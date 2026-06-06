@@ -1,0 +1,15 @@
+# requirements-dev.txt — 開発時のみの依存
+#
+# 仕様書 v3.1 C5 準拠
+# インストール: `python -m pip install -r requirements.txt -r requirements-dev.txt`
+
+-r requirements.txt
+
+# pytest
+# 役割: Python テストフレームワーク
+# 責務: ユニットテスト（domain/algorithm/application/interface/infrastructure）、
+#       統合テスト（test_dependency_direction.py, test_h1_predictive_check.py）、
+#       Kuhn 1950 解析解との比較検証テストの実行
+# 仕様書 C5: pytest >= 7.0
+# 参照: https://docs.pytest.org/
+pytest>=7.0

@@ -1,0 +1,48 @@
+// For format details, see https://aka.ms. For config options, see the
+// README at: https://github.com
+{
+	"shutdownAction": "none",
+	"name": "${localWorkspaceFolderBasename}",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev
+	"dockerComposeFile": "../docker-compose.yml",
+	"service": "app",
+	"workspaceFolder": "/workspaces/app",
+
+	// ---------------------------------------------------------------------
+	// VS Code カスタマイズ設定
+	// ---------------------------------------------------------------------
+	// 目的: Dev Container 内で起動する VS Code の拡張機能と動作設定を定義します。
+	// コンテナ作成時に自動的に適用されるため、手動インストール不要です。
+	"customizations": {
+		"vscode": {
+			// 拡張機能一覧
+			// - ms-vscode-remote.remote-containers : Dev Container サポート本体
+			// - ms-python.python                   : Python 言語サポート（構文/Lintなど）
+			// - ms-python.debugpy                  : Python デバッガー（ブレークポイント/ステップ実行）
+			// - ms-python.vscode-pylance           : 型チェック・高精度なコード補完（Pylance）
+			"extensions": [
+				"ms-vscode-remote.remote-containers",
+				"ms-python.python",
+				"ms-python.debugpy",
+				"ms-python.vscode-pylance"
+			],
+			"settings": {
+				// コンテナ内の Python インタープリタパスを明示指定
+				"python.defaultInterpreterPath": "/usr/local/bin/python",
+				// ターミナル起動時に仮想環境を自動アクティベート
+				"python.terminal.activateEnvironment": true,
+				// デバッグ時はユーザーコードのみステップ実行（ライブラリ内には入らない）
+				"debugpy.debugJustMyCode": true
+			}
+		}
+	},
+
+	// コンテナ作成後のセットアップをスクリプトに委譲
+	"postCreateCommand": "bash .devcontainer/setup-mcp.sh"
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Uncomment to connect as root instead. More info: https://aka.ms.
+	// "remoteUser": "root"
+}

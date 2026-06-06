@@ -1,0 +1,28 @@
+# requirements.txt — GTOプリフロップ・レンジデータ取得 CLI ツール
+#
+# 仕様書 v3.1 準拠（.doc/preflop_range_getter_spec_v3_1.md）
+# - C1: Python 3.10 以上
+# - C2: 必須依存ライブラリ — numpy >= 1.24, tqdm >= 4.65
+# - C3: 標準ライブラリのみで完結すべき機能（argparse, hashlib, json, os,
+#       sys, signal, pathlib, dataclasses, platform, abc, typing, ast）
+# - C5: テストフレームワーク — pytest >= 7.0（開発時のみ依存）
+#
+# 運用ポリシー:
+# - 本ファイルは「実行時（production）の必須依存」を表す
+# - 開発依存は requirements-dev.txt に分離
+# - インストール: `python -m pip install -r requirements.txt`
+# - 開発時: `python -m pip install -r requirements.txt -r requirements-dev.txt`
+
+# numpy
+# 役割: 数値計算ライブラリ（行列演算、float32 配列）
+# 責務: CFR+ における後悔値・戦略累積値の管理、NPZ 形式でのシリアライズ、
+#       Strategy/SolverResult/Checkpoint の不変配列の保持
+# 仕様書 Section A.2: Domain 層に許容される唯一の外部依存
+# 参照: https://numpy.org/
+numpy>=1.24
+
+# tqdm
+# 役割: プログレスバー表示ライブラリ
+# 責務: CFR+ 反復進捗の stderr への表示（仕様書 Item 5 Progress Bar 仕様）
+# 参照: https://github.com/tqdm/tqdm
+tqdm>=4.65
