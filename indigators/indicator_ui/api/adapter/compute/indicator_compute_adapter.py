@@ -24,6 +24,19 @@ _TIME_REQUIRED = {"tgp_btlm", "profit_band"}
 # profit_band のみ。bands.build_bands(require_full=True)→ValueError・profit_band/src/bands.py:75）。
 _EMPTY_SERIES_INDICATORS = {"profit_band"}
 
+# error.type → HTTP ステータス対応（§6.3.4 / §7.4）の **単一定義**。
+# ComputeError.error_type と同じ層（adapter/compute）に置き、controller・server 殻が
+# 本表を import して共有する（status 表の二重定義を排する）。
+ERROR_STATUS: dict[str, int] = {
+    "validation": 400,
+    "missing_column": 400,
+    "missing_time": 400,
+    "empty_series": 422,
+    "backend_unavailable": 500,
+    "internal": 500,
+}
+
+
 # profit_band の「必須バケット空」ValueError を識別する sentinel 文字列。
 #
 # 構造的判定にできない理由（既存 src は read-only・改変禁止）:

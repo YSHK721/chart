@@ -12,12 +12,13 @@ df 以降キーワード専用（§5.5.4.1）。fitter enum 文字列 → Fitter
 
 from __future__ import annotations
 
-import importlib.util
-import sys
+import importlib
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, TypedDict
+
+from adapter.compute.module_loader import load_package
 
 # indigators/ ルート（このファイル: api/adapter/compute/ → parents[4] = indigators/）。
 _INDIGATORS = Path(__file__).resolve().parents[4]
@@ -36,30 +37,11 @@ def _src_module_name(indicator: str) -> str:
 def _load_src_package(indicator: str) -> ModuleType:
     """指標 src パッケージを一意なパッケージ名で読み込む（同名 ``src`` 衝突を回避）。
 
-    既存 src の相対 import（``from .bands import``）が解決するよう、一意名
-    ``_<indicator>_src`` で sys.modules へ登録してから読み込む。
-
-    キャッシュ: sys.modules を唯一のキャッシュとして用いる。同一指標の 2 回目以降は
-    登録済みモジュールを再利用し、exec_module を重複実行しない。
+    importlib 機構は ``module_loader.load_package`` に集約（重複解消・振る舞い不変）。
+    一意名 ``_<indicator>_src`` を与え、相対 import（``from .bands import``）と
+    sys.modules キャッシュは load_package が担保する。
     """
-    mod_name = _src_module_name(indicator)
-    cached = sys.modules.get(mod_name)
-    if cached is not None:
-        return cached
-
-    pkg_dir = _INDIGATORS / indicator / "src"
-    spec = importlib.util.spec_from_file_location(
-        mod_name,
-        pkg_dir / "__init__.py",
-        submodule_search_locations=[str(pkg_dir)],
-    )
-    if spec is None or spec.loader is None:  # pragma: no cover - 環境異常（spec 解決不能）
-        raise ImportError(f"指標 src を読み込めません: {indicator}")
-    module = importlib.util.module_from_spec(spec)
-    # exec_module 前に登録する（src 内の相対 import が自モジュールを参照できるように）。
-    sys.modules[mod_name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_package(_src_module_name(indicator), _INDIGATORS / indicator / "src")
 
 
 def _fitter_factory(name: str) -> Any:

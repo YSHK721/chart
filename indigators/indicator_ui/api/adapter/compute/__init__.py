@@ -12,6 +12,7 @@ from __future__ import annotations
 from adapter.compute.call_binding import CallBinding
 from adapter.compute.fake_chart import FakeHorizontalChart, FakeLineChart
 from adapter.compute.indicator_compute_adapter import (
+    ERROR_STATUS,
     ComputeError,
     IndicatorComputeAdapter,
 )
@@ -22,4 +23,5 @@ __all__ = [
     "CallBinding",
     "IndicatorComputeAdapter",
     "ComputeError",
+    "ERROR_STATUS",
 ]

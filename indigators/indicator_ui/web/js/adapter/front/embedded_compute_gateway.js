@@ -7,13 +7,10 @@
 //   - result.ok === true なら series 非 null、result.generation === req.generation（レース制御）。
 //   - キー不在は ComputeError を投げる（A方式の制限: 事前計算 variant のみ計算可能）。
 
-export class ComputeError extends Error {
-  constructor(message, { type = 'not_precomputed' } = {}) {
-    super(message);
-    this.name = 'ComputeError';
-    this.type = type;
-  }
-}
+// ComputeError は domain へ集約（単一定義）。re-export して呼び出し側を破壊しない。type を保持する。
+import { ComputeError } from '../../domain/compute_error.js';
+
+export { ComputeError };
 
 export class EmbeddedComputeGateway {
   // source: { precomputed: { "<id>:<variant>": SeriesPayload[] } }（SAMPLE_DATA 相当）。
@@ -26,7 +23,7 @@ export class EmbeddedComputeGateway {
     const key = `${indicatorId}:${variant ?? 'default'}`;
     const series = this._precomputed[key];
     if (!series) {
-      throw new ComputeError(`事前計算データ未収録のキー: ${key}（A方式は埋め込み variant のみ計算可能）`);
+      throw new ComputeError(`事前計算データ未収録のキー: ${key}（A方式は埋め込み variant のみ計算可能）`, { type: 'not_precomputed' });
     }
     // generation はそのままエコー（§7.1.1: result.generation === req.generation）。
     return { ok: true, generation, series };
