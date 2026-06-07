@@ -144,6 +144,137 @@ html, body {
 .ind-cat { color: #787b86; font-size: 12px; }
 .dialog-empty { color: #787b86; padding: 20px; text-align: center; }
 
+/* ===== プロパティ（パラメーター設定）ダイアログ ===== */
+/* EMA プロパティダイアログ（参照 UI ss20260607125849.jpg）を範とする見た目。
+   タブ下線・グループ見出し・disabled グレー・info アイコン・デフォルト/キャンセル/OK。 */
+.prop-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .45);
+  display: none; align-items: center; justify-content: center;
+}
+.prop-dialog-backdrop.is-open { display: flex; }
+
+.prop-dialog {
+  width: 460px; max-width: 92vw; max-height: 86vh;
+  background: #1e222d; border: 1px solid #2a2e39; border-radius: 8px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+}
+
+/* タイトルバー（ドラッグ移動ハンドル） */
+.prop-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border-bottom: 1px solid #2a2e39;
+  cursor: move; user-select: none; touch-action: none;
+}
+.prop-dialog-title { font-size: 14px; font-weight: 600; color: #fff; }
+.prop-dialog-close {
+  background: transparent; border: none; color: #9aa0ad; font-size: 18px; cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.prop-dialog-close:hover { color: #fff; background: #2a2e39; }
+
+/* タブバー（パラメーター/スタイル/可視性・下線アクティブ） */
+.prop-tabs { display: flex; gap: 2px; padding: 6px 12px 0; border-bottom: 1px solid #2a2e39; }
+.prop-tab {
+  padding: 7px 14px; background: transparent; border: none; color: #9aa0ad;
+  cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent;
+}
+.prop-tab:hover { color: #d1d4dc; }
+.prop-tab.is-active { color: #fff; border-bottom-color: #2962ff; }
+
+/* ボディ・ペイン */
+.prop-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 16px; }
+.prop-pane { display: none; }
+.prop-pane.is-active { display: block; }
+
+/* グループ見出し */
+.prop-group-heading {
+  font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  color: #787b86; margin: 12px 0 6px; padding-bottom: 4px; border-bottom: 1px solid #2a2e39;
+}
+.prop-group-heading:first-child { margin-top: 0; }
+
+/* パラメータ行（ラベル / コントロール / 違反） */
+.prop-field-row {
+  display: grid; grid-template-columns: 160px 1fr; align-items: center;
+  gap: 10px; padding: 6px 0;
+}
+.prop-field-label { color: #d1d4dc; font-size: 13px; display: inline-flex; align-items: center; gap: 4px; }
+.prop-field-info { color: #787b86; cursor: help; font-size: 12px; }
+.prop-field-info:hover { color: #2962ff; }
+.prop-field-control { display: inline-flex; align-items: center; gap: 8px; }
+.prop-field-unit { color: #787b86; font-size: 12px; }
+.prop-field-error {
+  grid-column: 2 / 3; color: #ef5350; font-size: 11px; min-height: 0;
+}
+.prop-field-row.is-invalid .prop-input { border-color: #ef5350; }
+
+/* 条件付き無効化（disabled グレーアウト・EMA 図の「14」グレー相当） */
+.prop-field-row.is-disabled { opacity: .45; }
+.prop-field-row.is-disabled .prop-field-label { color: #5d616b; }
+
+/* コントロール共通 */
+.prop-input {
+  background: #131722; border: 1px solid #2a2e39; color: #d1d4dc;
+  border-radius: 5px; font-size: 13px; padding: 6px 8px;
+}
+.prop-input:focus { outline: none; border-color: #2962ff; }
+.prop-input:disabled { background: #181b24; color: #5d616b; cursor: not-allowed; }
+.prop-input-number { width: 96px; }
+.prop-input-select { min-width: 120px; }
+.prop-input-checkbox { width: 16px; height: 16px; accent-color: #2962ff; }
+.prop-input-color { width: 40px; height: 26px; padding: 1px; cursor: pointer; }
+
+/* FLOAT_LIST（probabilities）リスト編集 */
+.prop-list { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding: 0; border: none; background: transparent; }
+.prop-list-rows { display: flex; flex-direction: column; gap: 4px; }
+.prop-list-row { display: inline-flex; align-items: center; gap: 6px; }
+.prop-list-del, .prop-list-add {
+  background: #2a2e39; border: none; color: #d1d4dc; cursor: pointer;
+  border-radius: 4px; font-size: 12px; padding: 4px 8px;
+}
+.prop-list-del:hover, .prop-list-add:hover { background: #363b49; color: #fff; }
+
+/* ENUM_LIST（buckets）マルチセレクト（チップ） */
+.prop-multiselect { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; border: none; background: transparent; }
+.prop-chip { display: inline-flex; align-items: center; gap: 4px; color: #d1d4dc; font-size: 12px; cursor: pointer; }
+
+/* window 複合（expanding/固定窓） */
+.prop-window-compound { display: inline-flex; align-items: center; gap: 10px; padding: 0; border: none; background: transparent; }
+.prop-window-compound label { display: inline-flex; align-items: center; gap: 4px; color: #d1d4dc; font-size: 12px; }
+
+/* スタイル / 可視性 タブ行 */
+.prop-style-row {
+  display: grid; grid-template-columns: 1fr 40px 80px 110px; align-items: center;
+  gap: 10px; padding: 6px 0; border-bottom: 1px solid #23272f;
+}
+.prop-style-name { color: #d1d4dc; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-visibility-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: #d1d4dc; font-size: 13px; cursor: pointer; }
+
+/* A 方式 未反映 注記（サイレント不一致回避・§9.3） */
+.prop-a-method-note {
+  background: #2a2410; border: 1px solid #5a4a18; color: #e0b84a;
+  border-radius: 5px; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; margin-bottom: 10px;
+}
+
+/* フッター（デフォルト / キャンセル / OK） */
+.prop-footer {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-top: 1px solid #2a2e39;
+}
+.prop-footer-spacer { flex: 1 1 auto; }
+.prop-btn {
+  padding: 7px 16px; border-radius: 5px; font-size: 13px; cursor: pointer; border: 1px solid transparent;
+}
+.prop-btn-default { background: transparent; border-color: #2a2e39; color: #b2b5be; }
+.prop-btn-default:hover { background: #2a2e39; color: #fff; }
+.prop-btn-cancel { background: transparent; border-color: #2a2e39; color: #d1d4dc; }
+.prop-btn-cancel:hover { background: #2a2e39; color: #fff; }
+.prop-btn-ok { background: #2962ff; color: #fff; }
+.prop-btn-ok:hover { background: #1e53e5; }
+.prop-btn-ok:disabled { background: #2a3354; color: #6b7088; cursor: not-allowed; }
+
 </style>
 </head>
 <body>
@@ -571,8 +702,49 @@ class IndicatorDef {
 
 const OHLC = ['open', 'high', 'low', 'close'];
 
-function param(name, type, def, constraints = [], enumValues = null) {
-  return { name, labelKey: `label.${name}`, type, default: def, enumValues, constraints };
+// ParamDef（JS plain object）を生成する。
+//
+// 必須引数 name/type/def は従来どおり。constraints/enumValues も従来位置を維持。
+// 第 6 引数 ui は UI 向けメタデータ（純 UI 情報・後方互換）。省略時は従来同値で、
+// ConstraintEvaluator.evaluate は ui フィールドを参照しない（constraint_eval.js:53-67）
+// ため evaluate 挙動は不変（§3.3.3 移行方針・C-3）。
+//
+// ui のオプション: group / controlType / tooltip / unit / step / min / max /
+//                  conditionalEnable / order / uiVisible。すべて末尾 default 付き。
+// ui メタデータの既定値（省略キーは従来挙動）。pick() で一括解決し ?? null 連鎖を集約する。
+const UI_DEFAULTS = Object.freeze({
+  group: null,
+  controlType: null,
+  tooltip: null,
+  unit: null,
+  step: null,
+  min: null,
+  max: null,
+  conditionalEnable: null,
+  order: null,
+  uiVisible: true,
+});
+
+// ui オブジェクトから UI_DEFAULTS のキーのみを既定フォールバック付きで抽出する。
+function pickUi(ui) {
+  const out = {};
+  for (const key of Object.keys(UI_DEFAULTS)) {
+    out[key] = ui[key] ?? UI_DEFAULTS[key];
+  }
+  return out;
+}
+
+function param(name, type, def, constraints = [], enumValues = null, ui = {}) {
+  return {
+    name,
+    labelKey: `label.${name}`,
+    type,
+    default: def,
+    enumValues,
+    constraints,
+    // --- UI 向けメタデータ（任意・省略時は従来挙動・pickUi で ?? 連鎖を集約）---
+    ...pickUi(ui),
+  };
 }
 
 // --- tgp_btlm（回帰チャネル・OVERLAY）-------------------------------------
@@ -583,15 +755,21 @@ const TGP_BTLM = new IndicatorDef({
   tab: 'indicator',
   placement: 'overlay',
   params: [
-    param('fitter', ParamType.ENUM, 'ols', [], ['ols', 'tgp']),
-    param('maxbars', ParamType.INT, 40, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }]),
+    param('fitter', ParamType.ENUM, 'ols', [], ['ols', 'tgp'], { group: 'group.calc', order: 1 }),
+    // price（ソース）: add_btlm の price="open"（lwc_chart.py:68・core.py 既定 open）。
+    param('price', ParamType.ENUM, 'open', [], ['open', 'high', 'low', 'close'], { group: 'group.calc', order: 2 }),
+    // maxbars 既定 40→100 是正（M-1・core.py:33 DEFAULT_MAXBARS=100）。
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, unit: 'unit.bars' }),
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
       { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
-    ]),
+    ], null, { group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1 }),
     param('q_high', ParamType.FLOAT, 0.95, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
-    ]),
+    ], null, { group: 'group.calc', order: 5, step: 0.01, min: 0, max: 1 }),
+    // color は COLOR＝スタイルタブへ移譲（§4.1）。既定は実コード add_btlm の
+    // color=_COLOR（MediumSlateBlue・lwc_chart.py:33,73）。
+    param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
   ],
   // 系列名は実バインディング（precomputed["tgp_btlm:default"]）の name に一致させる
   // （F3 _validateSeriesNames は series_name 基準・§3.3.6）。回帰チャネルは
@@ -612,9 +790,29 @@ const PROFIT_BAND = new IndicatorDef({
   tab: 'indicator',
   placement: 'pane',
   params: [
-    param('probabilities', ParamType.FLOAT_LIST, [0.95, 0.99], [
+    // probabilities 既定 [0.95,0.99]→実 7 水準 PROBABILITIES 是正（M-4・core.py:19）。
+    param('probabilities', ParamType.FLOAT_LIST, [0.51, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99], [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'probabilities', 1], messageKey: 'err.prob' },
-    ]),
+    ], null, { group: 'group.calc', order: 1, controlType: 'list' }),
+    // buckets（系統）: DEFAULT_BUCKETS=("nOH","pOL","pOH","nOL")（lwc_chart.py:51）。
+    param('buckets', ParamType.ENUM_LIST, ['nOH', 'pOL', 'pOH', 'nOL'], [], ['nOH', 'pOL', 'pOH', 'nOL'], { group: 'group.calc', order: 2, controlType: 'multiselect' }),
+    // require_full=True（lwc_chart.py:96）。
+    param('require_full', ParamType.BOOL, true, [], null, { group: 'group.calc', order: 3 }),
+    // legend=False（lwc_chart.py:97）。表示グループ。
+    param('legend', ParamType.BOOL, false, [], null, { group: 'group.display', order: 1 }),
+    // --- robust variant 固有（add_robust_profit_band・§4.3）---------------
+    // normalize="return"（enum return/atr・lwc_chart.py:164・robust_bands.py:135-140）。
+    param('normalize', ParamType.ENUM, 'return', [], ['return', 'atr'], { group: 'group.robust', order: 1 }),
+    // window="expanding"（Union[str,int]・複合型 UI・lwc_chart.py:165・§4.3.1）。
+    param('window', ParamType.ENUM, 'expanding', [], ['expanding'], { group: 'group.robust', order: 2, controlType: 'window_compound' }),
+    // atr_period=14（INT・normalize=="atr" のときのみ ATR 計算で使用・robust_bands.py:135-138）。
+    // 条件付き有効化（§3.5）: normalize==atr で有効、return で無効。
+    param('atr_period', ParamType.INT, 14, [], null, {
+      group: 'group.robust', order: 3, step: 1, min: 1, unit: 'unit.bars',
+      conditionalEnable: { when: { param: 'normalize', equals: 'atr' } },
+    }),
+    // min_obs=30（INT・lwc_chart.py:167）。
+    param('min_obs', ParamType.INT, 30, [{ kind: ConstraintKind.MIN_VALUE, operands: ['min_obs', 1], messageKey: 'err.min_obs' }], null, { group: 'group.robust', order: 4, step: 1, min: 1 }),
   ],
   // 動的系列（dynamic=true）: 系列名は実バインディングの命名規則
   // `{bucket} {pct}%`（lwc_chart.py:137 `name = f"{bucket} {tag}%"`）に従い、
@@ -640,8 +838,21 @@ const PRICE_RANGE_POWER = new IndicatorDef({
   tab: 'indicator',
   placement: 'overlay',
   params: [
-    param('interval', ParamType.ENUM, 0.1, [], [0.1, 0.01, 0.001]),
-    param('top_n', ParamType.INT, 2, [{ kind: ConstraintKind.MIN_VALUE, operands: ['top_n', 0], messageKey: 'err.top_n' }]),
+    // interval は ENUM 維持（INTERVAL_CHOICES=(0.1,0.01,0.001)・core.py:41）。
+    param('interval', ParamType.ENUM, 0.1, [], [0.1, 0.01, 0.001], { group: 'group.calc', order: 1 }),
+    // range_from/range_to=None（自動・lwc_chart.py:41-42）。両者非 null 時のみ range_from<range_to
+    // を form_model 側で前提付き検証（§11.2 Q-3・素の LT は両者 null 時に誤検出するため）。
+    param('range_from', ParamType.FLOAT, null, [], null, { group: 'group.calc', order: 2 }),
+    param('range_to', ParamType.FLOAT, null, [], null, { group: 'group.calc', order: 3 }),
+    // top_n 既定 2→5 是正（M-3・lwc_chart.py:43）。
+    param('top_n', ParamType.INT, 5, [{ kind: ConstraintKind.MIN_VALUE, operands: ['top_n', 0], messageKey: 'err.top_n' }], null, { group: 'group.calc', order: 4, step: 1, min: 0, unit: 'unit.bands' }),
+    // width=2（線幅・スタイルタブへ移譲・lwc_chart.py:46）。
+    param('width', ParamType.INT, 2, [], null, { group: 'group.style', order: 1, step: 1, min: 1 }),
+    // 色は bull/bear の 2 色（実コード add_price_range_power の bull_color/bear_color・
+    // lwc_chart.py:44-45）。既定は _BULL_COLOR / _BEAR_COLOR（lwc_chart.py:27-28）。
+    // スタイルタブへ移譲。
+    param('bull_color', ParamType.COLOR, 'rgba(46, 158, 91, 0.9)', [], null, { group: 'group.style', order: 2 }),
+    param('bear_color', ParamType.COLOR, 'rgba(210, 67, 58, 0.9)', [], null, { group: 'group.style', order: 3 }),
   ],
   // 実バインディングの horizontal_line 系列は単一（name='price_range_power'）。
   // BULL/BEAR は各価格線の text に載る（precomputed["price_range_power:default"][0].lines[].text）。
@@ -1193,6 +1404,958 @@ class IndicatorCatalogClient {
 }
 
 
+// ===== js/usecase/form_model.js =====
+// フォームモデル構築（usecase/form_model.js）。
+//
+// IndicatorDef.params（catalog の ParamDef[]）からプロパティダイアログのフォーム項目を
+// 構築し、条件付き有効化・検証委譲・既定復元を提供する純関数群。
+// DOM/chart/fetch/localStorage 非依存（母体「純ロジック分離」方針・§10.4）。
+//
+// 検証単一定義（C-3）: validateForm は domain constraint_eval.js の evaluate へ委譲する。
+// range_from<range_to の「両者非 null 時のみ」前提付き検証のみ本モジュールで最小実装する
+//   （素の LT は両者 null 時に null<null=false で誤検出するため。設計 §11.2 Q-3）。
+// ConstraintEvaluator のロジックは一切変更しない。
+
+
+// ParamType → デフォルトコントロール種別の写像（§3.1）。
+// control_type 明示があれば優先（buildFormModel 内で上書き）。
+const CONTROL_BY_TYPE = Object.freeze({
+  [ParamType.INT]: 'number',
+  [ParamType.FLOAT]: 'number',
+  [ParamType.ENUM]: 'select',
+  [ParamType.BOOL]: 'checkbox',
+  [ParamType.STRING]: 'text',
+  [ParamType.COLOR]: 'color',
+  [ParamType.FLOAT_LIST]: 'list',
+  [ParamType.ENUM_LIST]: 'multiselect',
+});
+
+// ParamDef からコントロール種別を一意に決定（明示 controlType 優先→ParamType 写像）。
+function resolveControlType(pdef) {
+  if (pdef.controlType !== null && pdef.controlType !== undefined) {
+    return pdef.controlType;
+  }
+  return CONTROL_BY_TYPE[pdef.type] ?? 'text';
+}
+
+// ParamDef → FieldDesc の任意メタデータ既定値（省略キーのフォールバックを 1 箇所に集約）。
+const FIELD_META_DEFAULTS = Object.freeze({
+  enumValues: null,
+  step: null,
+  min: null,
+  max: null,
+  unit: null,
+  tooltip: null,
+  group: null,
+  order: null,
+  conditionalEnable: null,
+});
+
+// pdef の任意メタデータを FIELD_META_DEFAULTS のキーで既定フォールバック付きに解決する。
+function pickFieldMeta(pdef) {
+  const out = {};
+  for (const key of Object.keys(FIELD_META_DEFAULTS)) {
+    out[key] = pdef[key] ?? FIELD_META_DEFAULTS[key];
+  }
+  return out;
+}
+
+// 1 ParamDef を FieldDesc へ変換（初期値は currentParams 優先→default フォールバック）。
+function paramToField(pdef, currentParams) {
+  const hasCurrent = Object.prototype.hasOwnProperty.call(currentParams, pdef.name);
+  return {
+    name: pdef.name,
+    label: pdef.labelKey ?? `label.${pdef.name}`,
+    controlType: resolveControlType(pdef),
+    value: hasCurrent ? currentParams[pdef.name] : pdef.default,
+    default: pdef.default,
+    constraints: pdef.constraints ?? [],
+    ...pickFieldMeta(pdef),
+  };
+}
+
+// IndicatorDef.params → フォームモデル。
+// 戻り値: { fields: FieldDesc[], groups: [{ key, fields: FieldDesc[] }] }。
+// - uiVisible===false の param は除外（§3.3.1）。
+// - グループは初出順、グループ内は order 昇順（order 無しは元配列順を保持・安定ソート）。
+// - group=null は先頭の無見出しグループ（参照 UI「基本」群相当・§3.4）。
+function buildFormModel(def, currentParams = {}) {
+  const fields = (def.params ?? [])
+    .filter((p) => p.uiVisible !== false)
+    .map((p) => paramToField(p, currentParams));
+
+  // グループ初出順を保持しつつ集約。
+  const groupOrder = [];
+  const byGroup = new Map();
+  for (const field of fields) {
+    const key = field.group ?? null;
+    if (!byGroup.has(key)) {
+      byGroup.set(key, []);
+      groupOrder.push(key);
+    }
+    byGroup.get(key).push(field);
+  }
+
+  const groups = groupOrder.map((key) => ({
+    key,
+    fields: sortByOrder(byGroup.get(key)),
+  }));
+
+  return { fields, groups };
+}
+
+// order 昇順の安定ソート（order 無し=元順を維持）。
+// 元インデックスを退避して order 同値・null 同士は元順を保つ（安定性を明示）。
+function sortByOrder(fields) {
+  const indexed = fields.map((field, originalIndex) => ({ field, originalIndex }));
+  indexed.sort((a, b) => {
+    const orderA = a.field.order;
+    const orderB = b.field.order;
+    if (orderA === null && orderB === null) return a.originalIndex - b.originalIndex;
+    if (orderA === null) return 1;
+    if (orderB === null) return -1;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.originalIndex - b.originalIndex;
+  });
+  return indexed.map((entry) => entry.field);
+}
+
+// 各パラメータの有効/無効を決定（§3.5 条件付き有効化）。
+// conditionalEnable.when（{param,equals}）が偽のとき disabled。未指定は常時 enabled。
+// 実コード対応: atr_period は normalize=="atr" のときのみ ATR 計算で使用（robust_bands.py:135-138）。
+function computeEnabled(def, values = {}) {
+  const enabled = {};
+  for (const pdef of def.params ?? []) {
+    const cond = pdef.conditionalEnable;
+    if (cond === null || cond === undefined) {
+      enabled[pdef.name] = true;
+      continue;
+    }
+    const { param, equals } = cond.when;
+    enabled[pdef.name] = values[param] === equals;
+  }
+  return enabled;
+}
+
+// フォーム検証（F-11・§5）。
+// ConstraintEvaluator.evaluate（単一定義・C-3）へ委譲し、その違反へ
+// range_from<range_to の前提付き違反（両者非 null 時のみ）を付加する（§11.2 Q-3）。
+// 戻り値: { violations: Violation[], ok: boolean }。
+function validateForm(def, values) {
+  const violations = evaluate(def.params, values);
+
+  // range_from<range_to: 両者が非 null（指定）のときのみ評価。素の LT を
+  // ConstraintEvaluator に置くと両者 null 時に null<null=false で誤検出するため、
+  // 「両者非 null」前提を本モジュールで前処理する（ConstraintEvaluator は不変）。
+  const hasRangeFrom = paramExists(def, 'range_from');
+  const hasRangeTo = paramExists(def, 'range_to');
+  if (hasRangeFrom && hasRangeTo) {
+    const from = values.range_from;
+    const to = values.range_to;
+    if (isNonNullNumber(from) && isNonNullNumber(to) && !(from < to)) {
+      violations.push({
+        param: 'range_from',
+        constraint: 'lt(range_from,range_to)',
+        expected: 'range_from<range_to',
+        actual: from,
+      });
+    }
+  }
+
+  return { violations, ok: violations.length === 0 };
+}
+
+function paramExists(def, name) {
+  return (def.params ?? []).some((p) => p.name === name);
+}
+
+function isNonNullNumber(v) {
+  return v !== null && v !== undefined && typeof v === 'number';
+}
+
+// 全パラメータを ParamDef.default へ復元（§7 デフォルト復元）。
+// 戻り値: { name: default }。default が null の param も null として返す。
+function resetToDefaults(def) {
+  const values = {};
+  for (const pdef of def.params ?? []) {
+    values[pdef.name] = pdef.default;
+  }
+  return values;
+}
+
+
+// ===== js/adapter/front/properties_dialog.js =====
+// PropertiesDialog（adapter/front/properties_dialog.js）— インジケーター・プロパティ ダイアログ DOM。
+//
+// 設計入力: 内部設計_パラメータ設定ダイアログ.md v0.2.0
+//   §2 ダイアログ構造（タイトル/タブ/フッター・ドラッグ・×閉じる）
+//   §3 PARAM_DEF→コントロール写像 / §3.4 グループ / §3.5 条件付き有効化 / §3.6 ツールチップ
+//   §5 リアルタイム検証（F-11・OK 制御）/ §6 スタイル・可視性タブ / §7 振る舞い・状態遷移
+//   §8.2 PropertiesDialog 署名 / §8.4 upstream JS API 非依存 / §9 A 方式可動差（H-1）。
+//
+// 純ロジックは usecase/form_model.js（buildFormModel/computeEnabled/validateForm/resetToDefaults）
+//   へ委譲する（DOM 非依存ロジックの分離・§10.4）。本ファイルは DOM 構築・イベント配線のみ。
+//
+// ★ upstream JS API（addLineSeries / createPriceLine / setData / applyOptions 等）は
+//   一切参照しない（§8.4・母体 §9 grep 0 件規律）。描画反映は onApply（→ ChartRenderer/facade 経由）。
+
+
+// A 方式（埋め込み事前計算）で「variant 以外のパラメータが描画へ反映されない」ことを
+// UI に明示する注記（§9.3・H-1・サイレント不一致を作らない）。
+const A_METHOD_NOTE =
+  'この値の反映は B 方式（ライブ API）で有効です。現プロトタイプ（A 方式）では variant 以外の値の変更は描画へ未反映です。';
+
+// i18n 解決器を持たないプロトタイプ向けの簡易ラベル化（キー末尾を表示）。
+function humanizeKey(key) {
+  if (key === null || key === undefined) {
+    return '';
+  }
+  const s = String(key);
+  return s.includes('.') ? s.split('.').pop() : s;
+}
+
+class PropertiesDialog {
+  // { document, def, instance, onApply, onCancel }
+  //   def      : IndicatorDef（catalog.get の戻り）
+  //   instance : AppliedInstance（params/variant を持つ。null 可＝既定値で開く）
+  //   onApply  : (values) => void   OK 押下時に収集値を渡す（→ recomputeInstance）
+  //   onCancel : () => void         キャンセル/×/背景時（任意）
+  constructor({ document: doc, def, instance = null, onApply = () => {}, onCancel = () => {} }) {
+    this._doc = doc;
+    this._def = def;
+    this._instance = instance;
+    this._onApply = onApply;
+    this._onCancel = onCancel;
+
+    // 現在のフォーム値（name -> value）。初期は instance.params 優先→default。
+    const currentParams = (instance && instance.params) || {};
+    const model = buildFormModel(def, currentParams);
+    this._values = {};
+    for (const f of model.fields) {
+      this._values[f.name] = f.value;
+    }
+
+    // バリアント（profit_band global↔robust 等）。OK 時に variant 変更を実反映する
+    //   経路を残す（A 方式でも variant 切替は事前計算 series があり実描画される・§9.2）。
+    this._variants = (def.compute && def.compute.variants) || ['default'];
+    this._variant = (instance && instance.variant) || this._variants[0];
+
+    this._activeTab = 'inputs';
+    this._root = null; // ダイアログ最上位要素
+    this._fieldEls = new Map(); // name -> { row, control, error, info }
+    this._okBtn = null;
+    this._drag = null;
+    this._offset = { x: 0, y: 0 };
+  }
+
+  // ダイアログ DOM を生成し document.body へ追加・配線する（§2・§7）。
+  open() {
+    const doc = this._doc;
+    const root = doc.createElement('div');
+    root.className = 'prop-dialog-backdrop is-open';
+    root.setAttribute('data-prop-dialog', this._def.id);
+
+    const panel = doc.createElement('div');
+    panel.className = 'prop-dialog';
+    panel.setAttribute('role', 'dialog');
+
+    panel.append(
+      this._buildHeader(),
+      this._buildTabBar(),
+      this._buildBody(),
+      this._buildFooter(),
+    );
+    root.append(panel);
+
+    // 背景クリックは閉じない（誤操作防止・§2.3）。パネル外側だけ無反応。
+    root.addEventListener('mousedown', (ev) => {
+      if (ev.target === root) {
+        ev.stopPropagation();
+      }
+    });
+
+    this._root = root;
+    this._panel = panel;
+    doc.body.append(root);
+
+    // 初期検証・有効化反映。
+    this._revalidate();
+    this._refreshEnabled();
+    return root;
+  }
+
+  close() {
+    if (this._root && this._root.parentNode) {
+      this._root.parentNode.removeChild(this._root);
+    }
+    this._root = null;
+  }
+
+  // ---- ヘッダ（タイトル＋×・ドラッグ移動ハンドル）-----------------------------
+  _buildHeader() {
+    const doc = this._doc;
+    const head = doc.createElement('div');
+    head.className = 'prop-dialog-head';
+
+    const title = doc.createElement('span');
+    title.className = 'prop-dialog-title';
+    const variantLabel =
+      this._instance && this._instance.variant && this._instance.variant !== 'default'
+        ? ` (${this._instance.variant})`
+        : '';
+    title.textContent = humanizeKey(this._def.displayNameKey ?? this._def.id) + variantLabel;
+
+    const close = doc.createElement('button');
+    close.className = 'prop-dialog-close';
+    close.type = 'button';
+    close.setAttribute('aria-label', '閉じる');
+    close.textContent = '×';
+    close.addEventListener('click', () => this._onCancelClick());
+
+    head.append(title, close);
+
+    // ドラッグ移動（Pointer Events・ブラウザ標準のみ・§2.3）。
+    head.addEventListener('pointerdown', (ev) => this._onDragStart(ev));
+    return head;
+  }
+
+  // ---- タブバー（パラメーター/スタイル/可視性）-------------------------------
+  _buildTabBar() {
+    const doc = this._doc;
+    const bar = doc.createElement('div');
+    bar.className = 'prop-tabs';
+    const tabs = [
+      { key: 'inputs', label: 'パラメーター' },
+      { key: 'style', label: 'スタイル' },
+      { key: 'visibility', label: '可視性' },
+    ];
+    this._tabBtns = new Map();
+    for (const t of tabs) {
+      const btn = doc.createElement('button');
+      btn.type = 'button';
+      btn.className = 'prop-tab' + (t.key === this._activeTab ? ' is-active' : '');
+      btn.dataset.propTab = t.key;
+      btn.textContent = t.label;
+      btn.addEventListener('click', () => this._switchTab(t.key));
+      this._tabBtns.set(t.key, btn);
+      bar.append(btn);
+    }
+    return bar;
+  }
+
+  _switchTab(key) {
+    this._activeTab = key;
+    for (const [k, btn] of this._tabBtns) {
+      btn.classList.toggle('is-active', k === key);
+    }
+    for (const [k, pane] of this._panes) {
+      pane.classList.toggle('is-active', k === key);
+    }
+  }
+
+  // ---- ボディ（3 タブのペイン）-----------------------------------------------
+  _buildBody() {
+    const doc = this._doc;
+    const body = doc.createElement('div');
+    body.className = 'prop-body';
+
+    this._panes = new Map();
+    const inputs = this._buildInputsPane();
+    const style = this._buildStylePane();
+    const visibility = this._buildVisibilityPane();
+    this._panes.set('inputs', inputs);
+    this._panes.set('style', style);
+    this._panes.set('visibility', visibility);
+
+    body.append(inputs, style, visibility);
+    return body;
+  }
+
+  // パラメーター タブ（本書の主眼・§3/§5）。
+  _buildInputsPane() {
+    const doc = this._doc;
+    const pane = doc.createElement('div');
+    pane.className = 'prop-pane is-active';
+    pane.dataset.propPane = 'inputs';
+
+    // バリアントセレクタ（複数 variant を持つ指標のみ・global↔robust 等）。
+    //   variant 変更は A/B 双方で実描画反映される（事前計算 series が存在・§9.2）。
+    if (this._variants.length > 1) {
+      pane.append(this._buildVariantRow());
+    }
+
+    const model = buildFormModel(this._def, this._values);
+    for (const group of model.groups) {
+      if (group.key !== null) {
+        const heading = doc.createElement('div');
+        heading.className = 'prop-group-heading';
+        heading.textContent = humanizeKey(group.key);
+        pane.append(heading);
+      }
+      for (const field of group.fields) {
+        pane.append(this._buildFieldRow(field));
+      }
+    }
+    return pane;
+  }
+
+  // バリアント選択行（variant 変更は実描画反映・§9.2・H-1 対象外）。
+  _buildVariantRow() {
+    const doc = this._doc;
+    const row = doc.createElement('div');
+    row.className = 'prop-field-row';
+    row.dataset.propField = '__variant';
+
+    const label = doc.createElement('label');
+    label.className = 'prop-field-label';
+    label.textContent = 'バリアント';
+
+    const controlWrap = doc.createElement('div');
+    controlWrap.className = 'prop-field-control';
+    const sel = doc.createElement('select');
+    sel.className = 'prop-input prop-input-select';
+    sel.dataset.propName = '__variant';
+    for (const v of this._variants) {
+      const opt = doc.createElement('option');
+      opt.value = v;
+      opt.textContent = humanizeKey(v);
+      if (v === this._variant) opt.selected = true;
+      sel.append(opt);
+    }
+    sel.addEventListener('change', () => { this._variant = sel.value; });
+    controlWrap.append(sel);
+    row.append(label, controlWrap);
+    return row;
+  }
+
+  // 1 フィールド行（ラベル / コントロール / 単位 / info / インライン違反）。
+  _buildFieldRow(field) {
+    const doc = this._doc;
+    const row = doc.createElement('div');
+    row.className = 'prop-field-row';
+    row.dataset.propField = field.name;
+
+    const label = doc.createElement('label');
+    label.className = 'prop-field-label';
+    label.textContent = humanizeKey(field.label);
+
+    // info（ツールチップ）アイコン。
+    let info = null;
+    if (field.tooltip) {
+      info = doc.createElement('span');
+      info.className = 'prop-field-info';
+      info.textContent = 'ⓘ';
+      info.title = humanizeKey(field.tooltip);
+      label.append(' ', info);
+    }
+
+    const controlWrap = doc.createElement('div');
+    controlWrap.className = 'prop-field-control';
+    const control = this._buildControl(field);
+    controlWrap.append(control);
+    if (field.unit) {
+      const unit = doc.createElement('span');
+      unit.className = 'prop-field-unit';
+      unit.textContent = humanizeKey(field.unit);
+      controlWrap.append(unit);
+    }
+
+    const error = doc.createElement('div');
+    error.className = 'prop-field-error';
+    error.dataset.propError = field.name;
+
+    row.append(label, controlWrap, error);
+    this._fieldEls.set(field.name, { row, control, error, info });
+    return row;
+  }
+
+  // control_type 別レンダリング（§3.1）。
+  _buildControl(field) {
+    switch (field.controlType) {
+      case 'number':
+        return this._buildNumber(field);
+      case 'select':
+        return this._buildSelect(field);
+      case 'checkbox':
+        return this._buildCheckbox(field);
+      case 'list':
+        return this._buildFloatList(field);
+      case 'multiselect':
+        return this._buildMultiselect(field);
+      case 'color':
+        return this._buildColor(field);
+      case 'window_compound':
+        return this._buildWindowCompound(field);
+      default:
+        return this._buildText(field);
+    }
+  }
+
+  _buildNumber(field) {
+    const doc = this._doc;
+    const input = doc.createElement('input');
+    input.type = 'number';
+    input.className = 'prop-input prop-input-number';
+    input.dataset.propName = field.name;
+    if (field.step !== null) input.step = String(field.step);
+    if (field.min !== null) input.min = String(field.min);
+    if (field.max !== null) input.max = String(field.max);
+    input.value = field.value === null || field.value === undefined ? '' : String(field.value);
+    input.addEventListener('input', () => {
+      const raw = input.value;
+      this._values[field.name] = raw === '' ? null : Number(raw);
+      this._onChange();
+    });
+    return input;
+  }
+
+  _buildSelect(field) {
+    const doc = this._doc;
+    const sel = doc.createElement('select');
+    sel.className = 'prop-input prop-input-select';
+    sel.dataset.propName = field.name;
+    for (const v of field.enumValues ?? []) {
+      const opt = doc.createElement('option');
+      opt.value = String(v);
+      opt.textContent = humanizeKey(String(v));
+      if (v === field.value) opt.selected = true;
+      sel.append(opt);
+    }
+    sel.addEventListener('change', () => {
+      // enum 値は raw（文字列/数値）。数値 enum は元型へ復元。
+      const picked = (field.enumValues ?? []).find((v) => String(v) === sel.value);
+      this._values[field.name] = picked !== undefined ? picked : sel.value;
+      this._onChange();
+    });
+    return sel;
+  }
+
+  _buildCheckbox(field) {
+    const doc = this._doc;
+    const input = doc.createElement('input');
+    input.type = 'checkbox';
+    input.className = 'prop-input prop-input-checkbox';
+    input.dataset.propName = field.name;
+    input.checked = Boolean(field.value);
+    input.addEventListener('change', () => {
+      this._values[field.name] = input.checked;
+      this._onChange();
+    });
+    return input;
+  }
+
+  _buildText(field) {
+    const doc = this._doc;
+    const input = doc.createElement('input');
+    input.type = 'text';
+    input.className = 'prop-input prop-input-text';
+    input.dataset.propName = field.name;
+    input.value = field.value === null || field.value === undefined ? '' : String(field.value);
+    input.addEventListener('input', () => {
+      this._values[field.name] = input.value === '' ? null : input.value;
+      this._onChange();
+    });
+    return input;
+  }
+
+  _buildColor(field) {
+    const doc = this._doc;
+    const input = doc.createElement('input');
+    input.type = 'color';
+    input.className = 'prop-input prop-input-color';
+    input.dataset.propName = field.name;
+    // <input type=color> は #rrggbb のみ。rgba 既定はそのまま値として保持し、
+    // ピッカーには近似 hex を表示する（プロトタイプ・スタイルタブは最小可）。
+    input.value = toHex(field.value);
+    input.addEventListener('input', () => {
+      this._values[field.name] = input.value;
+      this._onChange();
+    });
+    return input;
+  }
+
+  // FLOAT_LIST（probabilities）リスト編集（§3.2）。各要素=数値入力＋削除、末尾に追加。
+  _buildFloatList(field) {
+    const doc = this._doc;
+    const wrap = doc.createElement('div');
+    wrap.className = 'prop-input prop-list';
+    wrap.dataset.propName = field.name;
+
+    const list = Array.isArray(field.value) ? field.value.slice() : [];
+    this._values[field.name] = list;
+
+    const rows = doc.createElement('div');
+    rows.className = 'prop-list-rows';
+
+    const renderRows = () => {
+      rows.innerHTML = '';
+      const cur = this._values[field.name];
+      cur.forEach((val, idx) => {
+        const r = doc.createElement('div');
+        r.className = 'prop-list-row';
+        const num = doc.createElement('input');
+        num.type = 'number';
+        num.step = 'any';
+        num.className = 'prop-input prop-input-number';
+        num.value = String(val);
+        num.addEventListener('input', () => {
+          const arr = this._values[field.name].slice();
+          arr[idx] = num.value === '' ? null : Number(num.value);
+          this._values[field.name] = arr;
+          this._onChange();
+        });
+        const del = doc.createElement('button');
+        del.type = 'button';
+        del.className = 'prop-list-del';
+        del.textContent = '−';
+        del.addEventListener('click', () => {
+          const arr = this._values[field.name].slice();
+          // 空リスト禁止（最低 1 要素・§3.2）。
+          if (arr.length <= 1) return;
+          arr.splice(idx, 1);
+          this._values[field.name] = arr;
+          renderRows();
+          this._onChange();
+        });
+        r.append(num, del);
+        rows.append(r);
+      });
+    };
+    renderRows();
+
+    const add = doc.createElement('button');
+    add.type = 'button';
+    add.className = 'prop-list-add';
+    add.textContent = '＋追加';
+    add.addEventListener('click', () => {
+      const arr = this._values[field.name].slice();
+      arr.push(0.95); // 既定追加値（§3.2）。
+      this._values[field.name] = arr;
+      renderRows();
+      this._onChange();
+    });
+
+    wrap.append(rows, add);
+    return wrap;
+  }
+
+  // ENUM_LIST（buckets）マルチセレクト（候補からチェックで複数選択・§3.1）。
+  _buildMultiselect(field) {
+    const doc = this._doc;
+    const wrap = doc.createElement('div');
+    wrap.className = 'prop-input prop-multiselect';
+    wrap.dataset.propName = field.name;
+    const selected = new Set(Array.isArray(field.value) ? field.value : []);
+    this._values[field.name] = [...selected];
+
+    for (const opt of field.enumValues ?? []) {
+      const chip = doc.createElement('label');
+      chip.className = 'prop-chip';
+      const cb = doc.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = selected.has(opt);
+      cb.addEventListener('change', () => {
+        if (cb.checked) selected.add(opt);
+        else selected.delete(opt);
+        // 元の候補順を保持して配列化。
+        this._values[field.name] = (field.enumValues ?? []).filter((v) => selected.has(v));
+        this._onChange();
+      });
+      chip.append(cb, doc.createTextNode(' ' + humanizeKey(String(opt))));
+      wrap.append(chip);
+    }
+    return wrap;
+  }
+
+  // window（Union[str,int]）複合: ラジオ expanding/固定窓 ＋ 数値（§4.3.1）。
+  _buildWindowCompound(field) {
+    const doc = this._doc;
+    const wrap = doc.createElement('div');
+    wrap.className = 'prop-input prop-window-compound';
+    wrap.dataset.propName = field.name;
+
+    const isExpanding = field.value === 'expanding' || field.value === null || field.value === undefined;
+
+    const radioExp = doc.createElement('label');
+    const rExp = doc.createElement('input');
+    rExp.type = 'radio';
+    rExp.name = `prop-window-${field.name}`;
+    rExp.checked = isExpanding;
+    radioExp.append(rExp, doc.createTextNode(' 展開(expanding)'));
+
+    const radioFixed = doc.createElement('label');
+    const rFixed = doc.createElement('input');
+    rFixed.type = 'radio';
+    rFixed.name = `prop-window-${field.name}`;
+    rFixed.checked = !isExpanding;
+    radioFixed.append(rFixed, doc.createTextNode(' 固定窓'));
+
+    const num = doc.createElement('input');
+    num.type = 'number';
+    num.min = '1';
+    num.step = '1';
+    num.className = 'prop-input prop-input-number';
+    num.disabled = isExpanding;
+    num.value = isExpanding ? '' : String(field.value);
+
+    const sync = () => {
+      if (rExp.checked) {
+        num.disabled = true;
+        this._values[field.name] = 'expanding';
+      } else {
+        num.disabled = false;
+        this._values[field.name] = num.value === '' ? null : Number(num.value);
+      }
+      this._onChange();
+    };
+    rExp.addEventListener('change', sync);
+    rFixed.addEventListener('change', sync);
+    num.addEventListener('input', sync);
+
+    wrap.append(radioExp, radioFixed, num);
+    return wrap;
+  }
+
+  // ---- スタイル タブ（SERIES_DEF 単位の色/線幅/線種・最小可・§6.1）------------
+  _buildStylePane() {
+    const doc = this._doc;
+    const pane = doc.createElement('div');
+    pane.className = 'prop-pane';
+    pane.dataset.propPane = 'style';
+
+    const note = this._buildAMethodNote();
+    pane.append(note);
+
+    this._styleState = [];
+    const series = this._def.series ?? [];
+    series.forEach((s, idx) => {
+      const row = doc.createElement('div');
+      row.className = 'prop-style-row';
+
+      const name = doc.createElement('span');
+      name.className = 'prop-style-name';
+      name.textContent = s.seriesName ?? (s.dynamic ? '(動的系列)' : `系列${idx + 1}`);
+
+      const color = doc.createElement('input');
+      color.type = 'color';
+      color.className = 'prop-input prop-input-color';
+      color.value = toHex(s.colorRule ?? '#2962ff');
+
+      const width = doc.createElement('input');
+      width.type = 'number';
+      width.min = '1';
+      width.step = '1';
+      width.className = 'prop-input prop-input-number';
+      width.value = String(s.width ?? 1);
+
+      const style = doc.createElement('select');
+      style.className = 'prop-input prop-input-select';
+      for (const st of ['solid', 'dotted', 'dashed']) {
+        const o = doc.createElement('option');
+        o.value = st;
+        o.textContent = st;
+        if ((s.style ?? 'solid') === st) o.selected = true;
+        style.append(o);
+      }
+
+      const state = { seriesName: s.seriesName, color, width, style };
+      this._styleState.push(state);
+      row.append(name, color, width, style);
+      pane.append(row);
+    });
+    return pane;
+  }
+
+  // ---- 可視性 タブ（系列単位の表示/非表示・最小可・§6.2）---------------------
+  _buildVisibilityPane() {
+    const doc = this._doc;
+    const pane = doc.createElement('div');
+    pane.className = 'prop-pane';
+    pane.dataset.propPane = 'visibility';
+
+    pane.append(this._buildAMethodNote());
+
+    this._visibilityState = [];
+    const series = this._def.series ?? [];
+    series.forEach((s, idx) => {
+      const row = doc.createElement('label');
+      row.className = 'prop-visibility-row';
+      const cb = doc.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      const name = doc.createElement('span');
+      name.textContent = s.seriesName ?? (s.dynamic ? '(動的系列)' : `系列${idx + 1}`);
+      row.append(cb, name);
+      this._visibilityState.push({ seriesName: s.seriesName, checkbox: cb });
+      pane.append(row);
+    });
+    return pane;
+  }
+
+  // A 方式の可動差を明示する注記要素（§9.3・H-1・サイレント不一致を作らない）。
+  _buildAMethodNote() {
+    const doc = this._doc;
+    const note = doc.createElement('div');
+    note.className = 'prop-a-method-note';
+    note.dataset.aMethodNote = '1';
+    note.textContent = A_METHOD_NOTE;
+    return note;
+  }
+
+  // ---- フッター（デフォルト/キャンセル/OK）-----------------------------------
+  _buildFooter() {
+    const doc = this._doc;
+    const footer = doc.createElement('div');
+    footer.className = 'prop-footer';
+
+    const def = doc.createElement('button');
+    def.type = 'button';
+    def.className = 'prop-btn prop-btn-default';
+    def.textContent = 'デフォルト';
+    def.addEventListener('click', () => this._onDefaultClick());
+
+    const spacer = doc.createElement('span');
+    spacer.className = 'prop-footer-spacer';
+
+    const cancel = doc.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'prop-btn prop-btn-cancel';
+    cancel.textContent = 'キャンセル';
+    cancel.addEventListener('click', () => this._onCancelClick());
+
+    const ok = doc.createElement('button');
+    ok.type = 'button';
+    ok.className = 'prop-btn prop-btn-ok';
+    ok.textContent = 'OK';
+    ok.addEventListener('click', () => this._onOkClick());
+    this._okBtn = ok;
+
+    footer.append(def, spacer, cancel, ok);
+    return footer;
+  }
+
+  // ---- イベント---------------------------------------------------------------
+
+  _onChange() {
+    this._revalidate();
+    this._refreshEnabled();
+  }
+
+  // F-11 リアルタイム検証（§5）。違反をインライン表示し OK を制御する。
+  _revalidate() {
+    const { violations, ok } = validateForm(this._def, this._values);
+    // 全フィールドのエラー表示をクリア。
+    for (const [, els] of this._fieldEls) {
+      els.error.textContent = '';
+      els.row.classList.remove('is-invalid');
+    }
+    for (const v of violations) {
+      const els = this._fieldEls.get(v.param);
+      if (els) {
+        els.error.textContent = humanizeKey(v.constraint);
+        els.row.classList.add('is-invalid');
+      }
+    }
+    if (this._okBtn) {
+      this._okBtn.disabled = !ok;
+    }
+    return ok;
+  }
+
+  // 条件付き有効化（§3.5）。disabled のフィールド行をグレーアウト。
+  _refreshEnabled() {
+    const enabled = computeEnabled(this._def, this._values);
+    for (const [name, els] of this._fieldEls) {
+      const on = enabled[name] !== false;
+      els.row.classList.toggle('is-disabled', !on);
+      if (els.control) {
+        // コントロール（および内部の入力要素）を無効化。
+        if ('disabled' in els.control) {
+          els.control.disabled = !on;
+        }
+        for (const inner of els.control.querySelectorAll ? els.control.querySelectorAll('input,select,button') : []) {
+          inner.disabled = !on;
+        }
+      }
+    }
+  }
+
+  _onDefaultClick() {
+    const defaults = resetToDefaults(this._def);
+    this._values = { ...defaults };
+    // 再構築（フォーム内のみ・OK 押下まで適用しない・§7.1）。
+    this._rebuildBody();
+  }
+
+  _rebuildBody() {
+    const body = this._panel.querySelector('.prop-body');
+    if (!body) return;
+    const newBody = this._buildBody();
+    body.replaceWith(newBody);
+    this._switchTab(this._activeTab);
+    this._revalidate();
+    this._refreshEnabled();
+  }
+
+  _onOkClick() {
+    if (!this._revalidate()) {
+      return; // 違反時は適用しない。
+    }
+    const values = { ...this._values };
+    const variant = this._variant;
+    this.close();
+    // variant は params とは別経路（recompute の variant 引数）で渡す。
+    this._onApply(values, variant);
+  }
+
+  _onCancelClick() {
+    this.close();
+    this._onCancel();
+  }
+
+  // ---- ドラッグ移動（Pointer Events・§2.3）-----------------------------------
+  _onDragStart(ev) {
+    if (!this._panel) return;
+    this._drag = { startX: ev.clientX, startY: ev.clientY, baseX: this._offset.x, baseY: this._offset.y };
+    const move = (e) => this._onDragMove(e);
+    const up = () => {
+      this._doc.removeEventListener('pointermove', move);
+      this._doc.removeEventListener('pointerup', up);
+      this._drag = null;
+    };
+    this._doc.addEventListener('pointermove', move);
+    this._doc.addEventListener('pointerup', up);
+  }
+
+  _onDragMove(ev) {
+    if (!this._drag) return;
+    this._offset = {
+      x: this._drag.baseX + (ev.clientX - this._drag.startX),
+      y: this._drag.baseY + (ev.clientY - this._drag.startY),
+    };
+    this._panel.style.transform = `translate(${this._offset.x}px, ${this._offset.y}px)`;
+  }
+}
+
+// rgba(...)/#rgb/#rrggbb を <input type=color> 用の #rrggbb へ近似変換する。
+// 解析不能な値は安全な既定（#2962ff）を返す（プロトタイプ・スタイルタブ最小可）。
+function toHex(value) {
+  if (typeof value !== 'string') return '#2962ff';
+  const v = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(v)) {
+    return ('#' + v.slice(1).split('').map((c) => c + c).join('')).toLowerCase();
+  }
+  const m = v.match(/^rgba?\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)/i);
+  if (m) {
+    const toByte = (n) => Math.max(0, Math.min(255, Math.round(Number(n))));
+    const hex = (n) => toByte(n).toString(16).padStart(2, '0');
+    return ('#' + hex(m[1]) + hex(m[2]) + hex(m[3])).toLowerCase();
+  }
+  return '#2962ff';
+}
+
+
 // ===== js/adapter/front/indicator_controller.js =====
 // IndicatorController（adapter/front/indicator_controller.js）。
 //
@@ -1594,8 +2757,41 @@ class IndicatorController {
     }
   }
 
-  // 設定: profit_band は global↔robust を実切替（recompute）。他は最小（再計算のみ）。
+  // 設定: 歯車クリックでプロパティダイアログを開く（§7.1）。
+  //   現 AppliedInstance のパラメータを読込→編集→OK で recomputeInstance（generation+1・§6.6）。
+  //   A 方式 gateway は params を無視し id:variant キーで解決するため、variant 以外の値変更は
+  //   描画へ未反映（H-1）。ダイアログ内に A 方式注記を明示表示する（§9.3・サイレント不一致回避）。
   _onGear(inst, def) {
+    const doc = this._document;
+    if (!doc || !def || typeof PropertiesDialog !== 'function') {
+      // DOM 不在（node 単体テスト等）または未解決 def は従来の最小再計算へフォールバック。
+      this._gearRecompute(inst, def);
+      return;
+    }
+    // 現 instance の params をフォーム初期値に展開（未保持は ParamDef.default）。
+    const currentParams = (inst.params && Object.keys(inst.params).length > 0)
+      ? inst.params
+      : this._defaultParams(def);
+    const instanceForDialog = { ...inst, params: currentParams };
+
+    const dialog = new PropertiesDialog({
+      document: doc,
+      def,
+      instance: instanceForDialog,
+      onApply: (values, variant) => {
+        // variant 変更は実描画反映（事前計算 series が存在・§9.2）。同一 variant の
+        //   場合は null を渡し現 variant を維持。任意パラメータ変更は A 方式では未反映
+        //   （ダイアログ内に注記済み・H-1）。
+        const nextVariant = variant && variant !== inst.variant ? variant : null;
+        this.recomputeInstance(inst.instanceId, nextVariant, values);
+      },
+      onCancel: () => {},
+    });
+    dialog.open();
+  }
+
+  // variant トグル/最小再計算（DOM 不在時のフォールバック・従来挙動を保持）。
+  _gearRecompute(inst, def) {
     const variants = def?.compute?.variants ?? ['default'];
     if (variants.length > 1) {
       const idx = variants.indexOf(inst.variant);

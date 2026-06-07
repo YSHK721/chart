@@ -31,6 +31,8 @@ const MODULE_ORDER = [
   'js/adapter/front/embedded_compute_gateway.js',
   'js/adapter/front/local_storage_gateway.js',
   'js/adapter/front/catalog_client.js',
+  'js/usecase/form_model.js',
+  'js/adapter/front/properties_dialog.js',
   'js/adapter/front/indicator_controller.js',
   'js/adapter/front/composition_root_front.js',
 ];

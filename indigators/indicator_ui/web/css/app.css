@@ -136,3 +136,134 @@ html, body {
 .ind-name { flex: 1 1 auto; color: #e6e9ef; }
 .ind-cat { color: #787b86; font-size: 12px; }
 .dialog-empty { color: #787b86; padding: 20px; text-align: center; }
+
+/* ===== プロパティ（パラメーター設定）ダイアログ ===== */
+/* EMA プロパティダイアログ（参照 UI ss20260607125849.jpg）を範とする見た目。
+   タブ下線・グループ見出し・disabled グレー・info アイコン・デフォルト/キャンセル/OK。 */
+.prop-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .45);
+  display: none; align-items: center; justify-content: center;
+}
+.prop-dialog-backdrop.is-open { display: flex; }
+
+.prop-dialog {
+  width: 460px; max-width: 92vw; max-height: 86vh;
+  background: #1e222d; border: 1px solid #2a2e39; border-radius: 8px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+}
+
+/* タイトルバー（ドラッグ移動ハンドル） */
+.prop-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border-bottom: 1px solid #2a2e39;
+  cursor: move; user-select: none; touch-action: none;
+}
+.prop-dialog-title { font-size: 14px; font-weight: 600; color: #fff; }
+.prop-dialog-close {
+  background: transparent; border: none; color: #9aa0ad; font-size: 18px; cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.prop-dialog-close:hover { color: #fff; background: #2a2e39; }
+
+/* タブバー（パラメーター/スタイル/可視性・下線アクティブ） */
+.prop-tabs { display: flex; gap: 2px; padding: 6px 12px 0; border-bottom: 1px solid #2a2e39; }
+.prop-tab {
+  padding: 7px 14px; background: transparent; border: none; color: #9aa0ad;
+  cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent;
+}
+.prop-tab:hover { color: #d1d4dc; }
+.prop-tab.is-active { color: #fff; border-bottom-color: #2962ff; }
+
+/* ボディ・ペイン */
+.prop-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 16px; }
+.prop-pane { display: none; }
+.prop-pane.is-active { display: block; }
+
+/* グループ見出し */
+.prop-group-heading {
+  font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  color: #787b86; margin: 12px 0 6px; padding-bottom: 4px; border-bottom: 1px solid #2a2e39;
+}
+.prop-group-heading:first-child { margin-top: 0; }
+
+/* パラメータ行（ラベル / コントロール / 違反） */
+.prop-field-row {
+  display: grid; grid-template-columns: 160px 1fr; align-items: center;
+  gap: 10px; padding: 6px 0;
+}
+.prop-field-label { color: #d1d4dc; font-size: 13px; display: inline-flex; align-items: center; gap: 4px; }
+.prop-field-info { color: #787b86; cursor: help; font-size: 12px; }
+.prop-field-info:hover { color: #2962ff; }
+.prop-field-control { display: inline-flex; align-items: center; gap: 8px; }
+.prop-field-unit { color: #787b86; font-size: 12px; }
+.prop-field-error {
+  grid-column: 2 / 3; color: #ef5350; font-size: 11px; min-height: 0;
+}
+.prop-field-row.is-invalid .prop-input { border-color: #ef5350; }
+
+/* 条件付き無効化（disabled グレーアウト・EMA 図の「14」グレー相当） */
+.prop-field-row.is-disabled { opacity: .45; }
+.prop-field-row.is-disabled .prop-field-label { color: #5d616b; }
+
+/* コントロール共通 */
+.prop-input {
+  background: #131722; border: 1px solid #2a2e39; color: #d1d4dc;
+  border-radius: 5px; font-size: 13px; padding: 6px 8px;
+}
+.prop-input:focus { outline: none; border-color: #2962ff; }
+.prop-input:disabled { background: #181b24; color: #5d616b; cursor: not-allowed; }
+.prop-input-number { width: 96px; }
+.prop-input-select { min-width: 120px; }
+.prop-input-checkbox { width: 16px; height: 16px; accent-color: #2962ff; }
+.prop-input-color { width: 40px; height: 26px; padding: 1px; cursor: pointer; }
+
+/* FLOAT_LIST（probabilities）リスト編集 */
+.prop-list { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding: 0; border: none; background: transparent; }
+.prop-list-rows { display: flex; flex-direction: column; gap: 4px; }
+.prop-list-row { display: inline-flex; align-items: center; gap: 6px; }
+.prop-list-del, .prop-list-add {
+  background: #2a2e39; border: none; color: #d1d4dc; cursor: pointer;
+  border-radius: 4px; font-size: 12px; padding: 4px 8px;
+}
+.prop-list-del:hover, .prop-list-add:hover { background: #363b49; color: #fff; }
+
+/* ENUM_LIST（buckets）マルチセレクト（チップ） */
+.prop-multiselect { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; border: none; background: transparent; }
+.prop-chip { display: inline-flex; align-items: center; gap: 4px; color: #d1d4dc; font-size: 12px; cursor: pointer; }
+
+/* window 複合（expanding/固定窓） */
+.prop-window-compound { display: inline-flex; align-items: center; gap: 10px; padding: 0; border: none; background: transparent; }
+.prop-window-compound label { display: inline-flex; align-items: center; gap: 4px; color: #d1d4dc; font-size: 12px; }
+
+/* スタイル / 可視性 タブ行 */
+.prop-style-row {
+  display: grid; grid-template-columns: 1fr 40px 80px 110px; align-items: center;
+  gap: 10px; padding: 6px 0; border-bottom: 1px solid #23272f;
+}
+.prop-style-name { color: #d1d4dc; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-visibility-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: #d1d4dc; font-size: 13px; cursor: pointer; }
+
+/* A 方式 未反映 注記（サイレント不一致回避・§9.3） */
+.prop-a-method-note {
+  background: #2a2410; border: 1px solid #5a4a18; color: #e0b84a;
+  border-radius: 5px; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; margin-bottom: 10px;
+}
+
+/* フッター（デフォルト / キャンセル / OK） */
+.prop-footer {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-top: 1px solid #2a2e39;
+}
+.prop-footer-spacer { flex: 1 1 auto; }
+.prop-btn {
+  padding: 7px 16px; border-radius: 5px; font-size: 13px; cursor: pointer; border: 1px solid transparent;
+}
+.prop-btn-default { background: transparent; border-color: #2a2e39; color: #b2b5be; }
+.prop-btn-default:hover { background: #2a2e39; color: #fff; }
+.prop-btn-cancel { background: transparent; border-color: #2a2e39; color: #d1d4dc; }
+.prop-btn-cancel:hover { background: #2a2e39; color: #fff; }
+.prop-btn-ok { background: #2962ff; color: #fff; }
+.prop-btn-ok:hover { background: #1e53e5; }
+.prop-btn-ok:disabled { background: #2a3354; color: #6b7088; cursor: not-allowed; }

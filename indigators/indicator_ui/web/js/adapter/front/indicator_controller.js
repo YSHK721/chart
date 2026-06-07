@@ -20,6 +20,7 @@ import {
   toggleFavorite as facadeToggleFavorite,
   deserialize,
 } from '../../usecase/facade.js';
+import { PropertiesDialog } from './properties_dialog.js';
 
 export class IndicatorController {
   constructor({ catalog, compute, persistence, renderer, document: doc = null }) {
@@ -408,8 +409,41 @@ export class IndicatorController {
     }
   }
 
-  // 設定: profit_band は global↔robust を実切替（recompute）。他は最小（再計算のみ）。
+  // 設定: 歯車クリックでプロパティダイアログを開く（§7.1）。
+  //   現 AppliedInstance のパラメータを読込→編集→OK で recomputeInstance（generation+1・§6.6）。
+  //   A 方式 gateway は params を無視し id:variant キーで解決するため、variant 以外の値変更は
+  //   描画へ未反映（H-1）。ダイアログ内に A 方式注記を明示表示する（§9.3・サイレント不一致回避）。
   _onGear(inst, def) {
+    const doc = this._document;
+    if (!doc || !def || typeof PropertiesDialog !== 'function') {
+      // DOM 不在（node 単体テスト等）または未解決 def は従来の最小再計算へフォールバック。
+      this._gearRecompute(inst, def);
+      return;
+    }
+    // 現 instance の params をフォーム初期値に展開（未保持は ParamDef.default）。
+    const currentParams = (inst.params && Object.keys(inst.params).length > 0)
+      ? inst.params
+      : this._defaultParams(def);
+    const instanceForDialog = { ...inst, params: currentParams };
+
+    const dialog = new PropertiesDialog({
+      document: doc,
+      def,
+      instance: instanceForDialog,
+      onApply: (values, variant) => {
+        // variant 変更は実描画反映（事前計算 series が存在・§9.2）。同一 variant の
+        //   場合は null を渡し現 variant を維持。任意パラメータ変更は A 方式では未反映
+        //   （ダイアログ内に注記済み・H-1）。
+        const nextVariant = variant && variant !== inst.variant ? variant : null;
+        this.recomputeInstance(inst.instanceId, nextVariant, values);
+      },
+      onCancel: () => {},
+    });
+    dialog.open();
+  }
+
+  // variant トグル/最小再計算（DOM 不在時のフォールバック・従来挙動を保持）。
+  _gearRecompute(inst, def) {
     const variants = def?.compute?.variants ?? ['default'];
     if (variants.length > 1) {
       const idx = variants.indexOf(inst.variant);
