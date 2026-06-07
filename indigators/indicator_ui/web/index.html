@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>インジケーター管理 UI（プロトタイプ A方式）</title>
+  <link rel="stylesheet" href="./css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ツールバー：シンボル / 時間足 / インジケーターボタン -->
+    <div class="toolbar">
+      <span class="tb-symbol">NI225</span>
+      <span class="tb-sep"></span>
+      <button class="tb-interval" type="button">日</button>
+      <span class="tb-sep"></span>
+      <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
+        <span class="ic">∿</span>
+        <span class="lbl">インジケーター</span>
+      </button>
+    </div>
+
+    <!-- チャート + 凡例 -->
+    <div class="chart-wrap">
+      <div id="chart"></div>
+      <div id="legend"></div>
+    </div>
+  </div>
+
+  <!-- ダイアログ：サイドバー(カテゴリ) + 上部タブ + 検索 + 指標一覧 -->
+  <div id="indicator-dialog" class="dialog-backdrop">
+    <div class="dialog" role="dialog" aria-label="インジケーター">
+      <div class="dialog-head">
+        <span class="dialog-title">インジケーター、メトリクス、ストラテジー</span>
+        <button id="indicator-dialog-close" class="dialog-close" type="button" aria-label="閉じる">×</button>
+      </div>
+      <div class="dialog-tabs">
+        <button class="dialog-tab is-active" data-tab="indicator" type="button">インジケーター</button>
+        <button class="dialog-tab" data-tab="strategy" type="button">ストラテジー</button>
+        <button class="dialog-tab" data-tab="profile" type="button">プロファイル</button>
+        <button class="dialog-tab" data-tab="pattern" type="button">パターン</button>
+      </div>
+      <div class="dialog-body">
+        <div class="dialog-side">
+          <button class="side-item is-active" data-category="" type="button">すべて</button>
+          <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
+          <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
+          <button class="side-item" data-category="cat.statistics" type="button">統計</button>
+          <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+        </div>
+        <div class="dialog-main">
+          <div class="search-wrap">
+            <input id="indicator-search" type="text" placeholder="検索" autocomplete="off" />
+          </div>
+          <div id="indicator-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- bundled lightweight-charts v4.1.3（global LightweightCharts を公開） -->
+  <script src="./vendor/lightweight-charts.js"></script>
+  <script type="module">
+    import { bootstrap } from './js/adapter/front/composition_root_front.js';
+    const { controller } = bootstrap({
+      lwc: window.LightweightCharts,
+      container: document.getElementById('chart'),
+      doc: document,
+    });
+    controller.bind();
+    controller.restore();
+  </script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+/* インジケーター管理 UI プロトタイプ スタイル（設計図 chart-design.html を範とするダークテーマ）。
+   read-only の design/ は改変せず、クラス名は本プロトタイプ用に独自定義する。 */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #131722;
+  color: #d1d4dc;
+  font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  font-size: 13px;
+}
+
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+/* ===== ツールバー ===== */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 10px;
+  background: #1e222d;
+  border-bottom: 1px solid #2a2e39;
+  flex: 0 0 auto;
+}
+.tb-symbol { font-weight: 700; font-size: 15px; color: #fff; letter-spacing: .3px; }
+.tb-sep { width: 1px; height: 22px; background: #2a2e39; margin: 0 4px; }
+.tb-interval {
+  padding: 4px 9px; border-radius: 4px; background: transparent; color: #d1d4dc;
+  border: none; cursor: pointer; font-size: 13px;
+}
+.tb-interval:hover { background: #2a2e39; }
+
+.tb-indicator-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 4px;
+  background: transparent; color: #d1d4dc; border: none; cursor: pointer;
+  font-size: 13px;
+}
+.tb-indicator-btn:hover { background: #2a2e39; color: #fff; }
+.tb-indicator-btn .ic { font-size: 15px; line-height: 1; }
+
+/* ===== チャート領域 ===== */
+.chart-wrap { position: relative; flex: 1 1 auto; min-height: 0; }
+#chart { position: absolute; inset: 0; }
+
+/* 凡例（適用中インスタンス） */
+#legend {
+  position: absolute; top: 10px; left: 12px; z-index: 5;
+  display: flex; flex-direction: column; gap: 4px;
+  pointer-events: none;
+}
+.legend-row {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(30, 34, 45, .82); border: 1px solid #2a2e39;
+  border-radius: 4px; padding: 3px 8px; pointer-events: auto;
+  font-size: 12px; backdrop-filter: blur(2px);
+}
+.legend-label { color: #e6e9ef; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend-row button {
+  background: transparent; border: none; color: #9aa0ad; cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 1px 3px; border-radius: 3px;
+}
+.legend-row button:hover { color: #fff; background: #2a2e39; }
+.legend-remove:hover { color: #ef5350 !important; }
+
+/* ===== ダイアログ ===== */
+.dialog-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, .55);
+  display: none; align-items: center; justify-content: center;
+}
+.dialog-backdrop.is-open { display: flex; }
+
+.dialog {
+  width: 760px; max-width: 94vw; height: 560px; max-height: 88vh;
+  background: #1e222d; border: 1px solid #2a2e39; border-radius: 8px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+}
+.dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid #2a2e39;
+}
+.dialog-title { font-size: 15px; font-weight: 600; color: #fff; }
+.dialog-close {
+  background: transparent; border: none; color: #9aa0ad; font-size: 18px; cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.dialog-close:hover { color: #fff; background: #2a2e39; }
+
+/* 上部タブ */
+.dialog-tabs { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid #2a2e39; }
+.dialog-tab {
+  padding: 7px 14px; background: transparent; border: none; color: #9aa0ad;
+  cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent;
+}
+.dialog-tab:hover { color: #d1d4dc; }
+.dialog-tab.is-active { color: #fff; border-bottom-color: #2962ff; }
+
+.dialog-body { display: flex; flex: 1 1 auto; min-height: 0; }
+
+/* サイドバー（カテゴリ） */
+.dialog-side {
+  width: 180px; flex: 0 0 auto; border-right: 1px solid #2a2e39;
+  padding: 10px 8px; overflow-y: auto;
+}
+.side-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 10px; border-radius: 4px; background: transparent;
+  border: none; color: #b2b5be; cursor: pointer; font-size: 13px; margin-bottom: 2px;
+}
+.side-item:hover { background: #2a2e39; color: #fff; }
+.side-item.is-active { background: #2962ff22; color: #fff; }
+
+/* メイン（検索 + 一覧） */
+.dialog-main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+.search-wrap { padding: 12px 14px; }
+#indicator-search {
+  width: 100%; padding: 8px 12px; border-radius: 6px;
+  background: #131722; border: 1px solid #2a2e39; color: #d1d4dc; font-size: 13px;
+}
+#indicator-search::placeholder { color: #5d6madd; }
+#indicator-search:focus { outline: none; border-color: #2962ff; }
+
+#indicator-list { flex: 1 1 auto; overflow-y: auto; padding: 0 8px 12px; }
+.ind-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: 5px; cursor: pointer;
+}
+.ind-row:hover { background: #2a2e39; }
+.ind-fav { background: transparent; border: none; color: #f0b400; cursor: pointer; font-size: 15px; line-height: 1; }
+.ind-fav:hover { transform: scale(1.15); }
+.ind-name { flex: 1 1 auto; color: #e6e9ef; }
+.ind-cat { color: #787b86; font-size: 12px; }
+.dialog-empty { color: #787b86; padding: 20px; text-align: center; }
