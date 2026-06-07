@@ -8,7 +8,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { toHex } from '../js/adapter/front/properties_dialog.js';
+import { toHex, PropertiesDialog } from '../js/adapter/front/properties_dialog.js';
+
+// 最小 DOM スタブ（jsdom 等の新規依存を避ける・C-2）。_buildAMethodNote は createElement
+//   と className/dataset/textContent のみを使うため、これらを備えた要素を返せば足りる。
+function fakeDoc() {
+  return {
+    createElement() {
+      return { className: '', dataset: {}, textContent: '' };
+    },
+  };
+}
+
+const MIN_DEF = { id: 'tgp_btlm', displayNameKey: 'ind.tgp_btlm', params: [], series: [], compute: { variants: ['default'] } };
 
 test('toHex: passes through a 6-digit hex unchanged (lowercased)', () => {
   assert.equal(toHex('#2E9E5B'), '#2e9e5b');
@@ -35,4 +47,30 @@ test('toHex: returns safe default for unparseable input', () => {
   assert.equal(toHex('not-a-color'), '#2962ff');
   assert.equal(toHex(null), '#2962ff');
   assert.equal(toHex(42), '#2962ff');
+});
+
+// A 方式注記の出し分け（§9.3・H-1）: B 方式（served）では実反映されるため注記を出さない。
+test('_buildAMethodNote returns a note element in A-mode (file://) with the a-method marker', () => {
+  // Arrange
+  const dialog = new PropertiesDialog({ document: fakeDoc(), def: MIN_DEF, instance: null, mode: 'a' });
+  // Act
+  const note = dialog._buildAMethodNote();
+  // Assert
+  assert.ok(note);
+  assert.equal(note.className, 'prop-a-method-note');
+  assert.equal(note.dataset.aMethodNote, '1');
+});
+
+test('_buildAMethodNote returns null in B-mode (served) so the A-method note is hidden', () => {
+  // Arrange
+  const dialog = new PropertiesDialog({ document: fakeDoc(), def: MIN_DEF, instance: null, mode: 'b' });
+  // Act
+  const note = dialog._buildAMethodNote();
+  // Assert
+  assert.equal(note, null);
+});
+
+test('PropertiesDialog defaults to A-mode when mode is omitted (backward compatible)', () => {
+  const dialog = new PropertiesDialog({ document: fakeDoc(), def: MIN_DEF, instance: null });
+  assert.ok(dialog._buildAMethodNote());
 });

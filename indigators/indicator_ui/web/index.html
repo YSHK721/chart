@@ -62,13 +62,16 @@
   <script src="./vendor/lightweight-charts.js"></script>
   <script type="module">
     import { bootstrap } from './js/adapter/front/composition_root_front.js';
-    const { controller } = bootstrap({
+    // served（http://localhost:8000/）なら B方式（ライブ API・params 実反映）、file:// なら A方式。
+    //   protocol / fetch は composition root が location/globalThis から既定取得する。
+    const { controller, ready } = bootstrap({
       lwc: window.LightweightCharts,
       container: document.getElementById('chart'),
       doc: document,
     });
     controller.bind();
-    controller.restore();
+    // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。
+    ready.then(() => controller.restore());
   </script>
 </body>
 </html>

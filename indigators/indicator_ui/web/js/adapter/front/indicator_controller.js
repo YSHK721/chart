@@ -23,12 +23,15 @@ import {
 import { PropertiesDialog } from './properties_dialog.js';
 
 export class IndicatorController {
-  constructor({ catalog, compute, persistence, renderer, document: doc = null }) {
+  // mode: 計算モード。'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算）。
+  //   既定 'a'（従来挙動・単体テスト互換）。composition root が served 判定で 'b' を注入する。
+  constructor({ catalog, compute, persistence, renderer, document: doc = null, mode = 'a' }) {
     this._catalog = catalog;
     this._compute = compute;
     this._persistence = persistence;
     this._renderer = renderer;
     this._document = doc;
+    this._mode = mode;
 
     // メモリ状態（facade の純状態オブジェクト）。
     this._state = emptyState();
@@ -204,7 +207,9 @@ export class IndicatorController {
       this._meta.set(inst.instanceId, { def });
       try {
         const gateway = this._gatewayAdapter(inst.variant);
-        const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: {}, generation: inst.generation });
+        // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
+        const restoreParams = this._paramsObject(inst.params);
+        const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: restoreParams, datasetRef: 'sample', generation: inst.generation });
         this._lastSeries = result.series;
         this._draw(inst.instanceId, def, this._lastSeries);
         if (!inst.visible) {
@@ -235,6 +240,14 @@ export class IndicatorController {
       }
     }
     return params;
+  }
+
+  // AppliedInstance.params（[k,v] ペア配列・facade 形）または object を object へ正規化する。
+  _paramsObject(params) {
+    if (Array.isArray(params)) {
+      return Object.fromEntries(params);
+    }
+    return params ?? {};
   }
 
   _withVariant(state, instanceId, variant) {
@@ -430,6 +443,7 @@ export class IndicatorController {
       document: doc,
       def,
       instance: instanceForDialog,
+      mode: this._mode,
       onApply: (values, variant) => {
         // variant 変更は実描画反映（事前計算 series が存在・§9.2）。同一 variant の
         //   場合は null を渡し現 variant を維持。任意パラメータ変更は A 方式では未反映

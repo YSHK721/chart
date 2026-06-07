@@ -39,10 +39,13 @@ export class PropertiesDialog {
   //   instance : AppliedInstance（params/variant を持つ。null 可＝既定値で開く）
   //   onApply  : (values) => void   OK 押下時に収集値を渡す（→ recomputeInstance）
   //   onCancel : () => void         キャンセル/×/背景時（任意）
-  constructor({ document: doc, def, instance = null, onApply = () => {}, onCancel = () => {} }) {
+  // mode: 'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算・params 未反映）。
+  //   既定 'a'（従来挙動・単体テスト互換）。'b' では A 方式注記を出さない（実反映されるため）。
+  constructor({ document: doc, def, instance = null, mode = 'a', onApply = () => {}, onCancel = () => {} }) {
     this._doc = doc;
     this._def = def;
     this._instance = instance;
+    this._mode = mode;
     this._onApply = onApply;
     this._onCancel = onCancel;
 
@@ -543,7 +546,9 @@ export class PropertiesDialog {
     pane.dataset.propPane = 'style';
 
     const note = this._buildAMethodNote();
-    pane.append(note);
+    if (note) {
+      pane.append(note);
+    }
 
     this._styleState = [];
     const series = this._def.series ?? [];
@@ -592,7 +597,10 @@ export class PropertiesDialog {
     pane.className = 'prop-pane';
     pane.dataset.propPane = 'visibility';
 
-    pane.append(this._buildAMethodNote());
+    const visNote = this._buildAMethodNote();
+    if (visNote) {
+      pane.append(visNote);
+    }
 
     this._visibilityState = [];
     const series = this._def.series ?? [];
@@ -612,7 +620,12 @@ export class PropertiesDialog {
   }
 
   // A 方式の可動差を明示する注記要素（§9.3・H-1・サイレント不一致を作らない）。
+  //   B 方式（served）では params が実反映されるため注記を出さない（null を返す）。
+  //   A 方式（file://）でのみ注記を生成して返す（モード明示・サイレント化しない）。
   _buildAMethodNote() {
+    if (this._mode === 'b') {
+      return null;
+    }
     const doc = this._doc;
     const note = doc.createElement('div');
     note.className = 'prop-a-method-note';

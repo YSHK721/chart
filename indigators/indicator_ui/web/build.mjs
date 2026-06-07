@@ -23,11 +23,13 @@ const OUT = resolve(WEB, '../out/prototype.html');
 // ES Modules を依存順に列挙（内→外）。
 const MODULE_ORDER = [
   'js/domain/constraint_eval.js',
+  'js/domain/compute_error.js',
   'js/domain/domain_models.js',
   'js/usecase/catalog.js',
   'js/usecase/facade.js',
   'data/sample_data.js',
   'js/adapter/front/chart_renderer.js',
+  'js/adapter/front/compute_http_client.js',
   'js/adapter/front/embedded_compute_gateway.js',
   'js/adapter/front/local_storage_gateway.js',
   'js/adapter/front/catalog_client.js',
