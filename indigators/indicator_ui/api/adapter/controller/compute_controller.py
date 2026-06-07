@@ -1,0 +1,84 @@
+"""ComputeController（内部設計書 §3.3.5）— POST /compute の純ロジック。
+
+``handle_compute(body) -> (HTTPステータス, ボディ)`` は HTTP の殻
+（BaseHTTPRequestHandler・ソケット）に依存しない純関数である。HTTP サーバ本体は
+``api/framework/server.py`` が本関数を呼ぶ薄い殻として実装する。
+
+処理（§4.5 / §6.3 / §7.3 / §7.4）:
+  1. body から indicatorId（別名 compute_id 許容）/ variant / params / datasetRef を取り出す。
+  2. datasetRef をホワイトリスト解決する（未知キー・パス文字列は 400 で拒否＝§7.3
+     パストラバーサル対策。サーバ側パスを外から組み立てない）。
+  3. 解決したパスを既存 loader で DataFrame 化（adapter.compute.dataset へ集約）。
+  4. 既存 ``IndicatorComputeAdapter.compute`` を呼び、収集系列を得る。
+  5. 成功は (200, {ok, generation, series})。ComputeError は §6.3.4 の error.type →
+     HTTPステータス対応（adapter.compute.ERROR_STATUS・単一定義）で翻訳する。
+
+stdlib のみと既存 adapter/loader を用いる。Flask 等は導入しない。
+既存 IndicatorComputeAdapter / call_binding / 指標 src は read-only（改変しない）。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from adapter.compute import ERROR_STATUS, ComputeError, IndicatorComputeAdapter
+from adapter.compute import dataset
+
+
+def _error_body(generation: int, error_type: str, message: str) -> tuple[int, dict[str, Any]]:
+    """§6.3.4 エラーボディ（{ok:false, generation, error:{type, message, violations}}）。
+
+    error_type→HTTPステータスは adapter.compute.ERROR_STATUS（単一定義）を参照する。
+    """
+    status = ERROR_STATUS.get(error_type, 500)
+    return status, {
+        "ok": False,
+        "generation": generation,
+        "error": {"type": error_type, "message": message, "violations": []},
+    }
+
+
+def handle_compute(
+    body: dict[str, Any], *, adapter: Any | None = None
+) -> tuple[int, dict[str, Any]]:
+    """POST /compute の純ロジック（§4.5 / §6.3 / §7.3 / §7.4）。
+
+    Args:
+        body: リクエストボディ（indicatorId|compute_id / variant / params / datasetRef）。
+        adapter: IndicatorComputeAdapter 互換オブジェクト（テスト注入用。既定は実 adapter）。
+
+    Returns:
+        (HTTPステータス, レスポンスボディ)。成功は (200, {ok, generation, series})、
+        失敗は (4xx/5xx, {ok:false, generation, error})。
+    """
+    generation = body.get("generation", 0)
+
+    # indicatorId（別名 compute_id 許容）と variant の取り出し・入口検証。
+    indicator_id = body.get("indicatorId") or body.get("compute_id")
+    variant = body.get("variant")
+    if not indicator_id or not variant:
+        return _error_body(generation, "validation", "indicatorId と variant は必須です。")
+
+    params = body.get("params") or {}
+    dataset_ref = body.get("datasetRef")
+
+    # datasetRef ホワイトリスト解決（§7.3）。未知キー・パス文字列は拒否。
+    if not dataset.is_known(dataset_ref):
+        return _error_body(
+            generation, "validation", f"未知の datasetRef です: {dataset_ref!r}"
+        )
+
+    df = dataset.load_dataframe(dataset_ref)
+
+    compute = (adapter or IndicatorComputeAdapter()).compute
+    try:
+        series = compute(indicator_id, variant, df, dict(params))
+    except ComputeError as exc:
+        return _error_body(generation, exc.error_type, exc.message)
+    except KeyError as exc:
+        # 未登録 indicatorId/variant は CallBinding.resolve が raw KeyError を投げる（§3.3.3）。
+        return _error_body(
+            generation, "validation", f"未登録の指標または variant です: {exc}"
+        )
+
+    return 200, {"ok": True, "generation": generation, "series": series}
