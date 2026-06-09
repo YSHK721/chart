@@ -25,6 +25,26 @@ from adapter.compute import (  # noqa: E402
 )
 
 
+def _patch_tgp_unavailable(monkeypatch):
+    """tgp バックエンド不在（rpy2/R/tgp 未導入）を環境非依存に再現する。
+
+    R/tgp/rpy2 を導入済みの環境でも「backend_unavailable へのエラー翻訳」契約を検証できるよう、
+    _fitter_factory("tgp") が fit_predict 時に ImportError を送出する fitter を返すよう差し替える。
+    """
+    from adapter.compute import call_binding
+
+    class _UnavailableTgpFitter:
+        def fit_predict(self, *args, **kwargs):
+            raise ImportError("rpy2 未導入（テストで tgp 不在を再現）")
+
+    original = call_binding._fitter_factory
+
+    def fake(name):
+        return _UnavailableTgpFitter() if name == "tgp" else original(name)
+
+    monkeypatch.setattr(call_binding, "_fitter_factory", fake)
+
+
 # --------------------------------------------------------------------------- #
 # テストデータ（合成 OHLCV）
 # --------------------------------------------------------------------------- #
@@ -204,8 +224,9 @@ def test_call_binding_invoke_price_range_power_keyword_only():
     assert binding.output_kind == "horizontal_line"
 
 
-def test_call_binding_fitter_tgp_raises_import_error():
-    # Arrange: rpy2/R 不在環境では tgp 経路は ImportError（fit_predict 時）
+def test_call_binding_fitter_tgp_raises_import_error(monkeypatch):
+    # Arrange: tgp バックエンド不在を再現（fit_predict 時に ImportError）
+    _patch_tgp_unavailable(monkeypatch)
     chart = FakeLineChart()
     binding = CallBinding.resolve("tgp_btlm", "default")
     df = _ohlcv(40)
@@ -325,8 +346,9 @@ def test_adapter_required_bucket_empty_translates_to_empty_series():
     assert exc.value.error_type == "empty_series"
 
 
-def test_adapter_tgp_fitter_without_rpy2_translates_to_backend_unavailable():
-    # Arrange: fitter=tgp（rpy2/R 不在）
+def test_adapter_tgp_fitter_without_rpy2_translates_to_backend_unavailable(monkeypatch):
+    # Arrange: tgp バックエンド不在を再現 → ImportError を backend_unavailable へ翻訳
+    _patch_tgp_unavailable(monkeypatch)
     adapter = IndicatorComputeAdapter()
     df = _ohlcv(60)
     # Act / Assert

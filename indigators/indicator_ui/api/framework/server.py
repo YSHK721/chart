@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -105,6 +105,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        # 開発サーバ: 静的 JS/HTML を都度再取得させ、ブラウザの ES モジュール古いキャッシュで
+        # 修正が反映されない問題を防ぐ（プロトタイプ前提・キャッシュ無効）。
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 
@@ -178,8 +181,14 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
-    """localhost で HTTP サーバを起動する（§7.3 localhost バインドのみ）。"""
-    httpd = ThreadingHTTPServer((host, port), IndicatorUIRequestHandler)
+    """localhost で HTTP サーバを起動する（§7.3 localhost バインドのみ）。
+
+    単一スレッドの ``HTTPServer`` を用いる：fitter="tgp" は rpy2 経由で埋め込み R を呼ぶが、
+    R はスレッド非安全で、リクエストごとに別スレッドで処理する ``ThreadingHTTPServer`` だと
+    2 回目以降の R 呼び出しが失敗する。全リクエストを同一（メイン）スレッドで直列処理して
+    R をスレッド安全に保つ（ローカル単一ユーザー前提のため直列化の影響は無視できる）。
+    """
+    httpd = HTTPServer((host, port), IndicatorUIRequestHandler)
     url = f"http://{host}:{port}/"
     sys.stdout.write(f"インジケーター管理 UI（B方式）を起動しました: {url}\n")
     sys.stdout.write("  POST /compute  GET /candles?datasetRef=sample  GET /（web/ 静的配信）\n")

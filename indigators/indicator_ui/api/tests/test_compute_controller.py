@@ -22,6 +22,22 @@ import pytest
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
 
 
+def _patch_tgp_unavailable(monkeypatch):
+    """tgp バックエンド不在を環境非依存に再現する（_fitter_factory("tgp") を ImportError 化）。"""
+    from adapter.compute import call_binding
+
+    class _UnavailableTgpFitter:
+        def fit_predict(self, *args, **kwargs):
+            raise ImportError("rpy2 未導入（テストで tgp 不在を再現）")
+
+    original = call_binding._fitter_factory
+
+    def fake(name):
+        return _UnavailableTgpFitter() if name == "tgp" else original(name)
+
+    monkeypatch.setattr(call_binding, "_fitter_factory", fake)
+
+
 # --------------------------------------------------------------------------- #
 # 正常系（datasetRef="sample" → サンプル CSV を解決して既存アダプタ呼出）
 # --------------------------------------------------------------------------- #
@@ -115,8 +131,9 @@ def test_handle_compute_maps_empty_series_to_422():
     assert resp["error"]["type"] == "empty_series"
 
 
-def test_handle_compute_tgp_backend_unavailable_returns_500():
-    # Arrange: fitter=tgp（rpy2/R 不在）→ backend_unavailable
+def test_handle_compute_tgp_backend_unavailable_returns_500(monkeypatch):
+    # Arrange: tgp バックエンド不在を再現 → backend_unavailable（500）
+    _patch_tgp_unavailable(monkeypatch)
     body = {
         "indicatorId": "tgp_btlm", "variant": "default",
         "params": {"fitter": "tgp", "maxbars": 40},

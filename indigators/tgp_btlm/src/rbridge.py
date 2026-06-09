@@ -81,7 +81,6 @@ class TgpBtlmFitter:
         """
         try:
             import rpy2.robjects as ro
-            from rpy2.robjects import numpy2ri
             from rpy2.robjects.packages import importr
         except ImportError as exc:  # pragma: no cover - 環境依存
             raise ImportError(
@@ -95,25 +94,24 @@ class TgpBtlmFitter:
                 "R パッケージ 'tgp' をロードできません。R で install.packages('tgp') を実行してください。"
             ) from exc
 
-        numpy2ri.activate()
-        try:
-            if self.seed is not None:
-                ro.r("set.seed")(self.seed)
+        # 入力は FloatVector/IntVector で明示的に R へ渡し、出力は ListVector を rx2 で取り出して
+        # np.asarray する。numpy2ri の global activate/deactivate（rpy2>=3.6 で削除・例外化）には
+        # 依存しない（converter 非依存）。
+        if self.seed is not None:
+            ro.r("set.seed")(self.seed)
 
-            x_r = ro.FloatVector(np.asarray(x, dtype=np.float64))
-            z_r = ro.FloatVector(np.asarray(z, dtype=np.float64))
-            bte_r = ro.IntVector(self.bte)
+        x_r = ro.FloatVector(np.asarray(x, dtype=np.float64))
+        z_r = ro.FloatVector(np.asarray(z, dtype=np.float64))
+        bte_r = ro.IntVector(self.bte)
 
-            model = tgp.btlm(
-                X=x_r, Z=z_r, BTE=bte_r, R=self.r_restarts, verb=0,
-                **{"pred.n": True},
-            )
+        model = tgp.btlm(
+            X=x_r, Z=z_r, BTE=bte_r, R=self.r_restarts, verb=0,
+            **{"pred.n": True},
+        )
 
-            mean = np.asarray(model.rx2("Zp.mean"), dtype=np.float64).ravel()
-            nat_low = np.asarray(model.rx2("Zp.q1"), dtype=np.float64).ravel()
-            nat_high = np.asarray(model.rx2("Zp.q2"), dtype=np.float64).ravel()
-        finally:
-            numpy2ri.deactivate()
+        mean = np.asarray(model.rx2("Zp.mean"), dtype=np.float64).ravel()
+        nat_low = np.asarray(model.rx2("Zp.q1"), dtype=np.float64).ravel()
+        nat_high = np.asarray(model.rx2("Zp.q2"), dtype=np.float64).ravel()
 
         if (q_low, q_high) == (_NATIVE_LOW, _NATIVE_HIGH):
             return BtlmResult(mean=mean, q_low=nat_low, q_high=nat_high)
