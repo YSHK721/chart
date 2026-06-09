@@ -5,7 +5,8 @@
 //
 // 契約:
 //   - POST /compute に JSON ボディ（indicatorId/variant/params/datasetRef）を送る。
-//   - 200 応答なら body.series を返す。
+//   - 200 応答なら ComputeResult { ok, generation, series } を返す（EmbeddedComputeGateway と
+//     同一の戻り形。_gatewayAdapter が result.series を、recompute が result.generation を参照する）。
 //   - 非200 応答は body.error（{type,message}）を読み ComputeError（error_type 保持）を throw。
 //   - ネットワーク例外（fetch reject）は ComputeError（error_type='network'）へ翻訳して throw。
 //
@@ -26,8 +27,10 @@ export class ComputeHttpClient {
   }
 
   // ComputeRequest -> series（§7.1.1）。非200/ネットワーク例外は ComputeError へ翻訳。
-  async compute({ indicatorId, variant, params, datasetRef } = {}) {
-    const body = JSON.stringify({ indicatorId, variant, params, datasetRef });
+  // generation はサーバがエコーし、recompute の競合採否（advanced.accepts(result.generation)）が
+  // 参照する。転送しないと常に 0 がエコーされ recompute が破棄され params が反映されない。
+  async compute({ indicatorId, variant, params, datasetRef, generation } = {}) {
+    const body = JSON.stringify({ indicatorId, variant, params, datasetRef, generation });
 
     let response;
     try {
@@ -50,6 +53,12 @@ export class ComputeHttpClient {
       });
     }
 
-    return payload.series;
+    // EmbeddedComputeGateway と同一の ComputeResult 形へ揃える（_gatewayAdapter が
+    // result.series を、recompute が result.generation を参照するため。裸配列だと描画されない）。
+    return {
+      ok: payload.ok ?? true,
+      generation: payload.generation ?? 0,
+      series: payload.series,
+    };
   }
 }

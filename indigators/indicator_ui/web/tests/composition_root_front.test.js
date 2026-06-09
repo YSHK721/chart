@@ -43,7 +43,7 @@ test('bootstrap injects ComputeHttpClient and mode=b when served over http', asy
   const { lwc } = fakeLwc();
   const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
   // Act
-  const { controller, mode, ready } = bootstrap({
+  const { controller, mode, ready } = await bootstrap({
     lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
   });
   await ready;
@@ -52,11 +52,11 @@ test('bootstrap injects ComputeHttpClient and mode=b when served over http', asy
   assert.ok(controller._compute instanceof ComputeHttpClient);
 });
 
-test('bootstrap falls back to EmbeddedComputeGateway and mode=a on file://', () => {
+test('bootstrap falls back to EmbeddedComputeGateway and mode=a on file://', async () => {
   // Arrange
   const { lwc } = fakeLwc();
-  // Act
-  const { controller, mode } = bootstrap({
+  // Act（A方式は SAMPLE_DATA を動的 import するため await）
+  const { controller, mode } = await bootstrap({
     lwc, container: {}, doc: null, storage: noStorage, protocol: 'file:',
   });
   // Assert
@@ -74,26 +74,26 @@ test('bootstrap (served) fetches /candles and replaces main series data', async 
     return { ok: true, async json() { return { ok: true, candles }; } };
   };
   // Act
-  const { ready } = bootstrap({
+  const { ready } = await bootstrap({
     lwc, container: {}, doc: null, storage: noStorage, protocol: 'https:', fetch: fakeFetch,
   });
   await ready;
   // Assert
   assert.match(candlesUrl, /^\/candles\?datasetRef=sample$/);
-  // 初期 SAMPLE_DATA → /candles 取得後に再 setData（最後の呼び出しが取得 candles）。
+  // B方式は SAMPLE_DATA を読み込まず、/candles 取得後に setData する（唯一の setData が取得 candles）。
   assert.deepEqual(setDataCalls.at(-1), candles);
 });
 
-test('bootstrap (served) keeps SAMPLE_DATA when /candles fetch fails', async () => {
+test('bootstrap (served) draws nothing when /candles fetch fails (no SAMPLE_DATA in B mode)', async () => {
   // Arrange
   const { lwc, setDataCalls } = fakeLwc();
   const fakeFetch = async () => { throw new TypeError('Failed to fetch'); };
   const before = setDataCalls.length;
   // Act
-  const { ready } = bootstrap({
+  const { ready } = await bootstrap({
     lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
   });
   await ready;
-  // Assert: 取得失敗時は再 setData しない（初期 SAMPLE_DATA の 1 回のみ）。
-  assert.equal(setDataCalls.length, before + 1);
+  // Assert: B方式は SAMPLE_DATA を読み込まないため、/candles 失敗時は setData 0 回（空チャート）。
+  assert.equal(setDataCalls.length, before + 0);
 });

@@ -79,13 +79,19 @@ const TGP_BTLM = new IndicatorDef({
     // color=_COLOR（MediumSlateBlue・lwc_chart.py:33,73）。
     param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
   ],
-  // 系列名は実バインディング（precomputed["tgp_btlm:default"]）の name に一致させる
-  // （F3 _validateSeriesNames は series_name 基準・§3.3.6）。回帰チャネルは
-  // 平均線 btlm_mean ＋ 分位線 btlm_q5 / btlm_q95（lwc_chart.py の create_line(name=...)）。
+  // 平均線 btlm_mean ＋ 分位線。分位線名は core.py quantile_column(q)=`btlm_q{round(q*100)}`
+  // で q_low/q_high に依存して変わる（既定 0.05/0.95 → btlm_q5/btlm_q95、0.25 → btlm_q25）。
+  // よって F3（_validateSeriesNames）が任意の分位を受理するよう、分位線は動的パターン
+  // `btlm_q{pct}`（pct=1..99）で表現する（§3.3.6 dynamic 展開）。
   series: [
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_mean', seriesName: 'btlm_mean', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_q5', seriesName: 'btlm_q5', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_q95', seriesName: 'btlm_q95', dynamic: false }),
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      seriesNamePattern: {
+        template: 'btlm_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
   ],
   compute: { computeId: 'tgp_btlm', requiredColumns: OHLC, timeRequired: true, backendParam: 'fitter', variants: ['default'] },
 });

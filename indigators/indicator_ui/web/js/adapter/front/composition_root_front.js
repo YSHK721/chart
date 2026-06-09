@@ -12,7 +12,8 @@
 //   - file:// 単体時: 従来 EmbeddedComputeGateway + SAMPLE_DATA にフォールバック（A方式）。
 //   判定は location.protocol（http/https → 'b' / それ以外 → 'a'）。
 
-import { SAMPLE_DATA } from '../../../data/sample_data.js';
+// SAMPLE_DATA（埋め込み 635KB）は A方式（file://）でのみ動的 import する。B方式（served）は
+// candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
 import { ChartRenderer } from './chart_renderer.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
@@ -45,14 +46,20 @@ async function fetchCandles(fetchImpl, datasetRef = 'sample') {
 // グローバル LightweightCharts（bundled JS が window へ公開）を引数で受け取り、
 // チャート + ローソク系列を生成して ChartRenderer に渡す。
 // served（http://）時は ComputeHttpClient + /candles、file:// 時は EmbeddedComputeGateway + SAMPLE_DATA。
-export function bootstrap({
+export async function bootstrap({
   lwc,
   container,
   doc = (typeof document !== 'undefined' ? document : null),
   storage,
   // served 判定・/candles 取得・/compute 用の注入（テスト・SSR で差し替え可能）。
   protocol = (typeof location !== 'undefined' ? location.protocol : 'file:'),
-  fetch = (typeof globalThis !== 'undefined' ? globalThis.fetch : undefined),
+  // ネイティブ fetch は this===window/globalThis を要求する。detached のまま
+  // this._fetch(...) で呼ぶと "Illegal invocation" になるため globalThis へ束縛する。
+  fetch = (typeof globalThis !== 'undefined' && globalThis.fetch
+    ? globalThis.fetch.bind(globalThis) : undefined),
+  // B方式の対象データセット（/candles・/compute）。既定 'sample'（既存挙動・テスト互換）。
+  // アプリ入口（index.html）が 'jp225' を渡すと B方式は JP225 をライブ計算する。
+  datasetRef = 'sample',
 } = {}) {
   const mode = modeForProtocol(protocol);
 
@@ -69,27 +76,31 @@ export function bootstrap({
     borderUpColor: '#26a69a', borderDownColor: '#ef5350',
     wickUpColor: '#26a69a', wickDownColor: '#ef5350',
   });
-  // 初期ローソクは SAMPLE_DATA で即時描画（A方式の主データ・B方式の暫定）。
-  mainSeries.setData(SAMPLE_DATA.candles);
-  chart.timeScale().fitContent();
 
   // ポート実装の組み立て（モード別）。
-  //   B方式: ComputeHttpClient（fetch /compute）— params 実反映。
-  //   A方式: EmbeddedComputeGateway（埋め込み事前計算）— params 未反映。
-  const compute = mode === 'b'
-    ? new ComputeHttpClient({ fetch })
-    : new EmbeddedComputeGateway(SAMPLE_DATA);
+  //   B方式: ComputeHttpClient（fetch /compute）— params 実反映。candles は /candles から取得し、
+  //          SAMPLE_DATA（635KB）は読み込まない。
+  //   A方式: SAMPLE_DATA を動的 import し、初期ローソク描画 + EmbeddedComputeGateway（params 未反映）。
+  let compute;
+  if (mode === 'b') {
+    compute = new ComputeHttpClient({ fetch });
+  } else {
+    const { SAMPLE_DATA } = await import('../../../data/sample_data.js');
+    mainSeries.setData(SAMPLE_DATA.candles);
+    chart.timeScale().fitContent();
+    compute = new EmbeddedComputeGateway(SAMPLE_DATA);
+  }
 
   const renderer = new ChartRenderer({ chart, mainSeries });
   const persistence = new LocalStorageGateway(storage);
   const catalog = new IndicatorCatalogClient();
 
-  const controller = new IndicatorController({ catalog, compute, persistence, renderer, document: doc, mode });
+  const controller = new IndicatorController({ catalog, compute, persistence, renderer, document: doc, mode, datasetRef });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
   //   取得失敗時は SAMPLE_DATA のまま（フォールバック）。ready は呼び出し側で await 可能。
   const ready = (mode === 'b')
-    ? fetchCandles(fetch).then((candles) => {
+    ? fetchCandles(fetch, datasetRef).then((candles) => {
         if (candles && candles.length > 0) {
           mainSeries.setData(candles);
           chart.timeScale().fitContent();

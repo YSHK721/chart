@@ -22,16 +22,16 @@ function fakeResponse(status, body) {
   };
 }
 
-// 正常応答 200 → series をそのまま返す。
-test('compute returns the series array from a 200 response', async () => {
+// 正常応答 200 → ComputeResult { ok, generation, series } を返す（EmbeddedComputeGateway と同形）。
+test('compute returns the ComputeResult { ok, generation, series } from a 200 response', async () => {
   // Arrange
   const series = [{ name: 'btlm_mean', kind: 'line', data: [{ time: 1, value: 2 }] }];
   const fakeFetch = async () => fakeResponse(200, { ok: true, generation: 0, series });
   const client = new ComputeHttpClient({ fetch: fakeFetch });
   // Act
   const result = await client.compute({ indicatorId: 'tgp_btlm', variant: 'default', params: {}, datasetRef: 'sample' });
-  // Assert
-  assert.deepEqual(result, series);
+  // Assert: 描画は result.series、recompute 競合判定は result.generation を参照する。
+  assert.deepEqual(result, { ok: true, generation: 0, series });
 });
 
 // リクエスト整形: URL='/compute'・method='POST'・JSON headers・body=JSON.stringify(request)。

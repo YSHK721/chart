@@ -25,13 +25,15 @@ import { PropertiesDialog } from './properties_dialog.js';
 export class IndicatorController {
   // mode: 計算モード。'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算）。
   //   既定 'a'（従来挙動・単体テスト互換）。composition root が served 判定で 'b' を注入する。
-  constructor({ catalog, compute, persistence, renderer, document: doc = null, mode = 'a' }) {
+  constructor({ catalog, compute, persistence, renderer, document: doc = null, mode = 'a', datasetRef = 'sample' }) {
     this._catalog = catalog;
     this._compute = compute;
     this._persistence = persistence;
     this._renderer = renderer;
     this._document = doc;
     this._mode = mode;
+    // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
+    this._datasetRef = datasetRef;
 
     // メモリ状態（facade の純状態オブジェクト）。
     this._state = emptyState();
@@ -113,7 +115,7 @@ export class IndicatorController {
     const gateway = this._gatewayAdapter();
     const { state, instance } = await apply(
       this._state,
-      { indicatorId, variant: variant ?? this._defaultVariant(def), params, datasetRef: 'sample' },
+      { indicatorId, variant: variant ?? this._defaultVariant(def), params, datasetRef: this._datasetRef },
       gateway,
     );
     this._state = state;
@@ -136,20 +138,18 @@ export class IndicatorController {
     }
     const params = newParams ?? this._defaultParams(meta.def);
     const gateway = this._gatewayAdapter(newVariant);
-    const { state, accepted } = await recompute(this._state, instanceId, params, 'sample', gateway);
+    const { state, accepted } = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
     this._state = state;
     if (accepted) {
-      // 系列を再生成せず setData 差し替え（line のみ）。horizontal は再描画。
-      const validated = this._validateSeriesNames(this._lastSeries, meta.def);
-      for (const p of validated) {
-        if (p.kind === 'line') {
-          this._renderer.setData(`${instanceId}::${p.name}`, p.data ?? []);
-        }
-      }
-      const hlines = validated.filter((p) => p.kind === 'horizontal_line');
-      if (hlines.length > 0) {
-        this._renderer.remove(instanceId);
-        this._draw(instanceId, meta.def, this._lastSeries);
+      // params 変更で系列名が変わりうる（tgp の分位線 btlm_q{N}＝q_low/q_high 依存）ため、
+      // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
+      // 全系列を現在名で再生成する（line / horizontal_line 共通）。
+      this._renderer.remove(instanceId);
+      this._draw(instanceId, meta.def, this._lastSeries);
+      // 非表示状態を維持（redraw は可視で再生成するため）。
+      const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+      if (inst && !inst.visible) {
+        this._renderer.setVisible(instanceId, false);
       }
       this._persistAll();
       this._renderLegend();
@@ -209,7 +209,7 @@ export class IndicatorController {
         const gateway = this._gatewayAdapter(inst.variant);
         // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
         const restoreParams = this._paramsObject(inst.params);
-        const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: restoreParams, datasetRef: 'sample', generation: inst.generation });
+        const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: restoreParams, datasetRef: this._datasetRef, generation: inst.generation });
         this._lastSeries = result.series;
         this._draw(inst.instanceId, def, this._lastSeries);
         if (!inst.visible) {
@@ -434,8 +434,11 @@ export class IndicatorController {
       return;
     }
     // 現 instance の params をフォーム初期値に展開（未保持は ParamDef.default）。
-    const currentParams = (inst.params && Object.keys(inst.params).length > 0)
-      ? inst.params
+    // instance.params は pairs 形式（paramsToPairs）で保存されるため object へ変換してから
+    // 渡す（restore と同様）。変換しないと name で引けず再オープン時に既定値へ戻る。
+    const stored = this._paramsObject(inst.params);
+    const currentParams = (stored && Object.keys(stored).length > 0)
+      ? stored
       : this._defaultParams(def);
     const instanceForDialog = { ...inst, params: currentParams };
 

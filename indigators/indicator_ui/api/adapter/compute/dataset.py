@@ -33,6 +33,9 @@ DATASET_WHITELIST: dict[str, Path] = {
     / "examples"
     / "4_line_indicators"
     / "ohlcv.csv",
+    # JP225（日経225・Dukascopy E_N225Jap）。marketdata から書き出した日足 CSV
+    # （date,open,high,low,close・外れ値補正済み）。生成: indicator_ui/tools/export_jp225_csv.py。
+    "jp225": _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_daily.csv",
 }
 
 # サンプル CSV の時刻列（解像度非依存に UNIX 秒へ変換する起点）。

@@ -13,12 +13,73 @@ df 以降キーワード専用（§5.5.4.1）。fitter enum 文字列 → Fitter
 from __future__ import annotations
 
 import importlib
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, TypedDict
 
 from adapter.compute.module_loader import load_package
+
+
+def _accepted_kwargs(callable_: Callable, params: dict[str, Any]) -> dict[str, Any]:
+    """``callable_`` が実際に受け取るキーワード引数のみへ ``params`` を絞り込む。
+
+    フロントは catalog の全 params（variant 横断）を送るため、当該 variant の add_* が
+    取らない引数（例: global へ robust 専用 ``normalize``、robust へ ``require_full``）が
+    混入し ``TypeError`` になる。シグネチャに ``**kwargs`` があれば素通し、無ければ
+    宣言済みパラメータ名に一致するキーだけを残す（未知キーは黙って捨てる）。
+    """
+    sig = inspect.signature(callable_)
+    if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+        return dict(params)
+    allowed = {
+        name for name, p in sig.parameters.items()
+        if p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD)
+    }
+    return {k: v for k, v in params.items() if k in allowed}
+
+
+# price_range_power の interval（絶対価格刻み）バンド爆発を防ぐ上限/目標。
+# 指数等の高価格帯で catalog 既定 0.1 のままだとバンド数（価格レンジ/interval）が
+# 数十万に達し計算が事実上停止する。catalog/src の選択肢（core.py INTERVAL_CHOICES）は
+# 変更せず（パリティ契約を保つ）、バンド数が上限超過の場合のみ価格規模へ自動適応する。
+_PRP_MAX_BANDS = 20000
+_PRP_TARGET_BANDS = 3000
+
+
+def _nice_step(value: float) -> float:
+    """1/2/5×10^n の見やすい刻みへ丸める（最低 0.1）。"""
+    import math
+
+    if value <= 0:
+        return 0.1
+    exp = math.floor(math.log10(value))
+    base = value / (10 ** exp)
+    nice = 1.0 if base <= 1 else 2.0 if base <= 2 else 5.0 if base <= 5 else 10.0
+    return max(round(nice * (10 ** exp), 4), 0.1)
+
+
+def _adapt_prp_interval(df: Any, kw: dict[str, Any]) -> float:
+    """price_range_power の interval を価格規模へ適応させる（爆発時のみ粗刻み化）。
+
+    バンド数 = 価格レンジ / interval が ``_PRP_MAX_BANDS`` を超える場合のみ、目標バンド数に
+    収まる見やすい刻みへ置換する。低価格帯（sample 等）では元の interval をそのまま保つ。
+    レンジは add_price_range_power と同じく range_from/range_to 優先・無指定時は df の low/high。
+    """
+    interval = kw.get("interval")
+    if interval is None or interval <= 0:
+        return interval  # 0/None は core 側の検証へ委ねる（挙動を変えない）。
+    cols = {str(c).lower(): c for c in df.columns}
+    if "low" not in cols or "high" not in cols:
+        return interval
+    rf, rt = kw.get("range_from"), kw.get("range_to")
+    lo = float(rf) if rf is not None else float(df[cols["low"]].min())
+    hi = float(rt) if rt is not None else float(df[cols["high"]].max())
+    rng = hi - lo
+    if rng > 0 and rng / interval > _PRP_MAX_BANDS:
+        return _nice_step(rng / _PRP_TARGET_BANDS)
+    return interval
 
 # indigators/ ルート（このファイル: api/adapter/compute/ → parents[4] = indigators/）。
 _INDIGATORS = Path(__file__).resolve().parents[4]
@@ -125,6 +186,10 @@ class CallBinding:
         if self._kind == "btlm":
             kw = dict(params)
             fitter = _fitter_factory(kw.pop("fitter"))
-            callable_(chart, df, fitter, **kw)
+            callable_(chart, df, fitter, **_accepted_kwargs(callable_, kw))
         else:
-            callable_(chart, df, **params)
+            kw = _accepted_kwargs(callable_, params)
+            if self.compute_id == "price_range_power" and "interval" in kw:
+                # 高価格帯でのバンド爆発（ハング）を防ぐ自動適応（catalog/src は不変）。
+                kw["interval"] = _adapt_prp_interval(df, kw)
+            callable_(chart, df, **kw)

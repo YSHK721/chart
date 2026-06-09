@@ -64,14 +64,18 @@
     import { bootstrap } from './js/adapter/front/composition_root_front.js';
     // served（http://localhost:8000/）なら B方式（ライブ API・params 実反映）、file:// なら A方式。
     //   protocol / fetch は composition root が location/globalThis から既定取得する。
-    const { controller, ready } = bootstrap({
+    // bootstrap は async（A方式のみ SAMPLE_DATA を動的 import。B方式は 635KB を読み込まない）。
+    bootstrap({
       lwc: window.LightweightCharts,
       container: document.getElementById('chart'),
       doc: document,
+      // B方式の対象データセット。JP225（dataset.py の whitelist 'jp225'）をライブ計算する。
+      datasetRef: 'jp225',
+    }).then(({ controller, ready }) => {
+      controller.bind();
+      // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。
+      ready.then(() => controller.restore());
     });
-    controller.bind();
-    // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。
-    ready.then(() => controller.restore());
   </script>
 </body>
 </html>
