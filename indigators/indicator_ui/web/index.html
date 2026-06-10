@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>インジケーター管理 UI（プロトタイプ A方式）</title>
+  <link rel="stylesheet" href="./css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ツールバー：シンボル / 時間足 / インジケーターボタン -->
+    <div class="toolbar">
+      <span class="tb-symbol">NI225</span>
+      <span class="tb-sep"></span>
+      <!-- 時間足セレクタ（1 分足原子から resample・§チャート表示時間選択）。data-timeframe は
+           サーバの TIMEFRAME_RULES と一致。既定 1D を is-active。A方式では controller が無効化。 -->
+      <div class="tb-timeframe" role="group" aria-label="時間足">
+        <button class="tb-interval" data-timeframe="1m" type="button">1分</button>
+        <button class="tb-interval" data-timeframe="5m" type="button">5分</button>
+        <button class="tb-interval" data-timeframe="15m" type="button">15分</button>
+        <button class="tb-interval" data-timeframe="1h" type="button">1時間</button>
+        <button class="tb-interval" data-timeframe="4h" type="button">4時間</button>
+        <button class="tb-interval is-active" data-timeframe="1D" type="button">日</button>
+        <button class="tb-interval" data-timeframe="1W" type="button">週</button>
+        <button class="tb-interval" data-timeframe="1M" type="button">月</button>
+      </div>
+      <span class="tb-sep"></span>
+      <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
+        <span class="ic">∿</span>
+        <span class="lbl">インジケーター</span>
+      </button>
+    </div>
+
+    <!-- チャート + 凡例 -->
+    <div class="chart-wrap">
+      <div id="chart"></div>
+      <div id="legend"></div>
+    </div>
+  </div>
+
+  <!-- ダイアログ：サイドバー(カテゴリ) + 上部タブ + 検索 + 指標一覧 -->
+  <div id="indicator-dialog" class="dialog-backdrop">
+    <div class="dialog" role="dialog" aria-label="インジケーター">
+      <div class="dialog-head">
+        <span class="dialog-title">インジケーター、メトリクス、ストラテジー</span>
+        <button id="indicator-dialog-close" class="dialog-close" type="button" aria-label="閉じる">×</button>
+      </div>
+      <div class="dialog-tabs">
+        <button class="dialog-tab is-active" data-tab="indicator" type="button">インジケーター</button>
+        <button class="dialog-tab" data-tab="strategy" type="button">ストラテジー</button>
+        <button class="dialog-tab" data-tab="profile" type="button">プロファイル</button>
+        <button class="dialog-tab" data-tab="pattern" type="button">パターン</button>
+      </div>
+      <div class="dialog-body">
+        <div class="dialog-side">
+          <button class="side-item is-active" data-category="" type="button">すべて</button>
+          <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
+          <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
+          <button class="side-item" data-category="cat.statistics" type="button">統計</button>
+          <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+        </div>
+        <div class="dialog-main">
+          <div class="search-wrap">
+            <input id="indicator-search" type="text" placeholder="検索" autocomplete="off" />
+          </div>
+          <div id="indicator-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- bundled lightweight-charts v4.1.3（global LightweightCharts を公開） -->
+  <script src="./vendor/lightweight-charts.js"></script>
+  <script type="module">
+    import { bootstrap } from './js/adapter/front/composition_root_front.js';
+    // served（http://localhost:8000/）なら B方式（ライブ API・params 実反映）、file:// なら A方式。
+    //   protocol / fetch は composition root が location/globalThis から既定取得する。
+    // bootstrap は async（A方式のみ SAMPLE_DATA を動的 import。B方式は 635KB を読み込まない）。
+    bootstrap({
+      lwc: window.LightweightCharts,
+      container: document.getElementById('chart'),
+      doc: document,
+      // B方式の対象データセット。JP225 1分足原子（dataset.py の whitelist 'jp225_m1'）を
+      // ライブ計算し、時間足セレクタで resample 表示する（既定 1D・直近 RECENT_BARS 本）。
+      datasetRef: 'jp225_m1',
+    }).then(({ controller, ready }) => {
+      controller.bind();
+      // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。
+      ready.then(() => controller.restore());
+    });
+  </script>
+</body>
+</html>

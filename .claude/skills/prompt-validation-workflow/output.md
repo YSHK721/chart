@@ -1,196 +1,157 @@
 # Prompt Validation Workflow - Self Review Output
 
-**対象**: ISSUE-008（行単位チェックポイント実装）のリーダーエージェント判断
-**実施日**: 2026-05-10
+**対象**: indicator-ui B方式 — (1)Refactor ＋ (2)HTTPサーバ本体/静的配信/起動/フロント配線切替
+**実施日**: 2026-06-07
 **努力レベル**: xhigh
+**ブランチ**: feature/indicator-ui
+**主張内容**: Python 128 passed（既存 113 ＋ 新規 dataset7/server smoke8）/ JS 170 passed（既存 162 ＋ composition5/note3）/ Refactor 振る舞い不変 / stdlib のみ・新規依存ゼロ / IndicatorComputeAdapter・指標 src 不接触 / 実通信で param 反映実証（maxbars 40↔120 で系列長・値・時間範囲が変化）/ upstream 系列 API は chart_renderer.js のみ
+
+---
+
+## 視点固定: 擁護 → 死因究明
+
+本成果物が **本番（served B方式）で失敗した** と仮定し、最も可能性の高い失敗原因を判定前に実証で検証する。
+
+## A. 軽量検証の落とし穴チェック（強制適用）
+
+| 自己質問 | 答え |
+|---|---|
+| 「全テスト緑」を結論ありきにしていないか | 緑を後方互換の短絡にせず、(a) Refactor 後 Python113 再緑を git 機構差替え後に実行、(b) param 反映を curl 実値（40点 time=1676505600 vs 120点 time=1666310400）で死因究明 |
+| 「N 辺検証」で N 辺すべて実施したか | candles↔compute 時間軸整合 / Refactor 振る舞い不変 / 静的配信 traversal の 3 辺を後述 checklist で実施 |
+| Specification 射程外拡大はないか | nested error=§6.3.4・traversal=§7.3・解像度非依存 UNIX秒=§6.3 の射程内。本番デプロイ/認証/range は対象外と明示 |
+| ユーザー承認語彙に承認超過結論を付与していないか | 「サーバ殻はスモーク可」の承認範囲を守り、純ロジックは handle_compute/dataset 単体で網羅。スモークを「全数検証」と称さない |
+
+## B. 用語拡大解釈チェック
+
+- 「Refactor 振る舞い不変」= 既存 Python113/JS162 が機構差替え後も緑。新規振る舞いを足していない（module_loader/dataset/ComputeError 集約は委譲のみ）。
+- 「same-origin 静的配信」= web/ ルート内に正規化後パスを限定。`..` で抜けたら 404（curl --path-as-is で 404 実証）。
+- 「param 実反映」= /compute が params で実再計算（series 長・値・時間範囲が変化）。SAMPLE_DATA 固定エコーではない。
+
+---
+
+## 検証する 3 辺（事前列挙: Triangulation Checklist）
+
+| # | 辺 | 検証内容 | 実施状態 | 証拠強度 |
+|---|----|---------|----------|---------|
+| 1 | /candles 時間軸 ↔ /compute series 時間軸 | 両者 full CSV 由来・同一 UNIX秒変換式で揃う（compute time が candle range 内） | ☑ done | ★★★ |
+| 2 | Refactor 前後の振る舞い不変 | module_loader/dataset/ERROR_STATUS/ComputeError 集約後に Python113・JS162 再緑 | ☑ done | ★★★ |
+| 3 | 静的配信 ↔ traversal 防止 ↔ same-origin module 読込 | `/` 200 html・module 200 js・`..` 404 を curl 実証 | ☑ done | ★★★ |
+
+3 辺完了・全辺 ★★★。結論を全面採用可。本番デプロイ/認証/range はスコープ外→残存リスクへ転記。
+
+---
 
 ## Pre-mortem: 最も可能性の高い失敗原因
 
-1. **エージェント主張内容の追従性バイアス受領**: coding-executor が報告した「263 passed / 6 新規 PASS / SC9 空 / smoke 動作 OK / ISSUE-008 RESOLVED」を、リーダー独立で実証検証せずに採用していないか
-2. **ISSUE-008 RESOLVED の早期判定**: agent が RESOLVED に更新した時点で内部設計書 §9.1 が未同期だった可能性。CLAUDE.md §3 では「検証完了後 RESOLVED」と規定。推奨対応 #4「内部設計書 §9.1 追記」が未完了で RESOLVED は手順違反の疑い
-3. **multiprocessing 環境のチェックポイント書き込み race condition**: `Pool.imap_unordered` で複数 worker が同時に行を完了した場合、`CheckpointStore.save_row()` が複数プロセスから並行呼び出しされていないか
-4. **再開後の NPZ ビット同一性が未実証**: smoke での「resume が動く」検証はあるが「resume 経由で生成した最終 NPZ が単発実行の NPZ とビット同一」は empirical verify されていない
-5. **`--keep-checkpoints` 未指定 smoke の cleanup 漏れ**: smoke 終了後にチェックポイントが残ると次回起動時に意図しない値を読み込む副作用
-6. **行 ID と保存ファイル名の整合性**: `row_NNN.npy` の N が実際に hand index N の equity であることが保証されているか（誤った index で保存されると NPZ 全体が汚染）
-7. **`solver/scripts/__init__.py` の有無**: pytest からのモジュール解決失敗リスク
-8. **commit 境界の妥当性**: ISSUE-008 / .gitignore / 設計書更新 / 実装 / テストを 1 commit にまとめてよいか
-
-## 証拠先行検証
-
-### 1. エージェント主張内容の独立実証検証
-
-**実証方法**: agent 報告 5 項目を各々独立コマンドで再現
-
-| agent 主張 | 私の独立再現コマンド | 結果 | 一致 |
-|---|---|---|---|
-| 新規 test 6 件 PASS | `pytest solver/tests/scripts/test_build_preflop_equity_table_checkpoint.py -v` | 6 passed in 0.07s | ✓ |
-| 全体 263 passed / 11 skipped | `pytest --tb=short` | 263 passed, 11 skipped in 0.96s | ✓ |
-| SC9 違反なし | `git diff --stat HEAD -- solver/algorithm solver/domain solver/application` | 空出力 | ✓ |
-| smoke 1st run で 3 ファイル生成 | `rm -rf .equity_rows && smoke --smoke-size 3 --keep-checkpoints` | row_000.npy/row_001.npy/row_002.npy | ✓ |
-| 2nd run で resume | `smoke --smoke-size 3 --keep-checkpoints` 再実行 | "Resume: 3 行をスキップ"、2.35s | ✓ |
-
-**判定**: 5/5 一致。追従性バイアスなし、独立実証取得済み。
-
-### 2. ISSUE-008 RESOLVED 判定の論理整合性
-
-**実証方法**: CLAUDE.md §3 規定との照合
-
-```
-CLAUDE.md §3 (g): "検証完了後、ISSUE.md のステータスを RESOLVED に更新し、検証結果を記入する"
-ISSUE-008 推奨対応:
-  #1 行単位チェックポイント実装       → 実装完了 ✓
-  #2 CLI に --resume / --clean-checkpoints 追加 → 完了 ✓
-  #3 atomic rename                    → 完了（L468 np.save tmp → os.replace） ✓
-  #4 内部設計書 §9.1 追記              → リーダーが後追いで完了 ✓
-```
-
-agent が RESOLVED 更新した時点 (#4 未完了) と、リーダーが §9.1 同期した時点 (#4 完了) には時系列ギャップがあった。**ただし、現時点では #4 を含むすべての推奨対応が完了済みなので、RESOLVED ステータスは現状と整合する**。手順上の問題は、リーダーがコミット前に §9.1 同期を完了したことで吸収された。
-
-**判定**: 棄却（現時点で論理整合性あり、ただし agent への指示で「§9.1 同期はリーダー責任」と明記すべき改善点あり）。
-
-### 3. multiprocessing race condition
-
-**実証方法**: `checkpoint_store.save_row` 呼び出し箇所を grep + 呼び出しコンテキスト確認
-
-```
-$ grep -n "checkpoint_store.save_row\|for.*pool.imap_unordered" build_preflop_equity_table.py
-644:                checkpoint_store.save_row(i, row_arr)    ← parent process
-662:                checkpoint_store.save_row(i, row_arr)    ← parent process (single-proc)
-
-呼び出しコンテキスト（L640-645）:
-  for idx, (i, row_arr) in enumerate(
-      pool.imap_unordered(_compute_row_worker, args_list), start=1
-  ):
-      results[i] = row_arr
-      checkpoint_store.save_row(i, row_arr)   ← worker 出力を parent が逐次受信して書き込み
-```
-
-`imap_unordered` は **parent process** が結果を逐次受信する設計。worker は計算のみで I/O を行わない。`save_row` の呼び出しは parent シングルスレッド逐次。
-
-**判定**: 棄却（単一書き手プロトコル、race condition なし）。
-
-### 4. 再開後 NPZ ビット同一性
-
-**実証方法**: 直接実証は smoke 規模 (3×3) で実施可能だが、現状未実施
-
-| 項目 | 状態 |
-|---|---|
-| 各 row の決定論性 | 棄却済（spec C15 / smoke 1st 2nd でハンド値 AA vs AKs = 0.8786 一致確認） |
-| row_NNN.npy のシリアライズ決定論性 | numpy.save は dtype/shape 一意のバイナリ表現で安定 |
-| `table[i] = results[i]` のマージ順序 | hand label 順固定（L671: `for i in range(_NUM_HANDS)`） |
-| 圧縮 NPZ のビット同一性 | `np.savez_compressed` は zlib 圧縮、入力が同一ならビット同一（zlib は決定論的） |
-
-**結論**: 論理推論として「同じ row 値 → 同じ table → 同じ NPZ」が成立。empirical verify は実施可能だが、フル 169×169 build に 30 分〜2 時間を要するため、本 ISSUE 対応の範囲外として後続作業へ送る。
-
-**判定**: 条件付き棄却（論理は成立、empirical は後続 ISSUE-007 解消時に検証）。
-
-### 5. `--keep-checkpoints` 未指定 smoke の cleanup
-
-**実証方法**: 直接実行で確認
-
-```
-$ rm -rf solver/data/.equity_rows
-$ python -m solver.scripts.build_preflop_equity_table --smoke-test --smoke-size 3
-2026-05-10 22:41:00,778 INFO CheckpointStore: solver/data/.equity_rows を削除しました
-$ ls solver/data/
-(empty)
-```
-
-**判定**: 棄却（cleanup 動作が確認できた）。
-
-### 6. 行 ID と保存ファイル名の整合性
-
-**実証方法**: `_compute_row_worker` 戻り値構造と `save_row(i, row_arr)` への引数フロー検証
-
-```
-worker 戻り値（L397, L408）: tuple[int, list[float]] = (i, row)  ← i は hand index、row は equity 配列
-parent 受信（L640-644）:
-  for idx, (i, row_arr) in enumerate(pool.imap_unordered(_compute_row_worker, args_list)):
-      results[i] = row_arr             ← i は worker 出力の hand index
-      checkpoint_store.save_row(i, row_arr)   ← 同じ i で保存
-save_row(L455-): np.save(self._base_dir / f"row_{i:03d}.tmp.npy", row_data)
-                  → os.replace(..., self._base_dir / f"row_{i:03d}.npy")
-```
-
-worker が返す `i` が hand index であることが保証される（args_list[i_dispatch] = (i, labels) で投入時点で i は固定）。
-
-**判定**: 棄却（行 ID 整合性が保証されている）。
-
-### 7. `solver/scripts/__init__.py` 有無
-
-**実証方法**: ファイル存在確認
-
-```
-$ ls -la solver/scripts/__init__.py
--rw-r--r-- 1 root root 102 May 10 12:46 solver/scripts/__init__.py
-```
-
-**判定**: 棄却（既存ファイル、pytest モジュール解決に問題なし）。
-
-### 8. commit 境界の妥当性
-
-**実証方法**: 「1 コミット = 1 目的」原則との照合
-
-**1 コミットにまとめる候補**:
-- `ISSUE.md`: ISSUE-008 IN_PROGRESS → RESOLVED への移行
-- `.gitignore`: ISSUE-008 と紐づくチェックポイント ディレクトリの除外
-- `solver/scripts/build_preflop_equity_table.py`: ISSUE-008 推奨対応 #1〜#3 の実装
-- `solver/.doc/preflop_range_getter_internal_design_stage2_v1.md`: ISSUE-008 推奨対応 #4 の文書同期
-- `solver/tests/scripts/__init__.py` および `test_build_preflop_equity_table_checkpoint.py`: ISSUE-008 の検証テスト
-
-5 ファイルすべてが「ISSUE-008 対応」という単一目的に紐づく。GitFlow 慣習でも「issue 対応」を atomic commit の単位とする運用は妥当。
-
-**判定**: 棄却（1 コミット = 1 目的「ISSUE-008 対応」として整合）。
-
-## 検証結果
-
-| 項目 | 判定 | 根拠 |
+| # | 失敗原因 | リスク帯 |
 |---|---|---|
-| 1. agent 主張の独立実証 | ✓ 合格 | 5 項目すべて独立コマンドで再現確認 |
-| 2. ISSUE-008 RESOLVED 判定 | ✓ 合格 | 推奨対応 #1〜#4 すべて完了（時系列ギャップは吸収済み） |
-| 3. multiprocessing race | ✓ 合格 | parent 単一書き手、worker は I/O 非関与 |
-| 4. NPZ ビット同一性 | △ 条件付き合格 | 論理推論で成立、empirical は後続作業（ISSUE-007 範囲） |
-| 5. `--keep-checkpoints` cleanup | ✓ 合格 | 削除ログ出力 + ディレクトリ消失を実測 |
-| 6. 行 ID 整合性 | ✓ 合格 | worker 戻り値の i が hand index で保証 |
-| 7. `solver/scripts/__init__.py` | ✓ 合格 | 既存ファイル確認 |
-| 8. commit 境界 | ✓ 合格 | ISSUE-008 単一目的に紐づく 5 ファイル |
+| 1 | **/candles（full CSV）と /compute（別スライス）で時間軸が乖離**し B方式でラインが画面外へ浮く | 高（B方式核心） |
+| 2 | **Refactor（importlib 機構/whitelist/ERROR_STATUS/ComputeError 集約）が振る舞いを変え**既存緑を破壊 | 高（後方互換核心） |
+| 3 | **パストラバーサルで web/ ルート外を配信**（`..` 解決漏れ）→ 情報漏洩 | 高（セキュリティ） |
+| 4 | **restore() が pairs を ComputeHttpClient に渡し JSON 破壊**（B方式の保存復元失敗） | 中（B方式復元） |
+| 5 | **A方式注記が B方式でも表示**（出し分け漏れ）または null append で DOM 例外 | 低（UI 出し分け） |
+| 6 | **dataset.py の workspace ルート parents 深さ誤り**で CSV 解決失敗 | 中（パス算出） |
+
+---
+
+## 証拠先行: 実証的証拠
+
+### 証拠 E1: 時間軸整合（#1 死因究明）
+```
+GET /candles?datasetRef=sample → count 2981 first time 1277769600 (2010-06-29)
+POST /compute maxbars=40  → 40点 first time 1676505600
+POST /compute maxbars=120 → 120点 first time 1666310400
+両 compute time は candle range(1277769600..) 内。両者とも dataset.load_dataframe("sample")＋int(pd.Timestamp(idx).timestamp())
+```
+**判定**: #1 棄却。candles と series は同一 full CSV・同一変換式で時間軸一致。
+
+### 証拠 E2: Refactor 振る舞い不変（#2 死因究明）
+```
+module_loader.load_package/load_module へ call_binding・dataset を委譲後:
+  Python full → 128 passed（既存 113 緑維持）
+ComputeError を domain/compute_error.js へ集約・両 adapter re-export 後:
+  JS full → 170 passed（既存 162 緑維持）
+ERROR_STATUS を adapter.compute へ単一定義化・controller 参照後: test_compute_controller 全緑
+```
+**判定**: #2 棄却。3 つの Refactor すべて後方互換（既存テスト無改変で緑）。
+
+### 証拠 E3: param 実反映（#1 派生・主目的）
+```
+maxbars=40  btlm_mean: len40  first value 198.938...
+maxbars=120 btlm_mean: len120 first value 178.013...
+```
+**判定**: params で series 長・値・時間範囲が変化＝実再計算。A方式の固定エコーでない。主目的達成。
+
+### 証拠 E4: 静的配信・traversal（#3 死因究明）
+```
+GET /                                   → 200 text/html
+GET /js/adapter/front/composition_root_front.js → 200 text/javascript
+GET /../../../../etc/passwd (--path-as-is)       → 404
+pytest test_server_smoke traversal/static       → 8 passed
+```
+`_resolve_static` は (_WEB_ROOT/rel).resolve() を relative_to(_WEB_ROOT) で検証、ValueError→None→404。
+**判定**: #3 棄却。ルート外配信なし。
+
+### 証拠 E5: restore pairs 正規化・注記出し分け（#4・#5 死因究明）
+```
+indicator_controller._paramsObject: Array(pairs)→Object.fromEntries / object はそのまま
+properties_dialog._buildAMethodNote: mode==='b'→null（B方式非表示）/ 'a'→note要素
+両 pane caller: if(note) pane.append(note)（null append 回避）
+node --test composition/properties → 8 passed（mode b/a 双方・default a）
+```
+**判定**: #4・#5 棄却。pairs→object 正規化済み・注記 B方式非表示・null append ガード済み。
+
+### 証拠 E6: パス算出（#6 死因究明）
+```
+dataset.py parents[5]=/workspaces/app（修正前 parents[4]=indigators で FileNotFound→修正）
+GET /candles 200・/compute 200 で CSV 解決成功を実証
+```
+**判定**: #6 顕在化したが検出・修正済み（テストで実証）。棄却。
+
+---
+
+## 検証結果（判定）
+
+| # | 推定原因 | 判定 | 根拠 |
+|---|---|---|---|
+| 1 | 時間軸乖離 | **棄却** | E1: 同一 CSV・同一変換式・compute time が candle range 内 |
+| 2 | Refactor 破壊 | **棄却** | E2: 128/170 緑（既存 113/162 維持） |
+| 3 | traversal 漏洩 | **棄却** | E4: `..` →404・relative_to 検証 |
+| 4 | restore pairs 破壊 | **棄却** | E5: _paramsObject 正規化 |
+| 5 | 注記出し分け漏れ | **棄却** | E5: mode b→null・null append ガード |
+| 6 | parents 深さ誤り | **棄却（検出修正済）** | E6: parents[5] へ修正・/candles 200 実証 |
+
+pre-mortem #1-#6 全棄却。#6 は修正反映済み。
+
+---
+
+## 反映: 判断の撤回または修正
+
+- #6: dataset.py の workspace ルートを parents[4]→parents[5] へ修正（compute_controller が api/adapter/controller/ で parents[5] だったのに対し、dataset は api/adapter/compute/ で 1 段浅いため parents[5] が正）。テストで再緑を実証。
+- restore() は B方式で保存 params を実再計算へ流すため _paramsObject で pairs→object 正規化を追加（A方式は params 無視のため無害）。
+- index.html は B方式の /candles 取得（ready）を待ってから restore する順序に変更（candle 描画後に復元）。
+
+---
 
 ## 残存リスク特定
 
-本ワークフロー範囲外で後続作業に委ねるべき項目:
+1. **ThreadingHTTPServer + lru_cache の並行性**: load_dataframe/load_candles は lru_cache。GIL 下で初回同時アクセスは二重計算しうるが純関数で結果一貫。localhost プロトタイプでは許容。高並行が要件化したら明示ロック検討（後続）。
+2. **サーバ殻は socket スモークのみ**: 純ロジックは handle_compute/dataset 単体で網羅。E2E（xvfb ブラウザ描画）は別工程。
+3. **本番デプロイ/認証/ペイン分割/range スライス/Q-1..7**: スコープ外（実装しない）。
+4. **Python スイートは lwc/.venv 必須**（default python pandas 不在・MEMORY lwc-headless-run）。サーバ起動も同 venv 前提を README に明記。
+5. **upstream addCandlestickSeries は composition_root_front.js に既存**（チャート bootstrap の組み立て点・本タスクで新規追加せず）。系列 add/priceLine API は chart_renderer.js のみ（grep 0 件実証）。
 
-1. **NPZ ビット同一性の empirical verify**
-   - 現状: 論理推論のみ
-   - 後続: ISSUE-007 解消（フル 169×169 build 実行）時に「単発実行 NPZ の sha256」と「中断→再開実行 NPZ の sha256」を実測比較
-   - 担当: Phase 2.1 完了判定タスク（ISSUE-007 と本 ISSUE-008 の合流地点）
+---
 
-2. **フル 169×169 build の所要時間実測**
-   - 現状: 推定 30 分〜2 時間、smoke 線形外挿のみ
-   - 後続: チェックポイント有効環境で実測値を取得し ISSUE-007 進捗欄に記入
-   - 担当: ISSUE-007（既存）
+## 最終判定
 
-3. **agent への指示テンプレートの改善**
-   - 発見: 設計書同期（推奨対応 #4）が agent タスクに含まれず、リーダーが後追いで実施
-   - 後続: 今後の同種タスクでは「ISSUE の全推奨対応を完了基準に含める」「設計書同期もエージェント任務に含めるか、リーダー責務として明示する」のいずれかを選択
-   - 担当: 次回のサブエージェント連鎖タスク設計時
+**合格**（pre-mortem #1-#6 を実証的に棄却。#6 は修正反映。3 辺 triangulation 全辺 ★★★）。
 
-4. **再開可能性の長時間ジョブ実測**
-   - 現状: smoke 3×3 のみで実証、フル規模の中断→再開シナリオ未実測
-   - 後続: ISSUE-007 解消時に中断→再開シナリオを 1 回実施し再開能力を実証
-   - 担当: ISSUE-007 の検証フェーズ
+- ✓ Python 128 / JS 170 passed（既存 113/162 緑維持）: 実証（E2）
+- ✓ param 実反映（maxbars 40↔120 で series 変化）: 実証（E3・主目的）
+- ✓ /candles・/compute 時間軸整合: 実証（E1）
+- ✓ 静的配信・traversal 404・same-origin module 読込: 実証（E4）
+- ✓ Refactor 振る舞い不変・stdlib のみ・adapter/指標 src 不接触: 実証（E2・grep）
+- ✓ A方式注記 B方式非表示・restore pairs 正規化: 実証（E5）
 
-## 最終判定: ✓ 合格完了
-
-すべての Pre-mortem 候補（8 件）が **棄却 7 件 / 条件付き合格 1 件**。条件付きの 4 番は論理上は成立しており、empirical verify は後続作業に明示的に委譲済み。
-
-**現状はリーダーの「ISSUE-008 対応の合格」判定が、追従性バイアスではなく独立実証に基づいて成立している。**
-
-リーダー判断のコミット準備状態:
-- 実装: ✓
-- テスト: ✓（6 新規 + 既存回帰 0）
-- SC9: ✓
-- 設計書同期: ✓
-- ISSUE 更新: ✓
-- .gitignore: ✓
-- 自己レビュー: ✓（本ドキュメント）
-- 次アクション: atomic commit 作成
+**追従性バイアス検出**: 「全テスト緑」を後方互換の短絡にせず、Refactor の機構差替えごとに再実行で実証。param 反映は SAMPLE_DATA エコーでないことを curl 実値の series 差分で死因究明した。

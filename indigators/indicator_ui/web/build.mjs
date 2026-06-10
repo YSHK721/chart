@@ -1,0 +1,157 @@
+// build.mjs — 単一の自己完結 HTML を生成するビルドスクリプト（node 標準のみ・新規依存なし）。
+//
+// 目的: file:// で ES Modules が読めない制約を回避し、bundled lightweight-charts JS ＋
+//   全 ES Modules（domain/usecase/adapter/front/data）＋ index.html/css をインライン結合して
+//   indigators/indicator_ui/out/prototype.html を生成する。
+//
+// 方式: ES Modules を依存順に連結し、各ファイルの `import ... from '...';` 行を除去、
+//   `export ` 修飾子を除去して 1 つの古典 <script>（IIFE）スコープに収める。
+//   （事前確認: モジュール間で export シンボル名の衝突が無いこと）。
+//
+// read-only: lightweight-charts JS は読むだけ。design/ は触らない。
+
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const WEB = __dirname;
+const REPO = resolve(WEB, '../../..'); // /workspaces/app
+const LWC_JS = resolve(REPO, 'lightweight-charts-python-main/lightweight_charts/js/lightweight-charts.js');
+const OUT = resolve(WEB, '../out/prototype.html');
+
+// ES Modules を依存順に列挙（内→外）。
+const MODULE_ORDER = [
+  'js/domain/constraint_eval.js',
+  'js/domain/compute_error.js',
+  'js/domain/domain_models.js',
+  'js/usecase/catalog.js',
+  'js/usecase/facade.js',
+  'data/sample_data.js',
+  'js/adapter/front/chart_renderer.js',
+  'js/adapter/front/compute_http_client.js',
+  'js/adapter/front/embedded_compute_gateway.js',
+  'js/adapter/front/local_storage_gateway.js',
+  'js/adapter/front/catalog_client.js',
+  'js/usecase/form_model.js',
+  'js/adapter/front/properties_dialog.js',
+  'js/adapter/front/indicator_controller.js',
+  'js/adapter/front/composition_root_front.js',
+];
+
+// import 行を除去し、export 修飾子を剥がして 1 スコープに収める。
+function stripModuleSyntax(src) {
+  const lines = src.split('\n');
+  const out = [];
+  const aliasLines = []; // `import { X as Y }` -> `const Y = X;`（フラットスコープで別名を再現）
+  let inImport = false;
+  let importBuf = '';
+
+  // 1 つの import 文（単一/複数行）から `X as Y` の別名束縛を抽出。
+  const collectAliases = (stmt) => {
+    const braced = stmt.match(/\{([\s\S]*?)\}/);
+    if (!braced) {
+      return;
+    }
+    for (const spec of braced[1].split(',')) {
+      const m = spec.trim().match(/^([A-Za-z0-9_$]+)\s+as\s+([A-Za-z0-9_$]+)$/);
+      if (m && m[1] !== m[2]) {
+        aliasLines.push(`const ${m[2]} = ${m[1]};`);
+      }
+    }
+  };
+
+  for (const line of lines) {
+    const t = line.trim();
+    if (inImport) {
+      importBuf += ' ' + t;
+      if (t.includes('from ') || t.endsWith(';') || t.includes("'")) {
+        inImport = false;
+        collectAliases(importBuf);
+        importBuf = '';
+      }
+      continue;
+    }
+    if (/^import\s/.test(t)) {
+      if (t.includes('from ') && t.endsWith(';')) {
+        // 単一行 import: その場で別名抽出。
+        collectAliases(t);
+      } else {
+        inImport = true;
+        importBuf = t;
+      }
+      continue;
+    }
+    // export 修飾子を剥がす（export class/function/const/async function/let/var）。
+    const l = line.replace(/^(\s*)export\s+(default\s+)?/, '$1');
+    out.push(l);
+  }
+  // 別名束縛を末尾に追加（連結後のフラットスコープで参照可能にする）。
+  return out.join('\n') + (aliasLines.length ? '\n' + aliasLines.join('\n') + '\n' : '');
+}
+
+async function main() {
+  // 1) bundled lightweight-charts（read-only）
+  const lwcSrc = await readFile(LWC_JS, 'utf8');
+
+  // 2) ES Modules を連結
+  let bundle = '';
+  for (const rel of MODULE_ORDER) {
+    const src = await readFile(resolve(WEB, rel), 'utf8');
+    bundle += `\n// ===== ${rel} =====\n` + stripModuleSyntax(src) + '\n';
+  }
+
+  // 3) CSS
+  const css = await readFile(resolve(WEB, 'css/app.css'), 'utf8');
+
+  // 4) index.html から body 内のマークアップ（#app + ダイアログ）を抽出
+  const indexHtml = await readFile(resolve(WEB, 'index.html'), 'utf8');
+  const bodyMatch = indexHtml.match(/<div id="app">[\s\S]*?<\/div>\s*<!-- bundled/);
+  const appMarkup = indexHtml.slice(
+    indexHtml.indexOf('<div id="app">'),
+    indexHtml.indexOf('<!-- bundled lightweight-charts'),
+  );
+
+  // 5) 自己完結 HTML を組み立て
+  const html = `<!DOCTYPE html>
+<html lang="ja" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>インジケーター管理 UI（プロトタイプ A方式・単一HTML）</title>
+<style>
+${css}
+</style>
+</head>
+<body>
+${appMarkup.trim()}
+
+<!-- bundled lightweight-charts v4.1.3（read-only をインライン） -->
+<script>
+${lwcSrc}
+</script>
+
+<!-- ES Modules（domain/usecase/adapter/front/data）をインライン IIFE 化 -->
+<script>
+(function () {
+${bundle}
+// ブートストラップ
+var boot = bootstrap({
+  lwc: window.LightweightCharts,
+  container: document.getElementById('chart'),
+  doc: document,
+});
+boot.controller.bind();
+boot.controller.restore();
+})();
+</script>
+</body>
+</html>
+`;
+
+  await mkdir(dirname(OUT), { recursive: true });
+  await writeFile(OUT, html, 'utf8');
+  process.stdout.write(`built: ${OUT} (${html.length} bytes)\n`);
+}
+
+main().catch((e) => { process.stderr.write(String(e && e.stack ? e.stack : e) + '\n'); process.exit(1); });
