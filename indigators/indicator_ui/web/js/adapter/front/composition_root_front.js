@@ -21,18 +21,31 @@ import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
 import { IndicatorController } from './indicator_controller.js';
 
+// 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
+//   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
+export const DEFAULT_TIMEFRAME = '1D';
+export const RECENT_BARS = 1500;
+
 // protocol → モード判定。http/https は served（B方式）、それ以外（file: 等）は A方式。
 export function modeForProtocol(protocol) {
   return protocol === 'http:' || protocol === 'https:' ? 'b' : 'a';
 }
 
-// GET /candles?datasetRef=sample で candles を取得する（B方式）。失敗時は null（フォールバック）。
-async function fetchCandles(fetchImpl, datasetRef = 'sample') {
+// GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
+//   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
+async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe = null, limit = null) {
   if (typeof fetchImpl !== 'function') {
     return null;
   }
   try {
-    const resp = await fetchImpl(`/candles?datasetRef=${encodeURIComponent(datasetRef)}`);
+    let url = `/candles?datasetRef=${encodeURIComponent(datasetRef)}`;
+    if (timeframe) {
+      url += `&timeframe=${encodeURIComponent(timeframe)}`;
+    }
+    if (limit) {
+      url += `&limit=${encodeURIComponent(limit)}`;
+    }
+    const resp = await fetchImpl(url);
     if (!resp.ok) {
       return null;
     }
@@ -58,8 +71,11 @@ export async function bootstrap({
   fetch = (typeof globalThis !== 'undefined' && globalThis.fetch
     ? globalThis.fetch.bind(globalThis) : undefined),
   // B方式の対象データセット（/candles・/compute）。既定 'sample'（既存挙動・テスト互換）。
-  // アプリ入口（index.html）が 'jp225' を渡すと B方式は JP225 をライブ計算する。
+  // アプリ入口（index.html）が 'jp225_m1' を渡すと B方式は 1 分足原子をライブ計算する。
   datasetRef = 'sample',
+  // 既定時間足・直近表示本数（§配信設計）。テスト・入口で差し替え可能。
+  timeframe = DEFAULT_TIMEFRAME,
+  recentBars = RECENT_BARS,
 } = {}) {
   const mode = modeForProtocol(protocol);
 
@@ -68,7 +84,8 @@ export async function bootstrap({
     layout: { background: { color: '#131722' }, textColor: '#d1d4dc' },
     grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
     rightPriceScale: { borderColor: '#2a2e39' },
-    timeScale: { borderColor: '#2a2e39', timeVisible: false },
+    // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
+    timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
     autoSize: true,
   });
   const mainSeries = chart.addCandlestickSeries({
@@ -95,12 +112,21 @@ export async function bootstrap({
   const persistence = new LocalStorageGateway(storage);
   const catalog = new IndicatorCatalogClient();
 
-  const controller = new IndicatorController({ catalog, compute, persistence, renderer, document: doc, mode, datasetRef });
+  // 時間足切替で candles を再取得するためのローダ（B方式のみ）。A方式（SAMPLE_DATA・再集計不可）は null。
+  //   controller.setTimeframe が (datasetRef, timeframe) で呼び、直近 recentBars 本へ制限して取得する。
+  const loadCandles = (mode === 'b')
+    ? (ref, tf) => fetchCandles(fetch, ref, tf, recentBars)
+    : null;
+
+  const controller = new IndicatorController({
+    catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
+    timeframe, recentBars, loadCandles,
+  });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
-  //   取得失敗時は SAMPLE_DATA のまま（フォールバック）。ready は呼び出し側で await 可能。
+  //   初期は既定時間足・直近 recentBars 本。取得失敗時は SAMPLE_DATA のまま（フォールバック）。
   const ready = (mode === 'b')
-    ? fetchCandles(fetch, datasetRef).then((candles) => {
+    ? fetchCandles(fetch, datasetRef, timeframe, recentBars).then((candles) => {
         if (candles && candles.length > 0) {
           mainSeries.setData(candles);
           chart.timeScale().fitContent();

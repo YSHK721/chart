@@ -78,8 +78,8 @@ test('bootstrap (served) fetches /candles and replaces main series data', async 
     lwc, container: {}, doc: null, storage: noStorage, protocol: 'https:', fetch: fakeFetch,
   });
   await ready;
-  // Assert
-  assert.match(candlesUrl, /^\/candles\?datasetRef=sample$/);
+  // Assert: 既定時間足（1D）・直近 RECENT_BARS（1500）本を /candles へ伝搬する（§配信設計）。
+  assert.match(candlesUrl, /^\/candles\?datasetRef=sample&timeframe=1D&limit=1500$/);
   // B方式は SAMPLE_DATA を読み込まず、/candles 取得後に setData する（唯一の setData が取得 candles）。
   assert.deepEqual(setDataCalls.at(-1), candles);
 });

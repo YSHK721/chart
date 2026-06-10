@@ -54,6 +54,20 @@ test('compute POSTs to /compute with a JSON body carrying the request fields', a
   assert.equal(sent.datasetRef, 'sample');
 });
 
+// 時間足切替: timeframe / limit（直近 N 本）をボディに転送する（§チャート表示時間選択・配信設計）。
+test('compute forwards timeframe and limit in the JSON body', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  // Act
+  await client.compute({ indicatorId: 'tgp_btlm', variant: 'default', params: {}, datasetRef: 'jp225_m1', timeframe: '1W', limit: 1500 });
+  // Assert: サーバが resample（timeframe）・直近 N 本（limit）に使う。
+  const sent = JSON.parse(captured.body);
+  assert.equal(sent.timeframe, '1W');
+  assert.equal(sent.limit, 1500);
+});
+
 // 非200（400）→ ComputeError throw（error_type 保持）。
 test('compute throws ComputeError with error_type for a 400 response', async () => {
   // Arrange

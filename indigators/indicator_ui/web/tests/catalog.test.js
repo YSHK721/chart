@@ -17,12 +17,46 @@ function paramOf(def, name) {
   return def.params.find((p) => p.name === name);
 }
 
-test('catalog: list returns the 3 registered indicators', () => {
+test('catalog: list returns the 4 registered indicators', () => {
   // Act
   const defs = list();
-  // Assert（tgp_btlm / profit_band / price_range_power）
+  // Assert（tgp_btlm / profit_band / price_range_power / moving_averages）
   const ids = defs.map((d) => d.id).sort();
-  assert.deepEqual(ids, ['price_range_power', 'profit_band', 'tgp_btlm']);
+  assert.deepEqual(ids, ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm']);
+});
+
+test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース/オフセット + 平滑化 + 計算)', () => {
+  const d = get('moving_averages');
+  assert.equal(d.id, 'moving_averages');
+  assert.equal(d.placement, 'overlay');
+  assert.equal(d.category.nameKey, 'cat.technical');
+  assert.equal(paramOf(d, 'ma_type').type, ParamType.ENUM);
+  assert.equal(paramOf(d, 'ma_type').default, 'ema');
+  assert.equal(paramOf(d, 'length').type, ParamType.INT);
+  assert.equal(paramOf(d, 'length').default, 9);
+  assert.equal(paramOf(d, 'source').type, ParamType.ENUM);
+  assert.equal(paramOf(d, 'offset').default, 0);
+  assert.equal(paramOf(d, 'smoothing_type').default, 'none');
+  assert.equal(paramOf(d, 'wait_for_close').default, true);
+});
+
+test('catalog: moving_averages localizes labels and enum options (日本語表示)', () => {
+  const d = get('moving_averages');
+  assert.equal(paramOf(d, 'ma_type').label, '種別');
+  assert.equal(paramOf(d, 'source').label, 'ソース');
+  assert.equal(paramOf(d, 'source').enumLabels.hl2, '(高値 + 安値)/2');
+  assert.equal(paramOf(d, 'timeframe').enumLabels.chart, 'チャート');
+});
+
+test('catalog: moving_averages BB stddev is conditionally enabled only for sma_bb', () => {
+  const bb = paramOf(get('moving_averages'), 'bb_stddev');
+  assert.deepEqual(bb.conditionalEnable.when, { param: 'smoothing_type', equals: 'sma_bb' });
+});
+
+test('catalog: moving_averages declares 4 fixed series (MA/Smoothing/Upper/Lower)', () => {
+  const d = get('moving_averages');
+  assert.deepEqual(d.series.map((s) => s.seriesName), ['MA', 'Smoothing', 'Upper', 'Lower']);
+  assert.ok(d.series.every((s) => s.dynamic === false));
 });
 
 test('catalog: list returns IndicatorDef instances with series>=1', () => {

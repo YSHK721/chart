@@ -28,10 +28,13 @@ function fakeSeries() {
 function fakeChart() {
   const created = [];
   const removed = [];
+  let fitCount = 0;
   return {
     created, removed,
+    get fitCount() { return fitCount; },
     addLineSeries(opts) { const s = fakeSeries(); s._createOpts = opts; created.push(s); return s; },
     removeSeries(s) { removed.push(s); },
+    timeScale() { return { fitContent() { fitCount += 1; } }; },
   };
 }
 
@@ -46,6 +49,27 @@ function newRenderer() {
   const renderer = new ChartRenderer({ chart, mainSeries: main });
   return { renderer, chart, main };
 }
+
+// ===========================================================================
+// setCandles: メインローソク差し替え + 可視範囲フィット（時間足切替の upstream 隔離点）
+// ===========================================================================
+
+test('setCandles: sets main series data and fits the time scale', () => {
+  // Arrange
+  const { renderer, chart, main } = newRenderer();
+  const candles = [{ time: 1, open: 1, high: 2, low: 0, close: 1.5 }];
+  // Act
+  renderer.setCandles(candles);
+  // Assert: mainSeries.setData が呼ばれ、timeScale().fitContent() で全体へ合わせる。
+  assert.deepEqual(main._data, candles);
+  assert.equal(chart.fitCount, 1);
+});
+
+test('setCandles: empty/undefined yields empty data (no throw)', () => {
+  const { renderer, main } = newRenderer();
+  renderer.setCandles();
+  assert.deepEqual(main._data, []);
+});
 
 // ===========================================================================
 // renderLine: addLineSeries + setData、系列キー {instanceId}::{name}

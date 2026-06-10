@@ -31,6 +31,10 @@ const UI_DEFAULTS = Object.freeze({
   conditionalEnable: null,
   order: null,
   uiVisible: true,
+  // label: フィールド表示名の直接指定（日本語ラベル。省略時は labelKey 末尾を表示）。
+  label: null,
+  // enumLabels: enum 値 → 表示名のマップ（select の選択肢を日本語表示する。省略時は値をそのまま表示）。
+  enumLabels: null,
 });
 
 // ui オブジェクトから UI_DEFAULTS のキーのみを既定フォールバック付きで抽出する。
@@ -177,7 +181,55 @@ const PRICE_RANGE_POWER = new IndicatorDef({
   compute: { computeId: 'price_range_power', requiredColumns: OHLC, timeRequired: false, backendParam: null, variants: ['default'] },
 });
 
-const REGISTRY = Object.freeze([TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER]);
+// --- moving_averages（OVERLAY・単一 MA＋平滑化＋BB・TradingView「移動平均」準拠）--------
+// 実バインディング add_moving_averages（moving_averages/src/lwc_chart.py）。系列名は固定
+//   "MA"/"Smoothing"/"Upper"/"Lower"（4 静的 SeriesDef）。backend は平滑化タイプに応じて部分集合を
+//   出力し F3 を通過する。ダイアログは 3 セクション（基本 / 平滑化 / 計算）で画像レイアウトに準拠。
+const MA_TYPE_LABELS = { sma: 'SMA', ema: 'EMA', smma: 'SMMA', lwma: 'LWMA' };
+const MA_SOURCE_LABELS = {
+  close: '終値', open: '始値', high: '高値', low: '安値',
+  hl2: '(高値 + 安値)/2', hlc3: '(高値 + 安値 + 終値)/3',
+  ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
+};
+const MA_SMOOTHING_LABELS = {
+  none: 'なし', sma: 'SMA', ema: 'EMA', smma: 'SMMA', wma: 'WMA', sma_bb: 'SMA + ボリンジャーバンド',
+};
+const MA_TIMEFRAME_LABELS = {
+  chart: 'チャート', '1m': '1分', '5m': '5分', '15m': '15分', '1h': '1時間',
+  '4h': '4時間', '1D': '日', '1W': '週', '1M': '月',
+};
+const MA_LINE = (seriesName) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false });
+const MOVING_AVERAGES = new IndicatorDef({
+  id: 'moving_averages',
+  displayNameKey: 'ind.moving_averages',
+  category: { group: 'builtin', nameKey: 'cat.technical' },
+  tab: 'indicator',
+  placement: 'overlay',
+  params: [
+    // --- 基本（無見出しの先頭セクション）---
+    param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], { order: 1, label: '種別', enumLabels: MA_TYPE_LABELS }),
+    param('length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { order: 2, label: '期間', step: 1, min: 2 }),
+    param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { order: 3, label: 'ソース', enumLabels: MA_SOURCE_LABELS }),
+    param('offset', ParamType.INT, 0, [], null, { order: 4, label: 'オフセット', step: 1 }),
+    // --- 平滑化 ---
+    param('smoothing_type', ParamType.ENUM, 'none', [], ['none', 'sma', 'ema', 'smma', 'wma', 'sma_bb'], { group: '平滑化', order: 1, label: 'タイプ', enumLabels: MA_SMOOTHING_LABELS }),
+    param('smoothing_length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['smoothing_length', 2], messageKey: 'err.length' }], null, { group: '平滑化', order: 2, label: '期間', step: 1, min: 2 }),
+    // BB標準偏差: smoothing_type==sma_bb のときのみ有効（conditionalEnable で他はグレーアウト＝画像準拠）。
+    param('bb_stddev', ParamType.FLOAT, 2.0, [], null, {
+      group: '平滑化', order: 3, label: 'BB標準偏差', step: 0.001, min: 0.001,
+      tooltip: 'ボリンジャーバンドの標準偏差倍率（平滑化タイプが「SMA + ボリンジャーバンド」のとき有効）',
+      conditionalEnable: { when: { param: 'smoothing_type', equals: 'sma_bb' } },
+    }),
+    // --- 計算 ---
+    param('timeframe', ParamType.ENUM, 'chart', [], ['chart', '1m', '5m', '15m', '1h', '4h', '1D', '1W', '1M'], { group: '計算', order: 1, label: '時間足', enumLabels: MA_TIMEFRAME_LABELS, tooltip: 'この指標を計算する時間足（「チャート」はチャートの時間足に追従）' }),
+    param('wait_for_close', ParamType.BOOL, true, [], null, { group: '計算', order: 2, label: '時間足の確定を待つ' }),
+  ],
+  // 固定系列（dynamic=false）: backend が平滑化タイプに応じて部分集合を出力する。
+  series: [MA_LINE('MA'), MA_LINE('Smoothing'), MA_LINE('Upper'), MA_LINE('Lower')],
+  compute: { computeId: 'moving_averages', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
+});
+
+const REGISTRY = Object.freeze([TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES]);
 const BY_ID = new Map(REGISTRY.map((d) => [d.id, d]));
 
 // 全 IndicatorDef を返す（読み取り専用配列の複製）。

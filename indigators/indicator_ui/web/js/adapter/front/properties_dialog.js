@@ -339,7 +339,10 @@ export class PropertiesDialog {
     for (const v of field.enumValues ?? []) {
       const opt = doc.createElement('option');
       opt.value = String(v);
-      opt.textContent = humanizeKey(String(v));
+      // enumLabels（日本語表示マップ）優先。未指定はキー末尾を表示（従来挙動）。
+      opt.textContent = (field.enumLabels && field.enumLabels[v] != null)
+        ? field.enumLabels[v]
+        : humanizeKey(String(v));
       if (v === field.value) opt.selected = true;
       sel.append(opt);
     }

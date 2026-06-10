@@ -43,6 +43,8 @@ const FIELD_META_DEFAULTS = Object.freeze({
   group: null,
   order: null,
   conditionalEnable: null,
+  // enumLabels: enum 値 → 表示名マップ（properties_dialog の select 日本語表示）。
+  enumLabels: null,
 });
 
 // pdef の任意メタデータを FIELD_META_DEFAULTS のキーで既定フォールバック付きに解決する。
@@ -59,7 +61,8 @@ function paramToField(pdef, currentParams) {
   const hasCurrent = Object.prototype.hasOwnProperty.call(currentParams, pdef.name);
   return {
     name: pdef.name,
-    label: pdef.labelKey ?? `label.${pdef.name}`,
+    // label 直接指定（日本語）優先 → labelKey → 既定 label.<name>。
+    label: pdef.label ?? pdef.labelKey ?? `label.${pdef.name}`,
     controlType: resolveControlType(pdef),
     value: hasCurrent ? currentParams[pdef.name] : pdef.default,
     default: pdef.default,

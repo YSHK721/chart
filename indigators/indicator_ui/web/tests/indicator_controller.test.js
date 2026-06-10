@@ -43,6 +43,41 @@ test('_expectedSeriesNames expands dynamic series_name_pattern set (profit_band 
   assert.ok(expected.has('nOH 51%'));
 });
 
+// 汎用の params 対応 F3 展開（*FromParam）の検証。合成 def を用いる（moving_averages は
+//   現在 4 固定系列のため dynamic pattern を持たないが、_expandPattern の汎用機能は維持する）。
+const SYNTH_DYNAMIC_DEF = {
+  id: 'synthetic',
+  series: [{
+    dynamic: true,
+    seriesNamePattern: {
+      template: '{bucket} {pct}',
+      bucketsFromParam: 'types', bucketsUpper: true,
+      pctsFromParam: 'periods', pctsInt: true,
+      buckets: ['X'], pcts: ['1'],
+    },
+  }],
+};
+
+test('_expectedSeriesNames derives names from params, allowing arbitrary periods (252)', () => {
+  const ctrl = controller();
+  const params = { types: ['sma', 'ema'], periods: [252] };
+  const expected = ctrl._expectedSeriesNames(SYNTH_DYNAMIC_DEF, params);
+  assert.ok(expected.has('SMA 252'));
+  assert.ok(expected.has('EMA 252'));
+  const kept = ctrl._validateSeriesNames(
+    [{ name: 'SMA 252', kind: 'line', data: [] }, { name: 'EMA 252', kind: 'line', data: [] }],
+    SYNTH_DYNAMIC_DEF, params,
+  );
+  assert.deepEqual(kept.map((p) => p.name), ['SMA 252', 'EMA 252']);
+});
+
+test('_expectedSeriesNames falls back to static buckets/pcts when params omitted', () => {
+  const ctrl = controller();
+  const fb = ctrl._expectedSeriesNames(SYNTH_DYNAMIC_DEF);
+  assert.ok(fb.has('X 1'));
+  assert.ok(!fb.has('SMA 252'));
+});
+
 test('_validateSeriesNames keeps matching series and drops mismatches (F3 §3.3.6)', () => {
   const ctrl = controller();
   const def = get('tgp_btlm');
@@ -70,4 +105,60 @@ test('_validateSeriesNames keeps horizontal_line whose name matches series_name 
   const payloads = [{ name: 'price_range_power', kind: 'horizontal_line', lines: [] }];
   const kept = ctrl._validateSeriesNames(payloads, def);
   assert.deepEqual(kept.map((p) => p.name), ['price_range_power']);
+});
+
+// ===========================================================================
+// setTimeframe（§チャート表示時間選択・1 分足原子から resample）
+// ===========================================================================
+
+// 計算呼び出しを記録し generation をエコーする compute（recompute 採用条件 accepts を満たす）。
+function recordingController() {
+  const noop = () => {};
+  const computeCalls = [];
+  const setCandlesCalls = [];
+  const loadCandlesCalls = [];
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => { computeCalls.push(req); return { ok: true, generation: req.generation ?? 0, series: [] }; } },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, setData: noop, setVisible: noop, remove: noop, setCandles: (c) => setCandlesCalls.push(c) },
+    document: null,
+    mode: 'b',
+    datasetRef: 'jp225_m1',
+    timeframe: '1D',
+    recentBars: 1500,
+    loadCandles: async (ref, tf) => { loadCandlesCalls.push([ref, tf]); return [{ time: 1, open: 1, high: 1, low: 1, close: 1 }]; },
+  });
+  return { ctrl, computeCalls, setCandlesCalls, loadCandlesCalls };
+}
+
+test('setTimeframe is a no-op when the timeframe is unchanged', async () => {
+  const { ctrl, loadCandlesCalls } = recordingController();
+  await ctrl.setTimeframe('1D'); // 既定と同一
+  assert.equal(ctrl._timeframe, '1D');
+  assert.equal(loadCandlesCalls.length, 0);
+});
+
+test('setTimeframe re-fetches candles and replaces the main series via renderer.setCandles', async () => {
+  const { ctrl, loadCandlesCalls, setCandlesCalls } = recordingController();
+  await ctrl.setTimeframe('1W');
+  assert.equal(ctrl._timeframe, '1W');
+  // datasetRef と新時間足で candles を再取得し、メイン系列へ反映する。
+  assert.deepEqual(loadCandlesCalls.at(-1), ['jp225_m1', '1W']);
+  assert.equal(setCandlesCalls.length, 1);
+});
+
+test('setTimeframe recomputes applied indicators carrying the new timeframe and limit', async () => {
+  const { ctrl, computeCalls } = recordingController();
+  // 指標を 1 つ適用（apply 時は timeframe='1D'）。
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const beforeCount = computeCalls.length;
+  // 時間足切替 → 適用済み指標が新時間足で再計算される。
+  await ctrl.setTimeframe('1W');
+  const after = computeCalls.slice(beforeCount);
+  assert.ok(after.length >= 1, '再計算の compute が発火する');
+  // 再計算 compute は新 timeframe と直近 N 本（limit）を伴う（gateway 注入）。
+  const last = after.at(-1);
+  assert.equal(last.timeframe, '1W');
+  assert.equal(last.limit, 1500);
 });

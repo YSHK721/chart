@@ -275,3 +275,30 @@ test('resetToDefaults: default null param is restored to null', () => {
   assert.equal(values.range_from, null);
   assert.equal(values.range_to, null);
 });
+
+// ---- moving_averages: 単一MAフォーム（日本語ラベル/enumLabels/条件付き有効化）----------
+test('buildFormModel: moving_averages surfaces Japanese label and enumLabels and 平滑化/計算 groups', () => {
+  const def = get('moving_averages');
+  const model = buildFormModel(def, {});
+  const byName = new Map(model.fields.map((f) => [f.name, f]));
+  // label 直接指定（日本語）がフィールドへ反映される。
+  assert.equal(byName.get('ma_type').label, '種別');
+  assert.equal(byName.get('source').label, 'ソース');
+  // enumLabels が select 表示用にフィールドへ渡る。
+  assert.equal(byName.get('source').enumLabels.hl2, '(高値 + 安値)/2');
+  // グループ見出し（日本語キーをそのまま見出しに使う）。
+  const groupKeys = model.groups.map((g) => g.key);
+  assert.ok(groupKeys.includes(null)); // 基本（無見出し）
+  assert.ok(groupKeys.includes('平滑化'));
+  assert.ok(groupKeys.includes('計算'));
+});
+
+test('computeEnabled: moving_averages bb_stddev is enabled only when smoothing_type=sma_bb', () => {
+  const def = get('moving_averages');
+  // 既定（smoothing_type=none）→ bb_stddev 無効（グレーアウト・画像準拠）。
+  const off = computeEnabled(def, resetToDefaults(def));
+  assert.equal(off.bb_stddev, false);
+  // sma_bb 選択 → 有効。
+  const on = computeEnabled(def, { ...resetToDefaults(def), smoothing_type: 'sma_bb' });
+  assert.equal(on.bb_stddev, true);
+});

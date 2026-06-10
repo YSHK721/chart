@@ -12,7 +12,18 @@
     <div class="toolbar">
       <span class="tb-symbol">NI225</span>
       <span class="tb-sep"></span>
-      <button class="tb-interval" type="button">日</button>
+      <!-- 時間足セレクタ（1 分足原子から resample・§チャート表示時間選択）。data-timeframe は
+           サーバの TIMEFRAME_RULES と一致。既定 1D を is-active。A方式では controller が無効化。 -->
+      <div class="tb-timeframe" role="group" aria-label="時間足">
+        <button class="tb-interval" data-timeframe="1m" type="button">1分</button>
+        <button class="tb-interval" data-timeframe="5m" type="button">5分</button>
+        <button class="tb-interval" data-timeframe="15m" type="button">15分</button>
+        <button class="tb-interval" data-timeframe="1h" type="button">1時間</button>
+        <button class="tb-interval" data-timeframe="4h" type="button">4時間</button>
+        <button class="tb-interval is-active" data-timeframe="1D" type="button">日</button>
+        <button class="tb-interval" data-timeframe="1W" type="button">週</button>
+        <button class="tb-interval" data-timeframe="1M" type="button">月</button>
+      </div>
       <span class="tb-sep"></span>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
         <span class="ic">∿</span>
@@ -69,8 +80,9 @@
       lwc: window.LightweightCharts,
       container: document.getElementById('chart'),
       doc: document,
-      // B方式の対象データセット。JP225（dataset.py の whitelist 'jp225'）をライブ計算する。
-      datasetRef: 'jp225',
+      // B方式の対象データセット。JP225 1分足原子（dataset.py の whitelist 'jp225_m1'）を
+      // ライブ計算し、時間足セレクタで resample 表示する（既定 1D・直近 RECENT_BARS 本）。
+      datasetRef: 'jp225_m1',
     }).then(({ controller, ready }) => {
       controller.bind();
       // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。

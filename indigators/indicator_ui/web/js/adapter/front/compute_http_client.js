@@ -29,8 +29,10 @@ export class ComputeHttpClient {
   // ComputeRequest -> series（§7.1.1）。非200/ネットワーク例外は ComputeError へ翻訳。
   // generation はサーバがエコーし、recompute の競合採否（advanced.accepts(result.generation)）が
   // 参照する。転送しないと常に 0 がエコーされ recompute が破棄され params が反映されない。
-  async compute({ indicatorId, variant, params, datasetRef, generation } = {}) {
-    const body = JSON.stringify({ indicatorId, variant, params, datasetRef, generation });
+  async compute({ indicatorId, variant, params, datasetRef, generation, timeframe, limit } = {}) {
+    // timeframe（時間足）/ limit（直近 N 本）はサーバで resample・表示範囲制限に使う。
+    // 省略時はサーバが原子（再集計なし）・全件として扱う（後方互換）。
+    const body = JSON.stringify({ indicatorId, variant, params, datasetRef, generation, timeframe, limit });
 
     let response;
     try {

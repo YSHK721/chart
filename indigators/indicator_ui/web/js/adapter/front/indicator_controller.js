@@ -25,7 +25,10 @@ import { PropertiesDialog } from './properties_dialog.js';
 export class IndicatorController {
   // mode: 計算モード。'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算）。
   //   既定 'a'（従来挙動・単体テスト互換）。composition root が served 判定で 'b' を注入する。
-  constructor({ catalog, compute, persistence, renderer, document: doc = null, mode = 'a', datasetRef = 'sample' }) {
+  constructor({
+    catalog, compute, persistence, renderer, document: doc = null, mode = 'a',
+    datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
+  }) {
     this._catalog = catalog;
     this._compute = compute;
     this._persistence = persistence;
@@ -34,6 +37,13 @@ export class IndicatorController {
     this._mode = mode;
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
+    // 時間足（§チャート表示時間選択・1 分足原子から resample）。compute/candles に伝搬する。
+    this._timeframe = timeframe;
+    // 直近表示本数（§配信設計: リサンプル＋直近 N 本）。compute の limit に伝搬する。null=制限なし。
+    this._recentBars = recentBars;
+    // 時間足切替時に candles を再取得するローダ (datasetRef, timeframe) → Promise<candles|null>。
+    //   B方式のみ注入される（A方式は SAMPLE_DATA・再集計不可のため null）。
+    this._loadCandles = loadCandles;
 
     // メモリ状態（facade の純状態オブジェクト）。
     this._state = emptyState();
@@ -48,11 +58,14 @@ export class IndicatorController {
   // =========================================================================
 
   // SeriesDef.series_name（dynamic は series_name_pattern 展開）の期待集合を返す。
-  _expectedSeriesNames(def) {
+  //   params を渡すと、pattern が *FromParam を宣言する系列は現在の params から期待名を
+  //   生成する（moving_averages: 任意期間 252 等を許容・§3.3.6 拡張）。params 省略時は
+  //   pattern の静的 buckets/pcts へフォールバック（profit_band 等・後方互換）。
+  _expectedSeriesNames(def, params = null) {
     const names = new Set();
     for (const s of def.series ?? []) {
       if (s.dynamic && s.seriesNamePattern) {
-        for (const name of this._expandPattern(s.seriesNamePattern)) {
+        for (const name of this._expandPattern(s.seriesNamePattern, params)) {
           names.add(name);
         }
       } else if (s.seriesName) {
@@ -62,12 +75,28 @@ export class IndicatorController {
     return names;
   }
 
-  // series_name_pattern を展開（{bucket} {pct}% 形式・profit_band 28 系列）。
-  _expandPattern(pattern) {
-    const out = [];
+  // series_name_pattern を展開（{bucket} {pct} 形式）。
+  //   pattern.bucketsFromParam / pctsFromParam が指定され params が与えられた場合は、当該 param
+  //   値リストからトークンを生成する（bucketsUpper=大文字化 / pctsInt=整数文字列化）。これにより
+  //   ユーザが入力した任意期間（pcts 静的リスト外の 252 等）も期待集合に含まれ F3 を通過する。
+  //   未指定・params 無し時は従来どおり静的 buckets/pcts を直積展開する（profit_band 28 系列等）。
+  _expandPattern(pattern, params = null) {
     const template = pattern.template ?? '';
-    const buckets = pattern.buckets ?? [''];
-    const pcts = pattern.pcts ?? [''];
+    let buckets = pattern.buckets ?? [''];
+    let pcts = pattern.pcts ?? [''];
+    if (params) {
+      if (pattern.bucketsFromParam && Array.isArray(params[pattern.bucketsFromParam])) {
+        buckets = params[pattern.bucketsFromParam].map(
+          (v) => (pattern.bucketsUpper ? String(v).toUpperCase() : String(v)),
+        );
+      }
+      if (pattern.pctsFromParam && Array.isArray(params[pattern.pctsFromParam])) {
+        pcts = params[pattern.pctsFromParam].map(
+          (v) => (pattern.pctsInt ? String(Math.round(Number(v))) : String(v)),
+        );
+      }
+    }
+    const out = [];
     for (const bucket of buckets) {
       for (const pct of pcts) {
         out.push(template.replace('{bucket}', bucket).replace('{pct}', pct));
@@ -77,8 +106,9 @@ export class IndicatorController {
   }
 
   // F3: 期待集合に含まれない系列はスキップ（renderLine に渡さない）＋ console.warn 記録。
-  _validateSeriesNames(payloads, def) {
-    const expected = this._expectedSeriesNames(def);
+  //   params は dynamic pattern の *FromParam 展開に用いる（省略時は静的フォールバック）。
+  _validateSeriesNames(payloads, def, params = null) {
+    const expected = this._expectedSeriesNames(def, params);
     return (payloads ?? []).filter((p) => {
       const ok = expected.has(p.name);
       if (!ok && typeof console !== 'undefined' && console.warn) {
@@ -89,8 +119,9 @@ export class IndicatorController {
   }
 
   // 描画: F3 通過系列を kind 別に renderer へ渡す（line / horizontal_line）。
-  _draw(instanceId, def, series) {
-    const validated = this._validateSeriesNames(series, def);
+  //   params は F3 期待名の動的生成（moving_averages の任意期間）に用いる。
+  _draw(instanceId, def, series, params = null) {
+    const validated = this._validateSeriesNames(series, def, params);
     const lines = validated.filter((p) => p.kind === 'line');
     const hlines = validated.filter((p) => p.kind === 'horizontal_line');
     if (lines.length > 0) {
@@ -120,7 +151,7 @@ export class IndicatorController {
     );
     this._state = state;
     this._meta.set(instance.instanceId, { def });
-    this._draw(instance.instanceId, def, this._lastSeries);
+    this._draw(instance.instanceId, def, this._lastSeries, params);
     this._persistAll();
     this._renderLegend();
     return instance;
@@ -145,7 +176,7 @@ export class IndicatorController {
       // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
       // 全系列を現在名で再生成する（line / horizontal_line 共通）。
       this._renderer.remove(instanceId);
-      this._draw(instanceId, meta.def, this._lastSeries);
+      this._draw(instanceId, meta.def, this._lastSeries, params);
       // 非表示状態を維持（redraw は可視で再生成するため）。
       const inst = this._state.applied.find((i) => i.instanceId === instanceId);
       if (inst && !inst.visible) {
@@ -177,6 +208,41 @@ export class IndicatorController {
     this._renderLegend();
   }
 
+  // 時間足切替（§チャート表示時間選択・1 分足原子から resample）。
+  //   1) candles を新時間足で再取得しメイン系列を差し替え（B方式のみ・直近 recentBars 本）。
+  //   2) 適用済み全指標を新時間足で再計算・再描画（candles と時間軸を揃える）。
+  //   3) uiState に時間足を永続化（restore で復元）。
+  //   A方式（loadCandles 無し・SAMPLE_DATA）では candles 再取得を行わない（再集計不可）。
+  async setTimeframe(timeframe) {
+    if (!timeframe || timeframe === this._timeframe) {
+      return;
+    }
+    this._timeframe = timeframe;
+    this._syncTimeframeButtons();
+    // candles 再取得 → メイン系列差し替え（取得失敗・A方式は据え置き）。
+    if (typeof this._loadCandles === 'function') {
+      const candles = await this._loadCandles(this._datasetRef, timeframe);
+      if (candles && candles.length > 0) {
+        this._renderer.setCandles(candles);
+      }
+    }
+    // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
+    for (const inst of [...this._state.applied]) {
+      if (this._meta.has(inst.instanceId)) {
+        await this.recomputeInstance(inst.instanceId, null, this._paramsObject(inst.params));
+      }
+    }
+    this._state.uiState = { ...this._state.uiState, timeframe };
+    this._persistAll();
+  }
+
+  // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。
+  _syncTimeframeButtons() {
+    for (const b of this._el?.timeframeBtns ?? []) {
+      b.classList.toggle('is-active', b.dataset.timeframe === this._timeframe);
+    }
+  }
+
   // UC-06 お気に入り切替。
   toggleFavorite(indicatorId) {
     this._state = facadeToggleFavorite(this._state, indicatorId);
@@ -198,6 +264,19 @@ export class IndicatorController {
       uiState: this._persistence.loadUiState(),
     };
     this._state = deserialize(JSON.stringify({ ...json, seqCounters: {} }));
+    // 永続化された時間足を復元（compute は gateway 経由で this._timeframe を注入するため再計算前に確定）。
+    //   初期足（constructor 値・composition root が candles 取得済み）と異なる場合のみ candles を再取得。
+    const savedTimeframe = this._state.uiState?.timeframe;
+    if (savedTimeframe && savedTimeframe !== this._timeframe) {
+      this._timeframe = savedTimeframe;
+      if (typeof this._loadCandles === 'function') {
+        const candles = await this._loadCandles(this._datasetRef, savedTimeframe);
+        if (candles && candles.length > 0) {
+          this._renderer.setCandles(candles);
+        }
+      }
+    }
+    this._syncTimeframeButtons();
     // 各 instance を再計算して再描画（A方式は variant 事前計算データで復元）。
     for (const inst of this._state.applied) {
       const def = this._catalog.get(inst.indicatorId);
@@ -211,7 +290,7 @@ export class IndicatorController {
         const restoreParams = this._paramsObject(inst.params);
         const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: restoreParams, datasetRef: this._datasetRef, generation: inst.generation });
         this._lastSeries = result.series;
-        this._draw(inst.instanceId, def, this._lastSeries);
+        this._draw(inst.instanceId, def, this._lastSeries, restoreParams);
         if (!inst.visible) {
           this._renderer.setVisible(inst.instanceId, false);
         }
@@ -259,12 +338,24 @@ export class IndicatorController {
   }
 
   // facade.apply/recompute が呼ぶ compute をラップし、応答 series を捕捉（描画用）。
+  //   時間足（timeframe）・直近表示本数（limit）は facade を介さずここで注入する（facade は純粋を保つ）。
+  //   B方式は /compute がこれで resample・範囲制限し candles と時間軸を揃える。A方式は余剰フィールドを無視。
   _gatewayAdapter(variantOverride) {
     const compute = this._compute;
     const self = this;
     return {
       async compute(req) {
-        const result = await compute.compute({ ...req, variant: variantOverride ?? req.variant });
+        // 計算.時間足（params.timeframe）の per-indicator override。'chart'/未指定はグローバル
+        //   時間足（this._timeframe）に追従、特定足（1h 等）は当該足で計算（MTF）。backend は
+        //   params.timeframe を受理引数に含めない（_accepted_kwargs で除外）ため副作用なし。
+        const tfParam = req && req.params ? req.params.timeframe : undefined;
+        const effectiveTimeframe = tfParam && tfParam !== 'chart' ? tfParam : self._timeframe;
+        const result = await compute.compute({
+          ...req,
+          variant: variantOverride ?? req.variant,
+          timeframe: effectiveTimeframe,
+          limit: self._recentBars ?? undefined,
+        });
         self._lastSeries = result.series;
         return result;
       },
@@ -301,6 +392,7 @@ export class IndicatorController {
       list: doc.getElementById('indicator-list'),
       tabs: doc.querySelectorAll('[data-tab]'),
       cats: doc.querySelectorAll('[data-category]'),
+      timeframeBtns: doc.querySelectorAll('[data-timeframe]'),
       legend: doc.getElementById('legend'),
     };
     const e = this._el;
@@ -324,6 +416,16 @@ export class IndicatorController {
         this._renderDialogList();
       });
     }
+    // 時間足セレクタ（日/週/月…）。A方式（SAMPLE_DATA・再集計不可）は無効化する。
+    for (const b of e.timeframeBtns ?? []) {
+      if (this._mode === 'a') {
+        b.disabled = true;
+        b.title = 'A方式（file://）では時間足切替は無効です';
+        continue;
+      }
+      b.addEventListener('click', () => this.setTimeframe(b.dataset.timeframe));
+    }
+    this._syncTimeframeButtons();
     this._renderDialogList();
     this._renderLegend();
   }

@@ -30,6 +30,14 @@ export class ChartRenderer {
     this._instances = new Map();
   }
 
+  // 時間足切替: メインローソク系列のデータを差し替え、可視範囲を全体へ合わせる（§チャート表示時間選択）。
+  //   mainSeries.setData / chart.timeScale().fitContent は upstream API のため本ファイルに隔離する
+  //   （§2.2: 系列・時間軸の upstream API 名を参照するのは ChartRenderer のみ）。
+  setCandles(candles) {
+    this._mainSeries.setData(candles ?? []);
+    this._chart.timeScale().fitContent();
+  }
+
   _slot(instanceId) {
     let slot = this._instances.get(instanceId);
     if (!slot) {

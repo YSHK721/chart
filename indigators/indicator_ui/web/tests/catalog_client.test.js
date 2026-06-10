@@ -8,10 +8,10 @@ import assert from 'node:assert/strict';
 
 import { IndicatorCatalogClient } from '../js/adapter/front/catalog_client.js';
 
-test('listIndicators returns the 3 registered indicators', () => {
+test('listIndicators returns the 4 registered indicators', () => {
   const client = new IndicatorCatalogClient();
   const ids = client.listIndicators().map((d) => d.id).sort();
-  assert.deepEqual(ids, ['price_range_power', 'profit_band', 'tgp_btlm']);
+  assert.deepEqual(ids, ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm']);
 });
 
 test('get returns the indicator by id', () => {
