@@ -68,7 +68,20 @@ def handle_compute(
             generation, "validation", f"未知の datasetRef です: {dataset_ref!r}"
         )
 
-    df = dataset.load_dataframe(dataset_ref)
+    # timeframe（時間足）— None は原子（再集計なし・後方互換）。未知コードは拒否（§7.3 同様）。
+    timeframe = body.get("timeframe")
+    if timeframe is not None and not dataset.is_known_timeframe(timeframe):
+        return _error_body(
+            generation, "validation", f"未知の timeframe です: {timeframe!r}"
+        )
+
+    df = dataset.load_dataframe(dataset_ref, timeframe)
+
+    # 表示範囲制限（直近 N 本）。1 分足原子の全期間で指標計算しないための制限
+    # （§配信設計: リサンプル＋直近 N 本）。candles と同一窓で計算し時間軸を揃える。
+    limit = body.get("limit")
+    if isinstance(limit, int) and limit > 0:
+        df = df.tail(limit)
 
     compute = (adapter or IndicatorComputeAdapter()).compute
     try:

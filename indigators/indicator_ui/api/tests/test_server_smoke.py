@@ -123,6 +123,23 @@ def test_get_candles_unknown_ref_returns_400(server):
     assert payload["error"]["type"] == "validation"
 
 
+def test_get_candles_timeframe_and_limit_resamples_and_restricts(server):
+    # timeframe=1W で週足へ resample、limit=3 で直近 3 本に制限（§チャート表示時間選択 / 配信設計）。
+    status, _ctype, raw = _get(server, "/candles?datasetRef=sample&timeframe=1W&limit=3")
+    assert status == 200
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["ok"] is True
+    assert len(payload["candles"]) == 3
+    assert isinstance(payload["candles"][0]["time"], int)
+
+
+def test_get_candles_unknown_timeframe_returns_400(server):
+    status, _ctype, raw = _get(server, "/candles?datasetRef=sample&timeframe=9z")
+    assert status == 400
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["error"]["type"] == "validation"
+
+
 # --------------------------------------------------------------------------- #
 # 静的配信 / パストラバーサル
 # --------------------------------------------------------------------------- #

@@ -66,3 +66,52 @@ def test_load_candles_first_point_matches_sample_csv_2010_06_29():
     # 2010-06-29 00:00:00 UTC = 1277769600（int(pd.Timestamp("2010-06-29").timestamp())）。
     assert first["time"] == 1277769600
     assert first["open"] == 1.2667
+
+
+# --------------------------------------------------------------------------- #
+# 時間足（timeframe）— 1 分足原子から resample（§チャート表示時間選択）
+# --------------------------------------------------------------------------- #
+def test_is_known_timeframe_accepts_whitelist_and_rejects_unknown():
+    # ホワイトリスト（1m..1M）は True、未知コード・None は False。
+    assert dataset.is_known_timeframe("1m") is True
+    assert dataset.is_known_timeframe("1D") is True
+    assert dataset.is_known_timeframe("1W") is True
+    assert dataset.is_known_timeframe("9z") is False
+    assert dataset.is_known_timeframe(None) is False
+
+
+def test_load_candles_timeframe_none_is_passthrough_backward_compat():
+    # timeframe 省略は原子そのまま（既存挙動・後方互換）。
+    base = dataset.load_candles("sample")
+    same = dataset.load_candles("sample", None)
+    assert len(same) == len(base)
+    assert same[0] == base[0]
+
+
+def test_load_candles_weekly_resample_aggregates_ohlc_from_daily_base():
+    # 日足 sample を週足へ resample。週足本数は日足より少なく、high=週内最大を満たす。
+    daily = dataset.load_candles("sample")
+    weekly = dataset.load_candles("sample", "1W")
+    assert 0 < len(weekly) < len(daily)
+    # 週足は OHLC 形・time 昇順・int UNIX 秒を維持する。
+    assert set(weekly[0].keys()) == {"time", "open", "high", "low", "close"}
+    times = [c["time"] for c in weekly]
+    assert times == sorted(times)
+    # 先頭週の high は、その週に含まれる日足 high の最大（集約の正しさ）。
+    first_week_end = weekly[0]["time"]
+    in_first_week = [c for c in daily if c["time"] <= first_week_end]
+    assert weekly[0]["high"] == max(c["high"] for c in in_first_week)
+
+
+def test_load_candles_limit_returns_recent_n_bars():
+    # limit=N は直近 N 本に制限する（§配信設計: 直近 N 本）。末尾一致を確認。
+    full = dataset.load_candles("sample", "1D")
+    tail = dataset.load_candles("sample", "1D", 5)
+    assert len(tail) == 5
+    assert tail == full[-5:]
+
+
+def test_resample_ohlc_none_rule_returns_same_object():
+    # rule=None は無変換（原子そのもの）で同一オブジェクトを返す。
+    df = dataset.load_dataframe("sample")
+    assert dataset.resample_ohlc(df, None) is df

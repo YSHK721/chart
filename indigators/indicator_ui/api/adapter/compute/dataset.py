@@ -36,6 +36,9 @@ DATASET_WHITELIST: dict[str, Path] = {
     # JP225（日経225・Dukascopy E_N225Jap）。marketdata から書き出した日足 CSV
     # （date,open,high,low,close・外れ値補正済み）。生成: indicator_ui/tools/export_jp225_csv.py。
     "jp225": _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_daily.csv",
+    # JP225 1分足（原子データ）。全時間足はこの 1 分足を resample して生成する
+    # （date(UTC %Y-%m-%d %H:%M:%S),open,high,low,close,volume）。生成: tools/export_jp225_m1.py。
+    "jp225_m1": _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_m1.csv",
 }
 
 # サンプル CSV の時刻列（解像度非依存に UNIX 秒へ変換する起点）。
@@ -44,10 +47,62 @@ _SAMPLE_TIME_COLUMN = "date"
 # candles の必須 OHLC 列（小文字正規化後）。
 _OHLC_COLUMNS = ("open", "high", "low", "close")
 
+# 時間足コード → pandas resample ルール（§チャート表示時間選択・1 分足原子）。
+# 全時間足は 1 分足（原子）を resample して生成する。"1m" は無変換（None＝原子そのもの）。
+# pandas 3 系では分/時は "5min"/"1h"、週は取引週末（金曜ラベル）、月末は "ME"（旧 "M" は廃止）。
+# ここに無いキーはすべて拒否する（is_known_timeframe）。日足ベース dataset（sample/jp225）でも
+# "1D"/"1W"/"1M" は冪等に機能する（同日 1 本の再集計は値不変）。日足未満は日足 dataset には無効
+# （フロントが dataset 別に提示足を制限する）。
+TIMEFRAME_RULES: dict[str, str | None] = {
+    "1m": None,
+    "5m": "5min",
+    "15m": "15min",
+    "30m": "30min",
+    "1h": "1h",
+    "4h": "4h",
+    "1D": "1D",
+    "1W": "W-FRI",
+    "1M": "ME",
+}
+
+# OHLC 集約規則（再集計時の列別 agg）。volume は合算、その他（OHLC 外）は最終値。
+_OHLC_AGG = {"open": "first", "high": "max", "low": "min", "close": "last"}
+_VOLUME_NAMES = ("volume", "vol")
+
 
 def is_known(ref: Any) -> bool:
     """datasetRef がホワイトリストに存在するか（未知・生パスは False）。"""
     return ref in DATASET_WHITELIST
+
+
+def is_known_timeframe(timeframe: Any) -> bool:
+    """timeframe がホワイトリスト（1m..1M）に存在するか（未知は False）。"""
+    return timeframe in TIMEFRAME_RULES
+
+
+def resample_ohlc(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
+    """DataFrame を指定 pandas rule で OHLC 再集計する（§チャート表示時間選択・1 分足原子）。
+
+    ``rule=None`` は無変換で同一 DataFrame を返す（原子＝1 分足そのもの）。それ以外は
+    resample し、open=最初/high=最大/low=最小/close=最終、volume=合算、その他列=最終値で
+    集約する。取引の無い期間（OHLC が NaN の行）は除去する（resample は連続区間を埋めるため、
+    休場区間の空行を落とす）。
+    """
+    if rule is None:
+        return df
+    agg: dict[Any, str] = {}
+    for col in df.columns:
+        lc = str(col).lower()
+        if lc in _OHLC_AGG:
+            agg[col] = _OHLC_AGG[lc]
+        elif lc in _VOLUME_NAMES:
+            agg[col] = "sum"
+        else:
+            agg[col] = "last"
+    resampled = df.resample(rule).agg(agg)
+    lower_map = {str(c).lower(): c for c in df.columns}
+    ohlc_cols = [lower_map[k] for k in _OHLC_COLUMNS if k in lower_map]
+    return resampled.dropna(subset=ohlc_cols)
 
 
 def _to_unix_seconds(value: Any) -> int:
@@ -56,8 +111,8 @@ def _to_unix_seconds(value: Any) -> int:
 
 
 @lru_cache(maxsize=None)
-def load_dataframe(ref: str) -> pd.DataFrame:
-    """ホワイトリスト解決済みキーの CSV を DataFrame 化する（キャッシュ）。
+def _load_base_dataframe(ref: str) -> pd.DataFrame:
+    """ホワイトリスト解決済みキーの原子 CSV を DataFrame 化する（resample 前・キャッシュ）。
 
     既存 loader を再利用し、time 列（date）を index へ解決する（line 系指標の時刻解決）。
     """
@@ -68,14 +123,37 @@ def load_dataframe(ref: str) -> pd.DataFrame:
 
 
 @lru_cache(maxsize=None)
-def load_candles(ref: str) -> list[dict[str, Any]]:
+def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
+    """ホワイトリスト解決済みキーの DataFrame を指定時間足へ再集計して返す（キャッシュ）。
+
+    ``timeframe=None`` は原子（再集計なし）をそのまま返す（既存挙動・後方互換）。指定時は
+    ``TIMEFRAME_RULES`` の rule で resample する。未知 timeframe は呼び出し側（controller/server）
+    が事前に ``is_known_timeframe`` で拒否する前提（ここでは rule 解決のみ）。
+    """
+    base = _load_base_dataframe(ref)
+    if timeframe is None:
+        return base
+    return resample_ohlc(base, TIMEFRAME_RULES.get(timeframe))
+
+
+@lru_cache(maxsize=None)
+def load_candles(
+    ref: str, timeframe: str | None = None, limit: int | None = None
+) -> list[dict[str, Any]]:
     """ホワイトリスト解決済みキーを candles JSON へ変換する（§6.3・lightweight-charts 形）。
 
+    Args:
+        ref: datasetRef（ホワイトリスト済み）。
+        timeframe: 時間足コード（None=原子）。指定時は resample 後に変換する。
+        limit: 直近 N 本に制限する（None=全件）。1 分足原子の全期間（数百万点）を直接
+            配信しないための表示範囲制限（§配信設計: リサンプル＋直近 N 本）。
+
     Returns:
-        ``[{time: UNIX秒, open, high, low, close}, ...]``（time 昇順）。time は index
-        （load_ohlc_csv が date 列を index 化）から解像度非依存で UNIX 秒へ変換する。
+        ``[{time: UNIX秒, open, high, low, close}, ...]``（time 昇順・直近 limit 本）。
     """
-    df = load_dataframe(ref)
+    df = load_dataframe(ref, timeframe)
+    if limit is not None and limit > 0:
+        df = df.tail(limit)
     lower_map = {str(c).lower(): c for c in df.columns}
     cols = {k: lower_map[k] for k in _OHLC_COLUMNS}
     candles: list[dict[str, Any]] = []

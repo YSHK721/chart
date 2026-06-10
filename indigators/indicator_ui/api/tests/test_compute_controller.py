@@ -230,5 +230,45 @@ def test_handle_compute_accepts_compute_id_alias_for_indicator_id():
     assert [s["name"] for s in resp["series"]] == ["btlm_mean", "btlm_q5", "btlm_q95"]
 
 
+# --------------------------------------------------------------------------- #
+# 時間足（timeframe）・直近 N 本（limit）— §チャート表示時間選択 / 配信設計
+# --------------------------------------------------------------------------- #
+def test_handle_compute_unknown_timeframe_returns_400():
+    # 未知 timeframe コードは datasetRef 同様に拒否（§7.3 ホワイトリスト方針）。
+    body = {
+        "indicatorId": "tgp_btlm", "variant": "default",
+        "params": {"fitter": "ols", "maxbars": 40, "q_low": 0.05, "q_high": 0.95},
+        "datasetRef": "sample", "timeframe": "9z",
+    }
+    status, resp = handle_compute(body)
+    assert status == 400
+    assert resp["error"]["type"] == "validation"
+
+
+def test_handle_compute_weekly_timeframe_returns_200():
+    # 既知 timeframe（1W）は受理し、resample 済み DataFrame で計算できる。
+    body = {
+        "indicatorId": "tgp_btlm", "variant": "default",
+        "params": {"fitter": "ols", "maxbars": 40, "q_low": 0.05, "q_high": 0.95},
+        "datasetRef": "sample", "timeframe": "1W",
+    }
+    status, resp = handle_compute(body)
+    assert status == 200
+    assert [s["name"] for s in resp["series"]] == ["btlm_mean", "btlm_q5", "btlm_q95"]
+
+
+def test_handle_compute_limit_restricts_computation_window():
+    # limit=N は直近 N 本へ制限する（candles と同一窓で計算・§配信設計）。系列点数が limit 以下。
+    body = {
+        "indicatorId": "tgp_btlm", "variant": "default",
+        "params": {"fitter": "ols", "maxbars": 200, "q_low": 0.05, "q_high": 0.95},
+        "datasetRef": "sample", "timeframe": "1D", "limit": 30,
+    }
+    status, resp = handle_compute(body)
+    assert status == 200
+    # 計算窓が直近 30 本に制限されるため、各系列の点数は 30 以下。
+    assert all(len(s["data"]) <= 30 for s in resp["series"])
+
+
 # numpy は ramp フィクスチャ生成の将来拡張用 import（現テストでは controller 内で生成）。
 _ = (np, pd)

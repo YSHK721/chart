@@ -357,5 +357,100 @@ def test_adapter_tgp_fitter_without_rpy2_translates_to_backend_unavailable(monke
     assert exc.value.error_type == "backend_unavailable"
 
 
+# =========================================================================== #
+# moving_averages（複数 MA 種別 × 期間・line 群）
+# =========================================================================== #
+def test_call_binding_resolves_moving_averages_to_line_kw():
+    binding = CallBinding.resolve("moving_averages", "default")
+    assert binding.output_kind == "line"
+    assert binding._kind == "kw"
+
+
+def test_adapter_moving_averages_main_only_when_smoothing_none():
+    # 単一 MA モデル: 平滑化 none は主系列 "MA" のみ（time は int UNIX 秒）。
+    adapter = IndicatorComputeAdapter()
+    df = _ohlcv(60)
+    series = adapter.compute(
+        "moving_averages", "default", df,
+        {"ma_type": "ema", "length": 9, "source": "close",
+         "smoothing_type": "none", "wait_for_close": False},
+    )
+    assert [s["name"] for s in series] == ["MA"]
+    assert series[0]["kind"] == "line"
+    assert isinstance(series[0]["data"][0]["time"], int)
+
+
+def test_adapter_moving_averages_emits_smoothing_and_bb_series():
+    # 平滑化 sma_bb は MA / Smoothing / Upper / Lower の 4 系列を出力する。
+    adapter = IndicatorComputeAdapter()
+    df = _ohlcv(80)
+    series = adapter.compute(
+        "moving_averages", "default", df,
+        {"ma_type": "sma", "length": 20, "source": "close", "offset": 0,
+         "smoothing_type": "sma_bb", "smoothing_length": 9, "bb_stddev": 2.0,
+         "wait_for_close": False},
+    )
+    assert sorted(s["name"] for s in series) == ["Lower", "MA", "Smoothing", "Upper"]
+    assert all(s["kind"] == "line" for s in series)
+
+
+def test_adapter_moving_averages_source_compound_hl2_is_accepted():
+    # 合成ソース hl2 を受理し主 MA を出力する。
+    adapter = IndicatorComputeAdapter()
+    df = _ohlcv(40)
+    series = adapter.compute(
+        "moving_averages", "default", df,
+        {"ma_type": "sma", "length": 5, "source": "hl2",
+         "smoothing_type": "none", "wait_for_close": False},
+    )
+    assert [s["name"] for s in series] == ["MA"]
+
+
+@pytest.mark.parametrize(
+    "source, formula",
+    [
+        ("hl2", lambda o, h, low, c: (h + low) / 2.0),
+        ("hlc3", lambda o, h, low, c: (h + low + c) / 3.0),
+        ("ohlc4", lambda o, h, low, c: (o + h + low + c) / 4.0),
+        ("hlcc4", lambda o, h, low, c: (h + low + c + c) / 4.0),
+    ],
+)
+def test_adapter_moving_averages_composite_source_values_are_exact(source, formula):
+    # 合成ソースの SMA が「合成価格の rolling 平均」と厳密一致する（独立手計算と突合）。
+    adapter = IndicatorComputeAdapter()
+    n, length = 40, 5
+    df = _ohlcv(n)
+    o = df["open"].to_numpy(float)
+    h = df["high"].to_numpy(float)
+    low = df["low"].to_numpy(float)
+    c = df["close"].to_numpy(float)
+    # 独立に合成価格 → SMA（rolling mean）を時刻キーで算出。
+    price = formula(o, h, low, c)
+    exp = pd.Series(price).rolling(length, min_periods=length).mean().to_numpy()
+    times = [int(pd.Timestamp(t).timestamp()) for t in df["time"]]
+    expected = {times[i]: exp[i] for i in range(n) if not np.isnan(exp[i])}
+
+    series = adapter.compute(
+        "moving_averages", "default", df,
+        {"ma_type": "sma", "length": length, "source": source,
+         "smoothing_type": "none", "offset": 0, "wait_for_close": False},
+    )
+    got = {p["time"]: p["value"] for p in series[0]["data"]}
+    assert set(got) == set(expected)
+    for t in got:
+        assert abs(got[t] - expected[t]) < 1e-6
+
+
+def test_adapter_moving_averages_empty_when_length_exceeds_bars():
+    # 期間が本数を超える場合は系列を出さない（空）。
+    adapter = IndicatorComputeAdapter()
+    df = _ohlcv(10)
+    series = adapter.compute(
+        "moving_averages", "default", df,
+        {"ma_type": "sma", "length": 999, "smoothing_type": "none"},
+    )
+    assert series == []
+
+
 # ComputeError は adapter.compute の §6.3.4 翻訳例外（テスト import の都合で末尾に置く）。
 from adapter.compute import ComputeError  # noqa: E402

@@ -154,8 +154,16 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         if not dataset.is_known(ref):
             self._send_json(400, _nested_error("validation", f"未知の datasetRef です: {ref!r}"))
             return
+        # timeframe（時間足）— 省略は原子（再集計なし・後方互換）。未知コードは 400。
+        timeframe = (query.get("timeframe") or [None])[0]
+        if timeframe is not None and not dataset.is_known_timeframe(timeframe):
+            self._send_json(400, _nested_error("validation", f"未知の timeframe です: {timeframe!r}"))
+            return
+        # limit（直近 N 本）— 数字のみ採用。1 分足原子の全件直接配信を避ける表示範囲制限。
+        limit_raw = (query.get("limit") or [None])[0]
+        limit = int(limit_raw) if (limit_raw and limit_raw.isdigit()) else None
         try:
-            candles = dataset.load_candles(ref)
+            candles = dataset.load_candles(ref, timeframe, limit)
         except Exception as exc:  # noqa: BLE001
             self._send_json(500, _nested_error("internal", f"candles 取得に失敗しました: {exc}"))
             return

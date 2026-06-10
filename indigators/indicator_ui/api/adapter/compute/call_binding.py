@@ -14,12 +14,21 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, TypedDict
 
 from adapter.compute.module_loader import load_package
+
+# 共有プリミティブ層（``common.applied_price`` 等）を指標 src から絶対 import 可能にする。
+#   指標 src（例 moving_averages/src/lwc_chart.py）が ``from common.applied_price import ...``
+#   を解決できるよう、ワークスペース根（このファイル: api/adapter/compute/ → parents[5]）を
+#   sys.path に追加する（ロード境界で一括設定し、各 src に sys.path ハックを散らさない）。
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[5]
+if str(_WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_WORKSPACE_ROOT))
 
 
 def _accepted_kwargs(callable_: Callable, params: dict[str, Any]) -> dict[str, Any]:
@@ -156,6 +165,10 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("price_range_power", "default"): {
         "loader": lambda: _load_callable("price_range_power", "add_price_range_power"),
         "output_kind": "horizontal_line", "kind": "kw",
+    },
+    ("moving_averages", "default"): {
+        "loader": lambda: _load_callable("moving_averages", "add_moving_averages"),
+        "output_kind": "line", "kind": "kw",
     },
 }
 
