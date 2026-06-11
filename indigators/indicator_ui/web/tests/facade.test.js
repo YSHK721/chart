@@ -220,6 +220,60 @@ test('UC-07 serialize/deserialize: roundtrip preserves applied, favorites, seqCo
   assert.deepEqual(ri.params, [['probabilities', [0.95, 0.99]]]);
 });
 
+test('UC-07 deserialize: reconstructs seqCounters from applied (prevents instanceId collision after reload)', () => {
+  // Arrange: コントローラ restore と同様に seqCounters 抜き（空）の永続 JSON を復元する。
+  //   同一指標 'ma' を seq=2 まで使った状態を applied のみで表現（カウンタは永続化されない）。
+  const json = JSON.stringify({
+    applied: [
+      { indicatorId: 'ma', variant: 'default', params: [['period', 50]], visible: true, generation: 0, seq: 1, createdAt: '2026-06-07T00:00:00Z' },
+      { indicatorId: 'ma', variant: 'default', params: [['period', 30]], visible: true, generation: 0, seq: 2, createdAt: '2026-06-07T00:00:00Z' },
+    ],
+    favorites: [],
+    seqCounters: {},
+    uiState: {},
+  });
+  // Act
+  const restored = deserialize(json);
+  // Assert: カウンタは既存最大 seq（2）まで底上げされ、次回 apply は seq=3（衝突なし）となる。
+  assert.equal(restored.seqCounters.ma, 2);
+});
+
+test('UC-07 deserialize: seqCounters takes max of persisted counter and applied seq', () => {
+  // Arrange: 永続カウンタ（5）が applied 最大 seq（2）より大きい場合は減らさない（§5.7 単調）。
+  const json = JSON.stringify({
+    applied: [
+      { indicatorId: 'ma', variant: 'default', params: [], visible: true, generation: 0, seq: 2, createdAt: '2026-06-07T00:00:00Z' },
+    ],
+    favorites: [],
+    seqCounters: { ma: 5 },
+    uiState: {},
+  });
+  // Act
+  const restored = deserialize(json);
+  // Assert
+  assert.equal(restored.seqCounters.ma, 5);
+});
+
+test('UC-07 deserialize: heals duplicate (indicatorId, seq) by re-sequencing to unique instanceIds', () => {
+  // Arrange: バグ版が保存した破損データ（同一指標が seq=1 で2件・instanceId 衝突）。
+  const json = JSON.stringify({
+    applied: [
+      { indicatorId: 'ma', variant: 'default', params: [['length', 50]], visible: true, generation: 0, seq: 1, createdAt: '2026-06-07T00:00:00Z' },
+      { indicatorId: 'ma', variant: 'default', params: [['length', 30]], visible: true, generation: 0, seq: 1, createdAt: '2026-06-07T00:00:00Z' },
+    ],
+    favorites: [],
+    seqCounters: {},
+    uiState: {},
+  });
+  // Act
+  const restored = deserialize(json);
+  // Assert: instanceId が一意化され、params は保持、カウンタは最大 seq(2) まで底上げ。
+  assert.deepEqual(restored.applied.map((i) => i.instanceId), ['ma#1', 'ma#2']);
+  assert.deepEqual(restored.applied[0].params, [['length', 50]]);
+  assert.deepEqual(restored.applied[1].params, [['length', 30]]);
+  assert.equal(restored.seqCounters.ma, 2);
+});
+
 test('UC-07 serialize: output JSON is a string parseable to schema keys', () => {
   const state = emptyState();
   const json = serialize(state);

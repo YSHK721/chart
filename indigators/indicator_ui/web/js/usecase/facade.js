@@ -215,5 +215,39 @@ export function deserialize(json) {
   if (parsed?.uiState && typeof parsed.uiState === 'object' && !Array.isArray(parsed.uiState)) {
     base.uiState = parsed.uiState;
   }
+  // §5.7 不変条件の補正 + 既存破損データの治癒（同一指標 2 本のパラメータ汚染バグ対策）。
+  //   instanceId は `${indicatorId}#${seq}` で導出され、衝突すると recompute の findIndex が
+  //   常に先頭一致を返すため、2 本目の編集が 1 本目を書き換える。原因は 2 つ:
+  //   (1) seqCounters がコントローラ restore で永続化されず空で渡るため、リロード後に同一指標を
+  //       再追加すると seq が 1 に戻り既存と衝突する。
+  //   (2) 上記バグ版が既に同一 (indicatorId, seq) を複数保存しており、復元時点で instanceId が
+  //       重複している（カウンタ補正だけでは治らない）。
+  //   対策: 復元順に重複 seq を「当該指標の最大 seq + 1」へ再採番して一意化し、最終的な最大 seq
+  //   までカウンタを底上げする。再採番は冪等（重複なしなら無変更）。
+  const usedSeqByIndicator = new Map();
+  const maxSeqByIndicator = new Map();
+  base.applied = base.applied.map((inst) => {
+    const id = inst.indicatorId;
+    if (!usedSeqByIndicator.has(id)) {
+      usedSeqByIndicator.set(id, new Set());
+      maxSeqByIndicator.set(id, 0);
+    }
+    const used = usedSeqByIndicator.get(id);
+    let seq = inst.seq;
+    if (typeof seq !== 'number' || used.has(seq)) {
+      seq = maxSeqByIndicator.get(id) + 1; // 重複・不正 seq は再採番
+    }
+    used.add(seq);
+    if (seq > maxSeqByIndicator.get(id)) {
+      maxSeqByIndicator.set(id, seq);
+    }
+    return seq === inst.seq ? inst : rebuildInstance(inst, { seq });
+  });
+  for (const [id, maxSeq] of maxSeqByIndicator) {
+    const current = base.seqCounters[id] ?? 0;
+    if (maxSeq > current) {
+      base.seqCounters[id] = maxSeq;
+    }
+  }
   return base;
 }
