@@ -124,6 +124,6 @@ def add_volatility(
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
                 price=float(levels[key]), color=_LEVEL_COLOR, width=1,
-                style="dotted", text=key, price_label=False,
+                style="dotted", text=key, axis_label_visible=False,
             ))
     return created

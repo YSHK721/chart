@@ -93,7 +93,7 @@ def add_hl_band(
     元 ``ObjectCreate(..., OBJ_TREND, ...)`` 8 本（LimeGreen）を水平線で再表現する
     （MT4 描画オブジェクト自体は移植対象外・SPEC §2、close[-2] への ±band 投影値
     8 本のみを移す）。価格系列の描画は呼び出し側前提（本関数はバンドのみ追加）。
-    多数線のため price_line/price_label=False（ガイド §6）。
+    多数線のため axis_label_visible=False（ガイド §6。実 horizontal_line API 準拠）。
 
     Args:
         chart: ``horizontal_line(price, **kwargs)`` を持つメインチャート（duck typing）。
@@ -119,8 +119,7 @@ def add_hl_band(
                 width=1,
                 style="solid",
                 text=key,
-                price_line=False,
-                price_label=False,
+                axis_label_visible=False,
             )
         )
     return created

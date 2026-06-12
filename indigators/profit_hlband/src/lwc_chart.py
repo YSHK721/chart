@@ -17,8 +17,9 @@
         メインチャートの水平線で再表現する。MT4 の描画オブジェクト（ObjectCreate /
         ObjectDelete）そのものは移植対象外（SPEC §2）で、計算と描画の「意味」のみを移す。
 
-    値列名はライン名と完全一致させる（ガイド §5）。多数の水平線は price_line=False /
-    price_label=False（ガイド §6）。具体描画ライブラリを core/成果物層へ侵入させない。
+    値列名はライン名と完全一致させる（ガイド §5）。多数の水平線は
+    axis_label_visible=False（ガイド §6。実 horizontal_line API 準拠）。
+    具体描画ライブラリを core/成果物層へ侵入させない。
 
 元 MQL4 対応:
     L32 SetIndexStyle(0, DRAW_HISTOGRAM) / indicator_color1 clrLime / indicator_width1 2
@@ -155,7 +156,7 @@ def add_hlband_separate(
         for key in _LEVEL_KEYS:
             created.append(subchart.horizontal_line(
                 price=float(levels[key]), color=_LEVEL_COLOR, width=1,
-                style="solid", text=key, price_label=False,
+                style="solid", text=key, axis_label_visible=False,
             ))
     return created
 
@@ -170,7 +171,7 @@ def add_hlband_overlay(
 
     元 ``ObjectCreate(..., OBJ_TREND, ...)`` 8 本（LimeGreen）を水平線で再表現する
     （MT4 描画オブジェクト自体は移植対象外・SPEC §2、最新足 H/L への投影値のみ移す）。
-    多数線のため price_line/price_label=False（ガイド §6）。
+    多数線のため axis_label_visible=False（ガイド §6。実 horizontal_line API 準拠）。
 
     Args:
         chart: ``horizontal_line(price, **kwargs)`` を持つメインチャート（duck typing）。
@@ -189,6 +190,6 @@ def add_hlband_overlay(
     for key in _OVERLAY_KEYS:
         created.append(chart.horizontal_line(
             price=float(bands[key]), color=color, width=1,
-            style="solid", text=key, price_line=False, price_label=False,
+            style="solid", text=key, axis_label_visible=False,
         ))
     return created

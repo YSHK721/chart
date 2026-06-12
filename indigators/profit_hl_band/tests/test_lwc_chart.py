@@ -11,7 +11,7 @@
     * 水平線が 8 本生成される（up 4 / dn 4）。
     * 各水平線の price 値が hl_band_levels（up_*/dn_*）と一致する。
     * 各水平線の text（name）が対応する levels キーと一致する。
-    * 多数線のため price_line=False / price_label=False。
+    * 多数線のため axis_label_visible=False（実 horizontal_line API 準拠・ISSUE-008）。
     * 異常系: 必須列（high/low/close）欠落 → KeyError、時刻解決不可 → KeyError。
 
 依存: 標準 sys/pathlib / 外部 numpy, pandas, pytest / プロジェクト内 src.lwc_chart
@@ -105,12 +105,14 @@ def test_add_hl_band_each_line_text_matches_its_level_key():
         assert by_text[key] == pytest.approx(levels[key], abs=1e-12)
 
 
-def test_add_hl_band_lines_have_price_flags_off():
+def test_add_hl_band_lines_have_axis_label_off():
+    # 実 lightweight_charts の horizontal_line は price_line/price_label を受けない
+    # （ISSUE-008）。軸ラベル抑制は axis_label_visible=False で行う。
     chart = FakeChart()
     add_hl_band(chart, _df())
     for h in chart.hlines:
-        assert h["price_line"] is False
-        assert h["price_label"] is False
+        assert h["axis_label_visible"] is False
+        assert "price_line" not in h and "price_label" not in h
 
 
 def test_add_hl_band_resolves_time_from_datetime_index():
