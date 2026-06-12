@@ -206,11 +206,14 @@ def test_overlay_prices_match_price_bands():
     assert np.allclose(prices, expected)
 
 
-def test_overlay_lines_have_price_label_off():
+def test_overlay_lines_have_axis_label_off():
+    # 実 lightweight_charts の horizontal_line は price_line/price_label を受けない
+    # （ISSUE-008）。軸ラベル抑制は axis_label_visible=False で行う。
     chart = FakeChart()
     add_hlband_overlay(chart, _df())
     for h in chart.hlines:
-        assert h["price_label"] is False
+        assert h["axis_label_visible"] is False
+        assert "price_line" not in h and "price_label" not in h
 
 
 def test_overlay_missing_hl_raises():

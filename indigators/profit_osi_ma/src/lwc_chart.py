@@ -105,6 +105,6 @@ def add_osi_ma(
         for value in _LEVEL_VALUES:
             created.append(chart.horizontal_line(
                 price=float(value), color=_LEVEL_COLOR, width=1,
-                style="dotted", text=f"{value:g}", price_label=False,
+                style="dotted", text=f"{value:g}", axis_label_visible=False,
             ))
     return created
