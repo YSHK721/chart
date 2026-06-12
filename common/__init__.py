@@ -7,6 +7,7 @@
     applied_price                      : 種別で 8 種を切り替えるディスパッチャ。
     close_price / open_price / high_price / low_price : 単純な列選択。
     median_price / typical_price / weighted_price / ohlc4_price : 算術合成。
+    level_colors                       : レベルカウント系の値→HEX 色（緑→赤・|中心からの距離|）写像。
 
 典型的な使い方:
     >>> import numpy as np
@@ -31,6 +32,7 @@ from .applied_price import (
     typical_price,
     weighted_price,
 )
+from .level_colors import level_colors
 
 __all__ = [
     "AppliedPrice",
@@ -43,4 +45,5 @@ __all__ = [
     "typical_price",
     "weighted_price",
     "ohlc4_price",
+    "level_colors",
 ]
