@@ -16,14 +16,12 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from src.core import (  # noqa: E402
+# ISSUE-009: 絶対 import `from src.core`（＋sys.path への parents[1] 挿入）は top-level 名 `src`
+# を汚染し、adapter が他指標を先にロード済みのとき `src.core` が誤束縛され ImportError を招く。
+# 他指標と同じ相対 import へ統一し、`_<indicator>_src` 名前空間に閉じて衝突を断つ。
+from .core import (
     DEFAULT_PERIOD,
     compute_arctan_full,
 )
