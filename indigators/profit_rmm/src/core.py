@@ -114,6 +114,43 @@ def oscillator_span(x: np.ndarray, *, clamp: bool) -> float:
 # funLevelCount（level_count_score）は共有 profit_system へ集約済み（上部で import・再公開）。
 
 
+def _score_pivot50(osi: np.ndarray, span: float) -> np.ndarray:
+    """50 基準オシレーターの採点を要素単位でベクトル化する（``level_count_score`` 同値）。
+
+    ``level_count_score`` の case0（osi>50）と case1（osi<50）は
+    ``((osi-50)/r)/100`` と ``-((50-osi)/r)/100`` であり、``a-b == -(b-a)`` が IEEE754 で
+    厳密成立するため両ケースはビット的に同一値。よって基準点（osi==50）のみ寄与 0
+    （元ループは分岐に入らず加算しない）とすれば、丸め無しの本採点をビット一致のまま
+    ベクトル化できる（乱数掃引で実証済み）。
+
+    Args:
+        osi: オシレーター系列。
+        span: 当該オシレーターのスパン（スカラ）。
+
+    Returns:
+        各要素の採点（osi==50 は 0.0）。
+    """
+    r = (span - 50.0) / 200.0
+    return np.where(osi == 50.0, 0.0, ((osi - 50.0) / r) / 100.0)
+
+
+def _score_pivot0(osi: np.ndarray, span: float) -> np.ndarray:
+    """0 基準オシレーター（MAROD）の採点を要素単位でベクトル化する。
+
+    ``level_count_score`` の case2（osi<0）と case3（osi>0）は同様に符号反転でビット同値
+    （``((osi-r)/r)/100``）。基準点（osi==0）は元ループが加算しないため 0.0 とする。
+
+    Args:
+        osi: MAROD 系列。
+        span: MAROD のスパン（スカラ）。
+
+    Returns:
+        各要素の採点（osi==0 は 0.0）。
+    """
+    r = (span / 2.0) / 200.0
+    return np.where(osi == 0.0, 0.0, ((osi - r) / r) / 100.0)
+
+
 # ===========================================================================
 # 合成
 # ===========================================================================
@@ -210,27 +247,15 @@ def compute_rmm(
     mfi_span = oscillator_span(mfi, clamp=True)
     marod_span = oscillator_span(marod, clamp=False)
 
-    n = close.shape[0]
-    level_count = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        lc = 0.0
-        if rsi[i] < 50.0:
-            lc += level_count_score(rsi[i], rsi_span, 1)
-        elif rsi[i] > 50.0:
-            lc += level_count_score(rsi[i], rsi_span, 0)
-        if wpr[i] < 50.0:
-            lc += level_count_score(wpr[i], wpr_span, 1)
-        elif wpr[i] > 50.0:
-            lc += level_count_score(wpr[i], wpr_span, 0)
-        if mfi[i] < 50.0:
-            lc += level_count_score(mfi[i], mfi_span, 1)
-        elif mfi[i] > 50.0:
-            lc += level_count_score(mfi[i], mfi_span, 0)
-        if marod[i] < 0.0:
-            lc += level_count_score(marod[i], marod_span, 2)
-        elif marod[i] > 0.0:
-            lc += level_count_score(marod[i], marod_span, 3)
-        level_count[i] = lc
+    # 旧: for i in range(n) で 4 オシレーターを level_count_score 採点・加算（O(4n)）。
+    # 加算順（rsi→wpr→mfi→marod）を左結合で保持し、各採点を _score_pivot50/0 で
+    # ベクトル化（0.0 加算は IEEE754 で恒等のため未加算ケースとも一致）。
+    level_count = (
+        _score_pivot50(rsi, rsi_span)
+        + _score_pivot50(wpr, wpr_span)
+        + _score_pivot50(mfi, mfi_span)
+        + _score_pivot0(marod, marod_span)
+    )
 
     lc_levels = compute_rmm_levels(level_count)
     return RmmResult(

@@ -137,24 +137,31 @@ def compute_rvi(
     hl = h - l  # high - low
     out = np.zeros(n, dtype=np.float64)
 
-    def _value_up(j: int) -> float:
-        return co[j] + 2.0 * co[j - 1] + 2.0 * co[j - 2] + co[j - 3]
-
-    def _value_down(j: int) -> float:
-        return hl[j] + 2.0 * hl[j - 1] + 2.0 * hl[j - 2] + hl[j - 3]
-
     # 権威 RVI.mq5: 計算開始 start = period + 2（= (period-1)+TRIANGLE_PERIOD）。
     # main ループが index period+2 を上書きするため最初の実値は i=period+2。
-    # warm-up（i < period+2）は 0。i>=period+2 で窓内 min j=i-period+1>=3 ゆえ j-3>=0。
-    for i in range(period + 2, n):
-        sum_up = 0.0
-        sum_down = 0.0
-        for j in range(i - period + 1, i + 1):
-            if j - 3 < 0:  # j-3>=0 必要（先頭は計算不可）
-                continue
-            sum_up += _value_up(j)
-            sum_down += _value_down(j)
-        out[i] = sum_up / sum_down if sum_down != 0.0 else sum_up
+    # warm-up（i < period+2）は 0。i>=period+2 で窓内 min j=i-period+1>=3 ゆえ j-3>=0
+    # が常に成立し、旧 j-3<0 ガードは active 範囲では発火しない。
+    if n <= period + 2:
+        return out  # 窓が成立しない（元ループ range(period+2, n) が空）
+
+    # 旧: 二重ループ（i×j）で三角加重 value_up/value_down を窓和（O(n·period)）。
+    # value_up[j]=co[j]+2co[j-1]+2co[j-2]+co[j-3] は i 非依存なので要素配列として先に確定
+    # （左結合の演算順を保持してビット一致）。窓和は k=0(最古 j=i-period+1)..period-1(現バー)
+    # の period 回シフト加算で取り、元ループと同一加算順（古→新）を保つ（乱数掃引で実証済み）。
+    value_up = np.zeros(n, dtype=np.float64)
+    value_down = np.zeros(n, dtype=np.float64)
+    value_up[3:] = co[3:] + 2.0 * co[2:-1] + 2.0 * co[1:-2] + co[:-3]
+    value_down[3:] = hl[3:] + 2.0 * hl[2:-1] + 2.0 * hl[1:-2] + hl[:-3]
+
+    sum_up = np.zeros(n, dtype=np.float64)
+    sum_down = np.zeros(n, dtype=np.float64)
+    for k in range(period):  # k=0 が窓内最古、k=period-1 が現バー（元ループ加算順）
+        sum_up[period + 2 :] += value_up[3 + k : n - period + k + 1]
+        sum_down[period + 2 :] += value_down[3 + k : n - period + k + 1]
+
+    sd = sum_down[period + 2 :]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out[period + 2 :] = np.where(sd != 0.0, sum_up[period + 2 :] / sd, sum_up[period + 2 :])
     return out
 
 

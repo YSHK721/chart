@@ -153,12 +153,21 @@ def compute_volatility(
         raise ValueError(f"period は 2 以上である必要があります: {period}")
     px = _vol_price(x_digit, open_, high, low, close)
     py = _vol_price(y_digit, open_, high, low, close)
+    return _volatility_diff(px, py, period)
+
+
+def _volatility_diff(px: np.ndarray, py: np.ndarray, period: int) -> np.ndarray:
+    """``res[a] = pX[a] - pY[a-period]``（``a < period`` は 0）をスライスで算出する。
+
+    元 OnCalculate のループ ``for(i=0; i<limit-inpPeriod; i++)`` は最古 period 本
+    （昇順 ``a < period``）を計算せず ``ArrayResize`` 既定値 0 を残す。これを
+    要素ループではなくベクトル化スライスで 1:1 再現する（``out[period:] = px[period:] -
+    py[:n-period]``）。
+    """
     n = px.size
-    # 元 OnCalculate のループは for(i=0; i<limit-inpPeriod; i++) であり、最古 period
-    # 本（昇順 a<period）は計算されず 0 のまま残る（ArrayResize 既定値）。1:1 再現。
     out = np.zeros(n, dtype=np.float64)
-    for a in range(period, n):
-        out[a] = px[a] - py[a - period]
+    if n > period:
+        out[period:] = px[period:] - py[: n - period]
     return out
 
 
@@ -184,11 +193,16 @@ def compute_level_count(
     Returns:
         レベルカウント系列（同長, float64）。
     """
+    if period < 2:
+        raise ValueError(f"period は 2 以上である必要があります: {period}")
+    # 49 系列は 7 種の価格 digit の組み合わせに過ぎないため、価格系列は digit ごとに
+    # 一度だけ算出して使い回す（従来は mode ごとに _vol_price を都度呼び 98 回再計算していた）。
+    prices = {
+        digit: _vol_price(digit, open_, high, low, close) for digit in _PRICE_DIGITS
+    }
     level_count: np.ndarray | None = None
     for k, (x_digit, y_digit) in enumerate(VOLATILITY_MODES):
-        vol = compute_volatility(
-            open_, high, low, close, period=period, x_digit=x_digit, y_digit=y_digit
-        )
+        vol = _volatility_diff(prices[x_digit], prices[y_digit], period)
         # 元コードでは mode 00 のみ initialization=1、残りは 0（加算）。
         level_count = ps_level_count(vol, level_count, initialization=(k == 0))
     assert level_count is not None

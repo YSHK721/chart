@@ -182,14 +182,25 @@ def ps_level_count(
     up = _ps_band(a, sigma, _UPSIDE)
     down = _ps_band(a, sigma, _DOWNSIDE)
 
-    for i in range(n):
-        if a[i] > avg:
-            out[i] = out[i] + _unit_conversion(a[i], avg, up, distant, _UPSIDE)
-        elif a[i] < avg:
-            out[i] = out[i] + _unit_conversion(a[i], avg, down, distant, _DOWNSIDE)
-        else:
-            out[i] = 0.0
-    return out
+    # ループ版 ``_unit_conversion`` をベクトル化（要素ごとの分岐を np.where で表現）。
+    # avg/up/down は系列全体のスカラなので length も系列内で一定。
+    # ``length == 0``（= 母分散 0 の定数系列）のときは ``_unit_conversion`` のガードと同じく
+    # 寄与 0 とする（その場合 a[i] > avg / < avg は成立せず else 分岐に落ちるため挙動も等価）。
+    # np.round(_, 5) はスカラ ``round(_, 5)`` とビット一致することを乱数掃引で確認済み。
+    up_length = (up - avg) / distant
+    down_length = (down - avg) / distant
+    res_up = (
+        np.zeros(n, dtype=np.float64)
+        if up_length == 0.0
+        else np.round(((a - avg) / up_length) / 100.0, _NORMALIZE_DECIMALS)
+    )
+    res_down = (
+        np.zeros(n, dtype=np.float64)
+        if down_length == 0.0
+        else np.round(((avg - a) / down_length) / 100.0, _NORMALIZE_DECIMALS)
+    )
+    # a[i] > avg は加算（UPSIDE）、a[i] < avg は加算（DOWNSIDE）、a[i] == avg は 0 で上書き。
+    return np.where(a > avg, out + res_up, np.where(a < avg, out + res_down, 0.0))
 
 
 def compute_sigma_levels(level_count: np.ndarray) -> Mapping[str, float]:

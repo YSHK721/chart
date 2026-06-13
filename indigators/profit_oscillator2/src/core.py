@@ -133,6 +133,32 @@ def _score_0pivot(marod: float) -> float:
     return 0.0
 
 
+# span=100 固定の採点定数（level_count_score 各ケースの r。_SPAN!=50 ゆえ非ゼロ）。
+_R_50PIVOT: float = (_SPAN - 50.0) / 200.0  # case0/case1 の r
+_R_0PIVOT: float = (_SPAN / 2.0) / 200.0    # case2/case3 の r
+
+
+def _score_50pivot_vec(osi: np.ndarray) -> np.ndarray:
+    """``_score_50pivot`` の要素単位ベクトル化（ビット一致）。
+
+    level_count_score の case0（osi>50）/ case1（osi<50）は ``a-b == -(b-a)`` が IEEE754 で
+    厳密成立するためビット同値（丸め無し）。基準点 osi==50 は元の三分岐どおり 0。
+    span=100 固定で r=0.25（非ゼロ）ゆえ退化なし。乱数掃引でビット一致を実証済み。
+    """
+    osi = np.asarray(osi, dtype=np.float64)
+    return np.where(osi == 50.0, 0.0, ((osi - 50.0) / _R_50PIVOT) / 100.0)
+
+
+def _score_0pivot_vec(marod: np.ndarray) -> np.ndarray:
+    """``_score_0pivot`` の要素単位ベクトル化（ビット一致）。
+
+    case2（marod<0）/ case3（marod>0）は符号反転でビット同値（``((marod-r)/r)/100``）。
+    基準点 marod==0 は 0。span=100 固定で r=0.25（非ゼロ）。
+    """
+    marod = np.asarray(marod, dtype=np.float64)
+    return np.where(marod == 0.0, 0.0, ((marod - _R_0PIVOT) / _R_0PIVOT) / 100.0)
+
+
 def compute_level_count_rsi_term(
     *,
     rsi_low: np.ndarray,
@@ -153,12 +179,9 @@ def compute_level_count_rsi_term(
     Returns:
         score(rsi_low, 50pivot) の系列（rsi_high/rsi_typical は不寄与）。
     """
-    rsi_low = np.asarray(rsi_low, dtype=np.float64)
-    n = rsi_low.shape[0]
-    out = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        out[i] = _score_50pivot(float(rsi_low[i]))
-    return out
+    # 旧: for i で _score_50pivot を要素呼び出し（O(n)）。span 固定の純算術ゆえ
+    # _score_50pivot_vec でビット一致のままベクトル化。
+    return _score_50pivot_vec(rsi_low)
 
 
 def combine_level_count_terms(
@@ -265,20 +288,19 @@ def compute_level_count(
         h, l, c, osc_period=osc_period, stc_slow=stc_slow
     )
 
-    n = c.shape[0]
-    out = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        out[i] = combine_level_count_terms(
-            rsi_low_score=_score_50pivot(float(rsi_low[i])),
-            wpr_score=_score_50pivot(float(wpr[i])),
-            mfi_score=_score_50pivot(float(mfi[i])),
-            marod_typical_score=_score_0pivot(float(marod_t[i])),
-            marod_high_score=_score_0pivot(float(marod_h[i])),
-            marod_low_score=_score_0pivot(float(marod_l[i])),
-            stc_signal_score=_score_50pivot(float(stc_signal[i])),
-            stc_main_score=_score_50pivot(float(stc_main[i])),
-        )
-    return out
+    # 旧: for i で combine_level_count_terms を要素呼び出し（O(n)）。各採点は span 固定の
+    # 純算術、加重合算（係数 1/2/2/10/10/10/1/1）も combine と同一の左結合順を保つため
+    # ビット一致のままベクトル化する（乱数掃引で実証済み）。
+    return (
+        _score_50pivot_vec(rsi_low)
+        + 2.0 * _score_50pivot_vec(wpr)
+        + 2.0 * _score_50pivot_vec(mfi)
+        + 10.0 * _score_0pivot_vec(marod_t)
+        + 10.0 * _score_0pivot_vec(marod_h)
+        + 10.0 * _score_0pivot_vec(marod_l)
+        + _score_50pivot_vec(stc_signal)
+        + _score_50pivot_vec(stc_main)
+    )
 
 
 # =========================================================================== #
@@ -392,17 +414,26 @@ def compute_rci(
     n = lc.shape[0]
     out = np.zeros(n, dtype=np.float64)
     denom = float(period**3 - period)
-    for a in range(n):
-        if a < period - 1:
-            out[a] = 0.0
-            continue
-        window = [int(lc[a - k]) for k in range(period)]  # int 切り捨て（0 方向）
-        r2 = _rank_prices_int(window, period, direction)
-        z2 = 0.0
-        for k in range(period):
-            z2 += (r2[k] - (k + 1)) ** 2
-        spearman = 1.0 - 6.0 * z2 / denom
-        out[a] = spearman * sigma_ref
+    if n < period:
+        return out  # warm-up のみ（元ループは a>=period-1 を計算しない）
+
+    # 旧: 各バー a で int 切り捨て窓の順位付け（RankPrices）→ Spearman（O(n·period^2)）。
+    # 外側 a は窓ごとに独立（漸化式でない）ため一括ベクトル化できる。
+    #   * int 切り捨て（0 方向）= np.astype(int64)（負値も 0 方向で int() と一致）。
+    #   * _rank_prices_int の同値タイ平均ランクは、昇順平均ランク
+    #     r_asc = (#{<v} + #{<=v} + 1)/2 と厳密一致（direction=True は period+1-r_asc）。
+    #   * z2=Σ(r2-(k+1))^2 は半整数（×0.25）演算で丸めが起きず総和順序に依存しない。
+    # 以上より丸め・順序の差異なくビット一致する（整数タイ多発・両 direction で実証済み）。
+    li = lc.astype(np.int64)  # int() = 0 方向切り捨て
+    # 窓 W[row, k] = lc[a-k]（k=0 が現バー）。swv は古→新順なので反転して a-k 順に整える。
+    windows = np.lib.stride_tricks.sliding_window_view(li, period)[:, ::-1].astype(np.float64)
+    less = (windows[:, :, None] < windows[:, None, :]).sum(axis=1)
+    less_eq = (windows[:, :, None] <= windows[:, None, :]).sum(axis=1)
+    r_asc = (less + less_eq + 1.0) / 2.0
+    r2 = (period + 1.0 - r_asc) if direction else r_asc
+    k_pos = np.arange(1, period + 1, dtype=np.float64)[None, :]
+    z2 = ((r2 - k_pos) ** 2).sum(axis=1)
+    out[period - 1 :] = (1.0 - 6.0 * z2 / denom) * sigma_ref
     return out
 
 
