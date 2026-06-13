@@ -15,16 +15,27 @@ import { bootstrap, modeForProtocol } from '../js/adapter/front/composition_root
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
 
-// Fake lwc: createChart → chart（addCandlestickSeries/timeScale）。setData 呼出を記録。
+// Fake lwc（v5）: createChart → chart（addSeries/panes/addPane/timeScale/subscribeCrosshairMove）。
+//   ColorType / CandlestickSeries / createTextWatermark も公開（composition・ChartRenderer が参照）。
 function fakeLwc() {
   const setDataCalls = [];
   const mainSeries = { setData: (d) => setDataCalls.push(d) };
   const chart = {
-    addCandlestickSeries: () => mainSeries,
+    addSeries: () => mainSeries,
     timeScale: () => ({ fitContent: () => {} }),
+    panes: () => [{ setStretchFactor: () => {}, paneIndex: () => 0 }],
+    addPane: () => ({ addSeries: () => ({ setData: () => {} }), setStretchFactor: () => {}, paneIndex: () => 1 }),
+    removePane: () => {},
+    removeSeries: () => {},
+    subscribeCrosshairMove: () => {},
   };
   return {
-    lwc: { createChart: () => chart },
+    lwc: {
+      createChart: () => chart,
+      ColorType: { Solid: 'solid' },
+      CandlestickSeries: {}, LineSeries: {}, HistogramSeries: {},
+      createTextWatermark: () => ({ applyOptions: () => {}, detach: () => {} }),
+    },
     setDataCalls,
   };
 }

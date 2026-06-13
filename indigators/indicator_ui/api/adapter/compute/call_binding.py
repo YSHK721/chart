@@ -170,6 +170,72 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "loader": lambda: _load_callable("moving_averages", "add_moving_averages"),
         "output_kind": "line", "kind": "kw",
     },
+    # --- profit_* 系（MQL 移植・lwc 仕様）。統合 FakeChart が line/histogram/水平線を
+    #     一括収集するため output_kind は分岐に不使用（resolve 互換のため残置）。kind は全て kw。---
+    ("profit_adx_needle", "default"): {
+        "loader": lambda: _load_callable("profit_adx_needle", "add_adx_needle"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_arctan", "default"): {
+        "loader": lambda: _load_callable("profit_arctan", "add_arctan"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_hl_band", "default"): {
+        "loader": lambda: _load_callable("profit_hl_band", "add_hl_band"),
+        "output_kind": "horizontal_line", "kind": "kw",
+    },
+    ("profit_hlband", "separate"): {
+        "loader": lambda: _load_callable("profit_hlband", "add_hlband_separate"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_hlband", "overlay"): {
+        "loader": lambda: _load_callable("profit_hlband", "add_hlband_overlay"),
+        "output_kind": "horizontal_line", "kind": "kw",
+    },
+    ("profit_mfi", "default"): {
+        "loader": lambda: _load_callable("profit_mfi", "add_mfi"),
+        "output_kind": "line", "kind": "kw",
+    },
+    ("profit_mfi_macd", "default"): {
+        "loader": lambda: _load_callable("profit_mfi_macd", "add_mfimacd"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_oscillator", "default"): {
+        "loader": lambda: _load_callable("profit_oscillator", "add_oscillator"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_oscillator2", "default"): {
+        "loader": lambda: _load_callable("profit_oscillator2", "add_oscillator2"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_osi_ma", "default"): {
+        "loader": lambda: _load_callable("profit_osi_ma", "add_osi_ma"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_rmm", "default"): {
+        "loader": lambda: _load_callable("profit_rmm", "add_rmm"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_rmm_macd", "default"): {
+        "loader": lambda: _load_callable("profit_rmm_macd", "add_rmmmacd"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_rsi", "default"): {
+        "loader": lambda: _load_callable("profit_rsi", "add_rsi"),
+        "output_kind": "line", "kind": "kw",
+    },
+    ("profit_rsi_macd", "default"): {
+        "loader": lambda: _load_callable("profit_rsi_macd", "add_rsimacd"),
+        "output_kind": "histogram", "kind": "kw",
+    },
+    ("profit_stc", "default"): {
+        "loader": lambda: _load_callable("profit_stc", "add_stc"),
+        "output_kind": "line", "kind": "kw",
+    },
+    ("profit_volatility", "default"): {
+        "loader": lambda: _load_callable("profit_volatility", "add_volatility"),
+        "output_kind": "line", "kind": "kw",
+    },
 }
 
 

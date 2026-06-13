@@ -118,14 +118,21 @@ export class IndicatorController {
     });
   }
 
-  // 描画: F3 通過系列を kind 別に renderer へ渡す（line / horizontal_line）。
+  // 描画: F3 通過系列を kind 別に renderer へ渡す（line / histogram / horizontal_line）。
   //   params は F3 期待名の動的生成（moving_averages の任意期間）に用いる。
+  //   placement='overlay' は価格 pane(0) のローソクへ重畳（バンド等）、'pane' は専用 pane
+  //   （v5 ネイティブ・独立価格軸＋指標名＋高さドラッグ）。renderer が pane 生成と水準線配線を担う。
   _draw(instanceId, def, series, params = null) {
     const validated = this._validateSeriesNames(series, def, params);
     const lines = validated.filter((p) => p.kind === 'line');
+    const histograms = validated.filter((p) => p.kind === 'histogram');
     const hlines = validated.filter((p) => p.kind === 'horizontal_line');
+    const opts = { pane: def.placement !== 'overlay', name: this._label(def) };
+    if (histograms.length > 0) {
+      this._renderer.renderHistogram(instanceId, histograms, opts);
+    }
     if (lines.length > 0) {
-      this._renderer.renderLine(instanceId, lines);
+      this._renderer.renderLine(instanceId, lines, opts);
     }
     for (const h of hlines) {
       this._renderer.renderHorizontal(instanceId, h.lines ?? []);

@@ -8,6 +8,7 @@ import { evaluate } from './constraint_eval.js';
 
 export const SeriesKind = Object.freeze({
   LINE: 'line',
+  HISTOGRAM: 'histogram',
   HORIZONTAL_LINE: 'horizontal_line',
 });
 

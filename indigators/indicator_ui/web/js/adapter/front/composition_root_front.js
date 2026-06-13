@@ -80,15 +80,22 @@ export async function bootstrap({
   const mode = modeForProtocol(protocol);
 
   // チャート生成（組み立て点。系列追加系 API は ChartRenderer に隠蔽）。
+  // v5: background は { type: ColorType.Solid, color }、panes のリサイズ separator は既定 ON。
   const chart = lwc.createChart(container, {
-    layout: { background: { color: '#131722' }, textColor: '#d1d4dc' },
+    layout: {
+      background: { type: lwc.ColorType.Solid, color: '#131722' },
+      textColor: '#d1d4dc',
+      // ペイン境界のドラッグ・リサイズ（separator）を有効化（高さ調整・機能④）。
+      panes: { enableResize: true, separatorColor: '#2a2e39', separatorHoverColor: 'rgba(178,181,189,0.2)' },
+    },
     grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
     rightPriceScale: { borderColor: '#2a2e39' },
     // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
     timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
     autoSize: true,
   });
-  const mainSeries = chart.addCandlestickSeries({
+  // v5: addCandlestickSeries は廃止。addSeries(CandlestickSeries, ...) でメイン pane(0) に追加。
+  const mainSeries = chart.addSeries(lwc.CandlestickSeries, {
     upColor: '#26a69a', downColor: '#ef5350',
     borderUpColor: '#26a69a', borderDownColor: '#ef5350',
     wickUpColor: '#26a69a', wickDownColor: '#ef5350',
@@ -108,7 +115,9 @@ export async function bootstrap({
     compute = new EmbeddedComputeGateway(SAMPLE_DATA);
   }
 
-  const renderer = new ChartRenderer({ chart, mainSeries });
+  // ChartRenderer は upstream API の唯一の隔離点。v5 シリーズ定義（LineSeries/HistogramSeries）と
+  // createTextWatermark を lwc 名前空間ごと渡す（系列追加系 API 名の参照を本所外へ漏らさない）。
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc });
   const persistence = new LocalStorageGateway(storage);
   const catalog = new IndicatorCatalogClient();
 

@@ -229,7 +229,139 @@ const MOVING_AVERAGES = new IndicatorDef({
   compute: { computeId: 'moving_averages', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
 
-const REGISTRY = Object.freeze([TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES]);
+// ===========================================================================
+// profit_* 系（MQL 移植・lwc 仕様）。実バインディング add_*（indigators/profit_*/src/
+// lwc_chart.py）の系列名と完全一致させる（F3 照合・§3.3.6）。系列 kind:
+//   histogram = create_histogram、line = create_line、horizontal_line = σ 水準線群
+//   （統合 FakeChart が compute_id 名 1 件にまとめる＝seriesName は指標 id と一致）。
+// placement: オシレータは 'pane'（instance 専用 overlay スケールへ autoscale 分離）、
+//   価格バンドは 'overlay'（価格スケール上）。
+// ---------------------------------------------------------------------------
+const PF_HLINE = (id) => new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: id, dynamic: false });
+const PF_LINE = (seriesName) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false });
+const PF_HIST = (seriesName) => new SeriesDef({ kind: SeriesKind.HISTOGRAM, sourceColumn: null, seriesName, dynamic: false });
+// 正整数パラメータ（period 系）。MIN_VALUE>=1 の制約付き・group.calc・step1。
+const PF_INT = (name, def, extraUi = {}) => param(
+  name, ParamType.INT, def,
+  [{ kind: ConstraintKind.MIN_VALUE, operands: [name, 1], messageKey: `err.${name}` }],
+  null, { group: 'group.calc', step: 1, min: 1, ...extraUi },
+);
+const MA_METHOD_ENUM_LABELS = { 0: 'SMA', 1: 'EMA', 2: 'SMMA', 3: 'LWMA' };
+// compute 共通（OHLCV サンプルを前提に requiredColumns は OHLC、時刻必須）。
+const PF_COMPUTE = (id, variants = ['default']) => ({
+  computeId: id, requiredColumns: OHLC, timeRequired: true, backendParam: null, variants,
+});
+const pfDef = ({ id, name, cat, placement, params, series, variants }) => new IndicatorDef({
+  id,
+  displayNameKey: `ind.${name}`,
+  category: { group: 'builtin', nameKey: `cat.${cat}` },
+  tab: 'indicator',
+  placement,
+  params,
+  series,
+  compute: PF_COMPUTE(id, variants),
+});
+
+const PROFIT_ADX_NEEDLE = pfDef({
+  id: 'profit_adx_needle', name: 'ADXNeedle', cat: 'oscillator', placement: 'pane',
+  params: [PF_INT('period', 6)],
+  series: [PF_HIST('adx_needle'), PF_HLINE('profit_adx_needle')],
+});
+const PROFIT_ARCTAN = pfDef({
+  id: 'profit_arctan', name: 'ArcTan', cat: 'oscillator', placement: 'pane',
+  params: [
+    PF_INT('period', 6),
+    param('ma_method', ParamType.ENUM, 1, [], [0, 1, 2, 3], { group: 'group.calc', enumLabels: MA_METHOD_ENUM_LABELS }),
+    param('bar_width', ParamType.FLOAT, 0.1, [], null, { group: 'group.calc', step: 0.05, min: 0.05 }),
+  ],
+  series: [PF_HIST('arctan_lc'), PF_HLINE('profit_arctan')],
+});
+const PROFIT_MFI = pfDef({
+  id: 'profit_mfi', name: 'MFI', cat: 'volume', placement: 'pane',
+  params: [PF_INT('mfi_period', 14), PF_INT('ma_period', 5)],
+  series: [PF_LINE('mfi'), PF_LINE('mfi_ma'), PF_HLINE('profit_mfi')],
+});
+const PROFIT_RSI = pfDef({
+  id: 'profit_rsi', name: 'RSI', cat: 'oscillator', placement: 'pane',
+  params: [
+    PF_INT('rsi_period', 6),
+    param('apply', ParamType.ENUM, 5, [], [1, 2, 3, 4, 5, 6], { group: 'group.calc' }),
+    PF_INT('ma_period', 5),
+  ],
+  series: [PF_LINE('rsi'), PF_LINE('rsi_ma'), PF_HLINE('profit_rsi')],
+});
+const PROFIT_STC = pfDef({
+  id: 'profit_stc', name: 'STC', cat: 'oscillator', placement: 'pane',
+  params: [PF_INT('period', 70)],
+  series: [PF_LINE('stc_osc'), PF_HLINE('profit_stc')],
+});
+const PROFIT_OSCILLATOR = pfDef({
+  id: 'profit_oscillator', name: 'Oscillator', cat: 'volume', placement: 'pane',
+  params: [PF_INT('period_a', 6), PF_INT('period_b', 60)],
+  series: [PF_HIST('oscillator_lc'), PF_HLINE('profit_oscillator')],
+});
+const PROFIT_OSCILLATOR2 = pfDef({
+  id: 'profit_oscillator2', name: 'Oscillator2', cat: 'volume', placement: 'pane',
+  params: [
+    PF_INT('osc_period', 6), PF_INT('stc_slow', 6), PF_INT('ma_period', 60), PF_INT('rci_period', 12),
+    param('direction', ParamType.BOOL, false, [], null, { group: 'group.calc' }),
+  ],
+  series: [PF_HIST('oscillator2_lc'), PF_LINE('oscillator2_rci'), PF_HLINE('profit_oscillator2')],
+});
+const PROFIT_OSI_MA = pfDef({
+  id: 'profit_osi_ma', name: 'OsiMA', cat: 'oscillator', placement: 'pane',
+  params: [
+    param('ma_mode', ParamType.ENUM, 1, [], [0, 1, 2, 3], { group: 'group.calc', enumLabels: MA_METHOD_ENUM_LABELS }),
+    PF_INT('ma_period', 21),
+  ],
+  series: [PF_HIST('osi_ma_kairi'), PF_HLINE('profit_osi_ma')],
+});
+const PROFIT_RMM = pfDef({
+  id: 'profit_rmm', name: 'RMM', cat: 'volume', placement: 'pane',
+  params: [PF_INT('osc_period', 6), PF_INT('ma_period', 6)],
+  series: [PF_HIST('rmm_lc'), PF_HLINE('profit_rmm')],
+});
+const PROFIT_VOLATILITY = pfDef({
+  id: 'profit_volatility', name: 'Volatility', cat: 'oscillator', placement: 'pane',
+  params: [PF_INT('period', 6)],
+  series: [PF_HIST('volatility_lc'), PF_HLINE('profit_volatility')],
+});
+const PROFIT_HL_BAND = pfDef({
+  id: 'profit_hl_band', name: 'HLBand', cat: 'band', placement: 'overlay',
+  params: [],
+  series: [PF_HLINE('profit_hl_band')],
+});
+// hlband は variant で出力が一変する（separate=histogram pane / overlay=価格バンド）。
+// series は両者の和集合（F3 は欠落を許容し未知のみ除外）。placement='pane' は separate 基準だが、
+// overlay variant は line/histogram を出さないため renderer が水準線を mainSeries（価格軸）へ自動配線する。
+const PROFIT_HLBAND = pfDef({
+  id: 'profit_hlband', name: 'HLBandSep', cat: 'band', placement: 'pane',
+  params: [param('draw_levels', ParamType.BOOL, true, [], null, { group: 'group.display' })],
+  series: [PF_HIST('hl_range'), PF_HLINE('profit_hlband')],
+  variants: ['separate', 'overlay'],
+});
+const PROFIT_MFI_MACD = pfDef({
+  id: 'profit_mfi_macd', name: 'MFIMACD', cat: 'volume', placement: 'pane',
+  params: [PF_INT('mfi_period', 13), PF_INT('fast', 4), PF_INT('slow', 8), PF_INT('signal', 4)],
+  series: [PF_HIST('mfimacd_hist'), PF_LINE('MFIMACD'), PF_LINE('Signal'), PF_HLINE('profit_mfi_macd')],
+});
+const PROFIT_RMM_MACD = pfDef({
+  id: 'profit_rmm_macd', name: 'RMMMACD', cat: 'volume', placement: 'pane',
+  params: [PF_INT('osc_period', 6), PF_INT('ma_period', 6), PF_INT('fast', 4), PF_INT('slow', 8), PF_INT('signal', 4)],
+  series: [PF_HIST('rmmmacd_hist'), PF_LINE('RMMWMACD'), PF_LINE('Signal')],
+});
+const PROFIT_RSI_MACD = pfDef({
+  id: 'profit_rsi_macd', name: 'RSIMACD', cat: 'oscillator', placement: 'pane',
+  params: [PF_INT('rsi_period', 13), PF_INT('fast', 4), PF_INT('slow', 8), PF_INT('signal', 4)],
+  series: [PF_HIST('rsimacd_hist'), PF_LINE('RSIMACD'), PF_LINE('Signal'), PF_HLINE('profit_rsi_macd')],
+});
+
+const REGISTRY = Object.freeze([
+  TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES,
+  PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
+  PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
+  PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,
+]);
 const BY_ID = new Map(REGISTRY.map((d) => [d.id, d]));
 
 // 全 IndicatorDef を返す（読み取り専用配列の複製）。

@@ -454,3 +454,65 @@ def test_adapter_moving_averages_empty_when_length_exceeds_bars():
 
 # ComputeError は adapter.compute の §6.3.4 翻訳例外（テスト import の都合で末尾に置く）。
 from adapter.compute import ComputeError  # noqa: E402
+
+
+# ===========================================================================
+# FakeChart（統合スタブ）— line / histogram / horizontal_line の一括収集
+# ===========================================================================
+from adapter.compute import FakeChart  # noqa: E402
+
+
+def test_fake_chart_collects_line_histogram_and_levels_in_one_chart():
+    # 1 指標内で create_line / create_histogram / horizontal_line を併用しても
+    # 統合 FakeChart は各 payload を kind 別に収集する（旧 Fake は排他で不可だった）。
+    chart = FakeChart(name="profit_x")
+    line = chart.create_line(name="osc")
+    line.set(pd.DataFrame({"time": pd.date_range("2024-01-01", periods=2, freq="h"), "osc": [1.0, 2.0]}))
+    hist = chart.create_histogram(name="lc")
+    hist.set(pd.DataFrame({
+        "time": pd.date_range("2024-01-01", periods=2, freq="h"),
+        "lc": [-1.0, 3.0],
+        "color": ["#aaa", "#bbb"],  # per-bar 着色
+    }))
+    chart.horizontal_line(price=1.65, color="#545454", width=1, style="dotted", text="up")
+    chart.horizontal_line(price=-1.65, color="#545454", width=1, style="dotted", text="dn")
+
+    payloads = chart.to_payloads()
+    by_name = {p["name"]: p for p in payloads}
+    assert by_name["osc"]["kind"] == "line"
+    assert by_name["lc"]["kind"] == "histogram"
+    # histogram は per-point color を載せる。
+    assert by_name["lc"]["data"][0]["color"] == "#aaa"
+    # horizontal_line 群は name=コンストラクタ名（compute_id）で 1 件にまとまる。
+    hl = by_name["profit_x"]
+    assert hl["kind"] == "horizontal_line"
+    assert len(hl["lines"]) == 2
+
+
+def test_fake_chart_reproduces_price_range_power_horizontal_payload():
+    # price_range_power は compute_id と同名のため統合 FakeChart でも従来 name を再現する。
+    chart = FakeChart(name="price_range_power")
+    chart.horizontal_line(price=100.0, color="g", width=2, style="solid", text="BULL")
+    payloads = chart.to_payloads()
+    assert payloads[0]["name"] == "price_range_power"
+    assert payloads[0]["kind"] == "horizontal_line"
+
+
+def test_adapter_profit_rsi_emits_two_lines_and_levels():
+    # line+水準線併用指標が統合 FakeChart 経由で系列名どおり出る（F3 照合対象名）。
+    adapter = IndicatorComputeAdapter()
+    df = _ohlcv(120)
+    series = adapter.compute("profit_rsi", "default", df, {"rsi_period": 6, "apply": 5, "ma_period": 5})
+    names = {p["name"]: p["kind"] for p in series}
+    assert names["rsi"] == "line"
+    assert names["rsi_ma"] == "line"
+    assert names["profit_rsi"] == "horizontal_line"
+
+
+def test_adapter_profit_adx_needle_emits_histogram_with_per_bar_color():
+    adapter = IndicatorComputeAdapter()
+    df = _ohlcv(120)
+    series = adapter.compute("profit_adx_needle", "default", df, {"period": 6})
+    hist = next(p for p in series if p["kind"] == "histogram")
+    assert hist["name"] == "adx_needle"
+    assert any("color" in pt for pt in hist["data"])  # level_colors の per-bar 着色

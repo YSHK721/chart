@@ -17,12 +17,15 @@ function paramOf(def, name) {
   return def.params.find((p) => p.name === name);
 }
 
-test('catalog: list returns the 4 registered indicators', () => {
+test('catalog: list returns the 19 registered indicators (基本4 + profit_* 15)', () => {
   // Act
   const defs = list();
-  // Assert（tgp_btlm / profit_band / price_range_power / moving_averages）
-  const ids = defs.map((d) => d.id).sort();
-  assert.deepEqual(ids, ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm']);
+  // Assert: 既存4（tgp_btlm / profit_band / price_range_power / moving_averages）+ profit_* 15 = 19。
+  const ids = defs.map((d) => d.id);
+  for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm']) {
+    assert.ok(ids.includes(base), `missing ${base}`);
+  }
+  assert.equal(defs.length, 19);
 });
 
 test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース/オフセット + 平滑化 + 計算)', () => {

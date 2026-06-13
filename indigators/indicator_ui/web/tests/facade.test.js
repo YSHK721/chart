@@ -26,9 +26,9 @@ import { AppliedInstance } from '../js/domain/domain_models.js';
 // UC-01 listForView（タブ∧カテゴリ∧検索∧お気に入りの論理積 §4.6）
 // ===========================================================================
 
-test('UC-01 listForView: empty filter returns all 4', () => {
+test('UC-01 listForView: empty filter returns all 19', () => {
   const result = listForView({});
-  assert.equal(result.length, 4);
+  assert.equal(result.length, 19);
 });
 
 test('UC-01 listForView: filters by query (id/display partial, case-insensitive)', () => {
@@ -46,7 +46,7 @@ test('UC-01 listForView: filters by category conjunctively', () => {
 test('UC-01 listForView: filters by tab', () => {
   // 全指標 tab=indicator なので strategy では 0 件
   assert.equal(listForView({ tab: 'strategy' }).length, 0);
-  assert.equal(listForView({ tab: 'indicator' }).length, 4);
+  assert.equal(listForView({ tab: 'indicator' }).length, 19);
 });
 
 test('UC-01 listForView: favoriteOnly intersects with favorites set', () => {

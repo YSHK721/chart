@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from adapter.compute.call_binding import CallBinding
-from adapter.compute.fake_chart import FakeHorizontalChart, FakeLineChart
+from adapter.compute.fake_chart import FakeChart
 
 # 必須 OHLC 列（全 3 指標共通。ComputeEntry.required_columns と一致・§3.1.3）。
 _REQUIRED_COLUMNS = ("open", "high", "low", "close")
@@ -91,7 +91,9 @@ class IndicatorComputeAdapter:
         if not _has_columns(df):
             raise ComputeError("missing_column", "必須 OHLC 列が不足しています。")
 
-        fake = FakeLineChart() if binding.output_kind == "line" else FakeHorizontalChart()
+        # line / histogram / horizontal_line を 1 指標内で併用する指標があるため統合 Fake を使う。
+        # horizontal_line 群 payload の name は compute_id（price_range_power は従来同値）。
+        fake = FakeChart(name=compute_id)
         try:
             binding.invoke(fake, df, params)
         except ImportError as exc:
