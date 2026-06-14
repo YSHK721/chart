@@ -249,8 +249,8 @@ class TestLevelCountAggregation:
         for idx, s in enumerate(series_list):
             lc = core.ps_level_count(s, lc, initialization=(idx == 0))
 
-        # Act
-        got = core.compute_level_count(o, h, l, c, v, period_a=pa, period_b=pb)
+        # Act（全期間版＝参照 ps_level_count と同じ基準で 18 系列加算順序を固定）
+        got = core.compute_level_count(o, h, l, c, v, period_a=pa, period_b=pb, window=None)
         # Assert
         np.testing.assert_allclose(got, lc)
 
@@ -279,13 +279,27 @@ class TestOscillatorFull:
 
     def test_clamped_within_dn329_up329(self):
         o, h, l, c, v = self._ohlcv()
-        res = core.compute_oscillator_full(o, h, l, c, v)
+        res = core.compute_oscillator_full(o, h, l, c, v, window=None)  # 全期間版でクランプを固定
         up = res.levels["up_329"]
         dn = res.levels["dn_329"]
         assert np.all(res.level_count_clamped <= up + 1e-12)
         assert np.all(res.level_count_clamped >= dn - 1e-12)
         expected = np.clip(res.raw_level_count, dn, up)
         np.testing.assert_allclose(res.level_count_clamped, expected)
+
+
+    def test_causal_warmup_nan_and_no_repaint(self):
+        o, h, l, c, v = self._ohlcv(n=400)
+        W, bar = 120, 250
+        res = core.compute_oscillator_full(o, h, l, c, v, window=W)
+        assert np.all(np.isnan(res.raw_level_count[:W - 1]))
+        assert np.isfinite(res.raw_level_count[bar])
+        short = core.compute_oscillator_full(
+            o[:300], h[:300], l[:300], c[:300], v[:300], window=W
+        )
+        np.testing.assert_allclose(
+            res.raw_level_count[bar], short.raw_level_count[bar], rtol=1e-12, atol=1e-12
+        )
 
     def test_dto_is_frozen_and_arrays_not_writeable(self):
         o, h, l, c, v = self._ohlcv()

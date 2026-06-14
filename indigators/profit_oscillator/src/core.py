@@ -71,6 +71,10 @@ from profit_system import (  # noqa: E402
 DEFAULT_PERIOD_A: int = 6
 DEFAULT_PERIOD_B: int = 60
 
+# 標準化窓 W（直近 W 本の過去のみで σ 距離を算出＝look-ahead 除去・repaint しない）。
+# None で全期間バッチ（従来 1:1・比較用）。日足 ~半年。
+DEFAULT_WINDOW: int | None = 120
+
 # RVI の三角加重期間（権威 RVI.mq5: #define TRIANGLE_PERIOD 3）。
 _TRIANGLE_PERIOD: int = 3
 
@@ -233,6 +237,7 @@ def compute_level_count(
     *,
     period_a: int = DEFAULT_PERIOD_A,
     period_b: int = DEFAULT_PERIOD_B,
+    window: int | None = DEFAULT_WINDOW,
 ) -> np.ndarray:
     """18 系列（IC01..IC05）を順序厳守で加算したレベルカウント系列を返す。
 
@@ -244,9 +249,10 @@ def compute_level_count(
         open_/high/low/close/volume: OHLCV 各系列（昇順・同長）。
         period_a: オシレーター期間（既定 6。RSI/Stoch/MFI/RVI）。
         period_b: MARD 期間（既定 60）。
+        window: 標準化窓 W（直近本数。既定 120＝因果。None で全期間バッチ）。
 
     Returns:
-        レベルカウント系列（同長, float64）。
+        レベルカウント系列（同長, float64）。因果窓時は warm-up が NaN（非描画）。
     """
     o = np.asarray(open_, dtype=np.float64)
     h = np.asarray(high, dtype=np.float64)
@@ -260,26 +266,26 @@ def compute_level_count(
     # IC01: RSI × 7（applied price 順 W→T→M→H→L→O→C）。IC01_W が initialization。
     for kind in _APPLIED_PRICE_ORDER:
         rsi = compute_rsi(applied_price(kind, o, h, l, c), period=period_a)
-        level_count = ps_level_count(rsi, level_count, initialization=first)
+        level_count = ps_level_count(rsi, level_count, initialization=first, window=window)
         first = False
 
     # IC02: Stochastic main / signal（slowing=1/Dperiod=1 で両者とも生 %K）。
     stoch = compute_stochastic(h, l, c, period=period_a)
-    level_count = ps_level_count(stoch, level_count, initialization=False)  # main
-    level_count = ps_level_count(stoch, level_count, initialization=False)  # signal
+    level_count = ps_level_count(stoch, level_count, initialization=False, window=window)  # main
+    level_count = ps_level_count(stoch, level_count, initialization=False, window=window)  # signal
 
     # IC03: MFI × 1。
     mfi = compute_mfi(h, l, c, v, period=period_a)
-    level_count = ps_level_count(mfi, level_count, initialization=False)
+    level_count = ps_level_count(mfi, level_count, initialization=False, window=window)
 
     # IC04: RVI × 1。
     rvi = compute_rvi(o, h, l, c, period=period_a)
-    level_count = ps_level_count(rvi, level_count, initialization=False)
+    level_count = ps_level_count(rvi, level_count, initialization=False, window=window)
 
     # IC05: MARD × 7（applied price 順 W→T→M→H→L→O→C）。
     for kind in _APPLIED_PRICE_ORDER:
         mard = compute_mard(o, h, l, c, period=period_b, applied=kind)
-        level_count = ps_level_count(mard, level_count, initialization=False)
+        level_count = ps_level_count(mard, level_count, initialization=False, window=window)
 
     assert level_count is not None
     return level_count
@@ -320,18 +326,22 @@ def compute_oscillator_full(
     *,
     period_a: int = DEFAULT_PERIOD_A,
     period_b: int = DEFAULT_PERIOD_B,
+    window: int | None = DEFAULT_WINDOW,
 ) -> OscillatorResult:
     """18 系列レベルカウント（クランプ済み）を一括算出する。
 
     元 OnCalculate の全体（18 系列集計 → σ12 水準 → ±3.29σ クランプ）を再現する。
+    既定は因果ローリング窓（``window=DEFAULT_WINDOW``）で標準化し repaint しない。
 
     Args:
         open_/high/low/close/volume: OHLCV 各系列（昇順・同長）。
         period_a: オシレーター期間（既定 6）。
         period_b: MARD 期間（既定 60）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         OscillatorResult（level_count_clamped / raw_level_count / levels）。
+        因果窓時は warm-up（先頭 window-1）が NaN（非描画）。
 
     Raises:
         ValueError: OHLCV 長不一致、または period_a<2 / period_b<2。
@@ -350,11 +360,11 @@ def compute_oscillator_full(
     if period_b < 2:
         raise ValueError(f"period_b は 2 以上である必要があります: {period_b}")
 
-    raw = compute_level_count(o, h, l, c, v, period_a=period_a, period_b=period_b)
+    raw = compute_level_count(o, h, l, c, v, period_a=period_a, period_b=period_b, window=window)
     levels = compute_oscillator_levels(raw)
     upper = levels["up_329"]
     lower = levels["dn_329"]
-    clamped = np.clip(raw, lower, upper)
+    clamped = np.clip(raw, lower, upper)  # NaN（warm-up）は NaN のまま温存
     return OscillatorResult(
         level_count_clamped=clamped,
         raw_level_count=raw,

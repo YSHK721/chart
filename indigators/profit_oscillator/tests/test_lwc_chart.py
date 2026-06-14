@@ -108,8 +108,9 @@ def test_histogram_values_match_build_output():
 
     df = _df()
     chart = FakeChart()
-    add_oscillator(chart, df, period_a=6, period_b=60)
-    built = build_oscillator(df, period_a=6, period_b=60)
+    # 全期間版（window=None）で chart 値と build 出力の一致（配線）を固定。
+    add_oscillator(chart, df, period_a=6, period_b=60, window=None)
+    built = build_oscillator(df, period_a=6, period_b=60, window=None)
     expected = built[LEVEL_COUNT_COLUMN].to_numpy()
     got = chart.histograms[0].data[LEVEL_COUNT_COLUMN].to_numpy()
     assert len(got) == len(df)

@@ -15,6 +15,7 @@ from __future__ import annotations
 from .core import (
     DEFAULT_PERIOD_A,
     DEFAULT_PERIOD_B,
+    DEFAULT_WINDOW,
     SIGMA_LEVELS,
     OscillatorResult,
     compute_level_count,
@@ -44,6 +45,7 @@ __all__ = [
     "OscillatorResult",
     "DEFAULT_PERIOD_A",
     "DEFAULT_PERIOD_B",
+    "DEFAULT_WINDOW",
     "SIGMA_LEVELS",
     "LEVEL_COUNT_COLUMN",
 ]

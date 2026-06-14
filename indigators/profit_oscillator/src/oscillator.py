@@ -24,6 +24,7 @@ import pandas as pd
 from .core import (
     DEFAULT_PERIOD_A,
     DEFAULT_PERIOD_B,
+    DEFAULT_WINDOW,
     compute_oscillator_full,
 )
 
@@ -60,13 +61,18 @@ def build_oscillator(
     *,
     period_a: int = DEFAULT_PERIOD_A,
     period_b: int = DEFAULT_PERIOD_B,
+    window: int | None = DEFAULT_WINDOW,
 ) -> pd.DataFrame:
     """OHLCV DataFrame からクランプ済みレベルカウント列を付与した DataFrame を返す。
+
+    既定は因果ローリング窓（``window=DEFAULT_WINDOW``）で標準化し repaint しない。
+    warm-up（先頭 window-1）は ``NaN``（非描画）。
 
     Args:
         df: O/H/L/C/Volume 列（大小不問）を含む DataFrame。
         period_a: オシレーター期間（既定 6）。
         period_b: MARD 期間（既定 60）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         ``LEVEL_COUNT_COLUMN`` 列を持つ DataFrame（元 index を継承）。
@@ -83,6 +89,7 @@ def build_oscillator(
         ohlcv["volume"].to_numpy(dtype=float),
         period_a=period_a,
         period_b=period_b,
+        window=window,
     )
     return pd.DataFrame(
         {LEVEL_COUNT_COLUMN: res.level_count_clamped},
@@ -95,6 +102,7 @@ def oscillator_levels(
     *,
     period_a: int = DEFAULT_PERIOD_A,
     period_b: int = DEFAULT_PERIOD_B,
+    window: int | None = DEFAULT_WINDOW,
 ) -> dict[str, float]:
     """OHLCV DataFrame から σ12 水準線辞書（up_*/dn_*）を返す。
 
@@ -102,6 +110,7 @@ def oscillator_levels(
         df: O/H/L/C/Volume 列（大小不問）を含む DataFrame。
         period_a: オシレーター期間（既定 6）。
         period_b: MARD 期間（既定 60）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         σ12 水準（``up_067``..``up_329`` / ``dn_067``..``dn_329``）の辞書。
@@ -118,5 +127,6 @@ def oscillator_levels(
         ohlcv["volume"].to_numpy(dtype=float),
         period_a=period_a,
         period_b=period_b,
+        window=window,
     )
     return dict(res.levels)

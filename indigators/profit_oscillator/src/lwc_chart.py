@@ -34,6 +34,7 @@ from common import level_colors  # noqa: E402
 from .oscillator import (
     DEFAULT_PERIOD_A,
     DEFAULT_PERIOD_B,
+    DEFAULT_WINDOW,
     LEVEL_COUNT_COLUMN,
     build_oscillator,
     oscillator_levels,
@@ -87,6 +88,7 @@ def add_oscillator(
     *,
     period_a: int = DEFAULT_PERIOD_A,
     period_b: int = DEFAULT_PERIOD_B,
+    window: int | None = DEFAULT_WINDOW,
     time_column: str | None = None,
     color: str = _COLOR,
     draw_levels: bool = True,
@@ -109,7 +111,7 @@ def add_oscillator(
     Raises:
         KeyError: 時刻が解決できない / 必須列（OHLCV）が無い場合。
     """
-    bands = build_oscillator(df, period_a=period_a, period_b=period_b)
+    bands = build_oscillator(df, period_a=period_a, period_b=period_b, window=window)
     times = _resolve_times(df, time_column)
 
     hist = chart.create_histogram(
@@ -125,7 +127,7 @@ def add_oscillator(
 
     created = [hist]
     if draw_levels:
-        levels = oscillator_levels(df, period_a=period_a, period_b=period_b)
+        levels = oscillator_levels(df, period_a=period_a, period_b=period_b, window=window)
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
                 price=float(levels[key]), color=_LEVEL_COLOR, width=1,

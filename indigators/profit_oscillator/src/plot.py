@@ -36,6 +36,7 @@ from common import level_colors  # noqa: E402
 from .oscillator import (  # noqa: E402
     DEFAULT_PERIOD_A,
     DEFAULT_PERIOD_B,
+    DEFAULT_WINDOW,
     LEVEL_COUNT_COLUMN,
     build_oscillator,
     oscillator_levels,
@@ -58,6 +59,7 @@ def plot_oscillator(
     *,
     period_a: int = DEFAULT_PERIOD_A,
     period_b: int = DEFAULT_PERIOD_B,
+    window: int | None = DEFAULT_WINDOW,
     title: str = "PRO!fit_Oscillator",
 ) -> str:
     """Oscillator ヒストグラムを別ペイン風に PNG 出力する。
@@ -75,8 +77,8 @@ def plot_oscillator(
     Returns:
         書き出した PNG のパス。
     """
-    bands = build_oscillator(df, period_a=period_a, period_b=period_b)
-    levels = oscillator_levels(df, period_a=period_a, period_b=period_b)
+    bands = build_oscillator(df, period_a=period_a, period_b=period_b, window=window)
+    levels = oscillator_levels(df, period_a=period_a, period_b=period_b, window=window)
     lc = bands[LEVEL_COUNT_COLUMN].to_numpy(dtype=np.float64)
     x = np.arange(len(df))
 
