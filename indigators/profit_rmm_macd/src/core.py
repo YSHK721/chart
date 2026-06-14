@@ -20,8 +20,13 @@
 
 含む構造:
     compute_wpr / compute_marod / compute_rsi / compute_mfi / oscillator_span /
-        level_count_score : profit_rmm の level_count 算出部の verbatim 複製。
-    compute_rmm_level_count : 上記を採点・合算して level_count を返す（複製）。
+        rolling_span / level_count_score : profit_rmm の level_count 算出部の verbatim
+        複製（_series_avg/_series_std/oscillator_span/rolling_span は姉妹 profit_rmm と
+        同一実装の複製。将来の共有層集約候補。本フェーズでは集約しない）。
+    compute_rmm_level_count : 上記を採点・合算して level_count を返す（複製。window で
+        全期間スカラ span / 因果ローリング span を切替）。
+    _first_finite_index / _ema_chain_from_first_finite : EMA 開始位置ずらし＋warm-up
+        NaN 埋めを局所化するヘルパ（共有 EMA の NaN 汚染回避。振る舞い不変）。
     compute_rmmmacd         : level_count → fast/slow EMA → macd(=slow-fast) →
         signal EMA → histogram(=macd-signal・係数なし) を統合した frozen DTO を返す。
     RmmMacdResult           : 計算成果の不変 DTO（σ levels フィールドを持たない）。
@@ -69,6 +74,11 @@ DEFAULT_FAST_EMA: int = 4
 DEFAULT_SLOW_EMA: int = 8
 DEFAULT_SIGNAL_EMA: int = 4
 
+# 標準化窓 W（各オシレーターのスパン avg±3σ を直近 W 本の過去のみから算出＝look-ahead
+# 除去・repaint しない）。None で全期間バッチ（従来 1:1・比較用）。日足 ~半年。
+# profit_rmm/src/core.py と同一既定（姉妹指標と整合）。
+DEFAULT_WINDOW: int | None = 120
+
 # compute_wpr / compute_rsi / compute_mfi は共有 mql_builtins へ集約済み（上部で import・再公開）。
 # 既定 period 定数 DEFAULT_OSC_PERIOD は本パッケージに残置し、呼び出しで period= 明示する。
 
@@ -78,6 +88,13 @@ DEFAULT_SIGNAL_EMA: int = 4
 
 # ===========================================================================
 # σ 統計（母σ÷N・全系列）— oscillator_span 用（profit_rmm の verbatim 複製）
+# ===========================================================================
+# 【複製の明示・将来の集約候補】
+#   _series_avg / _series_std / oscillator_span / rolling_span の 4 関数は姉妹指標
+#   profit_rmm/src/core.py と **完全に同一実装の複製**である（本フェーズで bit-for-bit
+#   一致を確認済み）。本来は共有層（例: profit_system もしくは新規 statistics モジュール）
+#   へ集約すべき重複だが、profit_system 改修は別タスクであり、共有層への破壊的波及を
+#   避けるため **今フェーズでは集約しない**。将来の集約候補としてここに明示する。
 # ===========================================================================
 def _series_avg(x: np.ndarray) -> float:
     """系列平均（全系列）。"""
@@ -107,6 +124,43 @@ def oscillator_span(x: np.ndarray, *, clamp: bool) -> float:
     return x3p - x3m
 
 
+def rolling_span(x: np.ndarray, window: int, *, clamp: bool) -> np.ndarray:
+    """``oscillator_span`` の因果ローリング版（profit_rmm の verbatim 複製）。
+
+    バー i のスパンを区間 ``[i-window+1, i]`` の平均・母標準偏差から
+    ``(avg+3σ) - (avg-3σ)``（clamp 時は各端を [0,100] に丸め）で求める。未来を含まない
+    ため確定バーのスパン＝レベルカウントは repaint しない。warm-up（``i<window-1``）は
+    ``NaN``。
+
+    Args:
+        x: 対象オシレーター系列。
+        window: 過去参照本数 W（>=2）。
+        clamp: True で各端を [0,100] にクランプ（RSI/WPR/MFI）、False で素値（MAROD）。
+
+    Returns:
+        各バーのスパン（同長, float64。warm-up は NaN）。
+    """
+    a = np.asarray(x, dtype=np.float64)
+    n = a.size
+    out = np.full(n, np.nan, dtype=np.float64)
+    if window < 2 or n < window:
+        return out
+    csum = np.concatenate([[0.0], np.cumsum(a)])
+    csq = np.concatenate([[0.0], np.cumsum(a * a)])
+    for i in range(window - 1, n):
+        lo = i - window + 1
+        avg = (csum[i + 1] - csum[lo]) / window
+        var = (csq[i + 1] - csq[lo]) / window - avg * avg
+        dev = np.sqrt(var) if var > 0.0 else 0.0
+        x3p = avg + 3.0 * dev
+        x3m = avg - 3.0 * dev
+        if clamp:
+            x3p = min(100.0, x3p)
+            x3m = max(0.0, x3m)
+        out[i] = x3p - x3m
+    return out
+
+
 # funLevelCount（level_count_score）は共有 profit_system へ集約済み（上部で import・再公開）。
 
 
@@ -121,19 +175,25 @@ def compute_rmm_level_count(
     *,
     osc_period: int = DEFAULT_OSC_PERIOD,
     ma_period: int = DEFAULT_MA_PERIOD,
+    window: int | None = DEFAULT_WINDOW,
 ) -> np.ndarray:
     """iRSI / iWPR / iMFI / MAROD を funLevelCount で採点・合算した level_count を返す。
 
     profit_rmm/src/core.py ``compute_rmm`` の level_count 算出パイプライン全体を
-    verbatim 複製する（同一入力で ``compute_rmm(...).level_count`` と bit-for-bit 一致）。
+    verbatim 複製する。``window=None`` 時は全期間スカラ span（従来 1:1。同一入力で
+    ``compute_rmm(..., window=None).level_count`` と bit-for-bit 一致）。``window=W``
+    時は因果ローリング span 配列で各バー span[i] を採点する（look-ahead 除去・repaint
+    しない）。warm-up（``i<window-1``）は span NaN → level_count_score NaN →
+    level_count NaN（非描画）。
 
     Args:
         high/low/close/volume: 昇順 OHLCV（同長）。
         osc_period: オシレーター期間（既定 6、>=2）。
         ma_period: EMA 期間（既定 6）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
-        level_count 系列（入力と同長・float64）。
+        level_count 系列（入力と同長・float64。因果版 warm-up は NaN）。
 
     Raises:
         ValueError: ``osc_period < 2``、または HLCV 長不一致。
@@ -160,34 +220,102 @@ def compute_rmm_level_count(
     exponential_ma_on_buffer(typical.shape[0], 0, 0, ma_period, typical, ma)
     marod = compute_marod(typical, ma)
 
-    rsi_span = oscillator_span(rsi, clamp=True)
-    wpr_span = oscillator_span(wpr, clamp=True)
-    mfi_span = oscillator_span(mfi, clamp=True)
-    marod_span = oscillator_span(marod, clamp=False)
-
     n = close.shape[0]
+    # スパン（採点の分母）を全期間スカラ（window=None）か因果ローリング（window=W）で用意。
+    # 配列化して各バー span[i] を参照する（因果時は warm-up が NaN→採点 NaN→level_count NaN）。
+    if window is None:
+        rsi_span = np.full(n, oscillator_span(rsi, clamp=True))
+        wpr_span = np.full(n, oscillator_span(wpr, clamp=True))
+        mfi_span = np.full(n, oscillator_span(mfi, clamp=True))
+        marod_span = np.full(n, oscillator_span(marod, clamp=False))
+    else:
+        rsi_span = rolling_span(rsi, window, clamp=True)
+        wpr_span = rolling_span(wpr, window, clamp=True)
+        mfi_span = rolling_span(mfi, window, clamp=True)
+        marod_span = rolling_span(marod, window, clamp=False)
+
     level_count = np.zeros(n, dtype=np.float64)
     for i in range(n):
         lc = 0.0
         if rsi[i] < 50.0:
-            lc += level_count_score(rsi[i], rsi_span, 1)
+            lc += level_count_score(rsi[i], rsi_span[i], 1)
         elif rsi[i] > 50.0:
-            lc += level_count_score(rsi[i], rsi_span, 0)
+            lc += level_count_score(rsi[i], rsi_span[i], 0)
         if wpr[i] < 50.0:
-            lc += level_count_score(wpr[i], wpr_span, 1)
+            lc += level_count_score(wpr[i], wpr_span[i], 1)
         elif wpr[i] > 50.0:
-            lc += level_count_score(wpr[i], wpr_span, 0)
+            lc += level_count_score(wpr[i], wpr_span[i], 0)
         if mfi[i] < 50.0:
-            lc += level_count_score(mfi[i], mfi_span, 1)
+            lc += level_count_score(mfi[i], mfi_span[i], 1)
         elif mfi[i] > 50.0:
-            lc += level_count_score(mfi[i], mfi_span, 0)
+            lc += level_count_score(mfi[i], mfi_span[i], 0)
         if marod[i] < 0.0:
-            lc += level_count_score(marod[i], marod_span, 2)
+            lc += level_count_score(marod[i], marod_span[i], 2)
         elif marod[i] > 0.0:
-            lc += level_count_score(marod[i], marod_span, 3)
+            lc += level_count_score(marod[i], marod_span[i], 3)
+        # 因果版: span が NaN（warm-up）のバーは level_count を NaN（非描画）にする。
+        # 全採点が中立（4 オシレーターとも ==境界）でも span NaN を確実に伝播させる。
+        if window is not None and (
+            not np.isfinite(rsi_span[i])
+            or not np.isfinite(wpr_span[i])
+            or not np.isfinite(mfi_span[i])
+            or not np.isfinite(marod_span[i])
+        ):
+            lc = np.nan
         level_count[i] = lc
 
     return level_count
+
+
+# ===========================================================================
+# EMA 開始位置ずらし（warm-up NaN 非汚染）ヘルパ
+# ===========================================================================
+def _first_finite_index(series: np.ndarray) -> int:
+    """``series`` の最初の有限（非 NaN/Inf）要素の index を返す。
+
+    全要素が非有限なら ``series.size``（＝有限スライス長 0）を返す。EMA を有限
+    スライスにのみ適用して warm-up NaN による全期間汚染を避けるための開始位置
+    として用いる（``compute_rmmmacd`` の EMA 非汚染方針を参照）。
+    """
+    finite_mask = np.isfinite(series)
+    if not finite_mask.any():
+        return series.size  # 全非有限 → 有限スライスなし（EMA 非実行）
+    return int(np.argmax(finite_mask))
+
+
+def _ema_chain_from_first_finite(
+    series: np.ndarray, start: int, period: int
+) -> np.ndarray:
+    """``series[start:]`` に共有 EMA を適用し、``[0:start]`` を NaN 埋めして元長で返す。
+
+    共有 EMA（``exponential_ma_on_buffer``）は種 ``buffer[0]=price[0]`` かつ NaN
+    ガード無しのため、先頭の warm-up NaN を入れると EMA が全期間 NaN 汚染する。
+    本ヘルパは有限スライス ``series[start:]`` にのみ EMA を実行し、warm-up 区間
+    ``[0:start]`` を NaN のまま残すことで汚染を局所化する（共有 EMA 実装は触らない）。
+
+    Args:
+        series: 入力系列（先頭 ``[0:start]`` が warm-up NaN を含みうる, float64）。
+        start: 最初の有限要素 index（``_first_finite_index`` の戻り値）。
+        period: EMA 期間。
+
+    Returns:
+        EMA 適用結果（``series`` と同長, float64。``[0:start]`` は NaN）。
+        有限スライス長 0（``start>=size``）なら全 NaN を返す（EMA 非実行）。
+    """
+    n = series.size
+    out = np.full(n, np.nan, dtype=np.float64)
+    seg = series[start:]
+    m = seg.shape[0]
+    # 共有 EMA（exponential_ma_on_buffer）は period > m（有限スライス長 < EMA 期間）
+    # のとき buffer へ何も書かず 0 を返す。seg_out を 0 初期化すると、その偽 0.0 が
+    # 活性区間に混入する（本来は EMA 不能＝非描画 NaN であるべき）。そこで seg_out を
+    # NaN 初期化し、m >= period のときだけ EMA を実行して書き戻す。m < period では
+    # out[start:] を NaN のまま残す（非描画）。共有 EMA 実装は触らない。
+    if m >= period:
+        seg_out = np.full(m, np.nan, dtype=np.float64)
+        exponential_ma_on_buffer(m, 0, 0, period, seg, seg_out)
+        out[start:] = seg_out
+    return out
 
 
 # ===========================================================================
@@ -233,17 +361,29 @@ def compute_rmmmacd(
     fast: int = DEFAULT_FAST_EMA,
     slow: int = DEFAULT_SLOW_EMA,
     signal: int = DEFAULT_SIGNAL_EMA,
+    window: int | None = DEFAULT_WINDOW,
 ) -> RmmMacdResult:
     """level_count → fast/slow EMA → macd(=slow-fast) → signal EMA →
     histogram(=macd-signal・係数なし) を統合し RmmMacdResult（frozen DTO）を返す。
 
     計算順序（元 MQL の 1:1 再現）::
 
-        1. level_count = compute_rmm_level_count(...)   # profit_rmm 複製
+        1. level_count = compute_rmm_level_count(..., window=window)  # 因果/全期間
         2. fast = EMA(level_count, fast) ; slow = EMA(level_count, slow)  # 共有
         3. macd[i] = slow[i] - fast[i]                  # 重要差分①（L272）
         4. signal = EMA(macd, signal)
         5. histogram[i] = macd[i] - signal[i]           # 重要差分②（L280・係数なし）
+
+    **EMA 非汚染（最重要）**: 共有 EMA（exponential_ma_on_buffer）は種 buffer[0]=
+    price[0] かつ NaN ガード無しのため、level_count 先頭の warm-up NaN をそのまま
+    入れると EMA が全期間 NaN 汚染する。これを避けるため、level_count の最初の有限
+    index ``start = argmax(isfinite(level_count))``（全 NaN なら start=n＝EMA 非実行）
+    を求め、EMA は ``level_count[start:]`` の有限スライスに対して実行し、結果を元長へ
+    戻す際 ``[0:start]`` を NaN 埋めする。fast/slow/macd/signal/histogram すべて
+    warm-up 区間を NaN（非描画）にする。共有 EMA 実装は触らない。
+
+    ``window=None``（全期間版）では level_count に NaN が無いため start=0 となり、
+    従来挙動（全長 EMA）と一致する。
 
     σ 水準は算出しない（元は水準を出力しない）。
 
@@ -254,29 +394,31 @@ def compute_rmmmacd(
         fast: FastEMA 期間（既定 4）。
         slow: SlowEMA 期間（既定 8）。
         signal: SignalEMA 期間（既定 4）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
-        RmmMacdResult（level_count/fast/slow/macd/signal/histogram）。
+        RmmMacdResult（level_count/fast/slow/macd/signal/histogram。因果版 warm-up
+        は全フィールド NaN）。
 
     Raises:
         ValueError: ``osc_period < 2`` または HLCV 長不一致（compute_rmm_level_count 経由）。
     """
     level_count = compute_rmm_level_count(
-        high, low, close, volume, osc_period=osc_period, ma_period=ma_period
+        high, low, close, volume,
+        osc_period=osc_period, ma_period=ma_period, window=window,
     )
-    n = level_count.shape[0]
 
-    fast_buf = np.zeros(n, dtype=np.float64)
-    exponential_ma_on_buffer(n, 0, 0, fast, level_count, fast_buf)
-    slow_buf = np.zeros(n, dtype=np.float64)
-    exponential_ma_on_buffer(n, 0, 0, slow, level_count, slow_buf)
+    # EMA 開始位置 = level_count の最初の有限 index。warm-up NaN を EMA に入れない
+    # ことで共有 EMA の全期間 NaN 汚染を回避する（_ema_chain_from_first_finite 参照）。
+    # macd/signal も同一 start を共有: macd は有限スライス上 NaN を含まず、その
+    # first-finite は start と一致するため、全フィールドの warm-up 境界が揃う。
+    start = _first_finite_index(level_count)
 
-    macd = slow_buf - fast_buf  # 重要差分①: Slow - Fast（元 L272）
-
-    signal_buf = np.zeros(n, dtype=np.float64)
-    exponential_ma_on_buffer(n, 0, 0, signal, macd, signal_buf)
-
-    histogram = macd - signal_buf  # 重要差分②: 係数なし（元 L280）
+    fast_buf = _ema_chain_from_first_finite(level_count, start, fast)
+    slow_buf = _ema_chain_from_first_finite(level_count, start, slow)
+    macd = slow_buf - fast_buf  # 重要差分①: Slow - Fast（元 L272）。warm-up NaN は伝播。
+    signal_buf = _ema_chain_from_first_finite(macd, start, signal)
+    histogram = macd - signal_buf  # 重要差分②: 係数なし（元 L280）。warm-up NaN は伝播。
 
     return RmmMacdResult(
         level_count=level_count,

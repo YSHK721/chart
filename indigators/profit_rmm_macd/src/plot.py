@@ -41,6 +41,7 @@ from .core import (
     DEFAULT_OSC_PERIOD,
     DEFAULT_SIGNAL_EMA,
     DEFAULT_SLOW_EMA,
+    DEFAULT_WINDOW,
 )
 from .rmmmacd import (
     HIST_COLUMN,
@@ -63,6 +64,7 @@ def plot_rmmmacd(
     fast: int = DEFAULT_FAST_EMA,
     slow: int = DEFAULT_SLOW_EMA,
     signal: int = DEFAULT_SIGNAL_EMA,
+    window: int | None = DEFAULT_WINDOW,
     title: str = "PRO!fitRMMMACD",
 ) -> str:
     """RMMMACD ヒストグラム・RMMWMACD/Signal 線を別ペイン風に PNG 出力する。
@@ -79,6 +81,7 @@ def plot_rmmmacd(
         fast: FastEMA 期間（既定 4）。
         slow: SlowEMA 期間（既定 8）。
         signal: SignalEMA 期間（既定 4）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
         title: 図のタイトル。
 
     Returns:
@@ -86,7 +89,7 @@ def plot_rmmmacd(
     """
     built = build_rmmmacd(
         df, osc_period=osc_period, ma_period=ma_period,
-        fast=fast, slow=slow, signal=signal,
+        fast=fast, slow=slow, signal=signal, window=window,
     )
     hist = built[HIST_COLUMN].to_numpy(dtype=np.float64)
     macd = built[MACD_COLUMN].to_numpy(dtype=np.float64)

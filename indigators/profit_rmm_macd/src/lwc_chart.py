@@ -37,6 +37,7 @@ from .core import (
     DEFAULT_OSC_PERIOD,
     DEFAULT_SIGNAL_EMA,
     DEFAULT_SLOW_EMA,
+    DEFAULT_WINDOW,
 )
 from .rmmmacd import (
     HIST_COLUMN,
@@ -93,6 +94,7 @@ def add_rmmmacd(
     fast: int = DEFAULT_FAST_EMA,
     slow: int = DEFAULT_SLOW_EMA,
     signal: int = DEFAULT_SIGNAL_EMA,
+    window: int | None = DEFAULT_WINDOW,
     time_column: str | None = None,
 ) -> list:
     """chart に RMMMACD のヒストグラム 1 本・ライン 2 本を追加する（水準線なし）。
@@ -108,6 +110,7 @@ def add_rmmmacd(
         fast: FastEMA 期間（既定 4）。
         slow: SlowEMA 期間（既定 8）。
         signal: SignalEMA 期間（既定 4）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
         time_column: 時刻列の明示指定（省略時は time/date/DatetimeIndex を探索）。
 
     Returns:
@@ -118,7 +121,7 @@ def add_rmmmacd(
     """
     built = build_rmmmacd(
         df, osc_period=osc_period, ma_period=ma_period,
-        fast=fast, slow=slow, signal=signal,
+        fast=fast, slow=slow, signal=signal, window=window,
     )
     times = _resolve_times(df, time_column)
 
@@ -130,7 +133,13 @@ def add_rmmmacd(
         name=HIST_COLUMN, color=_HIST_COLOR,
         price_line=False, price_label=False,
     )
-    hist.set(pd.DataFrame({"time": times, HIST_COLUMN: built[HIST_COLUMN].to_numpy()}))
+    # warm-up NaN（先頭 window-1）は非描画。lightweight-charts へ NaN を渡さず
+    # dropna で除外して有限値のみ set する（姉妹 profit_rmm/adx_needle/arctan/
+    # oscillator と整合）。値列名はヒストグラム名と完全一致させる（§5）。
+    hist_df = pd.DataFrame(
+        {"time": times, HIST_COLUMN: built[HIST_COLUMN].to_numpy()}
+    ).dropna(subset=[HIST_COLUMN])
+    hist.set(hist_df)
     created.append(hist)
 
     # ライン 2 本（RMMWMACD / Signal, DRAW_LINE）。値列名はライン名と完全一致させる（§5）。

@@ -83,25 +83,31 @@ class TestComputeRmmLevelCount:
     def test_level_count_matches_profit_rmm_level_count_for_default_params(
         self,
     ) -> None:
-        # Arrange: 同一入力・同一既定 osc/ma 期間。
+        # Arrange: 同一入力・同一既定 osc/ma 期間。全期間版（window=None）で複製の
+        # 数学的同一性を固定する（既定の因果窓だと n<window で両辺 all-NaN になり
+        # 退化比較になるため window=None を明示する）。
         high, low, close, volume = _sample_ohlcv()
         # Act
-        got = core.compute_rmm_level_count(high, low, close, volume)
-        expected = rmm_core.compute_rmm(high, low, close, volume).level_count
-        # Assert: 複製パイプラインの同一性（bit-for-bit）。
+        got = core.compute_rmm_level_count(high, low, close, volume, window=None)
+        expected = rmm_core.compute_rmm(
+            high, low, close, volume, window=None
+        ).level_count
+        # Assert: 複製パイプラインの同一性（bit-for-bit）・有限値で discriminating。
+        assert np.all(np.isfinite(got))  # 退化（all-NaN）でないこと
         np.testing.assert_allclose(got, expected, rtol=0, atol=0)
 
     def test_level_count_matches_profit_rmm_for_custom_periods(self) -> None:
-        # Arrange
+        # Arrange: 全期間版（window=None）で複製の数学的同一性を固定する。
         high, low, close, volume = _sample_ohlcv()
         # Act
         got = core.compute_rmm_level_count(
-            high, low, close, volume, osc_period=5, ma_period=4
+            high, low, close, volume, osc_period=5, ma_period=4, window=None
         )
         expected = rmm_core.compute_rmm(
-            high, low, close, volume, osc_period=5, ma_period=4
+            high, low, close, volume, osc_period=5, ma_period=4, window=None
         ).level_count
         # Assert
+        assert np.all(np.isfinite(got))  # 退化（all-NaN）でないこと
         np.testing.assert_allclose(got, expected, rtol=0, atol=0)
 
 
@@ -111,10 +117,13 @@ class TestComputeRmmLevelCount:
 class TestMacdIsSlowMinusFast:
     def test_macd_equals_slow_minus_fast_not_fast_minus_slow(self) -> None:
         # Arrange: fast(4) != slow(8) なので fast-slow と slow-fast は別物。
+        # 全期間版（window=None）で有限値の符号差を discriminating に固定する
+        # （既定の因果窓だと n<window で all-NaN となり退化比較になるため）。
         high, low, close, volume = _sample_ohlcv()
         # Act
-        result = core.compute_rmmmacd(high, low, close, volume)
+        result = core.compute_rmmmacd(high, low, close, volume, window=None)
         # Assert: macd == slow-fast（重要差分①）。
+        assert np.all(np.isfinite(result.macd))  # 退化（all-NaN）でないこと
         np.testing.assert_allclose(
             result.macd, result.slow - result.fast, rtol=0, atol=0
         )
@@ -127,11 +136,12 @@ class TestMacdIsSlowMinusFast:
 # ===========================================================================
 class TestHistogramHasNoCoefficient:
     def test_histogram_equals_macd_minus_signal_without_coefficient(self) -> None:
-        # Arrange
+        # Arrange: 全期間版（window=None）で有限値の係数差を discriminating に固定。
         high, low, close, volume = _sample_ohlcv()
         # Act
-        result = core.compute_rmmmacd(high, low, close, volume)
+        result = core.compute_rmmmacd(high, low, close, volume, window=None)
         # Assert: histogram == macd-signal（重要差分②・係数なし）。
+        assert np.all(np.isfinite(result.histogram))  # 退化（all-NaN）でないこと
         np.testing.assert_allclose(
             result.histogram, result.macd - result.signal, rtol=0, atol=0
         )
@@ -146,24 +156,25 @@ class TestHistogramHasNoCoefficient:
 # ===========================================================================
 class TestEmaChain:
     def test_fast_slow_match_shared_ema_on_level_count(self) -> None:
-        # Arrange: level_count を共有 EMA に通した期待値。
+        # Arrange: level_count を共有 EMA に通した期待値。全期間版（window=None）で
+        # level_count が有限なので start=0、共有 EMA を全長に通した値と一致する。
         high, low, close, volume = _sample_ohlcv()
-        lc = core.compute_rmm_level_count(high, low, close, volume)
+        lc = core.compute_rmm_level_count(high, low, close, volume, window=None)
         n = lc.shape[0]
         exp_fast = np.zeros(n, dtype=np.float64)
         exponential_ma_on_buffer(n, 0, 0, 4, lc, exp_fast)
         exp_slow = np.zeros(n, dtype=np.float64)
         exponential_ma_on_buffer(n, 0, 0, 8, lc, exp_slow)
         # Act
-        result = core.compute_rmmmacd(high, low, close, volume)
+        result = core.compute_rmmmacd(high, low, close, volume, window=None)
         # Assert
         np.testing.assert_allclose(result.fast, exp_fast, rtol=0, atol=0)
         np.testing.assert_allclose(result.slow, exp_slow, rtol=0, atol=0)
 
     def test_signal_equals_shared_ema_of_macd(self) -> None:
-        # Arrange
+        # Arrange: 全期間版（window=None）で macd 全長に共有 EMA を通した値と一致。
         high, low, close, volume = _sample_ohlcv()
-        result = core.compute_rmmmacd(high, low, close, volume)
+        result = core.compute_rmmmacd(high, low, close, volume, window=None)
         n = result.macd.shape[0]
         exp_signal = np.zeros(n, dtype=np.float64)
         exponential_ma_on_buffer(n, 0, 0, 4, result.macd, exp_signal)

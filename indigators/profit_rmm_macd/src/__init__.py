@@ -35,9 +35,11 @@ from .core import (
     DEFAULT_OSC_PERIOD,
     DEFAULT_SIGNAL_EMA,
     DEFAULT_SLOW_EMA,
+    DEFAULT_WINDOW,
     RmmMacdResult,
     compute_rmm_level_count,
     compute_rmmmacd,
+    rolling_span,
 )
 from .loader import load_ohlcv_csv
 from .lwc_chart import (
@@ -57,6 +59,7 @@ __all__ = [
     "rmmmacd",
     "compute_rmm_level_count",
     "compute_rmmmacd",
+    "rolling_span",
     "RmmMacdResult",
     "build_rmmmacd",
     "load_ohlcv_csv",
@@ -71,4 +74,5 @@ __all__ = [
     "DEFAULT_FAST_EMA",
     "DEFAULT_SLOW_EMA",
     "DEFAULT_SIGNAL_EMA",
+    "DEFAULT_WINDOW",
 ]
