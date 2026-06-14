@@ -147,6 +147,33 @@ def _unit_conversion(
     return _normalize(res)
 
 
+def _causal_z(array: np.ndarray, window: int) -> np.ndarray:
+    """因果ローリング窓の σ 距離（z）を返す（look-ahead 除去）。
+
+    各バー i の基準（平均・母標準偏差）を **直近 window 本の過去のみ**（区間
+    ``[i-window+1, i]``）から算出し ``z[i]=(a[i]-mean_i)/std_i`` を返す。未来を含まない
+    ため確定バーは repaint しない。窓を満たさない先頭（``i < window-1``）は ``NaN``。
+    符号は平均超で正・平均未満で負（元 ``_unit_conversion`` と同義の σ 距離）。
+
+    全期間版の EMA 基準 std（``_ps_std_ema``）は系列長依存・seed バイアスがあるため、
+    因果版では窓内の母標準偏差を用いる（忠実移植は放棄済み・統計的に健全な定義）。
+    """
+    a = np.asarray(array, dtype=np.float64)
+    n = a.size
+    out = np.full(n, np.nan, dtype=np.float64)
+    if window < 2 or n < window:
+        return out
+    csum = np.concatenate([[0.0], np.cumsum(a)])
+    csq = np.concatenate([[0.0], np.cumsum(a * a)])
+    for i in range(window - 1, n):
+        lo = i - window + 1
+        mean = (csum[i + 1] - csum[lo]) / window
+        var = (csq[i + 1] - csq[lo]) / window - mean * mean
+        std = np.sqrt(var) if var > 0.0 else 0.0
+        out[i] = _normalize((a[i] - mean) / std) if std > 0.0 else 0.0
+    return out
+
+
 def ps_level_count(
     array: np.ndarray,
     res: np.ndarray | None = None,
@@ -154,6 +181,7 @@ def ps_level_count(
     initialization: bool = False,
     sigma: float = _SIGMA_L6,
     distant: float = _SIGMA_DISTANCE_L6,
+    window: int | None = None,
 ) -> np.ndarray:
     """元 ``PS_GetLevelCountValue`` 相当（系列を「平均からの σ 距離」へ変換・加算）。
 
@@ -162,12 +190,19 @@ def ps_level_count(
     同値（array[i]==avg）は 0。単位変換は符号付き（平均超で正・平均未満で負、
     ``_unit_conversion`` 参照）。
 
+    標準化基準（平均・ばらつき）の算出範囲:
+        * ``window=None``: 全期間バッチ（元 PS 1:1。look-ahead あり）。
+        * ``window=W``: 因果ローリング窓（直近 W 本の過去のみ。look-ahead 除去・
+          repaint しない）。窓未充足の先頭（``i<W-1``）は ``NaN`` を加算＝合算も NaN
+          （非描画）。各系列が同一窓なら warm-up 区間は全系列 NaN で整合する。
+
     Args:
         array: 適用価格別オシレーター系列（昇順）。
         res: 加算先（None なら 0 で新規）。
         initialization: True で res を 0 初期化してから加算。
-        sigma: バンド σ（既定 3.29 = SIGMA_L6）。
-        distant: 基準距離（既定 329 = PS_SIGMA_DISTANCE_L6）。
+        sigma: バンド σ（既定 3.29 = SIGMA_L6。window 指定時は未使用）。
+        distant: 基準距離（既定 329。window 指定時は未使用）。
+        window: 因果窓 W（直近参照本数）。None で全期間バッチ。
 
     Returns:
         加算後のレベルカウント配列（array と同長）。
@@ -177,6 +212,10 @@ def ps_level_count(
     out = np.zeros(n, dtype=np.float64) if res is None else np.array(res, dtype=np.float64)
     if initialization:
         out[:] = 0.0
+
+    if window is not None:
+        # 因果ローリング窓: 各系列の σ 距離（z）を加算。warm-up は NaN 加算で合算も NaN。
+        return out + _causal_z(a, window)
 
     avg = _ps_average(a)
     up = _ps_band(a, sigma, _UPSIDE)
@@ -195,16 +234,20 @@ def ps_level_count(
 def compute_sigma_levels(level_count: np.ndarray) -> Mapping[str, float]:
     """元 ``iBandsOnArray`` 相当の σ 水準線（上方 6 本・下方 6 本）を求める。
 
-    レベルカウント全長の SMA（= 平均）と母標準偏差を基準に、各 σ（0.67〜3.29）で
+    レベルカウントの SMA（= 平均）と母標準偏差を基準に、各 σ（0.67〜3.29）で
     ``mean ± σ×std`` を計算する。元 StdDevArray[1..6]=上方, [7..12]=下方 に対応。
+    因果版レベルカウントの warm-up（``NaN``）は基準算出から除外する（有限値のみ）。
 
     Args:
-        level_count: レベルカウント系列。
+        level_count: レベルカウント系列（NaN を含みうる）。
 
     Returns:
         キー ``up_067``..``up_329`` / ``dn_067``..``dn_329`` → 水準値（float）。
     """
     x = np.asarray(level_count, dtype=np.float64)
+    x = x[np.isfinite(x)]  # 因果版 warm-up の NaN を除外（全期間版は無影響）
+    if x.size == 0:
+        x = np.zeros(1, dtype=np.float64)
     mean = float(np.mean(x))
     std = float(np.sqrt(np.mean((x - mean) ** 2)))  # 母標準偏差（MT4 iBands と同じ）
     levels: dict[str, float] = {}

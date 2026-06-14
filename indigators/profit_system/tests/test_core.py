@@ -137,3 +137,53 @@ def test_compute_marod_handcalc():
     ma = np.array([100.0, 100.0])
     np.testing.assert_array_equal(compute_marod(typical, ma), np.array([10.0, -10.0]))
 
+
+
+# =================================================== 因果ローリング窓（look-ahead 除去）
+def test_ps_level_count_causal_warmup_is_nan():
+    # window 指定時、窓未充足の先頭（i<window-1）は NaN（非描画）。
+    rng = np.random.default_rng(0)
+    a = rng.normal(0, 1, 50)
+    out = ps_level_count(a, None, initialization=True, window=10)
+    assert np.all(np.isnan(out[:9]))
+    assert np.all(np.isfinite(out[9:]))
+
+
+def test_ps_level_count_causal_no_repaint_when_future_added():
+    # 因果版の核心: 確定した過去バーの値は未来バー追加で変わらない。
+    rng = np.random.default_rng(1)
+    a = rng.normal(0, 1, 300)
+    bar, W = 150, 30
+    v_short = ps_level_count(a[:200], None, initialization=True, window=W)[bar]
+    v_long = ps_level_count(a, None, initialization=True, window=W)[bar]
+    assert np.isfinite(v_short)
+    np.testing.assert_allclose(v_short, v_long, rtol=1e-12, atol=1e-12)
+
+
+def test_ps_level_count_fullsample_does_repaint():
+    # 対照: window=None（全期間）は未来追加で過去値が変わる。
+    rng = np.random.default_rng(1)
+    a = rng.normal(0, 1, 300)
+    bar = 150
+    v_short = ps_level_count(a[:200], None, initialization=True)[bar]
+    v_long = ps_level_count(a, None, initialization=True)[bar]
+    assert not np.isclose(v_short, v_long)
+
+
+def test_ps_level_count_causal_accumulates_across_series_with_nan_warmup():
+    # 複数系列の加算で warm-up は全系列 NaN→合算も NaN、有効区間は加算される。
+    rng = np.random.default_rng(2)
+    s1 = rng.normal(0, 1, 40)
+    s2 = rng.normal(0, 1, 40)
+    lc = ps_level_count(s1, None, initialization=True, window=8)
+    lc = ps_level_count(s2, lc, window=8)
+    assert np.all(np.isnan(lc[:7]))
+    assert np.all(np.isfinite(lc[7:]))
+
+
+def test_compute_sigma_levels_ignores_nan_warmup():
+    # 因果版 warm-up の NaN を除外して水準を算出（NaN を含まない場合と一致）。
+    x = np.array([0.5, -0.3, 1.2, -0.8, 0.1, 2.0, -1.5, 0.9])
+    base = compute_sigma_levels(x)
+    with_nan = compute_sigma_levels(np.concatenate([[np.nan, np.nan], x]))
+    assert base == with_nan
