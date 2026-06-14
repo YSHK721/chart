@@ -31,6 +31,7 @@ from . import core, lwc_chart, rmm  # noqa: F401
 from .core import (
     DEFAULT_MA_PERIOD,
     DEFAULT_OSC_PERIOD,
+    DEFAULT_WINDOW,
     RmmResult,
     compute_rmm,
     compute_rmm_levels,
@@ -52,5 +53,6 @@ __all__ = [
     "RmmResult",
     "DEFAULT_OSC_PERIOD",
     "DEFAULT_MA_PERIOD",
+    "DEFAULT_WINDOW",
     "LEVEL_COUNT_COLUMN",
 ]

@@ -52,13 +52,18 @@ def build_rmm(
     *,
     osc_period: int = core.DEFAULT_OSC_PERIOD,
     ma_period: int = core.DEFAULT_MA_PERIOD,
+    window: int | None = core.DEFAULT_WINDOW,
 ) -> pd.DataFrame:
     """OHLCV DataFrame から レベルカウント列を持つ DataFrame を返す（元 index 継承）。
+
+    既定は因果ローリング窓（``window=DEFAULT_WINDOW``）でスパンを算出し repaint しない。
+    warm-up（先頭 window-1）は ``NaN``（非描画）。
 
     Args:
         df: high/low/close/volume を含む DataFrame（列名大小不問）。
         osc_period: オシレーター期間（既定 6）。
         ma_period: EMA 期間（既定 6）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         ``LEVEL_COUNT_COLUMN``（"rmm_lc"）列を持つ DataFrame（df の index を継承）。
@@ -75,6 +80,7 @@ def build_rmm(
         df[cols["volume"]].to_numpy(dtype=float),
         osc_period=osc_period,
         ma_period=ma_period,
+        window=window,
     )
     return pd.DataFrame(
         {LEVEL_COUNT_COLUMN: result.level_count}, index=df.index
@@ -86,6 +92,7 @@ def rmm_levels(
     *,
     osc_period: int = core.DEFAULT_OSC_PERIOD,
     ma_period: int = core.DEFAULT_MA_PERIOD,
+    window: int | None = core.DEFAULT_WINDOW,
 ) -> dict[str, float]:
     """OHLCV DataFrame から level_count の σ6 水準辞書を返す。
 
@@ -93,6 +100,7 @@ def rmm_levels(
         df: high/low/close/volume を含む DataFrame（列名大小不問）。
         osc_period: オシレーター期間（既定 6）。
         ma_period: EMA 期間（既定 6）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         σ6 水準辞書（up_1s..dn_3s の 6 要素）。
@@ -109,5 +117,6 @@ def rmm_levels(
         df[cols["volume"]].to_numpy(dtype=float),
         osc_period=osc_period,
         ma_period=ma_period,
+        window=window,
     )
     return dict(result.lc_levels)

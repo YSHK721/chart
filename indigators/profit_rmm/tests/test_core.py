@@ -186,9 +186,9 @@ class TestComputeRmmAggregation:
         # Arrange
         high, low, close, volume = self._make_data()
         osc_period, ma_period = 6, 6
-        # Act
+        # Act（全期間版＝スカラ span。参照も全期間 oscillator_span で再構成）
         result = core.compute_rmm(
-            high, low, close, volume, osc_period=osc_period, ma_period=ma_period
+            high, low, close, volume, osc_period=osc_period, ma_period=ma_period, window=None
         )
         # 期待値を独立に再構成する（採点ロジックを test 側で 1:1 計算）。
         from common import typical_price  # noqa: E402
@@ -233,6 +233,26 @@ class TestComputeRmmAggregation:
         raw = core.compute_wpr(high, low, close, period=6)
         # Assert
         np.testing.assert_allclose(result.wpr, raw + 100.0)
+
+    def test_causal_warmup_nan_and_no_repaint(self) -> None:
+        # 因果既定: スパンを直近 W 本から算出し warm-up は NaN、確定バーは repaint しない。
+        rng = np.random.default_rng(7)
+        n = 400
+        close = 100 + np.cumsum(rng.normal(0, 1.0, n))
+        high = close + np.abs(rng.normal(0, 0.5, n))
+        low = close - np.abs(rng.normal(0, 0.5, n))
+        volume = rng.integers(1, 100, n).astype(float)
+        W, bar = 120, 250
+        res = core.compute_rmm(high, low, close, volume, osc_period=6, ma_period=6, window=W)
+        assert np.all(np.isnan(res.level_count[:W - 1]))
+        assert np.isfinite(res.level_count[bar])
+        short = core.compute_rmm(
+            high[:300], low[:300], close[:300], volume[:300],
+            osc_period=6, ma_period=6, window=W,
+        )
+        np.testing.assert_allclose(
+            res.level_count[bar], short.level_count[bar], rtol=1e-12, atol=1e-12
+        )
 
 
 # ---------------------------------------------------------------------------

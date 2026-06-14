@@ -65,6 +65,10 @@ from common import typical_price  # noqa: E402
 DEFAULT_OSC_PERIOD: int = 6
 DEFAULT_MA_PERIOD: int = 6
 
+# 標準化窓 W（各オシレーターのスパン avg±3σ を直近 W 本の過去のみから算出＝look-ahead 除去・
+# repaint しない）。None で全期間バッチ（従来 1:1・比較用）。日足 ~半年。
+DEFAULT_WINDOW: int | None = 120
+
 # compute_wpr / compute_rsi / compute_mfi は共有 mql_builtins へ集約済み（上部で import・再公開）。
 # 既定 period 定数 DEFAULT_OSC_PERIOD は本パッケージに残置し、呼び出しで period= 明示する。
 
@@ -111,6 +115,42 @@ def oscillator_span(x: np.ndarray, *, clamp: bool) -> float:
     return x3p - x3m
 
 
+def rolling_span(x: np.ndarray, window: int, *, clamp: bool) -> np.ndarray:
+    """``oscillator_span`` の因果ローリング版（各バーの avg±3σ スパンを直近 W 本から算出）。
+
+    バー i のスパンを区間 ``[i-window+1, i]`` の平均・母標準偏差から
+    ``(avg+3σ) - (avg-3σ)``（clamp 時は各端を [0,100] に丸め）で求める。未来を含まないため
+    確定バーのスパン＝レベルカウントは repaint しない。warm-up（``i<window-1``）は ``NaN``。
+
+    Args:
+        x: 対象オシレーター系列。
+        window: 過去参照本数 W（>=2）。
+        clamp: True で各端を [0,100] にクランプ（RSI/WPR/MFI）、False で素値（MAROD）。
+
+    Returns:
+        各バーのスパン（同長, float64。warm-up は NaN）。
+    """
+    a = np.asarray(x, dtype=np.float64)
+    n = a.size
+    out = np.full(n, np.nan, dtype=np.float64)
+    if window < 2 or n < window:
+        return out
+    csum = np.concatenate([[0.0], np.cumsum(a)])
+    csq = np.concatenate([[0.0], np.cumsum(a * a)])
+    for i in range(window - 1, n):
+        lo = i - window + 1
+        avg = (csum[i + 1] - csum[lo]) / window
+        var = (csq[i + 1] - csq[lo]) / window - avg * avg
+        dev = np.sqrt(var) if var > 0.0 else 0.0
+        x3p = avg + 3.0 * dev
+        x3m = avg - 3.0 * dev
+        if clamp:
+            x3p = min(100.0, x3p)
+            x3m = max(0.0, x3m)
+        out[i] = x3p - x3m
+    return out
+
+
 # funLevelCount（level_count_score）は共有 profit_system へ集約済み（上部で import・再公開）。
 
 
@@ -152,6 +192,7 @@ def compute_rmm(
     *,
     osc_period: int = DEFAULT_OSC_PERIOD,
     ma_period: int = DEFAULT_MA_PERIOD,
+    window: int | None = DEFAULT_WINDOW,
 ) -> RmmResult:
     """iRSI / iWPR / iMFI / MAROD を採点・合算し RmmResult（frozen DTO）を返す。
 
@@ -205,31 +246,39 @@ def compute_rmm(
     exponential_ma_on_buffer(typical.shape[0], 0, 0, ma_period, typical, ma)
     marod = compute_marod(typical, ma)
 
-    rsi_span = oscillator_span(rsi, clamp=True)
-    wpr_span = oscillator_span(wpr, clamp=True)
-    mfi_span = oscillator_span(mfi, clamp=True)
-    marod_span = oscillator_span(marod, clamp=False)
-
     n = close.shape[0]
+    # スパン（採点の分母）を全期間スカラ（window=None）か因果ローリング（window=W）で用意。
+    # 配列化して各バー span[i] を参照する（因果時は warm-up が NaN→採点 NaN→level_count NaN）。
+    if window is None:
+        rsi_span = np.full(n, oscillator_span(rsi, clamp=True))
+        wpr_span = np.full(n, oscillator_span(wpr, clamp=True))
+        mfi_span = np.full(n, oscillator_span(mfi, clamp=True))
+        marod_span = np.full(n, oscillator_span(marod, clamp=False))
+    else:
+        rsi_span = rolling_span(rsi, window, clamp=True)
+        wpr_span = rolling_span(wpr, window, clamp=True)
+        mfi_span = rolling_span(mfi, window, clamp=True)
+        marod_span = rolling_span(marod, window, clamp=False)
+
     level_count = np.zeros(n, dtype=np.float64)
     for i in range(n):
         lc = 0.0
         if rsi[i] < 50.0:
-            lc += level_count_score(rsi[i], rsi_span, 1)
+            lc += level_count_score(rsi[i], rsi_span[i], 1)
         elif rsi[i] > 50.0:
-            lc += level_count_score(rsi[i], rsi_span, 0)
+            lc += level_count_score(rsi[i], rsi_span[i], 0)
         if wpr[i] < 50.0:
-            lc += level_count_score(wpr[i], wpr_span, 1)
+            lc += level_count_score(wpr[i], wpr_span[i], 1)
         elif wpr[i] > 50.0:
-            lc += level_count_score(wpr[i], wpr_span, 0)
+            lc += level_count_score(wpr[i], wpr_span[i], 0)
         if mfi[i] < 50.0:
-            lc += level_count_score(mfi[i], mfi_span, 1)
+            lc += level_count_score(mfi[i], mfi_span[i], 1)
         elif mfi[i] > 50.0:
-            lc += level_count_score(mfi[i], mfi_span, 0)
+            lc += level_count_score(mfi[i], mfi_span[i], 0)
         if marod[i] < 0.0:
-            lc += level_count_score(marod[i], marod_span, 2)
+            lc += level_count_score(marod[i], marod_span[i], 2)
         elif marod[i] > 0.0:
-            lc += level_count_score(marod[i], marod_span, 3)
+            lc += level_count_score(marod[i], marod_span[i], 3)
         level_count[i] = lc
 
     lc_levels = compute_rmm_levels(level_count)
@@ -257,8 +306,12 @@ def compute_rmm_levels(level_count: np.ndarray) -> dict[str, float]:
     Returns:
         σ6 水準辞書（6 要素）。
     """
-    avg = _series_avg(level_count)
-    dev = _series_std(level_count)
+    x = np.asarray(level_count, dtype=np.float64)
+    x = x[np.isfinite(x)]  # 因果版 warm-up の NaN を除外（全期間版は無影響）
+    if x.size == 0:
+        x = np.zeros(1, dtype=np.float64)
+    avg = _series_avg(x)
+    dev = _series_std(x)
     return {
         "up_1s": avg + dev,
         "up_2s": avg + 2.0 * dev,

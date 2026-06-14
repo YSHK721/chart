@@ -76,6 +76,7 @@ def add_rmm(
     *,
     osc_period: int = core.DEFAULT_OSC_PERIOD,
     ma_period: int = core.DEFAULT_MA_PERIOD,
+    window: int | None = core.DEFAULT_WINDOW,
     time_column: str | None = None,
     color: str = _COLOR,
     draw_levels: bool = True,
@@ -99,7 +100,7 @@ def add_rmm(
         KeyError: 必須列（high/low/close/volume）欠落、または時刻が解決できない場合。
         ValueError: osc_period<2、または抽出系列長不一致（build_rmm 経由）。
     """
-    bands = build_rmm(df, osc_period=osc_period, ma_period=ma_period)
+    bands = build_rmm(df, osc_period=osc_period, ma_period=ma_period, window=window)
     times = _resolve_times(df, time_column)
 
     hist = chart.create_histogram(
@@ -115,7 +116,7 @@ def add_rmm(
 
     created = [hist]
     if draw_levels:
-        levels = rmm_levels(df, osc_period=osc_period, ma_period=ma_period)
+        levels = rmm_levels(df, osc_period=osc_period, ma_period=ma_period, window=window)
         for key in _LEVEL_KEYS:
             created.append(
                 chart.horizontal_line(

@@ -32,7 +32,7 @@ import pandas as pd  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
 from common import level_colors  # noqa: E402
 
-from .core import DEFAULT_MA_PERIOD, DEFAULT_OSC_PERIOD  # noqa: E402
+from .core import DEFAULT_MA_PERIOD, DEFAULT_OSC_PERIOD, DEFAULT_WINDOW  # noqa: E402
 from .rmm import LEVEL_COUNT_COLUMN, build_rmm, rmm_levels  # noqa: E402
 
 # 元 #property indicator_color1 clrLime はヒストグラムの per-bar 着色
@@ -50,6 +50,7 @@ def plot_rmm(
     *,
     osc_period: int = DEFAULT_OSC_PERIOD,
     ma_period: int = DEFAULT_MA_PERIOD,
+    window: int | None = DEFAULT_WINDOW,
     title: str = "PRO!fitRMM",
 ) -> str:
     """RMM レベルカウント・ヒストグラムを別ペイン風に PNG 出力する。
@@ -67,8 +68,8 @@ def plot_rmm(
     Returns:
         書き出した PNG のパス。
     """
-    bands = build_rmm(df, osc_period=osc_period, ma_period=ma_period)
-    levels = rmm_levels(df, osc_period=osc_period, ma_period=ma_period)
+    bands = build_rmm(df, osc_period=osc_period, ma_period=ma_period, window=window)
+    levels = rmm_levels(df, osc_period=osc_period, ma_period=ma_period, window=window)
     level_count = bands[LEVEL_COUNT_COLUMN].to_numpy(dtype=np.float64)
     x = np.arange(len(df))
 

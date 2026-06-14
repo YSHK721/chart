@@ -88,8 +88,9 @@ def test_histogram_name_matches_value_column():
 def test_histogram_values_match_build_rmm():
     df = _df()
     chart = FakeChart()
-    add_rmm(chart, df, osc_period=6, ma_period=6)
-    expected = rmm.build_rmm(df, osc_period=6, ma_period=6)[
+    # 全期間版（window=None）で chart 値と build 出力の一致（配線）を固定。
+    add_rmm(chart, df, osc_period=6, ma_period=6, window=None)
+    expected = rmm.build_rmm(df, osc_period=6, ma_period=6, window=None)[
         rmm.LEVEL_COUNT_COLUMN
     ].to_numpy()
     got = chart.histograms[0].data[rmm.LEVEL_COUNT_COLUMN].to_numpy()
