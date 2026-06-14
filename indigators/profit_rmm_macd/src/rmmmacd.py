@@ -26,6 +26,7 @@ from .core import (
     DEFAULT_OSC_PERIOD,
     DEFAULT_SIGNAL_EMA,
     DEFAULT_SLOW_EMA,
+    DEFAULT_WINDOW,
     compute_rmmmacd,
 )
 
@@ -67,10 +68,13 @@ def build_rmmmacd(
     fast: int = DEFAULT_FAST_EMA,
     slow: int = DEFAULT_SLOW_EMA,
     signal: int = DEFAULT_SIGNAL_EMA,
+    window: int | None = DEFAULT_WINDOW,
 ) -> pd.DataFrame:
     """histogram/macd/signal の 3 列を付与した DataFrame（元 index 継承）を返す。
 
-    σ 水準は出力しない（levels 列・levels 関数を作らない）。
+    既定は因果ローリング窓（``window=DEFAULT_WINDOW``）でスパンを算出し repaint しない。
+    warm-up（先頭 window-1）および level_count 全 NaN 区間は histogram/macd/signal とも
+    ``NaN``（非描画）。σ 水準は出力しない（levels 列・levels 関数を作らない）。
 
     Args:
         df: high/low/close/volume を含む DataFrame（列名の大小不問）。
@@ -79,6 +83,7 @@ def build_rmmmacd(
         fast: FastEMA 期間（既定 4）。
         slow: SlowEMA 期間（既定 8）。
         signal: SignalEMA 期間（既定 4）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         ``HIST_COLUMN`` / ``MACD_COLUMN`` / ``SIGNAL_COLUMN`` 列を付与した
@@ -91,7 +96,7 @@ def build_rmmmacd(
     result = compute_rmmmacd(
         high, low, close, volume,
         osc_period=osc_period, ma_period=ma_period,
-        fast=fast, slow=slow, signal=signal,
+        fast=fast, slow=slow, signal=signal, window=window,
     )
     out = df.copy()
     out[HIST_COLUMN] = result.histogram

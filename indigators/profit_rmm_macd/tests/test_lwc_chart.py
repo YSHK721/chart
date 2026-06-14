@@ -116,13 +116,17 @@ def test_line_names_match_value_columns():
 
 
 # ---------------------------------------------------------------------------
-# TC-L4 系列値が build_rmmmacd の出力と一致する
+# TC-L4 系列値が build_rmmmacd の出力（NaN 除外後）と一致する
+#   warm-up NaN は描画側で非描画にするため set 前に dropna 除外する（姉妹
+#   profit_rmm と整合）。本テストは window=None（全期間版＝NaN 無し）を用いて
+#   全行が保持されかつ値が build と一致することを固定する。warm-up NaN 除外の
+#   挙動自体は TC-L11 で discriminating に固定する。
 # ---------------------------------------------------------------------------
 def test_series_values_match_build_output():
     df = _df()
     chart = FakeChart()
-    add_rmmmacd(chart, df, **_KW)
-    built = build_rmmmacd(df, **_KW)
+    add_rmmmacd(chart, df, **_KW, window=None)  # 全期間版: NaN 無しで全行保持
+    built = build_rmmmacd(df, **_KW, window=None)
 
     # ヒストグラム値（rmmmacd_hist）。
     hist = chart.histograms[0]
@@ -227,3 +231,34 @@ def test_missing_volume_raises():
     chart = FakeChart()
     with pytest.raises(KeyError):
         add_rmmmacd(chart, df, **_KW)
+
+
+# ---------------------------------------------------------------------------
+# TC-L11 warm-up NaN 行を histogram 系列から除外する（非描画保証・姉妹整合）
+#   因果版（window=120）は先頭 window-1 が NaN（warm-up・非描画）。lightweight-charts
+#   へ NaN を渡さず dropna 除外して描画系へ有限値のみ渡す（姉妹 profit_rmm と整合）。
+# ---------------------------------------------------------------------------
+def test_histogram_drops_warmup_nan_rows():
+    # Arrange: n>window で warm-up NaN（window-1 本）と有限行が共存する。
+    W = 120
+    n = 150
+    df = _df(n)
+    built = build_rmmmacd(df, **_KW, window=W)
+    n_nan = int(built[HIST_COLUMN].isna().sum())
+    assert n_nan > 0, "前提: warm-up NaN が存在する n を選ぶこと"
+
+    # Act
+    chart = FakeChart()
+    add_rmmmacd(chart, df, **_KW, window=W)
+
+    # Assert: histogram 系列に NaN 行が 1 つも無く、行数 = 有限行数（= n - n_nan）。
+    hist = chart.histograms[0]
+    assert not hist.data[HIST_COLUMN].isna().any(), "warm-up NaN が描画系へ漏れている"
+    assert len(hist.data) == n - n_nan
+    # 生き残った値が build の有限値と完全一致する（dropna が値を歪めない）。
+    expected_finite = built[HIST_COLUMN].to_numpy()[
+        ~np.isnan(built[HIST_COLUMN].to_numpy())
+    ]
+    np.testing.assert_allclose(
+        hist.data[HIST_COLUMN].to_numpy(), expected_finite, rtol=0, atol=0
+    )
