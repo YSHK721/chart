@@ -31,7 +31,7 @@ import pandas as pd  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
 from common import level_colors  # noqa: E402
 
-from .core import DEFAULT_PERIOD  # noqa: E402
+from .core import DEFAULT_PERIOD, DEFAULT_WINDOW  # noqa: E402
 from .volatility import (  # noqa: E402
     LEVEL_COUNT_COLUMN,
     build_volatility,
@@ -54,6 +54,7 @@ def plot_volatility(
     out_path: str = "profit_volatility.png",
     *,
     period: int = DEFAULT_PERIOD,
+    window: int | None = DEFAULT_WINDOW,
     title: str = "PRO!fit_Volatility",
 ) -> str:
     """Volatility ヒストグラムを別ペイン風に PNG 出力する。
@@ -70,8 +71,8 @@ def plot_volatility(
     Returns:
         書き出した PNG のパス。
     """
-    bands = build_volatility(df, period=period)
-    levels = volatility_levels(df, period=period)
+    bands = build_volatility(df, period=period, window=window)
+    levels = volatility_levels(df, period=period, window=window)
     lc = bands[LEVEL_COUNT_COLUMN].to_numpy(dtype=np.float64)
     x = np.arange(len(df))
 
@@ -88,15 +89,15 @@ def plot_volatility(
     ax_price.legend(loc="upper left", fontsize=9)
     ax_price.grid(True, alpha=0.2)
 
-    # 別ウィンドウ相当: ヒストグラム（レベルカウントは符号付き＝0 基準の温度）。
+    # 別ウィンドウ相当: ヒストグラム（OHLC4 対数6本変化を標準化＝0 基準の符号付き σ 距離）。
     ax_ind.axhline(0.0, color="#333333", linewidth=0.7)
     ax_ind.bar(x, lc, width=0.8, color=level_colors(lc), alpha=0.85,
-               label="volatility level count")
+               label="OHLC4 log-change z (clamped ±3.29σ)")
     # σ12 水準線（上下を点線で重畳）。
     for sigma_key in _LEVEL_KEYS:
         ax_ind.axhline(levels[sigma_key], color=_LEVEL_COLOR, linewidth=0.7,
                        linestyle=":", alpha=0.6)
-    ax_ind.set_ylabel("level count")
+    ax_ind.set_ylabel("z (σ distance)")
     ax_ind.set_xlabel("bar index")
     ax_ind.legend(loc="upper left", fontsize=9)
     ax_ind.grid(True, axis="y", alpha=0.2)

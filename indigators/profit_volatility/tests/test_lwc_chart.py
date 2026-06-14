@@ -45,7 +45,7 @@ class FakeChart:
         return line
 
 
-def _df(n=80, seed=3):
+def _df(n=250, seed=3):  # 因果窓（既定 120）で有効点が出る長さ。
     rng = np.random.default_rng(seed)
     o = rng.uniform(100, 110, n)
     h = o + rng.uniform(0.5, 2.0, n)
@@ -94,9 +94,9 @@ def test_histogram_values_match_build_volatility():
     chart = FakeChart()
     add_volatility(chart, df, period=6)
     values = chart.histograms[0].data[LEVEL_COUNT_COLUMN].to_numpy()
-    np.testing.assert_allclose(
-        values, bands[LEVEL_COUNT_COLUMN].to_numpy(), rtol=0, atol=0
-    )
+    # warm-up（先頭 period 本）は NaN で描画側 dropna により除外されるため、参照も NaN を除く。
+    expected = bands[LEVEL_COUNT_COLUMN].dropna().to_numpy()
+    np.testing.assert_allclose(values, expected, rtol=0, atol=0)
 
 
 def test_histogram_color_column_matches_level_colors():
@@ -145,7 +145,7 @@ def test_histogram_price_flags_off():
 
 
 def test_time_resolution_from_datetime_index():
-    df = _df(50).set_index("time")
+    df = _df(250).set_index("time")
     chart = FakeChart()
     add_volatility(chart, df, period=6)
     assert "time" in chart.histograms[0].data.columns

@@ -33,7 +33,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
 from common import level_colors  # noqa: E402
 
-from .core import DEFAULT_PERIOD
+from .core import DEFAULT_PERIOD, DEFAULT_WINDOW
 from .volatility import LEVEL_COUNT_COLUMN, build_volatility, volatility_levels
 
 _COLOR = "rgba(0, 100, 0, 0.85)"        # DarkGreen
@@ -83,6 +83,7 @@ def add_volatility(
     df: pd.DataFrame,
     *,
     period: int = DEFAULT_PERIOD,
+    window: int | None = DEFAULT_WINDOW,
     time_column: str | None = None,
     color: str = _COLOR,
     draw_levels: bool = True,
@@ -93,7 +94,8 @@ def add_volatility(
         chart: ``create_histogram(name, **kwargs)`` と ``horizontal_line(price, **kwargs)``
             を持つオブジェクト（duck typing。別ウィンドウの場合は subchart を渡す）。
         df: OHLC DataFrame（open/high/low/close 必須・大小不問）。
-        period: 乖離をとる足数（既定 6）。
+        period: 変化をとる足数（既定 6）。
+        window: 標準化窓 W（因果ローリング。既定 120）。``None`` で全期間バッチ。
         time_column: 時刻列の明示指定（省略時は time/date/DatetimeIndex を探索）。
         color: ヒストグラム色（既定 DarkGreen）。
         draw_levels: True で σ12 水準線（上下各 6 本＝12 本）を水平線として追加。
@@ -104,7 +106,7 @@ def add_volatility(
     Raises:
         KeyError: 時刻が解決できない / 必須列（OHLC）が無い場合。
     """
-    bands = build_volatility(df, period=period)
+    bands = build_volatility(df, period=period, window=window)
     times = _resolve_times(df, time_column)
 
     hist = chart.create_histogram(
@@ -120,7 +122,7 @@ def add_volatility(
 
     created = [hist]
     if draw_levels:
-        levels = volatility_levels(df, period=period)
+        levels = volatility_levels(df, period=period, window=window)
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
                 price=float(levels[key]), color=_LEVEL_COLOR, width=1,

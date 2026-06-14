@@ -64,6 +64,11 @@ from profit_system import (  # noqa: E402
 # 既定パラメータ（元 ``input int inpPeriod = 6``）。
 DEFAULT_PERIOD: int = 6
 
+# 因果標準化の既定窓長 W（直近 W 本の過去のみで平均・ばらつきを算出 = look-ahead 除去）。
+# 日足で ~半年分。少標本で z が頭打ちにならない長さ（>=60 推奨）。``window=None`` で全期間
+# バッチ（look-ahead あり・比較用）に切り替わる。
+DEFAULT_WINDOW: int = 120
+
 # iVOLATILITY の 2 桁 case コード ``XY`` の digit 価格種別（MQL4 流・0 始まり）。
 # 0=Close,1=Open,2=High,3=Low,4=Median,5=Typical,6=Weighted。
 # X=1 桁目=price_A（現足側 x_digit）、Y=2 桁目=price_B（period 本前側 y_digit）。
@@ -261,5 +266,193 @@ def compute_volatility_full(
     return VolatilityResult(
         level_count_clamped=clamped,
         raw_level_count=raw,
+        levels=levels,
+    )
+
+
+# ===================================================== 本質コア（OHLC4 対数変化・1 系列）
+# 49 系列（X∈0..6 × Y∈0..6）の合算は、実証上 第1主成分が分散の 94.4% を占め、加重値
+# （OHLC4）どうしの 6 本変化 1 本で合算の 100% を再現できる（実効独立次元 ≒ 1）。本コアは
+# その「本質 1 本」だけを保持し、さらに乖離を **値幅 X-Y → 対数差 ln(X/Y)** に変えて
+# 価格水準依存（値幅は水準に比例し非定常）を除去する。標準化（σ 距離）は元 ps_level_count が
+# 代数的に z=(d-avg)/std に帰着するのと同義の素直な z 化で実装する。
+def _ohlc4(open_: np.ndarray, high: np.ndarray, low: np.ndarray,
+           close: np.ndarray) -> np.ndarray:
+    """加重値 OHLC4 = (O+H+L+C)/4 を返す（iVOLATILITY digit=6 と同式）。"""
+    o = np.asarray(open_, dtype=np.float64)
+    h = np.asarray(high, dtype=np.float64)
+    low_a = np.asarray(low, dtype=np.float64)
+    c = np.asarray(close, dtype=np.float64)
+    return (o + h + low_a + c) / 4.0
+
+
+def compute_core_divergence(
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    *,
+    period: int = DEFAULT_PERIOD,
+) -> np.ndarray:
+    """加重値(OHLC4)の period 本「対数変化」 d[a]=ln(ohlc4[a]/ohlc4[a-period]) を返す。
+
+    値幅 ``ohlc4[a]-ohlc4[a-period]`` は価格水準に比例して大きくなり非定常（水準依存）。
+    対数差（＝比率の対数）にすることで「同じ % の動き」が価格水準に依らず同じ値になり、
+    スケール不変になる。warm-up（``a<period``）は算出不能のため ``NaN``（非描画・統計から除外）。
+
+    Args:
+        open_/high/low/close: OHLC 各系列（昇順・同長・正値）。
+        period: 変化をとる足数（>=2。既定 6）。
+
+    Returns:
+        対数変化系列（同長, float64）。``a<period`` は ``NaN``。
+
+    Raises:
+        ValueError: ``period < 2`` の場合。
+    """
+    if period < 2:
+        raise ValueError(f"period は 2 以上である必要があります: {period}")
+    w = _ohlc4(open_, high, low, close)
+    n = w.size
+    d = np.full(n, np.nan, dtype=np.float64)
+    if n > period:
+        d[period:] = np.log(w[period:] / w[:-period])
+    return d
+
+
+def _standardize(values: np.ndarray) -> np.ndarray:
+    """NaN を除外した平均・母標準偏差で z 化する（warm-up NaN はそのまま温存）。
+
+    ``z = (x - mean) / std``（std は母標準偏差 ÷N）。元 PS の σ 距離単位変換は代数的に
+    この z に帰着する（定数 3.29/329/100 が相殺）。``std==0`` のとき有効点は 0。
+    """
+    v = np.asarray(values, dtype=np.float64)
+    valid = ~np.isnan(v)
+    out = np.full(v.size, np.nan, dtype=np.float64)
+    if not valid.any():
+        return out
+    vals = v[valid]
+    mean = float(np.mean(vals))
+    std = float(np.sqrt(np.mean((vals - mean) ** 2)))
+    out[valid] = (vals - mean) / std if std > 0.0 else 0.0
+    return out
+
+
+def _standardize_causal(values: np.ndarray, window: int) -> np.ndarray:
+    """因果ローリング窓で z 化する（look-ahead 除去）。
+
+    各バー a の標準化基準（平均・母標準偏差）を **直近 window 本の過去データのみ**
+    （バー区間 ``[a-window+1, a]``）から計算する。未来は一切入れないため、確定した
+    バーの値は後から新データを足しても変わらない（repaint しない）。
+
+    warm-up（先頭 NaN 区間 ＋ 窓を満たさない区間）は ``NaN``（非描画）。すなわち最初の
+    有効点は ``period + window - 1`` 付近（窓が全て有限値で満たされる最初のバー）。
+
+    Args:
+        values: 乖離系列（先頭 period 本が NaN、以降有限）。
+        window: 過去参照本数 W（>=2）。
+
+    Returns:
+        因果標準化系列（同長, float64。warm-up は NaN）。
+    """
+    v = np.asarray(values, dtype=np.float64)
+    n = v.size
+    out = np.full(n, np.nan, dtype=np.float64)
+    if window < 2 or n == 0:
+        return out
+    finite = ~np.isnan(v)
+    if not finite.any():
+        return out
+    start = int(np.argmax(finite))  # 先頭の有限 index（= period）
+    # NaN を 0 に置いた作業配列で累積和を作る（有効窓は全て有限なので 0 置換の影響なし）。
+    w0 = np.where(finite, v, 0.0)
+    csum = np.concatenate([[0.0], np.cumsum(w0)])
+    csq = np.concatenate([[0.0], np.cumsum(w0 * w0)])
+    first = start + window - 1  # 窓が全て有限値で満たされる最初のバー
+    for a in range(first, n):
+        lo = a - window + 1
+        s = csum[a + 1] - csum[lo]
+        sq = csq[a + 1] - csq[lo]
+        mean = s / window
+        var = sq / window - mean * mean
+        std = np.sqrt(var) if var > 0.0 else 0.0
+        out[a] = (v[a] - mean) / std if std > 0.0 else 0.0
+    return out
+
+
+@dataclass(frozen=True)
+class CoreVolatilityResult:
+    """本質コア（OHLC4 対数変化・標準化 1 系列）の計算成果（描画非依存）。
+
+    Attributes:
+        level_count_clamped: ±3.29σ クランプ後の標準化系列（描画対象, N,。warm-up は NaN）。
+        raw_level_count: クランプ前の標準化系列（N,。warm-up は NaN）。
+        divergence: OHLC4 の対数変化 d=ln(ohlc4[a]/ohlc4[a-period])（N,。warm-up は NaN）。
+        levels: σ 水準線（up_*/dn_*。warm-up を除く有効点から算出）。
+    """
+
+    level_count_clamped: np.ndarray
+    raw_level_count: np.ndarray
+    divergence: np.ndarray
+    levels: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        for name in ("level_count_clamped", "raw_level_count", "divergence"):
+            arr = np.asarray(getattr(self, name), dtype=np.float64)
+            arr.setflags(write=False)  # DTO は不変
+            object.__setattr__(self, name, arr)
+
+
+def compute_core_volatility(
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    *,
+    period: int = DEFAULT_PERIOD,
+    window: int | None = None,
+) -> CoreVolatilityResult:
+    """本質コア（OHLC4 の対数 period 本変化を標準化した 1 系列）を一括算出する。
+
+    49 系列合算の本質（実効 1 次元）だけを残し、価格水準依存を対数差で除去したパターン。
+    σ12 水準（``compute_sigma_levels``）と ±3.29σ クランプは表示継続のため維持する
+    （水準・クランプは warm-up NaN を除く有効点から算出）。
+
+    標準化の基準（平均・ばらつき）の算出範囲:
+        * ``window=None``: 全期間バッチ（look-ahead あり。比較・参照用）。
+        * ``window=W``: 因果ローリング窓（直近 W 本の過去のみ。look-ahead 除去。
+          確定したバーは repaint しない）。warm-up は ``period + W - 1`` 付近まで。
+
+    Args:
+        open_/high/low/close: OHLC 各系列（昇順・同長・正値）。
+        period: 変化をとる足数（既定 6 = 測定幅）。
+        window: 標準化窓 W（直近参照本数）。None で全期間バッチ。
+
+    Returns:
+        CoreVolatilityResult（level_count_clamped / raw_level_count / divergence / levels）。
+
+    Raises:
+        ValueError: OHLC の長さが不一致、または ``period < 2`` の場合。
+    """
+    o = np.asarray(open_, dtype=np.float64)
+    h = np.asarray(high, dtype=np.float64)
+    low_a = np.asarray(low, dtype=np.float64)
+    c = np.asarray(close, dtype=np.float64)
+    if not (o.size == h.size == low_a.size == c.size):
+        raise ValueError(
+            f"OHLC の長さが不一致です: {[o.size, h.size, low_a.size, c.size]}"
+        )
+
+    d = compute_core_divergence(o, h, low_a, c, period=period)
+    z = _standardize(d) if window is None else _standardize_causal(d, window)
+    valid = ~np.isnan(z)
+    levels = compute_sigma_levels(z[valid] if valid.any() else np.zeros(1))
+    upper = levels["up_329"]
+    lower = levels["dn_329"]
+    clamped = np.clip(z, lower, upper)  # NaN（warm-up）は NaN のまま温存
+    return CoreVolatilityResult(
+        level_count_clamped=clamped,
+        raw_level_count=z,
+        divergence=d,
         levels=levels,
     )
