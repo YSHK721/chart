@@ -145,7 +145,11 @@ const PROFIT_BAND = new IndicatorDef({
       seriesNamePattern: { template: '{bucket} {pct}%', buckets: ['nOH', 'pOL', 'pOH', 'nOL'], pcts: ['51', '80', '85', '90', '95', '98', '99'] },
     }),
   ],
-  compute: { computeId: 'profit_band', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['global', 'robust'] },
+  // variants[0] が既定 variant になる（参照は複数サイト: indicator_controller._defaultVariant、
+  // および properties_dialog の新規インスタンス既定 _variants[0]）。順序入替はこれら全てに波及する。
+  // 先頭の robust を既定にする理由: global は全長分位点＋生値幅のため repaint＋価格水準依存の欠陥を持つ。
+  // robust は因果窓＋比率/ATR 正規化による是正版。global は後方互換のため末尾に温存する。
+  compute: { computeId: 'profit_band', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['robust', 'global'] },
 });
 
 // --- price_range_power（OVERLAY・horizontal_line）-------------------------

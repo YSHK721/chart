@@ -74,3 +74,18 @@ test('PropertiesDialog defaults to A-mode when mode is omitted (backward compati
   const dialog = new PropertiesDialog({ document: fakeDoc(), def: MIN_DEF, instance: null });
   assert.ok(dialog._buildAMethodNote());
 });
+
+// 新規インスタンス（instance=null）の既定 variant は variants[0]。catalog の
+// profit_band は variants=['robust','global'] のため、新規ダイアログ既定が是正版 robust に
+// なることを固定する（既定 variant 解決の第2サイト・順序入替の波及を回帰固定）。
+test('PropertiesDialog new-instance default variant follows variants[0] (robust for profit_band order)', () => {
+  const DEF = { id: 'profit_band', displayNameKey: 'ind.profit_band', params: [], series: [], compute: { variants: ['robust', 'global'] } };
+  const dialog = new PropertiesDialog({ document: fakeDoc(), def: DEF, instance: null });
+  assert.equal(dialog._variant, 'robust');
+});
+
+test('PropertiesDialog existing-instance variant is preserved (global instance stays global)', () => {
+  const DEF = { id: 'profit_band', displayNameKey: 'ind.profit_band', params: [], series: [], compute: { variants: ['robust', 'global'] } };
+  const dialog = new PropertiesDialog({ document: fakeDoc(), def: DEF, instance: { variant: 'global' } });
+  assert.equal(dialog._variant, 'global');
+});
