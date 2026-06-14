@@ -91,19 +91,19 @@ def test_hl_band_levels_returns_eight_bands_and_close_ref():
     df = _make_df()
     # Act
     levels = hl_band_levels(df)
-    # Assert
+    # Assert（8 バンド + close_ref + available。因果窓化で available フラグを追加）
     assert set(levels.keys()) == {
         "up_067", "up_165", "up_196", "up_258",
         "dn_067", "dn_165", "dn_196", "dn_258",
-        "close_ref",
+        "close_ref", "available",
     }
 
 
 def test_hl_band_levels_values_match_core_semantics():
     # Arrange
     df = _make_df()
-    # Act
-    levels = hl_band_levels(df)
+    # Act（後方互換モード = 全長・絶対距離。旧 core semantics の固定点）
+    levels = hl_band_levels(df, window=None, normalize=False)
     # Assert（close_ref=close[-2]=12.0、dn_165=12.0-2.92=9.08）
     assert levels["close_ref"] == pytest.approx(12.0, abs=1e-12)
     assert levels["up_165"] == pytest.approx(12.0 + band_upper(_EXPECTED_DIST_HIGH, 1.65), abs=1e-12)

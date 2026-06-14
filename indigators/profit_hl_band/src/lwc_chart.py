@@ -33,6 +33,7 @@ from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
+from .core import DEFAULT_WINDOW
 from .hl_band import hl_band_levels
 
 # 元 OBJPROP_COLOR LimeGreen（OBJ_TREND 8 本の色）。
@@ -87,6 +88,8 @@ def add_hl_band(
     *,
     time_column: str | None = None,
     color: str = _BAND_COLOR,
+    window: int | None = DEFAULT_WINDOW,
+    normalize: bool = True,
 ) -> list:
     """メインチャートに HL バンドの水平線 8 本（up_*/dn_*）を追加する。
 
@@ -108,9 +111,13 @@ def add_hl_band(
         KeyError: high/low/close 列が無い / 時刻が解決できない場合。
         ValueError: N<2（close[-2] 不在）の場合（成果物層ガード）。
     """
-    levels = hl_band_levels(df)  # high/low/close 欠落 KeyError・N<2 ValueError はここで送出
+    levels = hl_band_levels(
+        df, window=window, normalize=normalize
+    )  # high/low/close 欠落 KeyError・N<2 ValueError はここで送出
     _resolve_times(df, time_column)  # 時刻解決不可は KeyError（先例 profit_hlband 準拠）
     created: list = []
+    if not levels.get("available", True):
+        return created  # 有効本数 < 2: バンド線を描画しない（levels は NaN）
     for key in _BAND_KEYS:
         created.append(
             chart.horizontal_line(

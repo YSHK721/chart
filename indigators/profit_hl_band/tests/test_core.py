@@ -117,8 +117,8 @@ def test_compute_hl_band_close_ref_changes_with_second_to_last_close():
 
 # --- compute_hl_band: 8 バンド符号・dist 対応・dev 対応 ---
 def test_compute_hl_band_upper_bands_add_band_upper_of_dist_high():
-    # Act
-    result = compute_hl_band(_HIGH, _LOW, _CLOSE)
+    # Act（後方互換モード = 全長・絶対距離。旧 core.py:146-147 の固定点）
+    result = compute_hl_band(_HIGH, _LOW, _CLOSE, window=None, normalize=False)
     # Assert（up_k = close_ref + band_upper(dist_high, dev_k)・加算）
     levels = result.levels
     assert levels["up_067"] == pytest.approx(12.0 + band_upper(_EXPECTED_DIST_HIGH, 0.67), abs=1e-12)
@@ -128,8 +128,8 @@ def test_compute_hl_band_upper_bands_add_band_upper_of_dist_high():
 
 
 def test_compute_hl_band_lower_bands_subtract_band_upper_of_dist_low():
-    # Act
-    result = compute_hl_band(_HIGH, _LOW, _CLOSE)
+    # Act（後方互換モード = 全長・絶対距離。旧 core.py:146-147 の固定点）
+    result = compute_hl_band(_HIGH, _LOW, _CLOSE, window=None, normalize=False)
     # Assert（dn_k = close_ref - band_upper(dist_low, dev_k)・減算。手計算: dn_165=12.0-2.92=9.08）
     levels = result.levels
     assert levels["dn_067"] == pytest.approx(12.0 - band_upper(_EXPECTED_DIST_LOW, 0.67), abs=1e-12)
@@ -149,8 +149,8 @@ def test_compute_hl_band_levels_has_exactly_eight_keys():
 
 
 def test_compute_hl_band_exposes_distances():
-    # Act
-    result = compute_hl_band(_HIGH, _LOW, _CLOSE)
+    # Act（後方互換モード = 絶対距離を dist_* として保持する固定点）
+    result = compute_hl_band(_HIGH, _LOW, _CLOSE, window=None, normalize=False)
     # Assert
     np.testing.assert_allclose(result.dist_high, _EXPECTED_DIST_HIGH)
     np.testing.assert_allclose(result.dist_low, _EXPECTED_DIST_LOW)

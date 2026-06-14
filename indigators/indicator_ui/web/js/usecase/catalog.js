@@ -342,7 +342,7 @@ const PROFIT_VOLATILITY = pfDef({
 });
 const PROFIT_HL_BAND = pfDef({
   id: 'profit_hl_band', name: 'HLBand', cat: 'band', placement: 'overlay',
-  params: [],
+  params: [PF_WINDOW()],
   series: [PF_HLINE('profit_hl_band')],
 });
 // hlband は variant で出力が一変する（separate=histogram pane / overlay=価格バンド）。
