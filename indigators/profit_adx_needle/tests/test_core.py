@@ -119,14 +119,14 @@ def test_compute_level_count_is_sevenfold():
     h, low, c = _uptrend(50)
     adx = compute_adx(h, low, c, period=6)
     single = ps_level_count(adx, initialization=True)
-    seven = compute_level_count(h, low, c, period=6)
-    # 7 系統の適用価格 ADX は同一 → 単一の 7 倍（MetaQuotes 仕様 / SPEC §9）。
+    # 全期間版（window=None）の 7 倍性を固定（7 系統の ADX は同一・SPEC §9）。
+    seven = compute_level_count(h, low, c, period=6, window=None)
     assert np.allclose(seven, 7.0 * single)
 
 
 def test_level_count_flat_is_zero():
     flat = np.full(20, 5.0)
-    lc = compute_level_count(flat, flat, flat, period=6)
+    lc = compute_level_count(flat, flat, flat, period=6, window=None)
     assert np.allclose(lc, 0.0)
 
 
@@ -145,7 +145,7 @@ def test_sigma_levels_exact():
 # ------------------------------------------------------------------------- needle
 def test_needle_clamped_within_bounds():
     h, low, c = _uptrend(70)
-    res = compute_adx_needle(h, low, c, period=6)
+    res = compute_adx_needle(h, low, c, period=6, window=None)  # 全期間版でクランプ境界を固定
     assert np.all(res.needle >= res.lower_clamp - 1e-9)
     assert np.all(res.needle <= res.upper_clamp + 1e-9)
     # クランプ境界 = ±3.29σ 水準。
@@ -155,9 +155,32 @@ def test_needle_clamped_within_bounds():
 
 def test_needle_equals_level_when_within_bounds():
     h, low, c = _uptrend(70)
-    res = compute_adx_needle(h, low, c, period=6)
+    res = compute_adx_needle(h, low, c, period=6, window=None)
     inside = (res.level_count >= res.lower_clamp) & (res.level_count <= res.upper_clamp)
     assert np.allclose(res.needle[inside], res.level_count[inside])
+
+
+# ----------------------------------------------- 因果ローリング窓（look-ahead 除去）
+def test_causal_warmup_is_nan_and_no_repaint():
+    # 因果既定: warm-up は NaN、確定バーは未来追加で repaint しない。
+    h, low, c = _uptrend(400)
+    W, bar = 120, 250
+    res = compute_adx_needle(h, low, c, period=6, window=W)
+    assert np.all(np.isnan(res.level_count[:W - 1]))
+    assert np.isfinite(res.level_count[bar])
+    short = compute_adx_needle(h[:300], low[:300], c[:300], period=6, window=W)
+    np.testing.assert_allclose(
+        res.level_count[bar], short.level_count[bar], rtol=1e-12, atol=1e-12
+    )
+
+
+def test_causal_needle_clamped_on_finite():
+    h, low, c = _uptrend(300)
+    res = compute_adx_needle(h, low, c, period=6, window=120)
+    fin = np.isfinite(res.needle)
+    assert fin.any()
+    assert np.all(res.needle[fin] >= res.lower_clamp - 1e-9)
+    assert np.all(res.needle[fin] <= res.upper_clamp + 1e-9)
 
 
 def test_result_is_immutable():

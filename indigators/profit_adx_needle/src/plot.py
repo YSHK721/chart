@@ -29,7 +29,7 @@ import pandas as pd  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
 from common import level_colors  # noqa: E402
 
-from .core import DEFAULT_PERIOD  # noqa: E402
+from .core import DEFAULT_PERIOD, DEFAULT_WINDOW  # noqa: E402
 from .needle import NEEDLE_COLUMN, build_adx_needle, needle_levels  # noqa: E402
 
 # 元 #property indicator_color1 DarkGreen。
@@ -42,6 +42,7 @@ def plot_adx_needle(
     out_path: str = "profit_adx_needle.png",
     *,
     period: int = DEFAULT_PERIOD,
+    window: int | None = DEFAULT_WINDOW,
     title: str = "PRO!fit_ADX_NEEDLE",
 ) -> str:
     """ADX_NEEDLE ヒストグラムを別ペイン風に PNG 出力する。
@@ -57,8 +58,8 @@ def plot_adx_needle(
     Returns:
         書き出した PNG のパス。
     """
-    bands = build_adx_needle(df, period=period)
-    levels = needle_levels(df, period=period)
+    bands = build_adx_needle(df, period=period, window=window)
+    levels = needle_levels(df, period=period, window=window)
     needle = bands[NEEDLE_COLUMN].to_numpy(dtype=np.float64)
     x = np.arange(len(df))
 

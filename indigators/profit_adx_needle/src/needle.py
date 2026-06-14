@@ -23,7 +23,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .core import DEFAULT_PERIOD, compute_adx_needle
+from .core import DEFAULT_PERIOD, DEFAULT_WINDOW, compute_adx_needle
 
 # 成果物の列名（ガイド §5: 機械可読）。
 NEEDLE_COLUMN: str = "adx_needle"        # クランプ済みヒストグラム（描画対象）
@@ -44,14 +44,18 @@ def _extract_hlc(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def build_adx_needle(
-    df: pd.DataFrame, *, period: int = DEFAULT_PERIOD
+    df: pd.DataFrame, *, period: int = DEFAULT_PERIOD, window: int | None = DEFAULT_WINDOW
 ) -> pd.DataFrame:
     """OHLC DataFrame から ADX_NEEDLE の成果物 DataFrame を生成する。
+
+    既定は因果ローリング窓（``window=DEFAULT_WINDOW``）で標準化し repaint しない。
+    warm-up（先頭 window-1）は ``NaN``（非描画）。
 
     Args:
         df: ``high``/``low``/``close`` 列を持つ DataFrame（列名の大小不問・昇順）。
             元 index を引き継ぐ。
         period: ADX 平滑期間（既定 6。元 inpPeriod）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         index=入力 index、列= ``adx_needle`` / ``adx_level_count`` / ``adx``。
@@ -61,7 +65,7 @@ def build_adx_needle(
         ValueError: 行が空・period<=0 の場合。
     """
     h, low, c = _extract_hlc(df)
-    result = compute_adx_needle(h, low, c, period=period)
+    result = compute_adx_needle(h, low, c, period=period, window=window)
     return pd.DataFrame(
         {
             NEEDLE_COLUMN: result.needle,
@@ -72,7 +76,9 @@ def build_adx_needle(
     )
 
 
-def needle_levels(df: pd.DataFrame, *, period: int = DEFAULT_PERIOD) -> dict[str, float]:
+def needle_levels(
+    df: pd.DataFrame, *, period: int = DEFAULT_PERIOD, window: int | None = DEFAULT_WINDOW
+) -> dict[str, float]:
     """σ 水準線（up_067..up_329 / dn_067..dn_329）とクランプ境界を返す。
 
     時系列ではなく価格軸（オシレーター軸）の水平参照線であるため、成果物 DataFrame と
@@ -81,12 +87,13 @@ def needle_levels(df: pd.DataFrame, *, period: int = DEFAULT_PERIOD) -> dict[str
     Args:
         df: OHLC DataFrame。
         period: ADX 平滑期間（既定 6）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         ``up_*``/``dn_*`` の 12 水準に加え、``upper_clamp``/``lower_clamp`` を含む辞書。
     """
     h, low, c = _extract_hlc(df)
-    result = compute_adx_needle(h, low, c, period=period)
+    result = compute_adx_needle(h, low, c, period=period, window=window)
     levels = dict(result.sigma_levels)
     levels["upper_clamp"] = result.upper_clamp
     levels["lower_clamp"] = result.lower_clamp

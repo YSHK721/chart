@@ -27,7 +27,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
 from common import level_colors  # noqa: E402
 
-from .core import DEFAULT_PERIOD
+from .core import DEFAULT_PERIOD, DEFAULT_WINDOW
 from .needle import NEEDLE_COLUMN, build_adx_needle, needle_levels
 
 _COLOR = "rgba(0, 100, 0, 0.85)"        # DarkGreen
@@ -70,6 +70,7 @@ def add_adx_needle(
     df: pd.DataFrame,
     *,
     period: int = DEFAULT_PERIOD,
+    window: int | None = DEFAULT_WINDOW,
     time_column: str | None = None,
     color: str = _COLOR,
     draw_levels: bool = True,
@@ -81,6 +82,7 @@ def add_adx_needle(
             を持つオブジェクト（duck typing。別ウィンドウの場合は subchart を渡す）。
         df: OHLC DataFrame（high/low/close 必須）。
         period: ADX 平滑期間（既定 6）。
+        window: 標準化窓 W（因果。既定 120。None で全期間バッチ）。
         time_column: 時刻列の明示指定（省略時は time/date/DatetimeIndex を探索）。
         color: ヒストグラム色（既定 DarkGreen）。
         draw_levels: True で σ 水準線（上方 6 本）を水平線として追加。
@@ -91,7 +93,7 @@ def add_adx_needle(
     Raises:
         KeyError: 時刻が解決できない / HLC 列が無い場合。
     """
-    bands = build_adx_needle(df, period=period)
+    bands = build_adx_needle(df, period=period, window=window)
     times = _resolve_times(df, time_column)
 
     hist = chart.create_histogram(
@@ -107,7 +109,7 @@ def add_adx_needle(
 
     created = [hist]
     if draw_levels:
-        levels = needle_levels(df, period=period)
+        levels = needle_levels(df, period=period, window=window)
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
                 price=float(levels[key]), color=_LEVEL_COLOR, width=1,

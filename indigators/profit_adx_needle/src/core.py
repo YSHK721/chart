@@ -61,6 +61,10 @@ from profit_system.src.core import (  # noqa: E402
 # 既定パラメータ（元 ``input int inpPeriod = 6``）。
 DEFAULT_PERIOD: int = 6
 
+# 標準化窓 W（直近 W 本の過去のみで σ 距離を算出＝look-ahead 除去・repaint しない）。
+# None で全期間バッチ（従来 1:1・比較用）。日足 ~半年。
+DEFAULT_WINDOW: int | None = 120
+
 # 元 7 系統の適用価格（PRICE_WEIGHTED/TYPICAL/MEDIAN/HIGH/LOW/OPEN/CLOSE）。
 # MetaQuotes 版 iADX では出力に影響しない（vestigial）が、元の 7 回加算（= 7×）を
 # 構造として保持するために枚数のみ用いる。SPEC.md §9 参照。
@@ -168,7 +172,8 @@ def compute_adx(
 
 
 def compute_level_count(
-    high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = DEFAULT_PERIOD
+    high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = DEFAULT_PERIOD,
+    *, window: int | None = DEFAULT_WINDOW,
 ) -> np.ndarray:
     """7 系統の適用価格 ADX を単位変換・加算したレベルカウント系列を返す。
 
@@ -179,15 +184,17 @@ def compute_level_count(
     Args:
         high/low/close: OHLC の高値/安値/終値（昇順・同長）。
         period: ADX 平滑期間（既定 6）。
+        window: 標準化窓 W（直近本数。既定 120＝因果。None で全期間バッチ）。
 
     Returns:
-        レベルカウント系列（同長, float64, 符号付き ≒ 7×(adx-平均)/std）。
+        レベルカウント系列（同長, float64, 符号付き ≒ 7×σ距離）。
+        因果窓時は warm-up（先頭 window-1）が NaN（非描画）。
     """
     adx = compute_adx(high, low, close, period)
     res: np.ndarray | None = None
     for k, _name in enumerate(APPLIED_PRICES):
         # 元コードでは W のみ initialization=1、残りは 0（加算）。
-        res = ps_level_count(adx, res, initialization=(k == 0))
+        res = ps_level_count(adx, res, initialization=(k == 0), window=window)
     assert res is not None
     return res
 
@@ -220,29 +227,32 @@ class AdxNeedleResult:
 
 
 def compute_adx_needle(
-    high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = DEFAULT_PERIOD
+    high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = DEFAULT_PERIOD,
+    *, window: int | None = DEFAULT_WINDOW,
 ) -> AdxNeedleResult:
     """ADX_NEEDLE のヒストグラム（クランプ済みレベルカウント）を一括算出する。
 
     元 OnCalculate の全体（ADX 算出 → レベルカウント加算 → σ 水準 → ±3.29σ クランプ）を
-    再現する。
+    再現する。既定は因果ローリング窓（``window=DEFAULT_WINDOW``）で標準化し repaint しない。
 
     Args:
         high/low/close: OHLC の高値/安値/終値（昇順・同長）。
         period: ADX 平滑期間（既定 6。元 inpPeriod）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         AdxNeedleResult（needle / level_count / adx / sigma_levels / clamp 境界）。
+        因果窓時は warm-up（先頭 window-1）が NaN（非描画）。
 
     Raises:
         ValueError: 配列長不一致・空・period<=0 の場合。
     """
     adx = compute_adx(high, low, close, period)
-    level = compute_level_count(high, low, close, period)
+    level = compute_level_count(high, low, close, period, window=window)
     levels = compute_sigma_levels(level)
     upper = levels["up_329"]
     lower = levels["dn_329"]
-    needle = np.clip(level, lower, upper)
+    needle = np.clip(level, lower, upper)  # NaN（warm-up）は NaN のまま温存
     return AdxNeedleResult(
         needle=needle,
         level_count=level,

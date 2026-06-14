@@ -26,6 +26,7 @@ from __future__ import annotations
 from .core import (
     APPLIED_PRICES,
     DEFAULT_PERIOD,
+    DEFAULT_WINDOW,
     SIGMA_LEVELS,
     AdxNeedleResult,
     compute_adx,
@@ -54,6 +55,7 @@ __all__ = [
     "load_ohlc_csv",
     "AdxNeedleResult",
     "DEFAULT_PERIOD",
+    "DEFAULT_WINDOW",
     "SIGMA_LEVELS",
     "APPLIED_PRICES",
     "NEEDLE_COLUMN",
