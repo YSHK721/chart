@@ -246,6 +246,10 @@ const PF_INT = (name, def, extraUi = {}) => param(
   [{ kind: ConstraintKind.MIN_VALUE, operands: [name, 1], messageKey: `err.${name}` }],
   null, { group: 'group.calc', step: 1, min: 1, ...extraUi },
 );
+// 標準化窓 W（直近 W 本の過去のみで標準化＝look-ahead 除去・repaint しない）。
+// profit_* の因果化済み 6 指標で共通の window パラメータ（def=120・min:2・専用ラベル）。
+// PF_INT('window', ...) リテラルの DRY 集約（生成 param は従来と完全同一）。
+const PF_WINDOW = () => PF_INT('window', 120, { min: 2, label: '標準化窓 W（直近本数）' });
 const MA_METHOD_ENUM_LABELS = { 0: 'SMA', 1: 'EMA', 2: 'SMMA', 3: 'LWMA' };
 // compute 共通（OHLCV サンプルを前提に requiredColumns は OHLC、時刻必須）。
 const PF_COMPUTE = (id, variants = ['default']) => ({
@@ -264,7 +268,7 @@ const pfDef = ({ id, name, cat, placement, params, series, variants }) => new In
 
 const PROFIT_ADX_NEEDLE = pfDef({
   id: 'profit_adx_needle', name: 'ADXNeedle', cat: 'oscillator', placement: 'pane',
-  params: [PF_INT('period', 6)],
+  params: [PF_INT('period', 6), PF_WINDOW()],
   series: [PF_HIST('adx_needle'), PF_HLINE('profit_adx_needle')],
 });
 const PROFIT_ARCTAN = pfDef({
@@ -273,6 +277,7 @@ const PROFIT_ARCTAN = pfDef({
     PF_INT('period', 6),
     param('ma_method', ParamType.ENUM, 1, [], [0, 1, 2, 3], { group: 'group.calc', enumLabels: MA_METHOD_ENUM_LABELS }),
     param('bar_width', ParamType.FLOAT, 0.1, [], null, { group: 'group.calc', step: 0.05, min: 0.05 }),
+    PF_WINDOW(),
   ],
   series: [PF_HIST('arctan_lc'), PF_HLINE('profit_arctan')],
 });
@@ -297,7 +302,7 @@ const PROFIT_STC = pfDef({
 });
 const PROFIT_OSCILLATOR = pfDef({
   id: 'profit_oscillator', name: 'Oscillator', cat: 'volume', placement: 'pane',
-  params: [PF_INT('period_a', 6), PF_INT('period_b', 60)],
+  params: [PF_INT('period_a', 6), PF_INT('period_b', 60), PF_WINDOW()],
   series: [PF_HIST('oscillator_lc'), PF_HLINE('profit_oscillator')],
 });
 const PROFIT_OSCILLATOR2 = pfDef({
@@ -318,7 +323,7 @@ const PROFIT_OSI_MA = pfDef({
 });
 const PROFIT_RMM = pfDef({
   id: 'profit_rmm', name: 'RMM', cat: 'volume', placement: 'pane',
-  params: [PF_INT('osc_period', 6), PF_INT('ma_period', 6)],
+  params: [PF_INT('osc_period', 6), PF_INT('ma_period', 6), PF_WINDOW()],
   series: [PF_HIST('rmm_lc'), PF_HLINE('profit_rmm')],
 });
 const PROFIT_VOLATILITY = pfDef({
@@ -327,7 +332,7 @@ const PROFIT_VOLATILITY = pfDef({
   // look-ahead 除去・repaint しない。min:2。i18n キー不在のため label を直指定）。
   params: [
     PF_INT('period', 6),
-    PF_INT('window', 120, { min: 2, label: '標準化窓 W（直近本数）' }),
+    PF_WINDOW(),
   ],
   series: [PF_HIST('volatility_lc'), PF_HLINE('profit_volatility')],
 });
@@ -352,7 +357,7 @@ const PROFIT_MFI_MACD = pfDef({
 });
 const PROFIT_RMM_MACD = pfDef({
   id: 'profit_rmm_macd', name: 'RMMMACD', cat: 'volume', placement: 'pane',
-  params: [PF_INT('osc_period', 6), PF_INT('ma_period', 6), PF_INT('fast', 4), PF_INT('slow', 8), PF_INT('signal', 4)],
+  params: [PF_INT('osc_period', 6), PF_INT('ma_period', 6), PF_INT('fast', 4), PF_INT('slow', 8), PF_INT('signal', 4), PF_WINDOW()],
   series: [PF_HIST('rmmmacd_hist'), PF_LINE('RMMWMACD'), PF_LINE('Signal')],
 });
 const PROFIT_RSI_MACD = pfDef({
