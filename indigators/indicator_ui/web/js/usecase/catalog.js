@@ -323,7 +323,12 @@ const PROFIT_RMM = pfDef({
 });
 const PROFIT_VOLATILITY = pfDef({
   id: 'profit_volatility', name: 'Volatility', cat: 'oscillator', placement: 'pane',
-  params: [PF_INT('period', 6)],
+  // period=測定幅（OHLC4 の何本変化か）/ window=標準化窓 W（直近 W 本の過去のみで標準化＝
+  // look-ahead 除去・repaint しない。min:2。i18n キー不在のため label を直指定）。
+  params: [
+    PF_INT('period', 6),
+    PF_INT('window', 120, { min: 2, label: '標準化窓 W（直近本数）' }),
+  ],
   series: [PF_HIST('volatility_lc'), PF_HLINE('profit_volatility')],
 });
 const PROFIT_HL_BAND = pfDef({
