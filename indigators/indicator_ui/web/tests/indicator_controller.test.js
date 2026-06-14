@@ -108,6 +108,26 @@ test('_validateSeriesNames keeps horizontal_line whose name matches series_name 
 });
 
 // ===========================================================================
+// 既定 variant 解決（profit_band の既定は是正版 robust）
+// ===========================================================================
+
+// _defaultVariant は def.compute.variants[0] を既定として返す実解決関数。
+// profit_band の既定が欠陥版 global ではなく是正版 robust（因果窓＋比率/ATR
+// 正規化）であることを、catalog の配列順ではなく実解決関数経由で固定する。
+test('_defaultVariant resolves profit_band default to robust (not the flawed global)', () => {
+  // Arrange: 実 catalog の profit_band 定義を取得
+  const ctrl = controller();
+  const def = get('profit_band');
+  // Act: 既定 variant 解決の実経路（_defaultVariant）を通す
+  const resolved = ctrl._defaultVariant(def);
+  // Assert: 既定は是正版 robust
+  assert.equal(resolved, 'robust');
+  // 非破壊確認: global は選択肢として温存される
+  assert.ok(def.compute.variants.includes('global'));
+  assert.ok(def.compute.variants.includes('robust'));
+});
+
+// ===========================================================================
 // setTimeframe（§チャート表示時間選択・1 分足原子から resample）
 // ===========================================================================
 
