@@ -51,3 +51,19 @@ test('catalog window: 5 指標の window param が volatility 事例と完全同
     assert.deepEqual(paramOf(get(id), 'window'), base, `${id} window param must be identical to volatility precedent`);
   }
 });
+
+// profit_hl_band の因果窓化: window param を公開する（normalize は非露出）。
+// PF_WINDOW() ヘルパ流用のため volatility 事例と完全同一であることを deep-equal で固定する。
+test('catalog window: profit_hl_band publishes window param (PF_WINDOW 事例準拠・normalize 非露出)', () => {
+  const def = get('profit_hl_band');
+  const p = paramOf(def, 'window');
+  // Assert: window が name='window' / type=INT / default=120 で公開され volatility と完全同一。
+  assert.ok(p, 'profit_hl_band must publish a window param');
+  assert.equal(p.name, 'window');
+  assert.equal(p.type, ParamType.INT);
+  assert.equal(p.default, 120);
+  const base = paramOf(get('profit_volatility'), 'window');
+  assert.deepEqual(p, base, 'profit_hl_band window param must be identical to volatility precedent');
+  // normalize は UI に露出しない（承認済み: window 公開・normalize 非露出）。
+  assert.equal(paramOf(def, 'normalize'), undefined, 'normalize must NOT be exposed in UI');
+});

@@ -21,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .core import compute_distances, compute_hl_band
+from .core import DEFAULT_WINDOW, compute_distances, compute_hl_band
 
 # 成果物の列名（機械可読）。
 DIST_HIGH_COLUMN: str = "hlband_dist_high"
@@ -70,25 +70,35 @@ def build_hl_band(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def hl_band_levels(df: pd.DataFrame) -> dict[str, float]:
-    """価格軸 overlay 8 バンド + 起点 close_ref の辞書を返す。
+def hl_band_levels(
+    df: pd.DataFrame,
+    *,
+    window: int | None = DEFAULT_WINDOW,
+    normalize: bool = True,
+) -> dict[str, float]:
+    """価格軸 overlay 8 バンド + 起点 close_ref + available の辞書を返す。
 
     ``{up_067, up_165, up_196, up_258, dn_067, dn_165, dn_196, dn_258,
-    close_ref}``。up=close[-2]+band_upper(|H-C|)、dn=close[-2]-band_upper(|L-C|)。
-    元 ``iClose(1)±iBandsOnArray(...)``（L220-227）に対応する。
+    close_ref, available}``。normalize=True（既定）は比率正規化（per-bar |X-C|/C）で
+    乗算投影、False は絶対距離で加減算投影（後方互換）。window は帯幅統計に用いる末尾
+    W 本（None で全長）。available=False（有効本数 < 2）のとき 8 バンドは NaN。
 
     Args:
         df: high/low/close を含む DataFrame（列名大小不問）。
+        window: 因果窓本数（直近 W 本）。None で全長。
+        normalize: True で比率正規化、False で絶対距離（後方互換）。
 
     Returns:
-        8 バンド + close_ref の辞書。
+        8 バンド + close_ref + available の辞書。
 
     Raises:
         KeyError: high/low/close いずれかが存在しない。
-        ValueError: N<2（close[-2] 不在）。
+        ValueError: N<2（close[-2] 不在）、window が int かつ < 1（直近 W 本の窓として
+            無意味）、または normalize=True かつ close に 0 以下。
     """
     high, low, close = _extract_hlc(df)
-    result = compute_hl_band(high, low, close)
+    result = compute_hl_band(high, low, close, window=window, normalize=normalize)
     levels = dict(result.levels)
     levels["close_ref"] = result.close_ref
+    levels["available"] = result.available
     return levels

@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from .core import DEFAULT_WINDOW
 from .hl_band import hl_band_levels
 
 _BAND_COLOR = "#32CD32"   # 元 OBJPROP_COLOR LimeGreen（上下バンド線）
@@ -45,6 +46,8 @@ def plot_hl_band(
     out_path: str = "profit_hl_band.png",
     *,
     title: str = "PRO!fit_HLBand",
+    window: int | None = DEFAULT_WINDOW,
+    normalize: bool = True,
 ) -> str:
     """価格 + 8 本の水平バンド線（上側 4 / 下側 4）をメイン軸に描画する（overlay）。
 
@@ -63,7 +66,7 @@ def plot_hl_band(
         KeyError: high/low/close 列が無い場合。
         ValueError: N<2（close[-2] 不在）の場合（成果物層ガード）。
     """
-    levels = hl_band_levels(df)
+    levels = hl_band_levels(df, window=window, normalize=normalize)
 
     cols = {c.lower(): c for c in df.columns}
     high = df[cols["high"]].to_numpy(dtype=np.float64)
@@ -78,11 +81,12 @@ def plot_hl_band(
     ax.plot(x, low, color="#bdbdbd", linewidth=0.8, label="low")
     ax.plot(x, close, color=_CLOSE_COLOR, linewidth=1.0, label="close")
 
-    # --- 水平バンド線 8 本（上側 4 / 下側 4） ---
-    for key in (*_UP_KEYS, *_DN_KEYS):
-        ax.axhline(
-            levels[key], color=_BAND_COLOR, linewidth=0.9, linestyle="-", alpha=0.85
-        )
+    # --- 水平バンド線 8 本（上側 4 / 下側 4）。available=False 時は描画しない ---
+    if levels.get("available", True):
+        for key in (*_UP_KEYS, *_DN_KEYS):
+            ax.axhline(
+                levels[key], color=_BAND_COLOR, linewidth=0.9, linestyle="-", alpha=0.85
+            )
     # 起点 close_ref（close[-2]）の参照線（点線・参考）。
     ax.axhline(
         levels["close_ref"], color="#888888", linewidth=0.8, linestyle="--", alpha=0.6
