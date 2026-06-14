@@ -23,6 +23,7 @@ import pandas as pd
 # 他指標と同じ相対 import へ統一し、`_<indicator>_src` 名前空間に閉じて衝突を断つ。
 from .core import (
     DEFAULT_PERIOD,
+    DEFAULT_WINDOW,
     compute_arctan_full,
 )
 
@@ -60,14 +61,19 @@ def build_arctan(
     period: int = DEFAULT_PERIOD,
     ma_method: int = 1,
     bar_width: float = 0.1,
+    window: int | None = DEFAULT_WINDOW,
 ) -> pd.DataFrame:
     """OHLC DataFrame からクランプ済みレベルカウント列を付与した DataFrame を返す。
+
+    既定は因果ローリング窓（``window=DEFAULT_WINDOW``）で標準化し repaint しない。
+    warm-up（先頭 window-1）は ``NaN``（非描画）。
 
     Args:
         df: O/H/L/C 列（大小不問）を含む DataFrame。
         period: MA 平滑期間（既定 6）。
         ma_method: 0=SMA/1=EMA/2=SMMA/3=LWMA（既定 1）。
         bar_width: iARCTAN の角度スケール（既定 0.1）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         ``LEVEL_COUNT_COLUMN`` 列を持つ DataFrame（元 index を継承）。
@@ -84,6 +90,7 @@ def build_arctan(
         period=period,
         ma_method=ma_method,
         bar_width=bar_width,
+        window=window,
     )
     return pd.DataFrame(
         {LEVEL_COUNT_COLUMN: res.level_count_clamped},
@@ -97,6 +104,7 @@ def arctan_levels(
     period: int = DEFAULT_PERIOD,
     ma_method: int = 1,
     bar_width: float = 0.1,
+    window: int | None = DEFAULT_WINDOW,
 ) -> dict[str, float]:
     """OHLC DataFrame から σ12 水準線辞書（up_*/dn_*）を返す。
 
@@ -105,6 +113,7 @@ def arctan_levels(
         period: MA 平滑期間（既定 6）。
         ma_method: 0=SMA/1=EMA/2=SMMA/3=LWMA（既定 1）。
         bar_width: iARCTAN の角度スケール（既定 0.1）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         σ12 水準（``up_067``..``up_329`` / ``dn_067``..``dn_329``）の辞書。
@@ -121,5 +130,6 @@ def arctan_levels(
         period=period,
         ma_method=ma_method,
         bar_width=bar_width,
+        window=window,
     )
     return dict(res.levels)

@@ -36,6 +36,7 @@ from .lwc_chart import add_arctan
 from .core import (
     APPLIED_PRICES,
     DEFAULT_PERIOD,
+    DEFAULT_WINDOW,
     SIGMA_LEVELS,
     ArctanResult,
     compute_arctan,
@@ -59,6 +60,7 @@ __all__ = [
     "ps_level_count",
     "ArctanResult",
     "DEFAULT_PERIOD",
+    "DEFAULT_WINDOW",
     "SIGMA_LEVELS",
     "APPLIED_PRICES",
     "LEVEL_COUNT_COLUMN",

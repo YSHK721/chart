@@ -160,7 +160,8 @@ def test_compute_level_count_seven_prices_w_init_rest_accumulate():
     low = o - rng.uniform(0.5, 2.0, n)
     c = low + rng.uniform(0.0, (h - low))
 
-    out = compute_level_count(o, h, low, c, period=6, ma_method=1, bar_width=0.1)
+    # 全期間版（window=None）の 7 系統加算順序を参照集計と固定。
+    out = compute_level_count(o, h, low, c, period=6, ma_method=1, bar_width=0.1, window=None)
 
     # 参照: W=初期化, T,M,H,L,O,C=加算（元の7回呼び出し順）
     order = [
@@ -234,7 +235,7 @@ def test_compute_arctan_full_clamps_to_sigma_329_band():
     h[30] += 5.0
     c[31] += 5.2
     h[31] += 5.2
-    res = compute_arctan_full(o, h, low, c)
+    res = compute_arctan_full(o, h, low, c, window=None)  # 全期間版でクランプ境界を固定
     upper = res.levels["up_329"]
     lower = res.levels["dn_329"]
     assert np.all(res.level_count_clamped <= upper + 1e-12)
@@ -243,6 +244,24 @@ def test_compute_arctan_full_clamps_to_sigma_329_band():
     assert res.raw_level_count.max() > upper or res.raw_level_count.min() < lower
     expected = np.clip(res.raw_level_count, lower, upper)
     np.testing.assert_allclose(res.level_count_clamped, expected, rtol=0, atol=0)
+
+
+# ----------------------------------------------- 因果ローリング窓（look-ahead 除去）
+def test_causal_warmup_nan_and_no_repaint():
+    rng = np.random.default_rng(3)
+    n = 400
+    o = 100 + np.cumsum(rng.normal(0, 1.0, n))
+    h = o + np.abs(rng.normal(0, 0.5, n))
+    low = o - np.abs(rng.normal(0, 0.5, n))
+    c = o + rng.normal(0, 0.3, n)
+    W, bar = 120, 250
+    res = compute_arctan_full(o, h, low, c, window=W)
+    assert np.all(np.isnan(res.raw_level_count[:W - 1]))
+    assert np.isfinite(res.raw_level_count[bar])
+    short = compute_arctan_full(o[:300], h[:300], low[:300], c[:300], window=W)
+    np.testing.assert_allclose(
+        res.raw_level_count[bar], short.raw_level_count[bar], rtol=1e-12, atol=1e-12
+    )
 
 
 def test_compute_arctan_full_arrays_are_readonly():

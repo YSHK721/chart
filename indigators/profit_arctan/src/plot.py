@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → co
 from common import level_colors  # noqa: E402
 
 from .arctan import LEVEL_COUNT_COLUMN, arctan_levels, build_arctan  # noqa: E402
-from .core import DEFAULT_PERIOD  # noqa: E402
+from .core import DEFAULT_PERIOD, DEFAULT_WINDOW  # noqa: E402
 
 # 元 #property indicator_color1 DarkGreen。
 _COLOR = "#006400"
@@ -50,6 +50,7 @@ def plot_arctan(
     period: int = DEFAULT_PERIOD,
     ma_method: int = 1,
     bar_width: float = 0.1,
+    window: int | None = DEFAULT_WINDOW,
     title: str = "PRO!fit_Arctan",
 ) -> str:
     """Arctan ヒストグラムを別ペイン風に PNG 出力する。
@@ -68,8 +69,8 @@ def plot_arctan(
     Returns:
         書き出した PNG のパス。
     """
-    bands = build_arctan(df, period=period, ma_method=ma_method, bar_width=bar_width)
-    levels = arctan_levels(df, period=period, ma_method=ma_method, bar_width=bar_width)
+    bands = build_arctan(df, period=period, ma_method=ma_method, bar_width=bar_width, window=window)
+    levels = arctan_levels(df, period=period, ma_method=ma_method, bar_width=bar_width, window=window)
     lc = bands[LEVEL_COUNT_COLUMN].to_numpy(dtype=np.float64)
     x = np.arange(len(df))
 

@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → co
 from common import level_colors  # noqa: E402
 
 from .arctan import LEVEL_COUNT_COLUMN, arctan_levels, build_arctan
-from .core import DEFAULT_PERIOD
+from .core import DEFAULT_PERIOD, DEFAULT_WINDOW
 
 _COLOR = "rgba(0, 100, 0, 0.85)"        # DarkGreen
 _LEVEL_COLOR = "rgba(84, 84, 84, 0.6)"  # 元 indicator_levelcolor C'84,84,84'
@@ -83,6 +83,7 @@ def add_arctan(
     period: int = DEFAULT_PERIOD,
     ma_method: int = 1,
     bar_width: float = 0.1,
+    window: int | None = DEFAULT_WINDOW,
     time_column: str | None = None,
     color: str = _COLOR,
     draw_levels: bool = True,
@@ -106,7 +107,7 @@ def add_arctan(
     Raises:
         KeyError: 時刻が解決できない / 必須列（OHLC）が無い場合。
     """
-    bands = build_arctan(df, period=period, ma_method=ma_method, bar_width=bar_width)
+    bands = build_arctan(df, period=period, ma_method=ma_method, bar_width=bar_width, window=window)
     times = _resolve_times(df, time_column)
 
     hist = chart.create_histogram(
@@ -122,7 +123,7 @@ def add_arctan(
 
     created = [hist]
     if draw_levels:
-        levels = arctan_levels(df, period=period, ma_method=ma_method, bar_width=bar_width)
+        levels = arctan_levels(df, period=period, ma_method=ma_method, bar_width=bar_width, window=window)
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
                 price=float(levels[key]), color=_LEVEL_COLOR, width=1,

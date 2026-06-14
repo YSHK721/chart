@@ -68,6 +68,10 @@ from profit_system import (  # noqa: E402
 # 既定パラメータ（元 iARCTAN の period 既定。ma_method=1/bar_width=0.1 は関数シグネチャ既定）。
 DEFAULT_PERIOD: int = 6
 
+# 標準化窓 W（直近 W 本の過去のみで σ 距離を算出＝look-ahead 除去・repaint しない）。
+# None で全期間バッチ（従来 1:1・比較用）。日足 ~半年。
+DEFAULT_WINDOW: int | None = 120
+
 # 元 7 系統の適用価格（W/T/M/H/L/O/C）。iARCTAN では出力に影響する（MA 入力を切替）。
 APPLIED_PRICES: tuple[str, ...] = ("W", "T", "M", "H", "L", "O", "C")
 
@@ -157,6 +161,7 @@ def compute_level_count(
     period: int,
     ma_method: int,
     bar_width: float,
+    window: int | None = DEFAULT_WINDOW,
 ) -> np.ndarray:
     """7 系統の適用価格 iARCTAN を単位変換・加算したレベルカウント系列を返す。
 
@@ -169,16 +174,17 @@ def compute_level_count(
         period: MA 平滑期間。
         ma_method: 0=SMA/1=EMA/2=SMMA/3=LWMA。
         bar_width: iARCTAN の角度スケール。
+        window: 標準化窓 W（直近本数。既定 120＝因果。None で全期間バッチ）。
 
     Returns:
-        レベルカウント系列（同長, float64）。
+        レベルカウント系列（同長, float64）。因果窓時は warm-up が NaN（非描画）。
     """
     level_count: np.ndarray | None = None
     for k, kind in enumerate(_APPLIED_PRICE_ORDER):
         price = applied_price(kind, open_, high, low, close)
         arc = compute_arctan(price, period=period, ma_method=ma_method, bar_width=bar_width)
         # 元コードでは W のみ initialization=1、残りは 0（加算）。
-        level_count = ps_level_count(arc, level_count, initialization=(k == 0))
+        level_count = ps_level_count(arc, level_count, initialization=(k == 0), window=window)
     assert level_count is not None
     return level_count
 
@@ -218,20 +224,23 @@ def compute_arctan_full(
     period: int = DEFAULT_PERIOD,
     ma_method: int = 1,
     bar_width: float = 0.1,
+    window: int | None = DEFAULT_WINDOW,
 ) -> ArctanResult:
     """iARCTAN レベルカウント（クランプ済み）を一括算出する。
 
     元 OnCalculate の全体（7 系統 iARCTAN → レベルカウント加算 → σ 水準 → ±3.29σ クランプ）を
-    再現する。
+    再現する。既定は因果ローリング窓（``window=DEFAULT_WINDOW``）で標準化し repaint しない。
 
     Args:
         open_/high/low/close: OHLC 各系列（昇順・同長）。
         period: MA 平滑期間（既定 6）。
         ma_method: 0=SMA/1=EMA/2=SMMA/3=LWMA（既定 1=EMA）。
         bar_width: iARCTAN の角度スケール（既定 0.1）。
+        window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
 
     Returns:
         ArctanResult（level_count_clamped / raw_level_count / levels）。
+        因果窓時は warm-up（先頭 window-1）が NaN（非描画）。
 
     Raises:
         ValueError: OHLC の長さが不一致の場合。
@@ -246,12 +255,12 @@ def compute_arctan_full(
         )
 
     raw = compute_level_count(
-        o, h, low_a, c, period=period, ma_method=ma_method, bar_width=bar_width
+        o, h, low_a, c, period=period, ma_method=ma_method, bar_width=bar_width, window=window
     )
     levels = compute_arctan_levels(raw)
     upper = levels["up_329"]
     lower = levels["dn_329"]
-    clamped = np.clip(raw, lower, upper)
+    clamped = np.clip(raw, lower, upper)  # NaN（warm-up）は NaN のまま温存
     return ArctanResult(
         level_count_clamped=clamped,
         raw_level_count=raw,
