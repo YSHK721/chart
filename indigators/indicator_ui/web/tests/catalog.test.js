@@ -86,6 +86,14 @@ test('catalog: profit_band exposes global and robust variants', () => {
   assert.deepEqual([...d.compute.variants].sort(), ['global', 'robust']);
 });
 
+// 回帰防止: バンド値は価格水準（始値±分位点を復元）なので価格 pane(0) へ重畳する。
+// placement!=='overlay' だと indicator_controller(pane:true)→専用 pane へ落ち、
+// 下部の別 pane に表示されるバグ（別 pane 描画回帰）になる。
+test('catalog: profit_band is overlaid on the price pane (not a separate pane)', () => {
+  const d = get('profit_band');
+  assert.equal(d.placement, 'overlay');
+});
+
 test('catalog: tgp_btlm has fitter backend_param', () => {
   const d = get('tgp_btlm');
   assert.equal(d.compute.backendParam, 'fitter');

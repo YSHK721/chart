@@ -100,13 +100,15 @@ const TGP_BTLM = new IndicatorDef({
   compute: { computeId: 'tgp_btlm', requiredColumns: OHLC, timeRequired: true, backendParam: 'fitter', variants: ['default'] },
 });
 
-// --- profit_band（global / robust・PANE）---------------------------------
+// --- profit_band（global / robust・OVERLAY）------------------------------
+// バンド値は始値±分位点を価格水準へ復元した price-level（bands.py / robust_bands.py）。
+// よって価格 pane(0) のローソクへ重畳する（§下部コメント「価格バンドは 'overlay'」準拠）。
 const PROFIT_BAND = new IndicatorDef({
   id: 'profit_band',
   displayNameKey: 'ind.profit_band',
   category: { group: 'builtin', nameKey: 'cat.statistics' },
   tab: 'indicator',
-  placement: 'pane',
+  placement: 'overlay',
   params: [
     // probabilities 既定 [0.95,0.99]→実 7 水準 PROBABILITIES 是正（M-4・core.py:19）。
     param('probabilities', ParamType.FLOAT_LIST, [0.51, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99], [
