@@ -40,7 +40,15 @@ test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース
   assert.equal(paramOf(d, 'source').type, ParamType.ENUM);
   assert.equal(paramOf(d, 'offset').default, 0);
   assert.equal(paramOf(d, 'smoothing_type').default, 'none');
-  assert.equal(paramOf(d, 'wait_for_close').default, true);
+  assert.equal(paramOf(d, 'wait_for_close').default, false);
+});
+
+// 回帰防止: wait_for_close の既定は false。true だと lwc_chart が最終足（未確定足）を
+//   price[:-1] で除外し、MA が常に最新足の1本手前で止まる（最新足に指標が出ないバグ）。
+//   確定足のみで計算したいユーザーはダイアログで ON にできる。
+test('catalog: moving_averages wait_for_close defaults to false so the MA reaches the latest bar', () => {
+  const d = get('moving_averages');
+  assert.equal(paramOf(d, 'wait_for_close').default, false);
 });
 
 test('catalog: moving_averages localizes labels and enum options (日本語表示)', () => {

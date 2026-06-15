@@ -228,7 +228,9 @@ const MOVING_AVERAGES = new IndicatorDef({
     }),
     // --- 計算 ---
     param('timeframe', ParamType.ENUM, 'chart', [], ['chart', '1m', '5m', '15m', '1h', '4h', '1D', '1W', '1M'], { group: '計算', order: 1, label: '時間足', enumLabels: MA_TIMEFRAME_LABELS, tooltip: 'この指標を計算する時間足（「チャート」はチャートの時間足に追従）' }),
-    param('wait_for_close', ParamType.BOOL, true, [], null, { group: '計算', order: 2, label: '時間足の確定を待つ' }),
+    // 既定 false: 未確定の最新足も計算し MA を最新足まで描画する（true だと最終足を除外し
+    //   常に1本手前で止まる）。確定足のみで計算したい場合はダイアログで ON にする。
+    param('wait_for_close', ParamType.BOOL, false, [], null, { group: '計算', order: 2, label: '時間足の確定を待つ' }),
   ],
   // 固定系列（dynamic=false）: backend が平滑化タイプに応じて部分集合を出力する。
   series: [MA_LINE('MA'), MA_LINE('Smoothing'), MA_LINE('Upper'), MA_LINE('Lower')],
