@@ -57,12 +57,17 @@ html, body {
 .chart-wrap { position: relative; flex: 1 1 auto; min-height: 0; }
 #chart { position: absolute; inset: 0; }
 
-/* クロスヘア価格読み取り欄（左上最上段・日時 + OHLC + overlay 各行）。
-   読み取り欄は #legend の上に縦積みする（読み取り欄の下に管理行）。 */
-#crosshair-readout {
+/* 左上オーバーレイ・スタック（読み取り欄→凡例を縦フローで積む）。固定 top を使わず
+   フロー配置にすることで、読み取り欄が overlay 行数で伸びても #legend と重ならない。 */
+#chart-overlay-tl {
   position: absolute; top: 10px; left: 12px; z-index: 6;
-  display: flex; flex-direction: column; gap: 3px;
+  display: flex; flex-direction: column; gap: 6px;
   pointer-events: none;
+}
+
+/* クロスヘア価格読み取り欄（日時 + OHLC + overlay 各行）。 */
+#crosshair-readout {
+  display: flex; flex-direction: column; gap: 3px;
   font-size: 12px;
 }
 #crosshair-readout .readout-ohlc {
@@ -79,11 +84,10 @@ html, body {
   white-space: nowrap; width: fit-content;
 }
 
-/* 凡例（適用中インスタンス）。読み取り欄の下へ下げる（縦積み・読み取り欄の高さ分）。 */
+/* 凡例（適用中インスタンス）。#chart-overlay-tl 内で読み取り欄の下に自然フローで並ぶ
+   （固定 top を撤廃したので読み取り欄の高さに追従し重ならない）。 */
 #legend {
-  position: absolute; top: 64px; left: 12px; z-index: 5;
   display: flex; flex-direction: column; gap: 4px;
-  pointer-events: none;
 }
 .legend-row {
   display: inline-flex; align-items: center; gap: 8px;
@@ -331,10 +335,14 @@ html, body {
     <!-- チャート + クロスヘア価格読み取り欄 + 凡例 -->
     <div class="chart-wrap">
       <div id="chart"></div>
-      <!-- クロスヘア価格読み取り欄（左上最上段・日時 + OHLC + overlay 各行）。
-           ChartRenderer.onCrosshairReadout → CrosshairReadoutView.render が描画する。 -->
-      <div id="crosshair-readout"></div>
-      <div id="legend"></div>
+      <!-- 左上オーバーレイ（読み取り欄→凡例を縦フローで積む。読み取り欄の高さが
+           overlay 行数で伸びても #legend が重ならないよう、固定 top でなくフロー配置にする）。 -->
+      <div id="chart-overlay-tl">
+        <!-- クロスヘア価格読み取り欄（日時 + OHLC + overlay 各行）。
+             ChartRenderer.onCrosshairReadout → CrosshairReadoutView.render が描画する。 -->
+        <div id="crosshair-readout"></div>
+        <div id="legend"></div>
+      </div>
     </div>
   </div>
 

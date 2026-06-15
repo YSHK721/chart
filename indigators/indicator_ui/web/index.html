@@ -34,10 +34,14 @@
     <!-- チャート + クロスヘア価格読み取り欄 + 凡例 -->
     <div class="chart-wrap">
       <div id="chart"></div>
-      <!-- クロスヘア価格読み取り欄（左上最上段・日時 + OHLC + overlay 各行）。
-           ChartRenderer.onCrosshairReadout → CrosshairReadoutView.render が描画する。 -->
-      <div id="crosshair-readout"></div>
-      <div id="legend"></div>
+      <!-- 左上オーバーレイ（読み取り欄→凡例を縦フローで積む。読み取り欄の高さが
+           overlay 行数で伸びても #legend が重ならないよう、固定 top でなくフロー配置にする）。 -->
+      <div id="chart-overlay-tl">
+        <!-- クロスヘア価格読み取り欄（日時 + OHLC + overlay 各行）。
+             ChartRenderer.onCrosshairReadout → CrosshairReadoutView.render が描画する。 -->
+        <div id="crosshair-readout"></div>
+        <div id="legend"></div>
+      </div>
     </div>
   </div>
 
