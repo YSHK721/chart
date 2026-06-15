@@ -81,3 +81,51 @@ node build.mjs   # → ../out/prototype.html を生成
 | 起動 | `node build.mjs` → file:// | venv python で `framework/server.py` → http:// |
 
 判定はフロントの `location.protocol`（http/https → B方式、file: → A方式）で自動切替する。
+
+## 市場データ取得（JP225 1 分足の自動更新）
+
+`tools/export_jp225_m1.py` が Dukascopy（無料・口座不要のヒストリカル）から JP225 1 分足を
+取得し、原子データ `marketdata/data/jp225_m1.csv` を生成・更新する。上位足（5m〜1D）は
+別途取得不要で、この 1 分足から `dataset.resample_ohlc` が自動で再集計する（原子＝1 分足）。
+
+> 既存 CSV の末尾時刻以降のみを取得して**追記**する。取得境界は「数分前まで」（`--lag-minutes`）
+> で、未確定足を除外し look-ahead / repaint を防ぐ。原子は UTC 素のまま保存する。
+
+### 起動方法
+
+リポジトリルート `/workspaces/app` から実行する（既定出力 `marketdata/data/jp225_m1.csv`）。
+
+```bash
+# ① 起動時ワンショット増分（既定）— 末尾以降を最新(数分前)まで取得・追記して終了
+python indigators/indicator_ui/tools/export_jp225_m1.py
+
+# ② 継続ポーリング — 起動時増分＋一定間隔で増分し続ける（Ctrl-C で停止）
+python indigators/indicator_ui/tools/export_jp225_m1.py --watch
+python indigators/indicator_ui/tools/export_jp225_m1.py --watch --interval 60   # 間隔指定（下限 60 秒）
+
+# ③ 全期間上書き（バックテスト初期構築用）— --start/--end 両指定
+python indigators/indicator_ui/tools/export_jp225_m1.py --start 2011-06-01 --end 2026-06-15
+```
+
+### モード判定（引数で自動分岐）
+
+| 指定 | モード |
+|---|---|
+| `--start`/`--end` 両方 | 全期間上書き（従来挙動） |
+| 両方省略・`--watch` なし | **ワンショット増分（既定）** |
+| `--watch` | 継続ポーリング |
+| 片側のみ | エラー（曖昧モード排除） |
+
+### 主なオプション
+
+| フラグ | 既定 | 意味 |
+|---|---|---|
+| `--output` | `marketdata/data/jp225_m1.csv` | 出力先 |
+| `--interval` | 60 | ポーリング間隔（秒・下限 60。過剰アクセス抑止） |
+| `--lag-minutes` | 3 | 「数分前まで」境界（未確定足を除外） |
+| `--offer-side` | bid | 気配側（bid / ask） |
+| `--no-repair` | — | 日内外れ値除去を無効化（既定は有効） |
+| `--quiet` | — | 進捗ログを抑制 |
+
+> データは Dukascopy の非商用ライセンス（再配布禁止）。取得 CSV は公開リポジトリへコミットしない。
+> リアルタイム秒単位のライブ追従が必要になった場合は JForex API への切り替えを別途検討する。
