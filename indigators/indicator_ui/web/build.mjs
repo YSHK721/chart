@@ -28,6 +28,7 @@ const MODULE_ORDER = [
   'js/usecase/catalog.js',
   'js/usecase/facade.js',
   'data/sample_data.js',
+  'js/adapter/front/format.js',
   'js/adapter/front/chart_renderer.js',
   'js/adapter/front/compute_http_client.js',
   'js/adapter/front/embedded_compute_gateway.js',
@@ -36,6 +37,8 @@ const MODULE_ORDER = [
   'js/usecase/form_model.js',
   'js/adapter/front/properties_dialog.js',
   'js/adapter/front/indicator_controller.js',
+  'js/adapter/front/live_updater.js',
+  'js/adapter/front/crosshair_readout_view.js',
   'js/adapter/front/composition_root_front.js',
 ];
 

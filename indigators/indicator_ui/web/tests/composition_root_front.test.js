@@ -138,3 +138,86 @@ test('bootstrap (file://) exposes liveUpdater=null so no live updates are wired'
   // Assert: A方式（file://）はライブ更新を配線しない。
   assert.equal(liveUpdater, null);
 });
+
+// ===========================================================================
+// クロスヘア価格読み取り欄（左上オーバーレイ）の配線
+//   composition root が CrosshairReadoutView を生成し、ChartRenderer の onCrosshairReadout に
+//   (dto) => view.render(dto) を注入する。crosshair 発火で読み取り要素へ描画される。
+// ===========================================================================
+
+// crosshair handler を捕捉できる fake lwc（fireCrosshair で発火可能）。
+function fakeLwcFireable() {
+  const created = [];
+  const mainSeries = { setData: () => {}, update: () => {} };
+  const CandlestickSeries = {};
+  let handler = null;
+  const chart = {
+    // 最初の addSeries（CandlestickSeries）は main 系列を返す。以降（overlay）は別系列。
+    addSeries: (def, opts) => {
+      if (def === CandlestickSeries) { return mainSeries; }
+      const s = { _opts: opts, setData: () => {}, applyOptions: () => {} }; created.push(s); return s;
+    },
+    timeScale: () => ({ fitContent: () => {} }),
+    panes: () => [{ setStretchFactor: () => {}, paneIndex: () => 0 }],
+    addPane: () => ({ addSeries: () => ({ setData: () => {} }), setStretchFactor: () => {}, setPreserveEmptyPane: () => {}, paneIndex: () => 1 }),
+    removePane: () => {}, removeSeries: () => {},
+    subscribeCrosshairMove: (h) => { handler = h; },
+    fireCrosshair: (param) => { if (handler) handler(param); },
+  };
+  return {
+    lwc: {
+      createChart: () => chart,
+      ColorType: { Solid: 'solid' },
+      CandlestickSeries, LineSeries: {}, HistogramSeries: {},
+      createTextWatermark: () => ({ applyOptions: () => {}, detach: () => {} }),
+    },
+    chart, mainSeries,
+  };
+}
+
+// crosshair-readout 要素を持つ fake document（CrosshairReadoutView の描画先）。
+function fakeReadoutDoc() {
+  const mk = () => ({ className: '', textContent: '', style: {}, children: [],
+    set innerHTML(v) { if (v === '') this.children = []; }, get innerHTML() { return ''; },
+    append(...n) { this.children.push(...n); } });
+  const readout = mk();
+  return {
+    _readout: readout,
+    getElementById: (id) => (id === 'crosshair-readout' ? readout : null),
+    createElement: () => mk(),
+  };
+}
+
+test('bootstrap wires onCrosshairReadout so crosshair moves render into #crosshair-readout', async () => {
+  // Arrange
+  const { lwc, chart, mainSeries } = fakeLwcFireable();
+  const doc = fakeReadoutDoc();
+  // Act
+  const { ready } = await bootstrap({
+    lwc, container: {}, doc, storage: noStorage, protocol: 'file:',
+  });
+  await ready;
+  // crosshair 移動を発火（main OHLC を seriesData に載せる）。
+  chart.fireCrosshair({ time: 1277769600, seriesData: new Map([[mainSeries, { open: 1.2, high: 1.6, low: 1.1, close: 1.5 }]]) });
+  // Assert: 読み取り要素へ何か描画される（OHLC 行）。
+  assert.ok(doc._readout.children.length > 0, 'crosshair readout element should be populated');
+});
+
+test('bootstrap (file://) establishes _lastBar so hover-off shows OHLC without a prior hover', async () => {
+  // 仕様: A方式（file://）でも成立（初期ロードの末尾足が _lastBar に立つ）。bootstrap が
+  //   初期 candles を renderer.setCandles 経由で流すことを固定する（直接 mainSeries.setData だと
+  //   _lastBar が立たず、hover 解除時に OHLC が空になる回帰を防ぐ）。
+  // Arrange
+  const { lwc, chart } = fakeLwcFireable();
+  const doc = fakeReadoutDoc();
+  // Act
+  const { ready } = await bootstrap({
+    lwc, container: {}, doc, storage: noStorage, protocol: 'file:',
+  });
+  await ready;
+  // hover 解除（seriesData 空・事前 hover なし）。
+  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
+  // Assert: SAMPLE_DATA 末尾足（close=185）が読み取り欄に描画される（_lastBar フォールバック）。
+  const text = JSON.stringify(doc._readout.children);
+  assert.match(text, /185/);
+});

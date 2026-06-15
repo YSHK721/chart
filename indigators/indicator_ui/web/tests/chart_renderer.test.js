@@ -354,3 +354,153 @@ test('updateLastCandle: forwards the candle to mainSeries.update exactly once', 
   assert.equal(updateCalls.length, 1);
   assert.deepEqual(updateCalls[0], candle);
 });
+
+// ===========================================================================
+// クロスヘア価格読み取り欄（onCrosshairReadout）— 読み取り DTO の構築・発火。
+//   DTO 形: { time, ohlc:{open,high,low,close}|null, overlays:[{name,value,color}] }。
+//   DTO に series 実体・lwc 型を含めない（隔離維持）。
+// ===========================================================================
+
+// onCrosshairReadout スパイ付き renderer を組む。dtos に発火 DTO を蓄積する。
+function newReadoutRenderer() {
+  const chart = fakeChart();
+  const main = fakeMainSeries();
+  const lwc = fakeLwc();
+  const dtos = [];
+  const renderer = new ChartRenderer({
+    chart, mainSeries: main, lwc, onCrosshairReadout: (dto) => dtos.push(dto),
+  });
+  return { renderer, chart, main, lwc, dtos };
+}
+
+test('crosshair readout: builds main OHLC from seriesData.get(mainSeries)', () => {
+  // Arrange
+  const { renderer, chart, main, dtos } = newReadoutRenderer();
+  const bar = { open: 1.2, high: 1.6, low: 1.1, close: 1.5 };
+  // Act: hover 中（seriesData に main がある）。
+  chart.fireCrosshair({ time: 1277769600, seriesData: new Map([[main, bar]]) });
+  // Assert: 最後の DTO に当該 OHLC が載る。
+  assert.ok(dtos.length >= 1);
+  const dto = dtos[dtos.length - 1];
+  assert.equal(dto.time, 1277769600);
+  assert.deepEqual(dto.ohlc, { open: 1.2, high: 1.6, low: 1.1, close: 1.5 });
+});
+
+test('crosshair readout: falls back to _lastBar when seriesData lacks the main series (hover off)', () => {
+  // Arrange: setCandles で最新足が _lastBar に立つ。
+  const { renderer, chart, dtos } = newReadoutRenderer();
+  renderer.setCandles([
+    { time: 1, open: 1, high: 2, low: 0, close: 1.5 },
+    { time: 2, open: 2.0, high: 2.5, low: 1.8, close: 2.2 },
+  ]);
+  // Act: hover 解除（seriesData に main 無し）。
+  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
+  // Assert: 末尾足へフォールバック。
+  const dto = dtos[dtos.length - 1];
+  assert.deepEqual(dto.ohlc, { open: 2.0, high: 2.5, low: 1.8, close: 2.2 });
+});
+
+test('crosshair readout: includes overlay value and color from seriesData', () => {
+  // Arrange: overlay（pane 0）の line 系列を生成。
+  const { renderer, chart, dtos } = newReadoutRenderer();
+  renderer.renderLine('prp#1', [
+    { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 100 }] },
+  ]);
+  const overlaySeries = chart.created[0];
+  // Act: hover 中、overlay に値がある。
+  chart.fireCrosshair({ time: 1277769600, seriesData: new Map([[overlaySeries, { value: 101 }]]) });
+  // Assert: overlay 行（name/value/color）が DTO に載る。
+  const dto = dtos[dtos.length - 1];
+  assert.deepEqual(dto.overlays, [{ name: 'BULL', value: 101, color: '#2e9e5b' }]);
+});
+
+test('crosshair readout: hidden overlay (setVisible false) is excluded; re-shown when visible — 🟡-1 regression', () => {
+  // Arrange: overlay を生成。
+  const { renderer, chart, dtos } = newReadoutRenderer();
+  renderer.renderLine('prp#1', [
+    { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 100 }] },
+  ]);
+  // Act/Assert: 非表示にすると読み取り欄から除外（hover 解除＝lastValue 経路でも出ない）。
+  renderer.setVisible('prp#1', false);
+  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
+  assert.deepEqual(dtos[dtos.length - 1].overlays, []);
+  // 再表示で戻る。
+  renderer.setVisible('prp#1', true);
+  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
+  assert.deepEqual(dtos[dtos.length - 1].overlays, [{ name: 'BULL', value: 100, color: '#2e9e5b' }]);
+});
+
+test('crosshair readout: overlay value falls back to last point value when seriesData lacks it', () => {
+  // Arrange: 末尾点 value=100 を保持しているはず。
+  const { renderer, chart, dtos } = newReadoutRenderer();
+  renderer.renderLine('prp#1', [
+    { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 99 }, { time: 2, value: 100 }] },
+  ]);
+  // Act: hover 解除（seriesData 空）。
+  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
+  // Assert: 保持した末尾 value=100 へフォールバック。
+  const dto = dtos[dtos.length - 1];
+  assert.deepEqual(dto.overlays, [{ name: 'BULL', value: 100, color: '#2e9e5b' }]);
+});
+
+test('crosshair readout: setData updates the overlay last value used for fallback', () => {
+  // Arrange
+  const { renderer, chart, dtos } = newReadoutRenderer();
+  renderer.renderLine('prp#1', [
+    { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 100 }] },
+  ]);
+  // Act: 再計算で末尾点が変わる → fallback 値も更新される。
+  renderer.setData('prp#1::BULL', [{ time: 2, value: 200 }]);
+  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
+  // Assert
+  const dto = dtos[dtos.length - 1];
+  assert.deepEqual(dto.overlays, [{ name: 'BULL', value: 200, color: '#2e9e5b' }]);
+});
+
+test('crosshair readout: pane (non-overlay) series are not included in overlays', () => {
+  // Arrange: pane 指標（pane 0 ではない）は読み取り欄の overlay 行に含めない。
+  const { renderer, chart, dtos } = newReadoutRenderer();
+  renderer.renderLine('rsi#1', [{ name: 'rsi', kind: 'line', style: 'solid', width: 1, color: '#fff', data: [{ time: 1, value: 55 }] }], { pane: true, name: 'RSI' });
+  const paneSeries = chart.created[0];
+  // Act
+  chart.fireCrosshair({ time: 1277769600, seriesData: new Map([[paneSeries, { value: 56 }]]) });
+  // Assert: overlays は空（pane 系列は除外）。
+  const dto = dtos[dtos.length - 1];
+  assert.deepEqual(dto.overlays, []);
+});
+
+test('crosshair readout: omitted onCrosshairReadout is a no-op (backward compatible, no throw)', () => {
+  // Arrange: コールバック省略。
+  const chart = fakeChart();
+  const main = fakeMainSeries();
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: fakeLwc() });
+  // Act + Assert: クロスヘア発火でクラッシュしない。
+  assert.doesNotThrow(() => chart.fireCrosshair({ time: 1, seriesData: new Map([[main, { open: 1, high: 1, low: 1, close: 1 }]]) }));
+});
+
+test('crosshair readout: updateLastCandle re-fires readout DTO with the new last bar', () => {
+  // Arrange
+  const { renderer, main, dtos } = newReadoutRenderer();
+  main.update = () => {};
+  renderer.setCandles([{ time: 1, open: 1, high: 2, low: 0, close: 1.5 }]);
+  const before = dtos.length;
+  // Act: ライブ更新で最新足が変わる。
+  renderer.updateLastCandle({ time: 2, open: 2.0, high: 2.5, low: 1.8, close: 2.2 });
+  // Assert: 読み取り DTO が最新足ベースで再発火する。
+  assert.ok(dtos.length > before, 'updateLastCandle should re-fire the readout');
+  const dto = dtos[dtos.length - 1];
+  assert.deepEqual(dto.ohlc, { open: 2.0, high: 2.5, low: 1.8, close: 2.2 });
+});
+
+test('crosshair readout: existing watermark logic still updates (機能③ backward compat)', () => {
+  // Arrange: pane 指標を作り、読み取りコールバックも注入する。
+  const { renderer, chart, lwc } = newReadoutRenderer();
+  renderer.renderHistogram('rsi#1', [{ name: 'rsi', kind: 'histogram', data: [] }], { pane: true, name: 'RSI' });
+  const series = chart.created[0];
+  // Act
+  chart.fireCrosshair({ seriesData: new Map([[series, { value: 56.3 }]]) });
+  // Assert: 既存 watermark 更新（機能③）が不変に動く。
+  const text = lwc._watermarks[0]._options.lines[0].text;
+  assert.match(text, /RSI/);
+  assert.match(text, /56\.3/);
+});
