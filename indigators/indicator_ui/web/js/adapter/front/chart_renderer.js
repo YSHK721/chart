@@ -84,6 +84,12 @@ export class ChartRenderer {
     this._chart.timeScale().fitContent();
   }
 
+  // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。
+  //   既存 time なら上書き、新しい time なら追加（lightweight-charts の update 仕様）。
+  updateLastCandle(candle) {
+    this._mainSeries.update(candle);
+  }
+
   _slot(instanceId) {
     let slot = this._instances.get(instanceId);
     if (!slot) {

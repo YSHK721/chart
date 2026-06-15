@@ -335,3 +335,22 @@ test('remove+redraw survives v5 empty-pane auto-removal (regression: period 変�
   renderer.renderHistogram('vol#1', [{ name: 'volatility_lc', kind: 'histogram', data: [] }], { pane: true, name: 'Volatility' });
   assert.equal(chart.panes().length, 2);  // 指標 pane が復活（消えない）
 });
+
+// ===========================================================================
+// updateLastCandle（ライブ更新・最新足の差分反映）— series.update は本所のみ呼ぶ（隔離維持）
+// ===========================================================================
+
+test('updateLastCandle: forwards the candle to mainSeries.update exactly once', () => {
+  // Arrange: main 系列に update スパイを仕込む（series.update を呼ぶのは ChartRenderer だけ）。
+  const chart = fakeChart();
+  const main = fakeMainSeries();
+  const updateCalls = [];
+  main.update = (c) => updateCalls.push(c);
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: fakeLwc() });
+  const candle = { time: 1277769600, open: 1.2, high: 1.6, low: 1.1, close: 1.5 };
+  // Act
+  renderer.updateLastCandle(candle);
+  // Assert: _mainSeries.update を 1 回・当該 candle で呼ぶ。
+  assert.equal(updateCalls.length, 1);
+  assert.deepEqual(updateCalls[0], candle);
+});

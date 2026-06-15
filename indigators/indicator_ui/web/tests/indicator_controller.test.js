@@ -182,3 +182,104 @@ test('setTimeframe recomputes applied indicators carrying the new timeframe and 
   assert.equal(last.timeframe, '1W');
   assert.equal(last.limit, 1500);
 });
+
+test('setTimeframe keeps isRecomputing() true during the candles fetch await (live tick is skipped) — 🟡-2 regression', async () => {
+  const noop = () => {};
+  let releaseCandles;
+  const candlesGate = new Promise((r) => { releaseCandles = r; });
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => ({ ok: true, generation: req.generation ?? 0, series: [] }) },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, setData: noop, setVisible: noop, remove: noop, setCandles: noop },
+    document: null,
+    mode: 'b',
+    datasetRef: 'jp225_m1',
+    timeframe: '1D',
+    recentBars: 1500,
+    // candles 取得を deferred でブロックし、取得 await 中の状態を観測可能にする。
+    loadCandles: async () => { await candlesGate; return [{ time: 1, open: 1, high: 1, low: 1, close: 1 }]; },
+  });
+  // setTimeframe を開始（candles 取得 await で停止する）。
+  const p = ctrl.setTimeframe('1W');
+  await Promise.resolve();
+  // 🟡-2: 取得 await 中も競合ガードが立っていること＝この隙にライブ tick が割り込めない。
+  //   （バッチ全体を包む前は false になり、二重 compute の窓が開いていた。）
+  assert.equal(ctrl.isRecomputing(), true);
+  releaseCandles();
+  await p;
+  // バッチ完了後は解除される。
+  assert.equal(ctrl.isRecomputing(), false);
+});
+
+// ===========================================================================
+// isRecomputing（競合ガード・ライブ更新の tick スキップ判定の単一権威）
+//   LiveUpdater は独自フラグを持たず controller.isRecomputing() を参照する。
+// ===========================================================================
+
+// compute を外部 deferred で制御し、再計算の「実行中」を観測できる controller。
+function deferredController() {
+  const noop = () => {};
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => { await gate; return { ok: true, generation: req.generation ?? 0, series: [] }; } },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop, setVisible: noop, remove: noop },
+    document: null,
+  });
+  return { ctrl, release };
+}
+
+test('isRecomputing returns false before any recompute', () => {
+  const { ctrl } = deferredController();
+  assert.equal(ctrl.isRecomputing(), false);
+});
+
+test('isRecomputing is true while a recompute is in flight and false after it settles', async () => {
+  // Arrange: 指標を 1 つ適用（apply の compute は即時解決させるため gate 前に release）。
+  const { ctrl, release } = deferredController();
+  // apply はゲート前に解決させたいので、まず apply を走らせ release で通す。
+  const applyPromise = ctrl.applyIndicator('tgp_btlm', 'default');
+  release();
+  await applyPromise;
+  const instId = ctrl._state.applied[0].instanceId;
+
+  // 次の recompute 用に新しいゲートを張る（deferredController は 1 つの gate のため再構成）。
+  let release2;
+  const gate2 = new Promise((r) => { release2 = r; });
+  ctrl._compute.compute = async (req) => { await gate2; return { ok: true, generation: req.generation ?? 0, series: [] }; };
+
+  // Act: recompute を開始（await しない＝実行中）。
+  const recomputePromise = ctrl.recomputeInstance(instId, null, {});
+  // Assert: 実行中は true。
+  assert.equal(ctrl.isRecomputing(), true);
+  // 解放後は false に戻る。
+  release2();
+  await recomputePromise;
+  assert.equal(ctrl.isRecomputing(), false);
+});
+
+// ===========================================================================
+// recomputeAllApplied（ライブ更新の再計算入口・適用済み全指標を現 params/timeframe で再計算）
+// ===========================================================================
+
+test('recomputeAllApplied recomputes every applied instance with current params', async () => {
+  const { ctrl, computeCalls } = recordingController();
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const before = computeCalls.length;
+  // Act
+  await ctrl.recomputeAllApplied();
+  const after = computeCalls.slice(before);
+  // Assert: 適用済み 1 指標の再計算 compute が発火し、現時間足（1D）を伴う。
+  assert.ok(after.length >= 1, '適用済み指標の再計算 compute が発火する');
+  assert.equal(after.at(-1).timeframe, '1D');
+});
+
+test('recomputeAllApplied is a no-op when nothing is applied', async () => {
+  const { ctrl, computeCalls } = recordingController();
+  const before = computeCalls.length;
+  await ctrl.recomputeAllApplied();
+  assert.equal(computeCalls.length, before);
+});

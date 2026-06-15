@@ -83,10 +83,17 @@
       // B方式の対象データセット。JP225 1分足原子（dataset.py の whitelist 'jp225_m1'）を
       // ライブ計算し、時間足セレクタで resample 表示する（既定 1D・直近 RECENT_BARS 本）。
       datasetRef: 'jp225_m1',
-    }).then(({ controller, ready }) => {
+    }).then(({ controller, ready, liveUpdater }) => {
       controller.bind();
       // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。
-      ready.then(() => controller.restore());
+      ready.then(() => {
+        controller.restore();
+        // ライブ更新（1 分間隔）。served（B方式）のみ liveUpdater が組み立てられる
+        //   （file:// は null）。復元後に開始し、以降 60 秒ごとに再計算＋最新足を反映する。
+        if (liveUpdater) {
+          liveUpdater.start();
+        }
+      });
     });
   </script>
 </body>

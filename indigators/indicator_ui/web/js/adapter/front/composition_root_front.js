@@ -16,6 +16,7 @@
 // candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
 import { ChartRenderer } from './chart_renderer.js';
 import { ComputeHttpClient } from './compute_http_client.js';
+import { LiveUpdater } from './live_updater.js';
 import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
@@ -76,6 +77,12 @@ export async function bootstrap({
   // 既定時間足・直近表示本数（§配信設計）。テスト・入口で差し替え可能。
   timeframe = DEFAULT_TIMEFRAME,
   recentBars = RECENT_BARS,
+  // ライブ更新のタイマー実装（注入・テストでフェイク化）。合成根自身は setInterval を
+  //   呼ばず、LiveUpdater へ実装を渡すだけにする（タイマー依存を合成根に置かない）。
+  setInterval: setIntervalImpl = (typeof globalThis !== 'undefined' ? globalThis.setInterval.bind(globalThis) : undefined),
+  clearInterval: clearIntervalImpl = (typeof globalThis !== 'undefined' ? globalThis.clearInterval.bind(globalThis) : undefined),
+  // ライブ更新間隔（ms・既定 60 秒）。テストで差し替え可能。
+  liveIntervalMs = 60000,
 } = {}) {
   const mode = modeForProtocol(protocol);
 
@@ -143,5 +150,21 @@ export async function bootstrap({
       })
     : Promise.resolve();
 
-  return { chart, mainSeries, renderer, controller, mode, ready };
+  // ライブ更新（1 分間隔）の組み立て。served（B方式）のみ。tick は controller 経由の再計算
+  //   ＋ /candles 再取得 → 最新足を renderer.updateLastCandle で差分反映する。start は入口
+  //   （index.html）が served 時のみ呼ぶ。A方式（file://）は null（更新を配線しない）。
+  const liveUpdater = (mode === 'b')
+    ? new LiveUpdater({
+        controller,
+        renderer,
+        loadCandles: (ref, tf) => fetchCandles(fetch, ref, tf, recentBars),
+        datasetRef,
+        getTimeframe: () => controller._timeframe,
+        setInterval: setIntervalImpl,
+        clearInterval: clearIntervalImpl,
+        intervalMs: liveIntervalMs,
+      })
+    : null;
+
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater };
 }

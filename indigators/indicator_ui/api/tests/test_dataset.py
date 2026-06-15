@@ -115,3 +115,89 @@ def test_resample_ohlc_none_rule_returns_same_object():
     # rule=None は無変換（原子そのもの）で同一オブジェクトを返す。
     df = dataset.load_dataframe("sample")
     assert dataset.resample_ohlc(df, None) is df
+
+
+# --------------------------------------------------------------------------- #
+# CSV mtime 検知キャッシュ（最内 _load_base_dataframe の1段のみ・有界）
+#   設計入力: ライブ更新（1 分間隔）で CSV が更新されたら再読込する。公開シグネチャ
+#   （load_candles / load_dataframe）は不変のまま、mtime 変化を全段貫通させる。
+# --------------------------------------------------------------------------- #
+import csv as _csv
+
+# 決定論的な tmp CSV（loader が要求する open/high/low/close + date 列）。
+_CSV_HEADER = ("date", "open", "high", "low", "close")
+
+
+def _write_csv(path, rows):
+    # rows: [(date, open, high, low, close), ...] を CSV へ書き出す。
+    with open(path, "w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(_CSV_HEADER)
+        w.writerows(rows)
+
+
+def _register_tmp_ref(monkeypatch, ref, path):
+    # ホワイトリストへ tmp ref を一時登録する（テスト終了で復元）。手書き mtime
+    #   キャッシュもクリアして前テストの残留を断つ。
+    monkeypatch.setitem(dataset.DATASET_WHITELIST, ref, path)
+    dataset._BASE_CACHE.clear()
+
+
+def test_load_candles_reflects_new_content_after_csv_mtime_changes(tmp_path, monkeypatch):
+    # CSV 生成→取得→CSV 上書きで mtime 変化→再取得で新内容が反映（無効化が全段貫通）。
+    # Arrange
+    csv_path = tmp_path / "live.csv"
+    _write_csv(csv_path, [("2020-01-01", 10.0, 12.0, 9.0, 11.0)])
+    _register_tmp_ref(monkeypatch, "_tmp_live", csv_path)
+    first = dataset.load_candles("_tmp_live")
+    assert first[-1]["close"] == 11.0
+    # Act: CSV を上書きし mtime を確実に進める（os.utime で決定論化）。
+    _write_csv(csv_path, [("2020-01-01", 10.0, 12.0, 9.0, 11.0),
+                          ("2020-01-02", 11.0, 20.0, 10.0, 19.0)])
+    import os as _os
+    st = _os.stat(csv_path)
+    _os.utime(csv_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    # Assert: 再取得で新しい末尾足（close=19.0）が反映される（mtime キーで無効化）。
+    second = dataset.load_candles("_tmp_live")
+    assert second[-1]["close"] == 19.0
+    assert len(second) == len(first) + 1
+
+
+def test_load_candles_serves_cached_when_mtime_unchanged(tmp_path, monkeypatch):
+    # mtime 不変なら再読込しない（CSV を消しても直前結果が返る＝キャッシュヒット）。
+    # Arrange
+    csv_path = tmp_path / "cached.csv"
+    _write_csv(csv_path, [("2020-01-01", 10.0, 12.0, 9.0, 11.0)])
+    _register_tmp_ref(monkeypatch, "_tmp_cached", csv_path)
+    first = dataset.load_candles("_tmp_cached")
+    # Act: CSV を物理削除する（mtime 取得不能＝再読込が走れば例外/空になる）。
+    csv_path.unlink()
+    # Assert: 直前結果が返る（mtime を取りに行かずキャッシュヒットしている）。
+    second = dataset.load_candles("_tmp_cached")
+    assert second == first
+
+
+def test_base_cache_holds_single_entry_per_ref_after_repeated_updates(tmp_path, monkeypatch):
+    # 同一 ref を複数回更新しても内部保持が 1 エントリで増えない（有界・サイズ検証）。
+    # Arrange
+    csv_path = tmp_path / "bounded.csv"
+    _write_csv(csv_path, [("2020-01-01", 10.0, 12.0, 9.0, 11.0)])
+    _register_tmp_ref(monkeypatch, "_tmp_bounded", csv_path)
+    import os as _os
+    # Act: 同一 ref を 3 回 mtime 変化させて取得する。
+    for i in range(3):
+        _write_csv(csv_path, [("2020-01-01", 10.0, 12.0, 9.0, 11.0 + i)])
+        st = _os.stat(csv_path)
+        _os.utime(csv_path, ns=(st.st_atime_ns, st.st_mtime_ns + (i + 1) * 1_000_000_000))
+        dataset.load_candles("_tmp_bounded")
+    # Assert: ref ごとに最新 mtime の 1 エントリのみ保持（旧 mtime は破棄され増えない）。
+    assert len(dataset._BASE_CACHE) == 1
+    assert "_tmp_bounded" in dataset._BASE_CACHE
+
+
+def test_sample_candles_behavior_unchanged_with_mtime_cache(monkeypatch):
+    # sample（静的）の既存挙動不変（先頭足が従来どおり 2010-06-29 / open=1.2667）。
+    dataset._BASE_CACHE.clear()
+    candles = dataset.load_candles("sample")
+    assert candles[0]["time"] == 1277769600
+    assert candles[0]["open"] == 1.2667
