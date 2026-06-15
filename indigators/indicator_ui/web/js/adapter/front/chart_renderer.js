@@ -19,6 +19,8 @@
 //
 // DOM 非依存: chart / mainSeries / lwc は composition root から注入（テストは Fake を渡す）。
 
+import { fmtValue } from './format.js';
+
 // lineStyle 文字列 → lightweight-charts LineStyle 整数（v4/v5 共通: Solid=0 / Dotted=1 / Dashed=2）。
 const LINE_STYLE_INT = Object.freeze({ solid: 0, dotted: 1, dashed: 2 });
 
@@ -52,22 +54,33 @@ function schemeColor(t, dim) {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-// 指標値の簡易整形（クロスヘア表示・機能③）。
-function fmtValue(v) {
-  if (v === null || v === undefined || !Number.isFinite(v)) {
-    return '';
+// 系列データ末尾点の value を取り出す（読み取り欄の hover 解除時 fallback 用）。空なら null。
+function lastPointValue(data) {
+  const arr = data ?? [];
+  if (arr.length === 0) {
+    return null;
   }
-  return Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
+  const last = arr[arr.length - 1];
+  return (last && last.value !== undefined) ? last.value : null;
 }
 
 export class ChartRenderer {
   // chart: LightweightCharts.createChart(...) の戻り（addSeries/addPane/panes/removePane を持つ）。
   // mainSeries: addSeries(CandlestickSeries, ...) の戻り（pane 0・createPriceLine を持つ）。
   // lwc: グローバル LightweightCharts 名前空間（LineSeries/HistogramSeries/createTextWatermark）。
-  constructor({ chart, mainSeries, lwc }) {
+  // onCrosshairReadout: クロスヘア価格読み取り欄へ読み取り DTO を渡すコールバック
+  //   （省略時 no-op＝後方互換）。DTO はプレーンなデータ構造（series 実体・lwc 型を含めない）。
+  constructor({ chart, mainSeries, lwc, onCrosshairReadout }) {
     this._chart = chart;
     this._mainSeries = mainSeries;
     this._lwc = lwc ?? {};
+    this._onCrosshairReadout = typeof onCrosshairReadout === 'function' ? onCrosshairReadout : () => {};
+    // 読み取り欄の最新足の単一源（lightweight-charts から逆引きしない＝upstream API 名を増やさない）。
+    //   setCandles で配列末尾、updateLastCandle で当該足を保持する。
+    this._lastBar = null;
+    // overlay（pane 0 重ね描き）line 系列の読み取り用メタ。key {instanceId}::{name} ->
+    //   { series, color, name, lastValue }。読み取り欄の overlay 行と fallback 値に使う。
+    this._overlayReadouts = new Map();
     // instanceId -> { lines, priceLines, hlinePayloads, visible, scaleHost, priceLineHost,
     //                 pane, watermark, paneName }
     this._instances = new Map();
@@ -80,7 +93,10 @@ export class ChartRenderer {
 
   // 時間足切替: メインローソク系列のデータを差し替え、可視範囲を全体へ合わせる。
   setCandles(candles) {
-    this._mainSeries.setData(candles ?? []);
+    const arr = candles ?? [];
+    this._mainSeries.setData(arr);
+    // 読み取り欄の最新足の単一源を更新（配列末尾の足）。空配列なら null。
+    this._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
     this._chart.timeScale().fitContent();
   }
 
@@ -88,6 +104,9 @@ export class ChartRenderer {
   //   既存 time なら上書き、新しい time なら追加（lightweight-charts の update 仕様）。
   updateLastCandle(candle) {
     this._mainSeries.update(candle);
+    // 最新足の単一源を更新し、hover していない読み取り表示が古くならないよう DTO を再発火する。
+    this._lastBar = candle;
+    this._emitReadout(null);
   }
 
   _slot(instanceId) {
@@ -180,6 +199,14 @@ export class ChartRenderer {
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }
+      // overlay（pane 0 重ね描き）の line 系列のみ読み取り欄の overlay 行に載せる。
+      //   color/name と末尾点 value（hover 解除時の fallback）を保持する。
+      if (!pane && kind === 'line') {
+        this._overlayReadouts.set(key, {
+          series, color: p.color, name: p.name, lastValue: lastPointValue(p.data),
+          visible: true,
+        });
+      }
     }
   }
 
@@ -223,8 +250,10 @@ export class ChartRenderer {
   }
 
   // 機能③: クロスヘア移動で各 pane のウォーターマークを「指標名  値1  値2 …」へ更新。
+  //   併せてクロスヘア価格読み取り欄（左上オーバーレイ）の読み取り DTO を構築・発火する。
   _onCrosshairMove(param) {
     const seriesData = param && param.seriesData;
+    // 機能③（sub-pane ウォーターマーク・後方互換）— 既存ロジックは削らず維持。
     for (const slot of this._instances.values()) {
       if (!slot.watermark) {
         continue;
@@ -245,6 +274,38 @@ export class ChartRenderer {
       const label = parts.length ? `${slot.paneName}  ${parts.join('  ')}` : slot.paneName;
       slot.watermark.applyOptions({ lines: [{ text: label, color: WATERMARK_COLOR, fontSize: 12 }] });
     }
+    // クロスヘア価格読み取り欄（左上オーバーレイ）への DTO 発火。
+    this._emitReadout(param);
+  }
+
+  // 読み取り DTO を構築してコールバックへ渡す。param=null（ライブ更新由来）は hover 解除扱い。
+  _emitReadout(param) {
+    this._onCrosshairReadout(this._buildReadoutDto(param));
+  }
+
+  // 読み取り DTO を構築する（プレーンなデータ構造・series 実体や lwc 型は含めない＝隔離維持）。
+  //   { time, ohlc:{open,high,low,close}|null, overlays:[{name,value,color}] }。
+  _buildReadoutDto(param) {
+    const seriesData = (param && param.seriesData) || null;
+    // main OHLC: seriesData に main があればそれ、無ければ（hover 解除）最新足 _lastBar へフォールバック。
+    const mainData = seriesData ? seriesData.get(this._mainSeries) : undefined;
+    const src = (mainData !== undefined && mainData !== null) ? mainData : this._lastBar;
+    const ohlc = (src && src.open !== undefined)
+      ? { open: src.open, high: src.high, low: src.low, close: src.close }
+      : null;
+    // overlays: pane0 overlay 系列の seriesData 値、無ければ保持した lastValue。色は保持した color。
+    const overlays = [];
+    for (const meta of this._overlayReadouts.values()) {
+      if (meta.visible === false) {
+        continue;  // 非表示（eye トグル OFF）の overlay は読み取り欄に出さない。
+      }
+      const d = seriesData ? seriesData.get(meta.series) : undefined;
+      const value = (d !== undefined && d !== null && d.value !== undefined) ? d.value : meta.lastValue;
+      overlays.push({ name: meta.name, value, color: meta.color });
+    }
+    const time = (param && param.time !== undefined) ? param.time
+      : (this._lastBar ? this._lastBar.time : undefined);
+    return { time, ohlc, overlays };
   }
 
   // UC-03 再計算: 既存系列を再生成せず data のみ差し替え。
@@ -253,6 +314,11 @@ export class ChartRenderer {
       const series = slot.lines.get(seriesKey);
       if (series) {
         series.setData(points ?? []);
+        // overlay 読み取りの fallback 値（末尾点 value）も更新する。
+        const meta = this._overlayReadouts.get(seriesKey);
+        if (meta) {
+          meta.lastValue = lastPointValue(points);
+        }
         return;
       }
     }
@@ -265,6 +331,13 @@ export class ChartRenderer {
       return;
     }
     slot.visible = visible;
+    // 読み取り欄の overlay 行も表示状態へ追従させる（非表示は欄から除外）。
+    for (const key of slot.lines.keys()) {
+      const meta = this._overlayReadouts.get(key);
+      if (meta) {
+        meta.visible = visible;
+      }
+    }
     for (const series of slot.lines.values()) {
       series.applyOptions({ visible });
     }
@@ -293,6 +366,10 @@ export class ChartRenderer {
     }
     // 価格線は系列除去より先に外す（pane 配置では水準線の host が当の系列のため）。
     this._removePriceLines(slot);
+    for (const key of slot.lines.keys()) {
+      // 読み取り欄の overlay メタも掃除する（残ると削除済み指標が読み取り欄に残る）。
+      this._overlayReadouts.delete(key);
+    }
     for (const series of slot.lines.values()) {
       this._chart.removeSeries(series);
     }

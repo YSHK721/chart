@@ -15,6 +15,7 @@
 // SAMPLE_DATA（埋め込み 635KB）は A方式（file://）でのみ動的 import する。B方式（served）は
 // candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
 import { ChartRenderer } from './chart_renderer.js';
+import { CrosshairReadoutView } from './crosshair_readout_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
 import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
@@ -113,18 +114,31 @@ export async function bootstrap({
   //          SAMPLE_DATA（635KB）は読み込まない。
   //   A方式: SAMPLE_DATA を動的 import し、初期ローソク描画 + EmbeddedComputeGateway（params 未反映）。
   let compute;
+  let initialCandles = null; // A方式の初期ローソク（renderer 生成後に setCandles で描画する）。
   if (mode === 'b') {
     compute = new ComputeHttpClient({ fetch });
   } else {
     const { SAMPLE_DATA } = await import('../../../data/sample_data.js');
-    mainSeries.setData(SAMPLE_DATA.candles);
-    chart.timeScale().fitContent();
+    initialCandles = SAMPLE_DATA.candles;
     compute = new EmbeddedComputeGateway(SAMPLE_DATA);
   }
 
+  // クロスヘア価格読み取り欄（左上固定オーバーレイ）のビュー。ChartRenderer の onCrosshairReadout
+  //   に (dto) => view.render(dto) を注入する（#legend の指標管理行とは別物として分離・相乗りしない）。
+  //   doc 不在（SSR/テスト）でも render は防御的に no-op（要素不在で安全）。
+  const readoutView = new CrosshairReadoutView({ document: doc, elementId: 'crosshair-readout' });
+
   // ChartRenderer は upstream API の唯一の隔離点。v5 シリーズ定義（LineSeries/HistogramSeries）と
   // createTextWatermark を lwc 名前空間ごと渡す（系列追加系 API 名の参照を本所外へ漏らさない）。
-  const renderer = new ChartRenderer({ chart, mainSeries, lwc });
+  const renderer = new ChartRenderer({
+    chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),
+  });
+
+  // A方式の初期ローソクは renderer.setCandles で描画する（直接 mainSeries.setData ではなく
+  //   経由させることで読み取り欄の最新足の単一源 _lastBar が立ち、hover 解除でも OHLC が出る）。
+  if (initialCandles) {
+    renderer.setCandles(initialCandles);
+  }
   const persistence = new LocalStorageGateway(storage);
   const catalog = new IndicatorCatalogClient();
 
@@ -144,8 +158,8 @@ export async function bootstrap({
   const ready = (mode === 'b')
     ? fetchCandles(fetch, datasetRef, timeframe, recentBars).then((candles) => {
         if (candles && candles.length > 0) {
-          mainSeries.setData(candles);
-          chart.timeScale().fitContent();
+          // renderer.setCandles 経由で _lastBar も立てる（読み取り欄の hover 解除フォールバック）。
+          renderer.setCandles(candles);
         }
       })
     : Promise.resolve();
