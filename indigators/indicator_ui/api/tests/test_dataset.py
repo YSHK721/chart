@@ -195,6 +195,52 @@ def test_base_cache_holds_single_entry_per_ref_after_repeated_updates(tmp_path, 
     assert "_tmp_bounded" in dataset._BASE_CACHE
 
 
+# --------------------------------------------------------------------------- #
+# reader 耐性（torn-read フォールバック・🟡-1）
+#   ライブ更新の writer が CSV を非アトミックに追記中、末尾行が途中の torn-read になり
+#   pandas が解析失敗しうる。失敗をキャッシュへ焼かず直前の良好 df を返す（不正配信防止）。
+# --------------------------------------------------------------------------- #
+def test_load_base_dataframe_falls_back_to_cached_on_torn_read(tmp_path, monkeypatch):
+    import os as _os
+    import pandas as _pd
+    csv_path = tmp_path / "torn.csv"
+    _write_csv(csv_path, [("2020-01-01", 10.0, 12.0, 9.0, 11.0)])
+    _register_tmp_ref(monkeypatch, "_tmp_torn", csv_path)
+    good = dataset.load_candles("_tmp_torn")  # 良好 df をキャッシュへ
+    assert good[-1]["close"] == 11.0
+    # mtime を進めて cache-miss を起こしつつ、次の CSV 読込を torn-read で失敗させる。
+    st = _os.stat(csv_path)
+    _os.utime(csv_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+    class _RaisingLoader:
+        def load_ohlc_csv(self, *a, **k):
+            raise _pd.errors.ParserError("Error tokenizing data (torn last line)")
+
+    monkeypatch.setattr(dataset, "_load_loader", lambda: _RaisingLoader())
+    # Act: 読込失敗でも直前の良好キャッシュを返す（例外を出さず・不正データを配信しない）。
+    served = dataset.load_candles("_tmp_torn")
+    # Assert: stale（直前）内容が返り、キャッシュは汚染されない。
+    assert served == good
+    assert float(dataset._BASE_CACHE["_tmp_torn"][1]["close"].iloc[-1]) == 11.0
+
+
+def test_load_base_dataframe_raises_on_read_error_without_prior_cache(tmp_path, monkeypatch):
+    import pandas as _pd
+    import pytest
+    csv_path = tmp_path / "nocache.csv"
+    _write_csv(csv_path, [("2020-01-01", 10.0, 12.0, 9.0, 11.0)])
+    _register_tmp_ref(monkeypatch, "_tmp_nocache", csv_path)  # キャッシュをクリア
+
+    class _RaisingLoader:
+        def load_ohlc_csv(self, *a, **k):
+            raise _pd.errors.ParserError("torn")
+
+    monkeypatch.setattr(dataset, "_load_loader", lambda: _RaisingLoader())
+    # 良好キャッシュが無い状態の読込失敗はフォールバック先が無く送出する（隠蔽しない）。
+    with pytest.raises(_pd.errors.ParserError):
+        dataset.load_candles("_tmp_nocache")
+
+
 def test_sample_candles_behavior_unchanged_with_mtime_cache(monkeypatch):
     # sample（静的）の既存挙動不変（先頭足が従来どおり 2010-06-29 / open=1.2667）。
     dataset._BASE_CACHE.clear()

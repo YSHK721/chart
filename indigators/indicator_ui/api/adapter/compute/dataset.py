@@ -14,11 +14,14 @@ datasetRef 識別子 → 実 CSV パスのホワイトリスト解決を単一�
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from adapter.compute.module_loader import load_module
 
@@ -142,9 +145,19 @@ def _load_base_dataframe(ref: str) -> pd.DataFrame:
         # mtime 不変、または取得不能（CSV 削除）ならキャッシュヒット（再読込しない）。
         return cached[1]
     loader = _load_loader()
-    df = loader.load_ohlc_csv(
-        str(DATASET_WHITELIST[ref]), time_column=_SAMPLE_TIME_COLUMN
-    )
+    try:
+        df = loader.load_ohlc_csv(
+            str(DATASET_WHITELIST[ref]), time_column=_SAMPLE_TIME_COLUMN
+        )
+    except (OSError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError):
+        # ライブ更新の writer が CSV を非アトミックに追記中だと、末尾行が途中の torn-read に
+        # なり pandas が解析失敗しうる（🟡-1）。失敗をキャッシュへ焼かず、直前の良好 df が
+        # あればそれを返す（最大 ~1 ポーリング分 stale だが不正データを配信しない）。次の
+        # mtime 変化で正常読込へ復帰する。良好キャッシュが無ければ送出する（隠蔽しない）。
+        if cached is not None:
+            logger.warning("CSV 読込に失敗（torn-read 等）。直前のキャッシュを維持: %s", ref)
+            return cached[1]
+        raise
     _BASE_CACHE[ref] = (_csv_mtime(ref), df)
     return df
 

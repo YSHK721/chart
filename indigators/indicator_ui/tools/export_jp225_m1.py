@@ -30,7 +30,9 @@ import argparse
 import csv
 import datetime as dt
 import logging
+import os
 import sys
+import tempfile
 import time as _time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -187,30 +189,44 @@ def stream_to_csv(
     last_ts = None
     total = 0
     dropped_total = 0
-    with open(output_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(_HEADER)
-        for chunk_start, chunk_end in _iter_chunks(start, end, chunk_months):
-            logger.info("fetching %s -> %s", chunk_start.date(), chunk_end.date())
-            df = fetch_chunk(
-                chunk_start, chunk_end, instrument=instrument, offer_side=offer_side
-            )
-            if df is None or df.empty:
-                continue
-            if last_ts is not None:
-                df = df[df.index > last_ts]
-                if df.empty:
+    # 原子化（🟡-1）: 同一ディレクトリの一時ファイルへストリーム書き→完了時に os.replace で
+    #   原子スワップする。再構築中も旧ファイルが有効に保たれ、reader（dataset ローダ）は
+    #   torn な中間状態を観測しない。失敗時は一時ファイルを除去し旧ファイルを温存する
+    #   （部分書きで上書きしない）。同一 FS 内 rename のため os.replace は原子的。
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(output_path.parent), prefix=output_path.name + ".", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(_HEADER)
+            for chunk_start, chunk_end in _iter_chunks(start, end, chunk_months):
+                logger.info("fetching %s -> %s", chunk_start.date(), chunk_end.date())
+                df = fetch_chunk(
+                    chunk_start, chunk_end, instrument=instrument, offer_side=offer_side
+                )
+                if df is None or df.empty:
                     continue
-            last_ts = df.index.max()
-            # チャンク（≈1 ヶ月）分の行を組み、日内外れ値を補正してから書き出す。
-            #   月チャンク境界＝日境界のため、各日のバーはこのチャンク内で完結する。
-            rows = _df_to_rows(df)
-            if repair:
-                rows, dropped = repair_outlier_rows(rows, threshold=repair_threshold)
-                dropped_total += dropped
-            writer.writerows(rows)
-            total += len(rows)
-            del df, rows  # 1 チャンク分のみ常駐させ即時解放
+                if last_ts is not None:
+                    df = df[df.index > last_ts]
+                    if df.empty:
+                        continue
+                last_ts = df.index.max()
+                # チャンク（≈1 ヶ月）分の行を組み、日内外れ値を補正してから書き出す。
+                #   月チャンク境界＝日境界のため、各日のバーはこのチャンク内で完結する。
+                rows = _df_to_rows(df)
+                if repair:
+                    rows, dropped = repair_outlier_rows(rows, threshold=repair_threshold)
+                    dropped_total += dropped
+                writer.writerows(rows)
+                total += len(rows)
+                del df, rows  # 1 チャンク分のみ常駐させ即時解放
+        os.chmod(tmp_path, 0o644)  # mkstemp の 0600 を従来の open("w") 相当へ揃える
+        os.replace(tmp_path, output_path)  # 原子スワップ（同一FS rename）
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)  # 失敗時は旧ファイルを温存（部分書きで上書きしない）
+        raise
     if repair and dropped_total:
         logger.info("外れ値補正: %d 本を除去（日内中央値±%.0f%% 超）", dropped_total, repair_threshold * 100)
     return total

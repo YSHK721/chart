@@ -418,3 +418,40 @@ def test_main_rejects_end_only(tmp_path: Path, monkeypatch):
     # Act / Assert: --start 欠落で SystemExit。
     with pytest.raises(SystemExit):
         mod.main(["--end", "2026-06-02", "--output", str(out)])
+
+
+# --------------------------------------------------------------------------- #
+# stream_to_csv の原子書き出し（temp→os.replace・🟡-1: torn-read 防止）
+#   全期間上書きは旧ファイルを一時ファイル経由で原子スワップし、再構築中も旧ファイルを
+#   有効に保つ。失敗時は旧ファイルを温存し、部分書きで上書きしない。
+# --------------------------------------------------------------------------- #
+def test_stream_to_csv_writes_atomically_and_leaves_no_tmp(tmp_path: Path, monkeypatch):
+    out = tmp_path / "jp225_m1.csv"
+    df = _make_df(["2026-06-15 09:00:00", "2026-06-15 09:01:00"])
+    monkeypatch.setattr(mod, "fetch_chunk", lambda *a, **k: df)
+    total = mod.stream_to_csv(
+        datetime(2026, 6, 15), datetime(2026, 6, 16), out, repair=False
+    )
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "date,open,high,low,close,volume"
+    assert total == 2
+    assert len(lines) == 3
+    # 一時ファイル（*.tmp）が残骸として残らない（os.replace 済み）。
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_stream_to_csv_preserves_original_on_failure(tmp_path: Path, monkeypatch):
+    out = tmp_path / "jp225_m1.csv"
+    out.write_text("OLD-CONTENT\n", encoding="utf-8")
+
+    def _boom(*a, **k):
+        raise RuntimeError("fetch failed mid-write")
+
+    monkeypatch.setattr(mod, "fetch_chunk", _boom)
+    # 失敗は送出し、旧ファイルは無傷・tmp 残骸なし（部分書きで上書きしない＝原子性）。
+    with pytest.raises(RuntimeError):
+        mod.stream_to_csv(
+            datetime(2026, 6, 15), datetime(2026, 6, 16), out, repair=False
+        )
+    assert out.read_text(encoding="utf-8") == "OLD-CONTENT\n"
+    assert list(tmp_path.glob("*.tmp")) == []
