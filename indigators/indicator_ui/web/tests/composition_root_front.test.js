@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { bootstrap, modeForProtocol } from '../js/adapter/front/composition_root_front.js';
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
+import { LiveUpdater } from '../js/adapter/front/live_updater.js';
 
 // Fake lwc（v5）: createChart → chart（addSeries/panes/addPane/timeScale/subscribeCrosshairMove）。
 //   ColorType / CandlestickSeries / createTextWatermark も公開（composition・ChartRenderer が参照）。
@@ -107,4 +108,33 @@ test('bootstrap (served) draws nothing when /candles fetch fails (no SAMPLE_DATA
   await ready;
   // Assert: B方式は SAMPLE_DATA を読み込まないため、/candles 失敗時は setData 0 回（空チャート）。
   assert.equal(setDataCalls.length, before + 0);
+});
+
+// ===========================================================================
+// LiveUpdater 配線（served のみ・1 分間隔ライブ更新）
+//   合成根は LiveUpdater を組み立てて bootstrap 戻り値に加える（setInterval は合成根に置かない）。
+//   index.html が served 時のみ liveUpdater.start() を呼ぶ（file:// はスキップ）。
+// ===========================================================================
+
+test('bootstrap (served) builds a LiveUpdater and exposes it on the return value', async () => {
+  // Arrange
+  const { lwc } = fakeLwc();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  // Act
+  const { liveUpdater, ready } = await bootstrap({
+    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+  });
+  await ready;
+  // Assert: served は LiveUpdater を組み立てて戻り値に載せる（start は index.html 側）。
+  assert.ok(liveUpdater instanceof LiveUpdater);
+});
+
+test('bootstrap (file://) exposes liveUpdater=null so no live updates are wired', async () => {
+  // Arrange / Act（A方式）。
+  const { lwc } = fakeLwc();
+  const { liveUpdater } = await bootstrap({
+    lwc, container: {}, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  // Assert: A方式（file://）はライブ更新を配線しない。
+  assert.equal(liveUpdater, null);
 });

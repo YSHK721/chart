@@ -51,6 +51,17 @@ export class IndicatorController {
     this._meta = new Map();
     // ダイアログ絞り込み UI 状態。
     this._filter = { tab: 'indicator', category: null, query: '', favoriteOnly: false };
+    // 再計算実行中の深さ（競合ガードの単一権威）。ライブ更新（LiveUpdater）は独自フラグを
+    //   持たず isRecomputing() を参照し、再計算中の tick をスキップする。bool ではなく深さ
+    //   カウンタにするのは、setTimeframe（candles 取得 await＋全指標再計算）が内側の
+    //   recomputeInstance をネスト呼びするため。bool だと内側 finally がバッチ途中で解除し、
+    //   その隙に tick が割り込む（torn なバッチ）。カウンタなら最外バッチ終了まで true を維持する。
+    this._recomputeDepth = 0;
+  }
+
+  // 競合ガード: 再計算バッチ実行中なら true。LiveUpdater が tick 先頭で参照しスキップ判定する。
+  isRecomputing() {
+    return this._recomputeDepth > 0;
   }
 
   // =========================================================================
@@ -176,21 +187,30 @@ export class IndicatorController {
     }
     const params = newParams ?? this._defaultParams(meta.def);
     const gateway = this._gatewayAdapter(newVariant);
-    const { state, accepted } = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
-    this._state = state;
-    if (accepted) {
-      // params 変更で系列名が変わりうる（tgp の分位線 btlm_q{N}＝q_low/q_high 依存）ため、
-      // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
-      // 全系列を現在名で再生成する（line / horizontal_line 共通）。
-      this._renderer.remove(instanceId);
-      this._draw(instanceId, meta.def, this._lastSeries, params);
-      // 非表示状態を維持（redraw は可視で再生成するため）。
-      const inst = this._state.applied.find((i) => i.instanceId === instanceId);
-      if (inst && !inst.visible) {
-        this._renderer.setVisible(instanceId, false);
+    // 競合ガード: 再計算中は isRecomputing()=true（ライブ更新の tick がスキップ判定に参照）。
+    //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
+    this._recomputeDepth += 1;
+    let accepted;
+    try {
+      const result = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
+      this._state = result.state;
+      accepted = result.accepted;
+      if (accepted) {
+        // params 変更で系列名が変わりうる（tgp の分位線 btlm_q{N}＝q_low/q_high 依存）ため、
+        // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
+        // 全系列を現在名で再生成する（line / horizontal_line 共通）。
+        this._renderer.remove(instanceId);
+        this._draw(instanceId, meta.def, this._lastSeries, params);
+        // 非表示状態を維持（redraw は可視で再生成するため）。
+        const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+        if (inst && !inst.visible) {
+          this._renderer.setVisible(instanceId, false);
+        }
+        this._persistAll();
+        this._renderLegend();
       }
-      this._persistAll();
-      this._renderLegend();
+    } finally {
+      this._recomputeDepth -= 1;
     }
     return accepted;
   }
@@ -226,21 +246,37 @@ export class IndicatorController {
     }
     this._timeframe = timeframe;
     this._syncTimeframeButtons();
-    // candles 再取得 → メイン系列差し替え（取得失敗・A方式は据え置き）。
-    if (typeof this._loadCandles === 'function') {
-      const candles = await this._loadCandles(this._datasetRef, timeframe);
-      if (candles && candles.length > 0) {
-        this._renderer.setCandles(candles);
+    // バッチ全体（candles 取得 await＋全指標再計算）を競合ガードで包む。これがないと
+    //   _loadCandles の await 中は isRecomputing()=false となり、その隙にライブ tick が
+    //   割り込んで二重 compute する（🟡-2）。最外で increment し finally で確実に解除する。
+    this._recomputeDepth += 1;
+    try {
+      // candles 再取得 → メイン系列差し替え（取得失敗・A方式は据え置き）。
+      if (typeof this._loadCandles === 'function') {
+        const candles = await this._loadCandles(this._datasetRef, timeframe);
+        if (candles && candles.length > 0) {
+          this._renderer.setCandles(candles);
+        }
       }
+      // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
+      //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
+      await this.recomputeAllApplied();
+    } finally {
+      this._recomputeDepth -= 1;
     }
-    // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
+    this._state.uiState = { ...this._state.uiState, timeframe };
+    this._persistAll();
+  }
+
+  // 適用済み全指標を現在の params / 時間足で再計算・再描画する（ライブ更新の再計算入口）。
+  //   competition ガード（generation+1・accepts 破棄）は recomputeInstance に集約済み。
+  //   適用が無ければ何もしない（no-op）。
+  async recomputeAllApplied() {
     for (const inst of [...this._state.applied]) {
       if (this._meta.has(inst.instanceId)) {
         await this.recomputeInstance(inst.instanceId, null, this._paramsObject(inst.params));
       }
     }
-    this._state.uiState = { ...this._state.uiState, timeframe };
-    this._persistAll();
   }
 
   // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。

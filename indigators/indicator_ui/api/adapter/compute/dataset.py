@@ -110,22 +110,50 @@ def _to_unix_seconds(value: Any) -> int:
     return int(pd.Timestamp(value).timestamp())
 
 
-@lru_cache(maxsize=None)
+# CSV mtime 検知キャッシュ（最内 _load_base_dataframe の1段のみ）。
+#   ref → (mtime_ns, DataFrame)。CSV 読込のみをキャッシュし、mtime 変化で当該 ref の
+#   旧エントリを破棄して再読込する（ライブ更新で CSV が上書きされたら全段へ貫通）。
+#   有界化: ref ごとに最新 mtime の 1 エントリのみ保持する（旧 mtime は上書きで消える）。
+_BASE_CACHE: dict[str, tuple[int, pd.DataFrame]] = {}
+
+
+def _csv_mtime(ref: str) -> int | None:
+    """ref の実 CSV の最終更新時刻（ns・整数）を返す（mtime キャッシュキー）。
+
+    CSV が存在しない場合は None を返す（キャッシュ済みなら直前結果を維持するため・
+    再読込判定が None で新規読込へ落ちて FileNotFoundError になるのは未キャッシュ時のみ）。
+    """
+    try:
+        return DATASET_WHITELIST[ref].stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 def _load_base_dataframe(ref: str) -> pd.DataFrame:
-    """ホワイトリスト解決済みキーの原子 CSV を DataFrame 化する（resample 前・キャッシュ）。
+    """ホワイトリスト解決済みキーの原子 CSV を DataFrame 化する（resample 前・mtime キャッシュ）。
 
     既存 loader を再利用し、time 列（date）を index へ解決する（line 系指標の時刻解決）。
+    CSV の mtime が前回と同一ならキャッシュ DataFrame を返す。mtime 変化（CSV 上書き）時は
+    再読込して当該 ref の 1 エントリを置換する（旧 mtime のエントリは保持しない＝有界）。
     """
+    mtime = _csv_mtime(ref)
+    cached = _BASE_CACHE.get(ref)
+    if cached is not None and (mtime is None or mtime == cached[0]):
+        # mtime 不変、または取得不能（CSV 削除）ならキャッシュヒット（再読込しない）。
+        return cached[1]
     loader = _load_loader()
-    return loader.load_ohlc_csv(
+    df = loader.load_ohlc_csv(
         str(DATASET_WHITELIST[ref]), time_column=_SAMPLE_TIME_COLUMN
     )
+    _BASE_CACHE[ref] = (_csv_mtime(ref), df)
+    return df
 
 
-@lru_cache(maxsize=None)
 def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
-    """ホワイトリスト解決済みキーの DataFrame を指定時間足へ再集計して返す（キャッシュ）。
+    """ホワイトリスト解決済みキーの DataFrame を指定時間足へ再集計して返す（無キャッシュ純変換）。
 
+    キャッシュは最内 ``_load_base_dataframe``（mtime 検知）の1段のみ。本関数は毎回 base を
+    取得し resample する純変換へ降格（mtime 無効化を全段へ貫通させるため・公開シグネチャ不変）。
     ``timeframe=None`` は原子（再集計なし）をそのまま返す（既存挙動・後方互換）。指定時は
     ``TIMEFRAME_RULES`` の rule で resample する。未知 timeframe は呼び出し側（controller/server）
     が事前に ``is_known_timeframe`` で拒否する前提（ここでは rule 解決のみ）。
@@ -136,11 +164,13 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
     return resample_ohlc(base, TIMEFRAME_RULES.get(timeframe))
 
 
-@lru_cache(maxsize=None)
 def load_candles(
     ref: str, timeframe: str | None = None, limit: int | None = None
 ) -> list[dict[str, Any]]:
     """ホワイトリスト解決済みキーを candles JSON へ変換する（§6.3・lightweight-charts 形）。
+
+    無キャッシュ純変換（mtime キャッシュは最内 ``_load_base_dataframe`` の1段のみ）。毎回
+    base を取得→resample/format するため CSV 更新（mtime 変化）が即座に反映される。
 
     Args:
         ref: datasetRef（ホワイトリスト済み）。
