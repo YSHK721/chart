@@ -119,6 +119,28 @@ def _to_unix_seconds(value: Any) -> int:
 #   有界化: ref ごとに最新 mtime の 1 エントリのみ保持する（旧 mtime は上書きで消える）。
 _BASE_CACHE: dict[str, tuple[int, pd.DataFrame]] = {}
 
+# resample 結果キャッシュ（load_dataframe の1段・性能最適化 A’）。
+#   キー (ref, timeframe) → 値 (mtime, resampled_df)。(ref, timeframe) ごとに最新 mtime の
+#   1 エントリのみ保持する（上書き＝有界・plain dict）。★P-2: functools.lru_cache を
+#   (ref,tf,mtime) キーで使わない（mtime ごとにエントリが残り maxsize=None でリークする＝
+#   先行修正が潰した欠陥の再混入）。plain dict 上書き方式のみ。
+#   ★P-1: キー mtime は _csv_mtime(ref) を独立に呼ばず、base が実際に焼いた世代 mtime
+#   （_baked_mtime）を単一真実源にする。torn-read 時 base は旧 df を返し _BASE_CACHE の
+#   mtime を据え置くため、_csv_mtime（進行済の新 mtime）を使うと古い resample を新 mtime で
+#   焼き、base 復帰後も恒久 stale 化する。
+_RESAMPLE_CACHE: dict[tuple[str, str | None], tuple[int | None, pd.DataFrame]] = {}
+
+
+def _baked_mtime(ref: str) -> int | None:
+    """base が実際に焼いた世代 mtime（_BASE_CACHE[ref][0]）を返す（無ければ None）。
+
+    ★P-1: resample キャッシュのキー mtime の単一真実源。_csv_mtime(ref) を独立に呼ぶと
+    torn-read 時に base の据え置き世代と乖離し恒久 stale 化するため、base が保持する世代
+    mtime をそのまま使う（_BASE_CACHE 内部表現への直接依存をこのヘルパに局所化する）。
+    """
+    cached = _BASE_CACHE.get(ref)
+    return cached[0] if cached is not None else None
+
 
 def _csv_mtime(ref: str) -> int | None:
     """ref の実 CSV の最終更新時刻（ns・整数）を返す（mtime キャッシュキー）。
@@ -173,8 +195,20 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
     """
     base = _load_base_dataframe(ref)
     if timeframe is None:
+        # 原子（1m）は resample せず base を直接返す（resample キャッシュ非経由・従来どおり）。
         return base
-    return resample_ohlc(base, TIMEFRAME_RULES.get(timeframe))
+    # ★P-1: base が実際に焼いた世代 mtime を resample キャッシュキーの単一真実源にする
+    #   （_csv_mtime を独立に呼ばない。torn-read 時の恒久 stale 化を防ぐ）。
+    mtime = _baked_mtime(ref)
+    key = (ref, timeframe)
+    cached = _RESAMPLE_CACHE.get(key)
+    if cached is not None and (mtime is None or mtime == cached[0]):
+        # mtime 不変、または取得不能（CSV 削除）なら直前の resample 結果を返す（再 resample しない）。
+        return cached[1]
+    resampled = resample_ohlc(base, TIMEFRAME_RULES.get(timeframe))
+    # (ref, timeframe) ごと最新 mtime の 1 エントリのみ保持（上書き＝有界・plain dict）。
+    _RESAMPLE_CACHE[key] = (mtime, resampled)
+    return resampled
 
 
 def load_candles(
