@@ -308,13 +308,14 @@ export class ChartRenderer {
     return { time, ohlc, overlays };
   }
 
-  // UC-03 再計算: 既存系列を再生成せず data のみ差し替え。
-  setData(seriesKey, points) {
+  // seriesKey の系列を全 instance から引き当て apply(series) を実行し、overlay 読み取りの
+  //   fallback 値（末尾点 value）を points 末尾で更新する。未知 seriesKey は no-op。
+  //   series への upstream 呼び出し（setData / update）は apply 内＝本所に閉じる（隔離維持）。
+  _withSeries(seriesKey, points, apply) {
     for (const slot of this._instances.values()) {
       const series = slot.lines.get(seriesKey);
       if (series) {
-        series.setData(points ?? []);
-        // overlay 読み取りの fallback 値（末尾点 value）も更新する。
+        apply(series);
         const meta = this._overlayReadouts.get(seriesKey);
         if (meta) {
           meta.lastValue = lastPointValue(points);
@@ -322,6 +323,22 @@ export class ChartRenderer {
         return;
       }
     }
+  }
+
+  // UC-03 再計算: 既存系列を再生成せず data のみ差し替え。
+  setData(seriesKey, points) {
+    this._withSeries(seriesKey, points, (series) => series.setData(points ?? []));
+  }
+
+  // Latest 末尾K差分反映: 末尾K点を series.update で 1 点ずつ反映する（過去確定足は不変）。
+  //   series.update を呼ぶのは ChartRenderer のみ（upstream 隔離維持）。既存 time は上書き、
+  //   新しい time は追加（lightweight-charts の update 仕様）。未知 seriesKey は no-op。
+  updateSeriesTail(seriesKey, points) {
+    this._withSeries(seriesKey, points, (series) => {
+      for (const p of points ?? []) {
+        series.update(p);
+      }
+    });
   }
 
   // UC-04 表示/非表示。line/histogram は applyOptions({visible})、priceLine は除去/再生成。

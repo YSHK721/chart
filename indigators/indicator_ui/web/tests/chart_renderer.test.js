@@ -14,12 +14,14 @@ import { ChartRenderer } from '../js/adapter/front/chart_renderer.js';
 const LineSeries = { kind: 'Line' };
 const HistogramSeries = { kind: 'Histogram' };
 
-// Fake series。setData / applyOptions / createPriceLine / removePriceLine を記録。
+// Fake series。setData / update / applyOptions / createPriceLine / removePriceLine を記録。
 function fakeSeries(def) {
   return {
-    _def: def, _data: null, _options: {}, _createOpts: null, _priceLines: [],
+    _def: def, _data: null, _options: {}, _createOpts: null, _priceLines: [], _updates: [],
     _kind: def === HistogramSeries ? 'histogram' : (def === LineSeries ? 'line' : 'candle'),
     setData(points) { this._data = points; },
+    // 末尾K差分反映: series.update を点ぶん呼ぶ（過去確定足は触らない・隔離維持）。
+    update(point) { this._updates.push(point); },
     applyOptions(opts) { Object.assign(this._options, opts); },
     createPriceLine(opt) { const pl = { opt }; this._priceLines.push(pl); return pl; },
     removePriceLine(pl) { this._priceLines = this._priceLines.filter((x) => x !== pl); },
@@ -503,4 +505,42 @@ test('crosshair readout: existing watermark logic still updates (機能③ backw
   const text = lwc._watermarks[0]._options.lines[0].text;
   assert.match(text, /RSI/);
   assert.match(text, /56\.3/);
+});
+
+// ===========================================================================
+// updateSeriesTail（Latest 末尾K差分反映）— series.update を points ぶん呼ぶ。
+//   過去確定足は触らない（setData で全置換しない）。series.update を呼ぶのは本所のみ。
+// ===========================================================================
+test('updateSeriesTail: calls series.update once per point and does not touch past points', () => {
+  // Arrange: line 系列を 1 本生成（初期 setData で過去確定足を置く）。
+  const { renderer, chart } = newRenderer();
+  const init = [{ time: 1, value: 10 }, { time: 2, value: 11 }, { time: 3, value: 12 }];
+  renderer.renderLine('ma#1', [{ name: 'MA', kind: 'line', style: 'solid', width: 1, color: 'blue', data: init }]);
+  const series = chart.created[0];
+  // Act: 末尾 K=2 点を差分反映する。
+  const tail = [{ time: 3, value: 12.5 }, { time: 4, value: 13 }];
+  renderer.updateSeriesTail('ma#1::MA', tail);
+  // Assert: series.update を 2 回（points ぶん）呼ぶ。setData による全置換はしない。
+  assert.deepEqual(series._updates, tail);
+  assert.deepEqual(series._data, init); // 過去 setData は不変（全置換していない）
+});
+
+test('updateSeriesTail: unknown seriesKey is a no-op (does not throw)', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#1', [{ name: 'MA', kind: 'line', data: [{ time: 1, value: 10 }] }]);
+  const series = chart.created[0];
+  renderer.updateSeriesTail('missing::key', [{ time: 2, value: 11 }]);
+  assert.deepEqual(series._updates, []); // 触らない
+});
+
+test('updateSeriesTail: updates overlay readout lastValue to the tail last point', () => {
+  // Arrange: overlay(line・pane 0)系列を生成し読み取り fallback の lastValue を持たせる。
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#1', [{ name: 'MA', kind: 'line', data: [{ time: 1, value: 10 }] }]);
+  // Act
+  renderer.updateSeriesTail('ma#1::MA', [{ time: 2, value: 99 }]);
+  // Assert: overlay 読み取りメタの lastValue が末尾点に更新される（_overlayReadouts 経由）。
+  const meta = renderer._overlayReadouts.get('ma#1::MA');
+  assert.equal(meta.lastValue, 99);
+  void chart;
 });

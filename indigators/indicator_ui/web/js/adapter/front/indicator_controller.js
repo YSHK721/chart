@@ -22,6 +22,12 @@ import {
 } from '../../usecase/facade.js';
 import { PropertiesDialog } from './properties_dialog.js';
 
+// 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
+//   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
+function isTailUpdatable(payload) {
+  return payload.kind === 'line' || payload.kind === 'histogram';
+}
+
 export class IndicatorController {
   // mode: 計算モード。'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算）。
   //   既定 'a'（従来挙動・単体テスト互換）。composition root が served 判定で 'b' を注入する。
@@ -176,7 +182,9 @@ export class IndicatorController {
   }
 
   // UC-03 再計算（設定変更・variant 切替）: generation 競合破棄は facade.recompute に集約（§6.6）。
-  async recomputeInstance(instanceId, newVariant, newParams) {
+  //   opts.mode='latest' は Latest 増分計算（gateway へ mode 伝播・末尾K点を updateSeriesTail へ
+  //   差分反映し remove+_draw の全描画はしない）。既定 'full' は従来どおり remove+redraw。
+  async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full' } = {}) {
     const meta = this._meta.get(instanceId);
     if (!meta) {
       return false;
@@ -186,7 +194,10 @@ export class IndicatorController {
       this._state = this._withVariant(this._state, instanceId, newVariant);
     }
     const params = newParams ?? this._defaultParams(meta.def);
-    const gateway = this._gatewayAdapter(newVariant);
+    // Latest 差分可否を「要求前」に def から確定する（混在/horizontal 指標は full を要求し
+    //   trim されない full データで全描画する＝混在バグ回避）。
+    const wantLatest = mode === 'latest' && this._defCanTailUpdate(meta.def);
+    const gateway = this._gatewayAdapter(newVariant, wantLatest ? 'latest' : 'full');
     // 競合ガード: 再計算中は isRecomputing()=true（ライブ更新の tick がスキップ判定に参照）。
     //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
     this._recomputeDepth += 1;
@@ -196,13 +207,18 @@ export class IndicatorController {
       this._state = result.state;
       accepted = result.accepted;
       if (accepted) {
-        // params 変更で系列名が変わりうる（tgp の分位線 btlm_q{N}＝q_low/q_high 依存）ため、
-        // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
-        // 全系列を現在名で再生成する（line / horizontal_line 共通）。
-        this._renderer.remove(instanceId);
-        this._draw(instanceId, meta.def, this._lastSeries, params);
-        // 非表示状態を維持（redraw は可視で再生成するため）。
         const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+        if (wantLatest) {
+          // Latest: 末尾K点を series.update で差分反映（過去確定足は不変・全描画しない）。
+          this._drawLatest(instanceId, meta.def, this._lastSeries, params);
+        } else {
+          // params 変更で系列名が変わりうる（tgp の分位線 btlm_q{N}＝q_low/q_high 依存）ため、
+          // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
+          // 全系列を現在名で再生成する（line / horizontal_line 共通）。
+          this._renderer.remove(instanceId);
+          this._draw(instanceId, meta.def, this._lastSeries, params);
+        }
+        // 非表示状態を維持（redraw は可視で再生成するため）。
         if (inst && !inst.visible) {
           this._renderer.setVisible(instanceId, false);
         }
@@ -213,6 +229,28 @@ export class IndicatorController {
       this._recomputeDepth -= 1;
     }
     return accepted;
+  }
+
+  // def の全系列が末尾K差分可能（line/histogram のみ・horizontal_line を含まない）か。
+  //   latest 要求の可否を「計算前」に def の系列定義から判定する（結果データの kind ではない）。
+  //   混在/horizontal 指標は backend が line/histogram を末尾K点へ trim する一方フロントは全差替に
+  //   落ちるため、trim 済みデータで全描画＝ライン履歴が 1 点に潰れる。よって最初から full を要求する。
+  _defCanTailUpdate(def) {
+    const series = def?.series ?? [];
+    if (series.length === 0) {
+      return false;
+    }
+    return series.every(isTailUpdatable);
+  }
+
+  // Latest: F3 通過系列の末尾K点を {instanceId}::{name} キーで updateSeriesTail へ差分反映する。
+  _drawLatest(instanceId, def, series, params = null) {
+    const validated = this._validateSeriesNames(series, def, params);
+    for (const p of validated) {
+      if (isTailUpdatable(p)) {
+        this._renderer.updateSeriesTail(`${instanceId}::${p.name}`, p.data ?? []);
+      }
+    }
   }
 
   // UC-04 表示/非表示。
@@ -271,10 +309,10 @@ export class IndicatorController {
   // 適用済み全指標を現在の params / 時間足で再計算・再描画する（ライブ更新の再計算入口）。
   //   competition ガード（generation+1・accepts 破棄）は recomputeInstance に集約済み。
   //   適用が無ければ何もしない（no-op）。
-  async recomputeAllApplied() {
+  async recomputeAllApplied({ mode = 'full' } = {}) {
     for (const inst of [...this._state.applied]) {
       if (this._meta.has(inst.instanceId)) {
-        await this.recomputeInstance(inst.instanceId, null, this._paramsObject(inst.params));
+        await this.recomputeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
       }
     }
   }
@@ -383,7 +421,7 @@ export class IndicatorController {
   // facade.apply/recompute が呼ぶ compute をラップし、応答 series を捕捉（描画用）。
   //   時間足（timeframe）・直近表示本数（limit）は facade を介さずここで注入する（facade は純粋を保つ）。
   //   B方式は /compute がこれで resample・範囲制限し candles と時間軸を揃える。A方式は余剰フィールドを無視。
-  _gatewayAdapter(variantOverride) {
+  _gatewayAdapter(variantOverride, mode) {
     const compute = this._compute;
     const self = this;
     return {
@@ -398,6 +436,8 @@ export class IndicatorController {
           variant: variantOverride ?? req.variant,
           timeframe: effectiveTimeframe,
           limit: self._recentBars ?? undefined,
+          // mode（full/latest）を素通し。未指定は compute_http_client がボディに含めない（後方互換）。
+          mode: mode === 'latest' ? 'latest' : undefined,
         });
         self._lastSeries = result.series;
         return result;
