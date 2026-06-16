@@ -153,7 +153,14 @@ def add_rmmmacd(
             price_line=False, price_label=False,
         )
         # 値列名 = ライン name（§5）。元の列値（macd/signal）を name にマップする。
-        line.set(pd.DataFrame({"time": times, line_name: built[value_col].to_numpy()}))
+        # warm-up NaN（先頭 window-1）はヒストグラムと同様 dropna で除外して有限値のみ set する
+        # （姉妹 profit_rmm/adx_needle/arctan/oscillator・仕様§1.3 と整合）。dropna しないと
+        # iterrows が「datetime の time 列＋NaN 値列」の warm-up 行を datetime64 と推論し NaN を
+        # NaT へ強制変換 → 描画側 float(NaT) が TypeError で落ちる（既定 window=120 で発火）。
+        line_df = pd.DataFrame(
+            {"time": times, line_name: built[value_col].to_numpy()}
+        ).dropna(subset=[line_name])
+        line.set(line_df)
         created.append(line)
 
     # σ 水準線は無い（元 funIndicatorSet 未呼出）。horizontal_line は呼ばない。
