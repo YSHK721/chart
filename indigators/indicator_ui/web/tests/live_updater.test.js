@@ -108,3 +108,22 @@ test('tick is skipped while controller.isRecomputing() is true (no recompute/fet
   assert.equal(sp.calls.loadCandles.length, 0);
   assert.equal(sp.calls.updateLast.length, 0);
 });
+
+// Latest 増分計算: tick は recomputeAllApplied({mode:'latest'}) を呼ぶ（末尾K差分反映）。
+test('tick recomputes with mode "latest" (Latest incremental compute)', async () => {
+  // Arrange: recomputeAllApplied の引数を捕捉する controller を注入。
+  const captured = [];
+  const controller = {
+    isRecomputing: () => false,
+    recomputeAllApplied: async (opts) => { captured.push(opts); },
+  };
+  const renderer = { updateLastCandle: () => {} };
+  const loadCandles = async () => [{ time: 1, open: 1, high: 2, low: 0, close: 1.5 }];
+  const sp = { controller, renderer, loadCandles, candles: [] };
+  const { updater, t } = newUpdater({}, sp);
+  // Act
+  updater.start();
+  await t.tick();
+  // Assert: ライブ tick は latest モードで再計算する。
+  assert.deepEqual(captured.at(-1), { mode: 'latest' });
+});

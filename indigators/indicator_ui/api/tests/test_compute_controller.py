@@ -270,5 +270,76 @@ def test_handle_compute_limit_restricts_computation_window():
     assert all(len(s["data"]) <= 30 for s in resp["series"])
 
 
+# --------------------------------------------------------------------------- #
+# mode 分岐（full / latest）— Latest 増分計算フレームワーク（Stage A 基盤）
+# --------------------------------------------------------------------------- #
+def test_handle_compute_mode_omitted_is_full_backward_compatible():
+    # mode 省略は full（既存挙動）。moving_averages の MA 系列が全件分の点数を持つ。
+    body = {
+        "indicatorId": "moving_averages", "variant": "default",
+        "params": {"ma_type": "sma", "length": 9, "source": "close",
+                   "smoothing_type": "none", "wait_for_close": False},
+        "datasetRef": "sample", "timeframe": "1D", "limit": 60,
+    }
+    status, resp = handle_compute(body)
+    assert status == 200
+    ma = next(s for s in resp["series"] if s["name"] == "MA")
+    assert len(ma["data"]) > 1  # full は複数点
+
+
+def test_handle_compute_mode_full_explicit_matches_omitted():
+    # mode="full" は mode 省略と同一 series（後方互換）。
+    base = {
+        "indicatorId": "moving_averages", "variant": "default",
+        "params": {"ma_type": "sma", "length": 9, "source": "close",
+                   "smoothing_type": "none", "wait_for_close": False},
+        "datasetRef": "sample", "timeframe": "1D", "limit": 60,
+    }
+    _, resp_omitted = handle_compute(dict(base))
+    _, resp_full = handle_compute({**base, "mode": "full"})
+    assert resp_full["series"] == resp_omitted["series"]
+
+
+def test_handle_compute_mode_latest_trims_line_to_trailing_k():
+    # mode="latest" は line 系列を末尾 K 点（moving_averages は K=1）へ切る。
+    body = {
+        "indicatorId": "moving_averages", "variant": "default",
+        "params": {"ma_type": "sma", "length": 9, "source": "close",
+                   "smoothing_type": "none", "wait_for_close": False},
+        "datasetRef": "sample", "timeframe": "1D", "limit": 60, "mode": "latest",
+    }
+    status, resp = handle_compute(body)
+    assert status == 200
+    ma = next(s for s in resp["series"] if s["name"] == "MA")
+    assert len(ma["data"]) == 1  # 末尾 K=1
+
+
+def test_handle_compute_mode_latest_line_tail_equals_full_tail():
+    # mode="latest" の末尾点が mode="full" の末尾点と一致（不変条件の controller 経路）。
+    base = {
+        "indicatorId": "moving_averages", "variant": "default",
+        "params": {"ma_type": "sma", "length": 9, "source": "close",
+                   "smoothing_type": "none", "wait_for_close": False},
+        "datasetRef": "sample", "timeframe": "1D", "limit": 60,
+    }
+    _, resp_full = handle_compute({**base, "mode": "full"})
+    _, resp_latest = handle_compute({**base, "mode": "latest"})
+    ma_full = next(s for s in resp_full["series"] if s["name"] == "MA")
+    ma_latest = next(s for s in resp_latest["series"] if s["name"] == "MA")
+    assert ma_latest["data"] == ma_full["data"][-1:]
+
+
+def test_handle_compute_mode_latest_price_range_power_keeps_horizontal_line():
+    # axis_distribution は latest でも horizontal_line を全件返す（末尾K切りしない）。
+    body = {
+        "indicatorId": "price_range_power", "variant": "default",
+        "params": {"interval": 1.0, "top_n": 3},
+        "datasetRef": "sample", "timeframe": "1D", "limit": 120, "mode": "latest",
+    }
+    status, resp = handle_compute(body)
+    assert status == 200
+    assert all(s["kind"] == "horizontal_line" for s in resp["series"])
+
+
 # numpy は ramp フィクスチャ生成の将来拡張用 import（現テストでは controller 内で生成）。
 _ = (np, pd)

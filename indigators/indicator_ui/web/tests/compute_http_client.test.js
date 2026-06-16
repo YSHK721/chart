@@ -112,3 +112,28 @@ test('compute translates a network failure into a ComputeError', async () => {
     },
   );
 });
+
+// mode（計算モード・Latest 増分計算）: 指定時のみボディに mode を載せる（未指定は従来＝載せない）。
+test('compute forwards mode in the JSON body when provided', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  // Act
+  await client.compute({ indicatorId: 'moving_averages', variant: 'default', params: {}, datasetRef: 'jp225_m1', mode: 'latest' });
+  // Assert: サーバが mode で full/latest を分岐する。
+  const sent = JSON.parse(captured.body);
+  assert.equal(sent.mode, 'latest');
+});
+
+test('compute omits mode from the body when not provided (backward compatible)', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  // Act
+  await client.compute({ indicatorId: 'tgp_btlm', variant: 'default', params: {}, datasetRef: 'sample' });
+  // Assert: mode 未指定はボディに mode を含めない（サーバ既定 full・後方互換）。
+  const sent = JSON.parse(captured.body);
+  assert.ok(!('mode' in sent), 'mode should be absent when not provided');
+});

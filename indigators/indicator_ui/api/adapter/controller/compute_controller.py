@@ -23,6 +23,7 @@ from typing import Any
 
 from adapter.compute import ERROR_STATUS, ComputeError, IndicatorComputeAdapter
 from adapter.compute import dataset
+from adapter.compute.latest_dispatch import full_compute, latest_compute
 
 
 def _error_body(generation: int, error_type: str, message: str) -> tuple[int, dict[str, Any]]:
@@ -83,9 +84,17 @@ def handle_compute(
     if isinstance(limit, int) and limit > 0:
         df = df.tail(limit)
 
-    compute = (adapter or IndicatorComputeAdapter()).compute
+    # mode（計算モード）: 省略=full＝既存挙動（既存テスト無変更で緑）。"latest" は
+    #   Latest 増分計算（archetype ごとに tail＋末尾K切り・latest_dispatch に集約）。
+    #   limit の tail は不変（min_window <= limit 前提）。
+    mode = body.get("mode", "full")
+    compute_adapter = adapter or IndicatorComputeAdapter()
     try:
-        series = compute(indicator_id, variant, df, dict(params))
+        series = (
+            latest_compute(compute_adapter, indicator_id, variant, df, dict(params))
+            if mode == "latest"
+            else full_compute(compute_adapter, indicator_id, variant, df, dict(params))
+        )
     except ComputeError as exc:
         return _error_body(generation, exc.error_type, exc.message)
     except KeyError as exc:

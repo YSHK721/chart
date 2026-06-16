@@ -55,7 +55,7 @@ export class LiveUpdater {
     if (this._controller.isRecomputing()) {
       return;
     }
-    await this._controller.recomputeAllApplied();
+    await this._controller.recomputeAllApplied({ mode: 'latest' });
     const candles = await this._loadCandles(this._datasetRef, this._getTimeframe());
     if (candles && candles.length > 0) {
       this._renderer.updateLastCandle(candles[candles.length - 1]);
