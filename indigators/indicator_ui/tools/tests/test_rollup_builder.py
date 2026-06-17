@@ -242,10 +242,11 @@ def test_incremental_update_falls_back_to_full_scan_when_probe_misses_tail(tmp_p
 
 
 def test_incremental_update_is_vectorized_no_iterrows_over_rollup(tmp_path, monkeypatch):
-    # ISSUE-012 回帰: incremental_update は既存ロールアップを行単位 dict 化（iterrows）しない。
-    #   90 万行規模を iterrows→dict-of-dict すると RSS が 618MB へ急騰し OOM を再発させるため、
-    #   DataFrame ベクトル経路（resample/groupby/to_csv）で iterrows 0 回を不変条件とする。
-    df_initial = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 5)  # 5 日
+    # ISSUE-012 回帰: incremental_update は「ロールアップ全体規模」を iterrows しない。
+    #   90 万行規模を iterrows→dict-of-dict すると RSS が 618MB へ急騰し OOM を再発させる。
+    #   O(新規) 経路は末尾 suffix（高々数本）のみ iterrows するため、iterrows 対象フレームの
+    #   行数は常に小さい（ロールアップ本数に比例しない）ことを不変条件とする。
+    df_initial = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 5)  # 5 日（5m=1440 本規模）
     m1_csv = tmp_path / "m1.csv"
     _write_m1_csv(m1_csv, df_initial)
     out_dir = tmp_path / "rollups"
@@ -257,17 +258,17 @@ def test_incremental_update_is_vectorized_no_iterrows_over_rollup(tmp_path, monk
     _write_m1_csv(m1_csv, df_full)
 
     real_iterrows = pd.DataFrame.iterrows
-    calls = {"n": 0}
+    sizes = {"max": 0}
 
     def _spy_iterrows(self, *a, **k):
-        calls["n"] += 1
+        sizes["max"] = max(sizes["max"], len(self))
         return real_iterrows(self, *a, **k)
 
     monkeypatch.setattr(pd.DataFrame, "iterrows", _spy_iterrows)
     new_state = rb.incremental_update(m1_csv, state, ["5m", "1h", "1D"], out_dir)
 
-    # 既存ロールアップ・tail を一度も iterrows しない（完全ベクトル経路）。
-    assert calls["n"] == 0
+    # iterrows 対象は末尾 suffix（数本）のみ。ロールアップ規模（5m=1440 本）を iterrows しない。
+    assert sizes["max"] < 50, f"iterrows 対象が大きすぎる（{sizes['max']} 行）＝ロールアップ全体走査の疑い"
     # それでも各 TF は resample_ohlc(全件) と一致する。
     for tf in ("5m", "1h", "1D"):
         expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES[tf])
@@ -279,10 +280,10 @@ def test_incremental_update_is_vectorized_no_iterrows_over_rollup(tmp_path, monk
 
 
 def test_incremental_update_peak_memory_is_bounded(tmp_path):
-    # ISSUE-012 回帰（数値版）: 大ロールアップへの 1 tick 増分の tracemalloc peak が上限未満。
-    #   旧 dict 経路（iterrows で 90 万件 dict 化）は RSS を 618MB へ急騰させた。本テストは
-    #   400k 行ロールアップで DataFrame 経路 peak<170MB を固定する（dict 経路 mutation は 230MB
-    #   で超過 FAIL）。閾値は実測（DataFrame 119MB / dict 230MB）の間隙に置き非 flaky。
+    # 回帰（数値版）: 大ロールアップへの 1 tick 増分の tracemalloc peak が上限未満。
+    #   O(新規) 経路は末尾だけ truncate+append し全体を read/write しないため peak は極小
+    #   （400k 行で実測 ~0.2MB）。全件 read/write 退行（旧 DataFrame 全件 119MB／dict 230MB）へ
+    #   戻ると 40MB 超で FAIL する。閾値は O(新規)0.2MB と全件退行 119MB+ の広い間隙（非 flaky）。
     n = 400_000
     out_dir = tmp_path / "rollups"
     out_dir.mkdir(parents=True)
@@ -312,10 +313,62 @@ def test_incremental_update_peak_memory_is_bounded(tmp_path):
     finally:
         tracemalloc.stop()
     peak_mb = peak / 1e6
-    assert peak_mb < 170, (
-        f"incremental_update peak {peak_mb:.0f}MB が上限 170MB を超過。"
-        f"ロールアップ全体の辞書化（iterrows）退行の疑い（ISSUE-012）。"
+    assert peak_mb < 40, (
+        f"incremental_update peak {peak_mb:.0f}MB が上限 40MB を超過。"
+        f"末尾 truncate+append（O新規）でなく全体 read/write へ退行した疑い。"
     )
+
+
+def test_incremental_update_appends_tail_without_rewriting_history(tmp_path):
+    # O(新規) 回帰: 過去確定足（最終データ行より前の prefix バイト列）は incremental tick 後も
+    #   1 バイトも変わらない＝末尾だけ truncate+append し、履歴を read/write しない。
+    df_initial = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 3)  # 3 日
+    m1_csv = tmp_path / "m1.csv"
+    _write_m1_csv(m1_csv, df_initial)
+    out_dir = tmp_path / "rollups"
+    rb.stream_build(m1_csv, ["5m"], out_dir, chunk_rows=2000)
+    state = rb.RollupState.load(out_dir)
+    path = out_dir / "jp225_m1_5m.csv"
+    offset = rb._last_data_line_offset(path)  # 最終データ行（形成中バー）の先頭。
+    prefix_before = path.read_bytes()[:offset]
+
+    df_more = _synthetic_m1("2020-01-04 00:00:00", 130)  # 形成中更新＋新 period append を跨ぐ。
+    df_full = pd.concat([df_initial, df_more])
+    _write_m1_csv(m1_csv, df_full)
+    rb.incremental_update(m1_csv, state, ["5m"], out_dir)
+
+    # prefix（過去確定足）はバイト一致（履歴を書き直していない）。
+    assert path.read_bytes()[:offset] == prefix_before
+    # かつ結果は resample_ohlc(全件) と一致（末尾追記が正しい）。
+    expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES["5m"])
+    actual = _read_rollup_csv(path)
+    assert list(actual.index) == list(expected.index)
+    for col in ("open", "high", "low", "close", "volume"):
+        assert actual[col].to_numpy() == pytest.approx(expected[col].to_numpy())
+
+
+def test_incremental_update_is_idempotent_on_reprocess(tmp_path):
+    # O(新規) 安全性: 形成中バーは probe から再計算（上書き）するため、同じ古い state で 2 回
+    #   処理しても volume を二重計上しない（書込中 crash 後の再処理が安全＝冪等）。
+    df_initial = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 3)
+    m1_csv = tmp_path / "m1.csv"
+    _write_m1_csv(m1_csv, df_initial)
+    out_dir = tmp_path / "rollups"
+    rb.stream_build(m1_csv, ["5m"], out_dir, chunk_rows=2000)
+    state = rb.RollupState.load(out_dir)
+
+    df_more = _synthetic_m1("2020-01-04 00:00:00", 130)
+    df_full = pd.concat([df_initial, df_more])
+    _write_m1_csv(m1_csv, df_full)
+    rb.incremental_update(m1_csv, state, ["5m"], out_dir)  # 1 回目
+    rb.incremental_update(m1_csv, state, ["5m"], out_dir)  # 2 回目（同じ古い state ＝ 再処理）
+
+    # 2 回処理しても resample(全件) と一致（merge だと volume 二重計上で不一致になる）。
+    expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES["5m"])
+    actual = _read_rollup_csv(out_dir / "jp225_m1_5m.csv")
+    assert list(actual.index) == list(expected.index)
+    for col in ("open", "high", "low", "close", "volume"):
+        assert actual[col].to_numpy() == pytest.approx(expected[col].to_numpy())
 
 
 def test_incremental_update_falls_back_to_stream_build_when_state_absent(tmp_path):

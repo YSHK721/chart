@@ -18,6 +18,7 @@ TF 別ロールアップ CSV（``date,open,high,low,close,volume``・loader 互�
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -244,6 +245,78 @@ def _index_chunk(chunk: pd.DataFrame) -> pd.DataFrame:
     return chunk.set_index("date")
 
 
+def _rollup_last_period(path: Path) -> Optional[pd.Timestamp]:
+    """既存ロールアップの末尾バーの period（最終行のみ逆シーク読み）。空・不在なら None。"""
+    if not path.exists():
+        return None
+    tail = tail_reader.read_tail(path, 1)
+    if tail.empty:
+        return None
+    return pd.Timestamp(tail.index[-1])
+
+
+def _last_data_line_offset(path: Path) -> int:
+    """ロールアップ CSV の「最終データ行」が始まるバイト位置を逆シークで求める（truncate 起点）。
+
+    末尾の改行を 1 つ無視し、その手前の改行の次バイト＝最終データ行の先頭。データ行が 1 本
+    （ヘッダ＋1 行）のときはヘッダ直後（＝ヘッダ行末改行の次）を返す。
+    """
+    block = 64 * 1024
+    with open(path, "rb") as f:
+        f.seek(0, io.SEEK_END)
+        size = f.tell()
+        if size == 0:
+            return 0
+        buf = b""
+        cur = size
+        while cur > 0:
+            step = min(block, cur)
+            cur -= step
+            f.seek(cur)
+            buf = f.read(step) + buf
+            stripped = buf[:-1] if buf.endswith(b"\n") else buf
+            idx = stripped.rfind(b"\n")
+            if idx != -1:
+                return cur + idx + 1
+        return 0
+
+
+def _truncate_append_bars(path: Path, offset: int, bars: "OrderedBars") -> None:
+    """``offset`` で切り詰め、period→bar を昇順で追記する（末尾だけ書く＝O(新規)・原子的でない）。
+
+    最終データ行（形成中バー）を ``offset`` から切り落とし、再計算した末尾バー群（形成中の上書き
+    ＋新規確定 append）を ``_bar_to_csv_row`` 形式で書く。履歴（prefix）は一切触らない。
+    書込中 crash の窓では末尾が欠けうるが、(1) state は全 TF 成功後に保存するため次 tick で
+    再処理され、(2) 形成中バーは probe から**再計算**（マージでなく上書き）するため再処理が冪等、
+    (3) ロールアップは 1 分足から再生成可能、で復元できる。
+    """
+    import csv as _csv
+
+    with open(path, "r+", newline="", encoding="utf-8") as fh:
+        fh.seek(offset)
+        fh.truncate()
+        w = _csv.writer(fh)
+        for period in sorted(bars):
+            w.writerow(_bar_to_csv_row(period, bars[period]))
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _resample_suffix(probe: pd.DataFrame, rule: str | None, since_period: pd.Timestamp) -> "OrderedBars":
+    """probe 全体を resample し、``since_period`` 以降の period→bar（完全バー）を返す。
+
+    probe が ``since_period`` の期間始端を内包する前提（``probe.index.min() <= since_period``）。
+    since_period 以降の各 period の 1 分足は probe に連続して含まれるため、その resample 結果は
+    形成中バーも含め完全（partial でない）＝そのまま上書きしてよい。
+    """
+    resampled = dataset.resample_ohlc(probe, rule)
+    suffix = resampled[resampled.index >= since_period]
+    bars: "OrderedBars" = {}
+    for period, row in suffix.iterrows():
+        bars[period] = _bar_to_dict(row)
+    return bars
+
+
 def stream_build(
     m1_csv_path: Path,
     tf_list: Iterable[str],
@@ -349,15 +422,31 @@ def incremental_update(
         return state
 
     new_last: Optional[pd.Timestamp] = tail_df.index.max()
+    probe_covers = not probe.empty
 
     for tf in tf_list:
         rule = dataset.TIMEFRAME_RULES[tf]
+        path = _rollup_path(out_dir, tf)
+        # ---- O(新規) 速い経路: 末尾だけ truncate+append（過去確定足を read/write しない）----
+        #   probe が「既存末尾 period の期間始端」を内包すれば、形成中バーを probe から再計算
+        #   （上書き＝冪等）でき、ロールアップ全体（5m≈64MB）の read/write を避けられる。
+        last_period = _rollup_last_period(path)
+        if (
+            last_period is not None
+            and probe_covers
+            and probe.index.min() <= last_period
+        ):
+            suffix = _resample_suffix(probe, rule, last_period)
+            if suffix:
+                offset = _last_data_line_offset(path)
+                _truncate_append_bars(path, offset, suffix)
+            continue
+        # ---- フォールバック（全件 rewrite）: probe 不足（1M 等）・ファイル不在・空 ----
         # 追記 tail を resample（小）。既存ロールアップは DataFrame のまま扱い辞書化しない
         #   （ISSUE-012: 90 万件の dict-of-dict が RSS を 618MB へ急騰させる回帰の防止）。
         new_df = dataset.resample_ohlc(tail_df, rule)
         if new_df.empty:
             continue
-        path = _rollup_path(out_dir, tf)
         if path.exists():
             existing = pd.read_csv(path)
             if existing.empty:
