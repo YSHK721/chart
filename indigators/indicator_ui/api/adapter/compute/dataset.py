@@ -24,6 +24,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 from adapter.compute.module_loader import load_module
+from adapter.compute import rollup_store, tail_reader
 
 # workspace ルート（このファイル: api/adapter/compute/ → parents[5] = /workspaces/app）。
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[5]
@@ -71,6 +72,14 @@ TIMEFRAME_RULES: dict[str, str | None] = {
 # OHLC 集約規則（再集計時の列別 agg）。volume は合算、その他（OHLC 外）は最終値。
 _OHLC_AGG = {"open": "first", "high": "max", "low": "min", "close": "last"}
 _VOLUME_NAMES = ("volume", "vol")
+
+# 1 分足原子を全ロードせず末尾だけ読む datasetRef（メモリ有界化・D-2）。1m は tail_reader、
+# 上位足は事前生成のロールアップ CSV（rollup_store）から読む。それ以外の ref（sample/jp225 日足等・
+# 小データ）は従来経路（_load_base_dataframe + resample_ohlc）据置。
+_ROLLUP_REFS = ("jp225_m1",)
+# 1m（原子）tail の安全上限（D-2）。表示 limit + 指標ルックバックぶんに十分な有界行数。
+# 1m 全件 tail（4.5M 行）で OOM を復活させないための上限（全件読みではない有限値）。
+_ATOMIC_TAIL_LOOKBACK_ROWS = 50_000
 
 
 def is_known(ref: Any) -> bool:
@@ -192,7 +201,19 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
     ``timeframe=None`` は原子（再集計なし）をそのまま返す（既存挙動・後方互換）。指定時は
     ``TIMEFRAME_RULES`` の rule で resample する。未知 timeframe は呼び出し側（controller/server）
     が事前に ``is_known_timeframe`` で拒否する前提（ここでは rule 解決のみ）。
+
+    ★メモリ有界化（D-2）: ``jp225_m1`` は 1 分足原子（4.5M 行 / 284MB）を二度と全ロードしない。
+    1m（None/'1m'）は末尾安全上限ぶんを ``tail_reader.read_tail`` で逆シーク読み、上位足（5m..1M）は
+    事前生成のロールアップ CSV を ``rollup_store.read`` で読む。それ以外の ref（sample/jp225 日足等・
+    小データ）は従来経路（base + resample）据置（A' resample キャッシュも sample 経路のみ通る・D-3）。
     """
+    if ref in _ROLLUP_REFS:
+        if timeframe in (None, "1m"):
+            # 1m 原子: 末尾安全上限ぶんだけ逆シークで読む（全件 tail で OOM 復活させない・D-2）。
+            return tail_reader.read_tail(DATASET_WHITELIST[ref], _ATOMIC_TAIL_LOOKBACK_ROWS)
+        # 上位足: 事前生成ロールアップ CSV（mtime キャッシュ + torn-read フォールバック）から読む。
+        return rollup_store.read(ref, timeframe)
+
     base = _load_base_dataframe(ref)
     if timeframe is None:
         # 原子（1m）は resample せず base を直接返す（resample キャッシュ非経由・従来どおり）。

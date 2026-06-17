@@ -44,6 +44,10 @@ from dukascopy_python.instruments import INSTRUMENT_IDX_ASIA_E_N225JAP
 
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_OUTPUT = _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_m1.csv"
+# 上位足ロールアップ CSV の既定出力先（rollup_store.path と整合）。
+_DEFAULT_ROLLUP_DIR = _WORKSPACE_ROOT / "marketdata" / "data" / "rollups"
+# ロールアップ対象の上位足（1m 原子を除く 5m..1M）。1 分足追記に同期して増分更新する。
+_ROLLUP_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M")
 
 # JP225（日経225）= Dukascopy 銘柄 "E_N225Jap"。
 DEFAULT_INSTRUMENT = INSTRUMENT_IDX_ASIA_E_N225JAP
@@ -287,6 +291,7 @@ def append_incremental(
     offer_side: Any = dukascopy_python.OFFER_SIDE_BID,
     repair: bool = True,
     repair_threshold: float = 0.3,
+    rollup_hook: Optional[Callable[[Path, int], None]] = None,
 ) -> int:
     """既存 CSV の末尾以降を増分取得して追記する（副作用）。追記した行数を返す。
 
@@ -294,6 +299,9 @@ def append_incremental(
       :func:`compute_fetch_window` で算出（``None`` なら何もせず 0 を返す）。
     - 追記モード ``"a"``。ファイル新規時のみヘッダー行を書く（既存ファイルへの二重書き禁止）。
     - 既存 ``last_ts`` より後の行のみ採用（重複混入なし）。
+    - ``rollup_hook`` 指定時は **追記成功後（return 直前）** に ``rollup_hook(csv_path, added)``
+      を呼ぶ（1 分足追記と上位足ロールアップ更新を同期する統合点）。追記 0 のときは呼ばない。
+      既定 ``None`` は CLI 既存挙動を不変に保つ（追記のみ・ロールアップを触らない）。
     """
     path = Path(csv_path)
     last_ts = read_last_timestamp(path)
@@ -326,7 +334,32 @@ def append_incremental(
         if not file_exists:  # 新規時のみヘッダー
             writer.writerow(_HEADER)
         writer.writerows(rows)
-    return len(rows)
+    added = len(rows)
+    # 追記成功後（return 直前）に上位足ロールアップを同期更新する統合点（追記時のみ）。
+    if added > 0 and rollup_hook is not None:
+        rollup_hook(path, added)
+    return added
+
+
+def build_rollup_hook(
+    out_dir: Path = _DEFAULT_ROLLUP_DIR,
+    tf_list: Tuple[str, ...] = _ROLLUP_TIMEFRAMES,
+) -> Callable[[Path, int], None]:
+    """1 分足追記成功後に上位足ロールアップを増分更新する hook を返す（watch 統合点）。
+
+    返す hook ``(csv_path, added)`` は ``rollup_builder.incremental_update`` を当該 1 分足 CSV と
+    全上位足（``tf_list``）で呼ぶ。state（``RollupState``）は ``out_dir`` から load し、不在時は
+    incremental_update 内で stream_build へフォールバックする（新 state は incremental_update が save）。
+    ``rollup_builder`` の import は hook 内に局所化し、CLI の起動時 import 副作用を増やさない。
+    """
+
+    def _hook(csv_path: Path, added: int) -> None:
+        import rollup_builder as _rb  # 局所 import（CLI 起動コストを増やさない）
+
+        state = _rb.RollupState.load(out_dir)
+        _rb.incremental_update(csv_path, state, list(tf_list), out_dir)
+
+    return _hook
 
 
 def run_watch(
@@ -446,6 +479,9 @@ def main(argv: List[str] | None = None) -> int:
     # 増分モード（--start/--end 省略）の default_start は原子起点を使う。
     incr_default_start = args.start if args.start is not None else DEFAULT_START
 
+    # 1 分足追記成功後に上位足ロールアップを同期更新する hook（増分モードで配線）。
+    rollup_hook = build_rollup_hook()
+
     if not range_given and not args.watch:
         # 起動時ワンショット増分：既存末尾以降を 1 回だけ追記して終了。
         now_utc_naive = _utc_now_naive()
@@ -457,6 +493,7 @@ def main(argv: List[str] | None = None) -> int:
             offer_side=offer_side,
             repair=args.repair,
             repair_threshold=args.repair_threshold,
+            rollup_hook=rollup_hook,
         )
         if added:
             logger.info("増分追記: %d 行 -> %s", added, args.output)
@@ -477,6 +514,7 @@ def main(argv: List[str] | None = None) -> int:
                 offer_side=offer_side,
                 repair=args.repair,
                 repair_threshold=args.repair_threshold,
+                rollup_hook=rollup_hook,
             )
             if added:
                 logger.info("増分追記: %d 行 -> %s", added, args.output)

@@ -455,3 +455,127 @@ def test_stream_to_csv_preserves_original_on_failure(tmp_path: Path, monkeypatch
         )
     assert out.read_text(encoding="utf-8") == "OLD-CONTENT\n"
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+# --------------------------------------------------------------------------- #
+# watch 統合（append_incremental 成功後に rollup を増分更新する統合点・return 直前）
+#   1 分足追記とロールアップ更新を同期する。CLI 既存挙動は不変（rollup_hook 既定 None）。
+#   実ネット（dukascopy）・実 rollup_builder は呼ばない（fetch・hook をスタブ）。
+# --------------------------------------------------------------------------- #
+def test_append_incremental_invokes_rollup_hook_after_successful_append(
+    tmp_path: Path, monkeypatch
+):
+    # Arrange: 新規ファイルへ 2 行追記が成功するケース。
+    csv_path = tmp_path / "jp225_m1.csv"
+    df = _make_df(["2026-06-15 09:00:00", "2026-06-15 09:01:00"])
+    monkeypatch.setattr(mod, "fetch_chunk", lambda *a, **k: df)
+    now = datetime(2026, 6, 15, 12, 0, 0)
+    seen = {}
+
+    def _hook(path, added):
+        seen["path"] = path
+        seen["added"] = added
+
+    # Act: rollup_hook を注入する（統合点）。
+    written = mod.append_incremental(
+        csv_path, now=now, lag_minutes=3, default_start=datetime(2026, 6, 15),
+        rollup_hook=_hook,
+    )
+    # Assert: 追記成功（2 行）後に hook が当該 CSV パスと追記行数で 1 回呼ばれる。
+    assert written == 2
+    assert seen["path"] == csv_path
+    assert seen["added"] == 2
+
+
+def test_append_incremental_does_not_invoke_rollup_hook_when_nothing_appended(
+    tmp_path: Path, monkeypatch
+):
+    # Arrange: 取得すべき新規なし（window=None）→ 追記 0 → hook を呼ばない。
+    csv_path = tmp_path / "jp225_m1.csv"
+    csv_path.write_text(
+        "date,open,high,low,close,volume\n"
+        "2026-06-15 11:59:00,100.0,101.0,99.0,100.5,10.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        mod, "fetch_chunk",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch")),
+    )
+    now = datetime(2026, 6, 15, 12, 0, 0)  # window=None
+    calls = {"n": 0}
+
+    def _hook(path, added):
+        calls["n"] += 1
+
+    # Act
+    written = mod.append_incremental(
+        csv_path, now=now, lag_minutes=3, default_start=datetime(2026, 6, 15),
+        rollup_hook=_hook,
+    )
+    # Assert: 追記 0 のため hook は呼ばれない（無更新でロールアップを触らない）。
+    assert written == 0
+    assert calls["n"] == 0
+
+
+def test_append_incremental_without_hook_preserves_cli_behavior(
+    tmp_path: Path, monkeypatch
+):
+    # rollup_hook 既定 None（CLI 既存挙動）では追記のみ・例外なく従来どおり動く（後方互換）。
+    csv_path = tmp_path / "jp225_m1.csv"
+    df = _make_df(["2026-06-15 09:00:00"])
+    monkeypatch.setattr(mod, "fetch_chunk", lambda *a, **k: df)
+    now = datetime(2026, 6, 15, 12, 0, 0)
+    # Act: hook 未指定（既定 None）。
+    written = mod.append_incremental(
+        csv_path, now=now, lag_minutes=3, default_start=datetime(2026, 6, 15)
+    )
+    # Assert: 従来どおり 1 行追記して終了（hook 不在でも壊れない）。
+    assert written == 1
+    lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
+    assert lines[-1].startswith("2026-06-15 09:00:00")
+
+
+def test_main_one_shot_passes_rollup_hook_to_append_incremental(
+    tmp_path: Path, monkeypatch
+):
+    # 統合の活性化: ワンショット増分 main が append_incremental へ rollup_hook を渡す
+    #   （1 分足追記と上位足ロールアップ更新の同期点を CLI で配線する）。実 fetch/rollup は走らせない。
+    seen = {}
+
+    def _append(*a, **k):
+        seen["rollup_hook"] = k.get("rollup_hook")
+        return 0
+
+    monkeypatch.setattr(mod, "append_incremental", _append)
+    out = tmp_path / "jp225_m1.csv"
+    # Act
+    rc = mod.main(["--output", str(out)])
+    # Assert: append_incremental が rollup_hook（callable）付きで呼ばれる（None ではない）。
+    assert rc == 0
+    assert callable(seen["rollup_hook"])
+
+
+def test_build_rollup_hook_updates_rollups_via_incremental_update(tmp_path, monkeypatch):
+    # build_rollup_hook が返す hook は rollup_builder.incremental_update を当該 CSV・全上位足で
+    #   呼ぶ（state load→update→（incremental_update 内で save））。実 rollup_builder はスタブ。
+    import rollup_builder as rb
+
+    seen = {}
+
+    def _fake_incremental(m1_csv_path, state, tf_list, out_dir):
+        seen["m1"] = m1_csv_path
+        seen["tf_list"] = list(tf_list)
+        seen["out_dir"] = out_dir
+        return rb.RollupState(last_processed_ts=datetime(2026, 6, 15))
+
+    monkeypatch.setattr(rb, "incremental_update", _fake_incremental)
+    monkeypatch.setattr(rb.RollupState, "load", staticmethod(lambda out_dir: None))
+
+    csv_path = tmp_path / "jp225_m1.csv"
+    hook = mod.build_rollup_hook(out_dir=tmp_path / "rollups")
+    # Act: 追記 5 行を通知。
+    hook(csv_path, 5)
+    # Assert: incremental_update が当該 CSV と全上位足（5m..1M・1m を除く）で呼ばれる。
+    assert seen["m1"] == csv_path
+    assert "1m" not in seen["tf_list"]
+    assert set(seen["tf_list"]) == {"5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M"}
