@@ -1,32 +1,37 @@
-"""rollup_store — 上位足ロールアップ CSV の解決・読込・mtime キャッシュ（dataset と同方式）。
+"""rollup_store — 上位足ロールアップ CSV の解決・末尾読込・mtime キャッシュ（dataset と同方式）。
 
 server が 1 分足を全ロードしないための読み取り側。上位足（5m..1M）はあらかじめ生成された
-TF 別ロールアップ CSV（``<workspace>/marketdata/data/rollups/<ref>_<tf>.csv``・loader 互換）を
-読む。既存 loader を再利用し、mtime キャッシュ（plain dict 上書き有界）と torn-read フォールバックを
-``dataset._BASE_CACHE`` と同方式で持つ（単一真実源・恒久 stale 化しない）。
+TF 別ロールアップ CSV（``<workspace>/marketdata/data/rollups/<ref>_<tf>.csv``・loader 互換）を読む。
 
-★dataset の P-1/P-2 と同型: (ref, tf) ごと最新 mtime の 1 エントリのみ保持（mtime ごと増殖しない）。
-torn-read（writer の非アトミック書込途中）時は失敗をキャッシュへ焼かず直前の良好 df を返す。
+★メモリ・読込時間有界（D-2 と同方針）: ロールアップ全件（5m≈96 万行/64MB）を読まず、末尾
+``_ROLLUP_TAIL_ROWS`` 行だけを ``tail_reader.read_tail`` で逆シーク読みする。表示・計算は
+recentBars（1500 本）以内のため十分で、全件読み（1.1s/145MB）→末尾読み（~0.18s/16MB）へ短縮し
+server の応答時間・常駐 RSS を抑える（1m の ``dataset._ATOMIC_TAIL_LOOKBACK_ROWS`` と同方式・同値）。
+
+mtime キャッシュ（plain dict 上書き有界）と torn-read フォールバックを ``dataset._BASE_CACHE`` と
+同方式で持つ（単一真実源・恒久 stale 化しない）。★dataset の P-1/P-2 と同型: (ref, tf) ごと最新
+mtime の 1 エントリのみ保持（mtime ごと増殖しない）。ロールアップ書込は原子的（os.replace）だが、
+読込失敗時は失敗をキャッシュへ焼かず直前の良好 df を返す（防御）。
 """
 
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-from adapter.compute.module_loader import load_module
+from adapter.compute import tail_reader
 
 # workspace ルート（このファイル: api/adapter/compute/ → parents[5] = /workspaces/app）。
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[5]
 _ROLLUPS_DIR = _WORKSPACE_ROOT / "marketdata" / "data" / "rollups"
 
-# ロールアップ CSV の時刻列（loader が index へ解決する起点）。
-_TIME_COLUMN = "date"
+# 末尾読込の上限行数（全件を読まず末尾だけ逆シーク。recentBars=1500 に対し十分大。1m の
+#   dataset._ATOMIC_TAIL_LOOKBACK_ROWS と同方式・同値）。遡及上限＝この行数（5m≈170 日・1h≈5.7 年）。
+_ROLLUP_TAIL_ROWS = 50_000
 
 # ロールアップ読込の mtime 検知キャッシュ（dataset._BASE_CACHE と同方式・有界）。
 #   (ref, tf) → (mtime_ns, DataFrame)。(ref,tf) ごと最新 mtime の 1 エントリのみ保持する
@@ -61,12 +66,11 @@ def read(ref: str, tf: str) -> pd.DataFrame:
     if cached is not None and (mtime is None or mtime == cached[0]):
         # mtime 不変、または取得不能（CSV 削除）ならキャッシュヒット（再読込しない）。
         return cached[1]
-    loader = _load_loader()
     try:
-        df = loader.load_ohlc_csv(str(csv_path), time_column=_TIME_COLUMN)
+        df = _read_tail_df(csv_path)
     except (OSError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError):
-        # writer が非アトミックに書込中だと torn-read で解析失敗しうる。失敗をキャッシュへ
-        # 焼かず、直前の良好 df があればそれを返す（不正データを配信しない）。無ければ送出する。
+        # 読込失敗（torn-read 等）時は失敗をキャッシュへ焼かず、直前の良好 df があればそれを
+        # 返す（不正データを配信しない）。無ければ送出する。
         if cached is not None:
             logger.warning("ロールアップ CSV 読込に失敗（torn-read 等）。直前のキャッシュを維持: %s/%s", ref, tf)
             return cached[1]
@@ -75,8 +79,10 @@ def read(ref: str, tf: str) -> pd.DataFrame:
     return df
 
 
-@lru_cache(maxsize=None)
-def _load_loader():
-    """指標 src の loader モジュールを一意名で読み込む（read-only・dataset と同じ loader）。"""
-    pkg_dir = _WORKSPACE_ROOT / "indigators" / "profit_band" / "src"
-    return load_module("_rollup_store_loader_src", pkg_dir / "loader.py")
+def _read_tail_df(csv_path: Path) -> pd.DataFrame:
+    """ロールアップ CSV の末尾 ``_ROLLUP_TAIL_ROWS`` 行だけを逆シークで読む（全件読みしない）。
+
+    ``tail_reader.read_tail`` は ``date`` を datetime index へ解決し loader 互換の
+    ``open/high/low/close/volume`` 列を返す（全件 loader 読みと末尾域で index/値一致）。
+    """
+    return tail_reader.read_tail(csv_path, _ROLLUP_TAIL_ROWS)
