@@ -1,5 +1,14 @@
 """PRO!fit_Band 戦略（#5 ＝ my_first_ea・StrategyPort 実装・SPEC §3.5・PROCESS §3.4）.
 
+一次情報（原典・今回入手）:
+    ``backtest/experts/PRO!fit_Band.mq5``（MetaQuotes "My First EA" 原型・#5 の原典）.
+    本モジュールは同 .mq5 の OnTick 判定（買い/売り条件・厳密不等号の全 AND・p_close=
+    mrate[1].close・桁補正・SL/TP 式・Bars<60 ゲート・同方向のみ重複抑止・反転決済なし）を
+    忠実再現する. SPEC §3.5 は当該原典の写しであり、原典が条件・式・既定値（StopLoss=30/
+    TakeProfit=100/ADX_Period=8/MA_Period=8/Adx_Min=22.0/Lot=0.1）の一次情報である.
+    原典との一致は ``tests/unit/test_strategy_pro_fit_band.py`` の独立オラクル
+    （production 非 import）テストで固定する.
+
 EMA(MA_Period) の傾き + 直前足終値の位置 + ADX(ADX_Period)>Adx_Min + +DI/−DI の大小で
 トレンド方向を判定し、新規バー 1 回だけ成行で 1 ポジション売買する.
 

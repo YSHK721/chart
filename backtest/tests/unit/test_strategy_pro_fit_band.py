@@ -18,11 +18,22 @@
     - エントリ基準価格は indicators.get("close").iloc[bar_index]（spread=0 近似で Ask=Bid=close）.
     - Order は kind="market"・price=None（約定価格は execution で解決）・sl/tp は絶対価格.
 
+一次情報（原典オラクル）:
+    本テスト末尾の ``_oracle_order`` は原典 MQL5 ソース
+    ``backtest/experts/PRO!fit_Band.mq5``（MetaQuotes "My First EA" 原型・#5 の原典）の
+    OnTick スカラー条件・SL/TP 式・桁補正・Bars ゲート・同方向のみ抑止を、production
+    （pro_fit_band.py）を一切 import せずに Python で独立に書き下したオラクルである.
+    ``test_order_matches_mql5_source_oracle`` が合成系列バッテリに対し ProFitBand の
+    発注（side/sl/tp/volume）とオラクルの一致を固定する（実装非依存＝トートロジー回避）.
+    非トートロジー性は「実装の SL/TP 符号を 1 箇所反転するとオラクル一致が崩れる」ことを
+    開発時ミューテーション（TDD output §3）で実証済み.
+
 TDD AAA 構造. F.I.R.S.T.
 """
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from backtest.domain.order import Order
 from backtest.usecase.ports import StrategyPort
@@ -392,3 +403,138 @@ def test_on_position_check_always_holds():
 
     # Assert
     assert decision == "hold"
+
+
+# --- 原典オラクル（一次情報 = PRO!fit_Band.mq5）------------------------------
+# 原典 input 既定値（PRO!fit_Band.mq5 L19-31）。production を import せずスカラー再計算する.
+_ORACLE_CFG = {
+    "stop_loss": 30,       # input int StopLoss=30
+    "take_profit": 100,    # input int TakeProfit=100
+    "adx_min": 22.0,       # input double Adx_Min=22.0
+    "lot": 0.1,            # input double Lot=0.1
+    "point": 0.0001,       # _Point（決定論固定）
+}
+
+
+def _oracle_order(ema, adx, plus_di, minus_di, close, bar_index, held_sides, digits, min_bars=2):
+    """原典 PRO!fit_Band.mq5 の OnTick 判定を production 非依存で再計算する独立オラクル.
+
+    参照規約（PROCESS §0.3 / 原典 ArraySetAsSeries(true)）:
+        MQL [0]=現足=iloc[bar_index], [1]=iloc[bar_index-1], [2]=iloc[bar_index-2].
+        p_close = mrate[1].close = close[bar_index-1]（1 本前の確定終値・原典 L361）.
+    桁補正（原典 OnInit L85-92）: _Digits∈{3,5} → STP=StopLoss*10, TKP=TakeProfit*10.
+    SL/TP（原典 L413-415 / L507-509）:
+        買い Ask=close[bar_index]: sl=Ask−STP*_Point, tp=Ask+TKP*_Point.
+        売り Bid=close[bar_index]: sl=Bid+STP*_Point, tp=Bid−TKP*_Point.
+    重複抑止（原典 L397-405 / L491-499）: 同方向保有のみ抑止（反対方向は抑止しない）.
+
+    Returns:
+        ``(side, sl, tp, volume)`` または発注なしの ``None``.
+    """
+    if bar_index < min_bars - 1:   # 原典 Bars<60 ゲート（現足含む総本数 = bar_index+1）
+        return None
+    if bar_index < 2:              # EMA[2] 不在境界
+        return None
+    cfg = _ORACLE_CFG
+    ma0, ma1, ma2 = ema[bar_index], ema[bar_index - 1], ema[bar_index - 2]
+    adx0 = adx[bar_index]
+    pdi0, mdi0 = plus_di[bar_index], minus_di[bar_index]
+    p_close = close[bar_index - 1]
+    price = close[bar_index]
+    mult = 10 if digits in (3, 5) else 1
+    stp = cfg["stop_loss"] * mult
+    tkp = cfg["take_profit"] * mult
+    pt = cfg["point"]
+    # 買い: Buy_Condition_1..4 全 AND・厳密不等号（原典 L375-381・L387-391）
+    if ma0 > ma1 and ma1 > ma2 and p_close > ma1 and adx0 > cfg["adx_min"] and pdi0 > mdi0:
+        if "buy" in held_sides:
+            return None
+        return ("buy", price - stp * pt, price + tkp * pt, cfg["lot"])
+    # 売り: Sell_Condition_1..4 全 AND・厳密不等号（原典 L469-475・L481-485）
+    if ma0 < ma1 and ma1 < ma2 and p_close < ma1 and adx0 > cfg["adx_min"] and pdi0 < mdi0:
+        if "sell" in held_sides:
+            return None
+        return ("sell", price + stp * pt, price - tkp * pt, cfg["lot"])
+    return None
+
+
+# 合成系列バッテリ: 買い成立・売り成立・各不成立（ADX/DI/EMA非単調/p_close位置）・
+# 同方向保有抑止・反対保有では発注可。digits 5/3（×10）と 4（×1）で桁補正も網羅.
+_ORACLE_CASES = [
+    # (id, ema, adx, plus_di, minus_di, close, held)
+    ("buy_signal", [1.0, 1.1, 1.2], [10.0, 20.0, 25.0], [10.0, 20.0, 30.0],
+     [20.0, 15.0, 10.0], [1.2000, 1.2010, 1.2020], []),
+    ("sell_signal", [1.2, 1.1, 1.0], [10.0, 20.0, 25.0], [20.0, 15.0, 10.0],
+     [10.0, 20.0, 30.0], [1.3000, 1.0500, 1.2990], []),
+    ("adx_at_threshold_no_order", [1.0, 1.1, 1.2], [10.0, 20.0, 22.0], [10.0, 20.0, 30.0],
+     [20.0, 15.0, 10.0], [1.2000, 1.2010, 1.2020], []),
+    ("di_reversed_no_order", [1.0, 1.1, 1.2], [10.0, 20.0, 25.0], [10.0, 20.0, 15.0],
+     [5.0, 10.0, 20.0], [1.2000, 1.2010, 1.2020], []),
+    ("ema_not_monotonic_no_order", [1.15, 1.1, 1.2], [10.0, 20.0, 25.0], [10.0, 20.0, 30.0],
+     [20.0, 15.0, 10.0], [1.2000, 1.2010, 1.2020], []),
+    ("prev_close_below_ema1_no_order", [1.0, 1.1, 1.2], [10.0, 20.0, 25.0], [10.0, 20.0, 30.0],
+     [20.0, 15.0, 10.0], [1.2000, 1.0500, 1.2020], []),
+    ("same_side_buy_blocked", [1.0, 1.1, 1.2], [10.0, 20.0, 25.0], [10.0, 20.0, 30.0],
+     [20.0, 15.0, 10.0], [1.2000, 1.2010, 1.2020], ["buy"]),
+    ("opposite_side_sell_allows_buy", [1.0, 1.1, 1.2], [10.0, 20.0, 25.0], [10.0, 20.0, 30.0],
+     [20.0, 15.0, 10.0], [1.2000, 1.2010, 1.2020], ["sell"]),
+]
+
+
+@pytest.mark.parametrize("digits", [5, 3, 4])
+@pytest.mark.parametrize(
+    "case_id,ema,adx,plus_di,minus_di,close,held",
+    _ORACLE_CASES,
+    ids=[c[0] for c in _ORACLE_CASES],
+)
+def test_order_matches_mql5_source_oracle(case_id, ema, adx, plus_di, minus_di, close, held, digits):
+    # Arrange: 原典 input 既定値（SL=30/TP=100/Adx_Min=22/Lot=0.1）を production config に写像.
+    #          オラクルは production を import せず原典 .mq5 条件から独立に期待値を計算する.
+    from backtest.adapter.strategy.pro_fit_band import ProFitBand
+
+    cfg = dict(_CONFIG, digits=digits)  # _CONFIG: lot/SL/TP/adx_min/point は原典既定と一致
+    strat = ProFitBand()
+    ind = _registry(ema=ema, adx=adx, plus_di=plus_di, minus_di=minus_di, close=close)
+    strat.on_init(cfg, ind)
+    expected = _oracle_order(ema, adx, plus_di, minus_di, close, 2, set(held), digits, min_bars=2)
+
+    # Act
+    orders = strat.on_new_bar(2, ind, _Account(held))
+
+    # Assert: 発注有無・side/sl/tp/volume が原典オラクルと一致（SL/TP は厳密一致＝手計算固定）.
+    if expected is None:
+        assert orders == []
+    else:
+        assert len(orders) == 1
+        o = orders[0]
+        side, sl, tp, vol = expected
+        assert (o.side, o.kind, o.price) == (side, "market", None)
+        assert o.volume == vol
+        assert o.sl == pytest.approx(sl, abs=1e-12)
+        assert o.tp == pytest.approx(tp, abs=1e-12)
+
+
+def test_oracle_buy_sltp_absolute_values_are_hand_computed_for_digits5():
+    # Arrange: トートロジー回避の固定点。買い成立・digits=5・price=close[2]=1.2020.
+    #          原典式 sl=Ask−STP*_Point / tp=Ask+TKP*_Point を手計算した絶対値で固定する.
+    from backtest.adapter.strategy.pro_fit_band import ProFitBand
+
+    strat = ProFitBand()
+    ind = _registry(
+        ema=[1.0, 1.1, 1.2],
+        adx=[10.0, 20.0, 25.0],
+        plus_di=[10.0, 20.0, 30.0],
+        minus_di=[20.0, 15.0, 10.0],
+        close=[1.2000, 1.2010, 1.2020],
+    )
+    strat.on_init(_CONFIG, ind)
+
+    # Act
+    orders = strat.on_new_bar(2, ind, _Account([]))
+
+    # Assert: 手計算（digits=5 → STP=300, TKP=1000, _Point=0.0001）.
+    #   sl = 1.2020 − 300*0.0001 = 1.1720 ／ tp = 1.2020 + 1000*0.0001 = 1.3020.
+    o = orders[0]
+    assert o.side == "buy"
+    assert o.sl == pytest.approx(1.1720, abs=1e-12)
+    assert o.tp == pytest.approx(1.3020, abs=1e-12)

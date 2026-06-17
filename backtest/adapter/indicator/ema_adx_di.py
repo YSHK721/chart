@@ -1,5 +1,17 @@
 """ADX(period)/+DI/−DI 指標（adapter・SPEC §3.5 / §9・PROCESS §1.2）.
 
+一次情報（原典・今回入手）:
+    ``backtest/experts/PRO!fit_Band.mq5``（MetaQuotes "My First EA" 原型・#5 の原典）.
+    原典は ``iADX(NULL,0,ADX_Period)`` でプラットフォーム（MT5）実装に委譲し、3 バッファ
+    buf0=ADX 本線 / buf1=+DI / buf2=−DI を参照する. SPEC §3.5 は当該原典の写しである.
+
+ADX 平滑定数の忠実性に関する注記（TBD）:
+    原典 .mq5 は ``iADX`` でプラットフォーム実装へ委譲するため、ADX 平滑定数
+    （本実装は α=2/(period+1) ＝ profit_adx_needle 準拠）の最終忠実性は実 MT5 突合
+    （ISSUE-013 / TBD-A）で要確証である. MetaQuotes 公式 iADX は Wilder の RMA
+    （α=1/period）系である可能性があり、本実装の EMA 系（α=2/(period+1)）との差は
+    実 MT5 ターミナル突合で確定する. 本実装は profit_adx_needle 準拠を維持し変更しない.
+
 #5 PRO!fit_Band が参照する ``iADX(NULL,0,ADX_Period)`` の 3 バッファ
 (buf0=ADX 本線 / buf1=+DI / buf2=−DI) を Wilder 式（MetaQuotes iADX 再現）で算出する.
 
