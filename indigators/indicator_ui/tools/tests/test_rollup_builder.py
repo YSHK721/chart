@@ -14,6 +14,7 @@ dataset.resample_ohlc(全件) を真値（oracle）として stream_build / incr
 from __future__ import annotations
 
 import csv as _csv
+import tracemalloc
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -275,6 +276,46 @@ def test_incremental_update_is_vectorized_no_iterrows_over_rollup(tmp_path, monk
         for col in ("open", "high", "low", "close", "volume"):
             assert actual[col].to_numpy() == pytest.approx(expected[col].to_numpy())
     assert new_state.last_processed_ts == df_full.index.max().to_pydatetime()
+
+
+def test_incremental_update_peak_memory_is_bounded(tmp_path):
+    # ISSUE-012 回帰（数値版）: 大ロールアップへの 1 tick 増分の tracemalloc peak が上限未満。
+    #   旧 dict 経路（iterrows で 90 万件 dict 化）は RSS を 618MB へ急騰させた。本テストは
+    #   400k 行ロールアップで DataFrame 経路 peak<170MB を固定する（dict 経路 mutation は 230MB
+    #   で超過 FAIL）。閾値は実測（DataFrame 119MB / dict 230MB）の間隙に置き非 flaky。
+    n = 400_000
+    out_dir = tmp_path / "rollups"
+    out_dir.mkdir(parents=True)
+    # 既存 5m ロールアップを直接書く（stream_build の 1m 全件生成は遅いため合成 CSV を用意）。
+    idx = pd.date_range("2018-01-01", periods=n, freq="5min")
+    pd.DataFrame(
+        {"date": idx, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0}
+    ).to_csv(out_dir / "jp225_m1_5m.csv", index=False)
+    last_ts = idx[-1]
+    rb.RollupState(last_processed_ts=last_ts.to_pydatetime()).save(out_dir)
+    # m1: probe が last_ts を内包するよう <=last_ts も数本含めつつ、新規追記を数本与える。
+    m1_idx = pd.date_range(last_ts - timedelta(minutes=3), periods=8, freq="1min")
+    m1_csv = tmp_path / "m1.csv"
+    _write_m1_csv(
+        m1_csv,
+        pd.DataFrame(
+            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0},
+            index=m1_idx,
+        ),
+    )
+
+    state = rb.RollupState.load(out_dir)
+    tracemalloc.start()
+    try:
+        rb.incremental_update(m1_csv, state, ["5m"], out_dir)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    peak_mb = peak / 1e6
+    assert peak_mb < 170, (
+        f"incremental_update peak {peak_mb:.0f}MB が上限 170MB を超過。"
+        f"ロールアップ全体の辞書化（iterrows）退行の疑い（ISSUE-012）。"
+    )
 
 
 def test_incremental_update_falls_back_to_stream_build_when_state_absent(tmp_path):
