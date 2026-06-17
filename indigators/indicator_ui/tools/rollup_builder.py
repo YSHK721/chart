@@ -36,7 +36,12 @@ _API_DIR = _INDICATOR_UI_DIR / "api"
 if str(_API_DIR) not in sys.path:
     sys.path.insert(0, str(_API_DIR))
 
-from adapter.compute import dataset  # noqa: E402
+from adapter.compute import dataset, tail_reader  # noqa: E402
+
+# 増分更新で「state 以降の新規 1 分足」を逆シークで拾う末尾 probe 行数。--watch は毎分 ~1 行
+# 追記なので十分大（≈14 日分の連続 1 分足）。probe が last_ts を内包できない長期 catch-up のみ
+# 全件スキャンへフォールバックする。
+_INCREMENTAL_TAIL_PROBE_ROWS = 20_000
 
 # ロールアップ CSV の列（loader 互換: date + OHLCV）。
 _HEADER = ["date", "open", "high", "low", "close", "volume"]
@@ -132,6 +137,32 @@ def _write_rollup(out_dir: Path, tf: str, bars: dict[Any, dict[str, Any]]) -> No
             w.writerow(_HEADER)
             for period in sorted(bars):
                 w.writerow(_bar_to_csv_row(period, bars[period]))
+        os.replace(tmp, final)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _write_rollup_df(out_dir: Path, tf: str, df: pd.DataFrame) -> None:
+    """date-index OHLCV DataFrame を date 昇順でロールアップ CSV へ**原子的に**書く（増分経路）。
+
+    増分更新（ISSUE-012）の memory-bounded 経路。``_write_rollup``（辞書版）と同じ tmp→``os.replace``
+    の原子化で確定パスを「完全な新 CSV」か「旧 CSV」のいずれかに限定する。出力列・date 書式
+    （``_DATE_FMT``）・ヘッダは loader 互換（``_HEADER``）で揃える。90 万件規模でも辞書化せず
+    pandas の to_csv をストリーム書きするため RSS は DataFrame 1〜2 個分に有界化する。
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    final = _rollup_path(out_dir, tf)
+    fd, tmp_name = tempfile.mkstemp(dir=str(out_dir), prefix=final.name + ".", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        out = df[["open", "high", "low", "close", "volume"]].sort_index()
+        out = out.copy()
+        out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
+        out.index.name = "date"
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+            out.to_csv(fh, header=_HEADER[1:], index_label=_HEADER[0])
         os.replace(tmp, final)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -283,21 +314,6 @@ def stream_build(
     return state
 
 
-def _read_existing_rollup(out_dir: Path, tf: str) -> OrderedBars:
-    """既存ロールアップ CSV を period→bar の順序辞書へ読む（末尾マージ用・小データ）。"""
-    path = _rollup_path(out_dir, tf)
-    bars: OrderedBars = {}
-    if not path.exists():
-        return bars
-    df = pd.read_csv(path)
-    if df.empty:
-        return bars
-    df["date"] = pd.to_datetime(df["date"])
-    for _, row in df.iterrows():
-        bars[pd.Timestamp(row["date"])] = _bar_to_dict(row)
-    return bars
-
-
 def incremental_update(
     m1_csv_path: Path,
     state: Optional[RollupState],
@@ -314,32 +330,60 @@ def incremental_update(
         return stream_build(m1_csv_path, tf_list, out_dir)
 
     last_ts = pd.Timestamp(state.last_processed_ts)
-    # state 以降の tail だけをストリーム読みする（全件を一度に載せない）。
-    tail_frames: list[pd.DataFrame] = []
-    new_last: Optional[pd.Timestamp] = None
-    for raw_chunk in pd.read_csv(m1_csv_path, chunksize=500_000):
-        chunk = _index_chunk(raw_chunk)
-        tail = chunk[chunk.index > last_ts]
-        if not tail.empty:
-            tail_frames.append(tail)
-            new_last = tail.index.max()
+    # まず末尾 probe（逆シーク）で state 以降の新規行を拾う。--watch は毎分 ~1 行追記なので
+    # probe（≈14 日分）が last_ts を内包し、全件スキャンを避けられる（OOM 回避の本丸）。
+    probe = tail_reader.read_tail(Path(m1_csv_path), _INCREMENTAL_TAIL_PROBE_ROWS)
+    if not probe.empty and probe.index.min() <= last_ts:
+        tail_df = probe[probe.index > last_ts]
+    else:
+        # probe が last_ts を内包できない長期 catch-up のみ全件ストリームへフォールバック。
+        tail_frames: list[pd.DataFrame] = []
+        for raw_chunk in pd.read_csv(m1_csv_path, chunksize=500_000):
+            chunk = _index_chunk(raw_chunk)
+            t = chunk[chunk.index > last_ts]
+            if not t.empty:
+                tail_frames.append(t)
+        tail_df = pd.concat(tail_frames) if tail_frames else probe.iloc[0:0]
 
-    if not tail_frames:
+    if tail_df.empty:
         return state
 
-    tail_df = pd.concat(tail_frames)
+    new_last: Optional[pd.Timestamp] = tail_df.index.max()
 
     for tf in tf_list:
         rule = dataset.TIMEFRAME_RULES[tf]
-        existing = _read_existing_rollup(out_dir, tf)
-        tail_bars = _resample_chunk(tail_df, rule)
-        for period, bar in tail_bars.items():
-            if period in existing:
-                # 形成中バーの継続: 既存末尾（partial）に追記分をマージして上書き。
-                existing[period] = merge_same_period(existing[period], bar)
+        # 追記 tail を resample（小）。既存ロールアップは DataFrame のまま扱い辞書化しない
+        #   （ISSUE-012: 90 万件の dict-of-dict が RSS を 618MB へ急騰させる回帰の防止）。
+        new_df = dataset.resample_ohlc(tail_df, rule)
+        if new_df.empty:
+            continue
+        path = _rollup_path(out_dir, tf)
+        if path.exists():
+            existing = pd.read_csv(path)
+            if existing.empty:
+                merged = new_df
             else:
-                existing[period] = bar  # period クローズ＝確定 append。
-        _write_rollup(out_dir, tf, existing)
+                existing["date"] = pd.to_datetime(existing["date"])
+                existing = existing.set_index("date")
+                # 新規 tail の最小 period 未満は確定済み（再集計しない）＝値をそのまま温存。
+                #   形成中の overlap（>= cut・高々 1 本）のみ new と groupby マージする。
+                cut = new_df.index.min()
+                keep = existing[existing.index < cut]
+                overlap = existing[existing.index >= cut]
+                union_tail = pd.concat([overlap, new_df])
+                # merge_same_period と同値: open=first/high=max/low=min/close=last/volume=sum。
+                #   concat 順（既存→新規）が first/last の意味（既存 open・新 close）を保証する。
+                merged_tail = union_tail.groupby(level=0, sort=True).agg(
+                    open=("open", "first"),
+                    high=("high", "max"),
+                    low=("low", "min"),
+                    close=("close", "last"),
+                    volume=("volume", "sum"),
+                )
+                merged = pd.concat([keep, merged_tail])
+        else:
+            merged = new_df
+        _write_rollup_df(out_dir, tf, merged)
 
     new_state = RollupState(
         last_processed_ts=(new_last.to_pydatetime() if new_last is not None else state.last_processed_ts)

@@ -168,6 +168,115 @@ def test_incremental_update_matches_full_resample_after_append(tmp_path, tf):
     assert new_state.last_processed_ts == df_full.index.max().to_pydatetime()
 
 
+def test_incremental_update_uses_tail_probe_not_full_scan(tmp_path, monkeypatch):
+    # 🟡-3 回帰: probe（逆シーク末尾読み）が state 以降を内包する通常追記では、
+    # incremental_update は全件 pd.read_csv(chunksize=...) を一切呼ばない（--watch 毎分の
+    # 全件スキャン＝RSS 肥大の再発を禁ずる）。probe が tail を拾えば正しく増分し続ける。
+    df_initial = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 3)  # 3 日
+    m1_csv = tmp_path / "m1.csv"
+    _write_m1_csv(m1_csv, df_initial)
+    out_dir = tmp_path / "rollups"
+    rb.stream_build(m1_csv, ["1h"], out_dir, chunk_rows=2000)
+    state = rb.RollupState.load(out_dir)
+
+    # 数本だけ追記（probe ≈14 日分が確実に内包する通常 --watch 追記を模す）。
+    df_more = _synthetic_m1("2020-01-04 00:00:00", 130)
+    df_full = pd.concat([df_initial, df_more])
+    _write_m1_csv(m1_csv, df_full)
+
+    real_read_csv = pd.read_csv
+    calls = {"with_chunksize": 0}
+
+    def _spy_read_csv(*args, **kwargs):
+        if kwargs.get("chunksize"):
+            calls["with_chunksize"] += 1
+        return real_read_csv(*args, **kwargs)
+
+    monkeypatch.setattr(rb.pd, "read_csv", _spy_read_csv)
+    new_state = rb.incremental_update(m1_csv, state, ["1h"], out_dir)
+
+    # 全件チャンクスキャンを 1 度も呼ばない（probe で完結）。
+    assert calls["with_chunksize"] == 0
+    # それでも結果は resample_ohlc(全件) と一致し、state も進む。
+    expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES["1h"])
+    actual = _read_rollup_csv(out_dir / "jp225_m1_1h.csv")
+    assert list(actual.index) == list(expected.index)
+    for col in ("open", "high", "low", "close", "volume"):
+        assert actual[col].to_numpy() == pytest.approx(expected[col].to_numpy())
+    assert new_state.last_processed_ts == df_full.index.max().to_pydatetime()
+
+
+def test_incremental_update_falls_back_to_full_scan_when_probe_misses_tail(tmp_path, monkeypatch):
+    # probe が last_ts を内包できない長期 catch-up は全件スキャンへフォールバックして正しく増分する。
+    df_initial = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 3)
+    m1_csv = tmp_path / "m1.csv"
+    _write_m1_csv(m1_csv, df_initial)
+    out_dir = tmp_path / "rollups"
+    rb.stream_build(m1_csv, ["1h"], out_dir, chunk_rows=2000)
+    state = rb.RollupState.load(out_dir)
+
+    df_more = _synthetic_m1("2020-01-04 00:00:00", 200)
+    df_full = pd.concat([df_initial, df_more])
+    _write_m1_csv(m1_csv, df_full)
+
+    # probe を極小化（last_ts より後ろしか拾えない）→ probe.index.min() > last_ts でフォールバック誘発。
+    monkeypatch.setattr(rb, "_INCREMENTAL_TAIL_PROBE_ROWS", 5)
+    real_read_csv = pd.read_csv
+    calls = {"with_chunksize": 0}
+
+    def _spy_read_csv(*args, **kwargs):
+        if kwargs.get("chunksize"):
+            calls["with_chunksize"] += 1
+        return real_read_csv(*args, **kwargs)
+
+    monkeypatch.setattr(rb.pd, "read_csv", _spy_read_csv)
+    new_state = rb.incremental_update(m1_csv, state, ["1h"], out_dir)
+
+    # probe では last_ts を内包できず、全件チャンクスキャンへフォールバックする。
+    assert calls["with_chunksize"] >= 1
+    expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES["1h"])
+    actual = _read_rollup_csv(out_dir / "jp225_m1_1h.csv")
+    assert list(actual.index) == list(expected.index)
+    assert new_state.last_processed_ts == df_full.index.max().to_pydatetime()
+
+
+def test_incremental_update_is_vectorized_no_iterrows_over_rollup(tmp_path, monkeypatch):
+    # ISSUE-012 回帰: incremental_update は既存ロールアップを行単位 dict 化（iterrows）しない。
+    #   90 万行規模を iterrows→dict-of-dict すると RSS が 618MB へ急騰し OOM を再発させるため、
+    #   DataFrame ベクトル経路（resample/groupby/to_csv）で iterrows 0 回を不変条件とする。
+    df_initial = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 5)  # 5 日
+    m1_csv = tmp_path / "m1.csv"
+    _write_m1_csv(m1_csv, df_initial)
+    out_dir = tmp_path / "rollups"
+    rb.stream_build(m1_csv, ["5m", "1h", "1D"], out_dir, chunk_rows=2000)
+    state = rb.RollupState.load(out_dir)
+
+    df_more = _synthetic_m1("2020-01-06 00:00:00", 130)
+    df_full = pd.concat([df_initial, df_more])
+    _write_m1_csv(m1_csv, df_full)
+
+    real_iterrows = pd.DataFrame.iterrows
+    calls = {"n": 0}
+
+    def _spy_iterrows(self, *a, **k):
+        calls["n"] += 1
+        return real_iterrows(self, *a, **k)
+
+    monkeypatch.setattr(pd.DataFrame, "iterrows", _spy_iterrows)
+    new_state = rb.incremental_update(m1_csv, state, ["5m", "1h", "1D"], out_dir)
+
+    # 既存ロールアップ・tail を一度も iterrows しない（完全ベクトル経路）。
+    assert calls["n"] == 0
+    # それでも各 TF は resample_ohlc(全件) と一致する。
+    for tf in ("5m", "1h", "1D"):
+        expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES[tf])
+        actual = _read_rollup_csv(out_dir / f"jp225_m1_{tf}.csv")
+        assert list(actual.index) == list(expected.index)
+        for col in ("open", "high", "low", "close", "volume"):
+            assert actual[col].to_numpy() == pytest.approx(expected[col].to_numpy())
+    assert new_state.last_processed_ts == df_full.index.max().to_pydatetime()
+
+
 def test_incremental_update_falls_back_to_stream_build_when_state_absent(tmp_path):
     # state 不在（初回・RollupState なし）は stream_build へフォールバックする。
     df = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 2)
