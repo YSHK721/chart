@@ -187,3 +187,13 @@
 - 検出日：2026-06-17
 - 検出経路：backtest framework 層 config_loader のコードレビュー（重点観点2 の許容値照合）
 - 対策（要文書修正）：DESIGN §7.2 のスケッチ値 `ohlc_simulate` を PROCESS §7 の正準名（every_tick/ohlc_expand/open_only）へ追従更新する。コードは現状維持で可
+
+## ISSUE-015
+
+- 概要：バックテスト #4 Band 戦略（pOL/pOH 四分位バンド依存）をスコープ外（descope）として確定
+- 重大度：低（Phase1 経路＝#1 TC24051901・#5 PRO!fit_Band は実装済で影響なし。#4 のみ非対応）
+- ステータス：CLOSED（WONTFIX・原典不在のため再現不能）
+- 検出日：2026-06-17
+- 経緯：CLEAN_ARCH §13 TBD「#4 Band 指標ソース（28バッファ四分位）」。Band.ex5 のみで .mq5 不在、pOL/pOH 算出式が不明のため完全再現不可。ユーザー確認の結果「Band.mq5 は存在しない」と確定 → #4 をスキップ
+- 影響：backtest/adapter/strategy に #4（Band 依存）戦略・E-PendingOrder(#4 専用 BuyLimit)・Band 指標は実装しない。設計上 #4 依存は adapter 層に局所化済みのため domain/usecase/framework/main・他戦略への波及なし
+- 再開条件：原典 Band.mq5 もしくは pOL/pOH の算出仕様が将来入手できた場合のみ再検討
