@@ -180,3 +180,6 @@ ehthumbs.db
 # ============================================================
 .dockerignore
 docker-compose.override.yml
+# backtest テスト fixture（MT5突合 golden）は *.json 除外の例外として追跡
+!backtest/tests/fixtures/
+!backtest/tests/fixtures/**
