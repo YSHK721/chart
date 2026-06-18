@@ -216,11 +216,16 @@ def test_trade_counts_match_metrics_12():
     assert profit_short_trades(t) == 0   # 全 Short が負け
 
 
-def test_z_score_matches_metrics_12():
-    # METRICS §3.2: Z = (R - E(R)) / sqrt(Var(R)) = 1.3416（§11 ヘルパーの分母疑義は §3.2 で上書き）
+def test_z_score_matches_mt5_formula():
+    # 校正（ISSUE-013 / golden report_900005560）: Z-Score は実 MT5 実装式
+    #   Z = (N*(R-0.5) - P) / sqrt(P*(P-N)/(N-1)), P=2WL, W=count(pnl>=0)
+    # を採用する。本プロジェクト目的＝MT5 再現につき、BACKTEST_METRICS §3.2 の
+    # (R-E(R))/sqrt(Var(R)) 形（§12 で 1.3416）は実 MT5 と割れる（実 fixture で 2.35 を
+    # 再現できるのは MT5 式のみ）ため、実 MT5 値を正とする。§12 入力（W=5,L=5,N=10,R=8）
+    # に本式を適用すると 1.6771（決定論的に確定）。
     from backtest.usecase.compute_stats import z_score
 
-    assert z_score(_trades()) == pytest.approx(1.3416, abs=1e-4)
+    assert z_score(_trades()) == pytest.approx(1.6771, abs=1e-4)
 
 
 def test_z_score_zero_when_all_wins():
@@ -400,6 +405,68 @@ def test_zero_pnl_trade_breaks_loss_run_no_phantom_run():
     assert count == 1
     # (b) phantom な連敗ラン（金額0）が混ざらず、最長ラン損失は単一の -50
     assert worst == pytest.approx(-50.0)
+
+
+# ---- 回帰(🔴 §4.3): avg_con の分子は「ランに属するトレード数」であり ----
+# 件数系の profit_trades(pnl>=0) を流用してはならない。ゼロ損益トレードを含む系列で固定する。
+# バグ: average_consecutive_wins が分子に profit_trades(=ゼロ込み件数) を流用すると、
+# ゼロ損益が win ラン（pnl>0 でラン分割・ゼロはラン中立で区切る）に属さないため
+# 分子(件数) > 分母由来の実件数 となり §4.3 (AvgConWins=N_w/K_w) と乖離する。
+
+def test_average_consecutive_wins_uses_run_member_count_not_count_win():
+    # Arrange: [win(+10), zero(0), win(+20)]。
+    #   win ラン = {[+10]}, {[+20]}（ゼロが区切る） → K_w=2, N_w=2（ラン内件数）。
+    #   profit_trades(pnl>=0) = 3（+10, 0, +20）を分子に流用すると 3/2=1.5 となり誤り。
+    #   正: N_w/K_w = 2/2 = 1.0。
+    from backtest.usecase.compute_stats import average_consecutive_wins
+
+    trades = [_trade_with_pnl(10.0), _trade_with_pnl(0.0), _trade_with_pnl(20.0)]
+    # Act
+    result = average_consecutive_wins(trades)
+    # Assert: ゼロ込み件数(3) 流用なら 1.5、ラン内件数(2) なら 1.0
+    assert result == pytest.approx(1.0)
+
+
+def test_average_consecutive_losses_uses_run_member_count_not_count_loss():
+    # Arrange: [loss(-10), zero(0), loss(-20), loss(-30)]。
+    #   loss ラン = {[-10]}, {[-20,-30]}（ゼロが区切る） → K_l=2, N_l=3（ラン内件数）。
+    #   loss_trades(pnl<0)=3 はこの系列では N_l と一致するが、対称性のため
+    #   分子を loss ラン内件数 sum(len(r)) に明示統一することを固定する。
+    #   正: N_l/K_l = 3/2 = 1.5。
+    from backtest.usecase.compute_stats import average_consecutive_losses
+
+    trades = [
+        _trade_with_pnl(-10.0),
+        _trade_with_pnl(0.0),
+        _trade_with_pnl(-20.0),
+        _trade_with_pnl(-30.0),
+    ]
+    # Act
+    result = average_consecutive_losses(trades)
+    # Assert
+    assert result == pytest.approx(1.5)
+
+
+# ---- 🟢 win 判定述語の分離: 件数系=pnl>=0、連勝ラン=pnl>0 を明示命名で強制 ----
+# 二重基準の暗黙化（is_win()=pnl>0 と件数 pnl>=0）が 🔴 の誤流用を招いた。
+# is_count_win(>=0) / is_run_win(>0) を明示述語に分離し、ゼロ損益で 2 基準が割れることを固定。
+
+def test_is_count_win_counts_zero_pnl_as_win():
+    # 件数系基準: pnl>=0 はゼロ損益も勝ち（MT5 実測 profit_trades=292 の根拠）。
+    from backtest.usecase.compute_stats import is_count_win
+
+    assert is_count_win(_trade_with_pnl(10.0)) is True
+    assert is_count_win(_trade_with_pnl(0.0)) is True
+    assert is_count_win(_trade_with_pnl(-10.0)) is False
+
+
+def test_is_run_win_excludes_zero_pnl():
+    # 連勝ラン基準: pnl>0 のみ勝ち（ゼロはラン中立。METRICS §6.1/§4.3）。
+    from backtest.usecase.compute_stats import is_run_win
+
+    assert is_run_win(_trade_with_pnl(10.0)) is True
+    assert is_run_win(_trade_with_pnl(0.0)) is False
+    assert is_run_win(_trade_with_pnl(-10.0)) is False
 
 
 def test_zero_pnl_trade_breaks_win_run_no_phantom_run():

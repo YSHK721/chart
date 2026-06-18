@@ -3,10 +3,26 @@
 METRICS §1〜§4 の式を一次情報とする純粋関数群。pandas は計算補助として許容するが、
 本モジュールは numpy のみで完結する（依存最小化）。usecase 層は domain のみ依存可。
 
-判断点（doc 不整合・upstream-input-validation で実証）:
+実 MT5 校正（ISSUE-013 / golden: tests/fixtures/mt5_outputs/report_900005560.json）:
+    本プロジェクト目的＝MT5 再現につき、BACKTEST_METRICS.md と実 MT5 が割れる点は実 MT5 を正とする。
+    * profit_trades = count(pnl >= 0)（ゼロ損益を勝ちに数える）。loss_trades = count(pnl < 0)。
+      avg_profit = gross_profit / profit_trades(>=0)。avg_loss = gross_loss / loss_trades。
+      （連勝/連敗ラン max_con_wins/losses の win 判定は is_win()=pnl>0・ゼロ中立で別ルール）
+    * Z-Score = (N*(R-0.5) - P) / sqrt(P*(P-N)/(N-1)), P=2WL, W=count(pnl>=0), R=ラン数（pnl>=0/<0）。
+      METRICS §3.2 の (R-E(R))/sqrt(Var(R)) 形は実 MT5（golden 2.35）と再現せず不採用。
+    * AHPR/GHPR = HPR_i = B_i/B_{i-1}（= 1 + profit_i/balance_before_i と算術的に同値）。
+
+トレード列だけからは再現不能な STAT_*（要バー別/ティック別 equity 系列・fixture に欠落）:
+    * STAT_SHARPE_RATIO (MT5 -5.0): バー単位 equity 収益率ベースと推定。トレード列の (AHPR-1)/σ(HPR)
+      では再現できないため本式（ddof=0）に留め、golden 突合対象から除外する（捏造しない）。
+    * STAT_RECOVERY_FACTOR (MT5 -0.935547 = net/EquityDD_max(6594)): MT5 定義は EquityDD 基準。
+      本実装の recovery_factor は Balance DD 基準（トレード列で算出可能な範囲）。golden では除外。
+    * STAT_EQUITY_DD / EQUITY_DD_abs (6594 / 6174): ティック別含み損ピーク要。本サイクル対象外。
+
+判断点（doc 不整合・upstream-input-validation で実証・据え置き）:
     * Sharpe / σ(HPR): METRICS §1.2/§11 の式（ddof=0 母分散）を採用。§12.2/§12.6 記載の
       σ=0.020019・Sharpe=0.17 は式から再現不能（実測 σ=0.018362・Sharpe=0.1862）のため不採用。
-    * Z-Score: METRICS §3.2 数式 Z=(R-E(R))/sqrt(Var(R)) を採用。§11 ヘルパーの分母疑義を上書き。
+      実 MT5 の Sharpe=-5.0 はバー別 equity 要のため未決（上記参照）。§12 Sharpe 期待値（0.1862）は据え置き。
 """
 from __future__ import annotations
 
@@ -39,6 +55,24 @@ def _hpr_series(balance_curve: Sequence[float], initial_deposit: float) -> list[
         hpr.append(b / prev)
         prev = b
     return hpr
+
+
+def is_count_win(t: TradeRecord) -> bool:
+    """件数系 / Z-Score 用の勝ち判定: pnl >= 0（ゼロ損益を勝ちに数える）。
+
+    根拠: 実 MT5 実測（golden report_900005560 で profit_trades=292）。連勝/連敗ラン
+    の勝ち判定 is_run_win(pnl>0) とは基準が異なるため、両者を混用してはならない。
+    """
+    return t.pnl() >= 0
+
+
+def is_run_win(t: TradeRecord) -> bool:
+    """連勝ラン用の勝ち判定: pnl > 0（ゼロ損益はラン中立で勝ちに数えない）。
+
+    根拠: METRICS §6.1（同値はラン区切り）/ §4.3（AvgConWins=N_w/K_w の N_w は
+    win ラン内件数）。件数系 is_count_win(pnl>=0) とは基準が異なる。
+    """
+    return t.pnl() > 0
 
 
 def _sign(t: TradeRecord) -> int:
@@ -191,7 +225,9 @@ def total_trades(trades: Sequence[TradeRecord]) -> int:
 
 
 def profit_trades(trades: Sequence[TradeRecord]) -> int:
-    return sum(1 for t in trades if t.is_win())
+    # 実 MT5 定義: profit_trades = count(is_count_win=pnl>=0)。ゼロ損益トレードを「勝ち」に数える。
+    # （連勝/連敗ランの win 判定 is_run_win=pnl>0 とは別ルール。golden report_900005560 で 292 を再現）
+    return sum(1 for t in trades if is_count_win(t))
 
 
 def loss_trades(trades: Sequence[TradeRecord]) -> int:
@@ -207,27 +243,47 @@ def short_trades(trades: Sequence[TradeRecord]) -> int:
 
 
 def profit_long_trades(trades: Sequence[TradeRecord]) -> int:
-    return sum(1 for t in trades if t.is_long() and t.is_win())
+    # MT5 profit 系件数は is_count_win=pnl>=0 を「勝ち」に数える（profit_trades と同ルール）
+    return sum(1 for t in trades if t.is_long() and is_count_win(t))
 
 
 def profit_short_trades(trades: Sequence[TradeRecord]) -> int:
-    return sum(1 for t in trades if not t.is_long() and t.is_win())
+    return sum(1 for t in trades if not t.is_long() and is_count_win(t))
+
+
+def _z_run_count(trades: Sequence[TradeRecord]) -> int:
+    """Z-Score 用のラン数 R（2 値分割: win=pnl>=0 / loss=pnl<0）。
+
+    連勝/連敗の最長ラン（is_win()=pnl>0・ゼロ中立）とは別ルール。MT5 Z-Score は
+    profit_trades と同じく pnl>=0 を勝ち側にまとめて連を数える（golden で 468 を再現）。
+    """
+    r = 0
+    prev: bool | None = None
+    for t in trades:
+        cur = is_count_win(t)  # Z は件数系と同じ pnl>=0 基準でラン分割
+        if cur != prev:
+            r += 1
+            prev = cur
+    return r
 
 
 def z_score(trades: Sequence[TradeRecord]) -> float:
-    # METRICS §3.2 Wald-Wolfowitz Runs Test
+    # 実 MT5 Wald-Wolfowitz: Z = (N*(R-0.5) - P) / sqrt(P*(P-N)/(N-1))
+    #   W = profit_trades(pnl>=0), L = loss_trades(pnl<0), N = W+L, P = 2*W*L,
+    #   R = ラン数（win=pnl>=0 / loss=pnl<0 の 2 値分割）。
+    # METRICS §3.2 の (R-E(R))/sqrt(Var(R)) 形は §12 で 1.6771（本式）と一致せず（1.3416）、
+    # 本プロジェクト目的（MT5 再現）に従い実 MT5 値（golden 2.35）を正とする。
+    w = profit_trades(trades)
     n = len(trades)
-    nw = profit_trades(trades)
-    nl = n - nw
-    if nw == 0 or nl == 0 or n < 2:
+    l = n - w
+    if w == 0 or l == 0 or n < 2:
         return 0.0
-    runs = _runs(trades)
-    r = len(runs)
-    er = 2 * nw * nl / n + 1
-    var = 2 * nw * nl * (2 * nw * nl - n) / (n**2 * (n - 1))
-    if var <= 0:
+    p = 2 * w * l
+    denom_sq = p * (p - n) / (n - 1)
+    if denom_sq <= 0:
         return 0.0
-    return (r - er) / math.sqrt(var)
+    r = _z_run_count(trades)
+    return (n * (r - 0.5) - p) / math.sqrt(denom_sq)
 
 
 # ---- §4 個別トレード統計 ----
@@ -243,21 +299,25 @@ def largest_loss_trade(trades: Sequence[TradeRecord]) -> float:
 
 
 def average_profit_trade(trades: Sequence[TradeRecord]) -> float:
-    wins = [p for p in _pnls(trades) if p > 0]
-    return float(sum(wins) / len(wins)) if wins else 0.0
+    # 実 MT5 定義: gross_profit / profit_trades(pnl>=0)。ゼロ損益は分母（件数）に算入し
+    # 分子（gross_profit）には 0 寄与する。golden report_900005560 で 35.979452 を再現。
+    n = profit_trades(trades)
+    return float(gross_profit(trades) / n) if n else 0.0
 
 
 def average_loss_trade(trades: Sequence[TradeRecord]) -> float:
-    losses = [p for p in _pnls(trades) if p < 0]
-    return float(sum(losses) / len(losses)) if losses else 0.0
+    # 実 MT5 定義: gross_loss / loss_trades(pnl<0)。
+    n = loss_trades(trades)
+    return float(gross_loss(trades) / n) if n else 0.0
 
 
 def _win_runs(trades: Sequence[TradeRecord]) -> list[list[TradeRecord]]:
-    return [r for r in _runs(trades) if r and r[0].is_win()]
+    # ラン基準 is_run_win=pnl>0（ゼロは _runs で中立として既に除外済み）
+    return [r for r in _runs(trades) if r and is_run_win(r[0])]
 
 
 def _loss_runs(trades: Sequence[TradeRecord]) -> list[list[TradeRecord]]:
-    return [r for r in _runs(trades) if r and not r[0].is_win()]
+    return [r for r in _runs(trades) if r and not is_run_win(r[0])]
 
 
 def _run_profit(run: Sequence[TradeRecord]) -> float:
@@ -324,18 +384,22 @@ def maximal_consecutive_loss_count(trades: Sequence[TradeRecord]) -> int:
 
 
 def average_consecutive_wins(trades: Sequence[TradeRecord]) -> float:
-    # METRICS §4.3: N_w / K_w（K_w=0 のとき 0）
+    # METRICS §4.3: AvgConWins = N_w / K_w（K_w=0 のとき 0）。
+    # N_w = win ラン内のトレード数（is_run_win=pnl>0 でラン分割・ゼロはラン中立で区切る）。
+    # 件数系 profit_trades(is_count_win=pnl>=0) を分子に流用してはならない（基準が異なる）。
     runs = _win_runs(trades)
     if not runs:
         return 0.0
-    return profit_trades(trades) / len(runs)
+    return sum(len(r) for r in runs) / len(runs)
 
 
 def average_consecutive_losses(trades: Sequence[TradeRecord]) -> float:
+    # METRICS §4.3: AvgConLosses = N_l / K_l。N_l = loss ラン内のトレード数。
+    # loss_trades(pnl<0) と偶然一致する系列もあるが、対称性のためラン内件数で明示統一する。
     runs = _loss_runs(trades)
     if not runs:
         return 0.0
-    return loss_trades(trades) / len(runs)
+    return sum(len(r) for r in runs) / len(runs)
 
 
 # ---- 統合 ----
@@ -385,4 +449,9 @@ def compute_stats(
         con_loss_max_trades=maximal_consecutive_loss_count(trades),
         profit_trades_avg_con=average_consecutive_wins(trades),
         loss_trades_avg_con=average_consecutive_losses(trades),
+        average_profit_trade=average_profit_trade(trades),
+        average_loss_trade=average_loss_trade(trades),
+        z_score=z_score(trades),
+        ahpr=ahpr(balance_curve, initial_deposit),
+        balance_dd_abs=balance_dd_absolute(balance_curve, initial_deposit),
     )
