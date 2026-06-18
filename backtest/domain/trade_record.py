@@ -2,7 +2,7 @@
 
 不変条件:
     exit_time >= entry_time（違反時 TimeOrderError）
-    exit_reason in {sl, tp, reverse, expire}（PROCESS §6・違反時 DataError）
+    exit_reason in {sl, tp, reverse, expire, stop_out}（PROCESS §6・cycle4・違反時 DataError）
 
 公開振る舞い:
     pnl() -> float
@@ -22,7 +22,8 @@ from backtest.domain._shared import sign_of
 from backtest.domain.exceptions import DataError, TimeOrderError
 
 # exit_reason は TradeRecord 固有の語彙のため当モジュールに留める（YAGNI: 単一利用）。
-_EXIT_REASONS = frozenset({"sl", "tp", "reverse", "expire"})
+# stop_out は cycle4 で追加（close_and_halt 時の強制決済理由）。
+_EXIT_REASONS = frozenset({"sl", "tp", "reverse", "expire", "stop_out"})
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,7 @@ class TradeRecord:
             )
         if self.exit_reason not in _EXIT_REASONS:
             raise DataError(
-                "exit_reason は {sl, tp, reverse, expire} のいずれか",
+                "exit_reason は {sl, tp, reverse, expire, stop_out} のいずれか",
                 context={"exit_reason": self.exit_reason},
             )
 

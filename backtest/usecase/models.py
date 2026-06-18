@@ -30,6 +30,16 @@ class BacktestConfig:
     digits: int
     legacy_quirks: bool
     return_basis: str
+    # 約定価格基準（実 MT5 突合・後方互換）。既定 "close"＝従来挙動（close 約定・spread 無視）。
+    # "current_open"＝原典 .mq5（新規バーで現値約定）に整合: bid=現バー open、
+    # 買い=open+spread×point（実 fixture 初回 buy 39412=open39402+100×0.1）・売り=open。
+    # default 付きのため既存 9 引数構築（config_loader/既存テスト）と完全後方互換。
+    entry_price_basis: str = "close"
+    # 証拠金ストップアウト時の挙動（cycle4 で追加）。既定 "fail_stop"＝従来挙動
+    # （margin_level < stop_out で MarginCallError を送出し部分結果を破棄）。
+    # "close_and_halt"＝全保有玉を強制決済（exit_reason="stop_out"）し、以降の新規発注を
+    # 抑止して最終統計まで完走する。default 付きのため既存構築と完全後方互換。
+    stop_out_action: str = "fail_stop"
 
 
 @dataclass

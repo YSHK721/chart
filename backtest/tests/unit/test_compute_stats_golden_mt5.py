@@ -21,24 +21,19 @@ MT5 実測値を再現することを assert する。
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from backtest.domain.trade_record import TradeRecord
+from backtest.tests.fixtures.mt5 import load_case
 from backtest.usecase.compute_stats import compute_stats
 
-_FIXTURE = (
-    Path(__file__).resolve().parents[1]
-    / "fixtures"
-    / "mt5_outputs"
-    / "report_900005560.json"
-)
+_CASE_NAME = "ma_slope_jp225_202501"
 
 
 def _load_fixture() -> dict:
-    return json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    # ケース単位の自己完結 fixture (fixtures/mt5/<case>/expected/report.json) を
+    # 統一ローダ経由で参照する。期待値・assert は不変。
+    return load_case(_CASE_NAME).expected
 
 
 def _reconstruct_trades(deals: list[dict]) -> list[TradeRecord]:

@@ -3,7 +3,7 @@
 METRICS §1〜§4 の式を一次情報とする純粋関数群。pandas は計算補助として許容するが、
 本モジュールは numpy のみで完結する（依存最小化）。usecase 層は domain のみ依存可。
 
-実 MT5 校正（ISSUE-013 / golden: tests/fixtures/mt5_outputs/report_900005560.json）:
+実 MT5 校正（ISSUE-013 / golden: tests/fixtures/mt5/ma_slope_jp225_202501/expected/report.json）:
     本プロジェクト目的＝MT5 再現につき、BACKTEST_METRICS.md と実 MT5 が割れる点は実 MT5 を正とする。
     * profit_trades = count(pnl >= 0)（ゼロ損益を勝ちに数える）。loss_trades = count(pnl < 0)。
       avg_profit = gross_profit / profit_trades(>=0)。avg_loss = gross_loss / loss_trades。

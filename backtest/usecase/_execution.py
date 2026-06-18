@@ -12,13 +12,64 @@ from backtest.domain.order import Order
 from backtest.domain.position import Position
 
 
-def fill_market_order(order: Order, *, bid: float, ask: float) -> Position:
+def fill_market_order(
+    order: Order,
+    *,
+    bid: float,
+    ask: float,
+    spread: int = 0,
+    point_size: float = 0.0,
+) -> Position:
     """成行注文を約定し Position を生成する（PROCESS §4.1）。
 
     買い=Ask・売り=Bid で約定する（スプレッドは entry_price に内包）。
+
+    スプレッド対応（後方互換・実 MT5 突合）:
+        spread > 0 のとき買いは ``bid + spread * point_size`` で約定する
+        （実 MT5 の Ask = Bid + spread×point に整合。fixture report_900005560 の
+        初回 buy=39412.0 ＝ open(bid)39402.0 + 100×0.1 を再現する）。売りは bid で約定。
+        spread=0（既定・未指定）のときは従来どおり買い=ask・売り=bid で、
+        既存の呼び出し・結果と完全に同一である。
     """
-    entry_price = ask if order.side == "buy" else bid
+    if order.side == "buy":
+        entry_price = bid + spread * point_size if spread > 0 else ask
+    else:
+        entry_price = bid
     return Position(side=order.side, volume=order.volume, entry_price=entry_price)
+
+
+def close_price_for(side: str, *, bid: float, ask: float) -> float:
+    """保有玉 1 件の決済価格を約定価格ルールで一意に決める（PROCESS §4・§6）。
+
+    約定価格ルール（一元化）:
+        新規 buy=ask / 新規 sell=bid（成行は fill_market_order が担う）
+        long（buy 玉）決済=bid / short（sell 玉）決済=ask
+    long を閉じるのは売り（=bid で約定）、short を閉じるのは買い（=ask で約定）に
+    対応する。reverse 決済・SL/TP 後の強制決済（stop_out）で共通して用いる。
+    spread=0（bid==ask）のときは従来の close 約定と完全一致する（後方互換）。
+    """
+    return bid if side == "buy" else ask
+
+
+def derive_quotes(
+    bar: object, *, entry_price_basis: str, point_size: float
+) -> "tuple[float, float, int, float]":
+    """約定価格基準（config）から当該足の (bid, ask, fill_spread, fill_point) を導く。
+
+    config ゲートを 1 箇所へ集約する（PROCESS §4・実 MT5 突合）:
+        "close"（既定・後方互換）:
+            bid=ask=close・spread 無視（fill_spread=0）で従来挙動と完全一致。
+        "current_open"（原典 .mq5・新規バー現値約定）:
+            bid=open / ask=open + spread×point（実 MT5 Ask=Bid+spread×point）。
+            fill_market_order の spread 引数に bar.spread・point_size を渡し、
+            買い建ては open+spread×point、short の reverse 決済（=ask）も対称に
+            spread を内包する（cycle4 バグ①）。
+    """
+    if entry_price_basis == "current_open":
+        bid = bar.open
+        ask = bar.open + bar.spread * point_size
+        return bid, ask, bar.spread, point_size
+    return bar.close, bar.close, 0, 0.0
 
 
 def fill_buy_limit(
