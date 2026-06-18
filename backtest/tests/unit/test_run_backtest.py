@@ -740,3 +740,91 @@ class TestAccountPropagationTradeInvariance:
         # 同方向抑止の有効化は確定トレード列を一切変えない（account 伝播の後方互換）。
         # クロス系では held_sides 抑止が未発火のため side/時刻/価格/決済理由が完全一致する。
         assert _trade_signature(none_result) == _trade_signature(real_result)
+
+
+# ---- warmup/trading_start: ウォームアップ期間のバーは指標 update のみ実施し
+#      トレード/equity_curve/stats から除外する（config-gated・既定 None=全バー取引） ----
+
+class TestTradingStartWarmupExclusion:
+    """RunBacktestRequest.trading_start により bar.time < trading_start のバーを
+    「指標 update のみ・トレード生成なし・equity_curve/stats 除外」とする振る舞いを固定。
+
+    既定（trading_start=None）は全バー取引＝後方互換（別テストで固定）。
+    """
+
+    @staticmethod
+    def _warmup_bars():
+        # bar0/bar1 = warmup（trading_start 前）、bar2/bar3 = trading 期間。
+        return [
+            _bar(np.datetime64("2024-12-31T23:58"), 1.10, 1.11, 1.09, 1.10),
+            _bar(np.datetime64("2024-12-31T23:59"), 1.10, 1.11, 1.09, 1.10),
+            _bar(np.datetime64("2025-01-01T00:00"), 1.10, 1.13, 1.10, 1.12),
+            _bar(np.datetime64("2025-01-01T00:01"), 1.12, 1.14, 1.11, 1.13),
+        ]
+
+    def test_warmup_bars_call_indicator_update_but_not_strategy_signal(self):
+        # Arrange: 全バーで warmup のうち bar0/bar1 は trading_start 前。
+        log = []
+        bars = self._warmup_bars()
+        interactor = RunBacktestInteractor(
+            strategy=SpyStrategyPort(log),
+            indicators=SpyIndicatorPort(log),
+            tick_model=StubTickModelPort(),
+        )
+        req = RunBacktestRequest(
+            config=_config(), bars=bars, symbol_spec=_symbol_spec(),
+            initial_deposit=10_000.0, stop_out_level=0.0,
+            trading_start=np.datetime64("2025-01-01T00:00"),
+        )
+        # Act
+        interactor.execute(req)
+        # Assert: warmup バー(0,1)では indicator.update のみ・on_new_bar は呼ばない。
+        #   trading バー(2,3)では update→on_new_bar の両方が呼ばれる。
+        assert ("indicator.update", 0) in log
+        assert ("indicator.update", 1) in log
+        assert ("strategy.on_new_bar", 0) not in log
+        assert ("strategy.on_new_bar", 1) not in log
+        assert ("strategy.on_new_bar", 2) in log
+        assert ("strategy.on_new_bar", 3) in log
+
+    def test_warmup_orders_not_filled_and_equity_excludes_warmup_bars(self):
+        # Arrange: bar0(warmup)に買い注文・bar2(trading)に買い→bar3で反対売り(reverse決済)。
+        # warmup の注文は約定せず、equity_curve は trading バー分のみ（=2件）。
+        buy = Order(side="buy", kind="market", volume=1.0, price=None)
+        sell = Order(side="sell", kind="market", volume=1.0, price=None)
+        bars = self._warmup_bars()
+        strategy = SpyStrategyPort([], orders_by_bar={0: [buy], 2: [buy], 3: [sell]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        req = RunBacktestRequest(
+            config=_config(), bars=bars, symbol_spec=_symbol_spec(),
+            initial_deposit=10_000.0, stop_out_level=0.0,
+            trading_start=np.datetime64("2025-01-01T00:00"),
+        )
+        # Act
+        result = interactor.execute(req)
+        # Assert: 確定トレードは trading 期間の 1 件のみ（warmup の buy は約定しない）。
+        assert len(result.trades) == 1
+        assert result.trades[0].entry_time == bars[2].time
+        # equity_curve は trading バー(2,3)の 2 件のみ（warmup の 2 バーは除外）。
+        assert len(result.equity_curve) == 2
+
+    def test_default_none_trading_start_keeps_all_bars_trading(self):
+        # 後方互換: trading_start=None（既定）では全バーで on_new_bar が呼ばれ、
+        # equity_curve は全バー分記録される（warmup 除外なし）。
+        log = []
+        bars = self._warmup_bars()
+        interactor = RunBacktestInteractor(
+            strategy=SpyStrategyPort(log),
+            indicators=SpyIndicatorPort(log),
+            tick_model=StubTickModelPort(),
+        )
+        # trading_start を指定しない（既定 None）。
+        result = interactor.execute(_request(bars))
+        # Assert: 全 4 バーで on_new_bar が呼ばれ equity_curve も 4 件。
+        for i in range(4):
+            assert ("strategy.on_new_bar", i) in log
+        assert len(result.equity_curve) == 4

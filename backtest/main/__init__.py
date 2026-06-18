@@ -179,6 +179,7 @@ def build_interactor(
     stop_out_level: float = 0.0,
     slope_shift: int = 1,
     slope_min_points: float = 1.0,
+    trading_start: Any = None,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
 
@@ -241,6 +242,9 @@ def build_interactor(
         symbol_spec=symbol_spec,
         initial_deposit=initial_deposit,
         stop_out_level=stop_out_level,
+        # warmup/trading_start（既定 None=全バー取引＝後方互換）。warmup 込み CSV を
+        # data_path に与え trading_start を指定すると、開始前のバーは指標 seed 収束のみ。
+        trading_start=trading_start,
     )
     return controller, request
 

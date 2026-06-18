@@ -15,6 +15,7 @@ cwd 非依存で参照できる ``MT5Case`` を返す。各ケースのディレ
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,11 @@ import yaml
 
 # このパッケージ (= fixtures/mt5/) の絶対パス。cwd に依存しない。
 _MT5_ROOT = Path(__file__).resolve().parent
+
+# ウォームアップ込み CSV の命名規則: ファイル名末尾が `_<12桁>_<12桁>.csv`
+# （開始/終了の完全タイムスタンプ範囲・例 JP225_M1_202412230100_202501302359.csv）。
+# 取引期間 CSV（例 JP225_M1_202501.csv）はこの形に一致しない。
+_WARMUP_CSV_RE = re.compile(r"_\d{12}_\d{12}\.csv$")
 
 
 @dataclass(frozen=True)
@@ -31,7 +37,9 @@ class MT5Case:
     属性:
         dir:        ケースのルートディレクトリ (Path)。
         config:     case.yaml をパースした dict。
-        input_csv:  価格データ CSV の Path (input/*.csv)。
+        input_csv:  取引期間の価格データ CSV の Path (input/ 配下・warmup でない正準データ)。
+        warmup_csv: ウォームアップ込み CSV の Path (`_<12桁>_<12桁>.csv` 命名)。
+                    存在しなければ None（後方互換: 従来ケースは warmup CSV を持たない）。
         expert_mq5: EA 原典の Path (expert/*.mq5)。
         expected:   expected/report.json をパースした dict
                     (top: source / settings / results / deals_count / deals)。
@@ -44,6 +52,7 @@ class MT5Case:
     expert_mq5: Path
     expected: dict
     deals: list
+    warmup_csv: Path | None = None
 
 
 def list_cases() -> list[str]:
@@ -65,6 +74,29 @@ def _single_file(directory: Path, pattern: str) -> Path:
     return matches[0]
 
 
+def _select_csvs(input_dir: Path) -> "tuple[Path, Path | None]":
+    """input_dir 配下の CSV を「取引期間 CSV」と「warmup CSV」へ弁別する。
+
+    warmup CSV は `_<12桁>_<12桁>.csv` 命名（フル期間レンジ）で識別する。取引期間 CSV は
+    それ以外で唯一でなければならない（warmup は 0/1 件）。warmup 併存ケース・従来の
+    単一 CSV ケースの双方を後方互換に扱う。
+    """
+    csvs = sorted(input_dir.glob("*.csv"))
+    warmups = [p for p in csvs if _WARMUP_CSV_RE.search(p.name)]
+    trading = [p for p in csvs if not _WARMUP_CSV_RE.search(p.name)]
+    if len(trading) != 1:
+        raise FileNotFoundError(
+            f"{input_dir}: 取引期間 CSV は 1 件である必要があるが {len(trading)} 件"
+            f"（warmup={len(warmups)} 件）: trading={trading} warmup={warmups}"
+        )
+    if len(warmups) > 1:
+        raise FileNotFoundError(
+            f"{input_dir}: warmup CSV は 0 または 1 件である必要があるが "
+            f"{len(warmups)} 件: {warmups}"
+        )
+    return trading[0], (warmups[0] if warmups else None)
+
+
 def load_case(name: str) -> MT5Case:
     """ケース名 (ディレクトリ名) から ``MT5Case`` を構築する。
 
@@ -83,13 +115,15 @@ def load_case(name: str) -> MT5Case:
         (case_dir / "expected" / "report.json").read_text(encoding="utf-8")
     )
 
+    input_csv, warmup_csv = _select_csvs(case_dir / "input")
     return MT5Case(
         dir=case_dir,
         config=config,
-        input_csv=_single_file(case_dir / "input", "*.csv"),
+        input_csv=input_csv,
         expert_mq5=_single_file(case_dir / "expert", "*.mq5"),
         expected=expected,
         deals=expected["deals"],
+        warmup_csv=warmup_csv,
     )
 
 

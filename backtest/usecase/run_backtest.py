@@ -64,6 +64,12 @@ class RunBacktestRequest:
     symbol_spec: Any
     initial_deposit: float
     stop_out_level: float = 0.0
+    # warmup/trading_start（config-gated・既定 None=全バー取引＝後方互換）。
+    # 指定時は bar.time < trading_start のバーを「指標 update のみ実施し、トレード/
+    # equity_curve/stats から除外する」ウォームアップ区間として扱う（指標 seed の収束のみ
+    # を目的とし、約定・損益・equity 記録を行わない）。時刻型は bar.time と比較可能な型
+    # （numpy.datetime64 / epoch int）を想定する。
+    trading_start: Any = None
 
 
 class RunBacktestInteractor(RunBacktestInputBoundary):
@@ -129,10 +135,17 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
         halted = False
 
+        # warmup/trading_start: 指定時のみウォームアップ区間を有効化（既定 None=全バー取引）。
+        trading_start = request.trading_start
+
         # tick ループ（PROCESS §2 A〜I を 1 bar = 1 OnTick として処理）
         for bar_index, bar in enumerate(bars):
             # C 指標値の取得（前計算系列から現足インデックスを引く）
             self._indicators.update(bar_index)
+            # warmup 区間（bar.time < trading_start）は指標 seed 収束のみを行い、トレード
+            # 評価・約定・SL/TP 監視・equity 記録をすべてスキップする（config-gated）。
+            if trading_start is not None and bar.time < trading_start:
+                continue
             # D 保有状態 / E シグナル評価（EA ロジック）
             #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。
             orders = (

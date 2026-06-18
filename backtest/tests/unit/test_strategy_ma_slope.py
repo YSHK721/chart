@@ -1,4 +1,4 @@
-"""adapter/strategy/ma_slope.py の MaSlope 戦略テスト（原典 260618-01.mq5 / StrategyPort）。
+"""adapter/strategy/ma_slope.py の MaSlope 戦略テスト（原典 fixtures/mt5/ma_slope_jp225_202501/expert/MA_Slope_EA.mq5 / StrategyPort）。
 
 戦略（原典 MA_Slope_EA — EMA 傾きで売買・新規バーのみ・確定足参照）:
     EMA(MA_Period=20, close) を indicators.get("ema") で取得。
