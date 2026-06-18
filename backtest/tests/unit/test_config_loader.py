@@ -332,3 +332,47 @@ def test_load_config_rejects_invalid_entry_price_basis():
     # Act / Assert: 列挙外は ConfigError へ翻訳（silent drop 禁止）
     with pytest.raises(ConfigError):
         load_config({"entry_price_basis": "bogus_basis"})
+
+
+# ---- 層1/層2: prime_first_trading_bar / floating_pnl_basis を config から設定可能にする ----
+
+
+def test_load_config_defaults_prime_first_trading_bar_to_false():
+    # 後方互換: 省略時は False（trading_start 境界バーも取引対象＝従来不変）。
+    from backtest.framework.config_loader import load_config
+
+    cfg = load_config({})
+    assert cfg.prime_first_trading_bar is False
+
+
+def test_load_config_accepts_prime_first_trading_bar_true():
+    # 層1: 取引開始境界バーをプライム扱い（初回約定を次足へ落とす）= MT5 突合に必須。
+    from backtest.framework.config_loader import load_config
+
+    cfg = load_config({"prime_first_trading_bar": True})
+    assert cfg.prime_first_trading_bar is True
+
+
+def test_load_config_defaults_floating_pnl_basis_to_close():
+    # 後方互換: 省略時は "close"（含み損益を close 固定評価＝従来不変）。
+    from backtest.framework.config_loader import load_config
+
+    cfg = load_config({})
+    assert cfg.floating_pnl_basis == "close"
+
+
+def test_load_config_accepts_floating_pnl_basis_bid_ask():
+    # 層2: 含み損益を決済価格基準（買い=Bid/売り=Ask）で評価する = MT5 突合に必須。
+    from backtest.framework.config_loader import load_config
+
+    cfg = load_config({"floating_pnl_basis": "bid_ask"})
+    assert cfg.floating_pnl_basis == "bid_ask"
+
+
+def test_load_config_rejects_invalid_floating_pnl_basis():
+    # 列挙外（close / bid_ask のみ許容）は ConfigError へ翻訳（silent drop 禁止）。
+    from backtest.domain.exceptions import ConfigError
+    from backtest.framework.config_loader import load_config
+
+    with pytest.raises(ConfigError):
+        load_config({"floating_pnl_basis": "bogus_basis"})

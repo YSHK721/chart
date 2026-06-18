@@ -40,6 +40,15 @@ class BacktestConfig:
     # "close_and_halt"＝全保有玉を強制決済（exit_reason="stop_out"）し、以降の新規発注を
     # 抑止して最終統計まで完走する。default 付きのため既存構築と完全後方互換。
     stop_out_action: str = "fail_stop"
+    # 取引開始境界の最初の 1 バーを「アタッチ/プライム」として扱うか（層1・config-gated）。
+    # 既定 False＝trading_start 境界バーも取引対象（従来不変）。True かつ trading_start 指定時、
+    # bar.time >= trading_start となる最初のバーを warmup 同様「指標 update のみ・発注/equity
+    # 除外」とし、初回約定を次足へ落とす（実 MT5 のテスト開始バー=アタッチ挙動に整合）。
+    prime_first_trading_bar: bool = False
+    # 含み損益の評価基準（層2・config-gated）。既定 "close"＝従来どおり bar.close 固定評価。
+    # "bid_ask"＝決済価格基準（買い保有=Bid=close / 売り保有=Ask=close+spread×point_size）。
+    # default 付きのため既存構築と完全後方互換。
+    floating_pnl_basis: str = "close"
 
 
 @dataclass
