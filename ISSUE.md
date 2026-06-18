@@ -169,7 +169,7 @@
 
 - 概要：バックテスト統計仕様 BACKTEST_METRICS.md 内で Sharpe/σ の固定値（§12）が算出式（§1.2/§11）と矛盾。加えて §11 Z-Score ヘルパーに sqrt 欠落バグ
 - 重大度：中（compute_stats=UC-002 の MT5 突合精度に影響。コードは式優先で確定済みだが、実 MT5 値が §12 の 0.17 側なら突合不一致の恐れ）
-- ステータス：OPEN
+- ステータス：PARTIALLY-RESOLVED（2026-06-18・実 MT5 golden 突合で件数/平均/PF/DD/AHPR/Z は決着。Sharpe・recovery_factor・equity DD 系は要バー別/ティック別 equity で未決）
 - 検出日：2026-06-17
 - 検出経路：backtest usecase 層 TDD（compute_stats を METRICS §12 の10トレード期待値で固定する過程）。tdd-executor が3独立手法で実測
 - 内容：
@@ -178,6 +178,42 @@
 - 対策（暫定・実施済み）：「式を一次情報とする」方針に従い Sharpe=0.1862・Z=1.3416（§3.2 式）で実装・固定。回帰テスト添付済み
 - 未解決点（要ユーザー確認）：実 MT5 STAT_* の σ 定義（母分散 ddof=0 か標本分散 ddof=1 か）と Sharpe 基準。Section 5 integration で実 MT5 突合時に §12 記載値 0.17 の出所を確定し、必要なら式 or 仕様書を改訂
 - 追記（2026-06-17・usecaseレビューで深掘り）：Sharpe の「収益率基準」自体も一次情報間で矛盾。METRICS §1.2 は balance-HPR・ddof=0・非年率を規定する一方、PROCESS §6.1/§7-#9 は equity・単純収益率・足ベース・ddof=1・年率係数√A を規定。現実装は「式優先」方針により METRICS §1.2 を採用。doc 側でどちらを正とするか（MT5 STAT_SHARPE_RATIO の実定義）を Section 5 実 MT5 突合時に確定し統一する。
+- 決着（2026-06-18・実 MT5 golden 突合 TBD-A／feature/backtest-mt5-stats-calibration）：
+  fixture `backtest/tests/fixtures/mt5_outputs/report_900005560.json`（MA_Slope_EA / JP225 M1 / 1163 確定トレード）の
+  `deals`(dir="out") から再構成したトレード/balance 列で `compute_stats` を実 MT5 `results` に突合
+  （新規 golden: `backtest/tests/unit/test_compute_stats_golden_mt5.py`・許容 金額±0.5/比率±1e-4/件数一致）。
+  - **一致確定（19 STAT_*・golden で固定）**：net(-6169)/gross_profit(10506)/gross_loss(-16675)/PF(0.630045)/
+    expected_payoff(-5.304385)/total_trades(1163)/profit_trades(292)/loss_trades(871)/long(582)/short(581)/
+    largest_profit(245)/largest_loss(-130)/avg_profit(35.979452)/avg_loss(-19.144661)/max_con_wins(4)/
+    max_con_losses(17)/Z-Score(2.35)/AHPR(0.9992)/balance_dd_abs(6169)/balance_dd_max(6476・62.83%)。
+  - **確定した実 MT5 定義（実装を校正）**：
+    (a) profit_trades = count(pnl>=0)（**ゼロ損益を勝ちに数える**。従前 pnl>0=217→292 へ）。
+        avg_profit = gross_profit / profit_trades(>=0)。profit_long/short も pnl>=0 基準。
+    (b) Z-Score = (N*(R-0.5) - P) / sqrt(P*(P-N)/(N-1)), P=2WL, W=count(pnl>=0), R=ラン数(pnl>=0/<0 の2値)。
+        → §3.2 の (R-E(R))/sqrt(Var(R)) 形は実 MT5 と再現せず（§12 で 1.3416 vs 本式 1.6771）。**実 MT5 を正**とし
+        §12 回帰テストを 1.6771 へ更新（test_z_score_matches_mt5_formula・理由コメント付）。
+    (c) AHPR/GHPR = HPR_i = B_i/B_{i-1}（= 1 + profit_i/balance_before_i と算術的に同値。既存式で一致確認）。
+    (d) 連勝/連敗（max_con_wins/losses=4/17）は従前の「ゼロ=ラン中立」ロジック（win=pnl>0）を**維持**（counts の ≥0 とは別ルール）。
+  - **未決・golden 除外（要バー別/ティック別 equity・fixture に欠落のため捏造回避）**：
+    STAT_SHARPE_RATIO(-5.0)＝バー単位 equity 収益率ベースと推定（トレード列の (AHPR-1)/σ では -0.13 で不一致）。
+    STAT_RECOVERY_FACTOR(-0.935547 = net/EquityDD_max(6594))＝MT5 は **EquityDD 基準**。本実装 recovery は Balance DD 基準のまま据え置き。
+    STAT_EQUITY_DD(6594)/EQUITY_DD_abs(6174)＝ティック別含み損ピーク要。
+    → これらは将来バー別/ティック別 equity 系列を `compute_stats` に供給できる段で再校正する（残存リスク）。
+  - **§12 Sharpe 期待値（0.1862）据え置き**：Sharpe 定義を変えていない（バー別 equity 要で保留）ため整合。
+  - テスト結果：`python -m pytest backtest/tests/ -q` = 363 passed（baseline 342 + golden 21・§12 Z テスト 1 件は更新の上 pass）。
+- 決着/未決の切り分け（2026-06-18・usecase レビュー 🟡-2／feature/backtest-mt5-stats-calibration）：
+  本 ISSUE を RESOLVED から **PARTIALLY-RESOLVED** に是正。決着済みと未決を明確に分離する。
+  - **決着済み（実 MT5 golden で固定）**：ゼロ=勝ち件数定義（profit_trades=292）/avg_profit・avg_loss/PF(0.630045)/
+    Balance DD($6476・62.83%・abs6169)/Z-Score(2.35・MT5 式)/AHPR(0.9992)/連勝連敗(4/17)/件数(1163/871/582/581)。
+  - **未決（要バー別/ティック別 equity・fixture 欠落のため捏造回避し golden 除外）**：
+    (1) STAT_SHARPE_RATIO(-5.0)＝バー単位 equity 収益率ベース要。本実装は METRICS §1.2（balance-HPR）式に留置。
+    (2) STAT_RECOVERY_FACTOR(-0.935547)＝MT5 は **Equity DD 基準**かつ符号も逆（net 負/EquityDD で負値）。
+        本実装 recovery_factor は **Balance DD 基準**のまま据え置き（トレード/balance 列で算出可能な範囲）。
+    (3) STAT_EQUITY_DD($6594・63.28%)/EQUITY_DD_abs(6174)＝ティック別含み損ピーク要・未充填。
+  - 再開条件：バー別/ティック別 equity 系列を `compute_stats` に供給できる段で (1)〜(3) を再校正する。
+  - 🔴 派生是正（同レビュー）：average_consecutive_wins/losses が件数系 profit_trades(pnl>=0) を分子に
+    誤流用（§4.3 違反・impl 1.57 vs 正 1.17）していた点を「win/loss ラン内件数 N/K」に修正し回帰テスト添付。
+    併せて is_count_win(pnl>=0)/is_run_win(pnl>0) を明示述語に分離し二重基準の誤流用を構造的に防止。
 
 ## ISSUE-014
 

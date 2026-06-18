@@ -88,6 +88,13 @@ class BacktestStats:
     con_loss_max_trades: int
     profit_trades_avg_con: float
     loss_trades_avg_con: float
+    # 実 MT5 golden 突合で追加（report_900005560.json への校正）。
+    # 既存コンストラクタ互換のため末尾に default 付きで配置する。
+    average_profit_trade: float = 0.0  # gross_profit / profit_trades(>=0)
+    average_loss_trade: float = 0.0    # gross_loss / loss_trades(<0)
+    z_score: float = 0.0               # Wald-Wolfowitz（MT5 実装式）
+    ahpr: float = 0.0                  # mean(1 + profit_i / balance_before_i)
+    balance_dd_abs: float = 0.0        # initial_deposit - min(balance)
 
 
 @dataclass
