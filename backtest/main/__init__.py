@@ -35,6 +35,8 @@ from backtest.adapter.indicator.registry import PandasIndicatorRegistry
 from backtest.adapter.presenter.json import JsonPresenter
 from backtest.adapter.presenter.markdown import MarkdownPresenter
 from backtest.adapter.repository.ohlc_csv import CsvOHLCRepository
+from backtest.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
+from backtest.adapter.strategy.ma_slope import MaSlope
 from backtest.adapter.strategy.tc24051901 import TC24051901
 from backtest.domain.exceptions import BacktestError, ConfigError, DataError
 from backtest.framework.config_loader import load_config
@@ -93,6 +95,30 @@ def _load_dataframe(data_path: Any) -> pd.DataFrame:
         ) from exc
 
 
+def _load_mt5_dataframe(data_path: Any) -> pd.DataFrame:
+    """MT5 エクスポート形式（タブ区切り）を指標 registry 用 DataFrame として読み込む。
+
+    `<CLOSE>` 等の MT5 列名を registry/EMA 計算が参照する小文字列名（close 等）へ
+    正規化する（_build_ma_slope_registry は df["close"] を参照）。外側例外は内側
+    DataError へ翻訳する（CLEAN_ARCH §6）。
+    """
+    try:
+        df = pd.read_csv(data_path, sep="\t")
+    except Exception as exc:
+        raise DataError(
+            f"指標計算用 MT5 CSV の読み込みに失敗しました: {data_path}",
+            context={"data_path": str(data_path), "cause": repr(exc)},
+        ) from exc
+    return df.rename(
+        columns={
+            "<OPEN>": "open",
+            "<HIGH>": "high",
+            "<LOW>": "low",
+            "<CLOSE>": "close",
+        }
+    )
+
+
 def _build_registry(df: pd.DataFrame, *, ma_period: int, ma_method: str) -> PandasIndicatorRegistry:
     """MADiff 系列と close 系列を登録した IndicatorPort 実装を構築する。
 
@@ -101,6 +127,32 @@ def _build_registry(df: pd.DataFrame, *, ma_period: int, ma_method: str) -> Pand
     """
     madiff_series = madiff(df, period=ma_period, method=ma_method)
     return PandasIndicatorRegistry({"madiff": madiff_series, "close": df["close"]})
+
+
+def _ema_series(price: pd.Series, period: int) -> pd.Series:
+    """MQL 忠実 EMA(period) を price 系列へ適用して返す（seed=price[0]）。
+
+    madiff.py と同じ共有実装 ``exponential_ma_on_buffer``（α=2/(period+1)・index0 シード）
+    を再利用する。MaSlope が indicators.get("ema") で参照する確定足 EMA を供給する。
+    """
+    import numpy as np
+
+    from backtest.adapter.indicator.madiff import (  # 共有 moving_averages を sys.path 登録済
+        _ma_series,
+    )
+
+    values = price.to_numpy(dtype=float)
+    ema = _ma_series(values, period, "ema")
+    return pd.Series(ema, index=price.index)
+
+
+def _build_ma_slope_registry(df: pd.DataFrame, *, ma_period: int) -> PandasIndicatorRegistry:
+    """EMA(ma_period, close) を "ema" として登録した IndicatorPort 実装を構築する。
+
+    MaSlope は indicators.get("ema") を参照する（ma_slope.py を Read で実証）。
+    """
+    ema = _ema_series(df["close"], ma_period)
+    return PandasIndicatorRegistry({"ema": ema})
 
 
 def build_interactor(
@@ -125,6 +177,8 @@ def build_interactor(
     take_profit_points: float,
     config_overrides: dict | None = None,
     stop_out_level: float = 0.0,
+    slope_shift: int = 1,
+    slope_min_points: float = 1.0,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
 
@@ -139,19 +193,31 @@ def build_interactor(
         "stop_loss_points": stop_loss_points,
         "take_profit_points": take_profit_points,
         "point_size": point_size,
+        # MaSlope が参照する追加パラメータ（TC24051901 は未参照のため無害）。
+        "slope_shift": slope_shift,
+        "slope_min_points": slope_min_points,
     }
     run_config = RunConfig(determinism, strategy_params)
 
-    # 指標系列の事前計算には DataFrame が要るため CSV を読む（registry 用）。
-    df = _load_dataframe(data_path)
-    registry = _build_registry(df, ma_period=ma_period, ma_method=ma_method)
+    # ea_name で戦略・指標・入力フォーマットを選択（config gated・既定は従来 TC 経路）。
+    if ea_name == "MA_Slope_EA":
+        # MA_Slope_EA は MT5 エクスポート形式（タブ区切り・<DATE>/<TIME>/<SPREAD>）を読む。
+        market_data = Mt5CsvOHLCRepository()
+        df = _load_mt5_dataframe(data_path)
+        registry = _build_ma_slope_registry(df, ma_period=ma_period)
+        strategy: Any = MaSlope()
+    else:
+        # 既定経路（TC24051901・comma 形式・MADiff 指標）= 従来挙動を不変に保つ。
+        market_data = CsvOHLCRepository()
+        df = _load_dataframe(data_path)
+        registry = _build_registry(df, ma_period=ma_period, ma_method=ma_method)
+        strategy = TC24051901()
 
     interactor = _ResultCapturingInteractor(
-        strategy=TC24051901(),
+        strategy=strategy,
         indicators=registry,
         tick_model=_make_tick_model(determinism.tick_model),
     )
-    market_data = CsvOHLCRepository()
     controller = BacktestController(market_data=market_data, interactor=interactor)
 
     symbol_spec = SymbolSpec(

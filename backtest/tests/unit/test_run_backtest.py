@@ -289,3 +289,454 @@ class TestReverseClose:
         assert trade.exit_reason == "reverse"
         assert trade.entry_time == bars[0].time
         assert trade.exit_time == bars[1].time
+
+
+# ---- cycle2-2a: account 伝播（Interactor が on_new_bar に実 Account を渡す） ----
+
+class CapturingStrategyPort:
+    """on_new_bar に渡された account を bar_index ごとに記録するスパイ。
+
+    既存 SpyStrategyPort（account を捨てる）と独立。account 伝播の結線を
+    検証するために account 引数を保持する。
+    """
+
+    def __init__(self, orders_by_bar=None):
+        self._orders_by_bar = orders_by_bar or {}
+        self.received_accounts = []  # [(bar_index, account)]
+
+    def on_init(self, config, indicators):
+        pass
+
+    def on_new_bar(self, bar_index, indicators, account):
+        self.received_accounts.append((bar_index, account))
+        return list(self._orders_by_bar.get(bar_index, []))
+
+    def on_position_check(self, position, bar_index, indicators):
+        return "hold"
+
+
+class TestAccountPropagation:
+    def test_on_new_bar_receives_real_account_not_none(self):
+        # Arrange: 発注なし 2 本。account 引数を捕捉する。
+        from backtest.domain.account import Account
+
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.10, 1.11, 1.09, 1.105),
+            _bar(np.datetime64("2024-01-01T00:01"), 1.105, 1.115, 1.10, 1.11),
+        ]
+        strategy = CapturingStrategyPort()
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        # Act
+        interactor.execute(_request(bars))
+        # Assert: 全 bar で実 Account が渡る（None でない・同一インスタンス）
+        assert len(strategy.received_accounts) == 2
+        for _, acct in strategy.received_accounts:
+            assert acct is not None
+            assert isinstance(acct, Account)
+        # 同一 run 内で同じ Account インスタンスが伝播する
+        assert strategy.received_accounts[0][1] is strategy.received_accounts[1][1]
+
+    def test_account_open_positions_reflects_held_position_on_next_bar(self):
+        # Arrange: bar0 で買い建て。bar1 の on_new_bar 時点で
+        # account.open_positions に保有が反映されている（同方向抑止/ドテンの本番前提）。
+        buy = Order(side="buy", kind="market", volume=1.0, price=None)
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.10, 1.11, 1.09, 1.10),
+            _bar(np.datetime64("2024-01-01T00:01"), 1.10, 1.13, 1.10, 1.12),
+        ]
+        strategy = CapturingStrategyPort(orders_by_bar={0: [buy]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        # Act
+        interactor.execute(_request(bars))
+        # Assert: bar1 の on_new_bar 受領時に保有 1 件（買い）が見える
+        bar1_account = strategy.received_accounts[1][1]
+        assert len(bar1_account.open_positions) == 1
+        assert bar1_account.open_positions[0].side == "buy"
+
+
+# ---- cycle2-2b: config駆動 spread + 現バー open 約定 ----
+
+def _bar_s(t, o, h, l, c, spread):
+    return Bar(time=t, open=o, high=h, low=l, close=c, volume=1.0, spread=spread)
+
+
+def _config_open_fill():
+    """現バー open 基準 + spread 適用モードの config（cycle2 で追加するフィールド）。"""
+    return BacktestConfig(
+        tick_model="ohlc_simulate",
+        spread_model="fixed",
+        sltp_tie="sl",
+        fill_delay="next_tick",
+        ohlc_order="auto",
+        session_calendar="none",
+        digits=1,
+        legacy_quirks=False,
+        return_basis="equity",
+        entry_price_basis="current_open",
+    )
+
+
+def _jp225_spec():
+    """JP225 相当（point_size=0.1・contract=10・leverage=10）。"""
+    return SymbolSpec(
+        contract_size=10.0,
+        volume_min=0.01,
+        volume_max=100.0,
+        volume_step=0.01,
+        stops_level=0,
+        digits=1,
+        point_size=0.1,
+        leverage=10.0,
+    )
+
+
+class TestConfigDrivenSpreadOpenFill:
+    # bar0 で建て、bar1 で反対シグナル → reverse 決済で確定トレードを生成し
+    # entry_price を観測する（建玉のままだと result.trades が空になる）。
+    _BARS = [
+        _bar_s(np.datetime64("2025-01-02T01:01"), 39402.0, 39450.0, 39400.0, 39440.0, 100),
+        _bar_s(np.datetime64("2025-01-02T01:02"), 39440.0, 39460.0, 39430.0, 39450.0, 100),
+    ]
+
+    def test_buy_fills_at_open_plus_spread_times_point_when_enabled(self):
+        # Arrange: 実 MT5 fixture アンカー（39412 = open 39402 + spread100×point0.1）の小データ再現。
+        # entry_price_basis="current_open" + spread=100 + point_size=0.1。
+        buy = Order(side="buy", kind="market", volume=1.0, price=None)
+        sell = Order(side="sell", kind="market", volume=1.0, price=None)
+        strategy = SpyStrategyPort([], orders_by_bar={0: [buy], 1: [sell]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        req = _request(self._BARS, config=_config_open_fill(), symbol_spec=_jp225_spec())
+        # Act
+        result = interactor.execute(req)
+        # Assert: buy entry_price == open(39402) + spread(100) * point(0.1) == 39412.0
+        assert result.trades[0].side == "buy"
+        assert result.trades[0].entry_price == pytest.approx(39412.0)
+
+    def test_sell_fills_at_open_bid_when_enabled(self):
+        # Arrange: sell は bid（=現バー open）で約定（spread 寄与 0）。
+        sell = Order(side="sell", kind="market", volume=1.0, price=None)
+        buy = Order(side="buy", kind="market", volume=1.0, price=None)
+        strategy = SpyStrategyPort([], orders_by_bar={0: [sell], 1: [buy]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        req = _request(self._BARS, config=_config_open_fill(), symbol_spec=_jp225_spec())
+        # Act
+        result = interactor.execute(req)
+        # Assert: sell entry_price == open(39402)（bid 基準・spread 寄与 0）
+        assert result.trades[0].side == "sell"
+        assert result.trades[0].entry_price == pytest.approx(39402.0)
+
+    def test_default_config_keeps_close_fill_zero_spread(self):
+        # 後方互換特性化: 新フィールド既定（"close"）では従来どおり buy=close・spread 無視。
+        buy = Order(side="buy", kind="market", volume=1.0, price=None)
+        sell = Order(side="sell", kind="market", volume=1.0, price=None)
+        strategy = SpyStrategyPort([], orders_by_bar={0: [buy], 1: [sell]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        # 既定 config（entry_price_basis 未指定）。spread=100 だが従来は無視。
+        req = _request(self._BARS, symbol_spec=_jp225_spec())
+        # Act
+        result = interactor.execute(req)
+        # Assert: 従来どおり close(39440) で約定（open でも open+spread でもない）
+        assert result.trades[0].side == "buy"
+        assert result.trades[0].entry_price == pytest.approx(39440.0)
+
+
+# ---- cycle2-2c: equity カーブが毎バー floating 込みで記録される（特性化・既実装の退行防止） ----
+
+class TestPerBarEquityCurve:
+    def test_equity_curve_has_one_entry_per_bar_including_floating_pnl(self):
+        # Arrange: bar0 で買い建て（決済しない）。各バーで equity が記録される。
+        # contract=1.0 / leverage=100 / 1 lot 買い@close=1.10。
+        # bar1 close=1.20 → 含み益 (1.20-1.10)*1*1 = +0.10 が equity に乗る。
+        order = Order(side="buy", kind="market", volume=1.0, price=None)
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.10, 1.11, 1.09, 1.10),
+            _bar(np.datetime64("2024-01-01T00:01"), 1.10, 1.21, 1.10, 1.20),
+        ]
+        strategy = SpyStrategyPort([], orders_by_bar={0: [order]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        # Act
+        result = interactor.execute(_request(bars, initial_deposit=10_000.0))
+        # Assert: トレード時点でなく毎バー記録（len == bar 数）
+        assert len(result.equity_curve) == 2
+        # bar0: 建値直後 close=entry → floating 0 → equity == balance == 10000
+        assert result.equity_curve[0] == pytest.approx(10_000.0)
+        # bar1: 含み益 +0.10（floating 込み）が equity に反映される（balance のみではない）
+        assert result.equity_curve[1] == pytest.approx(10_000.10)
+
+
+# ---- cycle2-2d: 証拠金 stop_out（既存 TestFailStopOnMarginCall で raise を固定済） ----
+#   stop_out の Fail-Stop（raise）契約は既実装かつ既存テストで固定済のため新規追加なし。
+#   「強制決済して継続」セマンティクスへの変更は既存 raise 契約を破壊するため本 cycle 対象外
+#   （判断点として報告）。
+
+
+# ---- cycle4-①: reverse 決済（short→buy 約定）の spread 加算（current_open） ----
+
+class TestReverseShortCloseSpread:
+    def test_short_reverse_close_fills_at_open_plus_spread_times_point(self):
+        # Arrange: current_open + spread=100 + point=0.1。
+        # bar0 で sell 建て（bid=open で約定）、bar1 で反対 buy シグナル →
+        # short を reverse 決済する。short 決済は buy 約定なので
+        # ask = open + spread×point で決済されるべき（現状は raw open でバグ）。
+        # bar1: open=39440, spread=100, point=0.1 → 決済 ask = 39440 + 10 = 39450。
+        sell = Order(side="sell", kind="market", volume=1.0, price=None)
+        buy = Order(side="buy", kind="market", volume=1.0, price=None)
+        strategy = SpyStrategyPort([], orders_by_bar={0: [sell], 1: [buy]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        req = _request(
+            TestConfigDrivenSpreadOpenFill._BARS,
+            config=_config_open_fill(),
+            symbol_spec=_jp225_spec(),
+        )
+        # Act
+        result = interactor.execute(req)
+        # Assert: reverse 決済された short の exit_price == bar1.open + spread×point
+        reverse_trade = next(t for t in result.trades if t.exit_reason == "reverse")
+        assert reverse_trade.side == "sell"
+        assert reverse_trade.exit_price == pytest.approx(39450.0)
+
+
+# ---- cycle4-②: stop_out_action config（fail_stop 既定 / close_and_halt） ----
+
+def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None):
+    """margin_level < stop_out を bar1 で発生させる共通セットアップ。
+
+    1 lot 買い@1.10、contract=100000、leverage=100 → 必要証拠金=1100。
+    bar1 close=1.00 → 含み損 -10000 → equity=0 → margin_level=0% < 50%。
+    """
+    cfg_kwargs = {}
+    if stop_out_action is not None:
+        cfg_kwargs["stop_out_action"] = stop_out_action
+    config = BacktestConfig(
+        tick_model="ohlc_simulate",
+        spread_model="fixed",
+        sltp_tie="sl",
+        fill_delay="next_tick",
+        ohlc_order="auto",
+        session_calendar="none",
+        digits=5,
+        legacy_quirks=False,
+        return_basis="equity",
+        **cfg_kwargs,
+    )
+    if bars is None:
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.10, 1.10, 1.10, 1.10),
+            _bar(np.datetime64("2024-01-01T00:01"), 1.10, 1.10, 1.00, 1.00),
+        ]
+    spec = SymbolSpec(
+        contract_size=100_000.0, volume_min=0.01, volume_max=100.0,
+        volume_step=0.01, stops_level=0, digits=5, point_size=0.00001,
+        leverage=100.0,
+    )
+    order = Order(side="buy", kind="market", volume=1.0, price=None)
+    strategy = SpyStrategyPort([], orders_by_bar=orders_by_bar or {0: [order]})
+    interactor = RunBacktestInteractor(
+        strategy=strategy,
+        indicators=SpyIndicatorPort([]),
+        tick_model=StubTickModelPort(),
+    )
+    req = _request(bars, initial_deposit=10_000.0, stop_out_level=50.0,
+                   symbol_spec=spec, config=config)
+    return interactor, req
+
+
+class TestStopOutActionConfig:
+    def test_default_action_fail_stop_raises(self):
+        # 既定（stop_out_action 未指定）= fail_stop = 従来どおり MarginCallError。
+        interactor, req = _margin_call_setup()
+        with pytest.raises(MarginCallError):
+            interactor.execute(req)
+
+    def test_close_and_halt_force_closes_and_returns_result(self):
+        # close_and_halt: 例外を送出せず、保有玉を stop_out 決済し BacktestResult を返す。
+        interactor, req = _margin_call_setup(stop_out_action="close_and_halt")
+        # Act
+        result = interactor.execute(req)
+        # Assert: 例外なし・保有玉が stop_out で確定する
+        assert isinstance(result, BacktestResult)
+        stop_out_trades = [t for t in result.trades if t.exit_reason == "stop_out"]
+        assert len(stop_out_trades) == 1
+        assert stop_out_trades[0].side == "buy"
+
+    def test_close_and_halt_suppresses_new_orders_after_stop_out(self):
+        # stop_out 後の新規発注シグナルは無視され、玉が増えない（halt セマンティクス）。
+        buy = Order(side="buy", kind="market", volume=1.0, price=None)
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.10, 1.10, 1.10, 1.10),
+            _bar(np.datetime64("2024-01-01T00:01"), 1.10, 1.10, 1.00, 1.00),  # stop_out
+            _bar(np.datetime64("2024-01-01T00:02"), 1.00, 1.10, 1.00, 1.05),  # 新規 buy 試行
+        ]
+        interactor, req = _margin_call_setup(
+            stop_out_action="close_and_halt",
+            orders_by_bar={0: [buy], 2: [buy]},
+            bars=bars,
+        )
+        # Act
+        result = interactor.execute(req)
+        # Assert: 確定トレードは初回 buy の stop_out 決済 1 件のみ（bar2 の新規発注は抑止）
+        assert len(result.trades) == 1
+        assert result.trades[0].exit_reason == "stop_out"
+
+
+# ---- account 伝播の後方互換: TC24051901 の確定トレード列が account の有無で不変 ----
+#
+# 背景（🟡-3）: develop では Interactor が on_new_bar に account=None を渡していた。
+# 現在は実 Account を渡すため TC24051901 の同方向抑止（"buy" not in held_sides /
+# "sell" not in held_sides）が有効化された。この有効化が**確定トレード列を変えない**
+# ことを明示固定する回帰テスト。
+#
+# 不変が成立する構造的理由（クロス系の性質）: TC24051901 のエントリは madiff の
+# ゼロクロス（買い: prev<0 and curr>0／売り: prev>0 and curr<0）のみ。保有中に
+# 同方向シグナルが再発火するには madiff が一度ゼロを跨いで反対符号になる必要があり、
+# その跨ぎ自体が反対方向クロス＝Interactor の reverse 決済を発火させ保有方向を反転
+# させる。ゆえに「同方向を保有したまま同方向シグナル」は通常実行では到達不能で、
+# held_sides 抑止は事実上未発火 → トレード列は account の有無に依らず不変。
+# 本テストは複数クロスの合成 madiff で end-to-end に同一トレード列を assert し、
+# 将来 account 伝播や抑止条件が変わってトレード列が動くことを退行として検出する。
+
+
+class _NullAccountStrategy:
+    """委譲先 strategy へ account=None を渡すラッパ（develop 相当の挙動を再現）。
+
+    Interactor は実 Account を on_new_bar に渡すが、本ラッパは account を None に
+    差し替えて委譲することで「account 伝播なし（同方向抑止 OFF）」を再現する。
+    open_positions は持たない（duck typing の held_sides が空集合になる）。
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def on_init(self, config, indicators):
+        self._inner.on_init(config, indicators)
+
+    def on_new_bar(self, bar_index, indicators, account):
+        return self._inner.on_new_bar(bar_index, indicators, None)
+
+    def on_position_check(self, position, bar_index, indicators):
+        return self._inner.on_position_check(position, bar_index, indicators)
+
+
+class _RunConfigLike:
+    """determinism 属性アクセス + 戦略パラメータの subscript を 1 つで満たす config。
+
+    Interactor は config.entry_price_basis 等を属性で、TC24051901 は cfg["point_size"]
+    等を subscript で参照する（main/run_config.RunConfig と同契約）。
+    """
+
+    def __init__(self, base_config, params):
+        self._base = base_config
+        self._params = params
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+    def __getitem__(self, key):
+        return self._params[key]
+
+
+def _tc_invariance_setup(strategy):
+    """複数クロスを含む合成 madiff で TC24051901 を Interactor 駆動する共通セットアップ。
+
+    SL/TP は十分広く（建玉が SL/TP で早期決済しない）、価格は微小変動に留める。
+    madiff はゼロクロスを複数回起こし、buy/sell の往復（reverse 決済）を生成する。
+    """
+    import pandas as pd
+
+    from backtest.adapter.indicator.registry import PandasIndicatorRegistry
+
+    # 複数のゼロクロス（buy→sell→buy→sell ...）を起こす madiff 系列。
+    madiff = [-1.0, 0.5, 0.8, -0.6, -0.3, 0.7, 0.9, -0.4, 0.6, -0.5]
+    close = [100.0 + 0.01 * i for i in range(len(madiff))]
+    bars = [
+        _bar(
+            np.datetime64("2024-01-01T00:00") + np.timedelta64(i, "m"),
+            c, c + 0.5, c - 0.5, c,
+        )
+        for i, c in enumerate(close)
+    ]
+    base = BacktestConfig(
+        tick_model="ohlc_simulate", spread_model="fixed", sltp_tie="sl",
+        fill_delay="next_tick", ohlc_order="auto", session_calendar="none",
+        digits=5, legacy_quirks=False, return_basis="equity",
+    )
+    params = {
+        "lot_size": 0.1, "stop_loss_points": 100_000,
+        "take_profit_points": 100_000, "point_size": 0.0001,
+    }
+    spec = SymbolSpec(
+        contract_size=1.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
+        stops_level=0, digits=5, point_size=0.0001, leverage=100.0,
+    )
+    registry = PandasIndicatorRegistry(
+        {"madiff": pd.Series(madiff), "close": pd.Series(close)}
+    )
+    interactor = RunBacktestInteractor(
+        strategy=strategy, indicators=registry, tick_model=StubTickModelPort(),
+    )
+    req = RunBacktestRequest(
+        config=_RunConfigLike(base, params), bars=bars, symbol_spec=spec,
+        initial_deposit=100_000.0, stop_out_level=0.0,
+    )
+    return interactor, req
+
+
+def _trade_signature(result):
+    """確定トレード列を比較可能なタプル列へ正規化する（side/時刻/価格/決済理由）。"""
+    return [
+        (
+            t.side, t.entry_time, t.exit_time,
+            t.entry_price, t.exit_price, t.exit_reason,
+        )
+        for t in result.trades
+    ]
+
+
+class TestAccountPropagationTradeInvariance:
+    def test_tc24051901_trades_unchanged_between_none_and_real_account(self):
+        # Arrange: 同一の複数クロス合成データを、(A) account=None 相当（develop・
+        #   同方向抑止 OFF）と (B) 実 Account（現在・抑止 ON）の 2 経路で実走する。
+        from backtest.adapter.strategy.tc24051901 import TC24051901
+
+        none_interactor, none_req = _tc_invariance_setup(
+            _NullAccountStrategy(TC24051901())
+        )
+        real_interactor, real_req = _tc_invariance_setup(TC24051901())
+
+        # Act
+        none_result = none_interactor.execute(none_req)
+        real_result = real_interactor.execute(real_req)
+
+        # Assert: 複数クロスで往復トレードが現に生成される（テストが空でない＝非自明）
+        assert len(real_result.trades) > 0
+        # 同方向抑止の有効化は確定トレード列を一切変えない（account 伝播の後方互換）。
+        # クロス系では held_sides 抑止が未発火のため side/時刻/価格/決済理由が完全一致する。
+        assert _trade_signature(none_result) == _trade_signature(real_result)

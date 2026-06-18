@@ -16,7 +16,12 @@ from backtest.domain.account import Account
 from backtest.domain.deal import Deal
 from backtest.domain.exceptions import MarginCallError
 from backtest.domain.trade_record import TradeRecord
-from backtest.usecase._execution import check_sltp_hit, fill_market_order
+from backtest.usecase._execution import (
+    check_sltp_hit,
+    close_price_for,
+    derive_quotes,
+    fill_market_order,
+)
 from backtest.usecase.compute_stats import compute_stats
 from backtest.usecase.models import BacktestResult
 from backtest.usecase.ports import RunBacktestInputBoundary
@@ -121,22 +126,34 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         spec = request.symbol_spec
         contract_size = spec.contract_size
         account = Account(balance=request.initial_deposit, contract_size=contract_size)
+        # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
+        halted = False
 
         # tick ループ（PROCESS §2 A〜I を 1 bar = 1 OnTick として処理）
         for bar_index, bar in enumerate(bars):
             # C 指標値の取得（前計算系列から現足インデックスを引く）
             self._indicators.update(bar_index)
             # D 保有状態 / E シグナル評価（EA ロジック）
-            orders = self._strategy.on_new_bar(bar_index, self._indicators, None) or []
-            # F 発注（成行約定。スプレッドは bid/ask に内包。最小骨格は spread=0）
-            bid = bar.close
-            ask = bar.close
+            #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。
+            orders = (
+                []
+                if halted
+                else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
+            )
+            # F 発注（成行約定）。約定価格基準（config）→当該足の建値を一元化した
+            #   derive_quotes（_execution）へ委譲する。決済価格は close_price_for で
+            #   約定価格ルール（long 決済=bid / short 決済=ask）を一意に決める。
+            bid, ask, fill_spread, fill_point = derive_quotes(
+                bar,
+                entry_price_basis=config.entry_price_basis,
+                point_size=spec.point_size,
+            )
             for order in orders:
                 # 反対サイドの保有玉があれば reverse 決済する（PROCESS §6）
                 reverse_kept: list[_OpenTrade] = []
                 for ot in open_trades:
                     if ot.position.side != order.side:
-                        close_price = bid if ot.position.side == "buy" else ask
+                        close_price = close_price_for(ot.position.side, bid=bid, ask=ask)
                         self._close_open_trade(
                             ot,
                             exit_time=bar.time,
@@ -153,7 +170,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         reverse_kept.append(ot)
                 open_trades = reverse_kept
 
-                position = fill_market_order(order, bid=bid, ask=ask)
+                position = fill_market_order(
+                    order, bid=bid, ask=ask, spread=fill_spread, point_size=fill_point
+                )
                 account.open_positions.append(position)
                 account.margin += position.required_margin(spec.leverage, contract_size)
                 open_trades.append(
@@ -198,18 +217,38 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
             open_trades = still_open
 
-            # I エクイティ/残高の更新（含み損益反映）→ margin_level < stop_out で Fail-Stop
+            # I エクイティ/残高の更新（含み損益反映）→ margin_level < stop_out で停止処理
             account.update_floating_pnl(bar)
             equity_curve.append(account.equity)
             if account.margin_level() < request.stop_out_level:
-                raise MarginCallError(
-                    "margin_level が stop_out_level を下回りました",
-                    context={
-                        "margin_level": account.margin_level(),
-                        "stop_out_level": request.stop_out_level,
-                    },
-                    bar_index=bar_index,
-                )
+                # 既定 "fail_stop": 従来どおり MarginCallError を送出し部分結果を破棄する。
+                if config.stop_out_action != "close_and_halt":
+                    raise MarginCallError(
+                        "margin_level が stop_out_level を下回りました",
+                        context={
+                            "margin_level": account.margin_level(),
+                            "stop_out_level": request.stop_out_level,
+                        },
+                        bar_index=bar_index,
+                    )
+                # "close_and_halt": 全保有玉を強制決済（buy=bid・sell=ask）し、以降の
+                # 新規発注を抑止して最終統計まで完走する（cycle4 バグ②）。
+                for ot in open_trades:
+                    close_price = close_price_for(ot.position.side, bid=bid, ask=ask)
+                    self._close_open_trade(
+                        ot,
+                        exit_time=bar.time,
+                        exit_price=close_price,
+                        exit_reason="stop_out",
+                        contract_size=contract_size,
+                        leverage=spec.leverage,
+                        account=account,
+                        trades=trades,
+                        deals=deals,
+                        balance_curve=balance_curve,
+                    )
+                open_trades = []
+                halted = True
 
         # OnDeinit 集計
         stats = compute_stats(

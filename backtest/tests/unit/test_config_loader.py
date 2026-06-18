@@ -297,3 +297,38 @@ def test_normalize_time_rejects_float_as_config_error():
     # Act / Assert
     with pytest.raises(ConfigError):
         normalize_time(1.5)
+
+
+# ---- cycle3: entry_price_basis を config から設定可能にする（MT5 current_open 約定の結線） ----
+
+
+def test_load_config_defaults_entry_price_basis_to_close():
+    # Arrange: 省略時は従来挙動（close 約定・spread 無視）= 後方互換
+    from backtest.framework.config_loader import load_config
+
+    # Act
+    cfg = load_config({})
+
+    # Assert: 既定は "close"（cycle2 の BacktestConfig 既定と一致）
+    assert cfg.entry_price_basis == "close"
+
+
+def test_load_config_accepts_entry_price_basis_current_open():
+    # Arrange: 原典 .mq5（新規バー現値約定）= MT5 突合に必須
+    from backtest.framework.config_loader import load_config
+
+    # Act
+    cfg = load_config({"entry_price_basis": "current_open"})
+
+    # Assert: config_loader 経由で current_open が BacktestConfig へ伝播する
+    assert cfg.entry_price_basis == "current_open"
+
+
+def test_load_config_rejects_invalid_entry_price_basis():
+    # Arrange: 列挙外の値（close / current_open のみ許容）
+    from backtest.domain.exceptions import ConfigError
+    from backtest.framework.config_loader import load_config
+
+    # Act / Assert: 列挙外は ConfigError へ翻訳（silent drop 禁止）
+    with pytest.raises(ConfigError):
+        load_config({"entry_price_basis": "bogus_basis"})

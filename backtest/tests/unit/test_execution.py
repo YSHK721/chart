@@ -75,6 +75,57 @@ class TestFillBuyLimit:
         assert result == "expired"
 
 
+# ---- B1b: スプレッド対応の成行約定（実 MT5 突合・後方互換） ----
+
+class TestFillMarketOrderWithSpread:
+    """買い=bid+spread×point / 売り=bid。spread=0（既定）で従来と完全同一。
+
+    実 MT5 アンカー（fixture report_900005560.json deal2）:
+        初回 buy@01:01 fill=39412.0 ＝ そのバー open(bid)=39402.0 + spread100×point0.1=10。
+        売りは bid(=39402.0) で約定。JP225: point_size=0.1。
+    """
+
+    def test_buy_with_spread_fills_at_bid_plus_spread_times_point(self):
+        # Arrange: 実 MT5 初回約定（bid=open=39402.0, spread=100, point=0.1）
+        order = Order(side="buy", kind="market", volume=1.0, price=None)
+        # Act: 買い = bid + spread×point = 39402.0 + 100×0.1 = 39412.0
+        position = fill_market_order(
+            order, bid=39402.0, ask=39402.0, spread=100, point_size=0.1
+        )
+        # Assert: 実 MT5 初回 buy fill=39412.0 と一致
+        assert position.side == "buy"
+        assert position.entry_price == 39412.0
+
+    def test_sell_with_spread_fills_at_bid(self):
+        # Arrange: 同バー（bid=open=39402.0, spread=100, point=0.1）
+        order = Order(side="sell", kind="market", volume=1.0, price=None)
+        # Act: 売りは bid で約定（spread はかけない）
+        position = fill_market_order(
+            order, bid=39402.0, ask=39402.0, spread=100, point_size=0.1
+        )
+        # Assert: 売り fill = bid = 39402.0
+        assert position.side == "sell"
+        assert position.entry_price == 39402.0
+
+    def test_spread_zero_buy_matches_legacy_ask_fill(self):
+        # Arrange: spread 未指定（既定 0）は従来挙動（買い=Ask）と完全同一であること
+        order = Order(side="buy", kind="market", volume=1.0, price=None)
+        # Act: spread を渡さない → 従来の buy=ask 経路
+        position = fill_market_order(order, bid=1.0998, ask=1.1002)
+        # Assert: 既存 test_buy_market_fills_at_ask_price と同値（後方互換）
+        assert position.entry_price == 1.1002
+
+    def test_spread_zero_explicit_buy_matches_legacy_ask_fill(self):
+        # Arrange: spread=0 を明示しても従来挙動（買い=Ask）であること
+        order = Order(side="buy", kind="market", volume=1.0, price=None)
+        # Act: spread=0 明示
+        position = fill_market_order(
+            order, bid=1.0998, ask=1.1002, spread=0, point_size=0.0001
+        )
+        # Assert: spread=0 は ask 経路に等しい（bid+0×point=bid だが従来は ask を採用）
+        assert position.entry_price == 1.1002
+
+
 # ---- B3: SL/TP ヒット判定（PROCESS §5・決定論 #3 SL 優先） ----
 
 class TestCheckSltpHit:
