@@ -74,6 +74,11 @@ def _bar(t, o, h, l, c):
     return Bar(time=t, open=o, high=h, low=l, close=c, volume=1.0, spread=0)
 
 
+def _bar_sp(t, o, h, l, c, *, spread):
+    """spread を指定できる Bar 生成ヘルパ（層2 の Ask 評価テスト用）。"""
+    return Bar(time=t, open=o, high=h, low=l, close=c, volume=1.0, spread=spread)
+
+
 def _config():
     return BacktestConfig(
         tick_model="ohlc_simulate",
@@ -488,6 +493,76 @@ class TestPerBarEquityCurve:
         assert result.equity_curve[1] == pytest.approx(10_000.10)
 
 
+# ---- 層2: floating_pnl_basis を engine の Account に結線する（config-gated・既定 close） ----
+
+class TestFloatingPnlBasisWiring:
+    """config.floating_pnl_basis を engine が Account へ伝播し、保有ポジの含み損益を
+    決済価格基準（売り=Ask=close+spread×point）で評価することを固定する。
+
+    既定 "close" は従来どおり close 固定評価＝後方互換（別テストで固定）。
+    """
+
+    @staticmethod
+    def _bars():
+        # bar0 で sell 建て（current_open: bid=open で約定）、bar1 を保有のまま評価。
+        return [
+            _bar_sp(np.datetime64("2024-01-01T00:00"), 100.0, 100.0, 100.0, 100.0, spread=10),
+            _bar_sp(np.datetime64("2024-01-01T00:01"), 101.0, 101.0, 101.0, 101.0, spread=10),
+        ]
+
+    def _config(self, basis):
+        c = _config()
+        c.entry_price_basis = "current_open"
+        c.floating_pnl_basis = basis
+        return c
+
+    def test_sell_floating_uses_ask_when_bid_ask(self):
+        # Arrange: floating_pnl_basis="bid_ask"・point=0.1・spread=10。
+        #   sell 建て@bar0 open=100（bid）。bar1 close=101・Ask=101+10*0.1=102。
+        order = Order(side="sell", kind="market", volume=1.0, price=None)
+        bars = self._bars()
+        strategy = SpyStrategyPort([], orders_by_bar={0: [order]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy, indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        spec = SymbolSpec(
+            contract_size=1.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
+            stops_level=0, digits=1, point_size=0.1, leverage=100.0,
+        )
+        req = RunBacktestRequest(
+            config=self._config("bid_ask"), bars=bars, symbol_spec=spec,
+            initial_deposit=10_000.0, stop_out_level=0.0,
+        )
+        # Act
+        result = interactor.execute(req)
+        # Assert: bar1 の含み損 = (Ask 102 - entry 100)*1*1*(-1) = -2 が equity に反映。
+        #   close 評価なら (101-100)*-1 = -1。Ask 評価で -2＝より悲観的（spread 加算）。
+        assert result.equity_curve[1] == pytest.approx(10_000.0 - 2.0)
+
+    def test_default_close_basis_ignores_spread_in_engine(self):
+        # 後方互換: 既定 "close" では engine の Account も close 固定評価（spread 無視）。
+        order = Order(side="sell", kind="market", volume=1.0, price=None)
+        bars = self._bars()
+        strategy = SpyStrategyPort([], orders_by_bar={0: [order]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy, indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        spec = SymbolSpec(
+            contract_size=1.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
+            stops_level=0, digits=1, point_size=0.1, leverage=100.0,
+        )
+        req = RunBacktestRequest(
+            config=self._config("close"), bars=bars, symbol_spec=spec,
+            initial_deposit=10_000.0, stop_out_level=0.0,
+        )
+        # Act
+        result = interactor.execute(req)
+        # Assert: bar1 close 評価 = (101-100)*-1 = -1（spread=10 を無視・従来不変）。
+        assert result.equity_curve[1] == pytest.approx(10_000.0 - 1.0)
+
+
 # ---- cycle2-2d: 証拠金 stop_out（既存 TestFailStopOnMarginCall で raise を固定済） ----
 #   stop_out の Fail-Stop（raise）契約は既実装かつ既存テストで固定済のため新規追加なし。
 #   「強制決済して継続」セマンティクスへの変更は既存 raise 契約を破壊するため本 cycle 対象外
@@ -828,3 +903,100 @@ class TestTradingStartWarmupExclusion:
         for i in range(4):
             assert ("strategy.on_new_bar", i) in log
         assert len(result.equity_curve) == 4
+
+
+# ---- 層1: prime_first_trading_bar — trading_start 境界の最初の 1 バーを
+#      「アタッチ/プライム」として扱い指標 update のみ実施しトレード/equity から除外する
+#      （config-gated・既定 False=従来どおり trading_start 境界バーも取引対象） ----
+
+class TestPrimeFirstTradingBar:
+    """config.prime_first_trading_bar=True のとき、trading_start 境界（bar.time >=
+    trading_start となる最初の 1 バー）を warmup 同様「指標 update のみ・発注/equity 除外」
+    として扱い、初回約定を次バーに落とす。
+
+    背景: 実 MT5 はテスト開始バーをアタッチ/プライムとして扱い初回約定が次足に落ちる。
+    既定 False は trading_start 境界バーも取引対象＝従来不変（別テストで固定）。
+    """
+
+    @staticmethod
+    def _bars():
+        # bar0/bar1 = warmup（trading_start 前）、bar2 = 境界バー（prime 対象）、bar3 = 取引。
+        return [
+            _bar(np.datetime64("2024-12-31T23:58"), 1.10, 1.11, 1.09, 1.10),
+            _bar(np.datetime64("2024-12-31T23:59"), 1.10, 1.11, 1.09, 1.10),
+            _bar(np.datetime64("2025-01-01T00:00"), 1.10, 1.13, 1.10, 1.12),
+            _bar(np.datetime64("2025-01-01T00:01"), 1.12, 1.14, 1.11, 1.13),
+        ]
+
+    def _config_primed(self):
+        c = _config()
+        c.prime_first_trading_bar = True
+        return c
+
+    def test_prime_boundary_bar_calls_update_only_not_signal(self):
+        # Arrange: prime_first_trading_bar=True・trading_start=00:00（bar2 が境界）。
+        log = []
+        bars = self._bars()
+        interactor = RunBacktestInteractor(
+            strategy=SpyStrategyPort(log),
+            indicators=SpyIndicatorPort(log),
+            tick_model=StubTickModelPort(),
+        )
+        req = RunBacktestRequest(
+            config=self._config_primed(), bars=bars, symbol_spec=_symbol_spec(),
+            initial_deposit=10_000.0, stop_out_level=0.0,
+            trading_start=np.datetime64("2025-01-01T00:00"),
+        )
+        # Act
+        interactor.execute(req)
+        # Assert: 境界バー(2)では indicator.update のみ・on_new_bar は呼ばない
+        #   （warmup の 0,1 も従来どおり除外。取引バーは 3 のみ）。
+        assert ("indicator.update", 2) in log
+        assert ("strategy.on_new_bar", 2) not in log
+        assert ("strategy.on_new_bar", 3) in log
+
+    def test_prime_excludes_boundary_bar_order_and_equity(self):
+        # Arrange: 境界バー(2)に買い注文・取引バー(3)に買い→次バー無しで保有のまま。
+        # prime のため境界バーの注文は約定せず、equity_curve は取引バー(3)の 1 件のみ。
+        buy = Order(side="buy", kind="market", volume=1.0, price=None)
+        bars = self._bars()
+        strategy = SpyStrategyPort([], orders_by_bar={2: [buy], 3: [buy]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+        req = RunBacktestRequest(
+            config=self._config_primed(), bars=bars, symbol_spec=_symbol_spec(),
+            initial_deposit=10_000.0, stop_out_level=0.0,
+            trading_start=np.datetime64("2025-01-01T00:00"),
+        )
+        # Act
+        result = interactor.execute(req)
+        # Assert: 境界バー(2)・取引バー(3)とも買いのみで反対決済が無いため確定トレード 0 件
+        #   （境界バーの発注が約定していれば次バーで何も起きず保有継続＝確定 0 は両解釈で成立）。
+        #   本テストの主眼は equity_curve から境界バーが除外されること。
+        assert len(result.trades) == 0
+        # equity_curve は取引バー(3)の 1 件のみ（warmup 2 件 + 境界 1 件は除外）。
+        assert len(result.equity_curve) == 1
+
+    def test_default_false_keeps_boundary_bar_trading(self):
+        # 後方互換: prime_first_trading_bar 既定 False では trading_start 境界バー(2)も
+        # 取引対象＝従来どおり on_new_bar が呼ばれ equity も記録される。
+        log = []
+        bars = self._bars()
+        interactor = RunBacktestInteractor(
+            strategy=SpyStrategyPort(log),
+            indicators=SpyIndicatorPort(log),
+            tick_model=StubTickModelPort(),
+        )
+        req = RunBacktestRequest(
+            config=_config(), bars=bars, symbol_spec=_symbol_spec(),
+            initial_deposit=10_000.0, stop_out_level=0.0,
+            trading_start=np.datetime64("2025-01-01T00:00"),
+        )
+        # Act
+        result = interactor.execute(req)
+        # Assert: 境界バー(2)でも on_new_bar が呼ばれ equity は取引バー(2,3)の 2 件。
+        assert ("strategy.on_new_bar", 2) in log
+        assert len(result.equity_curve) == 2

@@ -54,6 +54,10 @@ class _ConfigModel(BaseModel):
     # 証拠金ストップアウト時の挙動（cycle4 で追加）。既定 "fail_stop"＝従来どおり raise。
     # "close_and_halt"＝強制決済して完走。default 付きのため既存 config と後方互換。
     stop_out_action: Literal["fail_stop", "close_and_halt"] = "fail_stop"
+    # 取引開始境界バーのプライム扱い（層1）。既定 False＝従来不変。True で初回約定を次足へ。
+    prime_first_trading_bar: bool = False
+    # 含み損益の評価基準（層2）。既定 "close"＝close 固定。"bid_ask"＝買い Bid・売り Ask。
+    floating_pnl_basis: Literal["close", "bid_ask"] = "close"
 
 
 def normalize_time(value: Union[str, int]) -> Union[np.datetime64, int]:
@@ -144,4 +148,6 @@ def load_config(source: ConfigSource) -> BacktestConfig:
         return_basis=model.return_basis,
         entry_price_basis=model.entry_price_basis,
         stop_out_action=model.stop_out_action,
+        prime_first_trading_bar=model.prime_first_trading_bar,
+        floating_pnl_basis=model.floating_pnl_basis,
     )

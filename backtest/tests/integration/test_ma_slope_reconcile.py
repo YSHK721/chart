@@ -4,38 +4,40 @@ load_case → build_interactor（warmup CSV + trading_start）→ CSV 実走 →
 expected.deals/results と比較し、一致率を定量化する。完全一致を捏造せず、残差
 （sub-minute 時刻表現 / stop-out 発火バー精度）を不変条件テストとして固定する。
 
-実走 config（両修正 ON + warmup・本テストが固定する条件）:
+実走 config（全修正 ON + warmup + stop-out 精度2層・本テストが固定する条件）:
   entry_price_basis="current_open" / spread は Bar から取得 /
-  stop_out_action="close_and_halt" / stop_out_level=99.95。
+  stop_out_action="close_and_halt" / stop_out_level=99.95 /
+  prime_first_trading_bar=True（層1）/ floating_pnl_basis="bid_ask"（層2）。
   データは warmup 込み CSV（2024-12-23 始点）を与え、trading_start=2025-01-02T01:00:00 を
-  指定する。これにより開始前のバーは指標(EMA)seed 収束のみを行い、MT5 と同じく 2024 履歴で
-  EMA 収束済の状態で 2025-01 取引期間に入る（warmup なし時の初回 1 バーずれを解消）。
-  stop_out は MT5 同様「証拠金枯渇で全玉強制決済し以降停止」（close_and_halt）化する。
+  指定する。開始前のバーは指標(EMA)seed 収束のみを行い、MT5 と同じく 2024 履歴で EMA 収束済
+  の状態で取引期間に入る。層1 は取引開始境界の degenerate バー(01:00)をプライム扱いして
+  spurious SELL を除去し（初回約定を MT5 と同じ 01:01 buy@39412 に揃える）、層2 は含み損益を
+  決済価格基準（買い=Bid=close / 売り=Ask=close+spread×point）で評価して stop-out 発火を
+  MT5 の 13:07 に揃える。
 
-実測サマリ（本テストが固定する観測値・2026-06 実走・上記 config + warmup）:
-  - 我々の往復トレード = 1164、MT5 = 1163。差 ≈ 1 は sub-minute 時刻表現 + stop-out
-    発火バー精度に起因（MT5 は 2025-01-13T13:07 まで、我々は同日 13:04 で強制決済停止＝
-    発火バーが 3 分早いのみ。warmless 時の 10:03 停止＝数時間差から大幅改善）。
-  - net profit = -6165.4（MT5 = -6169.0）/ 最終 balance = 3834.6（MT5 = 3831.0・
-    初期証拠金 10000）。差 ≈ 3.6 はトレード差＋stop-out 価格バー差由来で現実的範囲
-    （warmless 時の差 ≈ 20 から改善）。
-  - side + entry_time 一致率 = 98.2%（1142/1163）→ 戦略ロジック・エントリ時刻はほぼ一致
-    （warmup により初回が 01:01 に揃い warmless の 96.4% から改善）。残差は stop-out
-    有効化で我々が 13:04 停止し以降のエントリ（MT5 は 13:07 まで継続）を生成しない必然差。
+実測サマリ（本テストが固定する観測値・2026-06 実走・上記 全修正 config）:
+  - 我々の往復トレード = 1164、MT5 = 1163。差 ≈ 1 は sub-minute 時刻表現の残差。
+  - net profit = -6173.9（MT5 = -6169.0）/ 最終 balance = 3826.1（MT5 = 3831.0・
+    初期証拠金 10000）。差 ≈ 4.9 はトレード差＋stop-out 価格差由来の現実的残差。
+    注: 層1 単独なら net/balance は MT5 にほぼ bit-exact（-6168.9 / 3831.1）だが stop-out
+    発火が 13:16 とずれる。層2 を加えると stop-out が 13:07（MT5 一致）に揃う代わりに
+    net/balance が ≈4.9 乖離する（stop-out 時刻一致 vs net/balance bit-exact のトレードオフ。
+    本テストは「stop-out 時刻 = MT5 と完全一致」を優先する config を固定する）。
+  - side + entry_time 一致率 = 98.2%（1142/1163）→ 戦略ロジック・エントリ時刻はほぼ一致。
+    残差は我々が 13:07 stop-out で停止し以降のエントリを生成しない必然差。
   - **SELL トレードは entry/exit 価格とも完全一致（574/574）**。reverse 決済 = 買い戻し
     = ask(open+spread×point) により spread が正しく加算される（spread 未加算への退行を禁止）。
-  - **BUY トレードは entry 価格 100% 一致（568/568）・exit 価格は 567/568 一致**。
-    唯一の不一致は最終 stop-out 強制決済バー（entry 2025-01-13T13:04）。我々の停止バー
-    （13:04）と MT5 の停止バー（13:07）が異なるため、その 1 件のみ exit 価格がずれる
-    （stop-out 発火バー精度の残差）。通常決済（reverse）の BUY exit は全件一致。
-  - 初回 BUY の fill 価格式 open+spread×point を再現する: warmup により初回 BUY 時刻は
+  - **BUY トレードは entry/exit 価格とも完全一致（568/568・568/568）**。層2 により
+    stop-out が SELL 側（13:07）で発火するため、BUY exit の stop-out バー不一致が解消する
+    （従来の層1単独では BUY が 13:04/13:16 で停止し 1 件不一致だった）。
+  - 初回 BUY の fill 価格式 open+spread×point を再現する: 層1 により初回 BUY 時刻は
     MT5 と同じ 2025-01-02T01:01 に揃い、価格 = open(39402)+spread(100)×point(0.1) = 39412
-    で MT5 初回約定（01:01@39412）と完全一致する。
+    で MT5 初回約定（01:01@39412）と完全一致する（01:00 の spurious SELL は生成されない）。
 
 本テストは上記を「現実的トレランスの不変条件」で固定し、退行（戦略ロジック破壊・
-エントリ時刻一致率低下・SELL exit spread 未加算への退行・BUY 価格不一致・trades/net/
-balance の MT5 乖離拡大・warmup/trading_start 無効化）を検出する。報告値とテスト固定値は
-本テスト内で自己完結する（どの config でどの数値が出るかをテストが実走して確定する）。
+エントリ時刻一致率低下・SELL/BUY exit spread 未加算への退行・価格不一致・trades/net/
+balance の MT5 乖離拡大・warmup/trading_start/層1/層2 無効化・spurious SELL@01:00 再発・
+stop-out 発火時刻の MT5 乖離）を検出する。報告値とテスト固定値は本テスト内で自己完結する。
 """
 from __future__ import annotations
 
@@ -47,10 +49,12 @@ from backtest.tests.fixtures.mt5 import load_case
 
 _CASE = "ma_slope_jp225_202501"
 # warmup/trading_start: 取引開始時刻（これ以前のバーは EMA seed 収束のみ）。
+# 層1（prime_first_trading_bar）により、この境界に当たる最初のバー(01:00 degenerate)は
+# プライム扱いされ取引対象外となる（初回約定は次足 01:01）。
 _TRADING_START = np.datetime64("2025-01-02T01:00:00")
-# 我々の stop-out 強制決済バー（close_and_halt が発火した最終バーの建値）。MT5 の停止バー
-# （13:07）とはバー精度が異なり（我々 13:04）、この 1 件のみ BUY exit が乖離する。
-_OUR_STOPOUT_ENTRY = np.datetime64("2025-01-13T13:04:00")
+# 我々の stop-out 強制決済バー。層2（bid_ask 含み損評価）により stop-out 発火が MT5 の
+# 13:07 に一致する。この時刻に SELL を建てた直後の同バーで強制決済される（entry=exit=13:07）。
+_OUR_STOPOUT_ENTRY = np.datetime64("2025-01-13T13:07:00")
 # MT5(report.json) との突合基準値（実測の現実的トレランスで固定する）。
 _MT5_TRADES = 1163
 _MT5_NET = -6169.0
@@ -88,12 +92,18 @@ def _run_engine(case):
         take_profit_points=int(ea["take_profit"]),
         slope_shift=int(ea["slope_shift"]),
         slope_min_points=float(ea["slope_min_points"]),
-        # cycle4 両修正 ON: current_open + spread from bar に加え、stop_out を MT5 同様
-        # 「強制決済して停止」（close_and_halt）化し stop_out_level=99.95 で発火させる。
+        # 全修正 ON: current_open + spread from bar + close_and_halt に加え、stop-out
+        # 精度の2層修正を有効化する。
+        #   層1 prime_first_trading_bar: 取引開始境界バー(01:00 degenerate) をプライム扱い
+        #     しspurious SELL を除去（初回約定を MT5 と同じ 01:01 buy@39412 に揃える）。
+        #   層2 floating_pnl_basis="bid_ask": 含み損益を決済価格基準（買い=Bid/売り=Ask）
+        #     で評価し、stop-out 発火を MT5 の 13:07 に揃える。
         config_overrides={
             "tick_model": "open_only",
             "entry_price_basis": "current_open",
             "stop_out_action": "close_and_halt",
+            "prime_first_trading_bar": True,
+            "floating_pnl_basis": "bid_ask",
         },
         stop_out_level=99.95,
         trading_start=_TRADING_START,
@@ -154,33 +164,44 @@ class TestMaSlopeReconcile:
         assert reconcile["expected"]["results"]["total_trades"] == float(_MT5_TRADES)
 
     def test_trade_count_close_to_mt5_within_realistic_tolerance(self, reconcile):
-        # 両修正 ON + warmup（trading_start=2025-01-02T01:00）で実走したトレード総数 = 1164。
-        # MT5 = 1163。差 ≈ 1 は sub-minute 時刻表現 + stop-out 発火バー精度（我々 13:04 停止 /
-        # MT5 13:07 継続）に起因する現実的残差（warmless 時の 1143＝差 20 から大幅改善）。
+        # 全修正 ON（層1+層2）+ warmup で実走したトレード総数 = 1164。MT5 = 1163。
+        # 差 ≈ 1 は sub-minute 時刻表現の残差（stop-out は層2 で MT5 と同じ 13:07 に一致）。
         ours = len(reconcile["ours"])
-        assert ours == 1164  # 実測固定（warmup + trading_start）
+        assert ours == 1164  # 実測固定（warmup + 層1 + 層2）
         assert abs(ours - _MT5_TRADES) <= 25  # MT5 との乖離トレランス（退行検出）
 
     def test_net_profit_close_to_mt5_within_realistic_tolerance(self, reconcile):
-        # net profit = -6165.4（MT5 = -6169.0）。差 ≈ 3.6 はトレード差＋stop-out 価格バー差。
-        assert reconcile["net"] == pytest.approx(-6165.4, abs=0.1)  # 実測固定
+        # net profit = -6173.9（MT5 = -6169.0）。差 ≈ 4.9 はトレード差＋stop-out 価格差。
+        # 層2（stop-out 時刻一致）優先のトレードオフ（層1単独なら -6168.9 で bit-exact）。
+        assert reconcile["net"] == pytest.approx(-6173.9, abs=0.1)  # 実測固定
         assert abs(reconcile["net"] - _MT5_NET) <= 60.0  # MT5 との乖離トレランス
 
     def test_final_balance_close_to_mt5_within_realistic_tolerance(self, reconcile):
-        # 最終 balance = 3834.6（MT5 = 3831.0・初期 10000）。net と整合する現実的残差。
-        assert reconcile["balance"] == pytest.approx(3834.6, abs=0.1)  # 実測固定
+        # 最終 balance = 3826.1（MT5 = 3831.0・初期 10000）。net と整合する現実的残差。
+        assert reconcile["balance"] == pytest.approx(3826.1, abs=0.1)  # 実測固定
         assert reconcile["balance"] == pytest.approx(
             _INITIAL_DEPOSIT + reconcile["net"], abs=0.1
         )  # balance = 初期証拠金 + net（自己整合）
         assert abs(reconcile["balance"] - _MT5_BALANCE) <= 60.0  # MT5 との乖離トレランス
 
     def test_first_buy_fill_reproduces_open_plus_spread_times_point(self, reconcile):
-        # warmup（trading_start 前を EMA seed 収束のみとする）により初回 BUY 時刻は MT5 と同じ
-        # 2025-01-02T01:01 に揃う。fill 価格式 open+spread×point を再現する: bar 01:01
-        # open=39402, spread=100, point=0.1 → 39402+100×0.1 = 39412（MT5 初回約定と完全一致）。
+        # 層1（prime_first_trading_bar）により初回約定は MT5 と同じ 2025-01-02T01:01 buy。
+        # fill 価格式 open+spread×point を再現する: bar 01:01 open=39402, spread=100,
+        # point=0.1 → 39402+100×0.1 = 39412（MT5 初回約定 01:01@39412 と完全一致）。
         first_buy = next(t for t in reconcile["ours"] if t.side == "buy")
         assert first_buy.entry_time == np.datetime64("2025-01-02T01:01:00")
         assert first_buy.entry_price == pytest.approx(39412.0)
+
+    def test_no_spurious_sell_at_session_boundary_01_00(self, reconcile):
+        # 層1 の回帰固定: 取引開始境界の degenerate バー(2025-01-02T01:00・O=H=L=C=39400.5)
+        # で MT5 に無い SELL を発注しない。初回トレードは MT5 と同じ 01:01 の buy であること。
+        # 層1 を無効化すると 01:00 に spurious SELL が再発し本アサートが落ちる。
+        first = reconcile["ours"][0]
+        assert first.side == "buy"
+        assert first.entry_time == np.datetime64("2025-01-02T01:01:00")
+        # 01:00 ちょうどに建てたトレードが 1 件も存在しない（spurious SELL 不在）。
+        boundary = np.datetime64("2025-01-02T01:00:00")
+        assert not any(t.entry_time == boundary for t in reconcile["ours"])
 
     def test_side_and_entry_time_match_rate_at_least_98pct(self, reconcile):
         # 戦略ロジック・エントリ時刻の一致（sub-minute ずれ・stop-out 停止差を除く主指標）。
@@ -193,32 +214,35 @@ class TestMaSlopeReconcile:
         rate = matched / len(reconcile["mt5"])
         assert rate >= 0.98, f"side+entry_time 一致率 {rate:.1%} < 98%（戦略退行の疑い）"
 
-    def test_buy_trades_match_prices_except_stopout_bar(self, reconcile):
-        # BUY は entry=ask(=open+spread×pt)・exit=bid(=open) とも MT5 と一致する。
-        # 唯一の例外は stop-out 強制決済バー（entry 2025-01-13T13:04）。我々の停止バー
-        # （13:04）と MT5 の停止バー（13:07）が異なるため、その 1 件のみ exit 価格がずれる。
+    def test_buy_trades_match_entry_and_exit_price_fully(self, reconcile):
+        # BUY は entry=ask(=open+spread×pt)・exit=bid(=open) とも MT5 と完全一致する。
+        # 層2 により stop-out は SELL 側（13:07）で発火するため、従来（層1単独）で残っていた
+        # BUY exit の stop-out バー 1 件不一致が解消し、BUY exit も全件一致（568/568）になる。
         mt5_by_key = reconcile["mt5_by_key"]
         n = entry_ok = exit_ok = 0
-        stopout_exit_mismatch = 0
         for t in reconcile["ours"]:
             m = mt5_by_key.get((t.side, t.entry_time))
             if m is None or t.side != "buy":
                 continue
             n += 1
             entry_ok += t.entry_price == pytest.approx(m["entry_price"])
-            exit_match = t.exit_price == pytest.approx(m["exit_price"])
-            exit_ok += exit_match
-            if not exit_match and t.entry_time == _OUR_STOPOUT_ENTRY:
-                stopout_exit_mismatch += 1
-        assert n == 568  # 実測固定（BUY 往復で MT5 とキー一致する件数・warmup）
+            exit_ok += t.exit_price == pytest.approx(m["exit_price"])
+        assert n == 568  # 実測固定（BUY 往復で MT5 とキー一致する件数・全修正）
         # BUY entry 価格は全件一致（spread 加算が entry 側で正しい）。
         assert entry_ok == n, f"BUY entry 一致 {entry_ok}/{n}（BUY fill 退行の疑い）"
-        # BUY exit は stop-out 強制決済バー 1 件のみ不一致・残り全件一致（567/568）。
-        assert exit_ok == n - 1, f"BUY exit 一致 {exit_ok}/{n}（期待 567）"
-        # その唯一の不一致が stop-out バーであることを固定（別バーでの退行を排除）。
-        assert stopout_exit_mismatch == 1, (
-            "BUY exit 不一致が stop-out 強制決済バー(13:04)以外で発生（退行の疑い）"
-        )
+        # BUY exit も全件一致（層2 で stop-out が SELL 側へ移り BUY exit の乖離が消える）。
+        assert exit_ok == n, f"BUY exit 一致 {exit_ok}/{n}（期待 568・層2 退行の疑い）"
+
+    def test_stop_out_fires_on_sell_at_mt5_bar_13_07(self, reconcile):
+        # 層2（bid_ask 含み損評価）の回帰固定: stop-out 強制決済は SELL 側で MT5 と同じ
+        # 2025-01-13T13:07 のバーで発火する（同バー建て→同バー強制決済で entry=exit=13:07）。
+        # 層2 を無効化すると stop-out が 13:16（層1単独）へずれ本アサートが落ちる。
+        stop_outs = [t for t in reconcile["ours"] if t.exit_reason == "stop_out"]
+        assert len(stop_outs) == 1, f"stop-out 強制決済は 1 件（実測 {len(stop_outs)}）"
+        so = stop_outs[0]
+        assert so.side == "sell", f"stop-out は SELL 側で発火（実測 {so.side}・層2 退行）"
+        assert so.entry_time == _OUR_STOPOUT_ENTRY  # 2025-01-13T13:07（MT5 停止バーに一致）
+        assert so.exit_time == np.datetime64("2025-01-13T13:07:00")
 
     def test_sell_trades_match_entry_and_exit_price_fully(self, reconcile):
         # cycle4 バグ① 修正後の回帰固定: SELL の決済（買い戻し=buy 約定）は

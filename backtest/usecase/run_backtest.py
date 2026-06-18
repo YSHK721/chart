@@ -131,12 +131,25 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         open_trades: list[_OpenTrade] = []
         spec = request.symbol_spec
         contract_size = spec.contract_size
-        account = Account(balance=request.initial_deposit, contract_size=contract_size)
+        # 層2: 含み損益の評価基準を config から引く（既定 "close"＝従来 close 固定で不変）。
+        # "bid_ask" 時は売り保有を Ask=close+spread×point で評価するため point_size を渡す。
+        floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
+        account = Account(
+            balance=request.initial_deposit,
+            contract_size=contract_size,
+            floating_pnl_basis=floating_pnl_basis,
+            point_size=spec.point_size,
+        )
         # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
         halted = False
 
         # warmup/trading_start: 指定時のみウォームアップ区間を有効化（既定 None=全バー取引）。
         trading_start = request.trading_start
+        # 層1: prime_first_trading_bar=True かつ trading_start 指定時、取引区間の最初の 1 バー
+        # （bar.time >= trading_start となる最初のバー）を warmup 同様にプライム扱いする。
+        # primed_done で 1 回だけ消費する（既定 False=無効＝従来不変）。
+        prime_first = getattr(config, "prime_first_trading_bar", False)
+        primed_done = False
 
         # tick ループ（PROCESS §2 A〜I を 1 bar = 1 OnTick として処理）
         for bar_index, bar in enumerate(bars):
@@ -145,6 +158,17 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             # warmup 区間（bar.time < trading_start）は指標 seed 収束のみを行い、トレード
             # 評価・約定・SL/TP 監視・equity 記録をすべてスキップする（config-gated）。
             if trading_start is not None and bar.time < trading_start:
+                continue
+            # 層1: 取引区間の最初の 1 バーをプライム（アタッチ）として warmup 同様にスキップ。
+            #   trading_start 指定 + prime_first 有効時のみ。1 回消費したら以降は通常取引。
+            #   bar.time >= trading_start を明示検査（warmup continue への暗黙依存を排除）。
+            if (
+                prime_first
+                and trading_start is not None
+                and bar.time >= trading_start
+                and not primed_done
+            ):
+                primed_done = True
                 continue
             # D 保有状態 / E シグナル評価（EA ロジック）
             #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。

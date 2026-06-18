@@ -6,7 +6,9 @@
 
 公開振る舞い:
     apply_deal(deal)           確定損益を balance に反映する。
-    update_floating_pnl(bar)   保有ポジションの含み損益を bar.close で再評価する。
+    update_floating_pnl(bar)   保有ポジションの含み損益を再評価する（基準は
+                               floating_pnl_basis: "close"=close 固定 / "bid_ask"=
+                               買い Bid・売り Ask）。
     margin_level() -> float    証拠金維持率を返す。
 
 設計判断（frozen 方針からの逸脱）:
@@ -36,6 +38,11 @@ class Account:
     swap: float = 0.0
     commission: float = 0.0
     open_positions: list[Position] = field(default_factory=list)
+    # 含み損益の評価基準（層2・config-gated）。既定 "close"＝従来どおり bar.close 固定で
+    # 全保有を評価。"bid_ask"＝決済価格基準（買い保有=Bid=close / 売り保有=Ask=
+    # close+spread×point_size）。point_size は "bid_ask" 時のみ参照する。
+    floating_pnl_basis: str = "close"
+    point_size: float = 0.0
 
     @property
     def equity(self) -> float:
@@ -53,8 +60,22 @@ class Account:
         self.balance += deal.profit
 
     def update_floating_pnl(self, bar: Any) -> None:
-        """保有ポジションの含み損益を bar.close で再評価する（METRICS §5.1）。"""
-        # TODO(🟡-2): close 評価は暫定。usecase 接続時に side 別 Bid/Ask 価格解決へ要変更（PROCESS §6）
+        """保有ポジションの含み損益を再評価する（METRICS §5.1）。
+
+        floating_pnl_basis="close"（既定）: 全保有を bar.close で評価（従来不変）。
+        floating_pnl_basis="bid_ask"（層2）: 決済価格基準で評価する。買い保有は
+            Bid(=bar.close)、売り保有は Ask(=bar.close + bar.spread × point_size)。
+            実 MT5 のポジション決済価格基準評価に整合し、売り含み損が悲観化する。
+        """
         self.floating_pnl = sum(
-            pos.floating_pnl(bar.close, self.contract_size) for pos in self.open_positions
+            pos.floating_pnl(self._eval_price(bar, pos.side), self.contract_size)
+            for pos in self.open_positions
         )
+
+    def _eval_price(self, bar: Any, side: str) -> float:
+        """floating_pnl_basis に従い保有 side の含み損益評価価格を解決する。"""
+        if self.floating_pnl_basis == "bid_ask" and side == "sell":
+            # 売り保有の決済 = 買い戻し = Ask = Bid(close) + spread×point。
+            return bar.close + bar.spread * self.point_size
+        # "close"（既定）および買い保有（Bid=close）は bar.close で評価する。
+        return bar.close
