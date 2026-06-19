@@ -72,6 +72,26 @@ class Account:
             for pos in self.open_positions
         )
 
+    def update_floating_pnl_at(self, *, bid: float, ask: float) -> None:
+        """現在ティックの評価価格（bid/ask）で含み損益を再評価する（every-tick #3）。
+
+        every-tick モードでは bar.close ではなく到達ティックの bid/ask で評価する。
+        買い保有は決済（売り戻し）= Bid、売り保有は決済（買い戻し）= Ask で評価する
+        （実 MT5 のポジション決済価格基準評価に整合）。bar 経路の update_floating_pnl
+        は不変で、本メソッドは新引数版として並存する。
+
+        config knob 不活性（real_ticks 経路）: 本メソッドは floating_pnl_basis を一切参照
+        しない（評価価格は引数の実 bid/ask に固定。買い=Bid・売り=Ask）。every-tick
+        （tick_model=="real_ticks"）経路は含み損評価を本メソッド経由で行うため、
+        floating_pnl_basis（"close"/"bid_ask"）config はこの経路では inert（無効）であり、
+        実 bid/ask 評価で代替される。basis を参照するのは bar 経路の update_floating_pnl
+        （_eval_price）のみ。
+        """
+        self.floating_pnl = sum(
+            pos.floating_pnl(bid if pos.side == "buy" else ask, self.contract_size)
+            for pos in self.open_positions
+        )
+
     def _eval_price(self, bar: Any, side: str) -> float:
         """floating_pnl_basis に従い保有 side の含み損益評価価格を解決する。"""
         if self.floating_pnl_basis == "bid_ask" and side == "sell":

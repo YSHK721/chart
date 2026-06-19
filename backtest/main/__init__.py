@@ -29,6 +29,7 @@ from backtest.adapter.execution.tick_model import (
     EveryTickModel,
     OhlcExpandTickModel,
     OpenOnlyTickModel,
+    RealTickModel,
 )
 from backtest.adapter.indicator.madiff import madiff
 from backtest.adapter.indicator.registry import PandasIndicatorRegistry
@@ -58,6 +59,59 @@ _DEFAULT_TICK_MODEL = OhlcExpandTickModel
 def _make_tick_model(tick_model_key: str) -> Any:
     """決定論 config の tick_model キーから TickModelPort 実装を生成する。"""
     return _TICK_MODELS.get(tick_model_key, _DEFAULT_TICK_MODEL)()
+
+
+# 本番 tick-store のルート（実 marketdata は gitignore・大容量）。テストは
+# tick_store_root を tmp_path に差し替えて小データで検証する（実データ非依存）。
+_DEFAULT_TICK_STORE_ROOT = "marketdata/ticks"
+
+
+def _bar_period(bars: Any) -> "tuple[Any, Any]":
+    """Bar 列から実ティック読込区間 [first bar.time, last bar.time + 60s) を導く。
+
+    tick_start/tick_end が未指定（None）のとき、対象バーを覆う半開区間を bar.time
+    から導出する（M1=60s 前提）。RealTickModel が各バー区間を [bar.time, bar.time+60s)
+    でスライスするため、終端は最終バーの 1 足分先まで確保する。
+    """
+    bar_list = list(bars)
+    first = bar_list[0].time
+    last = bar_list[-1].time
+    # epoch int は +60s（秒）で次足境界。それ以外（numpy.datetime64 / ISO 文字列）は
+    # pandas.Timestamp へ正規化して +60s する。load_ticks（adapter）の _date_predicate は
+    # start/end に year/month/day 属性（datetime/Timestamp）を要するため Timestamp で渡す
+    # （pandas は composition root=main 内に閉じる。usecase へは漏らさない）。
+    if isinstance(last, int) and not isinstance(last, bool):
+        return first, last + 60
+    start = pd.Timestamp(first)
+    end = pd.Timestamp(last) + pd.Timedelta(seconds=60)
+    return start, end
+
+
+def _build_real_tick_model(
+    *,
+    symbol: str,
+    bars: Any,
+    tick_store_root: Any,
+    tick_start: Any,
+    tick_end: Any,
+) -> RealTickModel:
+    """ParquetTickRepository から対象期間の tick を load し RealTickModel を構築する。
+
+    tick_start/tick_end 未指定時は bars から [first, last+60s) を導出する。
+
+    メモリ: 検証期間（~952k 行）は period frame をそのまま保持して可とする
+    （ユーザー承認）。年規模では per-day streaming への最適化が必要。
+    TODO(every-tick perf): 年規模 run では load_ticks の period frame 一括保持を
+    避け、バー区間ごとの per-day ストリーミング読みへ最適化する（本 cycle は範囲外）。
+    """
+    # 遅延 import: 既定経路（real_ticks 以外）では tick-store 依存を持ち込まない。
+    from backtest.adapter.repository.tick_parquet import ParquetTickRepository
+
+    if tick_start is None or tick_end is None:
+        tick_start, tick_end = _bar_period(bars)
+    repo = ParquetTickRepository(tick_store_root)
+    frame = repo.load_ticks(symbol, tick_start, tick_end)
+    return RealTickModel(frame)
 
 
 class _ResultCapturingInteractor(RunBacktestInteractor):
@@ -180,6 +234,9 @@ def build_interactor(
     slope_shift: int = 1,
     slope_min_points: float = 1.0,
     trading_start: Any = None,
+    tick_store_root: Any = None,
+    tick_start: Any = None,
+    tick_end: Any = None,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
 
@@ -214,10 +271,31 @@ def build_interactor(
         registry = _build_registry(df, ma_period=ma_period, ma_method=ma_method)
         strategy = TC24051901()
 
+    # bars は committed 公開 IF（market_data.load）で構築する。registry 用の DataFrame
+    # 読みと bars 用の load が分かれる（=読み複数回）のは committed adapter/usecase の
+    # IF（registry は系列・Interactor は Bar 列・controller は path 再読み）に起因する。
+    # 1 回読みへの統合は committed IF 変更が要るため範囲外＝申し送り（DESIGN 申し送り）。
+    # every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
+    bars = market_data.load(data_path, None, None)
+
+    # tick_model 選択（config gated）。real_ticks のときのみ ParquetTickRepository から
+    # 対象期間の実ティックを load し RealTickModel に供給する（every-tick #6）。
+    # それ以外（every_tick/ohlc_expand/open_only）は従来どおり合成 TickModel（build 不変）。
+    if determinism.tick_model == "real_ticks":
+        tick_model_impl: Any = _build_real_tick_model(
+            symbol=symbol,
+            bars=bars,
+            tick_store_root=tick_store_root or _DEFAULT_TICK_STORE_ROOT,
+            tick_start=tick_start,
+            tick_end=tick_end,
+        )
+    else:
+        tick_model_impl = _make_tick_model(determinism.tick_model)
+
     interactor = _ResultCapturingInteractor(
         strategy=strategy,
         indicators=registry,
-        tick_model=_make_tick_model(determinism.tick_model),
+        tick_model=tick_model_impl,
     )
     controller = BacktestController(market_data=market_data, interactor=interactor)
 
@@ -234,11 +312,7 @@ def build_interactor(
 
     request = RunBacktestRequest(
         config=run_config,
-        # bars は committed 公開 IF（market_data.load）で構築する。registry 用の DataFrame
-        # 読みと bars 用の load が分かれる（=読み複数回）のは committed adapter/usecase の
-        # IF（registry は系列・Interactor は Bar 列・controller は path 再読み）に起因する。
-        # 1 回読みへの統合は committed IF 変更が要るため範囲外＝申し送り（DESIGN 申し送り）。
-        bars=market_data.load(data_path, None, None),
+        bars=bars,
         symbol_spec=symbol_spec,
         initial_deposit=initial_deposit,
         stop_out_level=stop_out_level,

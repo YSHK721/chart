@@ -18,6 +18,7 @@ from backtest.domain.exceptions import MarginCallError
 from backtest.domain.trade_record import TradeRecord
 from backtest.usecase._execution import (
     check_sltp_hit,
+    check_sltp_hit_at_tick,
     close_price_for,
     derive_quotes,
     fill_market_order,
@@ -118,6 +119,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         balance_curve.append(account.balance)
 
     def execute(self, request: RunBacktestRequest) -> BacktestResult:
+        # every-tick 経路への分岐（every-tick #5）。config.tick_model == "real_ticks"
+        # のときのみ実ティック内側ループ経路へ委譲する。それ以外は冒頭で early-return
+        # せず以降の現行 bar ループへ直行し、既定（bar-mode）経路を 1 行も変えない。
+        if getattr(request.config, "tick_model", None) == "real_ticks":
+            return self._execute_every_tick(request)
+
         config = request.config
         bars = list(request.bars)
 
@@ -288,6 +295,219 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 halted = True
 
         # OnDeinit 集計
+        stats = compute_stats(
+            trades=trades,
+            balance_curve=balance_curve,
+            equity_curve=equity_curve,
+            initial_deposit=request.initial_deposit,
+        )
+        return BacktestResult(
+            trades=trades,
+            deals=deals,
+            equity_curve=equity_curve,
+            balance_curve=balance_curve,
+            stats=stats,
+        )
+
+    def _execute_every_tick(self, request: RunBacktestRequest) -> BacktestResult:
+        """every-tick 経路（PROCESS A〜I・config.tick_model=="real_ticks" 専用）。
+
+        バー外側ループ + 実ティック内側ループ。確定足指標 update（C）と新規バー
+        シグナル評価（D/E on_new_bar）は「足境界」でのみ行い、約定（F）・SL/TP 判定
+        （H）・含み損評価/equity 記録/stop-out（I）は「ティック」で行う。bar-mode 経路
+        （execute 本体）は不変で、本メソッドは並存する新経路。
+
+        判断点（PROCESS §2/§5/§7 推奨案）:
+            - ティック 0 件バー: 保有玉があれば最後の既知ティック価格（無ければ
+              bar.close）で 1 点だけ floating/equity を記録する。当該バーで on_new_bar が
+              返した orders は「約定タイミング（ティック）が存在しない」ため約定せず、
+              次バーへ持ち越さない（実ティック不在の足では建玉しない＝実 MT5 整合）。
+              保有玉も無いティック 0 件バーは equity_curve に点を追加しない（評価対象なし）。
+            - bar-mode との非一致: equity 系 stats（equity_curve 長・DD）は「評価点が
+              ティック数に依存する」ため bar-mode（1 バー 1 点）と一致しない。確定トレード
+              （約定・決済価格）は縮退条件（1 バー 1 ティック=close・spread0）で一致する。
+            - fill_delay=next_tick: 建てたバー（opened_bar_index==bar_index）のティック
+              では SL/TP 監視しない。次バー以降のティックで監視する。
+            - SL/TP 同時到達: check_sltp_hit_at_tick が単一価格 p で high=low=p として
+              config.sltp_tie の同点解消（既定 SL 優先）を継承する。
+        """
+        config = request.config
+        bars = list(request.bars)
+
+        self._strategy.on_init(config, self._indicators)
+
+        trades: list[TradeRecord] = []
+        deals: list = []
+        balance_curve: list[float] = []
+        equity_curve: list[float] = []
+        open_trades: list[_OpenTrade] = []
+        spec = request.symbol_spec
+        contract_size = spec.contract_size
+        floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
+        account = Account(
+            balance=request.initial_deposit,
+            contract_size=contract_size,
+            floating_pnl_basis=floating_pnl_basis,
+            point_size=spec.point_size,
+        )
+        halted = False
+
+        trading_start = request.trading_start
+        prime_first = getattr(config, "prime_first_trading_bar", False)
+        primed_done = False
+
+        prev_close: float | None = None
+        # ティック 0 件バーで保有玉を評価するための直近既知 bid/ask（carry-forward）。
+        last_bid: float | None = None
+        last_ask: float | None = None
+
+        for bar_index, bar in enumerate(bars):
+            # C 確定足指標（足単位・bar-mode と同一）
+            self._indicators.update(bar_index)
+            # warmup 区間（bar.time < trading_start）は指標 seed 収束のみ。
+            if trading_start is not None and bar.time < trading_start:
+                prev_close = bar.close
+                continue
+            # 取引区間の最初の 1 バーをプライム（warmup 同様にスキップ・1 回消費）。
+            if (
+                prime_first
+                and trading_start is not None
+                and bar.time >= trading_start
+                and not primed_done
+            ):
+                primed_done = True
+                prev_close = bar.close
+                continue
+
+            # D/E ★足境界のみ: 新規バーシグナル評価（ティックで呼ばない）。
+            #   halt 後は発注しない（玉を増やさない）。
+            pending_orders = (
+                []
+                if halted
+                else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
+            )
+
+            saw_tick = False
+            for tick in self._tick_model.ticks_of(bar, prev_close):
+                price, bid, ask, _tick_time = tick
+                saw_tick = True
+                last_bid, last_ask = bid, ask
+
+                # F 新規バー初回 orders を当該ティック bid/ask で約定（最初のティックのみ）。
+                if pending_orders:
+                    for order in pending_orders:
+                        # 反対サイドの保有玉があれば当該ティック価格で reverse 決済。
+                        reverse_kept: list[_OpenTrade] = []
+                        for ot in open_trades:
+                            if ot.position.side != order.side:
+                                close_price = close_price_for(
+                                    ot.position.side, bid=bid, ask=ask
+                                )
+                                self._close_open_trade(
+                                    ot,
+                                    exit_time=bar.time,
+                                    exit_price=close_price,
+                                    exit_reason="reverse",
+                                    contract_size=contract_size,
+                                    leverage=spec.leverage,
+                                    account=account,
+                                    trades=trades,
+                                    deals=deals,
+                                    balance_curve=balance_curve,
+                                )
+                            else:
+                                reverse_kept.append(ot)
+                        open_trades = reverse_kept
+
+                        position = fill_market_order(order, bid=bid, ask=ask)
+                        account.open_positions.append(position)
+                        account.margin += position.required_margin(
+                            spec.leverage, contract_size
+                        )
+                        open_trades.append(
+                            _OpenTrade(
+                                position=position,
+                                sl=order.sl,
+                                tp=order.tp,
+                                entry_time=bar.time,
+                                entry_price=position.entry_price,
+                                opened_bar_index=bar_index,
+                            )
+                        )
+                    pending_orders = []  # 初回ティックで消費（以降のティックでは約定しない）
+
+                # H 保有玉 SL/TP を到達ティック価格で判定（fill_delay=次tick: 発注足は監視外）。
+                still_open: list[_OpenTrade] = []
+                for ot in open_trades:
+                    if ot.opened_bar_index == bar_index:
+                        still_open.append(ot)  # 建てた足のティックでは監視しない
+                        continue
+                    reason = check_sltp_hit_at_tick(
+                        ot.position,
+                        price=price,
+                        sl=ot.sl,
+                        tp=ot.tp,
+                        sltp_tie=config.sltp_tie,
+                    )
+                    if reason is None:
+                        still_open.append(ot)
+                        continue
+                    exit_price = ot.sl if reason == "sl" else ot.tp
+                    self._close_open_trade(
+                        ot,
+                        exit_time=bar.time,
+                        exit_price=exit_price,
+                        exit_reason=reason,
+                        contract_size=contract_size,
+                        leverage=spec.leverage,
+                        account=account,
+                        trades=trades,
+                        deals=deals,
+                        balance_curve=balance_curve,
+                    )
+                open_trades = still_open
+
+                # I ティック評価価格で含み損更新 → equity 記録 → stop-out 判定。
+                account.update_floating_pnl_at(bid=bid, ask=ask)
+                equity_curve.append(account.equity)
+                if account.margin_level() < request.stop_out_level:
+                    if config.stop_out_action != "close_and_halt":
+                        raise MarginCallError(
+                            "margin_level が stop_out_level を下回りました",
+                            context={
+                                "margin_level": account.margin_level(),
+                                "stop_out_level": request.stop_out_level,
+                            },
+                            bar_index=bar_index,
+                        )
+                    for ot in open_trades:
+                        close_price = close_price_for(
+                            ot.position.side, bid=bid, ask=ask
+                        )
+                        self._close_open_trade(
+                            ot,
+                            exit_time=bar.time,
+                            exit_price=close_price,
+                            exit_reason="stop_out",
+                            contract_size=contract_size,
+                            leverage=spec.leverage,
+                            account=account,
+                            trades=trades,
+                            deals=deals,
+                            balance_curve=balance_curve,
+                        )
+                    open_trades = []
+                    halted = True
+
+            # ティック 0 件バー: 保有玉があれば直近既知 bid/ask（無ければ close）で 1 点記録。
+            if not saw_tick and open_trades:
+                eval_bid = last_bid if last_bid is not None else bar.close
+                eval_ask = last_ask if last_ask is not None else bar.close
+                account.update_floating_pnl_at(bid=eval_bid, ask=eval_ask)
+                equity_curve.append(account.equity)
+
+            prev_close = bar.close
+
         stats = compute_stats(
             trades=trades,
             balance_curve=balance_curve,

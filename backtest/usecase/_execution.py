@@ -119,3 +119,23 @@ def check_sltp_hit(
     if tp_hit:
         return "tp"
     return None
+
+
+def check_sltp_hit_at_tick(
+    position: Position,
+    *,
+    price: float,
+    sl: float | None,
+    tp: float | None,
+    sltp_tie: str,
+) -> "str | None":
+    """単一ティック価格 1 点で保有ポジの SL/TP ヒットを判定する（every-tick #2）。
+
+    every-tick モードでは 1 ティック＝1 価格のため、bar の high/low の代わりに
+    到達ティック価格 ``price`` 1 点で判定する。単一価格 p は bar 版へ high=low=p を
+    渡すことに等しく、決定論 #3（sltp_tie）の同点解消ロジックを継承する。
+    既存の bar 経路（check_sltp_hit）は不変。返り値: "sl" / "tp" / None。
+    """
+    return check_sltp_hit(
+        position, high=price, low=price, sl=sl, tp=tp, sltp_tie=sltp_tie
+    )

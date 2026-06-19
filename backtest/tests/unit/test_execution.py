@@ -15,6 +15,7 @@ from backtest.domain.order import Order
 from backtest.domain.position import Position
 from backtest.usecase._execution import (
     check_sltp_hit,
+    check_sltp_hit_at_tick,
     fill_buy_limit,
     fill_market_order,
 )
@@ -187,4 +188,72 @@ class TestCheckSltpHit:
             position, high=1.1110, low=1.0940, sl=1.0950, tp=1.1100, sltp_tie="sl"
         )
         # Assert: 両ヒット時は SL を返す
+        assert reason == "sl"
+
+
+# ---- B3b: 単一ティック価格による SL/TP ヒット判定（every-tick #2・一般化） ----
+# 既存 check_sltp_hit は bar の high/low で判定する。every-tick では 1 ティック＝1 価格
+# のため、単一ティック価格 1 点で判定する check_sltp_hit_at_tick を新設する（既存経路は不変）。
+# 単一価格 p は high=low=p に相当し、bar 版の決定論ロジック（sltp_tie）を継承する。
+
+
+class TestCheckSltpHitAtTick:
+    def test_buy_sl_hit_when_tick_price_at_or_below_sl(self):
+        # 買い: 到達ティック price<=sl で SL ヒット。
+        position = Position(side="buy", volume=1.0, entry_price=1.1000)
+        reason = check_sltp_hit_at_tick(
+            position, price=1.0950, sl=1.0950, tp=1.1100, sltp_tie="sl"
+        )
+        assert reason == "sl"
+
+    def test_buy_tp_hit_when_tick_price_at_or_above_tp(self):
+        # 買い: 到達ティック price>=tp で TP ヒット（SL 未到達）。
+        position = Position(side="buy", volume=1.0, entry_price=1.1000)
+        reason = check_sltp_hit_at_tick(
+            position, price=1.1100, sl=1.0950, tp=1.1100, sltp_tie="sl"
+        )
+        assert reason == "tp"
+
+    def test_sell_sl_hit_when_tick_price_at_or_above_sl(self):
+        # 売り: 到達ティック price>=sl で SL ヒット。
+        position = Position(side="sell", volume=1.0, entry_price=1.1000)
+        reason = check_sltp_hit_at_tick(
+            position, price=1.1050, sl=1.1050, tp=1.0900, sltp_tie="sl"
+        )
+        assert reason == "sl"
+
+    def test_sell_tp_hit_when_tick_price_at_or_below_tp(self):
+        # 売り: 到達ティック price<=tp で TP ヒット（SL 未到達）。
+        position = Position(side="sell", volume=1.0, entry_price=1.1000)
+        reason = check_sltp_hit_at_tick(
+            position, price=1.0900, sl=1.1050, tp=1.0900, sltp_tie="sl"
+        )
+        assert reason == "tp"
+
+    def test_no_hit_returns_none_when_tick_within_sl_tp(self):
+        # ティック価格が SL/TP どちらにも到達しない。
+        position = Position(side="buy", volume=1.0, entry_price=1.1000)
+        reason = check_sltp_hit_at_tick(
+            position, price=1.1000, sl=1.0950, tp=1.1100, sltp_tie="sl"
+        )
+        assert reason is None
+
+    def test_backward_compat_equals_bar_version_with_price_as_high_low(self):
+        # 後方互換性の橋渡し: 単一ティック価格 p は bar 版に high=low=p を渡した結果と一致する
+        # （spread=0・既存経路と完全整合）。買いで price=sl の SL ヒット境界を例に固定する。
+        position = Position(side="buy", volume=1.0, entry_price=1.1000)
+        tick_reason = check_sltp_hit_at_tick(
+            position, price=1.0950, sl=1.0950, tp=1.1100, sltp_tie="sl"
+        )
+        bar_reason = check_sltp_hit(
+            position, high=1.0950, low=1.0950, sl=1.0950, tp=1.1100, sltp_tie="sl"
+        )
+        assert tick_reason == bar_reason == "sl"
+
+    def test_both_hit_same_tick_prefers_sl(self):
+        # 単一ティックで SL/TP 両到達は理論上 sl==tp==price のみ。決定論 #3 SL 優先を継承。
+        position = Position(side="buy", volume=1.0, entry_price=1.1000)
+        reason = check_sltp_hit_at_tick(
+            position, price=1.1000, sl=1.1000, tp=1.1000, sltp_tie="sl"
+        )
         assert reason == "sl"
