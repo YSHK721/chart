@@ -60,6 +60,12 @@ _MT5_TRADES = 1163
 _MT5_NET = -6169.0
 _MT5_BALANCE = 3831.0  # 初期 10000 + net(-6169)
 _INITIAL_DEPOSIT = 10_000.0
+# MT5 report.json results の equity 系オラクル（突合基準）。
+_MT5_EQUITY_DD_ABS = 6174.0       # initial - min(equity)
+_MT5_EQUITY_DD_MAX = 6594.0       # equity peak-to-trough 最大金額 DD
+_MT5_EQUITY_DD_MAX_PCT = 63.28    # 同点での % DD
+_MT5_RECOVERY = -0.935547         # net / equity_dd_max
+_MT5_SHARPE = -5.0                # per-trade Sharpe を [-5,5] にクランプした値
 
 
 def _to64(mt5_time: str) -> np.datetime64:
@@ -267,3 +273,54 @@ class TestMaSlopeReconcile:
             f"SELL exit 一致 {exit_ok}/{n}: spread 未加算への退行の疑い "
             "（reverse 決済 ask に spread が加算されていない）"
         )
+
+
+class TestMaSlopeEquityStatsReconcile:
+    """第2サイクル: 結線済 compute_stats() の equity 系 STAT_* を engine 実走 equity_curve
+    で突合する（逆算3点 curve のトートロジー解消）。
+
+    期待値は engine 実走の実測値を primary に固定し、MT5 report.json results との残差を
+    トレランス付きで明示する。equity-DD は bar 解像度ゆえ bar 内の含み損ピークを捕捉できず
+    MT5 のティック解像度 DD（6594）に対し ~25 の残差が残る（既知・現実的残差）。
+
+    退行検出: 結線解除（sharpe/recovery/equity_dd を populate しない）/ equity_curve 経路の
+    破壊 / トレランス外への乖離拡大 を本テストが検出する。
+    """
+
+    def test_stats_carries_equity_curve_for_dd(self, reconcile):
+        # 結線の前提実証: BacktestResult.equity_curve が bar 別 equity を保持する。
+        eq = reconcile["result"].equity_curve
+        assert eq is not None and len(eq) > 0
+
+    def test_equity_dd_abs_matches_mt5_tightly(self, reconcile):
+        # equity_dd_abs（init - min(equity)）は engine 実走 = 6173.9。MT5 = 6174.0。
+        # net と同根（最安 equity = 初期 + net 近傍）のため極小トレランスで MT5 と一致する。
+        stats = reconcile["result"].stats
+        assert stats.equity_dd_abs == pytest.approx(6173.9, abs=0.1)  # 実走実測固定
+        assert abs(stats.equity_dd_abs - _MT5_EQUITY_DD_ABS) <= 0.5   # MT5 残差（~0.1）
+
+    def test_equity_dd_max_matches_mt5_within_tick_residual(self, reconcile):
+        # equity_dd_max（peak-to-trough）は engine 実走 = 6568.9。MT5 = 6594.0。
+        # 残差 ~25 は bar 解像度の限界（bar 内含み損ピーク非捕捉）由来の既知残差。
+        stats = reconcile["result"].stats
+        assert stats.equity_dd_max == pytest.approx(6568.9, abs=0.1)       # 実走実測固定
+        assert abs(stats.equity_dd_max - _MT5_EQUITY_DD_MAX) <= 30.0       # tick 粒度残差 ~25
+        # % DD も同様: 実走 63.19% / MT5 63.28%（残差 ~0.1）。
+        assert stats.equity_dd_max_percent == pytest.approx(63.19, abs=0.05)
+        assert abs(stats.equity_dd_max_percent - _MT5_EQUITY_DD_MAX_PCT) <= 0.2
+
+    def test_recovery_factor_equity_based_matches_mt5_within_residual(self, reconcile):
+        # recovery = net / equity_dd_max（符号付き）。engine 実走 = -0.93987（net -6173.9 /
+        # equity_dd_max 6568.9）。MT5 = -0.935547。残差 ~0.0043 は net・DD の tick 粒度残差由来。
+        stats = reconcile["result"].stats
+        assert stats.recovery_factor == pytest.approx(-0.93987, abs=1e-4)  # 実走実測固定
+        assert abs(stats.recovery_factor - _MT5_RECOVERY) <= 0.01          # MT5 残差（~0.004）
+        # 自己整合: recovery == net / equity_dd_max。
+        assert stats.recovery_factor == pytest.approx(
+            stats.profit / stats.equity_dd_max, abs=1e-9
+        )
+
+    def test_sharpe_per_trade_clamped_to_minus_five(self, reconcile):
+        # per-trade Sharpe = (mean/std)×√N の素値 ≈ -5.08 を [-5,5] にクランプ → MT5 -5.0 一致。
+        stats = reconcile["result"].stats
+        assert stats.sharpe_ratio == pytest.approx(_MT5_SHARPE, abs=1e-9)

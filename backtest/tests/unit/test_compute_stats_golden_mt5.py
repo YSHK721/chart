@@ -208,3 +208,127 @@ def test_golden_balance_dd_maximal_amount(golden_stats):
 def test_golden_balance_dd_maximal_percent(golden_stats):
     stats, _ = golden_stats
     assert stats.balance_dd_percent == pytest.approx(62.83, abs=0.01)
+
+
+# ---- equity 系 STAT_*（実 MT5 校正） -----------------------------------------
+# Sharpe（per-trade・clamp）と recovery（net/EquityDD）は MT5 約定列（_reconstruct_trades）
+# 由来で非トートロジーに突合する。
+#
+# equity-DD（abs/max/max_percent）の「engine equity_curve 実走突合」は本 unit fixture
+# （deals に per-bar equity 無し）では構成不能のため、逆算 equity_curve による golden は
+# トートロジー（入力で出力を逆算）となる。よって equity-DD の非トートロジー突合は
+# integration テスト tests/integration/test_ma_slope_reconcile.py::
+# TestMaSlopeEquityStatsReconcile（engine 実走 equity_curve で実測 vs MT5 を残差付き突合）に
+# 移譲する。本ファイルでは equity-DD 関数の純粋単体性（境界値）と Sharpe/recovery の
+# MT5 約定列突合のみを担う（トートロジー golden は撤去済）。
+_MT5_INITIAL_DEPOSIT = 10_000.0
+
+
+def test_golden_sharpe_ratio_per_trade_clamped_to_minus_five():
+    # MT5 STAT_SHARPE_RATIO = -5.0。per-trade profit 系列の (mean/std)×√N = -5.08 を
+    # [-5, 5] にクランプして MT5 値を再現する。期待値は report.json results を参照。
+    from backtest.usecase.compute_stats import sharpe_ratio_per_trade
+
+    fx = _load_fixture()
+    trades = _reconstruct_trades(fx["deals"])
+    assert sharpe_ratio_per_trade(trades) == pytest.approx(
+        fx["results"]["sharpe_ratio_mt5"], abs=1e-9
+    )
+
+
+def test_sharpe_ratio_per_trade_clamps_positive_to_upper_bound():
+    # [-5, 5] の上限クランプ: 強い正の系列で +5 を超える素の値を 5.0 にクランプする。
+    from backtest.usecase.compute_stats import sharpe_ratio_per_trade
+
+    trades = [
+        TradeRecord(
+            side="buy", volume=1.0, entry_time=i, exit_time=i + 1,
+            entry_price=1000.0, exit_price=1000.0 + (100.0 if i % 2 else 101.0),
+            contract_size=1.0, swap=0.0, commission=0.0, exit_reason="tp",
+        )
+        for i in range(50)
+    ]
+    assert sharpe_ratio_per_trade(trades) == pytest.approx(5.0, abs=1e-9)
+
+
+def test_sharpe_ratio_per_trade_zero_std_returns_zero():
+    # 全トレード同額（std==0）でゼロ除算を回避し 0.0 を返す。
+    from backtest.usecase.compute_stats import sharpe_ratio_per_trade
+
+    trades = [
+        TradeRecord(
+            side="buy", volume=1.0, entry_time=i, exit_time=i + 1,
+            entry_price=1000.0, exit_price=1010.0,
+            contract_size=1.0, swap=0.0, commission=0.0, exit_reason="tp",
+        )
+        for i in range(10)
+    ]
+    assert sharpe_ratio_per_trade(trades) == 0.0
+
+
+def test_sharpe_ratio_per_trade_empty_returns_zero():
+    from backtest.usecase.compute_stats import sharpe_ratio_per_trade
+
+    assert sharpe_ratio_per_trade([]) == 0.0
+
+
+def test_equity_dd_functions_are_pure_peak_to_trough():
+    # equity-DD 関数の純粋性（単体・非トートロジー）: 任意の既知 equity_curve に対し
+    # 「peak-to-trough 最大金額 DD」「init - min」「金額最大点での %」を正しく計算する。
+    # 期待値は curve から人手で導いた独立計算（MT5 オラクルとは独立の純関数性質）。
+    #   curve=[120, 80, 150, 60, 90], init=100 → full=[100,120,80,150,60,90]
+    #   peak 走査: 100,120,120,150,150,150 / dd_abs: 0,0,40,0,90,60 → max=90（150-60）
+    #   init - min = 100 - 60 = 40 / % at max-amount point = 90/150*100 = 60.0
+    from backtest.usecase.compute_stats import (
+        equity_dd_absolute,
+        equity_dd_maximal,
+        equity_dd_maximal_percent,
+    )
+
+    curve = [120.0, 80.0, 150.0, 60.0, 90.0]
+    assert equity_dd_maximal(curve, 100.0) == pytest.approx(90.0)
+    assert equity_dd_absolute(curve, 100.0) == pytest.approx(40.0)
+    assert equity_dd_maximal_percent(curve, 100.0) == pytest.approx(60.0)
+
+
+def test_golden_recovery_factor_composes_mt5_net_and_equity_dd():
+    # MT5 STAT_RECOVERY_FACTOR = -0.935547 = net / EquityDD_max。
+    # 非トートロジー突合: 分子 net は MT5 約定列（_reconstruct_trades）から独立に算出し、
+    # 分母 EquityDD_max は MT5 オラクル値（6594）を直接与える。recovery_factor_equity が
+    # 「符号付き net / equity_dd_max」を正しく合成して MT5 recovery を再現することを固定する。
+    # （equity-DD を engine 実走 equity_curve から得る非トートロジー突合は integration の
+    #  test_ma_slope_reconcile.py が担う。本テストは式の合成正当性のみを担う。）
+    from backtest.usecase.compute_stats import recovery_factor_equity, total_net_profit
+
+    fx = _load_fixture()
+    trades = _reconstruct_trades(fx["deals"])
+    # MT5 results.equity_dd_max は "6 594 (63.28%)" 形式の文字列オラクル。金額部のみ抽出。
+    mt5_equity_dd_max = float(
+        fx["results"]["equity_dd_max"].split("(")[0].replace(" ", "")
+    )  # = 6594.0（MT5 オラクル・逆算でない）
+    # min(equity) = init - 安値 DD を満たす 2 点 curve（peak=init, trough=init-dd_max）。
+    # ここで dd_max は MT5 オラクルを直接代入（curve から逆算した値ではない）。
+    curve = [_MT5_INITIAL_DEPOSIT - mt5_equity_dd_max]
+    rec = recovery_factor_equity(trades, curve, _MT5_INITIAL_DEPOSIT)
+    # 自己整合: rec == net / dd_max（合成式の検証）。
+    assert rec == pytest.approx(
+        total_net_profit(trades) / mt5_equity_dd_max, abs=1e-12
+    )
+    # MT5 recovery オラクルと一致（net・dd_max とも MT5 由来の合成）。
+    assert rec == pytest.approx(fx["results"]["recovery_factor_mt5"], abs=1e-4)
+
+
+def test_recovery_factor_equity_zero_dd_returns_inf():
+    # EquityDD_max == 0（単調増加 equity）で ∞ を返す（ゼロ除算回避）。
+    import math
+
+    from backtest.usecase.compute_stats import recovery_factor_equity
+
+    trades = [
+        TradeRecord(
+            side="buy", volume=1.0, entry_time=0, exit_time=1,
+            entry_price=1000.0, exit_price=1100.0,
+            contract_size=1.0, swap=0.0, commission=0.0, exit_reason="tp",
+        )
+    ]
+    assert recovery_factor_equity(trades, [10100.0], 10_000.0) == math.inf

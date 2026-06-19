@@ -319,15 +319,22 @@ def test_compute_stats_returns_backteststats_matching_metrics_12_6():
     )
 
     assert isinstance(stats, BacktestStats)
-    # §12.6 期待される MT5 出力との対応（Sharpe のみ判断点で式由来 0.1862）
+    # §12.6 期待される MT5 出力との対応
     assert stats.initial_deposit == pytest.approx(10000.0)
     assert stats.profit == pytest.approx(330.0)
     assert stats.gross_profit == pytest.approx(920.0)
     assert stats.gross_loss == pytest.approx(-590.0)
     assert stats.profit_factor == pytest.approx(1.56, abs=1e-2)
     assert stats.expected_payoff == pytest.approx(33.0)
-    assert stats.recovery_factor == pytest.approx(0.94, abs=1e-2)
-    assert stats.sharpe_ratio == pytest.approx(0.1862, abs=1e-4)
+    # recovery_factor は第2サイクルで equity DD 基準（recovery_factor_equity）へ結線。
+    # 本テストは equity_curve=_balance_curve()（equity==balance）のため equity_dd_max==
+    # balance_dd_max==350 となり net(330)/350=0.9428 で従来の balance 基準 0.94 と一致する。
+    assert stats.recovery_factor == pytest.approx(0.9428, abs=1e-2)
+    # sharpe_ratio は第2サイクルで per-trade 版（clamp[-5,5]・実 MT5 整合）へ結線（Z-Score
+    # 校正と同方針の正当更新）。旧 HPR 版 0.1862（METRICS §1.2）から per-trade 版へ差し替え:
+    #   per-trade pnl 系列の (mean/std(ddof=0))×√N = 0.560523（[-5,5] 内のためクランプなし）。
+    # HPR 版の値は sharpe_ratio()（残置関数）が引き続き提供する（test_*_sharpe で別途固定）。
+    assert stats.sharpe_ratio == pytest.approx(0.560523, abs=1e-5)
     assert stats.balance_min == pytest.approx(10000.0)
     assert stats.balance_dd == pytest.approx(350.0)
     assert stats.balance_dd_percent == pytest.approx(3.38, abs=1e-2)
@@ -517,3 +524,95 @@ def test_compute_stats_does_not_import_pandas_at_module_level_for_purity():
     forbidden = ("backtest.adapter", "backtest.framework", "backtest.main", "pydantic")
     for name in imported:
         assert not name.startswith(forbidden), name
+
+
+# ---- 結線(🔴 第2サイクル): compute_stats() 本体が equity 系 STAT_* を populate する ----
+# 第1サイクルで単体検証済の 5 関数を compute_stats() 出力へ結線する。
+#   - sharpe_ratio  → sharpe_ratio_per_trade(trades)（per-trade・clamp[-5,5]）に差し替え
+#   - recovery_factor → recovery_factor_equity（equity DD 基準・符号付き net）に差し替え
+#   - equity_dd_abs / equity_dd_max / equity_dd_max_percent を BacktestStats に追加し populate
+# balance 系（balance_dd 等）は不変。equity_curve は balance_curve と区別される独立系列で
+# あること（equity 系 DD が equity_curve から算出されること）を、balance とは異なる谷を持つ
+# 合成 equity_curve で実証する（balance を流用していたら値が一致せず落ちる）。
+
+def _equity_curve_distinct():
+    """balance_curve とは異なる谷（含み損ピーク）を持つ合成 equity 系列。
+
+    balance 系の min(9670)/最大 DD(350) とは一致しない値域にして、equity 系 DD が
+    equity_curve から独立に算出されることを検出可能にする。
+    """
+    return [10150.0, 9500.0, 10290.0, 10350.0, 9000.0, 8800.0, 9500.0, 9000.0, 9300.0, 10330.0]
+
+
+def test_compute_stats_populates_equity_dd_fields_from_equity_curve():
+    # Arrange: balance とは異なる谷を持つ equity_curve を供給する。
+    from backtest.usecase.compute_stats import compute_stats
+
+    # Act
+    stats = compute_stats(
+        trades=_trades(),
+        balance_curve=_balance_curve(),
+        equity_curve=_equity_curve_distinct(),
+        initial_deposit=B0,
+    )
+    # Assert: equity 系 DD は equity_curve(peak 10350 / trough 8800 / init 10000) から算出。
+    #   equity_dd_abs = init - min(equity) = 10000 - 8800 = 1200
+    #   equity_dd_max = peak - trough = 10350 - 8800 = 1550
+    #   equity_dd_max_percent = 1550/10350*100 = 14.9758…%
+    # balance 系 DD（balance_dd=350）と異なる値で、equity_curve 由来であることを実証する。
+    assert stats.equity_dd_abs == pytest.approx(1200.0)
+    assert stats.equity_dd_max == pytest.approx(1550.0)
+    assert stats.equity_dd_max_percent == pytest.approx(14.9758, abs=1e-3)
+
+
+def test_compute_stats_sharpe_is_per_trade_clamped_when_wired():
+    # Arrange/Act: sharpe_ratio フィールドが per-trade 版（clamp[-5,5]）へ差し替わる。
+    from backtest.usecase.compute_stats import compute_stats, sharpe_ratio_per_trade
+
+    stats = compute_stats(
+        trades=_trades(),
+        balance_curve=_balance_curve(),
+        equity_curve=_equity_curve_distinct(),
+        initial_deposit=B0,
+    )
+    # Assert: HPR 版(0.1862)ではなく per-trade 版（実 MT5 整合・clamp[-5,5]）の値。
+    assert stats.sharpe_ratio == pytest.approx(sharpe_ratio_per_trade(_trades()))
+    # 旧 HPR 版の値(0.1862)とは異なる（差し替えが行われたことの実証）。
+    assert stats.sharpe_ratio != pytest.approx(0.1862, abs=1e-4)
+
+
+def test_compute_stats_recovery_is_equity_based_when_curve_supplied():
+    # Arrange/Act: recovery_factor が equity DD 基準（符号付き net / equity_dd_max）へ差し替わる。
+    from backtest.usecase.compute_stats import compute_stats, recovery_factor_equity
+
+    eq = _equity_curve_distinct()
+    stats = compute_stats(
+        trades=_trades(),
+        balance_curve=_balance_curve(),
+        equity_curve=eq,
+        initial_deposit=B0,
+    )
+    # Assert: net(330)/equity_dd_max(1550) = 0.21290…（balance 版 recovery 0.94 とは異なる）。
+    assert stats.recovery_factor == pytest.approx(
+        recovery_factor_equity(_trades(), eq, B0)
+    )
+    assert stats.recovery_factor != pytest.approx(0.94, abs=1e-2)
+
+
+def test_compute_stats_equity_fields_backward_compatible_when_no_equity_curve():
+    # Arrange/Act: equity_curve 未供給（空列）時は equity 系を後方互換の既定値にする。
+    # balance 系・件数系は従来どおり算出され、equity 系 DD は 0（peak-to-trough なし）。
+    from backtest.usecase.compute_stats import compute_stats
+
+    stats = compute_stats(
+        trades=_trades(),
+        balance_curve=_balance_curve(),
+        equity_curve=[],
+        initial_deposit=B0,
+    )
+    # Assert: equity_curve 空のとき equity 系 DD は 0（後方互換・例外を投げない）。
+    assert stats.equity_dd_abs == pytest.approx(0.0)
+    assert stats.equity_dd_max == pytest.approx(0.0)
+    assert stats.equity_dd_max_percent == pytest.approx(0.0)
+    # balance 系は不変（既存挙動の維持）。
+    assert stats.balance_dd == pytest.approx(350.0)

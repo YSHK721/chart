@@ -114,6 +114,11 @@ class BacktestStats:
     z_score: float = 0.0               # Wald-Wolfowitz（MT5 実装式）
     ahpr: float = 0.0                  # mean(1 + profit_i / balance_before_i)
     balance_dd_abs: float = 0.0        # initial_deposit - min(balance)
+    # 実 MT5 校正済の equity 系 DD（第2サイクルで compute_stats() 本体へ結線）。
+    # equity_curve（含み損込みバー別 equity）由来。equity_curve 未供給時は 0（後方互換）。
+    equity_dd_abs: float = 0.0          # initial_deposit - min(equity)
+    equity_dd_max: float = 0.0          # equity peak-to-trough の最大金額 DD
+    equity_dd_max_percent: float = 0.0  # 金額 DD 最大点での % DD
 
 
 @dataclass

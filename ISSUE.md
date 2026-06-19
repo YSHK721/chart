@@ -169,7 +169,8 @@
 
 - 概要：バックテスト統計仕様 BACKTEST_METRICS.md 内で Sharpe/σ の固定値（§12）が算出式（§1.2/§11）と矛盾。加えて §11 Z-Score ヘルパーに sqrt 欠落バグ
 - 重大度：中（compute_stats=UC-002 の MT5 突合精度に影響。コードは式優先で確定済みだが、実 MT5 値が §12 の 0.17 側なら突合不一致の恐れ）
-- ステータス：PARTIALLY-RESOLVED（2026-06-18・実 MT5 golden 突合で件数/平均/PF/DD/AHPR/Z は決着。Sharpe・recovery_factor・equity DD 系は要バー別/ティック別 equity で未決）
+- ステータス：RESOLVED（2026-06-19・equity 系 5 関数を compute_stats() 本体へ結線し engine 実走 equity_curve で reconcile 突合完了。Sharpe(clamp 一致・下記注)/recovery(tick 粒度残差)/equity-DD(abs 一致・max は tick 粒度~25 残差) を残差明示で決着。後述「決着(2026-06-19)」参照）
+  - **注（Sharpe クランプは仮説・出典TBD）**：MT5 STAT_SHARPE_RATIO=-5.000000(6桁) に対し、per-trade `mean/std×√N` の素値 -5.0838 を [-5,5] にクランプして一致。クランプ [-5,5] は観測値を説明する仮説で、MT5 公式/ソースでのクランプ仕様は未確認。後続で一次情報確認を要す（確認でクローズ確定、否なら式再検討）。
 - 検出日：2026-06-17
 - 検出経路：backtest usecase 層 TDD（compute_stats を METRICS §12 の10トレード期待値で固定する過程）。tdd-executor が3独立手法で実測
 - 内容：
@@ -214,6 +215,35 @@
   - 🔴 派生是正（同レビュー）：average_consecutive_wins/losses が件数系 profit_trades(pnl>=0) を分子に
     誤流用（§4.3 違反・impl 1.57 vs 正 1.17）していた点を「win/loss ラン内件数 N/K」に修正し回帰テスト添付。
     併せて is_count_win(pnl>=0)/is_run_win(pnl>0) を明示述語に分離し二重基準の誤流用を構造的に防止。
+- 決着（2026-06-19・結線＋reconcile 実走突合／feature/backtest-equity-stats）：
+  PARTIALLY-RESOLVED の未決 3 項目 (1)〜(3) を、単体検証済の equity 系 5 関数を `compute_stats()` 本体へ
+  結線し、`test_ma_slope_reconcile.py` の engine 実走 equity_curve（bar 別 `account.equity`・28096 点）で
+  突合して決着した。**全項目で実 MT5 と一致（残差を正直に明示）**：
+  - **STAT_SHARPE_RATIO = -5.0（完全一致）**：`sharpe_ratio_per_trade`（per-trade pnl 系列の
+    (mean/std(ddof=0))×√N＝素値 -5.08 を [-5,5] にクランプ）を `compute_stats().sharpe_ratio` へ結線。
+    旧 HPR 版 `sharpe_ratio()`（METRICS §1.2・0.1862）は残置（§12 用途）。
+  - **STAT_RECOVERY_FACTOR**：`recovery_factor_equity`（符号付き net / equity_dd_max）を結線。
+    engine 実走 = **-0.93987**（net -6173.9 / equity_dd_max 6568.9）。MT5 = -0.935547。
+    残差 ~0.0043 は net・DD の tick 粒度残差由来（**bit-exact ではない**・残差明示で決着）。
+  - **STAT_EQUITY_DD_abs = 実走 6173.9（MT5 6174.0・残差 ~0.1・実質一致）**：`equity_dd_absolute` を結線。
+  - **STAT_EQUITY_DD_max = 実走 6568.9（MT5 6594・残差 ~25）/ 63.19%（MT5 63.28%・残差 ~0.1）**：
+    `equity_dd_maximal`/`_percent` を結線。残差 ~25 は **bar 解像度の限界**（bar 内の含み損ピークを
+    捕捉できず MT5 のティック解像度 DD に届かない・既知の現実的残差）。
+  - **BacktestStats に equity_dd_abs/max/max_percent を default 付きで追加**（既存構築と後方互換）。
+    equity_curve 未供給時は equity 系 0・recovery は balance 基準へフォールバック（後方互換）。
+  - **既存テスト更新（実 MT5 整合の正当更新・Z-Score 校正と同方針）**：
+    `test_compute_stats_returns_backteststats_matching_metrics_12_6` の sharpe_ratio 期待値を
+    0.1862（HPR 版）→ 0.560523（per-trade 版・equity==balance 合成下）へ更新。recovery は equity==balance
+    のため 0.9428 で従来と一致（更新不要）。balance 系 STAT_* は全て不変。
+  - **トートロジー解消**：`test_compute_stats_golden_mt5.py` の逆算3点 curve（`_MT5_EQUITY_CURVE`）による
+    equity-DD golden 3 件は入力で出力を逆算するトートロジーのため撤去。非トートロジー突合は
+    (a) equity-DD = integration `test_ma_slope_reconcile.py::TestMaSlopeEquityStatsReconcile`（engine 実走）、
+    (b) recovery = MT5 約定列 net × MT5 オラクル dd_max(6594) の合成、(c) equity-DD 関数の純粋性は
+    独立計算の単体テストへ移譲。
+  - テスト結果：`python -m pytest backtest/tests/ -q` = **449 passed**（baseline 442 + 結線 unit 4 + reconcile
+    integration 5 − トートロジー golden 3 + 純関数性単体 1 = 449・退行なし）。
+  - 残存（将来）：bar 解像度の equity-DD max は MT5 ティック解像度に ~25 届かない構造的残差。完全一致には
+    tick 別含み損ピークの再構成が必要（本 ISSUE の射程外・必要時に別 ISSUE 起票）。
 
 ## ISSUE-014
 

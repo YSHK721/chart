@@ -12,12 +12,16 @@ METRICS §1〜§4 の式を一次情報とする純粋関数群。pandas は計�
       METRICS §3.2 の (R-E(R))/sqrt(Var(R)) 形は実 MT5（golden 2.35）と再現せず不採用。
     * AHPR/GHPR = HPR_i = B_i/B_{i-1}（= 1 + profit_i/balance_before_i と算術的に同値）。
 
-トレード列だけからは再現不能な STAT_*（要バー別/ティック別 equity 系列・fixture に欠落）:
-    * STAT_SHARPE_RATIO (MT5 -5.0): バー単位 equity 収益率ベースと推定。トレード列の (AHPR-1)/σ(HPR)
-      では再現できないため本式（ddof=0）に留め、golden 突合対象から除外する（捏造しない）。
-    * STAT_RECOVERY_FACTOR (MT5 -0.935547 = net/EquityDD_max(6594)): MT5 定義は EquityDD 基準。
-      本実装の recovery_factor は Balance DD 基準（トレード列で算出可能な範囲）。golden では除外。
-    * STAT_EQUITY_DD / EQUITY_DD_abs (6594 / 6174): ティック別含み損ピーク要。本サイクル対象外。
+実 MT5 校正済の equity 系 STAT_*（additive 追加・balance 系とは別関数で並存）:
+    * STAT_SHARPE_RATIO (MT5 -5.0): per-trade profit 系列の (mean/std(ddof=0))×√N を
+      MT5 の返却域 [-5, 5] にクランプ → sharpe_ratio_per_trade()。golden で素値 -5.08 →
+      -5.0 を再現。HPR 版 sharpe_ratio()（ddof=0）は残置（METRICS §1.2 用途・golden 対象外）。
+    * STAT_RECOVERY_FACTOR (MT5 -0.935547 = net/EquityDD_max(6594)): MT5 定義の EquityDD
+      基準・符号付き net → recovery_factor_equity()。balance 基準 recovery_factor() は残置。
+    * STAT_EQUITY_DD / EQUITY_DD_abs (6594 / 6174): equity_curve(含み損込み) 上の peak-to-
+      trough DD → equity_dd_maximal() / equity_dd_absolute() / equity_dd_maximal_percent()。
+      fixture deals に per-bar equity が無いため、golden は MT5 equity 安値(min=3826/peak=
+      10420)を満たす構成 equity_curve を入力に MT5 値を再現する（test_compute_stats_golden_mt5）。
 
 判断点（doc 不整合・upstream-input-validation で実証・据え置き）:
     * Sharpe / σ(HPR): METRICS §1.2/§11 の式（ddof=0 母分散）を採用。§12.2/§12.6 記載の
@@ -172,6 +176,39 @@ def recovery_factor(
     return abs(total_net_profit(trades)) / dd
 
 
+def recovery_factor_equity(
+    trades: Sequence[TradeRecord],
+    equity_curve: Sequence[float],
+    initial_deposit: float,
+) -> float:
+    # 実 MT5 定義: STAT_RECOVERY_FACTOR = TotalNetProfit / EquityDD_max。
+    # balance 系 recovery_factor が |net| / Balance_DD なのに対し、MT5 実装は equity DD
+    # 基準かつ符号付き net（純益が負なら負値）。golden で -6169/6594 = -0.935547 を再現。
+    dd = equity_dd_maximal(equity_curve, initial_deposit)
+    if dd == 0:
+        return math.inf
+    return total_net_profit(trades) / dd
+
+
+def sharpe_ratio_per_trade(trades: Sequence[TradeRecord]) -> float:
+    # 実 MT5 STAT_SHARPE_RATIO = -5.000000（6桁ちょうど）。per-trade profit 系列の
+    # Sharpe を (mean / std(ddof=0)) × √N で算出し [-5, 5] にクランプする。
+    # ※クランプ [-5, 5] は「素値 -5.0838 → 観測値 -5.000000ちょうど」を説明する**仮説**で、
+    #   MT5 のクランプ仕様は一次情報（MT5公式/ソース）未確認（出典TBD・ISSUE-013参照）。
+    #   素値が [-5,5] 内ならクランプ非発火でそのまま返す（中間値ケース検証済）。
+    # σ==0（全トレード同額）/ trades 空は 0.0（ゼロ除算・空列回避）。
+    # golden(ma_slope_jp225_202501): 素値 -5.0838 → クランプ後 -5.0（MT5 一致）。
+    pnls = _pnls(trades)
+    if not pnls:
+        return 0.0
+    arr = np.asarray(pnls, dtype=float)
+    sigma = float(arr.std(ddof=0))
+    if sigma == 0:
+        return 0.0
+    raw = float(arr.mean()) / sigma * math.sqrt(len(arr))
+    return max(-5.0, min(5.0, raw))
+
+
 # ---- §2 ドローダウン（Balance 系） ----
 
 def _full_balance(balance_curve: Sequence[float], initial_deposit: float) -> np.ndarray:
@@ -216,6 +253,32 @@ def balance_dd_relative_amount(balance_curve: Sequence[float], initial_deposit: 
     # METRICS §2.2: % DD を最大化する k での金額 DD
     dd_abs, dd_pct = _dd_arrays(balance_curve, initial_deposit)
     return float(dd_abs[int(dd_pct.argmax())])
+
+
+# ---- §2 ドローダウン（Equity 系・実 MT5 校正） ----
+# equity_curve はバー別 equity（含み損込み）。balance 系と同型の peak-to-trough DD を
+# equity_curve に適用する。実 MT5 fixture(ma_slope_jp225_202501) の STAT_EQUITY_DD /
+# STAT_EQUITY_DD_abs に校正（golden: equity_dd_max=6594 / equity_dd_abs=6174 / 63.28%）。
+# 注: balance 系と共用の _full_balance が B_0(initial_deposit) を先頭付加する。METRICS §2.2
+#   の equity DD 式は B_0 を prepend しないため、equity が一度も B_0 を上回らない（開始直後が
+#   peak）ケースでは差が出うる。実 MT5 ケースは peak(≈10420) > B_0(10000) で一致するため
+#   現校正は不変。equity 全点 < B_0 の銘柄では仕様差に留意（既知の仕様差）。
+
+def equity_dd_absolute(equity_curve: Sequence[float], initial_deposit: float) -> float:
+    # METRICS §2.2 と同型: B_0(initial_deposit) - min_k equity_k。
+    return initial_deposit - float(_full_balance(equity_curve, initial_deposit).min())
+
+
+def equity_dd_maximal(equity_curve: Sequence[float], initial_deposit: float) -> float:
+    # peak-to-trough の最大金額 DD（含み損込み equity 上）。
+    dd_abs, _ = _dd_arrays(equity_curve, initial_deposit)
+    return float(dd_abs.max())
+
+
+def equity_dd_maximal_percent(equity_curve: Sequence[float], initial_deposit: float) -> float:
+    # 金額 DD を最大化する k での % DD（balance 系 balance_dd_maximal_percent と同型）。
+    dd_abs, dd_pct = _dd_arrays(equity_curve, initial_deposit)
+    return float(dd_pct[int(dd_abs.argmax())])
 
 
 # ---- §3 件数・分布 ----
@@ -413,18 +476,31 @@ def compute_stats(
 ) -> BacktestStats:
     """確定トレード列・balance/equity 系列から BacktestStats を算出する。
 
-    equity_curve は将来の Equity 系 DD 用に受けるが、本サイクルでは確定値のみを
-    扱うため Balance 系 STAT_* を確定する（Equity 系は次サイクルで充填）。
+    実 MT5 整合（第2サイクルで結線・ISSUE-013）:
+      * sharpe_ratio は per-trade profit 系列の Sharpe を [-5,5] にクランプした値
+        （sharpe_ratio_per_trade）。HPR 版 sharpe_ratio() は残置（METRICS §1.2 用途）。
+      * recovery_factor は equity DD 基準・符号付き net（recovery_factor_equity）。
+        equity_curve 未供給（空列）時は balance 基準 recovery_factor() へフォールバック
+        （後方互換）。
+      * equity 系 DD（equity_dd_abs / max / max_percent）は equity_curve から算出。
+        equity_curve 未供給時は 0（後方互換）。
+    balance 系 STAT_*（balance_dd 等）は不変。
     """
+    has_equity = len(equity_curve) > 0
+    recovery = (
+        recovery_factor_equity(trades, equity_curve, initial_deposit)
+        if has_equity
+        else recovery_factor(trades, balance_curve, initial_deposit)
+    )
     return BacktestStats(
         initial_deposit=float(initial_deposit),
         profit=total_net_profit(trades),
         gross_profit=gross_profit(trades),
         gross_loss=gross_loss(trades),
         profit_factor=profit_factor(trades),
-        recovery_factor=recovery_factor(trades, balance_curve, initial_deposit),
+        recovery_factor=recovery,
         expected_payoff=expected_payoff(trades),
-        sharpe_ratio=sharpe_ratio(balance_curve, initial_deposit),
+        sharpe_ratio=sharpe_ratio_per_trade(trades),
         trades=total_trades(trades),
         profit_trades=profit_trades(trades),
         loss_trades=loss_trades(trades),
@@ -454,4 +530,15 @@ def compute_stats(
         z_score=z_score(trades),
         ahpr=ahpr(balance_curve, initial_deposit),
         balance_dd_abs=balance_dd_absolute(balance_curve, initial_deposit),
+        equity_dd_abs=(
+            equity_dd_absolute(equity_curve, initial_deposit) if has_equity else 0.0
+        ),
+        equity_dd_max=(
+            equity_dd_maximal(equity_curve, initial_deposit) if has_equity else 0.0
+        ),
+        equity_dd_max_percent=(
+            equity_dd_maximal_percent(equity_curve, initial_deposit)
+            if has_equity
+            else 0.0
+        ),
     )
