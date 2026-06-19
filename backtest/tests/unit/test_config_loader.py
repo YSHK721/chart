@@ -376,3 +376,42 @@ def test_load_config_rejects_invalid_floating_pnl_basis():
 
     with pytest.raises(ConfigError):
         load_config({"floating_pnl_basis": "bogus_basis"})
+
+
+# ---- cycle (every-tick #1): tick_model に "real_ticks" を新設（実ティック隔離キー） ----
+# every_tick(=OHLC 合成・既定) は不変。real_ticks は実ティック I/O 経路用の新列挙値。
+# 既定が every_tick のまま不変であること・real_ticks 受理・列挙外は ConfigError を固定する。
+
+
+def test_load_config_defaults_tick_model_to_every_tick_unchanged():
+    # 後方互換: tick_model を省略すると既定は従来どおり "every_tick"（1行も挙動が変わらない）。
+    from backtest.framework.config_loader import load_config
+
+    cfg = load_config({})
+    assert cfg.tick_model == "every_tick"
+
+
+def test_load_config_accepts_tick_model_real_ticks():
+    # every-tick #1: 実ティック隔離キー real_ticks を新設し受理する（cycle2 で経路結線）。
+    from backtest.framework.config_loader import load_config
+
+    cfg = load_config({"tick_model": "real_ticks"})
+    assert cfg.tick_model == "real_ticks"
+
+
+def test_load_config_still_accepts_existing_tick_model_values():
+    # 既存3値（every_tick / ohlc_expand / open_only）は real_ticks 追加後も受理される。
+    from backtest.framework.config_loader import load_config
+
+    for value in ("every_tick", "ohlc_expand", "open_only"):
+        cfg = load_config({"tick_model": value})
+        assert cfg.tick_model == value
+
+
+def test_load_config_rejects_invalid_tick_model_value():
+    # 列挙外（4値以外）は silent drop されず ConfigError へ翻訳される。
+    from backtest.domain.exceptions import ConfigError
+    from backtest.framework.config_loader import load_config
+
+    with pytest.raises(ConfigError):
+        load_config({"tick_model": "bogus_model"})

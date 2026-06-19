@@ -263,3 +263,14 @@
 - 経緯：CLEAN_ARCH §13 TBD「#4 Band 指標ソース（28バッファ四分位）」。Band.ex5 のみで .mq5 不在、pOL/pOH 算出式が不明のため完全再現不可。ユーザー確認の結果「Band.mq5 は存在しない」と確定 → #4 をスキップ
 - 影響：backtest/adapter/strategy に #4（Band 依存）戦略・E-PendingOrder(#4 専用 BuyLimit)・Band 指標は実装しない。設計上 #4 依存は adapter 層に局所化済みのため domain/usecase/framework/main・他戦略への波及なし
 - 再開条件：原典 Band.mq5 もしくは pOL/pOH の算出仕様が将来入手できた場合のみ再検討
+
+## ISSUE-016
+
+- 概要：every-tick + real_ticks の end-to-end 経路で、CSV 由来 bar.time が ISO 文字列のとき RealTickModel が TypeError で落ちる。`_bar_end(bar.time)` が str を扱えず `bar_time + 60`（str+int）で `TypeError: can only concatenate str (not "int") to str`
+- 重大度：中（real_ticks 経路かつ CSV 由来 bars に限定。既定 bar-mode・他 tick_model は bar.time に算術しないため無影響。smoke が通ったのは実 Dukascopy bars が偶然 datetime64 だった＝CSV 経路は未検証だった）
+- ステータス：RESOLVED
+- 検出日：2026-06-19
+- 検出経路：レビュー指摘 🟡-2（integration の end-to-end 値未固定）の TDD 化で、main 実経路を controller._interactor.execute まで走らせた際に顕在化
+- 原因：CsvOHLCRepository._extract が time 列を「そのまま」採用するため、ISO 文字列 CSV では bar.time が str（Bar.time 契約 numpy.datetime64|int に対し loader 側が未正規化＝既存の committed 挙動）。bar-mode は bar.time に算術せず比較のみのため顕在化しなかった
+- 対策：committed CSV loader / bar-mode を変更せず、pandas を持つ adapter（RealTickModel）の区間算定でのみ bar.time を datetime64 へ正規化してスライスする（_bar_end も str/Timestamp を datetime64 化）。real_ticks 経路に局所化し既定経路不変
+- 検証：🟡-2 end-to-end 値検証テストが entry/exit を tick 価格で固定して通過。既存全テスト不変

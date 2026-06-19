@@ -130,3 +130,50 @@ class TestUpdateFloatingPnlBidAsk:
         # 既定 close 評価: (101-100)*1*1e5*-1 = -100000（spread=10 を無視）
         acc.update_floating_pnl(_bar(101.0, spread=10))
         assert acc.floating_pnl == pytest.approx(-100_000.0)
+
+
+# ---- every-tick #3: 現在ティックの評価価格（bid/ask）で含み損益を更新する
+#      update_floating_pnl_at(bid, ask)。買い保有=Bid 評価・売り保有=Ask 評価。
+#      既存 update_floating_pnl(bar)（bar 経路）は不変。 ----
+
+class TestUpdateFloatingPnlAtTick:
+    """update_floating_pnl_at(bid, ask): 現在ティックの bid/ask で含み損益を再評価する。
+
+    every-tick モードでは bar の close ではなく到達ティックの bid/ask で評価する。
+    買い保有は決済（=売り戻し）= Bid、売り保有は決済（=買い戻し）= Ask で評価する
+    （実 MT5 のポジション決済価格基準評価に整合）。bar 経路（update_floating_pnl）は不変。
+    """
+
+    def test_buy_evaluated_at_bid(self):
+        # 買い保有はティック Bid で評価する。
+        pos = Position(side="buy", volume=1.0, entry_price=100.0)
+        acc = Account(balance=10_000.0, contract_size=100_000, open_positions=[pos])
+        # bid=101, ask=102 → 買いは Bid=101 → (101-100)*1*1e5*+1 = 100000
+        acc.update_floating_pnl_at(bid=101.0, ask=102.0)
+        assert acc.floating_pnl == pytest.approx(100_000.0)
+
+    def test_sell_evaluated_at_ask(self):
+        # 売り保有はティック Ask で評価する（売りは価格が高いほど損＝悲観側）。
+        pos = Position(side="sell", volume=1.0, entry_price=100.0)
+        acc = Account(balance=10_000.0, contract_size=100_000, open_positions=[pos])
+        # bid=101, ask=102 → 売りは Ask=102 → (102-100)*1*1e5*-1 = -200000
+        acc.update_floating_pnl_at(bid=101.0, ask=102.0)
+        assert acc.floating_pnl == pytest.approx(-200_000.0)
+
+    def test_sums_buy_at_bid_and_sell_at_ask(self):
+        # 複数保有: 買いは Bid・売りは Ask で各々評価し合算する。
+        p_buy = Position(side="buy", volume=1.0, entry_price=100.0)
+        p_sell = Position(side="sell", volume=1.0, entry_price=100.0)
+        acc = Account(
+            balance=10_000.0, contract_size=100_000,
+            open_positions=[p_buy, p_sell],
+        )
+        # buy@Bid=101: (101-100)*1e5*+1 = +100000 ; sell@Ask=102: (102-100)*1e5*-1 = -200000
+        acc.update_floating_pnl_at(bid=101.0, ask=102.0)
+        assert acc.floating_pnl == pytest.approx(-100_000.0)
+
+    def test_zero_when_no_open_positions(self):
+        # 保有なしは 0（境界）。
+        acc = Account(balance=10_000.0, contract_size=100_000, open_positions=[])
+        acc.update_floating_pnl_at(bid=101.0, ask=102.0)
+        assert acc.floating_pnl == pytest.approx(0.0)

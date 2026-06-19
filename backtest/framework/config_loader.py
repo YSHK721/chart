@@ -37,7 +37,11 @@ class _ConfigModel(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    tick_model: Literal["every_tick", "ohlc_expand", "open_only"] = "every_tick"  # §7 #1
+    # §7 #1。real_ticks は実ティック I/O 経路用の隔離キー（every-tick #1）。
+    # every_tick(=OHLC 合成) は既定のまま不変。経路結線は cycle2。
+    tick_model: Literal[
+        "every_tick", "ohlc_expand", "open_only", "real_ticks"
+    ] = "every_tick"
     spread_model: Literal["fixed", "variable"] = "fixed"          # §7 #2 Ask=Bid+spread 固定
     sltp_tie: Literal["sl", "tp"] = "sl"                          # §7 #3 SL 優先（保守）
     fill_delay: Literal["next_tick", "same_tick"] = "next_tick"   # §7 #4 次ティック以降
