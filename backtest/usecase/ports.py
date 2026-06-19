@@ -15,6 +15,12 @@ if TYPE_CHECKING:  # 型注釈専用（実行時 import 不要・domain のみ�
     from backtest.domain.bar import Bar
     from backtest.domain.order import Order
 
+    # tick-store の戻り値型。実行時 pandas を import しない（依存方向維持）ため
+    # 文字列注釈（"TickFrame"）として参照する。concrete 型は adapter 側で
+    # pandas.DataFrame を採用する（設計 TBD・呼出側で後確定の判断点）。
+    TickFrame = Any
+    TickWriteResult = Any
+
 
 # ---- Input Boundary ----
 
@@ -44,6 +50,31 @@ class MarketDataPort(abc.ABC):
     @abc.abstractmethod
     def load(self, source_ref: Any, timeframe: Any, period: Any) -> Any:
         """OHLCFrame を返す。"""
+        raise NotImplementedError
+
+
+class TickDataPort(abc.ABC):
+    """ティック読込の隔離（Repository）。MarketDataPort は拡張しない（別 Port）。"""
+
+    @abc.abstractmethod
+    def load_ticks(
+        self, symbol: str, start: Any, end: Any, columns: Any = None
+    ) -> "TickFrame":
+        """[start, end) 半開区間の tick を返す。該当なしは空 frame（例外でない）。"""
+        raise NotImplementedError
+
+
+class TickStorePort(abc.ABC):
+    """ティック永続化の隔離（Repository）。raw を source of truth に日別へ振り分ける。"""
+
+    @abc.abstractmethod
+    def write_ticks(
+        self, symbol: str, frame_or_csv: Any, mode: str = "overwrite"
+    ) -> "TickWriteResult":
+        """TICK_COLUMNS 準拠の tick を日別 Parquet へ書き込む（冪等）。
+
+        mode="overwrite": 対象日を再生成 / mode="skip": 既存日を再書込しない。
+        """
         raise NotImplementedError
 
 
