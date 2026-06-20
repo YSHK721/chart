@@ -1,4 +1,4 @@
-"""MA_Slope_Pending 戦略（StrategyPort 実装・原典 backtest/tests/confirmation/260620-2603-01/MA_Slope_Pending_EA.mq5）。
+"""MA_Slope_Pending 戦略（StrategyPort 実装・原典 backtest/tests/confirmation/2026-03_ma-limit/ea.mq5）。
 
 既存 :class:`backtest.adapter.strategy.ma_slope.MaSlope`（成行）と同一の slope シグナルを
 用いつつ、注文方式を「指値（limit）/逆指値（stop）」へ切替えるペンディング版 EA。

@@ -102,6 +102,23 @@ def test_auto_doji_follows_previous_bar_direction():
     assert _prices(m2, _b(1.2, 1.5, 0.8, 1.2)) == [1.2, 0.8, 1.5, 1.2]  # 安値先
 
 
+def test_auto_doji_chain_carries_last_nondoji_direction():
+    # ドジ連鎖（直前足もドジ）でも、最後に方向を持った非ドジ足のモメンタムを継続する
+    #   （2604-02・ISSUE-024）。ドジ足は prev を上書きしないため連鎖を跨いで方向が保たれる。
+    from backtest.adapter.execution.tick_model import OhlcExpandTickModel
+
+    # 非ドジ陽線 → ドジ1 → ドジ2。ドジ1/2 とも高値先（陽線モメンタム継続）。
+    m = OhlcExpandTickModel(order="auto")
+    m.ticks_of(_b(1.0, 1.1, 1.0, 1.1), prev_close=0.0)  # 陽線（方向確定）
+    assert _prices(m, _b(1.2, 1.5, 0.8, 1.2)) == [1.2, 1.5, 0.8, 1.2]  # ドジ1: 高値先
+    assert _prices(m, _b(1.3, 1.6, 0.9, 1.3)) == [1.3, 1.6, 0.9, 1.3]  # ドジ2: 連鎖継続=高値先
+    # 非ドジ陰線 → ドジ連鎖は安値先を継続。
+    m2 = OhlcExpandTickModel(order="auto")
+    m2.ticks_of(_b(1.1, 1.1, 1.0, 1.0), prev_close=0.0)  # 陰線
+    assert _prices(m2, _b(1.2, 1.5, 0.8, 1.2)) == [1.2, 0.8, 1.5, 1.2]  # ドジ1: 安値先
+    assert _prices(m2, _b(1.3, 1.6, 0.9, 1.3)) == [1.3, 0.9, 1.6, 1.3]  # ドジ2: 連鎖継続=安値先
+
+
 def test_auto_thin_bar_dedups_adjacent_equal_ticks():
     # tickvol<4 は隣接等値を集約（実ティック 4 本未満ゆえ）。
     from backtest.adapter.execution.tick_model import OhlcExpandTickModel

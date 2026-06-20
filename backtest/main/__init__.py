@@ -39,6 +39,7 @@ from backtest.adapter.repository.ohlc_csv import CsvOHLCRepository
 from backtest.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 from backtest.adapter.strategy.ma_slope import MaSlope
 from backtest.adapter.strategy.ma_slope_pending import MaSlopePending
+from backtest.adapter.strategy.stop_entry_probe import StopEntryProbe
 from backtest.adapter.strategy.tc24051901 import TC24051901
 from backtest.domain.exceptions import BacktestError, ConfigError, DataError
 from backtest.framework.config_loader import load_config
@@ -320,6 +321,14 @@ def build_interactor(
         df = _load_mt5_dataframe(data_path)
         registry = _build_ma_slope_pending_registry(df, ma_period=ma_period)
         strategy = MaSlopePending()
+    elif ea_name == "StopEntryProbe_EA":
+        # 逆指値プローブ（両建て BuyStop+SellStop・OCO・足途中ティック再アーム）。MT5 CSV を読む。
+        #   発注クォートは engine が on_tick へ渡すティック bid/ask を使うため指標非依存だが、
+        #   registry IF を満たすため pending 用 registry（ema/open/spread）を共用する（戦略は未参照）。
+        market_data = Mt5CsvOHLCRepository()
+        df = _load_mt5_dataframe(data_path)
+        registry = _build_ma_slope_pending_registry(df, ma_period=ma_period)
+        strategy = StopEntryProbe()
     else:
         # 既定経路（TC24051901・comma 形式・MADiff 指標）= 従来挙動を不変に保つ。
         market_data = CsvOHLCRepository()

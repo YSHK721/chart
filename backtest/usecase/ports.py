@@ -110,6 +110,16 @@ class StrategyPort(abc.ABC):
         """"hold" または "close" を返す。"""
         raise NotImplementedError
 
+    def on_tick(self, bar_index: int, bid: float, ask: float, account: Any) -> "list[Order]":
+        """足途中ティック単位の発注フック（既定 no-op）。
+
+        実 MT5 の OnTick 相当。ペンディング持続モード（config: pending_persistent）で、
+        Interactor が「フラット かつ 未装填（保有0・resting 0）」のティックでのみ本メソッドを
+        呼ぶ。当該ティックのクォート（bid/ask）でペンディングを装填して返す（StopEntryProbe の
+        即時再アーム用）。非対応戦略は既定実装（空 list）でバー境界経路を維持する。
+        """
+        return []
+
 
 class IndicatorPort(abc.ABC):
     """指標の隔離（IndicatorRegistry）。"""

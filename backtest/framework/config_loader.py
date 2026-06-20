@@ -72,6 +72,15 @@ class _ConfigModel(BaseModel):
     # 従来経路（成行のみ）で byte-identical。True で execute() を every-tick 経路へ振り向け、
     # ペンディングを足途中ティックでトリガ評価する（MaSlopePending 用）。
     pending_lifecycle: bool = False
+    # 同時設置した複数ペンディングの OCO（2604-02）。既定 False＝従来挙動（兄弟は独立約定）。
+    # True で 1 本約定時に残る兄弟ペンディングを全取消（StopEntryProbe の両建て用）。
+    pending_oco: bool = False
+    # ペンディング持続＋足途中ティック再アーム（2604-02・ISSUE-024）。既定 False＝従来挙動。
+    # True で resting をバー境界でリセットせず保持し、フラット＆未装填のティックで on_tick を呼ぶ。
+    pending_persistent: bool = False
+    # hedging 口座の両建て証拠金相殺（2604-02・ISSUE-024）。既定 False＝単純加算。
+    # True で stop-out 判定の証拠金を「買い計・売り計の大きい側」とする（反対玉は相殺）。
+    hedged_margin: bool = False
 
 
 def normalize_time(value: Union[str, int]) -> Union[np.datetime64, int]:
@@ -167,4 +176,7 @@ def load_config(source: ConfigSource) -> BacktestConfig:
         profit_round_digits=model.profit_round_digits,
         stop_out_at_open=model.stop_out_at_open,
         pending_lifecycle=model.pending_lifecycle,
+        pending_oco=model.pending_oco,
+        pending_persistent=model.pending_persistent,
+        hedged_margin=model.hedged_margin,
     )

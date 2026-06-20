@@ -1,5 +1,5 @@
 {
- "source": "260620-01/ReportTester-900005560.xlsx (2026-01 every tick)",
+ "source": "2026-01_ma-market/report.xlsx (2026-01 every tick)",
  "settings": {
   "expert": "MA_Slope_EA(260618-01)",
   "symbol": "JP225",

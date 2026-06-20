@@ -78,7 +78,11 @@ class OhlcExpandTickModel(TickModelPort):
         prices = _ordered_ohlc_prices(
             bar, self._order, self._prev_open, self._prev_close
         )
-        self._prev_open, self._prev_close = bar.open, bar.close
+        # ドジ（close==open）の順序は直近の「非ドジ」足の方向を引き継ぐ（ドジ連鎖でも
+        #   momentum が途切れない）。直前足がドジのとき prev を更新しないことで、最後に方向を
+        #   持った足の (open, close) を保持する。非ドジ足では従来どおり更新する。
+        if bar.close != bar.open:
+            self._prev_open, self._prev_close = bar.open, bar.close
         if self._order == "auto":
             # 実 MT5 OHLC の生成ティック数は当該足の tick volume に依存する（2603-01 で実証）。
             #   tickvol >= 4: O→(極値2)→C の 4 ティックをそのまま生成（等値の隣接も別ティック。

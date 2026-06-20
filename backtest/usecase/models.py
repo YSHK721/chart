@@ -58,6 +58,18 @@ class BacktestConfig:
     # 指値/逆指値ペンディング注文のライフサイクルを有効化するか（2603-01）。既定 False＝
     # 従来経路（成行のみ・byte-identical）。True で execute() を every-tick 経路へ振り向ける。
     pending_lifecycle: bool = False
+    # 同時設置した複数ペンディングの OCO（One-Cancels-the-Other）を有効化するか（2604-02）。
+    # 既定 False＝従来挙動（兄弟ペンディングは各々独立に約定し得る・単一ペンディングEAでは無影響）。
+    # True で 1 本が約定した時点で残る兄弟ペンディングを全取消（StopEntryProbe の両建て用）。
+    pending_oco: bool = False
+    # ペンディング持続＋足途中ティック再アームを有効化するか（2604-02・ISSUE-024）。既定 False＝
+    # 従来挙動（resting は毎バー on_new_bar で置換）。True で resting をバー境界でリセットせず約定まで
+    # 保持し、フラット＆未装填のティックで strategy.on_tick を呼び当該ティッククォートで即再装填する。
+    pending_persistent: bool = False
+    # hedging 口座の両建て証拠金相殺（2604-02・ISSUE-024）。既定 False＝全保有の required_margin を
+    # 単純加算（従来）。True で stop-out 判定の証拠金を「買い計・売り計の大きい側」（反対玉は相殺）
+    # とする＝実 MT5 hedging のヘッジ証拠金に整合（同量両建ては実質ノーマージンで stop-out しない）。
+    hedged_margin: bool = False
 
 
 @dataclass
