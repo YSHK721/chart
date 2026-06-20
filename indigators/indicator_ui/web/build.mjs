@@ -39,6 +39,7 @@ const MODULE_ORDER = [
   'js/adapter/front/indicator_controller.js',
   'js/adapter/front/live_updater.js',
   'js/adapter/front/crosshair_readout_view.js',
+  'js/adapter/front/trade_markers_renderer.js',
   'js/adapter/front/composition_root_front.js',
 ];
 
