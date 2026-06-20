@@ -22,6 +22,7 @@ import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
 import { IndicatorController } from './indicator_controller.js';
+import { TradeMarkersRenderer } from './trade_markers_renderer.js';
 
 // 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
 //   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
@@ -180,5 +181,9 @@ export async function bootstrap({
       })
     : null;
 
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater };
+  // Trade Markers renderer（売買マーカー重畳）の組み立て。副作用 fetch は増やさず renderer を
+  //   返すのみ（load トリガは入口 index.html が ready 後に呼ぶ＝既存 candles 経路に非干渉）。
+  const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries });
+
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers };
 }

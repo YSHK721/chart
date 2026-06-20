@@ -90,7 +90,7 @@
       // B方式の対象データセット。JP225 1分足原子（dataset.py の whitelist 'jp225_m1'）を
       // ライブ計算し、時間足セレクタで resample 表示する（既定 1D・直近 RECENT_BARS 本）。
       datasetRef: 'jp225_m1',
-    }).then(({ controller, ready, liveUpdater }) => {
+    }).then(({ controller, ready, liveUpdater, tradeMarkers }) => {
       controller.bind();
       // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。
       ready.then(() => {
@@ -99,6 +99,11 @@
         //   （file:// は null）。復元後に開始し、以降 60 秒ごとに再計算＋最新足を反映する。
         if (liveUpdater) {
           liveUpdater.start();
+        }
+        // 売買マーカー（Trade Markers）の初回 load トリガ（入口に置く＝bootstrap に副作用 fetch を
+        //   足さない）。失敗は renderer 内で warn+0 件（既存 candles 描画に非干渉＝M-3）。
+        if (tradeMarkers) {
+          tradeMarkers.load('/data/trade_markers.json');
         }
       });
     });
