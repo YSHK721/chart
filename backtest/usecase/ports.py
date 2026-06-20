@@ -133,6 +133,21 @@ class TickModelPort(abc.ABC):
         raise NotImplementedError
 
 
+class SessionCalendarPort(abc.ABC):
+    """市場開閉（セッション）の隔離。
+
+    「新規成行を約定してはならないバー」の bar_index 集合を返す（事前計算・候補A）。
+    実 MT5 は市場閉鎖時間帯（週末ギャップ隣接バー等）の成行を `[market closed]` で
+    拒否し、開場する次バーで約定する。本ポートはその閉鎖バーを Interactor へ供給する。
+    既定（NullCalendar）は空集合＝常時開場で、既定経路の出力を 1 バイトも変えない。
+    """
+
+    @abc.abstractmethod
+    def closed_bar_indices(self, bars: Iterable["Bar"]) -> "set[int]":
+        """新規成行を約定しないバー index の集合を返す（開場のみなら空集合）。"""
+        raise NotImplementedError
+
+
 class ReportPresenterPort(abc.ABC):
     """レポート表現の隔離（Presenter・UC-004）。"""
 

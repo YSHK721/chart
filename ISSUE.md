@@ -286,3 +286,24 @@
 - 対策：`_execute_every_tick` の成行約定を足境界で `derive_quotes(bar, entry_price_basis, point_size)` により bar open クォート約定へ変更（bar-mode と同一の建値ルール）。ティックは SL/TP/floating/stop-out 評価専用に。ティック0件足は新規バー未検知＝発注しない（既存仕様を維持）。突合は entry_price_basis="current_open" を併用
 - 検証：bar-open fill 修正後の 2026-01 突合 → 初回トレード sell 50390.8（MT5 一致）、stop-out 01-14（MT5 一致）、trades 1446 vs 1444（+2・99.86%）、net -4598.8 vs -4649（差 50.2・1.08%）。unit/integration 全 511 passed（tick 価格約定を主張していた cycle2 distinguishing テスト3件＋integration1件を bar-open クォート約定へ是正）
 - 残差（構造的・tick 解像度の床）：残 ±2 trades / ~50pt は、輸出 CSV の片側ティックを ffill 復元したクォートと MT5 内部の実ティック列の差に起因。Jan-14 stop-out 境界で僅かなクォート差が margin 割れ tick を前後させ ±2 trades・~50pt を生む。輸出 CSV のみからの bit-exact 一致は原理的に不能（MT5 内部 tick 列が必要）。実用上の到達点として確定
+
+## ISSUE-018
+
+- 概要：every-tick/bar-mode 双方で、市場閉鎖時間帯（週末境界）の成行をエンジンが約定してしまい実 MT5 と +2 トレード乖離。MT5 はジャーナルで当該成行を `[market closed]` 拒否し開場する次バーで約定していた
+- 重大度：中（real_ticks/bar-mode 双方の数値精度。session_calendar 既定 "broker"→NullCalendar のため既定経路は不変）
+- ステータス：RESOLVED（トレード数・系列は一致。残差は別要因 ISSUE-019）
+- 検出日：2026-06-20
+- 検出経路：2026-01 突合（02: 1分足OHLC・Delays=0／260620-02.txt）。ours/MT5 トレード列の forward-align で分岐点が週末境界 Fri 2026-01-09 23:59 / Mon 2026-01-12 01:00 と特定。MT5 journal に `failed market sell ... [market closed]`（23:59・01:00）と開場後 01:24 約定を確認
+- 原因：エンジンに市場開閉判定が無く（session_calendar="none"/"broker"→約定可否に未反映）、閉鎖バーの成行を約定。MT5 は閉鎖中拒否→保有不変→開場バーで約定。MaSlope は保有側 level-trigger のため、MT5 は 23:59 sell 拒否で long 維持→01:01 の buy シグナルは「保有=long」で no-op→01:24 で sell 約定。こちらは 23:59 sell 約定→short 化→01:01 buy でドテン、と +2 トレード分岐
+- 対策（clean-arch・config gated）：`SessionCalendarPort.closed_bar_indices(bars)->set[int]`（usecase/ports.py・事前計算）を追加。adapter/calendar に NullCalendar（既定・空集合＝byte-identical）/ Jp225SessionCalendar（日次プレオープン 01:00 以前閉鎖・金曜 23:55 以降閉鎖＝実 MT5 02 の拒否点と整合）。Interactor は constructor `session_calendar=None`（既定 Null 相当）で受け、bar-mode/every-tick 両経路の発注点で「閉鎖バーは新規成行（ドテン reverse 含む）を約定しない」。保有不変のため戦略が次開場バーで自動再発注。main は config.session_calendar=="jp225" のとき Jp225 を結線（既定 broker は Null）
+- 検証：bar-mode + session_calendar="jp225" で 2026-01 突合 → trades 1444 vs 1444（完全一致）、初回 sell 50390.8（一致）、週末 +2 トレード消滅。trade-by-trade で 1443/1444 が建値・決済まで bit-exact（残る不一致は最終 stop-out 1 件のみ＝ISSUE-019）。unit/integration 全 519 passed（既定経路 byte-identical 維持・カレンダー単体 7 件追加）
+
+## ISSUE-019
+
+- 概要：2026-01 突合の最終 stop-out 1 件のみ決済価格が乖離。ours bar.close 基準で 54019.2（pnl -10）、MT5（1分足OHLC）は intra-bar 安値基準で 53859.2（pnl -170）。差 160pt が net 残差（ours -4488.8 vs MT5 -4649）の全量
+- 重大度：低（1444 件中 1 件の決済価格のみ。トレード列・建値は完全一致）
+- ステータス：OPEN（対応方針の承認待ち＝スコープ拡張）
+- 検出日：2026-06-20
+- 検出経路：bar-mode + jp225 カレンダーの trade-by-trade 突合で唯一の不一致として特定
+- 原因：bar-mode の stop-out 判定/強制決済が bar.close 基準（含み損 update_floating_pnl(bar)）。実 MT5 1分足OHLC は 4 疑似ティック(O/H/L/C)で評価するため、買い保有は intra-bar 安値で margin 割れ→安値で強制決済し、こちらより不利（深い）価格になる。every-tick(real_ticks) 経路は tick 評価のため net 差は約 50 とより小さい
+- 対策案（未承認・要スコープ拡張判断）：bar-mode の stop-out 評価を「当該足の不利側 extreme（買い=low／売り=high）」で行い、強制決済価格も extreme 基準にする（config gated で既定 close を維持し OHLC 突合時のみ有効化）。既定経路 byte-identical と既存 2025-01 突合の不変性を要確認

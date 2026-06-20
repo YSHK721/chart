@@ -74,10 +74,25 @@ class RunBacktestRequest:
 
 
 class RunBacktestInteractor(RunBacktestInputBoundary):
-    def __init__(self, *, strategy: Any, indicators: Any, tick_model: Any) -> None:
+    def __init__(
+        self,
+        *,
+        strategy: Any,
+        indicators: Any,
+        tick_model: Any,
+        session_calendar: Any = None,
+    ) -> None:
         self._strategy = strategy
         self._indicators = indicators
         self._tick_model = tick_model
+        # 市場開閉カレンダー（DI・既定 None=常時開場＝既定経路 byte-identical）。
+        self._session_calendar = session_calendar
+
+    def _closed_bars(self, bars: list) -> "set[int]":
+        """新規成行を約定しないバー index 集合（カレンダー未注入なら空集合）。"""
+        if self._session_calendar is None:
+            return set()
+        return self._session_calendar.closed_bar_indices(bars)
 
     @staticmethod
     def _close_open_trade(
@@ -127,6 +142,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
         config = request.config
         bars = list(request.bars)
+        # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で既定経路は不変。
+        closed_bars = self._closed_bars(bars)
 
         # OnInit 前処理
         self._strategy.on_init(config, self._indicators)
@@ -184,6 +201,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 if halted
                 else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
             )
+            # 市場閉鎖バーは新規成行を約定しない（ドテン反転の reverse 決済も含め全約定を
+            #   スキップ）。on_new_bar は評価済＝保有不変のため、戦略（保有側基準の
+            #   level-trigger）が次の開場バーで自動再発注し、実 MT5 の fail→retry→開場約定を
+            #   再現する。SL/TP(H)・equity/stop-out(I) は閉鎖バーでも従来どおり評価する。
+            if bar_index in closed_bars:
+                orders = []
             # F 発注（成行約定）。約定価格基準（config）→当該足の建値を一元化した
             #   derive_quotes（_execution）へ委譲する。決済価格は close_price_for で
             #   約定価格ルール（long 決済=bid / short 決済=ask）を一意に決める。
@@ -337,6 +360,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         """
         config = request.config
         bars = list(request.bars)
+        # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で挙動不変。
+        closed_bars = self._closed_bars(bars)
 
         self._strategy.on_init(config, self._indicators)
 
@@ -400,7 +425,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   実 MT5 は新規バーの成行を「バー open のクォート」（買い=open+spread×point、
             #   売り=open）で約定し、ティックは含み損/SL-TP/stop-out の評価にのみ用いる
             #   （bar-mode 突合 2025-01 と同一の建値ルール）。ティック 0 件足では発注しない。
-            if bar_ticks and pending_orders:
+            #   市場閉鎖バー（closed_bars）も新規成行を約定しない（ドテン反転の reverse
+            #   決済も含め全約定を抑止。保有不変＝戦略が次の開場バーで自動再発注）。
+            if bar_ticks and pending_orders and bar_index not in closed_bars:
                 bid0, ask0, fill_spread, fill_point = derive_quotes(
                     bar,
                     entry_price_basis=config.entry_price_basis,

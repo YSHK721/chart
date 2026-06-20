@@ -61,6 +61,23 @@ def _make_tick_model(tick_model_key: str) -> Any:
     return _TICK_MODELS.get(tick_model_key, _DEFAULT_TICK_MODEL)()
 
 
+def _make_session_calendar(session_calendar_key: str) -> Any:
+    """config.session_calendar キーから SessionCalendarPort 実装を生成する。
+
+    "jp225" のときのみ Jp225SessionCalendar（日次プレオープン 01:01・金曜 23:55 クローズ）。
+    それ以外（既定 "broker"/"none"/未知値）は NullCalendar＝常時開場で既定経路を
+    byte-identical に保つ（config_loader の既定 "broker" を変更しないためのフォールバック）。
+    """
+    from backtest.adapter.calendar.session_calendar import (
+        Jp225SessionCalendar,
+        NullCalendar,
+    )
+
+    if session_calendar_key == "jp225":
+        return Jp225SessionCalendar()
+    return NullCalendar()
+
+
 # 本番 tick-store のルート（実 marketdata は gitignore・大容量）。テストは
 # tick_store_root を tmp_path に差し替えて小データで検証する（実データ非依存）。
 _DEFAULT_TICK_STORE_ROOT = "marketdata/ticks"
@@ -292,10 +309,14 @@ def build_interactor(
     else:
         tick_model_impl = _make_tick_model(determinism.tick_model)
 
+    # 市場開閉カレンダー（config gated・既定 broker→NullCalendar で既定経路不変）。
+    session_calendar_impl = _make_session_calendar(determinism.session_calendar)
+
     interactor = _ResultCapturingInteractor(
         strategy=strategy,
         indicators=registry,
         tick_model=tick_model_impl,
+        session_calendar=session_calendar_impl,
     )
     controller = BacktestController(market_data=market_data, interactor=interactor)
 
