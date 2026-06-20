@@ -89,6 +89,41 @@ def fill_buy_limit(
     return None
 
 
+def fill_pending_order(
+    order: Order, *, bid: float, ask: float
+) -> "Position | None":
+    """ペンディング注文（指値/逆指値）を 1 ティック分評価する（PROCESS §4.2 拡張）。
+
+    実 MT5 のトリガ条件（約定価格＝注文価格・スリッページ 0）:
+        buy_limit  : Ask <= price（現値が指値まで下落して買い）
+        sell_limit : Bid >= price（現値が指値まで上昇して売り）
+        buy_stop   : Ask >= price（現値が逆指値まで上昇して買い）
+        sell_stop  : Bid <= price（現値が逆指値まで下落して売り）
+
+    返り値:
+        Position … トリガ条件成立で約定した（entry_price=order.price）。
+        None      … 未到達（保留継続）。
+
+    時間失効は扱わない（本 EA は毎バー未約定分を取消・再設置するため 1 バー寿命）。
+    fill_buy_limit（既存・expire 付き）とは別関数として並存させる（既存経路は不変）。
+    """
+    price = order.price
+    kind = order.kind
+    if kind == "buy_limit":
+        triggered = ask <= price
+    elif kind == "sell_limit":
+        triggered = bid >= price
+    elif kind == "buy_stop":
+        triggered = ask >= price
+    elif kind == "sell_stop":
+        triggered = bid <= price
+    else:
+        return None
+    if not triggered:
+        return None
+    return Position(side=order.side, volume=order.volume, entry_price=price)
+
+
 def check_sltp_hit(
     position: Position,
     *,

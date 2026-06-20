@@ -28,11 +28,72 @@ def _ohlc_ticks(bar: Any) -> Iterable[tuple]:
         yield _tick(price, bar)
 
 
+def _ordered_ohlc_prices(
+    bar: Any, order: str, prev_open: float | None, prev_close: float | None
+) -> tuple:
+    """4 疑似ティックの価格順を ohlc_order に従って決める（PROCESS §7 #5）。
+
+    "ohlc": O→H→L→C（既定・従来不変）。"olhc": O→L→H→C。
+    "auto": 実 MT5 1 分 OHLC の極値到達順則（2603-01 journal で実証）。
+        非ドジ足は当該足方向: 強気（close>open）は安値先 O→L→H→C、弱気（close<open）は
+        高値先 O→H→L→C（実体方向と逆の極値へ先に振れてから引ける）。
+        ドジ足（close==open）は直前足のモメンタムを継続: 前足が陽線（prev_close>prev_open）
+        なら高値先 O→H→L→C、前足が陰線なら安値先 O→L→H→C。前足不明/前足ドジは安値先を既定。
+        （実証: bar 01:45 強気→L先／bar 11:37 ドジ・前足陽→H先／bar 04:25 ドジ・前足陰→L先。
+        順序依存ドジ 8/8 が前足方向と一致）。
+    """
+    o, h, l, c = bar.open, bar.high, bar.low, bar.close
+    olhc = (o, l, h, c)
+    ohlc = (o, h, l, c)
+    if order == "olhc":
+        return olhc
+    if order == "auto":
+        if c > o:
+            return olhc  # 強気: 安値先
+        if c < o:
+            return ohlc  # 弱気: 高値先
+        # ドジ: 前足モメンタム継続（前足陽→高値先 / 前足陰→安値先 / 不明→安値先）
+        if prev_open is not None and prev_close is not None and prev_close > prev_open:
+            return ohlc
+        return olhc
+    return ohlc  # "ohlc"（既定）
+
+
 class OhlcExpandTickModel(TickModelPort):
-    """O→H→L→C の 4 疑似ティックへ展開する。"""
+    """O→H→L→C 等の 4 疑似ティックへ展開する（ohlc_order で順序切替）。
+
+    order 既定 "ohlc"（O→H→L→C）で従来挙動・既存テストと完全一致。"auto"/"olhc" は
+    バー内の極値到達順を切替え、ペンディング/SL/TP の同足競合の決済順を MT5 に整合させる。
+    "auto" のドジ足判定は直前足の方向を要するため、直近に処理した足の (open, close) を保持する
+    （ticks_of は run 中に足を時系列で 1 回ずつ評価する前提＝決定論。order="ohlc"/"olhc" は
+    前足状態を参照しないため状態保持は無害）。
+    """
+
+    def __init__(self, order: str = "ohlc") -> None:
+        self._order = order
+        self._prev_open: float | None = None
+        self._prev_close: float | None = None
 
     def ticks_of(self, bar: Any, prev_close: float) -> Iterable[tuple]:
-        return _ohlc_ticks(bar)
+        prices = _ordered_ohlc_prices(
+            bar, self._order, self._prev_open, self._prev_close
+        )
+        self._prev_open, self._prev_close = bar.open, bar.close
+        if self._order == "auto":
+            # 実 MT5 OHLC の生成ティック数は当該足の tick volume に依存する（2603-01 で実証）。
+            #   tickvol >= 4: O→(極値2)→C の 4 ティックをそのまま生成（等値の隣接も別ティック。
+            #     例 bar 15:32 は L==C でも 4 ティック＝約定@L→SL@C で同足決済）。
+            #   tickvol < 4: 実ティックが 4 本未満ゆえ隣接等値を集約し ≈tickvol ティックにする
+            #     （例 bar 23:12 tickvol=2 は O==L・H==C で 2 ティック＝約定@H 後にティックなし→
+            #      持ち越し／bar 02:16 tickvol=3 は 3 ティック）。tick volume は bar.volume（<TICKVOL>）。
+            tickvol = getattr(bar, "volume", 0) or 0
+            if tickvol < 4:
+                deduped: list = []
+                for p in prices:
+                    if not deduped or deduped[-1] != p:
+                        deduped.append(p)
+                prices = tuple(deduped)
+        return [_tick(price, bar) for price in prices]
 
 
 class OpenOnlyTickModel(TickModelPort):

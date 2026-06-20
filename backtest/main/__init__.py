@@ -38,6 +38,7 @@ from backtest.adapter.presenter.markdown import MarkdownPresenter
 from backtest.adapter.repository.ohlc_csv import CsvOHLCRepository
 from backtest.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 from backtest.adapter.strategy.ma_slope import MaSlope
+from backtest.adapter.strategy.ma_slope_pending import MaSlopePending
 from backtest.adapter.strategy.tc24051901 import TC24051901
 from backtest.domain.exceptions import BacktestError, ConfigError, DataError
 from backtest.framework.config_loader import load_config
@@ -56,8 +57,14 @@ _TICK_MODELS = {
 _DEFAULT_TICK_MODEL = OhlcExpandTickModel
 
 
-def _make_tick_model(tick_model_key: str) -> Any:
-    """決定論 config の tick_model キーから TickModelPort 実装を生成する。"""
+def _make_tick_model(tick_model_key: str, ohlc_order: str = "ohlc") -> Any:
+    """決定論 config の tick_model キーから TickModelPort 実装を生成する。
+
+    ohlc_expand は ohlc_order（"ohlc"/"olhc"/"auto"）でバー内の極値到達順を切替える
+    （ペンディング/SL/TP の同足競合の決済順を MT5 に整合）。他モデルは ohlc_order 非対応。
+    """
+    if tick_model_key == "ohlc_expand":
+        return OhlcExpandTickModel(order=ohlc_order)
     return _TICK_MODELS.get(tick_model_key, _DEFAULT_TICK_MODEL)()
 
 
@@ -226,6 +233,25 @@ def _build_ma_slope_registry(df: pd.DataFrame, *, ma_period: int) -> PandasIndic
     return PandasIndicatorRegistry({"ema": ema})
 
 
+def _build_ma_slope_pending_registry(
+    df: pd.DataFrame, *, ma_period: int
+) -> PandasIndicatorRegistry:
+    """EMA に加え当該バー始値 "open" と "spread"（ポイント）を登録した IndicatorPort。
+
+    MaSlopePending は確定足 EMA（"ema"）でシグナルを出しつつ、ペンディング価格を当該バー
+    始値クォート（bid=open / ask=open+spread×point）から算出するため "open"/"spread" 系列を
+    参照する（ma_slope_pending.py を Read で実証）。spread は MT5 CSV の <SPREAD>（ポイント）。
+    """
+    ema = _ema_series(df["close"], ma_period)
+    return PandasIndicatorRegistry(
+        {
+            "ema": ema,
+            "open": df["open"].astype(float).reset_index(drop=True),
+            "spread": df["<SPREAD>"].astype(float).reset_index(drop=True),
+        }
+    )
+
+
 def build_interactor(
     *,
     data_path: Any,
@@ -250,6 +276,8 @@ def build_interactor(
     stop_out_level: float = 0.0,
     slope_shift: int = 1,
     slope_min_points: float = 1.0,
+    entry_offset_points: float = 50.0,
+    entry_type: str = "limit",
     trading_start: Any = None,
     tick_store_root: Any = None,
     tick_start: Any = None,
@@ -271,6 +299,11 @@ def build_interactor(
         # MaSlope が参照する追加パラメータ（TC24051901 は未参照のため無害）。
         "slope_shift": slope_shift,
         "slope_min_points": slope_min_points,
+        # MaSlopePending が参照する追加パラメータ（MaSlope/TC は未参照のため無害）。
+        "digits": digits,
+        "stops_level": stops_level,
+        "entry_offset_points": entry_offset_points,
+        "entry_type": entry_type,
     }
     run_config = RunConfig(determinism, strategy_params)
 
@@ -281,6 +314,12 @@ def build_interactor(
         df = _load_mt5_dataframe(data_path)
         registry = _build_ma_slope_registry(df, ma_period=ma_period)
         strategy: Any = MaSlope()
+    elif ea_name == "MA_Slope_Pending_EA":
+        # 指値/逆指値版。MA_Slope_EA と同じ MT5 CSV を読み、open/spread も registry に載せる。
+        market_data = Mt5CsvOHLCRepository()
+        df = _load_mt5_dataframe(data_path)
+        registry = _build_ma_slope_pending_registry(df, ma_period=ma_period)
+        strategy = MaSlopePending()
     else:
         # 既定経路（TC24051901・comma 形式・MADiff 指標）= 従来挙動を不変に保つ。
         market_data = CsvOHLCRepository()
@@ -307,7 +346,9 @@ def build_interactor(
             tick_end=tick_end,
         )
     else:
-        tick_model_impl = _make_tick_model(determinism.tick_model)
+        tick_model_impl = _make_tick_model(
+            determinism.tick_model, ohlc_order=determinism.ohlc_order
+        )
 
     # 市場開閉カレンダー（config gated・既定 broker→NullCalendar で既定経路不変）。
     session_calendar_impl = _make_session_calendar(determinism.session_calendar)

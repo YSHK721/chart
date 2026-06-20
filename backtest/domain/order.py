@@ -2,7 +2,7 @@
 
 不変条件:
     side in {buy, sell}
-    kind in {market, buy_limit}
+    kind in {market, buy_limit, sell_limit, buy_stop, sell_stop}
     volume は volume_step の倍数かつ [volume_min, volume_max]
     SL/TP は stops_level 距離制約（|price - sl| >= stops_level * point_size）
 
@@ -23,7 +23,19 @@ from backtest.domain._shared import SIDES
 from backtest.domain.exceptions import InvalidPriceError
 
 # kind は Order 固有の語彙のため当モジュールに留める（YAGNI: 単一利用）。
-_KINDS = frozenset({"market", "buy_limit"})
+# 成行 + ペンディング 4 種（指値=limit / 逆指値=stop の買い・売り）。ペンディング種別の
+# 約定判定（トリガ条件）は usecase/_execution.fill_pending_order が担い、domain は
+# 集合の妥当性検査のみを行う（domain は外部依存ゼロ・約定ロジックを持たない）。
+_KINDS = frozenset(
+    {"market", "buy_limit", "sell_limit", "buy_stop", "sell_stop"}
+)
+# kind から含意される side（kind と side の不整合を検出する）。market は side 自由。
+_KIND_SIDE = {
+    "buy_limit": "buy",
+    "sell_limit": "sell",
+    "buy_stop": "buy",
+    "sell_stop": "sell",
+}
 # 価格・範囲比較の絶対許容（FX 価格の丸め誤差を吸収する）。
 _TOL = 1e-9
 # volume / volume_step が整数倍かを判定する際の許容（刻み比の丸め誤差を吸収する）。
@@ -47,7 +59,14 @@ class Order:
             )
         if self.kind not in _KINDS:
             raise InvalidPriceError(
-                "kind は {market, buy_limit} のいずれか", context={"kind": self.kind}
+                "kind は {market, buy_limit, sell_limit, buy_stop, sell_stop} のいずれか",
+                context={"kind": self.kind},
+            )
+        expected_side = _KIND_SIDE.get(self.kind)
+        if expected_side is not None and self.side != expected_side:
+            raise InvalidPriceError(
+                "kind と side が不整合",
+                context={"kind": self.kind, "side": self.side},
             )
         self._validate_volume(symbol_spec)
         self._validate_stops(symbol_spec)

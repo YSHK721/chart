@@ -55,6 +55,9 @@ class BacktestConfig:
     # stop-out をバー open でも先行評価するか（ISSUE-022）。既定 False＝従来 close 基準のみ。
     # True で実 MT5 OHLC の open pseudo-tick 評価に整合（週末ギャップで open 約定）。
     stop_out_at_open: bool = False
+    # 指値/逆指値ペンディング注文のライフサイクルを有効化するか（2603-01）。既定 False＝
+    # 従来経路（成行のみ・byte-identical）。True で execute() を every-tick 経路へ振り向ける。
+    pending_lifecycle: bool = False
 
 
 @dataclass

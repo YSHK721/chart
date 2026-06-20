@@ -23,7 +23,10 @@ from backtest.domain.exceptions import DataError, TimeOrderError
 
 # exit_reason は TradeRecord 固有の語彙のため当モジュールに留める（YAGNI: 単一利用）。
 # stop_out は cycle4 で追加（close_and_halt 時の強制決済理由）。
-_EXIT_REASONS = frozenset({"sl", "tp", "reverse", "expire", "stop_out"})
+# end_of_test は 2603-01 で追加（ペンディング経路でテスト終了時に残存建玉を清算する理由）。
+_EXIT_REASONS = frozenset(
+    {"sl", "tp", "reverse", "expire", "stop_out", "end_of_test"}
+)
 
 
 @dataclass(frozen=True)
@@ -50,7 +53,7 @@ class TradeRecord:
             )
         if self.exit_reason not in _EXIT_REASONS:
             raise DataError(
-                "exit_reason は {sl, tp, reverse, expire, stop_out} のいずれか",
+                "exit_reason は {sl, tp, reverse, expire, stop_out, end_of_test} のいずれか",
                 context={"exit_reason": self.exit_reason},
             )
 

@@ -62,6 +62,71 @@ def test_ohlc_expand_tick_has_price_bid_ask_time_shape():
     assert time == bar.time
 
 
+# --- OhlcExpandTickModel order="auto"（実 MT5 OHLC 順序則・2603-01 で実証） ----
+
+def _b(o, h, l, c, vol=10.0, spread=0):
+    return Bar(time=0, open=o, high=h, low=l, close=c, volume=vol, spread=spread)
+
+
+def _prices(model, bar, prev_close=0.0):
+    return [t[0] for t in model.ticks_of(bar, prev_close=prev_close)]
+
+
+def test_auto_bullish_bar_visits_low_first():
+    # 強気足（close>open）は安値先 O→L→H→C（実体方向と逆の極値へ先に振れる）
+    from backtest.adapter.execution.tick_model import OhlcExpandTickModel
+
+    m = OhlcExpandTickModel(order="auto")
+    assert _prices(m, _b(1.0, 1.5, 0.8, 1.2)) == [1.0, 0.8, 1.5, 1.2]
+
+
+def test_auto_bearish_bar_visits_high_first():
+    # 弱気足（close<open）は高値先 O→H→L→C
+    from backtest.adapter.execution.tick_model import OhlcExpandTickModel
+
+    m = OhlcExpandTickModel(order="auto")
+    assert _prices(m, _b(1.2, 1.5, 0.8, 1.0)) == [1.2, 1.5, 0.8, 1.0]
+
+
+def test_auto_doji_follows_previous_bar_direction():
+    # ドジ足（close==open）は直前足のモメンタムを継続。前足陽→高値先 / 前足陰→安値先。
+    from backtest.adapter.execution.tick_model import OhlcExpandTickModel
+
+    m = OhlcExpandTickModel(order="auto")
+    # 前足: 陽線（close>open）
+    m.ticks_of(_b(1.0, 1.1, 1.0, 1.1), prev_close=0.0)
+    assert _prices(m, _b(1.2, 1.5, 0.8, 1.2)) == [1.2, 1.5, 0.8, 1.2]  # 高値先
+    # 前足: 陰線（close<open）
+    m2 = OhlcExpandTickModel(order="auto")
+    m2.ticks_of(_b(1.1, 1.1, 1.0, 1.0), prev_close=0.0)
+    assert _prices(m2, _b(1.2, 1.5, 0.8, 1.2)) == [1.2, 0.8, 1.5, 1.2]  # 安値先
+
+
+def test_auto_thin_bar_dedups_adjacent_equal_ticks():
+    # tickvol<4 は隣接等値を集約（実ティック 4 本未満ゆえ）。
+    from backtest.adapter.execution.tick_model import OhlcExpandTickModel
+
+    m = OhlcExpandTickModel(order="auto")
+    # 強気 O=L, H=C, tickvol=2 → O→L→H→C=[1.0,1.0,1.2,1.2] を集約して [1.0,1.2]
+    assert _prices(m, _b(1.0, 1.2, 1.0, 1.2, vol=2.0)) == [1.0, 1.2]
+
+
+def test_auto_thick_bar_keeps_duplicate_ticks():
+    # tickvol>=4 は等値の隣接も別ティックとして 4 件保持（同足で約定後の決済を可能にする）。
+    from backtest.adapter.execution.tick_model import OhlcExpandTickModel
+
+    m = OhlcExpandTickModel(order="auto")
+    assert _prices(m, _b(1.0, 1.2, 1.0, 1.2, vol=10.0)) == [1.0, 1.0, 1.2, 1.2]
+
+
+def test_default_order_unchanged_ohlc():
+    # 既定 order="ohlc" は従来どおり O→H→L→C（4 件・dedup なし）で後方互換。
+    from backtest.adapter.execution.tick_model import OhlcExpandTickModel
+
+    m = OhlcExpandTickModel()
+    assert _prices(m, _b(1.0, 1.2, 1.0, 1.2, vol=2.0)) == [1.0, 1.2, 1.0, 1.2]
+
+
 # --- OpenOnlyTickModel ------------------------------------------------------
 
 def test_open_only_yields_single_tick_at_open():

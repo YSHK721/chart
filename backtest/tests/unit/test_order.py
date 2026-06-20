@@ -2,7 +2,7 @@
 
 不変条件:
     side  in {buy, sell}
-    kind  in {market, buy_limit}
+    kind  in {market, buy_limit, sell_limit, buy_stop, sell_stop}
     volume は volume_step の倍数かつ [volume_min, volume_max]
     SL/TP は stops_level 距離制約（>= stops_level * point_size）
 validate(symbol_spec) -> None | raises InvalidPriceError。
@@ -67,6 +67,18 @@ class TestOrderValid:
         order = _order(kind="buy_limit", price=99.0)
         assert order.validate(_Spec()) is None
 
+    def test_sell_limit_kind_passes(self):
+        order = _order(side="sell", kind="sell_limit", price=101.0)
+        assert order.validate(_Spec()) is None
+
+    def test_buy_stop_kind_passes(self):
+        order = _order(side="buy", kind="buy_stop", price=101.0)
+        assert order.validate(_Spec()) is None
+
+    def test_sell_stop_kind_passes(self):
+        order = _order(side="sell", kind="sell_stop", price=99.0)
+        assert order.validate(_Spec()) is None
+
     def test_none_sl_tp_skips_distance_check(self):
         order = _order(sl=None, tp=None)
         assert order.validate(_Spec()) is None
@@ -79,7 +91,13 @@ class TestOrderInvalid:
             order.validate(_Spec())
 
     def test_invalid_kind_raises(self):
-        order = _order(kind="sell_stop")
+        order = _order(kind="trailing_stop")
+        with pytest.raises(InvalidPriceError):
+            order.validate(_Spec())
+
+    def test_kind_side_mismatch_raises(self):
+        # kind=sell_limit は side=sell を含意（buy との組合せは不整合）
+        order = _order(side="buy", kind="sell_limit", price=101.0)
         with pytest.raises(InvalidPriceError):
             order.validate(_Spec())
 

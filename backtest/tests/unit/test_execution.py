@@ -18,6 +18,7 @@ from backtest.usecase._execution import (
     check_sltp_hit_at_tick,
     fill_buy_limit,
     fill_market_order,
+    fill_pending_order,
 )
 
 
@@ -74,6 +75,52 @@ class TestFillBuyLimit:
         result = fill_buy_limit(order, ask=1.0999, tick_time=100, expire_time=100)
         # Assert: 失効を表す "expired" を返す（None=保留 と区別する）
         assert result == "expired"
+
+
+# ---- B2b: ペンディング 4 種のトリガ約定（PROCESS §4.2 拡張・実 MT5 突合） ----
+
+class TestFillPendingOrder:
+    """指値/逆指値 4 種のトリガ条件（約定価格＝注文価格・スリッページ 0）。"""
+
+    def test_buy_limit_fills_when_ask_at_or_below_price(self):
+        order = Order(side="buy", kind="buy_limit", volume=1.0, price=100.0)
+        pos = fill_pending_order(order, bid=99.5, ask=100.0)  # ask==price 境界
+        assert isinstance(pos, Position)
+        assert pos.side == "buy" and pos.entry_price == 100.0
+
+    def test_buy_limit_pending_when_ask_above_price(self):
+        order = Order(side="buy", kind="buy_limit", volume=1.0, price=100.0)
+        assert fill_pending_order(order, bid=100.05, ask=100.1) is None
+
+    def test_sell_limit_fills_when_bid_at_or_above_price(self):
+        order = Order(side="sell", kind="sell_limit", volume=1.0, price=100.0)
+        pos = fill_pending_order(order, bid=100.0, ask=100.5)  # bid==price 境界
+        assert isinstance(pos, Position)
+        assert pos.side == "sell" and pos.entry_price == 100.0
+
+    def test_sell_limit_pending_when_bid_below_price(self):
+        order = Order(side="sell", kind="sell_limit", volume=1.0, price=100.0)
+        assert fill_pending_order(order, bid=99.9, ask=100.4) is None
+
+    def test_buy_stop_fills_when_ask_at_or_above_price(self):
+        order = Order(side="buy", kind="buy_stop", volume=1.0, price=100.0)
+        pos = fill_pending_order(order, bid=99.5, ask=100.0)
+        assert isinstance(pos, Position)
+        assert pos.side == "buy" and pos.entry_price == 100.0
+
+    def test_buy_stop_pending_when_ask_below_price(self):
+        order = Order(side="buy", kind="buy_stop", volume=1.0, price=100.0)
+        assert fill_pending_order(order, bid=99.4, ask=99.9) is None
+
+    def test_sell_stop_fills_when_bid_at_or_below_price(self):
+        order = Order(side="sell", kind="sell_stop", volume=1.0, price=100.0)
+        pos = fill_pending_order(order, bid=100.0, ask=100.5)
+        assert isinstance(pos, Position)
+        assert pos.side == "sell" and pos.entry_price == 100.0
+
+    def test_sell_stop_pending_when_bid_above_price(self):
+        order = Order(side="sell", kind="sell_stop", volume=1.0, price=100.0)
+        assert fill_pending_order(order, bid=100.1, ask=100.6) is None
 
 
 # ---- B1b: スプレッド対応の成行約定（実 MT5 突合・後方互換） ----
