@@ -65,6 +65,9 @@ class _ConfigModel(BaseModel):
     # 約定損益の口座通貨丸め桁（ISSUE-020）。既定 None＝丸めず（byte-identical）。
     # 0=JPY 整数丸め。実 MT5 は約定損益を口座通貨精度へ丸めて balance/stats に反映する。
     profit_round_digits: Optional[int] = Field(default=None, ge=0, le=8)
+    # stop-out をバー open でも先行評価するか（ISSUE-022）。既定 False＝従来 close 基準のみ。
+    # True で実 MT5 OHLC の open pseudo-tick 評価に整合（週末ギャップ等で open クォート約定）。
+    stop_out_at_open: bool = False
 
 
 def normalize_time(value: Union[str, int]) -> Union[np.datetime64, int]:
@@ -158,4 +161,5 @@ def load_config(source: ConfigSource) -> BacktestConfig:
         prime_first_trading_bar=model.prime_first_trading_bar,
         floating_pnl_basis=model.floating_pnl_basis,
         profit_round_digits=model.profit_round_digits,
+        stop_out_at_open=model.stop_out_at_open,
     )

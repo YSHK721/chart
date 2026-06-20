@@ -185,6 +185,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # primed_done で 1 回だけ消費する（既定 False=無効＝従来不変）。
         prime_first = getattr(config, "prime_first_trading_bar", False)
         primed_done = False
+        # stop-out をバー open でも先行評価するか（config gated・既定 False=従来 close のみ）。
+        stop_out_at_open = getattr(config, "stop_out_at_open", False)
 
         # tick ループ（PROCESS §2 A〜I を 1 bar = 1 OnTick として処理）
         for bar_index, bar in enumerate(bars):
@@ -205,6 +207,51 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             ):
                 primed_done = True
                 continue
+            # I' ★バー open での stop-out 先行判定（config gated）。実 MT5 1分足OHLC は
+            #   O→H→L→C の最初の pseudo-tick（open）で margin を評価するため、週末ギャップ等で
+            #   open が割れた保有玉は「バー open クォート」で強制決済される（買い=Bid=open /
+            #   売り=Ask=open+spread×point）。後段の close 基準判定（I）は残すため、open が割れず
+            #   bar 内で割れる場合は従来どおり close で決済する。既定 False で本ブロックは不活性＝
+            #   byte-identical（ISSUE-022）。open 評価は floating_pnl_basis を参照せず実 bid/ask
+            #   固定（買い=Bid=open / 売り=Ask=open+spread＝MT5 open pseudo-tick 整合）。
+            if stop_out_at_open and open_trades and not halted:
+                o_bid, o_ask, _, _ = derive_quotes(
+                    bar, entry_price_basis="current_open", point_size=spec.point_size
+                )
+                account.update_floating_pnl_at(bid=o_bid, ask=o_ask)
+                if account.margin_level() < request.stop_out_level:
+                    if config.stop_out_action != "close_and_halt":
+                        raise MarginCallError(
+                            "margin_level が stop_out_level を下回りました（bar open 評価）",
+                            context={
+                                "margin_level": account.margin_level(),
+                                "stop_out_level": request.stop_out_level,
+                            },
+                            bar_index=bar_index,
+                        )
+                    for ot in open_trades:
+                        close_price = close_price_for(
+                            ot.position.side, bid=o_bid, ask=o_ask
+                        )
+                        self._close_open_trade(
+                            ot,
+                            exit_time=bar.time,
+                            exit_price=close_price,
+                            exit_reason="stop_out",
+                            contract_size=contract_size,
+                            leverage=spec.leverage,
+                            account=account,
+                            trades=trades,
+                            deals=deals,
+                            balance_curve=balance_curve,
+                        )
+                    open_trades = []
+                    halted = True
+                else:
+                    # 非breach: open 基準で書き換えた floating を close 基準へ戻す
+                    #   （後続 on_new_bar 等へ open 基準 floating を漏らさない。equity_curve は
+                    #   後段 I で close 基準により記録する）。レビュー🟡対応。
+                    account.update_floating_pnl(bar)
             # D 保有状態 / E シグナル評価（EA ロジック）
             #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。
             orders = (

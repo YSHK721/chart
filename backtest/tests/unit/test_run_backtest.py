@@ -602,7 +602,8 @@ class TestReverseShortCloseSpread:
 # ---- cycle4-②: stop_out_action config（fail_stop 既定 / close_and_halt） ----
 
 def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None,
-                       entry_price_basis=None, floating_pnl_basis=None):
+                       entry_price_basis=None, floating_pnl_basis=None,
+                       stop_out_at_open=None):
     """margin_level < stop_out を bar1 で発生させる共通セットアップ。
 
     1 lot 買い@1.10、contract=100000、leverage=100 → 必要証拠金=1100。
@@ -615,6 +616,8 @@ def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None,
         cfg_kwargs["entry_price_basis"] = entry_price_basis
     if floating_pnl_basis is not None:
         cfg_kwargs["floating_pnl_basis"] = floating_pnl_basis
+    if stop_out_at_open is not None:
+        cfg_kwargs["stop_out_at_open"] = stop_out_at_open
     config = BacktestConfig(
         tick_model="ohlc_simulate",
         spread_model="fixed",
@@ -734,6 +737,59 @@ class TestStopOutActionConfig:
         # 決済 = Ask = close(2.00) + spread(50)×point(0.00001) = 2.0005。close 単独ではない。
         assert stop_out[0].exit_price == pytest.approx(2.0005)
         assert stop_out[0].exit_price != pytest.approx(2.00)
+
+    def test_stop_out_at_open_closes_at_open_quote_on_gap(self):
+        # 回帰防止（ISSUE-022）: stop_out_at_open=True かつ週末ギャップ等で「バー open」が
+        # margin を割る場合、決済は close でなく「バー open クォート」で行う。
+        # bar1 open=0.50（窓開け下落・即割れ）→ close=1.05（回復）。long は open で stop-out。
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.10, 1.10, 1.10, 1.10),
+            _bar(np.datetime64("2024-01-01T00:01"), 0.50, 1.10, 0.50, 1.05),  # gap-down open
+        ]
+        interactor, req = _margin_call_setup(
+            stop_out_action="close_and_halt",
+            entry_price_basis="current_open",
+            stop_out_at_open=True,
+            bars=bars,
+        )
+        result = interactor.execute(req)
+        stop_out = [t for t in result.trades if t.exit_reason == "stop_out"]
+        assert len(stop_out) == 1
+        # 決済価格は bar open=0.50（割れた瞬間の現値）。close 1.05 ではない。
+        assert stop_out[0].exit_price == pytest.approx(0.50)
+        assert stop_out[0].exit_price != pytest.approx(1.05)
+
+    def test_default_no_open_check_when_close_recovers(self):
+        # 対照（既定 stop_out_at_open=False）: open が割れても close が回復していれば
+        # close 基準判定のみのため stop-out は起きない（byte-identical 経路の不変性）。
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.10, 1.10, 1.10, 1.10),
+            _bar(np.datetime64("2024-01-01T00:01"), 0.50, 1.10, 0.50, 1.05),  # close 回復
+        ]
+        interactor, req = _margin_call_setup(
+            stop_out_action="close_and_halt",
+            entry_price_basis="current_open",
+            bars=bars,  # stop_out_at_open 未指定＝既定 False
+        )
+        result = interactor.execute(req)
+        # close=1.05 では margin 割れしない（floating=(1.05-1.10)*1e5=-5000・equity=5000>>必要）
+        # → open 評価しないため stop-out 0 件。
+        assert [t for t in result.trades if t.exit_reason == "stop_out"] == []
+
+    def test_stop_out_at_open_fail_stop_raises(self):
+        # 回帰防止（ISSUE-022・レビュー🟢）: stop_out_at_open=True かつ既定 fail_stop で
+        # バー open が割れたら MarginCallError を送出する（close 経路と同型）。
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.10, 1.10, 1.10, 1.10),
+            _bar(np.datetime64("2024-01-01T00:01"), 0.50, 1.10, 0.50, 1.05),  # open 割れ
+        ]
+        interactor, req = _margin_call_setup(
+            entry_price_basis="current_open",
+            stop_out_at_open=True,
+            bars=bars,  # stop_out_action 未指定＝既定 fail_stop
+        )
+        with pytest.raises(MarginCallError):
+            interactor.execute(req)
 
 
 # ---- account 伝播の後方互換: TC24051901 の確定トレード列が account の有無で不変 ----

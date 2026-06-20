@@ -332,3 +332,15 @@
 - 対策：Jp225SessionCalendar を「mins < 61(01:01未満) または mins >= 1439(23:59以降) を閉鎖」（毎日同一・金曜固有ロジック撤去）へ修正。daily_open_minute=61 / daily_close_minute=1439。session_calendar.py の _FRIDAY 定数と weekday 判定を削除
 - 検証：2026-02 run5 突合 → trades 886 vs 886（完全一致）・全886エントリ bit-exact・初回 buy 53680.7・stop-out 2026-02-09 一致。2026-01 突合は net -4649/balance 5351/0-of-1444 を維持（退行なし）。全532テスト pass（カレンダー単体テストを 23:59 日次クローズ基準へ更新）
 - 残差（別要因）：2026-02 は net -5011 vs MT5 -5021（差 10）が残る。原因は stop-out の決済価格が「割れバーの open クォート」（MT5: Mon 2026-02-09 01:00 open 57612+spread45=57657）に対しこちらは close 基準 mark_price（57647）で、週末ギャップ（open≠close）でのみ顕在。2026-01 は stop バーが open==close のため一致していた（ISSUE-022 として切り出し）
+
+## ISSUE-022
+
+- 概要：2026-02 突合（260620-03 run5）の最終 stop-out 決済価格が net 残差 10 を生む。MT5 は割れバーの open クォート（Mon 2026-02-09 01:00 open 57612+spread45=57657）で決済、こちらは close 基準 mark_price（57602+45=57647）。週末ギャップ（open≠close）でのみ顕在
+- 重大度：低（1件の決済価格・net 0.2%）。2026-01 は stop バーが open==close で一致していたため未顕在
+- ステータス：RESOLVED
+- 検出日：2026-06-20
+- 検出経路：run5 突合で全886エントリ一致後、stop-out 決済のみ 10 乖離。割れバー 2026-02-09 01:00 の O=57612/C=57602（spread450）と MT5 決済 57657 から、MT5 が open+spread（=open の Ask）で決済と判明。ISSUE-019（close 基準）は 2026-01 で open==close だったため区別できず close と結論していた過少決定だった
+- 原因：実 MT5 1分足OHLC は O→H→L→C の最初の pseudo-tick（open）で margin を評価し、open が割れた保有玉を open クォートで強制決済する。こちらは close 基準（update_floating_pnl(bar)→mark_price）のみで判定/決済していたため、週末ギャップで open≠close のとき 10 ずれた
+- 対策（config gated・既定 byte-identical）：bar-mode ループのバー先頭に「open 基準 stop-out 先行判定」を追加。`config.stop_out_at_open`（既定 False）True 時のみ、`derive_quotes(bar, current_open)` の (open Bid / open+spread Ask) で含み損を評価し、割れたら open クォート（買い=Bid=open / 売り=Ask=open+spread）で強制決済。後段の close 基準判定は残すため、open 非割れ・bar 内割れは従来どおり close 決済。every-tick 経路は到達ティック価格で元から open 相当に正確のため不変。models/config_loader に stop_out_at_open(既定False) 追加
+- 検証：current_open+bid_ask+close_and_halt+jp225+profit_round_digits=0+stop_out_at_open=True の単一 config で **2026-02 net -5021 vs -5021（literal一致）・balance 4979・trades 886・全886エントリ bit-exact**、かつ **2026-01 net -4649/balance 5351/0-of-1444 を維持**（2026-01 は open==close のため open 判定でも不変）。既定 stop_out_at_open=False で全534テスト pass（byte-identical・stop-out at open の回帰テスト2件追加）
+- 到達点：2026-01 と 2026-02 の両月を、同一 config で trades・全建値・全決済・net・balance まで literal bit-exact に到達
