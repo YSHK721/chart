@@ -199,6 +199,36 @@ catch (e) { console.warn('[trade-markers] init skipped', e); }
 
 ---
 
+## 8. 動作確認フィードバック対応（Fix v2・export スクリプト堅牢化）
+
+実機動作確認で、機能の中核（presenter/renderer/配線/時間軸整合＝393件一致）は正常だが、
+**export スクリプトの既定動作**に 2 つの実用障害が判明。本節で確定する。
+
+### 8.1 Fix-A: 既定生成窓を「直近（tail）」にする（UI 可視窓と整合）
+- 問題: 既定 `--rows N` は marketdata の**先頭 N 本（最古=2012年）**を読む。UI 既定の `/candles?limit=1500`
+  は**直近**を返すため、マーカーが UI 可視窓と重ならず**画面に出ない**。
+- 修正: 既定を**直近 N 本（tail）**生成にする。297MB を丸読みせず、行数を数えて
+  `pd.read_csv(src, skiprows=range(1, total-N+1))` で**末尾のみ**読む `read_recent_marketdata(src, n)` を追加。
+  既定 N は UI の `RECENT_BARS=1500` を内包する余裕（例 5000）。明示の先頭指定も残す（後方互換オプション）。
+- 受入: 既定実行で生成したマーカー time が `/candles?datasetRef=jp225_m1&timeframe=1m&limit=1500` の
+  candle time 集合と**重なり >0**（UI に描画される）。
+
+### 8.2 Fix-B: 既定 run config を堅牢化（高価格でクラッシュしない）
+- 問題: 直近の高価格（JP225≈71700）×`_meta` 既定（lot=1.0 / leverage=100 / 証拠金10000 / fail_stop）で
+  `MarginCallError` が送出され**クラッシュ**（exit≠0・JSON 未生成）。
+- 修正: `_meta` に `config_overrides={"stop_out_action": "close_and_halt"}` を付与し、証拠金割れ時も
+  **強制決済して完走**（例外送出しない）。加えて持続可能なサイジング（`lot_size=0.1`）へ既定変更し、
+  直近窓を通してトレードが分布するようにする（早期 halt を避ける）。
+- 受入: 既定実行が**非ゼロ終了せず**完走し、trades>0・JSON 生成。
+
+### 8.3 受入（動作確認の完全完了基準）
+1. 既定 `python simulator/tools/export_trade_markers.py` がクラッシュせず JSON 生成。
+2. B方式サーバ配信下で、マーカー time が UI 直近 M1 candle 窓と**重なり >0**。
+3. 既存テスト全緑（回帰）＋ 新規テスト（tail 読み・堅牢 config・重なり>0）緑。
+4. committed simulator（domain/usecase/既存adapter/main）無改変は維持。
+
+---
+
 ## 7. 実装完了記録（2026-06-20・6 フェーズ全完了）
 
 | Phase | 成果物 | テスト |
