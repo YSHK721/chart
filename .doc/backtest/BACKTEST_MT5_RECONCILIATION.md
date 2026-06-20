@@ -4,24 +4,61 @@ JP225 `MA_Slope_EA`（`260618-01.ex5`）を実 MT5 Strategy Tester（OANDA-Japan
 数値突合した結果の記録。突合の目的は、本バックテストエンジン（`backtest/`）の確定トレード・
 損益・残高・stop-out を実 MT5 と一致させ、エンジンの正しさを実証すること。
 
-最終到達点：**2026-01 / 2026-02 の両月を、単一の config で実 MT5 と literal bit-exact
-（trades・全建値・全決済・net・balance まで完全一致）に到達**。
+最終到達点：**2026-01 / 2026-02 / 2026-03 の3か月を、単一の config で実 MT5 と literal
+bit-exact（trades・全建値・全決済・net・balance まで完全一致）に到達**。
+
+> 指値/逆指値（pending）EA `MA_Slope_Pending_EA` の突合と、MT5「1分OHLC」のバー内挙動
+> 6 要因は [`BACKTEST_MT5_PENDING_OHLC.md`](./BACKTEST_MT5_PENDING_OHLC.md) を参照。
+
+## 結論（テスト別の判定・一目で確認）
+
+| 期間 | 判定 | 根拠 |
+|---|---|---|
+| **2026-01** | ✅ **完全一致** | 全 1444 トレードの建値・決済・net・balance が実 MT5 と bit-exact（0/1444 不一致） |
+| **2026-02** | ✅ **完全一致** | 全 886 トレードが bit-exact（0/886 不一致） |
+| **2026-03** | ✅ **完全一致** | 全 842 トレードが bit-exact（0/842 不一致） |
+| 2025-01 | △ ほぼ一致（非完全） | net/balance に残差 ~5 が残る旧突合（warmup/層補正・既知） |
+
+> 「完全一致」＝ trades 件数・各トレードの建値・各決済価格・net・balance のすべてが実 MT5 と
+> 1 件・1 円も違わない（literal bit-exact）状態。
 
 ---
 
-## 1. 突合結果一覧
+## 1. 突合結果一覧（数値詳細）
 
-| ケース | modelling | 期間 | trades | net (ours / MT5) | balance (ours / MT5) | stop-out | 一致度 |
+| ケース | 判定 | modelling | 期間 | trades | net (ours / MT5) | balance (ours / MT5) | stop-out |
 |---|---|---|---|---|---|---|---|
-| 2026-01 | every-tick / 1分OHLC | 2026.01 | 1444 / 1444 | −4649.0 / −4649 | 5351.0 / 5351 | 01-14 | **literal bit-exact**（0/1444 不一致） |
-| 2026-02 (run5) | 1分OHLC | 2026.02 | 886 / 886 | −5021.0 / −5021 | 4979.0 / 4979 | 02-09 | **literal bit-exact**（0/886 不一致） |
-| 2025-01 | 1分OHLC | 2025.01 | 1164 | −6173.9 / −6169 | 3826.1 / 3831 | — | near（残差 ~5・既知。warmup/層補正の旧突合） |
+| 2026-01 | ✅ 完全一致 | every-tick / 1分OHLC | 2026.01 | 1444 / 1444 | −4649.0 / −4649 | 5351.0 / 5351 | 01-14 |
+| 2026-02 (run5) | ✅ 完全一致 | 1分OHLC | 2026.02 | 886 / 886 | −5021.0 / −5021 | 4979.0 / 4979 | 02-09 |
+| 2026-03 | ✅ 完全一致 | 1分OHLC | 2026.03 | 842 / 842 | −4823.0 / −4823 | 5177.0 / 5177 | 03-09 |
+| 2025-01 | △ ほぼ一致 | 1分OHLC | 2025.01 | 1164 | −6173.9 / −6169 | 3826.1 / 3831 | — |
 
 - 2026-01 は MT5 で every-tick と 1分OHLC の両方を実行したが、本 EA は成行をバー open で約定する
   ため両 modelling で MT5 結果は同一（balance 5351）。Delays（50ms / 0）も結果に非影響。
 - 数値型はすべて double（IEEE 754 binary64＝Python float）。`profit_round_digits=0` により各約定
   損益を整数値 double へ丸めるため、net/balance の `.0` は端数なしの真の整数（MT5 の JPY 整数表示と
   数値一致）。
+- 2026-03 は M1 を 2026-02-23 起点で供給（03-01 前を warmup）。stop-out は 2026.03.09 01:00（週明け
+  月曜の開場バー）で margin level 95.82%、保有 #1684 buy 54028.7 を deal #1685 sell 53003.7 で強制決済。
+  週末ギャップ玉をバー open で先行評価する ISSUE-022 経路が 2026-02 に続き 2026-03 でも再現一致。
+  突合は xlsx `Deals` テーブルの決済 deal（Direction=out）842 件の profit/balance 列を唯一の bit-exact
+  オラクルとし、ours の全 trades と逐次照合（0/842 不一致）。
+
+### 1.1 2026-03 詳細（✅ 完全一致）
+
+実施日時：**2026-06-20**（当方突合 04:22 UTC ／ MT5 Strategy Tester 実行 12:41 ＝ journal 記録）。
+
+| 項目 | ours | MT5 | 差分 |
+|---|---|---|---|
+| トレード数 | 842 | 842 | 0 |
+| net 損益 | −4823 | −4823 | 0 |
+| 最終 balance | 5177 | 5177 | 0 |
+| 初回約定 | 2026-03-02 01:01 sell 57653.7 | 2026-03-02 01:01 sell 57653.7 | 一致 |
+| stop-out | 2026-03-09 01:00（95.82%）sell 53003.7 | 2026-03-09 01:00（95.82%）sell 53003.7 | 一致 |
+
+全 842 トレードの建値・決済価格・profit・累積 balance を MT5 決済 deal と逐次照合し **0/842 不一致**
+（1 件・1 円も相違なし）。オラクル＝`ReportTester-900005560_2603.xlsx` / journal `260620-2603.txt`、
+突合スクリプト＝`backtest/tests/confirmation/260620-2603/_reconcile_2603.py`（使い捨て）。
 
 ---
 
@@ -40,7 +77,7 @@ build_interactor(
     stop_loss_points=0, take_profit_points=0,
     slope_shift=1, slope_min_points=1.0,
     stop_out_level=100.0,
-    trading_start=pd.Timestamp("<対象月初日>"),  # 2026-01-01 / 2026-02-01
+    trading_start=pd.Timestamp("<対象月初日>"),  # 2026-01-01 / 2026-02-01 / 2026-03-01
     config_overrides={
         "tick_model": "ohlc_expand",        # 1分OHLC（every-tick 検証時は "real_ticks"）
         "entry_price_basis": "current_open", # 成行＝バー open クォート（買い=open+spread×point/売り=open）
@@ -107,5 +144,5 @@ build_interactor(
   残差を残し得る（ISSUE-017 残差）。**1分OHLC modelling では本差は発生せず literal bit-exact**。
 - **equity 系 stats（equity-DD max 等）**：bar 解像度では MT5 のティック解像度ピークに届かない構造的残差
   （ISSUE-013）。確定トレード・balance 系は一致。
-- セッション境界・建値・stop-out の各規則は実測突合（2025-01 / 2026-01 / 2026-02）に基づく。別シンボル・
-  別ブローカー・祝日等の異なる条件では再検証が必要。
+- セッション境界・建値・stop-out の各規則は実測突合（2025-01 / 2026-01 / 2026-02 / 2026-03）に基づく。
+  別シンボル・別ブローカー・祝日等の異なる条件では再検証が必要。
