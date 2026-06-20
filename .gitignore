@@ -181,11 +181,11 @@ ehthumbs.db
 .dockerignore
 docker-compose.override.yml
 # backtest テスト fixture（MT5突合 golden）は *.json 除外の例外として追跡
-!backtest/tests/fixtures/
-!backtest/tests/fixtures/**
+!simulator/tests/fixtures/
+!simulator/tests/fixtures/**
 # ただし fixture 配下でも OS/Python の生成物は追跡しない（!** の再包含を打ち消す）
-backtest/tests/fixtures/**/__pycache__/
-backtest/tests/fixtures/**/.DS_Store
+simulator/tests/fixtures/**/__pycache__/
+simulator/tests/fixtures/**/.DS_Store
 # 突合検証用の使い捨て生データ・スクリプト（大容量・コミット対象外）
-backtest/tests/confirmation/
-backtest/tests/260620-01/
+simulator/tests/confirmation/
+simulator/tests/260620-01/

@@ -368,7 +368,7 @@ tests/
 | ~~MADiff 計算式・OnTick 処理順~~ | **解消済**。SPEC §2-3 で式・条件式、PROCESS §2 で処理順が確定 | — |
 | #4 Band 指標ソース（28バッファ四分位） | `Band.ex5` のみで `.mq5` 不在（SPEC §4）。`pOL/pOH` 算出式が不明で #4 完全再現不可。`indigators/profit_band` で代替可否を要照合 | ユーザー（原典ソース入手）／profit_band 照合 |
 | ADX(8)/+DI/−DI の移植 | #5 PRO!fit_Band が依存するが未移植（PROCESS §1.2）。PandasIndicatorRegistry に新規実装が必要 | 実装（Phase3 着手前） |
-| 既存 `indigators` ディレクトリ名 | 実ディレクトリは `indigators`（タイポ）。新 `backtest/adapter/indicator` から既存 core を流用する際の import パス整合 | ユーザー（リネーム可否は破壊的変更/承認事項） |
+| 既存 `indigators` ディレクトリ名 | 実ディレクトリは `indigators`（タイポ）。新 `simulator/adapter/indicator` から既存 core を流用する際の import パス整合 | ユーザー（リネーム可否は破壊的変更/承認事項） |
 | `PORTING_GUIDE.md` | SPEC/PROCESS が配列向き・型注意で参照するが未確認（不在の可能性）。移植時の `[0]→df.iloc[-1]` 等の規約根拠 | ユーザー（文書整備） |
 | order_executor を Port 化するか UseCase 内ヘルパーとするか | 外部 I/O を持たず差替要求も現状なし。境界粒度は実装時の約定モデル拡張要求で再判定 | Phase2 約定モデル拡張時 |
 

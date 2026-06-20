@@ -27,7 +27,7 @@
 内在する前提：
 - `.gitignore` は修正済みで ステージ対象
 - `.doc/backtest/` 配下の 5 ファイルが すべて存在する
-- `backtest/tests/fixtures/mt5/ma_slope_jp225_202601/expected/report.json` が 存在する
+- `simulator/tests/fixtures/mt5/ma_slope_jp225_202601/expected/report.json` が 存在する
 - `docs/testing-notes.md` が 存在する
 - 各ファイルは テキスト形式または JSON 形式（binary でない）
 - 除外対象 3 群 は リポジトリ source ではない（ランタイムデータ）

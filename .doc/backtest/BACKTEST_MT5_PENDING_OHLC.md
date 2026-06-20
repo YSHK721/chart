@@ -37,8 +37,8 @@ initial 10000 JPY / leverage 1:10 / 期間 2026.03.01–2026.03.31 / JP225 1分O
 （M1 データは 2026-02-23 起点で供給し 03-01 前を warmup）
 ```
 
-再現スクリプト：`backtest/tests/confirmation/260620-2603-01/_reconcile_2603_01.py`
-（2026-04 追試は `backtest/tests/confirmation/260620-2604-01/_reconcile_2604_01.py`。
+再現スクリプト：`simulator/tests/confirmation/260620-2603-01/_reconcile_2603_01.py`
+（2026-04 追試は `simulator/tests/confirmation/260620-2604-01/_reconcile_2604_01.py`。
 いずれもリポジトリルートで `PYTHONPATH=. python3 …` 実行）
 
 ### 注記：「SL/TP の逆指値的決済」と「逆指値エントリー」は別物

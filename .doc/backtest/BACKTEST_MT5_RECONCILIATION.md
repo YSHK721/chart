@@ -58,13 +58,13 @@ bit-exact（trades・全建値・全決済・net・balance まで完全一致）
 
 全 842 トレードの建値・決済価格・profit・累積 balance を MT5 決済 deal と逐次照合し **0/842 不一致**
 （1 件・1 円も相違なし）。オラクル＝`ReportTester-900005560_2603.xlsx` / journal `260620-2603.txt`、
-突合スクリプト＝`backtest/tests/confirmation/260620-2603/_reconcile_2603.py`（使い捨て）。
+突合スクリプト＝`simulator/tests/confirmation/260620-2603/_reconcile_2603.py`（使い捨て）。
 
 ---
 
 ## 2. literal bit-exact を得る config
 
-`backtest/main/build_interactor` への指定（JP225 econ + MA_Slope）：
+`simulator/main/build_interactor` への指定（JP225 econ + MA_Slope）：
 
 ```python
 build_interactor(
@@ -127,12 +127,12 @@ build_interactor(
 
 ## 5. 再現方法
 
-- **committed オラクル fixture**：`backtest/tests/fixtures/mt5/ma_slope_jp225_202601/expected/report.json`
+- **committed オラクル fixture**：`simulator/tests/fixtures/mt5/ma_slope_jp225_202601/expected/report.json`
   （2026-01）、`.../ma_slope_jp225_202501/`（2025-01）。
-- **回帰テスト**：`backtest/tests/unit/test_run_backtest.py`（stop-out・通貨丸め）、
+- **回帰テスト**：`simulator/tests/unit/test_run_backtest.py`（stop-out・通貨丸め）、
   `test_session_calendar.py`（カレンダー）、`test_run_backtest_every_tick.py`（every-tick 建値）、
   integration `test_ma_slope_reconcile.py`（2025-01 engine 実走突合）。
-- **使い捨て突合スクリプト・生データ**：`backtest/tests/confirmation/<日付>/`（.gitignore・大容量）。
+- **使い捨て突合スクリプト・生データ**：`simulator/tests/confirmation/<日付>/`（.gitignore・大容量）。
   各 `_reconcile_*.py` が当該月の M1/journal を読み、ours と MT5 オラクルを突合する。
 
 ---

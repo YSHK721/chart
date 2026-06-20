@@ -11,13 +11,13 @@
 ```
 chore(backtest): 突合用throwaway生データとfixture生成物をgitignore
 
-backtest/tests/confirmation/（179MBの突合用生MT5データ・使い捨てスクリプト）と、
+simulator/tests/confirmation/（179MBの突合用生MT5データ・使い捨てスクリプト）と、
 fixture 配下の OS/Python 生成物（.DS_Store / __pycache__）を追跡対象外にする
-（!backtest/tests/fixtures/** の再包含を打ち消す）。
+（!simulator/tests/fixtures/** の再包含を打ち消す）。
 ```
 
 ### コミット2（test: 2026-01 オラクル fixture）
-- Files: `backtest/tests/fixtures/mt5/ma_slope_jp225_202601/expected/report.json`
+- Files: `simulator/tests/fixtures/mt5/ma_slope_jp225_202601/expected/report.json`
 - Commit message:
 ```
 test(backtest): 2026-01 every-tick MT5突合オラクル fixture を追加

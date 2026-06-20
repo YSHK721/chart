@@ -29,7 +29,7 @@
 ?? .claude/skills/prompt-validation-workflow/run.sh
 ?? .doc/backtest/
 ?? .doc/indicator-management-ui/INDICATOR_CALC_MODEL.md
-?? backtest/tests/fixtures/mt5/ma_slope_jp225_202601/
+?? simulator/tests/fixtures/mt5/ma_slope_jp225_202601/
 ?? docs/
 
 分析：修正済みファイル（.gitignore）と未追跡ファイル（.doc/backtest/, docs/, fixture）を確認。

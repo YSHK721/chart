@@ -180,9 +180,9 @@
 - 未解決点（要ユーザー確認）：実 MT5 STAT_* の σ 定義（母分散 ddof=0 か標本分散 ddof=1 か）と Sharpe 基準。Section 5 integration で実 MT5 突合時に §12 記載値 0.17 の出所を確定し、必要なら式 or 仕様書を改訂
 - 追記（2026-06-17・usecaseレビューで深掘り）：Sharpe の「収益率基準」自体も一次情報間で矛盾。METRICS §1.2 は balance-HPR・ddof=0・非年率を規定する一方、PROCESS §6.1/§7-#9 は equity・単純収益率・足ベース・ddof=1・年率係数√A を規定。現実装は「式優先」方針により METRICS §1.2 を採用。doc 側でどちらを正とするか（MT5 STAT_SHARPE_RATIO の実定義）を Section 5 実 MT5 突合時に確定し統一する。
 - 決着（2026-06-18・実 MT5 golden 突合 TBD-A／feature/backtest-mt5-stats-calibration）：
-  fixture `backtest/tests/fixtures/mt5_outputs/report_900005560.json`（MA_Slope_EA / JP225 M1 / 1163 確定トレード）の
+  fixture `simulator/tests/fixtures/mt5_outputs/report_900005560.json`（MA_Slope_EA / JP225 M1 / 1163 確定トレード）の
   `deals`(dir="out") から再構成したトレード/balance 列で `compute_stats` を実 MT5 `results` に突合
-  （新規 golden: `backtest/tests/unit/test_compute_stats_golden_mt5.py`・許容 金額±0.5/比率±1e-4/件数一致）。
+  （新規 golden: `simulator/tests/unit/test_compute_stats_golden_mt5.py`・許容 金額±0.5/比率±1e-4/件数一致）。
   - **一致確定（19 STAT_*・golden で固定）**：net(-6169)/gross_profit(10506)/gross_loss(-16675)/PF(0.630045)/
     expected_payoff(-5.304385)/total_trades(1163)/profit_trades(292)/loss_trades(871)/long(582)/short(581)/
     largest_profit(245)/largest_loss(-130)/avg_profit(35.979452)/avg_loss(-19.144661)/max_con_wins(4)/
@@ -201,7 +201,7 @@
     STAT_EQUITY_DD(6594)/EQUITY_DD_abs(6174)＝ティック別含み損ピーク要。
     → これらは将来バー別/ティック別 equity 系列を `compute_stats` に供給できる段で再校正する（残存リスク）。
   - **§12 Sharpe 期待値（0.1862）据え置き**：Sharpe 定義を変えていない（バー別 equity 要で保留）ため整合。
-  - テスト結果：`python -m pytest backtest/tests/ -q` = 363 passed（baseline 342 + golden 21・§12 Z テスト 1 件は更新の上 pass）。
+  - テスト結果：`python -m pytest simulator/tests/ -q` = 363 passed（baseline 342 + golden 21・§12 Z テスト 1 件は更新の上 pass）。
 - 決着/未決の切り分け（2026-06-18・usecase レビュー 🟡-2／feature/backtest-mt5-stats-calibration）：
   本 ISSUE を RESOLVED から **PARTIALLY-RESOLVED** に是正。決着済みと未決を明確に分離する。
   - **決着済み（実 MT5 golden で固定）**：ゼロ=勝ち件数定義（profit_trades=292）/avg_profit・avg_loss/PF(0.630045)/
@@ -240,7 +240,7 @@
     (a) equity-DD = integration `test_ma_slope_reconcile.py::TestMaSlopeEquityStatsReconcile`（engine 実走）、
     (b) recovery = MT5 約定列 net × MT5 オラクル dd_max(6594) の合成、(c) equity-DD 関数の純粋性は
     独立計算の単体テストへ移譲。
-  - テスト結果：`python -m pytest backtest/tests/ -q` = **449 passed**（baseline 442 + 結線 unit 4 + reconcile
+  - テスト結果：`python -m pytest simulator/tests/ -q` = **449 passed**（baseline 442 + 結線 unit 4 + reconcile
     integration 5 − トートロジー golden 3 + 純関数性単体 1 = 449・退行なし）。
   - 残存（将来）：bar 解像度の equity-DD max は MT5 ティック解像度に ~25 届かない構造的残差。完全一致には
     tick 別含み損ピークの再構成が必要（本 ISSUE の射程外・必要時に別 ISSUE 起票）。
@@ -261,7 +261,7 @@
 - ステータス：CLOSED（WONTFIX・原典不在のため再現不能）
 - 検出日：2026-06-17
 - 経緯：CLEAN_ARCH §13 TBD「#4 Band 指標ソース（28バッファ四分位）」。Band.ex5 のみで .mq5 不在、pOL/pOH 算出式が不明のため完全再現不可。ユーザー確認の結果「Band.mq5 は存在しない」と確定 → #4 をスキップ
-- 影響：backtest/adapter/strategy に #4（Band 依存）戦略・E-PendingOrder(#4 専用 BuyLimit)・Band 指標は実装しない。設計上 #4 依存は adapter 層に局所化済みのため domain/usecase/framework/main・他戦略への波及なし
+- 影響：simulator/adapter/strategy に #4（Band 依存）戦略・E-PendingOrder(#4 専用 BuyLimit)・Band 指標は実装しない。設計上 #4 依存は adapter 層に局所化済みのため domain/usecase/framework/main・他戦略への波及なし
 - 再開条件：原典 Band.mq5 もしくは pOL/pOH の算出仕様が将来入手できた場合のみ再検討
 
 ## ISSUE-016
