@@ -317,3 +317,29 @@ marker の `id`（createSeriesMarkers は id 受理）。
   hover マーカー減光（§10.2）と単一 `_render` 経路で両立。後方互換（chart/購読API/range null）維持。
 - 受入: ホバー中、当該ペア以外のローソク足が減光し、ペアの足・マーカー・線が強調される。ホバー解除で復帰。
   既存テスト緑＋新規（範囲外帯の算出・highlight 連動・解除復帰）緑。canvas 実描画はブラウザ確認に委譲。
+
+---
+
+## 12. v6（ローソク足のみ減光・背景は減光しない／v5 オーバーレイを置換）
+
+- 変更理由: v5（§11・案A dimming オーバーレイ矩形）は x 帯を**全高の半透明暗色矩形**で覆うため、
+  ローソク足だけでなく**背景も減光**する。ユーザー要件は「**背景は絶対に減光させない・ローソク足だけを
+  限りなく減光**」。よってオーバーレイ方式を**廃止**し、per-bar 着色（案B）へ置換する。
+- 新方式（案B・per-bar 着色）: ホバー中、ペア `[entry_time, exit_time]` **外**のローソク足を、
+  `mainSeries.setData` の per-bar `color`/`borderColor`/`wickColor` で**極めて暗い色（背景に近い・限りなく減光）**へ
+  上書きする。ペア内バーは通常色。**背景ピクセルは一切変更しない**（ローソクの色だけが変わる）。ホバー解除で原色復元。
+- candle データ保持/復元（フェーズ2で確定・**ChartRenderer 起点 observer 方式**）:
+  - **基準 candles は ChartRenderer が単一所有**（`_baseCandles`）。`setCandles`（全置換）/`updateLastCandle`（差分）の
+    全経路（timeframe 切替=controller・restore・live=live_updater）が ChartRenderer を通過するため、ここを唯一の同期点とする。
+    （composition_root 単独供給＝`setBaseCandles` 方式は陳腐化するため**不採用**。）
+  - hover: trade markers renderer が ChartRenderer の `dimCandlesOutsidePair({from,to})` を呼び、ChartRenderer が基準
+    candles から「ペア外を per-bar 暗色化」した配列を `mainSeries.setData` する。解除: `restoreCandles()` で基準を `setData` 復元。
+    **mainSeries への setData は ChartRenderer に閉じる**（upstream 隔離・grep0件規約）。renderer は直接 setData しない。
+  - ChartRenderer は `setCandles`/`updateLastCandle` 時に observer（trade markers renderer の `onCandlesChanged`）へ通知。
+    hover 中（dim 適用中）に通知が来たら **highlight 解除→基準復元**してから本来の書込みに委ねる（二重 setData 競合の回避）。
+- `PairDimPrimitive`（v5 オーバーレイ）は**削除**。`PairLinesPrimitive`（ペア線・v4）と marker 減光（v4）は維持。
+- 制約: committed simulator 無改変。フロント（renderer＋composition_root±ChartRenderer 連携）に閉じる。
+  §9 範囲フィルタ・§10.2 marker 減光と単一 `_render` で両立。後方互換（chart/購読API/range null・基準candles未供給）維持。
+- 受入: ホバーで当該ペア以外の**ローソク足のみ**が限りなく減光（**背景は不変**）、ペアの足・マーカー・線が強調。
+  解除で完全復元。既存テスト緑＋新規（ペア外バー暗色化・ペア内保持・解除復元・基準candles未供給フォールバック）緑。
+  実描画・実hoverはブラウザ確認。

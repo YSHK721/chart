@@ -6,7 +6,8 @@
 //   chart.timeScale().timeToCoordinate(time)・series.priceToCoordinate(price)（範囲外は null）。
 //
 // 共通ライフサイクル/状態（attach・pairs/highlight 保持・再描画要求・paneView）は PairPrimitiveBase に集約。
-//   本クラスの責務は「ペア線の描画（_draw）」に限定する（SRP・帯減光は PairDimPrimitive が担う）。
+//   本クラスの責務は「ペア線の描画（_draw）」に限定する（SRP）。
+//   （ローソク減光は §12 v6 で ChartRenderer の per-bar 着色へ移行済。本 primitive は減光を担わない。）
 //
 // 単体検証は fake target/scale/chart で行い（座標・色・alpha を観測）、canvas 実描画・実 lwc は
 //   ブラウザ結合確認へ委譲する（§10.4・C3）。

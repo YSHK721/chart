@@ -544,3 +544,146 @@ test('updateSeriesTail: updates overlay readout lastValue to the tail last point
   assert.equal(meta.lastValue, 99);
   void chart;
 });
+
+// ===========================================================================
+// v6（§12）: 基準 candles 所有・observer 通知・per-bar 減光描画/復元
+// 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §12（ローソク足のみ減光・背景不変・per-bar 着色）、
+//   フェーズ2 確定機構（基準 candles は ChartRenderer 所有・ChartRenderer 起点 observer 通知）。
+//   構造: Arrange-Act-Assert。mainSeries.setData の記録（fakeSeries._data）で per-bar 色上書きを観測。
+//   canvas 実描画・実ピクセル（背景不変・極暗色の見た目）はブラウザ確認に委譲（node:test 範囲外）。
+// ===========================================================================
+
+const V6_CANDLES = [
+  { time: 10, open: 1, high: 2, low: 0, close: 1.5 },
+  { time: 20, open: 2, high: 3, low: 1, close: 2.5 },
+  { time: 30, open: 3, high: 4, low: 2, close: 3.5 },
+  { time: 40, open: 4, high: 5, low: 3, close: 4.5 },
+  { time: 50, open: 5, high: 6, low: 4, close: 5.5 },
+];
+
+test('v6: setCandles notifies the injected candle observer (ChartRenderer 起点同期)', () => {
+  // Arrange: observer を注入。
+  const chart = fakeChart();
+  const main = fakeMainSeries();
+  const lwc = fakeLwc();
+  let notified = 0;
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc, onCandlesChanged: () => { notified += 1; } });
+  // Act
+  renderer.setCandles(V6_CANDLES);
+  // Assert: setCandles で observer が 1 回通知される（候補同期の起点）。
+  assert.equal(notified, 1);
+});
+
+test('v6: updateLastCandle notifies the injected candle observer', () => {
+  // Arrange
+  const chart = fakeChart();
+  const main = fakeMainSeries();
+  const lwc = fakeLwc();
+  let notified = 0;
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc, onCandlesChanged: () => { notified += 1; } });
+  renderer.setCandles(V6_CANDLES); // 1
+  // Act
+  renderer.updateLastCandle({ time: 50, open: 5, high: 7, low: 4, close: 6 }); // 2
+  // Assert: live 差分更新でも observer が通知される（全経路同期）。
+  assert.equal(notified, 2);
+});
+
+test('v6: setCandles without an observer is a no-op notify (backward compatible)', () => {
+  // Arrange + Act + Assert: observer 未注入でも throw しない（後方互換）。
+  const { renderer, main } = newRenderer();
+  assert.doesNotThrow(() => renderer.setCandles(V6_CANDLES));
+  assert.deepEqual(main._data, V6_CANDLES);
+});
+
+test('v6: dimCandlesOutsidePair overrides per-bar color outside [from,to] and keeps inside original', () => {
+  // Arrange: 基準 candles を保持させる。
+  const { renderer, main } = newRenderer();
+  renderer.setCandles(V6_CANDLES);
+  // Act: ペア [20,40] の外（time=10,50）を減光、内（20,30,40）は原色維持。
+  renderer.dimCandlesOutsidePair({ from: 20, to: 40 });
+  // Assert: mainSeries.setData が dim 配列で呼ばれる。
+  const data = main._data;
+  assert.equal(data.length, 5);
+  const inside = data.filter((b) => b.time >= 20 && b.time <= 40);
+  const outside = data.filter((b) => b.time < 20 || b.time > 40);
+  // 外: per-bar color/borderColor/wickColor が極暗色で上書きされる（同一の暗色）。
+  for (const b of outside) {
+    assert.ok(b.color, '外バーは color を持つ（減光）');
+    assert.equal(b.color, b.borderColor);
+    assert.equal(b.color, b.wickColor);
+  }
+  // 内: per-bar 色上書きを持たない（原色＝既定 up/down 着色に委ねる）。
+  for (const b of inside) {
+    assert.equal(b.color, undefined);
+    assert.equal(b.borderColor, undefined);
+    assert.equal(b.wickColor, undefined);
+  }
+});
+
+test('v6: dimCandlesOutsidePair preserves OHLC values of every bar (only color is added)', () => {
+  // Arrange
+  const { renderer, main } = newRenderer();
+  renderer.setCandles(V6_CANDLES);
+  // Act
+  renderer.dimCandlesOutsidePair({ from: 20, to: 40 });
+  // Assert: time/open/high/low/close は基準と完全一致（データ改変なし＝§12 背景/データ不変則）。
+  const data = main._data;
+  for (let i = 0; i < V6_CANDLES.length; i += 1) {
+    assert.equal(data[i].time, V6_CANDLES[i].time);
+    assert.equal(data[i].open, V6_CANDLES[i].open);
+    assert.equal(data[i].high, V6_CANDLES[i].high);
+    assert.equal(data[i].low, V6_CANDLES[i].low);
+    assert.equal(data[i].close, V6_CANDLES[i].close);
+  }
+});
+
+test('v6: dimming does not mutate the stored base candles (restore yields originals)', () => {
+  // Arrange
+  const { renderer, main } = newRenderer();
+  renderer.setCandles(V6_CANDLES);
+  // Act: 減光 → 復元。
+  renderer.dimCandlesOutsidePair({ from: 20, to: 40 });
+  renderer.restoreCandles();
+  // Assert: 復元後は基準 candles（色上書きなし）が setData される。
+  assert.deepEqual(main._data, V6_CANDLES);
+});
+
+test('v6: restoreCandles re-applies the base candles to the main series', () => {
+  // Arrange
+  const { renderer, main } = newRenderer();
+  renderer.setCandles(V6_CANDLES);
+  renderer.dimCandlesOutsidePair({ from: 20, to: 40 });
+  // Act
+  renderer.restoreCandles();
+  // Assert: 基準復元（色なし）。
+  assert.deepEqual(main._data, V6_CANDLES);
+});
+
+test('v6: dimCandlesOutsidePair is a safe no-op when no base candles were set', () => {
+  // Arrange: setCandles を呼ばない（基準未供給）。
+  const { renderer, main } = newRenderer();
+  const before = main._data;
+  // Act / Assert: throw せず mainSeries.setData も呼ばない（フォールバック・候補据え置き）。
+  assert.doesNotThrow(() => renderer.dimCandlesOutsidePair({ from: 20, to: 40 }));
+  assert.equal(main._data, before); // 触らない（null のまま）
+});
+
+test('v6: restoreCandles is a safe no-op when no base candles were set', () => {
+  // Arrange
+  const { renderer, main } = newRenderer();
+  const before = main._data;
+  // Act / Assert
+  assert.doesNotThrow(() => renderer.restoreCandles());
+  assert.equal(main._data, before);
+});
+
+test('v6: setCandleObserver installs the observer after construction (late binding)', () => {
+  // Arrange: 構築後に observer を据える（composition root の生成順序差を吸収）。
+  const { renderer } = newRenderer();
+  let notified = 0;
+  renderer.setCandleObserver(() => { notified += 1; });
+  // Act
+  renderer.setCandles(V6_CANDLES);
+  // Assert
+  assert.equal(notified, 1);
+});

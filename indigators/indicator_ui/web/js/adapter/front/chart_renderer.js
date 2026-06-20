@@ -35,6 +35,11 @@ const INDICATOR_PANE_STRETCH = 1;
 
 const WATERMARK_COLOR = 'rgba(209, 212, 220, 0.9)';
 
+// v6（§12）: ホバー中ペア外のローソク足に被せる極暗色（背景 #131722 に近い不透明暗色）。
+//   per-bar color/borderColor/wickColor を本色で上書きし、ローソクのみを限りなく減光する
+//   （背景ピクセルは一切変更しない）。ペア内バーは色を付けず原色（既定 up/down 着色）に委ねる。
+const DIM_CANDLE_COLOR = '#16191f';
+
 // σ 水準線のカラースキーム（histogram の level_colors と同義: 中心からの距離で 緑→赤）。
 // 端点は common/level_colors.py の _CALM/_HOT（#2e7d32 / #d32f2f）に一致させる。
 const SCHEME_CALM = [46, 125, 50]; // 緑（中心＝穏やか）
@@ -70,11 +75,19 @@ export class ChartRenderer {
   // lwc: グローバル LightweightCharts 名前空間（LineSeries/HistogramSeries/createTextWatermark）。
   // onCrosshairReadout: クロスヘア価格読み取り欄へ読み取り DTO を渡すコールバック
   //   （省略時 no-op＝後方互換）。DTO はプレーンなデータ構造（series 実体・lwc 型を含めない）。
-  constructor({ chart, mainSeries, lwc, onCrosshairReadout }) {
+  // onCandlesChanged: 基準 candles 変更（setCandles 全置換 / updateLastCandle 差分）時に呼ぶ
+  //   observer（省略時 no-op＝後方互換）。trade markers renderer が hover 中なら highlight 解除へ使う
+  //   （ChartRenderer 起点の単一同期点＝v6・§12 / フェーズ2 確定機構）。
+  constructor({ chart, mainSeries, lwc, onCrosshairReadout, onCandlesChanged }) {
     this._chart = chart;
     this._mainSeries = mainSeries;
     this._lwc = lwc ?? {};
     this._onCrosshairReadout = typeof onCrosshairReadout === 'function' ? onCrosshairReadout : () => {};
+    // v6: 基準 candles の単一所有者（setCandles 全置換・updateLastCandle 差分で更新）。
+    //   per-bar 減光（dimCandlesOutsidePair）・基準復元（restoreCandles）はこの基準から導出する。
+    this._baseCandles = null;
+    // v6: candle 変更 observer（後方互換 no-op）。setCandleObserver で後から差し替え可能（生成順序吸収）。
+    this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
     // 読み取り欄の最新足の単一源（lightweight-charts から逆引きしない＝upstream API 名を増やさない）。
     //   setCandles で配列末尾、updateLastCandle で当該足を保持する。
     this._lastBar = null;
@@ -95,9 +108,13 @@ export class ChartRenderer {
   setCandles(candles) {
     const arr = candles ?? [];
     this._mainSeries.setData(arr);
+    // v6: 基準 candles を全置換で更新（per-bar 減光/復元の元集合）。
+    this._baseCandles = arr;
     // 読み取り欄の最新足の単一源を更新（配列末尾の足）。空配列なら null。
     this._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
     this._chart.timeScale().fitContent();
+    // v6: candle 変更を observer へ通知（ChartRenderer 起点同期＝hover 中なら highlight 解除へ）。
+    this._onCandlesChanged();
   }
 
   // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。
@@ -106,7 +123,60 @@ export class ChartRenderer {
     this._mainSeries.update(candle);
     // 最新足の単一源を更新し、hover していない読み取り表示が古くならないよう DTO を再発火する。
     this._lastBar = candle;
+    // v6: 基準 candles の末尾を差分反映（同 time は置換・新 time は追加）。減光の元集合を同期。
+    this._mergeBaseCandle(candle);
     this._emitReadout(null);
+    // v6: candle 変更を observer へ通知（live tick でも hover 中なら highlight 解除させる）。
+    this._onCandlesChanged();
+  }
+
+  // v6: candle 変更 observer を後から据える（composition root の renderer/markers 生成順序差を吸収）。
+  setCandleObserver(onCandlesChanged) {
+    this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
+  }
+
+  // v6: 基準 candles の末尾足を差分マージする（updateLastCandle 用）。基準未保持なら単一要素配列。
+  _mergeBaseCandle(candle) {
+    if (!candle) {
+      return;
+    }
+    const base = this._baseCandles ? this._baseCandles.slice() : [];
+    if (base.length > 0 && base[base.length - 1].time === candle.time) {
+      base[base.length - 1] = candle;
+    } else {
+      base.push(candle);
+    }
+    this._baseCandles = base;
+  }
+
+  // v6（§12）: ホバー中ペア [from,to] 外のローソク足を per-bar 極暗色へ上書きして mainSeries へ反映する。
+  //   ペア内バーは色を付けず原色（既定 up/down 着色）に委ねる。time/open/high/low/close は基準と完全一致
+  //   （データ非改変・背景ピクセルも不変）。基準 candles 未供給時は no-op（候補据え置き・後方互換）。
+  //   mainSeries.setData を呼ぶのは本所のみ（upstream 隔離・grep0件規約維持）。
+  dimCandlesOutsidePair({ from, to }) {
+    if (!this._baseCandles) {
+      return;
+    }
+    const dimmed = this._baseCandles.map((bar) => {
+      if (bar.time >= from && bar.time <= to) {
+        return bar; // ペア内は原色維持（色上書きしない）。
+      }
+      return {
+        ...bar,
+        color: DIM_CANDLE_COLOR,
+        borderColor: DIM_CANDLE_COLOR,
+        wickColor: DIM_CANDLE_COLOR,
+      };
+    });
+    this._mainSeries.setData(dimmed);
+  }
+
+  // v6（§12）: per-bar 減光を解除し基準 candles（色上書きなし）を復元する。基準未供給なら no-op。
+  restoreCandles() {
+    if (!this._baseCandles) {
+      return;
+    }
+    this._mainSeries.setData(this._baseCandles);
   }
 
   _slot(instanceId) {

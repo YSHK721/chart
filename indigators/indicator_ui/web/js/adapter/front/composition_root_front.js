@@ -185,7 +185,11 @@ export async function bootstrap({
   //   返すのみ（load トリガは入口 index.html が ready 後に呼ぶ＝既存 candles 経路に非干渉）。
   //   chart も渡し、可視時間範囲を購読して範囲内マーカーのみ描画する（§9 Fix v3・左端クランプ列の除去）。
   //   購読 API 非提供時は全件描画フォールバック（後方互換）。
-  const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  //   v6（§12）: renderer（ChartRenderer）を渡し、hover 中ペア外のローソク足を per-bar 減光させる
+  //   （減光/復元は ChartRenderer に閉じる＝upstream 隔離維持）。renderer 生成は tradeMarkers より先のため、
+  //   candle 変更 observer は setCandleObserver で後据えする（ChartRenderer 起点同期・必須条件1/2）。
+  const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart, chartRenderer: renderer });
+  renderer.setCandleObserver(() => tradeMarkers.onCandlesChanged());
 
   return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers };
 }

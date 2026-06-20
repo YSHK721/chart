@@ -41,7 +41,6 @@ const MODULE_ORDER = [
   'js/adapter/front/crosshair_readout_view.js',
   'js/adapter/front/pair_primitive_base.js',
   'js/adapter/front/pair_lines_primitive.js',
-  'js/adapter/front/pair_dim_primitive.js',
   'js/adapter/front/trade_markers_renderer.js',
   'js/adapter/front/composition_root_front.js',
 ];
