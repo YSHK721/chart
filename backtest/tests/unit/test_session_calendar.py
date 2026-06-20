@@ -41,25 +41,20 @@ class TestJp225SessionCalendar:
         closed = Jp225SessionCalendar().closed_bar_indices(bars)
         assert closed == {0}
 
-    def test_friday_2355_onward_closed(self):
-        # 2026-01-09 は金曜。23:52 は開場、23:55/23:59 は週末クローズ。
-        bars = [
-            _bar("2026-01-09T23:52"),  # 金 開場
-            _bar("2026-01-09T23:55"),  # 金 クローズ境界
-            _bar("2026-01-09T23:59"),  # 金 クローズ
-        ]
-        closed = Jp225SessionCalendar().closed_bar_indices(bars)
-        assert closed == {1, 2}
+    def test_daily_close_2359_closed_2358_open(self):
+        # 日次クローズ: 23:58 は開場、23:59 は閉鎖（実 MT5: 2026-02-06 23:58 約定/23:59 拒否）。
+        bars = [_bar("2026-02-06T23:58"), _bar("2026-02-06T23:59")]
+        assert Jp225SessionCalendar().closed_bar_indices(bars) == {1}
 
-    def test_non_friday_late_night_open(self):
-        # 2026-01-06 は火曜。23:59 でも開場（金曜クローズ規則の対象外）。
-        bars = [_bar("2026-01-06T23:59")]
-        assert Jp225SessionCalendar().closed_bar_indices(bars) == set()
+    def test_daily_close_applies_every_day_not_only_friday(self):
+        # 金曜固有ではなく毎日同一: 火曜でも 23:59 閉鎖・23:58 開場。
+        bars = [_bar("2026-02-03T23:58"), _bar("2026-02-03T23:59")]  # 火曜
+        assert Jp225SessionCalendar().closed_bar_indices(bars) == {1}
 
-    def test_weekend_boundary_marks_fri_last_and_mon_first(self):
-        # 実 MT5 の拒否点（Fri 23:59 と Mon 01:00）が両方閉鎖になることを固定。
+    def test_weekend_boundary_marks_fri_2359_and_mon_first(self):
+        # 実 MT5 の拒否点（Fri 23:59 と Mon 01:00）が閉鎖、Fri 23:58 と Mon 01:01 は開場。
         bars = [
-            _bar("2026-01-09T23:52"),  # 金 開場
+            _bar("2026-01-09T23:58"),  # 金 開場（23:58）
             _bar("2026-01-09T23:59"),  # 金 クローズ（拒否点1）
             _bar("2026-01-12T01:00"),  # 月 プレオープン（拒否点2）
             _bar("2026-01-12T01:01"),  # 月 開場

@@ -23,8 +23,6 @@ from typing import Any, Iterable
 
 from backtest.usecase.ports import SessionCalendarPort
 
-_FRIDAY = 4  # Monday=0 .. Sunday=6
-
 
 class NullCalendar(SessionCalendarPort):
     """常時開場（既定）。閉鎖バー無し＝空集合を返す。"""
@@ -34,19 +32,27 @@ class NullCalendar(SessionCalendarPort):
 
 
 class Jp225SessionCalendar(SessionCalendarPort):
-    """JP225 週次セッション（時刻ベース近似）。
+    """JP225 日次セッション（時刻ベース）。tradeable 窓 = [01:01, 23:58]。
+
+    実 MT5 突合（260620-01/02/03 journal の `[market closed]` 拒否点）から確定した
+    日次セッション境界:
+      - 日次プレオープン: 00:00–01:00（0..60 分）は閉鎖、01:01 開場
+        （実例 2026-01-12 / 02-02 の 01:00 拒否、01:01+ 約定）。
+      - 日次クローズ: 23:59（1439 分）は閉鎖、23:58 まで開場
+        （実例 2026-01-09 / 02-06 の 23:59 拒否、02-06 23:58 は約定）。
+    金曜固有ではなく毎日同一（23:59 約定は全 run で 0 件・23:58 は約定あり）。
+    週末（土日）はバー自体が存在しないため明示判定不要。
 
     Args:
-        daily_open_minute: 日次開場の分（午前0時からの分）。既定 61=01:01 開場
-            （00:00–01:00＝0..60 分は閉鎖）。
-        friday_close_minute: 金曜クローズの分。既定 1435=23:55（以降は週末閉鎖）。
+        daily_open_minute: 日次開場の分（午前0時からの分）。既定 61=01:01。
+        daily_close_minute: 日次クローズの分。既定 1439=23:59（以降は閉鎖）。
     """
 
     def __init__(
-        self, *, daily_open_minute: int = 61, friday_close_minute: int = 1435
+        self, *, daily_open_minute: int = 61, daily_close_minute: int = 1439
     ) -> None:
         self._daily_open_minute = int(daily_open_minute)
-        self._friday_close_minute = int(friday_close_minute)
+        self._daily_close_minute = int(daily_close_minute)
 
     def closed_bar_indices(self, bars: Iterable[Any]) -> "set[int]":
         import pandas as pd
@@ -55,11 +61,7 @@ class Jp225SessionCalendar(SessionCalendarPort):
         for i, bar in enumerate(bars):
             ts = pd.Timestamp(bar.time)
             mins = ts.hour * 60 + ts.minute
-            # 日次プレオープン: 開場分(既定 01:01)より前は閉鎖。
-            if mins < self._daily_open_minute:
-                closed.add(i)
-                continue
-            # 週末クローズ: 金曜の指定分(既定 23:55)以降は閉鎖。
-            if ts.weekday() == _FRIDAY and mins >= self._friday_close_minute:
+            # 日次プレオープン（01:00 以前）または日次クローズ（23:59 以降）は閉鎖。
+            if mins < self._daily_open_minute or mins >= self._daily_close_minute:
                 closed.add(i)
         return closed

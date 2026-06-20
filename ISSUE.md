@@ -320,3 +320,15 @@
 - 対策（config gated・既定 byte-identical）：domain/_shared に `round_profit(value, digits)`（digits=None は素値・指定時 half-away-from-zero）を追加。TradeRecord に `profit_round_digits`（既定 None）フィールド、Deal.from_close に同名引数を追加し、双方が round_profit を共有。Interactor は config.profit_round_digits（既定 None＝丸めず）を確定トレード生成点（_close_open_trade）で TradeRecord へ付与し、deal.profit（balance）と pnl（stats）を一致させる。config_loader/BacktestConfig に profit_round_digits（既定 None・0-8）を追加。既定 None では従来式の素値＝byte-identical
 - 検証：bar-mode + jp225 + profit_round_digits=0 で 2026-01 突合 → **net -4649.0 vs MT5 -4649（差 0.0・literal 一致）**、balance 5351.0 vs 5351、per-trade pnl 0/1444 不一致（完全一致）。全 530 passed（round_profit 単体4／TradeRecord 丸め2／Deal 丸め1 の回帰テスト追加・既定 None の byte-identical 維持・既存 2025-01 突合不変）
 - 到達点：ISSUE-017（every-tick 建値）→018（週末カレンダー）→019（stop-out 決済価格）→020（通貨丸め）の解消により、2026-01 は実 MT5 と **trades 1444・全建値・全決済・net -4649・balance 5351 まで literal bit-exact** に到達
+
+## ISSUE-021
+
+- 概要：Jp225SessionCalendar の日次クローズ時刻が「金曜 23:55 以降」に過剰適合（overfit）していた。2026-02 突合（260620-03 run5）で、MT5 が約定した金曜 2026-02-06 23:58 をこちらが誤って閉鎖扱いで拒否し +208 トレード乖離
+- 重大度：中（real_ticks/bar-mode 双方の session 判定。session_calendar="jp225" 選択時のみ。既定 broker/none は無影響）
+- ステータス：RESOLVED
+- 検出日：2026-06-20
+- 検出経路：260620-03 run5（2026-02・1分足OHLC）突合の forward-align。先頭885エントリ一致後、Fri 2026-02-06 23:58 sell をこちらが欠落（MT5 は約定）。journal に `2026.02.06 23:59:00 [market closed]`・23:59 約定 0 件・23:58 約定 2 件を確認し、クローズは「23:59（毎日）」で 23:58 は開場と判明。当初 ISSUE-018 の friday_close=23:55 は 2026-01 単一事象（01-09 23:59 拒否）への過剰適合だった（23:55-23:58 の金曜約定が 2026-01 に無く誤りが露見しなかった）
+- 原因：Jp225SessionCalendar が `weekday==Friday and mins>=1435(23:55)` を閉鎖にしていた。実 MT5 の日次セッションは [01:01, 23:58]（00:00-01:00 プレオープン閉鎖・23:59 クローズ閉鎖）で曜日非依存
+- 対策：Jp225SessionCalendar を「mins < 61(01:01未満) または mins >= 1439(23:59以降) を閉鎖」（毎日同一・金曜固有ロジック撤去）へ修正。daily_open_minute=61 / daily_close_minute=1439。session_calendar.py の _FRIDAY 定数と weekday 判定を削除
+- 検証：2026-02 run5 突合 → trades 886 vs 886（完全一致）・全886エントリ bit-exact・初回 buy 53680.7・stop-out 2026-02-09 一致。2026-01 突合は net -4649/balance 5351/0-of-1444 を維持（退行なし）。全532テスト pass（カレンダー単体テストを 23:59 日次クローズ基準へ更新）
+- 残差（別要因）：2026-02 は net -5011 vs MT5 -5021（差 10）が残る。原因は stop-out の決済価格が「割れバーの open クォート」（MT5: Mon 2026-02-09 01:00 open 57612+spread45=57657）に対しこちらは close 基準 mark_price（57647）で、週末ギャップ（open≠close）でのみ顕在。2026-01 は stop バーが open==close のため一致していた（ISSUE-022 として切り出し）
