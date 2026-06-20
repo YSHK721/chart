@@ -48,6 +48,20 @@ class TestDealFromClose:
         )
         assert deal.profit == pytest.approx(1_000_000.0)
 
+    def test_profit_round_digits_rounds_profit(self):
+        # ISSUE-020: profit_round_digits 指定で profit を口座通貨桁へ丸める。
+        # (100.002 - 100) * 1 * 1 * 100 = 0.2。None=素値 / 0=整数丸め。
+        raw = Deal.from_close(
+            side="buy", entry_price=100.0, close_price=100.002, volume=1.0,
+            contract_size=100, swap=0.0, commission=0.0,
+        )
+        assert raw.profit == pytest.approx(0.2)
+        rounded = Deal.from_close(
+            side="buy", entry_price=100.0, close_price=100.002, volume=1.0,
+            contract_size=100, swap=0.0, commission=0.0, profit_round_digits=0,
+        )
+        assert rounded.profit == pytest.approx(0.0)
+
     def test_swap_and_commission_included(self):
         # price == entry -> 価格差分 0、profit = swap + commission
         deal = Deal.from_close(

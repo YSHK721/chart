@@ -49,6 +49,9 @@ class BacktestConfig:
     # "bid_ask"＝決済価格基準（買い保有=Bid=close / 売り保有=Ask=close+spread×point_size）。
     # default 付きのため既存構築と完全後方互換。
     floating_pnl_basis: str = "close"
+    # 約定損益の口座通貨丸め桁（ISSUE-020）。既定 None＝丸めず素値（byte-identical）。
+    # 0 で JPY 整数丸め（実 MT5 は約定損益を口座通貨精度へ丸めて balance 反映）。
+    profit_round_digits: "int | None" = None
 
 
 @dataclass

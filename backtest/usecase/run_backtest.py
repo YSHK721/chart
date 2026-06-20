@@ -38,6 +38,8 @@ def _close_deal(trade: TradeRecord) -> Deal:
         contract_size=trade.contract_size,
         swap=trade.swap,
         commission=trade.commission,
+        # trade と同一の通貨丸めを deal.profit にも適用（balance と pnl を一致させる）。
+        profit_round_digits=trade.profit_round_digits,
     )
 
 
@@ -74,13 +76,31 @@ class RunBacktestRequest:
 
 
 class RunBacktestInteractor(RunBacktestInputBoundary):
-    def __init__(self, *, strategy: Any, indicators: Any, tick_model: Any) -> None:
+    def __init__(
+        self,
+        *,
+        strategy: Any,
+        indicators: Any,
+        tick_model: Any,
+        session_calendar: Any = None,
+    ) -> None:
         self._strategy = strategy
         self._indicators = indicators
         self._tick_model = tick_model
+        # 市場開閉カレンダー（DI・既定 None=常時開場＝既定経路 byte-identical）。
+        self._session_calendar = session_calendar
+        # 約定損益の口座通貨丸め桁（execute/_execute_every_tick が config から設定）。
+        # __init__ で明示初期化し「execute 経由で必ず設定済み」の前提を明確化する。
+        self._profit_round_digits: "int | None" = None
 
-    @staticmethod
+    def _closed_bars(self, bars: list) -> "set[int]":
+        """新規成行を約定しないバー index 集合（カレンダー未注入なら空集合）。"""
+        if self._session_calendar is None:
+            return set()
+        return self._session_calendar.closed_bar_indices(bars)
+
     def _close_open_trade(
+        self,
         ot: _OpenTrade,
         *,
         exit_time: Any,
@@ -96,7 +116,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         """保有玉 1 件を確定決済する（reverse / SL / TP で共通の決済処理）。
 
         手順は確定トレード列・margin・deal・balance_curve への反映を 1 箇所に集約する
-        （reverse 決済と SL/TP 決済で重複していた処理の単一化）。振る舞いは不変。
+        （reverse 決済と SL/TP 決済で重複していた処理の単一化）。TradeRecord は本メソッド
+        が唯一の生成点であり、約定損益の通貨丸め桁（self._profit_round_digits・既定 None）
+        を確定トレードへ付与する。振る舞いは丸め桁未設定時は不変（後方互換）。
         """
         trade = TradeRecord(
             side=ot.position.side,
@@ -109,6 +131,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             swap=0.0,
             commission=0.0,
             exit_reason=exit_reason,
+            profit_round_digits=self._profit_round_digits,
         )
         trades.append(trade)
         account.open_positions.remove(ot.position)
@@ -127,6 +150,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
         config = request.config
         bars = list(request.bars)
+        # 約定損益の口座通貨丸め桁（既定 None＝丸めず＝byte-identical）。確定トレード生成
+        # （_close_open_trade）が本値を TradeRecord に付与し pnl/deal/balance を一致させる。
+        self._profit_round_digits = getattr(config, "profit_round_digits", None)
+        # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で既定経路は不変。
+        closed_bars = self._closed_bars(bars)
 
         # OnInit 前処理
         self._strategy.on_init(config, self._indicators)
@@ -184,6 +212,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 if halted
                 else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
             )
+            # 市場閉鎖バーは新規成行を約定しない（ドテン反転の reverse 決済も含め全約定を
+            #   スキップ）。on_new_bar は評価済＝保有不変のため、戦略（保有側基準の
+            #   level-trigger）が次の開場バーで自動再発注し、実 MT5 の fail→retry→開場約定を
+            #   再現する。SL/TP(H)・equity/stop-out(I) は閉鎖バーでも従来どおり評価する。
+            if bar_index in closed_bars:
+                orders = []
             # F 発注（成行約定）。約定価格基準（config）→当該足の建値を一元化した
             #   derive_quotes（_execution）へ委譲する。決済価格は close_price_for で
             #   約定価格ルール（long 決済=bid / short 決済=ask）を一意に決める。
@@ -275,10 +309,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         },
                         bar_index=bar_index,
                     )
-                # "close_and_halt": 全保有玉を強制決済（buy=bid・sell=ask）し、以降の
-                # 新規発注を抑止して最終統計まで完走する（cycle4 バグ②）。
+                # "close_and_halt": 全保有玉を強制決済し、以降の新規発注を抑止して最終統計
+                # まで完走する（cycle4 バグ②）。強制決済価格は「margin 割れを判定した時点
+                # の現値」＝account.mark_price（update_floating_pnl と同一価格・bar.close
+                # 基準）を用いる。成行建値が始値基準（current_open）でも、過ぎ去った始値で
+                # なく割れ時点の close 現値で決済する（実 MT5 整合・ISSUE-019）。
                 for ot in open_trades:
-                    close_price = close_price_for(ot.position.side, bid=bid, ask=ask)
+                    close_price = account.mark_price(bar, ot.position.side)
                     self._close_open_trade(
                         ot,
                         exit_time=bar.time,
@@ -326,6 +363,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             - bar-mode との非一致: equity 系 stats（equity_curve 長・DD）は「評価点が
               ティック数に依存する」ため bar-mode（1 バー 1 点）と一致しない。確定トレード
               （約定・決済価格）は縮退条件（1 バー 1 ティック=close・spread0）で一致する。
+            - 約定価格の基準（非対称・意図的）: 成行約定（新規建て・reverse 決済）は
+              「足境界のバー open クォート」（derive_quotes・bar-mode と同一）で約定する。
+              一方 SL/TP・stop-out の決済は「到達/評価ティック価格」を用いる（ティック駆動
+              の固有挙動）。基準が約定種別で異なる点に注意（実 MT5 every-tick 整合）。
             - fill_delay=next_tick: 建てたバー（opened_bar_index==bar_index）のティック
               では SL/TP 監視しない。次バー以降のティックで監視する。
             - SL/TP 同時到達: check_sltp_hit_at_tick が単一価格 p で high=low=p として
@@ -333,6 +374,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         """
         config = request.config
         bars = list(request.bars)
+        # 約定損益の口座通貨丸め桁（既定 None＝丸めず＝byte-identical）。
+        self._profit_round_digits = getattr(config, "profit_round_digits", None)
+        # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で挙動不変。
+        closed_bars = self._closed_bars(bars)
 
         self._strategy.on_init(config, self._indicators)
 
@@ -387,54 +432,70 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
             )
 
+            # 当該足のティックを materialize（空判定のため一覧化）。実 MT5 every-tick は
+            # 新規バーを「最初のティック」で検知するため、ティック 0 件足では新規バーを
+            # 検知せず発注しない（次足へ持ち越さない＝実 MT5 整合）。
+            bar_ticks = list(self._tick_model.ticks_of(bar, prev_close))
+
+            # F ★足境界・バー open クォートで成行約定（bar-mode と同一: derive_quotes）。
+            #   実 MT5 は新規バーの成行を「バー open のクォート」（買い=open+spread×point、
+            #   売り=open）で約定し、ティックは含み損/SL-TP/stop-out の評価にのみ用いる
+            #   （bar-mode 突合 2025-01 と同一の建値ルール）。ティック 0 件足では発注しない。
+            #   市場閉鎖バー（closed_bars）も新規成行を約定しない（ドテン反転の reverse
+            #   決済も含め全約定を抑止。保有不変＝戦略が次の開場バーで自動再発注）。
+            if bar_ticks and pending_orders and bar_index not in closed_bars:
+                bid0, ask0, fill_spread, fill_point = derive_quotes(
+                    bar,
+                    entry_price_basis=config.entry_price_basis,
+                    point_size=spec.point_size,
+                )
+                for order in pending_orders:
+                    # 反対サイドの保有玉があれば bar open クォートで reverse 決済。
+                    reverse_kept: list[_OpenTrade] = []
+                    for ot in open_trades:
+                        if ot.position.side != order.side:
+                            close_price = close_price_for(
+                                ot.position.side, bid=bid0, ask=ask0
+                            )
+                            self._close_open_trade(
+                                ot,
+                                exit_time=bar.time,
+                                exit_price=close_price,
+                                exit_reason="reverse",
+                                contract_size=contract_size,
+                                leverage=spec.leverage,
+                                account=account,
+                                trades=trades,
+                                deals=deals,
+                                balance_curve=balance_curve,
+                            )
+                        else:
+                            reverse_kept.append(ot)
+                    open_trades = reverse_kept
+
+                    position = fill_market_order(
+                        order, bid=bid0, ask=ask0, spread=fill_spread, point_size=fill_point
+                    )
+                    account.open_positions.append(position)
+                    account.margin += position.required_margin(
+                        spec.leverage, contract_size
+                    )
+                    open_trades.append(
+                        _OpenTrade(
+                            position=position,
+                            sl=order.sl,
+                            tp=order.tp,
+                            entry_time=bar.time,
+                            entry_price=position.entry_price,
+                            opened_bar_index=bar_index,
+                        )
+                    )
+
             saw_tick = False
-            for tick in self._tick_model.ticks_of(bar, prev_close):
+            for tick in bar_ticks:
                 price, bid, ask, _tick_time = tick
                 saw_tick = True
                 last_bid, last_ask = bid, ask
-
-                # F 新規バー初回 orders を当該ティック bid/ask で約定（最初のティックのみ）。
-                if pending_orders:
-                    for order in pending_orders:
-                        # 反対サイドの保有玉があれば当該ティック価格で reverse 決済。
-                        reverse_kept: list[_OpenTrade] = []
-                        for ot in open_trades:
-                            if ot.position.side != order.side:
-                                close_price = close_price_for(
-                                    ot.position.side, bid=bid, ask=ask
-                                )
-                                self._close_open_trade(
-                                    ot,
-                                    exit_time=bar.time,
-                                    exit_price=close_price,
-                                    exit_reason="reverse",
-                                    contract_size=contract_size,
-                                    leverage=spec.leverage,
-                                    account=account,
-                                    trades=trades,
-                                    deals=deals,
-                                    balance_curve=balance_curve,
-                                )
-                            else:
-                                reverse_kept.append(ot)
-                        open_trades = reverse_kept
-
-                        position = fill_market_order(order, bid=bid, ask=ask)
-                        account.open_positions.append(position)
-                        account.margin += position.required_margin(
-                            spec.leverage, contract_size
-                        )
-                        open_trades.append(
-                            _OpenTrade(
-                                position=position,
-                                sl=order.sl,
-                                tp=order.tp,
-                                entry_time=bar.time,
-                                entry_price=position.entry_price,
-                                opened_bar_index=bar_index,
-                            )
-                        )
-                    pending_orders = []  # 初回ティックで消費（以降のティックでは約定しない）
 
                 # H 保有玉 SL/TP を到達ティック価格で判定（fill_delay=次tick: 発注足は監視外）。
                 still_open: list[_OpenTrade] = []

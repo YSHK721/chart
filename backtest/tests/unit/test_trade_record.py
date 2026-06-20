@@ -45,6 +45,19 @@ class TestPnl:
         # price 不変 -> pnl = swap + commission
         assert _rec(exit_price=100.0, swap=-3.0, commission=-2.0).pnl() == pytest.approx(-5.0)
 
+    def test_profit_round_digits_none_keeps_raw(self):
+        # ISSUE-020: 既定 None は丸めず素値（byte-identical）。
+        # (100.002 - 100) * 1 * 1 * 100 = 0.2 → 端数保持。
+        rec = _rec(entry_price=100.0, exit_price=100.002, contract_size=100,
+                   profit_round_digits=None)
+        assert rec.pnl() == pytest.approx(0.2)
+
+    def test_profit_round_digits_zero_rounds_to_integer(self):
+        # ISSUE-020: 0 桁丸めで JPY 整数（0.2→0）。約定損益の口座通貨丸め。
+        rec = _rec(entry_price=100.0, exit_price=100.002, contract_size=100,
+                   profit_round_digits=0)
+        assert rec.pnl() == pytest.approx(0.0)
+
 
 class TestIsWin:
     def test_positive_pnl_is_win(self):

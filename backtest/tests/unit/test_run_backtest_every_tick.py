@@ -6,8 +6,9 @@ TickModelPort で駆動する。実 parquet（marketdata/ticks/*.parquet）は�
 
 検証観点（Red→Green・構造/自己整合）:
     * on_new_bar は「足境界」でのみ評価され、ティックごとに呼ばれない
-    * 約定は「実ティック価格（bid/ask）」で起きる（bar.close ではない）
-    * SL/TP は到達ティック価格で決済される
+    * 新規バーの成行約定は「バー open クォート」（買い=open+spread×point / 売り=open）で
+      起きる（bar.close でもティック価格でもない＝bar-mode と同一・実 MT5 突合）
+    * SL/TP は到達ティック価格で決済される（ここがティック駆動の固有挙動）
     * stop-out が「ティック」で発火する（バー中間ティックで margin 割れ）
     * 縮退（1 バー 1 ティック・price=close・bid==ask==close）で bar-mode と整合
     * 既定 config（real_ticks 以外）では every-tick 経路に入らない
@@ -122,19 +123,21 @@ T0 = np.datetime64("2024-01-01T00:00")
 T1 = np.datetime64("2024-01-01T00:01")
 
 
-# ---- ET-2: 約定は実ティック価格（bid/ask）で起きる（bar.close ではない） ----
+# ---- ET-2: 成行約定はバー open クォートで起きる（close でもティック価格でもない） ----
 
-class TestFillAtRealTickPrice:
-    def test_buy_fills_at_first_tick_ask_not_bar_close(self):
-        # Arrange: bar0 の close は 1.10 だが、bar0 の最初のティック ask=1.123。
-        # every-tick 経路は最初のティック ask で約定する（bar.close=1.10 ではない）。
+class TestFillAtBarOpenQuote:
+    def test_buy_fills_at_bar_open_ask_not_tick_or_close(self):
+        # Arrange: bar0 open=1.10・spread=300pts（point=0.00001）→ バー open Ask=
+        # 1.10+300×0.00001=1.103。close=1.10、最初のティック ask=1.123。
+        # 実 MT5 every-tick は新規バー成行をバー open クォート（買い=open+spread×point）で
+        # 約定する＝entry は 1.103（close 1.10 でもティック ask 1.123 でもない）。
         # bar1 で反対シグナル → reverse 決済で確定トレードを生成し entry_price を観測。
         bars = [
-            _bar(T0, 1.10, 1.20, 1.05, 1.10),
+            _bar(T0, 1.10, 1.20, 1.05, 1.10, spread=300),
             _bar(T1, 1.10, 1.20, 1.05, 1.11),
         ]
         ticks = {
-            T0: [(1.122, 1.121, 1.123, T0)],  # price, bid, ask（ask=1.123 で約定）
+            T0: [(1.122, 1.121, 1.123, T0)],  # 罠: ティック ask=1.123（建値ではない）
             T1: [(1.150, 1.149, 1.151, T1)],
         }
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
@@ -145,13 +148,45 @@ class TestFillAtRealTickPrice:
             indicators=SpyIndicatorPort(),
             tick_model=ListTickModel(ticks),
         )
-        # Act
-        result = interactor.execute(_request(bars))
-        # Assert: 確定トレードの entry_price は最初のティック ask（1.123）であり close でない
+        # Act: entry_price_basis="current_open" でバー open クォート約定
+        result = interactor.execute(
+            _request(bars, config=_config(entry_price_basis="current_open"))
+        )
+        # Assert: entry はバー open Ask（1.103）。close 1.10 でもティック ask 1.123 でもない。
         assert len(result.trades) == 1
         assert result.trades[0].side == "buy"
-        assert result.trades[0].entry_price == pytest.approx(1.123)
+        assert result.trades[0].entry_price == pytest.approx(1.103)
         assert result.trades[0].entry_price != pytest.approx(1.10)
+        assert result.trades[0].entry_price != pytest.approx(1.123)
+
+    def test_real_ticks_default_basis_fills_at_close_like_bar_mode(self):
+        # 回帰防止（レビュー🟡-1）: real_ticks でも entry_price_basis 既定="close" の
+        # ときは bar.close 約定になる（bar-mode と同一・derive_quotes の close 分岐）。
+        # open=1.10・close=1.105・spread=300 で close≠open を作り、約定が close=1.105
+        # （open 1.10 でも罠ティック ask 1.123 でもない）であることを値で固定する。
+        bars = [
+            _bar(T0, 1.10, 1.20, 1.05, 1.105, spread=300),
+            _bar(T1, 1.10, 1.20, 1.05, 1.11),
+        ]
+        ticks = {
+            T0: [(1.122, 1.121, 1.123, T0)],  # 罠: ティック ask=1.123
+            T1: [(1.150, 1.149, 1.151, T1)],
+        }
+        buy = Order(side="buy", kind="market", volume=1.0, price=None)
+        sell = Order(side="sell", kind="market", volume=1.0, price=None)
+        strategy = SpyStrategyPort(orders_by_bar={0: [buy], 1: [sell]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort(),
+            tick_model=ListTickModel(ticks),
+        )
+        # Act: _config() 既定（tick_model="real_ticks" / entry_price_basis="close"）
+        result = interactor.execute(_request(bars))
+        # Assert: entry は bar0.close=1.105（open 1.10 でもティック ask 1.123 でもない）
+        assert len(result.trades) == 1
+        assert result.trades[0].entry_price == pytest.approx(1.105)
+        assert result.trades[0].entry_price != pytest.approx(1.10)
+        assert result.trades[0].entry_price != pytest.approx(1.123)
 
 
 # ---- ET-1: on_new_bar は足境界でのみ評価される（ティックごとに呼ばない） ----
@@ -179,35 +214,31 @@ class TestOnNewBarOnlyAtBarBoundary:
         # Assert: on_new_bar は bar ごとに 1 回（合計 2 回・ティック数に依存しない）
         assert strategy.on_new_bar_calls == [0, 1]
 
-    def test_signal_orders_fill_only_at_first_tick_price_not_per_tick(self):
+    def test_signal_orders_fill_at_bar_open_once_not_per_tick(self):
         # ---- distinguishing 強化（弱い Red 是正・AP.1 R-7）----
-        # 「on_new_bar は足境界で 1 回だけ評価され、その orders は当該足の【最初のティック】
-        #  価格でのみ約定する。ティックごとに on_new_bar を再評価して各ティック価格で
-        #  約定し直すことはしない」ことを、トレードの【値】で区別する。
+        # 「on_new_bar は足境界で 1 回だけ評価され、その orders は当該足の【バー open
+        #  クォート】で 1 回だけ約定する。ティックごとに on_new_bar を再評価して各ティック
+        #  価格で約定し直すことはしない」ことを、トレードの【値】で区別する。
         #
         # 区別の仕組み（every-tick 経路でしか成立しない distinguishing アサーション）:
-        #   - bar0 で買い → 最初のティック ask=1.131 で約定（entry_price は close=1.10 でも
-        #     bar1 のティック価格でもない）。
-        #   - bar1 で反対（売り）→ bar1 最初のティック bid=1.140 で reverse 決済。
-        #   - もし実装がティックごとに on_new_bar を呼ぶ（＝足境界限定でない）なら、bar0 の
-        #     2 番目以降のティックでも buy が再評価され約定列・建値が変わる。on_new_bar が
-        #     足境界 1 回・約定が最初のティックのみであることを、確定トレードの entry/exit が
-        #     ちょうど 1 件・各々が最初のティック価格に一致することで固定する。
-        #   - bar-mode fallback では entry=exit=close（1.10/1.11）になり下記 1.131/1.140 で
-        #     必ず落ちる（distinguishing）。
+        #   - bar0 open=1.10・spread=300pts → 買いはバー open Ask=1.103 で約定
+        #     （close=1.10 でもどのティック ask でもない）。
+        #   - bar1 open=1.13・spread=0 → 反対（売り）の reverse はバー open（long 決済=
+        #     Bid=open=1.13）で決済（close=1.11 でもどのティック bid でもない）。
+        #   - もし実装がティックごとに約定し直すなら entry/exit がティック価格に変わる。
+        #     バー open クォートで 1 回のみ約定することを確定トレードの値で固定する。
         bars = [
-            _bar(T0, 1.10, 1.20, 1.05, 1.10),
-            _bar(T1, 1.10, 1.20, 1.05, 1.11),
+            _bar(T0, 1.10, 1.20, 1.05, 1.10, spread=300),
+            _bar(T1, 1.13, 1.20, 1.05, 1.11),
         ]
         ticks = {
-            # bar0: 最初のティック ask=1.131 で約定。2・3 番目は異なる価格（足境界限定
-            # でなければ約定価格が変わる罠）。
+            # bar0: どのティック ask もバー open Ask=1.103 と異なる（ティック約定なら値が変わる罠）。
             T0: [
                 (1.130, 1.129, 1.131, T0),
                 (1.160, 1.159, 1.161, T0),
                 (1.170, 1.169, 1.171, T0),
             ],
-            # bar1: 最初のティック bid=1.140 で reverse 決済。2 番目は罠。
+            # bar1: どのティック bid もバー open=1.13 と異なる（罠）。
             T1: [(1.141, 1.140, 1.142, T1), (1.180, 1.179, 1.181, T1)],
         }
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
@@ -219,22 +250,24 @@ class TestOnNewBarOnlyAtBarBoundary:
             tick_model=ListTickModel(ticks),
         )
         # Act
-        result = interactor.execute(_request(bars))
+        result = interactor.execute(
+            _request(bars, config=_config(entry_price_basis="current_open"))
+        )
         # Assert: on_new_bar は足境界で各 1 回（ティック数に依存しない）
         assert strategy.on_new_bar_calls == [0, 1]
-        # かつ約定は「最初のティック価格」でのみ起きる（ティックごとの再評価をしない）:
+        # かつ約定は「バー open クォート」でのみ起きる（ティックごとの再約定をしない）:
         #   確定トレードはちょうど 1 件・買い。
         assert len(result.trades) == 1
         assert result.trades[0].side == "buy"
-        # entry は bar0 最初のティック ask=1.131（close 1.10 でも 2 番目以降のティックでもない）
-        assert result.trades[0].entry_price == pytest.approx(1.131)
+        # entry は bar0 バー open Ask=1.103（close 1.10 でもティック ask でもない）
+        assert result.trades[0].entry_price == pytest.approx(1.103)
         assert result.trades[0].entry_price != pytest.approx(1.10)
-        assert result.trades[0].entry_price != pytest.approx(1.161)
-        # exit は bar1 最初のティック bid=1.140（close 1.11 でも 2 番目ティックでもない）
+        assert result.trades[0].entry_price != pytest.approx(1.131)
+        # exit は bar1 バー open=Bid=1.13（close 1.11 でもティック bid でもない）
         assert result.trades[0].exit_reason == "reverse"
-        assert result.trades[0].exit_price == pytest.approx(1.140)
+        assert result.trades[0].exit_price == pytest.approx(1.13)
         assert result.trades[0].exit_price != pytest.approx(1.11)
-        assert result.trades[0].exit_price != pytest.approx(1.179)
+        assert result.trades[0].exit_price != pytest.approx(1.140)
 
 
 # ---- ET-3: SL/TP は到達ティック価格で決済される ----
@@ -252,15 +285,16 @@ class TestSlTpClosesAtTickPrice:
         #     check_sltp_hit_at_tick(price=1.094) は 1.094<=1.095=True → SL ヒット）。
         #   - よって every-tick 経路でのみ SL 決済が成立する。bar-mode fallback では
         #     bar1 で決済されず（trades 件数・exit_reason が変わり）必ず落ちる。
-        #   - entry も bar0 最初のティック ask=1.101（close=1.10 ではない）で固定し、
-        #     経路を二重に区別する。
+        #   - entry も bar0 バー open Ask=1.101（open=1.10+spread100×point0.00001、close=1.10
+        #     でもティック ask 1.108 でもない）で固定し、経路を二重に区別する。
         bars = [
-            _bar(T0, 1.10, 1.12, 1.10, 1.10),
+            _bar(T0, 1.10, 1.12, 1.10, 1.10, spread=100),
             # bar1.low=1.100 は SL=1.095 に届かない（bar-mode では SL 非ヒット）。
             _bar(T1, 1.10, 1.12, 1.10, 1.11),
         ]
         ticks = {
-            T0: [(1.100, 1.099, 1.101, T0)],  # entry ask=1.101（close 1.10 ではない）
+            # entry はバー open Ask=1.101。ティック ask=1.108 は罠（建値ではない）。
+            T0: [(1.100, 1.099, 1.108, T0)],
             # 1 番目は SL 未到達、2 番目 price=1.094 が SL=1.095 を貫く（ティックのみ到達）。
             T1: [(1.110, 1.110, 1.110, T1), (1.094, 1.094, 1.094, T1)],
         }
@@ -273,12 +307,15 @@ class TestSlTpClosesAtTickPrice:
             tick_model=ListTickModel(ticks),
         )
         # Act
-        result = interactor.execute(_request(bars))
+        result = interactor.execute(
+            _request(bars, config=_config(entry_price_basis="current_open"))
+        )
         # Assert: ティック価格でのみ成立する SL 決済（bar.low では到達しない）
         assert len(result.trades) == 1
-        # entry は bar0 最初のティック ask=1.101（close 1.10 ではない＝every-tick 経路）
+        # entry は bar0 バー open Ask=1.101（close 1.10 でもティック ask 1.108 でもない）
         assert result.trades[0].entry_price == pytest.approx(1.101)
         assert result.trades[0].entry_price != pytest.approx(1.10)
+        assert result.trades[0].entry_price != pytest.approx(1.108)
         # SL 決済・exit_price は SL(1.095)・exit は bar1（bar.low 1.100 では非ヒット）
         assert result.trades[0].exit_reason == "sl"
         assert result.trades[0].exit_price == pytest.approx(1.095)

@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from backtest.domain._shared import sign_of
+from backtest.domain._shared import round_profit, sign_of
 from backtest.domain.exceptions import DataError, TimeOrderError
 
 # exit_reason は TradeRecord 固有の語彙のため当モジュールに留める（YAGNI: 単一利用）。
@@ -38,6 +38,9 @@ class TradeRecord:
     swap: float
     commission: float
     exit_reason: str
+    # 約定損益の口座通貨丸め桁（既定 None＝丸めず素値＝後方互換）。指定時 pnl() は
+    # round_profit で丸める（実 MT5 の通貨精度反映・JPY=0 桁）。
+    profit_round_digits: "int | None" = None
 
     def __post_init__(self) -> None:
         if self.exit_time < self.entry_time:
@@ -53,7 +56,7 @@ class TradeRecord:
 
     def pnl(self) -> float:
         # METRICS §5.2: (exit - entry) * sign * lot * contract_size + swap + commission
-        return (
+        raw = (
             (self.exit_price - self.entry_price)
             * sign_of(self.side)
             * self.volume
@@ -61,6 +64,8 @@ class TradeRecord:
             + self.swap
             + self.commission
         )
+        # 口座通貨丸め（profit_round_digits=None は素値＝後方互換）。
+        return round_profit(raw, self.profit_round_digits)
 
     def is_win(self) -> bool:
         return self.pnl() > 0  # 同値（== 0）は非勝ち

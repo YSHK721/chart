@@ -601,7 +601,8 @@ class TestReverseShortCloseSpread:
 
 # ---- cycle4-②: stop_out_action config（fail_stop 既定 / close_and_halt） ----
 
-def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None):
+def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None,
+                       entry_price_basis=None, floating_pnl_basis=None):
     """margin_level < stop_out を bar1 で発生させる共通セットアップ。
 
     1 lot 買い@1.10、contract=100000、leverage=100 → 必要証拠金=1100。
@@ -610,6 +611,10 @@ def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None):
     cfg_kwargs = {}
     if stop_out_action is not None:
         cfg_kwargs["stop_out_action"] = stop_out_action
+    if entry_price_basis is not None:
+        cfg_kwargs["entry_price_basis"] = entry_price_basis
+    if floating_pnl_basis is not None:
+        cfg_kwargs["floating_pnl_basis"] = floating_pnl_basis
     config = BacktestConfig(
         tick_model="ohlc_simulate",
         spread_model="fixed",
@@ -661,6 +666,9 @@ class TestStopOutActionConfig:
         stop_out_trades = [t for t in result.trades if t.exit_reason == "stop_out"]
         assert len(stop_out_trades) == 1
         assert stop_out_trades[0].side == "buy"
+        # byte-identical 担保（ISSUE-019）: 既定 entry/floating="close" では強制決済価格は
+        # bar.close（=mark_price）。本是正後も従来どおり bar1.close=1.00 で不変。
+        assert stop_out_trades[0].exit_price == pytest.approx(1.00)
 
     def test_close_and_halt_suppresses_new_orders_after_stop_out(self):
         # stop_out 後の新規発注シグナルは無視され、玉が増えない（halt セマンティクス）。
@@ -680,6 +688,52 @@ class TestStopOutActionConfig:
         # Assert: 確定トレードは初回 buy の stop_out 決済 1 件のみ（bar2 の新規発注は抑止）
         assert len(result.trades) == 1
         assert result.trades[0].exit_reason == "stop_out"
+
+    def test_stop_out_closes_at_close_mark_price_not_bar_open(self):
+        # 回帰防止（ISSUE-019）: entry_price_basis="current_open" でも stop-out 強制決済は
+        # 「margin 割れを判定した時点の現値」＝bar.close（account.mark_price）で行う。
+        # 過ぎ去った始値（bar.open）で決済しない（実 MT5 整合・決済価格と判定価格の整合）。
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.10, 1.10, 1.10, 1.10),
+            # 急落バー: open=1.05・close=0.50。close で margin 割れ。
+            _bar(np.datetime64("2024-01-01T00:01"), 1.05, 1.05, 0.50, 0.50),
+        ]
+        interactor, req = _margin_call_setup(
+            stop_out_action="close_and_halt",
+            entry_price_basis="current_open",
+            bars=bars,
+        )
+        result = interactor.execute(req)
+        stop_out = [t for t in result.trades if t.exit_reason == "stop_out"]
+        assert len(stop_out) == 1
+        # 決済価格は bar.close=0.50（mark price）。bar.open=1.05 ではない。
+        assert stop_out[0].exit_price == pytest.approx(0.50)
+        assert stop_out[0].exit_price != pytest.approx(1.05)
+
+    def test_stop_out_sell_bid_ask_closes_at_ask_close_plus_spread(self):
+        # 回帰防止（ISSUE-019 / レビュー🟡）: 売り保有 + floating_pnl_basis="bid_ask" では
+        # 強制決済（買い戻し）= Ask = close + spread×point。判定価格（update_floating_pnl）
+        # と決済価格（mark_price）が同一基準で整合することを値で固定する。
+        sell = Order(side="sell", kind="market", volume=1.0, price=None)
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 1.00, 1.00, 1.00, 1.00),
+            # 価格上昇で売り保有が含み損→margin 割れ。spread=50pt（point=0.00001→0.0005）。
+            Bar(time=np.datetime64("2024-01-01T00:01"), open=1.00, high=2.00, low=1.00,
+                close=2.00, volume=1.0, spread=50),
+        ]
+        interactor, req = _margin_call_setup(
+            stop_out_action="close_and_halt",
+            floating_pnl_basis="bid_ask",
+            orders_by_bar={0: [sell]},
+            bars=bars,
+        )
+        result = interactor.execute(req)
+        stop_out = [t for t in result.trades if t.exit_reason == "stop_out"]
+        assert len(stop_out) == 1
+        assert stop_out[0].side == "sell"
+        # 決済 = Ask = close(2.00) + spread(50)×point(0.00001) = 2.0005。close 単独ではない。
+        assert stop_out[0].exit_price == pytest.approx(2.0005)
+        assert stop_out[0].exit_price != pytest.approx(2.00)
 
 
 # ---- account 伝播の後方互換: TC24051901 の確定トレード列が account の有無で不変 ----

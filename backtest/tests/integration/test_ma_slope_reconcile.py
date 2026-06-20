@@ -179,6 +179,10 @@ class TestMaSlopeReconcile:
     def test_net_profit_close_to_mt5_within_realistic_tolerance(self, reconcile):
         # net profit = -6173.9（MT5 = -6169.0）。差 ≈ 4.9 はトレード差＋stop-out 価格差。
         # 層2（stop-out 時刻一致）優先のトレードオフ（層1単独なら -6168.9 で bit-exact）。
+        # 注記（ISSUE-019）: 本 net は stop-out 強制決済を mark_price(close 基準)へ是正後も
+        #   不変。理由は当該 stop-out バーが open==close だったため close 基準=従来 open
+        #   基準と一致する偶然による。将来 fixture を差し替え当該バーが open≠close になると
+        #   決済価格が変わり net も変化する（その際は本実測値の更新が必要）。
         assert reconcile["net"] == pytest.approx(-6173.9, abs=0.1)  # 実測固定
         assert abs(reconcile["net"] - _MT5_NET) <= 60.0  # MT5 との乖離トレランス
 
