@@ -183,7 +183,9 @@ export async function bootstrap({
 
   // Trade Markers renderer（売買マーカー重畳）の組み立て。副作用 fetch は増やさず renderer を
   //   返すのみ（load トリガは入口 index.html が ready 後に呼ぶ＝既存 candles 経路に非干渉）。
-  const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries });
+  //   chart も渡し、可視時間範囲を購読して範囲内マーカーのみ描画する（§9 Fix v3・左端クランプ列の除去）。
+  //   購読 API 非提供時は全件描画フォールバック（後方互換）。
+  const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart });
 
   return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers };
 }

@@ -246,3 +246,20 @@ catch (e) { console.warn('[trade-markers] init skipped', e); }
 - 利用手順: `PYTHONPATH=/workspaces/app python3 simulator/tools/export_trade_markers.py --rows N`
   で `web/data/trade_markers.json` を生成 → B方式サーバ起動 → UI を **M1 表示**にすると mainSeries に
   売買マーカーが重畳される。
+
+---
+
+## 9. 動作確認フィードバック対応 v3（可視範囲外マーカーの非描画＝左端クランプ列の除去）
+
+- 症状: UI 既定（直近1500本 M1）表示で、描画中ローソク範囲より**前の時刻**を持つマーカーが
+  lightweight-charts により**左端へクランプ**され、ラベルが縦に積層する（左側のマーカー列）。
+- 原因: JSON のマーカー（直近5000本窓・約1326件）のうち、UI が読む直近1500本ローソクの
+  **範囲外**の時刻（窓の左外）が左端へ寄る。集合包含は export の5000窓基準であり、UI の1500窓とは別。
+- 修正: `TradeMarkersRenderer` を「**現在の可視時間範囲内のマーカーのみ描画**」に変更。
+  - constructor に `chart` を追加。`chart.timeScale().subscribeVisibleTimeRangeChange(range => _apply(range))` を購読。
+  - `load()` は全マーカーを `this._all` に保持。可視範囲が確定したら `from<=time<=to` のマーカーのみ
+    `createSeriesMarkers`/`setMarkers` で適用。範囲変更（時間足切替・パン・ズーム）で再適用。範囲 null（初期）は空。
+  - 既存の `setMarkers`/`clear`/`load` の公開挙動は互換維持（range 未購読時のフォールバックを明確化）。
+- 配線: `composition_root_front.js` で `new TradeMarkersRenderer({ lwc, mainSeries, chart })`（chart 追加）。
+- 受入: 既定表示で**左端のマーカー列が消え**、可視ローソク上のマーカーのみ表示。可視範囲変更で追従。
+  既存フロントテスト緑＋新規（範囲内のみ適用・範囲外除外・範囲変更で再適用）緑。committed simulator 無改変。
