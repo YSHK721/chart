@@ -344,3 +344,14 @@
 - 対策（config gated・既定 byte-identical）：bar-mode ループのバー先頭に「open 基準 stop-out 先行判定」を追加。`config.stop_out_at_open`（既定 False）True 時のみ、`derive_quotes(bar, current_open)` の (open Bid / open+spread Ask) で含み損を評価し、割れたら open クォート（買い=Bid=open / 売り=Ask=open+spread）で強制決済。後段の close 基準判定は残すため、open 非割れ・bar 内割れは従来どおり close 決済。every-tick 経路は到達ティック価格で元から open 相当に正確のため不変。models/config_loader に stop_out_at_open(既定False) 追加
 - 検証：current_open+bid_ask+close_and_halt+jp225+profit_round_digits=0+stop_out_at_open=True の単一 config で **2026-02 net -5021 vs -5021（literal一致）・balance 4979・trades 886・全886エントリ bit-exact**、かつ **2026-01 net -4649/balance 5351/0-of-1444 を維持**（2026-01 は open==close のため open 判定でも不変）。既定 stop_out_at_open=False で全534テスト pass（byte-identical・stop-out at open の回帰テスト2件追加）
 - 到達点：2026-01 と 2026-02 の両月を、同一 config で trades・全建値・全決済・net・balance まで literal bit-exact に到達
+
+## ISSUE-023
+
+- 概要：indicator_ui の Web チャートで時間軸（タイムフレーム）を移動/変更したとき、メインチャートと各インジケーターの画面更新がバラバラ（非同期・段階的）なタイミングで行われる。利用者には「メイン → 指標1 → 指標2」と順に切り替わって見える
+- 重大度：低（表示の体感品質。計算結果・データ整合性に影響なし）
+- ステータス：RESOLVED
+- 検出日：2026-06-20
+- 検出経路：`indicator_ui/web/js/adapter/front/indicator_controller.js` の `setTimeframe`/`recomputeAllApplied` を精査。(1) L296 で先に `renderer.setCandles()` がメインのみ即描画。(2) L313-318 の `recomputeAllApplied` が適用済み指標を直列ループで「`await` compute → 即 `remove`+`_draw`」する。各 `await` でイベントループに制御が戻り、ブラウザが中間状態を1指標ずつ描画するため段階的に見える
+- 原因：計算（async）と描画（renderer 呼び出し）が `recomputeInstance` 内で密結合し、指標ごとに「計算→即描画」を繰り返す。`await` を跨いで描画するため中間ペイントが発生する。エージェント提案の Promise.all 並列化は不採用（`facade.recompute` が呼び出し時 `this._state` を `cloneState` し最後の代入が勝つため generation の lost update を生む。`this._lastSeries` も共有フィールドで上書きされる）
+- 対策（indicator_ui/web のみ・描画ライブラリ/API 変更なし）：`recomputeInstance` を「計算フェーズ `_computeInstance`（async・state 更新・series を job に退避）」と「描画フェーズ `_renderInstance`（同期）」に分離。`recomputeAllApplied` は直列で全指標を計算（state 競合なし）→ `await` を挟まない単一同期パスで全描画→ persist/legend は最後に1回。`setTimeframe` は candles 取得後、メイン系列差し替え（setCandles）を `preRender` として同じ同期バッチに含める。既存契約（setCandles 1回・timeframe/limit 伝播・`isRecomputing()` 全期間 true・全指標再計算）は保持
+- 検証：web 全 253 テスト pass（既存 252＋回帰1）。回帰テスト `setTimeframe batches all renders after every compute resolves (ISSUE-023 regression)` は (1) 計算完了前に `setCandles`/`remove`/`renderLine` が呼ばれない (2) すべての compute が描画より前に並ぶ（compute-all→render-all）を検証。旧実装では (1)(2) 双方で fail する非空テスト

@@ -185,9 +185,26 @@ export class IndicatorController {
   //   opts.mode='latest' は Latest 増分計算（gateway へ mode 伝播・末尾K点を updateSeriesTail へ
   //   差分反映し remove+_draw の全描画はしない）。既定 'full' は従来どおり remove+redraw。
   async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full' } = {}) {
+    const job = await this._computeInstance(instanceId, newVariant, newParams, { mode });
+    if (!job || !job.accepted) {
+      return job ? job.accepted : false;
+    }
+    // 単体再計算は計算直後に同期描画→persist→legend（従来の挙動と等価）。
+    this._renderInstance(job);
+    this._persistAll();
+    this._renderLegend();
+    return true;
+  }
+
+  // 計算フェーズ（async）: state を更新し、描画に必要な series を job へ退避して返す（ISSUE-023）。
+  //   renderer は呼ばない。複数指標を一括描画する recomputeAllApplied は全 job を集めてから
+  //   _renderInstance を await を挟まない同期パスで呼び、中間ペイント（バラバラ更新）を防ぐ。
+  //   ※ this._lastSeries は gateway compute が上書きする共有フィールドのため、compute 直後に
+  //     job へ確保する（描画まで遅延すると次指標の series で上書きされ取り違える）。
+  async _computeInstance(instanceId, newVariant, newParams, { mode = 'full' } = {}) {
     const meta = this._meta.get(instanceId);
     if (!meta) {
-      return false;
+      return null;
     }
     // variant を差し替える場合は def はそのまま、gateway が variant でキー解決。
     if (newVariant) {
@@ -201,34 +218,49 @@ export class IndicatorController {
     // 競合ガード: 再計算中は isRecomputing()=true（ライブ更新の tick がスキップ判定に参照）。
     //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
     this._recomputeDepth += 1;
-    let accepted;
     try {
       const result = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
       this._state = result.state;
-      accepted = result.accepted;
-      if (accepted) {
-        const inst = this._state.applied.find((i) => i.instanceId === instanceId);
-        if (wantLatest) {
-          // Latest: 末尾K点を series.update で差分反映（過去確定足は不変・全描画しない）。
-          this._drawLatest(instanceId, meta.def, this._lastSeries, params);
-        } else {
-          // params 変更で系列名が変わりうる（tgp の分位線 btlm_q{N}＝q_low/q_high 依存）ため、
-          // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
-          // 全系列を現在名で再生成する（line / horizontal_line 共通）。
-          this._renderer.remove(instanceId);
-          this._draw(instanceId, meta.def, this._lastSeries, params);
-        }
-        // 非表示状態を維持（redraw は可視で再生成するため）。
-        if (inst && !inst.visible) {
-          this._renderer.setVisible(instanceId, false);
-        }
-        this._persistAll();
-        this._renderLegend();
+      if (!result.accepted) {
+        return { instanceId, accepted: false };
       }
+      const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+      return {
+        instanceId,
+        accepted: true,
+        def: meta.def,
+        params,
+        wantLatest,
+        // compute 直後の series を job へ確保（共有 _lastSeries の上書き対策）。
+        series: this._lastSeries,
+        // 非表示状態を描画時に維持するためのフラグ（redraw は可視で再生成するため）。
+        hidden: !!(inst && !inst.visible),
+      };
     } finally {
       this._recomputeDepth -= 1;
     }
-    return accepted;
+  }
+
+  // 描画フェーズ（同期）: 退避済み job の series を renderer へ反映する。await を挟まないため
+  //   複数 job を連続実行しても中間ペイントが起きず、全指標が同時に更新される（ISSUE-023）。
+  _renderInstance(job) {
+    if (!job || !job.accepted) {
+      return;
+    }
+    if (job.wantLatest) {
+      // Latest: 末尾K点を series.update で差分反映（過去確定足は不変・全描画しない）。
+      this._drawLatest(job.instanceId, job.def, job.series, job.params);
+    } else {
+      // params 変更で系列名が変わりうる（tgp の分位線 btlm_q{N}＝q_low/q_high 依存）ため、
+      // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
+      // 全系列を現在名で再生成する（line / horizontal_line 共通）。
+      this._renderer.remove(job.instanceId);
+      this._draw(job.instanceId, job.def, job.series, job.params);
+    }
+    // 非表示状態を維持（redraw は可視で再生成するため）。
+    if (job.hidden) {
+      this._renderer.setVisible(job.instanceId, false);
+    }
   }
 
   // def の全系列が末尾K差分可能（line/histogram のみ・horizontal_line を含まない）か。
@@ -289,16 +321,19 @@ export class IndicatorController {
     //   割り込んで二重 compute する（🟡-2）。最外で increment し finally で確実に解除する。
     this._recomputeDepth += 1;
     try {
-      // candles 再取得 → メイン系列差し替え（取得失敗・A方式は据え置き）。
+      // candles を新時間足で再取得（取得のみ・描画は下のバッチへ遅延）。
+      let candles = null;
       if (typeof this._loadCandles === 'function') {
-        const candles = await this._loadCandles(this._datasetRef, timeframe);
-        if (candles && candles.length > 0) {
-          this._renderer.setCandles(candles);
-        }
+        candles = await this._loadCandles(this._datasetRef, timeframe);
       }
+      // メイン系列差し替えを指標の再描画と同じ同期バッチへ含め、全要素を同時更新する（ISSUE-023）。
+      //   取得失敗・A方式（candles 無し）は preRender=null でメイン系列を据え置く。
+      const preRender = candles && candles.length > 0
+        ? () => this._renderer.setCandles(candles)
+        : null;
       // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
       //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
-      await this.recomputeAllApplied();
+      await this.recomputeAllApplied({ preRender });
     } finally {
       this._recomputeDepth -= 1;
     }
@@ -309,12 +344,34 @@ export class IndicatorController {
   // 適用済み全指標を現在の params / 時間足で再計算・再描画する（ライブ更新の再計算入口）。
   //   competition ガード（generation+1・accepts 破棄）は recomputeInstance に集約済み。
   //   適用が無ければ何もしない（no-op）。
-  async recomputeAllApplied({ mode = 'full' } = {}) {
+  //   フェーズ1（直列計算）: 各指標を順に計算し state を更新する（this._state は呼び出し時 clone・
+  //     最後の代入が勝つため並列化は generation の lost update を生む＝直列必須）。描画はしない。
+  //   フェーズ2（同期一括描画）: await を挟まず全 job を描画する。中間ペイントが起きないため、
+  //     メイン系列（opts.preRender＝setCandles）と全指標が同時に更新される（ISSUE-023）。
+  //   persist/legend は描画後に1回だけ。適用 0 でも preRender（候補：メイン系列差し替え）は実行する。
+  async recomputeAllApplied({ mode = 'full', preRender = null } = {}) {
+    // フェーズ1: 直列計算（描画なし）。
+    const jobs = [];
     for (const inst of [...this._state.applied]) {
       if (this._meta.has(inst.instanceId)) {
-        await this.recomputeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
+        const job = await this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
+        if (job && job.accepted) {
+          jobs.push(job);
+        }
       }
     }
+    // フェーズ2: ここから await を挟まない同期一括描画。
+    if (preRender) {
+      preRender();
+    }
+    if (jobs.length === 0) {
+      return;
+    }
+    for (const job of jobs) {
+      this._renderInstance(job);
+    }
+    this._persistAll();
+    this._renderLegend();
   }
 
   // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。

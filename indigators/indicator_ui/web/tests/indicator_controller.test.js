@@ -212,6 +212,71 @@ test('setTimeframe keeps isRecomputing() true during the candles fetch await (li
   assert.equal(ctrl.isRecomputing(), false);
 });
 
+// 時間足切替の画面更新は「全計算 → 同期一括描画」で行い、メインチャートと各指標を同時に更新する。
+//   旧実装は (1) 先に setCandles でメインのみ即描画 → (2) 指標を直列ループで「compute→即描画」し、
+//   各 await でブラウザが中間状態を1指標ずつ描画＝バラバラ更新になっていた（ISSUE-023）。
+test('setTimeframe batches all renders after every compute resolves (ISSUE-023 regression)', async () => {
+  const noop = () => {};
+  const events = [];
+  let releaseCompute;
+  const computeGate = new Promise((r) => { releaseCompute = r; });
+  let gateCompute = false; // apply 時は即時解決し、時間足切替の compute のみ gate で止める。
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: {
+      compute: async (req) => {
+        if (gateCompute) {
+          events.push('compute');
+          await computeGate;
+        }
+        return { ok: true, generation: req.generation ?? 0, series: [] };
+      },
+    },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: {
+      renderLine: () => events.push('renderLine'),
+      renderHorizontal: noop,
+      renderHistogram: () => events.push('renderHistogram'),
+      setData: noop,
+      setVisible: noop,
+      remove: () => events.push('remove'),
+      setCandles: () => events.push('setCandles'),
+    },
+    document: null,
+    mode: 'b',
+    datasetRef: 'jp225_m1',
+    timeframe: '1D',
+    recentBars: 1500,
+    loadCandles: async () => [{ time: 1, open: 1, high: 1, low: 1, close: 1 }],
+  });
+  // 指標を1つ適用（apply の compute は gate しない＝即時）。
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  gateCompute = true;
+  events.length = 0; // apply 由来のイベントを除外。
+
+  // Act: 時間足切替を開始（指標 compute が gate でブロックされる）。
+  const p = ctrl.setTimeframe('1W');
+  await new Promise((r) => setTimeout(r, 0)); // candles 取得 await＋compute 到達まで進める。
+
+  // Assert(1): compute は開始しているが、描画は一切起きていない＝メインも指標も先行描画しない。
+  assert.ok(events.includes('compute'), '指標の計算は開始している');
+  assert.ok(!events.includes('setCandles'), '計算完了前にメイン系列を描画しない');
+  assert.ok(!events.includes('remove') && !events.includes('renderLine'), '計算完了前に指標を描画しない');
+
+  // 計算を解放 → 同期一括描画フェーズへ。
+  releaseCompute();
+  await p;
+
+  // Assert(2): すべての compute が、いかなる描画よりも前に並ぶ（compute-all → render-all）。
+  const isRender = (e) => e === 'setCandles' || e === 'remove' || e === 'renderLine' || e === 'renderHistogram';
+  const firstRender = events.findIndex(isRender);
+  const lastCompute = events.lastIndexOf('compute');
+  assert.ok(firstRender > -1 && lastCompute > -1, '計算と描画の双方が記録される');
+  assert.ok(firstRender > lastCompute, 'すべての計算が描画より前に実行される（一括描画）');
+  // メイン系列も同じバッチで描画される（メインのみ先行描画しない）。
+  assert.ok(events.includes('setCandles'), 'メイン系列が描画される');
+});
+
 // ===========================================================================
 // isRecomputing（競合ガード・ライブ更新の tick スキップ判定の単一権威）
 //   LiveUpdater は独自フラグを持たず controller.isRecomputing() を参照する。
