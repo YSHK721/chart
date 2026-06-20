@@ -326,6 +326,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             - bar-mode との非一致: equity 系 stats（equity_curve 長・DD）は「評価点が
               ティック数に依存する」ため bar-mode（1 バー 1 点）と一致しない。確定トレード
               （約定・決済価格）は縮退条件（1 バー 1 ティック=close・spread0）で一致する。
+            - 約定価格の基準（非対称・意図的）: 成行約定（新規建て・reverse 決済）は
+              「足境界のバー open クォート」（derive_quotes・bar-mode と同一）で約定する。
+              一方 SL/TP・stop-out の決済は「到達/評価ティック価格」を用いる（ティック駆動
+              の固有挙動）。基準が約定種別で異なる点に注意（実 MT5 every-tick 整合）。
             - fill_delay=next_tick: 建てたバー（opened_bar_index==bar_index）のティック
               では SL/TP 監視しない。次バー以降のティックで監視する。
             - SL/TP 同時到達: check_sltp_hit_at_tick が単一価格 p で high=low=p として
@@ -387,54 +391,68 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
             )
 
+            # 当該足のティックを materialize（空判定のため一覧化）。実 MT5 every-tick は
+            # 新規バーを「最初のティック」で検知するため、ティック 0 件足では新規バーを
+            # 検知せず発注しない（次足へ持ち越さない＝実 MT5 整合）。
+            bar_ticks = list(self._tick_model.ticks_of(bar, prev_close))
+
+            # F ★足境界・バー open クォートで成行約定（bar-mode と同一: derive_quotes）。
+            #   実 MT5 は新規バーの成行を「バー open のクォート」（買い=open+spread×point、
+            #   売り=open）で約定し、ティックは含み損/SL-TP/stop-out の評価にのみ用いる
+            #   （bar-mode 突合 2025-01 と同一の建値ルール）。ティック 0 件足では発注しない。
+            if bar_ticks and pending_orders:
+                bid0, ask0, fill_spread, fill_point = derive_quotes(
+                    bar,
+                    entry_price_basis=config.entry_price_basis,
+                    point_size=spec.point_size,
+                )
+                for order in pending_orders:
+                    # 反対サイドの保有玉があれば bar open クォートで reverse 決済。
+                    reverse_kept: list[_OpenTrade] = []
+                    for ot in open_trades:
+                        if ot.position.side != order.side:
+                            close_price = close_price_for(
+                                ot.position.side, bid=bid0, ask=ask0
+                            )
+                            self._close_open_trade(
+                                ot,
+                                exit_time=bar.time,
+                                exit_price=close_price,
+                                exit_reason="reverse",
+                                contract_size=contract_size,
+                                leverage=spec.leverage,
+                                account=account,
+                                trades=trades,
+                                deals=deals,
+                                balance_curve=balance_curve,
+                            )
+                        else:
+                            reverse_kept.append(ot)
+                    open_trades = reverse_kept
+
+                    position = fill_market_order(
+                        order, bid=bid0, ask=ask0, spread=fill_spread, point_size=fill_point
+                    )
+                    account.open_positions.append(position)
+                    account.margin += position.required_margin(
+                        spec.leverage, contract_size
+                    )
+                    open_trades.append(
+                        _OpenTrade(
+                            position=position,
+                            sl=order.sl,
+                            tp=order.tp,
+                            entry_time=bar.time,
+                            entry_price=position.entry_price,
+                            opened_bar_index=bar_index,
+                        )
+                    )
+
             saw_tick = False
-            for tick in self._tick_model.ticks_of(bar, prev_close):
+            for tick in bar_ticks:
                 price, bid, ask, _tick_time = tick
                 saw_tick = True
                 last_bid, last_ask = bid, ask
-
-                # F 新規バー初回 orders を当該ティック bid/ask で約定（最初のティックのみ）。
-                if pending_orders:
-                    for order in pending_orders:
-                        # 反対サイドの保有玉があれば当該ティック価格で reverse 決済。
-                        reverse_kept: list[_OpenTrade] = []
-                        for ot in open_trades:
-                            if ot.position.side != order.side:
-                                close_price = close_price_for(
-                                    ot.position.side, bid=bid, ask=ask
-                                )
-                                self._close_open_trade(
-                                    ot,
-                                    exit_time=bar.time,
-                                    exit_price=close_price,
-                                    exit_reason="reverse",
-                                    contract_size=contract_size,
-                                    leverage=spec.leverage,
-                                    account=account,
-                                    trades=trades,
-                                    deals=deals,
-                                    balance_curve=balance_curve,
-                                )
-                            else:
-                                reverse_kept.append(ot)
-                        open_trades = reverse_kept
-
-                        position = fill_market_order(order, bid=bid, ask=ask)
-                        account.open_positions.append(position)
-                        account.margin += position.required_margin(
-                            spec.leverage, contract_size
-                        )
-                        open_trades.append(
-                            _OpenTrade(
-                                position=position,
-                                sl=order.sl,
-                                tp=order.tp,
-                                entry_time=bar.time,
-                                entry_price=position.entry_price,
-                                opened_bar_index=bar_index,
-                            )
-                        )
-                    pending_orders = []  # 初回ティックで消費（以降のティックでは約定しない）
 
                 # H 保有玉 SL/TP を到達ティック価格で判定（fill_delay=次tick: 発注足は監視外）。
                 still_open: list[_OpenTrade] = []

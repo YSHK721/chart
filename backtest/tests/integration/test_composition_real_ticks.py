@@ -18,10 +18,12 @@ from backtest.main import build_interactor
 
 
 # 合成 OHLC（end-to-end テストと同型・MADiff SMA period=2 が bar2 で買いクロス）
+#   bar2 は spread=200pts（point=0.0001 → 0.02）。current_open 約定でバー open Ask=
+#   open+spread×point がバー open/close と判別可能になる（every-tick 突合の建値検証用）。
 _ROWS = [
     ("2024-01-01T00:00:00", 1.1000, 1.1010, 1.0990, 1.0995, 1.0, 0),
     ("2024-01-01T00:01:00", 1.1000, 1.1010, 1.0985, 1.0990, 1.0, 0),
-    ("2024-01-01T00:02:00", 1.0990, 1.1050, 1.0990, 1.1040, 1.0, 0),
+    ("2024-01-01T00:02:00", 1.0990, 1.1050, 1.0990, 1.1040, 1.0, 200),
     ("2024-01-01T00:03:00", 1.1040, 1.1100, 1.1040, 1.1090, 1.0, 0),
     ("2024-01-01T00:04:00", 1.1090, 1.1120, 1.0900, 1.0950, 1.0, 0),
     ("2024-01-01T00:05:00", 1.0950, 1.0960, 1.0900, 1.0920, 1.0, 0),
@@ -147,19 +149,23 @@ class TestRealTicksWiring:
         # Assert: Interactor の tick_model が RealTickModel（実ティック供給経路）。
         assert isinstance(controller._interactor._tick_model, RealTickModel)
 
-    def test_real_ticks_end_to_end_entry_exit_at_tick_prices(self, tmp_path):
+    def test_real_ticks_end_to_end_fills_at_bar_open_quote(self, tmp_path):
         # Arrange: 小 OHLC CSV ＋ tick 価格を bar OHLC と判別可能にずらした tick-store。
-        #   bar2（買い建て）の tick ask と bar4（reverse 決済=long 決済=bid）の tick bid を
-        #   どの bar OHLC 値とも一致しない固有値にして「tick 価格で約定したか」を判別する。
+        #   実 MT5 every-tick は新規バー成行を「バー open クォート」で約定する（ティック価格
+        #   ではない）。bar2 ask=1.2222・bar4 bid=1.3333 の罠ティックを置き、約定が
+        #   ティック価格に【ならない】こと（=バー open クォート）を値で固定する。
         csv_path = _write_csv(tmp_path / "synth_m1.csv")
         tick_root = _write_distinct_tick_store(tmp_path / "ticks")
 
-        # Act: real_ticks 指定で build → main 実経路（_bar_period→load_ticks→
+        # Act: real_ticks + current_open で build → main 実経路（_bar_period→load_ticks→
         #   RealTickModel→_execute_every_tick）を controller._interactor.execute で走らせる。
         controller, request = build_interactor(
             **_meta(
                 csv_path,
-                config_overrides={"tick_model": "real_ticks"},
+                config_overrides={
+                    "tick_model": "real_ticks",
+                    "entry_price_basis": "current_open",
+                },
                 tick_store_root=tick_root,
             )
         )
@@ -170,13 +176,16 @@ class TestRealTicksWiring:
         trade = result.trades[0]
         assert trade.side == "buy"
         assert trade.exit_reason == "reverse"
-        # entry_price は bar2 の tick ask（1.2222）＝ tick 価格であり bar の値ではない。
-        assert trade.entry_price == pytest.approx(1.2222)
-        assert trade.entry_price != pytest.approx(_ROWS[2][1])  # bar2.open
+        # entry_price は bar2 バー open Ask=open+spread×point=1.0990+200×0.0001=1.1190
+        #   （bar2.close 1.1040 でも罠ティック ask 1.2222 でもない）。
+        assert trade.entry_price == pytest.approx(1.1190)
         assert trade.entry_price != pytest.approx(_ROWS[2][4])  # bar2.close
-        # exit_price は bar4 の tick bid（1.3333・long 決済=bid）＝ tick 価格。
-        assert trade.exit_price == pytest.approx(1.3333)
-        assert trade.exit_price != pytest.approx(_ROWS[4][4])  # bar4.close
+        assert trade.entry_price != pytest.approx(1.2222)       # 罠ティック ask
+        # exit_price は bar4 バー open=Bid（long 決済=bid・spread 非加算）=1.1090
+        #   （bar4.close 1.0950 でも罠ティック bid 1.3333 でもない）。
+        assert trade.exit_price == pytest.approx(1.1090)
+        assert trade.exit_price != pytest.approx(_ROWS[4][4])   # bar4.close
+        assert trade.exit_price != pytest.approx(1.3333)        # 罠ティック bid
         assert trade.exit_time == request.bars[4].time
 
     def test_default_tick_model_build_unchanged(self, tmp_path):

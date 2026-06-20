@@ -274,3 +274,15 @@
 - 原因：CsvOHLCRepository._extract が time 列を「そのまま」採用するため、ISO 文字列 CSV では bar.time が str（Bar.time 契約 numpy.datetime64|int に対し loader 側が未正規化＝既存の committed 挙動）。bar-mode は bar.time に算術せず比較のみのため顕在化しなかった
 - 対策：committed CSV loader / bar-mode を変更せず、pandas を持つ adapter（RealTickModel）の区間算定でのみ bar.time を datetime64 へ正規化してスライスする（_bar_end も str/Timestamp を datetime64 化）。real_ticks 経路に局所化し既定経路不変
 - 検証：🟡-2 end-to-end 値検証テストが entry/exit を tick 価格で固定して通過。既存全テスト不変
+
+## ISSUE-017
+
+- 概要：every-tick（real_ticks）の成行約定が「足内初回ティック価格」で約定していたため、実 MT5 every-tick（成行はバー open クォートで約定）と乖離。2026-01 突合で初回トレード価格・stop-out 日・トレード数が一致しなかった
+- 重大度：中（real_ticks 経路の数値精度。既定 bar-mode・他 tick_model は無影響）
+- ステータス：RESOLVED
+- 検出日：2026-06-20
+- 検出経路：2026-01 every-tick 数値突合（fixtures/mt5/ma_slope_jp225_202601 オラクル）。初回トレード ours buy 50580.8 vs MT5 sell 50390.8、stop-out ours 01-12 vs MT5 01-14、trades 932 vs 1444 の乖離
+- 原因：`_execute_every_tick` が pending_orders をティック内側ループの「最初のティック bid/ask」で約定していた。実 MT5 は新規バー成行を「バー open クォート」（買い=open+spread×point、売り=open＝bar-mode と同一）で約定し、ティックは含み損/SL-TP/stop-out 評価にのみ用いる。初回ティックは ffill 復元値で open と数 pt ずれ、建値誤差が累積し equity 減衰が加速→stop-out が 2 日早発→トレード数が激減
+- 対策：`_execute_every_tick` の成行約定を足境界で `derive_quotes(bar, entry_price_basis, point_size)` により bar open クォート約定へ変更（bar-mode と同一の建値ルール）。ティックは SL/TP/floating/stop-out 評価専用に。ティック0件足は新規バー未検知＝発注しない（既存仕様を維持）。突合は entry_price_basis="current_open" を併用
+- 検証：bar-open fill 修正後の 2026-01 突合 → 初回トレード sell 50390.8（MT5 一致）、stop-out 01-14（MT5 一致）、trades 1446 vs 1444（+2・99.86%）、net -4598.8 vs -4649（差 50.2・1.08%）。unit/integration 全 511 passed（tick 価格約定を主張していた cycle2 distinguishing テスト3件＋integration1件を bar-open クォート約定へ是正）
+- 残差（構造的・tick 解像度の床）：残 ±2 trades / ~50pt は、輸出 CSV の片側ティックを ffill 復元したクォートと MT5 内部の実ティック列の差に起因。Jan-14 stop-out 境界で僅かなクォート差が margin 割れ tick を前後させ ±2 trades・~50pt を生む。輸出 CSV のみからの bit-exact 一致は原理的に不能（MT5 内部 tick 列が必要）。実用上の到達点として確定
