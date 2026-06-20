@@ -1,10 +1,10 @@
-// pair_primitive_base.js — 売買ペア系カスタム primitive 共通基底（v4/v5・リファクタ）。
+// pair_primitive_base.js — 売買ペア系カスタム primitive 共通基底（v4・リファクタ）。
 //
-// 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10/§11。PairLinesPrimitive（§10・ペア線描画）と
-//   PairDimPrimitive（§11・帯減光）は lwc ISeriesPrimitive のライフサイクル/状態保持（attach・座標源・
-//   pairs/highlight 状態・再描画要求・paneView）が同形であり、唯一の差異は描画本体 _draw(target) である。
-//   両者の SRP（ペア線描画 vs 帯減光）は _draw の override により分離を維持し、共通スキャフォールドのみ
-//   本基底へ集約する（依存方向・公開シグネチャ・後方互換は不変）。
+// 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10。lwc ISeriesPrimitive のライフサイクル/状態保持
+//   （attach・座標源・pairs/highlight 状態・再描画要求・paneView）を共通スキャフォールドとして本基底へ集約し、
+//   サブクラスは描画本体 _draw(target) の override のみで責務を分化する（依存方向・公開シグネチャ・後方互換は不変）。
+//   現在の唯一のサブクラスは PairLinesPrimitive（§10・ペア線描画）。
+//   （v5 の PairDimPrimitive（§11・帯減光）は §12 v6 で廃止済。ローソク減光は ChartRenderer の per-bar 着色へ移行。）
 //
 // 公開契約（サブクラスへ継承される不変条件）:
 //   - attached({chart,series,requestUpdate}) / detached() で座標源を授受する。

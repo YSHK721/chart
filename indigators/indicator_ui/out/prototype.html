@@ -1469,6 +1469,11 @@ const INDICATOR_PANE_STRETCH = 1;
 
 const WATERMARK_COLOR = 'rgba(209, 212, 220, 0.9)';
 
+// v6（§12）: ホバー中ペア外のローソク足に被せる極暗色（背景 #131722 に近い不透明暗色）。
+//   per-bar color/borderColor/wickColor を本色で上書きし、ローソクのみを限りなく減光する
+//   （背景ピクセルは一切変更しない）。ペア内バーは色を付けず原色（既定 up/down 着色）に委ねる。
+const DIM_CANDLE_COLOR = '#16191f';
+
 // σ 水準線のカラースキーム（histogram の level_colors と同義: 中心からの距離で 緑→赤）。
 // 端点は common/level_colors.py の _CALM/_HOT（#2e7d32 / #d32f2f）に一致させる。
 const SCHEME_CALM = [46, 125, 50]; // 緑（中心＝穏やか）
@@ -1504,11 +1509,19 @@ class ChartRenderer {
   // lwc: グローバル LightweightCharts 名前空間（LineSeries/HistogramSeries/createTextWatermark）。
   // onCrosshairReadout: クロスヘア価格読み取り欄へ読み取り DTO を渡すコールバック
   //   （省略時 no-op＝後方互換）。DTO はプレーンなデータ構造（series 実体・lwc 型を含めない）。
-  constructor({ chart, mainSeries, lwc, onCrosshairReadout }) {
+  // onCandlesChanged: 基準 candles 変更（setCandles 全置換 / updateLastCandle 差分）時に呼ぶ
+  //   observer（省略時 no-op＝後方互換）。trade markers renderer が hover 中なら highlight 解除へ使う
+  //   （ChartRenderer 起点の単一同期点＝v6・§12 / フェーズ2 確定機構）。
+  constructor({ chart, mainSeries, lwc, onCrosshairReadout, onCandlesChanged }) {
     this._chart = chart;
     this._mainSeries = mainSeries;
     this._lwc = lwc ?? {};
     this._onCrosshairReadout = typeof onCrosshairReadout === 'function' ? onCrosshairReadout : () => {};
+    // v6: 基準 candles の単一所有者（setCandles 全置換・updateLastCandle 差分で更新）。
+    //   per-bar 減光（dimCandlesOutsidePair）・基準復元（restoreCandles）はこの基準から導出する。
+    this._baseCandles = null;
+    // v6: candle 変更 observer（後方互換 no-op）。setCandleObserver で後から差し替え可能（生成順序吸収）。
+    this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
     // 読み取り欄の最新足の単一源（lightweight-charts から逆引きしない＝upstream API 名を増やさない）。
     //   setCandles で配列末尾、updateLastCandle で当該足を保持する。
     this._lastBar = null;
@@ -1529,9 +1542,13 @@ class ChartRenderer {
   setCandles(candles) {
     const arr = candles ?? [];
     this._mainSeries.setData(arr);
+    // v6: 基準 candles を全置換で更新（per-bar 減光/復元の元集合）。
+    this._baseCandles = arr;
     // 読み取り欄の最新足の単一源を更新（配列末尾の足）。空配列なら null。
     this._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
     this._chart.timeScale().fitContent();
+    // v6: candle 変更を observer へ通知（ChartRenderer 起点同期＝hover 中なら highlight 解除へ）。
+    this._onCandlesChanged();
   }
 
   // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。
@@ -1540,7 +1557,60 @@ class ChartRenderer {
     this._mainSeries.update(candle);
     // 最新足の単一源を更新し、hover していない読み取り表示が古くならないよう DTO を再発火する。
     this._lastBar = candle;
+    // v6: 基準 candles の末尾を差分反映（同 time は置換・新 time は追加）。減光の元集合を同期。
+    this._mergeBaseCandle(candle);
     this._emitReadout(null);
+    // v6: candle 変更を observer へ通知（live tick でも hover 中なら highlight 解除させる）。
+    this._onCandlesChanged();
+  }
+
+  // v6: candle 変更 observer を後から据える（composition root の renderer/markers 生成順序差を吸収）。
+  setCandleObserver(onCandlesChanged) {
+    this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
+  }
+
+  // v6: 基準 candles の末尾足を差分マージする（updateLastCandle 用）。基準未保持なら単一要素配列。
+  _mergeBaseCandle(candle) {
+    if (!candle) {
+      return;
+    }
+    const base = this._baseCandles ? this._baseCandles.slice() : [];
+    if (base.length > 0 && base[base.length - 1].time === candle.time) {
+      base[base.length - 1] = candle;
+    } else {
+      base.push(candle);
+    }
+    this._baseCandles = base;
+  }
+
+  // v6（§12）: ホバー中ペア [from,to] 外のローソク足を per-bar 極暗色へ上書きして mainSeries へ反映する。
+  //   ペア内バーは色を付けず原色（既定 up/down 着色）に委ねる。time/open/high/low/close は基準と完全一致
+  //   （データ非改変・背景ピクセルも不変）。基準 candles 未供給時は no-op（候補据え置き・後方互換）。
+  //   mainSeries.setData を呼ぶのは本所のみ（upstream 隔離・grep0件規約維持）。
+  dimCandlesOutsidePair({ from, to }) {
+    if (!this._baseCandles) {
+      return;
+    }
+    const dimmed = this._baseCandles.map((bar) => {
+      if (bar.time >= from && bar.time <= to) {
+        return bar; // ペア内は原色維持（色上書きしない）。
+      }
+      return {
+        ...bar,
+        color: DIM_CANDLE_COLOR,
+        borderColor: DIM_CANDLE_COLOR,
+        wickColor: DIM_CANDLE_COLOR,
+      };
+    });
+    this._mainSeries.setData(dimmed);
+  }
+
+  // v6（§12）: per-bar 減光を解除し基準 candles（色上書きなし）を復元する。基準未供給なら no-op。
+  restoreCandles() {
+    if (!this._baseCandles) {
+      return;
+    }
+    this._mainSeries.setData(this._baseCandles);
   }
 
   _slot(instanceId) {
@@ -3920,13 +3990,13 @@ class CrosshairReadoutView {
 
 
 // ===== js/adapter/front/pair_primitive_base.js =====
-// pair_primitive_base.js — 売買ペア系カスタム primitive 共通基底（v4/v5・リファクタ）。
+// pair_primitive_base.js — 売買ペア系カスタム primitive 共通基底（v4・リファクタ）。
 //
-// 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10/§11。PairLinesPrimitive（§10・ペア線描画）と
-//   PairDimPrimitive（§11・帯減光）は lwc ISeriesPrimitive のライフサイクル/状態保持（attach・座標源・
-//   pairs/highlight 状態・再描画要求・paneView）が同形であり、唯一の差異は描画本体 _draw(target) である。
-//   両者の SRP（ペア線描画 vs 帯減光）は _draw の override により分離を維持し、共通スキャフォールドのみ
-//   本基底へ集約する（依存方向・公開シグネチャ・後方互換は不変）。
+// 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10。lwc ISeriesPrimitive のライフサイクル/状態保持
+//   （attach・座標源・pairs/highlight 状態・再描画要求・paneView）を共通スキャフォールドとして本基底へ集約し、
+//   サブクラスは描画本体 _draw(target) の override のみで責務を分化する（依存方向・公開シグネチャ・後方互換は不変）。
+//   現在の唯一のサブクラスは PairLinesPrimitive（§10・ペア線描画）。
+//   （v5 の PairDimPrimitive（§11・帯減光）は §12 v6 で廃止済。ローソク減光は ChartRenderer の per-bar 着色へ移行。）
 //
 // 公開契約（サブクラスへ継承される不変条件）:
 //   - attached({chart,series,requestUpdate}) / detached() で座標源を授受する。
@@ -3996,7 +4066,8 @@ class PairPrimitiveBase {
 //   chart.timeScale().timeToCoordinate(time)・series.priceToCoordinate(price)（範囲外は null）。
 //
 // 共通ライフサイクル/状態（attach・pairs/highlight 保持・再描画要求・paneView）は PairPrimitiveBase に集約。
-//   本クラスの責務は「ペア線の描画（_draw）」に限定する（SRP・帯減光は PairDimPrimitive が担う）。
+//   本クラスの責務は「ペア線の描画（_draw）」に限定する（SRP）。
+//   （ローソク減光は §12 v6 で ChartRenderer の per-bar 着色へ移行済。本 primitive は減光を担わない。）
 //
 // 単体検証は fake target/scale/chart で行い（座標・色・alpha を観測）、canvas 実描画・実 lwc は
 //   ブラウザ結合確認へ委譲する（§10.4・C3）。
@@ -4047,74 +4118,6 @@ class PairLinesPrimitive extends PairPrimitiveBase {
 }
 
 
-// ===== js/adapter/front/pair_dim_primitive.js =====
-// pair_dim_primitive.js — ホバー中ペア以外のローソク足を減光する dimming オーバーレイ primitive（v5・§11）。
-//
-// 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §11（案A・自己完結 dimming オーバーレイ）。
-//   フェーズ2 確定: 専用 primitive を併設（PairLinesPrimitive に相乗りしない・SRP 分離）。
-//   highlight 時のみ、ペア i の [左端, entryX] と [exitX, 右端] の x 帯に半透明暗色矩形を
-//   pane 全高（scope.bitmapSize.height）で描画。entryX/exitX は timeScale().timeToCoordinate(time)。
-//   座標 null（範囲外）はスキップ。highlight=null は何も描かない。
-//
-// 共通ライフサイクル/状態（attach・pairs/highlight 保持・再描画要求・paneView）は PairPrimitiveBase に集約。
-//   本クラスの責務は「ペア帯外の減光描画（_draw）」と z 配置（zOrder）に限定する（SRP・ペア線は
-//   PairLinesPrimitive が担う）。
-//
-// z 配置: zOrder()==='bottom'（ローソクの上・マーカー/ペア線の下を狙う）。実 z 合成はブラウザ確認。
-// 単体検証は fake target/chart で行い（fillRect 矩形を観測）、canvas 実描画・実 z 合成は
-//   ブラウザ結合確認へ委譲する（§11 受入・C3）。
-
-
-const DIM_FILL = '#000000'; // 暗色（半透明で重ねる）。
-const DIM_ALPHA = 0.4; // 減光帯の不透明度（半透明）。
-
-class PairDimPrimitive extends PairPrimitiveBase {
-  // ローソクの上・マーカー/ペア線の下に置くことを狙う（実 z 合成はブラウザ確認）。
-  zOrder() {
-    return 'bottom';
-  }
-
-  // highlight 中ペアの [左端, entryX] と [exitX, 右端] に pane 全高の半透明暗色矩形を描く。
-  //   highlight=null・一致ペアなし・attach 前・座標 null はそれぞれスキップ（§11・C3）。
-  _draw(target) {
-    if (this._highlight == null) {
-      return; // 非ホバーは減光しない。
-    }
-    if (!this._chart) {
-      return; // attach 前は座標源が無い（防御・後方互換）。
-    }
-    const pair = this._pairs.find((p) => p.i === this._highlight);
-    if (!pair) {
-      return; // 一致ペアが無ければ何も描かない。
-    }
-    const timeScale = this._chart.timeScale && this._chart.timeScale();
-    if (!timeScale || typeof timeScale.timeToCoordinate !== 'function') {
-      return;
-    }
-    const entryX = timeScale.timeToCoordinate(pair.entry.time);
-    const exitX = timeScale.timeToCoordinate(pair.exit.time);
-
-    target.useBitmapCoordinateSpace((scope) => {
-      const ctx = scope.context;
-      const h = scope.bitmapSize.height; // pane 全高。
-      const right = scope.bitmapSize.width; // pane 右端。
-      ctx.save();
-      ctx.fillStyle = DIM_FILL;
-      ctx.globalAlpha = DIM_ALPHA;
-      // 左帯 [左端(0), entryX]（entryX が範囲外 null ならスキップ）。
-      if (entryX != null) {
-        ctx.fillRect(0, 0, entryX, h);
-      }
-      // 右帯 [exitX, 右端]（exitX が範囲外 null ならスキップ）。
-      if (exitX != null) {
-        ctx.fillRect(exitX, 0, right - exitX, h);
-      }
-      ctx.restore();
-    });
-  }
-}
-
-
 // ===== js/adapter/front/trade_markers_renderer.js =====
 // trade_markers_renderer.js — 上流 lwc API（createSeriesMarkers）を隔離する adapter。
 //
@@ -4144,16 +4147,21 @@ class TradeMarkersRenderer {
   //   v4: chart.subscribeCrosshairMove があれば購読し、hoveredObjectId（"t{i}:..."）から
   //   _highlight=i を解析して当該ペア以外を減光する（§10.2・C1）。mainSeries.attachPrimitive が
   //   あれば PairLinesPrimitive を付与して売買ペア線を描く（§10.1）。
-  constructor({ lwc, mainSeries, chart = null }) {
+  //   v6（§12）: chartRenderer（任意）を受け取ると、hover 中ペア外のローソク足を per-bar 減光させる。
+  //   減光/復元は chartRenderer.dimCandlesOutsidePair / restoreCandles を呼ぶ（mainSeries.setData を
+  //   直接呼ばない＝upstream 隔離・grep0件規約維持）。chartRenderer 未注入時は全件通常描画フォールバック。
+  constructor({ lwc, mainSeries, chart = null, chartRenderer = null }) {
     this._lwc = lwc;
     this._series = mainSeries;
+    this._chartRenderer = chartRenderer; // v6: 基準 candles 所有者（dim/restore の委譲先）。
     this._handle = null;
     this._all = []; // load した全 lwc マーカー（昇順）。範囲フィルタの元集合。
+    this._pairs = []; // v6: load した売買ペア（dim 範囲 [entry_time, exit_time] の参照元）。
     this._range = null; // 直近の可視時間範囲（null=初期・未確定）。
     this._rangeAware = false; // 可視範囲購読が成立したか（成立時のみ範囲フィルタを適用）。
     this._highlight = null; // v4: ホバー中トレード i（null=非ホバー・全件通常）。
     this._primitive = null; // v4: 売買ペア線 primitive（attachPrimitive 非提供時 null）。
-    this._dimPrimitive = null; // v5: ローソク減光 primitive（§11・attachPrimitive 非提供時 null）。
+    this._candlesDimmed = false; // v6: ローソク減光中か（onCandlesChanged 時の復元要否判定）。
 
     const sub = chart && chart.timeScale && chart.timeScale();
     if (sub && typeof sub.subscribeVisibleTimeRangeChange === 'function') {
@@ -4209,10 +4217,41 @@ class TradeMarkersRenderer {
     if (this._primitive) {
       this._primitive.setHighlight(this._highlight);
     }
-    if (this._dimPrimitive) {
-      this._dimPrimitive.setHighlight(this._highlight); // v5・§11: ローソク減光も単一経路で連動（C2）。
-    }
+    // v6・§12: ローソク足の per-bar 減光も単一 _render 経路で連動（C2）。
+    //   highlight 中ペアの [entry_time, exit_time] 外を ChartRenderer へ減光要求、非 highlight は基準復元。
+    this._applyCandleDimming();
     this.setMarkers(applied);
+  }
+
+  // v6（§12）: highlight 状態に応じて ChartRenderer へ per-bar 減光/基準復元を委譲する。
+  //   highlight 中で一致ペアがあれば [entry_time, exit_time] 外を減光、それ以外は減光中なら復元。
+  //   chartRenderer 未注入時は no-op（後方互換・全件通常描画フォールバック）。
+  _applyCandleDimming() {
+    const cr = this._chartRenderer;
+    if (!cr) {
+      return;
+    }
+    const pair = this._highlight == null
+      ? null
+      : this._pairs.find((p) => p.i === this._highlight);
+    if (pair && typeof cr.dimCandlesOutsidePair === 'function') {
+      cr.dimCandlesOutsidePair({ from: pair.entry.time, to: pair.exit.time });
+      this._candlesDimmed = true;
+    } else if (this._candlesDimmed && typeof cr.restoreCandles === 'function') {
+      cr.restoreCandles();
+      this._candlesDimmed = false;
+    }
+  }
+
+  // v6（§12・必須条件2）: ChartRenderer 起点の candle 変更通知。hover 中（減光中）なら highlight を
+  //   解除し基準色へ戻してから ChartRenderer 本来の書込みに委ねる（同一 mainSeries への dim版 setData と
+  //   timeframe/live setData の二重書込み競合を回避）。非ホバー中は何もしない（不要な復元を発火しない）。
+  onCandlesChanged() {
+    if (this._highlight == null && !this._candlesDimmed) {
+      return; // 非ホバー・非減光なら ChartRenderer 本来の書込みに委ねる（二重書込みしない）。
+    }
+    this._highlight = null;
+    this._render(); // highlight 解除 → marker 通常色復帰 ＋ _applyCandleDimming で基準復元。
   }
 
   // _rangeAware 時は _range で絞った集合、それ以外（フォールバック）は全件を返す。
@@ -4240,23 +4279,17 @@ class TradeMarkersRenderer {
 
   // v4・§10.1: 売買ペア線 primitive を mainSeries へ付与する。attachPrimitive 非提供（旧 API）の
   //   series では skip（後方互換・throw しない）。再 load 時は既存 primitive へ pairs を差し替える。
-  //   v5・§11: 同 series へ dimming オーバーレイ primitive も併設し（SRP 分離）、同じ pairs を供給する。
+  //   v6・§12: ローソク減光は ChartRenderer の per-bar 着色（dimCandlesOutsidePair）で行うため、
+  //   v5 の dimming オーバーレイ primitive（PairDimPrimitive）は付与しない（廃止）。pairs は
+  //   _pairs に保持し、_applyCandleDimming が減光範囲 [entry_time, exit_time] の参照元にする。
   _attachPairLines(pairs) {
+    this._pairs = pairs || [];
     const canAttach = this._series && typeof this._series.attachPrimitive === 'function';
-    // 売買ペア線 primitive（v4）。
     if (this._primitive) {
-      this._primitive.setPairs(pairs);
+      this._primitive.setPairs(this._pairs);
     } else if (canAttach) {
-      this._primitive = new PairLinesPrimitive(pairs);
+      this._primitive = new PairLinesPrimitive(this._pairs);
       this._series.attachPrimitive(this._primitive);
-    }
-    // ローソク減光 primitive（v5・§11）。pairs は setPairs 経由で供給する（再 load も同経路）。
-    if (!this._dimPrimitive && canAttach) {
-      this._dimPrimitive = new PairDimPrimitive();
-      this._series.attachPrimitive(this._dimPrimitive);
-    }
-    if (this._dimPrimitive) {
-      this._dimPrimitive.setPairs(pairs);
     }
   }
 
@@ -4471,7 +4504,11 @@ async function bootstrap({
   //   返すのみ（load トリガは入口 index.html が ready 後に呼ぶ＝既存 candles 経路に非干渉）。
   //   chart も渡し、可視時間範囲を購読して範囲内マーカーのみ描画する（§9 Fix v3・左端クランプ列の除去）。
   //   購読 API 非提供時は全件描画フォールバック（後方互換）。
-  const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  //   v6（§12）: renderer（ChartRenderer）を渡し、hover 中ペア外のローソク足を per-bar 減光させる
+  //   （減光/復元は ChartRenderer に閉じる＝upstream 隔離維持）。renderer 生成は tradeMarkers より先のため、
+  //   candle 変更 observer は setCandleObserver で後据えする（ChartRenderer 起点同期・必須条件1/2）。
+  const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart, chartRenderer: renderer });
+  renderer.setCandleObserver(() => tradeMarkers.onCandlesChanged());
 
   return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers };
 }
