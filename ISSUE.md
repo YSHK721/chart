@@ -308,3 +308,15 @@
 - 原因（当初の「OHLC 安値基準」説を訂正）：bar-mode の stop-out 強制決済が、成行建値用に算出した `derive_quotes`（entry_price_basis="current_open"）の **bid=bar.open** を流用していた。一方 margin 割れの**判定**は含み損評価（update_floating_pnl→bar.close 基準）で行う。よって「**終値で割れたと判定しながら過ぎ去った始値で決済する**」非物理的な内部不整合があった（MT5 は割れ時点の現値＝終値で決済＝物理的に正しい）。安値 53849.2 は MT5 も使っておらず「OHLC 安値評価」は不要だった
 - 対策：bar-mode の stop-out 強制決済価格を `account.mark_price(bar, side)`（update_floating_pnl と同一の評価価格＝margin 判定時点の現値。買い=Bid=close／売り=Ask=close[+spread]）へ是正。判定価格と決済価格を一致させた。Account に公開メソッド `mark_price` を追加（`_eval_price` へ委譲）。every-tick 経路の stop-out は元から到達ティック価格（割れ時点の現値）で決済しており不変。既定経路は entry/floating とも基準="close" のため mark_price==close==従来値で **byte-identical** 維持
 - 検証：bar-mode + jp225 + 本修正で 2026-01 突合 → **trade-by-trade 0/1444 不一致（全建値・全決済が bit-exact）**、net -4648.8 vs MT5 -4649（残差 0.2＝MT5 レポートの整数丸め）、balance 5351.2 vs 5351、初回 sell 50390.8。unit/integration 全 522 passed（既定 byte-identical 維持・stop-out 決済価格の回帰テスト 1 件追加・既存 2025-01 突合不変）
+
+## ISSUE-020
+
+- 概要：2026-01 突合の最終残差 0.2 円（ours net -4648.8 vs MT5 -4649）。価格・トレード列は完全一致だが、約定損益の通貨精度の扱いが MT5 と異なっていた
+- 重大度：低（0.004%。実用上は一致だが literal 一致でない）
+- ステータス：RESOLVED
+- 検出日：2026-06-20
+- 検出経路：per-trade pnl 突合で 1444 件中 2 件のみ profit が乖離と特定（idx600 ours 200.4 vs MT5 200／idx1125 ours -6.2 vs MT5 -6）。MT5 の全 1444 約定 profit は整数（非整数 0 件）で、差の合計 +0.2＝net 残差の全量
+- 原因：実 MT5 は約定損益を口座通貨の精度（JPY=0 桁）へ丸めて balance/stats に反映する。本エンジンは損益式 (exit-entry)×contract×lot の素値（0.1 円端数）を保持していた。値差が 0.1 刻みのため profit は X.0/X.2/X.4… になり得るが、MT5 は整数へ丸める
+- 対策（config gated・既定 byte-identical）：domain/_shared に `round_profit(value, digits)`（digits=None は素値・指定時 half-away-from-zero）を追加。TradeRecord に `profit_round_digits`（既定 None）フィールド、Deal.from_close に同名引数を追加し、双方が round_profit を共有。Interactor は config.profit_round_digits（既定 None＝丸めず）を確定トレード生成点（_close_open_trade）で TradeRecord へ付与し、deal.profit（balance）と pnl（stats）を一致させる。config_loader/BacktestConfig に profit_round_digits（既定 None・0-8）を追加。既定 None では従来式の素値＝byte-identical
+- 検証：bar-mode + jp225 + profit_round_digits=0 で 2026-01 突合 → **net -4649.0 vs MT5 -4649（差 0.0・literal 一致）**、balance 5351.0 vs 5351、per-trade pnl 0/1444 不一致（完全一致）。全 530 passed（round_profit 単体4／TradeRecord 丸め2／Deal 丸め1 の回帰テスト追加・既定 None の byte-identical 維持・既存 2025-01 突合不変）
+- 到達点：ISSUE-017（every-tick 建値）→018（週末カレンダー）→019（stop-out 決済価格）→020（通貨丸め）の解消により、2026-01 は実 MT5 と **trades 1444・全建値・全決済・net -4649・balance 5351 まで literal bit-exact** に到達

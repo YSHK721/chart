@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backtest.domain._shared import sign_of
+from backtest.domain._shared import round_profit, sign_of
 from backtest.domain.exceptions import ExecutionError
 
 # direction は Deal 固有の語彙のため当モジュールに留める（YAGNI: 単一利用）。
@@ -44,13 +44,19 @@ class Deal:
         contract_size: float,
         swap: float,
         commission: float,
+        profit_round_digits: "int | None" = None,
     ) -> "Deal":
-        """決済約定を生成し、METRICS §5.2 の式で profit を確定する。"""
+        """決済約定を生成し、METRICS §5.2 の式で profit を確定する。
+
+        profit_round_digits 指定時は profit を口座通貨桁へ丸める（既定 None＝素値＝
+        後方互換）。TradeRecord.pnl と同一の round_profit を共有し balance/stats を一致させる。
+        """
         # METRICS §5.2: (close - entry) * sign * lot * contract_size + swap + commission
-        profit = (
+        profit = round_profit(
             (close_price - entry_price) * sign_of(side) * volume * contract_size
             + swap
-            + commission
+            + commission,
+            profit_round_digits,
         )
         return cls(
             direction="out",

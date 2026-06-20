@@ -38,6 +38,8 @@ def _close_deal(trade: TradeRecord) -> Deal:
         contract_size=trade.contract_size,
         swap=trade.swap,
         commission=trade.commission,
+        # trade と同一の通貨丸めを deal.profit にも適用（balance と pnl を一致させる）。
+        profit_round_digits=trade.profit_round_digits,
     )
 
 
@@ -87,6 +89,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         self._tick_model = tick_model
         # 市場開閉カレンダー（DI・既定 None=常時開場＝既定経路 byte-identical）。
         self._session_calendar = session_calendar
+        # 約定損益の口座通貨丸め桁（execute/_execute_every_tick が config から設定）。
+        # __init__ で明示初期化し「execute 経由で必ず設定済み」の前提を明確化する。
+        self._profit_round_digits: "int | None" = None
 
     def _closed_bars(self, bars: list) -> "set[int]":
         """新規成行を約定しないバー index 集合（カレンダー未注入なら空集合）。"""
@@ -94,8 +99,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             return set()
         return self._session_calendar.closed_bar_indices(bars)
 
-    @staticmethod
     def _close_open_trade(
+        self,
         ot: _OpenTrade,
         *,
         exit_time: Any,
@@ -111,7 +116,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         """保有玉 1 件を確定決済する（reverse / SL / TP で共通の決済処理）。
 
         手順は確定トレード列・margin・deal・balance_curve への反映を 1 箇所に集約する
-        （reverse 決済と SL/TP 決済で重複していた処理の単一化）。振る舞いは不変。
+        （reverse 決済と SL/TP 決済で重複していた処理の単一化）。TradeRecord は本メソッド
+        が唯一の生成点であり、約定損益の通貨丸め桁（self._profit_round_digits・既定 None）
+        を確定トレードへ付与する。振る舞いは丸め桁未設定時は不変（後方互換）。
         """
         trade = TradeRecord(
             side=ot.position.side,
@@ -124,6 +131,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             swap=0.0,
             commission=0.0,
             exit_reason=exit_reason,
+            profit_round_digits=self._profit_round_digits,
         )
         trades.append(trade)
         account.open_positions.remove(ot.position)
@@ -142,6 +150,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
         config = request.config
         bars = list(request.bars)
+        # 約定損益の口座通貨丸め桁（既定 None＝丸めず＝byte-identical）。確定トレード生成
+        # （_close_open_trade）が本値を TradeRecord に付与し pnl/deal/balance を一致させる。
+        self._profit_round_digits = getattr(config, "profit_round_digits", None)
         # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で既定経路は不変。
         closed_bars = self._closed_bars(bars)
 
@@ -363,6 +374,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         """
         config = request.config
         bars = list(request.bars)
+        # 約定損益の口座通貨丸め桁（既定 None＝丸めず＝byte-identical）。
+        self._profit_round_digits = getattr(config, "profit_round_digits", None)
         # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で挙動不変。
         closed_bars = self._closed_bars(bars)
 
