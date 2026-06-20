@@ -45,6 +45,34 @@ class _Symbol:
     digits: int
 
 
+def read_recent_marketdata(src: Any, n: int) -> pd.DataFrame:
+    """marketdata（date,open,high,low,close,volume）の末尾 n 行を header 付きで返す（Fix-A）。
+
+    297MB を丸読みしないため、まず行数を数え `skiprows=range(1, total-n+1)` で末尾のみ読む
+    （行 0=header は保持）。`total<=n` の場合は全行を返す。src は読み取り専用（バイト不変）。
+    """
+    # データ行数（header を除く）を数える。
+    with open(src, encoding="utf-8") as f:
+        total = sum(1 for _ in f) - 1
+    if total <= n:
+        return pd.read_csv(src)
+    # 先頭 (total-n) データ行をスキップし末尾 n 行のみ読む（header=行 0 は保持）。
+    return pd.read_csv(src, skiprows=range(1, total - n + 1))
+
+
+def _load_marketdata(csv_path: Any, rows: "int | None", from_head: bool) -> pd.DataFrame:
+    """読み取り専用ロードの経路選択を一箇所に集約する（src 非改変）。
+
+    rows=None は全行、from_head=True は先頭 N 本（後方互換）、既定は直近 tail
+    （`read_recent_marketdata`）。run_and_export から読み込み分岐を分離する（SRP）。
+    """
+    if rows is None:
+        return pd.read_csv(csv_path)
+    if from_head:
+        return pd.read_csv(csv_path, nrows=rows)
+    return read_recent_marketdata(csv_path, rows)
+
+
 def bridge_marketdata_df(src: pd.DataFrame) -> pd.DataFrame:
     """marketdata 形式（date,open,...,volume）を engine 形式へブリッジする（src 非改変）。
 
@@ -87,16 +115,30 @@ def _meta(data_path: Any, ea_name: str) -> dict:
         leverage=100.0,
         ma_period=14,
         ma_method="sma",
-        lot_size=1.0,
+        # Fix-B: 堅牢サイジング（早期 halt 回避・直近高価格でトレードを窓内に分布させる）。
+        lot_size=0.1,
         stop_loss_points=500,
         take_profit_points=3000,
+        # Fix-B: 証拠金割れでも強制決済して完走する（MarginCallError を出さない）。
+        config_overrides={"stop_out_action": "close_and_halt"},
     )
 
 
-def run_and_export(*, csv_path: Path, out_path: Path, ea_name: str, rows: "int | None") -> dict:
-    """marketdata を読み取り専用ロード→ブリッジ→run→presenter→集合包含検証して payload を返す。"""
-    # 1. marketdata 読み取り専用ロード（既存データ非改変）。
-    src = pd.read_csv(csv_path, nrows=rows) if rows else pd.read_csv(csv_path)
+def run_and_export(
+    *,
+    csv_path: Path,
+    out_path: Path,
+    ea_name: str,
+    rows: "int | None",
+    from_head: bool = False,
+) -> dict:
+    """marketdata を読み取り専用ロード→ブリッジ→run→presenter→集合包含検証して payload を返す。
+
+    Fix-A: rows 指定時は既定で直近 tail（`read_recent_marketdata`）を読む。先頭 N 本が必要な
+    場合は `from_head=True`（後方互換オプション）。rows=None は全行。
+    """
+    # 1. marketdata 読み取り専用ロード（経路選択は _load_marketdata に集約）。
+    src = _load_marketdata(csv_path, rows, from_head)
     # 2. 列ブリッジ（tmp へ engine 形式 CSV を書く・実行後削除）。
     bridged = bridge_marketdata_df(src)
     tmp = tempfile.NamedTemporaryFile(
@@ -135,7 +177,13 @@ def run_and_export(*, csv_path: Path, out_path: Path, ea_name: str, rows: "int |
 
 def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(description="Export trade markers JSON for chart overlay.")
-    parser.add_argument("--rows", type=int, default=None, help="先頭 N 本に限定（既定: 全件）")
+    # Fix-A: 既定は直近 N 本（tail）。UI の RECENT_BARS=1500 を内包する余裕（5000）。
+    parser.add_argument("--rows", type=int, default=5000, help="直近 N 本に限定（既定 5000・tail）")
+    parser.add_argument(
+        "--from-head",
+        action="store_true",
+        help="先頭 N 本を読む（後方互換オプション・既定は直近 tail）",
+    )
     parser.add_argument("--ea", dest="ea_name", default="TC24051901", help="EA 名（既定 TC24051901）")
     parser.add_argument("--out", default=str(_DEFAULT_OUT), help="出力 JSON パス")
     parser.add_argument("--csv", default=str(_DEFAULT_CSV), help="入力 marketdata CSV")
@@ -146,6 +194,7 @@ def main(argv: "list[str] | None" = None) -> int:
             out_path=Path(args.out),
             ea_name=args.ea_name,
             rows=args.rows,
+            from_head=args.from_head,
         )
     except Exception as exc:  # noqa: BLE001 — 非ゼロ終了＋メッセージ（既存データ非改変）
         print(f"[trade-markers] ERROR: {exc}", file=sys.stderr)
