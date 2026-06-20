@@ -298,10 +298,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         },
                         bar_index=bar_index,
                     )
-                # "close_and_halt": 全保有玉を強制決済（buy=bid・sell=ask）し、以降の
-                # 新規発注を抑止して最終統計まで完走する（cycle4 バグ②）。
+                # "close_and_halt": 全保有玉を強制決済し、以降の新規発注を抑止して最終統計
+                # まで完走する（cycle4 バグ②）。強制決済価格は「margin 割れを判定した時点
+                # の現値」＝account.mark_price（update_floating_pnl と同一価格・bar.close
+                # 基準）を用いる。成行建値が始値基準（current_open）でも、過ぎ去った始値で
+                # なく割れ時点の close 現値で決済する（実 MT5 整合・ISSUE-019）。
                 for ot in open_trades:
-                    close_price = close_price_for(ot.position.side, bid=bid, ask=ask)
+                    close_price = account.mark_price(bar, ot.position.side)
                     self._close_open_trade(
                         ot,
                         exit_time=bar.time,

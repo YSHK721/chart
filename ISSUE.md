@@ -300,10 +300,11 @@
 
 ## ISSUE-019
 
-- 概要：2026-01 突合の最終 stop-out 1 件のみ決済価格が乖離。ours bar.close 基準で 54019.2（pnl -10）、MT5（1分足OHLC）は intra-bar 安値基準で 53859.2（pnl -170）。差 160pt が net 残差（ours -4488.8 vs MT5 -4649）の全量
+- 概要：2026-01 突合の最終 stop-out 1 件のみ決済価格が乖離。ours 54019.2（pnl -10）、MT5 53859.2（pnl -170）。差 160pt が net 残差（ours -4488.8 vs MT5 -4649）の全量
 - 重大度：低（1444 件中 1 件の決済価格のみ。トレード列・建値は完全一致）
-- ステータス：OPEN（対応方針の承認待ち＝スコープ拡張）
+- ステータス：RESOLVED
 - 検出日：2026-06-20
-- 検出経路：bar-mode + jp225 カレンダーの trade-by-trade 突合で唯一の不一致として特定
-- 原因：bar-mode の stop-out 判定/強制決済が bar.close 基準（含み損 update_floating_pnl(bar)）。実 MT5 1分足OHLC は 4 疑似ティック(O/H/L/C)で評価するため、買い保有は intra-bar 安値で margin 割れ→安値で強制決済し、こちらより不利（深い）価格になる。every-tick(real_ticks) 経路は tick 評価のため net 差は約 50 とより小さい
-- 対策案（未承認・要スコープ拡張判断）：bar-mode の stop-out 評価を「当該足の不利側 extreme（買い=low／売り=high）」で行い、強制決済価格も extreme 基準にする（config gated で既定 close を維持し OHLC 突合時のみ有効化）。既定経路 byte-identical と既存 2025-01 突合の不変性を要確認
+- 検出経路：bar-mode + jp225 カレンダーの trade-by-trade 突合で唯一の不一致として特定。当該バー（2026.01.14 23:54 O=54019.2 H=54019.2 L=53849.2 C=53859.2）を実データ確認し、ours 決済価格 54019.2=バー**始値**、MT5 53859.2=バー**終値**（=23:55 始値）と判明
+- 原因（当初の「OHLC 安値基準」説を訂正）：bar-mode の stop-out 強制決済が、成行建値用に算出した `derive_quotes`（entry_price_basis="current_open"）の **bid=bar.open** を流用していた。一方 margin 割れの**判定**は含み損評価（update_floating_pnl→bar.close 基準）で行う。よって「**終値で割れたと判定しながら過ぎ去った始値で決済する**」非物理的な内部不整合があった（MT5 は割れ時点の現値＝終値で決済＝物理的に正しい）。安値 53849.2 は MT5 も使っておらず「OHLC 安値評価」は不要だった
+- 対策：bar-mode の stop-out 強制決済価格を `account.mark_price(bar, side)`（update_floating_pnl と同一の評価価格＝margin 判定時点の現値。買い=Bid=close／売り=Ask=close[+spread]）へ是正。判定価格と決済価格を一致させた。Account に公開メソッド `mark_price` を追加（`_eval_price` へ委譲）。every-tick 経路の stop-out は元から到達ティック価格（割れ時点の現値）で決済しており不変。既定経路は entry/floating とも基準="close" のため mark_price==close==従来値で **byte-identical** 維持
+- 検証：bar-mode + jp225 + 本修正で 2026-01 突合 → **trade-by-trade 0/1444 不一致（全建値・全決済が bit-exact）**、net -4648.8 vs MT5 -4649（残差 0.2＝MT5 レポートの整数丸め）、balance 5351.2 vs 5351、初回 sell 50390.8。unit/integration 全 522 passed（既定 byte-identical 維持・stop-out 決済価格の回帰テスト 1 件追加・既存 2025-01 突合不変）

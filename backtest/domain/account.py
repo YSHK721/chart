@@ -92,6 +92,16 @@ class Account:
             for pos in self.open_positions
         )
 
+    def mark_price(self, bar: Any, side: str) -> float:
+        """保有 side の含み損益評価価格（=その時点の決済現値）を返す。
+
+        update_floating_pnl と同一の価格を返すため、stop-out 強制決済価格に再利用すると
+        「margin 割れを判定した時点の価格で決済する」整合が保たれる（実 MT5 整合）。
+        買い保有=Bid(=bar.close)、売り保有=Ask（"bid_ask" 時は close+spread×point、
+        "close" 時は close）。
+        """
+        return self._eval_price(bar, side)
+
     def _eval_price(self, bar: Any, side: str) -> float:
         """floating_pnl_basis に従い保有 side の含み損益評価価格を解決する。"""
         if self.floating_pnl_basis == "bid_ask" and side == "sell":
