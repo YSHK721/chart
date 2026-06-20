@@ -29,8 +29,8 @@ def _unix(value: Any) -> int:
 
 
 def _marker(time: Any, position: str, shape: str, color: str, text: str,
-            *, kind: str, side: str) -> dict:
-    """lwc 純フィールドとメタ（kind/side）を別階層に分離した Marker DTO（M-2）。"""
+            *, kind: str, side: str, pair: int, marker_id: str) -> dict:
+    """lwc 純フィールド（v4: id 追加）とメタ（kind/side/pair）を別階層に分離した Marker DTO（M-2・§10.3）。"""
     return {
         "lwc": {
             "time": _unix(time),
@@ -38,12 +38,13 @@ def _marker(time: Any, position: str, shape: str, color: str, text: str,
             "shape": shape,
             "color": color,
             "text": text,
+            "id": marker_id,  # v4: createSeriesMarkers が受理する hover 用 id（"t{i}:entry"/"t{i}:exit"）
         },
-        "meta": {"kind": kind, "side": side},
+        "meta": {"kind": kind, "side": side, "pair": pair},  # v4: pair=トレード通番
     }
 
 
-def _entry_marker(tr: Any, digits: int) -> dict:
+def _entry_marker(tr: Any, digits: int, i: int) -> dict:
     """建てマーカー（H-1: buy→belowBar/arrowUp/buy色、sell→aboveBar/arrowDown/sell色）。"""
     if tr.side == "buy":
         position, shape, color = "belowBar", "arrowUp", _C_BUY
@@ -51,10 +52,10 @@ def _entry_marker(tr: Any, digits: int) -> dict:
         position, shape, color = "aboveBar", "arrowDown", _C_SELL
     text = f"{tr.side.upper()} {tr.entry_price:.{digits}f}"
     return _marker(tr.entry_time, position, shape, color, text,
-                   kind="entry", side=tr.side)
+                   kind="entry", side=tr.side, pair=i, marker_id=f"t{i}:entry")
 
 
-def _exit_marker(tr: Any, digits: int) -> dict:
+def _exit_marker(tr: Any, digits: int, i: int) -> dict:
     """決済マーカー（H-1: 反対側/circle、色は勝敗、H-3: REASON price (pnl)）。"""
     # position は side から一意（buy 玉→aboveBar / sell 玉→belowBar）。
     position = "aboveBar" if tr.side == "buy" else "belowBar"
@@ -66,7 +67,18 @@ def _exit_marker(tr: Any, digits: int) -> dict:
     reason = str(tr.exit_reason).upper()  # 未知 reason はそのまま大文字化（H-2 フォールバック）
     text = f"{reason} {tr.exit_price:.{digits}f} ({pnl:+.{pnl_fmt}f})"
     return _marker(tr.exit_time, position, "circle", color, text,
-                   kind="exit", side=tr.side)
+                   kind="exit", side=tr.side, pair=i, marker_id=f"t{i}:exit")
+
+
+def _pair_record(tr: Any, i: int) -> dict:
+    """売買ペア（建て→決済の線分結合用）DTO（§10.3）。win は pnl>0。時刻は既存 UNIX 秒式。"""
+    return {
+        "i": i,
+        "side": tr.side,
+        "win": tr.pnl() > 0,
+        "entry": {"time": _unix(tr.entry_time), "price": tr.entry_price},
+        "exit": {"time": _unix(tr.exit_time), "price": tr.exit_price},
+    }
 
 
 class TradeMarkersPresenter(TradeMarkerPresenterPort):
@@ -77,9 +89,11 @@ class TradeMarkersPresenter(TradeMarkerPresenterPort):
     ) -> None:
         digits = symbol.digits
         markers: list[dict] = []
-        for tr in result.trades:
-            markers.append(_entry_marker(tr, digits))
-            markers.append(_exit_marker(tr, digits))
+        pairs: list[dict] = []  # v4: 売買ペア（線分結合用・§10.3）
+        for i, tr in enumerate(result.trades):
+            markers.append(_entry_marker(tr, digits, i))
+            markers.append(_exit_marker(tr, digits, i))
+            pairs.append(_pair_record(tr, i))
         markers.sort(key=lambda m: m["lwc"]["time"])  # time 昇順（lwc setMarkers 要求）
         payload = {
             "ok": True,
@@ -87,6 +101,7 @@ class TradeMarkersPresenter(TradeMarkerPresenterPort):
             "ea_name": ea_name,
             "count": len(markers),  # 全件数（無音切り捨て禁止＝H-4）
             "markers": markers,
+            "pairs": pairs,  # v4: トレード通番順（線分結合・hover 用）
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)

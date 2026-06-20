@@ -150,7 +150,7 @@ function fakeLwcFireable() {
   const created = [];
   const mainSeries = { setData: () => {}, update: () => {} };
   const CandlestickSeries = {};
-  let handler = null;
+  const handlers = [];
   const chart = {
     // 最初の addSeries（CandlestickSeries）は main 系列を返す。以降（overlay）は別系列。
     addSeries: (def, opts) => {
@@ -161,8 +161,10 @@ function fakeLwcFireable() {
     panes: () => [{ setStretchFactor: () => {}, paneIndex: () => 0 }],
     addPane: () => ({ addSeries: () => ({ setData: () => {} }), setStretchFactor: () => {}, setPreserveEmptyPane: () => {}, paneIndex: () => 1 }),
     removePane: () => {}, removeSeries: () => {},
-    subscribeCrosshairMove: (h) => { handler = h; },
-    fireCrosshair: (param) => { if (handler) handler(param); },
+    // 実 lwc の subscribeCrosshairMove はマルチキャスト（複数購読が共存）。ChartRenderer と
+    //   TradeMarkersRenderer（v4・C1）が共に購読するため、単一スロットではなく全ハンドラを保持する。
+    subscribeCrosshairMove: (h) => { handlers.push(h); },
+    fireCrosshair: (param) => { handlers.forEach((h) => h(param)); },
   };
   return {
     lwc: {

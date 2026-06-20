@@ -136,7 +136,9 @@ def test_entry_buy_marker_uses_belowbar_arrowup_buycolor_and_text(tmp_path):
     assert entry["lwc"]["shape"] == "arrowUp"
     assert entry["lwc"]["color"] == "#26a69a"
     assert entry["lwc"]["text"] == "BUY 8568.9"
-    assert entry["meta"] == {"kind": "entry", "side": "buy"}
+    # v4: meta は kind/side（+ pair=トレード通番）。kind/side の不変を維持。
+    assert entry["meta"]["kind"] == "entry"
+    assert entry["meta"]["side"] == "buy"
 
 
 def test_entry_sell_marker_uses_abovebar_arrowdown_sellcolor_and_text(tmp_path):
@@ -163,7 +165,9 @@ def test_exit_buy_position_win_uses_abovebar_circle_buycolor_with_reason_and_pnl
     assert ex["lwc"]["shape"] == "circle"
     assert ex["lwc"]["color"] == "#26a69a"  # 勝ち
     assert ex["lwc"]["text"] == "TP 8600.0 (+311)"
-    assert ex["meta"] == {"kind": "exit", "side": "buy"}
+    # v4: meta は kind/side（+ pair）。kind/side の不変を維持。
+    assert ex["meta"]["kind"] == "exit"
+    assert ex["meta"]["side"] == "buy"
 
 
 def test_exit_sell_position_uses_belowbar_circle(tmp_path):
@@ -254,9 +258,12 @@ def test_lwc_and_meta_are_separated_into_distinct_key_hierarchies(tmp_path):
     # Act
     payload = _present([rec], tmp_path=tmp_path)
     m = payload["markers"][0]
-    # Assert: lwc には純フィールドのみ、meta は別階層（M-2）
-    assert set(m["lwc"]) == {"time", "position", "shape", "color", "text"}
-    assert set(m["meta"]) == {"kind", "side"}
+    # Assert: lwc/meta は別階層（M-2）。v4 で lwc に id、meta に pair を追加（§10.3）。
+    #   従来の純フィールド（time/position/shape/color/text）は lwc 側に維持される。
+    assert {"time", "position", "shape", "color", "text"} <= set(m["lwc"])
+    assert {"kind", "side"} <= set(m["meta"])
+    # lwc と meta はキーが交わらない（分離不変）。
+    assert set(m["lwc"]).isdisjoint(set(m["meta"]))
 
 
 def test_digits_controls_price_precision_in_text(tmp_path):
@@ -315,3 +322,120 @@ def test_unknown_exit_reason_is_uppercased_into_text_and_marker_is_still_rendere
     # Assert: 未知 reason はそのまま大文字化して text に出し、マーカーは生成される
     assert ex["lwc"]["text"] == "MARGIN_CALL 8600.0 (+311)"
     assert len([m for m in payload["markers"] if m["meta"]["kind"] == "exit"]) == 1
+
+
+# ============================================================================
+# v4 追加機能（§10）: marker.lwc.id / meta.pair / JSON pairs 配列
+#   設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10.3。
+#   既存 markers/時刻式/配色/text/昇順/lwc・meta 分離は不変（回帰テストで担保済）。
+# ============================================================================
+
+def _markers_for_trade(payload, i):
+    """meta.pair == i の (entry, exit) マーカーを返す（昇順保持）。"""
+    ms = [m for m in payload["markers"] if m["meta"].get("pair") == i]
+    entry = [m for m in ms if m["meta"]["kind"] == "entry"][0]
+    ex = [m for m in ms if m["meta"]["kind"] == "exit"][0]
+    return entry, ex
+
+
+def test_v4_entry_and_exit_markers_carry_pair_index_id_in_lwc(tmp_path):
+    # Arrange: 2 トレード → 各 marker の lwc.id が "t{i}:entry"/"t{i}:exit"
+    recs = [
+        _record(side="buy", entry_time="2025-01-02 09:00:00", exit_time="2025-01-02 10:00:00"),
+        _record(side="sell", entry_price=8600.0, exit_price=8550.0,
+                entry_time="2025-01-02 11:00:00", exit_time="2025-01-02 12:00:00"),
+    ]
+    # Act
+    payload = _present(recs, tmp_path=tmp_path)
+    e0, x0 = _markers_for_trade(payload, 0)
+    e1, x1 = _markers_for_trade(payload, 1)
+    # Assert: id は createSeriesMarkers が受理する規約 "t{i}:entry"/"t{i}:exit"
+    assert e0["lwc"]["id"] == "t0:entry"
+    assert x0["lwc"]["id"] == "t0:exit"
+    assert e1["lwc"]["id"] == "t1:entry"
+    assert x1["lwc"]["id"] == "t1:exit"
+
+
+def test_v4_meta_carries_pair_trade_index(tmp_path):
+    # Arrange: meta.pair に元トレード通番 i を付与（由来トレース）
+    recs = [
+        _record(entry_time="2025-01-02 09:00:00", exit_time="2025-01-02 10:00:00"),
+        _record(entry_time="2025-01-02 11:00:00", exit_time="2025-01-02 12:00:00"),
+    ]
+    # Act
+    payload = _present(recs, tmp_path=tmp_path)
+    # Assert: trade 0 由来は pair==0、trade 1 由来は pair==1
+    pairs0 = {m["meta"]["pair"] for m in payload["markers"]
+              if m["meta"]["kind"] in ("entry", "exit") and m["lwc"]["id"].startswith("t0:")}
+    pairs1 = {m["meta"]["pair"] for m in payload["markers"]
+              if m["lwc"]["id"].startswith("t1:")}
+    assert pairs0 == {0}
+    assert pairs1 == {1}
+
+
+def test_v4_meta_keys_extended_with_pair_only(tmp_path):
+    # Arrange
+    rec = _record()
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    m = payload["markers"][0]
+    # Assert: meta は kind/side に pair を加えた 3 キー（既存 2 キーを破壊しない）
+    assert set(m["meta"]) == {"kind", "side", "pair"}
+
+
+def test_v4_lwc_keys_extended_with_id_only(tmp_path):
+    # Arrange
+    rec = _record()
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    m = payload["markers"][0]
+    # Assert: lwc は従来 5 キー + id（createSeriesMarkers が受理）
+    assert set(m["lwc"]) == {"time", "position", "shape", "color", "text", "id"}
+
+
+def test_v4_pairs_array_present_with_one_entry_per_trade(tmp_path):
+    # Arrange: 2 トレード
+    recs = [
+        _record(entry_time="2025-01-02 09:00:00", exit_time="2025-01-02 10:00:00"),
+        _record(side="sell", entry_price=8600.0, exit_price=8550.0,
+                entry_time="2025-01-02 11:00:00", exit_time="2025-01-02 12:00:00"),
+    ]
+    # Act
+    payload = _present(recs, tmp_path=tmp_path)
+    # Assert: pairs は各トレード 1 件で件数一致
+    assert "pairs" in payload
+    assert len(payload["pairs"]) == 2
+    assert [p["i"] for p in payload["pairs"]] == [0, 1]
+
+
+def test_v4_pair_record_carries_side_win_entry_exit_time_and_price(tmp_path):
+    # Arrange: buy 玉・勝ち（pnl>0）。entry 8568.9 → exit 8600.0
+    rec = _record(side="buy", entry_price=8568.9, exit_price=8600.0,
+                  entry_time="2025-01-02 09:00:00", exit_time="2025-01-02 10:00:00")
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    p = payload["pairs"][0]
+    # Assert: i/side/win(pnl>0)/entry{time,price}/exit{time,price}（時刻は既存 UNIX 秒式）
+    assert p["i"] == 0
+    assert p["side"] == "buy"
+    assert p["win"] is True
+    assert p["entry"] == {"time": _unix("2025-01-02 09:00:00"), "price": 8568.9}
+    assert p["exit"] == {"time": _unix("2025-01-02 10:00:00"), "price": 8600.0}
+
+
+def test_v4_pair_win_is_false_when_pnl_not_positive(tmp_path):
+    # Arrange: buy 玉・負け（pnl<0）。pnl = (8500-8568.9)*10 < 0
+    rec = _record(side="buy", entry_price=8568.9, exit_price=8500.0, exit_reason="sl")
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    # Assert: pnl<=0 は win=False（マーカー配色と整合）
+    assert payload["pairs"][0]["win"] is False
+
+
+def test_v4_pair_win_false_at_breakeven_pnl_zero(tmp_path):
+    # Arrange: pnl == 0（境界・非勝ち）
+    rec = _record(side="buy", entry_price=8568.9, exit_price=8568.9, exit_reason="reverse")
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    # Assert: pnl==0 は win=False（exit marker の負け色と一致）
+    assert payload["pairs"][0]["win"] is False

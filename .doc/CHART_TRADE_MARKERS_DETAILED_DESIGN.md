@@ -263,3 +263,57 @@ catch (e) { console.warn('[trade-markers] init skipped', e); }
 - 配線: `composition_root_front.js` で `new TradeMarkersRenderer({ lwc, mainSeries, chart })`（chart 追加）。
 - 受入: 既定表示で**左端のマーカー列が消え**、可視ローソク上のマーカーのみ表示。可視範囲変更で追従。
   既存フロントテスト緑＋新規（範囲内のみ適用・範囲外除外・範囲変更で再適用）緑。committed simulator 無改変。
+
+---
+
+## 10. 追加機能 v4（売買ペアのライン結合 + ホバー時の他マーク減光）
+
+v5 API 実在確認済: `attachPrimitive`/`detachPrimitive`・`paneViews`・`requestUpdate`・
+`series.priceToCoordinate`・`timeScale().timeToCoordinate`・`subscribeCrosshairMove`・`param.hoveredObjectId`・
+marker の `id`（createSeriesMarkers は id 受理）。
+
+### 10.1 機能(1) 売買ペアをラインで結ぶ
+- 各トレードの建て `(entry_time, entry_price)` → 決済 `(exit_time, exit_price)` を**線分**で結ぶ。
+- 配色: 勝敗（`pnl>0`=緑 `#26a69a` / それ以外=赤 `#ef5350`）。
+- 実装: 新規カスタム primitive `PairLinesPrimitive`（`web/js/adapter/front/pair_lines_primitive.js`）を
+  `mainSeries.attachPrimitive(...)` で付与。pane view renderer が `pairs` を走査し、
+  `timeScale().timeToCoordinate(time)` と `series.priceToCoordinate(price)` で座標化して canvas に線分描画。
+  座標が null（可視範囲外）の点はスキップ（Fix v3 の可視範囲整合）。`requestUpdate()` で再描画。
+
+### 10.2 機能(2) ホバー時に当該ペア以外を減光
+- `chart.subscribeCrosshairMove(param)` の `param.hoveredObjectId` で、ホバー中マーカーの id を取得。
+- id 規約: 各 marker に `id = "t{i}:entry" / "t{i}:exit"`（i=トレード通番）を付与（presenter）。
+- ホバー時、当該トレード i の**ペア（entry+exit のマーカー＋線）を強調、それ以外を減光**:
+  - マーカー: 非ハイライトを **alpha 低下色**（例 rgba 0.15）で再 `setMarkers`、ハイライトは通常色。
+  - 線: primitive に `highlightIndex=i` を渡し `requestUpdate` で非ハイライト線を低 alpha 描画。
+- ホバー解除（`hoveredObjectId` 無し）で全件通常表示へ復帰。可視範囲フィルタ（§9）と両立。
+
+### 10.3 データ（presenter 追補）
+- `simulator/adapter/presenter/trade_markers.py`（feature の新規ファイル・committed engine ではない）に:
+  - 各 marker の `lwc` に `id`（`t{i}:entry`/`t{i}:exit`）を追加（v5 marker は id 受理）。`meta` に `pair=i`。
+  - JSON に **`pairs`** 配列を追加: `[{ "i", "side", "win", "entry": {"time","price"}, "exit": {"time","price"} }]`。
+- 既存 markers/lwc サブセット・時刻式・配色・昇順は互換維持。committed simulator は無改変。
+
+### 10.4 配線・制約・受入
+- 新規: `pair_lines_primitive.js`。`trade_markers_renderer.js` 拡張（pairs 保持・primitive attach・hover dimming・
+  範囲フィルタ整合）。`composition_root_front.js` で chart/crosshair を renderer へ供給。
+- committed simulator（domain/usecase/既存adapter/main）無改変。新規依存禁止。後方互換（chart省略・購読API非提供）維持。
+- 受入: ブラウザで**ペア線が表示**され、マーカーに**ホバーすると当該ペア以外が減光**。range=null/フォールバックでも throw しない。
+  既存フロントテスト緑＋新規（pairs生成・id付与・hover時の強調/減光集合計算・座標スキップ・範囲整合）緑。
+  canvas 実描画は node:test 範囲外のためブラウザ結合確認で担保（ロジックは fake scale で単体検証）。
+
+---
+
+## 11. 追加機能 v5（ホバー時に当該ペア以外のローソク足も減光）
+
+- 目的: マーカー/線の減光（§10.2）に加え、ホバー中ペアの時間範囲 `[entry_time, exit_time]` **外のローソク足も減光**し、当該ペアへ視覚的フォーカスする。
+- アプローチ候補（フェーズ2で実コード実証のうえ確定）:
+  - **案A（推奨・自己完結）**: dimming オーバーレイ primitive。highlight 時、`[左端, entryX]` と `[exitX, 右端]` の x 帯に
+    半透明の暗色矩形を `useBitmapCoordinateSpace` で描画（pane 全高）。ローソク・他マーカー・他線を一括減光し、
+    ペア帯のみ素通し。candle データを改変しない。z 順は「ローソクの上・ペアマーカーを潰さない」配置を確認。
+  - **案B**: ローソク per-bar 色上書き。`mainSeries.setData` で範囲外バーを暗色（color/borderColor/wickColor）に、
+    範囲内は通常色に。hover 解除で復元。candle データ保持・復元責務が必要（ChartRenderer 連携）。
+- 制約: committed simulator 無改変。フロント（primitive/renderer±composition_root）に閉じる。範囲フィルタ（§9）・
+  hover マーカー減光（§10.2）と単一 `_render` 経路で両立。後方互換（chart/購読API/range null）維持。
+- 受入: ホバー中、当該ペア以外のローソク足が減光し、ペアの足・マーカー・線が強調される。ホバー解除で復帰。
+  既存テスト緑＋新規（範囲外帯の算出・highlight 連動・解除復帰）緑。canvas 実描画はブラウザ確認に委譲。
