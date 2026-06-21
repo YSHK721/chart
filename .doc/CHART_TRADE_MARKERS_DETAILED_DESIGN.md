@@ -448,3 +448,37 @@ marker の `id`（createSeriesMarkers は id 受理）。
   ローソク・余白の hover では一切発火しない**。canvas 実描画・実 hover はブラウザ結合確認で担保。
 - テスト: 既存「load extracts the lwc subset」を text 除去前提へ更新＋回帰「load strips marker text so the
   hit region is the glyph only」を追加（lwc へ渡る全 marker に `text` が無いことを assert）。既存緑を維持。
+
+## 15. 追加機能（ISSUE-026）: 売買マーカー hover 時の取引明細ポップアップ
+
+- 機能: 売買マーカー（矢印 / 円グリフ）hover 時に当該ペアの取引明細ポップアップを表示する。ISSUE-025（§14）で
+  marker `text` を除去済みのためヒット領域は**グリフのみ**であり、本機能は既存 v8（§13）の `hoveredObjectId`
+  駆動経路に**相乗り**する。新規の購読・新規 fetch は増やさない（既存 crosshair `param` を `_updatePopup` に渡すのみ）。
+- 表示 9 項目: 利益 / 取引日時（YYYY/MM/DD）/ 取引時間（HH:MM:SS）/ 取引価格 / 取引数量 /
+  決済日時 / 決済時間 / 決済価格 / 決済数量。
+- 確定仕様（ユーザー決定）:
+  - 日時は **JST（UTC+9）** 固定。`_jst(unixSec) = new Date((unixSec + 9*3600) * 1000)` で +9h オフセット後 `getUTC*`
+    で読み、実行環境 TZ に依存しない決定論的整形（`_fmtDate` = YYYY/MM/DD・`_fmtClock` = HH:MM:SS）。型不正は `"-"`。
+  - 利益は**数値のみ**（`_fmtNum`）。`profit > 0` 緑（#26a69a）・`< 0` 赤（#ef5350）・`== 0` 既定色。
+  - 配置: **マーカー固定（カーソル非追従）**。`_updatePopup` は §13 の不変ガード（`next === this._highlight` で
+    早期 return）配下にあるため、`_positionPopup` は **highlight が変化した瞬間（グリフに乗った時）にのみ 1 回**呼ばれ、
+    同一マーカーを hover 中はカーソルが動いても再配置されない。配置位置は注入 container の `getBoundingClientRect()` を
+    基準に、その瞬間の crosshair `param.point`（container 内相対座標＝グリフに乗った位置）から +16px オフセットし、
+    ビューポート外へはみ出す場合は左反転・下端クランプする。container 不在 / `point` 不明時は位置を据え置く。
+    ＝ユーザー確定仕様「マーカー固定（hover 開始位置に表示・同一マーカー内で追従しない）」と整合（差異なし）。
+  - 取引数量＝決済数量＝`pair.volume`（部分決済なし＝往復同量）。
+- データ（presenter 追補）: `_pair_record`（§10.3 の pair record）が各 pair に `profit`（`tr.pnl()`）と `volume`（`tr.volume`）を
+  追加出力する。§10.3 の pair 構造 `{ i, side, win, entry, exit }` に `profit` / `volume` を**追加のみ**で拡張
+  （既存キー・時刻式・配色・昇順は不変。committed simulator は無改変）。
+- DI 結線（`composition_root_front.js`）: `new TradeMarkersRenderer({ ..., document: doc, container })` とし、
+  bootstrap が受け取る `doc`（document）と `container`（チャート要素）を注入する。
+  - 目的: renderer 内の `getElementById('chart')` リテラルフォールバックを使わず、**注入された container を基準**に
+    ポップアップを配置する（アーキ評価 §3 の 🔵 解消）。
+  - no-op 契約: `document` 不在（SSR / node:test / 未注入）では `_updatePopup` / `_ensurePopup` が `null` ガードで
+    早期 return しポップアップを生成しない（後方互換）。`container` 不在時は `getElementById('chart')` を探索する
+    既定フォールバックに退避する。
+- 既存節との関係: §13（v8 hoveredObjectId 駆動）の発火経路・§10.3 の pair record データ契約に追補で乗る変更。
+  範囲フィルタ（§9）・ペア識別・減光連動・配色は不変。
+- テスト（renderer 側・別フェーズ完了済）: `_fmtDate` / `_fmtClock` の JST 整形・日跨ぎ境界・型不正、`_popupHtml` の
+  9 項目ラベル・利益着色・BUY/SELL ヘッダ、`_updatePopup` の表示/非表示（注入 document）、`_ensurePopup` の単一要素
+  再利用を node:test で検証済（全緑）。composition_root の bootstrap テストは DI 注入後も回帰なし。

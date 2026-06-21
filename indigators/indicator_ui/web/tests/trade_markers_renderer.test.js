@@ -842,3 +842,187 @@ test('時間足フィルタ: setCurrentTimeframe は単一 _render 経路で再�
   r.setCurrentTimeframe('1D');
   assert.equal(lwc.calls.setMarkers.length, before + 1, '1 切替につき再描画1回');
 });
+
+// ── ISSUE-026: 取引明細ポップアップの DI リファクタ＋単体テスト ─────────────────
+// 仕様: rapid-prototype 収束（ユーザー確認済）。hover 中ペアの取引明細 9 項目を JST で表示する。
+//   本フェーズで _ensurePopup / _updatePopup / _positionPopup の document ハードコードを DI 化し、
+//   注入 document（fakeDoc）で単体検証可能にする。実描画・実ピクセル位置はブラウザ確認に委譲。
+//   pair データ: { i, side, win, profit, volume, entry:{time,price}, exit:{time,price} }。
+//   日時は JST（UTC+9）。利益は 正=緑(#26a69a)/負=赤(#ef5350)/0=既定色(#d1d4dc)。
+
+// 最小 DOM スタブ（crosshair_readout_view.test.js の fakeDoc 流儀）。document 不在を避けるため注入する。
+//   要素は id / style（cssText 含む）/ innerHTML / appendChild / getBoundingClientRect / offsetWidth/Height を備える。
+function fakePopupElement(tag = 'div') {
+  return {
+    tagName: tag,
+    id: '',
+    style: {
+      _css: '',
+      get cssText() { return this._css; },
+      set cssText(v) { this._css = v; },
+    },
+    children: [],
+    get innerHTML() { return this._innerHTML ?? ''; },
+    set innerHTML(v) { this._innerHTML = v; },
+    appendChild(n) { this.children.push(n); return n; },
+    getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; },
+    offsetWidth: 220,
+    offsetHeight: 180,
+  };
+}
+
+function fakePopupDoc() {
+  const created = [];
+  const byId = new Map();
+  const body = fakePopupElement('body');
+  const doc = {
+    _created: created,
+    _byId: byId,
+    body,
+    createElement(tag) { const el = fakePopupElement(tag); created.push(el); return el; },
+    getElementById(id) { return byId.get(id) ?? null; },
+  };
+  return doc;
+}
+
+// pair データ 1 件を組み立てる補助（仕様データ構造）。
+function makePair(overrides = {}) {
+  return {
+    i: 0, side: 'buy', win: true, profit: 50, volume: 0.1,
+    entry: { time: 1781568840, price: 100.5 },
+    exit: { time: 1781568900, price: 110.5 },
+    ...overrides,
+  };
+}
+
+// ── _fmtDate / _fmtClock（JST 整形）──────────────────────────────────────────
+test('ISSUE-026 _fmtDate: 既知 UNIX 秒を JST の YYYY/MM/DD に整形する', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const out = r._fmtDate(1781568840);
+  // Assert: 1781568840 は UTC+9 で 2026/06/16。
+  assert.equal(out, '2026/06/16');
+});
+
+test('ISSUE-026 _fmtClock: 既知 UNIX 秒を JST の HH:MM:SS に整形する', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const out = r._fmtClock(1781568840);
+  // Assert: 1781568840 は UTC+9 で 09:14:00。
+  assert.equal(out, '09:14:00');
+});
+
+test('ISSUE-026 _fmtDate: UTC 当日 15:00 以降は JST で翌日へ繰り上がる（UTC+9 日跨ぎ境界）', () => {
+  // Arrange: 2026-06-16T15:00:00Z は JST で 2026-06-17 00:00:00。
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  const unixSec = Date.UTC(2026, 5, 16, 15, 0, 0) / 1000;
+  // Act
+  // Assert: JST 日付は 6/17・時刻は 00:00:00（UTC+9 で日付境界を跨ぐ）。
+  assert.equal(r._fmtDate(unixSec), '2026/06/17');
+  assert.equal(r._fmtClock(unixSec), '00:00:00');
+});
+
+test('ISSUE-026 _fmtDate/_fmtClock: 型不正（非 number）は "-" を返す', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act / Assert
+  assert.equal(r._fmtDate(null), '-');
+  assert.equal(r._fmtDate('1781568840'), '-');
+  assert.equal(r._fmtClock(undefined), '-');
+  assert.equal(r._fmtClock({}), '-');
+});
+
+// ── _popupHtml（9 項目・利益色・side ヘッダ）────────────────────────────────
+test('ISSUE-026 _popupHtml: 9 項目すべてのラベルを含む', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const html = r._popupHtml(makePair());
+  // Assert: 仕様 9 項目ラベルがすべて含まれる。
+  for (const label of ['利益', '取引日時', '取引時間', '取引価格', '取引数量', '決済日時', '決済時間', '決済価格', '決済数量']) {
+    assert.ok(html.includes(label), `ラベル「${label}」が含まれる`);
+  }
+});
+
+test('ISSUE-026 _popupHtml: 利益>0 は緑・<0 は赤・==0 は既定色で描画する', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const pos = r._popupHtml(makePair({ profit: 10 }));
+  const neg = r._popupHtml(makePair({ profit: -10 }));
+  const zero = r._popupHtml(makePair({ profit: 0 }));
+  // Assert: 緑 #26a69a / 赤 #ef5350 / 既定 #d1d4dc。
+  assert.ok(pos.includes('#26a69a'), '利益>0 は緑');
+  assert.ok(neg.includes('#ef5350'), '利益<0 は赤');
+  assert.ok(zero.includes('#d1d4dc'), '利益==0 は既定色');
+});
+
+test('ISSUE-026 _popupHtml: side で BUY / SELL ヘッダを切り替える', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const buy = r._popupHtml(makePair({ side: 'buy' }));
+  const sell = r._popupHtml(makePair({ side: 'sell' }));
+  // Assert
+  assert.ok(buy.includes('BUY'), 'side=buy は BUY ヘッダ');
+  assert.ok(sell.includes('SELL'), 'side=sell は SELL ヘッダ');
+});
+
+// ── _updatePopup（DI document・highlight 同期）───────────────────────────────
+test('ISSUE-026 _updatePopup: highlight が有効ペアなら popup を表示し 9 項目を描画する（注入 document）', () => {
+  // Arrange: 注入 document で _pairs を持たせ highlight を有効化。
+  const doc = fakePopupDoc();
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {}, document: doc });
+  r._pairs = [makePair({ i: 0 })];
+  r._highlight = 0;
+  // Act
+  r._updatePopup({ point: { x: 10, y: 10 } });
+  // Assert: popup が body へ生成され、display 表示・innerHTML に 9 項目（利益/決済数量 等）。
+  assert.equal(doc.body.children.length, 1, 'popup 要素が body へ 1 件 append');
+  const el = doc.body.children[0];
+  assert.equal(el.style.display, 'block', 'display は表示（block）');
+  assert.ok(el.innerHTML.includes('利益') && el.innerHTML.includes('決済数量'), '9 項目が描画される');
+});
+
+test('ISSUE-026 _updatePopup: highlight=null なら popup を display:none にする（注入 document）', () => {
+  // Arrange
+  const doc = fakePopupDoc();
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {}, document: doc });
+  r._pairs = [makePair({ i: 0 })];
+  r._highlight = null;
+  // Act
+  r._updatePopup(null);
+  // Assert: 非ホバーは非表示。
+  const el = doc.body.children[0];
+  assert.equal(el.style.display, 'none', 'highlight=null は display:none');
+});
+
+test('ISSUE-026 _updatePopup: _pairs に無い i を highlight しても popup を display:none にする（注入 document）', () => {
+  // Arrange: highlight=99 は _pairs に存在しない。
+  const doc = fakePopupDoc();
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {}, document: doc });
+  r._pairs = [makePair({ i: 0 })];
+  r._highlight = 99;
+  // Act
+  r._updatePopup({ point: { x: 1, y: 1 } });
+  // Assert: 該当ペア無しは非表示。
+  const el = doc.body.children[0];
+  assert.equal(el.style.display, 'none', '該当ペア無しは display:none');
+});
+
+// ── _ensurePopup（遅延生成・再利用）────────────────────────────────────────
+test('ISSUE-026 _ensurePopup: 初回は document.body へ 1 要素 append、2 回目は同一要素を再利用する（注入 document）', () => {
+  // Arrange
+  const doc = fakePopupDoc();
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {}, document: doc });
+  // Act
+  const first = r._ensurePopup();
+  const second = r._ensurePopup();
+  // Assert: append は 1 回だけ・2 回目は同一参照（重複生成しない）。
+  assert.equal(doc.body.children.length, 1, 'body への append は 1 回');
+  assert.equal(doc._created.length, 1, 'createElement は 1 回（再生成しない）');
+  assert.strictEqual(first, second, '同一要素を再利用');
+  assert.equal(first.id, 'trade-detail-popup', 'popup の id が付与される');
+});

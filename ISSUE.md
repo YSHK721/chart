@@ -389,3 +389,25 @@
   - 案A：非ペアマーカーの減光（§10.2）を廃止しローソク足減光（§12）のみ残す（ラベル hover でも他マーカーは暗くならない／実装小）
   - 案B：価格を marker `text` から外し矢印グリフのみを hover 対象化、価格は別 UI（凡例/クロスヘア読取欄）へ（§13.3 の意図に忠実だが表示再設計＝実装大）
   - 案C：現挙動を許容し §13.3 の誤記述（離れた価格帯では発火しない）を訂正（実装最小）
+
+## ISSUE-026
+
+- 概要：売買マーカー（矢印/円グリフ）にオンマウスした際、当該売買ペアの取引明細ステートメントをポップアップ表示する機能を追加する（仕様追加）。表示項目は 利益 / 取引日時 / 取引価格 / 取引数量 / 決済日時 / 決済価格 / 決済数量 の 7 項目
+- 重大度：低（新規機能追加・既存挙動は不変。rapid-prototype で試作・要 UX 確認）
+- ステータス：RESOLVED（試作スコープ＝ユーザー決定反映・検証済。productionization は別途依頼）
+- 検出日：2026-06-21
+- 検出経路：ユーザー仕様追加指示（/rapid-prototype）
+- 発火条件：売買マーカーのグリフ hover（ISSUE-025 で text 除去済＝ヒット領域はグリフのみ。`hoveredObjectId="t{i}:..."` 駆動＝v8 と同一トリガを共用）
+- 仕様⇔データの差分（実証・要承認）：表示 7 項目のうち、現行 `trade_markers.json` の `pairs` が保持するのは `entry/exit{time,price}` と `side/win` のみ。**利益（profit）と数量（volume）が presenter（`adapter/presenter/trade_markers.py` の `_pair_record`）で欠落**している
+  - 利益：`pairs` には無いが（exit-exit）×sign×lot×contract で厳密導出可（先頭6件で marker text の (±) と完全一致を確認。lot=0.1・contract=10＝1.0/point）。決済マーカー text にも (+37) 等として既出
+  - 数量：エクスポート config の `lot_size=0.1`（固定）が実数量。pairs に未保持
+  - 取引数量＝決済数量：MT5 往復は同量決済のため両者同値（volume）。別数量の部分決済は当エンジンに無い
+- 対策案（試作で採用）：(1) presenter `_pair_record` に `profit`（pnl）と `volume` を追加（恒久修正）。(2) 既存 JSON は再バックテスト不要で直接 enrich（試作の即時確認用）。(3) フロント `TradeMarkersRenderer._onCrosshair` に「highlight 中ペアの明細ポップアップ表示／非 highlight で非表示」を追加（既存 v8 hover 経路に相乗り・新規 fetch なし）
+- 残論点（要ユーザー確認）：日時の TZ（UTC/ローカル）／数値の桁・通貨単位（利益の単位・円/pt）／ポップアップの配置（カーソル追従 vs マーカー固定）・スタイル／部分決済の有無
+- ユーザー決定（2026-06-21・/rapid-prototype）：日時＝**JST（UTC+9）**／利益＝**数値のみ**（単位なし）／配置＝**マーカー固定**（カーソル追従しない）
+- 仕様改訂（2026-06-21・ユーザー）：**日時（YYYY/MM/DD）と時間（HH:MM:SS）を別行に分離**＝計 9 項目（利益／取引日時／取引時間／取引価格／取引数量／決済日時／決済時間／決済価格／決済数量）。`_fmtTime` を `_fmtDate`/`_fmtClock`（JST）へ分割し検証済（取引 2026/06/16・09:14:00 等）
+- 試作結果（ステータス＝RESOLVED・試作スコープ）：
+  - 実装：(1) presenter `_pair_record` に `profit`/`volume` 追加（恒久）。(2) `trade_markers.json` を再バックテスト不要で enrich（profit 厳密導出・volume=lot_size 0.1）。(3) `TradeMarkersRenderer` に hover 明細ポップアップ追加（`_updatePopup`/`_ensurePopup`/`_popupHtml`/`_fmtTime`(JST)/`_fmtNum`/`_positionPopup`）＝既存 v8 hover 経路に相乗り・新規 fetch/購読なし・`document` 不在時 no-op
+  - 検証（playwright + 実 lwc + 実 JSON・使い捨てハーネス）：#0 BUY 利益+37 緑／#3 SELL 利益-58 赤で 7 項目すべて表示。日時 JST 09:14:00 等。マーカー離脱で非表示。スクショ 2 枚をユーザー提示済
+  - 回帰：web renderer/wiring 41 pass／presenter unit 28 pass（profit/volume 保持の回帰テスト 1 本追加・`_DuckRecord` に volume 付与）
+  - 残（productionization・本 issue 範囲外＝要依頼）：実バックテストでの `trade_markers.json` 再生成（presenter は対応済）／`out/prototype.html` バンドルへの同期／実 served アプリ（index.html・B方式）でのグリフ実 hover 通し確認（試作は `_onCrosshair` 直叩きで等価検証）

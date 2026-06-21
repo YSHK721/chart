@@ -315,6 +315,7 @@ class _DuckRecord:
     exit_price: float
     exit_reason: str
     _pnl: float
+    volume: float = 1.0  # ISSUE-026: pair に volume を出すため実 TradeRecord と同じ属性を持たせる。
 
     def pnl(self) -> float:
         return self._pnl
@@ -436,6 +437,19 @@ def test_v4_pair_record_carries_side_win_entry_exit_time_and_price(tmp_path):
     assert p["win"] is True
     assert p["entry"] == {"time": _unix("2025-01-02 09:00:00"), "price": 8568.9}
     assert p["exit"] == {"time": _unix("2025-01-02 10:00:00"), "price": 8600.0}
+
+
+def test_issue026_pair_record_carries_profit_and_volume_for_hover_popup(tmp_path):
+    # Arrange: hover 明細ポップアップ用に pair が profit(pnl) と volume(数量) を保持する。
+    #   pnl = (8600-8568.9)*1*volume*10。volume=2.0 で 622.0。
+    rec = _record(side="buy", entry_price=8568.9, exit_price=8600.0,
+                  exit_reason="tp", volume=2.0)
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    p = payload["pairs"][0]
+    # Assert: profit は pnl()、volume は取引数量（取引数量＝決済数量＝同量決済）。
+    assert p["profit"] == rec.pnl()
+    assert p["volume"] == 2.0
 
 
 def test_v4_pair_win_is_false_when_pnl_not_positive(tmp_path):

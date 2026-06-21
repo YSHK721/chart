@@ -30,10 +30,18 @@ export class TradeMarkersRenderer {
   //   v6（§12）: chartRenderer（任意）を受け取ると、hover 中ペア外のローソク足を per-bar 減光させる。
   //   減光/復元は chartRenderer.dimCandlesOutsidePair / restoreCandles を呼ぶ（mainSeries.setData を
   //   直接呼ばない＝upstream 隔離・grep0件規約維持）。chartRenderer 未注入時は全件通常描画フォールバック。
-  constructor({ lwc, mainSeries, chart = null, chartRenderer = null }) {
+  // ISSUE-026: document / container を DI（既定はブラウザ globalThis.document）。node:test では fakeDoc を注入し
+  //   ポップアップの DOM 操作を単体検証する。素の document / getElementById('chart') ハードコードを除去（テスト容易化）。
+  constructor({
+    lwc, mainSeries, chart = null, chartRenderer = null,
+    document = (typeof globalThis !== 'undefined' ? (globalThis.document ?? null) : null),
+    container = null,
+  }) {
     this._lwc = lwc;
     this._series = mainSeries;
     this._chartRenderer = chartRenderer; // v6: 基準 candles 所有者（dim/restore の委譲先）。
+    this._document = document; // ISSUE-026: ポップアップ DOM の生成先（注入可・不在時 null で no-op）。
+    this._container = container; // ISSUE-026: ポップアップ配置の基準矩形要素（無ければ #chart を探索）。
     this._handle = null;
     this._all = []; // load した全 lwc マーカー（昇順）。範囲フィルタの元集合。
     this._pairs = []; // v6: load した売買ペア（dim 範囲 [entry_time, exit_time] の参照元）。
@@ -76,6 +84,143 @@ export class TradeMarkersRenderer {
     }
     this._highlight = next;
     this._render();
+    this._updatePopup(param); // ISSUE-026: 取引明細ポップアップ（highlight 状態に同期）。
+  }
+
+  // ISSUE-026: 売買ペアの取引明細ステートメントをポップアップ表示する。
+  //   highlight 中（グリフ hover 中）は当該ペアの 9 項目を表示、非 highlight では非表示。
+  //   既存 v8 hover 経路（hoveredObjectId）に相乗りし、新規購読・新規 fetch を増やさない。
+  //   document 不在（node:test/SSR）では no-op（ブラウザ専用 UI）。
+  _updatePopup(param) {
+    if (!this._document) {
+      return; // document 不在（SSR / 未注入）では no-op（後方互換）。
+    }
+    const el = this._ensurePopup();
+    if (!el) {
+      return;
+    }
+    const pair = this._highlight == null
+      ? null
+      : this._pairs.find((p) => p.i === this._highlight);
+    if (!pair) {
+      el.style.display = 'none';
+      return;
+    }
+    el.innerHTML = this._popupHtml(pair);
+    el.style.display = 'block';
+    this._positionPopup(el, param);
+  }
+
+  // ポップアップ DOM を遅延生成する（既存なら再利用）。pointer-events:none で hover を妨げない。
+  _ensurePopup() {
+    if (this._popupEl) {
+      return this._popupEl;
+    }
+    if (!this._document) {
+      return null; // document 不在では生成しない（_updatePopup 側で null ガード）。
+    }
+    const el = this._document.createElement('div');
+    el.id = 'trade-detail-popup';
+    el.style.cssText = [
+      'position:fixed', 'z-index:9999', 'display:none', 'pointer-events:none',
+      'background:#1e222d', 'color:#d1d4dc', 'border:1px solid #2a2e39',
+      'border-radius:6px', 'padding:8px 10px', 'font:12px/1.5 system-ui,sans-serif',
+      'box-shadow:0 4px 16px rgba(0,0,0,0.5)', 'min-width:220px',
+    ].join(';');
+    this._document.body.appendChild(el);
+    this._popupEl = el;
+    return el;
+  }
+
+  // ペアの 9 項目（利益/取引日時/取引時間/取引価格/取引数量/決済日時/決済時間/決済価格/決済数量）を HTML 化する。
+  _popupHtml(pair) {
+    const profit = pair.profit;
+    const profitColor = (typeof profit === 'number' && profit > 0) ? '#26a69a'
+      : (typeof profit === 'number' && profit < 0) ? '#ef5350' : '#d1d4dc';
+    const sideLabel = pair.side === 'buy' ? 'BUY' : 'SELL';
+    const row = (label, value, color) =>
+      `<div style="display:flex;justify-content:space-between;gap:16px">`
+      + `<span style="color:#787b86">${label}</span>`
+      + `<span style="color:${color || '#d1d4dc'};font-variant-numeric:tabular-nums">${value}</span></div>`;
+    return [
+      `<div style="font-weight:600;margin-bottom:4px;color:${pair.side === 'buy' ? '#26a69a' : '#ef5350'}">`
+        + `#${pair.i} ${sideLabel}</div>`,
+      row('利益', this._fmtNum(profit), profitColor),
+      `<div style="border-top:1px solid #2a2e39;margin:4px 0"></div>`,
+      row('取引日時', this._fmtDate(pair.entry.time)),
+      row('取引時間', this._fmtClock(pair.entry.time)),
+      row('取引価格', this._fmtNum(pair.entry.price)),
+      row('取引数量', this._fmtNum(pair.volume)),
+      `<div style="border-top:1px solid #2a2e39;margin:4px 0"></div>`,
+      row('決済日時', this._fmtDate(pair.exit.time)),
+      row('決済時間', this._fmtClock(pair.exit.time)),
+      row('決済価格', this._fmtNum(pair.exit.price)),
+      row('決済数量', this._fmtNum(pair.volume)),
+    ].join('');
+  }
+
+  // UNIX 秒を JST（日本時間・UTC+9）の Date オブジェクトへ変換する（ISSUE-026 ユーザー決定）。
+  //   実行環境の TZ に依存しないよう +9h オフセットを加えて getUTC* で読む（決定論的）。
+  _jst(unixSec) {
+    return new Date((unixSec + 9 * 3600) * 1000); // JST = UTC+9。
+  }
+
+  // 2 桁ゼロ埋め（_fmtDate / _fmtClock 共通）。
+  _pad2(n) {
+    return String(n).padStart(2, '0');
+  }
+
+  // 日付のみ YYYY/MM/DD（JST）へ整形する（ISSUE-026: 日時と時間を別行に分離）。
+  _fmtDate(unixSec) {
+    if (typeof unixSec !== 'number') {
+      return '-';
+    }
+    const d = this._jst(unixSec);
+    return `${d.getUTCFullYear()}/${this._pad2(d.getUTCMonth() + 1)}/${this._pad2(d.getUTCDate())}`;
+  }
+
+  // 時刻のみ HH:MM:SS（JST）へ整形する（ISSUE-026: 日時と時間を別行に分離）。
+  _fmtClock(unixSec) {
+    if (typeof unixSec !== 'number') {
+      return '-';
+    }
+    const d = this._jst(unixSec);
+    return `${this._pad2(d.getUTCHours())}:${this._pad2(d.getUTCMinutes())}:${this._pad2(d.getUTCSeconds())}`;
+  }
+
+  // 数値整形（int/double 双方を許容＝余分な末尾 0 を出さない）。
+  _fmtNum(v) {
+    return typeof v === 'number' ? String(v) : '-';
+  }
+
+  // hover 開始位置（グリフに乗った瞬間の param.point）へポップアップを配置し、ビューポート外は
+  //   左反転・下端クランプする。**呼び出しは highlight 遷移時のみ**（_onCrosshair の不変ガード前提）＝
+  //   同一マーカー hover 中は再配置されない＝マーカー固定（カーソル非追従）。関数単体は point を参照するが追従しない。
+  _positionPopup(el, param) {
+    const point = param && param.point;
+    const container = this._container || (this._document ? this._document.getElementById('chart') : null);
+    if (!point || !container) {
+      return; // 座標不明時は表示位置を据え置く（display は呼び出し側で block 済み）。
+    }
+    const rect = container.getBoundingClientRect();
+    const pw = el.offsetWidth;
+    const ph = el.offsetHeight;
+    // window 寸法はブラウザのみ参照（node:test / SSR では未定義のためクランプを行わない）。
+    const vw = (typeof window !== 'undefined') ? window.innerWidth : null;
+    const vh = (typeof window !== 'undefined') ? window.innerHeight : null;
+    let x = rect.left + point.x + 16;
+    let y = rect.top + point.y + 16;
+    if (vw != null && x + pw > vw) {
+      x = rect.left + point.x - pw - 16;
+    }
+    if (vh != null && y + ph > vh) {
+      y = vh - ph - 8;
+    }
+    if (y < 0) {
+      y = 8;
+    }
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
   }
 
   // "t{i}:..." から数値 i を取り出す（不一致は null）。
@@ -151,6 +296,7 @@ export class TradeMarkersRenderer {
     }
     this._highlight = null;
     this._render(); // highlight 解除 → marker 通常色復帰 ＋ _applyCandleDimming で基準復元。
+    this._updatePopup(null); // ISSUE-026: candle 変更で highlight 解除時はポップアップも閉じる。
   }
 
   // _rangeAware 時は _range で絞った集合、それ以外（フォールバック）は全件を返す。
