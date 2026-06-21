@@ -627,3 +627,136 @@ test('v6: hover still dims non-highlighted markers and forwards highlight to the
     assert.ok(highlights.includes(1), 'ペア線 primitive へ highlight=1 を転送');
   } finally { m.restore(); }
 });
+
+// ── v8（§13）: ホバー減光を hoveredObjectId 駆動＋不変ガードで規則化 ─────────────
+// 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §13（v8・hoveredObjectId 駆動＋不変ガード）。
+//   v7「カーソル画素近接判定」は実ブラウザ計測で破綻（§13.1）したため全面撤去。
+//   確定方針（§13.2）:
+//   - 発火信号は param.hoveredObjectId のみ（_parseTradeIndex で "t{i}:..." → i／不一致・無しは null）。
+//   - 不変ガード: next === this._highlight なら即 return（再描画しない）。これがイベント間引き
+//     （＝不規則発火）の真因（§13.1-3）への対処。
+//   - 変化時のみ this._highlight = next; this._render();（単一 _render 経路 C2 は不変）。
+//   テスト要件（§13.4）の 5 件をここで担保する。近接系（半径・最近傍・tie-break・exit 近接・
+//   point/座標 null フォールバック・近接 C2）は撤去（§13.4 削除対象）。
+//   実 canvas 描画・実 hover の発火規則性・滑らかさはブラウザ結合確認に委譲（node:test 範囲外）。
+//
+//   fake は座標 API（timeToCoordinate/priceToCoordinate）を提供しない。v8 は hoveredObjectId のみで
+//   発火するため座標 API に一切依存しない（上流座標 API への hover 用途依存が消えることの構造的検証）。
+
+// v8 共通: load → 全件可視化（範囲フィルタを無効化）して hover 観測だけに集中するヘルパ。
+async function loadV8(r, chart, times) {
+  const fakeFetch = async () => ({ ok: true, async json() { return markersJsonV4(times); } });
+  const mc = muteConsole();
+  try {
+    await r.load('/data/trade_markers.json', fakeFetch);
+    chart.emitRange({ from: -1e9, to: 1e9 }); // 全件可視
+  } finally { mc.restore(); }
+}
+
+test('v8: a valid hoveredObjectId highlights that trade and dims the others (single _render)', async () => {
+  // §13.4-1. Arrange: pair0/pair3 を含む 4 ペアを load・全件可視化。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  await loadV8(r, chart, [10, 20, 30, 40]);
+  const m = muteConsole();
+  try {
+    const before = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    // Act: t3:entry にカーソルが乗る（hoveredObjectId）。
+    chart.emitCross({ hoveredObjectId: 't3:entry' });
+    // Assert: _highlight===3・当該ペアはハイライト（通常色）・他は減光・_render は 1 回だけ。
+    assert.equal(r._highlight, 3, 'hoveredObjectId t3:entry で _highlight===3');
+    const after = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    assert.equal(after - before, 1, '単一 _render（C2）で marker 適用は 1 回');
+    const applied = lwc.calls.setMarkers.at(-1) || lwc.calls.create.at(-1).markers;
+    const hl = applied.filter((x) => x.id === 't3:entry');
+    const dim = applied.filter((x) => x.id !== 't3:entry');
+    assert.ok(hl.length > 0 && hl.every((x) => x.color === '#26a69a'), 'pair3 はハイライト（通常色）');
+    assert.ok(dim.length > 0 && dim.every((x) => x.color !== '#26a69a'), '他ペアは減光色');
+  } finally { m.restore(); }
+});
+
+test('v8: no hoveredObjectId releases the highlight back to null (all markers normal color)', async () => {
+  // §13.4-2. Arrange: 先に t3:entry をハイライトしてから解除する。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  await loadV8(r, chart, [10, 20, 30, 40]);
+  const m = muteConsole();
+  try {
+    chart.emitCross({ hoveredObjectId: 't3:entry' }); // ハイライト確立
+    const before = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    // Act: hoveredObjectId 無し（undefined）でマーカーから外れる。
+    chart.emitCross({});
+    // Assert: _highlight===null へ復帰・全 marker 通常色・解除で _render は 1 回。
+    assert.equal(r._highlight, null, 'hoveredObjectId 無しで _highlight===null へ復帰');
+    const after = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    assert.equal(after - before, 1, '解除も単一 _render（1 回）');
+    const applied = lwc.calls.setMarkers.at(-1) || lwc.calls.create.at(-1).markers;
+    assert.ok(applied.every((x) => x.color === '#26a69a'), '解除で全 marker 通常色');
+  } finally { m.restore(); }
+});
+
+test('v8: invariance guard — re-hovering the same trade (same or sibling id) triggers no re-render', async () => {
+  // §13.4-3. Arrange: t3:entry をハイライト済みにする。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  await loadV8(r, chart, [10, 20, 30, 40]);
+  const m = muteConsole();
+  try {
+    chart.emitCross({ hoveredObjectId: 't3:entry' }); // 既に _highlight===3
+    const setBefore = lwc.calls.setMarkers.length;
+    const createBefore = lwc.calls.create.length;
+    // Act: 同一トレード i=3 の crosshair を再度発火（同一 entry／同 i の exit）。
+    chart.emitCross({ hoveredObjectId: 't3:entry' });
+    chart.emitCross({ hoveredObjectId: 't3:exit' });
+    // Assert(不変ガード): next===this._highlight なら即 return＝setMarkers/create は一切呼ばれない（0 回）。
+    assert.equal(lwc.calls.setMarkers.length - setBefore, 0, '不変ガードで setMarkers 呼び出し 0');
+    assert.equal(lwc.calls.create.length - createBefore, 0, '不変ガードで create 呼び出し 0');
+    assert.equal(r._highlight, 3, '_highlight は 3 のまま不変');
+  } finally { m.restore(); }
+});
+
+test('v8: changing to a different trade id triggers exactly one re-render (single _render path)', async () => {
+  // §13.4-4. Arrange: t3 をハイライト済みにする。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  await loadV8(r, chart, [10, 20, 30, 40, 50, 60, 70, 80]);
+  const m = muteConsole();
+  try {
+    chart.emitCross({ hoveredObjectId: 't3:entry' }); // _highlight===3
+    const before = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    // Act: 別トレード t7 へ変化。
+    chart.emitCross({ hoveredObjectId: 't7:entry' });
+    // Assert(C2): 変化時は _render がちょうど 1 回。_highlight===7・pair7 ハイライト・pair3 減光。
+    const after = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    assert.equal(after - before, 1, '別トレードへ変化で _render は 1 回');
+    assert.equal(r._highlight, 7, '_highlight===7 へ変化');
+    const applied = lwc.calls.setMarkers.at(-1) || lwc.calls.create.at(-1).markers;
+    assert.ok(applied.filter((x) => x.id === 't7:entry').every((x) => x.color === '#26a69a'), 'pair7 ハイライト');
+    assert.ok(applied.filter((x) => x.id === 't3:entry').every((x) => x.color !== '#26a69a'), 'pair3 は減光');
+  } finally { m.restore(); }
+});
+
+test('v8: hover before load is a no-op (does not touch lwc — early return in _render)', async () => {
+  // §13.4-5. Arrange: load せず（マーカー未保持・ハンドル未生成）。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  // eslint-disable-next-line no-new
+  new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  const m = muteConsole();
+  try {
+    // Act: load 前に hover（hoveredObjectId あり）。
+    assert.doesNotThrow(() => chart.emitCross({ hoveredObjectId: 't1:entry' }));
+    // Assert: lwc に一切触れない（create も setMarkers も 0）＝既存早期 return の維持。
+    assert.equal(lwc.calls.create.length, 0, 'load 前 hover は create 0');
+    assert.equal(lwc.calls.setMarkers.length, 0, 'load 前 hover は setMarkers 0');
+  } finally { m.restore(); }
+});

@@ -62,11 +62,16 @@ export class TradeMarkersRenderer {
     this._render();
   }
 
-  // v4・§10.2: hoveredObjectId（"t{i}:entry"/"t{i}:exit"）から i を解析して _highlight を更新。
-  //   無ければ解除（null）。いずれも単一 _render() 経路で再描画する（C2）。
+  // v8・§13: hoveredObjectId（"t{i}:entry"/"t{i}:exit"）から i を解析して _highlight を更新（オンマウス基準）。
+  //   不変ガード: ハイライトが不変（next === this._highlight）なら即 return し再描画しない。これで毎クロス
+  //   ヘア移動の全再描画（1326 マーカー再設定＋約 1500 本ローソク減光 setData）を排し、イベント間引きに
+  //   よる不規則発火を解消する（§13.1-3 への対処）。変化時のみ単一 _render() 経路で再描画する（C2）。
+  //   v7 のカーソル画素近接判定は実ブラウザ計測で破綻（§13.1）したため撤去した。
   _onCrosshair(param) {
-    const id = param && param.hoveredObjectId;
-    const next = this._parseTradeIndex(id);
+    const next = this._parseTradeIndex(param && param.hoveredObjectId);
+    if (next === this._highlight) {
+      return; // 不変ガード：ハイライト不変なら再描画しない。
+    }
     this._highlight = next;
     this._render();
   }
