@@ -188,8 +188,15 @@ export async function bootstrap({
   //   v6（§12）: renderer（ChartRenderer）を渡し、hover 中ペア外のローソク足を per-bar 減光させる
   //   （減光/復元は ChartRenderer に閉じる＝upstream 隔離維持）。renderer 生成は tradeMarkers より先のため、
   //   candle 変更 observer は setCandleObserver で後据えする（ChartRenderer 起点同期・必須条件1/2）。
-  const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart, chartRenderer: renderer });
+  //   ISSUE-026: document / container を注入し、ポップアップ配置の基準を bootstrap が受け取った
+  //   container（チャート要素）に固定する（getElementById('chart') リテラルフォールバックを回避）。
+  const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart, chartRenderer: renderer, document: doc, container });
   renderer.setCandleObserver(() => tradeMarkers.onCandlesChanged());
+
+  // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
+  //   初期時間足を反映し、以降は controller の時間足購読で連動する。
+  tradeMarkers.setCurrentTimeframe(timeframe);
+  controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
 
   return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers };
 }

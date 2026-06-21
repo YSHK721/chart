@@ -101,9 +101,39 @@ test('load extracts the lwc subset from json.markers and passes it to setMarkers
   // Act
   let count;
   try { count = await r.load('/data/trade_markers.json', fakeFetch); } finally { m.restore(); }
-  // Assert: lwc サブセットのみ（meta 除外）を createSeriesMarkers へ渡す（M-2）
+  // Assert: lwc サブセット（meta 除外）かつ §14・ISSUE-025 で text（価格ラベル）を除外して渡す。
+  //   text を外すと lwc marker のヒット領域が矢印/円グリフのみに縮小し、価格ラベル領域の hover では
+  //   hoveredObjectId が立たない（＝減光が発火しない）。価格ラベル自体も非表示になる。
   assert.equal(count, 2);
-  assert.deepEqual(lwc.calls.create[0].markers, [json.markers[0].lwc, json.markers[1].lwc]);
+  const expected = json.markers.map((m) => { const { text, ...rest } = m.lwc; return rest; });
+  assert.deepEqual(lwc.calls.create[0].markers, expected);
+});
+
+test('ISSUE-025: load strips marker text so the hit region is the glyph only (price labels hidden)', async () => {
+  // Arrange: text 付きマーカー2件を load する。
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const json = {
+    ok: true, count: 2,
+    markers: [
+      { lwc: { time: 1, position: 'belowBar', shape: 'arrowUp', color: '#26a69a', text: 'BUY 69435.4', id: 't0:entry' }, meta: {} },
+      { lwc: { time: 2, position: 'aboveBar', shape: 'circle', color: '#ef5350', text: 'SL 69400.4 (-50)', id: 't0:exit' }, meta: {} },
+    ],
+  };
+  const fakeFetch = async () => ({ ok: true, async json() { return json; } });
+  const m = muteConsole();
+  // Act
+  try { await r.load('/data/trade_markers.json', fakeFetch); } finally { m.restore(); }
+  // Assert: lwc へ渡る全マーカーに text プロパティが無い（ラベル非表示＝ヒット領域はグリフのみ）。
+  //   time/position/shape/color/id 等の他フィールドは保持（描画・hover 識別は不変）。
+  const passed = lwc.calls.create[0].markers;
+  assert.equal(passed.length, 2);
+  for (const mk of passed) {
+    assert.equal('text' in mk, false, 'marker に text（価格ラベル）が残ってはならない');
+  }
+  assert.equal(passed[0].id, 't0:entry');
+  assert.equal(passed[0].shape, 'arrowUp');
+  assert.equal(passed[1].id, 't0:exit');
 });
 
 test('load returns 0 and warns without throwing when fetch response is not ok', async () => {
@@ -626,4 +656,373 @@ test('v6: hover still dims non-highlighted markers and forwards highlight to the
     assert.ok(dimmed.length > 0 && dimmed.every((x) => x.color !== '#26a69a'), '非ハイライトは減光色');
     assert.ok(highlights.includes(1), 'ペア線 primitive へ highlight=1 を転送');
   } finally { m.restore(); }
+});
+
+// ── v8（§13）: ホバー減光を hoveredObjectId 駆動＋不変ガードで規則化 ─────────────
+// 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §13（v8・hoveredObjectId 駆動＋不変ガード）。
+//   v7「カーソル画素近接判定」は実ブラウザ計測で破綻（§13.1）したため全面撤去。
+//   確定方針（§13.2）:
+//   - 発火信号は param.hoveredObjectId のみ（_parseTradeIndex で "t{i}:..." → i／不一致・無しは null）。
+//   - 不変ガード: next === this._highlight なら即 return（再描画しない）。これがイベント間引き
+//     （＝不規則発火）の真因（§13.1-3）への対処。
+//   - 変化時のみ this._highlight = next; this._render();（単一 _render 経路 C2 は不変）。
+//   テスト要件（§13.4）の 5 件をここで担保する。近接系（半径・最近傍・tie-break・exit 近接・
+//   point/座標 null フォールバック・近接 C2）は撤去（§13.4 削除対象）。
+//   実 canvas 描画・実 hover の発火規則性・滑らかさはブラウザ結合確認に委譲（node:test 範囲外）。
+//
+//   fake は座標 API（timeToCoordinate/priceToCoordinate）を提供しない。v8 は hoveredObjectId のみで
+//   発火するため座標 API に一切依存しない（上流座標 API への hover 用途依存が消えることの構造的検証）。
+
+// v8 共通: load → 全件可視化（範囲フィルタを無効化）して hover 観測だけに集中するヘルパ。
+async function loadV8(r, chart, times) {
+  const fakeFetch = async () => ({ ok: true, async json() { return markersJsonV4(times); } });
+  const mc = muteConsole();
+  try {
+    await r.load('/data/trade_markers.json', fakeFetch);
+    chart.emitRange({ from: -1e9, to: 1e9 }); // 全件可視
+  } finally { mc.restore(); }
+}
+
+test('v8: a valid hoveredObjectId highlights that trade and dims the others (single _render)', async () => {
+  // §13.4-1. Arrange: pair0/pair3 を含む 4 ペアを load・全件可視化。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  await loadV8(r, chart, [10, 20, 30, 40]);
+  const m = muteConsole();
+  try {
+    const before = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    // Act: t3:entry にカーソルが乗る（hoveredObjectId）。
+    chart.emitCross({ hoveredObjectId: 't3:entry' });
+    // Assert: _highlight===3・当該ペアはハイライト（通常色）・他は減光・_render は 1 回だけ。
+    assert.equal(r._highlight, 3, 'hoveredObjectId t3:entry で _highlight===3');
+    const after = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    assert.equal(after - before, 1, '単一 _render（C2）で marker 適用は 1 回');
+    const applied = lwc.calls.setMarkers.at(-1) || lwc.calls.create.at(-1).markers;
+    const hl = applied.filter((x) => x.id === 't3:entry');
+    const dim = applied.filter((x) => x.id !== 't3:entry');
+    assert.ok(hl.length > 0 && hl.every((x) => x.color === '#26a69a'), 'pair3 はハイライト（通常色）');
+    assert.ok(dim.length > 0 && dim.every((x) => x.color !== '#26a69a'), '他ペアは減光色');
+  } finally { m.restore(); }
+});
+
+test('v8: no hoveredObjectId releases the highlight back to null (all markers normal color)', async () => {
+  // §13.4-2. Arrange: 先に t3:entry をハイライトしてから解除する。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  await loadV8(r, chart, [10, 20, 30, 40]);
+  const m = muteConsole();
+  try {
+    chart.emitCross({ hoveredObjectId: 't3:entry' }); // ハイライト確立
+    const before = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    // Act: hoveredObjectId 無し（undefined）でマーカーから外れる。
+    chart.emitCross({});
+    // Assert: _highlight===null へ復帰・全 marker 通常色・解除で _render は 1 回。
+    assert.equal(r._highlight, null, 'hoveredObjectId 無しで _highlight===null へ復帰');
+    const after = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    assert.equal(after - before, 1, '解除も単一 _render（1 回）');
+    const applied = lwc.calls.setMarkers.at(-1) || lwc.calls.create.at(-1).markers;
+    assert.ok(applied.every((x) => x.color === '#26a69a'), '解除で全 marker 通常色');
+  } finally { m.restore(); }
+});
+
+test('v8: invariance guard — re-hovering the same trade (same or sibling id) triggers no re-render', async () => {
+  // §13.4-3. Arrange: t3:entry をハイライト済みにする。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  await loadV8(r, chart, [10, 20, 30, 40]);
+  const m = muteConsole();
+  try {
+    chart.emitCross({ hoveredObjectId: 't3:entry' }); // 既に _highlight===3
+    const setBefore = lwc.calls.setMarkers.length;
+    const createBefore = lwc.calls.create.length;
+    // Act: 同一トレード i=3 の crosshair を再度発火（同一 entry／同 i の exit）。
+    chart.emitCross({ hoveredObjectId: 't3:entry' });
+    chart.emitCross({ hoveredObjectId: 't3:exit' });
+    // Assert(不変ガード): next===this._highlight なら即 return＝setMarkers/create は一切呼ばれない（0 回）。
+    assert.equal(lwc.calls.setMarkers.length - setBefore, 0, '不変ガードで setMarkers 呼び出し 0');
+    assert.equal(lwc.calls.create.length - createBefore, 0, '不変ガードで create 呼び出し 0');
+    assert.equal(r._highlight, 3, '_highlight は 3 のまま不変');
+  } finally { m.restore(); }
+});
+
+test('v8: changing to a different trade id triggers exactly one re-render (single _render path)', async () => {
+  // §13.4-4. Arrange: t3 をハイライト済みにする。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  await loadV8(r, chart, [10, 20, 30, 40, 50, 60, 70, 80]);
+  const m = muteConsole();
+  try {
+    chart.emitCross({ hoveredObjectId: 't3:entry' }); // _highlight===3
+    const before = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    // Act: 別トレード t7 へ変化。
+    chart.emitCross({ hoveredObjectId: 't7:entry' });
+    // Assert(C2): 変化時は _render がちょうど 1 回。_highlight===7・pair7 ハイライト・pair3 減光。
+    const after = lwc.calls.setMarkers.length + lwc.calls.create.length;
+    assert.equal(after - before, 1, '別トレードへ変化で _render は 1 回');
+    assert.equal(r._highlight, 7, '_highlight===7 へ変化');
+    const applied = lwc.calls.setMarkers.at(-1) || lwc.calls.create.at(-1).markers;
+    assert.ok(applied.filter((x) => x.id === 't7:entry').every((x) => x.color === '#26a69a'), 'pair7 ハイライト');
+    assert.ok(applied.filter((x) => x.id === 't3:entry').every((x) => x.color !== '#26a69a'), 'pair3 は減光');
+  } finally { m.restore(); }
+});
+
+test('v8: hover before load is a no-op (does not touch lwc — early return in _render)', async () => {
+  // §13.4-5. Arrange: load せず（マーカー未保持・ハンドル未生成）。
+  const lwc = fakeLwc();
+  const mainSeries = fakeSeriesWithPrimitive();
+  const chart = fakeChartV4();
+  // eslint-disable-next-line no-new
+  new TradeMarkersRenderer({ lwc, mainSeries, chart });
+  const m = muteConsole();
+  try {
+    // Act: load 前に hover（hoveredObjectId あり）。
+    assert.doesNotThrow(() => chart.emitCross({ hoveredObjectId: 't1:entry' }));
+    // Assert: lwc に一切触れない（create も setMarkers も 0）＝既存早期 return の維持。
+    assert.equal(lwc.calls.create.length, 0, 'load 前 hover は create 0');
+    assert.equal(lwc.calls.setMarkers.length, 0, 'load 前 hover は setMarkers 0');
+  } finally { m.restore(); }
+});
+
+// ── 時間足フィルタ: 該当時間足（建玉の時間足＝json.timeframe）以外は売買マークを表示しない ─────────────
+// 仕様: rapid-prototype 収束（ユーザー確認済）。「該当時間軸」＝建玉の時間足。trade_markers.json の
+//   top-level `timeframe` を該当時間足とし、現在時間足が不一致なら lwc へ空集合を渡す（非表示）。
+//   timeframe 未宣言の旧データは時間足に関係なく従来どおり表示（後方互換）。
+
+function _tfJson(timeframe) {
+  const markers = [{ lwc: { time: 1, position: 'belowBar', shape: 'arrowUp', color: '#26a69a', id: 't0:entry' }, meta: {} }];
+  return timeframe == null ? { ok: true, count: 1, markers } : { ok: true, count: 1, timeframe, markers };
+}
+const _fetchOf = (json) => async () => ({ ok: true, async json() { return json; } });
+
+test('時間足フィルタ: load が json.timeframe を該当時間足として取り込み、不一致の時間足で非表示にする', async () => {
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const m = muteConsole();
+  try { await r.load('/x', _fetchOf(_tfJson('1m'))); } finally { m.restore(); }
+  // Act: 該当時間足(1m)以外へ切替。
+  r.setCurrentTimeframe('1D');
+  // Assert: 直近 setMarkers は空集合（非表示）。
+  assert.deepEqual(lwc.calls.setMarkers.at(-1), []);
+});
+
+test('時間足フィルタ: 現在時間足が該当時間足と一致 → マーカーを表示する', async () => {
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const m = muteConsole();
+  try { await r.load('/x', _fetchOf(_tfJson('1m'))); } finally { m.restore(); }
+  r.setCurrentTimeframe('1D'); // 一旦非表示
+  r.setCurrentTimeframe('1m'); // 該当へ
+  assert.equal(lwc.calls.setMarkers.at(-1).length, 1, '該当時間足で1件表示');
+});
+
+test('時間足フィルタ: json.timeframe 無し → 時間足に関係なく表示（後方互換）', async () => {
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const m = muteConsole();
+  try { await r.load('/x', _fetchOf(_tfJson(null))); } finally { m.restore(); }
+  // Act: 任意の時間足へ切替（timeframe 未宣言なのでゲートしない）。
+  r.setCurrentTimeframe('1D');
+  assert.equal(lwc.calls.setMarkers.at(-1).length, 1, 'timeframe 未宣言は非表示にしない');
+});
+
+test('時間足フィルタ: setCurrentTimeframe は単一 _render 経路で再描画する', async () => {
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const m = muteConsole();
+  try { await r.load('/x', _fetchOf(_tfJson('1m'))); } finally { m.restore(); }
+  const before = lwc.calls.setMarkers.length;
+  r.setCurrentTimeframe('1D');
+  assert.equal(lwc.calls.setMarkers.length, before + 1, '1 切替につき再描画1回');
+});
+
+// ── ISSUE-026: 取引明細ポップアップの DI リファクタ＋単体テスト ─────────────────
+// 仕様: rapid-prototype 収束（ユーザー確認済）。hover 中ペアの取引明細 9 項目を JST で表示する。
+//   本フェーズで _ensurePopup / _updatePopup / _positionPopup の document ハードコードを DI 化し、
+//   注入 document（fakeDoc）で単体検証可能にする。実描画・実ピクセル位置はブラウザ確認に委譲。
+//   pair データ: { i, side, win, profit, volume, entry:{time,price}, exit:{time,price} }。
+//   日時は JST（UTC+9）。利益は 正=緑(#26a69a)/負=赤(#ef5350)/0=既定色(#d1d4dc)。
+
+// 最小 DOM スタブ（crosshair_readout_view.test.js の fakeDoc 流儀）。document 不在を避けるため注入する。
+//   要素は id / style（cssText 含む）/ innerHTML / appendChild / getBoundingClientRect / offsetWidth/Height を備える。
+function fakePopupElement(tag = 'div') {
+  return {
+    tagName: tag,
+    id: '',
+    style: {
+      _css: '',
+      get cssText() { return this._css; },
+      set cssText(v) { this._css = v; },
+    },
+    children: [],
+    get innerHTML() { return this._innerHTML ?? ''; },
+    set innerHTML(v) { this._innerHTML = v; },
+    appendChild(n) { this.children.push(n); return n; },
+    getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; },
+    offsetWidth: 220,
+    offsetHeight: 180,
+  };
+}
+
+function fakePopupDoc() {
+  const created = [];
+  const byId = new Map();
+  const body = fakePopupElement('body');
+  const doc = {
+    _created: created,
+    _byId: byId,
+    body,
+    createElement(tag) { const el = fakePopupElement(tag); created.push(el); return el; },
+    getElementById(id) { return byId.get(id) ?? null; },
+  };
+  return doc;
+}
+
+// pair データ 1 件を組み立てる補助（仕様データ構造）。
+function makePair(overrides = {}) {
+  return {
+    i: 0, side: 'buy', win: true, profit: 50, volume: 0.1,
+    entry: { time: 1781568840, price: 100.5 },
+    exit: { time: 1781568900, price: 110.5 },
+    ...overrides,
+  };
+}
+
+// ── _fmtDate / _fmtClock（JST 整形）──────────────────────────────────────────
+test('ISSUE-026 _fmtDate: 既知 UNIX 秒を JST の YYYY/MM/DD に整形する', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const out = r._fmtDate(1781568840);
+  // Assert: 1781568840 は UTC+9 で 2026/06/16。
+  assert.equal(out, '2026/06/16');
+});
+
+test('ISSUE-026 _fmtClock: 既知 UNIX 秒を JST の HH:MM:SS に整形する', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const out = r._fmtClock(1781568840);
+  // Assert: 1781568840 は UTC+9 で 09:14:00。
+  assert.equal(out, '09:14:00');
+});
+
+test('ISSUE-026 _fmtDate: UTC 当日 15:00 以降は JST で翌日へ繰り上がる（UTC+9 日跨ぎ境界）', () => {
+  // Arrange: 2026-06-16T15:00:00Z は JST で 2026-06-17 00:00:00。
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  const unixSec = Date.UTC(2026, 5, 16, 15, 0, 0) / 1000;
+  // Act
+  // Assert: JST 日付は 6/17・時刻は 00:00:00（UTC+9 で日付境界を跨ぐ）。
+  assert.equal(r._fmtDate(unixSec), '2026/06/17');
+  assert.equal(r._fmtClock(unixSec), '00:00:00');
+});
+
+test('ISSUE-026 _fmtDate/_fmtClock: 型不正（非 number）は "-" を返す', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act / Assert
+  assert.equal(r._fmtDate(null), '-');
+  assert.equal(r._fmtDate('1781568840'), '-');
+  assert.equal(r._fmtClock(undefined), '-');
+  assert.equal(r._fmtClock({}), '-');
+});
+
+// ── _popupHtml（9 項目・利益色・side ヘッダ）────────────────────────────────
+test('ISSUE-026 _popupHtml: 9 項目すべてのラベルを含む', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const html = r._popupHtml(makePair());
+  // Assert: 仕様 9 項目ラベルがすべて含まれる。
+  for (const label of ['利益', '取引日時', '取引時間', '取引価格', '取引数量', '決済日時', '決済時間', '決済価格', '決済数量']) {
+    assert.ok(html.includes(label), `ラベル「${label}」が含まれる`);
+  }
+});
+
+test('ISSUE-026 _popupHtml: 利益>0 は緑・<0 は赤・==0 は既定色で描画する', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const pos = r._popupHtml(makePair({ profit: 10 }));
+  const neg = r._popupHtml(makePair({ profit: -10 }));
+  const zero = r._popupHtml(makePair({ profit: 0 }));
+  // Assert: 緑 #26a69a / 赤 #ef5350 / 既定 #d1d4dc。
+  assert.ok(pos.includes('#26a69a'), '利益>0 は緑');
+  assert.ok(neg.includes('#ef5350'), '利益<0 は赤');
+  assert.ok(zero.includes('#d1d4dc'), '利益==0 は既定色');
+});
+
+test('ISSUE-026 _popupHtml: side で BUY / SELL ヘッダを切り替える', () => {
+  // Arrange
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
+  // Act
+  const buy = r._popupHtml(makePair({ side: 'buy' }));
+  const sell = r._popupHtml(makePair({ side: 'sell' }));
+  // Assert
+  assert.ok(buy.includes('BUY'), 'side=buy は BUY ヘッダ');
+  assert.ok(sell.includes('SELL'), 'side=sell は SELL ヘッダ');
+});
+
+// ── _updatePopup（DI document・highlight 同期）───────────────────────────────
+test('ISSUE-026 _updatePopup: highlight が有効ペアなら popup を表示し 9 項目を描画する（注入 document）', () => {
+  // Arrange: 注入 document で _pairs を持たせ highlight を有効化。
+  const doc = fakePopupDoc();
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {}, document: doc });
+  r._pairs = [makePair({ i: 0 })];
+  r._highlight = 0;
+  // Act
+  r._updatePopup({ point: { x: 10, y: 10 } });
+  // Assert: popup が body へ生成され、display 表示・innerHTML に 9 項目（利益/決済数量 等）。
+  assert.equal(doc.body.children.length, 1, 'popup 要素が body へ 1 件 append');
+  const el = doc.body.children[0];
+  assert.equal(el.style.display, 'block', 'display は表示（block）');
+  assert.ok(el.innerHTML.includes('利益') && el.innerHTML.includes('決済数量'), '9 項目が描画される');
+});
+
+test('ISSUE-026 _updatePopup: highlight=null なら popup を display:none にする（注入 document）', () => {
+  // Arrange
+  const doc = fakePopupDoc();
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {}, document: doc });
+  r._pairs = [makePair({ i: 0 })];
+  r._highlight = null;
+  // Act
+  r._updatePopup(null);
+  // Assert: 非ホバーは非表示。
+  const el = doc.body.children[0];
+  assert.equal(el.style.display, 'none', 'highlight=null は display:none');
+});
+
+test('ISSUE-026 _updatePopup: _pairs に無い i を highlight しても popup を display:none にする（注入 document）', () => {
+  // Arrange: highlight=99 は _pairs に存在しない。
+  const doc = fakePopupDoc();
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {}, document: doc });
+  r._pairs = [makePair({ i: 0 })];
+  r._highlight = 99;
+  // Act
+  r._updatePopup({ point: { x: 1, y: 1 } });
+  // Assert: 該当ペア無しは非表示。
+  const el = doc.body.children[0];
+  assert.equal(el.style.display, 'none', '該当ペア無しは display:none');
+});
+
+// ── _ensurePopup（遅延生成・再利用）────────────────────────────────────────
+test('ISSUE-026 _ensurePopup: 初回は document.body へ 1 要素 append、2 回目は同一要素を再利用する（注入 document）', () => {
+  // Arrange
+  const doc = fakePopupDoc();
+  const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {}, document: doc });
+  // Act
+  const first = r._ensurePopup();
+  const second = r._ensurePopup();
+  // Assert: append は 1 回だけ・2 回目は同一参照（重複生成しない）。
+  assert.equal(doc.body.children.length, 1, 'body への append は 1 回');
+  assert.equal(doc._created.length, 1, 'createElement は 1 回（再生成しない）');
+  assert.strictEqual(first, second, '同一要素を再利用');
+  assert.equal(first.id, 'trade-detail-popup', 'popup の id が付与される');
 });

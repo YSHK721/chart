@@ -50,6 +50,9 @@ export class IndicatorController {
     // 時間足切替時に candles を再取得するローダ (datasetRef, timeframe) → Promise<candles|null>。
     //   B方式のみ注入される（A方式は SAMPLE_DATA・再集計不可のため null）。
     this._loadCandles = loadCandles;
+    // 時間足変更の購読者（任意・1 個）。setTimeframe 適用後に新時間足を通知する。
+    //   売買マーカーの該当時間足フィルタ等、時間足に連動する描画の配線点。
+    this._timeframeObserver = null;
 
     // メモリ状態（facade の純状態オブジェクト）。
     this._state = emptyState();
@@ -339,6 +342,13 @@ export class IndicatorController {
     }
     this._state.uiState = { ...this._state.uiState, timeframe };
     this._persistAll();
+    // 時間足購読者へ新時間足を通知する（売買マーカーの該当時間足フィルタ等）。
+    this._timeframeObserver?.(this._timeframe);
+  }
+
+  // 時間足変更の購読者を登録する（任意・1 個）。setTimeframe 適用後に新時間足で呼ばれる。
+  setTimeframeObserver(observer) {
+    this._timeframeObserver = observer;
   }
 
   // 適用済み全指標を現在の params / 時間足で再計算・再描画する（ライブ更新の再計算入口）。
@@ -415,6 +425,9 @@ export class IndicatorController {
       }
     }
     this._syncTimeframeButtons();
+    // 復元した時間足を購読者へ通知する（売買マーカーの該当時間足フィルタが restore 後の
+    //   現在時間足を正しく評価できるようにする。通知欠落だと該当時間足でも非表示になる逆動作）。
+    this._timeframeObserver?.(this._timeframe);
     // 各 instance を再計算して再描画（A方式は variant 事前計算データで復元）。
     for (const inst of this._state.applied) {
       const def = this._catalog.get(inst.indicatorId);

@@ -30,10 +30,18 @@ export class TradeMarkersRenderer {
   //   v6（§12）: chartRenderer（任意）を受け取ると、hover 中ペア外のローソク足を per-bar 減光させる。
   //   減光/復元は chartRenderer.dimCandlesOutsidePair / restoreCandles を呼ぶ（mainSeries.setData を
   //   直接呼ばない＝upstream 隔離・grep0件規約維持）。chartRenderer 未注入時は全件通常描画フォールバック。
-  constructor({ lwc, mainSeries, chart = null, chartRenderer = null }) {
+  // ISSUE-026: document / container を DI（既定はブラウザ globalThis.document）。node:test では fakeDoc を注入し
+  //   ポップアップの DOM 操作を単体検証する。素の document / getElementById('chart') ハードコードを除去（テスト容易化）。
+  constructor({
+    lwc, mainSeries, chart = null, chartRenderer = null,
+    document = (typeof globalThis !== 'undefined' ? (globalThis.document ?? null) : null),
+    container = null,
+  }) {
     this._lwc = lwc;
     this._series = mainSeries;
     this._chartRenderer = chartRenderer; // v6: 基準 candles 所有者（dim/restore の委譲先）。
+    this._document = document; // ISSUE-026: ポップアップ DOM の生成先（注入可・不在時 null で no-op）。
+    this._container = container; // ISSUE-026: ポップアップ配置の基準矩形要素（無ければ #chart を探索）。
     this._handle = null;
     this._all = []; // load した全 lwc マーカー（昇順）。範囲フィルタの元集合。
     this._pairs = []; // v6: load した売買ペア（dim 範囲 [entry_time, exit_time] の参照元）。
@@ -42,6 +50,8 @@ export class TradeMarkersRenderer {
     this._highlight = null; // v4: ホバー中トレード i（null=非ホバー・全件通常）。
     this._primitive = null; // v4: 売買ペア線 primitive（attachPrimitive 非提供時 null）。
     this._candlesDimmed = false; // v6: ローソク減光中か（onCandlesChanged 時の復元要否判定）。
+    this._currentTimeframe = null; // 現在の時間足（null=未設定）。setCurrentTimeframe で更新。
+    this._targetTimeframe = null; // 該当時間足＝建玉の時間足。load で json.timeframe から取り込む（null=未宣言＝ゲートしない）。
 
     const sub = chart && chart.timeScale && chart.timeScale();
     if (sub && typeof sub.subscribeVisibleTimeRangeChange === 'function') {
@@ -62,13 +72,155 @@ export class TradeMarkersRenderer {
     this._render();
   }
 
-  // v4・§10.2: hoveredObjectId（"t{i}:entry"/"t{i}:exit"）から i を解析して _highlight を更新。
-  //   無ければ解除（null）。いずれも単一 _render() 経路で再描画する（C2）。
+  // v8・§13: hoveredObjectId（"t{i}:entry"/"t{i}:exit"）から i を解析して _highlight を更新（オンマウス基準）。
+  //   不変ガード: ハイライトが不変（next === this._highlight）なら即 return し再描画しない。これで毎クロス
+  //   ヘア移動の全再描画（1326 マーカー再設定＋約 1500 本ローソク減光 setData）を排し、イベント間引きに
+  //   よる不規則発火を解消する（§13.1-3 への対処）。変化時のみ単一 _render() 経路で再描画する（C2）。
+  //   v7 のカーソル画素近接判定は実ブラウザ計測で破綻（§13.1）したため撤去した。
   _onCrosshair(param) {
-    const id = param && param.hoveredObjectId;
-    const next = this._parseTradeIndex(id);
+    const next = this._parseTradeIndex(param && param.hoveredObjectId);
+    if (next === this._highlight) {
+      return; // 不変ガード：ハイライト不変なら再描画しない。
+    }
     this._highlight = next;
     this._render();
+    this._updatePopup(param); // ISSUE-026: 取引明細ポップアップ（highlight 状態に同期）。
+  }
+
+  // ISSUE-026: 売買ペアの取引明細ステートメントをポップアップ表示する。
+  //   highlight 中（グリフ hover 中）は当該ペアの 9 項目を表示、非 highlight では非表示。
+  //   既存 v8 hover 経路（hoveredObjectId）に相乗りし、新規購読・新規 fetch を増やさない。
+  //   document 不在（node:test/SSR）では no-op（ブラウザ専用 UI）。
+  _updatePopup(param) {
+    if (!this._document) {
+      return; // document 不在（SSR / 未注入）では no-op（後方互換）。
+    }
+    const el = this._ensurePopup();
+    if (!el) {
+      return;
+    }
+    const pair = this._highlight == null
+      ? null
+      : this._pairs.find((p) => p.i === this._highlight);
+    if (!pair) {
+      el.style.display = 'none';
+      return;
+    }
+    el.innerHTML = this._popupHtml(pair);
+    el.style.display = 'block';
+    this._positionPopup(el, param);
+  }
+
+  // ポップアップ DOM を遅延生成する（既存なら再利用）。pointer-events:none で hover を妨げない。
+  _ensurePopup() {
+    if (this._popupEl) {
+      return this._popupEl;
+    }
+    if (!this._document) {
+      return null; // document 不在では生成しない（_updatePopup 側で null ガード）。
+    }
+    const el = this._document.createElement('div');
+    el.id = 'trade-detail-popup';
+    el.style.cssText = [
+      'position:fixed', 'z-index:9999', 'display:none', 'pointer-events:none',
+      'background:#1e222d', 'color:#d1d4dc', 'border:1px solid #2a2e39',
+      'border-radius:6px', 'padding:8px 10px', 'font:12px/1.5 system-ui,sans-serif',
+      'box-shadow:0 4px 16px rgba(0,0,0,0.5)', 'min-width:220px',
+    ].join(';');
+    this._document.body.appendChild(el);
+    this._popupEl = el;
+    return el;
+  }
+
+  // ペアの 9 項目（利益/取引日時/取引時間/取引価格/取引数量/決済日時/決済時間/決済価格/決済数量）を HTML 化する。
+  _popupHtml(pair) {
+    const profit = pair.profit;
+    const profitColor = (typeof profit === 'number' && profit > 0) ? '#26a69a'
+      : (typeof profit === 'number' && profit < 0) ? '#ef5350' : '#d1d4dc';
+    const sideLabel = pair.side === 'buy' ? 'BUY' : 'SELL';
+    const row = (label, value, color) =>
+      `<div style="display:flex;justify-content:space-between;gap:16px">`
+      + `<span style="color:#787b86">${label}</span>`
+      + `<span style="color:${color || '#d1d4dc'};font-variant-numeric:tabular-nums">${value}</span></div>`;
+    return [
+      `<div style="font-weight:600;margin-bottom:4px;color:${pair.side === 'buy' ? '#26a69a' : '#ef5350'}">`
+        + `#${pair.i} ${sideLabel}</div>`,
+      row('利益', this._fmtNum(profit), profitColor),
+      `<div style="border-top:1px solid #2a2e39;margin:4px 0"></div>`,
+      row('取引日時', this._fmtDate(pair.entry.time)),
+      row('取引時間', this._fmtClock(pair.entry.time)),
+      row('取引価格', this._fmtNum(pair.entry.price)),
+      row('取引数量', this._fmtNum(pair.volume)),
+      `<div style="border-top:1px solid #2a2e39;margin:4px 0"></div>`,
+      row('決済日時', this._fmtDate(pair.exit.time)),
+      row('決済時間', this._fmtClock(pair.exit.time)),
+      row('決済価格', this._fmtNum(pair.exit.price)),
+      row('決済数量', this._fmtNum(pair.volume)),
+    ].join('');
+  }
+
+  // UNIX 秒を JST（日本時間・UTC+9）の Date オブジェクトへ変換する（ISSUE-026 ユーザー決定）。
+  //   実行環境の TZ に依存しないよう +9h オフセットを加えて getUTC* で読む（決定論的）。
+  _jst(unixSec) {
+    return new Date((unixSec + 9 * 3600) * 1000); // JST = UTC+9。
+  }
+
+  // 2 桁ゼロ埋め（_fmtDate / _fmtClock 共通）。
+  _pad2(n) {
+    return String(n).padStart(2, '0');
+  }
+
+  // 日付のみ YYYY/MM/DD（JST）へ整形する（ISSUE-026: 日時と時間を別行に分離）。
+  _fmtDate(unixSec) {
+    if (typeof unixSec !== 'number') {
+      return '-';
+    }
+    const d = this._jst(unixSec);
+    return `${d.getUTCFullYear()}/${this._pad2(d.getUTCMonth() + 1)}/${this._pad2(d.getUTCDate())}`;
+  }
+
+  // 時刻のみ HH:MM:SS（JST）へ整形する（ISSUE-026: 日時と時間を別行に分離）。
+  _fmtClock(unixSec) {
+    if (typeof unixSec !== 'number') {
+      return '-';
+    }
+    const d = this._jst(unixSec);
+    return `${this._pad2(d.getUTCHours())}:${this._pad2(d.getUTCMinutes())}:${this._pad2(d.getUTCSeconds())}`;
+  }
+
+  // 数値整形（int/double 双方を許容＝余分な末尾 0 を出さない）。
+  _fmtNum(v) {
+    return typeof v === 'number' ? String(v) : '-';
+  }
+
+  // hover 開始位置（グリフに乗った瞬間の param.point）へポップアップを配置し、ビューポート外は
+  //   左反転・下端クランプする。**呼び出しは highlight 遷移時のみ**（_onCrosshair の不変ガード前提）＝
+  //   同一マーカー hover 中は再配置されない＝マーカー固定（カーソル非追従）。関数単体は point を参照するが追従しない。
+  _positionPopup(el, param) {
+    const point = param && param.point;
+    const container = this._container || (this._document ? this._document.getElementById('chart') : null);
+    if (!point || !container) {
+      return; // 座標不明時は表示位置を据え置く（display は呼び出し側で block 済み）。
+    }
+    const rect = container.getBoundingClientRect();
+    const pw = el.offsetWidth;
+    const ph = el.offsetHeight;
+    // window 寸法はブラウザのみ参照（node:test / SSR では未定義のためクランプを行わない）。
+    const vw = (typeof window !== 'undefined') ? window.innerWidth : null;
+    const vh = (typeof window !== 'undefined') ? window.innerHeight : null;
+    let x = rect.left + point.x + 16;
+    let y = rect.top + point.y + 16;
+    if (vw != null && x + pw > vw) {
+      x = rect.left + point.x - pw - 16;
+    }
+    if (vh != null && y + ph > vh) {
+      y = vh - ph - 8;
+    }
+    if (y < 0) {
+      y = 8;
+    }
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
   }
 
   // "t{i}:..." から数値 i を取り出す（不一致は null）。
@@ -80,12 +232,24 @@ export class TradeMarkersRenderer {
     return m ? Number(m[1]) : null;
   }
 
+  // 現在の時間足を受け取り単一 _render 経路で再描画する。該当時間足（建玉の時間足）以外は _render が非表示にする。
+  setCurrentTimeframe(timeframe) {
+    this._currentTimeframe = timeframe;
+    this._render();
+  }
+
   // 現在の可視マーカー集合を upstream へ反映する単一の経路（範囲変更・load・hover 共通＝C2）。
   //   _highlight!=null の時は非ハイライト marker を減光色へ変換し、primitive へ highlight を転送する。
   _render() {
     // load 前（マーカー未保持・ハンドル未生成）は lwc に一切触れない（candles 非干渉・C1 共存）。
     //   crosshair 購読は既存 ChartRenderer と共有されるため、load 前の hover では何もしない。
     if (this._all.length === 0 && !this._handle) {
+      return;
+    }
+    // 該当時間足（建玉の時間足＝_targetTimeframe）以外では売買マークを表示しない。
+    //   _targetTimeframe が null（json.timeframe 未宣言）の旧データはゲートせず従来どおり表示（後方互換）。
+    if (this._targetTimeframe && this._currentTimeframe && this._currentTimeframe !== this._targetTimeframe) {
+      this.setMarkers([]);
       return;
     }
     const visible = this._visibleMarkers();
@@ -132,6 +296,7 @@ export class TradeMarkersRenderer {
     }
     this._highlight = null;
     this._render(); // highlight 解除 → marker 通常色復帰 ＋ _applyCandleDimming で基準復元。
+    this._updatePopup(null); // ISSUE-026: candle 変更で highlight 解除時はポップアップも閉じる。
   }
 
   // _rangeAware 時は _range で絞った集合、それ以外（フォールバック）は全件を返す。
@@ -147,7 +312,7 @@ export class TradeMarkersRenderer {
     return this._all.filter((m) => r.from <= m.time && m.time <= r.to);
   }
 
-  // lwcMarkers: [{time,position,shape,color,text}]（昇順）。
+  // lwcMarkers: [{time,position,shape,color,id}]（昇順）。§14・ISSUE-025 で text（価格ラベル）は load 時に除外。
   //   初回は createSeriesMarkers でハンドル生成、以降はハンドルへ setMarkers（v5・C-3）。
   setMarkers(lwcMarkers) {
     if (!this._handle) {
@@ -189,7 +354,14 @@ export class TradeMarkersRenderer {
         return 0;
       }
       const json = await res.json();
-      const lwc = (json.markers || []).map((m) => m.lwc); // lwc サブセットのみ抽出（M-2）
+      // lwc サブセットのみ抽出（M-2）。§14・ISSUE-025: text（価格ラベル）を除外する。
+      //   text を外すと lwc marker のヒット領域が矢印/円グリフのみに縮小し、価格ラベル領域の hover では
+      //   hoveredObjectId が立たない（＝減光が発火しない）。価格ラベル自体も非表示になる（ユーザー要件）。
+      this._targetTimeframe = json.timeframe ?? null; // 該当時間足＝建玉の時間足（未宣言は null＝ゲートしない）。
+      const lwc = (json.markers || []).map((m) => {
+        const { text, ...rest } = m.lwc || {};
+        return rest;
+      });
       this._all = lwc; // 全件保持（範囲フィルタの元集合・§9）。
       this._attachPairLines(json.pairs || []); // v4: 売買ペア線 primitive（§10.1）。
       this._render(); // 範囲確定済みなら範囲内のみ、フォールバックは全件。

@@ -157,7 +157,10 @@ def run_and_export(
     # 5. presenter → OUT（新規パス）。
     out_path.parent.mkdir(parents=True, exist_ok=True)
     spec = _Symbol(name="JP225", digits=1)
-    TradeMarkersPresenter().present_markers(result, out_path, symbol=spec, ea_name=ea_name)
+    # 該当時間足＝建玉の時間足。バックテストは M1（1分足）なので '1m'。
+    TradeMarkersPresenter().present_markers(
+        result, out_path, symbol=spec, ea_name=ea_name, timeframe="1m"
+    )
     payload = json.loads(out_path.read_text(encoding="utf-8"))
 
     # 6. 集合包含検証（全マーカー time ⊆ candles time）。

@@ -343,3 +343,142 @@ marker の `id`（createSeriesMarkers は id 受理）。
 - 受入: ホバーで当該ペア以外の**ローソク足のみ**が限りなく減光（**背景は不変**）、ペアの足・マーカー・線が強調。
   解除で完全復元。既存テスト緑＋新規（ペア外バー暗色化・ペア内保持・解除復元・基準candles未供給フォールバック）緑。
   実描画・実hoverはブラウザ確認。
+
+---
+
+## 13. バグ修正 v8（ホバー減光の発火が不規則 — hoveredObjectId 駆動＋不変ガードへ）
+
+> 改訂履歴: 本節は当初 v7「カーソル画素近接判定」を採用したが、実ブラウザ計測で同方式の破綻が確定したため
+> v8「hoveredObjectId 駆動＋不変ガード」へ全面改訂した（v7 破棄の根拠は下記「v7 破棄理由」を参照）。本改訂は
+> 本設計書 §13 の仕様改訂であり、コード（committed simulator・presenter・既存マーカー JSON）は本節では変更しない。
+
+- 症状: 売買マーカー（約 1326 個・id="t{i}:entry"/"t{i}:exit"）に**マウスカーソルを乗せても**減光
+  （v4 マーカー／v5・v6 ローソク）の発火に**規則性がない**。
+- 発火条件（確定・ユーザー確認済・不変）: **「カーソル（マウス）がマーカー図形に乗った（オンマウス）とき」**に発火する。
+  クロスライン（十字線）がマーカーの時刻列を通過したときではない（時間列＝クロスライン基準は採らない）。
+
+### 13.1 v7 破棄理由（実ブラウザ計測で確定した死因）
+
+実ブラウザでの計測により、v7「カーソル画素近接判定」は原理的に破綻することが確定した。以下の 3 事実を履歴として残す。
+
+1. **`param.hoveredObjectId` は正しく発火する**（採用すべき信号）。グリフ直上で `t478:exit` を検出した。これは
+   lightweight-charts が**カーソルをマーカー図形のヒット領域に乗せた時だけ**セットする値で、まさに発火条件
+   「カーソルがマーカーに乗った」に合致する。v7 の前提（hoveredObjectId は密集マーカーで乗りにくい）は実測で否定された。
+2. **近接判定が当たらない**（v7 破綻の核心）。v7 の `_nearestTradeByPixel` はマーカー y に
+   `mainSeries.priceToCoordinate(約定価格)` を用いるが、**実グリフ画素は約定価格画素から約 130px 離れている**（実測 dy ≈ -130）。
+   マーカーは足の高値／安値の**外側にオフセット描画**されるため、約定価格の画素とは構造的に一致しない。許容半径 12px では
+   絶対に当たらず、近接判定では減光がほぼ発火しない。**上流（lwc）が実グリフ画素を公開しない**以上、近接ピクセル方式は
+   原理的に成立しない。
+3. **不変時の全再描画が重く、イベントが間引かれる**（不規則発火の真因）。`_onCrosshair` はハイライト対象が**不変でも**
+   毎クロスヘア移動で全再描画していた（1326 マーカー再設定＋約 1500 本ローソクの減光 `setData`）。この重さにより
+   クロスヘアイベントが間引かれた（**実測: 32 移動中 3 件のみハンドラ到達**）。これが「発火が不規則」と体感される真因である。
+
+### 13.2 v8 確定方針（hoveredObjectId 駆動＋不変ガード）
+
+- 方式名: **「hoveredObjectId 駆動＋不変ガード」**。発火信号を `param.hoveredObjectId` のみに戻し（13.1-1 が実証）、
+  v7 の**カーソル画素近接判定を完全撤去**したうえで、**不変ガード**で不要な全再描画を排除する（13.1-3 への対処）。
+- `_onCrosshair(param)` の確定仕様（決定論）:
+  - `const next = this._parseTradeIndex(param && param.hoveredObjectId);`
+    （"t{i}:entry"/"t{i}:exit" → 数値 `i`、不一致・無しは `null`。`_parseTradeIndex` は既存・不変）。
+  - **不変ガード**: `if (next === this._highlight) return;`
+    ハイライトが不変なら即 `return`（＝再描画しない）。これにより毎クロスヘア移動の全再描画を排除し、イベント間引き
+    （＝不規則発火）を解消する。
+  - 変化時のみ `this._highlight = next; this._render();`。
+  - 単一 `_render()` 経路は不変（C2）。marker 減光・ペア線 highlight・v6 ローソク減光は `_highlight` 駆動のまま連動する。
+- **撤去対象（v7 で導入したもの）**:
+  - `_nearestTradeByPixel` メソッド（全体）。
+  - `_HIT_RADIUS_PX` 定数（全体）。
+  - `_onCrosshair` 内の近接フォールバック分岐（`byProximity != null ? byProximity : ...` の三項を、上記
+    `_parseTradeIndex(...)` 直接代入へ置換）。
+  - `_nearestTradeByPixel` 用途の `this._series.priceToCoordinate` / `timeScale().timeToCoordinate` 呼び出し。
+- **撤去対象（追補）**: `this._chart` フィールドも**削除**する。当初本節は §9 用途で保持と記したが、§9 の可視範囲
+  購読・crosshair 購読はいずれも constructor ローカル引数 `chart` のクロージャで完結し `this._chart` を参照しない。
+  本フィールドは v7 が近接判定（`_nearestTradeByPixel`）専用に導入したもので、撤去により未参照（write-only）と
+  なるため除去する（CLAUDE.md「不要な追加実装はしない」に整合）。`_highlight`・`_render`・`_applyCandleDimming`・
+  `onCandlesChanged`・`_parseTradeIndex` は不変。
+- 上流座標 API（`priceToCoordinate` / `timeToCoordinate`）への**hover 用途依存は消える**（範囲フィルタ §9 用途は別途存続）。
+  upstream lwc API の隔離（adapter 層に閉じる）は維持する。
+
+### 13.3 受入条件
+
+- マーカー図形にカーソルを乗せると当該ペアがハイライトされ、他のマーカー・ローソクが減光する。外すと復帰する。
+- **同一マーカー上で小刻みに動かしても再描画されず（不変ガード）滑らか**である（13.1-3 の解消）。
+- マーカーから離れた同時刻の価格帯では発火しない（hoveredObjectId はグリフ上のみセットされるため）。
+- canvas 実描画・実 hover はブラウザ結合確認で担保（ロジックは fake で単体検証）。
+
+### 13.4 テスト要件（tdd 工程への申し送り）
+
+- **新規／維持する単体テスト（5 件）**:
+  1. `hoveredObjectId` が有効 ID（"t{i}:entry"/"t{i}:exit"）→ 当該 `i` がハイライト（非ペアは減光）。
+  2. `hoveredObjectId` 無し（または不一致）→ `_highlight` が `null` 復帰（全件通常色）。
+  3. **不変ガード**: 同一ハイライト中に再度 `_onCrosshair`（同一 ID）が来ても `_render`／`setMarkers` が呼ばれない
+     （呼び出し回数 0 を assert）。
+  4. 別トレード ID へ変化時は `_render` が 1 回だけ呼ばれる（C2・単一経路）。
+  5. load 前の hover は no-op（既存・`_render` の早期 return で lwc に触れない）。
+- **削除対象の旧テスト（v7 近接系）**: 以下は撤去に伴い削除する。
+  - カーソル近接選択（半径内ヒット）。
+  - 半径境界（距離ちょうど 12=ヒット／13=非ヒット）。
+  - 最近傍選択（複数候補から最近傍）。
+  - tie-break（同距離は小さい i 優先）。
+  - exit 側マーカー近接でのハイライト。
+  - `param.point` 非提供時の hoveredObjectId フォールバック（フォールバック自体が消えるため）。
+  - 座標 API が null を返す時の hoveredObjectId フォールバック。
+  - 近接 crosshair での setMarkers 1 回（C2）—— 不変ガード前提の新 #3/#4 に置換される。
+- 既存フロントテスト（v4/v5/v6 の hoveredObjectId 経路・範囲フィルタ・onCandlesChanged）は緑を維持する。
+
+## 14. バグ修正（ISSUE-025）: 価格ラベルを非表示にし hover 対象を矢印グリフのみへ
+
+- 症状: 売買マーカー上部の価格ラベル（例 "SL 71265.5 (-50)"）にカーソルを乗せると、当該ペア以外の
+  マーカー・ローソクが減光する。ユーザー要件は「**売買マーカー（矢印グリフ）のオンマウス時のみ**発火し、
+  価格ラベルを含むそれ以外では何も起こらない」。あわせて「**価格ラベルは非表示**にする」。
+- 原因（実証）: 価格ラベルは lwc series marker の `text` で、矢印グリフと**同一 marker・同一 `hoveredObjectId`**。
+  lwc v5.2.0 は marker の**テキスト範囲もヒット領域に内包**するため、ラベル hover でも `hoveredObjectId` が
+  セットされ v8 減光が発火する。ブラウザ実測でローソク足が無い上部ラベル帯 hover での発火を確認。
+  §13.3 の「マーカーから離れた同時刻の価格帯では発火しない」は**ラベルには当てはまらない**（本節で訂正）。
+- 確定方針: `TradeMarkersRenderer.load()` の lwc サブセット抽出で **`text`（価格ラベル）を除外**する。
+  - `const { text, ...rest } = m.lwc || {}; return rest;`（既存 M-2 抽出に text 除去を追加）。
+  - 効果1: lwc marker が text を持たないため**価格ラベルが非表示**になる（ユーザー要件）。
+  - 効果2: marker のヒット領域が**矢印/円グリフのみ**へ縮小し、旧ラベル領域の hover では `hoveredObjectId` が
+    立たない＝減光が発火しない。グリフ hover は従来どおり `hoveredObjectId` で減光発火（v8 不変）。
+  - 後方互換: `id`/`time`/`position`/`shape`/`color` は保持＝範囲フィルタ（§9）・ペア識別・減光連動は不変。
+    `trade_markers.json`（バックエンド生成）は無改変＝`text` はデータ側に残るが front では描画・hover に使わない。
+- §13.3 訂正: 「離れた価格帯では発火しない」はグリフのみの前提。価格ラベルは marker text としてヒット領域に
+  含まれていたため発火していた。本節でラベルを除去し、**発火対象は矢印/円グリフのみ**となる。
+- 受入: 価格ラベルが非表示。マーカーのグリフに hover で当該ペアがハイライト・他が減光。**ラベル領域や
+  ローソク・余白の hover では一切発火しない**。canvas 実描画・実 hover はブラウザ結合確認で担保。
+- テスト: 既存「load extracts the lwc subset」を text 除去前提へ更新＋回帰「load strips marker text so the
+  hit region is the glyph only」を追加（lwc へ渡る全 marker に `text` が無いことを assert）。既存緑を維持。
+
+## 15. 追加機能（ISSUE-026）: 売買マーカー hover 時の取引明細ポップアップ
+
+- 機能: 売買マーカー（矢印 / 円グリフ）hover 時に当該ペアの取引明細ポップアップを表示する。ISSUE-025（§14）で
+  marker `text` を除去済みのためヒット領域は**グリフのみ**であり、本機能は既存 v8（§13）の `hoveredObjectId`
+  駆動経路に**相乗り**する。新規の購読・新規 fetch は増やさない（既存 crosshair `param` を `_updatePopup` に渡すのみ）。
+- 表示 9 項目: 利益 / 取引日時（YYYY/MM/DD）/ 取引時間（HH:MM:SS）/ 取引価格 / 取引数量 /
+  決済日時 / 決済時間 / 決済価格 / 決済数量。
+- 確定仕様（ユーザー決定）:
+  - 日時は **JST（UTC+9）** 固定。`_jst(unixSec) = new Date((unixSec + 9*3600) * 1000)` で +9h オフセット後 `getUTC*`
+    で読み、実行環境 TZ に依存しない決定論的整形（`_fmtDate` = YYYY/MM/DD・`_fmtClock` = HH:MM:SS）。型不正は `"-"`。
+  - 利益は**数値のみ**（`_fmtNum`）。`profit > 0` 緑（#26a69a）・`< 0` 赤（#ef5350）・`== 0` 既定色。
+  - 配置: **マーカー固定（カーソル非追従）**。`_updatePopup` は §13 の不変ガード（`next === this._highlight` で
+    早期 return）配下にあるため、`_positionPopup` は **highlight が変化した瞬間（グリフに乗った時）にのみ 1 回**呼ばれ、
+    同一マーカーを hover 中はカーソルが動いても再配置されない。配置位置は注入 container の `getBoundingClientRect()` を
+    基準に、その瞬間の crosshair `param.point`（container 内相対座標＝グリフに乗った位置）から +16px オフセットし、
+    ビューポート外へはみ出す場合は左反転・下端クランプする。container 不在 / `point` 不明時は位置を据え置く。
+    ＝ユーザー確定仕様「マーカー固定（hover 開始位置に表示・同一マーカー内で追従しない）」と整合（差異なし）。
+  - 取引数量＝決済数量＝`pair.volume`（部分決済なし＝往復同量）。
+- データ（presenter 追補）: `_pair_record`（§10.3 の pair record）が各 pair に `profit`（`tr.pnl()`）と `volume`（`tr.volume`）を
+  追加出力する。§10.3 の pair 構造 `{ i, side, win, entry, exit }` に `profit` / `volume` を**追加のみ**で拡張
+  （既存キー・時刻式・配色・昇順は不変。committed simulator は無改変）。
+- DI 結線（`composition_root_front.js`）: `new TradeMarkersRenderer({ ..., document: doc, container })` とし、
+  bootstrap が受け取る `doc`（document）と `container`（チャート要素）を注入する。
+  - 目的: renderer 内の `getElementById('chart')` リテラルフォールバックを使わず、**注入された container を基準**に
+    ポップアップを配置する（アーキ評価 §3 の 🔵 解消）。
+  - no-op 契約: `document` 不在（SSR / node:test / 未注入）では `_updatePopup` / `_ensurePopup` が `null` ガードで
+    早期 return しポップアップを生成しない（後方互換）。`container` 不在時は `getElementById('chart')` を探索する
+    既定フォールバックに退避する。
+- 既存節との関係: §13（v8 hoveredObjectId 駆動）の発火経路・§10.3 の pair record データ契約に追補で乗る変更。
+  範囲フィルタ（§9）・ペア識別・減光連動・配色は不変。
+- テスト（renderer 側・別フェーズ完了済）: `_fmtDate` / `_fmtClock` の JST 整形・日跨ぎ境界・型不正、`_popupHtml` の
+  9 項目ラベル・利益着色・BUY/SELL ヘッダ、`_updatePopup` の表示/非表示（注入 document）、`_ensurePopup` の単一要素
+  再利用を node:test で検証済（全緑）。composition_root の bootstrap テストは DI 注入後も回帰なし。

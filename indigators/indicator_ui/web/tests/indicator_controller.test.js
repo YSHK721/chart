@@ -348,3 +348,23 @@ test('recomputeAllApplied is a no-op when nothing is applied', async () => {
   await ctrl.recomputeAllApplied();
   assert.equal(computeCalls.length, before);
 });
+
+// restore で永続化時間足を復元した際、時間足購読者へ通知する。
+//   回帰: code-review 🔴。通知欠落だと売買マーカーの該当時間足フィルタが
+//   restore 後の現在時間足を旧値のまま誤判定し、該当時間足なのに非表示になる（逆動作）。
+test('restore notifies the timeframe observer with the restored timeframe (trade-markers gate regression)', async () => {
+  const noop = () => {};
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async () => ({ ok: true, generation: 0, series: [] }) },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({ timeframe: '1m' }), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, setData: noop, setVisible: noop, remove: noop, setCandles: noop },
+    facade: {},
+    document: null,
+    timeframe: '1D',
+  });
+  const seen = [];
+  ctrl.setTimeframeObserver((tf) => seen.push(tf));
+  await ctrl.restore();
+  assert.ok(seen.includes('1m'), `restore は復元時間足 1m を購読者へ通知する（実際: ${JSON.stringify(seen)}）`);
+});

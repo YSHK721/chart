@@ -1,97 +1,32 @@
-# upstream-input-validation
+# upstream-input-validation 実行結果（v7 ホバー減光修正レビュー）
 
 ## 上流入力の整理
-
-本タスクの上流入力を 4 種別で分類：
-
-1. **依頼者指示**：1 件
-   - 4 件の原子的コミット投入 + 除外3群の明示
-   
-2. **他者レビュー指摘**：0 件
-
-3. **前段成果物**：1 件
-   - 現在ブランチ `develop` のファイル状態（git status より）
-   
-4. **既存合意の引き継ぎ**：1 件
-   - `.claude/CLAUDE.md` の「破壊的な変更禁止」「承認が必要な操作」ルール
-
-判定：上流入力 3 件存在 → 続行
-
----
+- 依頼者指示: 1 件（フェーズ5 コードレビュー依頼／受入基準§13／観点・確認テスト指定）
+- 他者レビュー指摘: 0 件（該当なし）
+- 前段成果物: 2 件（feature/trade-markers-hover-fix の差分／設計書 §13）
+- 既存合意の引き継ぎ: 1 件（C2 単一 _render 不変・grep0件規約・presenter i 昇順）
 
 ## 前提抽出
-
-### 上流入力 #1：依頼者指示（4 コミット分割）
-主張：「残りの未ステージ/未追跡ファイルを4件の原子的コミットに分けて作成」
-
-内在する前提：
-- `.gitignore` は修正済みで ステージ対象
-- `.doc/backtest/` 配下の 5 ファイルが すべて存在する
-- `simulator/tests/fixtures/mt5/ma_slope_jp225_202601/expected/report.json` が 存在する
-- `docs/testing-notes.md` が 存在する
-- 各ファイルは テキスト形式または JSON 形式（binary でない）
-- 除外対象 3 群 は リポジトリ source ではない（ランタイムデータ）
-
-独立検証可能性：✓ (git status / ls / find で確認可能)
-
----
+1. [前段] pair 構造が `{ i, side, win, entry:{time,price}, exit:{time,price} }` である（_nearestTradeByPixel の side.time/side.price/pair.i アクセスの成立条件）
+2. [前段] presenter（_attachPairLines の入力 json.pairs）が常に i 昇順を出す（tie 最小 i 決定論の成立条件）
+3. [依頼/引継] coordinate 変換 API 利用が grep0件規約に違反しない（規約対象は setData のみ）
+4. [依頼] simulator/SP/presenter に変更が及ばない（フロント1ファイル＋テストに閉じる）
+5. [依頼] §13 が hoveredObjectId 単独依存を是正しカーソル画素近接へ移す方針である
 
 ## 証拠先行検証
-
-### 前提 1-1：.gitignore が修正済みで存在する
-
-Git status 出力：
-On branch develop
-Your branch is ahead of 'origin/develop' by 48 commits.
-  (use "git push" to publish your local commits)
-
-Changes not staged for commit:
-  (use "git add <file>..." to update what will be committed)
-  (use "git restore <file>..." to discard changes in working directory)
-	modified:   .gitignore
-
-no changes added to commit (use "git add" and/or "git commit -a")
-
-判定：Modified - 存在する ✓
-
-### 前提 1-2：.doc/backtest/ 配下に 5 ファイルが存在する
-
-ファイル一覧：
-BACKTEST_CLEAN_ARCH.md
-BACKTEST_DESIGN.md
-BACKTEST_METRICS.md
-BACKTEST_PROCESS.md
-BACKTEST_SPEC.md
-
-判定：5 ファイル確認 ✓
-
-### 前提 1-3：report.json が存在する
-
-判定：EXISTS ✓
-
-### 前提 1-4：docs/testing-notes.md が存在する
-
-判定：EXISTS ✓
-
-### 前提 2：除外対象 3 群はリポジトリ source ではない
-
-判定：除外対象の分離確認 ✓
-
----
+1. grep `pairs` 構造定義 → pair_primitive_base.js:16 `// pairs: [{ i, side, win, entry:{time,price}, exit:{time,price} }]`、markersJsonV4 (test:292-295) が同形を生成。実証取得。
+2. _attachPairLines は json.pairs をそのまま _pairs に格納（renderer:211）。markersJsonV4 は idx 昇順で i を採番（test:292 `i: idx`）。本番 presenter の昇順保証はフロント外＝実コードで未確認だが、コード内コメント(renderer:99-101)が「非昇順入力時は走査順依存・実害なし(申し送り)」と明記。条件付き実証。
+3. grep → 規約対象は `mainSeries.setData`（test:460）。timeToCoordinate/priceToCoordinate は pair_lines_primitive.js でも使用済の純粋読み取り API。実証取得。
+4. `git diff develop..HEAD --name-only -- simulator/` 空、`git diff develop..HEAD --name-only -- web/` も空（コミット差分なし＝全て worktree 変更）。実証取得。
+5. 設計書 §13 diff 全文確認（症状・根本原因・修正方針・受入が記載）。実証取得。
 
 ## 判定結果
-
-| # | 上流入力 | 採用 | 理由 |
-|---|---|---|---|
-| 1 | 依頼者指示（4 コミット分割） | 採用 | 全 5 前提の実証取得。ファイル存在・形式確認済み |
-| 2 | 前段成果物（git status） | 採用 | リポジトリ状態の客観的確認 |
-| 3 | CLAUDE.md ルール継承 | 採用 | 既存合意準拠 |
-
----
+1. 採用（pair 構造実証済）
+2. 条件付き採用（フロント内では昇順・本番 presenter 昇順はフロント外で未実証だが、非昇順時もコメント通り tie 規則が走査順依存になるのみで throw・誤動作なし。残存リスクへ転記）
+3. 採用（規約対象外を実証）
+4. 採用（コミット差分 0 を実証）
+5. 採用（設計書実証）
 
 ## 残存リスク
-
-- ファイル内容の semantic 検証は human review に委ねる
-- Conventional Commits メッセージ の「why」品質評価は commit author 責務
-
-判定：PASS
+- 本番 presenter が json.pairs を i 昇順で出す保証はフロント外（バックエンド/SP）に存在し、本レビュー範囲（フロント1ファイル）では実証不能。非昇順時も機能破綻はせず tie 選択 i が走査順依存になるのみ（コード申し送り済）。後続のバックエンド契約レビューに委ねる。
+- 実カーソルでの発火規則性・半径12px の体感は node:test 範囲外（実機委譲・設計書明記済）。

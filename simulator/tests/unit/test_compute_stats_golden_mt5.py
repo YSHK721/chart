@@ -90,6 +90,17 @@ def golden_stats():
     return stats, fx["results"]
 
 
+# 注意（equity DD の MT5 照合場所）:
+#   equity_dd_abs / equity_dd_max は「含み損込みのティック別 equity 曲線」を要するが、本
+#   golden fixture は約定明細から作る balance 曲線しか持たない（上の equity_curve=balance_curve
+#   は代替）ため、ここで MT5 値（6174 / 6594）と直接照合すると balance 値との比較になり無意味。
+#   よって equity DD の MT5 直接照合は実エンジンを走らせて本物の equity 曲線を作る integration
+#   側に置く: tests/integration/test_ma_slope_reconcile.py の
+#     - test_equity_dd_abs_matches_mt5_tightly       （engine 6173.9 vs MT5 6174.0・残差≤0.5）
+#     - test_equity_dd_max_matches_mt5_within_tick_residual（engine 6568.9 vs MT5 6594.0・残差≤30）
+#   本ファイルの golden は equity 系を除く summary 各項目の MT5 一致を担う（役割分担）。
+
+
 # ---- §1 損益サマリー ----
 
 def test_golden_total_net_profit(golden_stats):
