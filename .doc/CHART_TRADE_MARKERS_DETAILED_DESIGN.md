@@ -425,3 +425,26 @@ marker の `id`（createSeriesMarkers は id 受理）。
   - 座標 API が null を返す時の hoveredObjectId フォールバック。
   - 近接 crosshair での setMarkers 1 回（C2）—— 不変ガード前提の新 #3/#4 に置換される。
 - 既存フロントテスト（v4/v5/v6 の hoveredObjectId 経路・範囲フィルタ・onCandlesChanged）は緑を維持する。
+
+## 14. バグ修正（ISSUE-025）: 価格ラベルを非表示にし hover 対象を矢印グリフのみへ
+
+- 症状: 売買マーカー上部の価格ラベル（例 "SL 71265.5 (-50)"）にカーソルを乗せると、当該ペア以外の
+  マーカー・ローソクが減光する。ユーザー要件は「**売買マーカー（矢印グリフ）のオンマウス時のみ**発火し、
+  価格ラベルを含むそれ以外では何も起こらない」。あわせて「**価格ラベルは非表示**にする」。
+- 原因（実証）: 価格ラベルは lwc series marker の `text` で、矢印グリフと**同一 marker・同一 `hoveredObjectId`**。
+  lwc v5.2.0 は marker の**テキスト範囲もヒット領域に内包**するため、ラベル hover でも `hoveredObjectId` が
+  セットされ v8 減光が発火する。ブラウザ実測でローソク足が無い上部ラベル帯 hover での発火を確認。
+  §13.3 の「マーカーから離れた同時刻の価格帯では発火しない」は**ラベルには当てはまらない**（本節で訂正）。
+- 確定方針: `TradeMarkersRenderer.load()` の lwc サブセット抽出で **`text`（価格ラベル）を除外**する。
+  - `const { text, ...rest } = m.lwc || {}; return rest;`（既存 M-2 抽出に text 除去を追加）。
+  - 効果1: lwc marker が text を持たないため**価格ラベルが非表示**になる（ユーザー要件）。
+  - 効果2: marker のヒット領域が**矢印/円グリフのみ**へ縮小し、旧ラベル領域の hover では `hoveredObjectId` が
+    立たない＝減光が発火しない。グリフ hover は従来どおり `hoveredObjectId` で減光発火（v8 不変）。
+  - 後方互換: `id`/`time`/`position`/`shape`/`color` は保持＝範囲フィルタ（§9）・ペア識別・減光連動は不変。
+    `trade_markers.json`（バックエンド生成）は無改変＝`text` はデータ側に残るが front では描画・hover に使わない。
+- §13.3 訂正: 「離れた価格帯では発火しない」はグリフのみの前提。価格ラベルは marker text としてヒット領域に
+  含まれていたため発火していた。本節でラベルを除去し、**発火対象は矢印/円グリフのみ**となる。
+- 受入: 価格ラベルが非表示。マーカーのグリフに hover で当該ペアがハイライト・他が減光。**ラベル領域や
+  ローソク・余白の hover では一切発火しない**。canvas 実描画・実 hover はブラウザ結合確認で担保。
+- テスト: 既存「load extracts the lwc subset」を text 除去前提へ更新＋回帰「load strips marker text so the
+  hit region is the glyph only」を追加（lwc へ渡る全 marker に `text` が無いことを assert）。既存緑を維持。

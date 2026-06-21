@@ -101,9 +101,39 @@ test('load extracts the lwc subset from json.markers and passes it to setMarkers
   // Act
   let count;
   try { count = await r.load('/data/trade_markers.json', fakeFetch); } finally { m.restore(); }
-  // Assert: lwc サブセットのみ（meta 除外）を createSeriesMarkers へ渡す（M-2）
+  // Assert: lwc サブセット（meta 除外）かつ §14・ISSUE-025 で text（価格ラベル）を除外して渡す。
+  //   text を外すと lwc marker のヒット領域が矢印/円グリフのみに縮小し、価格ラベル領域の hover では
+  //   hoveredObjectId が立たない（＝減光が発火しない）。価格ラベル自体も非表示になる。
   assert.equal(count, 2);
-  assert.deepEqual(lwc.calls.create[0].markers, [json.markers[0].lwc, json.markers[1].lwc]);
+  const expected = json.markers.map((m) => { const { text, ...rest } = m.lwc; return rest; });
+  assert.deepEqual(lwc.calls.create[0].markers, expected);
+});
+
+test('ISSUE-025: load strips marker text so the hit region is the glyph only (price labels hidden)', async () => {
+  // Arrange: text 付きマーカー2件を load する。
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const json = {
+    ok: true, count: 2,
+    markers: [
+      { lwc: { time: 1, position: 'belowBar', shape: 'arrowUp', color: '#26a69a', text: 'BUY 69435.4', id: 't0:entry' }, meta: {} },
+      { lwc: { time: 2, position: 'aboveBar', shape: 'circle', color: '#ef5350', text: 'SL 69400.4 (-50)', id: 't0:exit' }, meta: {} },
+    ],
+  };
+  const fakeFetch = async () => ({ ok: true, async json() { return json; } });
+  const m = muteConsole();
+  // Act
+  try { await r.load('/data/trade_markers.json', fakeFetch); } finally { m.restore(); }
+  // Assert: lwc へ渡る全マーカーに text プロパティが無い（ラベル非表示＝ヒット領域はグリフのみ）。
+  //   time/position/shape/color/id 等の他フィールドは保持（描画・hover 識別は不変）。
+  const passed = lwc.calls.create[0].markers;
+  assert.equal(passed.length, 2);
+  for (const mk of passed) {
+    assert.equal('text' in mk, false, 'marker に text（価格ラベル）が残ってはならない');
+  }
+  assert.equal(passed[0].id, 't0:entry');
+  assert.equal(passed[0].shape, 'arrowUp');
+  assert.equal(passed[1].id, 't0:exit');
 });
 
 test('load returns 0 and warns without throwing when fetch response is not ok', async () => {

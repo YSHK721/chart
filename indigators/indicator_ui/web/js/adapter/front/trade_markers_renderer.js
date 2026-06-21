@@ -152,7 +152,7 @@ export class TradeMarkersRenderer {
     return this._all.filter((m) => r.from <= m.time && m.time <= r.to);
   }
 
-  // lwcMarkers: [{time,position,shape,color,text}]（昇順）。
+  // lwcMarkers: [{time,position,shape,color,id}]（昇順）。§14・ISSUE-025 で text（価格ラベル）は load 時に除外。
   //   初回は createSeriesMarkers でハンドル生成、以降はハンドルへ setMarkers（v5・C-3）。
   setMarkers(lwcMarkers) {
     if (!this._handle) {
@@ -194,7 +194,13 @@ export class TradeMarkersRenderer {
         return 0;
       }
       const json = await res.json();
-      const lwc = (json.markers || []).map((m) => m.lwc); // lwc サブセットのみ抽出（M-2）
+      // lwc サブセットのみ抽出（M-2）。§14・ISSUE-025: text（価格ラベル）を除外する。
+      //   text を外すと lwc marker のヒット領域が矢印/円グリフのみに縮小し、価格ラベル領域の hover では
+      //   hoveredObjectId が立たない（＝減光が発火しない）。価格ラベル自体も非表示になる（ユーザー要件）。
+      const lwc = (json.markers || []).map((m) => {
+        const { text, ...rest } = m.lwc || {};
+        return rest;
+      });
       this._all = lwc; // 全件保持（範囲フィルタの元集合・§9）。
       this._attachPairLines(json.pairs || []); // v4: 売買ペア線 primitive（§10.1）。
       this._render(); // 範囲確定済みなら範囲内のみ、フォールバックは全件。
