@@ -42,6 +42,8 @@ export class TradeMarkersRenderer {
     this._highlight = null; // v4: ホバー中トレード i（null=非ホバー・全件通常）。
     this._primitive = null; // v4: 売買ペア線 primitive（attachPrimitive 非提供時 null）。
     this._candlesDimmed = false; // v6: ローソク減光中か（onCandlesChanged 時の復元要否判定）。
+    this._currentTimeframe = null; // 現在の時間足（null=未設定）。setCurrentTimeframe で更新。
+    this._targetTimeframe = null; // 該当時間足＝建玉の時間足。load で json.timeframe から取り込む（null=未宣言＝ゲートしない）。
 
     const sub = chart && chart.timeScale && chart.timeScale();
     if (sub && typeof sub.subscribeVisibleTimeRangeChange === 'function') {
@@ -85,12 +87,24 @@ export class TradeMarkersRenderer {
     return m ? Number(m[1]) : null;
   }
 
+  // 現在の時間足を受け取り単一 _render 経路で再描画する。該当時間足（建玉の時間足）以外は _render が非表示にする。
+  setCurrentTimeframe(timeframe) {
+    this._currentTimeframe = timeframe;
+    this._render();
+  }
+
   // 現在の可視マーカー集合を upstream へ反映する単一の経路（範囲変更・load・hover 共通＝C2）。
   //   _highlight!=null の時は非ハイライト marker を減光色へ変換し、primitive へ highlight を転送する。
   _render() {
     // load 前（マーカー未保持・ハンドル未生成）は lwc に一切触れない（candles 非干渉・C1 共存）。
     //   crosshair 購読は既存 ChartRenderer と共有されるため、load 前の hover では何もしない。
     if (this._all.length === 0 && !this._handle) {
+      return;
+    }
+    // 該当時間足（建玉の時間足＝_targetTimeframe）以外では売買マークを表示しない。
+    //   _targetTimeframe が null（json.timeframe 未宣言）の旧データはゲートせず従来どおり表示（後方互換）。
+    if (this._targetTimeframe && this._currentTimeframe && this._currentTimeframe !== this._targetTimeframe) {
+      this.setMarkers([]);
       return;
     }
     const visible = this._visibleMarkers();
@@ -197,6 +211,7 @@ export class TradeMarkersRenderer {
       // lwc サブセットのみ抽出（M-2）。§14・ISSUE-025: text（価格ラベル）を除外する。
       //   text を外すと lwc marker のヒット領域が矢印/円グリフのみに縮小し、価格ラベル領域の hover では
       //   hoveredObjectId が立たない（＝減光が発火しない）。価格ラベル自体も非表示になる（ユーザー要件）。
+      this._targetTimeframe = json.timeframe ?? null; // 該当時間足＝建玉の時間足（未宣言は null＝ゲートしない）。
       const lwc = (json.markers || []).map((m) => {
         const { text, ...rest } = m.lwc || {};
         return rest;

@@ -191,5 +191,10 @@ export async function bootstrap({
   const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart, chartRenderer: renderer });
   renderer.setCandleObserver(() => tradeMarkers.onCandlesChanged());
 
+  // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
+  //   初期時間足を反映し、以降は controller の時間足購読で連動する。
+  tradeMarkers.setCurrentTimeframe(timeframe);
+  controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
+
   return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers };
 }

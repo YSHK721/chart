@@ -85,7 +85,7 @@ class TradeMarkersPresenter(TradeMarkerPresenterPort):
     """確定トレード列を Marker DTO 列（lwc/meta 分離）へ変換し JSON を書き出す。"""
 
     def present_markers(
-        self, result: Any, path: Any, *, symbol: Any, ea_name: Any
+        self, result: Any, path: Any, *, symbol: Any, ea_name: Any, timeframe: Any = None
     ) -> None:
         digits = symbol.digits
         markers: list[dict] = []
@@ -99,6 +99,7 @@ class TradeMarkersPresenter(TradeMarkerPresenterPort):
             "ok": True,
             "symbol": symbol.name,
             "ea_name": ea_name,
+            "timeframe": timeframe,  # 該当時間足＝建玉の時間足（フロントはこれ以外で売買マーク非表示）
             "count": len(markers),  # 全件数（無音切り捨て禁止＝H-4）
             "markers": markers,
             "pairs": pairs,  # v4: トレード通番順（線分結合・hover 用）

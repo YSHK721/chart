@@ -790,3 +790,55 @@ test('v8: hover before load is a no-op (does not touch lwc — early return in _
     assert.equal(lwc.calls.setMarkers.length, 0, 'load 前 hover は setMarkers 0');
   } finally { m.restore(); }
 });
+
+// ── 時間足フィルタ: 該当時間足（建玉の時間足＝json.timeframe）以外は売買マークを表示しない ─────────────
+// 仕様: rapid-prototype 収束（ユーザー確認済）。「該当時間軸」＝建玉の時間足。trade_markers.json の
+//   top-level `timeframe` を該当時間足とし、現在時間足が不一致なら lwc へ空集合を渡す（非表示）。
+//   timeframe 未宣言の旧データは時間足に関係なく従来どおり表示（後方互換）。
+
+function _tfJson(timeframe) {
+  const markers = [{ lwc: { time: 1, position: 'belowBar', shape: 'arrowUp', color: '#26a69a', id: 't0:entry' }, meta: {} }];
+  return timeframe == null ? { ok: true, count: 1, markers } : { ok: true, count: 1, timeframe, markers };
+}
+const _fetchOf = (json) => async () => ({ ok: true, async json() { return json; } });
+
+test('時間足フィルタ: load が json.timeframe を該当時間足として取り込み、不一致の時間足で非表示にする', async () => {
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const m = muteConsole();
+  try { await r.load('/x', _fetchOf(_tfJson('1m'))); } finally { m.restore(); }
+  // Act: 該当時間足(1m)以外へ切替。
+  r.setCurrentTimeframe('1D');
+  // Assert: 直近 setMarkers は空集合（非表示）。
+  assert.deepEqual(lwc.calls.setMarkers.at(-1), []);
+});
+
+test('時間足フィルタ: 現在時間足が該当時間足と一致 → マーカーを表示する', async () => {
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const m = muteConsole();
+  try { await r.load('/x', _fetchOf(_tfJson('1m'))); } finally { m.restore(); }
+  r.setCurrentTimeframe('1D'); // 一旦非表示
+  r.setCurrentTimeframe('1m'); // 該当へ
+  assert.equal(lwc.calls.setMarkers.at(-1).length, 1, '該当時間足で1件表示');
+});
+
+test('時間足フィルタ: json.timeframe 無し → 時間足に関係なく表示（後方互換）', async () => {
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const m = muteConsole();
+  try { await r.load('/x', _fetchOf(_tfJson(null))); } finally { m.restore(); }
+  // Act: 任意の時間足へ切替（timeframe 未宣言なのでゲートしない）。
+  r.setCurrentTimeframe('1D');
+  assert.equal(lwc.calls.setMarkers.at(-1).length, 1, 'timeframe 未宣言は非表示にしない');
+});
+
+test('時間足フィルタ: setCurrentTimeframe は単一 _render 経路で再描画する', async () => {
+  const lwc = fakeLwc();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: {} });
+  const m = muteConsole();
+  try { await r.load('/x', _fetchOf(_tfJson('1m'))); } finally { m.restore(); }
+  const before = lwc.calls.setMarkers.length;
+  r.setCurrentTimeframe('1D');
+  assert.equal(lwc.calls.setMarkers.length, before + 1, '1 切替につき再描画1回');
+});
