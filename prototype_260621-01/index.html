@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Sim Report Multiview — Prototype (SPEC_260621-01)</title>
+<script src="vendor/lightweight-charts.standalone.js"></script>
+<script src="vendor/chart.umd.js"></script>
+<style>
+  :root{--bg:#0e1117;--panel:#161b22;--line:#272d38;--fg:#c9d1d9;--mut:#8b949e;
+        --up:#26a69a;--down:#ef5350;--accent:#f0b429;--sel:#3b82f6;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:12px/1.4 -apple-system,Segoe UI,Roboto,Tahoma,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+  header{padding:6px 12px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex:0 0 auto}
+  header b{color:#fff} header .mut{color:var(--mut)}
+  #chartWrap{flex:0 0 46%;position:relative;border-bottom:2px solid var(--line)}
+  #chart{position:absolute;inset:0}
+  #chartBadge{position:absolute;top:8px;left:12px;z-index:5;background:rgba(22,27,34,.85);
+    padding:3px 8px;border-radius:4px;color:var(--mut);pointer-events:none}
+  #bottom{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+  .tabs{display:flex;gap:2px;padding:4px 8px 0;border-bottom:1px solid var(--line);flex:0 0 auto}
+  .tab{padding:6px 14px;cursor:pointer;color:var(--mut);border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0}
+  .tab.active{color:#fff;background:var(--bg);border-color:var(--line)}
+  .panes{flex:1 1 auto;min-height:0;position:relative}
+  .pane{position:absolute;inset:0;overflow:auto;padding:8px 10px;display:none}
+  .pane.active{display:block}
+  /* trade table */
+  table.trades{border-collapse:collapse;width:100%;font-size:11px}
+  table.trades th,table.trades td{padding:2px 7px;border-bottom:1px solid var(--line);white-space:nowrap;text-align:right}
+  table.trades th{position:sticky;top:0;background:var(--panel);cursor:pointer;user-select:none;color:var(--mut);z-index:2}
+  table.trades th:hover{color:#fff}
+  table.trades td:nth-child(-n+2),table.trades th:nth-child(-n+2){text-align:left}
+  tr.tw[data-side=buy] td.side{color:var(--up)} tr.tw[data-side=sell] td.side{color:var(--down)}
+  td.pl.pos{color:var(--up)} td.pl.neg{color:var(--down)}
+  tr.tw:hover,tr.tw.hl{background:#1f3350!important;color:#fff}
+  tr.tw.dim{opacity:.25}
+  /* heatmap */
+  table.heat{border-collapse:collapse;margin-top:6px}
+  table.heat td,table.heat th{border:1px solid var(--line);padding:3px 5px;text-align:center;font-size:10px;min-width:30px}
+  table.heat th{color:var(--mut)}
+  table.heat td.cell{cursor:pointer;color:#0b0e14;font-weight:600}
+  table.heat td.cell.sel{outline:2px solid var(--accent);outline-offset:-2px}
+  /* graphs */
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+  .card h4{margin:2px 0 6px;font-size:11px;color:var(--mut);font-weight:600}
+  .card .cv{position:relative;height:200px}
+  .full{grid-column:1 / -1}
+  /* report summary */
+  .rgrid{columns:3;column-gap:24px}
+  .rrow{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:2px 0;break-inside:avoid}
+  .rrow .k{color:var(--mut)} .rrow .v{color:#fff;font-weight:600}
+  .hint{color:var(--mut);margin:2px 0 8px}
+  .pill{display:inline-block;background:#1f3350;color:#cde;border-radius:10px;padding:1px 8px;margin-left:6px;cursor:pointer}
+</style>
+</head>
+<body>
+<header>
+  <b>Sim Report Multiview</b>
+  <span class="mut" id="hMeta">loading…</span>
+  <span class="mut" id="hSel"></span>
+  <span style="margin-left:auto" class="mut">SPEC_260621-01 · prototype</span>
+</header>
+
+<div id="chartWrap">
+  <div id="chart"></div>
+  <div id="chartBadge">—</div>
+</div>
+
+<div id="bottom">
+  <div class="tabs" id="tabs">
+    <div class="tab active" data-pane="detail">取引明細 (Trade Detail)</div>
+    <div class="tab" data-pane="heat">ヒートマップ (Heatmap)</div>
+    <div class="tab" data-pane="graphs">グラフ (Graphs)</div>
+    <div class="tab" data-pane="report">サマリー (Report)</div>
+  </div>
+  <div class="panes">
+    <div class="pane active" id="pane-detail">
+      <div class="hint">行 hover → 該当売買ペアの建玉〜決済区間だけ明色で残し、その他ローソク足を減光（既存マーカー仕様を踏襲）/ 列見出しクリックでソート。<span id="detailCount"></span>
+        <span class="pill" id="clearFilter" style="display:none">フィルタ解除 ✕</span></div>
+      <table class="trades" id="tradeTable"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="pane" id="pane-heat">
+      <div class="hint">曜日×時間帯の損益ヒートマップ（最小単位 = 1セル）。セルをクリックすると該当バケットの取引をチャート＆明細でハイライト。</div>
+      <div id="heatHost"></div>
+    </div>
+    <div class="pane" id="pane-graphs">
+      <div class="hint">各グラフの要素クリックでチャート連動（点=該当取引へ / 棒=該当バケット抽出 / 資産曲線=その時刻へ移動）。</div>
+      <div class="grid" id="graphGrid"></div>
+    </div>
+    <div class="pane" id="pane-report"><div class="rgrid" id="reportGrid"></div></div>
+  </div>
+</div>
+
+<script>
+const fmtT = t => { const d=new Date(t*1000);
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getUTCFullYear()}.${p(d.getUTCMonth()+1)}.${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; };
+const fmtMoney = v => (v==null?'':(v>0?'+':'')+v.toLocaleString());
+
+let DATA, chart, candle, tradesById=new Map(), MARKER_CAP=700;
+let activeFilter=null;            // Set of trade ids, or null
+let hoverTradeId=null;
+// 既存仕様(trade_markers_renderer.js)踏襲: hover中ペアの[entry,exit]区間外を per-bar 減光。
+const DIM_ALPHA=0.15;
+let barsNormal=[], barsDim=[], barTimes=[], candlesDimmed=false;
+function withAlpha(hex,a){
+  if(typeof hex!=='string'||hex[0]!=='#'||hex.length!==7) return hex;
+  return `rgba(${parseInt(hex.slice(1,3),16)},${parseInt(hex.slice(3,5),16)},${parseInt(hex.slice(5,7),16)},${a})`;
+}
+function bisectLeft(a,x){let lo=0,hi=a.length;while(lo<hi){const m=(lo+hi)>>1;if(a[m]<x)lo=m+1;else hi=m;}return lo;}
+
+// ---------- boot ----------
+fetch('data.json').then(r=>r.json()).then(d=>{ DATA=d; init(); })
+  .catch(e=>{ document.getElementById('hMeta').textContent='data.json load error: '+e; });
+
+function init(){
+  DATA.trades.forEach(t=>tradesById.set(t.id,t));
+  document.getElementById('hMeta').innerHTML =
+    `${DATA.meta.symbol} · ${DATA.meta.timeframe} · ${DATA.meta.strategy} · `+
+    `<b>${DATA.meta.trades.toLocaleString()}</b> trades · ${DATA.meta.bars.toLocaleString()} bars · ${DATA.meta.period}`;
+  buildChart();
+  buildTradeTable();
+  buildHeatmap();
+  buildGraphs();
+  buildReport();
+  wireTabs();
+}
+
+// ---------- chart ----------
+function buildChart(){
+  const el=document.getElementById('chart');
+  chart=LightweightCharts.createChart(el,{
+    layout:{background:{color:'#0e1117'},textColor:'#c9d1d9'},
+    grid:{vertLines:{color:'#1b2230'},horzLines:{color:'#1b2230'}},
+    timeScale:{timeVisible:true,secondsVisible:false,borderColor:'#272d38'},
+    rightPriceScale:{borderColor:'#272d38'},
+    crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+  });
+  candle=chart.addCandlestickSeries({upColor:'#26a69a',downColor:'#ef5350',
+     borderVisible:false,wickUpColor:'#26a69a',wickDownColor:'#ef5350'});
+  // 通常データ(色未指定=シリーズ既定の up/down)と、全減光データ(per-bar alpha 0.15)を事前計算。
+  barsNormal=DATA.bars.map(b=>({time:b.time,open:b.open,high:b.high,low:b.low,close:b.close}));
+  barsDim=DATA.bars.map(b=>{ const up=b.close>=b.open;
+    const c=up?withAlpha('#26a69a',DIM_ALPHA):withAlpha('#ef5350',DIM_ALPHA);
+    return {time:b.time,open:b.open,high:b.high,low:b.low,close:b.close,color:c,wickColor:c,borderColor:c}; });
+  barTimes=DATA.bars.map(b=>b.time);
+  candle.setData(barsNormal);
+  // default view = around the first trade so markers are visible/interactive
+  const t0=DATA.trades.length?DATA.trades[0].entry_time:DATA.bars[0].time;
+  chart.timeScale().setVisibleRange({from:t0-600,to:t0+3*3600});
+  chart.timeScale().subscribeVisibleTimeRangeChange(()=>renderMarkers());
+  chart.subscribeCrosshairMove(onCrosshair);
+  renderMarkers();
+}
+
+function visibleTrades(){
+  const r=chart.timeScale().getVisibleRange(); if(!r) return DATA.trades;
+  return DATA.trades.filter(t=>t.exit_time>=r.from && t.entry_time<=r.to);
+}
+
+function renderMarkers(){
+  let vt=visibleTrades();
+  if(activeFilter) vt=vt.filter(t=>activeFilter.has(t.id));
+  const badge=document.getElementById('chartBadge');
+  if(vt.length>MARKER_CAP){
+    candle.setMarkers([]);
+    badge.textContent=`${vt.length} trades in view — ズームインでマーカー表示 (cap ${MARKER_CAP})`;
+    return;
+  }
+  badge.textContent=`${vt.length} trades in view`;
+  const hovering=(hoverTradeId!=null);
+  const mk=[];
+  for(const t of vt){
+    const win=t.profit>0, hot=(t.id===hoverTradeId), dim=hovering&&!hot;
+    const ecol = win? '#26a69a':'#ef5350';
+    // 既存仕様: highlight 中ペアは通常色のまま、非ペアは alpha 0.15 へ減光。
+    mk.push({time:t.entry_time,position:t.side==='buy'?'belowBar':'aboveBar',
+      color:dim?withAlpha(ecol,DIM_ALPHA):ecol, shape:t.side==='buy'?'arrowUp':'arrowDown',
+      size:hot?1.4:1, id:'e'+t.id, text:hot?('#'+t.id):''});
+    mk.push({time:t.exit_time,position:t.side==='buy'?'aboveBar':'belowBar',
+      color:dim?'rgba(107,119,133,0.15)':'#6b7785', shape:'circle', size:hot?1.4:0.6, id:'x'+t.id});
+  }
+  mk.sort((a,b)=>a.time-b.time);
+  candle.setMarkers(mk);
+}
+
+// 既存 dimCandlesOutsidePair 相当: ペア[entry,exit]区間内は通常色、区間外は減光。
+function dimCandlesForTrade(t){
+  if(!t||t.entry_price==null){ restoreCandles(); return; }
+  const lo=bisectLeft(barTimes,t.entry_time), hi=bisectLeft(barTimes,t.exit_time+1);
+  const merged=barsDim.slice();
+  for(let i=lo;i<hi;i++) merged[i]=barsNormal[i];
+  candle.setData(merged); candlesDimmed=true;
+}
+function restoreCandles(){ if(candlesDimmed){ candle.setData(barsNormal); candlesDimmed=false; } }
+
+function onCrosshair(param){
+  // 既存仕様踏襲: マーカーグリフのヒット(hoveredObjectId="e{id}"/"x{id}")時のみ該当行をハイライト。
+  //   時間軸近接ではなくグリフ命中で判定する。グリフ外では解除。
+  const oid=param && param.hoveredObjectId;
+  if(typeof oid==='string' && (oid[0]==='e' || oid[0]==='x')){
+    const tid=Number(oid.slice(1));
+    if(!Number.isNaN(tid)){ setHover(tid,'chart'); return; }
+  }
+  setHover(null,'chart');
+}
+
+// ---------- central linkage ----------
+function setHover(id,source){
+  if(hoverTradeId===id) return;
+  hoverTradeId=id;
+  // table row
+  document.querySelectorAll('tr.tw.hl').forEach(r=>r.classList.remove('hl'));
+  if(id!=null){
+    const row=document.querySelector(`tr.tw[data-id="${id}"]`);
+    if(row){ row.classList.add('hl'); if(source!=='table') row.scrollIntoView({block:'nearest'}); }
+    const t=tradesById.get(id);
+    document.getElementById('hSel').innerHTML = t?
+      `▶ #${t.id} ${t.side.toUpperCase()} @${t.entry_price} → ${t.exit_price} `+
+      `<b style="color:${t.profit>0?'#26a69a':'#ef5350'}">${fmtMoney(t.profit)} JPY</b> · MFE ${t.mfe} / MAE ${t.mae}`:'';
+    dimCandlesForTrade(t);   // 既存仕様: ペア区間外のローソク足を減光。
+  } else { document.getElementById('hSel').textContent=''; restoreCandles(); }
+  renderMarkers();
+}
+
+function focusTime(t,span=3*3600){
+  chart.timeScale().setVisibleRange({from:t-span/2,to:t+span/2});
+}
+function applyFilter(ids,label){
+  activeFilter = ids && ids.size? ids : null;
+  // dim table rows
+  document.querySelectorAll('tr.tw').forEach(r=>{
+    const on = !activeFilter || activeFilter.has(+r.dataset.id);
+    r.classList.toggle('dim',!on);
+  });
+  const cf=document.getElementById('clearFilter');
+  cf.style.display = activeFilter? 'inline-block':'none';
+  document.getElementById('detailCount').textContent = activeFilter? ` · 抽出 ${activeFilter.size} 件 (${label||''})`:'';
+  // zoom to span of filtered trades
+  if(activeFilter){
+    const ts=DATA.trades.filter(t=>activeFilter.has(t.id));
+    if(ts.length){ const a=Math.min(...ts.map(t=>t.entry_time)), b=Math.max(...ts.map(t=>t.exit_time));
+      chart.timeScale().setVisibleRange({from:a-600,to:b+600}); }
+  }
+  renderMarkers();
+}
+document.getElementById('clearFilter').onclick=()=>applyFilter(null);
+
+// ---------- trade table ----------
+const COLS=[
+  ['id','#','id'],['entry_time','Open Time','time'],['order','Order','num'],
+  ['side','Type','side'],['volume','Vol','txt'],['entry_price','Price','num'],
+  ['sl','S / L','txt'],['tp','T / P','txt'],['exit_time','Time(close)','time'],
+  ['exit_price','Exit','num'],['comment','State / Comment','txt'],['profit','Profit','pl'],
+];
+let sortKey='id',sortDir=1;
+function buildTradeTable(){
+  const thead=document.querySelector('#tradeTable thead');
+  thead.innerHTML='<tr>'+COLS.map(c=>`<th data-k="${c[0]}">${c[1]}<span class="ar"></span></th>`).join('')+'</tr>';
+  thead.querySelectorAll('th').forEach(th=>th.onclick=()=>{
+    const k=th.dataset.k; sortDir = (sortKey===k)? -sortDir : 1; sortKey=k; renderRows();
+  });
+  document.getElementById('detailCount').textContent='';
+  renderRows();
+}
+function renderRows(){
+  const arr=[...DATA.trades].sort((a,b)=>{
+    let x=a[sortKey],y=b[sortKey];
+    if(typeof x==='string'){x=x||'';y=y||'';return sortDir*x.localeCompare(y);}
+    return sortDir*((x||0)-(y||0));
+  });
+  const tb=document.querySelector('#tradeTable tbody');
+  const f=document.createDocumentFragment();
+  for(const t of arr){
+    const tr=document.createElement('tr');
+    tr.className='tw'; tr.dataset.id=t.id; tr.dataset.side=t.side;
+    if(activeFilter&&!activeFilter.has(t.id)) tr.classList.add('dim');
+    tr.innerHTML=
+      `<td>${t.id}</td><td>${fmtT(t.entry_time)}</td><td>${t.order??''}</td>`+
+      `<td class="side">${t.side}</td><td>${t.volume}</td><td>${t.entry_price}</td>`+
+      `<td>${t.sl||''}</td><td>${t.tp||''}</td><td>${fmtT(t.exit_time)}</td>`+
+      `<td>${t.exit_price}</td><td style="text-align:left">${t.comment||''}</td>`+
+      `<td class="pl ${t.profit>0?'pos':'neg'}">${fmtMoney(t.profit)}</td>`;
+    f.appendChild(tr);
+  }
+  tb.innerHTML=''; tb.appendChild(f);
+}
+// event delegation for hover + click-to-focus
+document.getElementById('tradeTable').addEventListener('mouseover',e=>{
+  const tr=e.target.closest('tr.tw'); if(tr) setHover(+tr.dataset.id,'table');
+});
+document.getElementById('tradeTable').addEventListener('click',e=>{
+  const tr=e.target.closest('tr.tw'); if(tr){ const t=tradesById.get(+tr.dataset.id); focusTime(t.entry_time); }
+});
+
+// ---------- heatmap ----------
+function buildHeatmap(){
+  const W=DATA.agg.weekorder, cells=DATA.agg.heat;
+  const map={}; let mx=0;
+  cells.forEach(c=>{map[c.wday+'|'+c.hour]=c; mx=Math.max(mx,Math.abs(c.profit));});
+  const col=v=>{ if(v==null) return '#161b22';
+     const r=Math.max(-1,Math.min(1,v/(mx||1)));
+     return r>=0? `rgba(38,166,154,${0.15+0.85*r})` : `rgba(239,83,80,${0.15+0.85*-r})`; };
+  let html='<table class="heat"><tr><th>曜日\\時</th>';
+  for(let h=0;h<24;h++) html+=`<th>${h}</th>`; html+='</tr>';
+  for(const w of W){
+    html+=`<tr><th>${w}</th>`;
+    for(let h=0;h<24;h++){
+      const c=map[w+'|'+h];
+      if(c) html+=`<td class="cell" data-w="${w}" data-h="${h}" title="${w} ${h}:00  ${fmtMoney(c.profit)} JPY / ${c.count} trades" style="background:${col(c.profit)}">${c.profit}</td>`;
+      else html+=`<td style="color:#30363d">·</td>`;
+    }
+    html+='</tr>';
+  }
+  html+='</table>';
+  document.getElementById('heatHost').innerHTML=html;
+  document.querySelectorAll('#heatHost td.cell').forEach(td=>td.onclick=()=>{
+    document.querySelectorAll('#heatHost td.cell.sel').forEach(x=>x.classList.remove('sel'));
+    td.classList.add('sel');
+    const w=td.dataset.w,h=+td.dataset.h;
+    const ids=new Set(DATA.trades.filter(t=>{
+      const d=new Date(t.entry_time*1000);
+      return DATA.agg.weekorder[(d.getUTCDay()+6)%7]===w && d.getUTCHours()===h;
+    }).map(t=>t.id));
+    applyFilter(ids,`${w} ${h}:00`);
+  });
+}
+
+// ---------- graphs ----------
+let charts={};
+function card(id,title,full){ return `<div class="card ${full?'full':''}"><h4>${title}</h4><div class="cv"><canvas id="${id}"></canvas></div></div>`; }
+function buildGraphs(){
+  const g=DATA.agg, W=g.weekorder;
+  document.getElementById('graphGrid').innerHTML=
+    card('gBal','Balance（資産曲線）',true)+
+    card('gEH','Entries by hours (Asia/Europe/USA)')+
+    card('gEW','Entries by weekdays')+
+    card('gEM','Entries by months')+
+    card('gPH','Profits and losses by hours')+
+    card('gPW','Profits and losses by weekdays')+
+    card('gPM','Profits and losses by months')+
+    card('gCF','Correlation (Profits, MFE)')+
+    card('gCA','Correlation (Profits, MAE)')+
+    card('gHT','Position holding time（保有時間別損益）');
+  const baseOpt=ev=>({responsive:true,maintainAspectRatio:false,animation:false,
+    plugins:{legend:{labels:{color:'#8b949e',boxWidth:10}}},
+    scales:{x:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}},y:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}},
+    onClick:ev});
+  const hours=[...Array(24).keys()];
+  const sessCol=h=> h<7?'#f0b429': h<13?'#3b82f6':'#26a69a';
+
+  // Balance
+  charts.bal=new Chart(gId('gBal'),{type:'line',
+    data:{labels:g.balance_curve.map(p=>p.time),
+      datasets:[{data:g.balance_curve.map(p=>({x:p.time,y:p.value})),borderColor:'#3b82f6',
+        borderWidth:1,pointRadius:0,fill:true,backgroundColor:'rgba(59,130,246,.12)'}]},
+    options:{...baseOpt((e,els)=>{ if(els[0]){ const p=g.balance_curve[els[0].index]; focusTime(p.time);} }),
+      parsing:false,plugins:{legend:{display:false}},
+      scales:{x:{type:'linear',ticks:{color:'#8b949e',callback:v=>fmtT(v).slice(5,10)},grid:{color:'#1b2230'}},
+              y:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
+
+  const barClickHour=(e,els)=>{ if(els[0]) filterByHour(els[0].index); };
+  const barClickWday=(e,els)=>{ if(els[0]) filterByWday(W[els[0].index]); };
+
+  // Entries by hours
+  charts.eh=new Chart(gId('gEH'),{type:'bar',
+    data:{labels:hours,datasets:[{label:'entries',data:hours.map(h=>g.entries_hour[h]||0),
+      backgroundColor:hours.map(sessCol)}]},options:baseOpt(barClickHour)});
+  // Entries weekday
+  charts.ew=new Chart(gId('gEW'),{type:'bar',
+    data:{labels:W,datasets:[{label:'entries',data:W.map(w=>g.entries_wday[w]||0),backgroundColor:'#3b82f6'}]},
+    options:baseOpt(barClickWday)});
+  // Entries month
+  charts.em=new Chart(gId('gEM'),{type:'bar',
+    data:{labels:Object.keys(g.entries_month),datasets:[{label:'entries',data:Object.values(g.entries_month),backgroundColor:'#3b82f6'}]},
+    options:baseOpt(()=>{})});
+  // P/L hours
+  charts.ph=new Chart(gId('gPH'),{type:'bar',
+    data:{labels:hours,datasets:[{label:'P/L',data:hours.map(h=>g.pl_hour[h]||0),
+      backgroundColor:hours.map(h=>(g.pl_hour[h]||0)>=0?'#26a69a':'#ef5350')}]},options:baseOpt(barClickHour)});
+  // P/L weekday
+  charts.pw=new Chart(gId('gPW'),{type:'bar',
+    data:{labels:W,datasets:[{label:'P/L',data:W.map(w=>g.pl_wday[w]||0),
+      backgroundColor:W.map(w=>(g.pl_wday[w]||0)>=0?'#26a69a':'#ef5350')}]},options:baseOpt(barClickWday)});
+  // P/L month
+  charts.pm=new Chart(gId('gPM'),{type:'bar',
+    data:{labels:Object.keys(g.pl_month),datasets:[{label:'P/L',data:Object.values(g.pl_month),
+      backgroundColor:Object.values(g.pl_month).map(v=>v>=0?'#26a69a':'#ef5350')}]},options:baseOpt(()=>{})});
+  // Correlation MFE
+  charts.cf=new Chart(gId('gCF'),{type:'scatter',
+    data:{datasets:[{data:g.scatter_mfe,backgroundColor:'rgba(38,166,154,.45)',pointRadius:2}]},
+    options:{...baseOpt((e,els)=>{ if(els[0]) setHover(g.scatter_mfe[els[0].index].id,'graph'); }),
+      plugins:{legend:{display:false}},
+      scales:{x:{title:{display:true,text:'MFE (JPY)',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}},
+              y:{title:{display:true,text:'Profit',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
+  // Correlation MAE
+  charts.ca=new Chart(gId('gCA'),{type:'scatter',
+    data:{datasets:[{data:g.scatter_mae,backgroundColor:'rgba(239,83,80,.45)',pointRadius:2}]},
+    options:{...baseOpt((e,els)=>{ if(els[0]) setHover(g.scatter_mae[els[0].index].id,'graph'); }),
+      plugins:{legend:{display:false}},
+      scales:{x:{title:{display:true,text:'MAE (JPY)',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}},
+              y:{title:{display:true,text:'Profit',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
+  // Holding time
+  const hl=Object.keys(g.hold_pl);
+  charts.ht=new Chart(gId('gHT'),{type:'bar',
+    data:{labels:hl,datasets:[{label:'P/L',data:hl.map(k=>g.hold_pl[k]),
+      backgroundColor:hl.map(k=>g.hold_pl[k]>=0?'#26a69a':'#ef5350')}]},
+    options:baseOpt((e,els)=>{ if(els[0]) filterByHold(hl[els[0].index]); })});
+}
+function gId(id){ return document.getElementById(id).getContext('2d'); }
+function filterByHour(h){
+  const ids=new Set(DATA.trades.filter(t=>new Date(t.entry_time*1000).getUTCHours()===h).map(t=>t.id));
+  applyFilter(ids,`hour ${h}:00`); gotoTab('detail');
+}
+function filterByWday(w){
+  const ids=new Set(DATA.trades.filter(t=>DATA.agg.weekorder[(new Date(t.entry_time*1000).getUTCDay()+6)%7]===w).map(t=>t.id));
+  applyFilter(ids,w); gotoTab('detail');
+}
+const HB=[[0,60,'<1m'],[60,120,'1-2m'],[120,300,'2-5m'],[300,600,'5-10m'],[600,1800,'10-30m'],[1800,3600,'30-60m'],[3600,1e9,'>1h']];
+function filterByHold(lab){
+  const b=HB.find(x=>x[2]===lab);
+  const ids=new Set(DATA.trades.filter(t=>t.hold_sec>=b[0]&&t.hold_sec<b[1]).map(t=>t.id));
+  applyFilter(ids,'hold '+lab); gotoTab('detail');
+}
+
+// ---------- report summary ----------
+function buildReport(){
+  const r=DATA.report;
+  document.getElementById('reportGrid').innerHTML=Object.entries(r).map(([k,v])=>
+    `<div class="rrow"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
+}
+
+// ---------- tabs ----------
+function wireTabs(){
+  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>gotoTab(t.dataset.pane));
+}
+function gotoTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.pane===name));
+  document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('active',p.id==='pane-'+name));
+  setTimeout(()=>{ Object.values(charts).forEach(c=>c.resize()); },30);
+}
+</script>
+</body>
+</html>
