@@ -10,11 +10,13 @@
 | 1. レポートのマルチ画面 + インタラクティブ接続 | 下部タブ（明細/ヒートマップ/グラフ/サマリー） | 全タブがチャートと連動 |
 | 2. 取引明細 ⇔ 売買ペア連動 | ソート可能テーブル（5,224 取引） | 行 hover→**該当ペアの建玉〜決済区間だけ明色、他のローソク足を減光**（既存 `trade_markers_renderer.js` 仕様踏襲・DIM_ALPHA=0.15）＋非ペアマーカーも減光 / マーカーグリフ hover（`hoveredObjectId` 命中・時間軸近接ではない）→該当行ハイライト＆同減光、グリフ外は解除 |
 | 3. 最小単位項目をテーブル＋ヒートマップ | 曜日×時間帯の損益ヒートマップ（115 セル） | セルクリック→該当バケットの取引を抽出しチャート＆明細でハイライト |
-| 4. グラフ項目を全てインタラクティブ化 | 10 グラフ（下記）Chart.js | 点クリック→該当取引 / 棒クリック→バケット抽出 / 資産曲線→その時刻へ移動 |
+| 4. グラフ項目を全てインタラクティブ化 | 10 グラフ（下記）＋Drawdown Chart.js | 点クリック→該当取引 / 棒クリック→バケット抽出 / 資産曲線→その時刻へ移動 |
+| 追加: 用語説明 | 用語説明(Glossary)タブ | レポート全54項目＋全グラフの「役割／見方」を章立てで解説 |
 
 10 グラフ: Balance / Entries by hours(Asia,Europe,USA) / Entries by weekdays / Entries by months /
 P&L by hours / P&L by weekdays / P&L by months / Correlation(Profits,MFE) /
 Correlation(Profits,MAE) / Position holding time。
+追加: Drawdown（残高ベースのアンダーウォーター曲線・最大DDは残高ベース最大DD 1,850 JPY/7.97% とオラクル一致）。
 
 ## データ（実データ・無改変で読込）
 

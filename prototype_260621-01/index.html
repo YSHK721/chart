@@ -46,9 +46,24 @@
   .card .cv{position:relative;height:200px}
   .full{grid-column:1 / -1}
   /* report summary */
-  .rgrid{columns:3;column-gap:24px}
-  .rrow{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:2px 0;break-inside:avoid}
-  .rrow .k{color:var(--mut)} .rrow .v{color:#fff;font-weight:600}
+  .rgroups{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;align-items:start}
+  .rcard{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+  .rcard h4{margin:2px 0 6px;font-size:11px;color:var(--accent);font-weight:700;border-bottom:1px solid var(--line);padding-bottom:4px}
+  .rrow{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:2px 0}
+  .rrow:last-child{border-bottom:none}
+  .rrow .k{color:var(--mut)} .rrow .v{color:#fff;font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+  .rrow .k small{color:#5b626c;font-size:9px;margin-left:5px}
+  .rrow .v.pos{color:var(--up)} .rrow .v.neg{color:var(--down)}
+  /* glossary */
+  .gloss{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;align-items:start}
+  .gcard{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 12px}
+  .gcard h4{margin:2px 0 6px;font-size:11px;color:var(--accent);font-weight:700;border-bottom:1px solid var(--line);padding-bottom:4px}
+  .gitem{padding:6px 0;border-bottom:1px solid var(--line)}
+  .gitem:last-child{border-bottom:none}
+  .gitem .nm{color:#fff;font-weight:600}
+  .gitem .nm small{color:#5b626c;font-size:9px;margin-left:5px;font-weight:400}
+  .gitem .d{color:var(--mut);margin-top:2px;line-height:1.5}
+  .gitem .d b{display:inline-block;min-width:34px;color:#8fb4e0;font-weight:600;margin-right:6px}
   .hint{color:var(--mut);margin:2px 0 8px}
   .pill{display:inline-block;background:#1f3350;color:#cde;border-radius:10px;padding:1px 8px;margin-left:6px;cursor:pointer}
 </style>
@@ -72,6 +87,7 @@
     <div class="tab" data-pane="heat">ヒートマップ (Heatmap)</div>
     <div class="tab" data-pane="graphs">グラフ (Graphs)</div>
     <div class="tab" data-pane="report">サマリー (Report)</div>
+    <div class="tab" data-pane="glossary">用語説明 (Glossary)</div>
   </div>
   <div class="panes">
     <div class="pane active" id="pane-detail">
@@ -87,7 +103,14 @@
       <div class="hint">各グラフの要素クリックでチャート連動（点=該当取引へ / 棒=該当バケット抽出 / 資産曲線=その時刻へ移動）。</div>
       <div class="grid" id="graphGrid"></div>
     </div>
-    <div class="pane" id="pane-report"><div class="rgrid" id="reportGrid"></div></div>
+    <div class="pane" id="pane-report">
+      <div class="hint">レポート項目を仕様書のレポート定義（章立て）に沿って分類表示。</div>
+      <div class="rgroups" id="reportGrid"></div>
+    </div>
+    <div class="pane" id="pane-glossary">
+      <div class="hint">各レポート項目・グラフの<b>役割</b>（何を測るか）と<b>見方</b>（どう読むか）の説明。</div>
+      <div class="gloss" id="glossHost"></div>
+    </div>
   </div>
 </div>
 
@@ -123,6 +146,7 @@ function init(){
   buildHeatmap();
   buildGraphs();
   buildReport();
+  buildGlossary();
   wireTabs();
 }
 
@@ -328,11 +352,56 @@ function buildHeatmap(){
 
 // ---------- graphs ----------
 let charts={};
+// ---- グラデーション・ヘルパー（カラースキームの微妙な陰影） ----
+// 「僅かに分かる程度」: 縦の陰影は GRAD_LIGHTEN%、横(距離)方向は GRAD_DIST% だけ明度を動かす。
+const GRAD_LIGHTEN=42;   // 棒: 先端(=基部から伸びた側)を明るく。各棒の高さに対して張る縦グラデの強さ。
+const GRAD_DIST=10;      // 線の左端→右端で動かす明度差（距離あたり≈1%・全体で僅か）。
+const GRAD_PER_BAR=1;    // 棒: 1本進むごとの明度変化(%)。"距離の変化は1%程度"。
+function _hexRgb(h){ return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)]; }
+function _toRgb(c){ if(typeof c==='string'&&c[0]==='#'&&c.length===7) return _hexRgb(c);
+  const m=String(c).match(/\d+/g); return m?m.slice(0,3).map(Number):[0,0,0]; }
+function _lift(rgb,pct){ const t=pct>0?255:0,p=Math.abs(pct)/100; return rgb.map(v=>Math.round((t-v)*p+v)); }
+function _shade(hex,pct){ // pct>0 で白へ、<0 で黒へ寄せる
+  if(typeof hex!=='string'||hex[0]!=='#'||hex.length!==7) return hex;
+  return `rgb(${_lift(_hexRgb(hex),pct).join(',')})`;
+}
+function gradV(ctx,base){ // 棒: 距離(本数)で僅かに明度変化 ＋ 各棒の高さに張る縦グラデ（先端=明るく）
+  const i=ctx.dataIndex||0;
+  const b=_lift(_toRgb(base), i*GRAD_PER_BAR);          // 横(距離)方向の僅かな変化
+  const ch=ctx.chart, ys=ch.scales&&ch.scales.y, a=ch.chartArea;
+  if(!a||!ys) return `rgb(${b.join(',')})`;
+  const val=ctx.dataset.data[i];
+  let yTip=ys.getPixelForValue(val), yBase=ys.getPixelForValue(0);   // 棒の先端と基部(0)の画素位置
+  if(!isFinite(yTip)||!isFinite(yBase)) return `rgb(${b.join(',')})`;
+  if(Math.abs(yTip-yBase)<1) yTip=yBase-1;
+  const g=ch.ctx.createLinearGradient(0,yTip,0,yBase);
+  g.addColorStop(0,`rgb(${_lift(b,GRAD_LIGHTEN).join(',')})`);       // 先端=明るく
+  g.addColorStop(1,`rgb(${b.join(',')})`);                            // 基部=基準色
+  return g;
+}
+function gradArea(ctx,rgb,top=0.30,bot=0.02){ // 面塗り: 上濃→下薄
+  const a=ctx.chart.chartArea; if(!a) return `rgba(${rgb},${top})`;
+  const g=ctx.chart.ctx.createLinearGradient(0,a.top,0,a.bottom);
+  g.addColorStop(0,`rgba(${rgb},${top})`); g.addColorStop(1,`rgba(${rgb},${bot})`); return g;
+}
+function gradH(ctx,base){ // 横(距離)方向: 左=基準 → 右=僅かに明るく
+  const a=ctx.chart.chartArea; if(!a) return base;
+  const g=ctx.chart.ctx.createLinearGradient(a.left,0,a.right,0);
+  g.addColorStop(0,base); g.addColorStop(1,_shade(base,GRAD_DIST)); return g;
+}
+function gradHRgba(ctx,rgb,alpha){ // 散布図用: 横方向に明度を僅かに上げる（alpha 保持）
+  const a=ctx.chart.chartArea; if(!a) return `rgba(${rgb},${alpha})`;
+  const [r,g0,b]=rgb.split(',').map(Number), lift=v=>Math.round(v+(255-v)*GRAD_DIST/100);
+  const g=ctx.chart.ctx.createLinearGradient(a.left,0,a.right,0);
+  g.addColorStop(0,`rgba(${r},${g0},${b},${alpha})`);
+  g.addColorStop(1,`rgba(${lift(r)},${lift(g0)},${lift(b)},${alpha})`); return g;
+}
 function card(id,title,full){ return `<div class="card ${full?'full':''}"><h4>${title}</h4><div class="cv"><canvas id="${id}"></canvas></div></div>`; }
 function buildGraphs(){
   const g=DATA.agg, W=g.weekorder;
   document.getElementById('graphGrid').innerHTML=
     card('gBal','Balance（資産曲線）',true)+
+    card('gDD','Drawdown（ドローダウン推移・残高ベース）',true)+
     card('gEH','Entries by hours (Asia/Europe/USA)')+
     card('gEW','Entries by weekdays')+
     card('gEM','Entries by months')+
@@ -352,10 +421,30 @@ function buildGraphs(){
   // Balance
   charts.bal=new Chart(gId('gBal'),{type:'line',
     data:{labels:g.balance_curve.map(p=>p.time),
-      datasets:[{data:g.balance_curve.map(p=>({x:p.time,y:p.value})),borderColor:'#3b82f6',
-        borderWidth:1,pointRadius:0,fill:true,backgroundColor:'rgba(59,130,246,.12)'}]},
+      datasets:[{data:g.balance_curve.map(p=>({x:p.time,y:p.value})),
+        borderColor:ctx=>gradH(ctx,'#3b82f6'),
+        borderWidth:1,pointRadius:0,fill:true,backgroundColor:ctx=>gradArea(ctx,'59,130,246')}]},
     options:{...baseOpt((e,els)=>{ if(els[0]){ const p=g.balance_curve[els[0].index]; focusTime(p.time);} }),
       parsing:false,plugins:{legend:{display:false}},
+      scales:{x:{type:'linear',ticks:{color:'#8b949e',callback:v=>fmtT(v).slice(5,10)},grid:{color:'#1b2230'}},
+              y:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
+
+  // Drawdown（アンダーウォーター曲線）: 確定残高の連続ピークからの下落を JPY/％ で算出。
+  //   初期証拠金をピーク初期値に採用（最初の損失も 0 起点から正しく反映）。
+  const init=parseFloat(String(DATA.report['Initial Deposit']||'10000').replace(/[^\d.]/g,''))||10000;
+  let peak=init;
+  const ddData=g.balance_curve.map(p=>{ if(p.value>peak) peak=p.value;
+    return {x:p.time, y:+(p.value-peak).toFixed(1), pct:+(((p.value-peak)/peak)*100).toFixed(2)}; });
+  const maxDD=ddData.reduce((m,d)=>d.y<m.y?d:m,{y:0,pct:0});
+  charts.dd=new Chart(gId('gDD'),{type:'line',
+    data:{datasets:[{data:ddData,borderColor:ctx=>gradH(ctx,'#ef5350'),borderWidth:1,pointRadius:0,fill:true,
+      backgroundColor:ctx=>gradArea(ctx,'239,83,80',0.26,0.02)}]},
+    options:{...baseOpt((e,els)=>{ if(els[0]) focusTime(ddData[els[0].index].x); }),
+      parsing:false,
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{label:c=>`DD ${c.raw.y.toLocaleString()} JPY (${c.raw.pct}%)`}},
+        title:{display:true,position:'bottom',color:'#ef5350',
+          text:`最大ドローダウン ${maxDD.y.toLocaleString()} JPY (${maxDD.pct}%)`}},
       scales:{x:{type:'linear',ticks:{color:'#8b949e',callback:v=>fmtT(v).slice(5,10)},grid:{color:'#1b2230'}},
               y:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
 
@@ -365,37 +454,40 @@ function buildGraphs(){
   // Entries by hours
   charts.eh=new Chart(gId('gEH'),{type:'bar',
     data:{labels:hours,datasets:[{label:'entries',data:hours.map(h=>g.entries_hour[h]||0),
-      backgroundColor:hours.map(sessCol)}]},options:baseOpt(barClickHour)});
+      backgroundColor:ctx=>gradV(ctx,sessCol(ctx.dataIndex))}]},options:baseOpt(barClickHour)});
   // Entries weekday
   charts.ew=new Chart(gId('gEW'),{type:'bar',
-    data:{labels:W,datasets:[{label:'entries',data:W.map(w=>g.entries_wday[w]||0),backgroundColor:'#3b82f6'}]},
+    data:{labels:W,datasets:[{label:'entries',data:W.map(w=>g.entries_wday[w]||0),
+      backgroundColor:ctx=>gradV(ctx,'#3b82f6')}]},
     options:baseOpt(barClickWday)});
   // Entries month
   charts.em=new Chart(gId('gEM'),{type:'bar',
-    data:{labels:Object.keys(g.entries_month),datasets:[{label:'entries',data:Object.values(g.entries_month),backgroundColor:'#3b82f6'}]},
+    data:{labels:Object.keys(g.entries_month),datasets:[{label:'entries',data:Object.values(g.entries_month),
+      backgroundColor:ctx=>gradV(ctx,'#3b82f6')}]},
     options:baseOpt(()=>{})});
+  const sign=v=>v>=0?'#26a69a':'#ef5350';
   // P/L hours
   charts.ph=new Chart(gId('gPH'),{type:'bar',
     data:{labels:hours,datasets:[{label:'P/L',data:hours.map(h=>g.pl_hour[h]||0),
-      backgroundColor:hours.map(h=>(g.pl_hour[h]||0)>=0?'#26a69a':'#ef5350')}]},options:baseOpt(barClickHour)});
+      backgroundColor:ctx=>gradV(ctx,sign(g.pl_hour[ctx.dataIndex]||0))}]},options:baseOpt(barClickHour)});
   // P/L weekday
   charts.pw=new Chart(gId('gPW'),{type:'bar',
     data:{labels:W,datasets:[{label:'P/L',data:W.map(w=>g.pl_wday[w]||0),
-      backgroundColor:W.map(w=>(g.pl_wday[w]||0)>=0?'#26a69a':'#ef5350')}]},options:baseOpt(barClickWday)});
+      backgroundColor:ctx=>gradV(ctx,sign(g.pl_wday[W[ctx.dataIndex]]||0))}]},options:baseOpt(barClickWday)});
   // P/L month
   charts.pm=new Chart(gId('gPM'),{type:'bar',
     data:{labels:Object.keys(g.pl_month),datasets:[{label:'P/L',data:Object.values(g.pl_month),
-      backgroundColor:Object.values(g.pl_month).map(v=>v>=0?'#26a69a':'#ef5350')}]},options:baseOpt(()=>{})});
+      backgroundColor:ctx=>gradV(ctx,sign(Object.values(g.pl_month)[ctx.dataIndex]||0))}]},options:baseOpt(()=>{})});
   // Correlation MFE
   charts.cf=new Chart(gId('gCF'),{type:'scatter',
-    data:{datasets:[{data:g.scatter_mfe,backgroundColor:'rgba(38,166,154,.45)',pointRadius:2}]},
+    data:{datasets:[{data:g.scatter_mfe,backgroundColor:ctx=>gradHRgba(ctx,'38,166,154',0.45),pointRadius:2}]},
     options:{...baseOpt((e,els)=>{ if(els[0]) setHover(g.scatter_mfe[els[0].index].id,'graph'); }),
       plugins:{legend:{display:false}},
       scales:{x:{title:{display:true,text:'MFE (JPY)',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}},
               y:{title:{display:true,text:'Profit',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
   // Correlation MAE
   charts.ca=new Chart(gId('gCA'),{type:'scatter',
-    data:{datasets:[{data:g.scatter_mae,backgroundColor:'rgba(239,83,80,.45)',pointRadius:2}]},
+    data:{datasets:[{data:g.scatter_mae,backgroundColor:ctx=>gradHRgba(ctx,'239,83,80',0.45),pointRadius:2}]},
     options:{...baseOpt((e,els)=>{ if(els[0]) setHover(g.scatter_mae[els[0].index].id,'graph'); }),
       plugins:{legend:{display:false}},
       scales:{x:{title:{display:true,text:'MAE (JPY)',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}},
@@ -404,7 +496,7 @@ function buildGraphs(){
   const hl=Object.keys(g.hold_pl);
   charts.ht=new Chart(gId('gHT'),{type:'bar',
     data:{labels:hl,datasets:[{label:'P/L',data:hl.map(k=>g.hold_pl[k]),
-      backgroundColor:hl.map(k=>g.hold_pl[k]>=0?'#26a69a':'#ef5350')}]},
+      backgroundColor:ctx=>gradV(ctx,(g.hold_pl[hl[ctx.dataIndex]]>=0?'#26a69a':'#ef5350'))}]},
     options:baseOpt((e,els)=>{ if(els[0]) filterByHold(hl[els[0].index]); })});
 }
 function gId(id){ return document.getElementById(id).getContext('2d'); }
@@ -423,11 +515,152 @@ function filterByHold(lab){
   applyFilter(ids,'hold '+lab); gotoTab('detail');
 }
 
-// ---------- report summary ----------
+// ---------- report summary (グループ分類) ----------
+// 仕様書 SPEC_260621-01「レポートの定義」の章立てに沿った分類。
+const REPORT_GROUPS=[
+  ['戦略・テスト設定', ['Expert','Symbol','Period','Inputs','Company','Currency','Initial Deposit','Leverage']],
+  ['1. 基本設定とテスト環境', ['History Quality','Bars','Ticks','Symbols']],
+  ['2. 損益と資金効率', ['Total Net Profit','Gross Profit','Gross Loss','Profit Factor','Recovery Factor','Sharpe Ratio','Expected Payoff','AHPR','GHPR']],
+  ['3. 取引頻度と保有時間', ['Total Trades','Total Deals','Minimal position holding time','Average position holding time','Maximal position holding time']],
+  ['4. 勝率とポジション別の傾向', ['Profit Trades (% of total)','Loss Trades (% of total)','Short Trades (won %)','Long Trades (won %)']],
+  ['5. 勝ち負けの取引詳細', ['Largest profit trade','Average profit trade','Largest loss trade','Average loss trade','Maximum consecutive wins ($)','Maximum consecutive losses ($)','Maximal consecutive profit (count)','Maximal consecutive loss (count)','Average consecutive wins','Average consecutive losses']],
+  ['6. リスクとドローダウン', ['Balance Drawdown Absolute','Balance Drawdown Maximal','Balance Drawdown Relative','Equity Drawdown Absolute','Equity Drawdown Maximal','Equity Drawdown Relative','Margin Level']],
+  ['7. 統計的指標と相関', ['LR Correlation','LR Standard Error','Z-Score','OnTester result','Correlation (Profits,MFE)','Correlation (Profits,MAE)','Correlation (MFE,MAE)']],
+];
+// 項目名の日本語呼称（仕様書「レポートの定義」準拠）。未登録キーは英語のまま表示。
+const LABELS_JA={
+  'Expert':'戦略（エキスパート）','Symbol':'銘柄','Period':'期間','Inputs':'入力パラメータ',
+  'Company':'会社','Currency':'通貨','Initial Deposit':'初期証拠金','Leverage':'レバレッジ',
+  'History Quality':'履歴品質','Bars':'バー数','Ticks':'ティック数','Symbols':'銘柄数',
+  'Total Net Profit':'総純損益','Gross Profit':'総利益','Gross Loss':'総損失',
+  'Profit Factor':'プロフィットファクター','Recovery Factor':'リカバリーファクター',
+  'Sharpe Ratio':'シャープレシオ','Expected Payoff':'期待利得',
+  'AHPR':'AHPR（算術平均収益率）','GHPR':'GHPR（幾何平均収益率）',
+  'Total Trades':'総取引数','Total Deals':'総ディール数',
+  'Minimal position holding time':'最小ポジション保有時間',
+  'Average position holding time':'平均ポジション保有時間',
+  'Maximal position holding time':'最大ポジション保有時間',
+  'Profit Trades (% of total)':'勝率（勝ち取引）','Loss Trades (% of total)':'敗率（負け取引）',
+  'Short Trades (won %)':'ショートポジション勝率','Long Trades (won %)':'ロングポジション勝率',
+  'Largest profit trade':'最大勝ち取引','Average profit trade':'平均勝ち取引',
+  'Largest loss trade':'最大負け取引','Average loss trade':'平均負け取引',
+  'Maximum consecutive wins ($)':'最大連続勝ち数（利益）','Maximum consecutive losses ($)':'最大連続負け数（損失）',
+  'Maximal consecutive profit (count)':'最大連続利益（取引数）','Maximal consecutive loss (count)':'最大連続損失（取引数）',
+  'Average consecutive wins':'平均連続勝ち数','Average consecutive losses':'平均連続負け数',
+  'Balance Drawdown Absolute':'残高ベース絶対ドローダウン','Balance Drawdown Maximal':'残高ベース最大ドローダウン',
+  'Balance Drawdown Relative':'残高ベース相対ドローダウン','Equity Drawdown Absolute':'含み損ベース絶対ドローダウン',
+  'Equity Drawdown Maximal':'含み損ベース最大ドローダウン','Equity Drawdown Relative':'含み損ベース相対ドローダウン',
+  'Margin Level':'証拠金維持率',
+  'LR Correlation':'線形回帰相関','LR Standard Error':'線形回帰標準誤差',
+  'Z-Score':'Zスコア','OnTester result':'OnTester結果',
+  'Correlation (Profits,MFE)':'相関係数（利益, MFE）','Correlation (Profits,MAE)':'相関係数（利益, MAE）',
+  'Correlation (MFE,MAE)':'相関係数（MFE, MAE）',
+};
+function rrow(k,v){
+  // 先頭が '-' の数値は損失として赤、Net Profit/Gross Profit は緑寄せ（視認補助）。
+  let cls='';
+  const s=String(v).replace(/\s/g,'');
+  if(/^-[\d.]/.test(s)) cls='neg';
+  else if(/Net Profit|Gross Profit/.test(k) && /^[\d.]/.test(s)) cls='pos';
+  const ja=LABELS_JA[k];
+  const kHtml = ja ? `${ja}<small>${k}</small>` : k;   // 日本語主・英語小併記（トレース用）
+  return `<div class="rrow"><span class="k">${kHtml}</span><span class="v ${cls}">${v}</span></div>`;
+}
 function buildReport(){
-  const r=DATA.report;
-  document.getElementById('reportGrid').innerHTML=Object.entries(r).map(([k,v])=>
-    `<div class="rrow"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
+  const r={...DATA.report}, used=new Set();
+  let html='';
+  for(const [title,keys] of REPORT_GROUPS){
+    const rows=keys.filter(k=>k in r).map(k=>{ used.add(k); return rrow(k,r[k]); });
+    if(rows.length) html+=`<div class="rcard"><h4>${title}</h4>${rows.join('')}</div>`;
+  }
+  const rest=Object.keys(r).filter(k=>!used.has(k));
+  if(rest.length) html+=`<div class="rcard"><h4>その他</h4>${rest.map(k=>rrow(k,r[k])).join('')}</div>`;
+  document.getElementById('reportGrid').innerHTML=html;
+}
+
+// ---------- glossary (用語説明: 役割・見方) ----------
+const GLOSSARY={
+  'Expert':{role:'検証対象の自動売買ロジック（EA）の識別子。',read:'どの戦略の成績かを示す。結果はこの戦略に固有。'},
+  'Symbol':{role:'取引した金融商品（銘柄）。',read:'対象市場を確認（JP225＝日経225）。'},
+  'Period':{role:'バックテストの時間足と対象期間。',read:'M1＝1分足。検証範囲が十分かを確認。'},
+  'Inputs':{role:'EA に与えた設定値（パラメータ）。',read:'成績はこの設定に依存。再現の前提条件。'},
+  'Company':{role:'口座を提供するブローカー。',read:'約定条件・スプレッドの前提。'},
+  'Currency':{role:'損益計算に使う通貨。',read:'全金額の単位（JPY）。'},
+  'Initial Deposit':{role:'検証開始時の資金。',read:'損益率や％ドローダウンの基準値。'},
+  'Leverage':{role:'証拠金に対する取引可能額の倍率。',read:'高いほど必要証拠金は小さくリスクは大。'},
+  'History Quality':{role:'使用ヒストリカルデータの整合度。',read:'100％が理想。低いと結果の信頼性が下がる。'},
+  'Bars':{role:'検証に使ったローソク足の本数。',read:'サンプル量の目安。'},
+  'Ticks':{role:'価格更新（ティック）の回数。',read:'約定精度の基盤。多いほど現実に近い。'},
+  'Symbols':{role:'検証した銘柄数。',read:'単一銘柄なら1。'},
+  'Total Net Profit':{role:'総利益−総損失＝最終的な純損益。',read:'最重要の最終成績。プラスで収益。'},
+  'Gross Profit':{role:'勝ち取引の利益合計。',read:'収益の源泉の規模。'},
+  'Gross Loss':{role:'負け取引の損失合計。',read:'コストの規模。絶対値で評価。'},
+  'Profit Factor':{role:'総利益÷総損失（絶対値）。',read:'1超で利益。1.3以上で良好、1未満は赤字。'},
+  'Recovery Factor':{role:'純益÷最大ドローダウン。',read:'高いほどリスクに対し効率よく回復。'},
+  'Sharpe Ratio':{role:'変動リスクあたりの超過収益。',read:'高いほど安定。1以上で良好。'},
+  'Expected Payoff':{role:'1取引あたりの平均損益。',read:'プラスで優位。取引コストと比較。'},
+  'AHPR':{role:'1取引あたり平均収益率（算術平均）。',read:'1超で平均的にプラス。'},
+  'GHPR':{role:'複利を考慮した平均収益率（幾何平均）。',read:'AHPRより実態に近い。1超で資産増。'},
+  'Total Trades':{role:'決済まで完了したポジション数。',read:'サンプル数。多いほど統計的に信頼。'},
+  'Total Deals':{role:'約定（建て＋決済）の回数。',read:'概ね取引数の約2倍。'},
+  'Minimal position holding time':{role:'最も短い保有時間。',read:'瞬間的な決済の有無を確認。'},
+  'Average position holding time':{role:'平均の保有時間。',read:'戦略の時間軸（スキャル/スイング）を判別。'},
+  'Maximal position holding time':{role:'最も長い保有時間。',read:'塩漬けや長期保有の有無を確認。'},
+  'Profit Trades (% of total)':{role:'勝ち取引の割合（勝率）。',read:'高勝率でも損益比次第。PFと併読。'},
+  'Loss Trades (% of total)':{role:'負け取引の割合（敗率）。',read:'勝率の裏側。100−勝率。'},
+  'Short Trades (won %)':{role:'売り取引の件数と勝率。',read:'下落方向での優位性を確認。'},
+  'Long Trades (won %)':{role:'買い取引の件数と勝率。',read:'上昇方向での優位性を確認。'},
+  'Largest profit trade':{role:'単発で最大の勝ち額。',read:'外れ値の影響度を把握。'},
+  'Average profit trade':{role:'勝ち取引の平均額。',read:'平均負けとの比（損益比）で評価。'},
+  'Largest loss trade':{role:'単発で最大の負け額。',read:'1回あたりリスクの上限。'},
+  'Average loss trade':{role:'負け取引の平均額。',read:'平均勝ちと比較し損益比を確認。'},
+  'Maximum consecutive wins ($)':{role:'最大の連勝回数（括弧内は利益）。',read:'好調局面の継続性。'},
+  'Maximum consecutive losses ($)':{role:'最大の連敗回数（括弧内は損失）。',read:'ドローダウン耐性・資金管理の要。'},
+  'Maximal consecutive profit (count)':{role:'連続利益の最大額（括弧内は取引数）。',read:'最も稼いだ連続局面。'},
+  'Maximal consecutive loss (count)':{role:'連続損失の最大額（括弧内は取引数）。',read:'最も負けた連続局面。資金計画の基準。'},
+  'Average consecutive wins':{role:'平均の連勝数。',read:'勝ちの続きやすさ。'},
+  'Average consecutive losses':{role:'平均の連敗数。',read:'負けの続きやすさ。'},
+  'Balance Drawdown Absolute':{role:'初期資金からの最大の落ち込み額。',read:'開始直後のリスクの目安。'},
+  'Balance Drawdown Maximal':{role:'確定残高のピークからの最大下落（額/％）。',read:'最重要のリスク指標。％が小さいほど安全。'},
+  'Balance Drawdown Relative':{role:'％基準で見た最大下落。',read:'資金規模に依らない下落の深さ。'},
+  'Equity Drawdown Absolute':{role:'含み損を含む有効証拠金ベースの絶対DD。',read:'未決済も含む実リスク。'},
+  'Equity Drawdown Maximal':{role:'含み損ベースの最大ドローダウン。',read:'残高ベースより厳しい実際の証拠金リスク。'},
+  'Equity Drawdown Relative':{role:'含み損ベースの相対（％）DD。',read:'保有中の最大リスク水準。'},
+  'Margin Level':{role:'有効証拠金÷必要証拠金。',read:'高いほど余裕。100％割れでロスカット危険。'},
+  'LR Correlation':{role:'資産曲線の直線への当てはまり（線形回帰相関）。',read:'1に近いほど滑らかな右肩上がり。'},
+  'LR Standard Error':{role:'回帰直線からのばらつき。',read:'小さいほど安定した成長。'},
+  'Z-Score':{role:'勝敗の連続性の偏り（統計量）。',read:'連勝連敗が偶然か傾向かを判定。'},
+  'OnTester result':{role:'EAのカスタム評価関数の戻り値。',read:'最適化用の独自スコア（0は未使用）。'},
+  'Correlation (Profits,MFE)':{role:'利益と最大含み益（MFE）の相関。',read:'高いほど利を伸ばせている。'},
+  'Correlation (Profits,MAE)':{role:'利益と最大含み損（MAE）の相関。',read:'高いと含み損が結果に影響しやすい。'},
+  'Correlation (MFE,MAE)':{role:'最大含み益と最大含み損の相関。',read:'値動きの振れ方の傾向。'},
+};
+const GRAPH_GLOSSARY=[
+  {n:'資産曲線（Balance）',e:'Balance',role:'確定残高の時系列推移。',read:'滑らかな右肩上がりほど良い。急落は連敗局面。'},
+  {n:'ドローダウン（Drawdown）',e:'Drawdown',role:'残高ピークからの下落推移（アンダーウォーター）。',read:'谷が浅く短いほど良い。最深がレポートの最大DD。'},
+  {n:'時間帯別エントリー',e:'Entries by hours',role:'エントリー時刻の分布（Asia/Europe/USA色分け）。',read:'取引が集中する時間帯を把握。'},
+  {n:'曜日別エントリー',e:'Entries by weekdays',role:'曜日ごとのエントリー件数。',read:'曜日の偏りを確認。'},
+  {n:'月別エントリー',e:'Entries by months',role:'月ごとのエントリー件数。',read:'季節性・活動量の推移。'},
+  {n:'時間帯別損益',e:'P&L by hours',role:'決済時刻の時間帯別の損益合計。',read:'稼げる/負ける時間帯を特定（緑/赤）。'},
+  {n:'曜日別損益',e:'P&L by weekdays',role:'曜日別の損益合計。',read:'曜日ごとの優劣を判断。'},
+  {n:'月別損益',e:'P&L by months',role:'月別の損益合計。',read:'好調/不調の月を把握。'},
+  {n:'相関（利益, MFE）',e:'Correlation (Profits,MFE)',role:'各取引の利益と最大含み益の散布図。',read:'右肩上がりなら利を伸ばせている。'},
+  {n:'相関（利益, MAE）',e:'Correlation (Profits,MAE)',role:'各取引の利益と最大含み損の散布図。',read:'含み損の深さと結果の関係を確認。'},
+  {n:'保有時間別損益',e:'Position holding time',role:'保有時間バケット別の損益合計。',read:'最も有利な保有時間帯を発見。'},
+];
+function gitem(name,enKey,role,read){
+  return `<div class="gitem"><div class="nm">${name}<small>${enKey||''}</small></div>`+
+    `<div class="d"><b>役割</b>${role}</div><div class="d"><b>見方</b>${read}</div></div>`;
+}
+function buildGlossary(){
+  let html='';
+  for(const [title,keys] of REPORT_GROUPS){
+    const items=keys.filter(k=>GLOSSARY[k]).map(k=>gitem(LABELS_JA[k]||k,k,GLOSSARY[k].role,GLOSSARY[k].read));
+    if(items.length) html+=`<div class="gcard"><h4>${title}</h4>${items.join('')}</div>`;
+  }
+  html+=`<div class="gcard"><h4>グラフの見方</h4>`+
+    GRAPH_GLOSSARY.map(x=>gitem(x.n,x.e,x.role,x.read)).join('')+`</div>`;
+  document.getElementById('glossHost').innerHTML=html;
 }
 
 // ---------- tabs ----------
