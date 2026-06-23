@@ -1,0 +1,48 @@
+# Sim Report Multiview × OOS — 統合試作
+
+「シミュレーション結果マルチビュー試作(260621)」を**正**とし、そこへ「OOS ホワイトチェック
+試作(260623)」を統合した使い捨て試作。マルチビューの全項目を **IS（学習区間）/ OOS（検証区間）
+で切替表示**し、加えて **比較・判定タブ**で過剰最適化を一目で確認できる。既存データは読むだけ・無改変。
+
+## 組み合わせ方（比較 UX）
+
+- **区間セレクタ**（ヘッダ `IS 学習 / OOS 検証`）：チャート・取引明細・ヒートマップ・グラフ・
+  サマリーの全マルチビュー項目が、選択区間のデータで再描画される。項目定義はマルチビューが正。
+- **⚖ 比較・判定タブ**（既定で開く）：
+  - ホワイトチェック判定バナー（`過剰最適化 / 要注意 / 合格`）＋ヘッダの判定バッジ。
+  - 主要指標の基本サマリ（7指標のカード・差/比/IS/OOS・幅100%）。
+  - 画面2分割: **左=劣化比較表**（サマリー全指標・約54項目を章立て・ヘッダ付き
+    IS｜OOS｜比=OOS/IS｜差=OOS−IS、数値項目のみ比/差を算出）、**右=グラフ**で右余白を活用。
+  - 右グラフ: エクイティ曲線の重畳（IS=青 / OOS=橙・初期 10,000・分割 04-15 縦線）＋
+    純損益の内訳（総利益/総損失/純損益の区間別棒）。
+
+## データ（実データ・無改変で読込）
+
+| 区間 | バー | オラクル xlsx | trades / net / balance |
+|---|---|---|---|
+| IS（学習 04.01-14） | `bars_m1_is.csv`（22,771） | `*_2604_03.xlsx` | 5,224 / +11,370 / 21,370 |
+| OOS（検証 04.15-23） | `bars_m1.csv`（04-14〜 16,337） | `*_forword_01.xlsx` | 2,438 / −4,020 / 5,980 |
+
+両区間ともオラクル完全一致。判定＝**過剰最適化**（IS黒字 ⇄ OOS赤字、PF 1.159→0.888、
+期待値 +2.18→−1.65、勝率 −5.47pt）。MFE/MAE はバー走査で算出（point=0.1 JPY）。
+
+## 実行
+
+```bash
+cd /workspaces/app
+PYTHONPATH=/workspaces/app python3 prototype_260623-02/prep_data.py   # data.json 生成（要 openpyxl）
+cd prototype_260623-02 && python3 serve.py 8768   # no-cache サーバー
+# ブラウザで http://localhost:8768/index.html
+```
+
+検証（ヘッドレス）: `python3 prototype_260623-02/verify.py` → `shots/verify.png`。
+
+## 構成
+- `prep_data.py` … 両区間の xlsx＋bars → `data.json`（segments.{is,oos} 各完全 payload＋degradation＋verdict）
+- `index.html` … 単一ファイル UI（`vendor/lightweight-charts` ＋ `vendor/chart.umd.js`）。区間切替で `DATA.*` を差替え再描画
+- `serve.py` … no-cache 静的サーバー / `verify.py` … Playwright 自動検証
+
+## 試作の割り切り（既知の限界）
+- 区間切替は全パネル再生成（仮想化なし）。data.json は両区間bars込みで ~10MB。
+- IS と OOS は別 run（両方 10,000 始点）。エクイティ重畳で IS終端(21,370)と OOS始点(10,000)に段差が出るが正しい挙動。
+- セッション境界（Asia/Europe/USA）は UTC 固定の簡易区分。
