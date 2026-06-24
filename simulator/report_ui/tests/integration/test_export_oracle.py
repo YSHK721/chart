@@ -153,6 +153,50 @@ class TestVerdictOnRealRun:
         assert payload.verdict.result == "fail"
 
 
+class TestSegmentReportOnRealRun:
+    """⑤ R-1: 実 run の per-segment report 実体化＋オラクル代表値整合（§4.5・§8.2）。
+
+    report の Red→Green は unit（TestSegmentReport）で実証済。本クラスは実 BacktestStats
+    供給と confirmation オラクル代表値（PF 1.159→0.888 等）の整合を回帰固定する。
+    """
+
+    def test_both_segment_reports_nonempty(self, payload):
+        assert len(payload.segments["is"].report) > 0
+        assert len(payload.segments["oos"].report) > 0
+
+    def test_report_total_net_profit_matches_oracle(self, payload):
+        # オラクル: IS +11370 / OOS -4020（§4.5 整形は f"{v:.0f}"）。
+        assert payload.segments["is"].report["Total Net Profit"] == "11370"
+        assert payload.segments["oos"].report["Total Net Profit"] == "-4020"
+
+    def test_report_total_trades_matches_oracle(self, payload):
+        assert payload.segments["is"].report["Total Trades"] == "5224"
+        assert payload.segments["oos"].report["Total Trades"] == "2438"
+
+    def test_report_profit_factor_overfit_is_above_oos_below_one(self, payload):
+        # 過剰最適化の核心: IS PF>1（≈1.16）/ OOS PF<1（≈0.89）。§8.2 PF±0.01 許容。
+        pf_is = float(payload.segments["is"].report["Profit Factor"])
+        pf_oos = float(payload.segments["oos"].report["Profit Factor"])
+        assert abs(pf_is - 1.16) <= 0.01
+        assert abs(pf_oos - 0.89) <= 0.01
+        assert pf_is > 1.0 > pf_oos
+
+    def test_report_omits_non_held_metrics(self, payload):
+        # §4.5 確定方針: BacktestStats 非保持の指標は実 run でも出力しない。
+        r = payload.segments["is"].report
+        for k in ("GHPR", "Correlation (Profits,MFE)", "Margin Level", "Ticks"):
+            assert k not in r
+
+    def test_report_values_all_strings_in_written_json(self, tmp_path, payload):
+        # JSON 契約: 書出後の report 値が全て文字列（presenter 経由・inf は文字列 "inf"）。
+        out = tmp_path / "report.json"
+        exp.write_report(payload, out)
+        data = json.loads(out.read_text())
+        for seg in ("is", "oos"):
+            rep = data["segments"][seg]["report"]
+            assert rep and all(isinstance(v, str) for v in rep.values())
+
+
 class TestCritical1SlTpOracle:
     """致命-1 固定（詳細設計 §8.2・T-1）: 実 run の entry_price から導出した sl/tp が
     xlsx Orders の S/L,T/P と桁一致（digits=1 完全一致・許容0）することを回帰固定する。"""

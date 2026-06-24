@@ -134,6 +134,13 @@ def _launch(tmp_path):
     return p, browser, page, httpd
 
 
+def _open_detail_tab(page):
+    """取引明細サブタブを開く（F-5 で比較・判定タブが既定オープンになったため、
+    明細行の hover / ソートヘッダ click（要素の可視性が必要な操作）の前に明示的に開く）。"""
+    page.click('.mv-tab[data-tab="detail"]')
+    page.wait_for_selector('#tradeTable tbody tr.tw', state="visible", timeout=4000)
+
+
 def test_detail_table_renders_11_cols_and_row_count(tmp_path):
     p, browser, page, httpd = _launch(tmp_path)
     try:
@@ -175,6 +182,7 @@ def test_detail_table_cell_values_preserved_as_text(tmp_path):
 def test_detail_table_sort_reorders_rows(tmp_path):
     p, browser, page, httpd = _launch(tmp_path)
     try:
+        _open_detail_tab(page)
         def first_row_id():
             return page.eval_on_selector(
                 "#tradeTable tbody tr.tw", "el => el.dataset.id")
@@ -198,6 +206,7 @@ def test_row_hover_updates_linkage_hover(tmp_path):
     # 明細行 hover → linkage.hoverTradeId 更新（→ チャートマーカー強調の駆動）
     p, browser, page, httpd = _launch(tmp_path)
     try:
+        _open_detail_tab(page)
         page.hover('#tradeTable tbody tr.tw[data-id="2"]')
         page.wait_for_function("window.__linkage && window.__linkage.hoverTradeId === 2",
                                timeout=4000)
@@ -226,6 +235,7 @@ def test_row_hover_applies_visible_highlight_color(tmp_path):
     # className のみ検証していた既存テストの弱 assertion を補強する。
     p, browser, page, httpd = _launch(tmp_path)
     try:
+        _open_detail_tab(page)
         before = _bg(page, 2)            # hover 前の背景色
         page.hover('#tradeTable tbody tr.tw[data-id="2"]')
         page.wait_for_function("window.__linkage && window.__linkage.hoverTradeId === 2",
@@ -264,6 +274,7 @@ def test_highlight_survives_column_sort(tmp_path):
     # linkage.hoverTradeId を真実源に hl を再付与する）。
     p, browser, page, httpd = _launch(tmp_path)
     try:
+        _open_detail_tab(page)
         # id=2 を hover した状態でソート列をクリック
         page.hover('#tradeTable tbody tr.tw[data-id="2"]')
         page.wait_for_function("window.__linkage && window.__linkage.hoverTradeId === 2",
