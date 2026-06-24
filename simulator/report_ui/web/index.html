@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>シミュレーション結果レポートビューア（report_ui）</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <!-- vendor（v4.1.3 / v4.4.1・無断バージョン変更禁止） -->
+  <script src="vendor/lightweight-charts.standalone.js"></script>
+  <script src="vendor/chart.umd.js"></script>
+</head>
+<body>
+  <header id="topbar">
+    <h1>シミュレーション結果レポート</h1>
+    <div class="seg-area">
+      <label for="seg-select">区間</label>
+      <select id="seg-select">
+        <option value="is">IS（学習）</option>
+        <option value="oos">OOS（検証）</option>
+      </select>
+      <span id="verdict-badge" class="badge"></span>
+    </div>
+    <div id="meta-line" class="meta-line"></div>
+  </header>
+
+  <main>
+    <!-- サマリーカード -->
+    <section id="summary-cards" class="cards"></section>
+
+    <!-- ローソク足チャート -->
+    <section class="chart-area">
+      <h2>価格チャート（ローソク足）</h2>
+      <div id="price-chart" class="chart"></div>
+    </section>
+
+    <!-- 下部マルチビュー枠（F-2: 取引明細／F-3: ヒートマップ／SPEC#4: グラフ／F-5: 比較判定） -->
+    <section id="multiview" class="multiview">
+      <div class="mv-tabs">
+        <!-- F-5: 比較判定を第4サブタブとして追加し既定オープン（active）。既存3タブは非破壊。 -->
+        <button class="mv-tab active" data-tab="compare">比較・判定</button>
+        <button class="mv-tab" data-tab="detail">取引明細</button>
+        <button class="mv-tab" data-tab="heat">ヒートマップ</button>
+        <button class="mv-tab" data-tab="graph">グラフ</button>
+      </div>
+      <div id="mv-body" class="mv-body">
+        <!-- F-5: 比較・判定タブ（IS vs OOS・区間非依存・init 1回構築）。 -->
+        <div id="pane-compare" class="cmp-area mv-pane" data-pane="compare">
+          <div class="cmp-verdict" id="cmpVerdict"></div>
+          <div class="cmp-basic" id="cmpBasic"></div>
+          <div class="cmp-split">
+            <div class="cmp-left">
+              <table class="cmp" id="cmpTable"><thead></thead><tbody></tbody></table>
+            </div>
+            <div class="cmp-right">
+              <div class="cmp-card"><h4>エクイティ（IS/OOS 重畳）</h4>
+                <div class="cmp-cv"><canvas id="cmpEquity"></canvas></div></div>
+              <div class="cmp-card"><h4>純損益内訳</h4>
+                <div class="cmp-cv"><canvas id="cmpPnl"></canvas></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="detail-area mv-pane hidden" data-pane="detail">
+          <table id="tradeTable" class="trade-table">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <!-- F-3: 最小単位項目（曜日×時間セル）をテーブル形式＋ヒートマップ配色で 5 ビュー表示。 -->
+        <div id="heatHost" class="heat-area mv-pane hidden" data-pane="heat"></div>
+        <!-- SPEC#4: インタラクティブグラフ（entries/pl 比較棒・相関散布・保有時間棒）＋チャート連動。 -->
+        <div id="graphHost" class="mv-pane hidden" data-pane="graph">
+          <div id="graphGrid" class="graph-grid"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="error-banner" class="error hidden"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

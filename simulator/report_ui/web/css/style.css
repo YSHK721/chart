@@ -1,0 +1,129 @@
+:root {
+  --bg: #0e1117;
+  --panel: #161b22;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --accent: #2f81f7;
+  --pos: #2ea043;
+  --neg: #f85149;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+}
+#topbar {
+  padding: 12px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid #30363d;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+#topbar h1 { font-size: 16px; margin: 0; }
+.seg-area { display: flex; align-items: center; gap: 8px; }
+select { background: #0d1117; color: var(--fg); border: 1px solid #30363d; padding: 4px 8px; border-radius: 6px; }
+.badge { padding: 2px 10px; border-radius: 10px; font-size: 12px; font-weight: 700; }
+.badge.fail { background: var(--neg); color: #fff; }
+.badge.warn { background: #d29922; color: #000; }
+.badge.pass { background: var(--pos); color: #fff; }
+.meta-line { color: var(--muted); font-size: 12px; }
+main { padding: 16px; }
+.cards { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.card {
+  background: var(--panel);
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 10px 14px;
+  min-width: 120px;
+}
+.card .k { color: var(--muted); font-size: 11px; }
+.card .v { font-size: 18px; font-weight: 700; margin-top: 4px; }
+.card .v.pos { color: var(--pos); }
+.card .v.neg { color: var(--neg); }
+.chart-area h2, .multiview h2 { font-size: 13px; color: var(--muted); margin: 8px 0; }
+.chart { width: 100%; height: 380px; background: var(--panel); border: 1px solid #30363d; border-radius: 8px; }
+.multiview { margin-top: 16px; background: var(--panel); border: 1px solid #30363d; border-radius: 8px; }
+.mv-tabs { border-bottom: 1px solid #30363d; padding: 6px; }
+.mv-tab { background: transparent; color: var(--fg); border: none; padding: 6px 12px; cursor: pointer; border-radius: 6px; }
+.mv-tab.active { background: #21262d; }
+.mv-body { padding: 16px; min-height: 80px; }
+.placeholder-note { color: var(--muted); font-size: 13px; }
+/* 取引明細テーブル（SPEC §2.2）。配色は既存ダークトーン（--panel/--accent/#30363d）に合わせる。 */
+.detail-area { overflow-x: auto; }
+.trade-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.trade-table th, .trade-table td { padding: 4px 8px; border-bottom: 1px solid #30363d; white-space: nowrap; }
+.trade-table th { cursor: pointer; text-align: left; color: var(--muted); font-weight: 600; }
+.trade-table tr.tw td.side { font-weight: 600; }
+/* マーカー hover / 行 hover で該当売買行をハイライト（SPEC §2.3-2.4・双方向）。 */
+.trade-table tr.tw.hl { background: #1f6feb33; }
+/* F-3（ヒートマップ/抽出）用スキャフォールド。F-2 では未配線だが dim の見た目はここで定義済。 */
+.trade-table tr.tw.dim { opacity: .35; }
+/* F-3 最小単位ヒートマップ（曜日×時間セル・SPEC#3）。試作 index.html:44-54 準拠。
+   配色は heatmap.js が inline background（同色相の濃淡 linear-gradient）で与える。 */
+#heatHost { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px; align-items: start; }
+.heatBlock { min-width: 0; margin-bottom: 6px; }
+table.heat { border-collapse: collapse; margin-top: 4px; width: 100%; table-layout: fixed; }
+table.heat td, table.heat th { border: 1px solid #30363d; padding: 7px 1px; text-align: center; font-size: 12px; overflow: hidden; }
+table.heat th:first-child, table.heat td:first-child { width: 40px; }
+table.heat th { color: var(--muted); font-size: 11px; }
+table.heat td.empty { color: #30363d; }
+table.heat td.cell { cursor: pointer; color: #f5f7fa; font-weight: 600; text-shadow: 0 1px 2px rgba(0, 0, 0, .55); }
+/* セルクリック選択枠（連動中セルの可視化）。 */
+table.heat td.cell.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
+.heatTitle { font-size: 13px; font-weight: 700; color: var(--accent); margin: 6px 0 2px; }
+.heatTitle small { color: var(--muted); font-weight: 400; font-size: 10px; margin-left: 8px; display: block; margin-top: 1px; }
+@media (max-width: 1100px) { #heatHost { grid-template-columns: 1fr; } }
+/* F-4 インタラクティブグラフ（SPEC#4）。プロトタイプ index.html:63-76 を本番 DOM
+   （.graph-grid + .card>.cv>canvas）へ移植。maintainAspectRatio:false の canvas が
+   コンテナ高さに追従するため、行高（grid-auto-rows）と .cv の min-height で縦潰れを防ぐ。
+   配色は既存ダークトーン（--panel/#30363d）に合わせる。 */
+.graph-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; grid-auto-rows: 210px; }
+.graph-grid .card { display: flex; flex-direction: column; min-height: 0; }
+.graph-grid .card h4 { margin: 2px 0 6px; font-size: 11px; color: var(--muted); font-weight: 600; flex: 0 0 auto; }
+.graph-grid .card .cv { position: relative; flex: 1 1 auto; min-height: 80px; }
+.graph-grid .card .cv canvas { position: absolute; inset: 0; }
+@media (max-width: 1100px) { .graph-grid { grid-template-columns: 1fr; } }
+.error { position: fixed; bottom: 16px; left: 16px; background: var(--neg); color: #fff; padding: 10px 14px; border-radius: 8px; }
+.hidden { display: none; }
+
+/* F-5 比較・判定タブ（試作 index.html:104-117 準拠・本番トークン化） */
+.cmp-area { color: var(--fg); }
+.cmp-verdict { display: flex; gap: 14px; align-items: center; padding: 10px 14px; border: 1px solid #30363d; border-radius: 8px; margin-bottom: 12px; }
+.cmp-verdict.fail { background: linear-gradient(90deg, #2a1417, var(--panel)); border-color: #5a2326; }
+.cmp-verdict.warn { background: linear-gradient(90deg, #2a2410, var(--panel)); border-color: #5a4f23; }
+.cmp-verdict.pass { background: linear-gradient(90deg, #0f2418, var(--panel)); border-color: #23512f; }
+.cmp-verdict .big { font-size: 22px; font-weight: 800; padding: 6px 14px; border-radius: 6px; }
+.cmp-verdict .big.fail { background: var(--neg); color: #fff; }
+.cmp-verdict .big.warn { background: #d29922; color: #000; }
+.cmp-verdict .big.pass { background: var(--pos); color: #fff; }
+.cmp-verdict-title { font-weight: 700; }
+.cmp-verdict ul { margin: 2px 0 0; padding-left: 16px; color: var(--muted); }
+.cmp-basic { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.cmp-basic .bcard { flex: 1 1 130px; background: #0e131a; border: 1px solid #30363d; border-radius: 8px; padding: 8px 10px; }
+.cmp-basic .bk { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+.cmp-basic .bl { color: var(--muted); font-size: 10px; margin-right: 4px; }
+.cmp-basic .bdelta { font-size: 16px; font-weight: 700; }
+.cmp-basic .bratio { font-size: 12px; color: var(--muted); }
+.cmp-basic .bvals { display: flex; gap: 10px; margin-top: 4px; font-size: 12px; }
+.cmp-basic .bv .lbl { color: var(--muted); margin-right: 3px; }
+.cmp-basic .pos { color: var(--pos); }
+.cmp-basic .neg { color: var(--neg); }
+.cmp-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .cmp-split { grid-template-columns: 1fr; } }
+.cmp-left { overflow: auto; max-height: 520px; }
+table.cmp { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.cmp th, table.cmp td { padding: 4px 8px; border-bottom: 1px solid #20262f; text-align: right; }
+table.cmp th:first-child, table.cmp td.lab { text-align: left; }
+table.cmp tr.grp td { background: #0e131a; color: var(--muted); font-weight: 700; text-align: left; }
+table.cmp td.lab .en { color: var(--muted); font-size: 10px; margin-left: 6px; }
+table.cmp td.num.pos { color: var(--pos); }
+table.cmp td.num.neg { color: var(--neg); }
+.cmp-right { display: grid; grid-template-columns: 1fr; gap: 10px; grid-auto-rows: 240px; }
+.cmp-right .cmp-card { display: flex; flex-direction: column; min-height: 0; background: #0e131a; border: 1px solid #30363d; border-radius: 8px; padding: 8px 10px; }
+.cmp-right .cmp-card h4 { margin: 2px 0 6px; font-size: 11px; color: var(--muted); font-weight: 600; flex: 0 0 auto; }
+.cmp-right .cmp-cv { position: relative; flex: 1 1 auto; min-height: 80px; }
+.cmp-right .cmp-cv canvas { position: absolute; inset: 0; }
