@@ -5,8 +5,10 @@ import { fmtMoney, cfmt, signClass } from "./format.js";
 import { renderChart, renderMarkers, onMarkerHover, currentRows, emitMarkerHover } from "./chart.js";
 import { createLinkage } from "./linkage.js";
 import { buildTradeTable } from "./table.js";
+import { buildHeatmap } from "./heatmap.js";
 
 let DATA = null;
+let CUR_SEG = "is"; // 現在表示中の区間（filter 購読時の table 再構築に使用）
 const linkage = createLinkage();
 
 // サマリーカードに表示する指標（key, label, formatter）。
@@ -56,11 +58,35 @@ function renderTable(seg) {
   buildTradeTable(host, DATA.segments[seg], linkage);
 }
 
+// F-3: 最小単位ヒートマップ（5 ビュー）を描画し、セルクリック→linkage.applyFilter を結線。
+function renderHeatmap(seg) {
+  const host = document.getElementById("heatHost");
+  if (!host) return;
+  buildHeatmap(host, DATA, seg, linkage);
+}
+
 function selectSegment(seg) {
+  CUR_SEG = seg;
+  linkage.applyFilter(null, ""); // 区間切替でフィルタ解除（dim/抽出をリセット）
   renderMeta(seg);
   renderSummary(seg);
   renderChart("price-chart", DATA.segments[seg]);
   renderTable(seg);
+  renderHeatmap(seg);
+}
+
+// マルチビュータブ切替（取引明細 / ヒートマップ）。表示ペインのみ可視化する。
+function wireTabs() {
+  const tabs = document.querySelectorAll(".mv-tab");
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const name = tab.dataset.tab;
+      tabs.forEach((t) => t.classList.toggle("active", t === tab));
+      document.querySelectorAll(".mv-pane").forEach((pane) => {
+        pane.classList.toggle("hidden", pane.dataset.pane !== name);
+      });
+    });
+  });
 }
 
 function showError(msg) {
@@ -81,6 +107,16 @@ async function boot() {
     onMarkerHover((id) => linkage.setHover(id, "chart")); // マーカー hover → 行ハイライト
     linkage.subscribe((id) =>
       renderMarkers(currentRows(), { hoverId: id, filter: linkage.activeFilter })); // hover → マーカー強調
+
+    // F-3: 抽出フィルタ購読（②で実装済の subscribeFilter を活性化・新規実装はしない）。
+    // hover 購読（_hoverSubs）とは別購読リスト（_filterSubs）＝責務分離・競合させない（アーキ指針 §5）。
+    // ヒートセルクリック → chart のマーカーを当該 trade のみ抽出・table の非該当行を dim。
+    linkage.subscribeFilter((filter) => {
+      renderMarkers(currentRows(), { hoverId: linkage.hoverTradeId, filter }); // chart 抽出
+      renderTable(CUR_SEG); // table 再構築で dim を反映（renderRows が activeFilter を読む）
+    });
+
+    wireTabs();
 
     const sel = document.getElementById("seg-select");
     sel.addEventListener("change", () => selectSegment(sel.value));

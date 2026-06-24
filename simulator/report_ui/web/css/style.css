@@ -62,5 +62,20 @@ main { padding: 16px; }
 .trade-table tr.tw.hl { background: #1f6feb33; }
 /* F-3（ヒートマップ/抽出）用スキャフォールド。F-2 では未配線だが dim の見た目はここで定義済。 */
 .trade-table tr.tw.dim { opacity: .35; }
+/* F-3 最小単位ヒートマップ（曜日×時間セル・SPEC#3）。試作 index.html:44-54 準拠。
+   配色は heatmap.js が inline background（同色相の濃淡 linear-gradient）で与える。 */
+#heatHost { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px; align-items: start; }
+.heatBlock { min-width: 0; margin-bottom: 6px; }
+table.heat { border-collapse: collapse; margin-top: 4px; width: 100%; table-layout: fixed; }
+table.heat td, table.heat th { border: 1px solid #30363d; padding: 7px 1px; text-align: center; font-size: 12px; overflow: hidden; }
+table.heat th:first-child, table.heat td:first-child { width: 40px; }
+table.heat th { color: var(--muted); font-size: 11px; }
+table.heat td.empty { color: #30363d; }
+table.heat td.cell { cursor: pointer; color: #f5f7fa; font-weight: 600; text-shadow: 0 1px 2px rgba(0, 0, 0, .55); }
+/* セルクリック選択枠（連動中セルの可視化）。 */
+table.heat td.cell.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
+.heatTitle { font-size: 13px; font-weight: 700; color: var(--accent); margin: 6px 0 2px; }
+.heatTitle small { color: var(--muted); font-weight: 400; font-size: 10px; margin-left: 8px; display: block; margin-top: 1px; }
+@media (max-width: 1100px) { #heatHost { grid-template-columns: 1fr; } }
 .error { position: fixed; bottom: 16px; left: 16px; background: var(--neg); color: #fff; padding: 10px 14px; border-radius: 8px; }
 .hidden { display: none; }

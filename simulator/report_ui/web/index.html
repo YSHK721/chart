@@ -33,18 +33,21 @@
       <div id="price-chart" class="chart"></div>
     </section>
 
-    <!-- 下部マルチビュー枠（F-2: 取引明細テーブル＋双方向ハイライトを実体化） -->
+    <!-- 下部マルチビュー枠（F-2: 取引明細／F-3: 最小単位ヒートマップ＋連動） -->
     <section id="multiview" class="multiview">
       <div class="mv-tabs">
         <button class="mv-tab active" data-tab="detail">取引明細</button>
+        <button class="mv-tab" data-tab="heat">ヒートマップ</button>
       </div>
       <div id="mv-body" class="mv-body">
-        <div class="detail-area">
+        <div class="detail-area mv-pane" data-pane="detail">
           <table id="tradeTable" class="trade-table">
             <thead></thead>
             <tbody></tbody>
           </table>
         </div>
+        <!-- F-3: 最小単位項目（曜日×時間セル）をテーブル形式＋ヒートマップ配色で 5 ビュー表示。 -->
+        <div id="heatHost" class="heat-area mv-pane hidden" data-pane="heat"></div>
       </div>
     </section>
   </main>
