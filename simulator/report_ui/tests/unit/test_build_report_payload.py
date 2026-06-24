@@ -33,9 +33,47 @@ class _FakeTrade:
 
 @dataclass
 class _FakeStats:
+    # report 写像（§4.5）が stats を read-only 直引きするため、実 BacktestStats と同名の
+    # 保持フィールドを default 付きで全て備える（既存テストは profit/trades のみ指定すれば足りる）。
     profit: float
     trades: int
     initial_deposit: float = 10000.0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
+    profit_factor: float = 0.0
+    recovery_factor: float = 0.0
+    sharpe_ratio: float = 0.0
+    expected_payoff: float = 0.0
+    ahpr: float = 0.0
+    profit_trades: int = 0
+    loss_trades: int = 0
+    long_trades: int = 0
+    short_trades: int = 0
+    profit_long_trades: int = 0
+    profit_short_trades: int = 0
+    max_profit_trade: float = 0.0
+    average_profit_trade: float = 0.0
+    max_loss_trade: float = 0.0
+    average_loss_trade: float = 0.0
+    max_con_wins: int = 0
+    max_con_profit_trades: float = 0.0
+    max_con_losses: int = 0
+    max_con_loss_trades: float = 0.0
+    con_profit_max: float = 0.0
+    con_profit_max_trades: int = 0
+    con_loss_max: float = 0.0
+    con_loss_max_trades: int = 0
+    profit_trades_avg_con: float = 0.0
+    loss_trades_avg_con: float = 0.0
+    balance_dd_abs: float = 0.0
+    balance_dd: float = 0.0
+    balance_dd_percent: float = 0.0
+    balance_dd_relative: float = 0.0
+    balance_ddrel_percent: float = 0.0
+    equity_dd_abs: float = 0.0
+    equity_dd_max: float = 0.0
+    equity_dd_max_percent: float = 0.0
+    z_score: float = 0.0
 
 
 @dataclass
@@ -424,3 +462,196 @@ class TestAggFull:
         assert agg["scatter_mfe"] == []
         assert sum(agg["entries_hour"].values()) == 0
         assert sum(agg["hold_cnt"].values()) == 0
+
+
+# --- segments.{is,oos}.report 実体化（⑤ R-1・§4.5 BacktestStats→report 写像） -----
+
+@dataclass
+class _FullStats:
+    """§4.5 写像検証用に BacktestStats の保持フィールドを網羅した stats ダブル。
+
+    report 写像は stats を read-only 直引きするため、実 BacktestStats と同名の属性を
+    持つダブルで十分（domain 非依存・写像の組立ロジックのみを検証する）。
+    """
+    initial_deposit: float = 10000.0
+    profit: float = 11370.0
+    gross_profit: float = 84600.0
+    gross_loss: float = -73230.0
+    profit_factor: float = 1.155
+    recovery_factor: float = 3.21
+    sharpe_ratio: float = 0.42
+    expected_payoff: float = 2.18
+    ahpr: float = 1.0002
+    trades: int = 5224
+    profit_trades: int = 2950
+    loss_trades: int = 2274
+    long_trades: int = 2600
+    short_trades: int = 2624
+    profit_long_trades: int = 1480
+    profit_short_trades: int = 1470
+    max_profit_trade: float = 50.0
+    average_profit_trade: float = 28.68
+    max_loss_trade: float = -20.0
+    average_loss_trade: float = -32.2
+    max_con_wins: int = 12
+    max_con_profit_trades: float = 360.0
+    max_con_losses: int = 9
+    max_con_loss_trades: float = -180.0
+    con_profit_max: float = 420.0
+    con_profit_max_trades: int = 11
+    con_loss_max: float = -240.0
+    con_loss_max_trades: int = 8
+    profit_trades_avg_con: float = 3.0
+    loss_trades_avg_con: float = 2.0
+    balance_dd_abs: float = 0.0
+    balance_dd: float = 2400.0
+    balance_dd_percent: float = 10.5
+    balance_dd_relative: float = 2400.0
+    balance_ddrel_percent: float = 10.5
+    equity_dd_abs: float = 0.0
+    equity_dd_max: float = 2600.0
+    equity_dd_max_percent: float = 11.2
+    z_score: float = -1.34
+
+
+def _result_with_stats(stats, profits=(10.0, -5.0), exit_times=(2000, 3000),
+                       balances=(10010.0, 10005.0)):
+    """report 写像検証用に任意 stats を載せた FakeResult を組む（trades は最小・1:1）。"""
+    r = _make_result(list(profits), list(exit_times), list(balances))
+    return _FakeResult(trades=r.trades, balance_curve=r.balance_curve, stats=stats)
+
+
+def _run_report(stats_is, stats_oos=None):
+    stats_oos = stats_oos if stats_oos is not None else stats_is
+    return _run(_result_with_stats(stats_is), _result_with_stats(stats_oos))
+
+
+class TestSegmentReport:
+    """§4.5 BacktestStats→report ラベル dict 写像（保持指標 set・欠落 skip・文字列整形）。"""
+
+    def test_report_is_nonempty_for_both_segments(self):
+        # R-1: IS/OOS 両 report が実体化（空でない）。
+        p = _run_report(_FullStats())
+        assert len(p.segments["is"].report) > 0
+        assert len(p.segments["oos"].report) > 0
+
+    def test_total_net_profit_formatted_as_integer_string(self):
+        # §4.5: Total Net Profit = f"{stats.profit:.0f}"（文字列）。
+        seg = _run_report(_FullStats(profit=11370.0)).segments["is"]
+        assert seg.report["Total Net Profit"] == "11370"
+
+    def test_profit_factor_two_decimals(self):
+        # §4.5: Profit Factor = f"{v:.2f}"。
+        seg = _run_report(_FullStats(profit_factor=1.155)).segments["is"]
+        assert seg.report["Profit Factor"] == "1.16"
+
+    def test_sharpe_and_recovery_and_payoff_two_decimals(self):
+        seg = _run_report(_FullStats(
+            sharpe_ratio=0.42, recovery_factor=3.21, expected_payoff=2.18)).segments["is"]
+        assert seg.report["Sharpe Ratio"] == "0.42"
+        assert seg.report["Recovery Factor"] == "3.21"
+        assert seg.report["Expected Payoff"] == "2.18"
+
+    def test_ahpr_four_decimals(self):
+        # §4.5: AHPR = f"{v:.4f}"。
+        seg = _run_report(_FullStats(ahpr=1.0002)).segments["is"]
+        assert seg.report["AHPR"] == "1.0002"
+
+    def test_total_trades_is_count(self):
+        seg = _run_report(_FullStats(trades=5224)).segments["is"]
+        assert seg.report["Total Trades"] == "5224"
+
+    def test_profit_trades_percent_and_count(self):
+        # §4.5: Profit Trades (% of total) = f"{pct:.2f}% ({n})"・pct=profit_trades/trades*100。
+        seg = _run_report(_FullStats(trades=5224, profit_trades=2950)).segments["is"]
+        # 2950/5224*100 = 56.47%
+        assert seg.report["Profit Trades (% of total)"] == "56.47% (2950)"
+
+    def test_loss_trades_percent_and_count(self):
+        seg = _run_report(_FullStats(trades=5224, loss_trades=2274)).segments["is"]
+        # 2274/5224*100 = 43.53%
+        assert seg.report["Loss Trades (% of total)"] == "43.53% (2274)"
+
+    def test_short_trades_won_percent(self):
+        # §4.5: Short Trades (won %) = f"{pct:.2f}% ({n})"・pct=profit_short/short*100, n=short。
+        seg = _run_report(_FullStats(short_trades=2624, profit_short_trades=1470)).segments["is"]
+        # 1470/2624*100 = 56.02%
+        assert seg.report["Short Trades (won %)"] == "56.02% (2624)"
+
+    def test_long_trades_won_percent(self):
+        seg = _run_report(_FullStats(long_trades=2600, profit_long_trades=1480)).segments["is"]
+        # 1480/2600*100 = 56.92%
+        assert seg.report["Long Trades (won %)"] == "56.92% (2600)"
+
+    def test_largest_and_average_profit_loss_trade(self):
+        seg = _run_report(_FullStats(
+            max_profit_trade=50.0, average_profit_trade=28.68,
+            max_loss_trade=-20.0, average_loss_trade=-32.2)).segments["is"]
+        assert seg.report["Largest profit trade"] == "50"
+        assert seg.report["Average profit trade"] == "28.68"
+        assert seg.report["Largest loss trade"] == "-20"
+        assert seg.report["Average loss trade"] == "-32.20"
+
+    def test_max_consecutive_wins_losses_count_and_amount(self):
+        # §4.5: Maximum consecutive wins ($) = f"{cnt} ({amt:.0f})"。
+        seg = _run_report(_FullStats(
+            max_con_wins=12, max_con_profit_trades=360.0,
+            max_con_losses=9, max_con_loss_trades=-180.0)).segments["is"]
+        assert seg.report["Maximum consecutive wins ($)"] == "12 (360)"
+        assert seg.report["Maximum consecutive losses ($)"] == "9 (-180)"
+
+    def test_maximal_consecutive_profit_loss_amount_and_count(self):
+        # §4.5: Maximal consecutive profit (count) = f"{amt:.0f} ({cnt})"。
+        seg = _run_report(_FullStats(
+            con_profit_max=420.0, con_profit_max_trades=11,
+            con_loss_max=-240.0, con_loss_max_trades=8)).segments["is"]
+        assert seg.report["Maximal consecutive profit (count)"] == "420 (11)"
+        assert seg.report["Maximal consecutive loss (count)"] == "-240 (8)"
+
+    def test_balance_drawdown_maximal_amount_and_percent(self):
+        # §4.5: Balance Drawdown Maximal = f"{amt:.0f} ({pct:.2f}%)"。
+        seg = _run_report(_FullStats(
+            balance_dd=2400.0, balance_dd_percent=10.5)).segments["is"]
+        assert seg.report["Balance Drawdown Maximal"] == "2400 (10.50%)"
+
+    def test_z_score_two_decimals(self):
+        seg = _run_report(_FullStats(z_score=-1.34)).segments["is"]
+        assert seg.report["Z-Score"] == "-1.34"
+
+    def test_static_labels_expert_symbol_period(self):
+        # §4.5: Expert=定数, Symbol=meta.symbol, Period=meta.period。
+        seg = _run_report(_FullStats()).segments["is"]
+        assert seg.report["Expert"] == "StopEntryProbe_EA"
+        assert seg.report["Symbol"] == "JP225"
+        assert seg.report["Period"] == "2026.04.01-04.14"
+
+    def test_initial_deposit_integer_string(self):
+        seg = _run_report(_FullStats(initial_deposit=10000.0)).segments["is"]
+        assert seg.report["Initial Deposit"] == "10000"
+
+    def test_missing_metrics_are_not_emitted(self):
+        # §4.5 確定方針: BacktestStats 非保持の指標は report に出力しない（欠落キーは出さない）。
+        seg = _run_report(_FullStats()).segments["is"]
+        for k in ("GHPR", "Correlation (Profits,MFE)", "LR Correlation",
+                  "Margin Level", "Ticks", "Minimal position holding time",
+                  "History Quality"):
+            assert k not in seg.report
+
+    def test_profit_factor_inf_renders_as_inf_string(self):
+        # §4.5 整形規約: Profit Factor の inf は文字列 "inf"（presenter _sanitize は
+        # float のみ null 化・report 値は文字列のため素通し）。
+        seg = _run_report(_FullStats(profit_factor=float("inf"))).segments["is"]
+        assert seg.report["Profit Factor"] == "inf"
+
+    def test_report_values_are_all_strings(self):
+        # §4.5: report{<label>:<value文字列>}（JSON 契約・全値 str）。
+        seg = _run_report(_FullStats()).segments["is"]
+        assert all(isinstance(v, str) for v in seg.report.values())
+
+    def test_payload_shape_other_keys_unchanged(self):
+        # 形状不変: report 実体化で segments/summary/degradation/verdict 他キーは不変。
+        p = _run_report(_FullStats())
+        assert set(p.segments.keys()) == {"is", "oos"}
+        assert set(p.summary.keys()) == {"is", "oos"}
+        assert isinstance(p.degradation, dict)
+        assert p.verdict.result in {"fail", "warn", "pass"}

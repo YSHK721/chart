@@ -125,7 +125,7 @@ class BuildReportPayload:
         segment = SegmentModel(
             label=meta.get("label", ""),
             meta=seg_meta,
-            report={},          # 遅延（ステージ① は空。後段で stats 写像）
+            report=self._report(result.stats, seg_meta),  # §4.5 BacktestStats→report 写像
             bars=bars_out,
             trades=trade_rows,
             orders=[],          # 遅延（空配列・キー確保）
@@ -233,6 +233,65 @@ class BuildReportPayload:
             if balance_curve else 0.0,
             max_dd_pct=derive.max_drawdown_pct(balance_curve),
         )
+
+    # --- report（§4.5 BacktestStats→report ラベル dict 写像） -----------------
+
+    def _report(self, stats: Any, seg_meta: dict) -> dict:
+        """BacktestStats を §4.5 写像で report ラベル dict（全値 str）へ写す。
+
+        stats 直引き＋文字列整形の組立のみ（derive 化しない）。BacktestStats が保持する
+        指標のみ set し、非保持（GHPR/Correlation/LR/Margin/保有時間統計/Ticks 等）は
+        出力しない（§4.5 確定方針＝欠落キーは出さない）。inf は `f"{inf:.2f}"` が "inf" を
+        返すため文字列 "inf" として出力される（report 値は文字列・presenter 素通し）。
+        """
+        def pct_n(num, den):
+            p = (num / den * 100) if den else 0.0
+            return f"{p:.2f}% ({num})"
+
+        return {
+            "Expert": "StopEntryProbe_EA",
+            "Symbol": seg_meta.get("symbol", "JP225"),
+            "Period": seg_meta.get("period", ""),
+            "Initial Deposit": f"{stats.initial_deposit:.0f}",
+            "Total Net Profit": f"{stats.profit:.0f}",
+            "Gross Profit": f"{stats.gross_profit:.0f}",
+            "Gross Loss": f"{stats.gross_loss:.0f}",
+            "Profit Factor": f"{stats.profit_factor:.2f}",
+            "Recovery Factor": f"{stats.recovery_factor:.2f}",
+            "Sharpe Ratio": f"{stats.sharpe_ratio:.2f}",
+            "Expected Payoff": f"{stats.expected_payoff:.2f}",
+            "AHPR": f"{stats.ahpr:.4f}",
+            "Total Trades": f"{stats.trades}",
+            "Profit Trades (% of total)": pct_n(stats.profit_trades, stats.trades),
+            "Loss Trades (% of total)": pct_n(stats.loss_trades, stats.trades),
+            "Short Trades (won %)":
+                f"{(stats.profit_short_trades / stats.short_trades * 100) if stats.short_trades else 0.0:.2f}% ({stats.short_trades})",
+            "Long Trades (won %)":
+                f"{(stats.profit_long_trades / stats.long_trades * 100) if stats.long_trades else 0.0:.2f}% ({stats.long_trades})",
+            "Largest profit trade": f"{stats.max_profit_trade:.0f}",
+            "Average profit trade": f"{stats.average_profit_trade:.2f}",
+            "Largest loss trade": f"{stats.max_loss_trade:.0f}",
+            "Average loss trade": f"{stats.average_loss_trade:.2f}",
+            "Maximum consecutive wins ($)":
+                f"{stats.max_con_wins} ({stats.max_con_profit_trades:.0f})",
+            "Maximum consecutive losses ($)":
+                f"{stats.max_con_losses} ({stats.max_con_loss_trades:.0f})",
+            "Maximal consecutive profit (count)":
+                f"{stats.con_profit_max:.0f} ({stats.con_profit_max_trades})",
+            "Maximal consecutive loss (count)":
+                f"{stats.con_loss_max:.0f} ({stats.con_loss_max_trades})",
+            "Average consecutive wins": f"{stats.profit_trades_avg_con:.0f}",
+            "Average consecutive losses": f"{stats.loss_trades_avg_con:.0f}",
+            "Balance Drawdown Absolute": f"{stats.balance_dd_abs:.0f}",
+            "Balance Drawdown Maximal":
+                f"{stats.balance_dd:.0f} ({stats.balance_dd_percent:.2f}%)",
+            "Balance Drawdown Relative":
+                f"{stats.balance_ddrel_percent:.2f}% ({stats.balance_dd_relative:.0f})",
+            "Equity Drawdown Absolute": f"{stats.equity_dd_abs:.0f}",
+            "Equity Drawdown Maximal":
+                f"{stats.equity_dd_max:.0f} ({stats.equity_dd_max_percent:.2f}%)",
+            "Z-Score": f"{stats.z_score:.2f}",
+        }
 
     # --- degradation（§5.3） ------------------------------------------------
 
