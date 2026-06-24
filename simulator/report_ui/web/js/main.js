@@ -7,6 +7,7 @@ import { createLinkage } from "./linkage.js";
 import { buildTradeTable } from "./table.js";
 import { buildHeatmap } from "./heatmap.js";
 import { buildGraphs, activeCharts } from "./graphs.js";
+import { buildCompare, resizeCompareCharts, cmpChartInstances } from "./compare.js";
 
 let DATA = null;
 let CUR_SEG = "is"; // 現在表示中の区間（filter 購読時の table 再構築に使用）
@@ -86,7 +87,8 @@ function selectSegment(seg) {
   renderGraphs(seg);
 }
 
-// マルチビュータブ切替（取引明細 / ヒートマップ）。表示ペインのみ可視化する。
+// マルチビュータブ切替（比較判定 / 取引明細 / ヒートマップ / グラフ）。表示ペインのみ可視化する。
+// 比較判定タブ表示時は cmpCharts を resize する（destroy せず隔離 init を維持・区間非依存）。
 function wireTabs() {
   const tabs = document.querySelectorAll(".mv-tab");
   tabs.forEach((tab) => {
@@ -96,6 +98,7 @@ function wireTabs() {
       document.querySelectorAll(".mv-pane").forEach((pane) => {
         pane.classList.toggle("hidden", pane.dataset.pane !== name);
       });
+      if (name === "compare") resizeCompareCharts(); // 非表示中に縮んだ canvas を再計測
     });
   });
 }
@@ -128,6 +131,11 @@ async function boot() {
     });
 
     wireTabs();
+
+    // F-5: 比較・判定タブは IS/OOS 両区間を常に参照し init で 1 回構築する（区間非依存）。
+    //   selectSegment からは除外する（区間切替で再描画しない・cmpCharts を destroy しない）。
+    buildCompare(DATA);
+    window.__cmpCharts = cmpChartInstances(); // E2E フック（cmpCharts 隔離 init の検証用）
 
     const sel = document.getElementById("seg-select");
     sel.addEventListener("change", () => selectSegment(sel.value));

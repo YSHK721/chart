@@ -11,6 +11,14 @@ export function cfmt(v, digits = 2) {
   return Number(v).toFixed(digits);
 }
 
+// 桁区切り付き固定小数（ja-JP ロケール・null/inf 耐性）。compare の指標表示が消費する。
+// cfmt（toFixed・区切りなし）とは別整形。比較タブ専用ヘルパの重複定義を集約する。
+export function cfmtLocale(v, digits) {
+  if (v === null || v === undefined || !isFinite(v)) return "—";
+  return Number(v).toLocaleString("ja-JP",
+    { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
 export function signClass(v) {
   if (v === null || v === undefined || !isFinite(v)) return "";
   if (v > 0) return "pos";

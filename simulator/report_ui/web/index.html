@@ -33,15 +33,33 @@
       <div id="price-chart" class="chart"></div>
     </section>
 
-    <!-- 下部マルチビュー枠（F-2: 取引明細／F-3: 最小単位ヒートマップ＋連動） -->
+    <!-- 下部マルチビュー枠（F-2: 取引明細／F-3: ヒートマップ／SPEC#4: グラフ／F-5: 比較判定） -->
     <section id="multiview" class="multiview">
       <div class="mv-tabs">
-        <button class="mv-tab active" data-tab="detail">取引明細</button>
+        <!-- F-5: 比較判定を第4サブタブとして追加し既定オープン（active）。既存3タブは非破壊。 -->
+        <button class="mv-tab active" data-tab="compare">比較・判定</button>
+        <button class="mv-tab" data-tab="detail">取引明細</button>
         <button class="mv-tab" data-tab="heat">ヒートマップ</button>
         <button class="mv-tab" data-tab="graph">グラフ</button>
       </div>
       <div id="mv-body" class="mv-body">
-        <div class="detail-area mv-pane" data-pane="detail">
+        <!-- F-5: 比較・判定タブ（IS vs OOS・区間非依存・init 1回構築）。 -->
+        <div id="pane-compare" class="cmp-area mv-pane" data-pane="compare">
+          <div class="cmp-verdict" id="cmpVerdict"></div>
+          <div class="cmp-basic" id="cmpBasic"></div>
+          <div class="cmp-split">
+            <div class="cmp-left">
+              <table class="cmp" id="cmpTable"><thead></thead><tbody></tbody></table>
+            </div>
+            <div class="cmp-right">
+              <div class="cmp-card"><h4>エクイティ（IS/OOS 重畳）</h4>
+                <div class="cmp-cv"><canvas id="cmpEquity"></canvas></div></div>
+              <div class="cmp-card"><h4>純損益内訳</h4>
+                <div class="cmp-cv"><canvas id="cmpPnl"></canvas></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="detail-area mv-pane hidden" data-pane="detail">
           <table id="tradeTable" class="trade-table">
             <thead></thead>
             <tbody></tbody>
