@@ -197,9 +197,11 @@ def build_segment(key, label, bars_csv, xlsx, bars_start):
         pl_wday[xw] += pr
         pl_month[xm] = pl_month.get(xm, 0.0) + pr
         ckey = f"{ew}|{eh}"
-        cc = heat.setdefault(ckey, {"profit": 0.0, "count": 0})
+        cc = heat.setdefault(ckey, {"profit": 0.0, "count": 0, "wins": 0})
         cc["profit"] += pr
         cc["count"] += 1
+        if pr > 0:
+            cc["wins"] += 1
 
     HBUCK = [(0, 60, "<1m"), (60, 120, "1-2m"), (120, 300, "2-5m"), (300, 600, "5-10m"),
              (600, 1800, "10-30m"), (1800, 3600, "30-60m"), (3600, 10**9, ">1h")]
@@ -217,7 +219,7 @@ def build_segment(key, label, bars_csv, xlsx, bars_start):
     scat_mfe = [{"x": t["mfe"], "y": t["profit"] or 0.0, "id": t["id"]} for t in trades]
     scat_mae = [{"x": t["mae"], "y": t["profit"] or 0.0, "id": t["id"]} for t in trades]
     heat_cells = [{"wday": k.split("|")[0], "hour": int(k.split("|")[1]),
-                   "profit": round(v["profit"], 1), "count": v["count"]}
+                   "profit": round(v["profit"], 1), "count": v["count"], "wins": v["wins"]}
                   for k, v in heat.items()]
 
     agg = {"entries_hour": entries_hour, "entries_session": entries_session,

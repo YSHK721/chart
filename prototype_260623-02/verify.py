@@ -33,13 +33,15 @@ try:
           const rows=[...document.querySelectorAll('#cmpTable tbody tr')];
           const grp=rows.filter(r=>r.classList.contains('grp')).length;
           const data=rows.filter(r=>!r.classList.contains('grp')).length;
-          const tnp=rows.find(r=>/Total Net Profit/.test(r.innerText));
+          const tnp=rows.find(r=>/総純損益/.test(r.innerText));
           const left=document.querySelector('.cmp-left').getBoundingClientRect();
           const right=document.querySelector('.cmp-right').getBoundingClientRect();
           const eq=document.querySelector('#cmpEquity')?1:0, pnl=document.querySelector('#cmpPnl')?1:0, dd=document.querySelector('#cmpDD')?1:0;
+          const radar=(typeof cmpCharts!=='undefined'&&cmpCharts.radar)?1:0, deg=(typeof cmpCharts!=='undefined'&&cmpCharts.deg)?1:0;
           const ddLabs=(typeof cmpCharts!=='undefined'&&cmpCharts.dd)?cmpCharts.dd.data.datasets.map(d=>d.label):[];
+          const radarN=(typeof cmpCharts!=='undefined'&&cmpCharts.radar)?cmpCharts.radar.data.labels.length:0;
           return {grp, data, tnp: tnp?[...tnp.children].map(c=>c.innerText):null,
-            split: right.x>left.x+left.width-5, eq, pnl, dd, ddLabs, rightW:Math.round(right.width)};
+            split: right.x>left.x+left.width-5, eq, pnl, dd, radar, deg, radarN, ddLabs, rightW:Math.round(right.width)};
         }""")
         print("verdict:", verdict, "| badge:", vbadge, "| groups:", cmp["grp"], "| metric rows:", cmp["data"],
               "| charts right-of-table:", cmp["split"], "| right width:", cmp["rightW"])
@@ -53,6 +55,11 @@ try:
             issues.append("charts not placed to the right of the table (split layout broken)")
         if not (cmp["eq"] and cmp["pnl"] and cmp["dd"]):
             issues.append("equity/pnl/drawdown charts missing in right column")
+        print("radar/deg charts:", cmp["radar"], cmp["deg"], "| radar axes:", cmp["radarN"])
+        if not (cmp["radar"] and cmp["deg"]):
+            issues.append("radar/degradation charts missing in compare tab")
+        if cmp["radarN"] != 6:
+            issues.append(f"radar axes != 6 (got {cmp['radarN']})")
         if not any("-7.97%" in s for s in cmp["ddLabs"]):
             issues.append(f"DD chart IS max-DD label wrong (expect -7.97%): {cmp['ddLabs']}")
         if not cmp["tnp"] or cmp["tnp"][3] != "-0.354":
@@ -118,6 +125,24 @@ try:
         cb = pg.eval_on_selector("#chart canvas", "el=>{const r=el.getBoundingClientRect();return {x:r.x+r.width*0.55,y:r.y+r.height*0.5};}")
         pg.mouse.move(cb["x"], cb["y"], steps=3)
         time.sleep(0.3)
+
+        # maximize toggles: chart-max hides bottom, detail-max hides chart, restore returns
+        def hh(s): return pg.eval_on_selector(s, "el=>Math.round(el.getBoundingClientRect().height)")
+        def disp(s): return pg.eval_on_selector(s, "el=>getComputedStyle(el).display!=='none'")
+        nb = (hh("#chartWrap"), hh("#bottom"))
+        pg.eval_on_selector("#maxChart", "el=>el.click()"); time.sleep(0.4)
+        chart_max = (not disp("#bottom")) and hh("#chartWrap") > nb[0] + 50
+        pg.eval_on_selector("#maxChart", "el=>el.click()"); time.sleep(0.5)
+        rest1 = abs(hh("#chartWrap") - nb[0]) < 14 and abs(hh("#bottom") - nb[1]) < 14
+        pg.eval_on_selector("#maxDetail", "el=>el.click()"); time.sleep(0.4)
+        detail_max = (not disp("#chartWrap")) and hh("#bottom") > nb[1] + 50
+        pg.eval_on_selector("#maxDetail", "el=>el.click()"); time.sleep(0.5)
+        rest2 = abs(hh("#chartWrap") - nb[0]) < 14 and abs(hh("#bottom") - nb[1]) < 14
+        print("maximize: chart-max", chart_max, "restore", rest1, "| detail-max", detail_max, "restore", rest2)
+        if not (chart_max and detail_max):
+            issues.append(f"maximize toggles broken (chart_max={chart_max}, detail_max={detail_max})")
+        if not (rest1 and rest2):
+            issues.append(f"maximize restore broken (rest1={rest1}, rest2={rest2})")
 
         # graphs tab: 残り9グラフが IS/OOS 比較（2系列）。Balance/DD は移設済み。
         pg.eval_on_selector(".tab[data-pane=graphs]", "el=>el.click()"); time.sleep(0.6)
