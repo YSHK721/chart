@@ -6,6 +6,7 @@ import { renderChart, renderMarkers, onMarkerHover, currentRows, emitMarkerHover
 import { createLinkage } from "./linkage.js";
 import { buildTradeTable } from "./table.js";
 import { buildHeatmap } from "./heatmap.js";
+import { buildGraphs, activeCharts } from "./graphs.js";
 
 let DATA = null;
 let CUR_SEG = "is"; // 現在表示中の区間（filter 購読時の table 再構築に使用）
@@ -65,6 +66,15 @@ function renderHeatmap(seg) {
   buildHeatmap(host, DATA, seg, linkage);
 }
 
+// SPEC#4: インタラクティブグラフを描画し、要素クリック→linkage.applyFilter を結線。
+// R-3: buildGraphs が内部で既存 Chart を destroy→再構築する（区間切替の二重バインド回避）。
+function renderGraphs(seg) {
+  const host = document.getElementById("graphHost");
+  if (!host) return;
+  buildGraphs(host, DATA, seg, linkage);
+  window.__graphsCharts = activeCharts(); // E2E フック（再構築後の Chart 群を検証用に公開）
+}
+
 function selectSegment(seg) {
   CUR_SEG = seg;
   linkage.applyFilter(null, ""); // 区間切替でフィルタ解除（dim/抽出をリセット）
@@ -73,6 +83,7 @@ function selectSegment(seg) {
   renderChart("price-chart", DATA.segments[seg]);
   renderTable(seg);
   renderHeatmap(seg);
+  renderGraphs(seg);
 }
 
 // マルチビュータブ切替（取引明細 / ヒートマップ）。表示ペインのみ可視化する。

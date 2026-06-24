@@ -38,6 +38,7 @@
       <div class="mv-tabs">
         <button class="mv-tab active" data-tab="detail">取引明細</button>
         <button class="mv-tab" data-tab="heat">ヒートマップ</button>
+        <button class="mv-tab" data-tab="graph">グラフ</button>
       </div>
       <div id="mv-body" class="mv-body">
         <div class="detail-area mv-pane" data-pane="detail">
@@ -48,6 +49,10 @@
         </div>
         <!-- F-3: 最小単位項目（曜日×時間セル）をテーブル形式＋ヒートマップ配色で 5 ビュー表示。 -->
         <div id="heatHost" class="heat-area mv-pane hidden" data-pane="heat"></div>
+        <!-- SPEC#4: インタラクティブグラフ（entries/pl 比較棒・相関散布・保有時間棒）＋チャート連動。 -->
+        <div id="graphHost" class="mv-pane hidden" data-pane="graph">
+          <div id="graphGrid" class="graph-grid"></div>
+        </div>
       </div>
     </section>
   </main>

@@ -10,6 +10,8 @@
 // weekday() Mon=0・UTC）と単一規約に固定する。wday インデックス = (getUTCDay()+6)%7（Mon=0）＋
 // UTC 基準。back（fromtimestamp(ts,utc).weekday()）と同一 trade を選ぶ（境界: 日曜・hour0・hour23）。
 
+import { aggOf } from "./data.js";
+
 // wday インデックス規約（Mon=0..Sun=6）。back derive.WEEK と一致させる。
 export const WEEKORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -143,10 +145,10 @@ function _viewHtml(def) {
 //        onFocus(optional)=最初の該当 trade へズームするコールバック（main.js が注入）。
 export function buildHeatmap(host, data, seg, linkage, onFocus) {
   if (!host) return;
-  const curCells = (data.segments[seg].agg && data.segments[seg].agg.heat) || [];
+  const curCells = aggOf(data, seg).heat || [];
   const cur = _toMap(curCells);
-  const isM = _toMap(data.segments.is.agg.heat);
-  const oosM = _toMap(data.segments.oos.agg.heat);
+  const isM = _toMap(aggOf(data, "is").heat);
+  const oosM = _toMap(aggOf(data, "oos").heat);
   const mx = _maxes(cur, isM, oosM);
 
   host.innerHTML = _viewDefs(cur, isM, oosM, mx).map(_viewHtml).join("");
