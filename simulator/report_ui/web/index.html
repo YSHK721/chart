@@ -33,15 +33,18 @@
       <div id="price-chart" class="chart"></div>
     </section>
 
-    <!-- 下部マルチビュー枠（F-1 は枠のみ・後段でタブ実体化） -->
+    <!-- 下部マルチビュー枠（F-2: 取引明細テーブル＋双方向ハイライトを実体化） -->
     <section id="multiview" class="multiview">
       <div class="mv-tabs">
-        <button class="mv-tab active" data-tab="placeholder">マルチビュー（後段で実体化）</button>
+        <button class="mv-tab active" data-tab="detail">取引明細</button>
       </div>
       <div id="mv-body" class="mv-body">
-        <p class="placeholder-note">
-          取引明細・ヒートマップ・グラフ群・比較判定はステージ②以降で実装します（F-1 は枠）。
-        </p>
+        <div class="detail-area">
+          <table id="tradeTable" class="trade-table">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </section>
   </main>

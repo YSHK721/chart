@@ -2,9 +2,12 @@
 // report.json を fetch → DATA → 区間切替で各パネル再描画（チャート＋サマリーカード）。
 
 import { fmtMoney, cfmt, signClass } from "./format.js";
-import { renderChart } from "./chart.js";
+import { renderChart, renderMarkers, onMarkerHover, currentRows, emitMarkerHover } from "./chart.js";
+import { createLinkage } from "./linkage.js";
+import { buildTradeTable } from "./table.js";
 
 let DATA = null;
+const linkage = createLinkage();
 
 // サマリーカードに表示する指標（key, label, formatter）。
 const SUMMARY_FIELDS = [
@@ -47,10 +50,17 @@ function renderVerdict() {
   badge.title = (v.reasons || []).join(" / ");
 }
 
+function renderTable(seg) {
+  const host = document.getElementById("tradeTable");
+  if (!host) return;
+  buildTradeTable(host, DATA.segments[seg], linkage);
+}
+
 function selectSegment(seg) {
   renderMeta(seg);
   renderSummary(seg);
   renderChart("price-chart", DATA.segments[seg]);
+  renderTable(seg);
 }
 
 function showError(msg) {
@@ -66,9 +76,21 @@ async function boot() {
     DATA = await res.json();
 
     renderVerdict();
+
+    // 双方向ハイライト結線（一方向 import: chart→linkage はコールバック注入）。
+    onMarkerHover((id) => linkage.setHover(id, "chart")); // マーカー hover → 行ハイライト
+    linkage.subscribe((id) =>
+      renderMarkers(currentRows(), { hoverId: id, filter: linkage.activeFilter })); // hover → マーカー強調
+
     const sel = document.getElementById("seg-select");
     sel.addEventListener("change", () => selectSegment(sel.value));
     selectSegment(sel.value || "is");
+
+    // E2E フック（双方向結線の検証用。本番表示には不使用）。
+    // __chartEmitMarkerHover は chart モジュールの登録済み hover コールバック（= onMarkerHover で
+    // 注入した linkage.setHover）を駆動する。よって chart→linkage 結線が外れると行ハイライトも止まる。
+    window.__linkage = linkage;
+    window.__chartEmitMarkerHover = (id) => emitMarkerHover(id);
 
     window.__READY = true;
   } catch (e) {

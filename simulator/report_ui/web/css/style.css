@@ -52,5 +52,15 @@ main { padding: 16px; }
 .mv-tab.active { background: #21262d; }
 .mv-body { padding: 16px; min-height: 80px; }
 .placeholder-note { color: var(--muted); font-size: 13px; }
+/* 取引明細テーブル（SPEC §2.2）。配色は既存ダークトーン（--panel/--accent/#30363d）に合わせる。 */
+.detail-area { overflow-x: auto; }
+.trade-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.trade-table th, .trade-table td { padding: 4px 8px; border-bottom: 1px solid #30363d; white-space: nowrap; }
+.trade-table th { cursor: pointer; text-align: left; color: var(--muted); font-weight: 600; }
+.trade-table tr.tw td.side { font-weight: 600; }
+/* マーカー hover / 行 hover で該当売買行をハイライト（SPEC §2.3-2.4・双方向）。 */
+.trade-table tr.tw.hl { background: #1f6feb33; }
+/* F-3（ヒートマップ/抽出）用スキャフォールド。F-2 では未配線だが dim の見た目はここで定義済。 */
+.trade-table tr.tw.dim { opacity: .35; }
 .error { position: fixed; bottom: 16px; left: 16px; background: var(--neg); color: #fff; padding: 10px 14px; border-radius: 8px; }
 .hidden { display: none; }
