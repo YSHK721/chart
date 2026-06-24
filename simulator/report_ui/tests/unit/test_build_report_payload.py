@@ -329,7 +329,7 @@ class TestAggHeat:
         assert cell["wins"] == 1
 
     def test_agg_keys_shape_unchanged(self):
-        # 形状不変（OCP）: agg のキー集合は②と不変（heat のみ空→実体・他遅延キー維持）
+        # 形状不変（OCP）: agg のキー集合は②④を通じ不変（④で entries/pl/scatter/hold を実体化）
         r = _make_result_with_entry([10.0], [_TS_MON_H0], [2000], [10010.0])
         agg = _run(r, r).segments["is"].agg
         assert set(agg.keys()) == {
@@ -338,9 +338,10 @@ class TestAggHeat:
             "scatter_mfe", "scatter_mae", "hold_pl", "hold_cnt",
             "weekorder", "heat",
         }
-        # ④⑤ スコープ外は空キー維持（範囲外の非実装を固定）
-        assert agg["scatter_mfe"] == []
-        assert agg["hold_pl"] == {}
+        # ④で実体化: scatter は trade ごとの点列・hold は 7 区分の損益 dict（空 assertion を差替）
+        assert agg["scatter_mfe"] == [{"x": agg["scatter_mfe"][0]["x"], "y": 10.0, "id": 1}]
+        assert set(agg["hold_pl"].keys()) == {
+            "<1m", "1-2m", "2-5m", "5-10m", "10-30m", "30-60m", ">1h"}
 
     def test_heat_built_via_derive_not_inline(self):
         # 指針1: UC は derive.heat_cells を呼ぶ組立のみ（loop 内で時刻分解を直書きしない）。
@@ -355,3 +356,71 @@ class TestAggHeat:
         norm = lambda cs: sorted(
             (c["wday"], c["hour"], c["profit"], c["count"], c["wins"]) for c in cs)
         assert norm(uc_cells) == norm(direct)
+
+
+class TestAggFull:
+    """④ entries/pl/scatter/hold の実体化（空プレースホルダ→derive 組立）。"""
+
+    def test_all_agg_entities_nonempty_both_segments(self):
+        # IS/OOS 両区間で entries/pl/scatter/hold が実体化（OCP 対称）
+        r = _make_result_with_entry(
+            [10.0, -5.0], [_TS_MON_H0, _TS_MON_H23], [2000, 3000],
+            [10010.0, 10005.0])
+        for seg in ("is", "oos"):
+            agg = _run(r, r).segments[seg].agg
+            assert agg["entries_hour"][0] == 1
+            assert agg["entries_session"]["Asia"] == 1
+            assert len(agg["scatter_mfe"]) == 2
+            assert len(agg["scatter_mae"]) == 2
+            assert sum(agg["hold_cnt"].values()) == 2
+
+    def test_entries_use_entry_time_pl_use_exit_time(self):
+        # 基準差固定（最重要・アーキ指針 §1）: 同一 trade で entry hour と exit hour が異なる。
+        # entry_time=Mon hour0 / exit_time=Mon hour23 → entries は hour0、pl は hour23 に分かれる。
+        r = _make_result_with_entry(
+            [10.0], [_TS_MON_H0], [_TS_MON_H23], [10010.0])
+        agg = _run(r, r).segments["is"].agg
+        # entries 系は entry_time(hour0) に積まれる
+        assert agg["entries_hour"][0] == 1
+        assert agg["entries_hour"][23] == 0
+        # pl 系は exit_time(hour23) に積まれる（同一 trade でもバケットが分かれる）
+        assert agg["pl_hour"][23] == 10.0
+        assert agg["pl_hour"][0] == 0.0
+
+    def test_entries_count_integrity_equals_trades(self):
+        # 件数整合: Σ entries_hour == len(trades)
+        r = _make_result_with_entry(
+            [10.0, -5.0, 20.0], [_TS_MON_H0, _TS_MON_H0, _TS_MON_H23],
+            [2000, 3000, 4000], [10010.0, 10005.0, 10025.0])
+        seg = _run(r, r).segments["is"]
+        assert sum(seg.agg["entries_hour"].values()) == len(seg.trades)
+
+    def test_scatter_ids_match_trade_ids(self):
+        # scatter の id は trade id（1始点 index）に一致
+        r = _make_result_with_entry(
+            [10.0, -5.0], [_TS_MON_H0, _TS_MON_H23], [2000, 3000],
+            [10010.0, 10005.0])
+        seg = _run(r, r).segments["is"]
+        scat_ids = sorted(p["id"] for p in seg.agg["scatter_mfe"])
+        assert scat_ids == sorted(t.id for t in seg.trades)
+
+    def test_agg_built_via_derive_not_inline(self):
+        # 指針1: UC は derive 純関数を呼ぶ組立のみ（loop 直書きしない）。
+        # 同一入力を derive へ直接渡した結果と UC の entries/pl が一致する。
+        from simulator.report_ui.usecase import derive
+        entry_times = [_TS_MON_H0, _TS_MON_H23]
+        exit_times = [_TS_MON_H23, _TS_MON_H0]
+        profits = [10.0, -5.0]
+        r = _make_result_with_entry(profits, entry_times, exit_times,
+                                    [10010.0, 10005.0])
+        agg = _run(r, r).segments["is"].agg
+        assert agg["entries_hour"] == derive.entries_buckets(entry_times)["hour"]
+        assert agg["pl_hour"] == derive.pl_buckets(zip(exit_times, profits))["hour"]
+
+    def test_empty_trades_keep_empty_aggs(self):
+        # 空 trades: scatter は空列・hold/entries は 0 埋め維持（致命-3 1:1 を満たす空 result）
+        r = _make_result([], [], [])
+        agg = _run(r, r).segments["is"].agg
+        assert agg["scatter_mfe"] == []
+        assert sum(agg["entries_hour"].values()) == 0
+        assert sum(agg["hold_cnt"].values()) == 0

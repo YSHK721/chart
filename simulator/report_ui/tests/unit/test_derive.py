@@ -268,3 +268,99 @@ class TestHeatR2Contract:
         cells = derive.heat_cells([(ts, 10.0)])
         back = (cells[0]["wday"], cells[0]["hour"])
         assert back == self._front_contract(ts)
+
+
+# --- ④ agg 純関数（entries/pl/scatter/hold・試作 prep_data.py:177-231 準拠） -----------
+
+class TestEntriesBuckets:
+    """entries_* は entry_time の UTC 基準（hour/session/wday/month）で件数を積む。"""
+
+    def test_hour_session_wday_month_full_keys(self):
+        # 全 hour(0..23)・全 session・全 wday キーを 0 埋めで確保（プロト同形状）
+        b = derive.entries_buckets([_TS_MON_H0])
+        assert set(b["hour"].keys()) == set(range(24))
+        assert set(b["session"].keys()) == {"Asia", "Europe", "USA"}
+        assert set(b["wday"].keys()) == set(derive.WEEK)
+        # Mon hour0 = Asia セッション（session_of(0)="Asia"）
+        assert b["hour"][0] == 1
+        assert b["session"]["Asia"] == 1
+        assert b["wday"]["Mon"] == 1
+        assert b["month"]["2026-04"] == 1
+
+    def test_empty_entries_zero_filled(self):
+        # 空入力: hour/session/wday は 0 埋め維持、month は空 dict
+        b = derive.entries_buckets([])
+        assert b["hour"] == {h: 0 for h in range(24)}
+        assert b["session"] == {"Asia": 0, "Europe": 0, "USA": 0}
+        assert b["wday"] == {w: 0 for w in derive.WEEK}
+        assert b["month"] == {}
+
+    def test_session_boundary_uses_session_of(self):
+        # session 境界（hour7=Europe・hour13=USA）が session_of と一致
+        ts7 = _TS_MON_H0 + 7 * 3600   # Mon hour7 → Europe
+        ts13 = _TS_MON_H0 + 13 * 3600  # Mon hour13 → USA
+        b = derive.entries_buckets([ts7, ts13])
+        assert b["session"]["Europe"] == 1
+        assert b["session"]["USA"] == 1
+        assert b["session"]["Asia"] == 0
+
+
+class TestPlBuckets:
+    """pl_* は exit_time の UTC 基準（hour/wday/month）で profit を round(,1) で積む。"""
+
+    def test_hour_wday_month_by_exit_time(self):
+        b = derive.pl_buckets([(_TS_MON_H0, 10.0), (_TS_MON_H23, -5.0)])
+        assert b["hour"][0] == 10.0
+        assert b["hour"][23] == -5.0
+        assert b["wday"]["Mon"] == 5.0
+        assert b["month"]["2026-04"] == 5.0
+
+    def test_rounding_to_one_decimal(self):
+        # 試作同様 round(v,1)（合算後丸め）
+        b = derive.pl_buckets([(_TS_MON_H0, 0.05), (_TS_MON_H0, 0.06)])
+        assert b["hour"][0] == 0.1
+
+    def test_empty_zero_filled(self):
+        b = derive.pl_buckets([])
+        assert b["hour"] == {h: 0.0 for h in range(24)}
+        assert b["wday"] == {w: 0.0 for w in derive.WEEK}
+        assert b["month"] == {}
+
+
+class TestScatterPoints:
+    """scatter は [{x, y(profit), id}]（x=mfe または mae・id=trade id）。"""
+
+    def test_points_keep_id_x_y(self):
+        pts = derive.scatter_points([(1.5, 10.0, 7), (2.0, -3.0, 9)])
+        assert pts == [
+            {"x": 1.5, "y": 10.0, "id": 7},
+            {"x": 2.0, "y": -3.0, "id": 9},
+        ]
+
+    def test_empty_is_empty_list(self):
+        assert derive.scatter_points([]) == []
+
+
+class TestHoldBuckets:
+    """hold_* は hold_bucket(hold_sec) で profit 合計と件数を 7 区分へ積む。"""
+
+    def test_pl_and_cnt_by_bucket(self):
+        # 30s→<1m / 90s→1-2m（hold_bucket 境界踏襲）
+        agg = derive.hold_buckets([(30, 10.0), (90, -4.0), (30, 2.0)])
+        assert agg["cnt"]["<1m"] == 2
+        assert agg["cnt"]["1-2m"] == 1
+        assert agg["pl"]["<1m"] == 12.0
+        assert agg["pl"]["1-2m"] == -4.0
+
+    def test_boundary_60s_is_one_to_two_minutes(self):
+        # 境界 60s は [60,120) → "1-2m"（hold_bucket 規約）
+        agg = derive.hold_buckets([(60, 5.0)])
+        assert agg["cnt"]["1-2m"] == 1
+        assert agg["cnt"]["<1m"] == 0
+
+    def test_empty_zero_filled_all_buckets(self):
+        agg = derive.hold_buckets([])
+        labels = [lab for _, _, lab in derive._HBUCK]
+        assert set(agg["pl"].keys()) == set(labels)
+        assert all(v == 0.0 for v in agg["pl"].values())
+        assert all(v == 0 for v in agg["cnt"].values())

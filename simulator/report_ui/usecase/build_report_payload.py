@@ -182,22 +182,28 @@ class BuildReportPayload:
 
         時刻分解（ts→wday/hour, UTC）は derive.heat_cells が担う（loop 内で直書きしない・
         アーキ指針 §1）。entry_time×profit を渡し entry wday|hour セルへ集計させる。
-        他の集計（entries/pl/scatter/hold）は④で実体化（空/最小キー確保を維持）。
+        他の集計（entries/pl/scatter/hold）も④で derive 純関数を呼ぶ組立として実体化する
+        （loop 直書き禁止・アーキ指針 §1）。entries 系=entry_time 基準、pl 系=exit_time 基準。
         """
         heat = derive.heat_cells((t.entry_time, t.profit) for t in trade_rows)
+        entries = derive.entries_buckets(t.entry_time for t in trade_rows)
+        pl = derive.pl_buckets((t.exit_time, t.profit) for t in trade_rows)
+        hold = derive.hold_buckets((t.hold_sec, t.profit) for t in trade_rows)
         return {
-            "entries_hour": {},
-            "entries_session": {"Asia": 0, "Europe": 0, "USA": 0},
-            "entries_wday": {},
-            "entries_month": {},
-            "pl_hour": {},
-            "pl_wday": {},
-            "pl_month": {},
+            "entries_hour": entries["hour"],
+            "entries_session": entries["session"],
+            "entries_wday": entries["wday"],
+            "entries_month": entries["month"],
+            "pl_hour": pl["hour"],
+            "pl_wday": pl["wday"],
+            "pl_month": pl["month"],
             "balance_curve": balance_curve,
-            "scatter_mfe": [],
-            "scatter_mae": [],
-            "hold_pl": {},
-            "hold_cnt": {},
+            "scatter_mfe": derive.scatter_points(
+                (t.mfe, t.profit, t.id) for t in trade_rows),
+            "scatter_mae": derive.scatter_points(
+                (t.mae, t.profit, t.id) for t in trade_rows),
+            "hold_pl": hold["pl"],
+            "hold_cnt": hold["cnt"],
             "weekorder": derive.WEEK,
             "heat": heat,
         }
