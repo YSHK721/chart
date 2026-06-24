@@ -275,3 +275,83 @@ class TestTradeRows:
         # entry_price 39402.0, SL200/TP500/point0.1 → sl=39382.0, tp=39452.0
         assert seg.trades[0].sl == "39382.0"
         assert seg.trades[0].tp == "39452.0"
+
+
+# --- agg.heat 結合（§4.7・F-3 / アーキ指針 §1・§6 OCP） -----------------------
+
+# 既知 UTC entry_time（R-2 検証用。test_derive と同規約）。
+_TS_MON_H0 = 1776643200   # 2026-04-20 00:00:00 UTC（weekday()=0→"Mon"）
+_TS_MON_H23 = 1776726000  # 2026-04-20 23:00:00 UTC
+
+
+def _make_result_with_entry(profits, entry_times, exit_times, balances, side="buy"):
+    """entry_time を明示指定して FakeResult を組む（heat の wday|hour 分類検証用）。"""
+    trades = []
+    for p, et, xt in zip(profits, entry_times, exit_times):
+        trades.append(_FakeTrade(
+            side=side, entry_time=et, exit_time=xt,
+            entry_price=39402.0, exit_price=39402.0 + p, volume=0.1,
+            exit_reason="tp" if p > 0 else "sl", _pnl=p,
+        ))
+    stats = _FakeStats(profit=sum(profits), trades=len(trades))
+    return _FakeResult(trades=trades, balance_curve=list(balances), stats=stats)
+
+
+class TestAggHeat:
+    def test_is_and_oos_heat_both_nonempty(self):
+        # OCP 対称: IS/OOS 両区間で heat が同一経路で実体化（両非空）
+        r = _make_result_with_entry(
+            [10.0, -5.0], [_TS_MON_H0, _TS_MON_H23], [2000, 3000],
+            [10010.0, 10005.0])
+        payload = _run(r, r)
+        assert len(payload.segments["is"].agg["heat"]) > 0
+        assert len(payload.segments["oos"].agg["heat"]) > 0
+
+    def test_heat_cell_count_sum_equals_trades(self):
+        # 件数整合: Σ cell.count == len(trades)
+        r = _make_result_with_entry(
+            [10.0, -5.0, 20.0], [_TS_MON_H0, _TS_MON_H0, _TS_MON_H23],
+            [2000, 3000, 4000], [10010.0, 10005.0, 10025.0])
+        seg = _run(r, r).segments["is"]
+        total = sum(c["count"] for c in seg.agg["heat"])
+        assert total == len(seg.trades)
+
+    def test_heat_representative_cell_matches_manual(self):
+        # 代表セル一致: Mon hour0 に 2 取引(profit 30,-10; 1勝) → profit=20.0,count=2,wins=1
+        r = _make_result_with_entry(
+            [30.0, -10.0], [_TS_MON_H0, _TS_MON_H0], [2000, 3000],
+            [10030.0, 10020.0])
+        seg = _run(r, r).segments["is"]
+        by = {(c["wday"], c["hour"]): c for c in seg.agg["heat"]}
+        cell = by[("Mon", 0)]
+        assert cell["profit"] == 20.0
+        assert cell["count"] == 2
+        assert cell["wins"] == 1
+
+    def test_agg_keys_shape_unchanged(self):
+        # 形状不変（OCP）: agg のキー集合は②と不変（heat のみ空→実体・他遅延キー維持）
+        r = _make_result_with_entry([10.0], [_TS_MON_H0], [2000], [10010.0])
+        agg = _run(r, r).segments["is"].agg
+        assert set(agg.keys()) == {
+            "entries_hour", "entries_session", "entries_wday", "entries_month",
+            "pl_hour", "pl_wday", "pl_month", "balance_curve",
+            "scatter_mfe", "scatter_mae", "hold_pl", "hold_cnt",
+            "weekorder", "heat",
+        }
+        # ④⑤ スコープ外は空キー維持（範囲外の非実装を固定）
+        assert agg["scatter_mfe"] == []
+        assert agg["hold_pl"] == {}
+
+    def test_heat_built_via_derive_not_inline(self):
+        # 指針1: UC は derive.heat_cells を呼ぶ組立のみ（loop 内で時刻分解を直書きしない）。
+        # 同一 (entry_time, profit) を derive.heat_cells へ直接渡した結果とセル集合が一致する。
+        from simulator.report_ui.usecase import derive
+        entry_times = [_TS_MON_H0, _TS_MON_H23, _TS_MON_H0]
+        profits = [30.0, -10.0, 5.0]
+        r = _make_result_with_entry(profits, entry_times, [2000, 3000, 4000],
+                                    [10030.0, 10020.0, 10025.0])
+        uc_cells = _run(r, r).segments["is"].agg["heat"]
+        direct = derive.heat_cells(zip(entry_times, profits))
+        norm = lambda cs: sorted(
+            (c["wday"], c["hour"], c["profit"], c["count"], c["wins"]) for c in cs)
+        assert norm(uc_cells) == norm(direct)

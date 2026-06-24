@@ -178,7 +178,13 @@ class BuildReportPayload:
         return trade_rows
 
     def _agg(self, trade_rows, balance_curve):
-        """ステージ① で実体化する agg。balance_curve のみ実体・他は空/最小キー確保。"""
+        """agg を組み立てる。F-3 で heat を実体化（derive.heat_cells を呼ぶ組立のみ）。
+
+        時刻分解（ts→wday/hour, UTC）は derive.heat_cells が担う（loop 内で直書きしない・
+        アーキ指針 §1）。entry_time×profit を渡し entry wday|hour セルへ集計させる。
+        他の集計（entries/pl/scatter/hold）は④で実体化（空/最小キー確保を維持）。
+        """
+        heat = derive.heat_cells((t.entry_time, t.profit) for t in trade_rows)
         return {
             "entries_hour": {},
             "entries_session": {"Asia": 0, "Europe": 0, "USA": 0},
@@ -192,8 +198,8 @@ class BuildReportPayload:
             "scatter_mae": [],
             "hold_pl": {},
             "hold_cnt": {},
-            "weekorder": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-            "heat": [],
+            "weekorder": derive.WEEK,
+            "heat": heat,
         }
 
     # --- summary（§4.8・試作 summarize 準拠） --------------------------------

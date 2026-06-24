@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from simulator.report_ui.usecase import derive
@@ -179,3 +181,90 @@ class TestMaxDrawdownPct:
 
     def test_empty_returns_zero(self):
         assert derive.max_drawdown_pct([]) == 0.0
+
+
+# --- heat_cells（§4.7 agg.heat・試作 prep_data.py:185-223・R-2 wday規約） -------
+
+# 既知 UTC 基準時刻（R-2 検証用）。
+#   2026-04-20 00:00:00Z = 月曜 hour0（weekday()=0→"Mon"）
+#   2026-04-19 23:00:00Z = 日曜 hour23（weekday()=6→"Sun"）
+#   2026-04-20 23:00:00Z = 月曜 hour23
+_TS_MON_H0 = 1776643200   # 2026-04-20 00:00:00 UTC
+_TS_SUN_H23 = 1776639600  # 2026-04-19 23:00:00 UTC
+_TS_MON_H23 = 1776726000  # 2026-04-20 23:00:00 UTC
+
+
+class TestHeatCells:
+    def test_empty_trades_returns_empty(self):
+        # 境界（空入力）: 取引なし → 空セル
+        assert derive.heat_cells([]) == []
+
+    def test_single_trade_cell_has_all_keys(self):
+        # 正常系: 1 取引 → 1 セル・キー {wday,hour,profit,count,wins} 完備
+        cells = derive.heat_cells([(_TS_MON_H0, 50.0)])
+        assert len(cells) == 1
+        c = cells[0]
+        assert set(c.keys()) == {"wday", "hour", "profit", "count", "wins"}
+        assert c["wday"] == "Mon"
+        assert c["hour"] == 0
+        assert c["profit"] == 50.0
+        assert c["count"] == 1
+        assert c["wins"] == 1
+
+    def test_groups_same_wday_hour_into_one_cell(self):
+        # 正常系: 同じ entry wday|hour の 2 取引は 1 セルへ集約（profit 加算・count 加算）
+        cells = derive.heat_cells([(_TS_MON_H0, 30.0), (_TS_MON_H0, -10.0)])
+        assert len(cells) == 1
+        c = cells[0]
+        assert c["count"] == 2
+        assert c["profit"] == 20.0
+
+    def test_wins_counts_only_profit_gt_zero(self):
+        # 境界（win 判定=0）: profit>0 のみ wins（profit==0 は非 win）
+        cells = derive.heat_cells([
+            (_TS_MON_H0, 10.0),   # win
+            (_TS_MON_H0, 0.0),    # 非 win（境界）
+            (_TS_MON_H0, -5.0),   # 非 win
+        ])
+        c = cells[0]
+        assert c["count"] == 3
+        assert c["wins"] == 1
+
+    def test_sunday_classified_as_sun_idx6(self):
+        # 境界（日曜・wday規約 Mon=0）: weekday()=6 → "Sun"（R-2 規約）
+        cells = derive.heat_cells([(_TS_SUN_H23, 10.0)])
+        assert cells[0]["wday"] == "Sun"
+        assert cells[0]["hour"] == 23
+
+    def test_hour0_and_hour23_boundaries(self):
+        # 境界（hour=0/23）: UTC hour 抽出の両端が別セルに分かれる
+        cells = derive.heat_cells([(_TS_MON_H0, 1.0), (_TS_MON_H23, 2.0)])
+        by = {(c["wday"], c["hour"]): c for c in cells}
+        assert ("Mon", 0) in by
+        assert ("Mon", 23) in by
+
+
+class TestHeatR2Contract:
+    """R-2 整合（最重要回帰・アーキ指針 §4）。
+
+    back（derive.heat_cells の weekday() Mon=0・UTC）が、front 規約
+    `(getUTCDay()+6)%7`（Mon=0）＋UTC と同一 (wday,hour) を導く（=同一 trade を選ぶ）ことを
+    境界（日曜・hour0・hour23）で固定する。front 側の同規約検証は heatmap.test.mjs が担う。
+    本テストは characterization（既存 Green の heat_cells 分類が R-2 規約に一致することの回帰保護）。
+    """
+
+    @staticmethod
+    def _front_contract(ts):
+        """front 規約の Python 等価実装（(getUTCDay()+6)%7・UTC）で (wday,hour) を求める。"""
+        dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        # getUTCDay(): Sun=0..Sat=6 → (+6)%7 で Mon=0..Sun=6。python weekday() と等価。
+        js_dow = (dt.weekday() + 1) % 7  # python weekday()(Mon=0) → getUTCDay()(Sun=0)
+        idx = (js_dow + 6) % 7
+        return derive.WEEK[idx], dt.hour
+
+    @pytest.mark.parametrize("ts", [_TS_MON_H0, _TS_SUN_H23, _TS_MON_H23])
+    def test_back_cell_matches_front_contract(self, ts):
+        # back heat_cells の (wday,hour) 分類が front 規約と一致（境界 ts）
+        cells = derive.heat_cells([(ts, 10.0)])
+        back = (cells[0]["wday"], cells[0]["hour"])
+        assert back == self._front_contract(ts)

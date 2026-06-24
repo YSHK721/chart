@@ -6,6 +6,11 @@ sl/tp 導出・excursion(mfe/mae)・session/hold バケット・balance再構成
 from __future__ import annotations
 
 import bisect
+from datetime import datetime, timezone
+
+# wday インデックス規約（R-2・アーキ指針 §4）: weekday() Mon=0..Sun=6（UTC 基準）。
+# front 側 `(getUTCDay()+6)%7` と単一規約で一致させる（heat 分類とフィルタ判定が同一 trade を選ぶ）。
+WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # hold バケット定義（詳細設計 §6.2 HBUCK・試作 prep_data.py:206-207 踏襲）。
 _HBUCK = [
@@ -91,6 +96,31 @@ def reconstruct_balance_curve(exit_times, balances):
             f"{len(exit_times)} != {len(balances)}"
         )
     return [{"time": t, "value": v} for t, v in zip(exit_times, balances)]
+
+
+def heat_cells(entries):
+    """entry 時刻×損益を曜日×時間セルへ集計する（§4.7 agg.heat・試作 prep_data.py:185-223）。
+
+    entries は (entry_time:int, profit:float) の反復子。entry の UTC wday|hour で
+    グルーピングし、各セルに profit 合計・count・wins(profit>0) を積む。
+    時刻分解は datetime.fromtimestamp(int_ts, tz=timezone.utc) で決定論（domain依存・int時刻のみ）。
+    返り値は [{wday,hour,profit,count,wins}]（heat セル列）。空入力は空列。
+    """
+    heat = {}
+    for entry_time, profit in entries:
+        dt = datetime.fromtimestamp(int(entry_time), tz=timezone.utc)
+        wday = WEEK[dt.weekday()]
+        hour = dt.hour
+        cell = heat.setdefault((wday, hour), {"profit": 0.0, "count": 0, "wins": 0})
+        cell["profit"] += profit
+        cell["count"] += 1
+        if profit > 0:
+            cell["wins"] += 1
+    return [
+        {"wday": w, "hour": h, "profit": round(v["profit"], 1),
+         "count": v["count"], "wins": v["wins"]}
+        for (w, h), v in heat.items()
+    ]
 
 
 def max_drawdown_pct(curve):
