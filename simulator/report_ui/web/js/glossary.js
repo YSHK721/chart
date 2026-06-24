@@ -1,0 +1,80 @@
+// レポート項目の章立て（REPORT_GROUPS）と日本語呼称（LABELS_JA）の静的辞書。
+// 依存0のリーフモジュール（DOM 非依存・他 js 非 import）。compare.js（劣化比較表の章立て・
+// ラベル）と将来の用語表示が消費する。詳細設計 §11・試作 index.html:851-889 準拠。
+//
+// 章立て・呼称は MT5 ReportTester のラベル体系に合わせる。本番 report は BacktestStats 保持
+// 指標のみ（§4.5）のため、章立てに載るが report に無いキーは表示側で k in r フィルタにより
+// スキップされる（欠落耐性）。
+
+// [章タイトル, [英ラベル, ...]] の配列。劣化比較表・サマリー分類の表示順を規定する。
+export const REPORT_GROUPS = [
+  ["戦略・テスト設定",
+    ["Expert", "Symbol", "Period", "Inputs", "Company", "Currency",
+     "Initial Deposit", "Leverage"]],
+  ["1. 基本設定とテスト環境",
+    ["History Quality", "Bars", "Ticks", "Symbols"]],
+  ["2. 損益と資金効率",
+    ["Total Net Profit", "Gross Profit", "Gross Loss", "Profit Factor",
+     "Recovery Factor", "Sharpe Ratio", "Expected Payoff", "AHPR", "GHPR"]],
+  ["3. 取引頻度と保有時間",
+    ["Total Trades", "Total Deals", "Minimal position holding time",
+     "Average position holding time", "Maximal position holding time"]],
+  ["4. 勝率とポジション別の傾向",
+    ["Profit Trades (% of total)", "Loss Trades (% of total)",
+     "Short Trades (won %)", "Long Trades (won %)"]],
+  ["5. 勝ち負けの取引詳細",
+    ["Largest profit trade", "Average profit trade", "Largest loss trade",
+     "Average loss trade", "Maximum consecutive wins ($)",
+     "Maximum consecutive losses ($)", "Maximal consecutive profit (count)",
+     "Maximal consecutive loss (count)", "Average consecutive wins",
+     "Average consecutive losses"]],
+  ["6. リスクとドローダウン",
+    ["Balance Drawdown Absolute", "Balance Drawdown Maximal",
+     "Balance Drawdown Relative", "Equity Drawdown Absolute",
+     "Equity Drawdown Maximal", "Equity Drawdown Relative", "Margin Level"]],
+  ["7. 統計的指標と相関",
+    ["LR Correlation", "LR Standard Error", "Z-Score", "OnTester result",
+     "Correlation (Profits,MFE)", "Correlation (Profits,MAE)",
+     "Correlation (MFE,MAE)"]],
+];
+
+// 英ラベル → 日本語呼称（仕様書「レポートの定義」準拠）。未登録キーは英語のまま表示する。
+export const LABELS_JA = {
+  "Expert": "戦略（エキスパート）", "Symbol": "銘柄", "Period": "期間",
+  "Inputs": "入力パラメータ", "Company": "会社", "Currency": "通貨",
+  "Initial Deposit": "初期証拠金", "Leverage": "レバレッジ",
+  "History Quality": "履歴品質", "Bars": "バー数", "Ticks": "ティック数",
+  "Symbols": "銘柄数",
+  "Total Net Profit": "総純損益", "Gross Profit": "総利益", "Gross Loss": "総損失",
+  "Profit Factor": "プロフィットファクター", "Recovery Factor": "リカバリーファクター",
+  "Sharpe Ratio": "シャープレシオ", "Expected Payoff": "期待利得",
+  "AHPR": "AHPR（算術平均収益率）", "GHPR": "GHPR（幾何平均収益率）",
+  "Total Trades": "総取引数", "Total Deals": "総ディール数",
+  "Minimal position holding time": "最小ポジション保有時間",
+  "Average position holding time": "平均ポジション保有時間",
+  "Maximal position holding time": "最大ポジション保有時間",
+  "Profit Trades (% of total)": "勝率（勝ち取引）",
+  "Loss Trades (% of total)": "敗率（負け取引）",
+  "Short Trades (won %)": "ショートポジション勝率",
+  "Long Trades (won %)": "ロングポジション勝率",
+  "Largest profit trade": "最大勝ち取引", "Average profit trade": "平均勝ち取引",
+  "Largest loss trade": "最大負け取引", "Average loss trade": "平均負け取引",
+  "Maximum consecutive wins ($)": "最大連続勝ち数（利益）",
+  "Maximum consecutive losses ($)": "最大連続負け数（損失）",
+  "Maximal consecutive profit (count)": "最大連続利益（取引数）",
+  "Maximal consecutive loss (count)": "最大連続損失（取引数）",
+  "Average consecutive wins": "平均連続勝ち数",
+  "Average consecutive losses": "平均連続負け数",
+  "Balance Drawdown Absolute": "残高ベース絶対ドローダウン",
+  "Balance Drawdown Maximal": "残高ベース最大ドローダウン",
+  "Balance Drawdown Relative": "残高ベース相対ドローダウン",
+  "Equity Drawdown Absolute": "含み損ベース絶対ドローダウン",
+  "Equity Drawdown Maximal": "含み損ベース最大ドローダウン",
+  "Equity Drawdown Relative": "含み損ベース相対ドローダウン",
+  "Margin Level": "証拠金維持率",
+  "LR Correlation": "線形回帰相関", "LR Standard Error": "線形回帰標準誤差",
+  "Z-Score": "Zスコア", "OnTester result": "OnTester結果",
+  "Correlation (Profits,MFE)": "相関係数（利益, MFE）",
+  "Correlation (Profits,MAE)": "相関係数（利益, MAE）",
+  "Correlation (MFE,MAE)": "相関係数（MFE, MAE）",
+};
