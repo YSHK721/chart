@@ -12,8 +12,14 @@
   body{margin:0;background:var(--bg);color:var(--fg);font:12px/1.4 -apple-system,Segoe UI,Roboto,Tahoma,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
   header{padding:6px 12px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex:0 0 auto}
   header b{color:#fff} header .mut{color:var(--mut)}
-  #chartWrap{flex:0 0 46%;position:relative;border-bottom:2px solid var(--line)}
-  #chart{position:absolute;inset:0}
+  #chartWrap{flex:0 0 52%;position:relative;border-bottom:2px solid var(--line);display:flex;flex-direction:column}
+  #chart{flex:1 1 54%;position:relative;min-height:0}
+  .subpane{flex:1 1 23%;position:relative;min-height:0;border-top:1px solid var(--line)}
+  .subpane>.plabel{position:absolute;top:3px;left:8px;z-index:4;font-size:10px;font-weight:700;
+    color:var(--mut);background:rgba(22,27,34,.6);padding:1px 6px;border-radius:3px;pointer-events:none}
+  .resizer{flex:0 0 5px;background:var(--line);cursor:row-resize;z-index:6}
+  .resizer:hover,.resizer.drag{background:var(--sel)}
+  #rz0{flex:0 0 5px}
   #chartBadge{position:absolute;top:8px;left:12px;z-index:5;background:rgba(22,27,34,.85);
     padding:3px 8px;border-radius:4px;color:var(--mut);pointer-events:none}
   #bottom{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;background:var(--panel)}
@@ -139,8 +145,13 @@
 
 <div id="chartWrap">
   <div id="chart"></div>
+  <div class="resizer" id="rz1" title="ドラッグで高さ調整"></div>
+  <div class="subpane" id="paneBal"><span class="plabel">Balance（資産曲線）</span></div>
+  <div class="resizer" id="rz2" title="ドラッグで高さ調整"></div>
+  <div class="subpane" id="paneDD"><span class="plabel">Drawdown（残高ベースDD・JPY）</span></div>
   <div id="chartBadge">—</div>
 </div>
+<div class="resizer" id="rz0" title="ドラッグでチャート/下部の高さ調整"></div>
 
 <div id="bottom">
   <div class="tabs" id="tabs">
@@ -170,6 +181,9 @@
           </div>
           <div class="cmp-card"><h4>純損益の内訳（区間別: 総利益 / 総損失 / 純損益）</h4>
             <div class="cv"><canvas id="cmpPnl"></canvas></div>
+          </div>
+          <div class="cmp-card"><h4>最大ドローダウン（残高ベース・JPY・縦線=分割 04-15）</h4>
+            <div class="cv"><canvas id="cmpDD"></canvas></div>
           </div>
         </div>
       </div>
@@ -204,7 +218,7 @@ const fmtT = t => { const d=new Date(t*1000);
   return `${d.getUTCFullYear()}.${p(d.getUTCMonth()+1)}.${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; };
 const fmtMoney = v => (v==null?'':(v>0?'+':'')+v.toLocaleString());
 
-let DATA, chart, candle, tradesById=new Map(), MARKER_CAP=700;
+let DATA, chart, balChart, ddChart, candle, balSeries, ddSeries, tradesById=new Map(), MARKER_CAP=700;
 let activeFilter=null;            // Set of trade ids, or null
 let hoverTradeId=null;
 // 既存仕様(trade_markers_renderer.js)踏襲: hover中ペアの[entry,exit]区間外を per-bar 減光。
@@ -227,7 +241,31 @@ function init(){
   buildCompare();      // 比較タブ（両区間・区間切替に依存しない）
   buildGlossary();     // 用語（静的）
   wireTabs();
+  wireResizers();      // ウィンドウ高さのドラッグ調整
   selectSegment('is'); // マルチビュー各パネルを IS で初期描画
+}
+
+// ウィンドウ（ローソク足/Balance/Drawdown/下部）の高さをドラッグで調整可能にする。
+function makeResizer(rz, prevEl, nextEl){
+  if(!rz) return;
+  rz.addEventListener('mousedown', e=>{
+    e.preventDefault();
+    const startY=e.clientY;
+    const pH=prevEl.getBoundingClientRect().height, nH=nextEl.getBoundingClientRect().height;
+    rz.classList.add('drag'); document.body.style.userSelect='none';
+    const move=ev=>{ const dy=ev.clientY-startY;
+      prevEl.style.flex='0 0 '+Math.max(40,pH+dy)+'px';
+      nextEl.style.flex='0 0 '+Math.max(40,nH-dy)+'px'; };
+    const up=()=>{ rz.classList.remove('drag'); document.body.style.userSelect='';
+      document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up); };
+    document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+  });
+}
+function wireResizers(){
+  const $=id=>document.getElementById(id);
+  makeResizer($('rz1'), $('chart'), $('paneBal'));
+  makeResizer($('rz2'), $('paneBal'), $('paneDD'));
+  makeResizer($('rz0'), $('chartWrap'), $('bottom'));
 }
 
 // 現在区間のデータを DATA.* に流し込み、マルチビュー各パネルを再構築する。
@@ -240,6 +278,8 @@ function selectSegment(seg){
   // 既存インスタンスを破棄（区間切替で作り直す）
   Object.values(charts).forEach(c=>{ try{c.destroy();}catch(e){} }); charts={};
   if(chart){ try{chart.remove();}catch(e){} chart=null; }
+  if(balChart){ try{balChart.remove();}catch(e){} balChart=null; }
+  if(ddChart){ try{ddChart.remove();}catch(e){} ddChart=null; }
   activeFilter=null; hoverTradeId=null;
   document.querySelectorAll('.segbtn').forEach(b=>b.classList.toggle('on',b.dataset.seg===seg));
   updateHeaderMeta();
@@ -269,29 +309,99 @@ function buildSegSelector(){
 
 // ---------- chart ----------
 function buildChart(){
-  const el=document.getElementById('chart');
-  chart=LightweightCharts.createChart(el,{
-    layout:{background:{color:'#0e1117'},textColor:'#c9d1d9'},
+  const elC=document.getElementById('chart'), elB=document.getElementById('paneBal'), elD=document.getElementById('paneDD');
+  const baseTs={timeVisible:true,secondsVisible:false,borderColor:'#272d38',minBarSpacing:0.004};
+  const common=()=>({layout:{background:{color:'#0e1117'},textColor:'#c9d1d9'},
     grid:{vertLines:{color:'#1b2230'},horzLines:{color:'#1b2230'}},
-    timeScale:{timeVisible:true,secondsVisible:false,borderColor:'#272d38'},
     rightPriceScale:{borderColor:'#272d38'},
-    crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
-  });
+    crosshair:{mode:LightweightCharts.CrosshairMode.Normal},autoSize:true});
+  // インジゲーター別ウィンドウの体裁: 上2パネルは時間軸ラベル非表示、最下段(DD)のみ表示。
+  chart=LightweightCharts.createChart(elC,{...common(),timeScale:{...baseTs,visible:false}});
+  balChart=LightweightCharts.createChart(elB,{...common(),timeScale:{...baseTs,visible:false}});
+  ddChart=LightweightCharts.createChart(elD,{...common(),timeScale:{...baseTs,visible:true}});
+
   candle=chart.addCandlestickSeries({upColor:'#26a69a',downColor:'#ef5350',
      borderVisible:false,wickUpColor:'#26a69a',wickDownColor:'#ef5350'});
-  // 通常データ(色未指定=シリーズ既定の up/down)と、全減光データ(per-bar alpha 0.15)を事前計算。
   barsNormal=DATA.bars.map(b=>({time:b.time,open:b.open,high:b.high,low:b.low,close:b.close}));
   barsDim=DATA.bars.map(b=>{ const up=b.close>=b.open;
     const c=up?withAlpha('#26a69a',DIM_ALPHA):withAlpha('#ef5350',DIM_ALPHA);
     return {time:b.time,open:b.open,high:b.high,low:b.low,close:b.close,color:c,wickColor:c,borderColor:c}; });
   barTimes=DATA.bars.map(b=>b.time);
   candle.setData(barsNormal);
-  // default view = around the first trade so markers are visible/interactive
+
+  // Balance/Drawdown を各バー時刻へ前方補完 → 全チャート同一時間ドメイン（論理レンジ同期が成立）。
+  const initDep=DATA.meta.initial_deposit||10000;
+  const dedupe=arr=>{ const m=new Map(); for(const p of arr) m.set(p.time,p.value);
+    return [...m.entries()].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value})); };
+  const bc=dedupe(DATA.agg.balance_curve.map(p=>({time:p.time,value:p.value})));
+  let j=0,cur=initDep,peak=initDep; const balData=[], ddData=[];
+  for(const t of barTimes){
+    while(j<bc.length && bc[j].time<=t){ cur=bc[j].value; j++; }
+    balData.push({time:t,value:cur});
+    if(cur>peak) peak=cur;
+    ddData.push({time:t,value:+(cur-peak).toFixed(0)});
+  }
+  // Balance: エリア系列（フィル＋縦グラデ・低不透明度）
+  balSeries=balChart.addAreaSeries({lineColor:'rgba(59,130,246,0.9)',
+    topColor:'rgba(59,130,246,0.40)',bottomColor:'rgba(59,130,246,0.03)',
+    lineWidth:2,priceLineVisible:false,lastValueVisible:true});
+  balSeries.setData(balData);
+  // Drawdown: ベースライン0基準（アンダーウォーター・下方フィル＋グラデ・低不透明度）
+  ddSeries=ddChart.addBaselineSeries({baseValue:{type:'price',price:0},
+    topLineColor:'rgba(239,83,80,0)',topFillColor1:'rgba(239,83,80,0)',topFillColor2:'rgba(239,83,80,0)',
+    bottomLineColor:'rgba(239,83,80,0.9)',bottomFillColor1:'rgba(239,83,80,0.05)',bottomFillColor2:'rgba(239,83,80,0.42)',
+    lineWidth:2,priceLineVisible:false,lastValueVisible:true});
+  ddSeries.setData(ddData);
+
+  syncCharts([chart,balChart,ddChart]);
+  // クロスヘアを3ウィンドウで同期（時刻＝縦線を一致、横線は各系列の値に合わせる）。
+  const candleByTime=new Map(barsNormal.map(b=>[b.time,b.close]));
+  const balByTime=new Map(balData.map(p=>[p.time,p.value]));
+  const ddByTime=new Map(ddData.map(p=>[p.time,p.value]));
+  crosshairSync([
+    {chart:chart, series:candle, byTime:candleByTime},
+    {chart:balChart, series:balSeries, byTime:balByTime},
+    {chart:ddChart, series:ddSeries, byTime:ddByTime},
+  ]);
+
   const t0=DATA.trades.length?DATA.trades[0].entry_time:DATA.bars[0].time;
-  chart.timeScale().setVisibleRange({from:t0-600,to:t0+3*3600});
+  const t1=DATA.trades.length?DATA.trades[DATA.trades.length-1].exit_time:DATA.bars[DATA.bars.length-1].time;
+  chart.timeScale().setVisibleRange({from:t0-600,to:t1+600});
   chart.timeScale().subscribeVisibleTimeRangeChange(()=>renderMarkers());
   chart.subscribeCrosshairMove(onCrosshair);
   renderMarkers();
+}
+
+// 3チャートの可視論理レンジを相互同期（別ウィンドウでも時間軸を一致させる）。
+function syncCharts(list){
+  let lock=false;
+  for(const src of list){
+    src.timeScale().subscribeVisibleLogicalRangeChange(lr=>{
+      if(lock||!lr) return; lock=true;
+      for(const o of list){ if(o!==src){ try{o.timeScale().setVisibleLogicalRange(lr);}catch(e){} } }
+      lock=false;
+    });
+  }
+}
+
+// クロスヘア（縦のクロスライン）を全ウィンドウで同期する。
+function crosshairSync(items){
+  let lock=false;
+  for(const src of items){
+    src.chart.subscribeCrosshairMove(param=>{
+      if(lock) return; lock=true;
+      for(const o of items){
+        if(o===src) continue;
+        if(param.time===undefined || param.point===undefined){
+          o.chart.clearCrosshairPosition();
+        } else {
+          const v=o.byTime.get(param.time);
+          o.chart.setCrosshairPosition(v===undefined?0:v, param.time, o.series);
+        }
+      }
+      lock=false;
+    });
+  }
 }
 
 function visibleTrades(){
@@ -515,11 +625,11 @@ function gradHRgba(ctx,rgb,alpha){ // 散布図用: 横方向に明度を僅か�
 }
 function card(id,title,full){ return `<div class="card ${full?'full':''}"><h4>${title}</h4><div class="cv"><canvas id="${id}"></canvas></div></div>`; }
 function buildGraphs(){
-  const g=DATA.agg, W=g.weekorder;
+  const A=DATA.segments.is.agg, B=DATA.segments.oos.agg, W=A.weekorder;
+  const IS='#3b82f6', OOS='#f0843b';
+  // Balance/Drawdown はチャート下部のオーバーレイ・パネル（同一時間軸）に移設。ここでは比較棒/散布のみ。
   document.getElementById('graphGrid').innerHTML=
-    card('gBal','Balance（資産曲線）',true)+
-    card('gDD','Drawdown（ドローダウン推移・残高ベース）',true)+
-    card('gEH','Entries by hours (Asia/Europe/USA)')+
+    card('gEH','Entries by hours')+
     card('gEW','Entries by weekdays')+
     card('gEM','Entries by months')+
     card('gPH','Profits and losses by hours')+
@@ -533,88 +643,40 @@ function buildGraphs(){
     scales:{x:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}},y:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}},
     onClick:ev});
   const hours=[...Array(24).keys()];
-  const sessCol=h=> h<7?'#f0b429': h<13?'#3b82f6':'#26a69a';
-
-  // Balance
-  charts.bal=new Chart(gId('gBal'),{type:'line',
-    data:{labels:g.balance_curve.map(p=>p.time),
-      datasets:[{data:g.balance_curve.map(p=>({x:p.time,y:p.value})),
-        borderColor:ctx=>gradH(ctx,'#3b82f6'),
-        borderWidth:1,pointRadius:0,fill:true,backgroundColor:ctx=>gradArea(ctx,'59,130,246')}]},
-    options:{...baseOpt((e,els)=>{ if(els[0]){ const p=g.balance_curve[els[0].index]; focusTime(p.time);} }),
-      parsing:false,plugins:{legend:{display:false}},
-      scales:{x:{type:'linear',ticks:{color:'#8b949e',callback:v=>fmtT(v).slice(5,10)},grid:{color:'#1b2230'}},
-              y:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
-
-  // Drawdown（アンダーウォーター曲線）: 確定残高の連続ピークからの下落を JPY/％ で算出。
-  //   初期証拠金をピーク初期値に採用（最初の損失も 0 起点から正しく反映）。
-  const init=parseFloat(String(DATA.report['Initial Deposit']||'10000').replace(/[^\d.]/g,''))||10000;
-  let peak=init;
-  const ddData=g.balance_curve.map(p=>{ if(p.value>peak) peak=p.value;
-    return {x:p.time, y:+(p.value-peak).toFixed(1), pct:+(((p.value-peak)/peak)*100).toFixed(2)}; });
-  const maxDD=ddData.reduce((m,d)=>d.y<m.y?d:m,{y:0,pct:0});
-  charts.dd=new Chart(gId('gDD'),{type:'line',
-    data:{datasets:[{data:ddData,borderColor:ctx=>gradH(ctx,'#ef5350'),borderWidth:1,pointRadius:0,fill:true,
-      backgroundColor:ctx=>gradArea(ctx,'239,83,80',0.26,0.02)}]},
-    options:{...baseOpt((e,els)=>{ if(els[0]) focusTime(ddData[els[0].index].x); }),
-      parsing:false,
-      plugins:{legend:{display:false},
-        tooltip:{callbacks:{label:c=>`DD ${c.raw.y.toLocaleString()} JPY (${c.raw.pct}%)`}},
-        title:{display:true,position:'bottom',color:'#ef5350',
-          text:`最大ドローダウン ${maxDD.y.toLocaleString()} JPY (${maxDD.pct}%)`}},
-      scales:{x:{type:'linear',ticks:{color:'#8b949e',callback:v=>fmtT(v).slice(5,10)},grid:{color:'#1b2230'}},
-              y:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
 
   const barClickHour=(e,els)=>{ if(els[0]) filterByHour(els[0].index); };
   const barClickWday=(e,els)=>{ if(els[0]) filterByWday(W[els[0].index]); };
+  const pair=(da,db)=>[{label:'IS',data:da,backgroundColor:IS},{label:'OOS',data:db,backgroundColor:OOS}];
 
-  // Entries by hours
-  charts.eh=new Chart(gId('gEH'),{type:'bar',
-    data:{labels:hours,datasets:[{label:'entries',data:hours.map(h=>g.entries_hour[h]||0),
-      backgroundColor:ctx=>gradV(ctx,sessCol(ctx.dataIndex))}]},options:baseOpt(barClickHour)});
-  // Entries weekday
-  charts.ew=new Chart(gId('gEW'),{type:'bar',
-    data:{labels:W,datasets:[{label:'entries',data:W.map(w=>g.entries_wday[w]||0),
-      backgroundColor:ctx=>gradV(ctx,'#3b82f6')}]},
-    options:baseOpt(barClickWday)});
-  // Entries month
-  charts.em=new Chart(gId('gEM'),{type:'bar',
-    data:{labels:Object.keys(g.entries_month),datasets:[{label:'entries',data:Object.values(g.entries_month),
-      backgroundColor:ctx=>gradV(ctx,'#3b82f6')}]},
-    options:baseOpt(()=>{})});
-  const sign=v=>v>=0?'#26a69a':'#ef5350';
-  // P/L hours
-  charts.ph=new Chart(gId('gPH'),{type:'bar',
-    data:{labels:hours,datasets:[{label:'P/L',data:hours.map(h=>g.pl_hour[h]||0),
-      backgroundColor:ctx=>gradV(ctx,sign(g.pl_hour[ctx.dataIndex]||0))}]},options:baseOpt(barClickHour)});
-  // P/L weekday
-  charts.pw=new Chart(gId('gPW'),{type:'bar',
-    data:{labels:W,datasets:[{label:'P/L',data:W.map(w=>g.pl_wday[w]||0),
-      backgroundColor:ctx=>gradV(ctx,sign(g.pl_wday[W[ctx.dataIndex]]||0))}]},options:baseOpt(barClickWday)});
-  // P/L month
-  charts.pm=new Chart(gId('gPM'),{type:'bar',
-    data:{labels:Object.keys(g.pl_month),datasets:[{label:'P/L',data:Object.values(g.pl_month),
-      backgroundColor:ctx=>gradV(ctx,sign(Object.values(g.pl_month)[ctx.dataIndex]||0))}]},options:baseOpt(()=>{})});
-  // Correlation MFE
-  charts.cf=new Chart(gId('gCF'),{type:'scatter',
-    data:{datasets:[{data:g.scatter_mfe,backgroundColor:ctx=>gradHRgba(ctx,'38,166,154',0.45),pointRadius:2}]},
-    options:{...baseOpt((e,els)=>{ if(els[0]) setHover(g.scatter_mfe[els[0].index].id,'graph'); }),
-      plugins:{legend:{display:false}},
-      scales:{x:{title:{display:true,text:'MFE (JPY)',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}},
-              y:{title:{display:true,text:'Profit',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
-  // Correlation MAE
-  charts.ca=new Chart(gId('gCA'),{type:'scatter',
-    data:{datasets:[{data:g.scatter_mae,backgroundColor:ctx=>gradHRgba(ctx,'239,83,80',0.45),pointRadius:2}]},
-    options:{...baseOpt((e,els)=>{ if(els[0]) setHover(g.scatter_mae[els[0].index].id,'graph'); }),
-      plugins:{legend:{display:false}},
-      scales:{x:{title:{display:true,text:'MAE (JPY)',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}},
-              y:{title:{display:true,text:'Profit',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
-  // Holding time
-  const hl=Object.keys(g.hold_pl);
-  charts.ht=new Chart(gId('gHT'),{type:'bar',
-    data:{labels:hl,datasets:[{label:'P/L',data:hl.map(k=>g.hold_pl[k]),
-      backgroundColor:ctx=>gradV(ctx,(g.hold_pl[hl[ctx.dataIndex]]>=0?'#26a69a':'#ef5350'))}]},
-    options:baseOpt((e,els)=>{ if(els[0]) filterByHold(hl[els[0].index]); })});
+  charts.eh=new Chart(gId('gEH'),{type:'bar',data:{labels:hours,
+    datasets:pair(hours.map(h=>A.entries_hour[h]||0),hours.map(h=>B.entries_hour[h]||0))},options:baseOpt(barClickHour)});
+  charts.ew=new Chart(gId('gEW'),{type:'bar',data:{labels:W,
+    datasets:pair(W.map(w=>A.entries_wday[w]||0),W.map(w=>B.entries_wday[w]||0))},options:baseOpt(barClickWday)});
+  const months=[...new Set([...Object.keys(A.entries_month),...Object.keys(B.entries_month)])].sort();
+  charts.em=new Chart(gId('gEM'),{type:'bar',data:{labels:months,
+    datasets:pair(months.map(m=>A.entries_month[m]||0),months.map(m=>B.entries_month[m]||0))},options:baseOpt(()=>{})});
+  charts.ph=new Chart(gId('gPH'),{type:'bar',data:{labels:hours,
+    datasets:pair(hours.map(h=>A.pl_hour[h]||0),hours.map(h=>B.pl_hour[h]||0))},options:baseOpt(barClickHour)});
+  charts.pw=new Chart(gId('gPW'),{type:'bar',data:{labels:W,
+    datasets:pair(W.map(w=>A.pl_wday[w]||0),W.map(w=>B.pl_wday[w]||0))},options:baseOpt(barClickWday)});
+  const pmonths=[...new Set([...Object.keys(A.pl_month),...Object.keys(B.pl_month)])].sort();
+  charts.pm=new Chart(gId('gPM'),{type:'bar',data:{labels:pmonths,
+    datasets:pair(pmonths.map(m=>A.pl_month[m]||0),pmonths.map(m=>B.pl_month[m]||0))},options:baseOpt(()=>{})});
+
+  const scatOpt=xt=>({responsive:true,maintainAspectRatio:false,animation:false,
+    plugins:{legend:{labels:{color:'#8b949e',boxWidth:10}}},
+    scales:{x:{title:{display:true,text:xt,color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}},
+            y:{title:{display:true,text:'Profit',color:'#8b949e'},ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}});
+  charts.cf=new Chart(gId('gCF'),{type:'scatter',data:{datasets:[
+    {label:'IS',data:A.scatter_mfe,backgroundColor:'rgba(59,130,246,0.45)',pointRadius:2},
+    {label:'OOS',data:B.scatter_mfe,backgroundColor:'rgba(240,132,59,0.5)',pointRadius:2}]},options:scatOpt('MFE (JPY)')});
+  charts.ca=new Chart(gId('gCA'),{type:'scatter',data:{datasets:[
+    {label:'IS',data:A.scatter_mae,backgroundColor:'rgba(59,130,246,0.45)',pointRadius:2},
+    {label:'OOS',data:B.scatter_mae,backgroundColor:'rgba(240,132,59,0.5)',pointRadius:2}]},options:scatOpt('MAE (JPY)')});
+
+  const hl=Object.keys(A.hold_pl);
+  charts.ht=new Chart(gId('gHT'),{type:'bar',data:{labels:hl,
+    datasets:pair(hl.map(k=>A.hold_pl[k]),hl.map(k=>B.hold_pl[k]))},options:baseOpt((e,els)=>{ if(els[0]) filterByHold(hl[els[0].index]); })});
 }
 function gId(id){ return document.getElementById(id).getContext('2d'); }
 function filterByHour(h){
@@ -889,6 +951,24 @@ function buildCompare(){
         tooltip:{callbacks:{label:it=>it.dataset.label+': '+cfmt(it.parsed.y,0)}}},
       scales:{x:{ticks:{color:'#8b949e'},grid:{display:false}},
               y:{ticks:{color:'#8b949e'},grid:{color:'#1b2230'}}}}});
+
+  // 最大DD（残高ベース・アンダーウォーター JPY）の重畳。連続ピークからの下落額を算出し、
+  //   最深=最大金額DD（オラクルの Balance Drawdown Maximal と一致）。ラベルは最深点の額(%)で自己整合。
+  const ddSet=(seg,col)=>{ const bc=DATA.segments[seg].agg.balance_curve; let peak=init, mm=0, mp=0;
+    const pts=[{x:bc[0].time-1,y:0}].concat(bc.map(p=>{ if(p.value>peak) peak=p.value;
+      const d=p.value-peak; if(d<mm){ mm=d; mp=d/peak*100; }
+      return {x:p.time, y:+d.toFixed(0)}; }));
+    const lab=`${DATA.segments[seg].label}  最大 ${cfmt(mm,0)} (${mp.toFixed(2)}%)`;
+    return {label:lab,data:pts,borderColor:col,backgroundColor:col+'22',
+      borderWidth:1.4,pointRadius:0,tension:0,fill:true,parsing:false}; };
+  cmpCharts.dd=new Chart(document.getElementById('cmpDD').getContext('2d'),{
+    type:'line',data:{datasets:[ddSet('is','#3b82f6'),ddSet('oos','#f0843b')]},
+    options:{responsive:true,maintainAspectRatio:false,animation:false,
+      interaction:{mode:'nearest',intersect:false},
+      plugins:{legend:{labels:{color:'#8b949e',boxWidth:10}},splitLine:{x:splitTs,label:split},
+        tooltip:{callbacks:{title:it=>fmtT(it[0].parsed.x).slice(5,16),label:it=>it.dataset.label.split('  ')[0]+': '+cfmt(it.parsed.y,0)+' JPY'}}},
+      scales:{x:{type:'linear',ticks:{color:'#8b949e',maxTicksLimit:9,callback:v=>fmtT(v).slice(5,10)},grid:{color:'#1b2230'}},
+              y:{ticks:{color:'#8b949e',callback:v=>cfmt(v,0)},grid:{color:'#1b2230'}}}}});
 }
 
 // ---------- tabs ----------
