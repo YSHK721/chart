@@ -27,9 +27,13 @@ export function createLinkage() {
       for (const fn of this._hoverSubs) fn(id, source);
     },
 
-    // F-3用・F-2では未配線。抽出フィルタを設定（空 Set / null は null 化）。
+    // 抽出フィルタを設定（空 Set / null は null 化）。
     applyFilter(ids, label) {
       this.activeFilter = ids && ids.size ? ids : null;
+      // 抽出（ヒートマップ/グラフの複数取引選択）は単一取引の選択を上書きする。
+      // 残存 hover による「前回クリック取引の減光・マーカー誤強調」を防ぐため hover を解除する
+      // （hover 購読者が restoreCandles・マーカー再描画＝抽出側のハイライトのみが残る）。
+      if (this.activeFilter && this.hoverTradeId !== null) this.setHover(null);
       for (const fn of this._filterSubs) fn(this.activeFilter, label);
     },
   };

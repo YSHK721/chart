@@ -226,3 +226,31 @@ def test_heatmap_cell_click_dims_unmatched_table_rows(tmp_path):
         browser.close()
         httpd.shutdown()
         p.stop()
+
+
+def test_heatmap_cell_click_clears_prior_trade_selection(tmp_path):
+    """回帰: 直前の取引明細クリックで残った単一取引の減光/選択が、
+    ヒートマップのセルクリック（抽出）で解除されること（抽出が単一選択を上書き）。"""
+    p, browser, page, httpd = _launch(tmp_path)
+    try:
+        # 1) 取引明細で行クリック → 当該取引を選択・他ローソク足を減光（hover/dim 確立）。
+        page.click('.mv-tab[data-tab="detail"]')
+        page.wait_for_selector('#tradeTable tbody tr.tw', state="visible", timeout=4000)
+        page.click('#tradeTable tbody tr.tw[data-id="1"]')
+        page.wait_for_timeout(200)
+        assert page.evaluate("() => window.__candlesDimmed === true"), "前提: 行クリックで減光されていない"
+        assert page.evaluate("() => window.__linkage.hoverTradeId") == 1
+        # 2) ヒートマップのセルをクリック（抽出） → 単一選択(hover/減光)が解除される。
+        _open_heat_tab(page)
+        page.click('#heatHost .heatBlock:first-child td.cell[data-w="Mon"][data-h="0"]')
+        page.wait_for_function(
+            "window.__linkage && window.__linkage.activeFilter && "
+            "window.__linkage.activeFilter.size === 2", timeout=4000)
+        assert page.evaluate("() => window.__candlesDimmed === false"), (
+            "ヒート抽出後も前回取引の減光が残っている（バグ未修正）")
+        assert page.evaluate("() => window.__linkage.hoverTradeId") is None, (
+            "ヒート抽出後も単一取引の選択が残っている")
+    finally:
+        browser.close()
+        httpd.shutdown()
+        p.stop()
