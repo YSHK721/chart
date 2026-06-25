@@ -216,6 +216,9 @@ table.cmp td.lab .en { color: #5b626c; font-size: 9px; margin-left: 6px; }
 table.cmp td.num { font-variant-numeric: tabular-nums; }
 table.cmp td.num.pos { color: var(--up); }
 table.cmp td.num.neg { color: var(--down); }
+/* 戦略セクション（名称＋説明・全幅行）。説明は折り返して可読に。 */
+table.cmp td.strat-name { text-align: left; color: #e6edf3; font-weight: 700; }
+table.cmp td.strat-desc { text-align: left; color: #c9d1d9; white-space: normal; line-height: 1.5; font-size: 11px; }
 /* 右グラフ（2列・点13 レーダーは2行分）。 */
 .cmp-right { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
 @media (max-width: 1100px) { .cmp-right { grid-template-columns: 1fr 1fr; } }

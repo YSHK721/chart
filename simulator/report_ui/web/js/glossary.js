@@ -79,6 +79,14 @@ export const LABELS_JA = {
   "Correlation (MFE,MAE)": "相関係数（MFE, MAE）",
 };
 
+// 戦略名 → 戦略の説明（比較・判定タブ「戦略」セクション・約200字）。
+export const STRATEGY_INFO = {
+  "StopEntryProbe_EA":
+    "MAシグナルに依存せず、フラットになる度に現値の上下へ逆指値（BuyStop/SellStop）を両建てで一度だけ設置し、" +
+    "片側が約定したら反対側を取消す（OCO）プローブEA。約定玉はSL200/TP500ptsで決済し、フラット復帰で再装填する。" +
+    "逆指値の約定挙動・SL/TP・OCO・再アームの実MT5突合検証を目的とした動作確認用戦略。（offset100/Lot0.1/両建て）",
+};
+
 // 用語解説（役割/見方）。試作 index.html:924-979 準拠。レポート項目キー → {role, read}。
 export const GLOSSARY = {
   "Expert": { role: "検証対象の自動売買ロジック（EA）の識別子。", read: "どの戦略の成績かを示す。結果はこの戦略に固有。" },

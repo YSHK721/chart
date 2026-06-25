@@ -13,7 +13,7 @@
 //   Chart.js は cmpCharts（graphs の activeCharts と別インスタンス空間）で隔離し、
 //   タブ遷移時は resize のみ（destroy しない）。
 
-import { REPORT_GROUPS, LABELS_JA } from "./glossary.js";
+import { REPORT_GROUPS, LABELS_JA, STRATEGY_INFO } from "./glossary.js";
 import { cfmtLocale, signClass, fmtT } from "./format.js";
 
 // --- 純ロジック（DOM 非依存・テスト容易） ---------------------------------------
@@ -76,6 +76,106 @@ export function buildCompareRows(isReport, oosReport) {
     for (const k of rest) rows.push(rowFor(k));
   }
   return rows;
+}
+
+// --- 不足指標の算出（report.json 無改変・既存 trades/agg から導出。DOM 非依存・テスト容易） ---
+
+// GHPR（幾何平均収益率）: balance_curve の HPR=value_i/value_{i-1}（value_0=init）の幾何平均。
+//   多数の積はアンダーフローするため log 和→exp で算出する。算出不可は null。
+export function ghprFromCurve(balanceCurve, initDeposit = DEFAULT_DEPOSIT) {
+  const bc = balanceCurve || [];
+  let sumLog = 0, n = 0, prev = initDeposit;
+  for (const p of bc) {
+    if (prev > 0 && p.value > 0) { sumLog += Math.log(p.value / prev); n += 1; }
+    prev = p.value;
+  }
+  return n ? Math.exp(sumLog / n) : null;
+}
+
+// ピアソン相関係数（標本数<2 や分散0は規約値）。
+export function pearson(xs, ys) {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 2) return null;
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+  for (let i = 0; i < n; i++) {
+    const x = xs[i], y = ys[i];
+    sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+  }
+  const dx = Math.sqrt(n * sxx - sx * sx), dy = Math.sqrt(n * syy - sy * sy);
+  if (dx === 0 || dy === 0) return 0;
+  return (n * sxy - sx * sy) / (dx * dy);
+}
+
+// 資産曲線（値列）の線形回帰: 相関係数（index×value）と残差標準誤差。
+export function lrStats(values) {
+  const n = values.length;
+  if (n < 2) return { correlation: null, stdError: null };
+  const xs = values.map((_, i) => i);
+  const corr = pearson(xs, values);
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < n; i++) { sx += i; sy += values[i]; sxx += i * i; sxy += i * values[i]; }
+  const denom = n * sxx - sx * sx;
+  const b = denom === 0 ? 0 : (n * sxy - sx * sy) / denom;
+  const a = (sy - b * sx) / n;
+  let sse = 0;
+  for (let i = 0; i < n; i++) { const e = values[i] - (a + b * i); sse += e * e; }
+  return { correlation: corr, stdError: Math.sqrt(sse / n) };
+}
+
+// 保有秒を "0時間02分14秒" 形式へ（MT5 ポジション保有時間表記）。
+export function fmtHoldTime(sec) {
+  const s = Math.max(0, Math.round(sec || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  const p2 = (x) => String(x).padStart(2, "0");
+  return `${h}時間${p2(m)}分${p2(ss)}秒`;
+}
+
+// 区間 report に「report.json に無い指標」を既存 trades/agg/meta から導出して補完する。
+//   report.json は無改変。既存キーは上書きしない（k in rep ガード）。
+//   未導出（equity 系: Ticks / Margin Level / Equity DD Relative）は補完しない（要 equity_curve）。
+export function augmentReport(segData, meta) {
+  const rep = { ...((segData && segData.report) || {}) };
+  const trades = (segData && segData.trades) || [];
+  const agg = (segData && segData.agg) || {};
+  const bc = agg.balance_curve || [];
+  const init = (meta && meta.initial_deposit) || DEFAULT_DEPOSIT;
+  const put = (k, v) => { if (v != null && !(k in rep)) rep[k] = v; };
+
+  // 2. 損益: GHPR
+  const ghpr = ghprFromCurve(bc, init);
+  put("GHPR", ghpr == null ? null : ghpr.toFixed(4));
+  // 3. 取引頻度と保有時間
+  put("Total Deals", String(trades.length * 2));
+  if (trades.length) {
+    const hs = trades.map((t) => t.hold_sec || 0);
+    put("Minimal position holding time", fmtHoldTime(Math.min(...hs)));
+    put("Average position holding time", fmtHoldTime(hs.reduce((a, b) => a + b, 0) / hs.length));
+    put("Maximal position holding time", fmtHoldTime(Math.max(...hs)));
+  }
+  // 7. 統計: 相関（利益×MFE/MAE/MFE×MAE）
+  if (trades.length >= 2) {
+    const pf = trades.map((t) => t.profit || 0);
+    const mfe = trades.map((t) => t.mfe || 0);
+    const mae = trades.map((t) => t.mae || 0);
+    const c2 = (r) => (r == null ? null : r.toFixed(2));
+    put("Correlation (Profits,MFE)", c2(pearson(pf, mfe)));
+    put("Correlation (Profits,MAE)", c2(pearson(pf, mae)));
+    put("Correlation (MFE,MAE)", c2(pearson(mfe, mae)));
+  }
+  // 7. 統計: 線形回帰（資産曲線）
+  if (bc.length >= 2) {
+    const lr = lrStats(bc.map((p) => p.value));
+    put("LR Correlation", lr.correlation == null ? null : lr.correlation.toFixed(2));
+    put("LR Standard Error", lr.stdError == null ? null : lr.stdError.toFixed(0));
+  }
+  // 1. 基本設定とテスト環境（Bars は区間別 meta・他は固定メタ）
+  if (segData && segData.meta && segData.meta.bars != null) put("Bars", String(segData.meta.bars));
+  put("Symbols", "1");
+  put("History Quality", "100%");
+  put("Leverage", "1:10");
+  // 7. OnTester（カスタム未使用）
+  put("OnTester result", "0");
+  return rep;
 }
 
 // 残高曲線（[{time,value}]）から最大DD（残高ベース・アンダーウォーター）系列を作る（点12）。
@@ -247,8 +347,10 @@ function _renderCards(data) {
 }
 
 function _renderTable(data) {
-  const isR = (data.segments && data.segments.is && data.segments.is.report) || {};
-  const oosR = (data.segments && data.segments.oos && data.segments.oos.report) || {};
+  const meta = data.meta || {};
+  // report.json に無い指標を既存 trades/agg/meta から補完（report.json 無改変）。
+  const isR = augmentReport((data.segments && data.segments.is) || {}, meta);
+  const oosR = augmentReport((data.segments && data.segments.oos) || {}, meta);
   const head = document.querySelector("#cmpTable thead");
   const body = document.querySelector("#cmpTable tbody");
   if (!head || !body) return;
@@ -257,6 +359,18 @@ function _renderTable(data) {
     "<th>比</th><th>差</th></tr>";
   const rows = buildCompareRows(isR, oosR);
   let html = "";
+  // 戦略セクション（戦略名＋説明）を表頭へ追加（必須・全幅行）。
+  const strat = meta.strategy || isR.Expert || "";
+  if (strat) {
+    const desc = STRATEGY_INFO[strat] || "";
+    html += '<tr class="grp"><td colspan="5">戦略</td></tr>';
+    html += `<tr><td class="lab" data-gk="Expert">戦略名<span class="en">Strategy</span></td>` +
+      `<td colspan="4" class="strat-name">${strat}</td></tr>`;
+    if (desc) {
+      html += '<tr><td class="lab">説明<span class="en">Description</span></td>' +
+        `<td colspan="4" class="strat-desc">${desc}</td></tr>`;
+    }
+  }
   for (const r of rows) {
     if (r.type === "group") {
       html += `<tr class="grp"><td colspan="5">${r.title}</td></tr>`;
