@@ -411,3 +411,16 @@
   - 検証（playwright + 実 lwc + 実 JSON・使い捨てハーネス）：#0 BUY 利益+37 緑／#3 SELL 利益-58 赤で 7 項目すべて表示。日時 JST 09:14:00 等。マーカー離脱で非表示。スクショ 2 枚をユーザー提示済
   - 回帰：web renderer/wiring 41 pass／presenter unit 28 pass（profit/volume 保持の回帰テスト 1 本追加・`_DuckRecord` に volume 付与）
   - 残（productionization・本 issue 範囲外＝要依頼）：実バックテストでの `trade_markers.json` 再生成（presenter は対応済）／`out/prototype.html` バンドルへの同期／実 served アプリ（index.html・B方式）でのグリフ実 hover 通し確認（試作は `_onCrosshair` 直叩きで等価検証）
+
+---
+
+## ISSUE-027: 週次ボラバンド戦略 金曜引け強制手仕舞いが既存エンジンの on_position_check 未配線と衝突
+- **重大度**: High（設計レビューで Blocker 検出 → 非破壊代替で解決）
+- **ステータス**: RESOLVED
+- **検出**: spec-reviewer-executor（基本設計レビュー）。`run_backtest.py` に `on_position_check` 呼出 0 件（grep 実証）、時間ベース強制決済機構なし。仕様§3.1-7 金曜引け強制手仕舞いが C2（既存無改変）と両立不能。
+- **原因**: 既存エンジンの戦略フックは on_init/on_new_bar/on_tick のみ配線。週単位の強制 close 機構は end_of_test（最終足・pending_mode 限定）と stop_out のみ。
+- **対策（非破壊・エンジン無改変）**: 週次戦略を **週単位セグメント実行**（bars=各週の最初の取引日寄り〜最後の取引日引け）とし、`end_of_test` 清算（run_backtest.py:888-910・pending_mode 限定で建玉を最終足 close で強制決済）を金曜引け手仕舞いに充てる。
+  - 検証(b) 同一バー S/T 両到達 → 既存 `sltp_tie="sl"`（config_loader.py:46）でストップ優先＝仕様§2.6 一致。
+  - 検証(c) 週初/金曜が非取引日 → セグメント先頭/末尾バーが自動対応＝仕様§2.6 一致。
+  - 検証(d) market ロング＋SL=S/TP=T の OCO 監視はエンジン既存 SL/TP 経路で充足。
+- **結果**: エンジン破壊的変更ゼロ。詳細設計で UC-WV2 を「週単位セグメント orchestration（run_is_oos 同型の DIP 注入）」として確定。
