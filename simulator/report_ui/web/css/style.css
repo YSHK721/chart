@@ -96,6 +96,11 @@ body {
 .trade-table tr.tw td.side { font-weight: 600; }
 .trade-table tr.tw.hl { background: #1f3350; color: #fff; }
 .trade-table tr.tw.dim { opacity: .35; }
+.trade-table tr.tw { cursor: pointer; } /* 行クリック→チャート移動 */
+/* Profit 列カラースキーム（試作 td.pl.pos/neg 準拠・緑=利益/赤=損失）。 */
+.trade-table td.pl { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.trade-table td.pl.pos { color: var(--up); }
+.trade-table td.pl.neg { color: var(--down); }
 
 /* ヒートマップ（曜日×時間セル・5 ビュー）。
    ID セレクタが .hidden(display:none) を上書きしないよう :not(.hidden) に限定する。 */

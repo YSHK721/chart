@@ -141,12 +141,14 @@ def _open_detail_tab(page):
     page.wait_for_selector('#tradeTable tbody tr.tw', state="visible", timeout=4000)
 
 
-def test_detail_table_renders_11_cols_and_row_count(tmp_path):
+def test_detail_table_renders_12_cols_and_row_count(tmp_path):
     p, browser, page, httpd = _launch(tmp_path)
     try:
-        # SPEC 11列ヘッダ
+        # SPEC 11列 ＋ Profit 列 = 12 列ヘッダ（試作準拠）
         ths = page.query_selector_all("#tradeTable thead th")
-        assert len(ths) == 11, f"expected 11 cols, got {len(ths)}"
+        assert len(ths) == 12, f"expected 12 cols, got {len(ths)}"
+        # 末尾ヘッダは Profit
+        assert page.inner_text("#tradeTable thead th:last-child").strip() == "Profit"
         # 行数 = trades 件数（3）
         rows = page.query_selector_all("#tradeTable tbody tr.tw")
         assert len(rows) == 3, f"expected 3 rows, got {len(rows)}"
@@ -160,7 +162,7 @@ def test_detail_table_renders_11_cols_and_row_count(tmp_path):
 
 
 def test_detail_table_cell_values_preserved_as_text(tmp_path):
-    # 🟡B 回帰保護: セル描画を textContent 化しても 11 列の値表示が同一であること。
+    # 🟡B 回帰保護: セル描画を textContent 化しても 12 列の値表示が同一であること。
     # 各行の Type 列(buy/sell) と Symbol 列(JP225) が正確に表示される（振る舞い不変）。
     p, browser, page, httpd = _launch(tmp_path)
     try:
@@ -168,11 +170,55 @@ def test_detail_table_cell_values_preserved_as_text(tmp_path):
         texts = page.eval_on_selector(
             '#tradeTable tbody tr.tw[data-id="1"]',
             "tr => Array.from(tr.children).map(td => td.textContent)")
-        assert len(texts) == 11, f"expected 11 cells, got {len(texts)}: {texts}"
+        assert len(texts) == 12, f"expected 12 cells, got {len(texts)}: {texts}"
         # 射影値（Symbol=JP225 / Type=buy / Volume=0.1）がそのまま表示される
         assert "JP225" in texts, f"symbol cell missing: {texts}"
         assert "buy" in texts, f"type cell missing: {texts}"
         assert "0.1" in texts, f"volume cell missing: {texts}"
+    finally:
+        browser.close()
+        httpd.shutdown()
+        p.stop()
+
+
+def test_profit_column_colored_and_signed(tmp_path):
+    """Profit 列が試作準拠で損益配色（td.pl.pos/neg）＋符号付き金額を表示する。"""
+    p, browser, page, httpd = _launch(tmp_path)
+    try:
+        _open_detail_tab(page)
+        # id=1 は利益（profit>0）→ pl pos（緑）・"+" 前置
+        win = page.eval_on_selector(
+            '#tradeTable tbody tr.tw[data-id="1"] td.pl',
+            "td => ({cls: td.className, txt: td.textContent})")
+        assert "pos" in win["cls"], f"win row not pos-colored: {win}"
+        assert win["txt"].startswith("+"), f"win profit not signed: {win}"
+        # id=2 は損失（profit<0）→ pl neg（赤）・"-" 前置
+        loss = page.eval_on_selector(
+            '#tradeTable tbody tr.tw[data-id="2"] td.pl',
+            "td => ({cls: td.className, txt: td.textContent})")
+        assert "neg" in loss["cls"], f"loss row not neg-colored: {loss}"
+        assert loss["txt"].startswith("-"), f"loss profit not signed: {loss}"
+    finally:
+        browser.close()
+        httpd.shutdown()
+        p.stop()
+
+
+def test_row_click_moves_chart_to_trade_time(tmp_path):
+    """行クリック→該当 trade の entry_time へチャート移動（試作 focusTime 準拠）。"""
+    p, browser, page, httpd = _launch(tmp_path)
+    try:
+        _open_detail_tab(page)
+        # クリック前後で lightweight-charts の可視レンジ（focusTime=setVisibleRange）が動くこと。
+        before = page.evaluate(
+            "() => window.__priceChart && window.__priceChart.timeScale().getVisibleRange()")
+        page.click('#tradeTable tbody tr.tw[data-id="3"]')
+        page.wait_for_timeout(300)
+        after = page.evaluate(
+            "() => window.__priceChart && window.__priceChart.timeScale().getVisibleRange()")
+        # 可視レンジが取得でき、クリックで該当 trade 時刻へ移動（範囲が変化）したこと
+        assert after is not None, "visible range not available after click"
+        assert before != after, f"chart did not move on row click: before={before} after={after}"
     finally:
         browser.close()
         httpd.shutdown()

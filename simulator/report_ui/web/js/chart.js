@@ -181,6 +181,8 @@ export function renderChart(containerId, segment, opts) {
   _chart.timeScale().subscribeVisibleTimeRangeChange(() => renderMarkers(_rows, { hoverId: null, filter: null }));
   _ensureCrosshair();
   renderMarkers(_rows, { hoverId: null, filter: null });
+  // E2E フック（行クリック→focusTime の可視レンジ移動を検証するため・本番表示には不使用）。
+  if (typeof window !== "undefined") window.__priceChart = _chart;
 }
 
 // crosshair でマーカーグリフ命中時に注入コールバックへ trade id を通知。

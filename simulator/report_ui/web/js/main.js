@@ -35,7 +35,8 @@ function renderVerdict() {
 
 function renderTable(seg) {
   const host = document.getElementById("tradeTable");
-  if (host) buildTradeTable(host, DATA.segments[seg], linkage);
+  // 行クリック→該当 trade の entry_time へチャート移動（focusTime・試作準拠）。
+  if (host) buildTradeTable(host, DATA.segments[seg], linkage, focusTime);
 }
 
 function renderHeatmap(seg) {

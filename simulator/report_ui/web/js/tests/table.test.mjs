@@ -9,18 +9,23 @@ import assert from "node:assert/strict";
 
 import { COLS, compareTrades, projectRow } from "../table.js";
 
-// SPEC §2.2.2 の 11 列（key の順序）。Symbol は meta 射影列。
+// SPEC §2.2.2 の 11 列 ＋ 試作準拠の Profit 列（key の順序）。Symbol は meta 射影列。
 const SPEC_KEYS = [
   "open_time", "order", "symbol", "type", "volume",
-  "price", "sl", "tp", "exit_time", "state", "comment",
+  "price", "sl", "tp", "exit_time", "state", "comment", "profit",
 ];
 
-test("COLS defines exactly the SPEC 2.2.2 11 columns in order", () => {
+test("COLS defines the 11 SPEC columns plus the Profit column in order", () => {
   // Arrange / Act
   const keys = COLS.map((c) => c[0]);
   // Assert
-  assert.equal(COLS.length, 11);
+  assert.equal(COLS.length, 12);
   assert.deepEqual(keys, SPEC_KEYS);
+});
+
+test("Profit column is the last column with kind 'pl' (試作準拠の損益配色)", () => {
+  const last = COLS[COLS.length - 1];
+  assert.deepEqual(last, ["profit", "Profit", "pl"]);
 });
 
 test("COLS each column has a [key, label, kind] triple", () => {
@@ -75,7 +80,7 @@ test("compareTrades is null-safe: missing string key treated as empty string", (
   assert.ok(compareTrades(a, b, "comment", 1) < 0);
 });
 
-test("projectRow maps a 16-key trade to the SPEC 11-col row (with meta.symbol)", () => {
+test("projectRow maps a 16-key trade to the 12-col row incl. profit (with meta.symbol)", () => {
   // Arrange（trades[] 16キー → SPEC 11列キーへ射影。詳細設計 §4.4）
   const t = {
     id: 7, side: "buy", entry_time: 1000, exit_time: 1060,
@@ -97,8 +102,9 @@ test("projectRow maps a 16-key trade to the SPEC 11-col row (with meta.symbol)",
   assert.equal(row.exit_time, 1060);
   assert.equal(row.state, "tp");         // comment 写像
   assert.equal(row.comment, "tp");
+  assert.equal(row.profit, 50.0);        // Profit 列（pl 配色用）
   // id を保持（hover/marker の単一 id 空間用）
   assert.equal(row.id, 7);
-  // SPEC 11列 + id の合計キー数
-  for (const c of COLS) assert.ok(c[0] in row, `row missing SPEC key ${c[0]}`);
+  // 12列 + id の各キーが射影されている
+  for (const c of COLS) assert.ok(c[0] in row, `row missing key ${c[0]}`);
 });
