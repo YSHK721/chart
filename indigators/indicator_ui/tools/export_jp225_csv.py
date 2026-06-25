@@ -5,7 +5,7 @@ B方式（サーバ）の ``datasetRef='jp225'`` 用データを生成する。`
 ``loader.load_ohlc_csv(path, time_column='date')`` で読むため、``date,open,high,low,close``
 列（ヘッダー付き）で出力する。外れ値（2025-08-26 等）は補正してから書き出す。
 
-出力既定: ``<workspace>/marketdata/data/jp225_daily.csv``（dataset.py の whitelist と対応）。
+出力既定: ``DATA_DIR/jp225_daily.csv``（dataset.py の whitelist と対応）。
 既存データ（sample 系）には一切触れない。
 """
 from __future__ import annotations
@@ -22,7 +22,6 @@ from typing import List
 import dukascopy_python
 
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_OUTPUT = _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_daily.csv"
 
 if str(_WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKSPACE_ROOT))
@@ -32,6 +31,10 @@ from marketdata import (  # noqa: E402
     DukascopyCandleSource,
     repair_ohlc_outliers,
 )
+from marketdata.paths import DATA_DIR  # noqa: E402
+
+# 時系列データの単一基点（marketdata.paths.DATA_DIR・Sd §10.1 C-1）配下へ集約。
+_DEFAULT_OUTPUT = DATA_DIR / "jp225_daily.csv"
 
 logger = logging.getLogger("export_jp225_csv")
 

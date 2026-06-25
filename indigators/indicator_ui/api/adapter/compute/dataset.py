@@ -28,9 +28,17 @@ from adapter.compute import rollup_store, tail_reader
 
 # workspace ルート（このファイル: api/adapter/compute/ → parents[5] = /workspaces/app）。
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[5]
+# 時系列データの単一基点（marketdata.paths.DATA_DIR）を import するため repo 根を sys.path へ
+# （call_binding と同じロード境界の一括設定。各 src に sys.path ハックを散らさない）。
+import sys as _sys
+
+if str(_WORKSPACE_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_WORKSPACE_ROOT))
+from marketdata.paths import DATA_DIR
 
 # datasetRef ホワイトリスト（§7.3）。識別子 → 実 CSV パス。生パス直送・パストラバーサルを
 # 防ぐため、ここに無いキーはすべて拒否する（外から組み立てたパスは解決しない）。
+# JP225 系の時系列データは marketdata.paths.DATA_DIR（単一基点・Sd §10.1 C-1）配下に集約。
 DATASET_WHITELIST: dict[str, Path] = {
     "sample": _WORKSPACE_ROOT
     / "lightweight-charts-python-main"
@@ -39,10 +47,10 @@ DATASET_WHITELIST: dict[str, Path] = {
     / "ohlcv.csv",
     # JP225（日経225・Dukascopy E_N225Jap）。marketdata から書き出した日足 CSV
     # （date,open,high,low,close・外れ値補正済み）。生成: indicator_ui/tools/export_jp225_csv.py。
-    "jp225": _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_daily.csv",
+    "jp225": DATA_DIR / "jp225_daily.csv",
     # JP225 1分足（原子データ）。全時間足はこの 1 分足を resample して生成する
     # （date(UTC %Y-%m-%d %H:%M:%S),open,high,low,close,volume）。生成: tools/export_jp225_m1.py。
-    "jp225_m1": _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_m1.csv",
+    "jp225_m1": DATA_DIR / "jp225_m1.csv",
 }
 
 # サンプル CSV の時刻列（解像度非依存に UNIX 秒へ変換する起点）。

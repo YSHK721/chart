@@ -18,7 +18,7 @@ OOM 回避（ISSUE-017 と同方針）:
     境界）は配信側 resample の rule/offset で扱う（原子に tz シフトを焼き込まない）。
 
 使用例:
-    # 直近 1 ヶ月（配線実証用・既定出力 marketdata/data/jp225_m1.csv）
+    # 直近 1 ヶ月（配線実証用・既定出力 DATA_DIR/jp225_m1.csv）
     python tools/export_jp225_m1.py --start 2026-05-01 --end 2026-05-31
 
     # 全 15 年（バックグラウンド・完了まで数時間）
@@ -43,9 +43,15 @@ import dukascopy_python
 from dukascopy_python.instruments import INSTRUMENT_IDX_ASIA_E_N225JAP
 
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_OUTPUT = _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_m1.csv"
+# 時系列データの単一基点（marketdata.paths.DATA_DIR・Sd §10.1 C-1）を import するため
+# repo 根を sys.path へ。
+if str(_WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_WORKSPACE_ROOT))
+from marketdata.paths import DATA_DIR
+
+_DEFAULT_OUTPUT = DATA_DIR / "jp225_m1.csv"
 # 上位足ロールアップ CSV の既定出力先（rollup_store.path と整合）。
-_DEFAULT_ROLLUP_DIR = _WORKSPACE_ROOT / "marketdata" / "data" / "rollups"
+_DEFAULT_ROLLUP_DIR = DATA_DIR / "rollups"
 # ロールアップ対象の上位足（1m 原子を除く 5m..1M）。1 分足追記に同期して増分更新する。
 _ROLLUP_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M")
 

@@ -1,7 +1,7 @@
 """rollup_store の検証（TDD: Red→Green）— 上位足ロールアップ CSV の解決・読込・mtime キャッシュ。
 
 設計（dataset の _BASE_CACHE と同方式・単一真実源）:
-  - path(ref, tf) -> <workspace>/marketdata/data/rollups/<ref>_<tf>.csv。
+  - path(ref, tf) -> DATA_DIR/rollups/<ref>_<tf>.csv（Sd §10.1 C-1 単一基点）。
   - read(ref, tf) -> 末尾読み（tail_reader・_ROLLUP_TAIL_ROWS 上限）+ mtime キャッシュ（plain dict
     上書き有界）+ torn-read フォールバック。全件は読まない（応答時間・RSS 有界化）。
 
@@ -46,16 +46,20 @@ def _clear_cache():
 
 
 # --------------------------------------------------------------------------- #
-# path（<workspace>/marketdata/data/rollups/<ref>_<tf>.csv）
+# path（DATA_DIR/rollups/<ref>_<tf>.csv・Sd §10.1 C-1 単一基点）
 # --------------------------------------------------------------------------- #
 def test_path_resolves_under_marketdata_rollups_with_ref_tf_filename():
+    from marketdata.paths import DATA_DIR
+
     p = rollup_store.path("jp225_m1", "1h")
-    assert p.parts[-3:] == ("marketdata", "data", "rollups") or (
-        p.parent.name == "rollups"
-        and p.parent.parent.name == "data"
-        and p.parent.parent.parent.name == "marketdata"
-    )
+    # 検証本体（不変）: rollups 直下に <ref>_<tf>.csv で解決する。
+    assert p.parent.name == "rollups"
     assert p.name == "jp225_m1_1h.csv"
+    # 単一基点（Sd）: DATA_DIR/rollups 配下である（DATA_DIR は data/marketdata）。
+    assert p == DATA_DIR / "rollups" / "jp225_m1_1h.csv"
+    # 回帰（旧多基点禁止・memory bugfix-pair-with-regression-test）: 旧 marketdata/data 直下へ
+    # 退行していない（parents[5]/marketdata/data ハードコード復活なら落ちる）。
+    assert "marketdata/data/rollups" not in str(p).replace("\\", "/")
 
 
 # --------------------------------------------------------------------------- #

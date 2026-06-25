@@ -86,6 +86,8 @@ site/
 # データファイル（入力・出力）
 # ============================================================
 input/*
+# marketdata 時系列データ（生成物・Sd でパッケージ外へ分離・単一基点 marketdata.paths.DATA_DIR）
+data/marketdata/
 *.csv
 *.tsv
 *.json
