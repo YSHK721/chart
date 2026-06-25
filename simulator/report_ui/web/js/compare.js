@@ -147,10 +147,13 @@ export function augmentReport(segData, meta) {
   // 3. 取引頻度と保有時間
   put("Total Deals", String(trades.length * 2));
   if (trades.length) {
+    // spread(...) は大量取引でスタック超過するため reduce で縮約する。
     const hs = trades.map((t) => t.hold_sec || 0);
-    put("Minimal position holding time", fmtHoldTime(Math.min(...hs)));
+    const mn = hs.reduce((m, v) => (v < m ? v : m), Infinity);
+    const mx = hs.reduce((m, v) => (v > m ? v : m), -Infinity);
+    put("Minimal position holding time", fmtHoldTime(mn));
     put("Average position holding time", fmtHoldTime(hs.reduce((a, b) => a + b, 0) / hs.length));
-    put("Maximal position holding time", fmtHoldTime(Math.max(...hs)));
+    put("Maximal position holding time", fmtHoldTime(mx));
   }
   // 7. 統計: 相関（利益×MFE/MAE/MFE×MAE）
   if (trades.length >= 2) {

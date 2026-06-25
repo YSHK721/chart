@@ -229,13 +229,13 @@ def test_degradation_table_groups_and_rows(tmp_path):
         metric_rows = page.query_selector_all("#cmpTable tbody tr:not(.grp)")
         # 導出指標の補完で 30 行以上を満たす。
         assert len(metric_rows) >= 30, f"指標行が少なすぎる: {len(metric_rows)}"
-        # 通常の指標行（Profit Factor）は 5 セル（指標｜IS｜OOS｜比｜差）。
-        pf_cells = page.evaluate("""() => {
+        # 戦略の全幅行（colspan）を除く全指標行が 5 セル（指標｜IS｜OOS｜比｜差）であること（網羅）。
+        bad = page.evaluate("""() => {
           const rows = [...document.querySelectorAll('#cmpTable tbody tr:not(.grp)')];
-          const r = rows.find(tr => tr.querySelector('.lab')?.dataset.gk === 'Profit Factor');
-          return r ? r.querySelectorAll('td').length : null;
+          const metric = rows.filter(r => !r.querySelector('[colspan]'));
+          return { total: metric.length, bad: metric.filter(r => r.querySelectorAll('td').length !== 5).length };
         }""")
-        assert pf_cells == 5, f"指標行のセル数が5でない: {pf_cells}"
+        assert bad["total"] >= 30 and bad["bad"] == 0, f"5セルでない指標行あり: {bad}"
         # Profit Factor 行: IS>1 / OOS<1 が劣化（比 0.766・差 neg）として描画される実値検証。
         pf_ratio = page.evaluate("""() => {
           const rows = [...document.querySelectorAll('#cmpTable tbody tr:not(.grp)')];
