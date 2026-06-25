@@ -265,9 +265,10 @@ def test_segment_switch_does_not_break_compare(tmp_path):
     p, browser, page, httpd = _launch(tmp_path)
     try:
         eq_before = page.evaluate("() => window.__cmpCharts.eq.id")
-        page.select_option("#seg-select", "oos")
+        # 点15: 区間切替は select 廃止 → .segbtn クリック。
+        page.click('.segbtn[data-seg="oos"]')
         page.wait_for_timeout(150)
-        page.select_option("#seg-select", "is")
+        page.click('.segbtn[data-seg="is"]')
         page.wait_for_timeout(150)
         # 同一 Chart インスタンス（id 不変）＝区間切替で destroy/再構築していない。
         eq_after = page.evaluate("() => window.__cmpCharts.eq.id")

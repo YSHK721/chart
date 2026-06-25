@@ -11,6 +11,12 @@ import {
   parseReportNum,
   compareCell,
   buildCompareRows,
+  underwaterCurve,
+  metricRetention,
+  metricRetentionAll,
+  degradationBars,
+  radarClamp,
+  RADAR_METRICS,
 } from "../compare.js";
 
 // --- 判定バナー文言マッピング（R-2: 過剰最適化/要注意/合格） ---------------------
@@ -129,4 +135,74 @@ test("buildCompareRows keeps string metrics with null ratio/delta", () => {
   assert.ok(exp);
   assert.equal(exp.ratio, null);
   assert.equal(exp.delta, null);
+});
+
+// --- 点12 cmpDD: アンダーウォーター（残高ベース DD）系列 --------------------------
+
+test("underwaterCurve starts at zero (init-1 anchor) and is never positive", () => {
+  const bc = [{ time: 100, value: 10500 }, { time: 200, value: 9800 }, { time: 300, value: 10100 }];
+  const uw = underwaterCurve(bc, 10000);
+  assert.equal(uw.points[0].x, 99);     // bc[0].time - 1
+  assert.equal(uw.points[0].y, 0);      // 起点 0
+  assert.ok(uw.points.every((p) => p.y <= 0), "DD は常に ≤0");
+});
+
+test("underwaterCurve maxDrawdown is the deepest peak-relative drop", () => {
+  // peak: 10000→10500→10500→10500。最深は t=200 で 9800-10500 = -700。
+  const bc = [{ time: 100, value: 10500 }, { time: 200, value: 9800 }, { time: 300, value: 10100 }];
+  const uw = underwaterCurve(bc, 10000);
+  assert.equal(uw.maxDrawdown, -700);
+  assert.ok(uw.maxDdPct < 0);
+});
+
+test("underwaterCurve handles empty curve", () => {
+  const uw = underwaterCurve([], 10000);
+  assert.deepEqual(uw.points, []);
+  assert.equal(uw.maxDrawdown, 0);
+});
+
+// --- 点13 cmpRadar: 維持率（hi 軸=OOS/IS・低DD 軸=絶対値の逆数・符号非依存） ---------
+
+test("metricRetention computes oos/is for higher-is-better axes", () => {
+  const m = { k: "profit_factor", l: "PF", hi: true };
+  assert.equal(metricRetention(m, { profit_factor: 1.16 }, { profit_factor: 0.58 }), 0.5);
+});
+
+test("metricRetention low-DD axis uses |is|/|oos| and is sign-independent", () => {
+  // summary.max_dd_pct は負値（-11.52 等）。符号非依存で IS=10/OOS=20 → 維持率 0.5。
+  const m = { k: "max_dd_pct", l: "低DD", hi: false };
+  assert.equal(metricRetention(m, { max_dd_pct: -10 }, { max_dd_pct: -20 }), 0.5);
+  assert.equal(metricRetention(m, { max_dd_pct: 10 }, { max_dd_pct: 20 }), 0.5);
+});
+
+test("metricRetention returns 0 when IS metric is zero (hi axis)", () => {
+  const m = { k: "return_pct", l: "リターン", hi: true };
+  assert.equal(metricRetention(m, { return_pct: 0 }, { return_pct: 50 }), 0);
+});
+
+test("metricRetentionAll returns one value per radar axis", () => {
+  const isS = { profit_factor: 1, win_rate: 50, payoff: 2, expectancy: 2, return_pct: 100, max_dd_pct: -10 };
+  const oosS = { profit_factor: 1, win_rate: 50, payoff: 2, expectancy: 2, return_pct: 100, max_dd_pct: -10 };
+  const out = metricRetentionAll(isS, oosS);
+  assert.equal(out.length, RADAR_METRICS.length);
+  assert.ok(out.every((v) => Math.abs(v - 1) < 1e-9), "同値なら全軸 1.0 維持");
+});
+
+test("radarClamp bounds values to [0, 1.3]", () => {
+  assert.equal(radarClamp(-5), 0);
+  assert.equal(radarClamp(0.7), 0.7);
+  assert.equal(radarClamp(9), 1.3);
+});
+
+// --- 点14 cmpDeg: 維持率バーの色しきい値（>=0.95 緑 / >=0.7 黄 / 他 赤） --------------
+
+test("degradationBars colors by retention thresholds", () => {
+  // PF 維持1.0(緑) / 勝率0.8(黄) / ペイオフ0.5(赤) … 残りは同値=1.0(緑)。
+  const isS = { profit_factor: 1, win_rate: 50, payoff: 2, expectancy: 2, return_pct: 100, max_dd_pct: -10 };
+  const oosS = { profit_factor: 1, win_rate: 40, payoff: 1, expectancy: 2, return_pct: 100, max_dd_pct: -10 };
+  const db = degradationBars(isS, oosS);
+  assert.equal(db.labels.length, RADAR_METRICS.length);
+  assert.equal(db.colors[0], "#26a69a"); // PF 1.0 → 緑
+  assert.equal(db.colors[1], "#e3b341"); // 勝率 0.8 → 黄
+  assert.equal(db.colors[2], "#ef5350"); // ペイオフ 0.5 → 赤
 });

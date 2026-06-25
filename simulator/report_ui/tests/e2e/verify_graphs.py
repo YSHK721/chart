@@ -318,7 +318,7 @@ def test_scatter_hold_datasets_are_seg_independent_is_oos(tmp_path):
     p, browser, page, httpd = _launch(tmp_path)
     try:
         _open_graph_tab(page)
-        page.select_option("#seg-select", "oos")   # OOS 区間に切替（最も誤りが出やすい）
+        page.click('.segbtn[data-seg="oos"]')   # 点15: OOS 区間に切替（select 廃止 → .segbtn）
         page.wait_for_function(
             "() => { const cs = Object.values(window.__graphsCharts||{}); "
             "return cs.length >= 9; }", timeout=4000)
@@ -347,9 +347,9 @@ def test_segment_switch_no_chart_double_bind(tmp_path):
     page.on("pageerror", lambda e: errors.append(str(e)))
     try:
         _open_graph_tab(page)
-        # IS→OOS→IS と切替（毎回 buildGraphs が destroy→再構築する）。
+        # IS→OOS→IS と切替（毎回 buildGraphs が destroy→再構築する）。点15: .segbtn クリック。
         for v in ("oos", "is", "oos"):
-            page.select_option("#seg-select", v)
+            page.click(f'.segbtn[data-seg="{v}"]')
             page.wait_for_function(
                 "() => { const cs = Object.values(window.__graphsCharts||{}); "
                 "return cs.length >= 9; }", timeout=4000)

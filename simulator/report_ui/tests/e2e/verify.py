@@ -111,13 +111,13 @@ def test_web_skeleton_renders():
 
             # ローソク足チャートのコンテナ存在
             assert page.query_selector("#price-chart") is not None
-            # 下部マルチビュー枠の存在
-            assert page.query_selector("#multiview") is not None
-            # サマリーカードに net 等が描画されている
-            summary_text = page.inner_text("#summary-cards")
-            assert "10008" in summary_text or "8" in summary_text
-            # 区間セレクタ存在（IS/OOS）
-            assert page.query_selector("#seg-select") is not None
+            # 下部マルチビュー枠の存在（試作準拠で #multiview→#bottom へ改称）
+            assert page.query_selector("#bottom") is not None
+            # 点17: 最上部サマリーカード（#summary-cards）は試作に無い → 削除済（完全準拠）
+            assert page.query_selector("#summary-cards") is None
+            # 点15: 区間トグルボタン（select 廃止 → .segbtn）が存在（IS/OOS）
+            assert page.query_selector('.segbtn[data-seg="is"]') is not None
+            assert page.query_selector('.segbtn[data-seg="oos"]') is not None
 
             # JS エラーが出ていない
             assert errors == [], f"page errors: {errors}"

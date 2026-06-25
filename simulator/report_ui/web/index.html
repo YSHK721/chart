@@ -12,68 +12,102 @@
 <body>
   <header id="topbar">
     <h1>シミュレーション結果レポート</h1>
-    <div class="seg-area">
-      <label for="seg-select">区間</label>
-      <select id="seg-select">
-        <option value="is">IS（学習）</option>
-        <option value="oos">OOS（検証）</option>
-      </select>
-      <span id="verdict-badge" class="badge"></span>
-    </div>
+    <!-- 点15: 区間トグルボタン（select 廃止・IS 学習 / OOS 検証）。 -->
+    <span class="segwrap" id="segSel">
+      <span class="seg-label">区間</span>
+      <span class="segbtn on" data-seg="is">IS 学習</span>
+      <span class="segbtn" data-seg="oos">OOS 検証</span>
+    </span>
+    <span id="verdict-badge" class="badge"></span>
     <div id="meta-line" class="meta-line"></div>
+    <!-- 点16: 連動選択ラベル（hover/クリックで選択中 trade を表示）。 -->
+    <span id="hSel" class="hsel"></span>
   </header>
 
-  <main>
-    <!-- サマリーカード -->
-    <section id="summary-cards" class="cards"></section>
+  <!-- 点11: 多窓チャート枠（ローソク足 + Balance + Drawdown）＋リサイザ rz1/rz2＋最大化 ⛶。 -->
+  <div id="chartWrap">
+    <div id="price-chart"></div>
+    <div class="resizer" id="rz1" title="ドラッグで高さ調整"></div>
+    <div class="subpane" id="paneBal"><span class="plabel" data-gg="Balance pane">Balance（資産曲線）</span></div>
+    <div class="resizer" id="rz2" title="ドラッグで高さ調整"></div>
+    <div class="subpane" id="paneDD"><span class="plabel" data-gg="Drawdown pane">Drawdown（残高ベースDD・JPY）</span></div>
+    <!-- 点7: chartBadge（可視取引件数 readout）。 -->
+    <div id="chartBadge">—</div>
+    <!-- 点6: チャート最大化トグル。 -->
+    <button id="maxChart" class="maxbtn">⛶ チャート最大化</button>
+  </div>
+  <!-- 点11: rz0（チャート/下部の分割ドラッグ）。 -->
+  <div class="resizer" id="rz0" title="ドラッグでチャート/下部の高さ調整"></div>
 
-    <!-- ローソク足チャート -->
-    <section class="chart-area">
-      <h2>価格チャート（ローソク足）</h2>
-      <div id="price-chart" class="chart"></div>
-    </section>
-
-    <!-- 下部マルチビュー枠（F-2: 取引明細／F-3: ヒートマップ／SPEC#4: グラフ／F-5: 比較判定） -->
-    <section id="multiview" class="multiview">
-      <div class="mv-tabs">
-        <!-- F-5: 比較判定を第4サブタブとして追加し既定オープン（active）。既存3タブは非破壊。 -->
-        <button class="mv-tab active" data-tab="compare">比較・判定</button>
-        <button class="mv-tab" data-tab="detail">取引明細</button>
-        <button class="mv-tab" data-tab="heat">ヒートマップ</button>
-        <button class="mv-tab" data-tab="graph">グラフ</button>
-      </div>
-      <div id="mv-body" class="mv-body">
-        <!-- F-5: 比較・判定タブ（IS vs OOS・区間非依存・init 1回構築）。 -->
-        <div id="pane-compare" class="cmp-area mv-pane" data-pane="compare">
-          <div class="cmp-verdict" id="cmpVerdict"></div>
-          <div class="cmp-basic" id="cmpBasic"></div>
-          <div class="cmp-split">
-            <div class="cmp-left">
+  <!-- 下部マルチビュー枠（比較判定／取引明細／ヒートマップ／グラフ／サマリー／用語説明）。 -->
+  <div id="bottom">
+    <div class="mv-tabs" id="tabs">
+      <button class="mv-tab active" data-tab="compare">⚖ 比較・判定 (IS vs OOS)</button>
+      <button class="mv-tab" data-tab="detail">取引明細 (Trade Detail)</button>
+      <button class="mv-tab" data-tab="heat">ヒートマップ (Heatmap)</button>
+      <button class="mv-tab" data-tab="graph">グラフ (Graphs)</button>
+      <button class="mv-tab" data-tab="report">サマリー (Report)</button>
+      <button class="mv-tab" data-tab="glossary">用語説明 (Glossary)</button>
+      <!-- 点10: 明細最大化トグル。 -->
+      <button id="maxDetail" class="maxbtn">⛶ 明細最大化</button>
+    </div>
+    <div id="mv-body" class="mv-body">
+      <!-- 比較・判定タブ（IS vs OOS・区間非依存・init 1回構築）。 -->
+      <div id="pane-compare" class="cmp-area mv-pane" data-pane="compare">
+        <div class="cmp-verdict" id="cmpVerdict"></div>
+        <div class="cmp-card cmp-basic-wrap"><h4>主要指標の基本サマリ（IS vs OOS）</h4>
+          <div class="cmp-basic basic-grid" id="cmpBasic"></div>
+        </div>
+        <div class="cmp-split">
+          <div class="cmp-left">
+            <div class="cmp-card"><h4>主要指標の劣化比較（比=OOS/IS、差=OOS−IS・数値項目のみ算出）</h4>
               <table class="cmp" id="cmpTable"><thead></thead><tbody></tbody></table>
             </div>
-            <div class="cmp-right">
-              <div class="cmp-card"><h4>エクイティ（IS/OOS 重畳）</h4>
-                <div class="cmp-cv"><canvas id="cmpEquity"></canvas></div></div>
-              <div class="cmp-card"><h4>純損益内訳</h4>
-                <div class="cmp-cv"><canvas id="cmpPnl"></canvas></div></div>
-            </div>
+          </div>
+          <div class="cmp-right">
+            <div class="cmp-card"><h4>エクイティ曲線（両区間とも初期 10,000・縦線=分割）</h4>
+              <div class="cmp-cv"><canvas id="cmpEquity"></canvas></div></div>
+            <div class="cmp-card"><h4>純損益の内訳（区間別: 総利益 / 総損失 / 純損益）</h4>
+              <div class="cmp-cv"><canvas id="cmpPnl"></canvas></div></div>
+            <!-- 点12 最大DD（残高ベース・縦線=分割）。 -->
+            <div class="cmp-card"><h4>最大ドローダウン（残高ベース・JPY・縦線=分割）</h4>
+              <div class="cmp-cv"><canvas id="cmpDD"></canvas></div></div>
+            <!-- 点13 指標レーダー（IS=1.0 基準・OOS が内側に縮むほど過剰最適化）。 -->
+            <div class="cmp-card tall"><h4>指標レーダー（IS=1.0 基準・OOS が内側に縮むほど過剰最適化）</h4>
+              <div class="cmp-cv"><canvas id="cmpRadar"></canvas></div></div>
+            <!-- 点14 劣化比（OOS/IS・縦線1.0=維持・1.0未満＝劣化）。 -->
+            <div class="cmp-card"><h4>劣化比（OOS/IS・縦線1.0=維持・1.0未満＝劣化）</h4>
+              <div class="cmp-cv"><canvas id="cmpDeg"></canvas></div></div>
           </div>
         </div>
-        <div class="detail-area mv-pane hidden" data-pane="detail">
-          <table id="tradeTable" class="trade-table">
-            <thead></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <!-- F-3: 最小単位項目（曜日×時間セル）をテーブル形式＋ヒートマップ配色で 5 ビュー表示。 -->
-        <div id="heatHost" class="heat-area mv-pane hidden" data-pane="heat"></div>
-        <!-- SPEC#4: インタラクティブグラフ（entries/pl 比較棒・相関散布・保有時間棒）＋チャート連動。 -->
-        <div id="graphHost" class="mv-pane hidden" data-pane="graph">
-          <div id="graphGrid" class="graph-grid"></div>
-        </div>
       </div>
-    </section>
-  </main>
+      <!-- 取引明細タブ。点18: フィルタ解除ピル＋件数。 -->
+      <div class="detail-area mv-pane hidden" data-pane="detail">
+        <div class="hint">行 hover → 該当売買ペアの建玉〜決済区間だけ明色で残し、その他ローソク足を減光 / 列見出しクリックでソート。<span id="detailCount"></span>
+          <span class="pill" id="clearFilter" style="display:none">フィルタ解除 ✕</span></div>
+        <table id="tradeTable" class="trade-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <!-- ヒートマップタブ（曜日×時間セル・5 ビュー）。 -->
+      <div id="heatHost" class="heat-area mv-pane hidden" data-pane="heat"></div>
+      <!-- グラフタブ（entries/pl 比較棒・相関散布・保有時間棒）＋チャート連動。 -->
+      <div id="graphHost" class="mv-pane hidden" data-pane="graph">
+        <div id="graphGrid" class="graph-grid"></div>
+      </div>
+      <!-- 点8 サマリー(Report)タブ（区間別 report を章立て）。 -->
+      <div id="pane-report" class="report-area mv-pane hidden" data-pane="report">
+        <div class="hint">レポート項目を仕様書のレポート定義（章立て）に沿って分類表示。</div>
+        <div class="rgroups" id="reportGrid"></div>
+      </div>
+      <!-- 点9 用語説明(Glossary)タブ（役割/見方＋hover tip）。 -->
+      <div id="pane-glossary" class="glossary-area mv-pane hidden" data-pane="glossary">
+        <div class="hint">各レポート項目・グラフの<b>役割</b>（何を測るか）と<b>見方</b>（どう読むか）の説明。</div>
+        <div class="gloss" id="glossHost"></div>
+      </div>
+    </div>
+  </div>
 
   <div id="error-banner" class="error hidden"></div>
 
