@@ -93,6 +93,10 @@ data/marketdata/
 *.json
 !.devcontainer/devcontainer.json
 !pyproject.toml
+# テスト golden（byte 一致 oracle・物理 commit する固定 fixture・§10.3 M-2）。生成データの
+# blanket *.csv ignore から除外し、移設前コードで採取した golden を版管理に固定する。
+!indigators/indicator_ui/api/tests/golden/
+!indigators/indicator_ui/api/tests/golden/**
 *.parquet
 *.feather
 *.pkl
