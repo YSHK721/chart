@@ -90,8 +90,8 @@ body {
 
 /* 取引明細テーブル。 */
 .detail-area { overflow-x: auto; }
-.trade-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.trade-table th, .trade-table td { padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.trade-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.trade-table th, .trade-table td { padding: 2px 7px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .trade-table th { cursor: pointer; color: var(--muted); font-weight: 600; }
 .trade-table tr.tw td.side { font-weight: 600; }
 .trade-table tr.tw.hl { background: #1f3350; color: #fff; }
