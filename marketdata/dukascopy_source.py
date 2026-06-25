@@ -41,6 +41,37 @@ OFFER_SIDES = {
     "ask": dukascopy_python.OFFER_SIDE_ASK,
 }
 
+# 一次識別子（TIMEFRAME_RULES キー系 "5m"/"1h"/"1D" …）→ ライブラリ INTERVAL 定数（§10.3 M-1）。
+# enabler④（足種の命名統一）: 呼出面の一次識別子を marketdata.resample.TIMEFRAME_RULES の
+# キー系へ統一し、ベンダ INTERVAL 定数へのベンダ固有変換はこの adapter 境界に閉じる。既存
+# INTERVALS（"min_5"/"hour_1"）直利用の呼出は不変のまま、新たに "5m" 系での解決経路を追加する
+# （後方互換・両系統サポート）。"1W"/"1M" は含めない。dukascopy_python は INTERVAL_WEEK_1 /
+# INTERVAL_MONTH_1 を持つが、本プロジェクトの週足/月足は 1 分足原子から resample で導出する
+# 設計（marketdata.resample.TIMEFRAME_RULES の "1W"="W-FRI" / "1M"="ME"・rollup 生成）であり、
+# 既存 INTERVALS も週足/月足を持たない。よって本変換表は「直接 fetch する足種」のみに限定し、
+# 既存 INTERVALS のキー集合（min_1..day_1）と 1:1 対応させる（§4 ロールアップ設計と整合）。
+TIMEFRAME_INTERVALS = {
+    "1m": dukascopy_python.INTERVAL_MIN_1,
+    "5m": dukascopy_python.INTERVAL_MIN_5,
+    "15m": dukascopy_python.INTERVAL_MIN_15,
+    "30m": dukascopy_python.INTERVAL_MIN_30,
+    "1h": dukascopy_python.INTERVAL_HOUR_1,
+    "4h": dukascopy_python.INTERVAL_HOUR_4,
+    "1D": dukascopy_python.INTERVAL_DAY_1,
+}
+
+
+def interval_for_timeframe(timeframe: str) -> Any:
+    """足種コードをライブラリ INTERVAL 定数へ解決する（両系統サポート・§10.3 M-1）。
+
+    一次識別子（``"5m"/"1h"/"1D"`` …＝:data:`TIMEFRAME_INTERVALS` キー）を優先解決し、旧系統名
+    （``"min_5"/"hour_1"`` …＝:data:`INTERVALS` キー）も後方互換で解決する。いずれにも無い未知
+    コードは ``KeyError``（暗黙のフォールバックを設けない）。
+    """
+    if timeframe in TIMEFRAME_INTERVALS:
+        return TIMEFRAME_INTERVALS[timeframe]
+    return INTERVALS[timeframe]
+
 
 def _to_candles(df: pd.DataFrame) -> List[Candle]:
     """UTC OHLCV DataFrame を candles へ変換する（純粋・time 昇順・同一 time は後勝ち）。
