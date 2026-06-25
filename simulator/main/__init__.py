@@ -41,6 +41,7 @@ from simulator.adapter.strategy.ma_slope import MaSlope
 from simulator.adapter.strategy.ma_slope_pending import MaSlopePending
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
+from simulator.adapter.strategy.weekly_vol_band import WeeklyVolBand
 from simulator.domain.exceptions import BacktestError, ConfigError, DataError
 from simulator.framework.config_loader import load_config
 from simulator.main.run_config import RunConfig
@@ -253,6 +254,16 @@ def _build_ma_slope_pending_registry(
     )
 
 
+def _build_open_registry(df: pd.DataFrame) -> PandasIndicatorRegistry:
+    """セグメント先頭 open を "open" として登録した IndicatorPort 実装を構築する。
+
+    WeeklyVolBand は indicators.get("open").iloc[0] でセグメント先頭バー open（=O）を
+    参照する（weekly_vol_band.py を Read で実証）。registry IF を満たすため open 系列の
+    みを登録する（他指標は未参照）。pandas は composition root=main 内に閉じる。
+    """
+    return PandasIndicatorRegistry({"open": df["open"].astype(float).reset_index(drop=True)})
+
+
 def build_interactor(
     *,
     data_path: Any,
@@ -283,6 +294,10 @@ def build_interactor(
     tick_store_root: Any = None,
     tick_start: Any = None,
     tick_end: Any = None,
+    weekly_forecast: Any = None,
+    weekly_p_tp: float = 0.50,
+    weekly_capital: float = 0.0,
+    weekly_f_risk: float = 0.01,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
 
@@ -329,6 +344,21 @@ def build_interactor(
         df = _load_mt5_dataframe(data_path)
         registry = _build_ma_slope_pending_registry(df, ma_period=ma_period)
         strategy = StopEntryProbe()
+    elif ea_name == "WeeklyVolBand_EA":
+        # 週次ボラ・バンド戦略（詳細設計 §5.1・§11 D1）。comma 形式 CSV を読み、
+        # セグメント先頭 open のみを "open" registry に載せる（WeeklyVolBand は get("open")
+        # を参照）。S/T/N は当週 forecast から VolatilityBand で算出する。週単位セグメント
+        # orchestration（run_weekly_segments）は tools/usecase 側に保ち、本分岐は戦略生成
+        # のみを担う（build_interactor は 1 戦略を DI する Composition Root の役割）。
+        market_data = CsvOHLCRepository()
+        df = _load_dataframe(data_path)
+        registry = _build_open_registry(df)
+        strategy = WeeklyVolBand(
+            forecast=weekly_forecast,
+            p_tp=weekly_p_tp,
+            capital=weekly_capital,
+            f_risk=weekly_f_risk,
+        )
     else:
         # 既定経路（TC24051901・comma 形式・MADiff 指標）= 従来挙動を不変に保つ。
         market_data = CsvOHLCRepository()
