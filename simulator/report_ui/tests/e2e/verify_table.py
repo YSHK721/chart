@@ -141,18 +141,21 @@ def _open_detail_tab(page):
     page.wait_for_selector('#tradeTable tbody tr.tw', state="visible", timeout=4000)
 
 
-def test_detail_table_renders_11_cols_and_row_count(tmp_path):
+def test_detail_table_renders_12_cols_and_row_count(tmp_path):
     p, browser, page, httpd = _launch(tmp_path)
     try:
-        # SPEC 11列ヘッダ
+        # 試作 12 列ヘッダ（Symbol 列なし・先頭 "#"・末尾 "Profit"）
         ths = page.query_selector_all("#tradeTable thead th")
-        assert len(ths) == 11, f"expected 11 cols, got {len(ths)}"
+        assert len(ths) == 12, f"expected 12 cols, got {len(ths)}"
+        headers = page.eval_on_selector_all(
+            "#tradeTable thead th", "els => els.map(e => e.textContent.trim())")
+        assert headers[0] == "#", f"first col not '#': {headers}"
+        assert headers[-1] == "Profit", f"last col not 'Profit': {headers}"
+        assert "Symbol" not in headers, f"prototype has no Symbol col: {headers}"
+        assert "Exit" in headers and "Time(close)" in headers, headers
         # 行数 = trades 件数（3）
         rows = page.query_selector_all("#tradeTable tbody tr.tw")
         assert len(rows) == 3, f"expected 3 rows, got {len(rows)}"
-        # Symbol 列が meta.symbol を描画
-        body = page.inner_text("#tradeTable tbody")
-        assert "JP225" in body
     finally:
         browser.close()
         httpd.shutdown()
@@ -160,7 +163,7 @@ def test_detail_table_renders_11_cols_and_row_count(tmp_path):
 
 
 def test_detail_table_cell_values_preserved_as_text(tmp_path):
-    # 🟡B 回帰保護: セル描画を textContent 化しても 11 列の値表示が同一であること。
+    # 🟡B 回帰保護: セル描画を textContent 化しても 12 列の値表示が同一であること。
     # 各行の Type 列(buy/sell) と Symbol 列(JP225) が正確に表示される（振る舞い不変）。
     p, browser, page, httpd = _launch(tmp_path)
     try:
@@ -168,11 +171,75 @@ def test_detail_table_cell_values_preserved_as_text(tmp_path):
         texts = page.eval_on_selector(
             '#tradeTable tbody tr.tw[data-id="1"]',
             "tr => Array.from(tr.children).map(td => td.textContent)")
-        assert len(texts) == 11, f"expected 11 cells, got {len(texts)}: {texts}"
-        # 射影値（Symbol=JP225 / Type=buy / Volume=0.1）がそのまま表示される
-        assert "JP225" in texts, f"symbol cell missing: {texts}"
+        assert len(texts) == 12, f"expected 12 cells, got {len(texts)}: {texts}"
+        # 射影値（Type=buy / Vol=0.1）がそのまま表示される（Symbol 列は試作に無い）
         assert "buy" in texts, f"type cell missing: {texts}"
         assert "0.1" in texts, f"volume cell missing: {texts}"
+        # Open Time は fmtT 整形（生エポックでなく YYYY.MM.DD 形式）
+        assert any("." in c and ":" in c for c in texts), f"time cell not formatted: {texts}"
+    finally:
+        browser.close()
+        httpd.shutdown()
+        p.stop()
+
+
+def test_profit_column_colored_and_signed(tmp_path):
+    """Profit 列が試作準拠で損益配色（td.pl.pos/neg）＋符号付き金額を表示する。"""
+    p, browser, page, httpd = _launch(tmp_path)
+    try:
+        _open_detail_tab(page)
+        # id=1 は利益（profit>0）→ pl pos（緑）・"+" 前置
+        win = page.eval_on_selector(
+            '#tradeTable tbody tr.tw[data-id="1"] td.pl',
+            "td => ({cls: td.className, txt: td.textContent})")
+        assert "pos" in win["cls"], f"win row not pos-colored: {win}"
+        assert win["txt"].startswith("+"), f"win profit not signed: {win}"
+        # id=2 は損失（profit<0）→ pl neg（赤）・"-" 前置
+        loss = page.eval_on_selector(
+            '#tradeTable tbody tr.tw[data-id="2"] td.pl',
+            "td => ({cls: td.className, txt: td.textContent})")
+        assert "neg" in loss["cls"], f"loss row not neg-colored: {loss}"
+        assert loss["txt"].startswith("-"), f"loss profit not signed: {loss}"
+    finally:
+        browser.close()
+        httpd.shutdown()
+        p.stop()
+
+
+def test_row_click_moves_chart_to_trade_time(tmp_path):
+    """行クリック→該当 trade の entry_time へチャート移動（試作 focusTime 準拠）。"""
+    p, browser, page, httpd = _launch(tmp_path)
+    try:
+        _open_detail_tab(page)
+        # クリック前後で lightweight-charts の可視レンジ（focusTime=setVisibleRange）が動くこと。
+        before = page.evaluate(
+            "() => window.__priceChart && window.__priceChart.timeScale().getVisibleRange()")
+        page.click('#tradeTable tbody tr.tw[data-id="3"]')
+        page.wait_for_timeout(300)
+        after = page.evaluate(
+            "() => window.__priceChart && window.__priceChart.timeScale().getVisibleRange()")
+        # 可視レンジが取得でき、クリックで該当 trade 時刻へ移動（範囲が変化）したこと
+        assert after is not None, "visible range not available after click"
+        assert before != after, f"chart did not move on row click: before={before} after={after}"
+    finally:
+        browser.close()
+        httpd.shutdown()
+        p.stop()
+
+
+def test_row_click_dims_other_candles_and_highlights_trade(tmp_path):
+    """行クリックで該当取引以外のローソク足を減光（その取引をハイライト）し、ズーム後も維持する。"""
+    p, browser, page, httpd = _launch(tmp_path)
+    try:
+        _open_detail_tab(page)
+        # クリックで該当取引以外が減光される（window.__candlesDimmed=true）。
+        page.click('#tradeTable tbody tr.tw[data-id="3"]')
+        page.wait_for_timeout(300)
+        dimmed = page.evaluate("() => window.__candlesDimmed === true")
+        assert dimmed, "クリックで該当取引以外が減光されていない"
+        # 選択（hover）状態が当該 trade になり、focusTime のズーム後も保持されること。
+        hov = page.evaluate("() => window.__linkage && window.__linkage.hoverTradeId")
+        assert hov == 3, f"clicked trade not highlighted/selected: {hov}"
     finally:
         browser.close()
         httpd.shutdown()
@@ -189,10 +256,10 @@ def test_detail_table_sort_reorders_rows(tmp_path):
         # 初期は order 昇順前提（id=1 が先頭）
         before = first_row_id()
         # Price 列ヘッダをクリックしてソート（昇順）。price は 100,110,102 → 昇順先頭は id=1(100)
-        page.click('#tradeTable thead th[data-k="price"]')
+        page.click('#tradeTable thead th[data-k="entry_price"]')
         asc = first_row_id()
         # もう一度クリックで降順 → 先頭は id=2(110)
-        page.click('#tradeTable thead th[data-k="price"]')
+        page.click('#tradeTable thead th[data-k="entry_price"]')
         desc = first_row_id()
         assert asc != desc, f"sort did not reorder: asc={asc} desc={desc}"
         assert asc == "1" and desc == "2", f"asc={asc} desc={desc} before={before}"
@@ -279,7 +346,7 @@ def test_highlight_survives_column_sort(tmp_path):
         page.hover('#tradeTable tbody tr.tw[data-id="2"]')
         page.wait_for_function("window.__linkage && window.__linkage.hoverTradeId === 2",
                                timeout=4000)
-        page.click('#tradeTable thead th[data-k="price"]')  # tbody 全再生成が走る
+        page.click('#tradeTable thead th[data-k="entry_price"]')  # tbody 全再生成が走る
         # 再生成後も id=2 の行に hl が残っている
         cls = page.eval_on_selector('#tradeTable tbody tr.tw[data-id="2"]',
                                     "el => el.className")

@@ -178,9 +178,13 @@ export function renderChart(containerId, segment, opts) {
   const t0 = _rows.length ? _rows[0].entry_time : (_barTimes[0] || 0);
   const t1 = _rows.length ? _rows[_rows.length - 1].exit_time : (_barTimes[_barTimes.length - 1] || 0);
   _chart.timeScale().setVisibleRange({ from: t0 - 600, to: t1 + 600 });
-  _chart.timeScale().subscribeVisibleTimeRangeChange(() => renderMarkers(_rows, { hoverId: null, filter: null }));
+  // 可視レンジ変更（pan/zoom・focusTime 含む）でマーカーを再描画する。直近の描画意図
+  // （hoverId/filter）を保持して再描画し、focusTime のズームで選択ハイライトが消えないようにする。
+  _chart.timeScale().subscribeVisibleTimeRangeChange(() => renderMarkers(_rows, _lastMarkerOpts));
   _ensureCrosshair();
   renderMarkers(_rows, { hoverId: null, filter: null });
+  // E2E フック（行クリック→focusTime の可視レンジ移動を検証するため・本番表示には不使用）。
+  if (typeof window !== "undefined") window.__priceChart = _chart;
 }
 
 // crosshair でマーカーグリフ命中時に注入コールバックへ trade id を通知。
@@ -209,10 +213,14 @@ function _visibleTrades(rows) {
   return (rows || []).filter((t) => t.exit_time >= r.from && t.entry_time <= r.to);
 }
 
+// 直近の描画意図（hoverId/filter）。可視レンジ変更時の再描画で選択/抽出状態を保持する。
+let _lastMarkerOpts = { hoverId: null, filter: null };
+
 // 売買マーカーを描画し、点7 chartBadge に可視取引件数を表示する。
 export function renderMarkers(rows, opts) {
   if (!_candle) return;
   const { hoverId = null, filter = null } = opts || {};
+  _lastMarkerOpts = { hoverId, filter }; // pan/zoom 再描画で再利用
   let vt = _visibleTrades(rows || _rows);
   if (filter) vt = vt.filter((t) => filter.has(t.id));
   const badge = typeof document !== "undefined" ? document.getElementById("chartBadge") : null;
@@ -252,9 +260,11 @@ export function dimCandlesForTrade(t) {
   for (let i = lo; i < hi; i++) merged[i] = _barsNormal[i];
   _candle.setData(merged);
   _candlesDimmed = true;
+  if (typeof window !== "undefined") window.__candlesDimmed = true; // E2E フック
 }
 export function restoreCandles() {
   if (_candlesDimmed && _candle) { _candle.setData(_barsNormal); _candlesDimmed = false; }
+  if (typeof window !== "undefined") window.__candlesDimmed = false; // E2E フック
 }
 
 // 時刻 t を中心にチャートをズームする（試作 focusTime・グラフ/ヒート/明細クリック連動）。

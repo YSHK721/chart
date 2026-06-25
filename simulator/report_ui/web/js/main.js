@@ -13,7 +13,7 @@ import { buildGraphs, activeCharts } from "./graphs.js";
 import { buildCompare, resizeCompareCharts, cmpChartInstances } from "./compare.js";
 import { buildReport } from "./report.js";
 import { buildGlossary, wireTips } from "./glossary.js";
-import { wireResizers, wireMaximize } from "./layout.js";
+import { wireResizers, wireMaximize, toggleDetailMax } from "./layout.js";
 
 let DATA = null;
 let CUR_SEG = "is"; // 現在表示中の区間
@@ -35,7 +35,11 @@ function renderVerdict() {
 
 function renderTable(seg) {
   const host = document.getElementById("tradeTable");
-  if (host) buildTradeTable(host, DATA.segments[seg], linkage);
+  // 行クリック→該当 trade を選択ハイライト（その取引以外を減光）し、entry_time へチャート移動。
+  // id を渡して setHover で減光＋マーカー強調を確定させ、focusTime でズームする
+  // （hover に依存せず click 単体で「該当取引以外を減光」を成立させる）。
+  const onRowFocus = (id, t) => { linkage.setHover(id, "table"); focusTime(t); };
+  if (host) buildTradeTable(host, DATA.segments[seg], linkage, onRowFocus);
 }
 
 function renderHeatmap(seg) {
@@ -104,6 +108,8 @@ function wireTabs() {
       if (name === "compare") resizeCompareCharts();
       setTimeout(() => { resizeChart(); resizeCompareCharts(); }, 30);
     });
+    // タブのダブルクリックで下部（明細/タブ領域）を 正常⇄拡大 トグルする。
+    tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleDetailMax(); });
   });
 }
 
