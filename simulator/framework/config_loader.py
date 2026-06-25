@@ -180,3 +180,37 @@ def load_config(source: ConfigSource) -> BacktestConfig:
         pending_persistent=model.pending_persistent,
         hedged_margin=model.hedged_margin,
     )
+
+
+# ===========================================================================
+# 週次ボラ・バンド戦略 config 追記（詳細設計 §11・既存無改変・追記のみ）
+# 既存ブロックは 1 行も変更しない。usecase へは pydantic を漏らさずプレーン引数へ
+# 変換して渡す（DI-1）。
+# ===========================================================================
+
+class VolEstimationParams(BaseModel):
+    """WV1 週末バッチ推定パラメータ（詳細設計 §11）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window: int = Field(260, ge=1)
+    nw_lag: int = Field(4, ge=0)
+    min_bars_per_week: int = Field(..., ge=1)  # 立会内最小5分本数（D4・要供給）
+
+
+class ValidationParams(BaseModel):
+    """WV3 検証パラメータ（詳細設計 §11・TBD コストは既定 0.0）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seed: int = 0
+    B: int = Field(5000, ge=1)
+    alpha_stop: float = 0.05
+    f_risk: float = 0.01
+    min_weeks: int = 260
+    min_stop_hits: int = 30
+    c_spread: float = 0.0
+    c_comm: float = 0.0
+    r_fund: float = 0.0
+    e_grid: list[str] = ["E0", "E1(0.5)", "E1(1.0)", "E1(1.5)", "E1(2.0)"]
+    p_tp_grid: list[float] = [0.40, 0.50, 0.60, 0.70]

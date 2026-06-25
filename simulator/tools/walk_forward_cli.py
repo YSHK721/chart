@@ -38,6 +38,7 @@ _BUILD_INTERACTOR_KEYWORDS = frozenset({
     "take_profit_points", "config_overrides", "stop_out_level", "slope_shift",
     "slope_min_points", "entry_offset_points", "entry_type", "trading_start",
     "tick_store_root", "tick_start", "tick_end",
+    "weekly_forecast", "weekly_p_tp", "weekly_capital", "weekly_f_risk",
 })
 
 
