@@ -1,7 +1,8 @@
 """rollup_store — 上位足ロールアップ CSV の解決・末尾読込・mtime キャッシュ（dataset と同方式）。
 
 server が 1 分足を全ロードしないための読み取り側。上位足（5m..1M）はあらかじめ生成された
-TF 別ロールアップ CSV（``<workspace>/marketdata/data/rollups/<ref>_<tf>.csv``・loader 互換）を読む。
+TF 別ロールアップ CSV（``DATA_DIR/rollups/<ref>_<tf>.csv``・loader 互換）を読む。
+パスは marketdata.paths.DATA_DIR（単一基点・Sd §10.1 C-1）配下に集約する。
 
 ★メモリ・読込時間有界（D-2 と同方針）: ロールアップ全件（5m≈96 万行/64MB）を読まず、末尾
 ``_ROLLUP_TAIL_ROWS`` 行だけを ``tail_reader.read_tail`` で逆シーク読みする。表示・計算は
@@ -27,7 +28,15 @@ from adapter.compute import tail_reader
 
 # workspace ルート（このファイル: api/adapter/compute/ → parents[5] = /workspaces/app）。
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[5]
-_ROLLUPS_DIR = _WORKSPACE_ROOT / "marketdata" / "data" / "rollups"
+# 時系列データの単一基点（marketdata.paths.DATA_DIR・Sd §10.1 C-1）を import するため
+# repo 根を sys.path へ（call_binding と同じロード境界の一括設定）。
+import sys as _sys
+
+if str(_WORKSPACE_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_WORKSPACE_ROOT))
+from marketdata.paths import DATA_DIR
+
+_ROLLUPS_DIR = DATA_DIR / "rollups"
 
 # 末尾読込の上限行数（全件を読まず末尾だけ逆シーク。recentBars=1500 に対し十分大。1m の
 #   dataset._ATOMIC_TAIL_LOOKBACK_ROWS と同方式・同値）。遡及上限＝この行数（5m≈170 日・1h≈5.7 年）。
@@ -40,7 +49,7 @@ _ROLLUP_CACHE: dict[tuple[str, str], tuple[int | None, pd.DataFrame]] = {}
 
 
 def path(ref: str, tf: str) -> Path:
-    """ロールアップ CSV の解決パス（``<workspace>/marketdata/data/rollups/<ref>_<tf>.csv``）。"""
+    """ロールアップ CSV の解決パス（``DATA_DIR/rollups/<ref>_<tf>.csv``）。"""
     return _ROLLUPS_DIR / f"{ref}_{tf}.csv"
 
 

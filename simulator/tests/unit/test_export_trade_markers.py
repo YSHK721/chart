@@ -20,7 +20,8 @@ from simulator.tools import export_trade_markers as ext
 
 # 実 marketdata（読み取り専用）。Fix v2 受入 3（既定実行が MarginCallError を出さず完走）を
 # 実機相当で検証する際に直近 tail を参照する（§8.3「実 marketdata 直近で run」許容）。
-_REAL_CSV = Path(__file__).resolve().parents[3] / "marketdata" / "data" / "jp225_m1.csv"
+# パスは marketdata.paths.DATA_DIR（単一基点・Sd §10.1 C-1）配下＝被テスト側 _DEFAULT_CSV と同源。
+_REAL_CSV = ext._DEFAULT_CSV
 
 
 def test_bridge_renames_date_to_time_and_adds_zero_spread():

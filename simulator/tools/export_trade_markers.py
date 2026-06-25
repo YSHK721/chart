@@ -4,7 +4,7 @@
   §4（集合包含: 全マーカー time ⊆ candles time 集合・包含外件数を明示・0 件合格）。
 
 責務＝結線（Composition Root 利用側・main 無改変＝C3）。
-  1. marketdata/data/jp225_m1.csv を読み取り専用で pandas ロード（date,open,high,low,close,volume）。
+  1. DATA_DIR/jp225_m1.csv を読み取り専用で pandas ロード（date,open,high,low,close,volume）。
   2. 列ブリッジ（既存データ非改変・新規 tmp へ書く）: date→time / +spread=0。
   3. build_interactor(...) で controller/request を構築（committed IF のみ使用）。
   4. result = controller._interactor.execute(request)。
@@ -26,12 +26,14 @@ from typing import Any
 
 import pandas as pd
 
+from marketdata.paths import DATA_DIR
 from simulator.adapter.presenter.trade_markers import TradeMarkersPresenter
 from simulator.main import build_interactor
 
-# 既定パス（リポジトリルート相対）。
+# 既定パス（リポジトリルート相対）。時系列データは marketdata.paths.DATA_DIR（単一基点・
+# Sd §10.1 C-1 / §10.2 H-5）配下へ集約する（tools 層のみ・usecase/domain/adapter 無改変）。
 _ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_CSV = _ROOT / "marketdata" / "data" / "jp225_m1.csv"
+_DEFAULT_CSV = DATA_DIR / "jp225_m1.csv"
 _DEFAULT_OUT = _ROOT / "indigators" / "indicator_ui" / "web" / "data" / "trade_markers.json"
 
 # engine（comma 形式 CsvOHLCRepository）が要求する列順。

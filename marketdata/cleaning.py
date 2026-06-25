@@ -54,5 +54,7 @@ def repair_ohlc_outliers(
                 f"{fixed['open']:.1f}/{fixed['high']:.1f}/"
                 f"{fixed['low']:.1f}/{fixed['close']:.1f}"
             )
-        repaired.append({"time": cd["time"], **fixed})  # type: ignore[typeddict-item]
+        repaired.append(  # type: ignore[typeddict-item]
+            {"time": cd["time"], "volume": cd.get("volume", 0.0), **fixed}
+        )
     return repaired, log_lines

@@ -28,9 +28,17 @@ from adapter.compute import rollup_store, tail_reader
 
 # workspace ルート（このファイル: api/adapter/compute/ → parents[5] = /workspaces/app）。
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[5]
+# 時系列データの単一基点（marketdata.paths.DATA_DIR）を import するため repo 根を sys.path へ
+# （call_binding と同じロード境界の一括設定。各 src に sys.path ハックを散らさない）。
+import sys as _sys
+
+if str(_WORKSPACE_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_WORKSPACE_ROOT))
+from marketdata.paths import DATA_DIR
 
 # datasetRef ホワイトリスト（§7.3）。識別子 → 実 CSV パス。生パス直送・パストラバーサルを
 # 防ぐため、ここに無いキーはすべて拒否する（外から組み立てたパスは解決しない）。
+# JP225 系の時系列データは marketdata.paths.DATA_DIR（単一基点・Sd §10.1 C-1）配下に集約。
 DATASET_WHITELIST: dict[str, Path] = {
     "sample": _WORKSPACE_ROOT
     / "lightweight-charts-python-main"
@@ -39,10 +47,10 @@ DATASET_WHITELIST: dict[str, Path] = {
     / "ohlcv.csv",
     # JP225（日経225・Dukascopy E_N225Jap）。marketdata から書き出した日足 CSV
     # （date,open,high,low,close・外れ値補正済み）。生成: indicator_ui/tools/export_jp225_csv.py。
-    "jp225": _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_daily.csv",
+    "jp225": DATA_DIR / "jp225_daily.csv",
     # JP225 1分足（原子データ）。全時間足はこの 1 分足を resample して生成する
     # （date(UTC %Y-%m-%d %H:%M:%S),open,high,low,close,volume）。生成: tools/export_jp225_m1.py。
-    "jp225_m1": _WORKSPACE_ROOT / "marketdata" / "data" / "jp225_m1.csv",
+    "jp225_m1": DATA_DIR / "jp225_m1.csv",
 }
 
 # サンプル CSV の時刻列（解像度非依存に UNIX 秒へ変換する起点）。
@@ -51,27 +59,14 @@ _SAMPLE_TIME_COLUMN = "date"
 # candles の必須 OHLC 列（小文字正規化後）。
 _OHLC_COLUMNS = ("open", "high", "low", "close")
 
-# 時間足コード → pandas resample ルール（§チャート表示時間選択・1 分足原子）。
-# 全時間足は 1 分足（原子）を resample して生成する。"1m" は無変換（None＝原子そのもの）。
-# pandas 3 系では分/時は "5min"/"1h"、週は取引週末（金曜ラベル）、月末は "ME"（旧 "M" は廃止）。
-# ここに無いキーはすべて拒否する（is_known_timeframe）。日足ベース dataset（sample/jp225）でも
-# "1D"/"1W"/"1M" は冪等に機能する（同日 1 本の再集計は値不変）。日足未満は日足 dataset には無効
-# （フロントが dataset 別に提示足を制限する）。
-TIMEFRAME_RULES: dict[str, str | None] = {
-    "1m": None,
-    "5m": "5min",
-    "15m": "15min",
-    "30m": "30min",
-    "1h": "1h",
-    "4h": "4h",
-    "1D": "1D",
-    "1W": "W-FRI",
-    "1M": "ME",
-}
-
-# OHLC 集約規則（再集計時の列別 agg）。volume は合算、その他（OHLC 外）は最終値。
-_OHLC_AGG = {"open": "first", "high": "max", "low": "min", "close": "last"}
-_VOLUME_NAMES = ("volume", "vol")
+# resample 規則源は marketdata.resample（enabler③・Sd 後の単一基点と同様に唯一化）。
+# dataset は薄い再エクスポートへ降格し、resample_ohlc / TIMEFRAME_RULES / is_known_timeframe を
+# marketdata から再公開する（既存 import 元の後方互換維持）。規則の二重実装を禁ずる（§4）。
+from marketdata.resample import (  # noqa: E402  (再エクスポート)
+    TIMEFRAME_RULES,
+    is_known_timeframe,
+    resample_ohlc,
+)
 
 # 1 分足原子を全ロードせず末尾だけ読む datasetRef（メモリ有界化・D-2）。1m は tail_reader、
 # 上位足は事前生成のロールアップ CSV（rollup_store）から読む。それ以外の ref（sample/jp225 日足等・
@@ -87,34 +82,8 @@ def is_known(ref: Any) -> bool:
     return ref in DATASET_WHITELIST
 
 
-def is_known_timeframe(timeframe: Any) -> bool:
-    """timeframe がホワイトリスト（1m..1M）に存在するか（未知は False）。"""
-    return timeframe in TIMEFRAME_RULES
-
-
-def resample_ohlc(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
-    """DataFrame を指定 pandas rule で OHLC 再集計する（§チャート表示時間選択・1 分足原子）。
-
-    ``rule=None`` は無変換で同一 DataFrame を返す（原子＝1 分足そのもの）。それ以外は
-    resample し、open=最初/high=最大/low=最小/close=最終、volume=合算、その他列=最終値で
-    集約する。取引の無い期間（OHLC が NaN の行）は除去する（resample は連続区間を埋めるため、
-    休場区間の空行を落とす）。
-    """
-    if rule is None:
-        return df
-    agg: dict[Any, str] = {}
-    for col in df.columns:
-        lc = str(col).lower()
-        if lc in _OHLC_AGG:
-            agg[col] = _OHLC_AGG[lc]
-        elif lc in _VOLUME_NAMES:
-            agg[col] = "sum"
-        else:
-            agg[col] = "last"
-    resampled = df.resample(rule).agg(agg)
-    lower_map = {str(c).lower(): c for c in df.columns}
-    ohlc_cols = [lower_map[k] for k in _OHLC_COLUMNS if k in lower_map]
-    return resampled.dropna(subset=ohlc_cols)
+# is_known_timeframe / resample_ohlc / TIMEFRAME_RULES は marketdata.resample から再エクスポート
+# （ファイル冒頭の import 参照）。dataset 固有の規則実装は持たない（規則源は marketdata・§4）。
 
 
 def _to_unix_seconds(value: Any) -> int:

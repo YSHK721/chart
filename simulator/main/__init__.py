@@ -35,6 +35,7 @@ from simulator.adapter.indicator.madiff import madiff
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.presenter.json import JsonPresenter
 from simulator.adapter.presenter.markdown import MarkdownPresenter
+from simulator.adapter.repository.marketdata_source import MarketDataSourceRepository
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 from simulator.adapter.strategy.ma_slope import MaSlope
@@ -298,6 +299,7 @@ def build_interactor(
     weekly_p_tp: float = 0.50,
     weekly_capital: float = 0.0,
     weekly_f_risk: float = 0.01,
+    marketdata_window: Any = None,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
 
@@ -366,12 +368,25 @@ def build_interactor(
         registry = _build_registry(df, ma_period=ma_period, ma_method=ma_method)
         strategy = TC24051901()
 
+    # S5 strangler（marketdata 委譲）: marketdata_window=(start,end) 指定時、comma 形式戦略
+    # （既定 TC・WeeklyVolBand＝spread 非依存・H-4）の OHLC 取得を marketdata.CandleSource へ
+    # 委譲し Candle→Bar 写像する経路へ切り替える（§10.1 C-2）。registry 用 DataFrame は従来
+    # どおり data_path から構築（U6 解決＝併存）。spread 依存戦略（MA_Slope/MA_Slope_Pending/
+    # StopEntryProbe＝Mt5CsvOHLCRepository）は委譲対象外で本分岐に入らず、report.json 再現性
+    # （StopEntryProbe 経路無改変）を保つ。usecase IF（RunBacktestRequest.bars）は不変。
+    load_source: Any = data_path
+    if marketdata_window is not None and isinstance(market_data, CsvOHLCRepository):
+        from marketdata.csv_source import CsvCandleSource
+
+        market_data = MarketDataSourceRepository(CsvCandleSource(data_path))
+        load_source = marketdata_window  # C-2: (start, end) 半開窓を委譲 repo へ渡す
+
     # bars は committed 公開 IF（market_data.load）で構築する。registry 用の DataFrame
     # 読みと bars 用の load が分かれる（=読み複数回）のは committed adapter/usecase の
     # IF（registry は系列・Interactor は Bar 列・controller は path 再読み）に起因する。
     # 1 回読みへの統合は committed IF 変更が要るため範囲外＝申し送り（DESIGN 申し送り）。
     # every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
-    bars = market_data.load(data_path, None, None)
+    bars = market_data.load(load_source, None, None)
 
     # tick_model 選択（config gated）。real_ticks のときのみ ParquetTickRepository から
     # 対象期間の実ティックを load し RealTickModel に供給する（every-tick #6）。
