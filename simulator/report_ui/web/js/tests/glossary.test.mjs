@@ -5,7 +5,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { REPORT_GROUPS, LABELS_JA } from "../glossary.js";
+import {
+  REPORT_GROUPS, LABELS_JA, GLOSSARY, GRAPH_GLOSSARY, gkTip, ggTip,
+} from "../glossary.js";
 
 test("REPORT_GROUPS is a non-empty array of [title, keys[]] pairs", () => {
   assert.ok(Array.isArray(REPORT_GROUPS));
@@ -45,4 +47,44 @@ test("LABELS_JA covers every key referenced by REPORT_GROUPS", () => {
       assert.ok(k in LABELS_JA, `LABELS_JA must contain ${k}`);
     }
   }
+});
+
+// --- 点9 用語説明: GLOSSARY / GRAPH_GLOSSARY 網羅・tip 生成 -----------------------
+
+test("GLOSSARY provides role/read for every REPORT_GROUPS key", () => {
+  // 章立て対象キーは全て用語解説（役割/見方）を持つ（用語タブの欠落防止）。
+  for (const [, keys] of REPORT_GROUPS) {
+    for (const k of keys) {
+      assert.ok(GLOSSARY[k], `GLOSSARY must contain ${k}`);
+      assert.equal(typeof GLOSSARY[k].role, "string");
+      assert.equal(typeof GLOSSARY[k].read, "string");
+    }
+  }
+});
+
+test("GRAPH_GLOSSARY covers the 5 compare-pane graph keys", () => {
+  const keys = GRAPH_GLOSSARY.map((x) => x.e);
+  for (const e of ["Equity IS/OOS", "P/L breakdown", "Max Drawdown", "Metrics radar", "Degradation ratio"]) {
+    assert.ok(keys.includes(e), `GRAPH_GLOSSARY must contain ${e}`);
+  }
+});
+
+test("GRAPH_GLOSSARY covers chart panes and graph/heatmap keys", () => {
+  const keys = GRAPH_GLOSSARY.map((x) => x.e);
+  // チャート（Balance/Drawdown pane）・グラフ・ヒートマップの data-gg と整合。
+  for (const e of ["Balance pane", "Drawdown pane", "Entries by hours", "P&L heatmap", "Position holding time"]) {
+    assert.ok(keys.includes(e), `GRAPH_GLOSSARY must contain ${e}`);
+  }
+});
+
+test("gkTip returns HTML for known keys and null for unknown", () => {
+  const tip = gkTip("Profit Factor");
+  assert.ok(tip && tip.includes("役割") && tip.includes("見方"));
+  assert.equal(gkTip("NoSuchKey"), null);
+});
+
+test("ggTip returns HTML for known graph keys and null for unknown", () => {
+  const tip = ggTip("Metrics radar");
+  assert.ok(tip && tip.includes("指標レーダー"));
+  assert.equal(ggTip("NoSuchGraph"), null);
 });
