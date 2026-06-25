@@ -35,13 +35,20 @@ __all__ = [
     "DukascopyCandleSource",
     "DukascopyTickSource",
     "INTERVALS",
+    "OFFER_SIDES",
     "JP225",
     "repair_ohlc_outliers",
 ]
 
 # ベンダ依存（dukascopy_python）を要する名前は遅延 import（PEP 562）。
 # `from marketdata import DukascopyCandleSource` 等のアクセス時にのみ dukascopy_source を読む。
-_LAZY = {"DukascopyCandleSource", "DukascopyTickSource", "INTERVALS", "JP225"}
+_LAZY = {
+    "DukascopyCandleSource",
+    "DukascopyTickSource",
+    "INTERVALS",
+    "OFFER_SIDES",
+    "JP225",
+}
 
 
 def __getattr__(name: str) -> Any:  # noqa: D401

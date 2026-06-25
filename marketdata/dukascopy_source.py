@@ -34,6 +34,13 @@ INTERVALS = {
     "min_1": dukascopy_python.INTERVAL_MIN_1,
 }
 
+# 気配側名 → ライブラリ OFFER_SIDE 定数（INTERVALS と対称・利用側のベンダ非依存化用）。
+# 利用側は "bid"/"ask" の文字列で気配側を指定し、ベンダ定数はこの境界で隔離する。
+OFFER_SIDES = {
+    "bid": dukascopy_python.OFFER_SIDE_BID,
+    "ask": dukascopy_python.OFFER_SIDE_ASK,
+}
+
 
 def _to_candles(df: pd.DataFrame) -> List[Candle]:
     """UTC OHLCV DataFrame を candles へ変換する（純粋・time 昇順・同一 time は後勝ち）。

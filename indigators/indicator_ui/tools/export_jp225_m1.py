@@ -8,10 +8,14 @@ date は UTC ``%Y-%m-%d %H:%M:%S``）で出力する。
 
 OOM 回避（ISSUE-017 と同方針）:
     15 年分の 1 分足（約 500 万行）は全件メモリ展開で OOM するため、``--chunk-months`` 単位で
-    ``dukascopy_python.fetch`` を呼び、チャンク境界の重複（前チャンク末 == 次チャンク頭）を
-    直前書き出し UTC タイムスタンプ超過行のみ採用して除去しつつ、逐次 1 行ずつ書き出す。
-    ライブラリ依存（dukascopy_python）はこのツールに限定する（marketdata の Candle は volume を
-    持たないため、原子に volume を残す目的でライブラリを直接呼ぶ）。
+    ``marketdata.DukascopyCandleSource.fetch_candles`` を反復呼びし、チャンク境界の重複
+    （前チャンク末 == 次チャンク頭）を直前書き出し UTC タイムスタンプ超過行のみ採用して除去
+    しつつ、逐次 1 行ずつ書き出す。
+
+ベンダ隔離（S3・enabler①解消）:
+    取得は marketdata 境界（``DukascopyCandleSource``・volume 付き＝S0）へ委譲し、
+    ``dukascopy_python`` への直接依存はこのツールから除去する（ベンダ定数は marketdata の
+    ``INTERVALS`` / ``OFFER_SIDES`` 経由で解決）。volume は Candle.volume から取得する。
 
 時刻:
     Dukascopy は UTC。原子はベンダ素のまま UTC で保存し、日足/週足等の境界整合（JST セッション
@@ -39,15 +43,18 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Callable, List, Optional, Tuple
 
-import dukascopy_python
-from dukascopy_python.instruments import INSTRUMENT_IDX_ASIA_E_N225JAP
-
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 # 時系列データの単一基点（marketdata.paths.DATA_DIR・Sd §10.1 C-1）を import するため
 # repo 根を sys.path へ。
 if str(_WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKSPACE_ROOT))
-from marketdata.paths import DATA_DIR
+import pandas as pd  # noqa: E402（取得部 DataFrame 形の復元・marketdata 委譲後の整形）
+
+from marketdata import (  # noqa: E402（sys.path 設定後に import・ベンダは marketdata で隔離）
+    JP225,
+    DukascopyCandleSource,
+)
+from marketdata.paths import DATA_DIR  # noqa: E402
 
 _DEFAULT_OUTPUT = DATA_DIR / "jp225_m1.csv"
 # 上位足ロールアップ CSV の既定出力先（rollup_store.path と整合）。
@@ -55,8 +62,10 @@ _DEFAULT_ROLLUP_DIR = DATA_DIR / "rollups"
 # ロールアップ対象の上位足（1m 原子を除く 5m..1M）。1 分足追記に同期して増分更新する。
 _ROLLUP_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M")
 
-# JP225（日経225）= Dukascopy 銘柄 "E_N225Jap"。
-DEFAULT_INSTRUMENT = INSTRUMENT_IDX_ASIA_E_N225JAP
+# JP225（日経225）= Dukascopy 銘柄 "E_N225Jap"。marketdata 経由で取り込み（ベンダ隔離）。
+DEFAULT_INSTRUMENT = JP225
+# 気配側の既定（ベンダ非依存の文字列。fetch_chunk が marketdata.OFFER_SIDES で解決する）。
+DEFAULT_OFFER_SIDE = "bid"
 
 # 出力 CSV のヘッダーと date 列書式（stream_to_csv / append_incremental で共用）。
 _HEADER = ["date", "open", "high", "low", "close", "volume"]
@@ -118,25 +127,63 @@ def _iter_chunks(
     return chunks
 
 
+def _candles_to_df(candles: List[Any]) -> Any:
+    """``CandleSource`` の candles（time=UNIX 秒・volume 付き）を取得部の DataFrame 形へ戻す。
+
+    取得部は従来 tz-aware UTC index・列 ``open/high/low/close/volume`` の DataFrame を返す契約
+    （``_df_to_rows`` / 増分の ``df.index`` 操作が依存）。委譲後もこの形を保ち、Candle.time
+    （UNIX 秒・UTC）を ``unit="s", utc=True`` で同一 UTC 瞬時の tz-aware index に復元する
+    （date 書式・dedup・float repr が委譲前とバイト一致する根拠＝§7.3 oracle）。
+    """
+    if not candles:
+        return pd.DataFrame()
+    idx = pd.to_datetime([c["time"] for c in candles], unit="s", utc=True)
+    return pd.DataFrame(
+        {
+            "open": [c["open"] for c in candles],
+            "high": [c["high"] for c in candles],
+            "low": [c["low"] for c in candles],
+            "close": [c["close"] for c in candles],
+            "volume": [c["volume"] for c in candles],
+        },
+        index=idx,
+    )
+
+
 def fetch_chunk(
     chunk_start: datetime,
     chunk_end: datetime,
     *,
     instrument: str = DEFAULT_INSTRUMENT,
-    offer_side: Any = dukascopy_python.OFFER_SIDE_BID,
+    offer_side: str = DEFAULT_OFFER_SIDE,
 ):
-    """Dukascopy から単一チャンク [chunk_start, chunk_end) の 1 分足を取得する（取得部）。
+    """単一チャンク [chunk_start, chunk_end) の 1 分足を marketdata 経由で取得する（取得部）。
 
-    戻り値は UTC index・列 ``open/high/low/close/volume`` の DataFrame（無データは None/空）。
-    ライブラリ依存はこの関数に限定する（差し替え時もここだけを置換）。
+    ``DukascopyCandleSource``（marketdata adapter・volume 付き＝S0）へ委譲し、ベンダ依存
+    （``dukascopy_python``）を marketdata 境界に隔離する（S3・enabler①解消）。戻り値は従来どおり
+    tz-aware UTC index・列 ``open/high/low/close/volume`` の DataFrame（無データは空 DataFrame）。
+    ``offer_side`` は "bid"/"ask" のベンダ非依存文字列で受け、adapter 構築時にベンダ定数へ写す。
     """
-    return dukascopy_python.fetch(
-        instrument,
-        dukascopy_python.INTERVAL_MIN_1,
-        offer_side,
-        chunk_start,
-        chunk_end,
+    source = DukascopyCandleSource(
+        instrument=instrument,
+        interval=_min1_interval(),
+        offer_side=_offer_side_const(offer_side),
     )
+    return _candles_to_df(source.fetch_candles(chunk_start, chunk_end))
+
+
+def _min1_interval() -> Any:
+    """1 分足の INTERVAL 定数を marketdata 経由で解決する（ベンダ定数を隔離）。"""
+    from marketdata import INTERVALS  # 局所 import（marketdata 経由でベンダを隔離）
+
+    return INTERVALS["min_1"]
+
+
+def _offer_side_const(offer_side: str) -> Any:
+    """"bid"/"ask" を OFFER_SIDE 定数へ marketdata 経由で解決する（ベンダ定数を隔離）。"""
+    from marketdata import OFFER_SIDES  # 局所 import（marketdata 経由でベンダを隔離）
+
+    return OFFER_SIDES[offer_side]
 
 
 def repair_outlier_rows(
@@ -183,7 +230,7 @@ def stream_to_csv(
     output_path: Path,
     *,
     instrument: str = DEFAULT_INSTRUMENT,
-    offer_side: Any = dukascopy_python.OFFER_SIDE_BID,
+    offer_side: str = DEFAULT_OFFER_SIDE,
     chunk_months: int = 1,
     repair: bool = True,
     repair_threshold: float = 0.3,
@@ -294,7 +341,7 @@ def append_incremental(
     lag_minutes: int = DEFAULT_LAG_MINUTES,
     default_start: datetime = DEFAULT_START,
     instrument: str = DEFAULT_INSTRUMENT,
-    offer_side: Any = dukascopy_python.OFFER_SIDE_BID,
+    offer_side: str = DEFAULT_OFFER_SIDE,
     repair: bool = True,
     repair_threshold: float = 0.3,
     rollup_hook: Optional[Callable[[Path, int], None]] = None,
@@ -476,11 +523,9 @@ def main(argv: List[str] | None = None) -> int:
         parser.error("--start と --end は両方指定するか、両方省略してください（増分モード）")
 
     range_given = args.start is not None and args.end is not None
-    offer_side = (
-        dukascopy_python.OFFER_SIDE_BID
-        if args.offer_side == "bid"
-        else dukascopy_python.OFFER_SIDE_ASK
-    )
+    # 気配側はベンダ非依存の文字列（"bid"/"ask"）のまま下流へ渡す（ベンダ定数化は
+    # fetch_chunk が marketdata.OFFER_SIDES で行う＝vendor 隔離）。
+    offer_side = args.offer_side
 
     # 増分モード（--start/--end 省略）の default_start は原子起点を使う。
     incr_default_start = args.start if args.start is not None else DEFAULT_START
