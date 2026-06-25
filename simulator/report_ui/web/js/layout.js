@@ -48,6 +48,12 @@ export function applyLayout(mode) {
   setTimeout(() => { if (_onResize) _onResize(); }, 40);
 }
 
+// 下部（明細/タブ領域）の最大化トグル（正常⇄拡大）。タブのダブルクリックから呼ぶ。
+//   現在 detail なら normal へ復元、それ以外（normal/chart）なら detail へ最大化する。
+export function toggleDetailMax() {
+  applyLayout(nextLayoutMode(_mode, "detail"));
+}
+
 // 最大化トグル（点6/点10）を結線する（試作 wireMaximize）。
 export function wireMaximize(onResize) {
   _onResize = onResize || null;

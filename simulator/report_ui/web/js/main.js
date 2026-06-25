@@ -13,7 +13,7 @@ import { buildGraphs, activeCharts } from "./graphs.js";
 import { buildCompare, resizeCompareCharts, cmpChartInstances } from "./compare.js";
 import { buildReport } from "./report.js";
 import { buildGlossary, wireTips } from "./glossary.js";
-import { wireResizers, wireMaximize } from "./layout.js";
+import { wireResizers, wireMaximize, toggleDetailMax } from "./layout.js";
 
 let DATA = null;
 let CUR_SEG = "is"; // 現在表示中の区間
@@ -108,6 +108,8 @@ function wireTabs() {
       if (name === "compare") resizeCompareCharts();
       setTimeout(() => { resizeChart(); resizeCompareCharts(); }, 30);
     });
+    // タブのダブルクリックで下部（明細/タブ領域）を 正常⇄拡大 トグルする。
+    tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleDetailMax(); });
   });
 }
 

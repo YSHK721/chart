@@ -289,3 +289,26 @@ def test_parity_all_18_points(tmp_path):
         browser.close()
         httpd.shutdown()
         p.stop()
+
+
+def test_tab_double_click_toggles_detail_max(tmp_path):
+    """タブのダブルクリックで下部（明細/タブ領域）を 正常⇄拡大 トグルする。
+
+    正常→ダブルクリック→拡大（#chartWrap 非表示）、拡大→ダブルクリック→正常（復元）。"""
+    p, browser, page, httpd, errors = _launch(tmp_path)
+    try:
+        # 初期は正常（chartWrap が表示されている）。
+        assert not page.eval_on_selector("#chartWrap", "el => el.style.display === 'none'"), "初期が正常でない"
+        # 正常 → ダブルクリック → 拡大（detail max・chartWrap 非表示）。
+        page.dblclick('.mv-tab[data-tab="detail"]')
+        page.wait_for_timeout(120)
+        assert page.eval_on_selector("#chartWrap", "el => el.style.display === 'none'"), "ダブルクリックで拡大しない"
+        # 拡大 → ダブルクリック → 正常（復元）。
+        page.dblclick('.mv-tab[data-tab="detail"]')
+        page.wait_for_timeout(120)
+        assert not page.eval_on_selector("#chartWrap", "el => el.style.display === 'none'"), "ダブルクリックで正常へ戻らない"
+        assert errors == [], f"page errors: {errors}"
+    finally:
+        browser.close()
+        httpd.shutdown()
+        p.stop()
