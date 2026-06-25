@@ -222,14 +222,20 @@ def test_degradation_table_groups_and_rows(tmp_path):
     p, browser, page, httpd = _launch(tmp_path)
     try:
         groups = page.query_selector_all("#cmpTable tbody tr.grp")
+        # 戦略章＋既存章立て。
         assert len(groups) >= 4, f"章立て見出しが少なすぎる: {len(groups)}"
+        # 戦略セクション（戦略名＋説明・全幅行）が先頭に追加される。
+        assert page.query_selector("#cmpTable td.strat-name") is not None, "戦略名行が無い"
         metric_rows = page.query_selector_all("#cmpTable tbody tr:not(.grp)")
-        # ダミー report は約33項目（本番保持指標）。30行以上を満たす。
+        # 導出指標の補完で 30 行以上を満たす。
         assert len(metric_rows) >= 30, f"指標行が少なすぎる: {len(metric_rows)}"
-        # 各指標行は 5 セル（指標｜IS｜OOS｜比｜差）。
-        cell_count = page.eval_on_selector(
-            "#cmpTable tbody tr:not(.grp)", "el => el.querySelectorAll('td').length")
-        assert cell_count == 5, f"指標行のセル数が5でない: {cell_count}"
+        # 戦略の全幅行（colspan）を除く全指標行が 5 セル（指標｜IS｜OOS｜比｜差）であること（網羅）。
+        bad = page.evaluate("""() => {
+          const rows = [...document.querySelectorAll('#cmpTable tbody tr:not(.grp)')];
+          const metric = rows.filter(r => !r.querySelector('[colspan]'));
+          return { total: metric.length, bad: metric.filter(r => r.querySelectorAll('td').length !== 5).length };
+        }""")
+        assert bad["total"] >= 30 and bad["bad"] == 0, f"5セルでない指標行あり: {bad}"
         # Profit Factor 行: IS>1 / OOS<1 が劣化（比 0.766・差 neg）として描画される実値検証。
         pf_ratio = page.evaluate("""() => {
           const rows = [...document.querySelectorAll('#cmpTable tbody tr:not(.grp)')];
