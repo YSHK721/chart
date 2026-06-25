@@ -36,18 +36,25 @@ INTERVALS = {
 
 
 def _to_candles(df: pd.DataFrame) -> List[Candle]:
-    """UTC OHLC DataFrame を candles へ変換する（純粋・time 昇順・同一 time は後勝ち）。"""
+    """UTC OHLCV DataFrame を candles へ変換する（純粋・time 昇順・同一 time は後勝ち）。
+
+    ``volume`` 列があれば Candle.volume へ抽出する（enabler①）。列が無い／NaN は ``0.0``。
+    """
+    vol = df["volume"] if "volume" in df.columns else None
     by_time: dict[int, Candle] = {}
-    for ts, o, h, low, c in zip(
-        df.index, df["open"], df["high"], df["low"], df["close"]
+    for i, (ts, o, h, low, c) in enumerate(
+        zip(df.index, df["open"], df["high"], df["low"], df["close"])
     ):
         t = int(pd.Timestamp(ts).timestamp())
+        raw_v = vol.iloc[i] if vol is not None else 0.0
+        v = 0.0 if pd.isna(raw_v) else float(raw_v)  # 列不在 / NaN は 0.0（欠損 volume）。
         by_time[t] = {
             "time": t,
             "open": float(o),
             "high": float(h),
             "low": float(low),
             "close": float(c),
+            "volume": v,
         }
     return [by_time[t] for t in sorted(by_time)]
 

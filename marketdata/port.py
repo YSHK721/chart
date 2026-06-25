@@ -11,13 +11,18 @@ from typing import List, Protocol, TypedDict, runtime_checkable
 
 
 class Candle(TypedDict):
-    """供給する 1 本の OHLC。``time`` は解像度非依存の UNIX 秒（整数）。"""
+    """供給する 1 本の OHLCV。``time`` は解像度非依存の UNIX 秒（整数）。
+
+    ``volume`` は tick volume または出来高（enabler①）。抽出元が値を持たない場合は
+    ``0.0``（``cleaning`` / ``dukascopy_source`` が欠落を 0.0 で補う）。
+    """
 
     time: int
     open: float
     high: float
     low: float
     close: float
+    volume: float
 
 
 @runtime_checkable
