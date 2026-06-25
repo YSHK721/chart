@@ -227,23 +227,19 @@ def test_row_click_moves_chart_to_trade_time(tmp_path):
         p.stop()
 
 
-def test_row_click_clears_candle_dim(tmp_path):
-    """回帰: hover で減光されたローソク足が、行クリック（移動）で確実に解除されること。
-
-    hold_sec=0 の取引は明色域が極小で全体が暗く見えるため、クリック時は減光を残さない。"""
+def test_row_click_dims_other_candles_and_highlights_trade(tmp_path):
+    """行クリックで該当取引以外のローソク足を減光（その取引をハイライト）し、ズーム後も維持する。"""
     p, browser, page, httpd = _launch(tmp_path)
     try:
         _open_detail_tab(page)
-        # hover で当該取引の建玉区間外が減光される（window.__candlesDimmed=true）。
-        page.hover('#tradeTable tbody tr.tw[data-id="1"]')
-        page.wait_for_timeout(150)
+        # クリックで該当取引以外が減光される（window.__candlesDimmed=true）。
+        page.click('#tradeTable tbody tr.tw[data-id="3"]')
+        page.wait_for_timeout(300)
         dimmed = page.evaluate("() => window.__candlesDimmed === true")
-        assert dimmed, "hover did not dim candles (前提が崩れている)"
-        # クリック（移動）で減光が解除される。
-        page.click('#tradeTable tbody tr.tw[data-id="1"]')
-        page.wait_for_timeout(200)
-        cleared = page.evaluate("() => window.__candlesDimmed === false")
-        assert cleared, "クリック後もローソク足が減光されたまま（バグ未修正）"
+        assert dimmed, "クリックで該当取引以外が減光されていない"
+        # 選択（hover）状態が当該 trade になり、focusTime のズーム後も保持されること。
+        hov = page.evaluate("() => window.__linkage && window.__linkage.hoverTradeId")
+        assert hov == 3, f"clicked trade not highlighted/selected: {hov}"
     finally:
         browser.close()
         httpd.shutdown()

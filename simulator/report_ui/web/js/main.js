@@ -35,10 +35,10 @@ function renderVerdict() {
 
 function renderTable(seg) {
   const host = document.getElementById("tradeTable");
-  // 行クリック→該当 trade の entry_time へチャート移動（focusTime）。
-  // クリックは「その取引を見る」操作のため、hover で適用された減光(dimCandlesForTrade)を
-  // 解除してから移動する（hold_sec=0 の取引で明色域が極小→全体が暗く見えるバグの解消）。
-  const onRowFocus = (t) => { restoreCandles(); focusTime(t); };
+  // 行クリック→該当 trade を選択ハイライト（その取引以外を減光）し、entry_time へチャート移動。
+  // id を渡して setHover で減光＋マーカー強調を確定させ、focusTime でズームする
+  // （hover に依存せず click 単体で「該当取引以外を減光」を成立させる）。
+  const onRowFocus = (id, t) => { linkage.setHover(id, "table"); focusTime(t); };
   if (host) buildTradeTable(host, DATA.segments[seg], linkage, onRowFocus);
 }
 

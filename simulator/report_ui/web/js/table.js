@@ -99,8 +99,9 @@ function _wireHoverHighlight(hostTable, linkage) {
   });
 }
 
-// 行クリック→チャート移動（試作 focusTime）の結線。hover と同じく一度だけ登録し、
+// 行クリック→選択ハイライト＋チャート移動の結線。hover と同じく一度だけ登録し、
 // 最新の onFocus を module 参照で保持する（区間切替で再構築されても累積しない・冪等）。
+// onFocus(id, entryTime): id=該当 trade（減光/強調の確定用）, entryTime=focusTime のズーム先。
 let _focusCb = null;
 let _clickWired = false;
 function _wireRowClickFocus(hostTable, onFocus) {
@@ -109,7 +110,7 @@ function _wireRowClickFocus(hostTable, onFocus) {
   _clickWired = true;
   hostTable.addEventListener("click", (e) => {
     const tr = e.target.closest("tr.tw");
-    if (tr && _focusCb) _focusCb(+tr.dataset.t); // tr.dataset.t = 該当 trade の entry_time
+    if (tr && _focusCb) _focusCb(+tr.dataset.id, +tr.dataset.t); // id ＋ entry_time
   });
 }
 
