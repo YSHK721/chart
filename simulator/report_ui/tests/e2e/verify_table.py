@@ -227,6 +227,29 @@ def test_row_click_moves_chart_to_trade_time(tmp_path):
         p.stop()
 
 
+def test_row_click_clears_candle_dim(tmp_path):
+    """回帰: hover で減光されたローソク足が、行クリック（移動）で確実に解除されること。
+
+    hold_sec=0 の取引は明色域が極小で全体が暗く見えるため、クリック時は減光を残さない。"""
+    p, browser, page, httpd = _launch(tmp_path)
+    try:
+        _open_detail_tab(page)
+        # hover で当該取引の建玉区間外が減光される（window.__candlesDimmed=true）。
+        page.hover('#tradeTable tbody tr.tw[data-id="1"]')
+        page.wait_for_timeout(150)
+        dimmed = page.evaluate("() => window.__candlesDimmed === true")
+        assert dimmed, "hover did not dim candles (前提が崩れている)"
+        # クリック（移動）で減光が解除される。
+        page.click('#tradeTable tbody tr.tw[data-id="1"]')
+        page.wait_for_timeout(200)
+        cleared = page.evaluate("() => window.__candlesDimmed === false")
+        assert cleared, "クリック後もローソク足が減光されたまま（バグ未修正）"
+    finally:
+        browser.close()
+        httpd.shutdown()
+        p.stop()
+
+
 def test_detail_table_sort_reorders_rows(tmp_path):
     p, browser, page, httpd = _launch(tmp_path)
     try:

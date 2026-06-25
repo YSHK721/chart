@@ -254,9 +254,11 @@ export function dimCandlesForTrade(t) {
   for (let i = lo; i < hi; i++) merged[i] = _barsNormal[i];
   _candle.setData(merged);
   _candlesDimmed = true;
+  if (typeof window !== "undefined") window.__candlesDimmed = true; // E2E フック
 }
 export function restoreCandles() {
   if (_candlesDimmed && _candle) { _candle.setData(_barsNormal); _candlesDimmed = false; }
+  if (typeof window !== "undefined") window.__candlesDimmed = false; // E2E フック
 }
 
 // 時刻 t を中心にチャートをズームする（試作 focusTime・グラフ/ヒート/明細クリック連動）。

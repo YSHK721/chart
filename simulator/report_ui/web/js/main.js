@@ -35,8 +35,11 @@ function renderVerdict() {
 
 function renderTable(seg) {
   const host = document.getElementById("tradeTable");
-  // 行クリック→該当 trade の entry_time へチャート移動（focusTime・試作準拠）。
-  if (host) buildTradeTable(host, DATA.segments[seg], linkage, focusTime);
+  // 行クリック→該当 trade の entry_time へチャート移動（focusTime）。
+  // クリックは「その取引を見る」操作のため、hover で適用された減光(dimCandlesForTrade)を
+  // 解除してから移動する（hold_sec=0 の取引で明色域が極小→全体が暗く見えるバグの解消）。
+  const onRowFocus = (t) => { restoreCandles(); focusTime(t); };
+  if (host) buildTradeTable(host, DATA.segments[seg], linkage, onRowFocus);
 }
 
 function renderHeatmap(seg) {
