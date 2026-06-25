@@ -144,17 +144,18 @@ def _open_detail_tab(page):
 def test_detail_table_renders_12_cols_and_row_count(tmp_path):
     p, browser, page, httpd = _launch(tmp_path)
     try:
-        # SPEC 11列 ＋ Profit 列 = 12 列ヘッダ（試作準拠）
+        # 試作 12 列ヘッダ（Symbol 列なし・先頭 "#"・末尾 "Profit"）
         ths = page.query_selector_all("#tradeTable thead th")
         assert len(ths) == 12, f"expected 12 cols, got {len(ths)}"
-        # 末尾ヘッダは Profit
-        assert page.inner_text("#tradeTable thead th:last-child").strip() == "Profit"
+        headers = page.eval_on_selector_all(
+            "#tradeTable thead th", "els => els.map(e => e.textContent.trim())")
+        assert headers[0] == "#", f"first col not '#': {headers}"
+        assert headers[-1] == "Profit", f"last col not 'Profit': {headers}"
+        assert "Symbol" not in headers, f"prototype has no Symbol col: {headers}"
+        assert "Exit" in headers and "Time(close)" in headers, headers
         # 行数 = trades 件数（3）
         rows = page.query_selector_all("#tradeTable tbody tr.tw")
         assert len(rows) == 3, f"expected 3 rows, got {len(rows)}"
-        # Symbol 列が meta.symbol を描画
-        body = page.inner_text("#tradeTable tbody")
-        assert "JP225" in body
     finally:
         browser.close()
         httpd.shutdown()
@@ -171,10 +172,11 @@ def test_detail_table_cell_values_preserved_as_text(tmp_path):
             '#tradeTable tbody tr.tw[data-id="1"]',
             "tr => Array.from(tr.children).map(td => td.textContent)")
         assert len(texts) == 12, f"expected 12 cells, got {len(texts)}: {texts}"
-        # 射影値（Symbol=JP225 / Type=buy / Volume=0.1）がそのまま表示される
-        assert "JP225" in texts, f"symbol cell missing: {texts}"
+        # 射影値（Type=buy / Vol=0.1）がそのまま表示される（Symbol 列は試作に無い）
         assert "buy" in texts, f"type cell missing: {texts}"
         assert "0.1" in texts, f"volume cell missing: {texts}"
+        # Open Time は fmtT 整形（生エポックでなく YYYY.MM.DD 形式）
+        assert any("." in c and ":" in c for c in texts), f"time cell not formatted: {texts}"
     finally:
         browser.close()
         httpd.shutdown()
@@ -235,10 +237,10 @@ def test_detail_table_sort_reorders_rows(tmp_path):
         # 初期は order 昇順前提（id=1 が先頭）
         before = first_row_id()
         # Price 列ヘッダをクリックしてソート（昇順）。price は 100,110,102 → 昇順先頭は id=1(100)
-        page.click('#tradeTable thead th[data-k="price"]')
+        page.click('#tradeTable thead th[data-k="entry_price"]')
         asc = first_row_id()
         # もう一度クリックで降順 → 先頭は id=2(110)
-        page.click('#tradeTable thead th[data-k="price"]')
+        page.click('#tradeTable thead th[data-k="entry_price"]')
         desc = first_row_id()
         assert asc != desc, f"sort did not reorder: asc={asc} desc={desc}"
         assert asc == "1" and desc == "2", f"asc={asc} desc={desc} before={before}"
@@ -325,7 +327,7 @@ def test_highlight_survives_column_sort(tmp_path):
         page.hover('#tradeTable tbody tr.tw[data-id="2"]')
         page.wait_for_function("window.__linkage && window.__linkage.hoverTradeId === 2",
                                timeout=4000)
-        page.click('#tradeTable thead th[data-k="price"]')  # tbody 全再生成が走る
+        page.click('#tradeTable thead th[data-k="entry_price"]')  # tbody 全再生成が走る
         # 再生成後も id=2 の行に hl が残っている
         cls = page.eval_on_selector('#tradeTable tbody tr.tw[data-id="2"]',
                                     "el => el.className")

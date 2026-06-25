@@ -1,26 +1,32 @@
 // table.js 純ロジック単体テスト（node:test・DOM 非依存）。
-// 対象: SPEC §2.2.2 の 11 列定義（COLS）と、列ソートの比較純関数（compareTrades）。
-// 設計（アーキ指針 §3 table.js / 詳細設計 §4.4 orders 11キー）:
-//   SPEC 11列 = Open(Time), Order, Symbol, Type, Volume, Price, S/L, T/P, Time(close), State, Comment。
-//   明細は trades[] を一次ソースに描画し、Symbol 列は meta.symbol を射影する。
+// 対象: 試作 prototype_260623-02 の取引明細 12 列定義（COLS）と、列ソート比較純関数（compareTrades）。
+// 設計（アーキ指針 §3 table.js）:
+//   試作 12 列 = # / Open Time / Order / Type / Vol / Price / S/L / T/P / Time(close) /
+//   Exit / State / Comment / Profit。Symbol 列は試作の取引明細に無い（銘柄はヘッダ表示）。
 //   ソート比較は副作用のない純関数として切り出しテスト可能化する（試作 renderRows のソート式踏襲）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { COLS, compareTrades, projectRow } from "../table.js";
 
-// SPEC §2.2.2 の 11 列 ＋ 試作準拠の Profit 列（key の順序）。Symbol は meta 射影列。
-const SPEC_KEYS = [
-  "open_time", "order", "symbol", "type", "volume",
-  "price", "sl", "tp", "exit_time", "state", "comment", "profit",
+// 試作 prototype_260623-02 index.html の COLS と同順・同キー（key の順序）。Symbol 列は無い。
+const PROTO_KEYS = [
+  "id", "entry_time", "order", "side", "volume",
+  "entry_price", "sl", "tp", "exit_time", "exit_price", "comment", "profit",
 ];
 
-test("COLS defines the 11 SPEC columns plus the Profit column in order", () => {
+test("COLS matches the prototype trade-detail 12 columns in order (no Symbol col)", () => {
   // Arrange / Act
   const keys = COLS.map((c) => c[0]);
   // Assert
   assert.equal(COLS.length, 12);
-  assert.deepEqual(keys, SPEC_KEYS);
+  assert.deepEqual(keys, PROTO_KEYS);
+  assert.ok(!keys.includes("symbol"), "prototype trade table has no Symbol column");
+});
+
+test("time columns use kind 'time' (fmtT 整形対象) — Open Time と Time(close)", () => {
+  const timeKeys = COLS.filter((c) => c[2] === "time").map((c) => c[0]);
+  assert.deepEqual(timeKeys, ["entry_time", "exit_time"]);
 });
 
 test("Profit column is the last column with kind 'pl' (試作準拠の損益配色)", () => {
@@ -80,8 +86,8 @@ test("compareTrades is null-safe: missing string key treated as empty string", (
   assert.ok(compareTrades(a, b, "comment", 1) < 0);
 });
 
-test("projectRow maps a 16-key trade to the 12-col row incl. profit (with meta.symbol)", () => {
-  // Arrange（trades[] 16キー → SPEC 11列キーへ射影。詳細設計 §4.4）
+test("projectRow maps a trade to the prototype 12-col row (no Symbol col)", () => {
+  // Arrange（trades[] → 試作 12 列キーへ射影）
   const t = {
     id: 7, side: "buy", entry_time: 1000, exit_time: 1060,
     entry_price: 100.5, exit_price: 105.0, profit: 50.0, volume: "0.1",
@@ -89,20 +95,20 @@ test("projectRow maps a 16-key trade to the 12-col row incl. profit (with meta.s
     balance: 10050, hold_sec: 60, mfe: 1.2, mae: 0.5,
   };
   // Act
-  const row = projectRow(t, "JP225");
-  // Assert（SPEC 11列の各キーが正しい値に射影される）
-  assert.equal(row.open_time, 1000);     // entry_time
+  const row = projectRow(t);
+  // Assert（試作 12 列の各キーが正しい値に射影される）
+  assert.equal(row.entry_time, 1000);    // Open Time（fmtT 整形は描画側）
   assert.equal(row.order, 7);
-  assert.equal(row.symbol, "JP225");     // meta.symbol 射影
-  assert.equal(row.type, "buy");         // side
-  assert.equal(row.volume, "0.1");
-  assert.equal(row.price, 100.5);        // entry_price
+  assert.equal(row.side, "buy");         // Type
+  assert.equal(row.volume, "0.1");       // Vol
+  assert.equal(row.entry_price, 100.5);  // Price
   assert.equal(row.sl, "98.5");
   assert.equal(row.tp, "105.5");
-  assert.equal(row.exit_time, 1060);
-  assert.equal(row.state, "tp");         // comment 写像
-  assert.equal(row.comment, "tp");
+  assert.equal(row.exit_time, 1060);     // Time(close)
+  assert.equal(row.exit_price, 105.0);   // Exit
+  assert.equal(row.comment, "tp");       // State / Comment
   assert.equal(row.profit, 50.0);        // Profit 列（pl 配色用）
+  assert.ok(!("symbol" in row), "no Symbol column in prototype trade table");
   // id を保持（hover/marker の単一 id 空間用）
   assert.equal(row.id, 7);
   // 12列 + id の各キーが射影されている

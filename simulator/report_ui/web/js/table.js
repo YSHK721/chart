@@ -1,26 +1,27 @@
 // 取引明細テーブル（詳細設計 §11.1 table.js / アーキ指針 §3）。
-// SPEC §2.2.2 の 11 列 ＋ Profit 列を trades[] を一次ソースに描画する（Symbol 列は meta.symbol 射影）。
+// 試作 prototype_260623-02 の取引明細 12 列に**完全準拠**で trades[] を一次ソースに描画する。
 // 列ソートの比較は副作用のない純関数 compareTrades として切り出す（テスト容易化）。
 // hover は mouseover delegation で linkage.setHover(id,'table') を呼ぶ（DOM 結線は main.js）。
-// Profit 列は試作 prototype_260623-02 準拠で kind="pl"・td.pl.pos/neg 配色（緑=利益/赤=損失）。
+// 時刻列(time)は fmtT 整形、Profit 列(pl)は td.pl.pos/neg 配色（緑=利益/赤=損失）。
 
-import { fmtMoney } from "./format.js";
+import { fmtMoney, fmtT } from "./format.js";
 
-// 列定義: [key, label, kind]。kind は描画/比較の型ヒント（time/num/txt/side/pl）。
-// trades[] のフィールド名に射影（open_time=entry_time, exit_time=close time, state/comment=comment 写像）。
-// 末尾 Profit は試作の取引明細 12 列目（kind="pl"・損益配色）に一致させる。
+// 列定義: [key, label, kind]。kind は描画/比較の型ヒント（id/time/num/side/txt/pl）。
+// 試作 prototype_260623-02 index.html の COLS（# / Open Time / Order / Type / Vol / Price /
+// S/L / T/P / Time(close) / Exit / State / Comment / Profit）と同順・同キー・同ラベルにする。
+// 注: 試作の取引明細に Symbol 列は無い（銘柄はヘッダ meta-line に表示）。
 export const COLS = [
-  ["open_time", "Open Time", "time"],
+  ["id", "#", "id"],
+  ["entry_time", "Open Time", "time"],
   ["order", "Order", "num"],
-  ["symbol", "Symbol", "txt"],
-  ["type", "Type", "side"],
-  ["volume", "Volume", "txt"],
-  ["price", "Price", "num"],
+  ["side", "Type", "side"],
+  ["volume", "Vol", "txt"],
+  ["entry_price", "Price", "num"],
   ["sl", "S / L", "txt"],
   ["tp", "T / P", "txt"],
-  ["exit_time", "Time", "time"],
-  ["state", "State", "txt"],
-  ["comment", "Comment", "txt"],
+  ["exit_time", "Time(close)", "time"],
+  ["exit_price", "Exit", "num"],
+  ["comment", "State / Comment", "txt"],
   ["profit", "Profit", "pl"],
 ];
 
@@ -44,29 +45,30 @@ export function compareTrades(a, b, key, dir) {
   return dir * (x - y);
 }
 
-// trades[] 16キーを SPEC 11列キーの行ビューへ射影（詳細設計 §4.4・Symbol は meta.symbol）。
-// id を併せて保持し、hover / marker の単一 id 空間（id=order=i+1）を維持する。
-export function projectRow(t, symbol) {
+// trades[] を試作 12 列キーの行ビューへ射影する（試作はトレード生フィールドを直接描画）。
+// 列キー（id/entry_time/order/side/volume/entry_price/sl/tp/exit_time/exit_price/comment/profit）を
+// そのまま保持し、hover / marker の単一 id 空間（id=order=i+1）を維持する。
+export function projectRow(t) {
   return {
     id: t.id,
-    open_time: t.entry_time,
+    entry_time: t.entry_time,
     order: t.order,
-    symbol: symbol,
-    type: t.side,
+    side: t.side,
     volume: t.volume,
-    price: t.entry_price,
+    entry_price: t.entry_price,
     sl: t.sl,
     tp: t.tp,
     exit_time: t.exit_time,
-    state: t.comment,
+    exit_price: t.exit_price,
     comment: t.comment,
     profit: t.profit,
   };
 }
 
-// 射影済み行のセル文字列。
-function _cell(row, key) {
+// 射影済み行のセル文字列（time は fmtT 整形・その他は素の文字列／欠落は空）。
+function _cell(row, key, kind) {
   const v = row[key];
+  if (kind === "time") return fmtT(v);
   return v === null || v === undefined ? "" : String(v);
 }
 
@@ -115,9 +117,8 @@ function _wireRowClickFocus(hostTable, onFocus) {
 // 引数: hostTable=<table id=tradeTable>, segment（trades[]/meta.symbol）, linkage,
 //        onFocus(optional)=行クリックで該当 trade の時刻へチャートを移動するコールバック（main 注入）。
 export function buildTradeTable(hostTable, segment, linkage, onFocus) {
-  const symbol = (segment.meta && segment.meta.symbol) || "";
-  const rows = (segment.trades || []).map((t) => projectRow(t, symbol)); // SPEC 11列へ射影
-  const state = { sortKey: "order", sortDir: 1 };
+  const rows = (segment.trades || []).map((t) => projectRow(t)); // 試作 12 列へ射影
+  const state = { sortKey: "id", sortDir: 1 }; // 試作既定は id 昇順
 
   const thead = hostTable.querySelector("thead");
   // ヘッダは [data-k=列キー] + ラベルのみ。ソート方向の視覚インジケータ（矢印）は本フェーズの
@@ -144,26 +145,27 @@ export function buildTradeTable(hostTable, segment, linkage, onFocus) {
       const tr = document.createElement("tr");
       tr.className = "tw";
       tr.dataset.id = row.id;
-      tr.dataset.side = row.type;
-      // F-3用・F-2では未配線: activeFilter は applyFilter(F-3 ヒートマップ/抽出)で設定される
-      // スキャフォールド。F-2 では常に null のため dim は付かない（CSS は定義済・未発火）。
+      tr.dataset.side = row.side;
+      // activeFilter は applyFilter（ヒートマップ/抽出）で設定。非該当行を dim 表示する。
       const filter = linkage.activeFilter;
       if (filter && !filter.has(row.id)) tr.classList.add("dim");
       // クリック→チャート移動（focusTime）のため entry_time を行に保持する。
-      tr.dataset.t = row.open_time;
+      tr.dataset.t = row.entry_time;
       // セルは textContent で描画（多層防御: 値経路からの HTML 注入を遮断）。
       for (const c of COLS) {
         const td = document.createElement("td");
         if (c[2] === "side") {
           td.className = "side";
-          td.textContent = _cell(row, c[0]);
+          td.textContent = _cell(row, c[0], c[2]);
         } else if (c[2] === "pl") {
           // Profit 列: 試作準拠で損益配色（正=pos/緑・0以下=neg/赤）＋符号付き金額。
           const p = row[c[0]];
           td.className = "pl " + (p > 0 ? "pos" : "neg");
           td.textContent = _money(p);
         } else {
-          td.textContent = _cell(row, c[0]);
+          // State / Comment 列は試作同様に左寄せ（cmt クラス）。
+          if (c[0] === "comment") td.className = "cmt";
+          td.textContent = _cell(row, c[0], c[2]);
         }
         tr.appendChild(td);
       }
