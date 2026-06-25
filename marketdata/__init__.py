@@ -25,13 +25,15 @@ from typing import Any
 # ベンダ非依存なものは eager に公開（dukascopy_python を要求しない）。
 from marketdata.cleaning import repair_ohlc_outliers
 from marketdata.paths import DATA_DIR
-from marketdata.port import Candle, CandleSource
+from marketdata.port import Candle, CandleSource, TickSource
 
 __all__ = [
     "DATA_DIR",
     "Candle",
     "CandleSource",
+    "TickSource",
     "DukascopyCandleSource",
+    "DukascopyTickSource",
     "INTERVALS",
     "JP225",
     "repair_ohlc_outliers",
@@ -39,7 +41,7 @@ __all__ = [
 
 # ベンダ依存（dukascopy_python）を要する名前は遅延 import（PEP 562）。
 # `from marketdata import DukascopyCandleSource` 等のアクセス時にのみ dukascopy_source を読む。
-_LAZY = {"DukascopyCandleSource", "INTERVALS", "JP225"}
+_LAZY = {"DukascopyCandleSource", "DukascopyTickSource", "INTERVALS", "JP225"}
 
 
 def __getattr__(name: str) -> Any:  # noqa: D401

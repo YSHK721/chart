@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, List
 
 import pandas as pd
@@ -86,3 +86,52 @@ class DukascopyCandleSource:
         if df is None or df.empty:
             return []
         return _to_candles(df)
+
+
+class DukascopyTickSource:
+    """Dukascopy 実 tick を取得する :class:`TickSource` 実装（enabler②）。
+
+    ``fetch_ticks_dukascopy.fetch_range`` のロジック（日次チャンク・resilient 取得・連結）を
+    移管する。``INTERVAL_TICK`` の隔離・銘柄固定はここに閉じる。
+
+    H-2: 戻り DataFrame は ``timestamp`` を**列**に持つ（``reset_index`` 済・列名 ``"timestamp"``）。
+    ``ingest.RAW_COLUMNS``（timestamp/bidPrice/askPrice/bidVolume/askVolume）契約へ直接適合する。
+
+    H-3: ``offer_side`` 単一指定は持たない。raw tick は気配側に依らず bidPrice/askPrice 両列を
+    含むため、両列を常に返し last=mid=(bid+ask)/2 算出を保全する。気配側の選択は port の責務外。
+    """
+
+    def __init__(self, *, instrument: Any = JP225) -> None:
+        self._instrument = instrument
+
+    def fetch_ticks(self, start: datetime, end: datetime) -> pd.DataFrame:
+        """``[start, end)`` の raw tick を日次チャンクで取得し timestamp 列の DataFrame で返す。
+
+        取得失敗日はスキップして継続する（resilient・進捗ログ）。データなしは空 DataFrame。
+        """
+        frames: list[pd.DataFrame] = []
+        day = start
+        while day < end:
+            nxt = min(day + timedelta(days=1), end)
+            try:
+                df = dukascopy_python.fetch(
+                    self._instrument, dukascopy_python.INTERVAL_TICK,
+                    dukascopy_python.OFFER_SIDE_BID, day, nxt,
+                )
+            except Exception as exc:  # noqa: BLE001 (取得失敗日はスキップ・継続)
+                print(f"  WARN {day:%Y-%m-%d}: fetch失敗 skip ({exc})", flush=True)
+                day = nxt
+                continue
+            n = 0 if df is None else len(df)
+            if n:
+                frames.append(df)
+            print(
+                f"  {day:%Y-%m-%d}: {n} ticks (累計 {sum(len(f) for f in frames)})",
+                flush=True,
+            )
+            day = nxt
+        if not frames:
+            return pd.DataFrame()
+        # 連結し timestamp 昇順。H-2: index(=timestamp) を列へ出す（reset_index 済・列名 timestamp）。
+        out = pd.concat(frames).sort_index()
+        return out.reset_index().rename(columns={"index": "timestamp"})
