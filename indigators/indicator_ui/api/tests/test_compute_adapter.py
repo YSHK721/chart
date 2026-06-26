@@ -39,8 +39,8 @@ def _patch_tgp_unavailable(monkeypatch):
 
     original = call_binding._fitter_factory
 
-    def fake(name):
-        return _UnavailableTgpFitter() if name == "tgp" else original(name)
+    def fake(name, samples="standard"):
+        return _UnavailableTgpFitter() if name == "tgp" else original(name, samples)
 
     monkeypatch.setattr(call_binding, "_fitter_factory", fake)
 
@@ -198,6 +198,28 @@ def test_fitter_factory_tgp_uses_fixed_seed_for_live_determinism():
     assert call_binding._TGP_SEED is not None
     fitter = call_binding._fitter_factory("tgp")  # R 不在でも実体化は成功
     assert fitter.seed == call_binding._TGP_SEED
+
+
+def test_fitter_factory_tgp_samples_select_bte_preset():
+    # MCMC サンプル選択: standard(既定)/high/max が BTE プリセットへ写像される。
+    from adapter.compute import call_binding
+
+    assert call_binding._fitter_factory("tgp").bte == call_binding._BTE_PRESETS["standard"]
+    assert call_binding._fitter_factory("tgp", "high").bte == call_binding._BTE_PRESETS["high"]
+    assert call_binding._fitter_factory("tgp", "max").bte == call_binding._BTE_PRESETS["max"]
+    # 未知値は standard へフォールバック（不正入力で壊れない）。
+    assert call_binding._fitter_factory("tgp", "bogus").bte == call_binding._BTE_PRESETS["standard"]
+    # Total は standard<high<max（サンプル増の単調性）。
+    totals = [call_binding._BTE_PRESETS[k][1] for k in ("standard", "high", "max")]
+    assert totals == sorted(totals) and len(set(totals)) == 3
+
+
+def test_fitter_factory_ols_ignores_samples():
+    # ols は解析解のため samples を無視（bte 属性を持たない OlsBtlmFitter）。
+    from adapter.compute import call_binding
+
+    fitter = call_binding._fitter_factory("ols", "max")
+    assert not hasattr(fitter, "bte")
 
 
 def test_call_binding_invoke_profit_band_keyword_only():

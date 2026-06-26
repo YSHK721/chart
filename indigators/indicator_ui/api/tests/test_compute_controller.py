@@ -32,8 +32,8 @@ def _patch_tgp_unavailable(monkeypatch):
 
     original = call_binding._fitter_factory
 
-    def fake(name):
-        return _UnavailableTgpFitter() if name == "tgp" else original(name)
+    def fake(name, samples="standard"):
+        return _UnavailableTgpFitter() if name == "tgp" else original(name, samples)
 
     monkeypatch.setattr(call_binding, "_fitter_factory", fake)
 
