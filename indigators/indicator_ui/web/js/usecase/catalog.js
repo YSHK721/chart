@@ -82,6 +82,7 @@ const TGP_BTLM = new IndicatorDef({
     // MCMC サンプル（帯の安定性）: fitter='tgp'(btlm) のみ有効。サンプル増で分位帯が収束し
     // 安定するが計算は重くなる。standard=既定(BTE Total 15000)/high(30000)/max(60000)。
     // fitter='ols' は解析解のため無視される（backend _fitter_factory で吸収）。
+    // 既定 'standard' は backend call_binding._DEFAULT_SAMPLES と一致必須（乖離防止）。
     param('mcmc_samples', ParamType.ENUM, 'standard', [], ['standard', 'high', 'max'], { group: 'group.calc', order: 6 }),
     // color は COLOR＝スタイルタブへ移譲（§4.1）。既定は実コード add_btlm の
     // color=_COLOR（MediumSlateBlue・lwc_chart.py:33,73）。

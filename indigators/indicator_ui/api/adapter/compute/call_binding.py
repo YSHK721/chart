@@ -122,11 +122,17 @@ _TGP_SEED = 20260101
 
 # MCMC サンプル量プリセット（BTE=Burn-in, Total, Every）。Total を増やすほど posterior が
 # 収束し分位帯が安定するが計算は重い（おおよそ Total 比例）。catalog.js の mcmc_samples と対応。
+# ⚠️ 運用注意（性能）: server は R スレッド非安全のため単一スレッド（framework/server.py）。
+#   tgp 計算中は全リクエストがブロックされる。ライブは 60 秒間隔で再計算するため、"max"（Total
+#   4倍）は実 R btlm が 60 秒を超えると当該指標がライブ中ほとんど更新されない場合がある。
+#   重い設定は静的分析向け。既定 standard は従来どおり軽量（後方互換）。
 _BTE_PRESETS: dict[str, tuple[int, int, int]] = {
     "standard": (2000, 15000, 2),  # 既定（保持サンプル ~6500）
     "high": (4000, 30000, 2),      # ~13000・約2倍重い
-    "max": (8000, 60000, 2),       # ~26000・約4倍重い
+    "max": (8000, 60000, 2),       # ~26000・約4倍重い（ライブ再計算で server をブロックし得る）
 }
+# 既定サンプル。catalog.js の mcmc_samples 既定（'standard'）と**一致必須**（不一致だと
+# UI 既定と API 直叩き既定が乖離する）。test_fitter_factory_default_matches_catalog で固定。
 _DEFAULT_SAMPLES = "standard"
 
 
