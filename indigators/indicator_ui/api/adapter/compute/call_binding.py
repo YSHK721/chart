@@ -114,17 +114,25 @@ def _load_src_package(indicator: str) -> ModuleType:
     return load_package(_src_module_name(indicator), _INDIGATORS / indicator / "src")
 
 
+# tgp::btlm は MCMC（非決定的）。seed 未設定だと再当てはめ（ライブの毎分再計算）ごとに
+# 結果が揺れ、トレンド線/帯が更新間で動いて見える。固定 seed で「同じ窓→毎回同一結果」にし、
+# ライブ表示を静的表示と一致させる（rbridge は fit_predict ごとに set.seed する＝各 fit が決定的）。
+# 値は任意だが固定であることが重要（再現性確保）。
+_TGP_SEED = 20260101
+
+
 def _fitter_factory(name: str) -> Any:
     """fitter enum 文字列 → Fitter 実体（§3.3.3 fitter_factory）。
 
-    "ols" → OlsBtlmFitter()、"tgp" → TgpBtlmFitter()（tgp_btlm/src/__init__.py:38-39）。
+    "ols" → OlsBtlmFitter()、"tgp" → TgpBtlmFitter(seed=_TGP_SEED)（tgp_btlm/src/__init__.py:38-39）。
     rpy2/R 不在でも TgpBtlmFitter の実体化自体は成功し、fit_predict 時に ImportError。
+    tgp は MCMC のため seed を固定し、ライブ再計算での非決定的な揺れを除く（再現性確保）。
     """
     src = _load_src_package("tgp_btlm")
     if name == "ols":
         return src.OlsBtlmFitter()
     if name == "tgp":
-        return src.TgpBtlmFitter()
+        return src.TgpBtlmFitter(seed=_TGP_SEED)
     raise ValueError(f"未知の fitter です: {name}")
 
 
