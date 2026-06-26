@@ -223,7 +223,10 @@ def _to_utc_midnight(d: dt.date) -> dt.datetime:
 # --------------------------------------------------------------------------- #
 def stage_bars(ctx: PipelineContext) -> int:
     """1 分足 + ロールアップ。増分は引数なし main([])。--full は --start/--end 範囲で再取得。"""
-    if ctx.full and ctx.start is not None and ctx.end is not None:
+    if ctx.full:
+        # --full の契約を全段で一致させる（ticks と同様、全期間再取得には範囲必須）。
+        if ctx.start is None or ctx.end is None:
+            raise PipelineError("--full 指定時は bars に --start/--end が必須です（全期間再取得）。")
         argv = ["--start", ctx.start.isoformat(), "--end", ctx.end.isoformat()]
     else:
         argv = []

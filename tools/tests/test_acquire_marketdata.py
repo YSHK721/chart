@@ -152,6 +152,13 @@ class TestRunBarsStage:
         assert rc == 0
         assert called["argv"] == []
 
+    def test_full_requires_start_and_end(self, monkeypatch):
+        # 回帰: --full かつ start/end 欠落で bars が黙って増分実行してはならない
+        # （ticks と契約一致＝PipelineError）。
+        monkeypatch.setattr(am, "_export_jp225_m1_main", lambda argv: 0)
+        with pytest.raises(am.PipelineError):
+            am.stage_bars(am.PipelineContext(full=True))
+
 
 class TestRunTicksStage:
     def test_incremental_computes_start_from_tree(self, tmp_path, monkeypatch):
