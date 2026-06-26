@@ -407,7 +407,10 @@ def build_rollup_hook(
     """
 
     def _hook(csv_path: Path, added: int) -> None:
-        import rollup_builder as _rb  # 局所 import（CLI 起動コストを増やさない）
+        # 絶対 import（局所・CLI 起動コストを増やさない）。兄弟名 `import rollup_builder` は
+        # スクリプト実行時しか解決せず、パイプライン等からの module import 時に
+        # ModuleNotFoundError になるため絶対 import で両経路を解決する（repo 根は上で sys.path 済）。
+        from indigators.indicator_ui.tools import rollup_builder as _rb
 
         state = _rb.RollupState.load(out_dir)
         _rb.incremental_update(csv_path, state, list(tf_list), out_dir)
