@@ -190,6 +190,16 @@ def test_call_binding_invoke_passes_fitter_as_third_positional():
     assert names == ["btlm_mean", "btlm_q5", "btlm_q95"]
 
 
+def test_fitter_factory_tgp_uses_fixed_seed_for_live_determinism():
+    # 回帰: tgp(MCMC) は seed 固定でなければライブ再計算ごとにトレンド/帯が揺れる。
+    # _fitter_factory("tgp") が固定 seed 付き TgpBtlmFitter を返すことを担保（None 退行防止）。
+    from adapter.compute import call_binding
+
+    assert call_binding._TGP_SEED is not None
+    fitter = call_binding._fitter_factory("tgp")  # R 不在でも実体化は成功
+    assert fitter.seed == call_binding._TGP_SEED
+
+
 def test_call_binding_invoke_profit_band_keyword_only():
     # Arrange
     chart = FakeLineChart()
