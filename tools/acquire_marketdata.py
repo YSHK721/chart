@@ -1,11 +1,13 @@
 """marketdata 取得パイプライン CLI（散在する取得ツールを単一エントリで順次実行）。
 
 合成点（Composition Root 相当）として既存エントリを **in-process import** で呼ぶ。
-既定は増分（最終→最新を追記）。段階選択・ログ・resume を備える。
+既定は増分（最終→最新を追記）。ただし daily は委譲先に増分追記が無く小容量のため
+**常に最新まで全件再生成**（増分追記ではない）。段階選択・ログ・resume を備える。
 
 段階（実行順・既定で全実行）:
   1. bars   : indigators.indicator_ui.tools.export_jp225_m1.main([])（増分・rollups 込み）
-  2. daily  : indigators.indicator_ui.tools.export_jp225_csv.main([...])（最新まで）
+  2. daily  : indigators.indicator_ui.tools.export_jp225_csv.main([...])
+              （最新まで全件再生成 "w"・増分追記ではない・小容量ゆえ許容）
   3. ticks  : data/marketdata/ticks の y/m/d を走査し最新日の翌日から本日+1日まで取得
   4. ingest : raw parquet を走査し未 ingest 日のみ canonical tick-store へ ingest（state 冪等）
 
@@ -26,6 +28,7 @@ import argparse
 import datetime as dt
 import json
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -171,20 +174,35 @@ def _state_path(tickstore_root: Path) -> Path:
 
 
 def load_ingest_state(tickstore_root: Path) -> Set[str]:
-    """ingest 済み YYYY-MM-DD 集合をロードする。state 不在時は空集合。"""
+    """ingest 済み YYYY-MM-DD 集合をロードする。state 不在/破損時は空集合（安全側）。
+
+    破損 JSON や非配列フォーマットは「空集合で続行」する。ingest は overwrite 冪等
+    （`ingest_raw_parquet mode="overwrite"`）のため、全件再 ingest しても store を壊さない。
+    """
     path = _state_path(tickstore_root)
     if not path.exists():
         return set()
-    data = json.loads(path.read_text())
-    return set(data)
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, list):
+            raise ValueError("ingest_state は配列である必要があります")
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
+        LOG.warning("ingest_state 破損/不正（%s）→空集合で続行（再 ingest は冪等）", exc)
+        return set()
+    return {str(x) for x in data}
 
 
 def save_ingest_state(tickstore_root: Path, ingested: Set[str]) -> None:
-    """ingest 済み集合を sorted JSON 配列で永続化する（既存 store を破壊せず追記更新）。"""
+    """ingest 済み集合を sorted JSON 配列で**アトミックに**永続化する（tmp→os.replace）。
+
+    途中 kill による state 破損（resume 性の喪失）を防ぐため、同一ディレクトリの tmp へ
+    書き込み fsync 後に `os.replace` で原子的に差し替える。既存 store は破壊しない。
+    """
     tickstore_root.mkdir(parents=True, exist_ok=True)
-    _state_path(tickstore_root).write_text(
-        json.dumps(sorted(ingested), ensure_ascii=False, indent=0)
-    )
+    path = _state_path(tickstore_root)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(sorted(ingested), ensure_ascii=False, indent=0))
+    os.replace(tmp, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -236,7 +254,13 @@ def stage_bars(ctx: PipelineContext) -> int:
 
 
 def stage_daily(ctx: PipelineContext) -> int:
-    """日足。最新まで取得（小容量のため増分=最新まで）。範囲明示は --start/--end で上書き。"""
+    """日足。委譲先に増分追記が無いため**常に最新まで全件再生成**（"w" 上書き・小容量ゆえ許容）。
+
+    --full の契約は bars/ticks と一致させ、全期間再取得には --start/--end を必須とする
+    （範囲未指定の --full は段間で挙動が割れないよう PipelineError）。範囲明示は上書き。
+    """
+    if ctx.full and (ctx.start is None or ctx.end is None):
+        raise PipelineError("--full 指定時は daily に --start/--end が必須です（全期間再取得）。")
     argv: List[str] = ["--output", str(ctx.daily_output)]
     if ctx.start is not None:
         argv += ["--start", ctx.start.isoformat()]
@@ -259,10 +283,14 @@ def stage_ticks(ctx: PipelineContext) -> int:
     else:
         # 空 tree なら next_tick_start_day が PipelineError を送出（起点不定）。
         start = next_tick_start_day(ctx.ticks_root)
-    end = _to_utc_midnight(ctx.today + dt.timedelta(days=1))
+    # --end 指定時はそれを終端に尊重（bars と一致）。未指定時のみ本日+1日まで増分取得。
+    end_date = ctx.end if ctx.end is not None else ctx.today
+    end = _to_utc_midnight(end_date + dt.timedelta(days=1))
     if end <= start:
         LOG.info("ticks: 取得対象期間なし（start=%s end=%s）", start, end)
         return 0
+    # 注: _fetch_ticks_run（fetch_ticks_ymd.run）の戻り値は累計ティック数であり終了コードでは
+    # ない。個別日の失敗は委譲先がログして継続するため、本 stage の成否は例外有無で表す。
     total = _fetch_ticks_run(start, end, ctx.ticks_root)
     LOG.info("ticks: %s ticks 取得（%s..%s）", total, start.date(), end.date())
     return 0

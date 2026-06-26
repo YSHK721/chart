@@ -115,6 +115,20 @@ class TestIngestState:
         data = json.loads((root / "ingest_state.json").read_text())
         assert data == ["2025-01-01", "2025-01-03"]
 
+    def test_load_corrupt_json_returns_empty_set(self, tmp_path):
+        # 回帰: 破損 JSON で ingest 全停止せず空集合で続行（再 ingest は overwrite 冪等）。
+        root = tmp_path / "tickstore"
+        root.mkdir(parents=True)
+        (root / "ingest_state.json").write_text('{"2025-01-01": tru')  # 途中切断
+        assert am.load_ingest_state(root) == set()
+
+    def test_load_non_array_json_returns_empty_set(self, tmp_path):
+        # 回帰: 非配列（オブジェクト）を黙って誤解釈せず空集合に倒す。
+        root = tmp_path / "tickstore"
+        root.mkdir(parents=True)
+        (root / "ingest_state.json").write_text('{"2025-01-01": true}')
+        assert am.load_ingest_state(root) == set()
+
 
 # --------------------------------------------------------------------------- #
 # 3. 段階選択（--skip / --only）
@@ -217,6 +231,41 @@ class TestRunTicksStage:
         assert rc == 0
         assert captured["start"] == dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc)
         assert captured["end"] == dt.datetime(2025, 1, 6, tzinfo=dt.timezone.utc)
+
+    def test_explicit_end_is_respected_not_today(self, tmp_path, monkeypatch):
+        # 回帰: --end 指定時は today+1 でなく end+1 を終端にする（過取得防止・bars と一致）。
+        root = tmp_path / "ticks"
+        captured = {}
+        monkeypatch.setattr(
+            am, "_fetch_ticks_run",
+            lambda start, end, run_root: captured.update(start=start, end=end) or 3,
+        )
+        ctx = am.PipelineContext(
+            full=False,
+            start=dt.date(2025, 1, 1),
+            end=dt.date(2025, 1, 2),
+            today=dt.date(2025, 1, 31),  # today は無視され end が効く
+            ticks_root=root,
+        )
+        assert am.stage_ticks(ctx) == 0
+        assert captured["end"] == dt.datetime(2025, 1, 3, tzinfo=dt.timezone.utc)
+
+
+class TestRunDailyStage:
+    def test_incremental_passes_output_without_range(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(am, "_export_jp225_csv_main",
+                            lambda argv: captured.update(argv=argv) or 0)
+        ctx = am.PipelineContext(full=False, daily_output=tmp_path / "d.csv")
+        assert am.stage_daily(ctx) == 0
+        assert "--start" not in captured["argv"]  # 増分=範囲なしで最新まで
+
+    def test_full_requires_start_and_end(self, monkeypatch):
+        # 回帰: --full かつ範囲欠落で daily が黙って全期間上書きせず PipelineError
+        # （bars/ticks と契約一致・コードレビュー🔴-A）。
+        monkeypatch.setattr(am, "_export_jp225_csv_main", lambda argv: 0)
+        with pytest.raises(am.PipelineError):
+            am.stage_daily(am.PipelineContext(full=True))
 
 
 class TestRunIngestStage:
