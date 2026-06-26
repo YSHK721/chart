@@ -120,19 +120,37 @@ def _load_src_package(indicator: str) -> ModuleType:
 # 値は任意だが固定であることが重要（再現性確保）。
 _TGP_SEED = 20260101
 
+# MCMC サンプル量プリセット（BTE=Burn-in, Total, Every）。Total を増やすほど posterior が
+# 収束し分位帯が安定するが計算は重い（おおよそ Total 比例）。catalog.js の mcmc_samples と対応。
+# ⚠️ 運用注意（性能）: server は R スレッド非安全のため単一スレッド（framework/server.py）。
+#   tgp 計算中は全リクエストがブロックされる。ライブは 60 秒間隔で再計算するため、"max"（Total
+#   4倍）は実 R btlm が 60 秒を超えると当該指標がライブ中ほとんど更新されない場合がある。
+#   重い設定は静的分析向け。既定 standard は従来どおり軽量（後方互換）。
+_BTE_PRESETS: dict[str, tuple[int, int, int]] = {
+    "standard": (2000, 15000, 2),  # 既定（保持サンプル ~6500）
+    "high": (4000, 30000, 2),      # ~13000・約2倍重い
+    "max": (8000, 60000, 2),       # ~26000・約4倍重い（ライブ再計算で server をブロックし得る）
+}
+# 既定サンプル。catalog.js の mcmc_samples 既定（'standard'）と**一致必須**（不一致だと
+# UI 既定と API 直叩き既定が乖離する）。test_fitter_factory_default_matches_catalog で固定。
+_DEFAULT_SAMPLES = "standard"
 
-def _fitter_factory(name: str) -> Any:
+
+def _fitter_factory(name: str, samples: str = _DEFAULT_SAMPLES) -> Any:
     """fitter enum 文字列 → Fitter 実体（§3.3.3 fitter_factory）。
 
-    "ols" → OlsBtlmFitter()、"tgp" → TgpBtlmFitter(seed=_TGP_SEED)（tgp_btlm/src/__init__.py:38-39）。
+    "ols" → OlsBtlmFitter()、"tgp" → TgpBtlmFitter(seed=_TGP_SEED, bte=preset)。
     rpy2/R 不在でも TgpBtlmFitter の実体化自体は成功し、fit_predict 時に ImportError。
-    tgp は MCMC のため seed を固定し、ライブ再計算での非決定的な揺れを除く（再現性確保）。
+    tgp は MCMC のため seed を固定し（再現性確保）、``samples`` で BTE プリセットを選んで
+    分位帯の安定性を調整する。未知の ``samples`` は standard へフォールバック。``ols`` は
+    解析解のため ``samples`` を無視する。
     """
     src = _load_src_package("tgp_btlm")
     if name == "ols":
         return src.OlsBtlmFitter()
     if name == "tgp":
-        return src.TgpBtlmFitter(seed=_TGP_SEED)
+        bte = _BTE_PRESETS.get(samples, _BTE_PRESETS[_DEFAULT_SAMPLES])
+        return src.TgpBtlmFitter(seed=_TGP_SEED, bte=bte)
     raise ValueError(f"未知の fitter です: {name}")
 
 
@@ -272,7 +290,8 @@ class CallBinding:
         callable_ = spec["loader"]()
         if self._kind == "btlm":
             kw = dict(params)
-            fitter = _fitter_factory(kw.pop("fitter"))
+            # mcmc_samples は fitter 構築用（add_btlm の kwarg ではない）→ pop して factory へ。
+            fitter = _fitter_factory(kw.pop("fitter"), kw.pop("mcmc_samples", _DEFAULT_SAMPLES))
             callable_(chart, df, fitter, **_accepted_kwargs(callable_, kw))
         else:
             kw = _accepted_kwargs(callable_, params)

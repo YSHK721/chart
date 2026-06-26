@@ -127,6 +127,14 @@ test('catalog parity: tgp_btlm maxbars default is 100 (core.py:33 DEFAULT_MAXBAR
   assert.equal(p.default, 100);
 });
 
+test('catalog: tgp_btlm exposes mcmc_samples ENUM [standard,high,max] default standard', () => {
+  const p = paramOf(get('tgp_btlm'), 'mcmc_samples');
+  assert.ok(p, 'mcmc_samples param が存在する');
+  assert.equal(p.type, ParamType.ENUM);
+  assert.equal(p.default, 'standard'); // 既定は現挙動維持
+  assert.deepEqual(p.enumValues, ['standard', 'high', 'max']);
+});
+
 test('catalog parity: price_range_power top_n default is 5 (lwc_chart.py:43 top_n=5, M-3)', () => {
   const p = paramOf(get('price_range_power'), 'top_n');
   assert.equal(p.default, 5); // 旧 catalog は 2

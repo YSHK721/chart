@@ -39,8 +39,8 @@ def _patch_tgp_unavailable(monkeypatch):
 
     original = call_binding._fitter_factory
 
-    def fake(name):
-        return _UnavailableTgpFitter() if name == "tgp" else original(name)
+    def fake(name, samples="standard"):
+        return _UnavailableTgpFitter() if name == "tgp" else original(name, samples)
 
     monkeypatch.setattr(call_binding, "_fitter_factory", fake)
 
@@ -198,6 +198,62 @@ def test_fitter_factory_tgp_uses_fixed_seed_for_live_determinism():
     assert call_binding._TGP_SEED is not None
     fitter = call_binding._fitter_factory("tgp")  # R 不在でも実体化は成功
     assert fitter.seed == call_binding._TGP_SEED
+
+
+def test_fitter_factory_tgp_samples_select_bte_preset():
+    # MCMC サンプル選択: standard(既定)/high/max が BTE プリセットへ写像される。
+    from adapter.compute import call_binding
+
+    assert call_binding._fitter_factory("tgp").bte == call_binding._BTE_PRESETS["standard"]
+    assert call_binding._fitter_factory("tgp", "high").bte == call_binding._BTE_PRESETS["high"]
+    assert call_binding._fitter_factory("tgp", "max").bte == call_binding._BTE_PRESETS["max"]
+    # 未知値は standard へフォールバック（不正入力で壊れない）。
+    assert call_binding._fitter_factory("tgp", "bogus").bte == call_binding._BTE_PRESETS["standard"]
+    # Total は standard<high<max（サンプル増の単調性）。
+    totals = [call_binding._BTE_PRESETS[k][1] for k in ("standard", "high", "max")]
+    assert totals == sorted(totals) and len(set(totals)) == 3
+
+
+def test_fitter_factory_ols_ignores_samples():
+    # ols は解析解のため samples を無視（bte 属性を持たない OlsBtlmFitter）。
+    from adapter.compute import call_binding
+
+    fitter = call_binding._fitter_factory("ols", "max")
+    assert not hasattr(fitter, "bte")
+
+
+def test_fitter_factory_default_matches_catalog():
+    # 既定の二重定義（catalog.js mcmc_samples 既定 'standard' と _DEFAULT_SAMPLES）の乖離防止。
+    # catalog 側は catalog.test.js が 'standard' を固定。backend 側を本テストで固定する。
+    from adapter.compute import call_binding
+
+    assert call_binding._DEFAULT_SAMPLES == "standard"
+    assert call_binding._DEFAULT_SAMPLES in call_binding._BTE_PRESETS
+
+
+def test_invoke_btlm_passes_mcmc_samples_to_factory_not_to_add_btlm(monkeypatch):
+    # E2E（invoke 経路）: params の mcmc_samples が pop されて factory へ届き、add_btlm には
+    # 漏れない（漏れれば TypeError）。fitter は R 不要の OlsBtlmFitter で完走させ samples を捕捉。
+    from adapter.compute import call_binding
+
+    captured = {}
+
+    def fake_factory(name, samples="standard"):
+        captured["name"] = name
+        captured["samples"] = samples
+        src = call_binding._load_src_package("tgp_btlm")
+        return src.OlsBtlmFitter()  # R 不要・add_btlm が完走
+
+    monkeypatch.setattr(call_binding, "_fitter_factory", fake_factory)
+    chart = FakeLineChart()
+    binding = CallBinding.resolve("tgp_btlm", "default")
+    binding.invoke(chart, _ohlcv(60),
+                   {"fitter": "tgp", "mcmc_samples": "high",
+                    "maxbars": 40, "q_low": 0.05, "q_high": 0.95})
+    # samples が factory へ届いた
+    assert captured == {"name": "tgp", "samples": "high"}
+    # add_btlm が mcmc_samples 漏れなく完走（3 ライン収集）
+    assert [p["name"] for p in chart.to_payloads()] == ["btlm_mean", "btlm_q5", "btlm_q95"]
 
 
 def test_call_binding_invoke_profit_band_keyword_only():
