@@ -3,7 +3,8 @@
 #   使い方:  ./serve.sh [PORT] [--no-update]   （既定ポート 8000・停止は Ctrl-C）
 #   例:      ./serve.sh 9000
 #            ./serve.sh --no-update          # データ更新をスキップして即起動
-# 起動前にチャート用データ（足/ロールアップ/日足）を増分取得し、最新データで表示する。
+# 起動前にチャート用データ（足/ロールアップ/日足）を増分取得し、さらに毎分 1 分足を追記する
+# バックエンド watch を併走させて、チャートの足がライブで伸び続けるようにする。
 # どのディレクトリから実行してもよい（パスはスクリプト位置基準で解決する）。
 set -euo pipefail
 
@@ -38,14 +39,27 @@ fi
 
 # 最新データを増分取得（チャート用＝足/ロールアップ/日足のみ。ティック/ingest は重く
 # チャート非表示のためスキップ）。取得失敗時も既存データで起動を続行する（--no-update で省略）。
+M1_TOOL="$REPO_ROOT/indigators/indicator_ui/tools/export_jp225_m1.py"
+WATCH_LOG="$REPO_ROOT/data/marketdata/live_watch.log"
+WATCH_PID=""
 if [ "$NO_UPDATE" -eq 0 ]; then
   echo "▶ 最新データを増分取得中（足/ロールアップ/日足）..."
   if ! PYTHONPATH="$REPO_ROOT" python3 "$REPO_ROOT/tools/acquire_marketdata.py" --skip ticks --skip ingest; then
     echo "warn: データ更新に失敗しました。既存データで起動を続行します（--no-update で更新省略可）。" >&2
   fi
+  # ライブ更新の実体: 1 分足を毎分取得し jp225_m1.csv + rollups へ追記し続けるバックエンド
+  # watch（これが無いとデータが伸びず、フロント LiveUpdater がポーリングしても足が増えない）。
+  echo "▶ ライブ更新を開始（毎分 1 分足を追記・ログ: $WATCH_LOG）"
+  PYTHONPATH="$REPO_ROOT" python3 "$M1_TOOL" --watch --interval 60 >"$WATCH_LOG" 2>&1 &
+  WATCH_PID=$!
 fi
+
+# サーバ停止時（Ctrl-C 等）にバックグラウンド watch も確実に止める。
+cleanup() { [ -n "$WATCH_PID" ] && kill "$WATCH_PID" 2>/dev/null || true; }
+trap cleanup EXIT INT TERM
 
 echo "indicator UI（B方式）を起動します: $URL"
 echo "  停止: Ctrl-C"
+# exec しない（trap を生かしてサーバ終了時に watch を停止するため）。
 cd "$API_DIR"
-exec "$VENV_PY" -m framework.server "$PORT"
+"$VENV_PY" -m framework.server "$PORT"
