@@ -49,7 +49,20 @@ _ROLLUP_CACHE: dict[tuple[str, str], tuple[int | None, pd.DataFrame]] = {}
 
 
 def path(ref: str, tf: str) -> Path:
-    """ロールアップ CSV の解決パス（``DATA_DIR/rollups/<ref>_<tf>.csv``）。"""
+    """ロールアップ CSV の解決パス（**当該 CSV ファイルの存在**でレイアウトを選ぶ）。
+
+    ref 専用サブディレクトリ配置 ``DATA_DIR/rollups/<ref>/<ref>_<tf>.csv`` に**当該 tf の CSV が
+    実在すれば**それを返す（``build_tick_rollup.py`` が ``rollup_state.json`` 衝突回避のため ref ごと
+    隔離する配置・例 ``rollups/jp225_tick/jp225_tick_5m.csv``）。無ければ従来のフラット配置
+    ``DATA_DIR/rollups/<ref>_<tf>.csv``（``jp225_m1`` 等の既存）を返す。
+
+    判定基準を「サブdir の存在」ではなく「**ファイルの存在**」にするのは、空/作りかけの
+    ``rollups/<ref>/`` がフラット CSV を無言で shadow して既存 ref を壊す事故（部分生成・誤生成）を
+    避けるため。両配置に無ければフラットパスを返す（``read`` 側が不在を 1 箇所で扱う）。
+    """
+    subdir_csv = _ROLLUPS_DIR / ref / f"{ref}_{tf}.csv"
+    if subdir_csv.is_file():
+        return subdir_csv
     return _ROLLUPS_DIR / f"{ref}_{tf}.csv"
 
 

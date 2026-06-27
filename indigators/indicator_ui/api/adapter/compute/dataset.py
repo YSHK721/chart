@@ -51,6 +51,10 @@ DATASET_WHITELIST: dict[str, Path] = {
     # JP225 1分足（原子データ）。全時間足はこの 1 分足を resample して生成する
     # （date(UTC %Y-%m-%d %H:%M:%S),open,high,low,close,volume）。生成: tools/export_jp225_m1.py。
     "jp225_m1": DATA_DIR / "jp225_m1.csv",
+    # JP225 1分足（ティック由来・原子データ）。生ティックを mid=(bid+ask)/2・UTC で集計した
+    # 1 分足（足も足内更新も同一ティック由来へ統一）。上位足は rollups/jp225_tick/ から読む。
+    # 生成: tools/build_tick_rollup.py（marketdata/tick_m1.py）。
+    "jp225_tick": DATA_DIR / "jp225_tick_m1.csv",
 }
 
 # サンプル CSV の時刻列（解像度非依存に UNIX 秒へ変換する起点）。
@@ -71,7 +75,7 @@ from marketdata.resample import (  # noqa: E402  (再エクスポート)
 # 1 分足原子を全ロードせず末尾だけ読む datasetRef（メモリ有界化・D-2）。1m は tail_reader、
 # 上位足は事前生成のロールアップ CSV（rollup_store）から読む。それ以外の ref（sample/jp225 日足等・
 # 小データ）は従来経路（_load_base_dataframe + resample_ohlc）据置。
-_ROLLUP_REFS = ("jp225_m1",)
+_ROLLUP_REFS = ("jp225_m1", "jp225_tick")
 # 1m（原子）tail の安全上限（D-2）。表示 limit + 指標ルックバックぶんに十分な有界行数。
 # 1m 全件 tail（4.5M 行）で OOM を復活させないための上限（全件読みではない有限値）。
 _ATOMIC_TAIL_LOOKBACK_ROWS = 50_000

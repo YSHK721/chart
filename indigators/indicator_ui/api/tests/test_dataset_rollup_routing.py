@@ -92,6 +92,34 @@ def test_jp225_m1_upper_timeframe_passes_ref_and_tf_to_rollup_store(monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
+# jp225_tick（ティック由来）も同じロールアップ経路へ分岐する（チャート切替の結線回帰）
+# --------------------------------------------------------------------------- #
+def test_jp225_tick_is_registered_and_routes_like_jp225_m1(monkeypatch):
+    # whitelist 登録（ティック由来 1分足原子）と _ROLLUP_REFS 所属を固定する。
+    from marketdata.paths import DATA_DIR
+
+    assert dataset.is_known("jp225_tick")
+    assert dataset.DATASET_WHITELIST["jp225_tick"] == DATA_DIR / "jp225_tick_m1.csv"
+    assert "jp225_tick" in dataset._ROLLUP_REFS
+
+    seen = {"tail_path": None, "rollup": None}
+    monkeypatch.setattr(
+        dataset.tail_reader, "read_tail",
+        lambda p, n: (seen.__setitem__("tail_path", p), _fake_df())[1],
+    )
+    monkeypatch.setattr(
+        dataset.rollup_store, "read",
+        lambda ref, tf: (seen.__setitem__("rollup", (ref, tf)), _fake_df())[1],
+    )
+    # 1m 原子 → ティック由来 whitelist CSV を tail_reader で読む。
+    dataset.load_dataframe("jp225_tick", "1m")
+    assert seen["tail_path"] == DATA_DIR / "jp225_tick_m1.csv"
+    # 上位足 → rollup_store.read(ref='jp225_tick', tf) へ委譲。
+    dataset.load_dataframe("jp225_tick", "1h")
+    assert seen["rollup"] == ("jp225_tick", "1h")
+
+
+# --------------------------------------------------------------------------- #
 # sample / jp225（小データ）→ 従来経路据置（rollup_store / tail_reader を経由しない）
 # --------------------------------------------------------------------------- #
 def test_sample_still_uses_legacy_base_path(monkeypatch):

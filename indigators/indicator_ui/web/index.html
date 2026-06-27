@@ -87,9 +87,10 @@
       lwc: window.LightweightCharts,
       container: document.getElementById('chart'),
       doc: document,
-      // B方式の対象データセット。JP225 1分足原子（dataset.py の whitelist 'jp225_m1'）を
-      // ライブ計算し、時間足セレクタで resample 表示する（既定 1D・直近 RECENT_BARS 本）。
-      datasetRef: 'jp225_m1',
+      // B方式の対象データセット。JP225 ティック由来 1分足原子（dataset.py の whitelist
+      // 'jp225_tick'＝mid・UTC 集計）をライブ計算し、時間足セレクタで resample 表示する
+      // （上位足は rollups/jp225_tick/ を読む・既定 1D・直近 RECENT_BARS 本）。
+      datasetRef: 'jp225_tick',
     }).then(({ controller, ready, liveUpdater, tradeMarkers }) => {
       controller.bind();
       // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。

@@ -62,6 +62,31 @@ def test_path_resolves_under_marketdata_rollups_with_ref_tf_filename():
     assert "marketdata/data/rollups" not in str(p).replace("\\", "/")
 
 
+def test_path_prefers_ref_subdir_when_csv_file_present(tmp_path, monkeypatch):
+    # ref 専用サブdir配置の CSV が**実在**すればそこへ解決する。
+    monkeypatch.setattr(rollup_store, "_ROLLUPS_DIR", tmp_path)
+    sub = tmp_path / "jp225_tick"
+    sub.mkdir()
+    _write_csv(sub / "jp225_tick_5m.csv", [_point(1, 11.0)])
+    p = rollup_store.path("jp225_tick", "5m")
+    assert p == sub / "jp225_tick_5m.csv"
+
+
+def test_path_falls_back_to_flat_when_no_ref_subdir(tmp_path, monkeypatch):
+    # サブdirが無い ref（jp225_m1 等の既存）は従来のフラット配置へフォールバック。
+    monkeypatch.setattr(rollup_store, "_ROLLUPS_DIR", tmp_path)
+    p = rollup_store.path("jp225_m1", "1h")
+    assert p == tmp_path / "jp225_m1_1h.csv"
+
+
+def test_path_falls_back_to_flat_when_subdir_present_but_csv_missing(tmp_path, monkeypatch):
+    # 空/作りかけのサブdir（該当 tf CSV 不在）はフラット配置を shadow しない（事故防止・🟡是正）。
+    monkeypatch.setattr(rollup_store, "_ROLLUPS_DIR", tmp_path)
+    (tmp_path / "jp225_m1").mkdir()  # 誤って rollups/jp225_m1/ ができても…
+    p = rollup_store.path("jp225_m1", "1h")
+    assert p == tmp_path / "jp225_m1_1h.csv"  # …既存フラットを壊さない。
+
+
 # --------------------------------------------------------------------------- #
 # read（loader 再利用・DataFrame・date index）
 # --------------------------------------------------------------------------- #
