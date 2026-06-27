@@ -67,8 +67,68 @@
 - 実ティックは Parquet（Dukascopy・日分割）で読込済。年規模はティックの日別ストリーミングが必要
   （コード内 TODO 既述）。
 
+## ティックモデリングと約定差（検証分析・cycle b）
+
+MT5 の Modelling 5モードを simulator に突き合わせ、指標再評価・約定への影響を実測した。
+
+### モード ↔ 既存実装
+
+| MT5モード | 既存 tick_model | 状態 |
+|---|---|---|
+| 実ティック全ティック | `real_ticks`（RealTickModel） | 既存 |
+| 全ティック（OHLC合成多数） | `every_tick` | 既存（実装は4点≒1分OHLC） |
+| 1分OHLC（O→H→L→C 4回） | `ohlc_expand`（order auto/ohlc/olhc） | 既存（MT5超：極値到達順を実証再現） |
+| 始値のみ | `open_only` | 既存 |
+| 数学計算（0tick・約定なし） | （bar-mode 相当） | 未（明示モード無し） |
+
+実装ギャップ: 合成モード（every_tick/ohlc_expand/open_only）は**市場注文では every-tick 経路に
+未結線**＝bar-mode 固定（config に「経路結線は cycle2」と明記）。執行差は `pending_lifecycle=True`
+か `real_ticks` でのみ現れる。
+
+### 指標・シグナル再評価の差 — `mt5_modeling_modes.py`
+
+形成中バーの EMA を毎ティック再評価し on_tick クロスを検出（JP225 2018-06）:
+
+| モード | 評価ティック | シグナル | vs math |
+|---|---|---|---|
+| real_ticks | 357,771 | 27,681 | +24,437 |
+| every_tick | 365,408 | 14,230 | +10,986 |
+| ohlc_1min | 83,209 | 10,862 | +7,618 |
+| open_only | 22,838 | 3,746 | +502 |
+| math(基準) | 22,838 | 3,244 | 0 |
+
+real_ticks は math の 8.5 倍。合成 every_tick(14,230) < 実ティック(27,681)＝合成は微振動を欠き過小評価。
+
+### 約定込みの差（実エンジン駆動）
+
+成行reverse戦略（TC24051901・`mt5_exec_compare.py`）: 4モード全て同一（-121.4/sl4/tp8）。
+建値=足終値（モード非依存）＋bar高安=ティック極値で近似一致＝**成行戦略はモデリング非依存**。
+
+ペンディング戦略（MA_Slope_Pending_EA・pending_lifecycle=True）:
+- 2025-01 合成3モード（`mt5_exec_pending.py`）: open_only(3,987/-45,930) vs
+  ohlc/every(4,169/-17,919)＝トレード +182・損益 2.5 倍差。
+- 2018-06 実ティック含む4モード（`mt5_exec_pending_realticks.py`）:
+
+| モード | トレード | 損益 |
+|---|---|---|
+| open_only | 462 | -3,912.4 |
+| ohlc_expand | 540 | -3,022.7 |
+| every_tick | 540 | -3,022.7 |
+| real_ticks | 537 | -3,067.2 |
+
+real_ticks は合成OHLC(540)を僅かに下回る(537)＝合成OHLCは指値約定を**わずかに過大評価**。
+open_only は大きく過小評価。every_tick≡ohlc_expand（指値は極値で決まり補間密度は無関係）。
+
+### 結論（戦略検証への含意）
+
+- モデリング選択は**ペンディング/足内約定戦略の検証結果を左右する**（成行reverse戦略では実質非依存）。
+- **正確な検証には実ティックが必要**。合成OHLCは近似（指値をやや過大評価）、open_only は粗い近似。
+- feature 実装の主要ギャップ＝**合成モードの market 執行 every-tick 結線**（cycle2 TODO）と
+  **指標の毎ティック再評価(on_tick) の本番結線**。
+
 ## 留意
 
 - 数値は単一ラン・JP225 1銘柄。パラメータ探索（数千ラン）×複数銘柄では線形に増える。
   毎ティック再フィットが破綻する一方、頻度分離なら探索でも現実的。
 - 本試作の帯トリガは「当日エッジ固定」近似。日中で帯を動かしたい指標は毎バー再フィットへ。
+- 約定検証の試作データ（M1 CSV・hive parquet）は scratch に生成し非コミット（実ティックは read-only 参照）。
