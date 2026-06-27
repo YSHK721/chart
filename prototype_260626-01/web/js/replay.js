@@ -219,7 +219,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   async function playLoop() {
     while (playing && bar < candles.length - 1) {
       await drive(bar + 1);
-      await animateForming();          // 新しい最新足を選択モードで足内形成（プリセット起点から前進）
+      await animateForming(() => !playing);   // 形成途中でも停止要求で即中断（停止ボタンの即応性）
       if (!playing) break;
       await waitFrame();
     }
@@ -244,6 +244,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     $('rp-play').textContent = playing ? '⏸ 停止' : '▶ 再生';
     $('rp-play').classList.toggle('rp-playing', playing);   // 再生中は色を変えて状態を明示
     if (playing) playLoop();
+    else settleFrameWait();                                 // 停止＝フレーム待機(最大 frameMs)を即解除し待ち時間をゼロに
   };
   $('rp-speed').addEventListener('change', rescheduleFrameWait);  // 再生中の速度変更を即時反映
 
@@ -297,11 +298,14 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     return { prices: [cd.open, cd.high, cd.low, cd.close], note: 'M1無→OHLC4点' };
   }
   let animating = false;
-  async function animateForming() {
+  // shouldAbort: 再生から呼ぶとき () => !playing を渡す。足内更新ループ途中でも停止要求で即中断し、
+  //   「停止」ボタンのタイムラグ（最大 ANIM_CAP×ANIM_MS ≒ 数秒）を解消する。1足送りは未指定（中断なし）。
+  async function animateForming(shouldAbort) {
     if (animating || !candles.length) return;
     const cd = candles[bar];
     if (!cd) return;
     animating = true;
+    window.__rpAnimating = true;                            // E2E/verify 用フック（停止即応性の計測）
     const mode = $('rp-mode').value;
     try {
       // 確定日足のチラ見せ防止: fetch を await する前（同期）に最新足を始値の同事足へ畳む。
@@ -313,6 +317,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       let hi = prices[0], lo = prices[0];
       const o = prices[0];                                 // 始値はティック列の先頭値（ティックに存在する値）
       for (let i = 0; i < prices.length; i++) {
+        if (shouldAbort && shouldAbort()) break;           // 停止要求＝足内更新を即中断（タイムラグ解消）
         const p = prices[i];
         hi = Math.max(hi, p); lo = Math.min(lo, p);        // 高安は流れてきたティックの極値のみ
         try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: p }); } catch (_e) { /* noop */ }
@@ -321,7 +326,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       // 足確定: ティック列由来の OHLC で確定する。cd.high/low へはスナップしない
       //   （日足集計の高安は流したティックに無い値になり得るため＝バグ「存在しない高安」防止）。
       try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: prices[prices.length - 1] }); } catch (_e) { /* noop */ }
-    } finally { animating = false; }
+    } finally { animating = false; window.__rpAnimating = false; }
   }
   // 1 足送り＝新しく現れた最新足（playhead）を選択モードで足内形成する。
   //   最新足の定義は「期間プリセット起点から前進する先頭足」。本当のデータ末尾ではない。
