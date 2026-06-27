@@ -1,0 +1,7 @@
+# 大きい事前計算データ・検証生成物は版管理外（再生成可能）
+data.json
+shots/
+*.log
+__pycache__/
+*.pyc
+venv/
