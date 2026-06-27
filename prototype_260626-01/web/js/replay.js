@@ -46,9 +46,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   let generation = 0;                        // スクラブ等で古い計算結果を破棄する世代番号
   let followOn = false;                       // 直近窓追従トグル（OFF=過去すべて表示／ON=直近 FOLLOW_BARS 本）
   let autoFrame = true;                        // 自動フレーム。ユーザーがチャートを直接操作すると false（手動閲覧）
-  // テスト期間プリセットで選択する再生開始位置。replayStart=区間の開始 bar（playhead のジャンプ先）。
+  // 期間プリセット状態。replayStart=既定窓の開始 bar（減光境界の算出に使用）。
   let replayStart = 0;                        // 既定=全期間（先頭から）
   let activeSecs = null;                      // 選択中プリセットの期間秒（ハイライト用・null=全期間）
+  let activePeriodBars = null;                // 選択中プリセットの可視窓「幅」（バー数）。null=全期間（左端0まで）。
 
   // 期間プリセット境界（再生区間の開始位置）より過去側の背景を減光するプリミティブ（本番無改変・装着のみ）。
   const boundaryDim = new ReplayBoundaryDimPrimitive();
@@ -81,14 +82,13 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   function applyView() {
     if (!autoFrame) return;                  // 手動閲覧中（ユーザーが pan/zoom）は上書きしない＝リセットしない
     try {
-      // 期間プリセットは「再生区間 [開始(replayStart), present]」を固定枠表示する（設計意図）。
-      //   playhead(bar) は枠内を左→右へ進み、未リビールの右側は ▶ 再生で 1 足ずつ埋まる。
-      //   枠を present 起点で固定するため、スライダー/プリセットで bar を動かしても枠は崩れない
-      //   （旧実装は to=bar 固定で、左スクラブ時に [0, bar] へ激しくズームし「効かない」様に見えた）。
-      //   直近窓追従(followOn)時のみ従来どおり playhead 起点の直近 FOLLOW_BARS 本を追う。
-      const present = candles.length - 1;
-      const from = followOn ? Math.max(0, bar - FOLLOW_BARS) : replayStart;
-      const to = (followOn ? bar : present) + RIGHT_MARGIN;
+      // 期間プリセット＝可視窓の「幅」、スライダー(=playhead bar)＝その窓を履歴上でパンする位置。
+      //   窓は [bar-幅, bar] とし、最新リビール足(bar)を常に右端へ置く（左端移動バグなし）。
+      //   スライダーを動かすと窓ごと履歴がスクロール＝期間プリセットとスライダーが連動する。
+      //   直近窓追従(followOn)=固定本数 FOLLOW_BARS の窓。全期間(activePeriodBars=null)=左端0。
+      const width = followOn ? FOLLOW_BARS : activePeriodBars;
+      const from = (width == null) ? 0 : Math.max(0, bar - width);
+      const to = bar + RIGHT_MARGIN;
       chart.timeScale().setVisibleLogicalRange({ from, to });
     } catch (_e) { /* レイアウト未確定時の単発失敗は無視 */ }
   }
@@ -108,14 +108,16 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       btn.onclick = () => {
         activeSecs = secs;
         autoFrame = true;                                  // 明示的な表示操作＝自動フレーム再開
-        const presentTime = candles.length ? candles[candles.length - 1].time : 0;
-        replayStart = (secs == null) ? 0 : idxForTime(presentTime - secs);  // 区間開始 bar（全期間=先頭）
-        // スライダー(スクロールバー)の作用域を再生スパン [replayStart, present] へ連動させる。
-        //   以降スライダーはこのスパン内だけをスクラブ＝期間プリセットと連動（全期間は min=0）。
-        $('rp-slider').min = replayStart;
+        const present = candles.length - 1;
+        const presentTime = candles.length ? candles[present].time : 0;
+        replayStart = (secs == null) ? 0 : idxForTime(presentTime - secs);  // 既定窓の開始 bar
+        activePeriodBars = (secs == null) ? null : (present - replayStart);  // 可視窓の幅（バー数）
+        // スライダーは全履歴 [0, present] をスクロール。窓幅=プリセットなので、スライダーを動かすと
+        //   幅一定の期間窓が履歴上をパンする＝期間プリセットとスライダーが連動する。
+        $('rp-slider').min = 0;
         syncBoundary();                                    // 過去側の背景減光境界を更新
         renderPresets();
-        drive(candles.length - 1);   // 既定 playhead は present（最新足）＝右端・全足リビール。左へスクラブで span 内を遡る。
+        drive(present);   // 既定 playhead=present＝最新足を右端に、直近 period 窓を表示。スライダーで遡るとパン。
       };
       host.appendChild(btn);
     }
@@ -178,7 +180,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   // ---- 時間足ロード / 連続再生 ----
   async function loadTimeframe(tf) {
     timeframe = tf;
-    replayStart = 0; activeSecs = null;                    // 時間足切替で「全期間」へ戻す
+    replayStart = 0; activeSecs = null; activePeriodBars = null;  // 時間足切替で「全期間」へ戻す
     candles = await fetchCandles(tf);
     syncBoundary();                                        // 全期間へ戻る＝減光解除（candles 差替後）
     $('rp-slider').min = 0;

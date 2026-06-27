@@ -4,10 +4,11 @@
 区間開始(replayStart)へジャンプして「最新足が左端へ移動」してしまうバグ。
 
 正しい挙動（本テストが保証する契約）:
-  - クリック後も playhead は present（最新足）に留まる    → window.__rpbar === slider.max
-  - 可視範囲の右端が present 近傍にある（最新足＝右端）    → visibleRange.to ≈ slider.max
-  - 可視範囲の左端が present より十分過去にズームしている  → visibleRange.from < slider.max
-  - 「全期間」は左端=0 までズームアウト                    → visibleRange.from ≈ 0
+  - クリック後 playhead=present、最新足は右端           → __rpbar===slider.max, vis.to≈present
+  - 期間プリセットは直近 N 期間の窓幅にズーム            → 0 <= vis.from < present
+  - 「全期間」は左端=0 までズームアウト                  → vis.from ≈ 0
+  - 連動: スライダーを動かすと幅一定の窓が履歴をパンする  → スクラブで vis.from/to が共に移動し、
+    窓幅(to-from)は不変、最新足(=playhead bar)は右端のまま（＝「ただ拡大」でない）
 
 前提: proto_server.py を別プロセスで起動済み。使い方: python3 verify_preset_framing.py [PORT]
 終了コード: 0=全契約 OK / 1=退行検出。
@@ -60,12 +61,8 @@ async def main():
             await pg.wait_for_timeout(2200)
             bar = int(await pg.evaluate("()=>window.__rpbar"))
             v = await _vis(pg)
-            slider_min = int(await pg.evaluate("()=>+document.getElementById('rp-slider').min"))
             is_all = "全期間" in label
-
-            # 契約0: スライダー(スクロールバー)の作用域が再生スパン開始(replayStart=可視左端)に連動
-            if abs(slider_min - v["f"]) > MARGIN:
-                failures.append(f"[{label}] スライダー未連動: slider.min={slider_min} replayStart(≈vis.from)={v['f']}")
+            before = len(failures)
 
             # 契約1: playhead は present に留まる（左端へジャンプしない）
             if bar != present:
@@ -80,9 +77,31 @@ async def main():
             else:
                 if not (0 <= v["f"] < present):
                     failures.append(f"[{label}] 期間ズームになっていない: vis.from={v['f']} present={present}")
-            print(f"  [{label}] bar={bar} present={present} vis=[{v['f']},{v['t']}] OK"
-                  if not failures or failures[-1].split(']')[0].strip('[') != label
-                  else f"  [{label}] NG")
+
+            # 契約4（連動の核心）: スライダーを中間へ動かすと、幅一定の窓が履歴をパンする
+            #   ＝vis.from/to が共に過去側へ移動・窓幅は不変・最新足(bar)は右端のまま（「ただ拡大」でない）。
+            width0 = v["t"] - v["f"]
+            sm = await pg.evaluate("()=>({mn:+document.getElementById('rp-slider').min,mx:+document.getElementById('rp-slider').max})")
+            mid = int((sm["mn"] + sm["mx"]) / 2)
+            await pg.evaluate("(val)=>{const s=document.getElementById('rp-slider');s.value=val;s.dispatchEvent(new Event('input'));}", mid)
+            await pg.wait_for_timeout(2000)
+            bar2 = int(await pg.evaluate("()=>window.__rpbar"))
+            v2 = await _vis(pg)
+            width1 = v2["t"] - v2["f"]
+            if abs(v2["t"] - bar2) > MARGIN:
+                failures.append(f"[{label}] スクラブ後 最新足が右端でない: vis.to={v2['t']} bar={bar2}")
+            if not is_all:
+                # 全期間は左端0固定（パンしない）が正。有限プリセットのみ「幅一定でパン」を要求。
+                if abs(width1 - width0) > MARGIN:
+                    failures.append(f"[{label}] スクラブで窓幅が変化（パンでなくズーム）: {width0}->{width1}")
+                if v2["f"] >= v["f"]:
+                    failures.append(f"[{label}] スクラブで窓が左へパンしない（連動なし）: from {v['f']}->{v2['f']}")
+            # 後始末: 全期間へ戻して次プリセットへ影響させない
+            await pg.evaluate("()=>{const b=[...document.querySelectorAll('#rp-presets button')].find(x=>/全期間/.test(x.textContent));if(b)b.click();}")
+            await pg.wait_for_timeout(1500)
+
+            print(f"  [{label}] vis=[{v['f']},{v['t']}] →scrub bar={bar2} vis=[{v2['f']},{v2['t']}] "
+                  + ("OK" if len(failures) == before else "NG"))
 
         if errs:
             failures.append(f"pageerror 発生: {errs[-3:]}")
