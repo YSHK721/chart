@@ -110,14 +110,17 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         autoFrame = true;                                  // 明示的な表示操作＝自動フレーム再開
         const present = candles.length - 1;
         const presentTime = candles.length ? candles[present].time : 0;
-        replayStart = (secs == null) ? 0 : idxForTime(presentTime - secs);  // 既定窓の開始 bar
+        replayStart = (secs == null) ? 0 : idxForTime(presentTime - secs);  // 再生位置＝present−期間分
         activePeriodBars = (secs == null) ? null : (present - replayStart);  // 可視窓の幅（バー数）
+        window.__rpReplayStart = replayStart;              // E2E/verify 用フック（再生位置=present−期間分）
         // スライダーは全履歴 [0, present] をスクロール。窓幅=プリセットなので、スライダーを動かすと
         //   幅一定の期間窓が履歴上をパンする＝期間プリセットとスライダーが連動する。
         $('rp-slider').min = 0;
         syncBoundary();                                    // 過去側の背景減光境界を更新
         renderPresets();
-        drive(present);   // 既定 playhead=present＝最新足を右端に、直近 period 窓を表示。スライダーで遡るとパン。
+        // 再生位置(playhead)を replayStart（present−期間分）へ。ここから ▶ で前進再生。
+        //   可視窓は [bar−幅, bar] なので最新リビール足(=replayStart)は右端（左端移動なし）。
+        drive(replayStart);
       };
       host.appendChild(btn);
     }
