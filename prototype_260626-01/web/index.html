@@ -131,7 +131,7 @@
       lwc: window.LightweightCharts,
       container: document.getElementById('chart'),
       doc: document,
-      datasetRef: 'jp225_m1',
+      datasetRef: 'jp225_tick',
     }).then(({ chart, mainSeries, controller, renderer, ready, tradeMarkers }) => {
       controller.bind();
       ready.then(() => {
@@ -140,7 +140,7 @@
           tradeMarkers.load('/data/trade_markers.json');
         }
         // ライブ更新の代わりに再生ドライバを起動（untilTime をフレーム駆動＝ライブ同一計算）。
-        setupReplay({ chart, mainSeries, controller, renderer, datasetRef: 'jp225_m1', recentBars: RECENT_BARS, document });
+        setupReplay({ chart, mainSeries, controller, renderer, datasetRef: 'jp225_tick', recentBars: RECENT_BARS, document });
       });
     });
   </script>

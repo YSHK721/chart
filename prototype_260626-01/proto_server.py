@@ -30,7 +30,34 @@ _API = HERE.parent / "indigators" / "indicator_ui" / "api"
 sys.path.insert(0, str(_API))
 from adapter.compute import dataset, IndicatorComputeAdapter            # noqa: E402
 from adapter.compute.latest_dispatch import full_compute, latest_compute  # noqa: E402
+from marketdata.resample import resample_ohlc, TIMEFRAME_RULES          # noqa: E402（上位足規則・流用）
 ADAPTER = IndicatorComputeAdapter()
+
+# ---- ティック由来データ（ref="jp225_tick"）: 足も足内更新も同一ティック(mid・UTC)由来に一本化 ----
+#   prep_tick_rollup.py が生成した M1 原子を読み、上位足は resample_ohlc で生成（既存基盤流用）。
+#   日足の高安 = 当日 UTC ティックの最大/最小 = /intraday のティックと一致 ⇒ 書き変わり無し。
+TICK_M1_CSV = HERE.parent / "data" / "marketdata" / "jp225_tick_m1.csv"
+_tick_m1: dict = {}
+
+
+def _load_tick_m1():
+    mt = TICK_M1_CSV.stat().st_mtime
+    if _tick_m1.get("mt") != mt:
+        df = pd.read_csv(TICK_M1_CSV, parse_dates=["date"]).set_index("date")
+        _tick_m1.update(mt=mt, df=df)
+    return _tick_m1["df"]
+
+
+def load_tick_candles(tf, limit):
+    df = _load_tick_m1()
+    rule = None if (tf in (None, "1m")) else TIMEFRAME_RULES.get(tf)
+    r = resample_ohlc(df, rule)
+    if isinstance(limit, int) and limit > 0:
+        r = r.tail(limit)
+    secs = r.index.values.astype("datetime64[s]").astype("int64")
+    return [{"time": int(secs[i]), "open": float(x.open), "high": float(x.high),
+             "low": float(x.low), "close": float(x.close)}
+            for i, x in enumerate(r.itertuples(index=False))]
 
 # 計算ログ（A方式）: 各 /compute の入力(params・データ窓)＋出力(全系列)を JSON Lines で追記する。
 #   計算式そのもの（演算ステップ）はインジのソースに定義された静的なものなので、ここでは
@@ -91,6 +118,20 @@ def do_compute(body):
     _log_compute(body, df, series)            # A方式: 入力＋出力を .log に記録
     return series
 
+def _downsample_keep_extremes(mid, n):
+    """mid 列を最大 n 点へ間引く。最高/最安/先頭/末尾は必ず残す（日足の高安＝集計の最大/最小と
+    一致させ、足内更新後の書き変わりを防ぐ）。返り値は時系列順・小数3桁丸め。"""
+    if len(mid) <= n:
+        return mid
+    i_max = max(range(len(mid)), key=lambda i: mid[i])
+    i_min = min(range(len(mid)), key=lambda i: mid[i])
+    keep = {0, len(mid) - 1, i_max, i_min}
+    stride = len(mid) / n
+    for k in range(n):
+        keep.add(int(k * stride))
+    return [mid[i] for i in sorted(keep)]      # 丸めない（日足高安＝集計の最大/最小と bit 一致）
+
+
 def do_intraday(ref, start, end):
     """日足 1 本の区間 [start,end) の足内データを返す（最新足の 5 モード更新用）。
 
@@ -100,7 +141,7 @@ def do_intraday(ref, start, end):
     """
     out = {"ok": True, "m1": [], "ticks": []}
     try:
-        df = dataset.load_dataframe(ref, "1m")
+        df = _load_tick_m1() if ref == "jp225_tick" else dataset.load_dataframe(ref, "1m")
         # index は datetime64[us]（tz-naive・UTC扱い）。単位非依存に秒へ変換（candle.time と一致）。
         secs = df.index.values.astype("datetime64[s]").astype("int64")
         sub = df[(secs >= start) & (secs < end)]
@@ -114,8 +155,7 @@ def do_intraday(ref, start, end):
         if p.is_file():
             tdf = pd.read_parquet(p, columns=["bidPrice", "askPrice"])
             mid = ((tdf["bidPrice"] + tdf["askPrice"]) / 2.0).tolist()
-            step = max(1, len(mid) // 800)
-            out["ticks"] = [round(mid[j], 3) for j in range(0, len(mid), step)]
+            out["ticks"] = _downsample_keep_extremes(mid, 800)
     except Exception as e:
         out["ticks_error"] = str(e)[:120]
     return out
@@ -139,6 +179,11 @@ class H(BaseHTTPRequestHandler):
             ref = (q.get("datasetRef") or ["jp225_m1"])[0]
             tf = (q.get("timeframe") or [None])[0]
             lim = int(q["limit"][0]) if "limit" in q else None
+            if ref == "jp225_tick":
+                try:
+                    return self._json(200, {"ok": True, "candles": load_tick_candles(tf, lim)})
+                except Exception as e:
+                    return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
             if not dataset.is_known(ref): return self._json(400, {"error": {"type": "validation", "message": f"unknown {ref}"}})
             try:
                 cs = dataset.load_candles(ref, tf, lim)
@@ -151,7 +196,7 @@ class H(BaseHTTPRequestHandler):
                 start = int(q["start"][0]); end = int(q["end"][0])
             except Exception:
                 return self._json(400, {"error": {"type": "validation", "message": "start/end required"}})
-            if not dataset.is_known(ref):
+            if ref != "jp225_tick" and not dataset.is_known(ref):
                 return self._json(400, {"error": {"type": "validation", "message": f"unknown {ref}"}})
             try:
                 return self._json(200, do_intraday(ref, start, end))
