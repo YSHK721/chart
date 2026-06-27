@@ -187,6 +187,37 @@ def test_stage_rollup_does_not_touch_existing_jp225m1_rollups(tmp_path) -> None:
     assert (shared / "jp225_tick" / "rollup_state.json").is_file()
 
 
+def test_incremental_m1_and_rollup_equal_full_rebuild(tmp_path) -> None:
+    # 週(W-FRI)・月(ME)境界を跨ぐ増分が全再構築と全TFで完全一致する。
+    # 2025-01-31(金=週末ラベル・月末) で初回 → 2025-02-03(月=翌週・翌月) を増分。
+    rows_d1 = [("2025-01-31 09:00:10", 100.0, 100.0), ("2025-01-31 09:06:10", 106.0, 106.0)]
+    rows_d2 = [("2025-02-03 09:00:10", 200.0, 200.0)]
+
+    inc = tmp_path / "inc"
+    _write_tick_parquet(inc, (2025, 1, 31), rows_d1)
+    ctx1 = btr.PipelineContext(today=dt.date(2025, 1, 31), full_start=dt.date(2025, 1, 1), data_dir=inc)
+    assert btr.stage_m1(ctx1) == 0 and btr.stage_rollup(ctx1) == 0  # 初回=フルフォールバック
+    _write_tick_parquet(inc, (2025, 2, 3), rows_d2)
+    ctx2 = btr.PipelineContext(today=dt.date(2025, 2, 3), full_start=dt.date(2025, 1, 1), data_dir=inc)
+    assert btr.stage_m1(ctx2) == 0 and btr.stage_rollup(ctx2) == 0  # 増分追記/差分更新（週・月境界跨ぎ）
+
+    full = tmp_path / "full"
+    _write_tick_parquet(full, (2025, 1, 31), rows_d1)
+    _write_tick_parquet(full, (2025, 2, 3), rows_d2)
+    ctxf = btr.PipelineContext(today=dt.date(2025, 2, 3), full_start=dt.date(2025, 1, 1),
+                               data_dir=full, full_rebuild=True)
+    assert btr.stage_m1(ctxf) == 0 and btr.stage_rollup(ctxf) == 0  # 全再構築
+
+    def _read(p):
+        return pd.read_csv(p, parse_dates=["date"]).set_index("date")
+
+    pd.testing.assert_frame_equal(_read(inc / "jp225_tick_m1.csv"), _read(full / "jp225_tick_m1.csv"))
+    for tf in btr._rollup_timeframes():  # 全 8 TF（1W/1M の形成中バー増分マージ含む）。
+        inc_csv = inc / "rollups" / "jp225_tick" / f"jp225_tick_{tf}.csv"
+        full_csv = full / "rollups" / "jp225_tick" / f"jp225_tick_{tf}.csv"
+        pd.testing.assert_frame_equal(_read(inc_csv), _read(full_csv), check_like=True)
+
+
 def test_run_pipeline_continue_on_error_runs_rest_and_returns_1(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(btr, "stage_acquire", lambda ctx: (_ for _ in ()).throw(btr.PipelineError("x")))

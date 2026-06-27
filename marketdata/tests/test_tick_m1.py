@@ -153,6 +153,73 @@ def test_build_m1_rejects_unsafe_ref(tmp_path: Path, bad_ref: str) -> None:
         tick_m1.build_m1_from_ticks("2025-01-02", "2025-01-02", ref=bad_ref, data_dir=tmp_path)
 
 
+def _put_day(data_dir: Path, ymd: tuple[int, int, int], rows: list[tuple[str, float, float]]) -> None:
+    d = data_dir / "ticks" / f"{ymd[0]:04d}" / f"{ymd[1]:02d}" / f"{ymd[2]:02d}"
+    d.mkdir(parents=True)
+    _ticks(rows).to_parquet(d / "JP225_ticks.parquet")
+
+
+def test_append_m1_falls_back_to_full_when_no_existing(tmp_path: Path) -> None:
+    _put_day(tmp_path, (2025, 1, 2), [("2025-01-02 09:00:10", 100.0, 100.0)])
+    out = tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=tmp_path)
+    assert out.is_file()
+    assert len(pd.read_csv(out)) == 1  # 初回は全構築フォールバック。
+
+
+def test_append_m1_appends_only_new_days_and_equals_full(tmp_path: Path) -> None:
+    # day2 で初回フル → day3 追加で増分追記 → 全構築（全日一括）と完全一致。
+    _put_day(tmp_path, (2025, 1, 2), [
+        ("2025-01-02 09:00:10", 100.0, 100.0), ("2025-01-02 09:01:10", 102.0, 102.0),
+    ])
+    tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=tmp_path)  # 初回=フル
+    _put_day(tmp_path, (2025, 1, 3), [("2025-01-03 09:00:10", 200.0, 200.0)])
+    out = tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-03", data_dir=tmp_path)  # 増分
+
+    got = pd.read_csv(out, parse_dates=["date"]).set_index("date")
+    expected = tick_m1.ticks_to_m1(_ticks([
+        ("2025-01-02 09:00:10", 100.0, 100.0), ("2025-01-02 09:01:10", 102.0, 102.0),
+        ("2025-01-03 09:00:10", 200.0, 200.0),
+    ]))
+    pd.testing.assert_frame_equal(got, expected, check_names=True)
+
+
+def test_last_m1_date_variants(tmp_path: Path) -> None:
+    p = tmp_path / "jp225_tick_m1.csv"
+    assert tick_m1.last_m1_date(p) is None  # 不在。
+    p.write_text("date,open,high,low,close,volume\n", encoding="utf-8")
+    assert tick_m1.last_m1_date(p) is None  # ヘッダのみ。
+    p.write_text(
+        "date,open,high,low,close,volume\n2025-01-02 09:00:00,1,2,0,1,3\n", encoding="utf-8"
+    )
+    assert tick_m1.last_m1_date(p) == pd.Timestamp("2025-01-02 09:00:00")  # 単一行。
+
+
+def test_append_m1_self_heals_torn_last_line(tmp_path: Path) -> None:
+    # 非原子追記のクラッシュを模した「末尾 torn 行（列欠落）」を全構築フォールバックで自己修復する。
+    _put_day(tmp_path, (2025, 1, 2), [
+        ("2025-01-02 09:00:10", 100.0, 100.0), ("2025-01-02 09:01:10", 102.0, 102.0),
+    ])
+    out = tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=tmp_path)  # 初回=フル
+    with open(out, "a", encoding="utf-8") as fh:
+        fh.write("2025-01-02 09:02:00,108.0\n")  # torn: open のみ・他列欠落。
+    assert not tick_m1._is_healthy_m1_row(tick_m1._read_last_m1_row(out))  # 不健全を検出。
+
+    out2 = tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=tmp_path)  # 自己修復
+    df = pd.read_csv(out2)
+    assert len(df) == 2  # torn 行は除去され完成済み 2 行へ復元。
+    assert df[["open", "high", "low", "close", "volume"]].notna().all().all()
+
+
+def test_append_m1_noop_when_no_new_days(tmp_path: Path) -> None:
+    _put_day(tmp_path, (2025, 1, 2), [("2025-01-02 09:00:10", 100.0, 100.0)])
+    tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=tmp_path)
+    out = tick_m1.m1_csv_path(data_dir=tmp_path)
+    before = out.read_text(encoding="utf-8")
+    # 同範囲を再実行しても新しい日が無いので不変（再追記しない）。
+    tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=tmp_path)
+    assert out.read_text(encoding="utf-8") == before
+
+
 def test_build_m1_per_day_concat_matches_whole_aggregation(tmp_path: Path) -> None:
     # メモリ有界化（日別集約）の数値同一性: 2 日分を跨いでも全件一括集計と一致する。
     rows_d1 = [("2025-01-02 09:00:10", 100.0, 100.0), ("2025-01-02 09:00:50", 102.0, 102.0)]

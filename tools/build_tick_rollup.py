@@ -9,11 +9,14 @@
                既存 tick tree があれば最新取得日の翌日〜本日+1日（増分追記）。
                tree が空（データ無し）なら full-start〜本日+1日を**全期間取得**する。
                取得は :func:`simulator.tools.fetch_ticks_ymd.run`（DukascopyTickSource）へ委譲。
-  2. m1      : 取得済みの全ティックから tick 由来 M1（``jp225_tick_m1.csv``）を生成する
-               （:func:`marketdata.tick_m1.build_m1_from_ticks`・派生物の全再生成・冪等）。
-  3. rollup  : M1 を上位足（5m..1M）へロールアップする
-               （:func:`marketdata.rollup.stream_build`・``ref_prefix="jp225_tick"``・
-               ``DATA_DIR/rollups/jp225_tick_<tf>.csv``）。
+  2. m1      : 取得済みティックから tick 由来 M1（``jp225_tick_m1.csv``）を生成する。
+               既定は**増分追記**（既存 M1 の最終日より後の新しい日だけ集計し末尾へ追記＝
+               全 parquet を再走査しない・:func:`marketdata.tick_m1.append_m1_from_ticks`）。
+               初回（M1 不在）は自動で全構築へフォールバック。``--full`` で全再構築。
+  3. rollup  : M1 を上位足（5m..1M）へロールアップする。既定は**差分更新**（state 以降の追記
+               tail のみ・:func:`marketdata.rollup.incremental_update`）。初回（state 不在）は
+               自動で ``stream_build`` へフォールバック。``--full`` で全再構築。出力は
+               ``ref_prefix="jp225_tick"``・``DATA_DIR/rollups/jp225_tick/jp225_tick_<tf>.csv``。
 
 データ保全（重要）:
   - ティック parquet は**上書きしない**（fetch_ticks_ymd が既存日/空日マーカーを skip）。
@@ -88,20 +91,33 @@ def _fetch_ticks_run(start: dt.datetime, end: dt.datetime, root: Path) -> int:
     return _run(start, end, root)
 
 
-def _build_tick_m1(start: dt.date, end: dt.date, *, ref: str, data_dir: Path) -> Path:
-    from marketdata.tick_m1 import build_m1_from_ticks
+def _build_tick_m1(
+    start: dt.date, end: dt.date, *, ref: str, data_dir: Path, full_rebuild: bool
+) -> Path:
+    """M1 を生成する。既定は増分追記（新しい日だけ集計）、``full_rebuild`` で全再構築。
 
-    return build_m1_from_ticks(
-        start.isoformat(), end.isoformat(), ref=ref, data_dir=data_dir
-    )
+    増分は初回（M1 不在）に自動で全構築へフォールバックする（append_m1_from_ticks 内）。
+    """
+    from marketdata.tick_m1 import append_m1_from_ticks, build_m1_from_ticks
+
+    fn = build_m1_from_ticks if full_rebuild else append_m1_from_ticks
+    return fn(start.isoformat(), end.isoformat(), ref=ref, data_dir=data_dir)
 
 
 def _rollup_build(
-    m1_path: Path, tf_list: Sequence[str], out_dir: Path, ref_prefix: str
+    m1_path: Path, tf_list: Sequence[str], out_dir: Path, ref_prefix: str, *, full_rebuild: bool
 ):
-    from marketdata.rollup import stream_build
+    """ロールアップを生成する。既定は増分（state 以降の tail のみ）、``full_rebuild`` で全構築。
 
-    return stream_build(m1_path, list(tf_list), out_dir, ref_prefix=ref_prefix)
+    増分は state 不在（初回）に自動で stream_build へフォールバックする（incremental_update 内）。
+    いずれも out_dir へ rollup_state.json を保存する（関数内で save 済み）。
+    """
+    from marketdata.rollup import RollupState, incremental_update, stream_build
+
+    if full_rebuild:
+        return stream_build(m1_path, list(tf_list), out_dir, ref_prefix=ref_prefix)
+    state = RollupState.load(out_dir)
+    return incremental_update(m1_path, state, list(tf_list), out_dir, ref_prefix=ref_prefix)
 
 
 # --------------------------------------------------------------------------- #
@@ -154,6 +170,7 @@ class PipelineContext:
     start: Optional[dt.date] = None
     end: Optional[dt.date] = None
     ref: str = REF
+    full_rebuild: bool = False  # True で M1・rollup を全再構築（既定は増分追記/差分更新）。
     continue_on_error: bool = False
     # ティック格納先・派生物出力先の**単一真実源**は data_dir 一本（acquire の書込先と m1 の
     # 読込先が乖離しないよう ticks_root/rollups_dir は data_dir 由来の派生に固定する）。
@@ -196,12 +213,12 @@ def stage_acquire(ctx: PipelineContext) -> int:
 
 
 def stage_m1(ctx: PipelineContext) -> int:
-    """取得済み全ティックから tick 由来 M1 を生成する（派生物の全再生成）。"""
+    """取得済みティックから tick 由来 M1 を生成する（既定は増分追記・--full で全再構築）。"""
     m1_end = ctx.end if ctx.end is not None else ctx.today
     m1_path = _build_tick_m1(
-        ctx.full_start, m1_end, ref=ctx.ref, data_dir=ctx.data_dir
+        ctx.full_start, m1_end, ref=ctx.ref, data_dir=ctx.data_dir, full_rebuild=ctx.full_rebuild
     )
-    LOG.info("m1: %s を生成", m1_path)
+    LOG.info("m1: %s を生成（%s）", m1_path, "全再構築" if ctx.full_rebuild else "増分追記")
     return 0
 
 
@@ -216,8 +233,12 @@ def stage_rollup(ctx: PipelineContext) -> int:
         )
     ctx.rollups_dir.mkdir(parents=True, exist_ok=True)
     tfs = _rollup_timeframes()
-    _rollup_build(m1_path, tfs, ctx.rollups_dir, ctx.ref)
-    LOG.info("rollup: %s -> %s/%s_<tf>.csv (%s)", m1_path, ctx.rollups_dir, ctx.ref, ",".join(tfs))
+    _rollup_build(m1_path, tfs, ctx.rollups_dir, ctx.ref, full_rebuild=ctx.full_rebuild)
+    LOG.info(
+        "rollup: %s -> %s/%s_<tf>.csv (%s・%s)",
+        m1_path, ctx.rollups_dir, ctx.ref, ",".join(tfs),
+        "全再構築" if ctx.full_rebuild else "差分更新",
+    )
     return 0
 
 
@@ -288,6 +309,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--end", type=_parse_date, default=None, help="終了日 YYYY-MM-DD（含む）")
     p.add_argument("--full-start", type=_parse_date, default=None,
                    help=f"全期間取得の起点 YYYY-MM-DD（既定 {_DEFAULT_FULL_START.isoformat()}）")
+    p.add_argument("--full", action="store_true",
+                   help="M1・ロールアップを増分でなく全再構築する（既定は増分追記/差分更新）")
     p.add_argument("--today", type=_parse_date, default=None,
                    help="「本日」を注入 YYYY-MM-DD（未指定=実 UTC 本日）")
     p.add_argument("--data-dir", type=Path, default=None,
@@ -302,6 +325,7 @@ def _build_context(args: argparse.Namespace) -> PipelineContext:
     kwargs = dict(
         start=args.start,
         end=args.end,
+        full_rebuild=args.full,
         continue_on_error=args.continue_on_error,
     )
     if args.today is not None:

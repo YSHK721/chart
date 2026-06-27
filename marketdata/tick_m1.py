@@ -40,6 +40,7 @@ from marketdata.paths import DATA_DIR
 
 # ロールアップ互換の M1 CSV 列・date 書式（marketdata.rollup._HEADER / _DATE_FMT と一致させる）。
 _HEADER = ["date", "open", "high", "low", "close", "volume"]
+_OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]  # _HEADER から date を除いた値列。
 _DATE_FMT = "%Y-%m-%d %H:%M:%S"
 # 集計に要する生ティックの必須列（ingest.RAW_COLUMNS の price 部分集合）。
 _TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
@@ -139,6 +140,18 @@ def day_parquet_files(
     return out
 
 
+def _format_m1_for_csv(m1: pd.DataFrame) -> pd.DataFrame:
+    """date-index OHLCV を loader 互換 CSV 行へ整形する**単一規則源**（date=``_DATE_FMT`` 文字列）。
+
+    全構築（:func:`_write_m1_csv`）と増分追記（:func:`_append_m1_csv`）の双方がこれを呼び、列射影・
+    date 書式・昇順を一致させる（書式の二重定義による drift を防ぐ）。
+    """
+    out = m1[_OHLCV_COLUMNS].sort_index().copy()
+    out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
+    out.index.name = _HEADER[0]
+    return out
+
+
 def _write_m1_csv(m1: pd.DataFrame, path: Path) -> None:
     """date-index OHLCV を loader 互換 CSV（``_HEADER`` / ``_DATE_FMT``）へ**原子的に**書く。
 
@@ -153,9 +166,7 @@ def _write_m1_csv(m1: pd.DataFrame, path: Path) -> None:
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     tmp = Path(tmp_name)
     try:
-        out = m1[["open", "high", "low", "close", "volume"]].sort_index().copy()
-        out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
-        out.index.name = _HEADER[0]
+        out = _format_m1_for_csv(m1)
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
             out.to_csv(fh, header=_HEADER[1:], index_label=_HEADER[0])
         os.replace(tmp, path)
@@ -201,6 +212,104 @@ def build_m1_from_ticks(
         m1 = ticks_to_m1(pd.DataFrame({c: [] for c in _TICK_COLUMNS}))
     out_path = m1_csv_path(ref=ref, data_dir=data_dir)
     _write_m1_csv(m1, out_path)
+    return out_path
+
+
+def _read_last_m1_row(out_path: Any) -> "pd.DataFrame | None":
+    """既存 M1 CSV の末尾 1 行（date index・OHLCV 列）を逆シーク読みで返す。不在/空は ``None``。
+
+    :mod:`marketdata.tail_reader` で末尾 1 行のみ読むためメモリ有界（全読みしない）。
+    """
+    from marketdata import tail_reader
+
+    p = Path(out_path)
+    if not p.is_file():
+        return None
+    tail = tail_reader.read_tail(p, 1)
+    return None if tail.empty else tail
+
+
+def last_m1_date(out_path: Any) -> "pd.Timestamp | None":
+    """既存 M1 CSV の最終バー ``date``（末尾行）。不在/空（ヘッダのみ）は ``None``。メモリ有界。"""
+    tail = _read_last_m1_row(out_path)
+    return None if tail is None else pd.Timestamp(tail.index[-1])
+
+
+def _is_healthy_m1_row(tail: pd.DataFrame) -> bool:
+    """末尾 1 行が健全か（date 解釈可・OHLCV 列が揃い NaN を含まない）。
+
+    非原子追記がクラッシュ/ディスクフルで途中失敗すると末尾に torn/部分行（列欠落・NaN）が残りうる。
+    これを検出して全構築フォールバック（原子的）で自己修復するための健全性判定。
+    """
+    if pd.isna(tail.index[-1]):
+        return False
+    if any(c not in tail.columns for c in _OHLCV_COLUMNS):
+        return False
+    return not bool(tail.iloc[-1][_OHLCV_COLUMNS].isna().any())
+
+
+def _append_m1_csv(m1_new: pd.DataFrame, path: Path) -> None:
+    """新規 M1 行を既存 CSV の**末尾へ追記**する（ヘッダ無し・``_DATE_FMT``・date 昇順）。
+
+    既存行は読み込まず（メモリ有界）末尾追記のみ行う。呼び出し側が ``m1_new`` の全 index を既存
+    最終 date より後に保証するため、追記後も date 昇順（loader 前提）が保たれる。
+
+    原子性（注意・:func:`_write_m1_csv` との非対称）: 末尾追記は tmp→``os.replace`` の原子化を持たず、
+    クラッシュ時に末尾へ torn 行を残しうる。その torn 行は次回 :func:`append_m1_from_ticks` の
+    :func:`_is_healthy_m1_row` 検出で全構築フォールバックされ自己修復する（無検出の永続破損を避ける）。
+    """
+    out = _format_m1_for_csv(m1_new)
+    with open(Path(path), "a", newline="", encoding="utf-8") as fh:
+        out.to_csv(fh, header=False, index_label=_HEADER[0])
+
+
+def append_m1_from_ticks(
+    start: Any,
+    end: Any,
+    *,
+    symbol: str = _DEFAULT_SYMBOL,
+    ref: str = _DEFAULT_REF,
+    data_dir: Any = DATA_DIR,
+) -> Path:
+    """既存 M1 CSV に「最終バー日以降の不足分」だけを集計して**追記**する（増分・メモリ有界・自己修復）。
+
+    既存 CSV が不在/空、または末尾行が不健全（torn/部分書込み）なら :func:`build_m1_from_ticks`
+    （原子的全構築）へフォールバックして自己修復する。健全時は **最終バー日（当日）以降**を再読込し、
+    ``index > 最終 date`` の行だけ追記する。ティックは UTC 日で partition され分が日を跨がないため、
+    完成済みの最終日は空追記（冪等 no-op）、途中までしか書けていない日は欠損分のみ追記され自己修復する。
+    結果は全構築と一致する（過去確定日の再計算は不要）。
+
+    前提（重要）: 取得は前方追記（resume）である。過去日への遡及バックフィル（既存最終日より前の
+    欠損日を後から追加）は本増分では取り込めない。その場合は :func:`build_m1_from_ticks` で全再構築する。
+    """
+    _validate_ref(ref)
+    out_path = m1_csv_path(ref=ref, data_dir=data_dir)
+    tail = _read_last_m1_row(out_path)
+    if tail is None or not _is_healthy_m1_row(tail):
+        # 初回（M1 不在/空）or 末尾 torn 行 → 原子的全構築で（再）生成し自己修復。
+        return build_m1_from_ticks(start, end, symbol=symbol, ref=ref, data_dir=data_dir)
+
+    last_date = pd.Timestamp(tail.index[-1])
+    # 最終バー日（当日）から再読込し index > last_date のみ追記する。完成日は冪等 no-op、
+    # 部分日は欠損分のみ自己修復（要求 start がそれより後ろならそれを尊重）。
+    resume_start = last_date.normalize()
+    eff_start = max(resume_start, pd.Timestamp(start))
+    files = day_parquet_files(eff_start, end, symbol=symbol, data_dir=data_dir)
+    if not files:
+        return out_path  # 追記すべき新しい日は無い。
+
+    daily_m1: List[pd.DataFrame] = []
+    for p in files:
+        m1_day = ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS))
+        if not m1_day.empty:
+            daily_m1.append(m1_day)
+    if not daily_m1:
+        return out_path
+    m1_new = pd.concat(daily_m1).sort_index()
+    m1_new = m1_new[m1_new.index > last_date]  # 厳密に既存最終 date より後のみ追記（重複防止）。
+    if m1_new.empty:
+        return out_path
+    _append_m1_csv(m1_new, out_path)
     return out_path
 
 
