@@ -206,9 +206,12 @@ export async function bootstrap({
       })
     : null;
 
-  // 形成中バー（最新足の足内更新）の組み立て。served（B方式）のみ。LiveUpdater とは別系統で、
-  //   /forming_bar から選択 tf の形成中バーを取得し renderer.updateLastCandle のみで反映する
-  //   （インジ再計算しない＝負荷分離）。start は入口（index.html）が served 時のみ呼ぶ。
+  // 形成中バー（最新足の足内更新）の組み立て。served（B方式）のみ。/forming_bar から選択 tf の
+  //   形成中バーを取得し、(1) renderer.updateLastCandle で価格の最新足を反映、(2) 指標も
+  //   recomputeAllApplied({mode:'latest'}) で最新点をティック由来に再計算する（backend が
+  //   mode=latest 時に形成中バーを最新足として計算へ織り込む）。LiveUpdater(60s) との分離の実体は
+  //   「/candles 全件再取得(Live) vs /forming_bar(Forming)」であり、指標再計算はどちらも latest。
+  //   start は入口（index.html）が served 時のみ呼ぶ。
   const formingBarUpdater = (mode === 'b')
     ? new FormingBarUpdater({
         controller,

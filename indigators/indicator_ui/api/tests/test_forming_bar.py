@@ -65,3 +65,79 @@ def test_forming_bar_none_for_non_tick_ref_or_unsupported_tf(monkeypatch) -> Non
     monkeypatch.setattr(fb, "forming_bar_from_ticks", lambda *a, **k: pytest.fail("呼ばれてはいけない"))
     assert fb.forming_bar("jp225_m1", "5m", _unix("2025-01-02 09:00:00")) is None  # 非tick ref
     assert fb.forming_bar("jp225_tick", "1W", _unix("2025-01-02 09:00:00")) is None  # 非対応tf
+
+
+def _df(rows: list[tuple[str, float, float, float, float, float]]):
+    idx = pd.DatetimeIndex([pd.Timestamp(r[0]) for r in rows], name="date")
+    return pd.DataFrame(
+        {"open": [r[1] for r in rows], "high": [r[2] for r in rows], "low": [r[3] for r in rows],
+         "close": [r[4] for r in rows], "volume": [r[5] for r in rows]},
+        index=idx,
+    )
+
+
+def test_apply_forming_bar_appends_new_period(monkeypatch) -> None:
+    df = _df([("2025-01-02 09:00:00", 1.0, 2.0, 0.5, 1.5, 10.0)])
+    bar = {"time": _unix("2025-01-02 09:05:00"), "open": 1.5, "high": 3.0, "low": 1.0,
+           "close": 2.5, "volume": 7.0}
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: bar)
+    out = fb.apply_forming_bar(df, "jp225_tick", "5m", 999)
+    assert len(out) == 2  # 新期間バーが末尾に追加。
+    last = out.iloc[-1]
+    assert (last["open"], last["high"], last["low"], last["close"], last["volume"]) == (1.5, 3.0, 1.0, 2.5, 7.0)
+    assert out.index[-1] == pd.Timestamp("2025-01-02 09:05:00")
+    assert len(df) == 1  # 入力 df は不変（copy）。
+
+
+def test_apply_forming_bar_replaces_same_period(monkeypatch) -> None:
+    df = _df([("2025-01-02 09:00:00", 1.0, 2.0, 0.5, 1.5, 10.0),
+              ("2025-01-02 09:05:00", 1.5, 1.6, 1.4, 1.55, 3.0)])  # 末尾=形成中と同一期間
+    bar = {"time": _unix("2025-01-02 09:05:00"), "open": 1.5, "high": 9.0, "low": 0.1,
+           "close": 2.5, "volume": 8.0}
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: bar)
+    out = fb.apply_forming_bar(df, "jp225_tick", "5m", 999)
+    assert len(out) == 2  # 同一期間は置換（行数不変）。
+    last = out.iloc[-1]
+    assert (last["high"], last["low"], last["close"], last["volume"]) == (9.0, 0.1, 2.5, 8.0)
+
+
+def test_apply_forming_bar_ignores_past_time(monkeypatch) -> None:
+    # 形成中バーの time が既存末尾より過去（異常）→ 触らない（df 素通し・防御分岐）。
+    df = _df([("2025-01-02 09:00:00", 1.0, 2.0, 0.5, 1.5, 10.0),
+              ("2025-01-02 09:05:00", 1.5, 1.6, 1.4, 1.55, 3.0)])
+    bar = {"time": _unix("2025-01-02 09:00:00"), "open": 9.0, "high": 9.0, "low": 9.0,
+           "close": 9.0, "volume": 9.0}  # 末尾(09:05)より過去
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: bar)
+    out = fb.apply_forming_bar(df, "jp225_tick", "5m", 999)
+    assert out is df  # 不変。
+
+
+def test_apply_forming_bar_passes_through_on_io_error(monkeypatch) -> None:
+    # ライブ堅牢化: 形成中バー算出（parquet 読込）が例外でも指標計算を落とさず df 素通し。
+    df = _df([("2025-01-02 09:00:00", 1.0, 2.0, 0.5, 1.5, 10.0)])
+    def _raise(*a, **k):
+        raise OSError("parquet torn-read")
+    monkeypatch.setattr(fb, "forming_bar", _raise)
+    assert fb.apply_forming_bar(df, "jp225_tick", "5m", 999) is df  # 例外を握り df を返す。
+
+
+def test_apply_forming_bar_maps_uppercase_columns(monkeypatch) -> None:
+    # 列名が大文字でも lower 対応で set/replace できる。
+    df = _df([("2025-01-02 09:00:00", 1.0, 2.0, 0.5, 1.5, 10.0)])
+    df.columns = [c.upper() for c in df.columns]  # OPEN/HIGH/LOW/CLOSE/VOLUME
+    bar = {"time": _unix("2025-01-02 09:05:00"), "open": 1.5, "high": 3.0, "low": 1.0,
+           "close": 2.5, "volume": 7.0}
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: bar)
+    out = fb.apply_forming_bar(df, "jp225_tick", "5m", 999)
+    assert len(out) == 2
+    assert float(out.iloc[-1]["CLOSE"]) == 2.5  # 大文字列へ正しく書込。
+
+
+def test_apply_forming_bar_passthrough_when_none_or_empty(monkeypatch) -> None:
+    df = _df([("2025-01-02 09:00:00", 1.0, 2.0, 0.5, 1.5, 10.0)])
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: None)  # 対象外/ティック無し
+    assert fb.apply_forming_bar(df, "jp225_tick", "5m", 999) is df  # 同一オブジェクトで素通し
+    empty = df.iloc[0:0]
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: {"time": _unix("2025-01-02 09:05:00"),
+                        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0})
+    assert fb.apply_forming_bar(empty, "jp225_tick", "5m", 999) is empty  # 空 df も素通し

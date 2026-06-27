@@ -19,10 +19,12 @@ stdlib のみと既存 adapter/loader を用いる。Flask 等は導入しない
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from adapter.compute import ERROR_STATUS, ComputeError, IndicatorComputeAdapter
 from adapter.compute import dataset
+from adapter.compute import forming_bar as forming_bar_mod
 from adapter.compute.latest_dispatch import full_compute, latest_compute
 
 
@@ -78,16 +80,30 @@ def handle_compute(
 
     df = dataset.load_dataframe(dataset_ref, timeframe)
 
+    # mode（計算モード）: 省略=full＝既存挙動（既存テスト無変更で緑）。"latest" は
+    #   Latest 増分計算（archetype ごとに tail＋末尾K切り・latest_dispatch に集約）。
+    mode = body.get("mode", "full")
+
+    # ライブ足内更新（指標）: mode="latest"（＝ライブ増分）かつティック由来 ref + 対応 tf のとき、
+    #   現在の「形成中バー」を最新足として末尾へ set/replace してから計算する（指標が足内＝
+    #   ティック粒度で更新される）。full（履歴計算）は不変＝後方互換。形成中バーの基準時刻 now は
+    #   body.formingNow（UNIX 秒・テスト/クライアント注入可）優先、無ければサーバ実 UTC 現在。
+    #   対象外 ref/tf・ティック無しは df 不変（apply_forming_bar 内で判定）。
+    if mode == "latest":
+        forming_now = body.get("formingNow")
+        now_unix = (
+            forming_now
+            if isinstance(forming_now, int) and not isinstance(forming_now, bool)
+            else int(time.time())
+        )
+        df = forming_bar_mod.apply_forming_bar(df, dataset_ref, timeframe, now_unix)
+
     # 表示範囲制限（直近 N 本）。1 分足原子の全期間で指標計算しないための制限
     # （§配信設計: リサンプル＋直近 N 本）。candles と同一窓で計算し時間軸を揃える。
+    #   形成中バー追加後に tail するため、最新足（形成中）が窓に含まれる。
     limit = body.get("limit")
     if isinstance(limit, int) and limit > 0:
         df = df.tail(limit)
-
-    # mode（計算モード）: 省略=full＝既存挙動（既存テスト無変更で緑）。"latest" は
-    #   Latest 増分計算（archetype ごとに tail＋末尾K切り・latest_dispatch に集約）。
-    #   limit の tail は不変（min_window <= limit 前提）。
-    mode = body.get("mode", "full")
     compute_adapter = adapter or IndicatorComputeAdapter()
     try:
         series = (

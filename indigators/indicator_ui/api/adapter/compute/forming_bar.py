@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # repo 根を sys.path へ（marketdata を import するため・dataset/rollup_store と同じロード境界）。
 import sys as _sys
@@ -74,3 +77,33 @@ def forming_bar(ref: str, tf: str, now_unix: int) -> Optional[dict]:
         return None
     start = period_start_unix(now_unix, tf)
     return forming_bar_from_ticks(start, int(now_unix))
+
+
+def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int) -> "pd.DataFrame":
+    """``df``（date-index OHLCV）の末尾へ現在形成中バーを **set/replace** して返す（指標の足内更新用）。
+
+    対象外 ref/tf・ティック無し・空 df なら ``df`` をそのまま返す（後方互換）。形成中バーの ``time``
+    （＝``floor(now, tf)``）が ``df`` 末尾と同一なら置換、新しければ追加する（``updateLastCandle`` と
+    同じ append/replace 規則）。これにより ``mode='latest'`` の最新点再計算が形成中バー込みで走る。
+    既存 df より過去の time（異常）は触らない。
+
+    ライブ経路の堅牢化: 形成中バー算出（ticks parquet 読込）が torn-read / IO 失敗しても
+    **指標計算を落とさず** ``df`` を素通しする（CSV 側 dataset の torn-read フォールバックと整合）。
+    """
+    try:
+        bar = forming_bar(ref, tf, now_unix)
+    except Exception as exc:  # noqa: BLE001 — parquet torn-read/IO 失敗は注入せず df 素通し（live 経路堅牢化）
+        logger.warning("形成中バー算出に失敗（注入せず継続）: %s/%s (%s)", ref, tf, exc)
+        return df
+    if bar is None or df is None or len(df) == 0:
+        return df
+    t = pd.Timestamp(int(bar["time"]), unit="s")  # naive UTC（df.index と同基準）
+    if t < df.index[-1]:
+        return df  # 形成中バーが既存末尾より過去 → 触らない（異常時の防御）。
+    out = df.copy()
+    lower = {str(c).lower(): c for c in out.columns}
+    for key in ("open", "high", "low", "close", "volume"):
+        col = lower.get(key)
+        if col is not None:
+            out.loc[t, col] = float(bar[key])
+    return out.sort_index()

@@ -343,3 +343,53 @@ def test_handle_compute_mode_latest_price_range_power_keeps_horizontal_line():
 
 # numpy は ramp フィクスチャ生成の将来拡張用 import（現テストでは controller 内で生成）。
 _ = (np, pd)
+
+
+# --------------------------------------------------------------------------- #
+# ライブ足内更新（指標）: mode="latest" 時の形成中バー注入（ティック由来）
+# --------------------------------------------------------------------------- #
+from adapter.controller import compute_controller as _cc  # noqa: E402
+
+
+def _stub_df():
+    idx = pd.DatetimeIndex([pd.Timestamp("2025-01-02 09:00:00")], name="date")
+    return pd.DataFrame(
+        {"open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1.0]}, index=idx
+    )
+
+
+def test_latest_applies_forming_bar_for_tick_ref_with_formingNow(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(_cc.dataset, "load_dataframe", lambda ref, tf: _stub_df())
+    monkeypatch.setattr(_cc, "latest_compute", lambda *a, **k: [])
+    monkeypatch.setattr(_cc.forming_bar_mod, "apply_forming_bar",
+                        lambda df, ref, tf, now: (seen.update(ref=ref, tf=tf, now=now), df)[1])
+    status, body = handle_compute({
+        "indicatorId": "x", "variant": "default", "datasetRef": "jp225_tick",
+        "timeframe": "5m", "mode": "latest", "formingNow": 123,
+    })
+    assert status == 200 and body["ok"] is True
+    assert seen == {"ref": "jp225_tick", "tf": "5m", "now": 123}  # formingNow を now に採用。
+
+
+def test_latest_defaults_now_to_server_time_when_no_formingNow(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(_cc.dataset, "load_dataframe", lambda ref, tf: _stub_df())
+    monkeypatch.setattr(_cc, "latest_compute", lambda *a, **k: [])
+    monkeypatch.setattr(_cc.time, "time", lambda: 999.0)
+    monkeypatch.setattr(_cc.forming_bar_mod, "apply_forming_bar",
+                        lambda df, ref, tf, now: (seen.update(now=now), df)[1])
+    handle_compute({"indicatorId": "x", "variant": "default", "datasetRef": "jp225_tick",
+                    "timeframe": "5m", "mode": "latest"})
+    assert seen["now"] == 999  # int(time.time())。
+
+
+def test_full_mode_does_not_apply_forming_bar(monkeypatch):
+    seen = {"called": False}
+    monkeypatch.setattr(_cc.dataset, "load_dataframe", lambda ref, tf: _stub_df())
+    monkeypatch.setattr(_cc, "full_compute", lambda *a, **k: [])
+    monkeypatch.setattr(_cc.forming_bar_mod, "apply_forming_bar",
+                        lambda *a, **k: seen.update(called=True))
+    handle_compute({"indicatorId": "x", "variant": "default", "datasetRef": "jp225_tick",
+                    "timeframe": "5m"})  # mode 省略=full
+    assert seen["called"] is False  # 履歴計算は形成中バーを注入しない（後方互換）。

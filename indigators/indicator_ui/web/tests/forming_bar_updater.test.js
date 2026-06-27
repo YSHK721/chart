@@ -25,11 +25,11 @@ function fakeTimers() {
 }
 
 function spies({ recomputing = false, bar = { time: 100, open: 1, high: 2, low: 0, close: 1.5, volume: 9 } } = {}) {
-  const calls = { recompute: 0, loadForming: [], updateLast: [] };
+  const calls = { recompute: 0, recomputeOpts: null, loadForming: [], updateLast: [] };
   const controller = {
     isRecomputing: () => recomputing,
-    // 呼ばれてはいけない（インジ再計算しない設計）。呼ばれたら検出できるよう計上。
-    recomputeAllApplied: async () => { calls.recompute += 1; },
+    // 指標の最新点再計算（mode:'latest'）。呼び出し回数と引数を記録する。
+    recomputeAllApplied: async (opts) => { calls.recompute += 1; calls.recomputeOpts = opts; },
   };
   const renderer = { updateLastCandle: (c) => calls.updateLast.push(c) };
   const loadFormingBar = async (ref, tf) => { calls.loadForming.push([ref, tf]); return bar; };
@@ -52,14 +52,15 @@ function newUpdater(overrides = {}, sp = spies()) {
   return { updater, t, sp };
 }
 
-test('start: each tick fetches forming bar and updates last candle WITHOUT recompute', async () => {
+test('start: each tick updates last candle AND recomputes indicators latest (tick-driven)', async () => {
   const { updater, t, sp } = newUpdater();
   updater.start();
   await t.tick();
   assert.deepEqual(sp.calls.loadForming.at(-1), ['jp225_tick', '1D']);
   assert.equal(sp.calls.updateLast.length, 1);
   assert.deepEqual(sp.calls.updateLast[0], sp.bar);
-  assert.equal(sp.calls.recompute, 0); // 負荷分離: インジ再計算は呼ばない。
+  assert.equal(sp.calls.recompute, 1);                       // 指標も最新点を再計算。
+  assert.deepEqual(sp.calls.recomputeOpts, { mode: 'latest' }); // mode=latest（頻度分離・最新点のみ）。
 });
 
 test('start registers exactly one interval at the configured intervalMs (5000)', () => {
@@ -94,11 +95,12 @@ test('tick is skipped while controller.isRecomputing() is true (no fetch/update)
   assert.equal(sp.calls.updateLast.length, 0);
 });
 
-test('bar=null (no forming bar) does not call updateLastCandle', async () => {
+test('bar=null (no forming bar) is a full no-op (no candle update, no recompute)', async () => {
   const sp = spies({ bar: null });
   const { updater, t } = newUpdater({}, sp);
   updater.start();
   await t.tick();
   assert.equal(sp.calls.loadForming.length, 1); // 取得は試みる
-  assert.equal(sp.calls.updateLast.length, 0);   // が更新はしない
+  assert.equal(sp.calls.updateLast.length, 0);   // が価格は更新しない
+  assert.equal(sp.calls.recompute, 0);           // 指標も再計算しない（材料なし＝完全 no-op）
 });

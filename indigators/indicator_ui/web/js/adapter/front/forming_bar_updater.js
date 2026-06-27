@@ -1,10 +1,15 @@
 // FormingBarUpdater（adapter/front/forming_bar_updater.js）— 最新足（形成中バー）の
 //   ティック由来ライブ更新（served=B方式のみ・既定 5 秒）。
 //
-// 設計: LiveUpdater（60 秒・全インジ再計算）とは**別系統**で、価格の最新足だけを高頻度に差分反映する。
-//   /forming_bar?datasetRef=&timeframe= から選択 tf の「現在期間の形成中バー（mid OHLCV・1 本）」を取得し
-//   renderer.updateLastCandle で反映する。インジ再計算はしない（負荷分離＝5 秒間隔でも全指標を再計算
-//   しない）。bar=null（対象外 tf / 期間内ティック無し）は無視（更新なし）。
+// 設計: LiveUpdater（60 秒・/candles 全件再取得＋最新点 latest 再計算）とは**別系統**で、最新足を
+//   高頻度に差分反映する。両者の分離の実体は「/candles 再取得(Live) vs /forming_bar(Forming)」「60秒
+//   vs 5秒」であり、指標再計算はどちらも mode:'latest'（重い全件 full 計算ではない）。
+//   /forming_bar?datasetRef=&timeframe= から選択 tf の「現在期間の形成中バー
+//   （mid OHLCV・1 本）」を取得し、(1) renderer.updateLastCandle で価格の最新足を反映し、(2) 指標も
+//   recomputeAllApplied({mode:'latest'}) で最新点をティック由来に再計算する（backend が mode=latest 時に
+//   形成中バーを最新足として末尾追加して計算する）。bar=null（対象外 tf / 期間内ティック無し）は
+//   価格も指標も更新しない（完全 no-op）。指標の重い再計算は確定足の LiveUpdater に委ね、ここは
+//   「最新点（latest）」のみ更新する（頻度分離）。
 //
 // 隔離・注入方針（DOM/ネット/タイマー非依存）:
 //   - setInterval / clearInterval / loadFormingBar / getTimeframe は注入（テストでフェイク化）。
@@ -51,14 +56,25 @@ export class FormingBarUpdater {
     this._timerId = null;
   }
 
-  // 1 tick: 再計算中ならスキップ。そうでなければ形成中バーを取得し最新足へ差分反映（インジ再計算なし）。
+  // 1 tick: 再計算中ならスキップ。形成中バーを取得し、(1) 価格の最新足を反映、(2) 指標の最新点を
+  //   ティック由来に再計算する。bar=null（更新材料なし）は完全 no-op。1 tick の失敗（取得/再計算/
+  //   描画）は握りつぶしてログ化する（5 秒周期＝unhandledRejection を毎回出さず、次 tick で回復）。
   async _tick() {
-    if (this._controller.isRecomputing()) {
-      return;
-    }
-    const bar = await this._loadFormingBar(this._datasetRef, this._getTimeframe());
-    if (bar) {
+    try {
+      if (this._controller.isRecomputing()) {
+        return;
+      }
+      const bar = await this._loadFormingBar(this._datasetRef, this._getTimeframe());
+      if (!bar) {
+        return;
+      }
       this._renderer.updateLastCandle(bar);
+      // 指標も最新点を再計算（mode:'latest'）。backend が形成中バーを最新足として計算へ織り込む。
+      await this._controller.recomputeAllApplied({ mode: 'latest' });
+    } catch (err) {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('FormingBarUpdater: tick 失敗（次 tick で回復）:', err && err.message);
+      }
     }
   }
 }
