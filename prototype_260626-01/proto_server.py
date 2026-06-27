@@ -41,10 +41,35 @@ TICK_M1_CSV = HERE.parent / "data" / "marketdata" / "jp225_tick_m1.csv"
 _tick_m1: dict = {}
 
 
+# 外れ値補正の許容相対乖離（0.3=±30%）。tools.export_jp225_m1.repair_outlier_rows と同一基準。
+OUTLIER_THRESHOLD = 0.3
+
+
+def _repair_day_outliers(df, threshold: float = OUTLIER_THRESHOLD):
+    """日内 close 中央値から OHLC のいずれかが threshold 超で乖離する M1 行を除去する（読み取り時補正）。
+
+    Dukascopy の区間欠損で 1 分足が極端に乖離する（例: 2025-08-26 の ~15100＝当日 ~42600 から
+    約 -64%）外れバーのみを安全に分離する。生 CSV は不変＝再生成不要・元データ無改変。
+    指数は日中に中央値比 ±30% も動かないため、配信欠損ファントムのみが該当する。
+    """
+    if len(df) == 0:
+        return df
+    day = df.index.normalize()                         # 暦日キー（UTC・tz-naive）
+    med = df.groupby(day)["close"].transform("median")  # 各行＝その日の close 中央値
+    dev = pd.concat([(df[c] / med - 1.0).abs() for c in ("open", "high", "low", "close")],
+                    axis=1).max(axis=1)
+    mask = (med > 0) & (dev > threshold)
+    n = int(mask.sum())
+    if n:
+        print(f"[tick-clean] M1 外れバー {n} 本を除去（日内中央値±{int(threshold * 100)}%超・例 2025-08-26）")
+    return df[~mask]
+
+
 def _load_tick_m1():
     mt = TICK_M1_CSV.stat().st_mtime
     if _tick_m1.get("mt") != mt:
         df = pd.read_csv(TICK_M1_CSV, parse_dates=["date"]).set_index("date")
+        df = _repair_day_outliers(df)                  # 読み取り時に外れバー除去（生CSVは不変）
         _tick_m1.update(mt=mt, df=df)
     return _tick_m1["df"]
 
@@ -163,8 +188,13 @@ def do_intraday(ref, start, end):
         p = TICK_ROOT / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}" / "JP225_ticks.parquet"
         if p.is_file():
             tdf = pd.read_parquet(p, columns=["bidPrice", "askPrice"])
-            mid = ((tdf["bidPrice"] + tdf["askPrice"]) / 2.0).tolist()
-            out["ticks"] = _downsample_keep_extremes(mid, 800)
+            mid = (tdf["bidPrice"] + tdf["askPrice"]) / 2.0
+            # 生ティックも同基準で外れ値補正（生 parquet は不変・読み取り時のみ）。
+            #   当日 mid 中央値から ±threshold 超で乖離する不正ティック（例 2025-08-26 の ~15100）を除去。
+            m = float(mid.median())
+            if m > 0:
+                mid = mid[(mid / m - 1.0).abs() <= OUTLIER_THRESHOLD]
+            out["ticks"] = _downsample_keep_extremes(mid.tolist(), 800)
     except Exception as e:
         out["ticks_error"] = str(e)[:120]
     return out
