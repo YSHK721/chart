@@ -289,7 +289,6 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     const cd = candles[bar];
     if (!cd) return;
     animating = true;
-    const noteEl = $('rp-anim-note');
     const mode = $('rp-mode').value;
     try {
       // 確定日足のチラ見せ防止: fetch を await する前（同期）に最新足を始値の同事足へ畳む。
@@ -297,8 +296,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       if (mode !== 'math') {
         try { mainSeries.update({ time: cd.time, open: cd.open, high: cd.open, low: cd.open, close: cd.open }); } catch (_e) { /* noop */ }
       }
-      const { prices, note } = await buildStream(cd, mode);
-      if (noteEl) noteEl.textContent = ` ${mode}: ${note}`;
+      const { prices } = await buildStream(cd, mode);
       let hi = prices[0], lo = prices[0];
       const o = prices[0];                                 // 始値はティック列の先頭値（ティックに存在する値）
       for (let i = 0; i < prices.length; i++) {
