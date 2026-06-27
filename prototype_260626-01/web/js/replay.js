@@ -170,6 +170,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   let busy = false;
   let queued = null;
   async function drive(target) {
+    pausedForm = null;          // bar を動かす操作（前進/スクラブ/1足/プリセット）は停止足の続きを無効化
     if (busy) { queued = target; return; }
     busy = true;
     try {
@@ -218,8 +219,13 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   }
   async function playLoop() {
     while (playing && bar < candles.length - 1) {
-      await drive(bar + 1);
-      await animateForming(() => !playing);   // 形成途中でも停止要求で即中断（停止ボタンの即応性）
+      let resume = null;
+      if (pausedForm && candles[bar] && pausedForm.time === candles[bar].time) {
+        resume = pausedForm;            // 停止した足の続きから再開＝次の足へ飛ばさない
+      } else {
+        await drive(bar + 1);           // 通常前進＝次の足を出す
+      }
+      await animateForming(() => !playing, resume);   // 形成途中でも停止要求で即中断（停止ボタンの即応性）
       if (!playing) break;
       await waitFrame();
     }
@@ -298,9 +304,13 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     return { prices: [cd.open, cd.high, cd.low, cd.close], note: 'M1無→OHLC4点' };
   }
   let animating = false;
+  // 「停止」した足が形成途中だった場合、その続き（prices・途中index i・進捗 o/hi/lo）を保持し、
+  //   次の「再生」で同じ足を続きから再開する（次の足へ飛ばさない）。bar が変わる操作(drive)で無効化。
+  let pausedForm = null;
   // shouldAbort: 再生から呼ぶとき () => !playing を渡す。足内更新ループ途中でも停止要求で即中断し、
   //   「停止」ボタンのタイムラグ（最大 ANIM_CAP×ANIM_MS ≒ 数秒）を解消する。1足送りは未指定（中断なし）。
-  async function animateForming(shouldAbort) {
+  // resume: pausedForm を渡すと同一足を続きから再開（畳み直さず途中 index から継続）。
+  async function animateForming(shouldAbort, resume) {
     if (animating || !candles.length) return;
     const cd = candles[bar];
     if (!cd) return;
@@ -308,21 +318,30 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     window.__rpAnimating = true;                            // E2E/verify 用フック（停止即応性の計測）
     const mode = $('rp-mode').value;
     try {
-      // 確定日足のチラ見せ防止: fetch を await する前（同期）に最新足を始値の同事足へ畳む。
-      //   drive() が描いた完成足を、ティック取得待ちの間に見せない（paint 前に上書き）。
-      if (mode !== 'math') {
-        try { mainSeries.update({ time: cd.time, open: cd.open, high: cd.open, low: cd.open, close: cd.open }); } catch (_e) { /* noop */ }
+      let prices, o, hi, lo, startI;
+      if (resume && resume.time === cd.time) {
+        // 同一足の続きから再開：畳み直さず、停止時点の prices・hi/lo・index を引き継ぐ。
+        prices = resume.prices; o = resume.o; hi = resume.hi; lo = resume.lo; startI = resume.i;
+      } else {
+        // 確定日足のチラ見せ防止: fetch を await する前（同期）に最新足を始値の同事足へ畳む。
+        //   drive() が描いた完成足を、ティック取得待ちの間に見せない（paint 前に上書き）。
+        if (mode !== 'math') {
+          try { mainSeries.update({ time: cd.time, open: cd.open, high: cd.open, low: cd.open, close: cd.open }); } catch (_e) { /* noop */ }
+        }
+        ({ prices } = await buildStream(cd, mode));
+        o = prices[0]; hi = prices[0]; lo = prices[0]; startI = 0;  // 始値はティック列の先頭値
       }
-      const { prices } = await buildStream(cd, mode);
-      let hi = prices[0], lo = prices[0];
-      const o = prices[0];                                 // 始値はティック列の先頭値（ティックに存在する値）
-      for (let i = 0; i < prices.length; i++) {
-        if (shouldAbort && shouldAbort()) break;           // 停止要求＝足内更新を即中断（タイムラグ解消）
+      for (let i = startI; i < prices.length; i++) {
+        if (shouldAbort && shouldAbort()) {                // 停止要求＝即中断（タイムラグ解消）＋続き保存
+          pausedForm = { time: cd.time, prices, o, hi, lo, i };
+          return;
+        }
         const p = prices[i];
         hi = Math.max(hi, p); lo = Math.min(lo, p);        // 高安は流れてきたティックの極値のみ
         try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: p }); } catch (_e) { /* noop */ }
         await sleepMs(ANIM_MS);
       }
+      pausedForm = null;                                   // 完走＝続き情報は破棄
       // 足確定: ティック列由来の OHLC で確定する。cd.high/low へはスナップしない
       //   （日足集計の高安は流したティックに無い値になり得るため＝バグ「存在しない高安」防止）。
       try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: prices[prices.length - 1] }); } catch (_e) { /* noop */ }
