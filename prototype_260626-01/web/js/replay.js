@@ -303,7 +303,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     if (m1.length) return { prices: cap(synthM1(m1), ANIM_CAP), note: '全ティック合成(M1×補間)' };
     return { prices: [cd.open, cd.high, cd.low, cd.close], note: 'M1無→OHLC4点' };
   }
-  let animating = false;
+  // 形成は「最新の1本のみ有効」。新しい形成（1足送り/モード切替/再生）が始まると、旧形成は次の
+  //   更新で自身を破棄する（世代トークン animGen）。旧実装の `if(animating) return` は新規呼び出しを
+  //   握り潰し、長いティック形成中の 1足送り・モード変更が無反応に見える原因だった（モード別更新の喪失）。
+  let animGen = 0;
   // 「停止」した足が形成途中だった場合、その続き（prices・途中index i・進捗 o/hi/lo）を保持し、
   //   次の「再生」で同じ足を続きから再開する（次の足へ飛ばさない）。bar が変わる操作(drive)で無効化。
   let pausedForm = null;
@@ -311,12 +314,13 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   「停止」ボタンのタイムラグ（最大 ANIM_CAP×ANIM_MS ≒ 数秒）を解消する。1足送りは未指定（中断なし）。
   // resume: pausedForm を渡すと同一足を続きから再開（畳み直さず途中 index から継続）。
   async function animateForming(shouldAbort, resume) {
-    if (animating || !candles.length) return;
+    if (!candles.length) return;
     const cd = candles[bar];
     if (!cd) return;
-    animating = true;
+    const myGen = ++animGen;                                // この形成を最新化（旧形成は次の更新で停止）
+    const superseded = () => myGen !== animGen;
     window.__rpAnimating = true;                            // E2E/verify 用フック（停止即応性の計測）
-    const mode = $('rp-mode').value;
+    const mode = $('rp-mode').value;                        // モードは呼び出しごとに最新値を読む
     try {
       let prices, o, hi, lo, startI;
       if (resume && resume.time === cd.time) {
@@ -329,13 +333,16 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
           try { mainSeries.update({ time: cd.time, open: cd.open, high: cd.open, low: cd.open, close: cd.open }); } catch (_e) { /* noop */ }
         }
         ({ prices } = await buildStream(cd, mode));
+        if (superseded()) return;                          // fetch 待ちの間に新形成が来たら破棄
         o = prices[0]; hi = prices[0]; lo = prices[0]; startI = 0;  // 始値はティック列の先頭値
       }
+      window.__rpForm = { mode, n: prices.length };         // E2E/verify 用フック（モード別ストリーム確認）
       for (let i = startI; i < prices.length; i++) {
         if (shouldAbort && shouldAbort()) {                // 停止要求＝即中断（タイムラグ解消）＋続き保存
           pausedForm = { time: cd.time, prices, o, hi, lo, i };
           return;
         }
+        if (superseded()) return;                          // 新形成に置換＝この足は破棄（pausedForm は保存しない）
         const p = prices[i];
         hi = Math.max(hi, p); lo = Math.min(lo, p);        // 高安は流れてきたティックの極値のみ
         try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: p }); } catch (_e) { /* noop */ }
@@ -345,7 +352,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       // 足確定: ティック列由来の OHLC で確定する。cd.high/low へはスナップしない
       //   （日足集計の高安は流したティックに無い値になり得るため＝バグ「存在しない高安」防止）。
       try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: prices[prices.length - 1] }); } catch (_e) { /* noop */ }
-    } finally { animating = false; window.__rpAnimating = false; }
+    } finally { if (myGen === animGen) window.__rpAnimating = false; }  // 最新が終了した時のみ false
   }
   // 1 足送り＝新しく現れた最新足（playhead）を選択モードで足内形成する。
   //   最新足の定義は「期間プリセット起点から前進する先頭足」。本当のデータ末尾ではない。
