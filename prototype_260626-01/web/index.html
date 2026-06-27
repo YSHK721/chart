@@ -11,6 +11,14 @@
     .replay-bar button,.replay-bar select{background:#1b2230;color:#d1d4dc;border:1px solid #2a2e39;border-radius:4px;padding:4px 9px;cursor:pointer}
     .replay-bar .rp-badge{padding:2px 8px;border-radius:4px;background:#2962ff33;color:#7aa2ff;font-weight:600}
     .replay-bar #rp-slider{flex:1;min-width:200px}
+    .replay-bar .rp-sep{width:1px;align-self:stretch;background:#2a2e39;margin:0 2px}
+    /* 未来足が無いとき再生不可＝減光＋クリック不可。理由は title 属性でホバー表示する
+       （disabled 属性だと一部ブラウザで title が出ないため、クラスで減光し click 側で抑止する）。 */
+    .replay-bar button.rp-disabled{opacity:.4;cursor:not-allowed}
+    /* 再生中は色を変えて状態を明示（停止中＝既定色 / 再生中＝緑）。 */
+    .replay-bar #rp-play.rp-playing{background:#16a34a;color:#fff;border-color:#16a34a}
+    /* 「▶ 再生」と「⏸ 停止」で文字幅が異なりボタン幅が動くため、幅を固定してズレを防ぐ。 */
+    .replay-bar #rp-play{min-width:84px;text-align:center}
     .replay-bar .on{outline:2px solid #2962ff}
     /* レンジ・プリセット（時間足別）。期間は t 起点で算出＝新足追従。 */
     #rp-presets{display:inline-flex;gap:4px}
@@ -46,12 +54,23 @@
     <!-- [PROTO] 再生バー（ライブ自動更新の代わりに時間軸再生を駆動） -->
     <div class="replay-bar" id="replay-bar">
       <span class="rp-badge">REPLAY r2（同時更新）</span>
-      <button id="rp-first" title="先頭">⏮</button>
       <button id="rp-prev">◀ 1足</button>
       <button id="rp-play">▶ 再生</button>
       <button id="rp-next">1足 ▶</button>
       <label>速度<select id="rp-speed"><option>1</option><option selected>2</option><option>5</option></select>fps上限</label>
+      <span class="rp-sep"></span>
+      <label title="最新足を足内で更新する方法（MT5 モデリング相当）">最新足更新<select id="rp-mode">
+        <option value="real_ticks">実ティック</option>
+        <option value="every_tick">全ティック合成</option>
+        <option value="ohlc_1min" selected>1分OHLC</option>
+        <option value="open_only">始値のみ</option>
+        <option value="math">数学計算(終値)</option>
+      </select></label>
+      <span id="rp-anim-note" style="font-size:11px;color:#9aa"></span>
       <button id="rp-follow">直近窓追従</button>
+      <span class="rp-sep"></span>
+      <button id="rp-view-left" title="チャート表示を左端へスクロール（再生位置は変えない）">⇤ 表示左端</button>
+      <button id="rp-view-right" title="チャート表示を右端へスクロール（再生位置は変えない）">表示右端 ⇥</button>
       <span id="rp-presets"></span>
       <input id="rp-slider" type="range" min="0" max="0" value="0" />
     </div>
@@ -113,7 +132,7 @@
       container: document.getElementById('chart'),
       doc: document,
       datasetRef: 'jp225_m1',
-    }).then(({ chart, controller, renderer, ready, tradeMarkers }) => {
+    }).then(({ chart, mainSeries, controller, renderer, ready, tradeMarkers }) => {
       controller.bind();
       ready.then(() => {
         controller.restore();
@@ -121,7 +140,7 @@
           tradeMarkers.load('/data/trade_markers.json');
         }
         // ライブ更新の代わりに再生ドライバを起動（untilTime をフレーム駆動＝ライブ同一計算）。
-        setupReplay({ chart, controller, renderer, datasetRef: 'jp225_m1', recentBars: RECENT_BARS, document });
+        setupReplay({ chart, mainSeries, controller, renderer, datasetRef: 'jp225_m1', recentBars: RECENT_BARS, document });
       });
     });
   </script>

@@ -15,7 +15,9 @@
 //   - 直列化: 再計算の多重実行（系列の二重描画・"計算中"固着）を防ぐため、render を
 //     1 本ずつ実行し、実行中の新要求は最新フレームへ coalesce する。
 
-export async function setupReplay({ chart, controller, renderer, datasetRef, recentBars, document: doc }) {
+import { ReplayBoundaryDimPrimitive } from './replay_boundary_dim.js';
+
+export async function setupReplay({ chart, mainSeries, controller, renderer, datasetRef, recentBars, document: doc }) {
   const $ = (id) => doc.getElementById(id);
   const RIGHT_MARGIN = 6;                    // 最新足の右に置く余白（バー数）
   const FOLLOW_BARS = 150;                   // 直近窓追従モードで playhead から遡って表示する本数
@@ -47,6 +49,16 @@ export async function setupReplay({ chart, controller, renderer, datasetRef, rec
   // テスト期間プリセットで選択する再生開始位置。replayStart=区間の開始 bar（playhead のジャンプ先）。
   let replayStart = 0;                        // 既定=全期間（先頭から）
   let activeSecs = null;                      // 選択中プリセットの期間秒（ハイライト用・null=全期間）
+
+  // 期間プリセット境界（再生区間の開始位置）より過去側の背景を減光するプリミティブ（本番無改変・装着のみ）。
+  const boundaryDim = new ReplayBoundaryDimPrimitive();
+  if (mainSeries && typeof mainSeries.attachPrimitive === 'function') {
+    mainSeries.attachPrimitive(boundaryDim);
+  }
+  // replayStart に応じて減光境界を更新する（0=全期間は減光なし）。
+  const syncBoundary = () => boundaryDim.setBoundaryTime(
+    (replayStart > 0 && candles[replayStart]) ? candles[replayStart].time : null,
+  );
 
   // candles 全体[0, length-1] から time >= target の最小 index を返す（二分探索）。
   function idxForTime(target) {
@@ -93,6 +105,7 @@ export async function setupReplay({ chart, controller, renderer, datasetRef, rec
         autoFrame = true;                                  // 明示的な表示操作＝自動フレーム再開
         const presentTime = candles.length ? candles[candles.length - 1].time : 0;
         replayStart = (secs == null) ? 0 : idxForTime(presentTime - secs);  // 区間開始 bar（全期間=先頭）
+        syncBoundary();                                    // 過去側の背景減光境界を更新
         renderPresets();
         drive(replayStart);   // 開始位置へジャンプ（区間を枠表示・足リビール）。以降 ▶ で前進再生。
       };
@@ -106,6 +119,7 @@ export async function setupReplay({ chart, controller, renderer, datasetRef, rec
     const g = ++generation;
     bar = Math.max(0, Math.min(candles.length - 1, target));
     $('rp-slider').value = bar;
+    updatePlayEnabled();                                   // 最新足では再生ボタンを減光・抑止
     const t = candles[bar].time;
 
     controller.setUntilTime(t);                            // 再生のその時点（ライブ同一）
@@ -158,30 +172,169 @@ export async function setupReplay({ chart, controller, renderer, datasetRef, rec
     timeframe = tf;
     replayStart = 0; activeSecs = null;                    // 時間足切替で「全期間」へ戻す
     candles = await fetchCandles(tf);
+    syncBoundary();                                        // 全期間へ戻る＝減光解除（candles 差替後）
     $('rp-slider').min = 0;
     $('rp-slider').max = Math.max(0, candles.length - 1);
     renderPresets();                                       // その時間足のプリセットを再構築
     await drive(candles.length - 1);                       // 開始は present（最新足）＝ライブ同様の表示
   }
+  // 再生フレーム待機。速度(fps上限)を再生中に変えたら即時反映するため、
+  // 進行中の待機を「残り時間 × 新fps」で組み直せるようにする（待機を中断→再スケジュール）。
+  const frameMs = () => 1000 / (+$('rp-speed').value || 1);   // fps 上限 → フレーム間隔
+  let frameTimer = null;        // 進行中フレーム待機のタイマーID
+  let frameResolve = null;      // 進行中フレーム待機の解決関数（待機中のみ非null）
+  let frameStart = 0;           // 現フレーム待機の開始時刻
+  function settleFrameWait() {                 // 待機を解消して次フレームへ進める
+    if (frameTimer != null) { clearTimeout(frameTimer); frameTimer = null; }
+    const resolve = frameResolve; frameResolve = null;
+    if (resolve) resolve();
+  }
+  function waitFrame() {
+    return new Promise((resolve) => {
+      frameResolve = resolve;
+      frameStart = performance.now();
+      frameTimer = setTimeout(settleFrameWait, frameMs());
+    });
+  }
+  function rescheduleFrameWait() {             // 速度変更時：残り時間を新fpsで取り直す
+    if (frameResolve == null) return;         // 再生待機中でなければ何もしない
+    if (frameTimer != null) { clearTimeout(frameTimer); frameTimer = null; }
+    const remaining = frameMs() - (performance.now() - frameStart);
+    if (remaining <= 0) { settleFrameWait(); return; }
+    frameTimer = setTimeout(settleFrameWait, remaining);
+  }
   async function playLoop() {
-    const frameMs = () => 1000 / (+$('rp-speed').value || 1);   // fps 上限 → フレーム間隔
     while (playing && bar < candles.length - 1) {
       await drive(bar + 1);
-      await new Promise((resolve) => setTimeout(resolve, frameMs()));
+      await animateForming();          // 新しい最新足を選択モードで足内形成（プリセット起点から前進）
+      if (!playing) break;
+      await waitFrame();
     }
     playing = false;
     $('rp-play').textContent = '▶ 再生';
+    $('rp-play').classList.remove('rp-playing');            // ループ終了（末尾到達等）で色を戻す
   }
 
   // ---- UI 配線 ----
+  // 未来足が無い（playhead が最新足）と再生できない。減光＋クリック抑止し、理由を title でホバー表示。
+  const NO_FUTURE_MSG = '最新足のため再生できません（未来足が存在しません）';
+  function updatePlayEnabled() {
+    const btn = $('rp-play');
+    if (!btn) return;
+    const atEnd = !candles.length || bar >= candles.length - 1;
+    btn.classList.toggle('rp-disabled', atEnd);
+    btn.title = atEnd ? NO_FUTURE_MSG : '';
+  }
   $('rp-play').onclick = () => {
+    if (bar >= candles.length - 1) return;                  // 未来足が無い＝再生不可（減光中）
     playing = !playing;
     $('rp-play').textContent = playing ? '⏸ 停止' : '▶ 再生';
+    $('rp-play').classList.toggle('rp-playing', playing);   // 再生中は色を変えて状態を明示
     if (playing) playLoop();
   };
-  $('rp-next').onclick = () => drive(bar + 1);
+  $('rp-speed').addEventListener('change', rescheduleFrameWait);  // 再生中の速度変更を即時反映
+
+  // ---- 最新足の足内更新（MT5 モデリング 5 モード相当） ----
+  //   現在の最新足(bar)を、選択モードの足内ティック列で 1 ティックずつ更新（mainSeries.update）。
+  //   指標(TGP帯)は足確定値のまま（頻度分離: 帯=足/判定=足内）＝足内では再フィットしない。
+  const DAY_SECS = 86400;
+  const ANIM_MS = 15;            // 足内更新の描画間隔（再生 fps とは別概念・滑らかさ優先）
+  const ANIM_CAP = 400;          // 足内更新の最大ステップ（間引き上限）
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+  const cap = (arr, n) => {      // 最大 n 点へ間引く。高値/安値(極値)と先頭/末尾は必ず保持する
+                                 //   （極値ティックを捨てると、後段でティックに無い高安が表示される）。
+    if (arr.length <= n) return arr;
+    let iMax = 0, iMin = 0;
+    for (let i = 1; i < arr.length; i++) {
+      if (arr[i] > arr[iMax]) iMax = i;
+      if (arr[i] < arr[iMin]) iMin = i;
+    }
+    const keep = new Set([0, arr.length - 1, iMax, iMin]);   // 先頭/末尾/最高/最安は必ず残す
+    const stride = arr.length / n;
+    for (let k = 0; k < n; k++) keep.add(Math.floor(k * stride));
+    return [...keep].sort((a, b) => a - b).map((i) => arr[i]);
+  };
+  const flattenM1 = (m1) => {    // 各 M1 を O→H→L→C の 4 疑似ティックへ（1分OHLC）
+    const out = [];
+    for (const b of m1) { out.push(b[0], b[1], b[2], b[3]); }
+    return out;
+  };
+  const synthM1 = (m1) => {      // 各 M1 を O→H→L→C の補間で多数化（全ティック合成）
+    const out = [];
+    for (const [o, h, l, c] of m1) { out.push(o, (o + h) / 2, h, (h + l) / 2, l, (l + c) / 2, c); }
+    return out;
+  };
+  async function buildStream(cd, mode) {
+    if (mode === 'open_only') return { prices: [cd.open], note: '始値のみ1更新' };
+    if (mode === 'math') return { prices: [cd.close], note: '終値で1回（足内更新なし）' };
+    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${cd.time}&end=${cd.time + DAY_SECS}`;
+    let resp = {};
+    try { resp = await (await fetch(url)).json(); } catch (_e) { /* noop */ }
+    const m1 = resp.m1 || [], ticks = resp.ticks || [];
+    if (mode === 'real_ticks') {
+      if (ticks.length) return { prices: cap(ticks, ANIM_CAP), note: `実ティック ${ticks.length}点` };
+      if (m1.length) return { prices: cap(flattenM1(m1), ANIM_CAP), note: '実ティック無→M1 OHLC代替' };
+      return { prices: [cd.close], note: '足内データ無→終値のみ' };
+    }
+    if (mode === 'ohlc_1min') {
+      if (m1.length) return { prices: cap(flattenM1(m1), ANIM_CAP), note: `1分OHLC ${m1.length}本` };
+      return { prices: [cd.open, cd.high, cd.low, cd.close], note: 'M1無→日足OHLC4点' };
+    }
+    if (m1.length) return { prices: cap(synthM1(m1), ANIM_CAP), note: '全ティック合成(M1×補間)' };
+    return { prices: [cd.open, cd.high, cd.low, cd.close], note: 'M1無→OHLC4点' };
+  }
+  let animating = false;
+  async function animateForming() {
+    if (animating || !candles.length) return;
+    const cd = candles[bar];
+    if (!cd) return;
+    animating = true;
+    const noteEl = $('rp-anim-note');
+    const mode = $('rp-mode').value;
+    try {
+      // 確定日足のチラ見せ防止: fetch を await する前（同期）に最新足を始値の同事足へ畳む。
+      //   drive() が描いた完成足を、ティック取得待ちの間に見せない（paint 前に上書き）。
+      if (mode !== 'math') {
+        try { mainSeries.update({ time: cd.time, open: cd.open, high: cd.open, low: cd.open, close: cd.open }); } catch (_e) { /* noop */ }
+      }
+      const { prices, note } = await buildStream(cd, mode);
+      if (noteEl) noteEl.textContent = ` ${mode}: ${note}`;
+      let hi = prices[0], lo = prices[0];
+      const o = prices[0];                                 // 始値はティック列の先頭値（ティックに存在する値）
+      for (let i = 0; i < prices.length; i++) {
+        const p = prices[i];
+        hi = Math.max(hi, p); lo = Math.min(lo, p);        // 高安は流れてきたティックの極値のみ
+        try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: p }); } catch (_e) { /* noop */ }
+        await sleepMs(ANIM_MS);
+      }
+      // 足確定: ティック列由来の OHLC で確定する。cd.high/low へはスナップしない
+      //   （日足集計の高安は流したティックに無い値になり得るため＝バグ「存在しない高安」防止）。
+      try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: prices[prices.length - 1] }); } catch (_e) { /* noop */ }
+    } finally { animating = false; }
+  }
+  // 1 足送り＝新しく現れた最新足（playhead）を選択モードで足内形成する。
+  //   最新足の定義は「期間プリセット起点から前進する先頭足」。本当のデータ末尾ではない。
+  $('rp-next').onclick = async () => { await drive(bar + 1); await animateForming(); };
   $('rp-prev').onclick = () => drive(bar - 1);
-  $('rp-first').onclick = () => drive(0);
+  // チャート「表示範囲だけ」を左端/右端へスクロールする（再生位置 bar・スライダー・計算は変えない）。
+  //   現在のズーム幅（可視バー数）を保ったまま、左端=logical 0／右端=最新リビール足(bar+余白)へ寄せる。
+  //   手動閲覧扱い（autoFrame=false）にして、後続フレームが表示を上書きしないようにする（wheel/ドラッグと同義）。
+  function scrollViewTo(edge) {
+    autoFrame = false;
+    try {
+      const r = chart.timeScale().getVisibleLogicalRange();
+      if (!r) return;
+      const width = r.to - r.from;                          // 現在のズーム幅を維持
+      if (edge === 'left') {
+        chart.timeScale().setVisibleLogicalRange({ from: 0, to: width });
+      } else {
+        const to = bar + RIGHT_MARGIN;                      // 右端＝最新リビール足＋余白
+        chart.timeScale().setVisibleLogicalRange({ from: to - width, to });
+      }
+    } catch (_e) { /* レイアウト未確定時は無視 */ }
+  }
+  $('rp-view-left').onclick = () => scrollViewTo('left');
+  $('rp-view-right').onclick = () => scrollViewTo('right');
   $('rp-slider').oninput = (e) => drive(+e.target.value);
   $('rp-follow').onclick = () => {                         // 直近窓追従トグル（OFF=過去全表示／ON=直近窓）
     followOn = !followOn;

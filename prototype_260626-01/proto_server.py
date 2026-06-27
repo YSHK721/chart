@@ -23,6 +23,7 @@ import pandas as pd
 resource.setrlimit(resource.RLIMIT_AS, (3 * 1024**3, 3 * 1024**3))  # price_range_power 等の暴走を catch 可能化
 HERE = Path(__file__).resolve().parent          # prototype_260626-01/
 WEB = HERE / "web"                              # 配信ルート（本番 web/ のコピー）
+TICK_ROOT = HERE.parent / "data" / "marketdata" / "ticks"  # 実ティック parquet（read-only）
 
 # 実バックエンド（indicator_ui api）を読み取り専用 import する。パッケージルートは api/（`from adapter...`）。
 _API = HERE.parent / "indigators" / "indicator_ui" / "api"
@@ -90,6 +91,36 @@ def do_compute(body):
     _log_compute(body, df, series)            # A方式: 入力＋出力を .log に記録
     return series
 
+def do_intraday(ref, start, end):
+    """日足 1 本の区間 [start,end) の足内データを返す（最新足の 5 モード更新用）。
+
+    m1    : 当該日の 1 分足 OHLC 列（dataset を区間スライス）。1分OHLC/全ティック合成の素。
+    ticks : 当該 UTC 日の実ティック parquet の mid 列（~800 点へ間引き）。real_ticks の素。
+    epoch は candle.time と同一エンコード（index.asi8//1e9 == pd.Timestamp(i).timestamp()）。
+    """
+    out = {"ok": True, "m1": [], "ticks": []}
+    try:
+        df = dataset.load_dataframe(ref, "1m")
+        # index は datetime64[us]（tz-naive・UTC扱い）。単位非依存に秒へ変換（candle.time と一致）。
+        secs = df.index.values.astype("datetime64[s]").astype("int64")
+        sub = df[(secs >= start) & (secs < end)]
+        out["m1"] = [[float(r.open), float(r.high), float(r.low), float(r.close)]
+                     for r in sub.itertuples(index=False)]
+    except Exception as e:
+        out["m1_error"] = str(e)[:120]
+    try:
+        d = datetime.fromtimestamp(start, tz=timezone.utc)
+        p = TICK_ROOT / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}" / "JP225_ticks.parquet"
+        if p.is_file():
+            tdf = pd.read_parquet(p, columns=["bidPrice", "askPrice"])
+            mid = ((tdf["bidPrice"] + tdf["askPrice"]) / 2.0).tolist()
+            step = max(1, len(mid) // 800)
+            out["ticks"] = [round(mid[j], 3) for j in range(0, len(mid), step)]
+    except Exception as e:
+        out["ticks_error"] = str(e)[:120]
+    return out
+
+
 class H(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         body = json.dumps(obj).encode()
@@ -114,6 +145,18 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
             return self._json(200, {"ok": True, "candles": cs})
+        if u.path == "/intraday":
+            ref = (q.get("datasetRef") or ["jp225_m1"])[0]
+            try:
+                start = int(q["start"][0]); end = int(q["end"][0])
+            except Exception:
+                return self._json(400, {"error": {"type": "validation", "message": "start/end required"}})
+            if not dataset.is_known(ref):
+                return self._json(400, {"error": {"type": "validation", "message": f"unknown {ref}"}})
+            try:
+                return self._json(200, do_intraday(ref, start, end))
+            except Exception as e:
+                return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
         # 静的配信（web/ 配下のみ・パストラバーサル防止）。
         rel = "index.html" if u.path in ("/", "") else u.path.lstrip("/")
         fp = (WEB / rel).resolve()
