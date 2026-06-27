@@ -16,8 +16,9 @@ from __future__ import annotations
 import sys, json, resource
 from datetime import datetime, timezone
 from pathlib import Path
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+import threading
 import pandas as pd
 
 resource.setrlimit(resource.RLIMIT_AS, (3 * 1024**3, 3 * 1024**3))  # price_range_power 等の暴走を catch 可能化
@@ -93,6 +94,14 @@ def _truncate(df, until):
     if until is None:
         return df
     return df[[int(pd.Timestamp(i).timestamp()) <= until for i in df.index]]
+
+# ThreadingHTTPServer 化に伴う 2 つのスレッド由来リスクを 1 本のロックで封じる:
+#   (1) R(rpy2) は単一インタプリタでスレッド非安全 → /compute の R 呼び出しを直列化。
+#   (2) ティック candles の resample（約4M行→152MiB）/ intraday が並行多重化すると
+#       RLIMIT_AS(3GB) を突破して MemoryError(=チャート 400・ローディング滞留) になる
+#       → 重いデータ処理も同ロックでピークメモリを 1 処理分に抑える。
+# 軽量な静的配信は本ロックを取らないため、重い処理が走っても UI シェルは即時表示できる。
+_HEAVY_LOCK = threading.Lock()
 
 def do_compute(body):
     indicator = body.get("indicatorId")
@@ -181,7 +190,9 @@ class H(BaseHTTPRequestHandler):
             lim = int(q["limit"][0]) if "limit" in q else None
             if ref == "jp225_tick":
                 try:
-                    return self._json(200, {"ok": True, "candles": load_tick_candles(tf, lim)})
+                    with _HEAVY_LOCK:                 # 巨大 resample を直列化（並行多重で OOM 防止）
+                        candles = load_tick_candles(tf, lim)
+                    return self._json(200, {"ok": True, "candles": candles})
                 except Exception as e:
                     return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
             if not dataset.is_known(ref): return self._json(400, {"error": {"type": "validation", "message": f"unknown {ref}"}})
@@ -199,7 +210,9 @@ class H(BaseHTTPRequestHandler):
             if ref != "jp225_tick" and not dataset.is_known(ref):
                 return self._json(400, {"error": {"type": "validation", "message": f"unknown {ref}"}})
             try:
-                return self._json(200, do_intraday(ref, start, end))
+                with _HEAVY_LOCK:                     # ティック読み込み/集計を直列化（OOM 防止）
+                    payload = do_intraday(ref, start, end)
+                return self._json(200, payload)
             except Exception as e:
                 return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
         # 静的配信（web/ 配下のみ・パストラバーサル防止）。
@@ -227,7 +240,8 @@ class H(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(n) or b"{}")
         gen = body.get("generation", 0)
         try:
-            series = do_compute(body)
+            with _HEAVY_LOCK:                    # R(rpy2)非スレッド安全＋メモリのため直列化
+                series = do_compute(body)
         except MemoryError:
             return self._json(400, {"error": {"type": "internal", "message": "memory limit"}})
         except Exception as e:
@@ -237,4 +251,4 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8796
     print(f"prototype_260626-01（本番フロント＋再生）: http://127.0.0.1:{port}/  (Ctrl-C 停止)")
-    HTTPServer(("127.0.0.1", port), H).serve_forever()
+    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
