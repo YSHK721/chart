@@ -46,9 +46,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   let generation = 0;                        // スクラブ等で古い計算結果を破棄する世代番号
   let followOn = false;                       // 直近窓追従トグル（OFF=過去すべて表示／ON=直近 FOLLOW_BARS 本）
   let autoFrame = true;                        // 自動フレーム。ユーザーがチャートを直接操作すると false（手動閲覧）
-  // テスト期間プリセットで選択する再生開始位置。replayStart=区間の開始 bar（playhead のジャンプ先）。
+  // 期間プリセット状態。replayStart=既定窓の開始 bar（減光境界の算出に使用）。
   let replayStart = 0;                        // 既定=全期間（先頭から）
   let activeSecs = null;                      // 選択中プリセットの期間秒（ハイライト用・null=全期間）
+  let activePeriodBars = null;                // 選択中プリセットの可視窓「幅」（バー数）。null=全期間（左端0まで）。
 
   // 期間プリセット境界（再生区間の開始位置）より過去側の背景を減光するプリミティブ（本番無改変・装着のみ）。
   const boundaryDim = new ReplayBoundaryDimPrimitive();
@@ -81,17 +82,21 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   function applyView() {
     if (!autoFrame) return;                  // 手動閲覧中（ユーザーが pan/zoom）は上書きしない＝リセットしない
     try {
-      // playhead(bar) を右端に置く（標準的なリプレイ）。未来は隠れ ▶ で右端に1足ずつ現れる。
-      //   追従 OFF=左端固定(0)で過去すべて表示（リビール）／ON=直近 FOLLOW_BARS 本だけ表示。
-      //   プリセットは開始位置のジャンプを担い、表示モード（追従の有無）とは独立。
-      const from = followOn ? Math.max(0, bar - FOLLOW_BARS) : 0;
-      chart.timeScale().setVisibleLogicalRange({ from, to: bar + RIGHT_MARGIN });
+      // 期間プリセット＝可視窓の「幅」、スライダー(=playhead bar)＝その窓を履歴上でパンする位置。
+      //   窓は [bar-幅, bar] とし、最新リビール足(bar)を常に右端へ置く（左端移動バグなし）。
+      //   スライダーを動かすと窓ごと履歴がスクロール＝期間プリセットとスライダーが連動する。
+      //   直近窓追従(followOn)=固定本数 FOLLOW_BARS の窓。全期間(activePeriodBars=null)=左端0。
+      const width = followOn ? FOLLOW_BARS : activePeriodBars;
+      const from = (width == null) ? 0 : Math.max(0, bar - width);
+      const to = bar + RIGHT_MARGIN;
+      chart.timeScale().setVisibleLogicalRange({ from, to });
     } catch (_e) { /* レイアウト未確定時の単発失敗は無視 */ }
   }
 
-  // 現在の時間足に応じたテスト期間プリセットを #rp-presets に並べる。クリックで「再生区間」を選択：
-  //   playhead を present から期間ぶん遡った開始位置へジャンプし、区間 [開始, present] を枠表示する。
-  //   以降 ▶ で前進再生＝その期間をリプレイ。期間は present 起点で算出するので新足追加でも自動追従。
+  // 現在の時間足に応じたテスト期間プリセットを #rp-presets に並べる。クリックで「直近 N 期間」へズーム：
+  //   可視範囲を [present-N(=replayStart), present] にし、最新足は右端に固定したまま全足リビール。
+  //   （旧実装は playhead を開始位置へジャンプさせ最新足が左端へ移動するバグ＝本修正で解消）。
+  //   期間は present 起点で算出するので新足追加でも自動追従。過去側へは ◀/スライダーで遡れる。
   function renderPresets() {
     const host = $('rp-presets');
     if (!host) return;
@@ -103,11 +108,19 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       btn.onclick = () => {
         activeSecs = secs;
         autoFrame = true;                                  // 明示的な表示操作＝自動フレーム再開
-        const presentTime = candles.length ? candles[candles.length - 1].time : 0;
-        replayStart = (secs == null) ? 0 : idxForTime(presentTime - secs);  // 区間開始 bar（全期間=先頭）
+        const present = candles.length - 1;
+        const presentTime = candles.length ? candles[present].time : 0;
+        replayStart = (secs == null) ? 0 : idxForTime(presentTime - secs);  // 再生位置＝present−期間分
+        activePeriodBars = (secs == null) ? null : (present - replayStart);  // 可視窓の幅（バー数）
+        window.__rpReplayStart = replayStart;              // E2E/verify 用フック（再生位置=present−期間分）
+        // スライダーは全履歴 [0, present] をスクロール。窓幅=プリセットなので、スライダーを動かすと
+        //   幅一定の期間窓が履歴上をパンする＝期間プリセットとスライダーが連動する。
+        $('rp-slider').min = 0;
         syncBoundary();                                    // 過去側の背景減光境界を更新
         renderPresets();
-        drive(replayStart);   // 開始位置へジャンプ（区間を枠表示・足リビール）。以降 ▶ で前進再生。
+        // 再生位置(playhead)を replayStart（present−期間分）へ。ここから ▶ で前進再生。
+        //   可視窓は [bar−幅, bar] なので最新リビール足(=replayStart)は右端（左端移動なし）。
+        drive(replayStart);
       };
       host.appendChild(btn);
     }
@@ -170,7 +183,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   // ---- 時間足ロード / 連続再生 ----
   async function loadTimeframe(tf) {
     timeframe = tf;
-    replayStart = 0; activeSecs = null;                    // 時間足切替で「全期間」へ戻す
+    replayStart = 0; activeSecs = null; activePeriodBars = null;  // 時間足切替で「全期間」へ戻す
     candles = await fetchCandles(tf);
     syncBoundary();                                        // 全期間へ戻る＝減光解除（candles 差替後）
     $('rp-slider').min = 0;
