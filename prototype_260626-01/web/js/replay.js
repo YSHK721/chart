@@ -81,17 +81,22 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   function applyView() {
     if (!autoFrame) return;                  // 手動閲覧中（ユーザーが pan/zoom）は上書きしない＝リセットしない
     try {
-      // playhead(bar) を右端に置く（標準的なリプレイ）。未来は隠れ ▶ で右端に1足ずつ現れる。
-      //   追従 OFF=左端固定(0)で過去すべて表示（リビール）／ON=直近 FOLLOW_BARS 本だけ表示。
-      //   プリセットは開始位置のジャンプを担い、表示モード（追従の有無）とは独立。
-      const from = followOn ? Math.max(0, bar - FOLLOW_BARS) : 0;
-      chart.timeScale().setVisibleLogicalRange({ from, to: bar + RIGHT_MARGIN });
+      // 期間プリセットは「再生区間 [開始(replayStart), present]」を固定枠表示する（設計意図）。
+      //   playhead(bar) は枠内を左→右へ進み、未リビールの右側は ▶ 再生で 1 足ずつ埋まる。
+      //   枠を present 起点で固定するため、スライダー/プリセットで bar を動かしても枠は崩れない
+      //   （旧実装は to=bar 固定で、左スクラブ時に [0, bar] へ激しくズームし「効かない」様に見えた）。
+      //   直近窓追従(followOn)時のみ従来どおり playhead 起点の直近 FOLLOW_BARS 本を追う。
+      const present = candles.length - 1;
+      const from = followOn ? Math.max(0, bar - FOLLOW_BARS) : replayStart;
+      const to = (followOn ? bar : present) + RIGHT_MARGIN;
+      chart.timeScale().setVisibleLogicalRange({ from, to });
     } catch (_e) { /* レイアウト未確定時の単発失敗は無視 */ }
   }
 
-  // 現在の時間足に応じたテスト期間プリセットを #rp-presets に並べる。クリックで「再生区間」を選択：
-  //   playhead を present から期間ぶん遡った開始位置へジャンプし、区間 [開始, present] を枠表示する。
-  //   以降 ▶ で前進再生＝その期間をリプレイ。期間は present 起点で算出するので新足追加でも自動追従。
+  // 現在の時間足に応じたテスト期間プリセットを #rp-presets に並べる。クリックで「直近 N 期間」へズーム：
+  //   可視範囲を [present-N(=replayStart), present] にし、最新足は右端に固定したまま全足リビール。
+  //   （旧実装は playhead を開始位置へジャンプさせ最新足が左端へ移動するバグ＝本修正で解消）。
+  //   期間は present 起点で算出するので新足追加でも自動追従。過去側へは ◀/スライダーで遡れる。
   function renderPresets() {
     const host = $('rp-presets');
     if (!host) return;
@@ -107,7 +112,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         replayStart = (secs == null) ? 0 : idxForTime(presentTime - secs);  // 区間開始 bar（全期間=先頭）
         syncBoundary();                                    // 過去側の背景減光境界を更新
         renderPresets();
-        drive(replayStart);   // 開始位置へジャンプ（区間を枠表示・足リビール）。以降 ▶ で前進再生。
+        drive(candles.length - 1);   // playhead は present（最新足）に固定＝右端。applyView が [replayStart, present] へズーム。
       };
       host.appendChild(btn);
     }
