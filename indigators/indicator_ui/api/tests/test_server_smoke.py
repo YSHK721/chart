@@ -141,6 +141,44 @@ def test_get_candles_unknown_timeframe_returns_400(server):
 
 
 # --------------------------------------------------------------------------- #
+# GET /forming_bar（ライブ形成中バー・ティック由来）
+# --------------------------------------------------------------------------- #
+def test_get_forming_bar_unknown_ref_returns_400(server):
+    status, _ctype, raw = _get(server, "/forming_bar?datasetRef=unknown&timeframe=1D")
+    assert status == 400
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["error"]["type"] == "validation"
+
+
+def test_get_forming_bar_unknown_timeframe_returns_400(server):
+    status, _ctype, raw = _get(server, "/forming_bar?datasetRef=jp225_tick&timeframe=9z")
+    assert status == 400
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["error"]["type"] == "validation"
+
+
+def test_get_forming_bar_unsupported_timeframe_returns_200_null_bar(server):
+    # 1W は固定 floor 不可で非対応 → 200 ok・bar=null（エラーではなく「更新なし」・データ非依存）。
+    status, _ctype, raw = _get(server, "/forming_bar?datasetRef=jp225_tick&timeframe=1W&now=1782505000")
+    assert status == 200
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["bar"] is None
+
+
+def test_get_forming_bar_returns_200_with_ok_and_bar_key(server):
+    # now 注入で 200・{ok, bar} 形を固定（bar は実データ有無で object/null・形のみ検証）。
+    status, _ctype, raw = _get(server, "/forming_bar?datasetRef=jp225_tick&timeframe=1D&now=1782505000")
+    assert status == 200
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["ok"] is True
+    assert "bar" in payload
+    if payload["bar"] is not None:
+        assert set(payload["bar"]) == {"time", "open", "high", "low", "close", "volume"}
+        assert isinstance(payload["bar"]["time"], int)
+
+
+# --------------------------------------------------------------------------- #
 # 静的配信 / パストラバーサル
 # --------------------------------------------------------------------------- #
 def test_get_root_serves_index_html(server):

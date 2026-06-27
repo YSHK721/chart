@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ if str(_API_ROOT) not in sys.path:
     sys.path.insert(0, str(_API_ROOT))
 
 from adapter.compute import dataset  # noqa: E402
+from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
 
 # 静的配信ルート（web/）。api/ → parents[1]=api → parents[2]=indicator_ui → web。
@@ -147,6 +149,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/candles":
             self._handle_candles(parse_qs(parsed.query))
             return
+        if parsed.path == "/forming_bar":
+            self._handle_forming_bar(parse_qs(parsed.query))
+            return
         self._handle_static(parsed.path)
 
     def _handle_candles(self, query: dict[str, list[str]]) -> None:
@@ -168,6 +173,29 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             self._send_json(500, _nested_error("internal", f"candles 取得に失敗しました: {exc}"))
             return
         self._send_json(200, {"ok": True, "candles": candles})
+
+    def _handle_forming_bar(self, query: dict[str, list[str]]) -> None:
+        """GET /forming_bar — 選択 tf の現在「形成中バー」を返す（ライブ足内更新用・読取のみ）。
+
+        ``{ok: True, bar: {time,open,high,low,close,volume} | null}``。対象外 ref/tf・期間内
+        ティック無しは ``bar=null``（エラーではなく「更新なし」）。``now``（UNIX 秒）省略時は実 UTC 現在。
+        """
+        ref = (query.get("datasetRef") or [None])[0]
+        if not dataset.is_known(ref):
+            self._send_json(400, _nested_error("validation", f"未知の datasetRef です: {ref!r}"))
+            return
+        timeframe = (query.get("timeframe") or [None])[0]
+        if timeframe is not None and not dataset.is_known_timeframe(timeframe):
+            self._send_json(400, _nested_error("validation", f"未知の timeframe です: {timeframe!r}"))
+            return
+        now_raw = (query.get("now") or [None])[0]
+        now_unix = int(now_raw) if (now_raw and now_raw.lstrip("-").isdigit()) else int(time.time())
+        try:
+            bar = forming_bar_mod.forming_bar(ref, timeframe, now_unix)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, _nested_error("internal", f"forming_bar 取得に失敗しました: {exc}"))
+            return
+        self._send_json(200, {"ok": True, "bar": bar})
 
     def _handle_static(self, url_path: str) -> None:
         target = _resolve_static(url_path)
