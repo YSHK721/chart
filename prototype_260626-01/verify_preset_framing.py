@@ -60,7 +60,12 @@ async def main():
             await pg.wait_for_timeout(2200)
             bar = int(await pg.evaluate("()=>window.__rpbar"))
             v = await _vis(pg)
+            slider_min = int(await pg.evaluate("()=>+document.getElementById('rp-slider').min"))
             is_all = "全期間" in label
+
+            # 契約0: スライダー(スクロールバー)の作用域が再生スパン開始(replayStart=可視左端)に連動
+            if abs(slider_min - v["f"]) > MARGIN:
+                failures.append(f"[{label}] スライダー未連動: slider.min={slider_min} replayStart(≈vis.from)={v['f']}")
 
             # 契約1: playhead は present に留まる（左端へジャンプしない）
             if bar != present:

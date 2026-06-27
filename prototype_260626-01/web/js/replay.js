@@ -110,9 +110,12 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         autoFrame = true;                                  // 明示的な表示操作＝自動フレーム再開
         const presentTime = candles.length ? candles[candles.length - 1].time : 0;
         replayStart = (secs == null) ? 0 : idxForTime(presentTime - secs);  // 区間開始 bar（全期間=先頭）
+        // スライダー(スクロールバー)の作用域を再生スパン [replayStart, present] へ連動させる。
+        //   以降スライダーはこのスパン内だけをスクラブ＝期間プリセットと連動（全期間は min=0）。
+        $('rp-slider').min = replayStart;
         syncBoundary();                                    // 過去側の背景減光境界を更新
         renderPresets();
-        drive(candles.length - 1);   // playhead は present（最新足）に固定＝右端。applyView が [replayStart, present] へズーム。
+        drive(candles.length - 1);   // 既定 playhead は present（最新足）＝右端・全足リビール。左へスクラブで span 内を遡る。
       };
       host.appendChild(btn);
     }
