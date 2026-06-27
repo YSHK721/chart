@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 import sys, json, resource
+from datetime import datetime, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -29,6 +30,36 @@ sys.path.insert(0, str(_API))
 from adapter.compute import dataset, IndicatorComputeAdapter            # noqa: E402
 from adapter.compute.latest_dispatch import full_compute, latest_compute  # noqa: E402
 ADAPTER = IndicatorComputeAdapter()
+
+# 計算ログ（A方式）: 各 /compute の入力(params・データ窓)＋出力(全系列)を JSON Lines で追記する。
+#   計算式そのもの（演算ステップ）はインジのソースに定義された静的なものなので、ここでは
+#   「どの入力・パラメータで計算し、何が出たか」を一意に再現できる形で記録する。
+#   ※全足OHLC＋全系列を毎フレーム記録するため肥大しやすい。不要時は env LOG_COMPUTE=0 で無効化、
+#     ファイルは compute.log（gitignore 済）。
+LOG_PATH = HERE / "compute.log"
+import os  # noqa: E402
+LOG_ENABLED = os.environ.get("LOG_COMPUTE", "1") != "0"
+
+def _log_compute(body, df, series):
+    if not LOG_ENABLED:
+        return
+    try:
+        bars = [[int(pd.Timestamp(i).timestamp()), float(r.open), float(r.high), float(r.low), float(r.close)]
+                for i, r in df.iterrows()]
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "request": {k: body.get(k) for k in
+                        ("indicatorId", "variant", "params", "datasetRef", "timeframe", "limit", "mode", "untilTime")},
+            "input": {"n": len(bars),
+                      "first_time": bars[0][0] if bars else None,
+                      "last_time": bars[-1][0] if bars else None,
+                      "bars": bars},          # データ窓全て: [time, open, high, low, close]
+            "output": {"series": series},     # 出力全系列: name / kind / data|lines
+        }
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # ログ失敗は計算をブロックしない
 
 def _truncate(df, until):
     if until is None:
@@ -53,8 +84,11 @@ def do_compute(body):
     if len(df) == 0:
         return []
     if body.get("mode") == "latest":
-        return latest_compute(ADAPTER, indicator, variant, df, params)
-    return full_compute(ADAPTER, indicator, variant, df, params)
+        series = latest_compute(ADAPTER, indicator, variant, df, params)
+    else:
+        series = full_compute(ADAPTER, indicator, variant, df, params)
+    _log_compute(body, df, series)            # A方式: 入力＋出力を .log に記録
+    return series
 
 class H(BaseHTTPRequestHandler):
     def _json(self, code, obj):

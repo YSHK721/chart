@@ -12,7 +12,10 @@
     .replay-bar .rp-badge{padding:2px 8px;border-radius:4px;background:#2962ff33;color:#7aa2ff;font-weight:600}
     .replay-bar #rp-slider{flex:1;min-width:200px}
     .replay-bar .on{outline:2px solid #2962ff}
-    .replay-bar #rp-status{color:#8b95a5;margin-left:auto;font-family:ui-monospace,monospace;font-size:12px}
+    /* レンジ・プリセット（時間足別）。期間は t 起点で算出＝新足追従。 */
+    #rp-presets{display:inline-flex;gap:4px}
+    #rp-presets .rp-preset{padding:3px 8px}
+    #rp-presets .rp-preset.on{background:#2962ff;color:#fff;border-color:#2962ff}
   </style>
 </head>
 <body>
@@ -49,8 +52,8 @@
       <button id="rp-next">1足 ▶</button>
       <label>速度<select id="rp-speed"><option>1</option><option selected>2</option><option>5</option></select>fps上限</label>
       <button id="rp-follow">直近窓追従</button>
+      <span id="rp-presets"></span>
       <input id="rp-slider" type="range" min="0" max="0" value="0" />
-      <span id="rp-status">loading…</span>
     </div>
 
     <!-- チャート + クロスヘア価格読み取り欄 + 凡例 -->
