@@ -237,14 +237,20 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     renderPresets();                                       // その時間足のプリセットを再構築
     await drive(candles.length - 1);                       // 開始は present（最新足）＝ライブ同様の表示
   }
-  // 再生速度 s∈[MIN_SPEED,1]（1.00=最速＝追加遅延ゼロ／環境が許す最速。小さいほど遅い＝観察用）。
+  // 再生速度 s∈[0,1]（1.00=最速＝追加遅延ゼロ／環境が許す最速。小さいほど遅い＝観察用。0.00=一時停止）。
   //   テンポ全体（足内アニメ stepMs と足送り間隔 frameMs）を 1/s で引き延ばす（×0.5なら全体2倍ゆっくり）。
-  //   s=0 近傍は MIN_SPEED にクランプ（停止は再生ボタン側・極端な無限待機を防ぐ）。
+  //   s=0 は凍結（ループ側ゲートで保持）。時間計算は effSpeed で MIN_SPEED にクランプ（Infinity 回避）。
   const MIN_SPEED = 0.05;
-  const speed = () => Math.min(1, Math.max(MIN_SPEED, +$('rp-speed').value || 1));
+  // 値の parse は `||1` を使わない（0 は falsy で 0||1=1＝最速に化ける＝「0.00で停止しない」バグの原因）。
+  //   NaN/空のみ既定 1 へ。0 は 0 のまま許容＝一時停止。
+  const speed = () => {
+    const v = parseFloat($('rp-speed').value);
+    return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
+  };
+  const effSpeed = () => Math.max(MIN_SPEED, speed());        // 時間計算用（0除算/Infinity 回避。0保持はゲート側）
   const BASE_FRAME_MS = 50;                                   // s=1（最速）時の足送り間隔。1/s で延伸。
   // 再生フレーム待機。速度を再生中に変えたら即時反映するため、進行中の待機を新速度で組み直す。
-  const frameMs = () => BASE_FRAME_MS / speed();              // 速度 s → フレーム間隔（1/s で減速）
+  const frameMs = () => BASE_FRAME_MS / effSpeed();          // 速度 s → フレーム間隔（1/s で減速・0は別途凍結）
   // ---- 完了予想時間（ETA）。速度/プリセット/モード変更時は即時にモデル推定で表示（<1秒）、
   //   再生中は実測(EMA)で精緻化。実測のみだと遅いモードで最初の1足完了まで数秒 `—` のまま＝タイムラグの原因。 ----
   let emaPeriodMs = null;                                      // 1足あたり実測所要のEMA（null=未計測→モデル推定）
@@ -263,12 +269,13 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
           : ANIM_FINE * PER_POINT_MS;
   // 1足あたり所要のモデル推定: 計算(固定) + (足内アニメ + 足送り間隔)/速度。速度・モードを即時反映。
   const estimatePeriodMs = () =>
-    (lastComputeMs == null ? 50 : lastComputeMs) + (animBaseMs($('rp-mode').value) + BASE_FRAME_MS) / speed();
+    (lastComputeMs == null ? 50 : lastComputeMs) + (animBaseMs($('rp-mode').value) + BASE_FRAME_MS) / effSpeed();
   const setEta = () => {
     const el = $('rp-eta');
     if (!el) return;
     const remain = Math.max(0, (candles.length - 1) - bar);
     if (remain === 0) { el.textContent = '完了予想 —'; return; }
+    if (speed() <= 0) { el.textContent = `完了予想 —（一時停止・残り${remain}足）`; return; }  // 0.00=停止
     const period = (emaPeriodMs == null) ? estimatePeriodMs() : emaPeriodMs;  // 実測優先・無ければ即時モデル
     el.textContent = `完了予想 ${fmtEta(remain * period)}（残り${remain}足）`;
   };
@@ -296,6 +303,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   }
   async function playLoop() {
     while (playing && bar < candles.length - 1) {
+      // 速度0.00=一時停止（凍結）。足を進めず、速度>0 になるか停止されるまで保持する。
+      while (playing && speed() <= 0) await sleepMs(80);
+      if (!playing) break;
       const barStart = performance.now();                     // 1足あたり実測（drive+anim+wait）開始
       let resume = null;
       if (pausedForm && candles[bar] && pausedForm.time === candles[bar].time) {
@@ -489,7 +499,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         hi = Math.max(hi, p); lo = Math.min(lo, p);        // 高安は流れてきたティックの極値のみ
         try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: p }); } catch (_e) { /* noop */ }
         pushFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: p });  // 足内 MA を追従
-        await sleepMs(Math.round(baseStepMs / speed()));     // 再生速度で減速（毎ステップ読込＝速度変更を即時反映）
+        while (speed() <= 0 && !superseded() && !(shouldAbort && shouldAbort())) await sleepMs(80);  // 速度0=凍結（解除/中断まで保持）
+        if (superseded() || (shouldAbort && shouldAbort())) continue;  // 凍結中に中断/置換されたらループ先頭の判定へ
+        await sleepMs(Math.round(baseStepMs / effSpeed()));  // 再生速度で減速（毎ステップ読込＝速度変更を即時反映）
       }
       pausedForm = null;                                   // 完走＝続き情報は破棄
       // 足確定: ティック列由来の OHLC で確定する。cd.high/low へはスナップしない
