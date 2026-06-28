@@ -338,7 +338,9 @@ def _standardize(values: np.ndarray) -> np.ndarray:
     return out
 
 
-def _standardize_causal(values: np.ndarray, window: int) -> np.ndarray:
+def _standardize_causal(
+    values: np.ndarray, window: int, *, freeze_last: bool = False
+) -> np.ndarray:
     """因果ローリング窓で z 化する（look-ahead 除去）。
 
     各バー a の標準化基準（平均・母標準偏差）を **直近 window 本の過去データのみ**
@@ -348,9 +350,25 @@ def _standardize_causal(values: np.ndarray, window: int) -> np.ndarray:
     warm-up（先頭 NaN 区間 ＋ 窓を満たさない区間）は ``NaN``（非描画）。すなわち最初の
     有効点は ``period + window - 1`` 付近（窓が全て有限値で満たされる最初のバー）。
 
+    ``freeze_last``（既定 ``False``）:
+        * ``False``: 上記の通り（既定。出力は 1 ビットも変えない）。
+        * ``True``: **最終要素 ``out[-1]`` のみ** 基準窓を確定足
+          ``[n-1-window .. n-2]``（最終点を除く直前 window 本）へ差し替え、
+          ``z = (v[-1] - mean_prior) / std_prior`` を算出する。``out[0..n-2]`` は
+          ``freeze_last=False`` と完全に同一。形成中（足内）の最新足をティック粒度で
+          評価する際、標準化基準を 1 足 1 回・足内で固定（凍結）する用途。mean/std は
+          本関数の窓内統計（母分散・分母 ``window``）と厳密に同一定義で、最終点だけ窓を
+          ずらした以外は数値が一致する。直前 window 本が満たせない（先頭 NaN 区間を
+          考慮し ``n-1-window < start``、すなわち ``n < start + window + 1``）場合は
+          ``out[-1]=NaN``（warm-up と同様）。``std==0`` 等の縮退時は
+          ``freeze_last=False`` と同じく ``0.0``。``profit_system._causal_z`` の
+          freeze_last と整合する（start=0 のとき条件は ``n < window + 1`` に一致）。
+
     Args:
         values: 乖離系列（先頭 period 本が NaN、以降有限）。
         window: 過去参照本数 W（>=2）。
+        freeze_last: True で最終点の標準化基準を確定足（直前 W 本）へ凍結する。既定
+            False で挙動不変。
 
     Returns:
         因果標準化系列（同長, float64。warm-up は NaN）。
@@ -377,6 +395,19 @@ def _standardize_causal(values: np.ndarray, window: int) -> np.ndarray:
         var = sq / window - mean * mean
         std = np.sqrt(var) if var > 0.0 else 0.0
         out[a] = (v[a] - mean) / std if std > 0.0 else 0.0
+    if freeze_last:
+        # 最終点 out[-1] のみ、基準窓を確定足 [n-1-window .. n-2]（最終点を除く直前
+        # window 本）へ差し替える。out[0..n-2] は上のループ結果のまま不変。
+        lo = n - 1 - window  # 直前 window 本 = v[lo:n-1]（= v[n-1-window .. n-2]）。
+        if lo < start:
+            out[-1] = np.nan  # 直前 window 本が先頭 NaN 区間に掛かる（warmup 同様）。
+        else:
+            s = csum[n - 1] - csum[lo]  # 確定足 v[lo:n-1] の和（window 本）。
+            sq = csq[n - 1] - csq[lo]
+            mean = s / window
+            var = sq / window - mean * mean
+            std = np.sqrt(var) if var > 0.0 else 0.0
+            out[-1] = (v[-1] - mean) / std if std > 0.0 else 0.0
     return out
 
 
@@ -411,6 +442,7 @@ def compute_core_volatility(
     *,
     period: int = DEFAULT_PERIOD,
     window: int | None = None,
+    freeze_last: bool = False,
 ) -> CoreVolatilityResult:
     """本質コア（OHLC4 の対数 period 本変化を標準化した 1 系列）を一括算出する。
 
@@ -427,6 +459,9 @@ def compute_core_volatility(
         open_/high/low/close: OHLC 各系列（昇順・同長・正値）。
         period: 変化をとる足数（既定 6 = 測定幅）。
         window: 標準化窓 W（直近参照本数）。None で全期間バッチ。
+        freeze_last: True かつ ``window is not None`` のとき、最終点の標準化基準を
+            確定足（直前 W 本）に凍結する（``_standardize_causal`` 参照）。
+            ``window=None``（全期間バッチ）経路では無関係（未使用）。既定 False で挙動不変。
 
     Returns:
         CoreVolatilityResult（level_count_clamped / raw_level_count / divergence / levels）。
@@ -444,7 +479,11 @@ def compute_core_volatility(
         )
 
     d = compute_core_divergence(o, h, low_a, c, period=period)
-    z = _standardize(d) if window is None else _standardize_causal(d, window)
+    z = (
+        _standardize(d)
+        if window is None
+        else _standardize_causal(d, window, freeze_last=freeze_last)
+    )
     valid = ~np.isnan(z)
     levels = compute_sigma_levels(z[valid] if valid.any() else np.zeros(1))
     upper = levels["up_329"]
