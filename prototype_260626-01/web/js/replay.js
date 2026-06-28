@@ -416,12 +416,13 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     //   暦/取引週（1W=W-FRI/1M=ME）も正確に表せる（ISSUE-030）。末足のみ次足が無く公称長で近似。
     const next = candles[bar + 1];
     const winEnd = next ? next.time : cd.time + durationSecs(timeframe);
-    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${cd.time}&end=${winEnd}`;
+    // mode を渡す＝実ティック時のみ backend が全ティックを返す（他モードは tick 読込スキップ＝軽量）。
+    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${cd.time}&end=${winEnd}&mode=${encodeURIComponent(mode)}`;
     let resp = {};
     try { resp = await (await fetch(url)).json(); } catch (_e) { /* noop */ }
     const m1 = resp.m1 || [], ticks = resp.ticks || [];
-    if (mode === 'real_ticks') {                            // 細かい（生ティック由来・滑らか）
-      if (ticks.length) return { prices: cap(ticks, ANIM_FINE), note: `実ティック ${ticks.length}点` };
+    if (mode === 'real_ticks') {                            // 接点検証＝全ティック（cap 廃止・間引かない・絶対仕様）
+      if (ticks.length) return { prices: ticks, note: `実ティック ${ticks.length}点（全件）` };
       if (m1.length) return { prices: cap(flattenM1(m1), ANIM_FINE), note: '実ティック無→M1 OHLC代替' };
       return { prices: [cd.close], note: '足内データ無→終値のみ' };
     }

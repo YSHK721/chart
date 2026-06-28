@@ -207,11 +207,13 @@ def _cap_m1_rows(rows, n):
     return [rows[i] for i in sorted(keep)]
 
 
-def do_intraday(ref, start, end):
-    """日足 1 本の区間 [start,end) の足内データを返す（最新足の 5 モード更新用）。
+def do_intraday(ref, start, end, mode="real_ticks"):
+    """足 1 本の区間 [start,end) の足内データを返す（最新足更新用）。
 
-    m1    : 当該日の 1 分足 OHLC 列（dataset を区間スライス）。1分OHLC/全ティック合成の素。
-    ticks : 当該 UTC 日の実ティック parquet の mid 列（~800 点へ間引き）。real_ticks の素。
+    m1    : 区間の 1 分足 OHLC（1分OHLC/全ティック合成の素）。上位足のペイロードは ~1500 行に cap。
+    ticks : 区間の実ティック mid 列（real_ticks の素）。**real_ticks 時のみ全ティック（cap 廃止）を返す**。
+            実ティックの目的＝取引成立の接点検証＝間引かない（日足で確定の絶対仕様・時間足で不変）。
+            他モードは ticks 読込をスキップして軽量に保つ（重くしたくなければ実ティックを選ばない）。
     epoch は candle.time と同一エンコード（index.asi8//1e9 == pd.Timestamp(i).timestamp()）。
     """
     out = {"ok": True, "m1": [], "ticks": []}
@@ -225,6 +227,8 @@ def do_intraday(ref, start, end):
         out["m1"] = _cap_m1_rows(rows, 1500)   # 1D(≤1440)は無変更／1W・1M(数千〜数万)はペイロード抑制
     except Exception as e:
         out["m1_error"] = str(e)[:120]
+    if mode != "real_ticks":
+        return out                       # 他モードは m1 のみで足りる＝tick 読込をスキップ（軽量維持）
     try:
         # 足の期間 [start,end) を跨ぐ全 UTC 日の parquet を走査し、timestamp で窓フィルタする。
         #   旧実装は start の「日」を丸ごと返し窓で絞っていなかった（1D では当日＝期間で偶然正しいが、
@@ -248,7 +252,7 @@ def do_intraday(ref, start, end):
             m = float(mid.median()) if len(mid) else 0.0
             if m > 0:
                 mid = mid[(mid / m - 1.0).abs() <= OUTLIER_THRESHOLD]
-            out["ticks"] = _downsample_keep_extremes(mid.tolist(), 800)
+            out["ticks"] = mid.tolist()   # cap 廃止＝全ティック（接点検証のため間引かない・実ティック専用）
     except Exception as e:
         out["ticks_error"] = str(e)[:120]
     return out
@@ -291,11 +295,12 @@ class H(BaseHTTPRequestHandler):
                 start = int(q["start"][0]); end = int(q["end"][0])
             except Exception:
                 return self._json(400, {"error": {"type": "validation", "message": "start/end required"}})
+            mode = (q.get("mode") or ["real_ticks"])[0]   # 実ティックのみ全ティック返却（他モードは軽量＝tick読込スキップ）
             if ref != "jp225_tick" and not dataset.is_known(ref):
                 return self._json(400, {"error": {"type": "validation", "message": f"unknown {ref}"}})
             try:
                 with _HEAVY_LOCK:                     # ティック読み込み/集計を直列化（OOM 防止）
-                    payload = do_intraday(ref, start, end)
+                    payload = do_intraday(ref, start, end, mode)
                 return self._json(200, payload)
             except Exception as e:
                 return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
