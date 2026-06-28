@@ -14,7 +14,7 @@
 """
 from __future__ import annotations
 import sys, json, resource
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -24,7 +24,6 @@ import pandas as pd
 resource.setrlimit(resource.RLIMIT_AS, (3 * 1024**3, 3 * 1024**3))  # price_range_power 等の暴走を catch 可能化
 HERE = Path(__file__).resolve().parent          # prototype_260626-01/
 WEB = HERE / "web"                              # 配信ルート（本番 web/ のコピー）
-TICK_ROOT = HERE.parent / "data" / "marketdata" / "ticks"  # 実ティック parquet（read-only）
 
 # 実バックエンド（indicator_ui api）を読み取り専用 import する。パッケージルートは api/（`from adapter...`）。
 _API = HERE.parent / "indigators" / "indicator_ui" / "api"
@@ -32,6 +31,9 @@ sys.path.insert(0, str(_API))
 from adapter.compute import dataset, IndicatorComputeAdapter            # noqa: E402
 from adapter.compute.latest_dispatch import full_compute, latest_compute  # noqa: E402
 from marketdata.resample import resample_ohlc, TIMEFRAME_RULES          # noqa: E402（上位足規則・流用）
+# 実ティック窓読み込みは contact_scan.tick_window が唯一の実装源（do_intraday から抽出・bit 一致）。
+#   TICK_ROOT / OUTLIER_THRESHOLD もそこへ移設し、ここからは import で参照する。
+from contact_scan.tick_window import window_ticks, OUTLIER_THRESHOLD    # noqa: E402
 ADAPTER = IndicatorComputeAdapter()
 
 # ---- ティック由来データ（ref="jp225_tick"）: 足も足内更新も同一ティック(mid・UTC)由来に一本化 ----
@@ -41,10 +43,7 @@ TICK_M1_CSV = HERE.parent / "data" / "marketdata" / "jp225_tick_m1.csv"
 _tick_m1: dict = {}
 
 
-# 外れ値補正の許容相対乖離（0.3=±30%）。tools.export_jp225_m1.repair_outlier_rows と同一基準。
-OUTLIER_THRESHOLD = 0.3
-
-
+# OUTLIER_THRESHOLD は contact_scan.tick_window へ移設済み（上で import）。同一基準（0.3=±30%）。
 def _repair_day_outliers(df, threshold: float = OUTLIER_THRESHOLD):
     """日内 close 中央値から OHLC のいずれかが threshold 超で乖離する M1 行を除去する（読み取り時補正）。
 
@@ -230,29 +229,11 @@ def do_intraday(ref, start, end, mode="real_ticks"):
     if mode != "real_ticks":
         return out                       # 他モードは m1 のみで足りる＝tick 読込をスキップ（軽量維持）
     try:
-        # 足の期間 [start,end) を跨ぐ全 UTC 日の parquet を走査し、timestamp で窓フィルタする。
-        #   旧実装は start の「日」を丸ごと返し窓で絞っていなかった（1D では当日＝期間で偶然正しいが、
-        #   1m/1h 等は窓外ティックを全量返す＝ISSUE-029 の 1m 再生バグの実体）。日跨ぎ窓（4h 等）にも対応。
-        frames = []
-        d0 = datetime.fromtimestamp(start, tz=timezone.utc).date()
-        d1 = datetime.fromtimestamp(max(start, end - 1), tz=timezone.utc).date()
-        day = d0
-        while day <= d1:
-            p = TICK_ROOT / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}" / "JP225_ticks.parquet"
-            if p.is_file():
-                frames.append(pd.read_parquet(p, columns=["timestamp", "bidPrice", "askPrice"]))
-            day += timedelta(days=1)
-        if frames:
-            tdf = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
-            # timestamp(UTC, tz-aware) → 秒（m1 と同基準: tz を外して datetime64[s]→int64）。
-            secs = tdf["timestamp"].dt.tz_localize(None).values.astype("datetime64[s]").astype("int64")
-            tdf = tdf[(secs >= start) & (secs < end)]
-            mid = (tdf["bidPrice"] + tdf["askPrice"]) / 2.0
-            # 生ティックも外れ値補正（生 parquet は不変・読み取り時のみ）。窓内 mid 中央値から ±threshold 超を除去。
-            m = float(mid.median()) if len(mid) else 0.0
-            if m > 0:
-                mid = mid[(mid / m - 1.0).abs() <= OUTLIER_THRESHOLD]
-            out["ticks"] = mid.tolist()   # cap 廃止＝全ティック（接点検証のため間引かない・実ティック専用）
+        # 足の期間 [start,end) の実ティック mid 列（接点検証＝全件・cap 無し）。
+        #   ロジックは contact_scan.tick_window.window_ticks に移設（[start,end) 跨ぎ全 UTC 日 parquet
+        #   走査＋timestamp 窓フィルタ＋mid=(bid+ask)/2＋窓内 mid 中央値±threshold 外れ値除去）。
+        #   返り (sec, mid) のうち mid のみ取り出し従来同型（float list・順序・値とも bit 一致）。
+        out["ticks"] = [m for _, m in window_ticks(start, end)]
     except Exception as e:
         out["ticks_error"] = str(e)[:120]
     return out
