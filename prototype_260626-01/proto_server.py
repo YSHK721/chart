@@ -193,6 +193,20 @@ def _downsample_keep_extremes(mid, n):
     return [mid[i] for i in sorted(keep)]      # 丸めない（日足高安＝集計の最大/最小と bit 一致）
 
 
+def _cap_m1_rows(rows, n):
+    """m1 OHLC 行列を最大 n 行へ間引く（上位足 1W/1M の m1 が数千行＝ペイロード肥大を抑制）。
+    先頭/末尾＋窓内の最高高値・最安安値の行は必ず残す（足の高安が消えない）。1D 以下は n 以内で無変更。"""
+    if len(rows) <= n:
+        return rows
+    i_hi = max(range(len(rows)), key=lambda i: rows[i][1])  # high 最大
+    i_lo = min(range(len(rows)), key=lambda i: rows[i][2])  # low 最小
+    keep = {0, len(rows) - 1, i_hi, i_lo}
+    stride = len(rows) / n
+    for k in range(n):
+        keep.add(int(k * stride))
+    return [rows[i] for i in sorted(keep)]
+
+
 def do_intraday(ref, start, end):
     """日足 1 本の区間 [start,end) の足内データを返す（最新足の 5 モード更新用）。
 
@@ -206,8 +220,9 @@ def do_intraday(ref, start, end):
         # index は datetime64[us]（tz-naive・UTC扱い）。単位非依存に秒へ変換（candle.time と一致）。
         secs = df.index.values.astype("datetime64[s]").astype("int64")
         sub = df[(secs >= start) & (secs < end)]
-        out["m1"] = [[float(r.open), float(r.high), float(r.low), float(r.close)]
-                     for r in sub.itertuples(index=False)]
+        rows = [[float(r.open), float(r.high), float(r.low), float(r.close)]
+                for r in sub.itertuples(index=False)]
+        out["m1"] = _cap_m1_rows(rows, 1500)   # 1D(≤1440)は無変更／1W・1M(数千〜数万)はペイロード抑制
     except Exception as e:
         out["m1_error"] = str(e)[:120]
     try:

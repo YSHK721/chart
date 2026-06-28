@@ -227,9 +227,22 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   }
 
   // ---- 時間足ロード / 連続再生 ----
+  // モードUIの時間足連動: その足で縮退するモードを非表示/無効化する（ISSUE-030）。
+  //   1m は m1 細分が縮退（足＝1分＝m1 1本）→「1分OHLC」「全ティック合成」を隠す。実ティック/始値/数学は全足可。
+  function syncModeOptions(tf) {
+    const sel = $('rp-mode');
+    if (!sel) return;
+    const degenerate = (tf === '1m') ? new Set(['ohlc_1min', 'every_tick']) : new Set();
+    for (const opt of sel.options) {
+      const hide = degenerate.has(opt.value);
+      opt.hidden = hide; opt.disabled = hide;
+    }
+    if (degenerate.has(sel.value)) sel.value = 'real_ticks';  // 縮退モード選択中なら有効モードへ退避
+  }
   async function loadTimeframe(tf) {
     timeframe = tf;
     replayStart = 0; activeSecs = null; activePeriodBars = null;  // 時間足切替で「全期間」へ戻す
+    syncModeOptions(tf);                                   // 縮退モードの非表示を時間足に合わせる
     candles = await fetchCandles(tf);
     syncBoundary();                                        // 全期間へ戻る＝減光解除（candles 差替後）
     $('rp-slider').min = 0;
@@ -363,8 +376,8 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   指標(TGP帯)は足確定値のまま（頻度分離: 帯=足/判定=足内）＝足内では再フィットしない。
   // 足内データ窓＝[cd.time, cd.time+durationSecs(tf)) ＝足の期間（ISSUE-029: 旧実装は 1D 固定で
   //   1m/他足が破綻）。1W/1M は暦・巨大ペイロードで別設計（増分2）＝当面 1D 窓で近似。
-  const TF_SECS = { '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1D': 86400 };
-  const durationSecs = (tf) => TF_SECS[tf] || 86400;
+  const TF_SECS = { '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000 };
+  const durationSecs = (tf) => TF_SECS[tf] || 86400;   // 末足の窓近似用（通常は次足境界を使う）
   // 足内更新の粒度はモードで分離する（実ティック=細かい/1分OHLC=粗い）。総時間は固定せず
   //   1ステップ間隔を「点あたり固定 PER_POINT_MS」とする＝総時間＝点数×PER_POINT_MS＝データ密度比例
   //   （速度UIでテンポ調整できるため総時間固定は不要に。密度が再生時間/ETAに反映される）。
@@ -399,7 +412,11 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   async function buildStream(cd, mode) {
     if (mode === 'open_only') return { prices: [cd.open], note: '始値のみ1更新' };
     if (mode === 'math') return { prices: [cd.close], note: '終値で1回（足内更新なし）' };
-    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${cd.time}&end=${cd.time + durationSecs(timeframe)}`;
+    // 足の期間＝次足の開始時刻まで [cd.time, next.time)。固定秒でなく実際の足境界を使うため、
+    //   暦/取引週（1W=W-FRI/1M=ME）も正確に表せる（ISSUE-030）。末足のみ次足が無く公称長で近似。
+    const next = candles[bar + 1];
+    const winEnd = next ? next.time : cd.time + durationSecs(timeframe);
+    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${cd.time}&end=${winEnd}`;
     let resp = {};
     try { resp = await (await fetch(url)).json(); } catch (_e) { /* noop */ }
     const m1 = resp.m1 || [], ticks = resp.ticks || [];
