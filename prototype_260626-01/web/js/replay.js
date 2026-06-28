@@ -412,12 +412,24 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   async function buildStream(cd, mode) {
     if (mode === 'open_only') return { prices: [cd.open], note: '始値のみ1更新' };
     if (mode === 'math') return { prices: [cd.close], note: '終値で1回（足内更新なし）' };
-    // 足の期間＝次足の開始時刻まで [cd.time, next.time)。固定秒でなく実際の足境界を使うため、
-    //   暦/取引週（1W=W-FRI/1M=ME）も正確に表せる（ISSUE-030）。末足のみ次足が無く公称長で近似。
-    const next = candles[bar + 1];
-    const winEnd = next ? next.time : cd.time + durationSecs(timeframe);
+    // 足内窓を足境界から決める。**ラベル規約に依存**（resample 既定）：
+    //   左ラベル(1m..1D・time=期間始端) → [time, 次足)。
+    //   右ラベル(1W=W-FRI/1M=ME・time=期間終端) → [前足+1日, 今足+1日)。ラベルは終端日の00:00だが構成
+    //     週/月は終端日のフル足を含むため +1日。実測でこの窓のみ足OHLCと一致（[今足,次足)は翌週＝1週ズレ）。
+    const DAY = 86400;
+    const rightLabeled = (timeframe === '1W' || timeframe === '1M');
+    let winStart, winEnd;
+    if (rightLabeled) {
+      const prev = candles[bar - 1];
+      winStart = (prev ? prev.time : cd.time - durationSecs(timeframe)) + DAY;
+      winEnd = cd.time + DAY;
+    } else {
+      const next = candles[bar + 1];
+      winStart = cd.time;
+      winEnd = next ? next.time : cd.time + durationSecs(timeframe);
+    }
     // mode を渡す＝実ティック時のみ backend が全ティックを返す（他モードは tick 読込スキップ＝軽量）。
-    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${cd.time}&end=${winEnd}&mode=${encodeURIComponent(mode)}`;
+    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${winStart}&end=${winEnd}&mode=${encodeURIComponent(mode)}`;
     let resp = {};
     try { resp = await (await fetch(url)).json(); } catch (_e) { /* noop */ }
     const m1 = resp.m1 || [], ticks = resp.ticks || [];
