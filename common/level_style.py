@@ -7,5 +7,5 @@ common は numpy のみの純粋層という方針に沿い、外部依存を足
 
 from __future__ import annotations
 
-LEVEL_LINE_WIDTH: int = 1
+LEVEL_LINE_WIDTH: int = 2
 """σ水準線（horizontal_line）の既定線幅。1px。"""
