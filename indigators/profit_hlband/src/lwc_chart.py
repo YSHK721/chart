@@ -38,9 +38,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
+from common import LEVEL_LINE_WIDTH  # noqa: E402
 
 from .hlband import (
     RANGE_COLUMN,
@@ -155,7 +160,7 @@ def add_hlband_separate(
     if draw_levels:
         for key in _LEVEL_KEYS:
             created.append(subchart.horizontal_line(
-                price=float(levels[key]), color=_LEVEL_COLOR, width=1,
+                price=float(levels[key]), color=_LEVEL_COLOR, width=LEVEL_LINE_WIDTH,
                 style="solid", text=key, axis_label_visible=False,
             ))
     return created
@@ -189,7 +194,7 @@ def add_hlband_overlay(
     created: list = []
     for key in _OVERLAY_KEYS:
         created.append(chart.horizontal_line(
-            price=float(bands[key]), color=color, width=1,
+            price=float(bands[key]), color=color, width=LEVEL_LINE_WIDTH,
             style="solid", text=key, axis_label_visible=False,
         ))
     return created

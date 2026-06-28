@@ -18,9 +18,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
+from common import LEVEL_LINE_WIDTH  # noqa: E402
 
 from .core import DEFAULT_MA_MODE, DEFAULT_MA_PERIOD
 from .osi_ma import KAIRI_COLUMN, build_osi_ma, osi_ma_levels
@@ -104,7 +109,7 @@ def add_osi_ma(
     if draw_levels:
         for value in _LEVEL_VALUES:
             created.append(chart.horizontal_line(
-                price=float(value), color=_LEVEL_COLOR, width=1,
+                price=float(value), color=_LEVEL_COLOR, width=LEVEL_LINE_WIDTH,
                 style="dotted", text=f"{value:g}", axis_label_visible=False,
             ))
     return created

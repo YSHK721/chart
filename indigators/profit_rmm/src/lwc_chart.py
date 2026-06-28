@@ -26,7 +26,7 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
-from common import level_colors  # noqa: E402
+from common import LEVEL_LINE_WIDTH, level_colors  # noqa: E402
 
 from . import core
 from .rmm import LEVEL_COUNT_COLUMN, build_rmm, rmm_levels
@@ -120,7 +120,7 @@ def add_rmm(
         for key in _LEVEL_KEYS:
             created.append(
                 chart.horizontal_line(
-                    price=float(levels[key]), color=_LEVEL_COLOR, width=1,
+                    price=float(levels[key]), color=_LEVEL_COLOR, width=LEVEL_LINE_WIDTH,
                     style="solid", text=key, axis_label_visible=False,
                 )
             )

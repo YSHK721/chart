@@ -25,9 +25,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
+from common import LEVEL_LINE_WIDTH  # noqa: E402
 
 from .core import (
     DEFAULT_FAST_EMA,
@@ -155,7 +160,7 @@ def add_mfimacd(
         )
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
-                price=float(levels[key]), color=_LEVEL_COLOR, width=1,
+                price=float(levels[key]), color=_LEVEL_COLOR, width=LEVEL_LINE_WIDTH,
                 style="solid", text=key, axis_label_visible=False,
             ))
     return created

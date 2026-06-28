@@ -29,7 +29,7 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
-from common import level_colors  # noqa: E402
+from common import LEVEL_LINE_WIDTH, level_colors  # noqa: E402
 
 from .oscillator import (
     DEFAULT_PERIOD_A,
@@ -130,7 +130,7 @@ def add_oscillator(
         levels = oscillator_levels(df, period_a=period_a, period_b=period_b, window=window)
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
-                price=float(levels[key]), color=_LEVEL_COLOR, width=1,
+                price=float(levels[key]), color=_LEVEL_COLOR, width=LEVEL_LINE_WIDTH,
                 style="dotted", text=key, axis_label_visible=False,
             ))
     return created
