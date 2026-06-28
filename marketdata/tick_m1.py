@@ -63,6 +63,20 @@ def _validate_ref(ref: str) -> None:
         )
 
 
+def _ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
+    """生ティック frame から ``(timestamp(naive UTC), mid)`` を返す共通前処理（mid/tz の単一規則源）。
+
+    timestamp は tz-aware なら UTC 揃え後に tz を剥がし naive datetime64 へ（全 UTC＝値不変）。
+    mid=(bidPrice+askPrice)/2。:func:`ticks_to_m1`（M1 集計）と :func:`forming_bar_from_ticks`
+    （形成中バー）が共有し、「同一ソース＝書き変わり無し」を構造で保証する（規則の二重定義を避ける）。
+    """
+    ts = pd.to_datetime(ticks["timestamp"])
+    if getattr(ts.dt, "tz", None) is not None:
+        ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+    mid = (ticks["bidPrice"].astype("float64") + ticks["askPrice"].astype("float64")) / 2.0
+    return ts, mid
+
+
 def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
     """生ティック DataFrame を M1 OHLC（mid 基準・UTC 分床）へ集計する純粋関数。
 
@@ -86,11 +100,7 @@ def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
             index=empty_idx,
         )
 
-    ts = pd.to_datetime(ticks["timestamp"])
-    if getattr(ts.dt, "tz", None) is not None:
-        # tz-aware → UTC 揃え後に tz を剥がし naive datetime64 へ（全 UTC＝値不変）。
-        ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
-    mid = (ticks["bidPrice"].astype("float64") + ticks["askPrice"].astype("float64")) / 2.0
+    ts, mid = _ts_and_mid(ticks)
 
     # 時刻順を保証してから分床で groupby（open=最初/close=最終を時刻基準で確定）。
     work = pd.DataFrame({"ts": ts.to_numpy(), "mid": mid.to_numpy()})
@@ -311,6 +321,50 @@ def append_m1_from_ticks(
         return out_path
     _append_m1_csv(m1_new, out_path)
     return out_path
+
+
+def forming_bar_from_ticks(
+    start_unix: int,
+    end_unix: int,
+    *,
+    symbol: str = _DEFAULT_SYMBOL,
+    data_dir: Any = DATA_DIR,
+) -> "dict | None":
+    """``[start_unix, end_unix)`` の実ティックから**形成中バー**（mid OHLCV・1本）を返す。
+
+    ライブの足内更新へ「形成中（in-progress）バー」を供給するための純粋集計。期間内の実ティックを
+    mid=(bid+ask)/2 で集計し、open=最初/high=最大/low=最小/close=最終、volume=ティック数、
+    ``time``=期間始端（``start_unix``）の 1 本（lightweight-charts 形）を返す。期間内にティックが
+    無ければ ``None``。
+
+    引数は UNIX 秒（UTC・整数・半開 ``[start, end)``）。日 partition（``ticks/YYYY/MM/DD``）を跨ぐ
+    場合は該当日 parquet を順に読む（通常 intraday は単一日）。メモリ有界（対象期間の日 parquet の
+    mid 列のみ・全期間ロードしない）。集計規則（mid・open=最初/close=最終・volume=ティック数）は
+    :func:`ticks_to_m1` と一致する（同一ソース由来＝書き変わり無し）。
+    """
+    s = pd.Timestamp(start_unix, unit="s")  # naive UTC wall time
+    e = pd.Timestamp(end_unix, unit="s")
+    if e <= s:
+        return None
+    files = day_parquet_files(s.normalize(), e.normalize(), symbol=symbol, data_dir=data_dir)
+    if not files:
+        return None
+    frames = [pd.read_parquet(p, columns=_TICK_COLUMNS) for p in files]
+    ticks = pd.concat(frames, ignore_index=True)
+    ts, mid = _ts_and_mid(ticks)
+    work = pd.DataFrame({"ts": ts.to_numpy(), "mid": mid.to_numpy()})
+    work = work[(work["ts"] >= s) & (work["ts"] < e)].sort_values("ts", kind="stable")
+    if work.empty:
+        return None
+    m = work["mid"]
+    return {
+        "time": int(start_unix),
+        "open": float(m.iloc[0]),
+        "high": float(m.max()),
+        "low": float(m.min()),
+        "close": float(m.iloc[-1]),
+        "volume": float(len(m)),
+    }
 
 
 def main(argv: List[str] | None = None) -> None:

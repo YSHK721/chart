@@ -162,6 +162,7 @@ def compute_level_count(
     ma_method: int,
     bar_width: float,
     window: int | None = DEFAULT_WINDOW,
+    freeze_last: bool = False,
 ) -> np.ndarray:
     """7 系統の適用価格 iARCTAN を単位変換・加算したレベルカウント系列を返す。
 
@@ -184,7 +185,7 @@ def compute_level_count(
         price = applied_price(kind, open_, high, low, close)
         arc = compute_arctan(price, period=period, ma_method=ma_method, bar_width=bar_width)
         # 元コードでは W のみ initialization=1、残りは 0（加算）。
-        level_count = ps_level_count(arc, level_count, initialization=(k == 0), window=window)
+        level_count = ps_level_count(arc, level_count, initialization=(k == 0), window=window, freeze_last=freeze_last)
     assert level_count is not None
     return level_count
 
@@ -225,6 +226,7 @@ def compute_arctan_full(
     ma_method: int = 1,
     bar_width: float = 0.1,
     window: int | None = DEFAULT_WINDOW,
+    freeze_last: bool = False,
 ) -> ArctanResult:
     """iARCTAN レベルカウント（クランプ済み）を一括算出する。
 
@@ -255,7 +257,8 @@ def compute_arctan_full(
         )
 
     raw = compute_level_count(
-        o, h, low_a, c, period=period, ma_method=ma_method, bar_width=bar_width, window=window
+        o, h, low_a, c, period=period, ma_method=ma_method, bar_width=bar_width, window=window,
+        freeze_last=freeze_last,
     )
     levels = compute_arctan_levels(raw)
     upper = levels["up_329"]

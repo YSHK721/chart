@@ -38,6 +38,7 @@ const MODULE_ORDER = [
   'js/adapter/front/properties_dialog.js',
   'js/adapter/front/indicator_controller.js',
   'js/adapter/front/live_updater.js',
+  'js/adapter/front/forming_bar_updater.js',
   'js/adapter/front/crosshair_readout_view.js',
   'js/adapter/front/pair_primitive_base.js',
   'js/adapter/front/pair_lines_primitive.js',

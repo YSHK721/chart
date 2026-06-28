@@ -33,6 +33,7 @@ from .applied_price import (
     weighted_price,
 )
 from .level_colors import level_colors
+from .level_style import LEVEL_LINE_WIDTH
 
 __all__ = [
     "AppliedPrice",
@@ -46,4 +47,5 @@ __all__ = [
     "weighted_price",
     "ohlc4_price",
     "level_colors",
+    "LEVEL_LINE_WIDTH",
 ]

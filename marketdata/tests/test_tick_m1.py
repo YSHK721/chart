@@ -183,6 +183,39 @@ def test_append_m1_appends_only_new_days_and_equals_full(tmp_path: Path) -> None
     pd.testing.assert_frame_equal(got, expected, check_names=True)
 
 
+def _unix(s: str) -> int:
+    return int(pd.Timestamp(s).tz_localize("UTC").timestamp())
+
+
+def test_forming_bar_aggregates_period_ticks(tmp_path: Path) -> None:
+    # 当日の 09:00 台 5m 窓に 3 tick。形成中バー= mid OHLC・volume=ティック数・time=期間始端。
+    _put_day(tmp_path, (2025, 1, 2), [
+        ("2025-01-02 09:00:10", 100.0, 102.0),  # mid 101 (open)
+        ("2025-01-02 09:02:30", 110.0, 110.0),  # mid 110 (high)
+        ("2025-01-02 09:04:50", 98.0, 100.0),   # mid 99  (low, close)
+        ("2025-01-02 09:06:00", 200.0, 200.0),  # 窓外（>= end）
+    ])
+    bar = tick_m1.forming_bar_from_ticks(
+        _unix("2025-01-02 09:00:00"), _unix("2025-01-02 09:05:00"), data_dir=tmp_path
+    )
+    assert bar == {
+        "time": _unix("2025-01-02 09:00:00"),
+        "open": 101.0, "high": 110.0, "low": 99.0, "close": 99.0, "volume": 3.0,
+    }
+
+
+def test_forming_bar_none_when_no_ticks_in_period(tmp_path: Path) -> None:
+    _put_day(tmp_path, (2025, 1, 2), [("2025-01-02 09:10:00", 100.0, 100.0)])
+    # 期間内（09:00..09:05）にティックが無い → None。
+    assert tick_m1.forming_bar_from_ticks(
+        _unix("2025-01-02 09:00:00"), _unix("2025-01-02 09:05:00"), data_dir=tmp_path
+    ) is None
+    # 当日 parquet 自体が無い日も None。
+    assert tick_m1.forming_bar_from_ticks(
+        _unix("2025-01-03 09:00:00"), _unix("2025-01-03 09:05:00"), data_dir=tmp_path
+    ) is None
+
+
 def test_last_m1_date_variants(tmp_path: Path) -> None:
     p = tmp_path / "jp225_tick_m1.csv"
     assert tick_m1.last_m1_date(p) is None  # 不在。

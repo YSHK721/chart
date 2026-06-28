@@ -29,9 +29,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
+from common import LEVEL_LINE_WIDTH  # noqa: E402
 
 from .core import DEFAULT_WINDOW
 from .hl_band import hl_band_levels
@@ -123,7 +128,7 @@ def add_hl_band(
             chart.horizontal_line(
                 price=float(levels[key]),
                 color=color,
-                width=1,
+                width=LEVEL_LINE_WIDTH,
                 style="solid",
                 text=key,
                 axis_label_visible=False,

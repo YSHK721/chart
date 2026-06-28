@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
-from common import level_colors  # noqa: E402
+from common import LEVEL_LINE_WIDTH, level_colors  # noqa: E402
 
 from .core import DEFAULT_PERIOD, DEFAULT_WINDOW
 from .needle import NEEDLE_COLUMN, build_adx_needle, needle_levels
@@ -112,7 +112,7 @@ def add_adx_needle(
         levels = needle_levels(df, period=period, window=window)
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
-                price=float(levels[key]), color=_LEVEL_COLOR, width=1,
+                price=float(levels[key]), color=_LEVEL_COLOR, width=LEVEL_LINE_WIDTH,
                 style="dotted", text=key, axis_label_visible=False,
             ))
     return created

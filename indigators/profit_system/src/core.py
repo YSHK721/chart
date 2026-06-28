@@ -147,7 +147,7 @@ def _unit_conversion(
     return _normalize(res)
 
 
-def _causal_z(array: np.ndarray, window: int) -> np.ndarray:
+def _causal_z(array: np.ndarray, window: int, *, freeze_last: bool = False) -> np.ndarray:
     """因果ローリング窓の σ 距離（z）を返す（look-ahead 除去）。
 
     各バー i の基準（平均・母標準偏差）を **直近 window 本の過去のみ**（区間
@@ -157,6 +157,18 @@ def _causal_z(array: np.ndarray, window: int) -> np.ndarray:
 
     全期間版の EMA 基準 std（``_ps_std_ema``）は系列長依存・seed バイアスがあるため、
     因果版では窓内の母標準偏差を用いる（忠実移植は放棄済み・統計的に健全な定義）。
+
+    ``freeze_last``（既定 ``False``）:
+        * ``False``: 上記の通り（既定。出力は 1 ビットも変えない）。
+        * ``True``: **最終要素 ``out[-1]`` のみ** 基準窓を確定足
+          ``[n-1-window .. n-2]``（最終点を除く直前 window 本）へ差し替え、
+          ``z = (a[-1] - mean_prior) / std_prior`` を算出する。``out[0..n-2]`` は
+          ``freeze_last=False`` と完全に同一。形成中（足内）の最新足をティック粒度で
+          評価する際、標準化基準を 1 足 1 回・足内で固定（凍結）する用途。
+          mean/std は本関数の窓内統計（母分散・分母 ``window``）と厳密に同一定義で、
+          最終点だけ窓をずらした以外は数値が一致する。直前 window 本が満たせない
+          （``n < window + 1``）場合は ``out[-1]=NaN``（warmup と同様）。``std==0`` 等の
+          縮退時は ``freeze_last=False`` と同じく ``0.0``。
     """
     a = np.asarray(array, dtype=np.float64)
     n = a.size
@@ -171,6 +183,18 @@ def _causal_z(array: np.ndarray, window: int) -> np.ndarray:
         var = (csq[i + 1] - csq[lo]) / window - mean * mean
         std = np.sqrt(var) if var > 0.0 else 0.0
         out[i] = _normalize((a[i] - mean) / std) if std > 0.0 else 0.0
+    if freeze_last:
+        # 最終点 out[-1] のみ、基準窓を確定足 [n-1-window .. n-2]（最終点を除く直前
+        # window 本）へ差し替える。out[0..n-2] は上のループ結果のまま不変。
+        if n < window + 1:
+            out[-1] = np.nan  # 直前 window 本を満たせない（warmup 同様）。
+        else:
+            lo = n - 1 - window  # 直前 window 本 = a[lo:n-1]（= a[n-1-window .. n-2]）。
+            hi = n - 1
+            mean = (csum[hi] - csum[lo]) / window
+            var = (csq[hi] - csq[lo]) / window - mean * mean
+            std = np.sqrt(var) if var > 0.0 else 0.0
+            out[-1] = _normalize((a[-1] - mean) / std) if std > 0.0 else 0.0
     return out
 
 
@@ -182,6 +206,7 @@ def ps_level_count(
     sigma: float = _SIGMA_L6,
     distant: float = _SIGMA_DISTANCE_L6,
     window: int | None = None,
+    freeze_last: bool = False,
 ) -> np.ndarray:
     """元 ``PS_GetLevelCountValue`` 相当（系列を「平均からの σ 距離」へ変換・加算）。
 
@@ -203,6 +228,9 @@ def ps_level_count(
         sigma: バンド σ（既定 3.29 = SIGMA_L6。window 指定時は未使用）。
         distant: 基準距離（既定 329。window 指定時は未使用）。
         window: 因果窓 W（直近参照本数）。None で全期間バッチ。
+        freeze_last: True かつ ``window is not None`` のとき、最終点の標準化基準を
+            確定足（直前 W 本）に凍結する（``_causal_z`` 参照）。``window=None``
+            （全期間バッチ）経路では無関係（未使用）。既定 False で挙動不変。
 
     Returns:
         加算後のレベルカウント配列（array と同長）。
@@ -215,7 +243,7 @@ def ps_level_count(
 
     if window is not None:
         # 因果ローリング窓: 各系列の σ 距離（z）を加算。warm-up は NaN 加算で合算も NaN。
-        return out + _causal_z(a, window)
+        return out + _causal_z(a, window, freeze_last=freeze_last)
 
     avg = _ps_average(a)
     up = _ps_band(a, sigma, _UPSIDE)

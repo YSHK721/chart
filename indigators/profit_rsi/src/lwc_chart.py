@@ -25,9 +25,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
+from common import LEVEL_LINE_WIDTH  # noqa: E402
 
 from .core import DEFAULT_APPLY, DEFAULT_MA_PERIOD, DEFAULT_RSI_PERIOD
 from .rsi import MA_COLUMN, RSI_COLUMN, build_rsi, rsi_levels
@@ -118,7 +123,7 @@ def add_rsi(
         )
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
-                price=float(levels[key]), color=_LEVEL_COLOR, width=1,
+                price=float(levels[key]), color=_LEVEL_COLOR, width=LEVEL_LINE_WIDTH,
                 style="solid", text=key, axis_label_visible=False,
             ))
     return created

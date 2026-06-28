@@ -18,6 +18,7 @@ import { ChartRenderer } from './chart_renderer.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
+import { FormingBarUpdater } from './forming_bar_updater.js';
 import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
@@ -59,6 +60,28 @@ async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe = null, 
   }
 }
 
+// GET /forming_bar?datasetRef=&timeframe= で選択 tf の「現在期間の形成中バー」を取得する（B方式）。
+//   応答 {ok, bar:{time,open,high,low,close,volume}|null}。対象外/ティック無し/失敗時は null。
+async function fetchFormingBar(fetchImpl, datasetRef, timeframe) {
+  if (typeof fetchImpl !== 'function') {
+    return null;
+  }
+  try {
+    let url = `/forming_bar?datasetRef=${encodeURIComponent(datasetRef)}`;
+    if (timeframe) {
+      url += `&timeframe=${encodeURIComponent(timeframe)}`;
+    }
+    const resp = await fetchImpl(url);
+    if (!resp.ok) {
+      return null;
+    }
+    const payload = await resp.json();
+    return payload && payload.ok ? payload.bar : null;
+  } catch {
+    return null;
+  }
+}
+
 // グローバル LightweightCharts（bundled JS が window へ公開）を引数で受け取り、
 // チャート + ローソク系列を生成して ChartRenderer に渡す。
 // served（http://）時は ComputeHttpClient + /candles、file:// 時は EmbeddedComputeGateway + SAMPLE_DATA。
@@ -85,6 +108,8 @@ export async function bootstrap({
   clearInterval: clearIntervalImpl = (typeof globalThis !== 'undefined' ? globalThis.clearInterval.bind(globalThis) : undefined),
   // ライブ更新間隔（ms・既定 60 秒）。テストで差し替え可能。
   liveIntervalMs = 60000,
+  // 形成中バー（最新足の足内更新）のポーリング間隔。インジ再計算とは分離（高頻度・価格のみ）。
+  formingIntervalMs = 5000,
 } = {}) {
   const mode = modeForProtocol(protocol);
 
@@ -181,6 +206,25 @@ export async function bootstrap({
       })
     : null;
 
+  // 形成中バー（最新足の足内更新）の組み立て。served（B方式）のみ。/forming_bar から選択 tf の
+  //   形成中バーを取得し、(1) renderer.updateLastCandle で価格の最新足を反映、(2) 指標も
+  //   recomputeAllApplied({mode:'latest'}) で最新点をティック由来に再計算する（backend が
+  //   mode=latest 時に形成中バーを最新足として計算へ織り込む）。LiveUpdater(60s) との分離の実体は
+  //   「/candles 全件再取得(Live) vs /forming_bar(Forming)」であり、指標再計算はどちらも latest。
+  //   start は入口（index.html）が served 時のみ呼ぶ。
+  const formingBarUpdater = (mode === 'b')
+    ? new FormingBarUpdater({
+        controller,
+        renderer,
+        loadFormingBar: (ref, tf) => fetchFormingBar(fetch, ref, tf),
+        datasetRef,
+        getTimeframe: () => controller._timeframe,
+        setInterval: setIntervalImpl,
+        clearInterval: clearIntervalImpl,
+        intervalMs: formingIntervalMs,
+      })
+    : null;
+
   // Trade Markers renderer（売買マーカー重畳）の組み立て。副作用 fetch は増やさず renderer を
   //   返すのみ（load トリガは入口 index.html が ready 後に呼ぶ＝既存 candles 経路に非干渉）。
   //   chart も渡し、可視時間範囲を購読して範囲内マーカーのみ描画する（§9 Fix v3・左端クランプ列の除去）。
@@ -198,5 +242,5 @@ export async function bootstrap({
   tradeMarkers.setCurrentTimeframe(timeframe);
   controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
 
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers };
 }

@@ -28,6 +28,20 @@ function isTailUpdatable(payload) {
   return payload.kind === 'line' || payload.kind === 'histogram';
 }
 
+// [PROTO 再生] 足内（ティック粒度）追従の対象指標。形成中バーを末尾へ差し込み、line/histogram の
+//   最終点だけを updateSeriesTail で更新する（horizontal_line の水準線は据え置き）。移動平均に加え、
+//   標準化窓を持たない profit_* 8 指標を対象とする（混在 kind は forceTail で末尾差分経路へ倒す）。
+const INTRABAR_FORMING_IDS = new Set([
+  'moving_averages',
+  'profit_mfi', 'profit_rsi', 'profit_stc', 'profit_oscillator2',
+  'profit_osi_ma', 'profit_hlband', 'profit_mfi_macd', 'profit_rsi_macd',
+  // 標準化窓 W を持つ profit_* のうち、本体（line/histogram）を持つ 6 指標を追加（推奨A）。
+  //   因果窓ゆえ過去点は repaint せず、最新点のみ forming で動く（実証済み）。profit_hl_band は
+  //   horizontal_line のみ（アニメ可能な本体なし）のため対象外＝末尾差分では動かない。
+  'profit_adx_needle', 'profit_arctan', 'profit_oscillator',
+  'profit_rmm', 'profit_volatility', 'profit_rmm_macd',
+]);
+
 export class IndicatorController {
   // mode: 計算モード。'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算）。
   //   既定 'a'（従来挙動・単体テスト互換）。composition root が served 判定で 'b' を注入する。
@@ -69,11 +83,43 @@ export class IndicatorController {
     // [PROTO 再生] untilTime（再生のその時点・UNIX秒）。undefined=ライブ（present）。
     //   setUntilTime で設定し、_gatewayAdapter の compute へ素通しする。
     this._untilTime = undefined;
+    // [PROTO 再生] forming（足内更新中の形成中バー暫定 OHLC）。undefined=確定足のまま計算。
+    //   setForming で設定し、_gatewayAdapter の compute へ素通しする（latest 経路でのみ backend が使用）。
+    this._forming = undefined;
   }
 
   // [PROTO 再生] untilTime を設定（以降の再計算がこの時点で計算される＝ライブ同一・df[:t+1]）。
   setUntilTime(t) {
     this._untilTime = t;
+  }
+
+  // [PROTO 再生] 形成中バー（暫定 OHLC）を設定。undefined で解除（確定足計算へ戻す）。
+  setForming(forming) {
+    this._forming = forming;
+  }
+
+  // [PROTO 再生] 足内更新: 形成中バーを差し込み、対象指標（INTRABAR_FORMING_IDS）の末尾点のみ
+  //   latest 差分再計算する。混在 kind（line+horizontal_line）でも forceTail=true で末尾差分経路へ
+  //   倒し、line/histogram の最終点のみ更新（水準線は据え置き＝履歴潰れなし）。tgp 帯等の対象外は
+  //   足確定値のまま（頻度分離 帯=足/判定=足内）＝触らない。forming 解除は finally で必ず行い、
+  //   後続の確定足計算に formingを残さない。
+  async recomputeFormingLatest(forming) {
+    this.setForming(forming);
+    try {
+      for (const inst of [...this._state.applied]) {
+        if (!INTRABAR_FORMING_IDS.has(inst.indicatorId)) {
+          continue;                                        // 足内 latest 対象外（帯系等）は触らない
+        }
+        if (!this._meta.has(inst.instanceId)) {
+          continue;
+        }
+        await this.recomputeInstance(
+          inst.instanceId, null, this._paramsObject(inst.params), { mode: 'latest', forceTail: true },
+        );
+      }
+    } finally {
+      this.setForming(undefined);                          // 確定計算へ formingを残さない
+    }
   }
 
   // 競合ガード: 再計算バッチ実行中なら true。LiveUpdater が tick 先頭で参照しスキップ判定する。
@@ -195,8 +241,8 @@ export class IndicatorController {
   // UC-03 再計算（設定変更・variant 切替）: generation 競合破棄は facade.recompute に集約（§6.6）。
   //   opts.mode='latest' は Latest 増分計算（gateway へ mode 伝播・末尾K点を updateSeriesTail へ
   //   差分反映し remove+_draw の全描画はしない）。既定 'full' は従来どおり remove+redraw。
-  async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full' } = {}) {
-    const job = await this._computeInstance(instanceId, newVariant, newParams, { mode });
+  async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
+    const job = await this._computeInstance(instanceId, newVariant, newParams, { mode, forceTail });
     if (!job || !job.accepted) {
       return job ? job.accepted : false;
     }
@@ -212,7 +258,7 @@ export class IndicatorController {
   //   _renderInstance を await を挟まない同期パスで呼び、中間ペイント（バラバラ更新）を防ぐ。
   //   ※ this._lastSeries は gateway compute が上書きする共有フィールドのため、compute 直後に
   //     job へ確保する（描画まで遅延すると次指標の series で上書きされ取り違える）。
-  async _computeInstance(instanceId, newVariant, newParams, { mode = 'full' } = {}) {
+  async _computeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
     const meta = this._meta.get(instanceId);
     if (!meta) {
       return null;
@@ -224,7 +270,10 @@ export class IndicatorController {
     const params = newParams ?? this._defaultParams(meta.def);
     // Latest 差分可否を「要求前」に def から確定する（混在/horizontal 指標は full を要求し
     //   trim されない full データで全描画する＝混在バグ回避）。
-    const wantLatest = mode === 'latest' && this._defCanTailUpdate(meta.def);
+    //   forceTail=true（[PROTO 再生] 足内追従）は混在指標でも末尾差分（updateSeriesTail）経路へ
+    //   倒す。末尾差分は既存系列の最終点のみ更新し horizontal_line は据え置くため、全差替の
+    //   履歴潰れ（🔴 回帰 indicator_controller_latest）は起きない。前提＝直前に full 描画済み。
+    const wantLatest = mode === 'latest' && (forceTail || this._defCanTailUpdate(meta.def));
     const gateway = this._gatewayAdapter(newVariant, wantLatest ? 'latest' : 'full');
     // 競合ガード: 再計算中は isRecomputing()=true（ライブ更新の tick がスキップ判定に参照）。
     //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
@@ -518,6 +567,8 @@ export class IndicatorController {
           mode: mode === 'latest' ? 'latest' : undefined,
           // [PROTO 再生] untilTime を素通し（undefined=ライブ present）。
           untilTime: self._untilTime,
+          // [PROTO 再生] forming（足内更新の形成中バー）を素通し（undefined=確定足のまま）。
+          forming: self._forming,
         });
         self._lastSeries = result.series;
         return result;

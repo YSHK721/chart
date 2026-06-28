@@ -124,7 +124,9 @@ def oscillator_span(x: np.ndarray, *, clamp: bool) -> float:
     return x3p - x3m
 
 
-def rolling_span(x: np.ndarray, window: int, *, clamp: bool) -> np.ndarray:
+def rolling_span(
+    x: np.ndarray, window: int, *, clamp: bool, freeze_last: bool = False
+) -> np.ndarray:
     """``oscillator_span`` の因果ローリング版（profit_rmm の verbatim 複製）。
 
     バー i のスパンを区間 ``[i-window+1, i]`` の平均・母標準偏差から
@@ -132,10 +134,24 @@ def rolling_span(x: np.ndarray, window: int, *, clamp: bool) -> np.ndarray:
     ため確定バーのスパン＝レベルカウントは repaint しない。warm-up（``i<window-1``）は
     ``NaN``。
 
+    ``freeze_last``（既定 ``False``）:
+        * ``False``: 上記の通り（既定。出力は 1 ビットも変えない）。
+        * ``True``: **最終要素 ``out[-1]`` のみ** 基準窓を確定足
+          ``[n-1-window .. n-2]``（最終点を除く直前 window 本）へ差し替えてスパンを
+          算出する。``out[0..n-2]`` は ``freeze_last=False`` と完全に同一。形成中（足内）
+          の最新足をティック粒度で採点する際、スパン（採点の分母）の基準を 1 足 1 回・
+          足内で固定（凍結）する用途。平均・母標準偏差・分母 ``window``・クランプは
+          本関数の既存定義と厳密に同一で、最終点だけ窓をずらした以外は数値が一致する。
+          直前 window 本が満たせない（``n < window + 1``）場合は ``out[-1]=NaN``
+          （warm-up と同様）。これは ``profit_system._causal_z`` の freeze_last と整合する。
+          （profit_rmm.rolling_span の freeze_last と verbatim 複製で同一実装。）
+
     Args:
         x: 対象オシレーター系列。
         window: 過去参照本数 W（>=2）。
         clamp: True で各端を [0,100] にクランプ（RSI/WPR/MFI）、False で素値（MAROD）。
+        freeze_last: True で最終点のスパン基準を確定足（直前 W 本）へ凍結する。既定
+            False で挙動不変。
 
     Returns:
         各バーのスパン（同長, float64。warm-up は NaN）。
@@ -158,6 +174,23 @@ def rolling_span(x: np.ndarray, window: int, *, clamp: bool) -> np.ndarray:
             x3p = min(100.0, x3p)
             x3m = max(0.0, x3m)
         out[i] = x3p - x3m
+    if freeze_last:
+        # 最終点 out[-1] のみ、基準窓を確定足 [n-1-window .. n-2]（最終点を除く直前
+        # window 本）へ差し替える。out[0..n-2] は上のループ結果のまま不変。
+        if n < window + 1:
+            out[-1] = np.nan  # 直前 window 本を満たせない（warmup 同様）。
+        else:
+            lo = n - 1 - window  # 直前 window 本 = a[lo:n-1]（= a[n-1-window .. n-2]）。
+            hi = n - 1  # csum 上限 index（確定足 a[lo:n-1] の和 = csum[hi]-csum[lo]）。
+            avg = (csum[hi] - csum[lo]) / window
+            var = (csq[hi] - csq[lo]) / window - avg * avg
+            dev = np.sqrt(var) if var > 0.0 else 0.0
+            x3p = avg + 3.0 * dev
+            x3m = avg - 3.0 * dev
+            if clamp:
+                x3p = min(100.0, x3p)
+                x3m = max(0.0, x3m)
+            out[-1] = x3p - x3m
     return out
 
 
@@ -176,6 +209,7 @@ def compute_rmm_level_count(
     osc_period: int = DEFAULT_OSC_PERIOD,
     ma_period: int = DEFAULT_MA_PERIOD,
     window: int | None = DEFAULT_WINDOW,
+    freeze_last: bool = False,
 ) -> np.ndarray:
     """iRSI / iWPR / iMFI / MAROD を funLevelCount で採点・合算した level_count を返す。
 
@@ -191,6 +225,9 @@ def compute_rmm_level_count(
         osc_period: オシレーター期間（既定 6、>=2）。
         ma_period: EMA 期間（既定 6）。
         window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
+        freeze_last: True かつ ``window is not None`` のとき、最終点のスパン基準
+            （採点の分母）を確定足（直前 W 本）に凍結する（``rolling_span`` 参照）。
+            ``window=None`` 経路では無関係（未使用）。既定 False で挙動不変。
 
     Returns:
         level_count 系列（入力と同長・float64。因果版 warm-up は NaN）。
@@ -229,10 +266,10 @@ def compute_rmm_level_count(
         mfi_span = np.full(n, oscillator_span(mfi, clamp=True))
         marod_span = np.full(n, oscillator_span(marod, clamp=False))
     else:
-        rsi_span = rolling_span(rsi, window, clamp=True)
-        wpr_span = rolling_span(wpr, window, clamp=True)
-        mfi_span = rolling_span(mfi, window, clamp=True)
-        marod_span = rolling_span(marod, window, clamp=False)
+        rsi_span = rolling_span(rsi, window, clamp=True, freeze_last=freeze_last)
+        wpr_span = rolling_span(wpr, window, clamp=True, freeze_last=freeze_last)
+        mfi_span = rolling_span(mfi, window, clamp=True, freeze_last=freeze_last)
+        marod_span = rolling_span(marod, window, clamp=False, freeze_last=freeze_last)
 
     level_count = np.zeros(n, dtype=np.float64)
     for i in range(n):
@@ -362,6 +399,7 @@ def compute_rmmmacd(
     slow: int = DEFAULT_SLOW_EMA,
     signal: int = DEFAULT_SIGNAL_EMA,
     window: int | None = DEFAULT_WINDOW,
+    freeze_last: bool = False,
 ) -> RmmMacdResult:
     """level_count → fast/slow EMA → macd(=slow-fast) → signal EMA →
     histogram(=macd-signal・係数なし) を統合し RmmMacdResult（frozen DTO）を返す。
@@ -395,6 +433,11 @@ def compute_rmmmacd(
         slow: SlowEMA 期間（既定 8）。
         signal: SignalEMA 期間（既定 4）。
         window: 標準化窓 W（既定 120＝因果。None で全期間バッチ）。
+        freeze_last: True かつ ``window is not None`` のとき、level_count の最終点の
+            スパン基準を確定足（直前 W 本）に凍結する（``compute_rmm_level_count`` /
+            ``rolling_span`` 参照）。凍結により最終点の level_count が変わると、その点を
+            入力とする fast/slow/macd/signal/histogram の最終点も EMA 連鎖で追従する
+            （ただし標準化窓の凍結は level_count の最終点のみ）。既定 False で挙動不変。
 
     Returns:
         RmmMacdResult（level_count/fast/slow/macd/signal/histogram。因果版 warm-up
@@ -406,6 +449,7 @@ def compute_rmmmacd(
     level_count = compute_rmm_level_count(
         high, low, close, volume,
         osc_period=osc_period, ma_period=ma_period, window=window,
+        freeze_last=freeze_last,
     )
 
     # EMA 開始位置 = level_count の最初の有限 index。warm-up NaN を EMA に入れない

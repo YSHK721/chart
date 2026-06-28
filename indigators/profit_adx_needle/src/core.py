@@ -173,7 +173,7 @@ def compute_adx(
 
 def compute_level_count(
     high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = DEFAULT_PERIOD,
-    *, window: int | None = DEFAULT_WINDOW,
+    *, window: int | None = DEFAULT_WINDOW, freeze_last: bool = False,
 ) -> np.ndarray:
     """7 系統の適用価格 ADX を単位変換・加算したレベルカウント系列を返す。
 
@@ -194,7 +194,7 @@ def compute_level_count(
     res: np.ndarray | None = None
     for k, _name in enumerate(APPLIED_PRICES):
         # 元コードでは W のみ initialization=1、残りは 0（加算）。
-        res = ps_level_count(adx, res, initialization=(k == 0), window=window)
+        res = ps_level_count(adx, res, initialization=(k == 0), window=window, freeze_last=freeze_last)
     assert res is not None
     return res
 
@@ -228,7 +228,7 @@ class AdxNeedleResult:
 
 def compute_adx_needle(
     high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = DEFAULT_PERIOD,
-    *, window: int | None = DEFAULT_WINDOW,
+    *, window: int | None = DEFAULT_WINDOW, freeze_last: bool = False,
 ) -> AdxNeedleResult:
     """ADX_NEEDLE のヒストグラム（クランプ済みレベルカウント）を一括算出する。
 
@@ -248,7 +248,7 @@ def compute_adx_needle(
         ValueError: 配列長不一致・空・period<=0 の場合。
     """
     adx = compute_adx(high, low, close, period)
-    level = compute_level_count(high, low, close, period, window=window)
+    level = compute_level_count(high, low, close, period, window=window, freeze_last=freeze_last)
     levels = compute_sigma_levels(level)
     upper = levels["up_329"]
     lower = levels["dn_329"]

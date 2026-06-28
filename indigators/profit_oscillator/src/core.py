@@ -238,6 +238,7 @@ def compute_level_count(
     period_a: int = DEFAULT_PERIOD_A,
     period_b: int = DEFAULT_PERIOD_B,
     window: int | None = DEFAULT_WINDOW,
+    freeze_last: bool = False,
 ) -> np.ndarray:
     """18 系列（IC01..IC05）を順序厳守で加算したレベルカウント系列を返す。
 
@@ -266,26 +267,26 @@ def compute_level_count(
     # IC01: RSI × 7（applied price 順 W→T→M→H→L→O→C）。IC01_W が initialization。
     for kind in _APPLIED_PRICE_ORDER:
         rsi = compute_rsi(applied_price(kind, o, h, l, c), period=period_a)
-        level_count = ps_level_count(rsi, level_count, initialization=first, window=window)
+        level_count = ps_level_count(rsi, level_count, initialization=first, window=window, freeze_last=freeze_last)
         first = False
 
     # IC02: Stochastic main / signal（slowing=1/Dperiod=1 で両者とも生 %K）。
     stoch = compute_stochastic(h, l, c, period=period_a)
-    level_count = ps_level_count(stoch, level_count, initialization=False, window=window)  # main
-    level_count = ps_level_count(stoch, level_count, initialization=False, window=window)  # signal
+    level_count = ps_level_count(stoch, level_count, initialization=False, window=window, freeze_last=freeze_last)  # main
+    level_count = ps_level_count(stoch, level_count, initialization=False, window=window, freeze_last=freeze_last)  # signal
 
     # IC03: MFI × 1。
     mfi = compute_mfi(h, l, c, v, period=period_a)
-    level_count = ps_level_count(mfi, level_count, initialization=False, window=window)
+    level_count = ps_level_count(mfi, level_count, initialization=False, window=window, freeze_last=freeze_last)
 
     # IC04: RVI × 1。
     rvi = compute_rvi(o, h, l, c, period=period_a)
-    level_count = ps_level_count(rvi, level_count, initialization=False, window=window)
+    level_count = ps_level_count(rvi, level_count, initialization=False, window=window, freeze_last=freeze_last)
 
     # IC05: MARD × 7（applied price 順 W→T→M→H→L→O→C）。
     for kind in _APPLIED_PRICE_ORDER:
         mard = compute_mard(o, h, l, c, period=period_b, applied=kind)
-        level_count = ps_level_count(mard, level_count, initialization=False, window=window)
+        level_count = ps_level_count(mard, level_count, initialization=False, window=window, freeze_last=freeze_last)
 
     assert level_count is not None
     return level_count
@@ -327,6 +328,7 @@ def compute_oscillator_full(
     period_a: int = DEFAULT_PERIOD_A,
     period_b: int = DEFAULT_PERIOD_B,
     window: int | None = DEFAULT_WINDOW,
+    freeze_last: bool = False,
 ) -> OscillatorResult:
     """18 系列レベルカウント（クランプ済み）を一括算出する。
 
@@ -360,7 +362,7 @@ def compute_oscillator_full(
     if period_b < 2:
         raise ValueError(f"period_b は 2 以上である必要があります: {period_b}")
 
-    raw = compute_level_count(o, h, l, c, v, period_a=period_a, period_b=period_b, window=window)
+    raw = compute_level_count(o, h, l, c, v, period_a=period_a, period_b=period_b, window=window, freeze_last=freeze_last)
     levels = compute_oscillator_levels(raw)
     upper = levels["up_329"]
     lower = levels["dn_329"]
