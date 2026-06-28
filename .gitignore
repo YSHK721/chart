@@ -195,3 +195,6 @@ simulator/tests/fixtures/**/.DS_Store
 # 突合検証用の使い捨て生データ・スクリプト（大容量・コミット対象外）
 simulator/tests/confirmation/
 simulator/tests/260620-01/
+
+# コンタクトスキャン検証成果物（生成物・コミット対象外）
+prototype_260626-01/analysis/out/
