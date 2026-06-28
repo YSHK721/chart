@@ -69,6 +69,22 @@ async def main():
         if not (n_rt >= 2 * n_oh):
             failures.append(f"実ティックと1分OHLCの粒度が分離されていない: 実ティック={n_rt} 1分OHLC={n_oh}")
 
+        # --- (A3) 始値モードの足内アニメが激遅でない（1点なのに総時間スリープする退行の禁止） ---
+        import time as _t
+        try:
+            await pg.wait_for_function("()=>window.__rpAnimating!==true", timeout=8000)
+        except Exception:
+            pass
+        await pg.select_option("#rp-mode", "open_only")
+        _t0 = _t.perf_counter()
+        await pg.click("#rp-next")
+        await pg.wait_for_function("()=>window.__rpAnimating===true", timeout=8000)
+        await pg.wait_for_function("()=>window.__rpAnimating!==true", timeout=15000)
+        open_ms = (_t.perf_counter() - _t0) * 1000
+        print(f"  始値モード 足内アニメ所要 ≈ {open_ms:.0f} ms（上限クランプで <1000ms のはず）")
+        if open_ms >= 1000:
+            failures.append(f"始値モードが激遅: {open_ms:.0f}ms（1点で総時間スリープの退行）")
+
         # --- (B) 形成中の切替が握り潰されない（supersede） ---
         try:
             await pg.wait_for_function("()=>window.__rpAnimating!==true", timeout=8000)

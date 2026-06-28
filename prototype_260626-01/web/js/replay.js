@@ -260,10 +260,12 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   const DAY_SECS = 86400;
   // 足内更新の粒度はモードで分離する（実ティック=細かい/1分OHLC=粗い）。1足の総アニメ時間は
   //   点数に依らず ANIM_TOTAL_MS で一定化し、1ステップ間隔=総時間/点数（点数が多いほど滑らか）。
-  const ANIM_TOTAL_MS = 5000;    // 1足の足内更新の総時間（実ティックも1分OHLCも約5s）
+  const ANIM_TOTAL_MS = 5000;    // 多点モードの足内更新の目安総時間（点数×1ステップ間隔の上限）
   const ANIM_FINE = 800;         // 実ティック/全ティック合成の上限（細かい・滑らか）
   const ANIM_COARSE = 200;       // 1分OHLC の上限（粗い・分足ステップが見える）
   const ANIM_MIN_MS = 5;         // 1ステップ最小間隔（速すぎ防止）
+  const ANIM_STEP_MAX_MS = 40;   // 1ステップ最大間隔。少点モード(始値=1点)が総時間で間延びするのを防ぐ
+                                 //   （上限なしだと 5000ms/点 で始値が1点=5秒スリープになり激遅になる）。
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   const cap = (arr, n) => {      // 最大 n 点へ間引く。高値/安値(極値)と先頭/末尾は必ず保持する
                                  //   （極値ティックを捨てると、後段でティックに無い高安が表示される）。
@@ -344,9 +346,11 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         o = prices[0]; hi = prices[0]; lo = prices[0]; startI = 0;  // 始値はティック列の先頭値
       }
       window.__rpForm = { mode, n: prices.length };         // E2E/verify 用フック（モード別ストリーム確認）
-      // 総時間一定: 1ステップ間隔 = ANIM_TOTAL_MS / 点数。点数が多い実ティックほど滑らか、
-      //   少ない1分OHLC ほどカクカク（＝粒度がモードで分離・同程度の所要時間）。
-      const stepMs = Math.max(ANIM_MIN_MS, Math.round(ANIM_TOTAL_MS / prices.length));
+      // 1ステップ間隔 = ANIM_TOTAL_MS / 点数 を [ANIM_MIN_MS, ANIM_STEP_MAX_MS] でクランプ。
+      //   多点モード（実ティック/1分OHLC）は ~総時間で滑らか/カクカクの差。少点モード（始値=1点）は
+      //   上限でクランプされ短時間で完了する（始値が5秒スリープになる激遅を防止）。
+      const stepMs = Math.min(ANIM_STEP_MAX_MS,
+        Math.max(ANIM_MIN_MS, Math.round(ANIM_TOTAL_MS / prices.length)));
       for (let i = startI; i < prices.length; i++) {
         if (shouldAbort && shouldAbort()) {                // 停止要求＝即中断（タイムラグ解消）＋続き保存
           pausedForm = { time: cd.time, prices, o, hi, lo, i };
