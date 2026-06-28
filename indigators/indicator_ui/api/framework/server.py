@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import sys
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -189,7 +188,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, _nested_error("validation", f"未知の timeframe です: {timeframe!r}"))
             return
         now_raw = (query.get("now") or [None])[0]
-        now_unix = int(now_raw) if (now_raw and now_raw.lstrip("-").isdigit()) else int(time.time())
+        now_override = int(now_raw) if (now_raw and now_raw.lstrip("-").isdigit()) else None
+        # now は forming_bar.resolve_now_unix に一元化（query now 優先→デモ時計→実 now）。
+        now_unix = forming_bar_mod.resolve_now_unix(now_override)
         try:
             bar = forming_bar_mod.forming_bar(ref, timeframe, now_unix)
         except Exception as exc:  # noqa: BLE001

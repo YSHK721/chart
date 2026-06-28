@@ -372,16 +372,17 @@ def test_latest_applies_forming_bar_for_tick_ref_with_formingNow(monkeypatch):
     assert seen == {"ref": "jp225_tick", "tf": "5m", "now": 123}  # formingNow を now に採用。
 
 
-def test_latest_defaults_now_to_server_time_when_no_formingNow(monkeypatch):
+def test_latest_resolves_now_via_provider_when_no_formingNow(monkeypatch):
     seen = {}
     monkeypatch.setattr(_cc.dataset, "load_dataframe", lambda ref, tf: _stub_df())
     monkeypatch.setattr(_cc, "latest_compute", lambda *a, **k: [])
-    monkeypatch.setattr(_cc.time, "time", lambda: 999.0)
+    # now は forming_bar.resolve_now_unix へ一元化（formingNow 無しは provider が解決）。
+    monkeypatch.setattr(_cc.forming_bar_mod, "resolve_now_unix", lambda override: 999 if override is None else override)
     monkeypatch.setattr(_cc.forming_bar_mod, "apply_forming_bar",
                         lambda df, ref, tf, now: (seen.update(now=now), df)[1])
     handle_compute({"indicatorId": "x", "variant": "default", "datasetRef": "jp225_tick",
                     "timeframe": "5m", "mode": "latest"})
-    assert seen["now"] == 999  # int(time.time())。
+    assert seen["now"] == 999  # provider 解決値（formingNow 不在）。
 
 
 def test_full_mode_does_not_apply_forming_bar(monkeypatch):

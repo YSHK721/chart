@@ -16,6 +16,24 @@ def _unix(s: str) -> int:
     return int(pd.Timestamp(s).tz_localize("UTC").timestamp())
 
 
+def test_resolve_now_unix_prefers_override() -> None:
+    assert fb.resolve_now_unix(1764500000) == 1764500000  # 明示 override を採用。
+    assert not isinstance(fb.resolve_now_unix(True), bool)  # bool は override 扱いせず実 now。
+
+
+def test_resolve_now_unix_demo_clock_base_with_speed_zero(monkeypatch) -> None:
+    # FORMING_DEMO_NOW="<base>:0" は speed=0＝経過無視で base 固定（決定的）。
+    monkeypatch.setenv("FORMING_DEMO_NOW", "1782432000:0")
+    assert fb.resolve_now_unix(None) == 1782432000
+    assert fb.resolve_now_unix(555) == 555  # override は env より優先。
+
+
+def test_resolve_now_unix_real_time_when_env_unset(monkeypatch) -> None:
+    import time as _t
+    monkeypatch.delenv("FORMING_DEMO_NOW", raising=False)
+    assert abs(fb.resolve_now_unix(None) - int(_t.time())) < 5  # 実 now 近傍。
+
+
 def test_floor_freq_is_derived_from_resample_rules_single_source() -> None:
     # 規則源単一化（§4）: floor freq は TIMEFRAME_RULES から導出し再エンコードしない。
     from marketdata.resample import TIMEFRAME_RULES

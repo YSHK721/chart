@@ -15,11 +15,39 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import Any, Optional
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# プロセス起動時刻（デモ時計の経過基準）。
+_BOOT_MONOTONIC = time.monotonic()
+
+
+def resolve_now_unix(override: Any = None) -> int:
+    """形成中バーの基準時刻 now（UNIX 秒・UTC）を解決する（時刻取得の単一注入点）。
+
+    優先順位:
+      1. ``override``（int・bool 除外）= リクエストの ``formingNow``/``now``（テスト/クライアント注入）。
+      2. env ``FORMING_DEMO_NOW``（デモ時計）= ``"<base_unix>[:<speed>]"``。base から実経過×speed を
+         進めたデモ時刻を返す（ライブ tick 供給が無い静的データで足内更新を可視化する再生用・
+         本番は未設定で無効）。speed 省略は 1.0。
+      3. それ以外 = 実 UTC 現在（``time.time()``）。
+    """
+    if isinstance(override, int) and not isinstance(override, bool):
+        return override
+    demo = os.environ.get("FORMING_DEMO_NOW")
+    if demo:
+        base, _, sp = demo.partition(":")
+        try:
+            speed = float(sp) if sp else 1.0
+            return int(float(base) + (time.monotonic() - _BOOT_MONOTONIC) * speed)
+        except ValueError:
+            logger.warning("FORMING_DEMO_NOW の形式が不正です: %r（実時刻にフォールバック）", demo)
+    return int(time.time())
 
 # repo 根を sys.path へ（marketdata を import するため・dataset/rollup_store と同じロード境界）。
 import sys as _sys
