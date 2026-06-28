@@ -323,8 +323,11 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     if (!cd) return;
     const myGen = ++animGen;                                // この形成を最新化（旧形成は次の更新で停止）
     const superseded = () => myGen !== animGen;
-    window.__rpAnimating = true;                            // E2E/verify 用フック（停止即応性の計測）
     const mode = $('rp-mode').value;                        // モードは呼び出しごとに最新値を読む
+    // 数学計算(終値): 足内更新を一切行わない。drive() が描いた確定足(実OHLC)をそのまま残す
+    //   ＝ティック非使用・終値ベースで計算するモデリング（最新足は足内で動かない）。
+    if (mode === 'math') { window.__rpForm = { mode, n: 0 }; pausedForm = null; return; }
+    window.__rpAnimating = true;                            // E2E/verify 用フック（停止即応性の計測）
     try {
       let prices, o, hi, lo, startI;
       if (resume && resume.time === cd.time) {

@@ -15,9 +15,9 @@ from playwright.async_api import async_playwright
 
 PORT = sys.argv[1] if len(sys.argv) > 1 else "8796"
 URL = f"http://127.0.0.1:{PORT}/"
-# (mode 値, 期待ストリーム長の判定)
-SINGLE = ("open_only", "math")            # n==1 のはず
-MULTI = ("ohlc_1min", "real_ticks", "every_tick")  # n>1 のはず
+# mode 値 -> 期待する足内更新ステップ数。math は「足内更新なし(0)」、始値のみは1更新、他は多数(>1)。
+EXPECT = {"open_only": 1, "math": 0, "ohlc_1min": -1, "real_ticks": -1, "every_tick": -1}  # -1 = ">1"
+ORDER = ("open_only", "math", "ohlc_1min", "real_ticks", "every_tick")
 
 
 async def main():
@@ -48,15 +48,18 @@ async def main():
 
         # --- (A) モード別ストリーム ---
         seen = {}
-        for m in SINGLE + MULTI:
+        for m in ORDER:
             f = await step(m)
             seen[m] = f
             print(f"  [{m}] -> {f}")
+            exp = EXPECT[m]
             if not f or f.get("mode") != m:
                 failures.append(f"[{m}] が反映されない（__rpForm={f}）")
-            elif m in SINGLE and f["n"] != 1:
+            elif exp == 0 and f["n"] != 0:
+                failures.append(f"[{m}] は足内更新なし(0)のはずが n={f['n']}（math が足内アニメする退行）")
+            elif exp == 1 and f["n"] != 1:
                 failures.append(f"[{m}] は1更新のはずが n={f['n']}")
-            elif m in MULTI and f["n"] <= 1:
+            elif exp == -1 and f["n"] <= 1:
                 failures.append(f"[{m}] が足内更新されない n={f['n']}（ティック/分足で更新されない退行）")
 
         # --- (A2) 実ティックは1分OHLCより明確に細かい（粒度分離・「同粒度」退行の禁止） ---
