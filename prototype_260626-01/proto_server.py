@@ -120,6 +120,30 @@ def _truncate(df, until):
         return df
     return df[[int(pd.Timestamp(i).timestamp()) <= until for i in df.index]]
 
+
+def _apply_forming(df, forming):
+    """形成中バー（フロントが足内アニメで描いている最新足の暫定 OHLC）を df 末尾へ set/replace する。
+
+    再生の足内更新で MA をローソクに追従させるための差し込み。forming["time"] が df 末尾と同一なら
+    その足を暫定 OHLC で置換、新しければ追加する（本番 forming_bar.apply_forming_bar と同じ規則）。
+    既存末尾より過去の time（異常）は触らない。列名は大小無関係で照合する。
+    """
+    if not isinstance(forming, dict) or len(df) == 0:
+        return df
+    try:
+        t = pd.Timestamp(int(forming["time"]), unit="s")
+    except (KeyError, TypeError, ValueError):
+        return df
+    if t < df.index[-1]:                                   # 形成中が既存末尾より過去 → 触らない（防御）
+        return df
+    out = df.copy()
+    lower = {str(c).lower(): c for c in out.columns}
+    for key in ("open", "high", "low", "close", "volume"):
+        col = lower.get(key)
+        if col is not None and key in forming:
+            out.loc[t, col] = float(forming[key])
+    return out.sort_index()
+
 # ThreadingHTTPServer 化に伴う 2 つのスレッド由来リスクを 1 本のロックで封じる:
 #   (1) R(rpy2) は単一インタプリタでスレッド非安全 → /compute の R 呼び出しを直列化。
 #   (2) ティック candles の resample（約4M行→152MiB）/ intraday が並行多重化すると
@@ -146,6 +170,9 @@ def do_compute(body):
     if len(df) == 0:
         return []
     if body.get("mode") == "latest":
+        # 足内更新: 形成中バー（フロントの暫定 OHLC）を末尾へ差し込んでから latest 計算する
+        #   ＝MA の末尾点がローソクの足内変化に追従する。forming 無し（バー確定再計算）は不変。
+        df = _apply_forming(df, body.get("forming"))
         series = latest_compute(ADAPTER, indicator, variant, df, params)
     else:
         series = full_compute(ADAPTER, indicator, variant, df, params)

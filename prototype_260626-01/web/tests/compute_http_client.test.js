@@ -137,3 +137,30 @@ test('compute omits mode from the body when not provided (backward compatible)',
   const sent = JSON.parse(captured.body);
   assert.ok(!('mode' in sent), 'mode should be absent when not provided');
 });
+
+// [PROTO 再生] 足内 MA 追従: forming（形成中バー暫定 OHLC）を指定時のみボディに載せる。
+//   これが落ちると backend が最終足を差し替えられず MA が足内で動かない（回帰の番人）。
+test('compute forwards forming (in-progress bar OHLC) in the JSON body when provided', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  const forming = { time: 1735810200, open: 1.0, high: 3.0, low: 0.5, close: 2.5 };
+  // Act
+  await client.compute({ indicatorId: 'moving_averages', variant: 'default', params: {}, datasetRef: 'jp225_tick', mode: 'latest', forming });
+  // Assert: サーバが forming で最終足を set/replace してから latest 計算する（MA が足内追従）。
+  const sent = JSON.parse(captured.body);
+  assert.deepEqual(sent.forming, forming);
+});
+
+test('compute omits forming from the body when not provided (confirmed-bar compute)', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  // Act
+  await client.compute({ indicatorId: 'moving_averages', variant: 'default', params: {}, datasetRef: 'jp225_m1', mode: 'latest' });
+  // Assert: forming 未指定はボディに含めない（確定足のまま計算＝バー確定再計算の後方互換）。
+  const sent = JSON.parse(captured.body);
+  assert.ok(!('forming' in sent), 'forming should be absent when not provided');
+});

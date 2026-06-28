@@ -56,10 +56,52 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   if (mainSeries && typeof mainSeries.attachPrimitive === 'function') {
     mainSeries.attachPrimitive(boundaryDim);
   }
-  // replayStart に応じて減光境界を更新する（0=全期間は減光なし）。
-  const syncBoundary = () => boundaryDim.setBoundaryTime(
-    (replayStart > 0 && candles[replayStart]) ? candles[replayStart].time : null,
-  );
+  // pane（下部のオシレータ等の区画）にもメイン pane と同一の減光を同期する（チャート設定＝主区画の
+  //   減光仕様に合わせる）。各 pane の系列1本へ dim プリミティブを装着すれば pane 全体が減光される。
+  //   公開 API（chart.panes()/pane.getSeries()/series.attachPrimitive）のみ使用＝adapter 無改変。
+  //   full 再計算は pane 系列を remove→再生成するため、series 同一性をキーに「新系列なら装着」し、
+  //   消えた系列の追跡は破棄する（render 末尾で毎回 syncBoundary を呼び再装着する）。
+  const paneDims = new Map();                                  // series -> ReplayBoundaryDimPrimitive
+  const boundaryTimeValue = () =>
+    (replayStart > 0 && candles[replayStart]) ? candles[replayStart].time : null;
+  const syncPaneDims = (boundaryTime) => {
+    const panes = (typeof chart.panes === 'function') ? chart.panes() : [];
+    const live = new Set();
+    for (let i = 1; i < panes.length; i++) {                   // pane 0=メイン（mainSeries で減光済み）
+      const seriesList = (typeof panes[i].getSeries === 'function') ? panes[i].getSeries() : [];
+      const host = seriesList[0];                              // pane 内の1系列へ装着＝pane 全体が減光
+      if (!host || typeof host.attachPrimitive !== 'function') continue;
+      live.add(host);
+      let dim = paneDims.get(host);
+      if (!dim) {
+        dim = new ReplayBoundaryDimPrimitive();
+        host.attachPrimitive(dim);
+        paneDims.set(host, dim);
+      }
+      dim.setBoundaryTime(boundaryTime);
+    }
+    for (const series of [...paneDims.keys()]) {               // 再生成・削除で消えた系列の追跡を破棄
+      if (!live.has(series)) paneDims.delete(series);
+    }
+  };
+  // replayStart に応じて減光境界を更新する（0=全期間は減光なし）。メイン＋全 pane を同一境界で同期。
+  const syncBoundary = () => {
+    const t = boundaryTimeValue();
+    boundaryDim.setBoundaryTime(t);
+    syncPaneDims(t);
+  };
+  // 指標の適用/削除（ダイアログ操作・再生フレームを経由しない）でも pane の減光を即同期する。
+  //   render を経ない経路のため、controller のメソッドを最小ラップして完了後に syncBoundary を呼ぶ。
+  for (const name of ['applyIndicator', 'removeInstance']) {
+    const orig = (typeof controller[name] === 'function') ? controller[name].bind(controller) : null;
+    if (!orig) continue;
+    controller[name] = (...a) => {
+      const r = orig(...a);
+      if (r && typeof r.then === 'function') return r.then((v) => { syncBoundary(); return v; });
+      syncBoundary();
+      return r;
+    };
+  }
 
   // candles 全体[0, length-1] から time >= target の最小 index を返す（二分探索）。
   function idxForTime(target) {
@@ -162,6 +204,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     }
     if (g !== generation) return;                          // 後発レンダが来ていれば破棄
     applyView();                                           // 念のため再確定（同一レンジ＝ちらつき無し）
+    syncBoundary();                                        // full 再計算で再生成された pane 系列へ減光を再装着
     setStatus(`bar ${bar}/${candles.length - 1}  ${fmt(t)}  計算 ${Math.round(performance.now() - started)}ms（その場計算）`);
     window.__rpbar = bar;                                  // E2E/verify 用フック
   }
@@ -313,6 +356,33 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   更新で自身を破棄する（世代トークン animGen）。旧実装の `if(animating) return` は新規呼び出しを
   //   握り潰し、長いティック形成中の 1足送り・モード変更が無反応に見える原因だった（モード別更新の喪失）。
   let animGen = 0;
+  // 足内 MA 更新（足内追従）の過剰リクエスト/オーバーラップ抑制。in-flight 中はスキップし、
+  //   最小間隔 FORMING_MIN_INTERVAL_MS を空けて最新の形成中 OHLC を送る（MA がローソクに追従）。
+  let formingInFlight = false;
+  let lastFormingMs = -1e9;
+  const FORMING_MIN_INTERVAL_MS = 120;
+  // 形成中バー（暫定 OHLC）を送って移動平均だけ足内 latest 再計算する（非ブロッキング・throttle）。
+  //   失敗・遅延はアニメを止めない（次tickで再試行）。帯系は触らない（controller 側で MA のみ対象）。
+  function pushFormingMA(forming) {
+    const nowMs = performance.now();
+    if (formingInFlight || (nowMs - lastFormingMs) < FORMING_MIN_INTERVAL_MS) return;
+    if (controller.isRecomputing()) return;                // 他の再計算中は譲る（torn バッチ回避）
+    lastFormingMs = nowMs;
+    formingInFlight = true;
+    controller.recomputeFormingLatest(forming)
+      .catch(() => { /* 足内 MA 失敗はアニメ継続（次tickで再試行） */ })
+      .finally(() => { formingInFlight = false; });
+  }
+  // 足確定時の最終着地: in-flight 完了を待ってから確定 OHLC で MA を1回更新する（throttle/skip
+  //   で最終ティックが落ちても MA 末尾点が確定足の終値に一致する）。await して順序を保証する。
+  async function settleFormingMA(forming) {
+    while (formingInFlight) { await sleepMs(ANIM_MIN_MS); }  // 直近の足内更新の完了を待つ
+    if (controller.isRecomputing()) return;
+    formingInFlight = true;
+    try { await controller.recomputeFormingLatest(forming); }
+    catch (_e) { /* 確定着地の失敗は次フレームの full 再計算が回復 */ }
+    finally { formingInFlight = false; lastFormingMs = performance.now(); }
+  }
   // 「停止」した足が形成途中だった場合、その続き（prices・途中index i・進捗 o/hi/lo）を保持し、
   //   次の「再生」で同じ足を続きから再開する（次の足へ飛ばさない）。bar が変わる操作(drive)で無効化。
   let pausedForm = null;
@@ -360,12 +430,17 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         const p = prices[i];
         hi = Math.max(hi, p); lo = Math.min(lo, p);        // 高安は流れてきたティックの極値のみ
         try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: p }); } catch (_e) { /* noop */ }
+        pushFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: p });  // 足内 MA を追従
         await sleepMs(stepMs);
       }
       pausedForm = null;                                   // 完走＝続き情報は破棄
       // 足確定: ティック列由来の OHLC で確定する。cd.high/low へはスナップしない
       //   （日足集計の高安は流したティックに無い値になり得るため＝バグ「存在しない高安」防止）。
-      try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: prices[prices.length - 1] }); } catch (_e) { /* noop */ }
+      const fc = prices[prices.length - 1];
+      try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: fc }); } catch (_e) { /* noop */ }
+      if (myGen === animGen) {                              // 最新の形成のみ着地（旧形成は破棄済み）
+        await settleFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: fc });  // MA を確定終値へ
+      }
     } finally { if (myGen === animGen) window.__rpAnimating = false; }  // 最新が終了した時のみ false
   }
   // 1 足送り＝新しく現れた最新足（playhead）を選択モードで足内形成する。
@@ -419,6 +494,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
 
   // ---- 起動 ----
   window.__rpChart = chart;                                // E2E/verify 用フック（可視範囲計測）
+  window.__rpController = controller;                      // E2E/verify 用フック（指標適用・足内 MA 追従検証）
   window.__rpSetAuto = (v) => { autoFrame = !!v; };        // E2E/verify 用フック（手動操作の模擬）
   window.__rpAuto = () => autoFrame;                       // E2E/verify 用フック（状態確認）
   await loadTimeframe(controller._timeframe);

@@ -153,3 +153,45 @@ test('latest recompute on a MIXED-kind indicator (line+horizontal_line) requests
   // Assert 3: updateSeriesTail は使わない（全差替経路）。
   assert.equal(renderer.calls.updateSeriesTail.length, 0);
 });
+
+// 🔴 回帰: [PROTO 再生] 足内追従。混在 kind 指標（profit_rsi）を recomputeFormingLatest で更新すると、
+//   forceTail で末尾差分（updateSeriesTail）経路へ倒れる＝全差替（renderLine setData）に落ちないため
+//   line 履歴が潰れない。かつ gateway へ mode='latest' と forming を伝播する（backend が形成中バーを
+//   差し込む）。これが崩れると profit_* 8 指標が足内で固定表示に戻る。
+test('recomputeFormingLatest on a MIXED-kind indicator uses tail-update (no collapse) and forwards latest+forming — 🔴 regression', async () => {
+  // Arrange: backend 模擬。latest 要求時は line を末尾1点へ trim（混在の全差替なら潰れる条件）。
+  const renderer = recordingRenderer();
+  const trimLine = (name) => ({ name, kind: 'line', data: [{ time: 3, value: 3 }] });
+  const fullLine = (name) => ({ name, kind: 'line', data: [{ time: 1, value: 1 }, { time: 2, value: 2 }, { time: 3, value: 3 }] });
+  const rsiSeriesFor = (req) => {
+    const lines = req.mode === 'latest' ? [trimLine('rsi'), trimLine('rsi_ma')] : [fullLine('rsi'), fullLine('rsi_ma')];
+    return [...lines, { name: 'profit_rsi', kind: 'horizontal_line', lines: [{ price: 70 }] }];
+  };
+  const { ctrl, computeCalls } = controllerWith(renderer, rsiSeriesFor);
+  await ctrl.applyIndicator('profit_rsi', 'default');   // 先に full 描画（末尾差分の前提＝既存系列）
+  const removesBefore = renderer.calls.removes.length;
+  const forming = { time: 3, open: 1, high: 9, low: 0.5, close: 2.5 };
+  // Act: 足内追従入口。
+  await ctrl.recomputeFormingLatest(forming);
+  // Assert 1: 末尾差分経路（updateSeriesTail）を使い、remove+全差替には落ちない（履歴潰れ回避）。
+  assert.equal(renderer.calls.removes.length, removesBefore, 'forceTail は remove（全差替）を呼ばない');
+  assert.ok(renderer.calls.updateSeriesTail.length >= 2, 'line 系列の最終点を updateSeriesTail で更新');
+  // Assert 2: gateway へ mode='latest' と forming を伝播（backend が形成中バーを差し込む）。
+  const last = computeCalls.at(-1);
+  assert.equal(last.mode, 'latest', '混在でも forceTail で latest を要求');
+  assert.deepEqual(last.forming, forming, '形成中バーを backend へ伝播');
+});
+
+// [PROTO 再生] 対象外指標（tgp_btlm 帯系）は recomputeFormingLatest で触らない（頻度分離 帯=足）。
+test('recomputeFormingLatest leaves non-target indicators (e.g. tgp_btlm band) untouched', async () => {
+  // Arrange
+  const renderer = recordingRenderer();
+  const tgpSeries = () => [{ name: 'btlm_mean', kind: 'line', data: [{ time: 1, value: 1 }] }];
+  const { ctrl, computeCalls } = controllerWith(renderer, tgpSeries);
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const before = computeCalls.length;
+  // Act
+  await ctrl.recomputeFormingLatest({ time: 3, open: 1, high: 9, low: 0.5, close: 2.5 });
+  // Assert: 対象集合外なので再計算 compute が増えない（足確定値のまま）。
+  assert.equal(computeCalls.length, before, '対象外指標は足内再計算しない');
+});

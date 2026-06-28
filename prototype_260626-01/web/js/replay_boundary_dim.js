@@ -7,7 +7,8 @@
 // 方針: 本番フロント（adapter/front）は無改変のまま、再生ドライバ（replay.js）から
 //   mainSeries.attachPrimitive で装着するだけにする（pair_lines_primitive と同じ装着規約）。
 //   paneViews().zOrder='bottom'（系列の下＝背景側）に boundaryTime より左の矩形を塗るため、
-//   ローソク・系列は上に残り「背景だけ」が暗くなる。
+//   ローソク・系列は上に残り「背景だけ」が暗くなる。区切りは境界足の中心ではなく本体の右側
+//   （スロット右端＝中心＋barSpacing/2）に置き、境界足を中心で2分割しない。
 //
 // 色: 本番背景 #131722（composition_root_front の layout.background）の各 RGB を -10 した
 //   #090d18（= 明度を 10 下げた背景色）。boundaryTime=null（全期間）では何も塗らない。
@@ -64,9 +65,13 @@ export class ReplayBoundaryDimPrimitive {
     if (xMedia == null) {
       return; // 境界足がまだ表示データに無い（playhead 未到達）等は減光しない。
     }
+    // timeToCoordinate は足の「中心」x を返すため、そのまま塗ると境界足が中心で2分割される。
+    //   ローソク本体の右側（スロット右端＝中心＋barSpacing/2）まで塗り、境界足を丸ごと過去側に含める。
+    const barSpacing = (typeof timeScale.options === 'function' && timeScale.options().barSpacing) || 0;
+    const xEdge = xMedia + barSpacing / 2;
     target.useBitmapCoordinateSpace((scope) => {
-      // 境界 x（media）を bitmap 座標へ換算し [0, 境界) を塗る。可視域でクランプ。
-      const right = Math.max(0, Math.min(scope.bitmapSize.width, xMedia * scope.horizontalPixelRatio));
+      // 境界右端 x（media）を bitmap 座標へ換算し [0, 境界右端) を塗る。可視域でクランプ。
+      const right = Math.max(0, Math.min(scope.bitmapSize.width, xEdge * scope.horizontalPixelRatio));
       if (right <= 0) {
         return; // 境界が左端より左＝可視域すべて「再生区間以降」なら減光なし。
       }
