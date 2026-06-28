@@ -14,7 +14,7 @@
 """
 from __future__ import annotations
 import sys, json, resource
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -211,14 +211,26 @@ def do_intraday(ref, start, end):
     except Exception as e:
         out["m1_error"] = str(e)[:120]
     try:
-        d = datetime.fromtimestamp(start, tz=timezone.utc)
-        p = TICK_ROOT / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}" / "JP225_ticks.parquet"
-        if p.is_file():
-            tdf = pd.read_parquet(p, columns=["bidPrice", "askPrice"])
+        # 足の期間 [start,end) を跨ぐ全 UTC 日の parquet を走査し、timestamp で窓フィルタする。
+        #   旧実装は start の「日」を丸ごと返し窓で絞っていなかった（1D では当日＝期間で偶然正しいが、
+        #   1m/1h 等は窓外ティックを全量返す＝ISSUE-029 の 1m 再生バグの実体）。日跨ぎ窓（4h 等）にも対応。
+        frames = []
+        d0 = datetime.fromtimestamp(start, tz=timezone.utc).date()
+        d1 = datetime.fromtimestamp(max(start, end - 1), tz=timezone.utc).date()
+        day = d0
+        while day <= d1:
+            p = TICK_ROOT / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}" / "JP225_ticks.parquet"
+            if p.is_file():
+                frames.append(pd.read_parquet(p, columns=["timestamp", "bidPrice", "askPrice"]))
+            day += timedelta(days=1)
+        if frames:
+            tdf = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+            # timestamp(UTC, tz-aware) → 秒（m1 と同基準: tz を外して datetime64[s]→int64）。
+            secs = tdf["timestamp"].dt.tz_localize(None).values.astype("datetime64[s]").astype("int64")
+            tdf = tdf[(secs >= start) & (secs < end)]
             mid = (tdf["bidPrice"] + tdf["askPrice"]) / 2.0
-            # 生ティックも同基準で外れ値補正（生 parquet は不変・読み取り時のみ）。
-            #   当日 mid 中央値から ±threshold 超で乖離する不正ティック（例 2025-08-26 の ~15100）を除去。
-            m = float(mid.median())
+            # 生ティックも外れ値補正（生 parquet は不変・読み取り時のみ）。窓内 mid 中央値から ±threshold 超を除去。
+            m = float(mid.median()) if len(mid) else 0.0
             if m > 0:
                 mid = mid[(mid / m - 1.0).abs() <= OUTLIER_THRESHOLD]
             out["ticks"] = _downsample_keep_extremes(mid.tolist(), 800)

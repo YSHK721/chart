@@ -361,7 +361,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   // ---- 最新足の足内更新（MT5 モデリング 5 モード相当） ----
   //   現在の最新足(bar)を、選択モードの足内ティック列で 1 ティックずつ更新（mainSeries.update）。
   //   指標(TGP帯)は足確定値のまま（頻度分離: 帯=足/判定=足内）＝足内では再フィットしない。
-  const DAY_SECS = 86400;
+  // 足内データ窓＝[cd.time, cd.time+durationSecs(tf)) ＝足の期間（ISSUE-029: 旧実装は 1D 固定で
+  //   1m/他足が破綻）。1W/1M は暦・巨大ペイロードで別設計（増分2）＝当面 1D 窓で近似。
+  const TF_SECS = { '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1D': 86400 };
+  const durationSecs = (tf) => TF_SECS[tf] || 86400;
   // 足内更新の粒度はモードで分離する（実ティック=細かい/1分OHLC=粗い）。総時間は固定せず
   //   1ステップ間隔を「点あたり固定 PER_POINT_MS」とする＝総時間＝点数×PER_POINT_MS＝データ密度比例
   //   （速度UIでテンポ調整できるため総時間固定は不要に。密度が再生時間/ETAに反映される）。
@@ -396,7 +399,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   async function buildStream(cd, mode) {
     if (mode === 'open_only') return { prices: [cd.open], note: '始値のみ1更新' };
     if (mode === 'math') return { prices: [cd.close], note: '終値で1回（足内更新なし）' };
-    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${cd.time}&end=${cd.time + DAY_SECS}`;
+    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${cd.time}&end=${cd.time + durationSecs(timeframe)}`;
     let resp = {};
     try { resp = await (await fetch(url)).json(); } catch (_e) { /* noop */ }
     const m1 = resp.m1 || [], ticks = resp.ticks || [];
