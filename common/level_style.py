@@ -8,4 +8,5 @@ common は numpy のみの純粋層という方針に沿い、外部依存を足
 from __future__ import annotations
 
 LEVEL_LINE_WIDTH: int = 2
-"""σ水準線（horizontal_line）の既定線幅。1px。"""
+"""σ水準線（horizontal_line）の既定線幅（px）。他のライン（系列線=幅1）と同幅で視認性が
+悪かったため 2px に設定し、水準線を判別しやすくする。"""
