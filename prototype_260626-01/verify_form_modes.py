@@ -59,6 +59,13 @@ async def main():
             elif m in MULTI and f["n"] <= 1:
                 failures.append(f"[{m}] が足内更新されない n={f['n']}（ティック/分足で更新されない退行）")
 
+        # --- (A2) 実ティックは1分OHLCより明確に細かい（粒度分離・「同粒度」退行の禁止） ---
+        n_rt = (seen.get("real_ticks") or {}).get("n", 0)
+        n_oh = (seen.get("ohlc_1min") or {}).get("n", 0)
+        print(f"  粒度: 実ティック n={n_rt} / 1分OHLC n={n_oh}（実ティックが明確に多いはず）")
+        if not (n_rt >= 2 * n_oh):
+            failures.append(f"実ティックと1分OHLCの粒度が分離されていない: 実ティック={n_rt} 1分OHLC={n_oh}")
+
         # --- (B) 形成中の切替が握り潰されない（supersede） ---
         try:
             await pg.wait_for_function("()=>window.__rpAnimating!==true", timeout=8000)

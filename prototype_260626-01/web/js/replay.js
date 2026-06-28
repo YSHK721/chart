@@ -258,8 +258,12 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   現在の最新足(bar)を、選択モードの足内ティック列で 1 ティックずつ更新（mainSeries.update）。
   //   指標(TGP帯)は足確定値のまま（頻度分離: 帯=足/判定=足内）＝足内では再フィットしない。
   const DAY_SECS = 86400;
-  const ANIM_MS = 15;            // 足内更新の描画間隔（再生 fps とは別概念・滑らかさ優先）
-  const ANIM_CAP = 400;          // 足内更新の最大ステップ（間引き上限）
+  // 足内更新の粒度はモードで分離する（実ティック=細かい/1分OHLC=粗い）。1足の総アニメ時間は
+  //   点数に依らず ANIM_TOTAL_MS で一定化し、1ステップ間隔=総時間/点数（点数が多いほど滑らか）。
+  const ANIM_TOTAL_MS = 5000;    // 1足の足内更新の総時間（実ティックも1分OHLCも約5s）
+  const ANIM_FINE = 800;         // 実ティック/全ティック合成の上限（細かい・滑らか）
+  const ANIM_COARSE = 200;       // 1分OHLC の上限（粗い・分足ステップが見える）
+  const ANIM_MIN_MS = 5;         // 1ステップ最小間隔（速すぎ防止）
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   const cap = (arr, n) => {      // 最大 n 点へ間引く。高値/安値(極値)と先頭/末尾は必ず保持する
                                  //   （極値ティックを捨てると、後段でティックに無い高安が表示される）。
@@ -291,16 +295,16 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     let resp = {};
     try { resp = await (await fetch(url)).json(); } catch (_e) { /* noop */ }
     const m1 = resp.m1 || [], ticks = resp.ticks || [];
-    if (mode === 'real_ticks') {
-      if (ticks.length) return { prices: cap(ticks, ANIM_CAP), note: `実ティック ${ticks.length}点` };
-      if (m1.length) return { prices: cap(flattenM1(m1), ANIM_CAP), note: '実ティック無→M1 OHLC代替' };
+    if (mode === 'real_ticks') {                            // 細かい（生ティック由来・滑らか）
+      if (ticks.length) return { prices: cap(ticks, ANIM_FINE), note: `実ティック ${ticks.length}点` };
+      if (m1.length) return { prices: cap(flattenM1(m1), ANIM_FINE), note: '実ティック無→M1 OHLC代替' };
       return { prices: [cd.close], note: '足内データ無→終値のみ' };
     }
-    if (mode === 'ohlc_1min') {
-      if (m1.length) return { prices: cap(flattenM1(m1), ANIM_CAP), note: `1分OHLC ${m1.length}本` };
+    if (mode === 'ohlc_1min') {                             // 粗い（1分OHLC・分足ステップが見える）
+      if (m1.length) return { prices: cap(flattenM1(m1), ANIM_COARSE), note: `1分OHLC ${m1.length}本` };
       return { prices: [cd.open, cd.high, cd.low, cd.close], note: 'M1無→日足OHLC4点' };
     }
-    if (m1.length) return { prices: cap(synthM1(m1), ANIM_CAP), note: '全ティック合成(M1×補間)' };
+    if (m1.length) return { prices: cap(synthM1(m1), ANIM_FINE), note: '全ティック合成(M1×補間)' };
     return { prices: [cd.open, cd.high, cd.low, cd.close], note: 'M1無→OHLC4点' };
   }
   // 形成は「最新の1本のみ有効」。新しい形成（1足送り/モード切替/再生）が始まると、旧形成は次の
@@ -311,7 +315,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   次の「再生」で同じ足を続きから再開する（次の足へ飛ばさない）。bar が変わる操作(drive)で無効化。
   let pausedForm = null;
   // shouldAbort: 再生から呼ぶとき () => !playing を渡す。足内更新ループ途中でも停止要求で即中断し、
-  //   「停止」ボタンのタイムラグ（最大 ANIM_CAP×ANIM_MS ≒ 数秒）を解消する。1足送りは未指定（中断なし）。
+  //   「停止」ボタンのタイムラグ（最大 ANIM_TOTAL_MS ≒ 数秒）を解消する。1足送りは未指定（中断なし）。
   // resume: pausedForm を渡すと同一足を続きから再開（畳み直さず途中 index から継続）。
   async function animateForming(shouldAbort, resume) {
     if (!candles.length) return;
@@ -337,6 +341,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         o = prices[0]; hi = prices[0]; lo = prices[0]; startI = 0;  // 始値はティック列の先頭値
       }
       window.__rpForm = { mode, n: prices.length };         // E2E/verify 用フック（モード別ストリーム確認）
+      // 総時間一定: 1ステップ間隔 = ANIM_TOTAL_MS / 点数。点数が多い実ティックほど滑らか、
+      //   少ない1分OHLC ほどカクカク（＝粒度がモードで分離・同程度の所要時間）。
+      const stepMs = Math.max(ANIM_MIN_MS, Math.round(ANIM_TOTAL_MS / prices.length));
       for (let i = startI; i < prices.length; i++) {
         if (shouldAbort && shouldAbort()) {                // 停止要求＝即中断（タイムラグ解消）＋続き保存
           pausedForm = { time: cd.time, prices, o, hi, lo, i };
@@ -346,7 +353,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         const p = prices[i];
         hi = Math.max(hi, p); lo = Math.min(lo, p);        // 高安は流れてきたティックの極値のみ
         try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: p }); } catch (_e) { /* noop */ }
-        await sleepMs(ANIM_MS);
+        await sleepMs(stepMs);
       }
       pausedForm = null;                                   // 完走＝続き情報は破棄
       // 足確定: ティック列由来の OHLC で確定する。cd.high/low へはスナップしない
