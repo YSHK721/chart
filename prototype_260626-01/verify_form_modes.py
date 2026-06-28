@@ -3,8 +3,9 @@
 確認/禁止する退行:
   (A) 「最新足更新」モードが全てティックで行われていないか＝各モードが固有のストリームを生成する。
       始値のみ=1更新 / 数学=1 / 1分OHLC・実ティック・全ティック合成=多数。
-  (B) 長い形成の途中で 1足送り・モード切替が握り潰される（旧 `if(animating) return`）退行。
-      形成中に open_only へ切替えて 1足送りすると、新モードが反映される（__rpForm.mode==open_only）。
+  (B) 長い形成の途中でモード切替が握り潰される（旧 `if(animating) return`）退行。
+      形成中に open_only へ切替えて再形成すると、新モードが反映される（__rpForm.mode==open_only）。
+      ※ rp-next は「スキップのみ（再生しない）」に変更したため、形成は __rpAnimateOnce フックで駆動する。
 
 前提: proto_server.py 起動済み。使い方: python3 verify_form_modes.py [PORT]
 終了コード: 0=OK / 1=退行。
@@ -39,7 +40,7 @@ async def main():
                 pass
             await pg.select_option("#rp-mode", mode)
             await pg.evaluate("()=>window.__rpForm=null")
-            await pg.click("#rp-next")
+            await pg.evaluate("()=>window.__rpAnimateOnce()")   # rp-next はスキップ化＝形成はフックで駆動
             try:
                 await pg.wait_for_function("()=>window.__rpForm!==null", timeout=8000)
             except Exception:
@@ -77,7 +78,7 @@ async def main():
             pass
         await pg.select_option("#rp-mode", "open_only")
         _t0 = _t.perf_counter()
-        await pg.click("#rp-next")
+        await pg.evaluate("()=>window.__rpAnimateOnce()")   # rp-next はスキップ化＝形成はフックで駆動
         await pg.wait_for_function("()=>window.__rpAnimating===true", timeout=8000)
         await pg.wait_for_function("()=>window.__rpAnimating!==true", timeout=15000)
         open_ms = (_t.perf_counter() - _t0) * 1000
@@ -92,12 +93,12 @@ async def main():
             pass
         await pg.select_option("#rp-mode", "real_ticks")
         await pg.evaluate("()=>window.__rpForm=null")
-        await pg.click("#rp-next")  # 長いティック形成を開始
+        await pg.evaluate("()=>window.__rpAnimateOnce()")  # 長いティック形成を開始（フック駆動）
         await pg.wait_for_function("()=>window.__rpAnimating===true", timeout=8000)
         await pg.wait_for_timeout(150)  # 形成途中
         await pg.select_option("#rp-mode", "open_only")
         await pg.evaluate("()=>window.__rpForm=null")
-        await pg.click("#rp-next")  # 形成中に新モードで1足送り
+        await pg.evaluate("()=>window.__rpAnimateOnce()")  # 形成中に新モードで再形成（モード切替の supersede 検証）
         try:
             await pg.wait_for_function("()=>window.__rpForm && window.__rpForm.mode==='open_only'", timeout=8000)
             ok = True

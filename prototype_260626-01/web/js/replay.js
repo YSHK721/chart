@@ -205,6 +205,8 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     if (g !== generation) return;                          // 後発レンダが来ていれば破棄
     applyView();                                           // 念のため再確定（同一レンジ＝ちらつき無し）
     syncBoundary();                                        // full 再計算で再生成された pane 系列へ減光を再装着
+    lastComputeMs = performance.now() - started;           // モデル推定の compute 項を最新化
+    setEta();                                              // ETA を即時更新（モデル推定＝計算/速度/モード反映）
     setStatus(`bar ${bar}/${candles.length - 1}  ${fmt(t)}  計算 ${Math.round(performance.now() - started)}ms（その場計算）`);
     window.__rpbar = bar;                                  // E2E/verify 用フック
   }
@@ -235,9 +237,41 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     renderPresets();                                       // その時間足のプリセットを再構築
     await drive(candles.length - 1);                       // 開始は present（最新足）＝ライブ同様の表示
   }
-  // 再生フレーム待機。速度(fps上限)を再生中に変えたら即時反映するため、
-  // 進行中の待機を「残り時間 × 新fps」で組み直せるようにする（待機を中断→再スケジュール）。
-  const frameMs = () => 1000 / (+$('rp-speed').value || 1);   // fps 上限 → フレーム間隔
+  // 再生速度 s∈[MIN_SPEED,1]（1.00=最速＝追加遅延ゼロ／環境が許す最速。小さいほど遅い＝観察用）。
+  //   テンポ全体（足内アニメ stepMs と足送り間隔 frameMs）を 1/s で引き延ばす（×0.5なら全体2倍ゆっくり）。
+  //   s=0 近傍は MIN_SPEED にクランプ（停止は再生ボタン側・極端な無限待機を防ぐ）。
+  const MIN_SPEED = 0.05;
+  const speed = () => Math.min(1, Math.max(MIN_SPEED, +$('rp-speed').value || 1));
+  const BASE_FRAME_MS = 50;                                   // s=1（最速）時の足送り間隔。1/s で延伸。
+  // 再生フレーム待機。速度を再生中に変えたら即時反映するため、進行中の待機を新速度で組み直す。
+  const frameMs = () => BASE_FRAME_MS / speed();              // 速度 s → フレーム間隔（1/s で減速）
+  // ---- 完了予想時間（ETA）。速度/プリセット/モード変更時は即時にモデル推定で表示（<1秒）、
+  //   再生中は実測(EMA)で精緻化。実測のみだと遅いモードで最初の1足完了まで数秒 `—` のまま＝タイムラグの原因。 ----
+  let emaPeriodMs = null;                                      // 1足あたり実測所要のEMA（null=未計測→モデル推定）
+  let lastComputeMs = null;                                    // 直近 render の計算時間（モデル推定の compute 項）
+  const fmtEta = (ms) => {
+    if (!isFinite(ms) || ms <= 0) return '—';
+    const s = Math.round(ms / 1000);
+    return s >= 60 ? `${Math.floor(s / 60)}分${String(s % 60).padStart(2, '0')}秒` : `${s}秒`;
+  };
+  // モード別の足内アニメ目安（s=1時）＝想定点数×PER_POINT_MS（点数比例＝密度反映）。
+  //   math=0／始値=1点／1分OHLC≈ANIM_COARSE点／実ティック・全ティック≈ANIM_FINE点。
+  const animBaseMs = (mode) =>
+    mode === 'math' ? 0
+      : mode === 'open_only' ? PER_POINT_MS
+        : mode === 'ohlc_1min' ? ANIM_COARSE * PER_POINT_MS
+          : ANIM_FINE * PER_POINT_MS;
+  // 1足あたり所要のモデル推定: 計算(固定) + (足内アニメ + 足送り間隔)/速度。速度・モードを即時反映。
+  const estimatePeriodMs = () =>
+    (lastComputeMs == null ? 50 : lastComputeMs) + (animBaseMs($('rp-mode').value) + BASE_FRAME_MS) / speed();
+  const setEta = () => {
+    const el = $('rp-eta');
+    if (!el) return;
+    const remain = Math.max(0, (candles.length - 1) - bar);
+    if (remain === 0) { el.textContent = '完了予想 —'; return; }
+    const period = (emaPeriodMs == null) ? estimatePeriodMs() : emaPeriodMs;  // 実測優先・無ければ即時モデル
+    el.textContent = `完了予想 ${fmtEta(remain * period)}（残り${remain}足）`;
+  };
   let frameTimer = null;        // 進行中フレーム待機のタイマーID
   let frameResolve = null;      // 進行中フレーム待機の解決関数（待機中のみ非null）
   let frameStart = 0;           // 現フレーム待機の開始時刻
@@ -262,6 +296,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   }
   async function playLoop() {
     while (playing && bar < candles.length - 1) {
+      const barStart = performance.now();                     // 1足あたり実測（drive+anim+wait）開始
       let resume = null;
       if (pausedForm && candles[bar] && pausedForm.time === candles[bar].time) {
         resume = pausedForm;            // 停止した足の続きから再開＝次の足へ飛ばさない
@@ -271,6 +306,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       await animateForming(() => !playing, resume);   // 形成途中でも停止要求で即中断（停止ボタンの即応性）
       if (!playing) break;
       await waitFrame();
+      const dt = performance.now() - barStart;                // この足の実測所要
+      emaPeriodMs = (emaPeriodMs == null) ? dt : emaPeriodMs * 0.7 + dt * 0.3;  // EMA平滑
+      setEta();                                               // 完了予想時間を更新（実測×残り足）
     }
     playing = false;
     $('rp-play').textContent = '▶ 再生';
@@ -295,20 +333,32 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     if (playing) playLoop();
     else settleFrameWait();                                 // 停止＝フレーム待機(最大 frameMs)を即解除し待ち時間をゼロに
   };
-  $('rp-speed').addEventListener('change', rescheduleFrameWait);  // 再生中の速度変更を即時反映
+  // 速度UI: 自由スライダー(0.00–1.00)＋固定プリセット(×0.25/×0.5/×0.75/×1)の2軸（連動）。1.00=最速。
+  const speedPresets = () => [...doc.querySelectorAll('#rp-speed-presets .rp-preset')];
+  function syncSpeedUI() {
+    const v = +$('rp-speed').value;
+    const valEl = $('rp-speed-val'); if (valEl) valEl.textContent = v.toFixed(2);
+    for (const b of speedPresets()) b.classList.toggle('on', Math.abs(+b.dataset.spd - v) < 1e-9);  // 一致プリセットを点灯
+    emaPeriodMs = null;                                    // 旧速度の実測は陳腐化＝モデル推定へ即フォールバック
+    setEta();                                              // 速度変更で完了予想を即時更新（<1秒・実測EMAは次足で追従）
+    rescheduleFrameWait();                                 // 再生中の足送り待機を新速度で即時組み直す
+  }
+  $('rp-speed').addEventListener('input', syncSpeedUI);     // スライダー操作＝即時反映
+  for (const b of speedPresets()) {
+    b.addEventListener('click', () => { $('rp-speed').value = b.dataset.spd; syncSpeedUI(); });  // プリセット→スライダーへ反映
+  }
 
   // ---- 最新足の足内更新（MT5 モデリング 5 モード相当） ----
   //   現在の最新足(bar)を、選択モードの足内ティック列で 1 ティックずつ更新（mainSeries.update）。
   //   指標(TGP帯)は足確定値のまま（頻度分離: 帯=足/判定=足内）＝足内では再フィットしない。
   const DAY_SECS = 86400;
-  // 足内更新の粒度はモードで分離する（実ティック=細かい/1分OHLC=粗い）。1足の総アニメ時間は
-  //   点数に依らず ANIM_TOTAL_MS で一定化し、1ステップ間隔=総時間/点数（点数が多いほど滑らか）。
-  const ANIM_TOTAL_MS = 5000;    // 多点モードの足内更新の目安総時間（点数×1ステップ間隔の上限）
-  const ANIM_FINE = 800;         // 実ティック/全ティック合成の上限（細かい・滑らか）
-  const ANIM_COARSE = 200;       // 1分OHLC の上限（粗い・分足ステップが見える）
+  // 足内更新の粒度はモードで分離する（実ティック=細かい/1分OHLC=粗い）。総時間は固定せず
+  //   1ステップ間隔を「点あたり固定 PER_POINT_MS」とする＝総時間＝点数×PER_POINT_MS＝データ密度比例
+  //   （速度UIでテンポ調整できるため総時間固定は不要に。密度が再生時間/ETAに反映される）。
+  const PER_POINT_MS = 6;        // 1点あたりのステップ間隔。最密(実ティック~800点)で約4.8秒/足≒従来感。
+  const ANIM_FINE = 800;         // 実ティック/全ティック合成の点数上限（細かい・滑らか）
+  const ANIM_COARSE = 200;       // 1分OHLC の点数上限（粗い・分足ステップが見える）
   const ANIM_MIN_MS = 5;         // 1ステップ最小間隔（速すぎ防止）
-  const ANIM_STEP_MAX_MS = 40;   // 1ステップ最大間隔。少点モード(始値=1点)が総時間で間延びするのを防ぐ
-                                 //   （上限なしだと 5000ms/点 で始値が1点=5秒スリープになり激遅になる）。
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   const cap = (arr, n) => {      // 最大 n 点へ間引く。高値/安値(極値)と先頭/末尾は必ず保持する
                                  //   （極値ティックを捨てると、後段でティックに無い高安が表示される）。
@@ -386,8 +436,18 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   // 「停止」した足が形成途中だった場合、その続き（prices・途中index i・進捗 o/hi/lo）を保持し、
   //   次の「再生」で同じ足を続きから再開する（次の足へ飛ばさない）。bar が変わる操作(drive)で無効化。
   let pausedForm = null;
+  // 「最新足更新」モード切替を再生中でも即反映する。mode は animateForming 開始時にしか読まれないため、
+  //   放置すると実行中の足内アニメ（real_ticks 等は数秒）が終わるまで新モードが反映されない（ETA/粒度が
+  //   変わらず「反映されない」バグに見える）。supersede（animGen 進行）で実行中の形成を即中断し、
+  //   pausedForm も破棄して次足から新モードを適用する。停止/再開の続き形成は別経路（shouldAbort）で不変。
+  $('rp-mode').addEventListener('change', () => {
+    animGen++;            // 実行中の形成を supersede（次の superseded() 判定で即 return）
+    pausedForm = null;    // 中断足を旧モードの続きで再開させない（新モードで次足へ進む）
+    emaPeriodMs = null;   // 旧モードの実測は陳腐化＝モデル推定へ即フォールバック
+    setEta();             // モード変更で完了予想を即時更新（<1秒・新モードのアニメ目安を反映）
+  });
   // shouldAbort: 再生から呼ぶとき () => !playing を渡す。足内更新ループ途中でも停止要求で即中断し、
-  //   「停止」ボタンのタイムラグ（最大 ANIM_TOTAL_MS ≒ 数秒）を解消する。1足送りは未指定（中断なし）。
+  //   「停止」ボタンのタイムラグ（最大 1ステップ＝PER_POINT_MS/速度）を解消する。1足送りは未指定（中断なし）。
   // resume: pausedForm を渡すと同一足を続きから再開（畳み直さず途中 index から継続）。
   async function animateForming(shouldAbort, resume) {
     if (!candles.length) return;
@@ -416,11 +476,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         o = prices[0]; hi = prices[0]; lo = prices[0]; startI = 0;  // 始値はティック列の先頭値
       }
       window.__rpForm = { mode, n: prices.length };         // E2E/verify 用フック（モード別ストリーム確認）
-      // 1ステップ間隔 = ANIM_TOTAL_MS / 点数 を [ANIM_MIN_MS, ANIM_STEP_MAX_MS] でクランプ。
-      //   多点モード（実ティック/1分OHLC）は ~総時間で滑らか/カクカクの差。少点モード（始値=1点）は
-      //   上限でクランプされ短時間で完了する（始値が5秒スリープになる激遅を防止）。
-      const stepMs = Math.min(ANIM_STEP_MAX_MS,
-        Math.max(ANIM_MIN_MS, Math.round(ANIM_TOTAL_MS / prices.length)));
+      // 点あたり固定の1ステップ間隔（総時間＝点数×PER_POINT_MS＝密度比例）。再生速度 s で 1/s 倍に延伸。
+      //   多点モード（実ティック~800点/1分OHLC~200点）は点数差がそのまま所要時間差になる（密度反映）。
+      const baseStepMs = Math.max(ANIM_MIN_MS, PER_POINT_MS);
       for (let i = startI; i < prices.length; i++) {
         if (shouldAbort && shouldAbort()) {                // 停止要求＝即中断（タイムラグ解消）＋続き保存
           pausedForm = { time: cd.time, prices, o, hi, lo, i };
@@ -431,7 +489,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         hi = Math.max(hi, p); lo = Math.min(lo, p);        // 高安は流れてきたティックの極値のみ
         try { mainSeries.update({ time: cd.time, open: o, high: hi, low: lo, close: p }); } catch (_e) { /* noop */ }
         pushFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: p });  // 足内 MA を追従
-        await sleepMs(stepMs);
+        await sleepMs(Math.round(baseStepMs / speed()));     // 再生速度で減速（毎ステップ読込＝速度変更を即時反映）
       }
       pausedForm = null;                                   // 完走＝続き情報は破棄
       // 足確定: ティック列由来の OHLC で確定する。cd.high/low へはスナップしない
@@ -443,10 +501,13 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       }
     } finally { if (myGen === animGen) window.__rpAnimating = false; }  // 最新が終了した時のみ false
   }
-  // 1 足送り＝新しく現れた最新足（playhead）を選択モードで足内形成する。
-  //   最新足の定義は「期間プリセット起点から前進する先頭足」。本当のデータ末尾ではない。
-  $('rp-next').onclick = async () => { await drive(bar + 1); await animateForming(); };
+  // 1 足スキップ＝再生せず次の確定足へ進めるだけ（◀1足 と対称・足内アニメはしない）。
+  //   足内形成は「再生」専用（クリックの動機＝再生不要でスキップしたい、というユーザー意図に合わせる）。
+  $('rp-next').onclick = () => drive(bar + 1);
   $('rp-prev').onclick = () => drive(bar - 1);
+  // E2E/verify 用フック: 現在足を1回だけ足内形成する（rp-next はスキップ化したため、形成検証はこれで駆動）。
+  //   promise は返さず fire-and-forget（呼び出し側 evaluate がアニメ完了まで待たない）。
+  window.__rpAnimateOnce = () => { animateForming(); };
   // チャート「表示範囲だけ」を左端/右端へスクロールする（再生位置 bar・スライダー・計算は変えない）。
   //   現在のズーム幅（可視バー数）を保ったまま、左端=logical 0／右端=最新リビール足(bar+余白)へ寄せる。
   //   手動閲覧扱い（autoFrame=false）にして、後続フレームが表示を上書きしないようにする（wheel/ドラッグと同義）。

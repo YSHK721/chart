@@ -57,7 +57,14 @@
       <button id="rp-prev">◀ 1足</button>
       <button id="rp-play">▶ 再生</button>
       <button id="rp-next">1足 ▶</button>
-      <label>速度<select id="rp-speed"><option>1</option><option selected>2</option><option>5</option></select>fps上限</label>
+      <label title="再生速度（1.00=最速。小さいほど遅い＝観察用）">速度<input id="rp-speed" type="range" min="0" max="1" step="0.01" value="1" style="vertical-align:middle;width:90px" /><span id="rp-speed-val" style="display:inline-block;min-width:2.6em;text-align:right">1.00</span></label>
+      <span id="rp-speed-presets">
+        <button class="rp-preset" data-spd="0.25">×0.25</button>
+        <button class="rp-preset" data-spd="0.5">×0.5</button>
+        <button class="rp-preset" data-spd="0.75">×0.75</button>
+        <button class="rp-preset on" data-spd="1">×1</button>
+      </span>
+      <span id="rp-eta" title="完了予想時間（残り足 × 実測の1足あたり所要）">完了予想 —</span>
       <span class="rp-sep"></span>
       <label title="最新足を足内で更新する方法（MT5 モデリング相当）">最新足更新<select id="rp-mode">
         <option value="real_ticks">実ティック</option>
