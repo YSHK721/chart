@@ -43,6 +43,9 @@ const MODULE_ORDER = [
   'js/adapter/front/pair_primitive_base.js',
   'js/adapter/front/pair_lines_primitive.js',
   'js/adapter/front/trade_markers_renderer.js',
+  'js/adapter/front/market_profile_client.js',
+  'js/adapter/front/market_profile_primitive.js',
+  'js/adapter/front/market_profile_actor.js',
   'js/adapter/front/composition_root_front.js',
 ];
 
