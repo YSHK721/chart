@@ -24,6 +24,9 @@ import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
 import { IndicatorController } from './indicator_controller.js';
 import { TradeMarkersRenderer } from './trade_markers_renderer.js';
+import { MarketProfileClient } from './market_profile_client.js';
+import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
+import { MarketProfileActor } from './market_profile_actor.js';
 
 // 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
 //   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
@@ -174,9 +177,24 @@ export async function bootstrap({
     ? (ref, tf) => fetchCandles(fetch, ref, tf, recentBars)
     : null;
 
-  const controller = new IndicatorController({
+  // Market Profile（独立アクター・candle 版 MVP）の組み立て。取得（client）と描画（primitive）を
+  //   注入し、トグル ON まで /market_profile を fetch しない・mainSeries へ attach しない（非破壊）。
+  //   getContext は取得時点の現在チャート状態（datasetRef / 選択時間足 / 直近本数）を遅延読み取りする。
+  //   ここで controller より先に生成し、(1) controller へ注入（インジケーターメニュー導線）と
+  //   (2) 戻り値（既存トグル導線）の両方へ同一アクターを渡す＝二重導線で同一状態を共有する。
+  //   getContext は controller._timeframe を遅延参照する（呼び出しは setEnabled/refresh 時＝
+  //   controller 代入後）。
+  let controller;
+  const marketProfile = new MarketProfileActor({
+    client: new MarketProfileClient({ fetch }),
+    primitive: new MarketProfileHistogramPrimitive(),
+    mainSeries,
+    getContext: () => ({ datasetRef, timeframe: controller._timeframe, limit: recentBars }),
+  });
+
+  controller = new IndicatorController({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
-    timeframe, recentBars, loadCandles,
+    timeframe, recentBars, loadCandles, marketProfile,
   });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
@@ -242,5 +260,7 @@ export async function bootstrap({
   tradeMarkers.setCurrentTimeframe(timeframe);
   controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
 
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers };
+  // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
+  //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile };
 }

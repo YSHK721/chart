@@ -379,8 +379,35 @@ const PROFIT_RSI_MACD = pfDef({
   series: [PF_HIST('rsimacd_hist'), PF_LINE('RSIMACD'), PF_LINE('Signal'), PF_HLINE('profit_rsi_macd')],
 });
 
+// --- market_profile（プロファイルタブ・アクター委譲型）--------------------
+// 他指標と異なり /compute で系列計算しない。IndicatorController が
+//   compute.computeId==='market_profile' を判定し、_draw（F3 系列描画）をバイパスして
+//   MarketProfileActor（GET /market_profile → primitive 反映）へ委譲する（専用パス）。
+// series は IndicatorDef の非空必須（domain_models.js L104）を満たすための最小ダミー 1 件で、
+//   上記バイパスにより描画には用いられない（renderLine/renderHorizontal を通さない）。
+// 既存トグル（#market-profile-toggle）は温存（二重導線）。表示名は displayNameKey 方式に準拠。
+const MARKET_PROFILE = new IndicatorDef({
+  id: 'market_profile',
+  displayNameKey: 'ind.market_profile',
+  category: { group: 'builtin', nameKey: 'cat.volume' },
+  tab: 'profile',
+  placement: 'overlay',
+  params: [
+    // bins: ヒストグラム区間数（INT・既定60・min1）。client.buildMarketProfileUrl が受理。
+    param('bins', ParamType.INT, 60, [{ kind: ConstraintKind.MIN_VALUE, operands: ['bins', 1], messageKey: 'err.bins' }], null, { group: 'group.calc', order: 1, step: 1, min: 1, label: 'ビン数' }),
+    // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
+    param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
+    // limit: 集計対象の直近本数（INT・既定1500・min1）。
+    param('limit', ParamType.INT, 1500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['limit', 1], messageKey: 'err.limit' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, label: '対象本数' }),
+  ],
+  series: [
+    new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'market_profile', dynamic: false }),
+  ],
+  compute: { computeId: 'market_profile', requiredColumns: OHLC, timeRequired: false, backendParam: null, variants: ['default'] },
+});
+
 const REGISTRY = Object.freeze([
-  TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES,
+  TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,

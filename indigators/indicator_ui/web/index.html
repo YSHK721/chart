@@ -25,6 +25,10 @@
         <button class="tb-interval" data-timeframe="1M" type="button">月</button>
       </div>
       <span class="tb-sep"></span>
+      <!-- Market Profile 表示トグル（独立アクター・candle 版）。ON でチャート右側に TPO ヒストグラム＋
+           POC/VA 線を重畳、OFF で非表示。tb-interval + is-active の既存トグル書式に合わせる。 -->
+      <button id="market-profile-toggle" class="tb-interval" type="button" aria-pressed="false" title="Market Profile">MP</button>
+      <span class="tb-sep"></span>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
         <span class="ic">∿</span>
         <span class="lbl">インジケーター</span>
@@ -91,8 +95,19 @@
       // 'jp225_tick'＝mid・UTC 集計）をライブ計算し、時間足セレクタで resample 表示する
       // （上位足は rollups/jp225_tick/ を読む・既定 1D・直近 RECENT_BARS 本）。
       datasetRef: 'jp225_tick',
-    }).then(({ controller, ready, liveUpdater, formingBarUpdater, tradeMarkers }) => {
+    }).then(({ controller, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile }) => {
       controller.bind();
+      // Market Profile 表示トグル（独立アクター）。ON/OFF で marketProfile.setEnabled を呼ぶ。
+      //   ON 初回に /market_profile を取得して primitive へ反映し表示、OFF で非表示（既存描画に非干渉）。
+      const mpBtn = document.getElementById('market-profile-toggle');
+      if (mpBtn && marketProfile) {
+        mpBtn.addEventListener('click', () => {
+          const on = !mpBtn.classList.contains('is-active');
+          mpBtn.classList.toggle('is-active', on);
+          mpBtn.setAttribute('aria-pressed', String(on));
+          marketProfile.setEnabled(on);
+        });
+      }
       // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。
       ready.then(() => {
         controller.restore();
