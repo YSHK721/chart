@@ -19,10 +19,25 @@ export class MarketProfileActor {
     this._getContext = typeof getContext === 'function' ? getContext : () => ({});
     this._enabled = false;
     this._attached = false;
+    // 取得パラメータ（bins/va/limit）。setParams で更新し refresh 時に getContext へ重畳する。
+    //   未設定時は空＝getContext のみ（サーバ既定・後方互換）。
+    this._params = {};
   }
 
   isEnabled() {
     return this._enabled;
+  }
+
+  // 取得パラメータ（bins/va/limit）を設定する。null/undefined のキーは無視する
+  //   （getContext の値やサーバ既定を潰さない）。次回 refresh から反映される。
+  setParams(params = {}) {
+    const next = {};
+    for (const key of ['bins', 'va', 'limit']) {
+      if (params[key] != null) {
+        next[key] = params[key];
+      }
+    }
+    this._params = next;
   }
 
   // トグル。ON: 初回のみ attach → 取得して反映 → 表示。OFF: 非表示（取得しない）。
@@ -42,7 +57,8 @@ export class MarketProfileActor {
     if (!this._enabled) {
       return;
     }
-    const profile = await this._client.fetchProfile(this._getContext());
+    // getContext（datasetRef/timeframe/limit）へ setParams の bins/va/limit を重畳して取得する。
+    const profile = await this._client.fetchProfile({ ...this._getContext(), ...this._params });
     if (profile) {
       this._primitive.setProfile(profile);
     }
@@ -57,5 +73,14 @@ export class MarketProfileActor {
       this._mainSeries.attachPrimitive(this._primitive);
       this._attached = true;
     }
+  }
+
+  // primitive を mainSeries から取り外す（detachPrimitive 非提供時は skip＝後方互換）。
+  //   凡例からの削除（close）で呼び、次回有効化で再 attach できるよう _attached を戻す。
+  detach() {
+    if (this._attached && this._mainSeries && typeof this._mainSeries.detachPrimitive === 'function') {
+      this._mainSeries.detachPrimitive(this._primitive);
+    }
+    this._attached = false;
   }
 }

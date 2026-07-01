@@ -34,6 +34,7 @@ export class IndicatorController {
   constructor({
     catalog, compute, persistence, renderer, document: doc = null, mode = 'a',
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
+    marketProfile = null,
   }) {
     this._catalog = catalog;
     this._compute = compute;
@@ -41,6 +42,10 @@ export class IndicatorController {
     this._renderer = renderer;
     this._document = doc;
     this._mode = mode;
+    // Market Profile アクター（任意注入）。computeId==='market_profile' の指標を
+    //   /compute 経由でなく本アクター（GET /market_profile → primitive）へ委譲する。
+    //   既存トグル（#market-profile-toggle）とは別導線（二重導線）。未注入時は MP 分岐が no-op。
+    this._marketProfile = marketProfile;
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
     // 時間足（§チャート表示時間選択・1 分足原子から resample）。compute/candles に伝搬する。
@@ -163,13 +168,22 @@ export class IndicatorController {
   // UC オーケストレーション（facade + ports）
   // =========================================================================
 
+  // MP 種別（アクター委譲型）判定。真なら _draw / _gatewayAdapter をバイパスする。
+  _isMarketProfile(def) {
+    return def?.compute?.computeId === 'market_profile';
+  }
+
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
+  //   MP 種別（computeId==='market_profile'）は /compute をバイパスし MarketProfileActor へ委譲する。
   async applyIndicator(indicatorId, variant) {
     const def = this._catalog.get(indicatorId);
     if (!def) {
       return null;
     }
     const params = this._defaultParams(def);
+    if (this._isMarketProfile(def)) {
+      return this._applyMarketProfile(def, variant, params);
+    }
     const gateway = this._gatewayAdapter();
     const { state, instance } = await apply(
       this._state,
@@ -182,6 +196,122 @@ export class IndicatorController {
     this._persistAll();
     this._renderLegend();
     return instance;
+  }
+
+  // MP 専用適用パス: /compute をバイパスし、state には no-op gateway で instance を登録して
+  //   凡例表示・永続化・restore の対象に含める。描画は MarketProfileActor（GET /market_profile →
+  //   primitive）へ委譲する。_draw（F3 系列描画）は通さない。
+  async _applyMarketProfile(def, variant, params) {
+    // MP 単一インスタンス制約: 既に MP が適用済みなら新規 legend 行を作らず no-op で
+    //   既存インスタンスを返す（二重 legend 行→単一 actor 駆動での状態乖離を防ぐ）。
+    //   actor へは触れない: 既存が非表示なら表示状態の乖離、gear 変更済みなら params
+    //   の既定値クロバーを招くため、可視・params の現状を保存する。
+    const existing = this._state.applied.find(
+      (i) => this._isMarketProfile(this._catalog.get(i.indicatorId)),
+    );
+    if (existing) {
+      return existing;
+    }
+    const { state, instance } = await apply(
+      this._state,
+      { indicatorId: def.id, variant: variant ?? this._defaultVariant(def), params, datasetRef: this._datasetRef },
+      { compute: async () => ({ generation: 0 }) },
+    );
+    this._state = state;
+    this._meta.set(instance.instanceId, { def });
+    await this._enableMarketProfile(params);
+    this._persistAll();
+    this._renderLegend();
+    return instance;
+  }
+
+  // MP アクターへ params を渡して有効化する（setParams→setEnabled(true)＝取得＋表示）。
+  //   setEnabled(true) は内部で refresh も行う。未注入時は no-op。
+  async _enableMarketProfile(params) {
+    if (!this._marketProfile) {
+      return;
+    }
+    this._marketProfile.setParams({ bins: params.bins, va: params.va, limit: params.limit });
+    await this._marketProfile.setEnabled(true);
+  }
+
+  // MP 凡例 eye: 表示/非表示トグル（state.visible を反転し actor.setEnabled へ同期）。
+  async _toggleMarketProfileVisible(inst) {
+    this._state = facadeToggleVisible(this._state, inst.instanceId);
+    const updated = this._state.applied.find((i) => i.instanceId === inst.instanceId);
+    if (this._marketProfile && updated) {
+      await this._marketProfile.setEnabled(updated.visible);
+    }
+    this._persistAll();
+    this._renderLegend();
+  }
+
+  // MP 凡例 close: 非表示＋detach してから applied/meta から除去する（renderer.remove は不要＝
+  //   MP は renderer に系列を持たない）。
+  async _removeMarketProfile(inst) {
+    if (this._marketProfile) {
+      await this._marketProfile.setEnabled(false);
+      if (typeof this._marketProfile.detach === 'function') {
+        this._marketProfile.detach();
+      }
+    }
+    this._state = facadeRemove(this._state, inst.instanceId);
+    this._meta.delete(inst.instanceId);
+    this._persistAll();
+    this._renderLegend();
+  }
+
+  // MP 凡例 gear: プロパティダイアログで bins/va/limit を編集し、onApply で setParams+refresh。
+  //   /compute は呼ばない。DOM 不在時は現 params で即時反映（フォールバック）。
+  _onGearMarketProfile(inst, def) {
+    const doc = this._document;
+    const stored = this._paramsObject(inst.params);
+    const currentParams = (stored && Object.keys(stored).length > 0)
+      ? stored
+      : this._defaultParams(def);
+    const applyParams = async (values) => {
+      this._state = this._withParams(this._state, inst.instanceId, values);
+      if (this._marketProfile) {
+        this._marketProfile.setParams({ bins: values.bins, va: values.va, limit: values.limit });
+        await this._marketProfile.refresh();
+      }
+      this._persistAll();
+      this._renderLegend();
+    };
+    // applyParams は async。未 await の fire-and-forget のため拒否を .catch で捕捉し
+    //   unhandledRejection 化を防ぐ（refresh 失敗等）。
+    const runApply = (values) => {
+      applyParams(values).catch((err) => {
+        if (typeof console !== 'undefined' && console.error) {
+          console.error('[MP] gear apply failed', err);
+        }
+      });
+    };
+    if (!doc || typeof PropertiesDialog !== 'function') {
+      runApply(currentParams);
+      return;
+    }
+    const dialog = new PropertiesDialog({
+      document: doc,
+      def,
+      instance: { ...inst, params: currentParams },
+      mode: this._mode,
+      onApply: (values) => { runApply(values); },
+      onCancel: () => {},
+    });
+    dialog.open();
+  }
+
+  // AppliedInstance（不変・凍結）の params のみ差し替えた state を返す（_withVariant と同型）。
+  _withParams(state, instanceId, values) {
+    const pairs = Object.entries(values ?? {});
+    return {
+      ...state,
+      applied: state.applied.map((i) =>
+        i.instanceId === instanceId
+          ? Object.assign(Object.create(Object.getPrototypeOf(i)), i, { params: pairs })
+          : i),
+    };
   }
 
   // UC-03 再計算（設定変更・variant 切替）: generation 競合破棄は facade.recompute に集約（§6.6）。
@@ -363,11 +493,22 @@ export class IndicatorController {
     // フェーズ1: 直列計算（描画なし）。
     const jobs = [];
     for (const inst of [...this._state.applied]) {
-      if (this._meta.has(inst.instanceId)) {
-        const job = await this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
-        if (job && job.accepted) {
-          jobs.push(job);
+      const meta = this._meta.get(inst.instanceId);
+      if (!meta) {
+        continue;
+      }
+      // MP 種別は /compute を持たない（backend に compute 無し）。再計算経路（ライブ tick /
+      //   足切替）で /compute へ流出させると例外→setTimeframe では preRender 前で全スキップ。
+      //   /compute を通さず actor.refresh（現時間足で再取得）へ委譲し、MP も新足へ追従させる。
+      if (this._isMarketProfile(meta.def)) {
+        if (this._marketProfile && inst.visible) {
+          await this._marketProfile.refresh();
         }
+        continue;
+      }
+      const job = await this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
+      if (job && job.accepted) {
+        jobs.push(job);
       }
     }
     // フェーズ2: ここから await を挟まない同期一括描画。
@@ -435,6 +576,18 @@ export class IndicatorController {
         continue;
       }
       this._meta.set(inst.instanceId, { def });
+      // MP 種別は /compute で計算しようとして失敗させない。保存 params を actor へ渡し、
+      //   可視だった場合のみ有効化して再取得・表示する。
+      if (this._isMarketProfile(def)) {
+        const rp = this._paramsObject(inst.params);
+        if (this._marketProfile) {
+          this._marketProfile.setParams({ bins: rp.bins, va: rp.va, limit: rp.limit });
+          if (inst.visible) {
+            await this._marketProfile.setEnabled(true);
+          }
+        }
+        continue;
+      }
       try {
         const gateway = this._gatewayAdapter(inst.variant);
         // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
@@ -654,11 +807,18 @@ export class IndicatorController {
       label.className = 'legend-label';
       label.textContent = `${def ? this._label(def) : inst.indicatorId}${inst.variant && inst.variant !== 'default' ? ' (' + inst.variant + ')' : ''}`;
 
+      // MP は state.applied に載るが renderer に系列を持たないため、eye/close を
+      //   MP 専用ハンドラ（setEnabled / setEnabled(false)+detach）へ分岐する。gear は
+      //   _onGear 内部で MP 分岐する。
+      const isMp = this._isMarketProfile(def);
+
       const eye = doc.createElement('button');
       eye.className = 'legend-eye';
       eye.title = inst.visible ? '非表示にする' : '表示する';
       eye.textContent = inst.visible ? '👁' : '🙈';
-      eye.addEventListener('click', () => this.toggleVisible(inst.instanceId));
+      eye.addEventListener('click', () => (isMp
+        ? this._toggleMarketProfileVisible(inst)
+        : this.toggleVisible(inst.instanceId)));
 
       const gear = doc.createElement('button');
       gear.className = 'legend-gear';
@@ -670,7 +830,9 @@ export class IndicatorController {
       close.className = 'legend-remove';
       close.title = '削除';
       close.textContent = '✕';
-      close.addEventListener('click', () => this.removeInstance(inst.instanceId));
+      close.addEventListener('click', () => (isMp
+        ? this._removeMarketProfile(inst)
+        : this.removeInstance(inst.instanceId)));
 
       row.append(label, eye, gear, close);
       legend.append(row);
@@ -683,6 +845,11 @@ export class IndicatorController {
   //   描画へ未反映（H-1）。ダイアログ内に A 方式注記を明示表示する（§9.3・サイレント不一致回避）。
   _onGear(inst, def) {
     const doc = this._document;
+    // MP は /compute を持たない専用パス（setParams+refresh）で設定を反映する。
+    if (this._isMarketProfile(def)) {
+      this._onGearMarketProfile(inst, def);
+      return;
+    }
     if (!doc || !def || typeof PropertiesDialog !== 'function') {
       // DOM 不在（node 単体テスト等）または未解決 def は従来の最小再計算へフォールバック。
       this._gearRecompute(inst, def);
