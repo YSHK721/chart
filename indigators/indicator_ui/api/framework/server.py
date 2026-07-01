@@ -36,6 +36,7 @@ if str(_API_ROOT) not in sys.path:
 from adapter.compute import dataset  # noqa: E402
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
+from adapter.controller.market_profile_controller import handle_market_profile  # noqa: E402
 
 # 静的配信ルート（web/）。api/ → parents[1]=api → parents[2]=indicator_ui → web。
 _WEB_ROOT = (_API_ROOT.parent / "web").resolve()
@@ -151,6 +152,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/forming_bar":
             self._handle_forming_bar(parse_qs(parsed.query))
             return
+        if parsed.path == "/market_profile":
+            self._handle_market_profile(parse_qs(parsed.query))
+            return
         self._handle_static(parsed.path)
 
     def _handle_candles(self, query: dict[str, list[str]]) -> None:
@@ -197,6 +201,25 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             self._send_json(500, _nested_error("internal", f"forming_bar 取得に失敗しました: {exc}"))
             return
         self._send_json(200, {"ok": True, "bar": bar})
+
+    def _handle_market_profile(self, query: dict[str, list[str]]) -> None:
+        """GET /market_profile — 足ベース TPO マーケットプロファイルを返す（読取のみ）。
+
+        検証（未知 ref/tf は 400）・計算は純ロジック ``handle_market_profile`` に委譲し、本メソッドは
+        クエリ取り出しと (status, payload) の JSON 応答のみを担う（``_handle_forming_bar`` と同型の薄殻）。
+        応答は ``{ok:true, profile:{...}}``（bins/poc/va_low/va_high/price_min/price_max/tpo_units/n_bins）。
+        """
+        ref = (query.get("datasetRef") or [None])[0]
+        timeframe = (query.get("timeframe") or [None])[0]
+        limit = (query.get("limit") or [None])[0]
+        bins = (query.get("bins") or [None])[0]
+        va = (query.get("va") or [None])[0]
+        try:
+            status, payload = handle_market_profile(ref, timeframe, limit, bins, va)
+        except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
+            self._send_json(500, _nested_error("internal", f"market_profile 取得に失敗しました: {exc}"))
+            return
+        self._send_json(status, payload)
 
     def _handle_static(self, url_path: str) -> None:
         target = _resolve_static(url_path)
