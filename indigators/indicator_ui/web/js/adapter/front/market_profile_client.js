@@ -7,21 +7,30 @@
 //     失敗時 {ok:false, error:{...}}。
 //   純関数（buildMarketProfileUrl / parseProfileResponse）を公開し単体検証を容易にする（SRP）。
 
-// datasetRef を必須、timeframe/limit/bins/va/src/range は与えられた場合のみ付加する（省略時はサーバ既定）。
+// datasetRef を必須、timeframe/bins/va/src/range は与えられた場合のみ付加する（省略時はサーバ既定）。
+//   limit は受理しない＝MP は常に全期間集計（backend は limit 省略時＝全件集計）。
 //   src: 集計原子（'candle'=足レンジ・既定 / 'dwell'=実ティック滞在 / 'm1'=tick数）。省略時は付与せず candle 後方互換。
-//   range: バー幅(pt) の直接指定。フロントの range を backend param 名 barw へ写像する。
-//     'auto'/null/未指定は「従来 bins に委ねる」＝barw を付与しない。数値（'25' 等）のとき &barw=<値> を付ける。
-export function buildMarketProfileUrl({ datasetRef, timeframe, limit, bins, va, src, range } = {}) {
+//   resmode: 解像度モード（'bins'=ビン / 'range'=レンジ）。試作 prototype_260630-01 の解像度トグル移植。
+//     resmode==='range' のとき range（レンジpt）を backend param 名 barw へ写像し bins は送らない。
+//     それ以外（'bins' / 未指定）は bins を送り barw は送らない。bins は ENUM プリセット化で文字列
+//     （'30'/'60'/'100'）が渡るため、文字列プリセット（非空）または有限数（後方互換）を付与し、
+//     NaN・空文字・null は排除する（backend の _parse_int が '60' を解釈可）。
+export function buildMarketProfileUrl({ datasetRef, timeframe, bins, va, src, range, resmode } = {}) {
   let url = `/market_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
     url += `&timeframe=${encodeURIComponent(timeframe)}`;
   }
-  if (limit != null) {
-    url += `&limit=${encodeURIComponent(limit)}`;
-  }
-  if (Number.isFinite(bins)) {
-    // 有限数のときのみ付与する。NaN（貼付等で数値化に失敗した値）を &bins=NaN として
-    //   送出しない防御的ガード（backend は barw 優先だが無効値を送らない）。
+  // limit は付与しない＝MP は常に全期間集計（backend が limit 省略時＝全件集計）。
+  //   context に limit が混ざっても（getContext の recentBars 等）URL には出さない。
+  // 解像度モードで bins / barw の送信を排他化する。
+  if (resmode === 'range') {
+    // レンジ指定 → barw のみ送る（bins は送らない）。'auto'/null は付与しない防御。
+    if (range != null && range !== 'auto') {
+      url += `&barw=${encodeURIComponent(range)}`;
+    }
+  } else if (Number.isFinite(bins) || (typeof bins === 'string' && bins !== '')) {
+    // ビン指定（既定）→ ENUM 文字列プリセット（非空）または有限数（後方互換）のときのみ bins を付与。
+    //   NaN（貼付等で数値化に失敗）・空文字・null は無効な &bins= を送出しない。
     url += `&bins=${encodeURIComponent(bins)}`;
   }
   if (va != null) {
@@ -29,9 +38,6 @@ export function buildMarketProfileUrl({ datasetRef, timeframe, limit, bins, va, 
   }
   if (src != null) {
     url += `&src=${encodeURIComponent(src)}`;
-  }
-  if (range != null && range !== 'auto') {
-    url += `&barw=${encodeURIComponent(range)}`;
   }
   return url;
 }

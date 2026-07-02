@@ -396,26 +396,40 @@ const MARKET_PROFILE = new IndicatorDef({
   tab: 'profile',
   placement: 'overlay',
   params: [
-    // bins: ヒストグラム区間数（INT・既定60・min1）。client.buildMarketProfileUrl が受理。
-    //   range≠auto（バー幅pt指定）のときは backend が n_bins を算出するため bins を隠す
-    //   （range=auto のときのみ表示 = conditionalVisible トグル。range が実質トグルスイッチ）。
-    param('bins', ParamType.INT, 60, [{ kind: ConstraintKind.MIN_VALUE, operands: ['bins', 1], messageKey: 'err.bins' }], null, { group: 'group.calc', order: 1, step: 1, min: 1, label: 'ビン数', conditionalVisible: { when: { param: 'range', equals: 'auto' } } }),
+    // resmode: 解像度指定モード（ENUM・既定 bins）。試作 prototype_260630-01 の解像度トグル
+    //   （ビン ⇄ レンジ）を移植。ui.controlType='segmented' で横並びセグメントボタンとして描画し、
+    //   押した側の入力（bins / range）だけを conditionalVisible で表示する。order は bins/range より前。
+    param('resmode', ParamType.ENUM, 'bins', [], ['bins', 'range'], {
+      group: 'group.calc', order: 0, label: '解像度', controlType: 'segmented',
+      enumLabels: { bins: 'ビン', range: 'レンジ' },
+    }),
+    // bins: ヒストグラム区間数（ENUM プリセット・既定 '60'）。試作 prototype_260630-01/web/index.html:30-34 の
+    //   <select>（option 30 / 60(selected) / 100）に忠実。数値自由入力(INT)からプリセットへ変更し、レンジ(range)と
+    //   同じく select・同位置(order 1)で描く。全プリセットが妥当なため MIN_VALUE 制約は不要（除去）。
+    //   解像度=ビン（resmode=bins）のときのみ表示（レンジ指定時は非表示 = conditionalVisible トグル）。
+    //   client.buildMarketProfileUrl が文字列プリセット（'30'/'60'/'100'）を &bins= へ付与する。
+    param('bins', ParamType.ENUM, '60', [], ['30', '60', '100'], {
+      group: 'group.calc', order: 1, label: 'ビン',
+      conditionalVisible: { when: { param: 'resmode', equals: 'bins' } },
+      enumLabels: { 30: '30', 60: '60', 100: '100' },
+    }),
     // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
     param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
-    // limit: 集計対象の直近本数（INT・既定1500・min1）。
-    param('limit', ParamType.INT, 1500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['limit', 1], messageKey: 'err.limit' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, label: '対象本数' }),
+    // limit（対象本数）param は削除済＝MP は常に全期間集計（backend は limit 省略時＝全件集計）。
     // src: 集計原子（ENUM・既定 candle=足レンジ TPO・後方互換 / dwell=実ティック滞在 / m1=tick数）。
     //   client.buildMarketProfileUrl が受理し URL の &src= に付与する（省略時はサーバ既定 candle）。
     param('src', ParamType.ENUM, 'candle', [], ['candle', 'dwell', 'm1'], {
       group: 'group.calc', order: 4, label: 'ソース',
       enumLabels: { candle: '足レンジ', dwell: '滞在時間(実ティック)', m1: 'tick数' },
     }),
-    // range: バー幅(pt) の直接指定（ENUM・既定 auto=従来 bins に委ねる）。試作 prototype_260630-01 の
-    //   range セレクタ（auto/25/50/100/250/500pt）を移植。値指定時は client が &barw= を付与し backend が
-    //   n_bins = round(窓幅/barw) を算出して bins に優先する。
-    param('range', ParamType.ENUM, 'auto', [], ['auto', '25', '50', '100', '250', '500'], {
-      group: 'group.calc', order: 5, label: 'バー幅(pt)',
-      enumLabels: { auto: '自動(bins)', 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
+    // range: レンジ(pt) の直接指定（ENUM・既定 100）。試作 prototype_260630-01 の range セレクタを移植。
+    //   解像度=レンジ（resmode=range）のときのみ表示。値は client が &barw= を付与し backend が
+    //   n_bins = round(窓幅/barw) を算出する（bins は送らない）。
+    //   order は bins と同一(1)＝同じ位置で入れ替わる（トグル時に下の va/src がズレず認知負荷を抑える）。
+    param('range', ParamType.ENUM, '100', [], ['25', '50', '100', '250', '500'], {
+      group: 'group.calc', order: 1, label: 'レンジ(pt)',
+      conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
+      enumLabels: { 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
     }),
   ],
   series: [

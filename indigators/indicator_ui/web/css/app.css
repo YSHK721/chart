@@ -246,8 +246,25 @@ html, body {
 .prop-input:disabled { background: #181b24; color: #5d616b; cursor: not-allowed; }
 .prop-input-number { width: 96px; }
 .prop-input-select { min-width: 120px; }
+/* Market Profile のビン(bins)/レンジ(range)セレクトを 96px に揃える（bins もプリセット select 化・トグルで幅が変わらないように）。他セレクト(ソース)/他指標に非波及。 */
+.prop-dialog-backdrop[data-prop-dialog="market_profile"] [data-prop-field="bins"] .prop-input-select,
+.prop-dialog-backdrop[data-prop-dialog="market_profile"] [data-prop-field="range"] .prop-input-select {
+  width: 96px; min-width: 0;
+}
 .prop-input-checkbox { width: 16px; height: 16px; accent-color: #2962ff; }
 .prop-input-color { width: 40px; height: 26px; padding: 1px; cursor: pointer; }
+
+/* segmented（ENUM を横並びセグメントボタンで描く・解像度トグル移植）。最小装飾・選択中ハイライト。 */
+.prop-segmented { display: inline-flex; gap: 0; padding: 0; border: none; background: transparent; }
+.prop-seg-btn {
+  padding: 4px 12px; border: 1px solid #2a2e39; background: transparent; color: #b2b5be;
+  cursor: pointer; font-size: 12px;
+}
+.prop-seg-btn + .prop-seg-btn { border-left: none; }
+.prop-seg-btn:first-child { border-radius: 4px 0 0 4px; }
+.prop-seg-btn:last-child { border-radius: 0 4px 4px 0; }
+.prop-seg-btn:hover { color: #fff; }
+.prop-seg-btn.is-active { background: #2962ff; border-color: #2962ff; color: #fff; }
 
 /* FLOAT_LIST（probabilities）リスト編集 */
 .prop-list { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding: 0; border: none; background: transparent; }

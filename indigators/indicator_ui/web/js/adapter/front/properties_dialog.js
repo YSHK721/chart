@@ -300,6 +300,8 @@ export class PropertiesDialog {
         return this._buildNumber(field);
       case 'select':
         return this._buildSelect(field);
+      case 'segmented':
+        return this._buildSegmented(field);
       case 'checkbox':
         return this._buildCheckbox(field);
       case 'list':
@@ -355,6 +357,45 @@ export class PropertiesDialog {
       this._onChange();
     });
     return sel;
+  }
+
+  // segmented: ENUM を「横並びセグメントボタン群」で描く（ドロップダウンでなくトグル・§3.1 拡張）。
+  //   試作 prototype_260630-01 の解像度トグル（ビン ⇄ レンジ）移植。各 option をボタン化し、
+  //   選択中に is-active を付与。クリックで this._values[name] を更新後、既存 _onChange() を呼ぶ
+  //   （→ _refreshVisible/_revalidate が走り bins/range 行が即出没する）。
+  _buildSegmented(field) {
+    const doc = this._doc;
+    const wrap = doc.createElement('div');
+    wrap.className = 'prop-input prop-segmented';
+    wrap.dataset.propName = field.name;
+    const options = field.enumValues ?? [];
+    const buttons = [];
+    const setActive = (val) => {
+      for (const b of buttons) {
+        b.classList.toggle('is-active', String(b.dataset.segValue) === String(val));
+      }
+    };
+    for (const v of options) {
+      const btn = doc.createElement('button');
+      btn.type = 'button';
+      btn.className = 'prop-seg-btn';
+      btn.dataset.segValue = String(v);
+      // enumLabels（日本語表示マップ）優先。未指定はキー末尾を表示（select と同挙動）。
+      btn.textContent = (field.enumLabels && field.enumLabels[v] != null)
+        ? field.enumLabels[v]
+        : humanizeKey(String(v));
+      btn.addEventListener('click', () => {
+        // v は走査中の option 値そのもの（enum の raw な元型＝文字列/数値を保持）。
+        //   options.find で自分自身を引き直す必要はないため直接代入する。
+        this._values[field.name] = v;
+        setActive(this._values[field.name]);
+        this._onChange();
+      });
+      buttons.push(btn);
+      wrap.append(btn);
+    }
+    setActive(field.value);
+    return wrap;
   }
 
   _buildCheckbox(field) {
@@ -725,7 +766,7 @@ export class PropertiesDialog {
   }
 
   // 条件付き表示（§3.5 拡張・トグル）。conditionalVisible=false のフィールド行を非表示にする。
-  //   _refreshEnabled（グレーアウト）と対称の動的経路。range を変えた瞬間に「ビン数」行が出没する。
+  //   _refreshEnabled（グレーアウト）と対称の動的経路。range を変えた瞬間に「ビン」行が出没する。
   //   静的除外（uiVisible===false）は buildFormModel が担い、本メソッドは動的トグルのみ担う。
   _refreshVisible() {
     const visible = computeVisible(this._def, this._values);

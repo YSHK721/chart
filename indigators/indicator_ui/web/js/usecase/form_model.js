@@ -140,7 +140,7 @@ export function computeEnabled(def, values = {}) {
 // 各パラメータの表示/非表示を決定（§3.5 条件付き表示・computeEnabled と対称）。
 // conditionalVisible.when（{param,equals}）が偽のとき非表示（hidden）。未指定は常時 visible。
 // 静的除外（uiVisible===false）は buildFormModel が担い、本関数は動的トグルを担う（併存）。
-// 用途: market_profile の bins は range==auto のときのみ表示（バー幅=数値選択で非表示）。
+// 用途: market_profile の bins は resmode==bins のとき表示 / range は resmode==range のとき表示（解像度トグル）。
 export function computeVisible(def, values = {}) {
   const visible = {};
   for (const pdef of def.params ?? []) {
