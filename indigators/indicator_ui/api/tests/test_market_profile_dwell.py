@@ -790,3 +790,186 @@ def test_integration_dwell_small_window_real_data():
     p = payload["profile"]
     assert p["n_bins"] == 30
     assert p["price_min"] <= p["poc"] <= p["price_max"]
+
+
+# --------------------------------------------------------------------------- #
+# want_sessions（日別プロファイル分割・dwell 経路）: 移植元 prototype_260630-01 mp_core
+# --------------------------------------------------------------------------- #
+class TestComputeDwellProfileSessions:
+    """compute_dwell_profile(want_sessions=True): 各カレンダー日の日別ロールアップを表示 bin へ再集計。
+
+    合成 3 日（_synthetic_master）は各日 hr2 に HOT(1000) 密集・hr20 に COLD(1100) 疎ら。metric='count'
+    （生ティック数）で決定論に検証する（dwell 秒はギャップ依存で日ごと同形だが count が最も明快）。
+    省略時（want_sessions=False）は sessions キー無し（後方互換）。
+    """
+
+    def _profile(self, monkeypatch, **kw):
+        secs, mids = _synthetic_master()
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        # 3 日を覆う窓（t0=day0 の足 time・t1=day2 の足 time・bar_sec=1D）。
+        return mpd.compute_dwell_profile(
+            "JP225", _DAY0, _DAY0 + 2 * _DAY, 900.0, 1200.0, 30,
+            va_pct=0.70, bar_sec=_DAY, metric="count", now=_DAY0 + 10 * _DAY, **kw
+        )
+
+    def test_omitted_has_no_sessions_key(self, monkeypatch):
+        out = self._profile(monkeypatch)
+        assert "sessions" not in out
+
+    def test_sessions_returns_one_entry_per_calendar_day(self, monkeypatch):
+        out = self._profile(monkeypatch, want_sessions=True)
+        sessions = out["sessions"]
+        # 3 日ぶん・日付昇順・各 tpo 長 = n_bins。
+        assert [s["date"] for s in sessions] == ["2024-01-01", "2024-01-02", "2024-01-03"]
+        for s in sessions:
+            assert len(s["tpo"]) == 30
+
+    def test_sessions_per_day_count_matches(self, monkeypatch):
+        # 各日 count は 32 ティック（HOT 30 + COLD 2）。日別合計 = 32 が保存される。
+        out = self._profile(monkeypatch, want_sessions=True)
+        for s in out["sessions"]:
+            assert round(sum(s["tpo"])) == 32, (s["date"], sum(s["tpo"]))
+
+    def test_sessions_sum_matches_cumulative_tpo(self, monkeypatch):
+        # 性質: 全日 sessions の bin 別合計 = 累積 tpo（分割の保存則・境界日合算含む）。
+        out = self._profile(monkeypatch, want_sessions=True)
+        acc = [0.0] * out["n_bins"]
+        for s in out["sessions"]:
+            for j, v in enumerate(s["tpo"]):
+                acc[j] += v
+        cum = [b["tpo"] for b in out["bins"]]
+        # tpo は int 丸め済のため round で比較（再集計値と丸めの差は 1 未満）。
+        for a, c in zip(acc, cum):
+            assert abs(a - c) < 1.0
+
+    def test_sessions_windowed_narrows_days(self, monkeypatch):
+        # to/from 窓（t0/t1）で日が絞られる: day1 のみを覆う窓 → sessions は 1 日。
+        secs, mids = _synthetic_master()
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        out = mpd.compute_dwell_profile(
+            "JP225", _DAY0 + _DAY, _DAY0 + _DAY, 900.0, 1200.0, 30,
+            va_pct=0.70, bar_sec=_DAY, metric="count", now=_DAY0 + 10 * _DAY,
+            want_sessions=True,
+        )
+        assert [s["date"] for s in out["sessions"]] == ["2024-01-02"]
+
+    # --- 修正2: 境界分割日の合算 / metric 尊重（hand-calc 回帰強化） ---------------- #
+    #
+    # 境界窓 [t0=day0+noon, t1=day0+noon]（bar_sec=1D）は win_to=day0+noon+1D となり、
+    #   day0 の午後（partial）と day1 の午前（partial）へまたがる。各カレンダー日は sessions に
+    #   **ちょうど 1 エントリ**として現れ（分割 2 エントリにならず同一 date へ合算される）、
+    #   その値は当該部分窓の集計に一致する。合成ティックは各日 hr2(=午前)に HOT30・hr20(=午後)に
+    #   COLD2 を置くため、day0(午後)=COLD2/HOT0、day1(午前)=HOT30/COLD0 に確定する。
+    _BOUNDARY_T = _DAY0 + 43200  # day0 正午（部分窓の起点＝終点。win_to は +1D で day1 正午）。
+    _BINW = (1200.0 - 900.0) / 30
+    _HOT_BIN = int((1000.0 - 900.0) / _BINW)   # HOT=1000 の表示 bin index（=10）。
+    _COLD_BIN = int((1100.0 - 900.0) / _BINW)  # COLD=1100 の表示 bin index（=20）。
+
+    def _boundary_sessions(self, monkeypatch, metric):
+        secs, mids = _synthetic_master()
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        out = mpd.compute_dwell_profile(
+            "JP225", self._BOUNDARY_T, self._BOUNDARY_T, 900.0, 1200.0, 30,
+            va_pct=0.70, bar_sec=_DAY, metric=metric, now=_DAY0 + 10 * _DAY,
+            want_sessions=True,
+        )
+        return out
+
+    def test_boundary_split_day_merges_to_single_entry_per_date(self, monkeypatch):
+        # 境界分割日の合算: 部分窓にまたがっても各 date はちょうど 1 エントリ（重複しない）。
+        out = self._boundary_sessions(monkeypatch, "count")
+        dates = [s["date"] for s in out["sessions"]]
+        # day0 午後 + day1 午前 = 2 日ぶん・各 1 回だけ（partial+partial が別エントリに割れない）。
+        assert dates == ["2024-01-01", "2024-01-02"]
+        assert len(dates) == len(set(dates)), f"date が重複＝分割エントリ化: {dates}"
+        # count 合算値のハンド計算: day0 午後=COLD2 のみ、day1 午前=HOT30 のみ。
+        by_date = {s["date"]: s["tpo"] for s in out["sessions"]}
+        assert round(sum(by_date["2024-01-01"])) == 2   # 午後の COLD 2 ティック。
+        assert round(sum(by_date["2024-01-02"])) == 30  # 午前の HOT 30 ティック。
+        # 保存則: sessions の bin 別合計 = 累積 tpo（合算経路が二重計上・欠落しない）。
+        acc = [0.0] * out["n_bins"]
+        for s in out["sessions"]:
+            for j, v in enumerate(s["tpo"]):
+                acc[j] += v
+        for a, c in zip(acc, (b["tpo"] for b in out["bins"])):
+            assert abs(a - c) < 1.0
+
+    def test_metric_count_and_dwell_differ_at_closed_band(self, monkeypatch):
+        # metric 尊重: 同一境界窓で count（生ティック）と dwell（滞在秒）の sessions 値が異なる。
+        #   休場帯 bin（COLD=1100・day0 午後）は count>0（生ティックは数える）だが dwell==0
+        #   （セッションマスクで休場帯の滞在は 0 に落とす）。
+        out_count = self._boundary_sessions(monkeypatch, "count")
+        mpd._reset_caches()  # metric 切替時のロールアップ再計算を保証（キャッシュは metric 非依存だが明示）。
+        out_dwell = self._boundary_sessions(monkeypatch, "dwell")
+        cnt_by_date = {s["date"]: s["tpo"] for s in out_count["sessions"]}
+        dwl_by_date = {s["date"]: s["tpo"] for s in out_dwell["sessions"]}
+        # 休場帯（day0 午後・COLD bin）: count は 2（生ティック）・dwell は 0（休場滞在は除外）。
+        assert cnt_by_date["2024-01-01"][self._COLD_BIN] == 2.0
+        assert dwl_by_date["2024-01-01"][self._COLD_BIN] == 0.0
+        # 活発帯（day1 午前・HOT bin）: どちらも非ゼロだが値は異なる（count=30 生数・dwell=滞在秒）。
+        assert cnt_by_date["2024-01-02"][self._HOT_BIN] == 30.0
+        assert dwl_by_date["2024-01-02"][self._HOT_BIN] > 0.0
+        assert dwl_by_date["2024-01-02"][self._HOT_BIN] != cnt_by_date["2024-01-02"][self._HOT_BIN]
+
+
+class TestControllerDwellSessions:
+    """controller: src=dwell & sessions=1 で応答トップレベルに sessions が付く（profile は不変）。"""
+
+    def _candles_3d(self):
+        return [
+            {"time": _DAY0, "open": 1000, "high": 1110, "low": 990, "close": 1005},
+            {"time": _DAY0 + _DAY, "open": 1005, "high": 1108, "low": 992, "close": 1002},
+            {"time": _DAY0 + 2 * _DAY, "open": 1002, "high": 1106, "low": 991, "close": 1000},
+        ]
+
+    def test_sessions_1_adds_toplevel_sessions(self, monkeypatch):
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+
+        status, payload = handle_market_profile(
+            "jp225_tick", timeframe="1D", src="dwell", **{"sessions": "1"}
+        )
+        assert status == 200
+        assert "sessions" in payload
+        assert len(payload["sessions"]) == 3
+        # profile の 8 キーは不変（sessions は profile 内に入れない）。
+        assert "sessions" not in payload["profile"]
+
+    def test_sessions_omitted_no_toplevel_sessions(self, monkeypatch):
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+
+        status, payload = handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
+        assert status == 200
+        assert "sessions" not in payload
+
+    def test_sessions_total_equals_day_count_dwell_path(self, monkeypatch):
+        # 注記の意味論整合（修正1・dwell 経路）: sessions_total はキャップ前の実日数（合成 3 日）。
+        #   3 日 <= 60 なのでキャップは発火しないが、sessions_total は sessions と同数（3）を返す。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+
+        status, payload = handle_market_profile(
+            "jp225_tick", timeframe="1D", src="dwell", **{"sessions": "1"}
+        )
+        assert status == 200
+        assert payload["sessions_total"] == 3
+        assert payload["sessions_total"] == len(payload["sessions"])
+        assert isinstance(payload["sessions_total"], int)
+
+    def test_sessions_total_omitted_when_not_requested_dwell_path(self, monkeypatch):
+        # 後方互換（dwell 経路）: sessions 非要求時は sessions_total を付けない。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+
+        status, payload = handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
+        assert status == 200
+        assert "sessions_total" not in payload

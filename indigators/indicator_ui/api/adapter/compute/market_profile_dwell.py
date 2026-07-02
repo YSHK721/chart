@@ -362,6 +362,7 @@ def compute_dwell_profile(
     now: float | None = None,
     metric: str = "dwell",
     want_today: bool = False,
+    want_sessions: bool = False,
 ) -> dict:
     """実ティックプロファイルを計算する（candle 版と同一スキーマ）。
 
@@ -373,6 +374,11 @@ def compute_dwell_profile(
     境界日は :func:`_partial_rollup` で固定グリッド ``{dwell[], cnt[]}`` を得て、metric に対応する配列を
     ``fine[]`` に加算し、固定グリッド中心を表示 bin へ再集計して tpo[] を得る。POC/VA は
     :func:`market_profile._value_area` を再利用する（dwell/count で同一定義）。
+
+    ``want_sessions=True`` のとき、応答に ``sessions[]``（各カレンダー日の表示 bin プロファイル
+    ``[{"date":"YYYY-MM-DD","tpo":[...]}]``・日付昇順）を付加する。走査中の日別ロールアップ
+    ``roll[roll_key]``（metric に従い dwell/cnt）を表示 bin へ再集計し、境界分割日は同一 date で合算する
+    （移植元 prototype_260630-01/mp_core.py want_sessions）。既定 False は不変（sessions キーを付けない）。
 
     全期間化: 250 日キャップは撤廃し ``[t0, t1+bar_sec)`` の全日を集計する。各完了日はディスク/メモリ
     キャッシュ経由で O(1) ロードされるため、一度ウォームすれば全期間でも高速（数秒）。
@@ -406,6 +412,10 @@ def compute_dwell_profile(
     fine = np.zeros(max(size, 1), dtype=float)
     last_roll = None  # want_today 用: 窓の最終日ぶんのロールアップ（スナップショット当日強調）。
 
+    # want_sessions: UTC カレンダー日 -> 表示 bin プロファイル（境界分割日は同日キーで合算）。
+    #   固定グリッド中心 → 表示 bin 変換は下段の disp（centers_fine 経由）と同一定義を使う。
+    sessions: dict[str, np.ndarray] = {}
+
     day = (win_from // 86400) * 86400
     while day < win_to:
         lo_t = max(day, win_from)
@@ -423,6 +433,15 @@ def compute_dwell_profile(
                 hi = min(size, off + len(arr))
                 if hi > lo:
                     fine[lo:hi] += arr[(lo - off):(hi - off)]
+                if want_sessions:
+                    # その日の roll[roll_key] を表示 bin へ再集計＝日別プロファイルの形（試作 mp_core と同）。
+                    cd = (roll["kmin"] + np.arange(len(arr)) + 0.5) * GRID_W
+                    dd = np.clip(((cd - price_min) / binw).astype(int), 0, n_bins - 1)
+                    da = np.zeros(n_bins, dtype=float)
+                    np.add.at(da, dd, arr)
+                    ds = pd.Timestamp(int(day), unit="s").strftime("%Y-%m-%d")
+                    prev = sessions.get(ds)  # 境界分割日（完全日と部分日が同一 ds）は合算。
+                    sessions[ds] = da if prev is None else prev + da
         day += 86400
 
     # 固定グリッド(fine) → 表示 bin へ再集計。
@@ -469,6 +488,12 @@ def compute_dwell_profile(
         today_max = float(today.max()) if today.max() > 0 else 1.0
         out["today"] = [round(float(v), 3) for v in today]
         out["today_max"] = today_max
+    if want_sessions:
+        # 日付昇順で {date, tpo[]} を返す（candle 版・試作 mp_core と同順・同形）。
+        out["sessions"] = [
+            {"date": d, "tpo": [round(float(v), 2) for v in a]}
+            for d, a in sorted(sessions.items())
+        ]
     return out
 
 

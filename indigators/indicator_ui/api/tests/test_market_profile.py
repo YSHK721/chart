@@ -286,3 +286,73 @@ class TestComputeCandleProfileNBinsConsistency:
         for r in (r10, r60):
             assert r["price_min"] <= r["va_low"] <= r["poc"] <= r["va_high"] <= r["price_max"]
         assert abs(r10["poc"] - r60["poc"]) <= (16.0 - 10.0) / 10
+
+
+# --------------------------------------------------------------------------- #
+# want_sessions（日別プロファイル分割・移植元 prototype_260630-01 mp_core want_sessions）
+# --------------------------------------------------------------------------- #
+_DAY = 86400
+# 2024-01-01 00:00 UTC。以降 1D 刻みで別カレンダー日になる。
+_D0 = 1704067200
+
+# 各足に UTC 日付が付くよう time を日境界へ置く 3 日ぶんの足（time 昇順）。
+#   day0 [10,14] / day1 [11,13] / day2 [12,16]（GOLDEN と同レンジで手計算可能）。
+_SESSION_CANDLES = [
+    _mk(_D0 + 0 * _DAY, 10.0, 14.0, 10.0, 13.0),
+    _mk(_D0 + 1 * _DAY, 13.0, 13.0, 11.0, 12.0),
+    _mk(_D0 + 2 * _DAY, 12.0, 16.0, 12.0, 15.0),
+]
+
+
+class TestComputeCandleProfileSessions:
+    """want_sessions=True: 各カレンダー日の表示 bin プロファイルを返す（candle 経路）。
+
+    手計算（n_bins=6, price_min=10, price_max=16, bin_width=1, edges=[10..16]）:
+      day0 [10,14] -> bin 0..4 に +1 = [1,1,1,1,1,0]
+      day1 [11,13] -> bin 1..3 に +1 = [0,1,1,1,0,0]
+      day2 [12,16] -> bin 2..5 に +1 = [0,0,1,1,1,1]
+    省略時（want_sessions=False）は sessions キーを付けない（後方互換）。
+    """
+
+    def test_omitted_has_no_sessions_key(self):
+        result = compute_candle_profile(_SESSION_CANDLES, n_bins=6, va_pct=0.70)
+        assert "sessions" not in result
+
+    def test_sessions_returns_one_entry_per_calendar_day(self):
+        # Act
+        result = compute_candle_profile(
+            _SESSION_CANDLES, n_bins=6, va_pct=0.70, want_sessions=True
+        )
+        # Assert: 3 日ぶん・日付昇順・各 tpo 長 = n_bins。
+        sessions = result["sessions"]
+        assert [s["date"] for s in sessions] == ["2024-01-01", "2024-01-02", "2024-01-03"]
+        for s in sessions:
+            assert len(s["tpo"]) == 6
+
+    def test_sessions_per_day_shape_matches_hand_calc(self):
+        # Act
+        result = compute_candle_profile(
+            _SESSION_CANDLES, n_bins=6, va_pct=0.70, want_sessions=True
+        )
+        sessions = {s["date"]: s["tpo"] for s in result["sessions"]}
+        # Assert: 各日が触れた [low,high] の bin へ +1（手計算）。
+        assert sessions["2024-01-01"] == [1, 1, 1, 1, 1, 0]
+        assert sessions["2024-01-02"] == [0, 1, 1, 1, 0, 0]
+        assert sessions["2024-01-03"] == [0, 0, 1, 1, 1, 1]
+
+    def test_sessions_sum_matches_cumulative_tpo(self):
+        # 性質: 全日 sessions の bin 別合計 = 累積 tpo（分割の保存則）。
+        result = compute_candle_profile(
+            _SESSION_CANDLES, n_bins=6, va_pct=0.70, want_sessions=True
+        )
+        acc = [0] * 6
+        for s in result["sessions"]:
+            for j, v in enumerate(s["tpo"]):
+                acc[j] += v
+        cum = [b["tpo"] for b in result["bins"]]
+        assert acc == cum
+
+    def test_sessions_empty_candles(self):
+        # 境界: 空リストは sessions=[] を返す（例外化しない・後方互換の安全値）。
+        result = compute_candle_profile([], n_bins=6, va_pct=0.70, want_sessions=True)
+        assert result["sessions"] == []
