@@ -61,32 +61,73 @@ test('catalog: market_profile exposes src ENUM [candle,dwell,m1] default candle 
   assert.equal(src.group, paramOf(d, 'bins').group);
 });
 
-// market_profile に range（バー幅pt）ENUM を追加。試作の range セレクタ（auto/25/50/100/250/500pt）を移植。
-//   'auto'=従来 bins に委ねる。値指定時は client が &barw= を付与し backend が n_bins を算出する。
-//   range≠auto のとき bins を無効化する conditionalEnable（bins は range=auto のときのみ有効）。
-test('catalog: market_profile exposes range ENUM [auto,25,50,100,250,500] default auto with bar-width label', () => {
+// market_profile に resmode（解像度）ENUM を追加。試作 prototype_260630-01 の解像度トグル
+//   （ビン ⇄ レンジ）を移植。segmented（横並びセグメントボタン）で描画し、押した側の入力だけ表示する。
+test('catalog: market_profile exposes resmode ENUM [bins,range] default bins as segmented toggle', () => {
+  const d = get('market_profile');
+  const resmode = paramOf(d, 'resmode');
+  assert.ok(resmode, 'resmode param exists');
+  assert.equal(resmode.type, ParamType.ENUM);
+  assert.equal(resmode.default, 'bins');
+  assert.deepEqual(resmode.enumValues, ['bins', 'range']);
+  assert.equal(resmode.label, '解像度');
+  assert.equal(resmode.enumLabels.bins, 'ビン');
+  assert.equal(resmode.enumLabels.range, 'レンジ');
+  // ENUM 既定 select でなく横並びセグメントボタンで描く（form_model.resolveControlType が尊重）。
+  assert.equal(resmode.controlType, 'segmented');
+  // order は bins/range より前（トグルを先頭に置く）。
+  assert.ok(resmode.order < paramOf(d, 'bins').order);
+  assert.ok(resmode.order < paramOf(d, 'range').order);
+});
+
+// market_profile の range（レンジpt）ENUM。resmode トグル移植に伴い 'auto' を撤去し純粋な値集合へ。
+//   resmode=range のときのみ表示され、client が &barw= を付与し backend が n_bins を算出する。
+test('catalog: market_profile range ENUM drops auto → [25,50,100,250,500] default 100', () => {
   const d = get('market_profile');
   const range = paramOf(d, 'range');
   assert.ok(range, 'range param exists');
   assert.equal(range.type, ParamType.ENUM);
-  assert.equal(range.default, 'auto');
-  assert.deepEqual(range.enumValues, ['auto', '25', '50', '100', '250', '500']);
-  assert.equal(range.label, 'バー幅(pt)');
-  assert.equal(range.enumLabels.auto, '自動(bins)');
-  assert.equal(range.enumLabels['25'], '25');
+  assert.equal(range.default, '100');
+  assert.deepEqual(range.enumValues, ['25', '50', '100', '250', '500']);
+  assert.equal(range.label, 'レンジ(pt)');
+  // 'auto' 由来のラベルは撤去済み。
+  assert.equal(range.enumLabels.auto ?? null, null);
+  // resmode=range のときだけ表示。
+  assert.deepEqual(range.conditionalVisible, { when: { param: 'resmode', equals: 'range' } });
   // bins/va/limit/src と同じ group（同一セクションに並ぶ）。
   assert.equal(range.group, paramOf(d, 'bins').group);
 });
 
-// range≠auto のとき bins を「非表示」にする conditionalVisible（グレーアウトでなくトグル）。
-//   バー幅=auto のときだけビン数を出し、バー幅に数値を選ぶとビン数行を隠す（range が実質トグル）。
-test('catalog: market_profile bins uses conditionalVisible {range:auto} and drops conditionalEnable', () => {
+// resmode=bins のとき bins を表示、resmode=range のとき非表示にする conditionalVisible（トグル）。
+//   従来の range=auto 条件を resmode=bins へ置換（resmode がトグルスイッチ）。
+test('catalog: market_profile bins uses conditionalVisible {resmode:bins} and drops conditionalEnable', () => {
   const d = get('market_profile');
   const bins = paramOf(d, 'bins');
-  // range=auto のときだけ表示（それ以外は非表示）。
-  assert.deepEqual(bins.conditionalVisible, { when: { param: 'range', equals: 'auto' } });
+  // resmode=bins のときだけ表示（それ以外は非表示）。
+  assert.deepEqual(bins.conditionalVisible, { when: { param: 'resmode', equals: 'bins' } });
   // 旧グレーアウト（conditionalEnable）は撤去済み（非表示トグルへ移行）。
   assert.equal(bins.conditionalEnable ?? null, null);
+});
+
+// bins をプリセット ENUM（30/60/100・既定60）へ変更。試作 prototype_260630-01/web/index.html:30-34 の
+//   <select>（option 30 / 60(selected) / 100）に忠実。レンジ(range)と同じく select・同位置(order 同一)で描く。
+test('catalog: market_profile bins is ENUM preset [30,60,100] default 60, same order as range', () => {
+  const d = get('market_profile');
+  const bins = paramOf(d, 'bins');
+  // 数値自由入力(INT)からプリセット(ENUM)へ。
+  assert.equal(bins.type, ParamType.ENUM);
+  assert.deepEqual(bins.enumValues, ['30', '60', '100']);
+  assert.equal(bins.default, '60');
+  // ラベルは数値そのまま。
+  assert.equal(bins.enumLabels[30], '30');
+  assert.equal(bins.enumLabels[60], '60');
+  assert.equal(bins.enumLabels[100], '100');
+  // 全プリセットが妥当なため MIN_VALUE 制約は除去。
+  assert.equal((bins.constraints ?? []).length, 0);
+  // conditionalVisible（resmode=bins トグル）は維持。
+  assert.deepEqual(bins.conditionalVisible, { when: { param: 'resmode', equals: 'bins' } });
+  // order はレンジ(range)と同一＝トグルで同位置に入れ替わる（下の va/limit/src がズレない）。
+  assert.equal(bins.order, paramOf(d, 'range').order);
 });
 
 // 回帰防止: wait_for_close の既定は false。true だと lwc_chart が最終足（未確定足）を

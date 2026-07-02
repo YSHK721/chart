@@ -121,7 +121,7 @@ test('setParams without src leaves src absent on the client context (candle 後�
   assert.ok(!('src' in client.calls[0]));
 });
 
-test('setParams({range}) forwards range to the client on refresh (バー幅pt)', async () => {
+test('setParams({range}) forwards range to the client on refresh (レンジpt)', async () => {
   // Arrange
   const { actor, client } = makeActor();
   actor.setParams({ range: '50' });

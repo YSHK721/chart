@@ -19,7 +19,7 @@ export class MarketProfileActor {
     this._getContext = typeof getContext === 'function' ? getContext : () => ({});
     this._enabled = false;
     this._attached = false;
-    // 取得パラメータ（bins/va/limit/src/range）。setParams で更新し refresh 時に getContext へ重畳する。
+    // 取得パラメータ（bins/va/src/range）。setParams で更新し refresh 時に getContext へ重畳する。
     //   未設定時は空＝getContext のみ（サーバ既定・後方互換）。
     this._params = {};
   }
@@ -28,12 +28,12 @@ export class MarketProfileActor {
     return this._enabled;
   }
 
-  // 取得パラメータ（bins/va/limit/src/range）を設定する。null/undefined のキーは無視する
+  // 取得パラメータ（bins/va/src/range）を設定する。null/undefined のキーは無視する
   //   （getContext の値やサーバ既定を潰さない）。次回 refresh から反映される。
-  //   range（バー幅pt）は client.buildMarketProfileUrl が barw へ写像する（'auto' は付与しない）。
+  //   range（レンジpt）は client.buildMarketProfileUrl が barw へ写像する（'auto' は付与しない）。
   setParams(params = {}) {
     const next = {};
-    for (const key of ['bins', 'va', 'limit', 'src', 'range']) {
+    for (const key of ['bins', 'va', 'src', 'range', 'resmode']) {
       if (params[key] != null) {
         next[key] = params[key];
       }
@@ -58,7 +58,8 @@ export class MarketProfileActor {
     if (!this._enabled) {
       return;
     }
-    // getContext（datasetRef/timeframe/limit）へ setParams の bins/va/limit を重畳して取得する。
+    // getContext（datasetRef/timeframe/…）へ setParams の bins/va/src/range を重畳して取得する。
+    //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
     const profile = await this._client.fetchProfile({ ...this._getContext(), ...this._params });
     if (profile) {
       this._primitive.setProfile(profile);

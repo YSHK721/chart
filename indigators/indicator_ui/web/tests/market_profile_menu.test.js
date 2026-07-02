@@ -36,19 +36,18 @@ test('catalog: market_profile is registered and retrievable via list/get', () =>
   assert.equal(def.compute.computeId, 'market_profile');
 });
 
-test('catalog: market_profile defines bins/va/limit params with defaults and constraints', () => {
+test('catalog: market_profile defines bins/va params (no limit param＝全期間集計固定)', () => {
   const def = get('market_profile');
-  // bins: INT 既定60 min1
-  assert.equal(paramOf(def, 'bins').type, ParamType.INT);
-  assert.equal(paramOf(def, 'bins').default, 60);
-  assert.ok(paramOf(def, 'bins').constraints.some((c) => c.kind === ConstraintKind.MIN_VALUE));
+  // bins: ENUM プリセット [30,60,100] 既定 '60'（数値自由入力→プリセット化・MIN_VALUE 制約撤去）。
+  assert.equal(paramOf(def, 'bins').type, ParamType.ENUM);
+  assert.equal(paramOf(def, 'bins').default, '60');
+  assert.deepEqual(paramOf(def, 'bins').enumValues, ['30', '60', '100']);
   // va: FLOAT 既定0.70 0<va<1 RANGE_OPEN
   assert.equal(paramOf(def, 'va').type, ParamType.FLOAT);
   assert.equal(paramOf(def, 'va').default, 0.70);
   assert.ok(paramOf(def, 'va').constraints.some((c) => c.kind === ConstraintKind.RANGE_OPEN));
-  // limit: INT 既定1500 min1
-  assert.equal(paramOf(def, 'limit').type, ParamType.INT);
-  assert.equal(paramOf(def, 'limit').default, 1500);
+  // limit: 対象本数 param は削除済（全期間集計固定＝再追加を禁止する回帰）。
+  assert.equal(paramOf(def, 'limit'), undefined, 'limit param は定義しない');
 });
 
 // --- controller 委譲 --------------------------------------------------------
@@ -95,16 +94,18 @@ test('applyIndicator(market_profile) delegates to the actor and does NOT call /c
   assert.equal(inst.indicatorId, 'market_profile');
 });
 
-test('applyIndicator(market_profile) forwards default params (bins/va/limit/src) to actor.setParams', async () => {
+test('applyIndicator(market_profile) forwards default params (resmode/bins/va/src) to actor.setParams', async () => {
   // Arrange
   const marketProfile = fakeMarketProfile();
   const computeCalls = [];
   const ctrl = makeController({ marketProfile, computeCalls });
   // Act
   await ctrl.applyIndicator('market_profile', 'default');
-  // Assert: src は既定 candle（後方互換）。bins/va/limit と同様に転送される。
+  // Assert: src は既定 candle（後方互換）。resmode（解像度）既定 bins・range 既定 100（'auto' 撤去済）も
+  //   bins/va と同様に転送される（client が resmode で bins/barw を排他化するため range 同送は無害）。
+  //   limit は転送しない（MP は全期間集計固定＝limit 非送信）。
   assert.equal(marketProfile.params.length, 1);
-  assert.deepEqual(marketProfile.params[0], { bins: 60, va: 0.70, limit: 1500, src: 'candle' });
+  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'candle', resmode: 'bins', range: '100' });
 });
 
 test('applyIndicator(existing indicator) still calls /compute (no regression)', async () => {
@@ -146,7 +147,8 @@ test('restore() re-hydrates a saved market_profile via the actor and does NOT ca
   await ctrl.restore();
   // Assert: MP は /compute を介さず actor へ復元される（保存 params で setParams、可視なので setEnabled(true)）。
   assert.equal(computeCalls.length, 0, 'restore は MP を /compute で計算しない');
-  assert.deepEqual(marketProfile.params.at(-1), { bins: 80, va: 0.65, limit: 500, src: 'dwell' });
+  // 保存 params に limit が残っていても _mpParams は転送しない（全期間集計固定）。
+  assert.deepEqual(marketProfile.params.at(-1), { bins: 80, va: 0.65, src: 'dwell' });
   assert.deepEqual(marketProfile.enables, [true]);
 });
 
@@ -270,8 +272,11 @@ test('gear apply rejection on a market_profile does not surface as an unhandled 
   assert.equal(unhandled.length, 0, 'gear の拒否は catch され unhandledRejection にならない');
 });
 
-// gear（設定変更）で range（バー幅pt）を actor へ転送する。auto/未指定は転送しない（従来 bins・
+// gear（設定変更）で range（レンジpt）を actor へ転送する。auto/未指定は転送しない（従来 bins・
 //   既定 apply の deepEqual を壊さない）。src=m1 も bins/va/limit/src と同様に転送される。
+//   後方互換マイグレーション（修正1）: resmode 欠落かつ数値 range の旧 barw 保存インスタンスは
+//   _mpParams が resmode='range' を導出する。これにより gear 経路でも保存レンジが barw として
+//   送られる（無しだと bins= に化ける defect）。よって転送 params には resmode='range' が載る。
 test('gear on market_profile forwards range to actor.setParams when set (non-auto)', async () => {
   // Arrange
   const marketProfile = fakeMarketProfile();
@@ -287,22 +292,23 @@ test('gear on market_profile forwards range to actor.setParams when set (non-aut
   // Act: document=null → applyParams(currentParams) が即時発火する。
   ctrl._onGearMarketProfile(inst, def);
   await new Promise((resolve) => setTimeout(resolve, 10));
-  // Assert: 保存 params（range=50 含む）を actor へ転送する。
-  assert.deepEqual(marketProfile.params.at(-1), { bins: 80, va: 0.65, limit: 500, src: 'm1', range: '50' });
+  // Assert: 保存 params（range=50 含む）を actor へ転送する。resmode 欠落の旧 barw インスタンスは
+  //   resmode='range' が導出される（後方互換マイグレーション・修正1）。
+  assert.deepEqual(marketProfile.params.at(-1), { bins: 80, va: 0.65, src: 'm1', range: '50', resmode: 'range' });
 });
 
-test('MarketProfileActor.setParams merges bins/va/limit into the fetch context', async () => {
-  // Arrange
+test('MarketProfileActor.setParams merges bins/va but DROPS limit (全期間集計固定)', async () => {
+  // Arrange: getContext は limit を持たない構成。setParams に limit を渡しても転送されないことを固定する。
   const calls = [];
   const client = { async fetchProfile(ctx) { calls.push(ctx); return { bins: [] }; } };
   const primitive = { setProfile() {}, setVisible() {} };
   const actor = new MarketProfileActor({
     client, primitive, mainSeries: {},
-    getContext: () => ({ datasetRef: 'sample', timeframe: '1D', limit: 1500 }),
+    getContext: () => ({ datasetRef: 'sample', timeframe: '1D' }),
   });
   // Act
   actor.setParams({ bins: 80, va: 0.68, limit: 500 });
   await actor.setEnabled(true);
-  // Assert: getContext の値に params が重畳される（limit は params が優先）。
-  assert.deepEqual(calls[0], { datasetRef: 'sample', timeframe: '1D', bins: 80, va: 0.68, limit: 500 });
+  // Assert: bins/va は重畳されるが limit は setParams で除外され fetch context に載らない。
+  assert.deepEqual(calls[0], { datasetRef: 'sample', timeframe: '1D', bins: 80, va: 0.68 });
 });

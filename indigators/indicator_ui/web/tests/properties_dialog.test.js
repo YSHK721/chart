@@ -93,31 +93,36 @@ test('PropertiesDialog existing-instance variant is preserved (global instance s
 
 // _refreshVisible: conditionalVisible トグルの動的経路（DOM なしのロジック層検証・C-2）。
 //   _fieldEls を fake row（style を持つ）で差し替え、range 値に応じて bins 行の display が
-//   出没することを固定する（バー幅=自動→bins 表示 / バー幅=25→bins 非表示）。
+//   出没することを固定する（レンジ=自動→bins 表示 / レンジ=25→bins 非表示）。
 function fakeFieldEls(names) {
   const map = new Map();
   for (const name of names) {
-    map.set(name, { row: { style: {}, classList: { toggle() {} } }, control: null, error: { textContent: '' } });
+    map.set(name, {
+      row: { style: {}, classList: { toggle() {}, add() {}, remove() {} } },
+      control: null,
+      error: { textContent: '' },
+    });
   }
   return map;
 }
 
-test('_refreshVisible: market_profile bins row is shown when range=auto and hidden when range=25', () => {
+test('_refreshVisible: market_profile bins/range rows toggle with resmode (bins→bins可視 / range→range可視)', () => {
   const dialog = new PropertiesDialog({ document: fakeDoc(), def: get('market_profile'), instance: null });
-  dialog._fieldEls = fakeFieldEls(['bins', 'va', 'limit', 'src', 'range']);
+  dialog._fieldEls = fakeFieldEls(['resmode', 'bins', 'va', 'limit', 'src', 'range']);
 
-  // Arrange/Act: バー幅=自動 → bins 表示（display は空文字＝既定表示）。
-  dialog._values.range = 'auto';
+  // Arrange/Act: 解像度=ビン → bins 表示・range 非表示。
+  dialog._values.resmode = 'bins';
   dialog._refreshVisible();
   assert.equal(dialog._fieldEls.get('bins').row.style.display, '');
-  assert.equal(dialog._fieldEls.get('range').row.style.display, ''); // range は常に表示
+  assert.equal(dialog._fieldEls.get('range').row.style.display, 'none');
 
-  // Act: バー幅=25 → bins 非表示（display:none）、range は表示維持。
-  dialog._values.range = '25';
+  // Act: 解像度=レンジ → bins 非表示・range 表示。
+  dialog._values.resmode = 'range';
   dialog._refreshVisible();
   assert.equal(dialog._fieldEls.get('bins').row.style.display, 'none');
   assert.equal(dialog._fieldEls.get('range').row.style.display, '');
   assert.equal(dialog._fieldEls.get('va').row.style.display, ''); // 他フィールドは非回帰
+  assert.equal(dialog._fieldEls.get('resmode').row.style.display, ''); // トグル自体は常時表示
 });
 
 // _revalidate: 隠しフィールド（computeVisible=false）の violation を OK 可否から除外する
@@ -137,13 +142,13 @@ function fakeRevalidateEls(names) {
   return map;
 }
 
-test('_revalidate: hidden bins violation does NOT block OK (bins=0 invalid + range=25 → ok=true)', () => {
-  // Arrange: market_profile で bins を min 違反（0）にし、range=25 で bins を非表示化。
+test('_revalidate: hidden bins violation does NOT block OK (bins=0 invalid + resmode=range → ok=true)', () => {
+  // Arrange: market_profile で bins を min 違反（0）にし、resmode=range で bins を非表示化。
   const dialog = new PropertiesDialog({ document: fakeDoc(), def: get('market_profile'), instance: null });
-  dialog._fieldEls = fakeRevalidateEls(['bins', 'va', 'limit', 'src', 'range']);
+  dialog._fieldEls = fakeRevalidateEls(['resmode', 'bins', 'va', 'limit', 'src', 'range']);
   dialog._okBtn = { disabled: false };
   dialog._values.bins = 0;
-  dialog._values.range = '25';
+  dialog._values.resmode = 'range';
   // Act
   const ok = dialog._revalidate();
   // Assert: 隠れた bins の violation は OK を阻害しない。
@@ -151,13 +156,13 @@ test('_revalidate: hidden bins violation does NOT block OK (bins=0 invalid + ran
   assert.equal(dialog._okBtn.disabled, false);
 });
 
-test('_revalidate: visible bins violation DOES block OK (bins=0 invalid + range=auto → ok=false)', () => {
-  // Arrange: 同じ bins 不正でも range=auto では bins が表示中 → 阻害する。
+test('_revalidate: visible bins violation DOES block OK (bins=0 invalid + resmode=bins → ok=false)', () => {
+  // Arrange: 同じ bins 不正でも resmode=bins では bins が表示中 → 阻害する。
   const dialog = new PropertiesDialog({ document: fakeDoc(), def: get('market_profile'), instance: null });
-  dialog._fieldEls = fakeRevalidateEls(['bins', 'va', 'limit', 'src', 'range']);
+  dialog._fieldEls = fakeRevalidateEls(['resmode', 'bins', 'va', 'limit', 'src', 'range']);
   dialog._okBtn = { disabled: false };
   dialog._values.bins = 0;
-  dialog._values.range = 'auto';
+  dialog._values.resmode = 'bins';
   // Act
   const ok = dialog._revalidate();
   // Assert: 表示中フィールドの violation は OK を阻害する。
@@ -165,16 +170,88 @@ test('_revalidate: visible bins violation DOES block OK (bins=0 invalid + range=
   assert.equal(dialog._okBtn.disabled, true);
 });
 
-test('_revalidate: visible va violation blocks OK regardless of range (va=1.5 invalid + range=25 → ok=false)', () => {
-  // Arrange: va は常時表示（conditionalVisible なし）。範囲違反（0<va<1 に反する 1.5）は range に依らず阻害。
+test('_revalidate: visible va violation blocks OK regardless of resmode (va=1.5 invalid + resmode=range → ok=false)', () => {
+  // Arrange: va は常時表示（conditionalVisible なし）。範囲違反（0<va<1 に反する 1.5）は resmode に依らず阻害。
   const dialog = new PropertiesDialog({ document: fakeDoc(), def: get('market_profile'), instance: null });
-  dialog._fieldEls = fakeRevalidateEls(['bins', 'va', 'limit', 'src', 'range']);
+  dialog._fieldEls = fakeRevalidateEls(['resmode', 'bins', 'va', 'limit', 'src', 'range']);
   dialog._okBtn = { disabled: false };
   dialog._values.va = 1.5;
-  dialog._values.range = '25'; // bins は隠れるが va は表示のまま
+  dialog._values.resmode = 'range'; // bins は隠れるが va は表示のまま
   // Act
   const ok = dialog._revalidate();
   // Assert
   assert.equal(ok, false);
   assert.equal(dialog._okBtn.disabled, true);
+});
+
+// ---- segmented レンダラ（ENUM を横並びボタン群で描く・解像度トグル移植）------------
+// jsdom を避けた最小 DOM スタブ（button + classList + append + click 発火）で検証する（C-2）。
+function segFakeDoc() {
+  const make = () => ({
+    className: '', dataset: {}, textContent: '', type: '', style: {},
+    _handlers: {},
+    _cls: new Set(),
+    classList: {
+      _owner: null,
+      add(c) { this._owner._cls.add(c); },
+      remove(c) { this._owner._cls.delete(c); },
+      toggle(c, on) {
+        const has = this._owner._cls.has(c);
+        const next = on === undefined ? !has : on;
+        if (next) this._owner._cls.add(c); else this._owner._cls.delete(c);
+      },
+      contains(c) { return this._owner._cls.has(c); },
+    },
+    children: [],
+    append(...kids) { this.children.push(...kids); },
+    addEventListener(ev, fn) { this._handlers[ev] = fn; },
+    click() { if (this._handlers.click) this._handlers.click(); },
+  });
+  return {
+    createElement() {
+      const el = make();
+      el.classList._owner = el; // classList から自要素の _cls を参照させる
+      return el;
+    },
+  };
+}
+
+const RESMODE_FIELD = {
+  name: 'resmode',
+  enumValues: ['bins', 'range'],
+  enumLabels: { bins: 'ビン', range: 'レンジ' },
+  value: 'bins',
+};
+
+test('_buildSegmented renders one button per enum option with active on current value', () => {
+  const dialog = new PropertiesDialog({ document: segFakeDoc(), def: get('market_profile'), instance: null });
+  const wrap = dialog._buildSegmented(RESMODE_FIELD);
+  // 2 オプション = 2 ボタン。
+  assert.equal(wrap.children.length, 2);
+  const [binsBtn, rangeBtn] = wrap.children;
+  assert.equal(binsBtn.textContent, 'ビン');
+  assert.equal(rangeBtn.textContent, 'レンジ');
+  // 現在値（bins）のボタンだけ is-active。
+  assert.equal(binsBtn.classList.contains('is-active'), true);
+  assert.equal(rangeBtn.classList.contains('is-active'), false);
+});
+
+test('_buildSegmented click updates _values and fires _onChange (resmode=range → bins 行が消え range 行が出る)', () => {
+  const dialog = new PropertiesDialog({ document: segFakeDoc(), def: get('market_profile'), instance: null });
+  // _onChange が走ることで _refreshVisible が bins/range 行を出没させる経路を固定する。
+  dialog._fieldEls = fakeFieldEls(['resmode', 'bins', 'va', 'limit', 'src', 'range']);
+  dialog._okBtn = { disabled: false };
+
+  const wrap = dialog._buildSegmented(RESMODE_FIELD);
+  const [binsBtn, rangeBtn] = wrap.children;
+
+  // Act: 「レンジ」ボタンをクリック。
+  rangeBtn.click();
+
+  // Assert: 値更新 + アクティブ切替 + _onChange 波及（bins 非表示 / range 表示）。
+  assert.equal(dialog._values.resmode, 'range');
+  assert.equal(rangeBtn.classList.contains('is-active'), true);
+  assert.equal(binsBtn.classList.contains('is-active'), false);
+  assert.equal(dialog._fieldEls.get('bins').row.style.display, 'none');
+  assert.equal(dialog._fieldEls.get('range').row.style.display, '');
 });

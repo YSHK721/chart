@@ -173,15 +173,39 @@ export class IndicatorController {
     return def?.compute?.computeId === 'market_profile';
   }
 
-  // MP アクターへ渡す取得 params（bins/va/limit/src/range）を組み立てる（apply/gear/restore 共通）。
-  //   range（バー幅pt）は 'auto'/null/未指定のとき「従来 bins」を意味するためキーを載せない
-  //   （既定転送の後方互換＝bins/va/limit/src のみ）。値指定時のみ range を付与する。
+  // MP アクターへ渡す取得 params（resmode/bins/va/src/range）を組み立てる（apply/gear/restore 共通）。
+  //   limit は転送しない（MP は全期間集計固定）。保存 params に limit が残っていても載せない。
+  //   resmode（解像度モード）を転送し、client が resmode で bins/barw の送信を排他化する。
+  //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
   _mpParams(p = {}) {
-    const out = { bins: p.bins, va: p.va, limit: p.limit, src: p.src };
+    const out = { bins: p.bins, va: p.va, src: p.src };
+    // resmode（解像度モード）: client が bins/barw の送信を排他化する。
+    //   後方互換: 明示 resmode が無い旧 barw 保存インスタンス（数値 range・resmode 無し）は
+    //   range から resmode を導出して保存レンジを維持する（_deriveResmode）。
+    const resmode = this._deriveResmode(p);
+    if (resmode != null) {
+      out.resmode = resmode;
+    }
     if (p.range != null && p.range !== 'auto') {
       out.range = p.range;
     }
     return out;
+  }
+
+  // resmode（解像度モード）を決める後方互換ヘルパ（restore と apply の両経路で共用）。
+  //   - 明示 resmode があればそのまま返す（後方互換補完のみ・上書きしない）。
+  //   - resmode 欠落かつ range がレンジ数値集合 → 'range'（保存したレンジを維持し client が &barw= を送る）。
+  //   - resmode 欠落かつ range='auto' → 'bins'（従来通り bins フォールバック）。
+  //   - resmode も range も無い旧インスタンスは null を返し resmode を付与しない（client 既定 = bins）。
+  _deriveResmode(p = {}) {
+    if (p.resmode != null) {
+      return p.resmode;
+    }
+    if (p.range == null) {
+      return null;
+    }
+    const BAR_WIDTHS = new Set(['25', '50', '100', '250', '500']);
+    return BAR_WIDTHS.has(String(p.range)) ? 'range' : 'bins';
   }
 
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
@@ -272,7 +296,7 @@ export class IndicatorController {
     this._renderLegend();
   }
 
-  // MP 凡例 gear: プロパティダイアログで bins/va/limit/src を編集し、onApply で setParams+refresh。
+  // MP 凡例 gear: プロパティダイアログで bins/va/src を編集し、onApply で setParams+refresh。
   //   /compute は呼ばない。DOM 不在時は現 params で即時反映（フォールバック）。
   _onGearMarketProfile(inst, def) {
     const doc = this._document;

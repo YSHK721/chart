@@ -6,7 +6,7 @@
       dwell 集計・POC/VA・ビン整合・休場除外（薄い時間帯が 0 になる）。
   - controller: src='dwell'（既知 tick ref）で 200/profile 妥当、src='dwell'＆非 tick ref で 400、
       src 不正で 400、src 省略で candle 後方互換。
-  - 統合（実データ・軽量）: jp225_tick の小窓で src=dwell が 200 かつ POC がレンジ内（perf 上限が効く）。
+  - 統合（実データ・軽量）: jp225_tick の小窓で src=dwell が 200 かつ POC がレンジ内（全期間・ディスクキャッシュ）。
 
 設計方針（AAA・handle_compute / candle テストの流儀に合わせる）:
   合成ティックは _load_window_ticks（単一注入点）を monkeypatch し、既知の (secs, mids) を注入する。
@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from adapter.compute import market_profile_dwell as mpd
@@ -32,8 +33,13 @@ _COLD = 1100.0  # 休場時間帯にのみ現れる価格＝滞在は除外さ�
 # テスト基盤: 合成ティック注入 / キャッシュ隔離
 # --------------------------------------------------------------------------- #
 @pytest.fixture(autouse=True)
-def _isolate_caches():
-    """プロセス内キャッシュ（日別/部分/active table）をテスト間で隔離する。"""
+def _isolate_caches(tmp_path, monkeypatch):
+    """プロセス内キャッシュ（日別/部分/active table）とディスクキャッシュをテスト間で隔離する。
+
+    ディスクキャッシュ基点を tmp へ差し替え、実データ DATA_DIR/cache への書込を完全に防ぐ
+    （既存データ非破壊・cache ディレクトリのみ書込の制約を保証する）。
+    """
+    monkeypatch.setattr(mpd, "_CACHE_ROOT", tmp_path / "mp_dwell_cache")
     mpd._reset_caches()
     yield
     mpd._reset_caches()
@@ -171,8 +177,8 @@ class TestComputeDwellProfile:
         profile = self._run(monkeypatch)
         assert profile["tpo_units"] > 0
 
-    def test_perf_cap_limits_scanned_days(self, monkeypatch):
-        # 巨大窓要求でも直近 _MAX_DWELL_DAYS 日ぶんに限定して走査する（呼び出し窓を記録）。
+    def test_full_period_scans_all_days_no_cap(self, monkeypatch):
+        # 全期間化: 250日キャップを撤廃したので、t0 が大昔でも window を切り詰めず全日を走査する。
         secs, mids = _synthetic_master()
         calls = []
         base_loader = _make_loader(secs, mids)
@@ -182,15 +188,16 @@ class TestComputeDwellProfile:
             return base_loader(symbol, start, end)
 
         monkeypatch.setattr(mpd, "_load_window_ticks", _spy)
-        # t0 を大昔に置く（_MAX_DWELL_DAYS を大きく超える窓）。
+        # t0 を旧キャップ(250日)を超える過去に置く（300日窓）。
         t1 = _DAY0 + 2 * _DAY
-        far_t0 = t1 - 5000 * _DAY
+        far_t0 = t1 - 300 * _DAY
         mpd.compute_dwell_profile("JP225", far_t0, t1, 990.0, 1110.0, 12, bar_sec=_DAY)
-        # 走査開始は win_to - _MAX_DWELL_DAYS*_DAY 以降に丸められる（far_t0 まで遡らない）。
-        win_to = t1 + _DAY
-        cap_from = win_to - mpd._MAX_DWELL_DAYS * _DAY
-        earliest = min(s for s, _ in calls)
-        assert earliest >= cap_from
+        # 走査開始は far_t0 の日境界まで遡る（旧 cap_from に丸められない）。
+        old_cap_from = (t1 + _DAY) - mpd._MAX_DWELL_DAYS * _DAY
+        day_calls = [s for s, _ in calls if s % _DAY == 0]  # 完全日ロールアップの呼び出し。
+        earliest = min(day_calls)
+        assert earliest == (far_t0 // _DAY) * _DAY   # 全期間の起点まで走査する。
+        assert earliest < old_cap_from               # 旧キャップより過去まで確実に遡る。
 
 
 # --------------------------------------------------------------------------- #
@@ -257,6 +264,190 @@ class TestDayRollupCaching:
 
 
 # --------------------------------------------------------------------------- #
+# ディスク永続キャッシュ: round-trip / 探索順 / 完了日永続化 / fail-safe
+# --------------------------------------------------------------------------- #
+class TestDiskCache:
+    def test_roundtrip_preserves_kmin_and_variable_length_arrays(self):
+        # Arrange: 可変長 dwell/cnt・kmin を持つロールアップ。
+        roll = {
+            "kmin": 97,
+            "dwell": np.array([1.0, 0.0, 5.5, 2.25], dtype=float),
+            "cnt": np.array([3.0, 0.0, 7.0, 4.0], dtype=float),
+        }
+        path = mpd._cache_path("JP225", _DAY0)
+
+        # Act: 保存 → 別プロセス相当（メモリ非依存）で読込。
+        mpd._save_day_rollup(path, roll)
+        loaded = mpd._load_day_rollup(path)
+
+        # Assert: kmin・可変長配列が完全一致。
+        assert loaded is not mpd._CACHE_MISS and loaded is not None
+        assert loaded["kmin"] == 97
+        assert np.array_equal(loaded["dwell"], roll["dwell"])
+        assert np.array_equal(loaded["cnt"], roll["cnt"])
+
+    def test_roundtrip_empty_day_is_none(self):
+        # 実データ無しの完了日（None）は None として往復し、_CACHE_MISS と区別される。
+        path = mpd._cache_path("JP225", _DAY0)
+        mpd._save_day_rollup(path, None)
+        loaded = mpd._load_day_rollup(path)
+        assert loaded is None  # 「実データ無しの完了日」＝再計算不要。
+
+    def test_missing_file_returns_cache_miss(self):
+        path = mpd._cache_path("JP225", _DAY0)
+        assert mpd._load_day_rollup(path) is mpd._CACHE_MISS
+
+    def test_completed_day_is_persisted_to_disk(self, monkeypatch):
+        # 完了日ロールアップはディスクにファイルが作られる。
+        secs, mids = _synthetic_master()
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        table = np.ones((7, 24), dtype=bool)
+        day = _DAY0
+        now = day + _DAY + 1  # 完了日。
+
+        mpd._day_rollup("JP225", day, table, now)
+
+        assert mpd._cache_path("JP225", day).is_file()
+
+    def test_incomplete_day_is_not_persisted_to_disk(self, monkeypatch):
+        # 当日（未確定）はディスクに保存しない（都度計算・stale 化防止）。
+        secs, mids = _synthetic_master()
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        table = np.ones((7, 24), dtype=bool)
+        day = _DAY0
+        now = day + 100  # 未完了日。
+
+        mpd._day_rollup("JP225", day, table, now)
+
+        assert not mpd._cache_path("JP225", day).is_file()
+
+    def test_search_order_disk_hit_skips_compute(self, monkeypatch):
+        # メモリ無 → ディスク有 でヒットし、loader（計算）は呼ばれない。
+        table = np.ones((7, 24), dtype=bool)
+        day = _DAY0
+        now = day + _DAY + 1
+        roll = {"kmin": 100, "dwell": np.array([9.0]), "cnt": np.array([2.0])}
+        mpd._save_day_rollup(mpd._cache_path("JP225", day), roll)  # 事前にディスクへ配置。
+
+        calls = []
+        monkeypatch.setattr(
+            mpd, "_load_window_ticks",
+            lambda s, a, b: calls.append((a, b)) or (mpd._EMPTY_SECS, mpd._EMPTY_MIDS),
+        )
+        got = mpd._day_rollup("JP225", day, table, now)
+
+        assert calls == []                       # 計算は行われない（ディスクヒット）。
+        assert got["kmin"] == 100
+        assert np.array_equal(got["dwell"], roll["dwell"])
+        assert ("JP225", day) in mpd._DAY_CACHE   # 以後はメモリからも返る。
+
+    def test_search_order_both_empty_computes_and_saves(self, monkeypatch):
+        # メモリ無・ディスク無 → 計算し、完了日ならディスクへ保存する。
+        secs, mids = _synthetic_master()
+        calls = []
+        base = _make_loader(secs, mids)
+        monkeypatch.setattr(
+            mpd, "_load_window_ticks",
+            lambda s, a, b: (calls.append((a, b)), base(s, a, b))[1],
+        )
+        table = np.ones((7, 24), dtype=bool)
+        day = _DAY0
+        now = day + _DAY + 1
+
+        mpd._day_rollup("JP225", day, table, now)
+
+        assert len(calls) == 1                         # 計算された。
+        assert mpd._cache_path("JP225", day).is_file()  # 保存された。
+
+    def test_corrupt_file_is_ignored_and_recomputed(self, monkeypatch):
+        # 破損ファイルは無視して再計算（fail-safe）。
+        day = _DAY0
+        path = mpd._cache_path("JP225", day)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not-a-valid-npz")  # 破損データ。
+        assert mpd._load_day_rollup(path) is mpd._CACHE_MISS
+
+        secs, mids = _synthetic_master()
+        calls = []
+        base = _make_loader(secs, mids)
+        monkeypatch.setattr(
+            mpd, "_load_window_ticks",
+            lambda s, a, b: (calls.append((a, b)), base(s, a, b))[1],
+        )
+        table = np.ones((7, 24), dtype=bool)
+        got = mpd._day_rollup("JP225", day, table, day + _DAY + 1)
+
+        assert len(calls) == 1        # 破損を無視して再計算。
+        assert got is not None
+
+    def test_version_mismatch_is_ignored(self):
+        # バージョン不整合は無視して _CACHE_MISS（再計算に委ねる）。
+        day = _DAY0
+        path = mpd._cache_path("JP225", day)
+        roll = {"kmin": 5, "dwell": np.array([1.0]), "cnt": np.array([1.0])}
+        mpd._save_day_rollup(path, roll)
+        monkeypatch_version = mpd._CACHE_VERSION + 999
+        # 保存済みファイルの version を実行時定数からずらして読む（不整合を模す）。
+        import unittest.mock as _mock
+        with _mock.patch.object(mpd, "_CACHE_VERSION", monkeypatch_version):
+            assert mpd._load_day_rollup(path) is mpd._CACHE_MISS
+
+
+# --------------------------------------------------------------------------- #
+# ウォーマー（事前ビルド）: 対象日のキャッシュ生成 / 冪等スキップ
+# --------------------------------------------------------------------------- #
+class TestWarmer:
+    def _fake_files(self, tmp_path, days):
+        """YYYY/MM/DD 構造の疑似 parquet パスを作る（day_parquet_files 差替用）。"""
+        paths = []
+        for day_start in days:
+            ts = pd.Timestamp(day_start, unit="s")
+            p = tmp_path / f"{ts.year:04d}" / f"{ts.month:02d}" / f"{ts.day:02d}" / "JP225_ticks.parquet"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"x")  # 実在ファイル（中身は warmer が読まない・loader を注入する）。
+            paths.append(p)
+        return paths
+
+    def test_warm_builds_completed_days_and_is_idempotent(self, tmp_path, monkeypatch):
+        # Arrange: 3 完了日ぶんの疑似 parquet。loader は合成ティックを返す。
+        days = [_DAY0, _DAY0 + _DAY, _DAY0 + 2 * _DAY]
+        files = self._fake_files(tmp_path / "ticks", days)
+        monkeypatch.setattr(mpd, "day_parquet_files", lambda lo, hi, symbol=None: files)
+        secs, mids = _synthetic_master()
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        now = _DAY0 + 10 * _DAY  # 全日完了。
+
+        # Act: 1 回目。
+        r1 = mpd.warm_dwell_cache("JP225", now=now)
+
+        # Assert: 対象日のキャッシュファイルが作られる。
+        assert r1["built"] == 3 and r1["skipped"] == 0
+        for day in days:
+            assert mpd._cache_path("JP225", day).is_file()
+
+        # Act: 2 回目（冪等）。
+        r2 = mpd.warm_dwell_cache("JP225", now=now)
+
+        # Assert: すべてスキップ（再構築しない）。
+        assert r2["built"] == 0 and r2["skipped"] == 3
+
+    def test_warm_skips_incomplete_current_day(self, tmp_path, monkeypatch):
+        # 当日（未確定）は永続化されない。
+        days = [_DAY0, _DAY0 + _DAY]
+        files = self._fake_files(tmp_path / "ticks", days)
+        monkeypatch.setattr(mpd, "day_parquet_files", lambda lo, hi, symbol=None: files)
+        secs, mids = _synthetic_master()
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        now = _DAY0 + _DAY + 100  # 2 日目は未完了。
+
+        r = mpd.warm_dwell_cache("JP225", now=now)
+
+        assert mpd._cache_path("JP225", _DAY0).is_file()          # 完了日は保存。
+        assert not mpd._cache_path("JP225", _DAY0 + _DAY).is_file()  # 未確定当日は非保存。
+        assert r["built"] == 1
+
+
+# --------------------------------------------------------------------------- #
 # controller: src 分岐
 # --------------------------------------------------------------------------- #
 def _patch_dwell_data(monkeypatch):
@@ -315,52 +506,67 @@ class TestControllerDwell:
 
 
 # --------------------------------------------------------------------------- #
-# controller: Y1 — dwell の価格レンジを集計窓（直近 _MAX_DWELL_DAYS 日）に揃える
+# controller: 全期間化 — dwell の価格レンジ/窓は全 candle 由来（250日キャップ撤廃）
 # --------------------------------------------------------------------------- #
 def _empty_loader(symbol, start, end):
-    """dwell 集計を空にする _load_window_ticks 代替（レンジ算出のみを検証するため）。"""
+    """dwell 集計を空にする _load_window_ticks 代替（レンジ/窓算出のみを検証するため）。"""
     return mpd._EMPTY_SECS, mpd._EMPTY_MIDS
 
 
-class TestControllerDwellRangeCap:
+class TestControllerDwellFullPeriod:
     def _candles_spanning_cap(self):
-        """cap（直近 _MAX_DWELL_DAYS 日）を超える candle 集合。
+        """旧 cap（250日）を超える期間の candle 集合。
 
-        古い期間（cap 外）に極端 low/high、直近 250 日以内に穏当 low/high を置く。
+        旧 cap 外（290〜300 日前）に極端 low/high を置く。全期間化後はこれらもレンジに反映される。
         """
-        cap = mpd._MAX_DWELL_DAYS
-        t1 = _DAY0 + 500 * _DAY
+        t1 = _DAY0 + 300 * _DAY
         candles = [
-            # cap 外（time < t1 - cap*_DAY）: 極端な安値/高値。除外されるべき。
-            {"time": t1 - 400 * _DAY, "open": 500, "high": 9999.0, "low": 1.0, "close": 500},
-            {"time": t1 - 300 * _DAY, "open": 500, "high": 8000.0, "low": 5.0, "close": 500},
+            # 旧 cap 外（300/290 日前）: 極端な安値/高値。全期間化ではレンジに含まれる。
+            {"time": t1 - 300 * _DAY, "open": 500, "high": 9999.0, "low": 1.0, "close": 500},
+            {"time": t1 - 290 * _DAY, "open": 500, "high": 8000.0, "low": 5.0, "close": 500},
         ]
-        # cap 以内（time >= t1 - cap*_DAY）: 穏当なレンジ 990..1110。これがレンジを定義する。
-        for k in range(200, -1, -1):
+        # 直近側: 穏当なレンジ 990..1110。
+        for k in range(20, -1, -1):
             candles.append(
                 {"time": t1 - k * _DAY, "open": 1000, "high": 1110.0, "low": 990.0, "close": 1005}
             )
         return candles
 
-    def test_dwell_price_range_uses_recent_max_dwell_days_only(self, monkeypatch):
-        # Arrange: cap を超える期間の candle。古い極値は cap 外に、穏当レンジは cap 以内に置く。
+    def test_dwell_price_range_uses_all_candles(self, monkeypatch):
+        # 全期間化: レンジは全 candle の low/high 由来（旧 cap 外の極値 1/9999 も反映される）。
         import adapter.controller.market_profile_controller as ctrl
 
         candles = self._candles_spanning_cap()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         monkeypatch.setattr(mpd, "_load_window_ticks", _empty_loader)
 
-        # Act
         status, payload = handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
 
-        # Assert: レンジ = 直近 250 日ぶんの low/high（990/1110）。全期間の極値(1/9999)には引きずられない。
         assert status == 200
         p = payload["profile"]
-        assert p["price_min"] == 990.0
-        assert p["price_max"] == 1110.0
+        assert p["price_min"] == 1.0      # 全 candle の最安（旧 cap で切られない）。
+        assert p["price_max"] == 9999.0   # 全 candle の最高。
 
-    def test_candle_path_price_range_unchanged_by_dwell_fix(self, monkeypatch):
-        # candle 経路（src 省略）は全 candle の low/high をそのまま使う（Y1 修正の影響を受けない）。
+    def test_dwell_window_spans_full_period(self, monkeypatch):
+        # 全期間化: 集計窓 [t0, t1+bar_sec) は全 candle の先頭〜末尾を覆う（旧 cap に丸められない）。
+        import adapter.controller.market_profile_controller as ctrl
+
+        candles = self._candles_spanning_cap()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+
+        calls = []
+        monkeypatch.setattr(
+            mpd, "_load_window_ticks",
+            lambda s, a, b: (calls.append((int(a), int(b))), (mpd._EMPTY_SECS, mpd._EMPTY_MIDS))[1],
+        )
+        handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
+
+        earliest = min(a for a, _ in calls)
+        t0 = candles[0]["time"]
+        assert earliest == (t0 // _DAY) * _DAY  # 走査は全期間の先頭 candle まで遡る。
+
+    def test_candle_path_price_range_uses_all_candles(self, monkeypatch):
+        # candle 経路（src 省略）は従来通り全 candle の low/high をそのまま使う（不変）。
         import adapter.controller.market_profile_controller as ctrl
 
         candles = self._candles_spanning_cap()
@@ -371,7 +577,6 @@ class TestControllerDwellRangeCap:
         assert status == 200
         assert payload["src"] == "candle"
         p = payload["profile"]
-        # candle 経路は全期間の極値をそのまま反映（cap を適用しない）。
         assert p["price_min"] == 1.0
         assert p["price_max"] == 9999.0
 

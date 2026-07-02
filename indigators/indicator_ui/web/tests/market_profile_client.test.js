@@ -31,15 +31,15 @@ test('buildMarketProfileUrl encodes datasetRef and always includes it', () => {
   assert.equal(url, '/market_profile?datasetRef=jp225_tick');
 });
 
-test('buildMarketProfileUrl appends timeframe/limit/bins/va only when provided', () => {
-  // Arrange / Act
+test('buildMarketProfileUrl appends timeframe/bins/va and NEVER limit (全期間集計固定)', () => {
+  // Arrange / Act: limit を渡しても URL には付与しない（全期間集計＝limit 非送信）。
   const url = buildMarketProfileUrl({
     datasetRef: 'sample', timeframe: '1D', limit: 1500, bins: 24, va: 0.7,
   });
-  // Assert: 各パラメータが URL に含まれる
+  // Assert: 各パラメータが URL に含まれるが limit= は決して含まれない
   assert.ok(url.startsWith('/market_profile?datasetRef=sample'));
   assert.ok(url.includes('&timeframe=1D'));
-  assert.ok(url.includes('&limit=1500'));
+  assert.ok(!url.includes('limit='), 'limit は送らない（全期間集計）');
   assert.ok(url.includes('&bins=24'));
   assert.ok(url.includes('&va=0.7'));
 });
@@ -66,35 +66,61 @@ test('buildMarketProfileUrl omits src when not provided (candle 後方互換=URL
   assert.equal(url, '/market_profile?datasetRef=sample');
 });
 
-test('buildMarketProfileUrl maps range to &barw when range is a value (range=50)', () => {
-  // Arrange / Act
-  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', range: '50' });
-  // Assert: フロントの range（バー幅pt）は backend param 名 barw へ写像される
+// 解像度モード（resmode）で bins/barw の送信を排他化する（試作 prototype_260630-01 の解像度トグル移植）。
+test('buildMarketProfileUrl with resmode=range appends &barw=<range> and omits bins', () => {
+  // Arrange / Act: 解像度=レンジ → range を backend param barw へ写像、bins は送らない。
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', resmode: 'range', range: '50', bins: 60 });
+  // Assert
   assert.ok(url.includes('&barw=50'));
+  assert.ok(!url.includes('bins='));
 });
 
-test('buildMarketProfileUrl omits barw when range is auto (=従来 bins・URLに付けない)', () => {
-  // Arrange / Act
-  const url = buildMarketProfileUrl({ datasetRef: 'sample', range: 'auto', bins: 30 });
-  // Assert: auto は「bins に委ねる」＝barw を付与しない
+test('buildMarketProfileUrl with resmode=bins appends &bins and omits barw', () => {
+  // Arrange / Act: 解像度=ビン → bins を送り、range があっても barw は送らない。
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', resmode: 'bins', bins: 30, range: '100' });
+  // Assert
+  assert.ok(url.includes('&bins=30'));
+  assert.ok(!url.includes('barw='));
+});
+
+// bins は ENUM プリセット化に伴い文字列（'30'/'60'/'100'）で渡る。resmode=bins（またはトグル未指定）で
+//   文字列プリセットを &bins=<値> として付与する（backend の _parse_int が '60' を解釈可）。
+test('buildMarketProfileUrl with resmode=bins appends &bins for a string preset (ENUM)', () => {
+  // Arrange / Act: ENUM プリセット文字列 '60' を渡す。
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', resmode: 'bins', bins: '60', range: '100' });
+  // Assert: 文字列プリセットでも &bins=60 が付与され、barw は送らない。
+  assert.ok(url.includes('&bins=60'));
+  assert.ok(!url.includes('barw='));
+});
+
+test('buildMarketProfileUrl appends &bins for a string preset even when resmode is absent (トグル未指定)', () => {
+  // Arrange / Act: resmode 未指定（既定 bins 相当）でも文字列プリセットを送る。
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', bins: '30' });
+  // Assert
+  assert.ok(url.includes('&bins=30'));
+  assert.ok(!url.includes('barw='));
+});
+
+test('buildMarketProfileUrl omits bins for an empty string (未選択ガード)', () => {
+  // Arrange / Act: 空文字は無効な &bins= を送出しない。
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', resmode: 'bins', bins: '' });
+  // Assert
+  assert.ok(!url.includes('bins='));
+});
+
+test('buildMarketProfileUrl omits barw when resmode is absent (既定 bins 相当)', () => {
+  // Arrange / Act: resmode 未指定は bins 相当（barw 非送信）。
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', bins: 30 });
+  // Assert
   assert.ok(!url.includes('barw='));
   assert.ok(url.includes('&bins=30'));
 });
 
-test('buildMarketProfileUrl omits barw when range is null/undefined', () => {
-  // Arrange / Act
-  const url = buildMarketProfileUrl({ datasetRef: 'sample', range: null });
-  // Assert
-  assert.ok(!url.includes('barw='));
-});
-
-test('buildMarketProfileUrl omits bins when bins is non-finite (NaN 貼付ガード)', () => {
-  // Arrange/Act: NaN（貼付等で数値化に失敗した値）が bins に渡る。range=25 で barw と併走しても
-  //   無効な &bins=NaN を送出しないこと（防御的・backend は barw 優先）。
-  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', bins: NaN, range: '25' });
-  // Assert: bins= は付かない（barw は付く）。
+test('buildMarketProfileUrl omits bins when bins is non-finite under resmode=bins (NaN 貼付ガード)', () => {
+  // Arrange/Act: NaN（貼付等で数値化に失敗した値）が bins に渡っても無効な &bins=NaN を送出しない。
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', resmode: 'bins', bins: NaN });
+  // Assert: bins= は付かない。
   assert.ok(!url.includes('bins='));
-  assert.ok(url.includes('&barw=25'));
 });
 
 test('buildMarketProfileUrl still appends bins when bins is a finite number (正常系不変)', () => {
@@ -127,7 +153,7 @@ test('parseProfileResponse passes through src/atom when present, else no extra k
 });
 
 test('parseProfileResponse passes through bar_width when present, else omitted (後方互換)', () => {
-  // Arrange: 応答トップレベルに bar_width（実効バー幅pt）がある場合。
+  // Arrange: 応答トップレベルに bar_width（実効レンジpt）がある場合。
   const withBw = {
     ok: true, profile: { bins: [{ price: 100, tpo: 1, norm: 1 }], poc: 100 },
     src: 'candle', atom: '足レンジ', bar_width: 25,
@@ -178,9 +204,10 @@ test('MarketProfileClient.fetchProfile builds the URL from context and returns t
   const client = new MarketProfileClient({ fetch: fakeFetch });
   // Act
   const profile = await client.fetchProfile({ datasetRef: 'sample', timeframe: '1D', limit: 1500 });
-  // Assert
+  // Assert: context に limit が混ざっても URL には limit= を出さない（全期間集計固定）。
   assert.equal(urls.length, 1);
-  assert.ok(urls[0].includes('datasetRef=sample') && urls[0].includes('timeframe=1D') && urls[0].includes('limit=1500'));
+  assert.ok(urls[0].includes('datasetRef=sample') && urls[0].includes('timeframe=1D'));
+  assert.ok(!urls[0].includes('limit='), 'limit は URL に付与しない（全期間集計）');
   assert.equal(profile.poc, 101);
 });
 

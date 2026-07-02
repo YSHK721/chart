@@ -8,7 +8,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MarketProfileHistogramPrimitive } from '../js/adapter/front/market_profile_primitive.js';
+import { MarketProfileHistogramPrimitive, heatColor } from '../js/adapter/front/market_profile_primitive.js';
+
+// heatColor（ヒート配色ヘルパ）: norm 0..1 を 青(hue240)→赤(hue0)。境界・防御分岐の回帰網。
+test('heatColor: norm=0 は青(hue240)・norm=1 は赤(hue0)', () => {
+  assert.equal(heatColor(0), 'hsla(240, 95%, 46%, 0.9)');
+  assert.equal(heatColor(1), 'hsla(0, 95%, 58%, 0.9)');
+});
+test('heatColor: 範囲外/NaN/null は [0,1] にクランプ（0=青 / >1=赤）', () => {
+  assert.equal(heatColor(-1), heatColor(0)); // 下限クランプ
+  assert.equal(heatColor(2), heatColor(1));  // 上限クランプ
+  assert.equal(heatColor(NaN), heatColor(0)); // NaN→0=青
+  assert.equal(heatColor(null), heatColor(0)); // null→0=青
+});
+test('heatColor: alpha 指定が反映される', () => {
+  assert.ok(heatColor(0.5, 0.3).endsWith(', 0.3)'));
+});
 
 // fake series: price→y 恒等写像（priceNulls の価格は null＝範囲外）。
 function fakeSeries(priceNulls = new Set()) {

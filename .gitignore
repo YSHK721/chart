@@ -103,8 +103,14 @@ data/marketdata/
 *.pickle
 *.h5
 *.hdf5
+*.npz
 *.sqlite
 *.db
+
+# Market Profile dwell 日別ロールアップのディスク永続キャッシュ（生成物・再構築可能）。
+# 既定は DATA_DIR(data/marketdata) 配下だが、DATA_DIR を上書きした場合も追跡しないよう明示除外。
+cache/market_profile_dwell/
+**/cache/market_profile_dwell/
 
 # ============================================================
 # 生成・検証アーティファクト（スクショ・出力HTML）
