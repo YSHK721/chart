@@ -9,6 +9,28 @@ from __future__ import annotations
 import numpy as np
 
 
+def price_range(candles) -> tuple[float, float]:
+    """candles の価格レンジ ``(price_min, price_max)`` を返す（価格レンジ定義の単一情報源）。
+
+    ``compute_candle_profile`` 内部・controller の barw 経路が共有する。空リストは
+    ``(0.0, 0.0)`` の安全値。レンジ縮退（``price_max <= price_min``）時はゼロ割回避のため
+    ``price_max = price_min + 1`` に安全化する（compute_candle_profile と同一挙動）。
+
+    Args:
+        candles: OHLC 辞書リスト [{"low","high", ...}, ...]。
+
+    Returns:
+        (price_min, price_max) の float タプル。
+    """
+    if not candles:
+        return 0.0, 0.0
+    price_min = float(min(c["low"] for c in candles))
+    price_max = float(max(c["high"] for c in candles))
+    if price_max <= price_min:
+        price_max = price_min + 1
+    return price_min, price_max
+
+
 def compute_candle_profile(candles, n_bins=60, va_pct=0.70) -> dict:
     """足ベース TPO マーケットプロファイルを計算する（純関数・副作用なし）。
 
@@ -33,11 +55,8 @@ def compute_candle_profile(candles, n_bins=60, va_pct=0.70) -> dict:
             "n_bins": n_bins,
         }
 
-    # 価格レンジ。レンジ縮退（price_max<=price_min）時はゼロ割回避のため +1 する。
-    price_min = min(c["low"] for c in candles)
-    price_max = max(c["high"] for c in candles)
-    if price_max <= price_min:
-        price_max = price_min + 1
+    # 価格レンジ（縮退時の +1 安全化を含め price_range に一元化＝単一情報源）。
+    price_min, price_max = price_range(candles)
 
     edges = np.linspace(price_min, price_max, n_bins + 1)
     centers = (edges[:-1] + edges[1:]) / 2.0

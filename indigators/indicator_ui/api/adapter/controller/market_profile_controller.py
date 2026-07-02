@@ -26,7 +26,7 @@ import math
 from typing import Any
 
 from adapter.compute import ERROR_STATUS, dataset, market_profile_dwell
-from adapter.compute.market_profile import compute_candle_profile
+from adapter.compute.market_profile import compute_candle_profile, price_range
 
 # パラメータ既定値（GET /market_profile のクエリ省略時）。
 _DEFAULT_BINS = 60
@@ -38,10 +38,16 @@ _DEFAULT_SRC = "candle"
 _MAX_BINS = 1000
 _MIN_VA = 0.01
 
-# src ホワイトリスト（candle=足レンジ TPO・dwell=実ティック滞在秒/セッション認識）。
-_ALLOWED_SRC = ("candle", "dwell")
+# src ホワイトリスト（candle=足レンジ TPO・dwell=実ティック滞在秒/セッション認識・m1=生ティック数）。
+_ALLOWED_SRC = ("candle", "dwell", "m1")
+# src → dwell モジュールの metric（dwell=滞在秒・count=生ティック数/セッション非適用）。
+_SRC_METRIC = {"dwell": "dwell", "m1": "count"}
 # 応答の atom 表示（UI 用・原子の意味）。
-_ATOM = {"candle": "足レンジ", "dwell": "tick滞在秒(セッション認識)"}
+_ATOM = {
+    "candle": "足レンジ",
+    "dwell": "tick滞在秒(セッション認識)",
+    "m1": "tick数",
+}
 # tf → 足の秒長（dwell 窓の終端は t1 + bar_sec で最終足の期間を満たす）。未知/None は 1D 相当。
 _TF_BAR_SEC = {
     "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
@@ -52,6 +58,25 @@ _TF_BAR_SEC = {
 def _bar_sec_for_tf(timeframe: Any) -> int:
     """timeframe から足の秒長を返す（None・未知は 86400=1D 相当・dwell 窓終端の延長量）。"""
     return _TF_BAR_SEC.get(timeframe, 86400)
+
+
+def _resolve_n_bins(n_bins: int, barw: float, price_min: float, price_max: float) -> int:
+    """barw（バー幅pt・>0）指定時は ``n_bins = round((price_max-price_min)/barw)`` を bins に優先する。
+
+    price_min/price_max 確定後に呼ぶ（試作 prototype_260630-01 の barw 意味論を移植）。クランプは既存
+    bins と同じ ``[1, _MAX_BINS]`` を流用する（0 や巨大値での退化/占有を封じる）。barw<=0 やレンジ縮退時は
+    従来 bins をそのまま返す（auto）。
+    """
+    if barw > 0 and price_max > price_min:
+        return max(1, min(int(round((price_max - price_min) / barw)), _MAX_BINS))
+    return n_bins
+
+
+def _bar_width(profile: dict[str, Any]) -> float:
+    """profile の実効バー幅(pt) = ``(price_max - price_min) / n_bins``（小数2桁）。0 除算は 0.0。"""
+    nb = int(profile.get("n_bins") or 0)
+    span = float(profile.get("price_max", 0.0)) - float(profile.get("price_min", 0.0))
+    return round(span / nb, 2) if nb > 0 else 0.0
 
 
 def _error_body(error_type: str, message: str) -> tuple[int, dict[str, Any]]:
@@ -96,6 +121,7 @@ def handle_market_profile(
     bins: Any = None,
     va: Any = None,
     src: Any = None,
+    barw: Any = None,
 ) -> tuple[int, dict[str, Any]]:
     """GET /market_profile の純ロジック。
 
@@ -105,18 +131,23 @@ def handle_market_profile(
         limit: 直近 N 本に制限（クエリ str|int|None。不正・None は全件）。
         bins: 価格ビン分割数（クエリ str|int|None。不正・None は 60）。
         va: バリューエリア比率 0..1（クエリ str|float|None。不正・None は 0.70）。
-        src: 集計原子（'candle'=足レンジ TPO・既定 / 'dwell'=実ティック滞在秒・セッション認識）。
-            許可値以外は 400。'dwell' はティック対応 ref（'jp225_tick'）以外は 400。
+        src: 集計原子（'candle'=足レンジ TPO・既定 / 'dwell'=実ティック滞在秒・セッション認識 /
+            'm1'=生ティック数）。許可値以外は 400。'dwell'/'m1' はティック対応 ref（'jp225_tick'）以外は 400。
+        barw: バー幅(pt・クエリ str|float|None)。>0 指定時は price レンジ確定後に
+            n_bins = round((price_max-price_min)/barw) を算出し bins に優先する（candle/dwell/m1 いずれも）。
+            None/0/不正・auto は従来 bins。
 
     Returns:
-        (HTTPステータス, ボディ)。成功は (200, {ok:true, profile:{...}, src, atom})、
-        失敗は (400/5xx, {ok:false, generation, error:{...}})。既存 candle の profile 応答形は不変
-        （src/atom はメタ情報として付加・既存キーは維持）。
+        (HTTPステータス, ボディ)。成功は (200, {ok:true, profile:{...}, src, atom, bar_width})、
+        失敗は (400/5xx, {ok:false, generation, error:{...}})。既存 candle/dwell の profile 応答スキーマは不変
+        （src/atom/bar_width はトップレベルのメタ情報として付加・profile 内の既存キーは維持）。
     """
     # src ホワイトリスト（既定 candle）。許可値以外は 400 validation。
     src_val = _DEFAULT_SRC if src is None else src
     if src_val not in _ALLOWED_SRC:
-        return _error_body("validation", f"未知の src です: {src!r}（candle|dwell）")
+        return _error_body(
+            "validation", f"未知の src です: {src!r}（{'|'.join(_ALLOWED_SRC)}）"
+        )
 
     # datasetRef ホワイトリスト解決（§7.3）。未知キー・パス文字列は拒否。
     if not dataset.is_known(ref):
@@ -133,15 +164,26 @@ def handle_market_profile(
         va_pct = _DEFAULT_VA
     va_pct = min(1.0, max(_MIN_VA, va_pct))
     limit_n = _parse_int(limit, None)
+    # barw（バー幅pt）— 有限かつ非負のみ採用（不正・None・負・NaN/Inf は 0=auto へ丸める）。
+    barw_val = _parse_float(barw, 0.0)
+    if not math.isfinite(barw_val) or barw_val < 0:
+        barw_val = 0.0
 
-    if src_val == "dwell":
-        return _handle_dwell(ref, timeframe, limit_n, n_bins, va_pct)
+    if src_val in ("dwell", "m1"):
+        return _handle_dwell(ref, timeframe, limit_n, n_bins, va_pct, barw_val, src_val)
 
-    # src=candle（既定）— 現状の足ベース TPO 経路（不変）。
+    # src=candle（既定）— 現状の足ベース TPO 経路（不変。barw 指定時のみ n_bins を上書き）。
     # candles は load_candles が返す [{time,open,high,low,close}] がそのまま compute の入力形。
     candles = dataset.load_candles(ref, timeframe, limit_n)
+    if candles and barw_val > 0:
+        # price レンジは compute_candle_profile と同一定義（price_range 単一情報源）。barw→n_bins に先取り使用。
+        price_min, price_max = price_range(candles)
+        n_bins = _resolve_n_bins(n_bins, barw_val, price_min, price_max)
     profile = compute_candle_profile(candles, n_bins=n_bins, va_pct=va_pct)
-    return 200, {"ok": True, "profile": profile, "src": "candle", "atom": _ATOM["candle"]}
+    return 200, {
+        "ok": True, "profile": profile, "src": "candle",
+        "atom": _ATOM["candle"], "bar_width": _bar_width(profile),
+    }
 
 
 def _handle_dwell(
@@ -150,25 +192,30 @@ def _handle_dwell(
     limit_n: int | None,
     n_bins: int,
     va_pct: float,
+    barw: float,
+    src: str,
 ) -> tuple[int, dict[str, Any]]:
-    """src=dwell の処理（実ティック滞在・セッション認識）。非 tick ref は 400。
+    """src=dwell/m1 の処理（実ティック・tick 対応 ref のみ）。非 tick ref は 400。
 
-    load_candles で表示レンジ（price_min=min(low)/price_max=max(high)）と実期間（t0=先頭/t1=末尾の
-    time）を求め、tf から bar_sec を決めて :func:`market_profile_dwell.compute_dwell_profile` を呼ぶ。
-    応答スキーマは candle 版と同一（tpo は dwell 秒）。src/atom をメタ情報として付加する。
+    src='dwell'→metric='dwell'（滞在秒・セッション認識）、src='m1'→metric='count'（生ティック数・
+    セッション非依存）。load_candles で表示レンジ（price_min=min(low)/price_max=max(high)）と実期間
+    （t0=先頭/t1=末尾の time）を求め、tf から bar_sec を決めて
+    :func:`market_profile_dwell.compute_dwell_profile` を呼ぶ。barw>0 は price レンジ確定後に n_bins を上書き
+    する。応答スキーマは candle 版と同一。src/atom/bar_width をトップレベルのメタ情報として付加する。
     """
     symbol = market_profile_dwell.resolve_symbol(ref)
     if symbol is None:
         return _error_body(
             "validation",
-            f"src=dwell はティック対応 ref のみ対応です: {ref!r}（例: 'jp225_tick'）",
+            f"src={src} はティック対応 ref のみ対応です: {ref!r}（例: 'jp225_tick'）",
         )
 
+    metric = _SRC_METRIC[src]
     candles = dataset.load_candles(ref, timeframe, limit_n)
     if not candles:
         # 空データは安全に空/ゼロプロファイルを返す（500 化しない）。
         profile = market_profile_dwell.compute_dwell_profile(
-            symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400
+            symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400, metric=metric
         )
     else:
         # Y1: dwell 集計は直近 MAX_DWELL_DAYS 日に切り詰められるため、価格レンジ/t0 も同じ窓から
@@ -180,7 +227,12 @@ def _handle_dwell(
         price_max = max(c["high"] for c in recent)
         t0 = recent[0]["time"]  # cap 窓内の最古 candle time（cap_from 相当）。
         bar_sec = _bar_sec_for_tf(timeframe)
+        n_bins = _resolve_n_bins(n_bins, barw, price_min, price_max)  # barw>0 は bins に優先。
         profile = market_profile_dwell.compute_dwell_profile(
-            symbol, t0, t1, price_min, price_max, n_bins, va_pct=va_pct, bar_sec=bar_sec
+            symbol, t0, t1, price_min, price_max, n_bins,
+            va_pct=va_pct, bar_sec=bar_sec, metric=metric,
         )
-    return 200, {"ok": True, "profile": profile, "src": "dwell", "atom": _ATOM["dwell"]}
+    return 200, {
+        "ok": True, "profile": profile, "src": src,
+        "atom": _ATOM[src], "bar_width": _bar_width(profile),
+    }

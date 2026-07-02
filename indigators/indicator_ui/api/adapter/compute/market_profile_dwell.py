@@ -176,7 +176,11 @@ def _session_dwell(secs: np.ndarray, table: np.ndarray) -> np.ndarray:
 # 固定グリッド日別ロールアップ（メモリキャッシュ）
 # --------------------------------------------------------------------------- #
 def _rollup_ticks(secs: np.ndarray, mids: np.ndarray, table: np.ndarray) -> "dict | None":
-    """ティック配列を固定グリッド ``{kmin, dwell[]}``（k=floor(mid/GRID_W)）へ集約する。空なら None。"""
+    """ティック配列を固定グリッド ``{kmin, dwell[], cnt[]}``（k=floor(mid/GRID_W)）へ集約する。空なら None。
+
+    dwell[]: セッション認識の実ティック滞在秒（休場帯は 0）。metric='dwell'（既定）が使用する。
+    cnt[]:   生ティック数（セッションマスク**非適用**＝休場帯もカウント）。metric='count'（src=m1）が使用する。
+    """
     if len(secs) == 0:
         return None
     dwell = _session_dwell(secs, table)  # len = len(secs)-1
@@ -186,7 +190,9 @@ def _rollup_ticks(secs: np.ndarray, mids: np.ndarray, table: np.ndarray) -> "dic
     dwell_arr = np.zeros(size, dtype=float)
     if dwell.size:
         np.add.at(dwell_arr, k[:-1] - kmin, dwell)  # dwell[i] は始端ティック価格 k[i] に帰属。
-    return {"kmin": kmin, "dwell": dwell_arr}
+    cnt_arr = np.zeros(size, dtype=float)
+    np.add.at(cnt_arr, k - kmin, 1.0)  # 生ティック数（全ティック・セッション非依存）。
+    return {"kmin": kmin, "dwell": dwell_arr, "cnt": cnt_arr}
 
 
 def _active_table(symbol: str, at_from: int, win_to: int) -> np.ndarray:
@@ -245,16 +251,23 @@ def compute_dwell_profile(
     va_pct: float = 0.70,
     bar_sec: int = 86400,
     now: float | None = None,
+    metric: str = "dwell",
 ) -> dict:
-    """実ティック滞在（セッション認識）プロファイルを計算する（candle 版と同一スキーマ）。
+    """実ティックプロファイルを計算する（candle 版と同一スキーマ）。
+
+    ``metric='dwell'``（既定）: セッション認識の実ティック滞在秒（tpo=滞在秒・tpo_units=総滞在秒）。
+    ``metric='count'``（src=m1）: 生ティック数（tpo=ティック数・tpo_units=総ティック数）。セッションマスク
+        非適用のため、薄商いの時間帯（休場帯）の価格もカウントされ、dwell とは分布が異なる。
 
     実期間 ``[t0, t1+bar_sec)`` を日単位に走査する。完全日は :func:`_day_rollup`（キャッシュ）、境界日は
-    :func:`_partial_rollup` で固定グリッド dwell を得て ``fine[]`` に加算し、固定グリッド中心を表示 bin へ
-    再集計して tpo[]（=dwell 秒）を得る。POC/VA は :func:`market_profile._value_area` を再利用する。
+    :func:`_partial_rollup` で固定グリッド ``{dwell[], cnt[]}`` を得て、metric に対応する配列を ``fine[]`` に
+    加算し、固定グリッド中心を表示 bin へ再集計して tpo[] を得る。POC/VA は
+    :func:`market_profile._value_area` を再利用する（dwell/count で同一定義）。
 
     perf 上限（必須）: 走査開始を ``win_to - _MAX_DWELL_DAYS*86400`` 以降へ丸め、要求窓がそれ以上でも
     直近 ``_MAX_DWELL_DAYS`` 日ぶんのサブ窓に限定する（初回集計の日数比例ブロックを防ぐ）。
     """
+    roll_key = "cnt" if metric == "count" else "dwell"  # src=m1 は生ティック数（セッション非依存）。
     now_val = _time.time() if now is None else float(now)  # Y2a: 当日判定の基準時刻（既定は現在時刻）。
     price_min = float(price_min)
     price_max = float(price_max)
@@ -293,7 +306,7 @@ def compute_dwell_profile(
             else:
                 roll = _partial_rollup(symbol, lo_t, hi_t, table, now_val)  # 境界日=完了窓のみキャッシュ。
             if roll is not None:
-                arr = roll["dwell"]
+                arr = roll[roll_key]  # metric に応じて dwell 秒 / 生ティック数 を集計。
                 off = roll["kmin"] - kw0
                 lo = max(0, off)
                 hi = min(size, off + len(arr))
@@ -326,6 +339,6 @@ def compute_dwell_profile(
         "va_high": round(float(va_high), 2),
         "price_min": price_min,
         "price_max": price_max,
-        "tpo_units": int(round(float(fine.sum()))),  # 総 dwell 秒（int へ丸め）。
+        "tpo_units": int(round(float(fine.sum()))),  # metric に応じ 総 dwell 秒 / 総ティック数（int 丸め）。
         "n_bins": n_bins,
     }
