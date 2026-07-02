@@ -173,6 +173,17 @@ export class IndicatorController {
     return def?.compute?.computeId === 'market_profile';
   }
 
+  // MP アクターへ渡す取得 params（bins/va/limit/src/range）を組み立てる（apply/gear/restore 共通）。
+  //   range（バー幅pt）は 'auto'/null/未指定のとき「従来 bins」を意味するためキーを載せない
+  //   （既定転送の後方互換＝bins/va/limit/src のみ）。値指定時のみ range を付与する。
+  _mpParams(p = {}) {
+    const out = { bins: p.bins, va: p.va, limit: p.limit, src: p.src };
+    if (p.range != null && p.range !== 'auto') {
+      out.range = p.range;
+    }
+    return out;
+  }
+
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
   //   MP 種別（computeId==='market_profile'）は /compute をバイパスし MarketProfileActor へ委譲する。
   async applyIndicator(indicatorId, variant) {
@@ -231,7 +242,7 @@ export class IndicatorController {
     if (!this._marketProfile) {
       return;
     }
-    this._marketProfile.setParams({ bins: params.bins, va: params.va, limit: params.limit, src: params.src });
+    this._marketProfile.setParams(this._mpParams(params));
     await this._marketProfile.setEnabled(true);
   }
 
@@ -272,7 +283,7 @@ export class IndicatorController {
     const applyParams = async (values) => {
       this._state = this._withParams(this._state, inst.instanceId, values);
       if (this._marketProfile) {
-        this._marketProfile.setParams({ bins: values.bins, va: values.va, limit: values.limit, src: values.src });
+        this._marketProfile.setParams(this._mpParams(values));
         await this._marketProfile.refresh();
       }
       this._persistAll();
@@ -581,7 +592,7 @@ export class IndicatorController {
       if (this._isMarketProfile(def)) {
         const rp = this._paramsObject(inst.params);
         if (this._marketProfile) {
-          this._marketProfile.setParams({ bins: rp.bins, va: rp.va, limit: rp.limit, src: rp.src });
+          this._marketProfile.setParams(this._mpParams(rp));
           if (inst.visible) {
             await this._marketProfile.setEnabled(true);
           }

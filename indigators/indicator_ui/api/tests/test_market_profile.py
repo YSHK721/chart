@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import pytest
 
+from adapter.compute import market_profile
 from adapter.compute.market_profile import compute_candle_profile
 
 
@@ -133,6 +134,79 @@ class TestComputeCandleProfileFlatRange:
         assert result["tpo_units"] == 2
         assert sum(b["tpo"] for b in result["bins"]) == 2
         assert result["price_min"] <= result["poc"] <= result["price_max"]
+
+
+# --------------------------------------------------------------------------- #
+# 修正2: price_range 公開ヘルパ（価格レンジ定義の単一情報源）
+# --------------------------------------------------------------------------- #
+class TestPriceRange:
+    """price_range(candles) -> (price_min, price_max)。compute_candle_profile と同一定義。"""
+
+    def test_price_range_normal_returns_min_low_and_max_high(self):
+        # Arrange
+        candles = [_mk(1, 1000, 1110, 990, 1005), _mk(2, 1005, 1108, 992, 1002)]
+        # Act
+        pmin, pmax = market_profile.price_range(candles)
+        # Assert: min(low)=990, max(high)=1110
+        assert (pmin, pmax) == (990.0, 1110.0)
+
+    def test_price_range_empty_returns_zeros(self):
+        # Arrange / Act / Assert: 空は (0.0, 0.0) の安全値。
+        assert market_profile.price_range([]) == (0.0, 0.0)
+
+    def test_price_range_degenerate_adds_one(self):
+        # Arrange: low==high（price_max<=price_min の縮退）。
+        candles = [_mk(1, 1000, 1000, 1000, 1000)]
+        # Act
+        pmin, pmax = market_profile.price_range(candles)
+        # Assert: 縮退は price_max=price_min+1 に安全化（compute と同一挙動）。
+        assert (pmin, pmax) == (1000.0, 1001.0)
+
+    def test_compute_candle_profile_uses_same_range_as_helper(self):
+        # Arrange: compute の返す price_min/price_max が price_range と一致（単一情報源）。
+        candles = GOLDEN_CANDLES
+        # Act
+        pmin, pmax = market_profile.price_range(candles)
+        result = compute_candle_profile(candles, n_bins=6, va_pct=0.70)
+        # Assert
+        assert result["price_min"] == pmin
+        assert result["price_max"] == pmax
+
+
+class TestComputeCandleProfileInvariantAfterRefactor:
+    """回帰: price_range 抽出後も compute_candle_profile の返り値が従来値と一致（リファクタ不変）。"""
+
+    def test_golden_profile_unchanged_after_price_range_extraction(self):
+        # Arrange / Act
+        result = compute_candle_profile(GOLDEN_CANDLES, n_bins=6, va_pct=0.70)
+        # Assert: 抽出前の既知ゴールデン値（本ファイル冒頭 docstring）と完全一致。
+        assert result == {
+            "bins": [
+                {"price": 10.5, "tpo": 1, "norm": 0.3333},
+                {"price": 11.5, "tpo": 2, "norm": 0.6667},
+                {"price": 12.5, "tpo": 3, "norm": 1.0},
+                {"price": 13.5, "tpo": 3, "norm": 1.0},
+                {"price": 14.5, "tpo": 2, "norm": 0.6667},
+                {"price": 15.5, "tpo": 1, "norm": 0.3333},
+            ],
+            "poc": 12.5,
+            "va_low": 11.5,
+            "va_high": 14.5,
+            "price_min": 10.0,
+            "price_max": 16.0,
+            "tpo_units": 3,
+            "n_bins": 6,
+        }
+
+    def test_flat_range_profile_unchanged_after_extraction(self):
+        # Arrange: 縮退足でも従来の price_max=price_min+1 挙動が保たれる。
+        candles = [_mk(1, 10.0, 10.0, 10.0, 10.0), _mk(2, 10.0, 10.0, 10.0, 10.0)]
+        # Act
+        result = compute_candle_profile(candles, n_bins=6, va_pct=0.70)
+        # Assert
+        assert result["price_min"] == 10.0
+        assert result["price_max"] == 11.0
+        assert result["tpo_units"] == 2
 
 
 # --- 以下は実装済み振る舞いに対する回帰 / 性質テスト（Red 駆動ではない） ---

@@ -19,7 +19,7 @@ export class MarketProfileActor {
     this._getContext = typeof getContext === 'function' ? getContext : () => ({});
     this._enabled = false;
     this._attached = false;
-    // 取得パラメータ（bins/va/limit/src）。setParams で更新し refresh 時に getContext へ重畳する。
+    // 取得パラメータ（bins/va/limit/src/range）。setParams で更新し refresh 時に getContext へ重畳する。
     //   未設定時は空＝getContext のみ（サーバ既定・後方互換）。
     this._params = {};
   }
@@ -28,11 +28,12 @@ export class MarketProfileActor {
     return this._enabled;
   }
 
-  // 取得パラメータ（bins/va/limit/src）を設定する。null/undefined のキーは無視する
+  // 取得パラメータ（bins/va/limit/src/range）を設定する。null/undefined のキーは無視する
   //   （getContext の値やサーバ既定を潰さない）。次回 refresh から反映される。
+  //   range（バー幅pt）は client.buildMarketProfileUrl が barw へ写像する（'auto' は付与しない）。
   setParams(params = {}) {
     const next = {};
-    for (const key of ['bins', 'va', 'limit', 'src']) {
+    for (const key of ['bins', 'va', 'limit', 'src', 'range']) {
       if (params[key] != null) {
         next[key] = params[key];
       }

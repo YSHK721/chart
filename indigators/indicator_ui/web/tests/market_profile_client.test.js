@@ -66,6 +66,35 @@ test('buildMarketProfileUrl omits src when not provided (candle 後方互換=URL
   assert.equal(url, '/market_profile?datasetRef=sample');
 });
 
+test('buildMarketProfileUrl maps range to &barw when range is a value (range=50)', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', range: '50' });
+  // Assert: フロントの range（バー幅pt）は backend param 名 barw へ写像される
+  assert.ok(url.includes('&barw=50'));
+});
+
+test('buildMarketProfileUrl omits barw when range is auto (=従来 bins・URLに付けない)', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', range: 'auto', bins: 30 });
+  // Assert: auto は「bins に委ねる」＝barw を付与しない
+  assert.ok(!url.includes('barw='));
+  assert.ok(url.includes('&bins=30'));
+});
+
+test('buildMarketProfileUrl omits barw when range is null/undefined', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', range: null });
+  // Assert
+  assert.ok(!url.includes('barw='));
+});
+
+test('buildMarketProfileUrl appends src=m1 when provided (tick数)', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', src: 'm1' });
+  // Assert: m1 も既存 src 経路で URL に載る
+  assert.ok(url.includes('&src=m1'));
+});
+
 test('parseProfileResponse passes through src/atom when present, else no extra keys', () => {
   // Arrange
   const withMeta = { ok: true, profile: { bins: [], poc: 1 }, src: 'dwell', atom: 'tick滞在秒' };
@@ -79,6 +108,32 @@ test('parseProfileResponse passes through src/atom when present, else no extra k
   const plain = parseProfileResponse(OK_PAYLOAD);
   assert.ok(!('src' in plain));
   assert.ok(!('atom' in plain));
+});
+
+test('parseProfileResponse passes through bar_width when present, else omitted (後方互換)', () => {
+  // Arrange: 応答トップレベルに bar_width（実効バー幅pt）がある場合。
+  const withBw = {
+    ok: true, profile: { bins: [{ price: 100, tpo: 1, norm: 1 }], poc: 100 },
+    src: 'candle', atom: '足レンジ', bar_width: 25,
+  };
+  // Act
+  const p = parseProfileResponse(withBw);
+  // Assert: bar_width が src/atom と同様に素通しされる。
+  assert.equal(p.bar_width, 25);
+  assert.equal(p.src, 'candle');
+  assert.equal(p.poc, 100);
+  // bar_width を含まない応答には bar_width キーを足さない（後方互換）。
+  const plain = parseProfileResponse(OK_PAYLOAD);
+  assert.ok(!('bar_width' in plain));
+});
+
+test('parseProfileResponse includes bar_width even when src/atom absent', () => {
+  // Arrange: src/atom が無く bar_width だけある応答でも素通しする。
+  const onlyBw = { ok: true, profile: { bins: [], poc: 1 }, bar_width: 12.5 };
+  // Act
+  const p = parseProfileResponse(onlyBw);
+  // Assert
+  assert.equal(p.bar_width, 12.5);
 });
 
 test('parseProfileResponse returns the profile object on ok:true', () => {

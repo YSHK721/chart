@@ -45,18 +45,39 @@ test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース
 });
 
 // market_profile に src（集計原子）ENUM を追加。candle=足レンジ TPO（既定・後方互換）/
-//   dwell=実ティック滞在。bins/va/limit と同じ group（プロパティダイアログの ENUM ドロップダウン）。
-test('catalog: market_profile exposes src ENUM [candle,dwell] default candle with jp labels', () => {
+//   dwell=実ティック滞在 / m1=tick数（試作 prototype_260630-01 の count 経路を移植）。
+//   bins/va/limit と同じ group（プロパティダイアログの ENUM ドロップダウン）。
+test('catalog: market_profile exposes src ENUM [candle,dwell,m1] default candle with jp labels', () => {
   const d = get('market_profile');
   const src = paramOf(d, 'src');
   assert.ok(src, 'src param exists');
   assert.equal(src.type, ParamType.ENUM);
   assert.equal(src.default, 'candle');
-  assert.deepEqual(src.enumValues, ['candle', 'dwell']);
+  assert.deepEqual(src.enumValues, ['candle', 'dwell', 'm1']);
   assert.equal(src.enumLabels.candle, '足レンジ');
   assert.equal(src.enumLabels.dwell, '滞在時間(実ティック)');
+  assert.equal(src.enumLabels.m1, 'tick数');
   // bins/va/limit と同じ group（同一セクションに並ぶ）。
   assert.equal(src.group, paramOf(d, 'bins').group);
+});
+
+// market_profile に range（バー幅pt）ENUM を追加。試作の range セレクタ（auto/25/50/100/250/500pt）を移植。
+//   'auto'=従来 bins に委ねる。値指定時は client が &barw= を付与し backend が n_bins を算出する。
+//   range≠auto のとき bins を無効化する conditionalEnable（bins は range=auto のときのみ有効）。
+test('catalog: market_profile exposes range ENUM [auto,25,50,100,250,500] default auto with bar-width label', () => {
+  const d = get('market_profile');
+  const range = paramOf(d, 'range');
+  assert.ok(range, 'range param exists');
+  assert.equal(range.type, ParamType.ENUM);
+  assert.equal(range.default, 'auto');
+  assert.deepEqual(range.enumValues, ['auto', '25', '50', '100', '250', '500']);
+  assert.equal(range.label, 'バー幅(pt)');
+  assert.equal(range.enumLabels.auto, '自動(bins)');
+  assert.equal(range.enumLabels['25'], '25');
+  // bins/va/limit/src と同じ group（同一セクションに並ぶ）。
+  assert.equal(range.group, paramOf(d, 'bins').group);
+  // range≠auto のとき bins を無効化 = bins は range=auto のときのみ有効化。
+  assert.deepEqual(paramOf(d, 'bins').conditionalEnable, { when: { param: 'range', equals: 'auto' } });
 });
 
 // 回帰防止: wait_for_close の既定は false。true だと lwc_chart が最終足（未確定足）を

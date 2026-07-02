@@ -7,9 +7,11 @@
 //     失敗時 {ok:false, error:{...}}。
 //   純関数（buildMarketProfileUrl / parseProfileResponse）を公開し単体検証を容易にする（SRP）。
 
-// datasetRef を必須、timeframe/limit/bins/va/src は与えられた場合のみ付加する（省略時はサーバ既定）。
-//   src: 集計原子（'candle'=足レンジ・既定 / 'dwell'=実ティック滞在）。省略時は付与せず candle 後方互換。
-export function buildMarketProfileUrl({ datasetRef, timeframe, limit, bins, va, src } = {}) {
+// datasetRef を必須、timeframe/limit/bins/va/src/range は与えられた場合のみ付加する（省略時はサーバ既定）。
+//   src: 集計原子（'candle'=足レンジ・既定 / 'dwell'=実ティック滞在 / 'm1'=tick数）。省略時は付与せず candle 後方互換。
+//   range: バー幅(pt) の直接指定。フロントの range を backend param 名 barw へ写像する。
+//     'auto'/null/未指定は「従来 bins に委ねる」＝barw を付与しない。数値（'25' 等）のとき &barw=<値> を付ける。
+export function buildMarketProfileUrl({ datasetRef, timeframe, limit, bins, va, src, range } = {}) {
   let url = `/market_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
     url += `&timeframe=${encodeURIComponent(timeframe)}`;
@@ -26,6 +28,9 @@ export function buildMarketProfileUrl({ datasetRef, timeframe, limit, bins, va, 
   if (src != null) {
     url += `&src=${encodeURIComponent(src)}`;
   }
+  if (range != null && range !== 'auto') {
+    url += `&barw=${encodeURIComponent(range)}`;
+  }
   return url;
 }
 
@@ -38,11 +43,13 @@ export function parseProfileResponse(payload) {
   if (!profile || !Array.isArray(profile.bins)) {
     return null;
   }
-  // 応答トップレベルに src/atom（UI メタ）があれば profile へ素通しする（無ければ既存 profile をそのまま返す）。
-  if (payload.src != null || payload.atom != null) {
+  // 応答トップレベルに src/atom/bar_width（UI メタ）があれば profile へ素通しする
+  // （無ければ既存 profile をそのまま返す＝後方互換・共有オブジェクト非破壊の spread 維持）。
+  if (payload.src != null || payload.atom != null || payload.bar_width != null) {
     const meta = {};
     if (payload.src != null) meta.src = payload.src;
     if (payload.atom != null) meta.atom = payload.atom;
+    if (payload.bar_width != null) meta.bar_width = payload.bar_width;
     return { ...profile, ...meta };
   }
   return profile;
