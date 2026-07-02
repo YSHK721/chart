@@ -33,6 +33,8 @@ export class MarketProfileActor {
     this._getContext = typeof getContext === 'function' ? getContext : () => ({});
     this._enabled = false;
     this._attached = false;
+    // sessions（日別プロファイル分割）ON/OFF。既定 false（通常の累積プロファイル・後方互換）。
+    this._sessions = false;
     // 取得パラメータ（bins/va/src/range）。setParams で更新し refresh 時に getContext へ重畳する。
     //   未設定時は空＝getContext のみ（サーバ既定・後方互換）。
     this._params = {};
@@ -94,9 +96,33 @@ export class MarketProfileActor {
       }
     }
     this._params = next;
+    // sessions（日別プロファイル分割）トグル。明示指定時のみ反映する（undefined は現状維持）。
+    //   true で refresh 時に context へ sessions:true を載せ、応答の profile.sessions を primitive/renderer へ
+    //   反映する。false で通常モードへ復帰（primitive.setSessions(null)・ローソク透明化解除）。
+    if (params.sessions != null) {
+      this._sessions = !!params.sessions;
+    }
     // replay トグル（増分1）。明示指定時のみ反映する（undefined は現状維持）。
     if (params.replay != null) {
       this._setReplay(!!params.replay);
+    }
+  }
+
+  // sessions（日別プロファイル分割）を primitive/renderer へ反映する。
+  //   on: primitive.setSessions(profile.sessions)・renderer.setCandleTransparency(true)（ローソク透明化）。
+  //   off: primitive.setSessions(null)（通常モード）・renderer.setCandleTransparency(false)（復元）。
+  //   該当メソッド非提供時は skip（後方互換）。移植元 prototype_260630-01 drawSessions。
+  _applySessions(profile) {
+    const on = !!this._sessions;
+    if (this._primitive && typeof this._primitive.setSessions === 'function') {
+      const list = on && profile && Array.isArray(profile.sessions) ? profile.sessions : null;
+      // sessions_total（キャップ前の実日数）を第 2 引数で渡す（注記「直近N/全M日」の M・修正1）。
+      //   未提供時は primitive 側で受信長へフォールバック（後方互換）。
+      const total = on && profile && profile.sessions_total != null ? profile.sessions_total : null;
+      this._primitive.setSessions(list, total);
+    }
+    if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+      this._renderer.setCandleTransparency(on);
     }
   }
 
@@ -180,14 +206,21 @@ export class MarketProfileActor {
     }
   }
 
-  // to=T（＋増分2 の from/today）を重畳して 1 回取得し、profile を反映する（null は前回描画保持）。
+  // to=T（＋増分2 の from/today／sessions）を重畳して 1 回取得し、profile を反映する（null は前回描画保持）。
   async _fetchAt(time) {
     const profile = await this._client.fetchProfile({
-      ...this._getContext(), ...this._params, to: time, ...this._replayExtra(time),
+      ...this._getContext(), ...this._params, to: time,
+      ...this._replayExtra(time), ...this._sessionsExtra(),
     });
     if (profile) {
       this._primitive.setProfile(profile);
+      this._applySessions(profile);
     }
+  }
+
+  // sessions ON 時のみ context へ sessions:true を載せる（client が &sessions=1 を付与）。OFF は載せない（後方互換）。
+  _sessionsExtra() {
+    return this._sessions ? { sessions: true } : {};
   }
 
   // トグル。ON: 初回のみ attach → 取得して反映 → 表示。OFF: 非表示（取得しない）。
@@ -199,6 +232,13 @@ export class MarketProfileActor {
       this._primitive.setVisible(true);
     } else {
       this._primitive.setVisible(false);
+      // sessions のローソク透明化・分割描画を必ず復元する（MP OFF で従来のローソク/累積へ戻す）。
+      if (this._primitive && typeof this._primitive.setSessions === 'function') {
+        this._primitive.setSessions(null);
+      }
+      if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+        this._renderer.setCandleTransparency(false);
+      }
     }
   }
 
@@ -209,10 +249,14 @@ export class MarketProfileActor {
     }
     // getContext（datasetRef/timeframe/…）へ setParams の bins/va/src/range を重畳して取得する。
     //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
-    const profile = await this._client.fetchProfile({ ...this._getContext(), ...this._params });
+    const profile = await this._client.fetchProfile({
+      ...this._getContext(), ...this._params, ...this._sessionsExtra(),
+    });
     if (profile) {
       this._primitive.setProfile(profile);
     }
+    // sessions ON/OFF を反映する（profile が null でも OFF 復元は必要＝独立に呼ぶ）。
+    this._applySessions(profile);
   }
 
   // primitive を mainSeries へ一度だけ attach する（attachPrimitive 非提供時は skip）。
@@ -233,5 +277,9 @@ export class MarketProfileActor {
       this._mainSeries.detachPrimitive(this._primitive);
     }
     this._attached = false;
+    // sessions のローソク透明化を必ず復元する（MP 削除でローソクを不透明へ戻す＝取り残さない）。
+    if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+      this._renderer.setCandleTransparency(false);
+    }
   }
 }

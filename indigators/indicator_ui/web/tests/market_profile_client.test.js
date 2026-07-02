@@ -304,3 +304,73 @@ test('MarketProfileClient.fetchProfile returns null when no fetch impl injected'
   // Act / Assert
   assert.equal(await client.fetchProfile({ datasetRef: 'sample' }), null);
 });
+
+
+// sessions（日別プロファイル分割）: sessions===true のとき &sessions=1 を付与、false/未指定は付けない。
+//   移植元 prototype_260630-01（?sessions=1 で sessions[{date,tpo[]}]）。
+test('buildMarketProfileUrl appends &sessions=1 when sessions is true', () => {
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', sessions: true });
+  assert.ok(url.includes('&sessions=1'));
+});
+
+test('buildMarketProfileUrl omits &sessions when false/undefined (sessions OFF・後方互換)', () => {
+  assert.ok(!buildMarketProfileUrl({ datasetRef: 'sample' }).includes('sessions='));
+  assert.ok(!buildMarketProfileUrl({ datasetRef: 'sample', sessions: false }).includes('sessions='));
+});
+
+// parseProfileResponse: トップレベル sessions[] を profile へ素通し（actor が profile.sessions を消費）。
+test('parseProfileResponse passes through top-level sessions[] into profile', () => {
+  const payload = {
+    ok: true,
+    profile: {
+      bins: [{ price: 100, tpo: 1, norm: 1 }], poc: 100, va_low: 100, va_high: 100,
+      price_min: 100, price_max: 101, tpo_units: 1, n_bins: 1,
+    },
+    sessions: [{ date: '2024-01-01', tpo: [1] }, { date: '2024-01-02', tpo: [2] }],
+  };
+  const out = parseProfileResponse(payload);
+  assert.equal(out.sessions.length, 2);
+  assert.equal(out.sessions[0].date, '2024-01-01');
+});
+
+test('parseProfileResponse omits sessions key when absent (後方互換)', () => {
+  const payload = {
+    ok: true,
+    profile: {
+      bins: [{ price: 100, tpo: 1, norm: 1 }], poc: 100, va_low: 100, va_high: 100,
+      price_min: 100, price_max: 101, tpo_units: 1, n_bins: 1,
+    },
+  };
+  const out = parseProfileResponse(payload);
+  assert.ok(!('sessions' in out));
+});
+
+// sessions_total（キャップ前の実日数・修正1）: primitive 注記「直近N/全M日」の M へ渡す素材。
+//   parse はトップレベル sessions_total を profile へ素通しする（無ければ付けない＝後方互換）。
+test('parseProfileResponse passes through top-level sessions_total into profile', () => {
+  const payload = {
+    ok: true,
+    profile: {
+      bins: [{ price: 100, tpo: 1, norm: 1 }], poc: 100, va_low: 100, va_high: 100,
+      price_min: 100, price_max: 101, tpo_units: 1, n_bins: 1,
+    },
+    sessions: [{ date: '2024-01-01', tpo: [1] }, { date: '2024-01-02', tpo: [2] }],
+    sessions_total: 4146, // キャップ前の実日数（キャップ後 len(sessions)=2 とは別）。
+  };
+  const out = parseProfileResponse(payload);
+  assert.equal(out.sessions_total, 4146);
+  assert.equal(out.sessions.length, 2);
+});
+
+test('parseProfileResponse omits sessions_total when absent (後方互換)', () => {
+  const payload = {
+    ok: true,
+    profile: {
+      bins: [{ price: 100, tpo: 1, norm: 1 }], poc: 100, va_low: 100, va_high: 100,
+      price_min: 100, price_max: 101, tpo_units: 1, n_bins: 1,
+    },
+    sessions: [{ date: '2024-01-01', tpo: [1] }],
+  };
+  const out = parseProfileResponse(payload);
+  assert.ok(!('sessions_total' in out));
+});

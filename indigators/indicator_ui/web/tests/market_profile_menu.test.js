@@ -104,9 +104,10 @@ test('applyIndicator(market_profile) forwards default params (resmode/bins/va/sr
   // Assert: src は既定 candle（後方互換）。resmode（解像度）既定 bins・range 既定 100（'auto' 撤去済）も
   //   bins/va と同様に転送される（client が resmode で bins/barw を排他化するため range 同送は無害）。
   //   replay（リプレイ・増分1）既定 false も転送される（actor が false でバー非表示＝現状維持）。
+  //   sessions（日別プロファイル分割）既定 false も転送される（actor が false で通常モード＝現状維持）。
   //   limit は転送しない（MP は全期間集計固定＝limit 非送信）。
   assert.equal(marketProfile.params.length, 1);
-  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'candle', replay: false, resmode: 'bins', range: '100' });
+  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'candle', replay: false, sessions: false, resmode: 'bins', range: '100' });
 });
 
 test('applyIndicator(existing indicator) still calls /compute (no regression)', async () => {
@@ -296,6 +297,25 @@ test('gear on market_profile forwards range to actor.setParams when set (non-aut
   // Assert: 保存 params（range=50 含む）を actor へ転送する。resmode 欠落の旧 barw インスタンスは
   //   resmode='range' が導出される（後方互換マイグレーション・修正1）。
   assert.deepEqual(marketProfile.params.at(-1), { bins: 80, va: 0.65, src: 'm1', range: '50', resmode: 'range' });
+});
+
+test('gear on market_profile forwards sessions=true to actor.setParams (日別プロファイル)', async () => {
+  // Arrange: sessions=true を保存 params に含むインスタンス。
+  const marketProfile = fakeMarketProfile();
+  const computeCalls = [];
+  const ctrl = makeController({ marketProfile, computeCalls });
+  const def = get('market_profile');
+  const inst = {
+    instanceId: 'market_profile#1', indicatorId: 'market_profile', variant: 'default',
+    params: [['bins', '60'], ['va', 0.70], ['src', 'candle'], ['sessions', true]],
+    visible: true, generation: 0, seq: 1, createdAt: '2026-06-07T00:00:00Z',
+  };
+  ctrl._state = { ...ctrl._state, applied: [inst] };
+  // Act
+  ctrl._onGearMarketProfile(inst, def);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // Assert: sessions=true が actor へ転送される（_mpParams が p.sessions を out.sessions へ）。
+  assert.equal(marketProfile.params.at(-1).sessions, true);
 });
 
 test('MarketProfileActor.setParams merges bins/va but DROPS limit (全期間集計固定)', async () => {

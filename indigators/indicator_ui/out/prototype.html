@@ -1248,6 +1248,14 @@ const MARKET_PROFILE = new IndicatorDef({
       group: 'group.display', order: 1, label: 'リプレイ',
       tooltip: '過去に遡る（時間カーソル・as-seen-at-t）。ON でチャート下部のスライダから当時のプロファイルを再生する',
     }),
+    // sessions: 日別プロファイル分割（BOOL・既定 false・表示系 group）。試作 prototype_260630-01 の
+    //   sessions（drawSessions）を移植。ON で各営業日のプロファイル形を幅広の列で並べ、ローソクを
+    //   透明化して価格軸のみ残す。client が &sessions=1 を付与し backend が sessions[{date,tpo[]}] を返す。
+    //   OFF（既定）は完全に従来挙動（累積プロファイル・ローソク不透明）。計算系とは別の表示系 group。
+    param('sessions', ParamType.BOOL, false, [], null, {
+      group: 'group.display', order: 2, label: '日別プロファイル',
+      tooltip: '各営業日のプロファイルを日ごとの列で並べて表示する（ローソクは透明化・価格軸は維持）',
+    }),
   ],
   series: [
     new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'market_profile', dynamic: false }),
@@ -1588,6 +1596,12 @@ const WATERMARK_COLOR = 'rgba(209, 212, 220, 0.9)';
 //   （背景ピクセルは一切変更しない）。ペア内バーは色を付けず原色（既定 up/down 着色）に委ねる。
 const DIM_CANDLE_COLOR = '#16191f';
 
+// sessions（日別プロファイル分割）: ローソク透明化用の色。透明＝価格軸は残しローソクだけ消す。
+//   復元色は composition_root_front.js の mainSeries 既定（up=#26a69a / down=#ef5350）と一致させる。
+const TRANSPARENT_COLOR = 'rgba(0,0,0,0)';
+const CANDLE_UP_COLOR = '#26a69a';
+const CANDLE_DOWN_COLOR = '#ef5350';
+
 // σ 水準線のカラースキーム（histogram の level_colors と同義: 中心からの距離で 緑→赤）。
 // 端点は common/level_colors.py の _CALM/_HOT（#2e7d32 / #d32f2f）に一致させる。
 const SCHEME_CALM = [46, 125, 50]; // 緑（中心＝穏やか）
@@ -1688,6 +1702,30 @@ class ChartRenderer {
     this._chart.applyOptions({ handleScroll: on, handleScale: on });
   }
 
+  // sessions（日別プロファイル分割）: ローソクを透明化して価格軸のみ残す/復元する（移植元 prototype_260630-01）。
+  //   lightweight-charts の mainSeries.applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は
+  //   呼ばない）。on=true で up/down/border/wick の各色を透明へ上書きし、on=false で元の既定色へ復元する。
+  //   applyOptions 非提供時は no-op（後方互換）。冪等（同じ状態の再設定は無害）。
+  setCandleTransparency(on) {
+    if (typeof this._mainSeries.applyOptions !== 'function') {
+      return;
+    }
+    if (on) {
+      this._mainSeries.applyOptions({
+        upColor: TRANSPARENT_COLOR, downColor: TRANSPARENT_COLOR,
+        borderUpColor: TRANSPARENT_COLOR, borderDownColor: TRANSPARENT_COLOR,
+        wickUpColor: TRANSPARENT_COLOR, wickDownColor: TRANSPARENT_COLOR,
+      });
+    } else {
+      // 復元＝既定のローソク配色へ戻す（sessions OFF / MP 削除 / sessions 解除で必ず呼ぶ）。
+      this._mainSeries.applyOptions({
+        upColor: CANDLE_UP_COLOR, downColor: CANDLE_DOWN_COLOR,
+        borderUpColor: CANDLE_UP_COLOR, borderDownColor: CANDLE_DOWN_COLOR,
+        wickUpColor: CANDLE_UP_COLOR, wickDownColor: CANDLE_DOWN_COLOR,
+      });
+    }
+  }
+
   // 増分2: x 座標 → 論理 index（timeScale().coordinateToLogical）。リプレイスワイプの x→足 index 変換。
   //   lwc 座標 API を本所に隔離する（actor/primitive は renderer 経由でのみ座標を得る）。
   //   timeScale/coordinateToLogical 非提供時は null（後方互換・呼び出し側でガード）。
@@ -1708,26 +1746,34 @@ class ChartRenderer {
     if (!this._baseCandles) {
       return;
     }
-    // トリム後の末尾 index を決める（null=全件末尾）。位置不変なら再 set しない。
-    let idx;
+    // トリム状態の同一性で再 set 要否を決める（null=未トリム／数値=末尾 index）。位置不変なら再 set しない。
+    //   null は「全ローソク（未トリム）」を表す単一の状態＝復元は「既にトリム済みのとき」だけ実行する。
+    //   これにより replay/snapshot OFF 時（未トリム状態）に setCandleTrim(null) を呼んでも series へ触れない
+    //   （挙動不変＝冗長 setData を出さない）。
     if (time == null) {
-      idx = this._baseCandles.length - 1;
-    } else {
-      idx = -1;
-      for (let i = 0; i < this._baseCandles.length; i += 1) {
-        if (this._baseCandles[i].time <= time) {
-          idx = i;
-        } else {
-          break; // time 昇順前提（越えたら打ち切り）。
-        }
+      if (this._lastTrimIdx === null) {
+        return; // 既に未トリム＝何もしない（OFF 時の挙動不変）。
       }
+      this._lastTrimIdx = null;
+      this._mainSeries.setData(this._baseCandles); // トリム解除＝全ローソク復元。
+      return;
+    }
+    let idx = -1;
+    for (let i = 0; i < this._baseCandles.length; i += 1) {
+      if (this._baseCandles[i].time <= time) {
+        idx = i;
+      } else {
+        break; // time 昇順前提（越えたら打ち切り）。
+      }
+    }
+    if (idx === -1) {
+      return; // time がデータ先頭より前（縮退）＝トリム無効。全ローソクを維持し series へ触れない。
     }
     if (idx === this._lastTrimIdx) {
       return; // 位置変化なし＝重い setData を回避（プロト applyAsofView 相当）。
     }
     this._lastTrimIdx = idx;
-    const disp = (time == null) ? this._baseCandles : this._baseCandles.slice(0, idx + 1);
-    this._mainSeries.setData(disp);
+    this._mainSeries.setData(this._baseCandles.slice(0, idx + 1));
   }
 
   // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。
@@ -3556,6 +3602,11 @@ class IndicatorController {
     if (p.replay != null) {
       out.replay = p.replay;
     }
+    // sessions（日別プロファイル分割）: BOOL を actor へ転送する。undefined は載せない（現状維持）。
+    //   actor が sessions=true で &sessions=1 取得・日別列描画・ローソク透明化、false で通常モードへ復帰。
+    if (p.sessions != null) {
+      out.sessions = p.sessions;
+    }
     // resmode（解像度モード）: client が bins/barw の送信を排他化する。
     //   後方互換: 明示 resmode が無い旧 barw 保存インスタンス（数値 range・resmode 無し）は
     //   range から resmode を導出して保存レンジを維持する（_deriveResmode）。
@@ -5080,7 +5131,7 @@ class TradeMarkersRenderer {
 //     （'30'/'60'/'100'）が渡るため、文字列プリセット（非空）または有限数（後方互換）を付与し、
 //     NaN・空文字・null は排除する（backend の _parse_int が '60' を解釈可）。
 function buildMarketProfileUrl({
-  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today,
+  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today, sessions,
 } = {}) {
   let url = `/market_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
@@ -5120,6 +5171,11 @@ function buildMarketProfileUrl({
   if (today === true || today === 1 || today === '1') {
     url += '&today=1';
   }
+  // sessions（日別プロファイル分割）— true のときのみ &sessions=1 を付与（false/未指定は付けない・後方互換）。
+  //   移植元 prototype_260630-01（?sessions=1 で sessions[{date,tpo[]}]）。
+  if (sessions === true || sessions === 1 || sessions === '1') {
+    url += '&sessions=1';
+  }
   return url;
 }
 
@@ -5132,13 +5188,16 @@ function parseProfileResponse(payload) {
   if (!profile || !Array.isArray(profile.bins)) {
     return null;
   }
-  // 応答トップレベルに src/atom/bar_width（UI メタ）があれば profile へ素通しする
+  // 応答トップレベルに src/atom/bar_width（UI メタ）・sessions（日別分割）があれば profile へ素通しする
   // （無ければ既存 profile をそのまま返す＝後方互換・共有オブジェクト非破壊の spread 維持）。
-  if (payload.src != null || payload.atom != null || payload.bar_width != null) {
+  if (payload.src != null || payload.atom != null || payload.bar_width != null
+      || payload.sessions != null) {
     const meta = {};
     if (payload.src != null) meta.src = payload.src;
     if (payload.atom != null) meta.atom = payload.atom;
     if (payload.bar_width != null) meta.bar_width = payload.bar_width;
+    // sessions[{date,tpo[]}]（日別プロファイル分割）— actor が profile.sessions を primitive へ渡す。
+    if (payload.sessions != null) meta.sessions = payload.sessions;
     return { ...profile, ...meta };
   }
   return profile;
@@ -5204,7 +5263,12 @@ const C_POC_LINE = '#ff3b3b';
 const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
 // リプレイ時点 T の縦線色（試作 prototype_260630-01 の遡り縦線準拠・視認しやすい水色）。
 const C_CURSOR_LINE = 'rgba(120, 190, 255, 0.9)';
-
+// sessions（日別プロファイル分割）: 1 セッションの最小列幅(px 相当)。分析できる幅を確保する（試作 SESS_MIN_COL）。
+const SESS_MIN_COL = 102;
+// sessions 列内の日別 POC 行を白で強調（試作準拠）・列内バーの最小可視画素。
+const C_SESS_POC = 'rgba(255,255,255,0.95)';
+const SESS_BAR_ALPHA = 0.98;
+const SESS_MIN_BAR_PX = 1.5;
 class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -5215,6 +5279,16 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     // 増分2 スナップショット: true で累積バーを減光（DIM_ALPHA）＋ today[] を当日内スケールで明るく重畳。
     //   既定 false（明るい累積バー＝従来描画）。移植元 prototype_260630-01 drawComposite（showToday）。
     this._snapshot = false;
+    // sessions（日別プロファイル分割）: 各営業日の [{date,tpo[]}]。null=通常モード（累積プロファイル）。
+    //   non-null で sessions モード＝各営業日の列を描き、通常の累積バー・POC/VA 線は描かない（試作準拠）。
+    this._sessions = null;
+  }
+
+  // sessions（日別プロファイル分割）を設定して再描画要求。null で通常モード（累積プロファイル）へ復帰。
+  //   移植元 prototype_260630-01 drawSessions。sessions[{date,tpo[]}] は backend の応答トップレベル由来。
+  setSessions(sessions) {
+    this._sessions = Array.isArray(sessions) ? sessions : null;
+    this._update();
   }
 
   // 増分2: スナップショット表示（累積減光＋当日強調）を切替えて再描画要求。false で従来の明るい累積へ復帰。
@@ -5258,6 +5332,75 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     return step > 0 ? step * 0.85 : DEFAULT_BAR_H;
   }
 
+  // sessions 描画（移植元 prototype_260630-01 drawSessions）: チャート幅から nFit=floor(width/SESS_MIN_COL)
+  //   を求め、直近 nFit 日だけを**全幅に等間隔タイル**（cx=i*colW・試作 L204-210）で描く。
+  //   時刻座標(timeToCoordinate)には置かない＝ズームに依存せず常に分析できる列幅を確保し、
+  //   どの日かは列上部の日付ラベル(MM-DD)で示す（試作準拠）。列は交互背景で区切り、
+  //   列内は日内 max で正規化した横ヒストグラム（heatColor 再利用）・日別 POC 行を白で強調。
+  //   直近 nFit < 全日数のときは左下に「直近N/全M日」注記。累積 POC/VA 線・通常バーは描かない。
+  _drawSessions(ctx, scope, toY, barH) {
+    const all = this._sessions;
+    if (!all.length) {
+      return;
+    }
+    const width = scope.bitmapSize.width;
+    const height = scope.bitmapSize.height;
+    const bins = this._profile.bins;
+    // nFit: 列幅 >= SESS_MIN_COL を確保できる日数（直近優先）。1 未満にはしない。
+    const nFit = Math.max(1, Math.floor(width / SESS_MIN_COL));
+    const ss = all.slice(Math.max(0, all.length - nFit)); // 幅確保のため直近 nFit 日。
+    const colW = width / ss.length;                       // 各列の割当幅（全幅タイル）。
+    ctx.save();
+    ctx.font = '10px system-ui';
+    ctx.textBaseline = 'top';
+    for (let i = 0; i < ss.length; i += 1) {
+      const arr = ss[i].tpo || [];
+      const left = i * colW; // 全幅に等間隔タイル（試作 cx = i*colW）。
+      // 列を交互背景で区別（試作準拠）。
+      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.015)';
+      ctx.fillRect(left, 0, colW, height);
+      // 日内 max（正規化基準）と日別 POC（最頻 bin index）を求める。
+      let dmax = 0;
+      let pocj = -1;
+      for (let j = 0; j < arr.length; j += 1) {
+        if (arr[j] > dmax) {
+          dmax = arr[j];
+          pocj = j;
+        }
+      }
+      if (dmax > 0) {
+        for (let j = 0; j < arr.length; j += 1) {
+          const v = arr[j];
+          if (!v) {
+            continue;
+          }
+          const bin = bins[j];
+          if (!bin) {
+            continue;
+          }
+          const y = toY(bin.price);
+          if (y == null) {
+            continue; // 範囲外価格はスキップ。
+          }
+          const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * (colW - 4));
+          // 日別 POC 行は白で強調、それ以外は日内正規化のヒート配色。
+          ctx.fillStyle = (j === pocj) ? C_SESS_POC : heatColor(v / dmax, SESS_BAR_ALPHA);
+          ctx.fillRect(left + 2, y - barH / 2, w, barH);
+        }
+      }
+      // 列上部に日付（MM-DD・試作準拠）。
+      ctx.fillStyle = 'rgba(154,164,178,.6)';
+      ctx.fillText((ss[i].date || '').slice(5), left + 3, 4);
+    }
+    // 直近 nFit < 全日数なら左下に注記（試作準拠）。
+    if (ss.length < all.length) {
+      ctx.fillStyle = 'rgba(154,164,178,.8)';
+      ctx.font = '11px system-ui';
+      ctx.fillText(`直近${ss.length}/${all.length}日`, 6, height - 16);
+    }
+    ctx.restore();
+  }
+
   _draw(target) {
     // 非表示・profile 未取得・attach 前（座標源なし）は描画しない（防御・後方互換）。
     if (!this._visible || !this._profile || !this._chart || !this._series) {
@@ -5276,6 +5419,12 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       const ctx = scope.context;
       const width = scope.bitmapSize.width;
       const maxBarPx = width * BAR_MAX_FRACTION;
+
+      // sessions モード（日別プロファイル分割）: 各営業日の列を描き、通常の累積バー・POC/VA 線は描かない。
+      if (this._sessions) {
+        this._drawSessions(ctx, scope, toY, barH);
+        return;
+      }
 
       // TPO 横バー（右端整列・norm で長さ／色）。範囲外（y=null）の bin はスキップ。
       for (let i = 0; i < bins.length; i += 1) {
@@ -5383,6 +5532,8 @@ class MarketProfileActor {
     this._getContext = typeof getContext === 'function' ? getContext : () => ({});
     this._enabled = false;
     this._attached = false;
+    // sessions（日別プロファイル分割）ON/OFF。既定 false（通常の累積プロファイル・後方互換）。
+    this._sessions = false;
     // 取得パラメータ（bins/va/src/range）。setParams で更新し refresh 時に getContext へ重畳する。
     //   未設定時は空＝getContext のみ（サーバ既定・後方互換）。
     this._params = {};
@@ -5444,9 +5595,30 @@ class MarketProfileActor {
       }
     }
     this._params = next;
+    // sessions（日別プロファイル分割）トグル。明示指定時のみ反映する（undefined は現状維持）。
+    //   true で refresh 時に context へ sessions:true を載せ、応答の profile.sessions を primitive/renderer へ
+    //   反映する。false で通常モードへ復帰（primitive.setSessions(null)・ローソク透明化解除）。
+    if (params.sessions != null) {
+      this._sessions = !!params.sessions;
+    }
     // replay トグル（増分1）。明示指定時のみ反映する（undefined は現状維持）。
     if (params.replay != null) {
       this._setReplay(!!params.replay);
+    }
+  }
+
+  // sessions（日別プロファイル分割）を primitive/renderer へ反映する。
+  //   on: primitive.setSessions(profile.sessions)・renderer.setCandleTransparency(true)（ローソク透明化）。
+  //   off: primitive.setSessions(null)（通常モード）・renderer.setCandleTransparency(false)（復元）。
+  //   該当メソッド非提供時は skip（後方互換）。移植元 prototype_260630-01 drawSessions。
+  _applySessions(profile) {
+    const on = !!this._sessions;
+    if (this._primitive && typeof this._primitive.setSessions === 'function') {
+      const list = on && profile && Array.isArray(profile.sessions) ? profile.sessions : null;
+      this._primitive.setSessions(list);
+    }
+    if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+      this._renderer.setCandleTransparency(on);
     }
   }
 
@@ -5476,6 +5648,11 @@ class MarketProfileActor {
       }
       if (this._primitive && typeof this._primitive.setSnapshot === 'function') {
         this._primitive.setSnapshot(false);
+      }
+      // 防御: スワイプ捕捉中（setUserInteraction(false)）のまま gear で OFF にされても
+      // チャート操作を必ず復元する（冪等・未捕捉時も無害）。
+      if (this._renderer && typeof this._renderer.setUserInteraction === 'function') {
+        this._renderer.setUserInteraction(true);
       }
     }
   }
@@ -5525,14 +5702,21 @@ class MarketProfileActor {
     }
   }
 
-  // to=T（＋増分2 の from/today）を重畳して 1 回取得し、profile を反映する（null は前回描画保持）。
+  // to=T（＋増分2 の from/today／sessions）を重畳して 1 回取得し、profile を反映する（null は前回描画保持）。
   async _fetchAt(time) {
     const profile = await this._client.fetchProfile({
-      ...this._getContext(), ...this._params, to: time, ...this._replayExtra(time),
+      ...this._getContext(), ...this._params, to: time,
+      ...this._replayExtra(time), ...this._sessionsExtra(),
     });
     if (profile) {
       this._primitive.setProfile(profile);
+      this._applySessions(profile);
     }
+  }
+
+  // sessions ON 時のみ context へ sessions:true を載せる（client が &sessions=1 を付与）。OFF は載せない（後方互換）。
+  _sessionsExtra() {
+    return this._sessions ? { sessions: true } : {};
   }
 
   // トグル。ON: 初回のみ attach → 取得して反映 → 表示。OFF: 非表示（取得しない）。
@@ -5544,6 +5728,13 @@ class MarketProfileActor {
       this._primitive.setVisible(true);
     } else {
       this._primitive.setVisible(false);
+      // sessions のローソク透明化・分割描画を必ず復元する（MP OFF で従来のローソク/累積へ戻す）。
+      if (this._primitive && typeof this._primitive.setSessions === 'function') {
+        this._primitive.setSessions(null);
+      }
+      if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+        this._renderer.setCandleTransparency(false);
+      }
     }
   }
 
@@ -5554,10 +5745,14 @@ class MarketProfileActor {
     }
     // getContext（datasetRef/timeframe/…）へ setParams の bins/va/src/range を重畳して取得する。
     //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
-    const profile = await this._client.fetchProfile({ ...this._getContext(), ...this._params });
+    const profile = await this._client.fetchProfile({
+      ...this._getContext(), ...this._params, ...this._sessionsExtra(),
+    });
     if (profile) {
       this._primitive.setProfile(profile);
     }
+    // sessions ON/OFF を反映する（profile が null でも OFF 復元は必要＝独立に呼ぶ）。
+    this._applySessions(profile);
   }
 
   // primitive を mainSeries へ一度だけ attach する（attachPrimitive 非提供時は skip）。
@@ -5578,6 +5773,10 @@ class MarketProfileActor {
       this._mainSeries.detachPrimitive(this._primitive);
     }
     this._attached = false;
+    // sessions のローソク透明化を必ず復元する（MP 削除でローソクを不透明へ戻す＝取り残さない）。
+    if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+      this._renderer.setCandleTransparency(false);
+    }
   }
 }
 

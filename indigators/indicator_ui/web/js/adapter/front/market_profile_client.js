@@ -16,7 +16,7 @@
 //     （'30'/'60'/'100'）が渡るため、文字列プリセット（非空）または有限数（後方互換）を付与し、
 //     NaN・空文字・null は排除する（backend の _parse_int が '60' を解釈可）。
 export function buildMarketProfileUrl({
-  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today,
+  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today, sessions,
 } = {}) {
   let url = `/market_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
@@ -56,6 +56,11 @@ export function buildMarketProfileUrl({
   if (today === true || today === 1 || today === '1') {
     url += '&today=1';
   }
+  // sessions（日別プロファイル分割）— true のときのみ &sessions=1 を付与（false/未指定は付けない・後方互換）。
+  //   移植元 prototype_260630-01（?sessions=1 で sessions[{date,tpo[]}]）。
+  if (sessions === true || sessions === 1 || sessions === '1') {
+    url += '&sessions=1';
+  }
   return url;
 }
 
@@ -68,13 +73,18 @@ export function parseProfileResponse(payload) {
   if (!profile || !Array.isArray(profile.bins)) {
     return null;
   }
-  // 応答トップレベルに src/atom/bar_width（UI メタ）があれば profile へ素通しする
+  // 応答トップレベルに src/atom/bar_width（UI メタ）・sessions（日別分割）があれば profile へ素通しする
   // （無ければ既存 profile をそのまま返す＝後方互換・共有オブジェクト非破壊の spread 維持）。
-  if (payload.src != null || payload.atom != null || payload.bar_width != null) {
+  if (payload.src != null || payload.atom != null || payload.bar_width != null
+      || payload.sessions != null || payload.sessions_total != null) {
     const meta = {};
     if (payload.src != null) meta.src = payload.src;
     if (payload.atom != null) meta.atom = payload.atom;
     if (payload.bar_width != null) meta.bar_width = payload.bar_width;
+    // sessions[{date,tpo[]}]（日別プロファイル分割）— actor が profile.sessions を primitive へ渡す。
+    if (payload.sessions != null) meta.sessions = payload.sessions;
+    // sessions_total（キャップ前の実日数）— primitive 注記「直近N/全M日」の M（キャップ後 60 の誤読防止）。
+    if (payload.sessions_total != null) meta.sessions_total = payload.sessions_total;
     return { ...profile, ...meta };
   }
   return profile;

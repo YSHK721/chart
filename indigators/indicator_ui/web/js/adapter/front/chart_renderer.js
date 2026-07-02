@@ -40,6 +40,12 @@ const WATERMARK_COLOR = 'rgba(209, 212, 220, 0.9)';
 //   （背景ピクセルは一切変更しない）。ペア内バーは色を付けず原色（既定 up/down 着色）に委ねる。
 const DIM_CANDLE_COLOR = '#16191f';
 
+// sessions（日別プロファイル分割）: ローソク透明化用の色。透明＝価格軸は残しローソクだけ消す。
+//   復元色は composition_root_front.js の mainSeries 既定（up=#26a69a / down=#ef5350）と一致させる。
+const TRANSPARENT_COLOR = 'rgba(0,0,0,0)';
+const CANDLE_UP_COLOR = '#26a69a';
+const CANDLE_DOWN_COLOR = '#ef5350';
+
 // σ 水準線のカラースキーム（histogram の level_colors と同義: 中心からの距離で 緑→赤）。
 // 端点は common/level_colors.py の _CALM/_HOT（#2e7d32 / #d32f2f）に一致させる。
 const SCHEME_CALM = [46, 125, 50]; // 緑（中心＝穏やか）
@@ -138,6 +144,30 @@ export class ChartRenderer {
     }
     const on = !!enabled;
     this._chart.applyOptions({ handleScroll: on, handleScale: on });
+  }
+
+  // sessions（日別プロファイル分割）: ローソクを透明化して価格軸のみ残す/復元する（移植元 prototype_260630-01）。
+  //   lightweight-charts の mainSeries.applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は
+  //   呼ばない）。on=true で up/down/border/wick の各色を透明へ上書きし、on=false で元の既定色へ復元する。
+  //   applyOptions 非提供時は no-op（後方互換）。冪等（同じ状態の再設定は無害）。
+  setCandleTransparency(on) {
+    if (typeof this._mainSeries.applyOptions !== 'function') {
+      return;
+    }
+    if (on) {
+      this._mainSeries.applyOptions({
+        upColor: TRANSPARENT_COLOR, downColor: TRANSPARENT_COLOR,
+        borderUpColor: TRANSPARENT_COLOR, borderDownColor: TRANSPARENT_COLOR,
+        wickUpColor: TRANSPARENT_COLOR, wickDownColor: TRANSPARENT_COLOR,
+      });
+    } else {
+      // 復元＝既定のローソク配色へ戻す（sessions OFF / MP 削除 / sessions 解除で必ず呼ぶ）。
+      this._mainSeries.applyOptions({
+        upColor: CANDLE_UP_COLOR, downColor: CANDLE_DOWN_COLOR,
+        borderUpColor: CANDLE_UP_COLOR, borderDownColor: CANDLE_DOWN_COLOR,
+        wickUpColor: CANDLE_UP_COLOR, wickDownColor: CANDLE_DOWN_COLOR,
+      });
+    }
   }
 
   // 増分2: x 座標 → 論理 index（timeScale().coordinateToLogical）。リプレイスワイプの x→足 index 変換。

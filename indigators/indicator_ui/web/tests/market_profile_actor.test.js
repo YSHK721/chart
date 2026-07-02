@@ -388,3 +388,121 @@ test('setReplayCursor coalesces rapid scrubs: only the last cursor is fetched wh
   const cursorFetches = calls.filter((c) => c.to != null).map((c) => c.to);
   assert.deepEqual(cursorFetches, [10, 30], 'in-flight 中の連打は最後(30)だけ追走し 20 は捨てる');
 });
+
+
+// ===========================================================================
+// sessions（日別プロファイル分割・移植元 prototype_260630-01 drawSessions）
+//   setParams({sessions}) を受け、refresh 時に context へ sessions:true を載せる。
+//   fetch 後 profile.sessions を primitive.setSessions へ、ローソク透明化を
+//   renderer.setCandleTransparency(on) へ委譲する。OFF/無効化で必ず復元する。
+// ===========================================================================
+
+// setSessions / setCandleTransparency を記録できる Fake。
+function fakeSessPrimitive() {
+  const p = fakePrimitive();
+  p.sessionsCalls = [];
+  p.sessionsTotals = []; // setSessions の第 2 引数（total）を記録する。
+  p.setSessions = function (s, total) { this.sessionsCalls.push(s); this.sessionsTotals.push(total); };
+  return p;
+}
+function fakeSessRenderer() {
+  return {
+    transparencies: [],
+    setCandleTransparency(on) { this.transparencies.push(!!on); },
+  };
+}
+const PROFILE_WITH_SESSIONS = {
+  ...PROFILE,
+  sessions: [{ date: '2024-01-01', tpo: [1] }, { date: '2024-01-02', tpo: [2] }],
+  sessions_total: 4146, // キャップ前の実日数（parse が profile へ素通し済み）。
+};
+
+function makeSessActor(profile = PROFILE_WITH_SESSIONS) {
+  const client = fakeClient(profile);
+  const primitive = fakeSessPrimitive();
+  const renderer = fakeSessRenderer();
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries: fakeMainSeries(), renderer,
+    getContext: () => ({ datasetRef: 'sample', timeframe: '1D' }),
+  });
+  return { actor, client, primitive, renderer };
+}
+
+test('sessions ON: setParams({sessions:true}) makes refresh fetch with sessions:true in context', async () => {
+  const { actor, client } = makeSessActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  const last = client.calls[client.calls.length - 1];
+  assert.equal(last.sessions, true, 'context に sessions:true が載る');
+});
+
+test('sessions ON: primitive.setSessions receives profile.sessions and renderer transparency turns on', async () => {
+  const { actor, primitive, renderer } = makeSessActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  const lastSess = primitive.sessionsCalls[primitive.sessionsCalls.length - 1];
+  assert.ok(Array.isArray(lastSess) && lastSess.length === 2, 'profile.sessions が primitive へ渡る');
+  assert.ok(renderer.transparencies.includes(true), 'ローソク透明化 ON');
+});
+
+test('sessions ON: primitive.setSessions receives sessions_total (pre-cap day count) as 2nd arg', async () => {
+  // 修正1: actor は profile.sessions_total を primitive.setSessions(list, total) の total へ渡す。
+  //   primitive 注記「直近N/全M日」の M をキャップ後長でなく実日数にするため。
+  const { actor, primitive } = makeSessActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  const lastTotal = primitive.sessionsTotals[primitive.sessionsTotals.length - 1];
+  assert.equal(lastTotal, 4146, 'profile.sessions_total が total 引数として primitive へ渡る');
+});
+
+test('sessions OFF (default): setSessions(null) and transparency stays off (後方互換)', async () => {
+  const { actor, primitive, renderer } = makeSessActor(PROFILE); // sessions 無し profile
+  // sessions param を載せない（既定 OFF）。
+  await actor.setEnabled(true);
+  // primitive へは null（通常モード）が渡る・透明化は ON にしない。
+  assert.ok(!primitive.sessionsCalls.includes(undefined));
+  assert.ok(primitive.sessionsCalls.every((s) => s === null), 'OFF 時は setSessions(null)');
+  assert.ok(!renderer.transparencies.includes(true), 'OFF 時は透明化しない');
+});
+
+test('sessions OFF via setParams restores: setSessions(null) + transparency off', async () => {
+  const { actor, primitive, renderer } = makeSessActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  // Act: sessions を false へ切替え → refresh。
+  actor.setParams({ sessions: false });
+  await actor.refresh();
+  const lastSess = primitive.sessionsCalls[primitive.sessionsCalls.length - 1];
+  assert.equal(lastSess, null, 'OFF で通常モードへ復帰（setSessions(null)）');
+  assert.equal(renderer.transparencies[renderer.transparencies.length - 1], false, '透明化解除');
+});
+
+test('setEnabled(false) restores candle transparency and clears sessions', async () => {
+  const { actor, primitive, renderer } = makeSessActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  // Act: 無効化（凡例 OFF）。
+  await actor.setEnabled(false);
+  assert.equal(renderer.transparencies[renderer.transparencies.length - 1], false, 'OFF で透明化解除');
+  assert.equal(primitive.sessionsCalls[primitive.sessionsCalls.length - 1], null, 'OFF で sessions クリア');
+});
+
+// detach()（凡例からの削除）で sessions のローソク透明化を必ず復元する（防御の明示化・修正3）。
+//   setEnabled(false) を経ずに detach() 単独で呼ばれても、ローソクを不透明へ戻して取り残さない。
+test('detach() alone restores candle transparency (setCandleTransparency(false))', async () => {
+  // Arrange: sessions ON でローソク透明化 ON にしてから detach 単独呼び出し。
+  const client = fakeClient(PROFILE_WITH_SESSIONS);
+  const primitive = fakeSessPrimitive();
+  const renderer = fakeSessRenderer();
+  const mainSeries = { attached: [], detached: [], attachPrimitive(p) { this.attached.push(p); }, detachPrimitive(p) { this.detached.push(p); } };
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries, renderer, getContext: () => ({ datasetRef: 'sample', timeframe: '1D' }),
+  });
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  assert.ok(renderer.transparencies.includes(true), '前提: 透明化 ON になっている');
+  // Act: detach() 単独（setEnabled(false) を経由しない）。
+  actor.detach();
+  // Assert: detach 経路で透明化が false へ復元される（取り残さない）。
+  assert.equal(renderer.transparencies[renderer.transparencies.length - 1], false, 'detach で透明化解除');
+});

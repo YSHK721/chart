@@ -346,3 +346,17 @@ test('catalog params: existing q-chain constraints survive UI-metadata extension
   // 既定値検証は緑（evaluate 単一定義・挙動不変）
   assert.deepEqual(def.validateParams({ fitter: 'ols', price: 'open', maxbars: 100, q_low: 0.05, q_high: 0.95 }), []);
 });
+
+
+// market_profile に sessions（日別プロファイル分割）BOOL を追加。試作 prototype_260630-01 移植。
+//   既定 false・label '日別プロファイル'・group は表示系（bins/va と別セクション）。gear のチェックで ON/OFF。
+test('catalog: market_profile exposes sessions BOOL default false labeled 日別プロファイル (表示系 group)', () => {
+  const d = get('market_profile');
+  const sessions = paramOf(d, 'sessions');
+  assert.ok(sessions, 'sessions param exists');
+  assert.equal(sessions.type, ParamType.BOOL);
+  assert.equal(sessions.default, false);
+  assert.equal(sessions.label, '日別プロファイル');
+  // 表示系 group（計算系 group.calc とは別＝bins と同じ group ではない）。
+  assert.notEqual(sessions.group, paramOf(d, 'bins').group);
+});
