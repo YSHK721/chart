@@ -399,6 +399,12 @@ const MARKET_PROFILE = new IndicatorDef({
     param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
     // limit: 集計対象の直近本数（INT・既定1500・min1）。
     param('limit', ParamType.INT, 1500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['limit', 1], messageKey: 'err.limit' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, label: '対象本数' }),
+    // src: 集計原子（ENUM・既定 candle=足レンジ TPO・後方互換 / dwell=実ティック滞在）。
+    //   client.buildMarketProfileUrl が受理し URL の &src= に付与する（省略時はサーバ既定 candle）。
+    param('src', ParamType.ENUM, 'candle', [], ['candle', 'dwell'], {
+      group: 'group.calc', order: 4, label: 'ソース',
+      enumLabels: { candle: '足レンジ', dwell: '滞在時間(実ティック)' },
+    }),
   ],
   series: [
     new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'market_profile', dynamic: false }),

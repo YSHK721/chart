@@ -51,6 +51,36 @@ test('buildMarketProfileUrl omits optional params when null/undefined', () => {
   assert.equal(url, '/market_profile?datasetRef=sample');
 });
 
+test('buildMarketProfileUrl appends src when provided (src=dwell)', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', src: 'dwell' });
+  // Assert
+  assert.ok(url.includes('&src=dwell'));
+});
+
+test('buildMarketProfileUrl omits src when not provided (candle 後方互換=URLに付けない)', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'sample' });
+  // Assert: src 省略時は URL に付与しない（サーバ既定 candle）
+  assert.ok(!url.includes('src='));
+  assert.equal(url, '/market_profile?datasetRef=sample');
+});
+
+test('parseProfileResponse passes through src/atom when present, else no extra keys', () => {
+  // Arrange
+  const withMeta = { ok: true, profile: { bins: [], poc: 1 }, src: 'dwell', atom: 'tick滞在秒' };
+  // Act
+  const p = parseProfileResponse(withMeta);
+  // Assert: src/atom を素通し・既存キー維持
+  assert.equal(p.src, 'dwell');
+  assert.equal(p.atom, 'tick滞在秒');
+  assert.equal(p.poc, 1);
+  // src/atom 無しの応答には余分キーを足さない（後方互換）
+  const plain = parseProfileResponse(OK_PAYLOAD);
+  assert.ok(!('src' in plain));
+  assert.ok(!('atom' in plain));
+});
+
 test('parseProfileResponse returns the profile object on ok:true', () => {
   // Arrange / Act
   const profile = parseProfileResponse(OK_PAYLOAD);

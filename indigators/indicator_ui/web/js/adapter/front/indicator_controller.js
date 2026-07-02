@@ -231,7 +231,7 @@ export class IndicatorController {
     if (!this._marketProfile) {
       return;
     }
-    this._marketProfile.setParams({ bins: params.bins, va: params.va, limit: params.limit });
+    this._marketProfile.setParams({ bins: params.bins, va: params.va, limit: params.limit, src: params.src });
     await this._marketProfile.setEnabled(true);
   }
 
@@ -261,7 +261,7 @@ export class IndicatorController {
     this._renderLegend();
   }
 
-  // MP 凡例 gear: プロパティダイアログで bins/va/limit を編集し、onApply で setParams+refresh。
+  // MP 凡例 gear: プロパティダイアログで bins/va/limit/src を編集し、onApply で setParams+refresh。
   //   /compute は呼ばない。DOM 不在時は現 params で即時反映（フォールバック）。
   _onGearMarketProfile(inst, def) {
     const doc = this._document;
@@ -272,7 +272,7 @@ export class IndicatorController {
     const applyParams = async (values) => {
       this._state = this._withParams(this._state, inst.instanceId, values);
       if (this._marketProfile) {
-        this._marketProfile.setParams({ bins: values.bins, va: values.va, limit: values.limit });
+        this._marketProfile.setParams({ bins: values.bins, va: values.va, limit: values.limit, src: values.src });
         await this._marketProfile.refresh();
       }
       this._persistAll();
@@ -581,7 +581,7 @@ export class IndicatorController {
       if (this._isMarketProfile(def)) {
         const rp = this._paramsObject(inst.params);
         if (this._marketProfile) {
-          this._marketProfile.setParams({ bins: rp.bins, va: rp.va, limit: rp.limit });
+          this._marketProfile.setParams({ bins: rp.bins, va: rp.va, limit: rp.limit, src: rp.src });
           if (inst.visible) {
             await this._marketProfile.setEnabled(true);
           }
