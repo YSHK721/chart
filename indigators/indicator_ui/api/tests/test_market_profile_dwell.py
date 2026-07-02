@@ -506,6 +506,192 @@ class TestControllerDwell:
 
 
 # --------------------------------------------------------------------------- #
+# controller: リプレイ時間カーソル ``to`` — dwell 経路の as-seen-at-t（未来リーク無し）
+# --------------------------------------------------------------------------- #
+class TestControllerDwellReplayTo:
+    """dwell 経路の ``to``（UNIX 秒）: T 以降の滞在が入らない（未来リーク無し）。
+
+    3 日ぶんの合成ティック（各日 hr2 に HOT 密集）で、``to`` を 1 日目日中 T に置くと、
+    集計窓 ``[t0, t1+bar_sec)`` の終端が T までの足に切り詰められ、2〜3 日目の滞在が入らない。
+    ``to`` 省略時は全 3 日を集計する（後方互換）。
+    """
+
+    def _candles_3d(self):
+        return [
+            {"time": _DAY0, "open": 1000, "high": 1110, "low": 990, "close": 1005},
+            {"time": _DAY0 + _DAY, "open": 1005, "high": 1108, "low": 992, "close": 1002},
+            {"time": _DAY0 + 2 * _DAY, "open": 1002, "high": 1106, "low": 991, "close": 1000},
+        ]
+
+    def test_to_intraday_excludes_later_days_no_future_leak(self, monkeypatch):
+        # Arrange: 全 3 日 candle を返すが、to を 1 日目の hr2（HOT 集中の直後）に置く。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        # ティック窓の end（未来リーク検査点）を捕捉する spy loader。
+        secs, mids = _synthetic_master()
+        base = _make_loader(secs, mids)
+        windows = []
+
+        def _spy(symbol, start, end):
+            windows.append((int(start), int(end)))
+            return base(symbol, start, end)
+
+        monkeypatch.setattr(mpd, "_load_window_ticks", _spy)
+        # to = 1 日目日中（day0 の hr3 = HOT 集中 hr2 の後）。この足(idx0)までで打ち切る。
+        to_t = _DAY0 + 7200 + 3600  # day0 hr3。idx0 の足 time(_DAY0) <= to < idx1 の足 time。
+
+        # Act
+        status, payload = handle_market_profile(
+            "jp225_tick", timeframe="1D", src="dwell", to=str(to_t)
+        )
+
+        # Assert: 窓終端は day0 の足 + bar_sec までに収まり、2〜3 日目のティックを読まない。
+        assert status == 200
+        day_roll_ends = [e for s, e in windows if s % _DAY == 0]
+        # dwell 集計に使う日別ロールアップの窓終端がすべて day0+bar_sec 以下（未来リーク無し）。
+        assert max(day_roll_ends) <= _DAY0 + _DAY, day_roll_ends
+
+    def test_to_omitted_scans_all_days_backward_compat(self, monkeypatch):
+        # Arrange: to 省略 → 全 3 日を走査（従来）。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        secs, mids = _synthetic_master()
+        base = _make_loader(secs, mids)
+        windows = []
+
+        def _spy(symbol, start, end):
+            windows.append((int(start), int(end)))
+            return base(symbol, start, end)
+
+        monkeypatch.setattr(mpd, "_load_window_ticks", _spy)
+
+        # Act
+        handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
+
+        # Assert: 窓終端は 3 日目の足 + bar_sec（全期間）まで及ぶ。
+        assert max(e for _, e in windows) >= _DAY0 + 3 * _DAY
+
+
+# --------------------------------------------------------------------------- #
+# controller: ローリング窓 ``from`` — dwell 経路の過去リーク無し（増分2 A）
+# --------------------------------------------------------------------------- #
+class TestControllerDwellRollingFrom:
+    """dwell 経路の ``from``（UNIX 秒）: from より前の滞在が入らない（過去リーク無し）。
+
+    3 日ぶんの合成ティックで ``from`` を 2 日目に置くと、集計窓 ``[t0, t1+bar_sec)`` の起点が
+    from 以降の足へ繰り上がり、1 日目の滞在が入らない。``from`` 省略時は全 3 日を集計する（後方互換）。
+    """
+
+    def _candles_3d(self):
+        return [
+            {"time": _DAY0, "open": 1000, "high": 1110, "low": 990, "close": 1005},
+            {"time": _DAY0 + _DAY, "open": 1005, "high": 1108, "low": 992, "close": 1002},
+            {"time": _DAY0 + 2 * _DAY, "open": 1002, "high": 1106, "low": 991, "close": 1000},
+        ]
+
+    def test_from_excludes_earlier_days_no_past_leak(self, monkeypatch):
+        # Arrange: 全 3 日 candle を返すが、from を 2 日目に置く。1 日目のティック窓は走査されない。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        secs, mids = _synthetic_master()
+        base = _make_loader(secs, mids)
+        windows = []
+
+        def _spy(symbol, start, end):
+            windows.append((int(start), int(end)))
+            return base(symbol, start, end)
+
+        monkeypatch.setattr(mpd, "_load_window_ticks", _spy)
+        from_t = _DAY0 + _DAY  # 2 日目の足 time。idx1.. が残る。
+
+        # Act
+        status, payload = handle_market_profile(
+            "jp225_tick", timeframe="1D", src="dwell", **{"from": str(from_t)}
+        )
+
+        # Assert: dwell 集計に使う日別ロールアップの窓起点がすべて day1 以上（過去リーク無し）。
+        assert status == 200
+        earliest = min(s for s, _ in windows if not (s == _DAY0 and False))
+        # active table 構築窓（直近 _ACTIVE_TABLE_DAYS 日）は除外し、集計窓のみ検査する。
+        agg_starts = [s for s, e in windows if e - s <= _DAY and s >= _DAY0]
+        assert min(agg_starts) >= _DAY0 + _DAY, agg_starts
+
+    def test_from_omitted_scans_all_days_backward_compat(self, monkeypatch):
+        # Arrange: from 省略 → 全 3 日を走査（従来）。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        secs, mids = _synthetic_master()
+        base = _make_loader(secs, mids)
+        windows = []
+
+        def _spy(symbol, start, end):
+            windows.append((int(start), int(end)))
+            return base(symbol, start, end)
+
+        monkeypatch.setattr(mpd, "_load_window_ticks", _spy)
+
+        # Act
+        handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
+
+        # Assert: 集計窓の起点は 1 日目まで及ぶ（全期間）。
+        agg_starts = [s for s, e in windows if e - s <= _DAY]
+        assert min(agg_starts) <= _DAY0, agg_starts
+
+
+# --------------------------------------------------------------------------- #
+# controller: スナップショット ``today=1`` — dwell 経路の最終日ぶん再ビン（増分2 C）
+# --------------------------------------------------------------------------- #
+class TestControllerDwellSnapshotToday:
+    """dwell 経路の ``today=1``: 応答 profile に today[]/today_max（窓最終日ぶんの表示 bin 値）が付く。
+
+    移植元 prototype_260630-01 want_today（dwell=最終日ロールアップの再ビン）。today 省略時は付かない。
+    合成 3 日で最終日(day2)の滞在が today[] に乗り、累積 tpo とは別スケール（today_max）で返ることを検証。
+    """
+
+    def _candles_3d(self):
+        return [
+            {"time": _DAY0, "open": 1000, "high": 1110, "low": 990, "close": 1005},
+            {"time": _DAY0 + _DAY, "open": 1005, "high": 1108, "low": 992, "close": 1002},
+            {"time": _DAY0 + 2 * _DAY, "open": 1002, "high": 1106, "low": 991, "close": 1000},
+        ]
+
+    def test_today_omitted_has_no_today_keys(self, monkeypatch):
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+
+        _, payload = handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
+        assert "today" not in payload["profile"]
+        assert "today_max" not in payload["profile"]
+
+    def test_today_1_returns_last_day_only(self, monkeypatch):
+        # Arrange: 全 3 日集計だが today[] は最終日(day2)ぶんのみ。HOT(1000)へ day2 の 30 ティック分が乗る。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+
+        # Act
+        _, payload = handle_market_profile(
+            "jp225_tick", timeframe="1D", src="dwell", **{"today": "1"}
+        )
+        profile = payload["profile"]
+
+        # Assert: today[] は n_bins 長・today_max>0・最終日の HOT 帯に非ゼロがある。
+        assert "today" in profile
+        assert len(profile["today"]) == profile["n_bins"]
+        assert profile["today_max"] > 0
+        assert sum(profile["today"]) > 0
+        # today[] の総和（最終日ぶん）は 累積 tpo_units（全 3 日）より小さい（当日のみ）。
+        assert sum(profile["today"]) < profile["tpo_units"]
+
+
+# --------------------------------------------------------------------------- #
 # controller: 全期間化 — dwell の価格レンジ/窓は全 candle 由来（250日キャップ撤廃）
 # --------------------------------------------------------------------------- #
 def _empty_loader(symbol, start, end):

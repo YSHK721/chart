@@ -216,8 +216,13 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         va = (query.get("va") or [None])[0]
         src = (query.get("src") or [None])[0]
         barw = (query.get("barw") or [None])[0]
+        to = (query.get("to") or [None])[0]  # リプレイ時間カーソル（UNIX 秒・省略時=全期間＝現行挙動）。
+        frm = (query.get("from") or [None])[0]  # ローリング窓の下限 time（UNIX 秒・省略時=全期間）。増分2 A。
+        today = (query.get("today") or [None])[0]  # スナップショット当日強調（'1' で today[]/today_max 付加）。増分2 C。
         try:
-            status, payload = handle_market_profile(ref, timeframe, limit, bins, va, src, barw)
+            status, payload = handle_market_profile(
+                ref, timeframe, limit, bins, va, src, barw, to, **{"from": frm, "today": today}
+            )
         except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
             self._send_json(500, _nested_error("internal", f"market_profile 取得に失敗しました: {exc}"))
             return

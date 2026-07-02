@@ -114,6 +114,43 @@ def _parse_float(raw: Any, default: float) -> float:
     return default
 
 
+def _parse_to(raw: Any) -> int | None:
+    """リプレイ時間カーソル ``to``（UNIX 秒・str|int|None）を int へ変換する（不正・None は None=全期間）。
+
+    移植元: prototype_260630-01 の as-seen-at-t（時間カーソル）。``to`` は「その時点までに観測できた足」
+    に集計範囲を限定する上限 time（含む）。負値・非数値・None は None（＝全期間・現行挙動）へ丸める。
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 0 else None
+    if isinstance(raw, float):
+        return int(raw) if math.isfinite(raw) and raw >= 0 else None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if s.isdigit():
+            return int(s)
+    return None
+
+
+# ``from`` は ``to`` と同じ丸め（UNIX 秒・非負 int・不正/None は None）。ローリング窓の下限 time（含む）。
+_parse_from = _parse_to
+
+
+def _parse_bool_flag(raw: Any) -> bool:
+    """``today`` 等の BOOL フラグ（クエリ str|int|bool|None）を判定する（'1'/1/True で真・それ以外は偽）。
+
+    移植元 prototype_260630-01 の ``?today=1``（''→偽・'1'→真）に準拠する。省略・不正は偽（後方互換）。
+    """
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int):
+        return raw == 1
+    if isinstance(raw, str):
+        return raw.strip() == "1"
+    return False
+
+
 def handle_market_profile(
     ref: Any,
     timeframe: Any = None,
@@ -122,6 +159,8 @@ def handle_market_profile(
     va: Any = None,
     src: Any = None,
     barw: Any = None,
+    to: Any = None,
+    **kwargs: Any,
 ) -> tuple[int, dict[str, Any]]:
     """GET /market_profile の純ロジック。
 
@@ -136,6 +175,14 @@ def handle_market_profile(
         barw: レンジ(pt・クエリ str|float|None)。>0 指定時は price レンジ確定後に
             n_bins = round((price_max-price_min)/barw) を算出し bins に優先する（candle/dwell/m1 いずれも）。
             None/0/不正・auto は従来 bins。
+        to: リプレイ時間カーソル（UNIX 秒・クエリ str|int|None）。指定時は ``time <= to`` の足だけで
+            集計する（as-seen-at-t・アンカー＝データ先頭..T の累積）。省略・不正・範囲外は無視して全期間
+            （現行挙動＝後方互換）。移植元 prototype_260630-01。
+        **kwargs: ``from``（UNIX 秒・ローリング窓の下限 time・含む）と ``today``（'1' でスナップショット
+            当日強調）を受ける（``from`` は Python 予約語のため kwargs 経由）。増分2 A/C。
+            ``from`` 指定時は ``from <= time`` の足だけで集計する（``to`` と併用で [from,to] のローリング窓）。
+            ``today`` 真時は応答 profile に ``today[]``/``today_max``（窓最終日ぶんの表示 bin 値）を付加する。
+            いずれも省略・不正は無視して現行挙動（後方互換）。移植元 prototype_260630-01 mp_core。
 
     Returns:
         (HTTPステータス, ボディ)。成功は (200, {ok:true, profile:{...}, src, atom, bar_width})、
@@ -168,18 +215,31 @@ def handle_market_profile(
     barw_val = _parse_float(barw, 0.0)
     if not math.isfinite(barw_val) or barw_val < 0:
         barw_val = 0.0
+    # to（リプレイ時間カーソル・UNIX 秒）— 不正・None は None（全期間・後方互換）。
+    to_ts = _parse_to(to)
+    # from（ローリング窓の下限 time・増分2 A）／today（スナップショット・増分2 C）。予約語 from は kwargs 経由。
+    from_ts = _parse_from(kwargs.get("from"))
+    want_today = _parse_bool_flag(kwargs.get("today"))
 
     if src_val in ("dwell", "m1"):
-        return _handle_dwell(ref, timeframe, limit_n, n_bins, va_pct, barw_val, src_val)
+        return _handle_dwell(
+            ref, timeframe, limit_n, n_bins, va_pct, barw_val, src_val, to_ts, from_ts, want_today
+        )
 
     # src=candle（既定）— 現状の足ベース TPO 経路（不変。barw 指定時のみ n_bins を上書き）。
     # candles は load_candles が返す [{time,open,high,low,close}] がそのまま compute の入力形。
     candles = dataset.load_candles(ref, timeframe, limit_n)
+    if to_ts is not None:
+        # as-seen-at-t: T までに観測できた足だけへ切る（未来リーク無し）。空になれば従来の空プロファイル応答。
+        candles = [c for c in candles if c["time"] <= to_ts]
+    if from_ts is not None:
+        # ローリング窓: from 以上の足だけへ切る（下限・含む）。to と併用で [from,to] 窓（増分2 A）。
+        candles = [c for c in candles if c["time"] >= from_ts]
     if candles and barw_val > 0:
         # price レンジは compute_candle_profile と同一定義（price_range 単一情報源）。barw→n_bins に先取り使用。
         price_min, price_max = price_range(candles)
         n_bins = _resolve_n_bins(n_bins, barw_val, price_min, price_max)
-    profile = compute_candle_profile(candles, n_bins=n_bins, va_pct=va_pct)
+    profile = compute_candle_profile(candles, n_bins=n_bins, va_pct=va_pct, want_today=want_today)
     return 200, {
         "ok": True, "profile": profile, "src": "candle",
         "atom": _ATOM["candle"], "bar_width": _bar_width(profile),
@@ -194,6 +254,9 @@ def _handle_dwell(
     va_pct: float,
     barw: float,
     src: str,
+    to_ts: int | None = None,
+    from_ts: int | None = None,
+    want_today: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     """src=dwell/m1 の処理（実ティック・tick 対応 ref のみ）。非 tick ref は 400。
 
@@ -212,10 +275,19 @@ def _handle_dwell(
 
     metric = _SRC_METRIC[src]
     candles = dataset.load_candles(ref, timeframe, limit_n)
+    if to_ts is not None:
+        # as-seen-at-t（アンカー）: t1 = min(末尾, T までの足)・recent/t0 は従来（全期間先頭）。
+        #   compute_dwell_profile の境界日 _partial_rollup が T 途中日も未来リーク無しで集計する。
+        candles = [c for c in candles if c["time"] <= to_ts]
+    if from_ts is not None:
+        # ローリング窓（増分2 A）: t0 = max(先頭, from)。from 以上の足だけに切り、集計窓の起点を繰り上げる。
+        #   compute_dwell_profile の境界日 _partial_rollup が from 途中日も過去リーク無しで集計する。
+        candles = [c for c in candles if c["time"] >= from_ts]
     if not candles:
         # 空データは安全に空/ゼロプロファイルを返す（500 化しない）。
         profile = market_profile_dwell.compute_dwell_profile(
-            symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400, metric=metric
+            symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400,
+            metric=metric, want_today=want_today,
         )
     else:
         # 全期間化（250日キャップ撤廃）: レンジ（price_min/max）と実期間（t0/t1）を全 candle から
@@ -224,12 +296,12 @@ def _handle_dwell(
         t1 = candles[-1]["time"]
         price_min = min(c["low"] for c in candles)
         price_max = max(c["high"] for c in candles)
-        t0 = candles[0]["time"]  # 全 candle の最古 time（＝全期間の起点）。
+        t0 = candles[0]["time"]  # 窓の最古 time（from 指定時は from 以降の先頭＝ローリング窓の起点）。
         bar_sec = _bar_sec_for_tf(timeframe)
         n_bins = _resolve_n_bins(n_bins, barw, price_min, price_max)  # barw>0 は bins に優先。
         profile = market_profile_dwell.compute_dwell_profile(
             symbol, t0, t1, price_min, price_max, n_bins,
-            va_pct=va_pct, bar_sec=bar_sec, metric=metric,
+            va_pct=va_pct, bar_sec=bar_sec, metric=metric, want_today=want_today,
         )
     return 200, {
         "ok": True, "profile": profile, "src": src,

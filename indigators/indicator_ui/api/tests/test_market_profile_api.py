@@ -21,6 +21,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
+from adapter.compute import dataset
 from adapter.controller.market_profile_controller import _MAX_BINS, handle_market_profile
 
 
@@ -82,6 +83,178 @@ class TestHandleMarketProfileParams:
         narrow_w = narrow["profile"]["va_high"] - narrow["profile"]["va_low"]
         wide_w = wide["profile"]["va_high"] - wide["profile"]["va_low"]
         assert wide_w >= narrow_w
+
+
+class TestHandleMarketProfileReplayTo:
+    """リプレイ時間カーソル ``to``（UNIX 秒・as-seen-at-t）: candle 経路が T までの足だけで計算される。
+
+    移植元: prototype_260630-01（as-seen-at-t・アンカー）。``to`` 省略時は従来（全期間・後方互換）、
+    T を跨ぐ足は除外し未来リーク無し、不正 ``to`` は無視（全期間）。
+    """
+
+    def test_to_truncates_candles_to_prefix(self):
+        # Arrange: sample の idx=99 の足 time を境界 T にする（0..99 の 100 本のみが対象）。
+        candles = dataset.load_candles("sample", None, None)
+        t = candles[99]["time"]
+
+        # Act: to=T を指定（tpo_units = T までの足数）。
+        status, payload = handle_market_profile("sample", to=str(t))
+
+        # Assert: T までの足だけ（100 本）で集計される。
+        assert status == 200
+        assert payload["profile"]["tpo_units"] == 100
+
+    def test_to_excludes_candles_after_t_golden(self):
+        # Arrange: T を跨ぐ（T より後の）足が除外される golden。to=T-1（idx=99 の直前）で 99 本。
+        candles = dataset.load_candles("sample", None, None)
+        t_minus = candles[99]["time"] - 1  # idx=99 の足 time 未満 → 0..98 の 99 本のみ。
+
+        # Act
+        _, payload = handle_market_profile("sample", to=str(t_minus))
+
+        # Assert: T より後の足は入らない（未来リーク無し）。
+        assert payload["profile"]["tpo_units"] == 99
+
+    def test_to_omitted_is_full_period_backward_compat(self):
+        # Arrange / Act: to 省略は従来どおり全期間集計（後方互換）。
+        _, full = handle_market_profile("sample")
+        _, none_to = handle_market_profile("sample", to=None)
+
+        # Assert: to=None と to 省略は同一（全 2981 本）。
+        assert full["profile"]["tpo_units"] == none_to["profile"]["tpo_units"]
+        assert full["profile"]["tpo_units"] == len(dataset.load_candles("sample", None, None))
+
+    def test_invalid_to_is_ignored_full_period(self):
+        # Arrange / Act: 不正 to（非数値）は無視して全期間（500/退化させない）。
+        _, full = handle_market_profile("sample")
+        for bad in ("abc", "", "nan"):
+            status, payload = handle_market_profile("sample", to=bad)
+            assert status == 200, bad
+            assert payload["profile"]["tpo_units"] == full["profile"]["tpo_units"], bad
+
+    def test_to_before_first_candle_yields_empty_profile(self):
+        # Arrange: 全足より前の to は空プロファイル（従来の空応答挙動・500 化しない）。
+        candles = dataset.load_candles("sample", None, None)
+        t = candles[0]["time"] - 1
+
+        # Act
+        status, payload = handle_market_profile("sample", to=str(t))
+
+        # Assert
+        assert status == 200
+        assert payload["profile"]["tpo_units"] == 0
+
+
+class TestHandleMarketProfileReplayFrom:
+    """ローリング窓 ``from``（UNIX 秒）: candle 経路が from..to の窓だけで計算される（増分2 A）。
+
+    移植元: prototype_260630-01（ローリング窓 = T 直前 N 本）。``from`` 省略時は従来（全期間・
+    後方互換）、``from`` 指定時は ``from <= time`` の足だけで集計、不正/範囲外 ``from`` は無視（全期間）。
+    """
+
+    def test_from_truncates_candles_to_suffix(self):
+        # Arrange: idx=99 の足 time を from 下限にする（idx 99.. が残る）。
+        candles = dataset.load_candles("sample", None, None)
+        f = candles[99]["time"]
+        total = len(candles)
+
+        # Act
+        status, payload = handle_market_profile("sample", **{"from": str(f)})
+
+        # Assert: from 以上の足だけ（total-99 本）で集計される。
+        assert status == 200
+        assert payload["profile"]["tpo_units"] == total - 99
+
+    def test_from_and_to_form_a_window(self):
+        # Arrange: from=idx60 の time, to=idx79 の time → 60..79 の 20 本の窓（ローリング窓）。
+        candles = dataset.load_candles("sample", None, None)
+        f = candles[60]["time"]
+        t = candles[79]["time"]
+
+        # Act
+        status, payload = handle_market_profile("sample", **{"from": str(f), "to": str(t)})
+
+        # Assert: [from, to] の窓 20 本だけ（未来リークも過去リークも無い）。
+        assert status == 200
+        assert payload["profile"]["tpo_units"] == 20
+
+    def test_from_omitted_is_full_period_backward_compat(self):
+        # Arrange / Act: from 省略は従来どおり全期間（後方互換）。
+        _, full = handle_market_profile("sample")
+        _, none_from = handle_market_profile("sample", **{"from": None})
+
+        # Assert
+        assert none_from["profile"]["tpo_units"] == full["profile"]["tpo_units"]
+
+    def test_invalid_from_is_ignored_full_period(self):
+        # Arrange / Act: 不正 from（非数値・負）は無視して全期間（500/退化させない）。
+        _, full = handle_market_profile("sample")
+        for bad in ("abc", "", "nan", "-5"):
+            status, payload = handle_market_profile("sample", **{"from": bad})
+            assert status == 200, bad
+            assert payload["profile"]["tpo_units"] == full["profile"]["tpo_units"], bad
+
+    def test_from_greater_than_to_yields_empty_not_error(self):
+        # Arrange: from > to は空窓（交差なし）。500 化せず空プロファイル。
+        candles = dataset.load_candles("sample", None, None)
+        f = candles[80]["time"]
+        t = candles[40]["time"]
+
+        # Act
+        status, payload = handle_market_profile("sample", **{"from": str(f), "to": str(t)})
+
+        # Assert
+        assert status == 200
+        assert payload["profile"]["tpo_units"] == 0
+
+
+class TestHandleMarketProfileSnapshotToday:
+    """スナップショット ``today=1``（増分2 C）: 応答に today[]/today_max（窓最終足ぶんの表示bin値）が付く。
+
+    移植元: prototype_260630-01 mp_core want_today（candle=最終足の寄与）。today 省略時は today[]/
+    today_max を付けない（後方互換）。today[] の長さは n_bins。合成足で最終足の寄与のみが乗ることを検証。
+    """
+
+    def test_today_omitted_has_no_today_keys(self):
+        # Arrange / Act: today 省略 → 応答に today/today_max を付けない（後方互換）。
+        _, payload = handle_market_profile("sample", bins="30")
+        # Assert
+        assert "today" not in payload["profile"]
+        assert "today_max" not in payload["profile"]
+
+    def test_today_1_returns_today_array_len_nbins(self):
+        # Arrange / Act: today=1 で today[] が長さ n_bins・today_max>0 で返る。
+        _, payload = handle_market_profile("sample", bins="30", today="1")
+        profile = payload["profile"]
+        # Assert
+        assert "today" in profile
+        assert len(profile["today"]) == 30
+        assert profile["today_max"] >= 1.0
+
+    def test_today_reflects_last_candle_only(self, monkeypatch):
+        # Arrange: 合成 3 足。最終足だけが high/low を張る帯を today[] に持つ（前 2 足とは別価格帯）。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = [
+            {"time": 100, "open": 1000, "high": 1010, "low": 1000, "close": 1005},
+            {"time": 200, "open": 1005, "high": 1015, "low": 1002, "close": 1010},
+            {"time": 300, "open": 1010, "high": 1090, "low": 1080, "close": 1085},  # 最終足＝高帯。
+        ]
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+
+        # Act
+        _, payload = handle_market_profile("sample", bins="20", today="1")
+        profile = payload["profile"]
+
+        # Assert: today[] の非ゼロ bin は最終足(1080..1090)に対応する高価格帯のみ。
+        price_min = profile["price_min"]
+        price_max = profile["price_max"]
+        binw = (price_max - price_min) / profile["n_bins"]
+        nonzero = [i for i, v in enumerate(profile["today"]) if v > 0]
+        assert nonzero, "最終足の寄与で today[] に非ゼロ bin がある"
+        # 非ゼロ bin の中心価格はすべて 1080 付近以上（前 2 足 1000-1015 帯には乗らない）。
+        for i in nonzero:
+            center = price_min + (i + 0.5) * binw
+            assert center >= 1050, (i, center)
 
 
 class TestHandleMarketProfileInputBounds:

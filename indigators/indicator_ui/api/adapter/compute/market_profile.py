@@ -31,20 +31,24 @@ def price_range(candles) -> tuple[float, float]:
     return price_min, price_max
 
 
-def compute_candle_profile(candles, n_bins=60, va_pct=0.70) -> dict:
+def compute_candle_profile(candles, n_bins=60, va_pct=0.70, want_today=False) -> dict:
     """足ベース TPO マーケットプロファイルを計算する（純関数・副作用なし）。
 
     Args:
         candles: OHLC 辞書リスト [{"time","open","high","low","close"}, ...]（time 昇順）。
         n_bins: 価格ビン分割数。
         va_pct: バリューエリア比率（0..1）。
+        want_today: True のとき、応答に ``today[]``/``today_max`` を付加する（増分2 C スナップショット）。
+            ``today[]`` は「窓の最終足ぶんの表示 bin 値」（最終足の [low,high] が跨ぐ bin に +1）。
+            移植元 prototype_260630-01/mp_core.py want_today（candle=最終足の寄与）。既定 False は不変。
 
     Returns:
         {"bins","poc","va_low","va_high","price_min","price_max","tpo_units","n_bins"}
+        want_today=True 時は加えて {"today":[float,...](len=n_bins), "today_max":float}。
     """
     # 空リストは例外でなく空/ゼロの安全な返りを返す（poc 等は price_min=0.0 の安全値）。
     if not candles:
-        return {
+        out = {
             "bins": [],
             "poc": 0.0,
             "va_low": 0.0,
@@ -54,6 +58,10 @@ def compute_candle_profile(candles, n_bins=60, va_pct=0.70) -> dict:
             "tpo_units": 0,
             "n_bins": n_bins,
         }
+        if want_today:
+            out["today"] = []
+            out["today_max"] = 1.0
+        return out
 
     # 価格レンジ（縮退時の +1 安全化を含め price_range に一元化＝単一情報源）。
     price_min, price_max = price_range(candles)
@@ -83,7 +91,7 @@ def compute_candle_profile(candles, n_bins=60, va_pct=0.70) -> dict:
         for i in range(n_bins)
     ]
 
-    return {
+    out = {
         "bins": bins,
         "poc": round(poc, 2),
         "va_low": round(va_low, 2),
@@ -93,6 +101,19 @@ def compute_candle_profile(candles, n_bins=60, va_pct=0.70) -> dict:
         "tpo_units": len(candles),
         "n_bins": n_bins,
     }
+    if want_today:
+        # 窓の最終足ぶん（別カラー表示用）。最終足の [low,high] が跨ぐ bin に +1（試作 want_today と同義）。
+        last = candles[-1]
+        i0 = _bin_index(last["low"], price_min, span, n_bins)
+        i1 = _bin_index(last["high"], price_min, span, n_bins)
+        if i1 < i0:
+            i1 = i0
+        today = np.zeros(n_bins, dtype=float)
+        today[i0 : i1 + 1] += 1.0
+        today_max = float(today.max()) if today.max() > 0 else 1.0
+        out["today"] = [round(float(v), 3) for v in today]
+        out["today_max"] = today_max
+    return out
 
 
 def _value_area(tpo, centers, va_pct):
