@@ -5,7 +5,7 @@
       compute_dwell_profile(metric='count') が dwell 秒でなく生ティック数（cnt[]）で集計し、
       セッションマスクを適用しない（休場帯の価格もカウントされ、dwell とは分布が異なる）ことを検証。
       controller: src='m1' で 200・atom='tick数'、非 tick ref は 400。
-  ② range（バー幅pt・barw）:
+  ② range（レンジpt・barw）:
       barw 指定時 n_bins = round((price_max-price_min)/barw) が bins に優先（candle/dwell 両方）。
       auto/未指定は従来 bins。応答トップレベルに実効 bar_width（pt）を含む。
 
@@ -30,7 +30,9 @@ _COLD = 1100.0  # 休場時間帯にのみ現れる価格（dwell では 0・cou
 
 
 @pytest.fixture(autouse=True)
-def _isolate_caches():
+def _isolate_caches(tmp_path, monkeypatch):
+    # ディスクキャッシュ基点を tmp へ差し替え、実データ DATA_DIR/cache への書込を防ぐ。
+    monkeypatch.setattr(mpd, "_CACHE_ROOT", tmp_path / "mp_dwell_cache")
     mpd._reset_caches()
     yield
     mpd._reset_caches()
@@ -186,7 +188,7 @@ class TestUnknownSrcMessage:
 
 
 # --------------------------------------------------------------------------- #
-# ② barw（バー幅pt）→ n_bins 優先 + bar_width 応答
+# ② barw（レンジpt）→ n_bins 優先 + bar_width 応答
 # --------------------------------------------------------------------------- #
 def _patch_candles(monkeypatch, low, high, n=3):
     candles = [

@@ -61,7 +61,7 @@ def _bar_sec_for_tf(timeframe: Any) -> int:
 
 
 def _resolve_n_bins(n_bins: int, barw: float, price_min: float, price_max: float) -> int:
-    """barw（バー幅pt・>0）指定時は ``n_bins = round((price_max-price_min)/barw)`` を bins に優先する。
+    """barw（レンジpt・>0）指定時は ``n_bins = round((price_max-price_min)/barw)`` を bins に優先する。
 
     price_min/price_max 確定後に呼ぶ（試作 prototype_260630-01 の barw 意味論を移植）。クランプは既存
     bins と同じ ``[1, _MAX_BINS]`` を流用する（0 や巨大値での退化/占有を封じる）。barw<=0 やレンジ縮退時は
@@ -73,7 +73,7 @@ def _resolve_n_bins(n_bins: int, barw: float, price_min: float, price_max: float
 
 
 def _bar_width(profile: dict[str, Any]) -> float:
-    """profile の実効バー幅(pt) = ``(price_max - price_min) / n_bins``（小数2桁）。0 除算は 0.0。"""
+    """profile の実効レンジ(pt) = ``(price_max - price_min) / n_bins``（小数2桁）。0 除算は 0.0。"""
     nb = int(profile.get("n_bins") or 0)
     span = float(profile.get("price_max", 0.0)) - float(profile.get("price_min", 0.0))
     return round(span / nb, 2) if nb > 0 else 0.0
@@ -133,7 +133,7 @@ def handle_market_profile(
         va: バリューエリア比率 0..1（クエリ str|float|None。不正・None は 0.70）。
         src: 集計原子（'candle'=足レンジ TPO・既定 / 'dwell'=実ティック滞在秒・セッション認識 /
             'm1'=生ティック数）。許可値以外は 400。'dwell'/'m1' はティック対応 ref（'jp225_tick'）以外は 400。
-        barw: バー幅(pt・クエリ str|float|None)。>0 指定時は price レンジ確定後に
+        barw: レンジ(pt・クエリ str|float|None)。>0 指定時は price レンジ確定後に
             n_bins = round((price_max-price_min)/barw) を算出し bins に優先する（candle/dwell/m1 いずれも）。
             None/0/不正・auto は従来 bins。
 
@@ -164,7 +164,7 @@ def handle_market_profile(
         va_pct = _DEFAULT_VA
     va_pct = min(1.0, max(_MIN_VA, va_pct))
     limit_n = _parse_int(limit, None)
-    # barw（バー幅pt）— 有限かつ非負のみ採用（不正・None・負・NaN/Inf は 0=auto へ丸める）。
+    # barw（レンジpt）— 有限かつ非負のみ採用（不正・None・負・NaN/Inf は 0=auto へ丸める）。
     barw_val = _parse_float(barw, 0.0)
     if not math.isfinite(barw_val) or barw_val < 0:
         barw_val = 0.0
@@ -218,14 +218,13 @@ def _handle_dwell(
             symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400, metric=metric
         )
     else:
-        # Y1: dwell 集計は直近 MAX_DWELL_DAYS 日に切り詰められるため、価格レンジ/t0 も同じ窓から
-        # 算出する。全期間の low/high を使うとレンジ端に dwell=0 の空帯（silent truncation）ができる。
+        # 全期間化（250日キャップ撤廃）: レンジ（price_min/max）と実期間（t0/t1）を全 candle から
+        # 算出する。dwell 集計も全期間（各完了日はディスク/メモリキャッシュ経由）なので、レンジは
+        # 集計窓（＝全期間）に一致し、下部の空白（dwell=0 の空帯）が解消する。
         t1 = candles[-1]["time"]
-        cap_from = t1 - market_profile_dwell.MAX_DWELL_DAYS * 86400
-        recent = [c for c in candles if c["time"] >= cap_from] or candles
-        price_min = min(c["low"] for c in recent)
-        price_max = max(c["high"] for c in recent)
-        t0 = recent[0]["time"]  # cap 窓内の最古 candle time（cap_from 相当）。
+        price_min = min(c["low"] for c in candles)
+        price_max = max(c["high"] for c in candles)
+        t0 = candles[0]["time"]  # 全 candle の最古 time（＝全期間の起点）。
         bar_sec = _bar_sec_for_tf(timeframe)
         n_bins = _resolve_n_bins(n_bins, barw, price_min, price_max)  # barw>0 は bins に優先。
         profile = market_profile_dwell.compute_dwell_profile(
