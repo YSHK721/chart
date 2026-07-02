@@ -66,6 +66,79 @@ test('buildMarketProfileUrl omits src when not provided (candle 後方互換=URL
   assert.equal(url, '/market_profile?datasetRef=sample');
 });
 
+// リプレイ時間カーソル（to）: 指定時のみ &to=<UNIX秒> を付与、省略時は付けない（後方互換）。
+//   移植元 prototype_260630-01（as-seen-at-t・アンカー）。
+test('buildMarketProfileUrl appends &to when provided (replay time cursor)', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', to: 1277856000 });
+  // Assert
+  assert.ok(url.includes('&to=1277856000'));
+});
+
+test('buildMarketProfileUrl omits &to when not provided (省略時=全期間・後方互換)', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'sample' });
+  // Assert: to 省略時は URL に付与しない（サーバ既定=全期間）
+  assert.ok(!url.includes('to='));
+  assert.equal(url, '/market_profile?datasetRef=sample');
+});
+
+test('buildMarketProfileUrl omits &to when to is null', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', to: null });
+  // Assert
+  assert.ok(!url.includes('to='));
+});
+
+// ローリング窓（from）: 指定時のみ &from=<UNIX秒> を付与、省略/null は付けない（後方互換）。
+//   移植元 prototype_260630-01（ローリング窓 = T-ROLL_BARS本）。増分2 A。
+test('buildMarketProfileUrl appends &from when provided (rolling window lower bound)', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', from: 1277000000, to: 1277856000 });
+  // Assert: from/to の両方が付く（ローリング窓 [from,to]）
+  assert.ok(url.includes('&from=1277000000'));
+  assert.ok(url.includes('&to=1277856000'));
+});
+
+test('buildMarketProfileUrl omits &from when not provided or null (省略時=全期間・後方互換)', () => {
+  // Arrange / Act
+  assert.ok(!buildMarketProfileUrl({ datasetRef: 'sample' }).includes('from='));
+  assert.ok(!buildMarketProfileUrl({ datasetRef: 'sample', from: null }).includes('from='));
+});
+
+// スナップショット（today）: today===true のとき &today=1 を付与、false/未指定は付けない（後方互換）。
+//   移植元 prototype_260630-01（?today=1 で today[]/today_max）。増分2 C。
+test('buildMarketProfileUrl appends &today=1 when today is true (snapshot)', () => {
+  // Arrange / Act
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', today: true });
+  // Assert
+  assert.ok(url.includes('&today=1'));
+});
+
+test('buildMarketProfileUrl omits &today when false/undefined (snapshot OFF・後方互換)', () => {
+  // Arrange / Act
+  assert.ok(!buildMarketProfileUrl({ datasetRef: 'sample' }).includes('today='));
+  assert.ok(!buildMarketProfileUrl({ datasetRef: 'sample', today: false }).includes('today='));
+});
+
+// parseProfileResponse: today[]/today_max を profile へ素通し（スナップショット primitive が消費）。
+test('parseProfileResponse passes through today[]/today_max when present', () => {
+  // Arrange
+  const payload = {
+    ok: true,
+    profile: {
+      bins: [{ price: 100, tpo: 1, norm: 1 }], poc: 100, va_low: 100, va_high: 100,
+      price_min: 100, price_max: 101, tpo_units: 1, n_bins: 1,
+      today: [0.5], today_max: 0.5,
+    },
+  };
+  // Act
+  const out = parseProfileResponse(payload);
+  // Assert: today/today_max が profile に保持される
+  assert.deepEqual(out.today, [0.5]);
+  assert.equal(out.today_max, 0.5);
+});
+
 // 解像度モード（resmode）で bins/barw の送信を排他化する（試作 prototype_260630-01 の解像度トグル移植）。
 test('buildMarketProfileUrl with resmode=range appends &barw=<range> and omits bins', () => {
   // Arrange / Act: 解像度=レンジ → range を backend param barw へ写像、bins は送らない。

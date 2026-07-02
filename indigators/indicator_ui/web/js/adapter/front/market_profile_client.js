@@ -15,7 +15,9 @@
 //     それ以外（'bins' / 未指定）は bins を送り barw は送らない。bins は ENUM プリセット化で文字列
 //     （'30'/'60'/'100'）が渡るため、文字列プリセット（非空）または有限数（後方互換）を付与し、
 //     NaN・空文字・null は排除する（backend の _parse_int が '60' を解釈可）。
-export function buildMarketProfileUrl({ datasetRef, timeframe, bins, va, src, range, resmode } = {}) {
+export function buildMarketProfileUrl({
+  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today,
+} = {}) {
   let url = `/market_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
     url += `&timeframe=${encodeURIComponent(timeframe)}`;
@@ -38,6 +40,21 @@ export function buildMarketProfileUrl({ datasetRef, timeframe, bins, va, src, ra
   }
   if (src != null) {
     url += `&src=${encodeURIComponent(src)}`;
+  }
+  // to（リプレイ時間カーソル・UNIX 秒）— 指定時のみ付与（省略時=全期間＝現行挙動・後方互換）。
+  //   移植元 prototype_260630-01（as-seen-at-t・アンカー）。backend が time<=to の足だけで集計する。
+  if (to != null) {
+    url += `&to=${encodeURIComponent(to)}`;
+  }
+  // from（ローリング窓の下限 time・UNIX 秒）— 指定時のみ付与（省略時=全期間・後方互換）。増分2 A。
+  //   移植元 prototype_260630-01（ローリング窓 = T-ROLL_BARS本）。to と併用で [from,to] のローリング窓。
+  if (from != null) {
+    url += `&from=${encodeURIComponent(from)}`;
+  }
+  // today（スナップショット当日強調）— true のときのみ &today=1 を付与（false/未指定は付けない・後方互換）。
+  //   移植元 prototype_260630-01（?today=1 で today[]/today_max）。増分2 C。
+  if (today === true || today === 1 || today === '1') {
+    url += '&today=1';
   }
   return url;
 }

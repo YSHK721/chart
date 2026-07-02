@@ -98,6 +98,9 @@ export class ChartRenderer {
     //                 pane, watermark, paneName }
     this._instances = new Map();
     this._mainStretchSet = false;
+    // 増分2: setCandleTrim の直近トリム末尾 index（位置不変時の再 setData 回避＝プロト lastTrimIdx）。
+    //   null=未トリム。setCandles で候補が変わるためリセットする。
+    this._lastTrimIdx = null;
     // 機能③: クロスヘア移動で pane ウォーターマークへ系列値を追記。
     if (typeof this._chart.subscribeCrosshairMove === 'function') {
       this._chart.subscribeCrosshairMove((param) => this._onCrosshairMove(param));
@@ -110,11 +113,81 @@ export class ChartRenderer {
     this._mainSeries.setData(arr);
     // v6: 基準 candles を全置換で更新（per-bar 減光/復元の元集合）。
     this._baseCandles = arr;
+    // 増分2: 基準 candles が入れ替わったのでトリム位置キャッシュをリセット（次の setCandleTrim で再 set）。
+    this._lastTrimIdx = null;
     // 読み取り欄の最新足の単一源を更新（配列末尾の足）。空配列なら null。
     this._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
     this._chart.timeScale().fitContent();
     // v6: candle 変更を observer へ通知（ChartRenderer 起点同期＝hover 中なら highlight 解除へ）。
     this._onCandlesChanged();
+  }
+
+  // 基準 candles（_baseCandles）の読み取り専用アクセサ。リプレイバーが slider の min/max・
+  //   index→time 変換に使う（新規追加・読取のみ＝既存描画へ非干渉）。未設定時は空配列。
+  getCandles() {
+    return this._baseCandles ?? [];
+  }
+
+  // 増分2: チャートの通常操作（スクロール/ズーム）を停止/復元する（リプレイスワイプ捕捉用）。
+  //   移植元 prototype_260630-01 updateCaptureMode（capture 中 handleScroll/handleScale=false）。
+  //   lightweight-charts の applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は呼ばない）。
+  //   enabled=false でスクロール/ズーム停止、true で復元。applyOptions 非提供時は no-op（後方互換）。
+  setUserInteraction(enabled) {
+    if (typeof this._chart.applyOptions !== 'function') {
+      return;
+    }
+    const on = !!enabled;
+    this._chart.applyOptions({ handleScroll: on, handleScale: on });
+  }
+
+  // 増分2: x 座標 → 論理 index（timeScale().coordinateToLogical）。リプレイスワイプの x→足 index 変換。
+  //   lwc 座標 API を本所に隔離する（actor/primitive は renderer 経由でのみ座標を得る）。
+  //   timeScale/coordinateToLogical 非提供時は null（後方互換・呼び出し側でガード）。
+  coordinateToLogical(x) {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.coordinateToLogical !== 'function') {
+      return null;
+    }
+    return ts.coordinateToLogical(x);
+  }
+
+  // 増分2: スナップショット用のローソク局所トリム（基準 candles を time<=T へスライスして setData）。
+  //   移植元 prototype_260630-01 applyAsofView（当時の見え方＝ローソクを T までに切る・位置変化時のみ再 set）。
+  //   time=null で全ローソク復元（スナップショット OFF・replay OFF）。基準未供給なら no-op。
+  //   mainSeries.setData を呼ぶのは本所のみ（upstream 隔離・grep0件規約維持）。位置不変時は再 set しない
+  //   （重い再描画を回避＝プロト lastTrimIdx 相当）。
+  setCandleTrim(time) {
+    if (!this._baseCandles) {
+      return;
+    }
+    // トリム状態の同一性で再 set 要否を決める（null=未トリム／数値=末尾 index）。位置不変なら再 set しない。
+    //   null は「全ローソク（未トリム）」を表す単一の状態＝復元は「既にトリム済みのとき」だけ実行する。
+    //   これにより replay/snapshot OFF 時（未トリム状態）に setCandleTrim(null) を呼んでも series へ触れない
+    //   （挙動不変＝冗長 setData を出さない）。
+    if (time == null) {
+      if (this._lastTrimIdx === null) {
+        return; // 既に未トリム＝何もしない（OFF 時の挙動不変）。
+      }
+      this._lastTrimIdx = null;
+      this._mainSeries.setData(this._baseCandles); // トリム解除＝全ローソク復元。
+      return;
+    }
+    let idx = -1;
+    for (let i = 0; i < this._baseCandles.length; i += 1) {
+      if (this._baseCandles[i].time <= time) {
+        idx = i;
+      } else {
+        break; // time 昇順前提（越えたら打ち切り）。
+      }
+    }
+    if (idx === -1) {
+      return; // time がデータ先頭より前（縮退）＝トリム無効。全ローソクを維持し series へ触れない。
+    }
+    if (idx === this._lastTrimIdx) {
+      return; // 位置変化なし＝重い setData を回避（プロト applyAsofView 相当）。
+    }
+    this._lastTrimIdx = idx;
+    this._mainSeries.setData(this._baseCandles.slice(0, idx + 1));
   }
 
   // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。

@@ -32,6 +32,24 @@ html, body {
   border-bottom: 1px solid #2a2e39;
   flex: 0 0 auto;
 }
+/* Market Profile リプレイバー（下部固定・既定非表示・既存 toolbar トークン流用）。
+   component が setAttribute('hidden','true'/'false') で切替えるため [hidden="true"] を非表示にする。 */
+.mp-replay-bar {
+  display: flex; align-items: center; gap: 10px;
+  height: 34px; padding: 0 12px;
+  background: #1e222d; border-top: 1px solid #2a2e39;
+  flex: 0 0 auto; color: #d1d4dc; font-size: 12px;
+}
+.mp-replay-bar[hidden="true"] { display: none; }
+.mp-replay-label { color: #9aa0ad; white-space: nowrap; }
+.mp-replay-range { flex: 1 1 auto; accent-color: #2962ff; cursor: ew-resize; }
+.mp-replay-range:disabled { opacity: .4; cursor: not-allowed; }
+.mp-replay-date { color: #d1d4dc; font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 128px; text-align: right; }
+/* 増分2: モードトグル（アンカー/ローリング・segmented 流用）とスナップショットチェック。 */
+.mp-replay-mode { flex: 0 0 auto; }
+.mp-replay-snap { display: inline-flex; align-items: center; gap: 4px; color: #9aa0ad; white-space: nowrap; cursor: pointer; }
+.mp-replay-snap-cb { accent-color: #2962ff; cursor: pointer; }
+
 .tb-symbol { font-weight: 700; font-size: 15px; color: #fff; letter-spacing: .3px; }
 .tb-sep { width: 1px; height: 22px; background: #2a2e39; margin: 0 4px; }
 .tb-timeframe { display: inline-flex; align-items: center; gap: 2px; }
@@ -253,8 +271,25 @@ html, body {
 .prop-input:disabled { background: #181b24; color: #5d616b; cursor: not-allowed; }
 .prop-input-number { width: 96px; }
 .prop-input-select { min-width: 120px; }
+/* Market Profile のビン(bins)/レンジ(range)セレクトを 96px に揃える（bins もプリセット select 化・トグルで幅が変わらないように）。他セレクト(ソース)/他指標に非波及。 */
+.prop-dialog-backdrop[data-prop-dialog="market_profile"] [data-prop-field="bins"] .prop-input-select,
+.prop-dialog-backdrop[data-prop-dialog="market_profile"] [data-prop-field="range"] .prop-input-select {
+  width: 96px; min-width: 0;
+}
 .prop-input-checkbox { width: 16px; height: 16px; accent-color: #2962ff; }
 .prop-input-color { width: 40px; height: 26px; padding: 1px; cursor: pointer; }
+
+/* segmented（ENUM を横並びセグメントボタンで描く・解像度トグル移植）。最小装飾・選択中ハイライト。 */
+.prop-segmented { display: inline-flex; gap: 0; padding: 0; border: none; background: transparent; }
+.prop-seg-btn {
+  padding: 4px 12px; border: 1px solid #2a2e39; background: transparent; color: #b2b5be;
+  cursor: pointer; font-size: 12px;
+}
+.prop-seg-btn + .prop-seg-btn { border-left: none; }
+.prop-seg-btn:first-child { border-radius: 4px 0 0 4px; }
+.prop-seg-btn:last-child { border-radius: 0 4px 4px 0; }
+.prop-seg-btn:hover { color: #fff; }
+.prop-seg-btn.is-active { background: #2962ff; border-color: #2962ff; color: #fff; }
 
 /* FLOAT_LIST（probabilities）リスト編集 */
 .prop-list { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding: 0; border: none; background: transparent; }
@@ -326,6 +361,10 @@ html, body {
         <button class="tb-interval" data-timeframe="1M" type="button">月</button>
       </div>
       <span class="tb-sep"></span>
+      <!-- Market Profile 表示トグル（独立アクター・candle 版）。ON でチャート右側に TPO ヒストグラム＋
+           POC/VA 線を重畳、OFF で非表示。tb-interval + is-active の既存トグル書式に合わせる。 -->
+      <button id="market-profile-toggle" class="tb-interval" type="button" aria-pressed="false" title="Market Profile">MP</button>
+      <span class="tb-sep"></span>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
         <span class="ic">∿</span>
         <span class="lbl">インジケーター</span>
@@ -344,6 +383,9 @@ html, body {
         <div id="legend"></div>
       </div>
     </div>
+    <!-- Market Profile リプレイバーのホスト（既定空＝バーは replay=ON で動的生成・表示）。
+         チャート下部に配置し、MP のリプレイ ON 時に ◀リプレイ ラベル + スライダ + 日時ラベルを差し込む。 -->
+    <div id="mp-replay-bar-host"></div>
   </div>
 
   <!-- ダイアログ：サイドバー(カテゴリ) + 上部タブ + 検索 + 指標一覧 -->
@@ -785,7 +827,7 @@ const OHLC = ['open', 'high', 'low', 'close'];
 // ため evaluate 挙動は不変（§3.3.3 移行方針・C-3）。
 //
 // ui のオプション: group / controlType / tooltip / unit / step / min / max /
-//                  conditionalEnable / order / uiVisible。すべて末尾 default 付き。
+//                  conditionalEnable / conditionalVisible / order / uiVisible。すべて末尾 default 付き。
 // ui メタデータの既定値（省略キーは従来挙動）。pick() で一括解決し ?? null 連鎖を集約する。
 const UI_DEFAULTS = Object.freeze({
   group: null,
@@ -796,6 +838,9 @@ const UI_DEFAULTS = Object.freeze({
   min: null,
   max: null,
   conditionalEnable: null,
+  // conditionalVisible: 条件付き“表示”（トグル）。conditionalEnable（グレーアウト）と対称で、
+  //   { when: { param, equals } } が偽のとき当該フィールド行を非表示にする（form_model.computeVisible）。
+  conditionalVisible: null,
   order: null,
   uiVisible: true,
   // label: フィールド表示名の直接指定（日本語ラベル。省略時は labelKey 末尾を表示）。
@@ -846,6 +891,11 @@ const TGP_BTLM = new IndicatorDef({
     param('q_high', ParamType.FLOAT, 0.95, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
     ], null, { group: 'group.calc', order: 5, step: 0.01, min: 0, max: 1 }),
+    // MCMC サンプル（帯の安定性）: fitter='tgp'(btlm) のみ有効。サンプル増で分位帯が収束し
+    // 安定するが計算は重くなる。standard=既定(BTE Total 15000)/high(30000)/max(60000)。
+    // fitter='ols' は解析解のため無視される（backend _fitter_factory で吸収）。
+    // 既定 'standard' は backend call_binding._DEFAULT_SAMPLES と一致必須（乖離防止）。
+    param('mcmc_samples', ParamType.ENUM, 'standard', [], ['standard', 'high', 'max'], { group: 'group.calc', order: 6 }),
     // color は COLOR＝スタイルタブへ移譲（§4.1）。既定は実コード add_btlm の
     // color=_COLOR（MediumSlateBlue・lwc_chart.py:33,73）。
     param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
@@ -1141,8 +1191,72 @@ const PROFIT_RSI_MACD = pfDef({
   series: [PF_HIST('rsimacd_hist'), PF_LINE('RSIMACD'), PF_LINE('Signal'), PF_HLINE('profit_rsi_macd')],
 });
 
+// --- market_profile（プロファイルタブ・アクター委譲型）--------------------
+// 他指標と異なり /compute で系列計算しない。IndicatorController が
+//   compute.computeId==='market_profile' を判定し、_draw（F3 系列描画）をバイパスして
+//   MarketProfileActor（GET /market_profile → primitive 反映）へ委譲する（専用パス）。
+// series は IndicatorDef の非空必須（domain_models.js L104）を満たすための最小ダミー 1 件で、
+//   上記バイパスにより描画には用いられない（renderLine/renderHorizontal を通さない）。
+// 既存トグル（#market-profile-toggle）は温存（二重導線）。表示名は displayNameKey 方式に準拠。
+const MARKET_PROFILE = new IndicatorDef({
+  id: 'market_profile',
+  displayNameKey: 'ind.market_profile',
+  category: { group: 'builtin', nameKey: 'cat.volume' },
+  tab: 'profile',
+  placement: 'overlay',
+  params: [
+    // resmode: 解像度指定モード（ENUM・既定 bins）。試作 prototype_260630-01 の解像度トグル
+    //   （ビン ⇄ レンジ）を移植。ui.controlType='segmented' で横並びセグメントボタンとして描画し、
+    //   押した側の入力（bins / range）だけを conditionalVisible で表示する。order は bins/range より前。
+    param('resmode', ParamType.ENUM, 'bins', [], ['bins', 'range'], {
+      group: 'group.calc', order: 0, label: '解像度', controlType: 'segmented',
+      enumLabels: { bins: 'ビン', range: 'レンジ' },
+    }),
+    // bins: ヒストグラム区間数（ENUM プリセット・既定 '60'）。試作 prototype_260630-01/web/index.html:30-34 の
+    //   <select>（option 30 / 60(selected) / 100）に忠実。数値自由入力(INT)からプリセットへ変更し、レンジ(range)と
+    //   同じく select・同位置(order 1)で描く。全プリセットが妥当なため MIN_VALUE 制約は不要（除去）。
+    //   解像度=ビン（resmode=bins）のときのみ表示（レンジ指定時は非表示 = conditionalVisible トグル）。
+    //   client.buildMarketProfileUrl が文字列プリセット（'30'/'60'/'100'）を &bins= へ付与する。
+    param('bins', ParamType.ENUM, '60', [], ['30', '60', '100'], {
+      group: 'group.calc', order: 1, label: 'ビン',
+      conditionalVisible: { when: { param: 'resmode', equals: 'bins' } },
+      enumLabels: { 30: '30', 60: '60', 100: '100' },
+    }),
+    // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
+    param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
+    // limit（対象本数）param は削除済＝MP は常に全期間集計（backend は limit 省略時＝全件集計）。
+    // src: 集計原子（ENUM・既定 candle=足レンジ TPO・後方互換 / dwell=実ティック滞在 / m1=tick数）。
+    //   client.buildMarketProfileUrl が受理し URL の &src= に付与する（省略時はサーバ既定 candle）。
+    param('src', ParamType.ENUM, 'candle', [], ['candle', 'dwell', 'm1'], {
+      group: 'group.calc', order: 4, label: 'ソース',
+      enumLabels: { candle: '足レンジ', dwell: '滞在時間(実ティック)', m1: 'tick数' },
+    }),
+    // range: レンジ(pt) の直接指定（ENUM・既定 100）。試作 prototype_260630-01 の range セレクタを移植。
+    //   解像度=レンジ（resmode=range）のときのみ表示。値は client が &barw= を付与し backend が
+    //   n_bins = round(窓幅/barw) を算出する（bins は送らない）。
+    //   order は bins と同一(1)＝同じ位置で入れ替わる（トグル時に下の va/src がズレず認知負荷を抑える）。
+    param('range', ParamType.ENUM, '100', [], ['25', '50', '100', '250', '500'], {
+      group: 'group.calc', order: 1, label: 'レンジ(pt)',
+      conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
+      enumLabels: { 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
+    }),
+    // replay: リプレイ（BOOL・既定 false・表示系 group）。試作 prototype_260630-01 の時間カーソル
+    //   （as-seen-at-t）を移植（増分1）。gear ダイアログのチェックで ON/OFF。ON でチャート下部に
+    //   リプレイスライダバーを表示し、T スクラブで /market_profile?...&to=T を再取得して当時プロファイルへ。
+    //   OFF で全期間へ復帰（バー非表示・T 縦線消去）。計算系（group.calc）とは別の表示系 group に置く。
+    param('replay', ParamType.BOOL, false, [], null, {
+      group: 'group.display', order: 1, label: 'リプレイ',
+      tooltip: '過去に遡る（時間カーソル・as-seen-at-t）。ON でチャート下部のスライダから当時のプロファイルを再生する',
+    }),
+  ],
+  series: [
+    new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'market_profile', dynamic: false }),
+  ],
+  compute: { computeId: 'market_profile', requiredColumns: OHLC, timeRequired: false, backendParam: null, variants: ['default'] },
+});
+
 const REGISTRY = Object.freeze([
-  TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES,
+  TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,
@@ -1532,6 +1646,9 @@ class ChartRenderer {
     //                 pane, watermark, paneName }
     this._instances = new Map();
     this._mainStretchSet = false;
+    // 増分2: setCandleTrim の直近トリム末尾 index（位置不変時の再 setData 回避＝プロト lastTrimIdx）。
+    //   null=未トリム。setCandles で候補が変わるためリセットする。
+    this._lastTrimIdx = null;
     // 機能③: クロスヘア移動で pane ウォーターマークへ系列値を追記。
     if (typeof this._chart.subscribeCrosshairMove === 'function') {
       this._chart.subscribeCrosshairMove((param) => this._onCrosshairMove(param));
@@ -1544,11 +1661,73 @@ class ChartRenderer {
     this._mainSeries.setData(arr);
     // v6: 基準 candles を全置換で更新（per-bar 減光/復元の元集合）。
     this._baseCandles = arr;
+    // 増分2: 基準 candles が入れ替わったのでトリム位置キャッシュをリセット（次の setCandleTrim で再 set）。
+    this._lastTrimIdx = null;
     // 読み取り欄の最新足の単一源を更新（配列末尾の足）。空配列なら null。
     this._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
     this._chart.timeScale().fitContent();
     // v6: candle 変更を observer へ通知（ChartRenderer 起点同期＝hover 中なら highlight 解除へ）。
     this._onCandlesChanged();
+  }
+
+  // 基準 candles（_baseCandles）の読み取り専用アクセサ。リプレイバーが slider の min/max・
+  //   index→time 変換に使う（新規追加・読取のみ＝既存描画へ非干渉）。未設定時は空配列。
+  getCandles() {
+    return this._baseCandles ?? [];
+  }
+
+  // 増分2: チャートの通常操作（スクロール/ズーム）を停止/復元する（リプレイスワイプ捕捉用）。
+  //   移植元 prototype_260630-01 updateCaptureMode（capture 中 handleScroll/handleScale=false）。
+  //   lightweight-charts の applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は呼ばない）。
+  //   enabled=false でスクロール/ズーム停止、true で復元。applyOptions 非提供時は no-op（後方互換）。
+  setUserInteraction(enabled) {
+    if (typeof this._chart.applyOptions !== 'function') {
+      return;
+    }
+    const on = !!enabled;
+    this._chart.applyOptions({ handleScroll: on, handleScale: on });
+  }
+
+  // 増分2: x 座標 → 論理 index（timeScale().coordinateToLogical）。リプレイスワイプの x→足 index 変換。
+  //   lwc 座標 API を本所に隔離する（actor/primitive は renderer 経由でのみ座標を得る）。
+  //   timeScale/coordinateToLogical 非提供時は null（後方互換・呼び出し側でガード）。
+  coordinateToLogical(x) {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.coordinateToLogical !== 'function') {
+      return null;
+    }
+    return ts.coordinateToLogical(x);
+  }
+
+  // 増分2: スナップショット用のローソク局所トリム（基準 candles を time<=T へスライスして setData）。
+  //   移植元 prototype_260630-01 applyAsofView（当時の見え方＝ローソクを T までに切る・位置変化時のみ再 set）。
+  //   time=null で全ローソク復元（スナップショット OFF・replay OFF）。基準未供給なら no-op。
+  //   mainSeries.setData を呼ぶのは本所のみ（upstream 隔離・grep0件規約維持）。位置不変時は再 set しない
+  //   （重い再描画を回避＝プロト lastTrimIdx 相当）。
+  setCandleTrim(time) {
+    if (!this._baseCandles) {
+      return;
+    }
+    // トリム後の末尾 index を決める（null=全件末尾）。位置不変なら再 set しない。
+    let idx;
+    if (time == null) {
+      idx = this._baseCandles.length - 1;
+    } else {
+      idx = -1;
+      for (let i = 0; i < this._baseCandles.length; i += 1) {
+        if (this._baseCandles[i].time <= time) {
+          idx = i;
+        } else {
+          break; // time 昇順前提（越えたら打ち切り）。
+        }
+      }
+    }
+    if (idx === this._lastTrimIdx) {
+      return; // 位置変化なし＝重い setData を回避（プロト applyAsofView 相当）。
+    }
+    this._lastTrimIdx = idx;
+    const disp = (time == null) ? this._baseCandles : this._baseCandles.slice(0, idx + 1);
+    this._mainSeries.setData(disp);
   }
 
   // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。
@@ -2193,6 +2372,9 @@ const FIELD_META_DEFAULTS = Object.freeze({
   group: null,
   order: null,
   conditionalEnable: null,
+  // conditionalVisible: 条件付き“表示”（トグル）。conditionalEnable（グレーアウト）と対称。
+  //   { when: { param, equals } } が偽のとき当該フィールド行を非表示にする（§3.5 拡張）。
+  conditionalVisible: null,
   // enumLabels: enum 値 → 表示名マップ（properties_dialog の select 日本語表示）。
   enumLabels: null,
 });
@@ -2282,6 +2464,24 @@ function computeEnabled(def, values = {}) {
     enabled[pdef.name] = values[param] === equals;
   }
   return enabled;
+}
+
+// 各パラメータの表示/非表示を決定（§3.5 条件付き表示・computeEnabled と対称）。
+// conditionalVisible.when（{param,equals}）が偽のとき非表示（hidden）。未指定は常時 visible。
+// 静的除外（uiVisible===false）は buildFormModel が担い、本関数は動的トグルを担う（併存）。
+// 用途: market_profile の bins は resmode==bins のとき表示 / range は resmode==range のとき表示（解像度トグル）。
+function computeVisible(def, values = {}) {
+  const visible = {};
+  for (const pdef of def.params ?? []) {
+    const cond = pdef.conditionalVisible;
+    if (cond === null || cond === undefined) {
+      visible[pdef.name] = true;
+      continue;
+    }
+    const { param, equals } = cond.when;
+    visible[pdef.name] = values[param] === equals;
+  }
+  return visible;
 }
 
 // フォーム検証（F-11・§5）。
@@ -2428,9 +2628,10 @@ class PropertiesDialog {
     this._panel = panel;
     doc.body.append(root);
 
-    // 初期検証・有効化反映。
+    // 初期検証・有効化反映・表示トグル反映。
     this._revalidate();
     this._refreshEnabled();
+    this._refreshVisible();
     return root;
   }
 
@@ -2626,6 +2827,8 @@ class PropertiesDialog {
         return this._buildNumber(field);
       case 'select':
         return this._buildSelect(field);
+      case 'segmented':
+        return this._buildSegmented(field);
       case 'checkbox':
         return this._buildCheckbox(field);
       case 'list':
@@ -2681,6 +2884,45 @@ class PropertiesDialog {
       this._onChange();
     });
     return sel;
+  }
+
+  // segmented: ENUM を「横並びセグメントボタン群」で描く（ドロップダウンでなくトグル・§3.1 拡張）。
+  //   試作 prototype_260630-01 の解像度トグル（ビン ⇄ レンジ）移植。各 option をボタン化し、
+  //   選択中に is-active を付与。クリックで this._values[name] を更新後、既存 _onChange() を呼ぶ
+  //   （→ _refreshVisible/_revalidate が走り bins/range 行が即出没する）。
+  _buildSegmented(field) {
+    const doc = this._doc;
+    const wrap = doc.createElement('div');
+    wrap.className = 'prop-input prop-segmented';
+    wrap.dataset.propName = field.name;
+    const options = field.enumValues ?? [];
+    const buttons = [];
+    const setActive = (val) => {
+      for (const b of buttons) {
+        b.classList.toggle('is-active', String(b.dataset.segValue) === String(val));
+      }
+    };
+    for (const v of options) {
+      const btn = doc.createElement('button');
+      btn.type = 'button';
+      btn.className = 'prop-seg-btn';
+      btn.dataset.segValue = String(v);
+      // enumLabels（日本語表示マップ）優先。未指定はキー末尾を表示（select と同挙動）。
+      btn.textContent = (field.enumLabels && field.enumLabels[v] != null)
+        ? field.enumLabels[v]
+        : humanizeKey(String(v));
+      btn.addEventListener('click', () => {
+        // v は走査中の option 値そのもの（enum の raw な元型＝文字列/数値を保持）。
+        //   options.find で自分自身を引き直す必要はないため直接代入する。
+        this._values[field.name] = v;
+        setActive(this._values[field.name]);
+        this._onChange();
+      });
+      buttons.push(btn);
+      wrap.append(btn);
+    }
+    setActive(field.value);
+    return wrap;
   }
 
   _buildCheckbox(field) {
@@ -3002,23 +3244,30 @@ class PropertiesDialog {
   _onChange() {
     this._revalidate();
     this._refreshEnabled();
+    this._refreshVisible();
   }
 
   // F-11 リアルタイム検証（§5）。違反をインライン表示し OK を制御する。
+  // 条件付き非表示（conditionalVisible=false）のフィールドは検証対象外とする
+  //   （隠れた bins が既定 60 のままなら妥当だが、空値等でも OK を阻害させないため・トグル安全化）。
   _revalidate() {
-    const { violations, ok } = validateForm(this._def, this._values);
+    const { violations } = validateForm(this._def, this._values);
+    const visible = computeVisible(this._def, this._values);
+    // 非表示フィールドの違反は表示せず OK も阻害しない。
+    const effective = violations.filter((v) => visible[v.param] !== false);
     // 全フィールドのエラー表示をクリア。
     for (const [, els] of this._fieldEls) {
       els.error.textContent = '';
       els.row.classList.remove('is-invalid');
     }
-    for (const v of violations) {
+    for (const v of effective) {
       const els = this._fieldEls.get(v.param);
       if (els) {
         els.error.textContent = humanizeKey(v.constraint);
         els.row.classList.add('is-invalid');
       }
     }
+    const ok = effective.length === 0;
     if (this._okBtn) {
       this._okBtn.disabled = !ok;
     }
@@ -3043,6 +3292,17 @@ class PropertiesDialog {
     }
   }
 
+  // 条件付き表示（§3.5 拡張・トグル）。conditionalVisible=false のフィールド行を非表示にする。
+  //   _refreshEnabled（グレーアウト）と対称の動的経路。range を変えた瞬間に「ビン」行が出没する。
+  //   静的除外（uiVisible===false）は buildFormModel が担い、本メソッドは動的トグルのみ担う。
+  _refreshVisible() {
+    const visible = computeVisible(this._def, this._values);
+    for (const [name, els] of this._fieldEls) {
+      const on = visible[name] !== false;
+      els.row.style.display = on ? '' : 'none';
+    }
+  }
+
   _onDefaultClick() {
     const defaults = resetToDefaults(this._def);
     this._values = { ...defaults };
@@ -3058,6 +3318,7 @@ class PropertiesDialog {
     this._switchTab(this._activeTab);
     this._revalidate();
     this._refreshEnabled();
+    this._refreshVisible();
   }
 
   _onOkClick() {
@@ -3145,6 +3406,7 @@ class IndicatorController {
   constructor({
     catalog, compute, persistence, renderer, document: doc = null, mode = 'a',
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
+    marketProfile = null,
   }) {
     this._catalog = catalog;
     this._compute = compute;
@@ -3152,6 +3414,10 @@ class IndicatorController {
     this._renderer = renderer;
     this._document = doc;
     this._mode = mode;
+    // Market Profile アクター（任意注入）。computeId==='market_profile' の指標を
+    //   /compute 経由でなく本アクター（GET /market_profile → primitive）へ委譲する。
+    //   既存トグル（#market-profile-toggle）とは別導線（二重導線）。未注入時は MP 分岐が no-op。
+    this._marketProfile = marketProfile;
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
     // 時間足（§チャート表示時間選択・1 分足原子から resample）。compute/candles に伝搬する。
@@ -3274,13 +3540,62 @@ class IndicatorController {
   // UC オーケストレーション（facade + ports）
   // =========================================================================
 
+  // MP 種別（アクター委譲型）判定。真なら _draw / _gatewayAdapter をバイパスする。
+  _isMarketProfile(def) {
+    return def?.compute?.computeId === 'market_profile';
+  }
+
+  // MP アクターへ渡す取得 params（resmode/bins/va/src/range）を組み立てる（apply/gear/restore 共通）。
+  //   limit は転送しない（MP は全期間集計固定）。保存 params に limit が残っていても載せない。
+  //   resmode（解像度モード）を転送し、client が resmode で bins/barw の送信を排他化する。
+  //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
+  _mpParams(p = {}) {
+    const out = { bins: p.bins, va: p.va, src: p.src };
+    // replay（リプレイ・増分1）: BOOL を actor へ転送する。undefined は載せない（現状維持）。
+    //   actor が replay=true でバー表示・T スクラブ受付、false で非表示・T 縦線消去・全期間へ復帰。
+    if (p.replay != null) {
+      out.replay = p.replay;
+    }
+    // resmode（解像度モード）: client が bins/barw の送信を排他化する。
+    //   後方互換: 明示 resmode が無い旧 barw 保存インスタンス（数値 range・resmode 無し）は
+    //   range から resmode を導出して保存レンジを維持する（_deriveResmode）。
+    const resmode = this._deriveResmode(p);
+    if (resmode != null) {
+      out.resmode = resmode;
+    }
+    if (p.range != null && p.range !== 'auto') {
+      out.range = p.range;
+    }
+    return out;
+  }
+
+  // resmode（解像度モード）を決める後方互換ヘルパ（restore と apply の両経路で共用）。
+  //   - 明示 resmode があればそのまま返す（後方互換補完のみ・上書きしない）。
+  //   - resmode 欠落かつ range がレンジ数値集合 → 'range'（保存したレンジを維持し client が &barw= を送る）。
+  //   - resmode 欠落かつ range='auto' → 'bins'（従来通り bins フォールバック）。
+  //   - resmode も range も無い旧インスタンスは null を返し resmode を付与しない（client 既定 = bins）。
+  _deriveResmode(p = {}) {
+    if (p.resmode != null) {
+      return p.resmode;
+    }
+    if (p.range == null) {
+      return null;
+    }
+    const BAR_WIDTHS = new Set(['25', '50', '100', '250', '500']);
+    return BAR_WIDTHS.has(String(p.range)) ? 'range' : 'bins';
+  }
+
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
+  //   MP 種別（computeId==='market_profile'）は /compute をバイパスし MarketProfileActor へ委譲する。
   async applyIndicator(indicatorId, variant) {
     const def = this._catalog.get(indicatorId);
     if (!def) {
       return null;
     }
     const params = this._defaultParams(def);
+    if (this._isMarketProfile(def)) {
+      return this._applyMarketProfile(def, variant, params);
+    }
     const gateway = this._gatewayAdapter();
     const { state, instance } = await apply(
       this._state,
@@ -3293,6 +3608,122 @@ class IndicatorController {
     this._persistAll();
     this._renderLegend();
     return instance;
+  }
+
+  // MP 専用適用パス: /compute をバイパスし、state には no-op gateway で instance を登録して
+  //   凡例表示・永続化・restore の対象に含める。描画は MarketProfileActor（GET /market_profile →
+  //   primitive）へ委譲する。_draw（F3 系列描画）は通さない。
+  async _applyMarketProfile(def, variant, params) {
+    // MP 単一インスタンス制約: 既に MP が適用済みなら新規 legend 行を作らず no-op で
+    //   既存インスタンスを返す（二重 legend 行→単一 actor 駆動での状態乖離を防ぐ）。
+    //   actor へは触れない: 既存が非表示なら表示状態の乖離、gear 変更済みなら params
+    //   の既定値クロバーを招くため、可視・params の現状を保存する。
+    const existing = this._state.applied.find(
+      (i) => this._isMarketProfile(this._catalog.get(i.indicatorId)),
+    );
+    if (existing) {
+      return existing;
+    }
+    const { state, instance } = await apply(
+      this._state,
+      { indicatorId: def.id, variant: variant ?? this._defaultVariant(def), params, datasetRef: this._datasetRef },
+      { compute: async () => ({ generation: 0 }) },
+    );
+    this._state = state;
+    this._meta.set(instance.instanceId, { def });
+    await this._enableMarketProfile(params);
+    this._persistAll();
+    this._renderLegend();
+    return instance;
+  }
+
+  // MP アクターへ params を渡して有効化する（setParams→setEnabled(true)＝取得＋表示）。
+  //   setEnabled(true) は内部で refresh も行う。未注入時は no-op。
+  async _enableMarketProfile(params) {
+    if (!this._marketProfile) {
+      return;
+    }
+    this._marketProfile.setParams(this._mpParams(params));
+    await this._marketProfile.setEnabled(true);
+  }
+
+  // MP 凡例 eye: 表示/非表示トグル（state.visible を反転し actor.setEnabled へ同期）。
+  async _toggleMarketProfileVisible(inst) {
+    this._state = facadeToggleVisible(this._state, inst.instanceId);
+    const updated = this._state.applied.find((i) => i.instanceId === inst.instanceId);
+    if (this._marketProfile && updated) {
+      await this._marketProfile.setEnabled(updated.visible);
+    }
+    this._persistAll();
+    this._renderLegend();
+  }
+
+  // MP 凡例 close: 非表示＋detach してから applied/meta から除去する（renderer.remove は不要＝
+  //   MP は renderer に系列を持たない）。
+  async _removeMarketProfile(inst) {
+    if (this._marketProfile) {
+      await this._marketProfile.setEnabled(false);
+      if (typeof this._marketProfile.detach === 'function') {
+        this._marketProfile.detach();
+      }
+    }
+    this._state = facadeRemove(this._state, inst.instanceId);
+    this._meta.delete(inst.instanceId);
+    this._persistAll();
+    this._renderLegend();
+  }
+
+  // MP 凡例 gear: プロパティダイアログで bins/va/src を編集し、onApply で setParams+refresh。
+  //   /compute は呼ばない。DOM 不在時は現 params で即時反映（フォールバック）。
+  _onGearMarketProfile(inst, def) {
+    const doc = this._document;
+    const stored = this._paramsObject(inst.params);
+    const currentParams = (stored && Object.keys(stored).length > 0)
+      ? stored
+      : this._defaultParams(def);
+    const applyParams = async (values) => {
+      this._state = this._withParams(this._state, inst.instanceId, values);
+      if (this._marketProfile) {
+        this._marketProfile.setParams(this._mpParams(values));
+        await this._marketProfile.refresh();
+      }
+      this._persistAll();
+      this._renderLegend();
+    };
+    // applyParams は async。未 await の fire-and-forget のため拒否を .catch で捕捉し
+    //   unhandledRejection 化を防ぐ（refresh 失敗等）。
+    const runApply = (values) => {
+      applyParams(values).catch((err) => {
+        if (typeof console !== 'undefined' && console.error) {
+          console.error('[MP] gear apply failed', err);
+        }
+      });
+    };
+    if (!doc || typeof PropertiesDialog !== 'function') {
+      runApply(currentParams);
+      return;
+    }
+    const dialog = new PropertiesDialog({
+      document: doc,
+      def,
+      instance: { ...inst, params: currentParams },
+      mode: this._mode,
+      onApply: (values) => { runApply(values); },
+      onCancel: () => {},
+    });
+    dialog.open();
+  }
+
+  // AppliedInstance（不変・凍結）の params のみ差し替えた state を返す（_withVariant と同型）。
+  _withParams(state, instanceId, values) {
+    const pairs = Object.entries(values ?? {});
+    return {
+      ...state,
+      applied: state.applied.map((i) =>
+        i.instanceId === instanceId
+          ? Object.assign(Object.create(Object.getPrototypeOf(i)), i, { params: pairs })
+          : i),
+    };
   }
 
   // UC-03 再計算（設定変更・variant 切替）: generation 競合破棄は facade.recompute に集約（§6.6）。
@@ -3474,11 +3905,22 @@ class IndicatorController {
     // フェーズ1: 直列計算（描画なし）。
     const jobs = [];
     for (const inst of [...this._state.applied]) {
-      if (this._meta.has(inst.instanceId)) {
-        const job = await this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
-        if (job && job.accepted) {
-          jobs.push(job);
+      const meta = this._meta.get(inst.instanceId);
+      if (!meta) {
+        continue;
+      }
+      // MP 種別は /compute を持たない（backend に compute 無し）。再計算経路（ライブ tick /
+      //   足切替）で /compute へ流出させると例外→setTimeframe では preRender 前で全スキップ。
+      //   /compute を通さず actor.refresh（現時間足で再取得）へ委譲し、MP も新足へ追従させる。
+      if (this._isMarketProfile(meta.def)) {
+        if (this._marketProfile && inst.visible) {
+          await this._marketProfile.refresh();
         }
+        continue;
+      }
+      const job = await this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
+      if (job && job.accepted) {
+        jobs.push(job);
       }
     }
     // フェーズ2: ここから await を挟まない同期一括描画。
@@ -3546,6 +3988,18 @@ class IndicatorController {
         continue;
       }
       this._meta.set(inst.instanceId, { def });
+      // MP 種別は /compute で計算しようとして失敗させない。保存 params を actor へ渡し、
+      //   可視だった場合のみ有効化して再取得・表示する。
+      if (this._isMarketProfile(def)) {
+        const rp = this._paramsObject(inst.params);
+        if (this._marketProfile) {
+          this._marketProfile.setParams(this._mpParams(rp));
+          if (inst.visible) {
+            await this._marketProfile.setEnabled(true);
+          }
+        }
+        continue;
+      }
       try {
         const gateway = this._gatewayAdapter(inst.variant);
         // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
@@ -3765,11 +4219,18 @@ class IndicatorController {
       label.className = 'legend-label';
       label.textContent = `${def ? this._label(def) : inst.indicatorId}${inst.variant && inst.variant !== 'default' ? ' (' + inst.variant + ')' : ''}`;
 
+      // MP は state.applied に載るが renderer に系列を持たないため、eye/close を
+      //   MP 専用ハンドラ（setEnabled / setEnabled(false)+detach）へ分岐する。gear は
+      //   _onGear 内部で MP 分岐する。
+      const isMp = this._isMarketProfile(def);
+
       const eye = doc.createElement('button');
       eye.className = 'legend-eye';
       eye.title = inst.visible ? '非表示にする' : '表示する';
       eye.textContent = inst.visible ? '👁' : '🙈';
-      eye.addEventListener('click', () => this.toggleVisible(inst.instanceId));
+      eye.addEventListener('click', () => (isMp
+        ? this._toggleMarketProfileVisible(inst)
+        : this.toggleVisible(inst.instanceId)));
 
       const gear = doc.createElement('button');
       gear.className = 'legend-gear';
@@ -3781,7 +4242,9 @@ class IndicatorController {
       close.className = 'legend-remove';
       close.title = '削除';
       close.textContent = '✕';
-      close.addEventListener('click', () => this.removeInstance(inst.instanceId));
+      close.addEventListener('click', () => (isMp
+        ? this._removeMarketProfile(inst)
+        : this.removeInstance(inst.instanceId)));
 
       row.append(label, eye, gear, close);
       legend.append(row);
@@ -3794,6 +4257,11 @@ class IndicatorController {
   //   描画へ未反映（H-1）。ダイアログ内に A 方式注記を明示表示する（§9.3・サイレント不一致回避）。
   _onGear(inst, def) {
     const doc = this._document;
+    // MP は /compute を持たない専用パス（setParams+refresh）で設定を反映する。
+    if (this._isMarketProfile(def)) {
+      this._onGearMarketProfile(inst, def);
+      return;
+    }
     if (!doc || !def || typeof PropertiesDialog !== 'function') {
       // DOM 不在（node 単体テスト等）または未解決 def は従来の最小再計算へフォールバック。
       this._gearRecompute(inst, def);
@@ -3905,6 +4373,89 @@ class LiveUpdater {
     const candles = await this._loadCandles(this._datasetRef, this._getTimeframe());
     if (candles && candles.length > 0) {
       this._renderer.updateLastCandle(candles[candles.length - 1]);
+    }
+  }
+}
+
+
+// ===== js/adapter/front/forming_bar_updater.js =====
+// FormingBarUpdater（adapter/front/forming_bar_updater.js）— 最新足（形成中バー）の
+//   ティック由来ライブ更新（served=B方式のみ・既定 5 秒）。
+//
+// 設計: LiveUpdater（60 秒・/candles 全件再取得＋最新点 latest 再計算）とは**別系統**で、最新足を
+//   高頻度に差分反映する。両者の分離の実体は「/candles 再取得(Live) vs /forming_bar(Forming)」「60秒
+//   vs 5秒」であり、指標再計算はどちらも mode:'latest'（重い全件 full 計算ではない）。
+//   /forming_bar?datasetRef=&timeframe= から選択 tf の「現在期間の形成中バー
+//   （mid OHLCV・1 本）」を取得し、(1) renderer.updateLastCandle で価格の最新足を反映し、(2) 指標も
+//   recomputeAllApplied({mode:'latest'}) で最新点をティック由来に再計算する（backend が mode=latest 時に
+//   形成中バーを最新足として末尾追加して計算する）。bar=null（対象外 tf / 期間内ティック無し）は
+//   価格も指標も更新しない（完全 no-op）。指標の重い再計算は確定足の LiveUpdater に委ね、ここは
+//   「最新点（latest）」のみ更新する（頻度分離）。
+//
+// 隔離・注入方針（DOM/ネット/タイマー非依存）:
+//   - setInterval / clearInterval / loadFormingBar / getTimeframe は注入（テストでフェイク化）。
+//   - 競合ガードは controller.isRecomputing() の単一権威を参照（独自フラグを持たない）。
+//   - series.update を呼ぶのは ChartRenderer のみ（renderer.updateLastCandle 経由・隔離維持）。
+
+class FormingBarUpdater {
+  constructor({
+    controller,
+    renderer,
+    loadFormingBar,
+    datasetRef,
+    getTimeframe,
+    setInterval: setIntervalImpl = (typeof globalThis !== 'undefined' ? globalThis.setInterval : undefined),
+    clearInterval: clearIntervalImpl = (typeof globalThis !== 'undefined' ? globalThis.clearInterval : undefined),
+    intervalMs = 5000,
+  }) {
+    this._controller = controller;
+    this._renderer = renderer;
+    this._loadFormingBar = loadFormingBar;
+    this._datasetRef = datasetRef;
+    this._getTimeframe = getTimeframe;
+    this._setInterval = setIntervalImpl;
+    this._clearInterval = clearIntervalImpl;
+    this._intervalMs = intervalMs;
+    // 稼働中の interval ハンドル（null=停止中）。多重 start 防止の判定にも用いる。
+    this._timerId = null;
+  }
+
+  // ライブ足内更新を開始する。多重 start は無視する（稼働中なら二重に setInterval しない）。
+  start() {
+    if (this._timerId !== null) {
+      return;
+    }
+    this._timerId = this._setInterval(() => this._tick(), this._intervalMs);
+  }
+
+  // 停止する（clearInterval）。冪等。
+  stop() {
+    if (this._timerId === null) {
+      return;
+    }
+    this._clearInterval(this._timerId);
+    this._timerId = null;
+  }
+
+  // 1 tick: 再計算中ならスキップ。形成中バーを取得し、(1) 価格の最新足を反映、(2) 指標の最新点を
+  //   ティック由来に再計算する。bar=null（更新材料なし）は完全 no-op。1 tick の失敗（取得/再計算/
+  //   描画）は握りつぶしてログ化する（5 秒周期＝unhandledRejection を毎回出さず、次 tick で回復）。
+  async _tick() {
+    try {
+      if (this._controller.isRecomputing()) {
+        return;
+      }
+      const bar = await this._loadFormingBar(this._datasetRef, this._getTimeframe());
+      if (!bar) {
+        return;
+      }
+      this._renderer.updateLastCandle(bar);
+      // 指標も最新点を再計算（mode:'latest'）。backend が形成中バーを最新足として計算へ織り込む。
+      await this._controller.recomputeAllApplied({ mode: 'latest' });
+    } catch (err) {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('FormingBarUpdater: tick 失敗（次 tick で回復）:', err && err.message);
+      }
     }
   }
 }
@@ -4510,6 +5061,752 @@ class TradeMarkersRenderer {
 }
 
 
+// ===== js/adapter/front/market_profile_client.js =====
+// market_profile_client.js — GET /market_profile を隔離する取得アダプター（DOM/chart 非依存）。
+//
+// 設計入力: 依頼「サーバ呼び出しの作法（既存 fetch/usecase 層）に合わせる」。
+//   composition_root_front.js の fetchCandles / fetchFormingBar と同型（URL 組み立て・fetch・失敗時 null）。
+//   Backend 契約: GET /market_profile?datasetRef=&timeframe=&limit=&bins=&va=
+//     応答 {ok:true, profile:{bins:[{price,tpo,norm}],poc,va_low,va_high,price_min,price_max,tpo_units,n_bins}}
+//     失敗時 {ok:false, error:{...}}。
+//   純関数（buildMarketProfileUrl / parseProfileResponse）を公開し単体検証を容易にする（SRP）。
+
+// datasetRef を必須、timeframe/bins/va/src/range は与えられた場合のみ付加する（省略時はサーバ既定）。
+//   limit は受理しない＝MP は常に全期間集計（backend は limit 省略時＝全件集計）。
+//   src: 集計原子（'candle'=足レンジ・既定 / 'dwell'=実ティック滞在 / 'm1'=tick数）。省略時は付与せず candle 後方互換。
+//   resmode: 解像度モード（'bins'=ビン / 'range'=レンジ）。試作 prototype_260630-01 の解像度トグル移植。
+//     resmode==='range' のとき range（レンジpt）を backend param 名 barw へ写像し bins は送らない。
+//     それ以外（'bins' / 未指定）は bins を送り barw は送らない。bins は ENUM プリセット化で文字列
+//     （'30'/'60'/'100'）が渡るため、文字列プリセット（非空）または有限数（後方互換）を付与し、
+//     NaN・空文字・null は排除する（backend の _parse_int が '60' を解釈可）。
+function buildMarketProfileUrl({
+  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today,
+} = {}) {
+  let url = `/market_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
+  if (timeframe != null) {
+    url += `&timeframe=${encodeURIComponent(timeframe)}`;
+  }
+  // limit は付与しない＝MP は常に全期間集計（backend が limit 省略時＝全件集計）。
+  //   context に limit が混ざっても（getContext の recentBars 等）URL には出さない。
+  // 解像度モードで bins / barw の送信を排他化する。
+  if (resmode === 'range') {
+    // レンジ指定 → barw のみ送る（bins は送らない）。'auto'/null は付与しない防御。
+    if (range != null && range !== 'auto') {
+      url += `&barw=${encodeURIComponent(range)}`;
+    }
+  } else if (Number.isFinite(bins) || (typeof bins === 'string' && bins !== '')) {
+    // ビン指定（既定）→ ENUM 文字列プリセット（非空）または有限数（後方互換）のときのみ bins を付与。
+    //   NaN（貼付等で数値化に失敗）・空文字・null は無効な &bins= を送出しない。
+    url += `&bins=${encodeURIComponent(bins)}`;
+  }
+  if (va != null) {
+    url += `&va=${encodeURIComponent(va)}`;
+  }
+  if (src != null) {
+    url += `&src=${encodeURIComponent(src)}`;
+  }
+  // to（リプレイ時間カーソル・UNIX 秒）— 指定時のみ付与（省略時=全期間＝現行挙動・後方互換）。
+  //   移植元 prototype_260630-01（as-seen-at-t・アンカー）。backend が time<=to の足だけで集計する。
+  if (to != null) {
+    url += `&to=${encodeURIComponent(to)}`;
+  }
+  // from（ローリング窓の下限 time・UNIX 秒）— 指定時のみ付与（省略時=全期間・後方互換）。増分2 A。
+  //   移植元 prototype_260630-01（ローリング窓 = T-ROLL_BARS本）。to と併用で [from,to] のローリング窓。
+  if (from != null) {
+    url += `&from=${encodeURIComponent(from)}`;
+  }
+  // today（スナップショット当日強調）— true のときのみ &today=1 を付与（false/未指定は付けない・後方互換）。
+  //   移植元 prototype_260630-01（?today=1 で today[]/today_max）。増分2 C。
+  if (today === true || today === 1 || today === '1') {
+    url += '&today=1';
+  }
+  return url;
+}
+
+// 応答 payload を primitive が消費できる profile へ整形する。ok:false・欠損・bins 非配列は null。
+function parseProfileResponse(payload) {
+  if (!payload || payload.ok !== true) {
+    return null;
+  }
+  const profile = payload.profile;
+  if (!profile || !Array.isArray(profile.bins)) {
+    return null;
+  }
+  // 応答トップレベルに src/atom/bar_width（UI メタ）があれば profile へ素通しする
+  // （無ければ既存 profile をそのまま返す＝後方互換・共有オブジェクト非破壊の spread 維持）。
+  if (payload.src != null || payload.atom != null || payload.bar_width != null) {
+    const meta = {};
+    if (payload.src != null) meta.src = payload.src;
+    if (payload.atom != null) meta.atom = payload.atom;
+    if (payload.bar_width != null) meta.bar_width = payload.bar_width;
+    return { ...profile, ...meta };
+  }
+  return profile;
+}
+
+class MarketProfileClient {
+  // fetch はポート注入（テストは Fake、composition root は globalThis.fetch を bind して渡す）。
+  constructor({ fetch } = {}) {
+    this._fetch = fetch;
+  }
+
+  // context（datasetRef/timeframe/limit/bins/va）から profile を取得する。
+  //   fetch 不在・HTTP 非 ok・例外・整形失敗はすべて null（既存 candles 描画へ非干渉＝非破壊）。
+  async fetchProfile(context = {}) {
+    if (typeof this._fetch !== 'function') {
+      return null;
+    }
+    try {
+      const resp = await this._fetch(buildMarketProfileUrl(context));
+      if (!resp.ok) {
+        return null;
+      }
+      return parseProfileResponse(await resp.json());
+    } catch {
+      return null;
+    }
+  }
+}
+
+
+// ===== js/adapter/front/market_profile_primitive.js =====
+// market_profile_primitive.js — Market Profile の TPO ヒストグラムを描くカスタム ISeriesPrimitive。
+//
+// 設計入力: pair_primitive_base.js（attach/paneViews/_update ライフサイクルの土台）・
+//   pair_lines_primitive.js（v5 描画作法の手本）。CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10。
+//   v5 事実: attached({chart,series,requestUpdate})・paneViews()→renderer().draw(target)→
+//   target.useBitmapCoordinateSpace(scope=>scope.context 描画)・series.priceToCoordinate（範囲外 null）。
+//
+// 責務（SRP）: profile（bins/poc/va_low/va_high）を「チャート右側・価格軸整列の横バー＋POC 線＋VA 帯線」
+//   として描く _draw に限定する。取得・トグル状態は market_profile_actor.js が持つ。
+//   price→y 変換は series.priceToCoordinate のみを使い（既存 primitive と同 API）、lwc への直接依存を持たない。
+
+
+// バー長の最大割合（チャート幅に対する。右端から左へ伸ばす）と最小可視画素。
+const BAR_MAX_FRACTION = 0.28;
+const MIN_BAR_PX = 1;
+// バー高が算出できない（単一 bin 等）場合の既定画素。
+const DEFAULT_BAR_H = 2;
+// ヒート配色（試作 prototype_260630-01 heatColor 移植）: norm 0..1 を 青(hue240)→シアン→黄→赤(hue0)。
+//   累積(norm)が多い価格帯ほど赤く明るい。POC は最頻(norm≈1)で最濃赤になる。
+const HEAT_ALPHA = 0.9;
+function heatColor(norm, alpha = HEAT_ALPHA) {
+  const t = Math.max(0, Math.min(1, Number(norm) || 0));
+  const hue = 240 * (1 - t);           // 0→青(240) / 1→赤(0)
+  const light = 46 + 12 * t;           // 高いほど明るく（低 norm も視認できる明度）
+  return `hsla(${Math.round(hue)}, 95%, ${Math.round(light)}%, ${alpha})`;
+}
+// スナップショット時の累積バー減光アルファ（試作 prototype_260630-01 DIM_ALPHA=0.30）と当日強調アルファ。
+const DIM_ALPHA = 0.30;
+const TODAY_ALPHA = 0.98;
+// POC 線（最濃赤）・VA 帯線（灰）の色（試作準拠）。
+const C_POC_LINE = '#ff3b3b';
+const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
+// リプレイ時点 T の縦線色（試作 prototype_260630-01 の遡り縦線準拠・視認しやすい水色）。
+const C_CURSOR_LINE = 'rgba(120, 190, 255, 0.9)';
+
+class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
+  constructor() {
+    super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
+    this._profile = null;
+    this._visible = false;
+    // リプレイ時点 T（UNIX 秒）の縦線。null=非描画（replay OFF）。移植元 prototype_260630-01。
+    this._cursorTime = null;
+    // 増分2 スナップショット: true で累積バーを減光（DIM_ALPHA）＋ today[] を当日内スケールで明るく重畳。
+    //   既定 false（明るい累積バー＝従来描画）。移植元 prototype_260630-01 drawComposite（showToday）。
+    this._snapshot = false;
+  }
+
+  // 増分2: スナップショット表示（累積減光＋当日強調）を切替えて再描画要求。false で従来の明るい累積へ復帰。
+  setSnapshot(on) {
+    this._snapshot = !!on;
+    this._update();
+  }
+
+  // profile を差し替えて再描画要求（取得成功時）。
+  setProfile(profile) {
+    this._profile = profile;
+    this._update();
+  }
+
+  // リプレイ時点 T（UNIX 秒）を設定して再描画要求。null で縦線を消す（replay OFF）。
+  //   x は attach 済み chart の timeScale().timeToCoordinate(T) で解決する（座標源は基底 _chart）。
+  setCursorTime(time) {
+    this._cursorTime = time == null ? null : time;
+    this._update();
+  }
+
+  // 表示/非表示を切替えて再描画要求（トグル）。
+  setVisible(visible) {
+    this._visible = !!visible;
+    this._update();
+  }
+
+  // 連続 bin の y 距離から一様なバー高を導く（隣接間隔の最小値 × 0.85）。単一/未算出は既定値。
+  _barHeight(toY) {
+    const ys = this._profile.bins
+      .map((b) => toY(b.price))
+      .filter((y) => y != null)
+      .sort((a, b) => a - b);
+    let step = 0;
+    for (let i = 1; i < ys.length; i += 1) {
+      const d = ys[i] - ys[i - 1];
+      if (d > 0 && (step === 0 || d < step)) {
+        step = d;
+      }
+    }
+    return step > 0 ? step * 0.85 : DEFAULT_BAR_H;
+  }
+
+  _draw(target) {
+    // 非表示・profile 未取得・attach 前（座標源なし）は描画しない（防御・後方互換）。
+    if (!this._visible || !this._profile || !this._chart || !this._series) {
+      return;
+    }
+    const toY = (price) => this._series.priceToCoordinate(price);
+    const { bins, poc, va_low: vaLow, va_high: vaHigh } = this._profile;
+    const barH = this._barHeight(toY);
+    // 増分2 スナップショット: 累積バーを減光し、today[] を当日内スケール（today_max）で明るく重畳する。
+    const snapshot = this._snapshot;
+    const today = (snapshot && Array.isArray(this._profile.today)) ? this._profile.today : null;
+    const todayMax = Number(this._profile.today_max) || 1;
+    const cumAlpha = snapshot ? DIM_ALPHA : HEAT_ALPHA; // スナップショット時は累積を減光（当日を際立たせる）。
+
+    target.useBitmapCoordinateSpace((scope) => {
+      const ctx = scope.context;
+      const width = scope.bitmapSize.width;
+      const maxBarPx = width * BAR_MAX_FRACTION;
+
+      // TPO 横バー（右端整列・norm で長さ／色）。範囲外（y=null）の bin はスキップ。
+      for (let i = 0; i < bins.length; i += 1) {
+        const bin = bins[i];
+        const y = toY(bin.price);
+        if (y == null) {
+          continue;
+        }
+        const barW = Math.max(MIN_BAR_PX, (bin.norm ?? 0) * maxBarPx);
+        const x0 = width - barW; // 右端（価格軸側）に整列。
+        ctx.save();
+        ctx.fillStyle = heatColor(bin.norm ?? 0, cumAlpha); // 累積(norm)が多いほど赤（スナップショット時は減光）。
+        ctx.fillRect(x0, y - barH / 2, barW, barH);
+        ctx.restore();
+        // 当日ぶん（today>0）を当日内スケールで明るく重畳（スナップショット ON かつ today[] 有り時のみ）。
+        if (today && today[i] > 0) {
+          const tn = today[i] / todayMax;
+          const tw = Math.max(MIN_BAR_PX, tn * maxBarPx);
+          ctx.save();
+          ctx.fillStyle = heatColor(tn, TODAY_ALPHA);
+          ctx.fillRect(width - tw, y - barH / 2, tw, barH);
+          ctx.restore();
+        }
+      }
+
+      // POC / VAH / VAL の水平参照線（範囲内の価格のみ）。
+      const hline = (price, color) => {
+        if (price == null) {
+          return;
+        }
+        const y = toY(price);
+        if (y == null) {
+          return;
+        }
+        ctx.save();
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+        ctx.restore();
+      };
+      hline(poc, C_POC_LINE);
+      hline(vaHigh, C_VA_LINE);
+      hline(vaLow, C_VA_LINE);
+
+      // リプレイ時点 T の縦線（replay 中のみ・移植元 prototype_260630-01 の遡り縦線）。
+      //   x = timeScale().timeToCoordinate(T)。範囲外（null）はスキップ。上下（y=0..height）に伸ばす。
+      if (this._cursorTime != null) {
+        const ts = this._chart.timeScale && this._chart.timeScale();
+        const x = ts && typeof ts.timeToCoordinate === 'function'
+          ? ts.timeToCoordinate(this._cursorTime)
+          : null;
+        if (x != null) {
+          const height = scope.bitmapSize.height;
+          ctx.save();
+          ctx.beginPath();
+          ctx.strokeStyle = C_CURSOR_LINE;
+          ctx.lineWidth = 1;
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, height);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    });
+  }
+}
+
+
+// ===== js/adapter/front/market_profile_actor.js =====
+// market_profile_actor.js — Market Profile の薄い制御アクター（取得→primitive 反映・トグル状態）。
+//
+// 設計入力: 依頼「プロファイルを取得して primitive に反映する薄い制御・ES Modules・既存層構造」。
+//   trade_markers_renderer.js と同層（adapter/front）。client（取得）と primitive（描画）を注入し、
+//   本アクターは「トグル状態の保持」と「有効時の取得→反映」の編成のみを担う（SRP）。
+//   依存はすべて抽象（duck-typing）に向け、composition root が具象を注入する（DIP）。
+//
+// 非破壊方針: primitive は初回有効化まで mainSeries へ attach しない（OFF 時はチャートに一切触れない）。
+//   取得失敗（client が null）時も既存描画へ干渉せず、前回 profile を保持する。
+
+// 増分2 定数（試作 prototype_260630-01 と一致）。
+const ROLL_BARS = 60; // ローリング窓の本数（from = T - ROLL_BARS*bar_sec）。
+// timeframe → 足の秒長（from の窓幅算出用）。未知/None は 1D 相当（backend _TF_BAR_SEC と対応）。
+const TF_BAR_SEC = {
+  '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
+  '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000,
+};
+
+class MarketProfileActor {
+  // client: fetchProfile(context)->profile|null。primitive: setProfile/setVisible。
+  // mainSeries: attachPrimitive（v5・非提供時は attach を skip＝後方互換）。
+  // getContext: ()->{datasetRef,timeframe,limit,...}（取得時点の現在チャート状態を遅延読み取り）。
+  // replayBar: リプレイスライダバー（任意注入・setVisible/setCandles/mode/isSnapshot）。未注入時は no-op。
+  // getCandles: ()->candles（バーの min/max・index→time の元。renderer.getCandles を配線）。未注入時は空。
+  // renderer: 増分2 スナップショットのローソクトリム源（setCandleTrim(time|null)）。未注入時はトリムしない。
+  constructor({ client, primitive, mainSeries, getContext, replayBar, getCandles, renderer } = {}) {
+    this._client = client;
+    this._primitive = primitive;
+    this._mainSeries = mainSeries;
+    this._replayBar = replayBar ?? null;
+    this._renderer = renderer ?? null;
+    this._getCandles = typeof getCandles === 'function' ? getCandles : () => [];
+    this._getContext = typeof getContext === 'function' ? getContext : () => ({});
+    this._enabled = false;
+    this._attached = false;
+    // 取得パラメータ（bins/va/src/range）。setParams で更新し refresh 時に getContext へ重畳する。
+    //   未設定時は空＝getContext のみ（サーバ既定・後方互換）。
+    this._params = {};
+    // リプレイ（増分1）状態。replay=ON でバー表示・T スクラブで to 付き再取得（coalesce）。
+    this._replay = false;
+    this._replayTo = null;      // 現在の T（UNIX 秒）。null=最新（全期間）。
+    this._scrubRunning = false;  // in-flight フラグ（scrubProfile coalesce・移植元 prototype_260630-01）。
+    this._scrubQueued = null;    // in-flight 中に来た最後の T（末尾実行用）。
+  }
+
+  // 増分2: リプレイ取得の追加コンテキスト（from/today）を現在のモード/スナップショット状態から組む。
+  //   - ローリングモード: from = T - ROLL_BARS*bar_sec（T 直前 60 本の窓）。アンカーは from を載せない。
+  //   - スナップショット ON: today=true（当日強調用の today[]/today_max を要求）。OFF は載せない。
+  //   移植元 prototype_260630-01 params()（asofmode/asoftrim）。replayBar 未注入時は空（後方互換）。
+  _replayExtra(time) {
+    const extra = {};
+    if (!this._replayBar) {
+      return extra;
+    }
+    const mode = typeof this._replayBar.mode === 'function' ? this._replayBar.mode() : 'anchor';
+    if (mode === 'rolling' && time != null) {
+      const tf = this._getContext().timeframe;
+      const barSec = TF_BAR_SEC[tf] ?? 86400;
+      extra.from = time - ROLL_BARS * barSec;
+    }
+    if (typeof this._replayBar.isSnapshot === 'function' && this._replayBar.isSnapshot()) {
+      extra.today = true;
+    }
+    return extra;
+  }
+
+  // 増分2: スナップショット状態を反映する（ローソクトリム＋primitive の減光/today 描画）。
+  //   snapshot ON: ローソクを T までトリム（renderer.setCandleTrim(T)）・primitive.setSnapshot(true)。
+  //   snapshot OFF: トリム解除（setCandleTrim(null)）・primitive.setSnapshot(false)。
+  //   renderer/primitive の該当メソッド非提供時は skip（後方互換）。
+  _applySnapshot(time) {
+    const on = !!(this._replayBar && typeof this._replayBar.isSnapshot === 'function'
+      && this._replayBar.isSnapshot());
+    if (this._renderer && typeof this._renderer.setCandleTrim === 'function') {
+      this._renderer.setCandleTrim(on && time != null ? time : null);
+    }
+    if (this._primitive && typeof this._primitive.setSnapshot === 'function') {
+      this._primitive.setSnapshot(on);
+    }
+  }
+
+  isEnabled() {
+    return this._enabled;
+  }
+
+  // 取得パラメータ（bins/va/src/range）を設定する。null/undefined のキーは無視する
+  //   （getContext の値やサーバ既定を潰さない）。次回 refresh から反映される。
+  //   range（レンジpt）は client.buildMarketProfileUrl が barw へ写像する（'auto' は付与しない）。
+  setParams(params = {}) {
+    const next = {};
+    for (const key of ['bins', 'va', 'src', 'range', 'resmode']) {
+      if (params[key] != null) {
+        next[key] = params[key];
+      }
+    }
+    this._params = next;
+    // replay トグル（増分1）。明示指定時のみ反映する（undefined は現状維持）。
+    if (params.replay != null) {
+      this._setReplay(!!params.replay);
+    }
+  }
+
+  // replay ON/OFF を反映する。ON: バー表示（candles は composition root が別途 setCandles 済み）。
+  //   OFF: バー非表示・T 縦線消去・T をリセット（全期間へ復帰）。移植元 prototype_260630-01。
+  _setReplay(on) {
+    this._replay = on;
+    if (this._replayBar) {
+      // ON 時に最新 candles をバーへ供給（min/max・index→time の元）。timeframe 切替後も現在足に追従。
+      if (on && typeof this._replayBar.setCandles === 'function') {
+        this._replayBar.setCandles(this._getCandles());
+      }
+      if (typeof this._replayBar.setVisible === 'function') {
+        this._replayBar.setVisible(on);
+      }
+    }
+    if (!on) {
+      // OFF: 当時カーソルを解除し、T 縦線を消す（primitive.setCursorTime(null)）。
+      this._replayTo = null;
+      this._scrubQueued = null;
+      if (this._primitive && typeof this._primitive.setCursorTime === 'function') {
+        this._primitive.setCursorTime(null);
+      }
+      // 増分2: スナップショットのローソクトリムを解除し（全ローソク復元）、primitive の減光を消す。
+      if (this._renderer && typeof this._renderer.setCandleTrim === 'function') {
+        this._renderer.setCandleTrim(null);
+      }
+      if (this._primitive && typeof this._primitive.setSnapshot === 'function') {
+        this._primitive.setSnapshot(false);
+      }
+    }
+  }
+
+  // 増分2: リプレイバーのモード（アンカー/ローリング）・スナップショット変更を受け、現在 T で再取得する。
+  //   replayBar.onChange から配線する。無効時（replay OFF / disabled / T 未設定）は no-op。
+  async onReplayControlsChange() {
+    if (!this._enabled || !this._replay || this._replayTo == null) {
+      return;
+    }
+    await this.setReplayCursor(this._replayTo);
+  }
+
+  isReplay() {
+    return this._replay;
+  }
+
+  // リプレイ T スクラブ: T（対応足の time・UNIX 秒）を当時カーソルに設定し、to=T で当時プロファイルを
+  //   再取得して primitive へ反映する。連続スクラブは coalesce（in-flight 中は最後の T だけ末尾実行＝
+  //   移植元 prototype_260630-01 scrubProfile）。無効時（replay OFF / disabled）は no-op。
+  async setReplayCursor(time) {
+    if (!this._enabled || !this._replay) {
+      return;
+    }
+    this._replayTo = time;
+    // T 縦線は即時反映（fetch 完了を待たずカーソルを動かす＝プロト applyAsofView 相当）。
+    if (this._primitive && typeof this._primitive.setCursorTime === 'function') {
+      this._primitive.setCursorTime(time);
+    }
+    // 増分2: スナップショットのローソクトリム/減光を即時反映（fetch を待たず＝プロト applyAsofView）。
+    this._applySnapshot(time);
+    // coalesce: in-flight 中は最後の要求だけを queue し、完了後に末尾実行する。
+    if (this._scrubRunning) {
+      this._scrubQueued = time;
+      return;
+    }
+    this._scrubRunning = true;
+    try {
+      await this._fetchAt(time);
+    } finally {
+      this._scrubRunning = false;
+    }
+    if (this._scrubQueued != null) {
+      const last = this._scrubQueued;
+      this._scrubQueued = null;
+      await this.setReplayCursor(last); // 末尾実行（最後の T のみ）。
+    }
+  }
+
+  // to=T（＋増分2 の from/today）を重畳して 1 回取得し、profile を反映する（null は前回描画保持）。
+  async _fetchAt(time) {
+    const profile = await this._client.fetchProfile({
+      ...this._getContext(), ...this._params, to: time, ...this._replayExtra(time),
+    });
+    if (profile) {
+      this._primitive.setProfile(profile);
+    }
+  }
+
+  // トグル。ON: 初回のみ attach → 取得して反映 → 表示。OFF: 非表示（取得しない）。
+  async setEnabled(enabled) {
+    this._enabled = !!enabled;
+    if (this._enabled) {
+      this._ensureAttached();
+      await this.refresh();
+      this._primitive.setVisible(true);
+    } else {
+      this._primitive.setVisible(false);
+    }
+  }
+
+  // 現在のコンテキストで再取得し反映する（有効時のみ）。null は反映しない（前回描画保持）。
+  async refresh() {
+    if (!this._enabled) {
+      return;
+    }
+    // getContext（datasetRef/timeframe/…）へ setParams の bins/va/src/range を重畳して取得する。
+    //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
+    const profile = await this._client.fetchProfile({ ...this._getContext(), ...this._params });
+    if (profile) {
+      this._primitive.setProfile(profile);
+    }
+  }
+
+  // primitive を mainSeries へ一度だけ attach する（attachPrimitive 非提供時は skip）。
+  _ensureAttached() {
+    if (this._attached) {
+      return;
+    }
+    if (this._mainSeries && typeof this._mainSeries.attachPrimitive === 'function') {
+      this._mainSeries.attachPrimitive(this._primitive);
+      this._attached = true;
+    }
+  }
+
+  // primitive を mainSeries から取り外す（detachPrimitive 非提供時は skip＝後方互換）。
+  //   凡例からの削除（close）で呼び、次回有効化で再 attach できるよう _attached を戻す。
+  detach() {
+    if (this._attached && this._mainSeries && typeof this._mainSeries.detachPrimitive === 'function') {
+      this._mainSeries.detachPrimitive(this._primitive);
+    }
+    this._attached = false;
+  }
+}
+
+
+// ===== js/adapter/front/market_profile_replay_bar.js =====
+// market_profile_replay_bar.js — Market Profile リプレイ用の下部スライダバー（DOM アダプター）。
+//
+// 設計入力: 依頼（増分1）「replay=ON でチャート下部にスライダバーを表示。構成＝◀リプレイ ラベル＋
+//   <input type=range>（min=0/max=足数-1/既定=右端=最新）＋選択中の日時ラベル。OFF で非表示・全期間へ復帰」。
+//   移植元 prototype_260630-01/web/index.html（#asof/#asoft スライダ）・app.js（asofIdx・applyAsofView）。
+//
+// 責務（SRP）: スライダ DOM の生成・表示制御・index→time 変換・日時ラベル更新に限定する。当時プロファイルの
+//   再取得（to 付き fetch）や T 縦線描画は本コンポーネントの責務外（MarketProfileActor / primitive が担う）。
+//   本バーは input で onScrub(T) を呼ぶだけ（DIP: 上位の editor/actor を知らない）。lightweight-charts に
+//   直接依存しない（座標が要る箇所は primitive 側の attach 済み chart を使う＝本バーは純 DOM）。
+//
+// 非破壊方針: 既定は非表示（display:none 相当の hidden フラグ）。setVisible(true) で初めて可視化する。
+//   candles 未設定のうちは onScrub を発火しない（空 candles ガード）。
+
+// UNIX 秒 → 'YYYY-MM-DD HH:MM'（UTC）表示ラベル。移植元 prototype の ISO 日付ラベルに準拠。
+function formatCursorLabel(unixSec) {
+  const d = new Date(Number(unixSec) * 1000);
+  const iso = d.toISOString(); // e.g. '1970-01-01T00:16:40.000Z'
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+}
+
+// モードトグルの選択肢（アンカー = from なし累積 / ローリング = T 直前 ROLL_BARS 本の窓）。
+const MODES = [
+  { key: 'anchor', label: 'アンカー' },
+  { key: 'rolling', label: 'ローリング' },
+];
+
+class MarketProfileReplayBar {
+  // document/container: DOM 生成・追加先（container 下部にバーを appendChild）。
+  // onScrub: (timeSec) => void。スライダ input で「対応足の time」を通知する（actor.setReplayCursor へ配線）。
+  // onChange: () => void。モード（アンカー/ローリング）・スナップショットの状態変更を通知する（actor が
+  //   from/today を再計算するトリガ）。省略時 no-op。増分2 A/C。
+  constructor({ document, container, onScrub, onChange } = {}) {
+    this._doc = document ?? null;
+    this._container = container ?? null;
+    this._onScrub = typeof onScrub === 'function' ? onScrub : () => {};
+    this._onChange = typeof onChange === 'function' ? onChange : () => {};
+    this._candles = [];
+    this._visible = false;
+    this._label = '';
+    this._root = null;
+    this._range = null;
+    this._dateLabel = null;
+    // 増分2 状態: モード（既定アンカー）・スナップショット（既定 OFF）。
+    this._mode = 'anchor';
+    this._snapshot = false;
+    this._modeBtns = new Map(); // key -> ボタン要素（is-active トグル用）。
+    this._build();
+  }
+
+  // バー DOM を一度だけ構築する（◀リプレイ ラベル + モードトグル + range + スナップショット + 日時ラベル）。既定は非表示。
+  _build() {
+    if (!this._doc || typeof this._doc.createElement !== 'function'
+        || !this._container || typeof this._container.appendChild !== 'function') {
+      return; // DOM 不在・container が appendChild 非提供（SSR/テスト最小 fake）は no-op（防御）。
+    }
+    const root = this._doc.createElement('div');
+    root.className = 'mp-replay-bar';
+    root.setAttribute('hidden', 'true');
+
+    const tag = this._doc.createElement('span');
+    tag.className = 'mp-replay-label';
+    tag.textContent = '◀リプレイ';
+
+    // モードトグル（segmented・既存 .prop-seg-btn 流用）。押した側でアンカー/ローリングを切替える。
+    const seg = this._doc.createElement('span');
+    seg.className = 'prop-segmented mp-replay-mode';
+    for (const m of MODES) {
+      const btn = this._doc.createElement('button');
+      btn.className = 'prop-seg-btn' + (m.key === this._mode ? ' is-active' : '');
+      btn.textContent = m.label;
+      btn.addEventListener('click', () => this._setMode(m.key));
+      seg.appendChild(btn);
+      this._modeBtns.set(m.key, btn);
+    }
+
+    const range = this._doc.createElement('input');
+    range.type = 'range';
+    range.className = 'mp-replay-range';
+    range.min = '0';
+    range.max = '0';
+    range.value = '0';
+    range.disabled = true; // candles 未設定のうちは操作不可（空 candles ガード）。
+    range.addEventListener('input', () => this._onInput());
+
+    // スナップショットチェック（既定 OFF）。ON で「当時の見え方」（ローソクトリム＋当日強調）。
+    const snapWrap = this._doc.createElement('label');
+    snapWrap.className = 'mp-replay-snap';
+    const snapCb = this._doc.createElement('input');
+    snapCb.type = 'checkbox';
+    snapCb.className = 'mp-replay-snap-cb';
+    snapCb.addEventListener('change', () => this._setSnapshot(!!snapCb.checked));
+    const snapText = this._doc.createElement('span');
+    snapText.textContent = 'スナップショット';
+    snapWrap.appendChild(snapCb);
+    snapWrap.appendChild(snapText);
+
+    const dateLabel = this._doc.createElement('span');
+    dateLabel.className = 'mp-replay-date';
+    dateLabel.textContent = '';
+
+    root.appendChild(tag);
+    root.appendChild(seg);
+    root.appendChild(range);
+    root.appendChild(snapWrap);
+    root.appendChild(dateLabel);
+    this._container.appendChild(root);
+
+    this._root = root;
+    this._range = range;
+    this._dateLabel = dateLabel;
+    this._snapCb = snapCb;
+  }
+
+  // モード（アンカー/ローリング）を切替え、ボタンの is-active を更新して onChange を通知する。
+  _setMode(key) {
+    if (key !== 'anchor' && key !== 'rolling') {
+      return;
+    }
+    this._mode = key;
+    for (const [k, btn] of this._modeBtns) {
+      const active = k === key;
+      btn.className = 'prop-seg-btn' + (active ? ' is-active' : '');
+    }
+    this._onChange();
+  }
+
+  // スナップショット ON/OFF を切替え、onChange を通知する。
+  _setSnapshot(on) {
+    this._snapshot = !!on;
+    this._onChange();
+  }
+
+  // 現在のモード（'anchor' | 'rolling'）。actor が from を計算する分岐に使う。
+  mode() {
+    return this._mode;
+  }
+
+  // スナップショット状態（true/false）。actor が today/トリムを切替える。
+  isSnapshot() {
+    return this._snapshot;
+  }
+
+  // 足配列を受けてスライダの min=0/max=足数-1/既定 value=右端（最新）を設定する（index→time の元）。
+  setCandles(candles) {
+    this._candles = Array.isArray(candles) ? candles : [];
+    if (!this._range) {
+      return;
+    }
+    const last = Math.max(0, this._candles.length - 1);
+    this._range.min = '0';
+    this._range.max = String(last);
+    this._range.value = String(last); // 既定=右端=最新。
+    this._range.disabled = this._candles.length === 0;
+    // 既定ラベル（最新足の日時）。空なら空文字。
+    this._label = this._candles.length ? formatCursorLabel(this._candles[last].time) : '';
+    if (this._dateLabel) {
+      this._dateLabel.textContent = this._label;
+    }
+  }
+
+  // 表示/非表示。true でチャート下部に可視化、false で非表示（全期間へ復帰は actor 側が担う）。
+  setVisible(visible) {
+    this._visible = !!visible;
+    if (this._root) {
+      if (this._visible) {
+        this._root.setAttribute('hidden', 'false');
+      } else {
+        this._root.setAttribute('hidden', 'true');
+      }
+    }
+  }
+
+  isVisible() {
+    return this._visible;
+  }
+
+  // 現在の選択日時ラベル（テスト・表示確認用）。
+  currentLabel() {
+    return this._label;
+  }
+
+  // スライダ input: value（index）→ 対応足 time を決めて onScrub へ通知し、日時ラベルを更新する。
+  _onInput() {
+    if (!this._range || this._candles.length === 0) {
+      return; // 空 candles ガード（onScrub を発火しない）。
+    }
+    let idx = parseInt(this._range.value, 10);
+    if (Number.isNaN(idx)) {
+      return;
+    }
+    idx = Math.max(0, Math.min(idx, this._candles.length - 1));
+    const time = this._candles[idx].time;
+    this._label = formatCursorLabel(time);
+    if (this._dateLabel) {
+      this._dateLabel.textContent = this._label;
+    }
+    this._onScrub(time);
+  }
+
+  // 増分2 スワイプ: logical index（renderer.coordinateToLogical(x) の結果）→ 足 index へ round/clamp し、
+  //   スライダ値と T（対応足 time）を同期して onScrub へ通知する（双方向同期）。
+  //   移植元 prototype_260630-01（updateCaptureMode の x→logical→candles index clamp）。
+  //   candles 未設定・null/NaN は no-op（scrub しない・例外なし）。
+  scrubToLogical(logical) {
+    if (this._candles.length === 0 || logical == null || Number.isNaN(Number(logical))) {
+      return;
+    }
+    let idx = Math.round(Number(logical));
+    idx = Math.max(0, Math.min(idx, this._candles.length - 1));
+    // スライダ値へ反映（双方向同期）。
+    if (this._range) {
+      this._range.value = String(idx);
+    }
+    const time = this._candles[idx].time;
+    this._label = formatCursorLabel(time);
+    if (this._dateLabel) {
+      this._dateLabel.textContent = this._label;
+    }
+    this._onScrub(time);
+  }
+}
+
+
 // ===== js/adapter/front/composition_root_front.js =====
 // composition_root_front.js（フロント側 Composition Root）。
 //
@@ -4563,6 +5860,28 @@ async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe = null, 
   }
 }
 
+// GET /forming_bar?datasetRef=&timeframe= で選択 tf の「現在期間の形成中バー」を取得する（B方式）。
+//   応答 {ok, bar:{time,open,high,low,close,volume}|null}。対象外/ティック無し/失敗時は null。
+async function fetchFormingBar(fetchImpl, datasetRef, timeframe) {
+  if (typeof fetchImpl !== 'function') {
+    return null;
+  }
+  try {
+    let url = `/forming_bar?datasetRef=${encodeURIComponent(datasetRef)}`;
+    if (timeframe) {
+      url += `&timeframe=${encodeURIComponent(timeframe)}`;
+    }
+    const resp = await fetchImpl(url);
+    if (!resp.ok) {
+      return null;
+    }
+    const payload = await resp.json();
+    return payload && payload.ok ? payload.bar : null;
+  } catch {
+    return null;
+  }
+}
+
 // グローバル LightweightCharts（bundled JS が window へ公開）を引数で受け取り、
 // チャート + ローソク系列を生成して ChartRenderer に渡す。
 // served（http://）時は ComputeHttpClient + /candles、file:// 時は EmbeddedComputeGateway + SAMPLE_DATA。
@@ -4589,6 +5908,8 @@ async function bootstrap({
   clearInterval: clearIntervalImpl = (typeof globalThis !== 'undefined' ? globalThis.clearInterval.bind(globalThis) : undefined),
   // ライブ更新間隔（ms・既定 60 秒）。テストで差し替え可能。
   liveIntervalMs = 60000,
+  // 形成中バー（最新足の足内更新）のポーリング間隔。インジ再計算とは分離（高頻度・価格のみ）。
+  formingIntervalMs = 5000,
 } = {}) {
   const mode = modeForProtocol(protocol);
 
@@ -4653,9 +5974,81 @@ async function bootstrap({
     ? (ref, tf) => fetchCandles(fetch, ref, tf, recentBars)
     : null;
 
-  const controller = new IndicatorController({
+  // Market Profile（独立アクター・candle 版 MVP）の組み立て。取得（client）と描画（primitive）を
+  //   注入し、トグル ON まで /market_profile を fetch しない・mainSeries へ attach しない（非破壊）。
+  //   getContext は取得時点の現在チャート状態（datasetRef / 選択時間足 / 直近本数）を遅延読み取りする。
+  //   ここで controller より先に生成し、(1) controller へ注入（インジケーターメニュー導線）と
+  //   (2) 戻り値（既存トグル導線）の両方へ同一アクターを渡す＝二重導線で同一状態を共有する。
+  //   getContext は controller._timeframe を遅延参照する（呼び出しは setEnabled/refresh 時＝
+  //   controller 代入後）。
+  let controller;
+  // リプレイスライダバー（増分1）。replay=ON で下部に表示。input で対応足 time を actor.setReplayCursor へ。
+  //   candles は renderer.getCandles()（取得済み・読取のみ）を再利用し、min/max・index→time を賄う。
+  //   doc/container 不在（SSR/テスト）でも内部で no-op（防御）。
+  // バーのホストは index.html の #mp-replay-bar-host（チャート下部・sibling）を優先し、
+  //   不在時は container（後方互換・テスト）へフォールバックする。#chart 内へ差し込まない
+  //   （lightweight-charts が #chart を専有するため、canvas と重ならない sibling へ置く）。
+  const replayHost = (doc && typeof doc.getElementById === 'function'
+    ? doc.getElementById('mp-replay-bar-host') : null) || container;
+  const replayBar = new MarketProfileReplayBar({
+    document: doc,
+    container: replayHost,
+    onScrub: (time) => { if (controller && controller._marketProfile) { controller._marketProfile.setReplayCursor(time); } },
+    // 増分2: モード（アンカー/ローリング）・スナップショット変更 → actor が現在 T で再取得する。
+    onChange: () => { if (controller && controller._marketProfile) { controller._marketProfile.onReplayControlsChange(); } },
+  });
+  const marketProfile = new MarketProfileActor({
+    client: new MarketProfileClient({ fetch }),
+    primitive: new MarketProfileHistogramPrimitive(),
+    mainSeries,
+    replayBar,
+    // 増分2: スナップショットのローソクトリム源（renderer.setCandleTrim）。lwc 直叩きは renderer に隔離。
+    renderer,
+    getCandles: () => renderer.getCandles(),
+    getContext: () => ({ datasetRef, timeframe: controller._timeframe, limit: recentBars }),
+  });
+
+  // 増分2 スワイプ: チャートコンテナの横ドラッグで T をスクラブする（replay ON 中のみ）。
+  //   pointerdown で通常スクロール/ズームを停止（renderer.setUserInteraction(false)）→ pointermove で
+  //   x→logical→足 index→T をスライダと同期（replayBar.scrubToLogical）→ pointerup で操作を復元。
+  //   lightweight-charts の座標/操作 API は renderer に隔離済み（chart 直叩きしない）。
+  //   container/doc 不在（SSR/テスト）や pointer 非対応は no-op（防御）。
+  if (container && typeof container.addEventListener === 'function') {
+    let swiping = false;
+    const isReplayOn = () => !!(controller && controller._marketProfile
+      && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
+    const rectLeft = () => (typeof container.getBoundingClientRect === 'function'
+      ? container.getBoundingClientRect().left : 0);
+    container.addEventListener('pointerdown', (e) => {
+      if (!isReplayOn()) {
+        return;
+      }
+      swiping = true;
+      renderer.setUserInteraction(false); // 通常スクロール/ズームを停止（スワイプ捕捉）。
+      const logical = renderer.coordinateToLogical(e.clientX - rectLeft());
+      replayBar.scrubToLogical(logical);
+    });
+    container.addEventListener('pointermove', (e) => {
+      if (!swiping || !isReplayOn()) {
+        return;
+      }
+      const logical = renderer.coordinateToLogical(e.clientX - rectLeft());
+      replayBar.scrubToLogical(logical);
+    });
+    const endSwipe = () => {
+      if (!swiping) {
+        return;
+      }
+      swiping = false;
+      renderer.setUserInteraction(true); // 通常操作を復元。
+    };
+    container.addEventListener('pointerup', endSwipe);
+    container.addEventListener('pointerleave', endSwipe);
+  }
+
+  controller = new IndicatorController({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
-    timeframe, recentBars, loadCandles,
+    timeframe, recentBars, loadCandles, marketProfile,
   });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
@@ -4685,6 +6078,25 @@ async function bootstrap({
       })
     : null;
 
+  // 形成中バー（最新足の足内更新）の組み立て。served（B方式）のみ。/forming_bar から選択 tf の
+  //   形成中バーを取得し、(1) renderer.updateLastCandle で価格の最新足を反映、(2) 指標も
+  //   recomputeAllApplied({mode:'latest'}) で最新点をティック由来に再計算する（backend が
+  //   mode=latest 時に形成中バーを最新足として計算へ織り込む）。LiveUpdater(60s) との分離の実体は
+  //   「/candles 全件再取得(Live) vs /forming_bar(Forming)」であり、指標再計算はどちらも latest。
+  //   start は入口（index.html）が served 時のみ呼ぶ。
+  const formingBarUpdater = (mode === 'b')
+    ? new FormingBarUpdater({
+        controller,
+        renderer,
+        loadFormingBar: (ref, tf) => fetchFormingBar(fetch, ref, tf),
+        datasetRef,
+        getTimeframe: () => controller._timeframe,
+        setInterval: setIntervalImpl,
+        clearInterval: clearIntervalImpl,
+        intervalMs: formingIntervalMs,
+      })
+    : null;
+
   // Trade Markers renderer（売買マーカー重畳）の組み立て。副作用 fetch は増やさず renderer を
   //   返すのみ（load トリガは入口 index.html が ready 後に呼ぶ＝既存 candles 経路に非干渉）。
   //   chart も渡し、可視時間範囲を購読して範囲内マーカーのみ描画する（§9 Fix v3・左端クランプ列の除去）。
@@ -4702,7 +6114,9 @@ async function bootstrap({
   tradeMarkers.setCurrentTimeframe(timeframe);
   controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
 
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers };
+  // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
+  //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile, replayBar };
 }
 
 

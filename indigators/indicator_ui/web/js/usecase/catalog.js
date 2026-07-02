@@ -431,6 +431,14 @@ const MARKET_PROFILE = new IndicatorDef({
       conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
       enumLabels: { 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
     }),
+    // replay: リプレイ（BOOL・既定 false・表示系 group）。試作 prototype_260630-01 の時間カーソル
+    //   （as-seen-at-t）を移植（増分1）。gear ダイアログのチェックで ON/OFF。ON でチャート下部に
+    //   リプレイスライダバーを表示し、T スクラブで /market_profile?...&to=T を再取得して当時プロファイルへ。
+    //   OFF で全期間へ復帰（バー非表示・T 縦線消去）。計算系（group.calc）とは別の表示系 group に置く。
+    param('replay', ParamType.BOOL, false, [], null, {
+      group: 'group.display', order: 1, label: 'リプレイ',
+      tooltip: '過去に遡る（時間カーソル・as-seen-at-t）。ON でチャート下部のスライダから当時のプロファイルを再生する',
+    }),
   ],
   series: [
     new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'market_profile', dynamic: false }),

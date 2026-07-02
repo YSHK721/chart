@@ -25,6 +25,24 @@ html, body {
   border-bottom: 1px solid #2a2e39;
   flex: 0 0 auto;
 }
+/* Market Profile リプレイバー（下部固定・既定非表示・既存 toolbar トークン流用）。
+   component が setAttribute('hidden','true'/'false') で切替えるため [hidden="true"] を非表示にする。 */
+.mp-replay-bar {
+  display: flex; align-items: center; gap: 10px;
+  height: 34px; padding: 0 12px;
+  background: #1e222d; border-top: 1px solid #2a2e39;
+  flex: 0 0 auto; color: #d1d4dc; font-size: 12px;
+}
+.mp-replay-bar[hidden="true"] { display: none; }
+.mp-replay-label { color: #9aa0ad; white-space: nowrap; }
+.mp-replay-range { flex: 1 1 auto; accent-color: #2962ff; cursor: ew-resize; }
+.mp-replay-range:disabled { opacity: .4; cursor: not-allowed; }
+.mp-replay-date { color: #d1d4dc; font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 128px; text-align: right; }
+/* 増分2: モードトグル（アンカー/ローリング・segmented 流用）とスナップショットチェック。 */
+.mp-replay-mode { flex: 0 0 auto; }
+.mp-replay-snap { display: inline-flex; align-items: center; gap: 4px; color: #9aa0ad; white-space: nowrap; cursor: pointer; }
+.mp-replay-snap-cb { accent-color: #2962ff; cursor: pointer; }
+
 .tb-symbol { font-weight: 700; font-size: 15px; color: #fff; letter-spacing: .3px; }
 .tb-sep { width: 1px; height: 22px; background: #2a2e39; margin: 0 4px; }
 .tb-timeframe { display: inline-flex; align-items: center; gap: 2px; }
