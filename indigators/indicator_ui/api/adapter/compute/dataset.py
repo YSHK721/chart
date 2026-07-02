@@ -19,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,70 @@ _SAMPLE_TIME_COLUMN = "date"
 
 # candles の必須 OHLC 列（小文字正規化後）。
 _OHLC_COLUMNS = ("open", "high", "low", "close")
+
+# 読み取り時 外れ値バー補正（per-bar OHLC クランプ）の許容相対乖離（既定 0.3=±30%）。
+# 既存 tools/export_jp225_m1.repair_outlier_rows の threshold=0.3 規約に整合させる
+# （日中に中央値比 ±30% 動かない指数の性質を利用し、配信欠損の外れヒゲのみを分離）。
+OUTLIER_CLAMP_THRESHOLD = 0.3
+
+# 外れ値クランプを適用する ref（実市場の JP225 系のみ）。sample 等の合成データセットは
+# 対象外（正常な ±30% 超ヒゲを持つ golden を壊さないため・読み取り時補正は市場データ限定）。
+# dict[ref -> True]（monkeypatch.setitem で一時追加できるようマッピングで保持する）。
+_OUTLIER_CLAMP_REFS_SET: dict[str, bool] = {
+    "jp225": True,
+    "jp225_m1": True,
+    "jp225_tick": True,
+}
+
+
+def _clamp_outlier_bars(df: pd.DataFrame, ref: str) -> pd.DataFrame:
+    """各行(バー)の OHLC を読み取り時クランプして返す（純粋・ソース df 不破壊）。
+
+    intraday の atomic 不良値（例 jp225_tick 2025-08-26 の low ~15,099）が集約バーの
+    安値を異常に引き下げる問題を、返却直前に補正する。ソース（CSV/ロールアップ生成物）は
+    改変せず、補正が必要なときのみ ``df.copy()`` 上で書き換える（不変・副作用なし）。
+
+    補正規約（``OUTLIER_CLAMP_THRESHOLD``＝±30% 既定）:
+      - ``ref_lo=min(open,close)`` / ``ref_hi=max(open,close)``（open/close は外れにくい）。
+      - ``low  < ref_lo*(1-threshold)`` → low を ref_lo にクランプ（下ヒゲ外れ＝配信欠損）。
+      - ``high > ref_hi*(1+threshold)`` → high を ref_hi にクランプ（上ヒゲ外れ）。
+      - 正常バー（±30% 以内のヒゲ）は完全に不変（no-op で同一オブジェクトを返す）。
+      - open/close が NaN/非正（ref_lo<=0）、low/high が NaN の行は防御的にスキップする。
+
+    補正対象は ``_OUTLIER_CLAMP_REFS_SET`` に登録した実市場 ref のみ（非対象は素通し）。
+    ベクトル化（pandas/numpy）で O(n)・全 load で軽量。冪等（再適用で不変）。
+    """
+    if ref not in _OUTLIER_CLAMP_REFS_SET:
+        return df
+    lower_map = {str(c).lower(): c for c in df.columns}
+    if not all(k in lower_map for k in _OHLC_COLUMNS):
+        # OHLC 列が揃わない df は補正対象外（防御・素通し）。
+        return df
+
+    open_ = pd.to_numeric(df[lower_map["open"]], errors="coerce")
+    high = pd.to_numeric(df[lower_map["high"]], errors="coerce")
+    low = pd.to_numeric(df[lower_map["low"]], errors="coerce")
+    close = pd.to_numeric(df[lower_map["close"]], errors="coerce")
+
+    ref_lo = np.minimum(open_, close)
+    ref_hi = np.maximum(open_, close)
+    # 有効行: open/close/low/high が数値かつ ref_lo>0（0/NaN/非正は誤補正を避けスキップ）。
+    valid = (
+        open_.notna() & close.notna() & low.notna() & high.notna() & (ref_lo > 0)
+    )
+    low_mask = valid & (low < ref_lo * (1.0 - OUTLIER_CLAMP_THRESHOLD))
+    high_mask = valid & (high > ref_hi * (1.0 + OUTLIER_CLAMP_THRESHOLD))
+
+    if not (bool(low_mask.any()) or bool(high_mask.any())):
+        # 正常バーのみ＝補正不要。コピーせず同一オブジェクトを返す（キャッシュ非破壊）。
+        return df
+
+    out = df.copy()
+    if bool(low_mask.any()):
+        out.loc[low_mask, lower_map["low"]] = ref_lo[low_mask]
+    if bool(high_mask.any()):
+        out.loc[high_mask, lower_map["high"]] = ref_hi[high_mask]
+    return out
 
 # resample 規則源は marketdata.resample（enabler③・Sd 後の単一基点と同様に唯一化）。
 # dataset は薄い再エクスポートへ降格し、resample_ohlc / TIMEFRAME_RULES / is_known_timeframe を
@@ -180,17 +245,22 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
     事前生成のロールアップ CSV を ``rollup_store.read`` で読む。それ以外の ref（sample/jp225 日足等・
     小データ）は従来経路（base + resample）据置（A' resample キャッシュも sample 経路のみ通る・D-3）。
     """
+    # ★読み取り時 外れ値バー補正（_clamp_outlier_bars）は全返却経路の最終返却前に一様適用する
+    #   （原子1m / rollup_store / resample のいずれも通過）。市場 ref 以外・正常バーは no-op。
+    #   キャッシュには生の resample 結果を保存し、返却時にクランプする（mtime 無効化挙動は不変）。
     if ref in _ROLLUP_REFS:
         if timeframe in (None, "1m"):
             # 1m 原子: 末尾安全上限ぶんだけ逆シークで読む（全件 tail で OOM 復活させない・D-2）。
-            return tail_reader.read_tail(DATASET_WHITELIST[ref], _ATOMIC_TAIL_LOOKBACK_ROWS)
-        # 上位足: 事前生成ロールアップ CSV（mtime キャッシュ + torn-read フォールバック）から読む。
-        return rollup_store.read(ref, timeframe)
+            df = tail_reader.read_tail(DATASET_WHITELIST[ref], _ATOMIC_TAIL_LOOKBACK_ROWS)
+        else:
+            # 上位足: 事前生成ロールアップ CSV（mtime キャッシュ + torn-read フォールバック）から読む。
+            df = rollup_store.read(ref, timeframe)
+        return _clamp_outlier_bars(df, ref)
 
     base = _load_base_dataframe(ref)
     if timeframe is None:
         # 原子（1m）は resample せず base を直接返す（resample キャッシュ非経由・従来どおり）。
-        return base
+        return _clamp_outlier_bars(base, ref)
     # ★P-1: base が実際に焼いた世代 mtime を resample キャッシュキーの単一真実源にする
     #   （_csv_mtime を独立に呼ばない。torn-read 時の恒久 stale 化を防ぐ）。
     mtime = _baked_mtime(ref)
@@ -198,11 +268,12 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
     cached = _RESAMPLE_CACHE.get(key)
     if cached is not None and (mtime is None or mtime == cached[0]):
         # mtime 不変、または取得不能（CSV 削除）なら直前の resample 結果を返す（再 resample しない）。
-        return cached[1]
+        return _clamp_outlier_bars(cached[1], ref)
     resampled = resample_ohlc(base, TIMEFRAME_RULES.get(timeframe))
     # (ref, timeframe) ごと最新 mtime の 1 エントリのみ保持（上書き＝有界・plain dict）。
+    #   キャッシュは生（未クランプ）を保存し、返却時にクランプする（mtime 無効化挙動を変えない）。
     _RESAMPLE_CACHE[key] = (mtime, resampled)
-    return resampled
+    return _clamp_outlier_bars(resampled, ref)
 
 
 def load_candles(
