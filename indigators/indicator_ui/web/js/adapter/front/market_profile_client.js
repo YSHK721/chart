@@ -19,7 +19,9 @@ export function buildMarketProfileUrl({ datasetRef, timeframe, limit, bins, va, 
   if (limit != null) {
     url += `&limit=${encodeURIComponent(limit)}`;
   }
-  if (bins != null) {
+  if (Number.isFinite(bins)) {
+    // 有限数のときのみ付与する。NaN（貼付等で数値化に失敗した値）を &bins=NaN として
+    //   送出しない防御的ガード（backend は barw 優先だが無効値を送らない）。
     url += `&bins=${encodeURIComponent(bins)}`;
   }
   if (va != null) {

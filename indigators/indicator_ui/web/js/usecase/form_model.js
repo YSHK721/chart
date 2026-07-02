@@ -43,6 +43,9 @@ const FIELD_META_DEFAULTS = Object.freeze({
   group: null,
   order: null,
   conditionalEnable: null,
+  // conditionalVisible: 条件付き“表示”（トグル）。conditionalEnable（グレーアウト）と対称。
+  //   { when: { param, equals } } が偽のとき当該フィールド行を非表示にする（§3.5 拡張）。
+  conditionalVisible: null,
   // enumLabels: enum 値 → 表示名マップ（properties_dialog の select 日本語表示）。
   enumLabels: null,
 });
@@ -132,6 +135,24 @@ export function computeEnabled(def, values = {}) {
     enabled[pdef.name] = values[param] === equals;
   }
   return enabled;
+}
+
+// 各パラメータの表示/非表示を決定（§3.5 条件付き表示・computeEnabled と対称）。
+// conditionalVisible.when（{param,equals}）が偽のとき非表示（hidden）。未指定は常時 visible。
+// 静的除外（uiVisible===false）は buildFormModel が担い、本関数は動的トグルを担う（併存）。
+// 用途: market_profile の bins は range==auto のときのみ表示（バー幅=数値選択で非表示）。
+export function computeVisible(def, values = {}) {
+  const visible = {};
+  for (const pdef of def.params ?? []) {
+    const cond = pdef.conditionalVisible;
+    if (cond === null || cond === undefined) {
+      visible[pdef.name] = true;
+      continue;
+    }
+    const { param, equals } = cond.when;
+    visible[pdef.name] = values[param] === equals;
+  }
+  return visible;
 }
 
 // フォーム検証（F-11・§5）。

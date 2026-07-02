@@ -15,6 +15,7 @@
 import {
   buildFormModel,
   computeEnabled,
+  computeVisible,
   validateForm,
   resetToDefaults,
 } from '../../usecase/form_model.js';
@@ -100,9 +101,10 @@ export class PropertiesDialog {
     this._panel = panel;
     doc.body.append(root);
 
-    // 初期検証・有効化反映。
+    // 初期検証・有効化反映・表示トグル反映。
     this._revalidate();
     this._refreshEnabled();
+    this._refreshVisible();
     return root;
   }
 
@@ -674,23 +676,30 @@ export class PropertiesDialog {
   _onChange() {
     this._revalidate();
     this._refreshEnabled();
+    this._refreshVisible();
   }
 
   // F-11 リアルタイム検証（§5）。違反をインライン表示し OK を制御する。
+  // 条件付き非表示（conditionalVisible=false）のフィールドは検証対象外とする
+  //   （隠れた bins が既定 60 のままなら妥当だが、空値等でも OK を阻害させないため・トグル安全化）。
   _revalidate() {
-    const { violations, ok } = validateForm(this._def, this._values);
+    const { violations } = validateForm(this._def, this._values);
+    const visible = computeVisible(this._def, this._values);
+    // 非表示フィールドの違反は表示せず OK も阻害しない。
+    const effective = violations.filter((v) => visible[v.param] !== false);
     // 全フィールドのエラー表示をクリア。
     for (const [, els] of this._fieldEls) {
       els.error.textContent = '';
       els.row.classList.remove('is-invalid');
     }
-    for (const v of violations) {
+    for (const v of effective) {
       const els = this._fieldEls.get(v.param);
       if (els) {
         els.error.textContent = humanizeKey(v.constraint);
         els.row.classList.add('is-invalid');
       }
     }
+    const ok = effective.length === 0;
     if (this._okBtn) {
       this._okBtn.disabled = !ok;
     }
@@ -715,6 +724,17 @@ export class PropertiesDialog {
     }
   }
 
+  // 条件付き表示（§3.5 拡張・トグル）。conditionalVisible=false のフィールド行を非表示にする。
+  //   _refreshEnabled（グレーアウト）と対称の動的経路。range を変えた瞬間に「ビン数」行が出没する。
+  //   静的除外（uiVisible===false）は buildFormModel が担い、本メソッドは動的トグルのみ担う。
+  _refreshVisible() {
+    const visible = computeVisible(this._def, this._values);
+    for (const [name, els] of this._fieldEls) {
+      const on = visible[name] !== false;
+      els.row.style.display = on ? '' : 'none';
+    }
+  }
+
   _onDefaultClick() {
     const defaults = resetToDefaults(this._def);
     this._values = { ...defaults };
@@ -730,6 +750,7 @@ export class PropertiesDialog {
     this._switchTab(this._activeTab);
     this._revalidate();
     this._refreshEnabled();
+    this._refreshVisible();
   }
 
   _onOkClick() {

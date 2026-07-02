@@ -18,7 +18,7 @@ const OHLC = ['open', 'high', 'low', 'close'];
 // ため evaluate 挙動は不変（§3.3.3 移行方針・C-3）。
 //
 // ui のオプション: group / controlType / tooltip / unit / step / min / max /
-//                  conditionalEnable / order / uiVisible。すべて末尾 default 付き。
+//                  conditionalEnable / conditionalVisible / order / uiVisible。すべて末尾 default 付き。
 // ui メタデータの既定値（省略キーは従来挙動）。pick() で一括解決し ?? null 連鎖を集約する。
 const UI_DEFAULTS = Object.freeze({
   group: null,
@@ -29,6 +29,9 @@ const UI_DEFAULTS = Object.freeze({
   min: null,
   max: null,
   conditionalEnable: null,
+  // conditionalVisible: 条件付き“表示”（トグル）。conditionalEnable（グレーアウト）と対称で、
+  //   { when: { param, equals } } が偽のとき当該フィールド行を非表示にする（form_model.computeVisible）。
+  conditionalVisible: null,
   order: null,
   uiVisible: true,
   // label: フィールド表示名の直接指定（日本語ラベル。省略時は labelKey 末尾を表示）。
@@ -394,9 +397,9 @@ const MARKET_PROFILE = new IndicatorDef({
   placement: 'overlay',
   params: [
     // bins: ヒストグラム区間数（INT・既定60・min1）。client.buildMarketProfileUrl が受理。
-    //   range≠auto（バー幅pt指定）のときは backend が n_bins を算出するため bins を無効化する
-    //   （range=auto のときのみ有効化 = conditionalEnable）。
-    param('bins', ParamType.INT, 60, [{ kind: ConstraintKind.MIN_VALUE, operands: ['bins', 1], messageKey: 'err.bins' }], null, { group: 'group.calc', order: 1, step: 1, min: 1, label: 'ビン数', conditionalEnable: { when: { param: 'range', equals: 'auto' } } }),
+    //   range≠auto（バー幅pt指定）のときは backend が n_bins を算出するため bins を隠す
+    //   （range=auto のときのみ表示 = conditionalVisible トグル。range が実質トグルスイッチ）。
+    param('bins', ParamType.INT, 60, [{ kind: ConstraintKind.MIN_VALUE, operands: ['bins', 1], messageKey: 'err.bins' }], null, { group: 'group.calc', order: 1, step: 1, min: 1, label: 'ビン数', conditionalVisible: { when: { param: 'range', equals: 'auto' } } }),
     // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
     param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
     // limit: 集計対象の直近本数（INT・既定1500・min1）。
