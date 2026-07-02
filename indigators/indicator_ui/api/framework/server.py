@@ -214,8 +214,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         limit = (query.get("limit") or [None])[0]
         bins = (query.get("bins") or [None])[0]
         va = (query.get("va") or [None])[0]
+        src = (query.get("src") or [None])[0]
         try:
-            status, payload = handle_market_profile(ref, timeframe, limit, bins, va)
+            status, payload = handle_market_profile(ref, timeframe, limit, bins, va, src)
         except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
             self._send_json(500, _nested_error("internal", f"market_profile 取得に失敗しました: {exc}"))
             return
