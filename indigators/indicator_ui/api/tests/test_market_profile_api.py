@@ -341,3 +341,72 @@ def test_get_market_profile_unknown_ref_returns_400(server):
     status, payload = _get(server, "/market_profile?datasetRef=unknown")
     assert status == 400
     assert payload["error"]["type"] == "validation"
+
+
+# --------------------------------------------------------------------------- #
+# sessions=1（日別プロファイル分割・candle 経路・移植元 prototype_260630-01）
+# --------------------------------------------------------------------------- #
+class TestHandleMarketProfileSessions:
+    """sessions=1: 応答トップレベルに sessions[{date,tpo[]}] が付き、profile 8 キーは不変（追加キーのみ）。"""
+
+    def test_sessions_omitted_no_sessions_key(self):
+        # 後方互換: sessions 省略時はトップレベルにも profile にも sessions を付けない。
+        _, payload = handle_market_profile("sample", limit="10")
+        assert "sessions" not in payload
+        assert "sessions" not in payload["profile"]
+
+    def test_sessions_1_adds_toplevel_sessions_list(self):
+        # Act: sessions=1（kwargs 経由・?sessions=1 相当）。
+        status, payload = handle_market_profile("sample", limit="5", **{"sessions": "1"})
+        # Assert: 200・sessions はトップレベル・profile 内には入れない（8 キー不変）。
+        assert status == 200
+        assert "sessions" in payload
+        assert "sessions" not in payload["profile"]
+        sessions = payload["sessions"]
+        # sample は 1 日 1 足なので 5 本 = 5 日ぶん。各 tpo 長 = n_bins。
+        assert len(sessions) == 5
+        n_bins = payload["profile"]["n_bins"]
+        for s in sessions:
+            assert isinstance(s["date"], str)
+            assert len(s["tpo"]) == n_bins
+
+    def test_sessions_windowed_by_to(self):
+        # to 窓で日が絞られる: to=T 以下の足だけが sessions に含まれる。
+        candles = dataset.load_candles("sample", None, None)
+        t = candles[2]["time"]
+        _, payload = handle_market_profile("sample", to=str(t), **{"sessions": "1"})
+        assert len(payload["sessions"]) == 3  # index 0,1,2 の 3 日。
+
+    def test_sessions_capped_to_recent_days(self):
+        # 回帰（応答肥大防止）: 全期間要求でも sessions は直近 _SESSIONS_MAX_DAYS 日にキャップされ、
+        # 直近日（末尾）が保持される（UI は直近 nFit 列しか描かないため十分）。
+        from adapter.controller.market_profile_controller import _SESSIONS_MAX_DAYS
+        candles = dataset.load_candles("sample", None, None)
+        _, payload = handle_market_profile("sample", **{"sessions": "1"})
+        sessions = payload["sessions"]
+        assert len(sessions) <= _SESSIONS_MAX_DAYS
+        if len(candles) > _SESSIONS_MAX_DAYS:
+            assert len(sessions) == _SESSIONS_MAX_DAYS
+        # 末尾（直近日）が最後の candle の日付と一致（先頭でなく直近を残す）。
+        import datetime as _dt
+        last_date = _dt.datetime.fromtimestamp(candles[-1]["time"], _dt.UTC).strftime("%Y-%m-%d")
+        assert sessions[-1]["date"] == last_date
+
+    def test_sessions_total_equals_pre_cap_day_count_when_capped(self):
+        # 注記の意味論整合（修正1）: キャップ発火時（sample は全期間 > 60 日）でも sessions_total は
+        #   キャップ前の実日数（= キャップされた len(sessions)=60 ではない）を返す。
+        #   primitive 注記「直近N/全M日」の M を実日数にするための素材（キャップ後 60 の誤読を防ぐ）。
+        from adapter.controller.market_profile_controller import _SESSIONS_MAX_DAYS
+        candles = dataset.load_candles("sample", None, None)
+        assert len(candles) > _SESSIONS_MAX_DAYS  # 前提: sample はキャップ発火する日数を持つ。
+        _, payload = handle_market_profile("sample", **{"sessions": "1"})
+        # sessions_total はキャップ前の実日数と一致する（キャップ後 len(sessions)=60 とは異なる）。
+        assert payload["sessions_total"] == len(candles)
+        assert payload["sessions_total"] > _SESSIONS_MAX_DAYS
+        assert payload["sessions_total"] != len(payload["sessions"])
+        assert isinstance(payload["sessions_total"], int)
+
+    def test_sessions_total_omitted_when_sessions_not_requested(self):
+        # 追加キーのみ（後方互換）: sessions を要求しない場合は sessions_total を付けない。
+        _, payload = handle_market_profile("sample", limit="10")
+        assert "sessions_total" not in payload

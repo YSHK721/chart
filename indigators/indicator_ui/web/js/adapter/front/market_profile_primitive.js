@@ -33,7 +33,12 @@ const C_POC_LINE = '#ff3b3b';
 const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
 // リプレイ時点 T の縦線色（試作 prototype_260630-01 の遡り縦線準拠・視認しやすい水色）。
 const C_CURSOR_LINE = 'rgba(120, 190, 255, 0.9)';
-
+// sessions（日別プロファイル分割）: 1 セッションの最小列幅(px 相当)。分析できる幅を確保する（試作 SESS_MIN_COL）。
+const SESS_MIN_COL = 102;
+// sessions 列内の日別 POC 行を白で強調（試作準拠）・列内バーの最小可視画素。
+const C_SESS_POC = 'rgba(255,255,255,0.95)';
+const SESS_BAR_ALPHA = 0.98;
+const SESS_MIN_BAR_PX = 1.5;
 export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -44,6 +49,21 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     // 増分2 スナップショット: true で累積バーを減光（DIM_ALPHA）＋ today[] を当日内スケールで明るく重畳。
     //   既定 false（明るい累積バー＝従来描画）。移植元 prototype_260630-01 drawComposite（showToday）。
     this._snapshot = false;
+    // sessions（日別プロファイル分割）: 各営業日の [{date,tpo[]}]。null=通常モード（累積プロファイル）。
+    //   non-null で sessions モード＝各営業日の列を描き、通常の累積バー・POC/VA 線は描かない（試作準拠）。
+    this._sessions = null;
+    // sessions_total（キャップ前の実日数）: 注記「直近N/全M日」の M。null=未提供＝受信長へフォールバック。
+    //   controller がキャップ後の直近 60 日ぶんだけ返すため、受信 sessions.length では実日数を表せない。
+    this._sessionsTotal = null;
+  }
+
+  // sessions（日別プロファイル分割）を設定して再描画要求。null で通常モード（累積プロファイル）へ復帰。
+  //   移植元 prototype_260630-01 drawSessions。sessions[{date,tpo[]}] は backend の応答トップレベル由来。
+  //   total（キャップ前の実日数・任意）は注記「直近N/全M日」の M に使う（未提供時は受信長フォールバック）。
+  setSessions(sessions, total = null) {
+    this._sessions = Array.isArray(sessions) ? sessions : null;
+    this._sessionsTotal = total;
+    this._update();
   }
 
   // 増分2: スナップショット表示（累積減光＋当日強調）を切替えて再描画要求。false で従来の明るい累積へ復帰。
@@ -87,6 +107,77 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     return step > 0 ? step * 0.85 : DEFAULT_BAR_H;
   }
 
+  // sessions 描画（移植元 prototype_260630-01 drawSessions）: チャート幅から nFit=floor(width/SESS_MIN_COL)
+  //   を求め、直近 nFit 日だけを**全幅に等間隔タイル**（cx=i*colW・試作 L204-210）で描く。
+  //   時刻座標(timeToCoordinate)には置かない＝ズームに依存せず常に分析できる列幅を確保し、
+  //   どの日かは列上部の日付ラベル(MM-DD)で示す（試作準拠）。列は交互背景で区切り、
+  //   列内は日内 max で正規化した横ヒストグラム（heatColor 再利用）・日別 POC 行を白で強調。
+  //   直近 nFit < 全日数のときは左下に「直近N/全M日」注記。累積 POC/VA 線・通常バーは描かない。
+  _drawSessions(ctx, scope, toY, barH) {
+    const all = this._sessions;
+    if (!all.length) {
+      return;
+    }
+    const width = scope.bitmapSize.width;
+    const height = scope.bitmapSize.height;
+    const bins = this._profile.bins;
+    // nFit: 列幅 >= SESS_MIN_COL を確保できる日数（直近優先）。1 未満にはしない。
+    const nFit = Math.max(1, Math.floor(width / SESS_MIN_COL));
+    const ss = all.slice(Math.max(0, all.length - nFit)); // 幅確保のため直近 nFit 日。
+    const colW = width / ss.length;                       // 各列の割当幅（全幅タイル）。
+    ctx.save();
+    ctx.font = '10px system-ui';
+    ctx.textBaseline = 'top';
+    for (let i = 0; i < ss.length; i += 1) {
+      const arr = ss[i].tpo || [];
+      const left = i * colW; // 全幅に等間隔タイル（試作 cx = i*colW）。
+      // 列を交互背景で区別（試作準拠）。
+      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.015)';
+      ctx.fillRect(left, 0, colW, height);
+      // 日内 max（正規化基準）と日別 POC（最頻 bin index）を求める。
+      let dmax = 0;
+      let pocj = -1;
+      for (let j = 0; j < arr.length; j += 1) {
+        if (arr[j] > dmax) {
+          dmax = arr[j];
+          pocj = j;
+        }
+      }
+      if (dmax > 0) {
+        for (let j = 0; j < arr.length; j += 1) {
+          const v = arr[j];
+          if (!v) {
+            continue;
+          }
+          const bin = bins[j];
+          if (!bin) {
+            continue;
+          }
+          const y = toY(bin.price);
+          if (y == null) {
+            continue; // 範囲外価格はスキップ。
+          }
+          const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * (colW - 4));
+          // 日別 POC 行は白で強調、それ以外は日内正規化のヒート配色。
+          ctx.fillStyle = (j === pocj) ? C_SESS_POC : heatColor(v / dmax, SESS_BAR_ALPHA);
+          ctx.fillRect(left + 2, y - barH / 2, w, barH);
+        }
+      }
+      // 列上部に日付（MM-DD・試作準拠）。
+      ctx.fillStyle = 'rgba(154,164,178,.6)';
+      ctx.fillText((ss[i].date || '').slice(5), left + 3, 4);
+    }
+    // 直近 nFit < 全日数なら左下に注記（試作準拠）。M はキャップ前の実日数（total）を優先し、
+    //   未提供時は受信長（all.length）へフォールバックする（キャップ後 60 の誤読を防ぐ・修正1）。
+    const totalDays = this._sessionsTotal ?? all.length;
+    if (ss.length < totalDays) {
+      ctx.fillStyle = 'rgba(154,164,178,.8)';
+      ctx.font = '11px system-ui';
+      ctx.fillText(`直近${ss.length}/全${totalDays}日`, 6, height - 16);
+    }
+    ctx.restore();
+  }
+
   _draw(target) {
     // 非表示・profile 未取得・attach 前（座標源なし）は描画しない（防御・後方互換）。
     if (!this._visible || !this._profile || !this._chart || !this._series) {
@@ -105,6 +196,12 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       const ctx = scope.context;
       const width = scope.bitmapSize.width;
       const maxBarPx = width * BAR_MAX_FRACTION;
+
+      // sessions モード（日別プロファイル分割）: 各営業日の列を描き、通常の累積バー・POC/VA 線は描かない。
+      if (this._sessions) {
+        this._drawSessions(ctx, scope, toY, barH);
+        return;
+      }
 
       // TPO 横バー（右端整列・norm で長さ／色）。範囲外（y=null）の bin はスキップ。
       for (let i = 0; i < bins.length; i += 1) {

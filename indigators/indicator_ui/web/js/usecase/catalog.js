@@ -439,6 +439,14 @@ const MARKET_PROFILE = new IndicatorDef({
       group: 'group.display', order: 1, label: 'リプレイ',
       tooltip: '過去に遡る（時間カーソル・as-seen-at-t）。ON でチャート下部のスライダから当時のプロファイルを再生する',
     }),
+    // sessions: 日別プロファイル分割（BOOL・既定 false・表示系 group）。試作 prototype_260630-01 の
+    //   sessions（drawSessions）を移植。ON で各営業日のプロファイル形を幅広の列で並べ、ローソクを
+    //   透明化して価格軸のみ残す。client が &sessions=1 を付与し backend が sessions[{date,tpo[]}] を返す。
+    //   OFF（既定）は完全に従来挙動（累積プロファイル・ローソク不透明）。計算系とは別の表示系 group。
+    param('sessions', ParamType.BOOL, false, [], null, {
+      group: 'group.display', order: 2, label: '日別プロファイル',
+      tooltip: '各営業日のプロファイルを日ごとの列で並べて表示する（ローソクは透明化・価格軸は維持）',
+    }),
   ],
   series: [
     new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'market_profile', dynamic: false }),

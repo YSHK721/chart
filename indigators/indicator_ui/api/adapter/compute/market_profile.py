@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import datetime as _dt
+
 import numpy as np
 
 
@@ -31,7 +33,9 @@ def price_range(candles) -> tuple[float, float]:
     return price_min, price_max
 
 
-def compute_candle_profile(candles, n_bins=60, va_pct=0.70, want_today=False) -> dict:
+def compute_candle_profile(
+    candles, n_bins=60, va_pct=0.70, want_today=False, want_sessions=False
+) -> dict:
     """足ベース TPO マーケットプロファイルを計算する（純関数・副作用なし）。
 
     Args:
@@ -41,10 +45,16 @@ def compute_candle_profile(candles, n_bins=60, va_pct=0.70, want_today=False) ->
         want_today: True のとき、応答に ``today[]``/``today_max`` を付加する（増分2 C スナップショット）。
             ``today[]`` は「窓の最終足ぶんの表示 bin 値」（最終足の [low,high] が跨ぐ bin に +1）。
             移植元 prototype_260630-01/mp_core.py want_today（candle=最終足の寄与）。既定 False は不変。
+        want_sessions: True のとき、応答に ``sessions[]`` を付加する（日別プロファイル分割表示）。
+            各カレンダー日（UTC 日付キー）の表示 bin プロファイル
+            ``[{"date":"YYYY-MM-DD", "tpo":[float,...](len=n_bins)}]`` を日付昇順で返す。
+            各足の [low,high] が跨ぐ表示 bin に +1 し、同一日の足を合算する
+            （移植元 prototype_260630-01/mp_core.py want_sessions・candle 経路）。既定 False は不変。
 
     Returns:
         {"bins","poc","va_low","va_high","price_min","price_max","tpo_units","n_bins"}
         want_today=True 時は加えて {"today":[float,...](len=n_bins), "today_max":float}。
+        want_sessions=True 時は加えて {"sessions":[{"date","tpo":[...]}]}。
     """
     # 空リストは例外でなく空/ゼロの安全な返りを返す（poc 等は price_min=0.0 の安全値）。
     if not candles:
@@ -61,6 +71,8 @@ def compute_candle_profile(candles, n_bins=60, va_pct=0.70, want_today=False) ->
         if want_today:
             out["today"] = []
             out["today_max"] = 1.0
+        if want_sessions:
+            out["sessions"] = []
         return out
 
     # 価格レンジ（縮退時の +1 安全化を含め price_range に一元化＝単一情報源）。
@@ -71,12 +83,23 @@ def compute_candle_profile(candles, n_bins=60, va_pct=0.70, want_today=False) ->
     span = price_max - price_min
 
     tpo = np.zeros(n_bins, dtype=int)
+    # want_sessions: UTC カレンダー日 -> 表示 bin プロファイル（同一日は合算）。
+    sessions: dict[str, np.ndarray] = {}
     for c in candles:
         i0 = _bin_index(c["low"], price_min, span, n_bins)
         i1 = _bin_index(c["high"], price_min, span, n_bins)
         if i1 < i0:  # 縮退時は i0 のみ
             i1 = i0
         tpo[i0 : i1 + 1] += 1
+        if want_sessions:
+            day = _dt.datetime.fromtimestamp(int(c["time"]), _dt.timezone.utc).strftime(
+                "%Y-%m-%d"
+            )
+            arr = sessions.get(day)
+            if arr is None:
+                arr = np.zeros(n_bins, dtype=float)
+                sessions[day] = arr
+            arr[i0 : i1 + 1] += 1.0  # その日の [low,high] が跨ぐ表示 bin に +1（同一日は合算）。
 
     tpo_max = int(tpo.max())
     poc = float(centers[int(tpo.argmax())])  # argmax は同値時に先頭 index を返す
@@ -113,6 +136,12 @@ def compute_candle_profile(candles, n_bins=60, va_pct=0.70, want_today=False) ->
         today_max = float(today.max()) if today.max() > 0 else 1.0
         out["today"] = [round(float(v), 3) for v in today]
         out["today_max"] = today_max
+    if want_sessions:
+        # 日付昇順で {date, tpo[]} を返す（試作 mp_core と同順・同形）。
+        out["sessions"] = [
+            {"date": d, "tpo": [round(float(v), 2) for v in a]}
+            for d, a in sorted(sessions.items())
+        ]
     return out
 
 

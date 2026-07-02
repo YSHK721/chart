@@ -184,6 +184,11 @@ export class IndicatorController {
     if (p.replay != null) {
       out.replay = p.replay;
     }
+    // sessions（日別プロファイル分割）: BOOL を actor へ転送する。undefined は載せない（現状維持）。
+    //   actor が sessions=true で &sessions=1 取得・日別列描画・ローソク透明化、false で通常モードへ復帰。
+    if (p.sessions != null) {
+      out.sessions = p.sessions;
+    }
     // resmode（解像度モード）: client が bins/barw の送信を排他化する。
     //   後方互換: 明示 resmode が無い旧 barw 保存インスタンス（数値 range・resmode 無し）は
     //   range から resmode を導出して保存レンジを維持する（_deriveResmode）。

@@ -53,6 +53,15 @@ _TF_BAR_SEC = {
     "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
     "1h": 3600, "4h": 14400, "1D": 86400, "1W": 604800, "1M": 2592000,
 }
+# sessions（日別プロファイル）応答の日数上限。UI は列幅>=102px を確保できる直近 nFit 日
+# （4K 幅でも ~37 列）しか描かないため、全期間ぶん（数千日×数百bin ≈ 10MB 超）を返すのは無駄。
+# 直近 _SESSIONS_MAX_DAYS 日に切って応答を軽量化する（試作は窓 n で自然に制限されていた）。
+_SESSIONS_MAX_DAYS = 60
+
+
+def _cap_sessions(sessions: list) -> list:
+    """sessions を直近 _SESSIONS_MAX_DAYS 日へキャップする（応答肥大の防止）。"""
+    return sessions[-_SESSIONS_MAX_DAYS:] if len(sessions) > _SESSIONS_MAX_DAYS else sessions
 
 
 def _bar_sec_for_tf(timeframe: Any) -> int:
@@ -182,6 +191,8 @@ def handle_market_profile(
             当日強調）を受ける（``from`` は Python 予約語のため kwargs 経由）。増分2 A/C。
             ``from`` 指定時は ``from <= time`` の足だけで集計する（``to`` と併用で [from,to] のローリング窓）。
             ``today`` 真時は応答 profile に ``today[]``/``today_max``（窓最終日ぶんの表示 bin 値）を付加する。
+            ``sessions`` 真時（'1'）は応答トップレベルに ``sessions[{date,tpo[]}]``（各カレンダー日の表示
+            bin プロファイル・日付昇順）を付加する（profile 8 キーは不変・追加キーのみ）。
             いずれも省略・不正は無視して現行挙動（後方互換）。移植元 prototype_260630-01 mp_core。
 
     Returns:
@@ -220,10 +231,13 @@ def handle_market_profile(
     # from（ローリング窓の下限 time・増分2 A）／today（スナップショット・増分2 C）。予約語 from は kwargs 経由。
     from_ts = _parse_from(kwargs.get("from"))
     want_today = _parse_bool_flag(kwargs.get("today"))
+    # sessions（日別プロファイル分割・?sessions=1）。省略・不正は偽（後方互換）。移植元 prototype_260630-01。
+    want_sessions = _parse_bool_flag(kwargs.get("sessions"))
 
     if src_val in ("dwell", "m1"):
         return _handle_dwell(
-            ref, timeframe, limit_n, n_bins, va_pct, barw_val, src_val, to_ts, from_ts, want_today
+            ref, timeframe, limit_n, n_bins, va_pct, barw_val, src_val, to_ts, from_ts,
+            want_today, want_sessions,
         )
 
     # src=candle（既定）— 現状の足ベース TPO 経路（不変。barw 指定時のみ n_bins を上書き）。
@@ -239,11 +253,22 @@ def handle_market_profile(
         # price レンジは compute_candle_profile と同一定義（price_range 単一情報源）。barw→n_bins に先取り使用。
         price_min, price_max = price_range(candles)
         n_bins = _resolve_n_bins(n_bins, barw_val, price_min, price_max)
-    profile = compute_candle_profile(candles, n_bins=n_bins, va_pct=va_pct, want_today=want_today)
-    return 200, {
+    profile = compute_candle_profile(
+        candles, n_bins=n_bins, va_pct=va_pct, want_today=want_today,
+        want_sessions=want_sessions,
+    )
+    body = {
         "ok": True, "profile": profile, "src": "candle",
         "atom": _ATOM["candle"], "bar_width": _bar_width(profile),
     }
+    # sessions は応答トップレベルへ移す（profile 8 キー不変・追加キーのみ）。省略時は付加しない。
+    #   直近 _SESSIONS_MAX_DAYS 日へキャップ（UI が描くのは直近 nFit 列のみ・応答肥大の防止）。
+    #   sessions_total はキャップ前の実日数（primitive 注記「直近N/全M日」の M＝キャップ後 60 の誤読防止）。
+    if want_sessions:
+        all_sessions = profile.pop("sessions", [])
+        body["sessions_total"] = len(all_sessions)
+        body["sessions"] = _cap_sessions(all_sessions)
+    return 200, body
 
 
 def _handle_dwell(
@@ -257,6 +282,7 @@ def _handle_dwell(
     to_ts: int | None = None,
     from_ts: int | None = None,
     want_today: bool = False,
+    want_sessions: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     """src=dwell/m1 の処理（実ティック・tick 対応 ref のみ）。非 tick ref は 400。
 
@@ -287,7 +313,7 @@ def _handle_dwell(
         # 空データは安全に空/ゼロプロファイルを返す（500 化しない）。
         profile = market_profile_dwell.compute_dwell_profile(
             symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400,
-            metric=metric, want_today=want_today,
+            metric=metric, want_today=want_today, want_sessions=want_sessions,
         )
     else:
         # 全期間化（250日キャップ撤廃）: レンジ（price_min/max）と実期間（t0/t1）を全 candle から
@@ -302,8 +328,17 @@ def _handle_dwell(
         profile = market_profile_dwell.compute_dwell_profile(
             symbol, t0, t1, price_min, price_max, n_bins,
             va_pct=va_pct, bar_sec=bar_sec, metric=metric, want_today=want_today,
+            want_sessions=want_sessions,
         )
-    return 200, {
+    body = {
         "ok": True, "profile": profile, "src": src,
         "atom": _ATOM[src], "bar_width": _bar_width(profile),
     }
+    # sessions は応答トップレベルへ移す（profile 8 キー不変・追加キーのみ）。省略時は付加しない。
+    #   直近 _SESSIONS_MAX_DAYS 日へキャップ（UI が描くのは直近 nFit 列のみ・応答肥大の防止）。
+    #   sessions_total はキャップ前の実日数（primitive 注記「直近N/全M日」の M＝キャップ後 60 の誤読防止）。
+    if want_sessions:
+        all_sessions = profile.pop("sessions", [])
+        body["sessions_total"] = len(all_sessions)
+        body["sessions"] = _cap_sessions(all_sessions)
+    return 200, body
