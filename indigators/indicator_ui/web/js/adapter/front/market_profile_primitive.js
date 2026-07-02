@@ -16,12 +16,18 @@ const BAR_MAX_FRACTION = 0.28;
 const MIN_BAR_PX = 1;
 // バー高が算出できない（単一 bin 等）場合の既定画素。
 const DEFAULT_BAR_H = 2;
-// バー色: VA 外（淡）/ VA 内（濃）/ POC（強調）。POC 線・VA 帯線の色。
-const C_BAR = 'rgba(120, 160, 255, 0.35)';
-const C_BAR_VA = 'rgba(120, 160, 255, 0.60)';
-const C_POC_BAR = 'rgba(255, 183, 77, 0.75)';
-const C_POC_LINE = '#ffb74d';
-const C_VA_LINE = 'rgba(120, 160, 255, 0.9)';
+// ヒート配色（試作 prototype_260630-01 heatColor 移植）: norm 0..1 を 青(hue240)→シアン→黄→赤(hue0)。
+//   累積(norm)が多い価格帯ほど赤く明るい。POC は最頻(norm≈1)で最濃赤になる。
+const HEAT_ALPHA = 0.9;
+export function heatColor(norm, alpha = HEAT_ALPHA) {
+  const t = Math.max(0, Math.min(1, Number(norm) || 0));
+  const hue = 240 * (1 - t);           // 0→青(240) / 1→赤(0)
+  const light = 46 + 12 * t;           // 高いほど明るく（低 norm も視認できる明度）
+  return `hsla(${Math.round(hue)}, 95%, ${Math.round(light)}%, ${alpha})`;
+}
+// POC 線（最濃赤）・VA 帯線（灰）の色（試作準拠）。
+const C_POC_LINE = '#ff3b3b';
+const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
 
 export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
@@ -80,10 +86,8 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         }
         const barW = Math.max(MIN_BAR_PX, (bin.norm ?? 0) * maxBarPx);
         const x0 = width - barW; // 右端（価格軸側）に整列。
-        const inVA = vaLow != null && vaHigh != null && bin.price >= vaLow && bin.price <= vaHigh;
-        const isPoc = poc != null && bin.price === poc;
         ctx.save();
-        ctx.fillStyle = isPoc ? C_POC_BAR : (inVA ? C_BAR_VA : C_BAR);
+        ctx.fillStyle = heatColor(bin.norm ?? 0); // 累積(norm)が多いほど赤（試作ヒート配色）。
         ctx.fillRect(x0, y - barH / 2, barW, barH);
         ctx.restore();
       }
