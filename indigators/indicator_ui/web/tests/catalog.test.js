@@ -76,8 +76,17 @@ test('catalog: market_profile exposes range ENUM [auto,25,50,100,250,500] defaul
   assert.equal(range.enumLabels['25'], '25');
   // bins/va/limit/src と同じ group（同一セクションに並ぶ）。
   assert.equal(range.group, paramOf(d, 'bins').group);
-  // range≠auto のとき bins を無効化 = bins は range=auto のときのみ有効化。
-  assert.deepEqual(paramOf(d, 'bins').conditionalEnable, { when: { param: 'range', equals: 'auto' } });
+});
+
+// range≠auto のとき bins を「非表示」にする conditionalVisible（グレーアウトでなくトグル）。
+//   バー幅=auto のときだけビン数を出し、バー幅に数値を選ぶとビン数行を隠す（range が実質トグル）。
+test('catalog: market_profile bins uses conditionalVisible {range:auto} and drops conditionalEnable', () => {
+  const d = get('market_profile');
+  const bins = paramOf(d, 'bins');
+  // range=auto のときだけ表示（それ以外は非表示）。
+  assert.deepEqual(bins.conditionalVisible, { when: { param: 'range', equals: 'auto' } });
+  // 旧グレーアウト（conditionalEnable）は撤去済み（非表示トグルへ移行）。
+  assert.equal(bins.conditionalEnable ?? null, null);
 });
 
 // 回帰防止: wait_for_close の既定は false。true だと lwc_chart が最終足（未確定足）を

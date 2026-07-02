@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import {
   buildFormModel,
   computeEnabled,
+  computeVisible,
   validateForm,
   resetToDefaults,
 } from '../js/usecase/form_model.js';
@@ -189,6 +190,60 @@ test('computeEnabled: params without conditionalEnable are always enabled', () =
   const def = { params: [{ name: 'maxbars', type: ParamType.INT, default: 100 }] };
   const enabled = computeEnabled(def, { maxbars: 100 });
   assert.equal(enabled.maxbars, true);
+});
+
+// ---- computeVisible: 条件付き表示（トグル・computeEnabled と対称）-------------
+
+test('computeVisible: field is visible when conditionalVisible predicate matches', () => {
+  // Arrange: bins は range==auto のときのみ表示（バー幅トグル）
+  const def = {
+    params: [
+      { name: 'range', type: ParamType.ENUM, default: 'auto', enumValues: ['auto', '25'] },
+      { name: 'bins', type: ParamType.INT, default: 60, conditionalVisible: { when: { param: 'range', equals: 'auto' } } },
+    ],
+  };
+  // Act
+  const visible = computeVisible(def, { range: 'auto', bins: 60 });
+  // Assert
+  assert.equal(visible.bins, true);
+});
+
+test('computeVisible: field is hidden when conditionalVisible predicate does not match', () => {
+  const def = {
+    params: [
+      { name: 'range', type: ParamType.ENUM, default: 'auto', enumValues: ['auto', '25'] },
+      { name: 'bins', type: ParamType.INT, default: 60, conditionalVisible: { when: { param: 'range', equals: 'auto' } } },
+    ],
+  };
+  const visible = computeVisible(def, { range: '25', bins: 60 });
+  assert.equal(visible.bins, false);
+});
+
+test('computeVisible: params without conditionalVisible are always visible', () => {
+  const def = { params: [{ name: 'maxbars', type: ParamType.INT, default: 100 }] };
+  const visible = computeVisible(def, { maxbars: 100 });
+  assert.equal(visible.maxbars, true);
+});
+
+test('buildFormModel: passes through conditionalVisible metadata (default null when absent)', () => {
+  const def = {
+    params: [
+      { name: 'a', type: ParamType.INT, default: 1 },
+      { name: 'b', type: ParamType.INT, default: 2, conditionalVisible: { when: { param: 'a', equals: 1 } } },
+    ],
+  };
+  const model = buildFormModel(def, {});
+  assert.equal(model.fields.find((f) => f.name === 'a').conditionalVisible, null);
+  assert.deepEqual(model.fields.find((f) => f.name === 'b').conditionalVisible, { when: { param: 'a', equals: 1 } });
+});
+
+// market_profile: バー幅=auto のとき bins 表示 / バー幅=25 のとき bins 非表示（トグル実挙動）。
+test('computeVisible: market_profile bins toggles with range (auto→visible, 25→hidden)', () => {
+  const def = get('market_profile');
+  const visAuto = computeVisible(def, { ...resetToDefaults(def), range: 'auto' });
+  assert.equal(visAuto.bins, true);
+  const vis25 = computeVisible(def, { ...resetToDefaults(def), range: '25' });
+  assert.equal(vis25.bins, false);
 });
 
 // ---- validateForm: ConstraintEvaluator への委譲（C-3 単一定義）----------------

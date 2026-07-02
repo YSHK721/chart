@@ -88,6 +88,22 @@ test('buildMarketProfileUrl omits barw when range is null/undefined', () => {
   assert.ok(!url.includes('barw='));
 });
 
+test('buildMarketProfileUrl omits bins when bins is non-finite (NaN 貼付ガード)', () => {
+  // Arrange/Act: NaN（貼付等で数値化に失敗した値）が bins に渡る。range=25 で barw と併走しても
+  //   無効な &bins=NaN を送出しないこと（防御的・backend は barw 優先）。
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', bins: NaN, range: '25' });
+  // Assert: bins= は付かない（barw は付く）。
+  assert.ok(!url.includes('bins='));
+  assert.ok(url.includes('&barw=25'));
+});
+
+test('buildMarketProfileUrl still appends bins when bins is a finite number (正常系不変)', () => {
+  // Arrange/Act: 有限 bins は従来通り URL に付与される（正常系の非回帰）。
+  const url = buildMarketProfileUrl({ datasetRef: 'sample', bins: 24 });
+  // Assert
+  assert.ok(url.includes('&bins=24'));
+});
+
 test('buildMarketProfileUrl appends src=m1 when provided (tick数)', () => {
   // Arrange / Act
   const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', src: 'm1' });
