@@ -44,6 +44,21 @@ test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース
   assert.equal(paramOf(d, 'wait_for_close').default, false);
 });
 
+// market_profile に src（集計原子）ENUM を追加。candle=足レンジ TPO（既定・後方互換）/
+//   dwell=実ティック滞在。bins/va/limit と同じ group（プロパティダイアログの ENUM ドロップダウン）。
+test('catalog: market_profile exposes src ENUM [candle,dwell] default candle with jp labels', () => {
+  const d = get('market_profile');
+  const src = paramOf(d, 'src');
+  assert.ok(src, 'src param exists');
+  assert.equal(src.type, ParamType.ENUM);
+  assert.equal(src.default, 'candle');
+  assert.deepEqual(src.enumValues, ['candle', 'dwell']);
+  assert.equal(src.enumLabels.candle, '足レンジ');
+  assert.equal(src.enumLabels.dwell, '滞在時間(実ティック)');
+  // bins/va/limit と同じ group（同一セクションに並ぶ）。
+  assert.equal(src.group, paramOf(d, 'bins').group);
+});
+
 // 回帰防止: wait_for_close の既定は false。true だと lwc_chart が最終足（未確定足）を
 //   price[:-1] で除外し、MA が常に最新足の1本手前で止まる（最新足に指標が出ないバグ）。
 //   確定足のみで計算したいユーザーはダイアログで ON にできる。

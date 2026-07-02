@@ -95,16 +95,16 @@ test('applyIndicator(market_profile) delegates to the actor and does NOT call /c
   assert.equal(inst.indicatorId, 'market_profile');
 });
 
-test('applyIndicator(market_profile) forwards default params (bins/va/limit) to actor.setParams', async () => {
+test('applyIndicator(market_profile) forwards default params (bins/va/limit/src) to actor.setParams', async () => {
   // Arrange
   const marketProfile = fakeMarketProfile();
   const computeCalls = [];
   const ctrl = makeController({ marketProfile, computeCalls });
   // Act
   await ctrl.applyIndicator('market_profile', 'default');
-  // Assert
+  // Assert: src は既定 candle（後方互換）。bins/va/limit と同様に転送される。
   assert.equal(marketProfile.params.length, 1);
-  assert.deepEqual(marketProfile.params[0], { bins: 60, va: 0.70, limit: 1500 });
+  assert.deepEqual(marketProfile.params[0], { bins: 60, va: 0.70, limit: 1500, src: 'candle' });
 });
 
 test('applyIndicator(existing indicator) still calls /compute (no regression)', async () => {
@@ -128,7 +128,7 @@ test('restore() re-hydrates a saved market_profile via the actor and does NOT ca
   const noop = () => {};
   const savedMp = {
     instanceId: 'market_profile#1', indicatorId: 'market_profile', variant: 'default',
-    params: [['bins', 80], ['va', 0.65], ['limit', 500]], visible: true,
+    params: [['bins', 80], ['va', 0.65], ['limit', 500], ['src', 'dwell']], visible: true,
     generation: 0, seq: 1, createdAt: '2026-06-07T00:00:00Z',
   };
   const ctrl = new IndicatorController({
@@ -146,7 +146,7 @@ test('restore() re-hydrates a saved market_profile via the actor and does NOT ca
   await ctrl.restore();
   // Assert: MP は /compute を介さず actor へ復元される（保存 params で setParams、可視なので setEnabled(true)）。
   assert.equal(computeCalls.length, 0, 'restore は MP を /compute で計算しない');
-  assert.deepEqual(marketProfile.params.at(-1), { bins: 80, va: 0.65, limit: 500 });
+  assert.deepEqual(marketProfile.params.at(-1), { bins: 80, va: 0.65, limit: 500, src: 'dwell' });
   assert.deepEqual(marketProfile.enables, [true]);
 });
 

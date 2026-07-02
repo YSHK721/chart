@@ -7,8 +7,9 @@
 //     失敗時 {ok:false, error:{...}}。
 //   純関数（buildMarketProfileUrl / parseProfileResponse）を公開し単体検証を容易にする（SRP）。
 
-// datasetRef を必須、timeframe/limit/bins/va は与えられた場合のみ付加する（省略時はサーバ既定）。
-export function buildMarketProfileUrl({ datasetRef, timeframe, limit, bins, va } = {}) {
+// datasetRef を必須、timeframe/limit/bins/va/src は与えられた場合のみ付加する（省略時はサーバ既定）。
+//   src: 集計原子（'candle'=足レンジ・既定 / 'dwell'=実ティック滞在）。省略時は付与せず candle 後方互換。
+export function buildMarketProfileUrl({ datasetRef, timeframe, limit, bins, va, src } = {}) {
   let url = `/market_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
     url += `&timeframe=${encodeURIComponent(timeframe)}`;
@@ -22,6 +23,9 @@ export function buildMarketProfileUrl({ datasetRef, timeframe, limit, bins, va }
   if (va != null) {
     url += `&va=${encodeURIComponent(va)}`;
   }
+  if (src != null) {
+    url += `&src=${encodeURIComponent(src)}`;
+  }
   return url;
 }
 
@@ -33,6 +37,13 @@ export function parseProfileResponse(payload) {
   const profile = payload.profile;
   if (!profile || !Array.isArray(profile.bins)) {
     return null;
+  }
+  // 応答トップレベルに src/atom（UI メタ）があれば profile へ素通しする（無ければ既存 profile をそのまま返す）。
+  if (payload.src != null || payload.atom != null) {
+    const meta = {};
+    if (payload.src != null) meta.src = payload.src;
+    if (payload.atom != null) meta.atom = payload.atom;
+    return { ...profile, ...meta };
   }
   return profile;
 }

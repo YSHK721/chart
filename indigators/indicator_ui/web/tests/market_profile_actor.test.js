@@ -101,6 +101,26 @@ test('refresh() re-fetches and applies the profile only while enabled', async ()
   assert.equal(primitive.profiles.length, 2);
 });
 
+test('setParams({src}) forwards src to the client on refresh (dwell 切替)', async () => {
+  // Arrange
+  const { actor, client } = makeActor();
+  actor.setParams({ src: 'dwell' });
+  // Act: setEnabled(true) は内部で refresh を行う
+  await actor.setEnabled(true);
+  // Assert: getContext へ src を重畳して client へ渡す
+  assert.equal(client.calls[0].src, 'dwell');
+});
+
+test('setParams without src leaves src absent on the client context (candle 後方互換)', async () => {
+  // Arrange
+  const { actor, client } = makeActor();
+  actor.setParams({ bins: 24 });
+  // Act
+  await actor.setEnabled(true);
+  // Assert: src 未指定時は context に src キーを載せない（サーバ既定 candle）
+  assert.ok(!('src' in client.calls[0]));
+});
+
 test('does not throw when mainSeries lacks attachPrimitive (legacy series fallback)', async () => {
   // Arrange
   const { actor } = makeActor({ mainSeries: {} });
