@@ -270,6 +270,27 @@ test('gear apply rejection on a market_profile does not surface as an unhandled 
   assert.equal(unhandled.length, 0, 'gear の拒否は catch され unhandledRejection にならない');
 });
 
+// gear（設定変更）で range（バー幅pt）を actor へ転送する。auto/未指定は転送しない（従来 bins・
+//   既定 apply の deepEqual を壊さない）。src=m1 も bins/va/limit/src と同様に転送される。
+test('gear on market_profile forwards range to actor.setParams when set (non-auto)', async () => {
+  // Arrange
+  const marketProfile = fakeMarketProfile();
+  const computeCalls = [];
+  const ctrl = makeController({ marketProfile, computeCalls });
+  const def = get('market_profile');
+  const inst = {
+    instanceId: 'market_profile#1', indicatorId: 'market_profile', variant: 'default',
+    params: [['bins', 80], ['va', 0.65], ['limit', 500], ['src', 'm1'], ['range', '50']],
+    visible: true, generation: 0, seq: 1, createdAt: '2026-06-07T00:00:00Z',
+  };
+  ctrl._state = { ...ctrl._state, applied: [inst] };
+  // Act: document=null → applyParams(currentParams) が即時発火する。
+  ctrl._onGearMarketProfile(inst, def);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // Assert: 保存 params（range=50 含む）を actor へ転送する。
+  assert.deepEqual(marketProfile.params.at(-1), { bins: 80, va: 0.65, limit: 500, src: 'm1', range: '50' });
+});
+
 test('MarketProfileActor.setParams merges bins/va/limit into the fetch context', async () => {
   // Arrange
   const calls = [];

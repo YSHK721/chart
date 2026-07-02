@@ -394,16 +394,25 @@ const MARKET_PROFILE = new IndicatorDef({
   placement: 'overlay',
   params: [
     // bins: ヒストグラム区間数（INT・既定60・min1）。client.buildMarketProfileUrl が受理。
-    param('bins', ParamType.INT, 60, [{ kind: ConstraintKind.MIN_VALUE, operands: ['bins', 1], messageKey: 'err.bins' }], null, { group: 'group.calc', order: 1, step: 1, min: 1, label: 'ビン数' }),
+    //   range≠auto（バー幅pt指定）のときは backend が n_bins を算出するため bins を無効化する
+    //   （range=auto のときのみ有効化 = conditionalEnable）。
+    param('bins', ParamType.INT, 60, [{ kind: ConstraintKind.MIN_VALUE, operands: ['bins', 1], messageKey: 'err.bins' }], null, { group: 'group.calc', order: 1, step: 1, min: 1, label: 'ビン数', conditionalEnable: { when: { param: 'range', equals: 'auto' } } }),
     // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
     param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
     // limit: 集計対象の直近本数（INT・既定1500・min1）。
     param('limit', ParamType.INT, 1500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['limit', 1], messageKey: 'err.limit' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, label: '対象本数' }),
-    // src: 集計原子（ENUM・既定 candle=足レンジ TPO・後方互換 / dwell=実ティック滞在）。
+    // src: 集計原子（ENUM・既定 candle=足レンジ TPO・後方互換 / dwell=実ティック滞在 / m1=tick数）。
     //   client.buildMarketProfileUrl が受理し URL の &src= に付与する（省略時はサーバ既定 candle）。
-    param('src', ParamType.ENUM, 'candle', [], ['candle', 'dwell'], {
+    param('src', ParamType.ENUM, 'candle', [], ['candle', 'dwell', 'm1'], {
       group: 'group.calc', order: 4, label: 'ソース',
-      enumLabels: { candle: '足レンジ', dwell: '滞在時間(実ティック)' },
+      enumLabels: { candle: '足レンジ', dwell: '滞在時間(実ティック)', m1: 'tick数' },
+    }),
+    // range: バー幅(pt) の直接指定（ENUM・既定 auto=従来 bins に委ねる）。試作 prototype_260630-01 の
+    //   range セレクタ（auto/25/50/100/250/500pt）を移植。値指定時は client が &barw= を付与し backend が
+    //   n_bins = round(窓幅/barw) を算出して bins に優先する。
+    param('range', ParamType.ENUM, 'auto', [], ['auto', '25', '50', '100', '250', '500'], {
+      group: 'group.calc', order: 5, label: 'バー幅(pt)',
+      enumLabels: { auto: '自動(bins)', 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
     }),
   ],
   series: [

@@ -121,6 +121,26 @@ test('setParams without src leaves src absent on the client context (candle 後�
   assert.ok(!('src' in client.calls[0]));
 });
 
+test('setParams({range}) forwards range to the client on refresh (バー幅pt)', async () => {
+  // Arrange
+  const { actor, client } = makeActor();
+  actor.setParams({ range: '50' });
+  // Act
+  await actor.setEnabled(true);
+  // Assert: getContext へ range を重畳して client へ渡す（client が barw へ写像する）
+  assert.equal(client.calls[0].range, '50');
+});
+
+test('setParams without range leaves range absent on the client context (従来 bins)', async () => {
+  // Arrange
+  const { actor, client } = makeActor();
+  actor.setParams({ bins: 24 });
+  // Act
+  await actor.setEnabled(true);
+  // Assert: range 未指定時は context に range キーを載せない
+  assert.ok(!('range' in client.calls[0]));
+});
+
 test('does not throw when mainSeries lacks attachPrimitive (legacy series fallback)', async () => {
   // Arrange
   const { actor } = makeActor({ mainSeries: {} });
