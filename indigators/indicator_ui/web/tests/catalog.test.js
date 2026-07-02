@@ -61,6 +61,19 @@ test('catalog: market_profile exposes src ENUM [candle,dwell,m1] default candle 
   assert.equal(src.group, paramOf(d, 'bins').group);
 });
 
+// market_profile に replay（リプレイ）BOOL を追加。試作 prototype_260630-01 の時間カーソル移植（増分1）。
+//   既定 false・label 'リプレイ'・group は表示系（bins/va と別セクション）。gear ダイアログのチェックで ON/OFF。
+test('catalog: market_profile exposes replay BOOL default false labeled リプレイ (表示系 group)', () => {
+  const d = get('market_profile');
+  const replay = paramOf(d, 'replay');
+  assert.ok(replay, 'replay param exists');
+  assert.equal(replay.type, ParamType.BOOL);
+  assert.equal(replay.default, false);
+  assert.equal(replay.label, 'リプレイ');
+  // 表示系 group（計算系 group.calc とは別＝bins と同じ group ではない）。
+  assert.notEqual(replay.group, paramOf(d, 'bins').group);
+});
+
 // market_profile に resmode（解像度）ENUM を追加。試作 prototype_260630-01 の解像度トグル
 //   （ビン ⇄ レンジ）を移植。segmented（横並びセグメントボタン）で描画し、押した側の入力だけ表示する。
 test('catalog: market_profile exposes resmode ENUM [bins,range] default bins as segmented toggle', () => {

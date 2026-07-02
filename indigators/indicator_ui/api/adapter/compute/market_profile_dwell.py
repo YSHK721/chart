@@ -361,6 +361,7 @@ def compute_dwell_profile(
     bar_sec: int = 86400,
     now: float | None = None,
     metric: str = "dwell",
+    want_today: bool = False,
 ) -> dict:
     """実ティックプロファイルを計算する（candle 版と同一スキーマ）。
 
@@ -403,6 +404,7 @@ def compute_dwell_profile(
     kw0 = int(np.floor(price_min / GRID_W))
     size = int(np.floor(price_max / GRID_W)) - kw0 + 1
     fine = np.zeros(max(size, 1), dtype=float)
+    last_roll = None  # want_today 用: 窓の最終日ぶんのロールアップ（スナップショット当日強調）。
 
     day = (win_from // 86400) * 86400
     while day < win_to:
@@ -414,6 +416,7 @@ def compute_dwell_profile(
             else:
                 roll = _partial_rollup(symbol, lo_t, hi_t, table, now_val)  # 境界日=完了窓のみキャッシュ。
             if roll is not None:
+                last_roll = roll  # 走査順＝時系列昇順のため、最後に非 None だったのが窓最終日ぶん。
                 arr = roll[roll_key]  # metric に応じて dwell 秒 / 生ティック数 を集計。
                 off = roll["kmin"] - kw0
                 lo = max(0, off)
@@ -440,7 +443,7 @@ def compute_dwell_profile(
         }
         for i in range(n_bins)
     ]
-    return {
+    out = {
         "bins": bins,
         "poc": round(poc, 2),
         "va_low": round(float(va_low), 2),
@@ -450,6 +453,23 @@ def compute_dwell_profile(
         "tpo_units": int(round(float(fine.sum()))),  # metric に応じ 総 dwell 秒 / 総ティック数（int 丸め）。
         "n_bins": n_bins,
     }
+    if want_today:
+        # 窓の最終日ぶんを別集計して表示 bin へ再集計する（スナップショット当日強調・増分2 C）。
+        #   移植元 prototype_260630-01/mp_core.py want_today（dwell/m1=最終日ロールアップの再ビン）。
+        today = np.zeros(n_bins, dtype=float)
+        if last_roll is not None:
+            arr = last_roll[roll_key]
+            off = last_roll["kmin"] - kw0
+            ft = np.zeros(max(size, 1), dtype=float)
+            lo = max(0, off)
+            hi = min(size, off + len(arr))
+            if hi > lo:
+                ft[lo:hi] += arr[(lo - off):(hi - off)]
+            np.add.at(today, disp, ft[:size])
+        today_max = float(today.max()) if today.max() > 0 else 1.0
+        out["today"] = [round(float(v), 3) for v in today]
+        out["today_max"] = today_max
+    return out
 
 
 # --------------------------------------------------------------------------- #

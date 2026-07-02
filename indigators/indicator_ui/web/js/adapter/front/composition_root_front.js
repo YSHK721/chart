@@ -27,6 +27,7 @@ import { TradeMarkersRenderer } from './trade_markers_renderer.js';
 import { MarketProfileClient } from './market_profile_client.js';
 import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
 import { MarketProfileActor } from './market_profile_actor.js';
+import { MarketProfileReplayBar } from './market_profile_replay_bar.js';
 
 // 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
 //   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
@@ -185,12 +186,69 @@ export async function bootstrap({
   //   getContext は controller._timeframe を遅延参照する（呼び出しは setEnabled/refresh 時＝
   //   controller 代入後）。
   let controller;
+  // リプレイスライダバー（増分1）。replay=ON で下部に表示。input で対応足 time を actor.setReplayCursor へ。
+  //   candles は renderer.getCandles()（取得済み・読取のみ）を再利用し、min/max・index→time を賄う。
+  //   doc/container 不在（SSR/テスト）でも内部で no-op（防御）。
+  // バーのホストは index.html の #mp-replay-bar-host（チャート下部・sibling）を優先し、
+  //   不在時は container（後方互換・テスト）へフォールバックする。#chart 内へ差し込まない
+  //   （lightweight-charts が #chart を専有するため、canvas と重ならない sibling へ置く）。
+  const replayHost = (doc && typeof doc.getElementById === 'function'
+    ? doc.getElementById('mp-replay-bar-host') : null) || container;
+  const replayBar = new MarketProfileReplayBar({
+    document: doc,
+    container: replayHost,
+    onScrub: (time) => { if (controller && controller._marketProfile) { controller._marketProfile.setReplayCursor(time); } },
+    // 増分2: モード（アンカー/ローリング）・スナップショット変更 → actor が現在 T で再取得する。
+    onChange: () => { if (controller && controller._marketProfile) { controller._marketProfile.onReplayControlsChange(); } },
+  });
   const marketProfile = new MarketProfileActor({
     client: new MarketProfileClient({ fetch }),
     primitive: new MarketProfileHistogramPrimitive(),
     mainSeries,
+    replayBar,
+    // 増分2: スナップショットのローソクトリム源（renderer.setCandleTrim）。lwc 直叩きは renderer に隔離。
+    renderer,
+    getCandles: () => renderer.getCandles(),
     getContext: () => ({ datasetRef, timeframe: controller._timeframe, limit: recentBars }),
   });
+
+  // 増分2 スワイプ: チャートコンテナの横ドラッグで T をスクラブする（replay ON 中のみ）。
+  //   pointerdown で通常スクロール/ズームを停止（renderer.setUserInteraction(false)）→ pointermove で
+  //   x→logical→足 index→T をスライダと同期（replayBar.scrubToLogical）→ pointerup で操作を復元。
+  //   lightweight-charts の座標/操作 API は renderer に隔離済み（chart 直叩きしない）。
+  //   container/doc 不在（SSR/テスト）や pointer 非対応は no-op（防御）。
+  if (container && typeof container.addEventListener === 'function') {
+    let swiping = false;
+    const isReplayOn = () => !!(controller && controller._marketProfile
+      && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
+    const rectLeft = () => (typeof container.getBoundingClientRect === 'function'
+      ? container.getBoundingClientRect().left : 0);
+    container.addEventListener('pointerdown', (e) => {
+      if (!isReplayOn()) {
+        return;
+      }
+      swiping = true;
+      renderer.setUserInteraction(false); // 通常スクロール/ズームを停止（スワイプ捕捉）。
+      const logical = renderer.coordinateToLogical(e.clientX - rectLeft());
+      replayBar.scrubToLogical(logical);
+    });
+    container.addEventListener('pointermove', (e) => {
+      if (!swiping || !isReplayOn()) {
+        return;
+      }
+      const logical = renderer.coordinateToLogical(e.clientX - rectLeft());
+      replayBar.scrubToLogical(logical);
+    });
+    const endSwipe = () => {
+      if (!swiping) {
+        return;
+      }
+      swiping = false;
+      renderer.setUserInteraction(true); // 通常操作を復元。
+    };
+    container.addEventListener('pointerup', endSwipe);
+    container.addEventListener('pointerleave', endSwipe);
+  }
 
   controller = new IndicatorController({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
@@ -262,5 +320,5 @@ export async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile, replayBar };
 }

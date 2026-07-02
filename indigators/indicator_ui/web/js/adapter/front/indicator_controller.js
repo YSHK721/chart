@@ -179,6 +179,11 @@ export class IndicatorController {
   //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
   _mpParams(p = {}) {
     const out = { bins: p.bins, va: p.va, src: p.src };
+    // replay（リプレイ・増分1）: BOOL を actor へ転送する。undefined は載せない（現状維持）。
+    //   actor が replay=true でバー表示・T スクラブ受付、false で非表示・T 縦線消去・全期間へ復帰。
+    if (p.replay != null) {
+      out.replay = p.replay;
+    }
     // resmode（解像度モード）: client が bins/barw の送信を排他化する。
     //   後方互換: 明示 resmode が無い旧 barw 保存インスタンス（数値 range・resmode 無し）は
     //   range から resmode を導出して保存レンジを維持する（_deriveResmode）。

@@ -68,7 +68,16 @@ function fakeChart() {
         }
       }
     },
-    timeScale() { return { fitContent() { fitCount += 1; } }; },
+    _options: {},
+    _tsOptions: {},
+    applyOptions(o) { Object.assign(this._options, o); },
+    timeScale() {
+      return {
+        fitContent() { fitCount += 1; },
+        // 座標→論理 index（リプレイスワイプの x→足 index 変換用・テストは x を 100 で割った値を返す）。
+        coordinateToLogical(x) { return x == null ? null : x / 100; },
+      };
+    },
     subscribeCrosshairMove(h) { crosshairHandler = h; },
     fireCrosshair(param) { if (crosshairHandler) crosshairHandler(param); },
   };
@@ -117,6 +126,135 @@ test('setCandles: empty/undefined yields empty data (no throw)', () => {
   const { renderer, main } = newRenderer();
   renderer.setCandles();
   assert.deepEqual(main._data, []);
+});
+
+// getCandles: 基準 candles の読み取り専用アクセサ（リプレイバーの min/max・index→time 変換用）。
+//   setCandles/updateLastCandle が保持する _baseCandles を露出する（新規描画・波及なし）。
+test('getCandles: returns the base candles set via setCandles (read-only accessor)', () => {
+  const { renderer } = newRenderer();
+  const candles = [
+    { time: 1, open: 1, high: 2, low: 0, close: 1.5 },
+    { time: 2, open: 1.5, high: 3, low: 1, close: 2.5 },
+  ];
+  renderer.setCandles(candles);
+  assert.deepEqual(renderer.getCandles(), candles);
+});
+
+// ===========================================================================
+// 増分2: リプレイ用アクセサ（lwc 直叩き隔離）。setUserInteraction / coordinateToLogical / setCandleTrim。
+//   移植元 prototype_260630-01（updateCaptureMode の handleScroll/Scale 停止・coordinateToLogical・
+//   applyAsofView のローソク局所トリム）。primitive/actor から lwc を直叩きせずここに閉じる。
+// ===========================================================================
+
+test('setUserInteraction(false) disables chart scroll/scale; (true) restores them', () => {
+  // Arrange
+  const { renderer, chart } = newRenderer();
+  // Act: OFF（スワイプ捕捉のため通常スクロール/ズームを止める）
+  renderer.setUserInteraction(false);
+  // Assert
+  assert.equal(chart._options.handleScroll, false);
+  assert.equal(chart._options.handleScale, false);
+  // Act: ON（復元）
+  renderer.setUserInteraction(true);
+  // Assert
+  assert.equal(chart._options.handleScroll, true);
+  assert.equal(chart._options.handleScale, true);
+});
+
+test('coordinateToLogical delegates to chart.timeScale().coordinateToLogical', () => {
+  // Arrange
+  const { renderer } = newRenderer();
+  // Act / Assert: fake は x/100 を返す
+  assert.equal(renderer.coordinateToLogical(250), 2.5);
+  assert.equal(renderer.coordinateToLogical(null), null);
+});
+
+test('setCandleTrim(time) trims candles to time<=T and setData; null restores full candles', () => {
+  // Arrange
+  const { renderer, main } = newRenderer();
+  const candles = [
+    { time: 100, open: 1, high: 2, low: 0, close: 1 },
+    { time: 200, open: 1, high: 2, low: 0, close: 1 },
+    { time: 300, open: 1, high: 2, low: 0, close: 1 },
+  ];
+  renderer.setCandles(candles);
+  // Act: T=200 でトリム（100,200 の 2 本のみ）
+  renderer.setCandleTrim(200);
+  // Assert
+  assert.equal(main._data.length, 2);
+  assert.equal(main._data[main._data.length - 1].time, 200);
+  // Act: null で全復元
+  renderer.setCandleTrim(null);
+  // Assert
+  assert.deepEqual(main._data, candles);
+});
+
+test('setCandleTrim re-set is skipped when the trim position does not change (no redundant setData)', () => {
+  // Arrange: setData 呼び出し回数を数える main
+  const { renderer, main } = newRenderer();
+  const candles = [
+    { time: 100, open: 1, high: 2, low: 0, close: 1 },
+    { time: 200, open: 1, high: 2, low: 0, close: 1 },
+  ];
+  renderer.setCandles(candles);
+  let setDataCount = 0;
+  const orig = main.setData.bind(main);
+  main.setData = (p) => { setDataCount += 1; orig(p); };
+  // Act: 同一 T を 2 回
+  renderer.setCandleTrim(100);
+  renderer.setCandleTrim(100);
+  // Assert: 2 回目は位置不変で setData を呼ばない（プロト applyAsofView の局所トリム最適化）
+  assert.equal(setDataCount, 1);
+});
+
+test('setCandleTrim(null) on a never-trimmed series does NOT call setData (OFF-path 挙動不変)', () => {
+  // 回帰: replay/snapshot OFF 時に setCandleTrim(null) が冗長 setData を出さない（既存挙動を触らない）。
+  // Arrange
+  const { renderer, main } = newRenderer();
+  const candles = [
+    { time: 100, open: 1, high: 2, low: 0, close: 1 },
+    { time: 200, open: 1, high: 2, low: 0, close: 1 },
+  ];
+  renderer.setCandles(candles);
+  let setDataCount = 0;
+  const orig = main.setData.bind(main);
+  main.setData = (p) => { setDataCount += 1; orig(p); };
+  // Act: 未トリム状態で null（トリム解除）を要求
+  renderer.setCandleTrim(null);
+  // Assert: series へ触れない（0 回）
+  assert.equal(setDataCount, 0);
+});
+
+test('setCandleTrim is a no-op before any candles are set (no throw)', () => {
+  // Arrange
+  const { renderer } = newRenderer();
+  // Act / Assert
+  assert.doesNotThrow(() => renderer.setCandleTrim(100));
+  assert.doesNotThrow(() => renderer.setCandleTrim(null));
+});
+
+test('setCandleTrim(time < first candle) keeps all candles (does NOT wipe the series)', () => {
+  // 回帰: to がデータ先頭より前（縮退）のとき idx=-1 で slice(0,0)=空 setData となり
+  // ローソクが全消去されるバグを禁止する（トリム無効＝series へ触れない）。
+  // Arrange
+  const { renderer, main } = newRenderer();
+  const candles = [
+    { time: 100, open: 1, high: 2, low: 0, close: 1 },
+    { time: 200, open: 1, high: 2, low: 0, close: 1 },
+  ];
+  renderer.setCandles(candles);
+  let setDataCount = 0;
+  const orig = main.setData.bind(main);
+  main.setData = (p) => { setDataCount += 1; orig(p); };
+  // Act: 先頭足(100)より前の time を要求
+  renderer.setCandleTrim(50);
+  // Assert: series へ触れない（全ローソク維持）
+  assert.equal(setDataCount, 0);
+});
+
+test('getCandles: returns an empty array before any candles are set (no throw)', () => {
+  const { renderer } = newRenderer();
+  assert.deepEqual(renderer.getCandles(), []);
 });
 
 // ===========================================================================
