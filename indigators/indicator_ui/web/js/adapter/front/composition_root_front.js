@@ -39,6 +39,28 @@ export function modeForProtocol(protocol) {
   return protocol === 'http:' || protocol === 'https:' ? 'b' : 'a';
 }
 
+// sessions 列クリック（単日拡大）の純判定。DOM/actor を触らず「次に何をすべきか」だけを返す。
+//   入力: isSessions（MP が sessions 表示中か）・focus（現在の単日フォーカス date|null）・
+//     dateAt（xRatio→列 date|null。actor.sessionDateAt を渡す）・xRatio（クリックx / CSS幅・0..1）。
+//   規則（依頼の click 配線）:
+//     - sessions 非表示中 → 'none'（既存クリック挙動を変えない）。
+//     - focus 中（どこでも再クリック）→ 一覧へ戻す（action='clear'）。
+//     - 一覧中 → 列の date を解決。date あり → 'focus'（その日を拡大）／範囲外(null) → 'none'。
+//   戻り値: { action: 'none' } | { action: 'clear' } | { action: 'focus', date }。
+export function resolveSessionClick({ isSessions, focus, dateAt, xRatio }) {
+  if (!isSessions) {
+    return { action: 'none' };
+  }
+  if (focus != null) {
+    return { action: 'clear' }; // focus 中はどこをクリックしても一覧へ戻る。
+  }
+  const date = typeof dateAt === 'function' ? dateAt(xRatio) : null;
+  if (date == null) {
+    return { action: 'none' }; // 列の範囲外（ラベル余白等）は無視。
+  }
+  return { action: 'focus', date };
+}
+
 // GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
 //   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
 async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe = null, limit = null) {
@@ -246,6 +268,69 @@ export async function bootstrap({
       swiping = false;
       renderer.setUserInteraction(true); // 通常操作を復元。
     };
+
+    // sessions 列クリックで単日拡大（フロントのみ）。pointerdown+up の移動が小さい＝クリック判定。
+    //   リプレイ swipe 捕捉中（swiping=true）は無視して衝突を避ける（replay ON のドラッグは既存挙動）。
+    //   sessions 表示中のみ作用し、非表示中は既存クリック挙動を一切変えない。
+    //   重要（順序）: この click-pointerup を endSwipe の pointerup より**先に**登録する。DOM は登録順に
+    //   発火するため、後述の endSwipe が swiping=false にする前に本ハンドラが swiping を観測でき、
+    //   スワイプ終端をクリックと誤認しない（衝突回避の要）。
+    const CLICK_MOVE_PX = 6; // これ以下の移動はクリック、超えたらドラッグ扱い（拡大しない）。
+    let downX = null;
+    let downY = null;
+    const mpActor = () => (controller && controller._marketProfile) || null;
+    container.addEventListener('pointerdown', (e) => {
+      downX = e.clientX;
+      downY = e.clientY;
+    });
+    container.addEventListener('pointerup', (e) => {
+      const sx = downX;
+      const sy = downY;
+      downX = null;
+      downY = null;
+      if (swiping || sx == null) {
+        return; // swipe 捕捉中/開始点なしはクリック扱いしない（endSwipe より先に走る＝swiping を観測可能）。
+      }
+      if (Math.abs(e.clientX - sx) > CLICK_MOVE_PX || Math.abs(e.clientY - sy) > CLICK_MOVE_PX) {
+        return; // 移動が大きい＝ドラッグ。拡大トグルしない。
+      }
+      const actor = mpActor();
+      if (!actor || typeof actor.isSessions !== 'function' || !actor.isSessions()) {
+        return; // sessions 非表示中は何もしない（既存クリック挙動不変）。
+      }
+      // xRatio = クリックx / コンテナ CSS 幅（0..1）。primitive が index→date を DPR 非依存で解く。
+      const cssWidth = typeof container.getBoundingClientRect === 'function'
+        ? container.getBoundingClientRect().width : 0;
+      const xRatio = cssWidth > 0 ? (e.clientX - rectLeft()) / cssWidth : 0;
+      const decision = resolveSessionClick({
+        isSessions: true,
+        focus: typeof actor.sessionFocus === 'function' ? actor.sessionFocus() : null,
+        dateAt: (r) => actor.sessionDateAt(r),
+        xRatio,
+      });
+      if (decision.action === 'clear') {
+        actor.setSessionFocus(null); // focus 中→一覧へ。
+      } else if (decision.action === 'focus') {
+        actor.setSessionFocus(decision.date); // 一覧中→単日拡大。
+      }
+    });
+
+    // Esc で単日フォーカスを解除（sessions focus 中のみ）。doc 不在（テスト）は no-op。
+    if (doc && typeof doc.addEventListener === 'function') {
+      doc.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') {
+          return;
+        }
+        const actor = mpActor();
+        if (actor && typeof actor.sessionFocus === 'function' && actor.sessionFocus() != null) {
+          actor.setSessionFocus(null);
+        }
+      });
+    }
+
+    // endSwipe は click-pointerup ハンドラの**後**に登録する（上記「順序」注記を参照）。こうすることで
+    //   スワイプ終端の pointerup では click ハンドラが先に swiping=true を観測して return し、その後
+    //   endSwipe が swiping=false へ戻す＝スワイプをクリックと誤認しない。
     container.addEventListener('pointerup', endSwipe);
     container.addEventListener('pointerleave', endSwipe);
   }
