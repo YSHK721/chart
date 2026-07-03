@@ -180,6 +180,27 @@ export class MarketProfileReplayBar {
     return this._label;
   }
 
+  // 現在スライダ位置に対応する足の time（UNIX 秒）。既定は右端＝最新。空 candles は null。
+  //   スクラブ前でも「現在の T」を返せるようにし、actor が初期カーソル（T 縦線）に使う。
+  currentTime() {
+    if (this._candles.length === 0) {
+      return null;
+    }
+    return this._candles[this.currentIndex()].time;
+  }
+
+  // 現在スライダ位置の足 index（0..足数-1）。空 candles は 0。スワイプの相対デルタ基準（startIdx）。
+  currentIndex() {
+    if (this._candles.length === 0) {
+      return 0;
+    }
+    let idx = this._range ? parseInt(this._range.value, 10) : this._candles.length - 1;
+    if (Number.isNaN(idx)) {
+      idx = this._candles.length - 1;
+    }
+    return Math.max(0, Math.min(idx, this._candles.length - 1));
+  }
+
   // スライダ input: value（index）→ 対応足 time を決めて onScrub へ通知し、日時ラベルを更新する。
   _onInput() {
     if (!this._range || this._candles.length === 0) {

@@ -431,21 +431,19 @@ const MARKET_PROFILE = new IndicatorDef({
       conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
       enumLabels: { 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
     }),
-    // replay: リプレイ（BOOL・既定 false・表示系 group）。試作 prototype_260630-01 の時間カーソル
-    //   （as-seen-at-t）を移植（増分1）。gear ダイアログのチェックで ON/OFF。ON でチャート下部に
-    //   リプレイスライダバーを表示し、T スクラブで /market_profile?...&to=T を再取得して当時プロファイルへ。
-    //   OFF で全期間へ復帰（バー非表示・T 縦線消去）。計算系（group.calc）とは別の表示系 group に置く。
-    param('replay', ParamType.BOOL, false, [], null, {
-      group: 'group.display', order: 1, label: 'リプレイ',
-      tooltip: '過去に遡る（時間カーソル・as-seen-at-t）。ON でチャート下部のスライダから当時のプロファイルを再生する',
-    }),
-    // sessions: 日別プロファイル分割（BOOL・既定 false・表示系 group）。試作 prototype_260630-01 の
-    //   sessions（drawSessions）を移植。ON で各営業日のプロファイル形を幅広の列で並べ、ローソクを
-    //   透明化して価格軸のみ残す。client が &sessions=1 を付与し backend が sessions[{date,tpo[]}] を返す。
-    //   OFF（既定）は完全に従来挙動（累積プロファイル・ローソク不透明）。計算系とは別の表示系 group。
-    param('sessions', ParamType.BOOL, false, [], null, {
-      group: 'group.display', order: 2, label: '日別プロファイル',
-      tooltip: '各営業日のプロファイルを日ごとの列で並べて表示する（ローソクは透明化・価格軸は維持）',
+    // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
+    //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する
+    //   （解像度トグル resmode と同方式）。排他が構造的に保証され、同時 ON が不可能になる。
+    //   - normal: 従来の累積プロファイル（replay/sessions とも OFF・既定）。完全に従来挙動。
+    //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
+    //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
+    //     T 縦線/トリム/スナップショット解除）。
+    //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
+    //   order は旧 replay の位置（1）＝表示系 group の先頭。
+    param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
+      group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
+      enumLabels: { normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル' },
+      tooltip: '通常＝累積プロファイル／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示',
     }),
   ],
   series: [

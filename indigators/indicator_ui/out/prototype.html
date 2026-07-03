@@ -1240,21 +1240,19 @@ const MARKET_PROFILE = new IndicatorDef({
       conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
       enumLabels: { 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
     }),
-    // replay: リプレイ（BOOL・既定 false・表示系 group）。試作 prototype_260630-01 の時間カーソル
-    //   （as-seen-at-t）を移植（増分1）。gear ダイアログのチェックで ON/OFF。ON でチャート下部に
-    //   リプレイスライダバーを表示し、T スクラブで /market_profile?...&to=T を再取得して当時プロファイルへ。
-    //   OFF で全期間へ復帰（バー非表示・T 縦線消去）。計算系（group.calc）とは別の表示系 group に置く。
-    param('replay', ParamType.BOOL, false, [], null, {
-      group: 'group.display', order: 1, label: 'リプレイ',
-      tooltip: '過去に遡る（時間カーソル・as-seen-at-t）。ON でチャート下部のスライダから当時のプロファイルを再生する',
-    }),
-    // sessions: 日別プロファイル分割（BOOL・既定 false・表示系 group）。試作 prototype_260630-01 の
-    //   sessions（drawSessions）を移植。ON で各営業日のプロファイル形を幅広の列で並べ、ローソクを
-    //   透明化して価格軸のみ残す。client が &sessions=1 を付与し backend が sessions[{date,tpo[]}] を返す。
-    //   OFF（既定）は完全に従来挙動（累積プロファイル・ローソク不透明）。計算系とは別の表示系 group。
-    param('sessions', ParamType.BOOL, false, [], null, {
-      group: 'group.display', order: 2, label: '日別プロファイル',
-      tooltip: '各営業日のプロファイルを日ごとの列で並べて表示する（ローソクは透明化・価格軸は維持）',
+    // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
+    //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する
+    //   （解像度トグル resmode と同方式）。排他が構造的に保証され、同時 ON が不可能になる。
+    //   - normal: 従来の累積プロファイル（replay/sessions とも OFF・既定）。完全に従来挙動。
+    //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
+    //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
+    //     T 縦線/トリム/スナップショット解除）。
+    //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
+    //   order は旧 replay の位置（1）＝表示系 group の先頭。
+    param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
+      group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
+      enumLabels: { normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル' },
+      tooltip: '通常＝累積プロファイル／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示',
     }),
   ],
   series: [
@@ -1613,6 +1611,70 @@ function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
+// 価格軸ホイールズームの中核式（純関数・単体テスト用に export）。
+//   range: { min, max } 現在の価格レンジ、price: カーソル位置の価格、deltaY: wheel の deltaY。
+//   ズーム係数 f = 0.9^(-deltaY/100)（deltaY<0=上=ズームイン=レンジ×0.90／deltaY>0=下=×1/0.90）。
+//   トラックパッド（微小 deltaY 連続）は指数で滑らかに比例。1 イベントの暴れ防止で f∈[0.5, 2] にクランプ。
+//   カーソル価格 p を中心に newMin = p-(p-min)*f / newMax = p+(max-p)*f。
+//   span を現 span×1e-4 未満に縮めない（最小 span クランプ）。price が range 外なら中央基準。
+const PRICE_ZOOM_F_MIN = 0.5;
+const PRICE_ZOOM_F_MAX = 2;
+const PRICE_ZOOM_SPAN_MIN_RATIO = 1e-4;
+
+// データ全幅に対する絶対クランプ（暴走防止・実機バグ修正）: ホイール連打/慣性スクロールで
+//   「読む→係数→書く」のフィードバックが複利増幅し 1e24 等へ発散したため、ズーム結果を
+//   データ（baseCandles の low/high）由来の絶対範囲に制限する。span ∈ [dataSpan×1e-4, dataSpan×5]、
+//   さらに表示中心（c）をデータ範囲内 [dataRange.min, dataRange.max] にクランプする（最大ズームアウトでも
+//   ローソクが視界から消えない）。純関数。
+const PRICE_ZOOM_MAX_SPAN_RATIO = 5;
+const PRICE_ZOOM_ABS_MIN_SPAN_RATIO = 1e-4;
+
+function clampPriceRange(range, dataRange) {
+  if (!dataRange || !(dataRange.max > dataRange.min)) {
+    return range; // データレンジ不明時はそのまま（従来挙動）。
+  }
+  const dataSpan = dataRange.max - dataRange.min;
+  const maxSpan = dataSpan * PRICE_ZOOM_MAX_SPAN_RATIO;
+  const minSpan = dataSpan * PRICE_ZOOM_ABS_MIN_SPAN_RATIO;
+  let span = range.max - range.min;
+  let c = (range.min + range.max) / 2;
+  if (span > maxSpan) span = maxSpan;
+  if (span < minSpan) span = minSpan;
+  // 中心はデータ範囲内に保つ（最大ズームアウトでもローソクが視界から消えない）。
+  const cMin = dataRange.min;
+  const cMax = dataRange.max;
+  if (c < cMin) c = cMin;
+  if (c > cMax) c = cMax;
+  return { min: c - span / 2, max: c + span / 2 };
+}
+
+function zoomedPriceRange(range, price, deltaY) {
+  const min = range.min;
+  const max = range.max;
+  const span = max - min;
+  if (!Number.isFinite(deltaY) || deltaY === 0) {
+    return { min, max }; // deltaY 不正/0 は無変化（NaN 伝播防止）。
+  }
+  let f = Math.pow(0.9, -deltaY / 100);
+  if (f < PRICE_ZOOM_F_MIN) {
+    f = PRICE_ZOOM_F_MIN;
+  } else if (f > PRICE_ZOOM_F_MAX) {
+    f = PRICE_ZOOM_F_MAX;
+  }
+  // price が range 外なら中央（(min+max)/2）を基準にする。
+  const p = (price >= min && price <= max) ? price : (min + max) / 2;
+  let newMin = p - (p - min) * f;
+  let newMax = p + (max - p) * f;
+  // 最小 span クランプ: 現 span×1e-4 未満へは縮めない（p 中心を保ったまま拡げる）。
+  const minSpan = span * PRICE_ZOOM_SPAN_MIN_RATIO;
+  if ((newMax - newMin) < minSpan) {
+    const c = (newMin + newMax) / 2;
+    newMin = c - minSpan / 2;
+    newMax = c + minSpan / 2;
+  }
+  return { min: newMin, max: newMax };
+}
+
 // 中心からの距離比 t∈[0,1] を 緑→赤 へ補間し dim で減光した rgb 文字列にする。
 function schemeColor(t, dim) {
   const r = Math.round(lerp(SCHEME_CALM[0], SCHEME_HOT[0], t) * dim);
@@ -1663,6 +1725,20 @@ class ChartRenderer {
     // 増分2: setCandleTrim の直近トリム末尾 index（位置不変時の再 setData 回避＝プロト lastTrimIdx）。
     //   null=未トリム。setCandles で候補が変わるためリセットする。
     this._lastTrimIdx = null;
+    // スクラブ時の表示フィット（_fitTrimView）に使う右プロファイル領域の割合（setRightMarginFraction で更新）。
+    this._profileMarginFraction = 0;
+    // スクラブ追従で保持するズーム倍率（可視論理幅）のキャッシュ。getVisibleLogicalRange 一時失敗時に使う。
+    this._replayViewSpan = null;
+    // 価格軸ホイールズーム: override 価格レンジ（null=自動スケール）。handlePriceWheel で更新し、
+    //   resetPriceZoom / ダブルクリックで null（自動スケール復帰）へ戻す。
+    this._priceZoomRange = null;
+    // 価格軸ズームの座標→価格変換に使う pane 高（container 高 - timeScale().height() 相当）。
+    //   composition root が setPaneHeight で供給（未設定時は timeScale から導出フォールバック）。
+    this._paneHeight = null;
+    // 価格軸ズームの autoscaleInfoProvider は _applyPriceProvider で mainSeries へ設定する。
+    //   ★呼び出しの度に新クロージャを applyOptions で再設定して再オートスケールを誘発する
+    //   （中身だけ変えても lwc は再計算しないため）。override 有→{priceRange} を返し、null→
+    //   original() 素通し（挙動不変）。切替は _priceZoomRange の内部状態で行う。
     // 機能③: クロスヘア移動で pane ウォーターマークへ系列値を追記。
     if (typeof this._chart.subscribeCrosshairMove === 'function') {
       this._chart.subscribeCrosshairMove((param) => this._onCrosshairMove(param));
@@ -1677,6 +1753,12 @@ class ChartRenderer {
     this._baseCandles = arr;
     // 増分2: 基準 candles が入れ替わったのでトリム位置キャッシュをリセット（次の setCandleTrim で再 set）。
     this._lastTrimIdx = null;
+    // 価格ズーム override とスクラブ span キャッシュもリセットする（時間足/データセット切替で
+    //   新しい価格帯へ自動スケール復帰させる。これが無いと provider が旧レンジを返し続け、新足が
+    //   枠外にはみ出したまま dblclick まで戻らない＝レビュー指摘 🟡#1 の修正）。
+    this._priceZoomRange = null;
+    this._replayViewSpan = null;
+    this._applyPriceProvider(); // provider を素通し（自動スケール）へ即時復帰。
     // 読み取り欄の最新足の単一源を更新（配列末尾の足）。空配列なら null。
     this._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
     this._chart.timeScale().fitContent();
@@ -1709,6 +1791,9 @@ class ChartRenderer {
   //   frac=null で 0（既定）へ復元。ズームで barSpacing が変わると px マージンはドリフトする
   //   （v1 の許容・再トグルで再計算）。timeScale/applyOptions 非提供時は no-op（後方互換）。
   setRightMarginFraction(frac) {
+    // スクラブ時の表示フィット（setCandleTrim → setVisibleLogicalRange の blank）にも使う margin 率を保持。
+    //   プロト applyAsofView の PROFILE_FRAC と同義（右プロファイル領域の割合）。0=マージンなし。
+    this._profileMarginFraction = (frac != null && frac > 0 && frac < 1) ? frac : 0;
     const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
     if (!ts || typeof ts.applyOptions !== 'function') {
       return;
@@ -1721,32 +1806,6 @@ class ChartRenderer {
     const bs = (typeof ts.options === 'function' && ts.options() && ts.options().barSpacing) || 6;
     const bars = w > 0 ? Math.max(0, Math.round((w * frac) / bs)) : 0;
     ts.applyOptions({ rightOffset: bars });
-  }
-
-  // sessions 単日フォーカス: 時間軸（下部ルーラ）の操作だけをロック/復元する（価格軸の手動操作は残す）。
-  //   単日拡大中（sessionFocus 設定）に呼び、横パン（handleScroll）と時間軸ズーム（axis time / wheel /
-  //   pinch）を止める。価格軸のドラッグズーム（axisPressedMouseMove.price）は許し縦の検証操作を残す。
-  //   lightweight-charts の applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は呼ばない）。
-  //   on=true でロック、on=false で lwc 既定（handleScroll:true / handleScale:true）へ復元。既存
-  //   setUserInteraction（リプレイ swipe 用・全ロック）とは独立（本メソッドは価格軸を残す点が異なる）。
-  //   applyOptions 非提供時は no-op（後方互換）。冪等（同じ状態の再設定は無害）。
-  setTimeScaleLock(on) {
-    if (typeof this._chart.applyOptions !== 'function') {
-      return;
-    }
-    if (on) {
-      this._chart.applyOptions({
-        handleScroll: false, // 横パン（チャート本体ドラッグ・ルーラドラッグ）を止める。
-        handleScale: {
-          axisPressedMouseMove: { time: false, price: true }, // 時間軸ドラッグ×／価格軸ドラッグ○。
-          mouseWheel: false, // ホイールによる時間軸ズームを止める。
-          pinch: false,      // ピンチによる時間軸ズームを止める。
-        },
-      });
-    } else {
-      // 復元＝lwc 既定（横スクロール可・両軸ズーム可）。sessions 解除/OFF/MP 削除で必ず呼ぶ。
-      this._chart.applyOptions({ handleScroll: true, handleScale: true });
-    }
   }
 
   // sessions（日別プロファイル分割）: ローソクを透明化して価格軸のみ残す/復元する（移植元 prototype_260630-01）。
@@ -1773,28 +1832,203 @@ class ChartRenderer {
     }
   }
 
-  // sessions 単日フォーカス: 価格軸の自動スケール範囲を上書きする（lwc autoscaleInfoProvider を本所に隔離）。
-  //   range={min,max} でその価格帯へ自動ズーム（フォーカスした日の形を全高で検証できる）。null で既定へ復帰。
-  //   provider は一度だけ恒久インストールし、内部フラグで override⇄既定(original) を切替える
-  //   （applyOptions で provider を外す確実な手段が無いための安全策・OFF 時は original() 素通し＝挙動不変）。
-  setPriceAutoscaleOverride(range) {
+  // 価格軸ホイールズーム: 座標→価格変換に使う pane 高（container 高 - timeScale().height() 相当）を設定。
+  //   composition root が resize 時などに供給する。未設定時は handlePriceWheel が timeScale().height()
+  //   から導出フォールバックするが、container 高が必要なため設定を推奨（新規追加・既存描画へ非干渉）。
+  setPaneHeight(h) {
+    this._paneHeight = (typeof h === 'number' && h > 0) ? h : null;
+  }
+
+  // 価格軸ホイールズームの autoscaleInfoProvider を **mainSeries** へ適用する。
+  //   注意: autoscaleInfoProvider は series オプション（priceScale に渡しても lwc は無視＝実機で確認した
+  //   バグの修正）。また provider の中身（_priceZoomRange）だけ変えても lwc は再オートスケールしないため、
+  //   **呼び出しの度に新しいクロージャを applyOptions で再設定**してオプション変更→再計算を誘発する。
+  //   override（_priceZoomRange）有→{priceRange:{minValue,maxValue}}／null→original() 素通し（挙動不変）。
+  _applyPriceProvider() {
     if (typeof this._mainSeries.applyOptions !== 'function') {
       return;
     }
-    this._autoscaleOverride = (range && Number.isFinite(range.min) && Number.isFinite(range.max)
-      && range.max > range.min) ? { min: range.min, max: range.max } : null;
-    if (!this._autoscaleProviderInstalled) {
-      this._autoscaleProviderInstalled = true;
-      this._mainSeries.applyOptions({
-        autoscaleInfoProvider: (original) => {
-          const ov = this._autoscaleOverride;
-          if (!ov) {
-            return original(); // 既定（挙動不変）。
-          }
-          return { priceRange: { minValue: ov.min, maxValue: ov.max } };
-        },
-      });
+    this._mainSeries.applyOptions({
+      autoscaleInfoProvider: (original) => {
+        if (this._priceZoomRange) {
+          // _priceZoomRange は「目標の可視レンジ」。lwc は provider のレンジへ scaleMargins
+          //   （既定 上0.2/下0.1）を上乗せして表示するため、逆算で内側に縮めた値を返す
+          //   （そのまま返すと毎回 margins ぶん広がり複利増幅＝1e24 発散の真因・実機バグ修正）。
+          const m = this._scaleMargins();
+          const vis = this._priceZoomRange;
+          const span = vis.max - vis.min;
+          return {
+            priceRange: {
+              minValue: vis.min + span * m.bottom,
+              maxValue: vis.max - span * m.top,
+            },
+          };
+        }
+        return typeof original === 'function' ? original() : original;
+      },
+    });
+  }
+
+  // 右価格軸ハンドル（mainSeries.priceScale('right') 優先、無ければ chart.priceScale('right')）。
+  //   lwc 直叩きは本所に隔離。いずれも非提供なら null（後方互換）。
+  _rightPriceScale() {
+    if (typeof this._mainSeries.priceScale === 'function') {
+      return this._mainSeries.priceScale('right');
     }
+    if (typeof this._chart.priceScale === 'function') {
+      return this._chart.priceScale('right');
+    }
+    return null;
+  }
+
+  // baseCandles の価格全幅 {min,max}（絶対クランプの基準）。未設定/空は null。
+  _candlesPriceRange() {
+    const arr = this._baseCandles;
+    if (!arr || arr.length === 0) {
+      return null;
+    }
+    let min = Infinity;
+    let max = -Infinity;
+    for (const c of arr) {
+      if (c.low < min) min = c.low;
+      if (c.high > max) max = c.high;
+    }
+    return (Number.isFinite(min) && Number.isFinite(max) && max > min) ? { min, max } : null;
+  }
+
+  // 価格軸ホイールズームの本体。x が価格軸領域（x >= timeScale().width()）のときだけ処理する。
+  //   カーソル価格 p=coordinateToPrice(y)、現レンジは coordinateToPrice(0)（上端＝高値）と
+  //   coordinateToPrice(paneHeight)（下端＝安値）から読む。zoomedPriceRange で新レンジを算出し
+  //   _priceZoomRange を更新、priceScale('right').applyOptions({autoScale:true}) で provider を効かせる。
+  //   処理したら true（呼び出し側が preventDefault する）。軸領域外・座標 null・データ無しは false。
+  //   チャート本体上のホイール（時間軸ズーム）は奪わない（x<width で false）。
+  handlePriceWheel(x, y, deltaY) {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.width !== 'function') {
+      return false;
+    }
+    if (x < ts.width()) {
+      return false; // チャート本体領域＝時間軸ズームに委ねる。
+    }
+    if (typeof this._mainSeries.coordinateToPrice !== 'function') {
+      return false;
+    }
+    // pane 高（container 高 - timeScale 高）。setPaneHeight 未設定時は座標の下端が不明なため
+    //   timeScale().height() を差し引けないが、既存レンジは 0..paneHeight で読む必要がある。
+    const paneHeight = this._paneHeight;
+    if (!(paneHeight > 0)) {
+      return false; // pane 高未供給＝座標→価格の下端が定まらない（安全側で何もしない）。
+    }
+    const p = this._mainSeries.coordinateToPrice(y);
+    if (p == null) {
+      return false; // データ無し・座標変換不能。
+    }
+    // 基準レンジ: ズーム中は内部状態（目標可視レンジ）を使い、表示を読み直さない
+    //   （lwc が scaleMargins を上乗せした表示を再度読むと複利増幅する＝発散の真因・実機バグ修正）。
+    let base = this._priceZoomRange;
+    if (!base) {
+      const topPrice = this._mainSeries.coordinateToPrice(0);
+      const bottomPrice = this._mainSeries.coordinateToPrice(paneHeight);
+      if (topPrice == null || bottomPrice == null) {
+        return false;
+      }
+      const min = Math.min(topPrice, bottomPrice);
+      const max = Math.max(topPrice, bottomPrice);
+      if (!(max > min)) {
+        return false; // 縮退レンジ。
+      }
+      base = { min, max };
+    }
+    // データ全幅（baseCandles の low/high）由来の絶対クランプで発散を封じる。
+    this._priceZoomRange = clampPriceRange(
+      zoomedPriceRange(base, p, deltaY), this._candlesPriceRange(),
+    );
+    this._applyPriceProvider(); // series へ新クロージャを再設定＝オプション変更で再オートスケール誘発。
+    const ps = this._rightPriceScale();
+    if (ps && typeof ps.applyOptions === 'function') {
+      ps.applyOptions({ autoScale: true }); // 軸ドラッグ等で autoScale=false でも provider を効かせる。
+    }
+    return true;
+  }
+
+  // チャート本体の縦ドラッグによる価格パン（上下移動）。dy=ポインタ縦移動量[px]（下+）。
+  //   横方向は lwc の時間軸パンに委ね（本メソッドは価格のみ操作）、両者が合成されて 2D パンになる。
+  //   ドラッグ下げ（dy>0）＝内容を下へ引く＝表示レンジを上へ（min/max とも +）。span は不変。
+  //   基準レンジはズーム/パン中の内部状態（_priceZoomRange）を優先し、無ければ現表示から読む
+  //   （表示を毎回読み直すと scaleMargins 上乗せで発散するため・handlePriceWheel と同じ方針）。
+  //   結果は clampPriceRange（span 保存・中心はデータ範囲内）で制限。処理したら true。
+  panPriceByPixels(dy) {
+    if (typeof this._mainSeries.coordinateToPrice !== 'function') {
+      return false;
+    }
+    const paneHeight = this._paneHeight;
+    if (!(paneHeight > 0) || !(Math.abs(dy) > 0)) {
+      return false;
+    }
+    let base = this._priceZoomRange;
+    if (!base) {
+      const topPrice = this._mainSeries.coordinateToPrice(0);
+      const bottomPrice = this._mainSeries.coordinateToPrice(paneHeight);
+      if (topPrice == null || bottomPrice == null) {
+        return false;
+      }
+      const min = Math.min(topPrice, bottomPrice);
+      const max = Math.max(topPrice, bottomPrice);
+      if (!(max > min)) {
+        return false;
+      }
+      base = { min, max };
+    }
+    const span = base.max - base.min;
+    const shift = (dy / paneHeight) * span; // dy>0（下げ）→表示レンジを上へ。
+    this._priceZoomRange = clampPriceRange(
+      { min: base.min + shift, max: base.max + shift }, this._candlesPriceRange(),
+    );
+    this._applyPriceProvider();
+    const ps = this._rightPriceScale();
+    if (ps && typeof ps.applyOptions === 'function') {
+      ps.applyOptions({ autoScale: true });
+    }
+    return true;
+  }
+
+  // 価格軸のダブルクリック等で自動スケールへ復帰する（override を解除）。provider は素通しに戻る。
+  resetPriceZoom() {
+    this._priceZoomRange = null;
+    this._applyPriceProvider(); // 新クロージャ再設定で即時に自動スケールへ復帰させる。
+    const ps = this._rightPriceScale();
+    if (ps && typeof ps.applyOptions === 'function') {
+      ps.applyOptions({ autoScale: true });
+    }
+  }
+
+  // テスト用フック: インストール済み autoscaleInfoProvider を明示的に呼び出す（本番未使用）。
+  //   lightweight-charts が内部で呼ぶ provider の挙動（override→{priceRange}／null→original 素通し）を
+  //   Fake priceScale 越しに検証するために使う。provider 未インストール時は original 素通し相当。
+  __callAutoscaleProvider(original) {
+    if (this._priceZoomRange) {
+      return { priceRange: { minValue: this._priceZoomRange.min, maxValue: this._priceZoomRange.max } };
+    }
+    return typeof original === 'function' ? original() : original;
+  }
+
+  // 右価格軸の scaleMargins（{top,bottom}・0..1）。options() 非提供時は 0（テスト互換・逆算なし）。
+  _scaleMargins() {
+    const ps = this._rightPriceScale();
+    const m = (ps && typeof ps.options === 'function' && ps.options() && ps.options().scaleMargins) || null;
+    const top = m && Number.isFinite(m.top) ? m.top : 0;
+    const bottom = m && Number.isFinite(m.bottom) ? m.bottom : 0;
+    // 合計が 1 に近い異常値は無効化（ゼロ割/負 span 防止）。
+    return (top + bottom < 0.9) ? { top, bottom } : { top: 0, bottom: 0 };
+  }
+
+  // 価格軸領域判定の小ヘルパ（x >= timeScale().width()）。composition root の dblclick 判定用（任意）。
+  isOverPriceAxis(x) {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.width !== 'function') {
+      return false;
+    }
+    return x >= ts.width();
   }
 
   // 増分2: x 座標 → 論理 index（timeScale().coordinateToLogical）。リプレイスワイプの x→足 index 変換。
@@ -1806,6 +2040,22 @@ class ChartRenderer {
       return null;
     }
     return ts.coordinateToLogical(x);
+  }
+
+  // リプレイスワイプの感度基準＝1 バーあたりのピクセル幅（barSpacing）。
+  //   移植元 prototype_260630-01/js/app.js L452-453: |logicalToCoordinate(1) - logicalToCoordinate(0)|。
+  //   ★ズームアウトで barSpacing が極小（<0.5px）のときは 8px を下限に使う（プロト準拠）。これにより
+  //     少しのマウス移動でスライダが暴走するのを防ぐ（絶対マッピングの過敏さの修正）。非提供時も 8。
+  pixelsPerBar() {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (ts && typeof ts.logicalToCoordinate === 'function') {
+      const c0 = ts.logicalToCoordinate(0);
+      const c1 = ts.logicalToCoordinate(1);
+      if (c0 != null && c1 != null && Math.abs(c1 - c0) > 0.5) {
+        return Math.abs(c1 - c0);
+      }
+    }
+    return 8; // barSpacing 極小/非提供時の下限（プロト準拠）。
   }
 
   // 増分2: スナップショット用のローソク局所トリム（基準 candles を time<=T へスライスして setData）。
@@ -1827,6 +2077,7 @@ class ChartRenderer {
       }
       this._lastTrimIdx = null;
       this._mainSeries.setData(this._baseCandles); // トリム解除＝全ローソク復元。
+      this._fitTrimView(this._baseCandles.length); // プロト applyAsofView: 先頭〜末尾へフィット（＋blank）。
       // 読み取り欄の単一源（_lastBar）も全ローソクの最終足へ復元し、即時再発火する
       //   （スナップショット解除後に古い T 時点の値が残らないように）。
       this._lastBar = this._baseCandles.length > 0
@@ -1850,11 +2101,56 @@ class ChartRenderer {
     }
     this._lastTrimIdx = idx;
     this._mainSeries.setData(this._baseCandles.slice(0, idx + 1));
+    this._fitTrimView(idx + 1); // プロト applyAsofView: 表示を先頭〜T にフィット（＋右 blank）。
+    //   これにより、ズームイン中でもスクラブで視界が T に追従する（過去→現在へも戻れる・実機で確認した
+    //   「現在へ戻れない」バグの修正）。移植元 prototype_260630-01/js/app.js L318-322。
     // 読み取り欄の単一源（_lastBar）をトリム後の最終足（=T 時点の足）へ更新し、即時再発火する。
     //   これが無いとスナップショット中も左上の読み取り欄がトリム前の最新足（例 2026-07-02）を
     //   表示し続け、当時（T）の表示と矛盾する（実機で確認したバグ）。
     this._lastBar = this._baseCandles[idx];
     this._emitReadout(null);
+  }
+
+  // スクラブ時の表示追従: **現在のズーム倍率（可視論理幅 span）を保ったまま** T（末尾トリム足）を
+  //   右端へスクロールし、右 f をプロファイル余白にする。これにより「拡大したまま過去↔現在を行き来」
+  //   できる（ユーザー選択・プロトの毎回全historyフィットからは意図的に外れる）。
+  //   span が全体を覆う（未ズーム）ときは from<=-0.5 となり自然に先頭〜T の全history表示になる
+  //   （プロト applyAsofView と実質同等）。getVisibleLogicalRange 非提供時は {from:-0.5, to:L-0.5+blank}
+  //   の全historyフィットにフォールバック。lwc の timeScale 直叩きは本所（ChartRenderer）に閉じる。
+  _fitTrimView(L) {
+    if (!(L > 0)) {
+      return;
+    }
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.setVisibleLogicalRange !== 'function') {
+      return; // 非提供（テスト/SSR）は no-op（後方互換）。
+    }
+    const f = this._profileMarginFraction || 0;
+    const lastIdx = L - 0.5; // 末尾バー（=T）の論理右端（プロトの -0.5 系に合わせる）。
+    // 現在の可視幅（ズーム倍率）を読む。読めた値はキャッシュし、**一時的に取得不能でも直前の span を
+    //   使う**（全history へ戻さない＝ズーム保持を確実にする）。span を一度も得ていない初回だけ全history。
+    let span = null;
+    if (typeof ts.getVisibleLogicalRange === 'function') {
+      const r = ts.getVisibleLogicalRange();
+      if (r && r.to > r.from) {
+        span = r.to - r.from;
+      }
+    }
+    if (span != null) {
+      this._replayViewSpan = span; // ユーザーのズーム（スクラブ間の変更含む）を捕捉。
+    } else if (this._replayViewSpan != null) {
+      span = this._replayViewSpan; // 取得失敗は直前の span で補う（フォールバックで全historyへ戻さない）。
+    }
+    if (span == null) {
+      // span を一度も得ていない（初回・API 非対応）＝全history フィット（プロト相当）。
+      const blank = (f > 0 && f < 1) ? (L * f) / (1 - f) : 0;
+      ts.setVisibleLogicalRange({ from: -0.5, to: lastIdx + blank });
+      return;
+    }
+    // ズーム倍率(span)を保持したまま T を右端へ（右 f を余白に）スクロール。
+    const to = lastIdx + span * f;
+    const from = to - span;
+    ts.setVisibleLogicalRange({ from, to });
   }
 
   // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。
@@ -3678,15 +3974,14 @@ class IndicatorController {
   //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
   _mpParams(p = {}) {
     const out = { bins: p.bins, va: p.va, src: p.src };
-    // replay（リプレイ・増分1）: BOOL を actor へ転送する。undefined は載せない（現状維持）。
-    //   actor が replay=true でバー表示・T スクラブ受付、false で非表示・T 縦線消去・全期間へ復帰。
-    if (p.replay != null) {
-      out.replay = p.replay;
-    }
-    // sessions（日別プロファイル分割）: BOOL を actor へ転送する。undefined は載せない（現状維持）。
-    //   actor が sessions=true で &sessions=1 取得・日別列描画・ローソク透明化、false で通常モードへ復帰。
-    if (p.sessions != null) {
-      out.sessions = p.sessions;
+    // mode（表示モード）: 旧 replay(BOOL)/sessions(BOOL) を統合した排他 ENUM
+    //   ['normal','replay','sessions'] を actor へ転送する。undefined は載せない（actor 既定=通常）。
+    //   後方互換マイグレーション（resmode 導出と同方針）: 永続 params に mode が無く legacy が残る
+    //   旧インスタンスは _deriveMode で legacy → mode を導出する。legacy キー（replay/sessions）自体は
+    //   actor へ送らない（mode に一本化・二重管理を避ける）。
+    const mode = this._deriveMode(p);
+    if (mode != null) {
+      out.mode = mode;
     }
     // resmode（解像度モード）: client が bins/barw の送信を排他化する。
     //   後方互換: 明示 resmode が無い旧 barw 保存インスタンス（数値 range・resmode 無し）は
@@ -3715,6 +4010,30 @@ class IndicatorController {
     }
     const BAR_WIDTHS = new Set(['25', '50', '100', '250', '500']);
     return BAR_WIDTHS.has(String(p.range)) ? 'range' : 'bins';
+  }
+
+  // mode（表示モード）を決める後方互換ヘルパ（_deriveResmode と同方針・apply/gear/restore 共用）。
+  //   - 明示 mode があればそのまま返す（legacy との競合時は mode 優先＝後方互換補完は上書きしない）。
+  //   - mode 欠落かつ legacy sessions:true → 'sessions'（両 true の旧データも sessions 優先）。
+  //   - mode 欠落かつ legacy replay:true → 'replay'。
+  //   - mode 欠落かつ legacy が明示 false（両 OFF）→ 'normal'（restore で両 OFF を再現）。
+  //   - mode も legacy キーも無い旧インスタンスは null（mode を付与しない＝actor 既定=通常）。
+  _deriveMode(p = {}) {
+    if (p.mode != null) {
+      return p.mode;
+    }
+    // 両 true の旧データは sessions 優先（排他統合のため一方に確定させる）。
+    if (p.sessions === true) {
+      return 'sessions';
+    }
+    if (p.replay === true) {
+      return 'replay';
+    }
+    // legacy キーが存在し明示 false（両 OFF）なら normal を導出する（両フラグ不在は null）。
+    if (p.replay != null || p.sessions != null) {
+      return 'normal';
+    }
+    return null;
   }
 
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
@@ -5212,7 +5531,7 @@ class TradeMarkersRenderer {
 //     （'30'/'60'/'100'）が渡るため、文字列プリセット（非空）または有限数（後方互換）を付与し、
 //     NaN・空文字・null は排除する（backend の _parse_int が '60' を解釈可）。
 function buildMarketProfileUrl({
-  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today, sessions, day,
+  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today, sessions,
 } = {}) {
   let url = `/market_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
@@ -5257,11 +5576,6 @@ function buildMarketProfileUrl({
   if (sessions === true || sessions === 1 || sessions === '1') {
     url += '&sessions=1';
   }
-  // day（単日拡大ビューの左70%パス）— 指定時のみ &day=<YYYY-MM-DD> を付与（省略/null は付けない・後方互換）。
-  //   本タスク: 左70%=その日のティック推移。backend が tick 対応 ref のとき day_path を応答へ付加する。
-  if (day != null && day !== '') {
-    url += `&day=${encodeURIComponent(day)}`;
-  }
   return url;
 }
 
@@ -5277,7 +5591,7 @@ function parseProfileResponse(payload) {
   // 応答トップレベルに src/atom/bar_width（UI メタ）・sessions（日別分割）があれば profile へ素通しする
   // （無ければ既存 profile をそのまま返す＝後方互換・共有オブジェクト非破壊の spread 維持）。
   if (payload.src != null || payload.atom != null || payload.bar_width != null
-      || payload.sessions != null || payload.sessions_total != null || payload.day_path != null) {
+      || payload.sessions != null || payload.sessions_total != null) {
     const meta = {};
     if (payload.src != null) meta.src = payload.src;
     if (payload.atom != null) meta.atom = payload.atom;
@@ -5286,8 +5600,6 @@ function parseProfileResponse(payload) {
     if (payload.sessions != null) meta.sessions = payload.sessions;
     // sessions_total（キャップ前の実日数）— primitive 注記「直近N/全M日」の M（キャップ後 60 の誤読防止）。
     if (payload.sessions_total != null) meta.sessions_total = payload.sessions_total;
-    // day_path[{t,p}]（単日ティック推移）— actor が単日拡大時に primitive の左70%パスへ渡す。
-    if (payload.day_path != null) meta.day_path = payload.day_path;
     return { ...profile, ...meta };
   }
   return profile;
@@ -5345,43 +5657,6 @@ function heatColor(norm, alpha = HEAT_ALPHA) {
   const light = 46 + 12 * t;           // 高いほど明るく（低 norm も視認できる明度）
   return `hsla(${Math.round(hue)}, 95%, ${Math.round(light)}%, ${alpha})`;
 }
-// 単日フォーカスの Value Area（VA）純関数: 日別 tpo を降順（同値は index 昇順で決定論化）に累積し、
-//   総量×va に達するビン集合の中心価格の min/max を {vah, val} で返す（backend _value_area の JS 版・
-//   market_profile.py L148-163 と同ロジック）。tpo（各 bin の量）と bins（{price} 配列）を入力に取り、
-//   総量 0・空配列・長さ不一致では null（VA 描画/テキストなし）。純関数＝副作用なし・単体テスト可能。
-function sessionValueArea(tpo, bins, va = 0.70) {
-  const arr = Array.isArray(tpo) ? tpo : [];
-  const bs = Array.isArray(bins) ? bins : [];
-  const n = Math.min(arr.length, bs.length);
-  let total = 0;
-  for (let i = 0; i < n; i += 1) {
-    total += Number(arr[i]) || 0;
-  }
-  if (total <= 0) {
-    return null;
-  }
-  const threshold = total * va;
-  // 降順（-tpo）・同値は index 昇順で決定論化（backend order と一致）。
-  const order = [];
-  for (let i = 0; i < n; i += 1) {
-    order.push(i);
-  }
-  order.sort((a, b) => ((Number(arr[b]) || 0) - (Number(arr[a]) || 0)) || (a - b));
-  let cum = 0;
-  let vah = -Infinity;
-  let val = Infinity;
-  for (const i of order) {
-    const price = bs[i].price;
-    if (price > vah) vah = price;
-    if (price < val) val = price;
-    cum += Number(arr[i]) || 0;
-    if (cum >= threshold) {
-      break;
-    }
-  }
-  return { vah, val };
-}
-
 // スナップショット時の累積バー減光アルファ（試作 prototype_260630-01 DIM_ALPHA=0.30）と当日強調アルファ。
 const DIM_ALPHA = 0.30;
 const TODAY_ALPHA = 0.98;
@@ -5392,29 +5667,10 @@ const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
 const C_CURSOR_LINE = 'rgba(120, 190, 255, 0.9)';
 // sessions（日別プロファイル分割）: 1 セッションの最小列幅(px 相当)。分析できる幅を確保する（試作 SESS_MIN_COL）。
 const SESS_MIN_COL = 102;
-// 単日フォーカスの分析メトリクス: POC 水平線（赤細線・試作 POC 色を流用）と VA 帯線（灰破線）の色。
-//   テキスト（POC/VAH/VAL/合計/レンジ）は既存注記トーン（10-11px の淡色）で左上に描く。
-const C_FOCUS_POC_LINE = C_POC_LINE;            // POC の赤細線（既存 C_POC_LINE を流用）。
-const C_FOCUS_VA_LINE = 'rgba(154, 164, 178, 0.7)'; // VA 帯線（灰破線）。
-const C_FOCUS_METRIC = 'rgba(220,228,240,.9)';  // メトリクステキスト（既存注記トーン）。
-// 数値の千区切り丸め（toLocaleString）。非有限は空文字（テキスト行をスキップさせる）。
-function fmtNum(v) {
-  return Number.isFinite(v) ? Number(v).toLocaleString() : '';
-}
 // sessions 列内の日別 POC 行を白で強調（試作準拠）・列内バーの最小可視画素。
 const C_SESS_POC = 'rgba(255,255,255,0.95)';
 const SESS_BAR_ALPHA = 0.98;
 const SESS_MIN_BAR_PX = 1.5;
-// 単日拡大の分割レイアウト（本タスク）: 左 FOCUS_PATH_FRACTION（=70%）にその日のティック推移
-//   （価格ライン）、右 30% に MP 横ヒストグラム。dayPath が無い場合は従来の全幅ヒストグラム。
-const FOCUS_PATH_FRACTION = 0.70;
-// MP バー右端の余白（価格軸に密着させない・実機フィードバック。16px→32px へ倍増の指示）。
-const FOCUS_MP_RIGHT_PAD = 32;
-// ティック推移（左70%）側の余白（左端と MP 領域境目・MP 側と対称の 32px）。
-const FOCUS_PATH_PAD = 32;
-// その日のティック推移ライン（視認しやすい水色系・1.5px）。
-const C_DAY_PATH = 'rgba(120, 190, 255, 0.95)';
-const DAY_PATH_WIDTH = 1.5;
 class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -5431,77 +5687,6 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     // sessions_total（キャップ前の実日数）: 注記「直近N/全M日」の M。null=未提供＝受信長へフォールバック。
     //   controller がキャップ後の直近 60 日ぶんだけ返すため、受信 sessions.length では実日数を表せない。
     this._sessionsTotal = null;
-    // 単日フォーカス（列クリックで拡大）: null=一覧（直近 nFit タイル）／date 文字列=その 1 日を全幅で描画。
-    //   フォーカス date が受信 sessions に無ければ通常一覧へフォールバック（防御）。
-    this._sessionFocus = null;
-    // 単日拡大の左70%パス（その日のティック推移 [{t,p}...]）。null=path 無し＝従来の全幅ヒストグラム。
-    //   setSessionFocus(date, dayPath) で設定し、解除/一覧復帰で null へ戻す。
-    this._dayPath = null;
-    // 直近 _drawSessions で描画した「表示中 ss の date 配列」。ヒットテスト（sessionDateAt）はこの
-    //   描画と同一のレイアウト源を使う（DPR>1 で bitmapWidth≠CSS幅でも xRatio=0..1 で index を解決するため）。
-    //   一覧非表示（通常モード or focus 中）は空配列＝列ヒットテスト対象なし。
-    this._lastSessDates = [];
-  }
-
-  // 単日フォーカス（列クリックで拡大）を設定して再描画要求。null で一覧（直近 nFit タイル）へ復帰。
-  //   date 文字列を渡すと _drawSessions がその 1 日だけを全幅で描く。受信 sessions に無い date は
-  //   通常一覧へフォールバックする（防御）。actor が sessions OFF/detach で null へ戻す。
-  setSessionFocus(date, dayPath = null) {
-    this._sessionFocus = date == null ? null : date;
-    // 単日拡大の左70%パス（その日のティック推移 [{t,p}...]）。null=path 無し＝従来の全幅ヒストグラム。
-    //   date=null（一覧復帰）時は path も必ずクリアする。
-    this._dayPath = (this._sessionFocus != null && Array.isArray(dayPath) && dayPath.length > 0)
-      ? dayPath : null;
-    this._update();
-  }
-
-  // ヒットテスト（純メソッド）: xRatio（クリックx / コンテナ CSS 幅・0..1）から、直近描画の一覧レイアウト
-  //   における列の date を返す。範囲外・一覧非表示（通常モード or focus 中＝_lastSessDates 空）は null。
-  //   描画と同じ「表示中 ss の件数」で index=floor(xRatio*count) を解くため DPR に依存しない。
-  sessionDateAt(xRatio) {
-    const dates = this._lastSessDates;
-    const count = dates.length;
-    if (!count) {
-      return null;
-    }
-    const r = Number(xRatio);
-    if (!(r >= 0) || r >= 1) {
-      return null; // 0..1 の範囲外（NaN 含む）は対象外。右端 1.0 も範囲外扱い。
-    }
-    const idx = Math.floor(r * count);
-    return dates[idx] ?? null;
-  }
-
-  // 単日フォーカスの価格レンジ（純メソッド）: date の tpo>0 な bin の価格 min/max（±半ビン）を返す。
-  //   actor がこれを renderer.setPriceAutoscaleOverride へ渡し、フォーカスした日の価格帯へ
-  //   価格軸を自動ズームする（全期間レンジのままだと形が潰れて検証できないため）。
-  //   sessions 未受信・date 不在・全ゼロ日は null（呼び出し側でズームなし）。
-  sessionPriceRange(date) {
-    const all = this._sessions;
-    const bins = this._profile && this._profile.bins;
-    if (!all || !bins || date == null) {
-      return null;
-    }
-    const entry = all.find((s) => s && s.date === date);
-    if (!entry) {
-      return null;
-    }
-    const arr = entry.tpo || [];
-    let min = Infinity;
-    let max = -Infinity;
-    for (let j = 0; j < arr.length; j += 1) {
-      if (arr[j] > 0 && bins[j]) {
-        const p = bins[j].price;
-        if (p < min) min = p;
-        if (p > max) max = p;
-      }
-    }
-    if (!Number.isFinite(min) || !Number.isFinite(max)) {
-      return null; // 全ゼロ日。
-    }
-    // 半ビンぶん広げる（bin 中心価格 → バーの上下端まで）。単一 bin でも 0 幅にしない。
-    const half = bins.length > 1 ? Math.abs(bins[1].price - bins[0].price) / 2 : Math.max(1, max * 0.001);
-    return { min: min - half, max: max + half };
   }
 
   // sessions（日別プロファイル分割）を設定して再描画要求。null で通常モード（累積プロファイル）へ復帰。
@@ -5560,231 +5745,18 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   //   どの日かは列上部の日付ラベル(MM-DD)で示す（試作準拠）。列は交互背景で区切り、
   //   列内は日内 max で正規化した横ヒストグラム（heatColor 再利用）・日別 POC 行を白で強調。
   //   直近 nFit < 全日数のときは左下に「直近N/全M日」注記。累積 POC/VA 線・通常バーは描かない。
-  // 単日フォーカス描画（列クリックで拡大）: 1 日ぶん（day.tpo）を全幅（colW=width）で描く。
-  //   一覧の 1 列と同じ正規化（日内 max）／ヒート配色（heatColor）／日別 POC 行の白強調を用い、
-  //   横バーの長さは (v/dmax)*(width-margin) まで伸ばす（形を大きく検証できる）。ヘッダ相当として
-  //   列上部に日付を大きめ（12px）で描き、右側に「クリックで一覧へ」の小注記を添える。
-  _drawFocusDay(ctx, scope, toY, barH, day) {
-    const width = scope.bitmapSize.width;
-    const height = scope.bitmapSize.height;
-    const bins = this._profile.bins;
-    const arr = day.tpo || [];
-    ctx.save();
-    ctx.font = '10px system-ui';
-    ctx.textBaseline = 'top';
-    // 日内 max（正規化基準）と日別 POC（最頻 bin index）を求める。
-    let dmax = 0;
-    let pocj = -1;
-    for (let j = 0; j < arr.length; j += 1) {
-      if (arr[j] > dmax) {
-        dmax = arr[j];
-        pocj = j;
-      }
-    }
-    // 分割レイアウト: dayPath があればヒストグラムを右 30% に縮め（x0=width*FOCUS_PATH_FRACTION 起点）、
-    //   左 70% にその日のティック推移（価格ライン）を描く。dayPath 無しは従来どおり全幅（x0=4）。
-    //   バーの右端は価格軸に密着させず FOCUS_MP_RIGHT_PAD の余白を確保する（視認ストレス低減・実機FB）。
-    const path = this._dayPath;
-    const split = Array.isArray(path) && path.length > 0;
-    const histW = split ? width * (1 - FOCUS_PATH_FRACTION) : (width - 8);
-    const x0 = split ? width * FOCUS_PATH_FRACTION : 4; // バー起点 x（右30%左端 or 従来の左端 4）。
-    const barMax = Math.max(1, histW - FOCUS_MP_RIGHT_PAD); // バー最大長（右余白ぶん短く）。
-    if (dmax > 0) {
-      for (let j = 0; j < arr.length; j += 1) {
-        const v = arr[j];
-        if (!v) {
-          continue;
-        }
-        const bin = bins[j];
-        if (!bin) {
-          continue;
-        }
-        const y = toY(bin.price);
-        if (y == null) {
-          continue; // 範囲外価格はスキップ。
-        }
-        const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * barMax);
-        ctx.fillStyle = (j === pocj) ? C_SESS_POC : heatColor(v / dmax, SESS_BAR_ALPHA);
-        ctx.fillRect(x0, y - barH / 2, w, barH);
-      }
-    }
-    // 左 70%: その日のティック推移（価格ライン）。x=(t-tMin)/(tMax-tMin)*width*FOCUS_PATH_FRACTION・
-    //   y=toY(p)。1 点しか無い/範囲縮退時はライン無し（防御）。範囲外価格（toY→null）はスキップ。
-    if (split) {
-      this._drawDayPath(ctx, path, toY, width);
-    }
-    // 分析メトリクス: POC（日別最頻 bin 価格）・VA（VAH/VAL・70% 純関数）・合計（tpo 総量）・レンジ
-    //   （tpo>0 の bin 価格 min〜max）。対応する水平線（POC 赤細線・VA 灰破線）も描く。
-    const pocPrice = (pocj >= 0 && bins[pocj]) ? bins[pocj].price : null;
-    const va = sessionValueArea(arr, bins, 0.70);
-    let total = 0;
-    let rMin = Infinity;
-    let rMax = -Infinity;
-    for (let j = 0; j < arr.length; j += 1) {
-      const v = arr[j];
-      total += Number(v) || 0;
-      if (v > 0 && bins[j]) {
-        const p = bins[j].price;
-        if (p < rMin) rMin = p;
-        if (p > rMax) rMax = p;
-      }
-    }
-    // 水平線: POC（赤細線）＋ VAH/VAL（灰破線）。範囲外価格（toY→null）はスキップ。
-    //   各ライン上（直上・左端）に「項目名 価格」ラベルを表示する（実機FB: ラインだけでは値が読めない）。
-    const hline = (price, color, dashed, label) => {
-      if (price == null) {
-        return;
-      }
-      const y = toY(price);
-      if (y == null) {
-        return;
-      }
-      ctx.save();
-      if (dashed && typeof ctx.setLineDash === 'function') {
-        ctx.setLineDash([4, 3]);
-      }
-      ctx.beginPath();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
-      ctx.moveTo(0, y);
-      ctx.lineTo(width, y);
-      ctx.stroke();
-      if (label) {
-        // ライン直上・左端に「項目名 価格」（ライン色・10px）。textBaseline=top なので y-13 で線の上に載る。
-        if (typeof ctx.setLineDash === 'function') {
-          ctx.setLineDash([]);
-        }
-        ctx.fillStyle = color;
-        ctx.font = '10px system-ui';
-        ctx.fillText(`${label} ${fmtNum(price)}`, 6, y - 13);
-      }
-      ctx.restore();
-    };
-    hline(pocPrice, C_FOCUS_POC_LINE, false, 'POC');
-    if (va) {
-      hline(va.vah, C_FOCUS_VA_LINE, true, 'VAH');
-      hline(va.val, C_FOCUS_VA_LINE, true, 'VAL');
-    }
-    // ヘッダ＋分析メトリクスは**右上ブロック（右寄せ）**に描く。左上は crosshair 読み取り欄・凡例の
-    //   オーバーレイ（#chart-overlay-tl）と重なって読めないため（実機検証で判明）。
-    //   1行目=「クリックで一覧へ」小注記 → 日付（12px）→ メトリクス（11px）を右端から積む。
-    ctx.textAlign = 'right';
-    ctx.fillStyle = 'rgba(154,164,178,.8)';
-    ctx.font = '10px system-ui';
-    ctx.fillText('クリックで一覧へ', width - 6, 6);
-    ctx.fillStyle = 'rgba(220,228,240,.95)';
-    ctx.font = '12px system-ui';
-    ctx.fillText(day.date || '', width - 6, 22);
-    // 分析メトリクス（既存注記トーン・11px・toLocaleString 丸め）。
-    //   合計は profile メタの atom（単位・dwell='tick滞在秒(セッション認識)' 等）を添える（無ければ単位なし）。
-    const atom = (this._profile && this._profile.atom != null) ? String(this._profile.atom) : '';
-    const lines = [];
-    if (pocPrice != null) {
-      lines.push(`POC ${fmtNum(pocPrice)}`);
-    }
-    if (va) {
-      lines.push(`VAH ${fmtNum(va.vah)}  VAL ${fmtNum(va.val)}`);
-    }
-    if (total > 0) {
-      lines.push(atom ? `合計 ${fmtNum(total)} ${atom}` : `合計 ${fmtNum(total)}`);
-    }
-    if (Number.isFinite(rMin) && Number.isFinite(rMax)) {
-      lines.push(`レンジ ${fmtNum(rMin)}〜${fmtNum(rMax)}`);
-    }
-    ctx.fillStyle = C_FOCUS_METRIC;
-    ctx.font = '11px system-ui';
-    let ty = 40; // 日付（12px・y=22）の下から積む。
-    for (const line of lines) {
-      ctx.fillText(line, width - 6, ty);
-      ty += 14;
-    }
-    ctx.textAlign = 'left';
-    ctx.restore();
-  }
-
-  // 単日拡大の左70%: その日のティック推移（価格ライン）を polyline で描く（本タスク）。
-  //   x = (t - tMin) / (tMax - tMin) * width * FOCUS_PATH_FRACTION（先頭=0・末尾=右端整列）。
-  //   y = toY(p)（既存の価格軸ズーム済レンジで整列）。範囲外価格（toY→null）は線分を分断する。
-  //   時間レンジ縮退（tMin==tMax）・有効頂点 2 未満はラインを描かない（防御）。
-  _drawDayPath(ctx, path, toY, width) {
-    let tMin = Infinity;
-    let tMax = -Infinity;
-    for (const pt of path) {
-      const t = Number(pt.t);
-      if (Number.isFinite(t)) {
-        if (t < tMin) tMin = t;
-        if (t > tMax) tMax = t;
-      }
-    }
-    const span = tMax - tMin;
-    if (!(span > 0)) {
-      return; // 時間レンジ縮退（全点同時刻等）はラインを描かない。
-    }
-    // 左端と MP 領域との境目に余白を設ける（実機フィードバック・MP 側の右余白と対称）。
-    const left = FOCUS_PATH_PAD;
-    const pathW = Math.max(1, width * FOCUS_PATH_FRACTION - FOCUS_PATH_PAD * 2);
-    // 範囲外価格（toY→null）で線分を分断できるよう、連続する有効点を run にまとめて stroke する。
-    ctx.save();
-    ctx.strokeStyle = C_DAY_PATH;
-    ctx.lineWidth = DAY_PATH_WIDTH;
-    if (typeof ctx.setLineDash === 'function') {
-      ctx.setLineDash([]);
-    }
-    let run = [];
-    const flush = () => {
-      if (run.length >= 2) {
-        ctx.beginPath();
-        ctx.moveTo(run[0].x, run[0].y);
-        for (let i = 1; i < run.length; i += 1) {
-          ctx.lineTo(run[i].x, run[i].y);
-        }
-        ctx.stroke();
-      }
-      run = [];
-    };
-    for (const pt of path) {
-      const t = Number(pt.t);
-      if (!Number.isFinite(t)) {
-        continue;
-      }
-      const y = toY(Number(pt.p));
-      if (y == null) {
-        flush(); // 範囲外価格で分断。
-        continue;
-      }
-      const x = left + ((t - tMin) / span) * pathW;
-      run.push({ x, y });
-    }
-    flush();
-    ctx.restore();
-  }
-
   _drawSessions(ctx, scope, toY, barH) {
     const all = this._sessions;
     if (!all.length) {
-      this._lastSessDates = []; // 一覧非表示＝列ヒットテスト対象なし。
       return;
     }
     const width = scope.bitmapSize.width;
     const height = scope.bitmapSize.height;
     const bins = this._profile.bins;
-    // 単日フォーカス（列クリックで拡大）: focus date が受信 sessions にあれば、その 1 日だけを
-    //   全幅（colW=width）で描いて早期 return する（一覧ヒットテスト対象は空＝再クリックで解除）。
-    //   focus date が受信 sessions に無ければ通常一覧へフォールバック（防御・下へ流す）。
-    if (this._sessionFocus != null) {
-      const day = all.find((s) => s && s.date === this._sessionFocus);
-      if (day) {
-        this._lastSessDates = []; // フォーカス中は列ヒットテスト対象なし（再クリックはどこでも解除）。
-        this._drawFocusDay(ctx, scope, toY, barH, day);
-        return;
-      }
-    }
     // nFit: 列幅 >= SESS_MIN_COL を確保できる日数（直近優先）。1 未満にはしない。
     const nFit = Math.max(1, Math.floor(width / SESS_MIN_COL));
     const ss = all.slice(Math.max(0, all.length - nFit)); // 幅確保のため直近 nFit 日。
     const colW = width / ss.length;                       // 各列の割当幅（全幅タイル）。
-    // ヒットテスト用に「表示中 ss の date 配列」を保持（描画と同一レイアウト源・sessionDateAt が参照）。
-    this._lastSessDates = ss.map((s) => (s ? s.date : null));
     ctx.save();
     ctx.font = '10px system-ui';
     ctx.textBaseline = 'top';
@@ -5909,9 +5881,11 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       hline(vaHigh, C_VA_LINE);
       hline(vaLow, C_VA_LINE);
 
-      // リプレイ時点 T の縦線（replay 中のみ・移植元 prototype_260630-01 の遡り縦線）。
-      //   x = timeScale().timeToCoordinate(T)。範囲外（null）はスキップ。上下（y=0..height）に伸ばす。
-      if (this._cursorTime != null) {
+      // リプレイ時点 T の縦線（移植元 prototype_260630-01/js/app.js L152-158）。
+      //   ★スナップショット（当時トリム）ON 時は描かない：ローソクが T までトリムされ T＝右端の
+      //     トリム境界に来るため、縦線は不要（プロト準拠・コメント「当時表示OFF時のみ。ON時はTが
+      //     右端なので不要」）。非スナップショット（リプレイのみ）のとき timeToCoordinate(T) で実足に立てる。
+      if (this._cursorTime != null && !this._snapshot) {
         const ts = this._chart.timeScale && this._chart.timeScale();
         const x = ts && typeof ts.timeToCoordinate === 'function'
           ? ts.timeToCoordinate(this._cursorTime)
@@ -5973,9 +5947,6 @@ class MarketProfileActor {
     this._attached = false;
     // sessions（日別プロファイル分割）ON/OFF。既定 false（通常の累積プロファイル・後方互換）。
     this._sessions = false;
-    // 単日フォーカス（列クリックで拡大）。null=一覧／date=その 1 日を全幅表示。sessions OFF・
-    //   setEnabled(false)・detach で必ず null へ戻す（拡大状態を安全に解除・後方互換）。
-    this._sessionFocus = null;
     // 取得パラメータ（bins/va/src/range）。setParams で更新し refresh 時に getContext へ重畳する。
     //   未設定時は空＝getContext のみ（サーバ既定・後方互換）。
     this._params = {};
@@ -6037,9 +6008,16 @@ class MarketProfileActor {
       }
     }
     this._params = next;
-    // sessions（日別プロファイル分割）トグル。明示指定時のみ反映する（undefined は現状維持）。
-    //   true で refresh 時に context へ sessions:true を載せ、応答の profile.sessions を primitive/renderer へ
-    //   反映する。false で通常モードへ復帰（primitive.setSessions(null)・ローソク透明化解除）。
+    // mode（表示モード・排他統合）: 旧 replay/sessions の 2 トグルを 1 つの排他 ENUM へ統合。
+    //   明示指定時のみ反映する（undefined は現状維持）。mode は legacy replay/sessions に優先する
+    //   （競合時は mode を採用＝二重管理を避ける）。normal|replay|sessions のいずれかへ状態遷移する。
+    if (params.mode != null) {
+      this._applyMode(params.mode);
+      return; // mode 指定時は legacy 分岐を評価しない（mode 優先）。
+    }
+    // legacy 受理（後方互換・mode 未指定時のみ）。旧 replay:true / sessions:true を引き続き受理する。
+    //   sessions（日別プロファイル分割）トグル: true で refresh 時に context へ sessions:true を載せ、
+    //   応答の profile.sessions を primitive/renderer へ反映。false で通常モードへ復帰。
     if (params.sessions != null) {
       this._sessions = !!params.sessions;
     }
@@ -6049,59 +6027,29 @@ class MarketProfileActor {
     }
   }
 
-  // 単日フォーカス（列クリックで拡大）を primitive へ伝播する。date=拡大／null=一覧。
-  //   sessions 表示中でないとき（this._sessions=false）は状態だけ保持し描画には影響しない
-  //   （primitive は sessions non-null のときのみ focus を描く）。composition の click 配線から呼ぶ。
-  //   本タスク: date 指定時は day 付きで単発再取得し、応答の day_path を primitive へ渡す（左70%＝
-  //   その日のティック推移）。取得失敗/day_path 無し（非 tick ref 等）は path 無しフォールバック
-  //   （現行の全幅ヒストグラム）。解除（null）で path をクリアする。await 不要（即時 focus は同期反映）。
-  async setSessionFocus(date) {
-    this._sessionFocus = date == null ? null : date;
-    // 即時反映: focus 状態（path はまだ無し）・価格軸ズーム・時間軸ロックは fetch を待たずに適用する。
-    if (this._primitive && typeof this._primitive.setSessionFocus === 'function') {
-      this._primitive.setSessionFocus(this._sessionFocus, null);
-    }
-    // 価格軸をフォーカス日の価格帯へ自動ズーム（全期間レンジのままだと形が潰れて検証できない）。
-    //   primitive.sessionPriceRange（tpo>0 の bin 価格 min/max±半ビン）を 4% パディングして
-    //   renderer.setPriceAutoscaleOverride へ。解除（null）で既定オートスケールへ復帰。
-    this._applyFocusPriceZoom(this._sessionFocus);
-    // 単日拡大中は時間軸（下部ルーラ）の操作をロックする（横パン/時間軸ズーム停止・価格軸は残す）。
-    //   focus=date でロック、focus=null で lwc 既定へ復元。renderer 非提供時は no-op。
-    this._applyTimeScaleLock(this._sessionFocus != null);
-    // 解除（null）は path 無しで確定＝ここで終了（fetch しない）。
-    if (this._sessionFocus == null) {
+  // 表示モードの排他遷移。既存の _setReplay / _applySessions 復元経路を再利用する（重複実装しない）。
+  //   - 'sessions': replay 一式 OFF（_setReplay(false)＝バー非表示・T 縦線/トリム/スナップショット解除・
+  //     カーソル null・チャート操作復元）＋ sessions ON（_sessions=true）。応答反映は後続 refresh で行う。
+  //   - 'replay': sessions 一式 OFF（_sessions=false ＋ _applySessions(null)＝setSessions(null)・透明化解除）
+  //     ＋ replay ON（_setReplay(true)）。
+  //   - 'normal': 両 OFF 一式（_setReplay(false) ＋ _sessions=false ＋ _applySessions(null)）。
+  //   排他が構造的に保証される（同時 ON が不可能）。未知の mode は 'normal' 扱い（安全側）。
+  _applyMode(mode) {
+    if (mode === 'sessions') {
+      this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
+      this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
       return;
     }
-    // day 付きで単発再取得（sessions コンテキスト＋day・coalesce 不要）→ day_path を primitive へ伝播。
-    await this._fetchDayPath(this._sessionFocus);
-  }
-
-  // 単日拡大の左70%パス（day_path）を day 付き単発取得して primitive へ渡す（本タスク）。
-  //   sessions コンテキストを維持したまま day=<date> を重畳して 1 回だけ fetch する。取得中に focus が
-  //   変わった/解除された場合は stale 反映を避ける（応答時点の focus と date が一致するときだけ適用）。
-  //   取得失敗（null）・day_path 無しは path 無しフォールバック（primitive は全幅ヒストグラムへ）。
-  async _fetchDayPath(date) {
-    let profile = null;
-    if (this._client && typeof this._client.fetchProfile === 'function') {
-      profile = await this._client.fetchProfile({
-        ...this._getContext(), ...this._params, ...this._sessionsExtra(), day: date,
-      });
+    if (mode === 'replay') {
+      this._sessions = false;   // sessions OFF。
+      this._applySessions(null); // sessions 一式解除（focus/ズーム/ロック・setSessions(null)・透明化解除）。
+      this._setReplay(true);    // replay ON（バー表示）。
+      return;
     }
-    if (this._sessionFocus !== date) {
-      return; // focus が変わった/解除された（stale 応答は捨てる）。
-    }
-    const dayPath = profile && Array.isArray(profile.day_path) ? profile.day_path : null;
-    if (this._primitive && typeof this._primitive.setSessionFocus === 'function') {
-      this._primitive.setSessionFocus(date, dayPath);
-    }
-  }
-
-  // 単日拡大中の時間軸ロックを renderer へ委譲する（on=true でロック／false で復元）。
-  //   renderer.setTimeScaleLock 非提供時は no-op（後方互換）。冪等。
-  _applyTimeScaleLock(on) {
-    if (this._renderer && typeof this._renderer.setTimeScaleLock === 'function') {
-      this._renderer.setTimeScaleLock(!!on);
-    }
+    // 'normal'（および未知値）: 両 OFF 一式。
+    this._setReplay(false);
+    this._sessions = false;
+    this._applySessions(null);
   }
 
   // MP 表示中の右マージン（プロファイル専用領域）を renderer へ委譲する。
@@ -6113,54 +6061,10 @@ class MarketProfileActor {
     }
   }
 
-  // フォーカス日の価格帯へ価格軸をズーム（date=null で解除）。renderer/primitive 非提供時は no-op。
-  _applyFocusPriceZoom(date) {
-    if (!this._renderer || typeof this._renderer.setPriceAutoscaleOverride !== 'function') {
-      return;
-    }
-    let range = null;
-    if (date != null && this._primitive && typeof this._primitive.sessionPriceRange === 'function') {
-      const r = this._primitive.sessionPriceRange(date);
-      if (r) {
-        const pad = (r.max - r.min) * 0.04;
-        range = { min: r.min - pad, max: r.max + pad };
-      }
-    }
-    this._renderer.setPriceAutoscaleOverride(range);
-  }
-
-  // 現在の単日フォーカス状態（date|null）を返す。click 配線が「focus 中→一覧／一覧中→拡大」を分岐する。
-  sessionFocus() {
-    return this._sessionFocus;
-  }
-
-  // sessions（日別プロファイル分割）を表示中か。click 配線が「sessions 中のみクリック拡大を有効化」する。
-  //   MP 有効かつ sessions トグル ON のときだけ true（OFF/通常モードでは既存クリック挙動を変えない）。
+  // sessions（日別プロファイル分割）を表示中か。
+  //   MP 有効かつ sessions トグル ON のときだけ true（OFF/通常モードでは既存挙動を変えない）。
   isSessions() {
     return this._enabled && !!this._sessions;
-  }
-
-  // ヒットテスト委譲: xRatio（クリックx / コンテナ CSS 幅・0..1）→ 一覧の列 date（範囲外/非表示は null）。
-  //   primitive が直近描画の一覧レイアウトで index→date を解く（DPR 非依存）。composition から呼ぶ。
-  sessionDateAt(xRatio) {
-    if (this._primitive && typeof this._primitive.sessionDateAt === 'function') {
-      return this._primitive.sessionDateAt(xRatio);
-    }
-    return null;
-  }
-
-  // 単日フォーカスを解除する（null 伝播）。sessions OFF・setEnabled(false)・detach から呼ぶ共通処理。
-  //   primitive 非提供/未フォーカス時も無害（冪等）。
-  _clearSessionFocus() {
-    if (this._sessionFocus == null) {
-      return;
-    }
-    this._sessionFocus = null;
-    if (this._primitive && typeof this._primitive.setSessionFocus === 'function') {
-      this._primitive.setSessionFocus(null, null); // path もクリア（左70%パスを残さない）。
-    }
-    this._applyFocusPriceZoom(null); // 価格軸ズームも解除（既定オートスケールへ復帰）。
-    this._applyTimeScaleLock(false); // 時間軸ロックも必ず解除（既定へ復元）。
   }
 
   // sessions（日別プロファイル分割）を primitive/renderer へ反映する。
@@ -6169,10 +6073,6 @@ class MarketProfileActor {
   //   該当メソッド非提供時は skip（後方互換）。移植元 prototype_260630-01 drawSessions。
   _applySessions(profile) {
     const on = !!this._sessions;
-    // sessions OFF 時は単日フォーカスを必ず解除する（拡大状態を残さない）。
-    if (!on) {
-      this._clearSessionFocus();
-    }
     if (this._primitive && typeof this._primitive.setSessions === 'function') {
       const list = on && profile && Array.isArray(profile.sessions) ? profile.sessions : null;
       // sessions_total（キャップ前の実日数）を第 2 引数で渡す（注記「直近N/全M日」の M・修正1）。
@@ -6193,6 +6093,19 @@ class MarketProfileActor {
       // ON 時に最新 candles をバーへ供給（min/max・index→time の元）。timeframe 切替後も現在足に追従。
       if (on && typeof this._replayBar.setCandles === 'function') {
         this._replayBar.setCandles(this._getCandles());
+      }
+      // 初期カーソルを現在のスライダ位置（既定=右端=最新）に設定して T 縦線を即描画する。
+      //   スライダは右端から始まるため、スクラブ前でも線が出る（ユーザFB「スナップショットONで
+      //   T 縦線が出ない」の修正）。fetch はしない（線＝setCursorTime のみ）。onReplayControlsChange の
+      //   初期化元にもなり、スクラブ前にスナップショットを ON にしても当時 T が確定する。
+      if (on && this._replayTo == null && typeof this._replayBar.currentTime === 'function') {
+        const t0 = this._replayBar.currentTime();
+        if (t0 != null) {
+          this._replayTo = t0;
+          if (this._primitive && typeof this._primitive.setCursorTime === 'function') {
+            this._primitive.setCursorTime(t0);
+          }
+        }
       }
       if (typeof this._replayBar.setVisible === 'function') {
         this._replayBar.setVisible(on);
@@ -6223,10 +6136,19 @@ class MarketProfileActor {
   // 増分2: リプレイバーのモード（アンカー/ローリング）・スナップショット変更を受け、現在 T で再取得する。
   //   replayBar.onChange から配線する。無効時（replay OFF / disabled / T 未設定）は no-op。
   async onReplayControlsChange() {
-    if (!this._enabled || !this._replay || this._replayTo == null) {
+    if (!this._enabled || !this._replay) {
       return;
     }
-    await this.setReplayCursor(this._replayTo);
+    // カーソル未設定（スクラブ前）でも、現在のスライダ位置（既定=最新）を当時 T として初期化する。
+    //   これによりスクラブせずスナップショットを ON にしても当時プロファイル・T 縦線が反映される。
+    let t = this._replayTo;
+    if (t == null && this._replayBar && typeof this._replayBar.currentTime === 'function') {
+      t = this._replayBar.currentTime();
+    }
+    if (t == null) {
+      return;
+    }
+    await this.setReplayCursor(t);
   }
 
   isReplay() {
@@ -6294,8 +6216,6 @@ class MarketProfileActor {
     } else {
       this._primitive.setVisible(false);
       this._applyProfileMargin(false); // 右マージン復元（ローソクを従来位置へ）。
-      // 単日フォーカスを解除する（MP OFF で拡大状態を残さない・安全に一覧へ）。
-      this._clearSessionFocus();
       // sessions のローソク透明化・分割描画を必ず復元する（MP OFF で従来のローソク/累積へ戻す）。
       if (this._primitive && typeof this._primitive.setSessions === 'function') {
         this._primitive.setSessions(null);
@@ -6342,8 +6262,6 @@ class MarketProfileActor {
     }
     this._attached = false;
     this._applyProfileMargin(false); // 右マージン復元（MP 削除で取り残さない）。
-    // 単日フォーカスを解除する（MP 削除で拡大状態を残さない）。
-    this._clearSessionFocus();
     // sessions のローソク透明化を必ず復元する（MP 削除でローソクを不透明へ戻す＝取り残さない）。
     if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
       this._renderer.setCandleTransparency(false);
@@ -6535,6 +6453,27 @@ class MarketProfileReplayBar {
     return this._label;
   }
 
+  // 現在スライダ位置に対応する足の time（UNIX 秒）。既定は右端＝最新。空 candles は null。
+  //   スクラブ前でも「現在の T」を返せるようにし、actor が初期カーソル（T 縦線）に使う。
+  currentTime() {
+    if (this._candles.length === 0) {
+      return null;
+    }
+    return this._candles[this.currentIndex()].time;
+  }
+
+  // 現在スライダ位置の足 index（0..足数-1）。空 candles は 0。スワイプの相対デルタ基準（startIdx）。
+  currentIndex() {
+    if (this._candles.length === 0) {
+      return 0;
+    }
+    let idx = this._range ? parseInt(this._range.value, 10) : this._candles.length - 1;
+    if (Number.isNaN(idx)) {
+      idx = this._candles.length - 1;
+    }
+    return Math.max(0, Math.min(idx, this._candles.length - 1));
+  }
+
   // スライダ input: value（index）→ 対応足 time を決めて onScrub へ通知し、日時ラベルを更新する。
   _onInput() {
     if (!this._range || this._candles.length === 0) {
@@ -6603,28 +6542,6 @@ const RECENT_BARS = 1500;
 // protocol → モード判定。http/https は served（B方式）、それ以外（file: 等）は A方式。
 function modeForProtocol(protocol) {
   return protocol === 'http:' || protocol === 'https:' ? 'b' : 'a';
-}
-
-// sessions 列クリック（単日拡大）の純判定。DOM/actor を触らず「次に何をすべきか」だけを返す。
-//   入力: isSessions（MP が sessions 表示中か）・focus（現在の単日フォーカス date|null）・
-//     dateAt（xRatio→列 date|null。actor.sessionDateAt を渡す）・xRatio（クリックx / CSS幅・0..1）。
-//   規則（依頼の click 配線）:
-//     - sessions 非表示中 → 'none'（既存クリック挙動を変えない）。
-//     - focus 中（どこでも再クリック）→ 一覧へ戻す（action='clear'）。
-//     - 一覧中 → 列の date を解決。date あり → 'focus'（その日を拡大）／範囲外(null) → 'none'。
-//   戻り値: { action: 'none' } | { action: 'clear' } | { action: 'focus', date }。
-function resolveSessionClick({ isSessions, focus, dateAt, xRatio }) {
-  if (!isSessions) {
-    return { action: 'none' };
-  }
-  if (focus != null) {
-    return { action: 'clear' }; // focus 中はどこをクリックしても一覧へ戻る。
-  }
-  const date = typeof dateAt === 'function' ? dateAt(xRatio) : null;
-  if (date == null) {
-    return { action: 'none' }; // 列の範囲外（ラベル余白等）は無視。
-  }
-  return { action: 'focus', date };
 }
 
 // GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
@@ -6715,6 +6632,9 @@ async function bootstrap({
       panes: { enableResize: true, separatorColor: '#2a2e39', separatorHoverColor: 'rgba(178,181,189,0.2)' },
     },
     grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
+    // クロスヘアを Normal（自由追従）に。既定 Magnet(1) は水平線を最寄り足の価格へスナップさせるため、
+    //   カーソル位置どおりに動かしたいという要望で Normal(0) に変更（enum 無い環境向けに 0 フォールバック）。
+    crosshair: { mode: (lwc.CrosshairMode && lwc.CrosshairMode.Normal) || 0 },
     rightPriceScale: { borderColor: '#2a2e39' },
     // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
     timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
@@ -6751,6 +6671,24 @@ async function bootstrap({
   const renderer = new ChartRenderer({
     chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),
   });
+
+  // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
+  //   coordinateToPrice(paneHeight) で価格レンジ下端を読むために必要。container/timeScale 非対応
+  //   （SSR/テスト）では設定できないため no-op（handlePriceWheel は pane 高未供給時に安全に false）。
+  //   リサイズで container 高が変わるため、autoSize 変化に追随できるよう wheel 発火時にも再計算する。
+  const updatePaneHeight = () => {
+    if (typeof renderer.setPaneHeight !== 'function') {
+      return;
+    }
+    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
+    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
+    const paneHeight = ch - th;
+    if (paneHeight > 0) {
+      renderer.setPaneHeight(paneHeight);
+    }
+  };
+  updatePaneHeight();
 
   // A方式の初期ローソクは renderer.setCandles で描画する（直接 mainSeries.setData ではなく
   //   経由させることで読み取り欄の最新足の単一源 _lastBar が立ち、hover 解除でも OHLC が出る）。
@@ -6801,31 +6739,39 @@ async function bootstrap({
   });
 
   // 増分2 スワイプ: チャートコンテナの横ドラッグで T をスクラブする（replay ON 中のみ）。
-  //   pointerdown で通常スクロール/ズームを停止（renderer.setUserInteraction(false)）→ pointermove で
-  //   x→logical→足 index→T をスライダと同期（replayBar.scrubToLogical）→ pointerup で操作を復元。
-  //   lightweight-charts の座標/操作 API は renderer に隔離済み（chart 直叩きしない）。
+  //   ★プロト準拠の**相対デルタ方式**（prototype_260630-01/js/app.js L442-457）:
+  //     pointerdown で開始 x（startX）と開始 index（startIdx）を記録するだけ（＝クリック位置へ飛ばさない）。
+  //     pointermove で dIdx=round((x - startX)/pixelsPerBar) を startIdx に足して T を更新する。
+  //     pixelsPerBar は renderer 側で barSpacing を返しつつ極小時は 8px を下限にする（ズームアウト時に
+  //     わずかなマウス移動でスライダが暴走する不具合の修正）。旧実装は coordinateToLogical の絶対
+  //     マッピング（下限なし）で過敏だった。lwc 座標 API は renderer に隔離済み。
   //   container/doc 不在（SSR/テスト）や pointer 非対応は no-op（防御）。
   if (container && typeof container.addEventListener === 'function') {
     let swiping = false;
+    let swipeStartX = 0;
+    let swipeStartIdx = 0;
     const isReplayOn = () => !!(controller && controller._marketProfile
       && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
     const rectLeft = () => (typeof container.getBoundingClientRect === 'function'
       ? container.getBoundingClientRect().left : 0);
     container.addEventListener('pointerdown', (e) => {
-      if (!isReplayOn()) {
-        return;
+      if (!isReplayOn() || e.button !== 0) {
+        return; // 左ボタンのみ（右クリック等でスワイプ開始しない・2Dパン側と整合）。
       }
       swiping = true;
       renderer.setUserInteraction(false); // 通常スクロール/ズームを停止（スワイプ捕捉）。
-      const logical = renderer.coordinateToLogical(e.clientX - rectLeft());
-      replayBar.scrubToLogical(logical);
+      // 開始点のみ記録（クリック位置へは飛ばさない＝プロト mousedown 相当）。
+      swipeStartX = e.clientX - rectLeft();
+      swipeStartIdx = typeof replayBar.currentIndex === 'function' ? replayBar.currentIndex() : 0;
     });
     container.addEventListener('pointermove', (e) => {
       if (!swiping || !isReplayOn()) {
         return;
       }
-      const logical = renderer.coordinateToLogical(e.clientX - rectLeft());
-      replayBar.scrubToLogical(logical);
+      const x = e.clientX - rectLeft();
+      const px = renderer.pixelsPerBar(); // barSpacing（極小時は 8px 下限＝プロト準拠）。
+      const dIdx = Math.round((x - swipeStartX) / px); // 左ドラッグ=過去へ（スライダと同方向）。
+      replayBar.scrubToLogical(swipeStartIdx + dIdx); // clamp は scrubToLogical 内で実施。
     });
     const endSwipe = () => {
       if (!swiping) {
@@ -6835,70 +6781,84 @@ async function bootstrap({
       renderer.setUserInteraction(true); // 通常操作を復元。
     };
 
-    // sessions 列クリックで単日拡大（フロントのみ）。pointerdown+up の移動が小さい＝クリック判定。
-    //   リプレイ swipe 捕捉中（swiping=true）は無視して衝突を避ける（replay ON のドラッグは既存挙動）。
-    //   sessions 表示中のみ作用し、非表示中は既存クリック挙動を一切変えない。
-    //   重要（順序）: この click-pointerup を endSwipe の pointerup より**先に**登録する。DOM は登録順に
-    //   発火するため、後述の endSwipe が swiping=false にする前に本ハンドラが swiping を観測でき、
-    //   スワイプ終端をクリックと誤認しない（衝突回避の要）。
-    const CLICK_MOVE_PX = 6; // これ以下の移動はクリック、超えたらドラッグ扱い（拡大しない）。
-    let downX = null;
-    let downY = null;
-    const mpActor = () => (controller && controller._marketProfile) || null;
-    container.addEventListener('pointerdown', (e) => {
-      downX = e.clientX;
-      downY = e.clientY;
-    });
-    container.addEventListener('pointerup', (e) => {
-      const sx = downX;
-      const sy = downY;
-      downX = null;
-      downY = null;
-      if (swiping || sx == null) {
-        return; // swipe 捕捉中/開始点なしはクリック扱いしない（endSwipe より先に走る＝swiping を観測可能）。
-      }
-      if (Math.abs(e.clientX - sx) > CLICK_MOVE_PX || Math.abs(e.clientY - sy) > CLICK_MOVE_PX) {
-        return; // 移動が大きい＝ドラッグ。拡大トグルしない。
-      }
-      const actor = mpActor();
-      if (!actor || typeof actor.isSessions !== 'function' || !actor.isSessions()) {
-        return; // sessions 非表示中は何もしない（既存クリック挙動不変）。
-      }
-      // xRatio = クリックx / コンテナ CSS 幅（0..1）。primitive が index→date を DPR 非依存で解く。
-      const cssWidth = typeof container.getBoundingClientRect === 'function'
-        ? container.getBoundingClientRect().width : 0;
-      const xRatio = cssWidth > 0 ? (e.clientX - rectLeft()) / cssWidth : 0;
-      const decision = resolveSessionClick({
-        isSessions: true,
-        focus: typeof actor.sessionFocus === 'function' ? actor.sessionFocus() : null,
-        dateAt: (r) => actor.sessionDateAt(r),
-        xRatio,
-      });
-      if (decision.action === 'clear') {
-        actor.setSessionFocus(null); // focus 中→一覧へ。
-      } else if (decision.action === 'focus') {
-        actor.setSessionFocus(decision.date); // 一覧中→単日拡大。
-      }
-    });
-
-    // Esc で単日フォーカスを解除（sessions focus 中のみ）。doc 不在（テスト）は no-op。
-    if (doc && typeof doc.addEventListener === 'function') {
-      doc.addEventListener('keydown', (e) => {
-        if (e.key !== 'Escape') {
-          return;
-        }
-        const actor = mpActor();
-        if (actor && typeof actor.sessionFocus === 'function' && actor.sessionFocus() != null) {
-          actor.setSessionFocus(null);
-        }
-      });
-    }
-
-    // endSwipe は click-pointerup ハンドラの**後**に登録する（上記「順序」注記を参照）。こうすることで
-    //   スワイプ終端の pointerup では click ハンドラが先に swiping=true を観測して return し、その後
-    //   endSwipe が swiping=false へ戻す＝スワイプをクリックと誤認しない。
     container.addEventListener('pointerup', endSwipe);
     container.addEventListener('pointerleave', endSwipe);
+  }
+
+  // 価格軸ホイールズームの配線（wheel / dblclick）。既存操作（本体ホイール=時間軸ズーム・軸ドラッグ）は不変。
+  //   wheel: 価格軸領域上（renderer が x>=timeScale().width() で判定）のときだけ価格ズームし preventDefault。
+  //     handlePriceWheel が false（本体領域・データ無し）なら preventDefault せず時間軸ズームへ委ねる。
+  //     passive:false で登録（preventDefault を有効化）。リプレイの pointer swipe とは別イベントで非干渉。
+  //   dblclick: 価格軸領域なら自動スケールへ復帰（resetPriceZoom）。
+  //   座標は **clientX/Y - コンテナ矩形**（コンテナ左上基準）で計算する。offsetX はイベント target
+  //   （lwc の内部 canvas＝価格軸 canvas 等）基準になり、軸上では小さい値→本体領域と誤判定して
+  //   価格ズームが発火しない（実機で確認したバグの修正）。lwc 座標/priceScale API は renderer に隔離済み。
+  if (container && typeof container.addEventListener === 'function') {
+    const containerXY = (e) => {
+      const r = typeof container.getBoundingClientRect === 'function'
+        ? container.getBoundingClientRect() : { left: 0, top: 0 };
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    };
+    container.addEventListener('wheel', (e) => {
+      // リサイズ追随: 価格変換前に pane 高を再計算する（autoSize で container 高が変わるため）。
+      updatePaneHeight();
+      const { x, y } = containerXY(e);
+      const handled = renderer.handlePriceWheel(x, y, e.deltaY);
+      if (handled) {
+        // lwc は自前の wheel リスナーで defaultPrevented を尊重せず時間軸ズームも実行してしまう。
+        // capture 段階（本リスナー）で stopPropagation し、lwc へ届く前に止める（実機で確認したバグの修正）。
+        if (typeof e.preventDefault === 'function') {
+          e.preventDefault();
+        }
+        if (typeof e.stopPropagation === 'function') {
+          e.stopPropagation();
+        }
+      }
+    }, { passive: false, capture: true });
+    container.addEventListener('dblclick', (e) => {
+      if (renderer.isOverPriceAxis(containerXY(e).x)) {
+        renderer.resetPriceZoom();
+      }
+    });
+
+    // チャート本体の**完全自由 2D ドラッグ**（TradingView 流・ユーザー選択）。
+    //   横方向は lwc の時間パン（既存）、縦成分は毎フレーム renderer.panPriceByPixels(dy) で価格をパンする
+    //   ＝上下左右・斜めが同時に動く。純横ドラッグ（dy=0）は価格を触らないので自動スケールは保たれる。
+    //   縦に動かすと価格は手動モード（override）になり、価格軸ダブルクリック（resetPriceZoom）で
+    //   自動スケールへ復帰する。preventDefault/stopPropagation はしない（lwc の時間パンを奪わない）。
+    //   価格軸上のドラッグは lwc ネイティブの縦パンに委ねる。リプレイ中は横スワイプが本体ドラッグを
+    //   占有するので 2D パンは無効化する。
+    let panActive = false;
+    let lastPanY = 0;
+    const isReplayOn = () => !!(controller && controller._marketProfile
+      && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
+    container.addEventListener('pointerdown', (e) => {
+      if (isReplayOn() || e.button !== 0) {
+        return;
+      }
+      const { x } = containerXY(e);
+      if (renderer.isOverPriceAxis(x)) {
+        return; // 価格軸上は lwc ネイティブの縦パンに委ねる。
+      }
+      panActive = true;
+      lastPanY = e.clientY;
+    });
+    container.addEventListener('pointermove', (e) => {
+      if (!panActive) {
+        return;
+      }
+      if ((e.buttons & 1) === 0) { // ボタンが離れていたら終了（pointerup 取りこぼし対策）。
+        panActive = false;
+        return;
+      }
+      const dy = e.clientY - lastPanY;
+      lastPanY = e.clientY;
+      updatePaneHeight(); // autoSize 追随（リサイズ後の pane 高を反映）。
+      renderer.panPriceByPixels(dy); // dy=0（純横）は panPriceByPixels 内で no-op＝自動スケール維持。
+    });
+    const endPan = () => { panActive = false; };
+    container.addEventListener('pointerup', endPan);
+    container.addEventListener('pointerleave', endPan);
   }
 
   controller = new IndicatorController({

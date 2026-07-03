@@ -61,17 +61,30 @@ test('catalog: market_profile exposes src ENUM [candle,dwell,m1] default candle 
   assert.equal(src.group, paramOf(d, 'bins').group);
 });
 
-// market_profile に replay（リプレイ）BOOL を追加。試作 prototype_260630-01 の時間カーソル移植（増分1）。
-//   既定 false・label 'リプレイ'・group は表示系（bins/va と別セクション）。gear ダイアログのチェックで ON/OFF。
-test('catalog: market_profile exposes replay BOOL default false labeled リプレイ (表示系 group)', () => {
+// market_profile の表示モード（mode）ENUM segmented トグル。旧 replay/sessions の 2 チェックを
+//   1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合（解像度トグル resmode と同方式）。
+//   既定 'normal'・label '表示モード'・controlType 'segmented'・表示系 group（bins と別）。
+test('catalog: market_profile exposes mode ENUM [normal,replay,sessions] default normal as segmented toggle', () => {
   const d = get('market_profile');
-  const replay = paramOf(d, 'replay');
-  assert.ok(replay, 'replay param exists');
-  assert.equal(replay.type, ParamType.BOOL);
-  assert.equal(replay.default, false);
-  assert.equal(replay.label, 'リプレイ');
+  const mode = paramOf(d, 'mode');
+  assert.ok(mode, 'mode param exists');
+  assert.equal(mode.type, ParamType.ENUM);
+  assert.equal(mode.default, 'normal');
+  assert.deepEqual(mode.enumValues, ['normal', 'replay', 'sessions']);
+  assert.equal(mode.label, '表示モード');
+  assert.equal(mode.controlType, 'segmented');
+  assert.equal(mode.enumLabels.normal, '通常');
+  assert.equal(mode.enumLabels.replay, 'リプレイ');
+  assert.equal(mode.enumLabels.sessions, '日別プロファイル');
   // 表示系 group（計算系 group.calc とは別＝bins と同じ group ではない）。
-  assert.notEqual(replay.group, paramOf(d, 'bins').group);
+  assert.notEqual(mode.group, paramOf(d, 'bins').group);
+});
+
+// 統合により旧 replay / sessions の BOOL param は catalog から撤去された（mode に一本化）。
+test('catalog: market_profile no longer exposes replay/sessions BOOL params (統合)', () => {
+  const d = get('market_profile');
+  assert.equal(paramOf(d, 'replay'), undefined, 'replay param は撤去された');
+  assert.equal(paramOf(d, 'sessions'), undefined, 'sessions param は撤去された');
 });
 
 // market_profile に resmode（解像度）ENUM を追加。試作 prototype_260630-01 の解像度トグル
@@ -348,15 +361,5 @@ test('catalog params: existing q-chain constraints survive UI-metadata extension
 });
 
 
-// market_profile に sessions（日別プロファイル分割）BOOL を追加。試作 prototype_260630-01 移植。
-//   既定 false・label '日別プロファイル'・group は表示系（bins/va と別セクション）。gear のチェックで ON/OFF。
-test('catalog: market_profile exposes sessions BOOL default false labeled 日別プロファイル (表示系 group)', () => {
-  const d = get('market_profile');
-  const sessions = paramOf(d, 'sessions');
-  assert.ok(sessions, 'sessions param exists');
-  assert.equal(sessions.type, ParamType.BOOL);
-  assert.equal(sessions.default, false);
-  assert.equal(sessions.label, '日別プロファイル');
-  // 表示系 group（計算系 group.calc とは別＝bins と同じ group ではない）。
-  assert.notEqual(sessions.group, paramOf(d, 'bins').group);
-});
+// 日別プロファイルは mode='sessions' へ統合済み（旧 sessions BOOL は撤去）。
+//   mode ENUM の enumLabels.sessions='日別プロファイル' 検証は上位の mode テストで担保する。

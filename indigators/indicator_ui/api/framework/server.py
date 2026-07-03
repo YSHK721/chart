@@ -220,11 +220,10 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         frm = (query.get("from") or [None])[0]  # ローリング窓の下限 time（UNIX 秒・省略時=全期間）。増分2 A。
         today = (query.get("today") or [None])[0]  # スナップショット当日強調（'1' で today[]/today_max 付加）。増分2 C。
         sessions = (query.get("sessions") or [None])[0]  # 日別プロファイル分割（'1' で sessions[] 付加）。移植元 prototype_260630-01。
-        day = (query.get("day") or [None])[0]  # 単日拡大ビューの左70%パス（'YYYY-MM-DD' で day_path 付加）。
         try:
             status, payload = handle_market_profile(
                 ref, timeframe, limit, bins, va, src, barw, to,
-                **{"from": frm, "today": today, "sessions": sessions, "day": day},
+                **{"from": frm, "today": today, "sessions": sessions},
             )
         except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
             self._send_json(500, _nested_error("internal", f"market_profile 取得に失敗しました: {exc}"))

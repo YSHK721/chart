@@ -93,6 +93,31 @@ test('setCandles wires the slider range min=0/max=足数-1 and defaults to the r
   assert.equal(Number(range.value), CANDLES.length - 1); // 既定=右端=最新
 });
 
+test('currentTime(): スクラブ前は最新（右端）の time を返し、スクラブ後は選択足の time を返す', () => {
+  // Arrange
+  const { bar, container } = makeBar();
+  assert.equal(bar.currentTime(), null, '空 candles は null');
+  bar.setCandles(CANDLES);
+  // Assert: 既定=右端=最新（3000）。
+  assert.equal(bar.currentTime(), 3000, '既定は最新足の time');
+  // Act: idx=0 へ移動 → currentTime=1000。
+  const range = findRange(container);
+  range.value = '0';
+  range.dispatch('input');
+  assert.equal(bar.currentTime(), 1000, 'スクラブ後は選択足の time');
+});
+
+test('currentIndex(): スクラブ前は最新(右端)の index、スクラブ後は選択 index を返す（スワイプの startIdx 源）', () => {
+  const { bar, container } = makeBar();
+  assert.equal(bar.currentIndex(), 0, '空 candles は 0');
+  bar.setCandles(CANDLES);
+  assert.equal(bar.currentIndex(), CANDLES.length - 1, '既定は右端 index');
+  const range = findRange(container);
+  range.value = '1';
+  range.dispatch('input');
+  assert.equal(bar.currentIndex(), 1, 'スクラブ後は選択 index');
+});
+
 test('moving the slider calls onScrub with the time of the corresponding candle (index→time)', () => {
   // Arrange
   const { bar, container, scrubs } = makeBar();
