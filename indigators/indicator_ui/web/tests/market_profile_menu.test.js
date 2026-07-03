@@ -103,11 +103,11 @@ test('applyIndicator(market_profile) forwards default params (resmode/bins/va/sr
   await ctrl.applyIndicator('market_profile', 'default');
   // Assert: src は既定 candle（後方互換）。resmode（解像度）既定 bins・range 既定 100（'auto' 撤去済）も
   //   bins/va と同様に転送される（client が resmode で bins/barw を排他化するため range 同送は無害）。
-  //   replay（リプレイ・増分1）既定 false も転送される（actor が false でバー非表示＝現状維持）。
-  //   sessions（日別プロファイル分割）既定 false も転送される（actor が false で通常モード＝現状維持）。
+  //   mode（表示モード・統合トグル）既定 'normal' も転送される（actor が normal で両 OFF＝現状維持）。
+  //   旧 replay/sessions は mode に統合されたため転送されない（catalog から撤去）。
   //   limit は転送しない（MP は全期間集計固定＝limit 非送信）。
   assert.equal(marketProfile.params.length, 1);
-  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'candle', replay: false, sessions: false, resmode: 'bins', range: '100' });
+  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'candle', mode: 'normal', resmode: 'bins', range: '100' });
 });
 
 test('applyIndicator(existing indicator) still calls /compute (no regression)', async () => {
@@ -299,8 +299,8 @@ test('gear on market_profile forwards range to actor.setParams when set (non-aut
   assert.deepEqual(marketProfile.params.at(-1), { bins: 80, va: 0.65, src: 'm1', range: '50', resmode: 'range' });
 });
 
-test('gear on market_profile forwards sessions=true to actor.setParams (日別プロファイル)', async () => {
-  // Arrange: sessions=true を保存 params に含むインスタンス。
+test('gear on a legacy market_profile (sessions:true) forwards mode=sessions to actor.setParams (日別プロファイル・後方互換)', async () => {
+  // Arrange: legacy sessions=true を保存 params に含む旧インスタンス（mode 統合前の永続データ）。
   const marketProfile = fakeMarketProfile();
   const computeCalls = [];
   const ctrl = makeController({ marketProfile, computeCalls });
@@ -314,8 +314,10 @@ test('gear on market_profile forwards sessions=true to actor.setParams (日別�
   // Act
   ctrl._onGearMarketProfile(inst, def);
   await new Promise((resolve) => setTimeout(resolve, 10));
-  // Assert: sessions=true が actor へ転送される（_mpParams が p.sessions を out.sessions へ）。
-  assert.equal(marketProfile.params.at(-1).sessions, true);
+  // Assert: legacy sessions:true は _mpParams(_deriveMode) で mode='sessions' へ導出され、
+  //   legacy キー（sessions）自体は actor へ送らない（mode に一本化）。
+  assert.equal(marketProfile.params.at(-1).mode, 'sessions', 'mode=sessions が導出される');
+  assert.equal('sessions' in marketProfile.params.at(-1), false, 'legacy sessions キーは送らない');
 });
 
 test('MarketProfileActor.setParams merges bins/va but DROPS limit (全期間集計固定)', async () => {

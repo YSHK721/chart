@@ -179,15 +179,14 @@ export class IndicatorController {
   //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
   _mpParams(p = {}) {
     const out = { bins: p.bins, va: p.va, src: p.src };
-    // replay（リプレイ・増分1）: BOOL を actor へ転送する。undefined は載せない（現状維持）。
-    //   actor が replay=true でバー表示・T スクラブ受付、false で非表示・T 縦線消去・全期間へ復帰。
-    if (p.replay != null) {
-      out.replay = p.replay;
-    }
-    // sessions（日別プロファイル分割）: BOOL を actor へ転送する。undefined は載せない（現状維持）。
-    //   actor が sessions=true で &sessions=1 取得・日別列描画・ローソク透明化、false で通常モードへ復帰。
-    if (p.sessions != null) {
-      out.sessions = p.sessions;
+    // mode（表示モード）: 旧 replay(BOOL)/sessions(BOOL) を統合した排他 ENUM
+    //   ['normal','replay','sessions'] を actor へ転送する。undefined は載せない（actor 既定=通常）。
+    //   後方互換マイグレーション（resmode 導出と同方針）: 永続 params に mode が無く legacy が残る
+    //   旧インスタンスは _deriveMode で legacy → mode を導出する。legacy キー（replay/sessions）自体は
+    //   actor へ送らない（mode に一本化・二重管理を避ける）。
+    const mode = this._deriveMode(p);
+    if (mode != null) {
+      out.mode = mode;
     }
     // resmode（解像度モード）: client が bins/barw の送信を排他化する。
     //   後方互換: 明示 resmode が無い旧 barw 保存インスタンス（数値 range・resmode 無し）は
@@ -216,6 +215,30 @@ export class IndicatorController {
     }
     const BAR_WIDTHS = new Set(['25', '50', '100', '250', '500']);
     return BAR_WIDTHS.has(String(p.range)) ? 'range' : 'bins';
+  }
+
+  // mode（表示モード）を決める後方互換ヘルパ（_deriveResmode と同方針・apply/gear/restore 共用）。
+  //   - 明示 mode があればそのまま返す（legacy との競合時は mode 優先＝後方互換補完は上書きしない）。
+  //   - mode 欠落かつ legacy sessions:true → 'sessions'（両 true の旧データも sessions 優先）。
+  //   - mode 欠落かつ legacy replay:true → 'replay'。
+  //   - mode 欠落かつ legacy が明示 false（両 OFF）→ 'normal'（restore で両 OFF を再現）。
+  //   - mode も legacy キーも無い旧インスタンスは null（mode を付与しない＝actor 既定=通常）。
+  _deriveMode(p = {}) {
+    if (p.mode != null) {
+      return p.mode;
+    }
+    // 両 true の旧データは sessions 優先（排他統合のため一方に確定させる）。
+    if (p.sessions === true) {
+      return 'sessions';
+    }
+    if (p.replay === true) {
+      return 'replay';
+    }
+    // legacy キーが存在し明示 false（両 OFF）なら normal を導出する（両フラグ不在は null）。
+    if (p.replay != null || p.sessions != null) {
+      return 'normal';
+    }
+    return null;
   }
 
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
