@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { bootstrap, modeForProtocol, resolveSessionClick } from '../js/adapter/front/composition_root_front.js';
+import { bootstrap, modeForProtocol } from '../js/adapter/front/composition_root_front.js';
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
 import { LiveUpdater } from '../js/adapter/front/live_updater.js';
@@ -20,6 +20,7 @@ import { LiveUpdater } from '../js/adapter/front/live_updater.js';
 //   ColorType / CandlestickSeries / createTextWatermark も公開（composition・ChartRenderer が参照）。
 function fakeLwc() {
   const setDataCalls = [];
+  const createChartOpts = [];
   const mainSeries = { setData: (d) => setDataCalls.push(d) };
   const chart = {
     addSeries: () => mainSeries,
@@ -32,53 +33,18 @@ function fakeLwc() {
   };
   return {
     lwc: {
-      createChart: () => chart,
+      createChart: (_c, opts) => { createChartOpts.push(opts); return chart; },
       ColorType: { Solid: 'solid' },
+      CrosshairMode: { Normal: 0, Magnet: 1 },
       CandlestickSeries: {}, LineSeries: {}, HistogramSeries: {},
       createTextWatermark: () => ({ applyOptions: () => {}, detach: () => {} }),
     },
     setDataCalls,
+    createChartOpts,
   };
 }
 
 const noStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
-
-// ===========================================================================
-// resolveSessionClick（sessions 列クリック単日拡大の純判定・本タスク）
-//   sessions 非表示→'none'／focus 中→'clear'（一覧へ）／一覧中で列 date あり→'focus'／範囲外→'none'。
-// ===========================================================================
-
-test('resolveSessionClick: does nothing when sessions are not showing (既存クリック挙動不変)', () => {
-  const r = resolveSessionClick({ isSessions: false, focus: null, dateAt: () => '2024-01-01', xRatio: 0.5 });
-  assert.deepEqual(r, { action: 'none' });
-});
-
-test('resolveSessionClick: clears focus (一覧へ) when currently focused, from anywhere', () => {
-  // focus 中はどこをクリックしても一覧へ戻る（dateAt は参照しない）。
-  const r = resolveSessionClick({ isSessions: true, focus: '2024-01-02', dateAt: () => '2024-01-03', xRatio: 0.9 });
-  assert.deepEqual(r, { action: 'clear' });
-});
-
-test('resolveSessionClick: focuses the resolved column date when in list view', () => {
-  const r = resolveSessionClick({ isSessions: true, focus: null, dateAt: (x) => (x === 0.5 ? '2024-01-02' : null), xRatio: 0.5 });
-  assert.deepEqual(r, { action: 'focus', date: '2024-01-02' });
-});
-
-test('resolveSessionClick: does nothing when the click is outside any column (date=null)', () => {
-  const r = resolveSessionClick({ isSessions: true, focus: null, dateAt: () => null, xRatio: 0.99 });
-  assert.deepEqual(r, { action: 'none' });
-});
-
-// クリック→date→focus→再クリック→解除のシナリオを純判定で連鎖検証（DOM スタブ不要の核ロジック）。
-test('resolveSessionClick: click→focus then re-click→clear round trip', () => {
-  const dateAt = () => '2024-01-02';
-  // 一覧中クリック → focus。
-  const first = resolveSessionClick({ isSessions: true, focus: null, dateAt, xRatio: 0.4 });
-  assert.deepEqual(first, { action: 'focus', date: '2024-01-02' });
-  // focus 反映後、再クリック → clear（一覧へ）。
-  const second = resolveSessionClick({ isSessions: true, focus: first.date, dateAt, xRatio: 0.4 });
-  assert.deepEqual(second, { action: 'clear' });
-});
 
 test('modeForProtocol maps http/https to b and others to a', () => {
   assert.equal(modeForProtocol('http:'), 'b');
@@ -259,4 +225,143 @@ test('bootstrap (file://) establishes _lastBar so hover-off shows OHLC without a
   // Assert: SAMPLE_DATA 末尾足（close=185）が読み取り欄に描画される（_lastBar フォールバック）。
   const text = JSON.stringify(doc._readout.children);
   assert.match(text, /185/);
+});
+
+// ===========================================================================
+// 価格軸ホイールズームの配線（wheel / dblclick）
+//   composition root がチャートコンテナに wheel（passive:false）と dblclick を配線する。
+//   wheel: renderer.handlePriceWheel(x, y, deltaY)（x/y=clientX/Y−コンテナ矩形）が true なら preventDefault。
+//   dblclick: 軸領域（renderer.isOverPriceAxis(x)）なら renderer.resetPriceZoom()。
+// ===========================================================================
+
+// addEventListener を記録するチャートコンテナ Fake（handler を type で引ける）。
+function fakeContainer() {
+  const handlers = {};
+  return {
+    addEventListener(type, fn, opts) { (handlers[type] ||= []).push({ fn, opts }); },
+    getBoundingClientRect() { return { left: 0, top: 0 }; },
+    fire(type, ev) { (handlers[type] || []).forEach((h) => h.fn(ev)); },
+    optsFor(type) { return (handlers[type] || [])[0]?.opts; },
+    has(type) { return !!(handlers[type] && handlers[type].length); },
+  };
+}
+
+test('bootstrap wires a non-passive wheel listener that preventDefaults when handlePriceWheel returns true', async () => {
+  // Arrange
+  const { lwc } = fakeLwcFireable();
+  const container = fakeContainer();
+  const { renderer } = await bootstrap({
+    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  // renderer.handlePriceWheel を spy（軸領域内=true 相当）。clientX/Y−rect の座標伝搬も検証。
+  const calls = [];
+  renderer.handlePriceWheel = (x, y, dy) => { calls.push([x, y, dy]); return true; };
+  let prevented = false;
+  // Act: 軸領域上でホイール（clientX=610, clientY=180, deltaY=-100・rect フォールバック 0,0）
+  container.fire('wheel', { clientX: 610, clientY: 180, deltaY: -100, preventDefault() { prevented = true; } });
+  // Assert: passive:false で登録され、handlePriceWheel が呼ばれ、true なので preventDefault
+  assert.equal(container.optsFor('wheel')?.passive, false);
+  assert.deepEqual(calls.at(-1), [610, 180, -100]);
+  assert.equal(prevented, true);
+});
+
+test('bootstrap wheel listener does NOT preventDefault when handlePriceWheel returns false (本体ホイールを奪わない)', async () => {
+  // Arrange
+  const { lwc } = fakeLwcFireable();
+  const container = fakeContainer();
+  const { renderer } = await bootstrap({
+    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  renderer.handlePriceWheel = () => false; // チャート本体領域＝false
+  let prevented = false;
+  // Act
+  container.fire('wheel', { clientX: 100, clientY: 180, deltaY: -100, preventDefault() { prevented = true; } });
+  // Assert: false なら preventDefault しない（時間軸ズームへ委ねる）
+  assert.equal(prevented, false);
+});
+
+test('bootstrap wires dblclick to resetPriceZoom only when over the price axis', async () => {
+  // Arrange
+  const { lwc } = fakeLwcFireable();
+  const container = fakeContainer();
+  const { renderer } = await bootstrap({
+    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  let resetCount = 0;
+  renderer.resetPriceZoom = () => { resetCount += 1; };
+  renderer.isOverPriceAxis = (x) => x >= 600; // 軸領域=600以上
+  // Act: 軸領域内でダブルクリック
+  container.fire('dblclick', { clientX: 610, clientY: 100 });
+  assert.equal(resetCount, 1, '軸領域のダブルクリックで resetPriceZoom');
+  // Act: 軸領域外でダブルクリック → reset されない
+  container.fire('dblclick', { clientX: 100, clientY: 100 });
+  assert.equal(resetCount, 1, '本体領域のダブルクリックでは reset しない');
+});
+
+test('bootstrap: 完全自由2Dドラッグ = 毎フレームの縦成分 dy で panPriceByPixels を呼ぶ（横は lwc に委ね preventDefault しない）', async () => {
+  // Arrange
+  const { lwc } = fakeLwcFireable();
+  const container = fakeContainer();
+  const { renderer } = await bootstrap({
+    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  const dys = [];
+  renderer.panPriceByPixels = (dy) => { dys.push(dy); return true; };
+  renderer.isOverPriceAxis = (x) => x >= 600; // 本体=600未満
+  // Act: ドラッグ開始 → 斜め移動を2フレーム（各フレームの縦デルタで価格パン）。
+  container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
+  container.fire('pointermove', { buttons: 1, clientX: 140, clientY: 130 }); // dy=30
+  container.fire('pointermove', { buttons: 1, clientX: 200, clientY: 145 }); // dy=15
+  // Assert: 各フレームの縦デルタで価格パン（横成分は lwc の時間パンに委ねる）。
+  assert.deepEqual(dys, [30, 15]);
+  // pointerup 後は移動してもパンしない
+  container.fire('pointerup', {});
+  container.fire('pointermove', { buttons: 1, clientX: 260, clientY: 175 });
+  assert.deepEqual(dys, [30, 15], 'ドラッグ終了後はパンしない');
+});
+
+test('bootstrap: 純横ドラッグ（dy=0）は panPriceByPixels(0) で価格を動かさない（自動スケール維持）', async () => {
+  // panPriceByPixels は dy=0 を内部で no-op 扱い（|dy|>0 ガード）＝純横ドラッグは価格 override しない。
+  // Arrange
+  const { lwc } = fakeLwcFireable();
+  const container = fakeContainer();
+  const { renderer } = await bootstrap({
+    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  const dys = [];
+  renderer.panPriceByPixels = (dy) => { dys.push(dy); return dy !== 0; };
+  renderer.isOverPriceAxis = (x) => x >= 600;
+  // Act: 純横（clientY 不変）
+  container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
+  container.fire('pointermove', { buttons: 1, clientX: 160, clientY: 100 });
+  container.fire('pointermove', { buttons: 1, clientX: 220, clientY: 100 });
+  // Assert: dy は毎回 0（実 renderer では no-op＝価格 override せず自動スケール維持）。
+  assert.deepEqual(dys, [0, 0]);
+});
+
+test('bootstrap: 価格軸上でのドラッグ開始は縦パンしない（lwc ネイティブ縦パンに委ねる）', async () => {
+  // Arrange
+  const { lwc } = fakeLwcFireable();
+  const container = fakeContainer();
+  const { renderer } = await bootstrap({
+    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  const dys = [];
+  renderer.panPriceByPixels = (dy) => { dys.push(dy); return true; };
+  renderer.isOverPriceAxis = (x) => x >= 600; // 軸=600以上
+  // Act: 軸領域でドラッグ開始 → 縦移動
+  container.fire('pointerdown', { button: 0, clientX: 610, clientY: 100 });
+  container.fire('pointermove', { buttons: 1, clientX: 610, clientY: 130 });
+  // Assert: 軸上開始は panning しない
+  assert.deepEqual(dys, [], '価格軸上のドラッグは縦パンしない');
+});
+
+test('bootstrap: クロスヘアは Normal(0)＝自由追従で作成する（Magnet スナップを無効化）', async () => {
+  // Arrange
+  const { lwc, createChartOpts } = fakeLwc();
+  // Act
+  await bootstrap({ lwc, container: {}, doc: null, storage: noStorage, protocol: 'file:' });
+  // Assert: createChart に crosshair.mode = Normal(0) を渡す
+  assert.equal(createChartOpts.length, 1);
+  assert.equal(createChartOpts[0].crosshair.mode, 0, 'Magnet(1) ではなく Normal(0)');
 });

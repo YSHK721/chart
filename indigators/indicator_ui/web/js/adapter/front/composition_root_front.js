@@ -39,28 +39,6 @@ export function modeForProtocol(protocol) {
   return protocol === 'http:' || protocol === 'https:' ? 'b' : 'a';
 }
 
-// sessions 列クリック（単日拡大）の純判定。DOM/actor を触らず「次に何をすべきか」だけを返す。
-//   入力: isSessions（MP が sessions 表示中か）・focus（現在の単日フォーカス date|null）・
-//     dateAt（xRatio→列 date|null。actor.sessionDateAt を渡す）・xRatio（クリックx / CSS幅・0..1）。
-//   規則（依頼の click 配線）:
-//     - sessions 非表示中 → 'none'（既存クリック挙動を変えない）。
-//     - focus 中（どこでも再クリック）→ 一覧へ戻す（action='clear'）。
-//     - 一覧中 → 列の date を解決。date あり → 'focus'（その日を拡大）／範囲外(null) → 'none'。
-//   戻り値: { action: 'none' } | { action: 'clear' } | { action: 'focus', date }。
-export function resolveSessionClick({ isSessions, focus, dateAt, xRatio }) {
-  if (!isSessions) {
-    return { action: 'none' };
-  }
-  if (focus != null) {
-    return { action: 'clear' }; // focus 中はどこをクリックしても一覧へ戻る。
-  }
-  const date = typeof dateAt === 'function' ? dateAt(xRatio) : null;
-  if (date == null) {
-    return { action: 'none' }; // 列の範囲外（ラベル余白等）は無視。
-  }
-  return { action: 'focus', date };
-}
-
 // GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
 //   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
 async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe = null, limit = null) {
@@ -149,6 +127,9 @@ export async function bootstrap({
       panes: { enableResize: true, separatorColor: '#2a2e39', separatorHoverColor: 'rgba(178,181,189,0.2)' },
     },
     grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
+    // クロスヘアを Normal（自由追従）に。既定 Magnet(1) は水平線を最寄り足の価格へスナップさせるため、
+    //   カーソル位置どおりに動かしたいという要望で Normal(0) に変更（enum 無い環境向けに 0 フォールバック）。
+    crosshair: { mode: (lwc.CrosshairMode && lwc.CrosshairMode.Normal) || 0 },
     rightPriceScale: { borderColor: '#2a2e39' },
     // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
     timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
@@ -185,6 +166,24 @@ export async function bootstrap({
   const renderer = new ChartRenderer({
     chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),
   });
+
+  // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
+  //   coordinateToPrice(paneHeight) で価格レンジ下端を読むために必要。container/timeScale 非対応
+  //   （SSR/テスト）では設定できないため no-op（handlePriceWheel は pane 高未供給時に安全に false）。
+  //   リサイズで container 高が変わるため、autoSize 変化に追随できるよう wheel 発火時にも再計算する。
+  const updatePaneHeight = () => {
+    if (typeof renderer.setPaneHeight !== 'function') {
+      return;
+    }
+    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
+    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
+    const paneHeight = ch - th;
+    if (paneHeight > 0) {
+      renderer.setPaneHeight(paneHeight);
+    }
+  };
+  updatePaneHeight();
 
   // A方式の初期ローソクは renderer.setCandles で描画する（直接 mainSeries.setData ではなく
   //   経由させることで読み取り欄の最新足の単一源 _lastBar が立ち、hover 解除でも OHLC が出る）。
@@ -235,31 +234,39 @@ export async function bootstrap({
   });
 
   // 増分2 スワイプ: チャートコンテナの横ドラッグで T をスクラブする（replay ON 中のみ）。
-  //   pointerdown で通常スクロール/ズームを停止（renderer.setUserInteraction(false)）→ pointermove で
-  //   x→logical→足 index→T をスライダと同期（replayBar.scrubToLogical）→ pointerup で操作を復元。
-  //   lightweight-charts の座標/操作 API は renderer に隔離済み（chart 直叩きしない）。
+  //   ★プロト準拠の**相対デルタ方式**（prototype_260630-01/js/app.js L442-457）:
+  //     pointerdown で開始 x（startX）と開始 index（startIdx）を記録するだけ（＝クリック位置へ飛ばさない）。
+  //     pointermove で dIdx=round((x - startX)/pixelsPerBar) を startIdx に足して T を更新する。
+  //     pixelsPerBar は renderer 側で barSpacing を返しつつ極小時は 8px を下限にする（ズームアウト時に
+  //     わずかなマウス移動でスライダが暴走する不具合の修正）。旧実装は coordinateToLogical の絶対
+  //     マッピング（下限なし）で過敏だった。lwc 座標 API は renderer に隔離済み。
   //   container/doc 不在（SSR/テスト）や pointer 非対応は no-op（防御）。
   if (container && typeof container.addEventListener === 'function') {
     let swiping = false;
+    let swipeStartX = 0;
+    let swipeStartIdx = 0;
     const isReplayOn = () => !!(controller && controller._marketProfile
       && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
     const rectLeft = () => (typeof container.getBoundingClientRect === 'function'
       ? container.getBoundingClientRect().left : 0);
     container.addEventListener('pointerdown', (e) => {
-      if (!isReplayOn()) {
-        return;
+      if (!isReplayOn() || e.button !== 0) {
+        return; // 左ボタンのみ（右クリック等でスワイプ開始しない・2Dパン側と整合）。
       }
       swiping = true;
       renderer.setUserInteraction(false); // 通常スクロール/ズームを停止（スワイプ捕捉）。
-      const logical = renderer.coordinateToLogical(e.clientX - rectLeft());
-      replayBar.scrubToLogical(logical);
+      // 開始点のみ記録（クリック位置へは飛ばさない＝プロト mousedown 相当）。
+      swipeStartX = e.clientX - rectLeft();
+      swipeStartIdx = typeof replayBar.currentIndex === 'function' ? replayBar.currentIndex() : 0;
     });
     container.addEventListener('pointermove', (e) => {
       if (!swiping || !isReplayOn()) {
         return;
       }
-      const logical = renderer.coordinateToLogical(e.clientX - rectLeft());
-      replayBar.scrubToLogical(logical);
+      const x = e.clientX - rectLeft();
+      const px = renderer.pixelsPerBar(); // barSpacing（極小時は 8px 下限＝プロト準拠）。
+      const dIdx = Math.round((x - swipeStartX) / px); // 左ドラッグ=過去へ（スライダと同方向）。
+      replayBar.scrubToLogical(swipeStartIdx + dIdx); // clamp は scrubToLogical 内で実施。
     });
     const endSwipe = () => {
       if (!swiping) {
@@ -269,70 +276,84 @@ export async function bootstrap({
       renderer.setUserInteraction(true); // 通常操作を復元。
     };
 
-    // sessions 列クリックで単日拡大（フロントのみ）。pointerdown+up の移動が小さい＝クリック判定。
-    //   リプレイ swipe 捕捉中（swiping=true）は無視して衝突を避ける（replay ON のドラッグは既存挙動）。
-    //   sessions 表示中のみ作用し、非表示中は既存クリック挙動を一切変えない。
-    //   重要（順序）: この click-pointerup を endSwipe の pointerup より**先に**登録する。DOM は登録順に
-    //   発火するため、後述の endSwipe が swiping=false にする前に本ハンドラが swiping を観測でき、
-    //   スワイプ終端をクリックと誤認しない（衝突回避の要）。
-    const CLICK_MOVE_PX = 6; // これ以下の移動はクリック、超えたらドラッグ扱い（拡大しない）。
-    let downX = null;
-    let downY = null;
-    const mpActor = () => (controller && controller._marketProfile) || null;
-    container.addEventListener('pointerdown', (e) => {
-      downX = e.clientX;
-      downY = e.clientY;
-    });
-    container.addEventListener('pointerup', (e) => {
-      const sx = downX;
-      const sy = downY;
-      downX = null;
-      downY = null;
-      if (swiping || sx == null) {
-        return; // swipe 捕捉中/開始点なしはクリック扱いしない（endSwipe より先に走る＝swiping を観測可能）。
-      }
-      if (Math.abs(e.clientX - sx) > CLICK_MOVE_PX || Math.abs(e.clientY - sy) > CLICK_MOVE_PX) {
-        return; // 移動が大きい＝ドラッグ。拡大トグルしない。
-      }
-      const actor = mpActor();
-      if (!actor || typeof actor.isSessions !== 'function' || !actor.isSessions()) {
-        return; // sessions 非表示中は何もしない（既存クリック挙動不変）。
-      }
-      // xRatio = クリックx / コンテナ CSS 幅（0..1）。primitive が index→date を DPR 非依存で解く。
-      const cssWidth = typeof container.getBoundingClientRect === 'function'
-        ? container.getBoundingClientRect().width : 0;
-      const xRatio = cssWidth > 0 ? (e.clientX - rectLeft()) / cssWidth : 0;
-      const decision = resolveSessionClick({
-        isSessions: true,
-        focus: typeof actor.sessionFocus === 'function' ? actor.sessionFocus() : null,
-        dateAt: (r) => actor.sessionDateAt(r),
-        xRatio,
-      });
-      if (decision.action === 'clear') {
-        actor.setSessionFocus(null); // focus 中→一覧へ。
-      } else if (decision.action === 'focus') {
-        actor.setSessionFocus(decision.date); // 一覧中→単日拡大。
-      }
-    });
-
-    // Esc で単日フォーカスを解除（sessions focus 中のみ）。doc 不在（テスト）は no-op。
-    if (doc && typeof doc.addEventListener === 'function') {
-      doc.addEventListener('keydown', (e) => {
-        if (e.key !== 'Escape') {
-          return;
-        }
-        const actor = mpActor();
-        if (actor && typeof actor.sessionFocus === 'function' && actor.sessionFocus() != null) {
-          actor.setSessionFocus(null);
-        }
-      });
-    }
-
-    // endSwipe は click-pointerup ハンドラの**後**に登録する（上記「順序」注記を参照）。こうすることで
-    //   スワイプ終端の pointerup では click ハンドラが先に swiping=true を観測して return し、その後
-    //   endSwipe が swiping=false へ戻す＝スワイプをクリックと誤認しない。
     container.addEventListener('pointerup', endSwipe);
     container.addEventListener('pointerleave', endSwipe);
+  }
+
+  // 価格軸ホイールズームの配線（wheel / dblclick）。既存操作（本体ホイール=時間軸ズーム・軸ドラッグ）は不変。
+  //   wheel: 価格軸領域上（renderer が x>=timeScale().width() で判定）のときだけ価格ズームし preventDefault。
+  //     handlePriceWheel が false（本体領域・データ無し）なら preventDefault せず時間軸ズームへ委ねる。
+  //     passive:false で登録（preventDefault を有効化）。リプレイの pointer swipe とは別イベントで非干渉。
+  //   dblclick: 価格軸領域なら自動スケールへ復帰（resetPriceZoom）。
+  //   座標は **clientX/Y - コンテナ矩形**（コンテナ左上基準）で計算する。offsetX はイベント target
+  //   （lwc の内部 canvas＝価格軸 canvas 等）基準になり、軸上では小さい値→本体領域と誤判定して
+  //   価格ズームが発火しない（実機で確認したバグの修正）。lwc 座標/priceScale API は renderer に隔離済み。
+  if (container && typeof container.addEventListener === 'function') {
+    const containerXY = (e) => {
+      const r = typeof container.getBoundingClientRect === 'function'
+        ? container.getBoundingClientRect() : { left: 0, top: 0 };
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    };
+    container.addEventListener('wheel', (e) => {
+      // リサイズ追随: 価格変換前に pane 高を再計算する（autoSize で container 高が変わるため）。
+      updatePaneHeight();
+      const { x, y } = containerXY(e);
+      const handled = renderer.handlePriceWheel(x, y, e.deltaY);
+      if (handled) {
+        // lwc は自前の wheel リスナーで defaultPrevented を尊重せず時間軸ズームも実行してしまう。
+        // capture 段階（本リスナー）で stopPropagation し、lwc へ届く前に止める（実機で確認したバグの修正）。
+        if (typeof e.preventDefault === 'function') {
+          e.preventDefault();
+        }
+        if (typeof e.stopPropagation === 'function') {
+          e.stopPropagation();
+        }
+      }
+    }, { passive: false, capture: true });
+    container.addEventListener('dblclick', (e) => {
+      if (renderer.isOverPriceAxis(containerXY(e).x)) {
+        renderer.resetPriceZoom();
+      }
+    });
+
+    // チャート本体の**完全自由 2D ドラッグ**（TradingView 流・ユーザー選択）。
+    //   横方向は lwc の時間パン（既存）、縦成分は毎フレーム renderer.panPriceByPixels(dy) で価格をパンする
+    //   ＝上下左右・斜めが同時に動く。純横ドラッグ（dy=0）は価格を触らないので自動スケールは保たれる。
+    //   縦に動かすと価格は手動モード（override）になり、価格軸ダブルクリック（resetPriceZoom）で
+    //   自動スケールへ復帰する。preventDefault/stopPropagation はしない（lwc の時間パンを奪わない）。
+    //   価格軸上のドラッグは lwc ネイティブの縦パンに委ねる。リプレイ中は横スワイプが本体ドラッグを
+    //   占有するので 2D パンは無効化する。
+    let panActive = false;
+    let lastPanY = 0;
+    const isReplayOn = () => !!(controller && controller._marketProfile
+      && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
+    container.addEventListener('pointerdown', (e) => {
+      if (isReplayOn() || e.button !== 0) {
+        return;
+      }
+      const { x } = containerXY(e);
+      if (renderer.isOverPriceAxis(x)) {
+        return; // 価格軸上は lwc ネイティブの縦パンに委ねる。
+      }
+      panActive = true;
+      lastPanY = e.clientY;
+    });
+    container.addEventListener('pointermove', (e) => {
+      if (!panActive) {
+        return;
+      }
+      if ((e.buttons & 1) === 0) { // ボタンが離れていたら終了（pointerup 取りこぼし対策）。
+        panActive = false;
+        return;
+      }
+      const dy = e.clientY - lastPanY;
+      lastPanY = e.clientY;
+      updatePaneHeight(); // autoSize 追随（リサイズ後の pane 高を反映）。
+      renderer.panPriceByPixels(dy); // dy=0（純横）は panPriceByPixels 内で no-op＝自動スケール維持。
+    });
+    const endPan = () => { panActive = false; };
+    container.addEventListener('pointerup', endPan);
+    container.addEventListener('pointerleave', endPan);
   }
 
   controller = new IndicatorController({

@@ -57,6 +57,70 @@ function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
+// 価格軸ホイールズームの中核式（純関数・単体テスト用に export）。
+//   range: { min, max } 現在の価格レンジ、price: カーソル位置の価格、deltaY: wheel の deltaY。
+//   ズーム係数 f = 0.9^(-deltaY/100)（deltaY<0=上=ズームイン=レンジ×0.90／deltaY>0=下=×1/0.90）。
+//   トラックパッド（微小 deltaY 連続）は指数で滑らかに比例。1 イベントの暴れ防止で f∈[0.5, 2] にクランプ。
+//   カーソル価格 p を中心に newMin = p-(p-min)*f / newMax = p+(max-p)*f。
+//   span を現 span×1e-4 未満に縮めない（最小 span クランプ）。price が range 外なら中央基準。
+const PRICE_ZOOM_F_MIN = 0.5;
+const PRICE_ZOOM_F_MAX = 2;
+const PRICE_ZOOM_SPAN_MIN_RATIO = 1e-4;
+
+// データ全幅に対する絶対クランプ（暴走防止・実機バグ修正）: ホイール連打/慣性スクロールで
+//   「読む→係数→書く」のフィードバックが複利増幅し 1e24 等へ発散したため、ズーム結果を
+//   データ（baseCandles の low/high）由来の絶対範囲に制限する。span ∈ [dataSpan×1e-4, dataSpan×5]、
+//   さらに表示中心（c）をデータ範囲内 [dataRange.min, dataRange.max] にクランプする（最大ズームアウトでも
+//   ローソクが視界から消えない）。純関数。
+const PRICE_ZOOM_MAX_SPAN_RATIO = 5;
+const PRICE_ZOOM_ABS_MIN_SPAN_RATIO = 1e-4;
+
+export function clampPriceRange(range, dataRange) {
+  if (!dataRange || !(dataRange.max > dataRange.min)) {
+    return range; // データレンジ不明時はそのまま（従来挙動）。
+  }
+  const dataSpan = dataRange.max - dataRange.min;
+  const maxSpan = dataSpan * PRICE_ZOOM_MAX_SPAN_RATIO;
+  const minSpan = dataSpan * PRICE_ZOOM_ABS_MIN_SPAN_RATIO;
+  let span = range.max - range.min;
+  let c = (range.min + range.max) / 2;
+  if (span > maxSpan) span = maxSpan;
+  if (span < minSpan) span = minSpan;
+  // 中心はデータ範囲内に保つ（最大ズームアウトでもローソクが視界から消えない）。
+  const cMin = dataRange.min;
+  const cMax = dataRange.max;
+  if (c < cMin) c = cMin;
+  if (c > cMax) c = cMax;
+  return { min: c - span / 2, max: c + span / 2 };
+}
+
+export function zoomedPriceRange(range, price, deltaY) {
+  const min = range.min;
+  const max = range.max;
+  const span = max - min;
+  if (!Number.isFinite(deltaY) || deltaY === 0) {
+    return { min, max }; // deltaY 不正/0 は無変化（NaN 伝播防止）。
+  }
+  let f = Math.pow(0.9, -deltaY / 100);
+  if (f < PRICE_ZOOM_F_MIN) {
+    f = PRICE_ZOOM_F_MIN;
+  } else if (f > PRICE_ZOOM_F_MAX) {
+    f = PRICE_ZOOM_F_MAX;
+  }
+  // price が range 外なら中央（(min+max)/2）を基準にする。
+  const p = (price >= min && price <= max) ? price : (min + max) / 2;
+  let newMin = p - (p - min) * f;
+  let newMax = p + (max - p) * f;
+  // 最小 span クランプ: 現 span×1e-4 未満へは縮めない（p 中心を保ったまま拡げる）。
+  const minSpan = span * PRICE_ZOOM_SPAN_MIN_RATIO;
+  if ((newMax - newMin) < minSpan) {
+    const c = (newMin + newMax) / 2;
+    newMin = c - minSpan / 2;
+    newMax = c + minSpan / 2;
+  }
+  return { min: newMin, max: newMax };
+}
+
 // 中心からの距離比 t∈[0,1] を 緑→赤 へ補間し dim で減光した rgb 文字列にする。
 function schemeColor(t, dim) {
   const r = Math.round(lerp(SCHEME_CALM[0], SCHEME_HOT[0], t) * dim);
@@ -107,6 +171,20 @@ export class ChartRenderer {
     // 増分2: setCandleTrim の直近トリム末尾 index（位置不変時の再 setData 回避＝プロト lastTrimIdx）。
     //   null=未トリム。setCandles で候補が変わるためリセットする。
     this._lastTrimIdx = null;
+    // スクラブ時の表示フィット（_fitTrimView）に使う右プロファイル領域の割合（setRightMarginFraction で更新）。
+    this._profileMarginFraction = 0;
+    // スクラブ追従で保持するズーム倍率（可視論理幅）のキャッシュ。getVisibleLogicalRange 一時失敗時に使う。
+    this._replayViewSpan = null;
+    // 価格軸ホイールズーム: override 価格レンジ（null=自動スケール）。handlePriceWheel で更新し、
+    //   resetPriceZoom / ダブルクリックで null（自動スケール復帰）へ戻す。
+    this._priceZoomRange = null;
+    // 価格軸ズームの座標→価格変換に使う pane 高（container 高 - timeScale().height() 相当）。
+    //   composition root が setPaneHeight で供給（未設定時は timeScale から導出フォールバック）。
+    this._paneHeight = null;
+    // 価格軸ズームの autoscaleInfoProvider は _applyPriceProvider で mainSeries へ設定する。
+    //   ★呼び出しの度に新クロージャを applyOptions で再設定して再オートスケールを誘発する
+    //   （中身だけ変えても lwc は再計算しないため）。override 有→{priceRange} を返し、null→
+    //   original() 素通し（挙動不変）。切替は _priceZoomRange の内部状態で行う。
     // 機能③: クロスヘア移動で pane ウォーターマークへ系列値を追記。
     if (typeof this._chart.subscribeCrosshairMove === 'function') {
       this._chart.subscribeCrosshairMove((param) => this._onCrosshairMove(param));
@@ -121,6 +199,12 @@ export class ChartRenderer {
     this._baseCandles = arr;
     // 増分2: 基準 candles が入れ替わったのでトリム位置キャッシュをリセット（次の setCandleTrim で再 set）。
     this._lastTrimIdx = null;
+    // 価格ズーム override とスクラブ span キャッシュもリセットする（時間足/データセット切替で
+    //   新しい価格帯へ自動スケール復帰させる。これが無いと provider が旧レンジを返し続け、新足が
+    //   枠外にはみ出したまま dblclick まで戻らない＝レビュー指摘 🟡#1 の修正）。
+    this._priceZoomRange = null;
+    this._replayViewSpan = null;
+    this._applyPriceProvider(); // provider を素通し（自動スケール）へ即時復帰。
     // 読み取り欄の最新足の単一源を更新（配列末尾の足）。空配列なら null。
     this._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
     this._chart.timeScale().fitContent();
@@ -153,6 +237,9 @@ export class ChartRenderer {
   //   frac=null で 0（既定）へ復元。ズームで barSpacing が変わると px マージンはドリフトする
   //   （v1 の許容・再トグルで再計算）。timeScale/applyOptions 非提供時は no-op（後方互換）。
   setRightMarginFraction(frac) {
+    // スクラブ時の表示フィット（setCandleTrim → setVisibleLogicalRange の blank）にも使う margin 率を保持。
+    //   プロト applyAsofView の PROFILE_FRAC と同義（右プロファイル領域の割合）。0=マージンなし。
+    this._profileMarginFraction = (frac != null && frac > 0 && frac < 1) ? frac : 0;
     const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
     if (!ts || typeof ts.applyOptions !== 'function') {
       return;
@@ -165,32 +252,6 @@ export class ChartRenderer {
     const bs = (typeof ts.options === 'function' && ts.options() && ts.options().barSpacing) || 6;
     const bars = w > 0 ? Math.max(0, Math.round((w * frac) / bs)) : 0;
     ts.applyOptions({ rightOffset: bars });
-  }
-
-  // sessions 単日フォーカス: 時間軸（下部ルーラ）の操作だけをロック/復元する（価格軸の手動操作は残す）。
-  //   単日拡大中（sessionFocus 設定）に呼び、横パン（handleScroll）と時間軸ズーム（axis time / wheel /
-  //   pinch）を止める。価格軸のドラッグズーム（axisPressedMouseMove.price）は許し縦の検証操作を残す。
-  //   lightweight-charts の applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は呼ばない）。
-  //   on=true でロック、on=false で lwc 既定（handleScroll:true / handleScale:true）へ復元。既存
-  //   setUserInteraction（リプレイ swipe 用・全ロック）とは独立（本メソッドは価格軸を残す点が異なる）。
-  //   applyOptions 非提供時は no-op（後方互換）。冪等（同じ状態の再設定は無害）。
-  setTimeScaleLock(on) {
-    if (typeof this._chart.applyOptions !== 'function') {
-      return;
-    }
-    if (on) {
-      this._chart.applyOptions({
-        handleScroll: false, // 横パン（チャート本体ドラッグ・ルーラドラッグ）を止める。
-        handleScale: {
-          axisPressedMouseMove: { time: false, price: true }, // 時間軸ドラッグ×／価格軸ドラッグ○。
-          mouseWheel: false, // ホイールによる時間軸ズームを止める。
-          pinch: false,      // ピンチによる時間軸ズームを止める。
-        },
-      });
-    } else {
-      // 復元＝lwc 既定（横スクロール可・両軸ズーム可）。sessions 解除/OFF/MP 削除で必ず呼ぶ。
-      this._chart.applyOptions({ handleScroll: true, handleScale: true });
-    }
   }
 
   // sessions（日別プロファイル分割）: ローソクを透明化して価格軸のみ残す/復元する（移植元 prototype_260630-01）。
@@ -217,28 +278,203 @@ export class ChartRenderer {
     }
   }
 
-  // sessions 単日フォーカス: 価格軸の自動スケール範囲を上書きする（lwc autoscaleInfoProvider を本所に隔離）。
-  //   range={min,max} でその価格帯へ自動ズーム（フォーカスした日の形を全高で検証できる）。null で既定へ復帰。
-  //   provider は一度だけ恒久インストールし、内部フラグで override⇄既定(original) を切替える
-  //   （applyOptions で provider を外す確実な手段が無いための安全策・OFF 時は original() 素通し＝挙動不変）。
-  setPriceAutoscaleOverride(range) {
+  // 価格軸ホイールズーム: 座標→価格変換に使う pane 高（container 高 - timeScale().height() 相当）を設定。
+  //   composition root が resize 時などに供給する。未設定時は handlePriceWheel が timeScale().height()
+  //   から導出フォールバックするが、container 高が必要なため設定を推奨（新規追加・既存描画へ非干渉）。
+  setPaneHeight(h) {
+    this._paneHeight = (typeof h === 'number' && h > 0) ? h : null;
+  }
+
+  // 価格軸ホイールズームの autoscaleInfoProvider を **mainSeries** へ適用する。
+  //   注意: autoscaleInfoProvider は series オプション（priceScale に渡しても lwc は無視＝実機で確認した
+  //   バグの修正）。また provider の中身（_priceZoomRange）だけ変えても lwc は再オートスケールしないため、
+  //   **呼び出しの度に新しいクロージャを applyOptions で再設定**してオプション変更→再計算を誘発する。
+  //   override（_priceZoomRange）有→{priceRange:{minValue,maxValue}}／null→original() 素通し（挙動不変）。
+  _applyPriceProvider() {
     if (typeof this._mainSeries.applyOptions !== 'function') {
       return;
     }
-    this._autoscaleOverride = (range && Number.isFinite(range.min) && Number.isFinite(range.max)
-      && range.max > range.min) ? { min: range.min, max: range.max } : null;
-    if (!this._autoscaleProviderInstalled) {
-      this._autoscaleProviderInstalled = true;
-      this._mainSeries.applyOptions({
-        autoscaleInfoProvider: (original) => {
-          const ov = this._autoscaleOverride;
-          if (!ov) {
-            return original(); // 既定（挙動不変）。
-          }
-          return { priceRange: { minValue: ov.min, maxValue: ov.max } };
-        },
-      });
+    this._mainSeries.applyOptions({
+      autoscaleInfoProvider: (original) => {
+        if (this._priceZoomRange) {
+          // _priceZoomRange は「目標の可視レンジ」。lwc は provider のレンジへ scaleMargins
+          //   （既定 上0.2/下0.1）を上乗せして表示するため、逆算で内側に縮めた値を返す
+          //   （そのまま返すと毎回 margins ぶん広がり複利増幅＝1e24 発散の真因・実機バグ修正）。
+          const m = this._scaleMargins();
+          const vis = this._priceZoomRange;
+          const span = vis.max - vis.min;
+          return {
+            priceRange: {
+              minValue: vis.min + span * m.bottom,
+              maxValue: vis.max - span * m.top,
+            },
+          };
+        }
+        return typeof original === 'function' ? original() : original;
+      },
+    });
+  }
+
+  // 右価格軸ハンドル（mainSeries.priceScale('right') 優先、無ければ chart.priceScale('right')）。
+  //   lwc 直叩きは本所に隔離。いずれも非提供なら null（後方互換）。
+  _rightPriceScale() {
+    if (typeof this._mainSeries.priceScale === 'function') {
+      return this._mainSeries.priceScale('right');
     }
+    if (typeof this._chart.priceScale === 'function') {
+      return this._chart.priceScale('right');
+    }
+    return null;
+  }
+
+  // baseCandles の価格全幅 {min,max}（絶対クランプの基準）。未設定/空は null。
+  _candlesPriceRange() {
+    const arr = this._baseCandles;
+    if (!arr || arr.length === 0) {
+      return null;
+    }
+    let min = Infinity;
+    let max = -Infinity;
+    for (const c of arr) {
+      if (c.low < min) min = c.low;
+      if (c.high > max) max = c.high;
+    }
+    return (Number.isFinite(min) && Number.isFinite(max) && max > min) ? { min, max } : null;
+  }
+
+  // 価格軸ホイールズームの本体。x が価格軸領域（x >= timeScale().width()）のときだけ処理する。
+  //   カーソル価格 p=coordinateToPrice(y)、現レンジは coordinateToPrice(0)（上端＝高値）と
+  //   coordinateToPrice(paneHeight)（下端＝安値）から読む。zoomedPriceRange で新レンジを算出し
+  //   _priceZoomRange を更新、priceScale('right').applyOptions({autoScale:true}) で provider を効かせる。
+  //   処理したら true（呼び出し側が preventDefault する）。軸領域外・座標 null・データ無しは false。
+  //   チャート本体上のホイール（時間軸ズーム）は奪わない（x<width で false）。
+  handlePriceWheel(x, y, deltaY) {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.width !== 'function') {
+      return false;
+    }
+    if (x < ts.width()) {
+      return false; // チャート本体領域＝時間軸ズームに委ねる。
+    }
+    if (typeof this._mainSeries.coordinateToPrice !== 'function') {
+      return false;
+    }
+    // pane 高（container 高 - timeScale 高）。setPaneHeight 未設定時は座標の下端が不明なため
+    //   timeScale().height() を差し引けないが、既存レンジは 0..paneHeight で読む必要がある。
+    const paneHeight = this._paneHeight;
+    if (!(paneHeight > 0)) {
+      return false; // pane 高未供給＝座標→価格の下端が定まらない（安全側で何もしない）。
+    }
+    const p = this._mainSeries.coordinateToPrice(y);
+    if (p == null) {
+      return false; // データ無し・座標変換不能。
+    }
+    // 基準レンジ: ズーム中は内部状態（目標可視レンジ）を使い、表示を読み直さない
+    //   （lwc が scaleMargins を上乗せした表示を再度読むと複利増幅する＝発散の真因・実機バグ修正）。
+    let base = this._priceZoomRange;
+    if (!base) {
+      const topPrice = this._mainSeries.coordinateToPrice(0);
+      const bottomPrice = this._mainSeries.coordinateToPrice(paneHeight);
+      if (topPrice == null || bottomPrice == null) {
+        return false;
+      }
+      const min = Math.min(topPrice, bottomPrice);
+      const max = Math.max(topPrice, bottomPrice);
+      if (!(max > min)) {
+        return false; // 縮退レンジ。
+      }
+      base = { min, max };
+    }
+    // データ全幅（baseCandles の low/high）由来の絶対クランプで発散を封じる。
+    this._priceZoomRange = clampPriceRange(
+      zoomedPriceRange(base, p, deltaY), this._candlesPriceRange(),
+    );
+    this._applyPriceProvider(); // series へ新クロージャを再設定＝オプション変更で再オートスケール誘発。
+    const ps = this._rightPriceScale();
+    if (ps && typeof ps.applyOptions === 'function') {
+      ps.applyOptions({ autoScale: true }); // 軸ドラッグ等で autoScale=false でも provider を効かせる。
+    }
+    return true;
+  }
+
+  // チャート本体の縦ドラッグによる価格パン（上下移動）。dy=ポインタ縦移動量[px]（下+）。
+  //   横方向は lwc の時間軸パンに委ね（本メソッドは価格のみ操作）、両者が合成されて 2D パンになる。
+  //   ドラッグ下げ（dy>0）＝内容を下へ引く＝表示レンジを上へ（min/max とも +）。span は不変。
+  //   基準レンジはズーム/パン中の内部状態（_priceZoomRange）を優先し、無ければ現表示から読む
+  //   （表示を毎回読み直すと scaleMargins 上乗せで発散するため・handlePriceWheel と同じ方針）。
+  //   結果は clampPriceRange（span 保存・中心はデータ範囲内）で制限。処理したら true。
+  panPriceByPixels(dy) {
+    if (typeof this._mainSeries.coordinateToPrice !== 'function') {
+      return false;
+    }
+    const paneHeight = this._paneHeight;
+    if (!(paneHeight > 0) || !(Math.abs(dy) > 0)) {
+      return false;
+    }
+    let base = this._priceZoomRange;
+    if (!base) {
+      const topPrice = this._mainSeries.coordinateToPrice(0);
+      const bottomPrice = this._mainSeries.coordinateToPrice(paneHeight);
+      if (topPrice == null || bottomPrice == null) {
+        return false;
+      }
+      const min = Math.min(topPrice, bottomPrice);
+      const max = Math.max(topPrice, bottomPrice);
+      if (!(max > min)) {
+        return false;
+      }
+      base = { min, max };
+    }
+    const span = base.max - base.min;
+    const shift = (dy / paneHeight) * span; // dy>0（下げ）→表示レンジを上へ。
+    this._priceZoomRange = clampPriceRange(
+      { min: base.min + shift, max: base.max + shift }, this._candlesPriceRange(),
+    );
+    this._applyPriceProvider();
+    const ps = this._rightPriceScale();
+    if (ps && typeof ps.applyOptions === 'function') {
+      ps.applyOptions({ autoScale: true });
+    }
+    return true;
+  }
+
+  // 価格軸のダブルクリック等で自動スケールへ復帰する（override を解除）。provider は素通しに戻る。
+  resetPriceZoom() {
+    this._priceZoomRange = null;
+    this._applyPriceProvider(); // 新クロージャ再設定で即時に自動スケールへ復帰させる。
+    const ps = this._rightPriceScale();
+    if (ps && typeof ps.applyOptions === 'function') {
+      ps.applyOptions({ autoScale: true });
+    }
+  }
+
+  // テスト用フック: インストール済み autoscaleInfoProvider を明示的に呼び出す（本番未使用）。
+  //   lightweight-charts が内部で呼ぶ provider の挙動（override→{priceRange}／null→original 素通し）を
+  //   Fake priceScale 越しに検証するために使う。provider 未インストール時は original 素通し相当。
+  __callAutoscaleProvider(original) {
+    if (this._priceZoomRange) {
+      return { priceRange: { minValue: this._priceZoomRange.min, maxValue: this._priceZoomRange.max } };
+    }
+    return typeof original === 'function' ? original() : original;
+  }
+
+  // 右価格軸の scaleMargins（{top,bottom}・0..1）。options() 非提供時は 0（テスト互換・逆算なし）。
+  _scaleMargins() {
+    const ps = this._rightPriceScale();
+    const m = (ps && typeof ps.options === 'function' && ps.options() && ps.options().scaleMargins) || null;
+    const top = m && Number.isFinite(m.top) ? m.top : 0;
+    const bottom = m && Number.isFinite(m.bottom) ? m.bottom : 0;
+    // 合計が 1 に近い異常値は無効化（ゼロ割/負 span 防止）。
+    return (top + bottom < 0.9) ? { top, bottom } : { top: 0, bottom: 0 };
+  }
+
+  // 価格軸領域判定の小ヘルパ（x >= timeScale().width()）。composition root の dblclick 判定用（任意）。
+  isOverPriceAxis(x) {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.width !== 'function') {
+      return false;
+    }
+    return x >= ts.width();
   }
 
   // 増分2: x 座標 → 論理 index（timeScale().coordinateToLogical）。リプレイスワイプの x→足 index 変換。
@@ -250,6 +486,22 @@ export class ChartRenderer {
       return null;
     }
     return ts.coordinateToLogical(x);
+  }
+
+  // リプレイスワイプの感度基準＝1 バーあたりのピクセル幅（barSpacing）。
+  //   移植元 prototype_260630-01/js/app.js L452-453: |logicalToCoordinate(1) - logicalToCoordinate(0)|。
+  //   ★ズームアウトで barSpacing が極小（<0.5px）のときは 8px を下限に使う（プロト準拠）。これにより
+  //     少しのマウス移動でスライダが暴走するのを防ぐ（絶対マッピングの過敏さの修正）。非提供時も 8。
+  pixelsPerBar() {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (ts && typeof ts.logicalToCoordinate === 'function') {
+      const c0 = ts.logicalToCoordinate(0);
+      const c1 = ts.logicalToCoordinate(1);
+      if (c0 != null && c1 != null && Math.abs(c1 - c0) > 0.5) {
+        return Math.abs(c1 - c0);
+      }
+    }
+    return 8; // barSpacing 極小/非提供時の下限（プロト準拠）。
   }
 
   // 増分2: スナップショット用のローソク局所トリム（基準 candles を time<=T へスライスして setData）。
@@ -271,6 +523,7 @@ export class ChartRenderer {
       }
       this._lastTrimIdx = null;
       this._mainSeries.setData(this._baseCandles); // トリム解除＝全ローソク復元。
+      this._fitTrimView(this._baseCandles.length); // プロト applyAsofView: 先頭〜末尾へフィット（＋blank）。
       // 読み取り欄の単一源（_lastBar）も全ローソクの最終足へ復元し、即時再発火する
       //   （スナップショット解除後に古い T 時点の値が残らないように）。
       this._lastBar = this._baseCandles.length > 0
@@ -294,11 +547,56 @@ export class ChartRenderer {
     }
     this._lastTrimIdx = idx;
     this._mainSeries.setData(this._baseCandles.slice(0, idx + 1));
+    this._fitTrimView(idx + 1); // プロト applyAsofView: 表示を先頭〜T にフィット（＋右 blank）。
+    //   これにより、ズームイン中でもスクラブで視界が T に追従する（過去→現在へも戻れる・実機で確認した
+    //   「現在へ戻れない」バグの修正）。移植元 prototype_260630-01/js/app.js L318-322。
     // 読み取り欄の単一源（_lastBar）をトリム後の最終足（=T 時点の足）へ更新し、即時再発火する。
     //   これが無いとスナップショット中も左上の読み取り欄がトリム前の最新足（例 2026-07-02）を
     //   表示し続け、当時（T）の表示と矛盾する（実機で確認したバグ）。
     this._lastBar = this._baseCandles[idx];
     this._emitReadout(null);
+  }
+
+  // スクラブ時の表示追従: **現在のズーム倍率（可視論理幅 span）を保ったまま** T（末尾トリム足）を
+  //   右端へスクロールし、右 f をプロファイル余白にする。これにより「拡大したまま過去↔現在を行き来」
+  //   できる（ユーザー選択・プロトの毎回全historyフィットからは意図的に外れる）。
+  //   span が全体を覆う（未ズーム）ときは from<=-0.5 となり自然に先頭〜T の全history表示になる
+  //   （プロト applyAsofView と実質同等）。getVisibleLogicalRange 非提供時は {from:-0.5, to:L-0.5+blank}
+  //   の全historyフィットにフォールバック。lwc の timeScale 直叩きは本所（ChartRenderer）に閉じる。
+  _fitTrimView(L) {
+    if (!(L > 0)) {
+      return;
+    }
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.setVisibleLogicalRange !== 'function') {
+      return; // 非提供（テスト/SSR）は no-op（後方互換）。
+    }
+    const f = this._profileMarginFraction || 0;
+    const lastIdx = L - 0.5; // 末尾バー（=T）の論理右端（プロトの -0.5 系に合わせる）。
+    // 現在の可視幅（ズーム倍率）を読む。読めた値はキャッシュし、**一時的に取得不能でも直前の span を
+    //   使う**（全history へ戻さない＝ズーム保持を確実にする）。span を一度も得ていない初回だけ全history。
+    let span = null;
+    if (typeof ts.getVisibleLogicalRange === 'function') {
+      const r = ts.getVisibleLogicalRange();
+      if (r && r.to > r.from) {
+        span = r.to - r.from;
+      }
+    }
+    if (span != null) {
+      this._replayViewSpan = span; // ユーザーのズーム（スクラブ間の変更含む）を捕捉。
+    } else if (this._replayViewSpan != null) {
+      span = this._replayViewSpan; // 取得失敗は直前の span で補う（フォールバックで全historyへ戻さない）。
+    }
+    if (span == null) {
+      // span を一度も得ていない（初回・API 非対応）＝全history フィット（プロト相当）。
+      const blank = (f > 0 && f < 1) ? (L * f) / (1 - f) : 0;
+      ts.setVisibleLogicalRange({ from: -0.5, to: lastIdx + blank });
+      return;
+    }
+    // ズーム倍率(span)を保持したまま T を右端へ（右 f を余白に）スクロール。
+    const to = lastIdx + span * f;
+    const from = to - span;
+    ts.setVisibleLogicalRange({ from, to });
   }
 
   // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。

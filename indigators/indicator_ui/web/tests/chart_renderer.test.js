@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ChartRenderer } from '../js/adapter/front/chart_renderer.js';
+import { ChartRenderer, zoomedPriceRange, clampPriceRange } from '../js/adapter/front/chart_renderer.js';
 
 // v5 シリーズ定義トークン（実体は object。renderer は addSeries(def, …) に渡すだけ）。
 const LineSeries = { kind: 'Line' };
@@ -161,55 +161,110 @@ test('setUserInteraction(false) disables chart scroll/scale; (true) restores the
   assert.equal(chart._options.handleScale, true);
 });
 
-// ===========================================================================
-// setTimeScaleLock（sessions 単日拡大中の時間軸ロック）:
-//   on=true で横パン（handleScroll:false）＋時間軸ズーム停止（axisPressedMouseMove.time:false /
-//   mouseWheel:false / pinch:false）を掛け、価格軸ドラッグ（axisPressedMouseMove.price:true）は残す。
-//   on=false で lwc 既定（handleScroll:true / handleScale:true）へ復元。setUserInteraction とは独立。
-// ===========================================================================
-
-test('setTimeScaleLock(true): locks time scale but keeps the price axis draggable', () => {
-  // Arrange
-  const { renderer, chart } = newRenderer();
-  // Act
-  renderer.setTimeScaleLock(true);
-  // Assert: 横パン停止
-  assert.equal(chart._options.handleScroll, false, '横パンを止める');
-  const hs = chart._options.handleScale;
-  assert.equal(hs.axisPressedMouseMove.time, false, '時間軸ドラッグは不可');
-  assert.equal(hs.axisPressedMouseMove.price, true, '価格軸ドラッグは可（縦の検証操作を残す）');
-  assert.equal(hs.mouseWheel, false, 'ホイールによる時間軸ズームを止める');
-  assert.equal(hs.pinch, false, 'ピンチによる時間軸ズームを止める');
-});
-
-test('setTimeScaleLock(false): restores lwc defaults (handleScroll/handleScale true)', () => {
-  // Arrange
-  const { renderer, chart } = newRenderer();
-  renderer.setTimeScaleLock(true);
-  // Act: 復元
-  renderer.setTimeScaleLock(false);
-  // Assert
-  assert.equal(chart._options.handleScroll, true);
-  assert.equal(chart._options.handleScale, true);
-});
-
-test('setTimeScaleLock does not touch setUserInteraction paths (独立・回帰)', () => {
-  // 回帰: 時間軸ロックはリプレイ swipe 用の全ロック（setUserInteraction）を変えない。
-  const { renderer, chart } = newRenderer();
-  // Arrange: 時間軸ロック → 価格軸は object 形（残す）
-  renderer.setTimeScaleLock(true);
-  assert.equal(typeof chart._options.handleScale, 'object', '時間軸ロックは handleScale を object 化');
-  // Act: setUserInteraction(false) は全ロック（handleScale=false boolean）
-  renderer.setUserInteraction(false);
-  assert.equal(chart._options.handleScale, false, 'setUserInteraction は従来どおり全ロック boolean');
-});
-
 test('coordinateToLogical delegates to chart.timeScale().coordinateToLogical', () => {
   // Arrange
   const { renderer } = newRenderer();
   // Act / Assert: fake は x/100 を返す
   assert.equal(renderer.coordinateToLogical(250), 2.5);
   assert.equal(renderer.coordinateToLogical(null), null);
+});
+
+// pixelsPerBar（スワイプ感度基準）: |logicalToCoordinate(1)-logicalToCoordinate(0)|、極小(<0.5)は 8 下限。
+//   最小 fake chart で timeScale().logicalToCoordinate を差し替えて検証する。
+function rendererWithSpacing(spacingPx) {
+  const main = { setData() {}, priceScale: () => ({ applyOptions() {} }) };
+  const chart = {
+    addSeries: () => main,
+    subscribeCrosshairMove() {},
+    timeScale: () => ({
+      logicalToCoordinate: spacingPx == null ? undefined : ((i) => (i == null ? null : i * spacingPx)),
+    }),
+  };
+  return new ChartRenderer({ chart, mainSeries: main, lwc: {} });
+}
+
+test('pixelsPerBar: 通常は barSpacing（|logicalToCoordinate(1)-(0)|）を返す', () => {
+  assert.equal(rendererWithSpacing(12).pixelsPerBar(), 12);
+});
+
+test('pixelsPerBar: barSpacing が極小(<0.5px)なら 8 を下限に使う（ズームアウト時の暴走防止・プロト準拠）', () => {
+  assert.equal(rendererWithSpacing(0.3).pixelsPerBar(), 8, '0.3px/bar → 8 下限');
+});
+
+test('pixelsPerBar: logicalToCoordinate 非提供なら 8（後方互換）', () => {
+  assert.equal(rendererWithSpacing(null).pixelsPerBar(), 8);
+});
+
+// _fitTrimView（スクラブ追従）: 現在の可視幅 span を保ったまま T を右端へスクロールする。
+//   ズームを保持したまま過去↔現在を移動できる（ユーザー選択・プロトの全historyフィットから意図的に外れる）。
+function rendererWithVisibleRange(visSpan) {
+  const ranges = [];
+  const main = {
+    setData() {}, applyOptions() {},
+    priceScale: () => ({ applyOptions() {} }),
+  };
+  const ts = {
+    fitContent() {}, applyOptions() {},
+    width: () => 1000, options: () => ({ barSpacing: 6 }),
+    getVisibleLogicalRange: () => (visSpan == null ? null : { from: 0, to: visSpan }),
+    setVisibleLogicalRange: (r) => ranges.push(r),
+  };
+  const chart = { addSeries: () => main, subscribeCrosshairMove() {}, timeScale: () => ts };
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: {} });
+  return { renderer, ranges };
+}
+
+test('_fitTrimView（setCandleTrim経由）: 可視幅 span を保持し T を右端(右fを余白)へ置く＝ズーム保持追従', () => {
+  // Arrange: 20 本、margin f=0.30、現在の可視幅 span=10（ズームイン相当）。
+  const { renderer, ranges } = rendererWithVisibleRange(10);
+  const candles = Array.from({ length: 20 }, (_, i) => ({ time: i + 1, open: 1, high: 2, low: 0, close: 1 }));
+  renderer.setCandles(candles);
+  renderer.setRightMarginFraction(0.30); // f=0.30
+  // Act: T=足10（time=10）までトリム → L=10、lastIdx=9.5。
+  renderer.setCandleTrim(10);
+  // Assert: span=10 を保持、to=lastIdx + span*f = 9.5+3=12.5、from=to-span=2.5。
+  const r = ranges.at(-1);
+  assert.ok(Math.abs((r.to - r.from) - 10) < 1e-9, 'span=10 を保持（ズーム維持）');
+  assert.ok(Math.abs(r.to - 12.5) < 1e-9, 'to = 9.5 + span*0.30');
+  assert.ok(Math.abs(r.from - 2.5) < 1e-9, 'from = to - span');
+});
+
+test('_fitTrimView: getVisibleLogicalRange が一時的に null でも直前 span を保持（全historyへ戻さない）', () => {
+  // 回帰: 一度得た span をキャッシュし、次に null を返しても全history フィットへスナップしない
+  //   （ユーザー報告「拡大表示して移動させると全history表示に戻る」の確実化）。
+  const ranges = [];
+  let call = 0;
+  const main = { setData() {}, applyOptions() {}, priceScale: () => ({ applyOptions() {} }) };
+  const ts = {
+    fitContent() {}, applyOptions() {}, width: () => 1000, options: () => ({ barSpacing: 6 }),
+    // 1回目は span=10、2回目以降は null（一時的な取得失敗を模す）。
+    getVisibleLogicalRange: () => { call += 1; return call === 1 ? { from: 0, to: 10 } : null; },
+    setVisibleLogicalRange: (r) => ranges.push(r),
+  };
+  const chart = { addSeries: () => main, subscribeCrosshairMove() {}, timeScale: () => ts };
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: {} });
+  const candles = Array.from({ length: 20 }, (_, i) => ({ time: i + 1, open: 1, high: 2, low: 0, close: 1 }));
+  renderer.setCandles(candles);
+  renderer.setRightMarginFraction(0.30);
+  // 1回目トリム（span=10 取得）→ 2回目トリム（null だがキャッシュ span=10 を使う）。
+  renderer.setCandleTrim(10); // L=10, span=10
+  renderer.setCandleTrim(8);  // L=8, getVisibleLogicalRange=null → cached span=10
+  const r = ranges.at(-1);
+  assert.ok(Math.abs((r.to - r.from) - 10) < 1e-9, 'span=10 を保持（全history=20 に戻らない）');
+  // to = (8-0.5) + 10*0.30 = 7.5+3 = 10.5
+  assert.ok(Math.abs(r.to - 10.5) < 1e-9, 'キャッシュ span で T 追従');
+});
+
+test('_fitTrimView: getVisibleLogicalRange 非提供なら全historyフィット {from:-0.5, to:L-0.5+blank} にフォールバック', () => {
+  // Arrange: visSpan=null（取得不能）。f=0.30、L=10 → blank=10*0.3/0.7≈4.2857。
+  const { renderer, ranges } = rendererWithVisibleRange(null);
+  const candles = Array.from({ length: 20 }, (_, i) => ({ time: i + 1, open: 1, high: 2, low: 0, close: 1 }));
+  renderer.setCandles(candles);
+  renderer.setRightMarginFraction(0.30);
+  renderer.setCandleTrim(10);
+  const r = ranges.at(-1);
+  assert.ok(Math.abs(r.from - (-0.5)) < 1e-9, 'from=-0.5（先頭）');
+  assert.ok(Math.abs(r.to - (9.5 + (10 * 0.3) / 0.7)) < 1e-6, 'to=L-0.5+blank');
 });
 
 test('setCandleTrim(time) trims candles to time<=T and setData; null restores full candles', () => {
@@ -870,41 +925,6 @@ test('v6: setCandleObserver installs the observer after construction (late bindi
 });
 
 // ---------------------------------------------------------------------------
-// sessions 単日フォーカスの価格軸ズーム（setPriceAutoscaleOverride）:
-//   lwc autoscaleInfoProvider を renderer に隔離。override 有→priceRange 上書き／null→original() 素通し。
-// ---------------------------------------------------------------------------
-test('setPriceAutoscaleOverride: installs provider once and overrides/restores the price range', () => {
-  // Arrange
-  const { renderer, main } = newRenderer();
-  // Act: override 設定
-  renderer.setPriceAutoscaleOverride({ min: 100, max: 200 });
-  const provider = main._options.autoscaleInfoProvider;
-  assert.equal(typeof provider, 'function', 'provider がインストールされる');
-  // Assert: override 中は priceRange を返す（original は呼ばれない）
-  let originalCalled = 0;
-  const original = () => { originalCalled += 1; return { priceRange: { minValue: 0, maxValue: 99999 } }; };
-  assert.deepEqual(provider(original), { priceRange: { minValue: 100, maxValue: 200 } });
-  assert.equal(originalCalled, 0);
-  // Act: 解除（null）→ original() 素通し＝既定挙動（挙動不変）
-  renderer.setPriceAutoscaleOverride(null);
-  assert.deepEqual(provider(original), { priceRange: { minValue: 0, maxValue: 99999 } });
-  assert.equal(originalCalled, 1);
-  // provider は再インストールされない（同一関数のまま）
-  renderer.setPriceAutoscaleOverride({ min: 1, max: 2 });
-  assert.equal(main._options.autoscaleInfoProvider, provider);
-});
-
-test('setPriceAutoscaleOverride: invalid range (min>=max / NaN) is treated as clear', () => {
-  const { renderer, main } = newRenderer();
-  renderer.setPriceAutoscaleOverride({ min: 5, max: 5 }); // 幅0=無効
-  const provider = main._options.autoscaleInfoProvider;
-  const original = () => ({ priceRange: { minValue: 0, maxValue: 1 } });
-  assert.deepEqual(provider(original), { priceRange: { minValue: 0, maxValue: 1 } });
-  renderer.setPriceAutoscaleOverride({ min: NaN, max: 10 });
-  assert.deepEqual(provider(original), { priceRange: { minValue: 0, maxValue: 1 } });
-});
-
-// ---------------------------------------------------------------------------
 // スナップショットの読み取り欄整合（実機バグ修正の回帰）:
 //   setCandleTrim(T) はトリム後の最終足（=T 時点の足）を読み取り欄の単一源（_lastBar）へ反映し
 //   即時再発火する。解除（null）で全ローソクの最終足へ復元する。
@@ -961,4 +981,313 @@ test('setRightMarginFraction: sets rightOffset bars from width*frac/barSpacing a
   // Act: null → 復元（rightOffset: 0）
   renderer.setRightMarginFraction(null);
   assert.deepEqual(applied.at(-1), { rightOffset: 0 });
+});
+
+// ===========================================================================
+// zoomedPriceRange（純関数・価格軸ホイールズームの中核式）
+//   f = 0.9^(-deltaY/100) を [0.5, 2] にクランプ。カーソル価格 p を中心に
+//   newMin = p-(p-min)*f / newMax = p+(max-p)*f。span 最小クランプ・p 範囲外は中央基準。
+// ===========================================================================
+
+test('zoomedPriceRange: 1ノッチ上(deltaY=-100)でレンジ×0.90にズームイン（カーソル中心）', () => {
+  // Arrange: p=100 を中心（min=0..max=200 の中央）→ 縮小は左右対称
+  const out = zoomedPriceRange({ min: 0, max: 200 }, 100, -100);
+  // Act/Assert: f=0.9 → newMin=100-100*0.9=10, newMax=100+100*0.9=190（span 200→180=×0.90）
+  assert.ok(Math.abs(out.min - 10) < 1e-9);
+  assert.ok(Math.abs(out.max - 190) < 1e-9);
+});
+
+test('zoomedPriceRange: カーソルが上寄りなら上側の縮み幅が小さい（p の位置に比例）', () => {
+  // Arrange: p=150（min=0..max=200 の上寄り）
+  const out = zoomedPriceRange({ min: 0, max: 200 }, 150, -100);
+  // Act/Assert: newMin=150-150*0.9=15, newMax=150+50*0.9=195。下側の縮み(15) > 上側の縮み(5)
+  assert.ok(Math.abs(out.min - 15) < 1e-9);
+  assert.ok(Math.abs(out.max - 195) < 1e-9);
+  assert.ok((out.min - 0) > (200 - out.max), '下側(カーソルから遠い)ほど大きく縮む');
+});
+
+test('zoomedPriceRange: 1ノッチ下(deltaY=+100)でレンジ×1/0.90にズームアウト', () => {
+  // Arrange/Act: f=0.9^(-1)=1/0.9≈1.1111
+  const out = zoomedPriceRange({ min: 0, max: 200 }, 100, 100);
+  const f = 1 / 0.9;
+  // Assert: newMin=100-100*f, newMax=100+100*f（span 拡大）
+  assert.ok(Math.abs(out.min - (100 - 100 * f)) < 1e-9);
+  assert.ok(Math.abs(out.max - (100 + 100 * f)) < 1e-9);
+  assert.ok((out.max - out.min) > 200, 'ズームアウトで span が拡大する');
+});
+
+test('zoomedPriceRange: 微小デルタは比例した連続ズーム（トラックパッド）', () => {
+  // Arrange: deltaY=-10 → f=0.9^(0.1)≈0.98952（微小縮小）
+  const out = zoomedPriceRange({ min: 0, max: 200 }, 100, -10);
+  const f = Math.pow(0.9, 0.1);
+  assert.ok(Math.abs(out.min - (100 - 100 * f)) < 1e-9);
+  assert.ok(Math.abs(out.max - (100 + 100 * f)) < 1e-9);
+  // 微小変化＝1ノッチ(0.9)より1に近い
+  assert.ok(f > 0.9 && f < 1);
+});
+
+test('zoomedPriceRange: f は下限 0.5 にクランプ（過大な負デルタでも暴れない）', () => {
+  // Arrange: deltaY=-1000 → 0.9^10≈0.3487 < 0.5 → 0.5 にクランプ
+  const out = zoomedPriceRange({ min: 0, max: 200 }, 100, -1000);
+  // Assert: f=0.5 → newMin=100-100*0.5=50, newMax=100+100*0.5=150
+  assert.ok(Math.abs(out.min - 50) < 1e-9);
+  assert.ok(Math.abs(out.max - 150) < 1e-9);
+});
+
+test('zoomedPriceRange: f は上限 2 にクランプ（過大な正デルタでも暴れない）', () => {
+  // Arrange: deltaY=+1000 → 0.9^-10≈2.867 > 2 → 2 にクランプ
+  const out = zoomedPriceRange({ min: 0, max: 200 }, 100, 1000);
+  // Assert: f=2 → newMin=100-100*2=-100, newMax=100+100*2=300
+  assert.ok(Math.abs(out.min - (-100)) < 1e-9);
+  assert.ok(Math.abs(out.max - 300) < 1e-9);
+});
+
+test('zoomedPriceRange: span を現 span×1e-4 以下に縮めない（最小 span クランプ）', () => {
+  // Arrange: 既に極小 span を更にズームインしても最小 span を割らない
+  const range = { min: 100, max: 100.0001 }; // span=1e-4
+  // deltaY=-100 → f=0.9 で span=9e-5 < 1e-4*1=1e-4 相当。最小 span = span_current*1e-4
+  const out = zoomedPriceRange(range, 100.00005, -100);
+  const minSpan = (range.max - range.min) * 1e-4;
+  assert.ok((out.max - out.min) >= minSpan - 1e-18, 'span は最小クランプ以上を維持する');
+});
+
+test('zoomedPriceRange: price が range 外なら中央基準でズームする', () => {
+  // Arrange: p=1000（min=0..max=200 の外側）→ 中央 100 を基準に
+  const out = zoomedPriceRange({ min: 0, max: 200 }, 1000, -100);
+  // Assert: center=100, f=0.9 → newMin=100-100*0.9=10, newMax=100+100*0.9=190
+  assert.ok(Math.abs(out.min - 10) < 1e-9);
+  assert.ok(Math.abs(out.max - 190) < 1e-9);
+});
+
+test('zoomedPriceRange: deltaY が NaN/0 は無変化（NaN 伝播防止・レビュー🔵）', () => {
+  assert.deepEqual(zoomedPriceRange({ min: 0, max: 200 }, 100, NaN), { min: 0, max: 200 });
+  assert.deepEqual(zoomedPriceRange({ min: 0, max: 200 }, 100, 0), { min: 0, max: 200 });
+});
+
+test('setCandles: 価格ズーム override を解除して自動スケールへ復帰する（時間足切替の固着修正・レビュー🟡#1）', () => {
+  // Arrange: 価格軸ズームで override を立てる。
+  const { chart, mainSeries } = fakeZoomChart(360);
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setPaneHeight(360);
+  renderer.handlePriceWheel(610, 180, -100); // 軸領域でズーム → _priceZoomRange 設定
+  // override 有効中は provider が override を返す（original を素通ししない）。
+  const zoomed = renderer.__callAutoscaleProvider(() => ({ priceRange: { minValue: 0, maxValue: 200 } }));
+  assert.notDeepEqual(zoomed, { priceRange: { minValue: 0, maxValue: 200 } }, 'ズーム中は override');
+  // Act: 時間足切替相当（setCandles で全置換）。
+  renderer.setCandles([{ time: 1, open: 1, high: 2, low: 0, close: 1.5 }]);
+  // Assert: override 解除＝provider は original() を素通し（自動スケール復帰）。
+  const orig = { priceRange: { minValue: 5, maxValue: 55 } };
+  assert.deepEqual(renderer.__callAutoscaleProvider(() => orig), orig, 'setCandles で自動スケール復帰');
+});
+
+// ===========================================================================
+// handlePriceWheel / resetPriceZoom（価格軸ホイールズームの renderer 配線）
+//   x >= timeScale().width() （価格軸領域）のときだけ処理し true を返す。
+//   autoscaleInfoProvider は一度だけ恒久インストールし、override 有→{priceRange}、null→original()。
+// ===========================================================================
+
+// 価格軸ズーム用の Fake chart。timeScale().width()/coordinateToPrice/priceScale().applyOptions を記録。
+function fakeZoomChart(paneHeight = 400) {
+  const applied = [];
+  const priceScaleApplied = [];
+  let providerFn = null;
+  const mainSeries = {
+    _def: undefined, setData() {}, update() {}, applyOptions() {},
+    _priceRange: { min: 0, max: 200 },
+    // 座標→価格: y=0 で max、y=paneHeight で min（lwc は上が高値）。
+    coordinateToPrice(y) {
+      if (y == null) return null;
+      const t = y / paneHeight;
+      return this._priceRange.max - t * (this._priceRange.max - this._priceRange.min);
+    },
+    priceScale() {
+      return {
+        applyOptions(o) {
+          priceScaleApplied.push(o);
+          if (o && o.autoscaleInfoProvider !== undefined) {
+            providerFn = o.autoscaleInfoProvider;
+          }
+        },
+        _providerCount: () => priceScaleApplied.filter((o) => o.autoscaleInfoProvider !== undefined).length,
+      };
+    },
+  };
+  const chart = {
+    _applied: applied, _priceScaleApplied: priceScaleApplied,
+    addSeries: () => mainSeries,
+    removeSeries() {},
+    panes: () => [{ setStretchFactor() {}, paneIndex: () => 0 }],
+    addPane: () => ({ addSeries: () => mainSeries, setStretchFactor() {}, paneIndex: () => 1, setPreserveEmptyPane() {} }),
+    removePane() {},
+    applyOptions(o) { applied.push(o); },
+    timeScale: () => ({ width: () => 600, height: () => 40, fitContent() {} }),
+    subscribeCrosshairMove() {},
+  };
+  return { chart, mainSeries, callProvider: (orig) => (providerFn ? providerFn(orig) : null),
+    providerInstalls: () => priceScaleApplied.filter((o) => o.autoscaleInfoProvider !== undefined).length };
+}
+
+test('handlePriceWheel: 軸領域内(x>=timeScale width)で処理し true を返す・provider 経由で新レンジになる', () => {
+  // Arrange
+  const { chart, mainSeries } = fakeZoomChart(360);
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setPaneHeight(360);
+  // Act: x=610（>=600=軸領域）, y=180（中央→p=100）, deltaY=-100（ズームイン）
+  const handled = renderer.handlePriceWheel(610, 180, -100);
+  // Assert: 処理された
+  assert.equal(handled, true);
+  // provider を呼ぶと新レンジ（f=0.9, p=100, min=0..max=200 → 10..190）が返る
+  const info = renderer.__callAutoscaleProvider(() => ({ priceRange: { minValue: 0, maxValue: 200 } }));
+  assert.ok(Math.abs(info.priceRange.minValue - 10) < 1e-6);
+  assert.ok(Math.abs(info.priceRange.maxValue - 190) < 1e-6);
+});
+
+test('handlePriceWheel: 軸領域外(x<timeScale width)は false で何もしない（時間軸ズームを奪わない）', () => {
+  // Arrange
+  const { chart, mainSeries } = fakeZoomChart(360);
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setPaneHeight(360);
+  // Act: x=300（<600=チャート本体）
+  const handled = renderer.handlePriceWheel(300, 180, -100);
+  // Assert
+  assert.equal(handled, false);
+  // provider override は未設定 → original() 素通し
+  const info = renderer.__callAutoscaleProvider(() => ({ priceRange: { minValue: 0, maxValue: 200 } }));
+  assert.deepEqual(info, { priceRange: { minValue: 0, maxValue: 200 } });
+});
+
+test('resetPriceZoom: override をクリアし original() 素通しへ復帰する', () => {
+  // Arrange: 一旦ズームして override をセット
+  const { chart, mainSeries } = fakeZoomChart(360);
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setPaneHeight(360);
+  renderer.handlePriceWheel(610, 180, -100);
+  // Act: リセット
+  renderer.resetPriceZoom();
+  // Assert: provider は original() を素通しする（override 無効）
+  const orig = { priceRange: { minValue: 5, maxValue: 55 } };
+  const info = renderer.__callAutoscaleProvider(() => orig);
+  assert.deepEqual(info, orig);
+});
+
+test('handlePriceWheel: autoscaleInfoProvider は series へ毎回再設定される（再オートスケール誘発）', () => {
+  // 回帰: autoscaleInfoProvider は series オプション（priceScale へ渡しても lwc は無視）。かつ
+  //   provider の中身だけ変えても lwc は再オートスケールしないため、wheel/reset の度に
+  //   mainSeries.applyOptions で新クロージャを再設定してオプション変更→再計算を誘発する（実機バグ修正）。
+  // Arrange: mainSeries.applyOptions を記録
+  const zc = fakeZoomChart(360);
+  const seriesApplied = [];
+  zc.mainSeries.applyOptions = (o) => seriesApplied.push(o);
+  const renderer = new ChartRenderer({ chart: zc.chart, mainSeries: zc.mainSeries, lwc: fakeLwc() });
+  renderer.setPaneHeight(360);
+  // Act: 2 回ズーム + リセット
+  renderer.handlePriceWheel(610, 180, -100);
+  renderer.handlePriceWheel(610, 180, -100);
+  renderer.resetPriceZoom();
+  // Assert: series へ provider が 3 回（wheel×2 + reset×1）再設定される。
+  const installs = seriesApplied.filter((o) => o && o.autoscaleInfoProvider !== undefined);
+  assert.equal(installs.length, 3, 'wheel/reset の度に series へ再設定');
+  // priceScale へは provider を渡さない（series オプションのため・lwc は無視する）。
+  assert.equal(zc.providerInstalls(), 0);
+  // 各クロージャは現在状態を反映する（reset 後は original 素通し）。
+  const orig = () => ({ priceRange: { minValue: 1, maxValue: 2 } });
+  assert.deepEqual(installs.at(-1).autoscaleInfoProvider(orig), { priceRange: { minValue: 1, maxValue: 2 } });
+});
+
+test('handlePriceWheel: coordinateToPrice が null（データ無し）なら false で何もしない', () => {
+  // Arrange: coordinateToPrice が常に null
+  const { chart, mainSeries } = fakeZoomChart(360);
+  mainSeries.coordinateToPrice = () => null;
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setPaneHeight(360);
+  // Act
+  const handled = renderer.handlePriceWheel(610, 180, -100);
+  // Assert
+  assert.equal(handled, false);
+});
+
+// ---------------------------------------------------------------------------
+// 発散防止の絶対クランプ（実機バグ修正の回帰）: ホイール連続入力（連打/慣性スクロール）で
+//   レンジが複利増幅して 1e24 等へ発散した。clampPriceRange がデータ全幅由来の絶対範囲
+//   （span ∈ [dataSpan×1e-4, dataSpan×5]・中心はデータ範囲 [min,max] 内）へ制限する。
+// ---------------------------------------------------------------------------
+test('clampPriceRange: span はデータ全幅の ×5 を超えず ×1e-4 未満に縮まない・中心はデータ範囲内', () => {
+  const data = { min: 20000, max: 70000 }; // dataSpan=50000
+  // 過大レンジ → maxSpan=250000（×5）に頭打ち・中心はデータ範囲内
+  const big = clampPriceRange({ min: -1e24, max: 1e24 }, data);
+  assert.ok((big.max - big.min) <= 250000 + 1e-6);
+  const bigC = (big.min + big.max) / 2;
+  assert.ok(bigC >= 20000 - 1e-6 && bigC <= 70000 + 1e-6, '中心はデータ範囲内');
+  // 過小レンジ → minSpan=5 に下げ止め
+  const tiny = clampPriceRange({ min: 45000, max: 45000.000001 }, data);
+  assert.ok((tiny.max - tiny.min) >= 5 - 1e-9);
+  // 正常レンジは不変
+  const ok = clampPriceRange({ min: 40000, max: 60000 }, data);
+  assert.deepEqual(ok, { min: 40000, max: 60000 });
+  // データレンジ不明はそのまま（従来挙動）
+  assert.deepEqual(clampPriceRange({ min: 1, max: 2 }, null), { min: 1, max: 2 });
+});
+
+test('handlePriceWheel: 連続 200 回のズームアウトでもレンジが発散しない（絶対クランプ）', () => {
+  // Arrange: baseCandles（データ全幅 100..200）を持つ renderer
+  const zc = fakeZoomChart(360);
+  const renderer = new ChartRenderer({ chart: zc.chart, mainSeries: zc.mainSeries, lwc: fakeLwc() });
+  renderer.setCandles([
+    { time: 1, open: 120, high: 200, low: 100, close: 150 },
+    { time: 2, open: 150, high: 180, low: 110, close: 160 },
+  ]);
+  renderer.setPaneHeight(360);
+  // Act: ズームアウト（deltaY=+100）を 200 連打
+  for (let i = 0; i < 200; i += 1) {
+    renderer.handlePriceWheel(610, 180, +100);
+  }
+  // Assert: span はデータ全幅(100)×5=500 を超えない（発散しない）
+  const info = renderer.__callAutoscaleProvider(() => null);
+  const span = info.priceRange.maxValue - info.priceRange.minValue;
+  assert.ok(span <= 500 + 1e-6, `span=${span} は 500 以下`);
+  assert.ok(Number.isFinite(info.priceRange.minValue) && Number.isFinite(info.priceRange.maxValue));
+});
+
+// ---------------------------------------------------------------------------
+// 縦ドラッグによる価格パン（panPriceByPixels）: 本体ドラッグの縦成分で価格レンジを平行移動する。
+//   span 不変・下げ(dy>0)で表示レンジが上へ・データ範囲内に中心クランプ・pane 高未供給時は false。
+// ---------------------------------------------------------------------------
+test('panPriceByPixels: 下げ(dy>0)で表示レンジが上へ平行移動し span は不変', () => {
+  const { chart, mainSeries } = fakeZoomChart(360);
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setCandles([
+    { time: 1, open: 40, high: 200, low: 0, close: 100 },
+    { time: 2, open: 100, high: 190, low: 10, close: 150 },
+  ]);
+  renderer.setPaneHeight(360);
+  // 初回パン: 基準は現表示 0..200（span=200）。dy=+36（=10% of paneHeight）→ shift=+20。
+  const handled = renderer.panPriceByPixels(36);
+  assert.equal(handled, true);
+  const info = renderer.__callAutoscaleProvider(() => null);
+  const span = info.priceRange.maxValue - info.priceRange.minValue;
+  assert.ok(Math.abs(span - 200) < 1e-6, 'span 不変');
+  assert.ok(info.priceRange.minValue > 0, '下げで min が上昇（表示レンジ上へ）');
+});
+
+test('panPriceByPixels: 中心はデータ範囲内にクランプ（無限にパンできない）', () => {
+  const { chart, mainSeries } = fakeZoomChart(360);
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setCandles([{ time: 1, open: 100, high: 120, low: 80, close: 110 }]); // データ 80..120
+  renderer.setPaneHeight(360);
+  // 大量にパン（dy=+100000 相当を連続）しても中心は [80,120] を超えない。
+  for (let i = 0; i < 50; i += 1) {
+    renderer.panPriceByPixels(1000);
+  }
+  const info = renderer.__callAutoscaleProvider(() => null);
+  const c = (info.priceRange.minValue + info.priceRange.maxValue) / 2;
+  assert.ok(c >= 80 - 1e-6 && c <= 120 + 1e-6, `中心 ${c} はデータ範囲内`);
+});
+
+test('panPriceByPixels: pane 高未供給/ dy=0 は false（何もしない）', () => {
+  const { chart, mainSeries } = fakeZoomChart(360);
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setCandles([{ time: 1, open: 100, high: 120, low: 80, close: 110 }]);
+  assert.equal(renderer.panPriceByPixels(20), false, 'pane 高未供給→false');
+  renderer.setPaneHeight(360);
+  assert.equal(renderer.panPriceByPixels(0), false, 'dy=0→false');
 });
