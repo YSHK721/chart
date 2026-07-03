@@ -146,6 +146,53 @@ export class ChartRenderer {
     this._chart.applyOptions({ handleScroll: on, handleScale: on });
   }
 
+  // MP プロファイル専用の右マージン: ローソクを左へ寄せ、チャート右側 frac（例 0.30）を空けて
+  //   プロファイルのバーがローソク足と重ならないようにする（試作 prototype_260630-01 の
+  //   PROFILE_FRAC=0.30「ヒートの重なり回避」の移植・実機FB「バーと足が重なって視認性が悪い」）。
+  //   実装は timeScale の rightOffset（単位=バー数）＝ width*frac / barSpacing を設定する。
+  //   frac=null で 0（既定）へ復元。ズームで barSpacing が変わると px マージンはドリフトする
+  //   （v1 の許容・再トグルで再計算）。timeScale/applyOptions 非提供時は no-op（後方互換）。
+  setRightMarginFraction(frac) {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.applyOptions !== 'function') {
+      return;
+    }
+    if (frac == null || !(frac > 0)) {
+      ts.applyOptions({ rightOffset: 0 }); // 復元（lwc 既定）。
+      return;
+    }
+    const w = typeof ts.width === 'function' ? ts.width() : 0;
+    const bs = (typeof ts.options === 'function' && ts.options() && ts.options().barSpacing) || 6;
+    const bars = w > 0 ? Math.max(0, Math.round((w * frac) / bs)) : 0;
+    ts.applyOptions({ rightOffset: bars });
+  }
+
+  // sessions 単日フォーカス: 時間軸（下部ルーラ）の操作だけをロック/復元する（価格軸の手動操作は残す）。
+  //   単日拡大中（sessionFocus 設定）に呼び、横パン（handleScroll）と時間軸ズーム（axis time / wheel /
+  //   pinch）を止める。価格軸のドラッグズーム（axisPressedMouseMove.price）は許し縦の検証操作を残す。
+  //   lightweight-charts の applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は呼ばない）。
+  //   on=true でロック、on=false で lwc 既定（handleScroll:true / handleScale:true）へ復元。既存
+  //   setUserInteraction（リプレイ swipe 用・全ロック）とは独立（本メソッドは価格軸を残す点が異なる）。
+  //   applyOptions 非提供時は no-op（後方互換）。冪等（同じ状態の再設定は無害）。
+  setTimeScaleLock(on) {
+    if (typeof this._chart.applyOptions !== 'function') {
+      return;
+    }
+    if (on) {
+      this._chart.applyOptions({
+        handleScroll: false, // 横パン（チャート本体ドラッグ・ルーラドラッグ）を止める。
+        handleScale: {
+          axisPressedMouseMove: { time: false, price: true }, // 時間軸ドラッグ×／価格軸ドラッグ○。
+          mouseWheel: false, // ホイールによる時間軸ズームを止める。
+          pinch: false,      // ピンチによる時間軸ズームを止める。
+        },
+      });
+    } else {
+      // 復元＝lwc 既定（横スクロール可・両軸ズーム可）。sessions 解除/OFF/MP 削除で必ず呼ぶ。
+      this._chart.applyOptions({ handleScroll: true, handleScale: true });
+    }
+  }
+
   // sessions（日別プロファイル分割）: ローソクを透明化して価格軸のみ残す/復元する（移植元 prototype_260630-01）。
   //   lightweight-charts の mainSeries.applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は
   //   呼ばない）。on=true で up/down/border/wick の各色を透明へ上書きし、on=false で元の既定色へ復元する。
@@ -166,6 +213,30 @@ export class ChartRenderer {
         upColor: CANDLE_UP_COLOR, downColor: CANDLE_DOWN_COLOR,
         borderUpColor: CANDLE_UP_COLOR, borderDownColor: CANDLE_DOWN_COLOR,
         wickUpColor: CANDLE_UP_COLOR, wickDownColor: CANDLE_DOWN_COLOR,
+      });
+    }
+  }
+
+  // sessions 単日フォーカス: 価格軸の自動スケール範囲を上書きする（lwc autoscaleInfoProvider を本所に隔離）。
+  //   range={min,max} でその価格帯へ自動ズーム（フォーカスした日の形を全高で検証できる）。null で既定へ復帰。
+  //   provider は一度だけ恒久インストールし、内部フラグで override⇄既定(original) を切替える
+  //   （applyOptions で provider を外す確実な手段が無いための安全策・OFF 時は original() 素通し＝挙動不変）。
+  setPriceAutoscaleOverride(range) {
+    if (typeof this._mainSeries.applyOptions !== 'function') {
+      return;
+    }
+    this._autoscaleOverride = (range && Number.isFinite(range.min) && Number.isFinite(range.max)
+      && range.max > range.min) ? { min: range.min, max: range.max } : null;
+    if (!this._autoscaleProviderInstalled) {
+      this._autoscaleProviderInstalled = true;
+      this._mainSeries.applyOptions({
+        autoscaleInfoProvider: (original) => {
+          const ov = this._autoscaleOverride;
+          if (!ov) {
+            return original(); // 既定（挙動不変）。
+          }
+          return { priceRange: { minValue: ov.min, maxValue: ov.max } };
+        },
       });
     }
   }
@@ -200,6 +271,11 @@ export class ChartRenderer {
       }
       this._lastTrimIdx = null;
       this._mainSeries.setData(this._baseCandles); // トリム解除＝全ローソク復元。
+      // 読み取り欄の単一源（_lastBar）も全ローソクの最終足へ復元し、即時再発火する
+      //   （スナップショット解除後に古い T 時点の値が残らないように）。
+      this._lastBar = this._baseCandles.length > 0
+        ? this._baseCandles[this._baseCandles.length - 1] : null;
+      this._emitReadout(null);
       return;
     }
     let idx = -1;
@@ -218,6 +294,11 @@ export class ChartRenderer {
     }
     this._lastTrimIdx = idx;
     this._mainSeries.setData(this._baseCandles.slice(0, idx + 1));
+    // 読み取り欄の単一源（_lastBar）をトリム後の最終足（=T 時点の足）へ更新し、即時再発火する。
+    //   これが無いとスナップショット中も左上の読み取り欄がトリム前の最新足（例 2026-07-02）を
+    //   表示し続け、当時（T）の表示と矛盾する（実機で確認したバグ）。
+    this._lastBar = this._baseCandles[idx];
+    this._emitReadout(null);
   }
 
   // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。

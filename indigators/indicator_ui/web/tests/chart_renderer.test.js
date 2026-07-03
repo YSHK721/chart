@@ -161,6 +161,49 @@ test('setUserInteraction(false) disables chart scroll/scale; (true) restores the
   assert.equal(chart._options.handleScale, true);
 });
 
+// ===========================================================================
+// setTimeScaleLock（sessions 単日拡大中の時間軸ロック）:
+//   on=true で横パン（handleScroll:false）＋時間軸ズーム停止（axisPressedMouseMove.time:false /
+//   mouseWheel:false / pinch:false）を掛け、価格軸ドラッグ（axisPressedMouseMove.price:true）は残す。
+//   on=false で lwc 既定（handleScroll:true / handleScale:true）へ復元。setUserInteraction とは独立。
+// ===========================================================================
+
+test('setTimeScaleLock(true): locks time scale but keeps the price axis draggable', () => {
+  // Arrange
+  const { renderer, chart } = newRenderer();
+  // Act
+  renderer.setTimeScaleLock(true);
+  // Assert: 横パン停止
+  assert.equal(chart._options.handleScroll, false, '横パンを止める');
+  const hs = chart._options.handleScale;
+  assert.equal(hs.axisPressedMouseMove.time, false, '時間軸ドラッグは不可');
+  assert.equal(hs.axisPressedMouseMove.price, true, '価格軸ドラッグは可（縦の検証操作を残す）');
+  assert.equal(hs.mouseWheel, false, 'ホイールによる時間軸ズームを止める');
+  assert.equal(hs.pinch, false, 'ピンチによる時間軸ズームを止める');
+});
+
+test('setTimeScaleLock(false): restores lwc defaults (handleScroll/handleScale true)', () => {
+  // Arrange
+  const { renderer, chart } = newRenderer();
+  renderer.setTimeScaleLock(true);
+  // Act: 復元
+  renderer.setTimeScaleLock(false);
+  // Assert
+  assert.equal(chart._options.handleScroll, true);
+  assert.equal(chart._options.handleScale, true);
+});
+
+test('setTimeScaleLock does not touch setUserInteraction paths (独立・回帰)', () => {
+  // 回帰: 時間軸ロックはリプレイ swipe 用の全ロック（setUserInteraction）を変えない。
+  const { renderer, chart } = newRenderer();
+  // Arrange: 時間軸ロック → 価格軸は object 形（残す）
+  renderer.setTimeScaleLock(true);
+  assert.equal(typeof chart._options.handleScale, 'object', '時間軸ロックは handleScale を object 化');
+  // Act: setUserInteraction(false) は全ロック（handleScale=false boolean）
+  renderer.setUserInteraction(false);
+  assert.equal(chart._options.handleScale, false, 'setUserInteraction は従来どおり全ロック boolean');
+});
+
 test('coordinateToLogical delegates to chart.timeScale().coordinateToLogical', () => {
   // Arrange
   const { renderer } = newRenderer();
@@ -824,4 +867,98 @@ test('v6: setCandleObserver installs the observer after construction (late bindi
   renderer.setCandles(V6_CANDLES);
   // Assert
   assert.equal(notified, 1);
+});
+
+// ---------------------------------------------------------------------------
+// sessions 単日フォーカスの価格軸ズーム（setPriceAutoscaleOverride）:
+//   lwc autoscaleInfoProvider を renderer に隔離。override 有→priceRange 上書き／null→original() 素通し。
+// ---------------------------------------------------------------------------
+test('setPriceAutoscaleOverride: installs provider once and overrides/restores the price range', () => {
+  // Arrange
+  const { renderer, main } = newRenderer();
+  // Act: override 設定
+  renderer.setPriceAutoscaleOverride({ min: 100, max: 200 });
+  const provider = main._options.autoscaleInfoProvider;
+  assert.equal(typeof provider, 'function', 'provider がインストールされる');
+  // Assert: override 中は priceRange を返す（original は呼ばれない）
+  let originalCalled = 0;
+  const original = () => { originalCalled += 1; return { priceRange: { minValue: 0, maxValue: 99999 } }; };
+  assert.deepEqual(provider(original), { priceRange: { minValue: 100, maxValue: 200 } });
+  assert.equal(originalCalled, 0);
+  // Act: 解除（null）→ original() 素通し＝既定挙動（挙動不変）
+  renderer.setPriceAutoscaleOverride(null);
+  assert.deepEqual(provider(original), { priceRange: { minValue: 0, maxValue: 99999 } });
+  assert.equal(originalCalled, 1);
+  // provider は再インストールされない（同一関数のまま）
+  renderer.setPriceAutoscaleOverride({ min: 1, max: 2 });
+  assert.equal(main._options.autoscaleInfoProvider, provider);
+});
+
+test('setPriceAutoscaleOverride: invalid range (min>=max / NaN) is treated as clear', () => {
+  const { renderer, main } = newRenderer();
+  renderer.setPriceAutoscaleOverride({ min: 5, max: 5 }); // 幅0=無効
+  const provider = main._options.autoscaleInfoProvider;
+  const original = () => ({ priceRange: { minValue: 0, maxValue: 1 } });
+  assert.deepEqual(provider(original), { priceRange: { minValue: 0, maxValue: 1 } });
+  renderer.setPriceAutoscaleOverride({ min: NaN, max: 10 });
+  assert.deepEqual(provider(original), { priceRange: { minValue: 0, maxValue: 1 } });
+});
+
+// ---------------------------------------------------------------------------
+// スナップショットの読み取り欄整合（実機バグ修正の回帰）:
+//   setCandleTrim(T) はトリム後の最終足（=T 時点の足）を読み取り欄の単一源（_lastBar）へ反映し
+//   即時再発火する。解除（null）で全ローソクの最終足へ復元する。
+//   これが無いとスナップショット中も左上読み取り欄がトリム前の最新足を表示し続ける（当時表示と矛盾）。
+// ---------------------------------------------------------------------------
+test('setCandleTrim(T) updates the readout last-bar to the trimmed bar and re-emits', () => {
+  // Arrange: readout DTO を記録
+  const chart = fakeChart();
+  const main = fakeMainSeries();
+  const readouts = [];
+  const renderer = new ChartRenderer({
+    chart, mainSeries: main, lwc: fakeLwc(),
+    onCrosshairReadout: (dto) => readouts.push(dto),
+  });
+  const candles = [
+    { time: 100, open: 1, high: 2, low: 0, close: 1.1 },
+    { time: 200, open: 2, high: 3, low: 1, close: 2.2 },
+    { time: 300, open: 3, high: 4, low: 2, close: 3.3 },
+  ];
+  renderer.setCandles(candles);
+  readouts.length = 0;
+  // Act: T=200 でトリム
+  renderer.setCandleTrim(200);
+  // Assert: 読み取り欄がトリム後の最終足（time=200・close=2.2）で再発火される
+  assert.ok(readouts.length >= 1, 'トリムで読み取り欄が再発火される');
+  const dto = readouts.at(-1);
+  assert.equal(dto.time, 200);
+  assert.equal(dto.ohlc.close, 2.2);
+  // Act: 解除（null）→ 全ローソクの最終足（time=300）へ復元
+  readouts.length = 0;
+  renderer.setCandleTrim(null);
+  assert.ok(readouts.length >= 1, '解除でも読み取り欄が再発火される');
+  assert.equal(readouts.at(-1).time, 300);
+  assert.equal(readouts.at(-1).ohlc.close, 3.3);
+});
+
+// ---------------------------------------------------------------------------
+// MP プロファイル専用の右マージン（試作 PROFILE_FRAC 移植・バーとローソクの重なり回避）:
+//   setRightMarginFraction(frac) → timeScale.applyOptions({rightOffset: width*frac/barSpacing}) ／
+//   null → rightOffset:0（復元）。
+// ---------------------------------------------------------------------------
+test('setRightMarginFraction: sets rightOffset bars from width*frac/barSpacing and restores on null', () => {
+  // Arrange: timeScale の width/options/applyOptions を fake
+  const { renderer, chart } = newRenderer();
+  const applied = [];
+  chart.timeScale = () => ({
+    width: () => 1200,
+    options: () => ({ barSpacing: 6 }),
+    applyOptions: (o) => applied.push(o),
+  });
+  // Act: frac=0.30 → 1200*0.30/6 = 60 bars
+  renderer.setRightMarginFraction(0.30);
+  assert.deepEqual(applied.at(-1), { rightOffset: 60 });
+  // Act: null → 復元（rightOffset: 0）
+  renderer.setRightMarginFraction(null);
+  assert.deepEqual(applied.at(-1), { rightOffset: 0 });
 });

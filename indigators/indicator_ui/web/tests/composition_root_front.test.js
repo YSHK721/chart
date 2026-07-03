@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { bootstrap, modeForProtocol } from '../js/adapter/front/composition_root_front.js';
+import { bootstrap, modeForProtocol, resolveSessionClick } from '../js/adapter/front/composition_root_front.js';
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
 import { LiveUpdater } from '../js/adapter/front/live_updater.js';
@@ -42,6 +42,43 @@ function fakeLwc() {
 }
 
 const noStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+
+// ===========================================================================
+// resolveSessionClick（sessions 列クリック単日拡大の純判定・本タスク）
+//   sessions 非表示→'none'／focus 中→'clear'（一覧へ）／一覧中で列 date あり→'focus'／範囲外→'none'。
+// ===========================================================================
+
+test('resolveSessionClick: does nothing when sessions are not showing (既存クリック挙動不変)', () => {
+  const r = resolveSessionClick({ isSessions: false, focus: null, dateAt: () => '2024-01-01', xRatio: 0.5 });
+  assert.deepEqual(r, { action: 'none' });
+});
+
+test('resolveSessionClick: clears focus (一覧へ) when currently focused, from anywhere', () => {
+  // focus 中はどこをクリックしても一覧へ戻る（dateAt は参照しない）。
+  const r = resolveSessionClick({ isSessions: true, focus: '2024-01-02', dateAt: () => '2024-01-03', xRatio: 0.9 });
+  assert.deepEqual(r, { action: 'clear' });
+});
+
+test('resolveSessionClick: focuses the resolved column date when in list view', () => {
+  const r = resolveSessionClick({ isSessions: true, focus: null, dateAt: (x) => (x === 0.5 ? '2024-01-02' : null), xRatio: 0.5 });
+  assert.deepEqual(r, { action: 'focus', date: '2024-01-02' });
+});
+
+test('resolveSessionClick: does nothing when the click is outside any column (date=null)', () => {
+  const r = resolveSessionClick({ isSessions: true, focus: null, dateAt: () => null, xRatio: 0.99 });
+  assert.deepEqual(r, { action: 'none' });
+});
+
+// クリック→date→focus→再クリック→解除のシナリオを純判定で連鎖検証（DOM スタブ不要の核ロジック）。
+test('resolveSessionClick: click→focus then re-click→clear round trip', () => {
+  const dateAt = () => '2024-01-02';
+  // 一覧中クリック → focus。
+  const first = resolveSessionClick({ isSessions: true, focus: null, dateAt, xRatio: 0.4 });
+  assert.deepEqual(first, { action: 'focus', date: '2024-01-02' });
+  // focus 反映後、再クリック → clear（一覧へ）。
+  const second = resolveSessionClick({ isSessions: true, focus: first.date, dateAt, xRatio: 0.4 });
+  assert.deepEqual(second, { action: 'clear' });
+});
 
 test('modeForProtocol maps http/https to b and others to a', () => {
   assert.equal(modeForProtocol('http:'), 'b');

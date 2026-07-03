@@ -228,9 +228,12 @@ function fakeReplayBar2({ mode = 'anchor', snapshot = false } = {}) {
 // setCandleTrim / setUserInteraction を記録する Fake renderer。
 function fakeRenderer() {
   return {
-    trims: [], interactions: [],
+    trims: [], interactions: [], autoscales: [], timeLocks: [], margins: [],
     setCandleTrim(t) { this.trims.push(t); },
     setUserInteraction(on) { this.interactions.push(!!on); },
+    setPriceAutoscaleOverride(r) { this.autoscales.push(r); },
+    setTimeScaleLock(on) { this.timeLocks.push(!!on); },
+    setRightMarginFraction(f) { this.margins.push(f); },
   };
 }
 
@@ -407,8 +410,9 @@ function fakeSessPrimitive() {
 }
 function fakeSessRenderer() {
   return {
-    transparencies: [],
+    transparencies: [], timeLocks: [],
     setCandleTransparency(on) { this.transparencies.push(!!on); },
+    setTimeScaleLock(on) { this.timeLocks.push(!!on); },
   };
 }
 const PROFILE_WITH_SESSIONS = {
@@ -505,4 +509,352 @@ test('detach() alone restores candle transparency (setCandleTransparency(false))
   actor.detach();
   // Assert: detach 経路で透明化が false へ復元される（取り残さない）。
   assert.equal(renderer.transparencies[renderer.transparencies.length - 1], false, 'detach で透明化解除');
+});
+
+// ===========================================================================
+// 単日フォーカス（列クリックで拡大・本タスク）
+//   setSessionFocus(date|null) を primitive へ伝播。sessions OFF/setEnabled(false)/detach で解除。
+//   isSessions()（MP 有効 & sessions ON）・sessionDateAt(xRatio) 委譲・sessionFocus() 状態。
+// ===========================================================================
+
+// setSessionFocus / sessionDateAt を記録できる Fake（sessions primitive を拡張）。
+function fakeFocusPrimitive() {
+  const p = fakeSessPrimitive();
+  p.focusCalls = [];
+  p.setSessionFocus = function (d) { this.focusCalls.push(d); };
+  p.sessionDateAt = function (r) { return `date@${r}`; };
+  return p;
+}
+
+function makeFocusActor(profile = PROFILE_WITH_SESSIONS) {
+  const client = fakeClient(profile);
+  const primitive = fakeFocusPrimitive();
+  const renderer = fakeSessRenderer();
+  const mainSeries = { attached: [], detached: [], attachPrimitive(p) { this.attached.push(p); }, detachPrimitive(p) { this.detached.push(p); } };
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries, renderer, getContext: () => ({ datasetRef: 'sample', timeframe: '1D' }),
+  });
+  return { actor, client, primitive, renderer, mainSeries };
+}
+
+test('setSessionFocus(date) propagates the focus date to the primitive and sessionFocus() reflects it', async () => {
+  const { actor, primitive } = makeFocusActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  // Act
+  actor.setSessionFocus('2024-01-02');
+  // Assert
+  assert.equal(primitive.focusCalls.at(-1), '2024-01-02', 'primitive へ focus date 伝播');
+  assert.equal(actor.sessionFocus(), '2024-01-02', 'actor 状態も更新');
+});
+
+test('setSessionFocus(null) clears the focus on the primitive', async () => {
+  const { actor, primitive } = makeFocusActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  actor.setSessionFocus('2024-01-02');
+  // Act
+  actor.setSessionFocus(null);
+  // Assert
+  assert.equal(primitive.focusCalls.at(-1), null);
+  assert.equal(actor.sessionFocus(), null);
+});
+
+test('isSessions() is true only while MP is enabled AND sessions is ON', async () => {
+  const { actor } = makeFocusActor();
+  assert.equal(actor.isSessions(), false, '無効時は false');
+  actor.setParams({ sessions: true });
+  assert.equal(actor.isSessions(), false, 'sessions ON でも無効なら false');
+  await actor.setEnabled(true);
+  assert.equal(actor.isSessions(), true, '有効 & sessions ON で true');
+  actor.setParams({ sessions: false });
+  await actor.refresh();
+  assert.equal(actor.isSessions(), false, 'sessions OFF で false');
+});
+
+test('sessionDateAt delegates to the primitive hit-test', async () => {
+  const { actor } = makeFocusActor();
+  assert.equal(actor.sessionDateAt(0.5), 'date@0.5', 'primitive.sessionDateAt へ委譲');
+});
+
+test('sessions OFF (setParams) clears an active session focus', async () => {
+  const { actor, primitive } = makeFocusActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  actor.setSessionFocus('2024-01-02');
+  primitive.focusCalls.length = 0; // 以降の解除呼び出しだけを観測。
+  // Act: sessions OFF → refresh。
+  actor.setParams({ sessions: false });
+  await actor.refresh();
+  // Assert: focus が null へ解除される。
+  assert.ok(primitive.focusCalls.includes(null), 'sessions OFF で focus 解除');
+  assert.equal(actor.sessionFocus(), null);
+});
+
+test('setEnabled(false) clears an active session focus', async () => {
+  const { actor, primitive } = makeFocusActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  actor.setSessionFocus('2024-01-02');
+  primitive.focusCalls.length = 0;
+  // Act
+  await actor.setEnabled(false);
+  // Assert
+  assert.ok(primitive.focusCalls.includes(null), 'MP OFF で focus 解除');
+  assert.equal(actor.sessionFocus(), null);
+});
+
+test('detach() clears an active session focus', async () => {
+  const { actor, primitive } = makeFocusActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  actor.setSessionFocus('2024-01-02');
+  primitive.focusCalls.length = 0;
+  // Act
+  actor.detach();
+  // Assert
+  assert.ok(primitive.focusCalls.includes(null), 'detach で focus 解除');
+  assert.equal(actor.sessionFocus(), null);
+});
+
+// ---------------------------------------------------------------------------
+// 単日拡大中の時間軸ロック: focus で renderer.setTimeScaleLock(true)、解除/OFF/detach で lock(false)。
+//   価格軸は残す（renderer 側の責務）。actor は focus 状態に応じて lock 真偽を委譲するだけ。
+// ---------------------------------------------------------------------------
+test('setSessionFocus(date) locks the time scale (true); unfocus restores it (false)', async () => {
+  const { actor, renderer } = makeFocusActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  renderer.timeLocks.length = 0; // 有効化までの記録はクリア
+  // Act: focus → lock(true)
+  actor.setSessionFocus('2024-01-02');
+  assert.equal(renderer.timeLocks.at(-1), true, 'focus で時間軸ロック');
+  // Act: 一覧へ（null）→ lock(false)
+  actor.setSessionFocus(null);
+  assert.equal(renderer.timeLocks.at(-1), false, '解除で復元');
+});
+
+test('sessions OFF unlocks the time scale (setTimeScaleLock(false))', async () => {
+  const { actor, renderer } = makeFocusActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  actor.setSessionFocus('2024-01-02');
+  renderer.timeLocks.length = 0;
+  // Act: sessions OFF → refresh（_clearSessionFocus 経由で lock(false)）
+  actor.setParams({ sessions: false });
+  await actor.refresh();
+  assert.ok(renderer.timeLocks.includes(false), 'sessions OFF で時間軸ロック解除');
+});
+
+test('setEnabled(false) unlocks the time scale', async () => {
+  const { actor, renderer } = makeFocusActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  actor.setSessionFocus('2024-01-02');
+  renderer.timeLocks.length = 0;
+  // Act: MP OFF
+  await actor.setEnabled(false);
+  assert.ok(renderer.timeLocks.includes(false), 'MP OFF で時間軸ロック解除');
+});
+
+test('detach() unlocks the time scale', async () => {
+  const { actor, renderer } = makeFocusActor();
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  actor.setSessionFocus('2024-01-02');
+  renderer.timeLocks.length = 0;
+  // Act: MP 削除
+  actor.detach();
+  assert.ok(renderer.timeLocks.includes(false), 'detach で時間軸ロック解除');
+});
+
+test('time scale lock is a no-op when the renderer does not provide setTimeScaleLock (後方互換)', async () => {
+  // Arrange: setTimeScaleLock 非提供の renderer でも focus/解除が throw しない。
+  const client = fakeClient(PROFILE_WITH_SESSIONS);
+  const primitive = fakeFocusPrimitive();
+  const renderer = { setCandleTransparency() {} }; // setTimeScaleLock なし
+  const mainSeries = { attachPrimitive() {}, detachPrimitive() {} };
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries, renderer, getContext: () => ({ datasetRef: 'sample', timeframe: '1D' }),
+  });
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  assert.doesNotThrow(() => { actor.setSessionFocus('2024-01-02'); actor.setSessionFocus(null); });
+});
+
+// ---------------------------------------------------------------------------
+// 単日フォーカスの価格軸ズーム: focus 時に primitive.sessionPriceRange を 4% パディングして
+//   renderer.setPriceAutoscaleOverride へ。解除で null（既定オートスケール復帰）。
+// ---------------------------------------------------------------------------
+test('setSessionFocus(date) zooms the price axis to the day range (4% pad) and clears on unfocus', () => {
+  // Arrange: sessionPriceRange を持つ fake primitive
+  const client = fakeClient();
+  const primitive = fakeSnapPrimitive();
+  primitive.focuses = [];
+  primitive.setSessionFocus = function (d) { this.focuses.push(d); };
+  primitive.sessionPriceRange = (d) => (d === '2024-01-01' ? { min: 100, max: 200 } : null);
+  const renderer = fakeRenderer();
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries: fakeMainSeries(), renderer,
+    getContext: () => ({ datasetRef: 'jp225_tick' }),
+  });
+  // Act: focus → ズーム（span=100 の 4% = 4 のパディング）
+  actor.setSessionFocus('2024-01-01');
+  assert.deepEqual(renderer.autoscales.at(-1), { min: 96, max: 204 });
+  // Act: 解除 → null（既定復帰）
+  actor.setSessionFocus(null);
+  assert.equal(renderer.autoscales.at(-1), null);
+});
+
+test('setSessionFocus: range unavailable (unknown date) clears the override (no stale zoom)', () => {
+  const client = fakeClient();
+  const primitive = fakeSnapPrimitive();
+  primitive.setSessionFocus = () => {};
+  primitive.sessionPriceRange = () => null;
+  const renderer = fakeRenderer();
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries: fakeMainSeries(), renderer,
+    getContext: () => ({ datasetRef: 'jp225_tick' }),
+  });
+  actor.setSessionFocus('9999-01-01');
+  assert.equal(renderer.autoscales.at(-1), null);
+});
+
+// ===========================================================================
+// 単日拡大の左70%パス（day_path 供給・本タスク）
+//   setSessionFocus(date) 時に sessions コンテキスト＋day で単発再取得し、
+//   primitive.setSessionFocus(date, dayPath) で path を伝播する。
+//   解除（null）で path クリア。取得失敗/day_path 無しは path 無しフォールバック（現行の全幅）。
+// ===========================================================================
+
+// setSessionFocus(date, dayPath) の第 2 引数（dayPath）を記録する Fake primitive。
+function fakeDayPathPrimitive() {
+  const p = fakeSessPrimitive();
+  p.focusCalls = [];      // date のみ
+  p.dayPaths = [];        // 第 2 引数 dayPath（undefined 含む）
+  p.setSessionFocus = function (d, path) { this.focusCalls.push(d); this.dayPaths.push(path); };
+  p.sessionDateAt = function (r) { return `date@${r}`; };
+  return p;
+}
+
+const PROFILE_WITH_DAYPATH = {
+  ...PROFILE_WITH_SESSIONS,
+  day_path: [{ t: 1704067200, p: 1000.5 }, { t: 1704067260, p: 1001.0 }],
+};
+
+function makeDayPathActor(profile = PROFILE_WITH_DAYPATH) {
+  const client = fakeClient(profile);
+  const primitive = fakeDayPathPrimitive();
+  const renderer = fakeSessRenderer();
+  const mainSeries = { attachPrimitive() {}, detachPrimitive() {} };
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries, renderer,
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1D' }),
+  });
+  return { actor, client, primitive, renderer };
+}
+
+test('setSessionFocus(date) re-fetches with sessions + day and forwards dayPath to the primitive', async () => {
+  const { actor, client, primitive } = makeDayPathActor();
+  actor.setParams({ sessions: true, src: 'dwell' });
+  await actor.setEnabled(true);
+  client.calls.length = 0; // focus 起因の fetch だけを観測。
+  // Act
+  await actor.setSessionFocus('2024-01-02');
+  // Assert: day 付きで単発再取得（sessions コンテキスト＋day）。
+  assert.equal(client.calls.length, 1, 'focus で 1 回だけ再取得（単発）');
+  const ctx = client.calls[0];
+  assert.equal(ctx.day, '2024-01-02', 'context に day=focus date');
+  assert.equal(ctx.sessions, true, 'sessions コンテキストを維持');
+  // day_path が primitive.setSessionFocus の第 2 引数として伝播する。
+  assert.deepEqual(primitive.dayPaths.at(-1), PROFILE_WITH_DAYPATH.day_path, 'dayPath を primitive へ伝播');
+  assert.equal(primitive.focusCalls.at(-1), '2024-01-02');
+});
+
+test('setSessionFocus(null) clears the day path (path 無しで primitive へ)', async () => {
+  const { actor, primitive } = makeDayPathActor();
+  actor.setParams({ sessions: true, src: 'dwell' });
+  await actor.setEnabled(true);
+  await actor.setSessionFocus('2024-01-02');
+  // Act: 解除
+  await actor.setSessionFocus(null);
+  // Assert: 最後の伝播は date=null・path はクリア（null/undefined）。
+  assert.equal(primitive.focusCalls.at(-1), null);
+  assert.ok(primitive.dayPaths.at(-1) == null, '解除で path クリア');
+});
+
+test('setSessionFocus: missing day_path falls back to path-less (現行の全幅)', async () => {
+  // day_path を持たない profile（非 tick ref 等）。fetch は成功するが day_path 無し。
+  const { actor, primitive } = makeDayPathActor(PROFILE_WITH_SESSIONS);
+  actor.setParams({ sessions: true, src: 'dwell' });
+  await actor.setEnabled(true);
+  // Act
+  await actor.setSessionFocus('2024-01-02');
+  // Assert: focus は伝播するが path は無し（null/undefined）＝全幅フォールバック。
+  assert.equal(primitive.focusCalls.at(-1), '2024-01-02');
+  assert.ok(primitive.dayPaths.at(-1) == null, 'day_path 無しは path 無しフォールバック');
+});
+
+test('setSessionFocus: fetch failure (null) falls back to path-less', async () => {
+  // client が null を返す（取得失敗）。focus 自体は伝播し、path は無し。
+  const { actor, primitive } = makeDayPathActor(null);
+  actor.setParams({ sessions: true, src: 'dwell' });
+  await actor.setEnabled(true);
+  // Act
+  await actor.setSessionFocus('2024-01-02');
+  // Assert
+  assert.equal(primitive.focusCalls.at(-1), '2024-01-02', 'focus は伝播する');
+  assert.ok(primitive.dayPaths.at(-1) == null, '取得失敗は path 無しフォールバック');
+});
+
+// ---------------------------------------------------------------------------
+// stale 応答ガード（レビュー🟡-1）: day 付き fetch の in-flight 中に focus が解除/変更された場合、
+//   遅れて届いた day_path を primitive へ反映しない（actor L: this._sessionFocus !== date で破棄）。
+//   filter を撤去するとこのテストが落ちる（回帰網）。
+// ---------------------------------------------------------------------------
+test('async setSessionFocus: a stale day_path response after unfocus is NOT applied', async () => {
+  // Arrange: fetch を手動 resolve できる遅延 Promise にする
+  const primitive = fakeFocusPrimitive();
+  const renderer = fakeSessRenderer();
+  let resolveFetch = null;
+  let calls = 0;
+  const client = {
+    async fetchProfile() {
+      calls += 1;
+      if (calls === 1) {
+        return PROFILE_WITH_SESSIONS; // setEnabled 時の初回 fetch は即時。
+      }
+      return new Promise((r) => { resolveFetch = r; }); // day 付き再取得は保留。
+    },
+  };
+  const mainSeries = { attached: [], attachPrimitive(p) { this.attached.push(p); } };
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries, renderer, getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1D' }),
+  });
+  actor.setParams({ sessions: true });
+  await actor.setEnabled(true);
+  // Act: focus → day fetch が in-flight のまま解除 → その後 stale 応答が届く
+  const focusP = actor.setSessionFocus('2024-01-02');
+  actor.setSessionFocus(null); // 解除（in-flight 中）
+  const before = primitive.focusCalls.length;
+  resolveFetch({ ...PROFILE_WITH_SESSIONS, day_path: [{ t: 1, p: 100 }, { t: 2, p: 101 }] });
+  await focusP;
+  // Assert: stale 応答での再 setSessionFocus（dayPath 反映）は行われない
+  assert.equal(primitive.focusCalls.length, before, 'stale day_path は反映されない');
+  assert.equal(actor.sessionFocus(), null, 'focus は解除されたまま');
+});
+
+// ---------------------------------------------------------------------------
+// MP 右マージン（試作 PROFILE_FRAC・重なり回避）: setEnabled(true)→0.30 適用、
+//   setEnabled(false)/detach→null（復元）。
+// ---------------------------------------------------------------------------
+test('setEnabled(true) applies the profile right margin (0.30) and OFF/detach restores it', async () => {
+  const { actor, renderer } = makeIncr2Actor();
+  await actor.setEnabled(true);
+  assert.equal(renderer.margins.at(-1), 0.30, 'ON で右マージン 0.30');
+  await actor.setEnabled(false);
+  assert.equal(renderer.margins.at(-1), null, 'OFF で復元(null)');
+  await actor.setEnabled(true);
+  actor.detach();
+  assert.equal(renderer.margins.at(-1), null, 'detach でも復元(null)');
 });

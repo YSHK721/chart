@@ -16,7 +16,7 @@
 //     （'30'/'60'/'100'）が渡るため、文字列プリセット（非空）または有限数（後方互換）を付与し、
 //     NaN・空文字・null は排除する（backend の _parse_int が '60' を解釈可）。
 export function buildMarketProfileUrl({
-  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today, sessions,
+  datasetRef, timeframe, bins, va, src, range, resmode, to, from, today, sessions, day,
 } = {}) {
   let url = `/market_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
@@ -61,6 +61,11 @@ export function buildMarketProfileUrl({
   if (sessions === true || sessions === 1 || sessions === '1') {
     url += '&sessions=1';
   }
+  // day（単日拡大ビューの左70%パス）— 指定時のみ &day=<YYYY-MM-DD> を付与（省略/null は付けない・後方互換）。
+  //   本タスク: 左70%=その日のティック推移。backend が tick 対応 ref のとき day_path を応答へ付加する。
+  if (day != null && day !== '') {
+    url += `&day=${encodeURIComponent(day)}`;
+  }
   return url;
 }
 
@@ -76,7 +81,7 @@ export function parseProfileResponse(payload) {
   // 応答トップレベルに src/atom/bar_width（UI メタ）・sessions（日別分割）があれば profile へ素通しする
   // （無ければ既存 profile をそのまま返す＝後方互換・共有オブジェクト非破壊の spread 維持）。
   if (payload.src != null || payload.atom != null || payload.bar_width != null
-      || payload.sessions != null || payload.sessions_total != null) {
+      || payload.sessions != null || payload.sessions_total != null || payload.day_path != null) {
     const meta = {};
     if (payload.src != null) meta.src = payload.src;
     if (payload.atom != null) meta.atom = payload.atom;
@@ -85,6 +90,8 @@ export function parseProfileResponse(payload) {
     if (payload.sessions != null) meta.sessions = payload.sessions;
     // sessions_total（キャップ前の実日数）— primitive 注記「直近N/全M日」の M（キャップ後 60 の誤読防止）。
     if (payload.sessions_total != null) meta.sessions_total = payload.sessions_total;
+    // day_path[{t,p}]（単日ティック推移）— actor が単日拡大時に primitive の左70%パスへ渡す。
+    if (payload.day_path != null) meta.day_path = payload.day_path;
     return { ...profile, ...meta };
   }
   return profile;
