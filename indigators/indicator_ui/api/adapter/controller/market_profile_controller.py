@@ -23,6 +23,7 @@ HTTP サーバ本体（BaseHTTPRequestHandler・ソケット）に依存しな�
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Any
 
 from adapter.compute import ERROR_STATUS, dataset, market_profile_dwell
@@ -160,6 +161,24 @@ def _parse_bool_flag(raw: Any) -> bool:
     return False
 
 
+def _parse_day_start(raw: Any) -> int | None:
+    """``day=YYYY-MM-DD``（UTC 日付・str）を UTC 真夜中の UNIX 秒へ変換する（不正・None は None）。
+
+    day_tick_path の窓起点 ``[day_start, day_start+86400)`` に用いる。パース不能な文字列・None・
+    非 str は None（＝day_path を付けない・現行挙動＝後方互換）へ丸める。
+    """
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.strptime(s, "%Y-%m-%d")  # 日付のみ（時刻成分を持たない）を要求する。
+    except (ValueError, TypeError):
+        return None
+    return int(dt.replace(tzinfo=timezone.utc).timestamp())
+
+
 def handle_market_profile(
     ref: Any,
     timeframe: Any = None,
@@ -233,11 +252,13 @@ def handle_market_profile(
     want_today = _parse_bool_flag(kwargs.get("today"))
     # sessions（日別プロファイル分割・?sessions=1）。省略・不正は偽（後方互換）。移植元 prototype_260630-01。
     want_sessions = _parse_bool_flag(kwargs.get("sessions"))
+    # day（単日拡大ビューの左70%パス・?day=YYYY-MM-DD）。tick 対応 ref のみ・省略/不正は None（現行不変）。
+    day_start = _parse_day_start(kwargs.get("day"))
 
     if src_val in ("dwell", "m1"):
         return _handle_dwell(
             ref, timeframe, limit_n, n_bins, va_pct, barw_val, src_val, to_ts, from_ts,
-            want_today, want_sessions,
+            want_today, want_sessions, day_start,
         )
 
     # src=candle（既定）— 現状の足ベース TPO 経路（不変。barw 指定時のみ n_bins を上書き）。
@@ -283,6 +304,7 @@ def _handle_dwell(
     from_ts: int | None = None,
     want_today: bool = False,
     want_sessions: bool = False,
+    day_start: int | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """src=dwell/m1 の処理（実ティック・tick 対応 ref のみ）。非 tick ref は 400。
 
@@ -341,4 +363,8 @@ def _handle_dwell(
         all_sessions = profile.pop("sessions", [])
         body["sessions_total"] = len(all_sessions)
         body["sessions"] = _cap_sessions(all_sessions)
+    # day（単日拡大ビューの左70%パス）— tick 対応 ref（symbol 解決済み）かつ有効 day のときのみ
+    #   day_path を付加する。day 無効/省略は付けない＝現行挙動（後方互換）。応答は追加キーのみ。
+    if day_start is not None:
+        body["day_path"] = market_profile_dwell.day_tick_path(symbol, day_start)
     return 200, body

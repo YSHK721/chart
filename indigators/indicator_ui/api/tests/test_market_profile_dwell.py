@@ -973,3 +973,121 @@ class TestControllerDwellSessions:
         status, payload = handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
         assert status == 200
         assert "sessions_total" not in payload
+
+
+# --------------------------------------------------------------------------- #
+# day_tick_path（単日ティック推移・左70%パス供給）: _load_window_ticks で (secs, mids) を得て、
+#   等間隔間引きで最大 max_points 点へダウンサンプル（先頭/末尾は必ず含める）。ティック無し日は []。
+# --------------------------------------------------------------------------- #
+class TestDayTickPath:
+    """day_tick_path(symbol, day_start, max_points) の点数キャップ・先頭末尾保持・空日→[]。"""
+
+    def test_returns_t_p_dicts_for_a_day(self, monkeypatch):
+        # Arrange: その日に 5 ティック（HOT 密集）。max_points=800 なら間引きされず全点返る。
+        secs = [_DAY0 + 100 * i for i in range(5)]
+        mids = [1000.0, 1001.0, 1002.0, 1003.0, 1004.0]
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        # Act
+        path = mpd.day_tick_path("JP225", _DAY0, max_points=800)
+        # Assert: [{t, p}...] 形・時系列昇順・t=UNIX 秒 int・p=mid。
+        assert isinstance(path, list)
+        assert len(path) == 5
+        assert path[0] == {"t": _DAY0, "p": 1000.0}
+        assert path[-1] == {"t": _DAY0 + 400, "p": 1004.0}
+        assert all(isinstance(pt["t"], int) for pt in path)
+
+    def test_downsamples_to_max_points_keeping_first_and_last(self, monkeypatch):
+        # Arrange: その日に 1000 ティック。max_points=800 で 800 点へ間引き。
+        secs = [_DAY0 + i for i in range(1000)]
+        mids = [1000.0 + i for i in range(1000)]
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        # Act
+        path = mpd.day_tick_path("JP225", _DAY0, max_points=800)
+        # Assert: キャップ以内・先頭/末尾は必ず含む（等間隔間引き）。
+        assert len(path) <= 800
+        assert path[0] == {"t": _DAY0, "p": 1000.0}
+        assert path[-1] == {"t": _DAY0 + 999, "p": 1999.0}
+        # t は昇順・重複なし。
+        ts = [pt["t"] for pt in path]
+        assert ts == sorted(ts)
+        assert len(set(ts)) == len(ts)
+
+    def test_empty_day_returns_empty_list(self, monkeypatch):
+        # Arrange: その日にティック無し。
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader([], []))
+        # Act / Assert
+        assert mpd.day_tick_path("JP225", _DAY0, max_points=800) == []
+
+    def test_window_is_one_calendar_day(self, monkeypatch):
+        # Arrange: 前日/翌日のティックは day 窓 [day_start, day_start+86400) の外で除外される。
+        secs = [_DAY0 - 100, _DAY0 + 100, _DAY0 + _DAY + 100]
+        mids = [900.0, 1000.0, 1100.0]
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        # Act
+        path = mpd.day_tick_path("JP225", _DAY0, max_points=800)
+        # Assert: 当日の 1 点のみ（前日 900・翌日 1100 は窓外）。
+        assert path == [{"t": _DAY0 + 100, "p": 1000.0}]
+
+
+class TestControllerDayPath:
+    """controller: day 指定で day_path 付加・非tick ref/不正 day で無し・省略時は現行不変。"""
+
+    def _candles_3d(self):
+        return [
+            {"time": _DAY0, "open": 1000, "high": 1110, "low": 990, "close": 1005},
+            {"time": _DAY0 + _DAY, "open": 1005, "high": 1108, "low": 992, "close": 1002},
+            {"time": _DAY0 + 2 * _DAY, "open": 1002, "high": 1106, "low": 991, "close": 1000},
+        ]
+
+    def test_day_adds_toplevel_day_path(self, monkeypatch):
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+
+        status, payload = handle_market_profile(
+            "jp225_tick", timeframe="1D", src="dwell", **{"day": "2024-01-01"}
+        )
+        assert status == 200
+        assert "day_path" in payload
+        assert isinstance(payload["day_path"], list)
+        assert len(payload["day_path"]) > 0
+        pt = payload["day_path"][0]
+        assert set(pt.keys()) == {"t", "p"}
+        # profile の 8 キーは不変（day_path は profile 内に入れない）。
+        assert "day_path" not in payload["profile"]
+
+    def test_day_omitted_no_day_path(self, monkeypatch):
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+
+        status, payload = handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
+        assert status == 200
+        assert "day_path" not in payload
+
+    def test_day_ignored_for_non_tick_ref_candle(self, monkeypatch):
+        # 非 tick ref（candle 経路）は day を無視＝day_path 無し・現行挙動。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+
+        status, payload = handle_market_profile(
+            "jp225", timeframe="1D", **{"day": "2024-01-01"}
+        )
+        assert status == 200
+        assert "day_path" not in payload
+
+    def test_invalid_day_ignored(self, monkeypatch):
+        # 不正 day（パース不能）は無視＝day_path 無し・現行挙動。
+        import adapter.controller.market_profile_controller as ctrl
+        candles = self._candles_3d()
+        monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+
+        status, payload = handle_market_profile(
+            "jp225_tick", timeframe="1D", src="dwell", **{"day": "not-a-date"}
+        )
+        assert status == 200
+        assert "day_path" not in payload

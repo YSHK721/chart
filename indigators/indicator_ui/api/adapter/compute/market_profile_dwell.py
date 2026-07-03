@@ -138,6 +138,34 @@ def _load_window_ticks(symbol: str, start: Any, end: Any) -> "tuple[np.ndarray, 
 
 
 # --------------------------------------------------------------------------- #
+# 単日ティック推移（左70%パス供給・_drawFocusDay の価格ライン源）
+# --------------------------------------------------------------------------- #
+def day_tick_path(symbol: str, day_start: Any, max_points: int = 800) -> list:
+    """1 カレンダー日 ``[day_start, day_start+86400)`` の実ティック推移を ``[{t, p}...]`` で返す。
+
+    :func:`_load_window_ticks`（単一注入点・±30% 外れ値除去内蔵）で (secs, mids) を得て、点数が
+    ``max_points`` を超える場合は**等間隔間引き**で最大 ``max_points`` 点へダウンサンプルする
+    （先頭/末尾は必ず含める）。t=UNIX 秒(int)・p=mid 価格(float)。ティック無し日は空リスト。
+
+    UI の単日拡大ビュー（左 70%）の価格ラインが消費する。dwell 集計とは独立に「その日の価格パス」を
+    供給する（滞在秒ではなく時間進行に沿った mid 価格の系列）。
+    """
+    ds = int(day_start)
+    secs, mids = _load_window_ticks(symbol, ds, ds + 86400)
+    n = len(secs)
+    if n == 0:
+        return []
+    cap = max(2, int(max_points))
+    if n > cap:
+        # 等間隔間引き: [0, n-1] を cap 点に線形サンプルし、重複 index を除去（先頭/末尾を必ず含む）。
+        idx = np.linspace(0, n - 1, cap).round().astype(np.int64)
+        idx = np.unique(idx)
+        secs = secs[idx]
+        mids = mids[idx]
+    return [{"t": int(t), "p": float(p)} for t, p in zip(secs, mids)]
+
+
+# --------------------------------------------------------------------------- #
 # セッション認識 dwell（活動テーブル + 活発秒の積分）
 # --------------------------------------------------------------------------- #
 def _build_active_table(secs: np.ndarray) -> np.ndarray:
