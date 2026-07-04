@@ -53,6 +53,7 @@ class ReplayApp:
         window_port: Any,
         is_known_ref: "Optional[Callable[[str], bool]]" = None,
         web_dir: Any = None,
+        shared_js_root: Any = None,
         heavy_lock: "Optional[threading.Lock]" = None,
         forming_port: Any = None,
     ) -> None:
@@ -61,6 +62,10 @@ class ReplayApp:
         self._window_port = window_port
         self._is_known_ref = is_known_ref
         self.web_dir = Path(web_dir).resolve() if web_dir else None
+        # 単一ソース共有: replay web_dir で miss したファイルを解決するフォールバック根
+        #   （既定 <repo>/indigators/indicator_ui/web/js）。None のときフォールバック無効＝従来挙動。
+        #   replay の複製が残る間は web_dir が優先されるため挙動不変（純増分・回帰ゼロ）。
+        self.shared_js_root = Path(shared_js_root).resolve() if shared_js_root else None
         self._lock = heavy_lock if heavy_lock is not None else threading.Lock()
         # MP サブバー tick 逐次成長の Port（任意注入）。None のときは /market_profile_forming
         #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
@@ -189,14 +194,42 @@ def make_handler(app: ReplayApp):
                     return self._json(500, {"error": {"type": "internal", "message": str(e)[:200]}})
             return self._serve_static(u.path)
 
+        @staticmethod
+        def _resolve_under(join_root: "Path | None", rel: str, allowed_roots):
+            """``join_root/rel`` を解決し、dual-root ガードを通った実ファイルのみ返す。
+
+            resolve() 後の実パスが ``allowed_roots``（web_dir / shared_js_root）のいずれかの
+            配下にあり、かつ実ファイルのときのみ返す。単一ソース共有では web_dir/js 配下の
+            シンボリックリンクが shared_js_root（=indicator_ui/web/js）を指すため、resolve()
+            後は shared_js_root 配下になる。dual-root ガードにより web_dir 経由の一次解決で
+            そのまま許可される（従来の名前一致フォールバック依存を排除）。
+            パストラバーサル（``..``）は resolve 後に両ルート配下を外れるため弾かれる。
+            join_root が None・全ルート不通過・非ファイルのときは None（呼び出し側が次ルート/404 へ）。
+            """
+            if join_root is None:
+                return None
+            fp = (join_root / rel).resolve()
+            if not fp.is_file():
+                return None
+            for ar in allowed_roots:
+                if ar is not None and str(fp).startswith(str(ar)):
+                    return fp
+            return None
+
         def _serve_static(self, path: str):
-            if app.web_dir is None:
-                self.send_response(404)
-                self.end_headers()
-                return
             rel = "index.html" if path in ("/", "") else path.lstrip("/")
-            fp = (app.web_dir / rel).resolve()
-            if not str(fp).startswith(str(app.web_dir)) or not fp.is_file():
+            # dual-root ガードで許可する根の集合（web_dir OR shared_js_root）。symlink 先が
+            #   shared_js_root 配下に落ちても web_dir 経由の一次解決で許可される（単一ソース）。
+            allowed = (app.web_dir, app.shared_js_root)
+            # replay web_dir 優先。web_dir は web 根（index.html + js/ を含む）で URL の /js/ 接頭辞込みで解決。
+            fp = self._resolve_under(app.web_dir, rel, allowed)
+            # miss かつ /js/ 配下のみ shared_js_root（=indicator_ui の web/js）へフォールバック。
+            #   shared_js_root は js ディレクトリ自体なので /js/ 接頭辞を剥がして解決する（css/vendor は
+            #   replay ローカルのまま＝js のみ共有・TBD-4 スコープ外）。indicator_ui のみに在る
+            #   ファイル（replay に symlink も実体も無いもの）用に残す。
+            if fp is None and path.startswith("/js/"):
+                fp = self._resolve_under(app.shared_js_root, path[len("/js/"):], allowed)
+            if fp is None:
                 self.send_response(404)
                 self.end_headers()
                 return

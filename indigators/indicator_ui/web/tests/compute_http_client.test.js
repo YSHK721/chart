@@ -137,3 +137,73 @@ test('compute omits mode from the body when not provided (backward compatible)',
   const sent = JSON.parse(captured.body);
   assert.ok(!('mode' in sent), 'mode should be absent when not provided');
 });
+
+// [PROTO 再生 seam] untilTime（そのフレームの時点・UNIX秒）: 指定時のみボディへ載せる。replay の
+//   reveal（df[:t+1] 因果計算）が untilTime を送る。未指定（present ライブ）は載せない＝後方互換。
+test('compute forwards untilTime in the JSON body when provided', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  // Act
+  await client.compute({ indicatorId: 'moving_averages', variant: 'default', params: {}, datasetRef: 'jp225_m1', untilTime: 1735810200 });
+  // Assert: サーバが untilTime で df[:t+1] へ切り出して当時計算する（reveal 因果）。
+  const sent = JSON.parse(captured.body);
+  assert.equal(sent.untilTime, 1735810200);
+});
+
+test('compute omits untilTime from the body when not provided (present live compute)', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  // Act
+  await client.compute({ indicatorId: 'tgp_btlm', variant: 'default', params: {}, datasetRef: 'sample' });
+  // Assert: untilTime 未指定はボディに含めない（present ライブ＝全件計算・後方互換）。
+  const sent = JSON.parse(captured.body);
+  assert.ok(!('untilTime' in sent), 'untilTime should be absent when not provided');
+});
+
+// [PROTO 再生 seam] 足内 MA 追従: forming（形成中バー暫定 OHLC）を指定時のみボディに載せる。
+//   これが落ちると backend が最終足を差し替えられず MA が足内で動かない（回帰の番人）。
+test('compute forwards forming (in-progress bar OHLC) in the JSON body when provided', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  const forming = { time: 1735810200, open: 1.0, high: 3.0, low: 0.5, close: 2.5 };
+  // Act
+  await client.compute({ indicatorId: 'moving_averages', variant: 'default', params: {}, datasetRef: 'jp225_tick', mode: 'latest', forming });
+  // Assert: サーバが forming で最終足を set/replace してから latest 計算する（MA が足内追従）。
+  const sent = JSON.parse(captured.body);
+  assert.deepEqual(sent.forming, forming);
+});
+
+test('compute omits forming from the body when not provided (confirmed-bar compute)', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  // Act
+  await client.compute({ indicatorId: 'moving_averages', variant: 'default', params: {}, datasetRef: 'jp225_m1', mode: 'latest' });
+  // Assert: forming 未指定はボディに含めない（確定足のまま計算＝バー確定再計算の後方互換）。
+  const sent = JSON.parse(captured.body);
+  assert.ok(!('forming' in sent), 'forming should be absent when not provided');
+});
+
+// present byte 不変の番人: untilTime/forming 未指定時の body キー集合が seam 導入前と完全一致すること。
+//   （seam が inert であることを固定＝present 回帰の実証）。
+test('compute body keys are unchanged when untilTime/forming are not provided (inert seam)', async () => {
+  // Arrange
+  let captured = null;
+  const fakeFetch = async (url, init) => { captured = init; return fakeResponse(200, { ok: true, series: [] }); };
+  const client = new ComputeHttpClient({ fetch: fakeFetch });
+  // Act
+  await client.compute({ indicatorId: 'tgp_btlm', variant: 'default', params: { probabilities: [0.99] }, datasetRef: 'sample', generation: 3, timeframe: '1D', limit: 1500 });
+  // Assert: seam 導入前と同一のキー集合（untilTime/forming/mode を含まない）。
+  const sent = JSON.parse(captured.body);
+  assert.deepEqual(
+    Object.keys(sent).sort(),
+    ['datasetRef', 'generation', 'indicatorId', 'limit', 'params', 'timeframe', 'variant'],
+  );
+});
