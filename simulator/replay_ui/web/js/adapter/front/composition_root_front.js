@@ -23,6 +23,10 @@ import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
 import { IndicatorController } from './indicator_controller.js';
 import { TradeMarkersRenderer } from './trade_markers_renderer.js';
+import { MarketProfileFormingClient } from './market_profile_forming_client.js';
+import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
+import { MarketProfileReplayActor } from './market_profile_replay_actor.js';
+import { DwellAccumulator } from '../../domain/market_profile_dwell_accumulator.js';
 
 // 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
 //   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
@@ -193,10 +197,23 @@ export async function bootstrap({
   const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart, chartRenderer: renderer, document: doc, container });
   renderer.setCandleObserver(() => tradeMarkers.onCandlesChanged());
 
+  // Market Profile tick-live（MP DI 集約点）。slim actor（enterBar/feedTick/settleTick/setEnabled）を
+  //   forming client（/market_profile_forming 取得）・primitive（TPO 描画）・DwellAccumulator factory で
+  //   組み立て、戻り値に marketProfile として公開する（replay.js/setupReplay は new せず受け取るだけ＝DI 集約）。
+  //   getContext は現在の datasetRef/timeframe を遅延読み取りし forming 取得に載せる（now=T は enterBar 引数）。
+  //   既定は setEnabled(false)＝OFF（#rp-mp トグルで ON・既存 replay へ非干渉）。
+  const marketProfile = new MarketProfileReplayActor({
+    formingClient: new MarketProfileFormingClient({ fetch }),
+    makeAccumulator: () => new DwellAccumulator(),
+    primitive: new MarketProfileHistogramPrimitive(),
+    mainSeries,
+    getContext: () => ({ datasetRef, timeframe: controller._timeframe }),
+  });
+
   // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
   //   初期時間足を反映し、以降は controller の時間足購読で連動する。
   tradeMarkers.setCurrentTimeframe(timeframe);
   controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
 
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers, marketProfile };
 }

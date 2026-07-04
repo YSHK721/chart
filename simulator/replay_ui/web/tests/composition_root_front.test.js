@@ -15,6 +15,7 @@ import { bootstrap, modeForProtocol } from '../js/adapter/front/composition_root
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
 import { LiveUpdater } from '../js/adapter/front/live_updater.js';
+import { MarketProfileReplayActor } from '../js/adapter/front/market_profile_replay_actor.js';
 
 // Fake lwc（v5）: createChart → chart（addSeries/panes/addPane/timeScale/subscribeCrosshairMove）。
 //   ColorType / CandlestickSeries / createTextWatermark も公開（composition・ChartRenderer が参照）。
@@ -137,6 +138,57 @@ test('bootstrap (file://) exposes liveUpdater=null so no live updates are wired'
   });
   // Assert: A方式（file://）はライブ更新を配線しない。
   assert.equal(liveUpdater, null);
+});
+
+// ===========================================================================
+// Market Profile tick-live 配線（MP DI は composition root に集約）
+//   forming client / primitive / accumulator factory を束ねた slim actor を組み立て、戻り値に
+//   marketProfile として公開する（replay.js/setupReplay 内で new しない＝DI 集約）。
+// ===========================================================================
+
+test('bootstrap builds a slim MarketProfileReplayActor and exposes it as marketProfile (initially disabled)', async () => {
+  // Arrange
+  const { lwc } = fakeLwc();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  // Act
+  const { marketProfile, ready } = await bootstrap({
+    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+  });
+  await ready;
+  // Assert: slim actor が組み立てられ、既定は無効（トグル OFF＝既存 replay へ非干渉）。
+  assert.ok(marketProfile instanceof MarketProfileReplayActor);
+  assert.equal(marketProfile.isEnabled(), false);
+});
+
+test('bootstrap marketProfile enterBar posts base=1/now to /market_profile_forming when enabled', async () => {
+  // Arrange: forming エンドポイントの URL を捕捉する fake fetch。
+  const { lwc } = fakeLwc();
+  const urls = [];
+  const fakeFetch = async (url) => {
+    urls.push(url);
+    if (String(url).startsWith('/market_profile_forming')) {
+      return { ok: true, async json() {
+        return { ok: true, formingStart: 1000, ticks: [], baseFine: [0, 0, 0], baseKmin: 100,
+          activeTable: [[1]], priceMin: 1000, priceMax: 1100, nBins: 3, gridW: 10, now: 1000 };
+      } };
+    }
+    return { ok: true, async json() { return { ok: true, candles: [] }; } };
+  };
+  // Act
+  const { marketProfile, ready } = await bootstrap({
+    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    datasetRef: 'jp225_tick',
+  });
+  await ready;
+  marketProfile.setEnabled(true);
+  await marketProfile.enterBar(1000);
+  // Assert: forming 取得が composition の fetch 経由で飛ぶ（base=1・now=T・datasetRef 連動）。
+  //   src=dwell は backend controller が強制するため URL には出ない（buildFormingUrl は src を送らない）。
+  const formingUrl = urls.find((u) => String(u).startsWith('/market_profile_forming'));
+  assert.ok(formingUrl, '/market_profile_forming へ取得が飛ぶ');
+  assert.match(formingUrl, /datasetRef=jp225_tick/);
+  assert.match(formingUrl, /base=1/);
+  assert.match(formingUrl, /now=1000/);
 });
 
 // ===========================================================================
