@@ -8,13 +8,15 @@ import assert from 'node:assert/strict';
 
 import { IndicatorCatalogClient } from '../js/adapter/front/catalog_client.js';
 
-test('listIndicators returns the 19 registered indicators (基本4 + profit_* 15)', () => {
+test('listIndicators returns the 20 registered indicators (基本4 + profit_* 15 + market_profile)', () => {
   const client = new IndicatorCatalogClient();
   const ids = client.listIndicators().map((d) => d.id);
   for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm']) {
     assert.ok(ids.includes(base), `missing ${base}`);
   }
-  assert.equal(ids.length, 19);
+  // market_profile（プロファイルタブ・メニュー一本化）を追加。既存19は不変（追加のみ）。
+  assert.ok(ids.includes('market_profile'), 'market_profile がメニュー一覧に載る');
+  assert.equal(ids.length, 20);
 });
 
 test('get returns the indicator by id', () => {

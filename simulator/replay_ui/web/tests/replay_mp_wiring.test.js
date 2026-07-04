@@ -6,7 +6,11 @@
 //   タイマ非依存で決定論的に観測できる。feedTick/settleTick/secs の逐次成長は actor（slim actor test）と
 //   stream（stream secs test）で Red→Green 済み＝本統合は render seam と非干渉を固定する。
 //
-// ★ここでは replay.js の marketProfile 配線が無い状態を Red として観測する（wiring を外すと enterBar 不呼出）。
+// ★#rp-mp トグル撤去後も、render→enterBar / animateForming→feedTick / settleTick の駆動フックは維持する。
+//   有効化は indicator メニュー（controller.applyIndicator('market_profile')→actor.setEnabled(true)）へ
+//   一本化された。本 wiring は「actor が有効（isEnabled()=true）なら render seam が enterBar を呼ぶ／
+//   無効・未配線なら一切干渉しない」を固定する（menu→setEnabled は controller test、feedTick 成長は
+//   actor test でそれぞれ緑）。spy の _en は menu 有効化後の状態を代表する。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

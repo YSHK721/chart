@@ -379,8 +379,38 @@ const PROFIT_RSI_MACD = pfDef({
   series: [PF_HIST('rsimacd_hist'), PF_LINE('RSIMACD'), PF_LINE('Signal'), PF_HLINE('profit_rsi_macd')],
 });
 
+// --- market_profile（プロファイルタブ・アクター委譲型・#rp-mp 撤去→メニュー一本化）------------
+// present-mode（indicator_ui）と同導線でプロファイルタブへ載せる。IndicatorController が
+//   compute.computeId==='market_profile' を判定し /compute をバイパスして MarketProfileReplayActor
+//   （slim・enterBar/feedTick/settleTick/setEnabled）へ委譲する（専用パス）。series は IndicatorDef の
+//   非空必須（domain_models.js L104）を満たす最小ダミー 1 件で、バイパスにより描画には用いない。
+// params は「replay で実際に効くもののみ」＝forming client（buildFormingUrl）へ反映される bins/va のみ。
+//   - src は buildFormingUrl が送らない（backend が dwell 強制）＝効かない飾り param のため非登録。
+//   - mode（normal/replay/sessions/ticklive）は replay では冗長（常時 frame 駆動 tick-live）＝非登録。
+//   - resmode/range は replay の properties_dialog が segmented/conditionalVisible 非対応＝非登録。
+const MARKET_PROFILE = new IndicatorDef({
+  id: 'market_profile',
+  displayNameKey: 'ind.market_profile',
+  category: { group: 'builtin', nameKey: 'cat.volume' },
+  tab: 'profile',
+  placement: 'overlay',
+  params: [
+    // bins: ヒストグラム区間数（ENUM プリセット・既定 '60'）。buildFormingUrl が &bins= へ付与する（effective）。
+    param('bins', ParamType.ENUM, '60', [], ['30', '60', '100'], {
+      group: 'group.calc', order: 1, label: 'ビン',
+      enumLabels: { 30: '30', 60: '60', 100: '100' },
+    }),
+    // va: バリューエリア比率（FLOAT・既定0.70・0<va<1）。buildFormingUrl が &va= へ付与する（effective）。
+    param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
+  ],
+  series: [
+    new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'market_profile', dynamic: false }),
+  ],
+  compute: { computeId: 'market_profile', requiredColumns: OHLC, timeRequired: false, backendParam: null, variants: ['default'] },
+});
+
 const REGISTRY = Object.freeze([
-  TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES,
+  TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,

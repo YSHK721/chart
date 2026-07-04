@@ -160,6 +160,20 @@ test('bootstrap builds a slim MarketProfileReplayActor and exposes it as marketP
   assert.equal(marketProfile.isEnabled(), false);
 });
 
+test('bootstrap injects the same marketProfile instance into the controller (menu enablement path)', async () => {
+  // 設計入力: 是正 step3「composition_root_front が同一 actor を controller と setupReplay 両方へ注入」。
+  //   これにより メニュー（controller.applyIndicator('market_profile')）が同一 actor を有効化し、
+  //   render/animateForming の駆動フック（setupReplay 側）が isEnabled()=true を観測して育てる。
+  const { lwc } = fakeLwc();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  const { controller, marketProfile, ready } = await bootstrap({
+    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+  });
+  await ready;
+  assert.strictEqual(controller._marketProfile, marketProfile,
+    'controller と setupReplay は同一 marketProfile 実体を共有する');
+});
+
 test('bootstrap marketProfile enterBar posts base=1/now to /market_profile_forming when enabled', async () => {
   // Arrange: forming エンドポイントの URL を捕捉する fake fetch。
   const { lwc } = fakeLwc();

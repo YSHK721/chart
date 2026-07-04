@@ -55,10 +55,20 @@ export class MarketProfileReplayActor {
     this._accumulator = null;   // 現在の DwellAccumulator（null＝未 enter）。
     this._formingStart = null;  // 現在バーの formingStart。
     this._lastSnapMs = -1e9;    // 最後に snapshot を描画した時刻（throttle 基準）。
+    // メニュー（controller）由来の forming param。buildFormingUrl が反映する bins/va のみ保持する
+    //   （効かない飾り param は保持しない）。未設定（null）は forming 取得に載せない＝backend 既定。
+    this._params = {};
   }
 
   isEnabled() {
     return this._enabled;
+  }
+
+  // メニュー（controller）から forming param（bins/va）を受け取り保持する。次回 enterBar の
+  //   fetchForming 引数へ合流する（buildFormingUrl が &bins= / &va= へ反映＝effective）。
+  //   未知/効かない param は buildFormingUrl が無視するため、そのまま保持しても副作用はない。
+  setParams(params = {}) {
+    this._params = { ...(params || {}) };
   }
 
   // トグル。ON: 初回のみ attach → 表示。OFF: 非表示（取得しない）。
@@ -83,8 +93,10 @@ export class MarketProfileReplayActor {
     //   combined = [当日始まり, now) ＝古典的 Market Profile（1 日の TPO 形成）＝価格域が当日へ集中し
     //   forming の tick 成長が明瞭になる。now は因果 T をそのまま透過（未来リーク防止）。
     const from = Math.floor(now / 86400) * 86400;
+    // setParams で保持した bins/va を forming 取得へ合流する（buildFormingUrl が反映＝effective）。
+    //   src=dwell / base=1 / now=T / from（当日始まり）は不変（session窓・tick-live 挙動不変）。
     const forming = await this._formingClient.fetchForming({
-      ...this._getContext(), src: 'dwell', base: 1, now, from,
+      ...this._getContext(), ...this._params, src: 'dwell', base: 1, now, from,
     });
     if (!forming) {
       return; // null は前回描画を保持（非破壊）。

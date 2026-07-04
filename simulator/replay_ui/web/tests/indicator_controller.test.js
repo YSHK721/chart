@@ -368,3 +368,164 @@ test('restore notifies the timeframe observer with the restored timeframe (trade
   await ctrl.restore();
   assert.ok(seen.includes('1m'), `restore は復元時間足 1m を購読者へ通知する（実際: ${JSON.stringify(seen)}）`);
 });
+
+// =========================================================================
+// Market Profile メニュー一本化（#rp-mp 撤去→プロファイルタブ・controller 委譲）
+//   設計入力: 是正 step2「controller に MP 分岐追加（present 参照移植・slim actor へ委譲）」。
+//   apply→setEnabled(true)+enterBar（即 base）/ remove→setEnabled(false)+detach（あれば）/
+//   toggleVisible→setEnabled(visible) / 設定変更→setParams / 再計算(render)経路で /compute へ流さない。
+// =========================================================================
+
+// slim actor スパイ（enterBar/feedTick/settleTick/setEnabled/isEnabled/setParams/detach を記録）。
+function spyMp() {
+  return {
+    _en: false,
+    calls: { setEnabled: [], enter: [], params: [], detach: 0 },
+    isEnabled() { return this._en; },
+    setEnabled(v) { this._en = !!v; this.calls.setEnabled.push(!!v); },
+    async enterBar(t) { this.calls.enter.push(t); },
+    setParams(p) { this.calls.params.push(p); },
+    detach() { this.calls.detach += 1; },
+    feedTick() {}, settleTick() {},
+  };
+}
+
+// MP 委譲用コントローラ。compute はスパイ（MP が /compute へ流れないことを検証）。
+//   marketProfile を注入し、untilTime（現在バー T）を任意に設定できる。
+function mpController({ untilTime } = {}) {
+  const noop = () => {};
+  const computeCalls = [];
+  const marketProfile = spyMp();
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => { computeCalls.push(req); return { ok: true, generation: 0, series: [] }; } },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: {
+      renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop,
+      setVisible: (...a) => { computeCalls.setVisibleCalled = true; ctrl._rendererSetVisible = a; },
+      remove: () => { ctrl._rendererRemoveCalled = true; },
+    },
+    marketProfile,
+    document: null,
+  });
+  if (untilTime != null) ctrl.setUntilTime(untilTime);
+  return { ctrl, marketProfile, computeCalls };
+}
+
+test('MP apply: setEnabled(true)+setParams and enterBar(current bar T), never touches /compute', async () => {
+  // Arrange: 現在バー T=1704074400 をセット。
+  const { ctrl, marketProfile, computeCalls } = mpController({ untilTime: 1704074400 });
+  // Act
+  const inst = await ctrl.applyIndicator('market_profile', 'default');
+  // Assert: actor を有効化（setEnabled(true)）＋現在バーで即 enterBar（base 描画）。
+  assert.deepEqual(marketProfile.calls.setEnabled, [true]);
+  assert.deepEqual(marketProfile.calls.enter, [1704074400], '現在バー T で即 enterBar');
+  // setParams で bins/va を渡す（effective 経路）。
+  assert.equal(marketProfile.calls.params.length, 1);
+  assert.equal(marketProfile.calls.params[0].bins, '60');
+  assert.equal(marketProfile.calls.params[0].va, 0.70);
+  // /compute へは一切流さない（MP は forming 委譲）。
+  const mpCompute = computeCalls.filter((r) => r.indicatorId === 'market_profile');
+  assert.equal(mpCompute.length, 0, 'MP は /compute をバイパス');
+  // 凡例/永続化のため state に登録される。
+  assert.ok(inst && inst.instanceId, 'MP インスタンスが state に登録される');
+});
+
+test('MP apply is single-instance: applying twice does not create a duplicate', async () => {
+  const { ctrl, marketProfile } = mpController({ untilTime: 1000 });
+  const a = await ctrl.applyIndicator('market_profile', 'default');
+  const b = await ctrl.applyIndicator('market_profile', 'default');
+  assert.equal(a.instanceId, b.instanceId, '2 回目は既存インスタンスを返す（単一）');
+  // 2 回目で二重に enterBar/setEnabled しない（1 回目のみ）。
+  assert.deepEqual(marketProfile.calls.setEnabled, [true]);
+});
+
+test('MP apply without untilTime skips immediate enterBar (render hook drives it later)', async () => {
+  const { ctrl, marketProfile } = mpController(); // untilTime 未設定
+  await ctrl.applyIndicator('market_profile', 'default');
+  assert.deepEqual(marketProfile.calls.setEnabled, [true]);
+  assert.equal(marketProfile.calls.enter.length, 0, 'T 未確定時は即 enterBar しない（render seam が駆動）');
+});
+
+test('MP toggleVisible: delegates to setEnabled(visible), not renderer.setVisible', async () => {
+  const { ctrl, marketProfile } = mpController({ untilTime: 1000 });
+  const inst = await ctrl.applyIndicator('market_profile', 'default');
+  marketProfile.calls.setEnabled.length = 0; // apply 分をクリア
+  // Act: 表示トグル（true→false）。
+  ctrl.toggleVisible(inst.instanceId);
+  // Assert: actor.setEnabled(false) へ委譲。renderer.setVisible は MP では呼ばない。
+  assert.deepEqual(marketProfile.calls.setEnabled, [false]);
+  assert.ok(!ctrl._rendererSetVisible, 'MP は renderer.setVisible を通さない');
+});
+
+test('MP removeInstance: setEnabled(false)+detach, not renderer.remove', async () => {
+  const { ctrl, marketProfile } = mpController({ untilTime: 1000 });
+  const inst = await ctrl.applyIndicator('market_profile', 'default');
+  marketProfile.calls.setEnabled.length = 0;
+  // Act
+  ctrl.removeInstance(inst.instanceId);
+  // Assert
+  assert.deepEqual(marketProfile.calls.setEnabled, [false]);
+  assert.equal(marketProfile.calls.detach, 1, 'detach（あれば）を呼ぶ');
+  assert.ok(!ctrl._rendererRemoveCalled, 'MP は renderer.remove を通さない');
+  // state から除去される。
+  assert.equal(ctrl._state.applied.find((i) => i.instanceId === inst.instanceId), undefined);
+});
+
+test('MP settings change (recomputeInstance): setParams + re-enterBar, never /compute', async () => {
+  const { ctrl, marketProfile, computeCalls } = mpController({ untilTime: 2000 });
+  const inst = await ctrl.applyIndicator('market_profile', 'default');
+  marketProfile.calls.params.length = 0;
+  marketProfile.calls.enter.length = 0;
+  const computeBefore = computeCalls.length;
+  // Act: gear 設定変更相当（bins を 30 へ）。
+  await ctrl.recomputeInstance(inst.instanceId, null, { bins: '30', va: 0.8 });
+  // Assert: setParams（bins/va）＋現在バーで再 enterBar。/compute は増えない。
+  assert.equal(marketProfile.calls.params.length, 1);
+  assert.equal(marketProfile.calls.params[0].bins, '30');
+  assert.deepEqual(marketProfile.calls.enter, [2000]);
+  const mpCompute = computeCalls.slice(computeBefore).filter((r) => r.indicatorId === 'market_profile');
+  assert.equal(mpCompute.length, 0, 'MP 設定変更は /compute へ流さない');
+});
+
+test('MP is skipped in recomputeAllApplied (render hook drives it, not /compute)', async () => {
+  const { ctrl, computeCalls } = mpController({ untilTime: 1000 });
+  await ctrl.applyIndicator('market_profile', 'default');
+  const before = computeCalls.length;
+  // Act: ライブ更新/時間足変更の一括再計算。
+  await ctrl.recomputeAllApplied();
+  // Assert: MP は /compute に載らない（skip）。
+  const mpCompute = computeCalls.slice(before).filter((r) => r.indicatorId === 'market_profile');
+  assert.equal(mpCompute.length, 0, 'recomputeAllApplied は MP を /compute へ流さない');
+});
+
+test('MP restore: re-enables actor from saved params/visibility without touching /compute', async () => {
+  // Arrange: 永続化済み MP インスタンス（pairs params・visible=true）を restore する。
+  const noop = () => {};
+  const computeCalls = [];
+  const marketProfile = spyMp();
+  const savedInst = {
+    instanceId: 'mp-1', indicatorId: 'market_profile', variant: 'default',
+    params: [['bins', '30'], ['va', 0.8]], visible: true, generation: 0, seq: 1, createdAt: 0,
+  };
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => { computeCalls.push(req); return { ok: true, generation: 0, series: [] }; } },
+    persistence: {
+      loadApplied: () => [savedInst], saveApplied: noop,
+      loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 2,
+    },
+    renderer: { renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop, setVisible: noop, remove: noop, setCandles: noop },
+    marketProfile,
+    document: null,
+    timeframe: '1D',
+  });
+  // Act
+  await ctrl.restore();
+  // Assert: MP は /compute へ流さず、保存 params/可視で actor を復元する。
+  const mpCompute = computeCalls.filter((r) => r.indicatorId === 'market_profile');
+  assert.equal(mpCompute.length, 0, 'restore は MP を /compute へ流さない');
+  assert.deepEqual(marketProfile.calls.setEnabled, [true], '保存可視状態 visible=true で有効化');
+  assert.equal(marketProfile.calls.params[0].bins, '30', '保存 bins を actor へ復元');
+  assert.equal(marketProfile.calls.params[0].va, 0.8);
+});

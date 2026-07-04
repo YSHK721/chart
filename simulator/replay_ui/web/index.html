@@ -48,7 +48,6 @@
         <option value="math">数学計算(終値)</option>
       </select></label>
       <button id="rp-follow">直近窓追従</button>
-      <button id="rp-mp" title="マーケットプロファイル（足内 tick 逐次成長）">MP</button>
       <span class="rp-sep"></span>
       <button id="rp-view-left" title="チャート表示を左端へスクロール（再生位置は変えない）">⇤ 表示左端</button>
       <button id="rp-view-right" title="チャート表示を右端へスクロール（再生位置は変えない）">表示右端 ⇥</button>
@@ -143,7 +142,8 @@
       ready.then(() => {
         controller.restore();
         // ライブ更新の代わりに再生ドライバを起動（untilTime をフレーム駆動＝ライブ同一計算）。
-        //   marketProfile（slim actor）を渡し #rp-mp トグルで足内 tick 逐次成長を有効化する。
+        //   marketProfile（slim actor・composition root が controller と同一実体を注入）を渡し、
+        //   indicator メニュー（market_profile）で有効化された actor の足内 tick 逐次成長を駆動する。
         setupReplay({ chart, mainSeries, controller, renderer, datasetRef: 'jp225_tick', recentBars: RECENT_BARS, document, marketProfile });
       });
     });
