@@ -15,8 +15,9 @@ from typing import Any
 
 import pandas as pd
 
-from simulator.main import build_interactor
+from simulator.main import _ema_series, build_interactor
 from simulator.report_ui.adapter.report_presenter import ReportUiPresenter
+from simulator.report_ui.tools.contacts_export import compute_segment_contacts
 from simulator.report_ui.usecase.build_report_payload import BuildReportPayload
 
 ROOT = Path("/workspaces/app")
@@ -130,15 +131,50 @@ def _run_segment(bars_csv: Path, trading_start: str) -> "tuple[Any, Any]":
     return result, request.bars
 
 
+def _segment_contacts(bars: "list") -> "list[dict]":
+    """1 セグメントの表示足範囲で接点（agg.contacts）を算出する（scan_contacts usecase 経由）。
+
+    ma_values は EA と同じ EMA(ma_period, close)（_ema_series）を当該セグメント足へ適用して構築する
+    （bar_index→EMA 値）。既定は該当セグメント足範囲のみ（性能考慮・詳細設計 A）。
+
+    注意（表示専用オーバレイ）: EMA は**表示トリム後のセグメント足で再シード**する。OOS のように
+    bars_start でトリムした窓では先頭 ~ma_period 本は EMA warmup 中で EA の EMA と厳密一致しない
+    （表示域先頭のみ）。取引開始（trading_start）までに period≪バー数で収束するため取引域では
+    実質一致する。本接点は分析用の表示オーバレイであり、EA のシグナル判定そのものではない。
+
+    モード方針: 本レポートは config_overrides["tick_model"]="ohlc_expand"（合成ティック・実ティック
+    非使用）で生成されるため、実ティック源を持たない。よって preview（full_scan=False・確定足 close
+    クロスのみ・tick 非読込）へ安全フォールバックする。実ティック源が供給できる将来経路では
+    ticks_fn を注入し full_scan=True へ切り替える。
+    """
+    if not bars:
+        return []
+    closes = pd.Series([float(b.close) for b in bars])
+    ema = _ema_series(closes, COMMON["ma_period"])
+    ma_values = {i: float(v) for i, v in enumerate(ema.to_numpy())}
+    return compute_segment_contacts(
+        bars=bars,
+        ma_values=ma_values,
+        ref=COMMON["symbol"],
+        timeframe=COMMON["period"],
+        indicator="ema",
+        variant="",
+        params={"period": COMMON["ma_period"], "method": COMMON["ma_method"]},
+        full_scan=False,
+    )
+
+
 def build_payload() -> Any:
     """IS/OOS を実 run し ReportPayloadModel を構築する（report.json は書かない）。"""
     runs = {}
     for key, label, bars_csv, trading_start, bars_start in SEGMENTS:
         result, bars = _run_segment(bars_csv, trading_start)
+        seg_bars = _filter_bars(bars, bars_start)
         runs[key] = {
             "result": _ResultView(result),
-            "bars": _filter_bars(bars, bars_start),
+            "bars": seg_bars,
             "label": label,
+            "contacts": _segment_contacts(seg_bars),
         }
 
     meta_is = _meta("is", runs["is"]["label"])
@@ -153,6 +189,8 @@ def build_payload() -> Any:
         ea_params=EA_PARAMS,
         meta_is=meta_is,
         meta_oos=meta_oos,
+        contacts_is=runs["is"]["contacts"],
+        contacts_oos=runs["oos"]["contacts"],
     )
 
 
