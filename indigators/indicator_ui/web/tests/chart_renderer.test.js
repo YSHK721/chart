@@ -195,6 +195,24 @@ test('pixelsPerBar: logicalToCoordinate 非提供なら 8（後方互換）', ()
   assert.equal(rendererWithSpacing(null).pixelsPerBar(), 8);
 });
 
+test('focusRecentBars(n): 直近 n バーを可視範囲にする（sessions の初期ズーム）', () => {
+  const ranges = [];
+  const main = { setData() {}, applyOptions() {}, priceScale: () => ({ applyOptions() {} }) };
+  const ts = {
+    fitContent() {}, applyOptions() {}, setVisibleLogicalRange: (r) => ranges.push(r),
+  };
+  const chart = { addSeries: () => main, subscribeCrosshairMove() {}, timeScale: () => ts };
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: {} });
+  const candles = Array.from({ length: 100 }, (_, i) => ({ time: i + 1, open: 1, high: 2, low: 0, close: 1 }));
+  renderer.setCandles(candles); // total=100
+  ranges.length = 0;
+  renderer.focusRecentBars(20);
+  const r = ranges.at(-1);
+  // from = 100-20-0.5 = 79.5、to = 100-0.5 + max(1,20*0.04)=99.5+1=100.5。
+  assert.ok(Math.abs(r.from - 79.5) < 1e-9, 'from=total-n-0.5');
+  assert.ok(Math.abs(r.to - 100.5) < 1e-9, 'to=total-0.5+右余白');
+});
+
 // _fitTrimView（スクラブ追従）: 現在の可視幅 span を保ったまま T を右端へスクロールする。
 //   ズームを保持したまま過去↔現在を移動できる（ユーザー選択・プロトの全historyフィットから意図的に外れる）。
 function rendererWithVisibleRange(visSpan) {
@@ -622,6 +640,22 @@ test('crosshair readout: builds main OHLC from seriesData.get(mainSeries)', () =
   const dto = dtos[dtos.length - 1];
   assert.equal(dto.time, 1277769600);
   assert.deepEqual(dto.ohlc, { open: 1.2, high: 1.6, low: 1.1, close: 1.5 });
+});
+
+test('crosshair readout: setSessionMP 供給時は time で当日 MP を DTO に載せる（sessions）', () => {
+  const { renderer, chart, main, dtos } = newReadoutRenderer();
+  const mp = { poc: 101, vah: 106, val: 98 };
+  renderer.setSessionMP(new Map([[1277769600, mp]]));
+  // 当日を指す（time 一致）→ DTO.sessionMP に当該 MP。
+  chart.fireCrosshair({ time: 1277769600, seriesData: new Map([[main, { open: 1, high: 2, low: 0, close: 1 }]]) });
+  assert.deepEqual(dtos.at(-1).sessionMP, mp);
+  // 別 time（未登録）→ sessionMP は null。
+  chart.fireCrosshair({ time: 999, seriesData: new Map([[main, { open: 1, high: 2, low: 0, close: 1 }]]) });
+  assert.equal(dtos.at(-1).sessionMP, null);
+  // setSessionMP(null) で解除 → null。
+  renderer.setSessionMP(null);
+  chart.fireCrosshair({ time: 1277769600, seriesData: new Map([[main, { open: 1, high: 2, low: 0, close: 1 }]]) });
+  assert.equal(dtos.at(-1).sessionMP, null);
 });
 
 test('crosshair readout: falls back to _lastBar when seriesData lacks the main series (hover off)', () => {

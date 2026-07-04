@@ -345,9 +345,9 @@ test('parseProfileResponse omits sessions key when absent (後方互換)', () =>
   assert.ok(!('sessions' in out));
 });
 
-// sessions_total（キャップ前の実日数・修正1）: primitive 注記「直近N/全M日」の M へ渡す素材。
-//   parse はトップレベル sessions_total を profile へ素通しする（無ければ付けない＝後方互換）。
-test('parseProfileResponse passes through top-level sessions_total into profile', () => {
+// sessions（日別分割）: parse はトップレベル sessions を profile へ素通しする（無ければ付けない）。
+//   sessions_total は「直近N/全M日」注記の撤去に伴い frontend では素通ししない（未使用配線を削除）。
+test('parseProfileResponse passes through top-level sessions into profile', () => {
   const payload = {
     ok: true,
     profile: {
@@ -355,22 +355,21 @@ test('parseProfileResponse passes through top-level sessions_total into profile'
       price_min: 100, price_max: 101, tpo_units: 1, n_bins: 1,
     },
     sessions: [{ date: '2024-01-01', tpo: [1] }, { date: '2024-01-02', tpo: [2] }],
-    sessions_total: 4146, // キャップ前の実日数（キャップ後 len(sessions)=2 とは別）。
+    sessions_total: 4146, // 応答には残るが frontend は素通ししない（未使用）。
   };
   const out = parseProfileResponse(payload);
-  assert.equal(out.sessions_total, 4146);
   assert.equal(out.sessions.length, 2);
+  assert.ok(!('sessions_total' in out), 'sessions_total は素通ししない（未使用配線を削除）');
 });
 
-test('parseProfileResponse omits sessions_total when absent (後方互換)', () => {
+test('parseProfileResponse omits sessions when absent (後方互換)', () => {
   const payload = {
     ok: true,
     profile: {
       bins: [{ price: 100, tpo: 1, norm: 1 }], poc: 100, va_low: 100, va_high: 100,
       price_min: 100, price_max: 101, tpo_units: 1, n_bins: 1,
     },
-    sessions: [{ date: '2024-01-01', tpo: [1] }],
   };
   const out = parseProfileResponse(payload);
-  assert.ok(!('sessions_total' in out));
+  assert.ok(!('sessions' in out));
 });

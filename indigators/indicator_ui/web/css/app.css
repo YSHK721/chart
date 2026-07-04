@@ -88,6 +88,15 @@ html, body {
   color: #d1d4dc; white-space: nowrap;
 }
 #crosshair-readout .readout-time { color: #9aa0ad; }
+/* sessions: 当日 MP（POC/VAH/VAL）行。OHLC 行と同じ枠・POC は赤系、VA は灰で読みやすく。 */
+#crosshair-readout .readout-mp {
+  display: inline-flex; align-items: center; gap: 10px;
+  background: rgba(30, 34, 45, .82); border: 1px solid #2a2e39;
+  border-radius: 4px; padding: 2px 8px; backdrop-filter: blur(2px);
+  white-space: nowrap; width: fit-content;
+}
+#crosshair-readout .readout-poc { color: #ff6b6b; }
+#crosshair-readout .readout-va { color: #9aa0ad; }
 #crosshair-readout .readout-overlay {
   display: inline-flex; align-items: center;
   background: rgba(30, 34, 45, .82); border: 1px solid #2a2e39;

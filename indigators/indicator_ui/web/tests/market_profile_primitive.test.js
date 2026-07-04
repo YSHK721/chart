@@ -351,16 +351,22 @@ const SESSIONS3 = [
   { date: '2024-01-02', tpo: [0, 3, 1] },
   { date: '2024-01-03', tpo: [2, 1, 1] },
 ];
-// date → UTC 00:00 time（秒）。2024-01-01=1704067200・以降 +86400。
+// date → dateToUnix（UTC 00:00 秒）。primitive の dateToUnix と一致（2024-01-01=1704067200・以降 +86400）。
 const DATE_TIME = {
   '2024-01-01': 1704067200,
   '2024-01-02': 1704067200 + 86400,
   '2024-01-03': 1704067200 + 2 * 86400,
 };
-// timeToCoordinate が DATE_TIME を x へ写像する fake chart（date time→x 恒等・範囲外 null）。
+// dateToUnix(time) → 画面 x への写像（連続 3 日を 100/118/136＝18px 間隔＝barSpacing に）。
+const X_OF = {
+  [1704067200]: 100,
+  [1704067200 + 86400]: 118,
+  [1704067200 + 2 * 86400]: 136,
+};
+// timeToCoordinate が各セッション日を x へ写像する fake chart（範囲外/nullTimes は null＝カリング）。
 function fakeChartSessions(nullTimes = new Set()) {
   return {
-    timeScale: () => ({ timeToCoordinate: (t) => (nullTimes.has(t) ? null : t) }),
+    timeScale: () => ({ timeToCoordinate: (t) => (nullTimes.has(t) ? null : (X_OF[t] ?? null)) }),
   };
 }
 
@@ -375,7 +381,7 @@ function drawSessions(prim, { width = 800, sessions = SESSIONS3, nullTimes = new
 }
 
 test('sessions mode: draws per-day bars and NOT the cumulative POC/VA lines', () => {
-  // Arrange / Act: 800px 幅 → nFit = floor(800/102) = 7 >= 3 日 → 全 3 日描画。
+  // Arrange / Act: 3 日とも timeToCoordinate 有効 → 全 3 日描画。
   const prim = new MarketProfileHistogramPrimitive();
   const target = drawSessions(prim, { width: 800 });
   // Assert: 通常の累積 POC/VA 水平線は引かれない（試作準拠）。
@@ -387,29 +393,74 @@ test('sessions mode: draws per-day bars and NOT the cumulative POC/VA lines', ()
   assert.ok(labels.includes('01-01') && labels.includes('01-02') && labels.includes('01-03'));
 });
 
-test('sessions mode: nFit limits to the most recent days when width is narrow', () => {
-  // Arrange: 幅 250px → nFit = floor(250/102) = 2 → 直近 2 日（01-02, 01-03）のみ。
+test('sessions mode: タイルは各日の時間座標(timeToCoordinate)に配置される（横スクロール/ズーム連動）', () => {
+  // 各日を x=100/118/136 に写像 → colW=18(中央値ギャップ)・tileW=15.3。背景左=cx-tileW/2。
   const prim = new MarketProfileHistogramPrimitive();
-  const target = drawSessions(prim, { width: 250 });
-  // 列背景 2 + 直近 2 日の非ゼロ数 (01-02: 2)+(01-03: 3)=5 → 7 rect。01-01 は含まれない。
-  assert.equal(target.rects.length, 7, `直近 2 日ぶんのみ: ${target.rects.length}`);
-  const labels = target.texts.map((t) => t.s);
-  assert.ok(!labels.includes('01-01') && labels.includes('01-02') && labels.includes('01-03'));
-  // 切捨て時は「直近N/全M日」注記（試作準拠・total 未提供時は all.length フォールバック）。
-  assert.ok(labels.some((s) => s.includes('直近2/全3日')), `注記: ${labels}`);
+  const target = drawSessions(prim, { width: 800 });
+  const bgs = target.rects.filter((r) => r.h === 600); // 列背景（全高）。
+  const tileW = 18 * 0.85;
+  assert.deepEqual(
+    bgs.map((r) => Math.round(r.x)),
+    [100, 118, 136].map((cx) => Math.round(cx - tileW / 2)),
+    'タイル中心が timeToCoordinate に一致',
+  );
+  assert.ok(bgs.every((r) => Math.abs(r.w - tileW) < 1e-6), '列幅=隣接間隔(18)*0.85');
 });
 
-test('sessions mode: tiles columns across full width (時刻座標に依存しない)', () => {
-  // 回帰: 列は cx=i*colW の全幅タイル（ズームアウトで右端に潰れない）。
-  //   timeToCoordinate が全日 null でも列は描かれる（時刻座標を使わない）。
+test('sessions mode: OHLC 付きセッションは列を方向ティントし終値線のみ描く（上げ=緑・下げ=赤）', () => {
   const prim = new MarketProfileHistogramPrimitive();
-  const target = drawSessions(prim, {
-    width: 306, // colW = 306/3 = 102
-    nullTimes: new Set(Object.values(DATE_TIME)), // 全日の座標を null に
+  const target = fakeTarget(800);
+  prim.attached({ chart: fakeChartSessions(), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setProfile(PROFILE);
+  prim.setVisible(true);
+  // 2024-01-01=上げ日(close>open)、2024-01-02=下げ日(close<open)。
+  const withOhlc = SESSIONS3.map((s, i) => {
+    if (i === 0) return { ...s, open: 100.2, high: 102, low: 100, close: 101.5 };
+    if (i === 1) return { ...s, open: 101.5, high: 102, low: 100, close: 100.3 };
+    return s;
   });
-  // 3 列の背景が x=0,102,204 にタイルされる（時刻座標非依存）。
-  const bgs = target.rects.filter((r) => r.h === 600);
-  assert.deepEqual(bgs.map((r) => Math.round(r.x)), [0, 102, 204]);
+  prim.setSessions(withOhlc);
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  // 水平線（y1==y2）は各 OHLC 日で **終値のみ 1 本**（H/L/始値の線は描かない）。
+  const hlines = target.lines.filter((l) => l.y1 === l.y2);
+  const ys = hlines.map((l) => l.y1).sort((a, b) => a - b);
+  assert.deepEqual(ys, [100.3, 101.5], '終値線のみ（2 日ぶん・H/L/始値は描かない）');
+  assert.ok(hlines.every((l) => l.lineWidth === 1), '終値線は控えめ(1px)');
+  // 上げ日=軟緑・下げ日=軟赤。
+  assert.equal(hlines.find((l) => l.y1 === 101.5).color, 'rgba(38, 166, 154, 0.8)', '上げ=軟緑');
+  assert.equal(hlines.find((l) => l.y1 === 100.3).color, 'rgba(239, 83, 80, 0.8)', '下げ=軟赤');
+  // ティントは**高安レンジ（low..high）のみ**。fake は toY=price 恒等なので rect は y=low, h=high-low。
+  //   上げ日(01-01): low=100/high=102 → 薄緑・y=100・h=2。下げ日(01-02): low=100/high=102 → 薄赤。
+  const tintUp = target.rects.find((r) => r.fill === 'rgba(38, 166, 154, 0.12)');
+  const tintDown = target.rects.find((r) => r.fill === 'rgba(239, 83, 80, 0.12)');
+  assert.ok(tintUp && Math.abs(tintUp.y - 100) < 1e-9 && Math.abs(tintUp.h - 2) < 1e-9,
+    '上げ日は高安レンジ(100..102)を薄緑ティント');
+  assert.ok(tintDown, '下げ日は薄赤ティント');
+  // 全列背景(h=600)ではない（レンジのみ）。
+  assert.equal(target.rects.filter((r) => r.h === 600 && r.fill && r.fill.includes('166')).length, 0,
+    '全列ティントはしない（高安レンジのみ）');
+});
+
+test('sessions mode: OHLC 未付与のセッションは水平線を描かない（後方互換）', () => {
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = fakeTarget(800);
+  prim.attached({ chart: fakeChartSessions(), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setProfile(PROFILE);
+  prim.setVisible(true);
+  prim.setSessions(SESSIONS3); // OHLC 無し。
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  assert.equal(target.lines.filter((l) => l.y1 === l.y2).length, 0, 'OHLC 無しは水平線を描かない');
+});
+
+test('sessions mode: 視野外の日（timeToCoordinate=null）はカリングして描かない', () => {
+  // 01-01 の座標を null に → 01-02/01-03 のみ描く（横スクロールで視野外を省く）。
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = drawSessions(prim, { nullTimes: new Set([DATE_TIME['2024-01-01']]) });
+  const labels = target.texts.map((t) => t.s);
+  assert.ok(!labels.includes('01-01'), '視野外の 01-01 は描かない');
+  assert.ok(labels.includes('01-02') && labels.includes('01-03'));
+  // 列背景 2 + 非ゼロバー(01-02:2)+(01-03:3)=5 → 7 rect。
+  assert.equal(target.rects.length, 7, `可視 2 日ぶんのみ: ${target.rects.length}`);
 });
 
 test('setSessions(null) restores normal mode: cumulative bars + POC/VA lines return', () => {
@@ -434,35 +485,15 @@ test('sessions mode: safe no-op when sessions is empty array', () => {
   assert.equal(target.lines.length, 0);
 });
 
-// sessions_total（キャップ前の実日数・修正1）: setSessions(sessions, total) の total が注記の M に載る。
-//   controller はキャップ後の直近 60 日ぶんだけ sessions を返すため、受信 sessions.length では実日数を
-//   表せない。total を渡すと注記「直近N/全M日」の M がキャップ前実日数になり誤読を防ぐ。
-test('sessions mode: annotation uses total (pre-cap day count) for the M in 直近N/全M日', () => {
-  // Arrange: 3 日ぶん受信・total=4146（キャップ前の実日数）・幅 250 → nFit=2（直近 2 日描画）。
+// 「直近N/全M日」注記は時間軸連動化で廃止。setSessions は単一引数（sessions のみ・total 撤去）。
+test('sessions mode: 「直近N/全M日」注記は描かない（注記UI・total 配線を撤去）', () => {
   const prim = new MarketProfileHistogramPrimitive();
-  const target = fakeTarget(250);
+  const target = fakeTarget(800);
   prim.attached({ chart: fakeChartSessions(), series: fakeSeries(), requestUpdate: () => {} });
   prim.setProfile(PROFILE);
   prim.setVisible(true);
-  // Act: total を第 2 引数で渡す。
-  prim.setSessions(SESSIONS3, 4146);
-  prim.paneViews().forEach((v) => v.renderer().draw(target));
-  // Assert: 注記の M は受信 3 でも直近 2 でもなく、total=4146。
-  const labels = target.texts.map((t) => t.s);
-  assert.ok(labels.some((s) => s.includes('直近2/全4146日')), `注記: ${labels}`);
-});
-
-test('sessions mode: annotation falls back to all.length when total is omitted (後方互換)', () => {
-  // Arrange: total 未提供（従来の単一引数呼び出し）→ M は受信 sessions 長（all.length=3）。
-  const prim = new MarketProfileHistogramPrimitive();
-  const target = fakeTarget(250); // nFit=2 → 直近 2 日・切捨てで注記が出る。
-  prim.attached({ chart: fakeChartSessions(), series: fakeSeries(), requestUpdate: () => {} });
-  prim.setProfile(PROFILE);
-  prim.setVisible(true);
-  // Act: total を渡さない（従来 API）。
   prim.setSessions(SESSIONS3);
   prim.paneViews().forEach((v) => v.renderer().draw(target));
-  // Assert: M は all.length=3（フォールバック）。
   const labels = target.texts.map((t) => t.s);
-  assert.ok(labels.some((s) => s.includes('直近2/全3日')), `注記: ${labels}`);
+  assert.ok(!labels.some((s) => s.includes('全') && s.includes('日')), '注記は描かない');
 });
