@@ -41,6 +41,10 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
 
     from adapter.compute import dataset, IndicatorComputeAdapter  # noqa: E402
     from adapter.compute.latest_dispatch import full_compute, latest_compute  # noqa: E402
+    # MP サブバー tick 逐次成長: forming controller の純ロジックを read-only 再利用（無改変・DRY）。
+    from adapter.controller.market_profile_forming_controller import (  # noqa: E402
+        handle_market_profile_forming,
+    )
     from marketdata.resample import (  # noqa: E402
         TIMEFRAME_RULES,
         is_known_timeframe,
@@ -53,6 +57,7 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
         full_compute=full_compute,
         latest_compute=latest_compute,
         resample_ohlc=resample_ohlc,
+        handle_market_profile_forming=handle_market_profile_forming,
         TIMEFRAME_RULES=TIMEFRAME_RULES,
         is_known_timeframe=is_known_timeframe,
     )

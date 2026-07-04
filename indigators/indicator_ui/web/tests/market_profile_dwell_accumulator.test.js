@@ -259,3 +259,47 @@ test('snapshot matches mp_core fine-grid golden for a wide, misaligned range (no
   assert.equal(snap.va_high, 1063.33);
   assert.equal(snap.tpo_units, 560);
 });
+
+// --- セッション窓（1D 空 base）の clip 解消: controller の導出レンジ契約を DwellAccumulator 側で固定 ---
+// backend fix（market_profile_forming_controller._reconcile_session_range）は base 空でも forming tick
+//   (mid) を包含する fine grid（baseKmin=floor(priceMin/gridW)・size=floor(priceMax/gridW)-baseKmin+1）を
+//   返す。DwellAccumulator は不変。本テストは「導出レンジなら育つ／旧縮退レンジなら clip で育たない」を
+//   対比し、controller が満たすべき契約（addTick される全 tick を包含）を回帰的に固定する。
+test('empty base + forming-derived session range grows a non-empty profile (no clip)', () => {
+  // Arrange: 1D セッション窓・base 空。task 実測レンジ 68280..69894。当日 forming tick を全域へ配置。
+  const DAY_1D = 1782950400; // floor(1782985000, 86400)。
+  const gridW = 10;
+  const priceMin = 68280;
+  const priceMax = 69894;
+  const baseKmin = Math.floor(priceMin / gridW);                 // 6828。
+  const size = Math.floor(priceMax / gridW) - baseKmin + 1;      // 162。
+  const derived = new DwellAccumulator();
+  derived.init({
+    baseFine: new Array(size).fill(0), baseKmin, activeTable: ALL_ACTIVE,
+    priceMin, priceMax, nBins: 60, gridW, formingStart: DAY_1D,
+  });
+  // 当日 forming tick（活発秒 gap を持つよう時刻を進める）。mid は当日レンジ全域。
+  const n = 20;
+  const ticks = Array.from({ length: n }, (_, i) => [
+    DAY_1D + 100 + i * 1500,
+    priceMin + ((priceMax - priceMin) * i) / (n - 1),
+  ]);
+  // 旧・縮退レンジ（欠陥時 controller が返していた形＝base 空→priceMin=0/priceMax=1/kmin=0/size=1）。
+  const degenerate = new DwellAccumulator();
+  degenerate.init({
+    baseFine: [0], baseKmin: 0, activeTable: ALL_ACTIVE,
+    priceMin: 0, priceMax: 1, nBins: 60, gridW, formingStart: DAY_1D,
+  });
+  // Act
+  for (const [sec, mid] of ticks) {
+    derived.addTick(sec, mid);
+    degenerate.addTick(sec, mid);
+  }
+  const okSnap = derived.snapshot();
+  const badSnap = degenerate.snapshot();
+  // Assert: 導出レンジは MP 非空（tpo_units>0・POC がレンジ内）＝当日プロファイルが育つ。
+  assert.ok(okSnap.tpo_units > 0, 'derived session range must accumulate dwell (non-empty MP)');
+  assert.ok(okSnap.poc >= priceMin && okSnap.poc <= priceMax);
+  // 旧・縮退レンジは全 tick が fine grid 外へ clip され育たない（欠陥の再現＝修正の必要性の実証）。
+  assert.equal(badSnap.tpo_units, 0, 'degenerate range clips all today ticks (the defect)');
+});

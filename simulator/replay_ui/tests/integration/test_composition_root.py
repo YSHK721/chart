@@ -21,3 +21,13 @@ def test_build_replay_app_wires_ports(tmp_path):
 def test_build_replay_app_web_dir_optional(tmp_path):
     app = build_replay_app(data_dir=tmp_path, web_dir=tmp_path)
     assert app.web_dir == tmp_path.resolve()
+
+
+def test_build_replay_app_injects_market_profile_forming_port(tmp_path):
+    # MP サブバー tick 逐次成長: forming_port（gateway）が注入され /market_profile_forming が有効。
+    from simulator.replay_ui.adapter.market_profile_forming_gateway import (
+        MarketProfileFormingGateway,
+    )
+    app = build_replay_app(data_dir=tmp_path / "missing", web_dir=None)
+    assert app.forming_enabled is True
+    assert isinstance(app._forming_port, MarketProfileFormingGateway)

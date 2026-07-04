@@ -62,18 +62,20 @@ export function intrabarWindow({ timeframe, cd, prevCandle, nextCandle }) {
 
 // fetch 後の 5 モード点列構築（open_only/math は fetch 前短絡だが、点列自体は cd のみに依存＝ここで返す）。
 //   （replay.js: buildStream の各 return）
-export function buildStreamFromResponse({ mode, cd, m1 = [], ticks = [] }) {
-  if (mode === 'open_only') return { prices: [cd.open], note: '始値のみ1更新' };
-  if (mode === 'math') return { prices: [cd.close], note: '終値で1回（足内更新なし）' };
+//   secs（tick_secs 並行配列・MP tick-live 用）: real_ticks の実ティック経路のみ ticks と同順で並走。
+//   他分岐・secs 未提供は secs:[]（当バー MP skip・base 継続）。prices は全分岐で従来と完全一致。
+export function buildStreamFromResponse({ mode, cd, m1 = [], ticks = [], secs = [] }) {
+  if (mode === 'open_only') return { prices: [cd.open], secs: [], note: '始値のみ1更新' };
+  if (mode === 'math') return { prices: [cd.close], secs: [], note: '終値で1回（足内更新なし）' };
   if (mode === 'real_ticks') { // 接点検証＝全ティック（cap 廃止・間引かない・絶対仕様）
-    if (ticks.length) return { prices: ticks, note: `実ティック ${ticks.length}点（全件）` };
-    if (m1.length) return { prices: cap(flattenM1(m1), ANIM_FINE), note: '実ティック無→M1 OHLC代替' };
-    return { prices: [cd.close], note: '足内データ無→終値のみ' };
+    if (ticks.length) return { prices: ticks, secs: Array.isArray(secs) ? secs : [], note: `実ティック ${ticks.length}点（全件）` };
+    if (m1.length) return { prices: cap(flattenM1(m1), ANIM_FINE), secs: [], note: '実ティック無→M1 OHLC代替' };
+    return { prices: [cd.close], secs: [], note: '足内データ無→終値のみ' };
   }
   if (mode === 'ohlc_1min') { // 粗い（1分OHLC・分足ステップが見える）
-    if (m1.length) return { prices: cap(flattenM1(m1), ANIM_COARSE), note: `1分OHLC ${m1.length}本` };
-    return { prices: [cd.open, cd.high, cd.low, cd.close], note: 'M1無→日足OHLC4点' };
+    if (m1.length) return { prices: cap(flattenM1(m1), ANIM_COARSE), secs: [], note: `1分OHLC ${m1.length}本` };
+    return { prices: [cd.open, cd.high, cd.low, cd.close], secs: [], note: 'M1無→日足OHLC4点' };
   }
-  if (m1.length) return { prices: cap(synthM1(m1), ANIM_FINE), note: '全ティック合成(M1×補間)' };
-  return { prices: [cd.open, cd.high, cd.low, cd.close], note: 'M1無→OHLC4点' };
+  if (m1.length) return { prices: cap(synthM1(m1), ANIM_FINE), secs: [], note: '全ティック合成(M1×補間)' };
+  return { prices: [cd.open, cd.high, cd.low, cd.close], secs: [], note: 'M1無→OHLC4点' };
 }

@@ -63,6 +63,35 @@ class IntrabarWindowPort(Protocol):
 
 
 @runtime_checkable
+class MarketProfileFormingPort(Protocol):
+    """/market_profile_forming 用の MP サブバー tick 逐次成長データ源（indicator_ui bridge 委譲）。
+
+    クライアント DwellAccumulator が初回取得する base（GRID_W 固定グリッド累積・不変）＋ forming 期間の
+    tick 列 ＋ active table を束ねた ``(status, body)`` を返す。``now`` は必ずリビール T を渡す
+    （因果＝T 以前のみ・未来リーク防止）。実装は adapter 層（bridge 委譲）に閉じる（DIP）。
+    """
+
+    def forming(
+        self,
+        ref: str,
+        timeframe: "str | None",
+        now: "int | None",
+        base: Any,
+        since: Any,
+        bins: Any,
+        va: Any,
+        barw: Any,
+        frm: Any = None,
+    ) -> "tuple[int, dict]":
+        """``(status, body)`` を返す（非 tick ref / 非対応 tf は 400 nested error）。
+
+        ``frm``（任意・既定 None）: セッション窓 MP の base 累積下限 time（当日始まり=floor(now,86400)）。
+        指定時は base を [frm, formingStart) の当日経過ぶんへ限定する。None は従来全期間 base（後方互換）。
+        """
+        ...
+
+
+@runtime_checkable
 class ContactScanPort(Protocol):
     """UC-R5: 接点スキャン（既存 ``simulator/usecase/scan_contacts.py`` 再利用）の境界。
 

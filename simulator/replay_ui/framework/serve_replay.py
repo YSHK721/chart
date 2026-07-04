@@ -28,6 +28,10 @@ from simulator.replay_ui.usecase.intrabar_window import (
     IntrabarWindowRequest,
     intrabar_window,
 )
+from simulator.replay_ui.usecase.market_profile_forming import (
+    MarketProfileFormingRequest,
+    market_profile_forming,
+)
 from simulator.replay_ui.usecase.reveal_candles import (
     RevealCandlesRequest,
     reveal_candles,
@@ -50,6 +54,7 @@ class ReplayApp:
         is_known_ref: "Optional[Callable[[str], bool]]" = None,
         web_dir: Any = None,
         heavy_lock: "Optional[threading.Lock]" = None,
+        forming_port: Any = None,
     ) -> None:
         self._candle_port = candle_port
         self._compute_port = compute_port
@@ -57,6 +62,10 @@ class ReplayApp:
         self._is_known_ref = is_known_ref
         self.web_dir = Path(web_dir).resolve() if web_dir else None
         self._lock = heavy_lock if heavy_lock is not None else threading.Lock()
+        # MP サブバー tick 逐次成長の Port（任意注入）。None のときは /market_profile_forming
+        #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
+        self._forming_port = forming_port
+        self.forming_enabled = forming_port is not None
 
     def candles(self, ref: str, tf: "str | None", limit: "int | None") -> "list[dict]":
         req = RevealCandlesRequest(ref=ref, timeframe=tf, limit=limit)
@@ -78,11 +87,11 @@ class ReplayApp:
         with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
             return causal_compute(request=req, compute_port=self._compute_port)
 
-    def intraday(self, ref: str, start: int, end: int, mode: str) -> dict:
+    def intraday(self, ref: str, start: int, end: int, mode: str, want_secs: bool = False) -> dict:
         # proto do_GET /intraday: 非 tick の未知 ref は事前に validation 拒否する。
         if self._is_known_ref is not None and ref != "jp225_tick" and not self._is_known_ref(ref):
             raise ValueError(f"unknown {ref}")
-        req = IntrabarWindowRequest(ref=ref, start=start, end=end, mode=mode)
+        req = IntrabarWindowRequest(ref=ref, start=start, end=end, mode=mode, want_secs=want_secs)
         with self._lock:  # ティック読込/集計を直列化（OOM 防止）
             res = intrabar_window(request=req, window_port=self._window_port)
         payload: dict = {"ok": res.ok, "m1": res.m1, "ticks": res.ticks}
@@ -90,7 +99,26 @@ class ReplayApp:
             payload["m1_error"] = res.m1_error
         if res.ticks_error is not None:
             payload["ticks_error"] = res.ticks_error
+        # MP tick-live 用: want_secs かつ tick_secs があるときだけ並行配列を付与（secs 無は payload 不変）。
+        if res.tick_secs:
+            payload["tick_secs"] = res.tick_secs
         return payload
+
+    def market_profile_forming(
+        self, ref: str, timeframe: "str | None", now: "int | None",
+        base: Any, since: Any, bins: Any, va: Any, barw: Any, frm: Any = None,
+    ) -> "tuple[int, dict]":
+        """MP サブバー tick 逐次成長データを返す（now は必ずリビール T＝因果・未来リーク防止）。
+
+        ``frm``（任意・既定 None）: セッション窓 MP の base 累積下限 time（当日始まり=floor(now,86400)）。
+        None は従来全期間 base（後方互換）。
+        """
+        req = MarketProfileFormingRequest(
+            ref=ref, timeframe=timeframe, now=now, base=base, since=since, bins=bins, va=va,
+            barw=barw, frm=frm,
+        )
+        with self._lock:  # forming 計算（dwell/resample）を直列化（OOM 防止）
+            return market_profile_forming(request=req, forming_port=self._forming_port)
 
 
 def make_handler(app: ReplayApp):
@@ -131,13 +159,34 @@ def make_handler(app: ReplayApp):
                 except Exception:  # noqa: BLE001
                     return self._json(400, {"error": {"type": "validation", "message": "start/end required"}})
                 mode = (q.get("mode") or ["real_ticks"])[0]
+                want_secs = (q.get("secs") or [None])[0] == "1"  # MP tick-live gate（secs=1 のみ）
                 try:
-                    payload = app.intraday(ref, start, end, mode)
+                    payload = app.intraday(ref, start, end, mode, want_secs=want_secs)
                     return self._json(200, payload)
                 except ValueError as e:
                     return self._json(400, {"error": {"type": "validation", "message": str(e)[:200]}})
                 except Exception as e:  # noqa: BLE001
                     return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
+            if u.path == "/market_profile_forming" and app.forming_enabled:
+                ref = (q.get("datasetRef") or [None])[0]
+                tf = (q.get("timeframe") or [None])[0]
+                since = (q.get("since") or [None])[0]
+                base = (q.get("base") or [None])[0]
+                now_raw = (q.get("now") or [None])[0]
+                # now は必ずリビール T（因果）。数値でなければ None（controller が実時刻へフォールバックするが
+                #   フロントは常に T を送るため実運用では常に T が入る）。
+                now = int(now_raw) if (now_raw and now_raw.lstrip("-").isdigit()) else None
+                bins = (q.get("bins") or [None])[0]
+                va = (q.get("va") or [None])[0]
+                barw = (q.get("barw") or [None])[0]
+                # from（セッション窓 base 下限・当日始まり）。省略時 None＝従来全期間 base（後方互換）。
+                frm = (q.get("from") or [None])[0]
+                try:
+                    status, payload = app.market_profile_forming(
+                        ref, tf, now, base, since, bins, va, barw, frm)
+                    return self._json(status, payload)
+                except Exception as e:  # noqa: BLE001
+                    return self._json(500, {"error": {"type": "internal", "message": str(e)[:200]}})
             return self._serve_static(u.path)
 
         def _serve_static(self, path: str):

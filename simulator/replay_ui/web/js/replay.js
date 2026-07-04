@@ -34,10 +34,12 @@ const RANGE_PRESETS = {
 const NO_FUTURE_MSG = '最新足のため再生できません（未来足が存在しません）';
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export async function setupReplay({ chart, mainSeries, controller, renderer, datasetRef, recentBars, document: doc, fetchImpl = (typeof fetch !== 'undefined' ? fetch : undefined) }) {
+export async function setupReplay({ chart, mainSeries, controller, renderer, datasetRef, recentBars, document: doc, fetchImpl = (typeof fetch !== 'undefined' ? fetch : undefined), marketProfile = null }) {
   const view = new ReplayView({ chart, mainSeries, renderer, document: doc });
   const fmt = (t) => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
   const setStatus = (text) => view.setText('rp-status', text);
+  // MP tick-live 有効判定（未配線=null は常に false＝既存 replay へ非干渉）。駆動結線の各所で共用する。
+  const mpOn = () => !!(marketProfile && marketProfile.isEnabled());
 
   // ---- 状態（既定はリビール: 追従 OFF） ----
   let candles = [];
@@ -130,6 +132,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     if (isStale(g, generation)) return; // 後発レンダが来ていれば破棄
     applyView();
     syncBoundary(); // full 再計算で再生成された pane 系列へ減光を再装着
+    // MP tick-live: バー単位ジャンプで base を now=T（因果）で取り直す（rollover 兼・await ready で
+    //   直後の animateForming feedTick 取りこぼしを防ぐ）。MP OFF/未配線時は完全に非干渉。
+    if (mpOn()) await marketProfile.enterBar(t);
     lastComputeMs = performance.now() - started;
     setEta();
     setStatus(`bar ${bar}/${candles.length - 1}  ${fmt(t)}  計算 ${Math.round(performance.now() - started)}ms（その場計算）`);
@@ -249,6 +254,19 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     b.addEventListener('click', () => { view.writeSpeed(b.dataset.spd); syncSpeedUI(); });
   }
 
+  // ---- Market Profile tick-live トグル（#rp-mp・rp-* パターン） ----
+  //   ON: 有効化して現在バーの base を now=T（因果）で即描画（以降 animateForming が feedTick で育てる）。
+  //   OFF: 無効化（primitive 非表示・以降 feedTick は no-op＝既存 replay へ非干渉）。要素/actor 不在時は skip。
+  const mpEl = view.el('rp-mp');
+  if (mpEl && marketProfile) {
+    mpEl.onclick = async () => {
+      const on = !marketProfile.isEnabled();
+      marketProfile.setEnabled(on);
+      mpEl.classList.toggle('on', on);
+      if (on && candles[bar]) await marketProfile.enterBar(candles[bar].time);
+    };
+  }
+
   // ---- 最新足の足内更新（MT5 モデリング 5 モード相当） ----
   async function buildStream(cd, mode) {
     if (mode === 'open_only' || mode === 'math') {
@@ -257,10 +275,14 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     const { winStart, winEnd } = intrabarWindow({
       timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
     });
-    const url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${winStart}&end=${winEnd}&mode=${encodeURIComponent(mode)}`;
+    // MP tick-live 有効かつ real_ticks のときだけ secs=1 gate を付与し tick_secs を並走取得する
+    //   （他バー・MP OFF は従来 payload 不変＝forming MA/OHLC アニメ回帰ゼロ）。
+    const wantSecs = mpOn() && mode === 'real_ticks';
+    let url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${winStart}&end=${winEnd}&mode=${encodeURIComponent(mode)}`;
+    if (wantSecs) url += '&secs=1';
     let resp = {};
     try { resp = await (await fetchImpl(url)).json(); } catch (_e) { /* noop */ }
-    return buildStreamFromResponse({ mode, cd, m1: resp.m1 || [], ticks: resp.ticks || [] });
+    return buildStreamFromResponse({ mode, cd, m1: resp.m1 || [], ticks: resp.ticks || [], secs: resp.tick_secs || [] });
   }
   let animGen = 0;
   let formingInFlight = false;
@@ -300,22 +322,23 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     if (mode === 'math') { window.__rpForm = { mode, n: 0 }; pausedForm = null; return; }
     window.__rpAnimating = true;
     try {
-      let prices, o, hi, lo, startI;
+      let prices, secs, o, hi, lo, startI;
       if (resume && resume.time === cd.time) {
         prices = resume.prices; o = resume.o; hi = resume.hi; lo = resume.lo; startI = resume.i;
+        secs = resume.secs || []; // MP tick-live: 停止再開時も sec 並行配列を additive 保持。
       } else {
         // 確定足のチラ見せ防止: fetch を await する前（同期）に最新足を始値へ畳む。
         if (mode !== 'math') {
           view.updateForming({ time: cd.time, open: cd.open, high: cd.open, low: cd.open, close: cd.open });
         }
-        ({ prices } = await buildStream(cd, mode));
+        ({ prices, secs } = await buildStream(cd, mode));
         if (superseded()) return;
         o = prices[0]; hi = prices[0]; lo = prices[0]; startI = 0;
       }
       window.__rpForm = { mode, n: prices.length };
       for (let i = startI; i < prices.length; i++) {
         if (shouldAbort && shouldAbort()) {
-          pausedForm = { time: cd.time, prices, o, hi, lo, i };
+          pausedForm = { time: cd.time, prices, secs, o, hi, lo, i };
           return;
         }
         if (superseded()) return;
@@ -323,6 +346,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         hi = Math.max(hi, p); lo = Math.min(lo, p); // 高安は流入ティックの極値のみ
         view.updateForming({ time: cd.time, open: o, high: hi, low: lo, close: p });
         pushFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: p });
+        // MP tick-live: この tick を DwellAccumulator へ供給し足内成長させる（sec 並走が有るバーのみ＝
+        //   real_ticks・MP 有効。secs 空バーは skip＝base 継続）。速度0凍結/supersede の既存制御に追従。
+        if (mpOn() && secs && secs[i] != null) marketProfile.feedTick(secs[i], p);
         while (speed() <= 0 && !superseded() && !(shouldAbort && shouldAbort())) await sleepMs(80); // 速度0=凍結
         if (superseded() || (shouldAbort && shouldAbort())) continue;
         await sleepMs(stepMs(speed())); // 再生速度で減速（毎ステップ読込＝速度変更を即時反映）
@@ -331,6 +357,8 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       // 足確定: ティック列由来の OHLC で確定（cd.high/low へスナップしない）。
       const fc = prices[prices.length - 1];
       view.updateForming({ time: cd.time, open: o, high: hi, low: lo, close: fc });
+      // MP tick-live: 確定時に最終 snapshot を強制描画する（throttle 無視・確定形を取りこぼさない）。
+      if (mpOn()) marketProfile.settleTick();
       if (myGen === animGen) {
         await settleFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: fc });
       }
