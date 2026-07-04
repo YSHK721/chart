@@ -5,6 +5,7 @@ import { fmtMoney } from "./format.js";
 import {
   renderChart, renderMarkers, onMarkerHover, currentRows, emitMarkerHover,
   dimCandlesForTrade, restoreCandles, focusTime, resizeChart,
+  setContactsVisible, contactsVisible,
 } from "./chart.js";
 import { createLinkage } from "./linkage.js";
 import { buildTradeTable } from "./table.js";
@@ -113,6 +114,18 @@ function wireTabs() {
   });
 }
 
+// 接点マーカー表示トグルを結線する（既定は表示・on）。ボタンクリックで chart.js の
+// 接点専用系列の setMarkers を表示/非表示に切り替え、ボタン .on クラスを state と同期する。
+function wireContactsToggle() {
+  const btn = document.getElementById("toggleContacts");
+  if (!btn) return;
+  btn.classList.toggle("on", contactsVisible());
+  btn.onclick = () => {
+    const now = setContactsVisible(!contactsVisible());
+    btn.classList.toggle("on", now);
+  };
+}
+
 function showError(msg) {
   const el = document.getElementById("error-banner");
   el.textContent = msg;
@@ -162,6 +175,7 @@ async function boot() {
     wireMaximize(onResize);
 
     buildSegToggle();      // 点15
+    wireContactsToggle();  // 接点マーカー表示トグル（既定 on）
     selectSegment("is");   // マルチビュー各パネルを IS で初期描画
 
     // E2E フック（双方向結線・各 Chart の検証用）。

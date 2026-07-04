@@ -57,9 +57,13 @@ class BuildReportPayload:
         ea_params: dict,
         meta_is: dict,
         meta_oos: dict,
+        contacts_is: "list | None" = None,
+        contacts_oos: "list | None" = None,
     ) -> ReportPayloadModel:
-        seg_is, sum_is = self._build_segment(result_is, bars_is, spec, ea_params, meta_is)
-        seg_oos, sum_oos = self._build_segment(result_oos, bars_oos, spec, ea_params, meta_oos)
+        seg_is, sum_is = self._build_segment(
+            result_is, bars_is, spec, ea_params, meta_is, contacts_is)
+        seg_oos, sum_oos = self._build_segment(
+            result_oos, bars_oos, spec, ea_params, meta_oos, contacts_oos)
 
         summary = {"is": sum_is, "oos": sum_oos}
         degradation = self._degradation(sum_is, sum_oos)
@@ -86,7 +90,7 @@ class BuildReportPayload:
 
     # --- segment ------------------------------------------------------------
 
-    def _build_segment(self, result, bars, spec, ea_params, meta):
+    def _build_segment(self, result, bars, spec, ea_params, meta, contacts=None):
         trades_src = list(result.trades)
         balance_curve_src = list(result.balance_curve)
 
@@ -120,7 +124,7 @@ class BuildReportPayload:
             "period": meta.get("period", ""),
         }
 
-        agg = self._agg(trade_rows, balance_curve)
+        agg = self._agg(trade_rows, balance_curve, contacts)
 
         segment = SegmentModel(
             label=meta.get("label", ""),
@@ -177,19 +181,24 @@ class BuildReportPayload:
             ))
         return trade_rows
 
-    def _agg(self, trade_rows, balance_curve):
+    def _agg(self, trade_rows, balance_curve, contacts=None):
         """agg を組み立てる。F-3 で heat を実体化（derive.heat_cells を呼ぶ組立のみ）。
 
         時刻分解（ts→wday/hour, UTC）は derive.heat_cells が担う（loop 内で直書きしない・
         アーキ指針 §1）。entry_time×profit を渡し entry wday|hour セルへ集計させる。
         他の集計（entries/pl/scatter/hold）も④で derive 純関数を呼ぶ組立として実体化する
         （loop 直書き禁止・アーキ指針 §1）。entries 系=entry_time 基準、pl 系=exit_time 基準。
+
+        contacts（接点マーカー列 [{time, price, dir}]）は上流 tools（Composition Root）が
+        scan_contacts usecase 経由で算出して渡す偶有的追加データ。後方互換のため None のときは
+        キーを一切追加しない（既存 agg キー集合を不変に保つ・追加のみ）。空リストは「算出済み
+        で接点0件」を意味するため載せる（None との区別）。
         """
         heat = derive.heat_cells((t.entry_time, t.profit) for t in trade_rows)
         entries = derive.entries_buckets(t.entry_time for t in trade_rows)
         pl = derive.pl_buckets((t.exit_time, t.profit) for t in trade_rows)
         hold = derive.hold_buckets((t.hold_sec, t.profit) for t in trade_rows)
-        return {
+        agg = {
             "entries_hour": entries["hour"],
             "entries_session": entries["session"],
             "entries_wday": entries["wday"],
@@ -207,6 +216,9 @@ class BuildReportPayload:
             "weekorder": derive.WEEK,
             "heat": heat,
         }
+        if contacts is not None:
+            agg["contacts"] = contacts
+        return agg
 
     # --- summary（§4.8・試作 summarize 準拠） --------------------------------
 

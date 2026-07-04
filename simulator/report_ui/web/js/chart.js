@@ -10,6 +10,9 @@
 
 let _chart = null, _balChart = null, _ddChart = null;
 let _candle = null, _balSeries = null, _ddSeries = null;
+// 接点マーカー専用系列（透明ライン）。売買マーカーと同一系列に setMarkers すると v4.1.3 は
+// シリーズ単位で上書きになるため、接点は別系列へ分離して独立トグルを成立させる。
+let _contactSeries = null, _contacts = [], _contactsVisible = true;
 let _markerHoverCb = null; // chart→linkage 通知のコールバック注入（直接 import を作らない）
 let _rows = []; // 直近の trades 行（マーカー再描画用）
 let _barTimes = [], _barsNormal = [], _barsDim = [], _candlesDimmed = false;
@@ -17,6 +20,12 @@ const DIM_ALPHA = 0.15; // 非 hover ペアの減光アルファ（試作 DIM_AL
 const MARKER_CAP = 700;
 const EXIT_COLOR = "#6b7785";
 const DEFAULT_DEPOSIT = 10000;
+
+// 接点マーカー（コンタクトスキャン）配色・上限。売買マーカー（買=#26a69a 緑 / 売=#ef5350 赤）
+// と区別できる別配色を用いる（up=琥珀 / down=藤）。cap は売買 MARKER_CAP と同流儀の可視間引き。
+export const CONTACT_UP_COLOR = "#f5c542";   // 下→上クロス（arrowUp・belowBar）
+export const CONTACT_DOWN_COLOR = "#c084fc"; // 上→下クロス（arrowDown・aboveBar）
+export const CONTACT_MARKER_CAP = 700;
 
 function _withAlpha(hex, a) {
   if (typeof hex !== "string" || hex[0] !== "#" || hex.length !== 7) return hex;
@@ -58,6 +67,38 @@ export function balanceForwardFill(barTimes, balanceCurve, initDeposit = DEFAULT
 // time→value の索引 Map（クロスヘア同期で他窓の同時刻値を引く・試作 *ByTime）。
 export function byTimeResolve(series) {
   return new Map((series || []).map((p) => [p.time, p.value]));
+}
+
+// 接点 1 件 {time, price, dir} を lwc マーカー 1 件へ変換する（up/down で shape/position/color 分離）。
+// dir==="up"（下→上）: arrowUp を belowBar に。dir==="down"（上→下）: arrowDown を aboveBar に。
+export function contactToMarker(c, idx) {
+  const up = c.dir === "up";
+  return {
+    time: c.time,
+    position: up ? "belowBar" : "aboveBar",
+    color: up ? CONTACT_UP_COLOR : CONTACT_DOWN_COLOR,
+    shape: up ? "arrowUp" : "arrowDown",
+    id: "c" + idx,
+  };
+}
+
+// 接点を可視レンジ [from,to] に絞る（cap 適用の前段）。売買マーカーの _visibleTrades と同流儀。
+//   全件が cap を超えても、ズームイン後の可視件数が cap 以下なら表示できる（恒常非表示の回避）。
+//   range が null（レンジ未確定）のときは全件を返す（防御的）。
+export function contactsInRange(contacts, range) {
+  if (!range) return contacts || [];
+  return (contacts || []).filter((c) => c.time >= range.from && c.time <= range.to);
+}
+
+// agg.contacts[{time,price,dir}] を lwc マーカー配列へ変換する（time 昇順 sort・cap 間引き・トグル）。
+//   opts.visible=false（トグル OFF）→ []。件数 > cap → [](売買 setMarkers と同流儀の可視間引き)。
+//   売買マーカーとは別系列へ setMarkers するため、本配列は接点専用（統合しない・独立トグル要件）。
+export function contactsToMarkers(contacts, opts) {
+  const { visible = true, cap = CONTACT_MARKER_CAP } = opts || {};
+  if (!visible) return [];
+  const list = (contacts || []).slice().sort((a, b) => a.time - b.time);
+  if (list.length > cap) return [];
+  return list.map((c, i) => contactToMarker(c, i));
 }
 
 // --- DOM/vendor（buildChart 多窓・同期・e2e 被覆） -------------------------------
@@ -111,6 +152,7 @@ function _destroyCharts() {
   for (const c of [_chart, _balChart, _ddChart]) { if (c) { try { c.remove(); } catch (e) { /* noop */ } } }
   _chart = _balChart = _ddChart = null;
   _candle = _balSeries = _ddSeries = null;
+  _contactSeries = null;
   _crosshairWired = false;
   _candlesDimmed = false;
 }
@@ -141,6 +183,16 @@ export function renderChart(containerId, segment, opts) {
   });
   _barTimes = (segment.bars || []).map((b) => b.time);
   _candle.setData(_barsNormal);
+
+  // 接点マーカー専用の透明ライン系列（バー close 上に重ねる・線は不可視）。売買マーカーの
+  // setMarkers（_candle 系列）とは別系列にして独立トグルを成立させる（v4.1.3 setMarkers は
+  // シリーズ単位＝同一系列だと上書きになるため分離）。接点データは agg.contacts から取得。
+  _contactSeries = _chart.addLineSeries({
+    color: "rgba(0,0,0,0)", lineWidth: 1,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  });
+  _contactSeries.setData(_barsNormal.map((b) => ({ time: b.time, value: b.close })));
+  _contacts = (segment.agg && segment.agg.contacts) || [];
 
   const initDep = (opts && opts.initialDeposit) || (segment.meta && segment.meta.initial_deposit) || DEFAULT_DEPOSIT;
   const curve = (segment.agg && segment.agg.balance_curve) || [];
@@ -180,9 +232,13 @@ export function renderChart(containerId, segment, opts) {
   _chart.timeScale().setVisibleRange({ from: t0 - 600, to: t1 + 600 });
   // 可視レンジ変更（pan/zoom・focusTime 含む）でマーカーを再描画する。直近の描画意図
   // （hoverId/filter）を保持して再描画し、focusTime のズームで選択ハイライトが消えないようにする。
-  _chart.timeScale().subscribeVisibleTimeRangeChange(() => renderMarkers(_rows, _lastMarkerOpts));
+  _chart.timeScale().subscribeVisibleTimeRangeChange(() => {
+    renderMarkers(_rows, _lastMarkerOpts);
+    renderContactMarkers(); // 接点も可視レンジに追従して再描画（pan/zoom で cap 内なら表示）
+  });
   _ensureCrosshair();
   renderMarkers(_rows, { hoverId: null, filter: null });
+  renderContactMarkers(); // 接点マーカー（別系列・現在のトグル state を反映）
   // E2E フック（行クリック→focusTime の可視レンジ移動を検証するため・本番表示には不使用）。
   if (typeof window !== "undefined") window.__priceChart = _chart;
 }
@@ -250,6 +306,29 @@ export function renderMarkers(rows, opts) {
   mk.sort((a, b) => a.time - b.time);
   _candle.setMarkers(mk);
 }
+
+// 可視レンジ内の接点のみを返す（売買 _visibleTrades と同流儀・全件 cap 超過時の恒常非表示回避）。
+function _visibleContacts() {
+  if (!_chart) return _contacts;
+  return contactsInRange(_contacts, _chart.timeScale().getVisibleRange());
+}
+
+// 接点マーカーを接点専用系列へ描画する（可視レンジ絞り→cap→トグル・売買 setMarkers とは分離）。
+export function renderContactMarkers() {
+  if (!_contactSeries) return;
+  _contactSeries.setMarkers(
+    contactsToMarkers(_visibleContacts(), { visible: _contactsVisible }));
+}
+
+// 接点マーカーの表示/非表示を切り替える（トグル UI から結線）。既定は表示。
+export function setContactsVisible(visible) {
+  _contactsVisible = !!visible;
+  renderContactMarkers();
+  return _contactsVisible;
+}
+
+// 現在の接点トグル state（表示中=true）を返す。
+export function contactsVisible() { return _contactsVisible; }
 
 // ペア[entry,exit]区間外のローソク足を減光する（試作 dimCandlesForTrade）。
 export function dimCandlesForTrade(t) {
