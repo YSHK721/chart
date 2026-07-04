@@ -439,6 +439,23 @@ test('MP apply: setEnabled(true)+setParams and enterBar(current bar T), never to
   assert.ok(inst && inst.instanceId, 'MP インスタンスが state に登録される');
 });
 
+test('MP gear apply (_onGear) is mode-aware — non-ticklive: as-of refresh, never enterBar (regression)', async () => {
+  // 回帰: gear 経路（_onGearMarketProfile の reveal seam）が mode 無関係に enterBar を呼ぶと、
+  //   enterBar が非ticklive で自己ガード no-op になり 通常/日別/リプレイ が /market_profile を
+  //   再取得せず描画されない不具合（recomputeInstance 経路は mode-aware だったが gear 経路は未対応）。
+  //   非ticklive の gear apply では refresh(as-of-T) が呼ばれ enterBar は呼ばれないこと。
+  const { ctrl, marketProfile } = mpController({ untilTime: 1704074400 });
+  const inst = await ctrl.applyIndicator('market_profile', 'default'); // 既定 mode=normal（非ticklive）
+  marketProfile.calls.refresh = 0;
+  const enterBefore = marketProfile.calls.enter.length;
+  // document:null かつ PropertiesDialog 不在のため _onGearMarketProfile は即 applyParams(currentParams)。
+  await ctrl._onGear(inst, get('market_profile'));
+  await new Promise((r) => setTimeout(r, 20)); // applyParams は fire-and-forget のため完了を待つ。
+  assert.equal(marketProfile.calls.refresh, 1, '非ticklive の gear apply は as-of refresh で再取得する');
+  assert.equal(marketProfile.calls.enter.length, enterBefore,
+    '非ticklive の gear apply は enterBar しない（自己ガード no-op で無描画になる不具合の防止）');
+});
+
 test('MP apply is single-instance: applying twice does not create a duplicate', async () => {
   const { ctrl, marketProfile } = mpController({ untilTime: 1000 });
   const a = await ctrl.applyIndicator('market_profile', 'default');
