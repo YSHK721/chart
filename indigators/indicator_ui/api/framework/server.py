@@ -37,6 +37,9 @@ from adapter.compute import dataset  # noqa: E402
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
 from adapter.controller.market_profile_controller import handle_market_profile  # noqa: E402
+from adapter.controller.market_profile_forming_controller import (  # noqa: E402
+    handle_market_profile_forming,
+)
 
 # 静的配信ルート（web/）。api/ → parents[1]=api → parents[2]=indicator_ui → web。
 _WEB_ROOT = (_API_ROOT.parent / "web").resolve()
@@ -155,6 +158,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/market_profile":
             self._handle_market_profile(parse_qs(parsed.query))
             return
+        if parsed.path == "/market_profile_forming":
+            self._handle_market_profile_forming(parse_qs(parsed.query))
+            return
         self._handle_static(parsed.path)
 
     def _handle_candles(self, query: dict[str, list[str]]) -> None:
@@ -227,6 +233,32 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             )
         except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
             self._send_json(500, _nested_error("internal", f"market_profile 取得に失敗しました: {exc}"))
+            return
+        self._send_json(status, payload)
+
+    def _handle_market_profile_forming(self, query: dict[str, list[str]]) -> None:
+        """GET /market_profile_forming — MP サブバー tick 逐次成長の base+forming tick 列+active table（読取のみ）。
+
+        検証（非 tick ref / 非対応 tf は 400）・組み立ては純ロジック
+        ``handle_market_profile_forming`` に委譲し、本メソッドはクエリ取り出しと (status, payload) の
+        JSON 応答のみを担う（``_handle_market_profile`` と同型の薄殻）。
+        """
+        ref = (query.get("datasetRef") or [None])[0]
+        timeframe = (query.get("timeframe") or [None])[0]
+        since = (query.get("since") or [None])[0]
+        base = (query.get("base") or [None])[0]
+        now_raw = (query.get("now") or [None])[0]
+        now_override = int(now_raw) if (now_raw and now_raw.lstrip("-").isdigit()) else None
+        bins = (query.get("bins") or [None])[0]
+        va = (query.get("va") or [None])[0]
+        barw = (query.get("barw") or [None])[0]
+        try:
+            status, payload = handle_market_profile_forming(
+                ref, timeframe, since, base, now_override, bins, va, barw,
+            )
+        except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
+            self._send_json(
+                500, _nested_error("internal", f"market_profile_forming 取得に失敗しました: {exc}"))
             return
         self._send_json(status, payload)
 
