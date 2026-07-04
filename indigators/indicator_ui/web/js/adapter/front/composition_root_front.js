@@ -25,6 +25,8 @@ import { IndicatorCatalogClient } from './catalog_client.js';
 import { IndicatorController } from './indicator_controller.js';
 import { TradeMarkersRenderer } from './trade_markers_renderer.js';
 import { MarketProfileClient } from './market_profile_client.js';
+import { MarketProfileFormingClient } from './market_profile_forming_client.js';
+import { DwellAccumulator } from '../../domain/market_profile_dwell_accumulator.js';
 import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
 import { MarketProfileActor } from './market_profile_actor.js';
 import { MarketProfileReplayBar } from './market_profile_replay_bar.js';
@@ -227,6 +229,10 @@ export async function bootstrap({
     primitive: new MarketProfileHistogramPrimitive(),
     mainSeries,
     replayBar,
+    // tick 逐次成長（ticklive）: forming 取得 client と DwellAccumulator factory を注入する。
+    //   未注入なら onLiveTick は refresh へ byte-identical 委譲（後方互換）。注入で ticklive が有効化される。
+    formingClient: new MarketProfileFormingClient({ fetch }),
+    makeAccumulator: () => new DwellAccumulator(),
     // 増分2: スナップショットのローソクトリム源（renderer.setCandleTrim）。lwc 直叩きは renderer に隔離。
     renderer,
     getCandles: () => renderer.getCandles(),

@@ -59,6 +59,9 @@ function fakeMarketProfile() {
     setParams(p) { this.params.push(p); },
     async setEnabled(on) { this.enables.push(on); },
     async refresh() { this.refreshes += 1; },
+    // 実 actor 契約: ライブ tick 入口は onLiveTick。非増分（ticklive OFF・既定）は refresh へ
+    //   byte-identical 委譲するため、fake も同契約（onLiveTick→refresh）で反映する。
+    async onLiveTick() { return this.refresh(); },
     detach() { this.detached = true; },
   };
 }
