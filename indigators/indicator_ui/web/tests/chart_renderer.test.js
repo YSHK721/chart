@@ -611,6 +611,34 @@ test('updateLastCandle: forwards the candle to mainSeries.update exactly once', 
   assert.deepEqual(updateCalls[0], candle);
 });
 
+test('updateLastCandle: スナップショット(トリム)中は series へ現在足を入れない（不可解なバグ修正）', () => {
+  // 回帰: トリム系列（過去 T まで）へライブの現在足を append すると範囲外にバーが出る。
+  //   トリム中は _mainSeries.update を呼ばず、基準 _baseCandles のマージのみ行う。
+  const chart = fakeChart();
+  const main = fakeMainSeries();
+  const updateCalls = [];
+  main.update = (c) => updateCalls.push(c);
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: fakeLwc() });
+  // 基準 candles を入れ、T=足2 までトリム（_lastTrimIdx != null）。
+  renderer.setCandles([
+    { time: 1, open: 1, high: 2, low: 0, close: 1 },
+    { time: 2, open: 1, high: 2, low: 0, close: 1 },
+    { time: 3, open: 1, high: 2, low: 0, close: 1 },
+  ]);
+  renderer.setCandleTrim(2); // トリム中。
+  updateCalls.length = 0;
+  // Act: ライブの現在足（time=99・現在価格）を反映。
+  renderer.updateLastCandle({ time: 99, open: 690, high: 692, low: 688, close: 691 });
+  // Assert: series.update は呼ばれない（トリム系列へ append しない）。基準へはマージされる。
+  assert.equal(updateCalls.length, 0, 'トリム中は series へ現在足を入れない');
+  assert.equal(renderer.getCandles().at(-1).time, 99, '基準 _baseCandles には反映（トリム解除後に復帰）');
+  // トリム解除後は通常どおり series.update する。
+  renderer.setCandleTrim(null);
+  updateCalls.length = 0;
+  renderer.updateLastCandle({ time: 100, open: 1, high: 2, low: 0, close: 1 });
+  assert.equal(updateCalls.length, 1, 'トリム解除後はライブ更新を series へ反映');
+});
+
 // ===========================================================================
 // クロスヘア価格読み取り欄（onCrosshairReadout）— 読み取り DTO の構築・発火。
 //   DTO 形: { time, ohlc:{open,high,low,close}|null, overlays:[{name,value,color}] }。
