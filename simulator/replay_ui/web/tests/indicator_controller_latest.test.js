@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { ReplayIndicatorController } from '../js/adapter/front/replay_indicator_controller.js';
 import { get } from '../js/usecase/catalog.js';
 
 // renderer の呼び出しを記録する recording fake。
@@ -35,7 +35,8 @@ function recordingRenderer() {
 function controllerWith(renderer, seriesFor) {
   const noop = () => {};
   const computeCalls = [];
-  const ctrl = new IndicatorController({
+  // Latest 増分（基底挙動・LSP）と recomputeFormingLatest（reveal 足内追従）の双方を subclass で検証する。
+  const ctrl = new ReplayIndicatorController({
     catalog: { listIndicators: () => [], get },
     compute: {
       compute: async (req) => {

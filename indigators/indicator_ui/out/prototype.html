@@ -4370,6 +4370,11 @@ class IndicatorController {
     }
     this._marketProfile.setParams(this._mpParams(params));
     await this._marketProfile.setEnabled(true);
+    // [reveal seam] reveal（replay）では現在バー T（_untilTime）が確定していれば即 enterBar で base を
+    //   描画する。present は _untilTime を持たない（undefined）ため常に skip（byte 挙動不変）。
+    if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function') {
+      await this._marketProfile.enterBar(this._untilTime);
+    }
   }
 
   // MP 凡例 eye: 表示/非表示トグル（state.visible を反転し actor.setEnabled へ同期）。
@@ -4410,7 +4415,13 @@ class IndicatorController {
       this._state = this._withParams(this._state, inst.instanceId, values);
       if (this._marketProfile) {
         this._marketProfile.setParams(this._mpParams(values));
-        await this._marketProfile.refresh();
+        // [reveal seam] reveal（replay）では現在バー T で再 enterBar（base 取り直し）。present は
+        //   _untilTime 未設定（undefined）ゆえ refresh 経路へ落ちる＝従来どおり（byte 挙動不変）。
+        if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function') {
+          await this._marketProfile.enterBar(this._untilTime);
+        } else if (typeof this._marketProfile.refresh === 'function') {
+          await this._marketProfile.refresh();
+        }
       }
       this._persistAll();
       this._renderLegend();
@@ -4454,8 +4465,8 @@ class IndicatorController {
   // UC-03 再計算（設定変更・variant 切替）: generation 競合破棄は facade.recompute に集約（§6.6）。
   //   opts.mode='latest' は Latest 増分計算（gateway へ mode 伝播・末尾K点を updateSeriesTail へ
   //   差分反映し remove+_draw の全描画はしない）。既定 'full' は従来どおり remove+redraw。
-  async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full' } = {}) {
-    const job = await this._computeInstance(instanceId, newVariant, newParams, { mode });
+  async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
+    const job = await this._computeInstance(instanceId, newVariant, newParams, { mode, forceTail });
     if (!job || !job.accepted) {
       return job ? job.accepted : false;
     }
@@ -4471,7 +4482,7 @@ class IndicatorController {
   //   _renderInstance を await を挟まない同期パスで呼び、中間ペイント（バラバラ更新）を防ぐ。
   //   ※ this._lastSeries は gateway compute が上書きする共有フィールドのため、compute 直後に
   //     job へ確保する（描画まで遅延すると次指標の series で上書きされ取り違える）。
-  async _computeInstance(instanceId, newVariant, newParams, { mode = 'full' } = {}) {
+  async _computeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
     const meta = this._meta.get(instanceId);
     if (!meta) {
       return null;
@@ -4483,7 +4494,10 @@ class IndicatorController {
     const params = newParams ?? this._defaultParams(meta.def);
     // Latest 差分可否を「要求前」に def から確定する（混在/horizontal 指標は full を要求し
     //   trim されない full データで全描画する＝混在バグ回避）。
-    const wantLatest = mode === 'latest' && this._defCanTailUpdate(meta.def);
+    // [reveal seam] forceTail=true（replay 足内追従）は混在指標でも末尾差分（updateSeriesTail）経路へ
+    //   倒す。末尾差分は既存系列の最終点のみ更新し horizontal_line は据え置く（履歴潰れ回避）。present は
+    //   forceTail 既定 false ＝ this._defCanTailUpdate 判定のみ（byte 挙動不変）。
+    const wantLatest = mode === 'latest' && (forceTail || this._defCanTailUpdate(meta.def));
     const gateway = this._gatewayAdapter(newVariant, wantLatest ? 'latest' : 'full');
     // 競合ガード: 再計算中は isRecomputing()=true（ライブ更新の tick がスキップ判定に参照）。
     //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
@@ -4638,8 +4652,10 @@ class IndicatorController {
       //   足切替）で /compute へ流出させると例外→setTimeframe では preRender 前で全スキップ。
       //   /compute を通さず actor.refresh（現時間足で再取得）へ委譲し、MP も新足へ追従させる。
       if (this._isMarketProfile(meta.def)) {
-        if (this._marketProfile && inst.visible) {
-          // tick 逐次成長（ticklive）ON 時は forming 増分、OFF 時は refresh へ byte-identical 委譲。
+        // [reveal seam] present の MP actor は onLiveTick（ticklive ON=forming 増分 / OFF=refresh 委譲）を持つ。
+        //   typeof gate で present は従来どおり onLiveTick を呼び（byte 挙動不変）、onLiveTick を持たない
+        //   replay slim actor は skip（render seam の enterBar/feedTick が MP を駆動する）。
+        if (this._marketProfile && inst.visible && typeof this._marketProfile.onLiveTick === 'function') {
           await this._marketProfile.onLiveTick();
         }
         continue;
@@ -4779,6 +4795,13 @@ class IndicatorController {
     return next;
   }
 
+  // [reveal seam] compute リクエストへ追加する reveal 拡張フィールドを返す（既定=空）。
+  //   present は reveal 概念を持たないため空オブジェクト（compute ボディ byte 挙動不変）。
+  //   replay subclass が { untilTime, forming } を返すよう override し、時点計算・足内追従を注入する。
+  _extraComputeFields() {
+    return {};
+  }
+
   // facade.apply/recompute が呼ぶ compute をラップし、応答 series を捕捉（描画用）。
   //   時間足（timeframe）・直近表示本数（limit）は facade を介さずここで注入する（facade は純粋を保つ）。
   //   B方式は /compute がこれで resample・範囲制限し candles と時間軸を揃える。A方式は余剰フィールドを無視。
@@ -4799,6 +4822,10 @@ class IndicatorController {
           limit: self._recentBars ?? undefined,
           // mode（full/latest）を素通し。未指定は compute_http_client がボディに含めない（後方互換）。
           mode: mode === 'latest' ? 'latest' : undefined,
+          // [reveal seam] reveal 拡張フィールド（untilTime/forming 等）を素通しする。present は
+          //   空オブジェクト（byte 挙動不変＝compute_http_client の `!== undefined` gate で不送信）。
+          //   replay subclass が _extraComputeFields を override して untilTime/forming を注入する。
+          ...self._extraComputeFields(),
         });
         self._lastSeries = result.series;
         return result;

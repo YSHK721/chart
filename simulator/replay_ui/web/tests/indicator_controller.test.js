@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { ReplayIndicatorController } from '../js/adapter/front/replay_indicator_controller.js';
 import { get } from '../js/usecase/catalog.js';
 
 // DOM/port を使わない純ロジック検証のため、ports は最小スタブで生成。
@@ -396,7 +397,8 @@ function mpController({ untilTime } = {}) {
   const noop = () => {};
   const computeCalls = [];
   const marketProfile = spyMp();
-  const ctrl = new IndicatorController({
+  // reveal（untilTime / MP enterBar 駆動）を検証するため subclass ReplayIndicatorController を用いる。
+  const ctrl = new ReplayIndicatorController({
     catalog: { listIndicators: () => [], get },
     compute: { compute: async (req) => { computeCalls.push(req); return { ok: true, generation: 0, series: [] }; } },
     persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
@@ -462,8 +464,9 @@ test('MP removeInstance: setEnabled(false)+detach, not renderer.remove', async (
   const { ctrl, marketProfile } = mpController({ untilTime: 1000 });
   const inst = await ctrl.applyIndicator('market_profile', 'default');
   marketProfile.calls.setEnabled.length = 0;
-  // Act
-  ctrl.removeInstance(inst.instanceId);
+  // Act（MP remove は共有 present の _removeMarketProfile へ委譲＝setEnabled(false) を await 後に detach する
+  //   async 経路。setupReplay の removeInstance ラッパは Promise を .then で待つ）。
+  await ctrl.removeInstance(inst.instanceId);
   // Assert
   assert.deepEqual(marketProfile.calls.setEnabled, [false]);
   assert.equal(marketProfile.calls.detach, 1, 'detach（あれば）を呼ぶ');
@@ -508,7 +511,7 @@ test('MP restore: re-enables actor from saved params/visibility without touching
     instanceId: 'mp-1', indicatorId: 'market_profile', variant: 'default',
     params: [['bins', '30'], ['va', 0.8]], visible: true, generation: 0, seq: 1, createdAt: 0,
   };
-  const ctrl = new IndicatorController({
+  const ctrl = new ReplayIndicatorController({
     catalog: { listIndicators: () => [], get },
     compute: { compute: async (req) => { computeCalls.push(req); return { ok: true, generation: 0, series: [] }; } },
     persistence: {
