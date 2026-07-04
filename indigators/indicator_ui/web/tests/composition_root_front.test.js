@@ -298,8 +298,9 @@ test('bootstrap wires dblclick to resetPriceZoom only when over the price axis',
   assert.equal(resetCount, 1, '本体領域のダブルクリックでは reset しない');
 });
 
-test('bootstrap: 完全自由2Dドラッグ = 毎フレームの縦成分 dy で panPriceByPixels を呼ぶ（横は lwc に委ね preventDefault しない）', async () => {
-  // Arrange
+test('bootstrap: 本体ドラッグの上下パンは「価格ズーム中(isPriceZoomed)」のみ有効（全体表示では無効）', async () => {
+  // 全体表示（自動スケール）では縦パンしない＝空白露出で拡大縮小に見える不具合を出さない。
+  //   価格軸ホイールズーム後（isPriceZoomed=true）だけ縦パンを許可＝ズーム帯の外も辿れる（ユーザFB）。
   const { lwc } = fakeLwcFireable();
   const container = fakeContainer();
   const { renderer } = await bootstrap({
@@ -307,53 +308,43 @@ test('bootstrap: 完全自由2Dドラッグ = 毎フレームの縦成分 dy で
   });
   const dys = [];
   renderer.panPriceByPixels = (dy) => { dys.push(dy); return true; };
-  renderer.isOverPriceAxis = (x) => x >= 600; // 本体=600未満
-  // Act: ドラッグ開始 → 斜め移動を2フレーム（各フレームの縦デルタで価格パン）。
+  renderer.isOverPriceAxis = () => false; // 本体領域。
+  // (A) 未ズーム（isPriceZoomed=false）→ 縦ドラッグしても価格パンしない。
+  renderer.isPriceZoomed = () => false;
+  container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
+  container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 140 });
+  container.fire('pointerup', {});
+  assert.deepEqual(dys, [], '未ズームは縦パンしない（自動スケール維持）');
+  // (B) ズーム中（isPriceZoomed=true）→ 縦成分 dy で価格パン。
+  renderer.isPriceZoomed = () => true;
+  container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
+  container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 130 }); // dy=30
+  container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 150 }); // dy=20
+  assert.deepEqual(dys, [30, 20], 'ズーム中は縦成分で価格パン');
+});
+
+test('bootstrap: リプレイ中の縦パンも「価格ズーム中」限定（非ズームは価格を触らない・非リプレイと統一）', async () => {
+  // リプレイ中も横=スクラブ＋縦=価格パンだが、縦パンは isPriceZoomed のときだけ（全体表示の空白露出防止）。
+  const { lwc } = fakeLwcFireable();
+  const container = fakeContainer();
+  const { renderer, controller } = await bootstrap({
+    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  controller._marketProfile = { isReplay: () => true }; // リプレイ ON。
+  const dys = [];
+  renderer.panPriceByPixels = (dy) => { dys.push(dy); return true; };
+  // (A) 非ズーム → 斜めドラッグしても価格パンしない。
+  renderer.isPriceZoomed = () => false;
+  container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
+  container.fire('pointermove', { buttons: 1, clientX: 140, clientY: 130 });
+  container.fire('pointerup', {});
+  assert.deepEqual(dys, [], '非ズームのリプレイ縦ドラッグは価格を触らない');
+  // (B) ズーム中 → 縦成分で価格パン。
+  renderer.isPriceZoomed = () => true;
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
   container.fire('pointermove', { buttons: 1, clientX: 140, clientY: 130 }); // dy=30
   container.fire('pointermove', { buttons: 1, clientX: 200, clientY: 145 }); // dy=15
-  // Assert: 各フレームの縦デルタで価格パン（横成分は lwc の時間パンに委ねる）。
-  assert.deepEqual(dys, [30, 15]);
-  // pointerup 後は移動してもパンしない
-  container.fire('pointerup', {});
-  container.fire('pointermove', { buttons: 1, clientX: 260, clientY: 175 });
-  assert.deepEqual(dys, [30, 15], 'ドラッグ終了後はパンしない');
-});
-
-test('bootstrap: 純横ドラッグ（dy=0）は panPriceByPixels(0) で価格を動かさない（自動スケール維持）', async () => {
-  // panPriceByPixels は dy=0 を内部で no-op 扱い（|dy|>0 ガード）＝純横ドラッグは価格 override しない。
-  // Arrange
-  const { lwc } = fakeLwcFireable();
-  const container = fakeContainer();
-  const { renderer } = await bootstrap({
-    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
-  });
-  const dys = [];
-  renderer.panPriceByPixels = (dy) => { dys.push(dy); return dy !== 0; };
-  renderer.isOverPriceAxis = (x) => x >= 600;
-  // Act: 純横（clientY 不変）
-  container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 160, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 220, clientY: 100 });
-  // Assert: dy は毎回 0（実 renderer では no-op＝価格 override せず自動スケール維持）。
-  assert.deepEqual(dys, [0, 0]);
-});
-
-test('bootstrap: 価格軸上でのドラッグ開始は縦パンしない（lwc ネイティブ縦パンに委ねる）', async () => {
-  // Arrange
-  const { lwc } = fakeLwcFireable();
-  const container = fakeContainer();
-  const { renderer } = await bootstrap({
-    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
-  });
-  const dys = [];
-  renderer.panPriceByPixels = (dy) => { dys.push(dy); return true; };
-  renderer.isOverPriceAxis = (x) => x >= 600; // 軸=600以上
-  // Act: 軸領域でドラッグ開始 → 縦移動
-  container.fire('pointerdown', { button: 0, clientX: 610, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 610, clientY: 130 });
-  // Assert: 軸上開始は panning しない
-  assert.deepEqual(dys, [], '価格軸上のドラッグは縦パンしない');
+  assert.deepEqual(dys, [30, 15], 'ズーム中のリプレイは縦成分で価格パン');
 });
 
 test('bootstrap: クロスヘアは Normal(0)＝自由追従で作成する（Magnet スナップを無効化）', async () => {

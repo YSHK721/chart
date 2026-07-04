@@ -95,6 +95,15 @@ html, body {
   color: #d1d4dc; white-space: nowrap;
 }
 #crosshair-readout .readout-time { color: #9aa0ad; }
+/* sessions: 当日 MP（POC/VAH/VAL）行。OHLC 行と同じ枠・POC は赤系、VA は灰で読みやすく。 */
+#crosshair-readout .readout-mp {
+  display: inline-flex; align-items: center; gap: 10px;
+  background: rgba(30, 34, 45, .82); border: 1px solid #2a2e39;
+  border-radius: 4px; padding: 2px 8px; backdrop-filter: blur(2px);
+  white-space: nowrap; width: fit-content;
+}
+#crosshair-readout .readout-poc { color: #ff6b6b; }
+#crosshair-readout .readout-va { color: #9aa0ad; }
 #crosshair-readout .readout-overlay {
   display: inline-flex; align-items: center;
   background: rgba(30, 34, 45, .82); border: 1px solid #2a2e39;
@@ -1729,6 +1738,8 @@ class ChartRenderer {
     this._profileMarginFraction = 0;
     // スクラブ追従で保持するズーム倍率（可視論理幅）のキャッシュ。getVisibleLogicalRange 一時失敗時に使う。
     this._replayViewSpan = null;
+    // sessions（日別プロファイル）の time→{poc,vah,val} Map（読み取り欄で当日 MP を出す）。null=非表示。
+    this._sessionMP = null;
     // 価格軸ホイールズーム: override 価格レンジ（null=自動スケール）。handlePriceWheel で更新し、
     //   resetPriceZoom / ダブルクリックで null（自動スケール復帰）へ戻す。
     this._priceZoomRange = null;
@@ -1992,6 +2003,11 @@ class ChartRenderer {
     return true;
   }
 
+  // 価格ズーム（override）が有効か。true のとき本体ドラッグの上下パンを許可する（全体表示では不許可）。
+  isPriceZoomed() {
+    return this._priceZoomRange != null;
+  }
+
   // 価格軸のダブルクリック等で自動スケールへ復帰する（override を解除）。provider は素通しに戻る。
   resetPriceZoom() {
     this._priceZoomRange = null;
@@ -2040,6 +2056,23 @@ class ChartRenderer {
       return null;
     }
     return ts.coordinateToLogical(x);
+  }
+
+  // 直近 n バーを可視範囲にフィットさせる（sessions=日別プロファイルの時間軸連動タイルを見せる初期ズーム）。
+  //   全期間表示だと 1 日=barSpacing が極小でタイルが潰れるため、sessions 有効化時に直近 n 日へ寄せる。
+  //   lwc の timeScale().setVisibleLogicalRange 直叩きは本所（ChartRenderer）に閉じる。
+  focusRecentBars(n) {
+    const total = this._baseCandles ? this._baseCandles.length : 0;
+    if (!(total > 0) || !(n > 0)) {
+      return;
+    }
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.setVisibleLogicalRange !== 'function') {
+      return;
+    }
+    const from = Math.max(-0.5, total - n - 0.5);
+    const to = total - 0.5 + Math.max(1, n * 0.04); // 右端に僅かな余白（最新タイルが切れないように）。
+    ts.setVisibleLogicalRange({ from, to });
   }
 
   // リプレイスワイプの感度基準＝1 バーあたりのピクセル幅（barSpacing）。
@@ -2411,7 +2444,15 @@ class ChartRenderer {
     }
     const time = (param && param.time !== undefined) ? param.time
       : (this._lastBar ? this._lastBar.time : undefined);
-    return { time, ohlc, overlays };
+    // sessions: 当日 MP（POC/VAH/VAL）を time で引いて DTO に載せる（供給時のみ・sessions 表示中）。
+    const sessionMP = (this._sessionMP && time != null) ? (this._sessionMP.get(time) || null) : null;
+    return { time, ohlc, overlays, sessionMP };
+  }
+
+  // sessions の time→{poc,vah,val} Map を供給する（読み取り欄で当日 MP を出す）。null で非表示。
+  //   lwc へは触れない純データ受け渡し（actor が sessions 応答から構築して渡す）。
+  setSessionMP(map) {
+    this._sessionMP = (map && typeof map.get === 'function') ? map : null;
   }
 
   // seriesKey の系列を全 instance から引き当て apply(series) を実行し、overlay 読み取りの
@@ -4990,6 +5031,21 @@ class CrosshairReadoutView {
       root.append(ohlcRow);
     }
 
+    // sessions: 当日 MP（POC/VAH/VAL）行（OHLC の下）。sessions 表示中に当日を指したときだけ出る。
+    if (dto.sessionMP) {
+      const mp = dto.sessionMP;
+      const row = doc.createElement('div');
+      row.className = 'readout-mp';
+      const poc = doc.createElement('span');
+      poc.className = 'readout-poc';
+      poc.textContent = `POC ${fmtValue(mp.poc)}`;
+      const va = doc.createElement('span');
+      va.className = 'readout-va';
+      va.textContent = `VA ${fmtValue(mp.val)}–${fmtValue(mp.vah)}`;
+      row.append(poc, va);
+      root.append(row);
+    }
+
     // overlay 各行（系列色付き）。
     for (const ov of dto.overlays ?? []) {
       const row = doc.createElement('div');
@@ -5591,15 +5647,13 @@ function parseProfileResponse(payload) {
   // 応答トップレベルに src/atom/bar_width（UI メタ）・sessions（日別分割）があれば profile へ素通しする
   // （無ければ既存 profile をそのまま返す＝後方互換・共有オブジェクト非破壊の spread 維持）。
   if (payload.src != null || payload.atom != null || payload.bar_width != null
-      || payload.sessions != null || payload.sessions_total != null) {
+      || payload.sessions != null) {
     const meta = {};
     if (payload.src != null) meta.src = payload.src;
     if (payload.atom != null) meta.atom = payload.atom;
     if (payload.bar_width != null) meta.bar_width = payload.bar_width;
-    // sessions[{date,tpo[]}]（日別プロファイル分割）— actor が profile.sessions を primitive へ渡す。
+    // sessions[{date,tpo[],OHLC,poc/va}]（日別プロファイル分割）— actor がビュー化して primitive/読取欄へ。
     if (payload.sessions != null) meta.sessions = payload.sessions;
-    // sessions_total（キャップ前の実日数）— primitive 注記「直近N/全M日」の M（キャップ後 60 の誤読防止）。
-    if (payload.sessions_total != null) meta.sessions_total = payload.sessions_total;
     return { ...profile, ...meta };
   }
   return profile;
@@ -5643,6 +5697,18 @@ class MarketProfileClient {
 //   price→y 変換は series.priceToCoordinate のみを使い（既存 primitive と同 API）、lwc への直接依存を持たない。
 
 
+// 'YYYY-MM-DD'（sessions の date）→ UNIX 秒（UTC 深夜）。timeToCoordinate へ渡し日付を時間軸に対応づける。
+function dateToUnix(dateStr) {
+  const parts = String(dateStr).split('-');
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  if (!(y > 0) || !(m > 0) || !(d > 0)) {
+    return NaN;
+  }
+  return Date.UTC(y, m - 1, d) / 1000;
+}
+
 // バー長の最大割合（チャート幅に対する。右端から左へ伸ばす）と最小可視画素。
 const BAR_MAX_FRACTION = 0.28;
 const MIN_BAR_PX = 1;
@@ -5665,8 +5731,15 @@ const C_POC_LINE = '#ff3b3b';
 const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
 // リプレイ時点 T の縦線色（試作 prototype_260630-01 の遡り縦線準拠・視認しやすい水色）。
 const C_CURSOR_LINE = 'rgba(120, 190, 255, 0.9)';
-// sessions（日別プロファイル分割）: 1 セッションの最小列幅(px 相当)。分析できる幅を確保する（試作 SESS_MIN_COL）。
-const SESS_MIN_COL = 102;
+// sessions 各列の OHLC 可視化（ユーザー選択「方向ティント＋終値線」）。
+//   列全体を当日方向で薄くティント（陽線=薄緑/陰線=薄赤）し、終値にのみ太い横線（緑/赤）を引く。
+//   ヒストグラムの形は保ちつつ、上げ下げが一目で分かりポイント（終値）が際立つ。
+const C_SESS_TINT_UP = 'rgba(38, 166, 154, 0.12)';   // 陽線日の列ティント（薄緑）
+const C_SESS_TINT_DOWN = 'rgba(239, 83, 80, 0.12)';  // 陰線日の列ティント（薄赤）
+// 終値線は控えめに（方向はティントで分かるので、終値は細い目印程度）。1px・やや軟らかい緑/赤。
+const C_OHLC_UP = 'rgba(38, 166, 154, 0.8)';         // 終値線（上げ・軟緑）
+const C_OHLC_DOWN = 'rgba(239, 83, 80, 0.8)';        // 終値線（下げ・軟赤）
+const OHLC_CLOSE_LW = 1;                             // 終値線の太さ（控えめ）
 // sessions 列内の日別 POC 行を白で強調（試作準拠）・列内バーの最小可視画素。
 const C_SESS_POC = 'rgba(255,255,255,0.95)';
 const SESS_BAR_ALPHA = 0.98;
@@ -5681,20 +5754,17 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     // 増分2 スナップショット: true で累積バーを減光（DIM_ALPHA）＋ today[] を当日内スケールで明るく重畳。
     //   既定 false（明るい累積バー＝従来描画）。移植元 prototype_260630-01 drawComposite（showToday）。
     this._snapshot = false;
-    // sessions（日別プロファイル分割）: 各営業日の [{date,tpo[]}]。null=通常モード（累積プロファイル）。
-    //   non-null で sessions モード＝各営業日の列を描き、通常の累積バー・POC/VA 線は描かない（試作準拠）。
+    // sessions（日別プロファイル分割）: 各営業日の [{date,tpo[],open,high,low,close,poc,va_low,va_high}]。
+    //   null=通常モード（累積プロファイル）。non-null で sessions モード＝各営業日の列を時間軸連動で描く。
     this._sessions = null;
-    // sessions_total（キャップ前の実日数）: 注記「直近N/全M日」の M。null=未提供＝受信長へフォールバック。
-    //   controller がキャップ後の直近 60 日ぶんだけ返すため、受信 sessions.length では実日数を表せない。
-    this._sessionsTotal = null;
+    // sessions タイルの列幅キャッシュ（隣接間隔から算出。可視 <2 のフォールバック用）。
+    this._lastSessColW = null;
   }
 
   // sessions（日別プロファイル分割）を設定して再描画要求。null で通常モード（累積プロファイル）へ復帰。
-  //   移植元 prototype_260630-01 drawSessions。sessions[{date,tpo[]}] は backend の応答トップレベル由来。
-  //   total（キャップ前の実日数・任意）は注記「直近N/全M日」の M に使う（未提供時は受信長フォールバック）。
-  setSessions(sessions, total = null) {
+  //   sessions[{date,tpo[],(OHLC),(poc/va)}] は actor が backend 応答＋candle から組み立てたビュー。
+  setSessions(sessions) {
     this._sessions = Array.isArray(sessions) ? sessions : null;
-    this._sessionsTotal = total;
     this._update();
   }
 
@@ -5739,34 +5809,72 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     return step > 0 ? step * 0.85 : DEFAULT_BAR_H;
   }
 
-  // sessions 描画（移植元 prototype_260630-01 drawSessions）: チャート幅から nFit=floor(width/SESS_MIN_COL)
-  //   を求め、直近 nFit 日だけを**全幅に等間隔タイル**（cx=i*colW・試作 L204-210）で描く。
-  //   時刻座標(timeToCoordinate)には置かない＝ズームに依存せず常に分析できる列幅を確保し、
-  //   どの日かは列上部の日付ラベル(MM-DD)で示す（試作準拠）。列は交互背景で区切り、
-  //   列内は日内 max で正規化した横ヒストグラム（heatColor 再利用）・日別 POC 行を白で強調。
-  //   直近 nFit < 全日数のときは左下に「直近N/全M日」注記。累積 POC/VA 線・通常バーは描かない。
+  // sessions 描画: 各営業日プロファイルを**その日の時間座標**（timeToCoordinate(date)）に配置する。
+  //   ユーザー選択で試作の全幅画面固定タイルから変更＝横ドラッグ/ズームでタイルもチャートと連動し、
+  //   スクロールで過去のセッションをたどれる。列幅は隣接セッションの中央間隔（=barSpacing・daily は
+  //   連続バー）から求め（<2 可視時は直前値へフォールバック）、視野外（x=null）はスキップ（カリング）。
+  //   列内は日内 max で正規化した横ヒストグラム（heatColor）・日別 POC 行を白。累積 POC/VA・通常バーは描かない。
+  //   lwc への到達は series.priceToCoordinate（toY）と timeScale().timeToCoordinate のみ（cursor 線と同じ作法）。
   _drawSessions(ctx, scope, toY, barH) {
     const all = this._sessions;
     if (!all.length) {
       return;
     }
-    const width = scope.bitmapSize.width;
     const height = scope.bitmapSize.height;
     const bins = this._profile.bins;
-    // nFit: 列幅 >= SESS_MIN_COL を確保できる日数（直近優先）。1 未満にはしない。
-    const nFit = Math.max(1, Math.floor(width / SESS_MIN_COL));
-    const ss = all.slice(Math.max(0, all.length - nFit)); // 幅確保のため直近 nFit 日。
-    const colW = width / ss.length;                       // 各列の割当幅（全幅タイル）。
+    const ts = this._chart.timeScale && this._chart.timeScale();
+    if (!ts || typeof ts.timeToCoordinate !== 'function') {
+      return;
+    }
+    // 各セッション中心 x（timeToCoordinate。範囲外は null＝カリング）。
+    const xs = all.map((s) => {
+      const c = ts.timeToCoordinate(dateToUnix(s.date));
+      return c == null ? null : c;
+    });
+    // 列幅 = 隣接セッション中央間隔の中央値（=1バー幅）。<2 可視時は直前値/既定。
+    const gaps = [];
+    for (let i = 1; i < xs.length; i += 1) {
+      if (xs[i] != null && xs[i - 1] != null) {
+        const g = Math.abs(xs[i] - xs[i - 1]);
+        if (g > 0) {
+          gaps.push(g);
+        }
+      }
+    }
+    gaps.sort((a, b) => a - b);
+    const colW = gaps.length ? gaps[Math.floor(gaps.length / 2)] : (this._lastSessColW || 18);
+    this._lastSessColW = colW;
+    const tileW = Math.max(3, colW * 0.85);
     ctx.save();
     ctx.font = '10px system-ui';
     ctx.textBaseline = 'top';
-    for (let i = 0; i < ss.length; i += 1) {
-      const arr = ss[i].tpo || [];
-      const left = i * colW; // 全幅に等間隔タイル（試作 cx = i*colW）。
-      // 列を交互背景で区別（試作準拠）。
-      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.015)';
-      ctx.fillRect(left, 0, colW, height);
-      // 日内 max（正規化基準）と日別 POC（最頻 bin index）を求める。
+    for (let i = 0; i < all.length; i += 1) {
+      const cx = xs[i];
+      if (cx == null) {
+        continue; // 視野外＝スクロールで可視化。
+      }
+      const left = cx - tileW / 2;
+      const s = all[i];
+      const arr = s.tpo || [];
+      const hasOhlc = s.open != null && s.close != null;
+      const hasRange = s.high != null && s.low != null;
+      // 列背景: OHLC 有れば**高安レンジ（toY(high)〜toY(low)）だけ**を当日方向でティント
+      //   （陽=薄緑/陰=薄赤）。当日値幅を色付きバンドで示し、方向も一目で分かる。
+      //   OHLC 無しは従来の交互背景（後方互換・列区別）。
+      if (hasOhlc && hasRange) {
+        const yHigh = toY(s.high);
+        const yLow = toY(s.low);
+        if (yHigh != null && yLow != null) {
+          const top = Math.min(yHigh, yLow);
+          const bot = Math.max(yHigh, yLow);
+          ctx.fillStyle = s.close >= s.open ? C_SESS_TINT_UP : C_SESS_TINT_DOWN;
+          ctx.fillRect(left, top, tileW, Math.max(1, bot - top));
+        }
+      } else {
+        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.015)';
+        ctx.fillRect(left, 0, tileW, height);
+      }
+      // 日内 max（正規化基準）と日別 POC（最頻 bin index）。
       let dmax = 0;
       let pocj = -1;
       for (let j = 0; j < arr.length; j += 1) {
@@ -5789,23 +5897,27 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
           if (y == null) {
             continue; // 範囲外価格はスキップ。
           }
-          const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * (colW - 4));
-          // 日別 POC 行は白で強調、それ以外は日内正規化のヒート配色。
+          const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * (tileW - 4));
           ctx.fillStyle = (j === pocj) ? C_SESS_POC : heatColor(v / dmax, SESS_BAR_ALPHA);
           ctx.fillRect(left + 2, y - barH / 2, w, barH);
         }
       }
-      // 列上部に日付（MM-DD・試作準拠）。
+      // 終値線のみ（列幅いっぱい・太線）。上げ=緑/下げ=赤。ヒストの上に重ね当日の終値ポイントを際立たせる。
+      //   actor が candle から o/c を付与済みのときのみ描く（未付与＝後方互換で skip）。
+      if (hasOhlc) {
+        const y = toY(s.close);
+        if (y != null) {
+          ctx.strokeStyle = s.close >= s.open ? C_OHLC_UP : C_OHLC_DOWN;
+          ctx.lineWidth = OHLC_CLOSE_LW;
+          ctx.beginPath();
+          ctx.moveTo(left, y);
+          ctx.lineTo(left + tileW, y);
+          ctx.stroke();
+        }
+      }
+      // 列上部に日付（MM-DD）。
       ctx.fillStyle = 'rgba(154,164,178,.6)';
-      ctx.fillText((ss[i].date || '').slice(5), left + 3, 4);
-    }
-    // 直近 nFit < 全日数なら左下に注記（試作準拠）。M はキャップ前の実日数（total）を優先し、
-    //   未提供時は受信長（all.length）へフォールバックする（キャップ後 60 の誤読を防ぐ・修正1）。
-    const totalDays = this._sessionsTotal ?? all.length;
-    if (ss.length < totalDays) {
-      ctx.fillStyle = 'rgba(154,164,178,.8)';
-      ctx.font = '11px system-ui';
-      ctx.fillText(`直近${ss.length}/全${totalDays}日`, 6, height - 16);
+      ctx.fillText((all[i].date || '').slice(5), left + 3, 4);
     }
     ctx.restore();
   }
@@ -5917,6 +6029,35 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
 //
 // 非破壊方針: primitive は初回有効化まで mainSeries へ attach しない（OFF 時はチャートに一切触れない）。
 //   取得失敗（client が null）時も既存描画へ干渉せず、前回 profile を保持する。
+
+// sessions の 'YYYY-MM-DD' → UNIX 秒（UTC 深夜）。candle.time との突合に使う（primitive dateToUnix と同一規則）。
+function _sessionDateToUnix(dateStr) {
+  const parts = String(dateStr).split('-');
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  return (y > 0 && m > 0 && d > 0) ? Date.UTC(y, m - 1, d) / 1000 : NaN;
+}
+
+// sessions 応答を表示用に組み立てる純変換（SRP: actor は制御に留め、変換は本関数へ）。
+//   ① 各セッションへ当日 candle の OHLC を date→time 突合で付与（列内 OHLC 描画用・透明化しても実値は残る）。
+//   ② 当日 MP（POC/VAH/VAL）の time→mp Map を作る。VA/POC は backend が _value_area 単一定義で算出済み
+//      （poc/va_low/va_high）＝frontend は表示に写すだけ（DRY・VA 定義は backend に一元化）。
+//   戻り値 { list, mp }。list=OHLC 付与済みセッション配列、mp=time→{poc,vah,val} の Map。
+function _buildSessionView(list, candles) {
+  const byTime = new Map((candles || []).map((c) => [c.time, c]));
+  const out = [];
+  const mp = new Map();
+  for (const s of list) {
+    const t = _sessionDateToUnix(s.date);
+    const c = byTime.get(t);
+    out.push(c ? { ...s, open: c.open, high: c.high, low: c.low, close: c.close } : s);
+    if (s.poc != null && s.va_low != null && s.va_high != null && Number.isFinite(t)) {
+      mp.set(t, { poc: s.poc, vah: s.va_high, val: s.va_low });
+    }
+  }
+  return { list: out, mp };
+}
 
 // 増分2 定数（試作 prototype_260630-01 と一致）。
 const ROLL_BARS = 60; // ローリング窓の本数（from = T - ROLL_BARS*bar_sec）。
@@ -6038,6 +6179,7 @@ class MarketProfileActor {
     if (mode === 'sessions') {
       this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
       this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
+      this._sessionsFocusPending = true; // 初回反映時に直近セッションへ寄せる（時間軸連動タイルを見せる）。
       return;
     }
     if (mode === 'replay') {
@@ -6073,15 +6215,31 @@ class MarketProfileActor {
   //   該当メソッド非提供時は skip（後方互換）。移植元 prototype_260630-01 drawSessions。
   _applySessions(profile) {
     const on = !!this._sessions;
+    // 表示用ビュー（OHLC 付与済みリスト＋当日 MP Map）を純変換で一括構築する（SRP）。
+    const rawList = on && profile && Array.isArray(profile.sessions) ? profile.sessions : null;
+    const view = (rawList && rawList.length)
+      ? _buildSessionView(rawList, (typeof this._getCandles === 'function' ? this._getCandles() : []))
+      : null;
     if (this._primitive && typeof this._primitive.setSessions === 'function') {
-      const list = on && profile && Array.isArray(profile.sessions) ? profile.sessions : null;
-      // sessions_total（キャップ前の実日数）を第 2 引数で渡す（注記「直近N/全M日」の M・修正1）。
-      //   未提供時は primitive 側で受信長へフォールバック（後方互換）。
-      const total = on && profile && profile.sessions_total != null ? profile.sessions_total : null;
-      this._primitive.setSessions(list, total);
+      this._primitive.setSessions(view ? view.list : null);
+    }
+    // 読み取り欄: クロスヘアが当日を指したとき OHLC に加え当日 MP（POC/VAH/VAL）を出す（sessions のみ）。
+    if (this._renderer && typeof this._renderer.setSessionMP === 'function') {
+      this._renderer.setSessionMP(view ? view.mp : null);
     }
     if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
       this._renderer.setCandleTransparency(on);
+    }
+    // sessions を有効化した初回のみ、直近セッション日へズームを寄せる（時間軸連動タイルが潰れないように）。
+    //   以後は寄せない（ユーザーの手動ズーム/スクロールを尊重）。off 遷移でフラグをクリア。
+    if (on) {
+      if (this._sessionsFocusPending && rawList && rawList.length
+          && this._renderer && typeof this._renderer.focusRecentBars === 'function') {
+        this._sessionsFocusPending = false;
+        this._renderer.focusRecentBars(rawList.length);
+      }
+    } else {
+      this._sessionsFocusPending = false;
     }
   }
 
@@ -6746,10 +6904,14 @@ async function bootstrap({
   //     わずかなマウス移動でスライダが暴走する不具合の修正）。旧実装は coordinateToLogical の絶対
   //     マッピング（下限なし）で過敏だった。lwc 座標 API は renderer に隔離済み。
   //   container/doc 不在（SSR/テスト）や pointer 非対応は no-op（防御）。
+  //   ★リプレイ中も**縦成分は価格パン**する（要望「拡大しても上下も移動」）。横=スクラブ・縦=価格パンの
+  //     2D 操作にする。純横（dy=0）は価格を触らず T 追従を維持、純縦は index 不変でスクラブせず価格のみ動く。
   if (container && typeof container.addEventListener === 'function') {
     let swiping = false;
     let swipeStartX = 0;
     let swipeStartIdx = 0;
+    let lastScrubIdx = 0; // 冗長スクラブ回避（縦のみドラッグで同 index を再取得しない）。
+    let lastSwipeY = 0;   // 縦パンの前フレーム y（価格パンの dy 算出）。
     const isReplayOn = () => !!(controller && controller._marketProfile
       && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
     const rectLeft = () => (typeof container.getBoundingClientRect === 'function'
@@ -6763,15 +6925,29 @@ async function bootstrap({
       // 開始点のみ記録（クリック位置へは飛ばさない＝プロト mousedown 相当）。
       swipeStartX = e.clientX - rectLeft();
       swipeStartIdx = typeof replayBar.currentIndex === 'function' ? replayBar.currentIndex() : 0;
+      lastScrubIdx = swipeStartIdx;
+      lastSwipeY = e.clientY;
     });
     container.addEventListener('pointermove', (e) => {
       if (!swiping || !isReplayOn()) {
         return;
       }
+      // 横成分: T スクラブ（相対デルタ・index 変化時のみ再取得＝縦のみドラッグで無駄打ちしない）。
       const x = e.clientX - rectLeft();
       const px = renderer.pixelsPerBar(); // barSpacing（極小時は 8px 下限＝プロト準拠）。
-      const dIdx = Math.round((x - swipeStartX) / px); // 左ドラッグ=過去へ（スライダと同方向）。
-      replayBar.scrubToLogical(swipeStartIdx + dIdx); // clamp は scrubToLogical 内で実施。
+      const idx = swipeStartIdx + Math.round((x - swipeStartX) / px); // 左ドラッグ=過去へ。
+      if (idx !== lastScrubIdx) {
+        lastScrubIdx = idx;
+        replayBar.scrubToLogical(idx); // clamp は scrubToLogical 内で実施。
+      }
+      // 縦成分: 価格パン。**価格ズーム中（isPriceZoomed）のみ**（非リプレイ側と統一）。全体表示で
+      //   縦パンすると override が張られ空白露出＝撤去した不具合をリプレイ中に再現するため、ゲートする。
+      const dy = e.clientY - lastSwipeY;
+      lastSwipeY = e.clientY;
+      if (typeof renderer.isPriceZoomed === 'function' && renderer.isPriceZoomed()) {
+        updatePaneHeight(); // autoSize 追随。
+        renderer.panPriceByPixels(dy);
+      }
     });
     const endSwipe = () => {
       if (!swiping) {
@@ -6821,44 +6997,44 @@ async function bootstrap({
       }
     });
 
-    // チャート本体の**完全自由 2D ドラッグ**（TradingView 流・ユーザー選択）。
-    //   横方向は lwc の時間パン（既存）、縦成分は毎フレーム renderer.panPriceByPixels(dy) で価格をパンする
-    //   ＝上下左右・斜めが同時に動く。純横ドラッグ（dy=0）は価格を触らないので自動スケールは保たれる。
-    //   縦に動かすと価格は手動モード（override）になり、価格軸ダブルクリック（resetPriceZoom）で
-    //   自動スケールへ復帰する。preventDefault/stopPropagation はしない（lwc の時間パンを奪わない）。
-    //   価格軸上のドラッグは lwc ネイティブの縦パンに委ねる。リプレイ中は横スワイプが本体ドラッグを
-    //   占有するので 2D パンは無効化する。
-    let panActive = false;
-    let lastPanY = 0;
-    const isReplayOn = () => !!(controller && controller._marketProfile
+    // 本体ドラッグの縦成分で価格パン（上下移動）を **価格ズーム中（override 有効時）に限り** 行う。
+    //   ・全体表示（自動スケール）では縦パンしない＝空白が出て拡大縮小に見える不具合を出さない（撤去理由）。
+    //   ・価格軸ホイールズーム後（renderer.isPriceZoomed()）は縦パンを許可＝拡大した価格帯の外も辿れる
+    //     （ユーザFB「その価格帯以外確認できないのは問題」への対応）。横は lwc の時間パンに委ねる。
+    //   価格軸上・リプレイ中は対象外（リプレイは横スワイプが占有・軸は lwc ネイティブ）。
+    let vpanActive = false;
+    let lastVpanY = 0;
+    const isReplayOn2 = () => !!(controller && controller._marketProfile
       && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
     container.addEventListener('pointerdown', (e) => {
-      if (isReplayOn() || e.button !== 0) {
+      if (isReplayOn2() || e.button !== 0) {
         return;
       }
-      const { x } = containerXY(e);
-      if (renderer.isOverPriceAxis(x)) {
-        return; // 価格軸上は lwc ネイティブの縦パンに委ねる。
+      if (renderer.isOverPriceAxis(containerXY(e).x)) {
+        return; // 価格軸上は lwc ネイティブのスケールに委ねる。
       }
-      panActive = true;
-      lastPanY = e.clientY;
+      vpanActive = true;
+      lastVpanY = e.clientY;
     });
     container.addEventListener('pointermove', (e) => {
-      if (!panActive) {
+      if (!vpanActive) {
         return;
       }
-      if ((e.buttons & 1) === 0) { // ボタンが離れていたら終了（pointerup 取りこぼし対策）。
-        panActive = false;
+      if ((e.buttons & 1) === 0) {
+        vpanActive = false;
         return;
       }
-      const dy = e.clientY - lastPanY;
-      lastPanY = e.clientY;
-      updatePaneHeight(); // autoSize 追随（リサイズ後の pane 高を反映）。
-      renderer.panPriceByPixels(dy); // dy=0（純横）は panPriceByPixels 内で no-op＝自動スケール維持。
+      const dy = e.clientY - lastVpanY;
+      lastVpanY = e.clientY;
+      // ★価格ズーム中のみ縦パン（全体表示では価格を触らず自動スケール維持）。
+      if (typeof renderer.isPriceZoomed === 'function' && renderer.isPriceZoomed()) {
+        updatePaneHeight();
+        renderer.panPriceByPixels(dy);
+      }
     });
-    const endPan = () => { panActive = false; };
-    container.addEventListener('pointerup', endPan);
-    container.addEventListener('pointerleave', endPan);
+    const endVpan = () => { vpanActive = false; };
+    container.addEventListener('pointerup', endVpan);
+    container.addEventListener('pointerleave', endVpan);
   }
 
   controller = new IndicatorController({
