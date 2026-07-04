@@ -380,12 +380,18 @@ test('restore notifies the timeframe observer with the restored timeframe (trade
 // slim actor スパイ（enterBar/feedTick/settleTick/setEnabled/isEnabled/setParams/detach を記録）。
 function spyMp() {
   return {
-    _en: false,
-    calls: { setEnabled: [], enter: [], params: [], detach: 0 },
+    _en: false, _ticklive: false,
+    calls: { setEnabled: [], enter: [], params: [], detach: 0, refresh: 0 },
     isEnabled() { return this._en; },
+    // 全モード機能化: mode-aware 駆動の分岐点。setParams({mode:'ticklive'}) で ticklive に入る。
+    isTicklive() { return this._en && this._ticklive; },
     setEnabled(v) { this._en = !!v; this.calls.setEnabled.push(!!v); },
     async enterBar(t) { this.calls.enter.push(t); },
-    setParams(p) { this.calls.params.push(p); },
+    async refresh() { this.calls.refresh += 1; },
+    setParams(p) {
+      this.calls.params.push(p);
+      if (p && p.mode != null) { this._ticklive = (p.mode === 'ticklive'); }
+    },
     detach() { this.calls.detach += 1; },
     feedTick() {}, settleTick() {},
   };
@@ -433,6 +439,23 @@ test('MP apply: setEnabled(true)+setParams and enterBar(current bar T), never to
   assert.ok(inst && inst.instanceId, 'MP インスタンスが state に登録される');
 });
 
+test('MP gear apply (_onGear) is mode-aware — non-ticklive: as-of refresh, never enterBar (regression)', async () => {
+  // 回帰: gear 経路（_onGearMarketProfile の reveal seam）が mode 無関係に enterBar を呼ぶと、
+  //   enterBar が非ticklive で自己ガード no-op になり 通常/日別/リプレイ が /market_profile を
+  //   再取得せず描画されない不具合（recomputeInstance 経路は mode-aware だったが gear 経路は未対応）。
+  //   非ticklive の gear apply では refresh(as-of-T) が呼ばれ enterBar は呼ばれないこと。
+  const { ctrl, marketProfile } = mpController({ untilTime: 1704074400 });
+  const inst = await ctrl.applyIndicator('market_profile', 'default'); // 既定 mode=normal（非ticklive）
+  marketProfile.calls.refresh = 0;
+  const enterBefore = marketProfile.calls.enter.length;
+  // document:null かつ PropertiesDialog 不在のため _onGearMarketProfile は即 applyParams(currentParams)。
+  await ctrl._onGear(inst, get('market_profile'));
+  await new Promise((r) => setTimeout(r, 20)); // applyParams は fire-and-forget のため完了を待つ。
+  assert.equal(marketProfile.calls.refresh, 1, '非ticklive の gear apply は as-of refresh で再取得する');
+  assert.equal(marketProfile.calls.enter.length, enterBefore,
+    '非ticklive の gear apply は enterBar しない（自己ガード no-op で無描画になる不具合の防止）');
+});
+
 test('MP apply is single-instance: applying twice does not create a duplicate', async () => {
   const { ctrl, marketProfile } = mpController({ untilTime: 1000 });
   const a = await ctrl.applyIndicator('market_profile', 'default');
@@ -475,18 +498,37 @@ test('MP removeInstance: setEnabled(false)+detach, not renderer.remove', async (
   assert.equal(ctrl._state.applied.find((i) => i.instanceId === inst.instanceId), undefined);
 });
 
-test('MP settings change (recomputeInstance): setParams + re-enterBar, never /compute', async () => {
+test('MP settings change (recomputeInstance) — non-ticklive: setParams + as-of refresh, never /compute', async () => {
   const { ctrl, marketProfile, computeCalls } = mpController({ untilTime: 2000 });
   const inst = await ctrl.applyIndicator('market_profile', 'default');
   marketProfile.calls.params.length = 0;
   marketProfile.calls.enter.length = 0;
+  marketProfile.calls.refresh = 0;
   const computeBefore = computeCalls.length;
-  // Act: gear 設定変更相当（bins を 30 へ）。
+  // Act: gear 設定変更相当（bins を 30 へ・mode 未指定＝normal/非ticklive）。
   await ctrl.recomputeInstance(inst.instanceId, null, { bins: '30', va: 0.8 });
-  // Assert: setParams（bins/va）＋現在バーで再 enterBar。/compute は増えない。
+  // Assert: setParams（bins/va）＋ as-of refresh（enterBar ではない）。/compute は増えない。
   assert.equal(marketProfile.calls.params.length, 1);
   assert.equal(marketProfile.calls.params[0].bins, '30');
-  assert.deepEqual(marketProfile.calls.enter, [2000]);
+  assert.equal(marketProfile.calls.refresh, 1, '非ticklive は as-of refresh で再取得（getContext().to=T）');
+  assert.deepEqual(marketProfile.calls.enter, [], '非ticklive は enterBar しない');
+  const mpCompute = computeCalls.slice(computeBefore).filter((r) => r.indicatorId === 'market_profile');
+  assert.equal(mpCompute.length, 0, 'MP 設定変更は /compute へ流さない');
+});
+
+test('MP settings change (recomputeInstance) — ticklive: setParams + re-enterBar, never /compute', async () => {
+  const { ctrl, marketProfile, computeCalls } = mpController({ untilTime: 2000 });
+  const inst = await ctrl.applyIndicator('market_profile', 'default');
+  marketProfile.calls.params.length = 0;
+  marketProfile.calls.enter.length = 0;
+  marketProfile.calls.refresh = 0;
+  const computeBefore = computeCalls.length;
+  // Act: gear 設定変更で ticklive モードへ（push 系＝base 取り直し）。
+  await ctrl.recomputeInstance(inst.instanceId, null, { mode: 'ticklive', bins: '30' });
+  // Assert: setParams（mode:ticklive）＋現在バー T で再 enterBar。refresh は呼ばない。/compute は増えない。
+  assert.equal(marketProfile.calls.params[0].mode, 'ticklive');
+  assert.deepEqual(marketProfile.calls.enter, [2000], 'ticklive は enterBar(T) で base 取り直し');
+  assert.equal(marketProfile.calls.refresh, 0, 'ticklive は refresh しない');
   const mpCompute = computeCalls.slice(computeBefore).filter((r) => r.indicatorId === 'market_profile');
   assert.equal(mpCompute.length, 0, 'MP 設定変更は /compute へ流さない');
 });

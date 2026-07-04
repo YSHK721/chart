@@ -24,8 +24,10 @@ import { IndicatorCatalogClient } from './catalog_client.js';
 import { ReplayIndicatorController } from './replay_indicator_controller.js';
 import { TradeMarkersRenderer } from './trade_markers_renderer.js';
 import { MarketProfileFormingClient } from './market_profile_forming_client.js';
+import { MarketProfileClient } from './market_profile_client.js';
 import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
-import { MarketProfileReplayActor } from './market_profile_replay_actor.js';
+import { MarketProfileReplayBar } from './market_profile_replay_bar.js';
+import { ReplayMarketProfileActor } from './replay_market_profile_actor.js';
 import { DwellAccumulator } from '../../domain/market_profile_dwell_accumulator.js';
 
 // 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
@@ -197,17 +199,36 @@ export async function bootstrap({
   const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart, chartRenderer: renderer, document: doc, container });
   renderer.setCandleObserver(() => tradeMarkers.onCandlesChanged());
 
-  // Market Profile tick-live（MP DI 集約点）。slim actor（enterBar/feedTick/settleTick/setEnabled）を
-  //   forming client（/market_profile_forming 取得）・primitive（TPO 描画）・DwellAccumulator factory で
-  //   組み立て、戻り値に marketProfile として公開する（replay.js/setupReplay は new せず受け取るだけ＝DI 集約）。
-  //   getContext は現在の datasetRef/timeframe を遅延読み取りし forming 取得に載せる（now=T は enterBar 引数）。
+  // Market Profile 全モード（MP DI 集約点）。共有 present MarketProfileActor を extends した
+  //   ReplayMarketProfileActor を組み立て、戻り値に marketProfile として公開する（replay.js/setupReplay は
+  //   new せず受け取るだけ＝DI 集約）。基底の normal/sessions/replay 駆動を再利用し、reveal 差（因果 as-of /
+  //   push 駆動 ticklive）は subclass の override/追加で吸収する（present 無改変）。
+  //   - client（共有 MarketProfileClient）: /market_profile を取得（normal/sessions/replay の refresh/_fetchAt）。
+  //   - formingClient / makeAccumulator: ticklive の push 成長（enterBar/feedTick）。
+  //   - renderer / getCandles: sessions（ローソク透明化 / OHLC 突合）・profile margin・snapshot trim。
+  //   - replayBar: replay モードの scrub バー（onScrub→setReplayCursor / onChange→onReplayControlsChange）。
+  //   - getContext.to（=controller._untilTime＝リビール T）: 全モードで as-seen-at-t を成立させる因果カーソル。
   //   既定は setEnabled(false)＝OFF（indicator メニューの market_profile 追加で ON・既存 replay へ非干渉）。
-  const marketProfile = new MarketProfileReplayActor({
+  //   バーのホストは index.html の #mp-replay-bar-host（チャート下部・sibling）を優先し、不在時は container。
+  const mpReplayHost = (doc && typeof doc.getElementById === 'function'
+    ? doc.getElementById('mp-replay-bar-host') : null) || container;
+  const replayBar = new MarketProfileReplayBar({
+    document: doc,
+    container: mpReplayHost,
+    onScrub: (time) => { if (controller && controller._marketProfile) { controller._marketProfile.setReplayCursor(time); } },
+    onChange: () => { if (controller && controller._marketProfile) { controller._marketProfile.onReplayControlsChange(); } },
+  });
+  const marketProfile = new ReplayMarketProfileActor({
+    client: new MarketProfileClient({ fetch }),
     formingClient: new MarketProfileFormingClient({ fetch }),
     makeAccumulator: () => new DwellAccumulator(),
     primitive: new MarketProfileHistogramPrimitive(),
     mainSeries,
-    getContext: () => ({ datasetRef, timeframe: controller._timeframe }),
+    replayBar,
+    renderer,
+    getCandles: () => renderer.getCandles(),
+    // to（=controller._untilTime＝リビール T）を遅延読み取りし、全モードで as-seen-at-t（因果）を成立させる。
+    getContext: () => ({ datasetRef, timeframe: controller._timeframe, to: controller._untilTime }),
   });
   // 同一 actor を controller へも注入する（メニュー一本化）。controller.applyIndicator('market_profile')
   //   が本 actor を有効化（setEnabled）し、setupReplay 側の駆動フック（render→enterBar / animateForming→
@@ -220,5 +241,5 @@ export async function bootstrap({
   tradeMarkers.setCurrentTimeframe(timeframe);
   controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
 
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers, marketProfile };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers, marketProfile, replayBar };
 }

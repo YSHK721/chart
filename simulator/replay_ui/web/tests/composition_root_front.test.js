@@ -15,7 +15,8 @@ import { bootstrap, modeForProtocol } from '../js/adapter/front/composition_root
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
 import { LiveUpdater } from '../js/adapter/front/live_updater.js';
-import { MarketProfileReplayActor } from '../js/adapter/front/market_profile_replay_actor.js';
+import { ReplayMarketProfileActor } from '../js/adapter/front/replay_market_profile_actor.js';
+import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
 import { ReplayIndicatorController } from '../js/adapter/front/replay_indicator_controller.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
 
@@ -146,12 +147,13 @@ test('bootstrap (file://) exposes liveUpdater=null so no live updates are wired'
 });
 
 // ===========================================================================
-// Market Profile tick-live 配線（MP DI は composition root に集約）
-//   forming client / primitive / accumulator factory を束ねた slim actor を組み立て、戻り値に
+// Market Profile 全モード配線（MP DI は composition root に集約）
+//   共有 present MarketProfileActor を extends した ReplayMarketProfileActor を組み立て、戻り値に
 //   marketProfile として公開する（replay.js/setupReplay 内で new しない＝DI 集約）。
+//   client（/market_profile）/formingClient（/market_profile_forming）/renderer/replayBar/getContext(to) を注入。
 // ===========================================================================
 
-test('bootstrap builds a slim MarketProfileReplayActor and exposes it as marketProfile (initially disabled)', async () => {
+test('bootstrap builds a ReplayMarketProfileActor (subclass of shared MarketProfileActor) as marketProfile (initially disabled)', async () => {
   // Arrange
   const { lwc } = fakeLwc();
   const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
@@ -160,8 +162,10 @@ test('bootstrap builds a slim MarketProfileReplayActor and exposes it as marketP
     lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
   });
   await ready;
-  // Assert: slim actor が組み立てられ、既定は無効（トグル OFF＝既存 replay へ非干渉）。
-  assert.ok(marketProfile instanceof MarketProfileReplayActor);
+  // Assert: subclass が組み立てられ（共有 MarketProfileActor を extends＝fork ではない）、既定は無効
+  //   （トグル OFF＝既存 replay へ非干渉）。
+  assert.ok(marketProfile instanceof ReplayMarketProfileActor);
+  assert.ok(marketProfile instanceof MarketProfileActor, '共有 MarketProfileActor を継承する（単一ソース）');
   assert.equal(marketProfile.isEnabled(), false);
 });
 
@@ -199,7 +203,9 @@ test('bootstrap marketProfile enterBar posts base=1/now to /market_profile_formi
     datasetRef: 'jp225_tick',
   });
   await ready;
-  marketProfile.setEnabled(true);
+  await marketProfile.setEnabled(true);
+  // 全モード機能化: enterBar は ticklive モードでのみ push 駆動する（self-guard）。ticklive を選択してから駆動。
+  marketProfile.setParams({ mode: 'ticklive' });
   await marketProfile.enterBar(1000);
   // Assert: forming 取得が composition の fetch 経由で飛ぶ（base=1・now=T・datasetRef 連動）。
   //   src=dwell は backend controller が強制するため URL には出ない（buildFormingUrl は src を送らない）。

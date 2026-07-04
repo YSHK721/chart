@@ -28,6 +28,10 @@ from simulator.replay_ui.usecase.intrabar_window import (
     IntrabarWindowRequest,
     intrabar_window,
 )
+from simulator.replay_ui.usecase.market_profile import (
+    MarketProfileRequest,
+    market_profile,
+)
 from simulator.replay_ui.usecase.market_profile_forming import (
     MarketProfileFormingRequest,
     market_profile_forming,
@@ -56,6 +60,7 @@ class ReplayApp:
         shared_js_root: Any = None,
         heavy_lock: "Optional[threading.Lock]" = None,
         forming_port: Any = None,
+        market_profile_port: Any = None,
     ) -> None:
         self._candle_port = candle_port
         self._compute_port = compute_port
@@ -71,6 +76,10 @@ class ReplayApp:
         #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
         self._forming_port = forming_port
         self.forming_enabled = forming_port is not None
+        # MP normal/sessions/replay（as-seen-at-t）の Port（任意注入）。None のときは /market_profile
+        #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
+        self._market_profile_port = market_profile_port
+        self.market_profile_enabled = market_profile_port is not None
 
     def candles(self, ref: str, tf: "str | None", limit: "int | None") -> "list[dict]":
         req = RevealCandlesRequest(ref=ref, timeframe=tf, limit=limit)
@@ -125,6 +134,23 @@ class ReplayApp:
         with self._lock:  # forming 計算（dwell/resample）を直列化（OOM 防止）
             return market_profile_forming(request=req, forming_port=self._forming_port)
 
+    def market_profile(
+        self, ref: str, timeframe: "str | None", limit: Any, bins: Any, va: Any,
+        src: Any, barw: Any, to: Any, frm: Any = None, today: Any = None,
+        sessions: Any = None,
+    ) -> "tuple[int, dict]":
+        """MP normal/sessions/replay データを返す（to は必ずリビール T＝as-seen-at-t・未来リーク防止）。
+
+        ``to`` 指定時は ``time<=to`` の足だけで集計する（因果）。``frm``/``today``/``sessions`` は
+        増分2/日別分割の任意フラグ（None/省略は現行挙動）。
+        """
+        req = MarketProfileRequest(
+            ref=ref, timeframe=timeframe, limit=limit, bins=bins, va=va, src=src,
+            barw=barw, to=to, frm=frm, today=today, sessions=sessions,
+        )
+        with self._lock:  # profile 計算（candle/dwell resample）を直列化（OOM 防止）
+            return market_profile(request=req, profile_port=self._market_profile_port)
+
 
 def make_handler(app: ReplayApp):
     """``app`` を束ねた BaseHTTPRequestHandler サブクラスを返す（proto H 忠実）。"""
@@ -172,6 +198,27 @@ def make_handler(app: ReplayApp):
                     return self._json(400, {"error": {"type": "validation", "message": str(e)[:200]}})
                 except Exception as e:  # noqa: BLE001
                     return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
+            if u.path == "/market_profile" and app.market_profile_enabled:
+                ref = (q.get("datasetRef") or [None])[0]
+                tf = (q.get("timeframe") or [None])[0]
+                limit = (q.get("limit") or [None])[0]
+                bins = (q.get("bins") or [None])[0]
+                va = (q.get("va") or [None])[0]
+                src = (q.get("src") or [None])[0]
+                barw = (q.get("barw") or [None])[0]
+                # to は必ずリビール T（as-seen-at-t）。省略時 None＝全期間（後方互換）。
+                to = (q.get("to") or [None])[0]
+                # from（ローリング窓下限）／today（スナップショット）／sessions（日別分割）。省略時 None。
+                frm = (q.get("from") or [None])[0]
+                today = (q.get("today") or [None])[0]
+                sessions = (q.get("sessions") or [None])[0]
+                try:
+                    status, payload = app.market_profile(
+                        ref, tf, limit, bins, va, src, barw, to,
+                        frm=frm, today=today, sessions=sessions)
+                    return self._json(status, payload)
+                except Exception as e:  # noqa: BLE001
+                    return self._json(500, {"error": {"type": "internal", "message": str(e)[:200]}})
             if u.path == "/market_profile_forming" and app.forming_enabled:
                 ref = (q.get("datasetRef") or [None])[0]
                 tf = (q.get("timeframe") or [None])[0]
@@ -223,17 +270,25 @@ def make_handler(app: ReplayApp):
 
         def _serve_static(self, path: str):
             rel = "index.html" if path in ("/", "") else path.lstrip("/")
-            # dual-root ガードで許可する根の集合（web_dir OR shared_js_root）。symlink 先が
-            #   shared_js_root 配下に落ちても web_dir 経由の一次解決で許可される（単一ソース）。
-            allowed = (app.web_dir, app.shared_js_root)
+            # dual-root ガードで許可する根の集合。web_dir は replay の web 根全体（index.html/js/css/
+            #   vendor + replay 固有）。共有元は **js/css/vendor サブツリーのみ**に限定する（最小権限）。
+            #   shared_js_root（=indicator_ui/web）全体を許可すると build.mjs/package.json/data/tests/
+            #   node_modules/prototype 等まで配信面に露出するため、資産3サブツリーだけを許可根にする。
+            #   symlink 先（indicator_ui/web/{js,css,vendor}/…）は該当サブツリー配下で許可される。
+            allowed = (
+                app.web_dir,
+                app.shared_js_root / "js" if app.shared_js_root else None,
+                app.shared_js_root / "css" if app.shared_js_root else None,
+                app.shared_js_root / "vendor" if app.shared_js_root else None,
+            )
             # replay web_dir 優先。web_dir は web 根（index.html + js/ を含む）で URL の /js/ 接頭辞込みで解決。
             fp = self._resolve_under(app.web_dir, rel, allowed)
-            # miss かつ /js/ 配下のみ shared_js_root（=indicator_ui の web/js）へフォールバック。
-            #   shared_js_root は js ディレクトリ自体なので /js/ 接頭辞を剥がして解決する（css/vendor は
-            #   replay ローカルのまま＝js のみ共有・TBD-4 スコープ外）。indicator_ui のみに在る
-            #   ファイル（replay に symlink も実体も無いもの）用に残す。
-            if fp is None and path.startswith("/js/"):
-                fp = self._resolve_under(app.shared_js_root, path[len("/js/"):], allowed)
+            # miss なら shared_js_root（=indicator_ui の web 根・js/css/vendor 包含）へ同一 rel で
+            #   フォールバック。symlink 化した資産は web_dir 経由で一次解決されるため、本フォールバックは
+            #   indicator_ui のみに実体があるファイル（replay に symlink も実体も無いもの）用。
+            #   index.html は web_dir に実体があるため常に web_dir が優先され、共有元へは落ちない（per-app）。
+            if fp is None:
+                fp = self._resolve_under(app.shared_js_root, rel, allowed)
             if fp is None:
                 self.send_response(404)
                 self.end_headers()

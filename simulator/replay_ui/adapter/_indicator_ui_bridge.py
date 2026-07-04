@@ -45,6 +45,10 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
     from adapter.controller.market_profile_forming_controller import (  # noqa: E402
         handle_market_profile_forming,
     )
+    # MP normal/sessions/replay: market_profile controller の純ロジックを read-only 再利用（無改変・DRY）。
+    from adapter.controller.market_profile_controller import (  # noqa: E402
+        handle_market_profile,
+    )
     from marketdata.resample import (  # noqa: E402
         TIMEFRAME_RULES,
         is_known_timeframe,
@@ -58,6 +62,7 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
         latest_compute=latest_compute,
         resample_ohlc=resample_ohlc,
         handle_market_profile_forming=handle_market_profile_forming,
+        handle_market_profile=handle_market_profile,
         TIMEFRAME_RULES=TIMEFRAME_RULES,
         is_known_timeframe=is_known_timeframe,
     )
