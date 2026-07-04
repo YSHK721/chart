@@ -45,7 +45,7 @@ def build_replay_app(
     shared_js = (
         Path(shared_js_root).resolve()
         if shared_js_root is not None
-        else root / "indigators" / "indicator_ui" / "web" / "js"
+        else root / "indigators" / "indicator_ui" / "web"
     )
     tick_m1_csv = data / "jp225_tick_m1.csv"
     tick_root = data / "ticks"

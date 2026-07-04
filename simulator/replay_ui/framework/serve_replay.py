@@ -275,12 +275,12 @@ def make_handler(app: ReplayApp):
             allowed = (app.web_dir, app.shared_js_root)
             # replay web_dir 優先。web_dir は web 根（index.html + js/ を含む）で URL の /js/ 接頭辞込みで解決。
             fp = self._resolve_under(app.web_dir, rel, allowed)
-            # miss かつ /js/ 配下のみ shared_js_root（=indicator_ui の web/js）へフォールバック。
-            #   shared_js_root は js ディレクトリ自体なので /js/ 接頭辞を剥がして解決する（css/vendor は
-            #   replay ローカルのまま＝js のみ共有・TBD-4 スコープ外）。indicator_ui のみに在る
-            #   ファイル（replay に symlink も実体も無いもの）用に残す。
-            if fp is None and path.startswith("/js/"):
-                fp = self._resolve_under(app.shared_js_root, path[len("/js/"):], allowed)
+            # miss なら shared_js_root（=indicator_ui の web 根・js/css/vendor 包含）へ同一 rel で
+            #   フォールバック。symlink 化した資産は web_dir 経由で一次解決されるため、本フォールバックは
+            #   indicator_ui のみに実体があるファイル（replay に symlink も実体も無いもの）用。
+            #   index.html は web_dir に実体があるため常に web_dir が優先され、共有元へは落ちない（per-app）。
+            if fp is None:
+                fp = self._resolve_under(app.shared_js_root, rel, allowed)
             if fp is None:
                 self.send_response(404)
                 self.end_headers()

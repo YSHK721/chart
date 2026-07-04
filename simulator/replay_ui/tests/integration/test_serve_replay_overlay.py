@@ -48,30 +48,40 @@ class _FakeWindowPort:
 @pytest.fixture
 def overlay_ctx(tmp_path):
     """replay web_dir と shared_js_root を実ファイルで用意して server を起動する。"""
-    # web_dir は replay の web 根（index.html + js/ を含む）。shared_js_root は indicator_ui の web/js。
+    # web_dir は replay の web 根（index.html + js/css/vendor を含む）。shared は indicator_ui の
+    #   web 根（js/css/vendor を内包）。共有ルートを web/js から web へ一般化し css/vendor も単一ソース化。
     web = tmp_path / "replay_web"
     shared = tmp_path / "shared_js"
     (web / "js" / "adapter" / "front").mkdir(parents=True)
-    (shared / "adapter" / "front").mkdir(parents=True)
+    (web / "css").mkdir(parents=True)
+    (web / "vendor").mkdir(parents=True)
+    (shared / "js" / "adapter" / "front").mkdir(parents=True)
+    (shared / "css").mkdir(parents=True)
+    (shared / "vendor").mkdir(parents=True)
 
     # replay 固有ファイル（shared には無い）。
     (web / "js" / "replay.js").write_text("REPLAY_SPECIFIC", encoding="utf-8")
     # 双方に在るファイル（replay 優先＝挙動不変を検証）。
     (web / "js" / "adapter" / "front" / "chart_renderer.js").write_text(
         "REPLAY_RENDERER", encoding="utf-8")
-    (shared / "adapter" / "front" / "chart_renderer.js").write_text(
+    (shared / "js" / "adapter" / "front" / "chart_renderer.js").write_text(
         "SHARED_RENDERER", encoding="utf-8")
     # 共有のみ（replay に無い→フォールバック配信）。
-    (shared / "adapter" / "front" / "forming_bar_updater.js").write_text(
+    (shared / "js" / "adapter" / "front" / "forming_bar_updater.js").write_text(
         "SHARED_ONLY_FALLBACK", encoding="utf-8")
-    # 単一ソース symlink（web_dir/js 配下から shared_js_root の実体を指す）。resolve() 後は
-    #   shared_js_root 配下に落ちるため、dual-root ガードでのみ 200 配信される（web_dir 単独
+    # 単一ソース symlink（web_dir/js 配下から shared 根の実体を指す）。resolve() 後は
+    #   shared 根配下に落ちるため、dual-root ガードでのみ 200 配信される（web_dir 単独
     #   ガードだと弾かれる）。symlink 名は shared 実体名と異なる（名前一致フォールバックでは
     #   解決できない＝一次解決の dual-root ガードを実証する）。
-    (shared / "adapter" / "front" / "shared_impl.js").write_text(
+    (shared / "js" / "adapter" / "front" / "shared_impl.js").write_text(
         "SHARED_VIA_SYMLINK", encoding="utf-8")
     (web / "js" / "adapter" / "front" / "linked_view.js").symlink_to(
-        shared / "adapter" / "front" / "shared_impl.js")
+        shared / "js" / "adapter" / "front" / "shared_impl.js")
+    # css/vendor の単一ソース symlink（web/js の外＝共有ルートを web へ広げた効果を検証）。
+    (shared / "css" / "app.css").write_text("SHARED_CSS_BODY", encoding="utf-8")
+    (web / "css" / "app.css").symlink_to(shared / "css" / "app.css")
+    (shared / "vendor" / "lib.js").write_text("SHARED_VENDOR_BODY", encoding="utf-8")
+    (web / "vendor" / "lib.js").symlink_to(shared / "vendor" / "lib.js")
 
     # CWE-22 回帰用: web_dir / shared_js_root と「接頭辞を共有する兄弟ディレクトリ」に機密を置く。
     #   区切り境界なしの str.startswith ガードだと `.../replay_web` の prefix を
@@ -167,6 +177,22 @@ def test_web_dir_symlink_to_shared_served_via_dual_root_guard(overlay_ctx):
     assert headers.get("Content-Type", "").startswith("application/javascript")
 
 
+def test_css_symlink_served_via_broadened_shared_root(overlay_ctx):
+    # web/css/app.css（symlink→shared/css/app.css）を配信。共有ルートを web/js から web へ
+    #   広げたことで web/js の外（css）の symlink も境界一致ガードで許可される（単一ソース）。
+    status, body, headers = _get_text(overlay_ctx, "/css/app.css")
+    assert status == 200
+    assert body == "SHARED_CSS_BODY"
+    assert headers.get("Content-Type", "").startswith("text/css")
+
+
+def test_vendor_symlink_served_via_broadened_shared_root(overlay_ctx):
+    # web/vendor/lib.js（symlink→shared/vendor/lib.js）を配信（css と同じく web/js 外の単一ソース）。
+    status, body, _ = _get_text(overlay_ctx, "/vendor/lib.js")
+    assert status == 200
+    assert body == "SHARED_VENDOR_BODY"
+
+
 def test_path_traversal_blocked_on_both_routes(overlay_ctx):
     with pytest.raises(HTTPError) as ei:
         _get_text(overlay_ctx, "/js/../../../../etc/passwd")
@@ -189,8 +215,10 @@ def test_prefix_sharing_sibling_of_web_dir_blocked(overlay_ctx):
 
 
 def test_prefix_sharing_sibling_of_shared_root_blocked(overlay_ctx):
-    # CWE-22 回帰（shared 側）: shared_js_root=`.../shared_js` と接頭辞を共有する兄弟
-    #   `.../shared_js_SIBLING` へ /js/ フォールバック経由で逸脱する exploit も 404。
-    status, body = _raw_get(overlay_ctx, "/js/../shared_js_SIBLING/leak.txt")
+    # CWE-22 回帰（shared 側）: shared 根=`.../shared_js` と接頭辞を共有する兄弟
+    #   `.../shared_js_SIBLING`（実在する機密）へ生 `..` で逸脱する exploit。full-rel フォールバックで
+    #   resolve 先は実在の tmp/shared_js_SIBLING/leak.txt になるが、境界一致ガード（is_relative_to）で
+    #   shared 根外＝404 でなければならない（機密非漏洩）。
+    status, body = _raw_get(overlay_ctx, "/js/../../shared_js_SIBLING/leak.txt")
     assert status == 404
     assert b"TOP_SECRET_SHARED" not in body
