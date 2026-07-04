@@ -96,6 +96,20 @@ def resolve_symbol(ref: Any) -> "str | None":
     return TICK_REF_SYMBOLS.get(ref)
 
 
+def get_active_table(symbol: str, now: float | None = None) -> list[list[int]]:
+    """symbol の活動テーブル（7 曜日×24 時・True=活発）を list[list[int]] で露出する薄アクセサ。
+
+    内部 :func:`_active_table`（プロセス内 1 回構築・直近 ``_ACTIVE_TABLE_DAYS`` 日から）をそのまま
+    list（0/1）へ変換して返す。tick 逐次成長のクライアント側 dwell 積分で使う（活発秒の判定地図）。
+    既存 :func:`compute_dwell_profile` の窓生成と同一定義（at_from/win_to）でテーブルを得る（DRY）。
+    """
+    now_val = _time.time() if now is None else float(now)
+    win_to = int(now_val) + 86400
+    at_from = win_to - _ACTIVE_TABLE_DAYS * 86400
+    table = _active_table(symbol, at_from, win_to)
+    return [[int(bool(v)) for v in row] for row in table]
+
+
 def _reset_caches() -> None:
     """プロセス内キャッシュを全消去する（テスト隔離・データ更新時の明示無効化用）。"""
     _DAY_CACHE.clear()
@@ -394,6 +408,7 @@ def compute_dwell_profile(
     metric: str = "dwell",
     want_today: bool = False,
     want_sessions: bool = False,
+    want_fine: bool = False,
 ) -> dict:
     """実ティックプロファイルを計算する（candle 版と同一スキーマ）。
 
@@ -405,6 +420,10 @@ def compute_dwell_profile(
     境界日は :func:`_partial_rollup` で固定グリッド ``{dwell[], cnt[]}`` を得て、metric に対応する配列を
     ``fine[]`` に加算し、固定グリッド中心を表示 bin へ再集計して tpo[] を得る。POC/VA は
     :func:`market_profile._value_area` を再利用する（dwell/count で同一定義）。
+
+    ``want_fine=True`` のとき、応答に ``fine[]``（表示 bin 再集計**前**の GRID_W 固定グリッド dwell/cnt・
+    ``kw0=floor(price_min/GRID_W)`` 起点）／``fine_kmin``／``grid_w`` を付加する（tick 逐次成長のクライアント
+    側忠実 binning 用・既定 False は不変＝キーを付けない）。
 
     ``want_sessions=True`` のとき、応答に ``sessions[]``（各カレンダー日の表示 bin プロファイル
     ``[{"date":"YYYY-MM-DD","tpo":[...]}]``・日付昇順）を付加する。走査中の日別ロールアップ
@@ -503,6 +522,16 @@ def compute_dwell_profile(
         "tpo_units": int(round(float(fine.sum()))),  # metric に応じ 総 dwell 秒 / 総ティック数（int 丸め）。
         "n_bins": n_bins,
     }
+    if want_fine:
+        # tick 逐次成長の忠実 binning 用に、表示 bin へ再集計する前の **GRID_W 固定グリッド**（base 累積）を
+        #   露出する。クライアント側 DwellAccumulator は forming tick を同一 fine grid（kw0=fine_kmin 起点）へ
+        #   累積し、combined fine → 表示 bin 再集計することで mp_core.compute_profile と厳密一致する
+        #   （base=表示 bin 再集計・forming=表示 bin 直接 の二方式併存による POC/VA 乖離を消す）。
+        #   既定 want_fine=False では本キーを付けない＝既存スキーマ不変。
+        fine_len = size if size >= 1 else len(fine)
+        out["fine"] = [float(v) for v in fine[:fine_len]]
+        out["fine_kmin"] = int(kw0)
+        out["grid_w"] = float(GRID_W)
     if want_today:
         # 窓の最終日ぶんを別集計して表示 bin へ再集計する（スナップショット当日強調・増分2 C）。
         #   移植元 prototype_260630-01/mp_core.py want_today（dwell/m1=最終日ロールアップの再ビン）。
