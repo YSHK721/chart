@@ -1,0 +1,56 @@
+"""Composition Root — replay_ui バックエンドの DI 結線（CLEAN_ARCH §8・main 層）。
+
+全層を import して port 実装（adapter）を UC 結線を保持する ``ReplayApp``（framework）へ注入する。
+データパスは引数で受け（既定は repo 根 ``data/marketdata`` = proto 慣行）、cwd 非依存の絶対パスで解決する。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from simulator.replay_ui.adapter import _indicator_ui_bridge
+from simulator.replay_ui.adapter.causal_candle_repository import CausalCandleRepository
+from simulator.replay_ui.adapter.causal_compute_gateway import CausalComputeGateway
+from simulator.replay_ui.adapter.intrabar_window_repository import (
+    IntrabarWindowRepository,
+)
+from simulator.replay_ui.framework.serve_replay import ReplayApp
+
+# repo 根 = simulator/replay_ui/main/composition_root.py の parents[3]。
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def build_replay_app(
+    *,
+    data_dir: Any = None,
+    api_path: Any = None,
+    repo_root: Any = None,
+    web_dir: Any = None,
+) -> ReplayApp:
+    """port 実装を結線した ``ReplayApp`` を返す。
+
+    ``data_dir``: tick 由来データ根（既定 ``<repo>/data/marketdata``）。``jp225_tick_m1.csv`` と
+    ``ticks/`` を含む。``web_dir``: 静的フロント配信ディレクトリ（任意・None で静的配信無効）。
+    """
+    root = Path(repo_root).resolve() if repo_root is not None else _REPO_ROOT
+    data = Path(data_dir).resolve() if data_dir is not None else root / "data" / "marketdata"
+    tick_m1_csv = data / "jp225_tick_m1.csv"
+    tick_root = data / "ticks"
+
+    candle_port = CausalCandleRepository(
+        tick_m1_csv=tick_m1_csv, api_path=api_path, repo_root=root
+    )
+    compute_port = CausalComputeGateway(api_path=api_path, repo_root=root)
+    window_port = IntrabarWindowRepository(
+        tick_root=tick_root, tick_m1_csv=tick_m1_csv, api_path=api_path, repo_root=root
+    )
+
+    bridge = _indicator_ui_bridge.load(api_path, root)
+
+    return ReplayApp(
+        candle_port=candle_port,
+        compute_port=compute_port,
+        window_port=window_port,
+        is_known_ref=bridge.dataset.is_known,
+        web_dir=web_dir,
+    )

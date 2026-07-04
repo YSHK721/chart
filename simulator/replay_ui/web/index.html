@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>因果リビール再生 UI（INC-F2 再生層）</title>
+  <link rel="stylesheet" href="./css/app.css" />
+  <style>
+    /* [INC-F2] 再生バー（ライブ自動更新の代わりに時間軸再生を駆動＝本番に無い唯一の追加UI）。プロト忠実移植。 */
+    .replay-bar{display:flex;gap:8px;align-items:center;padding:6px 12px;background:#10141d;border-bottom:1px solid #2a2e39;flex-wrap:wrap;font-size:13px;color:#d1d4dc}
+    .replay-bar button,.replay-bar select{background:#1b2230;color:#d1d4dc;border:1px solid #2a2e39;border-radius:4px;padding:4px 9px;cursor:pointer}
+    .replay-bar .rp-badge{padding:2px 8px;border-radius:4px;background:#2962ff33;color:#7aa2ff;font-weight:600}
+    .replay-bar #rp-slider{flex:1;min-width:200px}
+    .replay-bar .rp-sep{width:1px;align-self:stretch;background:#2a2e39;margin:0 2px}
+    /* 未来足が無いとき再生不可＝減光＋クリック不可（理由は title 属性でホバー表示）。 */
+    .replay-bar button.rp-disabled{opacity:.4;cursor:not-allowed}
+    /* 再生中は色を変えて状態を明示（停止中＝既定色 / 再生中＝緑）。 */
+    .replay-bar #rp-play.rp-playing{background:#16a34a;color:#fff;border-color:#16a34a}
+    .replay-bar #rp-play{min-width:84px;text-align:center}
+    .replay-bar .on{outline:2px solid #2962ff}
+    #rp-presets{display:inline-flex;gap:4px}
+    #rp-presets .rp-preset{padding:3px 8px}
+    #rp-presets .rp-preset.on{background:#2962ff;color:#fff;border-color:#2962ff}
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- [INC-F2] 再生バー（ライブ自動更新の代わりに時間軸再生を駆動）。プロト忠実移植。 -->
+    <div class="replay-bar" id="replay-bar">
+      <span class="rp-badge">REPLAY r2（同時更新）</span>
+      <button id="rp-prev">◀ 1足</button>
+      <button id="rp-play">▶ 再生</button>
+      <button id="rp-next">1足 ▶</button>
+      <label title="再生速度（1.00=最速。小さいほど遅い＝観察用）">速度<input id="rp-speed" type="range" min="0" max="1" step="0.01" value="1" style="vertical-align:middle;width:90px" /><span id="rp-speed-val" style="display:inline-block;min-width:2.6em;text-align:right">1.00</span></label>
+      <span id="rp-speed-presets">
+        <button class="rp-preset" data-spd="0.25">×0.25</button>
+        <button class="rp-preset" data-spd="0.5">×0.5</button>
+        <button class="rp-preset" data-spd="0.75">×0.75</button>
+        <button class="rp-preset on" data-spd="1">×1</button>
+      </span>
+      <span id="rp-eta" title="完了予想時間（残り足 × 実測の1足あたり所要）">完了予想 —</span>
+      <span class="rp-sep"></span>
+      <label title="最新足を足内で更新する方法（MT5 モデリング相当）">最新足更新<select id="rp-mode">
+        <option value="real_ticks">実ティック</option>
+        <option value="every_tick">全ティック合成</option>
+        <option value="ohlc_1min" selected>1分OHLC</option>
+        <option value="open_only">始値のみ</option>
+        <option value="math">数学計算(終値)</option>
+      </select></label>
+      <button id="rp-follow">直近窓追従</button>
+      <span class="rp-sep"></span>
+      <button id="rp-view-left" title="チャート表示を左端へスクロール（再生位置は変えない）">⇤ 表示左端</button>
+      <button id="rp-view-right" title="チャート表示を右端へスクロール（再生位置は変えない）">表示右端 ⇥</button>
+      <span id="rp-presets"></span>
+      <input id="rp-slider" type="range" min="0" max="0" value="0" />
+      <span id="rp-status" style="min-width:0"></span>
+    </div>
+
+    <!-- ツールバー：シンボル / 時間足 / インジケーターボタン -->
+    <div class="toolbar">
+      <span class="tb-symbol">NI225</span>
+      <span class="tb-sep"></span>
+      <!-- 時間足セレクタ（1 分足原子から resample・§チャート表示時間選択）。data-timeframe は
+           サーバの TIMEFRAME_RULES と一致。既定 1D を is-active。 -->
+      <div class="tb-timeframe" role="group" aria-label="時間足">
+        <button class="tb-interval" data-timeframe="1m" type="button">1分</button>
+        <button class="tb-interval" data-timeframe="5m" type="button">5分</button>
+        <button class="tb-interval" data-timeframe="15m" type="button">15分</button>
+        <button class="tb-interval" data-timeframe="1h" type="button">1時間</button>
+        <button class="tb-interval" data-timeframe="4h" type="button">4時間</button>
+        <button class="tb-interval is-active" data-timeframe="1D" type="button">日</button>
+        <button class="tb-interval" data-timeframe="1W" type="button">週</button>
+        <button class="tb-interval" data-timeframe="1M" type="button">月</button>
+      </div>
+      <span class="tb-sep"></span>
+      <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
+        <span class="ic">∿</span>
+        <span class="lbl">インジケーター</span>
+      </button>
+    </div>
+
+    <!-- チャート + クロスヘア価格読み取り欄 + 凡例 -->
+    <div class="chart-wrap">
+      <div id="chart"></div>
+      <!-- 左上オーバーレイ（読み取り欄→凡例を縦フローで積む。読み取り欄の高さが
+           overlay 行数で伸びても #legend が重ならないよう、固定 top でなくフロー配置にする）。 -->
+      <div id="chart-overlay-tl">
+        <!-- クロスヘア価格読み取り欄（日時 + OHLC + overlay 各行）。
+             ChartRenderer.onCrosshairReadout → CrosshairReadoutView.render が描画する。 -->
+        <div id="crosshair-readout"></div>
+        <div id="legend"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ダイアログ：サイドバー(カテゴリ) + 上部タブ + 検索 + 指標一覧 -->
+  <div id="indicator-dialog" class="dialog-backdrop">
+    <div class="dialog" role="dialog" aria-label="インジケーター">
+      <div class="dialog-head">
+        <span class="dialog-title">インジケーター、メトリクス、ストラテジー</span>
+        <button id="indicator-dialog-close" class="dialog-close" type="button" aria-label="閉じる">×</button>
+      </div>
+      <div class="dialog-tabs">
+        <button class="dialog-tab is-active" data-tab="indicator" type="button">インジケーター</button>
+        <button class="dialog-tab" data-tab="strategy" type="button">ストラテジー</button>
+        <button class="dialog-tab" data-tab="profile" type="button">プロファイル</button>
+        <button class="dialog-tab" data-tab="pattern" type="button">パターン</button>
+      </div>
+      <div class="dialog-body">
+        <div class="dialog-side">
+          <button class="side-item is-active" data-category="" type="button">すべて</button>
+          <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
+          <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
+          <button class="side-item" data-category="cat.statistics" type="button">統計</button>
+          <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+        </div>
+        <div class="dialog-main">
+          <div class="search-wrap">
+            <input id="indicator-search" type="text" placeholder="検索" autocomplete="off" />
+          </div>
+          <div id="indicator-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- bundled lightweight-charts v5.2.0（global LightweightCharts を公開・ネイティブ panes 対応） -->
+  <script src="./vendor/lightweight-charts.js"></script>
+  <script type="module">
+    // [INC-F2] 再生層結線。本番フロントをそのまま使い、データ駆動だけ「ライブ→再生」に差し替える。
+    //   唯一の違い: LiveUpdater.start()（present 60秒ポーリング）の代わりに setupReplay()＝
+    //   untilTime をフレーム駆動し controller.recomputeAllApplied で「その時点」を因果計算する。
+    import { bootstrap, RECENT_BARS } from './js/adapter/front/composition_root_front.js';
+    import { setupReplay } from './js/replay.js';
+    bootstrap({
+      lwc: window.LightweightCharts,
+      container: document.getElementById('chart'),
+      doc: document,
+      datasetRef: 'jp225_tick',
+    }).then(({ chart, mainSeries, controller, renderer, ready }) => {
+      controller.bind();
+      ready.then(() => {
+        controller.restore();
+        // ライブ更新の代わりに再生ドライバを起動（untilTime をフレーム駆動＝ライブ同一計算）。
+        setupReplay({ chart, mainSeries, controller, renderer, datasetRef: 'jp225_tick', recentBars: RECENT_BARS, document });
+      });
+    });
+  </script>
+</body>
+</html>

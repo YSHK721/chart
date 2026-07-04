@@ -475,3 +475,61 @@
 - **残論点（要確定）**: 1W/1M の duration 算出（resample ラベル流用の可否）／上位足サブ解像度の確定（日足 vs m1）／モード有効集合の定義と UI（非表示 vs 無効グレーアウト）。
 - **関連**: ISSUE-029（増分1 完了・commit cb05183）。ブランチ feature/replay-all-timeframes。
 - **進捗（2026-06-28・増分2a）**: ①足内窓を「次足の開始時刻」へ（暦/取引週も正確・固定秒不要）②backend `do_intraday` の m1 をサーバ側 cap（`_cap_m1_rows` 1500・極値保持／1D≤1440 無変更・1W6597→1502/1M27895→1503）③モードUIの tf 連動（1m で 1分OHLC/全ティック合成を非表示＋real_ticksへ退避）。実証: 1W足が期間内ティック(n=801)で形成・1m モード非表示・1D 非回帰(verify_form_modes 緑)。残(2b・任意)=上位足のサブ解像度を「日足サブバー」に意味付け（現状は capped m1＝機能的に妥当）。
+
+---
+
+## ISSUE-031: replay_ui backend — 足内 mid 算出/外れ値除去の orchestration が adapter に在る
+- **重大度**: Low（依存方向違反ではない・設計整理）
+- **ステータス**: OPEN
+- **検出**: 因果リビール再生バックエンド arch レビュー（2026-07-04・🟡-1）。
+- **背景**: `usecase/intrabar_window.py` は `window_port.load_ticks()` を素通しし、mid=(bid+ask)/2＋窓フィルタ＋外れ値除去（本質不変 E-4）の呼び出しが `adapter/intrabar_window_repository.py` に在る。domain `tick_mid_series.mid_series` 自体は純化済だが、tick 源差替のたび各 adapter が mid_series を再結線＝本質ルールが adapter ごとに分散し得る。
+- **対策（提案）**: Port を `load_raw_ticks(start,end)->[(sec,bid,ask)]` へ変え usecase 側で `mode=='real_ticks'` 時のみ domain `mid_series` を適用（mode ゲートは usecase 既存＝軽量性不変）。
+- **関連**: replay_ui バックエンド増分（branch feature/contact-scan-replay）。
+
+## ISSUE-032: replay_ui backend — 外れ値閾値 0.3 の二重定義（用途別だが同値）
+- **重大度**: Low
+- **ステータス**: OPEN
+- **検出**: arch レビュー（🔵-3・2026-07-04）。
+- **背景**: `domain/tick_mid_series.OUTLIER_THRESHOLD`（足内 mid 外れ値）と `adapter/_m1_repair.M1_OUTLIER_THRESHOLD`（M1 日内補正）が各 0.3。アルゴリズムは別物だが値・意図（±30%）同一で source が分岐＝値乖離リスク。
+- **対策（提案）**: 単一 source-of-truth へ集約、または「別用途で独立の定数」である旨を両所へ明記して意図を固定。
+- **関連**: replay_ui バックエンド増分。
+
+## ISSUE-033: replay_ui backend — 未消費の抽象（E-3 window / ContactScanPort）のフロント確定時精査
+- **重大度**: Low（YAGNI）
+- **ステータス**: OPEN
+- **検出**: arch レビュー（YAGNI 削除候補・2026-07-04）。
+- **背景**: `domain/intrabar_window.window`（足境界→窓算出 E-3）と `replay_ports.ContactScanPort` は backend に production caller 不在（テストのみ）。窓はフロント replay.js が算出し `/intraday` に start/end で渡す設計、接点は次フェーズ想定＝将来仮説が根拠。
+- **対策（提案）**: フロント増分で「消費者が生じるか」確定し、生じなければ削除。窓をサーバ側算出する usecase に倒す選択肢も検討。
+- **関連**: replay_ui フロント増分で判断。
+
+## ISSUE-034: replay_ui backend — df 往復の列名 lower()/float() 強制が暗黙契約
+- **重大度**: Low（現状安全）
+- **ステータス**: OPEN
+- **検出**: code レビュー（🔵-1・2026-07-04）。
+- **背景**: `adapter/causal_compute_gateway._df_to_bars` が全列を `str(c).lower()`＋`float(row[c])` へ強制。現状は源 CSV 列が小文字＋compute の case-insensitive アクセスで安全（SMA round-trip 同値テスト合格）。非数値列・大文字前提指標が将来入ると `float()` 例外/列名不一致。
+- **対策（提案）**: 「OHLCV 数値列前提」を docstring 明記、または非対象列を保存扱いにするガード追加。
+- **関連**: replay_ui バックエンド増分。
+
+## ISSUE-035: replay_ui backend — 静的配信のパストラバーサル判定が prefix 一致のみ（proto 継承）
+- **重大度**: Low（web_dir 既定 None＝静的配信オフ）
+- **ステータス**: OPEN
+- **検出**: code レビュー（🔵-3・2026-07-04）。
+- **背景**: `framework/serve_replay.py` の静的配信が `str(fp).startswith(str(web_dir))`。区切り無し prefix のため `web_dir="/a/web"` で `/a/webevil` が通過しうる（proto_server と同一弱点）。既定 web_dir=None で影響は低いが、フロント配信有効化時に露見。
+- **対策（提案）**: `os.path.commonpath([fp, web_dir]) == str(web_dir)` もしくは末尾セパレータ付き比較へ。
+- **関連**: replay_ui フロント増分（静的配信有効化）時に対応。
+
+## ISSUE-036: replay_ui backend — /candles 非tick分岐の過剰直列化＋失効 docstring 参照
+- **重大度**: Low
+- **ステータス**: OPEN
+- **検出**: code レビュー（🔵-4/🔵-5・2026-07-04）。
+- **背景**: (a) `serve_replay` が `/candles` の非 tick 軽量経路も `_HEAVY_LOCK` で直列化（proto は tick のみ施錠・出力不変の過剰直列化）。(b) `domain/tick_mid_series` 等の docstring が本 worktree 不在の `contact_scan.tick_window.window_ticks` を bit 一致対象と引用（実挙動は proto `do_intraday` tick 経路で検証済）。
+- **対策（提案）**: (a) 非 tick 軽量経路を施錠外へ、または保守的直列化の意図をコメント明記。(b) 参照を「proto_server.do_intraday tick 経路」へ更新。
+- **関連**: replay_ui バックエンド増分。
+
+## ISSUE-037: replay_ui frontend(再生層) — controller への結合＋View fallback の堅牢化
+- **重大度**: Low（挙動非差・parity 由来）
+- **ステータス**: OPEN
+- **検出**: 再生層(INC-F2) arch/code レビュー（🔵・2026-07-04）。
+- **背景**: (a) `web/js/replay.js` が `controller._timeframe`/`_recentBars` の private を直接参照＋`applyIndicator`/`removeInstance` を実行時 monkeypatch（syncBoundary ラップ）。プロト replay.js の忠実移植由来で依存方向違反ではないが結合が強い。(b) `replay_view.readSpeed/readMode` は要素欠落時 NaN→既定退避（clampSpeed→1/real_ticks）。プロトは `null.value` で throw。現行 index.html では rp-speed/rp-mode 常設のため到達不能。(c) `syncSpeedUI` の `clampSpeed(parseFloat())` はプロトの `+value` と [0,1] 範囲で等価。
+- **対策（提案）**: (a) controller 側に public accessor / フック（onApplied 等）を設け private 参照・monkeypatch を解消。(b)(c) 現行 DOM では非到達＝現状維持可。厳密忠実化するなら proto 準拠へ寄せる。
+- **関連**: replay_ui フロント増分（INC-F2）。
