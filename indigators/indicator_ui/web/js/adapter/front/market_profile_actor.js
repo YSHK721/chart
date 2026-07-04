@@ -37,6 +37,25 @@ function _buildSessionView(list, candles) {
   return { list: out, mp };
 }
 
+// MP-05: ticklive base=1 応答が DwellAccumulator.init を NaN 汚染せず駆動できるかの presence ガード。
+//   無ローソク等で空 profile が返ると priceMin/priceMax/nBins/gridW が欠損し、init の binw/kw0 が NaN と
+//   なり snapshot が NaN 価格を出す。必須フィールド（レンジ/グリッド/base 配列）がすべて有限/配列のときだけ
+//   true を返し、欠損時は呼び出し側で null 扱い（増分に入らず前回描画を保持＝既存 fetch null と同じ非破壊）。
+//   baseKmin は init が priceMin/gridW から導出フォールバックするため必須に含めない。
+//   注意: JSON の明示 null は Number(null)===0（有限）で誤通過するため、各必須数値は `!= null`（null/
+//   undefined 双方を除外）を先に課してから有限性を判定する（欠損 = 増分に入れない）。
+function _finiteNum(x) {
+  return x != null && Number.isFinite(Number(x));
+}
+function _hasBaseFields(f) {
+  return !!f
+    && _finiteNum(f.priceMin)
+    && _finiteNum(f.priceMax)
+    && _finiteNum(f.nBins) && Number(f.nBins) > 0
+    && _finiteNum(f.gridW) && Number(f.gridW) > 0
+    && Array.isArray(f.baseFine);
+}
+
 // 増分2 定数（試作 prototype_260630-01 と一致）。
 const ROLL_BARS = 60; // ローリング窓の本数（from = T - ROLL_BARS*bar_sec）。
 // MP 表示中の右マージン（プロファイル専用領域＝試作 PROFILE_FRAC。バーとローソクの重なり回避）。
@@ -54,12 +73,22 @@ export class MarketProfileActor {
   // replayBar: リプレイスライダバー（任意注入・setVisible/setCandles/mode/isSnapshot）。未注入時は no-op。
   // getCandles: ()->candles（バーの min/max・index→time の元。renderer.getCandles を配線）。未注入時は空。
   // renderer: 増分2 スナップショットのローソクトリム源（setCandleTrim(time|null)）。未注入時はトリムしない。
-  constructor({ client, primitive, mainSeries, getContext, replayBar, getCandles, renderer } = {}) {
+  constructor({
+    client, primitive, mainSeries, getContext, replayBar, getCandles, renderer,
+    formingClient, makeAccumulator,
+  } = {}) {
     this._client = client;
     this._primitive = primitive;
     this._mainSeries = mainSeries;
     this._replayBar = replayBar ?? null;
     this._renderer = renderer ?? null;
+    // tick 逐次成長（ticklive・増分2 系とは独立の 4 つ目の排他モード）。未注入時は非増分（refresh 委譲）。
+    this._formingClient = formingClient ?? null;
+    this._makeAccumulator = typeof makeAccumulator === 'function' ? makeAccumulator : null;
+    this._ticklive = false;       // ticklive モード ON/OFF（既定 OFF＝非増分・後方互換）。
+    this._accumulator = null;     // 現在の DwellAccumulator（null＝未 enter）。
+    this._formingStart = null;    // 現在足の formingStart（rollover 検出用）。
+    this._lastSec = null;         // 最後に addTick した tick 秒（base=0 尾部 since）。
     this._getCandles = typeof getCandles === 'function' ? getCandles : () => [];
     this._getContext = typeof getContext === 'function' ? getContext : () => ({});
     this._enabled = false;
@@ -154,22 +183,130 @@ export class MarketProfileActor {
   //   - 'normal': 両 OFF 一式（_setReplay(false) ＋ _sessions=false ＋ _applySessions(null)）。
   //   排他が構造的に保証される（同時 ON が不可能）。未知の mode は 'normal' 扱い（安全側）。
   _applyMode(mode) {
+    if (mode === 'ticklive') {
+      // ticklive ON（tick 逐次成長）。replay/sessions 一式を解除して排他化する。
+      this._setReplay(false);
+      this._sessions = false;
+      this._applySessions(null);
+      this._ticklive = true;
+      return;
+    }
     if (mode === 'sessions') {
+      this._exitTicklive();     // ticklive 解除（排他）。
       this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
       this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
       this._sessionsFocusPending = true; // 初回反映時に直近セッションへ寄せる（時間軸連動タイルを見せる）。
       return;
     }
     if (mode === 'replay') {
+      this._exitTicklive();     // ticklive 解除（排他）。
       this._sessions = false;   // sessions OFF。
       this._applySessions(null); // sessions 一式解除（focus/ズーム/ロック・setSessions(null)・透明化解除）。
       this._setReplay(true);    // replay ON（バー表示）。
       return;
     }
-    // 'normal'（および未知値）: 両 OFF 一式。
+    // 'normal'（および未知値）: 全 OFF 一式。
+    this._exitTicklive();       // ticklive 解除（排他）。
     this._setReplay(false);
     this._sessions = false;
     this._applySessions(null);
+  }
+
+  // ticklive 表示中か（MP 有効かつ ticklive トグル ON のときだけ true）。
+  isTicklive() {
+    return this._enabled && !!this._ticklive;
+  }
+
+  // 増分（ticklive）取得が可能か: モード ON かつ formingClient と accumulator factory が注入済み。
+  //   いずれか欠ければ非増分（onLiveTick は refresh へ byte-identical 委譲＝回帰ゼロ）。
+  _isIncremental() {
+    return !!this._ticklive && !!this._formingClient && !!this._makeAccumulator;
+  }
+
+  // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
+  //   MP-04 是正: ticklive は dwell（滞在秒 time-at-price）を原子とする機能。base（確定足累積）は backend
+  //   controller が src='dwell' を強制し、forming tick から DwellAccumulator が dwell 原子を計算する。
+  //   よって actor 境界でも src を 'dwell' に固定し、UI で選択中の src（candle/m1）が base と live 増分の
+  //   原子を食い違わせないことを保証する（非 ticklive 表示の原子との不整合を防ぐ）。参照実装 mp_core の
+  //   dwell 原子（_session_dwell）に忠実。
+  _buildFormingArgs({ base, since }) {
+    return { ...this._getContext(), ...this._params, src: 'dwell', base, since };
+  }
+
+  // ライブ tick 契機。増分（ticklive）: 未 enter なら _enterTicklive、以降は base=0 尾部を addTick して
+  //   snapshot を反映。formingStart 変化（rollover）で _enterTicklive を再実行。
+  //   非増分: this.refresh() へ byte-identical 委譲（ticklive OFF / formingClient 未注入＝回帰ゼロ）。
+  async onLiveTick() {
+    if (!this._isIncremental()) {
+      return this.refresh(); // 非増分＝既存 refresh と同一（後方互換・回帰ゼロ）。
+    }
+    if (!this._enabled) {
+      return undefined;
+    }
+    if (!this._accumulator) {
+      return this._enterTicklive(); // 初回＝UC-01。
+    }
+    const forming = await this._formingClient.fetchForming(
+      this._buildFormingArgs({ base: 0, since: this._lastSec }),
+    );
+    if (!forming) {
+      return undefined; // null は前回描画を保持（非破壊）。
+    }
+    if (forming.formingStart !== this._formingStart) {
+      return this._enterTicklive(); // rollover: base を取り直して reset。
+    }
+    for (const t of forming.ticks) {
+      this._accumulator.addTick(t[0], t[1]);
+      this._lastSec = t[0];
+    }
+    this._primitive.setProfile(this._accumulator.snapshot());
+    return undefined;
+  }
+
+  // UC-01: base=1 を取得して accumulator を init、forming tick 列を畳み込み、snapshot を描画する。
+  async _enterTicklive() {
+    if (!this._enabled || !this._isIncremental()) {
+      return;
+    }
+    const forming = await this._formingClient.fetchForming(
+      this._buildFormingArgs({ base: 1, since: null }),
+    );
+    if (!forming) {
+      return; // null は前回描画を保持（非破壊）。
+    }
+    // MP-05 是正: base=1 応答の必須フィールド（レンジ/グリッド/base 配列）が欠損（無ローソク等の空
+    //   profile）なら init へ NaN が伝播し snapshot が NaN 価格を出す。presence ガードで欠損時は null と
+    //   同じ扱い（増分に入らず前回描画を保持＝既存 fetch null と同じ非破壊挙動）にする。
+    if (!_hasBaseFields(forming)) {
+      return; // 空 profile（必須フィールド欠損）は前回描画を保持（非破壊・NaN 混入を防ぐ）。
+    }
+    const acc = this._makeAccumulator();
+    acc.init({
+      baseFine: forming.baseFine,
+      baseKmin: forming.baseKmin,
+      activeTable: forming.activeTable,
+      priceMin: forming.priceMin,
+      priceMax: forming.priceMax,
+      nBins: forming.nBins,
+      gridW: forming.gridW,
+      formingStart: forming.formingStart,
+    });
+    this._accumulator = acc;
+    this._formingStart = forming.formingStart;
+    this._lastSec = null;
+    for (const t of forming.ticks) {
+      acc.addTick(t[0], t[1]);
+      this._lastSec = t[0];
+    }
+    this._primitive.setProfile(acc.snapshot());
+  }
+
+  // ticklive を解除する（累積器破棄・通常経路復帰・冪等）。
+  _exitTicklive() {
+    this._ticklive = false;
+    this._accumulator = null;
+    this._formingStart = null;
+    this._lastSec = null;
   }
 
   // MP 表示中の右マージン（プロファイル専用領域）を renderer へ委譲する。

@@ -438,12 +438,19 @@ const MARKET_PROFILE = new IndicatorDef({
     //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
     //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
     //     T 縦線/トリム/スナップショット解除）。
-    //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
-    //   order は旧 replay の位置（1）＝表示系 group の先頭。
-    param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
+    //   - ticklive: 現在足の 1tick 毎 足内逐次成長（サブバー tick 逐次・クライアント側増分累積）。dwell
+    //     （滞在秒）原子で forming 期間の tick を 1 本ずつ増分累積し snapshot を描画する。normal/replay/
+    //     sessions とは排他（actor._applyMode('ticklive') が replay/sessions 一式を解除）。この値が
+    //     mode ENUM に存在しないと segmented トグルが選択肢を描けず本番 UI から発行不能＝機能が dead code に
+    //     なるため、他 3 モードと同形式で列挙する（MP-01 是正）。
+    //   actor.setParams が mode を受けて _setReplay/_applySessions/_applyMode('ticklive') の復元経路を
+    //   再利用し状態遷移する。order は旧 replay の位置（1）＝表示系 group の先頭。
+    param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions', 'ticklive'], {
       group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
-      enumLabels: { normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル' },
-      tooltip: '通常＝累積プロファイル／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示',
+      enumLabels: {
+        normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル', ticklive: 'Tickライブ',
+      },
+      tooltip: '通常＝累積プロファイル／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示／Tickライブ＝現在足を1tick毎に足内逐次成長',
     }),
   ],
   series: [

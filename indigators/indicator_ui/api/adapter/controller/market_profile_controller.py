@@ -233,11 +233,14 @@ def handle_market_profile(
     want_today = _parse_bool_flag(kwargs.get("today"))
     # sessions（日別プロファイル分割・?sessions=1）。省略・不正は偽（後方互換）。移植元 prototype_260630-01。
     want_sessions = _parse_bool_flag(kwargs.get("sessions"))
+    # want_fine（GRID_W 固定グリッド base の露出・tick 逐次成長の忠実 binning 用）。Python 内部呼び出し
+    #   （market_profile_forming_controller）専用の追加フラグ。省略・不正は偽＝既存応答スキーマ不変（後方互換）。
+    want_fine = _parse_bool_flag(kwargs.get("want_fine"))
 
     if src_val in ("dwell", "m1"):
         return _handle_dwell(
             ref, timeframe, limit_n, n_bins, va_pct, barw_val, src_val, to_ts, from_ts,
-            want_today, want_sessions,
+            want_today, want_sessions, want_fine,
         )
 
     # src=candle（既定）— 現状の足ベース TPO 経路（不変。barw 指定時のみ n_bins を上書き）。
@@ -283,6 +286,7 @@ def _handle_dwell(
     from_ts: int | None = None,
     want_today: bool = False,
     want_sessions: bool = False,
+    want_fine: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     """src=dwell/m1 の処理（実ティック・tick 対応 ref のみ）。非 tick ref は 400。
 
@@ -314,6 +318,7 @@ def _handle_dwell(
         profile = market_profile_dwell.compute_dwell_profile(
             symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400,
             metric=metric, want_today=want_today, want_sessions=want_sessions,
+            want_fine=want_fine,
         )
     else:
         # 全期間化（250日キャップ撤廃）: レンジ（price_min/max）と実期間（t0/t1）を全 candle から
@@ -328,7 +333,7 @@ def _handle_dwell(
         profile = market_profile_dwell.compute_dwell_profile(
             symbol, t0, t1, price_min, price_max, n_bins,
             va_pct=va_pct, bar_sec=bar_sec, metric=metric, want_today=want_today,
-            want_sessions=want_sessions,
+            want_sessions=want_sessions, want_fine=want_fine,
         )
     body = {
         "ok": True, "profile": profile, "src": src,

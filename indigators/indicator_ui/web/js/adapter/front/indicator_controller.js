@@ -570,7 +570,8 @@ export class IndicatorController {
       //   /compute を通さず actor.refresh（現時間足で再取得）へ委譲し、MP も新足へ追従させる。
       if (this._isMarketProfile(meta.def)) {
         if (this._marketProfile && inst.visible) {
-          await this._marketProfile.refresh();
+          // tick 逐次成長（ticklive）ON 時は forming 増分、OFF 時は refresh へ byte-identical 委譲。
+          await this._marketProfile.onLiveTick();
         }
         continue;
       }
