@@ -11,6 +11,18 @@
 
 import { PairPrimitiveBase } from './pair_primitive_base.js';
 
+// 'YYYY-MM-DD'（sessions の date）→ UNIX 秒（UTC 深夜）。timeToCoordinate へ渡し日付を時間軸に対応づける。
+function dateToUnix(dateStr) {
+  const parts = String(dateStr).split('-');
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  if (!(y > 0) || !(m > 0) || !(d > 0)) {
+    return NaN;
+  }
+  return Date.UTC(y, m - 1, d) / 1000;
+}
+
 // バー長の最大割合（チャート幅に対する。右端から左へ伸ばす）と最小可視画素。
 const BAR_MAX_FRACTION = 0.28;
 const MIN_BAR_PX = 1;
@@ -33,8 +45,15 @@ const C_POC_LINE = '#ff3b3b';
 const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
 // リプレイ時点 T の縦線色（試作 prototype_260630-01 の遡り縦線準拠・視認しやすい水色）。
 const C_CURSOR_LINE = 'rgba(120, 190, 255, 0.9)';
-// sessions（日別プロファイル分割）: 1 セッションの最小列幅(px 相当)。分析できる幅を確保する（試作 SESS_MIN_COL）。
-const SESS_MIN_COL = 102;
+// sessions 各列の OHLC 可視化（ユーザー選択「方向ティント＋終値線」）。
+//   列全体を当日方向で薄くティント（陽線=薄緑/陰線=薄赤）し、終値にのみ太い横線（緑/赤）を引く。
+//   ヒストグラムの形は保ちつつ、上げ下げが一目で分かりポイント（終値）が際立つ。
+const C_SESS_TINT_UP = 'rgba(38, 166, 154, 0.12)';   // 陽線日の列ティント（薄緑）
+const C_SESS_TINT_DOWN = 'rgba(239, 83, 80, 0.12)';  // 陰線日の列ティント（薄赤）
+// 終値線は控えめに（方向はティントで分かるので、終値は細い目印程度）。1px・やや軟らかい緑/赤。
+const C_OHLC_UP = 'rgba(38, 166, 154, 0.8)';         // 終値線（上げ・軟緑）
+const C_OHLC_DOWN = 'rgba(239, 83, 80, 0.8)';        // 終値線（下げ・軟赤）
+const OHLC_CLOSE_LW = 1;                             // 終値線の太さ（控えめ）
 // sessions 列内の日別 POC 行を白で強調（試作準拠）・列内バーの最小可視画素。
 const C_SESS_POC = 'rgba(255,255,255,0.95)';
 const SESS_BAR_ALPHA = 0.98;
@@ -49,20 +68,17 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     // 増分2 スナップショット: true で累積バーを減光（DIM_ALPHA）＋ today[] を当日内スケールで明るく重畳。
     //   既定 false（明るい累積バー＝従来描画）。移植元 prototype_260630-01 drawComposite（showToday）。
     this._snapshot = false;
-    // sessions（日別プロファイル分割）: 各営業日の [{date,tpo[]}]。null=通常モード（累積プロファイル）。
-    //   non-null で sessions モード＝各営業日の列を描き、通常の累積バー・POC/VA 線は描かない（試作準拠）。
+    // sessions（日別プロファイル分割）: 各営業日の [{date,tpo[],open,high,low,close,poc,va_low,va_high}]。
+    //   null=通常モード（累積プロファイル）。non-null で sessions モード＝各営業日の列を時間軸連動で描く。
     this._sessions = null;
-    // sessions_total（キャップ前の実日数）: 注記「直近N/全M日」の M。null=未提供＝受信長へフォールバック。
-    //   controller がキャップ後の直近 60 日ぶんだけ返すため、受信 sessions.length では実日数を表せない。
-    this._sessionsTotal = null;
+    // sessions タイルの列幅キャッシュ（隣接間隔から算出。可視 <2 のフォールバック用）。
+    this._lastSessColW = null;
   }
 
   // sessions（日別プロファイル分割）を設定して再描画要求。null で通常モード（累積プロファイル）へ復帰。
-  //   移植元 prototype_260630-01 drawSessions。sessions[{date,tpo[]}] は backend の応答トップレベル由来。
-  //   total（キャップ前の実日数・任意）は注記「直近N/全M日」の M に使う（未提供時は受信長フォールバック）。
-  setSessions(sessions, total = null) {
+  //   sessions[{date,tpo[],(OHLC),(poc/va)}] は actor が backend 応答＋candle から組み立てたビュー。
+  setSessions(sessions) {
     this._sessions = Array.isArray(sessions) ? sessions : null;
-    this._sessionsTotal = total;
     this._update();
   }
 
@@ -107,34 +123,72 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     return step > 0 ? step * 0.85 : DEFAULT_BAR_H;
   }
 
-  // sessions 描画（移植元 prototype_260630-01 drawSessions）: チャート幅から nFit=floor(width/SESS_MIN_COL)
-  //   を求め、直近 nFit 日だけを**全幅に等間隔タイル**（cx=i*colW・試作 L204-210）で描く。
-  //   時刻座標(timeToCoordinate)には置かない＝ズームに依存せず常に分析できる列幅を確保し、
-  //   どの日かは列上部の日付ラベル(MM-DD)で示す（試作準拠）。列は交互背景で区切り、
-  //   列内は日内 max で正規化した横ヒストグラム（heatColor 再利用）・日別 POC 行を白で強調。
-  //   直近 nFit < 全日数のときは左下に「直近N/全M日」注記。累積 POC/VA 線・通常バーは描かない。
+  // sessions 描画: 各営業日プロファイルを**その日の時間座標**（timeToCoordinate(date)）に配置する。
+  //   ユーザー選択で試作の全幅画面固定タイルから変更＝横ドラッグ/ズームでタイルもチャートと連動し、
+  //   スクロールで過去のセッションをたどれる。列幅は隣接セッションの中央間隔（=barSpacing・daily は
+  //   連続バー）から求め（<2 可視時は直前値へフォールバック）、視野外（x=null）はスキップ（カリング）。
+  //   列内は日内 max で正規化した横ヒストグラム（heatColor）・日別 POC 行を白。累積 POC/VA・通常バーは描かない。
+  //   lwc への到達は series.priceToCoordinate（toY）と timeScale().timeToCoordinate のみ（cursor 線と同じ作法）。
   _drawSessions(ctx, scope, toY, barH) {
     const all = this._sessions;
     if (!all.length) {
       return;
     }
-    const width = scope.bitmapSize.width;
     const height = scope.bitmapSize.height;
     const bins = this._profile.bins;
-    // nFit: 列幅 >= SESS_MIN_COL を確保できる日数（直近優先）。1 未満にはしない。
-    const nFit = Math.max(1, Math.floor(width / SESS_MIN_COL));
-    const ss = all.slice(Math.max(0, all.length - nFit)); // 幅確保のため直近 nFit 日。
-    const colW = width / ss.length;                       // 各列の割当幅（全幅タイル）。
+    const ts = this._chart.timeScale && this._chart.timeScale();
+    if (!ts || typeof ts.timeToCoordinate !== 'function') {
+      return;
+    }
+    // 各セッション中心 x（timeToCoordinate。範囲外は null＝カリング）。
+    const xs = all.map((s) => {
+      const c = ts.timeToCoordinate(dateToUnix(s.date));
+      return c == null ? null : c;
+    });
+    // 列幅 = 隣接セッション中央間隔の中央値（=1バー幅）。<2 可視時は直前値/既定。
+    const gaps = [];
+    for (let i = 1; i < xs.length; i += 1) {
+      if (xs[i] != null && xs[i - 1] != null) {
+        const g = Math.abs(xs[i] - xs[i - 1]);
+        if (g > 0) {
+          gaps.push(g);
+        }
+      }
+    }
+    gaps.sort((a, b) => a - b);
+    const colW = gaps.length ? gaps[Math.floor(gaps.length / 2)] : (this._lastSessColW || 18);
+    this._lastSessColW = colW;
+    const tileW = Math.max(3, colW * 0.85);
     ctx.save();
     ctx.font = '10px system-ui';
     ctx.textBaseline = 'top';
-    for (let i = 0; i < ss.length; i += 1) {
-      const arr = ss[i].tpo || [];
-      const left = i * colW; // 全幅に等間隔タイル（試作 cx = i*colW）。
-      // 列を交互背景で区別（試作準拠）。
-      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.015)';
-      ctx.fillRect(left, 0, colW, height);
-      // 日内 max（正規化基準）と日別 POC（最頻 bin index）を求める。
+    for (let i = 0; i < all.length; i += 1) {
+      const cx = xs[i];
+      if (cx == null) {
+        continue; // 視野外＝スクロールで可視化。
+      }
+      const left = cx - tileW / 2;
+      const s = all[i];
+      const arr = s.tpo || [];
+      const hasOhlc = s.open != null && s.close != null;
+      const hasRange = s.high != null && s.low != null;
+      // 列背景: OHLC 有れば**高安レンジ（toY(high)〜toY(low)）だけ**を当日方向でティント
+      //   （陽=薄緑/陰=薄赤）。当日値幅を色付きバンドで示し、方向も一目で分かる。
+      //   OHLC 無しは従来の交互背景（後方互換・列区別）。
+      if (hasOhlc && hasRange) {
+        const yHigh = toY(s.high);
+        const yLow = toY(s.low);
+        if (yHigh != null && yLow != null) {
+          const top = Math.min(yHigh, yLow);
+          const bot = Math.max(yHigh, yLow);
+          ctx.fillStyle = s.close >= s.open ? C_SESS_TINT_UP : C_SESS_TINT_DOWN;
+          ctx.fillRect(left, top, tileW, Math.max(1, bot - top));
+        }
+      } else {
+        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.015)';
+        ctx.fillRect(left, 0, tileW, height);
+      }
+      // 日内 max（正規化基準）と日別 POC（最頻 bin index）。
       let dmax = 0;
       let pocj = -1;
       for (let j = 0; j < arr.length; j += 1) {
@@ -157,23 +211,27 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
           if (y == null) {
             continue; // 範囲外価格はスキップ。
           }
-          const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * (colW - 4));
-          // 日別 POC 行は白で強調、それ以外は日内正規化のヒート配色。
+          const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * (tileW - 4));
           ctx.fillStyle = (j === pocj) ? C_SESS_POC : heatColor(v / dmax, SESS_BAR_ALPHA);
           ctx.fillRect(left + 2, y - barH / 2, w, barH);
         }
       }
-      // 列上部に日付（MM-DD・試作準拠）。
+      // 終値線のみ（列幅いっぱい・太線）。上げ=緑/下げ=赤。ヒストの上に重ね当日の終値ポイントを際立たせる。
+      //   actor が candle から o/c を付与済みのときのみ描く（未付与＝後方互換で skip）。
+      if (hasOhlc) {
+        const y = toY(s.close);
+        if (y != null) {
+          ctx.strokeStyle = s.close >= s.open ? C_OHLC_UP : C_OHLC_DOWN;
+          ctx.lineWidth = OHLC_CLOSE_LW;
+          ctx.beginPath();
+          ctx.moveTo(left, y);
+          ctx.lineTo(left + tileW, y);
+          ctx.stroke();
+        }
+      }
+      // 列上部に日付（MM-DD）。
       ctx.fillStyle = 'rgba(154,164,178,.6)';
-      ctx.fillText((ss[i].date || '').slice(5), left + 3, 4);
-    }
-    // 直近 nFit < 全日数なら左下に注記（試作準拠）。M はキャップ前の実日数（total）を優先し、
-    //   未提供時は受信長（all.length）へフォールバックする（キャップ後 60 の誤読を防ぐ・修正1）。
-    const totalDays = this._sessionsTotal ?? all.length;
-    if (ss.length < totalDays) {
-      ctx.fillStyle = 'rgba(154,164,178,.8)';
-      ctx.font = '11px system-ui';
-      ctx.fillText(`直近${ss.length}/全${totalDays}日`, 6, height - 16);
+      ctx.fillText((all[i].date || '').slice(5), left + 3, 4);
     }
     ctx.restore();
   }

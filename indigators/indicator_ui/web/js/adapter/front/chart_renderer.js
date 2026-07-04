@@ -175,6 +175,8 @@ export class ChartRenderer {
     this._profileMarginFraction = 0;
     // スクラブ追従で保持するズーム倍率（可視論理幅）のキャッシュ。getVisibleLogicalRange 一時失敗時に使う。
     this._replayViewSpan = null;
+    // sessions（日別プロファイル）の time→{poc,vah,val} Map（読み取り欄で当日 MP を出す）。null=非表示。
+    this._sessionMP = null;
     // 価格軸ホイールズーム: override 価格レンジ（null=自動スケール）。handlePriceWheel で更新し、
     //   resetPriceZoom / ダブルクリックで null（自動スケール復帰）へ戻す。
     this._priceZoomRange = null;
@@ -438,6 +440,11 @@ export class ChartRenderer {
     return true;
   }
 
+  // 価格ズーム（override）が有効か。true のとき本体ドラッグの上下パンを許可する（全体表示では不許可）。
+  isPriceZoomed() {
+    return this._priceZoomRange != null;
+  }
+
   // 価格軸のダブルクリック等で自動スケールへ復帰する（override を解除）。provider は素通しに戻る。
   resetPriceZoom() {
     this._priceZoomRange = null;
@@ -486,6 +493,23 @@ export class ChartRenderer {
       return null;
     }
     return ts.coordinateToLogical(x);
+  }
+
+  // 直近 n バーを可視範囲にフィットさせる（sessions=日別プロファイルの時間軸連動タイルを見せる初期ズーム）。
+  //   全期間表示だと 1 日=barSpacing が極小でタイルが潰れるため、sessions 有効化時に直近 n 日へ寄せる。
+  //   lwc の timeScale().setVisibleLogicalRange 直叩きは本所（ChartRenderer）に閉じる。
+  focusRecentBars(n) {
+    const total = this._baseCandles ? this._baseCandles.length : 0;
+    if (!(total > 0) || !(n > 0)) {
+      return;
+    }
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.setVisibleLogicalRange !== 'function') {
+      return;
+    }
+    const from = Math.max(-0.5, total - n - 0.5);
+    const to = total - 0.5 + Math.max(1, n * 0.04); // 右端に僅かな余白（最新タイルが切れないように）。
+    ts.setVisibleLogicalRange({ from, to });
   }
 
   // リプレイスワイプの感度基準＝1 バーあたりのピクセル幅（barSpacing）。
@@ -857,7 +881,15 @@ export class ChartRenderer {
     }
     const time = (param && param.time !== undefined) ? param.time
       : (this._lastBar ? this._lastBar.time : undefined);
-    return { time, ohlc, overlays };
+    // sessions: 当日 MP（POC/VAH/VAL）を time で引いて DTO に載せる（供給時のみ・sessions 表示中）。
+    const sessionMP = (this._sessionMP && time != null) ? (this._sessionMP.get(time) || null) : null;
+    return { time, ohlc, overlays, sessionMP };
+  }
+
+  // sessions の time→{poc,vah,val} Map を供給する（読み取り欄で当日 MP を出す）。null で非表示。
+  //   lwc へは触れない純データ受け渡し（actor が sessions 応答から構築して渡す）。
+  setSessionMP(map) {
+    this._sessionMP = (map && typeof map.get === 'function') ? map : null;
   }
 
   // seriesKey の系列を全 instance から引き当て apply(series) を実行し、overlay 読み取りの

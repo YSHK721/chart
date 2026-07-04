@@ -329,6 +329,19 @@ class TestComputeCandleProfileSessions:
         for s in sessions:
             assert len(s["tpo"]) == 6
 
+    def test_sessions_include_per_day_poc_and_va(self):
+        # 各セッションへ当日 POC/VA（_value_area 単一定義）を付与する（当日 MP 読み取りと VA 定義一致）。
+        result = compute_candle_profile(
+            _SESSION_CANDLES, n_bins=6, va_pct=0.70, want_sessions=True
+        )
+        for s in result["sessions"]:
+            assert {"poc", "va_low", "va_high"} <= set(s)
+            assert s["va_low"] <= s["poc"] <= s["va_high"]
+        # 手計算: 2024-01-01 は bin0..4 に各1（tpo=[1,1,1,1,1,0]）→ POC=最頻(先頭 bin0 中心)。
+        s0 = next(s for s in result["sessions"] if s["date"] == "2024-01-01")
+        centers = [b["price"] for b in result["bins"]]
+        assert s0["poc"] == round(centers[0], 2)  # argmax は同値時に先頭 index。
+
     def test_sessions_per_day_shape_matches_hand_calc(self):
         # Act
         result = compute_candle_profile(

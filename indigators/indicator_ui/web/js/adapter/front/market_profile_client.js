@@ -76,15 +76,13 @@ export function parseProfileResponse(payload) {
   // 応答トップレベルに src/atom/bar_width（UI メタ）・sessions（日別分割）があれば profile へ素通しする
   // （無ければ既存 profile をそのまま返す＝後方互換・共有オブジェクト非破壊の spread 維持）。
   if (payload.src != null || payload.atom != null || payload.bar_width != null
-      || payload.sessions != null || payload.sessions_total != null) {
+      || payload.sessions != null) {
     const meta = {};
     if (payload.src != null) meta.src = payload.src;
     if (payload.atom != null) meta.atom = payload.atom;
     if (payload.bar_width != null) meta.bar_width = payload.bar_width;
-    // sessions[{date,tpo[]}]（日別プロファイル分割）— actor が profile.sessions を primitive へ渡す。
+    // sessions[{date,tpo[],OHLC,poc/va}]（日別プロファイル分割）— actor がビュー化して primitive/読取欄へ。
     if (payload.sessions != null) meta.sessions = payload.sessions;
-    // sessions_total（キャップ前の実日数）— primitive 注記「直近N/全M日」の M（キャップ後 60 の誤読防止）。
-    if (payload.sessions_total != null) meta.sessions_total = payload.sessions_total;
     return { ...profile, ...meta };
   }
   return profile;

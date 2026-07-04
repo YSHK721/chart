@@ -8,6 +8,35 @@
 // 非破壊方針: primitive は初回有効化まで mainSeries へ attach しない（OFF 時はチャートに一切触れない）。
 //   取得失敗（client が null）時も既存描画へ干渉せず、前回 profile を保持する。
 
+// sessions の 'YYYY-MM-DD' → UNIX 秒（UTC 深夜）。candle.time との突合に使う（primitive dateToUnix と同一規則）。
+function _sessionDateToUnix(dateStr) {
+  const parts = String(dateStr).split('-');
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  return (y > 0 && m > 0 && d > 0) ? Date.UTC(y, m - 1, d) / 1000 : NaN;
+}
+
+// sessions 応答を表示用に組み立てる純変換（SRP: actor は制御に留め、変換は本関数へ）。
+//   ① 各セッションへ当日 candle の OHLC を date→time 突合で付与（列内 OHLC 描画用・透明化しても実値は残る）。
+//   ② 当日 MP（POC/VAH/VAL）の time→mp Map を作る。VA/POC は backend が _value_area 単一定義で算出済み
+//      （poc/va_low/va_high）＝frontend は表示に写すだけ（DRY・VA 定義は backend に一元化）。
+//   戻り値 { list, mp }。list=OHLC 付与済みセッション配列、mp=time→{poc,vah,val} の Map。
+function _buildSessionView(list, candles) {
+  const byTime = new Map((candles || []).map((c) => [c.time, c]));
+  const out = [];
+  const mp = new Map();
+  for (const s of list) {
+    const t = _sessionDateToUnix(s.date);
+    const c = byTime.get(t);
+    out.push(c ? { ...s, open: c.open, high: c.high, low: c.low, close: c.close } : s);
+    if (s.poc != null && s.va_low != null && s.va_high != null && Number.isFinite(t)) {
+      mp.set(t, { poc: s.poc, vah: s.va_high, val: s.va_low });
+    }
+  }
+  return { list: out, mp };
+}
+
 // 増分2 定数（試作 prototype_260630-01 と一致）。
 const ROLL_BARS = 60; // ローリング窓の本数（from = T - ROLL_BARS*bar_sec）。
 // MP 表示中の右マージン（プロファイル専用領域＝試作 PROFILE_FRAC。バーとローソクの重なり回避）。
@@ -128,6 +157,7 @@ export class MarketProfileActor {
     if (mode === 'sessions') {
       this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
       this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
+      this._sessionsFocusPending = true; // 初回反映時に直近セッションへ寄せる（時間軸連動タイルを見せる）。
       return;
     }
     if (mode === 'replay') {
@@ -163,15 +193,31 @@ export class MarketProfileActor {
   //   該当メソッド非提供時は skip（後方互換）。移植元 prototype_260630-01 drawSessions。
   _applySessions(profile) {
     const on = !!this._sessions;
+    // 表示用ビュー（OHLC 付与済みリスト＋当日 MP Map）を純変換で一括構築する（SRP）。
+    const rawList = on && profile && Array.isArray(profile.sessions) ? profile.sessions : null;
+    const view = (rawList && rawList.length)
+      ? _buildSessionView(rawList, (typeof this._getCandles === 'function' ? this._getCandles() : []))
+      : null;
     if (this._primitive && typeof this._primitive.setSessions === 'function') {
-      const list = on && profile && Array.isArray(profile.sessions) ? profile.sessions : null;
-      // sessions_total（キャップ前の実日数）を第 2 引数で渡す（注記「直近N/全M日」の M・修正1）。
-      //   未提供時は primitive 側で受信長へフォールバック（後方互換）。
-      const total = on && profile && profile.sessions_total != null ? profile.sessions_total : null;
-      this._primitive.setSessions(list, total);
+      this._primitive.setSessions(view ? view.list : null);
+    }
+    // 読み取り欄: クロスヘアが当日を指したとき OHLC に加え当日 MP（POC/VAH/VAL）を出す（sessions のみ）。
+    if (this._renderer && typeof this._renderer.setSessionMP === 'function') {
+      this._renderer.setSessionMP(view ? view.mp : null);
     }
     if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
       this._renderer.setCandleTransparency(on);
+    }
+    // sessions を有効化した初回のみ、直近セッション日へズームを寄せる（時間軸連動タイルが潰れないように）。
+    //   以後は寄せない（ユーザーの手動ズーム/スクロールを尊重）。off 遷移でフラグをクリア。
+    if (on) {
+      if (this._sessionsFocusPending && rawList && rawList.length
+          && this._renderer && typeof this._renderer.focusRecentBars === 'function') {
+        this._sessionsFocusPending = false;
+        this._renderer.focusRecentBars(rawList.length);
+      }
+    } else {
+      this._sessionsFocusPending = false;
     }
   }
 

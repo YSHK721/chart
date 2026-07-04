@@ -118,6 +118,30 @@ test('render: writes each overlay name/value with its series color', () => {
   assert.ok(colors.includes('#d2433a'), `expected BEAR color #d2433a in ${JSON.stringify(colors)}`);
 });
 
+test('render: sessionMP があれば当日 MP（POC/VA）行を描く（sessions のクロスヘア読み取り）', () => {
+  const doc = fakeDoc();
+  const root = withRoot(doc, 'crosshair-readout');
+  const view = new CrosshairReadoutView({ document: doc, elementId: 'crosshair-readout' });
+  view.render({
+    time: 1277769600, ohlc: { open: 100, high: 110, low: 95, close: 108 }, overlays: [],
+    sessionMP: { poc: 102, vah: 106, val: 98 },
+  });
+  const text = allText(root);
+  assert.match(text, /POC/);
+  assert.match(text, /102/);
+  assert.match(text, /VA/);
+  assert.match(text, /98/);
+  assert.match(text, /106/);
+});
+
+test('render: sessionMP 無し（通常モード）は MP 行を描かない', () => {
+  const doc = fakeDoc();
+  const root = withRoot(doc, 'crosshair-readout');
+  const view = new CrosshairReadoutView({ document: doc, elementId: 'crosshair-readout' });
+  view.render({ time: 1, ohlc: { open: 1, high: 2, low: 0, close: 1 }, overlays: [] });
+  assert.doesNotMatch(allText(root), /POC/);
+});
+
 // ===========================================================================
 // render: 安全性（null / ohlc null / overlays 空でクラッシュしない・空表示）
 // ===========================================================================

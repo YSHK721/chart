@@ -241,10 +241,14 @@ export async function bootstrap({
   //     わずかなマウス移動でスライダが暴走する不具合の修正）。旧実装は coordinateToLogical の絶対
   //     マッピング（下限なし）で過敏だった。lwc 座標 API は renderer に隔離済み。
   //   container/doc 不在（SSR/テスト）や pointer 非対応は no-op（防御）。
+  //   ★リプレイ中も**縦成分は価格パン**する（要望「拡大しても上下も移動」）。横=スクラブ・縦=価格パンの
+  //     2D 操作にする。純横（dy=0）は価格を触らず T 追従を維持、純縦は index 不変でスクラブせず価格のみ動く。
   if (container && typeof container.addEventListener === 'function') {
     let swiping = false;
     let swipeStartX = 0;
     let swipeStartIdx = 0;
+    let lastScrubIdx = 0; // 冗長スクラブ回避（縦のみドラッグで同 index を再取得しない）。
+    let lastSwipeY = 0;   // 縦パンの前フレーム y（価格パンの dy 算出）。
     const isReplayOn = () => !!(controller && controller._marketProfile
       && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
     const rectLeft = () => (typeof container.getBoundingClientRect === 'function'
@@ -258,15 +262,29 @@ export async function bootstrap({
       // 開始点のみ記録（クリック位置へは飛ばさない＝プロト mousedown 相当）。
       swipeStartX = e.clientX - rectLeft();
       swipeStartIdx = typeof replayBar.currentIndex === 'function' ? replayBar.currentIndex() : 0;
+      lastScrubIdx = swipeStartIdx;
+      lastSwipeY = e.clientY;
     });
     container.addEventListener('pointermove', (e) => {
       if (!swiping || !isReplayOn()) {
         return;
       }
+      // 横成分: T スクラブ（相対デルタ・index 変化時のみ再取得＝縦のみドラッグで無駄打ちしない）。
       const x = e.clientX - rectLeft();
       const px = renderer.pixelsPerBar(); // barSpacing（極小時は 8px 下限＝プロト準拠）。
-      const dIdx = Math.round((x - swipeStartX) / px); // 左ドラッグ=過去へ（スライダと同方向）。
-      replayBar.scrubToLogical(swipeStartIdx + dIdx); // clamp は scrubToLogical 内で実施。
+      const idx = swipeStartIdx + Math.round((x - swipeStartX) / px); // 左ドラッグ=過去へ。
+      if (idx !== lastScrubIdx) {
+        lastScrubIdx = idx;
+        replayBar.scrubToLogical(idx); // clamp は scrubToLogical 内で実施。
+      }
+      // 縦成分: 価格パン。**価格ズーム中（isPriceZoomed）のみ**（非リプレイ側と統一）。全体表示で
+      //   縦パンすると override が張られ空白露出＝撤去した不具合をリプレイ中に再現するため、ゲートする。
+      const dy = e.clientY - lastSwipeY;
+      lastSwipeY = e.clientY;
+      if (typeof renderer.isPriceZoomed === 'function' && renderer.isPriceZoomed()) {
+        updatePaneHeight(); // autoSize 追随。
+        renderer.panPriceByPixels(dy);
+      }
     });
     const endSwipe = () => {
       if (!swiping) {
@@ -316,44 +334,44 @@ export async function bootstrap({
       }
     });
 
-    // チャート本体の**完全自由 2D ドラッグ**（TradingView 流・ユーザー選択）。
-    //   横方向は lwc の時間パン（既存）、縦成分は毎フレーム renderer.panPriceByPixels(dy) で価格をパンする
-    //   ＝上下左右・斜めが同時に動く。純横ドラッグ（dy=0）は価格を触らないので自動スケールは保たれる。
-    //   縦に動かすと価格は手動モード（override）になり、価格軸ダブルクリック（resetPriceZoom）で
-    //   自動スケールへ復帰する。preventDefault/stopPropagation はしない（lwc の時間パンを奪わない）。
-    //   価格軸上のドラッグは lwc ネイティブの縦パンに委ねる。リプレイ中は横スワイプが本体ドラッグを
-    //   占有するので 2D パンは無効化する。
-    let panActive = false;
-    let lastPanY = 0;
-    const isReplayOn = () => !!(controller && controller._marketProfile
+    // 本体ドラッグの縦成分で価格パン（上下移動）を **価格ズーム中（override 有効時）に限り** 行う。
+    //   ・全体表示（自動スケール）では縦パンしない＝空白が出て拡大縮小に見える不具合を出さない（撤去理由）。
+    //   ・価格軸ホイールズーム後（renderer.isPriceZoomed()）は縦パンを許可＝拡大した価格帯の外も辿れる
+    //     （ユーザFB「その価格帯以外確認できないのは問題」への対応）。横は lwc の時間パンに委ねる。
+    //   価格軸上・リプレイ中は対象外（リプレイは横スワイプが占有・軸は lwc ネイティブ）。
+    let vpanActive = false;
+    let lastVpanY = 0;
+    const isReplayOn2 = () => !!(controller && controller._marketProfile
       && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
     container.addEventListener('pointerdown', (e) => {
-      if (isReplayOn() || e.button !== 0) {
+      if (isReplayOn2() || e.button !== 0) {
         return;
       }
-      const { x } = containerXY(e);
-      if (renderer.isOverPriceAxis(x)) {
-        return; // 価格軸上は lwc ネイティブの縦パンに委ねる。
+      if (renderer.isOverPriceAxis(containerXY(e).x)) {
+        return; // 価格軸上は lwc ネイティブのスケールに委ねる。
       }
-      panActive = true;
-      lastPanY = e.clientY;
+      vpanActive = true;
+      lastVpanY = e.clientY;
     });
     container.addEventListener('pointermove', (e) => {
-      if (!panActive) {
+      if (!vpanActive) {
         return;
       }
-      if ((e.buttons & 1) === 0) { // ボタンが離れていたら終了（pointerup 取りこぼし対策）。
-        panActive = false;
+      if ((e.buttons & 1) === 0) {
+        vpanActive = false;
         return;
       }
-      const dy = e.clientY - lastPanY;
-      lastPanY = e.clientY;
-      updatePaneHeight(); // autoSize 追随（リサイズ後の pane 高を反映）。
-      renderer.panPriceByPixels(dy); // dy=0（純横）は panPriceByPixels 内で no-op＝自動スケール維持。
+      const dy = e.clientY - lastVpanY;
+      lastVpanY = e.clientY;
+      // ★価格ズーム中のみ縦パン（全体表示では価格を触らず自動スケール維持）。
+      if (typeof renderer.isPriceZoomed === 'function' && renderer.isPriceZoomed()) {
+        updatePaneHeight();
+        renderer.panPriceByPixels(dy);
+      }
     });
-    const endPan = () => { panActive = false; };
-    container.addEventListener('pointerup', endPan);
-    container.addEventListener('pointerleave', endPan);
+    const endVpan = () => { vpanActive = false; };
+    container.addEventListener('pointerup', endVpan);
+    container.addEventListener('pointerleave', endVpan);
   }
 
   controller = new IndicatorController({

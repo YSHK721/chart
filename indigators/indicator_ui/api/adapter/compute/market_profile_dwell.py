@@ -46,7 +46,7 @@ import numpy as np
 import pandas as pd
 
 # POC/VA は candle 版の単一定義を再利用する（DRY・同一定義）。
-from adapter.compute.market_profile import _value_area
+from adapter.compute.market_profile import _session_entry, _value_area
 
 # repo 根を sys.path へ（marketdata を import するため・dataset/forming_bar と同じロード境界）。
 _WORKSPACE_ROOT = _Path(__file__).resolve().parents[5]
@@ -71,7 +71,9 @@ _ACTIVE_TABLE_DAYS = 120  # active table 構築に用いる直近日数（試作
 
 # ディスク永続キャッシュ（日別ロールアップ）。既存の生データ/ticks/CSV は触らず、新規 cache
 # ディレクトリのみに読み書きする。完了日（UTC 確定日）のみ永続化し、当日（未確定）は都度計算する。
-_CACHE_VERSION = 1        # 形式バージョン。読込時に不一致なら無視して再計算（fail-safe）。
+_CACHE_VERSION = 2        # 形式バージョン。読込時に不一致なら無視して再計算（fail-safe）。
+#   v2: 日次ロールアップに「ソースティック署名(sig)」を併記。完了日を空でキャッシュした後にティックが
+#       届いても署名変化で自動再計算する（無効化ロジック・stale-empty 修正）。v1 は不一致で全再計算。
 _CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_dwell)。テストは tmp を注入。
 _CACHE_MISS = object()    # ディスク未ヒット/破損の番兵（None=「実データ無しの完了日」と区別する）。
 
@@ -247,21 +249,40 @@ def _cache_path(symbol: str, day_start: int) -> _Path:
     return _cache_root() / str(symbol) / f"g{GRID_W:g}" / f"{int(day_start)}.npz"
 
 
-def _save_day_rollup(path: _Path, roll: "dict | None") -> None:
+def _day_source_signature(symbol: str, day_start: int) -> str:
+    """完了日 ``day_start`` のソースティック署名（日次 parquet の name:mtime:size を連結）。
+
+    キャッシュ無効化に使う。完了日を空でキャッシュした後にティック parquet が届く/更新されると署名が
+    変わり、``_day_rollup`` が stale-empty を検出して再計算する。ファイル無し（休場等）は空文字。
+    ``day_parquet_files``（read-only・正準経路）と ``stat`` のみ＝ソース非改変・低コスト。
+    """
+    day = pd.Timestamp(int(day_start), unit="s").normalize()
+    parts: list[str] = []
+    for p in day_parquet_files(day, day, symbol=symbol):
+        try:
+            st = p.stat()
+            parts.append(f"{p.name}:{int(st.st_mtime)}:{int(st.st_size)}")
+        except OSError:
+            parts.append(f"{p.name}:?")
+    return "|".join(parts)
+
+
+def _save_day_rollup(path: _Path, roll: "dict | None", sig: str = "") -> None:
     """ロールアップ（None=実データ無し完了日を含む）を ``.npz`` へ原子的に保存する。
 
-    可変長 ``dwell``/``cnt`` と ``kmin`` を保持し、``version``/``grid_w``/``empty`` メタを併記する。
-    tmp へ書いてから :func:`os.replace` で確定し、書き掛けの破損ファイルを残さない。
+    可変長 ``dwell``/``cnt`` と ``kmin`` を保持し、``version``/``grid_w``/``empty``/``sig`` メタを併記する。
+    ``sig`` はソースティック署名（無効化用）。tmp へ書いてから :func:`os.replace` で確定し破損を残さない。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    common = dict(version=np.int64(_CACHE_VERSION), grid_w=np.float64(GRID_W), sig=np.str_(sig))
     if roll is None:
         arrs = dict(
-            version=np.int64(_CACHE_VERSION), grid_w=np.float64(GRID_W), empty=np.bool_(True),
+            **common, empty=np.bool_(True),
             kmin=np.int64(0), dwell=np.zeros(0, dtype=float), cnt=np.zeros(0, dtype=float),
         )
     else:
         arrs = dict(
-            version=np.int64(_CACHE_VERSION), grid_w=np.float64(GRID_W), empty=np.bool_(False),
+            **common, empty=np.bool_(False),
             kmin=np.int64(int(roll["kmin"])),
             dwell=np.asarray(roll["dwell"], dtype=float),
             cnt=np.asarray(roll["cnt"], dtype=float),
@@ -278,29 +299,31 @@ def _save_day_rollup(path: _Path, roll: "dict | None") -> None:
         raise
 
 
-def _load_day_rollup(path: _Path) -> Any:
-    """ディスクから日別ロールアップを読む。未ヒット/破損/バージョン不整合は :data:`_CACHE_MISS` を返す。
+def _load_day_rollup(path: _Path) -> "tuple[Any, str]":
+    """ディスクから日別ロールアップと署名を読む。未ヒット/破損/バージョン不整合は ``(_CACHE_MISS, "")``。
 
-    戻り値: ``_CACHE_MISS``（要再計算） / ``None``（実データ無しの完了日） / ``dict``（ロールアップ）。
-    破損・形式不整合は例外を握り潰し ``_CACHE_MISS`` として再計算に委ねる（fail-safe）。
+    戻り値: ``(status, sig)``。status は ``_CACHE_MISS``（要再計算） / ``None``（実データ無しの完了日） /
+    ``dict``（ロールアップ）。sig は保存時のソースティック署名（無効化判定に使う。旧形式は ""）。
+    破損・形式不整合は例外を握り潰し ``(_CACHE_MISS, "")`` として再計算に委ねる（fail-safe）。
     """
     if not path.is_file():
-        return _CACHE_MISS
+        return _CACHE_MISS, ""
     try:
         with np.load(path) as z:
             if int(z["version"]) != _CACHE_VERSION:
-                return _CACHE_MISS
+                return _CACHE_MISS, ""
             if float(z["grid_w"]) != float(GRID_W):
-                return _CACHE_MISS
+                return _CACHE_MISS, ""
+            sig = str(z["sig"]) if "sig" in z.files else ""
             if bool(z["empty"]):
-                return None
+                return None, sig
             return {
                 "kmin": int(z["kmin"]),
                 "dwell": np.asarray(z["dwell"], dtype=float),
                 "cnt": np.asarray(z["cnt"], dtype=float),
-            }
+            }, sig
     except Exception:
-        return _CACHE_MISS
+        return _CACHE_MISS, ""
 
 
 def _day_rollup(symbol: str, day_start: int, table: np.ndarray, now: float) -> "dict | None":
@@ -311,21 +334,29 @@ def _day_rollup(symbol: str, day_start: int, table: np.ndarray, now: float) -> "
     （UTC 未確定日）はキャッシュせず毎回再計算し、新ティック到着による stale 化を防ぐ。
     """
     key = (symbol, int(day_start))
-    if key in _DAY_CACHE:  # メモリ（プロセス内・最速）。
+    if key in _DAY_CACHE:  # メモリ（プロセス内・最速）。**非空のみ**メモ化する（下記）。
         return _DAY_CACHE[key]
     completed = int(day_start) + 86400 <= now  # 完了日のみ永続化対象。
     path = _cache_path(symbol, int(day_start))
+    cur_sig = _day_source_signature(symbol, int(day_start)) if completed else ""
     if completed:  # ディスク（プロセス跨ぎ・ウォーム済みなら高速）。
-        disk = _load_day_rollup(path)
-        if disk is not _CACHE_MISS:
-            _DAY_CACHE[key] = disk
+        disk, cached_sig = _load_day_rollup(path)
+        # ソースティック署名が一致するときのみディスクを信頼する。空でキャッシュした完了日に後から
+        #   ティックが届く/更新された場合は署名が変わり再計算する（stale-empty の無効化）。
+        if disk is not _CACHE_MISS and cached_sig == cur_sig:
+            if disk is not None:
+                _DAY_CACHE[key] = disk  # 非空のみメモ化。
             return disk
     secs, mids = _load_window_ticks(symbol, day_start, day_start + 86400)  # 計算。
     roll = _rollup_ticks(secs, mids, table)
     if completed:
-        _DAY_CACHE[key] = roll
+        # ★空(None)はメモリにメモ化しない。ティック未着で空になった完了日を常駐プロセスがメモ保持すると、
+        #   後からティックが届いても line 337 で早期 return し stale-empty が残るため（ディスクは署名照合で
+        #   再計算されるので、空日は毎回ディスク照合に委ねる）。非空は従来どおりメモ化して高速維持。
+        if roll is not None:
+            _DAY_CACHE[key] = roll
         try:
-            _save_day_rollup(path, roll)  # 完了日のみディスク保存（保存失敗は次回再計算で吸収）。
+            _save_day_rollup(path, roll, cur_sig)  # 完了日のみ保存（署名併記・保存失敗は次回吸収）。
         except Exception:
             pass
     return roll
@@ -489,10 +520,10 @@ def compute_dwell_profile(
         out["today"] = [round(float(v), 3) for v in today]
         out["today_max"] = today_max
     if want_sessions:
-        # 日付昇順で {date, tpo[]} を返す（candle 版・試作 mp_core と同順・同形）。
+        # 日付昇順で {date, tpo[], poc, va_low, va_high} を返す。VA は累積プロファイルと同一定義
+        #   （_value_area）を各日 tpo に適用する＝当日 MP 読み取りと VA 線が一致する（DRY・単一定義）。
         out["sessions"] = [
-            {"date": d, "tpo": [round(float(v), 2) for v in a]}
-            for d, a in sorted(sessions.items())
+            _session_entry(d, a, centers, va_pct) for d, a in sorted(sessions.items())
         ]
     return out
 

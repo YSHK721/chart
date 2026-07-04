@@ -76,6 +76,21 @@ export class CrosshairReadoutView {
       root.append(ohlcRow);
     }
 
+    // sessions: 当日 MP（POC/VAH/VAL）行（OHLC の下）。sessions 表示中に当日を指したときだけ出る。
+    if (dto.sessionMP) {
+      const mp = dto.sessionMP;
+      const row = doc.createElement('div');
+      row.className = 'readout-mp';
+      const poc = doc.createElement('span');
+      poc.className = 'readout-poc';
+      poc.textContent = `POC ${fmtValue(mp.poc)}`;
+      const va = doc.createElement('span');
+      va.className = 'readout-va';
+      va.textContent = `VA ${fmtValue(mp.val)}–${fmtValue(mp.vah)}`;
+      row.append(poc, va);
+      root.append(row);
+    }
+
     // overlay 各行（系列色付き）。
     for (const ov of dto.overlays ?? []) {
       const row = doc.createElement('div');

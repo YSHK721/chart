@@ -137,12 +137,25 @@ def compute_candle_profile(
         out["today"] = [round(float(v), 3) for v in today]
         out["today_max"] = today_max
     if want_sessions:
-        # 日付昇順で {date, tpo[]} を返す（試作 mp_core と同順・同形）。
+        # 日付昇順で {date, tpo[], poc, va_low, va_high} を返す。VA は累積プロファイルと同一定義
+        #   （_value_area・単一定義）を各日 tpo に適用する＝当日 MP 読み取りと VA 線が一致する（DRY）。
         out["sessions"] = [
-            {"date": d, "tpo": [round(float(v), 2) for v in a]}
-            for d, a in sorted(sessions.items())
+            _session_entry(d, a, centers, va_pct) for d, a in sorted(sessions.items())
         ]
     return out
+
+
+def _session_entry(date, tpo, centers, va_pct):
+    """1 セッションの応答 dict ``{date, tpo[], poc, va_low, va_high}`` を作る（VA は _value_area 単一定義）。"""
+    va_low, va_high = _value_area(tpo, centers, va_pct)
+    poc = float(centers[int(tpo.argmax())]) if float(tpo.sum()) > 0 else float(centers[0])
+    return {
+        "date": date,
+        "tpo": [round(float(v), 2) for v in tpo],
+        "poc": round(poc, 2),
+        "va_low": round(va_low, 2),
+        "va_high": round(va_high, 2),
+    }
 
 
 def _value_area(tpo, centers, va_pct):

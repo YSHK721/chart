@@ -431,7 +431,11 @@ function fakeSessPrimitive() {
 function fakeSessRenderer() {
   return {
     transparencies: [],
+    focusCalls: [],
+    sessionMPs: [],
     setCandleTransparency(on) { this.transparencies.push(!!on); },
+    focusRecentBars(n) { this.focusCalls.push(n); },
+    setSessionMP(map) { this.sessionMPs.push(map); },
   };
 }
 const PROFILE_WITH_SESSIONS = {
@@ -440,16 +444,37 @@ const PROFILE_WITH_SESSIONS = {
   sessions_total: 4146, // キャップ前の実日数（parse が profile へ素通し済み）。
 };
 
-function makeSessActor(profile = PROFILE_WITH_SESSIONS) {
+function makeSessActor(profile = PROFILE_WITH_SESSIONS, getCandles = null) {
   const client = fakeClient(profile);
   const primitive = fakeSessPrimitive();
   const renderer = fakeSessRenderer();
   const actor = new MarketProfileActor({
     client, primitive, mainSeries: fakeMainSeries(), renderer,
     getContext: () => ({ datasetRef: 'sample', timeframe: '1D' }),
+    ...(getCandles ? { getCandles } : {}),
   });
   return { actor, client, primitive, renderer };
 }
+
+test('sessions ON: 各セッションへ candle の OHLC を付与して primitive へ渡す（date→time 突合）', async () => {
+  // date 'YYYY-MM-DD' → UTC 深夜秒で candle.time と突合し o/h/l/c を付与する。
+  const t1 = Date.UTC(2024, 0, 1) / 1000; // 2024-01-01
+  const t2 = Date.UTC(2024, 0, 2) / 1000; // 2024-01-02
+  const candles = [
+    { time: t1, open: 100, high: 110, low: 95, close: 108 },
+    { time: t2, open: 108, high: 112, low: 104, close: 106 },
+  ];
+  const { actor, primitive } = makeSessActor(PROFILE_WITH_SESSIONS, () => candles);
+  actor.setParams({ mode: 'sessions' });
+  await actor.setEnabled(true);
+  const lastSess = primitive.sessionsCalls[primitive.sessionsCalls.length - 1];
+  assert.deepEqual(
+    { open: lastSess[0].open, high: lastSess[0].high, low: lastSess[0].low, close: lastSess[0].close },
+    { open: 100, high: 110, low: 95, close: 108 },
+    '2024-01-01 のセッションへ当日 OHLC が付与される',
+  );
+  assert.equal(lastSess[1].close, 106, '2024-01-02 も付与');
+});
 
 test('sessions ON: setParams({sessions:true}) makes refresh fetch with sessions:true in context', async () => {
   const { actor, client } = makeSessActor();
@@ -468,14 +493,53 @@ test('sessions ON: primitive.setSessions receives profile.sessions and renderer 
   assert.ok(renderer.transparencies.includes(true), 'ローソク透明化 ON');
 });
 
-test('sessions ON: primitive.setSessions receives sessions_total (pre-cap day count) as 2nd arg', async () => {
-  // 修正1: actor は profile.sessions_total を primitive.setSessions(list, total) の total へ渡す。
-  //   primitive 注記「直近N/全M日」の M をキャップ後長でなく実日数にするため。
-  const { actor, primitive } = makeSessActor();
+test('sessions ON: backend 提供の POC/VA を time→mp Map で renderer.setSessionMP へ写す（VA は backend 単一定義）', async () => {
+  // VA/POC は backend が _value_area で算出済（poc/va_low/va_high）。actor は time で引ける Map へ写すだけ。
+  const t1 = Date.UTC(2024, 0, 1) / 1000;
+  const profile = {
+    bins: [{ price: 100 }], poc: 100, va_low: 100, va_high: 100,
+    sessions: [{ date: '2024-01-01', tpo: [1], poc: 101, va_low: 100, va_high: 102 }],
+  };
+  const { actor, renderer } = makeSessActor(profile);
   actor.setParams({ mode: 'sessions' });
   await actor.setEnabled(true);
-  const lastTotal = primitive.sessionsTotals[primitive.sessionsTotals.length - 1];
-  assert.equal(lastTotal, 4146, 'profile.sessions_total が total 引数として primitive へ渡る');
+  const map = renderer.sessionMPs.at(-1);
+  assert.ok(map && typeof map.get === 'function', 'setSessionMP に Map を渡す');
+  // backend の va_high→vah / va_low→val へ写す。
+  assert.deepEqual(map.get(t1), { poc: 101, vah: 102, val: 100 }, '当日 POC/VAH/VAL（backend 値）');
+});
+
+test('sessions ON: セッションに poc/va が無ければ MP Map に載せない（後方互換）', async () => {
+  const profile = {
+    bins: [{ price: 100 }], poc: 100, va_low: 100, va_high: 100,
+    sessions: [{ date: '2024-01-01', tpo: [1] }], // poc/va 無し。
+  };
+  const { actor, renderer } = makeSessActor(profile);
+  actor.setParams({ mode: 'sessions' });
+  await actor.setEnabled(true);
+  const map = renderer.sessionMPs.at(-1);
+  assert.equal(map.size, 0, 'poc/va 無しのセッションは MP に載らない');
+});
+
+test('sessions OFF: setSessionMP(null) で当日 MP 読み取りを解除する', async () => {
+  const { actor, renderer } = makeSessActor();
+  actor.setParams({ mode: 'sessions' });
+  await actor.setEnabled(true);
+  renderer.sessionMPs.length = 0;
+  actor.setParams({ mode: 'normal' });
+  await actor.refresh();
+  assert.ok(renderer.sessionMPs.includes(null), 'sessions OFF で null 供給（読み取り解除）');
+});
+
+test('sessions ON: 初回反映で直近セッション日へ自動ズーム（focusRecentBars(sessions長)を1回）', async () => {
+  // 時間軸連動タイルが潰れないよう、sessions 有効化の初回だけ直近 N 日へ寄せる。以後は寄せない。
+  const { actor, renderer } = makeSessActor();
+  actor.setParams({ mode: 'sessions' });
+  await actor.setEnabled(true);
+  assert.deepEqual(renderer.focusCalls, [2], '初回のみ sessions.length=2 で focusRecentBars');
+  // 再 refresh では寄せない（手動ズーム/スクロールを尊重）。
+  await actor.refresh();
+  assert.deepEqual(renderer.focusCalls, [2], '2回目以降は focus しない');
 });
 
 test('sessions OFF (default): setSessions(null) and transparency stays off (後方互換)', async () => {

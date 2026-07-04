@@ -40,6 +40,9 @@ def _isolate_caches(tmp_path, monkeypatch):
     （既存データ非破壊・cache ディレクトリのみ書込の制約を保証する）。
     """
     monkeypatch.setattr(mpd, "_CACHE_ROOT", tmp_path / "mp_dwell_cache")
+    # 既存テストは署名(ソースティック署名)チェックを中和する（cur_sig="" ＝保存時の既定 "" と一致）。
+    #   無効化(署名変化→再計算)は専用テスト TestCacheInvalidation で個別に検証する。
+    monkeypatch.setattr(mpd, "_day_source_signature", lambda symbol, day_start: "")
     mpd._reset_caches()
     yield
     mpd._reset_caches()
@@ -278,7 +281,7 @@ class TestDiskCache:
 
         # Act: 保存 → 別プロセス相当（メモリ非依存）で読込。
         mpd._save_day_rollup(path, roll)
-        loaded = mpd._load_day_rollup(path)
+        loaded, _sig = mpd._load_day_rollup(path)
 
         # Assert: kmin・可変長配列が完全一致。
         assert loaded is not mpd._CACHE_MISS and loaded is not None
@@ -290,12 +293,12 @@ class TestDiskCache:
         # 実データ無しの完了日（None）は None として往復し、_CACHE_MISS と区別される。
         path = mpd._cache_path("JP225", _DAY0)
         mpd._save_day_rollup(path, None)
-        loaded = mpd._load_day_rollup(path)
+        loaded, _sig = mpd._load_day_rollup(path)
         assert loaded is None  # 「実データ無しの完了日」＝再計算不要。
 
     def test_missing_file_returns_cache_miss(self):
         path = mpd._cache_path("JP225", _DAY0)
-        assert mpd._load_day_rollup(path) is mpd._CACHE_MISS
+        assert mpd._load_day_rollup(path)[0] is mpd._CACHE_MISS
 
     def test_completed_day_is_persisted_to_disk(self, monkeypatch):
         # 完了日ロールアップはディスクにファイルが作られる。
@@ -365,7 +368,7 @@ class TestDiskCache:
         path = mpd._cache_path("JP225", day)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"not-a-valid-npz")  # 破損データ。
-        assert mpd._load_day_rollup(path) is mpd._CACHE_MISS
+        assert mpd._load_day_rollup(path)[0] is mpd._CACHE_MISS
 
         secs, mids = _synthetic_master()
         calls = []
@@ -390,7 +393,83 @@ class TestDiskCache:
         # 保存済みファイルの version を実行時定数からずらして読む（不整合を模す）。
         import unittest.mock as _mock
         with _mock.patch.object(mpd, "_CACHE_VERSION", monkeypatch_version):
-            assert mpd._load_day_rollup(path) is mpd._CACHE_MISS
+            assert mpd._load_day_rollup(path)[0] is mpd._CACHE_MISS
+
+
+# --------------------------------------------------------------------------- #
+# キャッシュ無効化: 完了日を空でキャッシュ後にティックが届く（署名変化）と再計算する
+#   （実バグ修正: ティック到着前にウォームした日が空のまま配信され続けた stale-empty）
+# --------------------------------------------------------------------------- #
+class TestCacheInvalidation:
+    def test_stale_empty_cache_recomputes_when_signature_changes(self, monkeypatch):
+        # 1) ティック未着時に「空(None)」を署名 "" でキャッシュ（ウォーム済みだが空）。
+        day = _DAY0
+        now = day + _DAY + 1  # 完了日。
+        path = mpd._cache_path("JP225", day)
+        mpd._save_day_rollup(path, None, "")  # empty=True, sig=""
+        mpd._reset_caches()                    # メモリを空にしディスク判定へ入らせる。
+
+        # 2) その後ティックが届いた: 署名が変わり、_load_window_ticks が実データを返す。
+        secs, mids = _synthetic_master()
+        base = _make_loader(secs, mids)
+        calls = []
+        monkeypatch.setattr(
+            mpd, "_load_window_ticks",
+            lambda s, a, b: (calls.append((int(a), int(b))), base(s, a, b))[1],
+        )
+        monkeypatch.setattr(mpd, "_day_source_signature", lambda s, d: "ticks:123:456")
+
+        # 3) 署名変化 → disk の空を信用せず再計算する。
+        got = mpd._day_rollup("JP225", day, np.ones((7, 24), dtype=bool), now)
+        assert len(calls) == 1, "署名変化で再計算する（stale-empty を返さない）"
+        assert got is not None, "実データがあるので None(空) を返さない"
+        # 再計算後は新署名でディスクへ上書きされる。
+        loaded, sig = mpd._load_day_rollup(path)
+        assert loaded is not None and sig == "ticks:123:456"
+
+    def test_matching_signature_serves_disk_without_recompute(self, monkeypatch):
+        # 署名一致なら disk を信頼して再計算しない（過剰再計算を避ける）。
+        day = _DAY0
+        now = day + _DAY + 1
+        path = mpd._cache_path("JP225", day)
+        monkeypatch.setattr(mpd, "_day_source_signature", lambda s, d: "sameSig")
+        roll = {"kmin": 100, "dwell": np.array([9.0]), "cnt": np.array([2.0])}
+        mpd._save_day_rollup(path, roll, "sameSig")
+        mpd._reset_caches()
+        calls = []
+        monkeypatch.setattr(
+            mpd, "_load_window_ticks",
+            lambda s, a, b: calls.append((a, b)) or (mpd._EMPTY_SECS, mpd._EMPTY_MIDS),
+        )
+        got = mpd._day_rollup("JP225", day, np.ones((7, 24), dtype=bool), now)
+        assert calls == [], "署名一致なら再計算しない"
+        assert got["kmin"] == 100
+
+    def test_empty_completed_day_is_not_memoized_and_recomputes_same_process(self, monkeypatch):
+        # 🟡-1: 空(None)完了日はメモリにメモ化しない → 同一プロセス内でティック到着(署名変化)しても
+        #   line 337 の早期 return で stale-empty を返さず、ディスク署名照合で再計算される。
+        day = _DAY0
+        now = day + _DAY + 1
+        table = np.ones((7, 24), dtype=bool)
+        # 1) ティック未着（空）＋署名 ""。
+        monkeypatch.setattr(mpd, "_load_window_ticks", lambda s, a, b: (mpd._EMPTY_SECS, mpd._EMPTY_MIDS))
+        monkeypatch.setattr(mpd, "_day_source_signature", lambda s, d: "")
+        r1 = mpd._day_rollup("JP225", day, table, now)
+        assert r1 is None                                   # 空。
+        assert ("JP225", day) not in mpd._DAY_CACHE          # 空はメモリにメモ化しない（🟡-1）。
+        # 2) ティック到着（署名変化＋実データ）: _reset_caches せずに（同一プロセス）再計算される。
+        secs, mids = _synthetic_master()
+        base = _make_loader(secs, mids)
+        calls = []
+        monkeypatch.setattr(
+            mpd, "_load_window_ticks",
+            lambda s, a, b: (calls.append((int(a), int(b))), base(s, a, b))[1],
+        )
+        monkeypatch.setattr(mpd, "_day_source_signature", lambda s, d: "ticks:1:2")
+        r2 = mpd._day_rollup("JP225", day, table, now)
+        assert len(calls) == 1, "空をメモリに残さず同一プロセスで再計算される"
+        assert r2 is not None
+        assert ("JP225", day) in mpd._DAY_CACHE               # 非空はメモ化する。
 
 
 # --------------------------------------------------------------------------- #
@@ -823,6 +902,13 @@ class TestComputeDwellProfileSessions:
         assert [s["date"] for s in sessions] == ["2024-01-01", "2024-01-02", "2024-01-03"]
         for s in sessions:
             assert len(s["tpo"]) == 30
+
+    def test_sessions_include_per_day_poc_and_va(self, monkeypatch):
+        # dwell 経路も各セッションへ POC/VA（_value_area 単一定義）を付与する（frontend 再実装を排除）。
+        out = self._profile(monkeypatch, want_sessions=True)
+        for s in out["sessions"]:
+            assert {"poc", "va_low", "va_high"} <= set(s)
+            assert s["va_low"] <= s["poc"] <= s["va_high"]
 
     def test_sessions_per_day_count_matches(self, monkeypatch):
         # 各日 count は 32 ティック（HOT 30 + COLD 2）。日別合計 = 32 が保存される。
