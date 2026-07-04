@@ -817,6 +817,215 @@ class IndicatorDef {
 }
 
 
+// ===== js/domain/market_profile_dwell_accumulator.js =====
+// market_profile_dwell_accumulator.js — DwellAccumulator（依存ゼロ純ロジック・domain）。
+//
+// 設計入力: Phase2 設計 mp_ticklive_design.md「新規 domain DwellAccumulator」。参照実装
+//   prototype_260630-01/mp_core.py（_active_seconds_cross / _session_dwell / _value_area）と数値一致。
+//
+// 役割: base（確定足までの累積・不変）へ、forming 期間の tick を 1 本ずつ増分累積し、combined = base +
+//   forming の表示プロファイル（POC/VA/bins）を snapshot で返す。per-tick HTTP を行わずクライアント側で
+//   ローカルに増分する（サーバは base(GRID_W 固定グリッド) + forming tick 列 + active table を初回のみ供給）。
+//
+// 忠実 binning（mp_core.compute_profile と厳密一致）:
+//   base も forming も **GRID_W 固定グリッド**（fine grid・k=floor(mid/gridW)）へ累積し、snapshot で
+//   combined fine（base+forming）を表示 bin へ再集計してから POC/VA を出す。base=表示 bin 再集計・
+//   forming=表示 bin 直接 の二方式併存は、広レンジ（binw≫gridW）や price_min が gridW の倍数でないとき
+//   POC/VA を最大 5bin ずらす（実 tick で実証）。両者を同一 fine grid に統一してこの乖離を消す
+//   ＝本番 market_profile_dwell.compute_dwell_profile（全窓）と POC/VA/形が一致する。
+//
+// dwell 原子（mp_core と同基準）:
+//   dwell[i] = 隣接 tick 間ギャップ [sec[i], sec[i+1]) のうち「活発(曜日×時)に属する秒数」を
+//   tick i の価格 mid[i] の fine bin k=floor(mid[i]/gridW) へ帰属させる。最新 tick は次 tick 未着まで dwell=0。
+
+// バリューエリア比率（mp_core `_value_area` va_pct と同値・単一定義）。
+const VA_PCT = 0.70;
+
+// [a, b) のうち活発な (曜日×時) に属する秒数を時間境界で積分する（mp_core._active_seconds_cross 相当）。
+//   wd = ((floor(t/86400))+3)%7（1970-01-01=木を Mon0 基準へ）、hod = (t%86400)//3600。
+function activeSeconds(a, b, table) {
+  let total = 0;
+  let t = Math.trunc(a);
+  const end = Math.trunc(b);
+  while (t < end) {
+    const nextHour = (Math.floor(t / 3600) + 1) * 3600;
+    const seg = Math.min(nextHour, end);
+    const wd = ((Math.floor(t / 86400) + 3) % 7 + 7) % 7;
+    const hod = Math.floor((t % 86400) / 3600);
+    if (table[wd] && table[wd][hod]) {
+      total += seg - t;
+    }
+    t = seg;
+  }
+  return total;
+}
+
+// バリューエリアの下限/上限中心価格を返す（mp_core._value_area 相当・DRY の単一定義）。
+//   tpo 降順（同値は index 昇順で決定論化）にビンを積み、累積が総 tpo×va_pct に達するまでのビン集合の
+//   中心価格の最小/最大を [va_low, va_high] として返す。空/総和 0 は端の中心へ退化。
+//
+// MP-02 タイブレーク方針（意図的選択・決定論性の担保）:
+//   参照 mp_core._value_area は `np.argsort(tpo)[::-1]`（quicksort・unstable）で降順化するため、同値
+//   tpo のビン群の相対順序が非決定論的である。同値 bin 群が VA 70% 閾値を跨ぐ配置では、mp_core 側は
+//   実行毎に採用 bin が変わり得る＝JS と厳密一致は元来不能。よって本実装は「降順・同値は index 昇順」
+//   （下の sort 比較子 (tpo[j]-tpo[i]) || (i-j)）を**意図的に決定論的**な方針として採用する。これは
+//   mp_core の非決定論を再現するのではなく、決定論性を優先した意図的分岐である（実害は低い＝同値 bin は
+//   価格が隣接し VA 端の 1bin 差に留まる）。下段の「境界 tie golden」テストがこの方針を回帰的に固定する。
+function valueArea(centers, tpo, vaPct) {
+  const n = tpo.length;
+  if (n === 0) {
+    return [0, 0];
+  }
+  let total = 0;
+  for (let i = 0; i < n; i += 1) {
+    total += tpo[i];
+  }
+  if (total <= 0) {
+    return [Number(centers[0]), Number(centers[n - 1])];
+  }
+  const threshold = total * vaPct;
+  const order = Array.from({ length: n }, (_, i) => i)
+    .sort((i, j) => (tpo[j] - tpo[i]) || (i - j)); // 降順・同値は index 昇順。
+  const chosen = [];
+  let cum = 0;
+  for (const i of order) {
+    chosen.push(Number(centers[i]));
+    cum += tpo[i];
+    if (cum >= threshold) {
+      break;
+    }
+  }
+  return [Math.min(...chosen), Math.max(...chosen)];
+}
+
+class DwellAccumulator {
+  constructor() {
+    this._ready = false;
+  }
+
+  // base（GRID_W 固定グリッド dwell 配列・不変）／active table／レンジ／formingStart を受けて初期化する
+  //   （rollover 再実行可）。base は fine grid（kw0=baseKmin 起点・長さ size）で受け、複製して保持
+  //   （呼び出し側配列を破壊しない）。forming fine grid と pending tick はゼロにリセットする。
+  //   fine grid は base と完全同一（kw0=floor(priceMin/gridW)・size=floor(priceMax/gridW)-kw0+1）で揃え、
+  //   base と forming の binning を一致させる（Task A 忠実 binning）。
+  init({ baseFine, baseKmin, activeTable, priceMin, priceMax, nBins, gridW, formingStart } = {}) {
+    this._nBins = Math.max(1, Number(nBins) || 1);
+    this._priceMin = Number(priceMin);
+    this._priceMax = Number(priceMax);
+    this._gridW = Number(gridW);
+    this._formingStart = formingStart;
+    this._binw = (this._priceMax - this._priceMin) / this._nBins;
+    // fine grid の起点 kw0 と長さ size。baseKmin/baseFine.length を優先（backend と厳密整列）、
+    //   欠損時は priceMin/priceMax/gridW から導出（backend と同一定義 floor）。
+    this._kw0 = Number.isFinite(Number(baseKmin))
+      ? Number(baseKmin)
+      : Math.floor(this._priceMin / this._gridW);
+    const derivedSize = Math.floor(this._priceMax / this._gridW) - this._kw0 + 1;
+    const size = Array.isArray(baseFine) && baseFine.length > 0
+      ? baseFine.length
+      : Math.max(1, derivedSize);
+    this._size = size;
+    this._base = new Array(size).fill(0);
+    if (Array.isArray(baseFine)) {
+      for (let i = 0; i < size; i += 1) {
+        this._base[i] = Number(baseFine[i]) || 0;
+      }
+    }
+    this._forming = new Array(size).fill(0);
+    this._table = activeTable;
+    this._prevSec = null;
+    this._prevMid = null;
+    this._ready = true;
+  }
+
+  // tick を 1 本追加する（O(1)）。直前 pending tick の dwell = activeSeconds(prevSec, sec) を、
+  //   prev tick の価格 mid の fine bin k=floor(mid/gridW) へ加算する（表示 bin ではない＝忠実 binning）。
+  //   fine grid 範囲外（[kw0, kw0+size)）は捨てる（mp_core fine grid の境界と一致）。追加 tick 自身は
+  //   次 tick 未着まで dwell=0。
+  addTick(sec, mid) {
+    if (!this._ready) {
+      return;
+    }
+    if (this._prevSec !== null) {
+      const dwell = activeSeconds(this._prevSec, sec, this._table);
+      if (dwell > 0) {
+        const off = Math.floor(Number(this._prevMid) / this._gridW) - this._kw0;
+        if (off >= 0 && off < this._size) {
+          this._forming[off] += dwell;
+        }
+      }
+    }
+    this._prevSec = sec;
+    this._prevMid = mid;
+  }
+
+  // combined fine（base+forming）を表示 bin へ再集計したプロファイルを返す（純・状態を破壊しない）。
+  //   fine bin 中心 (kw0+i+0.5)*gridW → 表示 bin disp=clip(floor((center-priceMin)/binw),0,nBins-1) へ
+  //   加算する（mp_core.compute_profile の centers_fine→disp 再集計と厳密同型）。応答スキーマは backend
+  //   market_profile と同一（bins/poc/va_low/va_high/price_min/price_max/tpo_units/n_bins）。
+  snapshot() {
+    const n = this._nBins;
+    const binw = this._binw;
+    // combined fine を表示 bin へ再集計する（binning 一致の要）。
+    const tpo = new Array(n).fill(0);
+    let sum = 0;
+    for (let i = 0; i < this._size; i += 1) {
+      const combined = this._base[i] + this._forming[i];
+      if (combined === 0) {
+        continue;
+      }
+      const centerFine = (this._kw0 + i + 0.5) * this._gridW;
+      let disp = Math.floor((centerFine - this._priceMin) / binw);
+      if (disp < 0) {
+        disp = 0;
+      } else if (disp >= n) {
+        disp = n - 1;
+      }
+      tpo[disp] += combined;
+      sum += combined;
+    }
+    const centers = new Array(n);
+    let max = 0;
+    let pocIdx = 0;
+    for (let i = 0; i < n; i += 1) {
+      centers[i] = this._priceMin + (i + 0.5) * binw;
+      tpo[i] = Math.round(tpo[i]);
+      if (tpo[i] > max) {
+        max = tpo[i];
+      }
+      if (tpo[i] > tpo[pocIdx]) {
+        pocIdx = i;
+      }
+    }
+    const tmax = max > 0 ? max : 1;
+    const [vaLow, vaHigh] = valueArea(centers, tpo, VA_PCT);
+    const bins = new Array(n);
+    for (let i = 0; i < n; i += 1) {
+      bins[i] = {
+        price: round2(centers[i]),
+        tpo: tpo[i],
+        norm: Math.round((tpo[i] / tmax) * 10000) / 10000,
+      };
+    }
+    return {
+      bins,
+      poc: round2(centers[pocIdx]),
+      va_low: round2(vaLow),
+      va_high: round2(vaHigh),
+      price_min: this._priceMin,
+      price_max: this._priceMax,
+      tpo_units: Math.round(sum),
+      n_bins: n,
+    };
+  }
+}
+
+// 価格を小数 2 桁へ丸める（backend compute の round(x, 2) と同値・DRY）。
+function round2(x) {
+  return Math.round(Number(x) * 100) / 100;
+}
+
+
 // ===== js/usecase/catalog.js =====
 // 指標レジストリ（usecase/catalog.js）。
 //
@@ -1256,12 +1465,19 @@ const MARKET_PROFILE = new IndicatorDef({
     //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
     //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
     //     T 縦線/トリム/スナップショット解除）。
-    //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
-    //   order は旧 replay の位置（1）＝表示系 group の先頭。
-    param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
+    //   - ticklive: 現在足の 1tick 毎 足内逐次成長（サブバー tick 逐次・クライアント側増分累積）。dwell
+    //     （滞在秒）原子で forming 期間の tick を 1 本ずつ増分累積し snapshot を描画する。normal/replay/
+    //     sessions とは排他（actor._applyMode('ticklive') が replay/sessions 一式を解除）。この値が
+    //     mode ENUM に存在しないと segmented トグルが選択肢を描けず本番 UI から発行不能＝機能が dead code に
+    //     なるため、他 3 モードと同形式で列挙する（MP-01 是正）。
+    //   actor.setParams が mode を受けて _setReplay/_applySessions/_applyMode('ticklive') の復元経路を
+    //   再利用し状態遷移する。order は旧 replay の位置（1）＝表示系 group の先頭。
+    param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions', 'ticklive'], {
       group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
-      enumLabels: { normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル' },
-      tooltip: '通常＝累積プロファイル／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示',
+      enumLabels: {
+        normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル', ticklive: 'Tickライブ',
+      },
+      tooltip: '通常＝累積プロファイル／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示／Tickライブ＝現在足を1tick毎に足内逐次成長',
     }),
   ],
   series: [
@@ -4414,7 +4630,8 @@ class IndicatorController {
       //   /compute を通さず actor.refresh（現時間足で再取得）へ委譲し、MP も新足へ追従させる。
       if (this._isMarketProfile(meta.def)) {
         if (this._marketProfile && inst.visible) {
-          await this._marketProfile.refresh();
+          // tick 逐次成長（ticklive）ON 時は forming 増分、OFF 時は refresh へ byte-identical 委譲。
+          await this._marketProfile.onLiveTick();
         }
         continue;
       }
@@ -5692,6 +5909,88 @@ class MarketProfileClient {
 }
 
 
+// ===== js/adapter/front/market_profile_forming_client.js =====
+// market_profile_forming_client.js — GET /market_profile_forming を隔離する取得アダプター（DOM/chart 非依存）。
+//
+// 設計入力: Phase2 設計 mp_ticklive_design.md「新規 front client（Port 実装・DIP）」。
+//   market_profile_client.js（fetchProfile）と同型（URL 組み立て・fetch・失敗時 null）。
+//   Backend 契約: GET /market_profile_forming?datasetRef=&timeframe=&since=&base=[&bins=&va=&barw=]
+//     応答 {ok:true, formingStart, ticks:[[sec,mid]...], now[, baseFine, baseKmin, activeTable,
+//            priceMin, priceMax, nBins, gridW]}。baseFine は GRID_W 固定グリッド（表示 bin 再集計前・
+//            忠実 binning 用）。失敗時 {ok:false, error:{...}}。
+//   純関数（buildFormingUrl / parseForming）を公開し単体検証を容易にする（SRP）。
+
+// datasetRef を必須、timeframe/since/base/now と bins|barw（resmode で排他）を与えられた場合のみ付加する。
+//   base=1（既定 full・base+activeTable 同梱）/ base=0（軽量・forming tick 尾部のみ）。
+//   resmode==='range' のとき range（レンジpt）を backend param barw へ写像し bins は送らない（base の
+//   表示 bin を live 表示と整列させる。market_profile_client.buildMarketProfileUrl と同一規則）。
+function buildFormingUrl({
+  datasetRef, timeframe, since, base, now, bins, va, range, resmode,
+} = {}) {
+  let url = `/market_profile_forming?datasetRef=${encodeURIComponent(datasetRef)}`;
+  if (timeframe != null) {
+    url += `&timeframe=${encodeURIComponent(timeframe)}`;
+  }
+  if (since != null) {
+    url += `&since=${encodeURIComponent(since)}`;
+  }
+  if (base != null) {
+    url += `&base=${encodeURIComponent(base)}`;
+  }
+  if (now != null) {
+    url += `&now=${encodeURIComponent(now)}`;
+  }
+  // 解像度モードで bins / barw の送信を排他化する（base 表示 bin の整列・buildMarketProfileUrl と同型）。
+  if (resmode === 'range') {
+    if (range != null && range !== 'auto') {
+      url += `&barw=${encodeURIComponent(range)}`;
+    }
+  } else if (Number.isFinite(bins) || (typeof bins === 'string' && bins !== '')) {
+    url += `&bins=${encodeURIComponent(bins)}`;
+  }
+  if (va != null) {
+    url += `&va=${encodeURIComponent(va)}`;
+  }
+  return url;
+}
+
+// 応答 payload を検証して素通しする。ok:true かつ formingStart（数）と ticks（配列）を持つときのみ
+//   payload を返す。ok:false・欠損・型不一致は null（既存描画へ非干渉＝非破壊）。
+function parseForming(payload) {
+  if (!payload || payload.ok !== true) {
+    return null;
+  }
+  if (typeof payload.formingStart !== 'number' || !Array.isArray(payload.ticks)) {
+    return null;
+  }
+  return payload;
+}
+
+class MarketProfileFormingClient {
+  // fetch はポート注入（テストは Fake、composition root は globalThis.fetch を bind して渡す）。
+  constructor({ fetch } = {}) {
+    this._fetch = fetch;
+  }
+
+  // args（datasetRef/timeframe/since/base/…）から forming payload を取得する。
+  //   fetch 不在・HTTP 非 ok・例外・整形失敗はすべて null（既存描画へ非干渉＝非破壊）。
+  async fetchForming(args = {}) {
+    if (typeof this._fetch !== 'function') {
+      return null;
+    }
+    try {
+      const resp = await this._fetch(buildFormingUrl(args));
+      if (!resp.ok) {
+        return null;
+      }
+      return parseForming(await resp.json());
+    } catch {
+      return null;
+    }
+  }
+}
+
+
 // ===== js/adapter/front/market_profile_primitive.js =====
 // market_profile_primitive.js — Market Profile の TPO ヒストグラムを描くカスタム ISeriesPrimitive。
 //
@@ -6067,6 +6366,25 @@ function _buildSessionView(list, candles) {
   return { list: out, mp };
 }
 
+// MP-05: ticklive base=1 応答が DwellAccumulator.init を NaN 汚染せず駆動できるかの presence ガード。
+//   無ローソク等で空 profile が返ると priceMin/priceMax/nBins/gridW が欠損し、init の binw/kw0 が NaN と
+//   なり snapshot が NaN 価格を出す。必須フィールド（レンジ/グリッド/base 配列）がすべて有限/配列のときだけ
+//   true を返し、欠損時は呼び出し側で null 扱い（増分に入らず前回描画を保持＝既存 fetch null と同じ非破壊）。
+//   baseKmin は init が priceMin/gridW から導出フォールバックするため必須に含めない。
+//   注意: JSON の明示 null は Number(null)===0（有限）で誤通過するため、各必須数値は `!= null`（null/
+//   undefined 双方を除外）を先に課してから有限性を判定する（欠損 = 増分に入れない）。
+function _finiteNum(x) {
+  return x != null && Number.isFinite(Number(x));
+}
+function _hasBaseFields(f) {
+  return !!f
+    && _finiteNum(f.priceMin)
+    && _finiteNum(f.priceMax)
+    && _finiteNum(f.nBins) && Number(f.nBins) > 0
+    && _finiteNum(f.gridW) && Number(f.gridW) > 0
+    && Array.isArray(f.baseFine);
+}
+
 // 増分2 定数（試作 prototype_260630-01 と一致）。
 const ROLL_BARS = 60; // ローリング窓の本数（from = T - ROLL_BARS*bar_sec）。
 // MP 表示中の右マージン（プロファイル専用領域＝試作 PROFILE_FRAC。バーとローソクの重なり回避）。
@@ -6084,12 +6402,22 @@ class MarketProfileActor {
   // replayBar: リプレイスライダバー（任意注入・setVisible/setCandles/mode/isSnapshot）。未注入時は no-op。
   // getCandles: ()->candles（バーの min/max・index→time の元。renderer.getCandles を配線）。未注入時は空。
   // renderer: 増分2 スナップショットのローソクトリム源（setCandleTrim(time|null)）。未注入時はトリムしない。
-  constructor({ client, primitive, mainSeries, getContext, replayBar, getCandles, renderer } = {}) {
+  constructor({
+    client, primitive, mainSeries, getContext, replayBar, getCandles, renderer,
+    formingClient, makeAccumulator,
+  } = {}) {
     this._client = client;
     this._primitive = primitive;
     this._mainSeries = mainSeries;
     this._replayBar = replayBar ?? null;
     this._renderer = renderer ?? null;
+    // tick 逐次成長（ticklive・増分2 系とは独立の 4 つ目の排他モード）。未注入時は非増分（refresh 委譲）。
+    this._formingClient = formingClient ?? null;
+    this._makeAccumulator = typeof makeAccumulator === 'function' ? makeAccumulator : null;
+    this._ticklive = false;       // ticklive モード ON/OFF（既定 OFF＝非増分・後方互換）。
+    this._accumulator = null;     // 現在の DwellAccumulator（null＝未 enter）。
+    this._formingStart = null;    // 現在足の formingStart（rollover 検出用）。
+    this._lastSec = null;         // 最後に addTick した tick 秒（base=0 尾部 since）。
     this._getCandles = typeof getCandles === 'function' ? getCandles : () => [];
     this._getContext = typeof getContext === 'function' ? getContext : () => ({});
     this._enabled = false;
@@ -6184,22 +6512,130 @@ class MarketProfileActor {
   //   - 'normal': 両 OFF 一式（_setReplay(false) ＋ _sessions=false ＋ _applySessions(null)）。
   //   排他が構造的に保証される（同時 ON が不可能）。未知の mode は 'normal' 扱い（安全側）。
   _applyMode(mode) {
+    if (mode === 'ticklive') {
+      // ticklive ON（tick 逐次成長）。replay/sessions 一式を解除して排他化する。
+      this._setReplay(false);
+      this._sessions = false;
+      this._applySessions(null);
+      this._ticklive = true;
+      return;
+    }
     if (mode === 'sessions') {
+      this._exitTicklive();     // ticklive 解除（排他）。
       this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
       this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
       this._sessionsFocusPending = true; // 初回反映時に直近セッションへ寄せる（時間軸連動タイルを見せる）。
       return;
     }
     if (mode === 'replay') {
+      this._exitTicklive();     // ticklive 解除（排他）。
       this._sessions = false;   // sessions OFF。
       this._applySessions(null); // sessions 一式解除（focus/ズーム/ロック・setSessions(null)・透明化解除）。
       this._setReplay(true);    // replay ON（バー表示）。
       return;
     }
-    // 'normal'（および未知値）: 両 OFF 一式。
+    // 'normal'（および未知値）: 全 OFF 一式。
+    this._exitTicklive();       // ticklive 解除（排他）。
     this._setReplay(false);
     this._sessions = false;
     this._applySessions(null);
+  }
+
+  // ticklive 表示中か（MP 有効かつ ticklive トグル ON のときだけ true）。
+  isTicklive() {
+    return this._enabled && !!this._ticklive;
+  }
+
+  // 増分（ticklive）取得が可能か: モード ON かつ formingClient と accumulator factory が注入済み。
+  //   いずれか欠ければ非増分（onLiveTick は refresh へ byte-identical 委譲＝回帰ゼロ）。
+  _isIncremental() {
+    return !!this._ticklive && !!this._formingClient && !!this._makeAccumulator;
+  }
+
+  // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
+  //   MP-04 是正: ticklive は dwell（滞在秒 time-at-price）を原子とする機能。base（確定足累積）は backend
+  //   controller が src='dwell' を強制し、forming tick から DwellAccumulator が dwell 原子を計算する。
+  //   よって actor 境界でも src を 'dwell' に固定し、UI で選択中の src（candle/m1）が base と live 増分の
+  //   原子を食い違わせないことを保証する（非 ticklive 表示の原子との不整合を防ぐ）。参照実装 mp_core の
+  //   dwell 原子（_session_dwell）に忠実。
+  _buildFormingArgs({ base, since }) {
+    return { ...this._getContext(), ...this._params, src: 'dwell', base, since };
+  }
+
+  // ライブ tick 契機。増分（ticklive）: 未 enter なら _enterTicklive、以降は base=0 尾部を addTick して
+  //   snapshot を反映。formingStart 変化（rollover）で _enterTicklive を再実行。
+  //   非増分: this.refresh() へ byte-identical 委譲（ticklive OFF / formingClient 未注入＝回帰ゼロ）。
+  async onLiveTick() {
+    if (!this._isIncremental()) {
+      return this.refresh(); // 非増分＝既存 refresh と同一（後方互換・回帰ゼロ）。
+    }
+    if (!this._enabled) {
+      return undefined;
+    }
+    if (!this._accumulator) {
+      return this._enterTicklive(); // 初回＝UC-01。
+    }
+    const forming = await this._formingClient.fetchForming(
+      this._buildFormingArgs({ base: 0, since: this._lastSec }),
+    );
+    if (!forming) {
+      return undefined; // null は前回描画を保持（非破壊）。
+    }
+    if (forming.formingStart !== this._formingStart) {
+      return this._enterTicklive(); // rollover: base を取り直して reset。
+    }
+    for (const t of forming.ticks) {
+      this._accumulator.addTick(t[0], t[1]);
+      this._lastSec = t[0];
+    }
+    this._primitive.setProfile(this._accumulator.snapshot());
+    return undefined;
+  }
+
+  // UC-01: base=1 を取得して accumulator を init、forming tick 列を畳み込み、snapshot を描画する。
+  async _enterTicklive() {
+    if (!this._enabled || !this._isIncremental()) {
+      return;
+    }
+    const forming = await this._formingClient.fetchForming(
+      this._buildFormingArgs({ base: 1, since: null }),
+    );
+    if (!forming) {
+      return; // null は前回描画を保持（非破壊）。
+    }
+    // MP-05 是正: base=1 応答の必須フィールド（レンジ/グリッド/base 配列）が欠損（無ローソク等の空
+    //   profile）なら init へ NaN が伝播し snapshot が NaN 価格を出す。presence ガードで欠損時は null と
+    //   同じ扱い（増分に入らず前回描画を保持＝既存 fetch null と同じ非破壊挙動）にする。
+    if (!_hasBaseFields(forming)) {
+      return; // 空 profile（必須フィールド欠損）は前回描画を保持（非破壊・NaN 混入を防ぐ）。
+    }
+    const acc = this._makeAccumulator();
+    acc.init({
+      baseFine: forming.baseFine,
+      baseKmin: forming.baseKmin,
+      activeTable: forming.activeTable,
+      priceMin: forming.priceMin,
+      priceMax: forming.priceMax,
+      nBins: forming.nBins,
+      gridW: forming.gridW,
+      formingStart: forming.formingStart,
+    });
+    this._accumulator = acc;
+    this._formingStart = forming.formingStart;
+    this._lastSec = null;
+    for (const t of forming.ticks) {
+      acc.addTick(t[0], t[1]);
+      this._lastSec = t[0];
+    }
+    this._primitive.setProfile(acc.snapshot());
+  }
+
+  // ticklive を解除する（累積器破棄・通常経路復帰・冪等）。
+  _exitTicklive() {
+    this._ticklive = false;
+    this._accumulator = null;
+    this._formingStart = null;
+    this._lastSec = null;
   }
 
   // MP 表示中の右マージン（プロファイル専用領域）を renderer へ委譲する。
@@ -6898,6 +7334,10 @@ async function bootstrap({
     primitive: new MarketProfileHistogramPrimitive(),
     mainSeries,
     replayBar,
+    // tick 逐次成長（ticklive）: forming 取得 client と DwellAccumulator factory を注入する。
+    //   未注入なら onLiveTick は refresh へ byte-identical 委譲（後方互換）。注入で ticklive が有効化される。
+    formingClient: new MarketProfileFormingClient({ fetch }),
+    makeAccumulator: () => new DwellAccumulator(),
     // 増分2: スナップショットのローソクトリム源（renderer.setCandleTrim）。lwc 直叩きは renderer に隔離。
     renderer,
     getCandles: () => renderer.getCandles(),
