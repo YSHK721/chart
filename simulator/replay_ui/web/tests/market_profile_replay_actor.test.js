@@ -307,3 +307,40 @@ test('end-to-end with a real DwellAccumulator: enterBar draws base, feedTick gro
   assert.equal(drawn.n_bins, 3);
   assert.equal(drawn.bins[0].tpo, 60);
 });
+
+// --- setParams: メニュー（controller）由来の bins/va を forming 取得（buildFormingUrl）へ反映する ---
+//   設計入力: 是正 step2「反映に slim actor へ最小の setParams 追加（bins/va を enterBar の forming 取得へ流す）」。
+//   getContext は datasetRef/timeframe のみを返す（bins/va を含まない）ため、setParams で保持した bins/va が
+//   enterBar の fetchForming 引数へ合流することを固定する（buildFormingUrl が &bins= / &va= を付与＝effective）。
+test('setParams(bins,va) reflects into enterBar fetchForming args (effective via buildFormingUrl)', async () => {
+  // Arrange
+  const forming = fakeFormingClient([BASE_FULL]);
+  const facc = fakeAccumulatorFactory();
+  const { actor } = makeActor({ formingClient: forming, makeAccumulator: facc.make });
+  actor.setEnabled(true);
+  // Act: メニュー設定変更相当（bins/va）→ enterBar。
+  actor.setParams({ bins: '30', va: 0.9 });
+  await actor.enterBar(1000);
+  // Assert: fetchForming 引数に bins/va が合流（buildFormingUrl が URL へ反映する経路）。
+  const call = forming.calls[forming.calls.length - 1];
+  assert.equal(call.bins, '30');
+  assert.equal(call.va, 0.9);
+  // 既存の base=1/src=dwell/now=T は不変（session窓・tick-live 挙動不変）。
+  assert.equal(call.base, 1);
+  assert.equal(call.src, 'dwell');
+  assert.equal(call.now, 1000);
+});
+
+test('setParams is optional: enterBar still works with no bins/va set (backward compatible)', async () => {
+  // Arrange: setParams 未呼出（既存挙動）。
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({ formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make });
+  actor.setEnabled(true);
+  // Act
+  await actor.enterBar(1000);
+  // Assert: bins/va は未設定（undefined）＝buildFormingUrl は付与しない（backend 既定）。base 取得は不変。
+  const call = forming.calls[forming.calls.length - 1];
+  assert.equal(call.bins, undefined);
+  assert.equal(call.va, undefined);
+  assert.equal(call.base, 1);
+});

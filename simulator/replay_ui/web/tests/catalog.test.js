@@ -17,15 +17,50 @@ function paramOf(def, name) {
   return def.params.find((p) => p.name === name);
 }
 
-test('catalog: list returns the 19 registered indicators (基本4 + profit_* 15)', () => {
+test('catalog: list returns the 20 registered indicators (基本4 + profit_* 15 + market_profile)', () => {
   // Act
   const defs = list();
-  // Assert: 既存4（tgp_btlm / profit_band / price_range_power / moving_averages）+ profit_* 15 = 19。
+  // Assert: 既存4（tgp_btlm / profit_band / price_range_power / moving_averages）+ profit_* 15
+  //   + market_profile（プロファイルタブ・メニュー一本化）= 20。既存19は不変（追加のみ）。
   const ids = defs.map((d) => d.id);
   for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm']) {
     assert.ok(ids.includes(base), `missing ${base}`);
   }
-  assert.equal(defs.length, 19);
+  assert.ok(ids.includes('market_profile'), 'market_profile がメニュー一覧に載る');
+  assert.equal(defs.length, 20);
+});
+
+// --- market_profile（プロファイルタブ・アクター委譲型・#rp-mp 撤去→メニュー一本化）------------
+test('catalog: market_profile is registered on the profile tab with computeId=market_profile', () => {
+  const d = get('market_profile');
+  assert.ok(d, 'market_profile が get で引ける');
+  assert.equal(d.id, 'market_profile');
+  assert.equal(d.tab, 'profile', 'プロファイルタブ（present-mode と同導線）');
+  assert.equal(d.placement, 'overlay');
+  // computeId=market_profile: controller が /compute をバイパスし actor へ委譲する判定キー。
+  assert.equal(d.compute.computeId, 'market_profile');
+  // series は非空必須（IndicatorDef 制約）を満たす最小ダミー 1 件（バイパスにより描画に用いない）。
+  assert.equal(d.series.length, 1);
+});
+
+test('catalog: market_profile registers only effective params (bins/va) — 飾り param 非登録', () => {
+  const d = get('market_profile');
+  // 反映経路を持つ param のみ登録: bins（buildFormingUrl &bins=）/ va（&va=）。
+  const bins = paramOf(d, 'bins');
+  const va = paramOf(d, 'va');
+  assert.ok(bins, 'bins（区間数）が登録される');
+  assert.equal(bins.type, ParamType.ENUM);
+  assert.equal(bins.default, '60');
+  assert.ok(va, 'va（バリューエリア比率）が登録される');
+  assert.equal(va.type, ParamType.FLOAT);
+  assert.equal(va.default, 0.70);
+  // src は buildFormingUrl が送らない（backend が dwell 強制）＝効かない飾り param のため非登録。
+  assert.equal(paramOf(d, 'src'), undefined, 'src は非登録（forming client が送らない＝飾り）');
+  // mode（normal/replay/sessions/ticklive）は replay では冗長（常に frame 駆動 tick-live）＝非登録。
+  assert.equal(paramOf(d, 'mode'), undefined, 'mode は非登録（replay は常時 tick-live）');
+  // resmode/range は replay の properties_dialog が segmented/conditionalVisible 非対応＝非登録。
+  assert.equal(paramOf(d, 'resmode'), undefined, 'resmode は非登録（UI 非対応）');
+  assert.equal(paramOf(d, 'range'), undefined, 'range は非登録（UI 非対応）');
 });
 
 test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース/オフセット + 平滑化 + 計算)', () => {

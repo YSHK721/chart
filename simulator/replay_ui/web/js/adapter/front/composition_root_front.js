@@ -201,7 +201,7 @@ export async function bootstrap({
   //   forming client（/market_profile_forming 取得）・primitive（TPO 描画）・DwellAccumulator factory で
   //   組み立て、戻り値に marketProfile として公開する（replay.js/setupReplay は new せず受け取るだけ＝DI 集約）。
   //   getContext は現在の datasetRef/timeframe を遅延読み取りし forming 取得に載せる（now=T は enterBar 引数）。
-  //   既定は setEnabled(false)＝OFF（#rp-mp トグルで ON・既存 replay へ非干渉）。
+  //   既定は setEnabled(false)＝OFF（indicator メニューの market_profile 追加で ON・既存 replay へ非干渉）。
   const marketProfile = new MarketProfileReplayActor({
     formingClient: new MarketProfileFormingClient({ fetch }),
     makeAccumulator: () => new DwellAccumulator(),
@@ -209,6 +209,11 @@ export async function bootstrap({
     mainSeries,
     getContext: () => ({ datasetRef, timeframe: controller._timeframe }),
   });
+  // 同一 actor を controller へも注入する（メニュー一本化）。controller.applyIndicator('market_profile')
+  //   が本 actor を有効化（setEnabled）し、setupReplay 側の駆動フック（render→enterBar / animateForming→
+  //   feedTick）が isEnabled()=true を観測して育てる。controller は getContext で controller._timeframe を
+  //   遅延参照するため marketProfile を後に生成しており、ここで後注入する（同一実体の共有）。
+  controller._marketProfile = marketProfile;
 
   // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
   //   初期時間足を反映し、以降は controller の時間足購読で連動する。

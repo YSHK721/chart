@@ -48,9 +48,14 @@ export class IndicatorController {
   constructor({
     catalog, compute, persistence, renderer, document: doc = null, mode = 'a',
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
+    marketProfile = null,
   }) {
     this._catalog = catalog;
     this._compute = compute;
+    // Market Profile slim actor（任意注入）。computeId==='market_profile' の指標を /compute 経由でなく
+    //   本アクター（GET /market_profile_forming → primitive）へ委譲する。composition root が
+    //   setupReplay と同一実体を注入し、menu 状態（setEnabled）を駆動フック（isEnabled）が観測する。
+    this._marketProfile = marketProfile;
     this._persistence = persistence;
     this._renderer = renderer;
     this._document = doc;
@@ -217,13 +222,67 @@ export class IndicatorController {
   // UC オーケストレーション（facade + ports）
   // =========================================================================
 
+  // MP 種別判定（computeId==='market_profile'）。/compute をバイパスし slim actor へ委譲する。
+  _isMarketProfile(def) {
+    return def?.compute?.computeId === 'market_profile';
+  }
+
+  // slim actor へ渡す forming param を整形する（effective なもののみ＝bins/va）。
+  _mpParams(params) {
+    const p = this._paramsObject(params);
+    return { bins: p.bins, va: p.va };
+  }
+
+  // MP アクターへ params を渡して有効化する（setParams→setEnabled(true)＝取得＋表示）。
+  //   現在バー T（_untilTime）が確定していれば即 enterBar で base を描画する（未確定時は render seam が駆動）。
+  //   未注入時は no-op。
+  async _enableMarketProfile(params) {
+    if (!this._marketProfile) {
+      return;
+    }
+    if (typeof this._marketProfile.setParams === 'function') {
+      this._marketProfile.setParams(this._mpParams(params));
+    }
+    this._marketProfile.setEnabled(true);
+    if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function') {
+      await this._marketProfile.enterBar(this._untilTime);
+    }
+  }
+
+  // MP 専用適用パス: /compute をバイパスし、state には no-op gateway で instance を登録して
+  //   凡例表示・永続化・restore の対象に含める。描画は MarketProfileReplayActor（forming→primitive）へ委譲。
+  //   MP 単一インスタンス制約: 既に MP 適用済みなら新規 legend 行を作らず既存を返す（no-op）。
+  async _applyMarketProfile(def, variant, params) {
+    const existing = this._state.applied.find(
+      (i) => this._isMarketProfile(this._catalog.get(i.indicatorId)),
+    );
+    if (existing) {
+      return existing;
+    }
+    const { state, instance } = await apply(
+      this._state,
+      { indicatorId: def.id, variant: variant ?? this._defaultVariant(def), params, datasetRef: this._datasetRef },
+      { compute: async () => ({ generation: 0 }) },
+    );
+    this._state = state;
+    this._meta.set(instance.instanceId, { def });
+    await this._enableMarketProfile(params);
+    this._persistAll();
+    this._renderLegend();
+    return instance;
+  }
+
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
+  //   MP 種別（computeId==='market_profile'）は /compute をバイパスし actor へ委譲する。
   async applyIndicator(indicatorId, variant) {
     const def = this._catalog.get(indicatorId);
     if (!def) {
       return null;
     }
     const params = this._defaultParams(def);
+    if (this._isMarketProfile(def)) {
+      return this._applyMarketProfile(def, variant, params);
+    }
     const gateway = this._gatewayAdapter();
     const { state, instance } = await apply(
       this._state,
@@ -242,6 +301,11 @@ export class IndicatorController {
   //   opts.mode='latest' は Latest 増分計算（gateway へ mode 伝播・末尾K点を updateSeriesTail へ
   //   差分反映し remove+_draw の全描画はしない）。既定 'full' は従来どおり remove+redraw。
   async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
+    // MP 設定変更: /compute へ流さず setParams + 現在バーで再 enterBar（gear onApply 経路）。
+    const meta = this._meta.get(instanceId);
+    if (meta && this._isMarketProfile(meta.def)) {
+      return this._recomputeMarketProfile(instanceId, newParams);
+    }
     const job = await this._computeInstance(instanceId, newVariant, newParams, { mode, forceTail });
     if (!job || !job.accepted) {
       return job ? job.accepted : false;
@@ -345,20 +409,38 @@ export class IndicatorController {
     }
   }
 
-  // UC-04 表示/非表示。
+  // UC-04 表示/非表示。MP は renderer を持たず actor.setEnabled(visible) へ委譲する。
   toggleVisible(instanceId) {
     this._state = facadeToggleVisible(this._state, instanceId);
     const inst = this._state.applied.find((i) => i.instanceId === instanceId);
     if (inst) {
-      this._renderer.setVisible(instanceId, inst.visible);
+      const def = this._catalog.get(inst.indicatorId);
+      if (this._isMarketProfile(def)) {
+        if (this._marketProfile) {
+          this._marketProfile.setEnabled(inst.visible);
+        }
+      } else {
+        this._renderer.setVisible(instanceId, inst.visible);
+      }
     }
     this._persistAll();
     this._renderLegend();
   }
 
-  // UC-05 削除。
+  // UC-05 削除。MP は renderer.remove を持たず actor.setEnabled(false)+detach（あれば）へ委譲する。
   removeInstance(instanceId) {
-    this._renderer.remove(instanceId);
+    const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+    const def = inst ? this._catalog.get(inst.indicatorId) : null;
+    if (this._isMarketProfile(def)) {
+      if (this._marketProfile) {
+        this._marketProfile.setEnabled(false);
+        if (typeof this._marketProfile.detach === 'function') {
+          this._marketProfile.detach();
+        }
+      }
+    } else {
+      this._renderer.remove(instanceId);
+    }
     this._state = facadeRemove(this._state, instanceId);
     this._meta.delete(instanceId);
     this._persistAll();
@@ -421,6 +503,10 @@ export class IndicatorController {
     const jobs = [];
     for (const inst of [...this._state.applied]) {
       if (this._meta.has(inst.instanceId)) {
+        // MP は /compute へ流さない（render seam の enterBar が駆動する）＝skip。
+        if (this._isMarketProfile(this._meta.get(inst.instanceId).def)) {
+          continue;
+        }
         const job = await this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
         if (job && job.accepted) {
           jobs.push(job);
@@ -492,6 +578,16 @@ export class IndicatorController {
         continue;
       }
       this._meta.set(inst.instanceId, { def });
+      // MP は /compute へ流さない。保存 params/可視状態で actor を復元する（render seam が base を描画）。
+      if (this._isMarketProfile(def)) {
+        if (this._marketProfile) {
+          if (typeof this._marketProfile.setParams === 'function') {
+            this._marketProfile.setParams(this._mpParams(this._paramsObject(inst.params)));
+          }
+          this._marketProfile.setEnabled(!!inst.visible);
+        }
+        continue;
+      }
       try {
         const gateway = this._gatewayAdapter(inst.variant);
         // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
@@ -543,6 +639,37 @@ export class IndicatorController {
       i.instanceId === instanceId ? Object.assign(Object.create(Object.getPrototypeOf(i)), i, { variant }) : i,
     );
     return next;
+  }
+
+  // instance の params（pairs 形式）を差し替える（MP gear の設定変更で state を更新し restore へ反映）。
+  _withParams(state, instanceId, values) {
+    const pairs = Object.entries(values ?? {});
+    return {
+      ...state,
+      applied: state.applied.map((i) =>
+        i.instanceId === instanceId
+          ? Object.assign(Object.create(Object.getPrototypeOf(i)), i, { params: pairs })
+          : i),
+    };
+  }
+
+  // MP 設定変更（gear onApply）: /compute を呼ばず state.params を更新し、actor へ setParams +
+  //   現在バー T（_untilTime）で再 enterBar（base 取り直し）。未注入/未確定時は state 更新のみ。
+  async _recomputeMarketProfile(instanceId, newParams) {
+    const meta = this._meta.get(instanceId);
+    const params = newParams ?? this._defaultParams(meta.def);
+    this._state = this._withParams(this._state, instanceId, params);
+    if (this._marketProfile) {
+      if (typeof this._marketProfile.setParams === 'function') {
+        this._marketProfile.setParams(this._mpParams(params));
+      }
+      if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function') {
+        await this._marketProfile.enterBar(this._untilTime);
+      }
+    }
+    this._persistAll();
+    this._renderLegend();
+    return true;
   }
 
   // facade.apply/recompute が呼ぶ compute をラップし、応答 series を捕捉（描画用）。

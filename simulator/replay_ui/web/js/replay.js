@@ -254,18 +254,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     b.addEventListener('click', () => { view.writeSpeed(b.dataset.spd); syncSpeedUI(); });
   }
 
-  // ---- Market Profile tick-live トグル（#rp-mp・rp-* パターン） ----
-  //   ON: 有効化して現在バーの base を now=T（因果）で即描画（以降 animateForming が feedTick で育てる）。
-  //   OFF: 無効化（primitive 非表示・以降 feedTick は no-op＝既存 replay へ非干渉）。要素/actor 不在時は skip。
-  const mpEl = view.el('rp-mp');
-  if (mpEl && marketProfile) {
-    mpEl.onclick = async () => {
-      const on = !marketProfile.isEnabled();
-      marketProfile.setEnabled(on);
-      mpEl.classList.toggle('on', on);
-      if (on && candles[bar]) await marketProfile.enterBar(candles[bar].time);
-    };
-  }
+  // Market Profile の有効化は indicator メニュー（controller.applyIndicator('market_profile')）へ
+  //   一本化した（#rp-mp トグル撤去）。有効化された actor は同一実体で composition root から
+  //   controller と本 setupReplay 双方へ注入され、下記の駆動フック（render→enterBar /
+  //   animateForming→feedTick / settleTick）が isEnabled()=true を観測して育てる。
 
   // ---- 最新足の足内更新（MT5 モデリング 5 モード相当） ----
   async function buildStream(cd, mode) {
