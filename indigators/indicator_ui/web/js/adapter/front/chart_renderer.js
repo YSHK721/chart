@@ -626,6 +626,14 @@ export class ChartRenderer {
   // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。
   //   既存 time なら上書き、新しい time なら追加（lightweight-charts の update 仕様）。
   updateLastCandle(candle) {
+    // ★スナップショット（トリム）中は series へ現在足を入れない。トリム系列（過去 T 時点まで）へ
+    //   ライブの現在足（time=now・現在価格）を append すると、トリム範囲外の不可解な位置にバーが
+    //   プロットされる（放置でライブ更新が発火し発生・実機バグの修正）。基準 _baseCandles は更新し、
+    //   トリム解除後に最新足へ正しく復帰できるようにする（読み取り欄は T 時点のまま維持）。
+    if (this._lastTrimIdx !== null) {
+      this._mergeBaseCandle(candle);
+      return;
+    }
     this._mainSeries.update(candle);
     // 最新足の単一源を更新し、hover していない読み取り表示が古くならないよう DTO を再発火する。
     this._lastBar = candle;
