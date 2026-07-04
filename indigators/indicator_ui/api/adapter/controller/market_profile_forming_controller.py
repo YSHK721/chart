@@ -18,11 +18,13 @@ tick 列 ＋ active table」を束ねて返す（以降クライアントはロ�
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from adapter.compute import forming_bar as _forming_bar
 from adapter.compute import market_profile_dwell as _mpd
 from adapter.compute import market_profile_forming as _mpf
+from adapter.controller import market_profile_controller as _mpc
 from adapter.controller.market_profile_controller import (
     _error_body,
     handle_market_profile,
@@ -53,6 +55,90 @@ def _parse_since(since: Any) -> "int | None":
     return None
 
 
+def _reconcile_session_range(
+    base_fine: list,
+    base_kmin: Any,
+    price_min: Any,
+    price_max: Any,
+    n_bins: Any,
+    grid_w: Any,
+    base_tpo_units: Any,
+    ticks: list,
+    barw: Any,
+) -> tuple[list, Any, Any, Any, Any]:
+    """セッション窓（frm!=None）時のみ呼ぶ純関数。base 応答レンジを
+
+        「base の非空レンジ ∪ forming tick(mid) の実測 min/max」
+
+    の和集合から導出し、``(baseFine, baseKmin, priceMin, priceMax, nBins)`` を返す。
+
+    目的（1D 空 base / 1h 日中ブレイクアウトの clip 解消）:
+      forming で実際に addTick される tick(mid) を必ず包含する fine grid を返し、クライアント
+      DwellAccumulator.addTick の fine grid 範囲外 clip（off<0 or off>=size）を消す。DwellAccumulator は
+      一切変更しない（本関数が返す baseKmin/baseFine.length がそのまま init の kw0/size になる）。
+
+    レンジ規約（present-mode ``compute_dwell_profile`` に忠実）:
+      priceMin/priceMax は和集合の生 min/max（floor/ceil 整列しない＝present-mode の出力 price_min/price_max
+      と同規約）。fine grid は ``kw0=floor(priceMin/GRID_W)``・``size=floor(priceMax/GRID_W)-kw0+1``（同モジュール
+      の kw0/size 式と同一）。これにより priceMin<=tick_min・priceMax>=tick_max から
+      ``kw0<=floor(tick_min/GRID_W)`` かつ ``kw0+size>floor(tick_max/GRID_W)`` が保証され全 tick を包含する。
+
+    base の温存:
+      base が非空（``base_tpo_units>0``）なら base 非空レンジも和集合に含め、baseFine を和集合グリッドへ
+      左右 zero-pad で移し替えて既経過 dwell を温存する（二重計上なし・base 温存の両立）。base が空/縮退なら
+      forming tick レンジのみで baseFine を zero-padded（全ゼロ）にする。base も forming tick も無ければ
+      入力を素通しする（真に空＝縮退のまま）。
+    """
+    gw = float(grid_w) if grid_w else _mpd.GRID_W
+    # forming tick mid の実測 min/max（＝実際に addTick される実データ）。
+    tick_lo = tick_hi = None
+    if ticks:
+        mids = [float(t[1]) for t in ticks]
+        tick_lo, tick_hi = min(mids), max(mids)
+    # base 非空（実 dwell あり）か。tpo_units は sum(fine) の int 丸め＝非空判定に一致。
+    base_has = (
+        base_kmin is not None
+        and isinstance(base_fine, list)
+        and len(base_fine) > 0
+        and float(base_tpo_units or 0) > 0.0
+    )
+    lows: list[float] = []
+    highs: list[float] = []
+    if base_has:
+        lows.append(float(price_min))
+        highs.append(float(price_max))
+    if tick_lo is not None:
+        lows.append(tick_lo)
+        highs.append(tick_hi)
+    if not lows:  # base も forming tick も無い＝真に空。入力を素通し（縮退のまま）。
+        return base_fine, base_kmin, price_min, price_max, n_bins
+
+    union_min = min(lows)
+    union_max = max(highs)
+    if union_max <= union_min:  # 単一価格の縮退回避（present-mode の +1 と同規約）。
+        union_max = union_min + 1.0
+
+    new_kmin = int(math.floor(union_min / gw))
+    k_top = int(math.floor(union_max / gw))
+    new_size = max(1, k_top - new_kmin + 1)
+    new_fine = [0.0] * new_size
+    if base_has:
+        offset = int(base_kmin) - new_kmin  # 和集合下限は base 下限以下＝offset>=0。
+        for i, v in enumerate(base_fine):
+            j = offset + i
+            if 0 <= j < new_size:
+                new_fine[j] = float(v)
+
+    new_price_min = union_min
+    new_price_max = union_max
+    # nBins は導出レンジ基準で整合。barw>0（range モード）は導出レンジで再算出、なければ base の nBins を維持。
+    new_nbins = n_bins
+    barw_f = _mpc._parse_float(barw, 0.0)
+    if barw_f > 0 and new_price_max > new_price_min:
+        new_nbins = _mpc._resolve_n_bins(int(n_bins or 60), barw_f, new_price_min, new_price_max)
+    return new_fine, new_kmin, new_price_min, new_price_max, new_nbins
+
+
 def handle_market_profile_forming(
     ref: Any,
     timeframe: Any,
@@ -62,8 +148,17 @@ def handle_market_profile_forming(
     bins: Any = None,
     va: Any = None,
     barw: Any = None,
+    frm: Any = None,
 ) -> tuple[int, dict[str, Any]]:
-    """GET /market_profile_forming の純ロジック（(status, body) を返す・HTTP 殻非依存）。"""
+    """GET /market_profile_forming の純ロジック（(status, body) を返す・HTTP 殻非依存）。
+
+    ``frm``（セッション窓 MP・任意・既定 None）: base 累積のローリング窓下限 time（UNIX 秒・含む）。
+        フロントは ``from = 当日始まり = floor(now, 86400)`` を渡し、base を [当日始まり, formingStart) の
+        当日経過ぶんへ限定する（combined = [当日始まり, now) ＝古典的 Market Profile）。base 経路
+        （handle_market_profile src=dwell）は既に ``from`` を受ける（``from<=time`` フィルタ）ため、予約語
+        ``from`` を kwargs 経由で透過するのみ（additive）。``frm=None``（省略）は透過せず従来全期間 base＝
+        現行挙動不変（present-mode 後方互換）。forming tick 列は ``now`` 由来で ``frm`` の影響を受けない。
+    """
     # 検証: forming 対象は tick 由来 ref かつ固定周期 tf（1W/1M/未知は非対応）。
     if not _forming_bar.is_tick_ref(ref):
         return _error_body(
@@ -100,17 +195,36 @@ def handle_market_profile_forming(
         #   返す（want_fine=True）。クライアント DwellAccumulator は forming tick を同一 fine grid へ累積し、
         #   combined fine → 表示 bin 再集計して POC/VA を出すため、base と forming の binning が完全一致し
         #   mp_core.compute_profile / compute_dwell_profile（全窓）と厳密一致する。
+        #   セッション窓 MP: frm（当日始まり）指定時は base 累積下限を frm へ繰り上げる（[frm, formingStart)）。
+        #   予約語 from は kwargs 経由で透過（frm=None＝省略時は付与せず従来全期間＝後方互換）。
+        base_kwargs: dict[str, Any] = {}
+        if frm is not None:
+            base_kwargs["from"] = frm
         _, base_body = handle_market_profile(
             ref, timeframe=timeframe, src="dwell", to=int(forming_start) - 1,
-            bins=bins, va=va, barw=barw, want_fine=True,
+            bins=bins, va=va, barw=barw, want_fine=True, **base_kwargs,
         )
         profile = base_body.get("profile") or {}
-        body["baseFine"] = profile.get("fine", [])
-        body["baseKmin"] = profile.get("fine_kmin")
-        body["priceMin"] = profile.get("price_min")
-        body["priceMax"] = profile.get("price_max")
-        body["nBins"] = profile.get("n_bins")
-        body["gridW"] = profile.get("grid_w", _mpd.GRID_W)
+        base_fine = profile.get("fine", [])
+        base_kmin = profile.get("fine_kmin")
+        price_min = profile.get("price_min")
+        price_max = profile.get("price_max")
+        n_bins = profile.get("n_bins")
+        grid_w = profile.get("grid_w", _mpd.GRID_W)
+        if frm is not None:
+            # セッション窓（frm!=None）時のみ: base 応答レンジを base 非空レンジ ∪ forming tick(mid) 実測
+            #   min/max の和集合から導出し、addTick される全 tick を包含する（1D 空 base / 1h ブレイクアウト
+            #   の clip 解消）。frm=None（present-mode）は本分岐を通らず profile を素通し＝byte 同一で不変。
+            base_fine, base_kmin, price_min, price_max, n_bins = _reconcile_session_range(
+                base_fine, base_kmin, price_min, price_max, n_bins, grid_w,
+                profile.get("tpo_units", 0), ft["ticks"], barw,
+            )
+        body["baseFine"] = base_fine
+        body["baseKmin"] = base_kmin
+        body["priceMin"] = price_min
+        body["priceMax"] = price_max
+        body["nBins"] = n_bins
+        body["gridW"] = grid_w
         body["activeTable"] = _mpf.get_active_table(symbol)
 
     return 200, body

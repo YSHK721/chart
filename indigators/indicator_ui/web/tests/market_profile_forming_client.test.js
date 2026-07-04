@@ -68,6 +68,18 @@ test('buildFormingUrl appends now when provided', () => {
   assert.ok(url.includes('&now=1704074600'));
 });
 
+test('buildFormingUrl appends from (session-window base 下限) when provided', () => {
+  // セッション窓 MP: base 累積下限 from=当日始まり を URL へ透過する（backend が [from, formingStart) へ限定）。
+  const url = buildFormingUrl({ datasetRef: 'jp225_tick', timeframe: '1h', now: 1704074600, from: 1704067200 });
+  assert.ok(url.includes('&from=1704067200'));
+});
+
+test('buildFormingUrl omits from when null/undefined (present-mode 後方互換)', () => {
+  // from 非送信時は from パラメータを付けない＝present-mode（全期間 base）と同一 URL。
+  assert.ok(!buildFormingUrl({ datasetRef: 'jp225_tick' }).includes('from='));
+  assert.ok(!buildFormingUrl({ datasetRef: 'jp225_tick', from: null }).includes('from='));
+});
+
 test('parseForming returns the full payload object on ok:true', () => {
   const out = parseForming(OK_FULL);
   assert.equal(out.formingStart, 1704074400);

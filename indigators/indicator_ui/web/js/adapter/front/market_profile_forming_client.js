@@ -13,7 +13,7 @@
 //   resmode==='range' のとき range（レンジpt）を backend param barw へ写像し bins は送らない（base の
 //   表示 bin を live 表示と整列させる。market_profile_client.buildMarketProfileUrl と同一規則）。
 export function buildFormingUrl({
-  datasetRef, timeframe, since, base, now, bins, va, range, resmode,
+  datasetRef, timeframe, since, base, now, from, bins, va, range, resmode,
 } = {}) {
   let url = `/market_profile_forming?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
@@ -27,6 +27,11 @@ export function buildFormingUrl({
   }
   if (now != null) {
     url += `&now=${encodeURIComponent(now)}`;
+  }
+  // from（セッション窓 MP の base 累積下限 time＝当日始まり）。省略（null/undefined）時は付けない
+  //   ＝present-mode（全期間 base）と同一 URL＝後方互換。指定時は backend が base を [from, formingStart) へ限定。
+  if (from != null) {
+    url += `&from=${encodeURIComponent(from)}`;
   }
   // 解像度モードで bins / barw の送信を排他化する（base 表示 bin の整列・buildMarketProfileUrl と同型）。
   if (resmode === 'range') {
