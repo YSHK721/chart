@@ -14,6 +14,9 @@ from simulator.replay_ui.adapter.causal_compute_gateway import CausalComputeGate
 from simulator.replay_ui.adapter.intrabar_window_repository import (
     IntrabarWindowRepository,
 )
+from simulator.replay_ui.adapter.market_profile_forming_gateway import (
+    MarketProfileFormingGateway,
+)
 from simulator.replay_ui.framework.serve_replay import ReplayApp
 
 # repo 根 = simulator/replay_ui/main/composition_root.py の parents[3]。
@@ -47,10 +50,14 @@ def build_replay_app(
 
     bridge = _indicator_ui_bridge.load(api_path, root)
 
+    # MP サブバー tick 逐次成長: forming gateway（bridge 委譲）を Port として注入する。
+    forming_port = MarketProfileFormingGateway(api_path=api_path, repo_root=root)
+
     return ReplayApp(
         candle_port=candle_port,
         compute_port=compute_port,
         window_port=window_port,
         is_known_ref=bridge.dataset.is_known,
         web_dir=web_dir,
+        forming_port=forming_port,
     )

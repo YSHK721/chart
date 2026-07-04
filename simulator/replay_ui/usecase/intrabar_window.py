@@ -15,21 +15,31 @@ if TYPE_CHECKING:
 
 @dataclass
 class IntrabarWindowRequest:
-    """/intraday の入力。"""
+    """/intraday の入力。
+
+    ``want_secs``: MP tick-live 用に tick の秒（sec）を並行配列で欲しいときのみ True。既定 False で
+    従来と完全一致（ticks=[mid...] のみ・tick_secs は載せない）＝forming MA/OHLC アニメ回帰ゼロ。
+    """
     ref: str
     start: int
     end: int
     mode: str = "real_ticks"
+    want_secs: bool = False
 
 
 @dataclass
 class IntrabarWindowResult:
-    """do_intraday の payload（ok/m1/ticks・任意の *_error）。"""
+    """do_intraday の payload（ok/m1/ticks・任意の *_error）。
+
+    ``tick_secs``: ``want_secs=True`` かつ real_ticks のときだけ [sec...] を並行配列で持つ
+    （ticks=[mid...] と同順・同長）。既定は空（従来 payload 不変）。
+    """
     ok: bool = True
     m1: list = field(default_factory=list)
     ticks: list = field(default_factory=list)
     m1_error: "str | None" = None
     ticks_error: "str | None" = None
+    tick_secs: list = field(default_factory=list)
 
 
 def intrabar_window(
@@ -44,7 +54,11 @@ def intrabar_window(
     if request.mode != "real_ticks":
         return result  # 他モードは m1 のみで足りる＝tick 読込スキップ（軽量維持）
     try:
-        result.ticks = [mid for _sec, mid in window_port.load_ticks(request.start, request.end)]
+        rows = window_port.load_ticks(request.start, request.end)
+        result.ticks = [mid for _sec, mid in rows]  # 既存契約不変（mid のみ）
+        # MP tick-live 用: want_secs のときだけ sec 並行配列を追加（ticks と同順・同長）。
+        if request.want_secs:
+            result.tick_secs = [sec for sec, _mid in rows]
     except Exception as exc:  # noqa: BLE001 — proto 同様 ticks_error へ翻訳
         result.ticks_error = str(exc)[:120]
     return result
