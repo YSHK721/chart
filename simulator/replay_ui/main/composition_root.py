@@ -36,9 +36,12 @@ def build_replay_app(
 
     ``data_dir``: tick 由来データ根（既定 ``<repo>/data/marketdata``）。``jp225_tick_m1.csv`` と
     ``ticks/`` を含む。``web_dir``: 静的フロント配信ディレクトリ（任意・None で静的配信無効）。
-    ``shared_js_root``: 単一ソース共有のフォールバック根（既定 ``<repo>/indigators/indicator_ui/web/js``
-    ＝``_indicator_ui_bridge`` の repo_root 解決と同一手段）。replay web_dir で miss したフロント JS を
-    ここから配信する（複製が残る間は web_dir 優先＝挙動不変）。
+    ``shared_js_root``: 単一ソース共有のフォールバック根（既定 ``<repo>/indigators/indicator_ui/web``）。
+    ただし配信を許可するのは本根の **``js/``・``css/``・``vendor/`` サブツリーのみ**（serve_replay で
+    許可根を限定＝最小権限。build.mjs/package.json/data/tests/node_modules 等は露出しない）。replay
+    web_dir で miss したフロント資産（js/css/vendor）をここから配信し、web_dir/{js,css,vendor} 配下の
+    symlink が本根の該当サブツリーを指しても境界一致ガードで許可される。index.html は web_dir 実体が
+    常に優先（per-app）。
     """
     root = Path(repo_root).resolve() if repo_root is not None else _REPO_ROOT
     data = Path(data_dir).resolve() if data_dir is not None else root / "data" / "marketdata"

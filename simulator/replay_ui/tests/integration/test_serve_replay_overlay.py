@@ -82,6 +82,12 @@ def overlay_ctx(tmp_path):
     (web / "css" / "app.css").symlink_to(shared / "css" / "app.css")
     (shared / "vendor" / "lib.js").write_text("SHARED_VENDOR_BODY", encoding="utf-8")
     (web / "vendor" / "lib.js").symlink_to(shared / "vendor" / "lib.js")
+    # 最小権限回帰: 共有根直下の「非資産」（js/css/vendor 以外）。web 根全体を許可すると配信されて
+    #   しまうが、許可根を js/css/vendor サブツリーに限定したため 404 でなければならない。
+    (shared / "package.json").write_text("SHOULD_NOT_BE_SERVED", encoding="utf-8")
+    (shared / "build.mjs").write_text("SHOULD_NOT_BE_SERVED", encoding="utf-8")
+    (shared / "tests").mkdir()
+    (shared / "tests" / "x.test.js").write_text("SHOULD_NOT_BE_SERVED", encoding="utf-8")
 
     # CWE-22 回帰用: web_dir / shared_js_root と「接頭辞を共有する兄弟ディレクトリ」に機密を置く。
     #   区切り境界なしの str.startswith ガードだと `.../replay_web` の prefix を
@@ -191,6 +197,15 @@ def test_vendor_symlink_served_via_broadened_shared_root(overlay_ctx):
     status, body, _ = _get_text(overlay_ctx, "/vendor/lib.js")
     assert status == 200
     assert body == "SHARED_VENDOR_BODY"
+
+
+def test_shared_non_asset_files_not_served(overlay_ctx):
+    # 最小権限: 共有根直下の非資産（package.json / build.mjs / tests/*）は js/css/vendor 外なので
+    #   404（許可根を web 根全体でなく資産3サブツリーに限定＝least-privilege）。
+    for target in ("/package.json", "/build.mjs", "/tests/x.test.js"):
+        with pytest.raises(HTTPError) as ei:
+            _get_text(overlay_ctx, target)
+        assert ei.value.code == 404, f"{target} は配信されてはならない"
 
 
 def test_path_traversal_blocked_on_both_routes(overlay_ctx):

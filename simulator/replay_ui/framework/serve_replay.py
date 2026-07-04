@@ -270,9 +270,17 @@ def make_handler(app: ReplayApp):
 
         def _serve_static(self, path: str):
             rel = "index.html" if path in ("/", "") else path.lstrip("/")
-            # dual-root ガードで許可する根の集合（web_dir OR shared_js_root）。symlink 先が
-            #   shared_js_root 配下に落ちても web_dir 経由の一次解決で許可される（単一ソース）。
-            allowed = (app.web_dir, app.shared_js_root)
+            # dual-root ガードで許可する根の集合。web_dir は replay の web 根全体（index.html/js/css/
+            #   vendor + replay 固有）。共有元は **js/css/vendor サブツリーのみ**に限定する（最小権限）。
+            #   shared_js_root（=indicator_ui/web）全体を許可すると build.mjs/package.json/data/tests/
+            #   node_modules/prototype 等まで配信面に露出するため、資産3サブツリーだけを許可根にする。
+            #   symlink 先（indicator_ui/web/{js,css,vendor}/…）は該当サブツリー配下で許可される。
+            allowed = (
+                app.web_dir,
+                app.shared_js_root / "js" if app.shared_js_root else None,
+                app.shared_js_root / "css" if app.shared_js_root else None,
+                app.shared_js_root / "vendor" if app.shared_js_root else None,
+            )
             # replay web_dir 優先。web_dir は web 根（index.html + js/ を含む）で URL の /js/ 接頭辞込みで解決。
             fp = self._resolve_under(app.web_dir, rel, allowed)
             # miss なら shared_js_root（=indicator_ui の web 根・js/css/vendor 包含）へ同一 rel で
