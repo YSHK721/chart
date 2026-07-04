@@ -29,14 +29,23 @@ def build_replay_app(
     api_path: Any = None,
     repo_root: Any = None,
     web_dir: Any = None,
+    shared_js_root: Any = None,
 ) -> ReplayApp:
     """port 実装を結線した ``ReplayApp`` を返す。
 
     ``data_dir``: tick 由来データ根（既定 ``<repo>/data/marketdata``）。``jp225_tick_m1.csv`` と
     ``ticks/`` を含む。``web_dir``: 静的フロント配信ディレクトリ（任意・None で静的配信無効）。
+    ``shared_js_root``: 単一ソース共有のフォールバック根（既定 ``<repo>/indigators/indicator_ui/web/js``
+    ＝``_indicator_ui_bridge`` の repo_root 解決と同一手段）。replay web_dir で miss したフロント JS を
+    ここから配信する（複製が残る間は web_dir 優先＝挙動不変）。
     """
     root = Path(repo_root).resolve() if repo_root is not None else _REPO_ROOT
     data = Path(data_dir).resolve() if data_dir is not None else root / "data" / "marketdata"
+    shared_js = (
+        Path(shared_js_root).resolve()
+        if shared_js_root is not None
+        else root / "indigators" / "indicator_ui" / "web" / "js"
+    )
     tick_m1_csv = data / "jp225_tick_m1.csv"
     tick_root = data / "ticks"
 
@@ -59,5 +68,6 @@ def build_replay_app(
         window_port=window_port,
         is_known_ref=bridge.dataset.is_known,
         web_dir=web_dir,
+        shared_js_root=shared_js,
         forming_port=forming_port,
     )

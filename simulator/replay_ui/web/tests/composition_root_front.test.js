@@ -16,6 +16,8 @@ import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
 import { LiveUpdater } from '../js/adapter/front/live_updater.js';
 import { MarketProfileReplayActor } from '../js/adapter/front/market_profile_replay_actor.js';
+import { ReplayIndicatorController } from '../js/adapter/front/replay_indicator_controller.js';
+import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
 
 // Fake lwc（v5）: createChart → chart（addSeries/panes/addPane/timeScale/subscribeCrosshairMove）。
 //   ColorType / CandlestickSeries / createTextWatermark も公開（composition・ChartRenderer が参照）。
@@ -63,6 +65,9 @@ test('bootstrap injects ComputeHttpClient and mode=b when served over http', asy
   // Assert
   assert.equal(mode, 'b');
   assert.ok(controller._compute instanceof ComputeHttpClient);
+  // reveal 対応の subclass を生成する（共有 present base を extends＝単一ソース＋reveal 拡張）。
+  assert.ok(controller instanceof ReplayIndicatorController, 'controller は ReplayIndicatorController');
+  assert.ok(controller instanceof IndicatorController, 'subclass は共有 IndicatorController を extends する（LSP）');
 });
 
 test('bootstrap falls back to EmbeddedComputeGateway and mode=a on file://', async () => {

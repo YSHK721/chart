@@ -21,7 +21,7 @@ import { LiveUpdater } from './live_updater.js';
 import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
-import { IndicatorController } from './indicator_controller.js';
+import { ReplayIndicatorController } from './replay_indicator_controller.js';
 import { TradeMarkersRenderer } from './trade_markers_renderer.js';
 import { MarketProfileFormingClient } from './market_profile_forming_client.js';
 import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
@@ -153,7 +153,7 @@ export async function bootstrap({
     ? (ref, tf) => fetchCandles(fetch, ref, tf, recentBars)
     : null;
 
-  const controller = new IndicatorController({
+  const controller = new ReplayIndicatorController({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
     timeframe, recentBars, loadCandles,
   });
