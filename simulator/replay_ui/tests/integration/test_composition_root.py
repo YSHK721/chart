@@ -31,3 +31,11 @@ def test_build_replay_app_injects_market_profile_forming_port(tmp_path):
     app = build_replay_app(data_dir=tmp_path / "missing", web_dir=None)
     assert app.forming_enabled is True
     assert isinstance(app._forming_port, MarketProfileFormingGateway)
+
+
+def test_build_replay_app_injects_market_profile_port(tmp_path):
+    # MP normal/sessions/replay: market_profile_port（gateway）が注入され /market_profile が有効。
+    from simulator.replay_ui.adapter.market_profile_gateway import MarketProfileGateway
+    app = build_replay_app(data_dir=tmp_path / "missing", web_dir=None)
+    assert app.market_profile_enabled is True
+    assert isinstance(app._market_profile_port, MarketProfileGateway)

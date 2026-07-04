@@ -91,6 +91,11 @@
         <div id="legend"></div>
       </div>
     </div>
+    <!-- Market Profile リプレイモードの scrub バーのホスト（チャート下部・sibling）。
+         MarketProfileReplayBar が replay モード ON 時のみ内部で表示する（既定は空・非表示）。
+         #chart 内へ差し込まない（lightweight-charts が canvas を専有するため sibling へ置く）。
+         これは MP replay モード専用の第 2 カーソルで、上部のリビール再生バーとは独立（二重カーソル許容）。 -->
+    <div id="mp-replay-bar-host"></div>
   </div>
 
   <!-- ダイアログ：サイドバー(カテゴリ) + 上部タブ + 検索 + 指標一覧 -->

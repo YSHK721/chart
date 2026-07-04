@@ -92,6 +92,37 @@ class MarketProfileFormingPort(Protocol):
 
 
 @runtime_checkable
+class MarketProfilePort(Protocol):
+    """/market_profile 用の MP データ源（indicator_ui bridge 委譲・normal/sessions/replay モード）。
+
+    足ベース TPO / dwell プロファイルを ``(status, body)`` で返す。``to`` は必ずリビール T を渡す
+    （因果＝as-seen-at-t＝T 以前に観測できた足のみで集計・未来リーク防止）。実装は adapter 層
+    （bridge 委譲）に閉じる（DIP）。ticklive×{1W,1M} は forming が非対応（本 Port は as-of-cursor で代替）。
+    """
+
+    def profile(
+        self,
+        ref: str,
+        timeframe: "str | None",
+        limit: Any,
+        bins: Any,
+        va: Any,
+        src: Any,
+        barw: Any,
+        to: Any,
+        frm: Any = None,
+        today: Any = None,
+        sessions: Any = None,
+    ) -> "tuple[int, dict]":
+        """``(status, body)`` を返す（未知 ref / 未知 tf は 400 nested error）。
+
+        ``to``（任意）: リプレイ時間カーソル（UNIX 秒）。指定時は ``time<=to`` の足だけで集計する
+        （as-seen-at-t）。``frm``/``today``/``sessions`` は増分2/日別分割の任意フラグ（None/省略は現行挙動）。
+        """
+        ...
+
+
+@runtime_checkable
 class ContactScanPort(Protocol):
     """UC-R5: 接点スキャン（既存 ``simulator/usecase/scan_contacts.py`` 再利用）の境界。
 

@@ -17,6 +17,7 @@ from simulator.replay_ui.adapter.intrabar_window_repository import (
 from simulator.replay_ui.adapter.market_profile_forming_gateway import (
     MarketProfileFormingGateway,
 )
+from simulator.replay_ui.adapter.market_profile_gateway import MarketProfileGateway
 from simulator.replay_ui.framework.serve_replay import ReplayApp
 
 # repo 根 = simulator/replay_ui/main/composition_root.py の parents[3]。
@@ -62,6 +63,9 @@ def build_replay_app(
     # MP サブバー tick 逐次成長: forming gateway（bridge 委譲）を Port として注入する。
     forming_port = MarketProfileFormingGateway(api_path=api_path, repo_root=root)
 
+    # MP normal/sessions/replay（as-seen-at-t）: market_profile gateway（bridge 委譲）を Port として注入する。
+    market_profile_port = MarketProfileGateway(api_path=api_path, repo_root=root)
+
     return ReplayApp(
         candle_port=candle_port,
         compute_port=compute_port,
@@ -70,4 +74,5 @@ def build_replay_app(
         web_dir=web_dir,
         shared_js_root=shared_js,
         forming_port=forming_port,
+        market_profile_port=market_profile_port,
     )

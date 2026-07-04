@@ -10,10 +10,11 @@
 //   - untilTime（そのフレームの時点 T）: setUntilTime で設定し compute へ素通し（_extraComputeFields）。
 //   - forming（足内更新の形成中バー）: recomputeFormingLatest が INTRABAR_FORMING_IDS の末尾点のみ
 //     forceTail 差分再計算し compute へ素通しする。
-//   - MP（Market Profile）: slim MarketProfileReplayActor（enterBar/feedTick/settleTick）駆動。/compute を
-//     持たないため recomputeInstance は enterBar 経路（_recomputeMarketProfile）へ委譲する。ticklive の
-//     成長自体は setupReplay（render→enterBar / animateForming→feedTick）が actor を直接駆動する。
-//     mode/resmode/range は _mpParams が effective な bins/va のみ抽出＝表示のみ inert（全モード機能化は別増分）。
+//   - MP（Market Profile）: ReplayMarketProfileActor（共有 MarketProfileActor の subclass）駆動。/compute を
+//     持たないため recomputeInstance は _recomputeMarketProfile へ委譲し、mode-aware で ticklive→enterBar /
+//     normal・sessions・replay→refresh(as-of-T) に振り分ける。ticklive の成長自体は setupReplay
+//     （render→enterBar / animateForming→feedTick）が actor を直接駆動する。_mpParams は基底の rich 実装
+//     （mode/resmode/range/src/bins/va 全 param）を再利用し、全 4 モードを機能させる。
 
 import { IndicatorController } from './indicator_controller.js';
 
@@ -80,11 +81,11 @@ export class ReplayIndicatorController extends IndicatorController {
     }
   }
 
-  // MP slim actor へ渡す forming param を整形する（effective なもののみ＝bins/va）。mode/resmode/range/src は
-  //   駆動しない（表示のみ inert＝全モード機能化は別増分）。present の rich _mpParams を override する。
+  // MP アクターへ渡す取得 params。全モード機能化により全 param（mode/resmode/range/src/bins/va）を
+  //   基底 _mpParams（present の rich 実装）で組み立てる。基底は _paramsObject 済みの平坦 params を受けるため、
+  //   subclass の _paramsObject（配列/オブジェクト両受理）で正規化してから委譲する（mode-aware 駆動が有効化）。
   _mpParams(params) {
-    const p = this._paramsObject(params);
-    return { bins: p.bins, va: p.va };
+    return super._mpParams(this._paramsObject(params));
   }
 
   // MP 設定変更: /compute へ流さず setParams + 現在バー T（_untilTime）で再 enterBar（gear onApply 経路）。
@@ -99,7 +100,9 @@ export class ReplayIndicatorController extends IndicatorController {
   }
 
   // MP 設定変更（gear onApply）: /compute を呼ばず state.params を更新し、actor へ setParams +
-  //   現在バー T（_untilTime）で再 enterBar（base 取り直し）。未注入/未確定時は state 更新のみ。
+  //   mode-aware で再駆動する。setParams が _applyMode で排他モードを遷移させた後、ticklive は push
+  //   （enterBar で base 取り直し・現在バー T=_untilTime）、normal/sessions/replay は as-of refresh
+  //   （getContext().to=T で as-seen-at-t 再取得）へ振り分ける。未注入時は state 更新のみ。
   async _recomputeMarketProfile(instanceId, newParams) {
     const meta = this._meta.get(instanceId);
     const params = newParams ?? this._defaultParams(meta.def);
@@ -108,8 +111,13 @@ export class ReplayIndicatorController extends IndicatorController {
       if (typeof this._marketProfile.setParams === 'function') {
         this._marketProfile.setParams(this._mpParams(params));
       }
-      if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function') {
-        await this._marketProfile.enterBar(this._untilTime);
+      const isTicklive = typeof this._marketProfile.isTicklive === 'function'
+        && this._marketProfile.isTicklive();
+      if (isTicklive && this._untilTime != null
+          && typeof this._marketProfile.enterBar === 'function') {
+        await this._marketProfile.enterBar(this._untilTime); // ticklive: base 取り直し（push 系）。
+      } else if (typeof this._marketProfile.refresh === 'function') {
+        await this._marketProfile.refresh(); // normal/sessions/replay: as-of-T 再取得（因果）。
       }
     }
     this._persistAll();

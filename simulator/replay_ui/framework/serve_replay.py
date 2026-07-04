@@ -28,6 +28,10 @@ from simulator.replay_ui.usecase.intrabar_window import (
     IntrabarWindowRequest,
     intrabar_window,
 )
+from simulator.replay_ui.usecase.market_profile import (
+    MarketProfileRequest,
+    market_profile,
+)
 from simulator.replay_ui.usecase.market_profile_forming import (
     MarketProfileFormingRequest,
     market_profile_forming,
@@ -56,6 +60,7 @@ class ReplayApp:
         shared_js_root: Any = None,
         heavy_lock: "Optional[threading.Lock]" = None,
         forming_port: Any = None,
+        market_profile_port: Any = None,
     ) -> None:
         self._candle_port = candle_port
         self._compute_port = compute_port
@@ -71,6 +76,10 @@ class ReplayApp:
         #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
         self._forming_port = forming_port
         self.forming_enabled = forming_port is not None
+        # MP normal/sessions/replay（as-seen-at-t）の Port（任意注入）。None のときは /market_profile
+        #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
+        self._market_profile_port = market_profile_port
+        self.market_profile_enabled = market_profile_port is not None
 
     def candles(self, ref: str, tf: "str | None", limit: "int | None") -> "list[dict]":
         req = RevealCandlesRequest(ref=ref, timeframe=tf, limit=limit)
@@ -125,6 +134,23 @@ class ReplayApp:
         with self._lock:  # forming 計算（dwell/resample）を直列化（OOM 防止）
             return market_profile_forming(request=req, forming_port=self._forming_port)
 
+    def market_profile(
+        self, ref: str, timeframe: "str | None", limit: Any, bins: Any, va: Any,
+        src: Any, barw: Any, to: Any, frm: Any = None, today: Any = None,
+        sessions: Any = None,
+    ) -> "tuple[int, dict]":
+        """MP normal/sessions/replay データを返す（to は必ずリビール T＝as-seen-at-t・未来リーク防止）。
+
+        ``to`` 指定時は ``time<=to`` の足だけで集計する（因果）。``frm``/``today``/``sessions`` は
+        増分2/日別分割の任意フラグ（None/省略は現行挙動）。
+        """
+        req = MarketProfileRequest(
+            ref=ref, timeframe=timeframe, limit=limit, bins=bins, va=va, src=src,
+            barw=barw, to=to, frm=frm, today=today, sessions=sessions,
+        )
+        with self._lock:  # profile 計算（candle/dwell resample）を直列化（OOM 防止）
+            return market_profile(request=req, profile_port=self._market_profile_port)
+
 
 def make_handler(app: ReplayApp):
     """``app`` を束ねた BaseHTTPRequestHandler サブクラスを返す（proto H 忠実）。"""
@@ -172,6 +198,27 @@ def make_handler(app: ReplayApp):
                     return self._json(400, {"error": {"type": "validation", "message": str(e)[:200]}})
                 except Exception as e:  # noqa: BLE001
                     return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
+            if u.path == "/market_profile" and app.market_profile_enabled:
+                ref = (q.get("datasetRef") or [None])[0]
+                tf = (q.get("timeframe") or [None])[0]
+                limit = (q.get("limit") or [None])[0]
+                bins = (q.get("bins") or [None])[0]
+                va = (q.get("va") or [None])[0]
+                src = (q.get("src") or [None])[0]
+                barw = (q.get("barw") or [None])[0]
+                # to は必ずリビール T（as-seen-at-t）。省略時 None＝全期間（後方互換）。
+                to = (q.get("to") or [None])[0]
+                # from（ローリング窓下限）／today（スナップショット）／sessions（日別分割）。省略時 None。
+                frm = (q.get("from") or [None])[0]
+                today = (q.get("today") or [None])[0]
+                sessions = (q.get("sessions") or [None])[0]
+                try:
+                    status, payload = app.market_profile(
+                        ref, tf, limit, bins, va, src, barw, to,
+                        frm=frm, today=today, sessions=sessions)
+                    return self._json(status, payload)
+                except Exception as e:  # noqa: BLE001
+                    return self._json(500, {"error": {"type": "internal", "message": str(e)[:200]}})
             if u.path == "/market_profile_forming" and app.forming_enabled:
                 ref = (q.get("datasetRef") or [None])[0]
                 tf = (q.get("timeframe") or [None])[0]
