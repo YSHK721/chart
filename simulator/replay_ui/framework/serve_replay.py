@@ -212,7 +212,12 @@ def make_handler(app: ReplayApp):
             if not fp.is_file():
                 return None
             for ar in allowed_roots:
-                if ar is not None and str(fp).startswith(str(ar)):
+                # 区切り境界一致（Path.is_relative_to, Python 3.9+）で CWE-22 を封じる。
+                #   str.startswith は区切り境界を見ないため `.../replay_web` と接頭辞を共有する
+                #   兄弟 `.../replay_web_SECRET` へ生 `..` で逸脱できてしまう（区切り境界なし
+                #   prefix 一致）。is_relative_to は resolve() 後の実パスに対して境界単位で判定
+                #   するため、正規の symlink（resolve 先が shared_js_root 配下）は許可され続ける。
+                if ar is not None and fp.is_relative_to(ar):
                     return fp
             return None
 
