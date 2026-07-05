@@ -60,11 +60,26 @@ export function intrabarWindow({ timeframe, cd, prevCandle, nextCandle }) {
   return { winStart, winEnd };
 }
 
+// 合成 dwell の点毎タイムスタンプ（窓等分・MP tick-live 用）。every_tick/ohlc_1min の cap 後 N 点へ
+//   窓 [winStart, winEnd) を等分した secs[i] = winStart + (winEnd-winStart)*i/(N-1) を返す。
+//   DwellAccumulator が隣接差分で dwell 化するため総 dwell=窓時間、secs[last]=winEnd（settle が winEnd へ収束
+//   する基点）。窓未提供（backend 取得でなくクライアント合成＝M1 は取得済）・N<=1 は []（当バー MP skip・base 継続）。
+//   winEnd は intrabarWindow（real_ticks と同一窓＝因果性・未来リークなし）。
+function synthSecs(n, winStart, winEnd) {
+  if (n <= 1 || winStart == null || winEnd == null || !(winEnd > winStart)) return [];
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) out[i] = winStart + (winEnd - winStart) * i / (n - 1);
+  return out;
+}
+
 // fetch 後の 5 モード点列構築（open_only/math は fetch 前短絡だが、点列自体は cd のみに依存＝ここで返す）。
 //   （replay.js: buildStream の各 return）
-//   secs（tick_secs 並行配列・MP tick-live 用）: real_ticks の実ティック経路のみ ticks と同順で並走。
-//   他分岐・secs 未提供は secs:[]（当バー MP skip・base 継続）。prices は全分岐で従来と完全一致。
-export function buildStreamFromResponse({ mode, cd, m1 = [], ticks = [], secs = [] }) {
+//   secs（tick_secs 並行配列・MP tick-live 用）:
+//     - real_ticks: 実ティック経路のみ実 tick_secs を ticks と同順で並走（byte 不変・窓は無視）。
+//     - every_tick/ohlc_1min: winStart/winEnd 提供時は cap 後 N 点へ合成 dwell secs（窓等分）を並走生成。
+//     - open_only/math・窓未提供・M1 代替(real_ticks): secs:[]（当バー MP skip・base 継続）。
+//   prices は全分岐で従来と完全一致（挙動の正解＝既存 return を 1つも足さず/削らず）。
+export function buildStreamFromResponse({ mode, cd, m1 = [], ticks = [], secs = [], winStart = null, winEnd = null }) {
   if (mode === 'open_only') return { prices: [cd.open], secs: [], note: '始値のみ1更新' };
   if (mode === 'math') return { prices: [cd.close], secs: [], note: '終値で1回（足内更新なし）' };
   if (mode === 'real_ticks') { // 接点検証＝全ティック（cap 廃止・間引かない・絶対仕様）
@@ -73,9 +88,12 @@ export function buildStreamFromResponse({ mode, cd, m1 = [], ticks = [], secs = 
     return { prices: [cd.close], secs: [], note: '足内データ無→終値のみ' };
   }
   if (mode === 'ohlc_1min') { // 粗い（1分OHLC・分足ステップが見える）
-    if (m1.length) return { prices: cap(flattenM1(m1), ANIM_COARSE), secs: [], note: `1分OHLC ${m1.length}本` };
-    return { prices: [cd.open, cd.high, cd.low, cd.close], secs: [], note: 'M1無→日足OHLC4点' };
+    const prices = m1.length ? cap(flattenM1(m1), ANIM_COARSE) : [cd.open, cd.high, cd.low, cd.close];
+    const note = m1.length ? `1分OHLC ${m1.length}本` : 'M1無→日足OHLC4点';
+    return { prices, secs: synthSecs(prices.length, winStart, winEnd), note };
   }
-  if (m1.length) return { prices: cap(synthM1(m1), ANIM_FINE), secs: [], note: '全ティック合成(M1×補間)' };
-  return { prices: [cd.open, cd.high, cd.low, cd.close], secs: [], note: 'M1無→OHLC4点' };
+  // every_tick（全ティック合成）
+  const prices = m1.length ? cap(synthM1(m1), ANIM_FINE) : [cd.open, cd.high, cd.low, cd.close];
+  const note = m1.length ? '全ティック合成(M1×補間)' : 'M1無→OHLC4点';
+  return { prices, secs: synthSecs(prices.length, winStart, winEnd), note };
 }

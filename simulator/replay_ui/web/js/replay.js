@@ -274,7 +274,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     if (wantSecs) url += '&secs=1';
     let resp = {};
     try { resp = await (await fetchImpl(url)).json(); } catch (_e) { /* noop */ }
-    return buildStreamFromResponse({ mode, cd, m1: resp.m1 || [], ticks: resp.ticks || [], secs: resp.tick_secs || [] });
+    // winStart/winEnd を渡し every_tick/ohlc_1min は合成 dwell secs（窓等分・クライアント合成）を並走取得する。
+    //   real_ticks は実 tick_secs のまま（byte 不変・窓は無視）。open_only/math は上で短絡済み。
+    return buildStreamFromResponse({ mode, cd, m1: resp.m1 || [], ticks: resp.ticks || [], secs: resp.tick_secs || [], winStart, winEnd });
   }
   let animGen = 0;
   let formingInFlight = false;
@@ -334,7 +336,20 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     const myGen = ++animGen;
     const superseded = () => isSuperseded(myGen, animGen);
     const mode = view.readMode();
-    if (mode === 'math') { window.__rpForm = { mode, n: 0 }; pausedForm = null; return; }
+    if (mode === 'math') {
+      window.__rpForm = { mode, n: 0 }; pausedForm = null;
+      // math（終値）: 足内推移なし → その時間足の完成プロファイルを settleGrowTo(winEnd) で一度描く（成長なし）。
+      //   確定形は全モード共通で real_ticks と同一（[当日, winEnd) の backend 実 dwell 全窓 fold へ収束）。
+      //   MP OFF/未配線は非干渉。winEnd は intrabarWindow（fetch 不要・因果窓・未来リークなし）。
+      if (mpOn()) {
+        const { winEnd } = intrabarWindow({
+          timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
+        });
+        if (winEnd != null && typeof marketProfile.growTo === 'function') { await settleGrowTo(winEnd); }
+        marketProfile.settleTick();
+      }
+      return;
+    }
     window.__rpAnimating = true;
     try {
       let prices, secs, o, hi, lo, startI;
@@ -381,12 +396,20 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       // 足確定: ティック列由来の OHLC で確定（cd.high/low へスナップしない）。
       const fc = prices[prices.length - 1];
       view.updateForming({ time: cd.time, open: o, high: hi, low: lo, close: fc });
-      // MP tick-live: 確定時に当日窓全 tick を最終 secs で再畳み込みしてグリッド確定（mp_core 一致点＝
+      // MP tick-live: 確定時に当日窓全 tick を winEnd で再畳み込みしてグリッド確定（mp_core 一致点＝
       //   backend base=1 dwell と一致）してから最終 snapshot を強制描画する（throttle 無視）。
+      //   確定形は MP 有効なら全モード winEnd で fold（growth の secs 有無から分離＝一般化）。real_ticks は
+      //   最終実 tick 秒 t_k(<winEnd) ではなく winEnd で settle し、open_only は secs 空でも settle を発火する
+      //   ＝全モード（real_ticks/every_tick/ohlc_1min/open_only/math）の完成 MP が backend fold(winEnd) で
+      //   byte 一致（合成 dwell/始値のみは transient・settle=truth）。winEnd=足終端=settle 時の now（因果・
+      //   未来リークなし＝次足 tick は半開区間 [dayStart, winEnd) で除外）。actor は空/縮退 forming を非破壊で
+      //   扱う（データ無バーは前回描画保持）。
       if (mpOn()) {
-        const lastSec = (secs && secs.length) ? secs[secs.length - 1] : null;
-        if (lastSec != null && typeof marketProfile.growTo === 'function') {
-          await settleGrowTo(lastSec);
+        if (typeof marketProfile.growTo === 'function') {
+          const { winEnd } = intrabarWindow({
+            timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
+          });
+          if (winEnd != null) await settleGrowTo(winEnd);
         }
         marketProfile.settleTick();
       }
@@ -399,7 +422,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   // 1 足スキップ（再生せず次の確定足へ）。
   view.el('rp-next').onclick = () => drive(bar + 1);
   view.el('rp-prev').onclick = () => drive(bar - 1);
-  window.__rpAnimateOnce = () => { animateForming(); };
+  window.__rpAnimateOnce = () => animateForming(); // promise を返す（決定論テストが await 可能・実行時挙動は不変）
   function scrollViewTo(edge) {
     autoFrame = false;
     const r = view.getVisibleLogicalRange();
