@@ -335,6 +335,40 @@ class TestSessionWindow1DEmptyBase:
             k = math.floor(mid / gw)
             assert kmin <= k < kmin + len(body["baseFine"])
 
+    def test_1d_now_at_daystart_degenerate_then_now_advance_expands(self, monkeypatch):
+        """回帰ロック（backend 非改変の契約固定）: 空 base の 1D で
+
+          - 点1: now==当日00:00（formingStart）＝ forming 窓に tick 0 → base 空＋tick 空 →
+            _reconcile_session_range は入力素通し（縮退レンジ・当日レンジへ拡張しない）。
+          - 点2: now 前進（当日 tick 出現）→ 和集合レンジが当日 tick min/max へ拡張。
+
+        この 2 点が、クライアント側 growTo（now まで因果再取得でグリッド拡張）が必要な理由を実証する。
+        backend は本修正で 1byte も変えないため、本テストは現行挙動をそのままロックする（成功先行の
+        Red 駆動ではなく回帰ロック）。
+        """
+        import math
+        self._inject1d(monkeypatch)
+        # 点1: now == 当日00:00（= DAY_1D = formingStart(1D)）。forming 窓に tick 無し。
+        status0, body0 = handle_market_profile_forming(
+            "jp225_tick", "1D", base=1, now=self._DAY_1D, frm=self._DAY_1D,
+        )
+        assert status0 == 200 and body0["ok"] is True
+        assert body0["ticks"] == [], "当日00:00 では forming tick が 0"
+        # 縮退素通し: 当日 tick レンジ（MID_LO..MID_HI）へ拡張していない（growTo が必要な状態）。
+        assert not (
+            body0["priceMin"] == self._MID_LO and body0["priceMax"] == self._MID_HI
+        ), "tick 0 のとき当日レンジへ拡張しない（縮退素通し）"
+        # 点2: now 前進で当日 tick が出現 → 和集合レンジが当日 tick min/max へ拡張。
+        status1, body1 = handle_market_profile_forming(
+            "jp225_tick", "1D", base=1, now=self._NOW_1D, frm=self._DAY_1D,
+        )
+        assert status1 == 200 and body1["ok"] is True
+        assert body1["ticks"], "now 前進で forming tick が出現"
+        assert body1["priceMin"] == self._MID_LO
+        assert body1["priceMax"] == self._MID_HI
+        gw = body1["gridW"]
+        assert body1["baseKmin"] == math.floor(self._MID_LO / gw)
+
 
 # --------------------------------------------------------------------------- #
 # 配線スモーク: GET /market_profile_forming（薄殻の 1 本分岐が handler へ届くか）
