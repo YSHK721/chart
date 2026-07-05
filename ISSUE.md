@@ -552,7 +552,7 @@
 
 ## ISSUE-040: indicator_ui — SRP整理3件（DIルート/dwellキャッシュ/chart_renderer内部分割）※低優先
 - **重大度**: Low
-- **ステータス**: OPEN
+- **ステータス**: IN_PROGRESS（(a) RESOLVED・(b)(c) OPEN）。**(a) 完了(2026-07-05)**: チャート操作(swipe scrub/価格pan/wheelズーム/dblclick reset/2Dドラッグ)を `ChartInteractionController`(adapter/front) へ抽出、composition_root_front を配線専用に縮小(454→328行)。回帰ゼロ(unit11/11・present web633・replay162/162)、code-review 承認可(🔴0・byte不変を triangulation 実証)、ブラウザ目視合格(wheel/drag/dblclick・canvas健全・console0)。develop 4fc43af マージ・push 済(92ca8fc+8a7237c)。**(b) dwellキャッシュ分離・(c) chart_renderer 内部分割は未着手**。
 - **検出**: 同監査（🟡-2/🟡-3/🟡-4・2026-07-05）。
 - **背景**: (a) `web/js/adapter/front/composition_root_front.js` L242-381(~140行) が pointer swipe スクラブ/縦価格パン/wheel価格ズームの**振る舞い**を実装＝DIルートに配線以外が混入。(b) `api/adapter/compute/market_profile_dwell.py`(622行) が集計ロジックとディスクキャッシュ Repository(`_save_day_rollup`:284/`_load_day_rollup`:316/署名) の同居（変更軸が別）。(c) `web/js/adapter/front/chart_renderer.js`(998行) は lwc隔離という単一軸は妥当だが内部で系列描画/価格ズーム座標数学(`handlePriceWheel`:353/`panPriceByPixels`:408)/クロスヘアDTO(`_buildReadoutDto`:872)が混在。
 - **対策（提案）**: (a) `ChartInteractionController` 抽出・root は配線のみ。(b) 日次rollupを `DwellRollupStore`(Gateway) 分離し Output境界越し注入。(c) 価格スケール操作を `PriceScaleController` へ内部分割（隔離境界の価値は高く任意・低優先）。
