@@ -62,29 +62,24 @@ test('recomputeAllApplied skips the MP branch when the MP instance is hidden', a
   assert.equal(calls.onLiveTick, 0);
 });
 
-// --- MP-01 是正: 本番経路の到達性（UI が生成し得る ENUM 値で ticklive 機能が起動する） ---
-//   直挿入 setParams({mode:'ticklive'}) の「見せかけ緑」ではなく、UI が実際に発行し得る値の連鎖を辿る:
-//     catalog mode ENUM に 'ticklive' が存在（segmented トグルが描ける＝UI 発行可能）
-//       → IndicatorController._mpParams/_deriveMode が 'ticklive' を素通しで転送
-//       → MarketProfileActor.setParams → _applyMode('ticklive') → _ticklive=true（isTicklive）
-//       → onLiveTick が /market_profile_forming を叩く（増分機能が起動）
-//   この 1 本が「ENUM に ticklive が無ければ UI から到達不能＝dead code」を回帰的に禁止する。
-test('production path: UI-emittable mode ENUM value ticklive reaches _ticklive and starts the forming feature', async () => {
-  // Arrange: 本番 catalog def / 本番 _mpParams（controller）/ 本番 actor（forming client + accumulator 注入）。
+// --- Phase5（統一成長）: 成長経路は grow 軸で存続する（表示選択肢 'ticklive' のみ撤去） ---
+//   旧 MP-01 は「'ticklive' が UI 発行可能な ENUM 値」を強制したが、Phase5 で表示選択肢から撤去した。
+//   代わりに本 1 本が「成長エンジン（forming 増分）は表示モードでなく成長軸（growing 信号）で起動する」ことを
+//   回帰的に固定する:
+//     (1) catalog mode ENUM に 'ticklive' は無い（表示選択肢として撤去済）。
+//     (2) normal 表示 + applyGrowthState({growing:true}) → onLiveTick が /market_profile_forming を叩く
+//         （＝成長機能が grow 軸で起動する・dead code でない）。
+//   これにより「ticklive 撤去で成長が no-op 化する退行」を禁止する（gate3: 成長経路存続）。
+test('production path: forming growth starts via the grow axis (growing) in normal mode — ticklive segment removed but engine survives', async () => {
+  // (1) 表示選択肢からの撤去: segmented トグルに 'ticklive' は無い。
   const def = get('market_profile');
   const modeParam = def.params.find((p) => p.name === 'mode');
-  // (1) UI 発行可能性: segmented トグルは enumValues しか描けない。'ticklive' が列挙されていること。
   assert.ok(
-    modeParam.enumValues.includes('ticklive'),
-    'mode ENUM に ticklive が無いと本番 UI から mode:ticklive を発行できず _applyMode に到達不能',
+    !modeParam.enumValues.includes('ticklive'),
+    'Phase5: mode ENUM から ticklive セグメント（表示選択肢）を撤去済',
   );
 
-  const ctrl = controller();
-  // (2) 転送経路: _mpParams/_deriveMode が UI 値 'ticklive' を actor へ素通しする（potentially 落とさない）。
-  const forwarded = ctrl._mpParams({ mode: 'ticklive' });
-  assert.equal(forwarded.mode, 'ticklive', '_mpParams/_deriveMode が ticklive を転送する');
-
-  // (3)(4) 到達性: 転送 params を本番 actor.setParams へ → _applyMode('ticklive') → _ticklive=true。
+  // (2) 成長エンジンの grow 軸起動: normal 表示 + growing=true で onLiveTick が forming を叩く。
   const urls = [];
   const fakeFetch = async (u) => {
     urls.push(String(u));
@@ -98,9 +93,7 @@ test('production path: UI-emittable mode ENUM value ticklive reaches _ticklive a
       },
     };
   };
-  const primitive = {
-    setProfile() {}, setVisible() {}, setSessions() {},
-  };
+  const primitive = { setProfile() {}, setVisible() {}, setSessions() {} };
   const actor = new MarketProfileActor({
     client: { async fetchProfile() { return null; } },
     primitive,
@@ -109,15 +102,18 @@ test('production path: UI-emittable mode ENUM value ticklive reaches _ticklive a
     makeAccumulator: () => new DwellAccumulator(),
   });
   await actor.setEnabled(true);
-  // Act: UI が生成した ENUM 値の転送結果を setParams（＝本番 apply/restore と同じ経路）。
-  actor.setParams(forwarded);
-  // Assert: _applyMode('ticklive') に到達し _ticklive=true。
-  assert.equal(actor.isTicklive(), true, '本番経路で _ticklive=true に到達する（dead code でない）');
-  // 増分機能が起動する（onLiveTick が forming エンドポイントを叩く＝機能本体が動く）。
+  actor.setParams({ mode: 'normal' });          // 表示モードは通常（ticklive でない）。
+  actor.applyGrowthState({ growing: true });     // 成長軸で成長 ON（FOLLOW/reveal 相当）。
+  // Act: 成長状態の onLiveTick（present の pull 成長）。
   await actor.onLiveTick();
+  // Assert: 成長エンジンが grow 軸で起動する（forming エンドポイントを叩く＝dead code でない）。
+  assert.ok(
+    !actor.isTicklive(),
+    'normal 表示＝ticklive 表示モードではない（成長は表示モードでなく grow 軸が担う）',
+  );
   assert.ok(
     urls.some((u) => String(u).includes('market_profile_forming')),
-    'ticklive 到達後 onLiveTick が forming エンドポイントを叩く（機能起動を実証）',
+    'normal + growing で onLiveTick が forming を叩く（成長経路が grow 軸で存続）',
   );
 });
 

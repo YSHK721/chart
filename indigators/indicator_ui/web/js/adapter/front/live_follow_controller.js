@@ -139,7 +139,8 @@ export class LiveFollowController {
       this._renderer.setAnalysisTint(false);
     }
     this._setButtonActive(true);
-    // ライブ連動: FOLLOW 遷移を協調役へ通知（MP を ticklive へ）。未注入は no-op（byte 不変）。
+    // ライブ連動: FOLLOW 遷移を協調役へ通知（MP を成長 ON＝growing=true へ／Phase5: 旧 ticklive モード置換は
+    //   撤廃し成長軸で駆動）。未注入は no-op（byte 不変）。
     this._notifyLiveState(true);
   }
 

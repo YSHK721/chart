@@ -1122,23 +1122,23 @@ function makeMarketProfileDef({
       // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
       //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する
       //   （解像度トグル resmode と同方式）。排他が構造的に保証され、同時 ON が不可能になる。
-      //   - normal: 従来の累積プロファイル（replay/sessions とも OFF・既定）。完全に従来挙動。
+      //   - normal: 全期間累積プロファイル（既定）。成長状態（FOLLOW/reveal 前進）では現在足の bar-period
+      //     forming で足内成長する（Model A: 表示モード×成長状態の直交化。成長は growing 信号が担う）。
       //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
       //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
-      //     T 縦線/トリム/スナップショット解除）。
-      //   - ticklive: 現在足の 1tick 毎 足内逐次成長（サブバー tick 逐次・クライアント側増分累積）。dwell
-      //     （滞在秒）原子で forming 期間の tick を 1 本ずつ増分累積し snapshot を描画する。normal/replay/
-      //     sessions とは排他（actor._applyMode('ticklive') が replay/sessions 一式を解除）。この値が
-      //     mode ENUM に存在しないと segmented トグルが選択肢を描けず本番 UI から発行不能＝機能が dead code に
-      //     なるため、他 3 モードと同形式で列挙する（MP-01 是正）。
-      //   actor.setParams が mode を受けて _setReplay/_applySessions/_applyMode('ticklive') の復元経路を
-      //   再利用し状態遷移する。order は旧 replay の位置（1）＝表示系 group の先頭。
-      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions', 'ticklive'], {
+      //     T 縦線/トリム/スナップショット解除）。成長状態では当日タイルが [session_start, cursor) で因果成長
+      //     （refresh(to, sessions)・機構A）。
+      //   Phase5（統一成長）: 旧 'ticklive' セグメント（表示選択肢）は撤去した。足内 1tick 逐次成長は
+      //     「表示モード」ではなく成長軸（growing 信号）が担う（直交化）＝normal/sessions のいずれでも成長する。
+      //     成長エンジン（_enterTicklive/forming/DwellAccumulator）は grow 軸で存続（表示選択肢のみ削除）。
+      //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
+      //   order は旧 replay の位置（1）＝表示系 group の先頭。
+      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
         group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
         enumLabels: {
-          normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル', ticklive: 'Tickライブ',
+          normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル',
         },
-        tooltip: '通常＝累積プロファイル／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示／Tickライブ＝現在足を1tick毎に足内逐次成長',
+        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
       }),
     ],
     series: [
@@ -4359,7 +4359,7 @@ class IndicatorController {
   constructor({
     catalog, compute, persistence, renderer, document: doc = null, mode = 'a',
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
-    marketProfile = null, mpModeResolver = null,
+    marketProfile = null, mpModeResolver = null, mpGrowthResolver = null,
   }) {
     this._catalog = catalog;
     this._compute = compute;
@@ -4379,6 +4379,10 @@ class IndicatorController {
     //   注入時のみ MP へ渡す mode を実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）へ解決する。
     //   未注入（連動なし＝A方式・MP 不在・連動未配線）は mode をそのまま渡す＝byte 不変。
     this._mpModeResolver = typeof mpModeResolver === 'function' ? mpModeResolver : null;
+    // Model A 直交化: MP 成長状態の解決役（present 固有・任意注入）。()->boolean（FOLLOW=true / ANALYSIS=false）。
+    //   注入時のみ MP へ growing 信号（applyGrowthState）を適用し、growing 時のみ onLiveTick で成長させる。
+    //   未注入（連動なし＝A方式・MP 不在・連動未配線）は growing を適用しない＝byte 不変。
+    this._mpGrowthResolver = typeof mpGrowthResolver === 'function' ? mpGrowthResolver : null;
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
     // 時間足（§チャート表示時間選択・1 分足原子から resample）。compute/candles に伝搬する。
@@ -4535,9 +4539,11 @@ class IndicatorController {
   }
 
   // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
-  //   ライブ連動（mpModeResolver 注入時）は mode を実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）へ
-  //   解決してから渡す。解決役は同時に userMode（gear 選択）を記憶する。mode 未指定（旧インスタンス）は
-  //   解決しない（actor 既定＝通常）。未注入時は _mpParams の結果をそのまま渡す＝byte 不変（連動なし）。
+  //   ライブ連動（mpModeResolver 注入時）は mode を選択表示モード（gear 記憶／未選択は既定 normal）へ解決してから
+  //   渡す（'ticklive' 置換はしない＝直交化）。解決役は同時に userMode（gear 選択）を記憶する。mode 未指定
+  //   （旧インスタンス）は解決しない（actor 既定＝通常）。未注入時は _mpParams の結果をそのまま渡す＝byte 不変。
+  //   さらに growth 解決役（mpGrowthResolver 注入時）は setParams 後に growing 信号（applyGrowthState）を適用する。
+  //   FOLLOW=growing=true（成長 ON）／ANALYSIS=false（static）。未注入時は applyGrowthState を呼ばない＝byte 不変。
   //   marketProfile 未注入時は no-op（呼び出し側の guard と二重防御）。
   _applyMpParams(p) {
     if (!this._marketProfile) {
@@ -4548,10 +4554,25 @@ class IndicatorController {
       params.mode = this._mpModeResolver(params.mode);
     }
     this._marketProfile.setParams(params);
+    this._applyMpGrowth();
+  }
+
+  // 直交化: 現在の成長状態（mpGrowthResolver）を MP アクターへ growing 信号として適用する。
+  //   setParams（mode 遷移で _exitTicklive→growing リセット）の後に呼び、mode を維持したまま growing を確定する。
+  //   解決役未注入 or actor が applyGrowthState 非所持なら no-op（byte 不変）。返り値 growing を呼び出し側が使う。
+  _applyMpGrowth() {
+    if (!this._mpGrowthResolver || !this._marketProfile) {
+      return false;
+    }
+    const growing = !!this._mpGrowthResolver();
+    if (typeof this._marketProfile.applyGrowthState === 'function') {
+      this._marketProfile.applyGrowthState({ growing });
+    }
+    return growing;
   }
 
   // ライブ連動: チャート FOLLOW/ANALYSIS 遷移時に、現在表示中 MP の実効モードを再適用する（present 固有）。
-  //   MpLiveModeCoordinator.onLiveStateChange → reapply として配線される。連動未配線（mpModeResolver 未注入）
+  //   GrowthCoordinator.onLiveStateChange → reapply として配線される。連動未配線（mpModeResolver 未注入）
   //   時は呼ばれない設計だが、MP 不在/無効/未表示時も自己 guard で no-op（副作用なし）。
   //   実効モードは resolver(null)（記憶更新なし・実効解決のみ）で強制し、保存 params（bins/va/src/range）は
   //   維持したまま mode だけ差し替えて refresh する（既存 setParams→refresh 経路を再利用・actor 不変）。
@@ -4569,16 +4590,14 @@ class IndicatorController {
       return; // 表示中 MP インスタンスが無い。
     }
     const params = this._mpParams(this._paramsObject(inst.params));
-    params.mode = this._mpModeResolver(null); // 実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）を強制。
+    params.mode = this._mpModeResolver(null); // 選択表示モード（gear 記憶／未選択は既定）を維持（'ticklive' 置換なし）。
     this._marketProfile.setParams(params);
-    // ticklive-entry の一致（E2E バグ修正）: present の ticklive は forming を onLiveTick（→_enterTicklive）で
-    //   取得する。live loop(recomputeAllApplied)/初期 add/gear の ticklive-entry と同一経路。refresh は
-    //   /market_profile の base 累積を描くだけで forming を発火しないため、ticklive では onLiveTick を呼ぶ。
-    //   非 ticklive（normal/replay/sessions）は従来どおり refresh で選択モードを反映する。
-    //   isTicklive()（setParams({mode:'ticklive'}) 後に true）で分岐する。揃える先は live-loop
-    //   recomputeAllApplied の onLiveTick 経路（present gear は _untilTime==null で refresh に落ちるため別）。
-    if (typeof this._marketProfile.isTicklive === 'function' && this._marketProfile.isTicklive()
-        && typeof this._marketProfile.onLiveTick === 'function') {
+    // 直交化: mode を維持したまま growing だけをトグルする（applyGrowthState）。FOLLOW=growing=true / ANALYSIS=false。
+    const growing = this._applyMpGrowth();
+    // growing 時のみ成長エンジンを起動する。present の成長は forming を onLiveTick（→_enterTicklive）で取得する
+    //   （live loop(recomputeAllApplied)/初期 add と同一経路）。refresh は /market_profile の base 累積を描くだけで
+    //   forming を発火しないため、growing では onLiveTick を呼ぶ。非成長（static＝ANALYSIS）は refresh で選択モードを反映。
+    if (growing && typeof this._marketProfile.onLiveTick === 'function') {
       await this._marketProfile.onLiveTick();
     } else if (typeof this._marketProfile.refresh === 'function') {
       await this._marketProfile.refresh();
@@ -4730,12 +4749,13 @@ class IndicatorController {
       this._state = this._withParams(this._state, inst.instanceId, values);
       if (this._marketProfile) {
         this._applyMpParams(values);
-        // [reveal seam] reveal（replay）かつ **ticklive** のときだけ現在バー T で enterBar（forming push で
-        //   base 取り直し）。normal/sessions/replay は enterBar が自己ガード no-op のため refresh(as-of-T)
-        //   へ落とす（mode-aware）。present は enterBar 非所持ゆえ常に refresh＝従来どおり（byte 挙動不変）。
+        // [reveal seam] reveal（replay）かつ **push 成長中**（isGrowingPush＝growing かつ非 sessions）のときだけ
+        //   現在バー T で enterBar（forming push で base 取り直し）。sessions+growing / 非成長は refresh(as-of-T)
+        //   へ落とす（成長軸 aware）。present は _untilTime 未設定ゆえ常に refresh＝従来どおり（byte 挙動不変）。
+        //   Phase5: 旧 isTicklive()（表示モード）ゲートから isGrowingPush()（成長軸）へ移行（ticklive 撤去）。
         if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function'
-            && typeof this._marketProfile.isTicklive === 'function'
-            && this._marketProfile.isTicklive()) {
+            && typeof this._marketProfile.isGrowingPush === 'function'
+            && this._marketProfile.isGrowingPush()) {
           await this._marketProfile.enterBar(this._untilTime);
         } else if (typeof this._marketProfile.refresh === 'function') {
           await this._marketProfile.refresh();
@@ -6740,6 +6760,12 @@ class MarketProfileActor {
     this._formingClient = formingClient ?? null;
     this._makeAccumulator = typeof makeAccumulator === 'function' ? makeAccumulator : null;
     this._ticklive = false;       // ticklive モード ON/OFF（既定 OFF＝非増分・後方互換）。
+    // Model A 直交化: 成長状態（growing/static）。成長エンジン（_isIncremental/onLiveTick/_enterTicklive）は
+    //   この _growing で駆動する（表示モードと成長状態の分離）。Phase1 は mode='ticklive' が唯一 _growing=true を
+    //   立てる互換維持（_ticklive とロックステップ＝挙動不変）。Phase2 で mode 非依存の applyGrowthState が
+    //   直接トグルできるようにする（FOLLOW+normal 成長など）。
+    this._growing = false;
+    this._asOf = null;            // 因果基準秒（as-seen-at-t）の布石。present は常にライブ（now）ゆえ未使用。
     this._accumulator = null;     // 現在の DwellAccumulator（null＝未 enter）。
     this._formingStart = null;    // 現在足の formingStart（rollover 検出用）。
     this._lastSec = null;         // 最後に addTick した tick 秒（base=0 尾部 since）。
@@ -6843,6 +6869,7 @@ class MarketProfileActor {
       this._sessions = false;
       this._applySessions(null);
       this._ticklive = true;
+      this._growing = true;   // ticklive モード＝成長 ON（Phase1 互換: mode が _growing を立てる）。
       return;
     }
     if (mode === 'sessions') {
@@ -6867,14 +6894,52 @@ class MarketProfileActor {
   }
 
   // ticklive 表示中か（MP 有効かつ ticklive トグル ON のときだけ true）。
+  //   Phase5: 'ticklive' は表示選択肢から撤去済（catalog）だが、内部フラグ/機構は grow 軸の互換維持で残す
+  //   （setParams({mode:'ticklive'}) は依然 _applyMode('ticklive') を通り _growing を立てる）。UI からは到達不能。
   isTicklive() {
     return this._enabled && !!this._ticklive;
   }
 
-  // 増分（ticklive）取得が可能か: モード ON かつ formingClient と accumulator factory が注入済み。
-  //   いずれか欠ければ非増分（onLiveTick は refresh へ byte-identical 委譲＝回帰ゼロ）。
+  // Model A 統一成長（Phase5）: 「push 成長中か」の grow 軸判定。MP 有効かつ growing かつ非 sessions
+  //   （normal/replay 表示での足内 push 成長）のとき true。reveal（replay）の push 駆動ゲート
+  //   （enterBar/growTo/feedTick・旧 isTicklive() ゲート）を表示モードから成長軸へ移行するための単一判定。
+  //   sessions は refresh(to) で育てる（機構A）ため push 対象外（!_sessions）。present の pull 成長
+  //   （onLiveTick→forming）は _isIncremental が担い、本判定は replay の push ゲートに用いる。
+  isGrowingPush() {
+    return this._enabled && !!this._growing && !this._sessions;
+  }
+
+  // Model A 直交化: 成長状態を表示モードと独立に設定する単一信号（境界追加・actor ロジックは不変）。
+  //   growing=true で成長エンジン（_isIncremental→onLiveTick/_enterTicklive/forming）を有効化する。
+  //   これにより mode を維持したまま（例: FOLLOW+normal）成長 ON/OFF を切替えられる（present #2 の直交化）。
+  //   asOf は因果基準秒（as-seen-at-t）の布石。present は常にライブ（now）ゆえ未使用（保持のみ）。
+  //   growing=false へ遷移する際は成長エンジンの累積器/尾部を破棄する（static 復帰＝_enterTicklive 再入の初期化）。
+  applyGrowthState({ growing, asOf } = {}) {
+    const next = !!growing;
+    if (asOf !== undefined) {
+      this._asOf = asOf;
+    }
+    if (next === !!this._growing) {
+      return; // 同状態は no-op（冪等）。
+    }
+    this._growing = next;
+    if (!next) {
+      // static 復帰: 累積器/形成足/尾部を破棄（次回 growing=true で _enterTicklive が再取得・再 init）。
+      this._accumulator = null;
+      this._formingStart = null;
+      this._lastSec = null;
+    }
+  }
+
+  // 増分（forming/accumulator）成長が可能か: growing かつ formingClient・accumulator factory 注入済み、
+  //   かつ **sessions モードでない**こと。いずれか欠ければ非増分（onLiveTick は refresh へ委譲＝回帰ゼロ）。
+  //   Model A Phase3（成長経路の分岐）: sessions+growing は forming 単一プロファイル（_enterTicklive→
+  //   setProfile）を sessions 描画へ被せず、refresh(to=cursor, sessions=1) で backend の因果 sessions 分割
+  //   （当日=[session_start,to)・過去日静的）を取得する（review🔵4 の破綻状態を正しく解消）。よって
+  //   _sessions 時は非増分＝refresh 経路へ倒す（accumulator は sessions で使わない＝共有グリッド不整合回避）。
+  //   normal/replay+growing は従来どおり増分（全期間 base + bar-period forming）。
   _isIncremental() {
-    return !!this._ticklive && !!this._formingClient && !!this._makeAccumulator;
+    return !!this._growing && !this._sessions && !!this._formingClient && !!this._makeAccumulator;
   }
 
   // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
@@ -6958,6 +7023,7 @@ class MarketProfileActor {
   // ticklive を解除する（累積器破棄・通常経路復帰・冪等）。
   _exitTicklive() {
     this._ticklive = false;
+    this._growing = false;  // モード離脱＝成長 OFF（Phase1 互換: _ticklive とロックステップ）。
     this._accumulator = null;
     this._formingStart = null;
     this._lastSec = null;
@@ -7653,7 +7719,7 @@ class LiveFollowController {
     this._document = document ?? null;
     this._buttonId = buttonId;
     // optional なライブ連動フック（present 固有）。FOLLOW/ANALYSIS 遷移で onLiveStateChange(isFollow) を呼ぶ。
-    //   MP モード協調役（MpLiveModeCoordinator）へ通知して MP 表示モードを ticklive↔選択モードで連動させる。
+    //   成長協調役（GrowthCoordinator）へ通知して MP 成長状態を growing↔static で連動させる（表示モードは維持）。
     //   未注入なら null＝一切呼ばない（既存ライブトグル挙動 byte 不変・MP 不在時も不変）。
     this._onLiveStateChange = typeof onLiveStateChange === 'function' ? onLiveStateChange : null;
     this._mode = MODE_FOLLOW; // 初期 FOLLOW。
@@ -7766,7 +7832,8 @@ class LiveFollowController {
       this._renderer.setAnalysisTint(false);
     }
     this._setButtonActive(true);
-    // ライブ連動: FOLLOW 遷移を協調役へ通知（MP を ticklive へ）。未注入は no-op（byte 不変）。
+    // ライブ連動: FOLLOW 遷移を協調役へ通知（MP を成長 ON＝growing=true へ／Phase5: 旧 ticklive モード置換は
+    //   撤廃し成長軸で駆動）。未注入は no-op（byte 不変）。
     this._notifyLiveState(true);
   }
 
@@ -7815,34 +7882,35 @@ class LiveFollowController {
 
 
 // ===== js/adapter/front/mp_live_mode_coordinator.js =====
-// MpLiveModeCoordinator（adapter/front/mp_live_mode_coordinator.js）— ライブトグル状態と MP 表示モードの連動役。
-//   present（B方式）固有。replay へは配線しない（replay は LiveFollowController 非所持）。
+// GrowthCoordinator（usecase/growth_coordinator.js）— 表示モードと成長状態を直交化する共有協調役。
+//   Model A 統一成長モデル: 表示モード（normal/replay/sessions）× 成長状態（growing/static）を直交化する。
+//   present（B方式）が LiveFollowController の FOLLOW/ANALYSIS 遷移を単一の成長信号へ写像する。
+//   replay も後半で同一協調役を用いる布石として market_profile の共有 usecase へ移設（旧 indicator_ui adapter）。
 //
-// 確定仕様（present オーケストレーション・MP actor は不変）:
-//   - チャート FOLLOW（ライブトグル ON・右端追従）→ MP 実効モードを liveMode（'ticklive'＝足内成長）にする。
-//   - チャート ANALYSIS（分析・過去へパン/トグル OFF）→ MP 実効モードを「ユーザーが gear で選んだ記憶モード」
-//     _mpUserMode（normal/replay/sessions）へ戻す。未選択時は defaultMode（catalog 既定＝'normal'）。
-//   ＝手動で Tickライブ を選ぶ必要が消え、gear 選択は「分析モード時の表示」として記憶される。
+// 役割再フレーム（旧 MpLiveModeCoordinator からの変更）:
+//   旧: FOLLOW→MP 実効モードを 'ticklive' へ置換／ANALYSIS→gear 記憶モード。
+//   新: 表示モードは常に「ユーザーが gear で選んだ記憶モード（未選択は defaultMode='normal'）」を維持する
+//       （resolve は 'ticklive' を返さない）。ライブ/分析の差は成長状態のみ＝FOLLOW→growing=true /
+//       ANALYSIS→growing=false（isGrowing）。これを actor.applyGrowthState({growing}) の単一信号へ写像する。
 //
 // 配線（composition_root_front で注入）:
-//   - resolve(userMode): IndicatorController の MP param 構築（mpModeResolver）から呼ばれる。
-//       userMode を記憶し、現在のライブ状態に応じた実効モードを返す。副作用は記憶のみ（actor へは触れない）。
-//   - onLiveStateChange(isFollow): LiveFollowController の遷移フック（_applyFollow/_applyAnalysis）。
-//       状態を更新し、reapply（controller.reapplyMarketProfileMode の注入）で実効モードを再適用させる。
-//   - reapply: 現在表示中 MP へ実効モードを再適用する副作用（controller 経由・MP 不在/無効時は controller が no-op）。
+//   - resolve(userMode): IndicatorController の MP param 構築（mpModeResolver）から呼ばれる。userMode を記憶し、
+//       現在の選択表示モードを返す（成長状態には依存しない・副作用は記憶のみ）。null は「記憶更新なし・解決のみ」。
+//   - isGrowing(): 現在の成長状態（FOLLOW=true / ANALYSIS=false）。controller が growing 信号として読む。
+//   - onLiveStateChange(isFollow): LiveFollowController の遷移フック。状態を更新し reapply で実効を再適用させる。
+//   - reapply: 現在表示中 MP へ mode 維持＋growing トグルを再適用する副作用（controller 経由・不在時 no-op）。
 //
-// 冪等・非破壊: 同状態への遷移は再適用しない（高速トグル/連続 auto-off での flicker・二重 fetch を回避）。
+// 冪等・非破壊: 同状態への遷移は再適用しない（高速トグル/連続 auto-off の flicker・二重 fetch を回避）。
 //   reapply 未注入（MP 不在相当）は onLiveStateChange を no-op にする（例外を出さない）。
 
-class MpLiveModeCoordinator {
-  // liveMode: FOLLOW 時の実効モード（既定 'ticklive'）。defaultMode: ANALYSIS で未選択時のフォールバック
-  //   （catalog の MP mode 既定＝'normal'）。reapply: 実効モード再適用の副作用（関数・未注入で no-op）。
-  constructor({ liveMode = 'ticklive', defaultMode = 'normal', reapply = null } = {}) {
-    this._liveMode = liveMode;
+class GrowthCoordinator {
+  // defaultMode: gear 未選択時のフォールバック表示モード（catalog の MP mode 既定＝'normal'）。
+  //   reapply: mode 維持＋growing トグル再適用の副作用（関数・未注入で no-op）。
+  constructor({ defaultMode = 'normal', reapply = null } = {}) {
     this._defaultMode = defaultMode;
     this._reapply = typeof reapply === 'function' ? reapply : null;
-    this._isFollow = true;    // チャート既定 FOLLOW（初期はライブ追従）。
-    this._mpUserMode = null;  // gear で選んだ分析モードの記憶。null=未選択（defaultMode へフォールバック）。
+    this._isFollow = true;    // チャート既定 FOLLOW（初期はライブ追従＝成長 ON）。
+    this._mpUserMode = null;  // gear で選んだ表示モードの記憶。null=未選択（defaultMode へフォールバック）。
   }
 
   // 現在のチャート追従状態（true=FOLLOW / false=ANALYSIS）。
@@ -7850,30 +7918,27 @@ class MpLiveModeCoordinator {
     return this._isFollow;
   }
 
-  // 記憶している分析モード（gear 選択）。未選択なら null。
+  // 現在の成長状態（FOLLOW=growing / ANALYSIS=static）。actor.applyGrowthState の growing へ写像する。
+  isGrowing() {
+    return this._isFollow;
+  }
+
+  // 記憶している表示モード（gear 選択）。未選択なら null。
   userMode() {
     return this._mpUserMode;
   }
 
   // controller の MP param 構築（mpModeResolver）から呼ばれる。userMode（gear 選択）を記憶し、
-  //   現在のライブ状態に応じた実効モードを返す。null は「記憶更新なし・実効解決のみ」（reapply 経路用）。
+  //   現在の選択表示モードを返す（成長状態に依存しない）。null は「記憶更新なし・解決のみ」（reapply 経路用）。
+  //   'ticklive' は返さない（成長はモードでなく growing 信号が担う＝直交化）。
   resolve(userMode) {
-    // gear 選択を「分析モード」として記憶（FOLLOW 中でも記憶だけは更新する）。ただし liveMode
-    //   （'ticklive'）は分析モードになり得ない（仕様: 分析＝非 ticklive の選択モード）。legacy で
-    //   mode:'ticklive' を保存済のインスタンスでも ANALYSIS が ticklive 継続しないよう記憶対象から除外し
-    //   defaultMode へフォールバックさせる（review 🔵-2）。
-    if (userMode != null && userMode !== this._liveMode) {
+    if (userMode != null) {
       this._mpUserMode = userMode;
     }
-    return this._isFollow ? this._liveMode : this._analysisMode();
-  }
-
-  // ANALYSIS 時の実効モード（記憶モード優先・未選択は catalog 既定）。
-  _analysisMode() {
     return this._mpUserMode != null ? this._mpUserMode : this._defaultMode;
   }
 
-  // LiveFollowController の遷移フック。FOLLOW↔ANALYSIS の状態を更新し、実効モードを再適用させる。
+  // LiveFollowController の遷移フック。FOLLOW↔ANALYSIS の状態を更新し、実効（mode 維持＋growing）を再適用させる。
   //   同状態への遷移は再適用しない（冪等＝連続 auto-off/高速トグルでの二重 fetch・flicker を回避）。
   onLiveStateChange(isFollow) {
     const next = !!isFollow;
@@ -7911,6 +7976,8 @@ class MpLiveModeCoordinator {
 
 // SAMPLE_DATA（埋め込み 635KB）は A方式（file://）でのみ動的 import する。B方式（served）は
 // candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
+// GrowthCoordinator は共有 market_profile モジュール（usecase/growth_coordinator.js）へ移設済み。
+//   present は adapter/front/mp_live_mode_coordinator.js（symlink）経由で import（byte 不変 retarget）。
 
 // 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
 //   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
@@ -8117,7 +8184,25 @@ async function bootstrap({
     // 増分2: スナップショットのローソクトリム源（renderer.setCandleTrim）。lwc 直叩きは renderer に隔離。
     renderer,
     getCandles: () => renderer.getCandles(),
-    getContext: () => ({ datasetRef, timeframe: controller._timeframe, limit: recentBars }),
+    getContext: () => {
+      const ctx = { datasetRef, timeframe: controller._timeframe, limit: recentBars };
+      // Model A Phase3（sessions 因果成長・機構A）: growing×sessions のときだけ因果カーソル
+      //   to=cursor(=最新観測足 time) を送出する。refresh(to, sessions=1) で backend が当日タイルを
+      //   [session_start, to) に限定集計し（過去日は静的）、reveal/ライブ前進で当日タイルが育つ。
+      //   未来リーク禁止（to<=cursor＝最新足以下・当日完成を先出ししない）。他モード/静止（ANALYSIS）は
+      //   to を載せない＝present#2 byte 不変。cursor 源=最新ローソク time（renderer.getCandles 末尾）。
+      //   mpLiveModeCoordinator/marketProfile は呼び出し時（setEnabled/refresh 時）に確定済み（後方参照）。
+      if (mpLiveModeCoordinator && mpLiveModeCoordinator.isGrowing()
+          && marketProfile && typeof marketProfile.isSessions === 'function'
+          && marketProfile.isSessions()) {
+        const cs = renderer.getCandles();
+        const last = Array.isArray(cs) && cs.length ? cs[cs.length - 1] : null;
+        if (last && last.time != null) {
+          ctx.to = last.time;
+        }
+      }
+      return ctx;
+    },
   });
 
   // チャート操作（スワイプスクラブ・縦価格パン・wheel 価格ズーム・dblclick reset）の配線は
@@ -8134,14 +8219,14 @@ async function bootstrap({
     updatePaneHeight,
   }).install();
 
-  // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）に MP 表示モードを
-  //   連動させる協調役。FOLLOW→MP を ticklive（足内成長）／ANALYSIS→gear で選んだ記憶モードへ。
-  //   defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定＝'normal'）。reapply は controller の
-  //   MP モード再適用へ遅延束縛する（controller はこの直後に代入されるため () => controller で吸収）。
-  //   A方式（file://・mode!=='b'）は null＝連動を配線しない（mpModeResolver 未注入で MP 挙動 byte 不変）。
+  // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）を MP の成長状態へ
+  //   連動させる共有協調役（Model A 直交化）。表示モードは gear 選択を維持し、FOLLOW→growing=true（足内成長）／
+  //   ANALYSIS→growing=false（static）。defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定
+  //   ＝'normal'）。reapply は controller の MP 再適用（mode 維持＋growing トグル）へ遅延束縛する（controller は
+  //   直後に代入されるため () => controller で吸収）。A方式（file://・mode!=='b'）は null＝連動を配線しない
+  //   （resolver 未注入で MP 挙動 byte 不変）。
   const mpLiveModeCoordinator = (mode === 'b')
-    ? new MpLiveModeCoordinator({
-        liveMode: 'ticklive',
+    ? new GrowthCoordinator({
         defaultMode: 'normal',
         reapply: () => (controller ? controller.reapplyMarketProfileMode() : undefined),
       })
@@ -8151,7 +8236,9 @@ async function bootstrap({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
     timeframe, recentBars, loadCandles, marketProfile,
     // 連動配線時のみ resolver を注入（未注入＝MP へ渡す mode をそのまま＝byte 不変）。
+    //   mode 解決役: 選択表示モードを返す（'ticklive' 置換なし）。growth 解決役: FOLLOW/ANALYSIS→growing 信号。
     mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
+    mpGrowthResolver: mpLiveModeCoordinator ? () => mpLiveModeCoordinator.isGrowing() : null,
   });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
@@ -8227,7 +8314,7 @@ async function bootstrap({
         document: doc,
         buttonId: 'live-follow-toggle',
         mode,
-        // ライブ連動: FOLLOW/ANALYSIS 遷移を協調役へ通知（MP を ticklive↔選択モードで連動）。
+        // ライブ連動: FOLLOW/ANALYSIS 遷移を協調役へ通知（MP を growing↔static で連動・表示モードは維持）。
         //   協調役不在（A方式）は未注入＝既存ライブトグル挙動 byte 不変。
         onLiveStateChange: mpLiveModeCoordinator
           ? (isFollow) => mpLiveModeCoordinator.onLiveStateChange(isFollow)

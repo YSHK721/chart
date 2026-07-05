@@ -425,12 +425,13 @@ export class IndicatorController {
       this._state = this._withParams(this._state, inst.instanceId, values);
       if (this._marketProfile) {
         this._applyMpParams(values);
-        // [reveal seam] reveal（replay）かつ **ticklive** のときだけ現在バー T で enterBar（forming push で
-        //   base 取り直し）。normal/sessions/replay は enterBar が自己ガード no-op のため refresh(as-of-T)
-        //   へ落とす（mode-aware）。present は enterBar 非所持ゆえ常に refresh＝従来どおり（byte 挙動不変）。
+        // [reveal seam] reveal（replay）かつ **push 成長中**（isGrowingPush＝growing かつ非 sessions）のときだけ
+        //   現在バー T で enterBar（forming push で base 取り直し）。sessions+growing / 非成長は refresh(as-of-T)
+        //   へ落とす（成長軸 aware）。present は _untilTime 未設定ゆえ常に refresh＝従来どおり（byte 挙動不変）。
+        //   Phase5: 旧 isTicklive()（表示モード）ゲートから isGrowingPush()（成長軸）へ移行（ticklive 撤去）。
         if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function'
-            && typeof this._marketProfile.isTicklive === 'function'
-            && this._marketProfile.isTicklive()) {
+            && typeof this._marketProfile.isGrowingPush === 'function'
+            && this._marketProfile.isGrowingPush()) {
           await this._marketProfile.enterBar(this._untilTime);
         } else if (typeof this._marketProfile.refresh === 'function') {
           await this._marketProfile.refresh();

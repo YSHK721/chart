@@ -56,14 +56,16 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     this._gridPriceMax = null;
   }
 
-  // override: ticklive は push（enterBar/feedTick）が駆動するため onLiveTick（pull）を no-op で遮断する
-  //   （pull/push 二重駆動の防止）。非ticklive（normal/sessions/replay）は基底 refresh へ委譲し、
-  //   getContext().to=T が as-seen-at-t として載る（因果・自動駆動）。
+  // override: push 成長中（normal/replay+growing＝isGrowingPush）は enterBar/feedTick が駆動するため
+  //   onLiveTick（pull）を no-op で遮断する（pull/push 二重駆動の防止）。非 push（sessions+growing／非成長）は
+  //   基底 refresh へ委譲し、getContext().to=T が as-seen-at-t として載る（因果・自動駆動）。sessions 成長は
+  //   refresh(to,sessions) が育て（機構A）、非成長は as-of-T 再取得。
+  //   Phase5: ゲートを isTicklive()（表示モード）から isGrowingPush()（成長軸）へ移行（ticklive セグメント撤去）。
   async onLiveTick() {
-    if (this.isTicklive()) {
+    if (this.isGrowingPush()) {
       return undefined; // push が育てる＝pull は駆動しない（二重駆動遮断）。
     }
-    return super.refresh(); // 非ticklive: as-of-T（getContext().to）で再取得（因果）。
+    return super.refresh(); // 非 push: as-of-T（getContext().to）で再取得（因果）。
   }
 
   // override: 基底 forming 引数（{...ctx, ...params, src:'dwell', base, since}）へ now(=getContext().to＝
@@ -109,14 +111,14 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     return this._rebuildAt(now, false); // skipDegenerateDraw=false（拡張グリッドは描画）。
   }
 
-  // enterBar/growTo の共通実体: base=1/src=dwell/now/from=当日始まり で forming を [当日始まり, now] の
-  //   因果窓で取得 → accumulator を作り直し（rollover/grid 拡張）→ forming.ticks を畳み込み（present 基底
-  //   _enterTicklive と同一 fold semantics）→ _lastSec/レンジ設定 → 描画。取得失敗（null）・base 欠損は
-  //   前回描画を保持（非破壊）。skipDegenerateDraw=true かつ縮退グリッド（tick 0＋[..,+1] レンジ）は描画のみ
-  //   スキップ（init は行い growTo の土台を残す）。
+  // enterBar/growTo の共通実体: base=1/src=dwell/now/from=GrowthWindow(normal→全期間・Phase4) で forming を
+  //   [from, now] の因果窓で取得 → accumulator を作り直し（rollover/grid 拡張）→ forming.ticks を畳み込み
+  //   （present 基底 _enterTicklive と同一 fold semantics）→ _lastSec/レンジ設定 → 描画。取得失敗（null）・
+  //   base 欠損は前回描画を保持（非破壊）。skipDegenerateDraw=true かつ縮退グリッド（tick 0＋[..,+1] レンジ）は
+  //   描画のみスキップ（init は行い growTo の土台を残す）。
   async _rebuildAt(now, skipDegenerateDraw) {
-    if (!this.isTicklive()) {
-      return; // 自己ガード: ticklive 以外では push 駆動しない（既存フック不変）。
+    if (!this.isGrowingPush()) {
+      return; // 自己ガード: push 成長中（normal/replay+growing）以外は push 駆動しない（Phase5: 成長軸ゲート）。
     }
     if (!this._enabled || !this._formingClient || !this._makeAccumulator) {
       return;

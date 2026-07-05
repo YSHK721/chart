@@ -220,8 +220,19 @@ export class MarketProfileActor {
   }
 
   // ticklive 表示中か（MP 有効かつ ticklive トグル ON のときだけ true）。
+  //   Phase5: 'ticklive' は表示選択肢から撤去済（catalog）だが、内部フラグ/機構は grow 軸の互換維持で残す
+  //   （setParams({mode:'ticklive'}) は依然 _applyMode('ticklive') を通り _growing を立てる）。UI からは到達不能。
   isTicklive() {
     return this._enabled && !!this._ticklive;
+  }
+
+  // Model A 統一成長（Phase5）: 「push 成長中か」の grow 軸判定。MP 有効かつ growing かつ非 sessions
+  //   （normal/replay 表示での足内 push 成長）のとき true。reveal（replay）の push 駆動ゲート
+  //   （enterBar/growTo/feedTick・旧 isTicklive() ゲート）を表示モードから成長軸へ移行するための単一判定。
+  //   sessions は refresh(to) で育てる（機構A）ため push 対象外（!_sessions）。present の pull 成長
+  //   （onLiveTick→forming）は _isIncremental が担い、本判定は replay の push ゲートに用いる。
+  isGrowingPush() {
+    return this._enabled && !!this._growing && !this._sessions;
   }
 
   // Model A 直交化: 成長状態を表示モードと独立に設定する単一信号（境界追加・actor ロジックは不変）。

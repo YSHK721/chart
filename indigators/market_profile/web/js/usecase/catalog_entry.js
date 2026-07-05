@@ -72,23 +72,23 @@ export function makeMarketProfileDef({
       // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
       //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する
       //   （解像度トグル resmode と同方式）。排他が構造的に保証され、同時 ON が不可能になる。
-      //   - normal: 従来の累積プロファイル（replay/sessions とも OFF・既定）。完全に従来挙動。
+      //   - normal: 全期間累積プロファイル（既定）。成長状態（FOLLOW/reveal 前進）では現在足の bar-period
+      //     forming で足内成長する（Model A: 表示モード×成長状態の直交化。成長は growing 信号が担う）。
       //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
       //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
-      //     T 縦線/トリム/スナップショット解除）。
-      //   - ticklive: 現在足の 1tick 毎 足内逐次成長（サブバー tick 逐次・クライアント側増分累積）。dwell
-      //     （滞在秒）原子で forming 期間の tick を 1 本ずつ増分累積し snapshot を描画する。normal/replay/
-      //     sessions とは排他（actor._applyMode('ticklive') が replay/sessions 一式を解除）。この値が
-      //     mode ENUM に存在しないと segmented トグルが選択肢を描けず本番 UI から発行不能＝機能が dead code に
-      //     なるため、他 3 モードと同形式で列挙する（MP-01 是正）。
-      //   actor.setParams が mode を受けて _setReplay/_applySessions/_applyMode('ticklive') の復元経路を
-      //   再利用し状態遷移する。order は旧 replay の位置（1）＝表示系 group の先頭。
-      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions', 'ticklive'], {
+      //     T 縦線/トリム/スナップショット解除）。成長状態では当日タイルが [session_start, cursor) で因果成長
+      //     （refresh(to, sessions)・機構A）。
+      //   Phase5（統一成長）: 旧 'ticklive' セグメント（表示選択肢）は撤去した。足内 1tick 逐次成長は
+      //     「表示モード」ではなく成長軸（growing 信号）が担う（直交化）＝normal/sessions のいずれでも成長する。
+      //     成長エンジン（_enterTicklive/forming/DwellAccumulator）は grow 軸で存続（表示選択肢のみ削除）。
+      //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
+      //   order は旧 replay の位置（1）＝表示系 group の先頭。
+      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
         group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
         enumLabels: {
-          normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル', ticklive: 'Tickライブ',
+          normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル',
         },
-        tooltip: '通常＝累積プロファイル／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示／Tickライブ＝現在足を1tick毎に足内逐次成長',
+        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
       }),
     ],
     series: [
