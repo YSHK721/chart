@@ -141,6 +141,18 @@ export class MarketProfileActor {
     }
   }
 
+  // Model A 直交化シーム: 成長状態 `_growing`（growing/static）を現 `_ticklive` の別名として導入する。
+  //   Phase 0 では駆動は現状のまま（`_ticklive` が唯一の store）＝挙動不変。読み手が居ないため副作用ゼロ。
+  //   Phase 1 で `_isIncremental`/成長エンジンを `_growing` キーへ切替え、mode='ticklive' が `_growing=true` を
+  //   立てる互換に移行する（表示モードと成長状態の直交化の土台）。
+  get _growing() {
+    return this._ticklive;
+  }
+
+  set _growing(v) {
+    this._ticklive = v;
+  }
+
   isEnabled() {
     return this._enabled;
   }
