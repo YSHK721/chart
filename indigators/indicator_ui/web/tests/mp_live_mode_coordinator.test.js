@@ -112,3 +112,12 @@ test('async reapply の拒否は握り潰す（unhandledRejection を出さな�
 
   assert.doesNotThrow(() => coord.onLiveStateChange(false), '同期呼び出しは例外を投げない');
 });
+
+test('resolve: liveMode(ticklive) は分析モードとして記憶しない（legacy ticklive 保存でも分析は非ticklive）', () => {
+  const coord = new MpLiveModeCoordinator({ liveMode: 'ticklive', defaultMode: 'normal' });
+  coord.onLiveStateChange(false); // ANALYSIS へ遷移
+  // 仕様: 分析モードは非 ticklive の選択モード。ticklive 選択は記憶せず defaultMode へフォールバック（🔵-2）。
+  assert.equal(coord.resolve('ticklive'), 'normal', 'ticklive 選択は記憶されず defaultMode(normal) へ');
+  assert.equal(coord.resolve('sessions'), 'sessions', '非 ticklive の選択は記憶して分析に反映');
+  assert.equal(coord.resolve('ticklive'), 'sessions', '以後の ticklive 選択でも記憶(sessions)は破壊しない');
+});

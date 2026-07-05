@@ -4575,7 +4575,8 @@ class IndicatorController {
     //   取得する。live loop(recomputeAllApplied)/初期 add/gear の ticklive-entry と同一経路。refresh は
     //   /market_profile の base 累積を描くだけで forming を発火しないため、ticklive では onLiveTick を呼ぶ。
     //   非 ticklive（normal/replay/sessions）は従来どおり refresh で選択モードを反映する。
-    //   isTicklive()（setParams({mode:'ticklive'}) 後に true）で分岐し、gear applyParams の isTicklive 分岐に揃える。
+    //   isTicklive()（setParams({mode:'ticklive'}) 後に true）で分岐する。揃える先は live-loop
+    //   recomputeAllApplied の onLiveTick 経路（present gear は _untilTime==null で refresh に落ちるため別）。
     if (typeof this._marketProfile.isTicklive === 'function' && this._marketProfile.isTicklive()
         && typeof this._marketProfile.onLiveTick === 'function') {
       await this._marketProfile.onLiveTick();
@@ -7857,8 +7858,12 @@ class MpLiveModeCoordinator {
   // controller の MP param 構築（mpModeResolver）から呼ばれる。userMode（gear 選択）を記憶し、
   //   現在のライブ状態に応じた実効モードを返す。null は「記憶更新なし・実効解決のみ」（reapply 経路用）。
   resolve(userMode) {
-    if (userMode != null) {
-      this._mpUserMode = userMode; // gear 選択を記憶（FOLLOW 中でも記憶だけは更新する）。
+    // gear 選択を「分析モード」として記憶（FOLLOW 中でも記憶だけは更新する）。ただし liveMode
+    //   （'ticklive'）は分析モードになり得ない（仕様: 分析＝非 ticklive の選択モード）。legacy で
+    //   mode:'ticklive' を保存済のインスタンスでも ANALYSIS が ticklive 継続しないよう記憶対象から除外し
+    //   defaultMode へフォールバックさせる（review 🔵-2）。
+    if (userMode != null && userMode !== this._liveMode) {
+      this._mpUserMode = userMode;
     }
     return this._isFollow ? this._liveMode : this._analysisMode();
   }

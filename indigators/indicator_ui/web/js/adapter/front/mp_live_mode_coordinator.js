@@ -41,8 +41,12 @@ export class MpLiveModeCoordinator {
   // controller の MP param 構築（mpModeResolver）から呼ばれる。userMode（gear 選択）を記憶し、
   //   現在のライブ状態に応じた実効モードを返す。null は「記憶更新なし・実効解決のみ」（reapply 経路用）。
   resolve(userMode) {
-    if (userMode != null) {
-      this._mpUserMode = userMode; // gear 選択を記憶（FOLLOW 中でも記憶だけは更新する）。
+    // gear 選択を「分析モード」として記憶（FOLLOW 中でも記憶だけは更新する）。ただし liveMode
+    //   （'ticklive'）は分析モードになり得ない（仕様: 分析＝非 ticklive の選択モード）。legacy で
+    //   mode:'ticklive' を保存済のインスタンスでも ANALYSIS が ticklive 継続しないよう記憶対象から除外し
+    //   defaultMode へフォールバックさせる（review 🔵-2）。
+    if (userMode != null && userMode !== this._liveMode) {
+      this._mpUserMode = userMode;
     }
     return this._isFollow ? this._liveMode : this._analysisMode();
   }
