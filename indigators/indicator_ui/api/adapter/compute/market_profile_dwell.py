@@ -35,9 +35,7 @@ marketdata は import して使うだけ（既存データは読むだけ・波�
 
 from __future__ import annotations
 
-import os as _os
 import sys as _sys
-import tempfile as _tempfile
 import time as _time
 from pathlib import Path as _Path
 from typing import Any
@@ -47,6 +45,8 @@ import pandas as pd
 
 # POC/VA は candle 版の単一定義を再利用する（DRY・同一定義）。
 from adapter.compute.market_profile import _session_entry, _value_area
+# ディスクキャッシュ Repository（ISSUE-040(b) SRP 分離）。集計数学は本モジュール、永続化は Store が担う。
+from adapter.compute.market_profile_dwell_store import DwellRollupStore
 
 # repo 根を sys.path へ（marketdata を import するため・dataset/forming_bar と同じロード境界）。
 _WORKSPACE_ROOT = _Path(__file__).resolve().parents[5]
@@ -75,7 +75,19 @@ _CACHE_VERSION = 2        # 形式バージョン。読込時に不一致なら�
 #   v2: 日次ロールアップに「ソースティック署名(sig)」を併記。完了日を空でキャッシュした後にティックが
 #       届いても署名変化で自動再計算する（無効化ロジック・stale-empty 修正）。v1 は不一致で全再計算。
 _CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_dwell)。テストは tmp を注入。
-_CACHE_MISS = object()    # ディスク未ヒット/破損の番兵（None=「実データ無しの完了日」と区別する）。
+
+# ディスクキャッシュ Repository（ISSUE-040(b)）。永続化 I/O（save/load/署名/無効化・parquet/tempfile）は
+# DwellRollupStore に分離した。可変設定（cache root / 形式バージョン / 正準ティック列挙）は provider の
+# クロージャで注入し、本体 module 変数 _CACHE_ROOT / _CACHE_VERSION / day_parquet_files の **テスト注入
+# （monkeypatch）経路を温存**する（call-time に読むため）。集計数学は本モジュールに残す（下段）。
+_STORE = DwellRollupStore(
+    root_provider=lambda: _CACHE_ROOT,
+    default_root_provider=lambda: _paths.DATA_DIR / "cache" / "market_profile_dwell",
+    grid_w=GRID_W,
+    cache_version_provider=lambda: _CACHE_VERSION,
+    day_parquet_files=lambda *a, **k: day_parquet_files(*a, **k),
+)
+_CACHE_MISS = DwellRollupStore.CACHE_MISS  # 番兵は Store と同一オブジェクト（identity 一致を保つ）。
 
 # 生ティック parquet の必須列（marketdata.tick_m1._TICK_COLUMNS と同じ意味）。
 _TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
@@ -245,99 +257,34 @@ def _active_table(symbol: str, at_from: int, win_to: int) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
-# 日別ロールアップのディスク永続キャッシュ（新規 cache ディレクトリのみ・fail-safe）
+# 日別ロールアップのディスク永続キャッシュ委譲（DwellRollupStore・新規 cache ディレクトリのみ・fail-safe）
 # --------------------------------------------------------------------------- #
+# 以下は :class:`DwellRollupStore`（永続化 Repository）への薄い委譲。公開/内部シンボル名は不変に保ち、
+# 既存テストの monkeypatch 経路（`mpd._cache_path` / `_save_day_rollup` / `_load_day_rollup` /
+# `_day_source_signature` / `_CACHE_ROOT` / `_CACHE_VERSION`）と byte 出力を温存する（ISSUE-040(b)）。
 def _cache_root() -> _Path:
     """ディスクキャッシュの基点 ``DATA_DIR/cache/market_profile_dwell`` を返す（テストは _CACHE_ROOT で差替）。"""
-    if _CACHE_ROOT is not None:
-        return _Path(_CACHE_ROOT)
-    return _paths.DATA_DIR / "cache" / "market_profile_dwell"
+    return _STORE.cache_root()
 
 
 def _cache_path(symbol: str, day_start: int) -> _Path:
-    """日別ロールアップの保存パス。キーに symbol・GRID_W・day_start を含める（混線防止）。
-
-    ``<root>/<symbol>/g<GRID_W>/<day_start>.npz``。GRID_W を分岐に含めるため、グリッド幅変更時は
-    別ディレクトリとなり旧キャッシュと識別される。
-    """
-    return _cache_root() / str(symbol) / f"g{GRID_W:g}" / f"{int(day_start)}.npz"
+    """日別ロールアップの保存パス ``<root>/<symbol>/g<GRID_W>/<day_start>.npz``（Store へ委譲）。"""
+    return _STORE.cache_path(symbol, day_start)
 
 
 def _day_source_signature(symbol: str, day_start: int) -> str:
-    """完了日 ``day_start`` のソースティック署名（日次 parquet の name:mtime:size を連結）。
-
-    キャッシュ無効化に使う。完了日を空でキャッシュした後にティック parquet が届く/更新されると署名が
-    変わり、``_day_rollup`` が stale-empty を検出して再計算する。ファイル無し（休場等）は空文字。
-    ``day_parquet_files``（read-only・正準経路）と ``stat`` のみ＝ソース非改変・低コスト。
-    """
-    day = pd.Timestamp(int(day_start), unit="s").normalize()
-    parts: list[str] = []
-    for p in day_parquet_files(day, day, symbol=symbol):
-        try:
-            st = p.stat()
-            parts.append(f"{p.name}:{int(st.st_mtime)}:{int(st.st_size)}")
-        except OSError:
-            parts.append(f"{p.name}:?")
-    return "|".join(parts)
+    """完了日 ``day_start`` のソースティック署名（無効化用・Store へ委譲）。ファイル無しは空文字。"""
+    return _STORE.day_source_signature(symbol, day_start)
 
 
 def _save_day_rollup(path: _Path, roll: "dict | None", sig: str = "") -> None:
-    """ロールアップ（None=実データ無し完了日を含む）を ``.npz`` へ原子的に保存する。
-
-    可変長 ``dwell``/``cnt`` と ``kmin`` を保持し、``version``/``grid_w``/``empty``/``sig`` メタを併記する。
-    ``sig`` はソースティック署名（無効化用）。tmp へ書いてから :func:`os.replace` で確定し破損を残さない。
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    common = dict(version=np.int64(_CACHE_VERSION), grid_w=np.float64(GRID_W), sig=np.str_(sig))
-    if roll is None:
-        arrs = dict(
-            **common, empty=np.bool_(True),
-            kmin=np.int64(0), dwell=np.zeros(0, dtype=float), cnt=np.zeros(0, dtype=float),
-        )
-    else:
-        arrs = dict(
-            **common, empty=np.bool_(False),
-            kmin=np.int64(int(roll["kmin"])),
-            dwell=np.asarray(roll["dwell"], dtype=float),
-            cnt=np.asarray(roll["cnt"], dtype=float),
-        )
-    fd, tmp_name = _tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp.npz")
-    _os.close(fd)
-    tmp = _Path(tmp_name)
-    try:
-        with open(tmp, "wb") as fh:
-            np.savez_compressed(fh, **arrs)
-        _os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    """ロールアップ（None=実データ無し完了日を含む）を ``.npz`` へ原子的に保存する（Store へ委譲）。"""
+    _STORE.save_day_rollup(path, roll, sig)
 
 
 def _load_day_rollup(path: _Path) -> "tuple[Any, str]":
-    """ディスクから日別ロールアップと署名を読む。未ヒット/破損/バージョン不整合は ``(_CACHE_MISS, "")``。
-
-    戻り値: ``(status, sig)``。status は ``_CACHE_MISS``（要再計算） / ``None``（実データ無しの完了日） /
-    ``dict``（ロールアップ）。sig は保存時のソースティック署名（無効化判定に使う。旧形式は ""）。
-    破損・形式不整合は例外を握り潰し ``(_CACHE_MISS, "")`` として再計算に委ねる（fail-safe）。
-    """
-    if not path.is_file():
-        return _CACHE_MISS, ""
-    try:
-        with np.load(path) as z:
-            if int(z["version"]) != _CACHE_VERSION:
-                return _CACHE_MISS, ""
-            if float(z["grid_w"]) != float(GRID_W):
-                return _CACHE_MISS, ""
-            sig = str(z["sig"]) if "sig" in z.files else ""
-            if bool(z["empty"]):
-                return None, sig
-            return {
-                "kmin": int(z["kmin"]),
-                "dwell": np.asarray(z["dwell"], dtype=float),
-                "cnt": np.asarray(z["cnt"], dtype=float),
-            }, sig
-    except Exception:
-        return _CACHE_MISS, ""
+    """ディスクから日別ロールアップと署名を読む（Store へ委譲）。未ヒット/破損/不整合は ``(_CACHE_MISS, "")``。"""
+    return _STORE.load_day_rollup(path)
 
 
 def _day_rollup(symbol: str, day_start: int, table: np.ndarray, now: float) -> "dict | None":
