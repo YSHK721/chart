@@ -533,3 +533,27 @@
 - **背景**: (a) `web/js/replay.js` が `controller._timeframe`/`_recentBars` の private を直接参照＋`applyIndicator`/`removeInstance` を実行時 monkeypatch（syncBoundary ラップ）。プロト replay.js の忠実移植由来で依存方向違反ではないが結合が強い。(b) `replay_view.readSpeed/readMode` は要素欠落時 NaN→既定退避（clampSpeed→1/real_ticks）。プロトは `null.value` で throw。現行 index.html では rp-speed/rp-mode 常設のため到達不能。(c) `syncSpeedUI` の `clampSpeed(parseFloat())` はプロトの `+value` と [0,1] 範囲で等価。
 - **対策（提案）**: (a) controller 側に public accessor / フック（onApplied 等）を設け private 参照・monkeypatch を解消。(b)(c) 現行 DOM では非到達＝現状維持可。厳密忠実化するなら proto 準拠へ寄せる。
 - **関連**: replay_ui フロント増分（INC-F2）。
+
+## ISSUE-038: indicator_ui — indicator_controller.js(994行) SRP違反（View分離）※要判断・保留
+- **重大度**: Medium（設計整理・正しさ影響なし。監査は「依存方向違反0・破壊的変更不要」と明言）
+- **ステータス**: OPEN（大型分離はリスク>価値の見立てで**保留**・着手はユーザー判断待ち）
+- **検出**: architecture-executor クリーンアーキ徹底監査（🔴-1・2026-07-05）。
+- **背景**: `indigators/indicator_ui/web/js/adapter/front/indicator_controller.js` に変更軸の異なる3責務が同居＝(1)計算オーケストレーション(`applyIndicator`/`recomputeInstance`/`recomputeAllApplied`/`setTimeframe`) (2)View描画(`bind`:787/`_renderLegend`:893/`_renderDialogList`:865/`_openDialog`:838/`_onGear`:945/`_onGearMarketProfile`:339) (3)永続化(`_persistAll`/`restore`/`_toJson`)。**単一ソース共有**（present 直接＋simulator/replay_ui が symlink 共有＋`ReplayIndicatorController` が `_mpParams`/`removeInstance`/`recomputeInstance`/`_recomputeMarketProfile` override・`_onGear`/`_onGearMarketProfile` 継承）のため、View分離は **19指標＋MP4モード＋replay の両アプリ同時回帰リスク大**。特に `_onGearMarketProfile` の reveal seam（`_untilTime`＋`enterBar`＋`isTicklive()` ガード・直近修正済）は View と controller 状態に跨り分離困難。
+- **対策（提案）**: 純DOM描画（凡例/ダイアログ構築）を `IndicatorLegendView`(adapter/front) へ抽出し、ハンドラ(`_onGear`/`_onGearMarketProfile`)・状態・永続化・orchestration・subclass override は controller に温存。**回帰ゲート必須**（present web ≥601/603＝既知2fail除外・replay web 162/162・両アプリboot・MP4モード/replay目視・present byte不変）。**中間案**＝最も純粋なDOMヘルパのみ小さく抽出（低リスク・効果限定）。**見送り案**＝working維持・本Issueで既知化。
+- **関連**: 同監査で 🔴-2(api/domain 死蔵誤表示) は doc明記で解消済(branch `refactor/indicator-ui-arch-remediation` 03136b0・develop未マージ)。監査総評=依存方向・技術隔離は合格。working develop=ff90583 安定。
+
+## ISSUE-039: indicator_ui — market_profile_controller に usecase相当ロジック堆積（Interactor抽出）
+- **重大度**: Low〜Medium
+- **ステータス**: OPEN
+- **検出**: 同監査（🟡-1・2026-07-05）。
+- **背景**: `api/adapter/controller/market_profile_controller.py`(349行) に HTTP非依存の Application Business Rules が堆積＝`to`/`from` 時間窓フィルタ(:251/:311)・`_resolve_n_bins`(:72) barw→bins・`_handle_dwell`(:277) src分岐・`_cap_sessions`(:62) 応答整形。`compute_controller.py`(117行) は薄く妥当（Controller+Interactor 折り畳み許容）＝問題は market_profile のみ。
+- **対策（提案）**: `MarketProfileInteractor`（窓適用/bin決定/src分岐/session整形）を抽出し、controller はクエリ解析と error翻訳に縮小。過剰な usecase 層新設は不要（YAGNI）。
+- **関連**: indicator_ui backend。単独対応可。
+
+## ISSUE-040: indicator_ui — SRP整理3件（DIルート/dwellキャッシュ/chart_renderer内部分割）※低優先
+- **重大度**: Low
+- **ステータス**: OPEN
+- **検出**: 同監査（🟡-2/🟡-3/🟡-4・2026-07-05）。
+- **背景**: (a) `web/js/adapter/front/composition_root_front.js` L242-381(~140行) が pointer swipe スクラブ/縦価格パン/wheel価格ズームの**振る舞い**を実装＝DIルートに配線以外が混入。(b) `api/adapter/compute/market_profile_dwell.py`(622行) が集計ロジックとディスクキャッシュ Repository(`_save_day_rollup`:284/`_load_day_rollup`:316/署名) の同居（変更軸が別）。(c) `web/js/adapter/front/chart_renderer.js`(998行) は lwc隔離という単一軸は妥当だが内部で系列描画/価格ズーム座標数学(`handlePriceWheel`:353/`panPriceByPixels`:408)/クロスヘアDTO(`_buildReadoutDto`:872)が混在。
+- **対策（提案）**: (a) `ChartInteractionController` 抽出・root は配線のみ。(b) 日次rollupを `DwellRollupStore`(Gateway) 分離し Output境界越し注入。(c) 価格スケール操作を `PriceScaleController` へ内部分割（隔離境界の価値は高く任意・低優先）。
+- **関連**: 各 SRP整理。低リスク・低優先。🔵(market_profile.py の TPO/POC/VA を domain へ／properties_dialog 分割／frontend framework層物理配置) は将来余地。
