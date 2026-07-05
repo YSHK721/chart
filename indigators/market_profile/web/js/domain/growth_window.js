@@ -7,11 +7,12 @@
 //   モジュール所有）＝present（B 方式）と replay の双方が forCurrent を呼ぶ。
 //
 //   写像（forCurrent(mode,tf,cursor)→{from,to,formingStart}）:
-//     - normal:   from=null（全期間 base＝present の「from 省略」と一致）/ to=cursor /
-//                 formingStart=period_start(cursor,tf)（bar-period forming の始端）。
+//     - normal:   from=min(session_start,formingStart)（「絞った窓」＝日中足は当日始まり／上位足は当該バー期間）
+//                 / to=cursor / formingStart=period_start(cursor,tf)。全期間累積だと 1 本ぶんの成長が極小で
+//                 視認不能になるため当日を base 下限にする（ユーザー確定・視認性優先）。
 //     - sessions: from=session_start(cursor)（暦日 anchor＝当日始まり）/ to=cursor /
 //                 formingStart=period_start(cursor,tf)（backend forming_ticks の period_start_unix と同一 anchor）。
-//     - 未知 mode（replay 等）: normal 扱い（全期間 base の安全側）。
+//     - 未知 mode（replay 等）: normal 扱い（絞った窓の安全側）。
 //
 //   1D=86400 の隔離: 暦日 anchor（session_start）は本 domain の sessionStart だけが 86400 を用いる。
 //     bar-period anchor（period_start）は tf 依存で全時間足へ一般化する（1D も 86400 だが tf 表から導出）。
@@ -80,8 +81,15 @@ export class GrowthWindow {
     }
     const to = Number(cursor);
     const formingStart = GrowthWindow.periodStart(to, tf);
-    // sessions のみ暦日 anchor（当日始まり）を base 下限にする。normal/未知は全期間 base（from=null）。
-    const from = mode === 'sessions' ? GrowthWindow.sessionStart(to) : null;
+    // base 下限（from）:
+    //   - sessions: 暦日 anchor（当日始まり）。
+    //   - normal/未知: 「絞った窓」= min(当日始まり, formingStart)。全期間累積だと 1 本ぶんの成長が
+    //     数年分に対して極小で視認不能になるため（ユーザー確定・視認性優先）、当日を base 下限にする。
+    //     ただし 1W/1M は formingStart（週/月始端）が当日より前になるため min で formingStart 側へ寄せ、
+    //     不変条件 from<=formingStart を保つ（＝日中足は当日／上位足は当該バー期間が窓）。
+    const from = mode === 'sessions'
+      ? GrowthWindow.sessionStart(to)
+      : Math.min(GrowthWindow.sessionStart(to), formingStart);
     return new GrowthWindow({ from, to, formingStart });
   }
 }

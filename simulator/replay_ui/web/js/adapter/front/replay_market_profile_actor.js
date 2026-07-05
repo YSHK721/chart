@@ -73,10 +73,11 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   getContext().to。
   //   Phase4（86400 隔離）: 旧実装は from=当日始まり(floor(now,86400)) を決め打ちしていた。これを
   //   GrowthWindow(mode,tf,cursor) へ委譲し隔離する。明示 from（呼び出し側指定）は優先（compat）。未指定時は
-  //   GrowthWindow.from が窓を写像する: normal→null（全期間 base・gate1 承認: replay 再生=全期間累積）、
-  //   sessions→暦日 anchor。ただし sessions 成長は Phase3 で refresh(to) へ倒れ本 forming 経路には到達しない。
-  //   from=null は載せない＝全期間（present の from 省略と一貫）。全時間足の bar-period 成長は backend
-  //   forming_ticks の period_start_unix(now,tf)（tf 依存 formingStart）が担う（reveal 窓 stream.js は不変）。
+  //   GrowthWindow.from が窓を写像する: normal→絞った窓 min(当日始まり, formingStart)（視認性優先・ユーザー確定＝
+  //   全期間累積だと 1 本ぶんの成長が極小で見えないため当日を base 下限に）、sessions→暦日 anchor。ただし sessions
+  //   成長は Phase3 で refresh(to) へ倒れ本 forming 経路には到達しない。from=null（cursor 欠損）は載せない。
+  //   全時間足の bar-period 成長は backend forming_ticks の period_start_unix(now,tf)（tf 依存 formingStart）が担う
+  //   （reveal 窓 stream.js は不変）。
   _buildFormingArgs({ base, since, now, from } = {}) {
     const args = super._buildFormingArgs({ base, since });
     const effNow = now != null ? now : this._getContext().to;
@@ -88,7 +89,7 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
         const mode = this._sessions ? 'sessions' : 'normal';
         const w = GrowthWindow.forCurrent(mode, this._getContext().timeframe, effNow);
         if (w.from != null) {
-          args.from = w.from; // normal は null＝from 省略（全期間 base）。sessions のみ暦日 anchor。
+          args.from = w.from; // normal=絞った窓 min(当日,formingStart)／sessions=暦日 anchor。cursor 欠損時のみ null。
         }
       }
     }
