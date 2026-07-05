@@ -37,6 +37,7 @@ const MODULE_ORDER = [
   'js/adapter/front/catalog_client.js',
   'js/usecase/form_model.js',
   'js/adapter/front/properties_dialog.js',
+  'js/adapter/front/indicator_legend_view.js',
   'js/adapter/front/indicator_controller.js',
   'js/adapter/front/live_updater.js',
   'js/adapter/front/forming_bar_updater.js',
