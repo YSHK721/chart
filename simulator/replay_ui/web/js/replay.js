@@ -297,6 +297,29 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     catch (_e) { /* 確定着地の失敗は次フレームの full 再計算が回復 */ }
     finally { formingInFlight = false; lastFormingMs = performance.now(); }
   }
+  // MP tick-live グリッド拡張ドライバ（pushFormingMA / formingInFlight と同型の in-flight coalesce）。
+  //   1D 当日プロファイルの欠陥修正: enterBar(now=当日00:00) は base 窓空＋forming tick0 で縮退グリッド
+  //   ([0,1]) になり、以後の当日実 tick(価格~71000) が範囲外で全て捨てられ当日プロファイルが育たない。
+  //   revealed tick がグリッド外に出たら growTo(直近 revealed 秒) を発火し、now までの因果窓で forming を
+  //   再取得→グリッドを拡張して forming.ticks を畳み込む（未来リーク禁止＝now は必ず secs[i]）。
+  //   await でループを止めない fire-and-forget（完了で再描画）。in-flight 中は coalesce（多重発火抑止）。
+  let growInFlight = false;
+  function pushGrowTo(sec) {
+    if (growInFlight) return;
+    growInFlight = true;
+    marketProfile.growTo(sec)
+      .catch(() => { /* グリッド拡張失敗はアニメ継続（次 tick が再発火・settle が最終確定） */ })
+      .finally(() => { growInFlight = false; });
+  }
+  // 確定時のグリッド拡張強制（mp_core 一致点）: in-flight を待ってから最終 secs で growTo を await し、
+  //   当日窓全 tick を畳み込んだ確定グリッドにしてから settleTick する（backend base=1 dwell と一致）。
+  async function settleGrowTo(sec) {
+    while (growInFlight) { await sleepMs(ANIM_MIN_MS); }
+    growInFlight = true;
+    try { await marketProfile.growTo(sec); }
+    catch (_e) { /* 確定着地の拡張失敗は次フレームの enterBar が回復 */ }
+    finally { growInFlight = false; }
+  }
   let pausedForm = null;
   view.el('rp-mode').addEventListener('change', () => {
     animGen++;          // 実行中の形成を supersede
@@ -340,7 +363,16 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         pushFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: p });
         // MP tick-live: この tick を DwellAccumulator へ供給し足内成長させる（sec 並走が有るバーのみ＝
         //   real_ticks・MP 有効。secs 空バーは skip＝base 継続）。速度0凍結/supersede の既存制御に追従。
-        if (mpOn() && secs && secs[i] != null) marketProfile.feedTick(secs[i], p);
+        if (mpOn() && secs && secs[i] != null) {
+          // 当日プロファイル欠陥修正: revealed tick がグリッド外（縮退 [0,1] 等）なら growTo を発火し
+          //   now=secs[i] までの因果窓でグリッドを拡張する（in-flight coalesce・feedTick は継続）。
+          //   拡張完了後の tick は範囲内で feedTick が育て、確定時 settleGrowTo が全 tick を再畳み込む。
+          if (typeof marketProfile.isTickInGrid === 'function'
+              && !marketProfile.isTickInGrid(p) && !growInFlight) {
+            pushGrowTo(secs[i]);
+          }
+          marketProfile.feedTick(secs[i], p);
+        }
         while (speed() <= 0 && !superseded() && !(shouldAbort && shouldAbort())) await sleepMs(80); // 速度0=凍結
         if (superseded() || (shouldAbort && shouldAbort())) continue;
         await sleepMs(stepMs(speed())); // 再生速度で減速（毎ステップ読込＝速度変更を即時反映）
@@ -349,8 +381,15 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       // 足確定: ティック列由来の OHLC で確定（cd.high/low へスナップしない）。
       const fc = prices[prices.length - 1];
       view.updateForming({ time: cd.time, open: o, high: hi, low: lo, close: fc });
-      // MP tick-live: 確定時に最終 snapshot を強制描画する（throttle 無視・確定形を取りこぼさない）。
-      if (mpOn()) marketProfile.settleTick();
+      // MP tick-live: 確定時に当日窓全 tick を最終 secs で再畳み込みしてグリッド確定（mp_core 一致点＝
+      //   backend base=1 dwell と一致）してから最終 snapshot を強制描画する（throttle 無視）。
+      if (mpOn()) {
+        const lastSec = (secs && secs.length) ? secs[secs.length - 1] : null;
+        if (lastSec != null && typeof marketProfile.growTo === 'function') {
+          await settleGrowTo(lastSec);
+        }
+        marketProfile.settleTick();
+      }
       if (myGen === animGen) {
         await settleFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: fc });
       }
