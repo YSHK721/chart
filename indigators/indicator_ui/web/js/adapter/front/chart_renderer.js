@@ -995,4 +995,80 @@ export class ChartRenderer {
     }
     this._instances.delete(instanceId);
   }
+
+  // ─── ライブ追従（LiveFollowController 用）向け additive メソッド群 ───
+  //   本 3 メソッドは構築子・既存メソッドを 1byte も変えずに末尾追加したもの（present 固有の
+  //   ライブ追従トグルが呼ぶ）。replay は本メソッドを一切呼ばないため symlink 共有下でも inert
+  //   （replay 側の描画差分ゼロ）。lwc の timeScale/applyOptions 直叩きは本所（ChartRenderer）に閉じる。
+
+  // 可視論理範囲の変化を購読し、右端に居るか（atRightEdge）を bool で cb へ渡す。
+  //   atRightEdge = getVisibleLogicalRange().to >= (total-1) - EPS（EPS≈1バー）。total は基準 candles 本数。
+  //   timeScale/subscribe/getVisibleLogicalRange 非提供時・range 取得不能時は no-op（後方互換）。
+  subscribeVisibleRange(cb) {
+    if (typeof cb !== 'function') {
+      return;
+    }
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.subscribeVisibleLogicalRangeChange !== 'function') {
+      return;
+    }
+    const EPS = 1; // 右端判定の許容（約 1 バー）。programmatic scroll 由来の微小ずれを吸収する。
+    ts.subscribeVisibleLogicalRangeChange(() => {
+      if (typeof ts.getVisibleLogicalRange !== 'function') {
+        return;
+      }
+      const r = ts.getVisibleLogicalRange();
+      if (!r || typeof r.to !== 'number') {
+        return; // 範囲未確定（データ空・初期化前）は通知しない。
+      }
+      const total = this._baseCandles ? this._baseCandles.length : 0;
+      const atRightEdge = r.to >= (total - 1) - EPS;
+      cb(atRightEdge);
+    });
+  }
+
+  // 最新足（リアルタイム端）へスナップする（再FOLLOW の catch-up 用）。
+  //   timeScale/scrollToRealTime 非提供時は no-op（後方互換）。
+  scrollToRealTime() {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.scrollToRealTime !== 'function') {
+      return;
+    }
+    ts.scrollToRealTime();
+  }
+
+  // 分析モードの背景 tint を適用/解除する（on=true で薄い tint、off で既定背景へ復元）。
+  //   既定背景は初回呼び出し時に chart.options().layout.background から遅延取得しキャッシュする
+  //   （構築子を変更しないため）。取得不能時は既定色フォールバック。applyOptions 非提供時は no-op。
+  setAnalysisTint(on) {
+    if (typeof this._chart.applyOptions !== 'function') {
+      return;
+    }
+    // 分析モード（ANALYSIS）背景 tint 色。既定背景 #131722 より僅かに紫寄りに振り状態を明示する
+    //   （薄い tint＝ユーザー要求「背景色で状態明示」。目視微調整はユーザーが後で実施）。
+    const ANALYSIS_TINT_COLOR = '#1b1a24';
+    // options 取得不能時の既定背景フォールバック色（composition root の layout.background と同値）。
+    const DEFAULT_BACKGROUND_COLOR = '#131722';
+    // 既定背景を一度だけ捕捉（構築子外・遅延初期化）。以降の tint on/off はこの基準へ復元する。
+    if (this._analysisTintBase === undefined) {
+      let base = null;
+      if (typeof this._chart.options === 'function') {
+        const o = this._chart.options();
+        base = (o && o.layout && o.layout.background) ? o.layout.background : null;
+      }
+      this._analysisTintBase = base;
+    }
+    if (on) {
+      // 既定背景の type を保ったまま色だけ分析 tint へ差し替える（type 不明時は色のみ）。
+      const type = this._analysisTintBase ? this._analysisTintBase.type : undefined;
+      const bg = (type !== undefined)
+        ? { type, color: ANALYSIS_TINT_COLOR }
+        : { color: ANALYSIS_TINT_COLOR };
+      this._chart.applyOptions({ layout: { background: bg } });
+      return;
+    }
+    // 復元: 捕捉した既定背景（無ければ既定色フォールバック）。
+    const restore = this._analysisTintBase || { color: DEFAULT_BACKGROUND_COLOR };
+    this._chart.applyOptions({ layout: { background: restore } });
+  }
 }
