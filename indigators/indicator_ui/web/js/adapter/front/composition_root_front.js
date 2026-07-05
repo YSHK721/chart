@@ -241,7 +241,25 @@ export async function bootstrap({
     // 増分2: スナップショットのローソクトリム源（renderer.setCandleTrim）。lwc 直叩きは renderer に隔離。
     renderer,
     getCandles: () => renderer.getCandles(),
-    getContext: () => ({ datasetRef, timeframe: controller._timeframe, limit: recentBars }),
+    getContext: () => {
+      const ctx = { datasetRef, timeframe: controller._timeframe, limit: recentBars };
+      // Model A Phase3（sessions 因果成長・機構A）: growing×sessions のときだけ因果カーソル
+      //   to=cursor(=最新観測足 time) を送出する。refresh(to, sessions=1) で backend が当日タイルを
+      //   [session_start, to) に限定集計し（過去日は静的）、reveal/ライブ前進で当日タイルが育つ。
+      //   未来リーク禁止（to<=cursor＝最新足以下・当日完成を先出ししない）。他モード/静止（ANALYSIS）は
+      //   to を載せない＝present#2 byte 不変。cursor 源=最新ローソク time（renderer.getCandles 末尾）。
+      //   mpLiveModeCoordinator/marketProfile は呼び出し時（setEnabled/refresh 時）に確定済み（後方参照）。
+      if (mpLiveModeCoordinator && mpLiveModeCoordinator.isGrowing()
+          && marketProfile && typeof marketProfile.isSessions === 'function'
+          && marketProfile.isSessions()) {
+        const cs = renderer.getCandles();
+        const last = Array.isArray(cs) && cs.length ? cs[cs.length - 1] : null;
+        if (last && last.time != null) {
+          ctx.to = last.time;
+        }
+      }
+      return ctx;
+    },
   });
 
   // チャート操作（スワイプスクラブ・縦価格パン・wheel 価格ズーム・dblclick reset）の配線は

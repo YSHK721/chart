@@ -246,10 +246,15 @@ export class MarketProfileActor {
     }
   }
 
-  // 増分（ticklive）取得が可能か: モード ON かつ formingClient と accumulator factory が注入済み。
-  //   いずれか欠ければ非増分（onLiveTick は refresh へ byte-identical 委譲＝回帰ゼロ）。
+  // 増分（forming/accumulator）成長が可能か: growing かつ formingClient・accumulator factory 注入済み、
+  //   かつ **sessions モードでない**こと。いずれか欠ければ非増分（onLiveTick は refresh へ委譲＝回帰ゼロ）。
+  //   Model A Phase3（成長経路の分岐）: sessions+growing は forming 単一プロファイル（_enterTicklive→
+  //   setProfile）を sessions 描画へ被せず、refresh(to=cursor, sessions=1) で backend の因果 sessions 分割
+  //   （当日=[session_start,to)・過去日静的）を取得する（review🔵4 の破綻状態を正しく解消）。よって
+  //   _sessions 時は非増分＝refresh 経路へ倒す（accumulator は sessions で使わない＝共有グリッド不整合回避）。
+  //   normal/replay+growing は従来どおり増分（全期間 base + bar-period forming）。
   _isIncremental() {
-    return !!this._growing && !!this._formingClient && !!this._makeAccumulator;
+    return !!this._growing && !this._sessions && !!this._formingClient && !!this._makeAccumulator;
   }
 
   // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
