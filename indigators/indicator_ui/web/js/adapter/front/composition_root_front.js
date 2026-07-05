@@ -32,6 +32,7 @@ import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
 import { MarketProfileActor } from './market_profile_actor.js';
 import { MarketProfileReplayBar } from './market_profile_replay_bar.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
+import { MpLiveModeCoordinator } from './mp_live_mode_coordinator.js';
 
 // 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
 //   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
@@ -255,9 +256,24 @@ export async function bootstrap({
     updatePaneHeight,
   }).install();
 
+  // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）に MP 表示モードを
+  //   連動させる協調役。FOLLOW→MP を ticklive（足内成長）／ANALYSIS→gear で選んだ記憶モードへ。
+  //   defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定＝'normal'）。reapply は controller の
+  //   MP モード再適用へ遅延束縛する（controller はこの直後に代入されるため () => controller で吸収）。
+  //   A方式（file://・mode!=='b'）は null＝連動を配線しない（mpModeResolver 未注入で MP 挙動 byte 不変）。
+  const mpLiveModeCoordinator = (mode === 'b')
+    ? new MpLiveModeCoordinator({
+        liveMode: 'ticklive',
+        defaultMode: 'normal',
+        reapply: () => (controller ? controller.reapplyMarketProfileMode() : undefined),
+      })
+    : null;
+
   controller = new IndicatorController({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
     timeframe, recentBars, loadCandles, marketProfile,
+    // 連動配線時のみ resolver を注入（未注入＝MP へ渡す mode をそのまま＝byte 不変）。
+    mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
   });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
@@ -333,6 +349,11 @@ export async function bootstrap({
         document: doc,
         buttonId: 'live-follow-toggle',
         mode,
+        // ライブ連動: FOLLOW/ANALYSIS 遷移を協調役へ通知（MP を ticklive↔選択モードで連動）。
+        //   協調役不在（A方式）は未注入＝既存ライブトグル挙動 byte 不変。
+        onLiveStateChange: mpLiveModeCoordinator
+          ? (isFollow) => mpLiveModeCoordinator.onLiveStateChange(isFollow)
+          : undefined,
       })
     : null;
   if (liveFollowController) {
@@ -341,5 +362,5 @@ export async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile, replayBar, liveFollowController };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile, replayBar, liveFollowController, mpLiveModeCoordinator };
 }

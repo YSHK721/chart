@@ -35,7 +35,7 @@ export class IndicatorController {
   constructor({
     catalog, compute, persistence, renderer, document: doc = null, mode = 'a',
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
-    marketProfile = null,
+    marketProfile = null, mpModeResolver = null,
   }) {
     this._catalog = catalog;
     this._compute = compute;
@@ -51,6 +51,10 @@ export class IndicatorController {
     //   /compute 経由でなく本アクター（GET /market_profile → primitive）へ委譲する。
     //   既存トグル（#market-profile-toggle）とは別導線（二重導線）。未注入時は MP 分岐が no-op。
     this._marketProfile = marketProfile;
+    // ライブ連動: MP 表示モードの実効解決役（present 固有・任意注入）。(userMode)->effectiveMode。
+    //   注入時のみ MP へ渡す mode を実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）へ解決する。
+    //   未注入（連動なし＝A方式・MP 不在・連動未配線）は mode をそのまま渡す＝byte 不変。
+    this._mpModeResolver = typeof mpModeResolver === 'function' ? mpModeResolver : null;
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
     // 時間足（§チャート表示時間選択・1 分足原子から resample）。compute/candles に伝搬する。
@@ -206,6 +210,48 @@ export class IndicatorController {
     return out;
   }
 
+  // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
+  //   ライブ連動（mpModeResolver 注入時）は mode を実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）へ
+  //   解決してから渡す。解決役は同時に userMode（gear 選択）を記憶する。mode 未指定（旧インスタンス）は
+  //   解決しない（actor 既定＝通常）。未注入時は _mpParams の結果をそのまま渡す＝byte 不変（連動なし）。
+  //   marketProfile 未注入時は no-op（呼び出し側の guard と二重防御）。
+  _applyMpParams(p) {
+    if (!this._marketProfile) {
+      return;
+    }
+    const params = this._mpParams(p);
+    if (params.mode != null && this._mpModeResolver) {
+      params.mode = this._mpModeResolver(params.mode);
+    }
+    this._marketProfile.setParams(params);
+  }
+
+  // ライブ連動: チャート FOLLOW/ANALYSIS 遷移時に、現在表示中 MP の実効モードを再適用する（present 固有）。
+  //   MpLiveModeCoordinator.onLiveStateChange → reapply として配線される。連動未配線（mpModeResolver 未注入）
+  //   時は呼ばれない設計だが、MP 不在/無効/未表示時も自己 guard で no-op（副作用なし）。
+  //   実効モードは resolver(null)（記憶更新なし・実効解決のみ）で強制し、保存 params（bins/va/src/range）は
+  //   維持したまま mode だけ差し替えて refresh する（既存 setParams→refresh 経路を再利用・actor 不変）。
+  async reapplyMarketProfileMode() {
+    if (!this._marketProfile || !this._mpModeResolver) {
+      return;
+    }
+    if (typeof this._marketProfile.isEnabled === 'function' && !this._marketProfile.isEnabled()) {
+      return; // MP 未表示（enabled=false）は再適用不要。
+    }
+    const inst = this._state.applied.find(
+      (i) => this._isMarketProfile(this._catalog.get(i.indicatorId)) && i.visible,
+    );
+    if (!inst) {
+      return; // 表示中 MP インスタンスが無い。
+    }
+    const params = this._mpParams(this._paramsObject(inst.params));
+    params.mode = this._mpModeResolver(null); // 実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）を強制。
+    this._marketProfile.setParams(params);
+    if (typeof this._marketProfile.refresh === 'function') {
+      await this._marketProfile.refresh();
+    }
+  }
+
   // resmode（解像度モード）を決める後方互換ヘルパ（restore と apply の両経路で共用）。
   //   - 明示 resmode があればそのまま返す（後方互換補完のみ・上書きしない）。
   //   - resmode 欠落かつ range がレンジ数値集合 → 'range'（保存したレンジを維持し client が &barw= を送る）。
@@ -304,7 +350,7 @@ export class IndicatorController {
     if (!this._marketProfile) {
       return;
     }
-    this._marketProfile.setParams(this._mpParams(params));
+    this._applyMpParams(params);
     await this._marketProfile.setEnabled(true);
     // [reveal seam] reveal（replay）では現在バー T（_untilTime）が確定していれば即 enterBar で base を
     //   描画する。present は _untilTime を持たない（undefined）ため常に skip（byte 挙動不変）。
@@ -350,7 +396,7 @@ export class IndicatorController {
     const applyParams = async (values) => {
       this._state = this._withParams(this._state, inst.instanceId, values);
       if (this._marketProfile) {
-        this._marketProfile.setParams(this._mpParams(values));
+        this._applyMpParams(values);
         // [reveal seam] reveal（replay）かつ **ticklive** のときだけ現在バー T で enterBar（forming push で
         //   base 取り直し）。normal/sessions/replay は enterBar が自己ガード no-op のため refresh(as-of-T)
         //   へ落とす（mode-aware）。present は enterBar 非所持ゆえ常に refresh＝従来どおり（byte 挙動不変）。
@@ -674,7 +720,7 @@ export class IndicatorController {
       if (this._isMarketProfile(def)) {
         const rp = this._paramsObject(inst.params);
         if (this._marketProfile) {
-          this._marketProfile.setParams(this._mpParams(rp));
+          this._applyMpParams(rp);
           if (inst.visible) {
             await this._marketProfile.setEnabled(true);
           }
