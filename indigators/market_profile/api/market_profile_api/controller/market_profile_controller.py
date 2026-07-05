@@ -25,7 +25,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from adapter.compute import ERROR_STATUS, dataset
+from adapter.compute import ERROR_STATUS  # §6.3.4 error.type→HTTP は adapter.compute 据置
+from marketdata import dataset  # dataset 実体は marketdata へ移設済み（最下層 peer 依存）
 from market_profile_api.compute import market_profile_dwell
 from market_profile_api.compute.market_profile import compute_candle_profile, price_range
 
