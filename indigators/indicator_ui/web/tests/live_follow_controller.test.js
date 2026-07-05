@@ -226,3 +226,65 @@ test('renderer 不在 no-op: renderer 未注入でも install は例外を出さ
   assert.equal(controller.mode, 'FOLLOW');
   assert.ok(button.classList.contains('is-active'), 'renderer 不在でもボタンは点灯する');
 });
+
+// 実 lwc 再現 renderer: scrollToRealTime() は非同期/アニメで、収束前に stale な可視範囲
+//   （atRightEdge=false）を発火してから、右端収束後に true を発火する。この「scroll 由来イベント」を
+//   模擬する（従来 fake は scroll のイベントを模擬せず＝見せかけ緑になっていた回帰の再現）。
+function fakeRendererWithScrollEvents() {
+  return {
+    _rangeCb: null,
+    scrolls: 0,
+    tints: [],
+    subscribeVisibleRange(cb) { this._rangeCb = cb; },
+    scrollToRealTime() {
+      this.scrolls += 1;
+      // programmatic scroll 中: 収束前 stale(false) → 収束後 settled(true) の順で range イベントが発火。
+      if (this._rangeCb) { this._rangeCb(false); this._rangeCb(true); }
+    },
+    setAnalysisTint(on) { this.tints.push(!!on); },
+    fireRange(atRightEdge) { if (this._rangeCb) { this._rangeCb(atRightEdge); } },
+  };
+}
+
+test('回帰: ANALYSIS→手動FOLLOW で programmatic scroll の stale(false) に落とされず FOLLOW を維持する', () => {
+  // Arrange: scrollToRealTime が false→true を発火する fake（実 lwc の非同期 scroll 再現）。
+  const liveUpdater = fakeLiveUpdater();
+  const renderer = fakeRendererWithScrollEvents();
+  const button = fakeButton();
+  const document = fakeDocument(button);
+  const controller = new LiveFollowController({
+    liveUpdater, renderer, document, buttonId: 'live-follow-toggle', mode: 'b',
+  });
+  controller.install();
+  controller.toggleManual(); // → ANALYSIS
+  assert.equal(controller.mode, 'ANALYSIS');
+
+  // Act: 手動で FOLLOW へ。_applyFollow(true) が scrollToRealTime を呼び、その中で stale(false)→settled(true)。
+  controller.toggleManual();
+
+  // Assert: stale(false) に落とされず FOLLOW を維持（不具合が起きると即 ANALYSIS へ戻り mode=ANALYSIS）。
+  assert.equal(controller.mode, 'FOLLOW', 'programmatic scroll の stale イベントで ANALYSIS へ戻ってはならない');
+  assert.equal(button.getAttribute('aria-pressed'), 'true', 'FOLLOW 点灯を維持');
+  assert.equal(liveUpdater.stops, 1, 'ANALYSIS 化は最初の手動1回のみ（stale で再 stop されない）');
+});
+
+test('回帰: scroll 収束後（settled true 観測後）は genuine パン離脱で通常どおり ANALYSIS へ落ちる（suppression 解除）', () => {
+  // Arrange: 上と同じく scroll が false→true を発火する fake。
+  const liveUpdater = fakeLiveUpdater();
+  const renderer = fakeRendererWithScrollEvents();
+  const button = fakeButton();
+  const document = fakeDocument(button);
+  const controller = new LiveFollowController({
+    liveUpdater, renderer, document, buttonId: 'live-follow-toggle', mode: 'b',
+  });
+  controller.install();
+  controller.toggleManual(); // → ANALYSIS
+  controller.toggleManual(); // → FOLLOW（scroll が false→true を発火・suppression は true で解除される）
+  assert.equal(controller.mode, 'FOLLOW');
+
+  // Act: scroll 収束後に、ユーザーが実際に過去へパン（右端離脱）。
+  renderer.fireRange(false);
+
+  // Assert: suppression は settled(true) で解除済みのため、通常どおり auto-off が働く（回帰させない）。
+  assert.equal(controller.mode, 'ANALYSIS', 'scroll 収束後の genuine パン離脱は auto-off が復活する');
+});

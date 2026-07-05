@@ -28,6 +28,11 @@ export class LiveFollowController {
     this._mode = MODE_FOLLOW; // 初期 FOLLOW。
     this._served = mode === 'b'; // B方式のみ活性。
     this._button = null;
+    // programmatic scroll（scrollToRealTime）由来の可視範囲イベント抑制フラグ。
+    //   実 lwc の scrollToRealTime は非同期/アニメで、右端収束前に stale(panned) な範囲を報告する。
+    //   その stale(atRightEdge=false) で FOLLOW→ANALYSIS へ auto-off されると手動 FOLLOW が即取消されるため、
+    //   scroll 発火中は auto-off を抑止し、右端収束(atRightEdge=true)を観測した時点で解除する。
+    this._suppressAutoOff = false;
   }
 
   // 現在モード（'FOLLOW' | 'ANALYSIS'）の読み取り専用アクセサ。
@@ -84,8 +89,18 @@ export class LiveFollowController {
 
   // 可視範囲変化ハンドラ（振動防止の核）:
   //   FOLLOW && !atRightEdge → ANALYSIS ／ ANALYSIS && atRightEdge → FOLLOW ／ 同状態 no-op。
-  //   programmatic scrollToRealTime 由来の range イベント（atRightEdge=true）は FOLLOW 時 no-op で吸収する。
   _onRangeChange(atRightEdge) {
+    // programmatic scroll（scrollToRealTime）由来の stale イベント抑制:
+    //   武装中（_suppressAutoOff）は FOLLOW→ANALYSIS の auto-off を抑止する。scroll が右端へ収束し
+    //   atRightEdge=true を観測した時点で武装解除する（以降の genuine パン離脱では通常どおり auto-off）。
+    //   （arch の「programmatic scroll 由来イベントは atRightEdge=true で no-op 吸収＝suppression 不要」前提は
+    //     実機の非同期 scroll で崩れる＝収束前に panned 範囲を報告するため、明示的 suppression を置く。）
+    if (this._suppressAutoOff) {
+      if (atRightEdge) {
+        this._suppressAutoOff = false; // scroll が右端へ収束。以降は通常判定へ戻す。
+      }
+      return; // 収束前の stale(false) では auto-off しない（不具合の核）。
+    }
     if (this._mode === MODE_FOLLOW && !atRightEdge) {
       this._applyAnalysis();
     } else if (this._mode === MODE_ANALYSIS && atRightEdge) {
@@ -101,6 +116,8 @@ export class LiveFollowController {
       this._liveUpdater.start(); // 冪等（多重 start 無害）。
     }
     if (scroll && this._renderer && typeof this._renderer.scrollToRealTime === 'function') {
+      // scroll 発火の前に武装する（実 lwc は非同期・fake は同期発火 — どちらも収束前 stale を抑止するため先に立てる）。
+      this._suppressAutoOff = true;
       this._renderer.scrollToRealTime();
     }
     if (this._renderer && typeof this._renderer.setAnalysisTint === 'function') {
@@ -112,6 +129,8 @@ export class LiveFollowController {
   // ANALYSIS を適用: LiveUpdater 停止＋背景 tint＋ボタン消灯（サーバ watch は継続）。
   _applyAnalysis() {
     this._mode = MODE_ANALYSIS;
+    // ANALYSIS 化で programmatic scroll の抑制窓を閉じる（ANALYSIS 中に true が来たら auto-on を正しく通す）。
+    this._suppressAutoOff = false;
     if (this._liveUpdater && typeof this._liveUpdater.stop === 'function') {
       this._liveUpdater.stop();
     }
