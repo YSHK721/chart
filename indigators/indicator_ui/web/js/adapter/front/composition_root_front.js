@@ -32,7 +32,9 @@ import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
 import { MarketProfileActor } from './market_profile_actor.js';
 import { MarketProfileReplayBar } from './market_profile_replay_bar.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
-import { MpLiveModeCoordinator } from './mp_live_mode_coordinator.js';
+// GrowthCoordinator は共有 market_profile モジュール（usecase/growth_coordinator.js）へ移設済み。
+//   present は adapter/front/mp_live_mode_coordinator.js（symlink）経由で import（byte 不変 retarget）。
+import { GrowthCoordinator } from './mp_live_mode_coordinator.js';
 
 // 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
 //   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
@@ -256,14 +258,14 @@ export async function bootstrap({
     updatePaneHeight,
   }).install();
 
-  // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）に MP 表示モードを
-  //   連動させる協調役。FOLLOW→MP を ticklive（足内成長）／ANALYSIS→gear で選んだ記憶モードへ。
-  //   defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定＝'normal'）。reapply は controller の
-  //   MP モード再適用へ遅延束縛する（controller はこの直後に代入されるため () => controller で吸収）。
-  //   A方式（file://・mode!=='b'）は null＝連動を配線しない（mpModeResolver 未注入で MP 挙動 byte 不変）。
+  // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）を MP の成長状態へ
+  //   連動させる共有協調役（Model A 直交化）。表示モードは gear 選択を維持し、FOLLOW→growing=true（足内成長）／
+  //   ANALYSIS→growing=false（static）。defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定
+  //   ＝'normal'）。reapply は controller の MP 再適用（mode 維持＋growing トグル）へ遅延束縛する（controller は
+  //   直後に代入されるため () => controller で吸収）。A方式（file://・mode!=='b'）は null＝連動を配線しない
+  //   （resolver 未注入で MP 挙動 byte 不変）。
   const mpLiveModeCoordinator = (mode === 'b')
-    ? new MpLiveModeCoordinator({
-        liveMode: 'ticklive',
+    ? new GrowthCoordinator({
         defaultMode: 'normal',
         reapply: () => (controller ? controller.reapplyMarketProfileMode() : undefined),
       })
@@ -273,7 +275,9 @@ export async function bootstrap({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
     timeframe, recentBars, loadCandles, marketProfile,
     // 連動配線時のみ resolver を注入（未注入＝MP へ渡す mode をそのまま＝byte 不変）。
+    //   mode 解決役: 選択表示モードを返す（'ticklive' 置換なし）。growth 解決役: FOLLOW/ANALYSIS→growing 信号。
     mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
+    mpGrowthResolver: mpLiveModeCoordinator ? () => mpLiveModeCoordinator.isGrowing() : null,
   });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
@@ -349,7 +353,7 @@ export async function bootstrap({
         document: doc,
         buttonId: 'live-follow-toggle',
         mode,
-        // ライブ連動: FOLLOW/ANALYSIS 遷移を協調役へ通知（MP を ticklive↔選択モードで連動）。
+        // ライブ連動: FOLLOW/ANALYSIS 遷移を協調役へ通知（MP を growing↔static で連動・表示モードは維持）。
         //   協調役不在（A方式）は未注入＝既存ライブトグル挙動 byte 不変。
         onLiveStateChange: mpLiveModeCoordinator
           ? (isFollow) => mpLiveModeCoordinator.onLiveStateChange(isFollow)
