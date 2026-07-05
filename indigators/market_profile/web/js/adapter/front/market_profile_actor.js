@@ -86,6 +86,11 @@ export class MarketProfileActor {
     this._formingClient = formingClient ?? null;
     this._makeAccumulator = typeof makeAccumulator === 'function' ? makeAccumulator : null;
     this._ticklive = false;       // ticklive モード ON/OFF（既定 OFF＝非増分・後方互換）。
+    // Model A 直交化: 成長状態（growing/static）。成長エンジン（_isIncremental/onLiveTick/_enterTicklive）は
+    //   この _growing で駆動する（表示モードと成長状態の分離）。Phase1 は mode='ticklive' が唯一 _growing=true を
+    //   立てる互換維持（_ticklive とロックステップ＝挙動不変）。Phase2 で mode 非依存の applyGrowthState が
+    //   直接トグルできるようにする（FOLLOW+normal 成長など）。
+    this._growing = false;
     this._accumulator = null;     // 現在の DwellAccumulator（null＝未 enter）。
     this._formingStart = null;    // 現在足の formingStart（rollover 検出用）。
     this._lastSec = null;         // 最後に addTick した tick 秒（base=0 尾部 since）。
@@ -141,18 +146,6 @@ export class MarketProfileActor {
     }
   }
 
-  // Model A 直交化シーム: 成長状態 `_growing`（growing/static）を現 `_ticklive` の別名として導入する。
-  //   Phase 0 では駆動は現状のまま（`_ticklive` が唯一の store）＝挙動不変。読み手が居ないため副作用ゼロ。
-  //   Phase 1 で `_isIncremental`/成長エンジンを `_growing` キーへ切替え、mode='ticklive' が `_growing=true` を
-  //   立てる互換に移行する（表示モードと成長状態の直交化の土台）。
-  get _growing() {
-    return this._ticklive;
-  }
-
-  set _growing(v) {
-    this._ticklive = v;
-  }
-
   isEnabled() {
     return this._enabled;
   }
@@ -201,6 +194,7 @@ export class MarketProfileActor {
       this._sessions = false;
       this._applySessions(null);
       this._ticklive = true;
+      this._growing = true;   // ticklive モード＝成長 ON（Phase1 互換: mode が _growing を立てる）。
       return;
     }
     if (mode === 'sessions') {
@@ -232,7 +226,7 @@ export class MarketProfileActor {
   // 増分（ticklive）取得が可能か: モード ON かつ formingClient と accumulator factory が注入済み。
   //   いずれか欠ければ非増分（onLiveTick は refresh へ byte-identical 委譲＝回帰ゼロ）。
   _isIncremental() {
-    return !!this._ticklive && !!this._formingClient && !!this._makeAccumulator;
+    return !!this._growing && !!this._formingClient && !!this._makeAccumulator;
   }
 
   // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
@@ -316,6 +310,7 @@ export class MarketProfileActor {
   // ticklive を解除する（累積器破棄・通常経路復帰・冪等）。
   _exitTicklive() {
     this._ticklive = false;
+    this._growing = false;  // モード離脱＝成長 OFF（Phase1 互換: _ticklive とロックステップ）。
     this._accumulator = null;
     this._formingStart = null;
     this._lastSec = null;
