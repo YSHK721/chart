@@ -21,6 +21,7 @@
 //   保持する（NaN 混入を防ぐ＝既存 fetch null と同じ）。
 
 import { MarketProfileActor } from './market_profile_actor.js';
+import { GrowthWindow } from '../../domain/growth_window.js';
 import { FORMING_MIN_INTERVAL_MS } from '../../replay/timing.js';
 
 // MP-05 presence ガード（present actor と同基準）: base=1 応答の必須フィールド（レンジ/グリッド/base 配列）が
@@ -66,14 +67,28 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   }
 
   // override: 基底 forming 引数（{...ctx, ...params, src:'dwell', base, since}）へ now(=getContext().to＝
-  //   因果 T) と from(=当日始まり=floor(now,86400)) を合流する。combined=[当日始まり, now) の古典的
-  //   Market Profile（当日 TPO 形成）。now は引数優先（enterBar が透過する T）、無指定時は getContext().to。
+  //   因果 T) と from（base 累積の下限窓）を合流する。now は引数優先（enterBar が透過する T）、無指定時は
+  //   getContext().to。
+  //   Phase4（86400 隔離）: 旧実装は from=当日始まり(floor(now,86400)) を決め打ちしていた。これを
+  //   GrowthWindow(mode,tf,cursor) へ委譲し隔離する。明示 from（呼び出し側指定）は優先（compat）。未指定時は
+  //   GrowthWindow.from が窓を写像する: normal→null（全期間 base・gate1 承認: replay 再生=全期間累積）、
+  //   sessions→暦日 anchor。ただし sessions 成長は Phase3 で refresh(to) へ倒れ本 forming 経路には到達しない。
+  //   from=null は載せない＝全期間（present の from 省略と一貫）。全時間足の bar-period 成長は backend
+  //   forming_ticks の period_start_unix(now,tf)（tf 依存 formingStart）が担う（reveal 窓 stream.js は不変）。
   _buildFormingArgs({ base, since, now, from } = {}) {
     const args = super._buildFormingArgs({ base, since });
     const effNow = now != null ? now : this._getContext().to;
     if (effNow != null) {
       args.now = effNow;
-      args.from = from != null ? from : Math.floor(effNow / 86400) * 86400;
+      if (from != null) {
+        args.from = from; // 明示指定は温存（compat）。
+      } else {
+        const mode = this._sessions ? 'sessions' : 'normal';
+        const w = GrowthWindow.forCurrent(mode, this._getContext().timeframe, effNow);
+        if (w.from != null) {
+          args.from = w.from; // normal は null＝from 省略（全期間 base）。sessions のみ暦日 anchor。
+        }
+      }
     }
     return args;
   }

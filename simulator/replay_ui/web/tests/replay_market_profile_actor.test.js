@@ -151,24 +151,39 @@ test('enterBar is a no-op when NOT ticklive (self-guard — existing render hook
   assert.equal(forming.calls.length, 0, '非ticklive の enterBar は self-guard で no-op');
 });
 
-// --- _buildFormingArgs override: now(=getContext().to) と from(=当日始まり) を合流 ---
-test('_buildFormingArgs merges now(=getContext().to) and from(=当日始まり) into base args', () => {
+// --- _buildFormingArgs override: now(=getContext().to) と GrowthWindow 委譲（Phase4・86400 隔離） ---
+//   gate1 承認: normal 再生=全期間累積（from=null）＝当日 86400 決め打ちを撤廃。当日/セッションは
+//   sessions モード（refresh）で見る。GrowthWindow.forCurrent('normal',tf,to).from=null → from 省略。
+test('_buildFormingArgs merges now(=getContext().to) and delegates from to GrowthWindow (normal→全期間・from 省略)', () => {
   const to = 1782985000; // 日途中
   const { actor } = makeActor({ formingClient: fakeFormingClient([BASE_FULL]), makeAccumulator: fakeAccumulatorFactory().make, ctxTo: to });
   actor.setParams({ mode: 'ticklive', bins: '30', va: 0.9 });
   // Act
   const args = actor._buildFormingArgs({ base: 1, since: null });
-  // Assert: 基底の src=dwell/base/since + now(=to) + from(=当日始まり) + params(bins/va)。
+  // Assert: 基底 src=dwell/base/since + now(=to) + params。from は GrowthWindow(normal,tf,to)=null＝
+  //   全期間 base（86400 隔離＝当日決め打ち撤廃）。全時間足成長は backend forming_ticks の
+  //   period_start_unix(now,tf)（bar-period forming）が担う（frontend from は base 窓のみ）。
   assert.equal(args.src, 'dwell');
   assert.equal(args.base, 1);
   assert.equal(args.now, to, 'now=getContext().to（因果 T）');
-  assert.equal(args.from, Math.floor(to / 86400) * 86400, 'from=当日始まり（floor(now,86400)）');
+  assert.equal(args.from, undefined, 'normal は GrowthWindow.from=null＝from 省略（全期間 base・86400 隔離）');
   assert.equal(args.bins, '30');
   assert.equal(args.va, 0.9);
 });
 
-// --- enterBar（ticklive）: base=1/src=dwell/now=T/from=当日始まり で forming 取得し base のみ描画 ---
-test('enterBar (ticklive) fetches base=1/src=dwell/now=T/from=当日始まり, inits accumulator, draws base only', async () => {
+// --- 明示 from（compat）: _buildFormingArgs に from を渡すと GrowthWindow より優先し温存する ---
+test('_buildFormingArgs preserves an explicit from over GrowthWindow (backward-compat)', () => {
+  const to = 1782985000;
+  const { actor } = makeActor({ formingClient: fakeFormingClient([BASE_FULL]), makeAccumulator: fakeAccumulatorFactory().make, ctxTo: to });
+  actor.setParams({ mode: 'ticklive' });
+  // Act: 明示 from を渡す（呼び出し側が窓を指定するケースの互換温存）。
+  const args = actor._buildFormingArgs({ base: 1, since: null, from: 123456 });
+  // Assert
+  assert.equal(args.from, 123456, '明示 from は GrowthWindow 委譲より優先（compat）');
+});
+
+// --- enterBar（ticklive）: base=1/src=dwell/now=T/from=省略（全期間・Phase4）で forming 取得し base 描画 ---
+test('enterBar (ticklive) fetches base=1/src=dwell/now=T/from=全期間(省略), inits accumulator, draws base only', async () => {
   const now = 1782985000;
   const forming = fakeFormingClient([BASE_FULL]);
   const facc = fakeAccumulatorFactory();
@@ -183,7 +198,7 @@ test('enterBar (ticklive) fetches base=1/src=dwell/now=T/from=当日始まり, i
   assert.equal(call.base, 1);
   assert.equal(call.src, 'dwell');
   assert.equal(call.now, now);
-  assert.equal(call.from, Math.floor(now / 86400) * 86400);
+  assert.equal(call.from, undefined, 'Phase4: from 省略（GrowthWindow normal=全期間 base・86400 隔離）');
   assert.equal(facc.created.length, 1);
   // fold 版 enterBar: forming.ticks を畳み込む（present _enterTicklive 準拠）。BASE_FULL は ticks=[] のため
   //   畳み込み結果も空＝この入力では畳み込み有無に関わらず空（別 test で ticks あり fold を検証）。
