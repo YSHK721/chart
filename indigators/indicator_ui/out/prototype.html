@@ -7567,6 +7567,15 @@ class LiveFollowController {
     this._mode = MODE_FOLLOW; // 初期 FOLLOW。
     this._served = mode === 'b'; // B方式のみ活性。
     this._button = null;
+    // programmatic scroll（scrollToRealTime）由来の可視範囲イベント抑制フラグ。
+    //   実 lwc の scrollToRealTime は非同期/アニメで、右端収束前に stale(panned) な範囲を報告する。
+    //   その stale(atRightEdge=false) で FOLLOW→ANALYSIS へ auto-off されると手動 FOLLOW が即取消されるため、
+    //   scroll 発火中は auto-off を抑止し、右端収束(atRightEdge=true)を観測した時点で解除する。
+    this._suppressAutoOff = false;
+    // 直近の右端在否（range イベントで更新）。初期は右端（fitContent 初期表示は通常右端＝true）と仮定する。
+    //   _applyFollow は「既に右端なら scrollToRealTime は no-op でイベントを発火せず arm が解除されず stuck する」
+    //   ため、この値を見て『実際に移動する時（右端に居ない時）だけ』arm + scroll する（code-review 🔴 の是正）。
+    this._lastAtRightEdge = true;
   }
 
   // 現在モード（'FOLLOW' | 'ANALYSIS'）の読み取り専用アクセサ。
@@ -7599,9 +7608,15 @@ class LiveFollowController {
       this._renderer.subscribeVisibleRange((atRightEdge) => this._onRangeChange(atRightEdge));
     }
 
-    // 初期 FOLLOW を適用（LiveUpdater 起動所有権は本 controller が持つ・start は冪等）。
-    //   初期は catch-up scroll しない（既存の初期表示位置を尊重する）。
-    this._applyFollow(false);
+    // 初期 FOLLOW の「表示」を適用する（点灯＋tint 解除）。ただし LiveUpdater の初回 start は
+    //   ここでは行わない: 初回起動はデータ ready 後に入口（index.html）が既存経路で担う（データ未取得
+    //   時点でライブ更新を走らせない＝既存挙動を byte 不変で保つ）。以降のモード遷移（ANALYSIS↔FOLLOW）は
+    //   本 controller が stop()/start() を所有する（start は冪等）。初期は catch-up scroll もしない。
+    this._mode = MODE_FOLLOW;
+    if (this._renderer && typeof this._renderer.setAnalysisTint === 'function') {
+      this._renderer.setAnalysisTint(false);
+    }
+    this._setButtonActive(true);
     return this;
   }
 
@@ -7617,8 +7632,21 @@ class LiveFollowController {
 
   // 可視範囲変化ハンドラ（振動防止の核）:
   //   FOLLOW && !atRightEdge → ANALYSIS ／ ANALYSIS && atRightEdge → FOLLOW ／ 同状態 no-op。
-  //   programmatic scrollToRealTime 由来の range イベント（atRightEdge=true）は FOLLOW 時 no-op で吸収する。
   _onRangeChange(atRightEdge) {
+    // 直近の右端在否を常に記録する（_applyFollow の scroll 要否判定に使う）。stale イベントも含め更新するが、
+    //   scroll 収束後の最終イベントは true になるため、収束後は正しく true が残る。
+    this._lastAtRightEdge = atRightEdge;
+    // programmatic scroll（scrollToRealTime）由来の stale イベント抑制:
+    //   武装中（_suppressAutoOff）は FOLLOW→ANALYSIS の auto-off を抑止する。scroll が右端へ収束し
+    //   atRightEdge=true を観測した時点で武装解除する（以降の genuine パン離脱では通常どおり auto-off）。
+    //   （arch の「programmatic scroll 由来イベントは atRightEdge=true で no-op 吸収＝suppression 不要」前提は
+    //     実機の非同期 scroll で崩れる＝収束前に panned 範囲を報告するため、明示的 suppression を置く。）
+    if (this._suppressAutoOff) {
+      if (atRightEdge) {
+        this._suppressAutoOff = false; // scroll が右端へ収束。以降は通常判定へ戻す。
+      }
+      return; // 収束前の stale(false) では auto-off しない（不具合の核）。
+    }
     if (this._mode === MODE_FOLLOW && !atRightEdge) {
       this._applyAnalysis();
     } else if (this._mode === MODE_ANALYSIS && atRightEdge) {
@@ -7633,7 +7661,13 @@ class LiveFollowController {
     if (this._liveUpdater && typeof this._liveUpdater.start === 'function') {
       this._liveUpdater.start(); // 冪等（多重 start 無害）。
     }
-    if (scroll && this._renderer && typeof this._renderer.scrollToRealTime === 'function') {
+    // 実際に移動する時（＝まだ右端に居ない時）だけ arm + scrollToRealTime する。既に右端(_lastAtRightEdge=true)
+    //   なら scroll は no-op で range イベントを発火せず、arm が解除イベントを得られず stuck するため呼ばない
+    //   （既に右端なので catch-up scroll 自体も不要）＝code-review 🔴 の是正。
+    if (scroll && !this._lastAtRightEdge
+        && this._renderer && typeof this._renderer.scrollToRealTime === 'function') {
+      // scroll 発火の前に武装する（実 lwc は非同期・fake は同期発火 — どちらも収束前 stale を抑止するため先に立てる）。
+      this._suppressAutoOff = true;
       this._renderer.scrollToRealTime();
     }
     if (this._renderer && typeof this._renderer.setAnalysisTint === 'function') {
@@ -7645,6 +7679,8 @@ class LiveFollowController {
   // ANALYSIS を適用: LiveUpdater 停止＋背景 tint＋ボタン消灯（サーバ watch は継続）。
   _applyAnalysis() {
     this._mode = MODE_ANALYSIS;
+    // ANALYSIS 化で programmatic scroll の抑制窓を閉じる（ANALYSIS 中に true が来たら auto-on を正しく通す）。
+    this._suppressAutoOff = false;
     if (this._liveUpdater && typeof this._liveUpdater.stop === 'function') {
       this._liveUpdater.stop();
     }
