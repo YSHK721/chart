@@ -16,8 +16,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from adapter.compute import market_profile_dwell as mpd
-from adapter.compute import market_profile_forming as mpf
+from market_profile_api.compute import market_profile_dwell as mpd
+from market_profile_api.compute import market_profile_forming as mpf
 
 _DAY = 86400
 _DAY0 = 1704067200  # 2024-01-01 00:00 UTC（月曜）。

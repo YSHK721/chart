@@ -19,8 +19,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from adapter.compute import market_profile_dwell as mpd
-from adapter.controller.market_profile_controller import handle_market_profile
+from market_profile_api.compute import market_profile_dwell as mpd
+from market_profile_api.controller.market_profile_controller import handle_market_profile
 
 _DAY = 86400
 # 2024-01-01 00:00 UTC（月曜・UTC 真夜中）。weekday = ((s//86400)+3)%7 = 0（月）。
@@ -538,7 +538,7 @@ def _patch_dwell_data(monkeypatch):
         {"time": _DAY0 + _DAY, "open": 1005, "high": 1108, "low": 992, "close": 1002},
         {"time": _DAY0 + 2 * _DAY, "open": 1002, "high": 1106, "low": 991, "close": 1000},
     ]
-    import adapter.controller.market_profile_controller as ctrl
+    import market_profile_api.controller.market_profile_controller as ctrl
     monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
 
 
@@ -604,7 +604,7 @@ class TestControllerDwellReplayTo:
 
     def test_to_intraday_excludes_later_days_no_future_leak(self, monkeypatch):
         # Arrange: 全 3 日 candle を返すが、to を 1 日目の hr2（HOT 集中の直後）に置く。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         # ティック窓の end（未来リーク検査点）を捕捉する spy loader。
@@ -633,7 +633,7 @@ class TestControllerDwellReplayTo:
 
     def test_to_omitted_scans_all_days_backward_compat(self, monkeypatch):
         # Arrange: to 省略 → 全 3 日を走査（従来）。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         secs, mids = _synthetic_master()
@@ -672,7 +672,7 @@ class TestControllerDwellRollingFrom:
 
     def test_from_excludes_earlier_days_no_past_leak(self, monkeypatch):
         # Arrange: 全 3 日 candle を返すが、from を 2 日目に置く。1 日目のティック窓は走査されない。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         secs, mids = _synthetic_master()
@@ -700,7 +700,7 @@ class TestControllerDwellRollingFrom:
 
     def test_from_omitted_scans_all_days_backward_compat(self, monkeypatch):
         # Arrange: from 省略 → 全 3 日を走査（従来）。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         secs, mids = _synthetic_master()
@@ -739,7 +739,7 @@ class TestControllerDwellSnapshotToday:
         ]
 
     def test_today_omitted_has_no_today_keys(self, monkeypatch):
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
@@ -750,7 +750,7 @@ class TestControllerDwellSnapshotToday:
 
     def test_today_1_returns_last_day_only(self, monkeypatch):
         # Arrange: 全 3 日集計だが today[] は最終日(day2)ぶんのみ。HOT(1000)へ day2 の 30 ティック分が乗る。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
@@ -799,7 +799,7 @@ class TestControllerDwellFullPeriod:
 
     def test_dwell_price_range_uses_all_candles(self, monkeypatch):
         # 全期間化: レンジは全 candle の low/high 由来（旧 cap 外の極値 1/9999 も反映される）。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
 
         candles = self._candles_spanning_cap()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
@@ -814,7 +814,7 @@ class TestControllerDwellFullPeriod:
 
     def test_dwell_window_spans_full_period(self, monkeypatch):
         # 全期間化: 集計窓 [t0, t1+bar_sec) は全 candle の先頭〜末尾を覆う（旧 cap に丸められない）。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
 
         candles = self._candles_spanning_cap()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
@@ -832,7 +832,7 @@ class TestControllerDwellFullPeriod:
 
     def test_candle_path_price_range_uses_all_candles(self, monkeypatch):
         # candle 経路（src 省略）は従来通り全 candle の low/high をそのまま使う（不変）。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
 
         candles = self._candles_spanning_cap()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
@@ -1009,7 +1009,7 @@ class TestControllerDwellSessions:
         ]
 
     def test_sessions_1_adds_toplevel_sessions(self, monkeypatch):
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
@@ -1024,7 +1024,7 @@ class TestControllerDwellSessions:
         assert "sessions" not in payload["profile"]
 
     def test_sessions_omitted_no_toplevel_sessions(self, monkeypatch):
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
@@ -1036,7 +1036,7 @@ class TestControllerDwellSessions:
     def test_sessions_total_equals_day_count_dwell_path(self, monkeypatch):
         # 注記の意味論整合（修正1・dwell 経路）: sessions_total はキャップ前の実日数（合成 3 日）。
         #   3 日 <= 60 なのでキャップは発火しないが、sessions_total は sessions と同数（3）を返す。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
@@ -1051,7 +1051,7 @@ class TestControllerDwellSessions:
 
     def test_sessions_total_omitted_when_not_requested_dwell_path(self, monkeypatch):
         # 後方互換（dwell 経路）: sessions 非要求時は sessions_total を付けない。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = self._candles_3d()
         monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))

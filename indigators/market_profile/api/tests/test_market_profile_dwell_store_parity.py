@@ -19,7 +19,7 @@ import json
 import numpy as np
 import pytest
 
-from adapter.compute import market_profile_dwell as mpd
+from market_profile_api.compute import market_profile_dwell as mpd
 
 _DAY = 86400
 _DAY0 = 1704067200

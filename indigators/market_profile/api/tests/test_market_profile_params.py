@@ -19,8 +19,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from adapter.compute import market_profile_dwell as mpd
-from adapter.controller.market_profile_controller import handle_market_profile
+from market_profile_api.compute import market_profile_dwell as mpd
+from market_profile_api.controller.market_profile_controller import handle_market_profile
 
 _DAY = 86400
 # 2024-01-01 00:00 UTC（月曜・UTC 真夜中）。weekday = ((s//86400)+3)%7 = 0（月）。
@@ -134,7 +134,7 @@ def _patch_dwell_data(monkeypatch):
         {"time": _DAY0 + _DAY, "open": 1005, "high": 1108, "low": 992, "close": 1002},
         {"time": _DAY0 + 2 * _DAY, "open": 1002, "high": 1106, "low": 991, "close": 1000},
     ]
-    import adapter.controller.market_profile_controller as ctrl
+    import market_profile_api.controller.market_profile_controller as ctrl
     monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
 
 
@@ -195,7 +195,7 @@ def _patch_candles(monkeypatch, low, high, n=3):
         {"time": _DAY0 + i * _DAY, "open": low, "high": high, "low": low, "close": high}
         for i in range(n)
     ]
-    import adapter.controller.market_profile_controller as ctrl
+    import market_profile_api.controller.market_profile_controller as ctrl
     monkeypatch.setattr(ctrl.dataset, "load_candles", lambda ref, tf, limit: candles)
     return candles
 

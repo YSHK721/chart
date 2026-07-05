@@ -44,9 +44,9 @@ import numpy as np
 import pandas as pd
 
 # POC/VA は candle 版の単一定義を再利用する（DRY・同一定義）。
-from adapter.compute.market_profile import _session_entry, _value_area
+from market_profile_api.compute.market_profile import _session_entry, _value_area
 # ディスクキャッシュ Repository（ISSUE-040(b) SRP 分離）。集計数学は本モジュール、永続化は Store が担う。
-from adapter.compute.market_profile_dwell_store import DwellRollupStore
+from market_profile_api.compute.market_profile_dwell_store import DwellRollupStore
 
 # repo 根を sys.path へ（marketdata を import するため・dataset/forming_bar と同じロード境界）。
 _WORKSPACE_ROOT = _Path(__file__).resolve().parents[5]

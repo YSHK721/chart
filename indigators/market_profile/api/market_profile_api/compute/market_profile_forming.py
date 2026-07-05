@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from adapter.compute import forming_bar as _forming_bar
-from adapter.compute import market_profile_dwell as _mpd
+from market_profile_api.compute import market_profile_dwell as _mpd
 
 
 def forming_ticks(symbol: str, tf: str, now: Any, since: Any = None) -> dict:

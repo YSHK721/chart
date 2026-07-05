@@ -1,0 +1,1 @@
+../../../../../indicator_ui/web/js/adapter/front/pair_primitive_base.js

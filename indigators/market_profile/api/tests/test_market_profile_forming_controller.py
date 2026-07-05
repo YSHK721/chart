@@ -24,9 +24,9 @@ from http.server import ThreadingHTTPServer
 import numpy as np
 import pytest
 
-from adapter.compute import market_profile_dwell as mpd
-from adapter.controller import market_profile_controller as mpc
-from adapter.controller.market_profile_forming_controller import (
+from market_profile_api.compute import market_profile_dwell as mpd
+from market_profile_api.controller import market_profile_controller as mpc
+from market_profile_api.controller.market_profile_forming_controller import (
     handle_market_profile_forming,
 )
 

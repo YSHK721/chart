@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import pytest
 
-from adapter.compute import market_profile
-from adapter.compute.market_profile import compute_candle_profile
+from market_profile_api.compute import market_profile
+from market_profile_api.compute.market_profile import compute_candle_profile
 
 
 def _mk(time, o, h, low, c):
