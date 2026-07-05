@@ -557,3 +557,15 @@
 - **背景**: (a) `web/js/adapter/front/composition_root_front.js` L242-381(~140行) が pointer swipe スクラブ/縦価格パン/wheel価格ズームの**振る舞い**を実装＝DIルートに配線以外が混入。(b) `api/adapter/compute/market_profile_dwell.py`(622行) が集計ロジックとディスクキャッシュ Repository(`_save_day_rollup`:284/`_load_day_rollup`:316/署名) の同居（変更軸が別）。(c) `web/js/adapter/front/chart_renderer.js`(998行) は lwc隔離という単一軸は妥当だが内部で系列描画/価格ズーム座標数学(`handlePriceWheel`:353/`panPriceByPixels`:408)/クロスヘアDTO(`_buildReadoutDto`:872)が混在。
 - **対策（提案）**: (a) `ChartInteractionController` 抽出・root は配線のみ。(b) 日次rollupを `DwellRollupStore`(Gateway) 分離し Output境界越し注入。(c) 価格スケール操作を `PriceScaleController` へ内部分割（隔離境界の価値は高く任意・低優先）。
 - **関連**: 各 SRP整理。低リスク・低優先。🔵(market_profile.py の TPO/POC/VA を domain へ／properties_dialog 分割／frontend framework層物理配置) は将来余地。
+
+## ISSUE-041: MP 統一成長モデル（Model A）— 全時間足成長×tf/mode 窓パラメータ化（ISSUE-029/030 の上に積む）
+- **重大度**: Medium（機能拡張・因果/非退行が要件）
+- **ステータス**: IN_PROGRESS（Phase3-5・feature/replay-play-mp-coupling）。**採番注記**: 依頼は「ISSUE-033」だが同番は既存（replay backend 抽象精査）。CLAUDE.md 採番規則「既存最大+1」に従い ISSUE-041 とした（既存 Issue は不変）。
+- **背景**: MP のセッション集計窓が replay_market_profile_actor.js `_buildFormingArgs` に 1D 決め打ち `Math.floor(effNow/86400)*86400`（当日始まり）で残存＝全時間足で「当日1D窓」に固定され、5m/1h 等の bar-period 成長にならない。reveal 窓（stream.js intrabarWindow）とは別物（reveal は流用・触らない）。present は from 省略で全期間 base。
+- **設計（詳細版 arch・厳守）**: 新 domain 値 `GrowthWindow`（両 app 共有・market_profile/web/js/domain/）に窓写像を隔離。`forCurrent(mode,tf,cursor)→{from,to,formingStart}`＝normal:from=null(全期間)/formingStart=period_start(tf)、sessions:from=session_start(暦日86400)/formingStart=period_start(tf)。不変条件 to<=cursor（未来リーク禁止）・formingStart<=to。backend `period_start_unix(now,tf)`・`frm` 受理は既存流用（backend 無改変）。
+- **進捗**: **[Phase3 基盤] 完了** — `GrowthWindow` domain 値を TDD で新設（growth_window.js＋growth_window.test.js・13 ケース緑）。純関数・自内 import のみ・**既存コード無改変＝回帰ゼロ**（MP module web 181→194・replay web 181/181・present web 506/508＝既知2fail[replay_analysis/timeline_player]除外）。1D=86400 隔離・全 tf period_start 写像・cursor 欠損の窓不成立を固定。
+- **残作業（未着手・要判断/計測ゲート）**:
+  - **Phase3 結線**: present getContext に to/frm 送出（growing 時 cursor=now）＋sessions 当日タイルの accumulator 成長（当日1タイルのみ育て過去日は静的）。未来リーク golden 回帰。
+  - **Phase4**: `_buildFormingArgs` の 86400 anchor を `GrowthWindow.forCurrent(mode,tf,cursor)` 委譲へ。**要注意（設計内緊張）**: 現状 reveal 成長は `isTicklive()` ゲート（replay_indicator_controller.js:114-118）で from=当日固定。normal→from=null(全期間) 化は replay#3 reveal の可視窓を「当日→全期間+bar-period」へ変える＝reference/UX 変更の可能性。**1m 成長は実機計測ゲート必須**（実 tick 供給で成長本数計測）。
+  - **Phase5**: catalog_entry から 'ticklive' セグメント除去。ただし reveal 成長ゲートが `isTicklive()` 依存＝**ticklive 削除と reveal ゲートの grow 軸移行（isTicklive→_growing）は結合した 1 リファクタ**。4→3 モード test 更新・present バンドル out/prototype.html 再生成。
+- **関連**: ISSUE-029（1D固定窓・増分1完了）・ISSUE-030（1W/1M粗サブ解像度）。ブランチ feature/replay-play-mp-coupling（Phase0-2 承認済）。
