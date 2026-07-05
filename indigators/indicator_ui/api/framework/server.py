@@ -32,12 +32,18 @@ from urllib.parse import parse_qs, urlparse
 _API_ROOT = Path(__file__).resolve().parents[1]
 if str(_API_ROOT) not in sys.path:
     sys.path.insert(0, str(_API_ROOT))
+# MP backend は別モジュール（indigators/market_profile/api）へ切り出し済み。固有名トップパッケージ
+# ``market_profile_api`` を解決するため MP api/ も import パスへ追加する（MP は共有インフラ
+# ``adapter.compute`` を本 api/ 経由で参照する＝結線の一貫性）。
+_MP_API_ROOT = _API_ROOT.parents[1] / "market_profile" / "api"
+if str(_MP_API_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MP_API_ROOT))
 
 from adapter.compute import dataset  # noqa: E402
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
-from adapter.controller.market_profile_controller import handle_market_profile  # noqa: E402
-from adapter.controller.market_profile_forming_controller import (  # noqa: E402
+from market_profile_api.controller.market_profile_controller import handle_market_profile  # noqa: E402
+from market_profile_api.controller.market_profile_forming_controller import (  # noqa: E402
     handle_market_profile_forming,
 )
 

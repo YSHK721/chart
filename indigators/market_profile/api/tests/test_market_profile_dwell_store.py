@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from adapter.compute.market_profile_dwell_store import DwellRollupStore
+from market_profile_api.compute.market_profile_dwell_store import DwellRollupStore
 
 _DAY0 = 1704067200  # 2024-01-01 00:00 UTC。
 

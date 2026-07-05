@@ -34,19 +34,24 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
 
     import sys
 
-    # marketdata（repo 根）と adapter.compute（api）の双方を解決可能にする。
-    for p in (str(root), str(api)):
+    # MP backend は別モジュール（indigators/market_profile/api）へ切り出し済み。固有名トップパッケージ
+    # ``market_profile_api`` の解決用に MP api/ も sys.path へ追加する（MP は共有インフラ
+    # ``adapter.compute`` を indicator_ui の api/ 経由で参照する＝結線の一貫性）。
+    mp_api = root / "indigators" / "market_profile" / "api"
+
+    # marketdata（repo 根）・adapter.compute（indicator_ui api）・market_profile_api（MP api）を解決可能にする。
+    for p in (str(root), str(api), str(mp_api)):
         if p not in sys.path:
             sys.path.insert(0, p)
 
     from adapter.compute import dataset, IndicatorComputeAdapter  # noqa: E402
     from adapter.compute.latest_dispatch import full_compute, latest_compute  # noqa: E402
     # MP サブバー tick 逐次成長: forming controller の純ロジックを read-only 再利用（無改変・DRY）。
-    from adapter.controller.market_profile_forming_controller import (  # noqa: E402
+    from market_profile_api.controller.market_profile_forming_controller import (  # noqa: E402
         handle_market_profile_forming,
     )
     # MP normal/sessions/replay: market_profile controller の純ロジックを read-only 再利用（無改変・DRY）。
-    from adapter.controller.market_profile_controller import (  # noqa: E402
+    from market_profile_api.controller.market_profile_controller import (  # noqa: E402
         handle_market_profile,
     )
     from marketdata.resample import (  # noqa: E402

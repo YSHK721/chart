@@ -22,7 +22,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from adapter.compute import dataset
-from adapter.controller.market_profile_controller import _MAX_BINS, handle_market_profile
+from market_profile_api.controller.market_profile_controller import _MAX_BINS, handle_market_profile
 
 
 # --------------------------------------------------------------------------- #
@@ -233,7 +233,7 @@ class TestHandleMarketProfileSnapshotToday:
 
     def test_today_reflects_last_candle_only(self, monkeypatch):
         # Arrange: 合成 3 足。最終足だけが high/low を張る帯を today[] に持つ（前 2 足とは別価格帯）。
-        import adapter.controller.market_profile_controller as ctrl
+        import market_profile_api.controller.market_profile_controller as ctrl
         candles = [
             {"time": 100, "open": 1000, "high": 1010, "low": 1000, "close": 1005},
             {"time": 200, "open": 1005, "high": 1015, "low": 1002, "close": 1010},
@@ -380,7 +380,7 @@ class TestHandleMarketProfileSessions:
     def test_sessions_capped_to_recent_days(self):
         # 回帰（応答肥大防止）: 全期間要求でも sessions は直近 _SESSIONS_MAX_DAYS 日にキャップされ、
         # 直近日（末尾）が保持される（UI は直近 nFit 列しか描かないため十分）。
-        from adapter.controller.market_profile_controller import _SESSIONS_MAX_DAYS
+        from market_profile_api.controller.market_profile_controller import _SESSIONS_MAX_DAYS
         candles = dataset.load_candles("sample", None, None)
         _, payload = handle_market_profile("sample", **{"sessions": "1"})
         sessions = payload["sessions"]
@@ -396,7 +396,7 @@ class TestHandleMarketProfileSessions:
         # 注記の意味論整合（修正1）: キャップ発火時（sample は全期間 > 60 日）でも sessions_total は
         #   キャップ前の実日数（= キャップされた len(sessions)=60 ではない）を返す。
         #   primitive 注記「直近N/全M日」の M を実日数にするための素材（キャップ後 60 の誤読を防ぐ）。
-        from adapter.controller.market_profile_controller import _SESSIONS_MAX_DAYS
+        from market_profile_api.controller.market_profile_controller import _SESSIONS_MAX_DAYS
         candles = dataset.load_candles("sample", None, None)
         assert len(candles) > _SESSIONS_MAX_DAYS  # 前提: sample はキャップ発火する日数を持つ。
         _, payload = handle_market_profile("sample", **{"sessions": "1"})

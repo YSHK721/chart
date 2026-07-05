@@ -22,10 +22,10 @@ import math
 from typing import Any
 
 from adapter.compute import forming_bar as _forming_bar
-from adapter.compute import market_profile_dwell as _mpd
-from adapter.compute import market_profile_forming as _mpf
-from adapter.controller import market_profile_controller as _mpc
-from adapter.controller.market_profile_controller import (
+from market_profile_api.compute import market_profile_dwell as _mpd
+from market_profile_api.compute import market_profile_forming as _mpf
+from market_profile_api.controller import market_profile_controller as _mpc
+from market_profile_api.controller.market_profile_controller import (
     _error_body,
     handle_market_profile,
 )
