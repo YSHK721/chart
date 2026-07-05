@@ -24,6 +24,11 @@ import { MarketProfileActor } from './market_profile_actor.js';
 import { GrowthWindow } from '../../domain/growth_window.js';
 import { FORMING_MIN_INTERVAL_MS } from '../../replay/timing.js';
 
+// forming（足内成長）非対応 tf（backend forming_bar.is_supported_timeframe と一致＝1W/1M は固定 floor 不可で
+//   非対応）。この tf は enterBar/growTo の forming 取得が 400→null（非破壊）になり push 成長で描けないため、
+//   refresh override は基底 refresh（全期間 as-of）へ委譲して従来描画を保つ（1W/1M の描画欠落を防ぐ）。
+const _FORMING_UNSUPPORTED_TF = new Set(['1W', '1M']);
+
 // MP-05 presence ガード（present actor と同基準）: base=1 応答の必須フィールド（レンジ/グリッド/base 配列）が
 //   すべて有限/配列のときだけ true。欠損（無ローソク等の空 profile）は null 扱いで増分に入れず前回描画保持。
 //   JSON の明示 null は Number(null)===0（有限）で誤通過するため、各必須数値は `!= null` を先に課す。
@@ -68,6 +73,26 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     return super.refresh(); // 非 push: as-of-T（getContext().to）で再取得（因果）。
   }
 
+  // override: reveal 成長中（growing push）の refresh を因果 base（enterBar）へ振り替える。
+  //   基底 refresh は /market_profile を to=getContext().to（as-of-T）で引き、その T までの revealed 足を集計した
+  //   「その時間足の完成プロファイル（base 窓より広い as-of-T 完成形・未来リークではない）」を描く。これが
+  //   reveal（因果成長）では、成長開始前に一瞬この完成形を描いてから enterBar が base 窓（現在形成足）へ作り直す
+  //   ＝完成足フラッシュ→リセット→成長、という因果的に不自然な開始シーケンスを生む（実測: setEnabled(true)→基底
+  //   refresh が as-of-T 完成 setProfile を発火）。growing push では基底 refresh の完成形を描かず、現在カーソル
+  //   now=getContext().to の因果 base 窓（forming・空 forming＝再生点の開始形）で開始する。
+  //   非 growing push（sessions/static）・cursor 未設定は基底 refresh（as-of-T）へ委譲＝回帰なし。
+  //   本 override は replay subclass インスタンス限定（present 基底 actor は無改変）。
+  async refresh() {
+    const ctx = this._getContext();
+    const cursor = ctx.to;
+    if (this.isGrowingPush() && cursor != null && !_FORMING_UNSUPPORTED_TF.has(ctx.timeframe)) {
+      return this.enterBar(cursor); // 因果 base 窓（driver 未配線 from はフォールバック）。
+    }
+    // 非 growing push（sessions/static）・cursor 未設定・forming 非対応 tf（1W/1M）は基底 refresh へ委譲。
+    //   1W/1M は forming で描けない（enterBar→null）ため従来の全期間 as-of 描画を保つ（描画欠落を防ぐ）。
+    return super.refresh();
+  }
+
   // override: 基底 forming 引数（{...ctx, ...params, src:'dwell', base, since}）へ now(=getContext().to＝
   //   因果 T) と from（base 累積の下限窓）を合流する。now は引数優先（enterBar が透過する T）、無指定時は
   //   getContext().to。
@@ -98,34 +123,47 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
 
   // 追加: ticklive の push バー入場（render が now=T で呼ぶ）。バー入場＝rollover reset。
   //   fold 版（present 基底 _enterTicklive L266-302 の畳み込みに一致）: base=1・src=dwell・now=T・
-  //   from=当日始まり で forming 取得 → accumulator を作り直し → forming.ticks を addTick で畳み込み →
+  //   from で forming 取得 → accumulator を作り直し → forming.ticks を addTick で畳み込み →
   //   _lastSec 設定 → 描画。ただし縮退グリッド（forming tick 0 かつ priceMax-priceMin<=1）は描画スキップで
   //   前回描画を保持する（[0,1] 潰れを出さない＝最初の out-of-range tick で growTo が即グリッド確定）。
-  async enterBar(now) {
-    return this._rebuildAt(now, true); // skipDegenerateDraw=true（縮退は描かず前回保持）。
+  //   from（任意）: base 累積の下限窓（UNIX 秒）。replay.js driver が「再生開始点 replayStart の time」を渡す
+  //   （＝再生範囲から累積・日跨ぎでも非リセット）。省略時は _buildFormingArgs が GrowthWindow フォールバック
+  //   （当日窓）を写像する（driver 未配線の controller seam / gear 経路）。
+  async enterBar(now, from) {
+    return this._rebuildAt(now, true, from); // skipDegenerateDraw=true（縮退は描かず前回保持）。
   }
 
   // 追加: 当日 tick がグリッド外へ出たとき（replay.js driver が発火）、now までの因果窓で forming を
   //   再取得しグリッドを拡張して作り直す。growTo は縮退スキップしない（拡張後は必ず描画＝当日プロファイル
   //   成長）。fold 実体は enterBar と共通（_rebuildAt）。now は「直近 revealed tick 秒」（未来リーク禁止）。
-  async growTo(now) {
-    return this._rebuildAt(now, false); // skipDegenerateDraw=false（拡張グリッドは描画）。
+  //   from（任意）: enterBar と同じ replayStart 累積下限（driver が透過）。
+  async growTo(now, from) {
+    return this._rebuildAt(now, false, from); // skipDegenerateDraw=false（拡張グリッドは描画）。
   }
 
-  // enterBar/growTo の共通実体: base=1/src=dwell/now/from=GrowthWindow(normal→全期間・Phase4) で forming を
-  //   [from, now] の因果窓で取得 → accumulator を作り直し（rollover/grid 拡張）→ forming.ticks を畳み込み
-  //   （present 基底 _enterTicklive と同一 fold semantics）→ _lastSec/レンジ設定 → 描画。取得失敗（null）・
-  //   base 欠損は前回描画を保持（非破壊）。skipDegenerateDraw=true かつ縮退グリッド（tick 0＋[..,+1] レンジ）は
-  //   描画のみスキップ（init は行い growTo の土台を残す）。
-  async _rebuildAt(now, skipDegenerateDraw) {
+  // enterBar/growTo の共通実体: base=1/src=dwell/now/from で forming を [from, now] の因果窓で取得 →
+  //   accumulator を作り直し（rollover/grid 拡張）→ forming.ticks を畳み込み（present 基底 _enterTicklive と
+  //   同一 fold semantics）→ _lastSec/レンジ設定 → 描画。取得失敗（null）・base 欠損は前回描画を保持（非破壊）。
+  //   skipDegenerateDraw=true かつ縮退グリッド（tick 0＋[..,+1] レンジ）は描画のみスキップ（init は行い growTo
+  //   の土台を残す）。
+  //   from（任意・driver=replayStart）: 明示指定時は不変条件 from<=formingStart を保つため
+  //   min(from, periodStart(now,tf)) へクランプしてから _buildFormingArgs へ渡す（replayStart>formingStart の端＝
+  //   1W/1M ラベル規約や当該バー内でも未来リークしない）。省略時は _buildFormingArgs の GrowthWindow フォール
+  //   バックへ委譲する。
+  async _rebuildAt(now, skipDegenerateDraw, from) {
     if (!this.isGrowingPush()) {
       return; // 自己ガード: push 成長中（normal/replay+growing）以外は push 駆動しない（Phase5: 成長軸ゲート）。
     }
     if (!this._enabled || !this._formingClient || !this._makeAccumulator) {
       return;
     }
+    let effFrom = from;
+    if (effFrom != null && Number.isFinite(Number(now))) {
+      // クランプ: from<=formingStart（不変条件）・from<=now（未来リーク禁止）。formingStart<=now ゆえ十分。
+      effFrom = Math.min(Number(effFrom), GrowthWindow.periodStart(Number(now), this._getContext().timeframe));
+    }
     const forming = await this._formingClient.fetchForming(
-      this._buildFormingArgs({ base: 1, since: null, now }),
+      this._buildFormingArgs({ base: 1, since: null, now, from: effFrom }),
     );
     if (!forming) {
       return; // null は前回描画を保持（非破壊）。

@@ -79,10 +79,11 @@ function fakeFetch() {
 function spyMarketProfile(enabled) {
   return {
     _en: !!enabled,
-    calls: { enter: [], feed: [], settle: 0 },
+    calls: { enter: [], enterFrom: [], grow: [], feed: [], settle: 0 },
     isEnabled() { return this._en; },
     setEnabled(v) { this._en = !!v; },
-    async enterBar(t) { this.calls.enter.push(t); },
+    async enterBar(t, from) { this.calls.enter.push(t); this.calls.enterFrom.push(from); },
+    async growTo(t, from) { this.calls.grow.push([t, from]); },
     feedTick(s, m) { this.calls.feed.push([s, m]); },
     settleTick() { this.calls.settle += 1; },
   };
@@ -112,6 +113,18 @@ test('render calls marketProfile.enterBar(now=T) for the current bar when MP is 
   await drive({ marketProfile: mp });
   // Assert: 現在バー（最新足 time=200）で enterBar が呼ばれる（バー単位ジャンプの base 取り直し・因果 T）。
   assert.ok(mp.calls.enter.includes(200), 'render seam で enterBar(now=T) が呼ばれる');
+});
+
+test('render passes from=replayStart bar time to enterBar (Fix #1: cumulate from replay start, not today)', async () => {
+  // Arrange: MP 有効の spy。preset 未選択＝replayStart=0（最古足 time=100 が累積下限）。
+  const mp = spyMarketProfile(true);
+  // Act
+  await drive({ marketProfile: mp });
+  // Assert: enterBar の from は candles[replayStart=0].time=100（再生開始点から累積・当日窓でない）。
+  //   最新足 time=200 の enterBar に対応する from が 100（＝replayStart のバー時刻）で載る。
+  const idx = mp.calls.enter.indexOf(200);
+  assert.ok(idx >= 0, 'enterBar(now=200) が存在する');
+  assert.equal(mp.calls.enterFrom[idx], 100, 'from=candles[replayStart].time（replayStart 累積下限）を driver が透過する');
 });
 
 test('render does NOT call enterBar when MP is disabled (OFF non-interference)', async () => {

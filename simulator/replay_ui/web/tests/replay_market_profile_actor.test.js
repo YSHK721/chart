@@ -182,8 +182,156 @@ test('_buildFormingArgs preserves an explicit from over GrowthWindow (backward-c
   assert.equal(args.from, 123456, '明示 from は GrowthWindow 委譲より優先（compat）');
 });
 
-// --- enterBar（ticklive）: base=1/src=dwell/now=T/from=絞った窓(当日始端)で forming 取得し base 描画 ---
-test('enterBar (ticklive) fetches base=1/src=dwell/now=T/from=絞った窓(当日始端), inits accumulator, draws base only', async () => {
+// --- Fix #1（replayStart 累積）: driver 明示 from（=replayStart のバー時刻）を enterBar/growTo が forming へ
+//   透過し、当日窓 GrowthWindow フォールバックを上書きする。再生開始点から累積＝日跨ぎでも非リセット。 ---
+test('enterBar(now, from) threads explicit from (replayStart) into forming args (overrides today-window fallback)', async () => {
+  const now = 1782985000;
+  const replayStart = now - 3 * 86400; // 3 日前（replayStart < formingStart）＝再生開始点
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({ formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: now });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  // Act: driver が replayStart を明示 from で渡す。
+  await actor.enterBar(now, replayStart);
+  // Assert: from=replayStart（累積下限）が forming へ載る（当日窓でない＝日跨ぎ非リセット）。
+  const call = forming.calls[forming.calls.length - 1];
+  assert.equal(call.now, now, 'now=因果 T（未来リークなし）');
+  assert.equal(call.from, replayStart, 'from=replayStart（再生開始点から累積・GrowthWindow 当日窓を上書き）');
+});
+
+test('growTo(now, from) threads explicit from (replayStart) into forming args', async () => {
+  const now = 1782985000;
+  const replayStart = now - 5 * 86400;
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({ formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: now });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  // Act
+  await actor.growTo(now, replayStart);
+  // Assert
+  assert.equal(forming.calls[forming.calls.length - 1].from, replayStart, 'growTo も replayStart を forming へ透過');
+});
+
+test('enterBar clamps from to formingStart when from>formingStart (invariant from<=formingStart, no future-leak)', async () => {
+  const now = 1782985000;
+  const formingStart = Math.floor(now / 3600) * 3600; // 1h 床（makeActor tf='1h'）
+  const from = now + 100; // formingStart より後（未来側）＝クランプ対象
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({ formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: now });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  // Act
+  await actor.enterBar(now, from);
+  // Assert: from>formingStart は formingStart へクランプ（不変条件・未来リーク禁止）。
+  assert.equal(forming.calls[forming.calls.length - 1].from, formingStart, 'from>formingStart は formingStart へクランプ');
+});
+
+// --- Fix #2（完成足フラッシュ撲滅）: reveal 成長中（growing push）の refresh は全期間 fetchProfile（完成形・
+//   未来リーク）を描かず、因果 base 窓（forming・enterBar）で開始する。setEnabled(true) の基底 refresh も同様。 ---
+test('refresh during growing push draws causal base via forming (enterBar), NOT all-period fetchProfile (no completed-profile flash)', async () => {
+  const now = 1782985000;
+  const client = fakeClient();
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({ formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, client, ctxTo: now });
+  actor.setParams({ mode: 'normal' });
+  actor._enabled = true; // setEnabled を経ず enabled 化（基底 refresh を先に走らせない）。
+  actor.applyGrowthState({ growing: true });
+  assert.equal(actor.isGrowingPush(), true, 'growing push（normal+growing+enabled）');
+  const fetchBefore = client.calls.length;
+  const formingBefore = forming.calls.length;
+  // Act
+  await actor.refresh();
+  // Assert: 全期間 fetchProfile（完成形フラッシュ）を呼ばず、forming（因果 base）で描く。
+  assert.equal(client.calls.length, fetchBefore, 'growing push の refresh は全期間 fetchProfile を呼ばない（完成形フラッシュ無し）');
+  assert.equal(forming.calls.length, formingBefore + 1, 'refresh は enterBar 経由で forming（因果 base）を取得する');
+  assert.equal(forming.calls[forming.calls.length - 1].now, now, 'base 窓は現在カーソル now=getContext().to（因果・未来リークなし）');
+});
+
+test('refresh when NOT growing push delegates to base all-period refresh (sessions/static unchanged)', async () => {
+  const now = 1782985000;
+  const client = fakeClient();
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({ formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, client, ctxTo: now });
+  await actor.setEnabled(true); // normal・非 growing → isGrowingPush=false
+  const fetchBefore = client.calls.length;
+  // Act
+  await actor.refresh();
+  // Assert: 非 growing push は基底 refresh（全期間 fetchProfile）へ委譲＝回帰なし。
+  assert.equal(client.calls.length, fetchBefore + 1, '非 growing push は基底 refresh（全期間 fetchProfile）へ委譲');
+});
+
+test('regression: refresh on forming-unsupported tf (1W) delegates to base refresh even when growing push (no blank-profile regression)', async () => {
+  const now = 1782985000;
+  const c = fakeClient();
+  const forming = fakeFormingClient([BASE_FULL]);
+  // 1W: forming 非対応（backend 400→null）。growing push でも基底 refresh（全期間 as-of）で描く。
+  const actor = new ReplayMarketProfileActor({
+    client: c, primitive: fakePrimitive(), mainSeries: fakeMainSeries(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1W', to: now }),
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, now: () => 0, throttleMs: 120,
+  });
+  actor.setParams({ mode: 'normal' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  assert.equal(actor.isGrowingPush(), true, '1W も growing push（tf ゲートは isGrowingPush ではなく refresh override 内）');
+  const fetchBefore = c.calls.length;
+  const formingBefore = forming.calls.length;
+  // Act
+  await actor.refresh();
+  // Assert: 1W は forming で描けないため基底 refresh（全期間 fetchProfile）へ委譲＝1W/1M の描画欠落を防ぐ。
+  assert.equal(c.calls.length, fetchBefore + 1, '1W(forming 非対応)は growing push でも基底 refresh へ委譲');
+  assert.equal(forming.calls.length, formingBefore, '1W は forming(enterBar)を発火しない（描画欠落回避）');
+});
+
+test('regression: setEnabled(true) during growing push does NOT fetch all-period profile (no enable-time completed-profile flash); uses forming base', async () => {
+  const now = 1782985000;
+  const client = fakeClient();
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({ formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, client, ctxTo: now });
+  actor.setParams({ mode: 'normal' });
+  actor.applyGrowthState({ growing: true }); // reveal は常時 growing（composition mpGrowthResolver=()=>true 相当）
+  const fetchBefore = client.calls.length;
+  // Act: MP 有効化（indicator メニュー applyIndicator→setEnabled(true) 経路）。
+  await actor.setEnabled(true);
+  // Assert: 基底 setEnabled の refresh（全期間）は growing push override で forming（因果 base）へ転送され、
+  //   全期間 fetchProfile（未来リーク・完成形フラッシュ）を一切呼ばない。
+  assert.equal(client.calls.length, fetchBefore, 'growing push の setEnabled は全期間 fetchProfile を呼ばない（完成形フラッシュ無し）');
+  assert.ok(forming.calls.length >= 1, 'setEnabled は forming（因果 base）で描く');
+});
+
+// --- Fix #2 回帰（再発防止・観測点は setProfile 描画そのもの）: 開始シーケンス（setEnabled(true)）で
+//   「その時間足の完成形＝全期間 as-of プロファイル」を primitive.setProfile で一度も描かないことを固定する。
+//   過去にこの完成足フラッシュ→リセット→成長が回帰テスト不在で再発したため、誤シーケンスが起きたら fail する
+//   非空テストにする（全期間 profile が描かれた瞬間に fail）。 ---
+test('regression(recurring flash): start sequence never draws the all-period (completed) profile; first draw is the causal forming base', async () => {
+  const now = 1782985000;
+  const daySt = Math.floor(now / 86400) * 86400;
+  // 全期間 refresh の描画を一意マーカーで識別する（描かれたら完成足フラッシュ＝bug 再発）。
+  const ALL_PERIOD = { __allPeriod: true, poc: 12345, bins: [] };
+  const client = fakeClient(ALL_PERIOD);
+  // forming base は accumulator snapshot（_snap:true）で描かれる（因果 base・空 forming＝再生点の開始形）。
+  const forming = fakeFormingClient([{ ...BASE_FULL, ticks: [], formingStart: daySt, now }]);
+  const primitive = fakePrimitive();
+  const { actor } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make,
+    client, primitive, ctxTo: now,
+  });
+  actor.setParams({ mode: 'normal' });
+  actor.applyGrowthState({ growing: true }); // reveal は常時 growing。
+  // Act: MP 有効化（applyIndicator→setEnabled(true) の開始シーケンス）。
+  await actor.setEnabled(true);
+  // Assert 1: 全期間プロファイル（完成足フラッシュ）を一度も描かない（誤シーケンスが起きたら fail）。
+  const drewAllPeriod = primitive.profiles.some((p) => p && p.__allPeriod === true);
+  assert.equal(drewAllPeriod, false, '開始シーケンスで全期間 as-of プロファイル（完成足）を setProfile しない');
+  // Assert 2: 少なくとも 1 回は因果 base（forming snapshot）を描く（無描画の見せかけ緑を排除）。
+  assert.ok(primitive.profiles.length >= 1, '因果 base を描く（開始形）');
+  assert.ok(primitive.profiles.every((p) => p && p._snap === true),
+    '描画は全て forming base（accumulator snapshot）＝完成形フラッシュ無し');
+});
+
+// --- enterBar（ticklive・fallback）: driver 未配線 from の enterBar は GrowthWindow 当日窓へフォールバックする
+//   （controller seam / gear 経路）。primary は上の explicit-from（replayStart）テストが固定する。 ---
+test('enterBar (ticklive, no explicit from) falls back to GrowthWindow today-window: base=1/src=dwell/now=T/from=当日始端', async () => {
   const now = 1782985000;
   const daySt = Math.floor(now / 86400) * 86400; // 当日始端
   const forming = fakeFormingClient([BASE_FULL]);

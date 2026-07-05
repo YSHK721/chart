@@ -55,6 +55,13 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
 
   const syncBoundary = () => view.syncBoundary({ replayStart, candles });
 
+  // MP normal 成長の base 累積下限（UNIX 秒）= 再生開始点 replayStart のバー時刻。
+  //   再生を始めた位置から現在まで累積する（過去 revealed 足を保持・全期間より見やすい・日跨ぎでも非リセット）。
+  //   replayStart=0（全期間プリセット）は最古足 time＝実質全期間。actor 側が formingStart へクランプし
+  //   不変条件 from<=formingStart・未来リーク禁止を保つ。候補足が無ければ undefined（actor は GrowthWindow
+  //   フォールバックへ委譲）。
+  const mpBaseFrom = () => (candles[replayStart] ? candles[replayStart].time : undefined);
+
   // 指標の適用/削除（render を経ない経路）でも pane の減光を即同期する。
   for (const name of ['applyIndicator', 'removeInstance']) {
     const orig = (typeof controller[name] === 'function') ? controller[name].bind(controller) : null;
@@ -134,7 +141,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     syncBoundary(); // full 再計算で再生成された pane 系列へ減光を再装着
     // MP tick-live: バー単位ジャンプで base を now=T（因果）で取り直す（rollover 兼・await ready で
     //   直後の animateForming feedTick 取りこぼしを防ぐ）。MP OFF/未配線時は完全に非干渉。
-    if (mpOn()) await marketProfile.enterBar(t);
+    if (mpOn()) await marketProfile.enterBar(t, mpBaseFrom());
     lastComputeMs = performance.now() - started;
     setEta();
     setStatus(`bar ${bar}/${candles.length - 1}  ${fmt(t)}  計算 ${Math.round(performance.now() - started)}ms（その場計算）`);
@@ -309,7 +316,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   function pushGrowTo(sec) {
     if (growInFlight) return;
     growInFlight = true;
-    marketProfile.growTo(sec)
+    marketProfile.growTo(sec, mpBaseFrom())
       .catch(() => { /* グリッド拡張失敗はアニメ継続（次 tick が再発火・settle が最終確定） */ })
       .finally(() => { growInFlight = false; });
   }
@@ -318,7 +325,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   async function settleGrowTo(sec) {
     while (growInFlight) { await sleepMs(ANIM_MIN_MS); }
     growInFlight = true;
-    try { await marketProfile.growTo(sec); }
+    try { await marketProfile.growTo(sec, mpBaseFrom()); }
     catch (_e) { /* 確定着地の拡張失敗は次フレームの enterBar が回復 */ }
     finally { growInFlight = false; }
   }
