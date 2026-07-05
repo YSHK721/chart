@@ -33,6 +33,10 @@ export class LiveFollowController {
     //   その stale(atRightEdge=false) で FOLLOW→ANALYSIS へ auto-off されると手動 FOLLOW が即取消されるため、
     //   scroll 発火中は auto-off を抑止し、右端収束(atRightEdge=true)を観測した時点で解除する。
     this._suppressAutoOff = false;
+    // 直近の右端在否（range イベントで更新）。初期は右端（fitContent 初期表示は通常右端＝true）と仮定する。
+    //   _applyFollow は「既に右端なら scrollToRealTime は no-op でイベントを発火せず arm が解除されず stuck する」
+    //   ため、この値を見て『実際に移動する時（右端に居ない時）だけ』arm + scroll する（code-review 🔴 の是正）。
+    this._lastAtRightEdge = true;
   }
 
   // 現在モード（'FOLLOW' | 'ANALYSIS'）の読み取り専用アクセサ。
@@ -90,6 +94,9 @@ export class LiveFollowController {
   // 可視範囲変化ハンドラ（振動防止の核）:
   //   FOLLOW && !atRightEdge → ANALYSIS ／ ANALYSIS && atRightEdge → FOLLOW ／ 同状態 no-op。
   _onRangeChange(atRightEdge) {
+    // 直近の右端在否を常に記録する（_applyFollow の scroll 要否判定に使う）。stale イベントも含め更新するが、
+    //   scroll 収束後の最終イベントは true になるため、収束後は正しく true が残る。
+    this._lastAtRightEdge = atRightEdge;
     // programmatic scroll（scrollToRealTime）由来の stale イベント抑制:
     //   武装中（_suppressAutoOff）は FOLLOW→ANALYSIS の auto-off を抑止する。scroll が右端へ収束し
     //   atRightEdge=true を観測した時点で武装解除する（以降の genuine パン離脱では通常どおり auto-off）。
@@ -115,7 +122,11 @@ export class LiveFollowController {
     if (this._liveUpdater && typeof this._liveUpdater.start === 'function') {
       this._liveUpdater.start(); // 冪等（多重 start 無害）。
     }
-    if (scroll && this._renderer && typeof this._renderer.scrollToRealTime === 'function') {
+    // 実際に移動する時（＝まだ右端に居ない時）だけ arm + scrollToRealTime する。既に右端(_lastAtRightEdge=true)
+    //   なら scroll は no-op で range イベントを発火せず、arm が解除イベントを得られず stuck するため呼ばない
+    //   （既に右端なので catch-up scroll 自体も不要）＝code-review 🔴 の是正。
+    if (scroll && !this._lastAtRightEdge
+        && this._renderer && typeof this._renderer.scrollToRealTime === 'function') {
       // scroll 発火の前に武装する（実 lwc は非同期・fake は同期発火 — どちらも収束前 stale を抑止するため先に立てる）。
       this._suppressAutoOff = true;
       this._renderer.scrollToRealTime();

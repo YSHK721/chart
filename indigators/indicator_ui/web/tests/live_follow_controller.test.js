@@ -105,17 +105,25 @@ test('手動toggle: FOLLOW→ANALYSIS で stop・tint on・消灯', () => {
   assert.equal(isLit(button), false, 'ANALYSIS はボタン消灯');
 });
 
-test('手動toggle: ANALYSIS→FOLLOW で start・scrollToRealTime・tint off・点灯', () => {
-  const { controller, liveUpdater, renderer, button } = setup();
+test('手動toggle: ANALYSIS(panned)→FOLLOW で start・scrollToRealTime(catch-up)・tint off・点灯', () => {
+  // panned（右端に居ない）状態からの手動 re-FOLLOW は scrollToRealTime で右端へ catch-up する。
+  //   実 lwc 相当に false→true を発火する fake を使い、scroll 収束(true)で suppression が解除されることも担保。
+  const liveUpdater = fakeLiveUpdater();
+  const renderer = fakeRendererWithScrollEvents();
+  const button = fakeButton();
+  const controller = new LiveFollowController({
+    liveUpdater, renderer, document: fakeDocument(button), buttonId: 'live-follow-toggle', mode: 'b',
+  });
   controller.install();
-  controller.toggleManual(); // → ANALYSIS
+  renderer.fireRange(false); // パン離脱 → auto-off → ANALYSIS（_lastAtRightEdge=false）
+  assert.equal(controller.mode, 'ANALYSIS');
   const startsBefore = liveUpdater.starts;
 
-  controller.toggleManual(); // → FOLLOW（再FOLLOW）
+  controller.toggleManual(); // → FOLLOW（panned なので scrollToRealTime で catch-up）
 
   assert.equal(controller.mode, 'FOLLOW');
   assert.equal(liveUpdater.starts, startsBefore + 1, '再FOLLOW で start');
-  assert.equal(renderer.scrolls, 1, '再FOLLOW は scrollToRealTime で catch-up');
+  assert.equal(renderer.scrolls, 1, 'panned re-FOLLOW は scrollToRealTime で catch-up');
   assert.equal(renderer.tints.at(-1), false, '再FOLLOW は tint off');
   assert.ok(isLit(button), '再FOLLOW はボタン点灯');
 });
@@ -142,18 +150,20 @@ test('自動遷移 auto-off: FOLLOW 中に右端離脱（atRightEdge=false）で
   assert.equal(isLit(button), false);
 });
 
-test('自動遷移 auto-on: ANALYSIS 中に右端復帰（atRightEdge=true）で FOLLOW へ', () => {
+test('自動遷移 auto-on: ANALYSIS 中に右端復帰（atRightEdge=true）で FOLLOW へ（既に右端なので scroll しない）', () => {
   const { controller, liveUpdater, renderer, button } = setup();
   controller.install();
   controller.toggleManual(); // → ANALYSIS
   const startsBefore = liveUpdater.starts;
   const scrollsBefore = renderer.scrolls;
 
-  renderer.fireRange(true); // 右端復帰
+  renderer.fireRange(true); // 右端復帰（＝この時点で既に右端）
 
   assert.equal(controller.mode, 'FOLLOW');
   assert.equal(liveUpdater.starts, startsBefore + 1, 'auto-on で start');
-  assert.equal(renderer.scrolls, scrollsBefore + 1, 'auto-on は scrollToRealTime で catch-up');
+  // auto-on は「右端復帰」で発火＝定義上すでに右端。no-op scroll でイベントが来ず suppression が stuck するのを
+  //   避けるため scrollToRealTime を呼ばない（catch-up は既に右端なので不要）。
+  assert.equal(renderer.scrolls, scrollsBefore, 'auto-on は既に右端＝scroll を呼ばない（suppression stuck 回避）');
   assert.equal(renderer.tints.at(-1), false);
   assert.ok(isLit(button));
 });
@@ -256,16 +266,18 @@ test('回帰: ANALYSIS→手動FOLLOW で programmatic scroll の stale(false) �
     liveUpdater, renderer, document, buttonId: 'live-follow-toggle', mode: 'b',
   });
   controller.install();
-  controller.toggleManual(); // → ANALYSIS
+  renderer.fireRange(false); // パン離脱 → auto-off → ANALYSIS（_lastAtRightEdge=false＝手動FOLLOWで実 scroll が動く）
   assert.equal(controller.mode, 'ANALYSIS');
+  const stopsBefore = liveUpdater.stops; // auto-off の 1 回
 
-  // Act: 手動で FOLLOW へ。_applyFollow(true) が scrollToRealTime を呼び、その中で stale(false)→settled(true)。
+  // Act: 手動で FOLLOW へ。panned なので _applyFollow が scrollToRealTime を呼び、その中で stale(false)→settled(true)。
   controller.toggleManual();
 
   // Assert: stale(false) に落とされず FOLLOW を維持（不具合が起きると即 ANALYSIS へ戻り mode=ANALYSIS）。
   assert.equal(controller.mode, 'FOLLOW', 'programmatic scroll の stale イベントで ANALYSIS へ戻ってはならない');
   assert.equal(button.getAttribute('aria-pressed'), 'true', 'FOLLOW 点灯を維持');
-  assert.equal(liveUpdater.stops, 1, 'ANALYSIS 化は最初の手動1回のみ（stale で再 stop されない）');
+  assert.equal(renderer.scrolls, 1, 'panned re-FOLLOW で scrollToRealTime が実際に動く（scroll 経路を実行）');
+  assert.equal(liveUpdater.stops, stopsBefore, 'scroll の stale(false) で再 stop されない');
 });
 
 test('回帰: scroll 収束後（settled true 観測後）は genuine パン離脱で通常どおり ANALYSIS へ落ちる（suppression 解除）', () => {
@@ -278,13 +290,52 @@ test('回帰: scroll 収束後（settled true 観測後）は genuine パン離�
     liveUpdater, renderer, document, buttonId: 'live-follow-toggle', mode: 'b',
   });
   controller.install();
-  controller.toggleManual(); // → ANALYSIS
-  controller.toggleManual(); // → FOLLOW（scroll が false→true を発火・suppression は true で解除される）
+  renderer.fireRange(false); // パン離脱 → ANALYSIS（_lastAtRightEdge=false）
+  controller.toggleManual(); // → FOLLOW（panned なので scroll が false→true を発火・suppression は true で解除される）
   assert.equal(controller.mode, 'FOLLOW');
+  assert.equal(renderer.scrolls, 1, 'panned re-FOLLOW で実際に scroll が動く（収束 true で suppression 解除）');
 
   // Act: scroll 収束後に、ユーザーが実際に過去へパン（右端離脱）。
   renderer.fireRange(false);
 
   // Assert: suppression は settled(true) で解除済みのため、通常どおり auto-off が働く（回帰させない）。
   assert.equal(controller.mode, 'ANALYSIS', 'scroll 収束後の genuine パン離脱は auto-off が復活する');
+});
+
+// no-op scroll 再現: scrollToRealTime() は「既に右端」だと何も動かず range イベントを一切発火しない。
+//   この経路では「atRightEdge=true を観測したら解除」だけに頼ると解除イベントが来ず _suppressAutoOff が
+//   armed のまま stuck し、以降の genuine な右端離脱(false)を swallow して auto-off が死ぬ（code-review 🔴）。
+//   default の fakeRenderer が既に「scrollToRealTime は scrolls++ のみ・イベント無し」＝no-op scroll 模擬。
+
+test('回帰: 自動ON(no-op scroll)後の genuine パン離脱で auto-off が働く（suppression が stuck しない）', () => {
+  // Arrange: default fakeRenderer（scrollToRealTime はイベントを発火しない＝既に右端の no-op scroll 模擬）。
+  const { controller, renderer } = setup();
+  controller.install();
+  renderer.fireRange(false); // パン離脱 → auto-off → ANALYSIS
+  assert.equal(controller.mode, 'ANALYSIS');
+
+  // Act: 右端へ復帰 → 自動ON（ANALYSIS→FOLLOW）。既に右端のため scroll は no-op でイベント来ず。
+  renderer.fireRange(true);
+  assert.equal(controller.mode, 'FOLLOW');
+  // さらに genuine なパン離脱。
+  renderer.fireRange(false);
+
+  // Assert: suppression が stuck していなければ auto-off が働き ANALYSIS へ落ちる。
+  assert.equal(controller.mode, 'ANALYSIS', 'no-op scroll 経由の自動ON後も auto-off が発火する（suppression stuck 禁止）');
+});
+
+test('回帰: 右端での手動 re-FOLLOW(no-op scroll)後の genuine パン離脱で auto-off が働く', () => {
+  // Arrange: 右端に居る状態（_lastAtRightEdge=true）を range イベントで確定させる。
+  const { controller, renderer } = setup();
+  controller.install();
+  renderer.fireRange(true); // 右端に居ることを記録
+  controller.toggleManual(); // → ANALYSIS
+  controller.toggleManual(); // → FOLLOW（既に右端なので scroll は no-op・イベント無し）
+  assert.equal(controller.mode, 'FOLLOW');
+
+  // Act: genuine なパン離脱。
+  renderer.fireRange(false);
+
+  // Assert: suppression が stuck していなければ auto-off が働く。
+  assert.equal(controller.mode, 'ANALYSIS', '右端での手動 re-FOLLOW 後も auto-off が働く（suppression stuck 禁止）');
 });
