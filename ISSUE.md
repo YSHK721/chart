@@ -544,7 +544,7 @@
 
 ## ISSUE-039: indicator_ui — market_profile_controller に usecase相当ロジック堆積（Interactor抽出）
 - **重大度**: Low〜Medium
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-07-05・案A＝現状維持で決着。architecture-executor 精査の結論）。**抽出しないのが正解**: `handle_market_profile(...)→(status,body)` は既に BaseHTTPRequestHandler 非依存の Application Service 境界で、present(server.py)＋replay(bridge経由 MarketProfilePort)が消費中＝**usecase 抽出の目的は既に達成済**。提案の ProfileCompute/DwellCompute ポート化はドメイン数学の逆立ち(YAGNI違反)、CandleLoaderPort も JForex 実装着手まで時期尚早。新 usecase 層は既存分離の二重化＋byte契約リスクのみ増やす。依存方向違反は新規・既存とも0。将来 JForex ライブ着手時に CandleLoaderPort 1本のみ追加(案C)。コード変更なし。
 - **検出**: 同監査（🟡-1・2026-07-05）。
 - **背景**: `api/adapter/controller/market_profile_controller.py`(349行) に HTTP非依存の Application Business Rules が堆積＝`to`/`from` 時間窓フィルタ(:251/:311)・`_resolve_n_bins`(:72) barw→bins・`_handle_dwell`(:277) src分岐・`_cap_sessions`(:62) 応答整形。`compute_controller.py`(117行) は薄く妥当（Controller+Interactor 折り畳み許容）＝問題は market_profile のみ。
 - **対策（提案）**: `MarketProfileInteractor`（窓適用/bin決定/src分岐/session整形）を抽出し、controller はクエリ解析と error翻訳に縮小。過剰な usecase 層新設は不要（YAGNI）。
@@ -552,7 +552,7 @@
 
 ## ISSUE-040: indicator_ui — SRP整理3件（DIルート/dwellキャッシュ/chart_renderer内部分割）※低優先
 - **重大度**: Low
-- **ステータス**: IN_PROGRESS（(a) RESOLVED・(b)(c) OPEN）。**(a) 完了(2026-07-05)**: チャート操作(swipe scrub/価格pan/wheelズーム/dblclick reset/2Dドラッグ)を `ChartInteractionController`(adapter/front) へ抽出、composition_root_front を配線専用に縮小(454→328行)。回帰ゼロ(unit11/11・present web633・replay162/162)、code-review 承認可(🔴0・byte不変を triangulation 実証)、ブラウザ目視合格(wheel/drag/dblclick・canvas健全・console0)。develop 4fc43af マージ・push 済(92ca8fc+8a7237c)。**(b) dwellキャッシュ分離・(c) chart_renderer 内部分割は未着手**。
+- **ステータス**: IN_PROGRESS（(a) RESOLVED・(b)(c) OPEN）。**(a) 完了(2026-07-05)**: チャート操作(swipe scrub/価格pan/wheelズーム/dblclick reset/2Dドラッグ)を `ChartInteractionController`(adapter/front) へ抽出、composition_root_front を配線専用に縮小(454→328行)。回帰ゼロ(unit11/11・present web633・replay162/162)、code-review 承認可(🔴0・byte不変を triangulation 実証)、ブラウザ目視合格(wheel/drag/dblclick・canvas健全・console0)。develop 4fc43af マージ・push 済(92ca8fc+8a7237c)。**(b) 完了(2026-07-05)**: dwell ディスクキャッシュを `DwellRollupStore`(adapter/compute) へ分離、`market_profile_dwell.py` は集計数学を残し委譲(622→569行)。公開API/出力 byte 不変(parity 実証・黄金値は改変前採取)、api 486→504・replay 144 緑、code-review 承認可(🔴0・triangulation)、develop マージ(0271b75+81da98e)。**(c) chart_renderer 内部分割(PriceScaleController)は保留＝監査自身が「任意・低優先／隔離境界の価値は高く分割不要」と明記。実需(その領域の機能追加)が出た時に対応**。
 - **検出**: 同監査（🟡-2/🟡-3/🟡-4・2026-07-05）。
 - **背景**: (a) `web/js/adapter/front/composition_root_front.js` L242-381(~140行) が pointer swipe スクラブ/縦価格パン/wheel価格ズームの**振る舞い**を実装＝DIルートに配線以外が混入。(b) `api/adapter/compute/market_profile_dwell.py`(622行) が集計ロジックとディスクキャッシュ Repository(`_save_day_rollup`:284/`_load_day_rollup`:316/署名) の同居（変更軸が別）。(c) `web/js/adapter/front/chart_renderer.js`(998行) は lwc隔離という単一軸は妥当だが内部で系列描画/価格ズーム座標数学(`handlePriceWheel`:353/`panPriceByPixels`:408)/クロスヘアDTO(`_buildReadoutDto`:872)が混在。
 - **対策（提案）**: (a) `ChartInteractionController` 抽出・root は配線のみ。(b) 日次rollupを `DwellRollupStore`(Gateway) 分離し Output境界越し注入。(c) 価格スケール操作を `PriceScaleController` へ内部分割（隔離境界の価値は高く任意・低優先）。
