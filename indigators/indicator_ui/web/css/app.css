@@ -55,6 +55,21 @@ html, body {
 .tb-interval:disabled { opacity: .4; cursor: not-allowed; }
 .tb-interval:disabled:hover { background: transparent; }
 
+/* ライブ追従トグルの配色（FOLLOW=ワインレッド点灯 / ANALYSIS=くすみグレー消灯）。
+   状態を色で一目で判別させる（背景 tint と併用）。目視微調整用に CSS 変数化する。 */
+:root {
+  --live-follow-red: #7b2233;        /* FOLLOW（ライブ中）＝深いワイン/バーガンディ */
+  --live-follow-red-hover: #93293e;  /* FOLLOW hover（僅かに明るいワイン） */
+  --live-follow-off-bg: #3a3d47;     /* ANALYSIS（分析モード＝OFF）＝抑えた灰の消灯 */
+  --live-follow-off-bg-hover: #44474f;
+  --live-follow-off-text: #9aa0ad;   /* ANALYSIS の文字色（くすみ） */
+}
+/* 汎用 .tb-interval.is-active（青）を id 特異度で上書きし、ライブ追従だけワイン配色にする。 */
+#live-follow-toggle.is-active { background: var(--live-follow-red); color: #fff; }
+#live-follow-toggle.is-active:hover { background: var(--live-follow-red-hover); }
+#live-follow-toggle:not(.is-active) { background: var(--live-follow-off-bg); color: var(--live-follow-off-text); }
+#live-follow-toggle:not(.is-active):hover { background: var(--live-follow-off-bg-hover); }
+
 .tb-indicator-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 10px; border-radius: 4px;
