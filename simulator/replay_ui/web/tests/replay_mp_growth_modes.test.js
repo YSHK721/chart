@@ -63,9 +63,12 @@ const CANDLES = [
 ];
 // 最新足 time=200・1D → intrabarWindow 左ラベル [200, 200+86400)=winEnd 86600。
 const WIN_END = 86600;
+// real_ticks の最終実 tick 秒 t_k。**実データ条件 t_k < winEnd**（足終端より前で最終 tick が着く）を再現し、
+//   残差を assume-away しない（前回は t_k=winEnd に合わせて等価を仮定していた）。是正案 B は settle を全モード
+//   winEnd 統一するため、t_k < winEnd でも real_ticks は winEnd で settle する（t_k では settle しない）。
+const T_K = 80000; // 80000 < 86600（winEnd）。
 
-// /intraday の応答をモード別に返す（url の mode= で分岐）。real_ticks は最終 tick_sec を winEnd に合わせる
-//   ＝「同一 winEnd で settle」する参照系（合成モードとの完成 MP 一致を固定するため）。
+// /intraday の応答をモード別に返す（url の mode= で分岐）。
 function fakeFetch() {
   return async (url) => ({
     ok: true,
@@ -73,7 +76,7 @@ function fakeFetch() {
       const u = String(url);
       if (u.startsWith('/candles')) return { ok: true, candles: CANDLES };
       if (u.startsWith('/intraday')) {
-        if (u.includes('mode=real_ticks')) return { ok: true, m1: [], ticks: [1.6, 1.8, 2.0], tick_secs: [300, 40000, WIN_END] };
+        if (u.includes('mode=real_ticks')) return { ok: true, m1: [], ticks: [1.6, 1.8, 2.0], tick_secs: [300, 40000, T_K] };
         // every_tick / ohlc_1min は M1 を返す（synthM1 / flattenM1 の点列源）。
         return { ok: true, m1: [[1.5, 2.5, 1, 2], [1.7, 2.4, 1.3, 2.1]] };
       }
@@ -150,23 +153,28 @@ test('math shows the completed profile once (no growth) via settleGrowTo(winEnd)
   assert.equal(mp.settledGrid, `grid@${WIN_END}`);
 });
 
-// --- DoD 回帰: 合成モード(every_tick/ohlc_1min)/math の settle == real_ticks の settle（同一 winEnd で完成 MP 一致） ---
-test('regression: settle of synth modes and math equals real_ticks settle at the same winEnd', async () => {
+// --- DoD 回帰（是正案 B・強化）: 実データ条件 t_k < winEnd でも全モードの settle が winEnd で byte 一致 ---
+//   前回は real_ticks の最終 tick を winEnd に合わせて等価を「仮定」していた（残差を assume-away）。今回は
+//   t_k(=80000) < winEnd(=86600) の実条件で real_ticks が t_k ではなく winEnd で settle することを固定する。
+test('regression: with t_k < winEnd, real_ticks/every_tick/ohlc_1min/math all settle at winEnd (byte-identical completed MP)', async () => {
   const rt = await driveMode('real_ticks');
   const et = await driveMode('every_tick');
   const oc = await driveMode('ohlc_1min');
   const mt = await driveMode('math');
-  // real_ticks は最終 tick_sec=winEnd で settle（参照系）。合成 dwell は transient のみで完成 MP に影響しない。
-  assert.equal(rt.settledGrid, `grid@${WIN_END}`, 'real_ticks も winEnd の backend fold へ収束');
-  assert.equal(et.settledGrid, rt.settledGrid, 'every_tick の完成 MP == real_ticks');
-  assert.equal(oc.settledGrid, rt.settledGrid, 'ohlc_1min の完成 MP == real_ticks');
-  assert.equal(mt.settledGrid, rt.settledGrid, 'math の完成 MP == real_ticks');
+  // real_ticks は t_k(<winEnd) では settle せず winEnd で全窓 fold へ収束（是正案 B・完全足として正しい）。
+  assert.ok(rt.calls.grow.includes(WIN_END), 'real_ticks も settleGrowTo(winEnd) で確定');
+  assert.ok(!rt.calls.grow.includes(T_K), 'real_ticks は t_k では settle しない（残差を assume-away しない）');
+  assert.equal(rt.settledGrid, `grid@${WIN_END}`, 'real_ticks の完成 MP は winEnd の backend fold');
+  // 全モードの完成 MP が byte 一致（合成 dwell は transient のみ・settle=truth）。
+  assert.equal(et.settledGrid, rt.settledGrid, 'every_tick の完成 MP == real_ticks（byte 一致）');
+  assert.equal(oc.settledGrid, rt.settledGrid, 'ohlc_1min の完成 MP == real_ticks（byte 一致）');
+  assert.equal(mt.settledGrid, rt.settledGrid, 'math の完成 MP == real_ticks（byte 一致）');
 });
 
-// --- real_ticks は byte 不変（従来通り実 tick_secs で育ち settle） ---
-test('real_ticks still grows on real tick_secs and settles (byte-unchanged path)', async () => {
+// --- real_ticks の transient 成長は不変（実 tick_secs で育つ）・変わるのは settle 収束点のみ ---
+test('real_ticks still grows on real tick_secs (transient growth unchanged); only settle converges to winEnd', async () => {
   const rt = await driveMode('real_ticks');
-  assert.ok(rt.calls.feed.length > 0, 'real_ticks は実 tick_secs で feedTick');
-  assert.deepEqual(rt.calls.feed.map((f) => f[0]), [300, 40000, WIN_END], '実 tick_secs をそのまま供給');
+  assert.ok(rt.calls.feed.length > 0, 'real_ticks は実 tick_secs で feedTick（成長は不変）');
+  assert.deepEqual(rt.calls.feed.map((f) => f[0]), [300, 40000, T_K], '実 tick_secs をそのまま供給（transient byte 不変）');
   assert.equal(rt.calls.settle, 1);
 });
