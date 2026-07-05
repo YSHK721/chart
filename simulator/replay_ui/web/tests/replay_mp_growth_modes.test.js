@@ -153,21 +153,32 @@ test('math shows the completed profile once (no growth) via settleGrowTo(winEnd)
   assert.equal(mp.settledGrid, `grid@${WIN_END}`);
 });
 
+// --- open_only: transient は始値1点のまま（成長なし）・確定形は winEnd で完成足（math と同じ振る舞い） ---
+test('open_only keeps minimal transient (start-only, no growth) yet settles at winEnd (completed bar)', async () => {
+  const mp = await driveMode('open_only');
+  assert.equal(mp.calls.feed.length, 0, 'open_only は feedTick を呼ばない（始値のみ・育ち方 minimal）');
+  assert.equal(mp.calls.settle, 1, '確定形を一度だけ描く');
+  assert.ok(mp.calls.grow.includes(WIN_END), 'secs 空でも settleGrowTo(winEnd) が発火（settle を growth から分離）');
+  assert.equal(mp.settledGrid, `grid@${WIN_END}`, 'open_only の完成 MP は winEnd の backend fold（base のままにしない）');
+});
+
 // --- DoD 回帰（是正案 B・強化）: 実データ条件 t_k < winEnd でも全モードの settle が winEnd で byte 一致 ---
 //   前回は real_ticks の最終 tick を winEnd に合わせて等価を「仮定」していた（残差を assume-away）。今回は
 //   t_k(=80000) < winEnd(=86600) の実条件で real_ticks が t_k ではなく winEnd で settle することを固定する。
-test('regression: with t_k < winEnd, real_ticks/every_tick/ohlc_1min/math all settle at winEnd (byte-identical completed MP)', async () => {
+test('regression: with t_k < winEnd, all 5 modes (real_ticks/every_tick/ohlc_1min/open_only/math) settle at winEnd (byte-identical completed MP)', async () => {
   const rt = await driveMode('real_ticks');
   const et = await driveMode('every_tick');
   const oc = await driveMode('ohlc_1min');
+  const oo = await driveMode('open_only');
   const mt = await driveMode('math');
   // real_ticks は t_k(<winEnd) では settle せず winEnd で全窓 fold へ収束（是正案 B・完全足として正しい）。
   assert.ok(rt.calls.grow.includes(WIN_END), 'real_ticks も settleGrowTo(winEnd) で確定');
   assert.ok(!rt.calls.grow.includes(T_K), 'real_ticks は t_k では settle しない（残差を assume-away しない）');
   assert.equal(rt.settledGrid, `grid@${WIN_END}`, 'real_ticks の完成 MP は winEnd の backend fold');
-  // 全モードの完成 MP が byte 一致（合成 dwell は transient のみ・settle=truth）。
+  // 全 5 モードの完成 MP が byte 一致（合成 dwell/始値のみは transient・settle=truth）。open_only も含む。
   assert.equal(et.settledGrid, rt.settledGrid, 'every_tick の完成 MP == real_ticks（byte 一致）');
   assert.equal(oc.settledGrid, rt.settledGrid, 'ohlc_1min の完成 MP == real_ticks（byte 一致）');
+  assert.equal(oo.settledGrid, rt.settledGrid, 'open_only の完成 MP == real_ticks（byte 一致）');
   assert.equal(mt.settledGrid, rt.settledGrid, 'math の完成 MP == real_ticks（byte 一致）');
 });
 

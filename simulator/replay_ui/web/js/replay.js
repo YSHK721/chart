@@ -398,14 +398,14 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       view.updateForming({ time: cd.time, open: o, high: hi, low: lo, close: fc });
       // MP tick-live: 確定時に当日窓全 tick を winEnd で再畳み込みしてグリッド確定（mp_core 一致点＝
       //   backend base=1 dwell と一致）してから最終 snapshot を強制描画する（throttle 無視）。
-      //   確定形は全モード winEnd 統一（byte 厳密一致）: real_ticks も最終実 tick 秒 t_k(<winEnd) ではなく
-      //   winEnd で settle し、最終実 tick が足終端まで持続する dwell を含める＝完全足として正しく、全モードの
-      //   完成 MP が byte 一致（合成 dwell は transient のみ・settle=truth）。winEnd=足終端=settle 時の now
-      //   （因果・未来リークなし＝次足 tick は半開区間 [dayStart, winEnd) で除外）。secs 空バーは MP skip
-      //   （base 継続）＝settleGrowTo せず settleTick のみ（例: open_only は enterBar base のまま無改修）。
+      //   確定形は MP 有効なら全モード winEnd で fold（growth の secs 有無から分離＝一般化）。real_ticks は
+      //   最終実 tick 秒 t_k(<winEnd) ではなく winEnd で settle し、open_only は secs 空でも settle を発火する
+      //   ＝全モード（real_ticks/every_tick/ohlc_1min/open_only/math）の完成 MP が backend fold(winEnd) で
+      //   byte 一致（合成 dwell/始値のみは transient・settle=truth）。winEnd=足終端=settle 時の now（因果・
+      //   未来リークなし＝次足 tick は半開区間 [dayStart, winEnd) で除外）。actor は空/縮退 forming を非破壊で
+      //   扱う（データ無バーは前回描画保持）。
       if (mpOn()) {
-        const hasSecs = !!(secs && secs.length);
-        if (hasSecs && typeof marketProfile.growTo === 'function') {
+        if (typeof marketProfile.growTo === 'function') {
           const { winEnd } = intrabarWindow({
             timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
           });
