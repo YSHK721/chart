@@ -50,6 +50,13 @@ from market_profile_api.controller.market_profile_forming_controller import (  #
 # 静的配信ルート（web/）。api/ → parents[1]=api → parents[2]=indicator_ui → web。
 _WEB_ROOT = (_API_ROOT.parent / "web").resolve()
 
+# MP frontend は別モジュール（indigators/market_profile/web/js）へ切り出し済み。present は MP を
+# 「利用する側」で、web/js 配下に MP モジュール実体を指す symlink を持つ。resolve() 後の実パスは
+# MP モジュールの js/ サブツリーへ抜けるため、配信許可根を web/ ∪ market_profile/web/js の
+# dual-root（is_relative_to 境界一致）へ拡張する。許可は js/ サブツリーに限定＝最小権限
+# （build.mjs/package.json/tests 等は露出しない）。パストラバーサルは is_relative_to で封じる。
+_MP_WEB_JS_ROOT = (_API_ROOT.parents[1] / "market_profile" / "web" / "js").resolve()
+
 # POST 本文サイズ上限（§7.3・1 MiB）。超過は 413 で拒否する。
 _MAX_BODY_BYTES = 1 * 1024 * 1024
 
@@ -86,12 +93,15 @@ def _resolve_static(url_path: str) -> Path | None:
     rel = url_path.lstrip("/")
     if rel == "":
         rel = "index.html"
-    # 正規化（``..`` を解決）した上で web/ ルート内かを厳密判定する。
+    # 正規化（``..`` を解決）した上で web/ ルート内かを厳密判定する。symlink は resolve() で
+    #   実体へ解決され、MP モジュール（market_profile/web/js）へ抜ける場合も dual-root の
+    #   is_relative_to 境界一致で許可する（区切り境界単位・CWE-22 封じ）。
     candidate = (_WEB_ROOT / rel).resolve()
-    try:
-        candidate.relative_to(_WEB_ROOT)
-    except ValueError:
-        # ルート外（``..`` 等で外へ抜けた）→ 拒否。
+    if not (
+        candidate.is_relative_to(_WEB_ROOT)
+        or candidate.is_relative_to(_MP_WEB_JS_ROOT)
+    ):
+        # 両ルート外（``..`` 等で外へ抜けた）→ 拒否。
         return None
     if not candidate.is_file():
         return None

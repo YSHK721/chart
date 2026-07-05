@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/market_profile_forming_client.js
+../../../../../../indigators/market_profile/web/js/adapter/front/market_profile_forming_client.js

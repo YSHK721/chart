@@ -275,11 +275,19 @@ def make_handler(app: ReplayApp):
             #   shared_js_root（=indicator_ui/web）全体を許可すると build.mjs/package.json/data/tests/
             #   node_modules/prototype 等まで配信面に露出するため、資産3サブツリーだけを許可根にする。
             #   symlink 先（indicator_ui/web/{js,css,vendor}/…）は該当サブツリー配下で許可される。
+            #   MP frontend は別モジュール（indigators/market_profile/web/js）へ切り出し済みで、
+            #   replay の js/ 配下 symlink が MP モジュールを指す。resolve() 後は market_profile/web/js
+            #   配下へ抜けるため、当該 js サブツリーのみを許可根に追加する（最小権限）。
+            _mp_web_js = (
+                app.shared_js_root.parents[1] / "market_profile" / "web" / "js"
+                if app.shared_js_root else None
+            )
             allowed = (
                 app.web_dir,
                 app.shared_js_root / "js" if app.shared_js_root else None,
                 app.shared_js_root / "css" if app.shared_js_root else None,
                 app.shared_js_root / "vendor" if app.shared_js_root else None,
+                _mp_web_js,
             )
             # replay web_dir 優先。web_dir は web 根（index.html + js/ を含む）で URL の /js/ 接頭辞込みで解決。
             fp = self._resolve_under(app.web_dir, rel, allowed)

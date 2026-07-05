@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/domain/market_profile_dwell_accumulator.js
+../../../../../indigators/market_profile/web/js/domain/market_profile_dwell_accumulator.js
