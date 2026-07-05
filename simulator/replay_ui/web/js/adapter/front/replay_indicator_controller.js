@@ -111,13 +111,19 @@ export class ReplayIndicatorController extends IndicatorController {
       if (typeof this._marketProfile.setParams === 'function') {
         this._marketProfile.setParams(this._mpParams(params));
       }
-      const isTicklive = typeof this._marketProfile.isTicklive === 'function'
-        && this._marketProfile.isTicklive();
-      if (isTicklive && this._untilTime != null
+      // Phase5（統一成長）: reveal は常に成長状態（growing=true）。setParams（mode 遷移で growing リセット）の
+      //   後に growing を再適用し、mode を維持したまま成長軸を確定する（present の _applyMpGrowth と同型）。
+      //   mpGrowthResolver（composition root で ()=>true 注入）未注入時は no-op（byte 不変）。
+      this._applyMpGrowth();
+      // 成長軸ゲート（isGrowingPush＝normal/replay+growing）で push 系（enterBar）へ、sessions/非成長は
+      //   refresh へ振り分ける（Phase5: 旧 isTicklive() 表示モードゲートから成長軸へ移行）。
+      const push = typeof this._marketProfile.isGrowingPush === 'function'
+        && this._marketProfile.isGrowingPush();
+      if (push && this._untilTime != null
           && typeof this._marketProfile.enterBar === 'function') {
-        await this._marketProfile.enterBar(this._untilTime); // ticklive: base 取り直し（push 系）。
+        await this._marketProfile.enterBar(this._untilTime); // push 成長: base 取り直し（現在バー T）。
       } else if (typeof this._marketProfile.refresh === 'function') {
-        await this._marketProfile.refresh(); // normal/sessions/replay: as-of-T 再取得（因果）。
+        await this._marketProfile.refresh(); // sessions/非成長: as-of-T 再取得（因果）。
       }
     }
     this._persistAll();

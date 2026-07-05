@@ -312,3 +312,64 @@ test('end-to-end with a real DwellAccumulator: onLiveTick draws a real snapshot'
   // tick0(1005) dwell=60（1704074520-1704074460）→ bin0。末尾 tick は dwell 0。
   assert.equal(drawn.bins[0].tpo, 60);
 });
+
+// ===========================================================================
+// Model A 直交化（Phase 2）: 成長は表示モードから独立し applyGrowthState({growing}) の
+//   単一信号で駆動する。mode='normal'（非 ticklive）でも growing=true なら成長エンジンが
+//   forming を起動し（FOLLOW+normal 成長＝CP-5）、growing=false なら onLiveTick は refresh へ委譲する。
+//   これが「表示モード×成長状態の直交化」の実証（present #2 FOLLOW 成長の非退行契約）。
+// ===========================================================================
+
+test("applyGrowthState({growing:true}) drives forming growth even in mode='normal' (FOLLOW+normal 成長)", async () => {
+  // Arrange: 表示モードは normal（非 ticklive）。forming client / accumulator を注入。
+  const forming = fakeFormingClient([BASE_FULL]);
+  const factory = fakeAccumulatorFactory();
+  const { actor, primitive } = makeActor({ formingClient: forming, makeAccumulator: factory.make });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'normal' }); // 表示モード normal（ticklive にしない）。
+  assert.equal(actor.isTicklive(), false, '前提: mode=normal は ticklive ではない');
+  forming.calls.length = 0;
+  // Act: growing 信号のみで成長を ON にする（mode は normal のまま）。
+  actor.applyGrowthState({ growing: true });
+  await actor.onLiveTick();
+  // Assert: forming エンドポイントが叩かれ（成長エンジン起動）、snapshot が primitive へ反映される。
+  assert.ok(forming.calls.length >= 1, 'growing=true は mode=normal でも forming を起動する（直交化）');
+  assert.equal(factory.created.length, 1, 'accumulator を init（_enterTicklive 経路）');
+  const drawn = primitive.profiles.at(-1);
+  assert.ok(drawn && drawn._snap === true, 'snapshot が描画される');
+});
+
+test('applyGrowthState({growing:false}) reverts growth: onLiveTick delegates to refresh (static)', async () => {
+  // Arrange: normal + growing=true で成長させた後、growing=false へ（ANALYSIS 相当）。
+  const forming = fakeFormingClient([BASE_FULL, BASE_FULL]);
+  const factory = fakeAccumulatorFactory();
+  const { actor, client } = makeActor({ formingClient: forming, makeAccumulator: factory.make });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'normal' });
+  actor.applyGrowthState({ growing: true });
+  await actor.onLiveTick();       // 成長（forming）。
+  const formingBefore = forming.calls.length;
+  const clientBefore = client.calls.length;
+  // Act: growing OFF（static 復帰）。
+  actor.applyGrowthState({ growing: false });
+  await actor.onLiveTick();
+  // Assert: onLiveTick は /market_profile refresh へ委譲し、forming を追加で叩かない（成長停止）。
+  assert.equal(forming.calls.length, formingBefore, 'growing=false は forming を叩かない（成長停止）');
+  assert.equal(client.calls.length, clientBefore + 1, 'onLiveTick は refresh(/market_profile)へ委譲する');
+});
+
+test('applyGrowthState is idempotent for the same state (no accumulator reset on repeat growing=true)', async () => {
+  // Arrange
+  const forming = fakeFormingClient([BASE_FULL, BASE_FULL]);
+  const factory = fakeAccumulatorFactory();
+  const { actor } = makeActor({ formingClient: forming, makeAccumulator: factory.make });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'normal' });
+  actor.applyGrowthState({ growing: true });
+  await actor.onLiveTick(); // _enterTicklive → accumulator #1。
+  // Act: 同状態（growing:true）を再適用しても累積器を捨てない（冪等）。
+  actor.applyGrowthState({ growing: true });
+  await actor.onLiveTick(); // 尾部 addTick（base=0）＝再 enter しない。
+  // Assert: accumulator は 1 つのまま（同状態再適用でリセットされない）。
+  assert.equal(factory.created.length, 1, '同状態 growing=true 再適用は accumulator を作り直さない（冪等）');
+});

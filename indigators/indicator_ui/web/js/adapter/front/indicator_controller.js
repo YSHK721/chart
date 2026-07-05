@@ -35,7 +35,7 @@ export class IndicatorController {
   constructor({
     catalog, compute, persistence, renderer, document: doc = null, mode = 'a',
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
-    marketProfile = null, mpModeResolver = null,
+    marketProfile = null, mpModeResolver = null, mpGrowthResolver = null,
   }) {
     this._catalog = catalog;
     this._compute = compute;
@@ -55,6 +55,10 @@ export class IndicatorController {
     //   注入時のみ MP へ渡す mode を実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）へ解決する。
     //   未注入（連動なし＝A方式・MP 不在・連動未配線）は mode をそのまま渡す＝byte 不変。
     this._mpModeResolver = typeof mpModeResolver === 'function' ? mpModeResolver : null;
+    // Model A 直交化: MP 成長状態の解決役（present 固有・任意注入）。()->boolean（FOLLOW=true / ANALYSIS=false）。
+    //   注入時のみ MP へ growing 信号（applyGrowthState）を適用し、growing 時のみ onLiveTick で成長させる。
+    //   未注入（連動なし＝A方式・MP 不在・連動未配線）は growing を適用しない＝byte 不変。
+    this._mpGrowthResolver = typeof mpGrowthResolver === 'function' ? mpGrowthResolver : null;
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
     // 時間足（§チャート表示時間選択・1 分足原子から resample）。compute/candles に伝搬する。
@@ -211,9 +215,11 @@ export class IndicatorController {
   }
 
   // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
-  //   ライブ連動（mpModeResolver 注入時）は mode を実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）へ
-  //   解決してから渡す。解決役は同時に userMode（gear 選択）を記憶する。mode 未指定（旧インスタンス）は
-  //   解決しない（actor 既定＝通常）。未注入時は _mpParams の結果をそのまま渡す＝byte 不変（連動なし）。
+  //   ライブ連動（mpModeResolver 注入時）は mode を選択表示モード（gear 記憶／未選択は既定 normal）へ解決してから
+  //   渡す（'ticklive' 置換はしない＝直交化）。解決役は同時に userMode（gear 選択）を記憶する。mode 未指定
+  //   （旧インスタンス）は解決しない（actor 既定＝通常）。未注入時は _mpParams の結果をそのまま渡す＝byte 不変。
+  //   さらに growth 解決役（mpGrowthResolver 注入時）は setParams 後に growing 信号（applyGrowthState）を適用する。
+  //   FOLLOW=growing=true（成長 ON）／ANALYSIS=false（static）。未注入時は applyGrowthState を呼ばない＝byte 不変。
   //   marketProfile 未注入時は no-op（呼び出し側の guard と二重防御）。
   _applyMpParams(p) {
     if (!this._marketProfile) {
@@ -224,10 +230,25 @@ export class IndicatorController {
       params.mode = this._mpModeResolver(params.mode);
     }
     this._marketProfile.setParams(params);
+    this._applyMpGrowth();
+  }
+
+  // 直交化: 現在の成長状態（mpGrowthResolver）を MP アクターへ growing 信号として適用する。
+  //   setParams（mode 遷移で _exitTicklive→growing リセット）の後に呼び、mode を維持したまま growing を確定する。
+  //   解決役未注入 or actor が applyGrowthState 非所持なら no-op（byte 不変）。返り値 growing を呼び出し側が使う。
+  _applyMpGrowth() {
+    if (!this._mpGrowthResolver || !this._marketProfile) {
+      return false;
+    }
+    const growing = !!this._mpGrowthResolver();
+    if (typeof this._marketProfile.applyGrowthState === 'function') {
+      this._marketProfile.applyGrowthState({ growing });
+    }
+    return growing;
   }
 
   // ライブ連動: チャート FOLLOW/ANALYSIS 遷移時に、現在表示中 MP の実効モードを再適用する（present 固有）。
-  //   MpLiveModeCoordinator.onLiveStateChange → reapply として配線される。連動未配線（mpModeResolver 未注入）
+  //   GrowthCoordinator.onLiveStateChange → reapply として配線される。連動未配線（mpModeResolver 未注入）
   //   時は呼ばれない設計だが、MP 不在/無効/未表示時も自己 guard で no-op（副作用なし）。
   //   実効モードは resolver(null)（記憶更新なし・実効解決のみ）で強制し、保存 params（bins/va/src/range）は
   //   維持したまま mode だけ差し替えて refresh する（既存 setParams→refresh 経路を再利用・actor 不変）。
@@ -245,16 +266,14 @@ export class IndicatorController {
       return; // 表示中 MP インスタンスが無い。
     }
     const params = this._mpParams(this._paramsObject(inst.params));
-    params.mode = this._mpModeResolver(null); // 実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）を強制。
+    params.mode = this._mpModeResolver(null); // 選択表示モード（gear 記憶／未選択は既定）を維持（'ticklive' 置換なし）。
     this._marketProfile.setParams(params);
-    // ticklive-entry の一致（E2E バグ修正）: present の ticklive は forming を onLiveTick（→_enterTicklive）で
-    //   取得する。live loop(recomputeAllApplied)/初期 add/gear の ticklive-entry と同一経路。refresh は
-    //   /market_profile の base 累積を描くだけで forming を発火しないため、ticklive では onLiveTick を呼ぶ。
-    //   非 ticklive（normal/replay/sessions）は従来どおり refresh で選択モードを反映する。
-    //   isTicklive()（setParams({mode:'ticklive'}) 後に true）で分岐する。揃える先は live-loop
-    //   recomputeAllApplied の onLiveTick 経路（present gear は _untilTime==null で refresh に落ちるため別）。
-    if (typeof this._marketProfile.isTicklive === 'function' && this._marketProfile.isTicklive()
-        && typeof this._marketProfile.onLiveTick === 'function') {
+    // 直交化: mode を維持したまま growing だけをトグルする（applyGrowthState）。FOLLOW=growing=true / ANALYSIS=false。
+    const growing = this._applyMpGrowth();
+    // growing 時のみ成長エンジンを起動する。present の成長は forming を onLiveTick（→_enterTicklive）で取得する
+    //   （live loop(recomputeAllApplied)/初期 add と同一経路）。refresh は /market_profile の base 累積を描くだけで
+    //   forming を発火しないため、growing では onLiveTick を呼ぶ。非成長（static＝ANALYSIS）は refresh で選択モードを反映。
+    if (growing && typeof this._marketProfile.onLiveTick === 'function') {
       await this._marketProfile.onLiveTick();
     } else if (typeof this._marketProfile.refresh === 'function') {
       await this._marketProfile.refresh();
@@ -406,12 +425,13 @@ export class IndicatorController {
       this._state = this._withParams(this._state, inst.instanceId, values);
       if (this._marketProfile) {
         this._applyMpParams(values);
-        // [reveal seam] reveal（replay）かつ **ticklive** のときだけ現在バー T で enterBar（forming push で
-        //   base 取り直し）。normal/sessions/replay は enterBar が自己ガード no-op のため refresh(as-of-T)
-        //   へ落とす（mode-aware）。present は enterBar 非所持ゆえ常に refresh＝従来どおり（byte 挙動不変）。
+        // [reveal seam] reveal（replay）かつ **push 成長中**（isGrowingPush＝growing かつ非 sessions）のときだけ
+        //   現在バー T で enterBar（forming push で base 取り直し）。sessions+growing / 非成長は refresh(as-of-T)
+        //   へ落とす（成長軸 aware）。present は _untilTime 未設定ゆえ常に refresh＝従来どおり（byte 挙動不変）。
+        //   Phase5: 旧 isTicklive()（表示モード）ゲートから isGrowingPush()（成長軸）へ移行（ticklive 撤去）。
         if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function'
-            && typeof this._marketProfile.isTicklive === 'function'
-            && this._marketProfile.isTicklive()) {
+            && typeof this._marketProfile.isGrowingPush === 'function'
+            && this._marketProfile.isGrowingPush()) {
           await this._marketProfile.enterBar(this._untilTime);
         } else if (typeof this._marketProfile.refresh === 'function') {
           await this._marketProfile.refresh();

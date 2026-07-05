@@ -21,6 +21,7 @@
 //   保持する（NaN 混入を防ぐ＝既存 fetch null と同じ）。
 
 import { MarketProfileActor } from './market_profile_actor.js';
+import { GrowthWindow } from '../../domain/growth_window.js';
 import { FORMING_MIN_INTERVAL_MS } from '../../replay/timing.js';
 
 // MP-05 presence ガード（present actor と同基準）: base=1 応答の必須フィールド（レンジ/グリッド/base 配列）が
@@ -55,25 +56,41 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     this._gridPriceMax = null;
   }
 
-  // override: ticklive は push（enterBar/feedTick）が駆動するため onLiveTick（pull）を no-op で遮断する
-  //   （pull/push 二重駆動の防止）。非ticklive（normal/sessions/replay）は基底 refresh へ委譲し、
-  //   getContext().to=T が as-seen-at-t として載る（因果・自動駆動）。
+  // override: push 成長中（normal/replay+growing＝isGrowingPush）は enterBar/feedTick が駆動するため
+  //   onLiveTick（pull）を no-op で遮断する（pull/push 二重駆動の防止）。非 push（sessions+growing／非成長）は
+  //   基底 refresh へ委譲し、getContext().to=T が as-seen-at-t として載る（因果・自動駆動）。sessions 成長は
+  //   refresh(to,sessions) が育て（機構A）、非成長は as-of-T 再取得。
+  //   Phase5: ゲートを isTicklive()（表示モード）から isGrowingPush()（成長軸）へ移行（ticklive セグメント撤去）。
   async onLiveTick() {
-    if (this.isTicklive()) {
+    if (this.isGrowingPush()) {
       return undefined; // push が育てる＝pull は駆動しない（二重駆動遮断）。
     }
-    return super.refresh(); // 非ticklive: as-of-T（getContext().to）で再取得（因果）。
+    return super.refresh(); // 非 push: as-of-T（getContext().to）で再取得（因果）。
   }
 
   // override: 基底 forming 引数（{...ctx, ...params, src:'dwell', base, since}）へ now(=getContext().to＝
-  //   因果 T) と from(=当日始まり=floor(now,86400)) を合流する。combined=[当日始まり, now) の古典的
-  //   Market Profile（当日 TPO 形成）。now は引数優先（enterBar が透過する T）、無指定時は getContext().to。
+  //   因果 T) と from（base 累積の下限窓）を合流する。now は引数優先（enterBar が透過する T）、無指定時は
+  //   getContext().to。
+  //   Phase4（86400 隔離）: 旧実装は from=当日始まり(floor(now,86400)) を決め打ちしていた。これを
+  //   GrowthWindow(mode,tf,cursor) へ委譲し隔離する。明示 from（呼び出し側指定）は優先（compat）。未指定時は
+  //   GrowthWindow.from が窓を写像する: normal→null（全期間 base・gate1 承認: replay 再生=全期間累積）、
+  //   sessions→暦日 anchor。ただし sessions 成長は Phase3 で refresh(to) へ倒れ本 forming 経路には到達しない。
+  //   from=null は載せない＝全期間（present の from 省略と一貫）。全時間足の bar-period 成長は backend
+  //   forming_ticks の period_start_unix(now,tf)（tf 依存 formingStart）が担う（reveal 窓 stream.js は不変）。
   _buildFormingArgs({ base, since, now, from } = {}) {
     const args = super._buildFormingArgs({ base, since });
     const effNow = now != null ? now : this._getContext().to;
     if (effNow != null) {
       args.now = effNow;
-      args.from = from != null ? from : Math.floor(effNow / 86400) * 86400;
+      if (from != null) {
+        args.from = from; // 明示指定は温存（compat）。
+      } else {
+        const mode = this._sessions ? 'sessions' : 'normal';
+        const w = GrowthWindow.forCurrent(mode, this._getContext().timeframe, effNow);
+        if (w.from != null) {
+          args.from = w.from; // normal は null＝from 省略（全期間 base）。sessions のみ暦日 anchor。
+        }
+      }
     }
     return args;
   }
@@ -94,14 +111,14 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     return this._rebuildAt(now, false); // skipDegenerateDraw=false（拡張グリッドは描画）。
   }
 
-  // enterBar/growTo の共通実体: base=1/src=dwell/now/from=当日始まり で forming を [当日始まり, now] の
-  //   因果窓で取得 → accumulator を作り直し（rollover/grid 拡張）→ forming.ticks を畳み込み（present 基底
-  //   _enterTicklive と同一 fold semantics）→ _lastSec/レンジ設定 → 描画。取得失敗（null）・base 欠損は
-  //   前回描画を保持（非破壊）。skipDegenerateDraw=true かつ縮退グリッド（tick 0＋[..,+1] レンジ）は描画のみ
-  //   スキップ（init は行い growTo の土台を残す）。
+  // enterBar/growTo の共通実体: base=1/src=dwell/now/from=GrowthWindow(normal→全期間・Phase4) で forming を
+  //   [from, now] の因果窓で取得 → accumulator を作り直し（rollover/grid 拡張）→ forming.ticks を畳み込み
+  //   （present 基底 _enterTicklive と同一 fold semantics）→ _lastSec/レンジ設定 → 描画。取得失敗（null）・
+  //   base 欠損は前回描画を保持（非破壊）。skipDegenerateDraw=true かつ縮退グリッド（tick 0＋[..,+1] レンジ）は
+  //   描画のみスキップ（init は行い growTo の土台を残す）。
   async _rebuildAt(now, skipDegenerateDraw) {
-    if (!this.isTicklive()) {
-      return; // 自己ガード: ticklive 以外では push 駆動しない（既存フック不変）。
+    if (!this.isGrowingPush()) {
+      return; // 自己ガード: push 成長中（normal/replay+growing）以外は push 駆動しない（Phase5: 成長軸ゲート）。
     }
     if (!this._enabled || !this._formingClient || !this._makeAccumulator) {
       return;

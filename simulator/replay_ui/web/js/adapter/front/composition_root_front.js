@@ -158,6 +158,11 @@ export async function bootstrap({
   const controller = new ReplayIndicatorController({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
     timeframe, recentBars, loadCandles,
+    // Phase5（統一成長）: reveal は常に成長状態＝growing=true。旧 'ticklive' 表示モードが担っていた成長
+    //   活性化を成長軸へ移行し、mpGrowthResolver で常時 growing を注入する（setParams 後に _applyMpGrowth が
+    //   適用）。normal/replay+growing は push 成長（enterBar/growTo/feedTick）、sessions+growing は
+    //   refresh(to) 成長（機構A）。mode 解決役は注入しない＝gear 選択モードをそのまま維持（present と同型）。
+    mpGrowthResolver: () => true,
   });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。

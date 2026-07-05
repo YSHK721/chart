@@ -64,21 +64,21 @@ test('catalog: market_profile exposes src ENUM [candle,dwell,m1] default candle 
 // market_profile の表示モード（mode）ENUM segmented トグル。旧 replay/sessions の 2 チェックを
 //   1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合（解像度トグル resmode と同方式）。
 //   既定 'normal'・label '表示モード'・controlType 'segmented'・表示系 group（bins と別）。
-test('catalog: market_profile exposes mode ENUM [normal,replay,sessions,ticklive] default normal as segmented toggle', () => {
+test('catalog: market_profile exposes mode ENUM [normal,replay,sessions] default normal as segmented toggle', () => {
   const d = get('market_profile');
   const mode = paramOf(d, 'mode');
   assert.ok(mode, 'mode param exists');
   assert.equal(mode.type, ParamType.ENUM);
   assert.equal(mode.default, 'normal');
-  // MP-01 是正: ticklive（tick 逐次成長）を 4 つ目の排他モードとして列挙する。これが無いと segmented
-  //   トグルが選択肢を描けず本番 UI から mode:'ticklive' を発行できず _applyMode('ticklive') に到達不能。
-  assert.deepEqual(mode.enumValues, ['normal', 'replay', 'sessions', 'ticklive']);
+  // Phase5（統一成長）: 旧 'ticklive' セグメント（表示選択肢）は撤去。足内 1tick 逐次成長は表示モードでなく
+  //   成長軸（growing 信号）が担う（直交化）＝normal/sessions のいずれでも成長する。ENUM は 3 モード。
+  assert.deepEqual(mode.enumValues, ['normal', 'replay', 'sessions']);
   assert.equal(mode.label, '表示モード');
   assert.equal(mode.controlType, 'segmented');
   assert.equal(mode.enumLabels.normal, '通常');
   assert.equal(mode.enumLabels.replay, 'リプレイ');
   assert.equal(mode.enumLabels.sessions, '日別プロファイル');
-  assert.equal(mode.enumLabels.ticklive, 'Tickライブ');
+  assert.equal(mode.enumLabels.ticklive, undefined, 'ticklive セグメントは撤去（表示選択肢なし）');
   // 表示系 group（計算系 group.calc とは別＝bins と同じ group ではない）。
   assert.notEqual(mode.group, paramOf(d, 'bins').group);
 });

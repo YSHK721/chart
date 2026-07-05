@@ -26,7 +26,7 @@ export class LiveFollowController {
     this._document = document ?? null;
     this._buttonId = buttonId;
     // optional なライブ連動フック（present 固有）。FOLLOW/ANALYSIS 遷移で onLiveStateChange(isFollow) を呼ぶ。
-    //   MP モード協調役（MpLiveModeCoordinator）へ通知して MP 表示モードを ticklive↔選択モードで連動させる。
+    //   成長協調役（GrowthCoordinator）へ通知して MP 成長状態を growing↔static で連動させる（表示モードは維持）。
     //   未注入なら null＝一切呼ばない（既存ライブトグル挙動 byte 不変・MP 不在時も不変）。
     this._onLiveStateChange = typeof onLiveStateChange === 'function' ? onLiveStateChange : null;
     this._mode = MODE_FOLLOW; // 初期 FOLLOW。
@@ -139,7 +139,8 @@ export class LiveFollowController {
       this._renderer.setAnalysisTint(false);
     }
     this._setButtonActive(true);
-    // ライブ連動: FOLLOW 遷移を協調役へ通知（MP を ticklive へ）。未注入は no-op（byte 不変）。
+    // ライブ連動: FOLLOW 遷移を協調役へ通知（MP を成長 ON＝growing=true へ／Phase5: 旧 ticklive モード置換は
+    //   撤廃し成長軸で駆動）。未注入は no-op（byte 不変）。
     this._notifyLiveState(true);
   }
 

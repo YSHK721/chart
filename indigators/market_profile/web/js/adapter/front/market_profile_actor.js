@@ -86,6 +86,12 @@ export class MarketProfileActor {
     this._formingClient = formingClient ?? null;
     this._makeAccumulator = typeof makeAccumulator === 'function' ? makeAccumulator : null;
     this._ticklive = false;       // ticklive モード ON/OFF（既定 OFF＝非増分・後方互換）。
+    // Model A 直交化: 成長状態（growing/static）。成長エンジン（_isIncremental/onLiveTick/_enterTicklive）は
+    //   この _growing で駆動する（表示モードと成長状態の分離）。Phase1 は mode='ticklive' が唯一 _growing=true を
+    //   立てる互換維持（_ticklive とロックステップ＝挙動不変）。Phase2 で mode 非依存の applyGrowthState が
+    //   直接トグルできるようにする（FOLLOW+normal 成長など）。
+    this._growing = false;
+    this._asOf = null;            // 因果基準秒（as-seen-at-t）の布石。present は常にライブ（now）ゆえ未使用。
     this._accumulator = null;     // 現在の DwellAccumulator（null＝未 enter）。
     this._formingStart = null;    // 現在足の formingStart（rollover 検出用）。
     this._lastSec = null;         // 最後に addTick した tick 秒（base=0 尾部 since）。
@@ -189,6 +195,7 @@ export class MarketProfileActor {
       this._sessions = false;
       this._applySessions(null);
       this._ticklive = true;
+      this._growing = true;   // ticklive モード＝成長 ON（Phase1 互換: mode が _growing を立てる）。
       return;
     }
     if (mode === 'sessions') {
@@ -213,14 +220,52 @@ export class MarketProfileActor {
   }
 
   // ticklive 表示中か（MP 有効かつ ticklive トグル ON のときだけ true）。
+  //   Phase5: 'ticklive' は表示選択肢から撤去済（catalog）だが、内部フラグ/機構は grow 軸の互換維持で残す
+  //   （setParams({mode:'ticklive'}) は依然 _applyMode('ticklive') を通り _growing を立てる）。UI からは到達不能。
   isTicklive() {
     return this._enabled && !!this._ticklive;
   }
 
-  // 増分（ticklive）取得が可能か: モード ON かつ formingClient と accumulator factory が注入済み。
-  //   いずれか欠ければ非増分（onLiveTick は refresh へ byte-identical 委譲＝回帰ゼロ）。
+  // Model A 統一成長（Phase5）: 「push 成長中か」の grow 軸判定。MP 有効かつ growing かつ非 sessions
+  //   （normal/replay 表示での足内 push 成長）のとき true。reveal（replay）の push 駆動ゲート
+  //   （enterBar/growTo/feedTick・旧 isTicklive() ゲート）を表示モードから成長軸へ移行するための単一判定。
+  //   sessions は refresh(to) で育てる（機構A）ため push 対象外（!_sessions）。present の pull 成長
+  //   （onLiveTick→forming）は _isIncremental が担い、本判定は replay の push ゲートに用いる。
+  isGrowingPush() {
+    return this._enabled && !!this._growing && !this._sessions;
+  }
+
+  // Model A 直交化: 成長状態を表示モードと独立に設定する単一信号（境界追加・actor ロジックは不変）。
+  //   growing=true で成長エンジン（_isIncremental→onLiveTick/_enterTicklive/forming）を有効化する。
+  //   これにより mode を維持したまま（例: FOLLOW+normal）成長 ON/OFF を切替えられる（present #2 の直交化）。
+  //   asOf は因果基準秒（as-seen-at-t）の布石。present は常にライブ（now）ゆえ未使用（保持のみ）。
+  //   growing=false へ遷移する際は成長エンジンの累積器/尾部を破棄する（static 復帰＝_enterTicklive 再入の初期化）。
+  applyGrowthState({ growing, asOf } = {}) {
+    const next = !!growing;
+    if (asOf !== undefined) {
+      this._asOf = asOf;
+    }
+    if (next === !!this._growing) {
+      return; // 同状態は no-op（冪等）。
+    }
+    this._growing = next;
+    if (!next) {
+      // static 復帰: 累積器/形成足/尾部を破棄（次回 growing=true で _enterTicklive が再取得・再 init）。
+      this._accumulator = null;
+      this._formingStart = null;
+      this._lastSec = null;
+    }
+  }
+
+  // 増分（forming/accumulator）成長が可能か: growing かつ formingClient・accumulator factory 注入済み、
+  //   かつ **sessions モードでない**こと。いずれか欠ければ非増分（onLiveTick は refresh へ委譲＝回帰ゼロ）。
+  //   Model A Phase3（成長経路の分岐）: sessions+growing は forming 単一プロファイル（_enterTicklive→
+  //   setProfile）を sessions 描画へ被せず、refresh(to=cursor, sessions=1) で backend の因果 sessions 分割
+  //   （当日=[session_start,to)・過去日静的）を取得する（review🔵4 の破綻状態を正しく解消）。よって
+  //   _sessions 時は非増分＝refresh 経路へ倒す（accumulator は sessions で使わない＝共有グリッド不整合回避）。
+  //   normal/replay+growing は従来どおり増分（全期間 base + bar-period forming）。
   _isIncremental() {
-    return !!this._ticklive && !!this._formingClient && !!this._makeAccumulator;
+    return !!this._growing && !this._sessions && !!this._formingClient && !!this._makeAccumulator;
   }
 
   // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
@@ -304,6 +349,7 @@ export class MarketProfileActor {
   // ticklive を解除する（累積器破棄・通常経路復帰・冪等）。
   _exitTicklive() {
     this._ticklive = false;
+    this._growing = false;  // モード離脱＝成長 OFF（Phase1 互換: _ticklive とロックステップ）。
     this._accumulator = null;
     this._formingStart = null;
     this._lastSec = null;
