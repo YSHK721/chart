@@ -38,8 +38,13 @@ if str(_API_ROOT) not in sys.path:
 _MP_API_ROOT = _API_ROOT.parents[1] / "market_profile" / "api"
 if str(_MP_API_ROOT) not in sys.path:
     sys.path.insert(0, str(_MP_API_ROOT))
+# dataset 実体は最下層共有 marketdata へ移設済み。standalone 起動（python server.py・PYTHONPATH 無）でも
+# ``from marketdata import dataset`` を解決するため repo 根（api/ → parents[2] = /workspaces/app）を sys.path へ。
+_REPO_ROOT = _API_ROOT.parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from adapter.compute import dataset  # noqa: E402
+from marketdata import dataset  # noqa: E402
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
 from market_profile_api.controller.market_profile_controller import handle_market_profile  # noqa: E402
