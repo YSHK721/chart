@@ -25,6 +25,12 @@
         <button class="tb-interval" data-timeframe="1M" type="button">月</button>
       </div>
       <span class="tb-sep"></span>
+      <!-- ライブ追従トグル（present/B方式）。FOLLOW（点灯）=ライブ更新＋新足で右端追従、
+           ANALYSIS（消灯）=ライブ更新停止＋背景 tint で状態明示。右端離脱で自動 ANALYSIS／復帰で自動 FOLLOW。
+           配線・点灯は composition root の LiveFollowController.install()（B方式のみ）。A方式（file://）は
+           controller 未生成のため disabled のまま非活性。 -->
+      <button id="live-follow-toggle" class="tb-interval" type="button" aria-pressed="false" title="ライブ追従（点灯=ライブ／消灯=分析）" disabled>ライブ</button>
+      <span class="tb-sep"></span>
       <!-- Market Profile 表示トグル（独立アクター・candle 版）。ON でチャート右側に TPO ヒストグラム＋
            POC/VA 線を重畳、OFF で非表示。tb-interval + is-active の既存トグル書式に合わせる。 -->
       <button id="market-profile-toggle" class="tb-interval" type="button" aria-pressed="false" title="Market Profile">MP</button>
