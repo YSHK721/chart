@@ -534,9 +534,9 @@
 - **対策（提案）**: (a) controller 側に public accessor / フック（onApplied 等）を設け private 参照・monkeypatch を解消。(b)(c) 現行 DOM では非到達＝現状維持可。厳密忠実化するなら proto 準拠へ寄せる。
 - **関連**: replay_ui フロント増分（INC-F2）。
 
-## ISSUE-038: indicator_ui — indicator_controller.js(994行) SRP違反（View分離）※要判断・保留
+## ISSUE-038: indicator_ui — indicator_controller.js(994行) SRP違反（View分離）
 - **重大度**: Medium（設計整理・正しさ影響なし。監査は「依存方向違反0・破壊的変更不要」と明言）
-- **ステータス**: OPEN（大型分離はリスク>価値の見立てで**保留**・着手はユーザー判断待ち）
+- **ステータス**: RESOLVED（2026-07-05・ユーザー承認で実施）。純DOM描画を `IndicatorLegendView`（adapter/front・replay へ symlink 共有）へ抽出、controller は view-model 組立＋コールバック配線のみ委譲。ハンドラ/状態/永続化/reveal・gear seam は残置（未変更・diff で確認）。回帰ゼロ: present web 622/624（既知2fail除外・新規21）・replay web 162/162・api 486・replay py 144。code-review 承認可（🔴0・byte不変/subclass温存を実証）。両アプリのブラウザ目視合格（present 凡例/ダイアログ/指標+MP描画・replay MP4モード・console0）。コミット 55494ef+b59df20。
 - **検出**: architecture-executor クリーンアーキ徹底監査（🔴-1・2026-07-05）。
 - **背景**: `indigators/indicator_ui/web/js/adapter/front/indicator_controller.js` に変更軸の異なる3責務が同居＝(1)計算オーケストレーション(`applyIndicator`/`recomputeInstance`/`recomputeAllApplied`/`setTimeframe`) (2)View描画(`bind`:787/`_renderLegend`:893/`_renderDialogList`:865/`_openDialog`:838/`_onGear`:945/`_onGearMarketProfile`:339) (3)永続化(`_persistAll`/`restore`/`_toJson`)。**単一ソース共有**（present 直接＋simulator/replay_ui が symlink 共有＋`ReplayIndicatorController` が `_mpParams`/`removeInstance`/`recomputeInstance`/`_recomputeMarketProfile` override・`_onGear`/`_onGearMarketProfile` 継承）のため、View分離は **19指標＋MP4モード＋replay の両アプリ同時回帰リスク大**。特に `_onGearMarketProfile` の reveal seam（`_untilTime`＋`enterBar`＋`isTicklive()` ガード・直近修正済）は View と controller 状態に跨り分離困難。
 - **対策（提案）**: 純DOM描画（凡例/ダイアログ構築）を `IndicatorLegendView`(adapter/front) へ抽出し、ハンドラ(`_onGear`/`_onGearMarketProfile`)・状態・永続化・orchestration・subclass override は controller に温存。**回帰ゲート必須**（present web ≥601/603＝既知2fail除外・replay web 162/162・両アプリboot・MP4モード/replay目視・present byte不変）。**中間案**＝最も純粋なDOMヘルパのみ小さく抽出（低リスク・効果限定）。**見送り案**＝working維持・本Issueで既知化。

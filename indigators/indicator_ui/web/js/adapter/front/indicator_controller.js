@@ -21,6 +21,7 @@ import {
   deserialize,
 } from '../../usecase/facade.js';
 import { PropertiesDialog } from './properties_dialog.js';
+import { IndicatorLegendView } from './indicator_legend_view.js';
 
 // 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
 //   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
@@ -41,6 +42,10 @@ export class IndicatorController {
     this._persistence = persistence;
     this._renderer = renderer;
     this._document = doc;
+    // 凡例/お気に入り/ダイアログリストの純 DOM 構築を担う View（ISSUE-038・SRP 是正）。
+    //   controller は行の view-model＋コールバックを注入するだけ。doc=null でも構築でき、
+    //   その場合 View 各メソッドは要素不在で no-op（node 単体テスト互換）。
+    this._legendView = new IndicatorLegendView({ document: doc });
     this._mode = mode;
     // Market Profile アクター（任意注入）。computeId==='market_profile' の指標を
     //   /compute 経由でなく本アクター（GET /market_profile → primitive）へ委譲する。
@@ -835,9 +840,11 @@ export class IndicatorController {
     this._renderLegend();
   }
 
+  // ダイアログ開: DOM の is-open トグルは View へ委譲。uiState 更新・リスト再描画は controller に残す
+  //   （dialog 要素在席時のみ状態を進める従来ガードを保持＝byte 挙動不変）。
   _openDialog() {
     if (this._el?.dialog) {
-      this._el.dialog.classList.add('is-open');
+      this._legendView.setDialogOpen(true);
       this._state.uiState = { ...this._state.uiState, dialogOpen: true };
       this._renderDialogList();
     }
@@ -845,15 +852,14 @@ export class IndicatorController {
 
   _closeDialog() {
     if (this._el?.dialog) {
-      this._el.dialog.classList.remove('is-open');
+      this._legendView.setDialogOpen(false);
       this._state.uiState = { ...this._state.uiState, dialogOpen: false };
     }
   }
 
+  // グループ内 active トグル（純 DOM）は View へ委譲する（bind の tab/category 配線から呼ばれる）。
   _setActive(group, active) {
-    for (const el of group ?? []) {
-      el.classList.toggle('is-active', el === active);
-    }
+    this._legendView.setActive(group, active);
   }
 
   _label(def) {
@@ -862,80 +868,45 @@ export class IndicatorController {
     return k.includes('.') ? k.split('.').pop() : k;
   }
 
+  // ダイアログの指標リストを再描画する。行の view-model（label/category/favorite）＋コールバックを
+  //   組み立て、DOM 構築は IndicatorLegendView へ委譲する（ISSUE-038・SRP 是正）。挙動不変:
+  //   お気に入り絞り込み（listForView）・star の stopPropagation・row クリックの apply+close を保持。
   _renderDialogList() {
-    const doc = this._document;
-    if (!doc || !this._el?.list) {
-      return;
-    }
     const favorites = this._state.favorites;
     const defs = listForView({ ...this._filter, favorites });
-    const list = this._el.list;
-    list.innerHTML = '';
-    for (const def of defs) {
-      const row = doc.createElement('div');
-      row.className = 'ind-row';
-      const star = doc.createElement('button');
-      star.className = 'ind-fav' + (favorites.includes(def.id) ? ' is-on' : '');
-      star.textContent = favorites.includes(def.id) ? '★' : '☆';
-      star.addEventListener('click', (ev) => { ev.stopPropagation(); this.toggleFavorite(def.id); });
-      const name = doc.createElement('span');
-      name.className = 'ind-name';
-      name.textContent = this._label(def);
-      const cat = doc.createElement('span');
-      cat.className = 'ind-cat';
-      cat.textContent = (def.category?.nameKey ?? '').split('.').pop();
-      row.append(star, name, cat);
-      row.addEventListener('click', () => { this.applyIndicator(def.id, this._defaultVariant(def)); this._closeDialog(); });
-      list.append(row);
-    }
+    const rows = defs.map((def) => ({
+      label: this._label(def),
+      category: (def.category?.nameKey ?? '').split('.').pop(),
+      favorite: favorites.includes(def.id),
+      onToggleFavorite: () => this.toggleFavorite(def.id),
+      onPick: () => { this.applyIndicator(def.id, this._defaultVariant(def)); this._closeDialog(); },
+    }));
+    this._legendView.renderDialogList(rows);
   }
 
+  // 凡例を再描画する。行の view-model（label/visible）＋コールバックを組み立て、DOM 構築は
+  //   IndicatorLegendView へ委譲する（ISSUE-038・SRP 是正）。挙動不変:
+  //   - label は def 解決失敗時 indicatorId フォールバック＋非 default variant を括弧付与。
+  //   - MP は renderer に系列を持たないため eye/close を MP 専用ハンドラへ分岐する（isMp）。
+  //     gear は _onGear 内部で MP 分岐する。これらのハンドラ本体（reveal/gear seam を含む）は
+  //     controller に残し、subclass の override（toggleVisible/removeInstance 等）を温存する。
   _renderLegend() {
-    const doc = this._document;
-    if (!doc || !this._el?.legend) {
-      return;
-    }
-    const legend = this._el.legend;
-    legend.innerHTML = '';
-    for (const inst of this._state.applied) {
+    const rows = this._state.applied.map((inst) => {
       const def = this._catalog.get(inst.indicatorId);
-      const row = doc.createElement('div');
-      row.className = 'legend-row';
-
-      const label = doc.createElement('span');
-      label.className = 'legend-label';
-      label.textContent = `${def ? this._label(def) : inst.indicatorId}${inst.variant && inst.variant !== 'default' ? ' (' + inst.variant + ')' : ''}`;
-
-      // MP は state.applied に載るが renderer に系列を持たないため、eye/close を
-      //   MP 専用ハンドラ（setEnabled / setEnabled(false)+detach）へ分岐する。gear は
-      //   _onGear 内部で MP 分岐する。
       const isMp = this._isMarketProfile(def);
-
-      const eye = doc.createElement('button');
-      eye.className = 'legend-eye';
-      eye.title = inst.visible ? '非表示にする' : '表示する';
-      eye.textContent = inst.visible ? '👁' : '🙈';
-      eye.addEventListener('click', () => (isMp
-        ? this._toggleMarketProfileVisible(inst)
-        : this.toggleVisible(inst.instanceId)));
-
-      const gear = doc.createElement('button');
-      gear.className = 'legend-gear';
-      gear.title = '設定';
-      gear.textContent = '⚙';
-      gear.addEventListener('click', () => this._onGear(inst, def));
-
-      const close = doc.createElement('button');
-      close.className = 'legend-remove';
-      close.title = '削除';
-      close.textContent = '✕';
-      close.addEventListener('click', () => (isMp
-        ? this._removeMarketProfile(inst)
-        : this.removeInstance(inst.instanceId)));
-
-      row.append(label, eye, gear, close);
-      legend.append(row);
-    }
+      return {
+        label: `${def ? this._label(def) : inst.indicatorId}${inst.variant && inst.variant !== 'default' ? ' (' + inst.variant + ')' : ''}`,
+        visible: inst.visible,
+        onEye: () => (isMp
+          ? this._toggleMarketProfileVisible(inst)
+          : this.toggleVisible(inst.instanceId)),
+        onGear: () => this._onGear(inst, def),
+        onClose: () => (isMp
+          ? this._removeMarketProfile(inst)
+          : this.removeInstance(inst.instanceId)),
+      };
+    });
+    this._legendView.renderLegend(rows);
   }
 
   // 設定: 歯車クリックでプロパティダイアログを開く（§7.1）。
