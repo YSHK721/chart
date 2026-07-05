@@ -247,7 +247,15 @@ export class IndicatorController {
     const params = this._mpParams(this._paramsObject(inst.params));
     params.mode = this._mpModeResolver(null); // 実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）を強制。
     this._marketProfile.setParams(params);
-    if (typeof this._marketProfile.refresh === 'function') {
+    // ticklive-entry の一致（E2E バグ修正）: present の ticklive は forming を onLiveTick（→_enterTicklive）で
+    //   取得する。live loop(recomputeAllApplied)/初期 add/gear の ticklive-entry と同一経路。refresh は
+    //   /market_profile の base 累積を描くだけで forming を発火しないため、ticklive では onLiveTick を呼ぶ。
+    //   非 ticklive（normal/replay/sessions）は従来どおり refresh で選択モードを反映する。
+    //   isTicklive()（setParams({mode:'ticklive'}) 後に true）で分岐し、gear applyParams の isTicklive 分岐に揃える。
+    if (typeof this._marketProfile.isTicklive === 'function' && this._marketProfile.isTicklive()
+        && typeof this._marketProfile.onLiveTick === 'function') {
+      await this._marketProfile.onLiveTick();
+    } else if (typeof this._marketProfile.refresh === 'function') {
       await this._marketProfile.refresh();
     }
   }
