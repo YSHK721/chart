@@ -50,6 +50,7 @@ const MODULE_ORDER = [
   'js/adapter/front/market_profile_primitive.js',
   'js/adapter/front/market_profile_actor.js',
   'js/adapter/front/market_profile_replay_bar.js',
+  'js/adapter/front/chart_interaction_controller.js',
   'js/adapter/front/composition_root_front.js',
 ];
 
