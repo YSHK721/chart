@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from adapter.compute import ERROR_STATUS, ComputeError, IndicatorComputeAdapter
-from adapter.compute import dataset
+from marketdata import dataset  # dataset 実体は最下層共有 marketdata へ移設済み（peer 依存）
 from adapter.compute import forming_bar as forming_bar_mod
 from adapter.compute.latest_dispatch import full_compute, latest_compute
 
