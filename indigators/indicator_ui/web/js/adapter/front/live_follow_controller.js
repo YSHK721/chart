@@ -20,11 +20,15 @@ const MODE_FOLLOW = 'FOLLOW';
 const MODE_ANALYSIS = 'ANALYSIS';
 
 export class LiveFollowController {
-  constructor({ liveUpdater, renderer, document, buttonId, mode }) {
+  constructor({ liveUpdater, renderer, document, buttonId, mode, onLiveStateChange } = {}) {
     this._liveUpdater = liveUpdater ?? null;
     this._renderer = renderer ?? null;
     this._document = document ?? null;
     this._buttonId = buttonId;
+    // optional なライブ連動フック（present 固有）。FOLLOW/ANALYSIS 遷移で onLiveStateChange(isFollow) を呼ぶ。
+    //   MP モード協調役（MpLiveModeCoordinator）へ通知して MP 表示モードを ticklive↔選択モードで連動させる。
+    //   未注入なら null＝一切呼ばない（既存ライブトグル挙動 byte 不変・MP 不在時も不変）。
+    this._onLiveStateChange = typeof onLiveStateChange === 'function' ? onLiveStateChange : null;
     this._mode = MODE_FOLLOW; // 初期 FOLLOW。
     this._served = mode === 'b'; // B方式のみ活性。
     this._button = null;
@@ -135,6 +139,8 @@ export class LiveFollowController {
       this._renderer.setAnalysisTint(false);
     }
     this._setButtonActive(true);
+    // ライブ連動: FOLLOW 遷移を協調役へ通知（MP を ticklive へ）。未注入は no-op（byte 不変）。
+    this._notifyLiveState(true);
   }
 
   // ANALYSIS を適用: LiveUpdater 停止＋背景 tint＋ボタン消灯（サーバ watch は継続）。
@@ -149,6 +155,21 @@ export class LiveFollowController {
       this._renderer.setAnalysisTint(true);
     }
     this._setButtonActive(false);
+    // ライブ連動: ANALYSIS 遷移を協調役へ通知（MP を選択モードへ）。未注入は no-op（byte 不変）。
+    this._notifyLiveState(false);
+  }
+
+  // ライブ連動フックの呼び出し（未注入は no-op）。フック内例外が本 controller の状態機械へ波及しないよう
+  //   防御捕捉する（連動失敗でライブトグル本体が壊れない＝回帰ゼロ）。
+  _notifyLiveState(isFollow) {
+    if (!this._onLiveStateChange) {
+      return;
+    }
+    try {
+      this._onLiveStateChange(isFollow);
+    } catch {
+      // 連動側の失敗はライブトグルの状態遷移に影響させない（防御）。
+    }
   }
 
   // ボタン点灯/消灯（既存トグル書式 is-active + aria-pressed に合わせる）。ボタン不在は no-op。

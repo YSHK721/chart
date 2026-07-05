@@ -53,6 +53,7 @@ const MODULE_ORDER = [
   'js/adapter/front/market_profile_replay_bar.js',
   'js/adapter/front/chart_interaction_controller.js',
   'js/adapter/front/live_follow_controller.js',
+  'js/adapter/front/mp_live_mode_coordinator.js',
   'js/adapter/front/composition_root_front.js',
 ];
 

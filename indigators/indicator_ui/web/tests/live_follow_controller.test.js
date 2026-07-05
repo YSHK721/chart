@@ -324,6 +324,69 @@ test('回帰: 自動ON(no-op scroll)後の genuine パン離脱で auto-off が�
   assert.equal(controller.mode, 'ANALYSIS', 'no-op scroll 経由の自動ON後も auto-off が発火する（suppression stuck 禁止）');
 });
 
+// --- ライブ連動フック onLiveStateChange（present 固有・MP モード協調役への通知）-------------------
+//   optional な連動フック。_applyFollow（→FOLLOW=true）/_applyAnalysis（→ANALYSIS=false）遷移で呼ぶ。
+//   未注入は no-op＝既存ライブトグル挙動 byte 不変（上の全既存テストが未注入で不変を担保）。
+
+test('連動フック: FOLLOW→ANALYSIS（auto-off）で onLiveStateChange(false) を呼ぶ', () => {
+  const states = [];
+  const liveUpdater = fakeLiveUpdater();
+  const renderer = fakeRenderer();
+  const button = fakeButton();
+  const controller = new LiveFollowController({
+    liveUpdater, renderer, document: fakeDocument(button), buttonId: 'live-follow-toggle', mode: 'b',
+    onLiveStateChange: (isFollow) => states.push(isFollow),
+  });
+  controller.install();
+
+  renderer.fireRange(false); // パン離脱 → ANALYSIS
+
+  assert.equal(controller.mode, 'ANALYSIS');
+  assert.deepEqual(states, [false], 'ANALYSIS 遷移で false を 1 回通知');
+});
+
+test('連動フック: ANALYSIS→FOLLOW（auto-on）で onLiveStateChange(true) を呼ぶ', () => {
+  const states = [];
+  const liveUpdater = fakeLiveUpdater();
+  const renderer = fakeRenderer();
+  const button = fakeButton();
+  const controller = new LiveFollowController({
+    liveUpdater, renderer, document: fakeDocument(button), buttonId: 'live-follow-toggle', mode: 'b',
+    onLiveStateChange: (isFollow) => states.push(isFollow),
+  });
+  controller.install();
+  controller.toggleManual(); // → ANALYSIS（false 通知）
+
+  renderer.fireRange(true); // 右端復帰 → FOLLOW（true 通知）
+
+  assert.equal(controller.mode, 'FOLLOW');
+  assert.deepEqual(states, [false, true], '遷移ごとに false→true を通知');
+});
+
+test('連動フック: 手動 toggle 往復でも遷移ごとに通知する', () => {
+  const states = [];
+  const controller = new LiveFollowController({
+    liveUpdater: fakeLiveUpdater(), renderer: fakeRenderer(),
+    document: fakeDocument(fakeButton()), buttonId: 'live-follow-toggle', mode: 'b',
+    onLiveStateChange: (isFollow) => states.push(isFollow),
+  });
+  controller.install();
+
+  controller.toggleManual(); // FOLLOW→ANALYSIS
+  controller.toggleManual(); // ANALYSIS→FOLLOW
+
+  assert.deepEqual(states, [false, true], '各手動遷移で通知');
+});
+
+test('連動フック未注入: 遷移しても例外を出さない（byte 不変・no-op）', () => {
+  const { controller, renderer } = setup(); // onLiveStateChange 未注入
+  controller.install();
+
+  assert.doesNotThrow(() => renderer.fireRange(false));
+  assert.doesNotThrow(() => renderer.fireRange(true));
+  assert.equal(controller.mode, 'FOLLOW');
+});
+
 test('回帰: 右端での手動 re-FOLLOW(no-op scroll)後の genuine パン離脱で auto-off が働く', () => {
   // Arrange: 右端に居る状態（_lastAtRightEdge=true）を range イベントで確定させる。
   const { controller, renderer } = setup();

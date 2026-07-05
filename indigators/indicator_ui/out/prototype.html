@@ -4359,7 +4359,7 @@ class IndicatorController {
   constructor({
     catalog, compute, persistence, renderer, document: doc = null, mode = 'a',
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
-    marketProfile = null,
+    marketProfile = null, mpModeResolver = null,
   }) {
     this._catalog = catalog;
     this._compute = compute;
@@ -4375,6 +4375,10 @@ class IndicatorController {
     //   /compute 経由でなく本アクター（GET /market_profile → primitive）へ委譲する。
     //   既存トグル（#market-profile-toggle）とは別導線（二重導線）。未注入時は MP 分岐が no-op。
     this._marketProfile = marketProfile;
+    // ライブ連動: MP 表示モードの実効解決役（present 固有・任意注入）。(userMode)->effectiveMode。
+    //   注入時のみ MP へ渡す mode を実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）へ解決する。
+    //   未注入（連動なし＝A方式・MP 不在・連動未配線）は mode をそのまま渡す＝byte 不変。
+    this._mpModeResolver = typeof mpModeResolver === 'function' ? mpModeResolver : null;
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
     // 時間足（§チャート表示時間選択・1 分足原子から resample）。compute/candles に伝搬する。
@@ -4530,6 +4534,57 @@ class IndicatorController {
     return out;
   }
 
+  // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
+  //   ライブ連動（mpModeResolver 注入時）は mode を実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）へ
+  //   解決してから渡す。解決役は同時に userMode（gear 選択）を記憶する。mode 未指定（旧インスタンス）は
+  //   解決しない（actor 既定＝通常）。未注入時は _mpParams の結果をそのまま渡す＝byte 不変（連動なし）。
+  //   marketProfile 未注入時は no-op（呼び出し側の guard と二重防御）。
+  _applyMpParams(p) {
+    if (!this._marketProfile) {
+      return;
+    }
+    const params = this._mpParams(p);
+    if (params.mode != null && this._mpModeResolver) {
+      params.mode = this._mpModeResolver(params.mode);
+    }
+    this._marketProfile.setParams(params);
+  }
+
+  // ライブ連動: チャート FOLLOW/ANALYSIS 遷移時に、現在表示中 MP の実効モードを再適用する（present 固有）。
+  //   MpLiveModeCoordinator.onLiveStateChange → reapply として配線される。連動未配線（mpModeResolver 未注入）
+  //   時は呼ばれない設計だが、MP 不在/無効/未表示時も自己 guard で no-op（副作用なし）。
+  //   実効モードは resolver(null)（記憶更新なし・実効解決のみ）で強制し、保存 params（bins/va/src/range）は
+  //   維持したまま mode だけ差し替えて refresh する（既存 setParams→refresh 経路を再利用・actor 不変）。
+  async reapplyMarketProfileMode() {
+    if (!this._marketProfile || !this._mpModeResolver) {
+      return;
+    }
+    if (typeof this._marketProfile.isEnabled === 'function' && !this._marketProfile.isEnabled()) {
+      return; // MP 未表示（enabled=false）は再適用不要。
+    }
+    const inst = this._state.applied.find(
+      (i) => this._isMarketProfile(this._catalog.get(i.indicatorId)) && i.visible,
+    );
+    if (!inst) {
+      return; // 表示中 MP インスタンスが無い。
+    }
+    const params = this._mpParams(this._paramsObject(inst.params));
+    params.mode = this._mpModeResolver(null); // 実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）を強制。
+    this._marketProfile.setParams(params);
+    // ticklive-entry の一致（E2E バグ修正）: present の ticklive は forming を onLiveTick（→_enterTicklive）で
+    //   取得する。live loop(recomputeAllApplied)/初期 add/gear の ticklive-entry と同一経路。refresh は
+    //   /market_profile の base 累積を描くだけで forming を発火しないため、ticklive では onLiveTick を呼ぶ。
+    //   非 ticklive（normal/replay/sessions）は従来どおり refresh で選択モードを反映する。
+    //   isTicklive()（setParams({mode:'ticklive'}) 後に true）で分岐する。揃える先は live-loop
+    //   recomputeAllApplied の onLiveTick 経路（present gear は _untilTime==null で refresh に落ちるため別）。
+    if (typeof this._marketProfile.isTicklive === 'function' && this._marketProfile.isTicklive()
+        && typeof this._marketProfile.onLiveTick === 'function') {
+      await this._marketProfile.onLiveTick();
+    } else if (typeof this._marketProfile.refresh === 'function') {
+      await this._marketProfile.refresh();
+    }
+  }
+
   // resmode（解像度モード）を決める後方互換ヘルパ（restore と apply の両経路で共用）。
   //   - 明示 resmode があればそのまま返す（後方互換補完のみ・上書きしない）。
   //   - resmode 欠落かつ range がレンジ数値集合 → 'range'（保存したレンジを維持し client が &barw= を送る）。
@@ -4628,7 +4683,7 @@ class IndicatorController {
     if (!this._marketProfile) {
       return;
     }
-    this._marketProfile.setParams(this._mpParams(params));
+    this._applyMpParams(params);
     await this._marketProfile.setEnabled(true);
     // [reveal seam] reveal（replay）では現在バー T（_untilTime）が確定していれば即 enterBar で base を
     //   描画する。present は _untilTime を持たない（undefined）ため常に skip（byte 挙動不変）。
@@ -4674,7 +4729,7 @@ class IndicatorController {
     const applyParams = async (values) => {
       this._state = this._withParams(this._state, inst.instanceId, values);
       if (this._marketProfile) {
-        this._marketProfile.setParams(this._mpParams(values));
+        this._applyMpParams(values);
         // [reveal seam] reveal（replay）かつ **ticklive** のときだけ現在バー T で enterBar（forming push で
         //   base 取り直し）。normal/sessions/replay は enterBar が自己ガード no-op のため refresh(as-of-T)
         //   へ落とす（mode-aware）。present は enterBar 非所持ゆえ常に refresh＝従来どおり（byte 挙動不変）。
@@ -4998,7 +5053,7 @@ class IndicatorController {
       if (this._isMarketProfile(def)) {
         const rp = this._paramsObject(inst.params);
         if (this._marketProfile) {
-          this._marketProfile.setParams(this._mpParams(rp));
+          this._applyMpParams(rp);
           if (inst.visible) {
             await this._marketProfile.setEnabled(true);
           }
@@ -7592,11 +7647,15 @@ const MODE_FOLLOW = 'FOLLOW';
 const MODE_ANALYSIS = 'ANALYSIS';
 
 class LiveFollowController {
-  constructor({ liveUpdater, renderer, document, buttonId, mode }) {
+  constructor({ liveUpdater, renderer, document, buttonId, mode, onLiveStateChange } = {}) {
     this._liveUpdater = liveUpdater ?? null;
     this._renderer = renderer ?? null;
     this._document = document ?? null;
     this._buttonId = buttonId;
+    // optional なライブ連動フック（present 固有）。FOLLOW/ANALYSIS 遷移で onLiveStateChange(isFollow) を呼ぶ。
+    //   MP モード協調役（MpLiveModeCoordinator）へ通知して MP 表示モードを ticklive↔選択モードで連動させる。
+    //   未注入なら null＝一切呼ばない（既存ライブトグル挙動 byte 不変・MP 不在時も不変）。
+    this._onLiveStateChange = typeof onLiveStateChange === 'function' ? onLiveStateChange : null;
     this._mode = MODE_FOLLOW; // 初期 FOLLOW。
     this._served = mode === 'b'; // B方式のみ活性。
     this._button = null;
@@ -7707,6 +7766,8 @@ class LiveFollowController {
       this._renderer.setAnalysisTint(false);
     }
     this._setButtonActive(true);
+    // ライブ連動: FOLLOW 遷移を協調役へ通知（MP を ticklive へ）。未注入は no-op（byte 不変）。
+    this._notifyLiveState(true);
   }
 
   // ANALYSIS を適用: LiveUpdater 停止＋背景 tint＋ボタン消灯（サーバ watch は継続）。
@@ -7721,6 +7782,21 @@ class LiveFollowController {
       this._renderer.setAnalysisTint(true);
     }
     this._setButtonActive(false);
+    // ライブ連動: ANALYSIS 遷移を協調役へ通知（MP を選択モードへ）。未注入は no-op（byte 不変）。
+    this._notifyLiveState(false);
+  }
+
+  // ライブ連動フックの呼び出し（未注入は no-op）。フック内例外が本 controller の状態機械へ波及しないよう
+  //   防御捕捉する（連動失敗でライブトグル本体が壊れない＝回帰ゼロ）。
+  _notifyLiveState(isFollow) {
+    if (!this._onLiveStateChange) {
+      return;
+    }
+    try {
+      this._onLiveStateChange(isFollow);
+    } catch {
+      // 連動側の失敗はライブトグルの状態遷移に影響させない（防御）。
+    }
   }
 
   // ボタン点灯/消灯（既存トグル書式 is-active + aria-pressed に合わせる）。ボタン不在は no-op。
@@ -7733,6 +7809,86 @@ class LiveFollowController {
     }
     if (typeof this._button.setAttribute === 'function') {
       this._button.setAttribute('aria-pressed', String(on));
+    }
+  }
+}
+
+
+// ===== js/adapter/front/mp_live_mode_coordinator.js =====
+// MpLiveModeCoordinator（adapter/front/mp_live_mode_coordinator.js）— ライブトグル状態と MP 表示モードの連動役。
+//   present（B方式）固有。replay へは配線しない（replay は LiveFollowController 非所持）。
+//
+// 確定仕様（present オーケストレーション・MP actor は不変）:
+//   - チャート FOLLOW（ライブトグル ON・右端追従）→ MP 実効モードを liveMode（'ticklive'＝足内成長）にする。
+//   - チャート ANALYSIS（分析・過去へパン/トグル OFF）→ MP 実効モードを「ユーザーが gear で選んだ記憶モード」
+//     _mpUserMode（normal/replay/sessions）へ戻す。未選択時は defaultMode（catalog 既定＝'normal'）。
+//   ＝手動で Tickライブ を選ぶ必要が消え、gear 選択は「分析モード時の表示」として記憶される。
+//
+// 配線（composition_root_front で注入）:
+//   - resolve(userMode): IndicatorController の MP param 構築（mpModeResolver）から呼ばれる。
+//       userMode を記憶し、現在のライブ状態に応じた実効モードを返す。副作用は記憶のみ（actor へは触れない）。
+//   - onLiveStateChange(isFollow): LiveFollowController の遷移フック（_applyFollow/_applyAnalysis）。
+//       状態を更新し、reapply（controller.reapplyMarketProfileMode の注入）で実効モードを再適用させる。
+//   - reapply: 現在表示中 MP へ実効モードを再適用する副作用（controller 経由・MP 不在/無効時は controller が no-op）。
+//
+// 冪等・非破壊: 同状態への遷移は再適用しない（高速トグル/連続 auto-off での flicker・二重 fetch を回避）。
+//   reapply 未注入（MP 不在相当）は onLiveStateChange を no-op にする（例外を出さない）。
+
+class MpLiveModeCoordinator {
+  // liveMode: FOLLOW 時の実効モード（既定 'ticklive'）。defaultMode: ANALYSIS で未選択時のフォールバック
+  //   （catalog の MP mode 既定＝'normal'）。reapply: 実効モード再適用の副作用（関数・未注入で no-op）。
+  constructor({ liveMode = 'ticklive', defaultMode = 'normal', reapply = null } = {}) {
+    this._liveMode = liveMode;
+    this._defaultMode = defaultMode;
+    this._reapply = typeof reapply === 'function' ? reapply : null;
+    this._isFollow = true;    // チャート既定 FOLLOW（初期はライブ追従）。
+    this._mpUserMode = null;  // gear で選んだ分析モードの記憶。null=未選択（defaultMode へフォールバック）。
+  }
+
+  // 現在のチャート追従状態（true=FOLLOW / false=ANALYSIS）。
+  isFollow() {
+    return this._isFollow;
+  }
+
+  // 記憶している分析モード（gear 選択）。未選択なら null。
+  userMode() {
+    return this._mpUserMode;
+  }
+
+  // controller の MP param 構築（mpModeResolver）から呼ばれる。userMode（gear 選択）を記憶し、
+  //   現在のライブ状態に応じた実効モードを返す。null は「記憶更新なし・実効解決のみ」（reapply 経路用）。
+  resolve(userMode) {
+    // gear 選択を「分析モード」として記憶（FOLLOW 中でも記憶だけは更新する）。ただし liveMode
+    //   （'ticklive'）は分析モードになり得ない（仕様: 分析＝非 ticklive の選択モード）。legacy で
+    //   mode:'ticklive' を保存済のインスタンスでも ANALYSIS が ticklive 継続しないよう記憶対象から除外し
+    //   defaultMode へフォールバックさせる（review 🔵-2）。
+    if (userMode != null && userMode !== this._liveMode) {
+      this._mpUserMode = userMode;
+    }
+    return this._isFollow ? this._liveMode : this._analysisMode();
+  }
+
+  // ANALYSIS 時の実効モード（記憶モード優先・未選択は catalog 既定）。
+  _analysisMode() {
+    return this._mpUserMode != null ? this._mpUserMode : this._defaultMode;
+  }
+
+  // LiveFollowController の遷移フック。FOLLOW↔ANALYSIS の状態を更新し、実効モードを再適用させる。
+  //   同状態への遷移は再適用しない（冪等＝連続 auto-off/高速トグルでの二重 fetch・flicker を回避）。
+  onLiveStateChange(isFollow) {
+    const next = !!isFollow;
+    if (next === this._isFollow) {
+      return; // 同状態は no-op。
+    }
+    this._isFollow = next;
+    if (!this._reapply) {
+      return; // MP 不在相当（reapply 未注入）。状態は更新済みで副作用なし。
+    }
+    // reapply は async（controller.reapplyMarketProfileMode）でありうる。fire-and-forget の拒否は
+    //   握り潰して unhandledRejection 化を防ぐ（呼び出し元 _applyFollow/_applyAnalysis は同期）。
+    const r = this._reapply();
+    if (r && typeof r.then === 'function') {
+      r.catch(() => {});
     }
   }
 }
@@ -7978,9 +8134,24 @@ async function bootstrap({
     updatePaneHeight,
   }).install();
 
+  // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）に MP 表示モードを
+  //   連動させる協調役。FOLLOW→MP を ticklive（足内成長）／ANALYSIS→gear で選んだ記憶モードへ。
+  //   defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定＝'normal'）。reapply は controller の
+  //   MP モード再適用へ遅延束縛する（controller はこの直後に代入されるため () => controller で吸収）。
+  //   A方式（file://・mode!=='b'）は null＝連動を配線しない（mpModeResolver 未注入で MP 挙動 byte 不変）。
+  const mpLiveModeCoordinator = (mode === 'b')
+    ? new MpLiveModeCoordinator({
+        liveMode: 'ticklive',
+        defaultMode: 'normal',
+        reapply: () => (controller ? controller.reapplyMarketProfileMode() : undefined),
+      })
+    : null;
+
   controller = new IndicatorController({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
     timeframe, recentBars, loadCandles, marketProfile,
+    // 連動配線時のみ resolver を注入（未注入＝MP へ渡す mode をそのまま＝byte 不変）。
+    mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
   });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
@@ -8056,6 +8227,11 @@ async function bootstrap({
         document: doc,
         buttonId: 'live-follow-toggle',
         mode,
+        // ライブ連動: FOLLOW/ANALYSIS 遷移を協調役へ通知（MP を ticklive↔選択モードで連動）。
+        //   協調役不在（A方式）は未注入＝既存ライブトグル挙動 byte 不変。
+        onLiveStateChange: mpLiveModeCoordinator
+          ? (isFollow) => mpLiveModeCoordinator.onLiveStateChange(isFollow)
+          : undefined,
       })
     : null;
   if (liveFollowController) {
@@ -8064,7 +8240,7 @@ async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile, replayBar, liveFollowController };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile, replayBar, liveFollowController, mpLiveModeCoordinator };
 }
 
 
