@@ -84,9 +84,12 @@ export function etaRealTicksMs(tickvolSum, remainBars, lastComputeMs, s) {
   return tickvolSum * stepMs(s) + remainBars * (compute + BASE_FRAME_MS / effSpeed(s));
 }
 
-// ETA の文字列整形（非有限/非正は「—」、60秒未満は「N秒」、以上は「M分SS秒」）。（replay.js: fmtEta()）
+// ETA の文字列整形（非有限/非正は「—」、60秒未満は「N秒」、60分未満は「M分SS秒」、以上は「H時間MM分」）。
+//   （replay.js: fmtEta()。時間単位は ISSUE-044 追補＝real_ticks ETA 正確化で数時間規模が出るための
+//   依頼者承認拡張（2026-07-06）。分/秒の既存書式は不変。）
 export function fmtEta(ms) {
   if (!isFinite(ms) || ms <= 0) return '—';
   const s = Math.round(ms / 1000);
+  if (s >= 3600) return `${Math.floor(s / 3600)}時間${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}分`;
   return s >= 60 ? `${Math.floor(s / 60)}分${String(s % 60).padStart(2, '0')}秒` : `${s}秒`;
 }
