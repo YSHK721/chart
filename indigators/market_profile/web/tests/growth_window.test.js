@@ -120,3 +120,71 @@ test('forCurrent(cursor=null): from/to/formingStart はすべて null（窓を�
   assert.equal(w.to, null);
   assert.equal(w.formingStart, null);
 });
+
+// --- lockedBarw（ISSUE-047）: 成長 push 中の bins モードは窓レンジ拡大のたびに binw=(range/bins) が
+//   再導出されプロファイル全体が再スケールする。成長開始前の因果履歴（from 直前・約 1 営業日ぶんの
+//   確定足＝ceil(86400/barSec(tf)) 本）のレンジ / bins から barw を 1 回だけ導出して固定するための
+//   domain 純関数。履歴不足・レンジ縮退は null（呼び出し側が bins モードへフォールバック）。 ---
+test('lockedBarw: from 直前の因果履歴（1h→24本）レンジ / bins から barw を導出する', () => {
+  const from = DAY * 10;
+  // from 直前 24 本（1h）: low 100..123, high 200..223 → lo=100, hi=223, span=123。
+  const candles = [];
+  for (let i = 0; i < 24; i += 1) {
+    candles.push({ time: from - 3600 * (24 - i), low: 100 + i, high: 200 + i });
+  }
+  const barw = GrowthWindow.lockedBarw(candles, from, '1h', 60);
+
+  assert.equal(barw, 123 / 60, 'barw=(max(high)-min(low))/bins（因果履歴レンジ基準）');
+});
+
+test('lockedBarw: time>=from の足（未来側）はレンジへ含めない（未来リーク禁止）', () => {
+  const from = DAY * 10;
+  const candles = [
+    { time: from - 3600, low: 100, high: 200 },
+    { time: from, low: 0, high: 10000 },        // from 以後＝forming/未来側は除外
+    { time: from + 3600, low: 0, high: 99999 },
+  ];
+  const barw = GrowthWindow.lockedBarw(candles, from, '1h', 50);
+
+  assert.equal(barw, 100 / 50, 'from 以後の足はロック対象レンジに入らない');
+});
+
+test('lockedBarw: 履歴窓は直近 ceil(86400/barSec(tf)) 本のみ（古い極値は含めない）', () => {
+  const from = DAY * 10;
+  const candles = [{ time: from - 3600 * 100, low: 1, high: 9999 }]; // 窓外（1h→24本より古い）
+  for (let i = 0; i < 24; i += 1) {
+    candles.push({ time: from - 3600 * (24 - i), low: 100, high: 220 });
+  }
+  const barw = GrowthWindow.lockedBarw(candles, from, '1h', 60);
+
+  assert.equal(barw, 120 / 60, '窓は直近 24 本（1h）＝古い足の極値はレンジへ入れない');
+});
+
+test('lockedBarw: 1D は直近 1 本（前日レンジ）を基準にする', () => {
+  const from = DAY * 10;
+  const candles = [
+    { time: from - DAY * 2, low: 50, high: 500 },  // 前々日（窓外）
+    { time: from - DAY, low: 100, high: 400 },     // 前日（窓＝1 本）
+  ];
+  const barw = GrowthWindow.lockedBarw(candles, from, '1D', 60);
+
+  assert.equal(barw, 300 / 60, '1D の窓は ceil(86400/86400)=1 本＝前日レンジ');
+});
+
+test('lockedBarw: bins 非数/0 以下は既定 60、文字列 bins は数値化する', () => {
+  const from = DAY * 10;
+  const candles = [{ time: from - 3600, low: 100, high: 220 }];
+
+  assert.equal(GrowthWindow.lockedBarw(candles, from, '1h', undefined), 120 / 60, 'bins 未指定は既定 60');
+  assert.equal(GrowthWindow.lockedBarw(candles, from, '1h', '30'), 120 / 30, '文字列 bins は数値化');
+  assert.equal(GrowthWindow.lockedBarw(candles, from, '1h', 0), 120 / 60, 'bins<=0 は既定 60');
+});
+
+test('lockedBarw: 履歴なし・レンジ縮退・from 欠損・low/high 非有限は null（bins モードへフォールバック）', () => {
+  const from = DAY * 10;
+
+  assert.equal(GrowthWindow.lockedBarw([], from, '1h', 60), null, '履歴なしは null');
+  assert.equal(GrowthWindow.lockedBarw([{ time: from - 3600, low: 100, high: 100 }], from, '1h', 60), null, 'span=0 は null');
+  assert.equal(GrowthWindow.lockedBarw([{ time: from - 3600, low: 100, high: 200 }], null, '1h', 60), null, 'from 欠損は null');
+  assert.equal(GrowthWindow.lockedBarw([{ time: from - 3600, close: 1 }], from, '1h', 60), null, 'low/high 欠損足のみは null');
+});

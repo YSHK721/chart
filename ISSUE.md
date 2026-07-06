@@ -608,3 +608,11 @@
 - **検出**: 2026-07-06 ISSUE-045 対応中の全体テスト実行で検出。HEAD（変更前）でも同一失敗を確認済み。
 - **内容**: `tests/replay_analysis.test.js` と `tests/timeline_player.test.js` が `js/usecase/replay_analysis.js` 等の不存在モジュールを import して ERR_MODULE_NOT_FOUND。79982b8「未追跡のソース/ドキュメントを保全コミット」でテストのみ保全されソース側が欠落した可能性。
 - **対策案**: 対応方針は依頼者判断待ち（欠損ソースの復元 or テスト撤去）。
+
+## ISSUE-047: replay_ui MP — 再生中にプロファイルのバーのスケールが変動する（表示 bin 幅 binw が累積レンジ拡大のたびに再導出される）
+- **重大度**: Medium（視覚バグ・再生中の分析可読性を毀損）
+- **ステータス**: RESOLVED（fix/replay-mp-locked-binw 実装完了・案 a 依頼者承認済み。TDD Red→Green（domain 6 ケース＋actor 回帰 5 ケース）・replay_ui web 214/214・market_profile web 210/210 全緑・architecture-executor 違反なし・code-review 承認可 🔴0（🟡 null ロック恒久メモ化は「成功値のみキャッシュ＋再試行」で即時反映済み・回帰テスト追加）。実装: GrowthWindow.lockedBarw（domain 純関数・from 直前 ceil(86400/barSec(tf)) 本の因果履歴レンジ/bins）＋ replay actor が成長 push の bins モード時のみ resmode=range/range=barw を注入（ユーザー明示 range 温存・ロック不能時は bins フォールバック＝非破壊）。実データ検証: jp225_tick 5m×24 バーで binw が 28.6pt 近傍に安定（丸め揺れ ±数%・従来は 0.33→4.9pt へ 15 倍伸長）。ブラウザ目視は依頼者実施。🔵記録: 全期間プリセット（replayStart=0・履歴ゼロ）は従来 bins のまま／_MAX_BINS=1000 到達（ロック時レンジの千倍・実質非到達）で再スケール再開／1W/1M への注入は無駄計算のみ（非破壊））
+- **検出**: 依頼者報告（2026-07-06）「MPプロファイルを再生すると、プロファイルのバーのスケールが変動する」。
+- **原因（実データで再現済み）**: 成長 push（normal growth・from=replayStart）は enterBar（毎バー）/growTo（グリッド外 tick）ごとに `/market_profile_forming` を再取得し、backend が表示グリッドを毎回「窓 [replayStart, now] の実測レンジ ∪ forming tick 実測 min/max」から再導出する（`market_profile_forming_controller._reconcile_session_range`＋`market_profile_controller` L330-334）。既定 resmode=bins（bins=60 固定）ではレンジ拡大のたびに binw=(priceMax−priceMin)/60 が伸び（実測 jp225_tick 5m・6 バーで 0.33→2.05pt、11 バーで 0.92→4.92pt）、primitive の barH（=隣接 bin 中心のピクセル距離）と norm（現在最大 bin 基準の相対正規化）が全バー再計算される＝再生中にプロファイル全体が繰り返し再スケール。参照実装（prototype_260630-01・present normal）はレンジが実質静的（全期間窓）のため bins=60 でも binw が安定しており、本症状は「成長する窓 × bins 固定」の組み合わせで顕在化した replay 固有の新規事象（参照実装に成長グリッドの規定なし）。
+- **対策（案・依頼者判断待ち）**: (a) 成長中は binw を固定し nBins を可変にする（成長開始時に binw を確定・以降はレンジ拡大で bin 数だけ増加＝古典的 MP のティックサイズ固定と同型・推奨）。(b) binw を離散ステップ（例 GRID_W×2^n）でのみ更新するヒステリシス（再スケール頻度を激減・bins 意味論は概ね温存）。(c) 現状仕様のまま（bins=60 は「現在レンジを常に 60 分割」という意味論と割り切り、気になる場合は resmode=range（barw 固定）を使う運用）。
+- **関連**: ISSUE-041（統一成長モデル Model A）・replay.js mpBaseFrom（from=replayStart 累積）・DwellAccumulator（クライアント側は同一グリッドで増分、再取得時のみグリッド交換）。

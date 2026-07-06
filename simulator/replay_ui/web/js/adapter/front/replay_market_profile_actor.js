@@ -59,6 +59,10 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     // 直近 forming グリッドの価格レンジ（isTickInGrid の範囲判定に使用）。未確定は null。
     this._gridPriceMin = null;
     this._gridPriceMax = null;
+    // ISSUE-047: 成長 push 中の binw ロック（barw）。key=`from|tf|bins` が変わるまで再計算しない
+    //   （＝同一成長セッション内で固定・再生開始点/時間足/bins 変更で自動再導出）。null=ロック不能。
+    this._barwLockKey = null;
+    this._barwLock = null;
   }
 
   // override: push 成長中（normal/replay+growing＝isGrowingPush）は enterBar/feedTick が駆動するため
@@ -125,7 +129,40 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
         }
       }
     }
+    // ISSUE-047（再生中のバースケール変動）: 成長 push の bins モードは、enterBar/growTo のたびに backend が
+    //   binw=(累積窓レンジ/bins) を再導出するため、レンジ拡大のたびにプロファイル全体（バー高さ barH・
+    //   norm 正規化）が再スケールする。成長中は from 直前の因果履歴レンジから barw を 1 回だけ導出して固定し、
+    //   resmode=range（barw 固定・bin 数可変）で送る＝スケール安定（依頼者承認・案 a）。ユーザー明示の
+    //   resmode=range は温存（上書きしない）。ロック不能（履歴なし等）は従来 bins のまま（非破壊）。
+    if (this.isGrowingPush() && args.resmode !== 'range' && args.from != null) {
+      const barw = this._growthBarwLock(args.from);
+      if (barw != null) {
+        args.resmode = 'range';
+        args.range = barw;
+      }
+    }
     return args;
+  }
+
+  // ISSUE-047 の barw ロックを返す（内部）。key=`from|tf|bins` 単位でメモ化し、同一成長セッション内は
+  //   固定値を返す（再生開始点 from・時間足・bins のいずれかが変わったときだけ GrowthWindow.lockedBarw で
+  //   再導出＝stale ロックを引き回さない）。導出は domain 純関数へ委譲（このメソッドはメモ化のみ）。
+  //   ロック不能（null）はメモ化しない（レビュー🟡）: 初回時点で getCandles が履歴未ロードでも、揃った
+  //   次回呼び出しで再試行して復帰する（成功値のみキャッシュ・失敗の恒久固定でセッション全体が bins
+  //   フォールバックに沈黙残存するのを防ぐ。再試行コストは candles 走査 O(n) で毎バー許容）。
+  _growthBarwLock(from) {
+    const tf = this._getContext().timeframe;
+    const bins = this._params ? this._params.bins : undefined;
+    const key = `${from}|${tf}|${bins ?? ''}`;
+    if (this._barwLockKey === key && this._barwLock != null) {
+      return this._barwLock;
+    }
+    const barw = GrowthWindow.lockedBarw(this._getCandles(), from, tf, bins);
+    if (barw != null) {
+      this._barwLockKey = key;
+      this._barwLock = barw;
+    }
+    return barw;
   }
 
   // 追加: ticklive の push バー入場（render が now=T で呼ぶ）。バー入場＝rollover reset。
