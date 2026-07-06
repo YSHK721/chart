@@ -182,6 +182,35 @@ test('_buildFormingArgs preserves an explicit from over GrowthWindow (backward-c
   assert.equal(args.from, 123456, '明示 from は GrowthWindow 委譲より優先（compat）');
 });
 
+// --- 非退行（present 当日窓の波及遮断）: 基底 MarketProfileActor._buildFormingArgs が present 用に
+//   getCandles(最新ローソク time) から from=当日始端 を載せるようになっても、replay subclass の override は
+//   super の後に自前 from（GrowthWindow(mode,tf,effNow=getContext().to)）を必ず再設定するため、基底変更が
+//   replay の from へ波及しない（override 優先＝実測固定）。getCandles を ctxTo と別日で注入し、subclass 出力が
+//   GrowthWindow(ctxTo) 由来（getCandles 由来ではない）であることを検証する。 ---
+test('replay override wins: base present-window (getCandles) does NOT leak into replay _buildFormingArgs from', () => {
+  const to = 1782985000;                       // 因果 T（replay の getContext().to）
+  const daySt = Math.floor(to / 86400) * 86400; // GrowthWindow(normal,1h,to) 由来の当日始端
+  const candleNow = to - 10 * 86400;            // getCandles 由来（base が使う）を別日に置く
+  const candleDaySt = Math.floor(candleNow / 86400) * 86400;
+  assert.notEqual(candleDaySt, daySt, '前提: getCandles 由来の当日始端は GrowthWindow(ctxTo) と別日');
+  const actor = new ReplayMarketProfileActor({
+    primitive: fakePrimitive(),
+    formingClient: fakeFormingClient([BASE_FULL]),
+    makeAccumulator: fakeAccumulatorFactory().make,
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h', to }),
+    getCandles: () => [{ time: candleNow, close: 1 }], // 基底 present 経路が参照する最新ローソク
+    now: () => 0,
+  });
+  actor.setParams({ mode: 'normal' });
+  actor.applyGrowthState({ growing: true }); // 基底 present 分岐条件（_growing && !_sessions）を成立させる
+  // Act
+  const args = actor._buildFormingArgs({ base: 1, since: null });
+  // Assert: from は GrowthWindow(ctxTo)=当日始端(to 由来)。getCandles 由来（別日）へは波及しない。
+  assert.equal(args.now, to, 'replay override は now=getContext().to を維持');
+  assert.equal(args.from, daySt, 'replay override の from は GrowthWindow(ctxTo) 由来（基底 getCandles 由来へ波及しない）');
+  assert.notEqual(args.from, candleDaySt, '基底 present 窓（getCandles 由来）は replay へ漏れない');
+});
+
 // --- Fix #1（replayStart 累積）: driver 明示 from（=replayStart のバー時刻）を enterBar/growTo が forming へ
 //   透過し、当日窓 GrowthWindow フォールバックを上書きする。再生開始点から累積＝日跨ぎでも非リセット。 ---
 test('enterBar(now, from) threads explicit from (replayStart) into forming args (overrides today-window fallback)', async () => {

@@ -275,7 +275,45 @@ export class MarketProfileActor {
   //   原子を食い違わせないことを保証する（非 ticklive 表示の原子との不整合を防ぐ）。参照実装 mp_core の
   //   dwell 原子（_session_dwell）に忠実。
   _buildFormingArgs({ base, since }) {
-    return { ...this._getContext(), ...this._params, src: 'dwell', base, since };
+    const args = { ...this._getContext(), ...this._params, src: 'dwell', base, since };
+    // present normal ライブ成長（FOLLOW）: base 累積窓を全期間 → 当日（現在セッション）へ絞る。
+    //   全期間累積だと現在足 1 本ぶんの成長が数年分に対して極小で視認不能になるため、当日始端を base 下限
+    //   （from）にする（古典的セッション Market Profile・ユーザー確定・視認性優先）。growing かつ非 sessions
+    //   のときだけ載せる（static=ANALYSIS は _growing=false で forming 経路に入らず refresh 委譲＝全期間・不変／
+    //   sessions は refresh(to,sessions) が backend で当日タイルを育てるため forming from を載せない＝不変）。
+    //   from の写像規則は domain GrowthWindow.forCurrent('normal',tf,now).from と一致させる（下記 _sessionFrom）。
+    //   replay は subclass ReplayMarketProfileActor が _buildFormingArgs を override し、super（本メソッド）呼び
+    //   出しの後に自前 from（GrowthWindow(mode,tf,getContext().to)）を必ず再設定する＝本 present 分岐は replay の
+    //   from へ波及しない（override 優先・replay 非退行）。
+    if (this._growing && !this._sessions) {
+      const from = this._sessionFrom();
+      if (from != null) {
+        args.from = from;
+      }
+    }
+    return args;
+  }
+
+  // present normal ライブ成長の base 下限 from（当日始端）を最新ローソク time から写像する。
+  //   now = 最新ローソク time（_getCandles 末尾・sessions の getContext().to 源と同一）。空/不明は null
+  //   （窓を成さず＝全期間へ縮退＝既存 fetch と同じ非破壊）。
+  //   from = min(session_start, forming_start)＝domain GrowthWindow.forCurrent('normal',tf,now).from と同一規則
+  //   （日中足は session_start=当日始端／1W/1M は当該バー期間の始端で from<=forming_start 不変条件を保つ）。
+  //   NOTE: domain GrowthWindow を import せず本 actor 既存 TF_BAR_SEC で同規則を算出する。build.mjs（present
+  //   バンドル）は ES Modules を単一 IIFE スコープへ連結するため、growth_window.js を取り込むと本 actor と
+  //   growth_window.js の双方が持つ top-level `const TF_BAR_SEC` が二重宣言衝突を起こす（bundle 破損）。よって
+  //   規則を growth_window.js と一致させたまま本 actor 内で直接算出する（直接 session_start・規則同一）。
+  _sessionFrom() {
+    const candles = this._getCandles();
+    const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;
+    const now = last && last.time != null ? Number(last.time) : NaN;
+    if (!Number.isFinite(now)) {
+      return null;
+    }
+    const barSec = TF_BAR_SEC[this._getContext().timeframe] ?? 86400;
+    const sessionStart = Math.floor(now / 86400) * 86400;
+    const formingStart = Math.floor(now / barSec) * barSec;
+    return Math.min(sessionStart, formingStart);
   }
 
   // ライブ tick 契機。増分（ticklive）: 未 enter なら _enterTicklive、以降は base=0 尾部を addTick して
