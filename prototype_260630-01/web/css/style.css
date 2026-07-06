@@ -1,0 +1,65 @@
+/* prototype_260630-01 Market Profile ビューア — ダークな取引ツール風 */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%;
+  background: #0b0e13; color: #c9d1d9;
+  font: 13px/1.4 system-ui, "Segoe UI", sans-serif;
+}
+body { display: flex; flex-direction: column; }
+
+#bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 8px 12px; background: #11151c; border-bottom: 1px solid #1f2630;
+}
+#bar .title { color: #e6edf3; letter-spacing: .3px; }
+#bar label { display: inline-flex; align-items: center; gap: 5px; color: #8b949e; }
+#bar label.chk { gap: 4px; }
+#bar select, #bar input {
+  background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+  border-radius: 4px; padding: 3px 6px;
+}
+#bar .status { margin-left: auto; color: #6e7681; font-size: 12px; }
+
+#wrap { position: relative; flex: 1 1 auto; min-height: 0; }
+#chart { position: absolute; inset: 0; }
+/* ヒート canvas はチャート上に重ね、マウス操作はチャートへ通す。
+   lightweight-charts 内部 canvas より前面に出すため z-index を上げる */
+#heat { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+
+#readout {
+  padding: 6px 12px; background: #11151c; border-top: 1px solid #1f2630;
+  color: #adbac7; font-size: 12px; white-space: pre-wrap;
+}
+#readout .up   { color: #ff6b6b; }
+#readout .eq   { color: #e3b341; }
+#readout .down { color: #58a6ff; }
+
+#legend {
+  position: absolute; right: 78px; top: 52px; z-index: 5;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 7px 9px; background: rgba(13,17,23,.78);
+  border: 1px solid #222b36; border-radius: 6px; font-size: 11px; color: #adbac7;
+}
+#legend .lg { display: flex; align-items: center; gap: 6px; }
+#legend .sw { width: 16px; height: 0; border-top: 2px solid #fff; display: inline-block; }
+#legend .sw.poc  { border-top: 2px solid #ff3b3b; }
+#legend .sw.va   { height: 10px; border: none; background: rgba(227,179,65,.30); }
+#legend .sw.vah  { border-top: 2px dashed #9aa4b2; }
+#legend .sw.last { border-top: 2px dashed #58a6ff; }
+#legend .heatbar { gap: 5px; }
+#legend .hb {
+  width: 70px; height: 9px; border-radius: 2px; display: inline-block;
+  background: linear-gradient(90deg,
+    hsl(240 90% 50%), hsl(180 90% 50%), hsl(60 95% 52%), hsl(0 95% 52%));
+}
+
+/* 範囲選択ボタン（追加） */
+#bar button {
+  background: #1b2230; color: #c7d0db; border: 1px solid #2b3543;
+  border-radius: 5px; padding: 3px 9px; font-size: 12px; cursor: pointer;
+}
+#bar button:hover { background: #232c3c; }
+#bar button.on { background: #2d5fa6; color: #fff; border-color: #3a72c2; }
+
+/* 無効化コントロールのグレーアウト（遡りOFF時のスライダ等） */
+#bar input:disabled, #bar select:disabled { opacity: .35; cursor: not-allowed; filter: grayscale(1); }
