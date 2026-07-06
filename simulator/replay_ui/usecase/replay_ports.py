@@ -17,7 +17,11 @@ class CausalCandlePort(Protocol):
     def load_candles(
         self, ref: str, timeframe: "str | None", limit: "int | None"
     ) -> "list[dict]":
-        """``[{time,open,high,low,close}]`` を返す（resample + tail(limit)）。"""
+        """``[{time,open,high,low,close}]`` を返す（resample + tail(limit)）。
+
+        tick 源（volume 列あり）は各足に optional ``tickvol``（足内実 tick 数・int）を
+        additive に付与する（ISSUE-044 real_ticks ETA 用）。非 tick 源は付与しない。
+        """
         ...
 
 

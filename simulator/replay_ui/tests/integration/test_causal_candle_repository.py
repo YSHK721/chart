@@ -71,3 +71,37 @@ def test_unknown_non_tick_ref_raises_valueerror(tmp_path):
     repo = CausalCandleRepository(tick_m1_csv=tmp_path / "nope.csv")
     with pytest.raises(ValueError):
         repo.load_candles("totally_unknown_ref", "1D", None)
+
+
+def test_load_tick_candles_includes_tickvol(tmp_path):
+    """ISSUE-044: /candles の各足に実 tick 数（tickvol＝M1 volume の resample 合算）を載せる。
+
+    real_ticks（cap 廃止＝間引かない）の ETA を実 tick 総数から算出するための材料。
+    M1 volume は「その分のティック数」（prep_tick_rollup.py）で、外れバー除去後の合算＝
+    /intraday の外れ値除去済み再生 tick 数と整合する。
+    """
+    # Arrange
+    csv = tmp_path / "jp225_tick_m1.csv"
+    _write_csv(csv)
+    repo = CausalCandleRepository(tick_m1_csv=csv)
+    # Act — 1D resample（合算）と 1m 原子（無変換）の両経路。
+    candles = repo.load_candles("jp225_tick", "1D", None)
+    m1 = repo.load_candles("jp225_tick", "1m", None)
+    # Assert — 1/1 は外れバー 1 本除去後 3 tick、1/2 は 2 tick。1m は各 1 tick。
+    assert candles[0]["tickvol"] == 3
+    assert candles[1]["tickvol"] == 2
+    assert all(c["tickvol"] == 1 for c in m1)
+
+
+def test_tickvol_skips_non_finite_volume_rows(tmp_path):
+    """volume が NaN の行は tickvol を載せない（int(NaN)→ValueError で /candles 500 を防ぐ）。"""
+    csv = tmp_path / "jp225_tick_m1.csv"
+    csv.write_text(
+        "date,open,high,low,close,volume\n"
+        "2020-01-01 00:00:00,100.0,105.0,99.0,101.0,2.0\n"
+        "2020-01-01 00:01:00,101.0,106.0,100.0,102.0,\n"  # volume 欠損（NaN）
+    )
+    repo = CausalCandleRepository(tick_m1_csv=csv)
+    m1 = repo.load_candles("jp225_tick", "1m", None)
+    assert m1[0]["tickvol"] == 2
+    assert "tickvol" not in m1[1]  # 欠損足は載せない（JS 側が従来モデルへフォールバック）

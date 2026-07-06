@@ -11,6 +11,7 @@ import { ReplayView } from './adapter/front/replay_view.js';
 import {
   clampSpeed, frameMs as frameMsOf, stepMs,
   estimatePeriodMs, emaUpdate, periodMs, fmtEta, ANIM_MIN_MS, FORMING_MIN_INTERVAL_MS,
+  remainingTickvol, etaRealTicksMs,
 } from './replay/timing.js';
 import { intrabarWindow, buildStreamFromResponse } from './replay/stream.js';
 import {
@@ -187,6 +188,17 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     const remain = Math.max(0, (candles.length - 1) - bar);
     if (remain === 0) { view.setText('rp-eta', '完了予想 —'); return; }
     if (speed() <= 0) { view.setText('rp-eta', `完了予想 —（一時停止・残り${remain}足）`); return; }
+    // ISSUE-044: real_ticks は cap 廃止（間引かない・絶対仕様）＝1足あたり点数が足ごとに桁で異なる
+    //   （月足は数十万 tick）ため、旧 800 点 cap 前提のモデルも per-bar EMA も使わず、/candles の
+    //   tickvol（実 tick 数）の残り総数から算出する。tickvol 欠損（旧データセット等）は従来モデルへ
+    //   フォールバック（回帰なし）。他モードは点数 cap 済みで従来モデル（実測 EMA 優先）のまま。
+    if (view.readMode() === 'real_ticks') {
+      const tv = remainingTickvol(candles, bar);
+      if (tv != null) {
+        view.setText('rp-eta', `完了予想 ${fmtEta(etaRealTicksMs(tv, remain, lastComputeMs, speed()))}（残り${remain}足）`);
+        return;
+      }
+    }
     const period = periodMs(emaPeriodMs, lastComputeMs, view.readMode(), speed());
     view.setText('rp-eta', `完了予想 ${fmtEta(remain * period)}（残り${remain}足）`);
   };

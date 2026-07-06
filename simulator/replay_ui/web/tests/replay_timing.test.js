@@ -95,3 +95,28 @@ test('fmtEta returns dash for non-positive/non-finite and formats seconds/minute
   assert.equal(fmtEta(65000), '1分05秒'); // ゼロ埋め
   assert.equal(fmtEta(125000), '2分05秒');
 });
+
+// --- ISSUE-044: real_ticks（cap 廃止＝間引かない・絶対仕様）の ETA -------------------- //
+//   参照実装（プロト replay.js）は cap 廃止時に ETA モデル（animBaseMs=ANIM_FINE 前提）を更新して
+//   おらず「cap 廃止後の正しい ETA」の定義が無い（月足×実ティックで 53 秒 vs 実測が桁違いに乖離）。
+//   依頼者承認（2026-07-06・バックエンド拡張で正確化）に基づく拡張:
+//   残り足の実 tick 総数（/candles tickvol）×ステップ間隔 + 足あたり固定費(compute+足送り)。
+import { etaRealTicksMs, remainingTickvol } from '../js/replay/timing.js';
+
+test('etaRealTicksMs = 実tick総数×stepMs(s) + 残り足数×(compute + BASE_FRAME_MS/effSpeed)', () => {
+  // s=1: stepMs=6ms・足送り 50ms・compute null→50ms（estimatePeriodMs と同じ既定）
+  assert.equal(etaRealTicksMs(100000, 11, null, 1), 100000 * 6 + 11 * (50 + 50));
+  // 実測 compute（lastComputeMs）優先
+  assert.equal(etaRealTicksMs(1000, 2, 100, 1), 1000 * 6 + 2 * (100 + 50));
+  // s=0.5: stepMs=round(6/0.5)=12・足送り 50/0.5=100
+  assert.equal(etaRealTicksMs(1000, 1, null, 0.5), 1000 * 12 + 1 * (50 + 100));
+});
+
+test('remainingTickvol sums tickvol of bars AFTER current, null when any bar lacks it (model fallback)', () => {
+  const cs = [{ tickvol: 5 }, { tickvol: 7 }, { tickvol: 9 }];
+  assert.equal(remainingTickvol(cs, 0), 16); // 現在足は含めない（remain と同一範囲）
+  assert.equal(remainingTickvol(cs, 1), 9);
+  assert.equal(remainingTickvol(cs, 2), 0);  // 残り 0 足
+  assert.equal(remainingTickvol([{ tickvol: 5 }, {}, { tickvol: 9 }], 0), null); // 欠損→モデルへフォールバック
+  assert.equal(remainingTickvol([{ tickvol: 5 }, { tickvol: NaN }], 0), null);   // 非有限→フォールバック
+});
