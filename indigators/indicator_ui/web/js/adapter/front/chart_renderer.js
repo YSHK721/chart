@@ -277,9 +277,9 @@ export class ChartRenderer {
     }
   }
 
-  // 価格軸ホイールズーム: 座標→価格変換に使う pane 高（container 高 - timeScale().height() 相当）を設定。
-  //   composition root が resize 時などに供給する。未設定時は handlePriceWheel が timeScale().height()
-  //   から導出フォールバックするが、container 高が必要なため設定を推奨（新規追加・既存描画へ非干渉）。
+  // 縦パンの px→価格換算に使う pane 高（container 高 - timeScale().height() 相当）を設定。
+  //   composition root が resize 時などに供給する。消費者は panPriceByPixels のみ（未設定時は
+  //   false＝安全側）。handlePriceWheel は getVisibleRange を使うため pane 高に依存しない。
   setPaneHeight(h) {
     this._paneHeight = (typeof h === 'number' && h > 0) ? h : null;
   }
