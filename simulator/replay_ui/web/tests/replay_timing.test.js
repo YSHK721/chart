@@ -120,3 +120,15 @@ test('remainingTickvol sums tickvol of bars AFTER current, null when any bar lac
   assert.equal(remainingTickvol([{ tickvol: 5 }, {}, { tickvol: 9 }], 0), null); // 欠損→モデルへフォールバック
   assert.equal(remainingTickvol([{ tickvol: 5 }, { tickvol: NaN }], 0), null);   // 非有限→フォールバック
 });
+
+// --- ISSUE-044 追補（依頼者承認 2026-07-06）: 長時間 ETA の時間単位表示 -------------------- //
+//   real_ticks ETA 正確化で完了予想が数時間規模になり得る（月足×実ティック≒28時間）。
+//   参照実装 fmtEta は分までだが「1687分00秒」は規模把握が困難のため、60 分以上は「H時間MM分」へ。
+test('fmtEta formats >=1 hour as H時間MM分 (approved extension; minutes/seconds unchanged below)', () => {
+  assert.equal(fmtEta(3600 * 1000), '1時間00分');
+  assert.equal(fmtEta(101220 * 1000), '28時間07分'); // 月足×実ティック実測規模
+  assert.equal(fmtEta(59 * 1000), '59秒');           // 既存挙動不変
+  assert.equal(fmtEta(90 * 1000), '1分30秒');        // 既存挙動不変
+  assert.equal(fmtEta(3599 * 1000), '59分59秒');     // 分ブランチ最大値（境界固定・review 🟡）
+  assert.equal(fmtEta(3690 * 1000), '1時間01分');    // 剰余秒（30秒）切り捨ての明示検証（review 🟡）
+});
