@@ -595,3 +595,16 @@
 - **背景**: `stream.js` で real_ticks は「接点検証＝全ティック（cap 廃止・間引かない・絶対仕様）」だが、ETA モデル（`timing.js: animBaseMs/estimatePeriodMs`）は旧仕様の ANIM_FINE=800 点 cap 前提（800×6ms＋固定費≒4.9秒/足 → 11足≒53秒）のまま。月足は 1 足に数十万〜300万超 tick（実測: 残り11ヶ月足合計 約1,687万tick → s=1 で約28時間）。per-bar 実測 EMA の自己補正も「最初の 1 足が終わらない」ため効かない。**参照実装（prototype_260626-01 replay.js）にも同じ不整合があり（cap 廃止 :436 時に ETA モデル :277-282 未更新）、cap 廃止後の正しい ETA の定義が無い** → CLAUDE.md 規則によりユーザーへ方針確認し「バックエンド拡張で正確化」を承認取得（2026-07-06）。
 - **対策（承認済み設計）**: (1) backend `/candles`（jp225_tick）各足に `tickvol`（実 tick 数＝M1 volume の resample 合算・外れバー除去後）を追加（additive・volume 列無しデータセットは不変）。(2) `timing.js` に新規純関数 `remainingTickvol`（残り足の tick 総数・欠損は null）と `etaRealTicksMs`（tick総数×stepMs＋足あたり compute+足送り固定費）を追加（参照実装からの抽出でなく承認済み拡張である旨をコメント明記）。(3) `setEta` は real_ticks かつ tickvol 有りならこれを使用（tickvol 欠損は従来モデルへフォールバック・他モードは従来どおり＝回帰なし）。TDD: backend 1・timing 純関数 2・setEta 配線 3 の Red→Green。
 - **関連**: prototype_260626-01（参照実装・同不整合あり）。ブランチ fix/replay-eta-real-ticks-tickvol。
+
+## ISSUE-045: 価格軸ホイールズームがリプレイのバー境界（足リビール setCandles）で毎回リセットされる
+- **ステータス**: RESOLVED（lwc v5.2 ネイティブ API（priceScale.setVisibleRange/setAutoScale）への置換で根本解消。indicator_ui chart_renderer 85/85・replay_ui web 209/209 全緑。E2E 実測: 軸 wheel ズーム(3500〜7500)→rp-next 1 バー後もスケール維持・dblclick で自動スケール復帰・時間軸不変）
+- **検出**: 依頼者報告（2026-07-06）「価格スケール上のホイールで拡大縮小されない」→実機 E2E で「非再生時は動作・バー境界でリセット」と切り分け→依頼者の追撃質問（ドラッグとの挙動差・アーキテクチャ疑義）で真因特定。
+- **原因**: 旧実装はホイールズームを自前 override（autoscaleInfoProvider＋_priceZoomRange）で実現し、`setCandles` 内の「時間足切替用リセット」が override を破棄していた。replay_ui は足リビールで setCandles を毎バー呼ぶため、バー境界のたびにホイールズームだけが消えた（軸ドラッグ＝lwc ネイティブ状態は残る＝挙動非対称）。真因は「lwc に価格レンジ setter が無い」という v4 時代の前提で自前機構を組んでいたこと。同梱 lwc は v5.2.0 で `priceScale.setVisibleRange()`（内部で autoScale=false 設定＝ドラッグと同一状態）を公開済み。
+- **対策（依頼者承認済み・両UI統一）**: (1) handlePriceWheel/panPriceByPixels/isPriceZoomed/resetPriceZoom をネイティブ API（getVisibleRange/setVisibleRange/options().autoScale/applyOptions({autoScale:true})）で再実装（外側 interface 不変・controller 無変更）。(2) 自前機構（_priceZoomRange/_applyPriceProvider/_scaleMargins/__callAutoscaleProvider・setCandles のリセット）を全撤去。「手動スケールの解除はユーザーの dblclick のみ・システムは勝手に破棄しない」に統一（設計判断: 解除の判断はユーザーに属する）。(3) 回帰テスト「setCandles: 手動スケールを破棄しない」を追加・旧リセット固定テスト（🟡#1）を反転。chart_renderer.js は symlink 単一ソースのため indicator_ui/replay_ui 同時適用。
+- **関連**: feature/replay-price-wheel-zoom。zoomedPriceRange/clampPriceRange（純関数・発散クランプ）は温存。
+
+## ISSUE-046: indicator_ui の既存テスト2件が参照先モジュール欠損で失敗（既存・今回変更と無関係）
+- **ステータス**: OPEN
+- **検出**: 2026-07-06 ISSUE-045 対応中の全体テスト実行で検出。HEAD（変更前）でも同一失敗を確認済み。
+- **内容**: `tests/replay_analysis.test.js` と `tests/timeline_player.test.js` が `js/usecase/replay_analysis.js` 等の不存在モジュールを import して ERR_MODULE_NOT_FOUND。79982b8「未追跡のソース/ドキュメントを保全コミット」でテストのみ保全されソース側が欠落した可能性。
+- **対策案**: 対応方針は依頼者判断待ち（欠損ソースの復元 or テスト撤去）。
