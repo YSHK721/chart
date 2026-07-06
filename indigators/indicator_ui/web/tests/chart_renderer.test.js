@@ -1126,33 +1126,44 @@ test('zoomedPriceRange: deltaY が NaN/0 は無変化（NaN 伝播防止・レ�
   assert.deepEqual(zoomedPriceRange({ min: 0, max: 200 }, 100, 0), { min: 0, max: 200 });
 });
 
-test('setCandles: 価格ズーム override を解除して自動スケールへ復帰する（時間足切替の固着修正・レビュー🟡#1）', () => {
-  // Arrange: 価格軸ズームで override を立てる。
-  const { chart, mainSeries } = fakeZoomChart(360);
+test('setCandles: 手動スケール（ズーム）を破棄しない（解除はユーザーの dblclick のみ・足リビール回帰）', () => {
+  // Arrange: 価格軸ズームで手動スケール（autoScale=OFF＋レンジ）を立てる。
+  const { chart, mainSeries, psState } = fakeZoomChart(360);
   const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
   renderer.setPaneHeight(360);
-  renderer.handlePriceWheel(610, 180, -100); // 軸領域でズーム → _priceZoomRange 設定
-  // override 有効中は provider が override を返す（original を素通ししない）。
-  const zoomed = renderer.__callAutoscaleProvider(() => ({ priceRange: { minValue: 0, maxValue: 200 } }));
-  assert.notDeepEqual(zoomed, { priceRange: { minValue: 0, maxValue: 200 } }, 'ズーム中は override');
-  // Act: 時間足切替相当（setCandles で全置換）。
+  renderer.handlePriceWheel(610, 180, -100); // 軸領域でズーム → setVisibleRange（autoScale=OFF）
+  const zoomedRange = { ...psState.range };
+  assert.equal(psState.autoScale, false, 'ズームで手動スケールになる');
+  // Act: 全置換（時間足切替・リプレイの足リビールの両方がこの経路）。
   renderer.setCandles([{ time: 1, open: 1, high: 2, low: 0, close: 1.5 }]);
-  // Assert: override 解除＝provider は original() を素通し（自動スケール復帰）。
-  const orig = { priceRange: { minValue: 5, maxValue: 55 } };
-  assert.deepEqual(renderer.__callAutoscaleProvider(() => orig), orig, 'setCandles で自動スケール復帰');
+  // Assert: 手動スケールは維持される（システムは勝手に解除しない＝解除点は dblclick のみ）。
+  //   旧実装はここで override を破棄し、setCandles を毎バー呼ぶ replay_ui の足リビールで
+  //   バー境界のたびにホイールズームだけが消えていた（本テストはその再発を禁止する回帰）。
+  assert.equal(psState.autoScale, false, 'setCandles 後も手動スケールのまま');
+  assert.deepEqual(psState.range, zoomedRange, 'setCandles 後もズームレンジ不変');
 });
 
 // ===========================================================================
-// handlePriceWheel / resetPriceZoom（価格軸ホイールズームの renderer 配線）
-//   x >= timeScale().width() （価格軸領域）のときだけ処理し true を返す。
-//   autoscaleInfoProvider は一度だけ恒久インストールし、override 有→{priceRange}、null→original()。
+// handlePriceWheel / resetPriceZoom / panPriceByPixels（価格軸ホイールズームの renderer 配線）
+//   lwc v5.2 の priceScale ネイティブ API（getVisibleRange/setVisibleRange/autoScale）で実装する。
+//   setVisibleRange は autoScale=false を設定する＝軸ドラッグと同一の内部状態（lwc 実装準拠）。
 // ===========================================================================
 
-// 価格軸ズーム用の Fake chart。timeScale().width()/coordinateToPrice/priceScale().applyOptions を記録。
+// 価格軸ズーム用の Fake chart。priceScale はネイティブ API（getVisibleRange/setVisibleRange/
+//   options/applyOptions）を状態付きで模す。setVisibleRange が autoScale=false を設定する点も
+//   実 lwc（v5.2 bundle: setVisibleRange(t){this.setAutoScale(!1);...}）に合わせる。
 function fakeZoomChart(paneHeight = 400) {
-  const applied = [];
-  const priceScaleApplied = [];
-  let providerFn = null;
+  const psState = { autoScale: true, range: { from: 0, to: 200 } };
+  const priceScale = {
+    getVisibleRange: () => ({ ...psState.range }),
+    setVisibleRange(r) {
+      psState.autoScale = false; // 実 lwc と同じ: 手動レンジ設定は自動スケール解除を伴う。
+      psState.range = { from: r.from, to: r.to };
+    },
+    setAutoScale(on) { psState.autoScale = !!on; },
+    applyOptions(o) { if (o && o.autoScale !== undefined) psState.autoScale = !!o.autoScale; },
+    options: () => ({ autoScale: psState.autoScale }),
+  };
   const mainSeries = {
     _def: undefined, setData() {}, update() {}, applyOptions() {},
     _priceRange: { min: 0, max: 200 },
@@ -1162,110 +1173,87 @@ function fakeZoomChart(paneHeight = 400) {
       const t = y / paneHeight;
       return this._priceRange.max - t * (this._priceRange.max - this._priceRange.min);
     },
-    priceScale() {
-      return {
-        applyOptions(o) {
-          priceScaleApplied.push(o);
-          if (o && o.autoscaleInfoProvider !== undefined) {
-            providerFn = o.autoscaleInfoProvider;
-          }
-        },
-        _providerCount: () => priceScaleApplied.filter((o) => o.autoscaleInfoProvider !== undefined).length,
-      };
-    },
+    priceScale: () => priceScale,
   };
   const chart = {
-    _applied: applied, _priceScaleApplied: priceScaleApplied,
     addSeries: () => mainSeries,
     removeSeries() {},
     panes: () => [{ setStretchFactor() {}, paneIndex: () => 0 }],
     addPane: () => ({ addSeries: () => mainSeries, setStretchFactor() {}, paneIndex: () => 1, setPreserveEmptyPane() {} }),
     removePane() {},
-    applyOptions(o) { applied.push(o); },
+    applyOptions() {},
     timeScale: () => ({ width: () => 600, height: () => 40, fitContent() {} }),
     subscribeCrosshairMove() {},
   };
-  return { chart, mainSeries, callProvider: (orig) => (providerFn ? providerFn(orig) : null),
-    providerInstalls: () => priceScaleApplied.filter((o) => o.autoscaleInfoProvider !== undefined).length };
+  return { chart, mainSeries, priceScale, psState };
 }
 
-test('handlePriceWheel: 軸領域内(x>=timeScale width)で処理し true を返す・provider 経由で新レンジになる', () => {
+test('handlePriceWheel: 軸領域内(x>=timeScale width)で処理し true・setVisibleRange で新レンジ（autoScale=OFF）', () => {
   // Arrange
-  const { chart, mainSeries } = fakeZoomChart(360);
+  const { chart, mainSeries, psState } = fakeZoomChart(360);
   const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
   renderer.setPaneHeight(360);
   // Act: x=610（>=600=軸領域）, y=180（中央→p=100）, deltaY=-100（ズームイン）
   const handled = renderer.handlePriceWheel(610, 180, -100);
-  // Assert: 処理された
+  // Assert: 処理され、レンジは f=0.9・p=100 中心で 0..200 → 10..190、手動スケールになる。
   assert.equal(handled, true);
-  // provider を呼ぶと新レンジ（f=0.9, p=100, min=0..max=200 → 10..190）が返る
-  const info = renderer.__callAutoscaleProvider(() => ({ priceRange: { minValue: 0, maxValue: 200 } }));
-  assert.ok(Math.abs(info.priceRange.minValue - 10) < 1e-6);
-  assert.ok(Math.abs(info.priceRange.maxValue - 190) < 1e-6);
+  assert.ok(Math.abs(psState.range.from - 10) < 1e-6);
+  assert.ok(Math.abs(psState.range.to - 190) < 1e-6);
+  assert.equal(psState.autoScale, false);
+  assert.equal(renderer.isPriceZoomed(), true);
 });
 
 test('handlePriceWheel: 軸領域外(x<timeScale width)は false で何もしない（時間軸ズームを奪わない）', () => {
   // Arrange
-  const { chart, mainSeries } = fakeZoomChart(360);
+  const { chart, mainSeries, psState } = fakeZoomChart(360);
   const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
   renderer.setPaneHeight(360);
   // Act: x=300（<600=チャート本体）
   const handled = renderer.handlePriceWheel(300, 180, -100);
-  // Assert
+  // Assert: 未処理・自動スケールのまま・レンジ不変。
   assert.equal(handled, false);
-  // provider override は未設定 → original() 素通し
-  const info = renderer.__callAutoscaleProvider(() => ({ priceRange: { minValue: 0, maxValue: 200 } }));
-  assert.deepEqual(info, { priceRange: { minValue: 0, maxValue: 200 } });
+  assert.equal(psState.autoScale, true);
+  assert.deepEqual(psState.range, { from: 0, to: 200 });
 });
 
-test('resetPriceZoom: override をクリアし original() 素通しへ復帰する', () => {
-  // Arrange: 一旦ズームして override をセット
+test('handlePriceWheel: getVisibleRange が null（データ無し）なら false で何もしない', () => {
+  const { chart, mainSeries, priceScale, psState } = fakeZoomChart(360);
+  priceScale.getVisibleRange = () => null;
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setPaneHeight(360);
+  assert.equal(renderer.handlePriceWheel(610, 180, -100), false);
+  assert.equal(psState.autoScale, true);
+});
+
+test('handlePriceWheel: priceScale がネイティブ API 非提供なら false（後方互換・安全側）', () => {
   const { chart, mainSeries } = fakeZoomChart(360);
+  mainSeries.priceScale = () => ({ applyOptions() {} }); // getVisibleRange/setVisibleRange 無し
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
+  renderer.setPaneHeight(360);
+  assert.equal(renderer.handlePriceWheel(610, 180, -100), false);
+});
+
+test('resetPriceZoom: autoScale=true へ復帰する（手動スケールの唯一の解除点）', () => {
+  // Arrange: 一旦ズームして手動スケールにする。
+  const { chart, mainSeries, psState } = fakeZoomChart(360);
   const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
   renderer.setPaneHeight(360);
   renderer.handlePriceWheel(610, 180, -100);
-  // Act: リセット
+  assert.equal(renderer.isPriceZoomed(), true);
+  // Act: リセット（dblclick 相当）。
   renderer.resetPriceZoom();
-  // Assert: provider は original() を素通しする（override 無効）
-  const orig = { priceRange: { minValue: 5, maxValue: 55 } };
-  const info = renderer.__callAutoscaleProvider(() => orig);
-  assert.deepEqual(info, orig);
+  // Assert: 自動スケール復帰。
+  assert.equal(psState.autoScale, true);
+  assert.equal(renderer.isPriceZoomed(), false);
 });
 
-test('handlePriceWheel: autoscaleInfoProvider は series へ毎回再設定される（再オートスケール誘発）', () => {
-  // 回帰: autoscaleInfoProvider は series オプション（priceScale へ渡しても lwc は無視）。かつ
-  //   provider の中身だけ変えても lwc は再オートスケールしないため、wheel/reset の度に
-  //   mainSeries.applyOptions で新クロージャを再設定してオプション変更→再計算を誘発する（実機バグ修正）。
-  // Arrange: mainSeries.applyOptions を記録
-  const zc = fakeZoomChart(360);
-  const seriesApplied = [];
-  zc.mainSeries.applyOptions = (o) => seriesApplied.push(o);
-  const renderer = new ChartRenderer({ chart: zc.chart, mainSeries: zc.mainSeries, lwc: fakeLwc() });
-  renderer.setPaneHeight(360);
-  // Act: 2 回ズーム + リセット
-  renderer.handlePriceWheel(610, 180, -100);
-  renderer.handlePriceWheel(610, 180, -100);
-  renderer.resetPriceZoom();
-  // Assert: series へ provider が 3 回（wheel×2 + reset×1）再設定される。
-  const installs = seriesApplied.filter((o) => o && o.autoscaleInfoProvider !== undefined);
-  assert.equal(installs.length, 3, 'wheel/reset の度に series へ再設定');
-  // priceScale へは provider を渡さない（series オプションのため・lwc は無視する）。
-  assert.equal(zc.providerInstalls(), 0);
-  // 各クロージャは現在状態を反映する（reset 後は original 素通し）。
-  const orig = () => ({ priceRange: { minValue: 1, maxValue: 2 } });
-  assert.deepEqual(installs.at(-1).autoscaleInfoProvider(orig), { priceRange: { minValue: 1, maxValue: 2 } });
-});
-
-test('handlePriceWheel: coordinateToPrice が null（データ無し）なら false で何もしない', () => {
-  // Arrange: coordinateToPrice が常に null
-  const { chart, mainSeries } = fakeZoomChart(360);
-  mainSeries.coordinateToPrice = () => null;
+test('isPriceZoomed: 軸ドラッグ由来の手動スケール（autoScale=OFF）でも true（入力手段を区別しない）', () => {
+  const { chart, mainSeries, priceScale } = fakeZoomChart(360);
   const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
-  renderer.setPaneHeight(360);
-  // Act
-  const handled = renderer.handlePriceWheel(610, 180, -100);
-  // Assert
-  assert.equal(handled, false);
+  assert.equal(renderer.isPriceZoomed(), false);
+  // 軸ドラッグ相当: lwc ネイティブが autoScale=false にする。
+  priceScale.applyOptions({ autoScale: false });
+  assert.equal(renderer.isPriceZoomed(), true, 'ドラッグ由来でもズーム中扱い（縦パン許可）');
 });
 
 // ---------------------------------------------------------------------------
@@ -1292,22 +1280,21 @@ test('clampPriceRange: span はデータ全幅の ×5 を超えず ×1e-4 未満
 
 test('handlePriceWheel: 連続 200 回のズームアウトでもレンジが発散しない（絶対クランプ）', () => {
   // Arrange: baseCandles（データ全幅 100..200）を持つ renderer
-  const zc = fakeZoomChart(360);
-  const renderer = new ChartRenderer({ chart: zc.chart, mainSeries: zc.mainSeries, lwc: fakeLwc() });
+  const { chart, mainSeries, psState } = fakeZoomChart(360);
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
   renderer.setCandles([
     { time: 1, open: 120, high: 200, low: 100, close: 150 },
     { time: 2, open: 150, high: 180, low: 110, close: 160 },
   ]);
   renderer.setPaneHeight(360);
-  // Act: ズームアウト（deltaY=+100）を 200 連打
+  // Act: ズームアウト（deltaY=+100）を 200 連打（毎回 getVisibleRange を読み直す＝実挙動）
   for (let i = 0; i < 200; i += 1) {
     renderer.handlePriceWheel(610, 180, +100);
   }
   // Assert: span はデータ全幅(100)×5=500 を超えない（発散しない）
-  const info = renderer.__callAutoscaleProvider(() => null);
-  const span = info.priceRange.maxValue - info.priceRange.minValue;
+  const span = psState.range.to - psState.range.from;
   assert.ok(span <= 500 + 1e-6, `span=${span} は 500 以下`);
-  assert.ok(Number.isFinite(info.priceRange.minValue) && Number.isFinite(info.priceRange.maxValue));
+  assert.ok(Number.isFinite(psState.range.from) && Number.isFinite(psState.range.to));
 });
 
 // ---------------------------------------------------------------------------
@@ -1315,33 +1302,31 @@ test('handlePriceWheel: 連続 200 回のズームアウトでもレンジが発
 //   span 不変・下げ(dy>0)で表示レンジが上へ・データ範囲内に中心クランプ・pane 高未供給時は false。
 // ---------------------------------------------------------------------------
 test('panPriceByPixels: 下げ(dy>0)で表示レンジが上へ平行移動し span は不変', () => {
-  const { chart, mainSeries } = fakeZoomChart(360);
+  const { chart, mainSeries, psState } = fakeZoomChart(360);
   const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
   renderer.setCandles([
     { time: 1, open: 40, high: 200, low: 0, close: 100 },
     { time: 2, open: 100, high: 190, low: 10, close: 150 },
   ]);
   renderer.setPaneHeight(360);
-  // 初回パン: 基準は現表示 0..200（span=200）。dy=+36（=10% of paneHeight）→ shift=+20。
+  // 現表示 0..200（span=200）。dy=+36（=10% of paneHeight）→ shift=+20。
   const handled = renderer.panPriceByPixels(36);
   assert.equal(handled, true);
-  const info = renderer.__callAutoscaleProvider(() => null);
-  const span = info.priceRange.maxValue - info.priceRange.minValue;
+  const span = psState.range.to - psState.range.from;
   assert.ok(Math.abs(span - 200) < 1e-6, 'span 不変');
-  assert.ok(info.priceRange.minValue > 0, '下げで min が上昇（表示レンジ上へ）');
+  assert.ok(psState.range.from > 0, '下げで from が上昇（表示レンジ上へ）');
 });
 
 test('panPriceByPixels: 中心はデータ範囲内にクランプ（無限にパンできない）', () => {
-  const { chart, mainSeries } = fakeZoomChart(360);
+  const { chart, mainSeries, psState } = fakeZoomChart(360);
   const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
   renderer.setCandles([{ time: 1, open: 100, high: 120, low: 80, close: 110 }]); // データ 80..120
   renderer.setPaneHeight(360);
-  // 大量にパン（dy=+100000 相当を連続）しても中心は [80,120] を超えない。
+  // 大量にパン（dy=+1000 を連続）しても中心は [80,120] を超えない。
   for (let i = 0; i < 50; i += 1) {
     renderer.panPriceByPixels(1000);
   }
-  const info = renderer.__callAutoscaleProvider(() => null);
-  const c = (info.priceRange.minValue + info.priceRange.maxValue) / 2;
+  const c = (psState.range.from + psState.range.to) / 2;
   assert.ok(c >= 80 - 1e-6 && c <= 120 + 1e-6, `中心 ${c} はデータ範囲内`);
 });
 

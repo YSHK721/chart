@@ -300,3 +300,32 @@ test('bootstrap (file://) establishes _lastBar so hover-off shows OHLC without a
   const text = JSON.stringify(doc._readout.children);
   assert.match(text, /185/);
 });
+
+// ===========================================================================
+// ChartInteractionController 配線（価格軸 wheel ズーム・dblclick・本体縦パン）
+//   composition root は new して install() するだけに縮小する（配線専用）。
+//   参照実装 indigators/indicator_ui/.../composition_root_front.js L262-277 と同型の配線。
+// ===========================================================================
+
+test('bootstrap wires ChartInteractionController: registers wheel/dblclick/pointer listeners on container', async () => {
+  // Arrange: addEventListener を記録する container Fake（他配線に非干渉な補助 API も併設）。
+  const { lwc } = fakeLwc();
+  const registered = [];
+  const container = {
+    addEventListener(type, fn, opts) { registered.push({ type, opts }); },
+    getBoundingClientRect() { return { left: 0, top: 0 }; },
+    clientHeight: 400,
+  };
+  // Act（A方式・file://＝fetch 不要で同期配線を確認）。
+  const { ready } = await bootstrap({
+    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  await ready;
+  // Assert: wheel は passive:false + capture:true で配線され、dblclick / pointerdown も配線される。
+  const wheel = registered.find((r) => r.type === 'wheel');
+  assert.ok(wheel, 'wheel リスナーが配線される');
+  assert.equal(wheel.opts?.passive, false);
+  assert.equal(wheel.opts?.capture, true);
+  assert.ok(registered.some((r) => r.type === 'dblclick'), 'dblclick リスナーが配線される');
+  assert.ok(registered.some((r) => r.type === 'pointerdown'), 'pointerdown（本体縦パン）が配線される');
+});

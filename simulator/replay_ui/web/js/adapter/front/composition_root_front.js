@@ -15,6 +15,7 @@
 // SAMPLE_DATA（埋め込み 635KB）は A方式（file://）でのみ動的 import する。B方式（served）は
 // candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
 import { ChartRenderer } from './chart_renderer.js';
+import { ChartInteractionController } from './chart_interaction_controller.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
@@ -141,6 +142,25 @@ export async function bootstrap({
     chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),
   });
 
+  // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
+  //   coordinateToPrice(paneHeight) で価格レンジ下端を読むために必要。container/timeScale 非対応
+  //   （SSR/テスト）では設定できないため no-op（handlePriceWheel は pane 高未供給時に安全に false）。
+  //   リサイズで container 高が変わるため、autoSize 変化に追随できるよう wheel 発火時にも再計算する。
+  //   （参照実装 indigators/indicator_ui/web/js/adapter/front/composition_root_front.js L181-193 を忠実移植）
+  const updatePaneHeight = () => {
+    if (typeof renderer.setPaneHeight !== 'function') {
+      return;
+    }
+    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
+    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
+    const paneHeight = ch - th;
+    if (paneHeight > 0) {
+      renderer.setPaneHeight(paneHeight);
+    }
+  };
+  updatePaneHeight();
+
   // A方式の初期ローソクは renderer.setCandles で描画する（直接 mainSeries.setData ではなく
   //   経由させることで読み取り欄の最新足の単一源 _lastBar が立ち、hover 解除でも OHLC が出る）。
   if (initialCandles) {
@@ -164,6 +184,20 @@ export async function bootstrap({
     //   refresh(to) 成長（機構A）。mode 解決役は注入しない＝gear 選択モードをそのまま維持（present と同型）。
     mpGrowthResolver: () => true,
   });
+
+  // チャート操作（価格軸 wheel ズーム・dblclick 自動スケール復帰・ズーム中の本体縦パン）の配線は
+  //   ChartInteractionController（adapter/front）へ分離する。Composition Root は new して install する
+  //   だけに縮小する（配線専用）。振る舞い本体・座標計算・イベント登録順・分岐・オプションは参照実装
+  //   （indigators/indicator_ui/.../chart_interaction_controller.js L103-176）から忠実移植（挙動不変）。
+  //   参照実装のリプレイ横スワイプスクラブ（L39-101）は simulator/replay_ui スコープ外のため移植せず、
+  //   その専用依存 replayBar も本コントローラには渡さない。getController は controller を遅延参照する
+  //   （() => controller）。updatePaneHeight は初期供給（上記）と同一関数を注入する。
+  new ChartInteractionController({
+    container,
+    renderer,
+    getController: () => controller,
+    updatePaneHeight,
+  }).install();
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
   //   初期は既定時間足・直近 recentBars 本。取得失敗時は SAMPLE_DATA のまま（フォールバック）。
