@@ -5,3 +5,4 @@ shots/
 __pycache__/
 *.pyc
 venv/
+analysis/out/
