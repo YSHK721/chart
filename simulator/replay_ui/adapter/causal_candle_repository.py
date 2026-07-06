@@ -8,6 +8,7 @@ tick 源（ref="jp225_tick"）: ``jp225_tick_m1.csv`` を読み、日内 close �
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -69,13 +70,22 @@ class CausalCandleRepository:
         if isinstance(limit, int) and limit > 0:
             r = r.tail(limit)
         secs = r.index.values.astype("datetime64[s]").astype("int64")
-        return [
-            {
+        # ISSUE-044: tickvol＝足内の実 tick 数（M1 volume はその分のティック数・resample は volume を合算）。
+        #   real_ticks（cap 廃止＝間引かない）の ETA を実 tick 総数から算出するための材料。外れバー除去後の
+        #   合算＝/intraday の外れ値除去済み再生 tick 数と整合する。volume 列が無い場合は載せない（additive）。
+        has_vol = "volume" in r.columns
+        out = []
+        for i, x in enumerate(r.itertuples(index=False)):
+            d = {
                 "time": int(secs[i]),
                 "open": float(x.open),
                 "high": float(x.high),
                 "low": float(x.low),
                 "close": float(x.close),
             }
-            for i, x in enumerate(r.itertuples(index=False))
-        ]
+            if has_vol:
+                v = float(x.volume)
+                if math.isfinite(v):  # NaN/Inf 行は載せない（int(NaN)→ValueError の 500 を防ぐ・JS はフォールバック）
+                    d["tickvol"] = int(v)
+            out.append(d)
+        return out

@@ -587,3 +587,11 @@
 - **背景**: sessions モードは `isGrowingPush()=false`（`_growing && !_sessions` を満たさない）のため、ISSUE-042 の cursor 未確定ガードの対象外。ページ読込 restore（`_untilTime` 未設定＝`to=undefined`）で基底 refresh が全期間 sessions 分割を setProfile し、再生開始後の `refresh(to=T)`（機構A・as-of-T）で縮小ジャンプが起きうる。1W/1M（forming 非対応 tf）は enterBar→null で後続リセットが無くフラッシュ不成立＝対象外（妥当判定済み）。
 - **対策（案）**: sessions は描画経路が別（共有グリッド＋各日 tpo 整列）のため個別ハンドリング要。まずブラウザ目視で実挙動を確認してから対策設計する（ISSUE-042 のガードをそのまま流用しない）。
 - **関連**: ISSUE-042・ISSUE-041（機構A: refresh(to,sessions)）。
+
+## ISSUE-044: replay_ui — real_ticks（実ティック）再生の完了予想（ETA）が旧 800 点 cap モデルのままで実測と桁違いに乖離
+- **重大度**: Medium（表示バグ・月足×実ティックで約 1,900 倍の過小推定）
+- **ステータス**: RESOLVED（fix/replay-eta-real-ticks-tickvol 実装完了・TDD Red 実証（backend KeyError／wiring「5秒」vs 期待「3分00秒」）・replay python 146/146・replay web 199/199 全緑・architecture-executor 違反なし・code-review 承認可 🔴0（🟡 int(NaN) 防御は即時反映済み・🟡 fmtEta 時間単位表示は UI 変更のため依頼者判断待ち）。実データ検証: M1 volume 合算＝parquet 生 tick 数と完全一致（133,014=133,014）・残り11ヶ月足≒1,687万tick→s=1 で約28時間（旧表示53秒）。ブラウザ目視は依頼者実施）
+- **検出**: 依頼者報告（2026-07-06）「月足×実ティック再生で『53秒（残り11足)』表示が実測と整合しない」。
+- **背景**: `stream.js` で real_ticks は「接点検証＝全ティック（cap 廃止・間引かない・絶対仕様）」だが、ETA モデル（`timing.js: animBaseMs/estimatePeriodMs`）は旧仕様の ANIM_FINE=800 点 cap 前提（800×6ms＋固定費≒4.9秒/足 → 11足≒53秒）のまま。月足は 1 足に数十万〜300万超 tick（実測: 残り11ヶ月足合計 約1,687万tick → s=1 で約28時間）。per-bar 実測 EMA の自己補正も「最初の 1 足が終わらない」ため効かない。**参照実装（prototype_260626-01 replay.js）にも同じ不整合があり（cap 廃止 :436 時に ETA モデル :277-282 未更新）、cap 廃止後の正しい ETA の定義が無い** → CLAUDE.md 規則によりユーザーへ方針確認し「バックエンド拡張で正確化」を承認取得（2026-07-06）。
+- **対策（承認済み設計）**: (1) backend `/candles`（jp225_tick）各足に `tickvol`（実 tick 数＝M1 volume の resample 合算・外れバー除去後）を追加（additive・volume 列無しデータセットは不変）。(2) `timing.js` に新規純関数 `remainingTickvol`（残り足の tick 総数・欠損は null）と `etaRealTicksMs`（tick総数×stepMs＋足あたり compute+足送り固定費）を追加（参照実装からの抽出でなく承認済み拡張である旨をコメント明記）。(3) `setEta` は real_ticks かつ tickvol 有りならこれを使用（tickvol 欠損は従来モデルへフォールバック・他モードは従来どおり＝回帰なし）。TDD: backend 1・timing 純関数 2・setEta 配線 3 の Red→Green。
+- **関連**: prototype_260626-01（参照実装・同不整合あり）。ブランチ fix/replay-eta-real-ticks-tickvol。
