@@ -328,6 +328,31 @@ test('regression: setEnabled(true) during growing push does NOT fetch all-period
   assert.ok(forming.calls.length >= 1, 'setEnabled は forming（因果 base）で描く');
 });
 
+// --- 再発報告（restore 経路）: index.html は controller.restore() を setupReplay()（＝untilTime を設定する
+//   唯一の場所）より前に実行する。前回セッションで MP が表示状態のまま永続化されていると、restore →
+//   setEnabled(true) → refresh() の時点で getContext().to（カーソル）が undefined になり、`cursor != null`
+//   ガードを抜けて基底 refresh（全期間・完成形）が setProfile される＝完成形フラッシュ→再生開始でリセット→成長。
+//   growing push＋forming 対応 tf でカーソル未確定なら「何も描かない」（未来リーク禁止・最初の描画は再生
+//   1 フレーム目 enterBar の因果 base）を固定する。 ---
+test('regression(restore flash): refresh during growing push with cursor unset (page-load restore) draws NOTHING — no all-period completed-profile flash', async () => {
+  const ALL_PERIOD = { __allPeriod: true, poc: 12345, bins: [] };
+  const client = fakeClient(ALL_PERIOD);
+  const forming = fakeFormingClient([BASE_FULL]);
+  const primitive = fakePrimitive();
+  const { actor } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make,
+    client, primitive, ctxTo: undefined, // restore 時: setupReplay 前＝untilTime 未設定。
+  });
+  actor.setParams({ mode: 'normal' });
+  actor.applyGrowthState({ growing: true }); // reveal は常時 growing（mpGrowthResolver=()=>true）。
+  // Act: restore() の可視 MP 復元経路（_applyMpParams→setEnabled(true)→refresh）。
+  await actor.setEnabled(true);
+  // Assert: 全期間 fetchProfile（未来リーク・完成形フラッシュ）を呼ばず、setProfile も一切描かない。
+  assert.equal(client.calls.length, 0, 'cursor 未確定の growing push refresh は全期間 fetchProfile を呼ばない');
+  assert.equal(primitive.profiles.length, 0, 'cursor 未確定では何も描かない（最初の描画は再生 1 フレーム目の因果 base）');
+  assert.equal(forming.calls.length, 0, 'cursor 未確定では forming も引かない（now 無しの base 窓は定義不能）');
+});
+
 // --- Fix #2 回帰（再発防止・観測点は setProfile 描画そのもの）: 開始シーケンス（setEnabled(true)）で
 //   「その時間足の完成形＝全期間 as-of プロファイル」を primitive.setProfile で一度も描かないことを固定する。
 //   過去にこの完成足フラッシュ→リセット→成長が回帰テスト不在で再発したため、誤シーケンスが起きたら fail する

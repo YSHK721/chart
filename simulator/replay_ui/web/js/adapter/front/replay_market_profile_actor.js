@@ -80,15 +80,22 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   ＝完成足フラッシュ→リセット→成長、という因果的に不自然な開始シーケンスを生む（実測: setEnabled(true)→基底
   //   refresh が as-of-T 完成 setProfile を発火）。growing push では基底 refresh の完成形を描かず、現在カーソル
   //   now=getContext().to の因果 base 窓（forming・空 forming＝再生点の開始形）で開始する。
-  //   非 growing push（sessions/static）・cursor 未設定は基底 refresh（as-of-T）へ委譲＝回帰なし。
+  //   cursor 未確定（restore/初期化＝setupReplay 前で untilTime 未設定）は「何も描かない」: index.html は
+  //   controller.restore() を setupReplay()（untilTime を設定する唯一の場所）より前に実行するため、可視 MP の
+  //   復元がここへ cursor=undefined で到達する。基底 refresh へ委譲すると全期間（完成形）を描いて
+  //   フラッシュが再発する（実測・再発報告）ため、最初の描画は再生 1 フレーム目 enterBar の因果 base に遅延する。
+  //   非 growing push（sessions/static）は基底 refresh（as-of-T）へ委譲＝回帰なし。
   //   本 override は replay subclass インスタンス限定（present 基底 actor は無改変）。
   async refresh() {
     const ctx = this._getContext();
     const cursor = ctx.to;
-    if (this.isGrowingPush() && cursor != null && !_FORMING_UNSUPPORTED_TF.has(ctx.timeframe)) {
+    if (this.isGrowingPush() && !_FORMING_UNSUPPORTED_TF.has(ctx.timeframe)) {
+      if (cursor == null) {
+        return undefined; // cursor 未確定＝未来リーク禁止で描かない（再生 1 フレーム目の enterBar が初描画）。
+      }
       return this.enterBar(cursor); // 因果 base 窓（driver 未配線 from はフォールバック）。
     }
-    // 非 growing push（sessions/static）・cursor 未設定・forming 非対応 tf（1W/1M）は基底 refresh へ委譲。
+    // 非 growing push（sessions/static）・forming 非対応 tf（1W/1M）は基底 refresh へ委譲。
     //   1W/1M は forming で描けない（enterBar→null）ため従来の全期間 as-of 描画を保つ（描画欠落を防ぐ）。
     return super.refresh();
   }

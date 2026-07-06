@@ -571,3 +571,19 @@
 - **非退行（全緑）**: MP module web 197・replay web 183・present web 506/508（既知2fail=replay_analysis/timeline_player・MP 非関連）・market_profile api 190・indicator_ui api 342・replay py 144。DwellAccumulator/sessions primitive 無改修・prototype_* 無改変・技術スタック不変。
 - **要ブラウザ目視（依頼者実施）**: (1) replay normal 再生が全期間累積＋現在足 forming で育つ（当日でない）。(2) sessions 当日タイルが reveal 前進で因果成長・過去日静的。(3) 1m/全tf で forming が育つ。(4) ticklive gear 非表示。(5) 特に replay normal の push 成長で描画欠落が無い（enterBar が _growing=true で自己ガードを通過することに依存）。
 - **関連**: ISSUE-029（1D固定窓・増分1完了）・ISSUE-030（1W/1M粗サブ解像度）。ブランチ feature/replay-play-mp-coupling（Phase0-2 承認済・push しない）。
+
+## ISSUE-042: replay_ui MP — ページ読込 restore 経路で完成形フラッシュが再発（cursor 未確定の refresh が全期間へ委譲）
+- **重大度**: Medium（視覚バグ・因果契約違反＝未来リーク）
+- **ステータス**: RESOLVED（fix/mp-restore-cursorless-flash 実装完了・回帰テスト旧コード Red 実証・replay web 194/194・MP module web 204/204 green・architecture-executor 違反なし・code-review 🔴0 条件付き承認／ブラウザ目視は依頼者実施）
+- **検出**: 依頼者報告（2026-07-06）「リプレイモードのフラッシュのバグが修正されていない」。e371271（Fix#2 完成形フラッシュ撲滅）後も再現。
+- **背景**: index.html は `controller.restore()` を `setupReplay()`（`controller._untilTime` を設定する唯一の場所）より**前**に実行する。前回セッションで MP が可視のまま永続化されていると、restore → `_applyMpParams`（growing=true）→ `setEnabled(true)` → `refresh()` が `getContext().to === undefined` で走り、`ReplayMarketProfileActor.refresh()` の `cursor != null` ガードを抜けて基底 refresh（to 無し＝**全期間・完成形プロファイル**）が setProfile される。再生開始の enterBar が因果 base へ作り直すため「完成形→リセット→成長」のフラッシュが再発。e371271 の回帰テストは `ctxTo: now`（cursor 設定済み）のみ固定しており、cursor 未確定（restore/初期化）経路が未カバーだった。
+- **対策**: `refresh()` override を「growing push かつ forming 対応 tf」で cursor 未確定なら**何も描かず return**（未来リーク禁止・最初の描画は再生 1 フレーム目 enterBar の因果 base に遅延）へ修正。cursor 未確定の restore シーケンスで「全期間 fetchProfile を呼ばない／setProfile を一切描かない」を固定する回帰テストを追加（修正前 Red 実証）。
+- **関連**: e371271（Fix#2）・ISSUE-041（統一成長モデル）。ブランチ fix/mp-restore-cursorless-flash。
+
+## ISSUE-043: replay_ui MP sessions — restore 経路（cursor 未確定）で全期間 sessions → as-of-T への縮小ジャンプの疑い
+- **重大度**: Low（視覚バグ疑い・未目視・ISSUE-042 と同クラス）
+- **ステータス**: OPEN
+- **検出**: ISSUE-042 の code-review（🟡・2026-07-06）。
+- **背景**: sessions モードは `isGrowingPush()=false`（`_growing && !_sessions` を満たさない）のため、ISSUE-042 の cursor 未確定ガードの対象外。ページ読込 restore（`_untilTime` 未設定＝`to=undefined`）で基底 refresh が全期間 sessions 分割を setProfile し、再生開始後の `refresh(to=T)`（機構A・as-of-T）で縮小ジャンプが起きうる。1W/1M（forming 非対応 tf）は enterBar→null で後続リセットが無くフラッシュ不成立＝対象外（妥当判定済み）。
+- **対策（案）**: sessions は描画経路が別（共有グリッド＋各日 tpo 整列）のため個別ハンドリング要。まずブラウザ目視で実挙動を確認してから対策設計する（ISSUE-042 のガードをそのまま流用しない）。
+- **関連**: ISSUE-042・ISSUE-041（機構A: refresh(to,sessions)）。
