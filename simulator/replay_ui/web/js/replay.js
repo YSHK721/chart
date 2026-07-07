@@ -140,6 +140,18 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     if (isStale(g, generation)) return; // 後発レンダが来ていれば破棄
     applyView();
     syncBoundary(); // full 再計算で再生成された pane 系列へ減光を再装着
+    // ISSUE-048（完成足フラッシュ防止）: 参照実装 prototype_260626-01 は「リビール→animateForming 冒頭の
+    //   同期畳み込み」の間に await を挟まない不変条件で完成足のチラ見せを防ぐが、直下の MP enterBar
+    //   （HTTP await）が挟まると、その待ち時間ぶんブラウザが paint して完成足が露出する（実測 0.5〜1.5s）。
+    //   再生中（playing かつ足内更新モード）は enterBar の await より前＝リビールと同一同期ブロック内
+    //   （paint 前）で最新足を始値の同事足へ畳む。ガードは操作種別でなく playing フラグの現在値で判定する:
+    //   非再生時の手動ナビ（rp-next/prev/slider）は畳まず完成足のまま（従来どおり）。再生中に slider 等を
+    //   操作した場合は畳まれるが、直後の animateForming が同値で上書きするため良性。math（足内更新なし＝
+    //   完成足のまま）は除外。animateForming 冒頭の畳み込みは防御として温存。
+    if (playing && view.readMode() !== 'math') {
+      const cd = candles[bar];
+      view.updateForming({ time: cd.time, open: cd.open, high: cd.open, low: cd.open, close: cd.open });
+    }
     // MP tick-live: バー単位ジャンプで base を now=T（因果）で取り直す（rollover 兼・await ready で
     //   直後の animateForming feedTick 取りこぼしを防ぐ）。MP OFF/未配線時は完全に非干渉。
     if (mpOn()) await marketProfile.enterBar(t, mpBaseFrom());

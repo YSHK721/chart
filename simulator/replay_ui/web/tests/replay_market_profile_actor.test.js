@@ -813,3 +813,75 @@ test('lock retries when causal history was unavailable at first call (no permane
   assert.equal(forming.calls[1].resmode, 'range', '履歴が揃った次回はロックへ復帰（再試行）');
   assert.equal(forming.calls[1].range, 2, '復帰後の barw は因果履歴レンジ/bins');
 });
+
+// --- ISSUE-049（縮退グリッド中のブランク描画フラッシュの回帰禁止）: enterBar の skipDegenerateDraw は
+//   自身の描画だけをスキップし、直後の feedTick/settleTick の throttle 描画には縮退ガードが無かったため、
+//   縮退 accumulator（[0,1]・全 bin ゼロ）の空 snapshot が setProfile され MP バーが毎バー全消滅していた。
+//   修正: 縮退状態（_gridDegenerate）を状態化し、縮退中は feedTick/settleTick も描画抑止（前回描画保持）。
+//   growTo の実グリッド確定で解除して描画再開する。 ---
+
+const DEG_RESP = {
+  ok: true, formingStart: 1782950400, ticks: [], baseFine: [0], baseKmin: 0,
+  activeTable: [[1]], priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, now: 1782950400,
+};
+
+test('feedTick does NOT draw while grid is degenerate (blank [0,1] snapshot never rendered — ISSUE-049)', async () => {
+  const dayStart = 1782950400;
+  const forming = fakeFormingClient([DEG_RESP]);
+  const facc = fakeAccumulatorFactory();
+  const clock = fakeClock([0, 1000, 2000, 3000]);
+  const { actor, primitive } = makeActor({
+    formingClient: forming, makeAccumulator: facc.make, ctxTo: dayStart, now: clock, throttleMs: 100,
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  await actor.enterBar(dayStart); // 縮退 → enterBar は描画スキップ（既存）
+  const before = primitive.profiles.length;
+  // Act: throttle 間隔を超えて tick を供給（従来はここで空 snapshot が描かれていた＝Red）。
+  actor.feedTick(dayStart + 10, 71000);
+  actor.feedTick(dayStart + 20, 71010);
+  actor.feedTick(dayStart + 30, 71020);
+  // Assert: 縮退グリッド中は feedTick も描画しない（前回描画保持＝バー消滅フラッシュを出さない）。
+  assert.equal(primitive.profiles.length, before, '縮退中の feedTick は空 snapshot を描かない');
+});
+
+test('settleTick does NOT draw while grid is degenerate (ISSUE-049)', async () => {
+  const dayStart = 1782950400;
+  const forming = fakeFormingClient([DEG_RESP]);
+  const { actor, primitive } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: dayStart,
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  await actor.enterBar(dayStart); // 縮退
+  const before = primitive.profiles.length;
+  // Act
+  actor.settleTick();
+  // Assert
+  assert.equal(primitive.profiles.length, before, '縮退中の settleTick は空 snapshot を描かない');
+});
+
+test('growTo that stays degenerate does NOT draw; real grid re-enables drawing (feedTick resumes — ISSUE-049)', async () => {
+  const dayStart = 1782950400;
+  const GROWN = {
+    ok: true, formingStart: dayStart, ticks: [[dayStart + 100, 71000]],
+    baseFine: [0, 0, 0], baseKmin: 7100, activeTable: [[1]],
+    priceMin: 71000, priceMax: 71050, nBins: 3, gridW: 10, now: dayStart + 100,
+  };
+  const forming = fakeFormingClient([DEG_RESP, DEG_RESP, GROWN]);
+  const clock = fakeClock([0, 1000, 2000, 3000, 4000]);
+  const { actor, primitive } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: dayStart,
+    now: clock, throttleMs: 100,
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  await actor.enterBar(dayStart);          // 縮退 #1
+  const before = primitive.profiles.length;
+  await actor.growTo(dayStart + 50);       // まだ縮退（データ無バー）→ 描かない（従来は空描画＝Red）
+  assert.equal(primitive.profiles.length, before, '縮退のままの growTo は描かない（前回描画保持）');
+  await actor.growTo(dayStart + 100);      // 実グリッド確定 → 描画再開
+  assert.equal(primitive.profiles.length, before + 1, '実グリッド確定の growTo は描画する');
+  actor.feedTick(dayStart + 110, 71010);   // throttle 経過後の feedTick も描画する（解除確認）
+  assert.equal(primitive.profiles.length, before + 2, '実グリッド確定後は feedTick 描画が再開する');
+});

@@ -63,6 +63,9 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     //   （＝同一成長セッション内で固定・再生開始点/時間足/bins 変更で自動再導出）。null=ロック不能。
     this._barwLockKey = null;
     this._barwLock = null;
+    // ISSUE-049: 現在の accumulator グリッドが縮退（[0,1]・base 空/tick 0）か。縮退中は feedTick/
+    //   settleTick/growTo の描画も抑止する（前回描画保持＝バー全消滅フラッシュを出さない）。
+    this._gridDegenerate = false;
   }
 
   // override: push 成長中（normal/replay+growing＝isGrowingPush）は enterBar/feedTick が駆動するため
@@ -174,27 +177,28 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   （＝再生範囲から累積・日跨ぎでも非リセット）。省略時は _buildFormingArgs が GrowthWindow フォールバック
   //   （当日窓）を写像する（driver 未配線の controller seam / gear 経路）。
   async enterBar(now, from) {
-    return this._rebuildAt(now, true, from); // skipDegenerateDraw=true（縮退は描かず前回保持）。
+    return this._rebuildAt(now, from);
   }
 
   // 追加: 当日 tick がグリッド外へ出たとき（replay.js driver が発火）、now までの因果窓で forming を
-  //   再取得しグリッドを拡張して作り直す。growTo は縮退スキップしない（拡張後は必ず描画＝当日プロファイル
-  //   成長）。fold 実体は enterBar と共通（_rebuildAt）。now は「直近 revealed tick 秒」（未来リーク禁止）。
+  //   再取得しグリッドを拡張して作り直す。fold 実体は enterBar と共通（_rebuildAt）。拡張後の実グリッドは
+  //   描画され、縮退のまま（データ無バー等）は前回描画を保持する（ISSUE-049・enterBar と同一基準）。
+  //   now は「直近 revealed tick 秒」（未来リーク禁止）。
   //   from（任意）: enterBar と同じ replayStart 累積下限（driver が透過）。
   async growTo(now, from) {
-    return this._rebuildAt(now, false, from); // skipDegenerateDraw=false（拡張グリッドは描画）。
+    return this._rebuildAt(now, from);
   }
 
   // enterBar/growTo の共通実体: base=1/src=dwell/now/from で forming を [from, now] の因果窓で取得 →
   //   accumulator を作り直し（rollover/grid 拡張）→ forming.ticks を畳み込み（present 基底 _enterTicklive と
   //   同一 fold semantics）→ _lastSec/レンジ設定 → 描画。取得失敗（null）・base 欠損は前回描画を保持（非破壊）。
-  //   skipDegenerateDraw=true かつ縮退グリッド（tick 0＋[..,+1] レンジ）は描画のみスキップ（init は行い growTo
-  //   の土台を残す）。
+  //   縮退グリッド（tick 0＋[..,+1] レンジ）は描画のみスキップし _gridDegenerate を立てる（init は行い
+  //   growTo の土台を残す・ISSUE-049）。
   //   from（任意・driver=replayStart）: 明示指定時は不変条件 from<=formingStart を保つため
   //   min(from, periodStart(now,tf)) へクランプしてから _buildFormingArgs へ渡す（replayStart>formingStart の端＝
   //   1W/1M ラベル規約や当該バー内でも未来リークしない）。省略時は _buildFormingArgs の GrowthWindow フォール
   //   バックへ委譲する。
-  async _rebuildAt(now, skipDegenerateDraw, from) {
+  async _rebuildAt(now, from) {
     if (!this.isGrowingPush()) {
       return; // 自己ガード: push 成長中（normal/replay+growing）以外は push 駆動しない（Phase5: 成長軸ゲート）。
     }
@@ -238,9 +242,13 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
       this._lastSec = t[0];
     }
     this._lastSnapMs = this._now();
-    // 縮退グリッド（forming tick 0 かつ priceMax-priceMin<=1）は描画スキップ＝[0,1] 潰れを出さない。
-    if (skipDegenerateDraw && ticks.length === 0
-        && (this._gridPriceMax - this._gridPriceMin) <= 1) {
+    // ISSUE-049: 縮退グリッド（forming tick 0 かつ priceMax-priceMin<=1）を状態化する。縮退中は
+    //   enterBar/growTo 自身だけでなく feedTick/settleTick の throttle 描画も抑止し（前回描画保持）、
+    //   空 snapshot（[0,1]・全 bin ゼロ）による MP バー全消滅フラッシュを出さない。実グリッド確定
+    //   （非縮退の rebuild）で解除＝描画再開する。init 自体は行う（growTo の土台・従来どおり）。
+    this._gridDegenerate = ticks.length === 0
+      && (this._gridPriceMax - this._gridPriceMin) <= 1;
+    if (this._gridDegenerate) {
       return; // 前回描画を保持（最初の out-of-range tick で growTo が即グリッド確定）。
     }
     this._draw();
@@ -269,6 +277,12 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     }
     this._accumulator.addTick(sec, mid);
     this._lastSec = sec;
+    // ISSUE-049: 縮退グリッド中は throttle 描画も抑止（前回描画保持）。addTick 自体は行う（範囲外 clip・
+    //   O(1)）が、空 snapshot（[0,1]）を setProfile しない＝MP バー全消滅フラッシュを出さない。
+    //   グリッドは最初の out-of-range tick の growTo が確定し、以降の描画が再開する。
+    if (this._gridDegenerate) {
+      return;
+    }
     const t = this._now();
     if (t - this._lastSnapMs >= this._throttleMs) {
       this._lastSnapMs = t;
@@ -277,8 +291,9 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   }
 
   // 追加（slim 移設）: 確定時の最終 snapshot を強制描画する（throttle 無視）。
+  //   縮退グリッド中は描かない（ISSUE-049・前回描画保持＝feedTick と同一基準）。
   settleTick() {
-    if (!this._enabled || !this._accumulator) {
+    if (!this._enabled || !this._accumulator || this._gridDegenerate) {
       return;
     }
     this._lastSnapMs = this._now();
