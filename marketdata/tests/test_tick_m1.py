@@ -266,3 +266,66 @@ def test_build_m1_per_day_concat_matches_whole_aggregation(tmp_path: Path) -> No
     got = pd.read_csv(out, parse_dates=["date"]).set_index("date")
     expected = tick_m1.ticks_to_m1(_ticks(rows_d1 + rows_d2))
     pd.testing.assert_frame_equal(got, expected, check_names=True)
+
+
+# --------------------------------------------------------------------------- #
+# until: 形成中（in-progress）分バーの除外（index >= until を書き込まない）
+# --------------------------------------------------------------------------- #
+def test_build_m1_until_excludes_forming_minute_bar(tmp_path: Path) -> None:
+    # 09:00・09:01 は確定、09:02 は形成中（until=09:02 で除外）。
+    _put_day(tmp_path, (2025, 1, 2), [
+        ("2025-01-02 09:00:10", 100.0, 100.0),
+        ("2025-01-02 09:01:10", 102.0, 102.0),
+        ("2025-01-02 09:02:10", 104.0, 104.0),  # 形成中分バー（>= until）→ 除外。
+    ])
+    out = tick_m1.build_m1_from_ticks(
+        "2025-01-02", "2025-01-02", data_dir=tmp_path, until=pd.Timestamp("2025-01-02 09:02:00")
+    )
+    dates = set(pd.read_csv(out)["date"])
+    assert "2025-01-02 09:00:00" in dates
+    assert "2025-01-02 09:01:00" in dates
+    assert "2025-01-02 09:02:00" not in dates  # 形成中は確定値として書かない。
+
+
+def test_append_m1_until_excludes_forming_minute_bar(tmp_path: Path) -> None:
+    # 既存 M1（day2・09:00 のみ）へ day3 を増分追記。until=day3 09:02 で 09:02 を除外。
+    _put_day(tmp_path, (2025, 1, 2), [("2025-01-02 09:00:10", 100.0, 100.0)])
+    tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=tmp_path)  # 初回=フル
+    _put_day(tmp_path, (2025, 1, 3), [
+        ("2025-01-03 09:00:10", 200.0, 200.0),
+        ("2025-01-03 09:01:10", 202.0, 202.0),
+        ("2025-01-03 09:02:10", 204.0, 204.0),  # 形成中分バー → 除外。
+    ])
+    out = tick_m1.append_m1_from_ticks(
+        "2025-01-01", "2025-01-03", data_dir=tmp_path, until=pd.Timestamp("2025-01-03 09:02:00")
+    )
+    dates = set(pd.read_csv(out)["date"])
+    assert "2025-01-03 09:01:00" in dates
+    assert "2025-01-03 09:02:00" not in dates  # 増分経路でも形成中を除外。
+
+
+def test_until_none_matches_legacy_output_build_and_append(tmp_path: Path) -> None:
+    # 回帰固定: until=None は until 未指定（従来）と完全一致（byte 不変）。
+    rows = [
+        ("2025-01-02 09:00:10", 100.0, 100.0),
+        ("2025-01-02 09:01:10", 102.0, 102.0),
+    ]
+    legacy_dir = tmp_path / "legacy"
+    until_dir = tmp_path / "until_none"
+    _put_day(legacy_dir, (2025, 1, 2), rows)
+    _put_day(until_dir, (2025, 1, 2), rows)
+
+    legacy_build = tick_m1.build_m1_from_ticks("2025-01-02", "2025-01-02", data_dir=legacy_dir)
+    until_build = tick_m1.build_m1_from_ticks(
+        "2025-01-02", "2025-01-02", data_dir=until_dir, until=None
+    )
+    assert until_build.read_text(encoding="utf-8") == legacy_build.read_text(encoding="utf-8")
+
+    # append 経路（初回フルフォールバック）でも until=None が従来と一致。
+    legacy_app = tmp_path / "legacy_app"
+    until_app = tmp_path / "until_app"
+    _put_day(legacy_app, (2025, 1, 2), rows)
+    _put_day(until_app, (2025, 1, 2), rows)
+    lp = tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=legacy_app)
+    up = tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=until_app, until=None)
+    assert up.read_text(encoding="utf-8") == lp.read_text(encoding="utf-8")
