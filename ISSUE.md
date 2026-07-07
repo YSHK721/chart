@@ -608,3 +608,13 @@
 - **検出**: 2026-07-06 ISSUE-045 対応中の全体テスト実行で検出。HEAD（変更前）でも同一失敗を確認済み。
 - **内容**: `tests/replay_analysis.test.js` と `tests/timeline_player.test.js` が `js/usecase/replay_analysis.js` 等の不存在モジュールを import して ERR_MODULE_NOT_FOUND。79982b8「未追跡のソース/ドキュメントを保全コミット」でテストのみ保全されソース側が欠落した可能性。
 - **対策案**: 対応方針は依頼者判断待ち（欠損ソースの復元 or テスト撤去）。
+
+## ISSUE-048: indicator_ui ライブモードで価格が更新されない（表示データセット jp225_tick へのライブ供給プロセス不在）
+- **ステータス**: RESOLVED（fix/live-tick-watch 実装完了・TDD Red 実証・marketdata+tools 172／indicator_ui tools 59／indicator_ui api 342 全緑・architecture-executor 🟡2件対応済み・code-review-executor 承認可 🔴0（🟡見せかけ緑テストは識別力を実証付きで修正済み）・E2E `--once` 実測で M1 末尾=直前確定分／形成中除外／rollups 生成を確認。ブラウザ目視（serve.sh 再起動→localhost:8000 でライブ足の伸長確認）は依頼者実施）
+- **重大度**: High
+- **検出**: 依頼者報告（2026-07-06）「ライブモードで価格が更新されない」。
+- **原因**: 6/27 e6651a3 でチャート表示データセットを jp225_tick（tick 由来）へ切替時、serve.sh の watch（jp225_m1 系＝export_jp225_m1 --watch）を向け直し忘れ、かつ起動時取得も `--skip ticks --skip ingest` で tick 系を除外していた。結果、jp225_tick 系（`ticks/YYYY/MM/DD/JP225_ticks.parquet` → `jp225_tick_m1.csv` → `rollups/jp225_tick/`）は手動バッチのみで更新され 7/2 13:14 で凍結。`/forming_bar` は当日 parquet 不在で常に null（5 秒足内更新が完全 no-op）、`/candles` も新規足なしとなり価格が伸びない。実測: tick フィードはほぼリアルタイム（22:27 時点で 22:27:00 の tick 取得）・M1 足フィードは約 2h9m 遅延・当日全量再取得 12.4s。
+- **対策（依頼者承認済み・「tick watch 毎分・全日再取得」）**: (1) `tools/live_tick_watch.py` 新設（毎分: 当日 tick 全量再取得→原子スワップ→ M1 分単位増分追記（`until=floor(now,1min)` で形成中分バー除外・`start=full_start` で catch_up 済み丸日 parquet からの欠損日自己修復も委譲）→ `rollups/jp225_tick` 差分更新。起動時 1 回 catch_up＝既存最新日（部分日）の上書き自己修復＋昨日までの丸日追い付き）。(2) `indigators/indicator_ui/serve.sh` へ既存 M1 watch と併走で配線（ログ `data/marketdata/live_tick_watch.log`・cleanup trap で kill・`--no-update` 時は不起動）。(3) `marketdata/tick_m1.py` の `append_m1_from_ticks`/`build_m1_from_ticks` へ省略可能 `until` を追加（`until=None` は既定挙動 byte 不変）。
+- **アーキ精査対応（architecture-executor 指摘）**: 🟡tick tree レイアウト三重定義→ `marketdata.tick_m1.day_parquet_path` を単一権威として新設し reader/writer が共用。🟡`run_watch` のクロスアクター所有→ 汎用ポーリングループを `tools/watch_loop.py` へ移設（export_jp225_m1 は後方互換 re-export）。🟢`.empty` マーカー整合→ parquet 書込成功時に同日マーカーを除去。
+- **テスト**: `marketdata/tests/test_tick_m1.py`（until 除外・until=None 回帰固定 3 本追加）、`tools/tests/test_live_tick_watch.py`（新規 14 本・全フェイク／ネットワーク禁止。回帰固定: gap-day 自己修復／部分日上書き再取得／.empty 除去／形成中除外）。marketdata+tools 172 緑・indicator_ui tools 59 緑。E2E 実測: `--once` を隔離 data-dir で実行し「M1 末尾=直前確定分・形成中分除外・rollups/jp225_tick 生成」を確認。
+- **関連**: fix/live-tick-watch。参照実装: tools/build_tick_rollup.py・simulator/tools/fetch_ticks_ymd.py・export_jp225_m1.py。
