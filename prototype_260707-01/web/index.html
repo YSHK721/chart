@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>prototype 260707-01 — 5秒遅延ティック再生</title>
+<style>
+  body { margin: 0; background: #131722; color: #d1d4dc; font: 13px/1.5 system-ui, sans-serif; }
+  #hud { padding: 8px 12px; display: flex; gap: 24px; flex-wrap: wrap; border-bottom: 1px solid #2a2e39; }
+  #hud b { color: #4ec9b0; font-variant-numeric: tabular-nums; }
+  #hud .bad b { color: #f48771; }
+  #chart { position: absolute; top: 40px; bottom: 0; left: 0; right: 0; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <span>実遅延 <b id="h-delay">-</b></span>
+  <span>バッファ残量 <b id="h-runway">-</b></span>
+  <span>再生tick数 <b id="h-applied">0</b></span>
+  <span>枯渇回数 <b id="h-underrun">0</b></span>
+  <span>tick/秒(直近1分) <b id="h-rate">-</b></span>
+  <span>取得 <b id="h-poll">-</b></span>
+  <span>現在値 <b id="h-price">-</b></span>
+</div>
+<div id="chart"></div>
+<script src="lightweight-charts.js"></script>
+<script>
+// 5秒遅延ティック再生（ジッターバッファ）: /ticks を増分ポーリング → キュー →
+// 各tickを元タイムスタンプ+DELAY の実時刻に適用（1分足の形成中バーへ OHLC 累積）。
+// 固定遅延: 実測から poll間隔5s + feed側lag最大5.5s + fetch最大1.2s + 余裕 ≒ 12s。
+//   feed 側が 3.8〜5.5s まとめて配信するため（実測 25 polls）、これ未満だと枯渇する。
+const DELAY_MS = 12000;
+const POLL_MS = 2500;       // フロント→試作サーバ（ローカル）のポーリング
+const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+  layout: { background: { color: '#131722' }, textColor: '#d1d4dc' },
+  grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
+  timeScale: { timeVisible: true, secondsVisible: true },
+});
+const series = chart.addSeries(LightweightCharts.CandlestickSeries, {});
+
+let queue = [];            // 未適用 tick [(ms, mid)] 昇順
+let cursor = 0;            // サーバ取得済みカーソル（ms）
+let clockOffset = 0;       // server_now - client_now（遅延計測をサーバ時計基準に）
+let bar = null;            // 形成中 1 分足 {time(sec), open, high, low, close}
+let applied = 0, underruns = 0, inUnderrun = false;
+let appliedTimes = [];     // 直近再生 tick の適用時刻（rate 表示用）
+let lastTickMs = 0;        // 最後に適用した tick の元タイムスタンプ
+
+async function poll() {
+  try {
+    const r = await fetch(`/ticks?since=${cursor}`);
+    const j = await r.json();
+    clockOffset = j.server_now_ms - Date.now();
+    if (j.ticks.length) {
+      queue.push(...j.ticks);
+      cursor = j.ticks[j.ticks.length - 1][0];
+    }
+    document.getElementById('h-poll').textContent = `+${j.ticks.length} ticks`;
+  } catch (e) {
+    document.getElementById('h-poll').textContent = 'ERR';
+  }
+}
+
+function applyTick(ms, mid) {
+  const minSec = Math.floor(ms / 60000) * 60;
+  if (!bar || bar.time !== minSec) {
+    bar = { time: minSec, open: mid, high: mid, low: mid, close: mid };
+  } else {
+    bar.high = Math.max(bar.high, mid);
+    bar.low = Math.min(bar.low, mid);
+    bar.close = mid;
+  }
+  series.update(bar);
+  applied++;
+  lastTickMs = ms;
+  appliedTimes.push(Date.now());
+  document.getElementById('h-price').textContent = mid.toFixed(1);
+}
+
+function playback() {
+  const nowMs = Date.now() + clockOffset;
+  const playUntil = nowMs - DELAY_MS;   // この時刻以前の tick を適用してよい
+  let n = 0;
+  while (queue.length && queue[0][0] <= playUntil) {
+    const [ms, mid] = queue.shift();
+    applyTick(ms, mid);
+    n++;
+  }
+  // 枯渇 = 再生位置が追いつきキューが空（サーババッファに未来分が無い）で、直前まで流れていた
+  if (queue.length === 0 && lastTickMs > 0 && playUntil - lastTickMs > 3000) {
+    if (!inUnderrun) { underruns++; inUnderrun = true; }
+  } else if (queue.length > 0) {
+    inUnderrun = false;
+  }
+  // HUD
+  const delayEl = document.getElementById('h-delay');
+  delayEl.textContent = lastTickMs ? ((nowMs - lastTickMs) / 1000).toFixed(1) + 's' : '-';
+  const runway = queue.length ? ((queue[queue.length - 1][0] - playUntil) / 1000).toFixed(1) + 's' : '0s';
+  document.getElementById('h-runway').textContent = `${runway} (${queue.length} ticks)`;
+  document.getElementById('h-applied').textContent = applied;
+  const u = document.getElementById('h-underrun');
+  u.textContent = underruns;
+  u.parentElement.className = underruns > 0 ? 'bad' : '';
+  const cut = Date.now() - 60000;
+  appliedTimes = appliedTimes.filter(t => t > cut);
+  document.getElementById('h-rate').textContent = (appliedTimes.length / 60).toFixed(1);
+}
+
+(async () => {
+  await poll();               // 初回: サーババッファ全量（〜30分）を取り込み
+  // 初回シード: 遅延ラインまでの過去分は間隔を保たず即時適用（チャートに文脈を出す）
+  const nowMs = Date.now() + clockOffset;
+  while (queue.length && queue[0][0] <= nowMs - DELAY_MS) {
+    const [ms, mid] = queue.shift();
+    applyTick(ms, mid);
+  }
+  chart.timeScale().scrollToRealTime();
+  setInterval(poll, POLL_MS);
+  setInterval(playback, 100); // 100ms 粒度で「元の時間間隔どおり」再生
+})();
+</script>
+</body>
+</html>
