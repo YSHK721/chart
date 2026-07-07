@@ -273,9 +273,13 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         bins = (query.get("bins") or [None])[0]
         va = (query.get("va") or [None])[0]
         barw = (query.get("barw") or [None])[0]
+        # セッション窓 MP の base 累積下限 time（UNIX 秒・省略時=全期間＝後方互換）。兄弟の
+        #   _handle_market_profile と同型で controller へ透過する。これが欠けると from_ts=None に
+        #   落ち、base レンジが全期間 low/high（例 2012 年安値）へ広がり当日成長が不可視になる。
+        frm = (query.get("from") or [None])[0]
         try:
             status, payload = handle_market_profile_forming(
-                ref, timeframe, since, base, now_override, bins, va, barw,
+                ref, timeframe, since, base, now_override, bins, va, barw, frm=frm,
             )
         except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
             self._send_json(
