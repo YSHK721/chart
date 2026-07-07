@@ -179,6 +179,50 @@ def test_get_forming_bar_returns_200_with_ok_and_bar_key(server):
 
 
 # --------------------------------------------------------------------------- #
+# GET /live_ticks（ライブ tick バッファ配信・ISSUE-049）
+#   殻は注入された LiveTickBuffer.ticks_since(since) を JSON 応答へ載せる。buffer 未注入
+#   （テスト既定・自動起動なし）は空 ticks を返す（記録系・ネットワーク非依存）。
+# --------------------------------------------------------------------------- #
+def test_get_live_ticks_returns_empty_when_no_buffer_injected(server):
+    # 既定（buffer 未注入）は ok・空 ticks・serverNowMs を返す（fetch を起動しない）。
+    from framework import server as server_mod
+
+    server_mod.set_live_tick_buffer(None)
+    status, ctype, raw = _get(server, "/live_ticks?since=0")
+    assert status == 200
+    assert "application/json" in ctype
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["ticks"] == []
+    assert isinstance(payload["serverNowMs"], int)
+
+
+def test_get_live_ticks_serves_injected_buffer_since_cursor(server):
+    # フェイク buffer を注入 → ticks_since(since) の戻りをそのまま [[ms, mid], ...] で返す。
+    from framework import server as server_mod
+
+    class _FakeBuffer:
+        def __init__(self):
+            self.seen = []
+
+        def ticks_since(self, ms):
+            self.seen.append(ms)
+            return [[1000, 39005.0], [1500, 39007.0]]
+
+    fake = _FakeBuffer()
+    server_mod.set_live_tick_buffer(fake)
+    try:
+        status, _ctype, raw = _get(server, "/live_ticks?since=999")
+        assert status == 200
+        payload = json.loads(raw.decode("utf-8"))
+        assert payload["ok"] is True
+        assert payload["ticks"] == [[1000, 39005.0], [1500, 39007.0]]
+        assert fake.seen[-1] == 999
+    finally:
+        server_mod.set_live_tick_buffer(None)
+
+
+# --------------------------------------------------------------------------- #
 # 静的配信 / パストラバーサル
 # --------------------------------------------------------------------------- #
 def test_get_root_serves_index_html(server):

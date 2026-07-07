@@ -109,6 +109,26 @@ test('tick is skipped while controller.isRecomputing() is true (no recompute/fet
   assert.equal(sp.calls.updateLast.length, 0);
 });
 
+// suppressPriceUpdate（ISSUE-049）: LiveTickPlayer が価格の唯一の書き手になるとき、LiveUpdater は
+//   価格の巻き戻し（12 秒より古い candles 末尾での updateLastCandle）を止める。再計算は従来どおり。
+test('suppressPriceUpdate=true skips updateLastCandle but still recomputes (latest)', async () => {
+  const sp = spies();
+  const { updater, t } = newUpdater({ suppressPriceUpdate: true }, sp);
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.recompute, 1);           // 再計算は従来どおり
+  assert.equal(sp.calls.updateLast.length, 0);   // が価格は書かない（player が唯一の書き手）
+});
+
+test('suppressPriceUpdate default (unset) preserves existing behavior (updateLastCandle called)', async () => {
+  const sp = spies();
+  const { updater, t } = newUpdater({}, sp); // 既定 false（byte 不変）
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.updateLast.length, 1);
+  assert.deepEqual(sp.calls.updateLast[0], sp.candles.at(-1));
+});
+
 // Latest 増分計算: tick は recomputeAllApplied({mode:'latest'}) を呼ぶ（末尾K差分反映）。
 test('tick recomputes with mode "latest" (Latest incremental compute)', async () => {
   // Arrange: recomputeAllApplied の引数を捕捉する controller を注入。

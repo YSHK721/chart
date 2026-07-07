@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 # api/ を import パスへ（adapter.* を解決）。conftest と同方針（殻の自己完結起動用）。
@@ -64,6 +65,17 @@ _MP_WEB_JS_ROOT = (_API_ROOT.parents[1] / "market_profile" / "web" / "js").resol
 
 # POST 本文サイズ上限（§7.3・1 MiB）。超過は 413 で拒否する。
 _MAX_BODY_BYTES = 1 * 1024 * 1024
+
+# ライブ tick バッファ（ISSUE-049・配信系）。served（B方式）起動時に serve() が生成・start() する。
+# テストは set_live_tick_buffer でフェイクを注入する／None のままなら /live_ticks は空を返す
+# （自動起動なし＝ネットワーク非依存）。記録系（parquet/M1/rollups）へは一切干渉しない（メモリのみ）。
+_live_tick_buffer: Optional[Any] = None
+
+
+def set_live_tick_buffer(buffer: Optional[Any]) -> None:
+    """/live_ticks が配信する LiveTickBuffer を差し替える（注入点・テストで fake/None を渡す）。"""
+    global _live_tick_buffer
+    _live_tick_buffer = buffer
 
 # 静的配信の拡張子 → Content-Type（最小・stdlib mimetypes 相当を明示限定）。
 _CONTENT_TYPES = {
@@ -182,6 +194,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/market_profile_forming":
             self._handle_market_profile_forming(parse_qs(parsed.query))
             return
+        if parsed.path == "/live_ticks":
+            self._handle_live_ticks(parse_qs(parsed.query))
+            return
         self._handle_static(parsed.path)
 
     def _handle_candles(self, query: dict[str, list[str]]) -> None:
@@ -283,6 +298,21 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(status, payload)
 
+    def _handle_live_ticks(self, query: dict[str, list[str]]) -> None:
+        """GET /live_ticks?since=<ms> — バッファの増分 tick を配信する（ISSUE-049・読取のみ）。
+
+        応答 ``{"ok": True, "ticks": [[ms, mid], ...], "serverNowMs": <ms>}``。``since`` より後の
+        tick のみ（境界含まず）。buffer 未注入（テスト既定・非 served）は空 ticks を返す。
+        フロント（LiveTickPlayer）は serverNowMs で clockOffset を維持し、固定遅延で再生する。
+        """
+        since_raw = (query.get("since") or ["0"])[0]
+        since = int(since_raw) if since_raw.lstrip("-").isdigit() else 0
+        buffer = _live_tick_buffer
+        ticks = buffer.ticks_since(since) if buffer is not None else []
+        self._send_json(
+            200, {"ok": True, "ticks": ticks, "serverNowMs": int(time.time() * 1000)}
+        )
+
     def _handle_static(self, url_path: str) -> None:
         target = _resolve_static(url_path)
         if target is None:
@@ -316,6 +346,20 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     sys.stdout.write("  POST /compute  GET /candles?datasetRef=sample  GET /（web/ 静的配信）\n")
     sys.stdout.write("  停止: Ctrl-C\n")
     sys.stdout.flush()
+
+    # ライブ tick バッファ（ISSUE-049・配信系）を起動する。5 秒周期の増分ポーリングを
+    #   background thread で回し、/live_ticks へ直近 30 分の tick を供給する。記録系
+    #   （parquet/M1/rollups）とは完全分離（メモリのみ・ファイル書込なし）。起動失敗しても
+    #   本体配信は継続する（ライブ再生が無効になるだけ・既存 endpoint は不変）。
+    try:
+        from adapter.compute.live_tick_buffer import LiveTickBuffer
+
+        buffer = LiveTickBuffer()
+        set_live_tick_buffer(buffer)
+        buffer.start()
+    except Exception as exc:  # noqa: BLE001（配信の付加機能・本体起動を妨げない）
+        sys.stderr.write(f"  WARN: live tick buffer を起動できませんでした: {exc}\n")
+        sys.stderr.flush()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -104,7 +104,7 @@
       // 'jp225_tick'＝mid・UTC 集計）をライブ計算し、時間足セレクタで resample 表示する
       // （上位足は rollups/jp225_tick/ を読む・既定 1D・直近 RECENT_BARS 本）。
       datasetRef: 'jp225_tick',
-    }).then(({ controller, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile }) => {
+    }).then(({ controller, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile }) => {
       controller.bind();
       // Market Profile 表示トグル（独立アクター）。ON/OFF で marketProfile.setEnabled を呼ぶ。
       //   ON 初回に /market_profile を取得して primitive へ反映し表示、OFF で非表示（既存描画に非干渉）。
@@ -129,6 +129,12 @@
         //   分離し、価格の最新足だけを高頻度に差分反映する（負荷分離）。
         if (formingBarUpdater) {
           formingBarUpdater.start();
+        }
+        // ライブ tick 再生（12 秒固定遅延のなめらか再生・ISSUE-049）。served のみ。/live_ticks を
+        //   増分取得し 100ms 粒度で現在 tf の形成中バーへ累積する（価格の唯一の書き手＝上 2 者は
+        //   suppressPriceUpdate で価格を書かない）。file:// は liveTickPlayer=null（既存挙動 byte 不変）。
+        if (liveTickPlayer) {
+          liveTickPlayer.start();
         }
         // 売買マーカー（Trade Markers）の初回 load トリガ（入口に置く＝bootstrap に副作用 fetch を
         //   足さない）。失敗は renderer 内で warn+0 件（既存 candles 描画に非干渉＝M-3）。

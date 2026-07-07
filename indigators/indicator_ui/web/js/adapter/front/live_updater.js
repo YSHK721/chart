@@ -20,6 +20,10 @@ export class LiveUpdater {
     setInterval: setIntervalImpl = (typeof globalThis !== 'undefined' ? globalThis.setInterval : undefined),
     clearInterval: clearIntervalImpl = (typeof globalThis !== 'undefined' ? globalThis.clearInterval : undefined),
     intervalMs = 60000,
+    // 価格の最新足更新（updateLastCandle）を抑止する（ISSUE-049）。LiveTickPlayer が価格の唯一の
+    //   書き手になるときのみ composition root が true を渡す。既定 false＝従来挙動 byte 不変
+    //   （再計算 recomputeAllApplied は抑止対象外・従来どおり実行する）。
+    suppressPriceUpdate = false,
   }) {
     this._controller = controller;
     this._renderer = renderer;
@@ -29,6 +33,7 @@ export class LiveUpdater {
     this._setInterval = setIntervalImpl;
     this._clearInterval = clearIntervalImpl;
     this._intervalMs = intervalMs;
+    this._suppressPriceUpdate = suppressPriceUpdate;
     // 稼働中の interval ハンドル（null=停止中）。多重 start 防止の判定にも用いる。
     this._timerId = null;
   }
@@ -57,7 +62,8 @@ export class LiveUpdater {
     }
     await this._controller.recomputeAllApplied({ mode: 'latest' });
     const candles = await this._loadCandles(this._datasetRef, this._getTimeframe());
-    if (candles && candles.length > 0) {
+    // 価格の最新足反映。suppressPriceUpdate 時は skip（player が唯一の書き手＝巻き戻し防止）。
+    if (candles && candles.length > 0 && !this._suppressPriceUpdate) {
       this._renderer.updateLastCandle(candles[candles.length - 1]);
     }
   }
