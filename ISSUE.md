@@ -632,3 +632,11 @@
 - **原因（実測）**: 再生開始バー（from=replayStart かつ formingStart=from）では base 窓 [from, formingStart−1] が空集合になり、backend が空プロファイル（price_min=0/price_max=1）を返す→ _rebuildAt は skipDegenerateDraw で**自身の描画はスキップ**するが accumulator は縮退グリッドで作り直す（growTo の土台・設計どおり）→ 直後の **feedTick throttle 描画には縮退ガードが無く**、縮退 accumulator の空 snapshot（[0,1]・全 bin ゼロ）を setProfile→ MP バーが全消滅。最初の out-of-grid tick で growTo が実グリッドを確定するまで（実測 約1.1s）ブランクが続き、再生ループの enterBar 再実行のたびに繰り返す。
 - **対策（案・依頼者判断待ち）**: (a) _rebuildAt で縮退判定を状態化（例 _gridDegenerate）し、縮退中は feedTick/settleTick の描画も抑止（前回描画保持・enterBar の skipDegenerateDraw と同一基準）。growTo の実グリッド確定で解除（推奨・回帰テスト付き）。 (b) 縮退時に accumulator を入れ替えない（growTo 土台の設計コメントに反する・非推奨）。
 - **関連**: ISSUE-047（binw ロック・本件とは独立で再現）・replay_market_profile_actor.js feedTick/settleTick/_rebuildAt・market_profile_controller.py L318（空データ→ゼロプロファイル）。
+
+## ISSUE-051: devcontainer.json が削除済みインフラファイル（docker-compose.yml / setup-mcp.sh）を参照し続けコンテナ再構築が失敗する
+- **重大度**: High（develop へマージすると、以降 devcontainer を Rebuild した全員のコンテナ構築が失敗＝共有開発環境の破壊）
+- **ステータス**: RESOLVED（devcontainer.json を compose ベース→Dockerfile 直接ビルドへ切替え、参照切れを解消。依頼者承認（serena 撤去は意図的・危険点のみ先行対応）。コメント除去 JSON パース検証 OK。参照切れは devcontainer.json 1 ファイルに閉じることを git grep で確認（.gitignore の docker-compose.override.yml pattern は無害・http://serena 依存なし））
+- **検出**: 2026-07-08 「ブランチ整理→develop マージ」着手時、fix/replay-mp-locked-binw のコミット 03e4ea3（serena 撤去に伴う不要ファイル削除）が docker-compose.yml と .devcontainer/setup-mcp.sh を削除する一方、両者を参照する .devcontainer/devcontainer.json を未更新のまま残していることを検出。
+- **原因**: 03e4ea3 は `.serena/`・docker-compose.yml（app+serena サービス）・setup-mcp.sh（claude-code 導入＋serena MCP 登録）を削除したが、devcontainer.json の `"dockerComposeFile": "../docker-compose.yml"`（L7）・`"postCreateCommand": "bash .devcontainer/setup-mcp.sh"`（L41）を残置。dockerComposeFile が存在しないファイルを指すため devcontainer が起動不可になる。
+- **対策（実施済み）**: (1) `dockerComposeFile`+`service: app` を `build.dockerfile: ../Dockerfile`（context: ..）へ置換。(2) 旧 compose の app サービス相当を移設: `runArgs: ["--env-file", "${localWorkspaceFolder}/.env"]`（env_file 相当）・`mounts` に gh-config named volume（gh 認証の Rebuild 後永続化）。(3) `postCreateCommand`（setup-mcp.sh）を削除（serena/compose 撤去に伴い不要）。
+- **関連**: 03e4ea3（serena 撤去）・Dockerfile（リポ直下・既存ビルド定義）。
