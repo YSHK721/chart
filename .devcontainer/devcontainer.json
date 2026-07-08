@@ -45,9 +45,11 @@
 				"debugpy.debugJustMyCode": true
 			}
 		}
-	}
+	},
 
-	// postCreateCommand (setup-mcp.sh) は serena MCP / compose 撤去に伴い削除。
+	// コンテナ作成後に Claude Code CLI を導入する。
+	// （serena MCP / compose 撤去後は MCP 設定を持たず、claude 導入のみを担う）
+	"postCreateCommand": ".devcontainer/setup-mcp.sh"
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
