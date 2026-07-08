@@ -59,6 +59,10 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     // 直近 forming グリッドの価格レンジ（isTickInGrid の範囲判定に使用）。未確定は null。
     this._gridPriceMin = null;
     this._gridPriceMax = null;
+    // ISSUE-050 世代ガード（参照 prototype_260630-01 fetchProfileOnly の profSeq 相当）: _rebuildAt が
+    //   await fetchForming を跨ぐたびに単調増加させ、戻りが最新 seq でなければ setProfile を破棄する
+    //   （後方/連続スクラブで古い応答が新描画を上書きしない）。
+    this._rebuildSeq = 0;
   }
 
   // override: push 成長中（normal/replay+growing＝isGrowingPush）は enterBar/feedTick が駆動するため
@@ -137,7 +141,9 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   （＝再生範囲から累積・日跨ぎでも非リセット）。省略時は _buildFormingArgs が GrowthWindow フォールバック
   //   （当日窓）を写像する（driver 未配線の controller seam / gear 経路）。
   async enterBar(now, from) {
-    return this._rebuildAt(now, true, from); // skipDegenerateDraw=true（縮退は描かず前回保持）。
+    // syncClamp=true: バー変更（カーソル移動）＝ await fetchForming の解決前に旧プロファイルを新カーソルの
+    //   revealed 上限へ同期クランプして stale プロファイル・フラッシュを断つ（ISSUE-050）。
+    return this._rebuildAt(now, true, from, true); // skipDegenerateDraw=true（縮退は描かず前回保持）。
   }
 
   // 追加: 当日 tick がグリッド外へ出たとき（replay.js driver が発火）、now までの因果窓で forming を
@@ -145,7 +151,9 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   成長）。fold 実体は enterBar と共通（_rebuildAt）。now は「直近 revealed tick 秒」（未来リーク禁止）。
   //   from（任意）: enterBar と同じ replayStart 累積下限（driver が透過）。
   async growTo(now, from) {
-    return this._rebuildAt(now, false, from); // skipDegenerateDraw=false（拡張グリッドは描画）。
+    // syncClamp=false: グリッド拡張（同一カーソル）は同期クランプしない（成長中の revealed 超 tick を
+    //   誤って clip しないため）。世代ガードは _rebuildAt 内で常時適用される。
+    return this._rebuildAt(now, false, from, false); // skipDegenerateDraw=false（拡張グリッドは描画）。
   }
 
   // enterBar/growTo の共通実体: base=1/src=dwell/now/from で forming を [from, now] の因果窓で取得 →
@@ -157,21 +165,34 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   min(from, periodStart(now,tf)) へクランプしてから _buildFormingArgs へ渡す（replayStart>formingStart の端＝
   //   1W/1M ラベル規約や当該バー内でも未来リークしない）。省略時は _buildFormingArgs の GrowthWindow フォール
   //   バックへ委譲する。
-  async _rebuildAt(now, skipDegenerateDraw, from) {
+  async _rebuildAt(now, skipDegenerateDraw, from, syncClamp = false) {
     if (!this.isGrowingPush()) {
       return; // 自己ガード: push 成長中（normal/replay+growing）以外は push 駆動しない（Phase5: 成長軸ゲート）。
     }
     if (!this._enabled || !this._formingClient || !this._makeAccumulator) {
       return;
     }
+    // ISSUE-050 同期クランプ（blank 禁止・enterBar のみ）: await fetchForming（実測 ≈180ms）の解決前に、旧
+    //   accumulator のスナップショットを新カーソルの revealed 上限（_getCandles 末尾までの high 最大）へ同期
+    //   クランプして即描画する。revealed 超の bin/POC/VA（前カーソルの未来価格）を落とし、MP 上端がローソク
+    //   上端を超える stale プロファイル・フラッシュを断つ。空描画（setVisible(false)/空 snapshot）は ISSUE-049
+    //   の MP 全消滅フラッシュを招くため不可＝revealed 域内に bin が残るときだけ setProfile する。
+    if (syncClamp) {
+      this._clampDrawToRevealed();
+    }
     let effFrom = from;
     if (effFrom != null && Number.isFinite(Number(now))) {
       // クランプ: from<=formingStart（不変条件）・from<=now（未来リーク禁止）。formingStart<=now ゆえ十分。
       effFrom = Math.min(Number(effFrom), GrowthWindow.periodStart(Number(now), this._getContext().timeframe));
     }
+    // 世代ガード（profSeq 相当）: この fetch の世代を採番し、await の戻りが最新でなければ setProfile を破棄する。
+    const seq = ++this._rebuildSeq;
     const forming = await this._formingClient.fetchForming(
       this._buildFormingArgs({ base: 1, since: null, now, from: effFrom }),
     );
+    if (seq !== this._rebuildSeq) {
+      return; // 古い応答は破棄（後続 _rebuildAt が発行済み＝最新のみ反映・stale 上書き防止）。参照: fetchProfileOnly。
+    }
     if (!forming) {
       return; // null は前回描画を保持（非破壊）。
     }
@@ -254,4 +275,86 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
       this._primitive.setProfile(this._accumulator.snapshot());
     }
   }
+
+  // ISSUE-050: revealed 上限（現在カーソルまでの revealed ローソクの high 最大）を返す。_getContext().to まで
+  //   slice 済みの _getCandles()（replay の renderer.getCandles＝enterBar 前に fold 済み）末尾までの high 最大＝
+  //   ローソク上端。getCandles 未注入/空/high 非有限は null（＝クランプ不能＝present 非波及・既存挙動不変）。
+  _revealedPriceMax() {
+    const candles = this._getCandles();
+    if (!Array.isArray(candles) || candles.length === 0) {
+      return null;
+    }
+    let max = -Infinity;
+    for (const c of candles) {
+      const h = c == null ? NaN : Number(c.high);
+      if (Number.isFinite(h) && h > max) {
+        max = h;
+      }
+    }
+    return Number.isFinite(max) ? max : null;
+  }
+
+  // ISSUE-050: 旧 accumulator のスナップショットを revealed 上限へ同期クランプして即描画する。
+  //   revealed 上限が不明（getCandles 未注入/空）または accumulator 未確立なら no-op（前回描画保持＝非破壊・
+  //   present 非波及）。それ以外は clamp 結果を必ず即描画する:
+  //     - 部分重複（revealed 域内 bin が残る・例 1455→1429）: revealed 超 bin を落とした clamped を描く。
+  //     - 完全非重複（旧プロファイルが全て revealed 超・例 1499→400）: clamp は空 bin になり、空プロファイルを
+  //       描いて旧 stale 広プロファイルを消す（blank）。これは ISSUE-049（成長中の縮退＝**revealed 域に有効 bin
+  //       が有る**のに全消滅させる禁止）とは保護対象が異なり非矛盾＝revealed 域に有効 bin が無いのが正直な状態。
+  //       keep-stale だと 1499 帯の MP が 400 帯のローソク上へ ≈180ms 浮き、ISSUE-050 同クラスの欠陥を再生する
+  //       ため blank が正しい（architecture-executor 観点5）。いずれも await fetchForming 解決で as-of-T へ自己修正。
+  _clampDrawToRevealed() {
+    if (!this._accumulator || !this._primitive
+        || typeof this._primitive.setProfile !== 'function') {
+      return;
+    }
+    const revealedMax = this._revealedPriceMax();
+    if (revealedMax == null) {
+      return; // revealed 上限不明＝クランプ不能（present 非波及・既存挙動不変）。
+    }
+    const clamped = _clampProfileToMax(this._accumulator.snapshot(), revealedMax);
+    if (clamped) {
+      this._primitive.setProfile(clamped); // 部分重複=clamped 描画／完全非重複=空描画で stale 消去（blank）。
+    }
+  }
+}
+
+// ISSUE-050: revealed 上限 max を超える価格帯 bin/POC/VA を落としたプロファイルを返す（純・snapshot 非破壊・
+//   primitive 無改変）。bins は price<=max のみ残す（primitive はゼロ幅 bin でも MIN_BAR_PX を描くため、tpo=0 化
+//   でなく除去で上端を抑える）。POC/VAH/VAL は revealed 超なら null（水平線を引かない＝上端超えを出さない）。
+//   price_max も min(price_max,max) へクランプ。実データ範囲を超えない古典 MP と同型の同期描画にする。
+function _clampProfileToMax(profile, max) {
+  if (!profile || !Number.isFinite(Number(max))) {
+    return profile;
+  }
+  const m = Number(max);
+  const dropHi = (p) => (p != null && Number(p) > m ? null : p);
+  const out = {
+    ...profile,
+    bins: profile.bins,
+    poc: dropHi(profile.poc),
+    va_high: dropHi(profile.va_high),
+    va_low: dropHi(profile.va_low),
+    price_max: profile.price_max != null ? Math.min(Number(profile.price_max), m) : profile.price_max,
+  };
+  if (Array.isArray(profile.bins)) {
+    const kept = profile.bins.filter((b) => b != null && Number(b.price) <= m);
+    // bin 除去に整合させて派生量を再計算する（clamped DTO の自己整合＝architecture-executor 低重大度の是正）。
+    //   norm は**残存 bin の最大 tpo 基準**へ引き直す（除去した高値 bin が POC でもバー幅が正しい）。snapshot
+    //   と同型（tmax=0 は 1 フォールバック）。tpo_units/n_bins も残存に一致させる。
+    let tmax = 0;
+    let sum = 0;
+    for (const b of kept) {
+      const t = Number(b.tpo) || 0;
+      sum += t;
+      if (t > tmax) {
+        tmax = t;
+      }
+    }
+    const denom = tmax > 0 ? tmax : 1;
+    out.bins = kept.map((b) => ({ ...b, norm: Math.round(((Number(b.tpo) || 0) / denom) * 10000) / 10000 }));
+    out.n_bins = kept.length;
+    out.tpo_units = Math.round(sum);
+  }
+  return out;
 }

@@ -690,3 +690,199 @@ test('end-to-end (ticklive) with real DwellAccumulator: enterBar draws base, fee
   assert.equal(drawn.n_bins, 3);
   assert.equal(drawn.bins[0].tpo, 60);
 });
+
+// =====================================================================================
+// ISSUE-050: replay MP stale プロファイル・フラッシュ（後方スクラブで await fetchForming 中に
+//   旧・広プロファイルが露出する）の回帰テスト。方式は参照実装 prototype_260630-01 fetchProfileOnly の
+//   profSeq 世代ガードと、同期クランプ（blank 禁止）の 2 点セット（承認済み）。
+// =====================================================================================
+
+// fetchForming を手動解決できる制御可能クライアント（Promise 解決順を制御して世代ガード/クランプ順序を実証）。
+//   ネットワーク不使用（全フェイク・CLAUDE.md 準拠）。
+function controllableFormingClient() {
+  const calls = [];
+  const pending = [];
+  return {
+    calls,
+    pending,
+    fetchForming(args) {
+      calls.push(args);
+      let resolveFn;
+      const p = new Promise((res) => { resolveFn = res; });
+      pending.push(resolveFn);
+      return p;
+    },
+    resolveAt(idx, value) { this.pending[idx](value); },
+  };
+}
+
+// snapshot が init cfg の priceMin/priceMax から bins（[min, 中点, max]）と __marker(=priceMax) を導く fake
+//   accumulator。これによりクランプ（revealed 超 bin 除去）と世代ガード（どの応答が描かれたか）を検証できる。
+function markerAccumulatorFactory() {
+  const created = [];
+  const make = () => {
+    const acc = {
+      init(cfg) { this.cfg = cfg; this.ticks = []; },
+      addTick(sec, mid) { this.ticks.push([sec, mid]); },
+      snapshot() {
+        const pmin = this.cfg ? Number(this.cfg.priceMin) : 0;
+        const pmax = this.cfg ? Number(this.cfg.priceMax) : 0;
+        const mid = (pmin + pmax) / 2;
+        return {
+          bins: [
+            { price: pmin, tpo: 5, norm: 1 },
+            { price: mid, tpo: 3, norm: 0.6 },
+            { price: pmax, tpo: 1, norm: 0.2 },
+          ],
+          poc: pmin, va_low: pmin, va_high: pmax,
+          price_min: pmin, price_max: pmax,
+          n_bins: 3, tpo_units: 9, __marker: pmax,
+        };
+      },
+    };
+    created.push(acc);
+    return acc;
+  };
+  return { make, created };
+}
+
+function makeClampActor({ getCandles, formingClient, makeAccumulator, primitive, ctxTo }) {
+  const p = primitive ?? fakePrimitive();
+  const actor = new ReplayMarketProfileActor({
+    primitive: p,
+    mainSeries: fakeMainSeries(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h', to: ctxTo }),
+    getCandles,
+    formingClient,
+    makeAccumulator,
+    now: () => 0,
+  });
+  actor._enabled = true;            // setEnabled を経ず enabled 化（基底 refresh を先に走らせない）。
+  actor.setParams({ mode: 'ticklive' }); // isGrowingPush()=true（push 成長）。
+  return { actor, primitive: p };
+}
+
+// (1) 同期クランプ: 後方スクラブで await fetchForming の解決前に、旧・広プロファイルを revealed 上限へ
+//   同期クランプして描画する（revealed 超の bin/VA を除去・blank 禁止）。
+test('ISSUE-050 sync clamp: backward scrub clamps stale (wider) profile to revealed max BEFORE fetchForming resolves (no blank)', async () => {
+  const now = 1782985000;
+  // revealed（_getCandles 末尾までの high 最大）を可変にして後方スクラブを表現する。初期は広い（max high 150）。
+  let revealed = [{ time: now, high: 150, low: 80, close: 120 }];
+  const client = controllableFormingClient();
+  const facc = markerAccumulatorFactory();
+  const { actor, primitive } = makeClampActor({
+    getCandles: () => revealed, formingClient: client, makeAccumulator: facc.make, ctxTo: now,
+  });
+  // 1本目 enterBar: 解決して stale accumulator（priceMax=150 の広い snapshot）を確立（この時点は _accumulator 無で clamp 無し）。
+  const p1 = actor.enterBar(now);
+  client.resolveAt(0, { ...BASE_FULL, priceMin: 80, priceMax: 150, now });
+  await p1;
+  const afterFirst = primitive.profiles.length;
+  // 後方スクラブ: revealed を狭める（max high 100）＝新カーソルの revealed 上限は 100。
+  revealed = [{ time: now - 3600, high: 100, low: 80, close: 90 }];
+  // 2本目 enterBar（後方）: fetch は保留のまま。
+  const p2 = actor.enterBar(now - 3600);
+  // Assert（await 解決前）: 同期クランプで setProfile が発火し、revealed max(100) 超の bin/VA を落としている。
+  assert.ok(primitive.profiles.length >= afterFirst + 1, '同期クランプが await fetchForming の前に setProfile する');
+  const clamped = primitive.profiles[afterFirst]; // 2本目で最初に描かれたクランプ profile
+  assert.ok(clamped.bins.length > 0, 'クランプは空描画にしない（ISSUE-049 全消滅フラッシュ回避）');
+  assert.ok(clamped.bins.every((b) => b.price <= 100), 'revealed max(100) 超の bin（前カーソルの未来価格）を落とす');
+  assert.ok(Number(clamped.price_max) <= 100, 'price_max <= revealed max（実データ範囲を超えない）');
+  assert.ok(clamped.va_high == null || clamped.va_high <= 100, 'VA 上端も revealed max を超えない');
+  // settle: fetch を解決して as-of-T の正しいプロファイルへ自己修正。
+  client.resolveAt(1, { ...BASE_FULL, priceMin: 80, priceMax: 100, now: now - 3600 });
+  await p2;
+});
+
+// (1b) 完全非重複の大ジャンプ: 旧プロファイルが全て revealed 上限超なら、空プロファイル（bins=[]）を描いて
+//   旧 stale 広プロファイルを消す（blank）。keep-stale は ISSUE-050 同クラスの「MP がローソク域外へ浮く」欠陥を
+//   ≈180ms 再生するため不可（architecture-executor 観点5）。ISSUE-049（成長中の縮退＝**有効 bin あり**の全消滅
+//   禁止）とは保護対象が異なり非矛盾（revealed 域に有効 bin が無いのが正直な状態）。
+test('ISSUE-050 sync clamp: fully non-overlapping backward jump BLANKS the stale (wider) profile (bins=[]) not keep-stale', async () => {
+  const now = 1782985000;
+  let revealed = [{ time: now, high: 150, low: 80, close: 120 }];
+  const client = controllableFormingClient();
+  const facc = markerAccumulatorFactory();
+  const { actor, primitive } = makeClampActor({
+    getCandles: () => revealed, formingClient: client, makeAccumulator: facc.make, ctxTo: now,
+  });
+  // 1本目 enterBar: stale accumulator（bins at 80/115/150）を確立。
+  const p1 = actor.enterBar(now);
+  client.resolveAt(0, { ...BASE_FULL, priceMin: 80, priceMax: 150, now });
+  await p1;
+  const afterFirst = primitive.profiles.length;
+  // 完全非重複の後方ジャンプ: revealed 上限を全 stale bin(80 以上) 未満(70)へ。
+  revealed = [{ time: now - 86400, high: 70, low: 50, close: 60 }];
+  const p2 = actor.enterBar(now - 86400); // fetch 保留
+  // Assert（await 前）: 空プロファイルを描いて旧 stale を消す（keep-stale でない）。
+  assert.ok(primitive.profiles.length >= afterFirst + 1, '完全非重複でも同期クランプが setProfile する（旧 stale 消去）');
+  const blanked = primitive.profiles[afterFirst];
+  assert.equal(blanked.bins.length, 0, '完全非重複は空 bin（blank）＝revealed 域に有効 bin なし');
+  assert.ok(Number(blanked.price_max) <= 70, 'price_max <= revealed max');
+  assert.equal(blanked.poc, null, 'POC は revealed 超のため null（水平線を引かない）');
+  // settle: fetch 解決で as-of-T の正しいプロファイルへ自己修正。
+  client.resolveAt(1, { ...BASE_FULL, priceMin: 50, priceMax: 70, now: now - 86400 });
+  await p2;
+});
+
+// (2) 世代ガード: 先に発行・後に解決した古い応答が、新しい応答の描画を上書きしない（profSeq 破棄）。
+test('ISSUE-050 generation guard: a stale (earlier) fetchForming response does NOT overwrite the newer draw (profSeq discard)', async () => {
+  const now = 1782985000;
+  const revealed = [{ time: now, high: 2000, low: 80, close: 1500 }]; // revealed 上限は広く固定（clamp 影響を排除）
+  const client = controllableFormingClient();
+  const facc = markerAccumulatorFactory();
+  const { actor, primitive } = makeClampActor({
+    getCandles: () => revealed, formingClient: client, makeAccumulator: facc.make, ctxTo: now,
+  });
+  // 2 連続の後方スクラブ enterBar（両方 fetch 保留・_accumulator 未確立ゆえ clamp は発火しない）。
+  const pOld = actor.enterBar(now);        // seq=1（先発）
+  const pNew = actor.enterBar(now - 3600); // seq=2（後発・最新）
+  const drawnBefore = primitive.profiles.length;
+  // 後発（最新 seq=2）を先に解決 → 描画される。
+  client.resolveAt(1, { ...BASE_FULL, priceMin: 80, priceMax: 120, now: now - 3600 });
+  await pNew;
+  assert.equal(primitive.profiles.length, drawnBefore + 1, '最新応答は 1 回描画される');
+  assert.equal(primitive.profiles[primitive.profiles.length - 1].__marker, 120, '最新応答（priceMax=120）が描かれる');
+  const lenAfterNew = primitive.profiles.length;
+  // 先発（stale seq=1）を後から解決 → 世代ガードで破棄され、最新描画を上書きしない。
+  client.resolveAt(0, { ...BASE_FULL, priceMin: 80, priceMax: 900, now });
+  await pOld;
+  assert.equal(primitive.profiles.length, lenAfterNew, 'stale 応答は setProfile を追加しない（世代ガード破棄）');
+  assert.equal(primitive.profiles[primitive.profiles.length - 1].__marker, 120, '最新描画（120）は stale(900) に上書きされない');
+});
+
+// (3a) present 非波及（前方回帰ガード・特性化テスト＝旧コードでも Green）: getCandles 未注入（revealed 上限
+//   不明）では同期クランプを発火しない（既存挙動不変・clamp が present 経路へ漏れないことを固定）。
+test('ISSUE-050 no clamp draw when candles unavailable (revealed max unknown) — present non-propagation', async () => {
+  const now = 1782985000;
+  const forming = fakeFormingClient([BASE_FULL, BASE_FULL]);
+  const facc = fakeAccumulatorFactory();
+  const { actor, primitive } = makeActor({ formingClient: forming, makeAccumulator: facc.make, ctxTo: now });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  await actor.enterBar(now);              // acc 確立
+  const afterFirst = primitive.profiles.length;
+  await actor.enterBar(now - 3600);        // getCandles 未注入＝revealed 上限 null → 同期クランプ発火せず
+  assert.equal(primitive.profiles.length, afterFirst + 1, 'getCandles 無しでは同期クランプを発火しない（fetch 解決後の 1 回のみ）');
+});
+
+// (3b) enterBar 限定（前方回帰ガード・特性化テスト＝旧コードでも Green）: growTo（グリッド拡張・同一カーソル）は
+//   同期クランプしない（成長中 tick を誤 clip しない・clamp が growTo へ漏れないことを固定）。
+test('ISSUE-050 growTo (grid expansion, same cursor) does NOT sync-clamp — only enterBar (bar change) clamps', async () => {
+  const now = 1782985000;
+  const revealed = [{ time: now, high: 200, low: 80, close: 150 }];
+  const client = controllableFormingClient();
+  const facc = markerAccumulatorFactory();
+  const { actor, primitive } = makeClampActor({
+    getCandles: () => revealed, formingClient: client, makeAccumulator: facc.make, ctxTo: now,
+  });
+  const p1 = actor.enterBar(now);
+  client.resolveAt(0, { ...BASE_FULL, priceMin: 80, priceMax: 150, now });
+  await p1;
+  const afterFirst = primitive.profiles.length;
+  const pg = actor.growTo(now); // fetch 保留
+  // Assert（await 前）: growTo は同期クランプ描画を追加しない（バー変更でなくグリッド拡張）。
+  assert.equal(primitive.profiles.length, afterFirst, 'growTo は await 前に同期クランプ描画しない（enterBar 限定）');
+  client.resolveAt(1, { ...BASE_FULL, priceMin: 80, priceMax: 160, now });
+  await pg;
+});
