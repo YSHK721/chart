@@ -39,6 +39,7 @@ share/python-wheels/
 .installed.cfg
 lib/
 lib64/
+design/
 
 # ============================================================
 # テスト・カバレッジ
@@ -85,19 +86,40 @@ site/
 # データファイル（入力・出力）
 # ============================================================
 input/*
+# marketdata 時系列データ（生成物・Sd でパッケージ外へ分離・単一基点 marketdata.paths.DATA_DIR）
+data/marketdata/
 *.csv
 *.tsv
 *.json
 !.devcontainer/devcontainer.json
 !pyproject.toml
+# テスト golden（byte 一致 oracle・物理 commit する固定 fixture・§10.3 M-2）。生成データの
+# blanket *.csv ignore から除外し、移設前コードで採取した golden を版管理に固定する。
+!indigators/indicator_ui/api/tests/golden/
+!indigators/indicator_ui/api/tests/golden/**
 *.parquet
 *.feather
 *.pkl
 *.pickle
 *.h5
 *.hdf5
+*.npz
 *.sqlite
 *.db
+
+# Market Profile dwell 日別ロールアップのディスク永続キャッシュ（生成物・再構築可能）。
+# 既定は DATA_DIR(data/marketdata) 配下だが、DATA_DIR を上書きした場合も追跡しないよう明示除外。
+cache/market_profile_dwell/
+**/cache/market_profile_dwell/
+
+# ============================================================
+# 生成・検証アーティファクト（スクショ・出力HTML）
+# ============================================================
+*.jpg
+*.jpeg
+*.png
+indigators/indicator_ui/out/
+.doc/lwc_verify/
 
 # ============================================================
 # ログ・一時ファイル
@@ -170,3 +192,12 @@ ehthumbs.db
 # ============================================================
 .dockerignore
 docker-compose.override.yml
+# backtest テスト fixture（MT5突合 golden）は *.json 除外の例外として追跡
+!simulator/tests/fixtures/
+!simulator/tests/fixtures/**
+# ただし fixture 配下でも OS/Python の生成物は追跡しない（!** の再包含を打ち消す）
+simulator/tests/fixtures/**/__pycache__/
+simulator/tests/fixtures/**/.DS_Store
+# 突合検証用の使い捨て生データ・スクリプト（大容量・コミット対象外）
+simulator/tests/confirmation/
+simulator/tests/260620-01/

@@ -59,6 +59,25 @@ RUN apt-get update && apt-get install -y jq ca-certificates curl gnupg git gh &&
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------------------------------
+# R + tgp + gfortran（indicator_ui の tgp_btlm 指標 fitter="tgp" バックエンド）
+# -----------------------------------------------------------------------------
+# 目的: tgp_btlm で fitter="tgp"（R の tgp::btlm = ベイズ木構造線形モデル。非線形・
+#       レジーム変化を表現）を使えるようにする。
+# 内容:
+#   - r-base-dev : R 本体 + 開発ヘッダ（rpy2 ビルド用）
+#   - gfortran   : R パッケージ tgp の C/Fortran コンパイル用（既定イメージに無い）
+#   - tgp        : CRAN から導入（依存 cluster/rpart/maptree を含む）
+# 注意:
+#   - Python 側ブリッジ rpy2（src/rbridge.py が使用）は、API を起動する venv
+#     （lightweight-charts-python-main/.venv）へ別途 `pip install rpy2` が必要。
+#     当該 venv は本リポジトリ管理外（.gitignore）のため Dockerfile では導入しない。
+#   - 未導入でも fitter="ols"（numpy 参照実装）は動作し、tgp 経路のみ backend_unavailable。
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends r-base-dev gfortran && \
+    Rscript -e 'install.packages("tgp", repos="https://cloud.r-project.org")' && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
 # Python 依存関係のインストール
 # -----------------------------------------------------------------------------
 # requirements.txt をコピー (キャッシュ効率化のため、他のファイルより先にコピー)

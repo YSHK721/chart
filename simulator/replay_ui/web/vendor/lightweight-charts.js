@@ -1,0 +1,1 @@
+../../../../indigators/indicator_ui/web/vendor/lightweight-charts.js

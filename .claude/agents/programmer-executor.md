@@ -22,7 +22,6 @@ skills:
   - tdd
   - git
   - coding
-  - mcp-serena-tools
 ---
 
 # 役割

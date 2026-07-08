@@ -1,0 +1,1 @@
+../../../../../../indigators/indicator_ui/web/js/adapter/front/embedded_compute_gateway.js

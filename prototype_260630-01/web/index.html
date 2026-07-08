@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Market Profile (TPO) Viewer — prototype_260630-01</title>
+  <link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+  <header id="bar">
+    <strong class="title">Market Profile / TPO</strong>
+
+    <label>tf
+      <select id="tf">
+        <option value="1D">1D</option>
+        <option value="4h">4h</option>
+      </select>
+    </label>
+
+    <label>n
+      <select id="n">
+        <option value="60">60</option>
+        <option value="120" selected>120</option>
+        <option value="250">250</option>
+      </select>
+    </label>
+
+    <label>
+      <button id="resmode" type="button">bins</button>
+      <select id="bins">
+        <option value="30">30</option>
+        <option value="60" selected>60</option>
+        <option value="100">100</option>
+      </select>
+      <select id="barw" style="display:none">
+        <option value="25">25pt</option>
+        <option value="50">50pt</option>
+        <option value="100" selected>100pt</option>
+        <option value="250">250pt</option>
+        <option value="500">500pt</option>
+      </select>
+    </label>
+
+    <label>src
+      <select id="src">
+        <option value="dwell" selected>滞在時間(tick秒)</option>
+        <option value="m1">tick数</option>
+        <option value="1D">日足レンジ</option>
+        <option value="4h">4h足レンジ</option>
+      </select>
+    </label>
+
+    <label>VA%
+      <select id="va">
+        <option value="0.70" selected>0.70</option>
+        <option value="0.80">0.80</option>
+        <option value="0.90">0.90</option>
+      </select>
+    </label>
+
+    <label class="chk">sessions
+      <input type="checkbox" id="sessions">
+    </label>
+
+    <button id="rangesel" type="button">範囲選択: OFF</button>
+    <button id="resetrange" type="button">全体</button>
+
+    <label class="chk">リプレイ<input type="checkbox" id="asof"></label>
+    <select id="asofmode">
+      <option value="anchor" selected>アンカー</option>
+      <option value="rolling">ローリング</option>
+    </select>
+    <input type="range" id="asoft" min="0" max="100" value="100" style="width:150px">
+    <label class="chk">スナップショット<input type="checkbox" id="asoftrim"></label>
+    <span id="asoflabel" class="status"></span>
+
+    <span id="status" class="status">…</span>
+  </header>
+
+  <main id="wrap">
+    <div id="chart"></div>
+    <!-- チャートに重ねる絶対配置 canvas（TPOヒート/POC/VA を描く） -->
+    <canvas id="heat"></canvas>
+  </main>
+
+  <footer id="readout">読み込み中…</footer>
+
+  <!-- legend -->
+  <div id="legend">
+    <span class="lg"><i class="sw poc"></i>POC</span>
+    <span class="lg"><i class="sw va"></i>VA帯</span>
+    <span class="lg"><i class="sw vah"></i>VAH/VAL</span>
+    <span class="lg"><i class="sw last"></i>現値</span>
+    <span class="lg heatbar">low<i class="hb"></i>high</span>
+  </div>
+
+  <script src="./vendor/lightweight-charts.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>

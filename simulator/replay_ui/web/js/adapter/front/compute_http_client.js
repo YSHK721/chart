@@ -1,0 +1,1 @@
+../../../../../../indigators/indicator_ui/web/js/adapter/front/compute_http_client.js

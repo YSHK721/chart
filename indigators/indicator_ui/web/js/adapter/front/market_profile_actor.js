@@ -1,0 +1,1 @@
+../../../../../market_profile/web/js/adapter/front/market_profile_actor.js

@@ -3,10 +3,20 @@
 {
 	"shutdownAction": "none",
 	"name": "${localWorkspaceFolderBasename}",
-	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev
-	"dockerComposeFile": "../docker-compose.yml",
-	"service": "app",
+	// docker-compose.yml / serena サービス撤去に伴い、Dockerfile から直接ビルドする。
+	// （旧: dockerComposeFile + service: app）
+	"build": {
+		"dockerfile": "../Dockerfile",
+		"context": ".."
+	},
 	"workspaceFolder": "/workspaces/app",
+	// 旧 compose の app サービス相当を移設:
+	// - env_file: .env → --env-file で実行時環境へ反映（.env は単一の正）
+	// - gh-config named volume → gh 認証状態(~/.config/gh)を Rebuild 後も永続化
+	"runArgs": ["--env-file", "${localWorkspaceFolder}/.env"],
+	"mounts": [
+		"source=gh-config,target=/root/.config/gh,type=volume"
+	],
 
 	// ---------------------------------------------------------------------
 	// VS Code カスタマイズ設定
@@ -37,8 +47,9 @@
 		}
 	},
 
-	// コンテナ作成後のセットアップをスクリプトに委譲
-	"postCreateCommand": "bash .devcontainer/setup-mcp.sh"
+	// コンテナ作成後に Claude Code CLI を導入する。
+	// （serena MCP / compose 撤去後は MCP 設定を持たず、claude 導入のみを担う）
+	"postCreateCommand": ".devcontainer/setup-mcp.sh"
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],

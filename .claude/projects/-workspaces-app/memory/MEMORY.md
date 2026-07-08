@@ -1,0 +1,1 @@
+- [Vectorization bit-exact method](vectorization-bit-exact-method.md) — indigators 指標コアのベクトル化は 1:1 ビット一致を最優先し乱数掃引＋git stash＋全依存テストで実証

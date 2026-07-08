@@ -1,0 +1,351 @@
+"""MarketProfileController — GET /market_profile の純ロジック（HTTP 殻非依存）。
+
+``handle_market_profile(ref, timeframe, limit, bins, va) -> (HTTPステータス, ボディ)`` は
+HTTP サーバ本体（BaseHTTPRequestHandler・ソケット）に依存しない純関数である。HTTP 殻
+（``api/framework/server.py``）は本関数を呼ぶ薄い分岐として配線する（``handle_compute`` と同型）。
+
+処理:
+  1. datasetRef をホワイトリスト解決する（未知キー・パス文字列は 400 で拒否＝§7.3 パストラバーサル対策）。
+  2. timeframe を検証する（None は原子＝再集計なし・後方互換。未知コードは 400）。
+  3. ``dataset.load_candles(ref, tf, limit)`` で OHLC candles（``[{time,open,high,low,close}]``）を取得する
+     ── この形はそのまま ``compute_candle_profile`` の入力形（time/open/high/low/close の辞書リスト）。
+  4. ``bins``（int・既定 60・[1, _MAX_BINS] にクランプ）/ ``va``（float・既定 0.70・有限かつ
+     [_MIN_VA, 1.0] にクランプ）を反映して足ベース TPO プロファイルを計算する。
+  5. 成功は (200, {ok, profile})。ref/timeframe の検証失敗は §6.3.4 nested error（error.type→
+     HTTPステータスは adapter.compute.ERROR_STATUS・単一定義）で 400 に翻訳する。
+     bins/va は例外化せずクランプで吸収する（500 化しない）。data load / 計算の想定外失敗のみ
+     HTTP 殻の包括 try/except で internal 500 になる。
+
+依存方向: framework → adapter（本 controller）→ adapter.compute（dataset / market_profile）。
+既存 dataset / market_profile 計算コアは read-only（改変しない）。src は candle（足ベース TPO）のみ。
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+from adapter.compute import ERROR_STATUS  # §6.3.4 error.type→HTTP は adapter.compute 据置
+from marketdata import dataset  # dataset 実体は marketdata へ移設済み（最下層 peer 依存）
+from market_profile_api.compute import market_profile_dwell
+from market_profile_api.compute.market_profile import compute_candle_profile, price_range
+
+# パラメータ既定値（GET /market_profile のクエリ省略時）。
+_DEFAULT_BINS = 60
+_DEFAULT_VA = 0.70
+_DEFAULT_SRC = "candle"
+# 入力境界（単一スレッド常駐サーバの占有防止・退化した VA の防止）。
+#   bins は [1, _MAX_BINS] にクランプ（0 での ValueError→500 と巨大値での占有を封じる）。
+#   va は有限かつ [0.01, 1.0] にクランプ（負/NaN/Inf/>1 での無言退化を防ぐ）。
+_MAX_BINS = 1000
+_MIN_VA = 0.01
+
+# src ホワイトリスト（candle=足レンジ TPO・dwell=実ティック滞在秒/セッション認識・m1=生ティック数）。
+_ALLOWED_SRC = ("candle", "dwell", "m1")
+# src → dwell モジュールの metric（dwell=滞在秒・count=生ティック数/セッション非適用）。
+_SRC_METRIC = {"dwell": "dwell", "m1": "count"}
+# 応答の atom 表示（UI 用・原子の意味）。
+_ATOM = {
+    "candle": "足レンジ",
+    "dwell": "tick滞在秒(セッション認識)",
+    "m1": "tick数",
+}
+# tf → 足の秒長（dwell 窓の終端は t1 + bar_sec で最終足の期間を満たす）。未知/None は 1D 相当。
+_TF_BAR_SEC = {
+    "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+    "1h": 3600, "4h": 14400, "1D": 86400, "1W": 604800, "1M": 2592000,
+}
+# sessions（日別プロファイル）応答の日数上限。UI は列幅>=102px を確保できる直近 nFit 日
+# （4K 幅でも ~37 列）しか描かないため、全期間ぶん（数千日×数百bin ≈ 10MB 超）を返すのは無駄。
+# 直近 _SESSIONS_MAX_DAYS 日に切って応答を軽量化する（試作は窓 n で自然に制限されていた）。
+_SESSIONS_MAX_DAYS = 60
+
+
+def _cap_sessions(sessions: list) -> list:
+    """sessions を直近 _SESSIONS_MAX_DAYS 日へキャップする（応答肥大の防止）。"""
+    return sessions[-_SESSIONS_MAX_DAYS:] if len(sessions) > _SESSIONS_MAX_DAYS else sessions
+
+
+def _bar_sec_for_tf(timeframe: Any) -> int:
+    """timeframe から足の秒長を返す（None・未知は 86400=1D 相当・dwell 窓終端の延長量）。"""
+    return _TF_BAR_SEC.get(timeframe, 86400)
+
+
+def _resolve_n_bins(n_bins: int, barw: float, price_min: float, price_max: float) -> int:
+    """barw（レンジpt・>0）指定時は ``n_bins = round((price_max-price_min)/barw)`` を bins に優先する。
+
+    price_min/price_max 確定後に呼ぶ（試作 prototype_260630-01 の barw 意味論を移植）。クランプは既存
+    bins と同じ ``[1, _MAX_BINS]`` を流用する（0 や巨大値での退化/占有を封じる）。barw<=0 やレンジ縮退時は
+    従来 bins をそのまま返す（auto）。
+    """
+    if barw > 0 and price_max > price_min:
+        return max(1, min(int(round((price_max - price_min) / barw)), _MAX_BINS))
+    return n_bins
+
+
+def _bar_width(profile: dict[str, Any]) -> float:
+    """profile の実効レンジ(pt) = ``(price_max - price_min) / n_bins``（小数2桁）。0 除算は 0.0。"""
+    nb = int(profile.get("n_bins") or 0)
+    span = float(profile.get("price_max", 0.0)) - float(profile.get("price_min", 0.0))
+    return round(span / nb, 2) if nb > 0 else 0.0
+
+
+def _error_body(error_type: str, message: str) -> tuple[int, dict[str, Any]]:
+    """§6.3.4 nested error（{ok:false, generation, error:{type, message, violations}}）。
+
+    error_type→HTTPステータスは adapter.compute.ERROR_STATUS（単一定義）を参照する
+    （handle_compute の _error_body と同一のステータス翻訳・応答規約）。
+    """
+    status = ERROR_STATUS.get(error_type, 500)
+    return status, {
+        "ok": False,
+        "generation": 0,
+        "error": {"type": error_type, "message": message, "violations": []},
+    }
+
+
+def _parse_int(raw: Any, default: int | None) -> int | None:
+    """クエリ由来の値（str|None）を非負 int へ変換する（不正・None は default）。"""
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    return default
+
+
+def _parse_float(raw: Any, default: float) -> float:
+    """クエリ由来の値（str|None）を float へ変換する（不正・None は default）。"""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    if isinstance(raw, str):
+        try:
+            return float(raw)
+        except ValueError:
+            return default
+    return default
+
+
+def _parse_to(raw: Any) -> int | None:
+    """リプレイ時間カーソル ``to``（UNIX 秒・str|int|None）を int へ変換する（不正・None は None=全期間）。
+
+    移植元: prototype_260630-01 の as-seen-at-t（時間カーソル）。``to`` は「その時点までに観測できた足」
+    に集計範囲を限定する上限 time（含む）。負値・非数値・None は None（＝全期間・現行挙動）へ丸める。
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 0 else None
+    if isinstance(raw, float):
+        return int(raw) if math.isfinite(raw) and raw >= 0 else None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if s.isdigit():
+            return int(s)
+    return None
+
+
+# ``from`` は ``to`` と同じ丸め（UNIX 秒・非負 int・不正/None は None）。ローリング窓の下限 time（含む）。
+_parse_from = _parse_to
+
+
+def _parse_bool_flag(raw: Any) -> bool:
+    """``today`` 等の BOOL フラグ（クエリ str|int|bool|None）を判定する（'1'/1/True で真・それ以外は偽）。
+
+    移植元 prototype_260630-01 の ``?today=1``（''→偽・'1'→真）に準拠する。省略・不正は偽（後方互換）。
+    """
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int):
+        return raw == 1
+    if isinstance(raw, str):
+        return raw.strip() == "1"
+    return False
+
+
+def handle_market_profile(
+    ref: Any,
+    timeframe: Any = None,
+    limit: Any = None,
+    bins: Any = None,
+    va: Any = None,
+    src: Any = None,
+    barw: Any = None,
+    to: Any = None,
+    **kwargs: Any,
+) -> tuple[int, dict[str, Any]]:
+    """GET /market_profile の純ロジック。
+
+    Args:
+        ref: datasetRef（ホワイトリスト済みキー）。未知は 400。
+        timeframe: 時間足コード（None=原子・再集計なし）。未知は 400。
+        limit: 直近 N 本に制限（クエリ str|int|None。不正・None は全件）。
+        bins: 価格ビン分割数（クエリ str|int|None。不正・None は 60）。
+        va: バリューエリア比率 0..1（クエリ str|float|None。不正・None は 0.70）。
+        src: 集計原子（'candle'=足レンジ TPO・既定 / 'dwell'=実ティック滞在秒・セッション認識 /
+            'm1'=生ティック数）。許可値以外は 400。'dwell'/'m1' はティック対応 ref（'jp225_tick'）以外は 400。
+        barw: レンジ(pt・クエリ str|float|None)。>0 指定時は price レンジ確定後に
+            n_bins = round((price_max-price_min)/barw) を算出し bins に優先する（candle/dwell/m1 いずれも）。
+            None/0/不正・auto は従来 bins。
+        to: リプレイ時間カーソル（UNIX 秒・クエリ str|int|None）。指定時は ``time <= to`` の足だけで
+            集計する（as-seen-at-t・アンカー＝データ先頭..T の累積）。省略・不正・範囲外は無視して全期間
+            （現行挙動＝後方互換）。移植元 prototype_260630-01。
+        **kwargs: ``from``（UNIX 秒・ローリング窓の下限 time・含む）と ``today``（'1' でスナップショット
+            当日強調）を受ける（``from`` は Python 予約語のため kwargs 経由）。増分2 A/C。
+            ``from`` 指定時は ``from <= time`` の足だけで集計する（``to`` と併用で [from,to] のローリング窓）。
+            ``today`` 真時は応答 profile に ``today[]``/``today_max``（窓最終日ぶんの表示 bin 値）を付加する。
+            ``sessions`` 真時（'1'）は応答トップレベルに ``sessions[{date,tpo[]}]``（各カレンダー日の表示
+            bin プロファイル・日付昇順）を付加する（profile 8 キーは不変・追加キーのみ）。
+            いずれも省略・不正は無視して現行挙動（後方互換）。移植元 prototype_260630-01 mp_core。
+
+    Returns:
+        (HTTPステータス, ボディ)。成功は (200, {ok:true, profile:{...}, src, atom, bar_width})、
+        失敗は (400/5xx, {ok:false, generation, error:{...}})。既存 candle/dwell の profile 応答スキーマは不変
+        （src/atom/bar_width はトップレベルのメタ情報として付加・profile 内の既存キーは維持）。
+    """
+    # src ホワイトリスト（既定 candle）。許可値以外は 400 validation。
+    src_val = _DEFAULT_SRC if src is None else src
+    if src_val not in _ALLOWED_SRC:
+        return _error_body(
+            "validation", f"未知の src です: {src!r}（{'|'.join(_ALLOWED_SRC)}）"
+        )
+
+    # datasetRef ホワイトリスト解決（§7.3）。未知キー・パス文字列は拒否。
+    if not dataset.is_known(ref):
+        return _error_body("validation", f"未知の datasetRef です: {ref!r}")
+
+    # timeframe — None は原子（後方互換）。未知コードは拒否（§7.3 同様）。
+    if timeframe is not None and not dataset.is_known_timeframe(timeframe):
+        return _error_body("validation", f"未知の timeframe です: {timeframe!r}")
+
+    # bins/va は範囲クランプ（不正値でも 500/退化させず、安全な範囲へ丸める）。
+    n_bins = max(1, min(int(_parse_int(bins, _DEFAULT_BINS)), _MAX_BINS))
+    va_pct = _parse_float(va, _DEFAULT_VA)
+    if not math.isfinite(va_pct):
+        va_pct = _DEFAULT_VA
+    va_pct = min(1.0, max(_MIN_VA, va_pct))
+    limit_n = _parse_int(limit, None)
+    # barw（レンジpt）— 有限かつ非負のみ採用（不正・None・負・NaN/Inf は 0=auto へ丸める）。
+    barw_val = _parse_float(barw, 0.0)
+    if not math.isfinite(barw_val) or barw_val < 0:
+        barw_val = 0.0
+    # to（リプレイ時間カーソル・UNIX 秒）— 不正・None は None（全期間・後方互換）。
+    to_ts = _parse_to(to)
+    # from（ローリング窓の下限 time・増分2 A）／today（スナップショット・増分2 C）。予約語 from は kwargs 経由。
+    from_ts = _parse_from(kwargs.get("from"))
+    want_today = _parse_bool_flag(kwargs.get("today"))
+    # sessions（日別プロファイル分割・?sessions=1）。省略・不正は偽（後方互換）。移植元 prototype_260630-01。
+    want_sessions = _parse_bool_flag(kwargs.get("sessions"))
+    # want_fine（GRID_W 固定グリッド base の露出・tick 逐次成長の忠実 binning 用）。Python 内部呼び出し
+    #   （market_profile_forming_controller）専用の追加フラグ。省略・不正は偽＝既存応答スキーマ不変（後方互換）。
+    want_fine = _parse_bool_flag(kwargs.get("want_fine"))
+
+    if src_val in ("dwell", "m1"):
+        return _handle_dwell(
+            ref, timeframe, limit_n, n_bins, va_pct, barw_val, src_val, to_ts, from_ts,
+            want_today, want_sessions, want_fine,
+        )
+
+    # src=candle（既定）— 現状の足ベース TPO 経路（不変。barw 指定時のみ n_bins を上書き）。
+    # candles は load_candles が返す [{time,open,high,low,close}] がそのまま compute の入力形。
+    candles = dataset.load_candles(ref, timeframe, limit_n)
+    if to_ts is not None:
+        # as-seen-at-t: T までに観測できた足だけへ切る（未来リーク無し）。空になれば従来の空プロファイル応答。
+        candles = [c for c in candles if c["time"] <= to_ts]
+    if from_ts is not None:
+        # ローリング窓: from 以上の足だけへ切る（下限・含む）。to と併用で [from,to] 窓（増分2 A）。
+        candles = [c for c in candles if c["time"] >= from_ts]
+    if candles and barw_val > 0:
+        # price レンジは compute_candle_profile と同一定義（price_range 単一情報源）。barw→n_bins に先取り使用。
+        price_min, price_max = price_range(candles)
+        n_bins = _resolve_n_bins(n_bins, barw_val, price_min, price_max)
+    profile = compute_candle_profile(
+        candles, n_bins=n_bins, va_pct=va_pct, want_today=want_today,
+        want_sessions=want_sessions,
+    )
+    body = {
+        "ok": True, "profile": profile, "src": "candle",
+        "atom": _ATOM["candle"], "bar_width": _bar_width(profile),
+    }
+    # sessions は応答トップレベルへ移す（profile 8 キー不変・追加キーのみ）。省略時は付加しない。
+    #   直近 _SESSIONS_MAX_DAYS 日へキャップ（UI が描くのは直近 nFit 列のみ・応答肥大の防止）。
+    #   sessions_total はキャップ前の実日数（primitive 注記「直近N/全M日」の M＝キャップ後 60 の誤読防止）。
+    if want_sessions:
+        all_sessions = profile.pop("sessions", [])
+        body["sessions_total"] = len(all_sessions)
+        body["sessions"] = _cap_sessions(all_sessions)
+    return 200, body
+
+
+def _handle_dwell(
+    ref: Any,
+    timeframe: Any,
+    limit_n: int | None,
+    n_bins: int,
+    va_pct: float,
+    barw: float,
+    src: str,
+    to_ts: int | None = None,
+    from_ts: int | None = None,
+    want_today: bool = False,
+    want_sessions: bool = False,
+    want_fine: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    """src=dwell/m1 の処理（実ティック・tick 対応 ref のみ）。非 tick ref は 400。
+
+    src='dwell'→metric='dwell'（滞在秒・セッション認識）、src='m1'→metric='count'（生ティック数・
+    セッション非依存）。load_candles で表示レンジ（price_min=min(low)/price_max=max(high)）と実期間
+    （t0=先頭/t1=末尾の time）を求め、tf から bar_sec を決めて
+    :func:`market_profile_dwell.compute_dwell_profile` を呼ぶ。barw>0 は price レンジ確定後に n_bins を上書き
+    する。応答スキーマは candle 版と同一。src/atom/bar_width をトップレベルのメタ情報として付加する。
+    """
+    symbol = market_profile_dwell.resolve_symbol(ref)
+    if symbol is None:
+        return _error_body(
+            "validation",
+            f"src={src} はティック対応 ref のみ対応です: {ref!r}（例: 'jp225_tick'）",
+        )
+
+    metric = _SRC_METRIC[src]
+    candles = dataset.load_candles(ref, timeframe, limit_n)
+    if to_ts is not None:
+        # as-seen-at-t（アンカー）: t1 = min(末尾, T までの足)・recent/t0 は従来（全期間先頭）。
+        #   compute_dwell_profile の境界日 _partial_rollup が T 途中日も未来リーク無しで集計する。
+        candles = [c for c in candles if c["time"] <= to_ts]
+    if from_ts is not None:
+        # ローリング窓（増分2 A）: t0 = max(先頭, from)。from 以上の足だけに切り、集計窓の起点を繰り上げる。
+        #   compute_dwell_profile の境界日 _partial_rollup が from 途中日も過去リーク無しで集計する。
+        candles = [c for c in candles if c["time"] >= from_ts]
+    if not candles:
+        # 空データは安全に空/ゼロプロファイルを返す（500 化しない）。
+        profile = market_profile_dwell.compute_dwell_profile(
+            symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400,
+            metric=metric, want_today=want_today, want_sessions=want_sessions,
+            want_fine=want_fine,
+        )
+    else:
+        # 全期間化（250日キャップ撤廃）: レンジ（price_min/max）と実期間（t0/t1）を全 candle から
+        # 算出する。dwell 集計も全期間（各完了日はディスク/メモリキャッシュ経由）なので、レンジは
+        # 集計窓（＝全期間）に一致し、下部の空白（dwell=0 の空帯）が解消する。
+        t1 = candles[-1]["time"]
+        price_min = min(c["low"] for c in candles)
+        price_max = max(c["high"] for c in candles)
+        t0 = candles[0]["time"]  # 窓の最古 time（from 指定時は from 以降の先頭＝ローリング窓の起点）。
+        bar_sec = _bar_sec_for_tf(timeframe)
+        n_bins = _resolve_n_bins(n_bins, barw, price_min, price_max)  # barw>0 は bins に優先。
+        profile = market_profile_dwell.compute_dwell_profile(
+            symbol, t0, t1, price_min, price_max, n_bins,
+            va_pct=va_pct, bar_sec=bar_sec, metric=metric, want_today=want_today,
+            want_sessions=want_sessions, want_fine=want_fine,
+        )
+    body = {
+        "ok": True, "profile": profile, "src": src,
+        "atom": _ATOM[src], "bar_width": _bar_width(profile),
+    }
+    # sessions は応答トップレベルへ移す（profile 8 キー不変・追加キーのみ）。省略時は付加しない。
+    #   直近 _SESSIONS_MAX_DAYS 日へキャップ（UI が描くのは直近 nFit 列のみ・応答肥大の防止）。
+    #   sessions_total はキャップ前の実日数（primitive 注記「直近N/全M日」の M＝キャップ後 60 の誤読防止）。
+    if want_sessions:
+        all_sessions = profile.pop("sessions", [])
+        body["sessions_total"] = len(all_sessions)
+        body["sessions"] = _cap_sessions(all_sessions)
+    return 200, body
