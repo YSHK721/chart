@@ -73,6 +73,37 @@ export class GrowthWindow {
     return Math.floor(cursor / DAY) * DAY;
   }
 
+  // 成長 push（bins モード）の表示 bin 幅ロック（ISSUE-047）: barw = 「from 直前の因果履歴レンジ / bins」。
+  //   bins モードのままだと enterBar/growTo のたびに backend が binw=(累積窓レンジ/bins) を再導出し、
+  //   レンジ拡大のたびにプロファイル全体（バー高さ・norm 正規化）が再スケールする。成長開始前の確定履歴
+  //   （time<from の直近 ceil(86400/barSec(tf)) 本＝約 1 営業日ぶん・バー数基準ゆえ週末ギャップ非依存）の
+  //   min(low)/max(high) レンジを「成熟時レンジの因果プロキシ」とし、barw を 1 回だけ導出して固定する
+  //   （以降はレンジ拡大で bin 数のみ増える＝古典的 MP のティックサイズ固定と同型・未来リークなし）。
+  //   ロック不能（履歴なし・レンジ縮退・from 欠損）は null を返し、呼び出し側は bins モードへフォールバック。
+  static lockedBarw(candles, from, tf, bins) {
+    const fromN = Number(from);
+    if (from == null || !Number.isFinite(fromN) || !Array.isArray(candles)) {
+      return null;
+    }
+    const binsN = Number(bins);
+    const nb = Number.isFinite(binsN) && binsN > 0 ? binsN : 60;
+    const nBack = Math.max(1, Math.ceil(DAY / GrowthWindow.barSec(tf)));
+    // time<from（因果・確定履歴のみ）かつ low/high が有限な足の直近 nBack 本。
+    const hist = candles.filter((c) => c && Number(c.time) < fromN
+      && Number.isFinite(Number(c.low)) && Number.isFinite(Number(c.high))).slice(-nBack);
+    if (hist.length === 0) {
+      return null;
+    }
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const c of hist) {
+      lo = Math.min(lo, Number(c.low));
+      hi = Math.max(hi, Number(c.high));
+    }
+    const span = hi - lo;
+    return span > 0 ? span / nb : null;
+  }
+
   // 表示モード×tf×cursor から MP セッション集計窓を写像する（domain の単一源）。
   //   cursor 欠損（null/undefined/非有限）は窓を成さず {from:null,to:null,formingStart:null}。
   static forCurrent(mode, tf, cursor) {

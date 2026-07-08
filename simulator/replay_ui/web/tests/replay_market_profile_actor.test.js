@@ -80,6 +80,7 @@ function fakeClock(seq) {
 
 function makeActor({
   formingClient, makeAccumulator, primitive, mainSeries, client, now, throttleMs = 120, ctxTo,
+  getCandles,
 } = {}) {
   const p = primitive ?? fakePrimitive();
   const ms = mainSeries ?? fakeMainSeries();
@@ -91,6 +92,7 @@ function makeActor({
     getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h', to: ctxTo }),
     formingClient,
     makeAccumulator,
+    getCandles,
     now: now ?? (() => 0),
     throttleMs,
   });
@@ -885,4 +887,197 @@ test('ISSUE-050 growTo (grid expansion, same cursor) does NOT sync-clamp — onl
   assert.equal(primitive.profiles.length, afterFirst, 'growTo は await 前に同期クランプ描画しない（enterBar 限定）');
   client.resolveAt(1, { ...BASE_FULL, priceMin: 80, priceMax: 160, now });
   await pg;
+});
+
+// --- ISSUE-047（再生中のバースケール変動の回帰禁止）: 成長 push 中の bins モードは、enterBar/growTo の
+//   たびに backend が binw=(累積窓レンジ/bins) を再導出するため、レンジ拡大のたびにプロファイル全体が
+//   再スケールしていた。修正: from 直前の因果履歴レンジから barw を 1 回だけ導出して固定し、
+//   resmode=range（barw 固定・bin 数可変）として forming へ送る＝再生中のバー高さ/スケールが安定する。 ---
+
+// from 直前 24 本（1h・レンジ 120pt）の因果履歴。lockedBarw=120/60=2。
+function lockHistory(from) {
+  const candles = [];
+  for (let i = 0; i < 24; i += 1) {
+    candles.push({ time: from - 3600 * (24 - i), low: 100, high: 220 });
+  }
+  return candles;
+}
+
+test('growing push + bins mode locks barw from causal history: forming args carry resmode=range with a stable range across bars (ISSUE-047)', async () => {
+  const from = 1782900000 - (1782900000 % 86400); // 再生開始点（日境界に整列）
+  const now1 = from + 3600 * 5;                   // 1 本目のバー
+  const now2 = from + 3600 * 6;                   // 2 本目のバー（窓レンジが伸びた後でも）
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make,
+    ctxTo: now1, getCandles: () => lockHistory(from),
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive', bins: 60 }); // bins モード（resmode 未指定）
+  // Act: 連続する 2 バーの enterBar（driver from=replayStart）。
+  await actor.enterBar(now1, from);
+  await actor.enterBar(now2, from);
+  // Assert: 両呼び出しとも resmode=range・range=履歴レンジ(120)/bins(60)=2 で固定（bins 送信へ戻らない）。
+  assert.equal(forming.calls.length, 2);
+  for (const call of forming.calls) {
+    assert.equal(call.resmode, 'range', '成長 push の bins モードは barw 固定（resmode=range）で送る');
+    assert.equal(call.range, 2, 'barw=因果履歴レンジ/bins（成長開始時に確定・以降固定）');
+  }
+});
+
+test('growing push keeps an explicit user resmode=range untouched (user barw wins)', async () => {
+  const from = 1782900000 - (1782900000 % 86400);
+  const now = from + 3600 * 5;
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make,
+    ctxTo: now, getCandles: () => lockHistory(from),
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive', resmode: 'range', range: 50 });
+  // Act
+  await actor.enterBar(now, from);
+  // Assert: ユーザー明示の barw（range=50）を温存（ロックで上書きしない）。
+  const call = forming.calls[forming.calls.length - 1];
+  assert.equal(call.resmode, 'range');
+  assert.equal(call.range, 50, 'ユーザー明示 range はロック導出より優先');
+});
+
+test('growing push falls back to bins mode when no causal history exists before from (lock unavailable)', async () => {
+  const from = 1782900000 - (1782900000 % 86400);
+  const now = from + 3600 * 5;
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make,
+    ctxTo: now, getCandles: () => [], // 履歴なし（全期間プリセット等）
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive', bins: 60 });
+  // Act
+  await actor.enterBar(now, from);
+  // Assert: ロック不能時は従来どおり bins を送る（挙動フォールバック・非破壊）。
+  const call = forming.calls[forming.calls.length - 1];
+  assert.notEqual(call.resmode, 'range', '履歴なしは range へ切り替えない');
+  assert.equal(call.bins, 60, 'bins モードのまま（従来挙動）');
+});
+
+test('lock recomputes when the replay start (from) changes (new replay session)', async () => {
+  const fromA = 1782900000 - (1782900000 % 86400);
+  const fromB = fromA + 86400; // 別の再生開始点
+  const forming = fakeFormingClient([BASE_FULL]);
+  // fromA 直前はレンジ 120（barw=2）、fromB 直前はレンジ 240（barw=4）になる履歴。
+  const candles = [];
+  for (let i = 0; i < 24; i += 1) {
+    candles.push({ time: fromA - 3600 * (24 - i), low: 100, high: 220 });
+  }
+  for (let i = 0; i < 24; i += 1) {
+    candles.push({ time: fromB - 3600 * (24 - i), low: 100, high: 340 });
+  }
+  const { actor } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make,
+    ctxTo: fromB + 3600, getCandles: () => candles,
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive', bins: 60 });
+  // Act: fromA → fromB（再生開始点の変更＝新セッション）。
+  await actor.enterBar(fromA + 3600 * 5, fromA);
+  await actor.enterBar(fromB + 3600 * 5, fromB);
+  // Assert: from ごとにロックを再導出する（stale ロックを引き回さない）。
+  assert.equal(forming.calls[0].range, 2, 'fromA セッションのロック（120/60）');
+  assert.equal(forming.calls[1].range, 4, 'fromB セッションのロック（240/60）');
+});
+
+test('lock retries when causal history was unavailable at first call (no permanent null memoization)', async () => {
+  const from = 1782900000 - (1782900000 % 86400);
+  const now1 = from + 3600 * 5;
+  const now2 = from + 3600 * 6;
+  const forming = fakeFormingClient([BASE_FULL]);
+  // 1 回目は履歴未ロード（[]）→ 2 回目以降に履歴が揃う（読み込み順の競合を模す）。
+  let loaded = false;
+  const { actor } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make,
+    ctxTo: now1, getCandles: () => (loaded ? lockHistory(from) : []),
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive', bins: 60 });
+  // Act: 履歴なしで 1 バー目（bins フォールバック）→ 履歴ロード後の 2 バー目。
+  await actor.enterBar(now1, from);
+  loaded = true;
+  await actor.enterBar(now2, from);
+  // Assert: 失敗（null）を恒久メモ化せず、履歴が揃った時点でロックが復帰する（レビュー🟡）。
+  assert.notEqual(forming.calls[0].resmode, 'range', '履歴未ロードの初回は bins フォールバック');
+  assert.equal(forming.calls[1].resmode, 'range', '履歴が揃った次回はロックへ復帰（再試行）');
+  assert.equal(forming.calls[1].range, 2, '復帰後の barw は因果履歴レンジ/bins');
+});
+
+// --- ISSUE-049（縮退グリッド中のブランク描画フラッシュの回帰禁止）: enterBar の skipDegenerateDraw は
+//   自身の描画だけをスキップし、直後の feedTick/settleTick の throttle 描画には縮退ガードが無かったため、
+//   縮退 accumulator（[0,1]・全 bin ゼロ）の空 snapshot が setProfile され MP バーが毎バー全消滅していた。
+//   修正: 縮退状態（_gridDegenerate）を状態化し、縮退中は feedTick/settleTick も描画抑止（前回描画保持）。
+//   growTo の実グリッド確定で解除して描画再開する。 ---
+
+const DEG_RESP = {
+  ok: true, formingStart: 1782950400, ticks: [], baseFine: [0], baseKmin: 0,
+  activeTable: [[1]], priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, now: 1782950400,
+};
+
+test('feedTick does NOT draw while grid is degenerate (blank [0,1] snapshot never rendered — ISSUE-049)', async () => {
+  const dayStart = 1782950400;
+  const forming = fakeFormingClient([DEG_RESP]);
+  const facc = fakeAccumulatorFactory();
+  const clock = fakeClock([0, 1000, 2000, 3000]);
+  const { actor, primitive } = makeActor({
+    formingClient: forming, makeAccumulator: facc.make, ctxTo: dayStart, now: clock, throttleMs: 100,
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  await actor.enterBar(dayStart); // 縮退 → enterBar は描画スキップ（既存）
+  const before = primitive.profiles.length;
+  // Act: throttle 間隔を超えて tick を供給（従来はここで空 snapshot が描かれていた＝Red）。
+  actor.feedTick(dayStart + 10, 71000);
+  actor.feedTick(dayStart + 20, 71010);
+  actor.feedTick(dayStart + 30, 71020);
+  // Assert: 縮退グリッド中は feedTick も描画しない（前回描画保持＝バー消滅フラッシュを出さない）。
+  assert.equal(primitive.profiles.length, before, '縮退中の feedTick は空 snapshot を描かない');
+});
+
+test('settleTick does NOT draw while grid is degenerate (ISSUE-049)', async () => {
+  const dayStart = 1782950400;
+  const forming = fakeFormingClient([DEG_RESP]);
+  const { actor, primitive } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: dayStart,
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  await actor.enterBar(dayStart); // 縮退
+  const before = primitive.profiles.length;
+  // Act
+  actor.settleTick();
+  // Assert
+  assert.equal(primitive.profiles.length, before, '縮退中の settleTick は空 snapshot を描かない');
+});
+
+test('growTo that stays degenerate does NOT draw; real grid re-enables drawing (feedTick resumes — ISSUE-049)', async () => {
+  const dayStart = 1782950400;
+  const GROWN = {
+    ok: true, formingStart: dayStart, ticks: [[dayStart + 100, 71000]],
+    baseFine: [0, 0, 0], baseKmin: 7100, activeTable: [[1]],
+    priceMin: 71000, priceMax: 71050, nBins: 3, gridW: 10, now: dayStart + 100,
+  };
+  const forming = fakeFormingClient([DEG_RESP, DEG_RESP, GROWN]);
+  const clock = fakeClock([0, 1000, 2000, 3000, 4000]);
+  const { actor, primitive } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: dayStart,
+    now: clock, throttleMs: 100,
+  });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' });
+  await actor.enterBar(dayStart);          // 縮退 #1
+  const before = primitive.profiles.length;
+  await actor.growTo(dayStart + 50);       // まだ縮退（データ無バー）→ 描かない（従来は空描画＝Red）
+  assert.equal(primitive.profiles.length, before, '縮退のままの growTo は描かない（前回描画保持）');
+  await actor.growTo(dayStart + 100);      // 実グリッド確定 → 描画再開
+  assert.equal(primitive.profiles.length, before + 1, '実グリッド確定の growTo は描画する');
+  actor.feedTick(dayStart + 110, 71010);   // throttle 経過後の feedTick も描画する（解除確認）
+  assert.equal(primitive.profiles.length, before + 2, '実グリッド確定後は feedTick 描画が再開する');
 });

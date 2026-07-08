@@ -8,8 +8,7 @@ MetaTrader（MQL4 / MQL5）のインディケーターを Python へ移植する
 - **参照実装**: `indigators/profit_band/`（PRO!fit_Band の移植）。本書の原則はすべて
   この実装で実証済み。各節の「参照」で対応箇所を示す。
 - **準拠する上位規約**: プロジェクトのクリーンアーキテクチャ方針・コードスタイル
-  （`.serena/memories/design_patterns_and_guidelines.md` /
-  `code_style_conventions.md`）に従う。
+  （`code_style_conventions.md`）に従う。
 
 ---
 

@@ -63,6 +63,13 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     //   await fetchForming を跨ぐたびに単調増加させ、戻りが最新 seq でなければ setProfile を破棄する
     //   （後方/連続スクラブで古い応答が新描画を上書きしない）。
     this._rebuildSeq = 0;
+    // ISSUE-047: 成長 push 中の binw ロック（barw）。key=`from|tf|bins` が変わるまで再計算しない
+    //   （＝同一成長セッション内で固定・再生開始点/時間足/bins 変更で自動再導出）。null=ロック不能。
+    this._barwLockKey = null;
+    this._barwLock = null;
+    // ISSUE-049: 現在の accumulator グリッドが縮退（[0,1]・base 空/tick 0）か。縮退中は feedTick/
+    //   settleTick/growTo の描画も抑止する（前回描画保持＝バー全消滅フラッシュを出さない）。
+    this._gridDegenerate = false;
   }
 
   // override: push 成長中（normal/replay+growing＝isGrowingPush）は enterBar/feedTick が駆動するため
@@ -129,7 +136,40 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
         }
       }
     }
+    // ISSUE-047（再生中のバースケール変動）: 成長 push の bins モードは、enterBar/growTo のたびに backend が
+    //   binw=(累積窓レンジ/bins) を再導出するため、レンジ拡大のたびにプロファイル全体（バー高さ barH・
+    //   norm 正規化）が再スケールする。成長中は from 直前の因果履歴レンジから barw を 1 回だけ導出して固定し、
+    //   resmode=range（barw 固定・bin 数可変）で送る＝スケール安定（依頼者承認・案 a）。ユーザー明示の
+    //   resmode=range は温存（上書きしない）。ロック不能（履歴なし等）は従来 bins のまま（非破壊）。
+    if (this.isGrowingPush() && args.resmode !== 'range' && args.from != null) {
+      const barw = this._growthBarwLock(args.from);
+      if (barw != null) {
+        args.resmode = 'range';
+        args.range = barw;
+      }
+    }
     return args;
+  }
+
+  // ISSUE-047 の barw ロックを返す（内部）。key=`from|tf|bins` 単位でメモ化し、同一成長セッション内は
+  //   固定値を返す（再生開始点 from・時間足・bins のいずれかが変わったときだけ GrowthWindow.lockedBarw で
+  //   再導出＝stale ロックを引き回さない）。導出は domain 純関数へ委譲（このメソッドはメモ化のみ）。
+  //   ロック不能（null）はメモ化しない（レビュー🟡）: 初回時点で getCandles が履歴未ロードでも、揃った
+  //   次回呼び出しで再試行して復帰する（成功値のみキャッシュ・失敗の恒久固定でセッション全体が bins
+  //   フォールバックに沈黙残存するのを防ぐ。再試行コストは candles 走査 O(n) で毎バー許容）。
+  _growthBarwLock(from) {
+    const tf = this._getContext().timeframe;
+    const bins = this._params ? this._params.bins : undefined;
+    const key = `${from}|${tf}|${bins ?? ''}`;
+    if (this._barwLockKey === key && this._barwLock != null) {
+      return this._barwLock;
+    }
+    const barw = GrowthWindow.lockedBarw(this._getCandles(), from, tf, bins);
+    if (barw != null) {
+      this._barwLockKey = key;
+      this._barwLock = barw;
+    }
+    return barw;
   }
 
   // 追加: ticklive の push バー入場（render が now=T で呼ぶ）。バー入場＝rollover reset。
@@ -142,30 +182,33 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   （当日窓）を写像する（driver 未配線の controller seam / gear 経路）。
   async enterBar(now, from) {
     // syncClamp=true: バー変更（カーソル移動）＝ await fetchForming の解決前に旧プロファイルを新カーソルの
-    //   revealed 上限へ同期クランプして stale プロファイル・フラッシュを断つ（ISSUE-050）。
-    return this._rebuildAt(now, true, from, true); // skipDegenerateDraw=true（縮退は描かず前回保持）。
+    //   revealed 上限へ同期クランプして stale プロファイル・フラッシュを断つ（ISSUE-050）。縮退グリッドの
+    //   描画抑止は _rebuildAt/feedTick/settleTick 内の _gridDegenerate 状態で担う（ISSUE-049）。
+    return this._rebuildAt(now, from, true);
   }
 
   // 追加: 当日 tick がグリッド外へ出たとき（replay.js driver が発火）、now までの因果窓で forming を
-  //   再取得しグリッドを拡張して作り直す。growTo は縮退スキップしない（拡張後は必ず描画＝当日プロファイル
-  //   成長）。fold 実体は enterBar と共通（_rebuildAt）。now は「直近 revealed tick 秒」（未来リーク禁止）。
+  //   再取得しグリッドを拡張して作り直す。fold 実体は enterBar と共通（_rebuildAt）。拡張後の実グリッドは
+  //   描画され、縮退のまま（データ無バー等）は前回描画を保持する（ISSUE-049・enterBar と同一基準）。
+  //   now は「直近 revealed tick 秒」（未来リーク禁止）。
   //   from（任意）: enterBar と同じ replayStart 累積下限（driver が透過）。
   async growTo(now, from) {
     // syncClamp=false: グリッド拡張（同一カーソル）は同期クランプしない（成長中の revealed 超 tick を
-    //   誤って clip しないため）。世代ガードは _rebuildAt 内で常時適用される。
-    return this._rebuildAt(now, false, from, false); // skipDegenerateDraw=false（拡張グリッドは描画）。
+    //   誤って clip しないため）。世代ガードは _rebuildAt 内で常時適用される。縮退グリッドの描画抑止は
+    //   _rebuildAt/feedTick/settleTick 内の _gridDegenerate 状態で担う（ISSUE-049）。
+    return this._rebuildAt(now, from, false);
   }
 
   // enterBar/growTo の共通実体: base=1/src=dwell/now/from で forming を [from, now] の因果窓で取得 →
   //   accumulator を作り直し（rollover/grid 拡張）→ forming.ticks を畳み込み（present 基底 _enterTicklive と
   //   同一 fold semantics）→ _lastSec/レンジ設定 → 描画。取得失敗（null）・base 欠損は前回描画を保持（非破壊）。
-  //   skipDegenerateDraw=true かつ縮退グリッド（tick 0＋[..,+1] レンジ）は描画のみスキップ（init は行い growTo
-  //   の土台を残す）。
+  //   縮退グリッド（tick 0＋[..,+1] レンジ）は描画のみスキップし _gridDegenerate を立てる（init は行い
+  //   growTo の土台を残す・ISSUE-049）。
   //   from（任意・driver=replayStart）: 明示指定時は不変条件 from<=formingStart を保つため
   //   min(from, periodStart(now,tf)) へクランプしてから _buildFormingArgs へ渡す（replayStart>formingStart の端＝
   //   1W/1M ラベル規約や当該バー内でも未来リークしない）。省略時は _buildFormingArgs の GrowthWindow フォール
   //   バックへ委譲する。
-  async _rebuildAt(now, skipDegenerateDraw, from, syncClamp = false) {
+  async _rebuildAt(now, from, syncClamp = false) {
     if (!this.isGrowingPush()) {
       return; // 自己ガード: push 成長中（normal/replay+growing）以外は push 駆動しない（Phase5: 成長軸ゲート）。
     }
@@ -222,9 +265,13 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
       this._lastSec = t[0];
     }
     this._lastSnapMs = this._now();
-    // 縮退グリッド（forming tick 0 かつ priceMax-priceMin<=1）は描画スキップ＝[0,1] 潰れを出さない。
-    if (skipDegenerateDraw && ticks.length === 0
-        && (this._gridPriceMax - this._gridPriceMin) <= 1) {
+    // ISSUE-049: 縮退グリッド（forming tick 0 かつ priceMax-priceMin<=1）を状態化する。縮退中は
+    //   enterBar/growTo 自身だけでなく feedTick/settleTick の throttle 描画も抑止し（前回描画保持）、
+    //   空 snapshot（[0,1]・全 bin ゼロ）による MP バー全消滅フラッシュを出さない。実グリッド確定
+    //   （非縮退の rebuild）で解除＝描画再開する。init 自体は行う（growTo の土台・従来どおり）。
+    this._gridDegenerate = ticks.length === 0
+      && (this._gridPriceMax - this._gridPriceMin) <= 1;
+    if (this._gridDegenerate) {
       return; // 前回描画を保持（最初の out-of-range tick で growTo が即グリッド確定）。
     }
     this._draw();
@@ -253,6 +300,12 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     }
     this._accumulator.addTick(sec, mid);
     this._lastSec = sec;
+    // ISSUE-049: 縮退グリッド中は throttle 描画も抑止（前回描画保持）。addTick 自体は行う（範囲外 clip・
+    //   O(1)）が、空 snapshot（[0,1]）を setProfile しない＝MP バー全消滅フラッシュを出さない。
+    //   グリッドは最初の out-of-range tick の growTo が確定し、以降の描画が再開する。
+    if (this._gridDegenerate) {
+      return;
+    }
     const t = this._now();
     if (t - this._lastSnapMs >= this._throttleMs) {
       this._lastSnapMs = t;
@@ -261,8 +314,9 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   }
 
   // 追加（slim 移設）: 確定時の最終 snapshot を強制描画する（throttle 無視）。
+  //   縮退グリッド中は描かない（ISSUE-049・前回描画保持＝feedTick と同一基準）。
   settleTick() {
-    if (!this._enabled || !this._accumulator) {
+    if (!this._enabled || !this._accumulator || this._gridDegenerate) {
       return;
     }
     this._lastSnapMs = this._now();

@@ -51,7 +51,7 @@
   <button id="first">⏮</button><button id="prev">◀ 1足</button>
   <button id="play">▶ 再生</button><button id="next">1足 ▶</button>
   <label>速度<select id="speed"><option>1</option><option selected>2</option><option>5</option></select>fps上限</label>
-  <button id="follow" class="on">直近窓追従</button>
+  <button id="follow" class="on">再生追従</button>
   <input type="range" id="slider" min="0" max="0" value="0">
   <span id="status">loading…</span>
 </div>
@@ -160,7 +160,7 @@ async function render(b){
   const ms=Math.round(performance.now()-t0);
   $('status').textContent=`${TF} bar ${bar}/${CANDLES.length-1} ${fmt(t)}  計算 ${ms}ms（実3インジ・その場計算）`;
   $('readout').textContent=
-    `時間足=${TF}  時刻 t=${fmt(t)} (bar #${bar}/${CANDLES.length-1})  表示=${followOn?'直近窓追従':'全体'}  ※各フレームをサーバがその場で計算\n`+
+    `時間足=${TF}  時刻 t=${fmt(t)} (bar #${bar}/${CANDLES.length-1})  表示=${followOn?'再生追従':'全体'}  ※各フレームをサーバがその場で計算\n`+
     `OHLC O=${c.open.toFixed(1)} H=${c.high.toFixed(1)} L=${c.low.toFixed(1)} C=${c.close.toFixed(1)}\n`+
     `tgp_btlm as-seen-at-t  `+Object.entries(tgpVals).map(([k,v])=>`${k}=${v.toFixed(1)}`).join('  ')+`\n`+
     `エントリー判定例: close ${c.close.toFixed(1)} vs mean ${(tgpVals['btlm_mean']||0).toFixed(1)} → `+(c.close>(tgpVals['btlm_mean']||0)?'mean上抜け（buy候補）':'mean下（売り/見送り）')+`\n`+specLine;

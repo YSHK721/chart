@@ -142,3 +142,126 @@ test('setupReplay runs unchanged when marketProfile is not wired (null) — lega
   // Assert: ここまで到達＝既存 replay 経路が非干渉で完走する。
   assert.ok(true);
 });
+
+// --- ISSUE-048（完成足フラッシュの回帰禁止）: 参照実装 prototype_260626-01 は「リビール→畳み込み」間に
+//   await を挟まない不変条件で完成足のチラ見せを防ぐが、render() の MP enterBar（HTTP await）が
+//   リビール後に挟まり、その待ち時間ぶん完成足が露出していた（実測 0.5〜1.5s）。修正: 再生中
+//   （playing かつ mode≠math）は enterBar の await より前（同一同期ブロック＝paint 前）に最新足を
+//   始値の同事足へ畳む。本テストは「畳み込み update（O=H=L=C=open）が enterBar より先」を順序で固定する。 ---
+test('during play, the revealed bar is collapsed to its open BEFORE the MP enterBar await (no completed-bar flash — ISSUE-048)', async () => {
+  const candles3 = [
+    { time: 100, open: 1, high: 2, low: 0.5, close: 1.5 },
+    { time: 200, open: 1.5, high: 2.5, low: 1, close: 2 },
+    { time: 300, open: 2, high: 3, low: 1.5, close: 2.5 },
+  ];
+  const events = [];
+  const mainSeries = {
+    attachPrimitive() {},
+    update(bar) { events.push({ kind: 'update', ...bar }); },
+  };
+  const mp = {
+    _en: true,
+    isEnabled() { return this._en; },
+    setEnabled(v) { this._en = !!v; },
+    async enterBar(t) { events.push({ kind: 'enter', t }); },
+    async growTo() {},
+    feedTick() {},
+    settleTick() {},
+  };
+  const fetchImpl = async (url) => ({
+    ok: true,
+    async json() {
+      if (String(url).startsWith('/candles')) return { ok: true, candles: candles3 };
+      if (String(url).startsWith('/intraday')) return { ok: true, m1: [], ticks: [11, 12], tick_secs: [210, 220] };
+      return { ok: true };
+    },
+  });
+  globalThis.window = globalThis.window || {};
+  const doc = fakeDoc();
+  await setupReplay({
+    chart: fakeChart(),
+    mainSeries,
+    controller: fakeController(),
+    renderer: { setCandles() {} },
+    datasetRef: 'jp225_tick',
+    recentBars: 1500,
+    document: doc,
+    fetchImpl,
+    marketProfile: mp,
+  });
+  // 起動 drive は最新足（bar=2）。スライダーで bar=0 へ戻してから再生する。
+  const slider = doc._els['rp-slider'];
+  slider.value = '0';
+  await slider.oninput({ target: slider });
+  events.length = 0;
+  // Act: ▶再生（playLoop: drive(bar+1)=リビール → animateForming）。完走を待つ。
+  doc._els['rp-play'].onclick();
+  const playBtn = doc._els['rp-play'];
+  for (let i = 0; i < 200 && playBtn.textContent !== '▶ 再生'; i += 1) {
+    await new Promise((r) => { setTimeout(r, 25); });
+  }
+  // Assert: バー time=200 について「始値へ畳む update（O=H=L=C=open=1.5）」が enterBar(200) より先。
+  const isCollapse200 = (e) => e.kind === 'update' && e.time === 200
+    && e.open === 1.5 && e.high === 1.5 && e.low === 1.5 && e.close === 1.5;
+  const collapseIdx = events.findIndex(isCollapse200);
+  const enterIdx = events.findIndex((e) => e.kind === 'enter' && e.t === 200);
+  assert.ok(enterIdx >= 0, '再生で enterBar(200) が呼ばれる（前提）');
+  assert.ok(collapseIdx >= 0, '再生リビール時に始値畳み込み update が発火する');
+  assert.ok(collapseIdx < enterIdx,
+    `畳み込みは enterBar の await より先（collapse@${collapseIdx} < enter@${enterIdx}＝完成足を露出しない）`);
+});
+
+// --- ISSUE-048 ガードの反対側固定（レビュー🟡）: 非再生（playing=false）の手動ナビでは畳み込まない
+//   ＝完成足表示を保つ。`playing &&` ガードを誤って外す退行を検出する。 ---
+test('manual navigation (playing=false) does NOT collapse the revealed bar (completed candle preserved — ISSUE-048 guard)', async () => {
+  const candles3 = [
+    { time: 100, open: 1, high: 2, low: 0.5, close: 1.5 },
+    { time: 200, open: 1.5, high: 2.5, low: 1, close: 2 },
+    { time: 300, open: 2, high: 3, low: 1.5, close: 2.5 },
+  ];
+  const events = [];
+  const mainSeries = {
+    attachPrimitive() {},
+    update(bar) { events.push({ kind: 'update', ...bar }); },
+  };
+  const mp = {
+    _en: true,
+    isEnabled() { return this._en; },
+    setEnabled(v) { this._en = !!v; },
+    async enterBar(t) { events.push({ kind: 'enter', t }); },
+    async growTo() {},
+    feedTick() {},
+    settleTick() {},
+  };
+  const fetchImpl = async (url) => ({
+    ok: true,
+    async json() {
+      if (String(url).startsWith('/candles')) return { ok: true, candles: candles3 };
+      if (String(url).startsWith('/intraday')) return { ok: true, m1: [], ticks: [11, 12], tick_secs: [210, 220] };
+      return { ok: true };
+    },
+  });
+  globalThis.window = globalThis.window || {};
+  const doc = fakeDoc();
+  await setupReplay({
+    chart: fakeChart(),
+    mainSeries,
+    controller: fakeController(),
+    renderer: { setCandles() {} },
+    datasetRef: 'jp225_tick',
+    recentBars: 1500,
+    document: doc,
+    fetchImpl,
+    marketProfile: mp,
+  });
+  // 起動 drive（playing=false・最新足 bar=2）に続き、スライダーで bar=1 へ手動ナビ（playing=false のまま）。
+  events.length = 0;
+  const slider = doc._els['rp-slider'];
+  slider.value = '1';
+  await slider.oninput({ target: slider });
+  // Assert: enterBar は呼ばれるが、始値畳み込み update（O=H=L=C=open）は一切発火しない（完成足のまま）。
+  assert.ok(events.some((e) => e.kind === 'enter' && e.t === 200), '手動ナビでも enterBar は呼ばれる（前提）');
+  const collapsed = events.filter((e) => e.kind === 'update'
+    && e.open === e.high && e.high === e.low && e.low === e.close);
+  assert.equal(collapsed.length, 0, '非再生（playing=false）の手動ナビは畳み込まない（完成足表示を保つ）');
+});

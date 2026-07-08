@@ -4,8 +4,8 @@
 //   状態遷移の「判定」だけを抽出（値の算出）。副作用（chart/DOM/timer）は View 側に残す。
 //   分岐・境界・数式を 1つも足さず/削らず。
 
-export const RIGHT_MARGIN = 6;   // 最新足の右に置く余白（バー数）。（replay.js: RIGHT_MARGIN）
-export const FOLLOW_BARS = 150;  // 直近窓追従モードの表示本数。（replay.js: FOLLOW_BARS）
+export const RIGHT_MARGIN = 18;   // 最新足の右に置く余白（バー数）。（replay.js: RIGHT_MARGIN）
+export const FOLLOW_BARS = 200;  // 再生追従モードの表示本数。（replay.js: FOLLOW_BARS）
 
 // bar を [0, length-1] にクランプ。（replay.js: render() の bar 算出）
 export function clampBar(target, length) {
