@@ -130,20 +130,34 @@ def m1_csv_path(ref: str = _DEFAULT_REF, data_dir: Any = DATA_DIR) -> Path:
     return Path(data_dir) / f"{ref}_m1.csv"
 
 
+def day_parquet_path(day: Any, *, symbol: str = _DEFAULT_SYMBOL, data_dir: Any = DATA_DIR) -> Path:
+    """``day`` の日別ティック parquet の正準パスを返す（実在チェックはしない）。
+
+    tick tree レイアウト ``<DATA_DIR>/ticks/YYYY/MM/DD/<symbol>_ticks.parquet`` の単一権威
+    （reader: :func:`day_parquet_files` / writer: tools.live_tick_watch が共用し、レイアウト
+    変更を本所 1 箇所に閉じる）。
+    """
+    d = pd.Timestamp(day)
+    return (
+        tick_root(data_dir)
+        / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}"
+        / f"{symbol}_ticks.parquet"
+    )
+
+
 def day_parquet_files(
     start: Any, end: Any, *, symbol: str = _DEFAULT_SYMBOL, data_dir: Any = DATA_DIR
 ) -> List[Path]:
     """``[start, end]``（両端含む・日次）の実在する日別ティック parquet を昇順で列挙する。
 
-    ``<DATA_DIR>/ticks/YYYY/MM/DD/<symbol>_ticks.parquet`` を日単位に走査し、実在するものだけ
+    パスは :func:`day_parquet_path`（レイアウト単一権威）で解決し、実在するものだけ
     返す（欠損日はスキップ・休場日対応）。
     """
-    root = tick_root(data_dir)
     s, e = pd.Timestamp(start), pd.Timestamp(end)
     out: List[Path] = []
     d = s
     while d <= e:
-        p = root / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}" / f"{symbol}_ticks.parquet"
+        p = day_parquet_path(d, symbol=symbol, data_dir=data_dir)
         if p.is_file():
             out.append(p)
         d += pd.Timedelta(days=1)
@@ -185,6 +199,18 @@ def _write_m1_csv(m1: pd.DataFrame, path: Path) -> None:
         raise
 
 
+def _drop_forming_bars(m1: pd.DataFrame, until: Any) -> pd.DataFrame:
+    """``until`` 指定時、``index >= until`` の分バー（形成中）を除外する共通フィルタ。
+
+    ``until=None`` は素通し（従来出力を byte 不変に保つ）。用途は「形成中の分バー
+    （``floor(now, "min")`` 以降）を確定値として書き込まない」こと。:func:`build_m1_from_ticks`
+    と :func:`append_m1_from_ticks` の双方が共有し、除外規則の二重定義を避ける。
+    """
+    if until is None:
+        return m1
+    return m1[m1.index < pd.Timestamp(until)]
+
+
 def build_m1_from_ticks(
     start: Any,
     end: Any,
@@ -192,6 +218,7 @@ def build_m1_from_ticks(
     symbol: str = _DEFAULT_SYMBOL,
     ref: str = _DEFAULT_REF,
     data_dir: Any = DATA_DIR,
+    until: Any = None,
 ) -> Path:
     """``[start, end]`` の日別ティック parquet を読み、M1 CSV を生成して出力パスを返す。
 
@@ -202,6 +229,10 @@ def build_m1_from_ticks(
     **日別 parquet を 1 ファイルずつ** :func:`ticks_to_m1` で M1（数十〜数百倍に縮約）へ集約し、
     小さな日別 M1 のみを連結する。ティック parquet は UTC 日で partition されるため分バーが
     ファイルを跨がず、結果は全件一括集計と**数値同一**（RSS は 1 日分ティックに有界化）。
+
+    ``until``（省略可・:class:`pd.Timestamp` 互換）を指定すると、生成する M1 バーのうち
+    ``index >= until`` の行を除外する（用途: 形成中の分バー＝``floor(now, "min")`` 以降を確定値
+    として書き込まない）。``until=None``（既定）は従来出力と完全一致（byte 不変）。
     """
     _validate_ref(ref)
     files = day_parquet_files(start, end, symbol=symbol, data_dir=data_dir)
@@ -220,6 +251,7 @@ def build_m1_from_ticks(
     else:
         # parquet は在るが全日空（0 行）。ヘッダのみの空 M1 を出力する。
         m1 = ticks_to_m1(pd.DataFrame({c: [] for c in _TICK_COLUMNS}))
+    m1 = _drop_forming_bars(m1, until)  # 形成中分バー（>= until）を確定値として書かない。
     out_path = m1_csv_path(ref=ref, data_dir=data_dir)
     _write_m1_csv(m1, out_path)
     return out_path
@@ -280,6 +312,7 @@ def append_m1_from_ticks(
     symbol: str = _DEFAULT_SYMBOL,
     ref: str = _DEFAULT_REF,
     data_dir: Any = DATA_DIR,
+    until: Any = None,
 ) -> Path:
     """既存 M1 CSV に「最終バー日以降の不足分」だけを集計して**追記**する（増分・メモリ有界・自己修復）。
 
@@ -289,6 +322,11 @@ def append_m1_from_ticks(
     完成済みの最終日は空追記（冪等 no-op）、途中までしか書けていない日は欠損分のみ追記され自己修復する。
     結果は全構築と一致する（過去確定日の再計算は不要）。
 
+    ``until``（省略可・:class:`pd.Timestamp` 互換）を指定すると、追記する M1 バーのうち
+    ``index >= until`` の行を除外する（形成中の分バー＝``floor(now, "min")`` 以降を確定値として
+    書き込まない）。フォールバック先の :func:`build_m1_from_ticks` へも同じ ``until`` を伝播する。
+    ``until=None``（既定）は従来出力と完全一致（byte 不変）。
+
     前提（重要）: 取得は前方追記（resume）である。過去日への遡及バックフィル（既存最終日より前の
     欠損日を後から追加）は本増分では取り込めない。その場合は :func:`build_m1_from_ticks` で全再構築する。
     """
@@ -297,7 +335,9 @@ def append_m1_from_ticks(
     tail = _read_last_m1_row(out_path)
     if tail is None or not _is_healthy_m1_row(tail):
         # 初回（M1 不在/空）or 末尾 torn 行 → 原子的全構築で（再）生成し自己修復。
-        return build_m1_from_ticks(start, end, symbol=symbol, ref=ref, data_dir=data_dir)
+        return build_m1_from_ticks(
+            start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until
+        )
 
     last_date = pd.Timestamp(tail.index[-1])
     # 最終バー日（当日）から再読込し index > last_date のみ追記する。完成日は冪等 no-op、
@@ -317,6 +357,7 @@ def append_m1_from_ticks(
         return out_path
     m1_new = pd.concat(daily_m1).sort_index()
     m1_new = m1_new[m1_new.index > last_date]  # 厳密に既存最終 date より後のみ追記（重複防止）。
+    m1_new = _drop_forming_bars(m1_new, until)  # 形成中分バー（>= until）を確定値として書かない。
     if m1_new.empty:
         return out_path
     _append_m1_csv(m1_new, out_path)

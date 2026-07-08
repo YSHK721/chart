@@ -104,3 +104,25 @@ test('bar=null (no forming bar) is a full no-op (no candle update, no recompute)
   assert.equal(sp.calls.updateLast.length, 0);   // が価格は更新しない
   assert.equal(sp.calls.recompute, 0);           // 指標も再計算しない（材料なし＝完全 no-op）
 });
+
+// suppressPriceUpdate（ISSUE-049）: LiveTickPlayer が価格の唯一の書き手になるとき、FormingBarUpdater は
+//   価格の巻き戻し（12 秒より古いデータでの updateLastCandle）を止める。指標の最新点再計算は従来どおり。
+test('suppressPriceUpdate=true skips updateLastCandle but still recomputes indicators (latest)', async () => {
+  const sp = spies();
+  const { updater, t } = newUpdater({ suppressPriceUpdate: true }, sp);
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.loadForming.length, 1);  // 形成中バー取得は行う（指標材料）
+  assert.equal(sp.calls.updateLast.length, 0);   // が価格は書かない（player が唯一の書き手）
+  assert.equal(sp.calls.recompute, 1);           // 指標の最新点再計算は従来どおり
+  assert.deepEqual(sp.calls.recomputeOpts, { mode: 'latest' });
+});
+
+test('suppressPriceUpdate default (unset) preserves existing behavior (updateLastCandle called)', async () => {
+  const sp = spies();
+  const { updater, t } = newUpdater({}, sp); // 既定 false（byte 不変）
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.updateLast.length, 1);   // 従来どおり価格を更新
+  assert.deepEqual(sp.calls.updateLast[0], sp.bar);
+});

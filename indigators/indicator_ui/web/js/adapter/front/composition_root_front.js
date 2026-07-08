@@ -20,6 +20,7 @@ import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
 import { LiveFollowController } from './live_follow_controller.js';
 import { FormingBarUpdater } from './forming_bar_updater.js';
+import { LiveTickPlayer } from './live_tick_player.js';
 import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
@@ -88,6 +89,25 @@ async function fetchFormingBar(fetchImpl, datasetRef, timeframe) {
     }
     const payload = await resp.json();
     return payload && payload.ok ? payload.bar : null;
+  } catch {
+    return null;
+  }
+}
+
+// GET /live_ticks?since= で増分 tick を取得する（B方式・ISSUE-049）。応答
+//   {ok, ticks:[[ms,mid],...], serverNowMs}。LiveTickPlayer が clockOffset 維持と再生に使う。
+//   失敗時は null（player は次 poll で回復・巻き戻さない）。
+async function fetchLiveTicks(fetchImpl, since = 0) {
+  if (typeof fetchImpl !== 'function') {
+    return null;
+  }
+  try {
+    const resp = await fetchImpl(`/live_ticks?since=${encodeURIComponent(since)}`);
+    if (!resp.ok) {
+      return null;
+    }
+    const payload = await resp.json();
+    return payload && payload.ok ? payload : null;
   } catch {
     return null;
   }
@@ -312,6 +332,12 @@ export async function bootstrap({
   // ライブ更新（1 分間隔）の組み立て。served（B方式）のみ。tick は controller 経由の再計算
   //   ＋ /candles 再取得 → 最新足を renderer.updateLastCandle で差分反映する。start は入口
   //   （index.html）が served 時のみ呼ぶ。A方式（file://）は null（更新を配線しない）。
+  // LiveTickPlayer（12 秒固定遅延の tick 再生）を配線するのは served（B方式）のみ＝価格の唯一の
+  //   書き手。このとき旧 2 系統（LiveUpdater / FormingBarUpdater）の価格上書きは 12 秒より古い
+  //   データで巻き戻すため suppressPriceUpdate=true で止める（指標再計算は従来どおり）。
+  //   file://（A方式）は player 不在＝false で既存挙動 byte 不変。
+  const playerActive = (mode === 'b');
+
   const liveUpdater = (mode === 'b')
     ? new LiveUpdater({
         controller,
@@ -322,6 +348,7 @@ export async function bootstrap({
         setInterval: setIntervalImpl,
         clearInterval: clearIntervalImpl,
         intervalMs: liveIntervalMs,
+        suppressPriceUpdate: playerActive,
       })
     : null;
 
@@ -341,6 +368,23 @@ export async function bootstrap({
         setInterval: setIntervalImpl,
         clearInterval: clearIntervalImpl,
         intervalMs: formingIntervalMs,
+        suppressPriceUpdate: playerActive,
+      })
+    : null;
+
+  // LiveTickPlayer（12 秒固定遅延のなめらか tick 再生・ISSUE-049）の組み立て。served（B方式）のみ。
+  //   /live_ticks から increment 取得しキュー → 100ms 粒度で serverNow-12000 以前の tick を現在 tf の
+  //   形成中バーへ累積 → renderer.updateLastCandle。tf 切替・起動時は /forming_bar でシード。start は
+  //   入口（index.html）が served 時のみ呼ぶ。A方式（file://）は null（既存挙動 byte 不変）。
+  const liveTickPlayer = playerActive
+    ? new LiveTickPlayer({
+        renderer,
+        fetchLiveTicks: (since) => fetchLiveTicks(fetch, since),
+        loadFormingBar: (ref, tf) => fetchFormingBar(fetch, ref, tf),
+        datasetRef,
+        getTimeframe: () => controller._timeframe,
+        setInterval: setIntervalImpl,
+        clearInterval: clearIntervalImpl,
       })
     : null;
 
@@ -384,5 +428,5 @@ export async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, tradeMarkers, marketProfile, replayBar, liveFollowController, mpLiveModeCoordinator };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, replayBar, liveFollowController, mpLiveModeCoordinator };
 }

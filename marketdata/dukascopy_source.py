@@ -97,6 +97,45 @@ def _to_candles(df: pd.DataFrame) -> List[Candle]:
     return [by_time[t] for t in sorted(by_time)]
 
 
+def fetch_ticks_since(
+    cursor_ms: int,
+    *,
+    instrument: str = JP225,
+    limit: int = 30_000,
+) -> List[tuple]:
+    """``cursor_ms`` より後の増分 tick を ``(unix_ms, bid, ask)`` 昇順で返す（ベンダ隔離）。
+
+    freeserv 増分カーソル API（``dukascopy_python._fetch``・公式ライブウィジェットと同じ
+    endpoint）の薄いラッパ。``last_update=cursor_ms`` を渡し、直近数秒分（数 KB）を 1 接続で
+    取得する。戻りは ``cursor_ms`` より厳密に後の行のみ（重複ダウンロード・境界重複を排する）。
+
+    private API 依存（``_fetch`` はライブラリ非公開）である点に注意する。この呼び方
+    （instrument / interval=TICK / offer_side=BID / last_update / limit）は
+    ``prototype_260707-01/server.py`` の ``_poll_loop`` で実機ポーリングし実測済みである
+    （feed 側 lag 3.8〜5.5s・fetch 1.2s・5 秒周期で枯渇なし＝12 秒固定遅延の根拠）。
+
+    Args:
+        cursor_ms: この UNIX ミリ秒より後の tick のみ返す（0 なら freeserv 既定の直近窓）。
+        instrument: 銘柄（既定 JP225＝日経225）。
+        limit: 1 リクエストの最大行数（既定 30,000）。
+
+    Returns:
+        ``(unix_ms, bid, ask)`` の list（``unix_ms > cursor_ms`` のみ・昇順）。
+    """
+    rows = dukascopy_python._fetch(
+        instrument=instrument,
+        interval=dukascopy_python.INTERVAL_TICK,
+        offer_side=dukascopy_python.OFFER_SIDE_BID,
+        last_update=cursor_ms,
+        limit=limit,
+    )
+    return [
+        (int(r[0]), float(r[1]), float(r[2]))
+        for r in rows
+        if int(r[0]) > cursor_ms
+    ]
+
+
 class DukascopyCandleSource:
     """Dukascopy から OHLC candles を取得する :class:`CandleSource` 実装。
 

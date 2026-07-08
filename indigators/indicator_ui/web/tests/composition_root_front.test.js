@@ -15,6 +15,7 @@ import { bootstrap, modeForProtocol } from '../js/adapter/front/composition_root
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
 import { LiveUpdater } from '../js/adapter/front/live_updater.js';
+import { LiveTickPlayer } from '../js/adapter/front/live_tick_player.js';
 
 // Fake lwc（v5）: createChart → chart（addSeries/panes/addPane/timeScale/subscribeCrosshairMove）。
 //   ColorType / CandlestickSeries / createTextWatermark も公開（composition・ChartRenderer が参照）。
@@ -140,6 +141,42 @@ test('bootstrap (file://) exposes liveUpdater=null so no live updates are wired'
   });
   // Assert: A方式（file://）はライブ更新を配線しない。
   assert.equal(liveUpdater, null);
+});
+
+// ===========================================================================
+// LiveTickPlayer 配線（served のみ・12 秒固定遅延の tick 再生・ISSUE-049）
+//   served では player を組み立て、価格の二重書き排除のため LiveUpdater/FormingBarUpdater へ
+//   suppressPriceUpdate=true を渡す。file:// は player=null＝既存挙動 byte 不変。
+// ===========================================================================
+
+test('bootstrap (served) builds a LiveTickPlayer and exposes it on the return value', async () => {
+  const { lwc } = fakeLwc();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  const { liveTickPlayer, ready } = await bootstrap({
+    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+  });
+  await ready;
+  assert.ok(liveTickPlayer instanceof LiveTickPlayer);
+});
+
+test('bootstrap (file://) exposes liveTickPlayer=null (byte-unchanged A-mode)', async () => {
+  const { lwc } = fakeLwc();
+  const { liveTickPlayer } = await bootstrap({
+    lwc, container: {}, doc: null, storage: noStorage, protocol: 'file:',
+  });
+  assert.equal(liveTickPlayer, null);
+});
+
+test('bootstrap (served) passes suppressPriceUpdate=true to LiveUpdater and FormingBarUpdater', async () => {
+  const { lwc } = fakeLwc();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  const { liveUpdater, formingBarUpdater, ready } = await bootstrap({
+    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+  });
+  await ready;
+  // player が価格の唯一の書き手＝旧 2 系統は価格上書きを止める（12 秒より古い巻き戻し排除）。
+  assert.equal(liveUpdater._suppressPriceUpdate, true);
+  assert.equal(formingBarUpdater._suppressPriceUpdate, true);
 });
 
 // ===========================================================================

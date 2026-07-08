@@ -34,6 +34,7 @@ __all__ = [
     "TickSource",
     "DukascopyCandleSource",
     "DukascopyTickSource",
+    "fetch_ticks_since",
     "INTERVALS",
     "OFFER_SIDES",
     "JP225",
@@ -45,6 +46,7 @@ __all__ = [
 _LAZY = {
     "DukascopyCandleSource",
     "DukascopyTickSource",
+    "fetch_ticks_since",
     "INTERVALS",
     "OFFER_SIDES",
     "JP225",

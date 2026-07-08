@@ -37,7 +37,6 @@ import logging
 import os
 import sys
 import tempfile
-import time as _time
 from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import median
@@ -418,36 +417,10 @@ def build_rollup_hook(
     return _hook
 
 
-def run_watch(
-    update_fn: Callable[[], None],
-    *,
-    interval: int,
-    sleep_fn: Callable[[float], None] = _time.sleep,
-    stop_after: Optional[int] = None,
-) -> int:
-    """``update_fn`` → ``sleep_fn(interval)`` を繰り返す薄いポーリングループ（副作用）。
-
-    - ``sleep_fn`` 注入でテスト可能化。``stop_after``（回数）で有限終了。
-    - ``update_fn`` の一過性例外（ネットワーク断・一時 fetch 失敗等）は捕捉してログし、
-      次インターバルへ継続する（無人ポーリングの可用性を保つ）。
-    - ``KeyboardInterrupt`` を捕捉して正常終了（0 を返す）。
-    """
-    count = 0
-    try:
-        while True:
-            try:
-                update_fn()
-            except KeyboardInterrupt:
-                raise
-            except Exception:  # 一過性障害でポーリングを止めない（次インターバルへ継続）
-                logger.exception("増分更新に失敗しました（次インターバルへ継続します）")
-            count += 1
-            if stop_after is not None and count >= stop_after:
-                break
-            sleep_fn(interval)
-    except KeyboardInterrupt:
-        return 0
-    return 0
+# 汎用ポーリングループは共有層 tools.watch_loop へ移設した（本体は sleep＋例外捕捉のみで UI 非依存
+# の汎用抽象＝本アクターが所有する理由が無いため）。既存 API（本モジュール経由の run_watch 参照・
+# --watch 経路・テスト）互換のため re-export する（repo 根は上で sys.path 済）。
+from tools.watch_loop import run_watch  # noqa: E402,F401
 
 
 def _interval_seconds(value: str) -> int:
