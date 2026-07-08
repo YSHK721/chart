@@ -7,7 +7,7 @@
 //
 // 設計の要点:
 //   - リビール: 足は CANDLES.slice(0, bar+1) で t まで表示し未来を隠す（既定）。
-//     ビューは左端固定で右へ伸ばす（直近窓追従はトグルで任意）。スライドしない。
+//     ビューは左端固定で右へ伸ばす（再生追従はトグルで任意）。スライドしない。
 //   - 同時更新（アトミック）: 足リビールとビューを recomputeAllApplied の preRender
 //     （計算後の同期描画バッチ内）で行う。await を挟まず帯描画と同フレームに乗るため、
 //     足・帯・ビューが常に同一 t で揃う（帯が t-n に遅れない）。preRender は適用 0 でも
@@ -19,8 +19,8 @@ import { ReplayBoundaryDimPrimitive } from './replay_boundary_dim.js';
 
 export async function setupReplay({ chart, mainSeries, controller, renderer, datasetRef, recentBars, document: doc }) {
   const $ = (id) => doc.getElementById(id);
-  const RIGHT_MARGIN = 6;                    // 最新足の右に置く余白（バー数）
-  const FOLLOW_BARS = 150;                   // 直近窓追従モードで playhead から遡って表示する本数
+  const RIGHT_MARGIN = 18;                    // 最新足の右に置く余白（バー数）
+  const FOLLOW_BARS = 200;                   // 再生追従モードで playhead から遡って表示する本数
   const DAY = 86400;
   // 表示レンジ・テンプレート（時間足別）。期間は「秒」で持ち、t 起点で [t-期間, t] を毎回算出する
   //   （バー本数固定より正確・全時間足対応・新足追加で自動追従＝再設定不要）。null=全期間（左端から）。
@@ -44,7 +44,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   let playing = false;
   let timeframe = controller._timeframe;      // 現在の時間足（プリセット表示の切替に使用）
   let generation = 0;                        // スクラブ等で古い計算結果を破棄する世代番号
-  let followOn = false;                       // 直近窓追従トグル（OFF=過去すべて表示／ON=直近 FOLLOW_BARS 本）
+  let followOn = false;                       // 再生追従トグル（OFF=過去すべて表示／ON=直近 FOLLOW_BARS 本）
   let autoFrame = true;                        // 自動フレーム。ユーザーがチャートを直接操作すると false（手動閲覧）
   // 期間プリセット状態。replayStart=既定窓の開始 bar（減光境界の算出に使用）。
   let replayStart = 0;                        // 既定=全期間（先頭から）
@@ -127,7 +127,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       // 期間プリセット＝可視窓の「幅」、スライダー(=playhead bar)＝その窓を履歴上でパンする位置。
       //   窓は [bar-幅, bar] とし、最新リビール足(bar)を常に右端へ置く（左端移動バグなし）。
       //   スライダーを動かすと窓ごと履歴がスクロール＝期間プリセットとスライダーが連動する。
-      //   直近窓追従(followOn)=固定本数 FOLLOW_BARS の窓。全期間(activePeriodBars=null)=左端0。
+      //   再生追従(followOn)=固定本数 FOLLOW_BARS の窓。全期間(activePeriodBars=null)=左端0。
       const width = followOn ? FOLLOW_BARS : activePeriodBars;
       const from = (width == null) ? 0 : Math.max(0, bar - width);
       const to = bar + RIGHT_MARGIN;
@@ -573,7 +573,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   $('rp-view-left').onclick = () => scrollViewTo('left');
   $('rp-view-right').onclick = () => scrollViewTo('right');
   $('rp-slider').oninput = (e) => drive(+e.target.value);
-  $('rp-follow').onclick = () => {                         // 直近窓追従トグル（OFF=過去全表示／ON=直近窓）
+  $('rp-follow').onclick = () => {                         // 再生追従トグル（OFF=過去全表示／ON=直近窓）
     followOn = !followOn;
     $('rp-follow').classList.toggle('on', followOn);
     autoFrame = true;                                      // 明示的な表示操作＝自動フレーム再開
@@ -586,7 +586,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   }
 
   // チャートを直接操作（ホイール=拡大縮小／ドラッグ=移動）したら自動フレームを停止＝以降リセットしない。
-  //   詳細ポイントの検証を妨げない。再開は「直近窓追従」または期間プリセットのクリックで行う。
+  //   詳細ポイントの検証を妨げない。再開は「再生追従」または期間プリセットのクリックで行う。
   try {
     const el = chart.chartElement ? chart.chartElement() : null;
     if (el) {
