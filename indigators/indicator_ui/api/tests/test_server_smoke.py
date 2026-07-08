@@ -223,6 +223,33 @@ def test_get_live_ticks_serves_injected_buffer_since_cursor(server):
 
 
 # --------------------------------------------------------------------------- #
+# /market_profile_forming 殻の from 透過（回帰: 当日窓へレンジを絞る根幹）
+# --------------------------------------------------------------------------- #
+def test_get_market_profile_forming_passes_from_to_controller(server, monkeypatch):
+    """殻 `_handle_market_profile_forming` が query の `from` を controller へ `frm` として渡す。
+
+    これが欠けると controller の from_ts=None に落ち、base レンジが全期間 low/high へ広がり
+    当日成長が不可視になる（兄弟 `_handle_market_profile` と同型の透過を固定する回帰）。
+    """
+    import framework.server as _srv
+
+    captured = {}
+
+    def _spy(ref, timeframe, since, base, now, bins, va, barw, frm=None):
+        captured["frm"] = frm
+        return 200, {"ok": True, "frm_echo": frm}
+
+    monkeypatch.setattr(_srv, "handle_market_profile_forming", _spy)
+    status, _ctype, raw = _get(
+        server,
+        "/market_profile_forming?datasetRef=jp225_tick&timeframe=1D&base=1&from=1783382400&bins=60",
+    )
+    assert status == 200
+    assert captured.get("frm") == "1783382400"  # query の from が frm として届く。
+
+
+
+# --------------------------------------------------------------------------- #
 # 静的配信 / パストラバーサル
 # --------------------------------------------------------------------------- #
 def test_get_root_serves_index_html(server):
