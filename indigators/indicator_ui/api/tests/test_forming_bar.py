@@ -85,6 +85,31 @@ def test_forming_bar_none_for_non_tick_ref_or_unsupported_tf(monkeypatch) -> Non
     assert fb.forming_bar("jp225_tick", "1W", _unix("2025-01-02 09:00:00")) is None  # 非対応tf
 
 
+def test_forming_bar_from_buffer_ticks_aggregates_window() -> None:
+    # seed 鮮度化: in-memory buffer の (ms, mid) 昇順列から [start, now) の形成中バーを組む。
+    start = _unix("2025-01-02 09:05:00")
+    now = _unix("2025-01-02 09:07:30")
+    ticks = [
+        (start * 1000 - 5000, 111.0),        # 期間前（start 未満）→ 除外。
+        (start * 1000 + 1000, 100.0),        # open。
+        (start * 1000 + 2000, 105.0),        # high。
+        (start * 1000 + 3000, 98.0),         # low。
+        (start * 1000 + 4000, 102.0),        # close（窓内最終）。
+        (now * 1000 + 1000, 999.0),          # now 以降 → 除外。
+    ]
+    bar = fb.forming_bar_from_buffer_ticks(ticks, start, now)
+    assert bar == {"time": start, "open": 100.0, "high": 105.0, "low": 98.0,
+                   "close": 102.0, "volume": 4.0}
+
+
+def test_forming_bar_from_buffer_ticks_none_when_window_empty() -> None:
+    start = _unix("2025-01-02 09:05:00")
+    now = _unix("2025-01-02 09:07:30")
+    # 窓内に tick 無し（全て start 未満）→ None。
+    assert fb.forming_bar_from_buffer_ticks([(start * 1000 - 1000, 1.0)], start, now) is None
+    assert fb.forming_bar_from_buffer_ticks([], start, now) is None
+
+
 def _df(rows: list[tuple[str, float, float, float, float, float]]):
     idx = pd.DatetimeIndex([pd.Timestamp(r[0]) for r in rows], name="date")
     return pd.DataFrame(

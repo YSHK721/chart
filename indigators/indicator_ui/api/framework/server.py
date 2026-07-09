@@ -77,6 +77,20 @@ def set_live_tick_buffer(buffer: Optional[Any]) -> None:
     global _live_tick_buffer
     _live_tick_buffer = buffer
 
+
+def _forming_bar_from_buffer(ref: str, timeframe: Any, now_unix: int) -> Optional[dict]:
+    """parquet 経路が None のとき、in-memory LiveTickBuffer から現周期の形成中バーを組む（seed 鮮度化）。
+
+    buffer 未注入・非 tick ref・非対応 tf（1W/1M/未知）なら ``None``（既存挙動を変えない）。純関数
+    :func:`forming_bar.forming_bar_from_buffer_ticks` へ ``buffer.ticks_since(start*1000-1)`` を渡す。
+    """
+    buf = _live_tick_buffer
+    if buf is None or not forming_bar_mod.is_tick_ref(ref) or not forming_bar_mod.is_supported_timeframe(timeframe):
+        return None
+    start = forming_bar_mod.period_start_unix(now_unix, timeframe)
+    ticks = buf.ticks_since(start * 1000 - 1)  # start 以降（境界含む）の (ms, mid)。
+    return forming_bar_mod.forming_bar_from_buffer_ticks(ticks, start, now_unix)
+
 # 静的配信の拡張子 → Content-Type（最小・stdlib mimetypes 相当を明示限定）。
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -239,6 +253,12 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         now_unix = forming_bar_mod.resolve_now_unix(now_override)
         try:
             bar = forming_bar_mod.forming_bar(ref, timeframe, now_unix)
+            # seed 鮮度化: 当日 parquet フロンティア遅延で現周期窓が空（bar=None）でも、in-memory
+            #   LiveTickBuffer（/live_ticks と同源・near-real-time）に現周期 tick があれば fallback で
+            #   形成中バーを組む。短周期（1m/5m/15m）のシードが null 化して固着するのを防ぐ。
+            #   共有 forming_bar()（指標計算の apply_forming_bar 経路）は不変＝挙動ドリフトなし。
+            if bar is None:
+                bar = _forming_bar_from_buffer(ref, timeframe, now_unix)
         except Exception as exc:  # noqa: BLE001
             self._send_json(500, _nested_error("internal", f"forming_bar 取得に失敗しました: {exc}"))
             return

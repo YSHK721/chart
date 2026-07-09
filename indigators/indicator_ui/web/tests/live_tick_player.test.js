@@ -203,6 +203,47 @@ test('seed=null (unsupported tf like 1W/1M) makes the player a no-op for that tf
 });
 
 // --------------------------------------------------------------------------- #
+// 自己シード（参照実装復帰）: /forming_bar seed=null（短周期で当日 parquet 窓が空）でも、
+//   現周期の live tick が来れば自力で形成中バーを起こして描く（1m/5m/15m の固着解消）。
+//   参照 prototype_260707-01/web/index.html:63-66（!bar で open=mid の新バー）。
+// --------------------------------------------------------------------------- #
+test('seed=null on a supported short tf self-seeds a forming bar from a current-period tick (no freeze)', async () => {
+  const nowObj = fakeNow(2_000_000_000);
+  const t0 = 2_000_000_000;
+  const tickMs = t0 - 20_000; // 20s 前（12s 遅延境界より前＝適用対象・現 5m 周期内）。
+  const sp = spies({
+    seedBar: null, // /forming_bar が null（当日 parquet フロンティア遅延で現周期窓が空）。
+    ticksResponses: [{ ok: true, ticks: [[tickMs, 200.0]], serverNowMs: t0 }],
+  });
+  const { player, t } = newPlayer({}, sp, nowObj, () => '5m'); // 対応する短周期 tf。
+  player.start();
+  await t.tickPlayback(); // seed('5m') → null（_seeding 解除・_bar=null）。
+  await t.tickPoll();     // 現周期 tick を enqueue。
+  await t.tickPlayback(); // 自己シード: 最初の tick でバーを起こして描く。
+  assert.equal(sp.calls.updateLast.length, 1, 'self-seed draws instead of freezing');
+  const b = sp.calls.updateLast.at(-1);
+  assert.equal(b.open, 200.0);
+  assert.equal(b.close, 200.0);
+  assert.equal(b.time, Math.floor(tickMs / 1000 / 300) * 300, 'bar time = floor(tickMs, 5m)');
+});
+
+test('seed=null self-seed ignores a tick older than the current live period (protect /candles history)', async () => {
+  const nowObj = fakeNow(2_000_000_000);
+  const t0 = 2_000_000_000;
+  const oldMs = t0 - 700_000; // 700s 前＝現 5m 周期より 2 期間以上前（履歴側・後退禁止）。
+  const sp = spies({
+    seedBar: null,
+    ticksResponses: [{ ok: true, ticks: [[oldMs, 999.0]], serverNowMs: t0 }],
+  });
+  const { player, t } = newPlayer({}, sp, nowObj, () => '5m');
+  player.start();
+  await t.tickPlayback(); // seed null。
+  await t.tickPoll();     // 過去周期の tick を enqueue。
+  await t.tickPlayback(); // 現周期より前の tick は自己シードしない（/candles 履歴を後退させない）。
+  assert.equal(sp.calls.updateLast.length, 0, 'older-than-current-period tick must not self-seed');
+});
+
+// --------------------------------------------------------------------------- #
 // 後退ガード: シード期間より前の tick は無視（履歴＝/candles 済を後退させない・🟡3）
 // --------------------------------------------------------------------------- #
 test('applyTick ignores a tick from a period before the seed bar (no history regression)', async () => {

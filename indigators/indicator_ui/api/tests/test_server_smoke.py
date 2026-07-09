@@ -178,6 +178,51 @@ def test_get_forming_bar_returns_200_with_ok_and_bar_key(server):
         assert isinstance(payload["bar"]["time"], int)
 
 
+def test_get_forming_bar_falls_back_to_live_buffer_when_parquet_window_empty(server, monkeypatch):
+    # seed 鮮度化: parquet 経路が None（現周期窓が空）でも、注入 LiveTickBuffer に現周期 tick が
+    #   あれば fallback で形成中バーを返す（短周期 1m/5m/15m のシード null 固着を防ぐ）。
+    import framework.server as server_mod
+
+    now = 1782505000                        # 実 UTC 現在を注入（now query）。
+    start = 1782505000 - (1782505000 % 300)  # floor(now, 5m)。
+    monkeypatch.setattr(server_mod.forming_bar_mod, "forming_bar", lambda *a, **k: None)  # parquet=空。
+
+    class _FakeBuffer:
+        def ticks_since(self, ms):
+            return [[start * 1000 + 1000, 100.0], [start * 1000 + 2000, 105.0]]
+
+    server_mod.set_live_tick_buffer(_FakeBuffer())
+    try:
+        status, _ctype, raw = _get(server, f"/forming_bar?datasetRef=jp225_tick&timeframe=5m&now={now}")
+        assert status == 200
+        payload = json.loads(raw.decode("utf-8"))
+        assert payload["ok"] is True
+        assert payload["bar"] is not None, "buffer fallback should supply a forming bar"
+        assert payload["bar"]["time"] == start
+        assert payload["bar"]["open"] == 100.0 and payload["bar"]["close"] == 105.0
+    finally:
+        server_mod.set_live_tick_buffer(None)
+
+
+def test_get_forming_bar_unsupported_tf_ignores_live_buffer(server, monkeypatch):
+    # 非対応 tf（1W）は buffer 注入下でも fallback せず null（設計上の非対応を維持）。
+    import framework.server as server_mod
+
+    monkeypatch.setattr(server_mod.forming_bar_mod, "forming_bar", lambda *a, **k: None)
+
+    class _FakeBuffer:
+        def ticks_since(self, ms):
+            raise AssertionError("非対応 tf では buffer を参照してはいけない")
+
+    server_mod.set_live_tick_buffer(_FakeBuffer())
+    try:
+        status, _ctype, raw = _get(server, "/forming_bar?datasetRef=jp225_tick&timeframe=1W&now=1782505000")
+        assert status == 200
+        assert json.loads(raw.decode("utf-8"))["bar"] is None
+    finally:
+        server_mod.set_live_tick_buffer(None)
+
+
 # --------------------------------------------------------------------------- #
 # GET /live_ticks（ライブ tick バッファ配信・ISSUE-049）
 #   殻は注入された LiveTickBuffer.ticks_since(since) を JSON 応答へ載せる。buffer 未注入
