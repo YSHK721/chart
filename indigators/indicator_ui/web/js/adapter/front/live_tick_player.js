@@ -66,6 +66,7 @@ export class LiveTickPlayer {
     this._tf = null;          // シード済み tf（getTimeframe 変化で再シード）。
     this._tfSec = null;       // 現 tf の期間秒（非対応 tf は null＝no-op）。
     this._bar = null;         // 形成中バー {time(sec), open, high, low, close, volume}。
+    this._seeding = false;    // /forming_bar シード await 中フラグ（true の間は自己シードを抑止＝🟡4 保持）。
     this._applied = 0;
     this._lastTickMs = 0;
 
@@ -141,12 +142,14 @@ export class LiveTickPlayer {
   async _seed(tf) {
     this._tf = tf;
     this._tfSec = TF_SECONDS[tf] || null;
-    // シード確定まで _bar=null に倒し、await（loadFormingBar）中に再入した _playback が
-    //   「新 tfSec × 旧 bar」で誤ったバーを描くのを防ぐ（_applyTick は _bar===null で no-op）。
+    // シード確定まで _bar=null かつ _seeding=true に倒す。await（loadFormingBar）中に再入した
+    //   _playback は _seeding=true を見て自己シードせず（🟡4＝「新 tfSec × 旧 bar」誤描画の防止）。
     this._bar = null;
     if (this._tfSec === null) {
+      this._seeding = false;
       return; // 非対応 tf（1W/1M/未知）→ no-op。
     }
+    this._seeding = true;
     let bar = null;
     try {
       bar = await this._loadFormingBar(this._datasetRef, tf);
@@ -156,21 +159,42 @@ export class LiveTickPlayer {
       }
       bar = null;
     }
-    // tf が seed 中に再度変わっていたら破棄（直近の getTimeframe を優先）。
+    // tf が seed 中に再度変わっていたら破棄（直近の getTimeframe を優先。_seeding は新 seed が所有）。
     if (this._tf !== tf) {
       return;
     }
+    // seed 確定。非 null なら正確な形成中バーを採用。null（短周期で当日 parquet 窓が空・非対応）でも
+    //   _bar=null のまま _seeding を解除し、以降 _applyTick が現周期 live tick から自己シードする
+    //   （参照実装 prototype_260707-01 の !bar→新バー挙動へ復帰＝固着させない）。
     this._bar = bar
       ? { time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume }
-      : null; // bar=null（対象外/ティック無し）→ 当該 tf で描かない。
+      : null;
+    this._seeding = false;
   }
 
   // 1 tick を現在 tf の形成中バーへ適用する。過去期間（履歴＝/candles 済）へは後退させない。
   _applyTick(ms, mid) {
-    if (this._tfSec === null || this._bar === null) {
-      return; // 非対応 tf / シード無し → 何もしない。
+    if (this._tfSec === null) {
+      return; // 非対応 tf（1W/1M/未知）→ 何もしない。
     }
     const periodSec = Math.floor(ms / 1000 / this._tfSec) * this._tfSec;
+    if (this._bar === null) {
+      // 自己シード（参照実装復帰）: /forming_bar seed が null でも、現周期の tick からバーを起こす。
+      //   _seeding 中（seed await 未確定）は抑止（🟡4）。現 live 周期より前の tick は自己シードしない
+      //   （/candles 済履歴を後退させない＝既存の後退ガードと同一意図）。確定後は非 null 経路へ移る。
+      if (this._seeding) {
+        return;
+      }
+      const nowPeriod = Math.floor((this._now() + this._clockOffset) / 1000 / this._tfSec) * this._tfSec;
+      if (periodSec < nowPeriod) {
+        return; // 現周期より前 → 履歴側。自己シードしない。
+      }
+      this._bar = { time: periodSec, open: mid, high: mid, low: mid, close: mid, volume: 1 };
+      this._renderer.updateLastCandle(this._bar);
+      this._applied += 1;
+      this._lastTickMs = ms;
+      return;
+    }
     if (periodSec < this._bar.time) {
       return; // シード期間より前の tick は無視（履歴を後退させない）。
     }
