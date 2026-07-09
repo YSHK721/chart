@@ -107,6 +107,31 @@ def forming_bar(ref: str, tf: str, now_unix: int) -> Optional[dict]:
     return forming_bar_from_ticks(start, int(now_unix))
 
 
+def forming_bar_from_buffer_ticks(
+    ticks: Any, start_unix: int, now_unix: int
+) -> Optional[dict]:
+    """in-memory ``LiveTickBuffer`` の ``(unix_ms, mid)`` 昇順列から ``[start_unix, now_unix)`` の
+    形成中バー（mid OHLCV・1本）を組む（seed 鮮度化・当日 parquet 窓が空のときの fallback）。
+
+    集計規則は :func:`marketdata.tick_m1.forming_bar_from_ticks` と同一（open=最初/high=最大/
+    low=最小/close=最終・volume=tick 数・``time``=期間始端）。同源（mid）のため両経路の値は整合する。
+    窓 ``[start_unix*1000, now_unix*1000)`` に tick が無ければ ``None``。純関数（I/O 無し）。
+    """
+    lo = int(start_unix) * 1000
+    hi = int(now_unix) * 1000
+    mids = [float(mid) for (ms, mid) in ticks if lo <= ms < hi]
+    if not mids:
+        return None
+    return {
+        "time": int(start_unix),
+        "open": mids[0],
+        "high": max(mids),
+        "low": min(mids),
+        "close": mids[-1],
+        "volume": float(len(mids)),
+    }
+
+
 def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int) -> "pd.DataFrame":
     """``df``（date-index OHLCV）の末尾へ現在形成中バーを **set/replace** して返す（指標の足内更新用）。
 
