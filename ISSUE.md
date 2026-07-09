@@ -664,3 +664,12 @@
 - **原因（実測）**: 再生開始バー（from=replayStart かつ formingStart=from）では base 窓 [from, formingStart−1] が空集合になり、backend が空プロファイル（price_min=0/price_max=1）を返す→ _rebuildAt は skipDegenerateDraw で**自身の描画はスキップ**するが accumulator は縮退グリッドで作り直す（growTo の土台・設計どおり）→ 直後の **feedTick throttle 描画には縮退ガードが無く**、縮退 accumulator の空 snapshot（[0,1]・全 bin ゼロ）を setProfile→ MP バーが全消滅。最初の out-of-grid tick で growTo が実グリッドを確定するまで（実測 約1.1s）ブランクが続き、再生ループの enterBar 再実行のたびに繰り返す。
 - **対策（案・依頼者判断待ち）**: (a) _rebuildAt で縮退判定を状態化（例 _gridDegenerate）し、縮退中は feedTick/settleTick の描画も抑止（前回描画保持・enterBar の skipDegenerateDraw と同一基準）。growTo の実グリッド確定で解除（推奨・回帰テスト付き）。 (b) 縮退時に accumulator を入れ替えない（growTo 土台の設計コメントに反する・非推奨）。
 - **関連**: ISSUE-047（binw ロック・本件とは独立で再現）・replay_market_profile_actor.js feedTick/settleTick/_rebuildAt・market_profile_controller.py L318（空データ→ゼロプロファイル）。
+
+## ISSUE-053: indicator_ui ライブモードで短周期足（1m/5m/15m）の形成中バーが更新されない（seed null 固着＋parquet フロンティア遅延）
+- **ステータス**: RESOLVED（自己シード＋seed鮮度化 実装完了・TDD Red→Green・web live_tick_player 15/15＋関連47緑・API 360緑・既存2 failure（replay_analysis/timeline_player）は develop 既存＝無関係。ブラウザ目視は依頼者実施）
+- **重大度**: 中（ライブUXの中核・短周期足で価格が伸びない）
+- **検出**: 依頼者報告（2026-07-09）「1分・5分・15分の時間足がライブ更新されない」。
+- **原因（実測で特定）**: (1) `/forming_bar` の読み元が毎分フル再取得の当日 tick parquet（ISSUE-048 の正確性優先設計）で、フロンティアが実測 44 秒後方。現周期の窓 `[floor(now,tf), now)` の経過秒が遅延gapを下回る間、窓が空になり `bar=null`。短周期ほど頻発（1m=ほぼ常時／5m/15m=各周期先頭／長足=無縁）。実測: now=11:40:32・parquet最終tick=11:39:48・gap=44s で 1m/5m=null・15m=OK。(2) 増幅バグ: `LiveTickPlayer._seed` は tf 変更時しか再シードせず、seed が null だと `_bar=null` が固着し `_applyTick` が tick を捨て続ける（参照実装 prototype_260707-01 の `!bar→新バー` 自己シード挙動から移植時に逸脱した退行）。served では player が価格の唯一の書き手のため短周期足が完全停止。
+- **対策（依頼者承認済み・自己シード＋seed鮮度化）**: (1) フロント `web/js/adapter/front/live_tick_player.js`: `_applyTick` を参照実装へ復帰＝`_bar===null` でも現周期 live tick から自己シード（`_seeding` フラグで seed await 中の再入描画は抑止＝🟡4 保持／現 live 周期より前の tick は自己シードせず /candles 履歴を後退させない）。(2) バックエンド `api/framework/server.py` `_handle_forming_bar`: parquet 経路が None のとき in-memory `LiveTickBuffer`（/live_ticks 同源・near-real-time）へ fallback して現周期バーを組む（seed 鮮度化）。純関数 `forming_bar.forming_bar_from_buffer_ticks` を新設。共有 `forming_bar()`（指標計算 apply_forming_bar 経路）は不変＝挙動ドリフトなし。
+- **テスト**: web `live_tick_player.test.js`（+2: seed=null 自己シード／現周期前 tick は非自己シード）・api `test_forming_bar.py`（+2: buffer 集計／空窓 None）・`test_server_smoke.py`（+2: parquet null→buffer fallback／非対応tf は buffer 非参照）。既存回帰（🟡4 再入・後退ガード・1W/1M null）全保持。
+- **関連**: ISSUE-048（毎分フル再取得＝遅延の出所）・ISSUE-049（LiveTickPlayer/LiveTickBuffer）。参照実装: prototype_260707-01/web/index.html:63-66（applyTick 自己シード）。
