@@ -126,3 +126,18 @@ test('suppressPriceUpdate default (unset) preserves existing behavior (updateLas
   assert.equal(sp.calls.updateLast.length, 1);   // 従来どおり価格を更新
   assert.deepEqual(sp.calls.updateLast[0], sp.bar);
 });
+
+// suppressPriceUpdate が関数のとき、tick ごとに評価する（1W/1M は player 非対応＝FormingBarUpdater が
+//   価格の書き手になるため、tf に応じて抑止可否を切り替える配線を支える）。
+test('suppressPriceUpdate as a function is evaluated each tick (draw when it returns false)', async () => {
+  let suppress = true;
+  const sp = spies();
+  const { updater, t } = newUpdater({ suppressPriceUpdate: () => suppress }, sp);
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.updateLast.length, 0);   // 関数が true → 価格を書かない
+  assert.equal(sp.calls.recompute, 1);           // 指標は従来どおり再計算
+  suppress = false;
+  await t.tick();
+  assert.equal(sp.calls.updateLast.length, 1);   // 関数が false → 価格を書く
+});

@@ -74,7 +74,12 @@ export class FormingBarUpdater {
         return;
       }
       // 価格の最新足反映。suppressPriceUpdate 時は skip（player が唯一の書き手＝巻き戻し防止）。
-      if (!this._suppressPriceUpdate) {
+      //   suppressPriceUpdate は boolean または関数（() => boolean）。関数のときは tick ごとに評価し、
+      //   tf に応じて抑止可否を切り替える（1W/1M は player 非対応＝ここが価格の書き手＝抑止しない）。
+      const suppress = typeof this._suppressPriceUpdate === 'function'
+        ? this._suppressPriceUpdate()
+        : this._suppressPriceUpdate;
+      if (!suppress) {
         this._renderer.updateLastCandle(bar);
       }
       // 指標も最新点を再計算（mode:'latest'）。backend が形成中バーを最新足として計算へ織り込む。

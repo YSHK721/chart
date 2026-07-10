@@ -27,6 +27,13 @@ const TF_SECONDS = Object.freeze({
   '1D': 86400,
 });
 
+// プレイヤー（floor ベースの tick 累積）が扱える固定周期 tf か。1W/1M・未知は false
+//   （＝カレンダー周期でありプレイヤーでは扱えず、/forming_bar ポーリング＝FormingBarUpdater へ委譲する側）。
+//   composition root が「1W/1M のとき FormingBarUpdater を価格の書き手にする」配線判定に用いる。
+export function isPlayerTimeframe(tf) {
+  return Object.prototype.hasOwnProperty.call(TF_SECONDS, tf);
+}
+
 // 固定遅延（ms）: 実測から poll 間隔 5s + feed 側 lag 最大 5.5s + fetch 最大 1.2s + 余裕 ≒ 12s。
 //   これ未満だと feed のまとめ配信（3.8〜5.5s）で枯渇する（prototype 実測 25 polls）。
 const DELAY_MS = 12000;

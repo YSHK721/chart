@@ -110,6 +110,150 @@ def test_forming_bar_from_buffer_ticks_none_when_window_empty() -> None:
     assert fb.forming_bar_from_buffer_ticks([], start, now) is None
 
 
+def test_merge_forming_base_and_tail() -> None:
+    # 確定畳み込み（base=rollup 現周期 partial）＋未確定テール（tail）を 1 本へマージ。
+    #   time/open は base（＝周期始端・rollup ラベル）、high/low は両者の max/min、close は tail（最新）、
+    #   volume は加算。
+    base = {"time": 1000, "open": 100.0, "high": 110.0, "low": 95.0, "close": 105.0, "volume": 50.0}
+    tail = {"time": 1000, "open": 105.0, "high": 112.0, "low": 104.0, "close": 108.0, "volume": 7.0}
+    assert fb.merge_forming(base, tail) == {
+        "time": 1000, "open": 100.0, "high": 112.0, "low": 95.0, "close": 108.0, "volume": 57.0,
+    }
+
+
+def test_merge_forming_tail_does_not_extend_range() -> None:
+    # tail が高安を更新しない場合は base の高安を保持（close/volume のみ前進）。
+    base = {"time": 1000, "open": 100.0, "high": 110.0, "low": 95.0, "close": 105.0, "volume": 50.0}
+    tail = {"time": 1000, "open": 105.0, "high": 106.0, "low": 104.0, "close": 106.0, "volume": 3.0}
+    out = fb.merge_forming(base, tail)
+    assert (out["high"], out["low"], out["close"], out["volume"]) == (110.0, 95.0, 106.0, 53.0)
+
+
+def test_merge_forming_base_only_returns_base_copy() -> None:
+    # テール無し（確定末尾以降に tick 無し）→ base をそのまま（コピー）返す。
+    base = {"time": 1000, "open": 100.0, "high": 110.0, "low": 95.0, "close": 105.0, "volume": 50.0}
+    out = fb.merge_forming(base, None)
+    assert out == base and out is not base  # 値一致だが別オブジェクト（入力不変）。
+
+
+def test_merge_forming_tail_only_uses_tail_time() -> None:
+    # 周期先頭（rollup partial 未生成＝base 無し）→ tail のみでバー組成（time は tail の周期始端）。
+    tail = {"time": 1000, "open": 105.0, "high": 112.0, "low": 104.0, "close": 108.0, "volume": 7.0}
+    assert fb.merge_forming(None, tail) == {
+        "time": 1000, "open": 105.0, "high": 112.0, "low": 104.0, "close": 108.0, "volume": 7.0,
+    }
+
+
+def test_merge_forming_both_none_is_none() -> None:
+    assert fb.merge_forming(None, None) is None
+
+
+def test_augment_forming_ticks_fills_gap_after_parquet_frontier() -> None:
+    # MP 秒成長の遅延修正: parquet forming ティック（フロンティア ~1020 まで）を、buffer の
+    #   「parquet 末尾より後」の tick（1055/1090）で補完。窓内・parquet 被覆内（1015）は二重計上しない。
+    lo, hi = 1000, 1100
+    parquet = [[1010, 5.0], [1020, 5.1]]
+    buffer = [[1015 * 1000, 9.9], [1055 * 1000, 6.0], [1090 * 1000, 6.1], [1200 * 1000, 7.0]]
+    out = fb.augment_forming_ticks(parquet, buffer, lo, hi)
+    assert out == [[1010, 5.0], [1020, 5.1], [1055, 6.0], [1090, 6.1]]  # 1015=被覆内 skip / 1200=窓外 skip
+
+
+def test_augment_forming_ticks_applies_since_to_combined() -> None:
+    # 増分（base=0・since=lastSec）: 合成結果に since>フィルタ（クライアント既取得分を除外）。
+    lo, hi = 1000, 1100
+    parquet = [[1010, 5.0], [1020, 5.1]]
+    buffer = [[1055 * 1000, 6.0], [1090 * 1000, 6.1]]
+    out = fb.augment_forming_ticks(parquet, buffer, lo, hi, since=1020)
+    assert out == [[1055, 6.0], [1090, 6.1]]  # <=1020 は client 既取得＝除外。
+
+
+def test_augment_forming_ticks_buffer_only_when_parquet_empty() -> None:
+    # parquet が空（フロンティア未達で窓が空）でも buffer だけで秒成長を供給。
+    lo, hi = 1000, 1100
+    out = fb.augment_forming_ticks([], [[1040 * 1000, 6.0], [1080 * 1000, 6.2]], lo, hi)
+    assert out == [[1040, 6.0], [1080, 6.2]]
+
+
+def test_augment_forming_ticks_no_buffer_is_parquet_passthrough() -> None:
+    # buffer 未注入/空 → parquet のみ（窓内クランプ）＝現行挙動不変（後方互換）。
+    lo, hi = 1000, 1100
+    parquet = [[1010, 5.0], [1020, 5.1], [1200, 9.0]]  # 1200=窓外
+    assert fb.augment_forming_ticks(parquet, [], lo, hi) == [[1010, 5.0], [1020, 5.1]]
+
+
+class _FakeBuf:
+    def __init__(self, ticks):
+        self._ticks = ticks
+        self.seen = []
+
+    def ticks_since(self, ms):
+        self.seen.append(ms)
+        return [t for t in self._ticks if t[0] > ms]
+
+
+def test_rollup_forming_upper_tf_merges_base_and_tail() -> None:
+    # 上位足（5m）: base=rollup 現周期 partial ＋ tail=buffer の [confirmed_end, now) を合成。
+    ce = _unix("2025-01-02 09:06:00")  # 確定末尾（= last_processed+60）。
+    now = _unix("2025-01-02 09:06:40")
+    base = {"time": _unix("2025-01-02 09:05:00"), "open": 100.0, "high": 110.0, "low": 95.0,
+            "close": 105.0, "volume": 50.0}
+    buf = _FakeBuf([(ce * 1000 + 1000, 108.0), (ce * 1000 + 2000, 112.0)])  # tail: high=112,close=112
+    out = fb.rollup_forming_bar(
+        "jp225_tick", "5m", now, buffer=buf,
+        base_reader=lambda ref, tf: base, confirmed_end_reader=lambda ref: ce,
+    )
+    assert out == {"time": base["time"], "open": 100.0, "high": 112.0, "low": 95.0,
+                   "close": 112.0, "volume": 52.0}
+    assert buf.seen[-1] == ce * 1000 - 1  # 確定末尾以降を要求。
+
+
+def test_rollup_forming_1m_is_tail_only() -> None:
+    # 1m: rollup base 無し（reader→None）→ tail のみ（周期＝現分）。
+    ce = _unix("2025-01-02 09:06:00")
+    now = _unix("2025-01-02 09:06:40")
+    buf = _FakeBuf([(ce * 1000 + 1000, 108.0)])
+    out = fb.rollup_forming_bar(
+        "jp225_tick", "1m", now, buffer=buf,
+        base_reader=lambda ref, tf: None, confirmed_end_reader=lambda ref: ce,
+    )
+    assert out == {"time": ce, "open": 108.0, "high": 108.0, "low": 108.0, "close": 108.0, "volume": 1.0}
+
+
+def test_rollup_forming_base_only_when_no_tail_ticks() -> None:
+    # 確定末尾以降に tick 無し → base をそのまま返す。
+    ce = _unix("2025-01-02 09:06:00")
+    now = _unix("2025-01-02 09:06:40")
+    base = {"time": _unix("2025-01-02 09:05:00"), "open": 100.0, "high": 110.0, "low": 95.0,
+            "close": 105.0, "volume": 50.0}
+    buf = _FakeBuf([])  # tail 無し。
+    out = fb.rollup_forming_bar(
+        "jp225_tick", "5m", now, buffer=buf,
+        base_reader=lambda ref, tf: base, confirmed_end_reader=lambda ref: ce,
+    )
+    assert out == base
+
+
+def test_rollup_forming_1W_returns_none_when_base_absent() -> None:
+    # 1W/1M は base（rollup partial）必須。周期先頭で base 無し→ 誤 time を描かず None。
+    ce = _unix("2025-01-02 09:06:00")
+    now = _unix("2025-01-02 09:06:40")
+    buf = _FakeBuf([(ce * 1000 + 1000, 108.0)])
+    out = fb.rollup_forming_bar(
+        "jp225_tick", "1W", now, buffer=buf,
+        base_reader=lambda ref, tf: None, confirmed_end_reader=lambda ref: ce,
+    )
+    assert out is None
+
+
+def test_rollup_forming_non_tick_ref_is_none() -> None:
+    buf = _FakeBuf([(1, 1.0)])
+    assert fb.rollup_forming_bar(
+        "jp225_m1", "5m", 999, buffer=buf,
+        base_reader=lambda ref, tf: {"time": 1, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0},
+        confirmed_end_reader=lambda ref: 1,
+    ) is None
+
+
 def _df(rows: list[tuple[str, float, float, float, float, float]]):
     idx = pd.DatetimeIndex([pd.Timestamp(r[0]) for r in rows], name="date")
     return pd.DataFrame(

@@ -15,7 +15,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { LiveTickPlayer } from '../js/adapter/front/live_tick_player.js';
+import { LiveTickPlayer, isPlayerTimeframe } from '../js/adapter/front/live_tick_player.js';
+
+// isPlayerTimeframe: プレイヤー（floor ベース tick 累積）が扱う固定周期 tf の判定。
+//   1W/1M・未知は false（＝FormingBarUpdater/forming_bar ポーリングへ委譲する側）。
+test('isPlayerTimeframe: fixed-period tf are true, 1W/1M/unknown are false', () => {
+  for (const tf of ['1m', '5m', '15m', '30m', '1h', '4h', '1D']) {
+    assert.equal(isPlayerTimeframe(tf), true, `${tf} should be player-driven`);
+  }
+  for (const tf of ['1W', '1M', '9z', null, undefined]) {
+    assert.equal(isPlayerTimeframe(tf), false, `${String(tf)} should not be player-driven`);
+  }
+});
 
 // fake timers: setInterval を ms で捕捉し、poll(2500)/playback(100) を個別に手動駆動する。
 function fakeTimers() {
