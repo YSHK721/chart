@@ -20,7 +20,7 @@ import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
 import { LiveFollowController } from './live_follow_controller.js';
 import { FormingBarUpdater } from './forming_bar_updater.js';
-import { LiveTickPlayer } from './live_tick_player.js';
+import { LiveTickPlayer, isPlayerTimeframe } from './live_tick_player.js';
 import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
@@ -30,6 +30,9 @@ import { MarketProfileClient } from './market_profile_client.js';
 import { MarketProfileFormingClient } from './market_profile_forming_client.js';
 import { DwellAccumulator } from '../../domain/market_profile_dwell_accumulator.js';
 import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
+import { TfPeriodProfileClient } from './tf_period_profile_client.js';
+import { TfPeriodJitterBuffer } from './tf_period_jitter_buffer.js';
+import { TfPeriodProfileActor } from './tf_period_profile_actor.js';
 import { MarketProfileActor } from './market_profile_actor.js';
 import { MarketProfileReplayBar } from './market_profile_replay_bar.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
@@ -249,9 +252,12 @@ export async function bootstrap({
     // 増分2: モード（アンカー/ローリング）・スナップショット変更 → actor が現在 T で再取得する。
     onChange: () => { if (controller && controller._marketProfile) { controller._marketProfile.onReplayControlsChange(); } },
   });
+  // MP primitive を変数化し、時間足毎profile列（tf-period）actor と共有する（同一 primitive の
+  //   setTfPeriods で描画＝mainSeries へ二重 attach しない）。
+  const mpPrimitive = new MarketProfileHistogramPrimitive();
   const marketProfile = new MarketProfileActor({
     client: new MarketProfileClient({ fetch }),
-    primitive: new MarketProfileHistogramPrimitive(),
+    primitive: mpPrimitive,
     mainSeries,
     replayBar,
     // tick 逐次成長（ticklive）: forming 取得 client と DwellAccumulator factory を注入する。
@@ -318,6 +324,43 @@ export async function bootstrap({
     mpGrowthResolver: mpLiveModeCoordinator ? () => mpLiveModeCoordinator.isGrowing() : null,
   });
 
+  // 時間足毎profile列（tf-period・最小価格単位・ローリング窓＋ジッターバッファ）の配線（served のみ）。
+  //   sessions モード（marketProfile.isSessions()）かつ対応 tf（1m..1D）のとき、可視レンジぶんの列を
+  //   jitter buffer 経由で取得し MP と共有の primitive へ setTfPeriods で描く（sessions の tf 一般化。
+  //   primitive._draw は tf-period を優先＝旧 per-day sessions を上書き）。可視レンジ変化（スクロール/ズーム／
+  //   sessions 有効化時の focusTimeRange）で refresh＝ローリング。先読み完了（onReady）で再描画＝ジッターバッファ。
+  let tfPeriodActor = null;
+  if (mode === 'b') {
+    const getVisibleRange = () => {
+      const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+      const r = ts && typeof ts.getVisibleRange === 'function' ? ts.getVisibleRange() : null;
+      return (r && r.from != null && r.to != null) ? { from: Number(r.from), to: Number(r.to) } : null;
+    };
+    const tfBuf = new TfPeriodJitterBuffer({
+      client: new TfPeriodProfileClient({ fetch }),
+      datasetRef,
+      onReady: () => { if (tfPeriodActor) tfPeriodActor.onChunkReady(); },
+    });
+    tfPeriodActor = new TfPeriodProfileActor({
+      jitterBuffer: tfBuf,
+      primitive: mpPrimitive,
+      getTimeframe: () => controller._timeframe,
+      getVisibleRange,
+    });
+    const tsSub = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+    if (tsSub && typeof tsSub.subscribeVisibleTimeRangeChange === 'function') {
+      tsSub.subscribeVisibleTimeRangeChange(() => {
+        const on = !!(marketProfile && typeof marketProfile.isSessions === 'function'
+          && marketProfile.isSessions()) && isPlayerTimeframe(controller._timeframe);
+        if (on) {
+          tfPeriodActor.setEnabled(true); // refresh 含む（可視窓の確保＋描画・ローリング）。
+        } else if (tfPeriodActor.isEnabled()) {
+          tfPeriodActor.setEnabled(false); // sessions OFF / 非対応 tf → 列を消す。
+        }
+      });
+    }
+  }
+
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
   //   初期は既定時間足・直近 recentBars 本。取得失敗時は SAMPLE_DATA のまま（フォールバック）。
   const ready = (mode === 'b')
@@ -368,7 +411,10 @@ export async function bootstrap({
         setInterval: setIntervalImpl,
         clearInterval: clearIntervalImpl,
         intervalMs: formingIntervalMs,
-        suppressPriceUpdate: playerActive,
+        // 価格抑止は tf 依存: player が扱う固定周期（1m..1D）は player が唯一の書き手＝抑止する。
+        //   player 非対応の 1W/1M（カレンダー周期）は player が no-op のため、FormingBarUpdater が
+        //   /forming_bar（backend のロールアップ方式で 1W/1M も供給）を描く価格の書き手になる＝抑止しない。
+        suppressPriceUpdate: playerActive ? () => isPlayerTimeframe(controller._timeframe) : false,
       })
     : null;
 
@@ -428,5 +474,5 @@ export async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, replayBar, liveFollowController, mpLiveModeCoordinator };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, replayBar, liveFollowController, mpLiveModeCoordinator, tfPeriodActor };
 }

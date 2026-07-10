@@ -497,3 +497,33 @@ test('sessions mode: 「直近N/全M日」注記は描かない（注記UI・tot
   const labels = target.texts.map((t) => t.s);
   assert.ok(!labels.some((s) => s.includes('全') && s.includes('日')), '注記は描かない');
 });
+
+// 時間足毎profile列（tf-period・最小価格単位）の描画: 各列を time→x、各レベルを price→y に横バーで描く。
+test('setTfPeriods: 各周期列の占有レベルを time→x / price→y に横バーで描く（POC は際立たせる）', () => {
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = fakeTarget(800);
+  prim.attached({ chart: fakeChartWithTime(), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setVisible(true);
+  // 2 周期: time=100(levels 10:2,11:1 poc10) / time=200(levels 20:1 poc20)。unit=1。
+  prim.setTfPeriods([
+    { time: 100, levels: [[10, 2], [11, 1]], poc: 10 },
+    { time: 200, levels: [[20, 1]], poc: 20 },
+  ], 1);
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  // price(=y) に横バーが描かれる（fakeSeries は price 恒等・fakeChartWithTime は time 恒等）。
+  const ysDrawn = new Set(target.rects.map((r) => Math.round(r.y)));
+  assert.ok(ysDrawn.has(10) && ysDrawn.has(11) && ysDrawn.has(20), '価格 10/11/20 に描画');
+  // POC(price=10) は C_SESS_POC（白）で描かれる。
+  const pocRects = target.rects.filter((r) => Math.round(r.y) === 10 && r.fill === 'rgba(255,255,255,0.95)');
+  assert.ok(pocRects.length >= 1, 'POC は白で際立つ');
+});
+
+test('setTfPeriods(null): 非適用へ復帰（tf-period 描画を止める）', () => {
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = fakeTarget(800);
+  prim.attached({ chart: fakeChartWithTime(), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setVisible(true);
+  prim.setTfPeriods(null, 1);
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  assert.equal(target.rects.length, 0, 'tf-period 非適用時は列を描かない');
+});

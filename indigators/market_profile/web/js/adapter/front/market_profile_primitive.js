@@ -73,12 +73,25 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     this._sessions = null;
     // sessions タイルの列幅キャッシュ（隣接間隔から算出。可視 <2 のフォールバック用）。
     this._lastSessColW = null;
+    // 時間足毎profile列（tf-period・最小価格単位）: [{time, levels:[[price,count]...], poc, ...}]。
+    //   null=非適用。non-null で各周期の min-unit 列を時間軸連動で描く（sessions の tf 一般化）。
+    this._tfPeriods = null;
+    this._tfUnit = null;
+    this._lastTfColW = null;
   }
 
   // sessions（日別プロファイル分割）を設定して再描画要求。null で通常モード（累積プロファイル）へ復帰。
   //   sessions[{date,tpo[],(OHLC),(poc/va)}] は actor が backend 応答＋candle から組み立てたビュー。
   setSessions(sessions) {
     this._sessions = Array.isArray(sessions) ? sessions : null;
+    this._update();
+  }
+
+  // 時間足毎profile列（tf-period・最小価格単位）を設定して再描画要求。null で非適用へ復帰。
+  //   columns[{time, levels:[[price,count]...], poc}] は jitter buffer 経由の可視窓ぶん。unit=最小価格単位。
+  setTfPeriods(columns, unit) {
+    this._tfPeriods = Array.isArray(columns) && columns.length ? columns : null;
+    this._tfUnit = Number.isFinite(unit) ? unit : null;
     this._update();
   }
 
@@ -236,7 +249,59 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     ctx.restore();
   }
 
+  // 時間足毎profile列（tf-period・最小価格単位）を描く。各列を周期始端時刻 x に、各占有レベルを価格 y に、
+  //   count/最大で長さ・色（heat）を決める。POC は際立たせる。列幅=隣接列間隔の中央値、レベル高=最小単位の
+  //   画素距離（最低1px＝ズームアウト時は密なヒートマップ）。視野外列は timeToCoordinate=null でカリング。
+  _drawTfPeriods(ctx, scope, toY) {
+    const cols = this._tfPeriods;
+    if (!cols || !cols.length) return;
+    const ts = this._chart.timeScale && this._chart.timeScale();
+    if (!ts || typeof ts.timeToCoordinate !== 'function') return;
+    const xs = cols.map((c) => { const x = ts.timeToCoordinate(c.time); return x == null ? null : x; });
+    const gaps = [];
+    for (let i = 1; i < xs.length; i += 1) {
+      if (xs[i] != null && xs[i - 1] != null) { const g = Math.abs(xs[i] - xs[i - 1]); if (g > 0) gaps.push(g); }
+    }
+    gaps.sort((a, b) => a - b);
+    const colW = gaps.length ? gaps[Math.floor(gaps.length / 2)] : (this._lastTfColW || 18);
+    this._lastTfColW = colW;
+    const tileW = Math.max(3, colW * 0.85);
+    let lvlH = 1;
+    if (this._tfUnit && cols[0] && cols[0].poc != null) {
+      const yA = toY(cols[0].poc); const yB = toY(cols[0].poc + this._tfUnit);
+      if (yA != null && yB != null) lvlH = Math.max(1, Math.abs(yA - yB));
+    }
+    ctx.save();
+    for (let i = 0; i < cols.length; i += 1) {
+      const cx = xs[i];
+      if (cx == null) continue; // 視野外＝スクロールで可視化。
+      const left = cx - tileW / 2;
+      const c = cols[i];
+      const levels = c.levels || [];
+      let cmax = 1;
+      for (let k = 0; k < levels.length; k += 1) { if (levels[k][1] > cmax) cmax = levels[k][1]; }
+      const pocPrice = c.poc;
+      for (let k = 0; k < levels.length; k += 1) {
+        const price = levels[k][0];
+        const cnt = levels[k][1];
+        const y = toY(price);
+        if (y == null) continue;
+        const w = Math.max(SESS_MIN_BAR_PX, (cnt / cmax) * (tileW - 2));
+        ctx.fillStyle = (pocPrice != null && Math.abs(price - pocPrice) < 1e-9)
+          ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
+        ctx.fillRect(left + 1, y - lvlH / 2, w, lvlH);
+      }
+    }
+    ctx.restore();
+  }
+
   _draw(target) {
+    const toY0 = (price) => this._series && this._series.priceToCoordinate(price);
+    // 時間足毎profile列（tf-period・最小価格単位）は _profile 非依存で描く（sessions の tf 一般化）。
+    if (this._visible && this._tfPeriods && this._chart && this._series) {
+      target.useBitmapCoordinateSpace((scope) => this._drawTfPeriods(scope.context, scope, toY0));
+      return;
+    }
     // 非表示・profile 未取得・attach 前（座標源なし）は描画しない（防御・後方互換）。
     if (!this._visible || !this._profile || !this._chart || !this._series) {
       return;

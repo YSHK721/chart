@@ -157,8 +157,12 @@ def test_get_forming_bar_unknown_timeframe_returns_400(server):
     assert payload["error"]["type"] == "validation"
 
 
-def test_get_forming_bar_unsupported_timeframe_returns_200_null_bar(server):
-    # 1W は固定 floor 不可で非対応 → 200 ok・bar=null（エラーではなく「更新なし」・データ非依存）。
+def test_get_forming_bar_parquet_path_1W_is_null(server, monkeypatch):
+    # parquet 経路（ロールアップ未成立時のフォールバック）では 1W は固定 floor 不可で非対応 → null。
+    #   ※ ロールアップ方式では 1W も rollup partial から供給可（別テストで検証）。ここは fallback 層の不変。
+    import framework.server as server_mod
+
+    monkeypatch.setattr(server_mod.forming_bar_mod, "rollup_forming_bar", lambda *a, **k: None)  # 経路を強制
     status, _ctype, raw = _get(server, "/forming_bar?datasetRef=jp225_tick&timeframe=1W&now=1782505000")
     assert status == 200
     payload = json.loads(raw.decode("utf-8"))
@@ -185,6 +189,7 @@ def test_get_forming_bar_falls_back_to_live_buffer_when_parquet_window_empty(ser
 
     now = 1782505000                        # 実 UTC 現在を注入（now query）。
     start = 1782505000 - (1782505000 % 300)  # floor(now, 5m)。
+    monkeypatch.setattr(server_mod.forming_bar_mod, "rollup_forming_bar", lambda *a, **k: None)  # 経路強制
     monkeypatch.setattr(server_mod.forming_bar_mod, "forming_bar", lambda *a, **k: None)  # parquet=空。
 
     class _FakeBuffer:
@@ -204,15 +209,41 @@ def test_get_forming_bar_falls_back_to_live_buffer_when_parquet_window_empty(ser
         server_mod.set_live_tick_buffer(None)
 
 
-def test_get_forming_bar_unsupported_tf_ignores_live_buffer(server, monkeypatch):
-    # 非対応 tf（1W）は buffer 注入下でも fallback せず null（設計上の非対応を維持）。
+def test_get_forming_bar_uses_rollup_path_first(server, monkeypatch):
+    # ロールアップ方式が優先: rollup_forming_bar が非 None を返せば parquet 経路は呼ばない（1W も可）。
     import framework.server as server_mod
 
+    sentinel = {"time": 1782505000, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 9.0}
+    monkeypatch.setattr(server_mod.forming_bar_mod, "rollup_forming_bar", lambda *a, **k: sentinel)
+    monkeypatch.setattr(server_mod.forming_bar_mod, "forming_bar",
+                        lambda *a, **k: pytest.fail("rollup 経路成立時は parquet 経路を呼ばない"))
+    status, _ctype, raw = _get(server, "/forming_bar?datasetRef=jp225_tick&timeframe=1W&now=1782505000")
+    assert status == 200
+    assert json.loads(raw.decode("utf-8"))["bar"] == sentinel
+
+
+def test_get_forming_bar_falls_back_when_rollup_path_none(server, monkeypatch):
+    # ロールアップ経路が None（未成立）なら現行 parquet 経路へフォールバック（非破壊）。
+    import framework.server as server_mod
+
+    fallback = {"time": 1782505000, "open": 3.0, "high": 4.0, "low": 2.0, "close": 3.5, "volume": 1.0}
+    monkeypatch.setattr(server_mod.forming_bar_mod, "rollup_forming_bar", lambda *a, **k: None)
+    monkeypatch.setattr(server_mod.forming_bar_mod, "forming_bar", lambda *a, **k: fallback)
+    status, _ctype, raw = _get(server, "/forming_bar?datasetRef=jp225_tick&timeframe=5m&now=1782505000")
+    assert status == 200
+    assert json.loads(raw.decode("utf-8"))["bar"] == fallback
+
+
+def test_get_forming_bar_fallback_unsupported_tf_ignores_live_buffer(server, monkeypatch):
+    # フォールバック経路（ロールアップ未成立時）は非対応 tf（1W）で buffer を参照せず null。
+    import framework.server as server_mod
+
+    monkeypatch.setattr(server_mod.forming_bar_mod, "rollup_forming_bar", lambda *a, **k: None)  # 経路を強制
     monkeypatch.setattr(server_mod.forming_bar_mod, "forming_bar", lambda *a, **k: None)
 
     class _FakeBuffer:
         def ticks_since(self, ms):
-            raise AssertionError("非対応 tf では buffer を参照してはいけない")
+            raise AssertionError("非対応 tf のフォールバックでは buffer を参照してはいけない")
 
     server_mod.set_live_tick_buffer(_FakeBuffer())
     try:
@@ -292,6 +323,53 @@ def test_get_market_profile_forming_passes_from_to_controller(server, monkeypatc
     assert status == 200
     assert captured.get("frm") == "1783382400"  # query の from が frm として届く。
 
+
+def test_get_tf_period_profile_passes_window_to_controller(server, monkeypatch):
+    # 殻 `_handle_tf_period_profile` が query の from/to（ローリング窓）を controller へ透過し JSON 応答する。
+    import framework.server as _srv
+
+    captured = {}
+
+    def _spy(ref, timeframe, frm, to):
+        captured.update(ref=ref, tf=timeframe, frm=frm, to=to)
+        return 200, {"ok": True, "tf": timeframe, "columns": []}
+
+    monkeypatch.setattr(_srv, "handle_tf_period_profile", _spy)
+    status, _ctype, raw = _get(
+        server, "/tf_period_profile?datasetRef=jp225_tick&timeframe=5m&from=1000&to=2000")
+    assert status == 200
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["ok"] is True and payload["tf"] == "5m"
+    assert (captured["frm"], captured["to"]) == ("1000", "2000")
+
+
+def test_get_market_profile_forming_augments_ticks_with_live_buffer(server, monkeypatch):
+    # 秒成長の遅延解消: controller の forming ticks（parquet 由来・フロンティア遅延で末尾欠け）を、
+    #   注入 LiveTickBuffer の「parquet 末尾より後」の tick で補完して返す（非破壊・重複なし）。
+    import framework.server as server_mod
+
+    fs, now = 1783382400, 1783382445  # formingStart / now（45s 経過）。
+    # parquet forming ticks はフロンティア遅延で fs+10 までしか無い。
+    def _spy(ref, timeframe, since, base, now_ov, bins, va, barw, frm=None):
+        return 200, {"ok": True, "formingStart": fs, "now": now,
+                     "ticks": [[fs + 5, 100.0], [fs + 10, 101.0]]}
+
+    monkeypatch.setattr(server_mod, "handle_market_profile_forming", _spy)
+
+    class _FakeBuffer:  # fs+10 より後（fs+30/40）を near-real-time で保持。
+        def ticks_since(self, ms):
+            return [[(fs + 5) * 1000, 100.0], [(fs + 30) * 1000, 103.0], [(fs + 40) * 1000, 104.0]]
+
+    server_mod.set_live_tick_buffer(_FakeBuffer())
+    try:
+        status, _ctype, raw = _get(
+            server, f"/market_profile_forming?datasetRef=jp225_tick&timeframe=1m&base=1&now={now}")
+        assert status == 200
+        payload = json.loads(raw.decode("utf-8"))
+        # parquet 分（fs+5, fs+10）＋ buffer の parquet 末尾より後（fs+30, fs+40）。fs+5 の重複は載せない。
+        assert payload["ticks"] == [[fs + 5, 100.0], [fs + 10, 101.0], [fs + 30, 103.0], [fs + 40, 104.0]]
+    finally:
+        server_mod.set_live_tick_buffer(None)
 
 
 # --------------------------------------------------------------------------- #

@@ -52,6 +52,9 @@ from market_profile_api.controller.market_profile_controller import handle_marke
 from market_profile_api.controller.market_profile_forming_controller import (  # noqa: E402
     handle_market_profile_forming,
 )
+from market_profile_api.controller.tf_period_profile_controller import (  # noqa: E402
+    handle_tf_period_profile,
+)
 
 # 静的配信ルート（web/）。api/ → parents[1]=api → parents[2]=indicator_ui → web。
 _WEB_ROOT = (_API_ROOT.parent / "web").resolve()
@@ -90,6 +93,29 @@ def _forming_bar_from_buffer(ref: str, timeframe: Any, now_unix: int) -> Optiona
     start = forming_bar_mod.period_start_unix(now_unix, timeframe)
     ticks = buf.ticks_since(start * 1000 - 1)  # start 以降（境界含む）の (ms, mid)。
     return forming_bar_mod.forming_bar_from_buffer_ticks(ticks, start, now_unix)
+
+
+def _augment_mp_forming_ticks(payload: Any, ref: str, timeframe: Any, since: Any) -> None:
+    """MP 形成中期間の ``payload['ticks']`` を in-memory LiveTickBuffer で補完する（秒成長の遅延解消）。
+
+    当日 parquet フロンティア遅延（~44s）で欠ける「現在分の末尾 tick」を buffer（near-real-time）で
+    埋める。buffer 未注入・非 tick ref・非対応 tf・不正 payload なら **無改変**（現行挙動不変）。
+    純関数 :func:`forming_bar.augment_forming_ticks`（parquet 優先 dedup・since 適用）へ委譲する。
+    """
+    buf = _live_tick_buffer
+    if buf is None or not forming_bar_mod.is_tick_ref(ref) or not forming_bar_mod.is_supported_timeframe(timeframe):
+        return
+    if not isinstance(payload, dict) or "ticks" not in payload:
+        return
+    fs = payload.get("formingStart")
+    now_unix = payload.get("now")
+    if fs is None or now_unix is None:
+        return
+    since_int = int(since) if (since is not None and str(since).lstrip("-").isdigit()) else None
+    buffer_ticks = buf.ticks_since(int(fs) * 1000 - 1)  # formingStart 以降（境界含む）の (ms, mid)。
+    payload["ticks"] = forming_bar_mod.augment_forming_ticks(
+        payload["ticks"], buffer_ticks, int(fs), int(now_unix), since=since_int
+    )
 
 # 静的配信の拡張子 → Content-Type（最小・stdlib mimetypes 相当を明示限定）。
 _CONTENT_TYPES = {
@@ -208,6 +234,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/market_profile_forming":
             self._handle_market_profile_forming(parse_qs(parsed.query))
             return
+        if parsed.path == "/tf_period_profile":
+            self._handle_tf_period_profile(parse_qs(parsed.query))
+            return
         if parsed.path == "/live_ticks":
             self._handle_live_ticks(parse_qs(parsed.query))
             return
@@ -252,13 +281,16 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         # now は forming_bar.resolve_now_unix に一元化（query now 優先→デモ時計→実 now）。
         now_unix = forming_bar_mod.resolve_now_unix(now_override)
         try:
-            bar = forming_bar_mod.forming_bar(ref, timeframe, now_unix)
-            # seed 鮮度化: 当日 parquet フロンティア遅延で現周期窓が空（bar=None）でも、in-memory
-            #   LiveTickBuffer（/live_ticks と同源・near-real-time）に現周期 tick があれば fallback で
-            #   形成中バーを組む。短周期（1m/5m/15m）のシードが null 化して固着するのを防ぐ。
-            #   共有 forming_bar()（指標計算の apply_forming_bar 経路）は不変＝挙動ドリフトなし。
+            # ロールアップ方式（優先）: 確定畳み込み（rollup 現周期 partial）⊕ live テール（buffer の
+            #   確定末尾以降）を O(1) で合成する。全 tf（1W/1M 含む）対応・全期間の再読み込みを排除。
+            bar = forming_bar_mod.rollup_forming_bar(ref, timeframe, now_unix, buffer=_live_tick_buffer)
             if bar is None:
-                bar = _forming_bar_from_buffer(ref, timeframe, now_unix)
+                # フォールバック（現行挙動温存・非破壊）: parquet 全期間集計 → buffer 窓集計。
+                #   rollup_state/buffer 不在や周期先頭 base 欠落など、ロールアップ経路が組めない時のみ。
+                #   共有 forming_bar()（指標計算の apply_forming_bar 経路）は不変＝挙動ドリフトなし。
+                bar = forming_bar_mod.forming_bar(ref, timeframe, now_unix)
+                if bar is None:
+                    bar = _forming_bar_from_buffer(ref, timeframe, now_unix)
         except Exception as exc:  # noqa: BLE001
             self._send_json(500, _nested_error("internal", f"forming_bar 取得に失敗しました: {exc}"))
             return
@@ -319,6 +351,29 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
             self._send_json(
                 500, _nested_error("internal", f"market_profile_forming 取得に失敗しました: {exc}"))
+            return
+        # 秒成長の遅延解消: forming 期間の ticks を in-memory buffer（near-real-time）で補完する
+        #   （parquet フロンティア遅延で欠ける現在分の末尾 tick を埋める）。ok 応答のみ・非破壊。
+        if status == 200 and isinstance(payload, dict) and payload.get("ok"):
+            _augment_mp_forming_ticks(payload, ref, timeframe, since)
+        self._send_json(status, payload)
+
+    def _handle_tf_period_profile(self, query: dict[str, list[str]]) -> None:
+        """GET /tf_period_profile — 時間足毎の最小価格単位プロファイル列（ローリング窓・読取のみ）。
+
+        検証（非 tick ref / 非対応 tf は 400）・生成は純ロジック ``handle_tf_period_profile`` に委譲し、
+        本メソッドはクエリ取り出し（``datasetRef``/``timeframe``/``from``/``to``＝ローリング窓）と JSON 応答
+        のみを担う（``_handle_market_profile_forming`` と同型の薄殻）。
+        """
+        ref = (query.get("datasetRef") or [None])[0]
+        timeframe = (query.get("timeframe") or [None])[0]
+        frm = (query.get("from") or [None])[0]
+        to = (query.get("to") or [None])[0]
+        try:
+            status, payload = handle_tf_period_profile(ref, timeframe, frm, to)
+        except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
+            self._send_json(
+                500, _nested_error("internal", f"tf_period_profile 取得に失敗しました: {exc}"))
             return
         self._send_json(status, payload)
 

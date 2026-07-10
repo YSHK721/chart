@@ -167,16 +167,24 @@ test('bootstrap (file://) exposes liveTickPlayer=null (byte-unchanged A-mode)', 
   assert.equal(liveTickPlayer, null);
 });
 
-test('bootstrap (served) passes suppressPriceUpdate=true to LiveUpdater and FormingBarUpdater', async () => {
+test('bootstrap (served) suppresses price on LiveUpdater, and on FormingBarUpdater only for player-driven tf', async () => {
   const { lwc } = fakeLwc();
   const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
-  const { liveUpdater, formingBarUpdater, ready } = await bootstrap({
+  const { liveUpdater, formingBarUpdater, controller, ready } = await bootstrap({
     lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
   });
   await ready;
-  // player が価格の唯一の書き手＝旧 2 系統は価格上書きを止める（12 秒より古い巻き戻し排除）。
+  // LiveUpdater(60s) は served で常に価格抑止（player が唯一の書き手）。
   assert.equal(liveUpdater._suppressPriceUpdate, true);
-  assert.equal(formingBarUpdater._suppressPriceUpdate, true);
+  // FormingBarUpdater は tf 依存の関数: 固定周期（player 対応）は抑止 true、1W/1M（player 非対応）は false
+  //   ＝FormingBarUpdater が /forming_bar を描く価格の書き手になる。
+  assert.equal(typeof formingBarUpdater._suppressPriceUpdate, 'function');
+  controller._timeframe = '1D';
+  assert.equal(formingBarUpdater._suppressPriceUpdate(), true, '1D は player が価格を書く→抑止');
+  controller._timeframe = '1W';
+  assert.equal(formingBarUpdater._suppressPriceUpdate(), false, '1W は FormingBarUpdater が価格を書く→非抑止');
+  controller._timeframe = '1M';
+  assert.equal(formingBarUpdater._suppressPriceUpdate(), false, '1M も非抑止');
 });
 
 // ===========================================================================
