@@ -429,13 +429,24 @@ export class MarketProfileActor {
     if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
       this._renderer.setCandleTransparency(on);
     }
-    // sessions を有効化した初回のみ、直近セッション日へズームを寄せる（時間軸連動タイルが潰れないように）。
-    //   以後は寄せない（ユーザーの手動ズーム/スクロールを尊重）。off 遷移でフラグをクリア。
+    // sessions を有効化した初回のみ、被覆セッション日の時間レンジへズームを寄せる（時間軸連動タイルが
+    //   潰れない／短周期でも日別列が画面内に入るように）。以後は寄せない（手動ズーム/スクロール尊重）。
+    //   時間ベース（focusTimeRange）にすることで、1m（1日=1440本）でも「日数」を「バー数」と誤解して
+    //   列が画面外に落ちる不具合を解消する。off 遷移でフラグをクリア。
     if (on) {
       if (this._sessionsFocusPending && rawList && rawList.length
-          && this._renderer && typeof this._renderer.focusRecentBars === 'function') {
-        this._sessionsFocusPending = false;
-        this._renderer.focusRecentBars(rawList.length);
+          && this._renderer && typeof this._renderer.focusTimeRange === 'function') {
+        const candles = (typeof this._getCandles === 'function' ? this._getCandles() : []) || [];
+        if (candles.length) {
+          this._sessionsFocusPending = false;
+          // 被覆日の下限＝最古セッション日始端（ただしロード済み candle の左端より前へは行かない＝空白回避）。
+          const sessStart = _sessionDateToUnix(rawList[0].date);
+          const from = Number.isFinite(sessStart)
+            ? Math.max(sessStart, candles[0].time)
+            : candles[0].time;
+          const to = candles[candles.length - 1].time; // 右端＝最新足（now）。
+          this._renderer.focusTimeRange(from, to);
+        }
       }
     } else {
       this._sessionsFocusPending = false;

@@ -431,10 +431,10 @@ function fakeSessPrimitive() {
 function fakeSessRenderer() {
   return {
     transparencies: [],
-    focusCalls: [],
+    focusCalls: [],       // focusTimeRange(from, to) の [from, to] 記録。
     sessionMPs: [],
     setCandleTransparency(on) { this.transparencies.push(!!on); },
-    focusRecentBars(n) { this.focusCalls.push(n); },
+    focusTimeRange(from, to) { this.focusCalls.push([from, to]); },
     setSessionMP(map) { this.sessionMPs.push(map); },
   };
 }
@@ -531,15 +531,22 @@ test('sessions OFF: setSessionMP(null) で当日 MP 読み取りを解除する'
   assert.ok(renderer.sessionMPs.includes(null), 'sessions OFF で null 供給（読み取り解除）');
 });
 
-test('sessions ON: 初回反映で直近セッション日へ自動ズーム（focusRecentBars(sessions長)を1回）', async () => {
-  // 時間軸連動タイルが潰れないよう、sessions 有効化の初回だけ直近 N 日へ寄せる。以後は寄せない。
-  const { actor, renderer } = makeSessActor();
+test('sessions ON: 初回反映で被覆セッション日の時間レンジへ自動ズーム（focusTimeRange を1回・全tf対応）', async () => {
+  // 時間軸連動タイルが潰れないよう、sessions 有効化の初回だけ被覆日の時間レンジへ寄せる。以後は寄せない。
+  //   時間ベース（focusTimeRange）にすることで、1m（1日=1440本）でも日別列（日境界時刻）が画面内に入る。
+  const t1 = Date.UTC(2024, 0, 1) / 1000; // 最古セッション日 2024-01-01
+  const t2 = Date.UTC(2024, 0, 2) / 1000; // 最新足 2024-01-02
+  const candles = [
+    { time: t1, open: 1, high: 1, low: 1, close: 1 },
+    { time: t2, open: 1, high: 1, low: 1, close: 1 },
+  ];
+  const { actor, renderer } = makeSessActor(PROFILE_WITH_SESSIONS, () => candles);
   actor.setParams({ mode: 'sessions' });
   await actor.setEnabled(true);
-  assert.deepEqual(renderer.focusCalls, [2], '初回のみ sessions.length=2 で focusRecentBars');
+  assert.deepEqual(renderer.focusCalls, [[t1, t2]], '初回のみ [最古セッション日, 最新足] の時間レンジで focusTimeRange');
   // 再 refresh では寄せない（手動ズーム/スクロールを尊重）。
   await actor.refresh();
-  assert.deepEqual(renderer.focusCalls, [2], '2回目以降は focus しない');
+  assert.deepEqual(renderer.focusCalls, [[t1, t2]], '2回目以降は focus しない');
 });
 
 test('sessions OFF (default): setSessions(null) and transparency stays off (後方互換)', async () => {

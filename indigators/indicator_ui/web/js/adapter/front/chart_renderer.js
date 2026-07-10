@@ -439,6 +439,20 @@ export class ChartRenderer {
     ts.setVisibleLogicalRange({ from, to });
   }
 
+  // 指定の時間レンジ [from, to]（UNIX 秒）を可視範囲にする（日別プロファイルの被覆日を全 tf で表示する）。
+  //   focusRecentBars は論理バー数基準のため、1m では「日数」を「分数」と解釈して日別列（日境界時刻）が
+  //   画面外に落ちる。本メソッドは時間ベース（setVisibleRange）でズームし、全 tf で列を可視化する。
+  focusTimeRange(from, to) {
+    const ts = (this._chart && typeof this._chart.timeScale === 'function') ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.setVisibleRange !== 'function') {
+      return;
+    }
+    if (!(Number.isFinite(from) && Number.isFinite(to) && from < to)) {
+      return; // 不正レンジは触らない（現状維持）。
+    }
+    ts.setVisibleRange({ from, to });
+  }
+
   // リプレイスワイプの感度基準＝1 バーあたりのピクセル幅（barSpacing）。
   //   移植元 prototype_260630-01/js/app.js L452-453: |logicalToCoordinate(1) - logicalToCoordinate(0)|。
   //   ★ズームアウトで barSpacing が極小（<0.5px）のときは 8px を下限に使う（プロト準拠）。これにより

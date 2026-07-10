@@ -213,6 +213,21 @@ test('focusRecentBars(n): 直近 n バーを可視範囲にする（sessions の
   assert.ok(Math.abs(r.to - 100.5) < 1e-9, 'to=total-0.5+右余白');
 });
 
+test('focusTimeRange(from,to): 時間ベースで可視範囲を設定する（日別プロファイルの全tf対応）', () => {
+  const ranges = [];
+  const main = { setData() {}, applyOptions() {}, priceScale: () => ({ applyOptions() {} }) };
+  const ts = { fitContent() {}, applyOptions() {}, setVisibleRange: (r) => ranges.push(r) };
+  const chart = { addSeries: () => main, subscribeCrosshairMove() {}, timeScale: () => ts };
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: {} });
+  renderer.focusTimeRange(1000, 2000);
+  assert.deepEqual(ranges.at(-1), { from: 1000, to: 2000 }, 'setVisibleRange({from,to}) 時間ベース');
+  // 不正レンジ（from>=to / 非有限）は触らない。
+  ranges.length = 0;
+  renderer.focusTimeRange(2000, 1000);
+  renderer.focusTimeRange(NaN, 100);
+  assert.equal(ranges.length, 0, '不正レンジは setVisibleRange を呼ばない');
+});
+
 // _fitTrimView（スクラブ追従）: 現在の可視幅 span を保ったまま T を右端へスクロールする。
 //   ズームを保持したまま過去↔現在を移動できる（ユーザー選択・プロトの全historyフィットから意図的に外れる）。
 function rendererWithVisibleRange(visSpan) {
