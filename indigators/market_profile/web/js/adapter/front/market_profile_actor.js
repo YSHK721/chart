@@ -80,9 +80,12 @@ export class MarketProfileActor {
   // renderer: 増分2 スナップショットのローソクトリム源（setCandleTrim(time|null)）。未注入時はトリムしない。
   constructor({
     client, primitive, mainSeries, getContext, replayBar, getCandles, renderer,
-    formingClient, makeAccumulator, sessionsDrawnByTfPeriod,
+    formingClient, makeAccumulator, sessionsDrawnByTfPeriod, onParamsChanged,
   } = {}) {
     this._client = client;
+    // パラメータ変更通知（注入）。setParams 完了時に呼ぶ。composition_root が tf-period 列アクターの
+    //   即時再取得（src/mode 変更を可視レンジ変化を待たず反映・ISSUE-066）へ配線する。未注入は no-op。
+    this._onParamsChanged = typeof onParamsChanged === 'function' ? onParamsChanged : () => {};
     this._primitive = primitive;
     this._mainSeries = mainSeries;
     this._replayBar = replayBar ?? null;
@@ -178,6 +181,7 @@ export class MarketProfileActor {
     //   （競合時は mode を採用＝二重管理を避ける）。normal|replay|sessions のいずれかへ状態遷移する。
     if (params.mode != null) {
       this._applyMode(params.mode);
+      this._onParamsChanged(); // ISSUE-066: mode 変更を tf-period 列へ伝播（可視レンジ変化を待たない）。
       return; // mode 指定時は legacy 分岐を評価しない（mode 優先）。
     }
     // legacy 受理（後方互換・mode 未指定時のみ）。旧 replay:true / sessions:true を引き続き受理する。
@@ -190,6 +194,7 @@ export class MarketProfileActor {
     if (params.replay != null) {
       this._setReplay(!!params.replay);
     }
+    this._onParamsChanged(); // ISSUE-066: src/bins/va 等の変更を tf-period 列へ伝播（即時再取得）。
   }
 
   // 表示モードの排他遷移。既存の _setReplay / _applySessions 復元経路を再利用する（重複実装しない）。
@@ -647,6 +652,17 @@ export class MarketProfileActor {
     if (!this._enabled) {
       return;
     }
+    // ISSUE-067: 日別×tf-period 描画モード（sessionsDrawnByTfPeriod=true）では、重い全期間
+    //   /market_profile?sessions=1&src=<src>（dwell=1.4s・zp=3.3s／窓非依存の固定約1s）を**叩かない**。
+    //   日別プロファイル列は tf-period 列アクターが供給し poc/va も各列が保持する。ここでは日別タイル/
+    //   読取欄を null リセットし、初回のみ candle 範囲へ focus する（→可視レンジ変化で tf-period 取得）。
+    //   tf-period 列は onParamsChanged（composition_root→tfPeriodActor 即時再取得）と可視レンジ購読で
+    //   取得されるため、本フェッチに依存せず<1sで描ける。読取欄の当日MPは列由来へ簡素化（依頼者承認 A案）。
+    if (this._sessions && this._sessionsDrawnByTfPeriod()) {
+      this._applySessions(null);      // タイル非描画（tfDraws は null）＋読取欄クリア＋candle 透明化は tf-period 委譲。
+      this._focusSessionsPending();   // 初回のみ candle 範囲へ focus（列を画面内へ）。
+      return;
+    }
     if (this._refreshRunning) {
       this._refreshQueued = true;
       return;
@@ -670,6 +686,24 @@ export class MarketProfileActor {
       this._refreshQueued = false;
       await this.refresh(); // 末尾実行（最後の 1 回のみ）。
     }
+  }
+
+  // ISSUE-067: 日別 focus を candle 範囲だけで行う（sessions フェッチをスキップする tfDraws 経路用）。
+  //   _applySessions の focus ブロックと同一規則（初回のみ・直近 SESSIONS_INITIAL_SPAN_SEC＝1年に限定・
+  //   candle 左端より前へ行かない）。sessStart（セッション応答由来の下限引き上げ）は使わない＝candle 左端が下限。
+  _focusSessionsPending() {
+    if (!this._sessionsFocusPending || !this._renderer
+        || typeof this._renderer.focusTimeRange !== 'function') {
+      return;
+    }
+    const candles = (typeof this._getCandles === 'function' ? this._getCandles() : []) || [];
+    if (!candles.length) {
+      return;
+    }
+    this._sessionsFocusPending = false;
+    const to = candles[candles.length - 1].time;
+    const from = Math.max(candles[0].time, to - SESSIONS_INITIAL_SPAN_SEC);
+    this._renderer.focusTimeRange(from, to);
   }
 
   // primitive を mainSeries へ一度だけ attach する（attachPrimitive 非提供時は skip）。

@@ -300,3 +300,70 @@ test('actor: 非増分(static dwell) の setEnabled は従来どおり全期間 
   assert.equal(client.calls.length, 1, 'static は従来どおり refresh（全期間）');
   assert.equal(forming.calls.length, 0);
 });
+
+// --- 6) ISSUE-066: setParams が onParamsChanged を発火（tf-period 即時再取得の起点） ------ //
+test('actor: setParams（src/mode 変更）は onParamsChanged を発火する', () => {
+  let count = 0;
+  const actor = new MarketProfileActor({
+    client: fakeClient(),
+    primitive: fakePrimitive(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h' }),
+    onParamsChanged: () => { count += 1; },
+  });
+  actor.setParams({ src: 'dwell' });          // 通常パラメータ経路
+  assert.equal(count, 1);
+  actor.setParams({ mode: 'sessions' });      // mode 経路（早期 return 前に発火）
+  assert.equal(count, 2);
+  actor.setParams({ src: 'zp' });             // sessions のまま src 変更
+  assert.equal(count, 3);
+});
+
+test('actor: onParamsChanged 未注入でも setParams は例外なく動作（後方互換）', () => {
+  const actor = new MarketProfileActor({
+    client: fakeClient(), primitive: fakePrimitive(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h' }),
+  });
+  assert.doesNotThrow(() => actor.setParams({ src: 'dwell' }));
+});
+
+// --- 7) ISSUE-067: 日別×tf-period描画時は refresh が全期間 sessions フェッチを叩かない ------ //
+test('actor: sessions×tfDraws の refresh は /market_profile を fetch しない（列は tf-period 供給）', async () => {
+  const client = fakeClient();
+  let focusCalled = 0;
+  const actor = new MarketProfileActor({
+    client,
+    primitive: { setProfile() {}, setVisible() {}, setSessions() {} },
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h' }),
+    getCandles: () => [{ time: 1000 }, { time: 2000 }],
+    renderer: {
+      setSessionMP() {}, setCandleTransparency() {},
+      focusTimeRange() { focusCalled += 1; },
+    },
+    sessionsDrawnByTfPeriod: () => true,   // tf-period が列を描くモード
+  });
+  actor._enabled = true;
+  actor.setParams({ mode: 'sessions' });   // sessions ON（_sessionsFocusPending も立つ）
+  const before = client.calls.length;
+  await actor.refresh();
+  assert.equal(client.calls.length, before, 'tfDraws では /market_profile を叩かない');
+  assert.equal(focusCalled, 1, '初回のみ candle 範囲へ focus');
+  await actor.refresh();
+  assert.equal(focusCalled, 1, '2回目以降は focus しない（手動ズーム尊重）');
+});
+
+test('actor: sessions だが tfDraws=false（非対応tf等）は従来どおり /market_profile を fetch（回帰ゼロ）', async () => {
+  const client = fakeClient();
+  const actor = new MarketProfileActor({
+    client,
+    primitive: { setProfile() {}, setVisible() {}, setSessions() {} },
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1W' }),
+    getCandles: () => [{ time: 1000 }],
+    renderer: { setSessionMP() {}, setCandleTransparency() {}, focusTimeRange() {} },
+    sessionsDrawnByTfPeriod: () => false,  // タイルは MP actor が描く
+  });
+  actor._enabled = true;
+  actor.setParams({ mode: 'sessions' });
+  const before = client.calls.length;
+  await actor.refresh();
+  assert.equal(client.calls.length, before + 1, 'tfDraws=false は従来どおり fetch');
+});

@@ -263,11 +263,17 @@ export async function bootstrap({
   const mpSrc = () => (marketProfile && typeof marketProfile.srcParam === 'function'
     ? marketProfile.srcParam() : null);
   const zpTfOk = () => (mpSrc() !== 'zp' || ZP_TF_ALLOWED.has(controller._timeframe));
+  // ISSUE-066: MP パラメータ変更（gear の src/mode 等）を tf-period 列アクターへ即時伝播するフック。
+  //   tf-period 配線（mode==='b'）で実体を代入する。未配線（A方式・非served）は no-op（byte 不変）。
+  let refreshTfPeriodNow = () => {};
   const marketProfile = new MarketProfileActor({
     client: new MarketProfileClient({ fetch }),
     primitive: mpPrimitive,
     mainSeries,
     replayBar,
+    // ISSUE-066: setParams 完了時に tf-period 列を即時再取得（sessions×ライブで src 変更が可視レンジ
+    //   変化を待たず反映される）。tf-period 非配線時は no-op。
+    onParamsChanged: () => refreshTfPeriodNow(),
     // tick 逐次成長（ticklive）: forming 取得 client と DwellAccumulator factory を注入する。
     //   未注入なら onLiveTick は refresh へ byte-identical 委譲（後方互換）。注入で ticklive が有効化される。
     formingClient: new MarketProfileFormingClient({ fetch }),
@@ -380,6 +386,22 @@ export async function bootstrap({
       renderer, // ISSUE-055: 列が描けた時点で candle 透明化（MarketProfileActor から委譲）。
       getSrc: () => (mpSrc() === 'zp' ? 'zp' : null),
     });
+    const tfpShouldOn = () => !!(marketProfile && typeof marketProfile.isSessions === 'function'
+      && marketProfile.isSessions()) && isPlayerTimeframe(controller._timeframe)
+      // src=zp は backend 対応 tf（15m..1D）のみ列を出せる（1m/5m は 400 → 列を出さない。
+      //   このとき委譲述語も false になり MP actor が日別タイルを自前描画＝フォールバック）。
+      && zpTfOk();
+    // ISSUE-066: MP パラメータ変更時の tf-period 即時再適用。tfpShouldOn なら setEnabled(true)＝
+    //   refresh→ensure で jitter buffer の src 差分キャッシュ破棄→新 src 再fetch→再描画。不成立
+    //   （sessions 解除/非対応 tf）は列を消す。可視レンジ変化のデバウンスと違い**即時**（src 切替の反映）。
+    refreshTfPeriodNow = () => {
+      if (!tfPeriodActor) { return; }
+      if (!tfpShouldOn()) {
+        if (tfPeriodActor.isEnabled()) { tfPeriodActor.setEnabled(false); }
+        return;
+      }
+      tfPeriodActor.setEnabled(true);
+    };
     const tsSub = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
     if (tsSub && typeof tsSub.subscribeVisibleTimeRangeChange === 'function') {
       // ISSUE-055（A案: ローリング中は再取得/再描画しない）: 可視レンジ変化のたびに setEnabled(true)→refresh
@@ -389,11 +411,6 @@ export async function bootstrap({
       //   OFF（sessions 解除/非対応 tf）は列を残さないため即時反映する。tf 非依存＝全時間足に等しく効く。
       const TFP_ROLL_DEBOUNCE_MS = 150; // 「スクロール停止」判定の末尾待ち（体感即応と storm 抑制の均衡）。
       let tfpRollTimer = null;
-      const tfpShouldOn = () => !!(marketProfile && typeof marketProfile.isSessions === 'function'
-        && marketProfile.isSessions()) && isPlayerTimeframe(controller._timeframe)
-        // src=zp は backend 対応 tf（15m..1D）のみ列を出せる（1m/5m は 400 → 列を出さない。
-        //   このとき委譲述語も false になり MP actor が日別タイルを自前描画＝フォールバック）。
-        && zpTfOk();
       tsSub.subscribeVisibleTimeRangeChange(() => {
         if (!tfpShouldOn()) {
           if (tfpRollTimer != null) { clearTimeout(tfpRollTimer); tfpRollTimer = null; }
