@@ -130,13 +130,21 @@ test('catalog: market_profile range ENUM drops auto → [25,50,100,250,500] defa
 
 // resmode=bins のとき bins を表示、resmode=range のとき非表示にする conditionalVisible（トグル）。
 //   従来の range=auto 条件を resmode=bins へ置換（resmode がトグルスイッチ）。
-test('catalog: market_profile bins uses conditionalVisible {resmode:bins} and drops conditionalEnable', () => {
+test('catalog: market_profile bins は conditionalVisible {resmode:bins}＋tf-period描画時グレーアウト述語（ISSUE-070）', () => {
   const d = get('market_profile');
   const bins = paramOf(d, 'bins');
   // resmode=bins のときだけ表示（それ以外は非表示）。
   assert.deepEqual(bins.conditionalVisible, { when: { param: 'resmode', equals: 'bins' } });
-  // 旧グレーアウト（conditionalEnable）は撤去済み（非表示トグルへ移行）。
-  assert.equal(bins.conditionalEnable ?? null, null);
+  // ISSUE-070: conditionalEnable は関数述語（tf-period が日別列を描くとき無効＝グレーアウト）。
+  assert.equal(typeof bins.conditionalEnable, 'function');
+  const fn = bins.conditionalEnable;
+  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'b', timeframe: '1h' }), false);
+  assert.equal(fn({ mode: 'sessions', src: 'zp' }, { servedMode: 'b', timeframe: '1h' }), false);
+  assert.equal(fn({ mode: 'normal', src: 'dwell' }, { servedMode: 'b', timeframe: '1h' }), true);
+  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'b', timeframe: '1W' }), true);
+  assert.equal(fn({ mode: 'sessions', src: 'zp' }, { servedMode: 'b', timeframe: '5m' }), true);
+  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'a', timeframe: '1h' }), true);
+  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, {}), true);
 });
 
 // bins をプリセット ENUM（30/60/100・既定60）へ変更。試作 prototype_260630-01/web/index.html:30-34 の

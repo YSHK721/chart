@@ -11,6 +11,27 @@
 // 挙動不変: 本 factory の戻り値は、移設前に catalog.js 内で inline 定義していた
 //   MARKET_PROFILE と同一のオブジェクト構造（id / params / series / compute）を返す。
 
+// tf-period が日別列を描く対応 tf（列描画時は解像度が GRID_W 固定＝resmode/bins/range 無効）。
+//   ISSUE-070。count 列は 1m..1D、zp 列は 15m..1D 対応（backend の周期退化ガードと一致）。
+const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D']);
+const _MP_ZP_TF = new Set(['15m', '30m', '1h', '4h', '1D']);
+
+// tf-period が日別プロファイル列を描く状態か（＝解像度パラメータが無効な状態）。
+//   条件: served(B方式) かつ mode=sessions かつ対応 tf（src=zp は 15m..1D 限定）。ctx は
+//   { timeframe, servedMode } を受ける（gear ダイアログが現 timeframe/mode を注入）。
+function _mpTfPeriodDrawsColumns(values, ctx) {
+  if (!ctx || ctx.servedMode !== 'b') { return false; }
+  if (values.mode !== 'sessions') { return false; }
+  const tf = ctx.timeframe;
+  if (!_MP_PLAYER_TF.has(tf)) { return false; }
+  if (values.src === 'zp' && !_MP_ZP_TF.has(tf)) { return false; }
+  return true;
+}
+
+// 解像度パラメータ（resmode/bins/range）の enabled 述語: tf-period 列描画時のみ無効（グレーアウト）。
+//   通常モード・非対応tf の日別（タイル描画）・A方式では解像度が有効なので enabled=true。
+const _mpResolutionEnabled = (values, ctx) => !_mpTfPeriodDrawsColumns(values, ctx);
+
 export function makeMarketProfileDef({
   IndicatorDef,
   SeriesDef,
@@ -40,6 +61,8 @@ export function makeMarketProfileDef({
       param('resmode', ParamType.ENUM, 'bins', [], ['bins', 'range'], {
         group: 'group.calc', order: 0, label: '解像度', controlType: 'segmented',
         enumLabels: { bins: 'ビン', range: 'レンジ' },
+        // ISSUE-070: tf-period が日別列を描くとき（日別×対応tf）は解像度が GRID_W 固定で無効＝グレーアウト。
+        conditionalEnable: _mpResolutionEnabled,
       }),
       // bins: ヒストグラム区間数（ENUM プリセット・既定 '60'）。試作 prototype_260630-01/web/index.html:30-34 の
       //   <select>（option 30 / 60(selected) / 100）に忠実。数値自由入力(INT)からプリセットへ変更し、レンジ(range)と
@@ -49,6 +72,7 @@ export function makeMarketProfileDef({
       param('bins', ParamType.ENUM, '60', [], ['30', '60', '100'], {
         group: 'group.calc', order: 1, label: 'ビン',
         conditionalVisible: { when: { param: 'resmode', equals: 'bins' } },
+        conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
         enumLabels: { 30: '30', 60: '60', 100: '100' },
       }),
       // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
@@ -78,6 +102,7 @@ export function makeMarketProfileDef({
       param('range', ParamType.ENUM, '100', [], ['25', '50', '100', '250', '500'], {
         group: 'group.calc', order: 1, label: 'レンジ(pt)',
         conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
+        conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
         enumLabels: { 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
       }),
       // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/

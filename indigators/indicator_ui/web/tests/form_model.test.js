@@ -202,6 +202,22 @@ test('computeEnabled: params without conditionalEnable are always enabled', () =
   assert.equal(enabled.maxbars, true);
 });
 
+// ISSUE-070: conditionalEnable の関数述語形式（values, context）→ boolean。
+test('computeEnabled: conditionalEnable が関数のとき (values, context) で評価される', () => {
+  const def = { params: [{
+    name: 'res', type: ParamType.ENUM, default: 'a',
+    conditionalEnable: (values, ctx) => !(values.mode === 'x' && ctx && ctx.tf === '1h'),
+  }] };
+  // 条件成立 → 無効
+  assert.equal(computeEnabled(def, { mode: 'x' }, { tf: '1h' }).res, false);
+  // mode 不一致 → 有効
+  assert.equal(computeEnabled(def, { mode: 'y' }, { tf: '1h' }).res, true);
+  // tf 不一致 → 有効
+  assert.equal(computeEnabled(def, { mode: 'x' }, { tf: '5m' }).res, true);
+  // context 省略（既定 {}）→ 述語は ctx.tf undefined で有効（後方互換）
+  assert.equal(computeEnabled(def, { mode: 'x' }).res, true);
+});
+
 // ---- computeVisible: 条件付き表示（トグル・computeEnabled と対称）-------------
 
 test('computeVisible: field is visible when conditionalVisible predicate matches', () => {

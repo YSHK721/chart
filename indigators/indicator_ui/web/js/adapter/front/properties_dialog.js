@@ -42,11 +42,14 @@ export class PropertiesDialog {
   //   onCancel : () => void         キャンセル/×/背景時（任意）
   // mode: 'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算・params 未反映）。
   //   既定 'a'（従来挙動・単体テスト互換）。'b' では A 方式注記を出さない（実反映されるため）。
-  constructor({ document: doc, def, instance = null, mode = 'a', onApply = () => {}, onCancel = () => {} }) {
+  constructor({ document: doc, def, instance = null, mode = 'a', context = {}, onApply = () => {}, onCancel = () => {} }) {
     this._doc = doc;
     this._def = def;
     this._instance = instance;
     this._mode = mode;
+    // context: computeEnabled の関数述語へ渡す外部状態（例 { timeframe, servedMode }）。
+    //   ISSUE-070: mode=sessions×対応tf の解像度グレーアウト判定に timeframe が要る（param 値外）。
+    this._context = context || {};
     this._onApply = onApply;
     this._onCancel = onCancel;
 
@@ -749,7 +752,7 @@ export class PropertiesDialog {
 
   // 条件付き有効化（§3.5）。disabled のフィールド行をグレーアウト。
   _refreshEnabled() {
-    const enabled = computeEnabled(this._def, this._values);
+    const enabled = computeEnabled(this._def, this._values, this._context);
     for (const [name, els] of this._fieldEls) {
       const on = enabled[name] !== false;
       els.row.classList.toggle('is-disabled', !on);

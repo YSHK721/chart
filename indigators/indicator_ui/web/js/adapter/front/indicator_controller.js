@@ -458,6 +458,9 @@ export class IndicatorController {
       def,
       instance: { ...inst, params: currentParams },
       mode: this._mode,
+      // ISSUE-070: MP 解像度パラメータのグレーアウト判定に現 timeframe と served/A方式を渡す
+      //   （tf-period が日別列を描くとき resmode/bins/range は無効＝GRID_W 固定のため）。
+      context: { timeframe: this._timeframe, servedMode: this._mode },
       onApply: (values) => { runApply(values); },
       onCancel: () => {},
     });

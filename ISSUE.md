@@ -857,3 +857,12 @@
 - **対策**: TfPeriodProfileActor の描画を、可視範囲を満たすチャンクが全て ready になるまで保留し、揃った時点で1回だけ描く。安全弁として**上限タイムアウト**（例 800ms）を設け、時間内に揃わない場合はその時点の ready 分で強制描画（永久保留の防止）。ローソク足の表示は不変（本変更の対象外）。
 - **実装**: TfPeriodJitterBuffer.allReady(from,to)（可視範囲の全チャンク ready 判定）＋ TfPeriodProfileActor に保留/上限タイムアウト（既定800ms・注入可）。refresh は allReady なら一括描画・未なら保留＋timer。onChunkReady は保留中に揃ったら一括描画（逐次描画しない）。揃うまで前回描画を保持（clear しない＝ちらつき回避）。
 - **検証**: web テスト更新+新規（一括描画・onChunkReady で揃い次第 commit・タイムアウトで部分フォールバック・保留無しは再描画しない・透明化は描画時のみ）＝tf_period_actor 7 passed・MP web 247 緑・UI web 531/533（残2は既存無関係）。実UI（8137・1h・日別）src dwell⇄zp 切替でエラー0・列は完成形で一括描画を確認。ローソク足表示は不変。
+
+## ISSUE-070: 日別×tf-period描画時は解像度パラメータ（resmode/bins/range）が無効なのにグレーアウトされない
+- **ステータス**: RESOLVED（2026-07-12）
+- **発生日**: 2026-07-12
+- **概要**: 日別プロファイル×対応tf（列を tf-period が描くケース）では列は GRID_W(10pt)固定で、解像度パラメータ（resmode/bins/range）は URL にも送られず完全に無効。しかし gear で編集可能なため「動かしても変わらない」誤解を生む。tf-period が列を描くとき**のみ**これらをグレーアウトしたい。
+- **注意**: 解像度は「日別×非対応tf（1W/1M＝タイル描画）」「通常モード」では有効。よって一律無効化は誤り。判定は timeframe 依存（既存 conditionalVisible は param 値条件のみ）。
+- **対策**: gear ダイアログの param 無効化を、mode=sessions かつ対応tf（tf-period描画）のとき resmode/bins/range をグレーアウト（disabled）する。判定は controller の現 timeframe と mode を参照。
+- **実装**: form_model.computeEnabled に (values, context) 第3引数＋**関数述語**対応を追加（従来 {when:{param,equals}} と両対応）。properties_dialog に context を通し _refreshEnabled で渡す。indicator_controller の gear 起動で context={timeframe,servedMode} を注入。catalog_entry に述語 _mpResolutionEnabled（served×日別×対応tf、src=zp は15m..1D）を resmode/bins/range の conditionalEnable へ付与。param factory の pickUi が関数を透過。
+- **検証**: web テスト（catalog: bins 述語の真理値表／form_model: 関数述語評価）＋UI web 532/534（残2は既存無関係）・MP web 247 緑。実UI（8137・実HTTP）で 日別×1h は resmode/bins/range が is-disabled＋ctrl disabled、ダイアログ内 mode トグルで 通常→有効・日別→グレーアウトへ動的追従を確認。

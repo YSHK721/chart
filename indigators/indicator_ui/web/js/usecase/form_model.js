@@ -121,14 +121,21 @@ function sortByOrder(fields) {
 }
 
 // 各パラメータの有効/無効を決定（§3.5 条件付き有効化）。
-// conditionalEnable.when（{param,equals}）が偽のとき disabled。未指定は常時 enabled。
+// conditionalEnable が偽のとき disabled。未指定は常時 enabled。2 形式を受ける:
+//   - オブジェクト { when: {param, equals} }: 他 param 値との単一等価（従来）。
+//   - 関数 (values, context) => boolean: 複合述語。context は外部状態（例 timeframe）を渡す
+//     （ISSUE-070: mode=sessions×対応tf で tf-period が列を描くとき解像度をグレーアウト）。
 // 実コード対応: atr_period は normalize=="atr" のときのみ ATR 計算で使用（robust_bands.py:135-138）。
-export function computeEnabled(def, values = {}) {
+export function computeEnabled(def, values = {}, context = {}) {
   const enabled = {};
   for (const pdef of def.params ?? []) {
     const cond = pdef.conditionalEnable;
     if (cond === null || cond === undefined) {
       enabled[pdef.name] = true;
+      continue;
+    }
+    if (typeof cond === 'function') {
+      enabled[pdef.name] = !!cond(values, context);
       continue;
     }
     const { param, equals } = cond.when;
