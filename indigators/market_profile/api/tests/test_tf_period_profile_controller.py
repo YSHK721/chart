@@ -45,10 +45,13 @@ def test_happy_path_returns_columns(monkeypatch):
     st, body = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
     assert st == 200 and body["ok"] is True
     assert body["tf"] == "1m" and body["from"] == 0 and body["to"] == 120
-    assert body["unit"] == 1.0  # 最小 mid 増分（10,11 の差=1）。
+    # ISSUE-068: 列は GRID_W(=10pt) でビニング（最小単位でなく固定グリッド）。
+    assert body["unit"] == 10.0
     times = [c["time"] for c in body["columns"]]
     assert times == [0, 60]
-    assert body["columns"][0]["levels"] == [[10.0, 2], [11.0, 1]]
+    # period0 mids 10,10,11 → round(/10)=1 → price 10・count 3／period60 mids 20,21 → round(/10)=2 → price 20・count 2。
+    assert body["columns"][0]["levels"] == [[10.0, 3]]
+    assert body["columns"][1]["levels"] == [[20.0, 2]]
 
 
 def test_completed_day_is_cached(monkeypatch):

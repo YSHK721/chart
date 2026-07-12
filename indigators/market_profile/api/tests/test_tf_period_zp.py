@@ -79,11 +79,15 @@ def test_zp_columns_schema_and_unit(tfp_env):
 
 
 def test_src_none_response_unchanged_and_keys_separated(tfp_env):
-    """src=None は従来経路（zp キャッシュと混線しない・応答形式不変）。"""
+    """src=None は従来経路（count 列）。zp とはメモリキー・ディスク subdir で分離される。"""
     now = _day(40)
     s0, b0 = tfp.handle_tf_period_profile("jp225_tick", "1h", _day(29), _day(30), now=now)
     assert s0 == 200
-    assert b0["unit"] != float(zp.GRID_W)  # 最小価格単位（合成 RW mid は連続値 → 微小 unit）
+    # ISSUE-068: count 列も GRID_W(=10pt) グリッド。値は整数カウント（zp の z 値と別物）。
+    assert b0["unit"] == float(zp.GRID_W)
+    assert b0["columns"], "count 列が生成される"
+    assert all(isinstance(lv[1], (int,)) or float(lv[1]).is_integer()
+               for c in b0["columns"] for lv in c["levels"]), "count は整数"
     s1, _ = tfp.handle_tf_period_profile(
         "jp225_tick", "1h", _day(29), _day(30), now=now, src="zp")
     assert s1 == 200

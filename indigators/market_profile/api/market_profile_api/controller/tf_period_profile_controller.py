@@ -112,12 +112,18 @@ def _day_columns(
     day_start = int(day_start)
     completed = day_start + _DAY <= now_val
     key = (symbol, tf, day_start)
+    # ISSUE-068: 列のビニング解像度を最小価格単位→GRID_W(=10pt) へ粗くする（依頼者承認・2026-07-12）。
+    #   最小単位（≈0.0255）は 1 期間に数百レベルを生み可視1年で 37MB → parse/描画でメインスレッドが
+    #   5.4s ブロックしていた。列幅~10px では最小単位は視認不能ゆえ表示損失なし。GRID_W 化で 37MB→~1-2MB。
+    #   旧 min-unit ディスクキャッシュ（<root>/<sym>/<tf>/<day>.json）と混ざらないよう新 subdir へ隔離する。
+    unit = float(_mpd.GRID_W)
+    disk_tf = f"{tf}/g{unit:g}"
     if completed:
         hit = _DAY_MEM.get(key)
         if hit is not None:
             _DAY_MEM.move_to_end(key)
             return hit
-        disk = _load_day_disk(symbol, tf, day_start)
+        disk = _load_day_disk(symbol, disk_tf, day_start)
         if disk is not None:
             _DAY_MEM[key] = disk
             _DAY_MEM.move_to_end(key)
@@ -125,7 +131,6 @@ def _day_columns(
                 _DAY_MEM.popitem(last=False)
             return disk
     secs, mids = _mpd._load_window_ticks(symbol, day_start, day_start + _DAY)
-    unit = _min_unit(np.asarray(mids, dtype=float))
     cols = tf_period_profiles(secs, mids, tf_sec, unit, day_start, day_start + _DAY)
     result = (unit, cols)
     if completed:
@@ -133,7 +138,7 @@ def _day_columns(
         _DAY_MEM.move_to_end(key)
         while len(_DAY_MEM) > _DAY_MEM_MAX:
             _DAY_MEM.popitem(last=False)
-        _save_day_disk(symbol, tf, day_start, unit, cols)
+        _save_day_disk(symbol, disk_tf, day_start, unit, cols)  # ISSUE-068: GRID_W subdir。
     return result
 
 
