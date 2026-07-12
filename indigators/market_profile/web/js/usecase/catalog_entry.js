@@ -54,11 +54,22 @@ export function makeMarketProfileDef({
       // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
       param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
       // limit（対象本数）param は削除済＝MP は常に全期間集計（backend は limit 省略時＝全件集計）。
-      // src: 集計原子（ENUM・既定 candle=足レンジ TPO・後方互換 / dwell=実ティック滞在 / m1=tick数）。
+      // src: 集計原子（ENUM・既定 zp=超過占有 z(p)〔依頼者指示 2026-07-12 で candle から昇格〕/
+      //   dwell=実ティック滞在 / m1=tick数 /
+      //   zp=超過占有 z(p)＝Null B 帰無に対する分単位滞在の超過スコア。検定パイプライン Step1-5 で
+      //   実データ検証済み・POC は POC*=argmax z）。
       //   client.buildMarketProfileUrl が受理し URL の &src= に付与する（省略時はサーバ既定 candle）。
-      param('src', ParamType.ENUM, 'candle', [], ['candle', 'dwell', 'm1'], {
+      // candle（足レンジ TPO）と m1（tick数＝生ティック個数・セッション非認識）は選択肢から**非表示**
+      //   （依頼者指示 2026-07-12）。candle は原子として最も粗く、m1 は時間帯の配信密度のクセを差し引かない
+      //   生カウントで zp が帰無で除去する交絡そのもの＝いずれもティック由来 src（dwell/zp）に情報量で劣後。
+      //   backend の src 対応（controller の _ALLOWED_SRC）は candle/m1 とも温存し、将来ティックデータを
+      //   受信できないデータセットのフォールバックやデバッグ用途での再有効化を検討する。残る選択肢は
+      //   dwell（実滞在秒）と zp（超過占有）の 2 つ。
+      param('src', ParamType.ENUM, 'zp', [], ['dwell', 'zp'], {
         group: 'group.calc', order: 4, label: 'ソース',
-        enumLabels: { candle: '足レンジ', dwell: '滞在時間(実ティック)', m1: 'tick数' },
+        enumLabels: {
+          dwell: '滞在時間(実ティック)', zp: '超過占有z(p)',
+        },
       }),
       // range: レンジ(pt) の直接指定（ENUM・既定 100）。試作 prototype_260630-01 の range セレクタを移植。
       //   解像度=レンジ（resmode=range）のときのみ表示。値は client が &barw= を付与し backend が

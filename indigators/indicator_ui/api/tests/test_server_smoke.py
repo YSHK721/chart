@@ -330,8 +330,8 @@ def test_get_tf_period_profile_passes_window_to_controller(server, monkeypatch):
 
     captured = {}
 
-    def _spy(ref, timeframe, frm, to):
-        captured.update(ref=ref, tf=timeframe, frm=frm, to=to)
+    def _spy(ref, timeframe, frm, to, src=None):
+        captured.update(ref=ref, tf=timeframe, frm=frm, to=to, src=src)
         return 200, {"ok": True, "tf": timeframe, "columns": []}
 
     monkeypatch.setattr(_srv, "handle_tf_period_profile", _spy)
@@ -341,6 +341,13 @@ def test_get_tf_period_profile_passes_window_to_controller(server, monkeypatch):
     payload = json.loads(raw.decode("utf-8"))
     assert payload["ok"] is True and payload["tf"] == "5m"
     assert (captured["frm"], captured["to"]) == ("1000", "2000")
+    assert captured["src"] is None  # src 省略時は None（従来経路・byte 不変）
+
+    # src=zp はそのまま controller へ透過される。
+    status, _ctype, _raw = _get(
+        server, "/tf_period_profile?datasetRef=jp225_tick&timeframe=1h&from=1000&to=2000&src=zp")
+    assert status == 200
+    assert captured["src"] == "zp"
 
 
 def test_get_market_profile_forming_augments_ticks_with_live_buffer(server, monkeypatch):

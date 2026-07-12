@@ -68,3 +68,23 @@ test('tf 変更でキャッシュ破棄・再取得', async () => {
   assert.ok(c.calls.length > before, 'tf 変更で再取得が走る');
   assert.deepEqual(buf.getColumns(0, 1000).map((x) => x.time), [100, 200, 300]);
 });
+
+// ISSUE-055: windowSecForTf 注入で tf 連動窓。1D は大きな窓＝可視域を少数チャンクで満たす（fan-out 抑制）。
+test('windowSecForTf: tf ごとにチャンク幅を切替える（fan-out 抑制）', async () => {
+  const c = fakeClient();
+  // 1D=1000 秒窓、それ以外=100 秒窓 の擬似規則。
+  const buf = newBuf(c, { windowSecForTf: (tf) => (tf === '1D' ? 1000 : 100) });
+  // 5m は 100 窓（従来どおり）。
+  const t5 = buf.ensure('5m', 250, 260);
+  assert.deepEqual(t5, [100, 200, 300]);
+  // 1D は 1000 窓 → 可視 [250,260] は 1 チャンク（chunkStart=0）＋prefetch(1000 前後)。
+  const t1d = buf.ensure('1D', 250, 260);
+  assert.deepEqual(t1d, [-1000, 0, 1000]); // 幅 1000・floor(250/1000)*1000=0 中心。
+});
+
+// ISSUE-055: windowSecForTf 未注入時は固定 windowSec のまま（後方互換＝既存挙動不変）。
+test('windowSecForTf 未注入: 固定 windowSec を維持（後方互換）', async () => {
+  const c = fakeClient();
+  const buf = newBuf(c); // windowSec:100 固定・windowSecForTf なし。
+  assert.deepEqual(buf.ensure('1D', 250, 260), [100, 200, 300]); // tf に依らず 100 窓。
+});

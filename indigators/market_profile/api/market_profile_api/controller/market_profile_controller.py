@@ -28,6 +28,7 @@ from typing import Any
 from adapter.compute import ERROR_STATUS  # §6.3.4 error.type→HTTP は adapter.compute 据置
 from marketdata import dataset  # dataset 実体は marketdata へ移設済み（最下層 peer 依存）
 from market_profile_api.compute import market_profile_dwell
+from market_profile_api.compute import market_profile_zp
 from market_profile_api.compute.market_profile import compute_candle_profile, price_range
 
 # パラメータ既定値（GET /market_profile のクエリ省略時）。
@@ -40,8 +41,9 @@ _DEFAULT_SRC = "candle"
 _MAX_BINS = 1000
 _MIN_VA = 0.01
 
-# src ホワイトリスト（candle=足レンジ TPO・dwell=実ティック滞在秒/セッション認識・m1=生ティック数）。
-_ALLOWED_SRC = ("candle", "dwell", "m1")
+# src ホワイトリスト（candle=足レンジ TPO・dwell=実ティック滞在秒/セッション認識・m1=生ティック数・
+# zp=超過占有スコア z(p)＝Null B 帰無に対する分単位滞在の超過）。
+_ALLOWED_SRC = ("candle", "dwell", "m1", "zp")
 # src → dwell モジュールの metric（dwell=滞在秒・count=生ティック数/セッション非適用）。
 _SRC_METRIC = {"dwell": "dwell", "m1": "count"}
 # 応答の atom 表示（UI 用・原子の意味）。
@@ -49,6 +51,7 @@ _ATOM = {
     "candle": "足レンジ",
     "dwell": "tick滞在秒(セッション認識)",
     "m1": "tick数",
+    "zp": "超過占有z(p)(分単位滞在/NullB)",
 }
 # tf → 足の秒長（dwell 窓の終端は t1 + bar_sec で最終足の期間を満たす）。未知/None は 1D 相当。
 _TF_BAR_SEC = {
@@ -245,6 +248,12 @@ def handle_market_profile(
             want_today, want_sessions, want_fine,
         )
 
+    if src_val == "zp":
+        return _handle_zp(
+            ref, timeframe, limit_n, n_bins, va_pct, barw_val, to_ts, from_ts,
+            want_today, want_sessions,
+        )
+
     # src=candle（既定）— 現状の足ベース TPO 経路（不変。barw 指定時のみ n_bins を上書き）。
     # candles は load_candles が返す [{time,open,high,low,close}] がそのまま compute の入力形。
     candles = dataset.load_candles(ref, timeframe, limit_n)
@@ -344,6 +353,65 @@ def _handle_dwell(
     # sessions は応答トップレベルへ移す（profile 8 キー不変・追加キーのみ）。省略時は付加しない。
     #   直近 _SESSIONS_MAX_DAYS 日へキャップ（UI が描くのは直近 nFit 列のみ・応答肥大の防止）。
     #   sessions_total はキャップ前の実日数（primitive 注記「直近N/全M日」の M＝キャップ後 60 の誤読防止）。
+    if want_sessions:
+        all_sessions = profile.pop("sessions", [])
+        body["sessions_total"] = len(all_sessions)
+        body["sessions"] = _cap_sessions(all_sessions)
+    return 200, body
+
+
+def _handle_zp(
+    ref: Any,
+    timeframe: Any,
+    limit_n: int | None,
+    n_bins: int,
+    va_pct: float,
+    barw: float,
+    to_ts: int | None = None,
+    from_ts: int | None = None,
+    want_today: bool = False,
+    want_sessions: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    """src=zp（超過占有スコア z(p)）の処理（実ティック・tick 対応 ref のみ）。非 tick ref は 400。
+
+    _handle_dwell のミラー。窓確定（candles から t0/t1/price_min/max・to/from 切り出し・barw→n_bins）
+    は同一規則で、集計のみ :func:`market_profile_zp.compute_zp_profile`（分単位滞在の Null B 超過）
+    を呼ぶ。応答スキーマは candle/dwell 版と同一（tpo=z 値・norm=clip(z,0) 正規化・poc=POC*）＋
+    additive（z_max/poc_star）。want_fine（forming accumulator 経路）は zp 非対応のため受けない。
+    """
+    symbol = market_profile_dwell.resolve_symbol(ref)
+    if symbol is None:
+        return _error_body(
+            "validation",
+            f"src=zp はティック対応 ref のみ対応です: {ref!r}（例: 'jp225_tick'）",
+        )
+
+    candles = dataset.load_candles(ref, timeframe, limit_n)
+    if to_ts is not None:
+        candles = [c for c in candles if c["time"] <= to_ts]
+    if from_ts is not None:
+        candles = [c for c in candles if c["time"] >= from_ts]
+    if not candles:
+        profile = market_profile_zp.compute_zp_profile(
+            symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400,
+            want_today=want_today, want_sessions=want_sessions,
+        )
+    else:
+        t1 = candles[-1]["time"]
+        price_min = min(c["low"] for c in candles)
+        price_max = max(c["high"] for c in candles)
+        t0 = candles[0]["time"]
+        bar_sec = _bar_sec_for_tf(timeframe)
+        n_bins = _resolve_n_bins(n_bins, barw, price_min, price_max)
+        profile = market_profile_zp.compute_zp_profile(
+            symbol, t0, t1, price_min, price_max, n_bins,
+            va_pct=va_pct, bar_sec=bar_sec, want_today=want_today,
+            want_sessions=want_sessions,
+        )
+    body = {
+        "ok": True, "profile": profile, "src": "zp",
+        "atom": _ATOM["zp"], "bar_width": _bar_width(profile),
+    }
     if want_sessions:
         all_sessions = profile.pop("sessions", [])
         body["sessions_total"] = len(all_sessions)

@@ -549,6 +549,70 @@ test('sessions ON: 初回反映で被覆セッション日の時間レンジへ�
   assert.deepEqual(renderer.focusCalls, [[t1, t2]], '2回目以降は focus しない');
 });
 
+test('sessions ON: 初回オートズームは直近1年に限定（データが1年超なら from = to - 1年・ISSUE-055）', async () => {
+  // 1D で全期間（最大3.6年）を初回に映すと tf-period 一括取得で応答肥大（実測87MB）＝初回表示が重い。
+  //   初回は直近1年に寄せ、古い範囲はスクロールで（A案デバウンス＋per-day キャッシュで滑らか）。
+  const YEAR = 365 * 86400;
+  const to = Date.UTC(2024, 0, 2) / 1000;           // 最新足
+  const old = Date.UTC(2021, 0, 1) / 1000;          // 3年前（最古足＝最古セッション日）
+  const profile = {
+    ...PROFILE,
+    sessions: [{ date: '2021-01-01', tpo: [1] }, { date: '2024-01-02', tpo: [2] }],
+  };
+  const candles = [
+    { time: old, open: 1, high: 1, low: 1, close: 1 },
+    { time: to, open: 1, high: 1, low: 1, close: 1 },
+  ];
+  const { actor, renderer } = makeSessActor(profile, () => candles);
+  actor.setParams({ mode: 'sessions' });
+  await actor.setEnabled(true);
+  assert.deepEqual(renderer.focusCalls, [[to - YEAR, to]], '初回 focus は [to-1年, to]（全期間ではなく直近1年）');
+});
+
+test('sessions ON + sessionsDrawnByTfPeriod=true: 日別タイルを描かず読取欄は供給・candle 透明化は委譲（ISSUE-055 ちらつき防止）', async () => {
+  // tf-period 列が日別を描くモードでは、先に届く sessions 応答でタイルを一瞬描いて列へ差し替える
+  //   「日別(candle)→(tf-period)」ちらつきを防ぐため、本 actor はタイルを描かず（setSessions(null)）、
+  //   candle 透明化も tf-period 側（列描画時）へ委ねる。読取欄（setSessionMP）は維持する。
+  const t1 = Date.UTC(2024, 0, 1) / 1000;
+  const t2 = Date.UTC(2024, 0, 2) / 1000;
+  const candles = [
+    { time: t1, open: 1, high: 1, low: 1, close: 1 },
+    { time: t2, open: 1, high: 1, low: 1, close: 1 },
+  ];
+  const primitive = fakeSessPrimitive();
+  const renderer = fakeSessRenderer();
+  const actor = new MarketProfileActor({
+    client: fakeClient(PROFILE_WITH_SESSIONS), primitive, mainSeries: fakeMainSeries(), renderer,
+    getContext: () => ({ datasetRef: 'sample', timeframe: '1D' }),
+    getCandles: () => candles,
+    sessionsDrawnByTfPeriod: () => true,
+  });
+  actor.setParams({ mode: 'sessions' });
+  await actor.setEnabled(true);
+  assert.equal(primitive.sessionsCalls.at(-1), null, 'tfDraws 時は setSessions(null)＝日別タイル非描画');
+  assert.ok(renderer.sessionMPs.length >= 1, 'setSessionMP は呼ばれる（読取欄は維持）');
+  assert.ok(!renderer.transparencies.includes(true), 'tfDraws 時は actor が candle 透明化(true)を行わない（tf-period へ委譲）');
+});
+
+test('sessions 再適用（既に sessions のまま _applyMode(sessions)）は focus を再発火しない（自動FOLLOW復帰での手動ズームリセット防止）', async () => {
+  // 実機バグ: 価格更新→自動 FOLLOW 復帰→reapplyMarketProfileMode→setParams(mode:sessions) が pending を
+  //   再セットし focusTimeRange が再発火して手動ズームが「全体が初期表示」へリセットされる。再適用では寄せない。
+  const t1 = Date.UTC(2024, 0, 1) / 1000;
+  const t2 = Date.UTC(2024, 0, 2) / 1000;
+  const candles = [
+    { time: t1, open: 1, high: 1, low: 1, close: 1 },
+    { time: t2, open: 1, high: 1, low: 1, close: 1 },
+  ];
+  const { actor, renderer } = makeSessActor(PROFILE_WITH_SESSIONS, () => candles);
+  actor.setParams({ mode: 'sessions' });
+  await actor.setEnabled(true);
+  assert.equal(renderer.focusCalls.length, 1, '新規入場で focus 1 回');
+  // 既に sessions のまま再適用（reapplyMarketProfileMode 相当）→ 再 refresh でも focus を増やさない。
+  actor.setParams({ mode: 'sessions' });
+  await actor.refresh();
+  assert.equal(renderer.focusCalls.length, 1, '再適用では focus を再発火しない（手動ズーム尊重）');
+});
+
 test('sessions OFF (default): setSessions(null) and transparency stays off (後方互換)', async () => {
   const { actor, primitive, renderer } = makeSessActor(PROFILE); // sessions 無し profile
   // sessions param を載せない（既定 OFF）。

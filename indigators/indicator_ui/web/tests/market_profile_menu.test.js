@@ -104,13 +104,14 @@ test('applyIndicator(market_profile) forwards default params (resmode/bins/va/sr
   const ctrl = makeController({ marketProfile, computeCalls });
   // Act
   await ctrl.applyIndicator('market_profile', 'default');
-  // Assert: src は既定 candle（後方互換）。resmode（解像度）既定 bins・range 既定 100（'auto' 撤去済）も
+  // Assert: src は既定 zp（超過占有 z(p)・依頼者指示 2026-07-12 で candle から昇格）。
+  //   resmode（解像度）既定 bins・range 既定 100（'auto' 撤去済）も
   //   bins/va と同様に転送される（client が resmode で bins/barw を排他化するため range 同送は無害）。
   //   mode（表示モード・統合トグル）既定 'normal' も転送される（actor が normal で両 OFF＝現状維持）。
   //   旧 replay/sessions は mode に統合されたため転送されない（catalog から撤去）。
   //   limit は転送しない（MP は全期間集計固定＝limit 非送信）。
   assert.equal(marketProfile.params.length, 1);
-  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'candle', mode: 'normal', resmode: 'bins', range: '100' });
+  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'zp', mode: 'normal', resmode: 'bins', range: '100' });
 });
 
 test('applyIndicator(existing indicator) still calls /compute (no regression)', async () => {

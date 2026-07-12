@@ -43,6 +43,9 @@ const TODAY_ALPHA = 0.98;
 // POC 線（最濃赤）・VA 帯線（灰）の色（試作準拠）。
 const C_POC_LINE = '#ff3b3b';
 const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
+// POC* 線（src=zp・超過占有の最大行＝生カウント最頻値ではない）。zp であることを一目で
+//   区別できるよう黄で描く（通常 POC の赤と衝突しない・検定 Step5 の POC* 準拠）。
+const C_POC_STAR = '#ffd54a';
 // リプレイ時点 T の縦線色（試作 prototype_260630-01 の遡り縦線準拠・視認しやすい水色）。
 const C_CURSOR_LINE = 'rgba(120, 190, 255, 0.9)';
 // sessions 各列の OHLC 可視化（ユーザー選択「方向ティント＋終値線」）。
@@ -368,9 +371,29 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         ctx.stroke();
         ctx.restore();
       };
-      hline(poc, C_POC_LINE);
+      // src=zp のとき poc は POC*（超過占有 argmax z）＝黄で区別する（通常 POC は赤・試作準拠）。
+      hline(poc, this._profile.src === 'zp' ? C_POC_STAR : C_POC_LINE);
       hline(vaHigh, C_VA_LINE);
       hline(vaLow, C_VA_LINE);
+
+      // src=zp のみ: 各参照線の価格ラベルを線の左上に描く（POC*/VAH/VAL・依頼者指示 2026-07-12）。
+      //   既存 src（candle/dwell/m1）は試作準拠のラベル無しを維持＝描画 byte 不変。
+      if (this._profile.src === 'zp') {
+        const label = (price, text, color) => {
+          if (price == null) return;
+          const y = toY(price);
+          if (y == null) return;
+          ctx.save();
+          ctx.font = '10px system-ui';
+          ctx.textBaseline = 'bottom';
+          ctx.fillStyle = color;
+          ctx.fillText(`${text} ${Number(price).toFixed(2)}`, 4, y - 2);
+          ctx.restore();
+        };
+        label(poc, 'POC*', C_POC_STAR);
+        label(vaHigh, 'VAH', C_VA_LINE);
+        label(vaLow, 'VAL', C_VA_LINE);
+      }
 
       // リプレイ時点 T の縦線（移植元 prototype_260630-01/js/app.js L152-158）。
       //   ★スナップショット（当時トリム）ON 時は描かない：ローソクが T までトリムされ T＝右端の

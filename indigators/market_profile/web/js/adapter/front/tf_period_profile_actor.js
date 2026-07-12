@@ -7,12 +7,26 @@
 // 注入: jitterBuffer / primitive / getTimeframe() / getVisibleRange()（{from,to} UNIX 秒 or null）。
 
 export class TfPeriodProfileActor {
-  constructor({ jitterBuffer, primitive, getTimeframe, getVisibleRange }) {
+  // renderer（任意）: candle 透明化の書き手（setCandleTransparency）。tf-period 列を描く日別モードでは、
+  //   MarketProfileActor が透明化を本 actor へ委ねる（初回の日別タイルちらつき防止・ISSUE-055）。本 actor は
+  //   「列が実際に描けたら透明化 true・無効化で false」を担い、列が来るまで candle を可視のままにして空白を防ぐ。
+  // getSrc（任意）: 集計方式（null=従来 min-unit カウント / 'zp'=超過占有）を返す関数。未注入は
+  //   常に null＝既存挙動不変。src は jitter buffer の ensure へ透過され、変更時はキャッシュ破棄される。
+  constructor({ jitterBuffer, primitive, getTimeframe, getVisibleRange, renderer, getSrc }) {
     this._buf = jitterBuffer;
     this._primitive = primitive;
     this._getTimeframe = getTimeframe;
     this._getVisibleRange = getVisibleRange;
+    this._renderer = renderer ?? null;
+    this._getSrc = typeof getSrc === 'function' ? getSrc : () => null;
     this._enabled = false;
+  }
+
+  // candle 透明化を委譲書き込みする（renderer 未注入時は no-op＝後方互換）。
+  _setCandleTransparency(on) {
+    if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+      this._renderer.setCandleTransparency(!!on);
+    }
   }
 
   // 有効化/無効化。false で primitive の tf-period 列を消す（通常/他モードへ復帰）。
@@ -20,6 +34,7 @@ export class TfPeriodProfileActor {
     this._enabled = !!on;
     if (!this._enabled) {
       this._primitive.setTfPeriods(null, null);
+      this._setCandleTransparency(false); // 列を消したら candle を可視へ復元（委譲時のみ有効）。
       return;
     }
     this.refresh();
@@ -34,7 +49,7 @@ export class TfPeriodProfileActor {
     const tf = this._getTimeframe();
     const r = this._getVisibleRange ? this._getVisibleRange() : null;
     if (!r || r.from == null || r.to == null || !(r.from < r.to)) return;
-    this._buf.ensure(tf, r.from, r.to);
+    this._buf.ensure(tf, r.from, r.to, this._getSrc());
     this._render(r.from, r.to);
   }
 
@@ -48,6 +63,10 @@ export class TfPeriodProfileActor {
   }
 
   _render(from, to) {
-    this._primitive.setTfPeriods(this._buf.getColumns(from, to), this._buf.unit());
+    const cols = this._buf.getColumns(from, to);
+    this._primitive.setTfPeriods(cols, this._buf.unit());
+    // 列が実際に描けたときだけ candle を透明化する（それまでは可視＝初回の「候補足→空白→列」の空白を回避）。
+    //   同値の applyOptions は no-op ゆえ毎 render 呼んでもちらつかない（冪等）。委譲時（renderer 注入時）のみ。
+    this._setCandleTransparency(Array.isArray(cols) && cols.length > 0);
   }
 }

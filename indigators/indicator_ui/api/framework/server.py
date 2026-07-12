@@ -369,8 +369,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         timeframe = (query.get("timeframe") or [None])[0]
         frm = (query.get("from") or [None])[0]
         to = (query.get("to") or [None])[0]
+        src = (query.get("src") or [None])[0]  # 省略時 None＝従来経路（byte 不変）。
         try:
-            status, payload = handle_tf_period_profile(ref, timeframe, frm, to)
+            status, payload = handle_tf_period_profile(ref, timeframe, frm, to, src=src)
         except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
             self._send_json(
                 500, _nested_error("internal", f"tf_period_profile 取得に失敗しました: {exc}"))

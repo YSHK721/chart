@@ -47,16 +47,17 @@ test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース
 // market_profile に src（集計原子）ENUM を追加。candle=足レンジ TPO（既定・後方互換）/
 //   dwell=実ティック滞在 / m1=tick数（試作 prototype_260630-01 の count 経路を移植）。
 //   bins/va/limit と同じ group（プロパティダイアログの ENUM ドロップダウン）。
-test('catalog: market_profile exposes src ENUM [candle,dwell,m1] default candle with jp labels', () => {
+test('catalog: market_profile exposes src ENUM [dwell,zp] default zp（candle/m1 は非表示） with jp labels', () => {
   const d = get('market_profile');
   const src = paramOf(d, 'src');
   assert.ok(src, 'src param exists');
   assert.equal(src.type, ParamType.ENUM);
-  assert.equal(src.default, 'candle');
-  assert.deepEqual(src.enumValues, ['candle', 'dwell', 'm1']);
-  assert.equal(src.enumLabels.candle, '足レンジ');
+  assert.equal(src.default, 'zp');  // 依頼者指示 2026-07-12: zp を既定へ昇格
+  assert.deepEqual(src.enumValues, ['dwell', 'zp']);  // candle/m1 は非表示（依頼者指示 2026-07-12・backend は温存）
+  assert.equal(src.enumLabels.candle, undefined, 'candle ラベル撤去（非表示）');
+  assert.equal(src.enumLabels.m1, undefined, 'm1 ラベル撤去（非表示）');
   assert.equal(src.enumLabels.dwell, '滞在時間(実ティック)');
-  assert.equal(src.enumLabels.m1, 'tick数');
+  assert.equal(src.enumLabels.zp, '超過占有z(p)');
   // bins/va/limit と同じ group（同一セクションに並ぶ）。
   assert.equal(src.group, paramOf(d, 'bins').group);
 });

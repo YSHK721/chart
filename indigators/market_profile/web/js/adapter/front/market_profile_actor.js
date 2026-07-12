@@ -58,6 +58,11 @@ function _hasBaseFields(f) {
 
 // 増分2 定数（試作 prototype_260630-01 と一致）。
 const ROLL_BARS = 60; // ローリング窓の本数（from = T - ROLL_BARS*bar_sec）。
+// 日別（sessions）初回オートズームの最大遡り期間（直近1年）。ISSUE-055: 全期間（1D で最大3.6年）を初回に
+//   映すと tf-period 列が可視域ぶん一括取得され応答肥大（実測 87MB・warm でも数秒）で初回表示が重い。初回は
+//   直近1年に限定し（古い範囲はスクロールで＝A案デバウンス＋per-day キャッシュで滑らか）、初回取得量/描画を抑える。
+//   データが1年未満（intraday 等）のときは実効的に全期間（下限＝最古足）で不変。
+const SESSIONS_INITIAL_SPAN_SEC = 365 * 86400;
 // MP 表示中の右マージン（プロファイル専用領域＝試作 PROFILE_FRAC。バーとローソクの重なり回避）。
 const PROFILE_MARGIN_FRACTION = 0.30;
 // timeframe → 足の秒長（from の窓幅算出用）。未知/None は 1D 相当（backend _TF_BAR_SEC と対応）。
@@ -75,13 +80,19 @@ export class MarketProfileActor {
   // renderer: 増分2 スナップショットのローソクトリム源（setCandleTrim(time|null)）。未注入時はトリムしない。
   constructor({
     client, primitive, mainSeries, getContext, replayBar, getCandles, renderer,
-    formingClient, makeAccumulator,
+    formingClient, makeAccumulator, sessionsDrawnByTfPeriod,
   } = {}) {
     this._client = client;
     this._primitive = primitive;
     this._mainSeries = mainSeries;
     this._replayBar = replayBar ?? null;
     this._renderer = renderer ?? null;
+    // 日別（sessions）モードで、日別プロファイルを tf-period 列（別 actor）が描くか否かの述語（注入）。
+    //   true のとき本 actor は日別タイル（_drawSessions 用の setSessions）を描かず、candle 透明化も tf-period
+    //   側（列が描けた時点）へ委ねる（初回の「日別(candle)→(tf-period)」ちらつき防止・ISSUE-055）。未注入は
+    //   常に false＝従来どおり本 actor がタイル描画＋透明化（tf-period 非配線の A方式・非対応 tf で不変）。
+    this._sessionsDrawnByTfPeriod = typeof sessionsDrawnByTfPeriod === 'function'
+      ? sessionsDrawnByTfPeriod : () => false;
     // tick 逐次成長（ticklive・増分2 系とは独立の 4 つ目の排他モード）。未注入時は非増分（refresh 委譲）。
     this._formingClient = formingClient ?? null;
     this._makeAccumulator = typeof makeAccumulator === 'function' ? makeAccumulator : null;
@@ -201,8 +212,14 @@ export class MarketProfileActor {
     if (mode === 'sessions') {
       this._exitTicklive();     // ticklive 解除（排他）。
       this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
+      // 自動ズームは **非 sessions → sessions の新規入場時のみ** pending にする。既に sessions のまま
+      //   _applyMode('sessions') が再適用される（FOLLOW/ANALYSIS 遷移時の reapplyMarketProfileMode 等）
+      //   ケースで pending を再セットすると、価格更新→自動 FOLLOW 復帰のたびに focus が再発火して
+      //   ユーザーの手動ズームが「全体が初期表示」へリセットされる（実機バグ）。再適用では寄せない。
+      if (!this._sessions) {
+        this._sessionsFocusPending = true;
+      }
       this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
-      this._sessionsFocusPending = true; // 初回反映時に直近セッションへ寄せる（時間軸連動タイルを見せる）。
       return;
     }
     if (mode === 'replay') {
@@ -264,8 +281,17 @@ export class MarketProfileActor {
   //   （当日=[session_start,to)・過去日静的）を取得する（review🔵4 の破綻状態を正しく解消）。よって
   //   _sessions 時は非増分＝refresh 経路へ倒す（accumulator は sessions で使わない＝共有グリッド不整合回避）。
   //   normal/replay+growing は従来どおり増分（全期間 base + bar-period forming）。
+  //   src=zp（超過占有 z(p)）は per-tick 増分が定義できない（帰無モーメント込みの再計算が必要）ため
+  //   非増分＝refresh 委譲へ倒す（onLiveTick はライブ足更新周期＝数秒に 1 回。backend は当日 null を
+  //   経過分キーでメモし 0.05〜0.2s 程度で応答する）。
   _isIncremental() {
-    return !!this._growing && !this._sessions && !!this._formingClient && !!this._makeAccumulator;
+    return !!this._growing && !this._sessions && this._params.src !== 'zp'
+      && !!this._formingClient && !!this._makeAccumulator;
+  }
+
+  // 現在選択中の src（未設定は null）。composition root が tf-period 列への src 透過判定に使う。
+  srcParam() {
+    return this._params.src ?? null;
   }
 
   // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
@@ -414,19 +440,26 @@ export class MarketProfileActor {
   //   該当メソッド非提供時は skip（後方互換）。移植元 prototype_260630-01 drawSessions。
   _applySessions(profile) {
     const on = !!this._sessions;
-    // 表示用ビュー（OHLC 付与済みリスト＋当日 MP Map）を純変換で一括構築する（SRP）。
+    // tf-period 列が日別プロファイルを描くモード（player tf の日別）か。true のとき本 actor は日別タイルを
+    //   描かず（先に届く sessions 応答での一瞬のタイル描画→tf-period 列への差し替えちらつきを防ぐ）、candle
+    //   透明化も tf-period 側（列描画時）へ委ねる（それまで candle 可視＝空白回避）。ISSUE-055。
+    const tfDraws = on && this._sessionsDrawnByTfPeriod();
+    // 表示用ビュー（OHLC 付与済みリスト＋当日 MP Map）を純変換で一括構築する（SRP）。読取欄は tfDraws でも要る。
     const rawList = on && profile && Array.isArray(profile.sessions) ? profile.sessions : null;
     const view = (rawList && rawList.length)
       ? _buildSessionView(rawList, (typeof this._getCandles === 'function' ? this._getCandles() : []))
       : null;
     if (this._primitive && typeof this._primitive.setSessions === 'function') {
-      this._primitive.setSessions(view ? view.list : null);
+      // tfDraws のときは日別タイルを描かない（tf-period 列が描く）＝setSessions(null)。
+      this._primitive.setSessions(tfDraws ? null : (view ? view.list : null));
     }
-    // 読み取り欄: クロスヘアが当日を指したとき OHLC に加え当日 MP（POC/VAH/VAL）を出す（sessions のみ）。
+    // 読み取り欄: クロスヘアが当日を指したとき OHLC に加え当日 MP（POC/VAH/VAL）を出す（sessions のみ・tfDraws でも供給）。
     if (this._renderer && typeof this._renderer.setSessionMP === 'function') {
       this._renderer.setSessionMP(view ? view.mp : null);
     }
-    if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+    // candle 透明化: tfDraws のときはここで触らず tf-period 側（列描画時に true / 無効化時に false）へ委ねる。
+    //   非 tfDraws（通常の日別タイル or OFF）は従来どおり on で透明化/復元する。
+    if (!tfDraws && this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
       this._renderer.setCandleTransparency(on);
     }
     // sessions を有効化した初回のみ、被覆セッション日の時間レンジへズームを寄せる（時間軸連動タイルが
@@ -441,10 +474,13 @@ export class MarketProfileActor {
           this._sessionsFocusPending = false;
           // 被覆日の下限＝最古セッション日始端（ただしロード済み candle の左端より前へは行かない＝空白回避）。
           const sessStart = _sessionDateToUnix(rawList[0].date);
-          const from = Number.isFinite(sessStart)
+          const oldest = Number.isFinite(sessStart)
             ? Math.max(sessStart, candles[0].time)
             : candles[0].time;
           const to = candles[candles.length - 1].time; // 右端＝最新足（now）。
+          // 初回は直近 SESSIONS_INITIAL_SPAN_SEC（1年）に限定する（初回 tf-period 取得量/描画負荷の抑制・
+          //   ISSUE-055）。1年未満のデータでは oldest が下限となり実効全期間で不変。
+          const from = Math.max(oldest, to - SESSIONS_INITIAL_SPAN_SEC);
           this._renderer.focusTimeRange(from, to);
         }
       }
@@ -579,7 +615,17 @@ export class MarketProfileActor {
       this._ensureAttached();
       // ローソクを左へ寄せ右側をプロファイル専用領域に（試作 PROFILE_FRAC＝重なり回避・実機FB）。
       this._applyProfileMargin(true);
-      await this.refresh();
+      // ISSUE-065: 増分経路（present dwell ライブ成長＝growing×非sessions×非zp×forming注入）は初期描画を
+      //   当日 forming で**直接**行う。従来は refresh()（全期間 dwell）を 1 回描き、直後の onLiveTick→
+      //   _enterTicklive が当日窓（_sessionFrom＝当日始端 from）へ置換するため、全期間バーが一瞬映る
+      //   ちらつきがあった。増分時は最初から onLiveTick（accumulator 未生成→_enterTicklive＝当日 base+
+      //   forming）を描いて全期間フレームを消す。end-state（当日絞り）は不変。非増分（static/sessions/zp/
+      //   非tick）は従来どおり refresh()＝全期間（挙動不変・回帰ゼロ）。
+      if (this._isIncremental()) {
+        await this.onLiveTick();
+      } else {
+        await this.refresh();
+      }
       this._primitive.setVisible(true);
     } else {
       this._primitive.setVisible(false);
@@ -595,20 +641,35 @@ export class MarketProfileActor {
   }
 
   // 現在のコンテキストで再取得し反映する（有効時のみ）。null は反映しない（前回描画保持）。
+  //   coalesce（保険）: in-flight 中の再入は末尾 1 回に丸める（setReplayCursor と同型）。
+  //   src=zp のライブ成長は onLiveTick→refresh 委譲のため、応答遅延中の連続要求を貯めない。
   async refresh() {
     if (!this._enabled) {
       return;
     }
-    // getContext（datasetRef/timeframe/…）へ setParams の bins/va/src/range を重畳して取得する。
-    //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
-    const profile = await this._client.fetchProfile({
-      ...this._getContext(), ...this._params, ...this._sessionsExtra(),
-    });
-    if (profile) {
-      this._primitive.setProfile(profile);
+    if (this._refreshRunning) {
+      this._refreshQueued = true;
+      return;
     }
-    // sessions ON/OFF を反映する（profile が null でも OFF 復元は必要＝独立に呼ぶ）。
-    this._applySessions(profile);
+    this._refreshRunning = true;
+    try {
+      // getContext（datasetRef/timeframe/…）へ setParams の bins/va/src/range を重畳して取得する。
+      //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
+      const profile = await this._client.fetchProfile({
+        ...this._getContext(), ...this._params, ...this._sessionsExtra(),
+      });
+      if (profile) {
+        this._primitive.setProfile(profile);
+      }
+      // sessions ON/OFF を反映する（profile が null でも OFF 復元は必要＝独立に呼ぶ）。
+      this._applySessions(profile);
+    } finally {
+      this._refreshRunning = false;
+    }
+    if (this._refreshQueued) {
+      this._refreshQueued = false;
+      await this.refresh(); // 末尾実行（最後の 1 回のみ）。
+    }
   }
 
   // primitive を mainSeries へ一度だけ attach する（attachPrimitive 非提供時は skip）。

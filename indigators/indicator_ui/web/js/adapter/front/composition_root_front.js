@@ -255,6 +255,14 @@ export async function bootstrap({
   // MP primitive を変数化し、時間足毎profile列（tf-period）actor と共有する（同一 primitive の
   //   setTfPeriods で描画＝mainSeries へ二重 attach しない）。
   const mpPrimitive = new MarketProfileHistogramPrimitive();
+  // src=zp（超過占有 z(p)）の tf-period 対応判定。backend の zp 列は tf 15m..1D のみ（1m/5m は
+  //   周期内分数が退化し 400）。委譲述語（sessionsDrawnByTfPeriod）と tf-period 有効化（tfpShouldOn）の
+  //   **両方**がこの同一条件を使う＝どちらか片方だけだと「MP はタイルを委譲したのに tf-period は無効」で
+  //   誰も日別を描かない空白が生じる（実UI検証で検出）。marketProfile は直後に代入（closure 遅延評価で吸収）。
+  const ZP_TF_ALLOWED = new Set(['15m', '30m', '1h', '4h', '1D']);
+  const mpSrc = () => (marketProfile && typeof marketProfile.srcParam === 'function'
+    ? marketProfile.srcParam() : null);
+  const zpTfOk = () => (mpSrc() !== 'zp' || ZP_TF_ALLOWED.has(controller._timeframe));
   const marketProfile = new MarketProfileActor({
     client: new MarketProfileClient({ fetch }),
     primitive: mpPrimitive,
@@ -264,6 +272,11 @@ export async function bootstrap({
     //   未注入なら onLiveTick は refresh へ byte-identical 委譲（後方互換）。注入で ticklive が有効化される。
     formingClient: new MarketProfileFormingClient({ fetch }),
     makeAccumulator: () => new DwellAccumulator(),
+    // 日別プロファイルを tf-period 列（tfPeriodActor）が描くモードか（served かつ対応 tf）。true のとき
+    //   MarketProfileActor は日別タイルを描かず candle 透明化も tf-period へ委ねる（初回の「日別(candle)→
+    //   (tf-period)」ちらつき防止・ISSUE-055）。controller は呼び出し時に確定済み（後方参照）。
+    sessionsDrawnByTfPeriod: () => mode === 'b' && isPlayerTimeframe(controller._timeframe)
+      && zpTfOk(),
     // 増分2: スナップショットのローソクトリム源（renderer.setCandleTrim）。lwc 直叩きは renderer に隔離。
     renderer,
     getCandles: () => renderer.getCandles(),
@@ -336,38 +349,91 @@ export async function bootstrap({
       const r = ts && typeof ts.getVisibleRange === 'function' ? ts.getVisibleRange() : null;
       return (r && r.from != null && r.to != null) ? { from: Number(r.from), to: Number(r.to) } : null;
     };
+    // ISSUE-055（windowSec tf 連動）: 取得窓を tf のバー秒に比例させ、1 画面を少数チャンクで満たす。
+    //   6h 固定だと 1D は可視数十日を 6h 刻み＝274本(81%空)へ肥大する。規則 clamp(barSec×K, 6h, 45d)。
+    //   1m は 6h 据置（barSec×K<6h）、1D は 45d 上限で数本に収束。cacheMax は可視 chunk 数を上回る値
+    //   （32）にして、ローリング中に可視列が LRU 破棄される＝フラッシュを防ぐ。
+    const TFP_BAR_SEC = {
+      '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1D': 86400,
+    };
+    const TFP_WINDOW_MIN = 6 * 3600;      // 下限 6h（intraday 据置）。
+    const TFP_WINDOW_MAX = 45 * 86400;    // 上限 45 日（1D の 1 チャンク応答肥大を抑える）。
+    const TFP_PERIODS_PER_CHUNK = 96;     // 1 チャンク≒96 周期ぶん（1 画面を数チャンクに収める）。
+    const windowSecForTf = (tf) => {
+      const bar = TFP_BAR_SEC[tf] || 86400;
+      return Math.max(TFP_WINDOW_MIN, Math.min(TFP_WINDOW_MAX, bar * TFP_PERIODS_PER_CHUNK));
+    };
     const tfBuf = new TfPeriodJitterBuffer({
       client: new TfPeriodProfileClient({ fetch }),
       datasetRef,
+      windowSecForTf,
+      cacheMax: 32,
       onReady: () => { if (tfPeriodActor) tfPeriodActor.onChunkReady(); },
     });
+    // src=zp（超過占有 z(p)）の tf-period 透過: MP の src 選択が zp のとき列も zp で取得する。
+    //   backend の対応 tf 判定（zpTfOk）は上段＝委譲述語と同一定義（単一情報源）。
     tfPeriodActor = new TfPeriodProfileActor({
       jitterBuffer: tfBuf,
       primitive: mpPrimitive,
       getTimeframe: () => controller._timeframe,
       getVisibleRange,
+      renderer, // ISSUE-055: 列が描けた時点で candle 透明化（MarketProfileActor から委譲）。
+      getSrc: () => (mpSrc() === 'zp' ? 'zp' : null),
     });
     const tsSub = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
     if (tsSub && typeof tsSub.subscribeVisibleTimeRangeChange === 'function') {
+      // ISSUE-055（A案: ローリング中は再取得/再描画しない）: 可視レンジ変化のたびに setEnabled(true)→refresh
+      //   （fetch fan-out＋全再描画）を呼ぶと、ドラッグ中に storm 化して重く・列が出入りして**フラッシュ**する。
+      //   そこで **ON 時のローリング取得は末尾デバウンス**（停止後 1 回だけ ensure+描画）にする。ドラッグ中は
+      //   既取得列が primitive の毎フレーム再描画で時間軸に固定されて滑らかにパン追従する（fetch 0・不変）。
+      //   OFF（sessions 解除/非対応 tf）は列を残さないため即時反映する。tf 非依存＝全時間足に等しく効く。
+      const TFP_ROLL_DEBOUNCE_MS = 150; // 「スクロール停止」判定の末尾待ち（体感即応と storm 抑制の均衡）。
+      let tfpRollTimer = null;
+      const tfpShouldOn = () => !!(marketProfile && typeof marketProfile.isSessions === 'function'
+        && marketProfile.isSessions()) && isPlayerTimeframe(controller._timeframe)
+        // src=zp は backend 対応 tf（15m..1D）のみ列を出せる（1m/5m は 400 → 列を出さない。
+        //   このとき委譲述語も false になり MP actor が日別タイルを自前描画＝フォールバック）。
+        && zpTfOk();
       tsSub.subscribeVisibleTimeRangeChange(() => {
-        const on = !!(marketProfile && typeof marketProfile.isSessions === 'function'
-          && marketProfile.isSessions()) && isPlayerTimeframe(controller._timeframe);
-        if (on) {
-          tfPeriodActor.setEnabled(true); // refresh 含む（可視窓の確保＋描画・ローリング）。
-        } else if (tfPeriodActor.isEnabled()) {
-          tfPeriodActor.setEnabled(false); // sessions OFF / 非対応 tf → 列を消す。
+        if (!tfpShouldOn()) {
+          if (tfpRollTimer != null) { clearTimeout(tfpRollTimer); tfpRollTimer = null; }
+          if (tfPeriodActor.isEnabled()) {
+            tfPeriodActor.setEnabled(false); // sessions OFF / 非対応 tf → 列を消す（即時）。
+          }
+          return;
         }
+        // ON: ローリング停止後に 1 回だけ確保＋描画（ドラッグ中は既取得列がパン追従＝再取得しない）。
+        if (tfpRollTimer != null) { clearTimeout(tfpRollTimer); }
+        tfpRollTimer = setTimeout(() => {
+          tfpRollTimer = null;
+          if (tfpShouldOn()) {
+            tfPeriodActor.setEnabled(true); // enable＋ensure（可視窓の確保）＋描画を 1 回。
+          }
+        }, TFP_ROLL_DEBOUNCE_MS);
       });
     }
   }
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
   //   初期は既定時間足・直近 recentBars 本。取得失敗時は SAMPLE_DATA のまま（フォールバック）。
+  // 初回表示の最大遡り期間（直近1年）。ISSUE-055: 1D は数年ぶんの足がロードされ、setCandles の
+  //   自動フィットで全期間が可視になると 日別 tf-period が可視域ぶん一括取得され応答肥大（実測87MB）で
+  //   初回表示が重い。初回可視範囲を直近1年へ寄せ、古い範囲はスクロールで（A案デバウンス＋per-day
+  //   キャッシュで滑らか）。データが1年未満（intraday 等）のときは全期間で不変。
+  const INITIAL_VIEW_SPAN_SEC = 365 * 86400;
   const ready = (mode === 'b')
     ? fetchCandles(fetch, datasetRef, timeframe, recentBars).then((candles) => {
         if (candles && candles.length > 0) {
           // renderer.setCandles 経由で _lastBar も立てる（読み取り欄の hover 解除フォールバック）。
           renderer.setCandles(candles);
+          // 初回可視範囲を直近1年へ限定する（全期間フィットを上書き＝tf-period 初回一括取得を抑制）。
+          const lastT = candles[candles.length - 1].time;
+          const firstT = candles[0].time;
+          if (typeof renderer.focusTimeRange === 'function'
+              && Number.isFinite(lastT) && Number.isFinite(firstT)
+              && lastT - firstT > INITIAL_VIEW_SPAN_SEC) {
+            renderer.focusTimeRange(lastT - INITIAL_VIEW_SPAN_SEC, lastT);
+          }
         }
       })
     : Promise.resolve();
@@ -457,6 +523,9 @@ export async function bootstrap({
   const liveFollowController = (mode === 'b')
     ? new LiveFollowController({
         liveUpdater,
+        // ライブ価格の書き手も FOLLOW/ANALYSIS で start/stop（ANALYSIS で価格を凍結＝トグルを効かせる）。
+        liveTickPlayer,
+        formingBarUpdater,
         renderer,
         document: doc,
         buttonId: 'live-follow-toggle',

@@ -7,7 +7,7 @@
 //   純関数（buildTfPeriodUrl / parseTfPeriod）を公開し単体検証を容易にする（SRP）。市場プロファイルの
 //   sparse min-unit 列（実測で短周期も分布成立＝.doc/PROFILE_MICRO_STRUCTURE_VERIFICATION.md）を運ぶ。
 
-export function buildTfPeriodUrl({ datasetRef, timeframe, from, to } = {}) {
+export function buildTfPeriodUrl({ datasetRef, timeframe, from, to, src } = {}) {
   let url = `/tf_period_profile?datasetRef=${encodeURIComponent(datasetRef)}`;
   if (timeframe != null) {
     url += `&timeframe=${encodeURIComponent(timeframe)}`;
@@ -17,6 +17,10 @@ export function buildTfPeriodUrl({ datasetRef, timeframe, from, to } = {}) {
   }
   if (to != null) {
     url += `&to=${encodeURIComponent(to)}`;
+  }
+  // src（zp=超過占有 z(p) 列）。省略時は付与しない＝従来 URL byte 不変（サーバ既定＝min-unit カウント列）。
+  if (src != null) {
+    url += `&src=${encodeURIComponent(src)}`;
   }
   return url;
 }
@@ -41,13 +45,13 @@ export class TfPeriodProfileClient {
     this._fetch = fetch;
   }
 
-  // {datasetRef, timeframe, from, to} から tf-period 列を取得する。失敗・非 ok・例外・整形失敗は null。
-  async fetchWindow({ datasetRef, timeframe, from, to } = {}) {
+  // {datasetRef, timeframe, from, to, src} から tf-period 列を取得する。失敗・非 ok・例外・整形失敗は null。
+  async fetchWindow({ datasetRef, timeframe, from, to, src } = {}) {
     if (typeof this._fetch !== 'function') {
       return null;
     }
     try {
-      const resp = await this._fetch(buildTfPeriodUrl({ datasetRef, timeframe, from, to }));
+      const resp = await this._fetch(buildTfPeriodUrl({ datasetRef, timeframe, from, to, src }));
       if (!resp.ok) {
         return null;
       }

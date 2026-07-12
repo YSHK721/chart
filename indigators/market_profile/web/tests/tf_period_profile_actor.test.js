@@ -57,3 +57,22 @@ test('不正レンジ（from>=to / null）は ensure/描画しない', () => {
   a.setEnabled(true);
   assert.equal(buf.ensured.length, 0);
 });
+
+// ISSUE-055: candle 透明化の委譲。列が描けたら true・列が無い/無効化で false（初回ちらつき・空白の回避）。
+test('renderer 注入時: 列が描けたら candle 透明化 true・列無しは false・無効化で false', () => {
+  const buf = fakeBuf(); const prim = fakePrim();
+  const rc = { calls: [], setCandleTransparency(on) { this.calls.push(on); } };
+  const a = new TfPeriodProfileActor({
+    jitterBuffer: buf, primitive: prim, getTimeframe: () => '5m', getVisibleRange: () => ({ from: 100, to: 300 }), renderer: rc,
+  });
+  // 列がまだ無い状態で有効化 → 描画は空 → 透明化 false（candle 可視のまま列を待つ）。
+  a.setEnabled(true);
+  assert.equal(rc.calls.at(-1), false, '列が無い間は candle 可視（false）');
+  // 列が届いた → onChunkReady で再描画 → 透明化 true。
+  buf.cols = [{ time: 150 }];
+  a.onChunkReady();
+  assert.equal(rc.calls.at(-1), true, '列が描けたら candle 透明化 true');
+  // 無効化 → candle 復元（false）。
+  a.setEnabled(false);
+  assert.equal(rc.calls.at(-1), false, '無効化で candle 復元 false');
+});
