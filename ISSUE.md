@@ -673,3 +673,155 @@
 - **対策（依頼者承認済み・自己シード＋seed鮮度化）**: (1) フロント `web/js/adapter/front/live_tick_player.js`: `_applyTick` を参照実装へ復帰＝`_bar===null` でも現周期 live tick から自己シード（`_seeding` フラグで seed await 中の再入描画は抑止＝🟡4 保持／現 live 周期より前の tick は自己シードせず /candles 履歴を後退させない）。(2) バックエンド `api/framework/server.py` `_handle_forming_bar`: parquet 経路が None のとき in-memory `LiveTickBuffer`（/live_ticks 同源・near-real-time）へ fallback して現周期バーを組む（seed 鮮度化）。純関数 `forming_bar.forming_bar_from_buffer_ticks` を新設。共有 `forming_bar()`（指標計算 apply_forming_bar 経路）は不変＝挙動ドリフトなし。
 - **テスト**: web `live_tick_player.test.js`（+2: seed=null 自己シード／現周期前 tick は非自己シード）・api `test_forming_bar.py`（+2: buffer 集計／空窓 None）・`test_server_smoke.py`（+2: parquet null→buffer fallback／非対応tf は buffer 非参照）。既存回帰（🟡4 再入・後退ガード・1W/1M null）全保持。
 - **関連**: ISSUE-048（毎分フル再取得＝遅延の出所）・ISSUE-049（LiveTickPlayer/LiveTickBuffer）。参照実装: prototype_260707-01/web/index.html:63-66（applyTick 自己シード）。
+
+## ISSUE-054: market_profile 日別プロファイル（src=dwell）でレンジ(barw)変更が描画へ反映されない（バーが更新されない）
+- **重大度**: Medium（パラメータが無効・ユーザー操作が効かない。データ取得は正常だが描画が固着）
+- **ステータス**: OPEN
+- **検出**: 依頼者報告（2026-07-11）「レンジを500に設定したが更新されない」（ソース=滞在時間(実ティック)/表示モード=日別プロファイル）。実UIで再現・確定。
+- **原因（実UI実測・切り分け済み）**: バックエンド／リクエストは正常、描画のみが barw を無視する。
+  - フロント送信は正常: OK 押下で `GET /market_profile?...&barw=500&src=dwell&sessions=1` を送出（barw を正しく写像）。レンジ25 では `barw=25`。
+  - バックエンド応答も正常: barw=500→`n_bins=130`/`bar_width=501.47`、barw=25→`n_bins=1000`(65000pt レンジで 1000 クランプ)/`bar_width=65.19`。sessions[].tpo 長も 130 vs 1000 と解像度追従。ブラウザは両応答を受信。
+  - **描画が固着**: 日別プロファイル領域を barw=500/100/25 で撮影しピクセル差分＝**0.00%（changed_bbox=None・完全一致）**。応答の sessions.tpo（130/1000）が描画に反映されていない。POC/VA 値は変化（69256→69640）＝応答の一部は使われるが、日別バー histogram は barw 非依存の固定解像度で描かれている。
+  - primitive は `s.tpo` を描く（market_profile_primitive.js:185-228）、actor `_buildSessionView` は `s.tpo` を素通し（market_profile_actor.js:32）。にもかかわらず不変。
+- **根因（コードトレースで確定・2026-07-11）**: **tf-period 列描画が日別 sessions 描画を上書きし、tf-period は barw を持たない**。
+  - dwell 日別モード＋対応 tf（1m〜1D＝`isPlayerTimeframe`）のとき、composition_root_front.js:352-360 が可視レンジ変化ごとに `tfPeriodActor.setEnabled(true)`→共有 primitive の `setTfPeriods(columns, unit)` を呼ぶ。
+  - primitive `_draw`（market_profile_primitive.js:301）は `this._tfPeriods` 非 null を**最優先で早期 return**し、`_drawSessions`（barw 応答の `s.tpo`／`this._profile.bins` で描く経路）へ到達しない。
+  - 可視バーは `_drawTfPeriods`（同255-296）が `/tf_period_profile`（tf_period_profile_client.js:10 `buildTfPeriodUrl` は `datasetRef/timeframe/from/to` のみ＝**barw 無し**）の列を固定 `unit`（最小価格単位）解像度で描く。よって barw 変更（`/market_profile?...&barw=` → `this._profile`/`this._sessions` のみ更新）は可視描画へ一切波及せず **0.00% 差分**になる。
+  - 起票時 2 仮説は両方反証: ①DwellAccumulator(GRID_W=10) 上書き→`_isIncremental()` が `!this._sessions` 要求で sessions では未使用。②setSessions 未反映→POC/VA 読取欄が 69256→69640 と変化＝`_buildSessionView` が新 `s.poc` を生成＝setSessions は新 tpo を受領済み（描画のみが tf-period に覆われる）。
+  - なお tf-period 優先は**意図的設計**（コミット 28e1548・comp root 330 行コメント「tf-period を優先＝旧 per-day sessions を上書き」・ISSUE 起票後に追加）。
+- **実UI確認（served B・port 8137・Playwright 実ブラウザ・実HTTP・2026-07-11）**: dwell 日別＋日足（1D＝player tf）で確定。
+  - 実HTTP: `/market_profile?...&barw=500&src=dwell&sessions=1`（barw 正送出）と同時に `/tf_period_profile?...&timeframe=1D&from=&to=` が可視窓ぶん**275本超**発火（**barw 無し**）＝tf-period 経路が実際に有効。barw を 500→25 に変更しても `/tf_period_profile` 群は不変（barw を持たないため）。
+  - 実画素（barw=500 と barw=25 の viewport 比較）: **プロファイルバー描画領域（チャート本体 y120-400）は無変化**（40px バンド毎 18-22px＝十字線の縁のみ）。全体差 0.96% は上部読取欄（POC/VA テキスト）＋十字線/軸ラベルのみ＝プロファイル本体は barw で一切変わらない。読取欄 POC/VA が変わる＝`/market_profile` 応答は受信・一部（読取）使用されるが histogram は tf-period に覆われる、という起票時の観察と一致。
+- **依頼者の真の目的（2026-07-11 追加）**: barw を荒くした動機は**描画完了までが遅くストレス**だったため。まず描画速度を解決したい（barw は速度回避策の試みだった）。
+- **描画遅延の主因（実測確定・served B port 8137）**: **tf-period 列の細切れ大量リクエスト**。
+  - jitter buffer は `windowSec=6h` 固定・`cacheMax=12`（intraday 想定）。1D で可視レンジが数十日に及ぶと 6h 窓が過密になり、可視 68 日で **274 リクエスト・うち 224本(81%)が空（93B＝日足カラム時刻 00:00 を含まない窓）**。単一スレッド server で直列化＝**約 8.0s**（29ms/req）。
+  - tf-period 全 span 1 本でも **2.5s・12.6MB・サーバキャッシュ無し**（連続実行も 2.4〜4.9s で不変）。barw は tf-period に届かず、かつ**リクエスト本数を減らさない**ため、レンジを荒くしても描画は速くならない。
+  - 対して旧 sessions 描画 `/market_profile?...&sessions=1&barw=` は **1 本**: barw=500 で **0.66s/51KB**、barw=25 で 4.6s/352KB＝**barw が荒いほど速い**（n_bins 減で応答縮小）。sessions データは日別モードで常に取得済み（実HTTP #144 等）＝tfPeriod を止めれば `_drawSessions` が即描く。
+- **対策（案・依頼者判断待ち）**: 目的が「描画高速化」に確定したため、速度の観点で再整理。
+  - **推奨: 1D（以上／広域）で日別を sessions 描画へ**（tf-period を intraday 用に留める）: 8s→0.66s（≧12x）＋barw が効く（荒い=速い）。低リスク（sessions データは既取得・`_draw` 早期 return を日別で無効化 or comp root で 1D は tfPeriod 非有効化）。
+  - 代替（tf-period 維持で速度のみ改善）: windowSec を tf 連動（1D→数十日窓）で 8s→~2.6s／全span 1 本化／サーバ側キャッシュ導入。いずれも 2.5s・12.6MB は残り barw は無効のまま。
+  - 実装前に依頼者の方向決定を得る。
+- **検証環境**: served B方式（framework.server・port 8137）・datasetRef=jp225_tick・Playwright(実ブラウザ)・実HTTP。
+- **関連**: market_profile_dwell.py（sessions は n_bins を反映＝バックエンド正常）・market_profile_client.js:29-31（barw 写像）・ISSUE-052（dwell accumulator 縮退グリッド）・ISSUE-055（描画遅延＝本件の真因）。
+
+## ISSUE-055: market_profile 日別プロファイル（dwell・tf-period列）の描画完了が遅い（1Dで約8秒・体感ストレス）
+- **重大度**: High（主要操作のたびに数秒待ち・実用性を損なう。ISSUE-054 で barw を荒くした動機＝この遅延の回避策だった＝本件が真因）
+- **ステータス**: RESOLVED（A＋windowSec＋B を実装・実UI検証済み・2026-07-11）
+- **検出**: 依頼者報告（2026-07-11）「描画までの時間が長すぎてストレス」。ISSUE-054 調査中に真因として分離。
+- **原因（実測確定・served B port 8137・実HTTP）**: **tf-period 列取得の細切れ大量リクエスト（fan-out）**。
+  - jitter buffer（tf_period_jitter_buffer.js）は `windowSec=6h` 固定・`cacheMax=12`（intraday 想定の設計）。1D は可視レンジが数十日に及ぶため 6h 窓が過密になり、可視 68 日で **274 リクエスト／うち 224本(81%)が空（93B＝日足カラム時刻 00:00 を窓が含まない）**。単一スレッド server で直列化＝**実測 約 8.0s**（29ms/req）。
+  - tf-period 全 span 1 本でも **2.5s・12.6MB・サーバキャッシュ無し**（連続実行も 2.4〜4.9s で不変）。**barw は tf-period に届かず、かつリクエスト本数を減らさないため、レンジを荒くしても描画は速くならない**（＝ISSUE-054 の barw が効かない件と同根＝market_profile_primitive.js:301 の tf-period 優先 early-return）。
+  - 参考: 旧 sessions 描画 `/market_profile?...&sessions=1&barw=` は 1 本で barw=500→0.66s/51KB・barw=25→4.6s/352KB（荒いほど速い）。
+- **原因・追加（実測確定・ローリング＝スクロール/パン時・2026-07-11）**: 遅さ/フラッシュの主症状は**ローリング時**に出る。**5m も安全ではない**（当初「1m/5m は 6h のまま安全」は**誤り＝訂正**）。
+  - 配線: `chart.timeScale().subscribeVisibleTimeRangeChange` が**スロットルなし**で発火し、毎回 `tfPeriodActor.setEnabled(true)`→`refresh()`→`ensure()`（fetch fan-out）＋`_render()`（全再描画）を呼ぶ（composition_root_front.js:352-360）。加えて各チャンク到着（jitter buffer onReady）ごとに全再描画（tf_period_profile_actor.js:42-48）。
+  - 5m 実測: 可視 4.5 日＝**18 チャンク（6h 窓）だが cacheMax=12** → 可視中の列が LRU 破棄され出入り＝フラッシュ。約0.5秒の横ドラッグで **tf_period 23 リクエスト・再描画 44 パス・再描画が 5.7 秒間継続**（ドラッグ後もトリクル到着ごとに再描画）＝「遅く重い」。
+- **対策（依頼者承認済み方向「tf-period 維持で速度のみ改善」・ローリング判明で拡張）**: 表示・列の見た目は不変のまま、ローリングを軽くする 3 点。
+  1. **可視レンジ変化ハンドラをスロットル/合体**（rAF or 末尾 ~150ms）＝ドラッグ中の refresh/fetch 連発を 1 回へ集約（composition_root_front.js）。
+  2. **onReady 再描画を合体**（rAF で 1 フレーム 1 回）＝44 パス→数回（tf_period_profile_actor.js）。
+  3. **windowSec を tf 連動＋cacheMax を可視 chunk 数以上に**＝チャンク数を画面あたり少数に有界化し、fan-out（1D 274本）と eviction フラッシュ（5m）を同時に解消（tf_period_jitter_buffer.js）。規則 `windowSec(tf)=barSec(tf)×K`（K は 1 画面が数チャンクに収まる値）。
+  - 実装は front＋backend。backend は任意窓を span 上限なしで処理可（tf_period_profile_controller.py 確認済み）。
+- **実装（2026-07-11）**:
+  - A: composition_root_front.js の subscribeVisibleTimeRangeChange を末尾デバウンス（150ms）化。ON のローリング取得は停止後 1 回だけ ensure+描画（ドラッグ中は既取得列が primitive の毎フレーム再描画でパン追従＝fetch 0）。OFF は即時。
+  - windowSec: tf_period_jitter_buffer.js に `windowSecForTf` 注入（未注入は固定 windowSec＝既存テスト不変）。comp root が `clamp(barSec×96, 6h, 45d)` を注入・cacheMax=32。1D=45d 窓／5m=8h 窓／15m=1d 窓。
+  - B（per-day キャッシュ・依頼者要望で窓単位から拡張）: tf_period_profile_controller.py を **カレンダー日粒度**のキャッシュへ。窓 `[from,to)` を日分割し、各日を `(symbol,tf,day_start)` で **メモリ LRU（256件）＋ディスク JSON（DATA_DIR/cache/tf_period・跨プロセス永続）** に保存。完了日（`day_start+86400<=now`）のみ保存、当日は都度計算。応答はキャッシュ日＋当日を組み立て。副次効果: 同一日を常に同じ日内 unit で量子化＝ローリングで窓ごとに unit が揺れる現行の不整合も解消。
+  - テスト: jitter buffer +3・controller +3（per-day キャッシュ/当日非キャッシュ/ディスク永続）追加、全通過（front 227・backend tf_period 11）。
+- **実UI検証（served B port 8137・Playwright・実HTTP・2026-07-11）**:
+  - windowSec: 実リクエスト窓幅＝1D 3888000s(45d)／5m 28800s(8h)／15m 86400s(1d)。1D 初回は可視 3.6 年で **29 本**（旧 6h 換算なら約 5300 本）。
+  - A: ローリング（ドラッグ 0.5〜1.8s）中の tf_period fetch は **全ケース 0 本**（旧: 0.5s パンで 23 本・再描画 5.7s 継続）。ドラッグ中は既取得列が滑らかにパン、fetch は停止後のみ。列描画・見た目は不変（欠落なし）。
+  - B（per-day）: 1D 初回表示相当（可視 3.6 年＝29 窓タイル）を実測。**cold（ディスク空）41.7s → warm（mem/disk）5.1s＝8.2x**。ディスク永続ゆえ**再起動後も warm**（ユニットテストでディスク復元を確認）。直近窓（当日含む）は完了日キャッシュ＋当日のみ計算で **0.16s**。
+  - 87MB の主因＝初回に全期間（1D 最大 3.6〜4.8 年）を映すこと。→ 下記「初回1年」で削減。
+- **初回表示を直近1年に限定（依頼者指示・2026-07-11）**: 全期間フィットで tf-period が可視域ぶん一括取得され肥大するため、初回可視範囲を直近1年へ寄せる（古い範囲はスクロールで＝A案＋per-day で滑らか）。
+  - 実装: ①composition_root_front.js の候補足ロード後 `renderer.focusTimeRange(last-1年, last)`（データ1年超のときのみ・全期間フィットを上書き）。②market_profile_actor.js の 日別初回オートズームも `from=max(oldest, to-1年)` に限定（`SESSIONS_INITIAL_SPAN_SEC`）。1年未満（intraday）は全期間で不変。
+  - テスト: 日別初回ズーム「直近1年限定」を追加（front 228 に増）。
+  - 実UI検証: 1D 初回の tf_period **29本/可視4.8年 → 10本/可視1.2年（1年＋prefetch）** ＝取得データ **約1/4（87MB→約22MB）**。ローリング・再ロールは A案＋per-day で瞬時のまま。
+  - 一回性の cold（未ウォーム完了日）はディスク永続ゆえ2回目以降 warm。必要ならウォーマー（warm_dwell_cache 相当）で初回も事前生成可。
+- **初回描画順のちらつき修正（依頼者指摘・2026-07-11）**: 「ローソク足 → 日別プロファイル(candle=sessionsタイル) → 日別プロファイル(tf-period列)」の順で中間に一瞬タイルが出る問題。原因＝`/market_profile?sessions=1` 応答（1本・速い）で `_drawSessions` タイルを描いた後、遅れて届く tf-period 列が上書きするため。
+  - 対策: tf-period が日別を描くモード（player tf・`sessionsDrawnByTfPeriod` 述語）では、MarketProfileActor は**日別タイルを描かない**（`setSessions(null)`・読取欄 setSessionMP は維持）。候補足の透明化も **tf-period 側（列が実際に描けた時点）へ委譲**（TfPeriodProfileActor._render が `cols>0→透明化true`／無効化で false）。列が来るまで候補足は可視のまま＝空白も回避。
+  - 実装: market_profile_actor.js（述語＋タイル抑制＋透明化委譲）・tf_period_profile_actor.js（renderer 注入＋透明化管理）・composition_root_front.js（述語/renderer 注入）。テスト +2（タイル抑制・透明化委譲）＝front 230。
+  - 実UI検証: フレッシュ日別入場で日付ラベル(_drawSessions の MM-DD fillText)描画 **0 回**＝タイル非描画。読込中は候補足可視（`cols=0→transp=false`）→列到着で透明化（`cols=30/60→transp=true`）を実ログで確認。最終描画は従来どおり「透明候補足＋tf-period列」で不変。
+- **検証環境**: served B方式（framework.server・port 8137）・datasetRef=jp225_tick・Playwright(実ブラウザ)・実HTTP。
+- **関連**: tf_period_jitter_buffer.js（windowSec/cacheMax）・tf_period_profile_actor.js・composition_root_front.js:332-362（tfPeriodActor 配線）・ISSUE-054（barw 不反映＝同根 tf-period 優先）。
+
+## ISSUE-056: MP検定パイプライン Step2c 符号検定統計量に機械的正バイアス（経験サイズ20%）
+- **ステータス**: RESOLVED（2026-07-11 依頼者指示＝シミュレーション校正臨界値を実装・検証済み）
+- **発生日**: 2026-07-11
+- **概要**: 検定設計（依頼者確定）の Step2c 統計量 `T_d = sign(POC^raw−POC^τ)·sign(m_d−POC^τ)` は、両因子が POC^τ を共有するため、POC^τ の推定ノイズだけで T=+1 に系統的に偏る。季節性ゼロの合成 DGP（一様ボラ・ランダムウォーク 100日×40seed）で経験サイズ **20%**（名目5%）を実測（indigators/market_profile/analysis の Step2 サイズテストで検出）。
+- **原因**: 共有ノイズ問題。b=POC^τ のノイズに対し両因子が同方向に依存（a−b と c−b が b に共通負依存）→ H0 下でも E[T]>0。方向参照を POC^raw に置換すると逆符号バイアス（検出力全喪失も実測）。
+- **対策案（承認対象）**: 方向参照を中点 `(POC^raw+POC^τ)/2` へ変更：`T_d = sign(POC^raw−POC^τ)·sign(m_d−(POC^raw+POC^τ)/2)`。差 (a−b) と中点 (a+b)/2 のノイズは等分散近似で直交。実測：経験サイズ **7.5%**（3/40・二項ノイズ内）・検出力維持（釘付けDGP +89/−10, p<1e-15）。H0 の意味（生POCが低ボラ帯価格方向へ系統的にずれるか）は不変。
+- **検証**: 承認後、サイズ/検出力テストを test_steps.py に固定化。
+- **裁定（依頼者・2026-07-11）**: 中点参照案は**却下**（第1因子 sign(D) が代数的に不変のためバイアス機序は残存。実測でも 7.5% と残存）。指示＝統計量は原式のまま、**シミュレーション校正臨界値**（サロゲートごとに ŝ(b) 再推定・真の τ=identity 禁止）で判定し、その後 H1 検出力を必ず測定、不足なら統計量放棄。
+- **解決結果（実測）**: 日内バー順列サロゲート（バー内部形状保存・時刻配置のみ破壊）× ŝ/低ボラ窓/POC^τ 全再推定で帰無分布を構成、p_mc=(1+#{T̄⁽ᵐ⁾≥T̄obs})/(M+1)（片側）。D=100・M=99・12seed 実測: **経験サイズ 0/12（p_mc 分布ほぼ一様）・検出力 12/12（現実振幅W字季節性 min ŝ≈0.45）・12/12（釘付けDGP）**。検出力不足は不発生 → 統計量放棄は不要。実装: mp_stats/step2_seasonality_poc.py（calibrated_sign_test）・data_prep.py（permute_bars_within_day）、テスト test_steps.py に size/power を固定化（11 passed）。素の p_sign は p_sign_naive として参考併記。
+
+## ISSUE-057: MP検定パイプライン Step3 の HAR 移動平均が NaN で末尾全汚染（n=3810→148 に激減）
+- **ステータス**: RESOLVED（2026-07-11）
+- **発生日**: 2026-07-11（フルラン検証で発見）
+- **概要**: step3_incremental_r2._rolling_mean が素の np.cumsum を使っており、y=ln RV の NaN（実データに RV=0 の日が5日存在）以降の移動平均が全て NaN 化。回帰標本が n=148（2012年序盤のみ）に縮退し、Step3 判定が実質無効だった。合成テストは y に NaN が無く未検出。
+- **対策（即時実施・明示バグ）**: 有限値のみの cumsum＋有限数カウントで「窓内全有限」の行のみ平均を返す実装へ修正。NaN の影響は当該窓（最大 22 行）に局所化。
+- **検証**: 回帰テスト2件追加（NaN 窓通過後の回復・まばらな RV=0 で n>2900 維持）。18 passed。フルラン再実行で n=3783 を確認（修正前 n=148 の判定 fail_to_reject は無効。修正後は全7変種 reject に反転）。
+
+## ISSUE-058: MP検定パイプライン Step6-8 未実施（依頼者指示により保留・z(p)指標組込みを優先）
+- **ステータス**: RESOLVED（2026-07-12 依頼者指示で再開・Step6フルラン＋Step7/8実装・フルラン完了）
+- **解決結果**: Step6 reject（Part A: VA外寄り付き→翌日RV位置シフト γ=+0.085, Bonferroni2 p=0.0092。Part B 移動先検定: u_mean=0.523, Wilcoxon z=+4.49, 新規形成側の片側p≈3.5e-6＝**依頼者仮説（乖離した新しい価格で新POCが形成される）を支持**〔新POC*は過去受容水準から帰無より有意に遠い＝渡り歩きでなく新規形成。当初「過去水準への引き寄せ」と検定方向を誤設定していたのを依頼者指摘で訂正 2026-07-12〕・閾値2/4/8行で頑健）。Step7 fail_to_reject（SPA 216ルール・B=5000・p=0.23＝VA外寄り付き系ルールの予測改善は選択効果で説明可能）。Step8 skipped（打ち切り規則）。実装: mp_stats/step7_spa.py・step8_oos.py（62テスト緑）。レポート: analysis/out/mp_stats_report.{json,md}。
+- **発生日**: 2026-07-11
+- **概要**: 検定設計の Step6（VA外寄り付き→翌期RV条件付き分布＋POC*移動先検定〔依頼者仮説「不自然な価格から乖離すると次の不自然な価格で滞在する」の拡張・承認済み〕）、Step7（SPA 7次元データスヌーピング補正）、Step8（OOS・Kupiec/Christoffersen）が未実施。
+- **現状**: Step6 は実装・単体テスト済み（mp_stats/step6_conditional.py、Part A/B、テスト4件緑、CLI 結線済み）だが**実データフルラン未実施**。Step7/8 は未実装（HansenSpa/VarBacktests は simulator に既存・再利用可）。Step1-5 は完了済み（out/mp_stats_report.json、POC*系列=out/step5_poc_star.npz）。
+- **再開条件**: 依頼者指示。再開時は `python run_mp_tests.py`（Step6 込み・約1時間）→ Step7/8 実装。
+- **関連**: ISSUE-056/057、mp_stats パッケージ（57テスト）。
+
+## ISSUE-059: test_market_profile_byte_parity の 8 件が develop 時点で失敗（golden 陳腐化の疑い）
+- **ステータス**: OPEN
+- **発生日**: 2026-07-11（src=zp 追加作業中の回帰確認で発見）
+- **概要**: `indigators/market_profile/api/tests/test_market_profile_byte_parity.py` のうち dwell/m1（to=1780666320）5 件・forming 3 件が、**作業変更を stash した素の develop でも同一に失敗**する（8 failed / 19 passed で一致確認済み）。src=zp 追加とは無関係の既存問題。
+- **推定原因（未検証）**: golden 作成後の実データ（ticks parquet）更新または dwell キャッシュ／active table 依存のドリフト。
+- **対応方針**: 本 Issue では修正しない（golden 再生成は挙動確定の判断を要するため依頼者承認待ち）。zp 作業の回帰判定は「この 8 件を既知ベースラインとし、それ以外の全テスト green」を基準とする。
+
+## ISSUE-060: src=zp×日別×非対応tf（1m/5m）で日別タイルが消える（委譲述語の片側更新）
+- **ステータス**: RESOLVED（2026-07-11）
+- **発生日**: 2026-07-11（src=zp 実装の実UIブラウザ検証で発見）
+- **概要**: sessions モードで MP actor はタイル描画を tf-period 列へ委譲する（sessionsDrawnByTfPeriod）が、src=zp の tf-period は 15m..1D 限定のため 1m/5m では tfpShouldOn が false。委譲述語だけが true のままだと「MP はタイルを描かず・tf-period も無効」で誰も日別を描かず、normal ヒストへ落ちて見えた。
+- **原因**: zp の tf ゲート（zpTfOk）を tfpShouldOn にのみ追加し、委譲述語 sessionsDrawnByTfPeriod に追加しなかった（同一条件の二重管理）。
+- **対策**: composition_root_front.js で ZP_TF_ALLOWED/mpSrc/zpTfOk を上段へ単一定義し、委譲述語と tfpShouldOn の**両方**が同じ zpTfOk() を参照するよう修正（単一情報源化）。
+- **検証**: 実UI（Playwright・実HTTP・port 8138）で 5m×zp×日別 → MP actor の日別 z タイルが自前描画されることをスクリーンショットで確認（zp-05）。1D×zp×日別の tf-period z 列（zp-03）・normal live zp の POC* 黄線（zp-02）・src=dwell 回帰（zp-06）も確認。web テスト回帰 531/533（残 2 は既存 module-not-found・zp 無関係）。
+
+## ISSUE-061: 過去の高 z(p) 受容水準への価格再訪時の反応計測（未実施・依頼者発行）
+- **ステータス**: OPEN
+- **発生日**: 2026-07-12
+- **概要**: 過去に形成された高 z 水準（超過受容・POC*）へ価格が戻ってきたときの反応（反発・滞在・通過減速）を計測する。Step6 Part B で「乖離→新価格で POC 新規形成」は実証済み（p≈3.5e-6）。本 Issue はその対で「古い受容水準は再訪時に S/R として機能するか」を問う（実運用上の naked POC* 検定）。
+- **設計骨子（実装前に依頼者確定が必要）**:
+  - イベント: 過去 L 日内形成の高 z セル（z≥z_thr）への**形成後初回**接触（naked）。既訪問は別群。
+  - 反応3指標: ①反発率（接触後 k 分以内に逆方向へ x 行以上）②水準±1セル滞在分数 ③水準帯通過所要時間。
+  - 帰無: (a) 同日の低 z セル対照群 (b) Null B サロゲートの偽 POC* 水準への反応（季節性・レンジ位置の交絡吸収）。
+  - 主検定パラメータ案（依頼者未確定）: z_thr=3・L=60日・k=30分・x=4行。
+- **規律（Step7 の教訓・再発防止）**: 主検定は 1 本を事前登録し、感度は少数＋Bonferroni。パラメータを広く走査する場合は最初から SPA（HansenSpa 再利用）で束ねる。**「反応」の操作的定義は依頼者の言葉で確定してから実装する**（仮説文の解釈違い再発防止・2026-07-12 の Part B 訂正参照）。
+- **利用資産**: znull キャッシュ（日別 z・4,157日）・mgrid キャッシュ（分単位経路）・null_b_day_peaks（偽水準生成）・mp_stats テスト基盤。見積り: 実装 1-2h・フルラン数分〜30分。
+- **再開条件**: 依頼者による主検定パラメータの確定指示。
+- **関連**: ISSUE-058（Step6-8 完了）・mp_stats/step6_conditional.py（移動先検定の対）。
+- **追記（計測方法の平易な確定版・2026-07-12）**: 実験3ステップ＝①事件収集: 過去60日内形成の高z水準（z≥3）への**形成後初回**接触を15年分から全件抽出（2回目以降は別群）②反応3物差し: 跳ね返り（30分以内に逆方向4行）・滞在（水準近傍の滞在分数）・減速（帯の通過所要時間）③偽水準との比較＝計測の心臓部: 反応の絶対値でなく、偽水準A（同日の低zセル）・偽水準B（Null Bサロゲートが偶然作った偽こだわり水準）への同一物差しの反応との**差**のみを勘定する。本物への反応が両偽水準を統計的に上回って初めて「S/Rとして実在」。罠回避: 主検定1本（z≥3・L=60日・k=30分・x=4行）を事前固定、設定走査するなら最初からSPAで束ねる（Step7の教訓）。
+
+## ISSUE-062: MP 指標の既定ソースを candle → zp（超過占有 z(p)）へ昇格（依頼者指示）
+- **ステータス**: RESOLVED（2026-07-12）
+- **概要**: 「全期間だと現在足の成長が視認不能」は zp が超過分のみ表示で解決したため当日絞りは不要、かつ主目的（意識された水準の可視化）で zp が従来 src に優越——との依頼者判断で、MP 新規追加時の既定 src を zp へ変更。
+- **変更**: catalog_entry.js の src param 既定を 'candle'→'zp'。ENUM 選択肢（candle/dwell/m1/zp）は不変＝従来 src は選択で維持。**API 側の src 省略時既定は candle のまま**（backend 後方互換・既存 URL/テスト byte 不変）。
+- **検証**: web テスト既定値アサーション更新（mp web 239 緑・UI web 531/533＝残2は既存 module-not-found）。実UI（8137・実HTTP）で MP 新規追加時に即 zp 表示（POC* 黄線・価格ラベル）を確認。
+- **従来 src の残存役割**: ①フォールバック（非tick ref/キャッシュ未構築/履歴60日未満で zp 不可）②dwell の秒単位ライブ増分 ③記述統計（量）vs 推論（異常度）の対比。
+
+## ISSUE-063: MP ソース選択肢から「足レンジ」(candle) を非表示（依頼者指示）
+- **ステータス**: RESOLVED（2026-07-12）
+- **概要**: candle は原子として最も粗く（足の[low,high]跨ぎ本数のみ・滞在時間も出来高も非反映）、ティック由来 src（dwell/m1/zp）に情報量で劣後。「ティックデータが存在しない場合に限り有効」との依頼者判断で、現状は選択肢から非表示にする（将来ティック受信不可データセットのフォールバックとして再有効化を検討）。
+- **変更**: catalog_entry.js の src ENUM を ['candle','dwell','m1','zp'] → ['dwell','m1','zp']（enumLabels からも candle 撤去）。既定は zp のまま。**backend の _ALLOWED_SRC は candle を温存**（API 後方互換・将来フォールバック用・byte 不変）。
+- **検証**: web テスト更新（catalog.test.js の enumValues/candleラベル）。mp web 239 緑・UI web 531/533（残2は既存 module-not-found）。実UI（8137・実HTTP）で配信 JS の enumValues=['dwell','m1','zp']・default='zp' を確認。
+
+## ISSUE-064: MP ソース選択肢から「tick数」(m1) も非表示（依頼者指示）
+- **ステータス**: RESOLVED（2026-07-12）
+- **概要**: m1（src=m1・metric=count＝生ティック個数・セッション非認識）は「時間帯の配信密度のクセ」を差し引かない生カウントで、zp が帰無で除去する交絡そのもの。dwell（実滞在秒）の劣化版でもあり、意識水準を見る主目的では zp/dwell に劣後。ISSUE-063（candle 非表示）と同論理で選択肢から非表示。
+- **変更**: catalog_entry.js の src ENUM を ['dwell','m1','zp'] → ['dwell','zp']（enumLabels からも m1 撤去）。残る選択肢は dwell（実滞在秒）と zp（超過占有）の 2 つ。既定 zp。**backend の _ALLOWED_SRC は candle/m1 とも温存**（API 後方互換・将来フォールバック/デバッグ用）。
+- **検証**: catalog.test.js 更新（enumValues=['dwell','zp']・candle/m1 ラベル undefined）。mp web 239 緑・UI web 531/533（残2は既存 module-not-found）。実UI（8137・実HTTP）で配信 JS の enumValues=['dwell','zp']・default='zp' を確認。
+
+## ISSUE-065: ライブ×dwell の初期描画で全期間プロファイルが一瞬映ってから当日へ置換（フラッシュ）
+- **ステータス**: RESOLVED（2026-07-12）
+- **発生日**: 2026-07-12（依頼者報告）
+- **概要**: ライブモードで MP・src=滞在時間(dwell) を表示すると、最初に**全期間**プロファイルバーが描かれ、直後に**当日**プロファイルバーへ置き換わる（ちらつき）。
+- **原因**: market_profile_actor.js setEnabled(true) が増分経路（growing×dwell×forming）でも無条件に refresh()＝全期間 dwell を 1 回描画し、その後の初回 onLiveTick→_enterTicklive が当日 forming（_sessionFrom＝当日始端 from）へ置換するため。呼び出し順は _applyMpParams(applyGrowthState growing=true)→setEnabled(true) 済＝setEnabled 時点で _isIncremental()=true。
+- **対策（即時）**: setEnabled(true) で _isIncremental() が true のときは refresh() でなく onLiveTick()（accumulator 未生成→_enterTicklive＝当日 base+forming）で初期描画する。全期間フラッシュのフレームを消す。end-state（当日絞り）は不変＝参照実装・ユーザー確定挙動を維持。非増分（static/sessions/zp/非tick）は従来どおり refresh()。
+- **検証**: web テスト2件追加（増分時 setEnabled が forming 経路・全期間 client fetch 0／非増分 static は従来 refresh）＝mp web 241 緑。実UI（8137・実HTTP・日足・ライブ）で eye ON 有効化時の発火が market_profile_forming（from=当日始端）のみ＝全期間 /market_profile?src=dwell（from なし）0 件をネットワークで確認。end-state（当日絞り）不変。
+- **残課題（別症状・未修正）**: gear で src を dwell へ変更→OK した瞬間も同根で 1 フレーム全期間が映る（_onGearMarketProfile が growing 非考慮の refresh を呼ぶ）。有効化経路（本 Issue の報告症状）とは別。要否は依頼者判断。
