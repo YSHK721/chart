@@ -201,3 +201,8 @@ simulator/tests/fixtures/**/.DS_Store
 # 突合検証用の使い捨て生データ・スクリプト（大容量・コミット対象外）
 simulator/tests/confirmation/
 simulator/tests/260620-01/
+
+# MP analysis 生成物・ブラウザ検証成果物（2026-07-12）
+.playwright-mcp/
+indigators/market_profile/analysis/out/
+.pytest_cache/
