@@ -825,3 +825,35 @@
 - **対策（即時）**: setEnabled(true) で _isIncremental() が true のときは refresh() でなく onLiveTick()（accumulator 未生成→_enterTicklive＝当日 base+forming）で初期描画する。全期間フラッシュのフレームを消す。end-state（当日絞り）は不変＝参照実装・ユーザー確定挙動を維持。非増分（static/sessions/zp/非tick）は従来どおり refresh()。
 - **検証**: web テスト2件追加（増分時 setEnabled が forming 経路・全期間 client fetch 0／非増分 static は従来 refresh）＝mp web 241 緑。実UI（8137・実HTTP・日足・ライブ）で eye ON 有効化時の発火が market_profile_forming（from=当日始端）のみ＝全期間 /market_profile?src=dwell（from なし）0 件をネットワークで確認。end-state（当日絞り）不変。
 - **残課題（別症状・未修正）**: gear で src を dwell へ変更→OK した瞬間も同根で 1 フレーム全期間が映る（_onGearMarketProfile が growing 非考慮の refresh を呼ぶ）。有効化経路（本 Issue の報告症状）とは別。要否は依頼者判断。
+
+## ISSUE-066: 日別プロファイル×ライブで gear のソース変更が反映されない（tf-period 列が再取得されない）
+- **ステータス**: RESOLVED（2026-07-12）
+- **発生日**: 2026-07-12（依頼者報告）
+- **概要**: ライブ×日別プロファイル（sessions）モードで src を変更しても、画面の列表示が変わらない（スクロール/ズームすると初めて反映される）。
+- **原因**: sessions モードの可視表示は tf-period 列アクター（TfPeriodProfileActor）が描く。その再取得（ensure→jitter buffer の src 差分でキャッシュ破棄→再fetch）は composition_root の subscribeVisibleTimeRangeChange（可視レンジ変化）でしか駆動されない。gear 適用（_onGearMarketProfile→_applyMpParams→marketProfile.refresh）は MP actor の集約プロファイルを再取得するだけで、tf-period 列には伝播しない。
+- **対策（即時）**: MarketProfileActor.setParams に onParamsChanged フックを追加し、composition_root で tf-period の即時再適用（tfpShouldOn なら setEnabled(true)＝ensure で src 差分再fetch／不成立なら列を消す）へ配線。src/mode 変更が可視レンジ変化を待たず反映される。
+- **検証**: web テスト2件追加（setParams が onParamsChanged 発火・未注入でも例外なし）＝mp web 243 緑・UI web 531/533（残2は既存 module-not-found）。実UI（8137・1h・ライブ・日別）で src dwell→zp 変更が**スクロールせず即** tf_period_profile?...&src=zp を再取得（#192-211）・zセル列描画をネットワーク＋スクショで確認。
+
+## ISSUE-067: 日別プロファイル×dwell/zp でソース変更後の更新が数秒かかる（全期間 sessions フェッチが列描画を待たせる）
+- **ステータス**: RESOLVED（2026-07-12・A案）
+- **発生日**: 2026-07-12（依頼者報告）
+- **概要**: 日別（sessions）モードで src を dwell 等に変更すると、ローソク足表示後に日別プロファイル列の更新まで数秒かかる。目標=1秒以内。
+- **実測根本原因**: 日別モードで MP actor の refresh が全期間 `/market_profile?sessions=1&src=<src>` を叩く（dwell=1.4s・zp=3.3s／フェッチ窓に依存せず固定約1.0s）。しかも複数回。日別プロファイル列(tf-period)はこの重いフェッチ完了後の focus(自動ズーム)契機でしか取得されず、列表示が数秒遅延（実測 last_end 4.4s）。列自体は本来~200-500msで描ける（zp切替 実測208ms）。
+- **対策（A案・承認済）**: 日別かつ tf-period が列を描くモード（sessionsDrawnByTfPeriod=true）では、MP actor は重い全期間 `/market_profile?sessions=1` フェッチを行わない（列は tf-period が供給・poc/va も各列が保持）。focus は candle 範囲から算出。onParamsChanged で tf-period を即時発火し、列を market_profile フェッチ完了を待たず<1sで描く。トレードオフ=クロスヘアの当日MP読取欄は tf-period 列由来へ簡素化 or 省略。
+- **検証**: web テスト2件追加（tfDraws 時 refresh が /market_profile を叩かない・初回のみ candle focus／tfDraws=false は従来fetch）＝mp web 245 緑。実UI（8137・1h・日別）resource timing 実測: **全期間 /market_profile?sessions=1 フェッチ 0件**（旧2件・last_end 4.4s を消滅）。列(tf-period)は逐次描画で**最初の列 dwell 39ms・可視範囲 p50 575ms（<1s）**・zp 13-42ms。全プリフェッチ完了は dwell 2.78s（画面外先読み・37MB最小単位列＝背景継続で体感非ブロック）。残最適化余地=初回表示span 1年→短縮 or dwell列解像度粗化（依頼者の1ヶ月案）。
+
+## ISSUE-068: 日別×dwell の tf-period count 列が最小価格単位で巨大化（37MB・メインスレッド5.4秒ブロック）
+- **ステータス**: RESOLVED（2026-07-12・GRID_W 10pt 化）
+- **発生日**: 2026-07-12（依頼者報告・ISSUE-067 の残ボトルネック）
+- **概要**: 日別×dwell（src=null＝tf-period の count 列）は最小価格単位（≈0.0255）でビニングするため、1期間あたり数百レベル・可視1年分で37MB。ネットワークは39msで速いが、その後の JSON parse＋描画でメインスレッドが計5.4秒ブロック（最大単一1.4s）し「ローソク足の後に日別プロファイルが遅れて出る」。
+- **実測**: longtask 10件・total 5410ms・max 1428ms・last_end 6041ms（switch to dwell sessions・1h・可視1年）。zp は GRID_W=10pt 粗sparseで779KB→13-42ms。
+- **対策（承認済）**: count 列（src=null）のビニング解像度を最小価格単位→GRID_W(=10pt) へ粗くする（zp と同グリッド）。37MB→~1-2MB・ブロック<0.5s。列幅~10pxでは最小単位は視認不能ゆえ表示損失なし。POC/VA は10pt グリッド上で最大±5pt 誤差（日経225 日別用途で無視可）。
+- **検証**: api テスト更新（count 列 unit=10.0・GRID_W subdir・整数カウント／golden を GRID_W ビニングへ）＝MP api 222 passed（8失敗は既存 ISSUE-059・無関係）。1チャンク実測 1.1MB→**14KB（78倍削減）**。実UI（8137・1h・日別）longtask 実測: メインスレッドブロック **5410ms→132ms**（max 1428→68ms・tf 37MB→1.0MB・market_profile 0）＝日別プロファイル更新が体感即時。列見た目は従来と遜色なし（列幅~10pxで最小単位は視認不能）。
+
+## ISSUE-069: 日別プロファイル列の逐次描画を「揃ってから一括表示」へ（上限タイムアウト付き）
+- **ステータス**: RESOLVED（2026-07-12）
+- **発生日**: 2026-07-12
+- **概要**: 日別プロファイル列（tf-period）はチャンク到着ごとに逐次描画されるため、列がパラパラと段階的に現れる。これを「可視範囲の列が揃ってから一括表示」に変更し、完成形で一度に出す（ちらつき解消）。
+- **対策**: TfPeriodProfileActor の描画を、可視範囲を満たすチャンクが全て ready になるまで保留し、揃った時点で1回だけ描く。安全弁として**上限タイムアウト**（例 800ms）を設け、時間内に揃わない場合はその時点の ready 分で強制描画（永久保留の防止）。ローソク足の表示は不変（本変更の対象外）。
+- **実装**: TfPeriodJitterBuffer.allReady(from,to)（可視範囲の全チャンク ready 判定）＋ TfPeriodProfileActor に保留/上限タイムアウト（既定800ms・注入可）。refresh は allReady なら一括描画・未なら保留＋timer。onChunkReady は保留中に揃ったら一括描画（逐次描画しない）。揃うまで前回描画を保持（clear しない＝ちらつき回避）。
+- **検証**: web テスト更新+新規（一括描画・onChunkReady で揃い次第 commit・タイムアウトで部分フォールバック・保留無しは再描画しない・透明化は描画時のみ）＝tf_period_actor 7 passed・MP web 247 緑・UI web 531/533（残2は既存無関係）。実UI（8137・1h・日別）src dwell⇄zp 切替でエラー0・列は完成形で一括描画を確認。ローソク足表示は不変。
