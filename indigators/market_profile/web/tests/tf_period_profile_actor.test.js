@@ -5,22 +5,33 @@ import { TfPeriodProfileActor } from '../js/adapter/front/tf_period_profile_acto
 
 function fakeBuf() {
   return {
-    ensured: [], cols: [], u: 0.5,
+    ensured: [], cols: [], u: 0.5, ready: true, // ready=true: 可視範囲が揃っている（一括描画）。
     ensure(tf, from, to) { this.ensured.push([tf, from, to]); },
+    allReady() { return this.ready; },
     getColumns(from, to) { return this.cols.filter((c) => c.time >= from && c.time <= to); },
     unit() { return this.u; },
   };
 }
 function fakePrim() { return { calls: [], setTfPeriods(cols, unit) { this.calls.push([cols, unit]); } }; }
 
-function newActor(buf, prim, range = { from: 100, to: 300 }, tf = '5m') {
+// 制御可能な setTimeout（fired[] に (fn, ms) を積み、flush() で発火）。
+function fakeTimers() {
+  const t = { fired: [], _id: 0 };
+  t.set = (fn, ms) => { t.fired.push({ id: ++t._id, fn, ms, live: true }); return t._id; };
+  t.clear = (id) => { const e = t.fired.find((x) => x.id === id); if (e) e.live = false; };
+  t.flush = () => { for (const e of t.fired) if (e.live) { e.live = false; e.fn(); } };
+  return t;
+}
+
+function newActor(buf, prim, range = { from: 100, to: 300 }, tf = '5m', timers = null) {
   return new TfPeriodProfileActor({
     jitterBuffer: buf, primitive: prim, getTimeframe: () => tf, getVisibleRange: () => range,
+    ...(timers ? { setTimeoutFn: timers.set, clearTimeoutFn: timers.clear } : {}),
   });
 }
 
-test('setEnabled(true)→refresh: ensure(可視レンジ)＋現 ready 列を primitive へ', () => {
-  const buf = fakeBuf(); buf.cols = [{ time: 150 }, { time: 250 }, { time: 999 }];
+test('setEnabled(true)→refresh: 揃っていれば ensure(可視レンジ)＋一括描画（ISSUE-069）', () => {
+  const buf = fakeBuf(); buf.ready = true; buf.cols = [{ time: 150 }, { time: 250 }, { time: 999 }];
   const prim = fakePrim();
   const a = newActor(buf, prim);
   a.setEnabled(true);
@@ -36,17 +47,46 @@ test('setEnabled(false): primitive の tf-period を null で消す', () => {
   assert.equal(a.isEnabled(), false);
 });
 
-test('onChunkReady: 先読み完了で現可視レンジを再描画（enabled 時のみ）', () => {
-  const buf = fakeBuf(); const prim = fakePrim();
-  const a = newActor(buf, prim); a.setEnabled(true);
-  buf.cols = [{ time: 120 }]; // 後から埋まった
+test('揃うまで保留→onChunkReady で揃ったら一括描画（逐次描画しない・ISSUE-069）', () => {
+  const buf = fakeBuf(); buf.ready = false; buf.cols = [{ time: 120 }]; // まだ揃っていない
+  const prim = fakePrim();
+  const timers = fakeTimers();
+  const a = newActor(buf, prim, { from: 100, to: 300 }, '5m', timers);
+  a.setEnabled(true);
+  assert.equal(prim.calls.length, 0, '揃うまで描画しない（保留）');
+  assert.equal(timers.fired.filter((t) => t.live).length, 1, '上限タイムアウトを張る');
+  // まだ揃っていない onChunkReady → 描画しない
+  a.onChunkReady();
+  assert.equal(prim.calls.length, 0, '未 ready の onChunkReady は描画しない');
+  // 揃った → onChunkReady で一括描画＋タイムアウト解除
+  buf.ready = true; buf.cols = [{ time: 120 }, { time: 250 }];
+  a.onChunkReady();
+  assert.deepEqual(prim.calls.at(-1), [[{ time: 120 }, { time: 250 }], 0.5]);
+  assert.equal(timers.fired.filter((t) => t.live).length, 0, '揃ったらタイムアウト解除');
+});
+
+test('上限タイムアウトで揃わなくても現時点 ready 分を描画（フォールバック・ISSUE-069）', () => {
+  const buf = fakeBuf(); buf.ready = false; buf.cols = [{ time: 150 }];
+  const prim = fakePrim();
+  const timers = fakeTimers();
+  const a = newActor(buf, prim, { from: 100, to: 300 }, '5m', timers);
+  a.setEnabled(true);
+  assert.equal(prim.calls.length, 0, '揃うまで保留');
+  timers.flush(); // 上限到達
+  assert.deepEqual(prim.calls.at(-1), [[{ time: 150 }], 0.5], 'タイムアウトで部分描画');
+});
+
+test('onChunkReady: 保留が無ければ（一括描画済み）再描画しない・無効時も no-op', () => {
+  const buf = fakeBuf(); buf.ready = true; buf.cols = [{ time: 120 }];
+  const prim = fakePrim();
+  const a = newActor(buf, prim, { from: 100, to: 300 });
+  a.setEnabled(true);            // 揃い済み → 一括描画（pending なし）
   prim.calls.length = 0;
   a.onChunkReady();
-  assert.deepEqual(prim.calls.at(-1), [[{ time: 120 }], 0.5]);
-  // 無効時は再描画しない。
+  assert.equal(prim.calls.length, 0, '保留無しの onChunkReady は逐次再描画しない');
   a.setEnabled(false); prim.calls.length = 0;
   a.onChunkReady();
-  assert.equal(prim.calls.length, 0);
+  assert.equal(prim.calls.length, 0, '無効時は no-op');
 });
 
 test('不正レンジ（from>=to / null）は ensure/描画しない', () => {
@@ -65,11 +105,12 @@ test('renderer 注入時: 列が描けたら candle 透明化 true・列無し�
   const a = new TfPeriodProfileActor({
     jitterBuffer: buf, primitive: prim, getTimeframe: () => '5m', getVisibleRange: () => ({ from: 100, to: 300 }), renderer: rc,
   });
-  // 列がまだ無い状態で有効化 → 描画は空 → 透明化 false（candle 可視のまま列を待つ）。
+  // 列がまだ揃わない状態で有効化 → 保留（描画しない）＝透明化も呼ばない（candle 可視のまま列を待つ）。
+  buf.ready = false;
   a.setEnabled(true);
-  assert.equal(rc.calls.at(-1), false, '列が無い間は candle 可視（false）');
-  // 列が届いた → onChunkReady で再描画 → 透明化 true。
-  buf.cols = [{ time: 150 }];
+  assert.equal(rc.calls.length, 0, '揃うまで描画しない＝透明化も呼ばない（candle 可視のまま）');
+  // 列が揃った → onChunkReady で一括描画 → 透明化 true。
+  buf.ready = true; buf.cols = [{ time: 150 }];
   a.onChunkReady();
   assert.equal(rc.calls.at(-1), true, '列が描けたら candle 透明化 true');
   // 無効化 → candle 復元（false）。

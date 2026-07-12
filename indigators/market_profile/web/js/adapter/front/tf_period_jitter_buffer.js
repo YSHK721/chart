@@ -122,6 +122,20 @@ export class TfPeriodJitterBuffer {
     return targets;
   }
 
+  // 可視レンジ [from, to] を覆う全チャンクが ready か（先読み分は判定に含めない＝表示に必要な分のみ）。
+  //   ISSUE-069: actor が「揃ってから一括表示」の完了判定に使う。1 つでも未 ready/未取得なら false。
+  allReady(from, to) {
+    const first = this._chunkStart(from);
+    const last = this._chunkStart(to);
+    for (let cs = first; cs <= last; cs += this._windowSec) {
+      const c = this._chunks.get(cs);
+      if (!c || c.state !== 'ready') {
+        return false;
+      }
+    }
+    return true;
+  }
+
   // 現在キャッシュ済み（ready）の列のうち [from, to] に入る列を time 昇順・重複排除で返す。
   getColumns(from, to) {
     const out = new Map(); // time -> column（重複排除）。
