@@ -20,8 +20,12 @@ const MODE_FOLLOW = 'FOLLOW';
 const MODE_ANALYSIS = 'ANALYSIS';
 
 export class LiveFollowController {
-  constructor({ liveUpdater, renderer, document, buttonId, mode, onLiveStateChange } = {}) {
+  constructor({ liveUpdater, liveTickPlayer, formingBarUpdater, renderer, document, buttonId, mode, onLiveStateChange } = {}) {
     this._liveUpdater = liveUpdater ?? null;
+    // ライブ価格の書き手（ISSUE-049 の LiveTickPlayer・FormingBarUpdater）も FOLLOW/ANALYSIS で
+    //   start/stop する。これらを止めないと ANALYSIS でも価格が更新され続け（＝「ライブ」トグルが効かない）、
+    //   さらに更新→自動 FOLLOW 復帰→sessions 再 focus で手動ズームがリセットされる（実機バグの根治）。
+    this._liveActors = [liveUpdater, liveTickPlayer, formingBarUpdater].filter(Boolean);
     this._renderer = renderer ?? null;
     this._document = document ?? null;
     this._buttonId = buttonId;
@@ -123,8 +127,9 @@ export class LiveFollowController {
   // FOLLOW を適用: LiveUpdater 起動＋（再FOLLOW時のみ）最新足へ catch-up＋tint 解除＋ボタン点灯。
   _applyFollow(scroll) {
     this._mode = MODE_FOLLOW;
-    if (this._liveUpdater && typeof this._liveUpdater.start === 'function') {
-      this._liveUpdater.start(); // 冪等（多重 start 無害）。
+    // ライブ更新系（LiveUpdater＋LiveTickPlayer＋FormingBarUpdater）を全て起動（冪等・多重 start 無害）。
+    for (const a of this._liveActors) {
+      if (a && typeof a.start === 'function') a.start();
     }
     // 実際に移動する時（＝まだ右端に居ない時）だけ arm + scrollToRealTime する。既に右端(_lastAtRightEdge=true)
     //   なら scroll は no-op で range イベントを発火せず、arm が解除イベントを得られず stuck するため呼ばない
@@ -149,8 +154,10 @@ export class LiveFollowController {
     this._mode = MODE_ANALYSIS;
     // ANALYSIS 化で programmatic scroll の抑制窓を閉じる（ANALYSIS 中に true が来たら auto-on を正しく通す）。
     this._suppressAutoOff = false;
-    if (this._liveUpdater && typeof this._liveUpdater.stop === 'function') {
-      this._liveUpdater.stop();
+    // ライブ更新系を全て停止（ANALYSIS＝ライブ更新停止＝価格を凍結）。これで ANALYSIS 中に価格が更新されず、
+    //   自動 FOLLOW 復帰も起きず、手動ズームがリセットされない（Bug A/B の根治）。
+    for (const a of this._liveActors) {
+      if (a && typeof a.stop === 'function') a.stop();
     }
     if (this._renderer && typeof this._renderer.setAnalysisTint === 'function') {
       this._renderer.setAnalysisTint(true);

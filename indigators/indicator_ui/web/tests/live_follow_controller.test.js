@@ -93,6 +93,26 @@ test('初期FOLLOW: install で点灯・tint off・初期は start/scroll しな
   assert.ok(isLit(button), '初期 FOLLOW はボタン点灯');
 });
 
+test('FOLLOW/ANALYSIS で liveTickPlayer/formingBarUpdater も start/stop する（ANALYSIS で価格を凍結）', () => {
+  // 実機バグ根治: これらを止めないと ANALYSIS でも価格が更新され続け（トグルが効かない）、更新→自動 FOLLOW
+  //   復帰→sessions 再 focus で手動ズームがリセットされる。FOLLOW/ANALYSIS で liveUpdater と同時に start/stop する。
+  const liveUpdater = fakeLiveUpdater();
+  const player = fakeLiveUpdater();
+  const forming = fakeLiveUpdater();
+  const button = fakeButton();
+  const controller = new LiveFollowController({
+    liveUpdater, liveTickPlayer: player, formingBarUpdater: forming,
+    renderer: fakeRenderer(), document: fakeDocument(button), buttonId: 'live-follow-toggle', mode: 'b',
+  });
+  controller.install();
+  controller.toggleManual(); // FOLLOW→ANALYSIS
+  assert.equal(controller.mode, 'ANALYSIS');
+  assert.deepEqual([liveUpdater.stops, player.stops, forming.stops], [1, 1, 1], 'ANALYSIS で全ライブ更新系を stop');
+  controller.toggleManual(); // ANALYSIS→FOLLOW
+  assert.equal(controller.mode, 'FOLLOW');
+  assert.deepEqual([liveUpdater.starts, player.starts, forming.starts], [1, 1, 1], 'FOLLOW で全ライブ更新系を start');
+});
+
 test('手動toggle: FOLLOW→ANALYSIS で stop・tint on・消灯', () => {
   const { controller, liveUpdater, renderer, button } = setup();
   controller.install();
