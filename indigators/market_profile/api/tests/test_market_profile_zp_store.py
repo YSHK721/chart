@@ -165,3 +165,27 @@ def test_window_aggregation_identity(zp_env):
     got = np.array([b["tpo"] for b in prof["bins"]])
     assert np.allclose(got, np.round(z_manual, 2), atol=0.011)
     assert prof["z_max"] == pytest.approx(round(float(z_manual.max()), 2), abs=0.011)
+
+
+def test_day_source_signature_covers_two_utc_days(tmp_path):
+    """ISSUE-078: セッション日は UTC 2 日を跨ぐため署名も両日 parquet を覆う。"""
+    import pandas as pd
+    from market_profile_api.compute.market_profile_zp_store import ZpStore
+    calls = []
+
+    def dpf(lo, hi, symbol=None):
+        calls.append((lo, hi))
+        return []
+
+    store = ZpStore(
+        grid_w=10.0,
+        root_provider=lambda: str(tmp_path),
+        default_root_provider=lambda: tmp_path,
+        hist_days=250,
+        m_reps=2000,
+        cache_version_provider=lambda: 1,
+        day_parquet_files=dpf,
+    )
+    store.day_source_signature("JP225", 1783890000)  # 2026-07-12 21:00 UTC（夏セッション始端）。
+    assert calls and calls[0][0] == pd.Timestamp("2026-07-12")
+    assert calls[0][1] == pd.Timestamp("2026-07-13")

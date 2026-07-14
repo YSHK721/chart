@@ -150,7 +150,29 @@ class TestDaySourceSignature:
 
         s = _store(tmp_path, root="c", dpf=_dpf)
         s.day_source_signature("JP225", _DAY0)
-        # 正準経路と同じく (day, day, symbol=...) を正規化日で渡す。
+        # ISSUE-078: セッション日は UTC 2 日跨ぎ＝正規化日〜翌日 (day, day+1, symbol=...) を渡す。
         assert seen["symbol"] == "JP225"
         assert seen["lo"] == pd.Timestamp(_DAY0, unit="s").normalize()
-        assert seen["hi"] == pd.Timestamp(_DAY0, unit="s").normalize()
+        assert seen["hi"] == pd.Timestamp(_DAY0, unit="s").normalize() + pd.Timedelta(days=1)
+
+
+# --------------------------------------------------------------------------- #
+# day_source_signature: セッション日対応（ISSUE-078）
+#   セッション日 [start, end) は UTC 暦日を 2 日跨ぐ（境界=夏21:00/冬22:00 UTC）ため、
+#   署名は start の UTC 日と翌 UTC 日の両 parquet を覆う（片方の更新でも無効化される）。
+# --------------------------------------------------------------------------- #
+class TestSignatureCoversSessionSpan:
+    def test_signature_lists_two_utc_days(self, tmp_path):
+        calls = []
+
+        def dpf(lo, hi, symbol=None):
+            calls.append((lo, hi))
+            return []
+
+        s = _store(tmp_path, root="sig", dpf=dpf)
+        # セッション日始端例: 2026-07-12 21:00 UTC（月曜セッション・夏）。
+        s.day_source_signature("JP225", 1783890000)
+        assert len(calls) == 1
+        lo, hi = calls[0]
+        assert lo == pd.Timestamp("2026-07-12")
+        assert hi == pd.Timestamp("2026-07-13")  # 翌 UTC 日まで覆う（セッション跨ぎ）。

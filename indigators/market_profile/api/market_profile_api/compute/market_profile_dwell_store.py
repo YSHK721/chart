@@ -153,10 +153,12 @@ class DwellRollupStore:
         キャッシュ無効化に使う。完了日を空でキャッシュした後にティック parquet が届く/更新されると署名が
         変わり、呼び出し側が stale-empty を検出して再計算する。ファイル無し（休場等）は空文字。
         注入 ``day_parquet_files``（read-only・正準経路）と ``stat`` のみ＝ソース非改変・低コスト。
+        ISSUE-078: セッション日 [start, end) は UTC 暦日を 2 日跨ぐ（境界=夏21:00/冬22:00 UTC・
+        DST 25h 日でも終端は翌 UTC 日内）ため、start の UTC 日と翌 UTC 日の両 parquet を署名に含める。
         """
         day = pd.Timestamp(int(day_start), unit="s").normalize()
         parts: list[str] = []
-        for p in self._day_parquet_files(day, day, symbol=symbol):
+        for p in self._day_parquet_files(day, day + pd.Timedelta(days=1), symbol=symbol):
             try:
                 st = p.stat()
                 parts.append(f"{p.name}:{int(st.st_mtime)}:{int(st.st_size)}")
