@@ -830,7 +830,8 @@ test('mode wins over conflicting legacy flags in setParams (mode 優先)', async
 // 期間パラメータ period（ISSUE-071 (b)案）: 'day' × zp × 通常のとき refresh が from=当日始端を載せる。
 // ---------------------------------------------------------------------------
 
-// 当日始端テスト用 actor（getCandles 注入・最新ローソク time=1783936560 → 当日始端 1783900800）。
+// 当日窓テスト用 actor（getCandles 注入・最新ローソク 1783936560＝2026-07-13 09:56 UTC →
+//   セッション日始端 1783890000＝2026-07-12 21:00 UTC・ISSUE-078）。
 function makePeriodActor({ candles = [{ time: 1783936560 }] } = {}) {
   const client = fakeClient();
   const primitive = fakePrimitive();
@@ -848,8 +849,8 @@ test('refresh adds from=当日始端 when period=day and src=zp (通常モード
   actor.setParams({ src: 'zp', period: 'day' });
   // Act
   await actor.setEnabled(true);
-  // Assert: from = floor(1783936560/86400)*86400 = 1783900800
-  assert.equal(client.calls.at(-1).from, 1783900800);
+  // Assert: from = sessionDayStart(1783936560) = 1783890000（2026-07-12 21:00 UTC・夏境界）。
+  assert.equal(client.calls.at(-1).from, 1783890000);
   assert.equal(client.calls.at(-1).src, 'zp');
 });
 
@@ -890,9 +891,10 @@ test('refresh omits from when candles are unavailable (窓を成さず全期間�
 // sessions ビューの日中足対応（ISSUE-072）: UTC 日集計 OHLC ＋ tFirst/tLast 付与。
 // ---------------------------------------------------------------------------
 
-test('sessions ON: 日中足 candles は UTC 日集計 OHLC と tFirst/tLast を付与する（ISSUE-072）', async () => {
-  const day = 1704067200; // 2024-01-01 00:00 UTC
-  // 深夜バー無し（01:00/12:00/23:00 の 3 本）＝旧実装では OHLC 未付与だったケース。
+test('sessions ON: 日中足 candles はセッション日集計 OHLC と tFirst/tLast を付与する（ISSUE-072/078）', async () => {
+  const day = 1704067200; // 2024-01-01 00:00 UTC（冬・セッション境界は 22:00 UTC）
+  // 深夜バー無し（01:00/12:00/23:00 の 3 本）。23:00 UTC の足は**翌セッション**（1/2）へ帰属する
+  //   （ISSUE-078: 冬境界 22:00 UTC）＝'2024-01-01' セッションには前 2 本のみが束なる。
   const candles = [
     { time: day + 3600, open: 100, high: 105, low: 99, close: 104 },
     { time: day + 43200, open: 104, high: 110, low: 103, close: 108 },
@@ -914,12 +916,12 @@ test('sessions ON: 日中足 candles は UTC 日集計 OHLC と tFirst/tLast を
   await actor.setEnabled(true);
   const lastSess = primitive.sessions.at(-1);
   assert.ok(Array.isArray(lastSess) && lastSess.length === 1);
-  // 日集計 OHLC: open=最初のバー open / close=最後のバー close / high=max / low=min。
+  // セッション日集計 OHLC: 23:00 UTC の足は翌セッション＝除外（open=初/close=終/high=max/low=min）。
   assert.deepEqual(
     { open: lastSess[0].open, high: lastSess[0].high, low: lastSess[0].low, close: lastSess[0].close },
-    { open: 100, high: 110, low: 95, close: 96 },
+    { open: 100, high: 110, low: 99, close: 108 },
   );
-  // 当日実在バー範囲（primitive の日スパン整列アンカー）。
+  // 当日実在バー範囲（primitive の日スパン整列アンカー）＝セッション内の 2 本。
   assert.equal(lastSess[0].tFirst, day + 3600);
-  assert.equal(lastSess[0].tLast, day + 82800);
+  assert.equal(lastSess[0].tLast, day + 43200);
 });

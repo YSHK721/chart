@@ -19,6 +19,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { sessionDayStart } from '../js/domain/session_day.js';
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
 import { GrowthWindow } from '../js/domain/growth_window.js';
 
@@ -36,7 +37,7 @@ function makeActor({ timeframe = '1h', candles = null } = {}) {
 test('present normal growing: _buildFormingArgs adds from=session_start (当日始端) from latest candle time', () => {
   // Arrange: 日途中の最新ローソク time。mode=normal・growing=true（FOLLOW 相当）。
   const now = 1782985000; // 日途中
-  const daySt = Math.floor(now / DAY) * DAY;
+  const daySt = sessionDayStart(now); // ISSUE-078: セッション日始端。
   const actor = makeActor({ timeframe: '1h', candles: [{ time: now - 3600, close: 1 }, { time: now, close: 1 }] });
   actor.setParams({ mode: 'normal' });
   actor.applyGrowthState({ growing: true });
@@ -55,7 +56,7 @@ test('present normal growing on 1W: from clamps to the bar-period start (min(当
   //   epoch 週境界（木曜 00:00 UTC 基準）から +3.5 日の週央・日途中を選び、週始端 < 当日始端 を確実にする。
   const now = 1782950400 + 3 * DAY + 12 * 3600; // 既知の週境界 +3.5 日
   const weekSt = Math.floor(now / (7 * DAY)) * (7 * DAY);
-  const daySt = Math.floor(now / DAY) * DAY;
+  const daySt = sessionDayStart(now); // ISSUE-078。
   assert.ok(weekSt < daySt, '前提: 週始端 < 当日始端');
   const actor = makeActor({ timeframe: '1W', candles: [{ time: now, close: 1 }] });
   actor.setParams({ mode: 'normal' });
