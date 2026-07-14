@@ -96,11 +96,16 @@ export function makeMarketProfileDef({
       //   backend の src 対応（controller の _ALLOWED_SRC）は candle/m1 とも温存し、将来ティックデータを
       //   受信できないデータセットのフォールバックやデバッグ用途での再有効化を検討する。残る選択肢は
       //   dwell（実滞在秒）と zp（超過占有）の 2 つ。
+      // ISSUE-076（B案・依頼者選択 2026-07-13）: 日別×1m/5m の zp は周期列でなく日単位タイルへ
+      //   フォールバックする（z は短周期で統計が成立しない・ISSUE-060）。ソース切替で表示粒度が
+      //   黙って変わり混乱するとの依頼者指摘を受け、tooltip で挙動差を明記する（選択は許容＝
+      //   1分足で日別 z タイルを見る使い方は残す）。
       param('src', ParamType.ENUM, 'zp', [], ['dwell', 'zp'], {
         group: 'group.calc', order: 4, label: 'ソース',
         enumLabels: {
           dwell: '滞在時間(実ティック)', zp: '超過占有z(p)',
         },
+        tooltip: '滞在時間＝実ティックの滞在秒（日別では全時間足で周期ごとの列を表示）／超過占有z(p)＝偶然比の異常度（日別では15分足以上が周期列・1分足/5分足はzが短周期で統計不成立のため日単位タイル表示になる）',
       }),
       // range: レンジ(pt) の直接指定（ENUM・既定 100）。試作 prototype_260630-01 の range セレクタを移植。
       //   解像度=レンジ（resmode=range）のときのみ表示。値は client が &barw= を付与し backend が

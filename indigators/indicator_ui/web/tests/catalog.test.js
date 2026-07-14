@@ -60,6 +60,9 @@ test('catalog: market_profile exposes src ENUM [dwell,zp] default zp（candle/m1
   assert.equal(src.enumLabels.zp, '超過占有z(p)');
   // bins/va/limit と同じ group（同一セクションに並ぶ）。
   assert.equal(src.group, paramOf(d, 'bins').group);
+  // ISSUE-076（B案）: 日別×1m/5m の zp は日単位タイル表示になる旨を tooltip で明記（混乱防止）。
+  assert.ok(typeof src.tooltip === 'string' && src.tooltip.includes('日単位タイル'),
+    'src tooltip が zp の時間足別挙動差を明記する');
 });
 
 // market_profile の表示モード（mode）ENUM segmented トグル。旧 replay/sessions の 2 チェックを
