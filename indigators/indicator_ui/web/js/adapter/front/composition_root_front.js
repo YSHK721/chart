@@ -33,6 +33,7 @@ import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
 import { TfPeriodProfileClient } from './tf_period_profile_client.js';
 import { TfPeriodJitterBuffer } from './tf_period_jitter_buffer.js';
 import { TfPeriodProfileActor } from './tf_period_profile_actor.js';
+import { TfPeriodTooltip, formatPeriodLabel } from './tf_period_tooltip.js';
 import { MarketProfileActor } from './market_profile_actor.js';
 import { MarketProfileReplayBar } from './market_profile_replay_bar.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
@@ -387,6 +388,22 @@ export async function bootstrap({
       getSrc: () => (mpSrc() === 'zp' ? 'zp' : null),
       // 方向背景（依頼者指示 2026-07-13）: 列 time と同一周期グリッドの candle から陽/陰を注釈する。
       getCandles: () => renderer.getCandles(),
+    });
+    // tf-period ホバー読取ツールチップ（依頼者指示 2026-07-13・a案）: クロスヘア座標 DTO（renderer）
+    //   → 該当列レベル探索（primitive.tfPeriodLevelAt）→ カーソル追従表示（TfPeriodTooltip）。
+    //   列非表示（日別モード外・非対応 tf）・レベル不在（空行）・チャート外は hide。
+    const tfpTooltip = new TfPeriodTooltip({ document: doc, container });
+    renderer.setTfPeriodHoverHandler((pos) => {
+      if (!pos || !tfPeriodActor || !tfPeriodActor.isEnabled()) {
+        tfpTooltip.hide();
+        return;
+      }
+      const hit = mpPrimitive.tfPeriodLevelAt(pos.time, pos.price);
+      if (!hit) {
+        tfpTooltip.hide();
+        return;
+      }
+      tfpTooltip.show(pos.x, pos.y, { ...hit, timeLabel: formatPeriodLabel(hit.time) });
     });
     const tfpShouldOn = () => !!(marketProfile && typeof marketProfile.isSessions === 'function'
       && marketProfile.isSessions()) && isPlayerTimeframe(controller._timeframe)

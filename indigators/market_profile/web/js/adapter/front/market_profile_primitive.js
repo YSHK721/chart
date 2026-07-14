@@ -105,6 +105,64 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     this._update();
   }
 
+  // tf-period ホバー読取（依頼者指示 2026-07-13・a案ツールチップ）: 周期 time とカーソル価格から
+  //   該当列の**最近傍占有レベル**を引く純ロジック。0.0255 等の微細格子では行高がサブピクセルで
+  //   正確な行へカーソルを合わせるのが実質不可能なため、縦 HOVER_TOL_PX（3px）相当の価格幅以内で
+  //   最も近い占有レベルへスナップする（px→価格換算は priceToCoordinate の unit 距離から実測。
+  //   座標源不在＝テスト等では unit×3 で近似）。ヒット時 { time, price, value, poc, vaLow, vaHigh,
+  //   tpoUnits, unit } を返し、非表示・列不在・許容外（近傍に占有なし）は null。
+  tfPeriodLevelAt(time, price) {
+    const cols = this._tfPeriods;
+    const unit = this._tfUnit;
+    if (!this._visible || !cols || !cols.length || !(unit > 0)
+        || time == null || !Number.isFinite(Number(price))) {
+      return null;
+    }
+    const t = Number(time);
+    const col = cols.find((c) => Number(c.time) === t);
+    if (!col) {
+      return null;
+    }
+    const levels = col.levels || [];
+    if (!levels.length) {
+      return null;
+    }
+    const p = Number(price);
+    let best = null;
+    let bestD = Infinity;
+    for (let i = 0; i < levels.length; i += 1) {
+      const d = Math.abs(levels[i][0] - p);
+      if (d < bestD) {
+        bestD = d;
+        best = levels[i];
+      }
+    }
+    // 許容幅: 縦 3px 相当（priceToCoordinate で unit の px 高を実測して換算）。最低でも unit/2
+    //   （バー自身の高さ内）は許容する。座標源が px を返せないときは unit×3 の近似で代替。
+    const HOVER_TOL_PX = 3;
+    let tol = unit * HOVER_TOL_PX;
+    if (this._series && typeof this._series.priceToCoordinate === 'function') {
+      const y0 = this._series.priceToCoordinate(p);
+      const y1 = this._series.priceToCoordinate(p + unit);
+      if (y0 != null && y1 != null && Math.abs(y0 - y1) > 0) {
+        tol = Math.max(unit / 2, (HOVER_TOL_PX / Math.abs(y0 - y1)) * unit);
+      }
+    }
+    if (!best || bestD > tol) {
+      return null;
+    }
+    return {
+      time: t,
+      price: best[0],
+      value: best[1],
+      poc: col.poc ?? null,
+      vaLow: col.va_low ?? null,
+      vaHigh: col.va_high ?? null,
+      tpoUnits: col.tpo_units ?? 0,
+      unit,
+    };
+  }
+
   // 増分2: スナップショット表示（累積減光＋当日強調）を切替えて再描画要求。false で従来の明るい累積へ復帰。
   setSnapshot(on) {
     this._snapshot = !!on;

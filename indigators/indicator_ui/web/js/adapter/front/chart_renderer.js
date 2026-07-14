@@ -801,6 +801,25 @@ export class ChartRenderer {
     }
     // クロスヘア価格読み取り欄（左上オーバーレイ）への DTO 発火。
     this._emitReadout(param);
+    // tf-period ホバー読取（依頼者指示 2026-07-13・a案ツールチップ）: カーソル位置の座標 DTO
+    //   { x, y, time, price } を配線先（composition root）へ渡す。lwc 型は渡さない（隔離維持）。
+    //   カーソルがチャート外（point 無し）は null＝ツールチップ hide。ハンドラ未設定は no-op。
+    if (typeof this._onTfPeriodHover === 'function') {
+      const pt = param && param.point;
+      if (pt && param.time != null && typeof this._mainSeries.coordinateToPrice === 'function') {
+        const price = this._mainSeries.coordinateToPrice(pt.y);
+        this._onTfPeriodHover(price != null
+          ? { x: pt.x, y: pt.y, time: Number(param.time), price: Number(price) }
+          : null);
+      } else {
+        this._onTfPeriodHover(null);
+      }
+    }
+  }
+
+  // tf-period ホバー座標ハンドラを設定する（composition root が配線・null で解除）。
+  setTfPeriodHoverHandler(fn) {
+    this._onTfPeriodHover = typeof fn === 'function' ? fn : null;
   }
 
   // 読み取り DTO を構築してコールバックへ渡す。param=null（ライブ更新由来）は hover 解除扱い。

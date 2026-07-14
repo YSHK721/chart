@@ -58,6 +58,7 @@ const MODULE_ORDER = [
   'js/adapter/front/tf_period_profile_client.js',
   'js/adapter/front/tf_period_jitter_buffer.js',
   'js/adapter/front/tf_period_profile_actor.js',
+  'js/adapter/front/tf_period_tooltip.js',
   'js/adapter/front/composition_root_front.js',
 ];
 

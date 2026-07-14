@@ -636,3 +636,24 @@ test('sessions 1D 相当: 単一バー日（tFirst===tLast）は従来の深夜�
 });
 
 // ===========================================================================
+// tfPeriodLevelAt（ホバー読取・依頼者指示 2026-07-13 a案）: 周期 time × 価格 → レベルデータ。
+// ===========================================================================
+test('tfPeriodLevelAt: 最近傍占有レベルへスナップ（縦3px相当許容）・許容外/列不在/非表示は null', () => {
+  const prim = new MarketProfileHistogramPrimitive();
+  prim.attached({ chart: fakeChartWithTime(), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setVisible(true);
+  prim.setTfPeriods([
+    { time: 100, levels: [[10, 2], [11, 1]], poc: 10, va_low: 10, va_high: 11, tpo_units: 3 },
+  ], 1);
+  // 最近傍ヒット（fakeSeries は price 恒等 → unit=1 は 1px ＝許容 3px = 価格 3）。
+  const hit = prim.tfPeriodLevelAt(100, 10.4);
+  assert.deepEqual(hit, { time: 100, price: 10, value: 2, poc: 10, vaLow: 10, vaHigh: 11, tpoUnits: 3, unit: 1 });
+  // 空行 12.2 も最近傍 11 へスナップ（距離 1.2 <= 3px 相当）＝微細格子で行を外しても読める。
+  assert.equal(prim.tfPeriodLevelAt(100, 12.2).price, 11);
+  // 許容外（距離 > 3px 相当）・列不在（time=999）は null。
+  assert.equal(prim.tfPeriodLevelAt(100, 50), null);
+  assert.equal(prim.tfPeriodLevelAt(999, 10), null);
+  // 非表示は null。
+  prim.setVisible(false);
+  assert.equal(prim.tfPeriodLevelAt(100, 10), null);
+});
