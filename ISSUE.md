@@ -936,6 +936,11 @@
 - **概要**: UTC暦日切りが薄い日曜原子（週明け2時間）を生み、足指標の同格計上と zp 幻影滞在（ISSUE-077）の温床になっていた。依頼者裁定によりセッション日を「ブローカー時間（冬UTC+2/夏UTC+3・米DST日程切替）の00:00＝NYクローズ17:00 ET」区切りへ再定義する。実測検証済み: 週明けオープン（夏22:03/冬23:00 UTC）はブローカー時間で月曜01:00台＝日曜原子消滅、境界は夏冬とも休場帯内＝取引時間を分断しない。
 - **設計**: marketdata 層に session_day 関数群を単一定義（IANA tz 'America/New_York'＋7時間シフト＝NY17:00 が 00:00 になる座標系。DST は zoneinfo が自動処理＝自前カレンダー不要）。既存 floor(t/86400) の日切り（tf_period 36箇所・dwell 21・zp 14・frontend growth_window/actor 等）を session_day 経由へ置換。日足/週足/月足ロールアップはブローカー日で再生成。キャッシュ（実測21,705ファイル・248MB）は全再構築。
 - **関連**: ISSUE-077（zp幻影滞在＝主因はこれで消滅・薄い祝日補正は残課題）・ISSUE-079（zp bp相対格子）。
+- **進捗（2026-07-14）**: 単位①〜④実装完了（feature/session-day-boundary・コミット9本・バックアップ backup/20260714-pre-session-day）。
+  ①marketdata/session_day.py（12テスト）②stores 署名2UTC日化・dwell/zp/tf-period 置換（zp窓=ブローカー分 [60,1394]・G=1335・K=45・キャッシュ版数bump・step5パリティは規則等値へ再定義）③resample_ohlc_tf/session（1D/1W/1M ブローカー日集計・ラベル=UTC深夜規約）・rollup 被覆判定 period_utc_start・forming 1D・tf-period 1D列 time 整合 ④frontend session_day.js（Intl NY tz・7テスト）・actor/growth_window/live_tick_player 置換（1D ライブバーの 21-24時UTC フリーズ修正含む）。
+  単位⑤: rollups 全再構築完了（jp225_tick 33.8s・jp225_m1。旧は rollups_backup_utc20260714/ へ退避）。実測: 1D 日曜バー 504→26 本（残存は歴史的特殊日）・7/12(日)夜データは 7/13(月) バーへ統合・1500本→3673本（旧4160）。dwell キャッシュ warm 完了（セッションキー4,924日・25s+テスト時副次ウォーム）。zp warm 実行中。
+  検証済（部分）: 実UI 8139 で 1D/1W ローソク（日曜バー無し）・1m×dwell×日別の列描画・forming from=セッション始端 URL を確認。テスト: marketdata 135・MP api 216（byte-parity 既知10除く＝dwell golden 2件は設計上変化・再生成は依頼者裁定待ち）・UI api 380・MP web 270・UI web 534 全緑。
+  残: zp warm 完了→zp 実UI検証・ISSUE-077 幻影滞在の前後実測・旧UTCキャッシュ(v2)清掃の裁定・develop マージ。
 
 ## ISSUE-079: zp 格子の bp 相対化＋無次元校正スキャン（絶対10pt→価格比・依頼者承認）
 - **ステータス**: OPEN（ISSUE-078 完了後に着手）
