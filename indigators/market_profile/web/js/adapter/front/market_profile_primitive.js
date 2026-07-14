@@ -320,7 +320,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
           if (y == null) {
             continue; // 範囲外価格はスキップ。
           }
-          const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * (tileW - 4));
+          const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * (tw - 4));
           ctx.fillStyle = (j === pocj) ? C_SESS_POC : heatColor(v / dmax, SESS_BAR_ALPHA);
           ctx.fillRect(left + 2, y - barH / 2, w, barH);
         }
