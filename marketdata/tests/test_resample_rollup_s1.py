@@ -128,9 +128,11 @@ def test_marketdata_resample_none_rule_returns_same_object():
 # --------------------------------------------------------------------------- #
 # marketdata.rollup（移設・byte 一致 oracle = M-2 最重要）
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("tf", _GOLDEN_TFS)
+@pytest.mark.parametrize("tf", [tf for tf in _GOLDEN_TFS if tf not in md_resample.SESSION_TFS])
 def test_rollup_stream_build_byte_identical_to_premigration_golden(tmp_path, tf):
     # M-2: 移設後 stream_build 出力が移設前コードで採取した golden と byte 完全一致。
+    #   ISSUE-078: 1D/1W/1M はセッション日集計へ意図的に変更したため golden 対象から除外し、
+    #   下の stream==全件 resample_ohlc_tf パリティ（真の不変量）で検証する。日中足は不変＝byte 一致。
     df = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 40)
     m1_csv = tmp_path / "m1.csv"
     _write_m1_csv(m1_csv, df)
@@ -140,6 +142,25 @@ def test_rollup_stream_build_byte_identical_to_premigration_golden(tmp_path, tf)
     golden = _GOLDEN_DIR / f"jp225_m1_{tf}.csv"
     assert filecmp.cmp(produced, golden, shallow=False), (
         f"{tf}: 移設後 stream_build が golden と byte 不一致（M-4: 即 fail）"
+    )
+
+
+@pytest.mark.parametrize("tf", list(md_resample.SESSION_TFS))
+def test_rollup_stream_build_equals_full_session_resample(tmp_path, tf):
+    # ISSUE-078: セッション tf（1D/1W/1M）の不変量＝stream_build（チャンク跨ぎ carry-over 込み）が
+    #   全件 resample_ohlc_tf と完全一致する（チャンク分割に依存しない）。
+    df = _synthetic_m1("2020-01-01 00:00:00", 60 * 24 * 40)
+    m1_csv = tmp_path / "m1.csv"
+    _write_m1_csv(m1_csv, df)
+    out_dir = tmp_path / "rollups"
+    md_rollup.stream_build(m1_csv, [tf], out_dir, chunk_rows=7000)
+    produced = pd.read_csv(out_dir / f"jp225_m1_{tf}.csv")
+    produced["date"] = pd.to_datetime(produced["date"])
+    produced = produced.set_index("date")
+    expected = md_resample.resample_ohlc_tf(df, tf)
+    expected.index.name = "date"  # CSV 由来 index 名との差だけ吸収（値の一致が不変量）。
+    pd.testing.assert_frame_equal(
+        produced.astype(float), expected.astype(float), check_freq=False
     )
 
 

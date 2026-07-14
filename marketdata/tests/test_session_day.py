@@ -119,3 +119,17 @@ def test_vectorized_matches_scalar_across_dst():
 def test_vectorized_empty_input():
     out = sd.session_day_starts(np.array([], dtype=np.int64))
     assert out.dtype == np.int64 and out.size == 0
+
+
+# ---------------------------------------------------------------------------
+# session_bar_time（ISSUE-078 単位③）: 1D バーの time 規約＝セッション日ラベルの UTC 深夜 epoch。
+#   チャートの日付軸ラベル・既存フロント（dateToUnix(label)）との整合をとる表示規約。
+# ---------------------------------------------------------------------------
+def test_session_bar_time_is_utc_midnight_of_label():
+    t = utc(2026, 7, 12, 22, 3, 44)  # 日曜夜＝月曜セッション（ラベル 2026-07-13）。
+    assert sd.session_date_label(t) == "2026-07-13"
+    assert sd.session_bar_time(t) == utc(2026, 7, 13)  # ラベル日の UTC 深夜。
+    # セッション始端そのものでも同じラベル日へ写像される。
+    assert sd.session_bar_time(utc(2026, 7, 12, 21, 0, 0)) == utc(2026, 7, 13)
+    # 冬。
+    assert sd.session_bar_time(utc(2026, 1, 11, 23, 0, 37)) == utc(2026, 1, 12)

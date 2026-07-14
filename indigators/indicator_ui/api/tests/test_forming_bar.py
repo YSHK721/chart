@@ -57,11 +57,31 @@ def test_is_tick_ref_and_supported_timeframe() -> None:
 @pytest.mark.parametrize("tf,now,expected_start", [
     ("5m", "2025-01-02 09:07:30", "2025-01-02 09:05:00"),
     ("1h", "2025-01-02 09:40:00", "2025-01-02 09:00:00"),
-    ("1D", "2025-01-02 09:40:00", "2025-01-02 00:00:00"),
+    # ISSUE-078: 1D はセッション日（NY17:00 ET 基準）＝冬 22:00 UTC 始端。
+    ("1D", "2025-01-02 09:40:00", "2025-01-01 22:00:00"),
+    ("1D", "2025-07-02 09:40:00", "2025-07-01 21:00:00"),  # 夏は 21:00 UTC 始端。
     ("1m", "2025-01-02 09:07:30", "2025-01-02 09:07:00"),
 ])
 def test_period_start_unix_floors_now_to_tf(tf, now, expected_start) -> None:
     assert fb.period_start_unix(_unix(now), tf) == _unix(expected_start)
+
+
+def test_forming_bar_1d_time_is_session_label_midnight(monkeypatch) -> None:
+    """ISSUE-078: 1D forming バーの time はセッション日ラベルの UTC 深夜（表示規約＝rollup 1D と同一）。
+
+    データ窓はセッション始端からだが、time はラベル深夜へ再ラベルする（chart の 1D バー時刻整合）。
+    """
+    seen = {}
+
+    def fake_from_ticks(start, end, **kw):
+        seen["start"], seen["end"] = start, end
+        return {"time": start, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 3.0}
+
+    monkeypatch.setattr(fb, "forming_bar_from_ticks", fake_from_ticks)
+    now = _unix("2025-01-02 09:40:00")
+    bar = fb.forming_bar("jp225_tick", "1D", now)
+    assert seen["start"] == _unix("2025-01-01 22:00:00")  # データ窓＝セッション始端（冬）。
+    assert bar["time"] == _unix("2025-01-02 00:00:00")     # time＝ラベル深夜（表示規約）。
 
 
 def test_forming_bar_delegates_with_period_window(monkeypatch) -> None:

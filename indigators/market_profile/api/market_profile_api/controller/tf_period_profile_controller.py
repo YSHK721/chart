@@ -30,7 +30,11 @@ from market_profile_api.compute.tf_period_profile import tf_period_profiles
 from market_profile_api.controller.market_profile_controller import _error_body
 
 # セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定の唯一の規則源。
-from marketdata.session_day import next_session_day_start, session_day_start  # noqa: E402
+from marketdata.session_day import (  # noqa: E402
+    next_session_day_start,
+    session_bar_time,
+    session_day_start,
+)
 
 _DAY = 86400  # 1 カレンダー日（秒）。per-day キャッシュ／窓分割の単位。
 
@@ -154,7 +158,8 @@ def _day_columns(
         shifted = np.asarray(secs, dtype=np.int64) - day_start if len(secs) else secs
         cols = tf_period_profiles(shifted, mids, int(day_end - day_start), unit, 0, int(day_end - day_start))
         for c in cols:
-            c["time"] = int(day_start)
+            # 1D 列の time は 1D バー時刻規約（セッション日ラベルの UTC 深夜＝rollup/forming と同一）。
+            c["time"] = int(session_bar_time(day_start))
     else:
         p_first = ((day_start + tf_sec - 1) // tf_sec) * tf_sec       # 始端が本セッションに属す最初の周期。
         p_last = ((day_end - 1) // tf_sec) * tf_sec                    # 始端が day_end 未満の最後の周期。

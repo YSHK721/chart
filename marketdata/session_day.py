@@ -64,6 +64,17 @@ def session_date_label(t: "int | float") -> str:
     return _broker_date(t).strftime("%Y-%m-%d")
 
 
+def session_bar_time(t: "int | float") -> int:
+    """``t`` が属するセッション日の **1D バー time 規約値**＝ラベル日の UTC 深夜 epoch を返す。
+
+    表示規約（ISSUE-078 単位③）: 1D バーはデータ窓こそ [session_day_start, next) だが、time は
+    セッション日ラベル（ブローカー暦日）の UTC 深夜に置く。チャートの日付軸ラベル・既存フロントの
+    date→time 突合（dateToUnix(label)）と一致させるための表示座標であり、データ窓の始端ではない。
+    """
+    b = _broker_date(t)
+    return int(datetime(b.year, b.month, b.day, tzinfo=timezone.utc).timestamp())
+
+
 def session_label_to_start(label: str) -> int:
     """ラベル 'YYYY-MM-DD' → 当該セッション日の始端 UNIX 秒（:func:`session_date_label` の逆）。"""
     y, m, d = (int(x) for x in str(label).split("-"))

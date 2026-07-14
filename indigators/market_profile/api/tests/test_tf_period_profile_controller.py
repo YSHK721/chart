@@ -168,7 +168,7 @@ def test_4h_straddling_period_assigned_once(monkeypatch):
 
 
 def test_1d_column_is_one_per_session_keyed_by_session_start(monkeypatch):
-    """1D はセッション日＝1 周期（time=セッション始端・全セッションティックを集約）。"""
+    """1D はセッション日＝1 周期（time=1D バー規約＝セッション日ラベルの UTC 深夜）。"""
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _sunday_ticks)
@@ -178,5 +178,5 @@ def test_1d_column_is_one_per_session_keyed_by_session_start(monkeypatch):
     assert st == 200
     assert len(body["columns"]) == 1
     col = body["columns"][0]
-    assert col["time"] == _MON_START
+    assert col["time"] == 1783900800  # 2026-07-13 00:00 UTC（ラベル深夜＝1D バー時刻）。
     assert col["tpo_units"] == 3  # 日曜夜 2 + 月曜昼 1 の全ティックが単一セッション列に入る。
