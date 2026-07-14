@@ -292,7 +292,7 @@ export class IndicatorController {
     if (p.range == null) {
       return null;
     }
-    const BAR_WIDTHS = new Set(['25', '50', '100', '250', '500']);
+    const BAR_WIDTHS = new Set(['10', '25', '50', '100', '250', '500']);
     return BAR_WIDTHS.has(String(p.range)) ? 'range' : 'bins';
   }
 

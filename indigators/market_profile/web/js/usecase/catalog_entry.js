@@ -99,11 +99,14 @@ export function makeMarketProfileDef({
       //   解像度=レンジ（resmode=range）のときのみ表示。値は client が &barw= を付与し backend が
       //   n_bins = round(窓幅/barw) を算出する（bins は送らない）。
       //   order は bins と同一(1)＝同じ位置で入れ替わる（トグル時に下の va/src がズレず認知負荷を抑える）。
-      param('range', ParamType.ENUM, '100', [], ['25', '50', '100', '250', '500'], {
+      //   10pt は内部固定グリッド GRID_W と同値＝意味のある最細解像度（zp/dwell は 10pt セルで集計・
+      //   帰無評価するためこれ未満の表示 bin は情報が増えない）。backend は n_bins を [1,1000] へ
+      //   クランプするため、窓幅 10,000pt 超（1m 全窓等）では実効レンジが自動的に粗くなる。
+      param('range', ParamType.ENUM, '100', [], ['10', '25', '50', '100', '250', '500'], {
         group: 'group.calc', order: 1, label: 'レンジ(pt)',
         conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
         conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
-        enumLabels: { 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
+        enumLabels: { 10: '10', 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
       }),
       // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
       //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する

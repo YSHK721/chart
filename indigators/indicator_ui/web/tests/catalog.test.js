@@ -118,7 +118,7 @@ test('catalog: market_profile range ENUM drops auto → [25,50,100,250,500] defa
   assert.ok(range, 'range param exists');
   assert.equal(range.type, ParamType.ENUM);
   assert.equal(range.default, '100');
-  assert.deepEqual(range.enumValues, ['25', '50', '100', '250', '500']);
+  assert.deepEqual(range.enumValues, ['10', '25', '50', '100', '250', '500']);
   assert.equal(range.label, 'レンジ(pt)');
   // 'auto' 由来のラベルは撤去済み。
   assert.equal(range.enumLabels.auto ?? null, null);
