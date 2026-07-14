@@ -45,13 +45,27 @@ def test_happy_path_returns_columns(monkeypatch):
     st, body = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
     assert st == 200 and body["ok"] is True
     assert body["tf"] == "1m" and body["from"] == 0 and body["to"] == 120
-    # ISSUE-068: 列は GRID_W(=10pt) でビニング（最小単位でなく固定グリッド）。
-    assert body["unit"] == 10.0
+    # ISSUE-073: 1m は最小価格刻み 0.0255 でビニング（時間足別解像度・依頼者承認 2026-07-13）。
+    assert body["unit"] == 0.0255
     times = [c["time"] for c in body["columns"]]
     assert times == [0, 60]
-    # period0 mids 10,10,11 → round(/10)=1 → price 10・count 3／period60 mids 20,21 → round(/10)=2 → price 20・count 2。
-    assert body["columns"][0]["levels"] == [[10.0, 3]]
-    assert body["columns"][1]["levels"] == [[20.0, 2]]
+    # 0.0255 格子への量子化: mid 10→round(392.16)=392→9.996 / 11→431→10.9905 /
+    # 20→784→19.992 / 21→824→21.012（price は 4 桁丸め）。
+    assert body["columns"][0]["levels"] == [[9.996, 2], [10.9905, 1]]
+    assert body["columns"][1]["levels"] == [[19.992, 1], [21.012, 1]]
+
+
+def test_non_1m_tf_keeps_grid_w_unit(monkeypatch):
+    """ISSUE-073: 1m 以外（例 15m）は ISSUE-068 の GRID_W(=10pt) を維持する。"""
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
+    monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
+    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
+    st, body = ctl.handle_tf_period_profile("jp225_tick", "15m", 0, 900, now=1e12)
+    assert st == 200 and body["ok"] is True
+    assert body["unit"] == 10.0
+    # 全 mids 10,10,11,20,21 が単一 15m 周期に量子化される（round(/10): 1,1,1,2,2）。
+    assert body["columns"][0]["levels"] == [[10.0, 3], [20.0, 2]]
 
 
 def test_completed_day_is_cached(monkeypatch):
