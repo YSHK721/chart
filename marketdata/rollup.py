@@ -238,9 +238,13 @@ class _RollupWriter:
         self.close()
 
 
-def _resample_chunk(chunk: pd.DataFrame, rule: str | None) -> "OrderedBars":
-    """チャンク（date index 化済み）を rule で resample し period→bar の順序辞書を返す。"""
-    resampled = _resample.resample_ohlc(chunk, rule)
+def _resample_chunk(chunk: pd.DataFrame, tf: str) -> "OrderedBars":
+    """チャンク（date index 化済み）を tf で resample し period→bar の順序辞書を返す。
+
+    ISSUE-078: 規則解決は :func:`marketdata.resample.resample_ohlc_tf`（1D/1W/1M はセッション日
+    集計・日中足は UTC floor）へ単一化する。
+    """
+    resampled = _resample.resample_ohlc_tf(chunk, tf)
     bars: "OrderedBars" = {}
     for period, row in resampled.iterrows():
         bars[period] = _bar_to_dict(row)
@@ -315,14 +319,15 @@ def _truncate_append_bars(path: Path, offset: int, bars: "OrderedBars") -> None:
         os.fsync(fh.fileno())
 
 
-def _resample_suffix(probe: pd.DataFrame, rule: str | None, since_period: pd.Timestamp) -> "OrderedBars":
-    """probe 全体を resample し、``since_period`` 以降の period→bar（完全バー）を返す。
+def _resample_suffix(probe: pd.DataFrame, tf: str, since_period: pd.Timestamp) -> "OrderedBars":
+    """probe 全体を tf で resample し、``since_period`` 以降の period→bar（完全バー）を返す。
 
-    probe が ``since_period`` の期間始端を内包する前提（``probe.index.min() <= since_period``）。
-    since_period 以降の各 period の 1 分足は probe に連続して含まれるため、その resample 結果は
-    形成中バーも含め完全（partial でない）＝そのまま上書きしてよい。
+    probe が ``since_period`` の期間 **UTC 始端**（:func:`marketdata.resample.period_utc_start`）を
+    内包する前提。since_period 以降の各 period の 1 分足は probe に連続して含まれるため、その
+    resample 結果は形成中バーも含め完全（partial でない）＝そのまま上書きしてよい（ISSUE-078:
+    セッション tf はラベルがブローカー暦日のため、被覆判定は period_utc_start で行うこと）。
     """
-    resampled = _resample.resample_ohlc(probe, rule)
+    resampled = _resample.resample_ohlc_tf(probe, tf)
     suffix = resampled[resampled.index >= since_period]
     bars: "OrderedBars" = {}
     for period, row in suffix.iterrows():
@@ -363,8 +368,7 @@ def stream_build(
             if not chunk.empty:
                 last_ts = chunk.index.max()
             for tf in tf_list:
-                rule = _resample.TIMEFRAME_RULES[tf]
-                chunk_bars = _resample_chunk(chunk, rule)
+                chunk_bars = _resample_chunk(chunk, tf)
                 if not chunk_bars:
                     continue
                 periods = list(chunk_bars)
@@ -448,18 +452,20 @@ def incremental_update(
     probe_covers = not probe.empty
 
     for tf in tf_list:
-        rule = _resample.TIMEFRAME_RULES[tf]
         path = _rollup_path(out_dir, tf, ref_prefix)
         # ---- O(新規) 速い経路: 末尾だけ truncate+append（過去確定足を read/write しない）----
         #   probe が「既存末尾 period の期間始端」を内包すれば、形成中バーを probe から再計算
         #   （上書き＝冪等）でき、ロールアップ全体（5m≈64MB）の read/write を避けられる。
         last_period = _rollup_last_period(path)
+        # ISSUE-078: セッション tf のラベルはブローカー暦日＝probe（UTC index）との被覆判定は
+        #   期間の UTC 始端（period_utc_start）で行う（ラベル直接比較は最大 24h 過大評価し、
+        #   形成中バー前半を欠落させ得る）。日中足は period_utc_start がラベル素通し＝従来同値。
         if (
             last_period is not None
             and probe_covers
-            and probe.index.min() <= last_period
+            and probe.index.min() <= _resample.period_utc_start(tf, last_period)
         ):
-            suffix = _resample_suffix(probe, rule, last_period)
+            suffix = _resample_suffix(probe, tf, last_period)
             if suffix:
                 offset = _last_data_line_offset(path)
                 _truncate_append_bars(path, offset, suffix)
@@ -467,7 +473,7 @@ def incremental_update(
         # ---- フォールバック（全件 rewrite）: probe 不足（1M 等）・ファイル不在・空 ----
         # 追記 tail を resample（小）。既存ロールアップは DataFrame のまま扱い辞書化しない
         #   （ISSUE-012: 90 万件の dict-of-dict が RSS を 618MB へ急騰させる回帰の防止）。
-        new_df = _resample.resample_ohlc(tail_df, rule)
+        new_df = _resample.resample_ohlc_tf(tail_df, tf)
         if new_df.empty:
             continue
         if path.exists():

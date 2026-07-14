@@ -19,7 +19,8 @@ def _tick(mod: int, sec_in_min: int = 0):
 
 
 def test_minute_close_grid_last_tick_wins_and_ffill():
-    secs = np.array([_tick(61, 5), _tick(61, 40), _tick(63, 10)], dtype=np.int64)
+    o = zp.SESSION_OPEN_MOD  # 窓起点相対（ISSUE-078: ブローカー分 60 起点）。
+    secs = np.array([_tick(o, 5), _tick(o, 40), _tick(o + 2, 10)], dtype=np.int64)
     mids = np.array([100.0, 101.0, 105.0])
     out = zp.minute_close_grid(secs, mids, _DAY)
     assert out is not None
@@ -124,3 +125,52 @@ def test_null_b_period_moments_matches_full_split():
 def test_day_seed_deterministic():
     assert zp.day_seed("JP225", 123) == zp.day_seed("JP225", 123)
     assert zp.day_seed("JP225", 123) != zp.day_seed("JP225", 124)
+
+
+# --------------------------------------------------------------------------- #
+# セッション日切り（ISSUE-078）: セッション窓はブローカー分（NY17:00 ET 基準日内オフセット）
+# --------------------------------------------------------------------------- #
+class TestSessionDayWindow:
+    MON_START = 1783890000  # 2026-07-12 21:00 UTC（夏・月曜セッション始端）。
+
+    def test_session_window_constants_are_broker_relative(self):
+        # 実測（ISSUE-078）: オープン=ブローカー01:00（冬ちょうど・夏01:01-06）/ クローズ=23:14（夏冬同値）。
+        assert zp.SESSION_OPEN_MOD == 60
+        assert zp.SESSION_CLOSE_MOD == 1394
+        assert zp.G_MINUTES == 1335
+        assert zp.K_BRACKETS == (1394 - 60) // 30 + 1
+
+    def test_minute_close_grid_maps_session_relative_minutes(self):
+        # day_start=セッション始端。始端+60分（ブローカー01:00）のティックが grid[0] に入る。
+        secs = np.array([self.MON_START + 60 * 60, self.MON_START + 61 * 60], dtype=np.int64)
+        mids = np.array([100.0, 110.0])
+        grid = zp.minute_close_grid(secs, mids, self.MON_START)
+        assert grid is not None
+        closes, open_d = grid
+        assert closes.shape == (zp.G_MINUTES,)
+        assert closes[0] == 100.0 and closes[1] == 110.0
+        assert open_d == 100.0
+
+    def test_minute_close_grid_excludes_outside_session_window(self):
+        # 窓外（始端+10分＝ブローカー00:10 と 始端+1395分=23:15）は除外＝窓内ゼロで None。
+        secs = np.array([self.MON_START + 10 * 60, self.MON_START + 1395 * 60], dtype=np.int64)
+        mids = np.array([100.0, 110.0])
+        assert zp.minute_close_grid(secs, mids, self.MON_START) is None
+
+    def test_compute_walker_requests_session_windows(self, monkeypatch, tmp_path):
+        # 日ウォークが [セッション始端, 翌始端) 窓で tick を読む（UTC 深夜切りでない）。
+        from market_profile_api.compute import market_profile_dwell as mpd
+        monkeypatch.setattr(zp, "_ZP_CACHE_ROOT", tmp_path)
+        zp._reset_caches()
+        windows = []
+
+        def spy(symbol, start, end):
+            windows.append((int(start), int(end)))
+            return np.array([], dtype=np.int64), np.array([], dtype=np.float64)
+
+        monkeypatch.setattr(mpd, "_load_window_ticks", spy)
+        zp.compute_zp_profile(
+            "JP225", self.MON_START, self.MON_START, 95.0, 115.0, 4,
+            bar_sec=86400, now=self.MON_START + 3 * 86400,
+        )
+        assert (self.MON_START, self.MON_START + 86400) in windows

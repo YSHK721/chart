@@ -499,16 +499,19 @@ class TestWarmer:
         # Act: 1 回目。
         r1 = mpd.warm_dwell_cache("JP225", now=now)
 
-        # Assert: 対象日のキャッシュファイルが作られる。
-        assert r1["built"] == 3 and r1["skipped"] == 0
-        for day in days:
+        # Assert: 対象 UTC 日を被覆する全セッション日のキャッシュが作られる（ISSUE-078: 3 UTC 日
+        #   → 前後跨ぎで 4 セッション日。キーはセッション始端＝冬 22:00 UTC）。
+        expected_sessions = sorted({mpd.session_day_start(d) for d in days}
+                                   | {mpd.session_day_start(d + 86399) for d in days})
+        assert r1["built"] == len(expected_sessions) and r1["skipped"] == 0
+        for day in expected_sessions:
             assert mpd._cache_path("JP225", day).is_file()
 
         # Act: 2 回目（冪等）。
         r2 = mpd.warm_dwell_cache("JP225", now=now)
 
         # Assert: すべてスキップ（再構築しない）。
-        assert r2["built"] == 0 and r2["skipped"] == 3
+        assert r2["built"] == 0 and r2["skipped"] == len(expected_sessions)
 
     def test_warm_skips_incomplete_current_day(self, tmp_path, monkeypatch):
         # 当日（未確定）は永続化されない。
@@ -521,7 +524,10 @@ class TestWarmer:
 
         r = mpd.warm_dwell_cache("JP225", now=now)
 
-        assert mpd._cache_path("JP225", _DAY0).is_file()          # 完了日は保存。
+        # ISSUE-078: セッション日キー。now 時点で完了しているのは初回セッション
+        #   （2023-12-31 22:00 始まり・終端 2024-01-01 22:00 <= now）のみ。
+        first_session = mpd.session_day_start(_DAY0)
+        assert mpd._cache_path("JP225", first_session).is_file()  # 完了セッションは保存。
         assert not mpd._cache_path("JP225", _DAY0 + _DAY).is_file()  # 未確定当日は非保存。
         assert r["built"] == 1
 
@@ -1060,3 +1066,51 @@ class TestControllerDwellSessions:
         assert status == 200
         assert "sessions_total" not in payload
 
+
+
+# --------------------------------------------------------------------------- #
+# セッション日切り（ISSUE-078）: 日の走査・sessions ラベルが NY17:00 ET 基準のセッション日になる
+# --------------------------------------------------------------------------- #
+class TestSessionDaySplit:
+    # 夏の月曜セッション始端（2026-07-12 21:00 UTC）と実測オープン（日曜 22:03 UTC）。
+    MON_START = 1783890000
+    SUN_OPEN = 1783893824  # 2026-07-12 22:03:44 UTC
+
+    def test_sunday_evening_ticks_are_labeled_monday_session(self, monkeypatch):
+        # 日曜夜（UTC）のティックが '2026-07-12' でなく月曜セッション '2026-07-13' に帰属する。
+        secs = [self.SUN_OPEN, self.SUN_OPEN + 60, self.SUN_OPEN + 7200, self.SUN_OPEN + 7260]
+        mids = [100.0, 100.0, 110.0, 110.0]
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        profile = mpd.compute_dwell_profile(
+            "JP225", self.MON_START, self.MON_START, 95.0, 115.0, 4,
+            bar_sec=86400, now=self.MON_START + 3 * 86400, metric="count", want_sessions=True,
+        )
+        labels = [s["date"] for s in profile["sessions"]]
+        assert labels == ["2026-07-13"], labels
+        assert profile["tpo_units"] == 4  # 全ティックが単一セッションに計上される。
+
+    def test_full_session_walker_requests_session_window(self, monkeypatch):
+        # 完全日ウォークが [セッション始端, 翌セッション始端) の窓で読むこと（UTC 深夜切りでない）。
+        windows = []
+
+        def spy_loader(symbol, start, end):
+            windows.append((int(start), int(end)))
+            return _make_loader([self.SUN_OPEN], [100.0])(symbol, start, end)
+
+        monkeypatch.setattr(mpd, "_load_window_ticks", spy_loader)
+        mpd.compute_dwell_profile(
+            "JP225", self.MON_START, self.MON_START, 95.0, 115.0, 4,
+            bar_sec=86400, now=self.MON_START + 3 * 86400, metric="count",
+        )
+        day_windows = [w for w in windows if w[0] == self.MON_START]
+        assert day_windows and day_windows[0] == (self.MON_START, self.MON_START + 86400)
+
+    def test_day_rollup_completion_uses_next_session_start(self, monkeypatch, tmp_path):
+        # 完了判定がセッション終端（翌セッション始端）基準であること: now=終端-1 は未完了（非永続）。
+        monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader([self.SUN_OPEN], [100.0]))
+        table = np.ones((7, 24), dtype=bool)
+        path = mpd._cache_path("JP225", self.MON_START)
+        mpd._day_rollup("JP225", self.MON_START, table, now=self.MON_START + 86400 - 1)
+        assert not path.is_file(), "セッション未了は永続化しない"
+        mpd._day_rollup("JP225", self.MON_START, table, now=self.MON_START + 86400)
+        assert path.is_file(), "セッション完了で永続化する"

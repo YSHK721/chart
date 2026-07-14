@@ -23,7 +23,10 @@
 //   domain 値＝副作用なし・自内 import のみ（外側レイヤー非参照・Dependency Rule）。YAGNI: 明示 Port IF は
 //     作らず、呼び出し側は静的メソッド forCurrent の戻り値（duck-typing）を読む。
 
-const DAY = 86400; // 暦日 anchor（sessions のセッション境界）。1D=86400 の隔離点。
+// セッション日境界（ISSUE-078）: 暦日 anchor は UTC floor でなく NY17:00 ET 基準のセッション日。
+import { sessionDayStart } from './session_day.js';
+
+const DAY = 86400; // 窓幅・バー数近似の基準（境界 anchor には使わない＝sessionDayStart が担う）。
 
 // tf → 足の秒長（bar-period 床の基準）。既存 market_profile_actor.TF_BAR_SEC・
 //   replay 側 durationSecs と同一規約（未知/None は 1D=86400 相当へフォールバック）。
@@ -63,14 +66,18 @@ export class GrowthWindow {
 
   // bar-period 始端 = floor(cursor, tf)（tf 境界床）。backend forming_bar.period_start_unix と対応する
   //   front 側近似（固定周期 tf は同値。1W/1M は粗サブ解像度）。
+  //   ISSUE-078: '1D' のバー周期はセッション日（NY17:00 ET 基準）＝backend period_start_unix('1D') と同値。
   static periodStart(cursor, tf) {
+    if (tf === '1D') {
+      return sessionDayStart(cursor);
+    }
     const s = GrowthWindow.barSec(tf);
     return Math.floor(cursor / s) * s;
   }
 
-  // セッション始端 = 暦日 anchor = floor(cursor/86400)*86400（当日始まり）。1D=86400 の隔離点。
+  // セッション始端 = セッション日 anchor（NY17:00 ET 基準・ISSUE-078）。
   static sessionStart(cursor) {
-    return Math.floor(cursor / DAY) * DAY;
+    return sessionDayStart(cursor);
   }
 
   // 成長 push（bins モード）の表示 bin 幅ロック（ISSUE-047）: barw = 「from 直前の因果履歴レンジ / bins」。

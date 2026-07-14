@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { GrowthWindow } from '../js/domain/growth_window.js';
+import { sessionDayStart } from '../js/domain/session_day.js';
 
 const DAY = 86400;
 
@@ -21,7 +22,7 @@ test('forCurrent(normal): 日中足は from=当日始まり（絞った窓・視
   const w = GrowthWindow.forCurrent('normal', '1h', cursor);
 
   // session_start=DAY*3 <= formingStart=DAY*3+3600*10 → min は当日始まり。
-  assert.equal(w.from, DAY * 3, '日中足(1h)は当日始まりを base 下限にする（全期間でない）');
+  assert.equal(w.from, sessionDayStart(cursor), '日中足(1h)はセッション日始端を base 下限にする（ISSUE-078）');
 });
 
 test('forCurrent(normal): 上位足(1W)は from=当該バー期間始端（不変条件 from<=formingStart を保つ）', () => {
@@ -52,7 +53,7 @@ test('forCurrent(sessions): from は暦日 anchor＝floor(cursor/86400)*86400（
   const cursor = DAY * 3 + 5000; // 3 日目の途中
   const w = GrowthWindow.forCurrent('sessions', '1h', cursor);
 
-  assert.equal(w.from, DAY * 3, 'sessions は当日始まり（暦日 anchor）を base 下限にする');
+  assert.equal(w.from, sessionDayStart(cursor), 'sessions はセッション日始端（ISSUE-078）を base 下限にする');
 });
 
 test('forCurrent(sessions): to は cursor', () => {
@@ -73,7 +74,11 @@ test('forCurrent(sessions): formingStart は period_start(cursor,tf)（backend f
 test('period_start: 1m は 60 秒床、5m は 300 秒床（全 tf tf化の核心）', () => {
   assert.equal(GrowthWindow.periodStart(125, '1m'), 120, '1m=60 秒床');
   assert.equal(GrowthWindow.periodStart(1000, '5m'), 900, '5m=300 秒床');
-  assert.equal(GrowthWindow.periodStart(DAY + 7200 + 1, '1D'), DAY, '1D=86400 秒床');
+  // ISSUE-078: 1D のバー周期はセッション日（NY17:00 ET 基準）＝UTC 深夜床でなくセッション始端。
+  assert.equal(
+    GrowthWindow.periodStart(DAY + 7200 + 1, '1D'), sessionDayStart(DAY + 7200 + 1),
+    '1D はセッション日始端（ISSUE-078）',
+  );
 });
 
 test('period_start: 未知 tf は 1D（86400）相当へフォールバック（既存 actor TF_BAR_SEC 規約）', () => {
@@ -108,8 +113,8 @@ test('不変条件: sessions の from<=formingStart（base 窓 [from,formingStar
 test('forCurrent(未知 mode): normal 扱い（絞った窓・当日 base の安全側）', () => {
   const w = GrowthWindow.forCurrent('replay', '1h', 3600 * 10);
 
-  // session_start=0・formingStart=3600*10 → min は 0（当日始まり）。normal と同じ絞った窓。
-  assert.equal(w.from, 0, '未知 mode（replay 等）は normal 扱い＝絞った窓（min(当日,formingStart)）');
+  // session_start=sessionDayStart(cursor)（1969-12-31 22:00 UTC＝EST 境界）<= formingStart → min は session 側。
+  assert.equal(w.from, sessionDayStart(3600 * 10), '未知 mode（replay 等）は normal 扱い＝絞った窓');
 });
 
 // --- cursor 欠損: 窓を成さない（null 三つ組・呼び出し側で無効判定できる） ---

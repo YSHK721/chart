@@ -29,6 +29,13 @@ from market_profile_api.compute.market_profile import _value_area
 from market_profile_api.compute.tf_period_profile import tf_period_profiles
 from market_profile_api.controller.market_profile_controller import _error_body
 
+# セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定の唯一の規則源。
+from marketdata.session_day import (  # noqa: E402
+    next_session_day_start,
+    session_bar_time,
+    session_day_start,
+)
+
 _DAY = 86400  # 1 カレンダー日（秒）。per-day キャッシュ／窓分割の単位。
 
 # 対応 tf（固定周期＝floor 可能）→ 周期秒。1W/1M（カレンダー）は floor 不可で非対応。
@@ -119,7 +126,8 @@ def _day_columns(
     再利用する（不変ゆえ無効化不要）。当日（未確定）はキャッシュせず毎回計算する（ティック成長のため）。
     """
     day_start = int(day_start)
-    completed = day_start + _DAY <= now_val
+    day_end = next_session_day_start(day_start)  # ISSUE-078: セッション日窓（DST 切替日は 23h/25h）。
+    completed = day_end <= now_val
     key = (symbol, tf, day_start)
     # ISSUE-068: 列のビニング解像度を最小価格単位→GRID_W(=10pt) へ粗くする（依頼者承認・2026-07-12）。
     #   最小単位（≈0.0255）は 1 期間に数百レベルを生み可視1年で 37MB → parse/描画でメインスレッドが
@@ -127,7 +135,7 @@ def _day_columns(
     #   旧 min-unit ディスクキャッシュ（<root>/<sym>/<tf>/<day>.json）と混ざらないよう新 subdir へ隔離する。
     # ISSUE-073: tf 別解像度（_UNIT_BY_TF）。1m のみ最小刻み 0.0255・その他は GRID_W 維持（依頼者承認 2026-07-13）。
     unit = float(_UNIT_BY_TF.get(str(tf), _mpd.GRID_W))
-    disk_tf = f"{tf}/g{unit:g}"
+    disk_tf = f"{tf}/s1/g{unit:g}"  # ISSUE-078: セッション日キー世代は s1 subdir（旧 UTC 日と不混在）。
     if completed:
         hit = _DAY_MEM.get(key)
         if hit is not None:
@@ -140,8 +148,23 @@ def _day_columns(
             while len(_DAY_MEM) > _DAY_MEM_MAX:
                 _DAY_MEM.popitem(last=False)
             return disk
-    secs, mids = _mpd._load_window_ticks(symbol, day_start, day_start + _DAY)
-    cols = tf_period_profiles(secs, mids, tf_sec, unit, day_start, day_start + _DAY)
+    # ISSUE-078: 周期は「始端が本セッション日に属する」もので構成する。周期グリッドは従来どおり
+    #   UTC floor（チャートのバー時刻と一致）。tf<=1h は境界（毎時 21/22:00 UTC）に整列するため従来と
+    #   同形。4h はセッション境界を跨ぐ最終周期が生じるが始端所属で一意に割当（重複列を作らない）。
+    #   1D はセッション日そのもの＝1 周期（time=セッション始端）。
+    if tf_sec >= _DAY:
+        secs, mids = _mpd._load_window_ticks(symbol, day_start, day_end)
+        # 単一周期化: 秒を始端相対へシフトし全ティックを period 0 に畳む → time をセッション始端へ戻す。
+        shifted = np.asarray(secs, dtype=np.int64) - day_start if len(secs) else secs
+        cols = tf_period_profiles(shifted, mids, int(day_end - day_start), unit, 0, int(day_end - day_start))
+        for c in cols:
+            # 1D 列の time は 1D バー時刻規約（セッション日ラベルの UTC 深夜＝rollup/forming と同一）。
+            c["time"] = int(session_bar_time(day_start))
+    else:
+        p_first = ((day_start + tf_sec - 1) // tf_sec) * tf_sec       # 始端が本セッションに属す最初の周期。
+        p_last = ((day_end - 1) // tf_sec) * tf_sec                    # 始端が day_end 未満の最後の周期。
+        secs, mids = _mpd._load_window_ticks(symbol, p_first, p_last + tf_sec)
+        cols = tf_period_profiles(secs, mids, tf_sec, unit, p_first, day_end)
     result = (unit, cols)
     if completed:
         _DAY_MEM[key] = result
@@ -164,9 +187,10 @@ def _day_columns_zp(
     当日はキャッシュせず経過分までで都度計算する（既存 _day_columns と同規約）。
     """
     day_start = int(day_start)
-    completed = day_start + _DAY <= now_val
+    day_end = next_session_day_start(day_start)  # ISSUE-078。
+    completed = day_end <= now_val
     key = (symbol, tf, day_start, "zp")
-    disk_tf = f"{tf}/zp"  # 新サブディレクトリ（既存 JSON 形式・パスは非改変）。
+    disk_tf = f"{tf}/s1/zp"  # ISSUE-078: セッション日キー世代 s1（旧 UTC 日 subdir と不混在）。
     if completed:
         hit = _DAY_MEM.get(key)
         if hit is not None:
@@ -202,8 +226,11 @@ def _day_columns_zp(
             mid_day = (centers[0] + centers[-1]) / 2.0
             # 周期のカラム範囲（セッション窓 index・半開）。空周期はスキップ。
             periods: "list[tuple[int, tuple[int, int]]]" = []
-            p = day_start
-            while p < day_start + _DAY:
+            # ISSUE-078: 周期グリッドは UTC floor（バー時刻整合）のまま、始端所属で本セッションへ割当。
+            #   4h のセッション跨ぎ最終周期は本セッション窓内の分だけで評価する（観測・帰無とも同一
+            #   col 範囲＝統計的に整合。跨ぎ先はブローカー 01:00 前の休場帯が大半＝損失は僅少）。
+            p = ((day_start + tf_sec - 1) // tf_sec) * tf_sec
+            while p < day_end:
                 lo = max(0, (p - day_start) // 60 - _zp.SESSION_OPEN_MOD)
                 hi = min(col_cap, (p + tf_sec - day_start) // 60 - _zp.SESSION_OPEN_MOD)
                 if hi > lo:
@@ -309,7 +336,7 @@ def handle_tf_period_profile(
     day_fn = _day_columns_zp if src == "zp" else _day_columns
     columns: list = []
     units: list = []
-    day = (from_i // _DAY) * _DAY
+    day = session_day_start(from_i)  # ISSUE-078: セッション日ウォーク。
     while day < to_i:
         unit_d, cols_d = day_fn(symbol, timeframe, tf_sec, day, now_val)
         if cols_d:
@@ -317,7 +344,7 @@ def handle_tf_period_profile(
             if picked:
                 columns.extend(picked)
                 units.append(unit_d)
-        day += _DAY
+        day = next_session_day_start(day)
     unit = min(units) if units else (float(_zp.GRID_W) if src == "zp" else 1.0)
     return 200, {
         "ok": True,

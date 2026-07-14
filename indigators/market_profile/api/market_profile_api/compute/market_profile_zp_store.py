@@ -169,9 +169,10 @@ class ZpStore:
     # 無効化（ソースティック署名・DwellRollupStore と同一規則）
     # ------------------------------------------------------------------ #
     def day_source_signature(self, symbol: str, day_start: int) -> str:
+        # ISSUE-078: セッション日は UTC 2 日跨ぎ＝両日 parquet を署名に含める（DwellRollupStore と同一規則）。
         day = pd.Timestamp(int(day_start), unit="s").normalize()
         parts: list[str] = []
-        for p in self._day_parquet_files(day, day, symbol=symbol):
+        for p in self._day_parquet_files(day, day + pd.Timedelta(days=1), symbol=symbol):
             try:
                 st = p.stat()
                 parts.append(f"{p.name}:{int(st.st_mtime)}:{int(st.st_size)}")

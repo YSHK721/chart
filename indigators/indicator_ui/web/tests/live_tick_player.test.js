@@ -341,3 +341,32 @@ test('playback uses serverNow (now+clockOffset) so a skewed client clock still g
   assert.equal(sp.calls.updateLast.length, 1);
   assert.equal(sp.calls.updateLast.at(-1).close, 200.0);
 });
+
+
+// --------------------------------------------------------------------------- #
+// セッション日 1D（ISSUE-078）: 日曜夜 UTC の tick が月曜セッションの 1D バー（ラベル深夜 time）へ累積する。
+// --------------------------------------------------------------------------- #
+test('1D: 日曜夜 UTC の tick はセッション 1D バー（ラベル深夜 time）へ累積しフリーズしない', async () => {
+  const calls = [];
+  const renderer = { updateLastCandle: (b) => calls.push({ ...b }) };
+  // 2026-07-12 22:03 UTC（日曜夜＝月曜セッション）。seed は /forming_bar が新規約 time（7/13 深夜）を返す。
+  const t0ms = 1783893824000;
+  const seedBar = { time: 1783900800, open: 100, high: 101, low: 99, close: 100.5, volume: 3 };
+  const player = new LiveTickPlayer({
+    renderer,
+    fetchLiveTicks: async () => ({ ok: true, ticks: [], serverNowMs: t0ms }),
+    loadFormingBar: async () => seedBar,
+    datasetRef: 'jp225_tick',
+    getTimeframe: () => '1D',
+    setInterval: () => 1,
+    clearInterval: () => {},
+    now: () => t0ms,
+    delayMs: 0,
+  });
+  await player._seed('1D');
+  player._queue.push([t0ms - 1000, 105.0]); // 日曜 22:03 UTC の tick。
+  await player._playback();
+  assert.equal(calls.length, 1, '日曜夜 tick が適用される（旧 UTC floor では過去期間扱いで無視されていた）');
+  assert.equal(calls[0].time, 1783900800, 'バー time は 1D 規約（セッション日ラベルの UTC 深夜）');
+  assert.equal(calls[0].high, 105.0);
+});

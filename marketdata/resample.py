@@ -49,6 +49,66 @@ def is_known_timeframe(timeframe: Any) -> bool:
     return timeframe in TIMEFRAME_RULES
 
 
+# セッション日（NY17:00 ET 基準・ISSUE-078）で集計する上位 tf。日中足（5m..4h）は UTC floor 不変。
+SESSION_TFS = ("1D", "1W", "1M")
+_NY_TZ = "America/New_York"
+_BROKER_SHIFT = pd.Timedelta(hours=7)  # ブローカー時間 = NY + 7h（NY17:00 → 00:00）。
+
+
+def _to_broker_naive_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """naive UTC index → naive ブローカー時間 index（DST は IANA tz へ委譲・自前カレンダー禁止）。"""
+    return idx.tz_localize("UTC").tz_convert(_NY_TZ).tz_localize(None) + _BROKER_SHIFT
+
+
+def resample_ohlc_session(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
+    """1D/1W/1M をセッション日（ブローカー暦日）で集計する :func:`resample_ohlc` 変種（ISSUE-078）。
+
+    index（naive UTC）をブローカー時間へ写像して resample する。返す index ラベルは naive の
+    ブローカー暦日で、意味は「そのセッション日ラベルの UTC 深夜 epoch」（チャートの日付軸・
+    既存 loader の date 列と整合する表示規約＝marketdata.session_day.session_bar_time と同値）。
+    集約規則（OHLC/volume/dropna）は resample_ohlc へ委譲する（規則の二重定義なし）。
+    """
+    if rule is None:
+        return df
+    shifted = df.copy()
+    shifted.index = _to_broker_naive_index(df.index)
+    return resample_ohlc(shifted, rule)
+
+
+def resample_ohlc_tf(df: pd.DataFrame, tf: str) -> pd.DataFrame:
+    """tf 名で resample する単一入口（ISSUE-078）: 1D/1W/1M はセッション集計・日中足は UTC floor。
+
+    rollup（stream/increment）と全件再集計の両方が本関数を使うことで、セッション日規則の
+    二重定義を防ぐ（旧: 呼び出し側が TIMEFRAME_RULES→resample_ohlc を直接組み合わせ）。
+    """
+    rule = TIMEFRAME_RULES[tf]
+    if tf in SESSION_TFS:
+        return resample_ohlc_session(df, rule)
+    return resample_ohlc(df, rule)
+
+
+def period_utc_start(tf: str, label: pd.Timestamp) -> pd.Timestamp:
+    """period ラベル → その期間の **UTC 始端**（naive UTC Timestamp）を返す（ISSUE-078）。
+
+    日中足はラベル＝始端（UTC floor）。セッション tf はラベル（ブローカー暦日）から期間先頭の
+    ブローカー日を求め、その日のセッション始端（NY 前日 17:00）へ写像する:
+      1D: ラベル日そのもの / 1W(W-FRI): ラベル金曜の 6 日前（週= [土..金] ブローカー日）/
+      1M(ME): ラベル月の 1 日。rollup の probe 被覆判定（「現周期の始端を probe が含むか」）に使う。
+    """
+    label = pd.Timestamp(label)
+    if tf not in SESSION_TFS:
+        return label
+    if tf == "1D":
+        first = label
+    elif tf == "1W":
+        first = label - pd.Timedelta(days=6)
+    else:  # 1M
+        first = label.replace(day=1)
+    # ブローカー日 first のセッション始端 = NY ローカル（first - 1 日）17:00。
+    ny_naive = first - _BROKER_SHIFT
+    return ny_naive.tz_localize(_NY_TZ).tz_convert("UTC").tz_localize(None)
+
+
 def resample_ohlc(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
     """DataFrame を指定 pandas rule で OHLC 再集計する（§チャート表示時間選択・1 分足原子）。
 

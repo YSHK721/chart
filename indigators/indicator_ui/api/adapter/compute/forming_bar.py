@@ -58,6 +58,8 @@ if str(_WORKSPACE_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_WORKSPACE_ROOT))
 from marketdata.resample import TIMEFRAME_RULES  # noqa: E402  (規則源・floor freq を導出)
 from marketdata.tick_m1 import forming_bar_from_ticks  # noqa: E402
+# セッション日境界（ISSUE-078）: 1D の期間始端と 1D バー time 規約（ラベル深夜）の唯一の規則源。
+from marketdata.session_day import session_bar_time, session_day_start  # noqa: E402
 
 # 形成中バーを供給する datasetRef（ティック由来＝ticks parquet を持つ）。これ以外は対象外。
 TICK_REFS = frozenset({"jp225_tick"})
@@ -95,7 +97,14 @@ def is_supported_timeframe(tf: Any) -> bool:
 
 
 def period_start_unix(now_unix: int, tf: str) -> int:
-    """現在期間の始端 UNIX 秒（``floor(now, tf)``・UTC・規則源は marketdata.resample）。"""
+    """現在期間の始端 UNIX 秒（データ窓の左端・規則源は marketdata.resample / session_day）。
+
+    ISSUE-078: '1D' はセッション日（NY17:00 ET 基準＝夏21:00/冬22:00 UTC）の始端。日中足は従来
+    どおり UTC floor（バー不変）。1D バーの **time 表示規約**（ラベル深夜）は :func:`forming_bar`
+    側で再ラベルする（本関数はデータ窓の始端を返す）。
+    """
+    if tf == "1D":
+        return session_day_start(int(now_unix))
     start = pd.Timestamp(int(now_unix), unit="s").floor(_floor_freq(tf))  # naive UTC
     return int(start.value // 1_000_000_000)
 
@@ -108,7 +117,12 @@ def forming_bar(ref: str, tf: str, now_unix: int) -> Optional[dict]:
     if not is_tick_ref(ref) or not is_supported_timeframe(tf):
         return None
     start = period_start_unix(now_unix, tf)
-    return forming_bar_from_ticks(start, int(now_unix))
+    bar = forming_bar_from_ticks(start, int(now_unix))
+    # ISSUE-078: 1D の time はセッション日ラベルの UTC 深夜へ再ラベル（rollup 1D バーと同一規約・
+    #   チャート日付軸整合）。データ窓（start..now）はセッション始端基準のまま。
+    if bar is not None and tf == "1D":
+        bar = {**bar, "time": session_bar_time(start)}
+    return bar
 
 
 def merge_forming(base: Optional[dict], tail: Optional[dict]) -> Optional[dict]:

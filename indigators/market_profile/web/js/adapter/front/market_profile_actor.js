@@ -8,6 +8,9 @@
 // 非破壊方針: primitive は初回有効化まで mainSeries へ attach しない（OFF 時はチャートに一切触れない）。
 //   取得失敗（client が null）時も既存描画へ干渉せず、前回 profile を保持する。
 
+// セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・当日窓・日別集計の唯一の規則源。
+import { sessionDayStart, sessionDateLabel } from '../../domain/session_day.js';
+
 // sessions の 'YYYY-MM-DD' → UNIX 秒（UTC 深夜）。candle.time との突合に使う（primitive dateToUnix と同一規則）。
 function _sessionDateToUnix(dateStr) {
   const parts = String(dateStr).split('-');
@@ -18,16 +21,16 @@ function _sessionDateToUnix(dateStr) {
 }
 
 // sessions 応答を表示用に組み立てる純変換（SRP: actor は制御に留め、変換は本関数へ）。
-//   ① 各セッションへ当日 candle の OHLC を **UTC 日集計**で付与（列内 OHLC 描画用・透明化しても実値は残る）。
-//      1D は日=バー 1:1 で従来の date→time 突合と同値。日中足（1m 等）は当日全バーの集計 OHLC になる
-//      （旧実装は深夜 00:00 バー 1 本の OHLC を誤付与＝深夜バー不在日は未付与だった・ISSUE-072）。
+//   ① 各セッションへ当日 candle の OHLC を **セッション日集計**で付与（列内 OHLC 描画用・ISSUE-078:
+//      日曜夜 UTC の足も月曜セッションへ束ねる）。1D は日=バー 1:1 で date→time 突合と同値。
+//      日中足（1m 等）は当日全バーの集計 OHLC になる（ISSUE-072 の日集計を セッション日へ一般化）。
 //   ② 当日の実在バー範囲 tFirst/tLast（当日最初/最後のバー time）を付与する。primitive の日別タイルが
 //      日中足で「日の実在バー範囲」へ整列するための時間軸アンカー（深夜 00:00 バー不在でも解決できる）。
 //   ③ 当日 MP（POC/VAH/VAL）の time→mp Map を作る。VA/POC は backend が _value_area 単一定義で算出済み
 //      （poc/va_low/va_high）＝frontend は表示に写すだけ（DRY・VA 定義は backend に一元化）。
 //   戻り値 { list, mp }。list=OHLC/tFirst/tLast 付与済みセッション配列、mp=time→{poc,vah,val} の Map。
 function _buildSessionView(list, candles) {
-  // UTC 日 → { tFirst, tLast, open, high, low, close }（当日全バーの範囲と日次 OHLC）。
+  // セッション日ラベル → { tFirst, tLast, open, high, low, close }（当日全バーの範囲と日次 OHLC）。
   //   candles は time 昇順が契約だが、順序に依存しない min/max 更新で頑健化する。
   const byDay = new Map();
   for (const c of (candles || [])) {
@@ -35,7 +38,7 @@ function _buildSessionView(list, candles) {
     if (!Number.isFinite(time)) {
       continue;
     }
-    const d = Math.floor(time / 86400) * 86400;
+    const d = sessionDateLabel(time); // ISSUE-078: セッション日で束ねる（UTC 暦日でなく）。
     const agg = byDay.get(d);
     if (!agg) {
       byDay.set(d, {
@@ -62,7 +65,7 @@ function _buildSessionView(list, candles) {
   const mp = new Map();
   for (const s of list) {
     const t = _sessionDateToUnix(s.date);
-    const agg = byDay.get(t);
+    const agg = byDay.get(String(s.date)); // ラベル同士で突合（backend sessions ラベルもセッション日）。
     out.push(agg ? {
       ...s,
       open: agg.open, high: agg.high, low: agg.low, close: agg.close,
@@ -379,9 +382,13 @@ export class MarketProfileActor {
     if (!Number.isFinite(now)) {
       return null;
     }
-    const barSec = TF_BAR_SEC[this._getContext().timeframe] ?? 86400;
-    const sessionStart = Math.floor(now / 86400) * 86400;
-    const formingStart = Math.floor(now / barSec) * barSec;
+    // ISSUE-078: セッション始端は NY17:00 ET 基準（sessionDayStart）。1D の forming 始端も同関数
+    //   （バー周期＝セッション日）。日中足の forming は従来どおり UTC floor（バー不変）。
+    const tf = this._getContext().timeframe;
+    const sessionStart = sessionDayStart(now);
+    const formingStart = tf === '1D'
+      ? sessionStart
+      : Math.floor(now / (TF_BAR_SEC[tf] ?? 86400)) * (TF_BAR_SEC[tf] ?? 86400);
     return Math.min(sessionStart, formingStart);
   }
 
@@ -668,7 +675,7 @@ export class MarketProfileActor {
     if (!Number.isFinite(t)) {
       return {}; // ローソク未取得＝窓を成さず全期間へ縮退（既存 fetch と同じ非破壊）。
     }
-    return { from: Math.floor(t / 86400) * 86400 };
+    return { from: sessionDayStart(t) }; // ISSUE-078: セッション日始端。
   }
 
   // トグル。ON: 初回のみ attach → 取得して反映 → 表示。OFF: 非表示（取得しない）。

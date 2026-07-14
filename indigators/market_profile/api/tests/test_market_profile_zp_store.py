@@ -7,7 +7,9 @@ import pytest
 
 from market_profile_api.compute import market_profile_zp as zp
 
-_DAY0 = 1704067200  # 2024-01-01 00:00 UTC（合成日列の起点）
+# ISSUE-078: 合成日列の起点をセッション日始端へ整列（2023-12-31 22:00 UTC＝2024-01-01 セッション始端・
+#   冬時間で 2024-03 の DST 切替前区間のみ使用＝全日 86400 秒で next_session_day_start と整合）。
+_DAY0 = 1704060000
 
 
 def _synth_ticks_for_day(day_start: int) -> "tuple[np.ndarray, np.ndarray]":
@@ -165,3 +167,27 @@ def test_window_aggregation_identity(zp_env):
     got = np.array([b["tpo"] for b in prof["bins"]])
     assert np.allclose(got, np.round(z_manual, 2), atol=0.011)
     assert prof["z_max"] == pytest.approx(round(float(z_manual.max()), 2), abs=0.011)
+
+
+def test_day_source_signature_covers_two_utc_days(tmp_path):
+    """ISSUE-078: セッション日は UTC 2 日を跨ぐため署名も両日 parquet を覆う。"""
+    import pandas as pd
+    from market_profile_api.compute.market_profile_zp_store import ZpStore
+    calls = []
+
+    def dpf(lo, hi, symbol=None):
+        calls.append((lo, hi))
+        return []
+
+    store = ZpStore(
+        grid_w=10.0,
+        root_provider=lambda: str(tmp_path),
+        default_root_provider=lambda: tmp_path,
+        hist_days=250,
+        m_reps=2000,
+        cache_version_provider=lambda: 1,
+        day_parquet_files=dpf,
+    )
+    store.day_source_signature("JP225", 1783890000)  # 2026-07-12 21:00 UTC（夏セッション始端）。
+    assert calls and calls[0][0] == pd.Timestamp("2026-07-12")
+    assert calls[0][1] == pd.Timestamp("2026-07-13")

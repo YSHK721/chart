@@ -26,6 +26,7 @@ const MODULE_ORDER = [
   'js/domain/compute_error.js',
   'js/domain/domain_models.js',
   'js/domain/market_profile_dwell_accumulator.js',
+  'js/domain/session_day.js',
   'js/usecase/catalog_entry.js',
   'js/usecase/catalog.js',
   'js/usecase/facade.js',

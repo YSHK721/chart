@@ -15,6 +15,9 @@
 //   - fetchLiveTicks / loadFormingBar / renderer / getTimeframe / setInterval / clearInterval / now を注入。
 //   - series.update を呼ぶのは ChartRenderer のみ（renderer.updateLastCandle 経由・隔離維持）。
 
+// セッション日境界（ISSUE-078）: 1D の期間・バー time はセッション日（NY17:00 ET 基準）で解決する。
+import { sessionBarTime } from '../../domain/session_day.js';
+
 // 固定周期 tf → 期間秒。/forming_bar が供給できる固定 floor 足のみ（1W/1M・未知は非対応＝no-op）。
 //   backend forming_bar._floor_freq と同じ集合（1m/5m/15m/30m/1h/4h/1D）。
 const TF_SECONDS = Object.freeze({
@@ -179,12 +182,23 @@ export class LiveTickPlayer {
     this._seeding = false;
   }
 
+  // tick 時刻 → 現在 tf の期間キー（バー time）。ISSUE-078: '1D' はセッション日の 1D バー規約
+  //   （セッション日ラベルの UTC 深夜＝backend rollup/forming と同一）。日中足は UTC floor（不変）。
+  //   旧 UTC floor のままだと日曜夜 UTC（月曜セッション）の tick が「過去期間」と誤判定され、
+  //   1D ライブバーが毎日 21:00-24:00 UTC の間フリーズしていた。
+  _periodOf(sec) {
+    if (this._tf === '1D') {
+      return sessionBarTime(sec);
+    }
+    return Math.floor(sec / this._tfSec) * this._tfSec;
+  }
+
   // 1 tick を現在 tf の形成中バーへ適用する。過去期間（履歴＝/candles 済）へは後退させない。
   _applyTick(ms, mid) {
     if (this._tfSec === null) {
       return; // 非対応 tf（1W/1M/未知）→ 何もしない。
     }
-    const periodSec = Math.floor(ms / 1000 / this._tfSec) * this._tfSec;
+    const periodSec = this._periodOf(ms / 1000);
     if (this._bar === null) {
       // 自己シード（参照実装復帰）: /forming_bar seed が null でも、現周期の tick からバーを起こす。
       //   _seeding 中（seed await 未確定）は抑止（🟡4）。現 live 周期より前の tick は自己シードしない
@@ -192,7 +206,7 @@ export class LiveTickPlayer {
       if (this._seeding) {
         return;
       }
-      const nowPeriod = Math.floor((this._now() + this._clockOffset) / 1000 / this._tfSec) * this._tfSec;
+      const nowPeriod = this._periodOf((this._now() + this._clockOffset) / 1000);
       if (periodSec < nowPeriod) {
         return; // 現周期より前 → 履歴側。自己シードしない。
       }
