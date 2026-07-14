@@ -123,3 +123,60 @@ def test_completed_day_persists_to_disk(monkeypatch, tmp_path):
     st2, b2 = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
     assert st2 == 200
     assert b2["columns"] == b1["columns"]  # ディスクから同一結果を復元。
+
+
+# --------------------------------------------------------------------------- #
+# セッション日切り（ISSUE-078）
+# --------------------------------------------------------------------------- #
+_MON_START = 1783890000  # 2026-07-12 21:00 UTC（夏・月曜セッション始端）。
+
+
+def _sunday_ticks(_symbol, start, end):
+    # 週明けオープン近傍（日曜 22:03 UTC〜）のティック（mid 100/101）。
+    secs = np.array([_MON_START + 3800, _MON_START + 3860, _MON_START + 80000], dtype=np.int64)
+    mids = np.array([100.0, 101.0, 200.0])
+    m = (secs >= int(start)) & (secs < int(end))
+    return secs[m], mids[m]
+
+
+def test_session_walker_includes_sunday_evening_in_monday_session(monkeypatch):
+    """日曜夜 UTC のティックが月曜セッションの周期列として返る（薄い日曜原子の消滅）。"""
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
+    monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _sunday_ticks)
+    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
+    st, body = ctl.handle_tf_period_profile(
+        "jp225_tick", "1m", _MON_START, _MON_START + 7200, now=1e12)
+    assert st == 200
+    times = [c["time"] for c in body["columns"]]
+    assert times == [_MON_START + 3780, _MON_START + 3840]  # 22:03/22:04 UTC の 1m 周期。
+
+
+def test_4h_straddling_period_assigned_once(monkeypatch):
+    """4h 周期グリッドは UTC floor のまま・セッション跨ぎ周期は始端所属で一意（重複列なし）。"""
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
+    monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _sunday_ticks)
+    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
+    st, body = ctl.handle_tf_period_profile(
+        "jp225_tick", "4h", _MON_START - 86400, _MON_START + 2 * 86400, now=1e12)
+    assert st == 200
+    times = [c["time"] for c in body["columns"]]
+    assert len(times) == len(set(times)), f"重複列: {times}"
+    for t in times:
+        assert t % (4 * 3600) == 0, "4h 周期は UTC floor グリッド（バー時刻整合）"
+
+
+def test_1d_column_is_one_per_session_keyed_by_session_start(monkeypatch):
+    """1D はセッション日＝1 周期（time=セッション始端・全セッションティックを集約）。"""
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
+    monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _sunday_ticks)
+    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
+    st, body = ctl.handle_tf_period_profile(
+        "jp225_tick", "1D", _MON_START, _MON_START + 86400, now=1e12)
+    assert st == 200
+    assert len(body["columns"]) == 1
+    col = body["columns"][0]
+    assert col["time"] == _MON_START
+    assert col["tpo_units"] == 3  # 日曜夜 2 + 月曜昼 1 の全ティックが単一セッション列に入る。

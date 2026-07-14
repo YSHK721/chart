@@ -44,14 +44,26 @@ from market_profile_api.compute.market_profile_zp_store import ZpStore
 # repo 根は _mpd の import 時に sys.path へ挿入済み（marketdata 解決）。
 from marketdata import paths as _paths  # noqa: E402
 from marketdata.tick_m1 import day_parquet_files  # noqa: E402
+# セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源。
+from marketdata.session_day import (  # noqa: E402
+    next_session_day_start,
+    session_date_label,
+    session_day_start,
+)
 
-# セッション窓（UTC 分オフセット）。analysis/mp_stats/data_prep.py と同値（パリティテストで等値固定）。
-SESSION_OPEN_MOD = 61      # 01:01 UTC
-SESSION_CLOSE_MOD = 1438   # 23:58 UTC
-BRACKET_BASE_MOD = 60      # ブラケット起点 01:00
+# セッション窓（ブローカー分オフセット＝セッション日始端 NY17:00 ET からの経過分・ISSUE-078）。
+#   実測（JP225 CFD）: オープン=ブローカー01:00（冬は 23:00 UTC ちょうど・夏は 22:01-22:06 UTC＝01:01-06）、
+#   クローズ=23:14（夏 20:14 UTC / 冬 21:14 UTC＝ともに同一ブローカー分）。UTC 日切り時代（旧 61..1438）と
+#   異なり夏冬で窓が揺れない（季節安定）。DST 切替日（年2回・23h/25h セッション）のみ経過分と壁時計分が
+#   ±60 分ずれる近似を許容する（mod は経過分＝壁時計変換の per-tick tz コストを避ける・設計判断）。
+#   旧 analysis/mp_stats（UTC 窓）とは窓が意図的に異なる（math パリティは test_zp_step5_parity が
+#   ブラケット規則・モーメント計算の同一性で担保する）。
+SESSION_OPEN_MOD = 60      # ブローカー 01:00（セッション始端から 60 分）
+SESSION_CLOSE_MOD = 1394   # ブローカー 23:14（最終取引可能分・夏冬同値）
+BRACKET_BASE_MOD = 60      # ブラケット起点 ブローカー 01:00
 BRACKET_MIN = 30
-G_MINUTES = SESSION_CLOSE_MOD - SESSION_OPEN_MOD + 1                    # 1378
-K_BRACKETS = (SESSION_CLOSE_MOD - BRACKET_BASE_MOD) // BRACKET_MIN + 1  # 46
+G_MINUTES = SESSION_CLOSE_MOD - SESSION_OPEN_MOD + 1                    # 1335
+K_BRACKETS = (SESSION_CLOSE_MOD - BRACKET_BASE_MOD) // BRACKET_MIN + 1  # 45
 
 # 帰無パラメータ（因果・決定論）。
 NULL_HIST_DAYS = 250   # ステップ行列のソース窓（当日から遡る完了日数）
@@ -228,7 +240,7 @@ def null_b_period_moments(
 # --------------------------------------------------------------------------- #
 # ディスク永続キャッシュ（ZpStore）とプロセス内キャッシュ
 # --------------------------------------------------------------------------- #
-_ZP_CACHE_VERSION = 1
+_ZP_CACHE_VERSION = 2  # v2: セッション日切り（ISSUE-078）＝旧 UTC 日 mgrid/znull を全無効化。
 _ZP_CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_zp)。テストは tmp を注入。
 
 _STORE = ZpStore(
@@ -274,7 +286,8 @@ def _mgrid_of_day(symbol: str, day_start: int, now: float) -> "tuple[np.ndarray,
     key = (symbol, int(day_start))
     if key in _MGRID_CACHE:
         return _MGRID_CACHE[key]
-    completed = int(day_start) + 86400 <= now
+    day_end = next_session_day_start(int(day_start))  # ISSUE-078: DST 切替日は 23h/25h。
+    completed = day_end <= now
     path = _STORE.mgrid_path(symbol, int(day_start))
     cur_sig = _STORE.day_source_signature(symbol, int(day_start)) if completed else ""
     if completed:
@@ -283,7 +296,7 @@ def _mgrid_of_day(symbol: str, day_start: int, now: float) -> "tuple[np.ndarray,
             if disk is not None:
                 _MGRID_CACHE[key] = disk  # 非空のみメモ化（stale-empty はディスク署名照合に委ねる）。
             return disk
-    secs, mids = _mpd._load_window_ticks(symbol, day_start, day_start + 86400)
+    secs, mids = _mpd._load_window_ticks(symbol, day_start, day_end)
     grid = minute_close_grid(secs, mids, day_start)
     if completed:
         if grid is not None:
@@ -307,16 +320,16 @@ def _hist_step_matrix(symbol: str, day_start: int, now: float) -> "np.ndarray | 
         return cached[1]
     grids: "list[np.ndarray]" = []
     opens: "list[float]" = []
-    day = int(day_start) - 86400
+    day = session_day_start(int(day_start) - 1)  # 直前セッション（ISSUE-078）。
     scanned = 0
     max_scan = NULL_HIST_DAYS * 2 + 30
     while len(grids) < NULL_HIST_DAYS and scanned < max_scan:
-        if day + 86400 <= now:  # 完了日のみ帰無ソースにする。
+        if next_session_day_start(day) <= now:  # 完了セッションのみ帰無ソースにする。
             g = _mgrid_of_day(symbol, day, now)
             if g is not None:
                 grids.append(g[0])
                 opens.append(g[1])
-        day -= 86400
+        day = session_day_start(day - 1)
         scanned += 1
     if len(grids) < NULL_MIN_DAYS:
         return None
@@ -337,7 +350,7 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
     （帰無を全日分で評価すると mean が膨らみ z が負へ系統偏向するため）。
     """
     key = (symbol, int(day_start))
-    completed = int(day_start) + 86400 <= now
+    completed = next_session_day_start(int(day_start)) <= now  # ISSUE-078。
     if completed and key in _NULL_CACHE:
         return _NULL_CACHE[key]
     path = _STORE.null_path(symbol, int(day_start))
@@ -402,7 +415,7 @@ def _zp_partial_rollup(symbol: str, lo: int, hi: int, now: float) -> "dict | Non
     key = ("partial", symbol, int(lo), int(hi))
     if key in _LIVE_CACHE:
         return _LIVE_CACHE[key]
-    day_start = (int(lo) // 86400) * 86400
+    day_start = session_day_start(int(lo))  # ISSUE-078: 属セッションの始端。
     grid = _mgrid_of_day(symbol, day_start, now)
     roll: "dict | None" = None
     if grid is not None:
@@ -410,7 +423,7 @@ def _zp_partial_rollup(symbol: str, lo: int, hi: int, now: float) -> "dict | Non
         col_lo = max(0, (int(lo) - day_start) // 60 - SESSION_OPEN_MOD)
         col_hi_t = min(G_MINUTES, (int(hi) - day_start) // 60 - SESSION_OPEN_MOD)
         # 当日はさらに経過分まで（未来分の ffill 幻影滞在を数えない）。
-        if day_start + 86400 > now:
+        if next_session_day_start(day_start) > now:  # ISSUE-078。
             elapsed = int((now - day_start) // 60) - SESSION_OPEN_MOD + 1
             col_hi_t = min(col_hi_t, max(1, elapsed))
         if col_hi_t > col_lo:
@@ -518,12 +531,13 @@ def compute_zp_profile(
         if hi > lo:
             dst[lo:hi] += arr[(lo - off):(hi - off)]
 
-    day = (win_from // 86400) * 86400
+    day = session_day_start(win_from)
     while day < win_to:
+        day_end_w = next_session_day_start(day)
         lo_t = max(day, win_from)
-        hi_t = min(day + 86400, win_to)
+        hi_t = min(day_end_w, win_to)
         if lo_t < hi_t:
-            if lo_t == day and hi_t == day + 86400:
+            if lo_t == day and hi_t == day_end_w:
                 roll = _zp_day_rollup(symbol, day, now_val)
             else:
                 roll = _zp_partial_rollup(symbol, lo_t, hi_t, now_val)
@@ -545,11 +559,11 @@ def compute_zp_profile(
                     last_z_disp = disp_day
                     last_poc = poc_day
                     if want_sessions:
-                        ds = pd.Timestamp(int(day), unit="s").strftime("%Y-%m-%d")
+                        ds = session_date_label(day)
                         sessions.append(
                             _session_entry_zp(ds, disp_day, poc_day, centers, va_pct)
                         )
-        day += 86400
+        day = day_end_w
 
     z_fine = _fine_z(obs_sum[:size], mean_sum[:size], var_sum[:size])
     # fine → 表示 bin（obs/mean/var を bin 集約してから z を取り直す＝独立近似・docstring 参照）。
@@ -615,9 +629,11 @@ def warm_zp_cache(
     hi = pd.Timestamp(now_val, unit="s").normalize() if end is None else pd.Timestamp(end)
     files = day_parquet_files(lo, hi, symbol=symbol)
     built = skipped = 0
-    for p in files:
-        day_start = _mpd._day_start_from_tick_path(p)
-        if day_start + 86400 > now_val:
+    # ISSUE-078: 実在 parquet（UTC 日）から被覆セッション日集合を導出（dwell warm と同規則）。
+    session_days = sorted({session_day_start(_mpd._day_start_from_tick_path(p)) for p in files}
+                          | {session_day_start(_mpd._day_start_from_tick_path(p) + 86399) for p in files})
+    for day_start in session_days:
+        if next_session_day_start(day_start) > now_val:
             continue
         if _STORE.null_path(symbol, day_start).is_file():
             skipped += 1

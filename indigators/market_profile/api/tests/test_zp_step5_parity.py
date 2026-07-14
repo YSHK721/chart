@@ -26,14 +26,21 @@ from mp_stats import step5_null_b as s5  # noqa: E402
 
 
 def test_constants_parity_with_analysis():
-    """定数複製のドリフト防止（analysis 側と等値であることを固定）。"""
-    assert zp.SESSION_OPEN_MOD == dp.SESSION_OPEN_MOD
-    assert zp.SESSION_CLOSE_MOD == dp.SESSION_CLOSE_MOD
-    assert zp.BRACKET_BASE_MOD == dp.BRACKET_BASE_MOD
+    """math 規則のドリフト防止（ISSUE-078 で「窓」は意図的に分離・「規則」は等値固定）。
+
+    ISSUE-078: 本番 zp はセッション日（NY17:00 ET 基準）のブローカー分窓 [60,1394] を使い、
+    analysis/mp_stats（検定パイプライン・UTC 窓 [61,1438]）とは**窓が意図的に異なる**。
+    パリティで固定するのは規則（ブラケット幅/起点式・CHUNK・ブラケット写像関数）であり、
+    zp 側の窓へ dp.calendar_bracket_of_mod を適用した結果と _B_OF_MINUTE の等値で担保する。
+    """
     assert zp.BRACKET_MIN == dp.BRACKET_MIN
-    assert zp.K_BRACKETS == dp.K_BRACKETS
+    assert zp.BRACKET_BASE_MOD == 60 == dp.BRACKET_BASE_MOD  # 起点式は両者 60（意味は各窓の分基準）。
     assert zp.CHUNK == s5.CHUNK
-    mods = np.arange(dp.SESSION_OPEN_MOD, dp.SESSION_CLOSE_MOD + 1)
+    # 窓は意図的に異なる（回帰で「戻っていない」ことを固定）。
+    assert (zp.SESSION_OPEN_MOD, zp.SESSION_CLOSE_MOD) == (60, 1394)
+    assert (dp.SESSION_OPEN_MOD, dp.SESSION_CLOSE_MOD) == (61, 1438)
+    # ブラケット写像規則のパリティ（zp 自身の窓に dp の規則関数を適用して等値）。
+    mods = np.arange(zp.SESSION_OPEN_MOD, zp.SESSION_CLOSE_MOD + 1)
     assert np.array_equal(zp._B_OF_MINUTE, dp.calendar_bracket_of_mod(mods))
 
 
@@ -60,14 +67,19 @@ def _analysis_session(D: int, seed: int):
 
 
 def test_null_b_moments_parity_with_step5():
-    """同一 S・seed・M・CHUNK で step5.null_b_day と mean/sd が一致（グリッド整列条件下）。"""
-    sd, f = _analysis_session(30, seed=21)
-    S = s5.build_step_matrix(sd, f)
+    """同一 S・seed・M・CHUNK で step5.null_b_day と mean/sd が一致（グリッド整列条件下）。
+
+    ISSUE-078: 窓は zp のセッション分窓（G=1335）で比較する。s5.null_b_day は S とブラケット
+    配列 b を引数で受ける（窓非依存の純 math）ため、同一の合成 S（zp 窓次元）を両者へ与えれば
+    モーメント計算の同一性＝math パリティを窓分離後も検証できる。
+    """
+    rng_s = np.random.default_rng(21)
+    S = rng_s.normal(scale=1e-4, size=(30, zp.G_MINUTES))
     b = dp.calendar_bracket_of_mod(
-        np.arange(dp.SESSION_OPEN_MOD, dp.SESSION_CLOSE_MOD + 1, dtype=np.int32)
+        np.arange(zp.SESSION_OPEN_MOD, zp.SESSION_CLOSE_MOD + 1, dtype=np.int32)
     )
     d = 10
-    open_d = float(f.o[d])
+    open_d = 20000.0
     low, high = 20000.0, 20400.0  # row_w = 10 = GRID_W・境界整列
     m_reps = 600
     mean5, sd5 = s5.null_b_day(S, b, d, open_d, low, high, rng=np.random.default_rng(33), m_reps=m_reps)

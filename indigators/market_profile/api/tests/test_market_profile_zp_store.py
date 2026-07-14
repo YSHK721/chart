@@ -7,7 +7,9 @@ import pytest
 
 from market_profile_api.compute import market_profile_zp as zp
 
-_DAY0 = 1704067200  # 2024-01-01 00:00 UTC（合成日列の起点）
+# ISSUE-078: 合成日列の起点をセッション日始端へ整列（2023-12-31 22:00 UTC＝2024-01-01 セッション始端・
+#   冬時間で 2024-03 の DST 切替前区間のみ使用＝全日 86400 秒で next_session_day_start と整合）。
+_DAY0 = 1704060000
 
 
 def _synth_ticks_for_day(day_start: int) -> "tuple[np.ndarray, np.ndarray]":
