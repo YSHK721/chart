@@ -518,6 +518,29 @@ test('setTfPeriods: 各周期列の占有レベルを time→x / price→y に�
   assert.ok(pocRects.length >= 1, 'POC は白で際立つ');
 });
 
+test('setTfPeriods: dirUp 注釈列は占有レンジに方向背景（陽=薄緑/陰=薄赤・不透明度0.1）を敷く', () => {
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = fakeTarget(800);
+  prim.attached({ chart: fakeChartWithTime(), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setVisible(true);
+  prim.setTfPeriods([
+    { time: 100, levels: [[10, 2], [12, 1]], poc: 10, dirUp: true },   // 陽
+    { time: 200, levels: [[20, 1], [21, 1]], poc: 20, dirUp: false },  // 陰
+    { time: 300, levels: [[30, 1]], poc: 30 },                          // 注釈なし → 背景なし
+  ], 1);
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  const up = target.rects.filter((r) => r.fill === 'rgba(38, 166, 154, 0.1)');
+  const down = target.rects.filter((r) => r.fill === 'rgba(239, 83, 80, 0.1)');
+  assert.equal(up.length, 1, '陽線周期は薄緑背景 1 枚');
+  assert.equal(down.length, 1, '陰線周期は薄赤背景 1 枚');
+  // 背景はレベル占有レンジ（10..12）を覆う（lvlH=1 の半分ずつ外側へ拡張）。
+  assert.ok(up[0].y <= 10 - 0.5 + 1e-9 && up[0].y + up[0].h >= 12 + 0.5 - 1e-9, '背景が占有レンジを覆う');
+  // dirUp 未注釈の列は背景を描かない（後方互換）。
+  const bg30 = target.rects.filter((r) => r.y <= 30 && r.y + r.h >= 30
+    && (r.fill === 'rgba(38, 166, 154, 0.1)' || r.fill === 'rgba(239, 83, 80, 0.1)'));
+  assert.equal(bg30.length, 0, '注釈なし列は背景なし');
+});
+
 test('setTfPeriods(null): 非適用へ復帰（tf-period 描画を止める）', () => {
   const prim = new MarketProfileHistogramPrimitive();
   const target = fakeTarget(800);

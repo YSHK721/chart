@@ -15,8 +15,11 @@ export class TfPeriodProfileActor {
   // readyTimeoutMs（任意・既定 800ms）: ISSUE-069「揃ってから一括表示」の上限タイムアウト。可視範囲の
   //   全チャンクが ready になるまで描画を保留し、揃った時点で 1 回だけ一括描画する。時間内に揃わない
   //   場合は上限到達で現時点 ready 分を描く（永久保留の防止）。setTimeout/clearTimeout は注入可（テスト用）。
+  // getCandles（任意）: ()->candles（time 昇順・チャート表示中ローソク）。列 time と candle time は同一
+  //   周期グリッド（両者とも周期始端）のため、time 突合で当該周期の陽/陰（close>=open）を列へ注釈する
+  //   （方向背景・依頼者指示 2026-07-13）。未注入は注釈なし＝背景を描かない（後方互換）。
   constructor({
-    jitterBuffer, primitive, getTimeframe, getVisibleRange, renderer, getSrc,
+    jitterBuffer, primitive, getTimeframe, getVisibleRange, renderer, getSrc, getCandles,
     readyTimeoutMs = 800, setTimeoutFn, clearTimeoutFn,
   }) {
     this._buf = jitterBuffer;
@@ -25,6 +28,7 @@ export class TfPeriodProfileActor {
     this._getVisibleRange = getVisibleRange;
     this._renderer = renderer ?? null;
     this._getSrc = typeof getSrc === 'function' ? getSrc : () => null;
+    this._getCandles = typeof getCandles === 'function' ? getCandles : () => [];
     this._enabled = false;
     this._readyTimeoutMs = readyTimeoutMs;
     this._setTimeout = typeof setTimeoutFn === 'function' ? setTimeoutFn
@@ -106,8 +110,25 @@ export class TfPeriodProfileActor {
     }
   }
 
+  // 列へ当該周期の方向（dirUp: 陽=true/陰=false/不明=null）を注釈する純変換。列 time と candle time は
+  //   同一周期グリッドのため Map 突合。candle 不在（未ロード期間）は null＝primitive は背景を描かない。
+  _annotateDirections(cols) {
+    if (!Array.isArray(cols) || !cols.length) {
+      return cols;
+    }
+    const candles = this._getCandles() || [];
+    if (!candles.length) {
+      return cols;
+    }
+    const byTime = new Map(candles.map((c) => [c.time, c]));
+    return cols.map((col) => {
+      const c = byTime.get(col.time);
+      return { ...col, dirUp: c ? c.close >= c.open : null };
+    });
+  }
+
   _render(from, to) {
-    const cols = this._buf.getColumns(from, to);
+    const cols = this._annotateDirections(this._buf.getColumns(from, to));
     this._primitive.setTfPeriods(cols, this._buf.unit());
     // 列が実際に描けたときだけ candle を透明化する（それまでは可視＝初回の「候補足→空白→列」の空白を回避）。
     //   同値の applyOptions は no-op ゆえ毎 render 呼んでもちらつかない（冪等）。委譲時（renderer 注入時）のみ。

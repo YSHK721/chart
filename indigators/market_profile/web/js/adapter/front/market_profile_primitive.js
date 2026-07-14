@@ -61,6 +61,13 @@ const OHLC_CLOSE_LW = 1;                             // 終値線の太さ（控
 const C_SESS_POC = 'rgba(255,255,255,0.95)';
 const SESS_BAR_ALPHA = 0.98;
 const SESS_MIN_BAR_PX = 1.5;
+// tf-period 列の方向背景（依頼者指示 2026-07-13「どの時間足にも背景色を追加して上下が分かる仕様に」・
+//   不透明度は同日 0.95→0.1 へ調整指示）。各列の占有レンジ（levels の最安〜最高）を当該周期の
+//   陽/陰で塗る。α=0.1 の薄塗りのため色相は sessions ティントと同じ明色系（緑/赤）を用いる
+//   （暗色系は α0.1 ではダーク背景に埋没する）。方向不明（candle 未ロード・dirUp 未注釈＝
+//   旧呼び出し）は背景を描かない（後方互換）。
+const C_TFP_BG_UP = 'rgba(38, 166, 154, 0.1)';   // 陽線周期（薄緑）
+const C_TFP_BG_DOWN = 'rgba(239, 83, 80, 0.1)';  // 陰線周期（薄赤）
 export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -309,6 +316,18 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       const left = cx - tileW / 2;
       const c = cols[i];
       const levels = c.levels || [];
+      // 方向背景（依頼者指示 2026-07-13）: 列の占有レンジ（levels 昇順の先頭〜末尾）を陽/陰色・
+      //   不透明度0.95 で塗る。dirUp 未注釈（null/undefined＝candle 不在・旧呼び出し）は描かない。
+      if (levels.length && (c.dirUp === true || c.dirUp === false)) {
+        const yHi = toY(levels[levels.length - 1][0]);
+        const yLo = toY(levels[0][0]);
+        if (yHi != null && yLo != null) {
+          const top = Math.min(yHi, yLo) - lvlH / 2;
+          const hgt = Math.abs(yLo - yHi) + lvlH;
+          ctx.fillStyle = c.dirUp ? C_TFP_BG_UP : C_TFP_BG_DOWN;
+          ctx.fillRect(left, top, tileW, hgt);
+        }
+      }
       let cmax = 1;
       for (let k = 0; k < levels.length; k += 1) { if (levels[k][1] > cmax) cmax = levels[k][1]; }
       const pocPrice = c.poc;

@@ -385,6 +385,8 @@ export async function bootstrap({
       getVisibleRange,
       renderer, // ISSUE-055: 列が描けた時点で candle 透明化（MarketProfileActor から委譲）。
       getSrc: () => (mpSrc() === 'zp' ? 'zp' : null),
+      // 方向背景（依頼者指示 2026-07-13）: 列 time と同一周期グリッドの candle から陽/陰を注釈する。
+      getCandles: () => renderer.getCandles(),
     });
     const tfpShouldOn = () => !!(marketProfile && typeof marketProfile.isSessions === 'function'
       && marketProfile.isSessions()) && isPlayerTimeframe(controller._timeframe)

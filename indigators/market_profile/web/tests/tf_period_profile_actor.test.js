@@ -117,3 +117,31 @@ test('renderer 注入時: 列が描けたら candle 透明化 true・列無し�
   a.setEnabled(false);
   assert.equal(rc.calls.at(-1), false, '無効化で candle 復元 false');
 });
+
+// ---------------------------------------------------------------------------
+// 方向注釈（依頼者指示 2026-07-13「どの時間足にも背景色(不透明度95%)で上下が分かる」）:
+//   _render が getCandles の同 time candle から dirUp（陽=true/陰=false/不在=null）を列へ付与する。
+// ---------------------------------------------------------------------------
+
+test('_render は candle 突合で dirUp を列へ注釈する（陽/陰/不在null・未注入は注釈なし）', () => {
+  const buf = fakeBuf(); buf.ready = true;
+  buf.cols = [{ time: 120 }, { time: 180 }, { time: 240 }];
+  const prim = fakePrim();
+  const candles = [
+    { time: 120, open: 100, close: 105 }, // 陽
+    { time: 180, open: 105, close: 101 }, // 陰
+    // time 240 の candle 無し → dirUp=null
+  ];
+  const a = new TfPeriodProfileActor({
+    jitterBuffer: buf, primitive: prim, getTimeframe: () => '5m',
+    getVisibleRange: () => ({ from: 100, to: 300 }), getCandles: () => candles,
+  });
+  a.setEnabled(true);
+  const cols = prim.calls.at(-1)[0];
+  assert.deepEqual(cols.map((c) => c.dirUp), [true, false, null]);
+  // getCandles 未注入は注釈しない（後方互換）。
+  const prim2 = fakePrim();
+  const b = newActor(buf, prim2);
+  b.setEnabled(true);
+  assert.equal('dirUp' in prim2.calls.at(-1)[0][0], false, '未注入は dirUp を付けない');
+});
