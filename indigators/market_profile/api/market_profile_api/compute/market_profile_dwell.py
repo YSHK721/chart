@@ -54,6 +54,12 @@ if str(_WORKSPACE_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_WORKSPACE_ROOT))
 from marketdata import paths as _paths  # noqa: E402  (DATA_DIR 単一基点・cache 配置に使用)
 from marketdata.tick_m1 import day_parquet_files  # noqa: E402  (正準ティック経路・read-only)
+# セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源。
+from marketdata.session_day import (  # noqa: E402
+    next_session_day_start,
+    session_date_label,
+    session_day_start,
+)
 
 # datasetRef → 実ティック symbol 解決（forming_bar.TICK_REFS と整合。'jp225_tick'→'JP225'）。
 TICK_REF_SYMBOLS: dict[str, str] = {"jp225_tick": "JP225"}
@@ -71,7 +77,9 @@ _ACTIVE_TABLE_DAYS = 120  # active table 構築に用いる直近日数（試作
 
 # ディスク永続キャッシュ（日別ロールアップ）。既存の生データ/ticks/CSV は触らず、新規 cache
 # ディレクトリのみに読み書きする。完了日（UTC 確定日）のみ永続化し、当日（未確定）は都度計算する。
-_CACHE_VERSION = 2        # 形式バージョン。読込時に不一致なら無視して再計算（fail-safe）。
+_CACHE_VERSION = 3        # 形式バージョン。読込時に不一致なら無視して再計算（fail-safe）。
+#   v3: セッション日切り（ISSUE-078・NY17:00 ET 基準）。日キーが UTC 深夜→セッション始端へ変わるため
+#       旧 UTC 日ロールアップ（v2）を全無効化する。
 #   v2: 日次ロールアップに「ソースティック署名(sig)」を併記。完了日を空でキャッシュした後にティックが
 #       届いても署名変化で自動再計算する（無効化ロジック・stale-empty 修正）。v1 は不一致で全再計算。
 _CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_dwell)。テストは tmp を注入。
@@ -288,16 +296,18 @@ def _load_day_rollup(path: _Path) -> "tuple[Any, str]":
 
 
 def _day_rollup(symbol: str, day_start: int, table: np.ndarray, now: float) -> "dict | None":
-    """1 カレンダー日 ``[day_start, day_start+86400)`` を固定グリッドへ集約する。
+    """1 セッション日 ``[day_start, next_session_day_start)`` を固定グリッドへ集約する（ISSUE-078）。
 
+    ``day_start`` はセッション日始端（NY17:00 ET＝夏21:00/冬22:00 UTC・session_day が唯一の規則源）。
     探索順: **メモリ → ディスク → 計算(＋完了日ならディスク保存)**。
-    Y2a: 完了した過去日（``day_start + 86400 <= now``）のみキャッシュする。現在進行中の当日
-    （UTC 未確定日）はキャッシュせず毎回再計算し、新ティック到着による stale 化を防ぐ。
+    Y2a: 完了したセッション（``next_session_day_start(day_start) <= now``）のみキャッシュする。
+    進行中の当日セッションはキャッシュせず毎回再計算し、新ティック到着による stale 化を防ぐ。
     """
     key = (symbol, int(day_start))
     if key in _DAY_CACHE:  # メモリ（プロセス内・最速）。**非空のみ**メモ化する（下記）。
         return _DAY_CACHE[key]
-    completed = int(day_start) + 86400 <= now  # 完了日のみ永続化対象。
+    day_end = next_session_day_start(int(day_start))  # DST 切替日は 23h/25h（+86400 固定は不可）。
+    completed = day_end <= now  # 完了セッションのみ永続化対象。
     path = _cache_path(symbol, int(day_start))
     cur_sig = _day_source_signature(symbol, int(day_start)) if completed else ""
     if completed:  # ディスク（プロセス跨ぎ・ウォーム済みなら高速）。
@@ -308,7 +318,7 @@ def _day_rollup(symbol: str, day_start: int, table: np.ndarray, now: float) -> "
             if disk is not None:
                 _DAY_CACHE[key] = disk  # 非空のみメモ化。
             return disk
-    secs, mids = _load_window_ticks(symbol, day_start, day_start + 86400)  # 計算。
+    secs, mids = _load_window_ticks(symbol, day_start, day_end)  # 計算。
     roll = _rollup_ticks(secs, mids, table)
     if completed:
         # ★空(None)はメモリにメモ化しない。ティック未着で空になった完了日を常駐プロセスがメモ保持すると、
@@ -409,16 +419,17 @@ def compute_dwell_profile(
     fine = np.zeros(max(size, 1), dtype=float)
     last_roll = None  # want_today 用: 窓の最終日ぶんのロールアップ（スナップショット当日強調）。
 
-    # want_sessions: UTC カレンダー日 -> 表示 bin プロファイル（境界分割日は同日キーで合算）。
+    # want_sessions: セッション日 -> 表示 bin プロファイル（境界分割日は同日キーで合算・ISSUE-078）。
     #   固定グリッド中心 → 表示 bin 変換は下段の disp（centers_fine 経由）と同一定義を使う。
     sessions: dict[str, np.ndarray] = {}
 
-    day = (win_from // 86400) * 86400
+    day = session_day_start(win_from)
     while day < win_to:
+        day_end = next_session_day_start(day)
         lo_t = max(day, win_from)
-        hi_t = min(day + 86400, win_to)
+        hi_t = min(day_end, win_to)
         if lo_t < hi_t:
-            if lo_t == day and hi_t == day + 86400:
+            if lo_t == day and hi_t == day_end:
                 roll = _day_rollup(symbol, day, table, now_val)          # 完全日=完了日のみキャッシュ。
             else:
                 roll = _partial_rollup(symbol, lo_t, hi_t, table, now_val)  # 境界日=完了窓のみキャッシュ。
@@ -436,10 +447,10 @@ def compute_dwell_profile(
                     dd = np.clip(((cd - price_min) / binw).astype(int), 0, n_bins - 1)
                     da = np.zeros(n_bins, dtype=float)
                     np.add.at(da, dd, arr)
-                    ds = pd.Timestamp(int(day), unit="s").strftime("%Y-%m-%d")
+                    ds = session_date_label(day)
                     prev = sessions.get(ds)  # 境界分割日（完全日と部分日が同一 ds）は合算。
                     sessions[ds] = da if prev is None else prev + da
-        day += 86400
+        day = day_end
 
     # 固定グリッド(fine) → 表示 bin へ再集計。
     centers_fine = (kw0 + np.arange(size) + 0.5) * GRID_W
@@ -540,9 +551,12 @@ def warm_dwell_cache(
     table = _active_table(symbol, at_from, win_to)
 
     built = skipped = 0
-    for p in files:
-        day_start = _day_start_from_tick_path(p)
-        if day_start + 86400 > now_val:  # 未確定の当日は永続化しない。
+    # ISSUE-078: 実在 parquet（UTC 日）から被覆セッション日集合を導出する（同一セッションは 2 UTC 日に
+    #   跨るため set で重複排除）。セッション完了判定は next_session_day_start（DST 23h/25h 対応）。
+    session_days = sorted({session_day_start(_day_start_from_tick_path(p)) for p in files}
+                          | {session_day_start(_day_start_from_tick_path(p) + 86399) for p in files})
+    for day_start in session_days:
+        if next_session_day_start(day_start) > now_val:  # 未確定の当日セッションは永続化しない。
             continue
         if _cache_path(symbol, day_start).is_file():  # 冪等: 既存キャッシュはスキップ。
             skipped += 1
