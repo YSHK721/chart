@@ -18,18 +18,56 @@ function _sessionDateToUnix(dateStr) {
 }
 
 // sessions 応答を表示用に組み立てる純変換（SRP: actor は制御に留め、変換は本関数へ）。
-//   ① 各セッションへ当日 candle の OHLC を date→time 突合で付与（列内 OHLC 描画用・透明化しても実値は残る）。
-//   ② 当日 MP（POC/VAH/VAL）の time→mp Map を作る。VA/POC は backend が _value_area 単一定義で算出済み
+//   ① 各セッションへ当日 candle の OHLC を **UTC 日集計**で付与（列内 OHLC 描画用・透明化しても実値は残る）。
+//      1D は日=バー 1:1 で従来の date→time 突合と同値。日中足（1m 等）は当日全バーの集計 OHLC になる
+//      （旧実装は深夜 00:00 バー 1 本の OHLC を誤付与＝深夜バー不在日は未付与だった・ISSUE-072）。
+//   ② 当日の実在バー範囲 tFirst/tLast（当日最初/最後のバー time）を付与する。primitive の日別タイルが
+//      日中足で「日の実在バー範囲」へ整列するための時間軸アンカー（深夜 00:00 バー不在でも解決できる）。
+//   ③ 当日 MP（POC/VAH/VAL）の time→mp Map を作る。VA/POC は backend が _value_area 単一定義で算出済み
 //      （poc/va_low/va_high）＝frontend は表示に写すだけ（DRY・VA 定義は backend に一元化）。
-//   戻り値 { list, mp }。list=OHLC 付与済みセッション配列、mp=time→{poc,vah,val} の Map。
+//   戻り値 { list, mp }。list=OHLC/tFirst/tLast 付与済みセッション配列、mp=time→{poc,vah,val} の Map。
 function _buildSessionView(list, candles) {
-  const byTime = new Map((candles || []).map((c) => [c.time, c]));
+  // UTC 日 → { tFirst, tLast, open, high, low, close }（当日全バーの範囲と日次 OHLC）。
+  //   candles は time 昇順が契約だが、順序に依存しない min/max 更新で頑健化する。
+  const byDay = new Map();
+  for (const c of (candles || [])) {
+    const time = Number(c.time);
+    if (!Number.isFinite(time)) {
+      continue;
+    }
+    const d = Math.floor(time / 86400) * 86400;
+    const agg = byDay.get(d);
+    if (!agg) {
+      byDay.set(d, {
+        tFirst: time, tLast: time, open: c.open, high: c.high, low: c.low, close: c.close,
+      });
+    } else {
+      if (time < agg.tFirst) {
+        agg.tFirst = time;
+        agg.open = c.open;
+      }
+      if (time > agg.tLast) {
+        agg.tLast = time;
+        agg.close = c.close;
+      }
+      if (c.high > agg.high) {
+        agg.high = c.high;
+      }
+      if (c.low < agg.low) {
+        agg.low = c.low;
+      }
+    }
+  }
   const out = [];
   const mp = new Map();
   for (const s of list) {
     const t = _sessionDateToUnix(s.date);
-    const c = byTime.get(t);
-    out.push(c ? { ...s, open: c.open, high: c.high, low: c.low, close: c.close } : s);
+    const agg = byDay.get(t);
+    out.push(agg ? {
+      ...s,
+      open: agg.open, high: agg.high, low: agg.low, close: agg.close,
+      tFirst: agg.tFirst, tLast: agg.tLast,
+    } : s);
     if (s.poc != null && s.va_low != null && s.va_high != null && Number.isFinite(t)) {
       mp.set(t, { poc: s.poc, vah: s.va_high, val: s.va_low });
     }

@@ -887,3 +887,39 @@ test('refresh omits from when candles are unavailable (窓を成さず全期間�
 });
 
 // ---------------------------------------------------------------------------
+// sessions ビューの日中足対応（ISSUE-072）: UTC 日集計 OHLC ＋ tFirst/tLast 付与。
+// ---------------------------------------------------------------------------
+
+test('sessions ON: 日中足 candles は UTC 日集計 OHLC と tFirst/tLast を付与する（ISSUE-072）', async () => {
+  const day = 1704067200; // 2024-01-01 00:00 UTC
+  // 深夜バー無し（01:00/12:00/23:00 の 3 本）＝旧実装では OHLC 未付与だったケース。
+  const candles = [
+    { time: day + 3600, open: 100, high: 105, low: 99, close: 104 },
+    { time: day + 43200, open: 104, high: 110, low: 103, close: 108 },
+    { time: day + 82800, open: 108, high: 109, low: 95, close: 96 },
+  ];
+  const client = fakeClient({ ...PROFILE, sessions: [{ date: '2024-01-01', tpo: [1, 2, 0] }] });
+  const primitive = {
+    profiles: [], visibles: [], sessions: [],
+    setProfile(p) { this.profiles.push(p); },
+    setVisible(v) { this.visibles.push(v); },
+    setSessions(s) { this.sessions.push(s); },
+  };
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries: fakeMainSeries(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1m' }),
+    getCandles: () => candles,
+  });
+  actor.setParams({ mode: 'sessions' });
+  await actor.setEnabled(true);
+  const lastSess = primitive.sessions.at(-1);
+  assert.ok(Array.isArray(lastSess) && lastSess.length === 1);
+  // 日集計 OHLC: open=最初のバー open / close=最後のバー close / high=max / low=min。
+  assert.deepEqual(
+    { open: lastSess[0].open, high: lastSess[0].high, low: lastSess[0].low, close: lastSess[0].close },
+    { open: 100, high: 110, low: 95, close: 96 },
+  );
+  // 当日実在バー範囲（primitive の日スパン整列アンカー）。
+  assert.equal(lastSess[0].tFirst, day + 3600);
+  assert.equal(lastSess[0].tLast, day + 82800);
+});

@@ -527,3 +527,89 @@ test('setTfPeriods(null): 非適用へ復帰（tf-period 描画を止める）',
   prim.paneViews().forEach((v) => v.renderer().draw(target));
   assert.equal(target.rects.length, 0, 'tf-period 非適用時は列を描かない');
 });
+
+// ===========================================================================
+// sessions 日中足整列（ISSUE-072）: tFirst/tLast（当日実在バー範囲）付与時は
+//   timeToIndex(exact)→logicalToCoordinate の日スパンへタイルを整列する。
+//   深夜 00:00 バーが無い日（セッション開始 01:00 等）でもタイルが消えない。
+// ===========================================================================
+
+// 1m 相当の fake timeScale: バー time 配列から exact index を引く。深夜バーは存在しない
+//   （day1: 01:00 と 12:00 の 2 本 / day2: 01:00 と 18:00 の 2 本）。x = 100 + index*10。
+function fakeChartIntraday(barTimes) {
+  return {
+    timeScale: () => ({
+      timeToCoordinate: () => null,          // 深夜 time は非バー＝旧経路では全カリングされる状況。
+      timeToIndex: (t, nearest) => {
+        const i = barTimes.indexOf(t);
+        return i >= 0 ? i : (nearest ? 0 : null);
+      },
+      logicalToCoordinate: (i) => 100 + i * 10,
+    }),
+  };
+}
+
+const DAY1 = 1704067200;            // 2024-01-01 00:00 UTC
+const DAY2 = DAY1 + 86400;          // 2024-01-02
+const INTRA_BARS = [DAY1 + 3600, DAY1 + 43200, DAY2 + 3600, DAY2 + 64800];
+
+test('sessions 日中足: tFirst/tLast 付与時は日スパン（実在バー範囲）へタイル整列（深夜バー不在でも描く）', () => {
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = fakeTarget(800);
+  prim.attached({ chart: fakeChartIntraday(INTRA_BARS), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setProfile(PROFILE);
+  prim.setVisible(true);
+  prim.setSessions([
+    { date: '2024-01-01', tpo: [1, 2, 0], tFirst: DAY1 + 3600, tLast: DAY1 + 43200 },
+    { date: '2024-01-02', tpo: [0, 3, 1], tFirst: DAY2 + 3600, tLast: DAY2 + 64800 },
+  ]);
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  // day1: idx 0..1 → x 100..110（span 10・中心 105・tw=8.5）／day2: idx 2..3 → x 120..130。
+  const bgs = target.rects.filter((r) => r.h === 600);
+  assert.equal(bgs.length, 2, '深夜バー不在（timeToCoordinate=null）でも両日ともタイル描画');
+  assert.deepEqual(
+    bgs.map((r) => Math.round(r.x * 100) / 100),
+    [105 - 4.25, 125 - 4.25],
+    'タイル中心=日スパン中央・幅=スパン*0.85',
+  );
+  assert.ok(bgs.every((r) => Math.abs(r.w - 8.5) < 1e-9), '列幅=当日実在バー範囲のピクセル幅*0.85');
+});
+
+test('sessions 日中足: tFirst/tLast 未付与は従来経路（timeToCoordinate=null なら従来どおりカリング・後方互換）', () => {
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = fakeTarget(800);
+  prim.attached({ chart: fakeChartIntraday(INTRA_BARS), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setProfile(PROFILE);
+  prim.setVisible(true);
+  prim.setSessions([{ date: '2024-01-01', tpo: [1, 2, 0] }]); // tFirst/tLast 無し（旧呼び出し）。
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  assert.equal(target.rects.filter((r) => r.h === 600).length, 0, '旧経路の挙動は不変（カリング）');
+});
+
+test('sessions 1D 相当: 単一バー日（tFirst===tLast）は従来の深夜アンカー＋中央値幅（byte 不変）', () => {
+  // 1D: date と深夜バーが 1:1（X_OF 写像・従来テストと同じ座標系）。tFirst/tLast を同値で付与しても
+  //   span を作らず（iR<=iL）、従来の timeToCoordinate(深夜)＋中央値幅の描画になる。
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = fakeTarget(800);
+  const chart = {
+    timeScale: () => ({
+      timeToCoordinate: (t) => (X_OF[t] ?? null),
+      timeToIndex: (t) => ({ [DATE_TIME['2024-01-01']]: 0, [DATE_TIME['2024-01-02']]: 1, [DATE_TIME['2024-01-03']]: 2 }[t] ?? null),
+      logicalToCoordinate: (i) => 100 + i * 18,
+    }),
+  };
+  prim.attached({ chart, series: fakeSeries(), requestUpdate: () => {} });
+  prim.setProfile(PROFILE);
+  prim.setVisible(true);
+  prim.setSessions(SESSIONS3.map((s) => ({ ...s, tFirst: DATE_TIME[s.date], tLast: DATE_TIME[s.date] })));
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  const bgs = target.rects.filter((r) => r.h === 600);
+  const tileW = 18 * 0.85;
+  assert.deepEqual(
+    bgs.map((r) => Math.round(r.x)),
+    [100, 118, 136].map((cx) => Math.round(cx - tileW / 2)),
+    '1D は従来どおり深夜アンカー中心＋中央値幅',
+  );
+});
+
+// ===========================================================================

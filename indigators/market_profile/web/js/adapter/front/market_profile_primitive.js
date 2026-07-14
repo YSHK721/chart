@@ -156,12 +156,38 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     if (!ts || typeof ts.timeToCoordinate !== 'function') {
       return;
     }
-    // 各セッション中心 x（timeToCoordinate。範囲外は null＝カリング）。
-    const xs = all.map((s) => {
+    // 日中足の時間軸整列（ISSUE-072）: actor 付与の当日実在バー範囲 tFirst/tLast（当日最初/最後の
+    //   バー time）から日スパン [xL,xR] を求める。日中足では深夜 00:00 バーが存在しない日があり
+    //   （セッション開始が 01:00 等・週末ギャップ）、旧実装の timeToCoordinate(深夜) は null でタイルが
+    //   消える／解決できても列が日境界（深夜）中心＝実在バー範囲から半日ずれる。実在バー time の
+    //   index 座標（timeToIndex(exact)→logicalToCoordinate＝視野外でも座標が出る→部分可視日も描ける）
+    //   で日の実在バー範囲へ整列する。単一バー日（1D＝日とバーが 1:1）は span を作らず従来の
+    //   深夜アンカー＋中央値幅（試作 prototype_260630-01 準拠・不変）。tFirst/tLast 未付与
+    //   （旧呼び出し・後方互換）や timeToIndex 非提供（fake/旧 lwc）も従来経路。
+    const spans = all.map((s) => {
+      if (s.tFirst == null || s.tLast == null
+          || typeof ts.timeToIndex !== 'function' || typeof ts.logicalToCoordinate !== 'function') {
+        return null;
+      }
+      const iL = ts.timeToIndex(s.tFirst, false);
+      const iR = ts.timeToIndex(s.tLast, false);
+      if (iL == null || iR == null || iR <= iL) {
+        return null; // 単一バー日（1D）・未解決は従来経路（深夜アンカー）。
+      }
+      const xL = ts.logicalToCoordinate(iL);
+      const xR = ts.logicalToCoordinate(iR);
+      return (xL == null || xR == null) ? null : [xL, xR];
+    });
+    // 各セッション中心 x（span 有＝日スパン中央／無＝従来 timeToCoordinate(深夜)。null＝カリング）。
+    const xs = all.map((s, i) => {
+      if (spans[i]) {
+        return (spans[i][0] + spans[i][1]) / 2;
+      }
       const c = ts.timeToCoordinate(dateToUnix(s.date));
       return c == null ? null : c;
     });
     // 列幅 = 隣接セッション中央間隔の中央値（=1バー幅）。<2 可視時は直前値/既定。
+    //   span 日は自身の日スパン幅を使う（下の tw）ため、colW は非 span 日（1D 等）のフォールバック。
     const gaps = [];
     for (let i = 1; i < xs.length; i += 1) {
       if (xs[i] != null && xs[i - 1] != null) {
@@ -183,7 +209,9 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       if (cx == null) {
         continue; // 視野外＝スクロールで可視化。
       }
-      const left = cx - tileW / 2;
+      // 列幅: span 日（日中足）は当日実在バー範囲のピクセル幅、非 span 日（1D 等）は従来の中央値幅。
+      const tw = spans[i] ? Math.max(3, (spans[i][1] - spans[i][0]) * 0.85) : tileW;
+      const left = cx - tw / 2;
       const s = all[i];
       const arr = s.tpo || [];
       const hasOhlc = s.open != null && s.close != null;
@@ -198,11 +226,11 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
           const top = Math.min(yHigh, yLow);
           const bot = Math.max(yHigh, yLow);
           ctx.fillStyle = s.close >= s.open ? C_SESS_TINT_UP : C_SESS_TINT_DOWN;
-          ctx.fillRect(left, top, tileW, Math.max(1, bot - top));
+          ctx.fillRect(left, top, tw, Math.max(1, bot - top));
         }
       } else {
         ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.015)';
-        ctx.fillRect(left, 0, tileW, height);
+        ctx.fillRect(left, 0, tw, height);
       }
       // 日内 max（正規化基準）と日別 POC（最頻 bin index）。
       let dmax = 0;
@@ -241,7 +269,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
           ctx.lineWidth = OHLC_CLOSE_LW;
           ctx.beginPath();
           ctx.moveTo(left, y);
-          ctx.lineTo(left + tileW, y);
+          ctx.lineTo(left + tw, y);
           ctx.stroke();
         }
       }
