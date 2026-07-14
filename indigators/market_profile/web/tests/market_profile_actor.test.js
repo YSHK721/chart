@@ -825,3 +825,65 @@ test('mode wins over conflicting legacy flags in setParams (mode 優先)', async
   assert.equal(actor.isReplay(), true, 'mode=replay 優先');
   assert.equal(actor.isSessions(), false, 'legacy sessions は無視される');
 });
+
+// ---------------------------------------------------------------------------
+// 期間パラメータ period（ISSUE-071 (b)案）: 'day' × zp × 通常のとき refresh が from=当日始端を載せる。
+// ---------------------------------------------------------------------------
+
+// 当日始端テスト用 actor（getCandles 注入・最新ローソク time=1783936560 → 当日始端 1783900800）。
+function makePeriodActor({ candles = [{ time: 1783936560 }] } = {}) {
+  const client = fakeClient();
+  const primitive = fakePrimitive();
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries: fakeMainSeries(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1m' }),
+    getCandles: () => candles,
+  });
+  return { actor, client, primitive };
+}
+
+test('refresh adds from=当日始端 when period=day and src=zp (通常モード)', async () => {
+  // Arrange
+  const { actor, client } = makePeriodActor();
+  actor.setParams({ src: 'zp', period: 'day' });
+  // Act
+  await actor.setEnabled(true);
+  // Assert: from = floor(1783936560/86400)*86400 = 1783900800
+  assert.equal(client.calls.at(-1).from, 1783900800);
+  assert.equal(client.calls.at(-1).src, 'zp');
+});
+
+test('refresh omits from when period=all / period 未設定 (従来 URL 不変)', async () => {
+  // Arrange
+  const { actor, client } = makePeriodActor();
+  actor.setParams({ src: 'zp', period: 'all' });
+  // Act
+  await actor.setEnabled(true);
+  await actor.refresh();
+  // Assert: いずれの fetch にも from が無い
+  for (const c of client.calls) {
+    assert.equal('from' in c, false, 'period=all は from を載せない');
+  }
+});
+
+test('refresh omits from for src=dwell even when period=day (dwell は対象外)', async () => {
+  // Arrange
+  const { actor, client } = makePeriodActor();
+  actor.setParams({ src: 'dwell', period: 'day' });
+  // Act
+  await actor.setEnabled(true);
+  // Assert
+  assert.equal('from' in client.calls.at(-1), false, 'dwell は period を適用しない');
+});
+
+test('refresh omits from when candles are unavailable (窓を成さず全期間へ縮退)', async () => {
+  // Arrange
+  const { actor, client } = makePeriodActor({ candles: [] });
+  actor.setParams({ src: 'zp', period: 'day' });
+  // Act
+  await actor.setEnabled(true);
+  // Assert
+  assert.equal('from' in client.calls.at(-1), false, 'ローソク未取得は from 無し（非破壊）');
+});
+
+// ---------------------------------------------------------------------------

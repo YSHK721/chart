@@ -170,7 +170,7 @@ export class MarketProfileActor {
   //   range（レンジpt）は client.buildMarketProfileUrl が barw へ写像する（'auto' は付与しない）。
   setParams(params = {}) {
     const next = {};
-    for (const key of ['bins', 'va', 'src', 'range', 'resmode']) {
+    for (const key of ['bins', 'va', 'src', 'range', 'resmode', 'period']) {
       if (params[key] != null) {
         next[key] = params[key];
       }
@@ -613,6 +613,26 @@ export class MarketProfileActor {
     return this._sessions ? { sessions: true } : {};
   }
 
+  // 期間パラメータ（ISSUE-071 (b)案）: period='day' かつ zp かつ通常モードのとき、計測窓下限
+  //   from=当日始端（最新ローソク time の属する UTC 日始端＝_sessionFrom の sessionStart と同規則）を
+  //   fetch context へ載せる（client が &from= を付与し backend が candles を time>=from に限定）。
+  //   それ以外（period 未設定/'all'・dwell・replay・sessions）は空＝従来 URL byte 不変（後方互換）。
+  //   dwell を対象外にするのは、成長時の forming 経路が既に当日絞り（ISSUE-065）でありrefresh 窓まで
+  //   絞ると static（ANALYSIS）の全期間表示という既存確定挙動を壊すため（zp は非増分＝refresh のみで安全）。
+  _periodExtra() {
+    if (this._params.period !== 'day' || this._params.src !== 'zp'
+        || this._sessions || this._replay) {
+      return {};
+    }
+    const candles = this._getCandles();
+    const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;
+    const t = last && last.time != null ? Number(last.time) : NaN;
+    if (!Number.isFinite(t)) {
+      return {}; // ローソク未取得＝窓を成さず全期間へ縮退（既存 fetch と同じ非破壊）。
+    }
+    return { from: Math.floor(t / 86400) * 86400 };
+  }
+
   // トグル。ON: 初回のみ attach → 取得して反映 → 表示。OFF: 非表示（取得しない）。
   async setEnabled(enabled) {
     this._enabled = !!enabled;
@@ -672,7 +692,7 @@ export class MarketProfileActor {
       // getContext（datasetRef/timeframe/…）へ setParams の bins/va/src/range を重畳して取得する。
       //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
       const profile = await this._client.fetchProfile({
-        ...this._getContext(), ...this._params, ...this._sessionsExtra(),
+        ...this._getContext(), ...this._params, ...this._sessionsExtra(), ...this._periodExtra(),
       });
       if (profile) {
         this._primitive.setProfile(profile);

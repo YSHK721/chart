@@ -111,7 +111,8 @@ test('applyIndicator(market_profile) forwards default params (resmode/bins/va/sr
   //   旧 replay/sessions は mode に統合されたため転送されない（catalog から撤去）。
   //   limit は転送しない（MP は全期間集計固定＝limit 非送信）。
   assert.equal(marketProfile.params.length, 1);
-  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'zp', mode: 'normal', resmode: 'bins', range: '100' });
+  // period（期間・ISSUE-071 (b)案）既定 'all'（全期間＝従来窓）も転送される。
+  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'zp', mode: 'normal', resmode: 'bins', range: '100', period: 'all' });
 });
 
 test('applyIndicator(existing indicator) still calls /compute (no regression)', async () => {

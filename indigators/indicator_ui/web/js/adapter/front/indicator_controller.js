@@ -192,6 +192,11 @@ export class IndicatorController {
   //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
   _mpParams(p = {}) {
     const out = { bins: p.bins, va: p.va, src: p.src };
+    // period（期間: 全期間/当日・ISSUE-071 (b)案）: 保存時のみ転送する（period 未保存の旧インスタンスの
+    //   転送 payload を変えない＝undefined キーを載せない。actor 側も null/undefined キーは無視する）。
+    if (p.period != null) {
+      out.period = p.period;
+    }
     // mode（表示モード）: 旧 replay(BOOL)/sessions(BOOL) を統合した排他 ENUM
     //   ['normal','replay','sessions'] を actor へ転送する。undefined は載せない（actor 既定=通常）。
     //   後方互換マイグレーション（resmode 導出と同方針）: 永続 params に mode が無く legacy が残る

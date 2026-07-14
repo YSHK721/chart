@@ -128,6 +128,31 @@ test('catalog: market_profile range ENUM drops auto → [25,50,100,250,500] defa
   assert.equal(range.group, paramOf(d, 'bins').group);
 });
 
+// market_profile の period（期間・ISSUE-071 (b)案）ENUM [all,day] 既定 all。src=zp のときのみ表示し、
+//   通常モード×固定周期 tf でのみ有効（conditionalEnable は関数述語）。
+test('catalog: market_profile exposes period ENUM [all,day] default all, visible only for src=zp', () => {
+  const d = get('market_profile');
+  const period = paramOf(d, 'period');
+  assert.ok(period, 'period param exists');
+  assert.equal(period.type, ParamType.ENUM);
+  assert.equal(period.default, 'all');
+  assert.deepEqual(period.enumValues, ['all', 'day']);
+  assert.equal(period.label, '期間');
+  assert.equal(period.enumLabels.all, '全期間');
+  assert.equal(period.enumLabels.day, '当日');
+  // src=zp のときだけ表示（dwell は成長時 forming が当日絞り済みで対象外）。
+  assert.deepEqual(period.conditionalVisible, { when: { param: 'src', equals: 'zp' } });
+  // enabled 述語: 通常モード×固定周期 tf（1m..1D）のみ有効。
+  const enabled = period.conditionalEnable;
+  assert.equal(typeof enabled, 'function');
+  assert.equal(enabled({ mode: 'normal' }, { timeframe: '1m', servedMode: 'b' }), true, '通常×1m は有効');
+  assert.equal(enabled({ mode: 'normal' }, { timeframe: '1W', servedMode: 'b' }), false, '1W は無効');
+  assert.equal(enabled({ mode: 'replay' }, { timeframe: '1m', servedMode: 'b' }), false, 'リプレイは無効');
+  assert.equal(enabled({ mode: 'sessions' }, { timeframe: '1h', servedMode: 'b' }), false, '日別は無効');
+  assert.equal(enabled({ mode: 'normal' }, null), true, 'ctx 不在（A方式/テスト）は mode 条件のみ');
+  assert.equal(period.group, paramOf(d, 'bins').group);
+});
+
 // resmode=bins のとき bins を表示、resmode=range のとき非表示にする conditionalVisible（トグル）。
 //   従来の range=auto 条件を resmode=bins へ置換（resmode がトグルスイッチ）。
 test('catalog: market_profile bins は conditionalVisible {resmode:bins}＋tf-period描画時グレーアウト述語（ISSUE-070）', () => {

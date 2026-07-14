@@ -32,6 +32,13 @@ function _mpTfPeriodDrawsColumns(values, ctx) {
 //   通常モード・非対応tf の日別（タイル描画）・A方式では解像度が有効なので enabled=true。
 const _mpResolutionEnabled = (values, ctx) => !_mpTfPeriodDrawsColumns(values, ctx);
 
+// 期間パラメータ（period）の enabled 述語: 通常モードかつ固定周期 tf（1m..1D）でのみ有効。
+//   リプレイ（as-seen-at-t の窓は T が決める）・日別（各営業日で分割済み）では計測窓の意味が
+//   重複/矛盾するためグレーアウト。1W/1M は最新バー期間が「当日」を包含し窓が退化するため無効。
+//   ctx 不在（A方式・単体テスト）は timeframe 判定をスキップ（mode 条件のみ）。
+const _mpPeriodEnabled = (values, ctx) => values.mode === 'normal'
+  && (!ctx || ctx.timeframe == null || _MP_PLAYER_TF.has(ctx.timeframe));
+
 export function makeMarketProfileDef({
   IndicatorDef,
   SeriesDef,
@@ -107,6 +114,19 @@ export function makeMarketProfileDef({
         conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
         conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
         enumLabels: { 10: '10', 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
+      }),
+      // period: 計測窓（ENUM・既定 'all'＝全期間・ISSUE-071 (b)案）。'day'＝当日始端からの窓で計測する
+      //   （client が from=当日始端 を &from= へ付与し backend が candles を time>=from に限定する既存機構）。
+      //   zp 専用に表示する（conditionalVisible src=zp）: 全期間Σz合成では当日の成長が z_max 正規化に
+      //   埋没して視認不能（実測 0.05%/分）だが、当日窓なら当日単独の z（実測 バー長4.6%/分・約90倍）を
+      //   ライブで視認できる。dwell は成長時に forming 経路が当日絞り済み（ISSUE-065）のため本 param 対象外。
+      //   帰無（偶然の期待値/ばらつき）は窓と独立に各日の直前 NULL_HIST_DAYS 完了日から構築されるため、
+      //   当日窓でも z の統計的品質は不変。通常モード×固定周期 tf（1m..1D）でのみ有効（_mpPeriodEnabled）。
+      param('period', ParamType.ENUM, 'all', [], ['all', 'day'], {
+        group: 'group.calc', order: 5, label: '期間',
+        conditionalVisible: { when: { param: 'src', equals: 'zp' } },
+        conditionalEnable: _mpPeriodEnabled,
+        enumLabels: { all: '全期間', day: '当日' },
       }),
       // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
       //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する
