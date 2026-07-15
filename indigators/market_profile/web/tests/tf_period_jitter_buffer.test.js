@@ -88,3 +88,81 @@ test('windowSecForTf 未注入: 固定 windowSec を維持（後方互換）', a
   const buf = newBuf(c); // windowSec:100 固定・windowSecForTf なし。
   assert.deepEqual(buf.ensure('1D', 250, 260), [100, 200, 300]); // tf に依らず 100 窓。
 });
+
+// ISSUE-083（日別プロファイルのライブ育成）: refreshAt(time) は time を含む ready チャンクを
+//   stale-while-revalidate で再取得する（旧列を保持したまま背景取得→応答で差替え→onReady）。
+test('refreshAt: ready チャンクを再取得し列を差し替える（成功で true・onReady 発火）', async () => {
+  let readyCount = 0;
+  const calls = [];
+  let liveLevels = [[100, 1]];
+  const client = {
+    async fetchWindow({ from, to }) {
+      calls.push([from, to]);
+      return { unit: 0.5, columns: [{ time: from, levels: liveLevels }] };
+    },
+  };
+  const buf = new TfPeriodJitterBuffer({
+    client, datasetRef: 'jp225_tick', windowSec: 100, prefetch: 0, cacheMax: 12,
+    onReady: () => { readyCount += 1; },
+  });
+  buf.ensure('5m', 250, 260);
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(calls.length, 1);
+  const before = readyCount;
+  liveLevels = [[100, 7], [110, 2]]; // ライブ進行で列が育った想定。
+  const swapped = await buf.refreshAt(255);
+  assert.equal(swapped, true, '再取得成功で true');
+  assert.equal(calls.length, 2, '同一チャンクを再取得する');
+  assert.deepEqual(buf.getColumns(0, 1000)[0].levels, [[100, 7], [110, 2]], '列が差し替わる');
+  assert.equal(readyCount, before + 1, '差し替え完了で onReady 発火');
+});
+
+test('refreshAt: 未取得/loading チャンク・失敗応答では差し替えない（非破壊）', async () => {
+  let fail = false;
+  let block = null;
+  const client = {
+    async fetchWindow({ from }) {
+      if (block) await block;
+      if (fail) return null;
+      return { unit: 0.5, columns: [{ time: from, levels: [[100, 1]] }] };
+    },
+  };
+  const buf = new TfPeriodJitterBuffer({ client, datasetRef: 'd', windowSec: 100, prefetch: 0 });
+  // 未取得チャンク → false（ensure 経路に委ねる・fetch しない）。
+  assert.equal(await buf.refreshAt(255), false, '未取得チャンクは no-op');
+  buf.ensure('5m', 250, 260);
+  await Promise.resolve(); await Promise.resolve();
+  // 失敗応答 → 旧列を保持して false。
+  fail = true;
+  assert.equal(await buf.refreshAt(255), false, '失敗は false');
+  assert.deepEqual(buf.getColumns(0, 1000).map((c) => c.time), [200], '旧列を保持（非破壊）');
+  fail = false;
+  // 再取得中の連打 → 二重 fetch しない。
+  let release;
+  block = new Promise((r) => { release = r; });
+  const p1 = buf.refreshAt(255);
+  const p2 = buf.refreshAt(255); // 進行中 → 即 false。
+  assert.equal(await p2, false, '再取得中の連打は no-op');
+  release(); block = null;
+  assert.equal(await p1, true);
+});
+
+test('refreshAt: 取得中に tf が変わったら破棄する（stale 防御）', async () => {
+  let release;
+  const block = new Promise((r) => { release = r; });
+  let calls = 0;
+  const client = {
+    async fetchWindow({ from }) {
+      calls += 1;
+      if (calls >= 2) await block; // refreshAt の取得だけ遅延させる。
+      return { unit: 0.5, columns: [{ time: from, levels: [[100, calls]] }] };
+    },
+  };
+  const buf = new TfPeriodJitterBuffer({ client, datasetRef: 'd', windowSec: 100, prefetch: 0 });
+  buf.ensure('5m', 250, 260);
+  await Promise.resolve(); await Promise.resolve();
+  const p = buf.refreshAt(255);
+  buf.ensure('15m', 250, 260); // tf 変更 → キャッシュ破棄。
+  release();
+  assert.equal(await p, false, 'tf 変更後の応答は破棄');
+});

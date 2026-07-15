@@ -33,6 +33,7 @@ export class TfPeriodJitterBuffer {
     this._unit = null;
     this._chunks = new Map();   // chunkStart(sec) -> { state:'loading'|'ready', columns:[] }
     this._lru = [];             // chunkStart の使用順（末尾=最新）。
+    this._refreshing = new Set(); // refreshAt 進行中の chunkStart（ISSUE-083: 二重再取得防止）。
   }
 
   // 現在 tf の実効チャンク幅（秒）。windowSecForTf 注入時はそれを、未注入時は固定 windowSec を用いる。
@@ -74,6 +75,7 @@ export class TfPeriodJitterBuffer {
       this._unit = null;
       this._chunks.clear();
       this._lru = [];
+      this._refreshing.clear(); // 進行中 refreshAt の応答は取得後の tf/src 照合で破棄される。
     }
   }
 
@@ -120,6 +122,49 @@ export class TfPeriodJitterBuffer {
     }
     this._evict();
     return targets;
+  }
+
+  // ライブ育成（ISSUE-083）: time を含むチャンクを stale-while-revalidate で再取得する。
+  //   当日（未完了セッション）は backend がキャッシュせず都度計算するため、再取得のたびに経過分まで
+  //   育った列が返る。旧列は応答が届くまで保持（非破壊）し、成功時に差し替えて onReady を発火する。
+  //   対象は ready チャンクのみ（未取得は ensure 経路・loading は進行中取得に委ねる）。進行中の
+  //   再取得がある間の連打は no-op（二重 fetch しない）。戻り値: 差し替えたら true。
+  async refreshAt(time) {
+    if (this._tf == null) {
+      return false;
+    }
+    const cs = this._chunkStart(time);
+    const c = this._chunks.get(cs);
+    if (!c || c.state !== 'ready' || this._refreshing.has(cs)) {
+      return false;
+    }
+    this._refreshing.add(cs);
+    const tf = this._tf;
+    const src = this._src;
+    try {
+      const res = await this._client.fetchWindow({
+        datasetRef: this._datasetRef, timeframe: tf, from: cs, to: cs + this._windowSec,
+        ...(src != null ? { src } : {}),
+      });
+      // tf/src が取得中に変わっていたら破棄（stale・キャッシュは既に消えている）。
+      if (tf !== this._tf || src !== this._src) {
+        return false;
+      }
+      if (!res) {
+        return false; // 失敗は旧列を保持（非破壊・次のライブ tick で再試行）。
+      }
+      if (Number.isFinite(res.unit)) {
+        this._unit = res.unit;
+      }
+      this._chunks.set(cs, { state: 'ready', columns: res.columns || [] });
+      this._touch(cs);
+      if (this._onReady) {
+        this._onReady();
+      }
+      return true;
+    } finally {
+      this._refreshing.delete(cs);
+    }
   }
 
   // 可視レンジ [from, to] を覆う全チャンクが ready か（先読み分は判定に含めない＝表示に必要な分のみ）。
