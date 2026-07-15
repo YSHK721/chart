@@ -62,6 +62,10 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(mpd, "_CACHE_ROOT", tmp_path / "mp_dwell_cache")
     monkeypatch.setattr(mpd, "_day_source_signature", lambda symbol, day_start: "")
     monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
+    # ISSUE-089: golden は旧表セマンティクス（窓ティック由来）の合成値＝表をピンして意味を保存。
+    _secs, _ = _synthetic_master()
+    _tbl = mpd._build_active_table(np.asarray(_secs, dtype=np.int64))
+    monkeypatch.setattr(mpd, "_table_for_day", lambda _s, _d: _tbl)
     mpd._reset_caches()
     yield
     mpd._reset_caches()

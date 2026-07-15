@@ -19,6 +19,11 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "indigators" / "market_profile" / "api"))
 sys.path.insert(0, str(ROOT / "indigators" / "indicator_ui" / "api"))
 
+sys.path.insert(0, str(ROOT / "indigators" / "market_profile" / "api" / "tests"))
+import mp_parity_world  # noqa: E402（ISSUE-089: jp225_tick 系は決定論の合成世界で固定）
+
+mp_parity_world.apply()
+
 from market_profile_api.controller.market_profile_controller import handle_market_profile  # noqa: E402
 from market_profile_api.controller.market_profile_forming_controller import (  # noqa: E402
     handle_market_profile_forming,

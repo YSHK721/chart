@@ -36,6 +36,7 @@ marketdata は import して使うだけ（既存データは読むだけ・波�
 from __future__ import annotations
 
 import sys as _sys
+import datetime as _dt
 import time as _time
 from pathlib import Path as _Path
 from typing import Any
@@ -48,10 +49,7 @@ from market_profile_api.compute.market_profile import _session_entry, _value_are
 # ディスクキャッシュ Repository（ISSUE-040(b) SRP 分離）。集計数学は本モジュール、永続化は Store が担う。
 from market_profile_api.compute.market_profile_dwell_store import DwellRollupStore
 
-# repo 根を sys.path へ（marketdata を import するため・dataset/forming_bar と同じロード境界）。
-_WORKSPACE_ROOT = _Path(__file__).resolve().parents[5]
-if str(_WORKSPACE_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_WORKSPACE_ROOT))
+# ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 from marketdata import paths as _paths  # noqa: E402  (DATA_DIR 単一基点・cache 配置に使用)
 from marketdata.tick_m1 import day_parquet_files  # noqa: E402  (正準ティック経路・read-only)
 # セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源。
@@ -77,7 +75,7 @@ _ACTIVE_TABLE_DAYS = 120  # active table 構築に用いる直近日数（試作
 
 # ディスク永続キャッシュ（日別ロールアップ）。既存の生データ/ticks/CSV は触らず、新規 cache
 # ディレクトリのみに読み書きする。完了日（UTC 確定日）のみ永続化し、当日（未確定）は都度計算する。
-_CACHE_VERSION = 3        # 形式バージョン。読込時に不一致なら無視して再計算（fail-safe）。
+_CACHE_VERSION = 4  # ISSUE-089: active table 窓キー化に伴い、先勝ち表が焼き込まれた v3 日次 npz を全再計算        # 形式バージョン。読込時に不一致なら無視して再計算（fail-safe）。
 #   v3: セッション日切り（ISSUE-078・NY17:00 ET 基準）。日キーが UTC 深夜→セッション始端へ変わるため
 #       旧 UTC 日ロールアップ（v2）を全無効化する。
 #   v2: 日次ロールアップに「ソースティック署名(sig)」を併記。完了日を空でキャッシュした後にティックが
@@ -254,14 +252,38 @@ def _rollup_ticks(secs: np.ndarray, mids: np.ndarray, table: np.ndarray) -> "dic
 
 
 def _active_table(symbol: str, at_from: int, win_to: int) -> np.ndarray:
-    """symbol の活動テーブルをプロセス内で 1 回だけ構築してキャッシュする（直近ぶんから）。"""
-    cached = _ACTIVE_TABLE.get(symbol)
+    """symbol×窓の活動テーブルを構築してキャッシュする。
+
+    ISSUE-089: メモキーは (symbol, 日量子化した at_from/win_to)。旧実装の symbol のみキー
+    （先勝ち）は、プロセス内で最初に触った要求の窓のテーブルが以後の全要求へ流用され、
+    境界日 partial・新規保存の日次 npz へプロセス履歴依存の値が焼き込まれる非決定性の温床
+    だった（byte-parity golden が数時間で再赤化した真因）。日量子化はリプレイの sliding 窓で
+    キーが分単位に増殖するのを防ぐ（テーブルは曜日×時の粗い地図＝日内の差は実質無い）。
+    """
+    key = (symbol, int(at_from) // 86400, int(win_to) // 86400)
+    cached = _ACTIVE_TABLE.get(key)
     if cached is not None:
         return cached
     secs, _ = _load_window_ticks(symbol, at_from, win_to)
     table = _build_active_table(secs) if len(secs) else np.ones((7, 24), dtype=bool)
-    _ACTIVE_TABLE[symbol] = table
+    _ACTIVE_TABLE[key] = table
     return table
+
+
+def _table_for_day(symbol: str, day_start: int) -> np.ndarray:
+    """日次/部分ロールアップ用の active table＝「その日の属する月初」アンカー（ISSUE-089）。
+
+    窓は [月初-120日, 月初)＝当該日より厳密に過去のデータのみ（因果）。日の純関数であり、
+    リクエスト窓 t1 やプロセス履歴に依存しない（キャッシュへ焼き込まれる値の決定性を保証）。
+    旧実装（リクエスト時点アンカーの表を全日へ流用）は、歴史日へ現在の活動地図を適用する
+    アナクロニズムでもあった。参照実装（試作の「直近120日」）は単一ライブ窓の定義であり、
+    複数年ヒストリカルの決定性は未定義＝本規則で確定させる（ISSUE-089 記録参照）。
+    月初アンカーの量子化は表構築（120日ティック読込）を月1回に抑えるため（DST 切替の
+    時間帯シフトへも月粒度で追随する）。
+    """
+    d = _dt.datetime.fromtimestamp(int(day_start), tz=_dt.timezone.utc)
+    month_start = int(_dt.datetime(d.year, d.month, 1, tzinfo=_dt.timezone.utc).timestamp())
+    return _active_table(symbol, month_start - _ACTIVE_TABLE_DAYS * 86400, month_start)
 
 
 # --------------------------------------------------------------------------- #
@@ -295,7 +317,7 @@ def _load_day_rollup(path: _Path) -> "tuple[Any, str]":
     return _STORE.load_day_rollup(path)
 
 
-def _day_rollup(symbol: str, day_start: int, table: np.ndarray, now: float) -> "dict | None":
+def _day_rollup(symbol: str, day_start: int, table: "np.ndarray | None", now: float) -> "dict | None":
     """1 セッション日 ``[day_start, next_session_day_start)`` を固定グリッドへ集約する（ISSUE-078）。
 
     ``day_start`` はセッション日始端（NY17:00 ET＝夏21:00/冬22:00 UTC・session_day が唯一の規則源）。
@@ -319,7 +341,9 @@ def _day_rollup(symbol: str, day_start: int, table: np.ndarray, now: float) -> "
                 _DAY_CACHE[key] = disk  # 非空のみメモ化。
             return disk
     secs, mids = _load_window_ticks(symbol, day_start, day_end)  # 計算。
-    roll = _rollup_ticks(secs, mids, table)
+    # ISSUE-089: 表は「日の属する月初」アンカーで内部導出する（呼び出し側の table は使わない＝
+    #   キャッシュへ焼き込む値をリクエスト窓/プロセス履歴から独立させる。引数は互換のため残置）。
+    roll = _rollup_ticks(secs, mids, _table_for_day(symbol, int(day_start)))
     if completed:
         # ★空(None)はメモリにメモ化しない。ティック未着で空になった完了日を常駐プロセスがメモ保持すると、
         #   後からティックが届いても line 337 で早期 return し stale-empty が残るため（ディスクは署名照合で
@@ -343,7 +367,7 @@ def _partial_rollup(symbol: str, lo: int, hi: int, table: np.ndarray, now: float
     if key in _PARTIAL_CACHE:
         return _PARTIAL_CACHE[key]
     secs, mids = _load_window_ticks(symbol, lo, hi)
-    roll = _rollup_ticks(secs, mids, table)
+    roll = _rollup_ticks(secs, mids, _table_for_day(symbol, session_day_start(int(lo))))  # ISSUE-089: 日アンカー表。
     if int(hi) <= now:  # 完了した窓のみキャッシュ（未完了の当日部分は都度計算）。
         _PARTIAL_CACHE[key] = roll
     return roll
@@ -546,10 +570,6 @@ def warm_dwell_cache(
     lo = pd.Timestamp("2000-01-01") if start is None else pd.Timestamp(start)
     hi = pd.Timestamp(now_val, unit="s").normalize() if end is None else pd.Timestamp(end)
     files = day_parquet_files(lo, hi, symbol=symbol)
-    win_to = int(hi.timestamp()) + 86400
-    at_from = win_to - _ACTIVE_TABLE_DAYS * 86400
-    table = _active_table(symbol, at_from, win_to)
-
     built = skipped = 0
     # ISSUE-078: 実在 parquet（UTC 日）から被覆セッション日集合を導出する（同一セッションは 2 UTC 日に
     #   跨るため set で重複排除）。セッション完了判定は next_session_day_start（DST 23h/25h 対応）。
@@ -558,10 +578,13 @@ def warm_dwell_cache(
     for day_start in session_days:
         if next_session_day_start(day_start) > now_val:  # 未確定の当日セッションは永続化しない。
             continue
-        if _cache_path(symbol, day_start).is_file():  # 冪等: 既存キャッシュはスキップ。
+        # ISSUE-089: スキップは「現行版として有効なキャッシュ」のみ（旧: 存在チェックのみで
+        #   版数不一致の stale ファイルもスキップしていた）。署名照合込みの実ロードで検証する。
+        disk, cached_sig = _load_day_rollup(_cache_path(symbol, day_start))
+        if disk is not _CACHE_MISS and cached_sig == _day_source_signature(symbol, day_start):
             skipped += 1
             continue
-        _day_rollup(symbol, day_start, table, now_val)
+        _day_rollup(symbol, day_start, None, now_val)
         built += 1
         if built % 25 == 0:
             print(f"[warm] {symbol}: {built} built / {skipped} skipped ...")

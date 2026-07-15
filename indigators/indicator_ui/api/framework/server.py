@@ -29,21 +29,24 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
-# api/ を import パスへ（adapter.* を解決）。conftest と同方針（殻の自己完結起動用）。
+# ISSUE-087 🟡-3（正規化）: 固有名パッケージ（marketdata / market_profile_api）の恒久解決は
+#   venv の .pth（tools/install_dev_paths.py）が担う。本殻はエントリポイントとして
+#   **自スライスの api/ のみ**を結線する（汎用名 adapter/framework は他スライスと衝突するため
+#   .pth に載せない＝entry でのみ解決）。.pth 未登録環境（新規 venv 等）ではフォールバックで
+#   従来どおり自己結線する（自己完結起動の温存・fresh clone を壊さない）。
 _API_ROOT = Path(__file__).resolve().parents[1]
 if str(_API_ROOT) not in sys.path:
     sys.path.insert(0, str(_API_ROOT))
-# MP backend は別モジュール（indigators/market_profile/api）へ切り出し済み。固有名トップパッケージ
-# ``market_profile_api`` を解決するため MP api/ も import パスへ追加する（MP は共有インフラ
-# ``adapter.compute`` を本 api/ 経由で参照する＝結線の一貫性）。
-_MP_API_ROOT = _API_ROOT.parents[1] / "market_profile" / "api"
-if str(_MP_API_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MP_API_ROOT))
-# dataset 実体は最下層共有 marketdata へ移設済み。standalone 起動（python server.py・PYTHONPATH 無）でも
-# ``from marketdata import dataset`` を解決するため repo 根（api/ → parents[2] = /workspaces/app）を sys.path へ。
-_REPO_ROOT = _API_ROOT.parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+try:  # .pth 登録済みなら不要（正規経路）。
+    import marketdata  # noqa: F401
+    import market_profile_api  # noqa: F401
+except ImportError:  # フォールバック（未登録環境の自己完結起動）。
+    _MP_API_ROOT = _API_ROOT.parents[1] / "market_profile" / "api"
+    if str(_MP_API_ROOT) not in sys.path:
+        sys.path.insert(0, str(_MP_API_ROOT))
+    _REPO_ROOT = _API_ROOT.parents[2]
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
 
 from marketdata import dataset  # noqa: E402
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402

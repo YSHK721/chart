@@ -44,10 +44,12 @@ class TestCacheRootAndPath:
         s = _store(tmp_path, root=None)
         assert s.cache_root() == tmp_path / "default_cache"
 
-    def test_cache_path_includes_symbol_grid_and_day(self, tmp_path):
+    def test_cache_path_includes_symbol_version_grid_and_day(self, tmp_path):
+        # ISSUE-089: version をパスへ含める（新旧コード併走時の同一ファイル書き合いを排除）。
         s = _store(tmp_path, root="c", grid_w=10.0)
         p = s.cache_path("JP225", _DAY0)
-        assert p == tmp_path / "c" / "JP225" / "g10" / f"{_DAY0}.npz"
+        ver = s._cache_version_provider()
+        assert p == tmp_path / "c" / "JP225" / f"v{ver}" / "g10" / f"{_DAY0}.npz"
 
 
 # --------------------------------------------------------------------------- #

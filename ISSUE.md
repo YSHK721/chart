@@ -1047,3 +1047,24 @@
   1. 🟡-1: byte-parity golden を再生成スクリプト（tools/regen_mp_byte_parity_golden.py・クエリ集合不変）で現行データ基準へ更新。既知 10 件（データドリフト 8＋ISSUE-078 設計変更の dwell 2）のみ更新され 27/27 緑＝CI 承認条件を回復。
   2. 🔵-1: 週/月ラベル×resample 一致テストへ米 DST 切替区間（2026春・2025秋）を追加 🔵-2: jitter buffer refreshAt の finally を tf/src 世代照合（交差削除防止）🔵-3: tf-period zp ディスク世代を _ZP_CACHE_VERSION 連動（s3/zp→s3/zp-v3）🔵-4: _DAY_MEM 256→1024 🔵-5: next_period_label（年跨ぎ・閏2月）・_bucket_completed 境界の単体テスト追加。
 - **検証**: marketdata 146・MP api 229＋byte-parity 27・UI api 386・MP web 287・UI web 533/535 全緑（既知2件除く）。実UI（8139）: /candles・/forming_bar・1W zp 列の応答正常・30分ボタン追加動作・コンソールエラーなし。
+
+## ISSUE-087 追補（🟡-3 完了・キャッシュ実削除実施・2026-07-15 依頼者承認）
+- **sys.path 正規化**: venv site-packages への .pth 登録（tools/install_dev_paths.py・editable install は venv に setuptools 不在＋オフラインのため不採用＝site 標準機構で代替）。固有名パッケージ（marketdata/market_profile_api）を全プロセスで恒久解決し、ライブラリ 8 ファイル（marketdata 2・indicator_ui adapter/compute 5・MP dwell 1）から実行時 insert を撤去。entry（server.py・replay bridge）は自スライスの汎用名パッケージ（adapter 等＝スライス間で名前衝突するため .pth 不可）のみ結線し、.pth 未登録環境へのフォールバック（自己完結起動）を温存。検証: PYTHONPATH なし pytest 386 緑・env -i サーバー起動と /candles・/market_profile・/tf_period_profile 応答確認。
+- **キャッシュ孤児削除**: tools/cache_gc.py --delete 実行（179MB・16 エントリ→孤児ゼロ確認）。バックアップ類（rollups_backup_utc20260714 等）は対象外のまま（禁止事項）。
+
+## ISSUE-089: byte-parity golden が数時間で再赤化＝応答への実時刻依存の混入（レビュー診断の更正）
+- **ステータス**: RESOLVED（2026-07-15・feature/issue-089-causal-leak・真因3層＋窓ローリングを実測特定し根絶）
+- **実測**: ISSUE-088 で golden 再生成（27/27 緑）した数時間後、同一固定クエリ（to=1780666320 固定・過去窓）の dwell/m1/forming 6 件が再び不一致。同一プロセスで dwell profile の同一 price の tpo が 2431→1754 へ変化＝**過去窓固定でも応答が現在時刻/現在データに依存**している。
+- **含意**: ①ISSUE-088 🟡-1 の「parquet データドリフト」診断は不完全（過去ティック不変は実証済み＝ドリフトでは説明不能）②golden 再生成では恒久解決しない ③to= は replay の as-seen-at-t 窓であり、現在データが過去時点の応答へ影響するなら**因果リーク（未来参照）の疑い**＝replay 検証の信頼性に関わる。
+- **対処案（裁定待ち）**: (a) 依存経路の特定（レンジ導出・active table・正規化のどこが now を参照するか実測）→ 因果リークなら修正 (b) byte-parity は合成データ注入でデータ/時刻非依存化。
+
+## ISSUE-089 対応記録（真因の実測特定と根絶・2026-07-15）
+- **実測で特定した真因（4層・いずれも「データドリフト」ではない）**:
+  1. **active table の先勝ちメモ**: `_active_table` が symbol のみキーでメモ化し、プロセス内で最初に触った要求の窓の活動表が以後の全要求に流用→境界日 partial・新規保存 npz へ**プロセス履歴依存**の値が焼き込まれていた。
+  2. **表のリクエスト窓依存**: 日次ロールアップの表がリクエスト t1 アンカーのため、どの要求が最初にその日を計算したかでキャッシュ値が変わる（歴史日へ現在の活動地図を適用するアナクロニズムでもあった）。
+  3. **新旧コード併走のファイル書き合い**: キャッシュパスに版数が無く、旧コード常駐サーバ（8139/8000）と新プロセスが同一 npz を v3⇄v4 で相互上書き（監視中に実発生を確認）。
+  4. **1m 原子ストアのローリング保持**: `load_candles('jp225_tick')` の先頭（実測 t0≈2週間前）が壁時計と共に前進し、固定 `to` でも集計窓の左端が動いて全ビンが再分配される＝実データ依存の byte 固定は原理的に不能。
+- **修正**: ①表メモを (symbol, 窓) キー化＋日次/部分ロールアップの表を「その日の属する月初アンカー（過去120日・因果・**日の純関数**）」で内部導出（回帰テスト付き）②dwell _CACHE_VERSION 3→4・**キャッシュパスへ版数を組み込み**（`<sym>/v4/g10/`＝世代間のファイル奪い合いを構造排除・旧サーバ併走も安全）③warm のスキップを存在チェック→版数/署名検証付きロードへ④byte-parity の jp225_tick 系 12 ケースを決定論の**合成世界**（tests/mp_parity_world.py・regen ツールと注入器共有）へ移行し golden 再生成。
+- **as-seen-at-t への含意**: `to` 窓の右端（未来リーク）は健全（クランプ済み）。非再現性の実体は上記 1〜4＝修正後は「過去窓固定クエリ＝不変応答」（キャッシュ有無・要求順序・併走プロセスに非依存）。
+- **検証**: dwell v4 全再構築（4,884 セッション/125s）。byte-parity 27/27 を3連続・フルスイート 258 を2連続で同一緑（旧: 実行毎に 4〜6 件が変動赤）。parity 実行 16s→0.6s。marketdata 146・UI api 386 緑。実UI: /market_profile dwell 正常応答（v4 値）。
+- **注記**: 日次 dwell 値は表セマンティクス変更（月初アンカー）により v3 と微差（歴史日ほど妥当方向）。本番 8000 は旧パス（g10 直下）を読むため再起動まで従来どおり動作（干渉なし）。
