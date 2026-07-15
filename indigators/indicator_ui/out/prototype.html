@@ -1146,6 +1146,12 @@ function sessionLabelToStart(label) {
 const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D']);
 const _MP_ZP_TF = new Set(['15m', '30m', '1h', '4h', '1D']);
 
+// ISSUE-080（依頼者裁定 2026-07-15）: 日別（周期）プロファイルで zp を選べない時間足。
+//   原則「列の周期＝チャートの時間足。作れないソースは出さない」＝z は 1m/5m 周期で統計が
+//   成立せず（原子=1分1点）、代替粒度（日タイル・15m列）を黙って出すのは粒度契約違反。
+//   actor の実行時ガード（非対応組合せは fetch も描画もしない）と単一情報源で共有する。
+const MP_ZP_SESSIONS_BLOCKED_TFS = new Set(['1m', '5m']);
+
 // tf-period が日別プロファイル列を描く状態か（＝解像度パラメータが無効な状態）。
 //   条件: served(B方式) かつ mode=sessions かつ対応 tf（src=zp は 15m..1D 限定）。ctx は
 //   { timeframe, servedMode } を受ける（gear ダイアログが現 timeframe/mode を注入）。
@@ -1228,7 +1234,13 @@ function makeMarketProfileDef({
         enumLabels: {
           dwell: '滞在時間(実ティック)', zp: '超過占有z(p)',
         },
-        tooltip: '滞在時間＝実ティックの滞在秒（日別では全時間足で周期ごとの列を表示）／超過占有z(p)＝偶然比の異常度（日別では15分足以上が周期列・1分足/5分足はzが短周期で統計不成立のため日単位タイル表示になる）',
+        tooltip: '滞在時間＝実ティックの滞在秒（日別では全時間足で周期ごとの列を表示）／超過占有z(p)＝偶然比の異常度（zは15分以上の周期でのみ統計が成立するため、日別×1分/5分足では選択不可。日単位のzは日足チャートの日別で確認）',
+        // ISSUE-080: 日別×1m/5m では zp の option を無効化（灰色・選択不可）。代替粒度は出さない。
+        //   ctx 不在（A方式・単体テスト）は制限しない（timeframe を知り得ないため安全側＝有効）。
+        optionEnable: (value, values, ctx) => value !== 'zp'
+          || values.mode !== 'sessions'
+          || !ctx || ctx.timeframe == null
+          || !MP_ZP_SESSIONS_BLOCKED_TFS.has(ctx.timeframe),
       }),
 
       // period: 計測窓（ENUM・既定 'all'＝全期間・ISSUE-071 (b)案）。'day'＝当日始端からの窓で計測する
@@ -1304,6 +1316,9 @@ const UI_DEFAULTS = Object.freeze({
   min: null,
   max: null,
   conditionalEnable: null,
+  // optionEnable: ENUM option 単位の有効述語 (value, values, ctx)->bool（ISSUE-080・select の
+  //   option を個別に disabled にする。行全体の conditionalEnable と直交）。
+  optionEnable: null,
   // conditionalVisible: 条件付き“表示”（トグル）。conditionalEnable（グレーアウト）と対称で、
   //   { when: { param, equals } } が偽のとき当該フィールド行を非表示にする（form_model.computeVisible）。
   conditionalVisible: null,
@@ -3289,6 +3304,9 @@ const FIELD_META_DEFAULTS = Object.freeze({
   conditionalVisible: null,
   // enumLabels: enum 値 → 表示名マップ（properties_dialog の select 日本語表示）。
   enumLabels: null,
+  // optionEnable: ENUM の option 単位の有効述語 (value, values, ctx)->bool（ISSUE-080）。
+  //   偽の option は select 上で disabled（灰色・選択不可）。行全体の conditionalEnable と直交。
+  optionEnable: null,
 });
 
 // pdef の任意メタデータを FIELD_META_DEFAULTS のキーで既定フォールバック付きに解決する。
@@ -4210,6 +4228,41 @@ class PropertiesDialog {
         for (const inner of els.control.querySelectorAll ? els.control.querySelectorAll('input,select,button') : []) {
           inner.disabled = !on;
         }
+      }
+    }
+    // ISSUE-080: ENUM の option 単位無効化（optionEnable 述語）。select の各 option へ反映する
+    //   （mode/timeframe 変化に動的追従＝行の conditionalEnable と同じ再評価タイミング）。
+    //   選択中の値が無効化されたときは**最初の有効 option へ自動切替**する（灰色のまま選択が残ると
+    //   OK で無効組合せが保存され実行時ガードで空表示になるため。切替はダイアログ上で可視＝
+    //   黙った代替ではない。例: 日別×1分で src=zp → 滞在時間 へ跳ぶ）。
+    for (const pdef of this._def.params ?? []) {
+      if (typeof pdef.optionEnable !== 'function') {
+        continue;
+      }
+      const els = this._fieldEls.get(pdef.name);
+      const sel = els && els.control && els.control.tagName === 'SELECT'
+        ? els.control
+        : els && els.control && els.control.querySelector ? els.control.querySelector('select') : null;
+      if (!sel) {
+        continue;
+      }
+      let firstEnabled = null;
+      let currentDisabled = false;
+      for (const opt of sel.options ?? []) {
+        const raw = (pdef.enumValues ?? []).find((v) => String(v) === opt.value) ?? opt.value;
+        const ok = !!pdef.optionEnable(raw, this._values, this._context);
+        opt.disabled = !ok;
+        if (ok && firstEnabled === null) {
+          firstEnabled = raw;
+        }
+        if (!ok && String(this._values[pdef.name]) === opt.value) {
+          currentDisabled = true;
+        }
+      }
+      if (currentDisabled && firstEnabled !== null) {
+        this._values[pdef.name] = firstEnabled;
+        sel.value = String(firstEnabled);
+        this._refreshVisible(); // src 連動の表示（period 行など）も追従させる。
       }
     }
   }
@@ -7256,6 +7309,7 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
 //   取得失敗（client が null）時も既存描画へ干渉せず、前回 profile を保持する。
 
 // セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・当日窓・日別集計の唯一の規則源。
+// ISSUE-080: 日別×1m/5m で zp を出さない（単一情報源＝catalog の述語と同じ集合）。
 
 // sessions の 'YYYY-MM-DD' → UNIX 秒（UTC 深夜）。candle.time との突合に使う（primitive dateToUnix と同一規則）。
 function _sessionDateToUnix(dateStr) {
@@ -7990,6 +8044,22 @@ class MarketProfileActor {
     //   読取欄を null リセットし、初回のみ candle 範囲へ focus する（→可視レンジ変化で tf-period 取得）。
     //   tf-period 列は onParamsChanged（composition_root→tfPeriodActor 即時再取得）と可視レンジ購読で
     //   取得されるため、本フェッチに依存せず<1sで描ける。読取欄の当日MPは列由来へ簡素化（依頼者承認 A案）。
+    // ISSUE-080（依頼者裁定 2026-07-15）: 日別×1m/5m×zp は非対応＝代替粒度（日タイル）を出さない。
+    //   fetch もせず表示をクリアし、ローソクを可視のまま維持する（「作れないソースは出さない」原則。
+    //   gear では option 無効化済みだが、時間足切替で事後にこの状態へ到達し得るため実行時も防御）。
+    if (this._sessions && this._params.src === 'zp'
+        && MP_ZP_SESSIONS_BLOCKED_TFS.has(this._getContext().timeframe)) {
+      if (this._primitive && typeof this._primitive.setSessions === 'function') {
+        this._primitive.setSessions(null);
+      }
+      if (this._renderer && typeof this._renderer.setSessionMP === 'function') {
+        this._renderer.setSessionMP(null);
+      }
+      if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+        this._renderer.setCandleTransparency(false);
+      }
+      return;
+    }
     if (this._sessions && this._sessionsDrawnByTfPeriod()) {
       this._applySessions(null);      // タイル非描画（tfDraws は null）＋読取欄クリア＋candle 透明化は tf-period 委譲。
       this._focusSessionsPending();   // 初回のみ candle 範囲へ focus（列を画面内へ）。

@@ -48,6 +48,9 @@ const FIELD_META_DEFAULTS = Object.freeze({
   conditionalVisible: null,
   // enumLabels: enum 値 → 表示名マップ（properties_dialog の select 日本語表示）。
   enumLabels: null,
+  // optionEnable: ENUM の option 単位の有効述語 (value, values, ctx)->bool（ISSUE-080）。
+  //   偽の option は select 上で disabled（灰色・選択不可）。行全体の conditionalEnable と直交。
+  optionEnable: null,
 });
 
 // pdef の任意メタデータを FIELD_META_DEFAULTS のキーで既定フォールバック付きに解決する。

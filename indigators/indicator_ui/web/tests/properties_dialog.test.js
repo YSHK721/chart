@@ -238,3 +238,30 @@ test('_buildSegmented click updates _values and fires _onChange (mode=sessions �
   assert.equal(normalBtn.classList.contains('is-active'), false);
   void replayBtn;
 });
+
+// ISSUE-080: 選択中の option が無効化されたら最初の有効 option へ自動切替（zp→dwell が可視で跳ぶ）。
+test('_refreshEnabled: 無効化された選択中 option は有効な先頭 option へ自動切替（日別×1m の zp→dwell）', () => {
+  const dialog = new PropertiesDialog({
+    document: segFakeDoc(), def: get('market_profile'), instance: null,
+    context: { timeframe: '1m', servedMode: 'b' },
+  });
+  dialog._fieldEls = fakeFieldEls(['dispbp', 'va', 'src', 'period', 'mode']);
+  // 実 select を模す最小 fake（options 配列＋value）。
+  const opts = [
+    { value: 'dwell', disabled: false },
+    { value: 'zp', disabled: false },
+  ];
+  const sel = { tagName: 'SELECT', options: opts, value: 'zp' };
+  dialog._fieldEls.get('src').control = sel;
+  dialog._values.src = 'zp';
+  dialog._values.mode = 'sessions'; // 日別×1m → zp 無効。
+  dialog._refreshEnabled();
+  assert.equal(opts[1].disabled, true, 'zp option は無効化');
+  assert.equal(dialog._values.src, 'dwell', '選択値は有効な dwell へ自動切替');
+  assert.equal(sel.value, 'dwell');
+  // 通常へ戻すと zp option は再有効化されるが、値は勝手に戻らない（ユーザー操作を尊重）。
+  dialog._values.mode = 'normal';
+  dialog._refreshEnabled();
+  assert.equal(opts[1].disabled, false);
+  assert.equal(dialog._values.src, 'dwell');
+});

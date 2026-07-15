@@ -10,6 +10,8 @@
 
 // セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・当日窓・日別集計の唯一の規則源。
 import { sessionDayStart, sessionDateLabel } from '../../domain/session_day.js';
+// ISSUE-080: 日別×1m/5m で zp を出さない（単一情報源＝catalog の述語と同じ集合）。
+import { MP_ZP_SESSIONS_BLOCKED_TFS } from '../../usecase/catalog_entry.js';
 
 // sessions の 'YYYY-MM-DD' → UNIX 秒（UTC 深夜）。candle.time との突合に使う（primitive dateToUnix と同一規則）。
 function _sessionDateToUnix(dateStr) {
@@ -744,6 +746,22 @@ export class MarketProfileActor {
     //   読取欄を null リセットし、初回のみ candle 範囲へ focus する（→可視レンジ変化で tf-period 取得）。
     //   tf-period 列は onParamsChanged（composition_root→tfPeriodActor 即時再取得）と可視レンジ購読で
     //   取得されるため、本フェッチに依存せず<1sで描ける。読取欄の当日MPは列由来へ簡素化（依頼者承認 A案）。
+    // ISSUE-080（依頼者裁定 2026-07-15）: 日別×1m/5m×zp は非対応＝代替粒度（日タイル）を出さない。
+    //   fetch もせず表示をクリアし、ローソクを可視のまま維持する（「作れないソースは出さない」原則。
+    //   gear では option 無効化済みだが、時間足切替で事後にこの状態へ到達し得るため実行時も防御）。
+    if (this._sessions && this._params.src === 'zp'
+        && MP_ZP_SESSIONS_BLOCKED_TFS.has(this._getContext().timeframe)) {
+      if (this._primitive && typeof this._primitive.setSessions === 'function') {
+        this._primitive.setSessions(null);
+      }
+      if (this._renderer && typeof this._renderer.setSessionMP === 'function') {
+        this._renderer.setSessionMP(null);
+      }
+      if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
+        this._renderer.setCandleTransparency(false);
+      }
+      return;
+    }
     if (this._sessions && this._sessionsDrawnByTfPeriod()) {
       this._applySessions(null);      // タイル非描画（tfDraws は null）＋読取欄クリア＋candle 透明化は tf-period 委譲。
       this._focusSessionsPending();   // 初回のみ candle 範囲へ focus（列を画面内へ）。

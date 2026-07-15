@@ -766,6 +766,41 @@ export class PropertiesDialog {
         }
       }
     }
+    // ISSUE-080: ENUM の option 単位無効化（optionEnable 述語）。select の各 option へ反映する
+    //   （mode/timeframe 変化に動的追従＝行の conditionalEnable と同じ再評価タイミング）。
+    //   選択中の値が無効化されたときは**最初の有効 option へ自動切替**する（灰色のまま選択が残ると
+    //   OK で無効組合せが保存され実行時ガードで空表示になるため。切替はダイアログ上で可視＝
+    //   黙った代替ではない。例: 日別×1分で src=zp → 滞在時間 へ跳ぶ）。
+    for (const pdef of this._def.params ?? []) {
+      if (typeof pdef.optionEnable !== 'function') {
+        continue;
+      }
+      const els = this._fieldEls.get(pdef.name);
+      const sel = els && els.control && els.control.tagName === 'SELECT'
+        ? els.control
+        : els && els.control && els.control.querySelector ? els.control.querySelector('select') : null;
+      if (!sel) {
+        continue;
+      }
+      let firstEnabled = null;
+      let currentDisabled = false;
+      for (const opt of sel.options ?? []) {
+        const raw = (pdef.enumValues ?? []).find((v) => String(v) === opt.value) ?? opt.value;
+        const ok = !!pdef.optionEnable(raw, this._values, this._context);
+        opt.disabled = !ok;
+        if (ok && firstEnabled === null) {
+          firstEnabled = raw;
+        }
+        if (!ok && String(this._values[pdef.name]) === opt.value) {
+          currentDisabled = true;
+        }
+      }
+      if (currentDisabled && firstEnabled !== null) {
+        this._values[pdef.name] = firstEnabled;
+        sel.value = String(firstEnabled);
+        this._refreshVisible(); // src 連動の表示（period 行など）も追従させる。
+      }
+    }
   }
 
   // 条件付き表示（§3.5 拡張・トグル）。conditionalVisible=false のフィールド行を非表示にする。

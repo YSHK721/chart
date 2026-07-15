@@ -16,6 +16,12 @@
 const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D']);
 const _MP_ZP_TF = new Set(['15m', '30m', '1h', '4h', '1D']);
 
+// ISSUE-080（依頼者裁定 2026-07-15）: 日別（周期）プロファイルで zp を選べない時間足。
+//   原則「列の周期＝チャートの時間足。作れないソースは出さない」＝z は 1m/5m 周期で統計が
+//   成立せず（原子=1分1点）、代替粒度（日タイル・15m列）を黙って出すのは粒度契約違反。
+//   actor の実行時ガード（非対応組合せは fetch も描画もしない）と単一情報源で共有する。
+export const MP_ZP_SESSIONS_BLOCKED_TFS = new Set(['1m', '5m']);
+
 // tf-period が日別プロファイル列を描く状態か（＝解像度パラメータが無効な状態）。
 //   条件: served(B方式) かつ mode=sessions かつ対応 tf（src=zp は 15m..1D 限定）。ctx は
 //   { timeframe, servedMode } を受ける（gear ダイアログが現 timeframe/mode を注入）。
@@ -98,7 +104,13 @@ export function makeMarketProfileDef({
         enumLabels: {
           dwell: '滞在時間(実ティック)', zp: '超過占有z(p)',
         },
-        tooltip: '滞在時間＝実ティックの滞在秒（日別では全時間足で周期ごとの列を表示）／超過占有z(p)＝偶然比の異常度（日別では15分足以上が周期列・1分足/5分足はzが短周期で統計不成立のため日単位タイル表示になる）',
+        tooltip: '滞在時間＝実ティックの滞在秒（日別では全時間足で周期ごとの列を表示）／超過占有z(p)＝偶然比の異常度（zは15分以上の周期でのみ統計が成立するため、日別×1分/5分足では選択不可。日単位のzは日足チャートの日別で確認）',
+        // ISSUE-080: 日別×1m/5m では zp の option を無効化（灰色・選択不可）。代替粒度は出さない。
+        //   ctx 不在（A方式・単体テスト）は制限しない（timeframe を知り得ないため安全側＝有効）。
+        optionEnable: (value, values, ctx) => value !== 'zp'
+          || values.mode !== 'sessions'
+          || !ctx || ctx.timeframe == null
+          || !MP_ZP_SESSIONS_BLOCKED_TFS.has(ctx.timeframe),
       }),
 
       // period: 計測窓（ENUM・既定 'all'＝全期間・ISSUE-071 (b)案）。'day'＝当日始端からの窓で計測する
