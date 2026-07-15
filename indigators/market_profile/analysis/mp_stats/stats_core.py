@@ -20,11 +20,12 @@ import numpy as np
 
 from . import _REPO_ROOT  # noqa: F401  (sys.path 挿入の副作用を保証)
 
-from simulator.adapter.validation.spa import (  # noqa: E402
-    _pw_block_len,
-    _stationary_bootstrap_indices,
+# ISSUE-091 A1: simulator.adapter（他アプリ具象・private）への側方依存を廃し、中立共有核へ。
+from common.stats_boot import (  # noqa: E402
+    norm_cdf,
+    pw_block_len as _pw_block_len,
+    stationary_bootstrap_indices as _stationary_bootstrap_indices,
 )
-from simulator.adapter.validation.var_backtests import norm_cdf  # noqa: E402
 
 __all__ = [
     "semivariance_neg",
