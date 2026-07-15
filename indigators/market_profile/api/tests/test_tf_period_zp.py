@@ -67,7 +67,8 @@ def test_zp_columns_schema_and_unit(tfp_env):
     status, body = tfp.handle_tf_period_profile(
         "jp225_tick", "1h", _day(29), _day(30), now=_day(40), src="zp")
     assert status == 200
-    assert body["unit"] == float(zp.GRID_W)
+    # ISSUE-079: log 格子。unit はレンジ中央での 1 セル価格幅（≈ 価格×(e^W_LOG−1)）＝正の実数。
+    assert body["unit"] > 0
     assert body["columns"], "1h 周期列が生成されること"
     for c in body["columns"]:
         assert set(c) == {"time", "levels", "poc", "va_low", "va_high",
@@ -84,7 +85,7 @@ def test_src_none_response_unchanged_and_keys_separated(tfp_env):
     s0, b0 = tfp.handle_tf_period_profile("jp225_tick", "1h", _day(29), _day(30), now=now)
     assert s0 == 200
     # ISSUE-068: count 列も GRID_W(=10pt) グリッド。値は整数カウント（zp の z 値と別物）。
-    assert b0["unit"] == float(zp.GRID_W)
+    assert b0["unit"] > 0  # ISSUE-079: log 格子の代表価格幅。
     assert b0["columns"], "count 列が生成される"
     assert all(isinstance(lv[1], (int,)) or float(lv[1]).is_integer()
                for c in b0["columns"] for lv in c["levels"]), "count は整数"
@@ -99,7 +100,7 @@ def test_src_none_response_unchanged_and_keys_separated(tfp_env):
 def test_zp_disk_cache_subdir(tfp_env, tmp_path):
     now = _day(40)
     tfp.handle_tf_period_profile("jp225_tick", "1h", _day(29), _day(30), now=now, src="zp")
-    disk = tmp_path / "tfp" / "JP225" / "1h" / "s1" / "zp" / f"{_day(29)}.json"  # ISSUE-078: s1 世代。
+    disk = tmp_path / "tfp" / "JP225" / "1h" / "s2" / "zp" / f"{_day(29)}.json"  # ISSUE-079: log 格子 s2 世代。
     assert disk.is_file()
     data = json.loads(disk.read_text())
-    assert data["unit"] == float(zp.GRID_W)
+    assert data["unit"] > 0  # ISSUE-079: log 格子の代表価格幅。

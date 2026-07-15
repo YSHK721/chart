@@ -64,7 +64,7 @@ class ZpStore:
     def null_path(self, symbol: str, day_start: int) -> _Path:
         return (
             self.cache_root() / "znull" / str(symbol)
-            / f"g{self._grid_w:g}" / f"L{self._hist_days}-M{self._m_reps}"
+            / f"b{self._grid_w:g}" / f"L{self._hist_days}-M{self._m_reps}"  # ISSUE-079: bp タグ（旧 g10 と不混在）。
             / f"{int(day_start)}.npz"
         )
 

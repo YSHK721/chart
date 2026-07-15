@@ -190,7 +190,7 @@ def _day_columns_zp(
     day_end = next_session_day_start(day_start)  # ISSUE-078。
     completed = day_end <= now_val
     key = (symbol, tf, day_start, "zp")
-    disk_tf = f"{tf}/s1/zp"  # ISSUE-078: セッション日キー世代 s1（旧 UTC 日 subdir と不混在）。
+    disk_tf = f"{tf}/s2/zp"  # ISSUE-079: log 格子世代 s2（s1=10pt セッション日と不混在）。
     if completed:
         hit = _DAY_MEM.get(key)
         if hit is not None:
@@ -205,7 +205,6 @@ def _day_columns_zp(
             return disk
 
     grid = _zp._mgrid_of_day(symbol, day_start, now_val)
-    unit = float(_zp.GRID_W)
     cols: list = []
     if grid is not None:
         closes, open_d = grid
@@ -220,9 +219,10 @@ def _day_columns_zp(
                 col_cap = max(1, min(g, elapsed))
                 m_reps = _zp.M_REPS_LIVE
             seg_all = closes[:col_cap]
-            klo = int(np.floor(float(seg_all.min()) / unit))
-            khi = int(np.floor(float(seg_all.max()) / unit))
-            centers = (klo + np.arange(khi - klo + 1) + 0.5) * unit
+            # ISSUE-079: zp 内部格子は 1bp log 一様（W_LOG）。セル中心価格は exp((k+0.5)·W_LOG)。
+            klo = int(np.floor(np.log(float(seg_all.min())) / _zp.W_LOG))
+            khi = int(np.floor(np.log(float(seg_all.max())) / _zp.W_LOG))
+            centers = np.exp((klo + np.arange(khi - klo + 1) + 0.5) * _zp.W_LOG)
             mid_day = (centers[0] + centers[-1]) / 2.0
             # 周期のカラム範囲（セッション窓 index・半開）。空周期はスキップ。
             periods: "list[tuple[int, tuple[int, int]]]" = []
@@ -247,7 +247,7 @@ def _day_columns_zp(
                     poc_price = _zp._poc_star_from_fine(z, klo, mid_day)
                     z_pos = np.maximum(z, 0.0)
                     va_low, va_high = _value_area(z_pos, centers, 0.70)
-                    poc_k = int(np.floor(poc_price / unit)) - klo
+                    poc_k = int(np.floor(np.log(poc_price) / _zp.W_LOG)) - klo
                     keep = (z > 0)
                     keep[max(0, min(poc_k, keep.size - 1))] = True
                     levels = [
@@ -265,6 +265,13 @@ def _day_columns_zp(
                         "price_max": round(float(seg.max()), 6),
                         "tpo_units": int(obs.sum()),
                     })
+    # 応答 unit＝レンジ中央での 1 セル価格幅（bp 格子は価格比例のため代表値。フロントは行高・
+    #   ツールチップのスナップ幅にのみ使用＝厳密幅は不要）。空日は W_LOG×基準価格の名目値。
+    if cols:
+        mids_p = [(c["price_min"] + c["price_max"]) / 2.0 for c in cols]
+        unit = round(float(np.median(mids_p)) * (np.exp(_zp.W_LOG) - 1.0), 6)
+    else:
+        unit = round(60000.0 * (np.exp(_zp.W_LOG) - 1.0), 6)
     result = (unit, cols)
     if completed:
         _DAY_MEM[key] = result
