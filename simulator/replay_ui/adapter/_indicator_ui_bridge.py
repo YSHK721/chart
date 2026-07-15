@@ -39,8 +39,16 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
     # ``adapter.compute`` を indicator_ui の api/ 経由で参照する＝結線の一貫性）。
     mp_api = root / "indigators" / "market_profile" / "api"
 
-    # marketdata（repo 根）・adapter.compute（indicator_ui api）・market_profile_api（MP api）を解決可能にする。
-    for p in (str(root), str(api), str(mp_api)):
+    # ISSUE-087 🟡-3: 固有名（marketdata / market_profile_api）は venv の .pth（tools/
+    #   install_dev_paths.py）が恒久解決する。本 bridge は結線点として汎用名パッケージ
+    #   ``adapter``（indicator_ui api）のみを追加する。.pth 未登録環境はフォールバックで従来どおり。
+    paths = [str(api)]
+    try:
+        import marketdata as _md  # noqa: F401
+        import market_profile_api as _mp  # noqa: F401
+    except ImportError:  # フォールバック（未登録環境）。
+        paths += [str(root), str(mp_api)]
+    for p in paths:
         if p not in sys.path:
             sys.path.insert(0, p)
 

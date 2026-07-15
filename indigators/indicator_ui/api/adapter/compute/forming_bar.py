@@ -31,9 +31,7 @@ logger = logging.getLogger(__name__)
 import sys as _sys
 from pathlib import Path as _Path
 
-_WORKSPACE_ROOT = _Path(__file__).resolve().parents[5]
-if str(_WORKSPACE_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_WORKSPACE_ROOT))
+# ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 from marketdata.resample import TIMEFRAME_RULES  # noqa: E402  (規則源・floor freq を導出)
 from marketdata.tick_m1 import forming_bar_from_ticks  # noqa: E402
 # セッション日境界（ISSUE-078）: 1D の期間始端と 1D バー time 規約（ラベル深夜）の唯一の規則源。

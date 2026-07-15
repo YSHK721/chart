@@ -22,9 +22,7 @@ from pathlib import Path as _Path
 
 # marketdata パッケージ解決＋旧 dataset 自己挿入の移管（api/adapter/compute/ → parents[5] =
 # /workspaces/app）。proto_server はこの副作用に依存するため本 shim で必ず先に行う。
-_WORKSPACE_ROOT = _Path(__file__).resolve().parents[5]
-if str(_WORKSPACE_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_WORKSPACE_ROOT))
+# ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 
 from marketdata import dataset as _real  # noqa: E402
 

@@ -26,9 +26,7 @@ from adapter.compute.module_loader import load_package
 #   指標 src（例 moving_averages/src/lwc_chart.py）が ``from common.applied_price import ...``
 #   を解決できるよう、ワークスペース根（このファイル: api/adapter/compute/ → parents[5]）を
 #   sys.path に追加する（ロード境界で一括設定し、各 src に sys.path ハックを散らさない）。
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[5]
-if str(_WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKSPACE_ROOT))
+# ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 
 
 def _accepted_kwargs(callable_: Callable, params: dict[str, Any]) -> dict[str, Any]:

@@ -48,10 +48,7 @@ from market_profile_api.compute.market_profile import _session_entry, _value_are
 # ディスクキャッシュ Repository（ISSUE-040(b) SRP 分離）。集計数学は本モジュール、永続化は Store が担う。
 from market_profile_api.compute.market_profile_dwell_store import DwellRollupStore
 
-# repo 根を sys.path へ（marketdata を import するため・dataset/forming_bar と同じロード境界）。
-_WORKSPACE_ROOT = _Path(__file__).resolve().parents[5]
-if str(_WORKSPACE_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_WORKSPACE_ROOT))
+# ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 from marketdata import paths as _paths  # noqa: E402  (DATA_DIR 単一基点・cache 配置に使用)
 from marketdata.tick_m1 import day_parquet_files  # noqa: E402  (正準ティック経路・read-only)
 # セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源。

@@ -33,11 +33,7 @@ from marketdata import rollup_store, tail_reader
 # workspace ルート（このファイル: marketdata/ → parents[1] = /workspaces/app）。
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 # 時系列データの単一基点（marketdata.paths.DATA_DIR）を import するため repo 根を sys.path へ
-# （call_binding と同じロード境界の一括設定。各 src に sys.path ハックを散らさない）。
-import sys as _sys
-
-if str(_WORKSPACE_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_WORKSPACE_ROOT))
+# ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 from marketdata.paths import DATA_DIR
 
 # datasetRef ホワイトリスト（§7.3）。識別子 → 実 CSV パス。生パス直送・パストラバーサルを
