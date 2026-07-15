@@ -104,3 +104,36 @@ def test_zp_disk_cache_subdir(tfp_env, tmp_path):
     assert disk.is_file()
     data = json.loads(disk.read_text())
     assert data["unit"] > 0  # ISSUE-079: log 格子の代表価格幅。
+
+
+def test_zp_live_ticks_fresh_tail(tfp_env, monkeypatch):
+    """ISSUE-083 追補: 当日 zp 列は live_ticks で分足格子の末尾が最新化される（frontier 遅延の解消）。
+
+    parquet 末尾を 5 分遅延させ（frontier）、その先のティックを live_ticks で供給すると、
+    当日最終列の価格レンジ（price_max）が live 末尾の水準を反映する（ffill 停滞の解消）。
+    """
+    from marketdata.session_day import next_session_day_start, session_day_start
+
+    day = session_day_start(_day(29) + 3600)
+    now = day + 6 * 3600  # セッション 6 時間経過（未完了日）。
+    assert next_session_day_start(day) > now
+    frontier = now - 300  # parquet 末尾が 5 分遅延している想定。
+    full_load = tfp._mpd._load_window_ticks  # fixture の合成ローダ。
+    monkeypatch.setattr(
+        tfp._mpd, "_load_window_ticks",
+        lambda symbol, start, end: full_load(symbol, start, min(int(end), frontier)),
+    )
+    # frontier 以降のティックを buffer 末尾として供給（+0.5% の新水準＝±30% 内）。
+    tail_secs, tail_mids = full_load("JP225", frontier, now)
+    assert len(tail_secs) > 0, "合成データに frontier 以降のティックがあること"
+    live = [(int(s) * 1000, float(m) * 1.005) for s, m in zip(tail_secs, tail_mids)]
+
+    # 窓は live 末尾（[now-300, now)）が属する周期まで含める（now=day+6h・1h 周期）。
+    st0, without = tfp.handle_tf_period_profile(
+        "jp225_tick", "1h", day + 3600, now, now=now, src="zp")
+    st1, withlv = tfp.handle_tf_period_profile(
+        "jp225_tick", "1h", day + 3600, now, now=now, src="zp", live_ticks=live)
+    assert st0 == 200 and st1 == 200
+    last0 = without["columns"][-1]
+    last1 = withlv["columns"][-1]
+    assert last1["price_max"] > last0["price_max"], "live 末尾の新水準が当日列へ反映される"
