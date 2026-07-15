@@ -1,11 +1,13 @@
 // mp_mode_migration.test.js — 表示モード統合(mode)の転送・後方互換マイグレーション検証。
 //
 // 背景: 旧版は gear に replay(BOOL)/sessions(BOOL) の 2 チェックがあり、それぞれ永続 params に
-//   replay:true / sessions:true として保存された。統合版は 1 つの mode ENUM
-//   ['normal','replay','sessions'] へ一本化する。永続 params に mode が無く legacy replay/sessions
-//   が残るインスタンスを restore/apply したとき、_mpParams が legacy → mode を導出して actor へ渡す
-//   （legacy キー自体は actor へ送らない）。resmode の _deriveResmode と同方針。
+//   replay:true / sessions:true として保存された。統合版は 1 つの mode ENUM へ一本化する。
+//   永続 params に mode が無く legacy replay/sessions が残るインスタンスを restore/apply したとき、
+//   _mpParams が legacy → mode を導出して actor へ渡す（legacy キー自体は actor へ送らない）。
+//   resmode の _deriveResmode と同方針。
 // 規則: 両方 true の旧データは sessions 優先（排他統合のため一方に確定させる）。
+// ISSUE-082: リプレイモードは present から撤去。mode ENUM は ['normal','sessions'] となり、
+//   保存済み mode='replay'／legacy replay:true は 'normal' へ正規化する。
 // 構造: Arrange-Act-Assert（AAA）。DOM/ネット非依存（全注入・recording fake）。
 
 import { test } from 'node:test';
@@ -43,8 +45,14 @@ function makeController({ marketProfile, applied = [] } = {}) {
 
 test('_mpParams forwards an explicit mode to the actor', () => {
   const ctrl = makeController({ marketProfile: fakeMarketProfile() });
+  const out = ctrl._mpParams({ bins: 60, va: 0.7, src: 'candle', mode: 'sessions' });
+  assert.equal(out.mode, 'sessions', 'mode を actor へ転送する');
+});
+
+test('_mpParams normalizes persisted mode=replay to normal (ISSUE-082: リプレイ撤去)', () => {
+  const ctrl = makeController({ marketProfile: fakeMarketProfile() });
   const out = ctrl._mpParams({ bins: 60, va: 0.7, src: 'candle', mode: 'replay' });
-  assert.equal(out.mode, 'replay', 'mode を actor へ転送する');
+  assert.equal(out.mode, 'normal', '保存済み mode=replay は normal へ正規化する');
 });
 
 test('_mpParams does not forward legacy replay/sessions keys to the actor', () => {
@@ -56,10 +64,10 @@ test('_mpParams does not forward legacy replay/sessions keys to the actor', () =
 
 // --- 後方互換: legacy replay/sessions → mode 導出 ------------------------------
 
-test('_mpParams derives mode=replay from legacy replay:true (mode absent)', () => {
+test('_mpParams derives mode=normal from legacy replay:true (ISSUE-082: リプレイ撤去)', () => {
   const ctrl = makeController({ marketProfile: fakeMarketProfile() });
   const out = ctrl._mpParams({ bins: 60, va: 0.7, src: 'candle', replay: true });
-  assert.equal(out.mode, 'replay', 'legacy replay:true → mode=replay');
+  assert.equal(out.mode, 'normal', 'legacy replay:true → mode=normal（リプレイ撤去）');
   assert.equal('replay' in out, false, 'legacy replay キーは送らない');
 });
 
@@ -89,10 +97,10 @@ test('_mpParams does not derive mode from legacy false flags (replay:false/sessi
   assert.equal(out.mode, 'normal', 'legacy 両 false → mode=normal');
 });
 
-test('an explicit mode wins over conflicting legacy flags', () => {
+test('an explicit mode wins over conflicting legacy flags (replay は正規化後 normal)', () => {
   const ctrl = makeController({ marketProfile: fakeMarketProfile() });
   const out = ctrl._mpParams({ bins: 60, va: 0.7, src: 'candle', mode: 'replay', sessions: true });
-  assert.equal(out.mode, 'replay', 'mode 明示は legacy に優先する');
+  assert.equal(out.mode, 'normal', 'mode 明示は legacy に優先し、replay は normal へ正規化する');
 });
 
 // --- restore 経路（persisted params を直接通す reload）でも効く -----------------

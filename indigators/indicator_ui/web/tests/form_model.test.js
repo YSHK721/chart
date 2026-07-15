@@ -393,3 +393,14 @@ test('computeEnabled: moving_averages bb_stddev is enabled only when smoothing_t
   const on = computeEnabled(def, { ...resetToDefaults(def), smoothing_type: 'sma_bb' });
   assert.equal(on.bb_stddev, true);
 });
+
+// ISSUE-082: ENUM の保存値が enumValues に無い（撤去済み選択肢＝mode='replay' 等）場合は default へ
+//   フォールバックする（アクティブ表示の無いセグメント/選択不能値をダイアログへ持ち込まない）。
+test('buildFormModel: ENUM value absent from enumValues falls back to default (撤去済み mode=replay)', () => {
+  const def = get('market_profile');
+  const model = buildFormModel(def, { mode: 'replay', va: 0.7, src: 'dwell' });
+  const byName = new Map(model.fields.map((f) => [f.name, f]));
+  assert.equal(byName.get('mode').value, 'normal', '撤去済み mode=replay は default(normal) へ');
+  assert.equal(byName.get('src').value, 'dwell', 'enum に存在する保存値はそのまま');
+  assert.equal(byName.get('va').value, 0.7, '非 ENUM は影響なし');
+});

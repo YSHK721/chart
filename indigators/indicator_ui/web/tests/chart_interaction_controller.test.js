@@ -1,11 +1,14 @@
 // ChartInteractionController（adapter/front/chart_interaction_controller.js）の単体検証。
 //
 // 設計入力: ISSUE-040(a)。composition root の DI ルートに混入したチャート操作の振る舞い
-//   （pointer swipe スクラブ・縦価格パン・wheel 価格ズーム・dblclick reset）を本コントローラへ抽出し、
+//   （縦価格パン・wheel 価格ズーム・dblclick reset）を本コントローラへ抽出し、
 //   composition root は new して install() するだけに縮小する（Composition Root は配線専用）。
-// 観点: 抽出後も挙動は byte 不変。install() が container の pointer/wheel/dblclick を配線し、
-//   注入依存（renderer / replayBar / getController / updatePaneHeight）へ既存と同一の呼出を行う。
-// 構造: Arrange-Act-Assert。container/renderer/replayBar は Fake を注入（DOM/実描画非依存）。
+// ISSUE-082: リプレイモード（swipe スクラブ・replayBar 依存）は present から撤去した。
+//   本テストからもリプレイ系ケースを削除し、isReplay=true 相当でも通常パンのままであることを検証する
+//   （replay_ui は独立コピーを保持）。
+// 観点: install() が container の pointer/wheel/dblclick を配線し、
+//   注入依存（renderer / getController / updatePaneHeight）へ既存と同一の呼出を行う。
+// 構造: Arrange-Act-Assert。container/renderer は Fake を注入（DOM/実描画非依存）。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -41,30 +44,23 @@ function fakeRenderer(overrides = {}) {
   return Object.assign(r, overrides);
 }
 
-// replayBar Fake（currentIndex / scrubToLogical のスパイ）。
-function fakeReplayBar(startIdx = 0) {
-  const scrubs = [];
-  return { scrubs, currentIndex: () => startIdx, scrubToLogical: (i) => { scrubs.push(i); } };
-}
-
-// getController Fake（リプレイ ON/OFF を切替可能）。
+// getController Fake（旧リプレイ判定の残骸が参照されないことを isReplay スパイで確認できる形）。
 function makeGetController(isReplay = false) {
   const ctrl = { _marketProfile: { isReplay: () => isReplay } };
   return { ctrl, getController: () => ctrl };
 }
 
-function build({ replay = false, renderer, replayBar, startIdx = 0 } = {}) {
+function build({ replay = false, renderer } = {}) {
   const container = fakeContainer();
   const r = renderer || fakeRenderer();
-  const rb = replayBar || fakeReplayBar(startIdx);
   const { ctrl, getController } = makeGetController(replay);
   const paneCalls = [];
   const updatePaneHeight = () => { paneCalls.push(1); };
   const ctl = new ChartInteractionController({
-    container, renderer: r, replayBar: rb, getController, updatePaneHeight,
+    container, renderer: r, getController, updatePaneHeight,
   });
   ctl.install();
-  return { container, renderer: r, replayBar: rb, ctrl, paneCalls, ctl };
+  return { container, renderer: r, ctrl, paneCalls, ctl };
 }
 
 test('install wires a non-passive capturing wheel listener', () => {
@@ -101,9 +97,9 @@ test('dblclick: 価格軸上のみ resetPriceZoom（本体領域は無反応）'
   assert.equal(renderer.calls.resetPriceZoom, 1);
 });
 
-test('本体ドラッグ縦パン: 非リプレイ・価格ズーム中のみ panPriceByPixels（未ズームは無効）', () => {
+test('本体ドラッグ縦パン: 価格ズーム中のみ panPriceByPixels（未ズームは無効）', () => {
   const renderer = fakeRenderer({ isPriceZoomed: () => false });
-  const { container } = build({ renderer, replay: false });
+  const { container } = build({ renderer });
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
   container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 140 });
   assert.deepEqual(renderer.calls.panPriceByPixels, [], '未ズームは縦パンしない');
@@ -116,7 +112,7 @@ test('本体ドラッグ縦パン: 非リプレイ・価格ズーム中のみ pa
 
 test('本体ドラッグ縦パン: 左ボタン以外・価格軸上・ボタン解放では開始/継続しない', () => {
   const renderer = fakeRenderer({ isPriceZoomed: () => true, isOverPriceAxis: (x) => x >= 600 });
-  const { container } = build({ renderer, replay: false });
+  const { container } = build({ renderer });
   // 右ボタン → 開始しない
   container.fire('pointerdown', { button: 2, clientX: 100, clientY: 100 });
   container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 130 });
@@ -131,52 +127,22 @@ test('本体ドラッグ縦パン: 左ボタン以外・価格軸上・ボタン
   assert.deepEqual(renderer.calls.panPriceByPixels, [], 'ボタン解放後は縦パンしない');
 });
 
-test('リプレイ swipe: pointerdown で開始 index 記録・pointermove で dIdx=round((x−startX)/px) を scrubToLogical（index 変化時のみ）', () => {
-  const replayBar = fakeReplayBar(5); // 開始 index=5
-  const renderer = fakeRenderer({ pixelsPerBar: () => 10 });
-  const { container } = build({ renderer, replayBar, replay: true });
+test('ISSUE-082: isReplay=true 相当でもスワイプ捕捉は発生せず通常の縦パンとして動作する', () => {
+  // present からリプレイ配線を撤去した後、actor が isReplay=true を返しても
+  //   setUserInteraction(false)（スワイプ捕捉）は呼ばれず、本体ドラッグは通常縦パンのまま。
+  const renderer = fakeRenderer({ isPriceZoomed: () => true });
+  const { container } = build({ renderer, replay: true });
   container.fire('pointerdown', { button: 0, clientX: 0, clientY: 100 });
-  assert.deepEqual(renderer.calls.userInteraction, [false], 'スワイプ開始で通常操作停止');
-  container.fire('pointermove', { buttons: 1, clientX: 25, clientY: 100 }); // idx=5+round(2.5)=8
-  assert.deepEqual(replayBar.scrubs, [8]);
-  container.fire('pointermove', { buttons: 1, clientX: 25, clientY: 100 }); // 同 index → 再取得しない
-  assert.deepEqual(replayBar.scrubs, [8], '同 index は冗長スクラブしない');
+  container.fire('pointermove', { buttons: 1, clientX: 40, clientY: 130 }); // dy=30
   container.fire('pointerup', {});
-  assert.deepEqual(renderer.calls.userInteraction, [false, true], 'スワイプ終了で通常操作復元');
-});
-
-test('リプレイ swipe: 縦成分は価格ズーム中のみ panPriceByPixels（横スクラブとは独立）', () => {
-  const replayBar = fakeReplayBar(0);
-  const renderer = fakeRenderer({ pixelsPerBar: () => 10, isPriceZoomed: () => true });
-  const { container } = build({ renderer, replayBar, replay: true });
-  container.fire('pointerdown', { button: 0, clientX: 0, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 0, clientY: 130 }); // 純縦 dy=30・index 不変
-  assert.deepEqual(replayBar.scrubs, [], '純縦はスクラブしない');
-  assert.deepEqual(renderer.calls.panPriceByPixels, [30], 'ズーム中は縦成分で価格パン');
-});
-
-test('リプレイ OFF: swipe は開始しない（左ボタンでも無反応）', () => {
-  const replayBar = fakeReplayBar(3);
-  const { container, renderer } = build({ replayBar, replay: false });
-  container.fire('pointerdown', { button: 0, clientX: 0, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 50, clientY: 100 });
-  assert.deepEqual(replayBar.scrubs, [], 'リプレイ OFF はスクラブしない');
-  assert.ok(!renderer.calls.userInteraction.includes(false), 'リプレイ OFF はスワイプ捕捉しない');
-});
-
-test('リプレイ swipe: 左ボタン以外では開始しない', () => {
-  const replayBar = fakeReplayBar(3);
-  const { container, renderer } = build({ replayBar, replay: true });
-  container.fire('pointerdown', { button: 2, clientX: 0, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 50, clientY: 100 });
-  assert.deepEqual(replayBar.scrubs, [], '右ボタンはスワイプ開始しない');
-  assert.ok(!renderer.calls.userInteraction.includes(false));
+  assert.deepEqual(renderer.calls.userInteraction, [], 'スワイプ捕捉（setUserInteraction）は配線されない');
+  assert.deepEqual(renderer.calls.panPriceByPixels, [30], '通常縦パンとして動作する');
 });
 
 test('container 不在/addEventListener 非対応でも install は例外を投げない（SSR/テスト防御）', () => {
   const { getController } = makeGetController(false);
   const ctl = new ChartInteractionController({
-    container: {}, renderer: fakeRenderer(), replayBar: fakeReplayBar(), getController, updatePaneHeight: () => {},
+    container: {}, renderer: fakeRenderer(), getController, updatePaneHeight: () => {},
   });
   assert.doesNotThrow(() => ctl.install());
 });

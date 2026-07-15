@@ -85,12 +85,16 @@ export function makeMarketProfileDef({
       //     成長エンジン（_enterTicklive/forming/DwellAccumulator）は grow 軸で存続（表示選択肢のみ削除）。
       //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
       //   order は旧 replay の位置（1）＝表示系 group の先頭。
-      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
+      // ISSUE-082（依頼者指示 2026-07-15）: リプレイモードは present（本指標）から撤去。
+      //   リプレイ機構（actor の setReplayCursor/replay bar 等）は replay_ui（別アプリ）が依存する
+      //   共有資産のため温存し、本 catalog の選択肢と composition の配線のみを撤去する。
+      //   保存済み mode='replay'／legacy replay:true は controller._deriveMode が 'normal' へ正規化。
+      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'sessions'], {
         group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
         enumLabels: {
-          normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル',
+          normal: '通常', sessions: '日別プロファイル',
         },
-        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
+        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
       }),
       // dispbp: 表示幅（bp・価格比 1bp=0.01%・FLOAT 自由入力・ISSUE-079 依頼者承認 2026-07-15）。
       //   旧 解像度トグル（resmode）＋ビン（bins）＋レンジpt（range）を**一本化**して置換する。

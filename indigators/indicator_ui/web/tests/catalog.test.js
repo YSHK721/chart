@@ -75,22 +75,23 @@ test('catalog: market_profile exposes src ENUM [dwell,zp] default zp（candle/m1
 });
 
 // market_profile の表示モード（mode）ENUM segmented トグル。旧 replay/sessions の 2 チェックを
-//   1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合（解像度トグル resmode と同方式）。
+//   1 つの排他トグルへ統合（解像度トグル resmode と同方式）。
 //   既定 'normal'・label '表示モード'・controlType 'segmented'・表示系 group（bins と別）。
-test('catalog: market_profile exposes mode ENUM [normal,replay,sessions] default normal as segmented toggle', () => {
+//   ISSUE-082: リプレイモードは present から撤去（replay_ui 専用へ）。ENUM は [通常｜日別プロファイル] の 2 モード。
+test('catalog: market_profile exposes mode ENUM [normal,sessions] default normal as segmented toggle', () => {
   const d = get('market_profile');
   const mode = paramOf(d, 'mode');
   assert.ok(mode, 'mode param exists');
   assert.equal(mode.type, ParamType.ENUM);
   assert.equal(mode.default, 'normal');
   // Phase5（統一成長）: 旧 'ticklive' セグメント（表示選択肢）は撤去。足内 1tick 逐次成長は表示モードでなく
-  //   成長軸（growing 信号）が担う（直交化）＝normal/sessions のいずれでも成長する。ENUM は 3 モード。
-  assert.deepEqual(mode.enumValues, ['normal', 'replay', 'sessions']);
+  //   成長軸（growing 信号）が担う（直交化）＝normal/sessions のいずれでも成長する。
+  assert.deepEqual(mode.enumValues, ['normal', 'sessions']);
   assert.equal(mode.label, '表示モード');
   assert.equal(mode.controlType, 'segmented');
   assert.equal(mode.enumLabels.normal, '通常');
-  assert.equal(mode.enumLabels.replay, 'リプレイ');
   assert.equal(mode.enumLabels.sessions, '日別プロファイル');
+  assert.equal(mode.enumLabels.replay, undefined, 'リプレイセグメントは撤去（ISSUE-082）');
   assert.equal(mode.enumLabels.ticklive, undefined, 'ticklive セグメントは撤去（表示選択肢なし）');
   // 表示系 group（計算系 group.calc とは別＝dispbp と同じ group ではない）。
   assert.notEqual(mode.group, paramOf(d, 'dispbp').group);
@@ -126,7 +127,6 @@ test('catalog: market_profile exposes period ENUM [all,day] default all, visible
   assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1m', servedMode: 'b' }), true, 'zp×通常×1m は表示');
   assert.equal(vis({ src: 'dwell', mode: 'normal' }, { timeframe: '1m', servedMode: 'b' }), false, 'dwell は非表示');
   assert.equal(vis({ src: 'zp', mode: 'sessions' }, { timeframe: '1h', servedMode: 'b' }), false, '日別は非表示');
-  assert.equal(vis({ src: 'zp', mode: 'replay' }, { timeframe: '1m', servedMode: 'b' }), false, 'リプレイは非表示');
   assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1W', servedMode: 'b' }), false, '1W は非表示');
   assert.equal(vis({ src: 'zp', mode: 'normal' }, null), true, 'ctx 不在（A方式/テスト）は mode/src 条件のみ');
   assert.equal(period.group, paramOf(d, 'dispbp').group);

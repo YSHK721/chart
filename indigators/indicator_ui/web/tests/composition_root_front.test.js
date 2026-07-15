@@ -368,28 +368,27 @@ test('bootstrap: 本体ドラッグの上下パンは「価格ズーム中(isPri
   assert.deepEqual(dys, [30, 20], 'ズーム中は縦成分で価格パン');
 });
 
-test('bootstrap: リプレイ中の縦パンも「価格ズーム中」限定（非ズームは価格を触らない・非リプレイと統一）', async () => {
-  // リプレイ中も横=スクラブ＋縦=価格パンだが、縦パンは isPriceZoomed のときだけ（全体表示の空白露出防止）。
+test('bootstrap: リプレイ配線は present に存在しない（ISSUE-082: isReplay=true でもスワイプ捕捉せず通常パンのまま）', async () => {
+  // ISSUE-082: リプレイモード（スワイプスクラブ・replayBar）は present から撤去した。
+  //   万一 actor が isReplay=true を返しても、swipe 捕捉（setUserInteraction(false)）は発生せず、
+  //   本体ドラッグは通常の縦パン（価格ズーム中のみ）として動作する。
   const { lwc } = fakeLwcFireable();
   const container = fakeContainer();
   const { renderer, controller } = await bootstrap({
     lwc, container, doc: null, storage: noStorage, protocol: 'file:',
   });
-  controller._marketProfile = { isReplay: () => true }; // リプレイ ON。
+  controller._marketProfile = { isReplay: () => true }; // 旧リプレイ ON 相当でも無効。
+  const interactions = [];
+  renderer.setUserInteraction = (on) => { interactions.push(on); };
   const dys = [];
   renderer.panPriceByPixels = (dy) => { dys.push(dy); return true; };
-  // (A) 非ズーム → 斜めドラッグしても価格パンしない。
-  renderer.isPriceZoomed = () => false;
-  container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 140, clientY: 130 });
-  container.fire('pointerup', {});
-  assert.deepEqual(dys, [], '非ズームのリプレイ縦ドラッグは価格を触らない');
-  // (B) ズーム中 → 縦成分で価格パン。
+  renderer.isOverPriceAxis = () => false; // 本体領域。
   renderer.isPriceZoomed = () => true;
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
   container.fire('pointermove', { buttons: 1, clientX: 140, clientY: 130 }); // dy=30
-  container.fire('pointermove', { buttons: 1, clientX: 200, clientY: 145 }); // dy=15
-  assert.deepEqual(dys, [30, 15], 'ズーム中のリプレイは縦成分で価格パン');
+  container.fire('pointerup', {});
+  assert.deepEqual(interactions, [], 'スワイプ捕捉（setUserInteraction）は配線されていない');
+  assert.deepEqual(dys, [30], '通常の縦パンとして動作する（リプレイ分岐なし）');
 });
 
 test('bootstrap: クロスヘアは Normal(0)＝自由追従で作成する（Magnet スナップを無効化）', async () => {
