@@ -18,23 +18,14 @@
 // セッション日境界（ISSUE-078）: 1D の期間・バー time はセッション日（NY17:00 ET 基準）で解決する。
 import { sessionBarTime } from '../../domain/session_day.js';
 
-// 固定周期 tf → 期間秒。/forming_bar が供給できる固定 floor 足のみ（1W/1M・未知は非対応＝no-op）。
-//   backend forming_bar._floor_freq と同じ集合（1m/5m/15m/30m/1h/4h/1D）。
-const TF_SECONDS = Object.freeze({
-  '1m': 60,
-  '5m': 300,
-  '15m': 900,
-  '30m': 1800,
-  '1h': 3600,
-  '4h': 14400,
-  '1D': 86400,
-});
+// 固定周期 tf（floor 可能・1m..1D）と秒長は domain/tf_meta.js（単一情報源・ISSUE-087 🔴-2）を参照。
+import { TF_BAR_SEC, isFloorTimeframe } from '../../domain/tf_meta.js';
 
 // プレイヤー（floor ベースの tick 累積）が扱える固定周期 tf か。1W/1M・未知は false
 //   （＝カレンダー周期でありプレイヤーでは扱えず、/forming_bar ポーリング＝FormingBarUpdater へ委譲する側）。
 //   composition root が「1W/1M のとき FormingBarUpdater を価格の書き手にする」配線判定に用いる。
 export function isPlayerTimeframe(tf) {
-  return Object.prototype.hasOwnProperty.call(TF_SECONDS, tf);
+  return isFloorTimeframe(tf);
 }
 
 // 固定遅延（ms）: 実測から poll 間隔 5s + feed 側 lag 最大 5.5s + fetch 最大 1.2s + 余裕 ≒ 12s。
@@ -151,7 +142,7 @@ export class LiveTickPlayer {
   //   構成されるため、シード〜適用開始の隙間分だけ粗い近似になりうる（volume も適用 tick 数の近似）。
   async _seed(tf) {
     this._tf = tf;
-    this._tfSec = TF_SECONDS[tf] || null;
+    this._tfSec = isFloorTimeframe(tf) ? TF_BAR_SEC[tf] : null;
     // シード確定まで _bar=null かつ _seeding=true に倒す。await（loadFormingBar）中に再入した
     //   _playback は _seeding=true を見て自己シードせず（🟡4＝「新 tfSec × 旧 bar」誤描画の防止）。
     this._bar = null;
