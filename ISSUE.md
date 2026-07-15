@@ -1010,7 +1010,7 @@
 - **検証**: marketdata 139（ラベル規約 4 追加・参照実装一致含む）・MP api 226・MP web 284・UI web 533/535 全緑。実UI（8139）: 週足×日別×zp で週列（2トーン VA 背景・白 POC・ホバー読取 z+0.62/VA 66942〜68548）・月足列・週足×通常で mode/src/va/period/dispbp 全5項目表示＝1D と同一（統一達成）・1W count/zp 応答 0.16〜0.28s・当日週バケットのライブ育成は既存 onLiveTick 経路がそのまま機能（列 time=最新バー time）。
 
 ## ISSUE-087: システム全体アーキテクチャ調査（アーキテクチャエージェント・依頼者指示）
-- **ステータス**: OPEN（2026-07-15 起票・対応は依頼者裁定待ち）
+- **ステータス**: RESOLVED（2026-07-15・feature/issue-087-arch-fixes で対応完了。残課題は下記追補）
 - **総合判定**: 不合格（構造的リスク 3 件・改善推奨 4 件。最下層 marketdata の依存healthは健全＝内側→外側の逆流 0 件・上流 import 0 件）
 - **🔴 構造的リスク**:
   1. **MP backend が indicator_ui の `adapter` パッケージへ裸名依存（sys.path 注入前提）**: market_profile_controller.py:28 ほか production 4 ファイルが `from adapter.compute import ...` を server.py:33-41 / _indicator_ui_bridge.py:43-45 の sys.path.insert で解決。indicator_ui 側の再編で MP が無言破壊されるリスク。推奨: 共有純粋物（ERROR_STATUS・tf 秒長等）は marketdata へ降ろし、残りは MP 側 Output Boundary（protocol）＋Composition Root 注入（DIP）。
@@ -1021,7 +1021,7 @@
 - **変更局所性の実測**: 新指標追加=スライス内で局所（良好）／**新時間足追加=最低 5 箇所**（欠如・🔴-2）／新データソース追加=局所（良好）。
 
 ## ISSUE-088: 徹底コードレビュー結果（コードレビューエージェント・依頼者指示）
-- **ステータス**: OPEN（2026-07-15 起票・対応は依頼者裁定待ち）
+- **ステータス**: RESOLVED（2026-07-15・feature/issue-088-review-fixes で対応完了。詳細は下記追補）
 - **対象**: ISSUE-086（全時間足統一・レビュー時は作業ツリー差分＝現在はコミット済み）＋ISSUE-083〜085（ライブ育成・VA 修正・2トーン背景）。深度=完全（設計/ロジック/品質の3段階）。
 - **判定**: 🔴必須修正 **なし**（データ破壊・セキュリティ・明白バグ不検出）。**条件付きマージ可**＝CI 条件（byte-parity 10 件 RED）の解消が承認の必要条件。
 - **確認済み（精査の上問題なし）**: 週/月ラベルの整列性（resample・candle・forming と UTC 深夜で一致・年跨ぎ/閏/DST 境界を独立実測）／zp モーメント加算の独立性と k 空間整合／live_ticks が完了日キャッシュを汚さない保証／LiveTickBuffer の lock 安全性／入力 whitelist 検証（パストラバーサル不成立）。
@@ -1034,3 +1034,16 @@
   4. _DAY_MEM（上限256）が 1M 長期走査で LRU スラッシュの可能性（バケット/日次の LRU 分離 or 上限引き上げ）
   5. next_period_label(1M)・_bucket_completed の直接単体テスト追加（年跨ぎ・閏 2 月）
 - **残存リスク（エージェント申告）**: forming 週バーの実UI水平整列は実UI未確認（→ISSUE-086 の実UI検証で週足列・ツールチップ・現在値ライン整列は確認済み）。
+
+## ISSUE-087/088 対応記録（依頼者指示「087対応後に088対応・いつもの開発フェーズ絶対遵守」）
+- **ステータス**: RESOLVED（2026-07-15・feature/issue-087-arch-fixes → feature/issue-088-review-fixes）
+- **ISSUE-087 対応（🔴3件＋🟡3件実施）**:
+  1. 🔴-1 裸依存解消: tick ref・floor 規則・期間始端・now 解決・ERROR_STATUS を最下層 marketdata（tf_meta.py/api_contract.py）へ移設。market_profile_api は marketdata のみ参照（indicator_ui 側は再エクスポートで互換維持）。裸 `adapter` import の回帰ガードテスト追加。
+  2. 🔴-2 tf メタ単一化: JS の TF_BAR_SEC/TF_SECONDS 4重定義を domain/tf_meta.js へ集約（IIFE 連結の const 衝突も解消）。Python は marketdata/tf_meta.py。UI に欠落していた **30分ボタンを追加**（実ドリフト解消・実UIで 30m 列/ライブ稼働確認）。
+  3. 🔴-3 生成同期: tools/gen_js_parity_golden.py が DST 切替・週/月/年跨ぎ 160 境界点のセッション日規則・VA（整数/float）・tf 秒長を fixture 生成し、JS テストが session_day.js/valueArea/tf_meta.js との一致を網羅検定。Python 側に fixture 鮮度ガード（規則変更時の再生成を CI 強制）。
+  4. 🟡-1 薄殻化: /candles・/forming_bar を handle_candles/handle_forming_bar（純関数・3段フォールバック含む）へ抽出し殻を縮小（テスト5件）。🟡-2: .doc/LAYERING_CONVENTIONS.md にレイヤ役割対応・依存規則を明文化。🟡-4: tools/cache_gc.py（現行世代をコード定数から導出し孤児列挙・実測 179MB/16 エントリ・削除は --delete 明示＋承認後のみ）。
+  - **残課題（承認待ち）**: 🟡-3 sys.path 正規パッケージ化（技術スタック変更＝承認事項として LAYERING_CONVENTIONS.md に記載）／GC の実削除実行／🔵 symlink 共有の shared パッケージ昇格。
+- **ISSUE-088 対応（🟡1＋🔵5 全件実施）**:
+  1. 🟡-1: byte-parity golden を再生成スクリプト（tools/regen_mp_byte_parity_golden.py・クエリ集合不変）で現行データ基準へ更新。既知 10 件（データドリフト 8＋ISSUE-078 設計変更の dwell 2）のみ更新され 27/27 緑＝CI 承認条件を回復。
+  2. 🔵-1: 週/月ラベル×resample 一致テストへ米 DST 切替区間（2026春・2025秋）を追加 🔵-2: jitter buffer refreshAt の finally を tf/src 世代照合（交差削除防止）🔵-3: tf-period zp ディスク世代を _ZP_CACHE_VERSION 連動（s3/zp→s3/zp-v3）🔵-4: _DAY_MEM 256→1024 🔵-5: next_period_label（年跨ぎ・閏2月）・_bucket_completed 境界の単体テスト追加。
+- **検証**: marketdata 146・MP api 229＋byte-parity 27・UI api 386・MP web 287・UI web 533/535 全緑（既知2件除く）。実UI（8139）: /candles・/forming_bar・1W zp 列の応答正常・30分ボタン追加動作・コンソールエラーなし。
