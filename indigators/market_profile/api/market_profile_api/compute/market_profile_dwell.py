@@ -50,14 +50,24 @@ from market_profile_api.compute.market_profile import _session_entry, _value_are
 from market_profile_api.compute.market_profile_dwell_store import DwellRollupStore
 
 # ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
-from marketdata import paths as _paths  # noqa: E402  (DATA_DIR 単一基点・cache 配置に使用)
-from marketdata.tick_m1 import day_parquet_files  # noqa: E402  (正準ティック経路・read-only)
-# セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源。
+# ISSUE-091 🔴-2: ティック物理格納（day parquet・DATA_DIR）への依存は compute 所有の
+#   Output Boundary（TickStorePort）へ逆転。具象は gateway/marketdata_tick_store が実装。
+from market_profile_api.compute.tick_store_port import tick_store as _tick_store
+# セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源
+#（marketdata の純業務規則＝I/O 非依存のため内側 import を許容）。
 from marketdata.session_day import (  # noqa: E402
     next_session_day_start,
     session_date_label,
     session_day_start,
 )
+
+
+def day_parquet_files(lo_day: Any, hi_day: Any, *, symbol: str) -> "list[_Path]":
+    """正準ティック日別ファイルの列挙（TickStorePort へ委譲・read-only）。
+
+    既存テストの monkeypatch 単一注入点（``mpd.day_parquet_files``）を module 属性として温存する。
+    """
+    return _tick_store().day_files(lo_day, hi_day, symbol=symbol)
 
 # datasetRef → 実ティック symbol 解決（forming_bar.TICK_REFS と整合。'jp225_tick'→'JP225'）。
 TICK_REF_SYMBOLS: dict[str, str] = {"jp225_tick": "JP225"}
@@ -88,7 +98,7 @@ _CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_
 # （monkeypatch）経路を温存**する（call-time に読むため）。集計数学は本モジュールに残す（下段）。
 _STORE = DwellRollupStore(
     root_provider=lambda: _CACHE_ROOT,
-    default_root_provider=lambda: _paths.DATA_DIR / "cache" / "market_profile_dwell",
+    default_root_provider=lambda: _tick_store().data_dir() / "cache" / "market_profile_dwell",
     grid_w=GRID_W,
     cache_version_provider=lambda: _CACHE_VERSION,
     day_parquet_files=lambda *a, **k: day_parquet_files(*a, **k),
@@ -151,7 +161,7 @@ def _load_window_ticks(symbol: str, start: Any, end: Any) -> "tuple[np.ndarray, 
     files = day_parquet_files(lo_day, hi_day, symbol=symbol)
     if not files:
         return _EMPTY_SECS, _EMPTY_MIDS
-    frames = [pd.read_parquet(p, columns=_TICK_COLUMNS) for p in files]
+    frames = [_tick_store().read_ticks(p, _TICK_COLUMNS) for p in files]
     tdf = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
 
     ts = pd.to_datetime(tdf["timestamp"])
