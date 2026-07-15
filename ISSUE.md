@@ -963,3 +963,4 @@
 - **原則（1行）**: 「列の周期＝チャートの時間足。作れないソースは出さない。」
 - **実装**: ①catalog: src param に optionEnable 述語（ENUM option 単位の無効化機構を新設・param factory/form_model/properties_dialog._refreshEnabled へ透過）＝日別×1m/5m で zp option を灰色化（mode/timeframe に動的追従）。tooltip を「選択不可」文言へ更新 ②actor.refresh: 実行時ガード（時間足切替で事後に zp×日別×1m/5m へ到達した場合、fetch も描画もせず表示クリア・ローソク可視維持）＝重い全期間フォールバック fetch も消滅 ③ブロック集合 MP_ZP_SESSIONS_BLOCKED_TFS を catalog_entry で単一定義（actor と共有）。
 - **検証**: MP web 274・UI web 530/532 緑（TDD Red 2件→Green）。実UI（8139）: 日別×1分で zp option が disabled・通常へ戻すと再有効化（動的）／日足で zp×日別適用→1分へ切替で zp/sessions フェッチ 0 件・タイル非表示・ローソク可視をネットワーク＋スクショ確認。
+- **追補（依頼者指摘「デフォルト src=zp のまま選択されている」）**: 選択中 option が無効化された場合に灰色のまま選択が残る問題を修正＝最初の有効 option（滞在時間）へ**ダイアログ上で可視に自動切替**（黙った代替ではない・通常へ戻しても値は勝手に戻らない＝ユーザー操作尊重）。保存済みの無効組合せ（zp×日別×1m）も gear を開いた瞬間に是正される。テスト1件追加＝UI web 531/533 緑。実UI確認済み。
