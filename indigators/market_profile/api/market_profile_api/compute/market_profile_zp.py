@@ -26,6 +26,7 @@ open から乗法連鎖したサロゲート（時間帯別ボラ ŝ(b) を保�
 from __future__ import annotations
 
 import time as _time
+import math as _math
 import zlib as _zlib
 from pathlib import Path as _Path
 from typing import Any
@@ -33,12 +34,18 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-# GRID_W（絶対価格グリッド）と tick ローダ・symbol 解決は dwell 側の単一定義を再利用する。
+# bp 相対格子（ISSUE-079 単位②・依頼者承認 2026-07-15）: zp の内部格子を絶対 pt（GRID_W）から
+# 「価格比 1bp の log 一様格子」へ再定義する。セル index k = floor(ln(price) / W_LOG)、
+# W_LOG = ln(1+ZP_BP/1e4)。log 空間の絶対一様格子＝跨日 Σobs/Σmean/Σvar の窓合算は従来と同型。
+# 校正スキャン（analysis/zp_grid_scan.md）実測: FPR(z>=3) は細分化で膨張せず（現行10pt≈2.2% 基準・
+# 0.5bp まで合格）、1bp は 15m 周期（原子15分）で意味の立つ最細（約1.5分/セル）。絶対格子の時代
+# ドリフト（分/セル: 直近8 vs 2013年17.5）を解消する。dwell の内部格子（GRID_W）は対象外（不変）。
+# tick ローダ・symbol 解決は dwell 側の単一定義を再利用する。
 # _load_window_ticks は call-time 参照（_mpd._load_window_ticks(...)）＝既存テストの
 # monkeypatch 単一注入点を温存する。
 from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute.market_profile import _value_area
-from market_profile_api.compute.market_profile_dwell import GRID_W
+from market_profile_api.compute.market_profile_dwell import GRID_W  # noqa: F401  (dwell 互換・zp 内部では不使用)
 from market_profile_api.compute.market_profile_zp_store import ZpStore
 
 # repo 根は _mpd の import 時に sys.path へ挿入済み（marketdata 解決）。
@@ -64,6 +71,10 @@ BRACKET_BASE_MOD = 60      # ブラケット起点 ブローカー 01:00
 BRACKET_MIN = 30
 G_MINUTES = SESSION_CLOSE_MOD - SESSION_OPEN_MOD + 1                    # 1335
 K_BRACKETS = (SESSION_CLOSE_MOD - BRACKET_BASE_MOD) // BRACKET_MIN + 1  # 45
+
+# 内部格子（bp 相対・log 一様）。
+ZP_BP = 1.0                          # セル幅（価格比 bp）。校正スキャン＋依頼者裁定（2026-07-15）。
+W_LOG = _math.log1p(ZP_BP / 1e4)     # log 格子幅。k = floor(ln(price)/W_LOG)。
 
 # 帰無パラメータ（因果・決定論）。
 NULL_HIST_DAYS = 250   # ステップ行列のソース窓（当日から遡る完了日数）
@@ -120,14 +131,14 @@ def minute_close_grid(
 def obs_cell_counts(
     closes: "np.ndarray", klo: int, khi: int, *, col_lo: int = 0, col_hi: "int | None" = None
 ) -> "np.ndarray":
-    """観測の行占有分数 N_obs(k)（(khi-klo+1,)）。k = floor(close/GRID_W) を [klo,khi] へ clip。
+    """観測の行占有分数 N_obs(k)（(khi-klo+1,)）。k = floor(ln(close)/W_LOG) を [klo,khi] へ clip。
 
-    col_lo/col_hi で部分日（当日 forming・replay 境界日）のカラム範囲に限定できる。
-    観測 close は集計元の日レンジ内に自然に収まるため clip は端数保護のみ。
+    ISSUE-079: bp 相対（log 一様）格子。col_lo/col_hi で部分日（当日 forming・replay 境界日）の
+    カラム範囲に限定できる。観測 close は集計元の日レンジ内に自然に収まるため clip は端数保護のみ。
     """
     c = np.asarray(closes, dtype=float)
     c = c[col_lo : (None if col_hi is None else col_hi)]
-    k = np.clip(np.floor(c / GRID_W).astype(np.int64) - int(klo), 0, int(khi) - int(klo))
+    k = np.clip(np.floor(np.log(c) / W_LOG).astype(np.int64) - int(klo), 0, int(khi) - int(klo))
     return np.bincount(k, minlength=int(khi) - int(klo) + 1).astype(float)
 
 
@@ -178,8 +189,9 @@ def null_b_moments_abs(
         m = min(CHUNK, m_reps - done)
         days = rng.integers(0, L, size=(m, K_BRACKETS))
         s_surr = S[days[:, _B_OF_MINUTE], col]
-        prices = np.exp(log_open + np.cumsum(s_surr, axis=1))[:, lo:hi]
-        idx = np.floor(prices / GRID_W).astype(np.int64) - int(klo)
+        # ISSUE-079: log 格子＝log 価格のまま floor（exp 不要・絶対格子時代は exp→floor(price/GRID_W)）。
+        logp = (log_open + np.cumsum(s_surr, axis=1))[:, lo:hi]
+        idx = np.floor(logp / W_LOG).astype(np.int64) - int(klo)
         valid = (idx >= 0) & (idx < C)
         flat = (idx + np.arange(m)[:, None] * C)[valid]
         counts = np.bincount(flat, minlength=m * C).reshape(m, C).astype(float)
@@ -218,8 +230,8 @@ def null_b_period_moments(
         m = min(CHUNK, m_reps - done)
         days = rng.integers(0, L, size=(m, K_BRACKETS))
         s_surr = S[days[:, _B_OF_MINUTE], col]
-        prices = np.exp(log_open + np.cumsum(s_surr, axis=1))
-        idx_all = np.floor(prices / GRID_W).astype(np.int64) - int(klo)
+        logp = log_open + np.cumsum(s_surr, axis=1)  # ISSUE-079: log 格子。
+        idx_all = np.floor(logp / W_LOG).astype(np.int64) - int(klo)
         row_off = np.arange(m)[:, None] * C
         for j, (lo, hi) in enumerate(period_col_bounds):
             idx = idx_all[:, int(lo):int(hi)]
@@ -240,13 +252,13 @@ def null_b_period_moments(
 # --------------------------------------------------------------------------- #
 # ディスク永続キャッシュ（ZpStore）とプロセス内キャッシュ
 # --------------------------------------------------------------------------- #
-_ZP_CACHE_VERSION = 2  # v2: セッション日切り（ISSUE-078）＝旧 UTC 日 mgrid/znull を全無効化。
+_ZP_CACHE_VERSION = 3  # v3: bp 相対 log 格子（ISSUE-079）＝znull を全無効化（mgrid は格子非依存で温存）。
 _ZP_CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_zp)。テストは tmp を注入。
 
 _STORE = ZpStore(
     root_provider=lambda: _ZP_CACHE_ROOT,
     default_root_provider=lambda: _paths.DATA_DIR / "cache" / "market_profile_zp",
-    grid_w=GRID_W,
+    grid_w=ZP_BP,  # ISSUE-079: znull パスの格子タグは bp 値（b1 等・旧 g10 と不混在）。
     hist_days=NULL_HIST_DAYS,
     m_reps=M_REPS_DAY,
     cache_version_provider=lambda: _ZP_CACHE_VERSION,
@@ -382,8 +394,8 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
         if live_key in _LIVE_CACHE:
             return _LIVE_CACHE[live_key]
     obs_closes = closes[:col_hi]
-    klo = int(np.floor(float(obs_closes.min()) / GRID_W))
-    khi = int(np.floor(float(obs_closes.max()) / GRID_W))
+    klo = int(np.floor(np.log(float(obs_closes.min())) / W_LOG))
+    khi = int(np.floor(np.log(float(obs_closes.max())) / W_LOG))
     S = _hist_step_matrix(symbol, day_start, now)
     if S is None:
         roll = None
@@ -428,8 +440,8 @@ def _zp_partial_rollup(symbol: str, lo: int, hi: int, now: float) -> "dict | Non
             col_hi_t = min(col_hi_t, max(1, elapsed))
         if col_hi_t > col_lo:
             seg = closes[col_lo:col_hi_t]
-            klo = int(np.floor(float(seg.min()) / GRID_W))
-            khi = int(np.floor(float(seg.max()) / GRID_W))
+            klo = int(np.floor(np.log(float(seg.min())) / W_LOG))
+            khi = int(np.floor(np.log(float(seg.max())) / W_LOG))
             S = _hist_step_matrix(symbol, day_start, now)
             if S is not None:
                 rng = np.random.default_rng(day_seed(symbol, day_start) ^ 0x5A5A5A5A)
@@ -469,10 +481,13 @@ def _fine_z(obs: "np.ndarray", mean: "np.ndarray", var: "np.ndarray") -> "np.nda
 
 
 def _poc_star_from_fine(z: "np.ndarray", kw0: int, mid_price: float) -> float:
-    """fine 解像度の POC* = argmax z（タイは窓中間値へ最も近いセル・step5 規約）。"""
+    """fine 解像度の POC* = argmax z（タイは窓中間値へ最も近いセル・step5 規約）。
+
+    ISSUE-079: セル中心価格は exp((k+0.5)·W_LOG)（log 格子の価格化）。
+    """
     zmax = float(z.max()) if z.size else 0.0
     cand = np.flatnonzero(z == zmax)
-    centers = (kw0 + cand + 0.5) * GRID_W
+    centers = np.exp((kw0 + cand + 0.5) * W_LOG)
     return float(centers[np.argmin(np.abs(centers - mid_price))])
 
 
@@ -504,6 +519,11 @@ def compute_zp_profile(
     now_val = _time.time() if now is None else float(now)
     price_min = float(price_min)
     price_max = float(price_max)
+    # ISSUE-079: log 格子は正の価格が前提。空 candles 経路（controller が 0.0/0.0 を渡す）や
+    #   非正レンジは log(0)=-inf で即死するため、正の最小値へクランプする（旧線形格子では
+    #   floor(0/GRID_W)=0 で潜伏していた欠陥の顕在化・防御）。
+    if not (price_min > 0):
+        price_min = 1.0
     if price_max <= price_min:
         price_max = price_min + 1.0
     n_bins = max(1, int(n_bins))
@@ -515,8 +535,8 @@ def compute_zp_profile(
     win_to = int(t1) + int(bar_sec)
     win_from = int(t0)
 
-    kw0 = int(np.floor(price_min / GRID_W))
-    size = int(np.floor(price_max / GRID_W)) - kw0 + 1
+    kw0 = int(np.floor(np.log(price_min) / W_LOG))
+    size = int(np.floor(np.log(price_max) / W_LOG)) - kw0 + 1
     obs_sum = np.zeros(max(size, 1))
     mean_sum = np.zeros(max(size, 1))
     var_sum = np.zeros(max(size, 1))
@@ -550,7 +570,7 @@ def compute_zp_profile(
                     fine_day = np.zeros(max(size, 1))
                     _accumulate(fine_day, z_day, roll["kmin"])
                     disp_day = np.zeros(n_bins)
-                    cd = (kw0 + np.arange(size) + 0.5) * GRID_W
+                    cd = np.exp((kw0 + np.arange(size) + 0.5) * W_LOG)
                     dd = np.clip(((cd - price_min) / binw).astype(int), 0, n_bins - 1)
                     np.add.at(disp_day, dd, fine_day[:size])
                     poc_day = _poc_star_from_fine(
@@ -567,7 +587,7 @@ def compute_zp_profile(
 
     z_fine = _fine_z(obs_sum[:size], mean_sum[:size], var_sum[:size])
     # fine → 表示 bin（obs/mean/var を bin 集約してから z を取り直す＝独立近似・docstring 参照）。
-    centers_fine = (kw0 + np.arange(size) + 0.5) * GRID_W
+    centers_fine = np.exp((kw0 + np.arange(size) + 0.5) * W_LOG)
     disp = np.clip(((centers_fine - price_min) / binw).astype(int), 0, n_bins - 1)
     OBS = np.zeros(n_bins)
     MEAN = np.zeros(n_bins)

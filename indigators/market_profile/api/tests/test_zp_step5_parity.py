@@ -67,14 +67,32 @@ def _analysis_session(D: int, seed: int):
 
 
 def test_null_b_moments_parity_with_step5():
-    """同一 S・seed・M・CHUNK で step5.null_b_day と mean/sd が一致（グリッド整列条件下）。
+    """帰無モーメントの二重実装相互一致（ISSUE-079: log 格子は analysis/zp_grid_scan と照合）。
 
-    ISSUE-078: 窓は zp のセッション分窓（G=1335）で比較する。s5.null_b_day は S とブラケット
-    配列 b を引数で受ける（窓非依存の純 math）ため、同一の合成 S（zp 窓次元）を両者へ与えれば
-    モーメント計算の同一性＝math パリティを窓分離後も検証できる。
+    ISSUE-079 で production zp は log 格子へ移行し、線形行の step5.null_b_day とは格子が構造的に
+    異なる（step5 は検定パイプラインの参照実装として線形のまま温存）。math の錨は独立実装
+    zp_grid_scan.null_b_moments_log（単位①・別ファイルで独立に実装）との**完全一致**へ再定義する
+    （ブラケット・リサンプル・チャンク消費順・レンジ外棄却の同一性を相互に固定）。
     """
+    import zp_grid_scan as zgs
     rng_s = np.random.default_rng(21)
     S = rng_s.normal(scale=1e-4, size=(30, zp.G_MINUTES))
+    d = 10
+    open_d = 20000.0
+    k0 = int(np.floor(np.log(open_d) / zp.W_LOG))
+    klo, khi = k0 - 40, k0 + 40
+    m_reps = 600
+    m_prod, v_prod = zp.null_b_moments_abs(
+        S, open_d, klo, khi, rng=np.random.default_rng(33), m_reps=m_reps)
+    m_scan, v_scan = zgs.null_b_moments_log(
+        S, open_d, klo, khi, zp.W_LOG, rng=np.random.default_rng(33), m_reps=m_reps,
+        b_of_minute=zp._B_OF_MINUTE)
+    assert np.allclose(m_prod, m_scan, rtol=0, atol=1e-12)
+    assert np.allclose(v_prod, v_scan, rtol=0, atol=1e-12)
+
+
+def _unused_legacy_step5_reference():
+    """（記録用）旧・線形格子時代は s5.null_b_day との要素一致で錨付けしていた。"""
     b = dp.calendar_bracket_of_mod(
         np.arange(zp.SESSION_OPEN_MOD, zp.SESSION_CLOSE_MOD + 1, dtype=np.int32)
     )
@@ -91,11 +109,13 @@ def test_null_b_moments_parity_with_step5():
     assert np.allclose(np.sqrt(var_z), sd5, rtol=0, atol=1e-12)
 
 
-def test_obs_counts_parity_with_step5():
-    """観測側も step5.observed_row_counts と一致（同一グリッド整列）。"""
+def test_obs_counts_parity_with_scan_log_impl():
+    """観測計数も独立実装（zp_grid_scan.obs_cell_counts_log）と完全一致（ISSUE-079）。"""
+    import zp_grid_scan as zgs
     rng = np.random.default_rng(55)
     closes = 20000.0 + np.cumsum(rng.normal(scale=1.5, size=zp.G_MINUTES))
-    closes = np.clip(closes, 20000.0, 20399.99)
-    obs5 = s5.observed_row_counts(closes, 20000.0, 20400.0)
-    obs_z = zp.obs_cell_counts(closes, 2000, 2039)
-    assert np.array_equal(obs_z, obs5)
+    k0 = int(np.floor(np.log(closes.min()) / zp.W_LOG))
+    k1 = int(np.floor(np.log(closes.max()) / zp.W_LOG))
+    obs_prod = zp.obs_cell_counts(closes, k0, k1)
+    obs_scan = zgs.obs_cell_counts_log(closes, k0, k1, zp.W_LOG)
+    assert np.array_equal(obs_prod, obs_scan)

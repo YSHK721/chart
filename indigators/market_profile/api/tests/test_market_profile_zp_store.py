@@ -146,10 +146,10 @@ def test_window_aggregation_identity(zp_env):
     days = [_day(29), _day(30)]
     rolls = [zp._zp_day_rollup("SYN", d, now) for d in days]
     assert all(r is not None for r in rolls)
-    # fine セル（幅 10）と表示 bin が index 1:1 で整列するレンジ（size=40・ドリフト<0.5）
+    # ISSUE-079: log 格子。kw0/size は compute_zp_profile と同式（log 空間）で構成する。
     pmin, pmax = 19800.0, 20199.0
-    kw0 = int(np.floor(pmin / zp.GRID_W))
-    size = int(np.floor(pmax / zp.GRID_W)) - kw0 + 1
+    kw0 = int(np.floor(np.log(pmin) / zp.W_LOG))
+    size = int(np.floor(np.log(pmax) / zp.W_LOG)) - kw0 + 1
     obs = np.zeros(size)
     mean = np.zeros(size)
     var = np.zeros(size)
@@ -163,10 +163,13 @@ def test_window_aggregation_identity(zp_env):
         z_manual = (obs - mean) / np.sqrt(var)
     z_manual[~np.isfinite(z_manual)] = 0.0
     prof = zp.compute_zp_profile("SYN", days[0], days[1], pmin, pmax, size, now=now)
-    # n_bins = size ＝ 表示 bin と fine セルが 1:1 → bins[].tpo が z_manual と一致（丸め 2 桁）
-    got = np.array([b["tpo"] for b in prof["bins"]])
-    assert np.allclose(got, np.round(z_manual, 2), atol=0.011)
+    # log 格子では fine セルと線形表示 bin は 1:1 に整列しないため、格子非依存の不変量で照合する:
+    #   z_max（fine 合算 z の最大）は表示再集約に依存しない＝手動合算と一致。
     assert prof["z_max"] == pytest.approx(round(float(z_manual.max()), 2), abs=0.011)
+    # 表示 bin の tpo（z）は有限で、最大表示 z は fine z_max を超えない（再集約は保守側）。
+    got = np.array([b["tpo"] for b in prof["bins"]])
+    assert np.isfinite(got).all()
+    assert got.max() <= z_manual.max() + 0.011
 
 
 def test_day_source_signature_covers_two_utc_days(tmp_path):

@@ -52,15 +52,19 @@ def test_minute_close_grid_outside_window_none():
 # obs_cell_counts
 # --------------------------------------------------------------------------- #
 def test_obs_cell_counts_and_partial_columns():
+    # ISSUE-079: log 格子（1bp）。20015/20005 は約 5bp 差＝5 セル離れる。
+    import math
     closes = np.full(zp.G_MINUTES, 20005.0)
     closes[100:200] = 20015.0
-    klo, khi = 2000, 2003
+    k1 = int(math.floor(math.log(20005.0) / zp.W_LOG))
+    k2 = int(math.floor(math.log(20015.0) / zp.W_LOG))
+    klo, khi = k1, k2 + 1
     counts = zp.obs_cell_counts(closes, klo, khi)
     assert counts.sum() == zp.G_MINUTES
-    assert counts[0] == zp.G_MINUTES - 100  # 20005 → k=2000
-    assert counts[1] == 100                 # 20015 → k=2001
+    assert counts[0] == zp.G_MINUTES - 100
+    assert counts[k2 - k1] == 100
     part = zp.obs_cell_counts(closes, klo, khi, col_lo=100, col_hi=200)
-    assert part.sum() == 100 and part[1] == 100
+    assert part.sum() == 100 and part[k2 - k1] == 100
 
 
 # --------------------------------------------------------------------------- #
@@ -84,7 +88,9 @@ def test_step_matrix_roundtrip():
 def test_null_b_moments_basic_properties():
     grids, opens = _synth_mgrids(60, seed=2)
     S = zp.build_step_matrix(grids, opens)
-    klo, khi = 1990, 2010
+    import math
+    k0 = int(math.floor(math.log(20000.0) / zp.W_LOG))
+    klo, khi = k0 - 60, k0 + 60  # ±60bp ≒ 旧 ±100pt 相当の到達域。
     rng = np.random.default_rng(7)
     mean, var = zp.null_b_moments_abs(S, 20000.0, klo, khi, rng=rng, m_reps=400)
     assert mean.shape == var.shape == (khi - klo + 1,)
@@ -96,12 +102,15 @@ def test_null_b_moments_basic_properties():
 def test_null_b_moments_deterministic_and_partial_columns():
     grids, opens = _synth_mgrids(40, seed=3)
     S = zp.build_step_matrix(grids, opens)
-    m1, v1 = zp.null_b_moments_abs(S, 20000.0, 1990, 2010, rng=np.random.default_rng(9), m_reps=300)
-    m2, v2 = zp.null_b_moments_abs(S, 20000.0, 1990, 2010, rng=np.random.default_rng(9), m_reps=300)
+    import math
+    k0 = int(math.floor(math.log(20000.0) / zp.W_LOG))
+    klo, khi = k0 - 60, k0 + 60
+    m1, v1 = zp.null_b_moments_abs(S, 20000.0, klo, khi, rng=np.random.default_rng(9), m_reps=300)
+    m2, v2 = zp.null_b_moments_abs(S, 20000.0, klo, khi, rng=np.random.default_rng(9), m_reps=300)
     assert np.array_equal(m1, m2) and np.array_equal(v1, v2)
     # 部分カラム（前半のみ）→ 総和は必ず減る
     mp_, _ = zp.null_b_moments_abs(
-        S, 20000.0, 1990, 2010, rng=np.random.default_rng(9), m_reps=300, col_hi=zp.G_MINUTES // 2
+        S, 20000.0, klo, khi, rng=np.random.default_rng(9), m_reps=300, col_hi=zp.G_MINUTES // 2
     )
     assert mp_.sum() < m1.sum()
 
@@ -174,3 +183,50 @@ class TestSessionDayWindow:
             bar_sec=86400, now=self.MON_START + 3 * 86400,
         )
         assert (self.MON_START, self.MON_START + 86400) in windows
+
+
+# --------------------------------------------------------------------------- #
+# bp 相対格子（ISSUE-079 単位②）: 内部格子は log 一様 1bp（k=floor(ln p / W_LOG)）
+# --------------------------------------------------------------------------- #
+class TestBpRelativeGrid:
+    def test_grid_constants(self):
+        import math
+        assert zp.ZP_BP == 1.0
+        assert zp.W_LOG == pytest.approx(math.log1p(1.0 / 1e4))
+
+    def test_obs_cell_counts_uses_log_cells(self):
+        import math
+        # 価格 p とその +2bp は 2 セル離れる（1bp 格子）。
+        p = 67000.0
+        p2 = p * (1 + 2.001e-4)
+        klo = int(math.floor(math.log(p) / zp.W_LOG))
+        obs = zp.obs_cell_counts(np.array([p, p, p2]), klo, klo + 2)
+        assert obs[0] == 2 and obs[2] == 1
+
+    def test_profile_centers_are_exp_of_cell_centers(self):
+        # compute_zp_profile の poc_star は log セル中心の exp（相対格子の価格化）。
+        import math
+        z = np.zeros(5)
+        z[3] = 4.0
+        klo = int(math.floor(math.log(67000.0) / zp.W_LOG))
+        poc = zp._poc_star_from_fine(z, klo, 67000.0)
+        expected = math.exp((klo + 3 + 0.5) * zp.W_LOG)
+        assert poc == pytest.approx(expected, rel=1e-9)
+
+    def test_null_moments_index_on_log_grid(self):
+        # サロゲート帰無も同じ log 格子で計数する（open ちょうどのセルへ質量が入る）。
+        import math
+        rng = np.random.default_rng(3)
+        S = np.zeros((10, zp.G_MINUTES))  # ステップ0＝全分 open に滞在。
+        open_d = 67000.0
+        k_open = int(math.floor(math.log(open_d) / zp.W_LOG))
+        mean, var = zp.null_b_moments_abs(S, open_d, k_open - 1, k_open + 1, rng=rng, m_reps=8)
+        assert mean[1] == pytest.approx(zp.G_MINUTES)  # 全質量が open セル。
+        assert mean[0] == 0 and mean[2] == 0
+
+
+def test_compute_zp_profile_empty_candles_range_does_not_crash():
+    """ISSUE-079 回帰: 空 candles 経路（price_min=price_max=0）でも log(0) で落ちない。"""
+    out = zp.compute_zp_profile("NOSYM", 0, 0, 0.0, 0.0, 60, now=1e9)
+    assert out["n_bins"] == 60
+    assert all(np.isfinite(b["price"]) for b in out["bins"])

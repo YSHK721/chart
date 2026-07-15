@@ -36,18 +36,13 @@ test('catalog: market_profile is registered and retrievable via list/get', () =>
   assert.equal(def.compute.computeId, 'market_profile');
 });
 
-test('catalog: market_profile defines bins/va params (no limit param＝全期間集計固定)', () => {
-  const def = get('market_profile');
-  // bins: ENUM プリセット [30,60,100] 既定 '60'（数値自由入力→プリセット化・MIN_VALUE 制約撤去）。
-  assert.equal(paramOf(def, 'bins').type, ParamType.ENUM);
-  assert.equal(paramOf(def, 'bins').default, '60');
-  assert.deepEqual(paramOf(def, 'bins').enumValues, ['30', '60', '100']);
-  // va: FLOAT 既定0.70 0<va<1 RANGE_OPEN
-  assert.equal(paramOf(def, 'va').type, ParamType.FLOAT);
-  assert.equal(paramOf(def, 'va').default, 0.70);
-  assert.ok(paramOf(def, 'va').constraints.some((c) => c.kind === ConstraintKind.RANGE_OPEN));
-  // limit: 対象本数 param は削除済（全期間集計固定＝再追加を禁止する回帰）。
-  assert.equal(paramOf(def, 'limit'), undefined, 'limit param は定義しない');
+test('catalog: market_profile defines dispbp/va params (no limit param＝全期間集計固定)', () => {
+  const d = get('market_profile');
+  assert.ok(d.params.find((p) => p.name === 'dispbp'), 'dispbp（表示幅bp・ISSUE-079）');
+  assert.ok(d.params.find((p) => p.name === 'va'));
+  assert.equal(d.params.find((p) => p.name === 'limit'), undefined);
+  assert.equal(d.params.find((p) => p.name === 'bins'), undefined, 'bins は dispbp へ置換（ISSUE-079）');
+  assert.equal(d.params.find((p) => p.name === 'range'), undefined, 'range は dispbp へ置換（ISSUE-079）');
 });
 
 // --- controller 委譲 --------------------------------------------------------
@@ -97,7 +92,7 @@ test('applyIndicator(market_profile) delegates to the actor and does NOT call /c
   assert.equal(inst.indicatorId, 'market_profile');
 });
 
-test('applyIndicator(market_profile) forwards default params (resmode/bins/va/src) to actor.setParams', async () => {
+test('applyIndicator(market_profile) forwards default params (dispbp/va/src) to actor.setParams', async () => {
   // Arrange
   const marketProfile = fakeMarketProfile();
   const computeCalls = [];
@@ -111,8 +106,9 @@ test('applyIndicator(market_profile) forwards default params (resmode/bins/va/sr
   //   旧 replay/sessions は mode に統合されたため転送されない（catalog から撤去）。
   //   limit は転送しない（MP は全期間集計固定＝limit 非送信）。
   assert.equal(marketProfile.params.length, 1);
-  // period（期間・ISSUE-071 (b)案）既定 'all'（全期間＝従来窓）も転送される。
-  assert.deepEqual(marketProfile.params[0], { bins: '60', va: 0.70, src: 'zp', mode: 'normal', resmode: 'bins', range: '100', period: 'all' });
+  // ISSUE-079: 解像度は dispbp（表示幅bp・既定3）へ一本化（bins/resmode/range は撤去）。
+  //   period（ISSUE-071）既定 'all' も転送される。
+  assert.deepEqual(marketProfile.params[0], { va: 0.70, src: 'zp', mode: 'normal', period: 'all', dispbp: 3.0 });
 });
 
 test('applyIndicator(existing indicator) still calls /compute (no regression)', async () => {

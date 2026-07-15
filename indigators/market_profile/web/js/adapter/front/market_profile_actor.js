@@ -211,7 +211,7 @@ export class MarketProfileActor {
   //   range（レンジpt）は client.buildMarketProfileUrl が barw へ写像する（'auto' は付与しない）。
   setParams(params = {}) {
     const next = {};
-    for (const key of ['bins', 'va', 'src', 'range', 'resmode', 'period']) {
+    for (const key of ['bins', 'va', 'src', 'range', 'resmode', 'period', 'dispbp']) {
       if (params[key] != null) {
         next[key] = params[key];
       }
@@ -347,7 +347,7 @@ export class MarketProfileActor {
   //   原子を食い違わせないことを保証する（非 ticklive 表示の原子との不整合を防ぐ）。参照実装 mp_core の
   //   dwell 原子（_session_dwell）に忠実。
   _buildFormingArgs({ base, since }) {
-    const args = { ...this._getContext(), ...this._params, src: 'dwell', base, since };
+    const args = { ...this._getContext(), ...this._params, ...this._dispExtra(), src: 'dwell', base, since };
     // present normal ライブ成長（FOLLOW）: base 累積窓を全期間 → 当日（現在セッション）へ絞る。
     //   全期間累積だと現在足 1 本ぶんの成長が数年分に対して極小で視認不能になるため、当日始端を base 下限
     //   （from）にする（古典的セッション Market Profile・ユーザー確定・視認性優先）。growing かつ非 sessions
@@ -645,7 +645,7 @@ export class MarketProfileActor {
   async _fetchAt(time) {
     const profile = await this._client.fetchProfile({
       ...this._getContext(), ...this._params, to: time,
-      ...this._replayExtra(time), ...this._sessionsExtra(),
+      ...this._replayExtra(time), ...this._sessionsExtra(), ...this._dispExtra(),
     });
     if (profile) {
       this._primitive.setProfile(profile);
@@ -676,6 +676,27 @@ export class MarketProfileActor {
       return {}; // ローソク未取得＝窓を成さず全期間へ縮退（既存 fetch と同じ非破壊）。
     }
     return { from: sessionDayStart(t) }; // ISSUE-078: セッション日始端。
+  }
+
+  // 表示幅(bp)→barw(pt) 写像（ISSUE-079 二層構造: 計算=1bp 固定・見せ方=自由）。
+  //   dispbp 指定時、最新終値 close から barw = close × bp/1e4 を導出し、既存の resmode='range'
+  //   ＋range(pt) 経路（client の &barw=・forming の base 整列・barw ロックまで全て再利用）へ写像する。
+  //   backend 変更なしで時代整合（要求時の現在価格基準）を自動確保する。明示 resmode/range が
+  //   ある場合（legacy 保存インスタンス）はそれを優先（後方互換）。ローソク未取得は写像せず
+  //   サーバ既定（bins=60）へ縮退（非破壊）。
+  _dispExtra() {
+    const bp = Number(this._params.dispbp);
+    if (!(bp > 0) || this._params.resmode != null || this._params.range != null) {
+      return {};
+    }
+    const candles = this._getCandles();
+    const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;
+    const close = last && last.close != null ? Number(last.close) : NaN;
+    if (!Number.isFinite(close) || !(close > 0)) {
+      return {};
+    }
+    const barw = close * bp / 1e4;
+    return { resmode: 'range', range: String(Math.round(barw * 10000) / 10000) };
   }
 
   // トグル。ON: 初回のみ attach → 取得して反映 → 表示。OFF: 非表示（取得しない）。
@@ -738,6 +759,7 @@ export class MarketProfileActor {
       //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
       const profile = await this._client.fetchProfile({
         ...this._getContext(), ...this._params, ...this._sessionsExtra(), ...this._periodExtra(),
+        ...this._dispExtra(),
       });
       if (profile) {
         this._primitive.setProfile(profile);

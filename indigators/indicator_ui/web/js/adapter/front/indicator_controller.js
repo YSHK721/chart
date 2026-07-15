@@ -191,11 +191,20 @@ export class IndicatorController {
   //   resmode（解像度モード）を転送し、client が resmode で bins/barw の送信を排他化する。
   //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
   _mpParams(p = {}) {
-    const out = { bins: p.bins, va: p.va, src: p.src };
+    const out = { va: p.va, src: p.src };
+    // bins（legacy・ISSUE-079 で catalog から撤去済み）: 旧保存インスタンスにのみ存在。保存時のみ転送。
+    if (p.bins != null) {
+      out.bins = p.bins;
+    }
     // period（期間: 全期間/当日・ISSUE-071 (b)案）: 保存時のみ転送する（period 未保存の旧インスタンスの
     //   転送 payload を変えない＝undefined キーを載せない。actor 側も null/undefined キーは無視する）。
     if (p.period != null) {
       out.period = p.period;
+    }
+    // dispbp（表示幅 bp・ISSUE-079）: 保存時のみ転送（旧インスタンスの payload 不変・actor が
+    //   barw(pt) へ写像する）。
+    if (p.dispbp != null) {
+      out.dispbp = p.dispbp;
     }
     // mode（表示モード）: 旧 replay(BOOL)/sessions(BOOL) を統合した排他 ENUM
     //   ['normal','replay','sessions'] を actor へ転送する。undefined は載せない（actor 既定=通常）。
