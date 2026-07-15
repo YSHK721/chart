@@ -14,6 +14,11 @@ from typing import Any
 
 import numpy as np
 
+# 非 zp（素の tf-period 集計）のディスクキャッシュ世代。集計アルゴリズム・出力形が変わるときに
+# bump する（ISSUE-091 A3: 旧は controller 側の手書きリテラル 's1'＝bump 忘れで ISSUE-089 と同型の
+# 新旧併走上書きが再発しうるため、生成本体が世代を所有しパスへ連動させる。v1 = 従来 's1' と同一パス）。
+_TFP_CACHE_VERSION = 1
+
 
 def _value_area_sparse(counts: np.ndarray, poc_i: int, va_pct: float) -> tuple[int, int]:
     """占有レベル（価格昇順の ``counts``）で POC から拡張し、累積が ``va_pct`` 到達までの [lo, hi] index。

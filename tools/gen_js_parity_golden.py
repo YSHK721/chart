@@ -23,7 +23,8 @@ import numpy as np  # noqa: E402
 
 from marketdata import session_day as sd  # noqa: E402
 from marketdata import tf_meta  # noqa: E402
-from market_profile_api.compute.market_profile import _value_area  # noqa: E402
+# ISSUE-091 A7: private 名でなく公開 API（value_area）を参照する。
+from market_profile_api.compute.market_profile import value_area  # noqa: E402
 
 OUT = ROOT / "indigators" / "market_profile" / "web" / "tests" / "fixtures" / "py_parity_golden.json"
 
@@ -69,7 +70,7 @@ def value_area_cases() -> list[dict]:
     ]
     out = []
     for c in cases:
-        lo, hi = _value_area(np.asarray(c["tpo"], dtype=float), np.asarray(c["centers"]), c["pct"])
+        lo, hi = value_area(np.asarray(c["tpo"], dtype=float), np.asarray(c["centers"]), c["pct"])
         out.append({**c, "expected": [float(lo), float(hi)]})
     return out
 

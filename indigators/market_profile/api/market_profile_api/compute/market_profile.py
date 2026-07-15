@@ -179,6 +179,11 @@ def _value_area(tpo, centers, va_pct):
     return min(va_centers), max(va_centers)
 
 
+# POC/VA 単一定義の公開名（ISSUE-091 A7: tools/gen_js_parity_golden 等の外部利用者は公開 API を
+# 参照する。パッケージ内の既存参照（_value_area）は互換のため温存）。
+value_area = _value_area
+
+
 def _bin_index(price, price_min, span, n_bins) -> int:
     """price が属するビン index を返す（[0, n_bins-1] にクランプ）。"""
     idx = int((price - price_min) / span * n_bins)

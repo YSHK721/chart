@@ -15,7 +15,8 @@ from typing import Any
 
 import pandas as pd
 
-from simulator.main import _ema_series, build_interactor
+# ISSUE-091 #3: 主スライスの公開 API のみ参照する（private 名 _ema_series の越境 import を解消）。
+from simulator.main import build_interactor, ema_series
 from simulator.report_ui.adapter.report_presenter import ReportUiPresenter
 from simulator.report_ui.tools.contacts_export import compute_segment_contacts
 from simulator.report_ui.usecase.build_report_payload import BuildReportPayload
@@ -134,7 +135,7 @@ def _run_segment(bars_csv: Path, trading_start: str) -> "tuple[Any, Any]":
 def _segment_contacts(bars: "list") -> "list[dict]":
     """1 セグメントの表示足範囲で接点（agg.contacts）を算出する（scan_contacts usecase 経由）。
 
-    ma_values は EA と同じ EMA(ma_period, close)（_ema_series）を当該セグメント足へ適用して構築する
+    ma_values は EA と同じ EMA(ma_period, close)（ema_series）を当該セグメント足へ適用して構築する
     （bar_index→EMA 値）。既定は該当セグメント足範囲のみ（性能考慮・詳細設計 A）。
 
     注意（表示専用オーバレイ）: EMA は**表示トリム後のセグメント足で再シード**する。OOS のように
@@ -150,7 +151,7 @@ def _segment_contacts(bars: "list") -> "list[dict]":
     if not bars:
         return []
     closes = pd.Series([float(b.close) for b in bars])
-    ema = _ema_series(closes, COMMON["ma_period"])
+    ema = ema_series(closes, COMMON["ma_period"])
     ma_values = {i: float(v) for i, v in enumerate(ema.to_numpy())}
     return compute_segment_contacts(
         bars=bars,
