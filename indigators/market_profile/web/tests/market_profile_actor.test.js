@@ -925,3 +925,48 @@ test('sessions ON: 日中足 candles はセッション日集計 OHLC と tFirst
   assert.equal(lastSess[0].tFirst, day + 3600);
   assert.equal(lastSess[0].tLast, day + 43200);
 });
+
+// ---------------------------------------------------------------------------
+// 表示幅(bp)→barw(pt) 写像（ISSUE-079 二層構造: 計算=1bp固定・見せ方=自由）。
+// ---------------------------------------------------------------------------
+
+test('dispbp は最新終値から barw(pt) へ写像され resmode=range として fetch に載る', async () => {
+  const client = fakeClient();
+  const actor = new MarketProfileActor({
+    client, primitive: fakePrimitive(), mainSeries: fakeMainSeries(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h' }),
+    getCandles: () => [{ time: 1783890000, close: 67000 }],
+  });
+  actor.setParams({ dispbp: 3 });
+  await actor.setEnabled(true);
+  const call = client.calls.at(-1);
+  assert.equal(call.resmode, 'range');
+  assert.equal(call.range, '20.1'); // 67000 × 3bp/1e4 = 20.1pt。
+});
+
+test('legacy 保存の resmode/range があるときは dispbp より優先（後方互換）', async () => {
+  const client = fakeClient();
+  const actor = new MarketProfileActor({
+    client, primitive: fakePrimitive(), mainSeries: fakeMainSeries(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h' }),
+    getCandles: () => [{ time: 1783890000, close: 67000 }],
+  });
+  actor.setParams({ dispbp: 3, resmode: 'range', range: '50' });
+  await actor.setEnabled(true);
+  const call = client.calls.at(-1);
+  assert.equal(call.range, '50'); // legacy 明示値を尊重（dispbp 写像しない）。
+});
+
+test('ローソク未取得時は dispbp を写像しない（サーバ既定へ縮退＝非破壊）', async () => {
+  const client = fakeClient();
+  const actor = new MarketProfileActor({
+    client, primitive: fakePrimitive(), mainSeries: fakeMainSeries(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h' }),
+    getCandles: () => [],
+  });
+  actor.setParams({ dispbp: 3 });
+  await actor.setEnabled(true);
+  const call = client.calls.at(-1);
+  assert.equal('resmode' in call, false);
+  assert.equal('range' in call, false);
+});

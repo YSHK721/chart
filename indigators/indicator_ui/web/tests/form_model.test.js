@@ -43,14 +43,14 @@ test('buildFormModel: ENUM param resolves to select with enumValues', () => {
   assert.deepEqual(field.enumValues, ['ols', 'tgp']);
 });
 
-// market_profile の bins は ENUM プリセット化に伴い、ENUM 既定写像で select コントロールへ解決される
-//   （数値自由入力 number ではなく、レンジ(range)と同じ select ドロップダウン）。
-test('buildFormModel: market_profile bins resolves to select control (ENUM preset)', () => {
+// market_profile の dispbp（表示幅bp・FLOAT・ISSUE-079）は number 入力へ解決される。
+test('buildFormModel: market_profile dispbp resolves to number control (FLOAT 自由入力)', () => {
   const def = get('market_profile');
-  const model = buildFormModel(def, {});
-  const field = model.fields.find((f) => f.name === 'bins');
-  assert.equal(field.controlType, 'select');
-  assert.deepEqual(field.enumValues, ['30', '60', '100']);
+  const model = buildFormModel(def, resetToDefaults(def));
+  const field = model.fields.find((f) => f.name === 'dispbp');
+  assert.ok(field, 'dispbp field exists');
+  assert.equal(field.controlType, 'number');
+  assert.equal(field.value, 3.0);
 });
 
 test('buildFormModel: BOOL param resolves to checkbox', () => {
@@ -263,24 +263,23 @@ test('buildFormModel: passes through conditionalVisible metadata (default null w
   assert.deepEqual(model.fields.find((f) => f.name === 'b').conditionalVisible, { when: { param: 'a', equals: 1 } });
 });
 
-// market_profile: 解像度=ビン のとき bins 表示・range 非表示 / 解像度=レンジ のとき逆（トグル実挙動）。
-test('computeVisible: market_profile bins/range toggle with resmode (bins→bins可視, range→range可視)', () => {
+// market_profile: period は src=zp のときのみ表示（dispbp へ一本化後の実 conditionalVisible 挙動）。
+test('computeVisible: market_profile period toggles with src (zp→表示 / dwell→非表示)', () => {
   const def = get('market_profile');
-  const visBins = computeVisible(def, { ...resetToDefaults(def), resmode: 'bins' });
-  assert.equal(visBins.bins, true);
-  assert.equal(visBins.range, false);
-  const visRange = computeVisible(def, { ...resetToDefaults(def), resmode: 'range' });
-  assert.equal(visRange.bins, false);
-  assert.equal(visRange.range, true);
+  const visZp = computeVisible(def, { ...resetToDefaults(def), src: 'zp' });
+  assert.equal(visZp.period, true);
+  const visDwell = computeVisible(def, { ...resetToDefaults(def), src: 'dwell' });
+  assert.equal(visDwell.period, false);
+  assert.equal(visDwell.dispbp, true, 'dispbp は常時表示');
 });
 
 // resolveControlType（buildFormModel 経由）が catalog の ui.controlType='segmented' を尊重する。
-test('buildFormModel: market_profile resmode resolves controlType segmented (ENUM select を上書き)', () => {
+test('buildFormModel: market_profile mode resolves controlType segmented (ENUM select を上書き)', () => {
   const def = get('market_profile');
-  const model = buildFormModel(def, {});
-  const resmode = model.fields.find((f) => f.name === 'resmode');
-  assert.ok(resmode);
-  assert.equal(resmode.controlType, 'segmented');
+  const model = buildFormModel(def, resetToDefaults(def));
+  const mode = model.fields.find((f) => f.name === 'mode');
+  assert.ok(mode);
+  assert.equal(mode.controlType, 'segmented');
 });
 
 // ---- validateForm: ConstraintEvaluator への委譲（C-3 単一定義）----------------

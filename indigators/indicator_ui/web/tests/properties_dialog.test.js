@@ -106,23 +106,19 @@ function fakeFieldEls(names) {
   return map;
 }
 
-test('_refreshVisible: market_profile bins/range rows toggle with resmode (bins→bins可視 / range→range可視)', () => {
+test('_refreshVisible: market_profile period row toggles with src (zp→表示 / dwell→非表示・ISSUE-079 後)', () => {
   const dialog = new PropertiesDialog({ document: fakeDoc(), def: get('market_profile'), instance: null });
-  dialog._fieldEls = fakeFieldEls(['resmode', 'bins', 'va', 'limit', 'src', 'range']);
+  dialog._fieldEls = fakeFieldEls(['dispbp', 'va', 'src', 'period', 'mode']);
 
-  // Arrange/Act: 解像度=ビン → bins 表示・range 非表示。
-  dialog._values.resmode = 'bins';
+  dialog._values.src = 'zp';
   dialog._refreshVisible();
-  assert.equal(dialog._fieldEls.get('bins').row.style.display, '');
-  assert.equal(dialog._fieldEls.get('range').row.style.display, 'none');
+  assert.equal(dialog._fieldEls.get('period').row.style.display, '');
 
-  // Act: 解像度=レンジ → bins 非表示・range 表示。
-  dialog._values.resmode = 'range';
+  dialog._values.src = 'dwell';
   dialog._refreshVisible();
-  assert.equal(dialog._fieldEls.get('bins').row.style.display, 'none');
-  assert.equal(dialog._fieldEls.get('range').row.style.display, '');
-  assert.equal(dialog._fieldEls.get('va').row.style.display, ''); // 他フィールドは非回帰
-  assert.equal(dialog._fieldEls.get('resmode').row.style.display, ''); // トグル自体は常時表示
+  assert.equal(dialog._fieldEls.get('period').row.style.display, 'none');
+  assert.equal(dialog._fieldEls.get('dispbp').row.style.display, ''); // 表示幅は常時表示
+  assert.equal(dialog._fieldEls.get('va').row.style.display, '');     // 他フィールドは非回帰
 });
 
 // _revalidate: 隠しフィールド（computeVisible=false）の violation を OK 可否から除外する
@@ -142,30 +138,12 @@ function fakeRevalidateEls(names) {
   return map;
 }
 
-test('_revalidate: hidden bins violation does NOT block OK (bins=0 invalid + resmode=range → ok=true)', () => {
-  // Arrange: market_profile で bins を min 違反（0）にし、resmode=range で bins を非表示化。
+test('_revalidate: visible dispbp violation DOES block OK (dispbp=0 min 違反 → ok=false・ISSUE-079)', () => {
   const dialog = new PropertiesDialog({ document: fakeDoc(), def: get('market_profile'), instance: null });
-  dialog._fieldEls = fakeRevalidateEls(['resmode', 'bins', 'va', 'limit', 'src', 'range']);
+  dialog._fieldEls = fakeRevalidateEls(['dispbp', 'va', 'src', 'period', 'mode']);
   dialog._okBtn = { disabled: false };
-  dialog._values.bins = 0;
-  dialog._values.resmode = 'range';
-  // Act
+  dialog._values.dispbp = 0; // MIN_VALUE(1) 違反。
   const ok = dialog._revalidate();
-  // Assert: 隠れた bins の violation は OK を阻害しない。
-  assert.equal(ok, true);
-  assert.equal(dialog._okBtn.disabled, false);
-});
-
-test('_revalidate: visible bins violation DOES block OK (bins=0 invalid + resmode=bins → ok=false)', () => {
-  // Arrange: 同じ bins 不正でも resmode=bins では bins が表示中 → 阻害する。
-  const dialog = new PropertiesDialog({ document: fakeDoc(), def: get('market_profile'), instance: null });
-  dialog._fieldEls = fakeRevalidateEls(['resmode', 'bins', 'va', 'limit', 'src', 'range']);
-  dialog._okBtn = { disabled: false };
-  dialog._values.bins = 0;
-  dialog._values.resmode = 'bins';
-  // Act
-  const ok = dialog._revalidate();
-  // Assert: 表示中フィールドの violation は OK を阻害する。
   assert.equal(ok, false);
   assert.equal(dialog._okBtn.disabled, true);
 });
@@ -216,42 +194,47 @@ function segFakeDoc() {
   };
 }
 
+// ISSUE-079: resmode は撤去済み。segmented の汎用挙動は合成フィールド、実フィールドは mode で検証する。
 const RESMODE_FIELD = {
-  name: 'resmode',
-  enumValues: ['bins', 'range'],
-  enumLabels: { bins: 'ビン', range: 'レンジ' },
-  value: 'bins',
+  name: 'segdemo',
+  enumValues: ['a', 'b'],
+  enumLabels: { a: 'A', b: 'B' },
+  value: 'a',
+};
+const MODE_FIELD = {
+  name: 'mode',
+  enumValues: ['normal', 'replay', 'sessions'],
+  enumLabels: { normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル' },
+  value: 'normal',
 };
 
 test('_buildSegmented renders one button per enum option with active on current value', () => {
   const dialog = new PropertiesDialog({ document: segFakeDoc(), def: get('market_profile'), instance: null });
   const wrap = dialog._buildSegmented(RESMODE_FIELD);
-  // 2 オプション = 2 ボタン。
+  // 2 オプション = 2 ボタン（合成フィールド・ISSUE-079 で resmode 実フィールドは撤去）。
   assert.equal(wrap.children.length, 2);
-  const [binsBtn, rangeBtn] = wrap.children;
-  assert.equal(binsBtn.textContent, 'ビン');
-  assert.equal(rangeBtn.textContent, 'レンジ');
-  // 現在値（bins）のボタンだけ is-active。
-  assert.equal(binsBtn.classList.contains('is-active'), true);
-  assert.equal(rangeBtn.classList.contains('is-active'), false);
+  const [aBtn, bBtn] = wrap.children;
+  assert.equal(aBtn.textContent, 'A');
+  assert.equal(bBtn.textContent, 'B');
+  // 現在値（a）のボタンだけ is-active。
+  assert.equal(aBtn.classList.contains('is-active'), true);
+  assert.equal(bBtn.classList.contains('is-active'), false);
 });
 
-test('_buildSegmented click updates _values and fires _onChange (resmode=range → bins 行が消え range 行が出る)', () => {
+test('_buildSegmented click updates _values and fires _onChange (mode=sessions へ切替・ISSUE-079 後)', () => {
   const dialog = new PropertiesDialog({ document: segFakeDoc(), def: get('market_profile'), instance: null });
-  // _onChange が走ることで _refreshVisible が bins/range 行を出没させる経路を固定する。
-  dialog._fieldEls = fakeFieldEls(['resmode', 'bins', 'va', 'limit', 'src', 'range']);
+  dialog._fieldEls = fakeFieldEls(['dispbp', 'va', 'src', 'period', 'mode']);
   dialog._okBtn = { disabled: false };
 
-  const wrap = dialog._buildSegmented(RESMODE_FIELD);
-  const [binsBtn, rangeBtn] = wrap.children;
+  const wrap = dialog._buildSegmented(MODE_FIELD);
+  const [normalBtn, replayBtn, sessionsBtn] = wrap.children;
 
-  // Act: 「レンジ」ボタンをクリック。
-  rangeBtn.click();
+  // Act: 「日別プロファイル」ボタンをクリック。
+  sessionsBtn.click();
 
-  // Assert: 値更新 + アクティブ切替 + _onChange 波及（bins 非表示 / range 表示）。
-  assert.equal(dialog._values.resmode, 'range');
-  assert.equal(rangeBtn.classList.contains('is-active'), true);
-  assert.equal(binsBtn.classList.contains('is-active'), false);
-  assert.equal(dialog._fieldEls.get('bins').row.style.display, 'none');
-  assert.equal(dialog._fieldEls.get('range').row.style.display, '');
+  // Assert: 値更新 + アクティブ切替。
+  assert.equal(dialog._values.mode, 'sessions');
+  assert.equal(sessionsBtn.classList.contains('is-active'), true);
+  assert.equal(normalBtn.classList.contains('is-active'), false);
+  void replayBtn;
 });

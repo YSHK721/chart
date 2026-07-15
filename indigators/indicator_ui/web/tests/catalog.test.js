@@ -58,8 +58,8 @@ test('catalog: market_profile exposes src ENUM [dwell,zp] default zp（candle/m1
   assert.equal(src.enumLabels.m1, undefined, 'm1 ラベル撤去（非表示）');
   assert.equal(src.enumLabels.dwell, '滞在時間(実ティック)');
   assert.equal(src.enumLabels.zp, '超過占有z(p)');
-  // bins/va/limit と同じ group（同一セクションに並ぶ）。
-  assert.equal(src.group, paramOf(d, 'bins').group);
+  // dispbp/va と同じ group（同一セクションに並ぶ）。
+  assert.equal(src.group, paramOf(d, 'dispbp').group);
   // ISSUE-076（B案）: 日別×1m/5m の zp は日単位タイル表示になる旨を tooltip で明記（混乱防止）。
   assert.ok(typeof src.tooltip === 'string' && src.tooltip.includes('日単位タイル'),
     'src tooltip が zp の時間足別挙動差を明記する');
@@ -83,8 +83,8 @@ test('catalog: market_profile exposes mode ENUM [normal,replay,sessions] default
   assert.equal(mode.enumLabels.replay, 'リプレイ');
   assert.equal(mode.enumLabels.sessions, '日別プロファイル');
   assert.equal(mode.enumLabels.ticklive, undefined, 'ticklive セグメントは撤去（表示選択肢なし）');
-  // 表示系 group（計算系 group.calc とは別＝bins と同じ group ではない）。
-  assert.notEqual(mode.group, paramOf(d, 'bins').group);
+  // 表示系 group（計算系 group.calc とは別＝dispbp と同じ group ではない）。
+  assert.notEqual(mode.group, paramOf(d, 'dispbp').group);
 });
 
 // 統合により旧 replay / sessions の BOOL param は catalog から撤去された（mode に一本化）。
@@ -96,40 +96,7 @@ test('catalog: market_profile no longer exposes replay/sessions BOOL params (統
 
 // market_profile に resmode（解像度）ENUM を追加。試作 prototype_260630-01 の解像度トグル
 //   （ビン ⇄ レンジ）を移植。segmented（横並びセグメントボタン）で描画し、押した側の入力だけ表示する。
-test('catalog: market_profile exposes resmode ENUM [bins,range] default bins as segmented toggle', () => {
-  const d = get('market_profile');
-  const resmode = paramOf(d, 'resmode');
-  assert.ok(resmode, 'resmode param exists');
-  assert.equal(resmode.type, ParamType.ENUM);
-  assert.equal(resmode.default, 'bins');
-  assert.deepEqual(resmode.enumValues, ['bins', 'range']);
-  assert.equal(resmode.label, '解像度');
-  assert.equal(resmode.enumLabels.bins, 'ビン');
-  assert.equal(resmode.enumLabels.range, 'レンジ');
-  // ENUM 既定 select でなく横並びセグメントボタンで描く（form_model.resolveControlType が尊重）。
-  assert.equal(resmode.controlType, 'segmented');
-  // order は bins/range より前（トグルを先頭に置く）。
-  assert.ok(resmode.order < paramOf(d, 'bins').order);
-  assert.ok(resmode.order < paramOf(d, 'range').order);
-});
 
-// market_profile の range（レンジpt）ENUM。resmode トグル移植に伴い 'auto' を撤去し純粋な値集合へ。
-//   resmode=range のときのみ表示され、client が &barw= を付与し backend が n_bins を算出する。
-test('catalog: market_profile range ENUM drops auto → [25,50,100,250,500] default 100', () => {
-  const d = get('market_profile');
-  const range = paramOf(d, 'range');
-  assert.ok(range, 'range param exists');
-  assert.equal(range.type, ParamType.ENUM);
-  assert.equal(range.default, '100');
-  assert.deepEqual(range.enumValues, ['10', '25', '50', '100', '250', '500']);
-  assert.equal(range.label, 'レンジ(pt)');
-  // 'auto' 由来のラベルは撤去済み。
-  assert.equal(range.enumLabels.auto ?? null, null);
-  // resmode=range のときだけ表示。
-  assert.deepEqual(range.conditionalVisible, { when: { param: 'resmode', equals: 'range' } });
-  // bins/va/limit/src と同じ group（同一セクションに並ぶ）。
-  assert.equal(range.group, paramOf(d, 'bins').group);
-});
 
 // market_profile の period（期間・ISSUE-071 (b)案）ENUM [all,day] 既定 all。src=zp のときのみ表示し、
 //   通常モード×固定周期 tf でのみ有効（conditionalEnable は関数述語）。
@@ -153,19 +120,15 @@ test('catalog: market_profile exposes period ENUM [all,day] default all, visible
   assert.equal(enabled({ mode: 'replay' }, { timeframe: '1m', servedMode: 'b' }), false, 'リプレイは無効');
   assert.equal(enabled({ mode: 'sessions' }, { timeframe: '1h', servedMode: 'b' }), false, '日別は無効');
   assert.equal(enabled({ mode: 'normal' }, null), true, 'ctx 不在（A方式/テスト）は mode 条件のみ');
-  assert.equal(period.group, paramOf(d, 'bins').group);
+  assert.equal(period.group, paramOf(d, 'dispbp').group);
 });
 
-// resmode=bins のとき bins を表示、resmode=range のとき非表示にする conditionalVisible（トグル）。
-//   従来の range=auto 条件を resmode=bins へ置換（resmode がトグルスイッチ）。
-test('catalog: market_profile bins は conditionalVisible {resmode:bins}＋tf-period描画時グレーアウト述語（ISSUE-070）', () => {
+// ISSUE-070/079: 表示幅(bp) は tf-period が日別列を描くとき無効（列は 1bp/GRID 固定）＝グレーアウト。
+test('catalog: market_profile dispbp は tf-period描画時グレーアウト述語（ISSUE-070）', () => {
   const d = get('market_profile');
-  const bins = paramOf(d, 'bins');
-  // resmode=bins のときだけ表示（それ以外は非表示）。
-  assert.deepEqual(bins.conditionalVisible, { when: { param: 'resmode', equals: 'bins' } });
-  // ISSUE-070: conditionalEnable は関数述語（tf-period が日別列を描くとき無効＝グレーアウト）。
-  assert.equal(typeof bins.conditionalEnable, 'function');
-  const fn = bins.conditionalEnable;
+  const dispbp = paramOf(d, 'dispbp');
+  assert.equal(typeof dispbp.conditionalEnable, 'function');
+  const fn = dispbp.conditionalEnable;
   assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'b', timeframe: '1h' }), false);
   assert.equal(fn({ mode: 'sessions', src: 'zp' }, { servedMode: 'b', timeframe: '1h' }), false);
   assert.equal(fn({ mode: 'normal', src: 'dwell' }, { servedMode: 'b', timeframe: '1h' }), true);
@@ -173,27 +136,6 @@ test('catalog: market_profile bins は conditionalVisible {resmode:bins}＋tf-pe
   assert.equal(fn({ mode: 'sessions', src: 'zp' }, { servedMode: 'b', timeframe: '5m' }), true);
   assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'a', timeframe: '1h' }), true);
   assert.equal(fn({ mode: 'sessions', src: 'dwell' }, {}), true);
-});
-
-// bins をプリセット ENUM（30/60/100・既定60）へ変更。試作 prototype_260630-01/web/index.html:30-34 の
-//   <select>（option 30 / 60(selected) / 100）に忠実。レンジ(range)と同じく select・同位置(order 同一)で描く。
-test('catalog: market_profile bins is ENUM preset [30,60,100] default 60, same order as range', () => {
-  const d = get('market_profile');
-  const bins = paramOf(d, 'bins');
-  // 数値自由入力(INT)からプリセット(ENUM)へ。
-  assert.equal(bins.type, ParamType.ENUM);
-  assert.deepEqual(bins.enumValues, ['30', '60', '100']);
-  assert.equal(bins.default, '60');
-  // ラベルは数値そのまま。
-  assert.equal(bins.enumLabels[30], '30');
-  assert.equal(bins.enumLabels[60], '60');
-  assert.equal(bins.enumLabels[100], '100');
-  // 全プリセットが妥当なため MIN_VALUE 制約は除去。
-  assert.equal((bins.constraints ?? []).length, 0);
-  // conditionalVisible（resmode=bins トグル）は維持。
-  assert.deepEqual(bins.conditionalVisible, { when: { param: 'resmode', equals: 'bins' } });
-  // order はレンジ(range)と同一＝トグルで同位置に入れ替わる（下の va/limit/src がズレない）。
-  assert.equal(bins.order, paramOf(d, 'range').order);
 });
 
 // 回帰防止: wait_for_close の既定は false。true だと lwc_chart が最終足（未確定足）を

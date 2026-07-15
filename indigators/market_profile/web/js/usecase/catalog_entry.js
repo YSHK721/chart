@@ -62,26 +62,19 @@ export function makeMarketProfileDef({
     tab: 'profile',
     placement: 'overlay',
     params: [
-      // resmode: 解像度指定モード（ENUM・既定 bins）。試作 prototype_260630-01 の解像度トグル
-      //   （ビン ⇄ レンジ）を移植。ui.controlType='segmented' で横並びセグメントボタンとして描画し、
-      //   押した側の入力（bins / range）だけを conditionalVisible で表示する。order は bins/range より前。
-      param('resmode', ParamType.ENUM, 'bins', [], ['bins', 'range'], {
-        group: 'group.calc', order: 0, label: '解像度', controlType: 'segmented',
-        enumLabels: { bins: 'ビン', range: 'レンジ' },
-        // ISSUE-070: tf-period が日別列を描くとき（日別×対応tf）は解像度が GRID_W 固定で無効＝グレーアウト。
-        conditionalEnable: _mpResolutionEnabled,
-      }),
-      // bins: ヒストグラム区間数（ENUM プリセット・既定 '60'）。試作 prototype_260630-01/web/index.html:30-34 の
-      //   <select>（option 30 / 60(selected) / 100）に忠実。数値自由入力(INT)からプリセットへ変更し、レンジ(range)と
-      //   同じく select・同位置(order 1)で描く。全プリセットが妥当なため MIN_VALUE 制約は不要（除去）。
-      //   解像度=ビン（resmode=bins）のときのみ表示（レンジ指定時は非表示 = conditionalVisible トグル）。
-      //   client.buildMarketProfileUrl が文字列プリセット（'30'/'60'/'100'）を &bins= へ付与する。
-      param('bins', ParamType.ENUM, '60', [], ['30', '60', '100'], {
-        group: 'group.calc', order: 1, label: 'ビン',
-        conditionalVisible: { when: { param: 'resmode', equals: 'bins' } },
-        conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
-        enumLabels: { 30: '30', 60: '60', 100: '100' },
-      }),
+      // dispbp: 表示幅（bp・価格比 1bp=0.01%・FLOAT 自由入力・ISSUE-079 依頼者承認 2026-07-15）。
+      //   旧 解像度トグル（resmode）＋ビン（bins）＋レンジpt（range）を**一本化**して置換する。
+      //   絶対 pt/本数指定は価格水準で意味が変わる（時代ドリフト）ため、比率（bp）で表示粗さを
+      //   指定する（「計算は 1bp 固定・見せ方は自由」の二層構造。zp の内部格子 1bp が情報の下限）。
+      //   client への写像は actor が「最新終値 × bp/1e4 → barw(pt)」で行う（backend 変更なし・
+      //   既存 &barw= 経路を再利用＝時代整合は要求時の現在価格で自動確保）。
+      //   dwell の内部格子は絶対 10pt のまま（現在価格で約1.5bp・過去ほど粗い下限＝既知の残課題）。
+      param('dispbp', ParamType.FLOAT, 3.0,
+        [{ kind: ConstraintKind.MIN_VALUE, operands: ['dispbp', 1], messageKey: 'err.dispbp.min' }], null, {
+          group: 'group.calc', order: 0, label: '表示幅(bp)', step: 0.5, min: 1,
+          conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
+          tooltip: '価格帯 1 行の幅を価格比（bp=0.01%）で指定。1bp が下限（zp の計算格子）。値を小さくするほど精細・大きくするほど滑らか。旧「ビン/レンジ(pt)」を置換（絶対値指定は価格水準で意味が変わるため比率へ統一）',
+        }),
       // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
       param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
       // limit（対象本数）param は削除済＝MP は常に全期間集計（backend は limit 省略時＝全件集計）。
@@ -107,19 +100,7 @@ export function makeMarketProfileDef({
         },
         tooltip: '滞在時間＝実ティックの滞在秒（日別では全時間足で周期ごとの列を表示）／超過占有z(p)＝偶然比の異常度（日別では15分足以上が周期列・1分足/5分足はzが短周期で統計不成立のため日単位タイル表示になる）',
       }),
-      // range: レンジ(pt) の直接指定（ENUM・既定 100）。試作 prototype_260630-01 の range セレクタを移植。
-      //   解像度=レンジ（resmode=range）のときのみ表示。値は client が &barw= を付与し backend が
-      //   n_bins = round(窓幅/barw) を算出する（bins は送らない）。
-      //   order は bins と同一(1)＝同じ位置で入れ替わる（トグル時に下の va/src がズレず認知負荷を抑える）。
-      //   10pt は内部固定グリッド GRID_W と同値＝意味のある最細解像度（zp/dwell は 10pt セルで集計・
-      //   帰無評価するためこれ未満の表示 bin は情報が増えない）。backend は n_bins を [1,1000] へ
-      //   クランプするため、窓幅 10,000pt 超（1m 全窓等）では実効レンジが自動的に粗くなる。
-      param('range', ParamType.ENUM, '100', [], ['10', '25', '50', '100', '250', '500'], {
-        group: 'group.calc', order: 1, label: 'レンジ(pt)',
-        conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
-        conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
-        enumLabels: { 10: '10', 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
-      }),
+
       // period: 計測窓（ENUM・既定 'all'＝全期間・ISSUE-071 (b)案）。'day'＝当日始端からの窓で計測する
       //   （client が from=当日始端 を &from= へ付与し backend が candles を time>=from に限定する既存機構）。
       //   zp 専用に表示する（conditionalVisible src=zp）: 全期間Σz合成では当日の成長が z_max 正規化に

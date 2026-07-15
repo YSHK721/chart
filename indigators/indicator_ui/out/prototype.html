@@ -1192,26 +1192,19 @@ function makeMarketProfileDef({
     tab: 'profile',
     placement: 'overlay',
     params: [
-      // resmode: 解像度指定モード（ENUM・既定 bins）。試作 prototype_260630-01 の解像度トグル
-      //   （ビン ⇄ レンジ）を移植。ui.controlType='segmented' で横並びセグメントボタンとして描画し、
-      //   押した側の入力（bins / range）だけを conditionalVisible で表示する。order は bins/range より前。
-      param('resmode', ParamType.ENUM, 'bins', [], ['bins', 'range'], {
-        group: 'group.calc', order: 0, label: '解像度', controlType: 'segmented',
-        enumLabels: { bins: 'ビン', range: 'レンジ' },
-        // ISSUE-070: tf-period が日別列を描くとき（日別×対応tf）は解像度が GRID_W 固定で無効＝グレーアウト。
-        conditionalEnable: _mpResolutionEnabled,
-      }),
-      // bins: ヒストグラム区間数（ENUM プリセット・既定 '60'）。試作 prototype_260630-01/web/index.html:30-34 の
-      //   <select>（option 30 / 60(selected) / 100）に忠実。数値自由入力(INT)からプリセットへ変更し、レンジ(range)と
-      //   同じく select・同位置(order 1)で描く。全プリセットが妥当なため MIN_VALUE 制約は不要（除去）。
-      //   解像度=ビン（resmode=bins）のときのみ表示（レンジ指定時は非表示 = conditionalVisible トグル）。
-      //   client.buildMarketProfileUrl が文字列プリセット（'30'/'60'/'100'）を &bins= へ付与する。
-      param('bins', ParamType.ENUM, '60', [], ['30', '60', '100'], {
-        group: 'group.calc', order: 1, label: 'ビン',
-        conditionalVisible: { when: { param: 'resmode', equals: 'bins' } },
-        conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
-        enumLabels: { 30: '30', 60: '60', 100: '100' },
-      }),
+      // dispbp: 表示幅（bp・価格比 1bp=0.01%・FLOAT 自由入力・ISSUE-079 依頼者承認 2026-07-15）。
+      //   旧 解像度トグル（resmode）＋ビン（bins）＋レンジpt（range）を**一本化**して置換する。
+      //   絶対 pt/本数指定は価格水準で意味が変わる（時代ドリフト）ため、比率（bp）で表示粗さを
+      //   指定する（「計算は 1bp 固定・見せ方は自由」の二層構造。zp の内部格子 1bp が情報の下限）。
+      //   client への写像は actor が「最新終値 × bp/1e4 → barw(pt)」で行う（backend 変更なし・
+      //   既存 &barw= 経路を再利用＝時代整合は要求時の現在価格で自動確保）。
+      //   dwell の内部格子は絶対 10pt のまま（現在価格で約1.5bp・過去ほど粗い下限＝既知の残課題）。
+      param('dispbp', ParamType.FLOAT, 3.0,
+        [{ kind: ConstraintKind.MIN_VALUE, operands: ['dispbp', 1], messageKey: 'err.dispbp.min' }], null, {
+          group: 'group.calc', order: 0, label: '表示幅(bp)', step: 0.5, min: 1,
+          conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
+          tooltip: '価格帯 1 行の幅を価格比（bp=0.01%）で指定。1bp が下限（zp の計算格子）。値を小さくするほど精細・大きくするほど滑らか。旧「ビン/レンジ(pt)」を置換（絶対値指定は価格水準で意味が変わるため比率へ統一）',
+        }),
       // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
       param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
       // limit（対象本数）param は削除済＝MP は常に全期間集計（backend は limit 省略時＝全件集計）。
@@ -1237,19 +1230,7 @@ function makeMarketProfileDef({
         },
         tooltip: '滞在時間＝実ティックの滞在秒（日別では全時間足で周期ごとの列を表示）／超過占有z(p)＝偶然比の異常度（日別では15分足以上が周期列・1分足/5分足はzが短周期で統計不成立のため日単位タイル表示になる）',
       }),
-      // range: レンジ(pt) の直接指定（ENUM・既定 100）。試作 prototype_260630-01 の range セレクタを移植。
-      //   解像度=レンジ（resmode=range）のときのみ表示。値は client が &barw= を付与し backend が
-      //   n_bins = round(窓幅/barw) を算出する（bins は送らない）。
-      //   order は bins と同一(1)＝同じ位置で入れ替わる（トグル時に下の va/src がズレず認知負荷を抑える）。
-      //   10pt は内部固定グリッド GRID_W と同値＝意味のある最細解像度（zp/dwell は 10pt セルで集計・
-      //   帰無評価するためこれ未満の表示 bin は情報が増えない）。backend は n_bins を [1,1000] へ
-      //   クランプするため、窓幅 10,000pt 超（1m 全窓等）では実効レンジが自動的に粗くなる。
-      param('range', ParamType.ENUM, '100', [], ['10', '25', '50', '100', '250', '500'], {
-        group: 'group.calc', order: 1, label: 'レンジ(pt)',
-        conditionalVisible: { when: { param: 'resmode', equals: 'range' } },
-        conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
-        enumLabels: { 10: '10', 25: '25', 50: '50', 100: '100', 250: '250', 500: '500' },
-      }),
+
       // period: 計測窓（ENUM・既定 'all'＝全期間・ISSUE-071 (b)案）。'day'＝当日始端からの窓で計測する
       //   （client が from=当日始端 を &from= へ付与し backend が candles を time>=from に限定する既存機構）。
       //   zp 専用に表示する（conditionalVisible src=zp）: 全期間Σz合成では当日の成長が z_max 正規化に
@@ -4629,11 +4610,20 @@ class IndicatorController {
   //   resmode（解像度モード）を転送し、client が resmode で bins/barw の送信を排他化する。
   //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
   _mpParams(p = {}) {
-    const out = { bins: p.bins, va: p.va, src: p.src };
+    const out = { va: p.va, src: p.src };
+    // bins（legacy・ISSUE-079 で catalog から撤去済み）: 旧保存インスタンスにのみ存在。保存時のみ転送。
+    if (p.bins != null) {
+      out.bins = p.bins;
+    }
     // period（期間: 全期間/当日・ISSUE-071 (b)案）: 保存時のみ転送する（period 未保存の旧インスタンスの
     //   転送 payload を変えない＝undefined キーを載せない。actor 側も null/undefined キーは無視する）。
     if (p.period != null) {
       out.period = p.period;
+    }
+    // dispbp（表示幅 bp・ISSUE-079）: 保存時のみ転送（旧インスタンスの payload 不変・actor が
+    //   barw(pt) へ写像する）。
+    if (p.dispbp != null) {
+      out.dispbp = p.dispbp;
     }
     // mode（表示モード）: 旧 replay(BOOL)/sessions(BOOL) を統合した排他 ENUM
     //   ['normal','replay','sessions'] を actor へ転送する。undefined は載せない（actor 既定=通常）。
@@ -7467,7 +7457,7 @@ class MarketProfileActor {
   //   range（レンジpt）は client.buildMarketProfileUrl が barw へ写像する（'auto' は付与しない）。
   setParams(params = {}) {
     const next = {};
-    for (const key of ['bins', 'va', 'src', 'range', 'resmode', 'period']) {
+    for (const key of ['bins', 'va', 'src', 'range', 'resmode', 'period', 'dispbp']) {
       if (params[key] != null) {
         next[key] = params[key];
       }
@@ -7603,7 +7593,7 @@ class MarketProfileActor {
   //   原子を食い違わせないことを保証する（非 ticklive 表示の原子との不整合を防ぐ）。参照実装 mp_core の
   //   dwell 原子（_session_dwell）に忠実。
   _buildFormingArgs({ base, since }) {
-    const args = { ...this._getContext(), ...this._params, src: 'dwell', base, since };
+    const args = { ...this._getContext(), ...this._params, ...this._dispExtra(), src: 'dwell', base, since };
     // present normal ライブ成長（FOLLOW）: base 累積窓を全期間 → 当日（現在セッション）へ絞る。
     //   全期間累積だと現在足 1 本ぶんの成長が数年分に対して極小で視認不能になるため、当日始端を base 下限
     //   （from）にする（古典的セッション Market Profile・ユーザー確定・視認性優先）。growing かつ非 sessions
@@ -7901,7 +7891,7 @@ class MarketProfileActor {
   async _fetchAt(time) {
     const profile = await this._client.fetchProfile({
       ...this._getContext(), ...this._params, to: time,
-      ...this._replayExtra(time), ...this._sessionsExtra(),
+      ...this._replayExtra(time), ...this._sessionsExtra(), ...this._dispExtra(),
     });
     if (profile) {
       this._primitive.setProfile(profile);
@@ -7932,6 +7922,27 @@ class MarketProfileActor {
       return {}; // ローソク未取得＝窓を成さず全期間へ縮退（既存 fetch と同じ非破壊）。
     }
     return { from: sessionDayStart(t) }; // ISSUE-078: セッション日始端。
+  }
+
+  // 表示幅(bp)→barw(pt) 写像（ISSUE-079 二層構造: 計算=1bp 固定・見せ方=自由）。
+  //   dispbp 指定時、最新終値 close から barw = close × bp/1e4 を導出し、既存の resmode='range'
+  //   ＋range(pt) 経路（client の &barw=・forming の base 整列・barw ロックまで全て再利用）へ写像する。
+  //   backend 変更なしで時代整合（要求時の現在価格基準）を自動確保する。明示 resmode/range が
+  //   ある場合（legacy 保存インスタンス）はそれを優先（後方互換）。ローソク未取得は写像せず
+  //   サーバ既定（bins=60）へ縮退（非破壊）。
+  _dispExtra() {
+    const bp = Number(this._params.dispbp);
+    if (!(bp > 0) || this._params.resmode != null || this._params.range != null) {
+      return {};
+    }
+    const candles = this._getCandles();
+    const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;
+    const close = last && last.close != null ? Number(last.close) : NaN;
+    if (!Number.isFinite(close) || !(close > 0)) {
+      return {};
+    }
+    const barw = close * bp / 1e4;
+    return { resmode: 'range', range: String(Math.round(barw * 10000) / 10000) };
   }
 
   // トグル。ON: 初回のみ attach → 取得して反映 → 表示。OFF: 非表示（取得しない）。
@@ -7994,6 +8005,7 @@ class MarketProfileActor {
       //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
       const profile = await this._client.fetchProfile({
         ...this._getContext(), ...this._params, ...this._sessionsExtra(), ...this._periodExtra(),
+        ...this._dispExtra(),
       });
       if (profile) {
         this._primitive.setProfile(profile);
