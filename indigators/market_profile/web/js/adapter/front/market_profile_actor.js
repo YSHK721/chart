@@ -124,7 +124,7 @@ export class MarketProfileActor {
   constructor({
     client, primitive, mainSeries, getContext, replayBar, getCandles, renderer,
     formingClient, makeAccumulator, sessionsDrawnByTfPeriod, onParamsChanged,
-    onSessionsLiveGrow,
+    onSessionsLiveGrow, nowSecFn,
   } = {}) {
     this._client = client;
     // パラメータ変更通知（注入）。setParams 完了時に呼ぶ。composition_root が tf-period 列アクターの
@@ -134,6 +134,8 @@ export class MarketProfileActor {
     //   で呼ぶ。composition_root が tf-period 列アクターの当日チャンク再取得（refreshAt）へ配線し、
     //   当日列（zp/dwell とも）を育てる。throttle は tf-period 側の責務。未注入は no-op（後方互換）。
     this._onSessionsLiveGrow = typeof onSessionsLiveGrow === 'function' ? onSessionsLiveGrow : () => {};
+    // 現在時刻源（秒・ISSUE-086: 1W/1M ラベルの未来日クランプ用）。テスト注入可・既定 Date.now。
+    this._nowSec = typeof nowSecFn === 'function' ? nowSecFn : () => Date.now() / 1000;
     this._primitive = primitive;
     this._mainSeries = mainSeries;
     this._replayBar = replayBar ?? null;
@@ -678,9 +680,15 @@ export class MarketProfileActor {
     }
     const candles = this._getCandles();
     const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;
-    const t = last && last.time != null ? Number(last.time) : NaN;
+    let t = last && last.time != null ? Number(last.time) : NaN;
     if (!Number.isFinite(t)) {
       return {}; // ローソク未取得＝窓を成さず全期間へ縮退（既存 fetch と同じ非破壊）。
+    }
+    // ISSUE-086: 1W/1M バーの time はラベル（週末金曜/月末）＝未来日になり得るため、now で
+    //   クランプして「現在のセッション日」へ正しく写像する（1m..1D はラベル=当日で不変）。
+    const nowSec = this._nowSec();
+    if (Number.isFinite(nowSec) && nowSec < t) {
+      t = nowSec;
     }
     return { from: sessionDayStart(t) }; // ISSUE-078: セッション日始端。
   }

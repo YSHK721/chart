@@ -12,9 +12,10 @@
 //   MARKET_PROFILE と同一のオブジェクト構造（id / params / series / compute）を返す。
 
 // tf-period が日別列を描く対応 tf（列描画時は解像度が GRID_W 固定＝resmode/bins/range 無効）。
-//   ISSUE-070。count 列は 1m..1D、zp 列は 15m..1D 対応（backend の周期退化ガードと一致）。
-const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D']);
-const _MP_ZP_TF = new Set(['15m', '30m', '1h', '4h', '1D']);
+//   ISSUE-070。ISSUE-086（全時間足パラメータ統一）: 1W/1M もセッション日次ロールアップの
+//   バケット列として対応（count 1m..1M / zp 15m..1M＝backend _BUCKET_TFS・_ZP_TF_ALLOWED と一致）。
+const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M']);
+const _MP_ZP_TF = new Set(['15m', '30m', '1h', '4h', '1D', '1W', '1M']);
 
 // ISSUE-080（依頼者裁定 2026-07-15）: 日別（周期）プロファイルで zp を選べない時間足。
 //   原則「列の周期＝チャートの時間足。作れないソースは出さない」＝z は 1m/5m 周期で統計が
@@ -38,12 +39,11 @@ function _mpTfPeriodDrawsColumns(values, ctx) {
 //   通常モード・非対応tf の日別（タイル描画）・A方式では解像度が有効なので enabled=true。
 const _mpResolutionEnabled = (values, ctx) => !_mpTfPeriodDrawsColumns(values, ctx);
 
-// 期間パラメータ（period）の enabled 述語: 通常モードかつ固定周期 tf（1m..1D）でのみ有効。
-//   リプレイ（as-seen-at-t の窓は T が決める）・日別（各営業日で分割済み）では計測窓の意味が
-//   重複/矛盾するためグレーアウト。1W/1M は最新バー期間が「当日」を包含し窓が退化するため無効。
-//   ctx 不在（A方式・単体テスト）は timeframe 判定をスキップ（mode 条件のみ）。
-const _mpPeriodEnabled = (values, ctx) => values.mode === 'normal'
-  && (!ctx || ctx.timeframe == null || _MP_PLAYER_TF.has(ctx.timeframe));
+// 期間パラメータ（period）の enabled 述語: 通常モードでのみ有効（ISSUE-086: tf 制限を撤廃し
+//   全時間足で統一）。「当日」窓＝現在セッション日はチャート tf と独立に定義できる
+//   （actor が from=セッション始端を付与・1W/1M ラベルの未来日化は actor 側で now クランプ）。
+//   日別（各営業日で分割済み）では計測窓の意味が重複するため通常モード限定は維持。
+const _mpPeriodEnabled = (values, ctx) => values.mode === 'normal';
 
 export function makeMarketProfileDef({
   IndicatorDef,
