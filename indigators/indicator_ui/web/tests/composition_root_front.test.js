@@ -400,3 +400,34 @@ test('bootstrap: クロスヘアは Normal(0)＝自由追従で作成する（Ma
   assert.equal(createChartOpts.length, 1);
   assert.equal(createChartOpts[0].crosshair.mode, 0, 'Magnet(1) ではなく Normal(0)');
 });
+
+test('bootstrap: sessions×growing の MP ライブ tick が tfPeriodActor.onLiveTick へ配線される（ISSUE-083）', async () => {
+  // ISSUE-083（日別プロファイルのライブ育成）: 日別×tf-period 描画×growing（FOLLOW）では、MP の
+  //   live tick 経路（onLiveTick→refresh）が composition の配線で tfPeriodActor.onLiveTick を発火し、
+  //   当日チャンクの再取得（refreshAt）→当日列の育成につながる。static（growing=false）では発火しない。
+  const { lwc } = fakeLwcFireable();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  const { marketProfile, tfPeriodActor, ready } = await bootstrap({
+    lwc, container: fakeContainer(), doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+  });
+  await ready;
+  assert.ok(tfPeriodActor, 'B方式では tfPeriodActor が配線される');
+  let calls = 0;
+  tfPeriodActor.onLiveTick = () => { calls += 1; };
+  marketProfile.setParams({ mode: 'sessions' });
+  await marketProfile.setEnabled(true);
+  // 列描画中の想定（実UIでは可視レンジ購読/refreshTfPeriodNow が担う）。setParams 時点では MP 未有効＝
+  //   isSessions()=false のため配線が setEnabled(false) へ倒す。よって MP 有効化後に列を ON にする。
+  tfPeriodActor.setEnabled(true);
+  // static（ANALYSIS）: 発火しない。
+  await marketProfile.onLiveTick();
+  assert.equal(calls, 0, 'static では育成しない');
+  // growing（FOLLOW）: live tick → refresh → onSessionsLiveGrow → tfPeriodActor.onLiveTick。
+  marketProfile.applyGrowthState({ growing: true });
+  await marketProfile.onLiveTick();
+  assert.equal(calls, 1, 'growing の live tick で当日列の再取得が発火する');
+  // tfPeriodActor 無効（列非描画＝日別解除等）: 配線ゲートで発火しない。
+  tfPeriodActor.setEnabled(false);
+  await marketProfile.onLiveTick();
+  assert.equal(calls, 1, '列非描画中は発火しない');
+});

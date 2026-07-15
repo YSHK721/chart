@@ -7441,11 +7441,16 @@ class MarketProfileActor {
   constructor({
     client, primitive, mainSeries, getContext, replayBar, getCandles, renderer,
     formingClient, makeAccumulator, sessionsDrawnByTfPeriod, onParamsChanged,
+    onSessionsLiveGrow,
   } = {}) {
     this._client = client;
     // パラメータ変更通知（注入）。setParams 完了時に呼ぶ。composition_root が tf-period 列アクターの
     //   即時再取得（src/mode 変更を可視レンジ変化を待たず反映・ISSUE-066）へ配線する。未注入は no-op。
     this._onParamsChanged = typeof onParamsChanged === 'function' ? onParamsChanged : () => {};
+    // ライブ育成通知（ISSUE-083・注入）。日別×tf-period 描画×growing（FOLLOW）の refresh（live tick 経路）
+    //   で呼ぶ。composition_root が tf-period 列アクターの当日チャンク再取得（refreshAt）へ配線し、
+    //   当日列（zp/dwell とも）を育てる。throttle は tf-period 側の責務。未注入は no-op（後方互換）。
+    this._onSessionsLiveGrow = typeof onSessionsLiveGrow === 'function' ? onSessionsLiveGrow : () => {};
     this._primitive = primitive;
     this._mainSeries = mainSeries;
     this._replayBar = replayBar ?? null;
@@ -8082,6 +8087,11 @@ class MarketProfileActor {
     if (this._sessions && this._sessionsDrawnByTfPeriod()) {
       this._applySessions(null);      // タイル非描画（tfDraws は null）＋読取欄クリア＋candle 透明化は tf-period 委譲。
       this._focusSessionsPending();   // 初回のみ candle 範囲へ focus（列を画面内へ）。
+      if (this._growing) {
+        // ISSUE-083: growing（FOLLOW）中は当日列を tf-period 側で育成する（live tick 経路の refresh は
+        //   ここへ毎回到達する＝発火は毎回・再取得の間引きは tf-period 側 throttle が担う）。
+        this._onSessionsLiveGrow();
+      }
       return;
     }
     if (this._refreshRunning) {
@@ -8642,6 +8652,7 @@ class TfPeriodJitterBuffer {
     this._unit = null;
     this._chunks = new Map();   // chunkStart(sec) -> { state:'loading'|'ready', columns:[] }
     this._lru = [];             // chunkStart の使用順（末尾=最新）。
+    this._refreshing = new Set(); // refreshAt 進行中の chunkStart（ISSUE-083: 二重再取得防止）。
   }
 
   // 現在 tf の実効チャンク幅（秒）。windowSecForTf 注入時はそれを、未注入時は固定 windowSec を用いる。
@@ -8683,6 +8694,7 @@ class TfPeriodJitterBuffer {
       this._unit = null;
       this._chunks.clear();
       this._lru = [];
+      this._refreshing.clear(); // 進行中 refreshAt の応答は取得後の tf/src 照合で破棄される。
     }
   }
 
@@ -8729,6 +8741,49 @@ class TfPeriodJitterBuffer {
     }
     this._evict();
     return targets;
+  }
+
+  // ライブ育成（ISSUE-083）: time を含むチャンクを stale-while-revalidate で再取得する。
+  //   当日（未完了セッション）は backend がキャッシュせず都度計算するため、再取得のたびに経過分まで
+  //   育った列が返る。旧列は応答が届くまで保持（非破壊）し、成功時に差し替えて onReady を発火する。
+  //   対象は ready チャンクのみ（未取得は ensure 経路・loading は進行中取得に委ねる）。進行中の
+  //   再取得がある間の連打は no-op（二重 fetch しない）。戻り値: 差し替えたら true。
+  async refreshAt(time) {
+    if (this._tf == null) {
+      return false;
+    }
+    const cs = this._chunkStart(time);
+    const c = this._chunks.get(cs);
+    if (!c || c.state !== 'ready' || this._refreshing.has(cs)) {
+      return false;
+    }
+    this._refreshing.add(cs);
+    const tf = this._tf;
+    const src = this._src;
+    try {
+      const res = await this._client.fetchWindow({
+        datasetRef: this._datasetRef, timeframe: tf, from: cs, to: cs + this._windowSec,
+        ...(src != null ? { src } : {}),
+      });
+      // tf/src が取得中に変わっていたら破棄（stale・キャッシュは既に消えている）。
+      if (tf !== this._tf || src !== this._src) {
+        return false;
+      }
+      if (!res) {
+        return false; // 失敗は旧列を保持（非破壊・次のライブ tick で再試行）。
+      }
+      if (Number.isFinite(res.unit)) {
+        this._unit = res.unit;
+      }
+      this._chunks.set(cs, { state: 'ready', columns: res.columns || [] });
+      this._touch(cs);
+      if (this._onReady) {
+        this._onReady();
+      }
+      return true;
+    } finally {
+      this._refreshing.delete(cs);
+    }
   }
 
   // 可視レンジ [from, to] を覆う全チャンクが ready か（先読み分は判定に含めない＝表示に必要な分のみ）。
@@ -8780,9 +8835,12 @@ class TfPeriodProfileActor {
   // getCandles（任意）: ()->candles（time 昇順・チャート表示中ローソク）。列 time と candle time は同一
   //   周期グリッド（両者とも周期始端）のため、time 突合で当該周期の陽/陰（close>=open）を列へ注釈する
   //   （方向背景・依頼者指示 2026-07-13）。未注入は注釈なし＝背景を描かない（後方互換）。
+  // liveMinIntervalMs（任意・既定 5000ms）: ISSUE-083 ライブ育成の再取得 throttle（live tick は数秒周期で
+  //   届くため、当日チャンク再取得の連打を抑える）。nowMsFn は注入可（テスト用・既定 Date.now）。
   constructor({
     jitterBuffer, primitive, getTimeframe, getVisibleRange, renderer, getSrc, getCandles,
     readyTimeoutMs = 800, setTimeoutFn, clearTimeoutFn,
+    liveMinIntervalMs = 5000, nowMsFn,
   }) {
     this._buf = jitterBuffer;
     this._primitive = primitive;
@@ -8799,6 +8857,9 @@ class TfPeriodProfileActor {
       : (id) => clearTimeout(id);
     this._pendingRange = null;  // 準備待ち中の可視レンジ（揃うまで描画保留）。
     this._pendingTimer = null;  // 上限タイムアウト timer id。
+    this._liveMinIntervalMs = liveMinIntervalMs;
+    this._nowMs = typeof nowMsFn === 'function' ? nowMsFn : () => Date.now();
+    this._lastLiveMs = null;    // 直近のライブ再取得時刻（throttle 基準）。
   }
 
   // 保留状態を破棄する（無効化・再スケジュール時）。前回描画は保持（clear しない＝ちらつき回避）。
@@ -8841,6 +8902,36 @@ class TfPeriodProfileActor {
     if (!r || r.from == null || r.to == null || !(r.from < r.to)) return;
     this._buf.ensure(tf, r.from, r.to, this._getSrc());
     this._schedule(r.from, r.to);
+  }
+
+  // ライブ育成（ISSUE-083）: 現在周期の列を最新化する。現在周期の始端＝最新ローソク time
+  //   （1D はセッションバー時刻規約・日中足は UTC floor 周期グリッド＝いずれも列 time と同一規約）を含む
+  //   チャンクを buf.refreshAt で stale-while-revalidate 再取得し、差し替え成功時のみ可視レンジを一括
+  //   再描画する（失敗/進行中/未取得は前回描画を保持＝非破壊）。throttle（liveMinIntervalMs）で
+  //   live tick（数秒周期）の連打を抑制する。現在周期が可視範囲外なら fetch しない（画面に無い列は
+  //   育てない＝スクロールで戻れば ensure/refreshAt が最新を取得する）。
+  async onLiveTick() {
+    if (!this._enabled) {
+      return;
+    }
+    const nowMs = this._nowMs();
+    if (this._lastLiveMs != null && nowMs - this._lastLiveMs < this._liveMinIntervalMs) {
+      return; // throttle 内（前回のライブ再取得から間隔未満）。
+    }
+    const candles = this._getCandles() || [];
+    if (!candles.length) {
+      return;
+    }
+    const colTime = candles[candles.length - 1].time;
+    const r = this._getVisibleRange ? this._getVisibleRange() : null;
+    if (!r || r.from == null || r.to == null || colTime < r.from || colTime > r.to) {
+      return; // 現在周期列が可視範囲外＝育てても見えない（fetch 節約）。
+    }
+    this._lastLiveMs = nowMs;
+    const swapped = await this._buf.refreshAt(colTime);
+    if (swapped && this._enabled) {
+      this._render(r.from, r.to); // 差し替え成功 → 一括再描画（旧列→育った列）。
+    }
   }
 
   // 揃っていれば即一括描画、未なら保留＋上限タイムアウトを張る（onChunkReady で揃い次第 commit）。
@@ -9232,6 +9323,7 @@ async function bootstrap({
   // ISSUE-066: MP パラメータ変更（gear の src/mode 等）を tf-period 列アクターへ即時伝播するフック。
   //   tf-period 配線（mode==='b'）で実体を代入する。未配線（A方式・非served）は no-op（byte 不変）。
   let refreshTfPeriodNow = () => {};
+  let liveGrowTfPeriod = () => {};
   const marketProfile = new MarketProfileActor({
     client: new MarketProfileClient({ fetch }),
     primitive: mpPrimitive,
@@ -9239,6 +9331,9 @@ async function bootstrap({
     // ISSUE-066: setParams 完了時に tf-period 列を即時再取得（sessions×ライブで src 変更が可視レンジ
     //   変化を待たず反映される）。tf-period 非配線時は no-op。
     onParamsChanged: () => refreshTfPeriodNow(),
+    // ISSUE-083: 日別×tf-period 描画×growing（FOLLOW）の live tick で当日チャンクを再取得し当日列を
+    //   育てる（zp/dwell 共通）。tf-period 非配線（A方式）時は no-op。
+    onSessionsLiveGrow: () => liveGrowTfPeriod(),
     // tick 逐次成長（ticklive）: forming 取得 client と DwellAccumulator factory を注入する。
     //   未注入なら onLiveTick は refresh へ byte-identical 委譲（後方互換）。注入で ticklive が有効化される。
     formingClient: new MarketProfileFormingClient({ fetch }),
@@ -9383,6 +9478,14 @@ async function bootstrap({
         return;
       }
       tfPeriodActor.setEnabled(true);
+    };
+    // ISSUE-083: MP の live tick（sessions×tfDraws×growing）→ 当日チャンクの stale-while-revalidate
+    //   再取得（tfPeriodActor.onLiveTick→jitterBuffer.refreshAt）。throttle は actor 側（既定 5s）。
+    //   列非描画中（isEnabled=false＝日別解除・非対応 tf）は発火しない。
+    liveGrowTfPeriod = () => {
+      if (tfPeriodActor && tfPeriodActor.isEnabled()) {
+        tfPeriodActor.onLiveTick();
+      }
     };
     const tsSub = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
     if (tsSub && typeof tsSub.subscribeVisibleTimeRangeChange === 'function') {

@@ -253,6 +253,7 @@ export async function bootstrap({
   // ISSUE-066: MP パラメータ変更（gear の src/mode 等）を tf-period 列アクターへ即時伝播するフック。
   //   tf-period 配線（mode==='b'）で実体を代入する。未配線（A方式・非served）は no-op（byte 不変）。
   let refreshTfPeriodNow = () => {};
+  let liveGrowTfPeriod = () => {};
   const marketProfile = new MarketProfileActor({
     client: new MarketProfileClient({ fetch }),
     primitive: mpPrimitive,
@@ -260,6 +261,9 @@ export async function bootstrap({
     // ISSUE-066: setParams 完了時に tf-period 列を即時再取得（sessions×ライブで src 変更が可視レンジ
     //   変化を待たず反映される）。tf-period 非配線時は no-op。
     onParamsChanged: () => refreshTfPeriodNow(),
+    // ISSUE-083: 日別×tf-period 描画×growing（FOLLOW）の live tick で当日チャンクを再取得し当日列を
+    //   育てる（zp/dwell 共通）。tf-period 非配線（A方式）時は no-op。
+    onSessionsLiveGrow: () => liveGrowTfPeriod(),
     // tick 逐次成長（ticklive）: forming 取得 client と DwellAccumulator factory を注入する。
     //   未注入なら onLiveTick は refresh へ byte-identical 委譲（後方互換）。注入で ticklive が有効化される。
     formingClient: new MarketProfileFormingClient({ fetch }),
@@ -404,6 +408,14 @@ export async function bootstrap({
         return;
       }
       tfPeriodActor.setEnabled(true);
+    };
+    // ISSUE-083: MP の live tick（sessions×tfDraws×growing）→ 当日チャンクの stale-while-revalidate
+    //   再取得（tfPeriodActor.onLiveTick→jitterBuffer.refreshAt）。throttle は actor 側（既定 5s）。
+    //   列非描画中（isEnabled=false＝日別解除・非対応 tf）は発火しない。
+    liveGrowTfPeriod = () => {
+      if (tfPeriodActor && tfPeriodActor.isEnabled()) {
+        tfPeriodActor.onLiveTick();
+      }
     };
     const tsSub = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
     if (tsSub && typeof tsSub.subscribeVisibleTimeRangeChange === 'function') {
