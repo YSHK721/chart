@@ -23,31 +23,9 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# プロセス起動時刻（デモ時計の経過基準）。
-_BOOT_MONOTONIC = time.monotonic()
+# ISSUE-087 🔴-1: now 解決は marketdata.tf_meta（単一情報源）へ移設。本名は再エクスポートで維持
+#   （既存呼び出し・テストの互換）。デモ時計（FORMING_DEMO_NOW）の挙動も tf_meta 側が同一規約で担う。
 
-
-def resolve_now_unix(override: Any = None) -> int:
-    """形成中バーの基準時刻 now（UNIX 秒・UTC）を解決する（時刻取得の単一注入点）。
-
-    優先順位:
-      1. ``override``（int・bool 除外）= リクエストの ``formingNow``/``now``（テスト/クライアント注入）。
-      2. env ``FORMING_DEMO_NOW``（デモ時計）= ``"<base_unix>[:<speed>]"``。base から実経過×speed を
-         進めたデモ時刻を返す（ライブ tick 供給が無い静的データで足内更新を可視化する再生用・
-         本番は未設定で無効）。speed 省略は 1.0。
-      3. それ以外 = 実 UTC 現在（``time.time()``）。
-    """
-    if isinstance(override, int) and not isinstance(override, bool):
-        return override
-    demo = os.environ.get("FORMING_DEMO_NOW")
-    if demo:
-        base, _, sp = demo.partition(":")
-        try:
-            speed = float(sp) if sp else 1.0
-            return int(float(base) + (time.monotonic() - _BOOT_MONOTONIC) * speed)
-        except ValueError:
-            logger.warning("FORMING_DEMO_NOW の形式が不正です: %r（実時刻にフォールバック）", demo)
-    return int(time.time())
 
 # repo 根を sys.path へ（marketdata を import するため・dataset/rollup_store と同じロード境界）。
 import sys as _sys
@@ -61,52 +39,22 @@ from marketdata.tick_m1 import forming_bar_from_ticks  # noqa: E402
 # セッション日境界（ISSUE-078）: 1D の期間始端と 1D バー time 規約（ラベル深夜）の唯一の規則源。
 from marketdata.session_day import session_bar_time, session_day_start  # noqa: E402
 
-# 形成中バーを供給する datasetRef（ティック由来＝ticks parquet を持つ）。これ以外は対象外。
-TICK_REFS = frozenset({"jp225_tick"})
-
-# カレンダー周期（W-FRI/ME）は単純 floor で期間始端を表せない＝形成中バー非対応。
-_NON_FLOORABLE_TF = frozenset({"1W", "1M"})
+# ISSUE-087 🔴-1/🔴-2: tick ref・floor 規則・期間始端は marketdata.tf_meta（単一情報源）へ移設。
+#   本モジュールは既存名を再エクスポートして互換を維持する（indicator_ui 内の利用箇所は不変）。
+#   market_profile_api は adapter.compute を経由せず marketdata.tf_meta を直接参照する（裸依存排除）。
+from marketdata.tf_meta import (  # noqa: E402
+    NON_FLOORABLE_TF as _NON_FLOORABLE_TF,
+    TICK_REFS,
+    floor_freq as _floor_freq,
+    is_supported_timeframe,
+    is_tick_ref,
+    period_start_unix,
+    resolve_now_unix,
+)
 
 # ロールアップ方式 forming が対応する全 tf（1m＋上位足 5m..1M）。ロールアップの現周期 partial バー
 # （base）から周期始端を得るため、1W/1M も floor 不要で対応できる（rollup ラベル＝始端）。
 ROLLUP_FORMING_TF = frozenset(TIMEFRAME_RULES)
-
-
-def _floor_freq(tf: Any) -> Optional[str]:
-    """tf の pandas floor freq を :data:`marketdata.resample.TIMEFRAME_RULES` から導出する。
-
-    規則源を marketdata.resample に単一化し（§4・floor freq を二重定義しない）、形成中バーの
-    期間始端 ``floor(now, tf)`` がロールアップ足境界（resample 固定周期ラベル＝左端）と整合する。
-    1m（rule=None）は分床 ``"min"``。5m..1D は rule 文字列がそのまま floor freq（``"5min"/"1h"/"1D"``）。
-    1W/1M（``W-FRI``/``ME``）は floor 不可で ``None``（非対応）。未知 tf も ``None``。
-    """
-    if tf in _NON_FLOORABLE_TF or tf not in TIMEFRAME_RULES:
-        return None
-    rule = TIMEFRAME_RULES[tf]
-    return "min" if rule is None else rule
-
-
-def is_tick_ref(ref: Any) -> bool:
-    """形成中バー供給対象の ref か（ティック由来）。"""
-    return ref in TICK_REFS
-
-
-def is_supported_timeframe(tf: Any) -> bool:
-    """形成中バーを供給できる固定周期 tf か（1W/1M・未知は False）。"""
-    return _floor_freq(tf) is not None
-
-
-def period_start_unix(now_unix: int, tf: str) -> int:
-    """現在期間の始端 UNIX 秒（データ窓の左端・規則源は marketdata.resample / session_day）。
-
-    ISSUE-078: '1D' はセッション日（NY17:00 ET 基準＝夏21:00/冬22:00 UTC）の始端。日中足は従来
-    どおり UTC floor（バー不変）。1D バーの **time 表示規約**（ラベル深夜）は :func:`forming_bar`
-    側で再ラベルする（本関数はデータ窓の始端を返す）。
-    """
-    if tf == "1D":
-        return session_day_start(int(now_unix))
-    start = pd.Timestamp(int(now_unix), unit="s").floor(_floor_freq(tf))  # naive UTC
-    return int(start.value // 1_000_000_000)
 
 
 def forming_bar(ref: str, tf: str, now_unix: int) -> Optional[dict]:

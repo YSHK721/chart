@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from adapter.compute import forming_bar as _forming_bar
+from marketdata import tf_meta as _forming_bar  # ISSUE-087 🔴-1: 裸 adapter 依存を排し単一情報源を参照
 from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute import market_profile_zp as _zp
 from market_profile_api.compute.market_profile import _value_area
