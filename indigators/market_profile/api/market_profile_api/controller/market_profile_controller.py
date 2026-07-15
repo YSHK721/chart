@@ -12,7 +12,7 @@ HTTP サーバ本体（BaseHTTPRequestHandler・ソケット）に依存しな�
   4. ``bins``（int・既定 60・[1, _MAX_BINS] にクランプ）/ ``va``（float・既定 0.70・有限かつ
      [_MIN_VA, 1.0] にクランプ）を反映して足ベース TPO プロファイルを計算する。
   5. 成功は (200, {ok, profile})。ref/timeframe の検証失敗は §6.3.4 nested error（error.type→
-     HTTPステータスは adapter.compute.ERROR_STATUS・単一定義）で 400 に翻訳する。
+     HTTPステータスは marketdata.api_contract.ERROR_STATUS・単一定義）で 400 に翻訳する。
      bins/va は例外化せずクランプで吸収する（500 化しない）。data load / 計算の想定外失敗のみ
      HTTP 殻の包括 try/except で internal 500 になる。
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from adapter.compute import ERROR_STATUS  # §6.3.4 error.type→HTTP は adapter.compute 据置
+from marketdata.api_contract import ERROR_STATUS  # §6.3.4 単一定義（ISSUE-087: marketdata へ移設）
 from marketdata import dataset  # dataset 実体は marketdata へ移設済み（最下層 peer 依存）
 from market_profile_api.compute import market_profile_dwell
 from market_profile_api.compute import market_profile_zp
@@ -96,7 +96,7 @@ def _bar_width(profile: dict[str, Any]) -> float:
 def _error_body(error_type: str, message: str) -> tuple[int, dict[str, Any]]:
     """§6.3.4 nested error（{ok:false, generation, error:{type, message, violations}}）。
 
-    error_type→HTTPステータスは adapter.compute.ERROR_STATUS（単一定義）を参照する
+    error_type→HTTPステータスは marketdata.api_contract.ERROR_STATUS（単一定義）を参照する
     （handle_compute の _error_body と同一のステータス翻訳・応答規約）。
     """
     status = ERROR_STATUS.get(error_type, 500)

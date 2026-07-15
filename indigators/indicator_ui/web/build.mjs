@@ -25,6 +25,7 @@ const MODULE_ORDER = [
   'js/domain/constraint_eval.js',
   'js/domain/compute_error.js',
   'js/domain/domain_models.js',
+  'js/domain/tf_meta.js',
   'js/domain/market_profile_dwell_accumulator.js',
   'js/domain/session_day.js',
   'js/usecase/catalog_entry.js',

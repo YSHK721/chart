@@ -278,3 +278,17 @@ def test_month_bucket_and_validation(monkeypatch):
     assert st == 200 and body["ok"] is True
     assert [c["time"] for c in body["columns"]] == [label_mid]
     assert body["columns"][0]["levels"] == [[100.0, 2]]
+
+
+def test_bucket_completed_boundary():
+    """ISSUE-088 🔵-5: バケット完了判定＝次バケット先頭セッションの始端が now 以前。"""
+    from marketdata.session_day import session_label_to_start
+
+    # 週 2026-07-17（金）: 次バケット先頭は土曜ラベル 2026-07-18 のセッション始端。
+    nxt_first = session_label_to_start("2026-07-18")
+    assert ctl._bucket_completed("1W", "2026-07-17", nxt_first) is True
+    assert ctl._bucket_completed("1W", "2026-07-17", nxt_first - 1) is False
+    # 月 2026-02-28: 次バケット先頭は 2026-03-01 のセッション始端。
+    nxt_m = session_label_to_start("2026-03-01")
+    assert ctl._bucket_completed("1M", "2026-02-28", nxt_m) is True
+    assert ctl._bucket_completed("1M", "2026-02-28", nxt_m - 1) is False

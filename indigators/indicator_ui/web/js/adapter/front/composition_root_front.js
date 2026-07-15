@@ -33,6 +33,7 @@ import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
 import { TfPeriodProfileClient } from './tf_period_profile_client.js';
 import { TfPeriodJitterBuffer } from './tf_period_jitter_buffer.js';
 import { TfPeriodProfileActor } from './tf_period_profile_actor.js';
+import { TF_BAR_SEC } from '../../domain/tf_meta.js';
 import { TfPeriodTooltip, formatPeriodLabel } from './tf_period_tooltip.js';
 import { MarketProfileActor } from './market_profile_actor.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
@@ -358,10 +359,7 @@ export async function bootstrap({
     //   6h 固定だと 1D は可視数十日を 6h 刻み＝274本(81%空)へ肥大する。規則 clamp(barSec×K, 6h, 45d)。
     //   1m は 6h 据置（barSec×K<6h）、1D は 45d 上限で数本に収束。cacheMax は可視 chunk 数を上回る値
     //   （32）にして、ローリング中に可視列が LRU 破棄される＝フラッシュを防ぐ。
-    const TFP_BAR_SEC = {
-      '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1D': 86400,
-      '1W': 604800, '1M': 2592000, // ISSUE-086: バケット列（窓幅は上限 45 日へクランプされる）。
-    };
+    const TFP_BAR_SEC = TF_BAR_SEC; // 単一情報源（domain/tf_meta.js・ISSUE-087 🔴-2）。
     const TFP_WINDOW_MIN = 6 * 3600;      // 下限 6h（intraday 据置）。
     const TFP_WINDOW_MAX = 45 * 86400;    // 上限 45 日（1D の 1 チャンク応答肥大を抑える）。
     const TFP_PERIODS_PER_CHUNK = 96;     // 1 チャンク≒96 周期ぶん（1 画面を数チャンクに収める）。

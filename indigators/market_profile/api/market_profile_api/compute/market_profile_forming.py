@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from adapter.compute import forming_bar as _forming_bar
+from marketdata import tf_meta as _forming_bar  # ISSUE-087 🔴-1: 裸 adapter 依存を排し単一情報源を参照
 from market_profile_api.compute import market_profile_dwell as _mpd
 
 

@@ -28,13 +28,9 @@ import { sessionDayStart } from './session_day.js';
 
 const DAY = 86400; // 窓幅・バー数近似の基準（境界 anchor には使わない＝sessionDayStart が担う）。
 
-// tf → 足の秒長（bar-period 床の基準）。既存 market_profile_actor.TF_BAR_SEC・
-//   replay 側 durationSecs と同一規約（未知/None は 1D=86400 相当へフォールバック）。
-//   1W/1M は粗サブ解像度（ISSUE-030）＝暦周期の厳密床ではなく秒近似（front の窓幅算出用途に限る）。
-const TF_BAR_SEC = {
-  '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-  '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000,
-};
+// tf → 足の秒長は domain/tf_meta.js（単一情報源・ISSUE-087 🔴-2）から import する。
+//   未知/None は 1D=86400 相当へフォールバック（従来規約不変）。
+import { TF_BAR_SEC } from './tf_meta.js';
 
 export class GrowthWindow {
   // from: base 累積の下限（UNIX 秒・含む）。null=全期間（下限なし）。

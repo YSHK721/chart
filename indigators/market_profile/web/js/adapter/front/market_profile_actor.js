@@ -108,11 +108,9 @@ const ROLL_BARS = 60; // ローリング窓の本数（from = T - ROLL_BARS*bar_
 const SESSIONS_INITIAL_SPAN_SEC = 365 * 86400;
 // MP 表示中の右マージン（プロファイル専用領域＝試作 PROFILE_FRAC。バーとローソクの重なり回避）。
 const PROFILE_MARGIN_FRACTION = 0.30;
-// timeframe → 足の秒長（from の窓幅算出用）。未知/None は 1D 相当（backend _TF_BAR_SEC と対応）。
-const TF_BAR_SEC = {
-  '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-  '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000,
-};
+// timeframe → 足の秒長は domain/tf_meta.js（単一情報源・ISSUE-087 🔴-2）から import する。
+//   旧: growth_window.js との top-level const 衝突（IIFE 連結）で再宣言していた＝解消済み。
+import { TF_BAR_SEC } from '../../domain/tf_meta.js';
 
 export class MarketProfileActor {
   // client: fetchProfile(context)->profile|null。primitive: setProfile/setVisible。
