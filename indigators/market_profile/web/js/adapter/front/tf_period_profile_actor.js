@@ -18,9 +18,12 @@ export class TfPeriodProfileActor {
   // getCandles（任意）: ()->candles（time 昇順・チャート表示中ローソク）。列 time と candle time は同一
   //   周期グリッド（両者とも周期始端）のため、time 突合で当該周期の陽/陰（close>=open）を列へ注釈する
   //   （方向背景・依頼者指示 2026-07-13）。未注入は注釈なし＝背景を描かない（後方互換）。
+  // liveMinIntervalMs（任意・既定 5000ms）: ISSUE-083 ライブ育成の再取得 throttle（live tick は数秒周期で
+  //   届くため、当日チャンク再取得の連打を抑える）。nowMsFn は注入可（テスト用・既定 Date.now）。
   constructor({
     jitterBuffer, primitive, getTimeframe, getVisibleRange, renderer, getSrc, getCandles,
     readyTimeoutMs = 800, setTimeoutFn, clearTimeoutFn,
+    liveMinIntervalMs = 5000, nowMsFn,
   }) {
     this._buf = jitterBuffer;
     this._primitive = primitive;
@@ -37,6 +40,9 @@ export class TfPeriodProfileActor {
       : (id) => clearTimeout(id);
     this._pendingRange = null;  // 準備待ち中の可視レンジ（揃うまで描画保留）。
     this._pendingTimer = null;  // 上限タイムアウト timer id。
+    this._liveMinIntervalMs = liveMinIntervalMs;
+    this._nowMs = typeof nowMsFn === 'function' ? nowMsFn : () => Date.now();
+    this._lastLiveMs = null;    // 直近のライブ再取得時刻（throttle 基準）。
   }
 
   // 保留状態を破棄する（無効化・再スケジュール時）。前回描画は保持（clear しない＝ちらつき回避）。
@@ -79,6 +85,36 @@ export class TfPeriodProfileActor {
     if (!r || r.from == null || r.to == null || !(r.from < r.to)) return;
     this._buf.ensure(tf, r.from, r.to, this._getSrc());
     this._schedule(r.from, r.to);
+  }
+
+  // ライブ育成（ISSUE-083）: 現在周期の列を最新化する。現在周期の始端＝最新ローソク time
+  //   （1D はセッションバー時刻規約・日中足は UTC floor 周期グリッド＝いずれも列 time と同一規約）を含む
+  //   チャンクを buf.refreshAt で stale-while-revalidate 再取得し、差し替え成功時のみ可視レンジを一括
+  //   再描画する（失敗/進行中/未取得は前回描画を保持＝非破壊）。throttle（liveMinIntervalMs）で
+  //   live tick（数秒周期）の連打を抑制する。現在周期が可視範囲外なら fetch しない（画面に無い列は
+  //   育てない＝スクロールで戻れば ensure/refreshAt が最新を取得する）。
+  async onLiveTick() {
+    if (!this._enabled) {
+      return;
+    }
+    const nowMs = this._nowMs();
+    if (this._lastLiveMs != null && nowMs - this._lastLiveMs < this._liveMinIntervalMs) {
+      return; // throttle 内（前回のライブ再取得から間隔未満）。
+    }
+    const candles = this._getCandles() || [];
+    if (!candles.length) {
+      return;
+    }
+    const colTime = candles[candles.length - 1].time;
+    const r = this._getVisibleRange ? this._getVisibleRange() : null;
+    if (!r || r.from == null || r.to == null || colTime < r.from || colTime > r.to) {
+      return; // 現在周期列が可視範囲外＝育てても見えない（fetch 節約）。
+    }
+    this._lastLiveMs = nowMs;
+    const swapped = await this._buf.refreshAt(colTime);
+    if (swapped && this._enabled) {
+      this._render(r.from, r.to); // 差し替え成功 → 一括再描画（旧列→育った列）。
+    }
   }
 
   // 揃っていれば即一括描画、未なら保留＋上限タイムアウトを張る（onChunkReady で揃い次第 commit）。
