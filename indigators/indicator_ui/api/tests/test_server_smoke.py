@@ -330,8 +330,8 @@ def test_get_tf_period_profile_passes_window_to_controller(server, monkeypatch):
 
     captured = {}
 
-    def _spy(ref, timeframe, frm, to, src=None):
-        captured.update(ref=ref, tf=timeframe, frm=frm, to=to, src=src)
+    def _spy(ref, timeframe, frm, to, src=None, live_ticks=None):
+        captured.update(ref=ref, tf=timeframe, frm=frm, to=to, src=src, live_ticks=live_ticks)
         return 200, {"ok": True, "tf": timeframe, "columns": []}
 
     monkeypatch.setattr(_srv, "handle_tf_period_profile", _spy)
@@ -342,12 +342,40 @@ def test_get_tf_period_profile_passes_window_to_controller(server, monkeypatch):
     assert payload["ok"] is True and payload["tf"] == "5m"
     assert (captured["frm"], captured["to"]) == ("1000", "2000")
     assert captured["src"] is None  # src 省略時は None（従来経路・byte 不変）
+    assert captured["live_ticks"] is None  # buffer 未注入時は None（従来経路・byte 不変）
 
     # src=zp はそのまま controller へ透過される。
     status, _ctype, _raw = _get(
         server, "/tf_period_profile?datasetRef=jp225_tick&timeframe=1h&from=1000&to=2000&src=zp")
     assert status == 200
     assert captured["src"] == "zp"
+
+
+def test_get_tf_period_profile_passes_live_buffer_ticks(server, monkeypatch):
+    # ISSUE-083 追補: 注入 LiveTickBuffer の末尾 (ms, mid) が live_ticks として controller へ渡る
+    #   （当日列の最新化）。非 tick ref（バリデーションで 400 だが殻は buffer を読まない）は None。
+    import framework.server as server_mod
+
+    captured = {}
+
+    def _spy(ref, timeframe, frm, to, src=None, live_ticks=None):
+        captured.update(live_ticks=live_ticks)
+        return 200, {"ok": True, "tf": timeframe, "columns": []}
+
+    monkeypatch.setattr(server_mod, "handle_tf_period_profile", _spy)
+
+    class _FakeBuffer:
+        def ticks_since(self, ms):
+            return [[1783382401000, 100.0], [1783382402000, 105.0]]
+
+    server_mod.set_live_tick_buffer(_FakeBuffer())
+    try:
+        status, _ctype, _raw = _get(
+            server, "/tf_period_profile?datasetRef=jp225_tick&timeframe=5m&from=1000&to=2000")
+        assert status == 200
+        assert captured["live_ticks"] == [[1783382401000, 100.0], [1783382402000, 105.0]]
+    finally:
+        server_mod.set_live_tick_buffer(None)
 
 
 def test_get_market_profile_forming_augments_ticks_with_live_buffer(server, monkeypatch):
