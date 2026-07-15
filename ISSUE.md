@@ -1019,3 +1019,18 @@
 - **🟡 改善推奨**: ①server.py が /candles・/forming_bar で controller 層を飛ばし marketdata/compute 直参照（殻へ業務分岐が漏出。handle_x 純関数へ統一を推奨）②スライス間レイヤ不統一（replay_ui=5層完備 / indicator_ui api=usecase 欠落 / MP api=2層のみ。最低限の命名規約明文化）③sys.path 実行時 insert が結線機構（3 系統。正規パッケージ化＋main 結線へ）④dwell/zp キャッシュに世代 GC 戦略なし（パラメータ変更で旧世代ディレクトリが増殖＝既知の清掃残件と同根。世代マニフェスト＋GC ツール推奨）。
 - **🔵 将来検討**: symlink 共有は Windows/tar/CI で無言破壊リスク（共有 domain の shared/ パッケージ昇格）。過剰抽象なし（YAGNI 健全）・lightweight-charts/pandas/zoneinfo/HTTP 殻の隔離は概ね良好。
 - **変更局所性の実測**: 新指標追加=スライス内で局所（良好）／**新時間足追加=最低 5 箇所**（欠如・🔴-2）／新データソース追加=局所（良好）。
+
+## ISSUE-088: 徹底コードレビュー結果（コードレビューエージェント・依頼者指示）
+- **ステータス**: OPEN（2026-07-15 起票・対応は依頼者裁定待ち）
+- **対象**: ISSUE-086（全時間足統一・レビュー時は作業ツリー差分＝現在はコミット済み）＋ISSUE-083〜085（ライブ育成・VA 修正・2トーン背景）。深度=完全（設計/ロジック/品質の3段階）。
+- **判定**: 🔴必須修正 **なし**（データ破壊・セキュリティ・明白バグ不検出）。**条件付きマージ可**＝CI 条件（byte-parity 10 件 RED）の解消が承認の必要条件。
+- **確認済み（精査の上問題なし）**: 週/月ラベルの整列性（resample・candle・forming と UTC 深夜で一致・年跨ぎ/閏/DST 境界を独立実測）／zp モーメント加算の独立性と k 空間整合／live_ticks が完了日キャッシュを汚さない保証／LiveTickBuffer の lock 安全性／入力 whitelist 検証（パストラバーサル不成立）。
+- **🟡 推奨修正**:
+  1. **byte-parity 回帰スイート 10 件 RED（develop 由来の既存事象）**: エージェント実測で m1（整数経路）の golden 相違＝固定窓 parquet の**データドリフト**起因と確定（ISSUE-085 の _value_area float 化・ISSUE-086 起因は棄却）。対処案: golden 再生成（依頼者裁定待ちの既知残件＝ISSUE-078 記載の dwell golden 2 件を含む）または合成データ注入でデータ非依存化。
+- **🔵 改善提案（バックログ）**:
+  1. DST 切替週（3月/11月）を含む週/月ラベル×resample 一致テストの追加
+  2. jitter buffer refreshAt: tf/src 変更交差時に _refreshing ガードが交差削除され得る（無害・二重фetch の帯域微増。finally で tf/src 照合を推奨）
+  3. tf-period zp のディスク世代タグ（s3）が _ZP_CACHE_VERSION 非連動（将来 bump 時の陳腐化リスク。世代タグへ織り込み推奨）
+  4. _DAY_MEM（上限256）が 1M 長期走査で LRU スラッシュの可能性（バケット/日次の LRU 分離 or 上限引き上げ）
+  5. next_period_label(1M)・_bucket_completed の直接単体テスト追加（年跨ぎ・閏 2 月）
+- **残存リスク（エージェント申告）**: forming 週バーの実UI水平整列は実UI未確認（→ISSUE-086 の実UI検証で週足列・ツールチップ・現在値ライン整列は確認済み）。
