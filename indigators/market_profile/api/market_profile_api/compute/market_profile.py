@@ -163,14 +163,17 @@ def _value_area(tpo, centers, va_pct):
 
     tpo 降順（同値時は index 昇順で決定論化）にビンを積み、累積が総 tpo×va_pct に
     達するまでのビン集合の中心価格の最小/最大を (va_low, va_high) として返す。
+    ISSUE-085: 重みは float で累積する。旧 ``int(tpo[i])`` 切り捨ては zp の z 値（大半が 1 未満）を
+    全て 0 に潰し、累積が閾値へ届かず全ビン採用＝VA が全域へ広がっていた。整数 TPO（カウント系）は
+    int/float どちらの累積でも同値＝既存挙動不変（byte-parity 維持）。
     """
-    threshold = int(tpo.sum()) * va_pct
+    threshold = float(tpo.sum()) * va_pct
     order = sorted(range(len(tpo)), key=lambda i: (-tpo[i], i))
     va_centers = []
-    cum = 0
+    cum = 0.0
     for i in order:
         va_centers.append(float(centers[i]))
-        cum += int(tpo[i])
+        cum += float(tpo[i])
         if cum >= threshold:
             break
     return min(va_centers), max(va_centers)

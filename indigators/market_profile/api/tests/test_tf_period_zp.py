@@ -100,7 +100,7 @@ def test_src_none_response_unchanged_and_keys_separated(tfp_env):
 def test_zp_disk_cache_subdir(tfp_env, tmp_path):
     now = _day(40)
     tfp.handle_tf_period_profile("jp225_tick", "1h", _day(29), _day(30), now=now, src="zp")
-    disk = tmp_path / "tfp" / "JP225" / "1h" / "s2" / "zp" / f"{_day(29)}.json"  # ISSUE-079: log 格子 s2 世代。
+    disk = tmp_path / "tfp" / "JP225" / "1h" / "s3" / "zp" / f"{_day(29)}.json"  # ISSUE-085: VA 修正 s3 世代。
     assert disk.is_file()
     data = json.loads(disk.read_text())
     assert data["unit"] > 0  # ISSUE-079: log 格子の代表価格幅。

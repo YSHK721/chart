@@ -232,7 +232,7 @@ def _day_columns_zp(
     day_end = next_session_day_start(day_start)  # ISSUE-078。
     completed = day_end <= now_val
     key = (symbol, tf, day_start, "zp")
-    disk_tf = f"{tf}/s2/zp"  # ISSUE-079: log 格子世代 s2（s1=10pt セッション日と不混在）。
+    disk_tf = f"{tf}/s3/zp"  # ISSUE-085: VA 修正世代 s3（s2 は _value_area int 切り捨てバグの VA を含む）。
     if completed:
         hit = _DAY_MEM.get(key)
         if hit is not None:

@@ -369,3 +369,30 @@ class TestComputeCandleProfileSessions:
         # 境界: 空リストは sessions=[] を返す（例外化しない・後方互換の安全値）。
         result = compute_candle_profile([], n_bins=6, va_pct=0.70, want_sessions=True)
         assert result["sessions"] == []
+
+
+class TestValueAreaFloatWeights:
+    """ISSUE-085: _value_area は float 重み（zp の z 値・大半が 1 未満）でも正しく閾値到達で停止する。
+
+    旧実装は ``int(tpo[i])`` 切り捨てで z<1 が全て 0 になり、累積が閾値へ届かず全ビン採用＝
+    VA が列全域へ広がっていた（実UI で依頼者が発見・zp の VA 水準異常）。
+    """
+
+    def test_sub_unit_float_weights_do_not_expand_to_full_range(self):
+        import numpy as np
+        from market_profile_api.compute.market_profile import _value_area
+
+        z = np.array([0.9, 0.9, 0.9, 0.9])
+        centers = np.array([10.0, 11.0, 12.0, 13.0])
+        va_low, va_high = _value_area(z, centers, 0.70)
+        # 0.7×3.6=2.52 → 降順 3 ビンで到達（同値時 index 昇順）→ [10,12]（全域 [10,13] にしない）。
+        assert (va_low, va_high) == (10.0, 12.0)
+
+    def test_integer_weights_unchanged(self):
+        import numpy as np
+        from market_profile_api.compute.market_profile import _value_area
+
+        tpo = np.array([1, 3, 8, 2, 1])
+        centers = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        # 総 15×0.7=10.5 → 8(idx2)+3(idx1)=11 到達 → [2,3]（整数重みの既存挙動は不変）。
+        assert _value_area(tpo, centers, 0.70) == (2.0, 3.0)
