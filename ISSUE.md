@@ -1075,3 +1075,52 @@
 - **実測原因**: tf-period 列の再取得/再描画が「可視レンジ変化イベント（デバウンス付き）」にのみ配線されており、**可視レンジが変わらない時間足切替**（週→日→週 等）ではイベントが発火せず、旧 tf の列（日次 n=1338 を実測）が新 tf のチャートへ残留。週足バーの合間に lwc の座標補間で日次列が並び「細い列」に見えていた（列幅=隣接列間隔の中央値×0.85＝日次間隔で算出されるため）。
 - **修正**: controller の時間足オブザーバ（tradeMarkers と同じフック）から refreshTfPeriodNow() を明示発火（切替直後に ensure/再描画・非対応状態なら列消去）。配線回帰テスト追加。
 - **検証**: UI web 534/536 緑。実UI（8139）: 再現手順（週→日→週）で切替後の列が週次等間隔・ホバー読取も週次（周期計 446,714 tick）・日次残留なしをスクリーンショット確認。月足も正常。
+
+## ISSUE-091: 依存方向・DIP 徹底度のアーキテクチャ監査（4系統並列調査・全指摘 file:line 実証済み）
+- **ステータス**: OPEN（2026-07-15 起票・調査完了＝対処は裁定待ち）
+- **調査方法**: architecture-executor 4系統並列（simulator／indicator_ui／market_profile／marketdata+common 被依存全数）で import 文を実読。主要指摘 8 点はメイン会話で実コード再検証済み（憶測ゼロ）。prototype_* は対象外。
+- **総括**: 依存規則（内側→外側 import 禁止）は全系統で遵守・循環なし・共有ライブラリ production の逆依存ゼロ。**DIP の徹底度は系統間で大きな格差**——simulator はポート内側所有＋合成ルート集約の模範構造、market_profile_api は境界インターフェース皆無で計算コアが I/O 具象直結。
+
+### 🔴 高（DIP 不成立・依存方向違反）
+1. **market_profile_api: 境界インターフェース全面欠落**。パッケージ全体（tests 除く）で ABC/Protocol/abstractmethod が grep 0 件（実測確認済み）。依存逆転が型契約として不成立で、差し替え・モック境界が不在。
+2. **dwell/zp 計算コアが marketdata I/O 具象へ module-level 直結**。`compute/market_profile_dwell.py:53-54`・`compute/market_profile_zp.py:52-53` が `marketdata.paths`／`marketdata.tick_m1.day_parquet_files`（parquet 列挙・読取）を直接 import（`session_day` は純業務規則で許容）。ストレージ形式・配置変更が計算コアへ二重波及。対処案: `TickWindowPort`（Output Boundary）を compute 側に定義し parquet 実装を adapter へ隔離・entry point で注入。
+
+### 🟡 中（境界欠落・責務混在・越境）
+3. **simulator report_ui が主スライスの private シンボルを越境 import**。`report_ui/tools/export_report_payload.py:18` が `from simulator.main import _ema_series, build_interactor`（Composition Root＋非公開関数へ直結）。主スライスのリファクタで無警告破壊。`contacts_export.py:18` の公開 usecase 直 import（低）も併記。
+4. **indicator_ui: データ層に Output Boundary 無し**。`adapter/compute/dataset.py:27`／`rollup_store.py:21`／`tail_reader.py:18` は marketdata 具象の別名（`sys.modules` 同一化＝`dataset.py:30`）で、抽象の縫い目ではない。usecase 層も不在で業務手順が `compute_controller.py:43-117` に収斂（Input Boundary 未形成）。なお内向き依存規則自体は py/js とも全域遵守・合成は server.py 集約で良好。
+5. **market_profile_api: 永続化 I/O が compute/controller 内に同居**。`compute/market_profile_dwell_store.py:118`・`compute/market_profile_zp_store.py:80` の npz 原子書込が compute 層内、`controller/tf_period_profile_controller.py:105,121` に日次キャッシュ read/write 直書き（実測確認済み）。
+6. **mp_stats 統計コアが simulator の adapter 具象へ直結**。`analysis/mp_stats/stats_core.py:23,27`・`step7_spa.py:37`・`step8_oos.py:27` が `simulator.adapter.validation`（HansenSpa/VarBacktests）を境界なしで import。結線も sys.path 副作用依存（`mp_stats/__init__.py:15-16`）。
+7. **指標 src（ドメイン層）が I/O ローダ直結**。`indigators/profit_band/src/loader.py:21` が `marketdata.ohlc_csv_loader` を直接 import。
+
+### 🔵 低（構造負債）
+8. **marketdata tests の simulator 逆依存**。`marketdata/tests/test_ticksource_s2.py:159,256-257,277`（production は逆依存ゼロを実証済み）。単体 CI で collection error 要因＝契約テストは利用者側へ移設が対処案。
+9. **common の計算/表示混載（SRP）**。純粋価格計算（applied_price）と表示定数（level_colors/LEVEL_LINE_WIDTH）が同一パッケージ。
+10. **sys.path 実行時 insert の残存**（指標 src 多数・`server.py:38-49`・analysis 系）＝.pth 統一が未完で結線の真実源が二重。
+11. **indicator_ui domain 層が配信経路から未配線**（`api/domain/__init__.py:6-15` 自認・production 参照ゼロ）＝空境界。controller の marketdata 直参照（`compute_controller.py:25`）と shim 経由（`candles_controller.py:12`)の経路不一致も併記。
+
+### 模範例（正の参照・今後の基準）
+- **simulator**: ポート内側所有（`usecase/ports.py:11`・`optimize_ports.py:9` 等）→ adapter 実装（`adapter/repository/ohlc_csv.py:25`）→ 合成は `main/__init__.py:27-51` 集約。domain/usecase の外側参照 0 件（実測確認済み）。replay_ui は主スライスから完全独立。
+- **marketdata**: `port.py:31-60` の `CandleSource`/`TickSource`（runtime_checkable Protocol）を `simulator/adapter/repository/marketdata_source.py:21` がポート経由で消費＝DIP の模範消費例。
+
+## ISSUE-091 追補（システム全体レベルの DIP 調査・2026-07-15）
+- **調査範囲**: サブシステム内部（本体で調査済み）に対し、今回は①パッケージ間依存グラフと契約所有権②プロセス間・データ境界（HTTP 契約・共有ファイルストア・bridge・プラグイン）。2系統並列調査＋主要指摘 8 点をメイン会話で実コード再検証済み。
+- **定量**: パッケージ間 production 代表エッジ 15 本中、抽象/契約経由 3（20%）・具象直結 12（80%）。被依存最多の marketdata への依存で安定抽象（port.py）経由は 1 エッジのみ＝**システムとして「安定抽象への依存」（SAP/SDP）は不成立**。
+- **契約所有権の判定**: 上位方針が抽象を所有する DIP 正配置は simulator 系のみ——`usecase/ports.py:47` の自前 `MarketDataPort` を `adapter/repository/marketdata_source.py:58-68` が実装し `marketdata.CandleSource`（下位公開抽象）を DI 注入＋Candle→Bar 変換（ACL）で従属させる二重ポート構造（模範）。replay_ui も自前 `CausalCandlePort`/`CausalComputePort`＋gateway 隔離で consumer 側 DIP 成立。一方 MP/indicator_ui は下位具象へ従属し自前ポート不在。`marketdata/api_contract.py` は ERROR_STATUS（error→HTTP status 表）のみの下位所有共有カーネル（2 消費者・妥当）。
+
+### 🔴 高（システム横断）
+A1. **mp_stats（上位方針）→ simulator.adapter.validation の private 直結**。`analysis/mp_stats/stats_core.py:23-27` が `_pw_block_len`／`_stationary_bootstrap_indices`（private）・`norm_cdf` を、`step7_spa.py:37` が `HansenSpa` を直接 import（実測確認済み）。別アプリの adapter 層（不安定・偶有）に統計コアが側方依存＝安定度逆転・独立変更不能。対処案: 統計プリミティブを中立の共有核（common 配下等）へ抽出し双方が依存。
+A2. **replay backend のエラー契約分岐**。`serve_replay.py` は `ERROR_STATUS` を import せず（grep 0 件・実測確認済み）、`internal` を **400** で返す（:184,328。正典 `api_contract.py` は internal→500）。全例外を `validation` へ丸め（:330）、ボディも `{error:{type,message}}` のみで正典の `ok/generation/violations` を欠く。同一エンドポイント（/compute・/market_profile）が経路により異なる契約を返す。対処案: nested error 整形を純関数として marketdata へ一元化し 3 殻（server.py・MP controller・serve_replay）が共用。
+
+### 🟡 中
+A3. **tf_period 非 zp 経路のキャッシュ世代が手書きリテラル**。`tf_period_profile_controller.py:181` は `s1` 直書き（zp 経路 :243 は `_ZP_CACHE_VERSION` 連動・実測確認済み）。アルゴリズム変更時の bump 忘れで ISSUE-089 と同型の「新旧コードが同一 JSON を相互上書き」（8000/replay 併走）が再発しうる。対処案: `_TFP_CACHE_VERSION` 定数新設・パス連動（dwell/zp と同規律）。
+A4. **replay bridge が indicator_ui 内部モジュール構成へ踏み込み**。`_indicator_ui_bridge.py:45-67` が sys.path 挿入で `adapter.compute` 内部（`latest_dispatch.full_compute` 等）と MP controller 関数を直 import。replay_ui 自体は Port＋gateway で隔離済み（consumer 側は健全）だが、import 面が indicator_ui のパス規約・私的構成に密結合。対処案: indicator_ui 側に安定公開 Facade を定義し bridge はそれのみ import。
+A5. **プラグイン契約の 4 面分散**。指標追加時に back `call_binding._TABLE`＋指標 src シグネチャ（inspect 実行時解決）＋front `catalog.js`＋`latest_meta.py` の同期が必要で、param 既定値の front/back 整合はテスト固定依存。対処案: param schema の単一情報源を `_TABLE` に置き front は取得（/catalog）へ寄せる。
+
+### 🔵 低
+A6. **HTTP schema の言語境界二重化**（JS/Python 各所ハードコード）＝構造的に不可避。ERROR_STATUS 一元化＋parity テストで現状許容（codegen 導入は現状オーバースペック）。
+A7. **tools の private import**。`tools/gen_js_parity_golden.py:26` が `market_profile._value_area` を直接参照（実測確認済み）。公開 API 昇格か controller 経由へ。
+A8. **`marketdata.port.TickSource` の抽象消費者ゼロ（YAGNI）**。本番で型注入する消費者 0・実装は Dukascopy 単一で tools は具象直呼び（実測確認済み）。MP のティック読取は port を迂回し tick_m1 直結（責務違いのため流用不可）。ingest enabler② の設計意図が現役なら条件付き維持、なければ削除候補。
+A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で担保（py_parity_golden.test.js / test_js_parity_golden_fresh.py）＝現状妥当な設計判断として記録のみ。
+
+### 総括（システム全体の DIP 判定）
+方向性（内→外 import 禁止・循環なし・共有ライブラリの逆依存ゼロ）は全域健全。しかし DIP＝「上位方針による抽象所有」が成立しているのは simulator 本体と replay_ui の consumer 側のみで、パッケージ間エッジの 80% が具象直結、プロセス間契約も ERROR_STATUS 以外は暗黙同期。**「安定への依存」は達成、「安定"抽象"への依存」は未達**が結論。優先対処は A1（安定度逆転）と A2（契約分岐）、次いで A3（ISSUE-089 同型リスクの残存）。
