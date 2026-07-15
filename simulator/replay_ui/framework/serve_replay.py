@@ -9,7 +9,9 @@
 
 CLEAN_ARCH §6: HTTP・スレッド・静的配信という偶有的技術を最外層へ隔離する。R(rpy2) 非スレッド安全
 ＋巨大 resample の OOM 回避のため重い処理を 1 本の ``_HEAVY_LOCK`` で直列化する（proto と同一方針・
-出力は不変）。例外翻訳（MemoryError→internal / それ以外→validation）も proto do_POST に一致。
+出力は不変）。エラー応答は正典契約 marketdata.api_contract（ERROR_STATUS・nested_error）に従う
+（ISSUE-091 A2: 旧 proto 由来の独自形 {error:{type,message}}・internal→400 という契約分岐を是正。
+例外翻訳は ValueError→validation / MemoryError・それ以外→internal）。
 """
 from __future__ import annotations
 
@@ -19,6 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
+
+# 正典エラー契約（ISSUE-091 A2）: status 翻訳・nested ボディとも単一定義を参照する。
+from marketdata.api_contract import nested_error
 
 from simulator.replay_ui.usecase.causal_compute import (
     CausalComputeRequest,
@@ -179,25 +184,25 @@ def make_handler(app: ReplayApp):
                     candles = app.candles(ref, tf, lim)
                     return self._json(200, {"ok": True, "candles": candles})
                 except ValueError as e:
-                    return self._json(400, {"error": {"type": "validation", "message": str(e)[:200]}})
+                    return self._json(*nested_error("validation", str(e)[:200]))
                 except Exception as e:  # noqa: BLE001
-                    return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
+                    return self._json(*nested_error("internal", str(e)[:200]))
             if u.path == "/intraday":
                 ref = (q.get("datasetRef") or ["jp225_m1"])[0]
                 try:
                     start = int(q["start"][0])
                     end = int(q["end"][0])
                 except Exception:  # noqa: BLE001
-                    return self._json(400, {"error": {"type": "validation", "message": "start/end required"}})
+                    return self._json(*nested_error("validation", "start/end required"))
                 mode = (q.get("mode") or ["real_ticks"])[0]
                 want_secs = (q.get("secs") or [None])[0] == "1"  # MP tick-live gate（secs=1 のみ）
                 try:
                     payload = app.intraday(ref, start, end, mode, want_secs=want_secs)
                     return self._json(200, payload)
                 except ValueError as e:
-                    return self._json(400, {"error": {"type": "validation", "message": str(e)[:200]}})
+                    return self._json(*nested_error("validation", str(e)[:200]))
                 except Exception as e:  # noqa: BLE001
-                    return self._json(400, {"error": {"type": "internal", "message": str(e)[:200]}})
+                    return self._json(*nested_error("internal", str(e)[:200]))
             if u.path == "/market_profile" and app.market_profile_enabled:
                 ref = (q.get("datasetRef") or [None])[0]
                 tf = (q.get("timeframe") or [None])[0]
@@ -218,7 +223,7 @@ def make_handler(app: ReplayApp):
                         frm=frm, today=today, sessions=sessions)
                     return self._json(status, payload)
                 except Exception as e:  # noqa: BLE001
-                    return self._json(500, {"error": {"type": "internal", "message": str(e)[:200]}})
+                    return self._json(*nested_error("internal", str(e)[:200]))
             if u.path == "/market_profile_forming" and app.forming_enabled:
                 ref = (q.get("datasetRef") or [None])[0]
                 tf = (q.get("timeframe") or [None])[0]
@@ -238,7 +243,7 @@ def make_handler(app: ReplayApp):
                         ref, tf, now, base, since, bins, va, barw, frm)
                     return self._json(status, payload)
                 except Exception as e:  # noqa: BLE001
-                    return self._json(500, {"error": {"type": "internal", "message": str(e)[:200]}})
+                    return self._json(*nested_error("internal", str(e)[:200]))
             return self._serve_static(u.path)
 
         @staticmethod
@@ -325,9 +330,11 @@ def make_handler(app: ReplayApp):
             try:
                 series = app.compute(body)
             except MemoryError:
-                return self._json(400, {"error": {"type": "internal", "message": "memory limit"}})
+                return self._json(*nested_error("internal", "memory limit", generation=gen))
+            except ValueError as e:
+                return self._json(*nested_error("validation", str(e)[:200], generation=gen))
             except Exception as e:  # noqa: BLE001
-                return self._json(400, {"error": {"type": "validation", "message": f"{type(e).__name__}: {str(e)[:200]}"}})
+                return self._json(*nested_error("internal", f"{type(e).__name__}: {str(e)[:200]}", generation=gen))
             self._json(200, {"ok": True, "generation": gen, "series": series})
 
     return Handler
