@@ -970,3 +970,4 @@
 - **概要**: 「グレーアウトがユーザビリティを低下させている。表示モードの項目をトップに変更して親にしろ。その下に子（パラメーター項目）を設置しろ」（依頼者指示）。
 - **実装**: ①catalog の params 順を変更し表示モード（segmented）をダイアログ先頭へ（グループ描画は params 初出順＝display 群が最上段の親・calc 群が子）②グレーアウト→非表示へ転換: dispbp は conditionalEnable（ISSUE-070 灰色化）を廃止し同述語を conditionalVisible へ（tf-period 列描画時は行ごと消える）。period は「zp×通常×対応tf のときだけ表示」の単一関数述語へ統合（旧: src で表示＋mode/tf で灰色化）③form_model.computeVisible に関数述語＋ctx 対応を追加（computeEnabled と対称）・properties_dialog._refreshVisible が ctx を透過。
 - **検証**: MP web 274・UI web 531/533 緑（catalog テストを可視述語の真理値表へ更新）。実UI（8139・1h）: 先頭行=表示モード／通常=表示幅(bp)・期間 表示／日別=表示幅(bp) 行が消滅（is-disabled ではなく display:none）／リプレイ=表示幅(bp) 表示、のモード切替追従を確認。
+- **追補（依頼者指示・calc 順序）**: 子（calc 群）の表示順を「ソース→バリューエリア→期間→表示幅(bp)」へ変更（order 1/2/3/4）。順序固定テスト追加＝UI web 532/534 緑。実UI で並びを確認。

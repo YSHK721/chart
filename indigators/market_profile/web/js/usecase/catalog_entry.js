@@ -101,7 +101,7 @@ export function makeMarketProfileDef({
       //   dwell の内部格子は絶対 10pt のまま（現在価格で約1.5bp・過去ほど粗い下限＝既知の残課題）。
       param('dispbp', ParamType.FLOAT, 3.0,
         [{ kind: ConstraintKind.MIN_VALUE, operands: ['dispbp', 1], messageKey: 'err.dispbp.min' }], null, {
-          group: 'group.calc', order: 0, label: '表示幅(bp)', step: 0.5, min: 1,
+          group: 'group.calc', order: 4, label: '表示幅(bp)', step: 0.5, min: 1,
           // ISSUE-070→081: tf-period 列描画時（列は固定生解像度＝bp が効かない）は行ごと非表示。
           conditionalVisible: _mpResolutionEnabled,
           tooltip: '価格帯 1 行の幅を価格比（bp=0.01%）で指定。1bp が下限（zp の計算格子）。値を小さくするほど精細・大きくするほど滑らか。旧「ビン/レンジ(pt)」を置換（絶対値指定は価格水準で意味が変わるため比率へ統一）',
@@ -125,7 +125,7 @@ export function makeMarketProfileDef({
       //   黙って変わり混乱するとの依頼者指摘を受け、tooltip で挙動差を明記する（選択は許容＝
       //   1分足で日別 z タイルを見る使い方は残す）。
       param('src', ParamType.ENUM, 'zp', [], ['dwell', 'zp'], {
-        group: 'group.calc', order: 4, label: 'ソース',
+        group: 'group.calc', order: 1, label: 'ソース',
         enumLabels: {
           dwell: '滞在時間(実ティック)', zp: '超過占有z(p)',
         },
@@ -146,7 +146,7 @@ export function makeMarketProfileDef({
       //   帰無（偶然の期待値/ばらつき）は窓と独立に各日の直前 NULL_HIST_DAYS 完了日から構築されるため、
       //   当日窓でも z の統計的品質は不変。通常モード×固定周期 tf（1m..1D）でのみ有効（_mpPeriodEnabled）。
       param('period', ParamType.ENUM, 'all', [], ['all', 'day'], {
-        group: 'group.calc', order: 5, label: '期間',
+        group: 'group.calc', order: 3, label: '期間',
         // ISSUE-081: zp×通常×対応 tf のときだけ表示（旧: src 条件で表示＋mode/tf 条件でグレーアウト）。
         conditionalVisible: (values, ctx) => values.src === 'zp' && _mpPeriodEnabled(values, ctx),
         enumLabels: { all: '全期間', day: '当日' },

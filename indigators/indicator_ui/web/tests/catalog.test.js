@@ -356,3 +356,11 @@ test('catalog params: existing q-chain constraints survive UI-metadata extension
 
 // 日別プロファイルは mode='sessions' へ統合済み（旧 sessions BOOL は撤去）。
 //   mode ENUM の enumLabels.sessions='日別プロファイル' 検証は上位の mode テストで担保する。
+
+// calc 群の表示順（依頼者指示 2026-07-15）: ソース → バリューエリア → 期間 → 表示幅(bp)。
+test('catalog: market_profile calc 群の order は ソース<バリューエリア<期間<表示幅(bp)', () => {
+  const d = get('market_profile');
+  const o = (n) => paramOf(d, n).order;
+  assert.ok(o('src') < o('va') && o('va') < o('period') && o('period') < o('dispbp'),
+    `src=${o('src')} va=${o('va')} period=${o('period')} dispbp=${o('dispbp')}`);
+});
