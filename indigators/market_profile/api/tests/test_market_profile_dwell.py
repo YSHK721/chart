@@ -48,6 +48,20 @@ def _isolate_caches(tmp_path, monkeypatch):
     mpd._reset_caches()
 
 
+def _pin_legacy_table(monkeypatch, secs=None):
+    """ISSUE-089 後方互換ピン: 旧セマンティクス（窓ティックから構築した単一表）を固定する。
+
+    _table_for_day（日アンカー表＝追加の _load_window_ticks を発行する）を差し替え、
+    ①シナリオの表期待値を従来どおりに保つ ②loader スパイの呼数/最古日検証を汚さない。
+    表そのものの検証は TestActiveTableWindowKeyedMemo が担う。
+    """
+    if secs is not None and len(secs):
+        table = mpd._build_active_table(np.asarray(secs, dtype=np.int64))
+    else:
+        table = np.ones((7, 24), dtype=bool)
+    monkeypatch.setattr(mpd, "_table_for_day", lambda _s, _d: table)
+
+
 def _make_loader(master_secs, master_mids):
     """master 配列を [start, end) にフィルタして (secs, mids) を返す _load_window_ticks 代替。"""
     s = np.asarray(master_secs, dtype=np.int64)
@@ -148,6 +162,7 @@ class TestComputeDwellProfile:
     def _run(self, monkeypatch):
         secs, mids = _synthetic_master()
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        _pin_legacy_table(monkeypatch, secs)
         return mpd.compute_dwell_profile(
             "JP225", _DAY0, _DAY0 + 2 * _DAY, 990.0, 1110.0, 12, va_pct=0.70, bar_sec=_DAY
         )
@@ -191,6 +206,7 @@ class TestComputeDwellProfile:
             return base_loader(symbol, start, end)
 
         monkeypatch.setattr(mpd, "_load_window_ticks", _spy)
+        _pin_legacy_table(monkeypatch, secs)  # ISSUE-089: 表構築の追加 load をスパイから排除。
         # t0 を旧キャップ(250日)を超える過去に置く（300日窓）。
         t1 = _DAY0 + 2 * _DAY
         far_t0 = t1 - 300 * _DAY
@@ -217,6 +233,7 @@ class TestDayRollupCaching:
             return base(symbol, start, end)
 
         monkeypatch.setattr(mpd, "_load_window_ticks", _spy)
+        _pin_legacy_table(monkeypatch)  # ISSUE-089: 表構築の追加 load を呼数検証から排除。
         return calls
 
     def test_completed_day_is_cached(self, monkeypatch):
@@ -354,6 +371,7 @@ class TestDiskCache:
             lambda s, a, b: (calls.append((a, b)), base(s, a, b))[1],
         )
         table = np.ones((7, 24), dtype=bool)
+        _pin_legacy_table(monkeypatch)
         day = _DAY0
         now = day + _DAY + 1
 
@@ -378,6 +396,7 @@ class TestDiskCache:
             lambda s, a, b: (calls.append((a, b)), base(s, a, b))[1],
         )
         table = np.ones((7, 24), dtype=bool)
+        _pin_legacy_table(monkeypatch)
         got = mpd._day_rollup("JP225", day, table, day + _DAY + 1)
 
         assert len(calls) == 1        # 破損を無視して再計算。
@@ -418,6 +437,7 @@ class TestCacheInvalidation:
             lambda s, a, b: (calls.append((int(a), int(b))), base(s, a, b))[1],
         )
         monkeypatch.setattr(mpd, "_day_source_signature", lambda s, d: "ticks:123:456")
+        _pin_legacy_table(monkeypatch)
 
         # 3) 署名変化 → disk の空を信用せず再計算する。
         got = mpd._day_rollup("JP225", day, np.ones((7, 24), dtype=bool), now)
@@ -830,6 +850,7 @@ class TestControllerDwellFullPeriod:
             mpd, "_load_window_ticks",
             lambda s, a, b: (calls.append((int(a), int(b))), (mpd._EMPTY_SECS, mpd._EMPTY_MIDS))[1],
         )
+        _pin_legacy_table(monkeypatch)  # ISSUE-089: 表構築の追加 load を最古日検証から排除。
         handle_market_profile("jp225_tick", timeframe="1D", src="dwell")
 
         earliest = min(a for a, _ in calls)
@@ -960,6 +981,7 @@ class TestComputeDwellProfileSessions:
     def _boundary_sessions(self, monkeypatch, metric):
         secs, mids = _synthetic_master()
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        _pin_legacy_table(monkeypatch, secs)  # ISSUE-089: 旧セマンティクスの表を固定。
         out = mpd.compute_dwell_profile(
             "JP225", self._BOUNDARY_T, self._BOUNDARY_T, 900.0, 1200.0, 30,
             va_pct=0.70, bar_sec=_DAY, metric=metric, now=_DAY0 + 10 * _DAY,
@@ -1114,3 +1136,68 @@ class TestSessionDaySplit:
         assert not path.is_file(), "セッション未了は永続化しない"
         mpd._day_rollup("JP225", self.MON_START, table, now=self.MON_START + 86400)
         assert path.is_file(), "セッション完了で永続化する"
+
+
+class TestActiveTableWindowKeyedMemo:
+    """ISSUE-089: _active_table のメモは窓（at_from/win_to）をキーに含める。
+
+    旧実装は symbol のみキー（先勝ち）で、プロセス内で最初に触った要求の窓のテーブルが
+    以後の全要求へ流用され、境界日 partial・新規日 npz へ**プロセス履歴依存**の値が焼き込まれて
+    いた（byte-parity golden が数時間で再赤化した真因）。窓が異なれば別テーブルを構築すること。
+    """
+
+    def test_different_windows_build_different_tables(self, monkeypatch):
+        import numpy as np
+        import market_profile_api.compute.market_profile_dwell as mpd
+
+        mpd._reset_caches()
+
+        def fake_ticks(symbol, start, end):
+            # 窓 A（end<=1000）: 月曜 0 時台のみ活発 / 窓 B: 火曜 1 時台のみ活発、を模す
+            #   1970-01-05 が月曜。月曜0時 = 4*86400 + 0h、火曜1時 = 5*86400 + 1h。
+            if int(end) <= 1000 * 86400:
+                base = 4 * 86400
+            else:
+                base = 5 * 86400 + 3600
+            secs = np.arange(base, base + 3600, 10, dtype=np.int64)
+            return secs, np.full(secs.shape, 100.0)
+
+        monkeypatch.setattr(mpd, "_load_window_ticks", fake_ticks)
+        t_a = mpd._active_table("JP225", 0, 999 * 86400)
+        t_b = mpd._active_table("JP225", 0, 2000 * 86400)
+        assert not np.array_equal(t_a, t_b), "窓が異なれば別テーブル（先勝ちメモの禁止）"
+        # 同一窓は再構築しない（メモは窓キーで効く）。
+        calls = []
+        monkeypatch.setattr(mpd, "_load_window_ticks",
+                            lambda *a: calls.append(1) or fake_ticks(*a))
+        t_a2 = mpd._active_table("JP225", 0, 999 * 86400)
+        assert np.array_equal(t_a, t_a2) and not calls, "同一窓はメモヒット"
+        mpd._reset_caches()
+
+    def test_day_rollup_table_is_anchored_to_days_month(self, monkeypatch):
+        """ISSUE-089: 日次ロールアップの active table は「その日の属する月初」アンカー
+        （[月初-120日, 月初)＝日の純関数・因果）で構築し、リクエスト窓 t1 に依存しない。"""
+        import numpy as np
+        import market_profile_api.compute.market_profile_dwell as mpd
+
+        mpd._reset_caches()
+        seen = []
+        real = mpd._active_table
+
+        def spy(symbol, at_from, win_to):
+            seen.append((int(at_from), int(win_to)))
+            return np.ones((7, 24), dtype=bool)
+
+        monkeypatch.setattr(mpd, "_active_table", spy)
+        monkeypatch.setattr(mpd, "_load_window_ticks",
+                            lambda s, a, b: (np.array([], dtype=np.int64), np.array([])))
+        # now=0（未完了扱い）でディスク経路を回避し、計算経路の表アンカーのみを観測する。
+        from datetime import datetime, timezone
+        from marketdata.session_day import session_day_start
+        day = session_day_start(int(datetime(2026, 6, 5, 12, tzinfo=timezone.utc).timestamp()))
+        month_start = int(datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp())
+        mpd._day_rollup("JP225", day, None, now=0)
+        assert seen and seen[-1] == (month_start - 120 * 86400, month_start), \
+            "日次表は月初アンカー（リクエスト非依存）"
+        mpd._reset_caches()
+        monkeypatch.setattr(mpd, "_active_table", real)

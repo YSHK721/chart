@@ -34,6 +34,20 @@ from market_profile_api.controller.market_profile_forming_controller import (
 
 _GOLDEN_PATH = Path(__file__).resolve().parent / "fixtures" / "mp_byte_parity_golden.jsonl"
 
+# ISSUE-089: jp225_tick 系ケースは決定論の合成世界（mp_parity_world）で固定する。
+#   実 jp225_tick は 1m 原子ストアのローリング保持で窓左端が動き byte 固定不能（実測）。
+#   sample 系は静的データセットのため実物のまま。regen ツールと同一の注入器を共有する。
+import pytest
+
+import mp_parity_world
+
+
+@pytest.fixture(autouse=True)
+def _parity_world(monkeypatch):
+    mp_parity_world.apply(monkeypatch.setattr)
+    yield
+
+
 
 def _load_golden() -> list[dict]:
     return [json.loads(line) for line in _GOLDEN_PATH.read_text().splitlines() if line.strip()]

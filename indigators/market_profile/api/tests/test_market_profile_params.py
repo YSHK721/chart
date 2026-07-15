@@ -73,6 +73,9 @@ class TestComputeCountProfile:
     def _run(self, monkeypatch, metric):
         secs, mids = _synthetic_master()
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        # ISSUE-089: 表は旧セマンティクス（窓ティック由来）を固定（表仕様の検証は dwell テスト側）。
+        table = mpd._build_active_table(np.asarray(secs, dtype=np.int64))
+        monkeypatch.setattr(mpd, "_table_for_day", lambda _s, _d: table)
         return mpd.compute_dwell_profile(
             "JP225", _DAY0, _DAY0 + 2 * _DAY, 990.0, 1110.0, 12,
             va_pct=0.70, bar_sec=_DAY, metric=metric,
@@ -116,6 +119,9 @@ class TestComputeCountProfile:
         # metric 省略時は dwell（既存挙動）。COLD は 0。
         secs, mids = _synthetic_master()
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
+        # ISSUE-089: 表は旧セマンティクス（窓ティック由来）を固定。
+        table = mpd._build_active_table(np.asarray(secs, dtype=np.int64))
+        monkeypatch.setattr(mpd, "_table_for_day", lambda _s, _d: table)
         profile = mpd.compute_dwell_profile(
             "JP225", _DAY0, _DAY0 + 2 * _DAY, 990.0, 1110.0, 12, bar_sec=_DAY
         )
