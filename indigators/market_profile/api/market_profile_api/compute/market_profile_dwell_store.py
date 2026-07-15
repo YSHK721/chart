@@ -73,12 +73,16 @@ class DwellRollupStore:
         return self._default_root_provider()
 
     def cache_path(self, symbol: str, day_start: int) -> _Path:
-        """日別ロールアップの保存パス ``<root>/<symbol>/g<grid_w>/<day_start>.npz``。
+        """日別ロールアップの保存パス ``<root>/<symbol>/v<version>/g<grid_w>/<day_start>.npz``。
 
-        キーに symbol・grid_w・day_start を含め混線を防ぐ。grid_w を分岐に含めるため、グリッド幅変更時は
-        別ディレクトリとなり旧キャッシュと識別される。
+        キーに symbol・version・grid_w・day_start を含め混線を防ぐ。
+        ISSUE-089: version をパスへ含める。旧レイアウト（g<grid_w> 直下）は版数を npz メタでしか
+        持たず、新旧コードのプロセスが併走すると**同一ファイルを異版で書き合う**（旧 8000 サーバと
+        新プロセスの間で実際に発生＝byte-parity 再赤化の直接原因）。版数ディレクトリ分離で
+        世代間のファイル奪い合いを構造的に排除する（旧世代 dir は GC ツールの孤児対象）。
         """
-        return self.cache_root() / str(symbol) / f"g{self._grid_w:g}" / f"{int(day_start)}.npz"
+        return (self.cache_root() / str(symbol) / f"v{self._cache_version_provider()}"
+                / f"g{self._grid_w:g}" / f"{int(day_start)}.npz")
 
     # ------------------------------------------------------------------ #
     # 保存 / 読込（.npz・原子的・fail-safe）
