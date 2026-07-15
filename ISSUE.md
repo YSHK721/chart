@@ -964,3 +964,9 @@
 - **実装**: ①catalog: src param に optionEnable 述語（ENUM option 単位の無効化機構を新設・param factory/form_model/properties_dialog._refreshEnabled へ透過）＝日別×1m/5m で zp option を灰色化（mode/timeframe に動的追従）。tooltip を「選択不可」文言へ更新 ②actor.refresh: 実行時ガード（時間足切替で事後に zp×日別×1m/5m へ到達した場合、fetch も描画もせず表示クリア・ローソク可視維持）＝重い全期間フォールバック fetch も消滅 ③ブロック集合 MP_ZP_SESSIONS_BLOCKED_TFS を catalog_entry で単一定義（actor と共有）。
 - **検証**: MP web 274・UI web 530/532 緑（TDD Red 2件→Green）。実UI（8139）: 日別×1分で zp option が disabled・通常へ戻すと再有効化（動的）／日足で zp×日別適用→1分へ切替で zp/sessions フェッチ 0 件・タイル非表示・ローソク可視をネットワーク＋スクショ確認。
 - **追補（依頼者指摘「デフォルト src=zp のまま選択されている」）**: 選択中 option が無効化された場合に灰色のまま選択が残る問題を修正＝最初の有効 option（滞在時間）へ**ダイアログ上で可視に自動切替**（黙った代替ではない・通常へ戻しても値は勝手に戻らない＝ユーザー操作尊重）。保存済みの無効組合せ（zp×日別×1m）も gear を開いた瞬間に是正される。テスト1件追加＝UI web 531/533 緑。実UI確認済み。
+
+## ISSUE-081: gear の親子構造化（表示モードを先頭の親に・子は非表示切替でグレーアウト廃止）
+- **ステータス**: RESOLVED（2026-07-15）
+- **概要**: 「グレーアウトがユーザビリティを低下させている。表示モードの項目をトップに変更して親にしろ。その下に子（パラメーター項目）を設置しろ」（依頼者指示）。
+- **実装**: ①catalog の params 順を変更し表示モード（segmented）をダイアログ先頭へ（グループ描画は params 初出順＝display 群が最上段の親・calc 群が子）②グレーアウト→非表示へ転換: dispbp は conditionalEnable（ISSUE-070 灰色化）を廃止し同述語を conditionalVisible へ（tf-period 列描画時は行ごと消える）。period は「zp×通常×対応tf のときだけ表示」の単一関数述語へ統合（旧: src で表示＋mode/tf で灰色化）③form_model.computeVisible に関数述語＋ctx 対応を追加（computeEnabled と対称）・properties_dialog._refreshVisible が ctx を透過。
+- **検証**: MP web 274・UI web 531/533 緑（catalog テストを可視述語の真理値表へ更新）。実UI（8139・1h）: 先頭行=表示モード／通常=表示幅(bp)・期間 表示／日別=表示幅(bp) 行が消滅（is-disabled ではなく display:none）／リプレイ=表示幅(bp) 表示、のモード切替追従を確認。

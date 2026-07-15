@@ -151,12 +151,17 @@ export function computeEnabled(def, values = {}, context = {}) {
 // conditionalVisible.when（{param,equals}）が偽のとき非表示（hidden）。未指定は常時 visible。
 // 静的除外（uiVisible===false）は buildFormModel が担い、本関数は動的トグルを担う（併存）。
 // 用途: market_profile の bins は resmode==bins のとき表示 / range は resmode==range のとき表示（解像度トグル）。
-export function computeVisible(def, values = {}) {
+export function computeVisible(def, values = {}, context = null) {
   const visible = {};
   for (const pdef of def.params ?? []) {
     const cond = pdef.conditionalVisible;
     if (cond === null || cond === undefined) {
       visible[pdef.name] = true;
+      continue;
+    }
+    // ISSUE-081: 関数述語 (values, ctx)->bool を受理（computeEnabled と対称・ctx=timeframe 等）。
+    if (typeof cond === 'function') {
+      visible[pdef.name] = !!cond(values, context);
       continue;
     }
     const { param, equals } = cond.when;

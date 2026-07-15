@@ -728,7 +728,7 @@ export class PropertiesDialog {
   //   （隠れた bins が既定 60 のままなら妥当だが、空値等でも OK を阻害させないため・トグル安全化）。
   _revalidate() {
     const { violations } = validateForm(this._def, this._values);
-    const visible = computeVisible(this._def, this._values);
+    const visible = computeVisible(this._def, this._values, this._context);
     // 非表示フィールドの違反は表示せず OK も阻害しない。
     const effective = violations.filter((v) => visible[v.param] !== false);
     // 全フィールドのエラー表示をクリア。
@@ -807,7 +807,7 @@ export class PropertiesDialog {
   //   _refreshEnabled（グレーアウト）と対称の動的経路。range を変えた瞬間に「ビン」行が出没する。
   //   静的除外（uiVisible===false）は buildFormModel が担い、本メソッドは動的トグルのみ担う。
   _refreshVisible() {
-    const visible = computeVisible(this._def, this._values);
+    const visible = computeVisible(this._def, this._values, this._context);
     for (const [name, els] of this._fieldEls) {
       const on = visible[name] !== false;
       els.row.style.display = on ? '' : 'none';
