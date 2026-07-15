@@ -446,3 +446,25 @@ test('bootstrap: メイン系列は現在値ラインを固定色で常時表示
   assert.ok(main.priceLineColor.length > 0, '固定色が空でない');
   assert.equal(main.lastValueVisible, true, '価格軸の現在値ラベルも表示する');
 });
+
+test('bootstrap: 時間足切替で tf-period 列を即時再適用する（旧 tf 列の残留防止・ISSUE-090）', async () => {
+  // 実機バグ（依頼者報告）: 週→日→週 のように可視レンジが変わらない tf 切替では
+  //   visibleTimeRangeChange が発火せず、旧 tf の列（日次）が週足チャートへ残留して
+  //   週間隔÷7 の細い列に見えた。tf 切替オブザーバから refreshTfPeriodNow を明示発火する。
+  const { lwc } = fakeLwcFireable();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  const { marketProfile, tfPeriodActor, controller, ready } = await bootstrap({
+    lwc, container: fakeContainer(), doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+  });
+  await ready;
+  marketProfile.setParams({ mode: 'sessions' });
+  await marketProfile.setEnabled(true);
+  tfPeriodActor.setEnabled(true);
+  let refreshes = 0;
+  const origSetEnabled = tfPeriodActor.setEnabled.bind(tfPeriodActor);
+  tfPeriodActor.setEnabled = (on) => { if (on) refreshes += 1; return origSetEnabled(on); };
+  // 時間足切替（observer 経由）→ tf-period が即時 setEnabled(true)（=refresh/ensure）される。
+  controller._timeframe = '1W';
+  controller._timeframeObserver && controller._timeframeObserver('1W');
+  assert.ok(refreshes >= 1, 'tf 切替で tf-period を即時再適用する');
+});

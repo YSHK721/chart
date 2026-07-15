@@ -9678,7 +9678,13 @@ async function bootstrap({
   // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
   //   初期時間足を反映し、以降は controller の時間足購読で連動する。
   tradeMarkers.setCurrentTimeframe(timeframe);
-  controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
+  controller.setTimeframeObserver((tf) => {
+    tradeMarkers.setCurrentTimeframe(tf);
+    // ISSUE-090: tf 切替で tf-period 列を即時再適用する。従来は可視レンジ変化イベント頼みで、
+    //   レンジが変わらない切替（週→日→週 等）では旧 tf の列が残留し「週間隔÷7 の細い列」に
+    //   見える実機バグ（依頼者報告）が起きた。refreshTfPeriodNow は非対応状態なら列を消す。
+    refreshTfPeriodNow();
+  });
 
   // ライブ追従トグル（present 固有）。B方式（mode==='b'）のみ配線する。install() でボタン click＋
   //   可視範囲購読を配線し、初期 FOLLOW を適用（LiveUpdater 起動所有権を controller へ・start は冪等）。
