@@ -1047,3 +1047,13 @@
   1. 🟡-1: byte-parity golden を再生成スクリプト（tools/regen_mp_byte_parity_golden.py・クエリ集合不変）で現行データ基準へ更新。既知 10 件（データドリフト 8＋ISSUE-078 設計変更の dwell 2）のみ更新され 27/27 緑＝CI 承認条件を回復。
   2. 🔵-1: 週/月ラベル×resample 一致テストへ米 DST 切替区間（2026春・2025秋）を追加 🔵-2: jitter buffer refreshAt の finally を tf/src 世代照合（交差削除防止）🔵-3: tf-period zp ディスク世代を _ZP_CACHE_VERSION 連動（s3/zp→s3/zp-v3）🔵-4: _DAY_MEM 256→1024 🔵-5: next_period_label（年跨ぎ・閏2月）・_bucket_completed 境界の単体テスト追加。
 - **検証**: marketdata 146・MP api 229＋byte-parity 27・UI api 386・MP web 287・UI web 533/535 全緑（既知2件除く）。実UI（8139）: /candles・/forming_bar・1W zp 列の応答正常・30分ボタン追加動作・コンソールエラーなし。
+
+## ISSUE-087 追補（🟡-3 完了・キャッシュ実削除実施・2026-07-15 依頼者承認）
+- **sys.path 正規化**: venv site-packages への .pth 登録（tools/install_dev_paths.py・editable install は venv に setuptools 不在＋オフラインのため不採用＝site 標準機構で代替）。固有名パッケージ（marketdata/market_profile_api）を全プロセスで恒久解決し、ライブラリ 8 ファイル（marketdata 2・indicator_ui adapter/compute 5・MP dwell 1）から実行時 insert を撤去。entry（server.py・replay bridge）は自スライスの汎用名パッケージ（adapter 等＝スライス間で名前衝突するため .pth 不可）のみ結線し、.pth 未登録環境へのフォールバック（自己完結起動）を温存。検証: PYTHONPATH なし pytest 386 緑・env -i サーバー起動と /candles・/market_profile・/tf_period_profile 応答確認。
+- **キャッシュ孤児削除**: tools/cache_gc.py --delete 実行（179MB・16 エントリ→孤児ゼロ確認）。バックアップ類（rollups_backup_utc20260714 等）は対象外のまま（禁止事項）。
+
+## ISSUE-089: byte-parity golden が数時間で再赤化＝応答への実時刻依存の混入（レビュー診断の更正）
+- **ステータス**: OPEN（2026-07-15 起票・調査着手は依頼者裁定待ち）
+- **実測**: ISSUE-088 で golden 再生成（27/27 緑）した数時間後、同一固定クエリ（to=1780666320 固定・過去窓）の dwell/m1/forming 6 件が再び不一致。同一プロセスで dwell profile の同一 price の tpo が 2431→1754 へ変化＝**過去窓固定でも応答が現在時刻/現在データに依存**している。
+- **含意**: ①ISSUE-088 🟡-1 の「parquet データドリフト」診断は不完全（過去ティック不変は実証済み＝ドリフトでは説明不能）②golden 再生成では恒久解決しない ③to= は replay の as-seen-at-t 窓であり、現在データが過去時点の応答へ影響するなら**因果リーク（未来参照）の疑い**＝replay 検証の信頼性に関わる。
+- **対処案（裁定待ち）**: (a) 依存経路の特定（レンジ導出・active table・正規化のどこが now を参照するか実測）→ 因果リークなら修正 (b) byte-parity は合成データ注入でデータ/時刻非依存化。
