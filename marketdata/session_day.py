@@ -98,3 +98,62 @@ def session_day_starts(ts: "np.ndarray") -> "np.ndarray":
     b = np.asarray(bounds, dtype=np.int64)
     idx = np.searchsorted(b, arr.astype(np.int64), side="right") - 1
     return b[idx]
+
+
+# --------------------------------------------------------------------------- #
+# 週/月バケットのラベル規約（ISSUE-086: 全時間足パラメータ統一）
+#   規約源は marketdata.resample の 1W='W-FRI'（週= [土..金] ブローカー日・ラベル=金曜）と
+#   1M='ME'（ラベル=暦月末日）。ここではブローカー暦日の算術のみで同値を実装し、
+#   参照実装（resample_ohlc_tf）とのラベル一致はテストで担保する。
+# --------------------------------------------------------------------------- #
+def session_period_label(tf: str, t: "int | float") -> str:
+    """``t`` が属するセッション日の 1W/1M バケットラベル 'YYYY-MM-DD' を返す。
+
+    1W: 同ブローカー週（土..金）の金曜。1D バーの W-FRI resample ラベルと一致する。
+    1M: 同ブローカー月の暦月末日（ME ラベル）。tf は '1W'|'1M' のみ（他は ValueError）。
+    """
+    b = _broker_date(t)
+    if tf == "1W":
+        lab = b + timedelta(days=(4 - b.weekday()) % 7)  # Mon=0..Fri=4: 次の金曜（金曜は自身）。
+    elif tf == "1M":
+        nxt = (b.replace(day=1) + timedelta(days=32)).replace(day=1)
+        lab = nxt - timedelta(days=1)
+    else:
+        raise ValueError(f"session_period_label: 1W|1M のみ対応: {tf!r}")
+    return lab.strftime("%Y-%m-%d")
+
+
+def period_session_labels(tf: str, label: str) -> "list[str]":
+    """バケットラベル → 当該バケットに属する全ブローカー暦日ラベル（昇順）を返す。
+
+    1W: [ラベル金曜-6日（土）.. ラベル金曜] の 7 日。1M: [1日 .. 月末日]。
+    休場日もラベルとしては列挙する（データ有無は呼び出し側の日次計算が空で吸収する）。
+    """
+    y, m, d = (int(x) for x in str(label).split("-"))
+    end = datetime(y, m, d).date()
+    if tf == "1W":
+        first = end - timedelta(days=6)
+    elif tf == "1M":
+        first = end.replace(day=1)
+    else:
+        raise ValueError(f"period_session_labels: 1W|1M のみ対応: {tf!r}")
+    out = []
+    cur = first
+    while cur <= end:
+        out.append(cur.strftime("%Y-%m-%d"))
+        cur += timedelta(days=1)
+    return out
+
+
+def next_period_label(tf: str, label: str) -> str:
+    """バケットラベル → 次バケットのラベル（1W: +7日 / 1M: 翌月末）。"""
+    y, m, d = (int(x) for x in str(label).split("-"))
+    cur = datetime(y, m, d).date()
+    if tf == "1W":
+        nxt = cur + timedelta(days=7)
+    elif tf == "1M":
+        first_next = (cur.replace(day=1) + timedelta(days=32)).replace(day=1)
+        nxt = (first_next + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    else:
+        raise ValueError(f"next_period_label: 1W|1M のみ対応: {tf!r}")
+    return nxt.strftime("%Y-%m-%d")
