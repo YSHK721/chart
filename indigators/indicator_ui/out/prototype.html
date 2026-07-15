@@ -8825,7 +8825,11 @@ class TfPeriodJitterBuffer {
       }
       return true;
     } finally {
-      this._refreshing.delete(cs);
+      // ISSUE-088 🔵-2: 取得中に tf/src が変わった場合、_refreshing は _resetIfKeyChanged が
+      //   clear 済み＝新世代の同一 chunkStart エントリを誤削除しない（世代照合）。
+      if (tf === this._tf && src === this._src) {
+        this._refreshing.delete(cs);
+      }
     }
   }
 

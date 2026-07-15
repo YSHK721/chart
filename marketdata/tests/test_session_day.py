@@ -177,7 +177,21 @@ class TestSessionPeriodLabels:
         from marketdata.resample import resample_ohlc_tf
         from marketdata.session_day import session_period_label
 
-        idx = pd.date_range("2026-06-01", "2026-07-14", freq="1min")
+        # ISSUE-088 🔵-1: 通常区間に加え、米 DST 切替（2026-03-08 春・2025-11-02 秋）を跨ぐ区間も検定。
+        ranges = [
+            ("2026-06-01", "2026-07-14"),
+            ("2026-02-20", "2026-03-20"),  # 春切替（23h セッション日を含む週/月）
+            ("2025-10-20", "2025-11-20"),  # 秋切替（25h セッション日を含む週/月）
+        ]
+        for start, end in ranges:
+            self._assert_range(start, end)
+
+    def _assert_range(self, start: str, end: str) -> None:
+        import pandas as pd
+        from marketdata.resample import resample_ohlc_tf
+        from marketdata.session_day import session_period_label
+
+        idx = pd.date_range(start, end, freq="1min")
         df = pd.DataFrame(
             {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1},
             index=idx,
@@ -187,4 +201,15 @@ class TestSessionPeriodLabels:
             ref_labels = {ts.strftime("%Y-%m-%d") for ts in bars.index}
             secs = idx.values.astype("datetime64[s]").astype("int64")  # 単位非依存の秒化。
             mine = {session_period_label(tf, int(s)) for s in secs[:: 60 * 12]}
-            assert mine == ref_labels, f"{tf}: {sorted(mine)} != {sorted(ref_labels)}"
+            assert mine == ref_labels, f"{tf} [{start}..{end}]: {sorted(mine)} != {sorted(ref_labels)}"
+
+
+    def test_next_period_label_year_cross_and_feb(self):
+        """ISSUE-088 🔵-5: 翌バケットラベル（1W=+7日 / 1M=翌月末・年跨ぎ/閏 2 月）。"""
+        from marketdata.session_day import next_period_label
+
+        assert next_period_label("1W", "2026-12-25") == "2027-01-01"
+        assert next_period_label("1M", "2026-12-31") == "2027-01-31"
+        assert next_period_label("1M", "2026-01-31") == "2026-02-28"
+        assert next_period_label("1M", "2028-01-31") == "2028-02-29"  # 閏年。
+        assert next_period_label("1M", "2026-03-31") == "2026-04-30"

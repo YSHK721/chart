@@ -69,7 +69,7 @@ _ZP_TF_ALLOWED = ("15m", "30m", "1h", "4h", "1D", "1W", "1M")  # ISSUE-086: 1W/1
 #   高速化する。窓端がずれても日粒度でヒットする（窓単位キャッシュより頑健）。副次効果として、同一日を
 #   常に同じ日内 unit で量子化する＝ローリングで窓ごとに unit が揺れて同一日の描画が変わる現行の不整合も解消。
 #   メモリはホット層（有界 LRU）、ディスクは JSON で跨プロセス永続（dwell の日別ディスクキャッシュと同方針）。
-_DAY_MEM_MAX = 256  # メモリ LRU 上限（日エントリ数）。5m の 1 日は数百列で数百 KB になり得るため有界化。
+_DAY_MEM_MAX = 1024  # ISSUE-088 🔵-4: 1M バケット（当月~22日次）×年単位スクロールでの LRU スラッシュ回避（旧 256）。  # メモリ LRU 上限（日エントリ数）。5m の 1 日は数百列で数百 KB になり得るため有界化。
 _DAY_MEM: "OrderedDict[tuple, tuple]" = OrderedDict()  # (symbol, tf, day_start) -> (unit, columns)。完了日のみ。
 
 # ディスクキャッシュ根。None=既定（DATA_DIR/cache/tf_period）。False=ディスク無効（テスト隔離用）。
@@ -240,7 +240,7 @@ def _day_columns_zp(
     day_end = next_session_day_start(day_start)  # ISSUE-078。
     completed = day_end <= now_val
     key = (symbol, tf, day_start, "zp")
-    disk_tf = f"{tf}/s3/zp"  # ISSUE-085: VA 修正世代 s3（s2 は _value_area int 切り捨てバグの VA を含む）。
+    disk_tf = f"{tf}/s3/zp-v{_zp._ZP_CACHE_VERSION}"  # ISSUE-085: VA 修正世代 s3。ISSUE-088 🔵-3: zp 内部世代（_ZP_CACHE_VERSION）へ連動（bump 時の陳腐値配信を防ぐ）。
     if completed:
         hit = _DAY_MEM.get(key)
         if hit is not None:
@@ -474,7 +474,7 @@ def _bucket_columns_zp(
     bar_time = _label_midnight(label)
     completed = _bucket_completed(tf, label, now_val)
     key = (symbol, tf, bar_time, "zp")
-    disk_tf = f"{tf}/s3/zp"
+    disk_tf = f"{tf}/s3/zp-v{_zp._ZP_CACHE_VERSION}"  # ISSUE-088 🔵-3: zp 内部世代へ連動。
     if completed:
         hit = _DAY_MEM.get(key)
         if hit is not None:
