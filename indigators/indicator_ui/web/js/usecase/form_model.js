@@ -63,14 +63,20 @@ function pickFieldMeta(pdef) {
 }
 
 // 1 ParamDef を FieldDesc へ変換（初期値は currentParams 優先→default フォールバック）。
+//   ENUM は enumValues に無い保存値（撤去済み選択肢：ISSUE-082 の mode='replay' 等）を default へ
+//   フォールバックする（アクティブ表示無しのセグメント/選択不能値をダイアログへ持ち込まない）。
 function paramToField(pdef, currentParams) {
   const hasCurrent = Object.prototype.hasOwnProperty.call(currentParams, pdef.name);
+  let value = hasCurrent ? currentParams[pdef.name] : pdef.default;
+  if (Array.isArray(pdef.enumValues) && pdef.enumValues.length > 0 && !pdef.enumValues.includes(value)) {
+    value = pdef.default;
+  }
   return {
     name: pdef.name,
     // label 直接指定（日本語）優先 → labelKey → 既定 label.<name>。
     label: pdef.label ?? pdef.labelKey ?? `label.${pdef.name}`,
     controlType: resolveControlType(pdef),
-    value: hasCurrent ? currentParams[pdef.name] : pdef.default,
+    value,
     default: pdef.default,
     constraints: pdef.constraints ?? [],
     ...pickFieldMeta(pdef),

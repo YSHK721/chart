@@ -411,7 +411,6 @@ html, body {
     </div>
     <!-- Market Profile リプレイバーのホスト（既定空＝バーは replay=ON で動的生成・表示）。
          チャート下部に配置し、MP のリプレイ ON 時に ◀リプレイ ラベル + スライダ + 日時ラベルを差し込む。 -->
-    <div id="mp-replay-bar-host"></div>
   </div>
 
   <!-- ダイアログ：サイドバー(カテゴリ) + 上部タブ + 検索 + 指標一覧 -->
@@ -1215,12 +1214,16 @@ function makeMarketProfileDef({
       //     成長エンジン（_enterTicklive/forming/DwellAccumulator）は grow 軸で存続（表示選択肢のみ削除）。
       //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
       //   order は旧 replay の位置（1）＝表示系 group の先頭。
-      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
+      // ISSUE-082（依頼者指示 2026-07-15）: リプレイモードは present（本指標）から撤去。
+      //   リプレイ機構（actor の setReplayCursor/replay bar 等）は replay_ui（別アプリ）が依存する
+      //   共有資産のため温存し、本 catalog の選択肢と composition の配線のみを撤去する。
+      //   保存済み mode='replay'／legacy replay:true は controller._deriveMode が 'normal' へ正規化。
+      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'sessions'], {
         group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
         enumLabels: {
-          normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル',
+          normal: '通常', sessions: '日別プロファイル',
         },
-        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
+        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
       }),
       // dispbp: 表示幅（bp・価格比 1bp=0.01%・FLOAT 自由入力・ISSUE-079 依頼者承認 2026-07-15）。
       //   旧 解像度トグル（resmode）＋ビン（bins）＋レンジpt（range）を**一本化**して置換する。
@@ -3323,14 +3326,20 @@ function pickFieldMeta(pdef) {
 }
 
 // 1 ParamDef を FieldDesc へ変換（初期値は currentParams 優先→default フォールバック）。
+//   ENUM は enumValues に無い保存値（撤去済み選択肢：ISSUE-082 の mode='replay' 等）を default へ
+//   フォールバックする（アクティブ表示無しのセグメント/選択不能値をダイアログへ持ち込まない）。
 function paramToField(pdef, currentParams) {
   const hasCurrent = Object.prototype.hasOwnProperty.call(currentParams, pdef.name);
+  let value = hasCurrent ? currentParams[pdef.name] : pdef.default;
+  if (Array.isArray(pdef.enumValues) && pdef.enumValues.length > 0 && !pdef.enumValues.includes(value)) {
+    value = pdef.default;
+  }
   return {
     name: pdef.name,
     // label 直接指定（日本語）優先 → labelKey → 既定 label.<name>。
     label: pdef.label ?? pdef.labelKey ?? `label.${pdef.name}`,
     controlType: resolveControlType(pdef),
-    value: hasCurrent ? currentParams[pdef.name] : pdef.default,
+    value,
     default: pdef.default,
     constraints: pdef.constraints ?? [],
     ...pickFieldMeta(pdef),
@@ -4799,14 +4808,15 @@ class IndicatorController {
   //   - mode も legacy キーも無い旧インスタンスは null（mode を付与しない＝actor 既定=通常）。
   _deriveMode(p = {}) {
     if (p.mode != null) {
-      return p.mode;
+      // ISSUE-082: リプレイモードは present から撤去済み。保存済み mode='replay' は 'normal' へ正規化。
+      return p.mode === 'replay' ? 'normal' : p.mode;
     }
     // 両 true の旧データは sessions 優先（排他統合のため一方に確定させる）。
     if (p.sessions === true) {
       return 'sessions';
     }
     if (p.replay === true) {
-      return 'replay';
+      return 'normal'; // ISSUE-082: legacy replay:true も normal へ（リプレイ撤去）。
     }
     // legacy キーが存在し明示 false（両 OFF）なら normal を導出する（両フラグ不在は null）。
     if (p.replay != null || p.sessions != null) {
@@ -8145,359 +8155,42 @@ class MarketProfileActor {
 }
 
 
-// ===== js/adapter/front/market_profile_replay_bar.js =====
-// market_profile_replay_bar.js — Market Profile リプレイ用の下部スライダバー（DOM アダプター）。
-//
-// 設計入力: 依頼（増分1）「replay=ON でチャート下部にスライダバーを表示。構成＝◀リプレイ ラベル＋
-//   <input type=range>（min=0/max=足数-1/既定=右端=最新）＋選択中の日時ラベル。OFF で非表示・全期間へ復帰」。
-//   移植元 prototype_260630-01/web/index.html（#asof/#asoft スライダ）・app.js（asofIdx・applyAsofView）。
-//
-// 責務（SRP）: スライダ DOM の生成・表示制御・index→time 変換・日時ラベル更新に限定する。当時プロファイルの
-//   再取得（to 付き fetch）や T 縦線描画は本コンポーネントの責務外（MarketProfileActor / primitive が担う）。
-//   本バーは input で onScrub(T) を呼ぶだけ（DIP: 上位の editor/actor を知らない）。lightweight-charts に
-//   直接依存しない（座標が要る箇所は primitive 側の attach 済み chart を使う＝本バーは純 DOM）。
-//
-// 非破壊方針: 既定は非表示（display:none 相当の hidden フラグ）。setVisible(true) で初めて可視化する。
-//   candles 未設定のうちは onScrub を発火しない（空 candles ガード）。
-
-// UNIX 秒 → 'YYYY-MM-DD HH:MM'（UTC）表示ラベル。移植元 prototype の ISO 日付ラベルに準拠。
-function formatCursorLabel(unixSec) {
-  const d = new Date(Number(unixSec) * 1000);
-  const iso = d.toISOString(); // e.g. '1970-01-01T00:16:40.000Z'
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
-}
-
-// モードトグルの選択肢（アンカー = from なし累積 / ローリング = T 直前 ROLL_BARS 本の窓）。
-const MODES = [
-  { key: 'anchor', label: 'アンカー' },
-  { key: 'rolling', label: 'ローリング' },
-];
-
-class MarketProfileReplayBar {
-  // document/container: DOM 生成・追加先（container 下部にバーを appendChild）。
-  // onScrub: (timeSec) => void。スライダ input で「対応足の time」を通知する（actor.setReplayCursor へ配線）。
-  // onChange: () => void。モード（アンカー/ローリング）・スナップショットの状態変更を通知する（actor が
-  //   from/today を再計算するトリガ）。省略時 no-op。増分2 A/C。
-  constructor({ document, container, onScrub, onChange } = {}) {
-    this._doc = document ?? null;
-    this._container = container ?? null;
-    this._onScrub = typeof onScrub === 'function' ? onScrub : () => {};
-    this._onChange = typeof onChange === 'function' ? onChange : () => {};
-    this._candles = [];
-    this._visible = false;
-    this._label = '';
-    this._root = null;
-    this._range = null;
-    this._dateLabel = null;
-    // 増分2 状態: モード（既定アンカー）・スナップショット（既定 OFF）。
-    this._mode = 'anchor';
-    this._snapshot = false;
-    this._modeBtns = new Map(); // key -> ボタン要素（is-active トグル用）。
-    this._build();
-  }
-
-  // バー DOM を一度だけ構築する（◀リプレイ ラベル + モードトグル + range + スナップショット + 日時ラベル）。既定は非表示。
-  _build() {
-    if (!this._doc || typeof this._doc.createElement !== 'function'
-        || !this._container || typeof this._container.appendChild !== 'function') {
-      return; // DOM 不在・container が appendChild 非提供（SSR/テスト最小 fake）は no-op（防御）。
-    }
-    const root = this._doc.createElement('div');
-    root.className = 'mp-replay-bar';
-    root.setAttribute('hidden', 'true');
-
-    const tag = this._doc.createElement('span');
-    tag.className = 'mp-replay-label';
-    tag.textContent = '◀リプレイ';
-
-    // モードトグル（segmented・既存 .prop-seg-btn 流用）。押した側でアンカー/ローリングを切替える。
-    const seg = this._doc.createElement('span');
-    seg.className = 'prop-segmented mp-replay-mode';
-    for (const m of MODES) {
-      const btn = this._doc.createElement('button');
-      btn.className = 'prop-seg-btn' + (m.key === this._mode ? ' is-active' : '');
-      btn.textContent = m.label;
-      btn.addEventListener('click', () => this._setMode(m.key));
-      seg.appendChild(btn);
-      this._modeBtns.set(m.key, btn);
-    }
-
-    const range = this._doc.createElement('input');
-    range.type = 'range';
-    range.className = 'mp-replay-range';
-    range.min = '0';
-    range.max = '0';
-    range.value = '0';
-    range.disabled = true; // candles 未設定のうちは操作不可（空 candles ガード）。
-    range.addEventListener('input', () => this._onInput());
-
-    // スナップショットチェック（既定 OFF）。ON で「当時の見え方」（ローソクトリム＋当日強調）。
-    const snapWrap = this._doc.createElement('label');
-    snapWrap.className = 'mp-replay-snap';
-    const snapCb = this._doc.createElement('input');
-    snapCb.type = 'checkbox';
-    snapCb.className = 'mp-replay-snap-cb';
-    snapCb.addEventListener('change', () => this._setSnapshot(!!snapCb.checked));
-    const snapText = this._doc.createElement('span');
-    snapText.textContent = 'スナップショット';
-    snapWrap.appendChild(snapCb);
-    snapWrap.appendChild(snapText);
-
-    const dateLabel = this._doc.createElement('span');
-    dateLabel.className = 'mp-replay-date';
-    dateLabel.textContent = '';
-
-    root.appendChild(tag);
-    root.appendChild(seg);
-    root.appendChild(range);
-    root.appendChild(snapWrap);
-    root.appendChild(dateLabel);
-    this._container.appendChild(root);
-
-    this._root = root;
-    this._range = range;
-    this._dateLabel = dateLabel;
-    this._snapCb = snapCb;
-  }
-
-  // モード（アンカー/ローリング）を切替え、ボタンの is-active を更新して onChange を通知する。
-  _setMode(key) {
-    if (key !== 'anchor' && key !== 'rolling') {
-      return;
-    }
-    this._mode = key;
-    for (const [k, btn] of this._modeBtns) {
-      const active = k === key;
-      btn.className = 'prop-seg-btn' + (active ? ' is-active' : '');
-    }
-    this._onChange();
-  }
-
-  // スナップショット ON/OFF を切替え、onChange を通知する。
-  _setSnapshot(on) {
-    this._snapshot = !!on;
-    this._onChange();
-  }
-
-  // 現在のモード（'anchor' | 'rolling'）。actor が from を計算する分岐に使う。
-  mode() {
-    return this._mode;
-  }
-
-  // スナップショット状態（true/false）。actor が today/トリムを切替える。
-  isSnapshot() {
-    return this._snapshot;
-  }
-
-  // 足配列を受けてスライダの min=0/max=足数-1/既定 value=右端（最新）を設定する（index→time の元）。
-  setCandles(candles) {
-    this._candles = Array.isArray(candles) ? candles : [];
-    if (!this._range) {
-      return;
-    }
-    const last = Math.max(0, this._candles.length - 1);
-    this._range.min = '0';
-    this._range.max = String(last);
-    this._range.value = String(last); // 既定=右端=最新。
-    this._range.disabled = this._candles.length === 0;
-    // 既定ラベル（最新足の日時）。空なら空文字。
-    this._label = this._candles.length ? formatCursorLabel(this._candles[last].time) : '';
-    if (this._dateLabel) {
-      this._dateLabel.textContent = this._label;
-    }
-  }
-
-  // 表示/非表示。true でチャート下部に可視化、false で非表示（全期間へ復帰は actor 側が担う）。
-  setVisible(visible) {
-    this._visible = !!visible;
-    if (this._root) {
-      if (this._visible) {
-        this._root.setAttribute('hidden', 'false');
-      } else {
-        this._root.setAttribute('hidden', 'true');
-      }
-    }
-  }
-
-  isVisible() {
-    return this._visible;
-  }
-
-  // 現在の選択日時ラベル（テスト・表示確認用）。
-  currentLabel() {
-    return this._label;
-  }
-
-  // 現在スライダ位置に対応する足の time（UNIX 秒）。既定は右端＝最新。空 candles は null。
-  //   スクラブ前でも「現在の T」を返せるようにし、actor が初期カーソル（T 縦線）に使う。
-  currentTime() {
-    if (this._candles.length === 0) {
-      return null;
-    }
-    return this._candles[this.currentIndex()].time;
-  }
-
-  // 現在スライダ位置の足 index（0..足数-1）。空 candles は 0。スワイプの相対デルタ基準（startIdx）。
-  currentIndex() {
-    if (this._candles.length === 0) {
-      return 0;
-    }
-    let idx = this._range ? parseInt(this._range.value, 10) : this._candles.length - 1;
-    if (Number.isNaN(idx)) {
-      idx = this._candles.length - 1;
-    }
-    return Math.max(0, Math.min(idx, this._candles.length - 1));
-  }
-
-  // スライダ input: value（index）→ 対応足 time を決めて onScrub へ通知し、日時ラベルを更新する。
-  _onInput() {
-    if (!this._range || this._candles.length === 0) {
-      return; // 空 candles ガード（onScrub を発火しない）。
-    }
-    let idx = parseInt(this._range.value, 10);
-    if (Number.isNaN(idx)) {
-      return;
-    }
-    idx = Math.max(0, Math.min(idx, this._candles.length - 1));
-    const time = this._candles[idx].time;
-    this._label = formatCursorLabel(time);
-    if (this._dateLabel) {
-      this._dateLabel.textContent = this._label;
-    }
-    this._onScrub(time);
-  }
-
-  // 増分2 スワイプ: logical index（renderer.coordinateToLogical(x) の結果）→ 足 index へ round/clamp し、
-  //   スライダ値と T（対応足 time）を同期して onScrub へ通知する（双方向同期）。
-  //   移植元 prototype_260630-01（updateCaptureMode の x→logical→candles index clamp）。
-  //   candles 未設定・null/NaN は no-op（scrub しない・例外なし）。
-  scrubToLogical(logical) {
-    if (this._candles.length === 0 || logical == null || Number.isNaN(Number(logical))) {
-      return;
-    }
-    let idx = Math.round(Number(logical));
-    idx = Math.max(0, Math.min(idx, this._candles.length - 1));
-    // スライダ値へ反映（双方向同期）。
-    if (this._range) {
-      this._range.value = String(idx);
-    }
-    const time = this._candles[idx].time;
-    this._label = formatCursorLabel(time);
-    if (this._dateLabel) {
-      this._dateLabel.textContent = this._label;
-    }
-    this._onScrub(time);
-  }
-}
-
-
 // ===== js/adapter/front/chart_interaction_controller.js =====
 // ChartInteractionController（adapter/front/chart_interaction_controller.js）—
 //   チャートコンテナのポインタ/ホイール操作（振る舞い）を composition root から分離したアダプター。
 //
 // 設計入力: ISSUE-040(a)。Composition Root は配線専用（new して install するだけ）へ縮小し、
-//   DI ルートに混入していたチャート操作（スワイプスクラブ・縦価格パン・wheel 価格ズーム・dblclick reset）を
-//   本コントローラへ移設する。移設は挙動 byte 不変（分岐/座標計算/イベント配線/登録順を完全保持）。
+//   DI ルートに混入していたチャート操作（縦価格パン・wheel 価格ズーム・dblclick reset）を
+//   本コントローラへ移設する。
+// ISSUE-082: リプレイモードは present から撤去（replay_ui＝別アプリ専用機能へ）。リプレイ用の
+//   スワイプスクラブブロック・replayBar 依存・_isReplayOn 判定を本ファイルから削除した
+//   （replay_ui は独立コピー simulator/replay_ui/web/.../chart_interaction_controller.js を保持）。
 //
 // 隔離・注入方針（upstream lwc 非依存・DIP）:
 //   - lightweight-charts 直呼びはしない。座標→価格変換・スクロール/ズーム制御はすべて renderer 経由。
-//   - 依存（container / renderer / replayBar / getController / updatePaneHeight）は constructor 注入。
+//   - 依存（container / renderer / getController / updatePaneHeight）は constructor 注入。
 //   - getController は controller を遅延参照する（composition root では controller 代入前に install するため、
 //     () => controller のクロージャで呼出時点の controller を読む＝旧実装の外側 let クロージャと同一挙動）。
 //   - container 不在/pointer 非対応（SSR/テスト）では install が no-op（防御）。
 
 class ChartInteractionController {
-  constructor({ container, renderer, replayBar, getController, updatePaneHeight }) {
+  constructor({ container, renderer, getController, updatePaneHeight }) {
     this._container = container;
     this._renderer = renderer;
-    this._replayBar = replayBar;
     this._getController = getController;
     this._updatePaneHeight = updatePaneHeight;
   }
 
-  // リプレイ ON 判定（controller._marketProfile.isReplay() の遅延参照）。旧実装 isReplayOn/isReplayOn2 と同一。
-  _isReplayOn() {
-    const controller = this._getController();
-    return !!(controller && controller._marketProfile
-      && typeof controller._marketProfile.isReplay === 'function' && controller._marketProfile.isReplay());
-  }
-
-  // container の pointerdown/move/up/leave・wheel・dblclick を配線する。
-  //   旧 composition root の 2 ブロック（swipe / wheel+dblclick+本体縦パン）を登録順そのままに再現する。
+  // container の wheel・dblclick・pointerdown/move/up/leave（本体縦パン）を配線する。
   install() {
     const container = this._container;
     const renderer = this._renderer;
-    const replayBar = this._replayBar;
     const updatePaneHeight = this._updatePaneHeight;
-
-    // 増分2 スワイプ: チャートコンテナの横ドラッグで T をスクラブする（replay ON 中のみ）。
-    //   ★プロト準拠の**相対デルタ方式**（prototype_260630-01/js/app.js L442-457）:
-    //     pointerdown で開始 x（startX）と開始 index（startIdx）を記録するだけ（＝クリック位置へ飛ばさない）。
-    //     pointermove で dIdx=round((x - startX)/pixelsPerBar) を startIdx に足して T を更新する。
-    //     pixelsPerBar は renderer 側で barSpacing を返しつつ極小時は 8px を下限にする（ズームアウト時に
-    //     わずかなマウス移動でスライダが暴走する不具合の修正）。旧実装は coordinateToLogical の絶対
-    //     マッピング（下限なし）で過敏だった。lwc 座標 API は renderer に隔離済み。
-    //   container/doc 不在（SSR/テスト）や pointer 非対応は no-op（防御）。
-    //   ★リプレイ中も**縦成分は価格パン**する（要望「拡大しても上下も移動」）。横=スクラブ・縦=価格パンの
-    //     2D 操作にする。純横（dy=0）は価格を触らず T 追従を維持、純縦は index 不変でスクラブせず価格のみ動く。
-    if (container && typeof container.addEventListener === 'function') {
-      let swiping = false;
-      let swipeStartX = 0;
-      let swipeStartIdx = 0;
-      let lastScrubIdx = 0; // 冗長スクラブ回避（縦のみドラッグで同 index を再取得しない）。
-      let lastSwipeY = 0;   // 縦パンの前フレーム y（価格パンの dy 算出）。
-      const isReplayOn = () => this._isReplayOn();
-      const rectLeft = () => (typeof container.getBoundingClientRect === 'function'
-        ? container.getBoundingClientRect().left : 0);
-      container.addEventListener('pointerdown', (e) => {
-        if (!isReplayOn() || e.button !== 0) {
-          return; // 左ボタンのみ（右クリック等でスワイプ開始しない・2Dパン側と整合）。
-        }
-        swiping = true;
-        renderer.setUserInteraction(false); // 通常スクロール/ズームを停止（スワイプ捕捉）。
-        // 開始点のみ記録（クリック位置へは飛ばさない＝プロト mousedown 相当）。
-        swipeStartX = e.clientX - rectLeft();
-        swipeStartIdx = typeof replayBar.currentIndex === 'function' ? replayBar.currentIndex() : 0;
-        lastScrubIdx = swipeStartIdx;
-        lastSwipeY = e.clientY;
-      });
-      container.addEventListener('pointermove', (e) => {
-        if (!swiping || !isReplayOn()) {
-          return;
-        }
-        // 横成分: T スクラブ（相対デルタ・index 変化時のみ再取得＝縦のみドラッグで無駄打ちしない）。
-        const x = e.clientX - rectLeft();
-        const px = renderer.pixelsPerBar(); // barSpacing（極小時は 8px 下限＝プロト準拠）。
-        const idx = swipeStartIdx + Math.round((x - swipeStartX) / px); // 左ドラッグ=過去へ。
-        if (idx !== lastScrubIdx) {
-          lastScrubIdx = idx;
-          replayBar.scrubToLogical(idx); // clamp は scrubToLogical 内で実施。
-        }
-        // 縦成分: 価格パン。**価格ズーム中（isPriceZoomed）のみ**（非リプレイ側と統一）。全体表示で
-        //   縦パンすると override が張られ空白露出＝撤去した不具合をリプレイ中に再現するため、ゲートする。
-        const dy = e.clientY - lastSwipeY;
-        lastSwipeY = e.clientY;
-        if (typeof renderer.isPriceZoomed === 'function' && renderer.isPriceZoomed()) {
-          updatePaneHeight(); // autoSize 追随。
-          renderer.panPriceByPixels(dy);
-        }
-      });
-      const endSwipe = () => {
-        if (!swiping) {
-          return;
-        }
-        swiping = false;
-        renderer.setUserInteraction(true); // 通常操作を復元。
-      };
-
-      container.addEventListener('pointerup', endSwipe);
-      container.addEventListener('pointerleave', endSwipe);
-    }
 
     // 価格軸ホイールズームの配線（wheel / dblclick）。既存操作（本体ホイール=時間軸ズーム・軸ドラッグ）は不変。
     //   wheel: 価格軸領域上（renderer が x>=timeScale().width() で判定）のときだけ価格ズームし preventDefault。
     //     handlePriceWheel が false（本体領域・データ無し）なら preventDefault せず時間軸ズームへ委ねる。
-    //     passive:false で登録（preventDefault を有効化）。リプレイの pointer swipe とは別イベントで非干渉。
+    //     passive:false で登録（preventDefault を有効化）。
     //   dblclick: 価格軸領域なら自動スケールへ復帰（resetPriceZoom）。
     //   座標は **clientX/Y - コンテナ矩形**（コンテナ左上基準）で計算する。offsetX はイベント target
     //   （lwc の内部 canvas＝価格軸 canvas 等）基準になり、軸上では小さい値→本体領域と誤判定して
@@ -8534,12 +8227,11 @@ class ChartInteractionController {
       //   ・全体表示（自動スケール）では縦パンしない＝空白が出て拡大縮小に見える不具合を出さない（撤去理由）。
       //   ・価格軸ホイールズーム後（renderer.isPriceZoomed()）は縦パンを許可＝拡大した価格帯の外も辿れる
       //     （ユーザFB「その価格帯以外確認できないのは問題」への対応）。横は lwc の時間パンに委ねる。
-      //   価格軸上・リプレイ中は対象外（リプレイは横スワイプが占有・軸は lwc ネイティブ）。
+      //   価格軸上は対象外（軸は lwc ネイティブ）。
       let vpanActive = false;
       let lastVpanY = 0;
-      const isReplayOn2 = () => this._isReplayOn();
       container.addEventListener('pointerdown', (e) => {
-        if (isReplayOn2() || e.button !== 0) {
+        if (e.button !== 0) {
           return;
         }
         if (renderer.isOverPriceAxis(containerXY(e).x)) {
@@ -9524,21 +9216,8 @@ async function bootstrap({
   //   getContext は controller._timeframe を遅延参照する（呼び出しは setEnabled/refresh 時＝
   //   controller 代入後）。
   let controller;
-  // リプレイスライダバー（増分1）。replay=ON で下部に表示。input で対応足 time を actor.setReplayCursor へ。
-  //   candles は renderer.getCandles()（取得済み・読取のみ）を再利用し、min/max・index→time を賄う。
-  //   doc/container 不在（SSR/テスト）でも内部で no-op（防御）。
-  // バーのホストは index.html の #mp-replay-bar-host（チャート下部・sibling）を優先し、
-  //   不在時は container（後方互換・テスト）へフォールバックする。#chart 内へ差し込まない
-  //   （lightweight-charts が #chart を専有するため、canvas と重ならない sibling へ置く）。
-  const replayHost = (doc && typeof doc.getElementById === 'function'
-    ? doc.getElementById('mp-replay-bar-host') : null) || container;
-  const replayBar = new MarketProfileReplayBar({
-    document: doc,
-    container: replayHost,
-    onScrub: (time) => { if (controller && controller._marketProfile) { controller._marketProfile.setReplayCursor(time); } },
-    // 増分2: モード（アンカー/ローリング）・スナップショット変更 → actor が現在 T で再取得する。
-    onChange: () => { if (controller && controller._marketProfile) { controller._marketProfile.onReplayControlsChange(); } },
-  });
+  // ISSUE-082: リプレイモードは present から撤去（リプレイバーの構築・配線なし）。actor の
+  //   リプレイ機構は replay_ui（別アプリ）専用の共有資産として温存されている。
   // MP primitive を変数化し、時間足毎profile列（tf-period）actor と共有する（同一 primitive の
   //   setTfPeriods で描画＝mainSeries へ二重 attach しない）。
   const mpPrimitive = new MarketProfileHistogramPrimitive();
@@ -9557,7 +9236,6 @@ async function bootstrap({
     client: new MarketProfileClient({ fetch }),
     primitive: mpPrimitive,
     mainSeries,
-    replayBar,
     // ISSUE-066: setParams 完了時に tf-period 列を即時再取得（sessions×ライブで src 変更が可視レンジ
     //   変化を待たず反映される）。tf-period 非配線時は no-op。
     onParamsChanged: () => refreshTfPeriodNow(),
@@ -9594,7 +9272,7 @@ async function bootstrap({
     },
   });
 
-  // チャート操作（スワイプスクラブ・縦価格パン・wheel 価格ズーム・dblclick reset）の配線は
+  // チャート操作（縦価格パン・wheel 価格ズーム・dblclick reset）の配線は
   //   ChartInteractionController（adapter/front）へ分離した（ISSUE-040a）。Composition Root は
   //   new して install するだけに縮小する（配線専用）。振る舞い本体・座標計算・イベント登録順・分岐は
   //   同コントローラに byte 不変で移設済み（挙動不変）。getController は controller を遅延参照する
@@ -9603,7 +9281,6 @@ async function bootstrap({
   new ChartInteractionController({
     container,
     renderer,
-    replayBar,
     getController: () => controller,
     updatePaneHeight,
   }).install();
@@ -9865,7 +9542,7 @@ async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, replayBar, liveFollowController, mpLiveModeCoordinator, tfPeriodActor };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor };
 }
 
 
