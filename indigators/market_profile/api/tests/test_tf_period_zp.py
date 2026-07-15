@@ -137,3 +137,29 @@ def test_zp_live_ticks_fresh_tail(tfp_env, monkeypatch):
     last0 = without["columns"][-1]
     last1 = withlv["columns"][-1]
     assert last1["price_max"] > last0["price_max"], "live 末尾の新水準が当日列へ反映される"
+
+
+def test_zp_week_bucket_columns(tfp_env):
+    """ISSUE-086: tf=1W の zp 列＝セッション日次 {obs,mean,var} の k 空間合成→z 再計算。
+
+    合成データの週バケットで 200・スキーマ・VA/POC の整合（レンジ内・poc が levels に含まれる）を検証。
+    """
+    from marketdata.session_day import session_period_label
+
+    now = _day(40)
+    label = session_period_label("1W", _day(29))
+    y, m, d = (int(x) for x in label.split("-"))
+    import datetime as dtm
+
+    label_mid = int(dtm.datetime(y, m, d, tzinfo=dtm.timezone.utc).timestamp())
+    st, body = tfp.handle_tf_period_profile(
+        "jp225_tick", "1W", label_mid - 1, label_mid + 1, now=now, src="zp")
+    assert st == 200 and body["ok"] is True
+    assert len(body["columns"]) == 1, "1 バケット = 1 列"
+    c = body["columns"][0]
+    assert c["time"] == label_mid
+    assert set(c) == {"time", "levels", "poc", "va_low", "va_high",
+                      "price_min", "price_max", "tpo_units"}
+    assert c["tpo_units"] > 0
+    assert c["price_min"] < c["poc"] < c["price_max"] or c["price_min"] <= c["poc"] <= c["price_max"]
+    assert c["price_min"] <= c["va_low"] <= c["va_high"] <= c["price_max"]

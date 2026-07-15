@@ -26,7 +26,8 @@ def test_non_tick_ref_400():
 
 
 def test_unsupported_tf_400():
-    st, body = ctl.handle_tf_period_profile("jp225_tick", "1W", 0, 120)
+    # ISSUE-086: 1W/1M はバケット列として対応済み（旧: 400）。未知 tf のみ 400。
+    st, body = ctl.handle_tf_period_profile("jp225_tick", "3h", 0, 120)
     assert st == 400
 
 
@@ -217,3 +218,63 @@ def test_live_ticks_ignored_for_completed_day(monkeypatch):
     assert st == 200
     by_time = {c["time"]: c for c in body["columns"]}
     assert by_time[60]["levels"] == [[19.992, 1], [21.012, 1]], "完了日は合成しない（byte 不変）"
+
+
+def test_week_bucket_merges_session_days(monkeypatch):
+    """ISSUE-086: tf=1W はセッション日次（1D 列＝既存キャッシュ経路）を W-FRI バケットへ畳み込み、
+    1 バケット=1 列（time=週ラベル金曜の UTC 深夜）で返す。levels はセル価格ごとの加算。"""
+    import numpy as np
+    from marketdata.session_day import session_label_to_start
+
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
+    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
+    d_mon = session_label_to_start("2026-07-13")  # 月曜セッション
+    d_tue = session_label_to_start("2026-07-14")  # 火曜セッション
+
+    def fake_ticks(_symbol, start, end):
+        # 月曜: 100 を 2 tick / 火曜: 100 を 1 tick + 110 を 1 tick（GRID_W=10 格子で 100/110 セル）。
+        secs = np.array([d_mon + 3600, d_mon + 3700, d_tue + 3600, d_tue + 3800])
+        mids = np.array([100.0, 100.0, 100.0, 110.0])
+        m = (secs >= start) & (secs < end)
+        return secs[m], mids[m]
+
+    monkeypatch.setattr(ctl._mpd, "_load_window_ticks", fake_ticks)
+    now = session_label_to_start("2026-07-15") + 3600  # 週の途中（未完了バケット）。
+    label_mid = 1784246400  # 2026-07-17 00:00 UTC（週ラベル金曜）。
+    st, body = ctl.handle_tf_period_profile(
+        "jp225_tick", "1W", label_mid - 86400, label_mid + 1, now=now)
+    assert st == 200 and body["ok"] is True
+    assert len(body["columns"]) == 1, "1 バケット = 1 列"
+    col = body["columns"][0]
+    assert col["time"] == label_mid, "列 time は週ラベル（W-FRI）の UTC 深夜"
+    assert col["levels"] == [[100.0, 3], [110.0, 1]], "セッション日次の加算"
+    assert col["tpo_units"] == 4
+    assert col["poc"] == 100.0
+    assert col["va_low"] <= 100.0 <= col["va_high"]
+
+
+def test_month_bucket_and_validation(monkeypatch):
+    """ISSUE-086: tf=1M も受理され（旧: 400）、月バケット（ME ラベル）で列を返す。"""
+    import numpy as np
+    from marketdata.session_day import session_label_to_start
+
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
+    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
+    d1 = session_label_to_start("2026-07-13")
+
+    def fake_ticks(_symbol, start, end):
+        secs = np.array([d1 + 3600, d1 + 3700])
+        mids = np.array([100.0, 100.0])
+        m = (secs >= start) & (secs < end)
+        return secs[m], mids[m]
+
+    monkeypatch.setattr(ctl._mpd, "_load_window_ticks", fake_ticks)
+    now = session_label_to_start("2026-07-15") + 3600
+    label_mid = 1785456000  # 2026-07-31 00:00 UTC（ME ラベル）。
+    st, body = ctl.handle_tf_period_profile(
+        "jp225_tick", "1M", label_mid - 86400 * 30, label_mid + 1, now=now)
+    assert st == 200 and body["ok"] is True
+    assert [c["time"] for c in body["columns"]] == [label_mid]
+    assert body["columns"][0]["levels"] == [[100.0, 2]]

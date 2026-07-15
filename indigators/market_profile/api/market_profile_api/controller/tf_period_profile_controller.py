@@ -26,20 +26,28 @@ from adapter.compute import forming_bar as _forming_bar
 from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute import market_profile_zp as _zp
 from market_profile_api.compute.market_profile import _value_area
-from market_profile_api.compute.tf_period_profile import tf_period_profiles
+from market_profile_api.compute.tf_period_profile import _value_area_sparse, tf_period_profiles
 from market_profile_api.controller.market_profile_controller import _error_body
 
 # セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定の唯一の規則源。
 from marketdata.session_day import (  # noqa: E402
+    next_period_label,
     next_session_day_start,
+    period_session_labels,
     session_bar_time,
     session_day_start,
+    session_label_to_start,
+    session_period_label,
 )
 
 _DAY = 86400  # 1 カレンダー日（秒）。per-day キャッシュ／窓分割の単位。
 
-# 対応 tf（固定周期＝floor 可能）→ 周期秒。1W/1M（カレンダー）は floor 不可で非対応。
+# 対応 tf（固定周期＝floor 可能）→ 周期秒。1W/1M はカレンダーバケット（下記 _BUCKET_TFS）。
 _TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1D": _DAY}
+
+# ISSUE-086（全時間足パラメータ統一）: 1W/1M はセッション日次のロールアップ（W-FRI/ME バケット・
+#   規則源 marketdata.session_day.session_period_label＝resample と同一規約）で列を構成する。
+_BUCKET_TFS = ("1W", "1M")
 
 # ISSUE-073: 時間足別ビニング解像度（依頼者承認 2026-07-13「1分足は細かく分析したい」・
 #   同日 0.5pt→0.0255pt へ細分化指示）。1m は 1 周期の値幅が数〜数十 pt で GRID_W(10pt) では
@@ -52,7 +60,7 @@ _UNIT_BY_TF: dict[str, float] = {"1m": 0.0255}
 
 # src=zp の対応 tf。周期内分数が少なすぎると z が退化するため 15m 以上に限定する
 #   （1m=1 分・5m=5 分では帰無/観測とも計数が退化し z の意味が立たない）。
-_ZP_TF_ALLOWED = ("15m", "30m", "1h", "4h", "1D")
+_ZP_TF_ALLOWED = ("15m", "30m", "1h", "4h", "1D", "1W", "1M")  # ISSUE-086: 1W/1M＝日次 zp の畳み込み。
 
 # ISSUE-055（B: per-day キャッシュ）: 窓 ``[from, to)`` を**カレンダー日単位**に分割し、各日を
 #   ``(symbol, tf, day_start)`` でキャッシュする。過去日ティックは不変（実測:
@@ -332,6 +340,218 @@ def _day_columns_zp(
     return result
 
 
+def _label_midnight(label: str) -> int:
+    """バケットラベル 'YYYY-MM-DD' → バー time 規約値（ラベル日の UTC 深夜 epoch・1D と同規約）。"""
+    y, m, d = (int(x) for x in str(label).split("-"))
+    import datetime as _dtm
+
+    return int(_dtm.datetime(y, m, d, tzinfo=_dtm.timezone.utc).timestamp())
+
+
+def _bucket_completed(tf: str, label: str, now_val: float) -> bool:
+    """バケット完了判定: 次バケット先頭セッションの始端が now 以前なら完了（不変＝キャッシュ可）。"""
+    nxt_first = period_session_labels(tf, next_period_label(tf, label))[0]
+    return session_label_to_start(nxt_first) <= now_val
+
+
+def _bucket_columns(
+    symbol: Any, tf: Any, label: str, now_val: float, live_ticks: "list | None" = None
+) -> "tuple[float, list]":
+    """1W/1M バケットの count 列（ISSUE-086）。
+
+    セッション日次の 1D 列（:func:`_day_columns`＝既存の完了日キャッシュ経路を再利用）を
+    バケットの全セッション日で加算合成する。levels は同一 GRID_W 格子ゆえ価格キーで加算でき、
+    poc/va は合成カウントから再計算（:func:`_value_area_sparse`＝count 列と同一 VA 規約）。
+    time はバケットラベル（W-FRI 金曜/ME 月末）の UTC 深夜＝rollup 1W/1M バーと同一規約。
+    完了バケットは メモリ→ディスク→計算（＋保存）。当日を含むバケットは都度計算（ライブ育成）。
+    """
+    unit = float(_mpd.GRID_W)
+    bar_time = _label_midnight(label)
+    completed = _bucket_completed(tf, label, now_val)
+    key = (symbol, tf, bar_time)
+    disk_tf = f"{tf}/s1/g{unit:g}"
+    if completed:
+        hit = _DAY_MEM.get(key)
+        if hit is not None:
+            _DAY_MEM.move_to_end(key)
+            return hit
+        disk = _load_day_disk(symbol, disk_tf, bar_time)
+        if disk is not None:
+            _DAY_MEM[key] = disk
+            _DAY_MEM.move_to_end(key)
+            while len(_DAY_MEM) > _DAY_MEM_MAX:
+                _DAY_MEM.popitem(last=False)
+            return disk
+    merged: "dict[float, float]" = {}
+    pmin: "float | None" = None
+    pmax: "float | None" = None
+    tpo = 0
+    for lab in period_session_labels(tf, label):
+        day = session_label_to_start(lab)
+        if day >= now_val:
+            break  # 未来セッション（未開始）。
+        _u, cols_d = _day_columns(symbol, "1D", _DAY, day, now_val, live_ticks=live_ticks)
+        for c in cols_d:
+            for price, cnt in c["levels"]:
+                merged[price] = merged.get(price, 0) + cnt
+            pmin = c["price_min"] if pmin is None else min(pmin, c["price_min"])
+            pmax = c["price_max"] if pmax is None else max(pmax, c["price_max"])
+            tpo += int(c["tpo_units"])
+    if not merged:
+        result: "tuple[float, list]" = (unit, [])
+    else:
+        prices = sorted(merged)
+        counts = np.asarray([merged[p] for p in prices])
+        poc_i = int(np.argmax(counts))  # 最大カウント（同値は低価格側＝count 列と同規約）。
+        lo, hi = _value_area_sparse(counts, poc_i, 0.70)
+        col = {
+            "time": bar_time,
+            "levels": [[float(p), int(merged[p])] for p in prices],
+            "poc": float(prices[poc_i]),
+            "va_low": float(prices[lo]),
+            "va_high": float(prices[hi]),
+            "price_min": float(pmin),
+            "price_max": float(pmax),
+            "tpo_units": int(tpo),
+        }
+        result = (unit, [col])
+    if completed:
+        _DAY_MEM[key] = result
+        _DAY_MEM.move_to_end(key)
+        while len(_DAY_MEM) > _DAY_MEM_MAX:
+            _DAY_MEM.popitem(last=False)
+        _save_day_disk(symbol, disk_tf, bar_time, unit, result[1])
+    return result
+
+
+def _live_zp_day_roll(
+    symbol: Any, day_start: int, now_val: float, live_ticks: "list | None"
+) -> "dict | None":
+    """当日（未完了セッション）の zp 日次ロールアップを live buffer 合成グリッドで都度計算する。
+
+    :func:`market_profile_zp._zp_day_rollup` の未完了分岐と同一規約（elapsed cap・M_REPS_LIVE・
+    day_seed）で、分足格子のみ live 末尾を合成した最新版にする（ISSUE-083 追補と同じ鮮度化）。
+    live_ticks 空は _zp_day_rollup へ委譲（挙動同一・メモ化も既存に委ねる）。
+    """
+    if not live_ticks:
+        return _zp._zp_day_rollup(symbol, int(day_start), now_val)
+    day_start = int(day_start)
+    day_end = next_session_day_start(day_start)
+    secs, mids = _mpd._load_window_ticks(symbol, day_start, day_end)
+    secs, mids = _merge_live_tail(secs, mids, live_ticks, day_start, day_end)
+    grid = _zp.minute_close_grid(secs, mids, day_start)
+    if grid is None:
+        return None
+    closes, open_d = grid
+    elapsed = int((now_val - day_start) // 60) - _zp.SESSION_OPEN_MOD + 1
+    col_hi = max(1, min(_zp.G_MINUTES, elapsed))
+    obs_closes = closes[:col_hi]
+    klo = int(np.floor(np.log(float(obs_closes.min())) / _zp.W_LOG))
+    khi = int(np.floor(np.log(float(obs_closes.max())) / _zp.W_LOG))
+    S = _zp._hist_step_matrix(symbol, day_start, now_val)
+    if S is None:
+        return None
+    rng = np.random.default_rng(_zp.day_seed(str(symbol), day_start))
+    mean, var = _zp.null_b_moments_abs(
+        S, open_d, klo, khi, rng=rng, m_reps=_zp.M_REPS_LIVE, col_hi=col_hi
+    )
+    obs = _zp.obs_cell_counts(closes, klo, khi, col_hi=col_hi)
+    return {"kmin": klo, "obs": obs, "mean": mean, "var": var}
+
+
+def _bucket_columns_zp(
+    symbol: Any, tf: Any, label: str, now_val: float, live_ticks: "list | None" = None
+) -> "tuple[float, list]":
+    """1W/1M バケットの zp 列（ISSUE-086）。
+
+    z は加算不可のため、セッション日次の {obs, mean, var}（:func:`_zp_day_rollup`＝znull キャッシュ
+    再利用・独立日ゆえモーメント加算可）を k 空間（絶対 log 格子＝日間で整列）で合成し、
+    z = (Σobs − Σmean)/√Σvar を再計算する（compute_zp_profile の窓合成と同一規約）。
+    levels/poc*/va/price 範囲は _day_columns_zp と同じ導出（levels=z>0＋POC セル・va=_value_area）。
+    price_min/max は占有セル（Σobs>0）の格子境界（実 close との差は 1bp セル内）。
+    完了バケットは メモリ→ディスク→計算（＋保存）。当日を含むバケットは都度計算。
+    """
+    bar_time = _label_midnight(label)
+    completed = _bucket_completed(tf, label, now_val)
+    key = (symbol, tf, bar_time, "zp")
+    disk_tf = f"{tf}/s3/zp"
+    if completed:
+        hit = _DAY_MEM.get(key)
+        if hit is not None:
+            _DAY_MEM.move_to_end(key)
+            return hit
+        disk = _load_day_disk(symbol, disk_tf, bar_time)
+        if disk is not None:
+            _DAY_MEM[key] = disk
+            _DAY_MEM.move_to_end(key)
+            while len(_DAY_MEM) > _DAY_MEM_MAX:
+                _DAY_MEM.popitem(last=False)
+            return disk
+    rolls: "list[dict]" = []
+    for lab in period_session_labels(tf, label):
+        day = session_label_to_start(lab)
+        if day >= now_val:
+            break
+        if next_session_day_start(day) <= now_val:
+            roll = _zp._zp_day_rollup(symbol, day, now_val)
+        else:
+            roll = _live_zp_day_roll(symbol, day, now_val, live_ticks)
+        if roll is not None:
+            rolls.append(roll)
+    cols: list = []
+    if rolls:
+        klo = min(r["kmin"] for r in rolls)
+        khi = max(r["kmin"] + len(r["obs"]) - 1 for r in rolls)
+        size = khi - klo + 1
+        obs_sum = np.zeros(size)
+        mean_sum = np.zeros(size)
+        var_sum = np.zeros(size)
+        for r in rolls:
+            off = r["kmin"] - klo
+            obs_sum[off:off + len(r["obs"])] += r["obs"]
+            mean_sum[off:off + len(r["mean"])] += r["mean"]
+            var_sum[off:off + len(r["var"])] += r["var"]
+        centers = np.exp((klo + np.arange(size) + 0.5) * _zp.W_LOG)
+        z = _zp._fine_z(obs_sum, mean_sum, var_sum)
+        mid = (centers[0] + centers[-1]) / 2.0
+        poc_price = _zp._poc_star_from_fine(z, klo, mid)
+        z_pos = np.maximum(z, 0.0)
+        va_low, va_high = _value_area(z_pos, centers, 0.70)
+        occ = np.flatnonzero(obs_sum > 0)
+        p_lo = float(np.exp((klo + int(occ[0])) * _zp.W_LOG)) if occ.size else float(centers[0])
+        p_hi = float(np.exp((klo + int(occ[-1]) + 1) * _zp.W_LOG)) if occ.size else float(centers[-1])
+        poc_k = int(np.floor(np.log(poc_price) / _zp.W_LOG)) - klo
+        keep = (z > 0)
+        keep[max(0, min(poc_k, keep.size - 1))] = True
+        levels = [
+            [round(float(centers[k]), 6), round(float(z[k]), 2)]
+            for k in np.flatnonzero(keep)
+        ]
+        cols.append({
+            "time": bar_time,
+            "levels": levels,
+            "poc": round(float(poc_price), 6),
+            "va_low": round(float(va_low), 6),
+            "va_high": round(float(va_high), 6),
+            "price_min": round(p_lo, 6),
+            "price_max": round(p_hi, 6),
+            "tpo_units": int(obs_sum.sum()),
+        })
+    if cols:
+        mids_p = [(c["price_min"] + c["price_max"]) / 2.0 for c in cols]
+        unit = round(float(np.median(mids_p)) * (np.exp(_zp.W_LOG) - 1.0), 6)
+    else:
+        unit = round(60000.0 * (np.exp(_zp.W_LOG) - 1.0), 6)
+    result = (unit, cols)
+    if completed:
+        _DAY_MEM[key] = result
+        _DAY_MEM.move_to_end(key)
+        while len(_DAY_MEM) > _DAY_MEM_MAX:
+            _DAY_MEM.popitem(last=False)
+        _save_day_disk(symbol, disk_tf, bar_time, unit, cols)
+    return result
+
+
 def _parse_int(v: Any) -> "int | None":
     if isinstance(v, bool):
         return None
@@ -374,15 +594,16 @@ def handle_tf_period_profile(
         return _error_body("validation", f"未知の src です: {src!r}（省略|zp）")
     if not _forming_bar.is_tick_ref(ref):
         return _error_body("validation", f"tick 由来 datasetRef ではありません: {ref!r}")
-    if not _forming_bar.is_supported_timeframe(timeframe):
-        return _error_body("validation", f"非対応の timeframe です（1W/1M は floor 不可）: {timeframe!r}")
+    # ISSUE-086: 1W/1M はセッション日次のロールアップ（バケット列）として対応する（旧: 400）。
+    if not _forming_bar.is_supported_timeframe(timeframe) and timeframe not in _BUCKET_TFS:
+        return _error_body("validation", f"非対応の timeframe です: {timeframe!r}")
     if src == "zp" and timeframe not in _ZP_TF_ALLOWED:
         return _error_body(
             "validation",
             f"src=zp は tf {'|'.join(_ZP_TF_ALLOWED)} のみ対応です: {timeframe!r}",
         )
     tf_sec = _TF_SECONDS.get(timeframe)
-    if tf_sec is None:
+    if tf_sec is None and timeframe not in _BUCKET_TFS:
         return _error_body("validation", f"周期秒を解決できない timeframe です: {timeframe!r}")
     from_i, to_i = _parse_int(frm), _parse_int(to)
     if from_i is None or to_i is None or from_i >= to_i:
@@ -390,6 +611,33 @@ def handle_tf_period_profile(
 
     symbol = _mpd.resolve_symbol(ref)
     now_val = _time.time() if now is None else float(now)
+
+    # ISSUE-086: 1W/1M バケット走査（ラベル単位）。列 time はラベルの UTC 深夜＝rollup バーと同一。
+    if timeframe in _BUCKET_TFS:
+        bucket_fn = _bucket_columns_zp if src == "zp" else _bucket_columns
+        columns_b: list = []
+        units_b: list = []
+        label = session_period_label(timeframe, from_i)
+        while _label_midnight(label) < to_i:
+            first_start = session_label_to_start(period_session_labels(timeframe, label)[0])
+            if first_start >= now_val:
+                break  # 未来バケット（未開始）。
+            unit_d, cols_d = bucket_fn(symbol, timeframe, label, now_val, live_ticks=live_ticks)
+            picked = [c for c in cols_d if from_i <= c["time"] < to_i]
+            if picked:
+                columns_b.extend(picked)
+                units_b.append(unit_d)
+            label = next_period_label(timeframe, label)
+        unit_b = min(units_b) if units_b else (
+            round(60000.0 * (np.exp(_zp.W_LOG) - 1.0), 6) if src == "zp" else float(_mpd.GRID_W))
+        return 200, {
+            "ok": True,
+            "tf": timeframe,
+            "unit": round(unit_b, 6),
+            "from": from_i,
+            "to": to_i,
+            "columns": columns_b,
+        }
 
     # per-day 組み立て: 窓が跨るカレンダー日を走査し、各日の列（完了日=キャッシュ／当日=都度計算）を
     #   集めて窓 ``[from_i, to_i)`` に入る周期のみ採用する。列は日昇順・各日内も時刻昇順ゆえ結合で整列済み。
