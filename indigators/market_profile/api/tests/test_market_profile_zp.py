@@ -223,3 +223,10 @@ class TestBpRelativeGrid:
         mean, var = zp.null_b_moments_abs(S, open_d, k_open - 1, k_open + 1, rng=rng, m_reps=8)
         assert mean[1] == pytest.approx(zp.G_MINUTES)  # 全質量が open セル。
         assert mean[0] == 0 and mean[2] == 0
+
+
+def test_compute_zp_profile_empty_candles_range_does_not_crash():
+    """ISSUE-079 回帰: 空 candles 経路（price_min=price_max=0）でも log(0) で落ちない。"""
+    out = zp.compute_zp_profile("NOSYM", 0, 0, 0.0, 0.0, 60, now=1e9)
+    assert out["n_bins"] == 60
+    assert all(np.isfinite(b["price"]) for b in out["bins"])

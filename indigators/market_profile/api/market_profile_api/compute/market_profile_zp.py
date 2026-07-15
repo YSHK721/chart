@@ -519,6 +519,11 @@ def compute_zp_profile(
     now_val = _time.time() if now is None else float(now)
     price_min = float(price_min)
     price_max = float(price_max)
+    # ISSUE-079: log 格子は正の価格が前提。空 candles 経路（controller が 0.0/0.0 を渡す）や
+    #   非正レンジは log(0)=-inf で即死するため、正の最小値へクランプする（旧線形格子では
+    #   floor(0/GRID_W)=0 で潜伏していた欠陥の顕在化・防御）。
+    if not (price_min > 0):
+        price_min = 1.0
     if price_max <= price_min:
         price_max = price_min + 1.0
     n_bins = max(1, int(n_bins))
