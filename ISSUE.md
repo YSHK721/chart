@@ -1008,3 +1008,14 @@
 - **設計**: 週/月バケット規約は rollup（marketdata.resample）の参照実装に厳密一致: 1W=W-FRI（週=[土..金]ブローカー日・ラベル=金曜）/1M=ME（ラベル=暦月末）・列 time=ラベルの UTC 深夜（バーと同一）。①marketdata/session_day.py に session_period_label/period_session_labels/next_period_label を追加（resample_ohlc_tf とのラベル一致を合成データで検定）②count バケット列＝日次 1D 列（既存 s1 キャッシュ再利用）の価格キー加算・poc/va は _value_area_sparse で再計算 ③zp バケット列＝z は加算不可のため日次 {obs,mean,var}（_zp_day_rollup＝znull キャッシュ再利用・独立日でモーメント加算可）を絶対 log 格子の k 空間で合成し z を再計算（compute_zp_profile の窓合成と同一規約）。当日は live buffer 合成グリッドで都度計算（ISSUE-083 追補と同鮮度）④完了バケットは mem→disk（{tf}/s1/g10・{tf}/s3/zp）。
 - **フロント統一**: _MP_PLAYER_TF/_MP_ZP_TF・ZP_TF_ALLOWED・tf-period 有効述語へ 1W/1M を追加（LiveTickPlayer の isPlayerTimeframe とは分離）。期間（period）の tf 制限を撤廃（通常モードのみ条件・「当日」窓は tf 独立）。1W/1M バー time はラベル＝未来日になり得るため _periodExtra は now クランプで現在セッションへ写像（回帰テスト付き）。バケット tf の jitter チャンク窓は 45 日上限を外し 96 周期/チャンク（実測: 週足全期間表示のリクエスト 192→9・LRU スラッシング解消）。
 - **検証**: marketdata 139（ラベル規約 4 追加・参照実装一致含む）・MP api 226・MP web 284・UI web 533/535 全緑。実UI（8139）: 週足×日別×zp で週列（2トーン VA 背景・白 POC・ホバー読取 z+0.62/VA 66942〜68548）・月足列・週足×通常で mode/src/va/period/dispbp 全5項目表示＝1D と同一（統一達成）・1W count/zp 応答 0.16〜0.28s・当日週バケットのライブ育成は既存 onLiveTick 経路がそのまま機能（列 time=最新バー time）。
+
+## ISSUE-087: システム全体アーキテクチャ調査（アーキテクチャエージェント・依頼者指示）
+- **ステータス**: OPEN（2026-07-15 起票・対応は依頼者裁定待ち）
+- **総合判定**: 不合格（構造的リスク 3 件・改善推奨 4 件。最下層 marketdata の依存healthは健全＝内側→外側の逆流 0 件・上流 import 0 件）
+- **🔴 構造的リスク**:
+  1. **MP backend が indicator_ui の `adapter` パッケージへ裸名依存（sys.path 注入前提）**: market_profile_controller.py:28 ほか production 4 ファイルが `from adapter.compute import ...` を server.py:33-41 / _indicator_ui_bridge.py:43-45 の sys.path.insert で解決。indicator_ui 側の再編で MP が無言破壊されるリスク。推奨: 共有純粋物（ERROR_STATUS・tf 秒長等）は marketdata へ降ろし、残りは MP 側 Output Boundary（protocol）＋Composition Root 注入（DIP）。
+  2. **tf→秒長／許可 tf 集合が 5 箇所以上に散在（単一情報源違反・実ドリフト有）**: _TF_BAR_SEC（mp controller）・TF_BAR_SEC（actor.js/growth_window.js）・TF_SECONDS（live_tick_player.js）・TIMEFRAME_RULES（resample.py）・index.html の tf ボタン（**30m が UI に欠落＝既に不一致**）。actor.js は bundler の top-level const 衝突で growth_window を import できず再宣言。推奨: tf メタ単一定義（Python=marketdata.resample / JS=tf_meta.js domain 1 個）＋HTML ボタン生成＋bundler の名前空間化。
+  3. **セッション日規則・VA 定義が Python/JS 二重実装（同期は手写しスポット値のみ）**: session_day.py ↔ session_day.js（同期検定は JS テストのハードコード 2 値のみ）、_value_area ↔ dwell_accumulator.js valueArea＋VA_PCT=0.70 散在。推奨: Python から golden fixture 生成→JS テストが読む生成同期（最小）／規則の単一言語化（望ましい）。
+- **🟡 改善推奨**: ①server.py が /candles・/forming_bar で controller 層を飛ばし marketdata/compute 直参照（殻へ業務分岐が漏出。handle_x 純関数へ統一を推奨）②スライス間レイヤ不統一（replay_ui=5層完備 / indicator_ui api=usecase 欠落 / MP api=2層のみ。最低限の命名規約明文化）③sys.path 実行時 insert が結線機構（3 系統。正規パッケージ化＋main 結線へ）④dwell/zp キャッシュに世代 GC 戦略なし（パラメータ変更で旧世代ディレクトリが増殖＝既知の清掃残件と同根。世代マニフェスト＋GC ツール推奨）。
+- **🔵 将来検討**: symlink 共有は Windows/tar/CI で無言破壊リスク（共有 domain の shared/ パッケージ昇格）。過剰抽象なし（YAGNI 健全）・lightweight-charts/pandas/zoneinfo/HTTP 殻の隔離は概ね良好。
+- **変更局所性の実測**: 新指標追加=スライス内で局所（良好）／**新時間足追加=最低 5 箇所**（欠如・🔴-2）／新データソース追加=局所（良好）。
