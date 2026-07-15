@@ -1198,6 +1198,30 @@ function makeMarketProfileDef({
     tab: 'profile',
     placement: 'overlay',
     params: [
+      // ISSUE-081（依頼者指示 2026-07-15）: 表示モードを**親**としてダイアログ先頭へ置き、以下の
+      //   パラメータ（子）はモード・時間足に応じて表示/非表示で切り替える（グレーアウト廃止＝
+      //   「効かないツマミは見せない」。グレーアウトはユーザビリティを下げるとの依頼者指摘）。
+      // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
+      //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する
+      //   （解像度トグル resmode と同方式）。排他が構造的に保証され、同時 ON が不可能になる。
+      //   - normal: 全期間累積プロファイル（既定）。成長状態（FOLLOW/reveal 前進）では現在足の bar-period
+      //     forming で足内成長する（Model A: 表示モード×成長状態の直交化。成長は growing 信号が担う）。
+      //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
+      //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
+      //     T 縦線/トリム/スナップショット解除）。成長状態では当日タイルが [session_start, cursor) で因果成長
+      //     （refresh(to, sessions)・機構A）。
+      //   Phase5（統一成長）: 旧 'ticklive' セグメント（表示選択肢）は撤去した。足内 1tick 逐次成長は
+      //     「表示モード」ではなく成長軸（growing 信号）が担う（直交化）＝normal/sessions のいずれでも成長する。
+      //     成長エンジン（_enterTicklive/forming/DwellAccumulator）は grow 軸で存続（表示選択肢のみ削除）。
+      //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
+      //   order は旧 replay の位置（1）＝表示系 group の先頭。
+      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
+        group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
+        enumLabels: {
+          normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル',
+        },
+        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
+      }),
       // dispbp: 表示幅（bp・価格比 1bp=0.01%・FLOAT 自由入力・ISSUE-079 依頼者承認 2026-07-15）。
       //   旧 解像度トグル（resmode）＋ビン（bins）＋レンジpt（range）を**一本化**して置換する。
       //   絶対 pt/本数指定は価格水準で意味が変わる（時代ドリフト）ため、比率（bp）で表示粗さを
@@ -1207,8 +1231,9 @@ function makeMarketProfileDef({
       //   dwell の内部格子は絶対 10pt のまま（現在価格で約1.5bp・過去ほど粗い下限＝既知の残課題）。
       param('dispbp', ParamType.FLOAT, 3.0,
         [{ kind: ConstraintKind.MIN_VALUE, operands: ['dispbp', 1], messageKey: 'err.dispbp.min' }], null, {
-          group: 'group.calc', order: 0, label: '表示幅(bp)', step: 0.5, min: 1,
-          conditionalEnable: _mpResolutionEnabled, // ISSUE-070: tf-period 列描画時グレーアウト。
+          group: 'group.calc', order: 4, label: '表示幅(bp)', step: 0.5, min: 1,
+          // ISSUE-070→081: tf-period 列描画時（列は固定生解像度＝bp が効かない）は行ごと非表示。
+          conditionalVisible: _mpResolutionEnabled,
           tooltip: '価格帯 1 行の幅を価格比（bp=0.01%）で指定。1bp が下限（zp の計算格子）。値を小さくするほど精細・大きくするほど滑らか。旧「ビン/レンジ(pt)」を置換（絶対値指定は価格水準で意味が変わるため比率へ統一）',
         }),
       // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
@@ -1230,7 +1255,7 @@ function makeMarketProfileDef({
       //   黙って変わり混乱するとの依頼者指摘を受け、tooltip で挙動差を明記する（選択は許容＝
       //   1分足で日別 z タイルを見る使い方は残す）。
       param('src', ParamType.ENUM, 'zp', [], ['dwell', 'zp'], {
-        group: 'group.calc', order: 4, label: 'ソース',
+        group: 'group.calc', order: 1, label: 'ソース',
         enumLabels: {
           dwell: '滞在時間(実ティック)', zp: '超過占有z(p)',
         },
@@ -1251,31 +1276,10 @@ function makeMarketProfileDef({
       //   帰無（偶然の期待値/ばらつき）は窓と独立に各日の直前 NULL_HIST_DAYS 完了日から構築されるため、
       //   当日窓でも z の統計的品質は不変。通常モード×固定周期 tf（1m..1D）でのみ有効（_mpPeriodEnabled）。
       param('period', ParamType.ENUM, 'all', [], ['all', 'day'], {
-        group: 'group.calc', order: 5, label: '期間',
-        conditionalVisible: { when: { param: 'src', equals: 'zp' } },
-        conditionalEnable: _mpPeriodEnabled,
+        group: 'group.calc', order: 3, label: '期間',
+        // ISSUE-081: zp×通常×対応 tf のときだけ表示（旧: src 条件で表示＋mode/tf 条件でグレーアウト）。
+        conditionalVisible: (values, ctx) => values.src === 'zp' && _mpPeriodEnabled(values, ctx),
         enumLabels: { all: '全期間', day: '当日' },
-      }),
-      // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
-      //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する
-      //   （解像度トグル resmode と同方式）。排他が構造的に保証され、同時 ON が不可能になる。
-      //   - normal: 全期間累積プロファイル（既定）。成長状態（FOLLOW/reveal 前進）では現在足の bar-period
-      //     forming で足内成長する（Model A: 表示モード×成長状態の直交化。成長は growing 信号が担う）。
-      //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
-      //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
-      //     T 縦線/トリム/スナップショット解除）。成長状態では当日タイルが [session_start, cursor) で因果成長
-      //     （refresh(to, sessions)・機構A）。
-      //   Phase5（統一成長）: 旧 'ticklive' セグメント（表示選択肢）は撤去した。足内 1tick 逐次成長は
-      //     「表示モード」ではなく成長軸（growing 信号）が担う（直交化）＝normal/sessions のいずれでも成長する。
-      //     成長エンジン（_enterTicklive/forming/DwellAccumulator）は grow 軸で存続（表示選択肢のみ削除）。
-      //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
-      //   order は旧 replay の位置（1）＝表示系 group の先頭。
-      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'replay', 'sessions'], {
-        group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
-        enumLabels: {
-          normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル',
-        },
-        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／リプレイ＝時間カーソルで当時を再生／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
       }),
     ],
     series: [
@@ -3407,12 +3411,17 @@ function computeEnabled(def, values = {}, context = {}) {
 // conditionalVisible.when（{param,equals}）が偽のとき非表示（hidden）。未指定は常時 visible。
 // 静的除外（uiVisible===false）は buildFormModel が担い、本関数は動的トグルを担う（併存）。
 // 用途: market_profile の bins は resmode==bins のとき表示 / range は resmode==range のとき表示（解像度トグル）。
-function computeVisible(def, values = {}) {
+function computeVisible(def, values = {}, context = null) {
   const visible = {};
   for (const pdef of def.params ?? []) {
     const cond = pdef.conditionalVisible;
     if (cond === null || cond === undefined) {
       visible[pdef.name] = true;
+      continue;
+    }
+    // ISSUE-081: 関数述語 (values, ctx)->bool を受理（computeEnabled と対称・ctx=timeframe 等）。
+    if (typeof cond === 'function') {
+      visible[pdef.name] = !!cond(values, context);
       continue;
     }
     const { param, equals } = cond.when;
@@ -4192,7 +4201,7 @@ class PropertiesDialog {
   //   （隠れた bins が既定 60 のままなら妥当だが、空値等でも OK を阻害させないため・トグル安全化）。
   _revalidate() {
     const { violations } = validateForm(this._def, this._values);
-    const visible = computeVisible(this._def, this._values);
+    const visible = computeVisible(this._def, this._values, this._context);
     // 非表示フィールドの違反は表示せず OK も阻害しない。
     const effective = violations.filter((v) => visible[v.param] !== false);
     // 全フィールドのエラー表示をクリア。
@@ -4271,7 +4280,7 @@ class PropertiesDialog {
   //   _refreshEnabled（グレーアウト）と対称の動的経路。range を変えた瞬間に「ビン」行が出没する。
   //   静的除外（uiVisible===false）は buildFormModel が担い、本メソッドは動的トグルのみ担う。
   _refreshVisible() {
-    const visible = computeVisible(this._def, this._values);
+    const visible = computeVisible(this._def, this._values, this._context);
     for (const [name, els] of this._fieldEls) {
       const on = visible[name] !== false;
       els.row.style.display = on ? '' : 'none';

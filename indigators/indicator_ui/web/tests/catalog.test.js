@@ -119,25 +119,27 @@ test('catalog: market_profile exposes period ENUM [all,day] default all, visible
   assert.equal(period.label, '期間');
   assert.equal(period.enumLabels.all, '全期間');
   assert.equal(period.enumLabels.day, '当日');
-  // src=zp のときだけ表示（dwell は成長時 forming が当日絞り済みで対象外）。
-  assert.deepEqual(period.conditionalVisible, { when: { param: 'src', equals: 'zp' } });
-  // enabled 述語: 通常モード×固定周期 tf（1m..1D）のみ有効。
-  const enabled = period.conditionalEnable;
-  assert.equal(typeof enabled, 'function');
-  assert.equal(enabled({ mode: 'normal' }, { timeframe: '1m', servedMode: 'b' }), true, '通常×1m は有効');
-  assert.equal(enabled({ mode: 'normal' }, { timeframe: '1W', servedMode: 'b' }), false, '1W は無効');
-  assert.equal(enabled({ mode: 'replay' }, { timeframe: '1m', servedMode: 'b' }), false, 'リプレイは無効');
-  assert.equal(enabled({ mode: 'sessions' }, { timeframe: '1h', servedMode: 'b' }), false, '日別は無効');
-  assert.equal(enabled({ mode: 'normal' }, null), true, 'ctx 不在（A方式/テスト）は mode 条件のみ');
+  // ISSUE-081: zp×通常×対応 tf のときだけ**表示**（旧: src で表示＋mode/tf でグレーアウト）。
+  assert.equal(period.conditionalEnable, null, 'グレーアウト述語は廃止');
+  const vis = period.conditionalVisible;
+  assert.equal(typeof vis, 'function');
+  assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1m', servedMode: 'b' }), true, 'zp×通常×1m は表示');
+  assert.equal(vis({ src: 'dwell', mode: 'normal' }, { timeframe: '1m', servedMode: 'b' }), false, 'dwell は非表示');
+  assert.equal(vis({ src: 'zp', mode: 'sessions' }, { timeframe: '1h', servedMode: 'b' }), false, '日別は非表示');
+  assert.equal(vis({ src: 'zp', mode: 'replay' }, { timeframe: '1m', servedMode: 'b' }), false, 'リプレイは非表示');
+  assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1W', servedMode: 'b' }), false, '1W は非表示');
+  assert.equal(vis({ src: 'zp', mode: 'normal' }, null), true, 'ctx 不在（A方式/テスト）は mode/src 条件のみ');
   assert.equal(period.group, paramOf(d, 'dispbp').group);
 });
 
-// ISSUE-070/079: 表示幅(bp) は tf-period が日別列を描くとき無効（列は 1bp/GRID 固定）＝グレーアウト。
-test('catalog: market_profile dispbp は tf-period描画時グレーアウト述語（ISSUE-070）', () => {
+// ISSUE-070→081: 表示幅(bp) は tf-period が日別列を描くとき（列は固定生解像度＝bp が効かない）
+//   **行ごと非表示**（グレーアウト廃止・依頼者指示）。
+test('catalog: market_profile dispbp は tf-period描画時に非表示（ISSUE-081）', () => {
   const d = get('market_profile');
   const dispbp = paramOf(d, 'dispbp');
-  assert.equal(typeof dispbp.conditionalEnable, 'function');
-  const fn = dispbp.conditionalEnable;
+  assert.equal(dispbp.conditionalEnable, null, 'グレーアウト述語は廃止');
+  assert.equal(typeof dispbp.conditionalVisible, 'function');
+  const fn = dispbp.conditionalVisible;
   assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'b', timeframe: '1h' }), false);
   assert.equal(fn({ mode: 'sessions', src: 'zp' }, { servedMode: 'b', timeframe: '1h' }), false);
   assert.equal(fn({ mode: 'normal', src: 'dwell' }, { servedMode: 'b', timeframe: '1h' }), true);
@@ -354,3 +356,11 @@ test('catalog params: existing q-chain constraints survive UI-metadata extension
 
 // 日別プロファイルは mode='sessions' へ統合済み（旧 sessions BOOL は撤去）。
 //   mode ENUM の enumLabels.sessions='日別プロファイル' 検証は上位の mode テストで担保する。
+
+// calc 群の表示順（依頼者指示 2026-07-15）: ソース → バリューエリア → 期間 → 表示幅(bp)。
+test('catalog: market_profile calc 群の order は ソース<バリューエリア<期間<表示幅(bp)', () => {
+  const d = get('market_profile');
+  const o = (n) => paramOf(d, n).order;
+  assert.ok(o('src') < o('va') && o('va') < o('period') && o('period') < o('dispbp'),
+    `src=${o('src')} va=${o('va')} period=${o('period')} dispbp=${o('dispbp')}`);
+});
