@@ -657,3 +657,41 @@ test('tfPeriodLevelAt: 最近傍占有レベルへスナップ（縦3px相当許
   prim.setVisible(false);
   assert.equal(prim.tfPeriodLevelAt(100, 10), null);
 });
+
+// ISSUE-085 改（依頼者指示 2026-07-15）: VA 幅は**方向背景の2トーン**で表現する。VA 帯は通常 α（0.1）、
+//   VA 外の占有レンジは減光 α（0.04）。境界ラインは描かず、レベルバーも減光しない。
+//   va 欠損列は従来どおり単一背景（後方互換）。dirUp 未注釈列は背景なし＝VA 表現なし（従来仕様）。
+test('setTfPeriods: VA 幅は背景の2トーン（VA帯=通常・VA外=減光）で表現し、ライン/バー減光はしない（ISSUE-085 改）', () => {
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = fakeTarget(800);
+  prim.attached({ chart: fakeChartWithTime(), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setVisible(true);
+  prim.setTfPeriods([
+    // 占有 10..16・VA=[12,14]・陽線 → 背景 3 分割（上下=減光・VA帯=通常）。
+    { time: 100, levels: [[10, 1], [11, 1], [12, 2], [13, 3], [14, 2], [15, 1], [16, 1]],
+      poc: 13, va_low: 12, va_high: 14, dirUp: true },
+    // va 欠損列（陰線）→ 単一の通常背景（後方互換）。
+    { time: 200, levels: [[20, 1], [21, 1]], poc: 20, dirUp: false },
+  ], 1);
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  const alphaOf = (r) => Number(r.fill.match(/,\s*([0-9.]+)\)$/)[1]);
+  // レベルバーは全て通常アルファ 0.98（減光しない）。
+  for (const y of [10, 12, 14, 16]) {
+    const rs = target.rects.filter((r) => Math.round(r.y) === y && r.fill.startsWith('hsla('));
+    assert.ok(rs.length >= 1 && Math.abs(alphaOf(rs[0]) - 0.98) < 1e-6, `price=${y} は通常アルファ`);
+  }
+  // 背景（陽・通常 α0.1）: VA 帯 [12,14]±0.5 を覆う 1 枚。
+  const upBase = target.rects.filter((r) => r.fill === 'rgba(38, 166, 154, 0.1)');
+  assert.equal(upBase.length, 1, 'VA 帯の通常背景は 1 枚');
+  assert.ok(upBase[0].y <= 12 - 0.5 + 1e-9 && upBase[0].y + upBase[0].h >= 14 + 0.5 - 1e-9, 'VA 帯を覆う');
+  // 背景（陽・減光 α0.04）: VA 外の上下 2 枚（10..12 帯と 14..16 帯）。
+  const upDim = target.rects.filter((r) => r.fill === 'rgba(38, 166, 154, 0.04)');
+  assert.equal(upDim.length, 2, 'VA 外は上下 2 枚の減光背景');
+  // 境界ライン（灰）は描かない。
+  assert.ok(!target.rects.some((r) => r.fill.startsWith('rgba(154, 164, 178')), 'VA 境界ラインなし');
+  // va 欠損列（陰線）は単一の通常背景（後方互換・減光背景なし）。
+  const downBase = target.rects.filter((r) => r.fill === 'rgba(239, 83, 80, 0.1)');
+  const downDim = target.rects.filter((r) => r.fill === 'rgba(239, 83, 80, 0.04)');
+  assert.equal(downBase.length, 1, 'va 欠損列は単一背景');
+  assert.equal(downDim.length, 0, 'va 欠損列に減光背景なし');
+});

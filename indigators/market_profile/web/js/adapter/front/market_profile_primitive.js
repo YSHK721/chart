@@ -42,7 +42,7 @@ const DIM_ALPHA = 0.30;
 const TODAY_ALPHA = 0.98;
 // POC 線（最濃赤）・VA 帯線（灰）の色（試作準拠）。
 const C_POC_LINE = '#ff3b3b';
-const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
+const C_VA_LINE = 'rgba(168, 41, 174, 0.5)';
 // POC* 線（src=zp・超過占有の最大行＝生カウント最頻値ではない）。zp であることを一目で
 //   区別できるよう黄で描く（通常 POC の赤と衝突しない・検定 Step5 の POC* 準拠）。
 const C_POC_STAR = '#ffd54a';
@@ -68,6 +68,9 @@ const SESS_MIN_BAR_PX = 1.5;
 //   旧呼び出し）は背景を描かない（後方互換）。
 const C_TFP_BG_UP = 'rgba(38, 166, 154, 0.1)';   // 陽線周期（薄緑）
 const C_TFP_BG_DOWN = 'rgba(239, 83, 80, 0.1)';  // 陰線周期（薄赤）
+// ISSUE-085 改: VA 外の占有レンジ背景（減光）。VA 帯（通常 α0.1）との2トーンで VA 幅を表現する。
+const C_TFP_BG_UP_DIM = 'rgba(38, 166, 154, 0.04)';
+const C_TFP_BG_DOWN_DIM = 'rgba(239, 83, 80, 0.04)';
 export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -374,16 +377,34 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       const left = cx - tileW / 2;
       const c = cols[i];
       const levels = c.levels || [];
-      // 方向背景（依頼者指示 2026-07-13）: 列の占有レンジ（levels 昇順の先頭〜末尾）を陽/陰色・
-      //   不透明度0.95 で塗る。dirUp 未注釈（null/undefined＝candle 不在・旧呼び出し）は描かない。
+      // 方向背景（依頼者指示 2026-07-13）: 列の占有レンジ（levels 昇順の先頭〜末尾）を陽/陰色で塗る。
+      //   dirUp 未注釈（null/undefined＝candle 不在・旧呼び出し）は描かない。
+      // ISSUE-085 改（依頼者指示 2026-07-15）: VA 幅は**背景の2トーン**で表現する。VA 帯
+      //   [va_low, va_high] は通常 α・VA 外の占有レンジは減光 α（境界ラインは描かない・レベルバーも
+      //   減光しない）。zp の sparse levels（z>0 のみ）でも背景は占有レンジ全体に敷かれるため常に
+      //   判別できる。va 欠損列（旧応答・空日）は従来どおり単一背景（後方互換）。
       if (levels.length && (c.dirUp === true || c.dirUp === false)) {
         const yHi = toY(levels[levels.length - 1][0]);
         const yLo = toY(levels[0][0]);
         if (yHi != null && yLo != null) {
           const top = Math.min(yHi, yLo) - lvlH / 2;
-          const hgt = Math.abs(yLo - yHi) + lvlH;
-          ctx.fillStyle = c.dirUp ? C_TFP_BG_UP : C_TFP_BG_DOWN;
-          ctx.fillRect(left, top, tileW, hgt);
+          const bot = Math.max(yHi, yLo) + lvlH / 2;
+          const cBase = c.dirUp ? C_TFP_BG_UP : C_TFP_BG_DOWN;
+          const cDim = c.dirUp ? C_TFP_BG_UP_DIM : C_TFP_BG_DOWN_DIM;
+          const yVH = c.va_high != null ? toY(c.va_high) : null;
+          const yVL = c.va_low != null ? toY(c.va_low) : null;
+          if (yVH != null && yVL != null) {
+            const vaTop = Math.max(top, Math.min(yVH, yVL) - lvlH / 2);
+            const vaBot = Math.min(bot, Math.max(yVH, yVL) + lvlH / 2);
+            ctx.fillStyle = cDim;
+            if (vaTop > top) ctx.fillRect(left, top, tileW, vaTop - top);
+            if (bot > vaBot) ctx.fillRect(left, vaBot, tileW, bot - vaBot);
+            ctx.fillStyle = cBase;
+            if (vaBot > vaTop) ctx.fillRect(left, vaTop, tileW, vaBot - vaTop);
+          } else {
+            ctx.fillStyle = cBase;
+            ctx.fillRect(left, top, tileW, bot - top);
+          }
         }
       }
       let cmax = 1;

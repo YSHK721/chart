@@ -145,3 +145,79 @@ test('_render は candle 突合で dirUp を列へ注釈する（陽/陰/不在n
   b.setEnabled(true);
   assert.equal('dirUp' in prim2.calls.at(-1)[0][0], false, '未注入は dirUp を付けない');
 });
+
+// ISSUE-083（日別プロファイルのライブ育成）: onLiveTick は現在周期（最新ローソク time＝周期始端）を
+//   含むチャンクを buf.refreshAt で再取得し、差し替え成功時に可視レンジを再描画する。throttle で
+//   ライブ tick の連打を抑制し、可視範囲外の現在周期・無効時は fetch しない。
+function fakeLiveBuf() {
+  const b = fakeBuf();
+  b.refreshed = [];
+  b.refreshResult = true;
+  b.refreshAt = async (time) => { b.refreshed.push(time); return b.refreshResult; };
+  return b;
+}
+
+test('onLiveTick: 最新ローソク time のチャンクを refreshAt→成功で再描画（ISSUE-083）', async () => {
+  const buf = fakeLiveBuf(); buf.cols = [{ time: 200 }];
+  const prim = fakePrim();
+  let nowMs = 100000;
+  const a = new TfPeriodProfileActor({
+    jitterBuffer: buf, primitive: prim, getTimeframe: () => '5m',
+    getVisibleRange: () => ({ from: 100, to: 300 }),
+    getCandles: () => [{ time: 100, open: 1, close: 2 }, { time: 200, open: 2, close: 1 }],
+    nowMsFn: () => nowMs,
+  });
+  a.setEnabled(true);
+  prim.calls.length = 0;
+  await a.onLiveTick();
+  assert.deepEqual(buf.refreshed, [200], '最新ローソク time（現在周期始端）を再取得');
+  assert.equal(prim.calls.length, 1, '差し替え成功で一括再描画');
+  assert.deepEqual(prim.calls[0][0].map((c) => c.time), [200]);
+});
+
+test('onLiveTick: throttle 内の連打は no-op・経過後は再度取得（ISSUE-083）', async () => {
+  const buf = fakeLiveBuf();
+  const prim = fakePrim();
+  let nowMs = 100000;
+  const a = new TfPeriodProfileActor({
+    jitterBuffer: buf, primitive: prim, getTimeframe: () => '5m',
+    getVisibleRange: () => ({ from: 100, to: 300 }),
+    getCandles: () => [{ time: 200 }],
+    nowMsFn: () => nowMs, liveMinIntervalMs: 5000,
+  });
+  a.setEnabled(true);
+  await a.onLiveTick();
+  await a.onLiveTick(); // throttle 内。
+  assert.equal(buf.refreshed.length, 1, 'throttle 内は再取得しない');
+  nowMs += 5001;
+  await a.onLiveTick();
+  assert.equal(buf.refreshed.length, 2, 'throttle 経過後は再取得する');
+});
+
+test('onLiveTick: 無効時・ローソク無し・可視範囲外・差し替え失敗は再描画しない（ISSUE-083）', async () => {
+  const buf = fakeLiveBuf();
+  const prim = fakePrim();
+  let candles = [];
+  let range = { from: 100, to: 300 };
+  let nowMs = 0;
+  const a = new TfPeriodProfileActor({
+    jitterBuffer: buf, primitive: prim, getTimeframe: () => '5m',
+    getVisibleRange: () => range,
+    getCandles: () => candles,
+    nowMsFn: () => { nowMs += 10000; return nowMs; }, // throttle を毎回通す。
+  });
+  await a.onLiveTick(); // 無効。
+  assert.equal(buf.refreshed.length, 0, '無効時は no-op');
+  a.setEnabled(true);
+  prim.calls.length = 0;
+  await a.onLiveTick(); // ローソク無し。
+  assert.equal(buf.refreshed.length, 0, 'ローソク無しは no-op');
+  candles = [{ time: 999 }];
+  await a.onLiveTick(); // 可視範囲外（999 > to=300）。
+  assert.equal(buf.refreshed.length, 0, '可視範囲外の現在周期は再取得しない');
+  candles = [{ time: 200 }];
+  buf.refreshResult = false; // 差し替え失敗（loading/連打/失敗応答）。
+  await a.onLiveTick();
+  assert.equal(buf.refreshed.length, 1);
+  assert.equal(prim.calls.length, 0, '差し替え無しは再描画しない');
+});

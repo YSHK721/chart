@@ -1000,3 +1000,55 @@ test('sessions×zp×1m は fetch せず表示をクリアする（日タイル�
   assert.equal(primitive.sessions.at(-1), null, '日別タイルは描かない（代替なし）');
   assert.equal(transparencies.at(-1), false, 'ローソクは可視のまま');
 });
+
+// ISSUE-083（日別プロファイルのライブ育成）: 日別×tf-period 描画×growing（FOLLOW）の refresh は
+//   onSessionsLiveGrow フックを発火し、tf-period 側が当日列を再取得して育てる。static（ANALYSIS＝
+//   growing=false）・通常モードでは発火しない（既存の成長軸と整合）。
+test('sessions×tfDraws×growing: refresh が onSessionsLiveGrow を発火する（ISSUE-083）', async () => {
+  const t1 = Date.UTC(2024, 0, 1) / 1000;
+  const candles = [{ time: t1, open: 1, high: 1, low: 1, close: 1 }];
+  let grows = 0;
+  const actor = new MarketProfileActor({
+    client: fakeClient(PROFILE_WITH_SESSIONS), primitive: fakeSessPrimitive(),
+    mainSeries: fakeMainSeries(), renderer: fakeSessRenderer(),
+    getContext: () => ({ datasetRef: 'sample', timeframe: '1D' }),
+    getCandles: () => candles,
+    sessionsDrawnByTfPeriod: () => true,
+    onSessionsLiveGrow: () => { grows += 1; },
+  });
+  actor.setParams({ mode: 'sessions' });
+  await actor.setEnabled(true);
+  // static（growing=false）では発火しない。
+  assert.equal(grows, 0, 'static（ANALYSIS）では育成フックを発火しない');
+  // growing（FOLLOW）へ遷移 → live tick 経路（onLiveTick→refresh）で発火する。
+  actor.applyGrowthState({ growing: true });
+  await actor.onLiveTick();
+  assert.equal(grows, 1, 'growing の sessions×tfDraws refresh で発火');
+  await actor.onLiveTick();
+  assert.equal(grows, 2, 'live tick ごとに発火（throttle は tf-period 側の責務）');
+});
+
+test('onSessionsLiveGrow: 通常モード・tfDraws=false では発火しない（ISSUE-083）', async () => {
+  const t1 = Date.UTC(2024, 0, 1) / 1000;
+  const candles = [{ time: t1, open: 1, high: 1, low: 1, close: 1 }];
+  let grows = 0;
+  let tfDraws = false;
+  const actor = new MarketProfileActor({
+    client: fakeClient(PROFILE_WITH_SESSIONS), primitive: fakeSessPrimitive(),
+    mainSeries: fakeMainSeries(), renderer: fakeSessRenderer(),
+    getContext: () => ({ datasetRef: 'sample', timeframe: '1D' }),
+    getCandles: () => candles,
+    sessionsDrawnByTfPeriod: () => tfDraws,
+    onSessionsLiveGrow: () => { grows += 1; },
+  });
+  // 通常モード×growing → 発火しない（通常の成長は forming/refresh 経路が担う）。
+  actor.setParams({ mode: 'normal' });
+  await actor.setEnabled(true);
+  actor.applyGrowthState({ growing: true });
+  await actor.onLiveTick();
+  assert.equal(grows, 0, '通常モードでは発火しない');
+  // sessions だが tfDraws=false（タイル自前描画フォールバック）→ 発火しない（列アクター不在）。
+  actor.setParams({ mode: 'sessions' });
+  await actor.refresh();
+  assert.equal(grows, 0, 'tfDraws=false では発火しない');
+});

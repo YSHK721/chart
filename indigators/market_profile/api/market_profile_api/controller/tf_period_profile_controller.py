@@ -117,8 +117,43 @@ def _save_day_disk(symbol: Any, tf: Any, day_start: int, unit: float, columns: l
         pass
 
 
+def _merge_live_tail(
+    secs: np.ndarray, mids: np.ndarray, live_ticks: "list | None", lo: int, hi: int
+) -> "tuple[np.ndarray, np.ndarray]":
+    """parquet 窓ティックへ live buffer 末尾 ``[(unix_ms, mid)...]`` を合成する（ISSUE-083 追補）。
+
+    採用条件: 窓 ``[lo, hi)`` 内・parquet 末尾秒より**後**（parquet 優先 dedup＝
+    :func:`forming_bar.augment_forming_ticks` と同規約）・合成中央値±30%（
+    :func:`market_profile_dwell._load_window_ticks` の外れ値規約と同一）。空/採用ゼロは入力不変。
+    """
+    if not live_ticks:
+        return secs, mids
+    pmax = int(secs[-1]) if len(secs) else int(lo) - 1
+    add_s: "list[int]" = []
+    add_m: "list[float]" = []
+    for tk in live_ticks:
+        sec = int(tk[0] // 1000)
+        if lo <= sec < hi and sec > pmax:
+            add_s.append(sec)
+            add_m.append(float(tk[1]))
+    if not add_s:
+        return secs, mids
+    med = float(np.median(np.concatenate([mids, np.asarray(add_m)]))) if (len(mids) + len(add_m)) else 0.0
+    if med > 0:
+        keep = [abs(v / med - 1.0) <= _mpd._OUTLIER_FRAC for v in add_m]
+        add_s = [s for s, k in zip(add_s, keep) if k]
+        add_m = [v for v, k in zip(add_m, keep) if k]
+    if not add_s:
+        return secs, mids
+    out_s = np.concatenate([secs, np.asarray(add_s, dtype=np.int64)])
+    out_m = np.concatenate([mids, np.asarray(add_m, dtype=np.float64)])
+    order = np.argsort(out_s, kind="stable")
+    return out_s[order].astype(np.int64), out_m[order].astype(np.float64)
+
+
 def _day_columns(
-    symbol: Any, tf: Any, tf_sec: int, day_start: int, now_val: float
+    symbol: Any, tf: Any, tf_sec: int, day_start: int, now_val: float,
+    live_ticks: "list | None" = None,
 ) -> "tuple[float, list]":
     """1 カレンダー日 ``[day_start, day_start+_DAY)`` の tf-period 列 ``(unit, columns)`` を返す。
 
@@ -154,6 +189,9 @@ def _day_columns(
     #   1D はセッション日そのもの＝1 周期（time=セッション始端）。
     if tf_sec >= _DAY:
         secs, mids = _mpd._load_window_ticks(symbol, day_start, day_end)
+        if not completed:
+            # ISSUE-083 追補: 当日のみ live buffer 末尾を合成（最新ティックの即時反映・完了日は不変）。
+            secs, mids = _merge_live_tail(secs, mids, live_ticks, day_start, day_end)
         # 単一周期化: 秒を始端相対へシフトし全ティックを period 0 に畳む → time をセッション始端へ戻す。
         shifted = np.asarray(secs, dtype=np.int64) - day_start if len(secs) else secs
         cols = tf_period_profiles(shifted, mids, int(day_end - day_start), unit, 0, int(day_end - day_start))
@@ -164,6 +202,9 @@ def _day_columns(
         p_first = ((day_start + tf_sec - 1) // tf_sec) * tf_sec       # 始端が本セッションに属す最初の周期。
         p_last = ((day_end - 1) // tf_sec) * tf_sec                    # 始端が day_end 未満の最後の周期。
         secs, mids = _mpd._load_window_ticks(symbol, p_first, p_last + tf_sec)
+        if not completed:
+            # ISSUE-083 追補: 当日のみ live buffer 末尾を合成（最新ティックの即時反映・完了日は不変）。
+            secs, mids = _merge_live_tail(secs, mids, live_ticks, p_first, p_last + tf_sec)
         cols = tf_period_profiles(secs, mids, tf_sec, unit, p_first, day_end)
     result = (unit, cols)
     if completed:
@@ -176,7 +217,8 @@ def _day_columns(
 
 
 def _day_columns_zp(
-    symbol: Any, tf: Any, tf_sec: int, day_start: int, now_val: float
+    symbol: Any, tf: Any, tf_sec: int, day_start: int, now_val: float,
+    live_ticks: "list | None" = None,
 ) -> "tuple[float, list]":
     """src=zp の 1 カレンダー日 tf-period 列 ``(unit=GRID_W, columns)``。
 
@@ -190,7 +232,7 @@ def _day_columns_zp(
     day_end = next_session_day_start(day_start)  # ISSUE-078。
     completed = day_end <= now_val
     key = (symbol, tf, day_start, "zp")
-    disk_tf = f"{tf}/s2/zp"  # ISSUE-079: log 格子世代 s2（s1=10pt セッション日と不混在）。
+    disk_tf = f"{tf}/s3/zp"  # ISSUE-085: VA 修正世代 s3（s2 は _value_area int 切り捨てバグの VA を含む）。
     if completed:
         hit = _DAY_MEM.get(key)
         if hit is not None:
@@ -204,7 +246,15 @@ def _day_columns_zp(
                 _DAY_MEM.popitem(last=False)
             return disk
 
-    grid = _zp._mgrid_of_day(symbol, day_start, now_val)
+    if completed or not live_ticks:
+        grid = _zp._mgrid_of_day(symbol, day_start, now_val)
+    else:
+        # ISSUE-083 追補: 当日のみ live buffer 末尾を合成して分足格子を最新化する（parquet フロンティア
+        #   遅延中の ffill 停滞を解消）。合成後の格子構築は _mgrid_of_day の当日経路（load→minute_close_grid）
+        #   と同一規約（キャッシュ非使用）。完了日は従来経路＝キャッシュ規約 byte 不変。
+        secs, mids = _mpd._load_window_ticks(symbol, day_start, day_end)
+        secs, mids = _merge_live_tail(secs, mids, live_ticks, day_start, day_end)
+        grid = _zp.minute_close_grid(secs, mids, day_start)
     cols: list = []
     if grid is not None:
         closes, open_d = grid
@@ -307,14 +357,18 @@ def _min_unit(mids: np.ndarray) -> float:
 
 def handle_tf_period_profile(
     ref: Any, timeframe: Any, frm: Any, to: Any, now: "float | None" = None,
-    src: Any = None,
+    src: Any = None, live_ticks: "list | None" = None,
 ) -> "tuple[int, dict]":
     """ローリング窓 ``[frm, to)`` の tf-period プロファイル列を返す（読取のみ）。
 
-    ``now`` は完了窓判定（``to <= now`` のみキャッシュ）の基準時刻（既定は現在時刻・テスト注入用）。
+    ``now`` は完了窓判定（``to <= now`` のみキャッシュ)の基準時刻（既定は現在時刻・テスト注入用）。
     ``src``: None（既定）＝従来の最小価格単位カウント列（応答 byte 不変）。``"zp"``＝超過占有
     スコア z(p) 列（GRID_W セル解像度・levels 値は z・対応 tf は :data:`_ZP_TF_ALLOWED` のみ）。
     その他の値は 400。
+    ``live_ticks``（ISSUE-083 追補）: served の in-memory LiveTickBuffer 末尾 ``[(unix_ms, mid)...]``。
+    当日（未完了セッション）の計算にのみ parquet 優先 dedup で合成し、parquet フロンティア遅延
+    （~1分）を待たず最新ティックを列へ反映する。完了日は無視（不変列のキャッシュを汚さない）。
+    None/空は従来どおり（byte 不変）。
     """
     if src is not None and src != "zp":
         return _error_body("validation", f"未知の src です: {src!r}（省略|zp）")
@@ -345,7 +399,7 @@ def handle_tf_period_profile(
     units: list = []
     day = session_day_start(from_i)  # ISSUE-078: セッション日ウォーク。
     while day < to_i:
-        unit_d, cols_d = day_fn(symbol, timeframe, tf_sec, day, now_val)
+        unit_d, cols_d = day_fn(symbol, timeframe, tf_sec, day, now_val, live_ticks=live_ticks)
         if cols_d:
             picked = [c for c in cols_d if from_i <= c["time"] < to_i]
             if picked:

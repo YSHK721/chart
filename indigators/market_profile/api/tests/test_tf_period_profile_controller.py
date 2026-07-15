@@ -180,3 +180,40 @@ def test_1d_column_is_one_per_session_keyed_by_session_start(monkeypatch):
     col = body["columns"][0]
     assert col["time"] == 1783900800  # 2026-07-13 00:00 UTC（ラベル深夜＝1D バー時刻）。
     assert col["tpo_units"] == 3  # 日曜夜 2 + 月曜昼 1 の全ティックが単一セッション列に入る。
+
+
+def test_live_ticks_augment_incomplete_day(monkeypatch):
+    """ISSUE-083 追補: 当日（未完了セッション）は live_ticks（served の in-memory buffer 末尾）を
+    parquet 優先 dedup＋中央値±30% 外れ値除去で合成し、最新ティックが列へ即時反映される。"""
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
+    monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
+    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
+    live = [
+        (70_000, 11.0),    # parquet 末尾（70s）と同秒 → dedup（追加しない・parquet 優先）
+        (80_000, 12.0),    # 末尾より後 → 追加
+        (95_000, 12.0),    # 追加
+        (96_000, 1000.0),  # 合成中央値±30% の外れ値 → 除外（_load_window_ticks と同規約）
+    ]
+    st, body = ctl.handle_tf_period_profile(
+        "jp225_tick", "1m", 0, 120, now=100.0, live_ticks=live)
+    assert st == 200 and body["ok"] is True
+    by_time = {c["time"]: c for c in body["columns"]}
+    # period0 は不変（parquet のみ）。
+    assert by_time[0]["levels"] == [[9.996, 2], [10.9905, 1]]
+    # period60 に live 末尾 12.0×2 が加算される（12→round(/0.0255)=471→12.0105）。
+    # 同秒 dedup（11.0@70s）と外れ値（1000.0）は入らない。
+    assert by_time[60]["levels"] == [[12.0105, 2], [19.992, 1], [21.012, 1]]
+
+
+def test_live_ticks_ignored_for_completed_day(monkeypatch):
+    """ISSUE-083 追補: 完了日は live_ticks を無視する（不変列のキャッシュを汚さない）。"""
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
+    monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
+    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
+    st, body = ctl.handle_tf_period_profile(
+        "jp225_tick", "1m", 0, 120, now=1e12, live_ticks=[(80_000, 12.0)])
+    assert st == 200
+    by_time = {c["time"]: c for c in body["columns"]}
+    assert by_time[60]["levels"] == [[19.992, 1], [21.012, 1]], "完了日は合成しない（byte 不変）"

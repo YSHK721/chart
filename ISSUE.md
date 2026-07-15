@@ -978,3 +978,26 @@
 - **実装**: ①catalog: mode ENUM ['normal','replay','sessions']→['normal','sessions']（リプレイセグメント消滅）②indicator_controller._deriveMode: 保存済み mode='replay'／legacy replay:true を 'normal' へ正規化（旧インスタンスの後方互換）③composition_root_front: MarketProfileReplayBar の import/構築/注入を削除 ④index.html: #mp-replay-bar-host 削除 ⑤build.mjs: MODULE_ORDER から replay bar を除去＋indicator_ui 側 symlink 削除（market_profile モジュール内の実体は replay_ui 用に温存）⑥chart_interaction_controller（present 独立コピー）: リプレイ swipe スクラブブロック・replayBar 依存・_isReplayOn を削除（replayBar 未注入での pointerdown クラッシュも同時に解消）⑦form_model.paramToField: ENUM の保存値が enumValues に無い場合（撤去済み選択肢）は default へフォールバック＝mode='replay' 保存インスタンスの gear がアクティブ無しセグメントにならない。
 - **検証**: MP web 274 緑・UI web 531/533 緑（リプレイ系テストを撤去仕様へ書換・form_model フォールバックテスト追加。既知2件=replay_analysis/timeline_player の module-not-found は本件と無関係の既存事象）。実UI（8139・mode=b）: gear 表示モードが【通常｜日別プロファイル】の2択・#mp-replay-bar-host 不在・mode='replay' 保存インスタンスを restore→「通常」アクティブで復元（src=dwell 保持）・MP 通常モードのライブ更新（market_profile_forming フェッチ）継続・コンソールエラーなし（favicon 404 のみ）。
 - **残課題**: tests/replay_analysis.test.js・tests/timeline_player.test.js は存在しないモジュールを import する既存の不整合（本件以前から失敗）。削除は既存ファイル削除＝承認事項のため未着手。
+
+## ISSUE-083: 日別プロファイルのライブ育成（当日/現在周期列を zp・dwell とも成長させる）
+- **ステータス**: RESOLVED（2026-07-15・feature/mp-sessions-live-growth）
+- **概要**: 「ライブモードで日足プロファイルもバー(zp・dwell)が育成される仕様を追加しろ」（依頼者指示）。日別プロファイル（tf-period 列）の当日/現在周期列がライブで凍結していた。
+- **実測原因**: backend は当日（未完了セッション）を「キャッシュせず都度計算」（count は経過ティック・zp は経過分＋M_REPS_LIVE）で育成対応済み。凍結はフロント jitter buffer が一度 ready にしたチャンクを再取得しない構造（過去周期不変前提の設計）にあり、当日を含むチャンクだけがライブで陳腐化していた。backend 変更なし。
+- **実装（フロント3点）**: ①TfPeriodJitterBuffer.refreshAt(time): time を含む ready チャンクを stale-while-revalidate 再取得（旧列保持→応答で差替え→onReady。失敗/進行中/未取得は非破壊 no-op・tf/src 変更中の応答は破棄）②TfPeriodProfileActor.onLiveTick(): 現在周期始端（=最新ローソク time。1D はセッションバー時刻規約・日中足は UTC floor＝列 time と同一規約）のチャンクを throttle（既定5s）付きで refreshAt→差替え成功時のみ一括再描画。可視範囲外の現在周期は fetch しない ③MarketProfileActor に onSessionsLiveGrow フック: 日別×tf-period 描画×growing（FOLLOW）の refresh（live tick 経路）で発火し、composition が tfPeriodActor.onLiveTick へ配線。ANALYSIS（static）では発火しない＝既存の成長軸（growing 信号）と整合。zp・dwell はソース透過（&src=zp）で共通。
+- **検証**: TDD Red→Green（jitter buffer 3・tf-period actor 3・MP actor 2・composition 配線 1 追加）。MP web 282/282・UI web 532/534 緑（既知2件除く）。実UI（8139・FOLLOW×日別）: 1D で当日チャンク再取得が約5〜7s間隔で発火・当日列 tpo 66597→66667（+70/30s）／15m で現在周期列 tpo 628→662（ティック flush 周期≈1分）／zp（15m）で &src=zp 再取得＋現在周期 obs 1→2（経過分ごと）・zp 応答127ms・コンソールエラーなし。
+- **追補（依頼者指示「5秒更新にしろ」「最新データで直ぐに更新しろ」・2026-07-15）**: parquet flush 周期（≈1分）律速を解消。/tf_period_profile の殻で served の in-memory LiveTickBuffer 末尾を controller へ注入し（forming の _augment_mp_forming_ticks と同型）、当日（未完了セッション）計算にのみ parquet 優先 dedup＋中央値±30% 外れ値除去で合成。count はティック単位・zp は分足格子末尾（ffill 停滞）を最新化。完了日は無視＝不変列のキャッシュ規約 byte 不変。実測: count 列 tpo 751→753→759→771（7秒間隔で毎回増加）・zp は分確定が即時反映（obs 14→15・price_max 68439→68454）。テスト: MP api tf-period 23 緑（live 合成 3 追加）・UI api 381 緑（殻透過 1 追加）。byte-parity は既知10件のみ（本変更と無関係）。
+- **残課題**: なし（更新粒度: フェッチ5秒・count はティック鮮度≈5秒・zp は分足原子ゆえ各分確定から≈5秒で反映）。
+
+## ISSUE-084: 現在値ラインの常時表示＋VA 幅カラースキーム（視認性向上・依頼者指示）
+- **ステータス**: RESOLVED（2026-07-15・feature/mp-sessions-live-growth）
+- **概要**: 「現在値の水準にラインを表示して、現在値の視認性をあげろ。VA幅もカラースキームで視認性をあげろ」（依頼者指示）。
+- **実装**: ①現在値ライン: メイン系列の priceLine を固定色（橙 #ff9800・実線幅1・lastValueVisible=軸ラベル付き）で常時表示。lwc 既定の priceLineColor=''（バー色追従）は日別プロファイルのローソク透明化で線ごと消えるため固定色を明示（POC 赤・POC* 黄・カーソル青と非衝突の配色）②VA 幅カラースキーム: tf-period 列（日別プロファイル）の VA（va_low..va_high）内レベルは通常アルファ（0.98）・VA 外は減光（×0.35）で描画し、各列の VA 幅を一目で判別可能に。va 欠損列（旧応答・空日）は全レベル通常＝後方互換。zp・dwell 共通（列データの va_low/va_high はソース非依存で供給済み）。
+- **検証**: TDD Red→Green（primitive VA アルファ 1・composition priceLine オプション 1 追加）。MP web 283/283・UI web 533/535 緑（既知2件除く）。実UI（8139）: 15m/1h で橙破線の現在値ライン＋軸ラベル（FOLLOW 中はライブ追従・68544→68533.95→68465.90 を確認）・1h zp 列の拡大確認で VA 帯内が明・帯外が減光・白 POC の三層が判別可能・ホバーで VA 境界（67710〜68070）読取・コンソールエラーなし。スクロール時にラベルが可視範囲末尾の値へ追従するのは lwc ネイティブ挙動（最新表示時は線とラベルが一致）。
+
+## ISSUE-085: zp の VA 水準異常（_value_area の int 切り捨てで VA が全域化）＋VA 表現をラインへ変更
+- **ステータス**: RESOLVED（2026-07-15・feature/mp-sessions-live-growth）
+- **経緯**: ISSUE-084 の VA 可視化に対し依頼者指摘「日足プロファイルの zp の VA 帯のカラースキームが適用されていない」「dwell は減光されているがラインで表現しろ」「VA の水準がおかしくないか?」。
+- **実測原因（2件）**: ①表現の問題: zp 列の levels は sparse（z>0 のみ）で VA が可視レベル全域を覆う列が多く（実測: 直近 1D 3列中2列で VA外レベル=0）、「VA 外減光」方式では判別対象が存在しなかった ②計算バグ: `market_profile._value_area` が `int(tpo[i])` で重みを切り捨てるため、float の z（大半が1未満）が全て 0 になり累積が閾値へ届かず**全ビン採用＝VA が列レンジ全域へ拡大**（再現: z=[0.9]*4 → 全域）。カウント系（整数 TPO）は影響なし。影響範囲は zp の全 VA（通常プロファイルの VAH/VAL・日別タイル・tf-period 列）。
+- **修正**: ①_value_area の累積を float 化（整数入力は同値＝byte-parity 維持・既知10件のみ不変を確認）②tf-period 列の VA 表現を「VA 外減光」→「VAH/VAL 境界ライン（灰・列幅）」へ変更（zp の sparse 構造でも常に描ける・レベルバーは減光しない）③完了日 zp 列のディスクキャッシュは旧 VA を含むため世代 bump（s2→s3・削除なし）。C_VA_LINE は依頼者調整で α0.3。
+- **追補（依頼者指示「境界ラインは削除、背景のみ減光（バーは減光しない）」）**: VA 表現を境界ライン→**方向背景の2トーン**へ変更。VA 帯 [va_low,va_high] は通常 α0.1・VA 外の占有レンジは減光 α0.04（陽=緑/陰=赤の色相は不変・レベルバーは減光しない・ラインなし）。va 欠損列は単一背景・dirUp 未注釈列は背景なし（従来仕様）。テスト書換 1・実UI（1D×日別×zp）で2トーン背景を確認。
+- **検証**: TDD Red→Green（_value_area float 2・primitive 表現 1）。MP api 全緑（byte-parity 既知10のみ）・MP web 283・UI web 533/535。実測: 1D zp 直近3列の VA幅/レンジ 0.32/0.40/0.53・VA内 z シェア 0.89〜0.93（修正前は全域＝1.0）。実UI（8139・1D×日別×zp）: VA ラインが質量帯（明色バンド）を正しく括り、疎な裾には掛からないことをスクリーンショットで確認。

@@ -22,9 +22,10 @@ import { LiveTickPlayer } from '../js/adapter/front/live_tick_player.js';
 function fakeLwc() {
   const setDataCalls = [];
   const createChartOpts = [];
+  const addSeriesOpts = [];
   const mainSeries = { setData: (d) => setDataCalls.push(d) };
   const chart = {
-    addSeries: () => mainSeries,
+    addSeries: (_type, opts) => { addSeriesOpts.push(opts); return mainSeries; },
     timeScale: () => ({ fitContent: () => {} }),
     panes: () => [{ setStretchFactor: () => {}, paneIndex: () => 0 }],
     addPane: () => ({ addSeries: () => ({ setData: () => {} }), setStretchFactor: () => {}, paneIndex: () => 1 }),
@@ -42,6 +43,7 @@ function fakeLwc() {
     },
     setDataCalls,
     createChartOpts,
+    addSeriesOpts,
   };
 }
 
@@ -399,4 +401,48 @@ test('bootstrap: クロスヘアは Normal(0)＝自由追従で作成する（Ma
   // Assert: createChart に crosshair.mode = Normal(0) を渡す
   assert.equal(createChartOpts.length, 1);
   assert.equal(createChartOpts[0].crosshair.mode, 0, 'Magnet(1) ではなく Normal(0)');
+});
+
+test('bootstrap: sessions×growing の MP ライブ tick が tfPeriodActor.onLiveTick へ配線される（ISSUE-083）', async () => {
+  // ISSUE-083（日別プロファイルのライブ育成）: 日別×tf-period 描画×growing（FOLLOW）では、MP の
+  //   live tick 経路（onLiveTick→refresh）が composition の配線で tfPeriodActor.onLiveTick を発火し、
+  //   当日チャンクの再取得（refreshAt）→当日列の育成につながる。static（growing=false）では発火しない。
+  const { lwc } = fakeLwcFireable();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  const { marketProfile, tfPeriodActor, ready } = await bootstrap({
+    lwc, container: fakeContainer(), doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+  });
+  await ready;
+  assert.ok(tfPeriodActor, 'B方式では tfPeriodActor が配線される');
+  let calls = 0;
+  tfPeriodActor.onLiveTick = () => { calls += 1; };
+  marketProfile.setParams({ mode: 'sessions' });
+  await marketProfile.setEnabled(true);
+  // 列描画中の想定（実UIでは可視レンジ購読/refreshTfPeriodNow が担う）。setParams 時点では MP 未有効＝
+  //   isSessions()=false のため配線が setEnabled(false) へ倒す。よって MP 有効化後に列を ON にする。
+  tfPeriodActor.setEnabled(true);
+  // static（ANALYSIS）: 発火しない。
+  await marketProfile.onLiveTick();
+  assert.equal(calls, 0, 'static では育成しない');
+  // growing（FOLLOW）: live tick → refresh → onSessionsLiveGrow → tfPeriodActor.onLiveTick。
+  marketProfile.applyGrowthState({ growing: true });
+  await marketProfile.onLiveTick();
+  assert.equal(calls, 1, 'growing の live tick で当日列の再取得が発火する');
+  // tfPeriodActor 無効（列非描画＝日別解除等）: 配線ゲートで発火しない。
+  tfPeriodActor.setEnabled(false);
+  await marketProfile.onLiveTick();
+  assert.equal(calls, 1, '列非描画中は発火しない');
+});
+
+test('bootstrap: メイン系列は現在値ラインを固定色で常時表示する（ISSUE-084: 現在値の視認性）', async () => {
+  // 日別プロファイル（ローソク透明化）でも現在値の水準が見えるよう、priceLine を candle 色に
+  //   依存しない固定色で明示する（lwc 既定の priceLineColor=''（バー色追従）は透明化で消える）。
+  const { lwc, addSeriesOpts } = fakeLwc();
+  await bootstrap({ lwc, container: {}, doc: null, storage: noStorage, protocol: 'file:' });
+  const main = addSeriesOpts[0];
+  assert.ok(main, 'メイン系列の生成オプションが渡る');
+  assert.equal(main.priceLineVisible, true, '現在値ラインを表示する');
+  assert.equal(typeof main.priceLineColor, 'string', '固定色（バー色追従にしない）');
+  assert.ok(main.priceLineColor.length > 0, '固定色が空でない');
+  assert.equal(main.lastValueVisible, true, '価格軸の現在値ラベルも表示する');
 });
