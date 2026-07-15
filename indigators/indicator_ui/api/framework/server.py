@@ -55,6 +55,10 @@ from market_profile_api.controller.market_profile_forming_controller import (  #
 from market_profile_api.controller.tf_period_profile_controller import (  # noqa: E402
     handle_tf_period_profile,
 )
+from adapter.controller.candles_controller import (  # noqa: E402
+    handle_candles,
+    handle_forming_bar,
+)
 
 # 静的配信ルート（web/）。api/ → parents[1]=api → parents[2]=indicator_ui → web。
 _WEB_ROOT = (_API_ROOT.parent / "web").resolve()
@@ -81,20 +85,8 @@ def set_live_tick_buffer(buffer: Optional[Any]) -> None:
     _live_tick_buffer = buffer
 
 
-def _forming_bar_from_buffer(ref: str, timeframe: Any, now_unix: int) -> Optional[dict]:
-    """parquet 経路が None のとき、in-memory LiveTickBuffer から現周期の形成中バーを組む（seed 鮮度化）。
 
-    buffer 未注入・非 tick ref・非対応 tf（1W/1M/未知）なら ``None``（既存挙動を変えない）。純関数
-    :func:`forming_bar.forming_bar_from_buffer_ticks` へ ``buffer.ticks_since(start*1000-1)`` を渡す。
-    """
-    buf = _live_tick_buffer
-    if buf is None or not forming_bar_mod.is_tick_ref(ref) or not forming_bar_mod.is_supported_timeframe(timeframe):
-        return None
-    start = forming_bar_mod.period_start_unix(now_unix, timeframe)
-    ticks = buf.ticks_since(start * 1000 - 1)  # start 以降（境界含む）の (ms, mid)。
-    return forming_bar_mod.forming_bar_from_buffer_ticks(ticks, start, now_unix)
-
-
+# ISSUE-087 🟡-1: _forming_bar_from_buffer は adapter/controller/candles_controller へ移設（薄殻化）。
 def _augment_mp_forming_ticks(payload: Any, ref: str, timeframe: Any, since: Any) -> None:
     """MP 形成中期間の ``payload['ticks']`` を in-memory LiveTickBuffer で補完する（秒成長の遅延解消）。
 
@@ -243,58 +235,20 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         self._handle_static(parsed.path)
 
     def _handle_candles(self, query: dict[str, list[str]]) -> None:
+        """GET /candles — 検証・生成は handle_candles（純ロジック）へ委譲する薄殻（ISSUE-087 🟡-1）。"""
         ref = (query.get("datasetRef") or [None])[0]
-        if not dataset.is_known(ref):
-            self._send_json(400, _nested_error("validation", f"未知の datasetRef です: {ref!r}"))
-            return
-        # timeframe（時間足）— 省略は原子（再集計なし・後方互換）。未知コードは 400。
         timeframe = (query.get("timeframe") or [None])[0]
-        if timeframe is not None and not dataset.is_known_timeframe(timeframe):
-            self._send_json(400, _nested_error("validation", f"未知の timeframe です: {timeframe!r}"))
-            return
-        # limit（直近 N 本）— 数字のみ採用。1 分足原子の全件直接配信を避ける表示範囲制限。
         limit_raw = (query.get("limit") or [None])[0]
-        limit = int(limit_raw) if (limit_raw and limit_raw.isdigit()) else None
-        try:
-            candles = dataset.load_candles(ref, timeframe, limit)
-        except Exception as exc:  # noqa: BLE001
-            self._send_json(500, _nested_error("internal", f"candles 取得に失敗しました: {exc}"))
-            return
-        self._send_json(200, {"ok": True, "candles": candles})
+        status, payload = handle_candles(ref, timeframe, limit_raw)
+        self._send_json(status, payload)
 
     def _handle_forming_bar(self, query: dict[str, list[str]]) -> None:
-        """GET /forming_bar — 選択 tf の現在「形成中バー」を返す（ライブ足内更新用・読取のみ）。
-
-        ``{ok: True, bar: {time,open,high,low,close,volume} | null}``。対象外 ref/tf・期間内
-        ティック無しは ``bar=null``（エラーではなく「更新なし」）。``now``（UNIX 秒）省略時は実 UTC 現在。
-        """
+        """GET /forming_bar — 検証・3段フォールバックは handle_forming_bar（純ロジック）へ委譲する薄殻。"""
         ref = (query.get("datasetRef") or [None])[0]
-        if not dataset.is_known(ref):
-            self._send_json(400, _nested_error("validation", f"未知の datasetRef です: {ref!r}"))
-            return
         timeframe = (query.get("timeframe") or [None])[0]
-        if timeframe is not None and not dataset.is_known_timeframe(timeframe):
-            self._send_json(400, _nested_error("validation", f"未知の timeframe です: {timeframe!r}"))
-            return
         now_raw = (query.get("now") or [None])[0]
-        now_override = int(now_raw) if (now_raw and now_raw.lstrip("-").isdigit()) else None
-        # now は forming_bar.resolve_now_unix に一元化（query now 優先→デモ時計→実 now）。
-        now_unix = forming_bar_mod.resolve_now_unix(now_override)
-        try:
-            # ロールアップ方式（優先）: 確定畳み込み（rollup 現周期 partial）⊕ live テール（buffer の
-            #   確定末尾以降）を O(1) で合成する。全 tf（1W/1M 含む）対応・全期間の再読み込みを排除。
-            bar = forming_bar_mod.rollup_forming_bar(ref, timeframe, now_unix, buffer=_live_tick_buffer)
-            if bar is None:
-                # フォールバック（現行挙動温存・非破壊）: parquet 全期間集計 → buffer 窓集計。
-                #   rollup_state/buffer 不在や周期先頭 base 欠落など、ロールアップ経路が組めない時のみ。
-                #   共有 forming_bar()（指標計算の apply_forming_bar 経路）は不変＝挙動ドリフトなし。
-                bar = forming_bar_mod.forming_bar(ref, timeframe, now_unix)
-                if bar is None:
-                    bar = _forming_bar_from_buffer(ref, timeframe, now_unix)
-        except Exception as exc:  # noqa: BLE001
-            self._send_json(500, _nested_error("internal", f"forming_bar 取得に失敗しました: {exc}"))
-            return
-        self._send_json(200, {"ok": True, "bar": bar})
+        status, payload = handle_forming_bar(ref, timeframe, now_raw, buffer=_live_tick_buffer)
+        self._send_json(status, payload)
 
     def _handle_market_profile(self, query: dict[str, list[str]]) -> None:
         """GET /market_profile — 足ベース TPO マーケットプロファイルを返す（読取のみ）。
