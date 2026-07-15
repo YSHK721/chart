@@ -657,3 +657,28 @@ test('tfPeriodLevelAt: 最近傍占有レベルへスナップ（縦3px相当許
   prim.setVisible(false);
   assert.equal(prim.tfPeriodLevelAt(100, 10), null);
 });
+
+// ISSUE-084: VA 幅のカラースキーム。tf-period 列の VA（va_low..va_high）内レベルは通常アルファ、
+//   VA 外は減光（×0.35）で描き、各列の VA 幅が一目で判別できる。va 欠損列は全レベル通常（後方互換）。
+test('setTfPeriods: VA 幅内は通常アルファ・VA 外は減光アルファ（VA 幅の視認性・ISSUE-084）', () => {
+  const prim = new MarketProfileHistogramPrimitive();
+  const target = fakeTarget(800);
+  prim.attached({ chart: fakeChartWithTime(), series: fakeSeries(), requestUpdate: () => {} });
+  prim.setVisible(true);
+  prim.setTfPeriods([
+    // levels 10..13（poc=10・VA=[10,12]）→ 13 だけ VA 外＝減光。11/12 は VA 内＝通常。
+    { time: 100, levels: [[10, 2], [11, 1], [12, 1], [13, 1]], poc: 10, va_low: 10, va_high: 12 },
+    // va 欠損列 → 全レベル通常アルファ（後方互換）。
+    { time: 200, levels: [[20, 1], [21, 1]], poc: 20 },
+  ], 1);
+  prim.paneViews().forEach((v) => v.renderer().draw(target));
+  const at = (y) => target.rects.filter((r) => Math.round(r.y) === y && r.fill.startsWith('hsla('));
+  const alphaOf = (r) => Number(r.fill.match(/,\s*([0-9.]+)\)$/)[1]);
+  // VA 内（11,12）は通常アルファ 0.98。
+  assert.ok(at(11).length >= 1 && Math.abs(alphaOf(at(11)[0]) - 0.98) < 1e-6, 'VA 内は通常アルファ');
+  assert.ok(Math.abs(alphaOf(at(12)[0]) - 0.98) < 1e-6, 'VA 上限も VA 内');
+  // VA 外（13）は減光（0.98×0.35）。
+  assert.ok(at(13).length >= 1 && Math.abs(alphaOf(at(13)[0]) - 0.98 * 0.35) < 1e-6, 'VA 外は減光');
+  // va 欠損列（21）は通常アルファ（後方互換）。
+  assert.ok(Math.abs(alphaOf(at(21)[0]) - 0.98) < 1e-6, 'va 欠損列は全レベル通常');
+});

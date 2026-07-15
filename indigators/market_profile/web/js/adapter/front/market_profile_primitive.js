@@ -68,6 +68,7 @@ const SESS_MIN_BAR_PX = 1.5;
 //   旧呼び出し）は背景を描かない（後方互換）。
 const C_TFP_BG_UP = 'rgba(38, 166, 154, 0.1)';   // 陽線周期（薄緑）
 const C_TFP_BG_DOWN = 'rgba(239, 83, 80, 0.1)';  // 陰線周期（薄赤）
+const TFP_VA_OUT_DIM = 0.35;  // ISSUE-084: VA 外レベルの減光率（VA 幅のカラースキーム）。
 export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -389,14 +390,20 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       let cmax = 1;
       for (let k = 0; k < levels.length; k += 1) { if (levels[k][1] > cmax) cmax = levels[k][1]; }
       const pocPrice = c.poc;
+      // ISSUE-084: VA 幅のカラースキーム。VA（va_low..va_high）内は通常アルファ・VA 外は減光で描き、
+      //   各列の VA 幅を一目で判別できるようにする。va 欠損列（旧応答・空日）は全レベル通常（後方互換）。
+      const vaLo = c.va_low;
+      const vaHi = c.va_high;
+      const hasVa = vaLo != null && vaHi != null;
       for (let k = 0; k < levels.length; k += 1) {
         const price = levels[k][0];
         const cnt = levels[k][1];
         const y = toY(price);
         if (y == null) continue;
         const w = Math.max(SESS_MIN_BAR_PX, (cnt / cmax) * (tileW - 2));
+        const inVa = !hasVa || (price >= vaLo && price <= vaHi);
         ctx.fillStyle = (pocPrice != null && Math.abs(price - pocPrice) < 1e-9)
-          ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
+          ? C_SESS_POC : heatColor(cnt / cmax, inVa ? SESS_BAR_ALPHA : SESS_BAR_ALPHA * TFP_VA_OUT_DIM);
         ctx.fillRect(left + 1, y - lvlH / 2, w, lvlH);
       }
     }

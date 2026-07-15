@@ -987,3 +987,9 @@
 - **検証**: TDD Red→Green（jitter buffer 3・tf-period actor 3・MP actor 2・composition 配線 1 追加）。MP web 282/282・UI web 532/534 緑（既知2件除く）。実UI（8139・FOLLOW×日別）: 1D で当日チャンク再取得が約5〜7s間隔で発火・当日列 tpo 66597→66667（+70/30s）／15m で現在周期列 tpo 628→662（ティック flush 周期≈1分）／zp（15m）で &src=zp 再取得＋現在周期 obs 1→2（経過分ごと）・zp 応答127ms・コンソールエラーなし。
 - **追補（依頼者指示「5秒更新にしろ」「最新データで直ぐに更新しろ」・2026-07-15）**: parquet flush 周期（≈1分）律速を解消。/tf_period_profile の殻で served の in-memory LiveTickBuffer 末尾を controller へ注入し（forming の _augment_mp_forming_ticks と同型）、当日（未完了セッション）計算にのみ parquet 優先 dedup＋中央値±30% 外れ値除去で合成。count はティック単位・zp は分足格子末尾（ffill 停滞）を最新化。完了日は無視＝不変列のキャッシュ規約 byte 不変。実測: count 列 tpo 751→753→759→771（7秒間隔で毎回増加）・zp は分確定が即時反映（obs 14→15・price_max 68439→68454）。テスト: MP api tf-period 23 緑（live 合成 3 追加）・UI api 381 緑（殻透過 1 追加）。byte-parity は既知10件のみ（本変更と無関係）。
 - **残課題**: なし（更新粒度: フェッチ5秒・count はティック鮮度≈5秒・zp は分足原子ゆえ各分確定から≈5秒で反映）。
+
+## ISSUE-084: 現在値ラインの常時表示＋VA 幅カラースキーム（視認性向上・依頼者指示）
+- **ステータス**: RESOLVED（2026-07-15・feature/mp-sessions-live-growth）
+- **概要**: 「現在値の水準にラインを表示して、現在値の視認性をあげろ。VA幅もカラースキームで視認性をあげろ」（依頼者指示）。
+- **実装**: ①現在値ライン: メイン系列の priceLine を固定色（橙 #ff9800・実線幅1・lastValueVisible=軸ラベル付き）で常時表示。lwc 既定の priceLineColor=''（バー色追従）は日別プロファイルのローソク透明化で線ごと消えるため固定色を明示（POC 赤・POC* 黄・カーソル青と非衝突の配色）②VA 幅カラースキーム: tf-period 列（日別プロファイル）の VA（va_low..va_high）内レベルは通常アルファ（0.98）・VA 外は減光（×0.35）で描画し、各列の VA 幅を一目で判別可能に。va 欠損列（旧応答・空日）は全レベル通常＝後方互換。zp・dwell 共通（列データの va_low/va_high はソース非依存で供給済み）。
+- **検証**: TDD Red→Green（primitive VA アルファ 1・composition priceLine オプション 1 追加）。MP web 283/283・UI web 533/535 緑（既知2件除く）。実UI（8139）: 15m/1h で橙破線の現在値ライン＋軸ラベル（FOLLOW 中はライブ追従・68544→68533.95→68465.90 を確認）・1h zp 列の拡大確認で VA 帯内が明・帯外が減光・白 POC の三層が判別可能・ホバーで VA 境界（67710〜68070）読取・コンソールエラーなし。スクロール時にラベルが可視範囲末尾の値へ追従するのは lwc ネイティブ挙動（最新表示時は線とラベルが一致）。
