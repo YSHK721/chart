@@ -658,27 +658,30 @@ test('tfPeriodLevelAt: 最近傍占有レベルへスナップ（縦3px相当許
   assert.equal(prim.tfPeriodLevelAt(100, 10), null);
 });
 
-// ISSUE-084: VA 幅のカラースキーム。tf-period 列の VA（va_low..va_high）内レベルは通常アルファ、
-//   VA 外は減光（×0.35）で描き、各列の VA 幅が一目で判別できる。va 欠損列は全レベル通常（後方互換）。
-test('setTfPeriods: VA 幅内は通常アルファ・VA 外は減光アルファ（VA 幅の視認性・ISSUE-084）', () => {
+// ISSUE-084 改（依頼者指示）: VA 幅は境界ライン（VAH/VAL の横線・灰）で表現する。旧「VA 外減光」は
+//   zp のような sparse levels（z>0 のみ）で VA が可視レベル全域を覆う列では判別不能だった（実測）。
+//   レベルバーは全て通常アルファ（減光しない）。va 欠損列はラインを描かない（後方互換）。
+test('setTfPeriods: VA 幅は VAH/VAL 境界ライン（灰）で表現し、レベルは減光しない（ISSUE-084 改）', () => {
   const prim = new MarketProfileHistogramPrimitive();
   const target = fakeTarget(800);
   prim.attached({ chart: fakeChartWithTime(), series: fakeSeries(), requestUpdate: () => {} });
   prim.setVisible(true);
   prim.setTfPeriods([
-    // levels 10..13（poc=10・VA=[10,12]）→ 13 だけ VA 外＝減光。11/12 は VA 内＝通常。
     { time: 100, levels: [[10, 2], [11, 1], [12, 1], [13, 1]], poc: 10, va_low: 10, va_high: 12 },
-    // va 欠損列 → 全レベル通常アルファ（後方互換）。
+    // va 欠損列 → ラインなし（後方互換）。
     { time: 200, levels: [[20, 1], [21, 1]], poc: 20 },
   ], 1);
   prim.paneViews().forEach((v) => v.renderer().draw(target));
-  const at = (y) => target.rects.filter((r) => Math.round(r.y) === y && r.fill.startsWith('hsla('));
   const alphaOf = (r) => Number(r.fill.match(/,\s*([0-9.]+)\)$/)[1]);
-  // VA 内（11,12）は通常アルファ 0.98。
-  assert.ok(at(11).length >= 1 && Math.abs(alphaOf(at(11)[0]) - 0.98) < 1e-6, 'VA 内は通常アルファ');
-  assert.ok(Math.abs(alphaOf(at(12)[0]) - 0.98) < 1e-6, 'VA 上限も VA 内');
-  // VA 外（13）は減光（0.98×0.35）。
-  assert.ok(at(13).length >= 1 && Math.abs(alphaOf(at(13)[0]) - 0.98 * 0.35) < 1e-6, 'VA 外は減光');
-  // va 欠損列（21）は通常アルファ（後方互換）。
-  assert.ok(Math.abs(alphaOf(at(21)[0]) - 0.98) < 1e-6, 'va 欠損列は全レベル通常');
+  // レベルバーは VA 内外を問わず通常アルファ 0.98（減光しない）。
+  for (const y of [11, 12, 13, 21]) {
+    const rs = target.rects.filter((r) => Math.round(r.y) === y && r.fill.startsWith('hsla('));
+    assert.ok(rs.length >= 1 && Math.abs(alphaOf(rs[0]) - 0.98) < 1e-6, `price=${y} は通常アルファ`);
+  }
+  // VA 境界ライン: va_high=12 / va_low=10 に高さ 1px・灰（C_VA_LINE・α0.3 依頼者調整）の横線が列幅で描かれる。
+  const vaLines = target.rects.filter((r) => r.fill === 'rgba(154, 164, 178, 0.3)' && r.h === 1);
+  const lineYs = vaLines.map((r) => r.y + 0.5).sort((a, b) => a - b);
+  assert.deepEqual(lineYs, [10, 12], 'VAL/VAH の境界ラインを描く');
+  // va 欠損列（time=200・price 20/21 帯）にはラインを描かない。
+  assert.ok(!vaLines.some((r) => r.y + 0.5 >= 19 && r.y + 0.5 <= 22), 'va 欠損列はラインなし');
 });
