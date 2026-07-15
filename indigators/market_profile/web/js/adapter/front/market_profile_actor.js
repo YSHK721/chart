@@ -124,11 +124,16 @@ export class MarketProfileActor {
   constructor({
     client, primitive, mainSeries, getContext, replayBar, getCandles, renderer,
     formingClient, makeAccumulator, sessionsDrawnByTfPeriod, onParamsChanged,
+    onSessionsLiveGrow,
   } = {}) {
     this._client = client;
     // パラメータ変更通知（注入）。setParams 完了時に呼ぶ。composition_root が tf-period 列アクターの
     //   即時再取得（src/mode 変更を可視レンジ変化を待たず反映・ISSUE-066）へ配線する。未注入は no-op。
     this._onParamsChanged = typeof onParamsChanged === 'function' ? onParamsChanged : () => {};
+    // ライブ育成通知（ISSUE-083・注入）。日別×tf-period 描画×growing（FOLLOW）の refresh（live tick 経路）
+    //   で呼ぶ。composition_root が tf-period 列アクターの当日チャンク再取得（refreshAt）へ配線し、
+    //   当日列（zp/dwell とも）を育てる。throttle は tf-period 側の責務。未注入は no-op（後方互換）。
+    this._onSessionsLiveGrow = typeof onSessionsLiveGrow === 'function' ? onSessionsLiveGrow : () => {};
     this._primitive = primitive;
     this._mainSeries = mainSeries;
     this._replayBar = replayBar ?? null;
@@ -765,6 +770,11 @@ export class MarketProfileActor {
     if (this._sessions && this._sessionsDrawnByTfPeriod()) {
       this._applySessions(null);      // タイル非描画（tfDraws は null）＋読取欄クリア＋candle 透明化は tf-period 委譲。
       this._focusSessionsPending();   // 初回のみ candle 範囲へ focus（列を画面内へ）。
+      if (this._growing) {
+        // ISSUE-083: growing（FOLLOW）中は当日列を tf-period 側で育成する（live tick 経路の refresh は
+        //   ここへ毎回到達する＝発火は毎回・再取得の間引きは tf-period 側 throttle が担う）。
+        this._onSessionsLiveGrow();
+      }
       return;
     }
     if (this._refreshRunning) {
