@@ -201,10 +201,11 @@ const RESMODE_FIELD = {
   enumLabels: { a: 'A', b: 'B' },
   value: 'a',
 };
+// ISSUE-082: リプレイモード撤去後の mode ENUM は [normal, sessions] の 2 択。
 const MODE_FIELD = {
   name: 'mode',
-  enumValues: ['normal', 'replay', 'sessions'],
-  enumLabels: { normal: '通常', replay: 'リプレイ', sessions: '日別プロファイル' },
+  enumValues: ['normal', 'sessions'],
+  enumLabels: { normal: '通常', sessions: '日別プロファイル' },
   value: 'normal',
 };
 
@@ -227,7 +228,7 @@ test('_buildSegmented click updates _values and fires _onChange (mode=sessions �
   dialog._okBtn = { disabled: false };
 
   const wrap = dialog._buildSegmented(MODE_FIELD);
-  const [normalBtn, replayBtn, sessionsBtn] = wrap.children;
+  const [normalBtn, sessionsBtn] = wrap.children;
 
   // Act: 「日別プロファイル」ボタンをクリック。
   sessionsBtn.click();
@@ -236,7 +237,6 @@ test('_buildSegmented click updates _values and fires _onChange (mode=sessions �
   assert.equal(dialog._values.mode, 'sessions');
   assert.equal(sessionsBtn.classList.contains('is-active'), true);
   assert.equal(normalBtn.classList.contains('is-active'), false);
-  void replayBtn;
 });
 
 // ISSUE-080: 選択中の option が無効化されたら最初の有効 option へ自動切替（zp→dwell が可視で跳ぶ）。

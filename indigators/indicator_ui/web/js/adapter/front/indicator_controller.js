@@ -318,14 +318,15 @@ export class IndicatorController {
   //   - mode も legacy キーも無い旧インスタンスは null（mode を付与しない＝actor 既定=通常）。
   _deriveMode(p = {}) {
     if (p.mode != null) {
-      return p.mode;
+      // ISSUE-082: リプレイモードは present から撤去済み。保存済み mode='replay' は 'normal' へ正規化。
+      return p.mode === 'replay' ? 'normal' : p.mode;
     }
     // 両 true の旧データは sessions 優先（排他統合のため一方に確定させる）。
     if (p.sessions === true) {
       return 'sessions';
     }
     if (p.replay === true) {
-      return 'replay';
+      return 'normal'; // ISSUE-082: legacy replay:true も normal へ（リプレイ撤去）。
     }
     // legacy キーが存在し明示 false（両 OFF）なら normal を導出する（両フラグ不在は null）。
     if (p.replay != null || p.sessions != null) {
