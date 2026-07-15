@@ -35,7 +35,6 @@ import { TfPeriodJitterBuffer } from './tf_period_jitter_buffer.js';
 import { TfPeriodProfileActor } from './tf_period_profile_actor.js';
 import { TfPeriodTooltip, formatPeriodLabel } from './tf_period_tooltip.js';
 import { MarketProfileActor } from './market_profile_actor.js';
-import { MarketProfileReplayBar } from './market_profile_replay_bar.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
 // GrowthCoordinator は共有 market_profile モジュール（usecase/growth_coordinator.js）へ移設済み。
 //   present は adapter/front/mp_live_mode_coordinator.js（symlink）経由で import（byte 不変 retarget）。
@@ -238,21 +237,8 @@ export async function bootstrap({
   //   getContext は controller._timeframe を遅延参照する（呼び出しは setEnabled/refresh 時＝
   //   controller 代入後）。
   let controller;
-  // リプレイスライダバー（増分1）。replay=ON で下部に表示。input で対応足 time を actor.setReplayCursor へ。
-  //   candles は renderer.getCandles()（取得済み・読取のみ）を再利用し、min/max・index→time を賄う。
-  //   doc/container 不在（SSR/テスト）でも内部で no-op（防御）。
-  // バーのホストは index.html の #mp-replay-bar-host（チャート下部・sibling）を優先し、
-  //   不在時は container（後方互換・テスト）へフォールバックする。#chart 内へ差し込まない
-  //   （lightweight-charts が #chart を専有するため、canvas と重ならない sibling へ置く）。
-  const replayHost = (doc && typeof doc.getElementById === 'function'
-    ? doc.getElementById('mp-replay-bar-host') : null) || container;
-  const replayBar = new MarketProfileReplayBar({
-    document: doc,
-    container: replayHost,
-    onScrub: (time) => { if (controller && controller._marketProfile) { controller._marketProfile.setReplayCursor(time); } },
-    // 増分2: モード（アンカー/ローリング）・スナップショット変更 → actor が現在 T で再取得する。
-    onChange: () => { if (controller && controller._marketProfile) { controller._marketProfile.onReplayControlsChange(); } },
-  });
+  // ISSUE-082: リプレイモードは present から撤去（リプレイバーの構築・配線なし）。actor の
+  //   リプレイ機構は replay_ui（別アプリ）専用の共有資産として温存されている。
   // MP primitive を変数化し、時間足毎profile列（tf-period）actor と共有する（同一 primitive の
   //   setTfPeriods で描画＝mainSeries へ二重 attach しない）。
   const mpPrimitive = new MarketProfileHistogramPrimitive();
@@ -271,7 +257,6 @@ export async function bootstrap({
     client: new MarketProfileClient({ fetch }),
     primitive: mpPrimitive,
     mainSeries,
-    replayBar,
     // ISSUE-066: setParams 完了時に tf-period 列を即時再取得（sessions×ライブで src 変更が可視レンジ
     //   変化を待たず反映される）。tf-period 非配線時は no-op。
     onParamsChanged: () => refreshTfPeriodNow(),
@@ -308,7 +293,7 @@ export async function bootstrap({
     },
   });
 
-  // チャート操作（スワイプスクラブ・縦価格パン・wheel 価格ズーム・dblclick reset）の配線は
+  // チャート操作（縦価格パン・wheel 価格ズーム・dblclick reset）の配線は
   //   ChartInteractionController（adapter/front）へ分離した（ISSUE-040a）。Composition Root は
   //   new して install するだけに縮小する（配線専用）。振る舞い本体・座標計算・イベント登録順・分岐は
   //   同コントローラに byte 不変で移設済み（挙動不変）。getController は controller を遅延参照する
@@ -317,7 +302,6 @@ export async function bootstrap({
   new ChartInteractionController({
     container,
     renderer,
-    replayBar,
     getController: () => controller,
     updatePaneHeight,
   }).install();
@@ -579,5 +563,5 @@ export async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, replayBar, liveFollowController, mpLiveModeCoordinator, tfPeriodActor };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor };
 }

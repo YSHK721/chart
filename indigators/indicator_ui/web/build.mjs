@@ -52,7 +52,6 @@ const MODULE_ORDER = [
   'js/adapter/front/market_profile_forming_client.js',
   'js/adapter/front/market_profile_primitive.js',
   'js/adapter/front/market_profile_actor.js',
-  'js/adapter/front/market_profile_replay_bar.js',
   'js/adapter/front/chart_interaction_controller.js',
   'js/adapter/front/live_follow_controller.js',
   'js/adapter/front/mp_live_mode_coordinator.js',
