@@ -253,12 +253,15 @@ export async function bootstrap({
   //   周期内分数が退化し 400）。委譲述語（sessionsDrawnByTfPeriod）と tf-period 有効化（tfpShouldOn）の
   //   **両方**がこの同一条件を使う＝どちらか片方だけだと「MP はタイルを委譲したのに tf-period は無効」で
   //   誰も日別を描かない空白が生じる（実UI検証で検出）。marketProfile は直後に代入（closure 遅延評価で吸収）。
-  const ZP_TF_ALLOWED = new Set(['15m', '30m', '1h', '4h', '1D']);
+  const ZP_TF_ALLOWED = new Set(['15m', '30m', '1h', '4h', '1D', '1W', '1M']); // ISSUE-086: 1W/1M＝日次 zp 畳み込み。
   const mpSrc = () => (marketProfile && typeof marketProfile.srcParam === 'function'
     ? marketProfile.srcParam() : null);
   const zpTfOk = () => (mpSrc() !== 'zp' || ZP_TF_ALLOWED.has(controller._timeframe));
   // ISSUE-066: MP パラメータ変更（gear の src/mode 等）を tf-period 列アクターへ即時伝播するフック。
   //   tf-period 配線（mode==='b'）で実体を代入する。未配線（A方式・非served）は no-op（byte 不変）。
+  // tf-period 列を描ける tf（ISSUE-086: 全時間足統一）。player tf（1m..1D）＋バケット tf（1W/1M）。
+  //   isPlayerTimeframe は LiveTickPlayer（tick 再生）の対応判定で別物＝ここでは列描画の判定に使わない。
+  const isTfPeriodTimeframe = (tf) => isPlayerTimeframe(tf) || tf === '1W' || tf === '1M';
   let refreshTfPeriodNow = () => {};
   let liveGrowTfPeriod = () => {};
   const marketProfile = new MarketProfileActor({
@@ -278,7 +281,7 @@ export async function bootstrap({
     // 日別プロファイルを tf-period 列（tfPeriodActor）が描くモードか（served かつ対応 tf）。true のとき
     //   MarketProfileActor は日別タイルを描かず candle 透明化も tf-period へ委ねる（初回の「日別(candle)→
     //   (tf-period)」ちらつき防止・ISSUE-055）。controller は呼び出し時に確定済み（後方参照）。
-    sessionsDrawnByTfPeriod: () => mode === 'b' && isPlayerTimeframe(controller._timeframe)
+    sessionsDrawnByTfPeriod: () => mode === 'b' && isTfPeriodTimeframe(controller._timeframe)
       && zpTfOk(),
     // 増分2: スナップショットのローソクトリム源（renderer.setCandleTrim）。lwc 直叩きは renderer に隔離。
     renderer,
@@ -357,12 +360,19 @@ export async function bootstrap({
     //   （32）にして、ローリング中に可視列が LRU 破棄される＝フラッシュを防ぐ。
     const TFP_BAR_SEC = {
       '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1D': 86400,
+      '1W': 604800, '1M': 2592000, // ISSUE-086: バケット列（窓幅は上限 45 日へクランプされる）。
     };
     const TFP_WINDOW_MIN = 6 * 3600;      // 下限 6h（intraday 据置）。
     const TFP_WINDOW_MAX = 45 * 86400;    // 上限 45 日（1D の 1 チャンク応答肥大を抑える）。
     const TFP_PERIODS_PER_CHUNK = 96;     // 1 チャンク≒96 周期ぶん（1 画面を数チャンクに収める）。
     const windowSecForTf = (tf) => {
       const bar = TFP_BAR_SEC[tf] || 86400;
+      // ISSUE-086: バケット tf（1W/1M）は 1 周期=1 列で応答が軽く、45 日上限のままだと全期間表示で
+      //   チャンクが百超に分裂する（実測 192 リクエスト・LRU 上限 32 で破棄再取得のスラッシング）。
+      //   上限クランプを外し 96 周期/チャンク（1W≈1.8年・1M≈8年）で数チャンクに収める。
+      if (tf === '1W' || tf === '1M') {
+        return bar * TFP_PERIODS_PER_CHUNK;
+      }
       return Math.max(TFP_WINDOW_MIN, Math.min(TFP_WINDOW_MAX, bar * TFP_PERIODS_PER_CHUNK));
     };
     const tfBuf = new TfPeriodJitterBuffer({
@@ -401,7 +411,7 @@ export async function bootstrap({
       tfpTooltip.show(pos.x, pos.y, { ...hit, timeLabel: formatPeriodLabel(hit.time) });
     });
     const tfpShouldOn = () => !!(marketProfile && typeof marketProfile.isSessions === 'function'
-      && marketProfile.isSessions()) && isPlayerTimeframe(controller._timeframe)
+      && marketProfile.isSessions()) && isTfPeriodTimeframe(controller._timeframe)
       // src=zp は backend 対応 tf（15m..1D）のみ列を出せる（1m/5m は 400 → 列を出さない。
       //   このとき委譲述語も false になり MP actor が日別タイルを自前描画＝フォールバック）。
       && zpTfOk();

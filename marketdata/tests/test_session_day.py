@@ -133,3 +133,58 @@ def test_session_bar_time_is_utc_midnight_of_label():
     assert sd.session_bar_time(utc(2026, 7, 12, 21, 0, 0)) == utc(2026, 7, 13)
     # 冬。
     assert sd.session_bar_time(utc(2026, 1, 11, 23, 0, 37)) == utc(2026, 1, 12)
+
+
+class TestSessionPeriodLabels:
+    """ISSUE-086: 週/月バケットのラベル規約（rollup=resample の W-FRI / ME と厳密一致）。"""
+
+    def test_week_label_is_friday_of_broker_week(self):
+        from marketdata.session_day import session_period_label
+
+        # 2026-07-15（水）のセッション → 週ラベルは同週金曜 2026-07-17。
+        t = sd.session_label_to_start("2026-07-15")
+        assert session_period_label("1W", t) == "2026-07-17"
+        # 土曜開始（週= [土..金]）: 2026-07-11（土）→ 翌金曜 2026-07-17。
+        t2 = sd.session_label_to_start("2026-07-11")
+        assert session_period_label("1W", t2) == "2026-07-17"
+        # 金曜自身は自分がラベル。
+        t3 = sd.session_label_to_start("2026-07-17")
+        assert session_period_label("1W", t3) == "2026-07-17"
+
+    def test_month_label_is_calendar_month_end(self):
+        from marketdata.session_day import session_period_label
+
+        t = sd.session_label_to_start("2026-07-15")
+        assert session_period_label("1M", t) == "2026-07-31"
+        t2 = sd.session_label_to_start("2026-02-03")
+        assert session_period_label("1M", t2) == "2026-02-28"
+
+    def test_period_session_labels_enumerates_bucket_days(self):
+        from marketdata.session_day import period_session_labels
+
+        # 週 2026-07-17: 土 07-11 〜 金 07-17 の 7 ブローカー暦日。
+        labels = period_session_labels("1W", "2026-07-17")
+        assert labels[0] == "2026-07-11" and labels[-1] == "2026-07-17" and len(labels) == 7
+        # 月 2026-02-28: 02-01 〜 02-28。
+        labels_m = period_session_labels("1M", "2026-02-28")
+        assert labels_m[0] == "2026-02-01" and labels_m[-1] == "2026-02-28" and len(labels_m) == 28
+
+    def test_labels_match_reference_resample(self):
+        """参照実装一致: 合成 1 分足を resample_ohlc_tf('1W'/'1M') した bar ラベル集合と、
+        各セッション日を session_period_label で束ねたラベル集合が一致する。"""
+        import numpy as np
+        import pandas as pd
+        from marketdata.resample import resample_ohlc_tf
+        from marketdata.session_day import session_period_label
+
+        idx = pd.date_range("2026-06-01", "2026-07-14", freq="1min")
+        df = pd.DataFrame(
+            {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1},
+            index=idx,
+        )
+        for tf in ("1W", "1M"):
+            bars = resample_ohlc_tf(df, tf)
+            ref_labels = {ts.strftime("%Y-%m-%d") for ts in bars.index}
+            secs = idx.values.astype("datetime64[s]").astype("int64")  # 単位非依存の秒化。
+            mine = {session_period_label(tf, int(s)) for s in secs[:: 60 * 12]}
+            assert mine == ref_labels, f"{tf}: {sorted(mine)} != {sorted(ref_labels)}"

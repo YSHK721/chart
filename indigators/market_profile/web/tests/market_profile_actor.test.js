@@ -1052,3 +1052,24 @@ test('onSessionsLiveGrow: 通常モード・tfDraws=false では発火しない�
   await actor.refresh();
   assert.equal(grows, 0, 'tfDraws=false では発火しない');
 });
+
+// ISSUE-086（全時間足パラメータ統一）: 期間=当日 の from は 1W/1M でも「現在のセッション日」始端。
+//   1W/1M バーの time はラベル（週末金曜/月末）＝未来日になり得るため、now でクランプして写像する。
+test('_periodExtra: 1W の未来ラベル time は now でクランプし現在セッション始端を from にする（ISSUE-086）', async () => {
+  // 2026-07-15（水）12:00 UTC 時点。最新 1W バーの time はラベル 2026-07-17（金）＝未来。
+  const nowSec = Date.UTC(2026, 6, 15, 12, 0, 0) / 1000;
+  const fridayLabel = Date.UTC(2026, 6, 17) / 1000;
+  const candles = [{ time: fridayLabel, open: 1, high: 1, low: 1, close: 1 }];
+  const actor = new MarketProfileActor({
+    client: fakeClient(PROFILE_WITH_SESSIONS), primitive: fakeSessPrimitive(),
+    mainSeries: fakeMainSeries(), renderer: fakeSessRenderer(),
+    getContext: () => ({ datasetRef: 'sample', timeframe: '1W' }),
+    getCandles: () => candles,
+    nowSecFn: () => nowSec,
+  });
+  actor.setParams({ mode: 'normal', src: 'zp', period: 'day' });
+  const extra = actor._periodExtra();
+  // 期待: 2026-07-15 セッションの始端（夏 EDT＝前日 21:00 UTC）。未来の金曜セッションではない。
+  const expected = Date.UTC(2026, 6, 14, 21, 0, 0) / 1000;
+  assert.equal(extra.from, expected, '未来ラベルは now へクランプ（現在セッション始端）');
+});

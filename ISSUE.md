@@ -1001,3 +1001,36 @@
 - **修正**: ①_value_area の累積を float 化（整数入力は同値＝byte-parity 維持・既知10件のみ不変を確認）②tf-period 列の VA 表現を「VA 外減光」→「VAH/VAL 境界ライン（灰・列幅）」へ変更（zp の sparse 構造でも常に描ける・レベルバーは減光しない）③完了日 zp 列のディスクキャッシュは旧 VA を含むため世代 bump（s2→s3・削除なし）。C_VA_LINE は依頼者調整で α0.3。
 - **追補（依頼者指示「境界ラインは削除、背景のみ減光（バーは減光しない）」）**: VA 表現を境界ライン→**方向背景の2トーン**へ変更。VA 帯 [va_low,va_high] は通常 α0.1・VA 外の占有レンジは減光 α0.04（陽=緑/陰=赤の色相は不変・レベルバーは減光しない・ラインなし）。va 欠損列は単一背景・dirUp 未注釈列は背景なし（従来仕様）。テスト書換 1・実UI（1D×日別×zp）で2トーン背景を確認。
 - **検証**: TDD Red→Green（_value_area float 2・primitive 表現 1）。MP api 全緑（byte-parity 既知10のみ）・MP web 283・UI web 533/535。実測: 1D zp 直近3列の VA幅/レンジ 0.32/0.40/0.53・VA内 z シェア 0.89〜0.93（修正前は全域＝1.0）。実UI（8139・1D×日別×zp）: VA ラインが質量帯（明色バンド）を正しく括り、疎な裾には掛からないことをスクリーンショットで確認。
+
+## ISSUE-086: 全時間足でパラメータ統一（1W/1M＝セッション日次ロールアップのバケット列）
+- **ステータス**: RESOLVED（2026-07-15・feature/mp-unify-tf-params）
+- **概要**: 「日足と週足と月足でパラメータの設定項目が違う」→「原子は揃っているのでロールアップで対応できないのか」→「いつも通りの開発フェーズで全時間足でパラメータを統一しろ」（依頼者指示）。時間足による gear 項目の欠落（1W/1M で期間・日別列・zp が不成立）を、セッション日原子のロールアップで解消した。
+- **設計**: 週/月バケット規約は rollup（marketdata.resample）の参照実装に厳密一致: 1W=W-FRI（週=[土..金]ブローカー日・ラベル=金曜）/1M=ME（ラベル=暦月末）・列 time=ラベルの UTC 深夜（バーと同一）。①marketdata/session_day.py に session_period_label/period_session_labels/next_period_label を追加（resample_ohlc_tf とのラベル一致を合成データで検定）②count バケット列＝日次 1D 列（既存 s1 キャッシュ再利用）の価格キー加算・poc/va は _value_area_sparse で再計算 ③zp バケット列＝z は加算不可のため日次 {obs,mean,var}（_zp_day_rollup＝znull キャッシュ再利用・独立日でモーメント加算可）を絶対 log 格子の k 空間で合成し z を再計算（compute_zp_profile の窓合成と同一規約）。当日は live buffer 合成グリッドで都度計算（ISSUE-083 追補と同鮮度）④完了バケットは mem→disk（{tf}/s1/g10・{tf}/s3/zp）。
+- **フロント統一**: _MP_PLAYER_TF/_MP_ZP_TF・ZP_TF_ALLOWED・tf-period 有効述語へ 1W/1M を追加（LiveTickPlayer の isPlayerTimeframe とは分離）。期間（period）の tf 制限を撤廃（通常モードのみ条件・「当日」窓は tf 独立）。1W/1M バー time はラベル＝未来日になり得るため _periodExtra は now クランプで現在セッションへ写像（回帰テスト付き）。バケット tf の jitter チャンク窓は 45 日上限を外し 96 周期/チャンク（実測: 週足全期間表示のリクエスト 192→9・LRU スラッシング解消）。
+- **検証**: marketdata 139（ラベル規約 4 追加・参照実装一致含む）・MP api 226・MP web 284・UI web 533/535 全緑。実UI（8139）: 週足×日別×zp で週列（2トーン VA 背景・白 POC・ホバー読取 z+0.62/VA 66942〜68548）・月足列・週足×通常で mode/src/va/period/dispbp 全5項目表示＝1D と同一（統一達成）・1W count/zp 応答 0.16〜0.28s・当日週バケットのライブ育成は既存 onLiveTick 経路がそのまま機能（列 time=最新バー time）。
+
+## ISSUE-087: システム全体アーキテクチャ調査（アーキテクチャエージェント・依頼者指示）
+- **ステータス**: OPEN（2026-07-15 起票・対応は依頼者裁定待ち）
+- **総合判定**: 不合格（構造的リスク 3 件・改善推奨 4 件。最下層 marketdata の依存healthは健全＝内側→外側の逆流 0 件・上流 import 0 件）
+- **🔴 構造的リスク**:
+  1. **MP backend が indicator_ui の `adapter` パッケージへ裸名依存（sys.path 注入前提）**: market_profile_controller.py:28 ほか production 4 ファイルが `from adapter.compute import ...` を server.py:33-41 / _indicator_ui_bridge.py:43-45 の sys.path.insert で解決。indicator_ui 側の再編で MP が無言破壊されるリスク。推奨: 共有純粋物（ERROR_STATUS・tf 秒長等）は marketdata へ降ろし、残りは MP 側 Output Boundary（protocol）＋Composition Root 注入（DIP）。
+  2. **tf→秒長／許可 tf 集合が 5 箇所以上に散在（単一情報源違反・実ドリフト有）**: _TF_BAR_SEC（mp controller）・TF_BAR_SEC（actor.js/growth_window.js）・TF_SECONDS（live_tick_player.js）・TIMEFRAME_RULES（resample.py）・index.html の tf ボタン（**30m が UI に欠落＝既に不一致**）。actor.js は bundler の top-level const 衝突で growth_window を import できず再宣言。推奨: tf メタ単一定義（Python=marketdata.resample / JS=tf_meta.js domain 1 個）＋HTML ボタン生成＋bundler の名前空間化。
+  3. **セッション日規則・VA 定義が Python/JS 二重実装（同期は手写しスポット値のみ）**: session_day.py ↔ session_day.js（同期検定は JS テストのハードコード 2 値のみ）、_value_area ↔ dwell_accumulator.js valueArea＋VA_PCT=0.70 散在。推奨: Python から golden fixture 生成→JS テストが読む生成同期（最小）／規則の単一言語化（望ましい）。
+- **🟡 改善推奨**: ①server.py が /candles・/forming_bar で controller 層を飛ばし marketdata/compute 直参照（殻へ業務分岐が漏出。handle_x 純関数へ統一を推奨）②スライス間レイヤ不統一（replay_ui=5層完備 / indicator_ui api=usecase 欠落 / MP api=2層のみ。最低限の命名規約明文化）③sys.path 実行時 insert が結線機構（3 系統。正規パッケージ化＋main 結線へ）④dwell/zp キャッシュに世代 GC 戦略なし（パラメータ変更で旧世代ディレクトリが増殖＝既知の清掃残件と同根。世代マニフェスト＋GC ツール推奨）。
+- **🔵 将来検討**: symlink 共有は Windows/tar/CI で無言破壊リスク（共有 domain の shared/ パッケージ昇格）。過剰抽象なし（YAGNI 健全）・lightweight-charts/pandas/zoneinfo/HTTP 殻の隔離は概ね良好。
+- **変更局所性の実測**: 新指標追加=スライス内で局所（良好）／**新時間足追加=最低 5 箇所**（欠如・🔴-2）／新データソース追加=局所（良好）。
+
+## ISSUE-088: 徹底コードレビュー結果（コードレビューエージェント・依頼者指示）
+- **ステータス**: OPEN（2026-07-15 起票・対応は依頼者裁定待ち）
+- **対象**: ISSUE-086（全時間足統一・レビュー時は作業ツリー差分＝現在はコミット済み）＋ISSUE-083〜085（ライブ育成・VA 修正・2トーン背景）。深度=完全（設計/ロジック/品質の3段階）。
+- **判定**: 🔴必須修正 **なし**（データ破壊・セキュリティ・明白バグ不検出）。**条件付きマージ可**＝CI 条件（byte-parity 10 件 RED）の解消が承認の必要条件。
+- **確認済み（精査の上問題なし）**: 週/月ラベルの整列性（resample・candle・forming と UTC 深夜で一致・年跨ぎ/閏/DST 境界を独立実測）／zp モーメント加算の独立性と k 空間整合／live_ticks が完了日キャッシュを汚さない保証／LiveTickBuffer の lock 安全性／入力 whitelist 検証（パストラバーサル不成立）。
+- **🟡 推奨修正**:
+  1. **byte-parity 回帰スイート 10 件 RED（develop 由来の既存事象）**: エージェント実測で m1（整数経路）の golden 相違＝固定窓 parquet の**データドリフト**起因と確定（ISSUE-085 の _value_area float 化・ISSUE-086 起因は棄却）。対処案: golden 再生成（依頼者裁定待ちの既知残件＝ISSUE-078 記載の dwell golden 2 件を含む）または合成データ注入でデータ非依存化。
+- **🔵 改善提案（バックログ）**:
+  1. DST 切替週（3月/11月）を含む週/月ラベル×resample 一致テストの追加
+  2. jitter buffer refreshAt: tf/src 変更交差時に _refreshing ガードが交差削除され得る（無害・二重фetch の帯域微増。finally で tf/src 照合を推奨）
+  3. tf-period zp のディスク世代タグ（s3）が _ZP_CACHE_VERSION 非連動（将来 bump 時の陳腐化リスク。世代タグへ織り込み推奨）
+  4. _DAY_MEM（上限256）が 1M 長期走査で LRU スラッシュの可能性（バケット/日次の LRU 分離 or 上限引き上げ）
+  5. next_period_label(1M)・_bucket_completed の直接単体テスト追加（年跨ぎ・閏 2 月）
+- **残存リスク（エージェント申告）**: forming 週バーの実UI水平整列は実UI未確認（→ISSUE-086 の実UI検証で週足列・ツールチップ・現在値ライン整列は確認済み）。
