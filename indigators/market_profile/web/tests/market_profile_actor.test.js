@@ -970,3 +970,33 @@ test('ローソク未取得時は dispbp を写像しない（サーバ既定へ
   assert.equal('resmode' in call, false);
   assert.equal('range' in call, false);
 });
+
+
+// ---------------------------------------------------------------------------
+// ISSUE-080: 日別×1m/5m×zp は非対応（代替粒度を出さない・依頼者裁定 2026-07-15）。
+// ---------------------------------------------------------------------------
+
+test('sessions×zp×1m は fetch せず表示をクリアする（日タイルへのフォールバック廃止）', async () => {
+  const client = fakeClient();
+  const primitive = {
+    profiles: [], visibles: [], sessions: [],
+    setProfile(p) { this.profiles.push(p); },
+    setVisible(v) { this.visibles.push(v); },
+    setSessions(s) { this.sessions.push(s); },
+  };
+  const transparencies = [];
+  const renderer = {
+    setCandleTransparency(on) { transparencies.push(on); },
+    setSessionMP() {},
+  };
+  const actor = new MarketProfileActor({
+    client, primitive, mainSeries: fakeMainSeries(), renderer,
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1m' }),
+    getCandles: () => [{ time: 1783890000, close: 67000 }],
+  });
+  actor.setParams({ src: 'zp', mode: 'sessions' });
+  await actor.setEnabled(true);
+  assert.equal(client.calls.length, 0, '非対応組合せは /market_profile を叩かない');
+  assert.equal(primitive.sessions.at(-1), null, '日別タイルは描かない（代替なし）');
+  assert.equal(transparencies.at(-1), false, 'ローソクは可視のまま');
+});

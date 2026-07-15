@@ -60,9 +60,18 @@ test('catalog: market_profile exposes src ENUM [dwell,zp] default zp（candle/m1
   assert.equal(src.enumLabels.zp, '超過占有z(p)');
   // dispbp/va と同じ group（同一セクションに並ぶ）。
   assert.equal(src.group, paramOf(d, 'dispbp').group);
-  // ISSUE-076（B案）: 日別×1m/5m の zp は日単位タイル表示になる旨を tooltip で明記（混乱防止）。
-  assert.ok(typeof src.tooltip === 'string' && src.tooltip.includes('日単位タイル'),
-    'src tooltip が zp の時間足別挙動差を明記する');
+  // ISSUE-080: 日別×1m/5m の zp は**選択不可**（代替粒度を出さない・依頼者裁定 2026-07-15）。
+  assert.ok(typeof src.tooltip === 'string' && src.tooltip.includes('選択不可'),
+    'src tooltip が zp の非対応組合せ（日別×1m/5m）を明記する');
+  // optionEnable 述語: zp は sessions×1m/5m でのみ無効。dwell は常に有効。
+  assert.equal(typeof src.optionEnable, 'function');
+  const oe = src.optionEnable;
+  assert.equal(oe('zp', { mode: 'sessions' }, { timeframe: '1m' }), false, '日別×1m は zp 選択不可');
+  assert.equal(oe('zp', { mode: 'sessions' }, { timeframe: '5m' }), false, '日別×5m は zp 選択不可');
+  assert.equal(oe('zp', { mode: 'sessions' }, { timeframe: '15m' }), true, '日別×15m は可');
+  assert.equal(oe('zp', { mode: 'normal' }, { timeframe: '1m' }), true, '通常×1m は可（全期間/当日 z）');
+  assert.equal(oe('zp', { mode: 'sessions' }, null), true, 'ctx 不在（A方式/テスト）は制限しない');
+  assert.equal(oe('dwell', { mode: 'sessions' }, { timeframe: '1m' }), true, 'dwell は常に可');
 });
 
 // market_profile の表示モード（mode）ENUM segmented トグル。旧 replay/sessions の 2 チェックを

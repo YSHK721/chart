@@ -766,6 +766,26 @@ export class PropertiesDialog {
         }
       }
     }
+    // ISSUE-080: ENUM の option 単位無効化（optionEnable 述語）。select の各 option へ反映する
+    //   （mode/timeframe 変化に動的追従＝行の conditionalEnable と同じ再評価タイミング）。
+    for (const pdef of this._def.params ?? []) {
+      if (typeof pdef.optionEnable !== 'function') {
+        continue;
+      }
+      const els = this._fieldEls.get(pdef.name);
+      const sel = els && els.control && els.control.tagName === 'SELECT'
+        ? els.control
+        : els && els.control && els.control.querySelector ? els.control.querySelector('select') : null;
+      if (!sel) {
+        continue;
+      }
+      for (const opt of sel.options ?? []) {
+        opt.disabled = !pdef.optionEnable(
+          (pdef.enumValues ?? []).find((v) => String(v) === opt.value) ?? opt.value,
+          this._values, this._context,
+        );
+      }
+    }
   }
 
   // 条件付き表示（§3.5 拡張・トグル）。conditionalVisible=false のフィールド行を非表示にする。

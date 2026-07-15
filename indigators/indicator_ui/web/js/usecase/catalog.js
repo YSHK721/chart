@@ -30,6 +30,9 @@ const UI_DEFAULTS = Object.freeze({
   min: null,
   max: null,
   conditionalEnable: null,
+  // optionEnable: ENUM option 単位の有効述語 (value, values, ctx)->bool（ISSUE-080・select の
+  //   option を個別に disabled にする。行全体の conditionalEnable と直交）。
+  optionEnable: null,
   // conditionalVisible: 条件付き“表示”（トグル）。conditionalEnable（グレーアウト）と対称で、
   //   { when: { param, equals } } が偽のとき当該フィールド行を非表示にする（form_model.computeVisible）。
   conditionalVisible: null,
