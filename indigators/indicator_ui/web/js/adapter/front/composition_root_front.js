@@ -166,10 +166,17 @@ export async function bootstrap({
     autoSize: true,
   });
   // v5: addCandlestickSeries は廃止。addSeries(CandlestickSeries, ...) でメイン pane(0) に追加。
+  // ISSUE-084: 現在値ラインは固定色（橙）で常時表示する。lwc 既定の priceLineColor=''（バー色追従）は
+  //   日別プロファイルのローソク透明化（setCandleTransparency）で線ごと消えるため、candle 色に依存しない
+  //   固定色を明示する（POC 赤・POC* 黄・カーソル青と重ならない配色）。lastValueVisible で軸ラベルも表示。
   const mainSeries = chart.addSeries(lwc.CandlestickSeries, {
     upColor: '#26a69a', downColor: '#ef5350',
     borderUpColor: '#26a69a', borderDownColor: '#ef5350',
     wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    priceLineVisible: true,
+    priceLineColor: '#ff9800',
+    priceLineWidth: 1,
+    lastValueVisible: true,
   });
 
   // ポート実装の組み立て（モード別）。

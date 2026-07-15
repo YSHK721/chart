@@ -22,9 +22,10 @@ import { LiveTickPlayer } from '../js/adapter/front/live_tick_player.js';
 function fakeLwc() {
   const setDataCalls = [];
   const createChartOpts = [];
+  const addSeriesOpts = [];
   const mainSeries = { setData: (d) => setDataCalls.push(d) };
   const chart = {
-    addSeries: () => mainSeries,
+    addSeries: (_type, opts) => { addSeriesOpts.push(opts); return mainSeries; },
     timeScale: () => ({ fitContent: () => {} }),
     panes: () => [{ setStretchFactor: () => {}, paneIndex: () => 0 }],
     addPane: () => ({ addSeries: () => ({ setData: () => {} }), setStretchFactor: () => {}, paneIndex: () => 1 }),
@@ -42,6 +43,7 @@ function fakeLwc() {
     },
     setDataCalls,
     createChartOpts,
+    addSeriesOpts,
   };
 }
 
@@ -430,4 +432,17 @@ test('bootstrap: sessions×growing の MP ライブ tick が tfPeriodActor.onLiv
   tfPeriodActor.setEnabled(false);
   await marketProfile.onLiveTick();
   assert.equal(calls, 1, '列非描画中は発火しない');
+});
+
+test('bootstrap: メイン系列は現在値ラインを固定色で常時表示する（ISSUE-084: 現在値の視認性）', async () => {
+  // 日別プロファイル（ローソク透明化）でも現在値の水準が見えるよう、priceLine を candle 色に
+  //   依存しない固定色で明示する（lwc 既定の priceLineColor=''（バー色追従）は透明化で消える）。
+  const { lwc, addSeriesOpts } = fakeLwc();
+  await bootstrap({ lwc, container: {}, doc: null, storage: noStorage, protocol: 'file:' });
+  const main = addSeriesOpts[0];
+  assert.ok(main, 'メイン系列の生成オプションが渡る');
+  assert.equal(main.priceLineVisible, true, '現在値ラインを表示する');
+  assert.equal(typeof main.priceLineColor, 'string', '固定色（バー色追従にしない）');
+  assert.ok(main.priceLineColor.length > 0, '固定色が空でない');
+  assert.equal(main.lastValueVisible, true, '価格軸の現在値ラベルも表示する');
 });
