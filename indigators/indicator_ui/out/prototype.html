@@ -6832,7 +6832,7 @@ const DIM_ALPHA = 0.30;
 const TODAY_ALPHA = 0.98;
 // POC 線（最濃赤）・VA 帯線（灰）の色（試作準拠）。
 const C_POC_LINE = '#ff3b3b';
-const C_VA_LINE = 'rgba(154, 164, 178, 0.9)';
+const C_VA_LINE = 'rgba(154, 164, 178, 0.3)';
 // POC* 線（src=zp・超過占有の最大行＝生カウント最頻値ではない）。zp であることを一目で
 //   区別できるよう黄で描く（通常 POC の赤と衝突しない・検定 Step5 の POC* 準拠）。
 const C_POC_STAR = '#ffd54a';
@@ -6858,7 +6858,6 @@ const SESS_MIN_BAR_PX = 1.5;
 //   旧呼び出し）は背景を描かない（後方互換）。
 const C_TFP_BG_UP = 'rgba(38, 166, 154, 0.1)';   // 陽線周期（薄緑）
 const C_TFP_BG_DOWN = 'rgba(239, 83, 80, 0.1)';  // 陰線周期（薄赤）
-const TFP_VA_OUT_DIM = 0.35;  // ISSUE-084: VA 外レベルの減光率（VA 幅のカラースキーム）。
 class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -7180,21 +7179,26 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       let cmax = 1;
       for (let k = 0; k < levels.length; k += 1) { if (levels[k][1] > cmax) cmax = levels[k][1]; }
       const pocPrice = c.poc;
-      // ISSUE-084: VA 幅のカラースキーム。VA（va_low..va_high）内は通常アルファ・VA 外は減光で描き、
-      //   各列の VA 幅を一目で判別できるようにする。va 欠損列（旧応答・空日）は全レベル通常（後方互換）。
-      const vaLo = c.va_low;
-      const vaHi = c.va_high;
-      const hasVa = vaLo != null && vaHi != null;
       for (let k = 0; k < levels.length; k += 1) {
         const price = levels[k][0];
         const cnt = levels[k][1];
         const y = toY(price);
         if (y == null) continue;
         const w = Math.max(SESS_MIN_BAR_PX, (cnt / cmax) * (tileW - 2));
-        const inVa = !hasVa || (price >= vaLo && price <= vaHi);
         ctx.fillStyle = (pocPrice != null && Math.abs(price - pocPrice) < 1e-9)
-          ? C_SESS_POC : heatColor(cnt / cmax, inVa ? SESS_BAR_ALPHA : SESS_BAR_ALPHA * TFP_VA_OUT_DIM);
+          ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
         ctx.fillRect(left + 1, y - lvlH / 2, w, lvlH);
+      }
+      // ISSUE-084 改（依頼者指示 2026-07-15）: VA 幅は**境界ライン**（VAH/VAL の横線・灰）で表現する。
+      //   旧「VA 外減光」は zp のように levels が sparse（z>0 のみ）で VA が可視レベル全域を覆う列では
+      //   減光対象が無く判別不能だった（実測: 1D zp で VA外レベル 0 の列が多数）。ラインは列ごとに常に
+      //   描ける。va 欠損列（旧応答・空日）は描かない（後方互換）。
+      if (c.va_low != null && c.va_high != null) {
+        const yH = toY(c.va_high);
+        const yL = toY(c.va_low);
+        ctx.fillStyle = C_VA_LINE;
+        if (yH != null) ctx.fillRect(left + 1, yH - 0.5, tileW - 2, 1);
+        if (yL != null) ctx.fillRect(left + 1, yL - 0.5, tileW - 2, 1);
       }
     }
     ctx.restore();
