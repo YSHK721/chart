@@ -411,3 +411,33 @@ export function list() {
 export function get(id) {
   return BY_ID.get(id) ?? null;
 }
+
+// サーバ由来スキーマ（GET /catalog）で param 既定値を解決する（単一情報源・ISSUE-092 ③）。
+//
+// schema = { compute_id: { param_name: default } }（back catalog_schema.PARAM_DEFAULTS の配信形）。
+// レジストリの各 ParamDef.default を schema の値へ overlay する。既定値の正は back（Python）側で、
+// front のリテラルはフェッチ失敗時の静的フォールバック（オフライン耐性）。未知 id / 未知 param は
+// 黙って無視する（前方互換・back が先行して指標を増やしても front を壊さない）。schema に無い指標
+// （market_profile 等・独立アクター所有）は不変。表示ラベル等の純 UI メタは触らない（既定値のみ）。
+//
+// IndicatorDef は Object.freeze 済みだが params 配列要素（ParamDef plain object）は凍結されていない
+// ため .default の上書きは可能（domain_models.js は shallow freeze）。反映した param 数を返す。
+export function applyServerDefaults(schema) {
+  if (!schema || typeof schema !== 'object') {
+    return 0;
+  }
+  let applied = 0;
+  for (const [id, defaults] of Object.entries(schema)) {
+    const def = BY_ID.get(id);
+    if (!def || !defaults || typeof defaults !== 'object') {
+      continue;
+    }
+    for (const p of def.params) {
+      if (Object.prototype.hasOwnProperty.call(defaults, p.name)) {
+        p.default = defaults[p.name];
+        applied += 1;
+      }
+    }
+  }
+  return applied;
+}
