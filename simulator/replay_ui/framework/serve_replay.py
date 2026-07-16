@@ -11,7 +11,9 @@ CLEAN_ARCH §6: HTTP・スレッド・静的配信という偶有的技術を最
 ＋巨大 resample の OOM 回避のため重い処理を 1 本の ``_HEAVY_LOCK`` で直列化する（proto と同一方針・
 出力は不変）。エラー応答は正典契約 api_shared.http_contract（ERROR_STATUS・nested_error）に従う
 （ISSUE-091 A2: 旧 proto 由来の独自形 {error:{type,message}}・internal→400 という契約分岐を是正。
-例外翻訳は ValueError→validation / MemoryError・それ以外→internal）。
+例外翻訳は ValueError→validation / MemoryError・それ以外→internal）。ISSUE-097 🟡-4: 各ハンドラへ
+個別コピーされていた例外分類を中央翻訳器 ``_error_response`` へ集約し、/market_profile・
+/market_profile_forming に欠落していた ValueError→validation 分岐を正典契約へ是正した。
 """
 from __future__ import annotations
 
@@ -49,6 +51,26 @@ from simulator.replay_ui.usecase.reveal_candles import (
     RevealCandlesRequest,
     reveal_candles,
 )
+
+
+def _error_response(
+    exc: Exception, *, generation: int = 0, message: "str | None" = None
+) -> "tuple[int, dict[str, Any]]":
+    """例外を正典 (status, nested body) へ翻訳する中央関数（ISSUE-097 🟡-4）。
+
+    全 API ハンドラ共通の単一分類（旧: 各ハンドラへ個別コピーされていた
+    ``except ValueError→validation / except Exception→internal`` を集約）:
+        ValueError            → validation（400）
+        MemoryError・その他    → internal（500）
+    status 表引き・nested ボディ整形は api_shared.http_contract の単一定義
+    （``ERROR_STATUS`` / ``nested_error``）へ委譲する。``message`` 省略時は ``str(exc)[:200]``。
+    新エラー種別の追加は本関数 1 箇所の編集で全ハンドラへ反映される（OCP: 最大 5 ブロックの
+    同期編集を解消）。
+    """
+    error_type = "validation" if isinstance(exc, ValueError) else "internal"
+    if message is None:
+        message = str(exc)[:200]
+    return nested_error(error_type, message, generation=generation)
 
 
 class ReplayApp:
@@ -190,10 +212,8 @@ def make_handler(app: ReplayApp):
                 try:
                     candles = app.candles(ref, tf, lim)
                     return self._json(200, {"ok": True, "candles": candles})
-                except ValueError as e:
-                    return self._json(*nested_error("validation", str(e)[:200]))
-                except Exception as e:  # noqa: BLE001
-                    return self._json(*nested_error("internal", str(e)[:200]))
+                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
+                    return self._json(*_error_response(e))
             if u.path == "/intraday":
                 ref = (q.get("datasetRef") or ["jp225_m1"])[0]
                 try:
@@ -206,10 +226,8 @@ def make_handler(app: ReplayApp):
                 try:
                     payload = app.intraday(ref, start, end, mode, want_secs=want_secs)
                     return self._json(200, payload)
-                except ValueError as e:
-                    return self._json(*nested_error("validation", str(e)[:200]))
-                except Exception as e:  # noqa: BLE001
-                    return self._json(*nested_error("internal", str(e)[:200]))
+                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
+                    return self._json(*_error_response(e))
             if u.path == "/market_profile" and app.market_profile_enabled:
                 ref = (q.get("datasetRef") or [None])[0]
                 tf = (q.get("timeframe") or [None])[0]
@@ -229,8 +247,8 @@ def make_handler(app: ReplayApp):
                         ref, tf, limit, bins, va, src, barw, to,
                         frm=frm, today=today, sessions=sessions)
                     return self._json(status, payload)
-                except Exception as e:  # noqa: BLE001
-                    return self._json(*nested_error("internal", str(e)[:200]))
+                except Exception as e:  # noqa: BLE001 — ValueError→validation 欠落を是正し中央翻訳へ集約（ISSUE-097 🟡-4）
+                    return self._json(*_error_response(e))
             if u.path == "/market_profile_forming" and app.forming_enabled:
                 ref = (q.get("datasetRef") or [None])[0]
                 tf = (q.get("timeframe") or [None])[0]
@@ -249,8 +267,8 @@ def make_handler(app: ReplayApp):
                     status, payload = app.market_profile_forming(
                         ref, tf, now, base, since, bins, va, barw, frm)
                     return self._json(status, payload)
-                except Exception as e:  # noqa: BLE001
-                    return self._json(*nested_error("internal", str(e)[:200]))
+                except Exception as e:  # noqa: BLE001 — ValueError→validation 欠落を是正し中央翻訳へ集約（ISSUE-097 🟡-4）
+                    return self._json(*_error_response(e))
             # 静的配信＋トラバーサル防御は StaticFileServer へ委譲（Handler は API ルーティング＋
             #   委譲のみ・ISSUE-094 🟡-8）。許可根の導出・dual-root ガード・応答 byte は不変。
             return app.static_server.serve(self, u.path)
@@ -265,12 +283,15 @@ def make_handler(app: ReplayApp):
             gen = body.get("generation", 0)
             try:
                 series = app.compute(body)
-            except MemoryError:
-                return self._json(*nested_error("internal", "memory limit", generation=gen))
+            # 分類（status/type）は _error_response へ集約（ISSUE-097 🟡-4）。except ブロックは
+            #   compute 固有のメッセージ（MemoryError→"memory limit"・generic→"Name: msg"）供給のみ。
+            except MemoryError as e:
+                return self._json(*_error_response(e, generation=gen, message="memory limit"))
             except ValueError as e:
-                return self._json(*nested_error("validation", str(e)[:200], generation=gen))
+                return self._json(*_error_response(e, generation=gen))
             except Exception as e:  # noqa: BLE001
-                return self._json(*nested_error("internal", f"{type(e).__name__}: {str(e)[:200]}", generation=gen))
+                return self._json(*_error_response(
+                    e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
             self._json(200, {"ok": True, "generation": gen, "series": series})
 
     return Handler
