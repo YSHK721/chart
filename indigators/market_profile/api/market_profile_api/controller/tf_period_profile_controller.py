@@ -13,8 +13,6 @@
 """
 from __future__ import annotations
 
-import json as _json
-import os as _os
 import time as _time
 from collections import OrderedDict
 from pathlib import Path as _Path
@@ -26,6 +24,8 @@ from marketdata import tf_meta as _forming_bar  # ISSUE-087 🔴-1: 裸 adapter 
 from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute import market_profile_zp as _zp
 from market_profile_api.compute.market_profile import _value_area
+# ISSUE-092 ④: 日次ディスク JSON の物理 I/O は gateway 層へ抽出（ISSUE-091 #6 レイヤ責務違反の是正）。
+from market_profile_api.gateway import tf_period_disk_cache as _tf_disk_cache
 from market_profile_api.compute.tf_period_profile import (
     _TFP_CACHE_VERSION,
     _value_area_sparse,
@@ -95,38 +95,28 @@ def _tfp_disk_root() -> "_Path | None":
     return _mpd._paths.DATA_DIR / "cache" / "tf_period"
 
 
-def _day_disk_path(root: _Path, symbol: Any, tf: Any, day_start: int) -> _Path:
-    """完了日 JSON の保存パス ``<root>/<symbol>/<tf>/<day_start>.json``。"""
-    return root / str(symbol) / str(tf) / f"{int(day_start)}.json"
-
-
 def _load_day_disk(symbol: Any, tf: Any, day_start: int) -> "tuple[float, list] | None":
-    """完了日の (unit, columns) をディスクから読む。無効/未ヒット/破損は None（＝再計算へ）。"""
+    """完了日の (unit, columns) をディスクから読む。無効/未ヒット/破損は None（＝再計算へ）。
+
+    ISSUE-092 ④: キャッシュ根の有効/無効（``_TFP_CACHE_ROOT`` の monkeypatch）は本 controller に残し、
+    call-time 解決した root を gateway の純 I/O（:func:`tf_period_disk_cache.load_day_disk`）へ委譲する。
+    """
     root = _tfp_disk_root()
     if root is None:
         return None
-    try:
-        with open(_day_disk_path(root, symbol, tf, day_start)) as f:
-            d = _json.load(f)
-        return float(d["unit"]), d["columns"]
-    except Exception:
-        return None
+    return _tf_disk_cache.load_day_disk(root, symbol, tf, day_start)
 
 
 def _save_day_disk(symbol: Any, tf: Any, day_start: int, unit: float, columns: list) -> None:
-    """完了日の (unit, columns) を JSON へ原子的に保存する（無効/失敗は握りつぶす＝次回再計算）。"""
+    """完了日の (unit, columns) を JSON へ原子的に保存する（無効/失敗は握りつぶす＝次回再計算）。
+
+    ISSUE-092 ④: root 解決は本 controller（``_TFP_CACHE_ROOT`` の call-time 参照）、原子的書込は
+    gateway の純 I/O（:func:`tf_period_disk_cache.save_day_disk`）へ委譲する。挙動・パスは不変。
+    """
     root = _tfp_disk_root()
     if root is None:
         return
-    try:
-        path = _day_disk_path(root, symbol, tf, day_start)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w") as f:
-            _json.dump({"unit": unit, "columns": columns}, f)
-        _os.replace(tmp, path)
-    except Exception:
-        pass
+    _tf_disk_cache.save_day_disk(root, symbol, tf, day_start, unit, columns)
 
 
 def _merge_live_tail(
