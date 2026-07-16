@@ -22,11 +22,11 @@ from simulator.usecase._execution import (
     close_price_for,
     derive_quotes,
     fill_market_order,
-    fill_pending_order,
     resolve_eval_quote,
 )
 from simulator.usecase.compute_stats import compute_stats
 from simulator.usecase.models import BacktestResult
+from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
 from simulator.usecase.session_gate import SessionGate
 
@@ -538,8 +538,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 and not session_gate.is_closed(bar_index)
             ):
                 o_price = bar_ticks[0][0]
-                oq_bid = o_price
-                oq_ask = o_price + bar.spread * spec.point_size
+                oq_bid, oq_ask = PendingLifecycleEngine.tick_quote(
+                    o_price, spread=bar.spread, point_size=spec.point_size
+                )
                 kept_open: list[_OpenTrade] = []
                 for ot in open_trades:
                     sltp_price = oq_ask if ot.position.side == "sell" else oq_bid
@@ -574,15 +575,18 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 and not session_gate.is_closed(bar_index)
             ):
                 ro_price = bar_ticks[0][0]
-                rq_bid = ro_price
-                rq_ask = ro_price + bar.spread * spec.point_size
-                carried: list = []
-                filled_any = False
-                for order in resting_pending:
-                    pos = fill_pending_order(order, bid=rq_bid, ask=rq_ask)
-                    if pos is None:
-                        carried.append(order)
-                        continue
+                rq_bid, rq_ask = PendingLifecycleEngine.tick_quote(
+                    ro_price, spread=bar.spread, point_size=spec.point_size
+                )
+                # トリガ評価 + OCO 判定はエンジンへ委譲（純ロジック）。約定 Position の口座
+                #   反映（open_positions/margin/open_trades）は口座アクターとして本 Interactor
+                #   が担う。走査順＝反映順のため byte-identical（opened_tick_ordinal=0）。
+                #   OCO: 同一評価点で trigger した stop は全て約定（実 MT5 hedging・広 spread/doji
+                #   で両建て成立＝2604-02 実証）。約定が起きたら非約定分のみ EA が取消す。
+                filled, carried = PendingLifecycleEngine.evaluate_triggers(
+                    resting_pending, bid=rq_bid, ask=rq_ask, oco=pending_oco
+                )
+                for order, pos in filled:
                     account.open_positions.append(pos)
                     account.margin += pos.required_margin(spec.leverage, contract_size)
                     open_trades.append(
@@ -597,14 +601,6 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                             opened_tick_ordinal=0,
                         )
                     )
-                    filled_any = True
-                # OCO: 同一ティックで trigger した stop は全て約定する（実 MT5 hedging はサーバが
-                #   OnTick より前に当該ティックの trigger 分を全約定＝両建て成立。広 spread/doji バーで
-                #   1 ティックの bid-ask 帯が両 stop を跨ぐ場合に両玉が立つ＝2604-02 で実証）。約定が
-                #   1 本でも起きたら、このティックで trigger しなかった残ペンディングを EA が OnTick で
-                #   取消す（＝CancelOpposite）。triggerした側どうしは取り消さない。
-                if pending_oco and filled_any:
-                    carried = []
                 resting_pending = carried
 
             # D/E ★足境界のみ: 新規バーシグナル評価（ティックで呼ばない）。
@@ -733,8 +729,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 #   sell の SL は high tick の Ask=high+spread×point で発火）。非ペンディング
                 #   （real_ticks）経路は従来どおり tick の price で判定し byte-identical を保つ。
                 if pending_mode:
-                    q_bid = price
-                    q_ask = price + bar.spread * spec.point_size
+                    q_bid, q_ask = PendingLifecycleEngine.tick_quote(
+                        price, spread=bar.spread, point_size=spec.point_size
+                    )
                 else:
                     q_bid = q_ask = None
 
@@ -791,13 +788,15 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 #   後続足が SL/TP 未達なら次足へ持ち越し）。よって同ティック判定はせず、
                 #   skip_entry_bar=False で open_trades へ積み「約定ティックより後」のみ監視させる。
                 if resting_pending and not session_gate.is_closed(bar_index):
-                    still_armed: list = []
-                    filled_any_tick = False
-                    for order in resting_pending:
-                        pos = fill_pending_order(order, bid=q_bid, ask=q_ask)
-                        if pos is None:
-                            still_armed.append(order)
-                            continue
+                    # トリガ評価 + OCO 判定はエンジンへ委譲（純ロジック）。約定 Position の
+                    #   口座反映（open_positions/margin/open_trades）は本 Interactor が担う。
+                    #   走査順＝反映順のため byte-identical（opened_tick_ordinal=tick_ordinal）。
+                    #   OCO: 同一ティックで trigger した stop は全約定（実 MT5 hedging・広 spread/
+                    #   doji で両建て成立）。約定が起きたら非約定分のみ EA が取消す。
+                    filled, carried = PendingLifecycleEngine.evaluate_triggers(
+                        resting_pending, bid=q_bid, ask=q_ask, oco=pending_oco
+                    )
+                    for order, pos in filled:
                         account.open_positions.append(pos)
                         account.margin += pos.required_margin(
                             spec.leverage, contract_size
@@ -814,12 +813,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                                 opened_tick_ordinal=tick_ordinal,
                             )
                         )
-                        filled_any_tick = True
-                    # OCO: 同一ティックで trigger した stop は全て約定（実 MT5 hedging・広 spread/doji で
-                    #   両建て成立）。約定が起きたら trigger しなかった残ペンディングのみ EA が取消す。
-                    if pending_oco and filled_any_tick:
-                        still_armed = []
-                    resting_pending = still_armed
+                    resting_pending = carried
 
                 # ★ペンディング持続モードの足途中再アーム（ISSUE-024・実 MT5 OnTick 相当）。
                 #   SL/TP 決済直後など「保有0・resting 0」のティックで、当該ティッククォート
