@@ -1177,3 +1177,8 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 - **統合検証で検出・即修正した回帰 1 件**: `/tf_period_profile` の既定ディスク root が撤去済み `_mpd._paths` を参照し実 HTTP で 500（AttributeError）。既存テストが全て `_TFP_CACHE_ROOT` 注入で既定経路を通らず未検出だった。TickStorePort 経由へ是正＋既定経路の回帰テスト追加（fix/issue-092-tfp-default-root）。**実 UI・実 HTTP 検証の重要性を再確認**（スイート緑のみでは不十分・依頼者厳命どおり）。
 - **検証**: スイート別最終実行で全緑 — marketdata 138・simulator 869・replay 148・report_ui 155・MP api 270（byte-parity 27 含む）・MP analysis 66・UI api+tools 397・common/common_view 22・MP web 287・UI web 543/545（既知 2 件のみ）。実UI（8141 起動・Playwright）: チャート正常描画・/catalog 200 取得・/compute・/candles・/market_profile・/tf_period_profile 応答正常・コンソールエラアなし（favicon 404 のみ）。
 - **コードレビュー**: 統合レビュー（code-review-executor・完全深度）承認。🔴/🟡 ゼロ。🔵 3 件をバックログとして記録: (1) gateway 配置のスライス慣行差（ネスト vs フラット）を ADR に明文化 (2) 指標 src 単体実行は venv（.pth）前提である旨を開発ガイドへ明記 (3) catalog 同期テストに front 余剰 param の対称アサート追加。
+
+## ISSUE-092 追補（統合レビュー 🔵 バックログ 3 件の対応・2026-07-16）
+- **🔵-1/🔵-2**: `.doc/LAYERING_CONVENTIONS.md` を更新——gateway 配置慣行（indicator_ui=adapter/gateway ネスト・MP=gateway フラット・共通規律 3 点）と import 解決の前提（.pth 恒久解決・指標 src 単体実行は登録済み venv 前提・entry point のみフォールバック可）を明文化。あわせて ISSUE-092 で陳腐化した記述（usecase 欠落・sys.path 3 系統・依存規則の Facade 例外/catalog 権威）を現状へ整合。
+- **🔵-3**: `catalog_schema_sync.test.js` に param 名集合の双方向対称アサートを追加（front 固有の余剰 param を検出。全 19 指標で対称成立を実測済み）。
+- **検証**: UI web 544/546 緑（既知 2 件のみ）・同期テスト 2/2 緑。
