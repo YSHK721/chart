@@ -36,7 +36,6 @@ marketdata は import して使うだけ（既存データは読むだけ・波�
 from __future__ import annotations
 
 import sys as _sys
-import datetime as _dt
 import time as _time
 from pathlib import Path as _Path
 from typing import Any
@@ -46,6 +45,9 @@ import pandas as pd
 
 # POC/VA は candle 版の単一定義を再利用する（DRY・同一定義）。
 from market_profile_api.compute.market_profile import _session_entry, _value_area
+# セッション認識（活発/休場地図）の純カーネル（ISSUE-094 🔴-2）。集計側は下段の委譲ラッパー
+#   （_build_active_table / _active_seconds_cross / _table_for_day）で monkeypatch 経路と byte を温存する。
+from market_profile_api.compute import session_activity as _session_activity
 # ディスクキャッシュ Repository（ISSUE-040(b) SRP 分離 / ISSUE-092 ④ gateway 移設）。集計数学は本
 # モジュール、永続化 I/O は gateway 層の Store が担う（旧 compute パスは互換シムとして温存）。
 from market_profile_api.gateway.dwell_rollup_store import DwellRollupStore
@@ -73,8 +75,8 @@ def day_parquet_files(lo_day: Any, hi_day: Any, *, symbol: str) -> "list[_Path]"
 # datasetRef → 実ティック symbol 解決（forming_bar.TICK_REFS と整合。'jp225_tick'→'JP225'）。
 TICK_REF_SYMBOLS: dict[str, str] = {"jp225_tick": "JP225"}
 
-# セッション認識 dwell のパラメータ（試作と一致）。
-_ACTIVE_FRAC = 0.10   # (曜日×時) のティック数が ピーク×この割合 未満なら「休場」とみなす。
+# セッション認識 dwell のパラメータ（試作と一致）。規則は session_activity が唯一の規則源。
+_ACTIVE_FRAC = _session_activity.ACTIVE_FRAC   # (曜日×時) のティック数が ピーク×この割合 未満なら「休場」。
 GRID_W = 10.0         # 固定価格グリッド幅(pt)。日別集計→窓合算→表示 bin へ再集計する中間解像度。
 
 # 全期間化（250日キャップ撤廃）。完了日はディスク/メモリキャッシュ経由で O(1) ロードされるため、
@@ -186,33 +188,21 @@ def _load_window_ticks(symbol: str, start: Any, end: Any) -> "tuple[np.ndarray, 
 # セッション認識 dwell（活動テーブル + 活発秒の積分）
 # --------------------------------------------------------------------------- #
 def _build_active_table(secs: np.ndarray) -> np.ndarray:
-    """ティックから (曜日0-6 × 時0-23) の活動テーブル（True=活発/False=休場）を作る。
+    """セッション認識カーネルへの委譲（:func:`session_activity.build_active_table`）。
 
-    曜日 = ``((s//86400)+3)%7``（1970-01-01=木を Mon0 基準へ）、時 = ``(s%86400)//3600``。
-    バケット別ティック数が ピーク×``_ACTIVE_FRAC`` 以上を活発とする。
+    既存テストの monkeypatch 単一注入点（``mpd._build_active_table``）を module 属性として温存する。
+    ``_ACTIVE_FRAC``（module 変数）を call-time に読むため、テストが ``_ACTIVE_FRAC`` を差し替える
+    場合も反映される。
     """
-    s = np.asarray(secs, dtype=np.int64)
-    wd = ((s // 86400) + 3) % 7
-    hod = (s % 86400) // 3600
-    cnt = np.zeros((7, 24), dtype=np.int64)
-    np.add.at(cnt, (wd, hod), 1)
-    thr = cnt.max() * _ACTIVE_FRAC
-    return cnt >= thr
+    return _session_activity.build_active_table(secs, active_frac=_ACTIVE_FRAC)
 
 
 def _active_seconds_cross(a: int, b: int, table: np.ndarray) -> int:
-    """``[a, b)`` のうち活発な (曜日×時) に属する秒数を時間境界で積分する（跨ぎギャップ用）。"""
-    total = 0
-    t = int(a)
-    b = int(b)
-    while t < b:
-        nb = (t // 3600 + 1) * 3600
-        seg = min(nb, b)
-        wd = ((t // 86400) + 3) % 7
-        if table[wd, (t % 86400) // 3600]:
-            total += seg - t
-        t = seg
-    return total
+    """セッション認識カーネルへの委譲（:func:`session_activity.active_seconds_cross`）。
+
+    ``_session_dwell`` が本 module 名で参照する跨ぎギャップ積分。委譲シンボルを温存する。
+    """
+    return _session_activity.active_seconds_cross(a, b, table)
 
 
 def _session_dwell(secs: np.ndarray, table: np.ndarray) -> np.ndarray:
@@ -282,19 +272,16 @@ def _active_table(symbol: str, at_from: int, win_to: int) -> np.ndarray:
 
 
 def _table_for_day(symbol: str, day_start: int) -> np.ndarray:
-    """日次/部分ロールアップ用の active table＝「その日の属する月初」アンカー（ISSUE-089）。
+    """セッション認識カーネルへの委譲（:func:`session_activity.table_for_day`・ISSUE-089 月初アンカー）。
 
-    窓は [月初-120日, 月初)＝当該日より厳密に過去のデータのみ（因果）。日の純関数であり、
-    リクエスト窓 t1 やプロセス履歴に依存しない（キャッシュへ焼き込まれる値の決定性を保証）。
-    旧実装（リクエスト時点アンカーの表を全日へ流用）は、歴史日へ現在の活動地図を適用する
-    アナクロニズムでもあった。参照実装（試作の「直近120日」）は単一ライブ窓の定義であり、
-    複数年ヒストリカルの決定性は未定義＝本規則で確定させる（ISSUE-089 記録参照）。
-    月初アンカーの量子化は表構築（120日ティック読込）を月1回に抑えるため（DST 切替の
-    時間帯シフトへも月粒度で追随する）。
+    月初アンカーの因果規則は :mod:`session_activity` が唯一の規則源。活動テーブルの構築（120 日窓の
+    ティック読込＋プロセス内キャッシュ）は本 module の :func:`_active_table` を ``active_table_fn`` として
+    注入する（``_active_table`` は ``mpd._load_window_ticks`` を call-time 参照＝monkeypatch を尊重する）。
+    既存テストの monkeypatch 単一注入点（``mpd._table_for_day``）を module 属性として温存する。
     """
-    d = _dt.datetime.fromtimestamp(int(day_start), tz=_dt.timezone.utc)
-    month_start = int(_dt.datetime(d.year, d.month, 1, tzinfo=_dt.timezone.utc).timestamp())
-    return _active_table(symbol, month_start - _ACTIVE_TABLE_DAYS * 86400, month_start)
+    return _session_activity.table_for_day(
+        symbol, int(day_start), active_table_days=_ACTIVE_TABLE_DAYS, active_table_fn=_active_table
+    )
 
 
 # --------------------------------------------------------------------------- #
