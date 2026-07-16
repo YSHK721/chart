@@ -107,75 +107,38 @@ def _to_unix_seconds(value: Any) -> int:
     return int(pd.Timestamp(value).timestamp())
 
 
-# CSV mtime 検知キャッシュ（最内 _load_base_dataframe の1段のみ）。
-#   ref → (mtime_ns, DataFrame)。CSV 読込のみをキャッシュし、mtime 変化で当該 ref の
-#   旧エントリを破棄して再読込する（ライブ更新で CSV が上書きされたら全段へ貫通）。
-#   有界化: ref ごとに最新 mtime の 1 エントリのみ保持する（旧 mtime は上書きで消える）。
-_BASE_CACHE: dict[str, tuple[int, pd.DataFrame]] = {}
+# 供給時 mtime キャッシュ＋ロールアップ経路（性能アクター）は marketdata.serving_cache へ分離した
+# （ISSUE-094 🟡-7）。キャッシュ状態（_BASE_CACHE / _RESAMPLE_CACHE）は serving_cache の実体を
+# **同一オブジェクトで再エクスポート**する（利用側・既存テストの .clear()/len()/[] が単一真実源に
+# 効くよう温存）。dataset は ref 解決＋供給オーケストレーション＋candles JSON 整形へ縮退する。
+from marketdata import serving_cache
 
-# resample 結果キャッシュ（load_dataframe の1段・性能最適化 A’）。
-#   キー (ref, timeframe) → 値 (mtime, resampled_df)。(ref, timeframe) ごとに最新 mtime の
-#   1 エントリのみ保持する（上書き＝有界・plain dict）。★P-2: functools.lru_cache を
-#   (ref,tf,mtime) キーで使わない（mtime ごとにエントリが残り maxsize=None でリークする＝
-#   先行修正が潰した欠陥の再混入）。plain dict 上書き方式のみ。
-#   ★P-1: キー mtime は _csv_mtime(ref) を独立に呼ばず、base が実際に焼いた世代 mtime
-#   （_baked_mtime）を単一真実源にする。torn-read 時 base は旧 df を返し _BASE_CACHE の
-#   mtime を据え置くため、_csv_mtime（進行済の新 mtime）を使うと古い resample を新 mtime で
-#   焼き、base 復帰後も恒久 stale 化する。
-_RESAMPLE_CACHE: dict[tuple[str, str | None], tuple[int | None, pd.DataFrame]] = {}
+_BASE_CACHE = serving_cache._BASE_CACHE
+_RESAMPLE_CACHE = serving_cache._RESAMPLE_CACHE
 
 
 def _baked_mtime(ref: str) -> int | None:
-    """base が実際に焼いた世代 mtime（_BASE_CACHE[ref][0]）を返す（無ければ None）。
-
-    ★P-1: resample キャッシュのキー mtime の単一真実源。_csv_mtime(ref) を独立に呼ぶと
-    torn-read 時に base の据え置き世代と乖離し恒久 stale 化するため、base が保持する世代
-    mtime をそのまま使う（_BASE_CACHE 内部表現への直接依存をこのヘルパに局所化する）。
-    """
-    cached = _BASE_CACHE.get(ref)
-    return cached[0] if cached is not None else None
+    """base が焼いた世代 mtime（serving_cache へ委譲・P-1 の単一真実源）。旧 API 温存。"""
+    return serving_cache.baked_mtime(ref)
 
 
 def _csv_mtime(ref: str) -> int | None:
-    """ref の実 CSV の最終更新時刻（ns・整数）を返す（mtime キャッシュキー）。
-
-    CSV が存在しない場合は None を返す（キャッシュ済みなら直前結果を維持するため・
-    再読込判定が None で新規読込へ落ちて FileNotFoundError になるのは未キャッシュ時のみ）。
-    """
-    try:
-        return DATASET_WHITELIST[ref].stat().st_mtime_ns
-    except OSError:
-        return None
+    """ref の実 CSV の最終更新時刻（ns・serving_cache へ委譲）。取得不能は None。旧 API 温存。"""
+    return serving_cache.csv_mtime(DATASET_WHITELIST[ref])
 
 
 def _load_base_dataframe(ref: str) -> pd.DataFrame:
-    """ホワイトリスト解決済みキーの原子 CSV を DataFrame 化する（resample 前・mtime キャッシュ）。
+    """原子 CSV を DataFrame 化する（mtime キャッシュ＋torn-read フォールバックは serving_cache）。
 
-    既存 loader を再利用し、time 列（date）を index へ解決する（line 系指標の時刻解決）。
-    CSV の mtime が前回と同一ならキャッシュ DataFrame を返す。mtime 変化（CSV 上書き）時は
-    再読込して当該 ref の 1 エントリを置換する（旧 mtime のエントリは保持しない＝有界）。
+    ローダ生成は ``_load_loader``（本モジュール属性）を注入する。これにより
+    ``monkeypatch.setattr(dataset, "_load_loader", ...)`` が serving_cache 経由でも有効に働く。
     """
-    mtime = _csv_mtime(ref)
-    cached = _BASE_CACHE.get(ref)
-    if cached is not None and (mtime is None or mtime == cached[0]):
-        # mtime 不変、または取得不能（CSV 削除）ならキャッシュヒット（再読込しない）。
-        return cached[1]
-    loader = _load_loader()
-    try:
-        df = loader.load_ohlc_csv(
-            str(DATASET_WHITELIST[ref]), time_column=_SAMPLE_TIME_COLUMN
-        )
-    except (OSError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError):
-        # ライブ更新の writer が CSV を非アトミックに追記中だと、末尾行が途中の torn-read に
-        # なり pandas が解析失敗しうる（🟡-1）。失敗をキャッシュへ焼かず、直前の良好 df が
-        # あればそれを返す（最大 ~1 ポーリング分 stale だが不正データを配信しない）。次の
-        # mtime 変化で正常読込へ復帰する。良好キャッシュが無ければ送出する（隠蔽しない）。
-        if cached is not None:
-            logger.warning("CSV 読込に失敗（torn-read 等）。直前のキャッシュを維持: %s", ref)
-            return cached[1]
-        raise
-    _BASE_CACHE[ref] = (_csv_mtime(ref), df)
-    return df
+    return serving_cache.load_base_dataframe(
+        ref,
+        path=DATASET_WHITELIST[ref],
+        loader_factory=_load_loader,
+        time_column=_SAMPLE_TIME_COLUMN,
+    )
 
 
 def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
@@ -194,32 +157,27 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
     """
     # ★読み取り時 外れ値バー補正（_clamp_outlier_bars）は全返却経路の最終返却前に一様適用する
     #   （原子1m / rollup_store / resample のいずれも通過）。市場 ref 以外・正常バーは no-op。
-    #   キャッシュには生の resample 結果を保存し、返却時にクランプする（mtime 無効化挙動は不変）。
+    #   serving_cache は常に生（未クランプ）を返し、ここでクランプする（不変条件・§7-1）。
     if ref in _ROLLUP_REFS:
-        if timeframe in (None, "1m"):
-            # 1m 原子: 末尾安全上限ぶんだけ逆シークで読む（全件 tail で OOM 復活させない・D-2）。
-            df = tail_reader.read_tail(DATASET_WHITELIST[ref], _ATOMIC_TAIL_LOOKBACK_ROWS)
-        else:
-            # 上位足: 事前生成ロールアップ CSV（mtime キャッシュ + torn-read フォールバック）から読む。
-            df = rollup_store.read(ref, timeframe)
+        # ロールアップ経路（1m tail / 上位足 rollup_store）の分岐は serving_cache が担う（D-2）。
+        df = serving_cache.resolve_rollup_dataframe(
+            ref, timeframe,
+            path=DATASET_WHITELIST[ref],
+            atomic_tail_rows=_ATOMIC_TAIL_LOOKBACK_ROWS,
+        )
         return _clamp_outlier_bars(df, ref)
 
     base = _load_base_dataframe(ref)
     if timeframe is None:
         # 原子（1m）は resample せず base を直接返す（resample キャッシュ非経由・従来どおり）。
         return _clamp_outlier_bars(base, ref)
-    # ★P-1: base が実際に焼いた世代 mtime を resample キャッシュキーの単一真実源にする
-    #   （_csv_mtime を独立に呼ばない。torn-read 時の恒久 stale 化を防ぐ）。
-    mtime = _baked_mtime(ref)
-    key = (ref, timeframe)
-    cached = _RESAMPLE_CACHE.get(key)
-    if cached is not None and (mtime is None or mtime == cached[0]):
-        # mtime 不変、または取得不能（CSV 削除）なら直前の resample 結果を返す（再 resample しない）。
-        return _clamp_outlier_bars(cached[1], ref)
-    resampled = resample_ohlc(base, TIMEFRAME_RULES.get(timeframe))
-    # (ref, timeframe) ごと最新 mtime の 1 エントリのみ保持（上書き＝有界・plain dict）。
-    #   キャッシュは生（未クランプ）を保存し、返却時にクランプする（mtime 無効化挙動を変えない）。
-    _RESAMPLE_CACHE[key] = (mtime, resampled)
+    # resample キャッシュ（P-1 base 世代 mtime キー・P-2 有界）は serving_cache が担う。resample_ohlc は
+    # 本モジュール属性を注入する（monkeypatch.setattr(dataset, "resample_ohlc", ...) が有効に働く）。
+    resampled = serving_cache.resample_cached(
+        ref, timeframe, base,
+        resample_fn=resample_ohlc,
+        rule=TIMEFRAME_RULES.get(timeframe),
+    )
     return _clamp_outlier_bars(resampled, ref)
 
 
