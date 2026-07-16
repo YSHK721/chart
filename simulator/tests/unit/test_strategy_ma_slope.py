@@ -205,6 +205,56 @@ def test_slope_shift_two_boundary_below_min_index_returns_no_orders():
     assert orders == []
 
 
+def test_on_init_rejects_positive_stop_loss():
+    # Arrange: MaSlope は SL 未サポート。StrategyPort 契約（on_new_bar）に無い
+    # 暗黙事前条件を on_new_bar 経路の NotImplementedError で強制するのは LSP 不成立
+    # （ISSUE-098 🟡-2）。起動前（on_init）にドメイン例外 ConfigError で拒否する。
+    from simulator.adapter.strategy.ma_slope import MaSlope
+    from simulator.domain.exceptions import ConfigError
+
+    strat = MaSlope()
+    ind = _registry([100.0, 100.3, 100.5])
+    cfg = dict(_CONFIG, stop_loss_points=200)
+
+    # Act / Assert: on_init 時点で ConfigError（起動前検出）
+    import pytest
+    with pytest.raises(ConfigError):
+        strat.on_init(cfg, ind)
+
+
+def test_on_init_rejects_positive_take_profit():
+    # Arrange: TP>0 も同様に on_init で拒否する（ISSUE-098 🟡-2）
+    from simulator.adapter.strategy.ma_slope import MaSlope
+    from simulator.domain.exceptions import ConfigError
+
+    strat = MaSlope()
+    ind = _registry([100.0, 100.3, 100.5])
+    cfg = dict(_CONFIG, take_profit_points=400)
+
+    # Act / Assert
+    import pytest
+    with pytest.raises(ConfigError):
+        strat.on_init(cfg, ind)
+
+
+def test_on_init_accepts_zero_sl_tp_and_runs_normally():
+    # Arrange: SL/TP=0（本 EA の正常系）は on_init が例外を投げず、on_new_bar が
+    # NotImplementedError を送出せず正常に発注する（LSP 是正の回帰保証）
+    from simulator.adapter.strategy.ma_slope import MaSlope
+
+    strat = MaSlope()
+    ind = _registry([100.0, 100.3, 100.5])
+
+    # Act: SL/TP=0 は正常起動
+    strat.on_init(_CONFIG, ind)
+    orders = strat.on_new_bar(2, ind, _Account([]))
+
+    # Assert: 例外なく買い成行・SL/TP 無し
+    assert len(orders) == 1
+    assert orders[0].side == "buy"
+    assert orders[0].sl is None and orders[0].tp is None
+
+
 def test_on_position_check_always_holds():
     # Arrange: 反転はシグナルで実施（on_position_check は SL/TP 監視用）→ "hold"
     from simulator.adapter.strategy.ma_slope import MaSlope

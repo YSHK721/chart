@@ -1,4 +1,4 @@
-"""VolBandRepositoryPort 実装：Parquet 永続（詳細設計 §5.3 / §8.1/§8.3）。
+"""VolBandWriterPort / VolBandReaderPort 実装：Parquet 永続（詳細設計 §5.3 / §8.1/§8.3）。
 
 pandas は本ファイルに局所化（DI-4）。出力先は禁止プレフィクス（marketdata/・
 tests/fixtures/・tests/confirmation/）を拒否し、CLI 指定の OUT 配下のみ許可する
@@ -54,9 +54,6 @@ class VolBandParquetRepo:
         self._dir = Path(out_dir)
         self._path = self._dir / "vol_band_forecasts.parquet"
 
-    def save(self, forecast: VarianceForecast) -> None:
-        self.save_all([forecast])
-
     def save_all(self, forecasts: "Sequence[VarianceForecast]") -> None:
         _assert_out_path(self._path)
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -69,9 +66,3 @@ class VolBandParquetRepo:
         df = pd.read_parquet(self._path)
         row = df[df.week_id == week_id]
         return _from_row(row.iloc[0]) if len(row) else None
-
-    def all_week_ids(self) -> "tuple[str, ...]":
-        if not self._path.exists():
-            return ()
-        df = pd.read_parquet(self._path)
-        return tuple(str(w) for w in df["week_id"].tolist())

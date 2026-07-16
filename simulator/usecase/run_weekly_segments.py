@@ -17,7 +17,7 @@ from simulator.domain.variance_forecast import VarianceForecast
 
 if TYPE_CHECKING:
     from simulator.domain.bar import Bar
-    from simulator.usecase.vol_band_ports import VolBandRepositoryPort
+    from simulator.usecase.vol_band_ports import VolBandReaderPort
 
 
 class LookaheadViolationError(Exception):
@@ -145,7 +145,7 @@ def _no_trade_outcome(week: TradingWeek, reason: str) -> WeeklySegmentOutcome:
 def run_weekly_segments(
     *,
     request: RunWeeklySegmentsRequest,
-    repo: "VolBandRepositoryPort",
+    repo: "VolBandReaderPort",
     run_segment: SegmentRunner,
 ) -> "list[WeeklySegmentOutcome]":
     weeks = split_into_weeks(request.full_bars)

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from simulator.domain.bar import Bar
     from simulator.usecase.vol_band_ports import (
         VarianceEstimatorPort,
-        VolBandRepositoryPort,
+        VolBandWriterPort,
     )
 
 # 隣接 5 分 = 300 秒（欠落・昼休み・オーバーナイト跨ぎ除外）。
@@ -97,7 +97,7 @@ def estimate_weekly_band(
     *,
     request: EstimateWeeklyBandRequest,
     estimator: "VarianceEstimatorPort",
-    repo: "VolBandRepositoryPort",
+    repo: "VolBandWriterPort",
 ) -> EstimateWeeklyBandResult:
     weekly_rs = aggregate_weekly_rs(request.five_min_bars)
     weekly_gk = aggregate_weekly_gk(request.daily_bars)

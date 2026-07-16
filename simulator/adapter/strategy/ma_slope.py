@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from simulator.domain.exceptions import ConfigError
 from simulator.domain.order import Order
 from simulator.usecase.ports import StrategyPort
 
@@ -42,6 +43,19 @@ class MaSlope(StrategyPort):
         self._indicators: Any = None
 
     def on_init(self, config: Any, indicators: Any) -> None:
+        # 本 EA は SL/TP 無し（原典 MA_Slope_EA.mq5 は StopLoss=TakeProfit=0）。
+        # StrategyPort 契約（on_new_bar）に無い暗黙事前条件を on_new_bar 経路の
+        # NotImplementedError で強制すると LSP 不成立（ISSUE-098 🟡-2）。SL/TP>0 は
+        # 起動前（on_init）にドメイン例外 ConfigError で明示拒否する。
+        if config["stop_loss_points"] > 0 or config["take_profit_points"] > 0:
+            raise ConfigError(
+                "MaSlope は stop_loss_points/take_profit_points > 0 を未サポートです"
+                "（本 EA は SL/TP 無し・ISSUE-098 🟡-2）",
+                context={
+                    "stop_loss_points": config["stop_loss_points"],
+                    "take_profit_points": config["take_profit_points"],
+                },
+            )
         self._config = config
         self._indicators = indicators
 
@@ -86,23 +100,13 @@ class MaSlope(StrategyPort):
 
     def _build_order(self, side: str) -> Order:
         cfg = self._config
-        # 本 EA は StopLoss/TakeProfit=0 のため SL/TP 無し（None）。SL/TP 付き
-        # （points>0）の絶対価格化は price=None のため execution 側の責務であり、
-        # cycle 1 の対象外（原典 .../expert/MA_Slope_EA.mq5 は StopLoss=TakeProfit=0）。
-        sl = None if cfg["stop_loss_points"] == 0 else _stop_level_unsupported()
-        tp = None if cfg["take_profit_points"] == 0 else _stop_level_unsupported()
+        # 本 EA は SL/TP 無し（None）。SL/TP>0 は on_init が ConfigError で拒否済みの
+        # ため、ここへ到達する config は必ず SL/TP=0（ISSUE-098 🟡-2 の LSP 是正）。
         return Order(
             side=side,
             kind="market",
             volume=cfg["lot_size"],
             price=None,
-            sl=sl,
-            tp=tp,
+            sl=None,
+            tp=None,
         )
-
-
-def _stop_level_unsupported() -> None:
-    # cycle 1 範囲外: SL/TP 付き（points>0）は別サイクルで対応する。
-    raise NotImplementedError(
-        "stop_loss_points/take_profit_points > 0 は cycle 1 の対象外です"
-    )
