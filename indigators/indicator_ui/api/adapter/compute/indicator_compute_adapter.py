@@ -24,10 +24,11 @@ _TIME_REQUIRED = {"tgp_btlm", "profit_band"}
 # profit_band のみ。bands.build_bands(require_full=True)→ValueError・profit_band/src/bands.py:75）。
 _EMPTY_SERIES_INDICATORS = {"profit_band"}
 
-# error.type → HTTP ステータス対応（§6.3.4 / §7.4）の単一定義は marketdata.api_contract へ移設
-#   （ISSUE-087 🔴-1: market_profile_api が adapter.compute を経由せず参照できる最下層へ）。
-#   本名は再エクスポートで維持（controller・server 殻・既存テストの import 互換）。
-from marketdata.api_contract import ERROR_STATUS  # noqa: F401
+# error.type → HTTP ステータス対応（§6.3.4 / §7.4）の単一定義は中立共有パッケージ
+#   api_shared.http_contract へ移設（ISSUE-094 🔵-11: HTTP 契約の所有者は配信殻であり
+#   marketdata のどのアクターでもないため）。本名は再エクスポートで維持（controller・server 殻・
+#   既存テストの import 互換）。
+from api_shared.http_contract import ERROR_STATUS  # noqa: F401
 
 
 # profit_band の「必須バケット空」ValueError を識別する sentinel 文字列。

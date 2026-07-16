@@ -46,3 +46,35 @@ def forming_ticks(symbol: str, tf: str, now: Any, since: Any = None) -> dict:
 def get_active_table(symbol: str) -> list[list[int]]:
     """活発秒判定地図（7 曜日×24 時・0/1）を返す（:func:`market_profile_dwell.get_active_table` へ委譲）。"""
     return _mpd.get_active_table(symbol)
+
+
+def augment_forming_ticks(
+    parquet_ticks: Any,
+    buffer_ticks: Any,
+    forming_start: int,
+    now_unix: int,
+    since: Any = None,
+) -> list:
+    """MP 形成中期間の tick 列 ``[[sec, mid]...]`` を in-memory buffer で補完する（秒成長の遅延解消）。
+
+    ISSUE-094 🟡-8: 本純関数は MP forming payload 整形（A7）であり、indicator_ui/adapter/compute/
+    forming_bar（形成中バー算出 A4）から MP compute へ移設した（forming_bar は互換のため再エクスポート）。
+
+    parquet 由来 ``parquet_ticks``（``[[sec, mid]...]``・当日フロンティア遅延で末尾が欠ける）に、
+    ``buffer_ticks``（``[(unix_ms, mid)...]``・near-real-time）のうち **parquet 被覆の最終秒より後**かつ
+    窓 ``[forming_start, now_unix)`` 内の tick を **秒重複なく**追加する（parquet 優先）。``since`` 指定時は
+    合成結果へ ``sec > since`` を適用（クライアント既取得分を除外＝base=0 増分）。純関数（I/O 無し）。
+    buffer 空 → parquet の窓内クランプのみ＝現行挙動不変。
+    """
+    lo, hi = int(forming_start), int(now_unix)
+    result = [[int(t[0]), float(t[1])] for t in parquet_ticks if lo <= int(t[0]) < hi]
+    parquet_max = max((t[0] for t in result), default=lo - 1)
+    for tk in buffer_ticks or ():
+        sec = int(tk[0] // 1000)
+        if lo <= sec < hi and sec > parquet_max:  # parquet 末尾より後だけ補完（二重計上なし）
+            result.append([sec, float(tk[1])])
+    if since is not None:
+        s = int(since)
+        result = [t for t in result if t[0] > s]
+    result.sort(key=lambda t: t[0])
+    return result

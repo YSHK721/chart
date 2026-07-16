@@ -49,11 +49,12 @@ except ImportError:  # フォールバック（未登録環境の自己完結起
         sys.path.insert(0, str(_REPO_ROOT))
 
 from marketdata import dataset  # noqa: E402
-from marketdata import api_contract as _contract  # noqa: E402  (nested_error 単一定義・ISSUE-091 A2)
+from api_shared import http_contract as _contract  # noqa: E402  (nested_error 単一定義・ISSUE-094 🔵-11)
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
 from market_profile_api.controller.market_profile_controller import handle_market_profile  # noqa: E402
 from market_profile_api.controller.market_profile_forming_controller import (  # noqa: E402
+    augment_forming_payload,
     handle_market_profile_forming,
 )
 from market_profile_api.controller.tf_period_profile_controller import (  # noqa: E402
@@ -92,27 +93,8 @@ def set_live_tick_buffer(buffer: Optional[Any]) -> None:
 
 
 # ISSUE-087 🟡-1: _forming_bar_from_buffer は adapter/controller/candles_controller へ移設（薄殻化）。
-def _augment_mp_forming_ticks(payload: Any, ref: str, timeframe: Any, since: Any) -> None:
-    """MP 形成中期間の ``payload['ticks']`` を in-memory LiveTickBuffer で補完する（秒成長の遅延解消）。
-
-    当日 parquet フロンティア遅延（~44s）で欠ける「現在分の末尾 tick」を buffer（near-real-time）で
-    埋める。buffer 未注入・非 tick ref・非対応 tf・不正 payload なら **無改変**（現行挙動不変）。
-    純関数 :func:`forming_bar.augment_forming_ticks`（parquet 優先 dedup・since 適用）へ委譲する。
-    """
-    buf = _live_tick_buffer
-    if buf is None or not forming_bar_mod.is_tick_ref(ref) or not forming_bar_mod.is_supported_timeframe(timeframe):
-        return
-    if not isinstance(payload, dict) or "ticks" not in payload:
-        return
-    fs = payload.get("formingStart")
-    now_unix = payload.get("now")
-    if fs is None or now_unix is None:
-        return
-    since_int = int(since) if (since is not None and str(since).lstrip("-").isdigit()) else None
-    buffer_ticks = buf.ticks_since(int(fs) * 1000 - 1)  # formingStart 以降（境界含む）の (ms, mid)。
-    payload["ticks"] = forming_bar_mod.augment_forming_ticks(
-        payload["ticks"], buffer_ticks, int(fs), int(now_unix), since=since_int
-    )
+# ISSUE-094 🟡-8: MP forming payload への buffer tick 合成（旧 _augment_mp_forming_ticks・業務判断）は
+#   MP 側 controller の augment_forming_payload へ移設。殻は buffer を引数で渡すだけ（_handle_market_profile_forming）。
 
 # 静的配信の拡張子 → Content-Type（最小・stdlib mimetypes 相当を明示限定）。
 _CONTENT_TYPES = {
@@ -133,7 +115,7 @@ _CONTENT_TYPES = {
 def _nested_error(error_type: str, message: str, generation: int = 0) -> dict[str, Any]:
     """§6.3.4 nested エラーボディ（殻の例外・候補外要求も同形で返す）。
 
-    ボディ形は正典 marketdata.api_contract.nested_error の単一定義へ委譲（ISSUE-091 A2）。
+    ボディ形は正典 api_shared.http_contract.nested_error の単一定義へ委譲（ISSUE-094 🔵-11）。
     ステータスはエンドポイント固有の判断（404/413 等）があるため呼び出し側が選ぶ。
     """
     return _contract.nested_error(error_type, message, generation=generation)[1]
@@ -326,7 +308,8 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         # 秒成長の遅延解消: forming 期間の ticks を in-memory buffer（near-real-time）で補完する
         #   （parquet フロンティア遅延で欠ける現在分の末尾 tick を埋める）。ok 応答のみ・非破壊。
         if status == 200 and isinstance(payload, dict) and payload.get("ok"):
-            _augment_mp_forming_ticks(payload, ref, timeframe, since)
+            # 殻はバッファを渡すだけ。対応判定・合成は MP 側 controller が担う（ISSUE-094 🟡-8）。
+            augment_forming_payload(payload, ref, timeframe, since, buffer=_live_tick_buffer)
         self._send_json(status, payload)
 
     def _handle_tf_period_profile(self, query: dict[str, list[str]]) -> None:

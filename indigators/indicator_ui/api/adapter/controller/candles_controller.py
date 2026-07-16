@@ -13,7 +13,7 @@ from adapter.compute import dataset, forming_bar as forming_bar_mod
 
 
 def _error(error_type: str, message: str) -> "tuple[int, dict]":
-    from marketdata.api_contract import ERROR_STATUS
+    from api_shared.http_contract import ERROR_STATUS
 
     return ERROR_STATUS.get(error_type, 500), {
         "ok": False,

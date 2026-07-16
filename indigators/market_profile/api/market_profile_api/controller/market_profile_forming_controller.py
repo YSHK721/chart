@@ -31,6 +31,38 @@ from market_profile_api.controller.market_profile_controller import (
 )
 
 
+def augment_forming_payload(
+    payload: Any, ref: Any, timeframe: Any, since: Any, *, buffer: Any
+) -> None:
+    """forming payload の ``ticks`` を in-memory LiveTickBuffer で補完する（秒成長の遅延解消・in-place）。
+
+    ISSUE-094 🟡-8: 旧 indicator_ui/framework/server.py の ``_augment_mp_forming_ticks``（MP forming
+    payload への buffer tick 合成＝業務判断）を MP 側 controller へ移設した。殻（server.py）は
+    ``buffer`` を引数で渡すだけで、対応 ref/tf 判定・payload 妥当性・buffer 読取窓・合成は本関数が担う。
+
+    当日 parquet フロンティア遅延（~44s）で欠ける「現在分の末尾 tick」を buffer（near-real-time）で
+    埋める。buffer 未注入・非 tick ref・非対応 tf・不正 payload なら **無改変**（現行挙動不変）。
+    純関数 :func:`market_profile_forming.augment_forming_ticks`（parquet 優先 dedup・since 適用）へ委譲する。
+    """
+    if (
+        buffer is None
+        or not _forming_bar.is_tick_ref(ref)
+        or not _forming_bar.is_supported_timeframe(timeframe)
+    ):
+        return
+    if not isinstance(payload, dict) or "ticks" not in payload:
+        return
+    fs = payload.get("formingStart")
+    now_unix = payload.get("now")
+    if fs is None or now_unix is None:
+        return
+    since_int = int(since) if (since is not None and str(since).lstrip("-").isdigit()) else None
+    buffer_ticks = buffer.ticks_since(int(fs) * 1000 - 1)  # formingStart 以降（境界含む）の (ms, mid)。
+    payload["ticks"] = _mpf.augment_forming_ticks(
+        payload["ticks"], buffer_ticks, int(fs), int(now_unix), since=since_int
+    )
+
+
 def _is_full_base(base: Any) -> bool:
     """base フラグ（None/1/'1'=full・0/'0'=light）を判定する。既定（None）は full（base 同梱）。"""
     if base is None:
