@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from adapter.compute.call_binding import latest_meta_fields
+
 
 @dataclass(frozen=True)
 class LatestMeta:
@@ -38,28 +40,17 @@ class LatestMeta:
     trailing_k: int | None
 
 
-# ma_type → archetype の分類（reference 登録）。
-#   sma / lwma は窓系（理論上は窓 length 確定）だが core がスライド和の再帰のため full
-#   フォールバックを既定にする（min_window は latest_meta で None を返す）。
-_MA_WINDOW_TYPES = {"sma", "lwma"}
-_MA_RECURRENCE_TYPES = {"ema", "smma"}
-
-
 def latest_meta(compute_id: str, variant: str, params: dict) -> LatestMeta:
     """compute_id(+variant+params) から LatestMeta を解決する。
 
-    未登録は安全既定 LatestMeta("recurrence", None, 1)（full＋K=1）。
+    ISSUE-097 🟡-6: archetype 分類（archetype / min_window / trailing_k）の宣言は
+    ``call_binding._BindingSpec`` の ``latest_meta`` フィールドへ一元化した。本関数は
+    per-indicator if 連鎖を持たず、宣言テーブルの解決値を LatestMeta に組み立てる薄い
+    アダプタに徹する。未登録 / 未宣言の指標は安全既定 LatestMeta("recurrence", None, 1)
+    （full＋K=1＝必ず full と一致）へ落ちる（従来の未登録安全既定と同一挙動）。
     """
-    if compute_id == "moving_averages":
-        ma_type = str(params.get("ma_type", "ema")).lower()
-        if ma_type in _MA_WINDOW_TYPES:
-            # 窓系。spec の分岐に従い full フォールバック（min_window=None）を既定とする
-            #   （2*length は core のスライド和再帰により float 完全一致しないため）。
-            return LatestMeta("window", None, 1)
-        # ema / smma ほかは再帰（先頭シード必須）→ full。
+    fields = latest_meta_fields(compute_id, variant, params)
+    if fields is None:
+        # 安全既定（未登録 / 未宣言）= full＋K=1（必ず full と一致）。
         return LatestMeta("recurrence", None, 1)
-    if compute_id == "price_range_power":
-        # 価格軸分布（非時系列）。末尾K切りしない（全件）。
-        return LatestMeta("axis_distribution", None, None)
-    # 安全既定（未登録）= full＋K=1（必ず full と一致）。
-    return LatestMeta("recurrence", None, 1)
+    return LatestMeta(*fields)
