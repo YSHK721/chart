@@ -23,6 +23,7 @@ import {
 import { PropertiesDialog } from './properties_dialog.js';
 import { IndicatorLegendView } from './indicator_legend_view.js';
 import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_params.js';
+import { MarketProfileController } from './market_profile_controller.js';
 
 // 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
 //   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
@@ -85,6 +86,11 @@ export class IndicatorController {
     //   recomputeInstance をネスト呼びするため。bool だと内側 finally がバッチ途中で解除し、
     //   その隙に tick が割り込む（torn なバッチ）。カウンタなら最外バッチ終了まで true を維持する。
     this._recomputeDepth = 0;
+    // MP（A7）アクター駆動のオーケストレーションを委譲する協働子（ISSUE-094 🔴-4）。
+    //   host=this を渡し、apply/enable/toggle/remove/gear/reapply/restore/live-recompute を委譲する。
+    //   subclass の inherited メソッド呼出（this._toggleMarketProfileVisible 等）・_mpParams override を
+    //   温存するため base の各 MP メソッドは本協働子への薄いラッパへ縮退する（byte 挙動不変）。
+    this._mp = new MarketProfileController(this);
   }
 
   // 競合ガード: 再計算バッチ実行中なら true。LiveUpdater が tick 先頭で参照しスキップ判定する。
@@ -194,70 +200,20 @@ export class IndicatorController {
     return buildMpParams(p);
   }
 
-  // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
-  //   ライブ連動（mpModeResolver 注入時）は mode を選択表示モード（gear 記憶／未選択は既定 normal）へ解決してから
-  //   渡す（'ticklive' 置換はしない＝直交化）。解決役は同時に userMode（gear 選択）を記憶する。mode 未指定
-  //   （旧インスタンス）は解決しない（actor 既定＝通常）。未注入時は _mpParams の結果をそのまま渡す＝byte 不変。
-  //   さらに growth 解決役（mpGrowthResolver 注入時）は setParams 後に growing 信号（applyGrowthState）を適用する。
-  //   FOLLOW=growing=true（成長 ON）／ANALYSIS=false（static）。未注入時は applyGrowthState を呼ばない＝byte 不変。
-  //   marketProfile 未注入時は no-op（呼び出し側の guard と二重防御）。
+  // MP 委譲一式（apply/enable/toggle/remove/gear/reapply/restore/live-recompute）は
+  //   market_profile_controller.js（MarketProfileController）へ外出しした（ISSUE-094 🔴-4）。
+  //   以下は subclass の inherited 呼出（this._applyMpGrowth 等）・既存テスト・composition root 配線を
+  //   温存するための薄い委譲ラッパ（挙動は抽出前と byte 等価）。_mpParams override は host 経由で尊重される。
   _applyMpParams(p) {
-    if (!this._marketProfile) {
-      return;
-    }
-    const params = this._mpParams(p);
-    if (params.mode != null && this._mpModeResolver) {
-      params.mode = this._mpModeResolver(params.mode);
-    }
-    this._marketProfile.setParams(params);
-    this._applyMpGrowth();
+    return this._mp.applyMpParams(p);
   }
 
-  // 直交化: 現在の成長状態（mpGrowthResolver）を MP アクターへ growing 信号として適用する。
-  //   setParams（mode 遷移で _exitTicklive→growing リセット）の後に呼び、mode を維持したまま growing を確定する。
-  //   解決役未注入 or actor が applyGrowthState 非所持なら no-op（byte 不変）。返り値 growing を呼び出し側が使う。
   _applyMpGrowth() {
-    if (!this._mpGrowthResolver || !this._marketProfile) {
-      return false;
-    }
-    const growing = !!this._mpGrowthResolver();
-    if (typeof this._marketProfile.applyGrowthState === 'function') {
-      this._marketProfile.applyGrowthState({ growing });
-    }
-    return growing;
+    return this._mp.applyMpGrowth();
   }
 
-  // ライブ連動: チャート FOLLOW/ANALYSIS 遷移時に、現在表示中 MP の実効モードを再適用する（present 固有）。
-  //   GrowthCoordinator.onLiveStateChange → reapply として配線される。連動未配線（mpModeResolver 未注入）
-  //   時は呼ばれない設計だが、MP 不在/無効/未表示時も自己 guard で no-op（副作用なし）。
-  //   実効モードは resolver(null)（記憶更新なし・実効解決のみ）で強制し、保存 params（bins/va/src/range）は
-  //   維持したまま mode だけ差し替えて refresh する（既存 setParams→refresh 経路を再利用・actor 不変）。
-  async reapplyMarketProfileMode() {
-    if (!this._marketProfile || !this._mpModeResolver) {
-      return;
-    }
-    if (typeof this._marketProfile.isEnabled === 'function' && !this._marketProfile.isEnabled()) {
-      return; // MP 未表示（enabled=false）は再適用不要。
-    }
-    const inst = this._state.applied.find(
-      (i) => this._isMarketProfile(this._catalog.get(i.indicatorId)) && i.visible,
-    );
-    if (!inst) {
-      return; // 表示中 MP インスタンスが無い。
-    }
-    const params = this._mpParams(this._paramsObject(inst.params));
-    params.mode = this._mpModeResolver(null); // 選択表示モード（gear 記憶／未選択は既定）を維持（'ticklive' 置換なし）。
-    this._marketProfile.setParams(params);
-    // 直交化: mode を維持したまま growing だけをトグルする（applyGrowthState）。FOLLOW=growing=true / ANALYSIS=false。
-    const growing = this._applyMpGrowth();
-    // growing 時のみ成長エンジンを起動する。present の成長は forming を onLiveTick（→_enterTicklive）で取得する
-    //   （live loop(recomputeAllApplied)/初期 add と同一経路）。refresh は /market_profile の base 累積を描くだけで
-    //   forming を発火しないため、growing では onLiveTick を呼ぶ。非成長（static＝ANALYSIS）は refresh で選択モードを反映。
-    if (growing && typeof this._marketProfile.onLiveTick === 'function') {
-      await this._marketProfile.onLiveTick();
-    } else if (typeof this._marketProfile.refresh === 'function') {
-      await this._marketProfile.refresh();
-    }
+  reapplyMarketProfileMode() {
+    return this._mp.reapplyMode();
   }
 
   // resmode/mode（表示・解像度モード）の後方互換ヘルパは market_profile_params.js（純関数）へ外出しした
@@ -295,126 +251,27 @@ export class IndicatorController {
     return instance;
   }
 
-  // MP 専用適用パス: /compute をバイパスし、state には no-op gateway で instance を登録して
-  //   凡例表示・永続化・restore の対象に含める。描画は MarketProfileActor（GET /market_profile →
-  //   primitive）へ委譲する。_draw（F3 系列描画）は通さない。
-  async _applyMarketProfile(def, variant, params) {
-    // MP 単一インスタンス制約: 既に MP が適用済みなら新規 legend 行を作らず no-op で
-    //   既存インスタンスを返す（二重 legend 行→単一 actor 駆動での状態乖離を防ぐ）。
-    //   actor へは触れない: 既存が非表示なら表示状態の乖離、gear 変更済みなら params
-    //   の既定値クロバーを招くため、可視・params の現状を保存する。
-    const existing = this._state.applied.find(
-      (i) => this._isMarketProfile(this._catalog.get(i.indicatorId)),
-    );
-    if (existing) {
-      return existing;
-    }
-    const { state, instance } = await apply(
-      this._state,
-      { indicatorId: def.id, variant: variant ?? this._defaultVariant(def), params, datasetRef: this._datasetRef },
-      { compute: async () => ({ generation: 0 }) },
-    );
-    this._state = state;
-    this._meta.set(instance.instanceId, { def });
-    await this._enableMarketProfile(params);
-    this._persistAll();
-    this._renderLegend();
-    return instance;
+  // MP 委譲ラッパ（実体は MarketProfileController・ISSUE-094 🔴-4）。subclass の inherited 呼出
+  //   （this._toggleMarketProfileVisible / this._removeMarketProfile）と既存テスト（ctrl._onGearMarketProfile）を
+  //   温存するための薄い委譲（挙動は抽出前と byte 等価）。
+  _applyMarketProfile(def, variant, params) {
+    return this._mp.applyMarketProfile(def, variant, params);
   }
 
-  // MP アクターへ params を渡して有効化する（setParams→setEnabled(true)＝取得＋表示）。
-  //   setEnabled(true) は内部で refresh も行う。未注入時は no-op。
-  async _enableMarketProfile(params) {
-    if (!this._marketProfile) {
-      return;
-    }
-    this._applyMpParams(params);
-    await this._marketProfile.setEnabled(true);
-    // [reveal seam] reveal（replay）では現在バー T（_untilTime）が確定していれば即 enterBar で base を
-    //   描画する。present は _untilTime を持たない（undefined）ため常に skip（byte 挙動不変）。
-    if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function') {
-      await this._marketProfile.enterBar(this._untilTime);
-    }
+  _enableMarketProfile(params) {
+    return this._mp.enableMarketProfile(params);
   }
 
-  // MP 凡例 eye: 表示/非表示トグル（state.visible を反転し actor.setEnabled へ同期）。
-  async _toggleMarketProfileVisible(inst) {
-    this._state = facadeToggleVisible(this._state, inst.instanceId);
-    const updated = this._state.applied.find((i) => i.instanceId === inst.instanceId);
-    if (this._marketProfile && updated) {
-      await this._marketProfile.setEnabled(updated.visible);
-    }
-    this._persistAll();
-    this._renderLegend();
+  _toggleMarketProfileVisible(inst) {
+    return this._mp.toggleVisible(inst);
   }
 
-  // MP 凡例 close: 非表示＋detach してから applied/meta から除去する（renderer.remove は不要＝
-  //   MP は renderer に系列を持たない）。
-  async _removeMarketProfile(inst) {
-    if (this._marketProfile) {
-      await this._marketProfile.setEnabled(false);
-      if (typeof this._marketProfile.detach === 'function') {
-        this._marketProfile.detach();
-      }
-    }
-    this._state = facadeRemove(this._state, inst.instanceId);
-    this._meta.delete(inst.instanceId);
-    this._persistAll();
-    this._renderLegend();
+  _removeMarketProfile(inst) {
+    return this._mp.removeInstance(inst);
   }
 
-  // MP 凡例 gear: プロパティダイアログで bins/va/src を編集し、onApply で setParams+refresh。
-  //   /compute は呼ばない。DOM 不在時は現 params で即時反映（フォールバック）。
   _onGearMarketProfile(inst, def) {
-    const doc = this._document;
-    const stored = this._paramsObject(inst.params);
-    const currentParams = (stored && Object.keys(stored).length > 0)
-      ? stored
-      : this._defaultParams(def);
-    const applyParams = async (values) => {
-      this._state = this._withParams(this._state, inst.instanceId, values);
-      if (this._marketProfile) {
-        this._applyMpParams(values);
-        // [reveal seam] reveal（replay）かつ **push 成長中**（isGrowingPush＝growing かつ非 sessions）のときだけ
-        //   現在バー T で enterBar（forming push で base 取り直し）。sessions+growing / 非成長は refresh(as-of-T)
-        //   へ落とす（成長軸 aware）。present は _untilTime 未設定ゆえ常に refresh＝従来どおり（byte 挙動不変）。
-        //   Phase5: 旧 isTicklive()（表示モード）ゲートから isGrowingPush()（成長軸）へ移行（ticklive 撤去）。
-        if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function'
-            && typeof this._marketProfile.isGrowingPush === 'function'
-            && this._marketProfile.isGrowingPush()) {
-          await this._marketProfile.enterBar(this._untilTime);
-        } else if (typeof this._marketProfile.refresh === 'function') {
-          await this._marketProfile.refresh();
-        }
-      }
-      this._persistAll();
-      this._renderLegend();
-    };
-    // applyParams は async。未 await の fire-and-forget のため拒否を .catch で捕捉し
-    //   unhandledRejection 化を防ぐ（refresh 失敗等）。
-    const runApply = (values) => {
-      applyParams(values).catch((err) => {
-        if (typeof console !== 'undefined' && console.error) {
-          console.error('[MP] gear apply failed', err);
-        }
-      });
-    };
-    if (!doc || typeof PropertiesDialog !== 'function') {
-      runApply(currentParams);
-      return;
-    }
-    const dialog = new PropertiesDialog({
-      document: doc,
-      def,
-      instance: { ...inst, params: currentParams },
-      mode: this._mode,
-      // ISSUE-070: MP 解像度パラメータのグレーアウト判定に現 timeframe と served/A方式を渡す
-      //   （tf-period が日別列を描くとき resmode/bins/range は無効＝GRID_W 固定のため）。
-      context: { timeframe: this._timeframe, servedMode: this._mode },
-      onApply: (values) => { runApply(values); },
-      onCancel: () => {},
-    });
-    dialog.open();
+    return this._mp.onGear(inst, def);
   }
 
   // AppliedInstance（不変・凍結）の params のみ差し替えた state を返す（_withVariant と同型）。
@@ -617,14 +474,9 @@ export class IndicatorController {
       }
       // MP 種別は /compute を持たない（backend に compute 無し）。再計算経路（ライブ tick /
       //   足切替）で /compute へ流出させると例外→setTimeframe では preRender 前で全スキップ。
-      //   /compute を通さず actor.refresh（現時間足で再取得）へ委譲し、MP も新足へ追従させる。
+      //   /compute を通さず MP 側協働子（actor.onLiveTick／refresh 委譲）へ外出しする（ISSUE-094 🔴-4）。
       if (this._isMarketProfile(meta.def)) {
-        // [reveal seam] present の MP actor は onLiveTick（ticklive ON=forming 増分 / OFF=refresh 委譲）を持つ。
-        //   typeof gate で present は従来どおり onLiveTick を呼び（byte 挙動不変）、onLiveTick を持たない
-        //   replay slim actor は skip（render seam の enterBar/feedTick が MP を駆動する）。
-        if (this._marketProfile && inst.visible && typeof this._marketProfile.onLiveTick === 'function') {
-          await this._marketProfile.onLiveTick();
-        }
+        await this._mp.onLiveRecompute(inst);
         continue;
       }
       const job = await this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
@@ -697,16 +549,10 @@ export class IndicatorController {
         continue;
       }
       this._meta.set(inst.instanceId, { def });
-      // MP 種別は /compute で計算しようとして失敗させない。保存 params を actor へ渡し、
-      //   可視だった場合のみ有効化して再取得・表示する。
+      // MP 種別は /compute で計算しようとして失敗させない。復元は MP 側協働子へ委譲する
+      //   （保存 params を actor へ渡し、可視だった場合のみ有効化して再取得・表示・ISSUE-094 🔴-4）。
       if (this._isMarketProfile(def)) {
-        const rp = this._paramsObject(inst.params);
-        if (this._marketProfile) {
-          this._applyMpParams(rp);
-          if (inst.visible) {
-            await this._marketProfile.setEnabled(true);
-          }
-        }
+        await this._mp.restoreInstance(inst);
         continue;
       }
       try {
