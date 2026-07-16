@@ -1,8 +1,9 @@
-"""MarkdownPresenter（ReportPresenterPort 実装）。
+"""MarkdownPresenter（MarkdownReportPort 実装）。
 
 BacktestResult → DESIGN §8.2 標準 Markdown レポートへ変換する。jinja2 で
 テンプレートをレンダリングする。present_json / present_html は本 Presenter の責務外
-（各専用 Presenter が担う）。未対応操作の NotImplementedError は _BasePresenter が担う。
+（各専用 Presenter が担う）。本 Presenter は形式別 Port の MarkdownReportPort のみを
+実装し、他形式の未対応スタブを保持しない（ISSUE-098 🔴-1 LSP / ISSUE-099 🟡-1 ISP）。
 
 adapter 層は usecase + domain + 技術ドライバ（jinja2）のみに依存する。
 """
@@ -12,7 +13,7 @@ from typing import Any
 
 from jinja2 import Template
 
-from simulator.adapter.presenter._base import _BasePresenter
+from simulator.usecase.ports import MarkdownReportPort
 
 _MARKDOWN_TEMPLATE = """# Backtest Report: {{ ea_name }}
 
@@ -45,7 +46,7 @@ _MARKDOWN_TEMPLATE = """# Backtest Report: {{ ea_name }}
 """
 
 
-class MarkdownPresenter(_BasePresenter):
+class MarkdownPresenter(MarkdownReportPort):
     """BacktestResult を MT5 風 Markdown レポート文字列へ変換する。"""
 
     def present_markdown(self, result: Any) -> str:

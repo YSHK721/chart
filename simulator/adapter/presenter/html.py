@@ -1,4 +1,4 @@
-"""HtmlPresenter（ReportPresenterPort 実装）。
+"""HtmlPresenter（HtmlReportPort 実装）。
 
 BacktestResult → HTML レポート（jinja2 テンプレ + lightweight-charts 埋込）へ変換する。
 DESIGN §8.2 の Summary 表現を HTML 化し、equity/balance カーブを lightweight-charts で
@@ -13,7 +13,7 @@ from typing import Any
 
 from jinja2 import Environment
 
-from simulator.adapter.presenter._base import _BasePresenter
+from simulator.usecase.ports import HtmlReportPort
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="ja">
@@ -48,7 +48,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
-class HtmlPresenter(_BasePresenter):
+class HtmlPresenter(HtmlReportPort):
     """BacktestResult を lightweight-charts 埋込 HTML レポートへ変換する。"""
 
     def present_html(self, result: Any, path: Any) -> None:
