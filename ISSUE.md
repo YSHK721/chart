@@ -1231,3 +1231,13 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 3. E4 残: `out/prototype.html`（A方式バンドル）の再生成＋既存 `DIM_ALPHA` 二重宣言（trade_markers_renderer/pair_lines_primitive 由来・HEAD 以前から）の是正。
 4. E2 残: analysis→api の新結合（step5→null_b_kernel）が CI で PYTHONPATH に api を要する点の明文化（本番 venv は .pth で自動解決）。
 5. レビュー 🔵: session_ohlc.js の symlink 健全性チェックの CI 化（symlink 非対応環境対策）。
+
+## ISSUE-096: ライブ足更新中の時間足切替で "Cannot update oldest data" 過渡エラー（ブラウザ全UI動作確認で発見）
+- **ステータス**: OPEN（2026-07-16 起票・低優先＝過渡的・描画は正常）
+- **発見経緯**: ISSUE-094 完了後のブラウザ全UI動作確認（指標管理UI・replay・report を Playwright で全操作クリック）中に、indicator_ui（8145）で時間足を 30分へ切替えた瞬間にコンソールエラー 1 件を観測。
+- **症状**: `Error: Cannot update oldest data, last time=... new time=...`（lightweight-charts の series.update が現系列末尾より古い time のバーで呼ばれた）。スタックは `ChartRenderer.updateLastCandle (chart_renderer.js:578)` ← `LiveTickPlayer._applyTick (live_tick_player.js:222)` ← `_playback (:134)`。
+- **切り分け（実測）**: `live_tick_player.js` は ISSUE-094 で未変更（`git log 4b5731a..HEAD -- live_tick_player.js` 空）＝本 SRP リファクタの回帰ではない。E4 の setTimeframe 抽出（timeframe_controller）は byte 挙動不変で、ライブ player との協調（切替時の停止/再シード）は抽出前後で同一。既知のライブ tick 自己シード領域（ISSUE ~065 系・RESOLVED・当時ブラウザ目視は依頼者実施）に潜在していた競合が顕在化したもの。
+- **推定原因**: 時間足切替（candles 再取得→メイン系列差替）と、独立ポーリングするライブ tick player（2.5s poll / 100ms playback）の間に停止/再シードの同期がなく、切替直後にインフライトの live tick が旧周期の `_bar.time` で `updateLastCandle` を呼び、差し替え後の新系列末尾より古い time となって lwc が拒否する。`_applyTick` の後退ガード（`periodSec < this._bar.time` で return）は player 内部の `_bar` を基準にするため、系列側が差し替わったケースを捕捉できない。
+- **影響**: 過渡的（チャートは 30分足を正常描画・以降の操作も正常）。lwc は update を拒否するのみでクラッシュしない。他の時間足切替では未再現＝インフライト tick のタイミング依存。
+- **対処案（裁定・別実装向け）**: setTimeframe のバッチ（recomputeDepth ガード区間）に入る時に live player を一時停止し、系列差替後に新時間足で再シードしてから再開する。または updateLastCandle 側で「系列末尾 time 未満のライブ足は skip（後退ガードを player の _bar でなく実系列末尾で判定）」する防御を追加。
+- **検証記録（正常動作確認済みの操作）**: ①indicator_ui（8145）: 時間足9種・ライブ ON/OFF・メニュー4タブ・カテゴリ5種・検索・お気に入り登録・moving_averages 追加/歯車(パラメータ/スタイル/可視性)/期間変更 OK/表示トグル/削除・market_profile 追加/日別プロファイル切替/週↔日切替(ISSUE-090 回帰なし)/zp 描画(POC*/VAH 線) 全正常。②replay_ui（8146）: 1足送り/戻し・速度×0.25〜×1・bar スライダー・▶再生/⏸停止(bar 前進)・再生追従・表示左右端・レンジ4種・最新足更新モード・時間足・price_range_power 適用(バンド線描画) 全正常。③report_ui（8770）: IS/OOS 区間トグル・6タブ(比較判定/取引明細/ヒートマップ/グラフ/サマリー/用語)・接点ボタン・FAIL 判定バッジ(AssessmentPolicy)・3チャート(価格/Balance/Drawdown) 全正常。コンソールエラーは本 ISSUE-096 の 1 件と favicon 404 のみ（8144 への ERR_CONNECTION_REFUSED は検証中に停止した旧サーバへ旧タブがポーリングした残骸＝実欠陥でない）。
