@@ -9,7 +9,7 @@
 
 CLEAN_ARCH §6: HTTP・スレッド・静的配信という偶有的技術を最外層へ隔離する。R(rpy2) 非スレッド安全
 ＋巨大 resample の OOM 回避のため重い処理を 1 本の ``_HEAVY_LOCK`` で直列化する（proto と同一方針・
-出力は不変）。エラー応答は正典契約 marketdata.api_contract（ERROR_STATUS・nested_error）に従う
+出力は不変）。エラー応答は正典契約 api_shared.http_contract（ERROR_STATUS・nested_error）に従う
 （ISSUE-091 A2: 旧 proto 由来の独自形 {error:{type,message}}・internal→400 という契約分岐を是正。
 例外翻訳は ValueError→validation / MemoryError・それ以外→internal）。
 """
@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
-# 正典エラー契約（ISSUE-091 A2）: status 翻訳・nested ボディとも単一定義を参照する。
-from marketdata.api_contract import nested_error
+# 正典エラー契約（ISSUE-091 A2 / ISSUE-094 🔵-11）: status 翻訳・nested ボディとも中立共有
+#   パッケージ api_shared.http_contract の単一定義を直参照する。
+from api_shared.http_contract import nested_error
 
 from simulator.replay_ui.usecase.causal_compute import (
     CausalComputeRequest,

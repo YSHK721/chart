@@ -12,7 +12,7 @@ HTTP サーバ本体（BaseHTTPRequestHandler・ソケット）に依存しな�
   4. ``bins``（int・既定 60・[1, _MAX_BINS] にクランプ）/ ``va``（float・既定 0.70・有限かつ
      [_MIN_VA, 1.0] にクランプ）を反映して足ベース TPO プロファイルを計算する。
   5. 成功は (200, {ok, profile})。ref/timeframe の検証失敗は §6.3.4 nested error（error.type→
-     HTTPステータスは marketdata.api_contract.ERROR_STATUS・単一定義）で 400 に翻訳する。
+     HTTPステータスは api_shared.http_contract.ERROR_STATUS・単一定義）で 400 に翻訳する。
      bins/va は例外化せずクランプで吸収する（500 化しない）。data load / 計算の想定外失敗のみ
      HTTP 殻の包括 try/except で internal 500 になる。
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from marketdata.api_contract import nested_error  # §6.3.4 単一定義（ISSUE-087 移設・ISSUE-091 A2 で整形も一元化）
+from api_shared.http_contract import nested_error  # §6.3.4 単一定義（ISSUE-094 🔵-11: 中立共有パッケージへ移設）
 from marketdata import dataset  # dataset 実体は marketdata へ移設済み（最下層 peer 依存）
 from market_profile_api.compute import market_profile_dwell
 from market_profile_api.compute import market_profile_zp
@@ -96,7 +96,7 @@ def _bar_width(profile: dict[str, Any]) -> float:
 def _error_body(error_type: str, message: str) -> tuple[int, dict[str, Any]]:
     """§6.3.4 nested error（{ok:false, generation, error:{type, message, violations}}）。
 
-    ステータス翻訳・ボディ形とも正典 marketdata.api_contract.nested_error（単一定義）へ
+    ステータス翻訳・ボディ形とも正典 api_shared.http_contract.nested_error（単一定義）へ
     委譲する（ISSUE-091 A2: 3 殻の契約分岐を構造排除）。
     """
     return nested_error(error_type, message)
