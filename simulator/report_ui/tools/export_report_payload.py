@@ -20,6 +20,7 @@ from simulator.main import build_interactor, ema_series
 from simulator.report_ui.adapter.report_presenter import ReportUiPresenter
 from simulator.report_ui.tools.contacts_export import compute_segment_contacts
 from simulator.report_ui.usecase.build_report_payload import BuildReportPayload
+from simulator.report_ui.usecase.report_meta import ReportMeta
 
 ROOT = Path("/workspaces/app")
 CONF = ROOT / "simulator/tests/confirmation/2026-04_stop-probe_oos"
@@ -192,6 +193,9 @@ def build_payload() -> Any:
         meta_oos=meta_oos,
         contacts_is=runs["is"]["contacts"],
         contacts_oos=runs["oos"]["contacts"],
+        # 特定実験の所与（EA 名・試験条件・分割日/ノート・銘柄/時間足の既定）を
+        # Composition Root から明示注入する（ISSUE-094 🟡-5・現行 StopEntryProbe 値）。
+        report_meta=ReportMeta(),
     )
 
 

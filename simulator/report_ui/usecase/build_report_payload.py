@@ -4,29 +4,29 @@ BacktestResult(IS/OOS) を read-only 消費し報告ドメインモデル Report
 ステージ① F-1 スコープ: meta・bars・trades(16キー)・summary・degradation・verdict・balance_curve を
 実体化し、orders[]・agg の heat/scatter/graph 詳細は遅延（空/最小キー確保）とする。
 
-依存: domain（BacktestResult/TradeRecord は属性アクセスのみ）＋ report_models ＋ derive。
-pandas 非依存・int 時刻のみ（時刻 int 化と bars の int 化は上流 tools が担う）。
+ISSUE-094 🟡-5: 本 UC は「表示形状の写像」という単一アクターに収束させる。合否方法論
+（degradation/verdict の閾値・判定木）は AssessmentPolicy へ、特定実験の所与（EA 名・試験
+条件・分割日/ノート・銘柄/時間足の既定）は ReportMeta へ外出しし、本体は EA 非依存とする。
+
+依存: domain（BacktestResult/TradeRecord は属性アクセスのみ）＋ report_models ＋ derive
+＋ assessment_policy ＋ report_meta。pandas 非依存・int 時刻のみ（時刻 int 化と bars の
+int 化は上流 tools が担う）。
 """
 from __future__ import annotations
 
 from typing import Any
 
 from simulator.report_ui.usecase import derive
+from simulator.report_ui.usecase.assessment_policy import AssessmentPolicy
+from simulator.report_ui.usecase.report_meta import ReportMeta
 from simulator.report_ui.usecase.report_models import (
     ReportPayloadModel,
     SegmentModel,
     SummaryModel,
     TradeRow,
-    VerdictModel,
 )
 
 INITIAL = 10000.0
-
-# 全体 meta の固定記述（IS/OOS 単純分割・最適化なしの試験条件・§4.8）。
-# 区間に依らず一定のため execute 組立ロジックから分離して定数化する。
-_META_PARAMS = "ProbeDir=2(両建て) / offset100 / Lot0.1 / SL200 / TP500"
-_META_SPLIT = "2026-04-15"
-_META_NOTE = "IS/OOS 単純分割（同一パラメータを両区間で評価・最適化なし）"
 
 # exit_reason → comment 正規化値（詳細設計 §4.2.4）。
 _EXIT_REASON_COMMENT = {
@@ -38,13 +38,16 @@ _EXIT_REASON_COMMENT = {
     "end_of_test": "end of test",
 }
 
-# degradation 対象指標（詳細設計 §5.3）。
-_DEG_KEYS = ["net", "profit_factor", "win_rate", "expectancy", "payoff",
-             "return_pct", "max_dd_pct"]
-
 
 class BuildReportPayload:
-    """BacktestResult(IS/OOS)→ReportPayloadModel（派生集計・degradation・verdict）。"""
+    """BacktestResult(IS/OOS)→ReportPayloadModel（表示形状の写像）。
+
+    合否方法論は ``policy``（AssessmentPolicy）へ委譲し、特定実験の所与は execute の
+    ``report_meta``（ReportMeta）引数で受け取る。いずれも未指定なら現行既定で byte 不変。
+    """
+
+    def __init__(self, policy: "AssessmentPolicy | None" = None) -> None:
+        self._policy = policy or AssessmentPolicy()
 
     def execute(
         self,
@@ -59,24 +62,26 @@ class BuildReportPayload:
         meta_oos: dict,
         contacts_is: "list | None" = None,
         contacts_oos: "list | None" = None,
+        report_meta: "ReportMeta | None" = None,
     ) -> ReportPayloadModel:
+        report_meta = report_meta or ReportMeta()
         seg_is, sum_is = self._build_segment(
-            result_is, bars_is, spec, ea_params, meta_is, contacts_is)
+            result_is, bars_is, spec, ea_params, meta_is, report_meta, contacts_is)
         seg_oos, sum_oos = self._build_segment(
-            result_oos, bars_oos, spec, ea_params, meta_oos, contacts_oos)
+            result_oos, bars_oos, spec, ea_params, meta_oos, report_meta, contacts_oos)
 
         summary = {"is": sum_is, "oos": sum_oos}
-        degradation = self._degradation(sum_is, sum_oos)
-        verdict = self._verdict(sum_is, sum_oos, degradation)
+        degradation = self._policy.degradation(sum_is, sum_oos)
+        verdict = self._policy.verdict(sum_is, sum_oos, degradation)
 
         meta = {
-            "symbol": meta_is.get("symbol", "JP225"),
-            "timeframe": meta_is.get("timeframe", "M1"),
-            "strategy": meta_is.get("strategy", "StopEntryProbe_EA"),
-            "params": _META_PARAMS,
+            "symbol": meta_is.get("symbol", report_meta.symbol),
+            "timeframe": meta_is.get("timeframe", report_meta.timeframe),
+            "strategy": meta_is.get("strategy", report_meta.expert),
+            "params": report_meta.params,
             "initial_deposit": INITIAL,
-            "split": _META_SPLIT,
-            "note": _META_NOTE,
+            "split": report_meta.split,
+            "note": report_meta.note,
         }
 
         return ReportPayloadModel(
@@ -90,7 +95,7 @@ class BuildReportPayload:
 
     # --- segment ------------------------------------------------------------
 
-    def _build_segment(self, result, bars, spec, ea_params, meta, contacts=None):
+    def _build_segment(self, result, bars, spec, ea_params, meta, report_meta, contacts=None):
         trades_src = list(result.trades)
         balance_curve_src = list(result.balance_curve)
 
@@ -116,9 +121,9 @@ class BuildReportPayload:
         ]
 
         seg_meta = {
-            "symbol": meta.get("symbol", "JP225"),
-            "timeframe": meta.get("timeframe", "M1"),
-            "strategy": meta.get("strategy", "StopEntryProbe_EA"),
+            "symbol": meta.get("symbol", report_meta.symbol),
+            "timeframe": meta.get("timeframe", report_meta.timeframe),
+            "strategy": meta.get("strategy", report_meta.expert),
             "bars": len(bars_out),
             "trades": len(trade_rows),
             "period": meta.get("period", ""),
@@ -129,7 +134,8 @@ class BuildReportPayload:
         segment = SegmentModel(
             label=meta.get("label", ""),
             meta=seg_meta,
-            report=self._report(result.stats, seg_meta),  # §4.5 BacktestStats→report 写像
+            # §4.5 BacktestStats→report 写像
+            report=self._report(result.stats, seg_meta, report_meta),
             bars=bars_out,
             trades=trade_rows,
             orders=[],          # 遅延（空配列・キー確保）
@@ -248,7 +254,7 @@ class BuildReportPayload:
 
     # --- report（§4.5 BacktestStats→report ラベル dict 写像） -----------------
 
-    def _report(self, stats: Any, seg_meta: dict) -> dict:
+    def _report(self, stats: Any, seg_meta: dict, report_meta: ReportMeta) -> dict:
         """BacktestStats を §4.5 写像で report ラベル dict（全値 str）へ写す。
 
         stats 直引き＋文字列整形の組立のみ（derive 化しない）。BacktestStats が保持する
@@ -261,8 +267,8 @@ class BuildReportPayload:
             return f"{p:.2f}% ({num})"
 
         return {
-            "Expert": "StopEntryProbe_EA",
-            "Symbol": seg_meta.get("symbol", "JP225"),
+            "Expert": report_meta.expert,
+            "Symbol": seg_meta.get("symbol", report_meta.symbol),
             "Period": seg_meta.get("period", ""),
             "Initial Deposit": f"{stats.initial_deposit:.0f}",
             "Total Net Profit": f"{stats.profit:.0f}",
@@ -305,46 +311,8 @@ class BuildReportPayload:
             "Z-Score": f"{stats.z_score:.2f}",
         }
 
-    # --- degradation（§5.3） ------------------------------------------------
-
-    def _degradation(self, sum_is: SummaryModel, sum_oos: SummaryModel) -> dict:
-        deg = {}
-        for k in _DEG_KEYS:
-            i = getattr(sum_is, k)
-            o = getattr(sum_oos, k)
-            ratio = None if i == 0 else round(o / i, 3)
-            deg[k] = {"is": i, "oos": o, "ratio": ratio, "delta": round(o - i, 2)}
-        return deg
-
-    # --- verdict（§5.3・順序厳守） -------------------------------------------
-
-    def _verdict(self, sum_is: SummaryModel, sum_oos: SummaryModel, deg: dict) -> VerdictModel:
-        reasons: list[str] = []
-        is_net = sum_is.net
-        oos_net = sum_oos.net
-        oos_pf = sum_oos.profit_factor
-
-        if is_net > 0 and oos_net <= 0:
-            result = "fail"
-            reasons.append(
-                f"IS黒字(+{is_net:.0f})に対しOOS赤字({oos_net:.0f})＝未知区間で優位性消失"
-            )
-        elif oos_pf < 1.0:
-            result = "fail"
-            reasons.append(f"OOS PF={oos_pf:.3f}<1.0＝検証区間で損失超過")
-        elif deg["profit_factor"]["ratio"] is not None and deg["profit_factor"]["ratio"] < 0.7:
-            result = "warn"
-            reasons.append(f"PF劣化 比={deg['profit_factor']['ratio']}（OOS/IS<0.7）")
-        else:
-            result = "pass"
-            reasons.append("OOSでも優位性を維持")
-
-        if deg["win_rate"]["delta"] < -5:
-            reasons.append(f"勝率差={deg['win_rate']['delta']}pt 悪化")
-        if deg["expectancy"]["ratio"] is not None and deg["expectancy"]["ratio"] < 0:
-            reasons.append("期待値が正→負へ反転")
-
-        return VerdictModel(result=result, reasons=reasons)
+    # --- degradation / verdict は AssessmentPolicy へ委譲（ISSUE-094 🟡-5）------
+    # 劣化率算出・合否判定木・閾値は self._policy（AssessmentPolicy）が担う。
 
     def _contract_notes(self) -> list:
         return [
