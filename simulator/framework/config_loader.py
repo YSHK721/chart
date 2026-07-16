@@ -14,6 +14,7 @@ import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from simulator.adapter.execution.tick_model_registry import TICK_MODEL_IDS
 from simulator.domain.exceptions import ConfigError
 from simulator.usecase.models import BacktestConfig
 
@@ -39,9 +40,10 @@ class _ConfigModel(BaseModel):
 
     # §7 #1。real_ticks は実ティック I/O 経路用の隔離キー（every-tick #1）。
     # every_tick(=OHLC 合成) は既定のまま不変。経路結線は cycle2。
-    tick_model: Literal[
-        "every_tick", "ohlc_expand", "open_only", "real_ticks"
-    ] = "every_tick"
+    # 許容値は tick_model 単一レジストリ（TICK_MODEL_IDS）から導出する（ISSUE-097 🟡-5）。
+    # 従来ハードコードの Literal 4 値（every_tick/ohlc_expand/open_only/real_ticks）と
+    # 同一集合・同一順序であり検証挙動は完全不変（回帰ガード test_tick_model_registry）。
+    tick_model: Literal[TICK_MODEL_IDS] = "every_tick"
     spread_model: Literal["fixed", "variable"] = "fixed"          # §7 #2 Ask=Bid+spread 固定
     sltp_tie: Literal["sl", "tp"] = "sl"                          # §7 #3 SL 優先（保守）
     fill_delay: Literal["next_tick", "same_tick"] = "next_tick"   # §7 #4 次ティック以降

@@ -26,11 +26,10 @@ import pandas as pd
 
 from simulator.adapter.controller import BacktestController
 from simulator.adapter.execution.tick_model import (
-    EveryTickModel,
     OhlcExpandTickModel,
-    OpenOnlyTickModel,
     RealTickModel,
 )
+from simulator.adapter.execution.tick_model_registry import TICK_MODEL_REGISTRY
 from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
 from simulator.adapter.indicator.madiff import madiff
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
@@ -52,25 +51,27 @@ from simulator.usecase.compare_stats import ComparisonReport, compare_stats
 from simulator.usecase.models import SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
-# TickModel ファクトリ（config_loader の Literal キーと一致・CLEAN_ARCH §6.3）
-_TICK_MODELS = {
-    "every_tick": EveryTickModel,
-    "ohlc_expand": OhlcExpandTickModel,
-    "open_only": OpenOnlyTickModel,
-}
-# 列挙外キー時の既定（config_loader が列挙を検証済のため通常到達しない防御的既定）
+# TickModel の synthetic 生成・real_ticks 分岐は tick_model 単一レジストリ
+# （TICK_MODEL_REGISTRY・adapter/execution/tick_model_registry.py）から導出する
+# （ISSUE-097 🟡-5・従来 _TICK_MODELS dict と real_ticks 別分岐の三分散を撤廃）。
+# 列挙外キー時の既定（config_loader が列挙を検証済のため通常到達しない防御的既定）。
 _DEFAULT_TICK_MODEL = OhlcExpandTickModel
 
 
 def _make_tick_model(tick_model_key: str, ohlc_order: str = "ohlc") -> Any:
-    """決定論 config の tick_model キーから TickModelPort 実装を生成する。
+    """決定論 config の tick_model キーから synthetic TickModelPort 実装を生成する。
 
-    ohlc_expand は ohlc_order（"ohlc"/"olhc"/"auto"）でバー内の極値到達順を切替える
-    （ペンディング/SL/TP の同足競合の決済順を MT5 に整合）。他モデルは ohlc_order 非対応。
+    レジストリの ``synthetic_builder`` へ委譲する。ohlc_expand は ohlc_order
+    （"ohlc"/"olhc"/"auto"）でバー内の極値到達順を切替える（ペンディング/SL/TP の
+    同足競合の決済順を MT5 に整合）。他 synthetic モデルは ohlc_order 非対応。
+    レジストリ未登録キー・synthetic_builder を持たないキー（real_ticks）は
+    防御的既定 OhlcExpandTickModel()（order="ohlc"）へフォールバックする（従来と同一・
+    real_ticks は build_interactor が別分岐で処理するため本関数へは到達しない）。
     """
-    if tick_model_key == "ohlc_expand":
-        return OhlcExpandTickModel(order=ohlc_order)
-    return _TICK_MODELS.get(tick_model_key, _DEFAULT_TICK_MODEL)()
+    spec = TICK_MODEL_REGISTRY.get(tick_model_key)
+    if spec is not None and spec.synthetic_builder is not None:
+        return spec.synthetic_builder(ohlc_order)
+    return _DEFAULT_TICK_MODEL()
 
 
 def _make_session_calendar(session_calendar_key: str) -> Any:
@@ -495,10 +496,14 @@ def build_interactor(
     # every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
     bars = market_data.load(load_source, None, None)
 
-    # tick_model 選択（config gated）。real_ticks のときのみ ParquetTickRepository から
-    # 対象期間の実ティックを load し RealTickModel に供給する（every-tick #6）。
-    # それ以外（every_tick/ohlc_expand/open_only）は従来どおり合成 TickModel（build 不変）。
-    if determinism.tick_model == "real_ticks":
+    # tick_model 選択（config gated）。real_ticks（requires_real_ticks=True）のときのみ
+    # ParquetTickRepository から対象期間の実ティックを load し RealTickModel に供給する
+    # （every-tick #6）。それ以外（every_tick/ohlc_expand/open_only）は従来どおり合成
+    # TickModel（build 不変）。real_ticks/synthetic の分岐は tick_model 単一レジストリの
+    # requires_real_ticks フラグから導出する（ISSUE-097 🟡-5・従来 == "real_ticks" 直書き
+    # 分岐と同一分岐先）。
+    _tick_spec = TICK_MODEL_REGISTRY.get(determinism.tick_model)
+    if _tick_spec is not None and _tick_spec.requires_real_ticks:
         tick_model_impl: Any = _build_real_tick_model(
             symbol=symbol,
             bars=bars,
