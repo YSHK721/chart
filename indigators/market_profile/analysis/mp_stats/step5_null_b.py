@@ -19,6 +19,10 @@ from __future__ import annotations
 
 import numpy as np
 
+# ISSUE-094 🔴-2: 帰無サロゲートの純カーネルを live 配信版（market_profile_zp）と共有する。
+#   market_profile_api は venv の .pth 登録済み＝analysis からも import 可能（配置は api 側 compute）。
+from market_profile_api.compute import null_b_kernel as _null_b
+
 from .data_prep import (
     DailyFeatures,
     SessionData,
@@ -30,7 +34,7 @@ from .data_prep import (
 from .report import StepResult
 
 N_ROWS = 40          # 主変種 raw_r40 と同一の行数
-CHUNK = 2_000        # サロゲートのチャンク幅（メモリ有界化）
+CHUNK = _null_b.CHUNK  # ISSUE-094 🔴-2: サロゲートのチャンク幅（zp と共有カーネル＝rng 消費順の同一性）
 
 
 def _grid_mods() -> "np.ndarray":
@@ -55,17 +59,13 @@ def observed_row_counts(grid_d: "np.ndarray", low: float, high: float) -> "np.nd
 
 
 def build_step_matrix(sd: SessionData, f: DailyFeatures) -> "np.ndarray":
-    """(D, G) の分ステップ行列 S。S[d,0]=ln(grid[d,0]/open_d)、以降は隣接 log 差。
+    """(D, G) の分ステップ行列 S（共有カーネル :func:`null_b_kernel.build_step_matrix` へ委譲）。
 
-    サロゲートは S[d'(b), j] を分 j（ブラケット b(j)）ごとに集めて
-    ln(open_d) + cumsum で連鎖する。
+    ISSUE-094 🔴-2: live 配信版（market_profile_zp）と同式を純カーネルへ一元化した。step5 は
+    ``ffill_close_grid(sd)`` と ``f.o`` を配列として渡す薄い協調部（SessionData→配列の入力適応）。
+    サロゲートは S[d'(b), j] を分 j（ブラケット b(j)）ごとに集めて ln(open_d) + cumsum で連鎖する。
     """
-    grid = ffill_close_grid(sd)
-    lg = np.log(grid)
-    S = np.empty_like(lg)
-    S[:, 0] = lg[:, 0] - np.log(f.o)
-    S[:, 1:] = np.diff(lg, axis=1)
-    return S
+    return _null_b.build_step_matrix(ffill_close_grid(sd), f.o)
 
 
 def null_b_day(
@@ -87,13 +87,11 @@ def null_b_day(
     ssq = np.zeros(N_ROWS)
     done = 0
     log_open = np.log(open_d)
-    col = np.arange(G)[None, :]
     while done < m_reps:
         m = min(CHUNK, m_reps - done)
-        days = rng.integers(0, D, size=(m, b_of_minute.max() + 1))
-        day_mat = days[:, b_of_minute]                    # (m, G)
-        s_surr = S[day_mat, col]                          # (m, G)
-        prices = np.exp(log_open + np.cumsum(s_surr, axis=1))
+        # ISSUE-094 🔴-2: サロゲート log 価格連鎖は共有カーネルへ委譲（zp と同一 rng 消費順）。
+        #   step5 は線形行への価格化（exp→_row_index）を本結果へ適用する協調部（ISSUE-079 で zp とは格子が異なる）。
+        prices = np.exp(_null_b.surrogate_logprice_chunk(S, log_open, b_of_minute, rng=rng, m=m))
         idx = _row_index(prices.ravel(), low, row_w, N_ROWS).reshape(m, G)
         # 行カウント（範囲外 -1 は捨てる）: 行 offset トリックで一括 bincount
         valid = idx >= 0
@@ -133,14 +131,12 @@ def null_b_day_peaks(
     # タイ規約（日中間値に近い行）を argmax で実現するための安定ソート順
     order = np.argsort(np.abs(centers - mid), kind="stable")
     log_open = np.log(open_d)
-    col = np.arange(G)[None, :]
     out = np.empty(m_reps)
     done = 0
     while done < m_reps:
         m = min(CHUNK, m_reps - done)
-        days = rng.integers(0, D, size=(m, b_of_minute.max() + 1))
-        s_surr = S[days[:, b_of_minute], col]
-        prices = np.exp(log_open + np.cumsum(s_surr, axis=1))
+        # ISSUE-094 🔴-2: サロゲート log 価格連鎖は共有カーネルへ委譲（zp と同一 rng 消費順）。
+        prices = np.exp(_null_b.surrogate_logprice_chunk(S, log_open, b_of_minute, rng=rng, m=m))
         idx = _row_index(prices.ravel(), low, row_w, N_ROWS).reshape(m, G)
         valid = idx >= 0
         flat = (idx + np.arange(m)[:, None] * N_ROWS)[valid]
