@@ -427,3 +427,19 @@ def test_get_path_traversal_is_rejected_404(server):
     # web/ ルート外（../../ で抜ける）は配信しない。
     status, _ctype, _raw = _get(server, "/../../../../etc/passwd")
     assert status == 404
+
+
+# --------------------------------------------------------------------------- #
+# GET /catalog（param 既定値の単一情報源・ISSUE-092 ③）
+# --------------------------------------------------------------------------- #
+def test_get_catalog_returns_200_with_single_source_schema(server):
+    # 殻が /catalog を handle_catalog へ配線し、正典 ok 形で param 既定値スキーマを返す。
+    from adapter.compute.catalog_schema import PARAM_DEFAULTS
+
+    status, ctype, raw = _get(server, "/catalog")
+    assert status == 200
+    assert "application/json" in ctype
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["ok"] is True
+    # 配信スキーマは back single source と一致（front はこれを overlay で解決）。
+    assert payload["catalog"] == PARAM_DEFAULTS

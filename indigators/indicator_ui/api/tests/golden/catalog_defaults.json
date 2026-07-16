@@ -1,0 +1,127 @@
+{
+  "moving_averages": {
+    "bb_stddev": 2.0,
+    "length": 9,
+    "ma_type": "ema",
+    "offset": 0,
+    "smoothing_length": 9,
+    "smoothing_type": "none",
+    "source": "close",
+    "timeframe": "chart",
+    "wait_for_close": false
+  },
+  "price_range_power": {
+    "bear_color": "rgba(210, 67, 58, 0.9)",
+    "bull_color": "rgba(46, 158, 91, 0.9)",
+    "interval": 0.1,
+    "range_from": null,
+    "range_to": null,
+    "top_n": 5,
+    "width": 2
+  },
+  "profit_adx_needle": {
+    "period": 6,
+    "window": 120
+  },
+  "profit_arctan": {
+    "bar_width": 0.1,
+    "ma_method": 1,
+    "period": 6,
+    "window": 120
+  },
+  "profit_band": {
+    "atr_period": 14,
+    "buckets": [
+      "nOH",
+      "pOL",
+      "pOH",
+      "nOL"
+    ],
+    "legend": false,
+    "min_obs": 30,
+    "normalize": "return",
+    "probabilities": [
+      0.51,
+      0.8,
+      0.85,
+      0.9,
+      0.95,
+      0.98,
+      0.99
+    ],
+    "require_full": true,
+    "window": "expanding"
+  },
+  "profit_hl_band": {
+    "window": 120
+  },
+  "profit_hlband": {
+    "draw_levels": true
+  },
+  "profit_mfi": {
+    "ma_period": 5,
+    "mfi_period": 14
+  },
+  "profit_mfi_macd": {
+    "fast": 4,
+    "mfi_period": 13,
+    "signal": 4,
+    "slow": 8
+  },
+  "profit_oscillator": {
+    "period_a": 6,
+    "period_b": 60,
+    "window": 120
+  },
+  "profit_oscillator2": {
+    "direction": false,
+    "ma_period": 60,
+    "osc_period": 6,
+    "rci_period": 12,
+    "stc_slow": 6
+  },
+  "profit_osi_ma": {
+    "ma_mode": 1,
+    "ma_period": 21
+  },
+  "profit_rmm": {
+    "ma_period": 6,
+    "osc_period": 6,
+    "window": 120
+  },
+  "profit_rmm_macd": {
+    "fast": 4,
+    "ma_period": 6,
+    "osc_period": 6,
+    "signal": 4,
+    "slow": 8,
+    "window": 120
+  },
+  "profit_rsi": {
+    "apply": 5,
+    "ma_period": 5,
+    "rsi_period": 6
+  },
+  "profit_rsi_macd": {
+    "fast": 4,
+    "rsi_period": 13,
+    "signal": 4,
+    "slow": 8
+  },
+  "profit_stc": {
+    "period": 70
+  },
+  "profit_volatility": {
+    "period": 6,
+    "window": 120
+  },
+  "tgp_btlm": {
+    "color": "rgba(123, 104, 238, 1)",
+    "fitter": "ols",
+    "maxbars": 100,
+    "mcmc_samples": "standard",
+    "price": "open",
+    "q_high": 0.95,
+    "q_low": 0.05
+  }
+}

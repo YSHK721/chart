@@ -63,6 +63,7 @@ from adapter.controller.candles_controller import (  # noqa: E402
     handle_candles,
     handle_forming_bar,
 )
+from adapter.controller.catalog_controller import handle_catalog  # noqa: E402
 
 # 静的配信ルート（web/）。api/ → parents[1]=api → parents[2]=indicator_ui → web。
 _WEB_ROOT = (_API_ROOT.parent / "web").resolve()
@@ -236,7 +237,19 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/live_ticks":
             self._handle_live_ticks(parse_qs(parsed.query))
             return
+        if parsed.path == "/catalog":
+            self._handle_catalog()
+            return
         self._handle_static(parsed.path)
+
+    def _handle_catalog(self) -> None:
+        """GET /catalog — param 既定値スキーマ（単一情報源）を配信する薄殻（ISSUE-092 ③）。
+
+        検証・組み立ては純ロジック ``handle_catalog`` に委譲し、本メソッドは (status, payload) の
+        JSON 応答のみを担う。クエリ非依存（全指標の既定値スキーマを一括返却）。
+        """
+        status, payload = handle_catalog()
+        self._send_json(status, payload)
 
     def _handle_candles(self, query: dict[str, list[str]]) -> None:
         """GET /candles — 検証・生成は handle_candles（純ロジック）へ委譲する薄殻（ISSUE-087 🟡-1）。"""

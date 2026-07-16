@@ -129,9 +129,12 @@ _BTE_PRESETS: dict[str, tuple[int, int, int]] = {
     "high": (4000, 30000, 2),      # ~13000・約2倍重い
     "max": (8000, 60000, 2),       # ~26000・約4倍重い（ライブ再計算で server をブロックし得る）
 }
-# 既定サンプル。catalog.js の mcmc_samples 既定（'standard'）と**一致必須**（不一致だと
-# UI 既定と API 直叩き既定が乖離する）。test_fitter_factory_default_matches_catalog で固定。
-_DEFAULT_SAMPLES = "standard"
+# 既定サンプル。param 既定値の単一情報源（catalog_schema.PARAM_DEFAULTS）の tgp_btlm
+# mcmc_samples 既定から解決する（ISSUE-092 ③・back 内二重定義の解消）。front（catalog.js）とは
+# catalog_defaults.json 契約経由で back/front 双方のテストが一致を固定する。
+from adapter.compute import catalog_schema  # noqa: E402（single source 参照・循環なし）
+
+_DEFAULT_SAMPLES = catalog_schema.PARAM_DEFAULTS["tgp_btlm"]["mcmc_samples"]
 
 
 def _fitter_factory(name: str, samples: str = _DEFAULT_SAMPLES) -> Any:
