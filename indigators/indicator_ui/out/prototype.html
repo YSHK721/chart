@@ -1153,6 +1153,167 @@ function sessionLabelToStart(label) {
 }
 
 
+// ===== js/domain/session_ohlc.js =====
+// session_ohlc.js — セッション日 OHLC 集計（domain 純関数・ISSUE-094 V6 抽出）。
+//
+// market_profile_actor.js の _buildSessionView に混在していた「当日全バーの OHLC をセッション日で集計」
+//   する部分（データ品質/供給とは独立した集計数学）を domain の純関数へ外出しする。
+//   セッション日境界（NY17:00 ET 基準・ISSUE-078）は domain/session_day.js を唯一の規則源として使う
+//   （日曜夜 UTC の足も月曜セッションへ束ねる）。DOM・fetch・actor 状態に非依存の純関数。
+
+
+// candles を「セッション日ラベル → { tFirst, tLast, open, high, low, close }」へ集計する。
+//   candles は time 昇順が契約だが、順序に依存しない min/max 更新で頑健化する（tFirst=最古 open /
+//   tLast=最新 close / high=範囲最大 / low=範囲最小）。1D は日=バー 1:1、日中足（1m 等）は当日全バーの
+//   集計 OHLC になる（ISSUE-072 の日集計をセッション日へ一般化）。非有限 time のバーは無視する。
+function aggregateSessionOhlc(candles) {
+  const byDay = new Map();
+  for (const c of (candles || [])) {
+    const time = Number(c.time);
+    if (!Number.isFinite(time)) {
+      continue;
+    }
+    const d = sessionDateLabel(time); // ISSUE-078: セッション日で束ねる（UTC 暦日でなく）。
+    const agg = byDay.get(d);
+    if (!agg) {
+      byDay.set(d, {
+        tFirst: time, tLast: time, open: c.open, high: c.high, low: c.low, close: c.close,
+      });
+    } else {
+      if (time < agg.tFirst) {
+        agg.tFirst = time;
+        agg.open = c.open;
+      }
+      if (time > agg.tLast) {
+        agg.tLast = time;
+        agg.close = c.close;
+      }
+      if (c.high > agg.high) {
+        agg.high = c.high;
+      }
+      if (c.low < agg.low) {
+        agg.low = c.low;
+      }
+    }
+  }
+  return byDay;
+}
+
+
+// ===== js/domain/mp_source_capability.js =====
+// mp_source_capability.js — Market Profile「ソース能力記述子」の単一情報源（domain）。
+//
+// 設計入力（ISSUE-097 🟡-8/🟡-9/🔵-20・ISSUE-099 🟡-5 の起点）: MP のソース（zp / dwell / …）
+//   ごとの挙動差が、`src === 'zp'` の直書き述語として複数ファイル（catalog_entry.js・
+//   market_profile_actor.js・market_profile_primitive.js・composition_root_front.js）へ散在し、
+//   新ソース追加が各ファイル約 10 箇所の同期編集を強制していた。本モジュールは各ソースの能力を
+//   単一の記述子テーブルへ集約し、各ファイルは記述子参照のみへ寄せる。新ソース追加＝本テーブルへ
+//   1 エントリ追加で閉じる（OCP）。
+//
+// 挙動不変: 記述子から導出した述語結果は集約前の各リテラル（_MP_ZP_TF /
+//   MP_ZP_SESSIONS_BLOCKED_TFS / incremental / period / poc / labels）と完全一致する
+//   （tests/mp_source_capability.test.js が全 player tf で固定）。
+//
+// 記述子フィールド:
+//   id                : ソース識別子（'zp' | 'dwell' | …）
+//   label             : 日本語表示ラベル（catalog の enumLabels）
+//   selectable        : src ENUM の選択肢に出す（表示順は配列順）
+//   incremental       : per-tick forming 増分が可能か（actor._isIncremental）
+//   hasPeriodWindow   : 当日窓 period=day を持つか（period param 表示 / actor._periodExtra）
+//   supportedTfs      : 日別/tf-period 列を描ける tf 集合。null = 無制限（全 player tf）
+//   blockedSessionTfs : 日別（sessions）モードで選択不可の tf 集合
+//   poc               : POC 描画様式 'star'（POC*・黄星）| 'line'（通常線）
+//   showLabels        : POC*/VAH/VAL の価格ラベルを描くか
+//   tfPeriodSrc       : tf-period 列取得時に付与する src。null = 既定（min-unit カウント）
+
+const _ZP_SUPPORTED_TFS = new Set(['15m', '30m', '1h', '4h', '1D', '1W', '1M']);
+const _ZP_BLOCKED_SESSION_TFS = new Set(['1m', '5m']);
+const _EMPTY_TFS = new Set();
+
+// 既定（未知 src / 未選択）＝非 zp の従来挙動。dwell もこの既定と同一に振る舞う。
+const _DEFAULT_CAPABILITY = Object.freeze({
+  id: null,
+  label: null,
+  selectable: false,
+  incremental: true,
+  hasPeriodWindow: false,
+  supportedTfs: null,
+  blockedSessionTfs: _EMPTY_TFS,
+  poc: 'line',
+  showLabels: false,
+  tfPeriodSrc: null,
+});
+
+// ソース能力記述子テーブル（配列順＝ENUM 表示順）。新ソースは 1 エントリ追加で閉じる。
+const _DESCRIPTORS = [
+  Object.freeze({
+    id: 'dwell',
+    label: '滞在時間(実ティック)',
+    selectable: true,
+    incremental: true,
+    hasPeriodWindow: false,
+    supportedTfs: null,
+    blockedSessionTfs: _EMPTY_TFS,
+    poc: 'line',
+    showLabels: false,
+    tfPeriodSrc: null,
+  }),
+  Object.freeze({
+    id: 'zp',
+    label: '超過占有z(p)',
+    selectable: true,
+    incremental: false,
+    hasPeriodWindow: true,
+    supportedTfs: _ZP_SUPPORTED_TFS,
+    blockedSessionTfs: _ZP_BLOCKED_SESSION_TFS,
+    poc: 'star',
+    showLabels: true,
+    tfPeriodSrc: 'zp',
+  }),
+];
+
+const _BY_ID = new Map(_DESCRIPTORS.map((d) => [d.id, d]));
+
+// 指定 src の能力記述子を返す。未登録（candle/m1/undefined/null）は既定（非 zp 挙動）へ縮退。
+function mpSourceCapability(srcId) {
+  const d = _BY_ID.get(srcId);
+  if (d) { return d; }
+  // 既定に id だけ差し替えた読み取り専用ビューを返す（呼び出し側が id を参照できるよう）。
+  return srcId == null ? _DEFAULT_CAPABILITY : Object.freeze({ ..._DEFAULT_CAPABILITY, id: srcId });
+}
+
+// 指定 src が指定 tf で日別/tf-period 列を描けるか（supportedTfs=null は無制限＝常に true）。
+//   旧: catalog `src==='zp' && !_MP_ZP_TF.has(tf)` / composition `mpSrc()!=='zp' || ZP_TF_ALLOWED.has(tf)`。
+function mpSupportsTf(srcId, tf) {
+  const s = mpSourceCapability(srcId).supportedTfs;
+  return !s || s.has(tf);
+}
+
+// tf-period 列取得に付与する src（未対応ソースは null＝既定 min-unit カウント）。
+//   旧 composition: `mpSrc()==='zp' ? 'zp' : null`。
+function mpTfPeriodSrc(srcId) {
+  return mpSourceCapability(srcId).tfPeriodSrc;
+}
+
+// src ENUM の選択肢（表示順）。
+const MP_SELECTABLE_SOURCES = _DESCRIPTORS.filter((d) => d.selectable).map((d) => d.id);
+
+// src ENUM の既定値（依頼者指示 2026-07-12 で zp へ昇格）。
+const MP_DEFAULT_SOURCE = 'zp';
+
+// src ENUM の enumLabels（{id: label}）。
+function mpSourceEnumLabels() {
+  const out = {};
+  for (const d of _DESCRIPTORS) {
+    if (d.selectable) { out[d.id] = d.label; }
+  }
+  return out;
+}
+
+// 後方互換エクスポート（日別×1m/5m で zp を選べない tf 集合）。zp 記述子の blockedSessionTfs と同一実体。
+const MP_ZP_SESSIONS_BLOCKED_TFS = _ZP_BLOCKED_SESSION_TFS;
+
+
 // ===== js/usecase/catalog_entry.js =====
 // catalog_entry.js — Market Profile の IndicatorDef を組み立てる factory（MP モジュール所有）。
 //
@@ -1167,17 +1328,18 @@ function sessionLabelToStart(label) {
 // 挙動不変: 本 factory の戻り値は、移設前に catalog.js 内で inline 定義していた
 //   MARKET_PROFILE と同一のオブジェクト構造（id / params / series / compute）を返す。
 
+// ソース能力記述子（domain 単一情報源）。src ごとの挙動差（対応 tf・session ブロック・
+//   選択肢・ラベル・期間窓）はすべて本記述子から導出する（ISSUE-097 🟡-8/🟡-9・散在解消）。
+
 // tf-period が日別列を描く対応 tf（列描画時は解像度が GRID_W 固定＝resmode/bins/range 無効）。
 //   ISSUE-070。ISSUE-086（全時間足パラメータ統一）: 1W/1M もセッション日次ロールアップの
 //   バケット列として対応（count 1m..1M / zp 15m..1M＝backend _BUCKET_TFS・_ZP_TF_ALLOWED と一致）。
+//   src 別の対応 tf（旧 _MP_ZP_TF）は記述子（supportedTfs）へ集約した。
 const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M']);
-const _MP_ZP_TF = new Set(['15m', '30m', '1h', '4h', '1D', '1W', '1M']);
 
-// ISSUE-080（依頼者裁定 2026-07-15）: 日別（周期）プロファイルで zp を選べない時間足。
-//   原則「列の周期＝チャートの時間足。作れないソースは出さない」＝z は 1m/5m 周期で統計が
-//   成立せず（原子=1分1点）、代替粒度（日タイル・15m列）を黙って出すのは粒度契約違反。
-//   actor の実行時ガード（非対応組合せは fetch も描画もしない）と単一情報源で共有する。
-const MP_ZP_SESSIONS_BLOCKED_TFS = new Set(['1m', '5m']);
+// ISSUE-080（依頼者裁定 2026-07-15）: 日別×1m/5m の zp 非対応集合は記述子（zp.blockedSessionTfs）
+//   が単一情報源。後方互換のため本名で再エクスポートする（actor と同一実体を共有）。
+{ MP_ZP_SESSIONS_BLOCKED_TFS };
 
 // tf-period が日別プロファイル列を描く状態か（＝解像度パラメータが無効な状態）。
 //   条件: served(B方式) かつ mode=sessions かつ対応 tf（src=zp は 15m..1D 限定）。ctx は
@@ -1187,7 +1349,7 @@ function _mpTfPeriodDrawsColumns(values, ctx) {
   if (values.mode !== 'sessions') { return false; }
   const tf = ctx.timeframe;
   if (!_MP_PLAYER_TF.has(tf)) { return false; }
-  if (values.src === 'zp' && !_MP_ZP_TF.has(tf)) { return false; }
+  if (!mpSupportsTf(values.src, tf)) { return false; }
   return true;
 }
 
@@ -1284,18 +1446,16 @@ function makeMarketProfileDef({
       //   フォールバックする（z は短周期で統計が成立しない・ISSUE-060）。ソース切替で表示粒度が
       //   黙って変わり混乱するとの依頼者指摘を受け、tooltip で挙動差を明記する（選択は許容＝
       //   1分足で日別 z タイルを見る使い方は残す）。
-      param('src', ParamType.ENUM, 'zp', [], ['dwell', 'zp'], {
+      param('src', ParamType.ENUM, MP_DEFAULT_SOURCE, [], MP_SELECTABLE_SOURCES, {
         group: 'group.calc', order: 1, label: 'ソース',
-        enumLabels: {
-          dwell: '滞在時間(実ティック)', zp: '超過占有z(p)',
-        },
+        enumLabels: mpSourceEnumLabels(),
         tooltip: '滞在時間＝実ティックの滞在秒（日別では全時間足で周期ごとの列を表示）／超過占有z(p)＝偶然比の異常度（zは15分以上の周期でのみ統計が成立するため、日別×1分/5分足では選択不可。日単位のzは日足チャートの日別で確認）',
-        // ISSUE-080: 日別×1m/5m では zp の option を無効化（灰色・選択不可）。代替粒度は出さない。
+        // ISSUE-080: 日別×1m/5m では該当ソースの option を無効化（灰色・選択不可）。代替粒度は出さない。
+        //   ソース別の session ブロック tf は記述子（blockedSessionTfs）が単一情報源。
         //   ctx 不在（A方式・単体テスト）は制限しない（timeframe を知り得ないため安全側＝有効）。
-        optionEnable: (value, values, ctx) => value !== 'zp'
-          || values.mode !== 'sessions'
+        optionEnable: (value, values, ctx) => values.mode !== 'sessions'
           || !ctx || ctx.timeframe == null
-          || !MP_ZP_SESSIONS_BLOCKED_TFS.has(ctx.timeframe),
+          || !mpSourceCapability(value).blockedSessionTfs.has(ctx.timeframe),
       }),
 
       // period: 計測窓（ENUM・既定 'all'＝全期間・ISSUE-071 (b)案）。'day'＝当日始端からの窓で計測する
@@ -1308,7 +1468,8 @@ function makeMarketProfileDef({
       param('period', ParamType.ENUM, 'all', [], ['all', 'day'], {
         group: 'group.calc', order: 3, label: '期間',
         // ISSUE-081: zp×通常×対応 tf のときだけ表示（旧: src 条件で表示＋mode/tf 条件でグレーアウト）。
-        conditionalVisible: (values, ctx) => values.src === 'zp' && _mpPeriodEnabled(values, ctx),
+        conditionalVisible: (values, ctx) => mpSourceCapability(values.src).hasPeriodWindow
+          && _mpPeriodEnabled(values, ctx),
         enumLabels: { all: '全期間', day: '当日' },
       }),
     ],
@@ -1730,6 +1891,36 @@ function list() {
 // id で IndicatorDef を返す。未知 id は null。
 function get(id) {
   return BY_ID.get(id) ?? null;
+}
+
+// サーバ由来スキーマ（GET /catalog）で param 既定値を解決する（単一情報源・ISSUE-092 ③）。
+//
+// schema = { compute_id: { param_name: default } }（back catalog_schema.PARAM_DEFAULTS の配信形）。
+// レジストリの各 ParamDef.default を schema の値へ overlay する。既定値の正は back（Python）側で、
+// front のリテラルはフェッチ失敗時の静的フォールバック（オフライン耐性）。未知 id / 未知 param は
+// 黙って無視する（前方互換・back が先行して指標を増やしても front を壊さない）。schema に無い指標
+// （market_profile 等・独立アクター所有）は不変。表示ラベル等の純 UI メタは触らない（既定値のみ）。
+//
+// IndicatorDef は Object.freeze 済みだが params 配列要素（ParamDef plain object）は凍結されていない
+// ため .default の上書きは可能（domain_models.js は shallow freeze）。反映した param 数を返す。
+function applyServerDefaults(schema) {
+  if (!schema || typeof schema !== 'object') {
+    return 0;
+  }
+  let applied = 0;
+  for (const [id, defaults] of Object.entries(schema)) {
+    const def = BY_ID.get(id);
+    if (!def || !defaults || typeof defaults !== 'object') {
+      continue;
+    }
+    for (const p of def.params) {
+      if (Object.prototype.hasOwnProperty.call(defaults, p.name)) {
+        p.default = defaults[p.name];
+        applied += 1;
+      }
+    }
+  }
+  return applied;
 }
 
 
@@ -3273,6 +3464,10 @@ class LocalStorageGateway {
 //
 // 設計入力: 内部設計書 §7.1.5（list_indicators / get）。
 // A方式プロトタイプ: API 化せず usecase/catalog.js の静的レジストリをラップする（TBD-03 静的化）。
+//
+// ISSUE-092 ③: param 既定値の単一情報源は back（Python catalog_schema）。load() が GET /catalog で
+//   サーバ由来スキーマを取得し、レジストリへ overlay して既定値を解決する。フェッチ失敗時は静的値
+//   （catalog.js リテラル）へフォールバックし UI が従来どおり動く（後方互換・オフライン耐性）。
 
 
 class IndicatorCatalogClient {
@@ -3284,6 +3479,33 @@ class IndicatorCatalogClient {
   // id -> IndicatorDef | null。
   get(id) {
     return get(id);
+  }
+
+  // GET /catalog で param 既定値の単一情報源（back）を取得し、レジストリへ overlay する。
+  //   成功時 true。フェッチ不能 / 例外 / 非 ok レスポンス / 非 ok payload では overlay せず false を
+  //   返す（静的既定へフォールバック＝UI 従来どおり）。fetchImpl 省略時は globalThis.fetch を束縛。
+  async load(fetchImpl) {
+    const fetchFn = fetchImpl
+      || (typeof globalThis !== 'undefined' && globalThis.fetch
+        ? globalThis.fetch.bind(globalThis) : null);
+    if (!fetchFn) {
+      return false;
+    }
+    try {
+      const resp = await fetchFn('/catalog');
+      if (!resp || !resp.ok) {
+        return false;
+      }
+      const payload = await resp.json();
+      if (!payload || payload.ok !== true || !payload.catalog) {
+        return false;
+      }
+      applyServerDefaults(payload.catalog);
+      return true;
+    } catch {
+      // ネットワーク断・JSON 破損等 → 静的値フォールバック（UI 従来どおり）。
+      return false;
+    }
   }
 }
 
@@ -4526,6 +4748,438 @@ class IndicatorLegendView {
 }
 
 
+// ===== js/adapter/front/market_profile_params.js =====
+// market_profile_params.js — Market Profile（A7）のパラメータ・スキーマ写像（純関数）。
+//
+// ISSUE-094 🔴-4: indicator_controller.js（A6 指標管理 UI）へ混在していた MP のスキーマ知識
+//   （保存 params → actor 取得 params への写像・後方互換マイグレーション）を純関数へ外出しする。
+//   MP の param スキーマが変わったとき（＝A7 の変更要求）に A6 controller を編集させないための分離。
+//   挙動は抽出前の IndicatorController._mpParams / _deriveMode / _deriveResmode と byte 等価。
+//   DOM・facade・this 状態に非依存の純関数（node 単体テスト対象・controller は薄い委譲のみ保持）。
+
+// resmode（解像度モード）を決める後方互換ヘルパ（restore と apply の両経路で共用）。
+//   - 明示 resmode があればそのまま返す（後方互換補完のみ・上書きしない）。
+//   - resmode 欠落かつ range がレンジ数値集合 → 'range'（保存したレンジを維持し client が &barw= を送る）。
+//   - resmode 欠落かつ range='auto' → 'bins'（従来通り bins フォールバック）。
+//   - resmode も range も無い旧インスタンスは null を返し resmode を付与しない（client 既定 = bins）。
+function deriveMpResmode(p = {}) {
+  if (p.resmode != null) {
+    return p.resmode;
+  }
+  if (p.range == null) {
+    return null;
+  }
+  const BAR_WIDTHS = new Set(['10', '25', '50', '100', '250', '500']);
+  return BAR_WIDTHS.has(String(p.range)) ? 'range' : 'bins';
+}
+
+// mode（表示モード）を決める後方互換ヘルパ（deriveMpResmode と同方針・apply/gear/restore 共用）。
+//   - 明示 mode があればそのまま返す（legacy との競合時は mode 優先＝後方互換補完は上書きしない）。
+//   - mode 欠落かつ legacy sessions:true → 'sessions'（両 true の旧データも sessions 優先）。
+//   - mode 欠落かつ legacy replay:true → 'normal'（ISSUE-082: リプレイ撤去）。
+//   - mode 欠落かつ legacy が明示 false（両 OFF）→ 'normal'（restore で両 OFF を再現）。
+//   - mode も legacy キーも無い旧インスタンスは null（mode を付与しない＝actor 既定=通常）。
+function deriveMpMode(p = {}) {
+  if (p.mode != null) {
+    // ISSUE-082: リプレイモードは present から撤去済み。保存済み mode='replay' は 'normal' へ正規化。
+    return p.mode === 'replay' ? 'normal' : p.mode;
+  }
+  // 両 true の旧データは sessions 優先（排他統合のため一方に確定させる）。
+  if (p.sessions === true) {
+    return 'sessions';
+  }
+  if (p.replay === true) {
+    return 'normal'; // ISSUE-082: legacy replay:true も normal へ（リプレイ撤去）。
+  }
+  // legacy キーが存在し明示 false（両 OFF）なら normal を導出する（両フラグ不在は null）。
+  if (p.replay != null || p.sessions != null) {
+    return 'normal';
+  }
+  return null;
+}
+
+// MP アクターへ渡す取得 params（resmode/bins/va/src/range/mode/period/dispbp）を組み立てる
+//   （apply/gear/restore 共通）。limit は転送しない（MP は全期間集計固定）。resmode を転送し、
+//   client が resmode で bins/barw の送信を排他化する。range は null/未指定のとき載せない
+//   （値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
+function buildMpParams(p = {}) {
+  const out = { va: p.va, src: p.src };
+  // bins（legacy・ISSUE-079 で catalog から撤去済み）: 旧保存インスタンスにのみ存在。保存時のみ転送。
+  if (p.bins != null) {
+    out.bins = p.bins;
+  }
+  // period（期間: 全期間/当日・ISSUE-071 (b)案）: 保存時のみ転送する（period 未保存の旧インスタンスの
+  //   転送 payload を変えない＝undefined キーを載せない。actor 側も null/undefined キーは無視する）。
+  if (p.period != null) {
+    out.period = p.period;
+  }
+  // dispbp（表示幅 bp・ISSUE-079）: 保存時のみ転送（旧インスタンスの payload 不変・actor が
+  //   barw(pt) へ写像する）。
+  if (p.dispbp != null) {
+    out.dispbp = p.dispbp;
+  }
+  // mode（表示モード）: 旧 replay(BOOL)/sessions(BOOL) を統合した排他 ENUM
+  //   ['normal','replay','sessions'] を actor へ転送する。undefined は載せない（actor 既定=通常）。
+  //   legacy キー（replay/sessions）自体は actor へ送らない（mode に一本化・二重管理を避ける）。
+  const mode = deriveMpMode(p);
+  if (mode != null) {
+    out.mode = mode;
+  }
+  // resmode（解像度モード）: client が bins/barw の送信を排他化する。
+  const resmode = deriveMpResmode(p);
+  if (resmode != null) {
+    out.resmode = resmode;
+  }
+  if (p.range != null && p.range !== 'auto') {
+    out.range = p.range;
+  }
+  return out;
+}
+
+
+// ===== js/adapter/front/market_profile_controller.js =====
+// market_profile_controller.js — Market Profile（A7）アクター駆動のオーケストレーション協働子。
+//
+// ISSUE-094 🔴-4: indicator_controller.js（A6 指標管理 UI）へ凝集していた MP アクター駆動の一式
+//   （apply/enable/toggle/remove/gear/reapply/restore/live-recompute）を本協働子へ外出しする。
+//   indicator_controller は legend/menu からのコールバックを本協働子へ委譲するだけの薄い司令塔へ縮退する。
+//
+// 設計上の制約（byte 挙動不変）: 共有ベース IndicatorController は replay_ui の
+//   ReplayIndicatorController（symlink 単一ソースを extends・触れない）に継承され、subclass は
+//   _toggleMarketProfileVisible / _removeMarketProfile / _applyMpGrowth 等の inherited メソッドや
+//   _mpParams override（super._mpParams）に依存する。そのため本協働子は host（IndicatorController
+//   インスタンス）を受け取り host.* を直接操作する「クラス抽出＋ホスト参照」方式を採る。base の各
+//   メソッドは本協働子へ委譲する薄いラッパへ縮退し、既存の呼出面（this._xxx / super._xxx / ctrl._xxx）を
+//   そのまま温存する（挙動は抽出前と byte 等価）。_mpParams は subclass override を尊重するため host 経由で呼ぶ。
+
+
+class MarketProfileController {
+  // 依存契約（ISP・ISSUE-099 🟡-4）: 本協働子は host（IndicatorController）の広い公開面ではなく、
+  //   MP ロール専用の狭い契約 MarketProfileHost にのみ依存する。契約の単一ソースは
+  //   indicator_controller.js（@typedef MarketProfileHost ＋ MARKET_PROFILE_HOST_CONTRACT）で明文化し、
+  //   IndicatorController（present）/ ReplayIndicatorController（replay・symlink 継承）が
+  //   メンバー名・挙動不変のまま構造的に本契約を満たす。reveal seam の _untilTime は replay subclass
+  //   のみ在席する optional 面（present は != null guard で no-op）。
+  /**
+   * @param {import('./indicator_controller.js').MarketProfileHost} host MP ロール契約を満たすホスト。
+   */
+  constructor(host) {
+    this._host = host;
+  }
+
+  // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
+  //   ライブ連動（mpModeResolver 注入時）は mode を選択表示モード（gear 記憶／未選択は既定 normal）へ解決してから
+  //   渡す（'ticklive' 置換はしない＝直交化）。解決役は同時に userMode（gear 選択）を記憶する。mode 未指定
+  //   （旧インスタンス）は解決しない（actor 既定＝通常）。未注入時は _mpParams の結果をそのまま渡す＝byte 不変。
+  //   さらに growth 解決役（mpGrowthResolver 注入時）は setParams 後に growing 信号（applyGrowthState）を適用する。
+  //   FOLLOW=growing=true（成長 ON）／ANALYSIS=false（static）。未注入時は applyGrowthState を呼ばない＝byte 不変。
+  //   marketProfile 未注入時は no-op（呼び出し側の guard と二重防御）。
+  applyMpParams(p) {
+    const host = this._host;
+    if (!host._marketProfile) {
+      return;
+    }
+    const params = host._mpParams(p);
+    if (params.mode != null && host._mpModeResolver) {
+      params.mode = host._mpModeResolver(params.mode);
+    }
+    host._marketProfile.setParams(params);
+    this.applyMpGrowth();
+  }
+
+  // 直交化: 現在の成長状態（mpGrowthResolver）を MP アクターへ growing 信号として適用する。
+  //   setParams（mode 遷移で _exitTicklive→growing リセット）の後に呼び、mode を維持したまま growing を確定する。
+  //   解決役未注入 or actor が applyGrowthState 非所持なら no-op（byte 不変）。返り値 growing を呼び出し側が使う。
+  applyMpGrowth() {
+    const host = this._host;
+    if (!host._mpGrowthResolver || !host._marketProfile) {
+      return false;
+    }
+    const growing = !!host._mpGrowthResolver();
+    if (typeof host._marketProfile.applyGrowthState === 'function') {
+      host._marketProfile.applyGrowthState({ growing });
+    }
+    return growing;
+  }
+
+  // ライブ連動: チャート FOLLOW/ANALYSIS 遷移時に、現在表示中 MP の実効モードを再適用する（present 固有）。
+  //   GrowthCoordinator.onLiveStateChange → reapply として配線される。連動未配線（mpModeResolver 未注入）
+  //   時は呼ばれない設計だが、MP 不在/無効/未表示時も自己 guard で no-op（副作用なし）。
+  //   実効モードは resolver(null)（記憶更新なし・実効解決のみ）で強制し、保存 params（bins/va/src/range）は
+  //   維持したまま mode だけ差し替えて refresh する（既存 setParams→refresh 経路を再利用・actor 不変）。
+  async reapplyMode() {
+    const host = this._host;
+    if (!host._marketProfile || !host._mpModeResolver) {
+      return;
+    }
+    if (typeof host._marketProfile.isEnabled === 'function' && !host._marketProfile.isEnabled()) {
+      return; // MP 未表示（enabled=false）は再適用不要。
+    }
+    const inst = host._state.applied.find(
+      (i) => host._isMarketProfile(host._catalog.get(i.indicatorId)) && i.visible,
+    );
+    if (!inst) {
+      return; // 表示中 MP インスタンスが無い。
+    }
+    const params = host._mpParams(host._paramsObject(inst.params));
+    params.mode = host._mpModeResolver(null); // 選択表示モード（gear 記憶／未選択は既定）を維持（'ticklive' 置換なし）。
+    host._marketProfile.setParams(params);
+    // 直交化: mode を維持したまま growing だけをトグルする（applyGrowthState）。FOLLOW=growing=true / ANALYSIS=false。
+    const growing = this.applyMpGrowth();
+    // growing 時のみ成長エンジンを起動する。present の成長は forming を onLiveTick（→_enterTicklive）で取得する
+    //   （live loop(recomputeAllApplied)/初期 add と同一経路）。refresh は /market_profile の base 累積を描くだけで
+    //   forming を発火しないため、growing では onLiveTick を呼ぶ。非成長（static＝ANALYSIS）は refresh で選択モードを反映。
+    if (growing && typeof host._marketProfile.onLiveTick === 'function') {
+      await host._marketProfile.onLiveTick();
+    } else if (typeof host._marketProfile.refresh === 'function') {
+      await host._marketProfile.refresh();
+    }
+  }
+
+  // MP 専用適用パス: /compute をバイパスし、state には no-op gateway で instance を登録して
+  //   凡例表示・永続化・restore の対象に含める。描画は MarketProfileActor（GET /market_profile →
+  //   primitive）へ委譲する。_draw（F3 系列描画）は通さない。
+  async applyMarketProfile(def, variant, params) {
+    const host = this._host;
+    // MP 単一インスタンス制約: 既に MP が適用済みなら新規 legend 行を作らず no-op で
+    //   既存インスタンスを返す（二重 legend 行→単一 actor 駆動での状態乖離を防ぐ）。
+    //   actor へは触れない: 既存が非表示なら表示状態の乖離、gear 変更済みなら params
+    //   の既定値クロバーを招くため、可視・params の現状を保存する。
+    const existing = host._state.applied.find(
+      (i) => host._isMarketProfile(host._catalog.get(i.indicatorId)),
+    );
+    if (existing) {
+      return existing;
+    }
+    const { state, instance } = await apply(
+      host._state,
+      { indicatorId: def.id, variant: variant ?? host._defaultVariant(def), params, datasetRef: host._datasetRef },
+      { compute: async () => ({ generation: 0 }) },
+    );
+    host._state = state;
+    host._meta.set(instance.instanceId, { def });
+    await this.enableMarketProfile(params);
+    host._persistAll();
+    host._renderLegend();
+    return instance;
+  }
+
+  // MP アクターへ params を渡して有効化する（setParams→setEnabled(true)＝取得＋表示）。
+  //   setEnabled(true) は内部で refresh も行う。未注入時は no-op。
+  async enableMarketProfile(params) {
+    const host = this._host;
+    if (!host._marketProfile) {
+      return;
+    }
+    this.applyMpParams(params);
+    await host._marketProfile.setEnabled(true);
+    // [reveal seam] reveal（replay）では現在バー T（_untilTime）が確定していれば即 enterBar で base を
+    //   描画する。present は _untilTime を持たない（undefined）ため常に skip（byte 挙動不変）。
+    if (host._untilTime != null && typeof host._marketProfile.enterBar === 'function') {
+      await host._marketProfile.enterBar(host._untilTime);
+    }
+  }
+
+  // MP 凡例 eye: 表示/非表示トグル（state.visible を反転し actor.setEnabled へ同期）。
+  async toggleVisible(inst) {
+    const host = this._host;
+    host._state = mpFacadeToggleVisible(host._state, inst.instanceId);
+    const updated = host._state.applied.find((i) => i.instanceId === inst.instanceId);
+    if (host._marketProfile && updated) {
+      await host._marketProfile.setEnabled(updated.visible);
+    }
+    host._persistAll();
+    host._renderLegend();
+  }
+
+  // MP 凡例 close: 非表示＋detach してから applied/meta から除去する（renderer.remove は不要＝
+  //   MP は renderer に系列を持たない）。
+  async removeInstance(inst) {
+    const host = this._host;
+    if (host._marketProfile) {
+      await host._marketProfile.setEnabled(false);
+      if (typeof host._marketProfile.detach === 'function') {
+        host._marketProfile.detach();
+      }
+    }
+    host._state = mpFacadeRemove(host._state, inst.instanceId);
+    host._meta.delete(inst.instanceId);
+    host._persistAll();
+    host._renderLegend();
+  }
+
+  // MP 凡例 gear: プロパティダイアログで bins/va/src を編集し、onApply で setParams+refresh。
+  //   /compute は呼ばない。DOM 不在時は現 params で即時反映（フォールバック）。
+  onGear(inst, def) {
+    const host = this._host;
+    const doc = host._document;
+    const stored = host._paramsObject(inst.params);
+    const currentParams = (stored && Object.keys(stored).length > 0)
+      ? stored
+      : host._defaultParams(def);
+    const applyParams = async (values) => {
+      host._state = host._withParams(host._state, inst.instanceId, values);
+      if (host._marketProfile) {
+        this.applyMpParams(values);
+        // [reveal seam] reveal（replay）かつ **push 成長中**（isGrowingPush＝growing かつ非 sessions）のときだけ
+        //   現在バー T で enterBar（forming push で base 取り直し）。sessions+growing / 非成長は refresh(as-of-T)
+        //   へ落とす（成長軸 aware）。present は _untilTime 未設定ゆえ常に refresh＝従来どおり（byte 挙動不変）。
+        //   Phase5: 旧 isTicklive()（表示モード）ゲートから isGrowingPush()（成長軸）へ移行（ticklive 撤去）。
+        if (host._untilTime != null && typeof host._marketProfile.enterBar === 'function'
+            && typeof host._marketProfile.isGrowingPush === 'function'
+            && host._marketProfile.isGrowingPush()) {
+          await host._marketProfile.enterBar(host._untilTime);
+        } else if (typeof host._marketProfile.refresh === 'function') {
+          await host._marketProfile.refresh();
+        }
+      }
+      host._persistAll();
+      host._renderLegend();
+    };
+    // applyParams は async。未 await の fire-and-forget のため拒否を .catch で捕捉し
+    //   unhandledRejection 化を防ぐ（refresh 失敗等）。
+    const runApply = (values) => {
+      applyParams(values).catch((err) => {
+        if (typeof console !== 'undefined' && console.error) {
+          console.error('[MP] gear apply failed', err);
+        }
+      });
+    };
+    if (!doc || typeof PropertiesDialog !== 'function') {
+      runApply(currentParams);
+      return;
+    }
+    const dialog = new PropertiesDialog({
+      document: doc,
+      def,
+      instance: { ...inst, params: currentParams },
+      mode: host._mode,
+      // ISSUE-070: MP 解像度パラメータのグレーアウト判定に現 timeframe と served/A方式を渡す
+      //   （tf-period が日別列を描くとき resmode/bins/range は無効＝GRID_W 固定のため）。
+      context: { timeframe: host._timeframe, servedMode: host._mode },
+      onApply: (values) => { runApply(values); },
+      onCancel: () => {},
+    });
+    dialog.open();
+  }
+
+  // restore（UC-07）の MP 分岐: 保存 params を actor へ渡し、可視だった場合のみ有効化して再取得・表示する。
+  //   /compute で計算しようとして失敗させない（MP は backend に compute を持たない）。
+  async restoreInstance(inst) {
+    const host = this._host;
+    const rp = host._paramsObject(inst.params);
+    if (host._marketProfile) {
+      this.applyMpParams(rp);
+      if (inst.visible) {
+        await host._marketProfile.setEnabled(true);
+      }
+    }
+  }
+
+  // recomputeAllApplied（ライブ入口）の MP 分岐: /compute へ流さず actor.refresh（現時間足で再取得）へ委譲する。
+  //   [reveal seam] present の MP actor は onLiveTick（ticklive ON=forming 増分 / OFF=refresh 委譲）を持つ。
+  //   typeof gate で present は従来どおり onLiveTick を呼び（byte 挙動不変）、onLiveTick を持たない replay
+  //   slim actor は skip（render seam の enterBar/feedTick が MP を駆動する）。
+  async onLiveRecompute(inst) {
+    const host = this._host;
+    if (host._marketProfile && inst.visible && typeof host._marketProfile.onLiveTick === 'function') {
+      await host._marketProfile.onLiveTick();
+    }
+  }
+}
+
+const mpFacadeToggleVisible = toggleVisible;
+const mpFacadeRemove = remove;
+
+
+// ===== js/adapter/front/timeframe_controller.js =====
+// timeframe_controller.js — 時間足取得・切替（A3）の関心事を担う協働子。
+//
+// ISSUE-094 🔴-4: indicator_controller.js（A6 指標管理 UI）へ混在していた時間足（A3）の関心事
+//   ——setTimeframe（candles 再取得・メイン系列差替＋全指標再計算）・時間足ボタン同期・
+//   _gatewayAdapter の timeframe/limit 注入——を本協働子へ外出しする。
+//
+// 設計上の制約（byte 挙動不変）: 共有ベース IndicatorController は replay_ui の subclass に継承され
+//   （symlink 単一ソース・触れない）、restore()/bind() は this._syncTimeframeButtons() を、composition
+//   root/テストは controller.setTimeframe() を呼ぶ。よって base は本協働子への薄い委譲を保持し、本協働子は
+//   host（IndicatorController インスタンス）を受け取り host.* を直接操作する（挙動は抽出前と byte 等価）。
+//   再計算入口（recomputeAllApplied）はライブ入口として controller 側に温存し、host 経由で呼ぶ。
+
+class TimeframeController {
+  // 依存契約（ISP・ISSUE-099 🟡-3）: 本協働子は host（IndicatorController）の広い公開面ではなく、
+  //   時間足ロール専用の狭い契約 TimeframeHost にのみ依存する。契約の単一ソースは
+  //   indicator_controller.js（@typedef TimeframeHost ＋ TIMEFRAME_HOST_CONTRACT）で明文化し、
+  //   IndicatorController（present）/ ReplayIndicatorController（replay・symlink 継承）が
+  //   メンバー名・挙動不変のまま構造的に本契約を満たす（依存面 = getter/setter: _timeframe/
+  //   _recomputeDepth/_datasetRef/_recentBars/_state/_renderer/_loadCandles/_timeframeObserver、
+  //   method: recomputeAllApplied/_persistAll、optional: _el）。
+  /**
+   * @param {import('./indicator_controller.js').TimeframeHost} host 時間足ロール契約を満たすホスト。
+   */
+  constructor(host) {
+    this._host = host;
+  }
+
+  // 時間足切替（§チャート表示時間選択・1 分足原子から resample）。
+  //   1) candles を新時間足で再取得しメイン系列を差し替え（B方式のみ・直近 recentBars 本）。
+  //   2) 適用済み全指標を新時間足で再計算・再描画（candles と時間軸を揃える）。
+  //   3) uiState に時間足を永続化（restore で復元）。
+  //   A方式（loadCandles 無し・SAMPLE_DATA）では candles 再取得を行わない（再集計不可）。
+  async setTimeframe(timeframe) {
+    const host = this._host;
+    if (!timeframe || timeframe === host._timeframe) {
+      return;
+    }
+    host._timeframe = timeframe;
+    this.syncButtons();
+    // バッチ全体（candles 取得 await＋全指標再計算）を競合ガードで包む。これがないと
+    //   _loadCandles の await 中は isRecomputing()=false となり、その隙にライブ tick が
+    //   割り込んで二重 compute する（🟡-2）。最外で increment し finally で確実に解除する。
+    host._recomputeDepth += 1;
+    try {
+      // candles を新時間足で再取得（取得のみ・描画は下のバッチへ遅延）。
+      let candles = null;
+      if (typeof host._loadCandles === 'function') {
+        candles = await host._loadCandles(host._datasetRef, timeframe);
+      }
+      // メイン系列差し替えを指標の再描画と同じ同期バッチへ含め、全要素を同時更新する（ISSUE-023）。
+      //   取得失敗・A方式（candles 無し）は preRender=null でメイン系列を据え置く。
+      const preRender = candles && candles.length > 0
+        ? () => host._renderer.setCandles(candles)
+        : null;
+      // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
+      //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
+      await host.recomputeAllApplied({ preRender });
+    } finally {
+      host._recomputeDepth -= 1;
+    }
+    host._state.uiState = { ...host._state.uiState, timeframe };
+    host._persistAll();
+    // 時間足購読者へ新時間足を通知する（売買マーカーの該当時間足フィルタ等）。
+    host._timeframeObserver?.(host._timeframe);
+  }
+
+  // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。
+  syncButtons() {
+    const host = this._host;
+    for (const b of host._el?.timeframeBtns ?? []) {
+      b.classList.toggle('is-active', b.dataset.timeframe === host._timeframe);
+    }
+  }
+
+  // 計算.時間足（params.timeframe）の per-indicator override を解決する（_gatewayAdapter が注入に使う）。
+  //   'chart'/未指定はグローバル時間足（host._timeframe）に追従、特定足（1h 等）は当該足で計算（MTF）。
+  effectiveTimeframe(tfParam) {
+    return tfParam && tfParam !== 'chart' ? tfParam : this._host._timeframe;
+  }
+
+  // 直近表示本数（compute の limit・§配信設計: リサンプル＋直近 N 本）。null=制限なし（undefined 送出）。
+  limit() {
+    return this._host._recentBars ?? undefined;
+  }
+}
+
+
 // ===== js/adapter/front/indicator_controller.js =====
 // IndicatorController（adapter/front/indicator_controller.js）。
 //
@@ -4539,6 +5193,87 @@ class IndicatorLegendView {
 //
 // upstream JS の系列追加系 API は一切参照しない（renderer 経由のみ・§2.2 隔離）。
 
+
+// =========================================================================
+// フロントロール契約（ISP・ISSUE-099 🟡-3/🟡-4）
+// -------------------------------------------------------------------------
+// TimeframeController / MarketProfileController は host（IndicatorController インスタンス）の
+// 広い公開面（約40メソッド＋20超フィールド）ではなく、ロール専用の狭い契約にのみ依存する。その
+// 契約（各 controller が実際に読む/呼ぶ最小メンバー集合）を本ファイルへ単一ソースで明文化する:
+//   - @typedef で「ロール型」を宣言（各 controller は JSDoc import 型でこの契約に依存宣言・実行時 import 無し）
+//   - 凍結ロール記述オブジェクトで「必須 method / 必須 field / optional field」を列挙（構造充足テストの固定点）
+// IndicatorController（present 共有ベース）はメンバー名・挙動を一切変えず、既存構造のまま本契約を
+// 構造的に満たす（加法的・非破壊）。symlink 単一ソースで継承される ReplayIndicatorController（replay）も
+// 無改変で同契約を満たす（optional field _untilTime は replay subclass のみ在席する reveal seam）。
+
+/**
+ * TimeframeController（時間足取得・切替ロール・A3）が host に要求する最小契約。
+ *
+ * @typedef {object} TimeframeHost
+ * @property {string} _timeframe             現在の表示時間足（read/write）。
+ * @property {number} _recomputeDepth        再計算バッチの競合ガード深さ（read/write）。
+ * @property {string} _datasetRef            計算対象データセット参照（read）。
+ * @property {?number} _recentBars           直近表示本数（compute の limit）。null=制限なし（read）。
+ * @property {{uiState: object}} _state      UI 永続状態を保持する純状態オブジェクト（read/write: uiState）。
+ * @property {{setCandles: function}} _renderer  メイン系列差替に用いる renderer（read: setCandles を呼ぶ）。
+ * @property {?function} _loadCandles        時間足切替時の candles 再取得ローダ（B方式のみ・A方式は null）。
+ * @property {?function} _timeframeObserver  時間足変更の購読者（任意・1 個）。
+ * @property {function} recomputeAllApplied  適用済み全指標の再計算入口（ライブ更新と共通・host 温存）。
+ * @property {function} _persistAll          applied/favorites/uiState を永続化する。
+ * @property {{timeframeBtns?: Iterable}} [_el]  時間足ボタン DOM（bind() 後のみ在席・optional）。
+ */
+
+/**
+ * MarketProfileController（MP アクター駆動オーケストレーションロール・A7）が host に要求する最小契約。
+ *
+ * @typedef {object} MarketProfileHost
+ * @property {?object} _marketProfile        MP アクター（任意注入・未注入時は MP 分岐 no-op）。
+ * @property {?function} _mpModeResolver     MP 表示モードの実効解決役（present 固有・任意注入）。
+ * @property {?function} _mpGrowthResolver   MP 成長状態の解決役（present 固有・任意注入）。
+ * @property {{applied: Array}} _state       適用済みインスタンスを保持する純状態オブジェクト（read/write）。
+ * @property {{get: function}} _catalog      指標定義カタログ（read: get）。
+ * @property {Map} _meta                     instanceId -> { def } 描画済みメタ。
+ * @property {string} _datasetRef            計算対象データセット参照（read）。
+ * @property {?object} _document             プロパティダイアログ構築用 document（null 可）。
+ * @property {string} _mode                  計算モード（'a'=file:// / 'b'=served）。
+ * @property {string} _timeframe             現在の表示時間足（gear ダイアログ context 用・read）。
+ * @property {function} _mpParams            MP params 組み立て（subclass override を host 経由で尊重）。
+ * @property {function} _isMarketProfile     def が MP 指標か判定する。
+ * @property {function} _paramsObject        params（配列/オブジェクト）を平坦オブジェクトへ正規化する。
+ * @property {function} _renderLegend        凡例を再描画する。
+ * @property {function} _defaultVariant      def の既定 variant を返す。
+ * @property {function} _withParams          state の instance params を差し替える。
+ * @property {function} _defaultParams       def の既定 params を返す。
+ * @property {function} _persistAll          applied/favorites/uiState を永続化する。
+ * @property {?number} [_untilTime]          reveal（replay）の現在バー T。present は非在席（optional）。
+ */
+
+// TimeframeHost 契約の実体列挙（構造充足テスト・依存面部分集合テストの固定点）。
+const TIMEFRAME_HOST_CONTRACT = Object.freeze({
+  role: 'TimeframeHost',
+  methods: Object.freeze(['recomputeAllApplied', '_persistAll']),
+  fields: Object.freeze([
+    '_timeframe', '_recomputeDepth', '_datasetRef', '_recentBars',
+    '_state', '_renderer', '_loadCandles', '_timeframeObserver',
+  ]),
+  // bind() 後のみ在席（fresh インスタンスでは未在席・controller は optional chaining で許容）。
+  optionalFields: Object.freeze(['_el']),
+});
+
+// MarketProfileHost 契約の実体列挙（構造充足テスト・依存面部分集合テストの固定点）。
+const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
+  role: 'MarketProfileHost',
+  methods: Object.freeze([
+    '_mpParams', '_isMarketProfile', '_paramsObject', '_renderLegend',
+    '_defaultVariant', '_withParams', '_defaultParams', '_persistAll',
+  ]),
+  fields: Object.freeze([
+    '_marketProfile', '_mpModeResolver', '_mpGrowthResolver', '_state',
+    '_catalog', '_meta', '_datasetRef', '_document', '_mode', '_timeframe',
+  ]),
+  // reveal seam: replay subclass のみ在席（present base では非在席・controller は != null で許容）。
+  optionalFields: Object.freeze(['_untilTime']),
+});
 
 // 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
 //   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
@@ -4601,6 +5336,14 @@ class IndicatorController {
     //   recomputeInstance をネスト呼びするため。bool だと内側 finally がバッチ途中で解除し、
     //   その隙に tick が割り込む（torn なバッチ）。カウンタなら最外バッチ終了まで true を維持する。
     this._recomputeDepth = 0;
+    // MP（A7）アクター駆動のオーケストレーションを委譲する協働子（ISSUE-094 🔴-4）。
+    //   host=this を渡し、apply/enable/toggle/remove/gear/reapply/restore/live-recompute を委譲する。
+    //   subclass の inherited メソッド呼出（this._toggleMarketProfileVisible 等）・_mpParams override を
+    //   温存するため base の各 MP メソッドは本協働子への薄いラッパへ縮退する（byte 挙動不変）。
+    this._mp = new MarketProfileController(this);
+    // 時間足取得・切替（A3）を委譲する協働子（ISSUE-094 🔴-4）。setTimeframe / ボタン同期 /
+    //   gateway の timeframe・limit 注入を担う。ライブ再計算入口（recomputeAllApplied）は controller 温存。
+    this._tf = new TimeframeController(this);
   }
 
   // 競合ガード: 再計算バッチ実行中なら true。LiveUpdater が tick 先頭で参照しスキップ判定する。
@@ -4704,152 +5447,36 @@ class IndicatorController {
   }
 
   // MP アクターへ渡す取得 params（resmode/bins/va/src/range）を組み立てる（apply/gear/restore 共通）。
-  //   limit は転送しない（MP は全期間集計固定）。保存 params に limit が残っていても載せない。
-  //   resmode（解像度モード）を転送し、client が resmode で bins/barw の送信を排他化する。
-  //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
+  //   ISSUE-094 🔴-4: MP のパラメータ・スキーマ写像は market_profile_params.js（純関数）へ外出しした。
+  //   本メソッドは薄い委譲のみ（subclass の super._mpParams / 既存テストの ctrl._mpParams 呼出を温存）。
   _mpParams(p = {}) {
-    const out = { va: p.va, src: p.src };
-    // bins（legacy・ISSUE-079 で catalog から撤去済み）: 旧保存インスタンスにのみ存在。保存時のみ転送。
-    if (p.bins != null) {
-      out.bins = p.bins;
-    }
-    // period（期間: 全期間/当日・ISSUE-071 (b)案）: 保存時のみ転送する（period 未保存の旧インスタンスの
-    //   転送 payload を変えない＝undefined キーを載せない。actor 側も null/undefined キーは無視する）。
-    if (p.period != null) {
-      out.period = p.period;
-    }
-    // dispbp（表示幅 bp・ISSUE-079）: 保存時のみ転送（旧インスタンスの payload 不変・actor が
-    //   barw(pt) へ写像する）。
-    if (p.dispbp != null) {
-      out.dispbp = p.dispbp;
-    }
-    // mode（表示モード）: 旧 replay(BOOL)/sessions(BOOL) を統合した排他 ENUM
-    //   ['normal','replay','sessions'] を actor へ転送する。undefined は載せない（actor 既定=通常）。
-    //   後方互換マイグレーション（resmode 導出と同方針）: 永続 params に mode が無く legacy が残る
-    //   旧インスタンスは _deriveMode で legacy → mode を導出する。legacy キー（replay/sessions）自体は
-    //   actor へ送らない（mode に一本化・二重管理を避ける）。
-    const mode = this._deriveMode(p);
-    if (mode != null) {
-      out.mode = mode;
-    }
-    // resmode（解像度モード）: client が bins/barw の送信を排他化する。
-    //   後方互換: 明示 resmode が無い旧 barw 保存インスタンス（数値 range・resmode 無し）は
-    //   range から resmode を導出して保存レンジを維持する（_deriveResmode）。
-    const resmode = this._deriveResmode(p);
-    if (resmode != null) {
-      out.resmode = resmode;
-    }
-    if (p.range != null && p.range !== 'auto') {
-      out.range = p.range;
-    }
-    return out;
+    return buildMpParams(p);
   }
 
-  // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
-  //   ライブ連動（mpModeResolver 注入時）は mode を選択表示モード（gear 記憶／未選択は既定 normal）へ解決してから
-  //   渡す（'ticklive' 置換はしない＝直交化）。解決役は同時に userMode（gear 選択）を記憶する。mode 未指定
-  //   （旧インスタンス）は解決しない（actor 既定＝通常）。未注入時は _mpParams の結果をそのまま渡す＝byte 不変。
-  //   さらに growth 解決役（mpGrowthResolver 注入時）は setParams 後に growing 信号（applyGrowthState）を適用する。
-  //   FOLLOW=growing=true（成長 ON）／ANALYSIS=false（static）。未注入時は applyGrowthState を呼ばない＝byte 不変。
-  //   marketProfile 未注入時は no-op（呼び出し側の guard と二重防御）。
+  // MP 委譲一式（apply/enable/toggle/remove/gear/reapply/restore/live-recompute）は
+  //   market_profile_controller.js（MarketProfileController）へ外出しした（ISSUE-094 🔴-4）。
+  //   以下は subclass の inherited 呼出（this._applyMpGrowth 等）・既存テスト・composition root 配線を
+  //   温存するための薄い委譲ラッパ（挙動は抽出前と byte 等価）。_mpParams override は host 経由で尊重される。
   _applyMpParams(p) {
-    if (!this._marketProfile) {
-      return;
-    }
-    const params = this._mpParams(p);
-    if (params.mode != null && this._mpModeResolver) {
-      params.mode = this._mpModeResolver(params.mode);
-    }
-    this._marketProfile.setParams(params);
-    this._applyMpGrowth();
+    return this._mp.applyMpParams(p);
   }
 
-  // 直交化: 現在の成長状態（mpGrowthResolver）を MP アクターへ growing 信号として適用する。
-  //   setParams（mode 遷移で _exitTicklive→growing リセット）の後に呼び、mode を維持したまま growing を確定する。
-  //   解決役未注入 or actor が applyGrowthState 非所持なら no-op（byte 不変）。返り値 growing を呼び出し側が使う。
   _applyMpGrowth() {
-    if (!this._mpGrowthResolver || !this._marketProfile) {
-      return false;
-    }
-    const growing = !!this._mpGrowthResolver();
-    if (typeof this._marketProfile.applyGrowthState === 'function') {
-      this._marketProfile.applyGrowthState({ growing });
-    }
-    return growing;
+    return this._mp.applyMpGrowth();
   }
 
-  // ライブ連動: チャート FOLLOW/ANALYSIS 遷移時に、現在表示中 MP の実効モードを再適用する（present 固有）。
-  //   GrowthCoordinator.onLiveStateChange → reapply として配線される。連動未配線（mpModeResolver 未注入）
-  //   時は呼ばれない設計だが、MP 不在/無効/未表示時も自己 guard で no-op（副作用なし）。
-  //   実効モードは resolver(null)（記憶更新なし・実効解決のみ）で強制し、保存 params（bins/va/src/range）は
-  //   維持したまま mode だけ差し替えて refresh する（既存 setParams→refresh 経路を再利用・actor 不変）。
-  async reapplyMarketProfileMode() {
-    if (!this._marketProfile || !this._mpModeResolver) {
-      return;
-    }
-    if (typeof this._marketProfile.isEnabled === 'function' && !this._marketProfile.isEnabled()) {
-      return; // MP 未表示（enabled=false）は再適用不要。
-    }
-    const inst = this._state.applied.find(
-      (i) => this._isMarketProfile(this._catalog.get(i.indicatorId)) && i.visible,
-    );
-    if (!inst) {
-      return; // 表示中 MP インスタンスが無い。
-    }
-    const params = this._mpParams(this._paramsObject(inst.params));
-    params.mode = this._mpModeResolver(null); // 選択表示モード（gear 記憶／未選択は既定）を維持（'ticklive' 置換なし）。
-    this._marketProfile.setParams(params);
-    // 直交化: mode を維持したまま growing だけをトグルする（applyGrowthState）。FOLLOW=growing=true / ANALYSIS=false。
-    const growing = this._applyMpGrowth();
-    // growing 時のみ成長エンジンを起動する。present の成長は forming を onLiveTick（→_enterTicklive）で取得する
-    //   （live loop(recomputeAllApplied)/初期 add と同一経路）。refresh は /market_profile の base 累積を描くだけで
-    //   forming を発火しないため、growing では onLiveTick を呼ぶ。非成長（static＝ANALYSIS）は refresh で選択モードを反映。
-    if (growing && typeof this._marketProfile.onLiveTick === 'function') {
-      await this._marketProfile.onLiveTick();
-    } else if (typeof this._marketProfile.refresh === 'function') {
-      await this._marketProfile.refresh();
-    }
+  reapplyMarketProfileMode() {
+    return this._mp.reapplyMode();
   }
 
-  // resmode（解像度モード）を決める後方互換ヘルパ（restore と apply の両経路で共用）。
-  //   - 明示 resmode があればそのまま返す（後方互換補完のみ・上書きしない）。
-  //   - resmode 欠落かつ range がレンジ数値集合 → 'range'（保存したレンジを維持し client が &barw= を送る）。
-  //   - resmode 欠落かつ range='auto' → 'bins'（従来通り bins フォールバック）。
-  //   - resmode も range も無い旧インスタンスは null を返し resmode を付与しない（client 既定 = bins）。
+  // resmode/mode（表示・解像度モード）の後方互換ヘルパは market_profile_params.js（純関数）へ外出しした
+  //   （ISSUE-094 🔴-4）。本メソッドは薄い委譲のみ（内部呼出・既存呼出の互換温存）。
   _deriveResmode(p = {}) {
-    if (p.resmode != null) {
-      return p.resmode;
-    }
-    if (p.range == null) {
-      return null;
-    }
-    const BAR_WIDTHS = new Set(['10', '25', '50', '100', '250', '500']);
-    return BAR_WIDTHS.has(String(p.range)) ? 'range' : 'bins';
+    return deriveMpResmode(p);
   }
 
-  // mode（表示モード）を決める後方互換ヘルパ（_deriveResmode と同方針・apply/gear/restore 共用）。
-  //   - 明示 mode があればそのまま返す（legacy との競合時は mode 優先＝後方互換補完は上書きしない）。
-  //   - mode 欠落かつ legacy sessions:true → 'sessions'（両 true の旧データも sessions 優先）。
-  //   - mode 欠落かつ legacy replay:true → 'replay'。
-  //   - mode 欠落かつ legacy が明示 false（両 OFF）→ 'normal'（restore で両 OFF を再現）。
-  //   - mode も legacy キーも無い旧インスタンスは null（mode を付与しない＝actor 既定=通常）。
   _deriveMode(p = {}) {
-    if (p.mode != null) {
-      // ISSUE-082: リプレイモードは present から撤去済み。保存済み mode='replay' は 'normal' へ正規化。
-      return p.mode === 'replay' ? 'normal' : p.mode;
-    }
-    // 両 true の旧データは sessions 優先（排他統合のため一方に確定させる）。
-    if (p.sessions === true) {
-      return 'sessions';
-    }
-    if (p.replay === true) {
-      return 'normal'; // ISSUE-082: legacy replay:true も normal へ（リプレイ撤去）。
-    }
-    // legacy キーが存在し明示 false（両 OFF）なら normal を導出する（両フラグ不在は null）。
-    if (p.replay != null || p.sessions != null) {
-      return 'normal';
-    }
-    return null;
+    return deriveMpMode(p);
   }
 
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
@@ -4877,126 +5504,27 @@ class IndicatorController {
     return instance;
   }
 
-  // MP 専用適用パス: /compute をバイパスし、state には no-op gateway で instance を登録して
-  //   凡例表示・永続化・restore の対象に含める。描画は MarketProfileActor（GET /market_profile →
-  //   primitive）へ委譲する。_draw（F3 系列描画）は通さない。
-  async _applyMarketProfile(def, variant, params) {
-    // MP 単一インスタンス制約: 既に MP が適用済みなら新規 legend 行を作らず no-op で
-    //   既存インスタンスを返す（二重 legend 行→単一 actor 駆動での状態乖離を防ぐ）。
-    //   actor へは触れない: 既存が非表示なら表示状態の乖離、gear 変更済みなら params
-    //   の既定値クロバーを招くため、可視・params の現状を保存する。
-    const existing = this._state.applied.find(
-      (i) => this._isMarketProfile(this._catalog.get(i.indicatorId)),
-    );
-    if (existing) {
-      return existing;
-    }
-    const { state, instance } = await apply(
-      this._state,
-      { indicatorId: def.id, variant: variant ?? this._defaultVariant(def), params, datasetRef: this._datasetRef },
-      { compute: async () => ({ generation: 0 }) },
-    );
-    this._state = state;
-    this._meta.set(instance.instanceId, { def });
-    await this._enableMarketProfile(params);
-    this._persistAll();
-    this._renderLegend();
-    return instance;
+  // MP 委譲ラッパ（実体は MarketProfileController・ISSUE-094 🔴-4）。subclass の inherited 呼出
+  //   （this._toggleMarketProfileVisible / this._removeMarketProfile）と既存テスト（ctrl._onGearMarketProfile）を
+  //   温存するための薄い委譲（挙動は抽出前と byte 等価）。
+  _applyMarketProfile(def, variant, params) {
+    return this._mp.applyMarketProfile(def, variant, params);
   }
 
-  // MP アクターへ params を渡して有効化する（setParams→setEnabled(true)＝取得＋表示）。
-  //   setEnabled(true) は内部で refresh も行う。未注入時は no-op。
-  async _enableMarketProfile(params) {
-    if (!this._marketProfile) {
-      return;
-    }
-    this._applyMpParams(params);
-    await this._marketProfile.setEnabled(true);
-    // [reveal seam] reveal（replay）では現在バー T（_untilTime）が確定していれば即 enterBar で base を
-    //   描画する。present は _untilTime を持たない（undefined）ため常に skip（byte 挙動不変）。
-    if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function') {
-      await this._marketProfile.enterBar(this._untilTime);
-    }
+  _enableMarketProfile(params) {
+    return this._mp.enableMarketProfile(params);
   }
 
-  // MP 凡例 eye: 表示/非表示トグル（state.visible を反転し actor.setEnabled へ同期）。
-  async _toggleMarketProfileVisible(inst) {
-    this._state = facadeToggleVisible(this._state, inst.instanceId);
-    const updated = this._state.applied.find((i) => i.instanceId === inst.instanceId);
-    if (this._marketProfile && updated) {
-      await this._marketProfile.setEnabled(updated.visible);
-    }
-    this._persistAll();
-    this._renderLegend();
+  _toggleMarketProfileVisible(inst) {
+    return this._mp.toggleVisible(inst);
   }
 
-  // MP 凡例 close: 非表示＋detach してから applied/meta から除去する（renderer.remove は不要＝
-  //   MP は renderer に系列を持たない）。
-  async _removeMarketProfile(inst) {
-    if (this._marketProfile) {
-      await this._marketProfile.setEnabled(false);
-      if (typeof this._marketProfile.detach === 'function') {
-        this._marketProfile.detach();
-      }
-    }
-    this._state = facadeRemove(this._state, inst.instanceId);
-    this._meta.delete(inst.instanceId);
-    this._persistAll();
-    this._renderLegend();
+  _removeMarketProfile(inst) {
+    return this._mp.removeInstance(inst);
   }
 
-  // MP 凡例 gear: プロパティダイアログで bins/va/src を編集し、onApply で setParams+refresh。
-  //   /compute は呼ばない。DOM 不在時は現 params で即時反映（フォールバック）。
   _onGearMarketProfile(inst, def) {
-    const doc = this._document;
-    const stored = this._paramsObject(inst.params);
-    const currentParams = (stored && Object.keys(stored).length > 0)
-      ? stored
-      : this._defaultParams(def);
-    const applyParams = async (values) => {
-      this._state = this._withParams(this._state, inst.instanceId, values);
-      if (this._marketProfile) {
-        this._applyMpParams(values);
-        // [reveal seam] reveal（replay）かつ **push 成長中**（isGrowingPush＝growing かつ非 sessions）のときだけ
-        //   現在バー T で enterBar（forming push で base 取り直し）。sessions+growing / 非成長は refresh(as-of-T)
-        //   へ落とす（成長軸 aware）。present は _untilTime 未設定ゆえ常に refresh＝従来どおり（byte 挙動不変）。
-        //   Phase5: 旧 isTicklive()（表示モード）ゲートから isGrowingPush()（成長軸）へ移行（ticklive 撤去）。
-        if (this._untilTime != null && typeof this._marketProfile.enterBar === 'function'
-            && typeof this._marketProfile.isGrowingPush === 'function'
-            && this._marketProfile.isGrowingPush()) {
-          await this._marketProfile.enterBar(this._untilTime);
-        } else if (typeof this._marketProfile.refresh === 'function') {
-          await this._marketProfile.refresh();
-        }
-      }
-      this._persistAll();
-      this._renderLegend();
-    };
-    // applyParams は async。未 await の fire-and-forget のため拒否を .catch で捕捉し
-    //   unhandledRejection 化を防ぐ（refresh 失敗等）。
-    const runApply = (values) => {
-      applyParams(values).catch((err) => {
-        if (typeof console !== 'undefined' && console.error) {
-          console.error('[MP] gear apply failed', err);
-        }
-      });
-    };
-    if (!doc || typeof PropertiesDialog !== 'function') {
-      runApply(currentParams);
-      return;
-    }
-    const dialog = new PropertiesDialog({
-      document: doc,
-      def,
-      instance: { ...inst, params: currentParams },
-      mode: this._mode,
-      // ISSUE-070: MP 解像度パラメータのグレーアウト判定に現 timeframe と served/A方式を渡す
-      //   （tf-period が日別列を描くとき resmode/bins/range は無効＝GRID_W 固定のため）。
-      context: { timeframe: this._timeframe, servedMode: this._mode },
-      onApply: (values) => { runApply(values); },
-      onCancel: () => {},
-    });
-    dialog.open();
+    return this._mp.onGear(inst, def);
   }
 
   // AppliedInstance（不変・凍結）の params のみ差し替えた state を返す（_withVariant と同型）。
@@ -5138,42 +5666,10 @@ class IndicatorController {
     this._renderLegend();
   }
 
-  // 時間足切替（§チャート表示時間選択・1 分足原子から resample）。
-  //   1) candles を新時間足で再取得しメイン系列を差し替え（B方式のみ・直近 recentBars 本）。
-  //   2) 適用済み全指標を新時間足で再計算・再描画（candles と時間軸を揃える）。
-  //   3) uiState に時間足を永続化（restore で復元）。
-  //   A方式（loadCandles 無し・SAMPLE_DATA）では candles 再取得を行わない（再集計不可）。
-  async setTimeframe(timeframe) {
-    if (!timeframe || timeframe === this._timeframe) {
-      return;
-    }
-    this._timeframe = timeframe;
-    this._syncTimeframeButtons();
-    // バッチ全体（candles 取得 await＋全指標再計算）を競合ガードで包む。これがないと
-    //   _loadCandles の await 中は isRecomputing()=false となり、その隙にライブ tick が
-    //   割り込んで二重 compute する（🟡-2）。最外で increment し finally で確実に解除する。
-    this._recomputeDepth += 1;
-    try {
-      // candles を新時間足で再取得（取得のみ・描画は下のバッチへ遅延）。
-      let candles = null;
-      if (typeof this._loadCandles === 'function') {
-        candles = await this._loadCandles(this._datasetRef, timeframe);
-      }
-      // メイン系列差し替えを指標の再描画と同じ同期バッチへ含め、全要素を同時更新する（ISSUE-023）。
-      //   取得失敗・A方式（candles 無し）は preRender=null でメイン系列を据え置く。
-      const preRender = candles && candles.length > 0
-        ? () => this._renderer.setCandles(candles)
-        : null;
-      // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
-      //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
-      await this.recomputeAllApplied({ preRender });
-    } finally {
-      this._recomputeDepth -= 1;
-    }
-    this._state.uiState = { ...this._state.uiState, timeframe };
-    this._persistAll();
-    // 時間足購読者へ新時間足を通知する（売買マーカーの該当時間足フィルタ等）。
-    this._timeframeObserver?.(this._timeframe);
+  // 時間足切替（§チャート表示時間選択）。関心事は TimeframeController（A3）へ外出しした（ISSUE-094 🔴-4）。
+  //   本メソッドは composition root/テスト（controller.setTimeframe）を温存する薄い委譲（byte 挙動不変）。
+  setTimeframe(timeframe) {
+    return this._tf.setTimeframe(timeframe);
   }
 
   // 時間足変更の購読者を登録する（任意・1 個）。setTimeframe 適用後に新時間足で呼ばれる。
@@ -5199,14 +5695,9 @@ class IndicatorController {
       }
       // MP 種別は /compute を持たない（backend に compute 無し）。再計算経路（ライブ tick /
       //   足切替）で /compute へ流出させると例外→setTimeframe では preRender 前で全スキップ。
-      //   /compute を通さず actor.refresh（現時間足で再取得）へ委譲し、MP も新足へ追従させる。
+      //   /compute を通さず MP 側協働子（actor.onLiveTick／refresh 委譲）へ外出しする（ISSUE-094 🔴-4）。
       if (this._isMarketProfile(meta.def)) {
-        // [reveal seam] present の MP actor は onLiveTick（ticklive ON=forming 増分 / OFF=refresh 委譲）を持つ。
-        //   typeof gate で present は従来どおり onLiveTick を呼び（byte 挙動不変）、onLiveTick を持たない
-        //   replay slim actor は skip（render seam の enterBar/feedTick が MP を駆動する）。
-        if (this._marketProfile && inst.visible && typeof this._marketProfile.onLiveTick === 'function') {
-          await this._marketProfile.onLiveTick();
-        }
+        await this._mp.onLiveRecompute(inst);
         continue;
       }
       const job = await this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
@@ -5228,11 +5719,10 @@ class IndicatorController {
     this._renderLegend();
   }
 
-  // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。
+  // 時間足セレクタの active 表示同期は TimeframeController へ外出しした（ISSUE-094 🔴-4）。
+  //   restore()/bind() の this._syncTimeframeButtons() 呼出を温存する薄い委譲（byte 挙動不変）。
   _syncTimeframeButtons() {
-    for (const b of this._el?.timeframeBtns ?? []) {
-      b.classList.toggle('is-active', b.dataset.timeframe === this._timeframe);
-    }
+    return this._tf.syncButtons();
   }
 
   // UC-06 お気に入り切替。
@@ -5279,16 +5769,10 @@ class IndicatorController {
         continue;
       }
       this._meta.set(inst.instanceId, { def });
-      // MP 種別は /compute で計算しようとして失敗させない。保存 params を actor へ渡し、
-      //   可視だった場合のみ有効化して再取得・表示する。
+      // MP 種別は /compute で計算しようとして失敗させない。復元は MP 側協働子へ委譲する
+      //   （保存 params を actor へ渡し、可視だった場合のみ有効化して再取得・表示・ISSUE-094 🔴-4）。
       if (this._isMarketProfile(def)) {
-        const rp = this._paramsObject(inst.params);
-        if (this._marketProfile) {
-          this._applyMpParams(rp);
-          if (inst.visible) {
-            await this._marketProfile.setEnabled(true);
-          }
-        }
+        await this._mp.restoreInstance(inst);
         continue;
       }
       try {
@@ -5352,23 +5836,22 @@ class IndicatorController {
   }
 
   // facade.apply/recompute が呼ぶ compute をラップし、応答 series を捕捉（描画用）。
-  //   時間足（timeframe）・直近表示本数（limit）は facade を介さずここで注入する（facade は純粋を保つ）。
-  //   B方式は /compute がこれで resample・範囲制限し candles と時間軸を揃える。A方式は余剰フィールドを無視。
+  //   時間足（timeframe）・直近表示本数（limit）の注入は TimeframeController（A3）へ委譲する
+  //   （ISSUE-094 🔴-4・facade は純粋を保つ）。B方式は /compute がこれで resample・範囲制限し candles と
+  //   時間軸を揃える。A方式は余剰フィールドを無視。
   _gatewayAdapter(variantOverride, mode) {
     const compute = this._compute;
     const self = this;
     return {
       async compute(req) {
-        // 計算.時間足（params.timeframe）の per-indicator override。'chart'/未指定はグローバル
-        //   時間足（this._timeframe）に追従、特定足（1h 等）は当該足で計算（MTF）。backend は
-        //   params.timeframe を受理引数に含めない（_accepted_kwargs で除外）ため副作用なし。
+        // 計算.時間足（params.timeframe）の per-indicator override は TimeframeController が解決する。
+        //   backend は params.timeframe を受理引数に含めない（_accepted_kwargs で除外）ため副作用なし。
         const tfParam = req && req.params ? req.params.timeframe : undefined;
-        const effectiveTimeframe = tfParam && tfParam !== 'chart' ? tfParam : self._timeframe;
         const result = await compute.compute({
           ...req,
           variant: variantOverride ?? req.variant,
-          timeframe: effectiveTimeframe,
-          limit: self._recentBars ?? undefined,
+          timeframe: self._tf.effectiveTimeframe(tfParam),
+          limit: self._tf.limit(),
           // mode（full/latest）を素通し。未指定は compute_http_client がボディに含めない（後方互換）。
           mode: mode === 'latest' ? 'latest' : undefined,
           // [reveal seam] reveal 拡張フィールド（untilTime/forming 等）を素通しする。present は
@@ -6094,6 +6577,21 @@ class CrosshairReadoutView {
 }
 
 
+// ===== js/adapter/front/pair_render_constants.js =====
+// pair_render_constants.js — 売買ペア overlay（ペア線・売買マーカー）の共有描画定数（ISSUE-095 項目3）。
+//
+// 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10.2（非ハイライト要素の減光）。
+// 由来: pair_lines_primitive.js（`DIM_ALPHA=0.15`）と trade_markers_renderer.js（`_DIM_ALPHA=0.15`）が
+//   同値・同責務（売買ペアのホバー時に当該ペア以外を減光する alpha）で個別宣言していたものを単一情報源へ抽出。
+// 命名の根拠（実測）: A方式（file:// フラットバンドル）は import を剥がし全 ES Modules を 1 スコープへ連結する。
+//   market_profile_primitive.js が別責務・別値の `const DIM_ALPHA = 0.30`（累積バー減光）をトップレベル宣言しており、
+//   本共有定数を `DIM_ALPHA` にするとバンドル時に二重宣言（SyntaxError）を再発させる。ゆえに distinct-name
+//   `PAIR_DIM_ALPHA` とし、pair 側からトップレベル `DIM_ALPHA` を除去して衝突を解消する（挙動・実効値は不変）。
+
+// 売買ペアのホバー減光 alpha（非ハイライトのペア線・売買マーカーに適用）。
+const PAIR_DIM_ALPHA = 0.15;
+
+
 // ===== js/adapter/front/pair_primitive_base.js =====
 // pair_primitive_base.js — 売買ペア系カスタム primitive 共通基底（v4・リファクタ）。
 //
@@ -6180,7 +6678,7 @@ class PairPrimitiveBase {
 
 const C_WIN = '#26a69a';
 const C_LOSS = '#ef5350';
-const DIM_ALPHA = 0.15; // 非ハイライト線の減光 alpha（§10.2）。
+// 非ハイライト線の減光 alpha（§10.2）。共有定数 PAIR_DIM_ALPHA を参照（単一情報源）。
 
 class PairLinesPrimitive extends PairPrimitiveBase {
   // 各 pair の (entryTime→x, entryPrice→y)〜(exitTime→x, exitPrice→y) を座標化して線分描画。
@@ -6211,7 +6709,7 @@ class PairLinesPrimitive extends PairPrimitiveBase {
         ctx.save();
         ctx.beginPath();
         ctx.strokeStyle = pair.win ? C_WIN : C_LOSS;
-        ctx.globalAlpha = dimmed ? DIM_ALPHA : 1;
+        ctx.globalAlpha = dimmed ? PAIR_DIM_ALPHA : 1;
         ctx.lineWidth = 1;
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
@@ -6231,8 +6729,7 @@ class PairLinesPrimitive extends PairPrimitiveBase {
 // chart_renderer.js と同層・同規約（upstream API の唯一の隔離点）。
 
 
-// v4 §10.2: 非ハイライト marker の減光色（rgba・低 alpha）。
-const _DIM_ALPHA = 0.15;
+// v4 §10.2: 非ハイライト marker の減光色（rgba・低 alpha）。共有定数 PAIR_DIM_ALPHA を参照（単一情報源）。
 
 // "#rrggbb" を rgba(r,g,b,alpha) へ変換する。非 hex はそのまま返す（防御）。
 function _withAlpha(color, alpha) {
@@ -6482,7 +6979,7 @@ class TradeMarkersRenderer {
       ? visible
       : visible.map((mk) => (this._parseTradeIndex(mk.id) === this._highlight
         ? mk
-        : { ...mk, color: _withAlpha(mk.color, _DIM_ALPHA) }));
+        : { ...mk, color: _withAlpha(mk.color, PAIR_DIM_ALPHA) }));
     if (this._primitive) {
       this._primitive.setHighlight(this._highlight);
     }
@@ -6805,6 +7302,51 @@ class MarketProfileFormingClient {
 }
 
 
+// ===== js/adapter/front/mp_primitive_roles.js =====
+// mp_primitive_roles.js — 単一 MarketProfileHistogramPrimitive 上のロール別ファサード（ISP）。
+//
+// 設計入力（ISSUE-099 🟡-5）: MarketProfileHistogramPrimitive は 2 つの無関係なクライアント役割を
+//   1 クラス（god interface）へ束ねていた。MarketProfileActor は
+//   {setProfile,setVisible,setSnapshot,setSessions,setCursorTime} のみ・TfPeriodProfileActor /
+//   Tooltip は {setTfPeriods,tfPeriodLevelAt} のみを排他的に使う（実測・排他サブセット）。
+//   本モジュールは同一 primitive の上にロール別ファサードを定義し、各アクターへ必要面のみ注入する。
+//
+// 不変条件: 単一 ISeriesPrimitive の attach 点は 1 つのまま（両ファサードは同一 primitive を包む）。
+//   ProfileSink は attach 用に下層 primitive を `seriesPrimitive()` で取り出せる（MarketProfileActor
+//   の _attachTarget が使用）。ファサードは全メソッドを下層へ透過委譲する（挙動不変）。
+
+// プロファイル表示役（MarketProfileActor 用）。
+class ProfileSink {
+  constructor(primitive) {
+    this._primitive = primitive;
+  }
+
+  setProfile(profile) { return this._primitive.setProfile(profile); }
+
+  setVisible(visible) { return this._primitive.setVisible(visible); }
+
+  setSnapshot(on) { return this._primitive.setSnapshot(on); }
+
+  setSessions(sessions) { return this._primitive.setSessions(sessions); }
+
+  setCursorTime(time) { return this._primitive.setCursorTime(time); }
+
+  // 単一 attach 点: 下層 ISeriesPrimitive を返す（mainSeries.attachPrimitive の対象）。
+  seriesPrimitive() { return this._primitive; }
+}
+
+// tf-period 列役（TfPeriodProfileActor / TfPeriodTooltip 用）。
+class TfPeriodSink {
+  constructor(primitive) {
+    this._primitive = primitive;
+  }
+
+  setTfPeriods(columns, unit) { return this._primitive.setTfPeriods(columns, unit); }
+
+  tfPeriodLevelAt(time, price) { return this._primitive.tfPeriodLevelAt(time, price); }
+}
+
+
 // ===== js/adapter/front/market_profile_primitive.js =====
 // market_profile_primitive.js — Market Profile の TPO ヒストグラムを描くカスタム ISeriesPrimitive。
 //
@@ -6817,6 +7359,8 @@ class MarketProfileFormingClient {
 //   として描く _draw に限定する。取得・トグル状態は market_profile_actor.js が持つ。
 //   price→y 変換は series.priceToCoordinate のみを使い（既存 primitive と同 API）、lwc への直接依存を持たない。
 
+// ソース能力記述子（domain 単一情報源）: POC 描画様式（star/line）・ラベル可否を導出する
+//   （ISSUE-097 🔵-20・散在した profile.src==='zp' 述語の集約）。
 
 // 'YYYY-MM-DD'（sessions の date）→ UNIX 秒（UTC 深夜）。timeToCoordinate へ渡し日付を時間軸に対応づける。
 function dateToUnix(dateStr) {
@@ -7304,14 +7848,15 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         ctx.stroke();
         ctx.restore();
       };
-      // src=zp のとき poc は POC*（超過占有 argmax z）＝黄で区別する（通常 POC は赤・試作準拠）。
-      hline(poc, this._profile.src === 'zp' ? C_POC_STAR : C_POC_LINE);
+      // poc=star のソース（zp）は POC*（超過占有 argmax z）＝黄で区別する（通常 POC は赤・試作準拠）。
+      const cap = mpSourceCapability(this._profile.src);
+      hline(poc, cap.poc === 'star' ? C_POC_STAR : C_POC_LINE);
       hline(vaHigh, C_VA_LINE);
       hline(vaLow, C_VA_LINE);
 
-      // src=zp のみ: 各参照線の価格ラベルを線の左上に描く（POC*/VAH/VAL・依頼者指示 2026-07-12）。
-      //   既存 src（candle/dwell/m1）は試作準拠のラベル無しを維持＝描画 byte 不変。
-      if (this._profile.src === 'zp') {
+      // showLabels のソース（zp）のみ: 各参照線の価格ラベルを線の左上に描く（POC*/VAH/VAL・
+      //   依頼者指示 2026-07-12）。既存 src（candle/dwell/m1）は試作準拠のラベル無しを維持＝描画 byte 不変。
+      if (cap.showLabels) {
         const label = (price, text, color) => {
           if (price == null) return;
           const y = toY(price);
@@ -7366,7 +7911,9 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
 //   取得失敗（client が null）時も既存描画へ干渉せず、前回 profile を保持する。
 
 // セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・当日窓・日別集計の唯一の規則源。
-// ISSUE-080: 日別×1m/5m で zp を出さない（単一情報源＝catalog の述語と同じ集合）。
+// セッション日 OHLC 集計（domain 純関数・ISSUE-094 V6 抽出）。集計数学を actor から分離。
+// ソース能力記述子（domain 単一情報源）: src 別の増分可否・期間窓・session ブロックを導出する
+//   （ISSUE-097 🟡-9・散在した src==='zp' 述語の集約）。
 
 // sessions の 'YYYY-MM-DD' → UNIX 秒（UTC 深夜）。candle.time との突合に使う（primitive dateToUnix と同一規則）。
 function _sessionDateToUnix(dateStr) {
@@ -7388,36 +7935,8 @@ function _sessionDateToUnix(dateStr) {
 //   戻り値 { list, mp }。list=OHLC/tFirst/tLast 付与済みセッション配列、mp=time→{poc,vah,val} の Map。
 function _buildSessionView(list, candles) {
   // セッション日ラベル → { tFirst, tLast, open, high, low, close }（当日全バーの範囲と日次 OHLC）。
-  //   candles は time 昇順が契約だが、順序に依存しない min/max 更新で頑健化する。
-  const byDay = new Map();
-  for (const c of (candles || [])) {
-    const time = Number(c.time);
-    if (!Number.isFinite(time)) {
-      continue;
-    }
-    const d = sessionDateLabel(time); // ISSUE-078: セッション日で束ねる（UTC 暦日でなく）。
-    const agg = byDay.get(d);
-    if (!agg) {
-      byDay.set(d, {
-        tFirst: time, tLast: time, open: c.open, high: c.high, low: c.low, close: c.close,
-      });
-    } else {
-      if (time < agg.tFirst) {
-        agg.tFirst = time;
-        agg.open = c.open;
-      }
-      if (time > agg.tLast) {
-        agg.tLast = time;
-        agg.close = c.close;
-      }
-      if (c.high > agg.high) {
-        agg.high = c.high;
-      }
-      if (c.low < agg.low) {
-        agg.low = c.low;
-      }
-    }
-  }
+  //   集計数学は domain/session_ohlc.js（純関数）へ外出しした（ISSUE-094 V6）。actor は表示組立に専念する。
+  const byDay = aggregateSessionOhlc(candles);
   const out = [];
   const mp = new Map();
   for (const s of list) {
@@ -7692,7 +8211,7 @@ class MarketProfileActor {
   //   非増分＝refresh 委譲へ倒す（onLiveTick はライブ足更新周期＝数秒に 1 回。backend は当日 null を
   //   経過分キーでメモし 0.05〜0.2s 程度で応答する）。
   _isIncremental() {
-    return !!this._growing && !this._sessions && this._params.src !== 'zp'
+    return !!this._growing && !this._sessions && mpSourceCapability(this._params.src).incremental
       && !!this._formingClient && !!this._makeAccumulator;
   }
 
@@ -8026,7 +8545,7 @@ class MarketProfileActor {
   //   dwell を対象外にするのは、成長時の forming 経路が既に当日絞り（ISSUE-065）でありrefresh 窓まで
   //   絞ると static（ANALYSIS）の全期間表示という既存確定挙動を壊すため（zp は非増分＝refresh のみで安全）。
   _periodExtra() {
-    if (this._params.period !== 'day' || this._params.src !== 'zp'
+    if (this._params.period !== 'day' || !mpSourceCapability(this._params.src).hasPeriodWindow
         || this._sessions || this._replay) {
       return {};
     }
@@ -8114,8 +8633,8 @@ class MarketProfileActor {
     // ISSUE-080（依頼者裁定 2026-07-15）: 日別×1m/5m×zp は非対応＝代替粒度（日タイル）を出さない。
     //   fetch もせず表示をクリアし、ローソクを可視のまま維持する（「作れないソースは出さない」原則。
     //   gear では option 無効化済みだが、時間足切替で事後にこの状態へ到達し得るため実行時も防御）。
-    if (this._sessions && this._params.src === 'zp'
-        && MP_ZP_SESSIONS_BLOCKED_TFS.has(this._getContext().timeframe)) {
+    if (this._sessions
+        && mpSourceCapability(this._params.src).blockedSessionTfs.has(this._getContext().timeframe)) {
       if (this._primitive && typeof this._primitive.setSessions === 'function') {
         this._primitive.setSessions(null);
       }
@@ -8181,13 +8700,21 @@ class MarketProfileActor {
     this._renderer.focusTimeRange(from, to);
   }
 
+  // attach 対象の ISeriesPrimitive を解決する（ISSUE-099 🟡-5）。primitive が ProfileSink
+  //   ファサードのとき下層 primitive（seriesPrimitive()）を返し、生 primitive（既存テストの fake）は
+  //   そのまま返す＝単一 attach 点を維持しつつ挙動不変。
+  _attachTarget() {
+    const p = this._primitive;
+    return (p && typeof p.seriesPrimitive === 'function') ? p.seriesPrimitive() : p;
+  }
+
   // primitive を mainSeries へ一度だけ attach する（attachPrimitive 非提供時は skip）。
   _ensureAttached() {
     if (this._attached) {
       return;
     }
     if (this._mainSeries && typeof this._mainSeries.attachPrimitive === 'function') {
-      this._mainSeries.attachPrimitive(this._primitive);
+      this._mainSeries.attachPrimitive(this._attachTarget());
       this._attached = true;
     }
   }
@@ -8196,7 +8723,7 @@ class MarketProfileActor {
   //   凡例からの削除（close）で呼び、次回有効化で再 attach できるよう _attached を戻す。
   detach() {
     if (this._attached && this._mainSeries && typeof this._mainSeries.detachPrimitive === 'function') {
-      this._mainSeries.detachPrimitive(this._primitive);
+      this._mainSeries.detachPrimitive(this._attachTarget());
     }
     this._attached = false;
     this._applyProfileMargin(false); // 右マージン復元（MP 削除で取り残さない）。
@@ -9346,6 +9873,13 @@ async function bootstrap({
   }
   const persistence = new LocalStorageGateway(storage);
   const catalog = new IndicatorCatalogClient();
+  // param 既定値の単一情報源（back catalog_schema）を GET /catalog で解決する（ISSUE-092 ③）。
+  //   B方式のみ取得し、失敗時は静的既定（catalog.js リテラル）へフォールバック（オフライン耐性・UI 不変）。
+  //   A方式(file:)はサーバ無しのためスキップ（静的既定）。overlay は controller 生成前に完了させ、
+  //   以後のインスタンス生成が単一情報源の既定値を用いるようにする。load は例外を投げない（内部で吸収）。
+  if (mode === 'b') {
+    await catalog.load(fetch);
+  }
 
   // 時間足切替で candles を再取得するためのローダ（B方式のみ）。A方式（SAMPLE_DATA・再集計不可）は null。
   //   controller.setTimeframe が (datasetRef, timeframe) で呼び、直近 recentBars 本へ制限して取得する。
@@ -9366,14 +9900,17 @@ async function bootstrap({
   // MP primitive を変数化し、時間足毎profile列（tf-period）actor と共有する（同一 primitive の
   //   setTfPeriods で描画＝mainSeries へ二重 attach しない）。
   const mpPrimitive = new MarketProfileHistogramPrimitive();
-  // src=zp（超過占有 z(p)）の tf-period 対応判定。backend の zp 列は tf 15m..1D のみ（1m/5m は
-  //   周期内分数が退化し 400）。委譲述語（sessionsDrawnByTfPeriod）と tf-period 有効化（tfpShouldOn）の
-  //   **両方**がこの同一条件を使う＝どちらか片方だけだと「MP はタイルを委譲したのに tf-period は無効」で
-  //   誰も日別を描かない空白が生じる（実UI検証で検出）。marketProfile は直後に代入（closure 遅延評価で吸収）。
-  const ZP_TF_ALLOWED = new Set(['15m', '30m', '1h', '4h', '1D', '1W', '1M']); // ISSUE-086: 1W/1M＝日次 zp 畳み込み。
+  // ISSUE-099 🟡-5: 単一 primitive を 2 ロールへ分離注入（god interface 解消）。attach 点は 1 つのまま
+  //   （両 sink が同一 primitive を包む）。MarketProfileActor には ProfileSink、tf-period 系には TfPeriodSink。
+  const mpProfileSink = new ProfileSink(mpPrimitive);
+  const mpTfPeriodSink = new TfPeriodSink(mpPrimitive);
+  // src の tf-period 対応判定は記述子（supportedTfs）が単一情報源（ISSUE-097 🟡-8・旧 ZP_TF_ALLOWED）。
+  //   委譲述語（sessionsDrawnByTfPeriod）と tf-period 有効化（tfpShouldOn）の **両方**がこの同一条件を
+  //   使う＝どちらか片方だけだと「MP はタイルを委譲したのに tf-period は無効」で誰も日別を描かない空白が
+  //   生じる（実UI検証で検出）。marketProfile は直後に代入（closure 遅延評価で吸収）。
   const mpSrc = () => (marketProfile && typeof marketProfile.srcParam === 'function'
     ? marketProfile.srcParam() : null);
-  const zpTfOk = () => (mpSrc() !== 'zp' || ZP_TF_ALLOWED.has(controller._timeframe));
+  const zpTfOk = () => mpSupportsTf(mpSrc(), controller._timeframe);
   // ISSUE-066: MP パラメータ変更（gear の src/mode 等）を tf-period 列アクターへ即時伝播するフック。
   //   tf-period 配線（mode==='b'）で実体を代入する。未配線（A方式・非served）は no-op（byte 不変）。
   // tf-period 列を描ける tf（ISSUE-086: 全時間足統一）。player tf（1m..1D）＋バケット tf（1W/1M）。
@@ -9383,7 +9920,7 @@ async function bootstrap({
   let liveGrowTfPeriod = () => {};
   const marketProfile = new MarketProfileActor({
     client: new MarketProfileClient({ fetch }),
-    primitive: mpPrimitive,
+    primitive: mpProfileSink,
     mainSeries,
     // ISSUE-066: setParams 完了時に tf-period 列を即時再取得（sessions×ライブで src 変更が可視レンジ
     //   変化を待たず反映される）。tf-period 非配線時は no-op。
@@ -9500,11 +10037,11 @@ async function bootstrap({
     //   backend の対応 tf 判定（zpTfOk）は上段＝委譲述語と同一定義（単一情報源）。
     tfPeriodActor = new TfPeriodProfileActor({
       jitterBuffer: tfBuf,
-      primitive: mpPrimitive,
+      primitive: mpTfPeriodSink,
       getTimeframe: () => controller._timeframe,
       getVisibleRange,
       renderer, // ISSUE-055: 列が描けた時点で candle 透明化（MarketProfileActor から委譲）。
-      getSrc: () => (mpSrc() === 'zp' ? 'zp' : null),
+      getSrc: () => mpTfPeriodSrc(mpSrc()),
       // 方向背景（依頼者指示 2026-07-13）: 列 time と同一周期グリッドの candle から陽/陰を注釈する。
       getCandles: () => renderer.getCandles(),
     });
@@ -9517,7 +10054,7 @@ async function bootstrap({
         tfpTooltip.hide();
         return;
       }
-      const hit = mpPrimitive.tfPeriodLevelAt(pos.time, pos.price);
+      const hit = mpTfPeriodSink.tfPeriodLevelAt(pos.time, pos.price);
       if (!hit) {
         tfpTooltip.hide();
         return;

@@ -63,6 +63,13 @@ market_profile api=controller+compute+gateway 構成）に対し、**役割の�
   server.py・replay bridge・conftest・`__main__` スクリプト・mp_stats/__init__。
 - sibling 指標解決（`parents[2]` = indigators/）の insert は .pth の対象外（indigators/ は
   登録しない方針）のため src 内でも温存する（ISSUE-092 ⑤の判定）。
+- **analysis→api の結合（ISSUE-095 項目4・2026-07-16 明文化）**: `market_profile/analysis/mp_stats`
+  は帰無カーネル（`null_b_kernel` 等）を `market_profile_api.compute` から import する（ISSUE-094 E2 の
+  一元化）。本番 venv は `.pth` が `indigators/market_profile/api` を恒久解決するため自動で通るが、
+  **CI・素の python で analysis テストを走らせる場合は `PYTHONPATH` に `indigators/market_profile/api`
+  を含める**こと（例: `PYTHONPATH=<repo>:<repo>/indigators/market_profile/api python -m pytest
+  indigators/market_profile/analysis/tests`）。.pth 未登録環境で `market_profile_api` が解決しないと
+  step5 パリティ検定が collection error になる。
 
 ## 残課題（承認待ち・ISSUE-087 🟡-3）
 
