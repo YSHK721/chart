@@ -28,6 +28,7 @@ const MODULE_ORDER = [
   'js/domain/tf_meta.js',
   'js/domain/market_profile_dwell_accumulator.js',
   'js/domain/session_day.js',
+  'js/domain/session_ohlc.js',
   'js/usecase/catalog_entry.js',
   'js/usecase/catalog.js',
   'js/usecase/facade.js',
