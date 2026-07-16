@@ -18,19 +18,19 @@ main 層は全層を import 可。コミット済 domain/usecase/adapter/framewo
 """
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
 from simulator.adapter.controller import BacktestController
 from simulator.adapter.execution.tick_model import (
-    EveryTickModel,
     OhlcExpandTickModel,
-    OpenOnlyTickModel,
     RealTickModel,
 )
+from simulator.adapter.execution.tick_model_registry import TICK_MODEL_REGISTRY
+from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
 from simulator.adapter.indicator.madiff import madiff
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.presenter.json import JsonPresenter
@@ -40,9 +40,10 @@ from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 from simulator.adapter.strategy.ma_slope import MaSlope
 from simulator.adapter.strategy.ma_slope_pending import MaSlopePending
+from simulator.adapter.strategy.pro_fit_band import ProFitBand
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
-from simulator.adapter.strategy.weekly_vol_band import WeeklyVolBand
+from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
 from simulator.domain.exceptions import BacktestError, ConfigError, DataError
 from simulator.framework.config_loader import load_config
 from simulator.main.run_config import RunConfig
@@ -50,25 +51,27 @@ from simulator.usecase.compare_stats import ComparisonReport, compare_stats
 from simulator.usecase.models import SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
-# TickModel ファクトリ（config_loader の Literal キーと一致・CLEAN_ARCH §6.3）
-_TICK_MODELS = {
-    "every_tick": EveryTickModel,
-    "ohlc_expand": OhlcExpandTickModel,
-    "open_only": OpenOnlyTickModel,
-}
-# 列挙外キー時の既定（config_loader が列挙を検証済のため通常到達しない防御的既定）
+# TickModel の synthetic 生成・real_ticks 分岐は tick_model 単一レジストリ
+# （TICK_MODEL_REGISTRY・adapter/execution/tick_model_registry.py）から導出する
+# （ISSUE-097 🟡-5・従来 _TICK_MODELS dict と real_ticks 別分岐の三分散を撤廃）。
+# 列挙外キー時の既定（config_loader が列挙を検証済のため通常到達しない防御的既定）。
 _DEFAULT_TICK_MODEL = OhlcExpandTickModel
 
 
 def _make_tick_model(tick_model_key: str, ohlc_order: str = "ohlc") -> Any:
-    """決定論 config の tick_model キーから TickModelPort 実装を生成する。
+    """決定論 config の tick_model キーから synthetic TickModelPort 実装を生成する。
 
-    ohlc_expand は ohlc_order（"ohlc"/"olhc"/"auto"）でバー内の極値到達順を切替える
-    （ペンディング/SL/TP の同足競合の決済順を MT5 に整合）。他モデルは ohlc_order 非対応。
+    レジストリの ``synthetic_builder`` へ委譲する。ohlc_expand は ohlc_order
+    （"ohlc"/"olhc"/"auto"）でバー内の極値到達順を切替える（ペンディング/SL/TP の
+    同足競合の決済順を MT5 に整合）。他 synthetic モデルは ohlc_order 非対応。
+    レジストリ未登録キー・synthetic_builder を持たないキー（real_ticks）は
+    防御的既定 OhlcExpandTickModel()（order="ohlc"）へフォールバックする（従来と同一・
+    real_ticks は build_interactor が別分岐で処理するため本関数へは到達しない）。
     """
-    if tick_model_key == "ohlc_expand":
-        return OhlcExpandTickModel(order=ohlc_order)
-    return _TICK_MODELS.get(tick_model_key, _DEFAULT_TICK_MODEL)()
+    spec = TICK_MODEL_REGISTRY.get(tick_model_key)
+    if spec is not None and spec.synthetic_builder is not None:
+        return spec.synthetic_builder(ohlc_order)
+    return _DEFAULT_TICK_MODEL()
 
 
 def _make_session_calendar(session_calendar_key: str) -> Any:
@@ -270,6 +273,127 @@ def _build_open_registry(df: pd.DataFrame) -> PandasIndicatorRegistry:
     return PandasIndicatorRegistry({"open": df["open"].astype(float).reset_index(drop=True)})
 
 
+def _build_pro_fit_band_registry(
+    df: pd.DataFrame, *, ma_period: int, adx_period: int
+) -> PandasIndicatorRegistry:
+    """EMA(ma_period, close)・ADX(adx_period)/+DI/−DI・close を登録した IndicatorPort。
+
+    ProFitBand は indicators.get("ema"/"adx"/"plus_di"/"minus_di"/"close") を参照する
+    （pro_fit_band.py を Read で実証）。EMA は共有 ``_ema_series``、ADX/±DI は
+    ``compute_adx_with_di``（原典 iADX 再現・SPEC §3.5）で事前計算して登録する。
+    close は df["close"] をそのまま登録する（TC 既定 registry と同形）。
+    """
+    ema = _ema_series(df["close"], ma_period)
+    adx, plus_di, minus_di = compute_adx_with_di(
+        df["high"], df["low"], df["close"], period=adx_period
+    )
+    return PandasIndicatorRegistry(
+        {
+            "ema": ema,
+            "adx": adx,
+            "plus_di": plus_di,
+            "minus_di": minus_di,
+            "close": df["close"],
+        }
+    )
+
+
+@dataclass(frozen=True)
+class _EaBuildContext:
+    """EA ファクトリが参照する構築入力（ISSUE-097 🟡-3）。
+
+    build_interactor から各 EA ファクトリへ渡す構築パラメータを 1 つに束ねる。各
+    ファクトリは自分が必要とするフィールドのみ参照する（未参照フィールドは無害）。
+    """
+
+    data_path: Any
+    ma_period: int
+    ma_method: str
+    adx_period: int
+    weekly_forecast: Any
+    weekly_p_tp: float
+    weekly_capital: float
+    weekly_f_risk: float
+
+
+def _factory_ma_slope(ctx: "_EaBuildContext") -> "tuple[Any, PandasIndicatorRegistry, Any]":
+    # MA_Slope_EA は MT5 エクスポート形式（タブ区切り・<DATE>/<TIME>/<SPREAD>）を読む。
+    df = _load_mt5_dataframe(ctx.data_path)
+    registry = _build_ma_slope_registry(df, ma_period=ctx.ma_period)
+    return MaSlope(), registry, Mt5CsvOHLCRepository()
+
+
+def _factory_ma_slope_pending(
+    ctx: "_EaBuildContext",
+) -> "tuple[Any, PandasIndicatorRegistry, Any]":
+    # 指値/逆指値版。MA_Slope_EA と同じ MT5 CSV を読み、open/spread も registry に載せる。
+    df = _load_mt5_dataframe(ctx.data_path)
+    registry = _build_ma_slope_pending_registry(df, ma_period=ctx.ma_period)
+    return MaSlopePending(), registry, Mt5CsvOHLCRepository()
+
+
+def _factory_stop_entry_probe(
+    ctx: "_EaBuildContext",
+) -> "tuple[Any, PandasIndicatorRegistry, Any]":
+    # 逆指値プローブ（両建て BuyStop+SellStop・OCO・足途中ティック再アーム）。MT5 CSV を読む。
+    #   発注クォートは engine が on_tick へ渡すティック bid/ask を使うため指標非依存だが、
+    #   registry IF を満たすため pending 用 registry（ema/open/spread）を共用する（戦略は未参照）。
+    df = _load_mt5_dataframe(ctx.data_path)
+    registry = _build_ma_slope_pending_registry(df, ma_period=ctx.ma_period)
+    return StopEntryProbe(), registry, Mt5CsvOHLCRepository()
+
+
+def _factory_weekly_vol_band(
+    ctx: "_EaBuildContext",
+) -> "tuple[Any, PandasIndicatorRegistry, Any]":
+    # 週次ボラ・バンド戦略（詳細設計 §5.1・§11 D1）。comma 形式 CSV を読み、セグメント
+    # 先頭 open のみを "open" registry に載せる。構築は共有ファクトリへ一元化（🟡-3）。
+    df = _load_dataframe(ctx.data_path)
+    registry = _build_open_registry(df)
+    strategy = make_weekly_vol_band(
+        forecast=ctx.weekly_forecast,
+        p_tp=ctx.weekly_p_tp,
+        capital=ctx.weekly_capital,
+        f_risk=ctx.weekly_f_risk,
+    )
+    return strategy, registry, CsvOHLCRepository()
+
+
+def _factory_pro_fit_band(
+    ctx: "_EaBuildContext",
+) -> "tuple[Any, PandasIndicatorRegistry, Any]":
+    # PRO!fit_Band（#5・my_first_ea）。comma 形式 CSV を読み、EMA/ADX/±DI/close registry を
+    # 供給する。従来 build_interactor に分岐が無く生成不能だった件を 1 エントリで解消（🟡-3）。
+    df = _load_dataframe(ctx.data_path)
+    registry = _build_pro_fit_band_registry(
+        df, ma_period=ctx.ma_period, adx_period=ctx.adx_period
+    )
+    return ProFitBand(), registry, CsvOHLCRepository()
+
+
+def _factory_tc24051901(
+    ctx: "_EaBuildContext",
+) -> "tuple[Any, PandasIndicatorRegistry, Any]":
+    # 既定経路（TC24051901・comma 形式・MADiff 指標）= 従来挙動を不変に保つ。
+    df = _load_dataframe(ctx.data_path)
+    registry = _build_registry(df, ma_period=ctx.ma_period, ma_method=ctx.ma_method)
+    return TC24051901(), registry, CsvOHLCRepository()
+
+
+# ea_name → ファクトリの登録表（ISSUE-097 🟡-3・従来の if/elif 5 分岐を置換）。
+# 各ファクトリは (strategy, registry, market_data) を返す。未登録 ea_name は
+# _factory_tc24051901（既定 TC 経路）へフォールバックする（従来 else 分岐と同一）。
+# 新 EA 追加は本表への 1 エントリ追加のみで済む（import 行・専用 registry ビルダの
+# 追加は伴うが、分岐追記は不要）。
+_EA_FACTORIES: "dict[str, Callable[[_EaBuildContext], tuple[Any, PandasIndicatorRegistry, Any]]]" = {
+    "MA_Slope_EA": _factory_ma_slope,
+    "MA_Slope_Pending_EA": _factory_ma_slope_pending,
+    "StopEntryProbe_EA": _factory_stop_entry_probe,
+    "WeeklyVolBand_EA": _factory_weekly_vol_band,
+    "PRO_fit_Band_EA": _factory_pro_fit_band,
+}
+
+
 def build_interactor(
     *,
     data_path: Any,
@@ -304,6 +428,8 @@ def build_interactor(
     weekly_p_tp: float = 0.50,
     weekly_capital: float = 0.0,
     weekly_f_risk: float = 0.01,
+    adx_min: float = 22.0,
+    adx_period: int = 8,
     marketdata_window: Any = None,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
@@ -327,51 +453,28 @@ def build_interactor(
         "stops_level": stops_level,
         "entry_offset_points": entry_offset_points,
         "entry_type": entry_type,
+        # ProFitBand が参照する追加パラメータ（他戦略は未参照のため無害）。既定は
+        # 原典 .mq5 の Adx_Min=22.0（🟡-3）。
+        "adx_min": adx_min,
     }
     run_config = RunConfig(determinism, strategy_params)
 
     # ea_name で戦略・指標・入力フォーマットを選択（config gated・既定は従来 TC 経路）。
-    if ea_name == "MA_Slope_EA":
-        # MA_Slope_EA は MT5 エクスポート形式（タブ区切り・<DATE>/<TIME>/<SPREAD>）を読む。
-        market_data = Mt5CsvOHLCRepository()
-        df = _load_mt5_dataframe(data_path)
-        registry = _build_ma_slope_registry(df, ma_period=ma_period)
-        strategy: Any = MaSlope()
-    elif ea_name == "MA_Slope_Pending_EA":
-        # 指値/逆指値版。MA_Slope_EA と同じ MT5 CSV を読み、open/spread も registry に載せる。
-        market_data = Mt5CsvOHLCRepository()
-        df = _load_mt5_dataframe(data_path)
-        registry = _build_ma_slope_pending_registry(df, ma_period=ma_period)
-        strategy = MaSlopePending()
-    elif ea_name == "StopEntryProbe_EA":
-        # 逆指値プローブ（両建て BuyStop+SellStop・OCO・足途中ティック再アーム）。MT5 CSV を読む。
-        #   発注クォートは engine が on_tick へ渡すティック bid/ask を使うため指標非依存だが、
-        #   registry IF を満たすため pending 用 registry（ema/open/spread）を共用する（戦略は未参照）。
-        market_data = Mt5CsvOHLCRepository()
-        df = _load_mt5_dataframe(data_path)
-        registry = _build_ma_slope_pending_registry(df, ma_period=ma_period)
-        strategy = StopEntryProbe()
-    elif ea_name == "WeeklyVolBand_EA":
-        # 週次ボラ・バンド戦略（詳細設計 §5.1・§11 D1）。comma 形式 CSV を読み、
-        # セグメント先頭 open のみを "open" registry に載せる（WeeklyVolBand は get("open")
-        # を参照）。S/T/N は当週 forecast から VolatilityBand で算出する。週単位セグメント
-        # orchestration（run_weekly_segments）は tools/usecase 側に保ち、本分岐は戦略生成
-        # のみを担う（build_interactor は 1 戦略を DI する Composition Root の役割）。
-        market_data = CsvOHLCRepository()
-        df = _load_dataframe(data_path)
-        registry = _build_open_registry(df)
-        strategy = WeeklyVolBand(
-            forecast=weekly_forecast,
-            p_tp=weekly_p_tp,
-            capital=weekly_capital,
-            f_risk=weekly_f_risk,
-        )
-    else:
-        # 既定経路（TC24051901・comma 形式・MADiff 指標）= 従来挙動を不変に保つ。
-        market_data = CsvOHLCRepository()
-        df = _load_dataframe(data_path)
-        registry = _build_registry(df, ma_period=ma_period, ma_method=ma_method)
-        strategy = TC24051901()
+    # ea_name → ファクトリの登録表（_EA_FACTORIES）へ委譲する（ISSUE-097 🟡-3・従来の
+    # if/elif 5 分岐を置換）。ファクトリは (strategy, registry, market_data) を返す。未登録
+    # ea_name は _factory_tc24051901（既定 TC 経路）へフォールバックする（従来 else と同一）。
+    _ea_ctx = _EaBuildContext(
+        data_path=data_path,
+        ma_period=ma_period,
+        ma_method=ma_method,
+        adx_period=adx_period,
+        weekly_forecast=weekly_forecast,
+        weekly_p_tp=weekly_p_tp,
+        weekly_capital=weekly_capital,
+        weekly_f_risk=weekly_f_risk,
+    )
+    _ea_factory = _EA_FACTORIES.get(ea_name, _factory_tc24051901)
+    strategy, registry, market_data = _ea_factory(_ea_ctx)
 
     # S5 strangler（marketdata 委譲）: marketdata_window=(start,end) 指定時、comma 形式戦略
     # （既定 TC・WeeklyVolBand＝spread 非依存・H-4）の OHLC 取得を marketdata.CandleSource へ
@@ -393,10 +496,14 @@ def build_interactor(
     # every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
     bars = market_data.load(load_source, None, None)
 
-    # tick_model 選択（config gated）。real_ticks のときのみ ParquetTickRepository から
-    # 対象期間の実ティックを load し RealTickModel に供給する（every-tick #6）。
-    # それ以外（every_tick/ohlc_expand/open_only）は従来どおり合成 TickModel（build 不変）。
-    if determinism.tick_model == "real_ticks":
+    # tick_model 選択（config gated）。real_ticks（requires_real_ticks=True）のときのみ
+    # ParquetTickRepository から対象期間の実ティックを load し RealTickModel に供給する
+    # （every-tick #6）。それ以外（every_tick/ohlc_expand/open_only）は従来どおり合成
+    # TickModel（build 不変）。real_ticks/synthetic の分岐は tick_model 単一レジストリの
+    # requires_real_ticks フラグから導出する（ISSUE-097 🟡-5・従来 == "real_ticks" 直書き
+    # 分岐と同一分岐先）。
+    _tick_spec = TICK_MODEL_REGISTRY.get(determinism.tick_model)
+    if _tick_spec is not None and _tick_spec.requires_real_ticks:
         tick_model_impl: Any = _build_real_tick_model(
             symbol=symbol,
             bars=bars,
