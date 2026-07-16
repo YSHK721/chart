@@ -35,3 +35,17 @@ test('front static defaults match back single-source contract (catalog_defaults.
   // Assert: front 静的既定値 == back single source（乖離検出）。
   assert.deepStrictEqual(frontDefaults, FIXTURE);
 });
+
+test('front param set is symmetric with back contract (no front-only params)', () => {
+  // ISSUE-092 統合レビュー 🔵-3: 上のテストは fixture 収録 param のみ照合するため、front だけに
+  // 追加された param（back の single source に無い既定値）を捕捉できない。param 名集合の
+  // 完全一致を双方向で固定し、front 側の余剰・欠落の両方を検出する。
+  for (const id of Object.keys(FIXTURE)) {
+    const frontNames = get(id).params.map((p) => p.name).sort();
+    const backNames = Object.keys(FIXTURE[id]).sort();
+    assert.deepStrictEqual(
+      frontNames, backNames,
+      `${id}: front と back の param 集合が非対称（front 固有 param は catalog_schema.py へ追加し golden を再生成する）`,
+    );
+  }
+});
