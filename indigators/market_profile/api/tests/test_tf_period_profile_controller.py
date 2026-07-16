@@ -147,6 +147,24 @@ def test_disk_generation_follows_tfp_cache_version(monkeypatch, tmp_path):
     assert list((tmp_path / "JP225").glob("1m/s2/*")), "bump 後は s2 subdir へ書く（旧世代と不混在）"
 
 
+def test_default_disk_root_resolves_via_tick_store_port(monkeypatch, tmp_path):
+    """既定 root（_TFP_CACHE_ROOT=None）が TickStorePort 経由で解決される（ISSUE-092 回帰）。
+
+    既存テストは全て _TFP_CACHE_ROOT を注入して既定経路を通らないため、撤去済み属性への
+    参照（旧 _mpd._paths）が実行時 AttributeError として本番経路だけで発火していた。
+    既定経路そのものを実行して固定する。
+    """
+    from market_profile_api.compute import tick_store_port as tsp
+
+    class _FakeStore:
+        def data_dir(self):
+            return tmp_path
+
+    monkeypatch.setattr(tsp, "_STORE", _FakeStore())
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", None)
+    assert ctl._tfp_disk_root() == tmp_path / "cache" / "tf_period"
+
+
 # --------------------------------------------------------------------------- #
 # セッション日切り（ISSUE-078）
 # --------------------------------------------------------------------------- #
