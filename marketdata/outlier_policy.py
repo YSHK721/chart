@@ -1,27 +1,23 @@
-"""outlier_policy — OHLC 外れ値（配信欠損の不正ティック）判定/補正の単一定義（ISSUE-094 🔴-3）。
+"""outlier_policy — OHLC 外れ値（配信欠損の不正ティック）判定/補正の単一定義（ISSUE-094 🔴-3 / ISSUE-095 項目1）。
 
 同一アクター（データ品質・±30%・2025-08-26 JP225 不良値対策）の外れ値補正が、従来は
 書込側 :func:`marketdata.cleaning.repair_ohlc_outliers`（median([o,h,l,c]) 基準）と読取側
 :func:`marketdata.dataset._clamp_outlier_bars`（min/max(open,close) エンベロープ基準）で
-**別の式**として二重実装されていた。本モジュールが閾値と両戦略の唯一の定義であり、両呼び出し側は
-本モジュールへ委譲する。
+**別の式**として二重実装されていた。ISSUE-095 項目1（依頼者裁定＝エンベロープ式へ統一）により
+補正コアを **エンベロープ式の単一コア**（:func:`clamp_ohlc_envelope`）へ一本化した。両呼び出し側
+（acquisition / serving）は本コアへ委譲する。
 
 閾値の単一化:
-    ``OUTLIER_THRESHOLD``（±30%）を両戦略の唯一の規約源とする（旧: cleaning の threshold=0.3
-    既定と dataset.OUTLIER_CLAMP_THRESHOLD=0.3 の二重定義）。
+    ``OUTLIER_THRESHOLD``（±30%）を唯一の規約源とする（旧: cleaning の threshold=0.3 既定と
+    dataset.OUTLIER_CLAMP_THRESHOLD=0.3 の二重定義）。
 
-式は 2 戦略として同居（実測に基づく裁定事項・下記）:
-    実データ（jp225_daily / jp225_m1 / jp225_tick）で両式を全 TF に走らせた実測（ISSUE-094 3a）:
-      - jp225_m1 は全 TF で両式とも補正 0・乖離 0。
-      - jp225_tick は 1D/1W/1M で両式とも 8/26 バーを補正し **結果一致**（乖離 0）。
-      - jp225_tick の 1h/4h で計 4 バー乖離。いずれも open/close が異なる価格帯にまたがる
-        「二相バー」で、median 式が実在しない中間値（~28,700）へ 4 値を潰す（明白な誤検出）。
-        エンベロープ式は当該バーを不変に保つ。
-    生産経路では両式は乖離しない（書込＝日足で一致・読取＝供給バー）。ただし median 式は単一の
-    不正 open/close も補正でき、エンベロープ式は low/high のみ補正し二相バーを保全する——
-    **入力空間全体では優劣を断定できない**（median は二相バーで誤り・エンベロープは不正 open を放置）。
-    よって式は一本化せず 2 つの命名戦略として同居させ、閾値と共通規約のみ単一化する。
-    式の統一是非は裁定事項として上申する（憶測で確定しない・既存両テストが各式を byte 固定）。
+補正式の一本化（ISSUE-095 項目1・裁定＝エンベロープ）:
+    唯一の補正式は ``ref_lo=min(open,close)`` / ``ref_hi=max(open,close)`` を外れにくい基準とし、
+    ``low < ref_lo*(1-threshold)`` の下ヒゲ・``high > ref_hi*(1+threshold)`` の上ヒゲのみを
+    それぞれ ref_lo / ref_hi へクランプする（open/close は不変）。実データ実測（ISSUE-094 3a）で
+    旧 median 式は jp225_tick 1h/4h の二相バー 4 本（open/close が別価格帯にまたがるバー）で
+    実在しない中間値（~28,700）へ 4 値を潰す誤検出だったのに対し、エンベロープ式は当該バーを保全する。
+    本統一により acquisition 経路（旧 median）も serving 経路と同一の保全挙動になる。
 
 依存方向: 本モジュールは stdlib + numpy/pandas + :mod:`marketdata.port` のみに依存する
 （marketdata 最下層 peer・cleaning / dataset を逆 import しない・循環禁止）。
@@ -30,7 +26,6 @@
 from __future__ import annotations
 
 import datetime as _dt
-from statistics import median
 from typing import List, Tuple
 
 import numpy as np
@@ -39,7 +34,7 @@ import pandas as pd
 from marketdata.port import Candle
 
 # 外れ値許容相対乖離（±30%）の唯一の規約源。指数は 1 本の足内で中央値/始終値比 ±30% も
-# 動かない性質を利用し、配信欠損の外れヒゲのみを分離する（両戦略が共有する単一閾値）。
+# 動かない性質を利用し、配信欠損の外れヒゲのみを分離する（単一閾値）。
 OUTLIER_THRESHOLD = 0.3
 
 # candles / DataFrame の必須 OHLC 列（小文字正規化後）。
@@ -47,62 +42,14 @@ _OHLC_COLUMNS = ("open", "high", "low", "close")
 
 
 # --------------------------------------------------------------------------- #
-# 戦略 A: acquisition（取得/書込時）— 足内 4 値の中央値基準（median[o,h,l,c]）。
-#   単一の不正 open/high/low/close を中央値で置換し、OHLC 不変条件を再確立する。
-#   補正ログを返す（人可読の監査記録）。書込パイプライン（raw 日足）で用いる。
-# --------------------------------------------------------------------------- #
-def repair_ohlc_outliers_median(
-    candles: List[Candle], *, threshold: float = OUTLIER_THRESHOLD
-) -> Tuple[List[Candle], List[str]]:
-    """足内 OHLC の外れ値を中央値基準で検出・補正する（純粋・acquisition 戦略）。
-
-    足内 4 値の中央値から ``threshold`` を超えて乖離する値を中央値で置換し、OHLC 不変条件
-    （``low=min``・``high=max``）を再確立する。行を削除せず該当値のみ補正する。
-
-    Returns:
-        ``(補正後 candles, 補正ログ行)``。ログ行は補正があった足のみ（日付と変更内容）。
-    """
-    repaired: List[Candle] = []
-    log_lines: List[str] = []
-    for cd in candles:
-        o, h, low, c = cd["open"], cd["high"], cd["low"], cd["close"]
-        ref = median([o, h, low, c])
-        if ref <= 0:
-            repaired.append(cd)
-            continue
-        # 中央値から閾値超で乖離する値を中央値で置換（不正値の隔離）。
-        fixed = {
-            k: (ref if abs(v / ref - 1.0) > threshold else v)
-            for k, v in (("open", o), ("high", h), ("low", low), ("close", c))
-        }
-        # OHLC 不変条件を再確立（high=最大・low=最小）。
-        fixed["high"] = max(fixed.values())
-        fixed["low"] = min(fixed.values())
-        if (fixed["open"], fixed["high"], fixed["low"], fixed["close"]) != (o, h, low, c):
-            day = _dt.datetime.fromtimestamp(
-                cd["time"], _dt.timezone.utc
-            ).strftime("%Y-%m-%d %H:%M")
-            log_lines.append(
-                f"  {day}: O/H/L/C "
-                f"{o:.1f}/{h:.1f}/{low:.1f}/{c:.1f} -> "
-                f"{fixed['open']:.1f}/{fixed['high']:.1f}/"
-                f"{fixed['low']:.1f}/{fixed['close']:.1f}"
-            )
-        repaired.append(  # type: ignore[typeddict-item]
-            {"time": cd["time"], "volume": cd.get("volume", 0.0), **fixed}
-        )
-    return repaired, log_lines
-
-
-# --------------------------------------------------------------------------- #
-# 戦略 B: serving（返却/読取時）— min/max(open,close) エンベロープ基準。
+# 単一補正コア: min/max(open,close) エンベロープ基準（ISSUE-095 項目1・唯一の式）。
 #   open/close を外れにくい基準とし、low/high のみをエンベロープにクランプする。
-#   正常バーは同一オブジェクト返却（冪等・キャッシュ非破壊）。供給パイプラインで用いる。
+#   正常バーは同一オブジェクト返却（冪等・キャッシュ非破壊）。serving / acquisition の両経路が委譲する。
 # --------------------------------------------------------------------------- #
 def clamp_ohlc_envelope(
     df: pd.DataFrame, *, threshold: float = OUTLIER_THRESHOLD
 ) -> pd.DataFrame:
-    """各行(バー)の low/high を open/close エンベロープにクランプして返す（純粋・serving 戦略）。
+    """各行(バー)の low/high を open/close エンベロープにクランプして返す（純粋・単一補正コア）。
 
     補正規約（``threshold``＝±30% 既定）:
       - ``ref_lo=min(open,close)`` / ``ref_hi=max(open,close)``（open/close は外れにくい）。
@@ -145,8 +92,68 @@ def clamp_ohlc_envelope(
     return out
 
 
+# --------------------------------------------------------------------------- #
+# acquisition アダプタ（取得/書込時）— candles を DataFrame 化し単一コアへ委譲する。
+#   OHLC 不変条件の再確立ではなく、open/close エンベロープでの low/high クランプのみ行う
+#   （serving と同一挙動）。補正ログ（人可読の監査記録）を合成して返す。
+# --------------------------------------------------------------------------- #
+def repair_ohlc_outliers_envelope(
+    candles: List[Candle], *, threshold: float = OUTLIER_THRESHOLD
+) -> Tuple[List[Candle], List[str]]:
+    """足内 OHLC の外れ値をエンベロープ基準で検出・補正する（純粋・acquisition アダプタ）。
+
+    :func:`clamp_ohlc_envelope`（単一補正コア）へ委譲し、``ref_lo=min(open,close)`` /
+    ``ref_hi=max(open,close)`` を外れにくい基準として low/high のみをクランプする。open/close は
+    不変。行を削除せず該当値のみ補正する。二相バー（open/close が別価格帯にまたがるバー）は保全する。
+
+    Returns:
+        ``(補正後 candles, 補正ログ行)``。ログ行は補正があった足のみ（日付と変更内容）。
+    """
+    repaired: List[Candle] = []
+    log_lines: List[str] = []
+    if not candles:
+        return repaired, log_lines
+
+    # 単一コア（serving と同一の式）へ委譲するため candles を DataFrame 化する。
+    df = pd.DataFrame(
+        {
+            "open": [cd["open"] for cd in candles],
+            "high": [cd["high"] for cd in candles],
+            "low": [cd["low"] for cd in candles],
+            "close": [cd["close"] for cd in candles],
+        }
+    )
+    clamped = clamp_ohlc_envelope(df, threshold=threshold)
+
+    for i, cd in enumerate(candles):
+        o, h, low, c = cd["open"], cd["high"], cd["low"], cd["close"]
+        new_high = float(clamped["high"].iloc[i])
+        new_low = float(clamped["low"].iloc[i])
+        # エンベロープ式は open/close を変えず low/high のみをクランプする。
+        if (new_high, new_low) != (h, low):
+            day = _dt.datetime.fromtimestamp(
+                cd["time"], _dt.timezone.utc
+            ).strftime("%Y-%m-%d %H:%M")
+            log_lines.append(
+                f"  {day}: O/H/L/C "
+                f"{o:.1f}/{h:.1f}/{low:.1f}/{c:.1f} -> "
+                f"{o:.1f}/{new_high:.1f}/{new_low:.1f}/{c:.1f}"
+            )
+        repaired.append(  # type: ignore[typeddict-item]
+            {
+                "time": cd["time"],
+                "volume": cd.get("volume", 0.0),
+                "open": o,
+                "high": new_high,
+                "low": new_low,
+                "close": c,
+            }
+        )
+    return repaired, log_lines
+
+
 __all__ = [
     "OUTLIER_THRESHOLD",
-    "repair_ohlc_outliers_median",
     "clamp_ohlc_envelope",
+    "repair_ohlc_outliers_envelope",
 ]
