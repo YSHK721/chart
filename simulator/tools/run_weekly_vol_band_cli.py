@@ -13,7 +13,7 @@ from typing import Any, Sequence
 
 import pandas as pd
 
-from simulator.adapter.strategy.weekly_vol_band import WeeklyVolBand
+from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
 from simulator.domain.variance_forecast import VarianceForecast
 from simulator.domain.volatility_band import VolatilityBand
 from simulator.usecase.models import BacktestConfig, SymbolSpec
@@ -70,7 +70,8 @@ def make_segment_runner(*, p_tp: float, capital: float, f_risk: float = 0.01, di
 
     def _run_segment(week_bars: "Sequence[Any]", week_id: str, fc: VarianceForecast) -> WeeklySegmentOutcome:
         bars = list(week_bars)
-        strat = WeeklyVolBand(forecast=fc, p_tp=p_tp, capital=capital, f_risk=f_risk)
+        # WeeklyVolBand 構築は共有ファクトリへ一元化（ISSUE-097 🟡-3・main と同一）。
+        strat = make_weekly_vol_band(forecast=fc, p_tp=p_tp, capital=capital, f_risk=f_risk)
         strat.on_init({"digits": digits, "volume_step": 0.0}, None)
         interactor = RunBacktestInteractor(
             strategy=strat, indicators=_OpenIndicators(bars), tick_model=_OhlcTickModel(),

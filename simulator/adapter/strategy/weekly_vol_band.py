@@ -81,3 +81,16 @@ class WeeklyVolBand(StrategyPort):
         if step <= 0:
             return raw
         return round(round(raw / step) * step, 8)
+
+
+def make_weekly_vol_band(
+    *, forecast: VarianceForecast, p_tp: float, capital: float, f_risk: float
+) -> WeeklyVolBand:
+    """WeeklyVolBand 構築の共有ファクトリ（ISSUE-097 🟡-3・構築知識の一元化）。
+
+    従来 ``main/__init__.py`` と ``tools/run_weekly_vol_band_cli.py`` の 2 箇所で
+    ``WeeklyVolBand(forecast=…, p_tp=…, capital=…, f_risk=…)`` の構築知識が二重化して
+    いた。本ファクトリへ寄せて一元化し、双方が本関数を参照する（構築引数の同期漏れを
+    構造的に防止）。生成結果は従来の直接構築と完全に同一（byte 不変）。
+    """
+    return WeeklyVolBand(forecast=forecast, p_tp=p_tp, capital=capital, f_risk=f_risk)
