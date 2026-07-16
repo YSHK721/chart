@@ -44,6 +44,7 @@ import pandas as pd
 # _load_window_ticks は call-time 参照（_mpd._load_window_ticks(...)）＝既存テストの
 # monkeypatch 単一注入点を温存する。
 from market_profile_api.compute import market_profile_dwell as _mpd
+from market_profile_api.compute import null_b_kernel as _null_b  # ISSUE-094 🔴-2: 帰無サロゲート純カーネル（step5 と共有）
 from market_profile_api.compute.market_profile import _value_area
 from market_profile_api.compute.market_profile_dwell import GRID_W  # noqa: F401  (dwell 互換・zp 内部では不使用)
 from market_profile_api.gateway.zp_store import ZpStore  # ISSUE-092 ④: gateway 移設（旧 compute パスは互換シム）
@@ -89,7 +90,7 @@ NULL_HIST_DAYS = 250   # ステップ行列のソース窓（当日から遡る�
 NULL_MIN_DAYS = 60     # これ未満は z 未定義（rollup None 扱い）
 M_REPS_DAY = 2000      # 完了日 null の反復数（ディスクキャッシュされ一度きり）
 M_REPS_LIVE = 1000     # 当日/部分日の都度計算用
-CHUNK = 2000           # サロゲートのチャンク幅（step5 と同値・パリティの rng 消費順一致に必要）
+CHUNK = _null_b.CHUNK  # サロゲートのチャンク幅（step5 と共有カーネル＝rng 消費順一致・二重実装解消）
 
 # 分オフセット（セッション窓内 index 0..G-1）→ 暦時間ブラケット index（0..K-1）。
 _B_OF_MINUTE = (
@@ -154,16 +155,12 @@ def obs_cell_counts(
 # ステップ行列と Null B モーメント（絶対グリッド版）
 # --------------------------------------------------------------------------- #
 def build_step_matrix(mgrids: "np.ndarray", opens: "np.ndarray") -> "np.ndarray":
-    """(L, G) の分ステップ行列 S。S[:,0]=ln(grid[:,0]/open)、以降は隣接 log 差。
+    """(L, G) の分ステップ行列 S（共有カーネル :func:`null_b_kernel.build_step_matrix` へ委譲）。
 
-    analysis/mp_stats/step5_null_b.build_step_matrix と同式（入力が SessionData でなく
-    mgrid/open 配列な点のみ違う）。
+    ISSUE-094 🔴-2: step5_null_b と同式（入力が SessionData でなく mgrid/open 配列な点のみ違う）を
+    純カーネルへ一元化した。zp は配列を直接渡す（step5 は ffill_close_grid(sd)/f.o を渡す薄い協調部）。
     """
-    lg = np.log(np.asarray(mgrids, dtype=float))
-    S = np.empty_like(lg)
-    S[:, 0] = lg[:, 0] - np.log(np.asarray(opens, dtype=float))
-    S[:, 1:] = np.diff(lg, axis=1)
-    return S
+    return _null_b.build_step_matrix(mgrids, opens)
 
 
 def null_b_moments_abs(
@@ -191,14 +188,12 @@ def null_b_moments_abs(
     ssum = np.zeros(C)
     ssq = np.zeros(C)
     log_open = np.log(float(open_d))
-    col = np.arange(G)[None, :]
     done = 0
     while done < m_reps:
         m = min(CHUNK, m_reps - done)
-        days = rng.integers(0, L, size=(m, K_BRACKETS))
-        s_surr = S[days[:, _B_OF_MINUTE], col]
+        # ISSUE-094 🔴-2: サロゲート log 価格連鎖は共有カーネルへ委譲（step5 と同一 rng 消費順）。
+        logp = _null_b.surrogate_logprice_chunk(S, log_open, _B_OF_MINUTE, rng=rng, m=m)[:, lo:hi]
         # ISSUE-079: log 格子＝log 価格のまま floor（exp 不要・絶対格子時代は exp→floor(price/GRID_W)）。
-        logp = (log_open + np.cumsum(s_surr, axis=1))[:, lo:hi]
         idx = np.floor(logp / W_LOG).astype(np.int64) - int(klo)
         valid = (idx >= 0) & (idx < C)
         flat = (idx + np.arange(m)[:, None] * C)[valid]
@@ -232,13 +227,11 @@ def null_b_period_moments(
     ssum = np.zeros((P, C))
     ssq = np.zeros((P, C))
     log_open = np.log(float(open_d))
-    col = np.arange(G)[None, :]
     done = 0
     while done < m_reps:
         m = min(CHUNK, m_reps - done)
-        days = rng.integers(0, L, size=(m, K_BRACKETS))
-        s_surr = S[days[:, _B_OF_MINUTE], col]
-        logp = log_open + np.cumsum(s_surr, axis=1)  # ISSUE-079: log 格子。
+        # ISSUE-094 🔴-2: サロゲート log 価格連鎖は共有カーネルへ委譲（step5 と同一 rng 消費順）。
+        logp = _null_b.surrogate_logprice_chunk(S, log_open, _B_OF_MINUTE, rng=rng, m=m)  # ISSUE-079: log 格子。
         idx_all = np.floor(logp / W_LOG).astype(np.int64) - int(klo)
         row_off = np.arange(m)[:, None] * C
         for j, (lo, hi) in enumerate(period_col_bounds):
