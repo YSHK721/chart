@@ -24,6 +24,7 @@ import { PropertiesDialog } from './properties_dialog.js';
 import { IndicatorLegendView } from './indicator_legend_view.js';
 import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_params.js';
 import { MarketProfileController } from './market_profile_controller.js';
+import { TimeframeController } from './timeframe_controller.js';
 
 // 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
 //   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
@@ -91,6 +92,9 @@ export class IndicatorController {
     //   subclass の inherited メソッド呼出（this._toggleMarketProfileVisible 等）・_mpParams override を
     //   温存するため base の各 MP メソッドは本協働子への薄いラッパへ縮退する（byte 挙動不変）。
     this._mp = new MarketProfileController(this);
+    // 時間足取得・切替（A3）を委譲する協働子（ISSUE-094 🔴-4）。setTimeframe / ボタン同期 /
+    //   gateway の timeframe・limit 注入を担う。ライブ再計算入口（recomputeAllApplied）は controller 温存。
+    this._tf = new TimeframeController(this);
   }
 
   // 競合ガード: 再計算バッチ実行中なら true。LiveUpdater が tick 先頭で参照しスキップ判定する。
@@ -413,42 +417,10 @@ export class IndicatorController {
     this._renderLegend();
   }
 
-  // 時間足切替（§チャート表示時間選択・1 分足原子から resample）。
-  //   1) candles を新時間足で再取得しメイン系列を差し替え（B方式のみ・直近 recentBars 本）。
-  //   2) 適用済み全指標を新時間足で再計算・再描画（candles と時間軸を揃える）。
-  //   3) uiState に時間足を永続化（restore で復元）。
-  //   A方式（loadCandles 無し・SAMPLE_DATA）では candles 再取得を行わない（再集計不可）。
-  async setTimeframe(timeframe) {
-    if (!timeframe || timeframe === this._timeframe) {
-      return;
-    }
-    this._timeframe = timeframe;
-    this._syncTimeframeButtons();
-    // バッチ全体（candles 取得 await＋全指標再計算）を競合ガードで包む。これがないと
-    //   _loadCandles の await 中は isRecomputing()=false となり、その隙にライブ tick が
-    //   割り込んで二重 compute する（🟡-2）。最外で increment し finally で確実に解除する。
-    this._recomputeDepth += 1;
-    try {
-      // candles を新時間足で再取得（取得のみ・描画は下のバッチへ遅延）。
-      let candles = null;
-      if (typeof this._loadCandles === 'function') {
-        candles = await this._loadCandles(this._datasetRef, timeframe);
-      }
-      // メイン系列差し替えを指標の再描画と同じ同期バッチへ含め、全要素を同時更新する（ISSUE-023）。
-      //   取得失敗・A方式（candles 無し）は preRender=null でメイン系列を据え置く。
-      const preRender = candles && candles.length > 0
-        ? () => this._renderer.setCandles(candles)
-        : null;
-      // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
-      //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
-      await this.recomputeAllApplied({ preRender });
-    } finally {
-      this._recomputeDepth -= 1;
-    }
-    this._state.uiState = { ...this._state.uiState, timeframe };
-    this._persistAll();
-    // 時間足購読者へ新時間足を通知する（売買マーカーの該当時間足フィルタ等）。
-    this._timeframeObserver?.(this._timeframe);
+  // 時間足切替（§チャート表示時間選択）。関心事は TimeframeController（A3）へ外出しした（ISSUE-094 🔴-4）。
+  //   本メソッドは composition root/テスト（controller.setTimeframe）を温存する薄い委譲（byte 挙動不変）。
+  setTimeframe(timeframe) {
+    return this._tf.setTimeframe(timeframe);
   }
 
   // 時間足変更の購読者を登録する（任意・1 個）。setTimeframe 適用後に新時間足で呼ばれる。
@@ -498,11 +470,10 @@ export class IndicatorController {
     this._renderLegend();
   }
 
-  // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。
+  // 時間足セレクタの active 表示同期は TimeframeController へ外出しした（ISSUE-094 🔴-4）。
+  //   restore()/bind() の this._syncTimeframeButtons() 呼出を温存する薄い委譲（byte 挙動不変）。
   _syncTimeframeButtons() {
-    for (const b of this._el?.timeframeBtns ?? []) {
-      b.classList.toggle('is-active', b.dataset.timeframe === this._timeframe);
-    }
+    return this._tf.syncButtons();
   }
 
   // UC-06 お気に入り切替。
@@ -616,23 +587,22 @@ export class IndicatorController {
   }
 
   // facade.apply/recompute が呼ぶ compute をラップし、応答 series を捕捉（描画用）。
-  //   時間足（timeframe）・直近表示本数（limit）は facade を介さずここで注入する（facade は純粋を保つ）。
-  //   B方式は /compute がこれで resample・範囲制限し candles と時間軸を揃える。A方式は余剰フィールドを無視。
+  //   時間足（timeframe）・直近表示本数（limit）の注入は TimeframeController（A3）へ委譲する
+  //   （ISSUE-094 🔴-4・facade は純粋を保つ）。B方式は /compute がこれで resample・範囲制限し candles と
+  //   時間軸を揃える。A方式は余剰フィールドを無視。
   _gatewayAdapter(variantOverride, mode) {
     const compute = this._compute;
     const self = this;
     return {
       async compute(req) {
-        // 計算.時間足（params.timeframe）の per-indicator override。'chart'/未指定はグローバル
-        //   時間足（this._timeframe）に追従、特定足（1h 等）は当該足で計算（MTF）。backend は
-        //   params.timeframe を受理引数に含めない（_accepted_kwargs で除外）ため副作用なし。
+        // 計算.時間足（params.timeframe）の per-indicator override は TimeframeController が解決する。
+        //   backend は params.timeframe を受理引数に含めない（_accepted_kwargs で除外）ため副作用なし。
         const tfParam = req && req.params ? req.params.timeframe : undefined;
-        const effectiveTimeframe = tfParam && tfParam !== 'chart' ? tfParam : self._timeframe;
         const result = await compute.compute({
           ...req,
           variant: variantOverride ?? req.variant,
-          timeframe: effectiveTimeframe,
-          limit: self._recentBars ?? undefined,
+          timeframe: self._tf.effectiveTimeframe(tfParam),
+          limit: self._tf.limit(),
           // mode（full/latest）を素通し。未指定は compute_http_client がボディに含めない（後方互換）。
           mode: mode === 'latest' ? 'latest' : undefined,
           // [reveal seam] reveal 拡張フィールド（untilTime/forming 等）を素通しする。present は
