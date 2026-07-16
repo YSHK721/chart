@@ -1150,8 +1150,15 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
   8. marketdata.port.TickSource の削除可否（抽象消費者ゼロ・ingest enabler② の設計意図が現役なら維持）。
 
 ## ISSUE-093: 既存テスト失敗 6 件（ISSUE-091 検証中に発見・本変更とは無関係）
-- **ステータス**: OPEN（2026-07-16 起票）
+- **ステータス**: RESOLVED（2026-07-16・fix/issue-093-stale-tests・全6件＝テスト陳腐化と実測確定・実装は正）
 - **実測**: develop（ea1a8b5）基準の worktree でも同一に失敗＝以前から存在する failing tests。
   1. `common/tests/test_level_style.py::test_level_line_width_value_is_1`（1 件）: テストは `LEVEL_LINE_WIDTH == 1` を期待するが実体は 2（`common/level_style.py` の docstring は「視認性のため 2px に設定」と 2 を意図）。テストと定数のどちらが正か裁定要（実装意図は 2 が正に見える＝テスト陳腐化の疑い）。
   2. `indigators/indicator_ui/tools/tests/test_rollup_builder.py` の 5 件（stream_build 1D/1W/1M・incremental 1D・vectorized）: api を PYTHONPATH に載せた単独実行でも develop で同一失敗。rollup_builder と現行 resample 実装の乖離か、テスト前提の陳腐化かは未調査（原因調査から要着手）。
 - **含意**: この 5+1 件は各スイートの一括集計に含まれない実行構成（tools/tests は 'adapter' 解決に api パスが必要）のため見逃されてきた可能性。CI の実行構成の明文化も対処案に含める。
+
+## ISSUE-093 対応記録（真因の実測特定と修正・2026-07-16）
+- **真因（全6件とも「実装は正・テストが陳腐化」を git 履歴と実測で確定）**:
+  1. **level_style（1件）**: `LEVEL_LINE_WIDTH` は 2026-06-28 のコミット 5dabbdb（依頼者コミット・「視認性向上のため 1→2」と本文明記）で意図的に変更済み。テスト（==1 期待）の同時更新が漏れていた。→ テストを意図値 2 へ更新（テスト名も value_is_2 へ）。
+  2. **rollup_builder（5件）**: コミット f0584f1（ISSUE-078 単位③）で rollup の規則源が `resample_ohlc_tf`（1D/1W/1M＝セッション日集計）へ移行した際、marketdata 側テスト（test_session_resample 等）のみ更新され、本ファイルの oracle（旧 plain `resample_ohlc`＋TIMEFRAME_RULES）が未追随＝1D/1W/1M の境界がセッション日 vs UTC 日でずれ恒常失敗（41 行 vs 40 行を実測）。→ 全 oracle を現行規則源 `marketdata.resample.resample_ohlc_tf` へ更新（規則の再実装なし・5m/1h は両規則が同値のため実質不変）。
+- **見逃しの構造要因も是正**: tools/tests は `adapter` 解決に api パスが必要で**単独実行では collection error**＝失敗が集計に載らなかった。conftest.py に自スライス api ルートの結線を追加（server.py/bridge と同じ「自スライスのエントリが自分の root を結線する」規約）。単独実行 59 件・api 併走 445 件とも収集・実行可能になった。
+- **検証**: common 19 緑・UI tools 単独 59 緑・UI api＋tools 併走 445 緑（いずれも実測）。修正はテスト・conftest のみ＝プロダクションコード変更ゼロ。
