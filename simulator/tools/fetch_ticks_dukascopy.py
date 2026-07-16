@@ -4,8 +4,9 @@
 (bidPrice/askPrice/bidVolume/askVolume + timestamp[UTC,ms]) をそのまま Parquet へ保存する。
 canonical スキーマ(timestamp/bid/ask/last/volume)への変換＝段2は tick-store ingest 側の責務。
 
-取得ロジックは marketdata の :class:`DukascopyTickSource`（TickSource 実装・enabler②）へ
-移管済み。本スクリプトは後方互換の CLI（raw parquet 保存）を提供する薄い委譲ラッパである。
+取得ロジックは marketdata の :class:`DukascopyTickSource`（保存前 raw ティック取得の具象・
+旧 TickSource・ISSUE-092 ⑧で Protocol 撤去・enabler②）へ移管済み。本スクリプトは後方互換の
+CLI（raw parquet 保存）を提供する薄い委譲ラッパである。
 
 使い方:
     python simulator/tools/fetch_ticks_dukascopy.py \

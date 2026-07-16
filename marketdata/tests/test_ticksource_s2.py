@@ -1,19 +1,16 @@
-"""S2（enabler②）の検証（TDD: Red→Green）— TickSource 新設・DukascopyTickSource 移管。
+"""DukascopyTickSource（enabler②・保存前 raw ティック取得の具象）の挙動検証。
 
-設計正典: ``MARKETDATA_TIMESERIES_BOUNDARY_DESIGN.md`` §3.2（TickSource Protocol）/
-§3.2.1（戻り値 DataFrame 案A）/ §6 S2 行 / §10.2 H-2（timestamp 列化）/
-§10.2 H-3（offer_side 撤去・bid/ask 両列常時返却）/ 付録B（signature）。
+設計正典: ``MARKETDATA_TIMESERIES_BOUNDARY_DESIGN.md`` §3.2.1（戻り値 DataFrame 案A）/
+§6 S2 行 / §10.2 H-2（timestamp 列化）/ §10.2 H-3（offer_side 撤去・bid/ask 両列常時返却）。
 
-確定仕様:
-  1. ``marketdata.port.TickSource`` Protocol 新設：
-     ``fetch_ticks(self, start: datetime, end: datetime) -> pd.DataFrame``。
-  2. ``marketdata.dukascopy_source.DukascopyTickSource`` 新設（fetch_ticks_dukascopy 移管）：
-     - H-2: 戻り DataFrame は timestamp を**列**に持つ（reset_index 済・列名 "timestamp"）。
-       ingest の RAW_COLUMNS(timestamp/bidPrice/askPrice/bidVolume/askVolume) 契約へ直接適合。
-     - H-3: __init__ から offer_side 単一指定を削除。bidPrice/askPrice **両列を常に返す**。
-  3. ``marketdata.__init__`` の遅延 __getattr__ 対象に DukascopyTickSource を追加。
-  4. fetch_ticks_dukascopy.py は DukascopyTickSource 委譲へ（CLI 出力不変）。
-     to_canonical_ticks は無改変（last=mid・naive UTC バイト不変）。
+ISSUE-092 ⑧: 抽象消費者ゼロの ``marketdata.port.TickSource`` Protocol は撤去済み。
+本ファイルは Protocol 存在系テストを削除し、現役具象 DukascopyTickSource の挙動のみを検証する。
+
+確定仕様（DukascopyTickSource）:
+  - H-2: 戻り DataFrame は timestamp を**列**に持つ（reset_index 済・列名 "timestamp"）。
+    ingest の RAW_COLUMNS(timestamp/bidPrice/askPrice/bidVolume/askVolume) 契約へ直接適合。
+  - H-3: __init__ から offer_side 単一指定を削除。bidPrice/askPrice **両列を常に返す**。
+  - fetch_ticks_dukascopy.py は DukascopyTickSource 委譲へ（CLI 出力不変）。
 
 回帰観点（memory bugfix-pair-with-regression-test）:
   - offer_side 単一指定の復活（H-3 退行）／timestamp index 化（H-2 退行）が起きたら落ちる 1 本。
@@ -33,52 +30,7 @@ import pytest
 
 
 # =========================================================================
-# Section 1: TickSource Protocol（port 契約）
-# =========================================================================
-
-def test_ticksource_protocol_exists_in_port():
-    # Arrange / Act: marketdata.port から TickSource を import。
-    from marketdata.port import TickSource
-
-    # Assert: Protocol であり fetch_ticks を持つ。
-    assert hasattr(TickSource, "fetch_ticks")
-
-
-def test_ticksource_is_runtime_checkable_protocol():
-    # Arrange
-    from marketdata.port import TickSource
-
-    # Act: 構造的に fetch_ticks(start, end) を持つ任意オブジェクトが instance 判定される。
-    class _Fake:
-        def fetch_ticks(self, start, end):
-            return pd.DataFrame()
-
-    # Assert: runtime_checkable Protocol（CandleSource と同じ規約）。
-    assert isinstance(_Fake(), TickSource)
-
-
-def test_ticksource_fetch_ticks_signature_is_start_end():
-    # Arrange
-    from marketdata.port import TickSource
-
-    # Act: fetch_ticks の signature を取得。
-    sig = inspect.signature(TickSource.fetch_ticks)
-    params = list(sig.parameters)
-
-    # Assert: (self, start, end)（付録B signature）。
-    assert params == ["self", "start", "end"]
-
-
-def test_ticksource_exported_from_marketdata_package():
-    # Arrange / Act: パッケージ直下から import 可能（port 公開面）。
-    import marketdata
-
-    # Assert: TickSource が公開されている。
-    assert hasattr(marketdata, "TickSource")
-
-
-# =========================================================================
-# Section 2: DukascopyTickSource — H-2（timestamp 列化）/ H-3（bid/ask 両列）
+# DukascopyTickSource — H-2（timestamp 列化）/ H-3（bid/ask 両列）
 # =========================================================================
 
 # Dukascopy raw fetch が返す形（timestamp を index に持ち bidPrice/askPrice/bidVolume/
@@ -220,20 +172,7 @@ def test_dukascopy_tick_source_uses_interval_tick(patched_fetch):
 
 
 # =========================================================================
-# Section 3: DukascopyTickSource は TickSource Protocol を満たす（DIP）
-# =========================================================================
-
-def test_dukascopy_tick_source_satisfies_ticksource_protocol():
-    # Arrange
-    from marketdata.dukascopy_source import DukascopyTickSource
-    from marketdata.port import TickSource
-
-    # Act / Assert: 構造的 Protocol を満たす（runtime_checkable）。
-    assert isinstance(DukascopyTickSource(), TickSource)
-
-
-# =========================================================================
-# Section 4/5: 契約テスト（RAW_COLUMNS 適合・canonical 変換・fetch_range 委譲）は
+# 契約テスト（RAW_COLUMNS 適合・canonical 変換・fetch_range 委譲）は
 #   simulator/tests/unit/test_marketdata_tick_contract.py へ移設（ISSUE-091 #8:
 #   最下層 marketdata のテストからの simulator 逆依存を排除・消費者側で検証）。
 # =========================================================================

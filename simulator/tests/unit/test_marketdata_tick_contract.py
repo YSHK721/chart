@@ -1,4 +1,4 @@
-"""marketdata TickSource ⇄ simulator ingest の契約テスト（利用者側で検証）。
+"""marketdata DukascopyTickSource ⇄ simulator ingest の契約テスト（利用者側で検証）。
 
 ISSUE-091 #8: 旧所在 marketdata/tests/test_ticksource_s2.py（S2 enabler②）から移設。
 最下層ライブラリ marketdata のテストが上位 simulator を import する逆依存を排し、

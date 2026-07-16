@@ -25,13 +25,12 @@ from typing import Any
 # ベンダ非依存なものは eager に公開（dukascopy_python を要求しない）。
 from marketdata.cleaning import repair_ohlc_outliers
 from marketdata.paths import DATA_DIR
-from marketdata.port import Candle, CandleSource, TickSource
+from marketdata.port import Candle, CandleSource
 
 __all__ = [
     "DATA_DIR",
     "Candle",
     "CandleSource",
-    "TickSource",
     "DukascopyCandleSource",
     "DukascopyTickSource",
     "fetch_ticks_since",

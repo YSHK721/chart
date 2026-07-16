@@ -166,7 +166,11 @@ class DukascopyCandleSource:
 
 
 class DukascopyTickSource:
-    """Dukascopy 実 tick を取得する :class:`TickSource` 実装（enabler②）。
+    """Dukascopy 実 tick を保存前 raw ティックとして取得する具象（enabler②）。
+
+    （旧 TickSource 実装。ISSUE-092 ⑧で抽象消費者ゼロの TickSource Protocol を撤去。
+    本具象は fetch_ticks_dukascopy / fetch_ticks_ymd が直接利用する現役コード。）
+
 
     ``fetch_ticks_dukascopy.fetch_range`` のロジック（日次チャンク・resilient 取得・連結）を
     移管する。``INTERVAL_TICK`` の隔離・銘柄固定はここに閉じる。
