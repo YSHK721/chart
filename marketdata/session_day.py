@@ -17,9 +17,10 @@
       :func:`next_session_day_start` を使うこと（切替日に境界がずれる）。
     - NY ローカル 17:00 は DST 切替時刻（02:00）と重ならないため、曖昧・不存在時刻は生じない。
 
-依存方向: 本モジュールは stdlib（zoneinfo/datetime）と numpy のみに依存する（marketdata 内の
-最下層 peer・他モジュールを import しない）。日切りが必要な全層（dwell/zp/tf-period/rollup/
-frontend 供給値）は本モジュールを唯一の規則源として参照する（再実装を禁ずる）。
+依存方向: 本モジュールは stdlib（zoneinfo/datetime）・numpy・pandas と、週/月ラベル規則の唯一源
+:mod:`marketdata.resample`（ISSUE-094 🟡-10a）に依存する（resample は pandas のみに依存する葉＝
+循環しない）。日切りが必要な全層（dwell/zp/tf-period/rollup/frontend 供給値）は本モジュールを
+唯一の規則源として参照する（再実装を禁ずる）。
 """
 from __future__ import annotations
 
@@ -27,6 +28,9 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import numpy as np
+import pandas as pd
+
+from marketdata.resample import period_label_naive
 
 _NY = ZoneInfo("America/New_York")
 # ブローカー時間 = NY + 7h（NY 17:00 → 00:00）。セッション日ラベルはブローカー暦日。
@@ -103,23 +107,21 @@ def session_day_starts(ts: "np.ndarray") -> "np.ndarray":
 # --------------------------------------------------------------------------- #
 # 週/月バケットのラベル規約（ISSUE-086: 全時間足パラメータ統一）
 #   規約源は marketdata.resample の 1W='W-FRI'（週= [土..金] ブローカー日・ラベル=金曜）と
-#   1M='ME'（ラベル=暦月末日）。ここではブローカー暦日の算術のみで同値を実装し、
-#   参照実装（resample_ohlc_tf）とのラベル一致はテストで担保する。
+#   1M='ME'（ラベル=暦月末日）。従来はブローカー暦日の手書き算術で同値を再実装し「テストで一致
+#   担保」していた（規則の二重表現）。ISSUE-094 🟡-10a: 規則源 resample.period_label_naive への
+#   単方向委譲へ構造変更する（数値/ラベル出力は byte 不変・全期間 40 万点で一致実測済み）。
 # --------------------------------------------------------------------------- #
 def session_period_label(tf: str, t: "int | float") -> str:
     """``t`` が属するセッション日の 1W/1M バケットラベル 'YYYY-MM-DD' を返す。
 
     1W: 同ブローカー週（土..金）の金曜。1D バーの W-FRI resample ラベルと一致する。
     1M: 同ブローカー月の暦月末日（ME ラベル）。tf は '1W'|'1M' のみ（他は ValueError）。
+
+    ラベル規則は :func:`marketdata.resample.period_label_naive`（W-FRI/ME の唯一源）へ委譲する。
+    ブローカー暦日 ``b`` を naive 化して渡し、pandas offset の rollforward で右端ラベルを得る。
     """
     b = _broker_date(t)
-    if tf == "1W":
-        lab = b + timedelta(days=(4 - b.weekday()) % 7)  # Mon=0..Fri=4: 次の金曜（金曜は自身）。
-    elif tf == "1M":
-        nxt = (b.replace(day=1) + timedelta(days=32)).replace(day=1)
-        lab = nxt - timedelta(days=1)
-    else:
-        raise ValueError(f"session_period_label: 1W|1M のみ対応: {tf!r}")
+    lab = period_label_naive(tf, pd.Timestamp(b).tz_localize(None))
     return lab.strftime("%Y-%m-%d")
 
 
