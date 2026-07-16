@@ -88,10 +88,8 @@ class SourceDescriptor:
     metric: str | None
     handler: Callable[["_MPRequest"], tuple[int, dict[str, Any]]]
 # tf → 足の秒長（dwell 窓の終端は t1 + bar_sec で最終足の期間を満たす）。未知/None は 1D 相当。
-_TF_BAR_SEC = {
-    "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
-    "1h": 3600, "4h": 14400, "1D": 86400, "1W": 604800, "1M": 2592000,
-}
+# ISSUE-097 🟡-10: 唯一源 marketdata.tf_meta.TF_BAR_SEC を参照（従来の自前コピーは byte 同一の重複だった）。
+from marketdata.tf_meta import TF_BAR_SEC as _TF_BAR_SEC  # noqa: E402
 # sessions（日別プロファイル）応答の日数上限。UI は列幅>=102px を確保できる直近 nFit 日
 # （4K 幅でも ~37 列）しか描かないため、全期間ぶん（数千日×数百bin ≈ 10MB 超）を返すのは無駄。
 # 直近 _SESSIONS_MAX_DAYS 日に切って応答を軽量化する（試作は窓 n で自然に制限されていた）。
