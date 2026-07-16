@@ -20,7 +20,15 @@ import {
 import { PropertiesDialog } from './properties_dialog.js';
 
 export class MarketProfileController {
-  // host: IndicatorController（または subclass）インスタンス。MP 駆動が参照する state/actor/描画配線を保持する。
+  // 依存契約（ISP・ISSUE-099 🟡-4）: 本協働子は host（IndicatorController）の広い公開面ではなく、
+  //   MP ロール専用の狭い契約 MarketProfileHost にのみ依存する。契約の単一ソースは
+  //   indicator_controller.js（@typedef MarketProfileHost ＋ MARKET_PROFILE_HOST_CONTRACT）で明文化し、
+  //   IndicatorController（present）/ ReplayIndicatorController（replay・symlink 継承）が
+  //   メンバー名・挙動不変のまま構造的に本契約を満たす。reveal seam の _untilTime は replay subclass
+  //   のみ在席する optional 面（present は != null guard で no-op）。
+  /**
+   * @param {import('./indicator_controller.js').MarketProfileHost} host MP ロール契約を満たすホスト。
+   */
   constructor(host) {
     this._host = host;
   }
