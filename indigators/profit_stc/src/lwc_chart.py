@@ -20,14 +20,11 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
-from common import LEVEL_LINE_WIDTH  # noqa: E402
+from common_view import LEVEL_LINE_WIDTH  # noqa: E402
 
 from .core import DEFAULT_PERIOD
 from .stc import OSC_COLUMN, build_stc, stc_levels

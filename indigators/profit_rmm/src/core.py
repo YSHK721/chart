@@ -57,8 +57,6 @@ from profit_system import (  # noqa: E402,F401  # 正準 funLevelCount/MAROD（�
     level_count_score,
 )
 
-# 共有ライブラリ common（適用価格）を リポジトリルート経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # = repo root
 from common import typical_price  # noqa: E402
 
 # 元 input の既定値（PRO!fitRMM.mq4）。

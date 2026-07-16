@@ -47,9 +47,7 @@ from typing import Mapping
 import numpy as np
 
 # 共有層 import:
-#   common          … repo root（parents[3]）配下。
 #   moving_averages … indicators（parents[2]）配下。
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # indicators → moving_averages
 
 from common import AppliedPrice, applied_price  # noqa: E402
