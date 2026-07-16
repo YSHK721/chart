@@ -11,7 +11,16 @@
 //   再計算入口（recomputeAllApplied）はライブ入口として controller 側に温存し、host 経由で呼ぶ。
 
 export class TimeframeController {
-  // host: IndicatorController（または subclass）インスタンス。時間足状態・renderer・再計算入口を保持する。
+  // 依存契約（ISP・ISSUE-099 🟡-3）: 本協働子は host（IndicatorController）の広い公開面ではなく、
+  //   時間足ロール専用の狭い契約 TimeframeHost にのみ依存する。契約の単一ソースは
+  //   indicator_controller.js（@typedef TimeframeHost ＋ TIMEFRAME_HOST_CONTRACT）で明文化し、
+  //   IndicatorController（present）/ ReplayIndicatorController（replay・symlink 継承）が
+  //   メンバー名・挙動不変のまま構造的に本契約を満たす（依存面 = getter/setter: _timeframe/
+  //   _recomputeDepth/_datasetRef/_recentBars/_state/_renderer/_loadCandles/_timeframeObserver、
+  //   method: recomputeAllApplied/_persistAll、optional: _el）。
+  /**
+   * @param {import('./indicator_controller.js').TimeframeHost} host 時間足ロール契約を満たすホスト。
+   */
   constructor(host) {
     this._host = host;
   }
