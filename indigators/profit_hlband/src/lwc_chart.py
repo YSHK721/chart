@@ -45,7 +45,7 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
-from common import LEVEL_LINE_WIDTH  # noqa: E402
+from common_view import LEVEL_LINE_WIDTH  # noqa: E402
 
 from .hlband import (
     RANGE_COLUMN,

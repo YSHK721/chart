@@ -31,7 +31,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
-from common import level_colors  # noqa: E402
+from common_view import level_colors  # noqa: E402
 
 from .oscillator2 import (  # noqa: E402
     LEVEL_COUNT_COLUMN,

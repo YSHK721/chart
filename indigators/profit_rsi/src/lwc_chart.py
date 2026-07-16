@@ -32,7 +32,7 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
-from common import LEVEL_LINE_WIDTH  # noqa: E402
+from common_view import LEVEL_LINE_WIDTH  # noqa: E402
 
 from .core import DEFAULT_APPLY, DEFAULT_MA_PERIOD, DEFAULT_RSI_PERIOD
 from .rsi import MA_COLUMN, RSI_COLUMN, build_rsi, rsi_levels
