@@ -1,16 +1,20 @@
-"""OHLC クリーニング — 足内外れ値（不正ティック）の純粋な補正（ベンダ非依存）。"""
+"""OHLC クリーニング — 足内外れ値（不正ティック）の純粋な補正（ベンダ非依存）。
+
+外れ値判定/補正の実体は :mod:`marketdata.outlier_policy`（閾値・両戦略の唯一の定義・ISSUE-094
+🔴-3）へ移設した。本モジュールの :func:`repair_ohlc_outliers` は acquisition 戦略
+（median([o,h,l,c]) 基準）への薄い委譲へ降格する（公開シグネチャ・返り値・ログ形式は byte 不変）。
+"""
 
 from __future__ import annotations
 
-import datetime as _dt
-from statistics import median
 from typing import List, Tuple
 
+from marketdata import outlier_policy
 from marketdata.port import Candle
 
 
 def repair_ohlc_outliers(
-    candles: List[Candle], *, threshold: float = 0.3
+    candles: List[Candle], *, threshold: float = outlier_policy.OUTLIER_THRESHOLD
 ) -> Tuple[List[Candle], List[str]]:
     """足内 OHLC の外れ値（不正ティック）を中央値基準で検出・補正する（純粋）。
 
@@ -21,6 +25,8 @@ def repair_ohlc_outliers(
 
     行を削除せず該当値のみ補正するため、正常な open/high/close は保持される。
 
+    実装は :func:`marketdata.outlier_policy.repair_ohlc_outliers_median`（acquisition 戦略）へ委譲する。
+
     Args:
         candles: ``{time, open, high, low, close}``（time 昇順）。
         threshold: 中央値からの許容相対乖離（0.3 = ±30%）。
@@ -28,33 +34,4 @@ def repair_ohlc_outliers(
     Returns:
         ``(補正後 candles, 補正ログ行)``。ログ行は補正があった足のみ（日付と変更内容）。
     """
-    repaired: List[Candle] = []
-    log_lines: List[str] = []
-    for cd in candles:
-        o, h, low, c = cd["open"], cd["high"], cd["low"], cd["close"]
-        ref = median([o, h, low, c])
-        if ref <= 0:
-            repaired.append(cd)
-            continue
-        # 中央値から閾値超で乖離する値を中央値で置換（不正値の隔離）。
-        fixed = {
-            k: (ref if abs(v / ref - 1.0) > threshold else v)
-            for k, v in (("open", o), ("high", h), ("low", low), ("close", c))
-        }
-        # OHLC 不変条件を再確立（high=最大・low=最小）。
-        fixed["high"] = max(fixed.values())
-        fixed["low"] = min(fixed.values())
-        if (fixed["open"], fixed["high"], fixed["low"], fixed["close"]) != (o, h, low, c):
-            day = _dt.datetime.fromtimestamp(
-                cd["time"], _dt.timezone.utc
-            ).strftime("%Y-%m-%d %H:%M")
-            log_lines.append(
-                f"  {day}: O/H/L/C "
-                f"{o:.1f}/{h:.1f}/{low:.1f}/{c:.1f} -> "
-                f"{fixed['open']:.1f}/{fixed['high']:.1f}/"
-                f"{fixed['low']:.1f}/{fixed['close']:.1f}"
-            )
-        repaired.append(  # type: ignore[typeddict-item]
-            {"time": cd["time"], "volume": cd.get("volume", 0.0), **fixed}
-        )
-    return repaired, log_lines
+    return outlier_policy.repair_ohlc_outliers_median(candles, threshold=threshold)

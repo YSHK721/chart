@@ -23,7 +23,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -64,9 +63,11 @@ _SAMPLE_TIME_COLUMN = "date"
 _OHLC_COLUMNS = ("open", "high", "low", "close")
 
 # 読み取り時 外れ値バー補正（per-bar OHLC クランプ）の許容相対乖離（既定 0.3=±30%）。
-# 既存 tools/export_jp225_m1.repair_outlier_rows の threshold=0.3 規約に整合させる
-# （日中に中央値比 ±30% 動かない指数の性質を利用し、配信欠損の外れヒゲのみを分離）。
-OUTLIER_CLAMP_THRESHOLD = 0.3
+# 閾値の唯一の規約源は marketdata.outlier_policy.OUTLIER_THRESHOLD（ISSUE-094 🔴-3・書込側
+# cleaning と単一化）。旧名 OUTLIER_CLAMP_THRESHOLD は再エクスポートで温存する。
+from marketdata import outlier_policy
+
+OUTLIER_CLAMP_THRESHOLD = outlier_policy.OUTLIER_THRESHOLD
 
 # 外れ値クランプを適用する ref（実市場の JP225 系のみ）。sample 等の合成データセットは
 # 対象外（正常な ±30% 超ヒゲを持つ golden を壊さないため・読み取り時補正は市場データ限定）。
@@ -79,53 +80,20 @@ _OUTLIER_CLAMP_REFS_SET: dict[str, bool] = {
 
 
 def _clamp_outlier_bars(df: pd.DataFrame, ref: str) -> pd.DataFrame:
-    """各行(バー)の OHLC を読み取り時クランプして返す（純粋・ソース df 不破壊）。
+    """各行(バー)の OHLC を読み取り時クランプして返す（供給側 ref ゲート＋エンベロープ委譲）。
 
     intraday の atomic 不良値（例 jp225_tick 2025-08-26 の low ~15,099）が集約バーの
     安値を異常に引き下げる問題を、返却直前に補正する。ソース（CSV/ロールアップ生成物）は
-    改変せず、補正が必要なときのみ ``df.copy()`` 上で書き換える（不変・副作用なし）。
+    改変せず、補正が必要なときのみコピー上で書き換える（不変・副作用なし）。
 
-    補正規約（``OUTLIER_CLAMP_THRESHOLD``＝±30% 既定）:
-      - ``ref_lo=min(open,close)`` / ``ref_hi=max(open,close)``（open/close は外れにくい）。
-      - ``low  < ref_lo*(1-threshold)`` → low を ref_lo にクランプ（下ヒゲ外れ＝配信欠損）。
-      - ``high > ref_hi*(1+threshold)`` → high を ref_hi にクランプ（上ヒゲ外れ）。
-      - 正常バー（±30% 以内のヒゲ）は完全に不変（no-op で同一オブジェクトを返す）。
-      - open/close が NaN/非正（ref_lo<=0）、low/high が NaN の行は防御的にスキップする。
-
-    補正対象は ``_OUTLIER_CLAMP_REFS_SET`` に登録した実市場 ref のみ（非対象は素通し）。
-    ベクトル化（pandas/numpy）で O(n)・全 load で軽量。冪等（再適用で不変）。
+    「どの ref を補正対象とするか」（``_OUTLIER_CLAMP_REFS_SET`` の実市場 ref 限定）は供給側の
+    ポリシーとして本関数が担い、エンベロープ判定/補正の式（min/max(open,close) 基準・±30%）は
+    :func:`marketdata.outlier_policy.clamp_ohlc_envelope`（serving 戦略・唯一の定義）へ委譲する
+    （ISSUE-094 🔴-3: 書込側 cleaning と閾値を単一化・式は 2 戦略として同居）。非対象 ref は素通し。
     """
     if ref not in _OUTLIER_CLAMP_REFS_SET:
         return df
-    lower_map = {str(c).lower(): c for c in df.columns}
-    if not all(k in lower_map for k in _OHLC_COLUMNS):
-        # OHLC 列が揃わない df は補正対象外（防御・素通し）。
-        return df
-
-    open_ = pd.to_numeric(df[lower_map["open"]], errors="coerce")
-    high = pd.to_numeric(df[lower_map["high"]], errors="coerce")
-    low = pd.to_numeric(df[lower_map["low"]], errors="coerce")
-    close = pd.to_numeric(df[lower_map["close"]], errors="coerce")
-
-    ref_lo = np.minimum(open_, close)
-    ref_hi = np.maximum(open_, close)
-    # 有効行: open/close/low/high が数値かつ ref_lo>0（0/NaN/非正は誤補正を避けスキップ）。
-    valid = (
-        open_.notna() & close.notna() & low.notna() & high.notna() & (ref_lo > 0)
-    )
-    low_mask = valid & (low < ref_lo * (1.0 - OUTLIER_CLAMP_THRESHOLD))
-    high_mask = valid & (high > ref_hi * (1.0 + OUTLIER_CLAMP_THRESHOLD))
-
-    if not (bool(low_mask.any()) or bool(high_mask.any())):
-        # 正常バーのみ＝補正不要。コピーせず同一オブジェクトを返す（キャッシュ非破壊）。
-        return df
-
-    out = df.copy()
-    if bool(low_mask.any()):
-        out.loc[low_mask, lower_map["low"]] = ref_lo[low_mask]
-    if bool(high_mask.any()):
-        out.loc[high_mask, lower_map["high"]] = ref_hi[high_mask]
-    return out
+    return outlier_policy.clamp_ohlc_envelope(df, threshold=OUTLIER_CLAMP_THRESHOLD)
 
 # resample 規則源は marketdata.resample（enabler③・Sd 後の単一基点と同様に唯一化）。
 # dataset は薄い再エクスポートへ降格し、resample_ohlc / TIMEFRAME_RULES / is_known_timeframe を
