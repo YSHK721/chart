@@ -26,6 +26,8 @@ from market_profile_api.compute import market_profile_zp as _zp
 from market_profile_api.compute.market_profile import _value_area
 # ISSUE-092 ④: 日次ディスク JSON の物理 I/O は gateway 層へ抽出（ISSUE-091 #6 レイヤ責務違反の是正）。
 from market_profile_api.gateway import tf_period_disk_cache as _tf_disk_cache
+# 既定 DATA_DIR の解決は TickStorePort 経由（dwell/zp と同規律・ISSUE-092 統合検証での回帰修正）。
+from market_profile_api.compute.tick_store_port import tick_store as _tick_store
 from market_profile_api.compute.tf_period_profile import (
     _TFP_CACHE_VERSION,
     _value_area_sparse,
@@ -87,12 +89,17 @@ def _reset_tf_period_cache() -> None:
 
 
 def _tfp_disk_root() -> "_Path | None":
-    """ディスクキャッシュ基点を返す（False=無効なら None・既定は DATA_DIR/cache/tf_period）。"""
+    """ディスクキャッシュ基点を返す（False=無効なら None・既定は DATA_DIR/cache/tf_period）。
+
+    既定の DATA_DIR 解決は TickStorePort 経由（ISSUE-091 🔴-2 で dwell/zp と同規律）。
+    旧 `_mpd._paths` 参照は port 化で撤去済み属性への参照となり実行時 AttributeError を
+    起こしていた（ISSUE-092 統合検証の実 HTTP で検出・テストは root 注入経路のため未検出）。
+    """
     if _TFP_CACHE_ROOT is False:
         return None
     if _TFP_CACHE_ROOT is not None:
         return _Path(_TFP_CACHE_ROOT)
-    return _mpd._paths.DATA_DIR / "cache" / "tf_period"
+    return _tick_store().data_dir() / "cache" / "tf_period"
 
 
 def _load_day_disk(symbol: Any, tf: Any, day_start: int) -> "tuple[float, list] | None":
