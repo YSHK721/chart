@@ -1,17 +1,22 @@
-"""ComputeController（内部設計書 §3.3.5）— POST /compute の純ロジック。
+"""ComputeController（内部設計書 §3.3.5）— POST /compute の薄殻（Controller + Presenter）。
 
 ``handle_compute(body) -> (HTTPステータス, ボディ)`` は HTTP の殻
 （BaseHTTPRequestHandler・ソケット）に依存しない純関数である。HTTP サーバ本体は
 ``api/framework/server.py`` が本関数を呼ぶ薄い殻として実装する。
 
-処理（§4.5 / §6.3 / §7.3 / §7.4）:
-  1. body から indicatorId（別名 compute_id 許容）/ variant / params / datasetRef を取り出す。
-  2. datasetRef をホワイトリスト解決する（未知キー・パス文字列は 400 で拒否＝§7.3
-     パストラバーサル対策。サーバ側パスを外から組み立てない）。
-  3. 解決したパスを既存 loader で DataFrame 化（adapter.compute.dataset へ集約）。
-  4. 既存 ``IndicatorComputeAdapter.compute`` を呼び、収集系列を得る。
-  5. 成功は (200, {ok, generation, series})。ComputeError は §6.3.4 の error.type →
-     HTTPステータス対応（adapter.compute.ERROR_STATUS・単一定義）で翻訳する。
+ISSUE-092 ①: 業務手順（datasetRef ホワイトリスト検証→データロード→forming_bar→指標計算→
+エラー翻訳）は usecase 純関数 :func:`usecase.compute_indicators.compute_indicators` へ移設した。
+本 controller は次の 2 責務のみを担う薄殻へ縮退している:
+
+  - Controller: リクエストボディを Input Model（ComputeRequest）へ変換して usecase を呼ぶ。
+  - Presenter: usecase の Output Model（ComputeResult）を (HTTPステータス, レスポンスボディ) へ
+    翻訳する（error_type→HTTPステータスは adapter.compute.ERROR_STATUS・単一定義）。
+
+usecase へ渡す協調子（forming_bar / full_compute / latest_compute / ComputeError）は本 module の
+名前解決を通す（呼出時に module グローバルを参照）。これにより既存テストの monkeypatch 経路
+（``_cc.dataset.load_dataframe`` / ``_cc.latest_compute`` / ``_cc.full_compute`` /
+``_cc.forming_bar_mod.*``）は不変のまま温存される。datasetRef のロードは usecase 所有の
+Output Boundary（DatasetPort）＋既定 gateway（marketdata.dataset へ委譲）が担う。
 
 stdlib のみと既存 adapter/loader を用いる。Flask 等は導入しない。
 既存 IndicatorComputeAdapter / call_binding / 指標 src は read-only（改変しない）。
@@ -22,28 +27,40 @@ from __future__ import annotations
 from typing import Any
 
 from adapter.compute import ERROR_STATUS, ComputeError, IndicatorComputeAdapter
-from marketdata import dataset  # dataset 実体は最下層共有 marketdata へ移設済み（peer 依存）
+from marketdata import dataset  # noqa: F401  # monkeypatch 対象（_cc.dataset）＋既定 gateway の委譲先。
 from adapter.compute import forming_bar as forming_bar_mod
 from adapter.compute.latest_dispatch import full_compute, latest_compute
+from usecase.compute_indicators import ComputeRequest, ComputeResult, compute_indicators
 
 
-def _error_body(generation: int, error_type: str, message: str) -> tuple[int, dict[str, Any]]:
-    """§6.3.4 エラーボディ（{ok:false, generation, error:{type, message, violations}}）。
+def _present(result: ComputeResult) -> tuple[int, dict[str, Any]]:
+    """Output Model（ComputeResult）を (HTTPステータス, ボディ) へ翻訳する（Presenter）。
 
-    error_type→HTTPステータスは adapter.compute.ERROR_STATUS（単一定義）を参照する。
+    成功は (200, {ok, generation, series})。失敗は error_type→HTTPステータス
+    （adapter.compute.ERROR_STATUS・単一定義）で翻訳し §6.3.4 のエラーボディを返す。
     """
-    status = ERROR_STATUS.get(error_type, 500)
+    if result.ok:
+        return 200, {
+            "ok": True,
+            "generation": result.generation,
+            "series": result.series,
+        }
+    status = ERROR_STATUS.get(result.error_type, 500)
     return status, {
         "ok": False,
-        "generation": generation,
-        "error": {"type": error_type, "message": message, "violations": []},
+        "generation": result.generation,
+        "error": {
+            "type": result.error_type,
+            "message": result.error_message,
+            "violations": [],
+        },
     }
 
 
 def handle_compute(
     body: dict[str, Any], *, adapter: Any | None = None
 ) -> tuple[int, dict[str, Any]]:
-    """POST /compute の純ロジック（§4.5 / §6.3 / §7.3 / §7.4）。
+    """POST /compute の薄殻（§4.5 / §6.3 / §7.3 / §7.4）。
 
     Args:
         body: リクエストボディ（indicatorId|compute_id / variant / params / datasetRef）。
@@ -53,65 +70,16 @@ def handle_compute(
         (HTTPステータス, レスポンスボディ)。成功は (200, {ok, generation, series})、
         失敗は (4xx/5xx, {ok:false, generation, error})。
     """
-    generation = body.get("generation", 0)
-
-    # indicatorId（別名 compute_id 許容）と variant の取り出し・入口検証。
-    indicator_id = body.get("indicatorId") or body.get("compute_id")
-    variant = body.get("variant")
-    if not indicator_id or not variant:
-        return _error_body(generation, "validation", "indicatorId と variant は必須です。")
-
-    params = body.get("params") or {}
-    dataset_ref = body.get("datasetRef")
-
-    # datasetRef ホワイトリスト解決（§7.3）。未知キー・パス文字列は拒否。
-    if not dataset.is_known(dataset_ref):
-        return _error_body(
-            generation, "validation", f"未知の datasetRef です: {dataset_ref!r}"
-        )
-
-    # timeframe（時間足）— None は原子（再集計なし・後方互換）。未知コードは拒否（§7.3 同様）。
-    timeframe = body.get("timeframe")
-    if timeframe is not None and not dataset.is_known_timeframe(timeframe):
-        return _error_body(
-            generation, "validation", f"未知の timeframe です: {timeframe!r}"
-        )
-
-    df = dataset.load_dataframe(dataset_ref, timeframe)
-
-    # mode（計算モード）: 省略=full＝既存挙動（既存テスト無変更で緑）。"latest" は
-    #   Latest 増分計算（archetype ごとに tail＋末尾K切り・latest_dispatch に集約）。
-    mode = body.get("mode", "full")
-
-    # ライブ足内更新（指標）: mode="latest"（＝ライブ増分）かつティック由来 ref + 対応 tf のとき、
-    #   現在の「形成中バー」を最新足として末尾へ set/replace してから計算する（指標が足内＝
-    #   ティック粒度で更新される）。full（履歴計算）は不変＝後方互換。形成中バーの基準時刻 now は
-    #   body.formingNow（UNIX 秒・テスト/クライアント注入可）優先、無ければサーバ実 UTC 現在。
-    #   対象外 ref/tf・ティック無しは df 不変（apply_forming_bar 内で判定）。
-    if mode == "latest":
-        # now は forming_bar.resolve_now_unix に一元化（body.formingNow 優先→デモ時計→実 now）。
-        now_unix = forming_bar_mod.resolve_now_unix(body.get("formingNow"))
-        df = forming_bar_mod.apply_forming_bar(df, dataset_ref, timeframe, now_unix)
-
-    # 表示範囲制限（直近 N 本）。1 分足原子の全期間で指標計算しないための制限
-    # （§配信設計: リサンプル＋直近 N 本）。candles と同一窓で計算し時間軸を揃える。
-    #   形成中バー追加後に tail するため、最新足（形成中）が窓に含まれる。
-    limit = body.get("limit")
-    if isinstance(limit, int) and limit > 0:
-        df = df.tail(limit)
+    request = ComputeRequest.from_body(body)
     compute_adapter = adapter or IndicatorComputeAdapter()
-    try:
-        series = (
-            latest_compute(compute_adapter, indicator_id, variant, df, dict(params))
-            if mode == "latest"
-            else full_compute(compute_adapter, indicator_id, variant, df, dict(params))
-        )
-    except ComputeError as exc:
-        return _error_body(generation, exc.error_type, exc.message)
-    except KeyError as exc:
-        # 未登録 indicatorId/variant は CallBinding.resolve が raw KeyError を投げる（§3.3.3）。
-        return _error_body(
-            generation, "validation", f"未登録の指標または variant です: {exc}"
-        )
-
-    return 200, {"ok": True, "generation": generation, "series": series}
+    # 協調子は本 module の名前解決を通す（monkeypatch 経路の温存）。dataset のロードは
+    #   usecase 既定（DatasetPort 遅延既定 gateway＝marketdata.dataset 委譲）に委ねる。
+    result = compute_indicators(
+        request,
+        compute_adapter=compute_adapter,
+        forming_bar=forming_bar_mod,
+        full_compute=full_compute,
+        latest_compute=latest_compute,
+        compute_error=ComputeError,
+    )
+    return _present(result)
