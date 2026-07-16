@@ -2,13 +2,13 @@
 
 検証対象（合成1分足のみ・実 284MB jp225_m1.csv は読まない・決定論・メモリ小）:
   - merge_same_period: 同一 period の OHLCV 結合（open=first/high=max/low=min/close=last/volume=sum・結合的）。
-  - stream_build: チャンク跨ぎ carry-over を含む数値一致（== resample_ohlc(全件, rule)・最重要 D-1）。
-  - incremental_update: 追記 tail のみ読み各 TF をマージ（形成中バー上書き＋確定 append）== resample_ohlc(全件)。
+  - stream_build: チャンク跨ぎ carry-over を含む数値一致（== resample_ohlc_tf(全件, tf)・最重要 D-1）。
+  - incremental_update: 追記 tail のみ読み各 TF をマージ（形成中バー上書き＋確定 append）== resample_ohlc_tf(全件)。
   - RollupState: json load/save（last_processed_ts）。
   - メモリ有界: stream_build が chunk 単位処理（全件を同時に DataFrame 化しない）。
 
-数値一致の根拠（厳守）: resample_ohlc の規則（W-FRI/ME/5min/tz/closed/label）を再実装せず、
-dataset.resample_ohlc(全件) を真値（oracle）として stream_build / incremental_update を照合する。
+数値一致の根拠（厳守）: resample の規則（W-FRI/ME/5min/セッション日切り）を再実装せず、
+marketdata.resample.resample_ohlc_tf(全件) を真値（oracle）として stream_build / incremental_update を照合する。
 """
 
 from __future__ import annotations
@@ -23,8 +23,11 @@ import pytest
 
 import rollup_builder as rb
 
-# dataset.resample_ohlc を oracle として直接利用する（api 経路は rollup_builder が配線済み）。
-from adapter.compute import dataset
+# 規則源 resample_ohlc_tf（ISSUE-078: 1D/1W/1M はセッション日集計）を oracle として直接利用する。
+# ISSUE-093: 旧 oracle（plain resample_ohlc + TIMEFRAME_RULES）は f0584f1 のセッション日移行に
+#   未追随で 1D/1W/1M が恒常失敗していた（実装は正・テスト陳腐化）。
+from marketdata import resample as md_resample
+from adapter.compute import dataset  # noqa: F401  (api 経路の配線・後方互換)
 
 
 # --------------------------------------------------------------------------- #
@@ -107,8 +110,7 @@ def test_stream_build_matches_resample_ohlc_on_full_data_across_chunks(tmp_path,
     # Act: chunk_rows を小さくして複数チャンクに割る（チャンク跨ぎ carry-over を強制）。
     rb.stream_build(m1_csv, [tf], out_dir, chunk_rows=7000)
     # Assert: stream_build 結果 == resample_ohlc(全件, rule)（各 TF 完全一致）。
-    rule = dataset.TIMEFRAME_RULES[tf]
-    expected = dataset.resample_ohlc(df, rule)
+    expected = md_resample.resample_ohlc_tf(df, tf)
     actual = _read_rollup_csv(out_dir / f"jp225_m1_{tf}.csv")
     assert len(actual) == len(expected)
     assert list(actual.index) == list(expected.index)
@@ -130,8 +132,7 @@ def test_stream_build_streaming_write_is_byte_identical_to_full_sorted_write(tmp
     rb.stream_build(m1_csv, [tf], out_dir, chunk_rows=2500)
     streamed_bytes = (out_dir / f"jp225_m1_{tf}.csv").read_bytes()
     # Oracle: 全件 resample を _write_rollup で period 昇順一括書きした結果。
-    rule = dataset.TIMEFRAME_RULES[tf]
-    expected_bars = rb._resample_chunk(df, rule)
+    expected_bars = rb._resample_chunk(df, tf)
     oracle_dir = tmp_path / "oracle"
     rb._write_rollup(oracle_dir, tf, expected_bars)
     oracle_bytes = (oracle_dir / f"jp225_m1_{tf}.csv").read_bytes()
@@ -159,8 +160,7 @@ def test_incremental_update_matches_full_resample_after_append(tmp_path, tf):
     new_state = rb.incremental_update(m1_csv, state, [tf], out_dir)
 
     # Assert: 各 TF ロールアップ == resample_ohlc(全件)（形成中バー上書き＋確定 append の正しさ）。
-    rule = dataset.TIMEFRAME_RULES[tf]
-    expected = dataset.resample_ohlc(df_full, rule)
+    expected = md_resample.resample_ohlc_tf(df_full, tf)
     actual = _read_rollup_csv(out_dir / f"jp225_m1_{tf}.csv")
     assert list(actual.index) == list(expected.index)
     for col in ("open", "high", "low", "close", "volume"):
@@ -199,7 +199,7 @@ def test_incremental_update_uses_tail_probe_not_full_scan(tmp_path, monkeypatch)
     # 全件チャンクスキャンを 1 度も呼ばない（probe で完結）。
     assert calls["with_chunksize"] == 0
     # それでも結果は resample_ohlc(全件) と一致し、state も進む。
-    expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES["1h"])
+    expected = md_resample.resample_ohlc_tf(df_full, "1h")
     actual = _read_rollup_csv(out_dir / "jp225_m1_1h.csv")
     assert list(actual.index) == list(expected.index)
     for col in ("open", "high", "low", "close", "volume"):
@@ -235,7 +235,7 @@ def test_incremental_update_falls_back_to_full_scan_when_probe_misses_tail(tmp_p
 
     # probe では last_ts を内包できず、全件チャンクスキャンへフォールバックする。
     assert calls["with_chunksize"] >= 1
-    expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES["1h"])
+    expected = md_resample.resample_ohlc_tf(df_full, "1h")
     actual = _read_rollup_csv(out_dir / "jp225_m1_1h.csv")
     assert list(actual.index) == list(expected.index)
     assert new_state.last_processed_ts == df_full.index.max().to_pydatetime()
@@ -271,7 +271,7 @@ def test_incremental_update_is_vectorized_no_iterrows_over_rollup(tmp_path, monk
     assert sizes["max"] < 50, f"iterrows 対象が大きすぎる（{sizes['max']} 行）＝ロールアップ全体走査の疑い"
     # それでも各 TF は resample_ohlc(全件) と一致する。
     for tf in ("5m", "1h", "1D"):
-        expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES[tf])
+        expected = md_resample.resample_ohlc_tf(df_full, tf)
         actual = _read_rollup_csv(out_dir / f"jp225_m1_{tf}.csv")
         assert list(actual.index) == list(expected.index)
         for col in ("open", "high", "low", "close", "volume"):
@@ -340,7 +340,7 @@ def test_incremental_update_appends_tail_without_rewriting_history(tmp_path):
     # prefix（過去確定足）はバイト一致（履歴を書き直していない）。
     assert path.read_bytes()[:offset] == prefix_before
     # かつ結果は resample_ohlc(全件) と一致（末尾追記が正しい）。
-    expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES["5m"])
+    expected = md_resample.resample_ohlc_tf(df_full, "5m")
     actual = _read_rollup_csv(path)
     assert list(actual.index) == list(expected.index)
     for col in ("open", "high", "low", "close", "volume"):
@@ -364,7 +364,7 @@ def test_incremental_update_is_idempotent_on_reprocess(tmp_path):
     rb.incremental_update(m1_csv, state, ["5m"], out_dir)  # 2 回目（同じ古い state ＝ 再処理）
 
     # 2 回処理しても resample(全件) と一致（merge だと volume 二重計上で不一致になる）。
-    expected = dataset.resample_ohlc(df_full, dataset.TIMEFRAME_RULES["5m"])
+    expected = md_resample.resample_ohlc_tf(df_full, "5m")
     actual = _read_rollup_csv(out_dir / "jp225_m1_5m.csv")
     assert list(actual.index) == list(expected.index)
     for col in ("open", "high", "low", "close", "volume"):
@@ -380,7 +380,7 @@ def test_incremental_update_falls_back_to_stream_build_when_state_absent(tmp_pat
     # Act: state=None（不在）で呼ぶ。
     new_state = rb.incremental_update(m1_csv, None, ["1h"], out_dir)
     # Assert: フォールアウト build が走り、resample(全件) と一致し、state が返る。
-    expected = dataset.resample_ohlc(df, dataset.TIMEFRAME_RULES["1h"])
+    expected = md_resample.resample_ohlc_tf(df, "1h")
     actual = _read_rollup_csv(out_dir / "jp225_m1_1h.csv")
     assert list(actual.index) == list(expected.index)
     assert new_state.last_processed_ts == df.index.max().to_pydatetime()
