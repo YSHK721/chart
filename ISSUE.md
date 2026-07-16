@@ -1243,7 +1243,8 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 - **検証記録（正常動作確認済みの操作）**: ①indicator_ui（8145）: 時間足9種・ライブ ON/OFF・メニュー4タブ・カテゴリ5種・検索・お気に入り登録・moving_averages 追加/歯車(パラメータ/スタイル/可視性)/期間変更 OK/表示トグル/削除・market_profile 追加/日別プロファイル切替/週↔日切替(ISSUE-090 回帰なし)/zp 描画(POC*/VAH 線) 全正常。②replay_ui（8146）: 1足送り/戻し・速度×0.25〜×1・bar スライダー・▶再生/⏸停止(bar 前進)・再生追従・表示左右端・レンジ4種・最新足更新モード・時間足・price_range_power 適用(バンド線描画) 全正常。③report_ui（8770）: IS/OOS 区間トグル・6タブ(比較判定/取引明細/ヒートマップ/グラフ/サマリー/用語)・接点ボタン・FAIL 判定バッジ(AssessmentPolicy)・3チャート(価格/Balance/Drawdown) 全正常。コンソールエラーは本 ISSUE-096 の 1 件と favicon 404 のみ（8144 への ERR_CONNECTION_REFUSED は検証中に停止した旧サーバへ旧タブがポーリングした残骸＝実欠陥でない）。
 
 ## ISSUE-097: OCP（オープン・クローズドの原則）のアーキテクチャ監査（4系統並列調査・実コード実測に基づく）
-- **ステータス**: OPEN（2026-07-16 起票）
+- **ステータス**: 一部 RESOLVED（2026-07-16 起票／🔴-1 対応済み・残りは OPEN）
+- **対応記録（🔴-1・2026-07-16）**: market_profile の src ディスパッチを `SourceDescriptor` 登録表（`_SOURCE_DESCRIPTORS`／`_SOURCE_REGISTRY`）へ集約し、`_ALLOWED_SRC`/`_ATOM`/`_SRC_METRIC` を表からの導出値（同一値・同一順序＝byte 不変）に、if 連鎖を handler 参照の table-driven dispatch に置換。新ソース追加＝表への1エントリのみへ縮退。byte-parity golden 27×3 緑・MP api 296・web 287 緑。回帰ガード（導出値一致・handler 解決）新設。feature/solid-r2-mp-source-descriptor をマージ。🔴-2（tf_period の src 分岐）は記述子形状が異なるため無理に同一表へ入れず別タスクへ申し送り。🟡🔵は未着手（YAGNI 留保含む）。
 - **調査方法**: architecture-executor 4系統並列（①simulator 本体＋replay_ui/report_ui/simulator配下tools ②indigators/indicator_ui の api＋web/js ③indigators/market_profile の api＋analysis＋web/js ④共有層 marketdata/common/common_view＋リポジトリ直下tools）。評価軸＝新指標・新EA(戦略)・新datasetRef(銘柄)・新時間足・新Market Profileソース(dwell/zp以外)・新レポート出力形式・新ティックデータ源(Dukascopy以外)・新エラー種別/HTTP契約の追加が、既存のどのファイルの修正を強制するかを実測。OCP smell の主対象＝追加のたび編集を強要する if/elif・type-switch・==定数比較の分岐、抽象化点を欠いたハードコードのテーブル/レジストリ、追加のたび複数箇所の同期編集を要する構造。DIP監査(ISSUE-091/092)・SRP監査(ISSUE-094)で既に対処または記録済みの拡張点（module_loader/_TABLEプラグイン境界・catalog_schemaによる指標param単一情報源化・datasetRegistry統合・戦略/Presenter/Repositoryの1バリアント=1ファイル構造・null_bカーネル一元化・outlier_policy/csv_schema/serving_cache/resample委譲・api_shared/http_contract中立化）は既知として除外し新規発見に集中。prototype_* は対象外。
 - **総括**: 🔴（既存挙動破壊を強制する複数箇所同期編集）は market_profile の src ディスパッチ 2 件に限定。simulator・indicator_ui・共有層は 🔴 該当なし＝Composition Root 型の DI 選択分岐や、稼働中の第2バリアントが実在しない箇所（YAGNI 上未実装が妥当）に留まる。共通するsmellのパターンは「①ハードコードされた許可集合＋実処理分岐の並行テーブル化（3個以上に分散）」「②値表の重複定義（同一値の2箇所以上での再宣言）」「③フロント側でのソース/指標名==比較の散在」の3型。
 
@@ -1287,7 +1288,8 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 ### 裁定不要・実装フェーズへの申し送り
 上記🔴2件・🟡9件・🔵12件は分離方針案を併記済み。着手時は各件を1バリアント=1ファイル/1レジストリへの委譲としてSRP監査(ISSUE-094)と同様の並列実装体制（変更ファイル集合の非交差判定によるworktree隔離並列）を推奨。11番（銘柄/instrument分散）は稼働中の第2バリアントが存在しないためYAGNI上、実要求化まで先行実装しないことを推奨。
 ## ISSUE-098: LSP（リスコフの置換原則）徹底監査（4系統並列調査・全指摘 file:line 実証済み）
-- **ステータス**: OPEN（2026-07-16 起票）
+- **ステータス**: 一部 RESOLVED（2026-07-16 起票／🔴-1 対応済み・残りは OPEN）
+- **対応記録（🔴-1・2026-07-16）**: `ReportPresenterPort`（3メソッド1 Port）を形式別の単一メソッド Port（`MarkdownReportPort`/`HtmlReportPort`/`JsonReportPort`）へ分割し、各 Presenter を自形式 Port の単独実装へ変更、NotImplementedError スタブ基底 `_BasePresenter` を撤去（LSP 不成立を解消）。集約 `ReportPresenterPort` は参照元非破壊のため後方互換 ABC として温存。形式専用 Interactor 3 種を追加（ISP 是正）。本番 `main/__init__.py:459-460` は具象直接呼びで不変・出力 byte 不変。壊れた契約を固定していたテスト（test_usecase_ports.py:84-87／test_presenters.py の subtype アサート6行）を新契約へ再設計更新（出力検証は無変更）。simulator 937×2 緑。feature/solid-r1-presenter-port-split をマージ。ISSUE-099🟡-1（同一の ISP 指摘）も本対応で解消。🟡（MaSlope 事前条件・CandleSource 重複/例外契約・profit_band 例外多重・call_binding identity 分岐）・🔵は未着手。
 - **調査方法**: architecture-executor 4系統並列（①simulator本体＋replay_ui/report_ui/tools ②indicator_ui api+web/js ③market_profile api+analysis+web/js ④共有層 marketdata/common/common_view+リポジトリ直下 tools）。判定基準は「基底型（ABC/Protocol/ダックタイピング契約）を使うコードは、そのサブタイプ・実装に差し替えても正しさを壊されないか」。prototype_* は対象外。DIP監査（ISSUE-091/092）・SRP監査（ISSUE-094）で既知の依存方向違反・アクター混在・境界インターフェース欠如は重複指摘しない（純粋に置換可能性のみを評価）。各系統エージェントは着手前に上流前提（依頼が想定する「共通基底の存在」等）を実コードで検証し、前提が実在しない箇所（market_profile の Store/controller/検定コアには実は共通基底が存在しない等）は「LSP 対象外」として正しく除外した。
 - **総括**: 全4系統中、**明確な LSP 不成立（🔴）は simulator 系統に 1 件**（`ReportPresenterPort` の 3 メソッド契約を各 Presenter サブクラスが 1/3 しか履行せず、残り 2 メソッドは基底 `_BasePresenter` の `NotImplementedError` スタブへ落ちる）。他 3 系統（indicator_ui／market_profile／共有層）は 🔴 ゼロで、いずれも「契約に明記されない暗黙の振る舞い」を巡る 🟡 中程度の非対称（事前条件強化・事後条件/例外契約の兄弟間非対称）に留まる。simulator 系統の `ResultSinkPort`（3メソッドPort＋差分のみoverride）や marketdata の `CandleSource` Protocol（構築時パラメータ隔離）は模範的な置換可能設計として記録。
 
@@ -1321,7 +1323,8 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 ### 残存スコープ（次調査への申し送り）
 - `ReplayIndicatorController`（`simulator/replay_ui/web/js/adapter/front/replay_indicator_controller.js`）の基底 override 契約整合は indicator_ui 担当の範囲外のため未検証。
 ## ISSUE-099: ISP（インターフェース分離の原則）徹底度のアーキテクチャ監査（4系統並列調査・全指摘 file:line 実証済み）
-- **ステータス**: OPEN（2026-07-16 起票・依頼者指示によるアーキテクチャエージェント調査）
+- **ステータス**: 一部 RESOLVED（2026-07-16 起票／🟡-1 対応済み・残りは OPEN）
+- **対応記録（🟡-1・2026-07-16）**: `ReportPresenterPort` の形式別 Port 分割で対応済み（ISSUE-098🔴-1 と同一の収束点・feature/solid-r1-presenter-port-split をマージ）。太った3メソッド Port を単一メソッド Port 3種へ分割し未使用メソッドへの型依存を排除、`_BasePresenter` の NotImplementedError スタブを撤去。simulator 937×2 緑・出力 byte 不変。🟡-2〜5（VolBandRepositoryPort の read/write 分離・front host 全体依存 TimeframeController/MarketProfileController・MarketProfileHistogramPrimitive の god interface）と🔵は未着手（3・4 は symlink 共有ベース制約で即時分割困難、他は独立実装ゆえ分割可能）。
 - **調査方法**: architecture-executor 4系統並列（①simulator本体+replay_ui/report_ui/tools ②indigators/indicator_ui の api+web/js ③indigators/market_profile の api+analysis+web/js ④共有層 marketdata/common/common_view+リポジトリ直下 tools）。評価基準は「Protocol/ABC/クラスの公開面がクライアントの実利用に対して大きすぎないか」＝ISP固有の切り口とし、既知の DIP（ISSUE-091/092）・SRP（ISSUE-094）指摘とは非重複であることを各エージェントが upstream-input-validation で個別実証済み。prototype_* は対象外。実ディレクトリ名は `indigators/`（指示文中の `indicators` 表記の実体）。
 - **総括**: 🔴高の ISP 違反は**系統横断でゼロ**（4系統とも太った Protocol/ABC の未実装メソッド強制は限定的または不在）。🟡中5件・🔵低4件を検出。paternが2種に集約: (a) バックエンド Port が read/write 等の異ロールを1つに束ね一部クライアントが未使用メソッドへ型依存する、(b) フロントエンド front/adapter が「host オブジェクト丸ごと」を受け取り必要面はごく一部という広依存パターン（indicator_ui/market_profile 双方で共通・共有ベースの symlink 制約により即時分割は困難）。
 
