@@ -86,17 +86,24 @@ class Account:
         self.balance += deal.profit
 
     def update_floating_pnl(self, bar: Any) -> None:
-        """保有ポジションの含み損益を再評価する（METRICS §5.1）。
+        """[段階縮退] bar 評価基準で含み損益を再評価する（METRICS §5.1）。
 
-        floating_pnl_basis="close"（既定）: 全保有を bar.close で評価（従来不変）。
-        floating_pnl_basis="bid_ask"（層2）: 決済価格基準で評価する。買い保有は
-            Bid(=bar.close)、売り保有は Ask(=bar.close + bar.spread × point_size)。
-            実 MT5 のポジション決済価格基準評価に整合し、売り含み損が悲観化する。
+        ISSUE-094 🟡-10b: 執行クォート規約（bid/ask basis・spread×point）による評価価格の
+        解決は usecase 側（_execution.resolve_eval_quote）へ移送された。本メソッドは既存
+        config 経路・test_account.py が参照するため後方互換として温存する（非推奨）。含み
+        損益の合算自体は update_floating_pnl_at（口座唯一の合算実装）へ委譲し、評価価格の
+        解決のみ本メソッドが bar から行う。
+
+        floating_pnl_basis="close"（既定）: 買い・売りとも bar.close で評価（従来不変）。
+        floating_pnl_basis="bid_ask"（層2）: 買い=Bid(=bar.close) / 売り=Ask(=bar.close +
+            bar.spread × point_size)。実 MT5 の決済価格基準評価に整合し売り含み損が悲観化。
         """
-        self.floating_pnl = sum(
-            pos.floating_pnl(self._eval_price(bar, pos.side), self.contract_size)
-            for pos in self.open_positions
-        )
+        if self.floating_pnl_basis == "bid_ask":
+            self.update_floating_pnl_at(
+                bid=bar.close, ask=bar.close + bar.spread * self.point_size
+            )
+        else:
+            self.update_floating_pnl_at(bid=bar.close, ask=bar.close)
 
     def update_floating_pnl_at(self, *, bid: float, ask: float) -> None:
         """現在ティックの評価価格（bid/ask）で含み損益を再評価する（every-tick #3）。
@@ -111,7 +118,8 @@ class Account:
         （tick_model=="real_ticks"）経路は含み損評価を本メソッド経由で行うため、
         floating_pnl_basis（"close"/"bid_ask"）config はこの経路では inert（無効）であり、
         実 bid/ask 評価で代替される。basis を参照するのは bar 経路の update_floating_pnl
-        （_eval_price）のみ。
+        （評価価格の解決を bar から行う段階縮退シム）のみ。含み損益の合算は口座で本
+        メソッドに一本化されている（bar 経路も本メソッドへ委譲する・ISSUE-094 🟡-10b）。
         """
         self.floating_pnl = sum(
             pos.floating_pnl(bid if pos.side == "buy" else ask, self.contract_size)
@@ -119,17 +127,15 @@ class Account:
         )
 
     def mark_price(self, bar: Any, side: str) -> float:
-        """保有 side の含み損益評価価格（=その時点の決済現値）を返す。
+        """[段階縮退] 保有 side の含み損益評価価格（=その時点の決済現値）を返す。
 
+        ISSUE-094 🟡-10b: 執行クォート規約の解決は usecase 側（_execution.resolve_eval_quote
+        + close_price_for）へ移送された。本メソッドは後方互換として温存する（非推奨）。
         update_floating_pnl と同一の価格を返すため、stop-out 強制決済価格に再利用すると
         「margin 割れを判定した時点の価格で決済する」整合が保たれる（実 MT5 整合）。
         買い保有=Bid(=bar.close)、売り保有=Ask（"bid_ask" 時は close+spread×point、
         "close" 時は close）。
         """
-        return self._eval_price(bar, side)
-
-    def _eval_price(self, bar: Any, side: str) -> float:
-        """floating_pnl_basis に従い保有 side の含み損益評価価格を解決する。"""
         if self.floating_pnl_basis == "bid_ask" and side == "sell":
             # 売り保有の決済 = 買い戻し = Ask = Bid(close) + spread×point。
             return bar.close + bar.spread * self.point_size

@@ -23,6 +23,7 @@ from simulator.usecase._execution import (
     derive_quotes,
     fill_market_order,
     fill_pending_order,
+    resolve_eval_quote,
 )
 from simulator.usecase.compute_stats import compute_stats
 from simulator.usecase.models import BacktestResult
@@ -265,7 +266,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     # 非breach: open 基準で書き換えた floating を close 基準へ戻す
                     #   （後続 on_new_bar 等へ open 基準 floating を漏らさない。equity_curve は
                     #   後段 I で close 基準により記録する）。レビュー🟡対応。
-                    account.update_floating_pnl(bar)
+                    #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
+                    nb_bid, nb_ask = resolve_eval_quote(
+                        bar, basis=floating_pnl_basis, point_size=spec.point_size
+                    )
+                    account.update_floating_pnl_at(bid=nb_bid, ask=nb_ask)
             # D 保有状態 / E シグナル評価（EA ロジック）
             #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。
             orders = (
@@ -362,7 +367,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             open_trades = still_open
 
             # I エクイティ/残高の更新（含み損益反映）→ margin_level < stop_out で停止処理
-            account.update_floating_pnl(bar)
+            #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
+            eq_bid, eq_ask = resolve_eval_quote(
+                bar, basis=floating_pnl_basis, point_size=spec.point_size
+            )
+            account.update_floating_pnl_at(bid=eq_bid, ask=eq_ask)
             equity_curve.append(account.equity)
             if account.margin_level() < request.stop_out_level:
                 # 既定 "fail_stop": 従来どおり MarginCallError を送出し部分結果を破棄する。
@@ -377,11 +386,18 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     )
                 # "close_and_halt": 全保有玉を強制決済し、以降の新規発注を抑止して最終統計
                 # まで完走する（cycle4 バグ②）。強制決済価格は「margin 割れを判定した時点
-                # の現値」＝account.mark_price（update_floating_pnl と同一価格・bar.close
-                # 基準）を用いる。成行建値が始値基準（current_open）でも、過ぎ去った始値で
-                # なく割れ時点の close 現値で決済する（実 MT5 整合・ISSUE-019）。
+                # の現値」＝含み損評価と同一価格（bar.close 基準）を用いる。成行建値が始値
+                # 基準（current_open）でも、過ぎ去った始値でなく割れ時点の close 現値で決済
+                # する（実 MT5 整合・ISSUE-019）。
+                #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
+                #   買い=Bid / 売り=Ask を close_price_for で選択（旧 mark_price と同一値）。
+                so_bid, so_ask = resolve_eval_quote(
+                    bar, basis=floating_pnl_basis, point_size=spec.point_size
+                )
                 for ot in open_trades:
-                    close_price = account.mark_price(bar, ot.position.side)
+                    close_price = close_price_for(
+                        ot.position.side, bid=so_bid, ask=so_ask
+                    )
                     self._close_open_trade(
                         ot,
                         exit_time=bar.time,
