@@ -23,6 +23,8 @@ HTTP サーバ本体（BaseHTTPRequestHandler・ソケット）に依存しな�
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from api_shared.http_contract import nested_error  # §6.3.4 単一定義（ISSUE-094 🔵-11: 中立共有パッケージへ移設）
@@ -41,18 +43,50 @@ _DEFAULT_SRC = "candle"
 _MAX_BINS = 1000
 _MIN_VA = 0.01
 
-# src ホワイトリスト（candle=足レンジ TPO・dwell=実ティック滞在秒/セッション認識・m1=生ティック数・
-# zp=超過占有スコア z(p)＝Null B 帰無に対する分単位滞在の超過）。
-_ALLOWED_SRC = ("candle", "dwell", "m1", "zp")
-# src → dwell モジュールの metric（dwell=滞在秒・count=生ティック数/セッション非適用）。
-_SRC_METRIC = {"dwell": "dwell", "m1": "count"}
-# 応答の atom 表示（UI 用・原子の意味）。
-_ATOM = {
-    "candle": "足レンジ",
-    "dwell": "tick滞在秒(セッション認識)",
-    "m1": "tick数",
-    "zp": "超過占有z(p)(分単位滞在/NullB)",
-}
+# ISSUE-097 🔴-1（OCP）: src（プロファイル計算ソース）の定義を SourceDescriptor 登録表へ集約する。
+#   従来 4 箇所へ分散していた許可集合・metric 表・atom 表・実処理 if 連鎖を、1 ソース＝1 記述子の
+#   単一レジストリ（本ファイル末尾 _SOURCE_DESCRIPTORS）へ寄せる。新ソース追加＝表への 1 エントリ追加のみ。
+#   `_ALLOWED_SRC` / `_SRC_METRIC` / `_ATOM` は当該表からの導出値（同一値・同一順序＝応答 byte 不変）。
+#   実体（登録表・導出値・dispatch handler）は handler 関数定義後にまとめて配置する。
+
+
+@dataclass(frozen=True)
+class _MPRequest:
+    """handle_market_profile が解決済みパラメータを src handler へ渡す Input Model（HTTP 殻非依存）。
+
+    src ごとの dispatch handler は本 DTO 1 つを受け取り (HTTPステータス, ボディ) を返す。既存の
+    `_handle_candle` / `_handle_dwell` / `_handle_zp` の引数・戻り値・例外は不変（handler は薄い委譲）。
+    """
+
+    ref: Any
+    timeframe: Any
+    limit_n: int | None
+    n_bins: int
+    va_pct: float
+    barw_val: float
+    src_val: str
+    to_ts: int | None
+    from_ts: int | None
+    want_today: bool
+    want_sessions: bool
+    want_fine: bool
+
+
+@dataclass(frozen=True)
+class SourceDescriptor:
+    """1 プロファイルソース（src）の宣言的記述子。新ソース追加＝本記述子 1 件の追加のみで閉じる。
+
+    Attributes:
+        id: src 識別子（クエリ ``?src=`` の値・許可集合の 1 要素）。
+        atom: 応答トップレベル ``atom``（UI 表示用・原子の意味）。
+        metric: dwell モジュールに渡す metric（dwell 系のみ。非該当は None＝``_SRC_METRIC`` へ含めない）。
+        handler: 解決済み :class:`_MPRequest` を受け ``(status, body)`` を返す dispatch 関数。
+    """
+
+    id: str
+    atom: str
+    metric: str | None
+    handler: Callable[["_MPRequest"], tuple[int, dict[str, Any]]]
 # tf → 足の秒長（dwell 窓の終端は t1 + bar_sec で最終足の期間を満たす）。未知/None は 1D 相当。
 _TF_BAR_SEC = {
     "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
@@ -237,20 +271,33 @@ def handle_market_profile(
     #   （market_profile_forming_controller）専用の追加フラグ。省略・不正は偽＝既存応答スキーマ不変（後方互換）。
     want_fine = _parse_bool_flag(kwargs.get("want_fine"))
 
-    if src_val in ("dwell", "m1"):
-        return _handle_dwell(
-            ref, timeframe, limit_n, n_bins, va_pct, barw_val, src_val, to_ts, from_ts,
-            want_today, want_sessions, want_fine,
-        )
+    # ISSUE-097 🔴-1（OCP）: src 分岐は SourceDescriptor 登録表の handler へ委譲する（テーブル駆動）。
+    #   src_val は上の許可集合検証を通過済み＝必ず登録表に存在する。新ソース追加＝表への 1 エントリのみ。
+    request = _MPRequest(
+        ref=ref, timeframe=timeframe, limit_n=limit_n, n_bins=n_bins, va_pct=va_pct,
+        barw_val=barw_val, src_val=src_val, to_ts=to_ts, from_ts=from_ts,
+        want_today=want_today, want_sessions=want_sessions, want_fine=want_fine,
+    )
+    return _SOURCE_REGISTRY[src_val].handler(request)
 
-    if src_val == "zp":
-        return _handle_zp(
-            ref, timeframe, limit_n, n_bins, va_pct, barw_val, to_ts, from_ts,
-            want_today, want_sessions,
-        )
 
-    # src=candle（既定）— 現状の足ベース TPO 経路（不変。barw 指定時のみ n_bins を上書き）。
-    # candles は load_candles が返す [{time,open,high,low,close}] がそのまま compute の入力形。
+def _handle_candle(
+    ref: Any,
+    timeframe: Any,
+    limit_n: int | None,
+    n_bins: int,
+    va_pct: float,
+    barw: float,
+    to_ts: int | None = None,
+    from_ts: int | None = None,
+    want_today: bool = False,
+    want_sessions: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    """src=candle（既定）— 足ベース TPO 経路（従来の inline 処理を抽出・挙動不変）。
+
+    candles は load_candles が返す ``[{time,open,high,low,close}]`` がそのまま compute の入力形。
+    barw>0 指定時のみ price レンジ確定後に n_bins を上書きする。応答スキーマは従来と同一。
+    """
     candles = dataset.load_candles(ref, timeframe, limit_n)
     if to_ts is not None:
         # as-seen-at-t: T までに観測できた足だけへ切る（未来リーク無し）。空になれば従来の空プロファイル応答。
@@ -258,10 +305,10 @@ def handle_market_profile(
     if from_ts is not None:
         # ローリング窓: from 以上の足だけへ切る（下限・含む）。to と併用で [from,to] 窓（増分2 A）。
         candles = [c for c in candles if c["time"] >= from_ts]
-    if candles and barw_val > 0:
+    if candles and barw > 0:
         # price レンジは compute_candle_profile と同一定義（price_range 単一情報源）。barw→n_bins に先取り使用。
         price_min, price_max = price_range(candles)
-        n_bins = _resolve_n_bins(n_bins, barw_val, price_min, price_max)
+        n_bins = _resolve_n_bins(n_bins, barw, price_min, price_max)
     profile = compute_candle_profile(
         candles, n_bins=n_bins, va_pct=va_pct, want_today=want_today,
         want_sessions=want_sessions,
@@ -412,3 +459,65 @@ def _handle_zp(
         body["sessions_total"] = len(all_sessions)
         body["sessions"] = _cap_sessions(all_sessions)
     return 200, body
+
+
+# ── ISSUE-097 🔴-1（OCP）: src dispatch 登録表 ─────────────────────────────────────
+# 各 dispatch 関数は解決済み _MPRequest 1 つを受け、対応する _handle_* へ既存と同一の引数で委譲する
+# （呼び出し先・引数・戻り値・例外は完全不変）。dwell と m1 は metric 差のみで同一処理のため共通の
+# _dispatch_dwell を共有し、src_val（_MPRequest 経由）で metric を分岐する（既存 if-chain と同挙動）。
+
+
+def _dispatch_candle(request: _MPRequest) -> tuple[int, dict[str, Any]]:
+    """src=candle の dispatch（_handle_candle へ委譲）。"""
+    return _handle_candle(
+        request.ref, request.timeframe, request.limit_n, request.n_bins, request.va_pct,
+        request.barw_val, request.to_ts, request.from_ts, request.want_today,
+        request.want_sessions,
+    )
+
+
+def _dispatch_dwell(request: _MPRequest) -> tuple[int, dict[str, Any]]:
+    """src=dwell/m1 の dispatch（_handle_dwell へ委譲・metric は src_val で分岐）。"""
+    return _handle_dwell(
+        request.ref, request.timeframe, request.limit_n, request.n_bins, request.va_pct,
+        request.barw_val, request.src_val, request.to_ts, request.from_ts,
+        request.want_today, request.want_sessions, request.want_fine,
+    )
+
+
+def _dispatch_zp(request: _MPRequest) -> tuple[int, dict[str, Any]]:
+    """src=zp の dispatch（_handle_zp へ委譲）。"""
+    return _handle_zp(
+        request.ref, request.timeframe, request.limit_n, request.n_bins, request.va_pct,
+        request.barw_val, request.to_ts, request.from_ts, request.want_today,
+        request.want_sessions,
+    )
+
+
+# src 登録表（唯一の情報源）。順序は許可集合の列挙順＝400 メッセージの byte を固定する。
+#   candle=足レンジ TPO・dwell=実ティック滞在秒/セッション認識・m1=生ティック数・
+#   zp=超過占有スコア z(p)（Null B 帰無に対する分単位滞在の超過）。
+_SOURCE_DESCRIPTORS: tuple[SourceDescriptor, ...] = (
+    SourceDescriptor(
+        id="candle", atom="足レンジ", metric=None, handler=_dispatch_candle,
+    ),
+    SourceDescriptor(
+        id="dwell", atom="tick滞在秒(セッション認識)", metric="dwell", handler=_dispatch_dwell,
+    ),
+    SourceDescriptor(
+        id="m1", atom="tick数", metric="count", handler=_dispatch_dwell,
+    ),
+    SourceDescriptor(
+        id="zp", atom="超過占有z(p)(分単位滞在/NullB)", metric=None, handler=_dispatch_zp,
+    ),
+)
+# id → 記述子（dispatch 解決用）。挿入順を保持（許可集合の順序と一致）。
+_SOURCE_REGISTRY: dict[str, SourceDescriptor] = {d.id: d for d in _SOURCE_DESCRIPTORS}
+
+# 以下 3 つは登録表からの導出値（従来のハードコードと同一値・同一順序＝応答 byte 不変）。
+# src ホワイトリスト（許可値以外は 400。'|'.join(_ALLOWED_SRC) が 400 メッセージへ入るため順序を保持）。
+_ALLOWED_SRC = tuple(d.id for d in _SOURCE_DESCRIPTORS)
+# src → dwell モジュールの metric（dwell=滞在秒・count=生ティック数/セッション非適用。非該当 src は含めない）。
+_SRC_METRIC = {d.id: d.metric for d in _SOURCE_DESCRIPTORS if d.metric is not None}
+# 応答の atom 表示（UI 用・原子の意味）。
+_ATOM = {d.id: d.atom for d in _SOURCE_DESCRIPTORS}
