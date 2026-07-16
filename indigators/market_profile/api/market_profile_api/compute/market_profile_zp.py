@@ -46,7 +46,7 @@ import pandas as pd
 from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute.market_profile import _value_area
 from market_profile_api.compute.market_profile_dwell import GRID_W  # noqa: F401  (dwell 互換・zp 内部では不使用)
-from market_profile_api.compute.market_profile_zp_store import ZpStore
+from market_profile_api.gateway.zp_store import ZpStore  # ISSUE-092 ④: gateway 移設（旧 compute パスは互換シム）
 
 # ISSUE-091 🔴-2: ティック物理格納への依存は compute 所有の TickStorePort へ逆転（dwell と同規律）。
 from market_profile_api.compute.tick_store_port import tick_store as _tick_store

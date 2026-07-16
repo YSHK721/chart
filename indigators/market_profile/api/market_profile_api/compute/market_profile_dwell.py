@@ -46,8 +46,9 @@ import pandas as pd
 
 # POC/VA は candle 版の単一定義を再利用する（DRY・同一定義）。
 from market_profile_api.compute.market_profile import _session_entry, _value_area
-# ディスクキャッシュ Repository（ISSUE-040(b) SRP 分離）。集計数学は本モジュール、永続化は Store が担う。
-from market_profile_api.compute.market_profile_dwell_store import DwellRollupStore
+# ディスクキャッシュ Repository（ISSUE-040(b) SRP 分離 / ISSUE-092 ④ gateway 移設）。集計数学は本
+# モジュール、永続化 I/O は gateway 層の Store が担う（旧 compute パスは互換シムとして温存）。
+from market_profile_api.gateway.dwell_rollup_store import DwellRollupStore
 
 # ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 # ISSUE-091 🔴-2: ティック物理格納（day parquet・DATA_DIR）への依存は compute 所有の
