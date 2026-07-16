@@ -29,32 +29,16 @@ logger = logging.getLogger(__name__)
 
 from marketdata import rollup_store, tail_reader
 
-# workspace ルート（このファイル: marketdata/ → parents[1] = /workspaces/app）。
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
-# 時系列データの単一基点（marketdata.paths.DATA_DIR）を import するため repo 根を sys.path へ
-# ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
-from marketdata.paths import DATA_DIR
+# datasetRef 台帳は marketdata.dataset_registry の記述子レジストリ（唯一源・ISSUE-094 🟡-9）から
+# 導出する。従来 4 断片（DATASET_WHITELIST・_OUTLIER_CLAMP_REFS_SET・_ROLLUP_REFS・
+# tf_meta.TICK_REFS）は同一 ref 台帳の分割で、新銘柄追加時に整合が必要だった。実 CSV パスの解決
+# （DATA_DIR 単一基点・workspace ルート）は registry 側に集約した。
+from marketdata import dataset_registry
 
 # datasetRef ホワイトリスト（§7.3）。識別子 → 実 CSV パス。生パス直送・パストラバーサルを
-# 防ぐため、ここに無いキーはすべて拒否する（外から組み立てたパスは解決しない）。
-# JP225 系の時系列データは marketdata.paths.DATA_DIR（単一基点・Sd §10.1 C-1）配下に集約。
-DATASET_WHITELIST: dict[str, Path] = {
-    "sample": _WORKSPACE_ROOT
-    / "lightweight-charts-python-main"
-    / "examples"
-    / "4_line_indicators"
-    / "ohlcv.csv",
-    # JP225（日経225・Dukascopy E_N225Jap）。marketdata から書き出した日足 CSV
-    # （date,open,high,low,close・外れ値補正済み）。生成: indicator_ui/tools/export_jp225_csv.py。
-    "jp225": DATA_DIR / "jp225_daily.csv",
-    # JP225 1分足（原子データ）。全時間足はこの 1 分足を resample して生成する
-    # （date(UTC %Y-%m-%d %H:%M:%S),open,high,low,close,volume）。生成: tools/export_jp225_m1.py。
-    "jp225_m1": DATA_DIR / "jp225_m1.csv",
-    # JP225 1分足（ティック由来・原子データ）。生ティックを mid=(bid+ask)/2・UTC で集計した
-    # 1 分足（足も足内更新も同一ティック由来へ統一）。上位足は rollups/jp225_tick/ から読む。
-    # 生成: tools/build_tick_rollup.py（marketdata/tick_m1.py）。
-    "jp225_tick": DATA_DIR / "jp225_tick_m1.csv",
-}
+# 防ぐため、ここに無いキーはすべて拒否する（外から組み立てたパスは解決しない）。registry から
+# 導出した新規 mutable dict（monkeypatch.setitem で一時 ref を追加できる・利用側は無変更）。
+DATASET_WHITELIST: dict[str, Path] = dataset_registry.whitelist()
 
 # サンプル CSV の時刻列（解像度非依存に UNIX 秒へ変換する起点）。
 _SAMPLE_TIME_COLUMN = "date"
@@ -71,12 +55,8 @@ OUTLIER_CLAMP_THRESHOLD = outlier_policy.OUTLIER_THRESHOLD
 
 # 外れ値クランプを適用する ref（実市場の JP225 系のみ）。sample 等の合成データセットは
 # 対象外（正常な ±30% 超ヒゲを持つ golden を壊さないため・読み取り時補正は市場データ限定）。
-# dict[ref -> True]（monkeypatch.setitem で一時追加できるようマッピングで保持する）。
-_OUTLIER_CLAMP_REFS_SET: dict[str, bool] = {
-    "jp225": True,
-    "jp225_m1": True,
-    "jp225_tick": True,
-}
+# registry から導出した新規 mutable dict（monkeypatch.setitem で一時追加できる）。
+_OUTLIER_CLAMP_REFS_SET: dict[str, bool] = dataset_registry.clamp_refs()
 
 
 def _clamp_outlier_bars(df: pd.DataFrame, ref: str) -> pd.DataFrame:
@@ -107,7 +87,7 @@ from marketdata.resample import (  # noqa: E402  (再エクスポート)
 # 1 分足原子を全ロードせず末尾だけ読む datasetRef（メモリ有界化・D-2）。1m は tail_reader、
 # 上位足は事前生成のロールアップ CSV（rollup_store）から読む。それ以外の ref（sample/jp225 日足等・
 # 小データ）は従来経路（_load_base_dataframe + resample_ohlc）据置。
-_ROLLUP_REFS = ("jp225_m1", "jp225_tick")
+_ROLLUP_REFS = dataset_registry.rollup_refs()
 # 1m（原子）tail の安全上限（D-2）。表示 limit + 指標ルックバックぶんに十分な有界行数。
 # 1m 全件 tail（4.5M 行）で OOM を復活させないための上限（全件読みではない有限値）。
 _ATOMIC_TAIL_LOOKBACK_ROWS = 50_000
