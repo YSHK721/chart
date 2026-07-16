@@ -26,6 +26,9 @@ from urllib.parse import parse_qs, urlparse
 #   パッケージ api_shared.http_contract の単一定義を直参照する。
 from api_shared.http_contract import nested_error
 
+# 静的資産配信＋パストラバーサル防御（ISSUE-094 🟡-8: 殻から独立クラスへ抽出）。
+from simulator.replay_ui.framework.static_file_server import StaticFileServer
+
 from simulator.replay_ui.usecase.causal_compute import (
     CausalComputeRequest,
     causal_compute,
@@ -77,6 +80,9 @@ class ReplayApp:
         #   （既定 <repo>/indigators/indicator_ui/web/js）。None のときフォールバック無効＝従来挙動。
         #   replay の複製が残る間は web_dir が優先されるため挙動不変（純増分・回帰ゼロ）。
         self.shared_js_root = Path(shared_js_root).resolve() if shared_js_root else None
+        # 静的配信＋トラバーサル防御は StaticFileServer へ委譲（ISSUE-094 🟡-8）。許可根は
+        #   web_dir / shared_js_root から本クラス内で導出する（配信面・応答 byte は不変）。
+        self.static_server = StaticFileServer(self.web_dir, self.shared_js_root)
         self._lock = heavy_lock if heavy_lock is not None else threading.Lock()
         # MP サブバー tick 逐次成長の Port（任意注入）。None のときは /market_profile_forming
         #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
@@ -245,80 +251,9 @@ def make_handler(app: ReplayApp):
                     return self._json(status, payload)
                 except Exception as e:  # noqa: BLE001
                     return self._json(*nested_error("internal", str(e)[:200]))
-            return self._serve_static(u.path)
-
-        @staticmethod
-        def _resolve_under(join_root: "Path | None", rel: str, allowed_roots):
-            """``join_root/rel`` を解決し、dual-root ガードを通った実ファイルのみ返す。
-
-            resolve() 後の実パスが ``allowed_roots``（web_dir / shared_js_root）のいずれかの
-            配下にあり、かつ実ファイルのときのみ返す。単一ソース共有では web_dir/js 配下の
-            シンボリックリンクが shared_js_root（=indicator_ui/web/js）を指すため、resolve()
-            後は shared_js_root 配下になる。dual-root ガードにより web_dir 経由の一次解決で
-            そのまま許可される（従来の名前一致フォールバック依存を排除）。
-            パストラバーサル（``..``）は resolve 後に両ルート配下を外れるため弾かれる。
-            join_root が None・全ルート不通過・非ファイルのときは None（呼び出し側が次ルート/404 へ）。
-            """
-            if join_root is None:
-                return None
-            fp = (join_root / rel).resolve()
-            if not fp.is_file():
-                return None
-            for ar in allowed_roots:
-                # 区切り境界一致（Path.is_relative_to, Python 3.9+）で CWE-22 を封じる。
-                #   str.startswith は区切り境界を見ないため `.../replay_web` と接頭辞を共有する
-                #   兄弟 `.../replay_web_SECRET` へ生 `..` で逸脱できてしまう（区切り境界なし
-                #   prefix 一致）。is_relative_to は resolve() 後の実パスに対して境界単位で判定
-                #   するため、正規の symlink（resolve 先が shared_js_root 配下）は許可され続ける。
-                if ar is not None and fp.is_relative_to(ar):
-                    return fp
-            return None
-
-        def _serve_static(self, path: str):
-            rel = "index.html" if path in ("/", "") else path.lstrip("/")
-            # dual-root ガードで許可する根の集合。web_dir は replay の web 根全体（index.html/js/css/
-            #   vendor + replay 固有）。共有元は **js/css/vendor サブツリーのみ**に限定する（最小権限）。
-            #   shared_js_root（=indicator_ui/web）全体を許可すると build.mjs/package.json/data/tests/
-            #   node_modules/prototype 等まで配信面に露出するため、資産3サブツリーだけを許可根にする。
-            #   symlink 先（indicator_ui/web/{js,css,vendor}/…）は該当サブツリー配下で許可される。
-            #   MP frontend は別モジュール（indigators/market_profile/web/js）へ切り出し済みで、
-            #   replay の js/ 配下 symlink が MP モジュールを指す。resolve() 後は market_profile/web/js
-            #   配下へ抜けるため、当該 js サブツリーのみを許可根に追加する（最小権限）。
-            _mp_web_js = (
-                app.shared_js_root.parents[1] / "market_profile" / "web" / "js"
-                if app.shared_js_root else None
-            )
-            allowed = (
-                app.web_dir,
-                app.shared_js_root / "js" if app.shared_js_root else None,
-                app.shared_js_root / "css" if app.shared_js_root else None,
-                app.shared_js_root / "vendor" if app.shared_js_root else None,
-                _mp_web_js,
-            )
-            # replay web_dir 優先。web_dir は web 根（index.html + js/ を含む）で URL の /js/ 接頭辞込みで解決。
-            fp = self._resolve_under(app.web_dir, rel, allowed)
-            # miss なら shared_js_root（=indicator_ui の web 根・js/css/vendor 包含）へ同一 rel で
-            #   フォールバック。symlink 化した資産は web_dir 経由で一次解決されるため、本フォールバックは
-            #   indicator_ui のみに実体があるファイル（replay に symlink も実体も無いもの）用。
-            #   index.html は web_dir に実体があるため常に web_dir が優先され、共有元へは落ちない（per-app）。
-            if fp is None:
-                fp = self._resolve_under(app.shared_js_root, rel, allowed)
-            if fp is None:
-                self.send_response(404)
-                self.end_headers()
-                return
-            ct = {
-                "html": "text/html", "js": "application/javascript",
-                "mjs": "application/javascript", "css": "text/css",
-                "json": "application/json",
-            }.get(fp.suffix.lstrip("."), "text/plain")
-            body = fp.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", ct + "; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            # 静的配信＋トラバーサル防御は StaticFileServer へ委譲（Handler は API ルーティング＋
+            #   委譲のみ・ISSUE-094 🟡-8）。許可根の導出・dual-root ガード・応答 byte は不変。
+            return app.static_server.serve(self, u.path)
 
         def do_POST(self):  # noqa: N802
             if urlparse(self.path).path != "/compute":
