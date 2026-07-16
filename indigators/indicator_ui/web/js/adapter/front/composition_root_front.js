@@ -230,6 +230,13 @@ export async function bootstrap({
   }
   const persistence = new LocalStorageGateway(storage);
   const catalog = new IndicatorCatalogClient();
+  // param 既定値の単一情報源（back catalog_schema）を GET /catalog で解決する（ISSUE-092 ③）。
+  //   B方式のみ取得し、失敗時は静的既定（catalog.js リテラル）へフォールバック（オフライン耐性・UI 不変）。
+  //   A方式(file:)はサーバ無しのためスキップ（静的既定）。overlay は controller 生成前に完了させ、
+  //   以後のインスタンス生成が単一情報源の既定値を用いるようにする。load は例外を投げない（内部で吸収）。
+  if (mode === 'b') {
+    await catalog.load(fetch);
+  }
 
   // 時間足切替で candles を再取得するためのローダ（B方式のみ）。A方式（SAMPLE_DATA・再集計不可）は null。
   //   controller.setTimeframe が (datasetRef, timeframe) で呼び、直近 recentBars 本へ制限して取得する。
