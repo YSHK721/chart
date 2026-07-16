@@ -26,8 +26,16 @@ class VarianceEstimatorPort(Protocol):
 
 
 @runtime_checkable
-class VolBandRepositoryPort(Protocol):
-    def save(self, forecast: "VarianceForecast") -> None: ...
+class VolBandWriterPort(Protocol):
+    """書込ロール（ISP・ISSUE-099 🟡-2）。書込クライアント（estimate_weekly_band）
+    は save_all のみ使用するため、書込ロールを 1 メソッド Port として分離する。"""
+
     def save_all(self, forecasts: "Sequence[VarianceForecast]") -> None: ...
+
+
+@runtime_checkable
+class VolBandReaderPort(Protocol):
+    """読取ロール（ISP・ISSUE-099 🟡-2）。読取クライアント（run_weekly_segments）
+    は get のみ使用するため、読取ロールを 1 メソッド Port として分離する。"""
+
     def get(self, week_id: str) -> "VarianceForecast | None": ...
-    def all_week_ids(self) -> "tuple[str, ...]": ...

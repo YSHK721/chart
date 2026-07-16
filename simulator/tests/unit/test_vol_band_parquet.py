@@ -33,14 +33,6 @@ class TestRoundTrip:
         repo.save_all([VarianceForecast("2024-W07", 0.025, 0.020, 0.018, estimable=True)])
         assert repo.get("2099-W01") is None
 
-    def test_all_week_ids(self, tmp_path):
-        repo = VolBandParquetRepo(out_dir=tmp_path)
-        repo.save_all([
-            VarianceForecast("2024-W07", 0.025, 0.020, 0.018, estimable=True),
-            VarianceForecast.no_trade("2024-W08"),
-        ])
-        assert repo.all_week_ids() == ("2024-W07", "2024-W08")
-
 
 class TestOutputGuard:
     def test_rejects_marketdata_prefix(self):
