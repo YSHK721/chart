@@ -158,17 +158,39 @@ class SessionCalendarPort(abc.ABC):
         raise NotImplementedError
 
 
-class ReportPresenterPort(abc.ABC):
-    """レポート表現の隔離（Presenter・UC-004）。"""
+class MarkdownReportPort(abc.ABC):
+    """Markdown レポート表現の隔離（Presenter・UC-004）。
+
+    形式別 1 メソッド Port（ISP・ISSUE-099 🟡-1）。Markdown 出力のみを担う実装が
+    自 Port だけを履行できるようにする（LSP・ISSUE-098 🔴-1 の是正）。
+    """
 
     @abc.abstractmethod
     def present_markdown(self, result: Any) -> str:
         raise NotImplementedError
 
+
+class HtmlReportPort(abc.ABC):
+    """HTML レポート表現の隔離（Presenter・UC-004）。形式別 1 メソッド Port（ISP）。"""
+
     @abc.abstractmethod
     def present_html(self, result: Any, path: Any) -> None:
         raise NotImplementedError
 
+
+class JsonReportPort(abc.ABC):
+    """JSON レポート表現の隔離（Presenter・UC-004）。形式別 1 メソッド Port（ISP）。"""
+
     @abc.abstractmethod
     def present_json(self, result: Any, path: Any) -> None:
         raise NotImplementedError
+
+
+class ReportPresenterPort(MarkdownReportPort, HtmlReportPort, JsonReportPort):
+    """3 形式 Port を束ねる後方互換の集約 Port（Presenter・UC-004）。
+
+    形式別 Port（MarkdownReportPort / HtmlReportPort / JsonReportPort）へ分割済み。
+    本 Port は 3 形式すべてを 1 つの実装で提供する消費者向けに温存する集約であり、
+    3 メソッドすべてを abstract として継承する（各形式を全履行する実装のみ生成可能）。
+    形式別 1 メソッドのみを担う Presenter は本集約ではなく対応する形式別 Port を実装する。
+    """
