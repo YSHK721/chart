@@ -12,8 +12,9 @@
 import { sessionDayStart } from '../../domain/session_day.js';
 // セッション日 OHLC 集計（domain 純関数・ISSUE-094 V6 抽出）。集計数学を actor から分離。
 import { aggregateSessionOhlc } from '../../domain/session_ohlc.js';
-// ISSUE-080: 日別×1m/5m で zp を出さない（単一情報源＝catalog の述語と同じ集合）。
-import { MP_ZP_SESSIONS_BLOCKED_TFS } from '../../usecase/catalog_entry.js';
+// ソース能力記述子（domain 単一情報源）: src 別の増分可否・期間窓・session ブロックを導出する
+//   （ISSUE-097 🟡-9・散在した src==='zp' 述語の集約）。
+import { mpSourceCapability } from '../../domain/mp_source_capability.js';
 
 // sessions の 'YYYY-MM-DD' → UNIX 秒（UTC 深夜）。candle.time との突合に使う（primitive dateToUnix と同一規則）。
 function _sessionDateToUnix(dateStr) {
@@ -312,7 +313,7 @@ export class MarketProfileActor {
   //   非増分＝refresh 委譲へ倒す（onLiveTick はライブ足更新周期＝数秒に 1 回。backend は当日 null を
   //   経過分キーでメモし 0.05〜0.2s 程度で応答する）。
   _isIncremental() {
-    return !!this._growing && !this._sessions && this._params.src !== 'zp'
+    return !!this._growing && !this._sessions && mpSourceCapability(this._params.src).incremental
       && !!this._formingClient && !!this._makeAccumulator;
   }
 
@@ -646,7 +647,7 @@ export class MarketProfileActor {
   //   dwell を対象外にするのは、成長時の forming 経路が既に当日絞り（ISSUE-065）でありrefresh 窓まで
   //   絞ると static（ANALYSIS）の全期間表示という既存確定挙動を壊すため（zp は非増分＝refresh のみで安全）。
   _periodExtra() {
-    if (this._params.period !== 'day' || this._params.src !== 'zp'
+    if (this._params.period !== 'day' || !mpSourceCapability(this._params.src).hasPeriodWindow
         || this._sessions || this._replay) {
       return {};
     }
@@ -734,8 +735,8 @@ export class MarketProfileActor {
     // ISSUE-080（依頼者裁定 2026-07-15）: 日別×1m/5m×zp は非対応＝代替粒度（日タイル）を出さない。
     //   fetch もせず表示をクリアし、ローソクを可視のまま維持する（「作れないソースは出さない」原則。
     //   gear では option 無効化済みだが、時間足切替で事後にこの状態へ到達し得るため実行時も防御）。
-    if (this._sessions && this._params.src === 'zp'
-        && MP_ZP_SESSIONS_BLOCKED_TFS.has(this._getContext().timeframe)) {
+    if (this._sessions
+        && mpSourceCapability(this._params.src).blockedSessionTfs.has(this._getContext().timeframe)) {
       if (this._primitive && typeof this._primitive.setSessions === 'function') {
         this._primitive.setSessions(null);
       }
@@ -801,13 +802,21 @@ export class MarketProfileActor {
     this._renderer.focusTimeRange(from, to);
   }
 
+  // attach 対象の ISeriesPrimitive を解決する（ISSUE-099 🟡-5）。primitive が ProfileSink
+  //   ファサードのとき下層 primitive（seriesPrimitive()）を返し、生 primitive（既存テストの fake）は
+  //   そのまま返す＝単一 attach 点を維持しつつ挙動不変。
+  _attachTarget() {
+    const p = this._primitive;
+    return (p && typeof p.seriesPrimitive === 'function') ? p.seriesPrimitive() : p;
+  }
+
   // primitive を mainSeries へ一度だけ attach する（attachPrimitive 非提供時は skip）。
   _ensureAttached() {
     if (this._attached) {
       return;
     }
     if (this._mainSeries && typeof this._mainSeries.attachPrimitive === 'function') {
-      this._mainSeries.attachPrimitive(this._primitive);
+      this._mainSeries.attachPrimitive(this._attachTarget());
       this._attached = true;
     }
   }
@@ -816,7 +825,7 @@ export class MarketProfileActor {
   //   凡例からの削除（close）で呼び、次回有効化で再 attach できるよう _attached を戻す。
   detach() {
     if (this._attached && this._mainSeries && typeof this._mainSeries.detachPrimitive === 'function') {
-      this._mainSeries.detachPrimitive(this._primitive);
+      this._mainSeries.detachPrimitive(this._attachTarget());
     }
     this._attached = false;
     this._applyProfileMargin(false); // 右マージン復元（MP 削除で取り残さない）。

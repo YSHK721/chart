@@ -30,6 +30,8 @@ import { MarketProfileClient } from './market_profile_client.js';
 import { MarketProfileFormingClient } from './market_profile_forming_client.js';
 import { DwellAccumulator } from '../../domain/market_profile_dwell_accumulator.js';
 import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
+import { ProfileSink, TfPeriodSink } from './mp_primitive_roles.js';
+import { mpSupportsTf, mpTfPeriodSrc } from '../../domain/mp_source_capability.js';
 import { TfPeriodProfileClient } from './tf_period_profile_client.js';
 import { TfPeriodJitterBuffer } from './tf_period_jitter_buffer.js';
 import { TfPeriodProfileActor } from './tf_period_profile_actor.js';
@@ -257,14 +259,17 @@ export async function bootstrap({
   // MP primitive を変数化し、時間足毎profile列（tf-period）actor と共有する（同一 primitive の
   //   setTfPeriods で描画＝mainSeries へ二重 attach しない）。
   const mpPrimitive = new MarketProfileHistogramPrimitive();
-  // src=zp（超過占有 z(p)）の tf-period 対応判定。backend の zp 列は tf 15m..1D のみ（1m/5m は
-  //   周期内分数が退化し 400）。委譲述語（sessionsDrawnByTfPeriod）と tf-period 有効化（tfpShouldOn）の
-  //   **両方**がこの同一条件を使う＝どちらか片方だけだと「MP はタイルを委譲したのに tf-period は無効」で
-  //   誰も日別を描かない空白が生じる（実UI検証で検出）。marketProfile は直後に代入（closure 遅延評価で吸収）。
-  const ZP_TF_ALLOWED = new Set(['15m', '30m', '1h', '4h', '1D', '1W', '1M']); // ISSUE-086: 1W/1M＝日次 zp 畳み込み。
+  // ISSUE-099 🟡-5: 単一 primitive を 2 ロールへ分離注入（god interface 解消）。attach 点は 1 つのまま
+  //   （両 sink が同一 primitive を包む）。MarketProfileActor には ProfileSink、tf-period 系には TfPeriodSink。
+  const mpProfileSink = new ProfileSink(mpPrimitive);
+  const mpTfPeriodSink = new TfPeriodSink(mpPrimitive);
+  // src の tf-period 対応判定は記述子（supportedTfs）が単一情報源（ISSUE-097 🟡-8・旧 ZP_TF_ALLOWED）。
+  //   委譲述語（sessionsDrawnByTfPeriod）と tf-period 有効化（tfpShouldOn）の **両方**がこの同一条件を
+  //   使う＝どちらか片方だけだと「MP はタイルを委譲したのに tf-period は無効」で誰も日別を描かない空白が
+  //   生じる（実UI検証で検出）。marketProfile は直後に代入（closure 遅延評価で吸収）。
   const mpSrc = () => (marketProfile && typeof marketProfile.srcParam === 'function'
     ? marketProfile.srcParam() : null);
-  const zpTfOk = () => (mpSrc() !== 'zp' || ZP_TF_ALLOWED.has(controller._timeframe));
+  const zpTfOk = () => mpSupportsTf(mpSrc(), controller._timeframe);
   // ISSUE-066: MP パラメータ変更（gear の src/mode 等）を tf-period 列アクターへ即時伝播するフック。
   //   tf-period 配線（mode==='b'）で実体を代入する。未配線（A方式・非served）は no-op（byte 不変）。
   // tf-period 列を描ける tf（ISSUE-086: 全時間足統一）。player tf（1m..1D）＋バケット tf（1W/1M）。
@@ -274,7 +279,7 @@ export async function bootstrap({
   let liveGrowTfPeriod = () => {};
   const marketProfile = new MarketProfileActor({
     client: new MarketProfileClient({ fetch }),
-    primitive: mpPrimitive,
+    primitive: mpProfileSink,
     mainSeries,
     // ISSUE-066: setParams 完了時に tf-period 列を即時再取得（sessions×ライブで src 変更が可視レンジ
     //   変化を待たず反映される）。tf-period 非配線時は no-op。
@@ -391,11 +396,11 @@ export async function bootstrap({
     //   backend の対応 tf 判定（zpTfOk）は上段＝委譲述語と同一定義（単一情報源）。
     tfPeriodActor = new TfPeriodProfileActor({
       jitterBuffer: tfBuf,
-      primitive: mpPrimitive,
+      primitive: mpTfPeriodSink,
       getTimeframe: () => controller._timeframe,
       getVisibleRange,
       renderer, // ISSUE-055: 列が描けた時点で candle 透明化（MarketProfileActor から委譲）。
-      getSrc: () => (mpSrc() === 'zp' ? 'zp' : null),
+      getSrc: () => mpTfPeriodSrc(mpSrc()),
       // 方向背景（依頼者指示 2026-07-13）: 列 time と同一周期グリッドの candle から陽/陰を注釈する。
       getCandles: () => renderer.getCandles(),
     });
@@ -408,7 +413,7 @@ export async function bootstrap({
         tfpTooltip.hide();
         return;
       }
-      const hit = mpPrimitive.tfPeriodLevelAt(pos.time, pos.price);
+      const hit = mpTfPeriodSink.tfPeriodLevelAt(pos.time, pos.price);
       if (!hit) {
         tfpTooltip.hide();
         return;

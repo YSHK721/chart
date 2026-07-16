@@ -11,17 +11,26 @@
 // 挙動不変: 本 factory の戻り値は、移設前に catalog.js 内で inline 定義していた
 //   MARKET_PROFILE と同一のオブジェクト構造（id / params / series / compute）を返す。
 
+// ソース能力記述子（domain 単一情報源）。src ごとの挙動差（対応 tf・session ブロック・
+//   選択肢・ラベル・期間窓）はすべて本記述子から導出する（ISSUE-097 🟡-8/🟡-9・散在解消）。
+import {
+  mpSupportsTf,
+  mpSourceCapability,
+  MP_SELECTABLE_SOURCES,
+  MP_DEFAULT_SOURCE,
+  mpSourceEnumLabels,
+  MP_ZP_SESSIONS_BLOCKED_TFS,
+} from '../domain/mp_source_capability.js';
+
 // tf-period が日別列を描く対応 tf（列描画時は解像度が GRID_W 固定＝resmode/bins/range 無効）。
 //   ISSUE-070。ISSUE-086（全時間足パラメータ統一）: 1W/1M もセッション日次ロールアップの
 //   バケット列として対応（count 1m..1M / zp 15m..1M＝backend _BUCKET_TFS・_ZP_TF_ALLOWED と一致）。
+//   src 別の対応 tf（旧 _MP_ZP_TF）は記述子（supportedTfs）へ集約した。
 const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M']);
-const _MP_ZP_TF = new Set(['15m', '30m', '1h', '4h', '1D', '1W', '1M']);
 
-// ISSUE-080（依頼者裁定 2026-07-15）: 日別（周期）プロファイルで zp を選べない時間足。
-//   原則「列の周期＝チャートの時間足。作れないソースは出さない」＝z は 1m/5m 周期で統計が
-//   成立せず（原子=1分1点）、代替粒度（日タイル・15m列）を黙って出すのは粒度契約違反。
-//   actor の実行時ガード（非対応組合せは fetch も描画もしない）と単一情報源で共有する。
-export const MP_ZP_SESSIONS_BLOCKED_TFS = new Set(['1m', '5m']);
+// ISSUE-080（依頼者裁定 2026-07-15）: 日別×1m/5m の zp 非対応集合は記述子（zp.blockedSessionTfs）
+//   が単一情報源。後方互換のため本名で再エクスポートする（actor と同一実体を共有）。
+export { MP_ZP_SESSIONS_BLOCKED_TFS };
 
 // tf-period が日別プロファイル列を描く状態か（＝解像度パラメータが無効な状態）。
 //   条件: served(B方式) かつ mode=sessions かつ対応 tf（src=zp は 15m..1D 限定）。ctx は
@@ -31,7 +40,7 @@ function _mpTfPeriodDrawsColumns(values, ctx) {
   if (values.mode !== 'sessions') { return false; }
   const tf = ctx.timeframe;
   if (!_MP_PLAYER_TF.has(tf)) { return false; }
-  if (values.src === 'zp' && !_MP_ZP_TF.has(tf)) { return false; }
+  if (!mpSupportsTf(values.src, tf)) { return false; }
   return true;
 }
 
@@ -128,18 +137,16 @@ export function makeMarketProfileDef({
       //   フォールバックする（z は短周期で統計が成立しない・ISSUE-060）。ソース切替で表示粒度が
       //   黙って変わり混乱するとの依頼者指摘を受け、tooltip で挙動差を明記する（選択は許容＝
       //   1分足で日別 z タイルを見る使い方は残す）。
-      param('src', ParamType.ENUM, 'zp', [], ['dwell', 'zp'], {
+      param('src', ParamType.ENUM, MP_DEFAULT_SOURCE, [], MP_SELECTABLE_SOURCES, {
         group: 'group.calc', order: 1, label: 'ソース',
-        enumLabels: {
-          dwell: '滞在時間(実ティック)', zp: '超過占有z(p)',
-        },
+        enumLabels: mpSourceEnumLabels(),
         tooltip: '滞在時間＝実ティックの滞在秒（日別では全時間足で周期ごとの列を表示）／超過占有z(p)＝偶然比の異常度（zは15分以上の周期でのみ統計が成立するため、日別×1分/5分足では選択不可。日単位のzは日足チャートの日別で確認）',
-        // ISSUE-080: 日別×1m/5m では zp の option を無効化（灰色・選択不可）。代替粒度は出さない。
+        // ISSUE-080: 日別×1m/5m では該当ソースの option を無効化（灰色・選択不可）。代替粒度は出さない。
+        //   ソース別の session ブロック tf は記述子（blockedSessionTfs）が単一情報源。
         //   ctx 不在（A方式・単体テスト）は制限しない（timeframe を知り得ないため安全側＝有効）。
-        optionEnable: (value, values, ctx) => value !== 'zp'
-          || values.mode !== 'sessions'
+        optionEnable: (value, values, ctx) => values.mode !== 'sessions'
           || !ctx || ctx.timeframe == null
-          || !MP_ZP_SESSIONS_BLOCKED_TFS.has(ctx.timeframe),
+          || !mpSourceCapability(value).blockedSessionTfs.has(ctx.timeframe),
       }),
 
       // period: 計測窓（ENUM・既定 'all'＝全期間・ISSUE-071 (b)案）。'day'＝当日始端からの窓で計測する
@@ -152,7 +159,8 @@ export function makeMarketProfileDef({
       param('period', ParamType.ENUM, 'all', [], ['all', 'day'], {
         group: 'group.calc', order: 3, label: '期間',
         // ISSUE-081: zp×通常×対応 tf のときだけ表示（旧: src 条件で表示＋mode/tf 条件でグレーアウト）。
-        conditionalVisible: (values, ctx) => values.src === 'zp' && _mpPeriodEnabled(values, ctx),
+        conditionalVisible: (values, ctx) => mpSourceCapability(values.src).hasPeriodWindow
+          && _mpPeriodEnabled(values, ctx),
         enumLabels: { all: '全期間', day: '当日' },
       }),
     ],

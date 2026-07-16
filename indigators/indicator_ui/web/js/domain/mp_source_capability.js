@@ -1,0 +1,1 @@
+../../../../market_profile/web/js/domain/mp_source_capability.js

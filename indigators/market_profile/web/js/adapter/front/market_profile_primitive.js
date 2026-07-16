@@ -10,6 +10,9 @@
 //   price→y 変換は series.priceToCoordinate のみを使い（既存 primitive と同 API）、lwc への直接依存を持たない。
 
 import { PairPrimitiveBase } from './pair_primitive_base.js';
+// ソース能力記述子（domain 単一情報源）: POC 描画様式（star/line）・ラベル可否を導出する
+//   （ISSUE-097 🔵-20・散在した profile.src==='zp' 述語の集約）。
+import { mpSourceCapability } from '../../domain/mp_source_capability.js';
 
 // 'YYYY-MM-DD'（sessions の date）→ UNIX 秒（UTC 深夜）。timeToCoordinate へ渡し日付を時間軸に対応づける。
 function dateToUnix(dateStr) {
@@ -497,14 +500,15 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         ctx.stroke();
         ctx.restore();
       };
-      // src=zp のとき poc は POC*（超過占有 argmax z）＝黄で区別する（通常 POC は赤・試作準拠）。
-      hline(poc, this._profile.src === 'zp' ? C_POC_STAR : C_POC_LINE);
+      // poc=star のソース（zp）は POC*（超過占有 argmax z）＝黄で区別する（通常 POC は赤・試作準拠）。
+      const cap = mpSourceCapability(this._profile.src);
+      hline(poc, cap.poc === 'star' ? C_POC_STAR : C_POC_LINE);
       hline(vaHigh, C_VA_LINE);
       hline(vaLow, C_VA_LINE);
 
-      // src=zp のみ: 各参照線の価格ラベルを線の左上に描く（POC*/VAH/VAL・依頼者指示 2026-07-12）。
-      //   既存 src（candle/dwell/m1）は試作準拠のラベル無しを維持＝描画 byte 不変。
-      if (this._profile.src === 'zp') {
+      // showLabels のソース（zp）のみ: 各参照線の価格ラベルを線の左上に描く（POC*/VAH/VAL・
+      //   依頼者指示 2026-07-12）。既存 src（candle/dwell/m1）は試作準拠のラベル無しを維持＝描画 byte 不変。
+      if (cap.showLabels) {
         const label = (price, text, color) => {
           if (price == null) return;
           const y = toY(price);
