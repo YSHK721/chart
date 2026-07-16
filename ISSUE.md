@@ -1137,7 +1137,7 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 - **コードレビュー**: code-review-executor 承認（🔴/🟡 ゼロ・🔵 2 件は対応不要の記録: tick_store 遅延合成の理論上の初回競合＝無状態のため実害なし／エラー契約変更は意図的是正）。
 
 ## ISSUE-092: DIP 残件（ISSUE-091 Tier2・大規模リファクタ・裁定待ち）
-- **ステータス**: OPEN（2026-07-16 起票・ISSUE-091 から移管）
+- **ステータス**: RESOLVED（2026-07-16・全8項目実施完了＝裁定3項目は依頼者承認「全部実施」。7エージェント並列/直列実装・統合レビュー承認・詳細は下記対応記録）
 - **Tier2（実装方針は確定・規模大のため分割実施を推奨）**:
   1. indicator_ui のデータ層 Output Boundary 導入（marketdata 具象の sys.modules 同一化 shim ＝ dataset/rollup_store/tail_reader を抽象の縫い目へ）・usecase 層の切り出し（handle_compute の Input Boundary 化）。
   2. replay bridge（_indicator_ui_bridge）の import 面を indicator_ui 安定公開 Facade 1 点へ縮約（latest_dispatch 等内部モジュール直結の解消）。
@@ -1162,3 +1162,18 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
   2. **rollup_builder（5件）**: コミット f0584f1（ISSUE-078 単位③）で rollup の規則源が `resample_ohlc_tf`（1D/1W/1M＝セッション日集計）へ移行した際、marketdata 側テスト（test_session_resample 等）のみ更新され、本ファイルの oracle（旧 plain `resample_ohlc`＋TIMEFRAME_RULES）が未追随＝1D/1W/1M の境界がセッション日 vs UTC 日でずれ恒常失敗（41 行 vs 40 行を実測）。→ 全 oracle を現行規則源 `marketdata.resample.resample_ohlc_tf` へ更新（規則の再実装なし・5m/1h は両規則が同値のため実質不変）。
 - **見逃しの構造要因も是正**: tools/tests は `adapter` 解決に api パスが必要で**単独実行では collection error**＝失敗が集計に載らなかった。conftest.py に自スライス api ルートの結線を追加（server.py/bridge と同じ「自スライスのエントリが自分の root を結線する」規約）。単独実行 59 件・api 併走 445 件とも収集・実行可能になった。
 - **検証**: common 19 緑・UI tools 単独 59 緑・UI api＋tools 併走 445 緑（いずれも実測）。修正はテスト・conftest のみ＝プロダクションコード変更ゼロ。
+
+## ISSUE-092 対応記録（全8項目実施・2026-07-16・エージェント分担開発）
+- **実施方式**: 依頼者指示「各自エージェントが担当して実装」に従い、programmer-executor 7 体で分担。並列判定（変更ファイル集合の非交差）により Wave1=6 体並列（worktree 隔離・専用ブランチ）・Wave2=1 体直列（③は server.py が①と交わるため①マージ後）。統合は親会話がブランチ毎に検証マージ。
+- **実施内容**（各項目とも挙動保存・既存テスト無変更緑・新規ガードテスト付き）:
+  - **①** indicator_ui に usecase 層新設（`compute_indicators` 純関数・`DatasetPort` Protocol・`adapter/gateway/marketdata_dataset`）。compute_controller は Controller+Presenter の薄殻へ縮退（公開名・monkeypatch 経路不変）。＋23 テスト。
+  - **②** `adapter/compute/__init__.py` を安定公開 Facade 化（`full_compute`/`latest_compute` 明示再エクスポート・契約 docstring）。replay bridge の import 面を Facade 1 点へ縮約（`latest_dispatch` 直参照根絶・ガードテスト付き）。
+  - **③** 指標 param 既定値を `catalog_schema.PARAM_DEFAULTS`（Python・_TABLE 19 指標）で単一情報源化し `GET /catalog` で配信。front はサーバ由来スキーマを overlay・フェッチ失敗時は静的値フォールバック（オフライン耐性・UI 実効値不変）。back/front 同期は golden JSON を双方向テストで固定。back 内の `_DEFAULT_SAMPLES` 二重定義も schema へ一本化。
+  - **④** MP store 群（DwellRollupStore/ZpStore）を compute→gateway へ git mv（旧パスは identity 一致の互換シム）。tf_period controller の日次 JSON I/O を `gateway/tf_period_disk_cache` へ分離（monkeypatch 経路・パス・原子書込は不変）。byte-parity 27 緑 3 連続。
+  - **⑤** 指標 src の repo根 sys.path.insert 27 件撤去（.pth 恒久解決へ）。sibling 指標解決の parents[2] 13 件と standalone フォールバック 1 件は理由付きで温存。
+  - **⑥** common の表示系（level_colors/level_style）を新パッケージ `common_view` へ分離（SRP）。common は後方互換再エクスポート温存・production 消費者 20 ファイルを直参照へ更新。
+  - **⑦** indicator_ui api/domain（未配線・production 参照ゼロを grep 三形式で再実証）と専用テスト 2 ファイルを削除（9 ファイル・1805 行）。frontend の web/js/domain は別物＝不変。
+  - **⑧** `marketdata.port.TickSource` Protocol を削除（抽象消費者ゼロの YAGNI）。具象 DukascopyTickSource・CandleSource は温存。Protocol 存在系テスト 5 件削除・挙動テスト 7 件温存。
+- **統合検証で検出・即修正した回帰 1 件**: `/tf_period_profile` の既定ディスク root が撤去済み `_mpd._paths` を参照し実 HTTP で 500（AttributeError）。既存テストが全て `_TFP_CACHE_ROOT` 注入で既定経路を通らず未検出だった。TickStorePort 経由へ是正＋既定経路の回帰テスト追加（fix/issue-092-tfp-default-root）。**実 UI・実 HTTP 検証の重要性を再確認**（スイート緑のみでは不十分・依頼者厳命どおり）。
+- **検証**: スイート別最終実行で全緑 — marketdata 138・simulator 869・replay 148・report_ui 155・MP api 270（byte-parity 27 含む）・MP analysis 66・UI api+tools 397・common/common_view 22・MP web 287・UI web 543/545（既知 2 件のみ）。実UI（8141 起動・Playwright）: チャート正常描画・/catalog 200 取得・/compute・/candles・/market_profile・/tf_period_profile 応答正常・コンソールエラアなし（favicon 404 のみ）。
+- **コードレビュー**: 統合レビュー（code-review-executor・完全深度）承認。🔴/🟡 ゼロ。🔵 3 件をバックログとして記録: (1) gateway 配置のスライス慣行差（ネスト vs フラット）を ADR に明文化 (2) 指標 src 単体実行は venv（.pth）前提である旨を開発ガイドへ明記 (3) catalog 同期テストに front 余剰 param の対称アサート追加。
