@@ -2,7 +2,7 @@
 
 venv の site-packages へ .pth（標準の恒久パス登録機構）を書き、衝突しない固有名
 トップパッケージのみを全プロセスで解決可能にする:
-  - リポジトリ根（marketdata / tools）
+  - リポジトリ根（marketdata / common / common_view / api_shared / tools）
   - indigators/market_profile/api（market_profile_api）
 汎用名パッケージ（indicator_ui api の adapter/framework/domain、replay_ui の同名群）は
 スライス間で名前衝突するため .pth へ載せず、各エントリポイント（server.py / bridge）が

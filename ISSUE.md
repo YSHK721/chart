@@ -1184,7 +1184,7 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 - **検証**: UI web 544/546 緑（既知 2 件のみ）・同期テスト 2/2 緑。
 
 ## ISSUE-094: SRP（アクター単一性）のアーキテクチャ監査（4系統並列調査・主要指摘は実コード再検証済み）
-- **ステータス**: OPEN（2026-07-16 起票・調査完了＝対処は裁定待ち）
+- **ステータス**: RESOLVED（2026-07-16・全項目実施＝依頼者承認「🔴＋🟡＋🔵全部」。6 エージェント並列実装・統合レビュー条件付き承認→条件（規約文書反映）充足済み。残る裁定 1 件は ISSUE-095 へ。詳細は下記対応記録）
 - **調査方法**: architecture-executor 4系統並列（simulator／indicator_ui／market_profile／共有層 marketdata+common+tools）。判定基準は「モジュールはただ一つのアクター（変更要求の主体）に責任を負う」——各サブシステムでアクターカタログを実コードから帰納し、複数アクターの変更が同一ファイルを取り合う箇所のみを違反と認定（規模・関数数だけでは違反としない）。重大指摘 6 点はメイン会話で実コード再検証済み。DIP 系・ISSUE-091/092 対処済み事項は除外。
 - **総括**: 外周（EA=1ファイル・Presenter=1形式・Repository=1データ源・純 compute・gateway）はアクター単一性が徹底され模範的。**混在は各サブシステムの「中核の交差点」に集中**——実行エンジン（run_backtest）・巨大 compute（dwell）・controller の集計エンジン化（tf_period）・front の司令塔（indicator_controller.js）。また共有層に「同一アクター仕様の二重実装（手動同期）」という別型の SRP 破れが 5 件ある。
 
@@ -1210,3 +1210,24 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 - **1 変更主体=1 ファイル**: simulator の EA（adapter/strategy/*）・Presenter（markdown/html/json）・Repository（データ源別）。
 - **純カーネル**: tf_period_profile.py・market_profile.py（集計仕様のみ）・tail_reader.py・resample.py（「唯一の規則源」）・applied_price.py・compute_indicators.py（usecase 純関数）。
 - **描画↔集計分離**: web/js の domain（dwell accumulator）と adapter/front（primitive）の物理分離。
+
+## ISSUE-094 対応記録（全項目実施・2026-07-16・6 エージェント並列実装）
+- **実施方式**: programmer-executor 6 体並列（worktree 隔離・変更ファイル集合の非交差で並列判定）。E1 実行エンジン／E2 MP 中核／E3 marketdata／E4 front／E5 report・stats／E6 殻＋api_contract。全項目とも挙動保存（決定論・MT5 golden parity・byte-parity 27・report.json byte 一致）を絶対条件とし、各エージェントが原子コミット単位で全緑を確認。
+- **実施内容（アクター分離の新構造）**:
+  - **E1（🔴-1/🟡-10b）**: run_backtest から `session_gate.py`（セッション判定）・`pending_lifecycle.py`（trigger/OCO/クォート規約）を抽出、hedged_margin を `Account.hedged_margin_level`（口座不変ルール）へ、執行クォート規約を `_execution.resolve_eval_quote`（usecase）へ移送し `Account._eval_price` を除去。887→896 緑・2 連続同一。部分残: SL/TP 決済ループ等は口座副作用と密結合のため温存（byte 優先）・`update_floating_pnl(bar)` の basis 分岐は既存テスト参照のため非推奨シムで温存。
+  - **E2（🔴-2/🔵）**: dwell のセッション認識を `session_activity.py` へ、zp⇔step5 の帰無サロゲート核を `null_b_kernel.py` へ一元化（同一実体 import・パリティテスト無変更緑）、tf_period controller の集計エンジンを `tf_period_columns.py` へ移送（669→約410 行）、`cache_layout.current_layouts()` 公開契約で cache_gc の private 直結を解消、孤児 `_min_unit` 削除。byte-parity 27 緑 3 連続。部分残: moments/z/POC* の完全共有は ISSUE-079 の格子分岐（log vs 線形）により挙動差が出るためスキップ（サロゲート核のみ一元化）。
+  - **E3（🔴-3/🟡-6,7,9,10a/🔵）**: 外れ値ポリシーを `outlier_policy.py` へ集約（閾値単一源）。**両式の実測**: 全 TF 走査で乖離 4 バー（jp225_tick 1h/4h の二相バー＝median 式の明白な誤検出・エンベロープ式は保全）→ 式統一は挙動変更を伴うため 2 戦略同居に留め**裁定事項として上申（→ISSUE-095）**。CSV スキーマ `csv_schema.py`・ref 台帳 `dataset_registry.py`・供給キャッシュ `serving_cache.py` を単一化/分離、週月ラベルは `resample.period_label_naive` へ単方向委譲（40 万点 byte 一致実測）。marketdata 138→162 緑。
+  - **E4（🔴-4）**: indicator_controller.js 1058→809 行。`market_profile_params.js`（純関数）・`market_profile_controller.js`（MP 駆動）・`timeframe_controller.js`（時間足）へ抽出、セッション日 OHLC 集計を domain 純関数 `session_ohlc.js`（MP 側実体＋symlink 共有）へ。既存テスト 0 変更・新規 39 ケース。
+  - **E5（🟡-5/🔵）**: `AssessmentPolicy`（IS/OOS 合否・閾値注入可）・`ReportMeta`（実験所与の引数化）で build_report_payload を EA 非依存の純写像へ。compute_stats を `metrics_spec.py`／`mt5_parity.py` へ参照仕様分離。**report.json 5,958,171 byte の cmp 完全一致を実証**。
+  - **E6（🟡-8/🔵-11）**: `StaticFileServer` 抽出（トラバーサル防御保存を専用テストで固定）、MP forming の tick 合成を MP 側 `augment_forming_payload` へ移設（殻は buffer を渡すだけ）、HTTP 契約を中立 `api_shared/http_contract.py` へ移設（marketdata/api_contract は互換再エクスポート）。
+- **インシデント記録**: 並列作業中に E5 が共有チェックアウトの HEAD を一時 detach し、親のマージ 3 件（E1/E6/E4）が detached HEAD 上に積まれ develop ref が未前進となった。系譜が直系だったため fast-forward で復旧（コミット消失なし）。教訓: worktree 隔離エージェントには「共有チェックアウトの HEAD 操作禁止」を明示すべき（次回のエージェント規約へ反映）。
+- **検証**: 統合後の全スイート再実行で全緑 — simulator+report_ui 1092・replay 155・MP api+analysis 355（byte-parity 27 含む）・marketdata 162・UI api+tools 397・common 系 22・MP web 287・UI web 583/585（既知 2 件のみ）。実UI（8144・Playwright）: 週足切替（TimeframeController 経路）・market_profile 適用と描画（MarketProfileController 経路・POC*/VAH 線・凡例操作）正常・コンソールエラーなし。
+- **統合レビュー**: code-review-executor（完全深度）条件付き承認→条件充足済み。🔴 ゼロ。🟡-1（LAYERING_CONVENTIONS へ api_shared 配置規約を反映）＝本コミットで対応。🔵 2 件（install_dev_paths docstring＝対応済み／session_ohlc symlink の CI 健全性チェック＝ISSUE-095 へ）。縫い目の数値/identity 同一性（rng 消費順・hedged margin 合算順・キャッシュ/契約オブジェクト同一性）はレビュー側で独立実測済み。
+
+## ISSUE-095: ISSUE-094 残件（裁定 1 件＋バックログ）
+- **ステータス**: OPEN（2026-07-16 起票）
+1. **【裁定】外れ値補正式の統一是非**: 現在は `outlier_policy.py` 内に 2 戦略同居（acquisition=median[o,h,l,c]式・serving=min/max(open,close) エンベロープ式）。実測乖離は jp225_tick 1h/4h の二相バー 4 本のみで、median 式が実在しない中間値へ潰す誤検出＝エンベロープ式が妥当に見えるが、median 式には「単一の不正 open/close も補正できる」利点があり優劣は入力空間全体では断定不能。統一する場合は既存テスト 2 系（各式を byte 固定）の更新＝挙動変更を伴うため依頼者裁定が必要。
+2. E1 残: `Account.update_floating_pnl(bar)`/`mark_price` の basis 分岐完全除去（test_account.py の更新解禁が前提）。同一サイド複数玉 hedged margin の明示的統合テスト追加。
+3. E4 残: `out/prototype.html`（A方式バンドル）の再生成＋既存 `DIM_ALPHA` 二重宣言（trade_markers_renderer/pair_lines_primitive 由来・HEAD 以前から）の是正。
+4. E2 残: analysis→api の新結合（step5→null_b_kernel）が CI で PYTHONPATH に api を要する点の明文化（本番 venv は .pth で自動解決）。
+5. レビュー 🔵: session_ohlc.js の symlink 健全性チェックの CI 化（symlink 非対応環境対策）。
