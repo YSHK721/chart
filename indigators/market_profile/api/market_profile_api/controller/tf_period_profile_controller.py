@@ -565,19 +565,6 @@ def _parse_int(v: Any) -> "int | None":
     return None
 
 
-def _min_unit(mids: np.ndarray) -> float:
-    """最小価格単位＝窓内 tick の最小正 mid 増分（distinct mid の最小ギャップ）。
-
-    グリッド整合のため銘柄の最小価格刻み（JP225 mid≈0.0255）へ収束する。tick <2 種は 1.0 フォールバック。
-    """
-    u = np.unique(mids)
-    if u.size < 2:
-        return 1.0
-    gaps = np.diff(u)
-    gaps = gaps[gaps > 1e-9]
-    return float(gaps.min()) if gaps.size else 1.0
-
-
 def handle_tf_period_profile(
     ref: Any, timeframe: Any, frm: Any, to: Any, now: "float | None" = None,
     src: Any = None, live_ticks: "list | None" = None,
