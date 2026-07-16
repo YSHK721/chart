@@ -9,7 +9,9 @@
 //   取得失敗（client が null）時も既存描画へ干渉せず、前回 profile を保持する。
 
 // セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・当日窓・日別集計の唯一の規則源。
-import { sessionDayStart, sessionDateLabel } from '../../domain/session_day.js';
+import { sessionDayStart } from '../../domain/session_day.js';
+// セッション日 OHLC 集計（domain 純関数・ISSUE-094 V6 抽出）。集計数学を actor から分離。
+import { aggregateSessionOhlc } from '../../domain/session_ohlc.js';
 // ISSUE-080: 日別×1m/5m で zp を出さない（単一情報源＝catalog の述語と同じ集合）。
 import { MP_ZP_SESSIONS_BLOCKED_TFS } from '../../usecase/catalog_entry.js';
 
@@ -33,36 +35,8 @@ function _sessionDateToUnix(dateStr) {
 //   戻り値 { list, mp }。list=OHLC/tFirst/tLast 付与済みセッション配列、mp=time→{poc,vah,val} の Map。
 function _buildSessionView(list, candles) {
   // セッション日ラベル → { tFirst, tLast, open, high, low, close }（当日全バーの範囲と日次 OHLC）。
-  //   candles は time 昇順が契約だが、順序に依存しない min/max 更新で頑健化する。
-  const byDay = new Map();
-  for (const c of (candles || [])) {
-    const time = Number(c.time);
-    if (!Number.isFinite(time)) {
-      continue;
-    }
-    const d = sessionDateLabel(time); // ISSUE-078: セッション日で束ねる（UTC 暦日でなく）。
-    const agg = byDay.get(d);
-    if (!agg) {
-      byDay.set(d, {
-        tFirst: time, tLast: time, open: c.open, high: c.high, low: c.low, close: c.close,
-      });
-    } else {
-      if (time < agg.tFirst) {
-        agg.tFirst = time;
-        agg.open = c.open;
-      }
-      if (time > agg.tLast) {
-        agg.tLast = time;
-        agg.close = c.close;
-      }
-      if (c.high > agg.high) {
-        agg.high = c.high;
-      }
-      if (c.low < agg.low) {
-        agg.low = c.low;
-      }
-    }
-  }
+  //   集計数学は domain/session_ohlc.js（純関数）へ外出しした（ISSUE-094 V6）。actor は表示組立に専念する。
+  const byDay = aggregateSessionOhlc(candles);
   const out = [];
   const mp = new Map();
   for (const s of list) {
