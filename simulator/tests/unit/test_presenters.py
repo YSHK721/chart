@@ -13,7 +13,12 @@ import pandas as pd
 import pytest
 
 from simulator.usecase.models import BacktestResult, BacktestStats
-from simulator.usecase.ports import ReportPresenterPort
+from simulator.usecase.ports import (
+    HtmlReportPort,
+    JsonReportPort,
+    MarkdownReportPort,
+    ReportPresenterPort,
+)
 
 
 def _stats():
@@ -76,9 +81,9 @@ def _result():
 def test_markdown_presenter_is_report_presenter_port_subclass():
     from simulator.adapter.presenter.markdown import MarkdownPresenter
 
-    assert issubclass(MarkdownPresenter, ReportPresenterPort)
+    assert issubclass(MarkdownPresenter, MarkdownReportPort)
     assert issubclass(ReportPresenterPort, abc.ABC)
-    assert isinstance(MarkdownPresenter(), ReportPresenterPort)
+    assert isinstance(MarkdownPresenter(), MarkdownReportPort)
 
 
 def test_markdown_contains_summary_required_elements():
@@ -100,8 +105,8 @@ def test_markdown_contains_summary_required_elements():
 def test_json_presenter_is_report_presenter_port_subclass():
     from simulator.adapter.presenter.json import JsonPresenter
 
-    assert issubclass(JsonPresenter, ReportPresenterPort)
-    assert isinstance(JsonPresenter(), ReportPresenterPort)
+    assert issubclass(JsonPresenter, JsonReportPort)
+    assert isinstance(JsonPresenter(), JsonReportPort)
 
 
 def test_json_present_writes_stats_values_reloadable(tmp_path):
@@ -121,8 +126,8 @@ def test_json_present_writes_stats_values_reloadable(tmp_path):
 def test_html_presenter_is_report_presenter_port_subclass():
     from simulator.adapter.presenter.html import HtmlPresenter
 
-    assert issubclass(HtmlPresenter, ReportPresenterPort)
-    assert isinstance(HtmlPresenter(), ReportPresenterPort)
+    assert issubclass(HtmlPresenter, HtmlReportPort)
+    assert isinstance(HtmlPresenter(), HtmlReportPort)
 
 
 def test_html_present_writes_chart_embed_and_stats(tmp_path):

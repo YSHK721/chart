@@ -80,11 +80,18 @@ def test_result_sink_port_has_save_methods():
         assert method in ResultSinkPort.__abstractmethods__
 
 
-def test_report_presenter_port_has_three_present_methods():
-    from simulator.usecase.ports import ReportPresenterPort
+def test_report_ports_are_split_into_single_method_ports():
+    # ISSUE-098 🔴-1 / ISSUE-099 🟡-1: 旧「3 メソッド 1 Port」の壊れた契約を、形式別
+    # 1 メソッド Port の契約へ再設計した。各形式 Port は自形式 1 メソッドのみを abstract に持つ。
+    from simulator.usecase.ports import (
+        HtmlReportPort,
+        JsonReportPort,
+        MarkdownReportPort,
+    )
 
-    for method in ("present_markdown", "present_html", "present_json"):
-        assert method in ReportPresenterPort.__abstractmethods__
+    assert MarkdownReportPort.__abstractmethods__ == frozenset({"present_markdown"})
+    assert HtmlReportPort.__abstractmethods__ == frozenset({"present_html"})
+    assert JsonReportPort.__abstractmethods__ == frozenset({"present_json"})
 
 
 def test_run_backtest_input_boundary_has_execute():
