@@ -1182,3 +1182,31 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 - **🔵-1/🔵-2**: `.doc/LAYERING_CONVENTIONS.md` を更新——gateway 配置慣行（indicator_ui=adapter/gateway ネスト・MP=gateway フラット・共通規律 3 点）と import 解決の前提（.pth 恒久解決・指標 src 単体実行は登録済み venv 前提・entry point のみフォールバック可）を明文化。あわせて ISSUE-092 で陳腐化した記述（usecase 欠落・sys.path 3 系統・依存規則の Facade 例外/catalog 権威）を現状へ整合。
 - **🔵-3**: `catalog_schema_sync.test.js` に param 名集合の双方向対称アサートを追加（front 固有の余剰 param を検出。全 19 指標で対称成立を実測済み）。
 - **検証**: UI web 544/546 緑（既知 2 件のみ）・同期テスト 2/2 緑。
+
+## ISSUE-094: SRP（アクター単一性）のアーキテクチャ監査（4系統並列調査・主要指摘は実コード再検証済み）
+- **ステータス**: OPEN（2026-07-16 起票・調査完了＝対処は裁定待ち）
+- **調査方法**: architecture-executor 4系統並列（simulator／indicator_ui／market_profile／共有層 marketdata+common+tools）。判定基準は「モジュールはただ一つのアクター（変更要求の主体）に責任を負う」——各サブシステムでアクターカタログを実コードから帰納し、複数アクターの変更が同一ファイルを取り合う箇所のみを違反と認定（規模・関数数だけでは違反としない）。重大指摘 6 点はメイン会話で実コード再検証済み。DIP 系・ISSUE-091/092 対処済み事項は除外。
+- **総括**: 外周（EA=1ファイル・Presenter=1形式・Repository=1データ源・純 compute・gateway）はアクター単一性が徹底され模範的。**混在は各サブシステムの「中核の交差点」に集中**——実行エンジン（run_backtest）・巨大 compute（dwell）・controller の集計エンジン化（tf_period）・front の司令塔（indicator_controller.js）。また共有層に「同一アクター仕様の二重実装（手動同期）」という別型の SRP 破れが 5 件ある。
+
+### 🔴 高（複数アクターの実証済み混在）
+1. **simulator/usecase/run_backtest.py（924 行）: 5 アクター同居**。bar-mode 決定論仕様・実ティック実行仕様・ペンディング注文ライフサイクル（MT5 約定順）・マージン清算・セッション判定が単一 Interactor に凝集。`:157-160` で real_ticks と pending_lifecycle が同一メソッド `_execute_every_tick` へ合流し、OCO 取消（:799-803）等のペンディング変更が実ティック equity 経路を同時に危険に晒す（実測確認済み）。対処案: PendingLifecycleEngine・SessionGate の抽出、hedged_margin の Account 側メソッド化。
+2. **market_profile dwell/zp/tf_period の中核 3 ファイル**。(a) `market_profile_dwell.py`: 集計数学＋キャッシュ運用＋因果＋データ供給＋セッション認識の 5 アクター同居——`_CACHE_VERSION=4` のコメント自体が「active table 窓キー化（セッション認識）の変更がキャッシュ版数 bump を強制した」実波及の記録（実測確認済み）。(b) `market_profile_zp.py`: 帰無分布生成（統計仕様）と配信整形（表示仕様）の同居＋同一統計定義が analysis/step5_null_b.py と二重実装（パリティテスト縛りを docstring 自認）。(c) `tf_period_profile_controller.py`（669 行）: controller 名目で z 統計を直計算（:300-311・実測確認済み）＋表示解像度＋LRU＋ライブ合成の 5 アクター収束。対処案: セッション認識の `session_activity.py` 抽出・帰無カーネルの api/analysis 共有一元化・`_day_columns_zp` 系の compute 層移送。
+3. **共有層: 外れ値ポリシーが異なるアルゴリズムで二重実装**。同一アクター（データ品質・±30%・2025-08-26 JP225 不良値対策）の補正が、書込側 `cleaning.py:35`（median([o,h,l,c]) 基準）と読取側 `dataset.py:110-111`（min/max(open,close) エンベロープ基準）で**別の式**（実測確認済み）。閾値・基準変更時に片方修正漏れで書込時と読取時の外れ値定義が乖離する。対処案: `outlier_policy.py` へ単一化し両者は委譲へ。
+4. **indicator_ui/web/js/adapter/front/indicator_controller.js（1058 行）: 4 アクター同居**。指標管理 UI に MP のスキーマ知識（`_mpParams`/`_deriveMode`/`_applyMarketProfile` 等 約250 行・実測確認済み）・時間足取得・ライブ再計算が凝集し、`restore()` が 3 アクター分岐の交差点。対処案: MP 委譲一式を MarketProfileActor 側へ抽出・TimeframeController 分離。
+
+### 🟡 中（二重定義・漏出）
+5. **report_ui/usecase/build_report_payload.py**: レポート表示形状＋IS/OOS 合否方法論（`_verdict` 閾値直書き）＋特定実験の所与（`_META_PARAMS`＝StopEntryProbe 固定・:27-29 実測確認済み）の 3 者同居。汎用ビルダが 1 実験に固着。対処案: AssessmentPolicy 分離・実験固有値の引数化。
+6. **CSV スキーマの手動同期二重定義**: `tick_m1.py:42-44` と `rollup.py:51-52` に同一 `_HEADER`/`_DATE_FMT` リテラル（「一致させること」コメントで人手保証・実測確認済み）。対処案: csv_schema.py へ単一化。
+7. **dataset.py に品質/供給/性能の 3 アクター集中**（クランプ・whitelist/JSON 整形・mtime キャッシュ/経路分岐）。「キャッシュには生を保存し返却時にクランプ」の不変条件が改修で破られやすい構造。
+8. **serve_replay.py / server.py の殻に業務漏出**: replay 殻は API ルーティング＋静的配信セキュリティ＋性能直列化の同居、indicator_ui 殻は MP forming の tick 合成（`_augment_mp_forming_ticks`）とライブ注入が「薄殻」宣言に反して常駐。対処案: StaticFileServer 分離・augment の MP 側移設。
+9. **datasetRef 台帳の 4 断片化**（DATASET_WHITELIST・_OUTLIER_CLAMP_REFS_SET・_ROLLUP_REFS・TICK_REFS）: 新銘柄追加時に 4 箇所整合が必要。対処案: ref 記述子レジストリへ統合。
+10. **週/月ラベル規則の二重表現**（resample.py の W-FRI/ME ⇔ session_day.py の手書き暦算術・テスト担保依存）と **domain/account.py への執行クォート規約漏出**（`_eval_price` の bid/ask basis 分岐＝MT5 校正アクターが最内 Entity を変更する）。
+
+### 🔵 低（記録・裁定向け）
+11. **api_contract の再評価**: 依存方向は合法（ISSUE-091「低懸念」）だが、アクター観点では HTTP 契約の所有者は配信殻であり marketdata のどのアクターでもない。中立共有パッケージへの移設は境界衛生の改善候補（緊急性なし）。
+12. その他: compute_stats の METRICS 版/MT5 校正版の並存・cache_gc の MP private 直結・`_min_unit` 孤児化・tools の `_DEFAULT_FULL_START` 二重定義・VA/活発秒の Python↔JS 二重実装（パリティ縛りは現実解として維持妥当）・common_view/level_colors docstring の旧パス例。
+
+### 模範例（正の参照）
+- **1 変更主体=1 ファイル**: simulator の EA（adapter/strategy/*）・Presenter（markdown/html/json）・Repository（データ源別）。
+- **純カーネル**: tf_period_profile.py・market_profile.py（集計仕様のみ）・tail_reader.py・resample.py（「唯一の規則源」）・applied_price.py・compute_indicators.py（usecase 純関数）。
+- **描画↔集計分離**: web/js の domain（dwell accumulator）と adapter/front（primitive）の物理分離。
