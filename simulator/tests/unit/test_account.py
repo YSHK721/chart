@@ -87,40 +87,45 @@ class TestUpdateFloatingPnl:
         assert acc.floating_pnl == pytest.approx(0.0)
 
 
-# ---- 層2: floating_pnl_basis="bid_ask" — 含み損益を決済価格基準で評価する
-#      （買い保有=Bid=close / 売り保有=Ask=close+spread×point）。config-gated・既定 "close" ----
+# ---- ISSUE-095 項目2: update_floating_pnl(bar) から bid/ask basis 分岐を除去した。
+#      旧「floating_pnl_basis='bid_ask' で売りを Ask=close+spread×point 評価する」分岐は
+#      Account から完全除去され、bar シムは buy/sell とも bar.close で評価する（close 固定）。
+#      決済価格基準（買い=Bid/売り=Ask）評価は usecase が resolve_eval_quote で (bid,ask) を
+#      解決し update_floating_pnl_at へ直接渡す本番経路が担う（下記 TestUpdateFloatingPnlAtTick
+#      + test_eval_quote_resolution.py::TestProductionEvalQuotePath）。 ----
 
-class TestUpdateFloatingPnlBidAsk:
-    """floating_pnl_basis="bid_ask" のとき、保有ポジを決済側の価格で評価する。
+class TestUpdateFloatingPnlBarShimIsCloseFixed:
+    """update_floating_pnl(bar) は basis 分岐除去後、常に bar.close で評価する（ISSUE-095 項目2）。
 
-    実 MT5 はポジション決済価格基準で含み損益を評価する（買い保有=Bid・売り保有=Ask）。
-    Ask = Bid(=bar.close) + spread×point。これにより売り保有の含み損が close 固定より
-    悲観的（正しく）になり stop-out 発火が MT5 へ寄る。既定 "close" は従来評価で不変。
+    旧仕様（ISSUE-094 段階縮退シム）は floating_pnl_basis="bid_ask" のとき売り保有を
+    Ask=bar.close+spread×point で悲観化評価していた。本項目でその bid/ask basis 分岐を
+    Account から除去し、bar シムは inert となった floating_pnl_basis／point_size を一切参照
+    せず buy/sell とも bar.close（Bid=Ask=close）で評価する。決済価格基準の売り悲観化は
+    usecase（resolve_eval_quote）+ update_floating_pnl_at が担う（Account の責務外）。
     """
 
-    def test_buy_uses_bid_equals_close(self):
-        # 買い保有は Bid(=bar.close) で評価＝close 評価と同値（spread の影響を受けない）。
+    def test_buy_uses_close(self):
+        # 買い保有は bar.close で評価（basis 除去前後で不変＝買いは元々 Bid=close）。
         pos = Position(side="buy", volume=1.0, entry_price=100.0)
         acc = Account(
             balance=10_000.0, contract_size=100_000, open_positions=[pos],
             floating_pnl_basis="bid_ask", point_size=0.1,
         )
-        # bar.close=101, spread=10 → buy は Bid=101 で評価 → (101-100)*1*1e5*+1 = 100000
+        # bar.close=101, spread=10 → buy は close=101 → (101-100)*1*1e5*+1 = 100000
         acc.update_floating_pnl(_bar(101.0, spread=10))
         assert acc.floating_pnl == pytest.approx(100_000.0)
 
-    def test_sell_uses_ask_equals_close_plus_spread_times_point(self):
-        # 売り保有は Ask(=bar.close + spread×point) で評価。Ask>close により含み損が
-        # close 評価より悲観的になる（売りは価格が高いほど損）。
+    def test_sell_ignores_removed_bid_ask_basis_and_uses_close(self):
+        # 回帰固定: inert な floating_pnl_basis="bid_ask"・point_size をセットしても、bar シムは
+        # 売り保有を bar.close で評価する（spread×point を加算しない＝basis 分岐除去の実証）。
         pos = Position(side="sell", volume=1.0, entry_price=100.0)
         acc = Account(
             balance=10_000.0, contract_size=100_000, open_positions=[pos],
             floating_pnl_basis="bid_ask", point_size=0.1,
         )
-        # bar.close=101, spread=10 → Ask=101+10*0.1=102 → (102-100)*1*1e5*-1 = -200000
-        # （close 評価なら (101-100)*1e5*-1 = -100000。Ask 評価で -200000＝より悲観的）
+        # 除去前は Ask=101+10*0.1=102 → -200000 だった。除去後は close=101 → -100000。
         acc.update_floating_pnl(_bar(101.0, spread=10))
-        assert acc.floating_pnl == pytest.approx(-200_000.0)
+        assert acc.floating_pnl == pytest.approx(-100_000.0)
 
     def test_default_close_basis_ignores_spread_for_sell(self):
         # 後方互換: floating_pnl_basis 既定 "close" では売り保有も close 評価
