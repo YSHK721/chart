@@ -26,6 +26,87 @@ import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_p
 import { MarketProfileController } from './market_profile_controller.js';
 import { TimeframeController } from './timeframe_controller.js';
 
+// =========================================================================
+// フロントロール契約（ISP・ISSUE-099 🟡-3/🟡-4）
+// -------------------------------------------------------------------------
+// TimeframeController / MarketProfileController は host（IndicatorController インスタンス）の
+// 広い公開面（約40メソッド＋20超フィールド）ではなく、ロール専用の狭い契約にのみ依存する。その
+// 契約（各 controller が実際に読む/呼ぶ最小メンバー集合）を本ファイルへ単一ソースで明文化する:
+//   - @typedef で「ロール型」を宣言（各 controller は JSDoc import 型でこの契約に依存宣言・実行時 import 無し）
+//   - 凍結ロール記述オブジェクトで「必須 method / 必須 field / optional field」を列挙（構造充足テストの固定点）
+// IndicatorController（present 共有ベース）はメンバー名・挙動を一切変えず、既存構造のまま本契約を
+// 構造的に満たす（加法的・非破壊）。symlink 単一ソースで継承される ReplayIndicatorController（replay）も
+// 無改変で同契約を満たす（optional field _untilTime は replay subclass のみ在席する reveal seam）。
+
+/**
+ * TimeframeController（時間足取得・切替ロール・A3）が host に要求する最小契約。
+ *
+ * @typedef {object} TimeframeHost
+ * @property {string} _timeframe             現在の表示時間足（read/write）。
+ * @property {number} _recomputeDepth        再計算バッチの競合ガード深さ（read/write）。
+ * @property {string} _datasetRef            計算対象データセット参照（read）。
+ * @property {?number} _recentBars           直近表示本数（compute の limit）。null=制限なし（read）。
+ * @property {{uiState: object}} _state      UI 永続状態を保持する純状態オブジェクト（read/write: uiState）。
+ * @property {{setCandles: function}} _renderer  メイン系列差替に用いる renderer（read: setCandles を呼ぶ）。
+ * @property {?function} _loadCandles        時間足切替時の candles 再取得ローダ（B方式のみ・A方式は null）。
+ * @property {?function} _timeframeObserver  時間足変更の購読者（任意・1 個）。
+ * @property {function} recomputeAllApplied  適用済み全指標の再計算入口（ライブ更新と共通・host 温存）。
+ * @property {function} _persistAll          applied/favorites/uiState を永続化する。
+ * @property {{timeframeBtns?: Iterable}} [_el]  時間足ボタン DOM（bind() 後のみ在席・optional）。
+ */
+
+/**
+ * MarketProfileController（MP アクター駆動オーケストレーションロール・A7）が host に要求する最小契約。
+ *
+ * @typedef {object} MarketProfileHost
+ * @property {?object} _marketProfile        MP アクター（任意注入・未注入時は MP 分岐 no-op）。
+ * @property {?function} _mpModeResolver     MP 表示モードの実効解決役（present 固有・任意注入）。
+ * @property {?function} _mpGrowthResolver   MP 成長状態の解決役（present 固有・任意注入）。
+ * @property {{applied: Array}} _state       適用済みインスタンスを保持する純状態オブジェクト（read/write）。
+ * @property {{get: function}} _catalog      指標定義カタログ（read: get）。
+ * @property {Map} _meta                     instanceId -> { def } 描画済みメタ。
+ * @property {string} _datasetRef            計算対象データセット参照（read）。
+ * @property {?object} _document             プロパティダイアログ構築用 document（null 可）。
+ * @property {string} _mode                  計算モード（'a'=file:// / 'b'=served）。
+ * @property {string} _timeframe             現在の表示時間足（gear ダイアログ context 用・read）。
+ * @property {function} _mpParams            MP params 組み立て（subclass override を host 経由で尊重）。
+ * @property {function} _isMarketProfile     def が MP 指標か判定する。
+ * @property {function} _paramsObject        params（配列/オブジェクト）を平坦オブジェクトへ正規化する。
+ * @property {function} _renderLegend        凡例を再描画する。
+ * @property {function} _defaultVariant      def の既定 variant を返す。
+ * @property {function} _withParams          state の instance params を差し替える。
+ * @property {function} _defaultParams       def の既定 params を返す。
+ * @property {function} _persistAll          applied/favorites/uiState を永続化する。
+ * @property {?number} [_untilTime]          reveal（replay）の現在バー T。present は非在席（optional）。
+ */
+
+// TimeframeHost 契約の実体列挙（構造充足テスト・依存面部分集合テストの固定点）。
+export const TIMEFRAME_HOST_CONTRACT = Object.freeze({
+  role: 'TimeframeHost',
+  methods: Object.freeze(['recomputeAllApplied', '_persistAll']),
+  fields: Object.freeze([
+    '_timeframe', '_recomputeDepth', '_datasetRef', '_recentBars',
+    '_state', '_renderer', '_loadCandles', '_timeframeObserver',
+  ]),
+  // bind() 後のみ在席（fresh インスタンスでは未在席・controller は optional chaining で許容）。
+  optionalFields: Object.freeze(['_el']),
+});
+
+// MarketProfileHost 契約の実体列挙（構造充足テスト・依存面部分集合テストの固定点）。
+export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
+  role: 'MarketProfileHost',
+  methods: Object.freeze([
+    '_mpParams', '_isMarketProfile', '_paramsObject', '_renderLegend',
+    '_defaultVariant', '_withParams', '_defaultParams', '_persistAll',
+  ]),
+  fields: Object.freeze([
+    '_marketProfile', '_mpModeResolver', '_mpGrowthResolver', '_state',
+    '_catalog', '_meta', '_datasetRef', '_document', '_mode', '_timeframe',
+  ]),
+  // reveal seam: replay subclass のみ在席（present base では非在席・controller は != null で許容）。
+  optionalFields: Object.freeze(['_untilTime']),
+});
+
 // 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
 //   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
 function isTailUpdatable(payload) {
