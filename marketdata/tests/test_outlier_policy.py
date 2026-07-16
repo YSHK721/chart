@@ -1,8 +1,15 @@
-"""outlier_policy 単一定義の検証（ISSUE-094 🔴-3）。
+"""outlier_policy 単一定義の検証（ISSUE-094 🔴-3 / ISSUE-095 項目1）。
 
-閾値（OUTLIER_THRESHOLD）が両戦略の唯一源であり、cleaning / dataset が本モジュールへ委譲する
-ことを固定する。両戦略の byte 挙動は既存 test_volume_s0 / test_dataset_outlier_clamp が担保する。
-本ファイルは「委譲の結線」と「両戦略の式が別物である」実測事実（3a）を回帰として固定する。
+ISSUE-095 項目1（依頼者裁定＝エンベロープ式へ統一）により、外れ値補正式を **min/max(open,close)
+エンベロープ** の単一コアへ一本化した（旧 acquisition=median[o,h,l,c] 式は撤去）。閾値
+（OUTLIER_THRESHOLD=0.3）と ref ゲート等の共通判定は維持する。
+
+本ファイルは以下を回帰として固定する:
+  - 閾値が唯一源であること（cleaning / dataset が本モジュールへ委譲）。
+  - acquisition（cleaning 経路）と serving（dataset 経路）が **同一エンベロープコア** へ委譲し、
+    同一 OHLC 入力に対しバーレベルで同一結果を返すこと。
+  - 二相バー（open/close が別価格帯にまたがるバー）を両経路が保全すること
+    （旧 median 式は実在しない中間値へ潰す誤検出だった）。
 """
 
 from __future__ import annotations
@@ -22,15 +29,25 @@ def test_dataset_threshold_reexports_policy_threshold():
     assert dataset.OUTLIER_CLAMP_THRESHOLD is outlier_policy.OUTLIER_THRESHOLD
 
 
-# --- cleaning は acquisition 戦略へ委譲する ------------------------------- #
-def test_cleaning_delegates_to_median_strategy():
+# --- 式の一本化: median 戦略は撤去済み（ISSUE-095 項目1） ------------------- #
+def test_median_strategy_is_removed():
+    # 旧 acquisition median 式（repair_ohlc_outliers_median）は撤去され、
+    # エンベロープ式（repair_ohlc_outliers_envelope）へ一本化されている。
+    assert not hasattr(outlier_policy, "repair_ohlc_outliers_median")
+    assert hasattr(outlier_policy, "repair_ohlc_outliers_envelope")
+
+
+# --- cleaning は acquisition エンベロープ戦略へ委譲する -------------------- #
+def test_cleaning_delegates_to_envelope_strategy():
+    # low だけが外れる単相バー（open/close ~42,600）。エンベロープは low を ref_lo へクランプ。
     candles = [{"time": 1, "open": 42600.0, "high": 42700.0, "low": 15095.0,
                 "close": 42650.0, "volume": 9.0}]
     via_facade, log_f = cleaning.repair_ohlc_outliers(candles)
-    via_core, log_c = outlier_policy.repair_ohlc_outliers_median(candles)
+    via_core, log_c = outlier_policy.repair_ohlc_outliers_envelope(candles)
     assert via_facade == via_core
     assert log_f == log_c
-    # 中央値式の既存挙動（byte 不変）: low のみ閾値超→ref 置換→low=min(fixed)=42600。
+    # エンベロープ式: ref_lo=min(open,close)=42600 → low(15095)<42600*0.7 で 42600 へクランプ。
+    # high(42700) は ref_hi=max(open,close)=42650 の +30%(55445) 以下ゆえ不変。open/close は不変。
     assert (via_facade[0]["open"], via_facade[0]["high"],
             via_facade[0]["low"], via_facade[0]["close"]) == (42600.0, 42700.0, 42600.0, 42650.0)
 
@@ -47,19 +64,56 @@ def test_dataset_clamp_delegates_to_envelope_strategy():
     assert out["low"].iloc[0] == direct["low"].iloc[0] == 42476.68
 
 
-# --- 実測（3a）: 二相バーで 2 戦略が乖離する（式が別物である回帰の壁） --- #
-def test_two_strategies_diverge_on_bimodal_bar():
-    # open/close が別価格帯（15,156 と 42,419）にまたがる二相バー（jp225_tick 1h 2025-08-26 相当）。
+# --- 回帰ガード: acquisition と serving が同一エンベロープコアで一致する ---- #
+def _acq_low_high(o, h, low, c):
+    """acquisition 経路（cleaning 経路と同一）の補正後 (low, high) を取り出す。"""
+    candles = [{"time": 1, "open": o, "high": h, "low": low, "close": c, "volume": 1.0}]
+    repaired, _ = outlier_policy.repair_ohlc_outliers_envelope(candles)
+    r = repaired[0]
+    return r["low"], r["high"]
+
+
+def _serving_low_high(o, h, low, c):
+    """serving 経路（dataset 経路と同一）の補正後 (low, high) を取り出す。"""
+    df = pd.DataFrame({"open": [o], "high": [h], "low": [low], "close": [c]})
+    out = outlier_policy.clamp_ohlc_envelope(df, threshold=outlier_policy.OUTLIER_THRESHOLD)
+    return float(out["low"].iloc[0]), float(out["high"].iloc[0])
+
+
+def test_acquisition_and_serving_agree_bar_level():
+    # 正常バー / 下ヒゲ外れ / 上ヒゲ外れ / 二相バー を両経路へ通し、(low, high) が一致すること。
+    cases = [
+        (100.0, 130.0, 70.0, 100.0),      # 正常（境界内・不変）
+        (42600.0, 42700.0, 15095.0, 42650.0),  # 下ヒゲ外れ → low クランプ
+        (42642.89, 90000.0, 42400.0, 42476.68),  # 上ヒゲ外れ → high クランプ
+        (42419.0, 42454.0, 15155.0, 15156.0),  # 二相バー（保全）
+    ]
+    for o, h, low, c in cases:
+        assert _acq_low_high(o, h, low, c) == _serving_low_high(o, h, low, c)
+
+
+def test_bimodal_bar_is_preserved_by_both_paths():
+    # open/close が別価格帯（42,419 と 15,156）にまたがる二相バー
+    #（jp225_tick 1h 2025-08-26 相当・旧 median 式は ~28,787.5 へ 4 値を潰す誤検出だった）。
+    o, h, low, c = 42419.0, 42454.0, 15155.0, 15156.0
+    # acquisition: OHLC 4 値すべて不変（保全）・補正ログなし。
+    candles = [{"time": 1, "open": o, "high": h, "low": low, "close": c, "volume": 1.0}]
+    repaired, log = outlier_policy.repair_ohlc_outliers_envelope(candles)
+    r = repaired[0]
+    assert (r["open"], r["high"], r["low"], r["close"]) == (o, h, low, c)
+    assert log == []
+    # serving: 同一二相バーを不変に保つ（no-op で同一オブジェクト返却）。
+    df = pd.DataFrame({"open": [o], "high": [h], "low": [low], "close": [c]})
+    env_out = outlier_policy.clamp_ohlc_envelope(df, threshold=0.3)
+    assert env_out is df
+
+
+def test_acquisition_facade_preserves_bimodal_bar():
+    # 公開ファサード cleaning.repair_ohlc_outliers も二相バーを保全する（式統一の実利用実証）。
     candles = [{"time": 1, "open": 42419.0, "high": 42454.0, "low": 15155.0,
                 "close": 15156.0, "volume": 1.0}]
-    df = pd.DataFrame(
-        {"open": [42419.0], "high": [42454.0], "low": [15155.0], "close": [15156.0]},
-        index=pd.to_datetime(["2025-08-26 06:00:00"]),
-    )
-    median_out, _ = outlier_policy.repair_ohlc_outliers_median(candles)
-    env_out = outlier_policy.clamp_ohlc_envelope(df, threshold=0.3)
-    # median 式は 4 値を実在しない中間値（~28,787）へ潰す（明白な誤検出）。
-    assert median_out[0]["open"] == median_out[0]["close"]
-    assert abs(median_out[0]["open"] - 28787.5) < 1.0
-    # エンベロープ式は当該二相バーを不変に保つ（同一オブジェクト返却＝no-op）。
-    assert env_out is df
+    repaired, log = cleaning.repair_ohlc_outliers(candles)
+    r = repaired[0]
+    assert (r["open"], r["high"], r["low"], r["close"]) == (42419.0, 42454.0, 15155.0, 15156.0)
+    assert log == []
+    assert r["volume"] == 1.0

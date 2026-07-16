@@ -68,8 +68,9 @@ def _clamp_outlier_bars(df: pd.DataFrame, ref: str) -> pd.DataFrame:
 
     「どの ref を補正対象とするか」（``_OUTLIER_CLAMP_REFS_SET`` の実市場 ref 限定）は供給側の
     ポリシーとして本関数が担い、エンベロープ判定/補正の式（min/max(open,close) 基準・±30%）は
-    :func:`marketdata.outlier_policy.clamp_ohlc_envelope`（serving 戦略・唯一の定義）へ委譲する
-    （ISSUE-094 🔴-3: 書込側 cleaning と閾値を単一化・式は 2 戦略として同居）。非対象 ref は素通し。
+    :func:`marketdata.outlier_policy.clamp_ohlc_envelope`（単一補正コア・唯一の定義）へ委譲する
+    （ISSUE-094 🔴-3: 書込側 cleaning と閾値を単一化／ISSUE-095 項目1: 補正式をエンベロープへ一本化・
+    acquisition/serving の両経路が本コアへ委譲）。非対象 ref は素通し。
     """
     if ref not in _OUTLIER_CLAMP_REFS_SET:
         return df

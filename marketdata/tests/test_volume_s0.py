@@ -59,7 +59,7 @@ def test_repair_preserves_volume_on_unmodified_candle():
 
 
 def test_repair_preserves_volume_on_corrected_candle():
-    # Arrange: low が中央値から -64% 乖離（補正対象）＋ volume 付き。
+    # Arrange: low が open/close エンベロープから -64% 乖離（補正対象）＋ volume 付き。
     candles = [{"time": 1, "open": 42600.0, "high": 42700.0, "low": 15095.0,
                 "close": 42650.0, "volume": 999.0}]
     # Act
@@ -85,9 +85,10 @@ def test_repair_ohlc_values_byte_invariant_with_volume():
     # Act
     repaired, log = repair_ohlc_outliers(candles)
     out = repaired[0]
-    # Assert: OHLC は volume 非依存（中央値補正の既存仕様どおり）。
-    # ref = median(42600,42700,15095,42650) = 42625.0、low=15095 のみ閾値超→ref 置換、
-    # 再不変条件確立で low=min(fixed)=42600.0・high=max(fixed)=42700.0。
+    # Assert: OHLC は volume 非依存（ISSUE-095 項目1: エンベロープ補正へ統一後の仕様）。
+    # ref_lo=min(open,close)=42600、low=15095 < 42600*0.7 で ref_lo(42600) へクランプ。
+    # high=42700 は ref_hi=max(open,close)=42650 の +30%(55445) 以下ゆえ不変・open/close 不変。
+    #（この単相バーはエンベロープ・旧 median いずれでも同一結果＝byte 不変）。
     assert out["open"] == 42600.0
     assert out["high"] == 42700.0
     assert out["low"] == 42600.0
