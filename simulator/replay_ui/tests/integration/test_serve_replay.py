@@ -91,12 +91,14 @@ def test_candles_ok_and_no_store(server_ctx):
 
 
 def test_candles_internal_error_translated(server_ctx):
+    # ISSUE-091 A2: internal は正典 ERROR_STATUS（api_contract）どおり 500・nested 形（ok/generation 付き）。
     base, _ = server_ctx
     with pytest.raises(HTTPError) as ei:
         _get(base, "/candles?datasetRef=boom")
-    assert ei.value.code == 400
+    assert ei.value.code == 500
     err = json.loads(ei.value.read())
     assert err["error"]["type"] == "internal"
+    assert err["ok"] is False and "violations" in err["error"]
 
 
 def test_compute_until_time_and_full_mode(server_ctx):
@@ -132,13 +134,15 @@ def test_compute_unknown_ref_is_validation_error(server_ctx):
 
 
 def test_compute_memory_error_is_internal(server_ctx):
+    # ISSUE-091 A2: internal は正典 ERROR_STATUS（api_contract）どおり 500・nested 形（ok/generation 付き）。
     base, _ = server_ctx
     with pytest.raises(HTTPError) as ei:
         _post(base, "/compute", {"indicatorId": "x", "datasetRef": "oom"})
-    assert ei.value.code == 400
+    assert ei.value.code == 500
     err = json.loads(ei.value.read())
     assert err["error"]["type"] == "internal"
     assert err["error"]["message"] == "memory limit"
+    assert err["ok"] is False and "generation" in err
 
 
 def test_intraday_real_ticks_returns_mids(server_ctx):

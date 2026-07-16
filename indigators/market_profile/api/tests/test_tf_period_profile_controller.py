@@ -126,6 +126,27 @@ def test_completed_day_persists_to_disk(monkeypatch, tmp_path):
     assert b2["columns"] == b1["columns"]  # ディスクから同一結果を復元。
 
 
+def test_disk_generation_follows_tfp_cache_version(monkeypatch, tmp_path):
+    """非 zp のディスク世代 subdir は _TFP_CACHE_VERSION に連動する（ISSUE-091 A3・手書き 's1' 排除）。
+
+    version bump で保存先ディレクトリが変わる（＝新旧コード併走でも同一ファイルを奪い合わない）
+    ことを、実ディレクトリ名で確認する。
+    """
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", str(tmp_path))
+    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
+    monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
+    st, _ = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
+    assert st == 200
+    assert list((tmp_path / "JP225").glob("1m/s1/*")), "v1 は従来 's1' と同一パスへ保存する"
+
+    ctl._reset_tf_period_cache()
+    monkeypatch.setattr(ctl, "_TFP_CACHE_VERSION", 2)  # bump をシミュレート。
+    st2, _ = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
+    assert st2 == 200
+    assert list((tmp_path / "JP225").glob("1m/s2/*")), "bump 後は s2 subdir へ書く（旧世代と不混在）"
+
+
 # --------------------------------------------------------------------------- #
 # セッション日切り（ISSUE-078）
 # --------------------------------------------------------------------------- #

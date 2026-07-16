@@ -210,11 +210,13 @@ def _build_registry(df: pd.DataFrame, *, ma_period: int, ma_method: str) -> Pand
     return PandasIndicatorRegistry({"madiff": madiff_series, "close": df["close"]})
 
 
-def _ema_series(price: pd.Series, period: int) -> pd.Series:
+def ema_series(price: pd.Series, period: int) -> pd.Series:
     """MQL 忠実 EMA(period) を price 系列へ適用して返す（seed=price[0]）。
 
     madiff.py と同じ共有実装 ``exponential_ma_on_buffer``（α=2/(period+1)・index0 シード）
     を再利用する。MaSlope が indicators.get("ema") で参照する確定足 EMA を供給する。
+    report_ui（別スライス）が EA 同一 EMA の再現に用いるため公開 API とする（ISSUE-091 #3:
+    private 名の越境 import を解消）。
     """
     import numpy as np
 
@@ -225,6 +227,9 @@ def _ema_series(price: pd.Series, period: int) -> pd.Series:
     values = price.to_numpy(dtype=float)
     ema = _ma_series(values, period, "ema")
     return pd.Series(ema, index=price.index)
+
+
+_ema_series = ema_series  # 後方互換の旧名（simulator 内部の既存参照・テスト経路を温存）。
 
 
 def _build_ma_slope_registry(df: pd.DataFrame, *, ma_period: int) -> PandasIndicatorRegistry:

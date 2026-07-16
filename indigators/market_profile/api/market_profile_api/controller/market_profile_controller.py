@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from marketdata.api_contract import ERROR_STATUS  # §6.3.4 単一定義（ISSUE-087: marketdata へ移設）
+from marketdata.api_contract import nested_error  # §6.3.4 単一定義（ISSUE-087 移設・ISSUE-091 A2 で整形も一元化）
 from marketdata import dataset  # dataset 実体は marketdata へ移設済み（最下層 peer 依存）
 from market_profile_api.compute import market_profile_dwell
 from market_profile_api.compute import market_profile_zp
@@ -96,15 +96,10 @@ def _bar_width(profile: dict[str, Any]) -> float:
 def _error_body(error_type: str, message: str) -> tuple[int, dict[str, Any]]:
     """§6.3.4 nested error（{ok:false, generation, error:{type, message, violations}}）。
 
-    error_type→HTTPステータスは marketdata.api_contract.ERROR_STATUS（単一定義）を参照する
-    （handle_compute の _error_body と同一のステータス翻訳・応答規約）。
+    ステータス翻訳・ボディ形とも正典 marketdata.api_contract.nested_error（単一定義）へ
+    委譲する（ISSUE-091 A2: 3 殻の契約分岐を構造排除）。
     """
-    status = ERROR_STATUS.get(error_type, 500)
-    return status, {
-        "ok": False,
-        "generation": 0,
-        "error": {"type": error_type, "message": message, "violations": []},
-    }
+    return nested_error(error_type, message)
 
 
 def _parse_int(raw: Any, default: int | None) -> int | None:

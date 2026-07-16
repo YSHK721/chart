@@ -26,7 +26,11 @@ from marketdata import tf_meta as _forming_bar  # ISSUE-087 🔴-1: 裸 adapter 
 from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute import market_profile_zp as _zp
 from market_profile_api.compute.market_profile import _value_area
-from market_profile_api.compute.tf_period_profile import _value_area_sparse, tf_period_profiles
+from market_profile_api.compute.tf_period_profile import (
+    _TFP_CACHE_VERSION,
+    _value_area_sparse,
+    tf_period_profiles,
+)
 from market_profile_api.controller.market_profile_controller import _error_body
 
 # セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定の唯一の規則源。
@@ -178,7 +182,9 @@ def _day_columns(
     #   旧 min-unit ディスクキャッシュ（<root>/<sym>/<tf>/<day>.json）と混ざらないよう新 subdir へ隔離する。
     # ISSUE-073: tf 別解像度（_UNIT_BY_TF）。1m のみ最小刻み 0.0255・その他は GRID_W 維持（依頼者承認 2026-07-13）。
     unit = float(_UNIT_BY_TF.get(str(tf), _mpd.GRID_W))
-    disk_tf = f"{tf}/s1/g{unit:g}"  # ISSUE-078: セッション日キー世代は s1 subdir（旧 UTC 日と不混在）。
+    # ISSUE-078: セッション日キー世代 subdir（旧 UTC 日と不混在）。ISSUE-091 A3: 世代は生成本体の
+    #   _TFP_CACHE_VERSION に連動（手書きリテラル排除・zp/dwell と同規律。v1 = 従来 's1' と同一パス）。
+    disk_tf = f"{tf}/s{_TFP_CACHE_VERSION}/g{unit:g}"
     if completed:
         hit = _DAY_MEM.get(key)
         if hit is not None:

@@ -49,6 +49,7 @@ except ImportError:  # フォールバック（未登録環境の自己完結起
         sys.path.insert(0, str(_REPO_ROOT))
 
 from marketdata import dataset  # noqa: E402
+from marketdata import api_contract as _contract  # noqa: E402  (nested_error 単一定義・ISSUE-091 A2)
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
 from market_profile_api.controller.market_profile_controller import handle_market_profile  # noqa: E402
@@ -129,12 +130,12 @@ _CONTENT_TYPES = {
 
 
 def _nested_error(error_type: str, message: str, generation: int = 0) -> dict[str, Any]:
-    """§6.3.4 nested エラーボディ（殻の例外・候補外要求も同形で返す）。"""
-    return {
-        "ok": False,
-        "generation": generation,
-        "error": {"type": error_type, "message": message, "violations": []},
-    }
+    """§6.3.4 nested エラーボディ（殻の例外・候補外要求も同形で返す）。
+
+    ボディ形は正典 marketdata.api_contract.nested_error の単一定義へ委譲（ISSUE-091 A2）。
+    ステータスはエンドポイント固有の判断（404/413 等）があるため呼び出し側が選ぶ。
+    """
+    return _contract.nested_error(error_type, message, generation=generation)[1]
 
 
 def _resolve_static(url_path: str) -> Path | None:

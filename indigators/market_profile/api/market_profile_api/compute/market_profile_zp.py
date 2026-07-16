@@ -48,15 +48,23 @@ from market_profile_api.compute.market_profile import _value_area
 from market_profile_api.compute.market_profile_dwell import GRID_W  # noqa: F401  (dwell 互換・zp 内部では不使用)
 from market_profile_api.compute.market_profile_zp_store import ZpStore
 
-# repo 根は _mpd の import 時に sys.path へ挿入済み（marketdata 解決）。
-from marketdata import paths as _paths  # noqa: E402
-from marketdata.tick_m1 import day_parquet_files  # noqa: E402
-# セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源。
+# ISSUE-091 🔴-2: ティック物理格納への依存は compute 所有の TickStorePort へ逆転（dwell と同規律）。
+from market_profile_api.compute.tick_store_port import tick_store as _tick_store
+# セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源
+#（marketdata の純業務規則＝I/O 非依存のため内側 import を許容）。
 from marketdata.session_day import (  # noqa: E402
     next_session_day_start,
     session_date_label,
     session_day_start,
 )
+
+
+def day_parquet_files(lo_day, hi_day, *, symbol: str):
+    """正準ティック日別ファイルの列挙（TickStorePort へ委譲・read-only）。
+
+    既存テストの monkeypatch 単一注入点（``zp.day_parquet_files``）を module 属性として温存する。
+    """
+    return _tick_store().day_files(lo_day, hi_day, symbol=symbol)
 
 # セッション窓（ブローカー分オフセット＝セッション日始端 NY17:00 ET からの経過分・ISSUE-078）。
 #   実測（JP225 CFD）: オープン=ブローカー01:00（冬は 23:00 UTC ちょうど・夏は 22:01-22:06 UTC＝01:01-06）、
@@ -257,7 +265,7 @@ _ZP_CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profi
 
 _STORE = ZpStore(
     root_provider=lambda: _ZP_CACHE_ROOT,
-    default_root_provider=lambda: _paths.DATA_DIR / "cache" / "market_profile_zp",
+    default_root_provider=lambda: _tick_store().data_dir() / "cache" / "market_profile_zp",
     grid_w=ZP_BP,  # ISSUE-079: znull パスの格子タグは bp 値（b1 等・旧 g10 と不混在）。
     hist_days=NULL_HIST_DAYS,
     m_reps=M_REPS_DAY,
