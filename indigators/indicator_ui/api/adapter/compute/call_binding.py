@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, TypedDict
+from typing import Any, Callable, NotRequired, TypedDict
 
 from adapter.compute.module_loader import load_package
 
@@ -87,6 +87,51 @@ def _adapt_prp_interval(df: Any, kw: dict[str, Any]) -> float:
     if rng > 0 and rng / interval > _PRP_MAX_BANDS:
         return _nice_step(rng / _PRP_TARGET_BANDS)
     return interval
+
+
+def _prp_preprocess(df: Any, kw: dict[str, Any]) -> dict[str, Any]:
+    """price_range_power 専用 invoke 前処理フック（ISSUE-097 🟡-7 / ISSUE-098 🟡-6・LSP）。
+
+    従来 ``invoke`` 内に直書きされていた ``if compute_id == "price_range_power" and
+    "interval" in kw`` の指標名判定を _BindingSpec の宣言的フックへ昇格し、invoke から
+    compute_id 直判定を排除する。挙動は従来と同一（interval があるときのみバンド爆発を
+    防ぐ自動適応を行い、無いときは触らない）。
+    """
+    if "interval" in kw:
+        # 高価格帯でのバンド爆発（ハング）を防ぐ自動適応（catalog/src は不変）。
+        kw["interval"] = _adapt_prp_interval(df, kw)
+    return kw
+
+
+# --- Latest 増分計算メタ（archetype/min_window/trailing_k）の宣言（ISSUE-097 🟡-6・OCP）---
+# latest_meta.py の per-indicator if 連鎖を撤去し、各指標の archetype 分類を _BindingSpec の
+# ``latest_meta`` フィールド（params → (archetype, min_window, trailing_k) の resolver）へ
+# 一元宣言する。未宣言（field 不在）の指標は latest_meta.py 側の安全既定
+# recurrence/full/K=1 へ落ちる（従来不変）。LatestMeta 型はここで import しない
+# （latest_meta.py が本 resolver の戻り tuple から構築＝call_binding との循環を回避）。
+
+# ma_type → archetype の分類。sma / lwma は窓系（理論上は窓 length 確定）だが core が
+# スライド和の再帰のため、df.tail で開始点を変えると末尾値に浮動小数ドリフトが乗る。
+# spec の分岐「2*length が float 完全一致を満たさなければ full フォールバック」に従い
+# min_window=None（full）を既定とする。ema / smma ほかは先頭シード必須の再帰で full。K は両者 1。
+_MA_WINDOW_TYPES = {"sma", "lwma"}
+
+
+def _moving_averages_latest_meta(
+    params: dict[str, Any],
+) -> tuple[str, int | None, int | None]:
+    ma_type = str(params.get("ma_type", "ema")).lower()
+    if ma_type in _MA_WINDOW_TYPES:
+        return ("window", None, 1)
+    return ("recurrence", None, 1)
+
+
+def _price_range_power_latest_meta(
+    params: dict[str, Any],
+) -> tuple[str, int | None, int | None]:
+    # 価格軸分布（非時系列）。末尾K切りしない（全件・trailing_k=None）。
+    return ("axis_distribution", None, None)
+
 
 # indigators/ ルート（このファイル: api/adapter/compute/ → parents[4] = indigators/）。
 _INDIGATORS = Path(__file__).resolve().parents[4]
@@ -165,14 +210,20 @@ def _load_callable(indicator: str, attr: str) -> Callable:
 class _BindingSpec(TypedDict):
     """_TABLE のエントリ形状（compute_id+variant ごとの呼出規約）。
 
-    loader     : add_* を遅延ロードする callable（指標 src 同名衝突を回避するため遅延）。
-    output_kind: 系列 JSON 種別（"line" / "horizontal_line"・§6.3）。
-    kind       : invoke 時の引数渡し（"btlm"=fitter 第3位置 / "kw"=df 以降キーワード専用）。
+    loader      : add_* を遅延ロードする callable（指標 src 同名衝突を回避するため遅延）。
+    output_kind : 系列 JSON 種別（"line" / "horizontal_line"・§6.3）。
+    kind        : invoke 時の引数渡し（"btlm"=fitter 第3位置 / "kw"=df 以降キーワード専用）。
+    latest_meta : Latest 増分計算メタの resolver（任意・ISSUE-097 🟡-6）。
+                  params → (archetype, min_window, trailing_k)。未宣言は安全既定へ落ちる。
+    preprocess  : invoke 前の kw 変換フック（任意・ISSUE-097 🟡-7）。(df, kw) → kw。
+                  未宣言（既定 None）は変換なし。invoke から指標名直判定を排するための昇格点。
     """
 
     loader: Callable[[], Callable]
     output_kind: str
     kind: str
+    latest_meta: NotRequired[Callable[[dict[str, Any]], tuple[str, int | None, int | None]]]
+    preprocess: NotRequired[Callable[[Any, dict[str, Any]], dict[str, Any]]]
 
 
 # compute_id(+variant) → 規約。loader は import を遅延し、指標 src 同名衝突を回避する。
@@ -192,10 +243,13 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("price_range_power", "default"): {
         "loader": lambda: _load_callable("price_range_power", "add_price_range_power"),
         "output_kind": "horizontal_line", "kind": "kw",
+        "latest_meta": _price_range_power_latest_meta,
+        "preprocess": _prp_preprocess,
     },
     ("moving_averages", "default"): {
         "loader": lambda: _load_callable("moving_averages", "add_moving_averages"),
         "output_kind": "line", "kind": "kw",
+        "latest_meta": _moving_averages_latest_meta,
     },
     # --- profit_* 系（MQL 移植・lwc 仕様）。統合 FakeChart が line/histogram/水平線を
     #     一括収集するため output_kind は分岐に不使用（resolve 互換のため残置）。kind は全て kw。---
@@ -266,6 +320,22 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
 }
 
 
+def latest_meta_fields(
+    compute_id: str, variant: str, params: dict[str, Any]
+) -> tuple[str, int | None, int | None] | None:
+    """_BindingSpec の ``latest_meta`` 宣言から (archetype, min_window, trailing_k) を解決する。
+
+    ISSUE-097 🟡-6: archetype 分類の単一情報源。未登録 (compute_id, variant) または
+    ``latest_meta`` 未宣言のエントリは ``None`` を返し、呼び出し側（latest_meta.py）が
+    安全既定 recurrence/full/K=1 へ落とす（従来の未登録安全既定と同一挙動）。
+    """
+    spec = _TABLE.get((compute_id, variant))
+    resolver = spec.get("latest_meta") if spec is not None else None
+    if resolver is None:
+        return None
+    return resolver(params)
+
+
 @dataclass(frozen=True)
 class CallBinding:
     """1 指標(+variant)の呼出規約。``invoke`` で既存 add_* を呼ぶ。"""
@@ -296,7 +366,9 @@ class CallBinding:
             callable_(chart, df, fitter, **_accepted_kwargs(callable_, kw))
         else:
             kw = _accepted_kwargs(callable_, params)
-            if self.compute_id == "price_range_power" and "interval" in kw:
-                # 高価格帯でのバンド爆発（ハング）を防ぐ自動適応（catalog/src は不変）。
-                kw["interval"] = _adapt_prp_interval(df, kw)
+            # 指標固有の前処理は _BindingSpec の preprocess フックへ委譲（compute_id 直判定を
+            # invoke から排除・ISSUE-097 🟡-7）。未宣言指標はフック無し＝変換なし。
+            preprocess = spec.get("preprocess")
+            if preprocess is not None:
+                kw = preprocess(df, kw)
             callable_(chart, df, **kw)
