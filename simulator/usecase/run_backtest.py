@@ -22,11 +22,13 @@ from simulator.usecase._execution import (
     close_price_for,
     derive_quotes,
     fill_market_order,
-    fill_pending_order,
+    resolve_eval_quote,
 )
 from simulator.usecase.compute_stats import compute_stats
 from simulator.usecase.models import BacktestResult
+from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
+from simulator.usecase.session_gate import SessionGate
 
 
 def _close_deal(trade: TradeRecord) -> Deal:
@@ -102,11 +104,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # __init__ で明示初期化し「execute 経由で必ず設定済み」の前提を明確化する。
         self._profit_round_digits: "int | None" = None
 
-    def _closed_bars(self, bars: list) -> "set[int]":
-        """新規成行を約定しないバー index 集合（カレンダー未注入なら空集合）。"""
-        if self._session_calendar is None:
-            return set()
-        return self._session_calendar.closed_bar_indices(bars)
+    def _session_gate(self, bars: list) -> SessionGate:
+        """closed_bars セッション判定を集約した SessionGate を構築する（ISSUE-094）。
+
+        従来の `_closed_bars`（新規成行を約定しないバー index 集合の導出）を
+        SessionGate.from_calendar へ委譲する。カレンダー未注入なら空集合＝常時開場。
+        """
+        return SessionGate.from_calendar(self._session_calendar, bars)
 
     def _close_open_trade(
         self,
@@ -165,7 +169,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # （_close_open_trade）が本値を TradeRecord に付与し pnl/deal/balance を一致させる。
         self._profit_round_digits = getattr(config, "profit_round_digits", None)
         # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で既定経路は不変。
-        closed_bars = self._closed_bars(bars)
+        session_gate = self._session_gate(bars)
 
         # OnInit 前処理
         self._strategy.on_init(config, self._indicators)
@@ -262,7 +266,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     # 非breach: open 基準で書き換えた floating を close 基準へ戻す
                     #   （後続 on_new_bar 等へ open 基準 floating を漏らさない。equity_curve は
                     #   後段 I で close 基準により記録する）。レビュー🟡対応。
-                    account.update_floating_pnl(bar)
+                    #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
+                    nb_bid, nb_ask = resolve_eval_quote(
+                        bar, basis=floating_pnl_basis, point_size=spec.point_size
+                    )
+                    account.update_floating_pnl_at(bid=nb_bid, ask=nb_ask)
             # D 保有状態 / E シグナル評価（EA ロジック）
             #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。
             orders = (
@@ -274,7 +282,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   スキップ）。on_new_bar は評価済＝保有不変のため、戦略（保有側基準の
             #   level-trigger）が次の開場バーで自動再発注し、実 MT5 の fail→retry→開場約定を
             #   再現する。SL/TP(H)・equity/stop-out(I) は閉鎖バーでも従来どおり評価する。
-            if bar_index in closed_bars:
+            if session_gate.is_closed(bar_index):
                 orders = []
             # F 発注（成行約定）。約定価格基準（config）→当該足の建値を一元化した
             #   derive_quotes（_execution）へ委譲する。決済価格は close_price_for で
@@ -326,7 +334,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   （every-tick 経路と一貫）。stop-out（リスク清算・後段 I）は閉鎖バーでも継続する。
             still_open: list[_OpenTrade] = []
             for ot in open_trades:
-                if bar_index in closed_bars:
+                if session_gate.is_closed(bar_index):
                     still_open.append(ot)  # 閉鎖バーは SL/TP 監視外（セッション外）
                     continue
                 if ot.opened_bar_index == bar_index:
@@ -359,7 +367,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             open_trades = still_open
 
             # I エクイティ/残高の更新（含み損益反映）→ margin_level < stop_out で停止処理
-            account.update_floating_pnl(bar)
+            #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
+            eq_bid, eq_ask = resolve_eval_quote(
+                bar, basis=floating_pnl_basis, point_size=spec.point_size
+            )
+            account.update_floating_pnl_at(bid=eq_bid, ask=eq_ask)
             equity_curve.append(account.equity)
             if account.margin_level() < request.stop_out_level:
                 # 既定 "fail_stop": 従来どおり MarginCallError を送出し部分結果を破棄する。
@@ -374,11 +386,18 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     )
                 # "close_and_halt": 全保有玉を強制決済し、以降の新規発注を抑止して最終統計
                 # まで完走する（cycle4 バグ②）。強制決済価格は「margin 割れを判定した時点
-                # の現値」＝account.mark_price（update_floating_pnl と同一価格・bar.close
-                # 基準）を用いる。成行建値が始値基準（current_open）でも、過ぎ去った始値で
-                # なく割れ時点の close 現値で決済する（実 MT5 整合・ISSUE-019）。
+                # の現値」＝含み損評価と同一価格（bar.close 基準）を用いる。成行建値が始値
+                # 基準（current_open）でも、過ぎ去った始値でなく割れ時点の close 現値で決済
+                # する（実 MT5 整合・ISSUE-019）。
+                #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
+                #   買い=Bid / 売り=Ask を close_price_for で選択（旧 mark_price と同一値）。
+                so_bid, so_ask = resolve_eval_quote(
+                    bar, basis=floating_pnl_basis, point_size=spec.point_size
+                )
                 for ot in open_trades:
-                    close_price = account.mark_price(bar, ot.position.side)
+                    close_price = close_price_for(
+                        ot.position.side, bid=so_bid, ask=so_ask
+                    )
                     self._close_open_trade(
                         ot,
                         exit_time=bar.time,
@@ -452,7 +471,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # 証拠金を「買い計・売り計の大きい側」とする（反対玉は相殺＝同量両建ては stop-out しない）。
         hedged_margin = getattr(config, "hedged_margin", False)
         # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で挙動不変。
-        closed_bars = self._closed_bars(bars)
+        session_gate = self._session_gate(bars)
 
         self._strategy.on_init(config, self._indicators)
 
@@ -516,11 +535,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   ティックループは open tick を再評価するが、生存玉は同クォートで冪等（二重決済なし）。
             if (
                 pending_mode and not halted and open_trades and bar_ticks
-                and bar_index not in closed_bars
+                and not session_gate.is_closed(bar_index)
             ):
                 o_price = bar_ticks[0][0]
-                oq_bid = o_price
-                oq_ask = o_price + bar.spread * spec.point_size
+                oq_bid, oq_ask = PendingLifecycleEngine.tick_quote(
+                    o_price, spread=bar.spread, point_size=spec.point_size
+                )
                 kept_open: list[_OpenTrade] = []
                 for ot in open_trades:
                     sltp_price = oq_ask if ot.position.side == "sell" else oq_bid
@@ -552,18 +572,21 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 and not halted
                 and resting_pending
                 and bar_ticks
-                and bar_index not in closed_bars
+                and not session_gate.is_closed(bar_index)
             ):
                 ro_price = bar_ticks[0][0]
-                rq_bid = ro_price
-                rq_ask = ro_price + bar.spread * spec.point_size
-                carried: list = []
-                filled_any = False
-                for order in resting_pending:
-                    pos = fill_pending_order(order, bid=rq_bid, ask=rq_ask)
-                    if pos is None:
-                        carried.append(order)
-                        continue
+                rq_bid, rq_ask = PendingLifecycleEngine.tick_quote(
+                    ro_price, spread=bar.spread, point_size=spec.point_size
+                )
+                # トリガ評価 + OCO 判定はエンジンへ委譲（純ロジック）。約定 Position の口座
+                #   反映（open_positions/margin/open_trades）は口座アクターとして本 Interactor
+                #   が担う。走査順＝反映順のため byte-identical（opened_tick_ordinal=0）。
+                #   OCO: 同一評価点で trigger した stop は全て約定（実 MT5 hedging・広 spread/doji
+                #   で両建て成立＝2604-02 実証）。約定が起きたら非約定分のみ EA が取消す。
+                filled, carried = PendingLifecycleEngine.evaluate_triggers(
+                    resting_pending, bid=rq_bid, ask=rq_ask, oco=pending_oco
+                )
+                for order, pos in filled:
                     account.open_positions.append(pos)
                     account.margin += pos.required_margin(spec.leverage, contract_size)
                     open_trades.append(
@@ -578,14 +601,6 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                             opened_tick_ordinal=0,
                         )
                     )
-                    filled_any = True
-                # OCO: 同一ティックで trigger した stop は全て約定する（実 MT5 hedging はサーバが
-                #   OnTick より前に当該ティックの trigger 分を全約定＝両建て成立。広 spread/doji バーで
-                #   1 ティックの bid-ask 帯が両 stop を跨ぐ場合に両玉が立つ＝2604-02 で実証）。約定が
-                #   1 本でも起きたら、このティックで trigger しなかった残ペンディングを EA が OnTick で
-                #   取消す（＝CancelOpposite）。triggerした側どうしは取り消さない。
-                if pending_oco and filled_any:
-                    carried = []
                 resting_pending = carried
 
             # D/E ★足境界のみ: 新規バーシグナル評価（ティックで呼ばない）。
@@ -607,7 +622,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   （bar-mode 突合 2025-01 と同一の建値ルール）。ティック 0 件足では発注しない。
             #   市場閉鎖バー（closed_bars）も新規成行を約定しない（ドテン反転の reverse
             #   決済も含め全約定を抑止。保有不変＝戦略が次の開場バーで自動再発注）。
-            if bar_ticks and market_orders and bar_index not in closed_bars:
+            if bar_ticks and market_orders and not session_gate.is_closed(bar_index):
                 bid0, ask0, fill_spread, fill_point = derive_quotes(
                     bar,
                     entry_price_basis=config.entry_price_basis,
@@ -666,7 +681,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   再アームは足途中ティックの on_tick が担う＝実 MT5 の OnTick 即時再設置に整合）。
             if pending_mode and not pending_persistent:
                 resting_pending = []  # EA が自ペンディングを削除（未約定の残存分を破棄）
-            if bar_ticks and pending_orders and bar_index not in closed_bars:
+            if bar_ticks and pending_orders and not session_gate.is_closed(bar_index):
                 pbid0, pask0, _, _ = derive_quotes(
                     bar,
                     entry_price_basis=config.entry_price_basis,
@@ -703,7 +718,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   セッション外でも行う（2603 で 01:00 pre-open の stop-out が MT5 と一致・2604-02 で
             #   01:00 の SL/TP は MT5 で発火しないことを実証）。よって閉鎖バーでは SL/TP・約定・
             #   再アームのみ抑止し、equity 更新と stop-out は継続する。
-            bar_closed = bar_index in closed_bars
+            bar_closed = session_gate.is_closed(bar_index)
             for tick_ordinal, tick in enumerate(bar_ticks):
                 price, bid, ask, _tick_time = tick
                 saw_tick = True
@@ -714,8 +729,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 #   sell の SL は high tick の Ask=high+spread×point で発火）。非ペンディング
                 #   （real_ticks）経路は従来どおり tick の price で判定し byte-identical を保つ。
                 if pending_mode:
-                    q_bid = price
-                    q_ask = price + bar.spread * spec.point_size
+                    q_bid, q_ask = PendingLifecycleEngine.tick_quote(
+                        price, spread=bar.spread, point_size=spec.point_size
+                    )
                 else:
                     q_bid = q_ask = None
 
@@ -771,14 +787,16 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 #   監視する（2603-01 journal で実証: 約定@H tick→SL は後続 C tick で発火＝同足、
                 #   後続足が SL/TP 未達なら次足へ持ち越し）。よって同ティック判定はせず、
                 #   skip_entry_bar=False で open_trades へ積み「約定ティックより後」のみ監視させる。
-                if resting_pending and bar_index not in closed_bars:
-                    still_armed: list = []
-                    filled_any_tick = False
-                    for order in resting_pending:
-                        pos = fill_pending_order(order, bid=q_bid, ask=q_ask)
-                        if pos is None:
-                            still_armed.append(order)
-                            continue
+                if resting_pending and not session_gate.is_closed(bar_index):
+                    # トリガ評価 + OCO 判定はエンジンへ委譲（純ロジック）。約定 Position の
+                    #   口座反映（open_positions/margin/open_trades）は本 Interactor が担う。
+                    #   走査順＝反映順のため byte-identical（opened_tick_ordinal=tick_ordinal）。
+                    #   OCO: 同一ティックで trigger した stop は全約定（実 MT5 hedging・広 spread/
+                    #   doji で両建て成立）。約定が起きたら非約定分のみ EA が取消す。
+                    filled, carried = PendingLifecycleEngine.evaluate_triggers(
+                        resting_pending, bid=q_bid, ask=q_ask, oco=pending_oco
+                    )
+                    for order, pos in filled:
                         account.open_positions.append(pos)
                         account.margin += pos.required_margin(
                             spec.leverage, contract_size
@@ -795,12 +813,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                                 opened_tick_ordinal=tick_ordinal,
                             )
                         )
-                        filled_any_tick = True
-                    # OCO: 同一ティックで trigger した stop は全て約定（実 MT5 hedging・広 spread/doji で
-                    #   両建て成立）。約定が起きたら trigger しなかった残ペンディングのみ EA が取消す。
-                    if pending_oco and filled_any_tick:
-                        still_armed = []
-                    resting_pending = still_armed
+                    resting_pending = carried
 
                 # ★ペンディング持続モードの足途中再アーム（ISSUE-024・実 MT5 OnTick 相当）。
                 #   SL/TP 決済直後など「保有0・resting 0」のティックで、当該ティッククォート
@@ -814,7 +827,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     and not halted
                     and not open_trades
                     and not resting_pending
-                    and bar_index not in closed_bars
+                    and not session_gate.is_closed(bar_index)
                 ):
                     rearm = (
                         self._strategy.on_tick(bar_index, q_bid, q_ask, account) or []
@@ -834,18 +847,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 #   実 MT5 hedging に整合）。既定は account.margin_level()（従来の単純加算）で不変。
                 margin_level = account.margin_level()
                 if hedged_margin and open_trades:
-                    buy_m = sum(
-                        ot.position.required_margin(spec.leverage, contract_size)
-                        for ot in open_trades if ot.position.side == "buy"
-                    )
-                    sell_m = sum(
-                        ot.position.required_margin(spec.leverage, contract_size)
-                        for ot in open_trades if ot.position.side == "sell"
-                    )
-                    eff_margin = max(buy_m, sell_m)
-                    margin_level = (
-                        account.equity / eff_margin * 100.0
-                        if eff_margin > 0 else float("inf")
+                    # 実効証拠金算出は口座不変ルールとして Account が所有する（ISSUE-094）。
+                    #   保有列は account.open_positions と open_trades が常時 lockstep のため
+                    #   走査対象・順序・式が inline 版と同一＝byte-identical。
+                    margin_level = account.hedged_margin_level(
+                        leverage=spec.leverage, contract_size=contract_size
                     )
                 if margin_level < request.stop_out_level:
                     if config.stop_out_action != "close_and_halt":

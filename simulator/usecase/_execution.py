@@ -72,6 +72,24 @@ def derive_quotes(
     return bar.close, bar.close, 0, 0.0
 
 
+def resolve_eval_quote(
+    bar: object, *, basis: str, point_size: float
+) -> "tuple[float, float]":
+    """含み損益評価の (bid, ask) を評価基準（floating_pnl_basis）から解決する（🟡-10b）。
+
+    Account に埋め込まれていた執行クォート規約（旧 Account._eval_price）を usecase 側へ
+    移送したもの（ISSUE-094 🟡-10b: 最内 Entity への執行クォート規約漏出の是正）。
+    含み損益は決済価格基準で評価し、買い保有は Bid=bar.close、売り保有は Ask で評価する:
+        basis="close"（既定・後方互換）: Ask=bar.close（spread 無視＝従来不変）。
+        basis="bid_ask": Ask=bar.close + bar.spread×point_size（決済価格基準・売り悲観化）。
+    解決した (bid, ask) は Account.update_floating_pnl_at（買い=bid / 売り=ask）へ渡す。
+    close 基準では bid==ask=bar.close ゆえ買い・売りとも close 評価で従来と完全一致する。
+    """
+    if basis == "bid_ask":
+        return bar.close, bar.close + bar.spread * point_size
+    return bar.close, bar.close
+
+
 def fill_buy_limit(
     order: Order, *, ask: float, tick_time, expire_time
 ) -> "Position | str | None":
