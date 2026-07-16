@@ -47,8 +47,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
 from moving_averages import exponential_ma_on_buffer  # noqa: E402
 from mql_builtins import compute_rsi  # noqa: E402,F401  # 正準 iRSI（再公開して in-package 参照面を維持）
 
-# 共有ライブラリ common（適用価格）を リポジトリルート経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # = repo root
 from common import AppliedPrice, applied_price  # noqa: E402
 
 # 元 input の既定値（PRO!fitRSI.mq4: InpRSIPeriod=6, InpMAPeriod=5, Apply=5）。

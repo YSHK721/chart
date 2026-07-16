@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
 import matplotlib
 
@@ -26,7 +24,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
 from common_view import level_colors  # noqa: E402
 
 from .core import DEFAULT_PERIOD, DEFAULT_WINDOW  # noqa: E402
