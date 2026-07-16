@@ -38,10 +38,13 @@ import pandas as pd
 
 from marketdata.paths import DATA_DIR
 
-# ロールアップ互換の M1 CSV 列・date 書式（marketdata.rollup._HEADER / _DATE_FMT と一致させる）。
-_HEADER = ["date", "open", "high", "low", "close", "volume"]
-_OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]  # _HEADER から date を除いた値列。
-_DATE_FMT = "%Y-%m-%d %H:%M:%S"
+# ロールアップ互換の M1 CSV 列・date 書式は marketdata.csv_schema が唯一の規則源
+# （旧: rollup._HEADER / _DATE_FMT と手動同期）。旧属性名は import 共有で温存する。
+from marketdata import csv_schema as _csv_schema
+
+_HEADER = _csv_schema.HEADER
+_OHLCV_COLUMNS = _csv_schema.OHLCV_COLUMNS  # _HEADER から date を除いた値列。
+_DATE_FMT = _csv_schema.DATE_FMT
 # 集計に要する生ティックの必須列（ingest.RAW_COLUMNS の price 部分集合）。
 _TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
 # 既定の銘柄・出力 ref（試作 prep_tick_rollup と一致: <ref>_m1.csv = jp225_tick_m1.csv）。

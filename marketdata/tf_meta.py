@@ -15,11 +15,14 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from marketdata import dataset_registry
 from marketdata.resample import TIMEFRAME_RULES
 from marketdata.session_day import session_day_start
 
-# 形成中バー/tf-period を供給する datasetRef（ティック由来＝ticks parquet を持つ）。
-TICK_REFS = frozenset({"jp225_tick"})
+# 形成中バー/tf-period を供給する datasetRef（ティック由来＝ticks parquet を持つ）。値の源は
+# marketdata.dataset_registry の記述子レジストリ（唯一源・ISSUE-094 🟡-9）。定義位置は本モジュール
+# のまま（利用側は tf_meta.TICK_REFS を無変更参照）。registry→dataset の中立配置で循環を避ける。
+TICK_REFS = dataset_registry.tick_refs()
 
 # カレンダー周期（W-FRI/ME）は単純 floor で期間始端を表せない。
 NON_FLOORABLE_TF = frozenset({"1W", "1M"})

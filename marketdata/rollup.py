@@ -47,9 +47,12 @@ from marketdata import tail_reader
 # 全件スキャンへフォールバックする。
 _INCREMENTAL_TAIL_PROBE_ROWS = 20_000
 
-# ロールアップ CSV の列（loader 互換: date + OHLCV）。
-_HEADER = ["date", "open", "high", "low", "close", "volume"]
-_DATE_FMT = "%Y-%m-%d %H:%M:%S"
+# ロールアップ CSV の列・date 書式は marketdata.csv_schema が唯一の規則源
+# （旧: tick_m1._HEADER / _DATE_FMT と手動同期）。旧属性名は import 共有で温存する。
+from marketdata import csv_schema as _csv_schema
+
+_HEADER = _csv_schema.HEADER
+_DATE_FMT = _csv_schema.DATE_FMT
 # ロールアップ CSV のファイル名 prefix の既定（jp225_m1 由来・<prefix>_<tf>.csv）。
 # §10.3 M-3: 銘柄汎用化のため ref_prefix 引数で外部化（既定でこの値）。
 _REF_PREFIX = "jp225_m1"

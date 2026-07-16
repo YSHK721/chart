@@ -11,7 +11,7 @@
 
 典型的な使い方:
     >>> import numpy as np
-    >>> from common import level_colors
+    >>> from common_view import level_colors
     >>> level_colors(np.array([-3.0, 0.0, 3.0]))  # 両極=赤, 中心=緑
     ['#d32f2f', '#2e7d32', '#d32f2f']
 """

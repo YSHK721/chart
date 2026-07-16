@@ -109,6 +109,21 @@ def period_utc_start(tf: str, label: pd.Timestamp) -> pd.Timestamp:
     return ny_naive.tz_localize(_NY_TZ).tz_convert("UTC").tz_localize(None)
 
 
+def period_label_naive(tf: str, ts: "pd.Timestamp") -> "pd.Timestamp":
+    """naive Timestamp ``ts`` が属する tf バケットの右端ラベル（1W=金曜 / 1M=暦月末）を返す。
+
+    規則源は :data:`TIMEFRAME_RULES` の ``1W='W-FRI'`` / ``1M='ME'``。pandas offset の
+    ``rollforward`` で「``ts`` 以降の最初の期間右端」を求める（W-FRI: ``ts`` が金曜ならその日、
+    さもなくば次の金曜 / ME: その月の暦月末）。:func:`marketdata.session_day.session_period_label`
+    はブローカー暦日を naive 化して本関数へ委譲し、週/月ラベル規則の二重表現（手書き暦算術）を
+    解消する（ISSUE-094 🟡-10a）。``tf`` は ``'1W'|'1M'`` のみ（他は ValueError）。
+    """
+    if tf not in ("1W", "1M"):
+        raise ValueError(f"period_label_naive: 1W|1M のみ対応: {tf!r}")
+    offset = pd.tseries.frequencies.to_offset(TIMEFRAME_RULES[tf])
+    return offset.rollforward(pd.Timestamp(ts))
+
+
 def resample_ohlc(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
     """DataFrame を指定 pandas rule で OHLC 再集計する（§チャート表示時間選択・1 分足原子）。
 

@@ -47,11 +47,9 @@ import pandas as pd
 
 LOG = logging.getLogger("live_tick_watch")
 
-# 出力 ref（tick 由来）は build_tick_rollup と単一定義を共有する（値ドリフト防止）。
-from tools.build_tick_rollup import REF  # noqa: E402
-
-# 既定の全期間起点（build_tick_rollup._DEFAULT_FULL_START と一致させること）。
-_DEFAULT_FULL_START = dt.date(2012, 6, 14)
+# 出力 ref（tick 由来）・全期間起点は build_tick_rollup と単一定義を共有する（値ドリフト防止）。
+# 旧: _DEFAULT_FULL_START をここで再定義し「一致させること」コメントで人手同期していた（SRP 破れ）。
+from tools.build_tick_rollup import REF, _DEFAULT_FULL_START  # noqa: E402
 # ポーリング間隔の下限（秒）。過剰ポーリング抑止（下回る指定は argparse エラー）。
 MIN_INTERVAL_SECONDS = 30
 DEFAULT_INTERVAL_SECONDS = 60
