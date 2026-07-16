@@ -1077,7 +1077,7 @@
 - **検証**: UI web 534/536 緑。実UI（8139）: 再現手順（週→日→週）で切替後の列が週次等間隔・ホバー読取も週次（周期計 446,714 tick）・日次残留なしをスクリーンショット確認。月足も正常。
 
 ## ISSUE-091: 依存方向・DIP 徹底度のアーキテクチャ監査（4系統並列調査・全指摘 file:line 実証済み）
-- **ステータス**: OPEN（2026-07-15 起票・調査完了＝対処は裁定待ち）
+- **ステータス**: RESOLVED（2026-07-16・feature/issue-091-dip-tier1・Tier1（依頼者承認スコープ）対応完了。残件（Tier2・裁定要）は ISSUE-092 へ移管）
 - **調査方法**: architecture-executor 4系統並列（simulator／indicator_ui／market_profile／marketdata+common 被依存全数）で import 文を実読。主要指摘 8 点はメイン会話で実コード再検証済み（憶測ゼロ）。prototype_* は対象外。
 - **総括**: 依存規則（内側→外側 import 禁止）は全系統で遵守・循環なし・共有ライブラリ production の逆依存ゼロ。**DIP の徹底度は系統間で大きな格差**——simulator はポート内側所有＋合成ルート集約の模範構造、market_profile_api は境界インターフェース皆無で計算コアが I/O 具象直結。
 
@@ -1124,3 +1124,34 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 
 ### 総括（システム全体の DIP 判定）
 方向性（内→外 import 禁止・循環なし・共有ライブラリの逆依存ゼロ）は全域健全。しかし DIP＝「上位方針による抽象所有」が成立しているのは simulator 本体と replay_ui の consumer 側のみで、パッケージ間エッジの 80% が具象直結、プロセス間契約も ERROR_STATUS 以外は暗黙同期。**「安定への依存」は達成、「安定"抽象"への依存」は未達**が結論。優先対処は A1（安定度逆転）と A2（契約分岐）、次いで A3（ISSUE-089 同型リスクの残存）。
+
+## ISSUE-091 対応記録（Tier1 実施・2026-07-16・依頼者承認スコープ）
+- **実施内容**（全て挙動保存・公開名は互換 alias/再エクスポートで温存）:
+  - **A1（🔴）**: 統計核（HansenSpa・PW ブロック長・定常ブート・VarBacktests・norm_cdf）を中立共有核 `common/stats_boot.py` へ抽出。simulator/adapter/validation は再エクスポート化・mp_stats の simulator import を全廃（private 越境の根絶）。レビューで develop 版との数値 exact 一致を実証。
+  - **#1/#2（🔴）**: MP compute に `TickStorePort`（Protocol・compute 所有）＋ `gateway/marketdata_tick_store.py` を導入し、dwell/zp の marketdata I/O 直結（tick_m1/paths）を逆転。`day_parquet_files` はモジュール委譲関数としてテスト monkeypatch 経路を温存。回帰ガード（compute の I/O 具象 import 禁止）追加。session_day は純業務規則として許容を明文化。
+  - **A2（🔴）**: `nested_error`（status 翻訳＋nested ボディの純関数）を `marketdata/api_contract.py` に単一定義し 3 殻（server.py・MP controller・serve_replay）が共用。serve_replay の旧 proto 由来独自形を正典準拠へ是正（internal→500・ValueError→validation・ok/generation/violations 付与）。フロントは `!response.ok` 分岐＋`error.type/message` 参照のため吸収（実証済み）。旧分岐を固定していたテスト 2 件を正典期待へ更新。
+  - **A3（🟡）**: tf_period 非 zp ディスク世代を `_TFP_CACHE_VERSION` 定数連動へ（手書き `s1` 排除・v1=従来パスと byte 同一＝キャッシュ無効化なし）。版数連動の回帰テスト追加。
+  - **#3（🟡）**: `simulator.main._ema_series` を公開 `ema_series` へ昇格（旧名 alias 温存）。report_ui の private 越境 import を解消。
+  - **A7/#8（🔵）**: `value_area` 公開昇格（tools は公開 API 参照へ）／marketdata tests の simulator 依存 3 テストを `simulator/tests/unit/test_marketdata_tick_contract.py` へ移設（最下層の単体 CI collection error 要因を排除）。
+- **検証**: スイート別実行（スライスの汎用名パッケージ衝突のため分離実行が正規手順）で marketdata 143・simulator 869・replay 146・report_ui 155・MP api 265（byte-parity 27 含む）・MP analysis 66・UI api 386 全緑。MP web 287 緑・UI web 534/536（既知 2 件のみ）。既存失敗 6 件（→ISSUE-093）は develop 基準でも同一＝本変更起因ゼロを worktree 比較で実証。
+- **コードレビュー**: code-review-executor 承認（🔴/🟡 ゼロ・🔵 2 件は対応不要の記録: tick_store 遅延合成の理論上の初回競合＝無状態のため実害なし／エラー契約変更は意図的是正）。
+
+## ISSUE-092: DIP 残件（ISSUE-091 Tier2・大規模リファクタ・裁定待ち）
+- **ステータス**: OPEN（2026-07-16 起票・ISSUE-091 から移管）
+- **Tier2（実装方針は確定・規模大のため分割実施を推奨）**:
+  1. indicator_ui のデータ層 Output Boundary 導入（marketdata 具象の sys.modules 同一化 shim ＝ dataset/rollup_store/tail_reader を抽象の縫い目へ）・usecase 層の切り出し（handle_compute の Input Boundary 化）。
+  2. replay bridge（_indicator_ui_bridge）の import 面を indicator_ui 安定公開 Facade 1 点へ縮約（latest_dispatch 等内部モジュール直結の解消）。
+  3. プラグイン契約の単一情報源化（param schema を call_binding._TABLE に集約し front catalog.js は取得へ）。
+  4. MP store 群（dwell/zp store）の compute→adapter 移設・tf_period controller のキャッシュ I/O 分離。
+  5. sys.path 実行時 insert の残存一掃（common の .pth 登録・指標 src の insert 撤去）。
+- **裁定待ち（削除・共有再編を伴うため依頼者判断が必要）**:
+  6. common の計算/表示分割（applied_price 系 vs level_colors/LEVEL_LINE_WIDTH）。
+  7. indicator_ui api/domain 層の削除可否（配信経路から未配線・production 参照ゼロ）。
+  8. marketdata.port.TickSource の削除可否（抽象消費者ゼロ・ingest enabler② の設計意図が現役なら維持）。
+
+## ISSUE-093: 既存テスト失敗 6 件（ISSUE-091 検証中に発見・本変更とは無関係）
+- **ステータス**: OPEN（2026-07-16 起票）
+- **実測**: develop（ea1a8b5）基準の worktree でも同一に失敗＝以前から存在する failing tests。
+  1. `common/tests/test_level_style.py::test_level_line_width_value_is_1`（1 件）: テストは `LEVEL_LINE_WIDTH == 1` を期待するが実体は 2（`common/level_style.py` の docstring は「視認性のため 2px に設定」と 2 を意図）。テストと定数のどちらが正か裁定要（実装意図は 2 が正に見える＝テスト陳腐化の疑い）。
+  2. `indigators/indicator_ui/tools/tests/test_rollup_builder.py` の 5 件（stream_build 1D/1W/1M・incremental 1D・vectorized）: api を PYTHONPATH に載せた単独実行でも develop で同一失敗。rollup_builder と現行 resample 実装の乖離か、テスト前提の陳腐化かは未調査（原因調査から要着手）。
+- **含意**: この 5+1 件は各スイートの一括集計に含まれない実行構成（tools/tests は 'adapter' 解決に api パスが必要）のため見逃されてきた可能性。CI の実行構成の明文化も対処案に含める。
