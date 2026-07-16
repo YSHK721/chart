@@ -55,6 +55,32 @@ class Account:
             return math.inf
         return self.equity / self.margin * 100.0
 
+    def hedged_margin_level(self, *, leverage: float, contract_size: float) -> float:
+        """hedging 口座の両建て相殺後の証拠金維持率（ISSUE-094 🔴-1）。
+
+        反対玉を相殺し「買い計・売り計の大きい側」を実効証拠金とする（同量両建ては
+        実質ノーマージン＝stop-out しない・実 MT5 hedging 整合）。実効証拠金が 0 のとき
+        （保有ゼロ含む）は margin_level と同じく ∞ を返す。
+
+        従来 RunBacktestInteractor._execute_every_tick に inline されていた実効証拠金
+        算出（買い計・売り計を required_margin で合算し大きい側を採る）を、口座不変
+        ルールとして Account が所有する。合算は self.open_positions を保有順で走査し、
+        Position.required_margin（volume × contract_size × entry_price ÷ leverage）を
+        用いる。演算順・式は inline 版と同一で挙動は byte-identical。
+        """
+        buy_m = sum(
+            pos.required_margin(leverage, contract_size)
+            for pos in self.open_positions
+            if pos.side == "buy"
+        )
+        sell_m = sum(
+            pos.required_margin(leverage, contract_size)
+            for pos in self.open_positions
+            if pos.side == "sell"
+        )
+        eff_margin = max(buy_m, sell_m)
+        return self.equity / eff_margin * 100.0 if eff_margin > 0 else math.inf
+
     def apply_deal(self, deal: Deal) -> None:
         """確定損益（profit は METRICS §5.2 の純額）を balance に反映する。"""
         self.balance += deal.profit

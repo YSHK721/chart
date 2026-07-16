@@ -837,18 +837,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 #   実 MT5 hedging に整合）。既定は account.margin_level()（従来の単純加算）で不変。
                 margin_level = account.margin_level()
                 if hedged_margin and open_trades:
-                    buy_m = sum(
-                        ot.position.required_margin(spec.leverage, contract_size)
-                        for ot in open_trades if ot.position.side == "buy"
-                    )
-                    sell_m = sum(
-                        ot.position.required_margin(spec.leverage, contract_size)
-                        for ot in open_trades if ot.position.side == "sell"
-                    )
-                    eff_margin = max(buy_m, sell_m)
-                    margin_level = (
-                        account.equity / eff_margin * 100.0
-                        if eff_margin > 0 else float("inf")
+                    # 実効証拠金算出は口座不変ルールとして Account が所有する（ISSUE-094）。
+                    #   保有列は account.open_positions と open_trades が常時 lockstep のため
+                    #   走査対象・順序・式が inline 版と同一＝byte-identical。
+                    margin_level = account.hedged_margin_level(
+                        leverage=spec.leverage, contract_size=contract_size
                     )
                 if margin_level < request.stop_out_level:
                     if config.stop_out_action != "close_and_halt":
