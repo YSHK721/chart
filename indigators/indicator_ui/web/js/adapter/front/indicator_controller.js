@@ -22,6 +22,7 @@ import {
 } from '../../usecase/facade.js';
 import { PropertiesDialog } from './properties_dialog.js';
 import { IndicatorLegendView } from './indicator_legend_view.js';
+import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_params.js';
 
 // 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
 //   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
@@ -187,45 +188,10 @@ export class IndicatorController {
   }
 
   // MP アクターへ渡す取得 params（resmode/bins/va/src/range）を組み立てる（apply/gear/restore 共通）。
-  //   limit は転送しない（MP は全期間集計固定）。保存 params に limit が残っていても載せない。
-  //   resmode（解像度モード）を転送し、client が resmode で bins/barw の送信を排他化する。
-  //   range は null/未指定のとき載せない（値指定時のみ付与。'auto' は撤去済だが後方互換で除外を残す）。
+  //   ISSUE-094 🔴-4: MP のパラメータ・スキーマ写像は market_profile_params.js（純関数）へ外出しした。
+  //   本メソッドは薄い委譲のみ（subclass の super._mpParams / 既存テストの ctrl._mpParams 呼出を温存）。
   _mpParams(p = {}) {
-    const out = { va: p.va, src: p.src };
-    // bins（legacy・ISSUE-079 で catalog から撤去済み）: 旧保存インスタンスにのみ存在。保存時のみ転送。
-    if (p.bins != null) {
-      out.bins = p.bins;
-    }
-    // period（期間: 全期間/当日・ISSUE-071 (b)案）: 保存時のみ転送する（period 未保存の旧インスタンスの
-    //   転送 payload を変えない＝undefined キーを載せない。actor 側も null/undefined キーは無視する）。
-    if (p.period != null) {
-      out.period = p.period;
-    }
-    // dispbp（表示幅 bp・ISSUE-079）: 保存時のみ転送（旧インスタンスの payload 不変・actor が
-    //   barw(pt) へ写像する）。
-    if (p.dispbp != null) {
-      out.dispbp = p.dispbp;
-    }
-    // mode（表示モード）: 旧 replay(BOOL)/sessions(BOOL) を統合した排他 ENUM
-    //   ['normal','replay','sessions'] を actor へ転送する。undefined は載せない（actor 既定=通常）。
-    //   後方互換マイグレーション（resmode 導出と同方針）: 永続 params に mode が無く legacy が残る
-    //   旧インスタンスは _deriveMode で legacy → mode を導出する。legacy キー（replay/sessions）自体は
-    //   actor へ送らない（mode に一本化・二重管理を避ける）。
-    const mode = this._deriveMode(p);
-    if (mode != null) {
-      out.mode = mode;
-    }
-    // resmode（解像度モード）: client が bins/barw の送信を排他化する。
-    //   後方互換: 明示 resmode が無い旧 barw 保存インスタンス（数値 range・resmode 無し）は
-    //   range から resmode を導出して保存レンジを維持する（_deriveResmode）。
-    const resmode = this._deriveResmode(p);
-    if (resmode != null) {
-      out.resmode = resmode;
-    }
-    if (p.range != null && p.range !== 'auto') {
-      out.range = p.range;
-    }
-    return out;
+    return buildMpParams(p);
   }
 
   // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
@@ -294,45 +260,14 @@ export class IndicatorController {
     }
   }
 
-  // resmode（解像度モード）を決める後方互換ヘルパ（restore と apply の両経路で共用）。
-  //   - 明示 resmode があればそのまま返す（後方互換補完のみ・上書きしない）。
-  //   - resmode 欠落かつ range がレンジ数値集合 → 'range'（保存したレンジを維持し client が &barw= を送る）。
-  //   - resmode 欠落かつ range='auto' → 'bins'（従来通り bins フォールバック）。
-  //   - resmode も range も無い旧インスタンスは null を返し resmode を付与しない（client 既定 = bins）。
+  // resmode/mode（表示・解像度モード）の後方互換ヘルパは market_profile_params.js（純関数）へ外出しした
+  //   （ISSUE-094 🔴-4）。本メソッドは薄い委譲のみ（内部呼出・既存呼出の互換温存）。
   _deriveResmode(p = {}) {
-    if (p.resmode != null) {
-      return p.resmode;
-    }
-    if (p.range == null) {
-      return null;
-    }
-    const BAR_WIDTHS = new Set(['10', '25', '50', '100', '250', '500']);
-    return BAR_WIDTHS.has(String(p.range)) ? 'range' : 'bins';
+    return deriveMpResmode(p);
   }
 
-  // mode（表示モード）を決める後方互換ヘルパ（_deriveResmode と同方針・apply/gear/restore 共用）。
-  //   - 明示 mode があればそのまま返す（legacy との競合時は mode 優先＝後方互換補完は上書きしない）。
-  //   - mode 欠落かつ legacy sessions:true → 'sessions'（両 true の旧データも sessions 優先）。
-  //   - mode 欠落かつ legacy replay:true → 'replay'。
-  //   - mode 欠落かつ legacy が明示 false（両 OFF）→ 'normal'（restore で両 OFF を再現）。
-  //   - mode も legacy キーも無い旧インスタンスは null（mode を付与しない＝actor 既定=通常）。
   _deriveMode(p = {}) {
-    if (p.mode != null) {
-      // ISSUE-082: リプレイモードは present から撤去済み。保存済み mode='replay' は 'normal' へ正規化。
-      return p.mode === 'replay' ? 'normal' : p.mode;
-    }
-    // 両 true の旧データは sessions 優先（排他統合のため一方に確定させる）。
-    if (p.sessions === true) {
-      return 'sessions';
-    }
-    if (p.replay === true) {
-      return 'normal'; // ISSUE-082: legacy replay:true も normal へ（リプレイ撤去）。
-    }
-    // legacy キーが存在し明示 false（両 OFF）なら normal を導出する（両フラグ不在は null）。
-    if (p.replay != null || p.sessions != null) {
-      return 'normal';
-    }
-    return null;
+    return deriveMpMode(p);
   }
 
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
