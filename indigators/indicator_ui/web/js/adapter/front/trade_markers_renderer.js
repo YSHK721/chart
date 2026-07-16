@@ -5,9 +5,9 @@
 // chart_renderer.js と同層・同規約（upstream API の唯一の隔離点）。
 
 import { PairLinesPrimitive } from './pair_lines_primitive.js';
+import { PAIR_DIM_ALPHA } from './pair_render_constants.js';
 
-// v4 §10.2: 非ハイライト marker の減光色（rgba・低 alpha）。
-const _DIM_ALPHA = 0.15;
+// v4 §10.2: 非ハイライト marker の減光色（rgba・低 alpha）。共有定数 PAIR_DIM_ALPHA を参照（単一情報源）。
 
 // "#rrggbb" を rgba(r,g,b,alpha) へ変換する。非 hex はそのまま返す（防御）。
 function _withAlpha(color, alpha) {
@@ -257,7 +257,7 @@ export class TradeMarkersRenderer {
       ? visible
       : visible.map((mk) => (this._parseTradeIndex(mk.id) === this._highlight
         ? mk
-        : { ...mk, color: _withAlpha(mk.color, _DIM_ALPHA) }));
+        : { ...mk, color: _withAlpha(mk.color, PAIR_DIM_ALPHA) }));
     if (this._primitive) {
       this._primitive.setHighlight(this._highlight);
     }

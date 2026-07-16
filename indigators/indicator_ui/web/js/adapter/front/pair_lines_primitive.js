@@ -13,10 +13,11 @@
 //   ブラウザ結合確認へ委譲する（§10.4・C3）。
 
 import { PairPrimitiveBase } from './pair_primitive_base.js';
+import { PAIR_DIM_ALPHA } from './pair_render_constants.js';
 
 const C_WIN = '#26a69a';
 const C_LOSS = '#ef5350';
-const DIM_ALPHA = 0.15; // 非ハイライト線の減光 alpha（§10.2）。
+// 非ハイライト線の減光 alpha（§10.2）。共有定数 PAIR_DIM_ALPHA を参照（単一情報源）。
 
 export class PairLinesPrimitive extends PairPrimitiveBase {
   // 各 pair の (entryTime→x, entryPrice→y)〜(exitTime→x, exitPrice→y) を座標化して線分描画。
@@ -47,7 +48,7 @@ export class PairLinesPrimitive extends PairPrimitiveBase {
         ctx.save();
         ctx.beginPath();
         ctx.strokeStyle = pair.win ? C_WIN : C_LOSS;
-        ctx.globalAlpha = dimmed ? DIM_ALPHA : 1;
+        ctx.globalAlpha = dimmed ? PAIR_DIM_ALPHA : 1;
         ctx.lineWidth = 1;
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
