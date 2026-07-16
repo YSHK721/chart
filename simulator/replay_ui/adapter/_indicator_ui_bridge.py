@@ -52,11 +52,15 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
         if p not in sys.path:
             sys.path.insert(0, p)
 
-    # dataset 実体は marketdata へ移設済み（最下層 peer 依存）。IndicatorComputeAdapter は
-    # indicator_ui の adapter 層（偶有的技術の隔離点）に残置＝それぞれの正準置き場から import する。
+    # dataset 実体は marketdata へ移設済み（最下層 peer 依存）。IndicatorComputeAdapter /
+    # full_compute / latest_compute は indicator_ui の安定公開 Facade ``adapter.compute``
+    # （ISSUE-092 ②）1 点から import する＝compute の内部モジュール構成へ密結合しない。
     from marketdata import dataset  # noqa: E402
-    from adapter.compute import IndicatorComputeAdapter  # noqa: E402
-    from adapter.compute.latest_dispatch import full_compute, latest_compute  # noqa: E402
+    from adapter.compute import (  # noqa: E402
+        IndicatorComputeAdapter,
+        full_compute,
+        latest_compute,
+    )
     # MP サブバー tick 逐次成長: forming controller の純ロジックを read-only 再利用（無改変・DRY）。
     from market_profile_api.controller.market_profile_forming_controller import (  # noqa: E402
         handle_market_profile_forming,
