@@ -31,13 +31,19 @@ class CsvCandleSource:
         self._csv_path = csv_path
 
     def fetch_candles(self, start: datetime, end: datetime) -> List[Candle]:
-        """``[start, end)`` の candles を time 昇順で返す（データなしは空 list・半開）。"""
+        """``[start, end)`` の candles を time 昇順・一意で返す（データなしは空 list・半開）。
+
+        CandleSource 契約（``marketdata/port.py``・ISSUE-098 🟡-3）: 返す candles は ``time``
+        厳密昇順・一意。同一 ``time`` は**後勝ち**で一意化する（Dukascopy 実装 ``_to_candles``
+        と対称）。実データ（実 OHLC CSV）は time 一意のため後勝ち一意化は no-op（byte 不変）。
+        """
         df = pd.read_csv(self._csv_path)
         has_volume = "volume" in df.columns
         start_ts = int(start.timestamp())
         end_ts = int(end.timestamp())
 
-        candles: List[Candle] = []
+        # 後勝ち一意化: ``time`` をキーに dict 格納（Dukascopy ``_to_candles`` と同一構造）。
+        by_time: dict[int, Candle] = {}
         for i in range(len(df)):
             raw_t = df["time"].iat[i]
             try:
@@ -53,15 +59,12 @@ class CsvCandleSource:
             if t < start_ts or t >= end_ts:  # [start, end) 半開（C-2）
                 continue
             v = float(df["volume"].iat[i]) if has_volume else 0.0
-            candles.append(
-                {
-                    "time": t,
-                    "open": float(df["open"].iat[i]),
-                    "high": float(df["high"].iat[i]),
-                    "low": float(df["low"].iat[i]),
-                    "close": float(df["close"].iat[i]),
-                    "volume": v,
-                }
-            )
-        candles.sort(key=lambda c: c["time"])
-        return candles
+            by_time[t] = {
+                "time": t,
+                "open": float(df["open"].iat[i]),
+                "high": float(df["high"].iat[i]),
+                "low": float(df["low"].iat[i]),
+                "close": float(df["close"].iat[i]),
+                "volume": v,
+            }
+        return [by_time[t] for t in sorted(by_time)]
