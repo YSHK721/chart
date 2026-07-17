@@ -654,6 +654,32 @@ test('updateLastCandle: スナップショット(トリム)中は series へ現�
   assert.equal(updateCalls.length, 1, 'トリム解除後はライブ更新を series へ反映');
 });
 
+// ISSUE-096 回帰: 時間足切替（setCandles で系列＋_lastBar が新周期へ差替）直後に、旧周期の
+//   インフライト live tick が実系列末尾より古い time で来ても series.update を呼ばず skip する
+//   （lightweight-charts の "Cannot update oldest data" 過渡エラーを防ぐ）。同/新 time は反映する。
+test('updateLastCandle: skips a stale live tick older than the current series tail (ISSUE-096 backward guard)', () => {
+  const chart = fakeChart();
+  const main = fakeMainSeries();
+  const updateCalls = [];
+  main.update = (c) => updateCalls.push(c);
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: fakeLwc() });
+  // 時間足切替後の系列末尾（_lastBar.time=2000）を setCandles で確定する。
+  renderer.setCandles([
+    { time: 1000, open: 1, high: 2, low: 0, close: 1 },
+    { time: 2000, open: 1, high: 2, low: 0, close: 1 },
+  ]);
+  updateCalls.length = 0;
+  // Act1: 旧周期の stale tick（time=1500 < 系列末尾 2000）→ skip（series.update を呼ばない）。
+  renderer.updateLastCandle({ time: 1500, open: 9, high: 9, low: 9, close: 9 });
+  assert.equal(updateCalls.length, 0, '系列末尾より古い time のライブ足は skip する');
+  // Act2: 同 time（2000）→ 従来どおり反映（末尾足の上書き）。
+  renderer.updateLastCandle({ time: 2000, open: 3, high: 4, low: 2, close: 3 });
+  assert.equal(updateCalls.length, 1, '同 time は従来どおり series.update する');
+  // Act3: 新 time（3000）→ 従来どおり反映（新足の追加）。
+  renderer.updateLastCandle({ time: 3000, open: 5, high: 6, low: 4, close: 5 });
+  assert.equal(updateCalls.length, 2, '新 time は従来どおり series.update する');
+});
+
 // ===========================================================================
 // クロスヘア価格読み取り欄（onCrosshairReadout）— 読み取り DTO の構築・発火。
 //   DTO 形: { time, ohlc:{open,high,low,close}|null, overlays:[{name,value,color}] }。
