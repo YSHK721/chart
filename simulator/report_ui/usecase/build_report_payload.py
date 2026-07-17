@@ -90,7 +90,7 @@ class BuildReportPayload:
             summary=summary,
             degradation=degradation,
             verdict=verdict,
-            contract_notes=self._contract_notes(),
+            contract_notes=self._contract_notes(ea_params),
         )
 
     # --- segment ------------------------------------------------------------
@@ -314,10 +314,16 @@ class BuildReportPayload:
     # --- degradation / verdict は AssessmentPolicy へ委譲（ISSUE-094 🟡-5）------
     # 劣化率算出・合否判定木・閾値は self._policy（AssessmentPolicy）が担う。
 
-    def _contract_notes(self) -> list:
+    def _contract_notes(self, ea_params: dict) -> list:
+        # SL/TP は実行時 EA config（ea_params）から動的に埋め込む（ISSUE-100 🔵-2）。
+        #   従来は "SL200/TP500pts" を直書きし、別 EA（異なる SL/TP）で本ビルダを再利用すると
+        #   契約ノートだけが陳腐化していた（build_report_payload を「EA 非依存の純写像」とする
+        #   ISSUE-094 🟡-5 の主張と不整合）。ea_params は :159 の trades.sl/tp 導出と同一源。
+        sl = ea_params["sl_points"]
+        tp = ea_params["tp_points"]
         return [
             "trades.order は生注文番号ではなく配列index(1始点)。MT5 Order ticket とは非一致。",
             "trades.comment は exit_reason 由来の正規化値。MT5 生comment文字列とは非一致。",
-            "trades.sl/tp は EA固定パラメータ(SL200/TP500pts)から entry_price±距離で導出。",
+            f"trades.sl/tp は EA固定パラメータ(SL{sl}/TP{tp}pts)から entry_price±距離で導出。",
             "orders[] はステージ① では空配列（後段で trades からの射影を充足）。",
         ]
