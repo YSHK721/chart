@@ -413,8 +413,14 @@ export class IndicatorController {
     this._recomputeDepth += 1;
     try {
       const result = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
-      this._state = result.state;
-      if (!result.accepted) {
+      // 競合削除ガード（ISSUE-105 🟡-2）: recompute の await 中に凡例 close（removeInstance）で
+      //   当該インスタンスが state から除去されると、result.state は除去前スナップショット由来のため
+      //   そのまま代入すると除去済みインスタンスが「復活」する。これがフェーズ2 で再描画されると
+      //   凡例行の無い残留系列（ゾンビペイン）＋永続化汚染を生む。await 後の live state で在席を
+      //   確認し、除去済みなら復活させず（result.state から当該のみ除去）accepted:false を返す。
+      const removedDuringAwait = !this._state.applied.some((i) => i.instanceId === instanceId);
+      this._state = removedDuringAwait ? facadeRemove(result.state, instanceId) : result.state;
+      if (removedDuringAwait || !result.accepted) {
         return { instanceId, accepted: false };
       }
       const inst = this._state.applied.find((i) => i.instanceId === instanceId);
@@ -545,6 +551,15 @@ export class IndicatorController {
       return;
     }
     for (const job of jobs) {
+      // 競合ガード（ISSUE-105 🟡-2）: フェーズ1 の await 中に凡例 close（removeInstance）で
+      //   当該インスタンスが state から除去されていた場合、accepted 済み job を _renderInstance で
+      //   描画すると renderer に系列/ペインが再生成され、凡例行の無い「ゾンビペイン」が残留し
+      //   ライブ更新を受け続ける。描画直前に state 在席を確認し、除去済みなら描画せず（保険で
+      //   renderer からも除く）。通常時（削除なし）は必ず在席＝従来挙動と不変。
+      if (!this._state.applied.some((i) => i.instanceId === job.instanceId)) {
+        this._renderer.remove(job.instanceId);
+        continue;
+      }
       this._renderInstance(job);
     }
     this._persistAll();

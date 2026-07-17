@@ -349,6 +349,51 @@ test('recomputeAllApplied is a no-op when nothing is applied', async () => {
   assert.equal(computeCalls.length, before);
 });
 
+// ISSUE-105 🟡-2 回帰: フェーズ1（直列計算の await）中に凡例 close で当該インスタンスが
+//   state から除去された場合、accepted 済み job をフェーズ2 で描画すると renderer に
+//   系列/ペインが再生成され、凡例行の無い「ゾンビペイン」が残留してライブ更新を受け続ける。
+//   ガード（描画直前の state 在席確認）により、除去済みインスタンスは _renderInstance を
+//   通さず renderer.remove のみ行う。
+test('recomputeAllApplied skips drawing an instance removed during the compute await (zombie-pane guard)', async () => {
+  const noop = () => {};
+  const removeCalls = [];
+  let releaseCompute;
+  const computeGate = new Promise((r) => { releaseCompute = r; });
+  let gateArmed = false; // apply の compute は素通し、recompute の compute だけゲートする。
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: {
+      compute: async (req) => {
+        if (gateArmed) { await computeGate; }
+        return { ok: true, generation: req.generation ?? 0, series: [] };
+      },
+    },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop, setVisible: noop, remove: (id) => removeCalls.push(id) },
+    document: null,
+  });
+  // Arrange: 指標を 1 つ適用（apply の compute はゲート前＝即時解決）。
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const instId = ctrl._state.applied[0].instanceId;
+  // フェーズ2 の描画呼び出しを観測する spy。
+  const rendered = [];
+  const origRender = ctrl._renderInstance.bind(ctrl);
+  ctrl._renderInstance = (job) => { rendered.push(job.instanceId); return origRender(job); };
+
+  // Act: recompute を開始（フェーズ1 の compute await で停止）→ その最中に close で除去 → 解放。
+  gateArmed = true;
+  const recomputePromise = ctrl.recomputeAllApplied();
+  await Promise.resolve(); // フェーズ1 の compute await へ制御を渡す。
+  ctrl.removeInstance(instId); // 凡例 close 相当（state から除去）。
+  releaseCompute();
+  await recomputePromise;
+
+  // Assert: 除去済みインスタンスはフェーズ2 で描画されない（ゾンビペイン再生成なし）。
+  assert.ok(!rendered.includes(instId), '除去済みインスタンスは _renderInstance を通さない');
+  // 保険で renderer.remove が呼ばれている（removeInstance の 1 回＋ガードの 1 回）。
+  assert.ok(removeCalls.includes(instId), 'ガードが renderer.remove を確実に呼ぶ');
+});
+
 // restore で永続化時間足を復元した際、時間足購読者へ通知する。
 //   回帰: code-review 🔴。通知欠落だと売買マーカーの該当時間足フィルタが
 //   restore 後の現在時間足を旧値のまま誤判定し、該当時間足なのに非表示になる（逆動作）。
