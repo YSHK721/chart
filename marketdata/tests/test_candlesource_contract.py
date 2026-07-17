@@ -177,6 +177,40 @@ def test_dukascopy_returns_empty_list_on_no_data(monkeypatch):
         assert candles == []
 
 
+# ---------------------------------------------------------------------------
+# 🟡-1（ISSUE-102）volume 欠損補填の対称性 — 両実装とも欠損は 0.0
+# ---------------------------------------------------------------------------
+
+def test_csv_fills_missing_volume_cell_with_zero(tmp_path):
+    # Arrange: volume 列は在るがセルが空（NaN）＝欠損。
+    t0 = _epoch(2024, 1, 1)
+    csv = tmp_path / "nanvol.csv"
+    csv.write_text(
+        "time,open,high,low,close,volume\n"
+        f"{t0},1.1,1.2,1.0,1.15,\n",  # volume セル空
+        encoding="utf-8",
+    )
+    # Act
+    candles = CsvCandleSource(csv).fetch_candles(
+        datetime(2024, 1, 1, tzinfo=timezone.utc),
+        datetime(2024, 1, 2, tzinfo=timezone.utc),
+    )
+    # Assert: Candle.volume 契約＝有限 float・欠損は 0.0（Dukascopy と対称）。NaN を返さない。
+    assert len(candles) == 1
+    assert candles[0]["volume"] == 0.0
+
+
+def test_dukascopy_fills_nan_volume_with_zero():
+    # Arrange: Dukascopy 戻りの volume が NaN＝欠損（同一契約の対称確認）。
+    t0 = _epoch(2024, 1, 1)
+    df = _dukascopy_df([(t0, 1.1, 1.2, 1.0, 1.15, float("nan"))])
+    # Act
+    candles = _to_candles(df)
+    # Assert: CSV と同一＝欠損は 0.0。
+    assert len(candles) == 1
+    assert candles[0]["volume"] == 0.0
+
+
 def test_both_sources_satisfy_candle_source_protocol(tmp_path):
     # Arrange
     t0 = _epoch(2024, 1, 1)

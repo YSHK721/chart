@@ -46,6 +46,13 @@ class CandleSource(Protocol):
     - **不正データ**: ``time`` を UNIX 秒 int として解釈できない不正データ（非 epoch 文字列・
       ``NaT`` 等）を検出した場合は ``ValueError`` を fail-fast 送出する（暗黙のフォールバックを
       設けない）。この例外契約も全実装で対称に保つ。
+    - **``Candle.volume``**: 常に有限 ``float``。原データに volume が無い（列不在／セル欠損）
+      場合は ``0.0`` で補う（Dukascopy／CSV 対称・ISSUE-102 🟡-1）。
+    - **永続実体の不在（実装固有 I/O 例外）**: 構築時に固定した永続実体（CSV パス等）が存在
+      しない場合、各実装は固有の I/O 例外を送出しうる（CSV は ``pandas`` 経由の
+      ``FileNotFoundError``／ネットワーク系実装はベンダ層の接続例外）。これはデータ内容の
+      事後条件ではなく**構成不整合の即時失敗**であり、無例外を前提にする利用側は置かない
+      （利用側は捕捉境界を Composition Root 近傍で定義する・ISSUE-102 🔵-2）。
     """
 
     def fetch_candles(self, start: datetime, end: datetime) -> List[Candle]:
