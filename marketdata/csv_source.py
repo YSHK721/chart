@@ -58,7 +58,13 @@ class CsvCandleSource:
                 ) from exc
             if t < start_ts or t >= end_ts:  # [start, end) 半開（C-2）
                 continue
-            v = float(df["volume"].iat[i]) if has_volume else 0.0
+            # Candle 契約（port.py Candle.volume・ISSUE-102 🟡-1）: volume は常に有限 float。
+            #   欠損（列不在／セル NaN）は 0.0 で補う（Dukascopy _to_candles:88 `pd.isna→0.0`
+            #   と対称）。列不在のみ 0.0・セル NaN 未ガードだと NaN が下流へ伝播し、契約に依存する
+            #   利用側を CSV 実装へ差し替えると二重計上/NaN 汚染を起こす（LSP 非対称）。実データ
+            #   （実 OHLC CSV 34 ファイル）は volume NaN 0 件のため本ガードは no-op（byte 不変）。
+            raw_v = df["volume"].iat[i] if has_volume else None
+            v = 0.0 if (raw_v is None or pd.isna(raw_v)) else float(raw_v)
             by_time[t] = {
                 "time": t,
                 "open": float(df["open"].iat[i]),

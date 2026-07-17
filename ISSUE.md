@@ -1350,3 +1350,143 @@ A9. **MP dwell の Python/JS 二重実装**は golden parity テスト同期で�
 
 ### 総合判定
 🔴高は0件。🟡中5件（うち3・4は共有ベースの symlink 制約により即時分割困難・1・2・5は独立実装のため分割可能）・🔵低4件（うち8は範囲外につき確定違反ではなく観測）。全指摘は分割方針案（設計判断）の提示に留め、実装（Port/インターフェース改変）は破壊的変更・既存契約改変を伴うため承認後の別タスクとする。
+## ISSUE-100: SRP（単一責任＝アクター単一性）第2巡アーキテクチャ監査（全指摘 file:line 実証・自己レビュー済み）
+- **ステータス**: OPEN（2026-07-16 起票）
+- **調査方法**: architecture-executor によるシステム全体（simulator 本体＋replay_ui/report_ui/tools・indicator_ui api+web/js・market_profile api+analysis+web/js・共有層 marketdata/common/common_view/api_shared＋直下 tools）の第2巡監査。事前に ISSUE-091/092/094/095/097/098/099 の既知指摘・対応記録を精読し重複を除外、**是正後の現行コードに対する新規発見・是正の副作用・取りこぼし**のみを認定。判定基準は第1巡（ISSUE-094）と同一＝「複数アクターの変更要求が同一ファイルを取り合う箇所のみ違反（規模・行数だけでは違反としない）」。全指摘は prompt-validation-workflow（Pre-mortem）＋upstream-input-validation による自己レビューを通過（一次候補 6 件を重複/非違反/是正済として棄却）。prototype_* は対象外。
+- **総括**: 第1巡是正は概ね堅実で外周のアクター単一性は維持。新規は 2 件のみ——いずれも第1巡 🔴 中核（run_backtest／build_report_payload）の是正過程で**新設または見落とされた同一アクター多重表現**。両件とも局所的・挙動保存（byte 不変）で是正可能。
+
+### 🟡 中（是正の副作用・執行/PnL 経路の同期ハザード）
+1. **MT5 クォート規約（Ask=Bid+spread×point）が実行/評価の 3 関数へ三重インライン化**（アクター＝MT5 校正）。`simulator/usecase/_execution.py:70`（bar-mode 約定クォート・base=open）・`:89`（含み損益評価クォート・base=close）・`pending_lifecycle.py:40`（every-tick クォート・base=tick price）、補助的に `_execution.py:35`。第1巡 🟡-10 の E1 是正が `Account._eval_price` から規約を除去した際、移送先で 3 つ目の実体（`pending_lifecycle.tick_quote`）を新設し規約が 3 箇所に散在（コード自身が `pending_lifecycle.py:38`「inline 版と同一」・`run_backtest.py:784`「derive_quotes と対称に」と同一性を自認・束ねる単一プリミティブ不在は Grep 実証）。MT5 スプレッド規約の再校正時に 3 関数の手動同期が必要で、1 箇所漏れると bar-mode・floating・every-tick の各経路で執行/評価価格が乖離する。対処案: `mt5_bid_ask(base, *, spread, point)` の単一プリミティブへ委譲（演算順を保てば byte-identical・golden parity で回帰固定）。
+2. （🔵 低）**汎用レポートビルダに StopEntryProbe 実験固有値（SL200/TP500）が残存ハードコード**（E5 是正の取りこぼし）。`simulator/report_ui/usecase/build_report_payload.py:321` の `_contract_notes()` 内に「SL200/TP500pts」が直書きされ、同一値は `report_meta.py:30` で既に ReportMeta アクターがパラメータ化済み（重複表現）。E5 対応記録の「EA 非依存の純写像」という主張と現行コードが不整合。別 EA（異なる SL/TP）で再利用すると `_contract_notes[2]` のみ SL200/TP500 のまま出力され契約ノートが静かに陳腐化（`report_presenter.py:54` 経由の出力到達を実証・現行単一実験では無害）。対処案: SL/TP 値を含むノート行を ReportMeta 注入へ移す。
+
+### 模範例（SRP 遵守の正の参照）
+- `simulator/adapter/controller.py:25`（BacktestController＝単一入口アクター）／`assessment_policy.py`＋`report_meta.py`（合否方法論と実験所与の独立アクター分離）／`tf_period_columns.py`（キャッシュ非依存の純集計へ分離・controller は薄いキャッシュラッパーへ縮退）／共有層 `csv_schema`・`outlier_policy`（095 でエンベロープ式一本化）・`dataset_registry`・`tf_meta`（手動同期二重定義の解消済み）。
+
+### 自己レビュー記録（要点）
+- Pre-mortem F1「M-1 は base が正当に異なる 3 関数の過大認定では」→ base（open/close/tick）の差異は正当だが ask 側 `+ spread * point_size` は 3 者同一かつコメントで同一性自認＝規約部分の三重表現として成立（base 引数化で吸収可能）。
+- Pre-mortem F2「既往と重複では」→ 094 🟡-10 は `Account._eval_price`（E1 で除去済み）対象・`tick_quote` は E1 新設で記述外。094 🟡-5 は `_META_PARAMS` 対象で `_contract_notes` を含まず。重複なし。
+- 棄却 6 件: run_backtest 実行モデル併存（=094 🔴-1 residual 明記済み）／dwell 集計+キャッシュ併存（=094 🔴-2 residual）／zp 帰無分布+整形同居（同）／tf_period_columns の横断 import（単一アクター内部依存＝非違反）／MP src ディスパッチ（=097 🔴-1 対応済み・OCP 軸）／共有層二重定義（是正済み）。
+- 残存スコープ: JS 側（market_profile_controller.js/timeframe_controller.js）の同一アクター二重実装の網羅検証は symlink 単一ソース制約下（ISSUE-099 🟡-3/-4 記録範囲）のため後続調査へ委譲。
+
+### 裁定不要・実装フェーズへの申し送り
+🟡-1 を優先（執行/PnL 経路の同期ハザード・byte-identical 委譲で是正可）。🔵-2 は ReportMeta 注入化のみ。いずれも破壊的変更・既存契約改変を伴わない委譲リファクタであり、実装は承認後の別タスクとする。
+## ISSUE-101: OCP（オープン・クローズドの原則）第2巡アーキテクチャ監査（是正7系統の実コード再検証＋新規探索・自己レビュー済み）
+- **ステータス**: RESOLVED（2026-07-16 起票／🔵-1 を 2026-07-17 是正・唯一の新規指摘）
+- **対応記録（🔵-1・2026-07-17）**: optimize/walk_forward CLI の目的関数・探索アルゴリズム許容集合の三重宣言を解消。`simulator/usecase/optimize_strategies.py` に唯一の登録表 `OBJECTIVE_REGISTRY`（pf/net/sharpe/recovery→Objective）と `SEARCH_ALGOS`（grid/random）を新設し、`optimize_cli._build_objective_port` のインライン dict と両 CLI の argparse `choices` をすべて本表から導出（`list(OBJECTIVE_REGISTRY)`／`list(SEARCH_ALGOS)`）。新目的関数追加＝表への 1 エントリで両 CLI に閉じる。両パーサの choices が従来と同一集合・同一順序（pf/net/sharpe/recovery・grid/random）であることを実測固定。simulator 該当テスト 52 件緑（CLI パース含む）。
+- **調査方法**: architecture-executor によるシステム全体の第2巡監査。ISSUE-097 の既知指摘（🔴2・🟡9・🔵12）と対応記録を精読して重複を除外し、(a) 是正済み 7 系統（SourceDescriptor／_EA_FACTORIES／例外中央翻訳／TICK_MODEL_REGISTRY／_BindingSpec latest_meta+preprocess／mp_source_capability.js）が本当に「1エントリ追加で閉じる」かの実コード再検証、(b) 第1巡が対象外だった領域の新規探索、を実施。全指摘・全検証は file:line 実証、prompt-validation-workflow＋upstream-input-validation の自己レビューを通過（一次候補 7 件を重複/YAGNI/言語跨ぎ不可避/正当な純増として棄却）。prototype_* は対象外。
+- **総括**: **合格**。是正 7 系統はすべて「新バリアント追加＝表への 1 エントリ（＋handler/factory の純増）で閉じる」構造に到達しており、取り漏らし・是正が導入した新 smell はゼロ。新規発見は第1巡が調査対象に含めなかった最適化系ツール CLI の値表重複 1 件（🔵）のみ。
+
+### 🔵 低（新規発見 1 件）
+1. **[simulator/tools] 最適化目的関数・探索アルゴリズムの許容集合が 2 CLI＋1 ディスパッチに三重宣言**。単一情報源は `simulator/tools/optimize_cli.py:69-82` の dict レジストリ `{"pf","net","sharpe","recovery"}→Objective`（正当）だが、argparse `choices` が `optimize_cli.py:195` と `walk_forward_cli.py:193` に並行リテラル化（walk_forward_cli.py:23 が `_build_objective_port` を import 共有しているのに choices だけ再宣言）。同型で search_algo も `optimize_cli.py:62`（if/else）・`:191`・`walk_forward_cli.py:189` に分散。新目的関数（例 calmar）追加時に 2 つの choices リストの同期編集を怠ると片方の CLI で拒否される（ISSUE-097 総括 smell パターン②「値表の重複定義」に該当）。🔵 根拠: 中核ディスパッチはレジストリ化済み・安定閉集合・research ツール 2 本に局所化。対処案: `OBJECTIVE_REGISTRY`/`SEARCH_ALGOS` を usecase 側で単一定義し、両 CLI の `choices=` を `list(OBJECTIVE_REGISTRY)` から導出。
+
+### 是正済み 7 系統の再検証結果（すべて成立・正の参照）
+- **SourceDescriptor**（`market_profile_controller.py:76-89,498-521`）: `_SOURCE_DESCRIPTORS` が唯一源・`_ALLOWED_SRC`/`_SRC_METRIC`/`_ATOM` は内包表記で導出・src 分岐は `_SOURCE_REGISTRY[src].handler` の table-driven dispatch。旧 if 連鎖消滅。
+- **_EA_FACTORIES**（`main/__init__.py:388-394,476-477`）: dict＋既定フォールバック。EA 許容集合の並行テーブルなし（`__main__.py` に choices なし）。`run_weekly_vol_band_cli.py:74` も共有ファクトリ利用で二重構築解消。
+- **例外中央翻訳**（`serve_replay.py:56-73`）: `_error_response` 単一定義・全 5 ハンドラが委譲・ValueError→validation 欠落是正済み。
+- **TICK_MODEL_REGISTRY**（`tick_model_registry.py:56-80`）: 4 モデル単一表・`config_loader.py:46` は `Literal[TICK_MODEL_IDS]` で導出参照・`requires_real_ticks` フラグで分岐導出（三分散解消・別リテラル残存なし）。
+- **_BindingSpec**（`call_binding.py:210-227,323-336,371-373`）: latest_meta/preprocess 宣言フィールド化・`latest_meta.py:52-56` は if 連鎖なし・invoke から compute_id 直判定排除。
+- **mp_source_capability.js**: `_DESCRIPTORS`（:45-70）唯一源・production の `=== 'zp'`/`!== 'zp'` 述語は grep 0 件（コメント/テストのみ）・POC 星/ラベルも記述子集約。
+
+### 自己レビュー記録（棄却 7 件の要点）
+front `_ZP_SUPPORTED_TFS` と back `_ZP_TF_ALLOWED` の同値並行（言語跨ぎ不可避＋既往 🔴-2/🟡-8/-9 記録済み）／`_MP_PLAYER_TF` 9-tf リテラル（=🔵-18/-21 既録）／call_binding `output_kind` 残置フィールド（追加を強制しないデッドメタ＝OCP 非該当）／`_EXIT_MAP`（複製なし・語彙は trade_record._EXIT_REASONS に単一化済み）／`_build_search_port` の 2 値 if/else（Composition Root 正当・choices 重複のみ 🔵-1 へ内包）／`_dispatch_dwell` の dwell/m1 共有（新 handler 追加＝OCP 遵守の純増）／config_loader の spread_model 等 Literal（安定閉集合・YAGNI）。
+- 残存リスク: 共有層（common/common_view/api_shared/marketdata）の未記録 smell 網羅探索は第1巡網羅済みの前提で本巡の重点外。ISSUE-097 🔴-2（tf_period src ディスパッチ）・🟡-11（第2銘柄 YAGNI）は OPEN のまま既往管轄。
+
+### 裁定不要・実装フェーズへの申し送り
+新規 🔵-1 は任意対応（レジストリ単一化のみ・挙動不変）。優先度は既往 ISSUE-097 🔴-2 の残件対応が上位。
+## ISSUE-102: LSP（リスコフの置換原則）第2巡アーキテクチャ監査（是正5件の実コード再検証＋残存スコープ検証・自己レビュー済み）
+- **ステータス**: 一部 RESOLVED（2026-07-16 起票／🟡-1・🔵-2 を 2026-07-17 是正・🔵-3 は記録のみ据置）
+- **対応記録（🟡-1・🔵-2・2026-07-17）**: 🟡-1＝`CandleSource` の volume 事後条件非対称を是正。`marketdata/csv_source.py:61` を `pd.isna` ガードで Dukascopy（`dukascopy_source.py:88`）と対称化し、volume 列在・セル NaN の欠損を 0.0 補填（列不在のみ 0.0 だった非対称を解消）。**実データ実測**: 実 OHLC CSV 全 34 ファイルで volume NaN 0 件を確認→本ガードは実データ上 no-op（byte 不変）。契約テスト新設（CSV セル NaN／Dukascopy NaN とも volume=0.0 を固定）。🔵-2＝`marketdata/port.py` の `CandleSource` 契約 docstring に「volume は常に有限・欠損は 0.0」と「永続実体不在時の実装固有 I/O 例外（CSV=FileNotFoundError／構成不整合の即時失敗）」を明記し例外契約の網羅欠落を補完。marketdata 175 件緑。🔵-3（ReplayIndicatorController 戻り値 widening＝非破綻）は記録のみで対応不要。
+- **調査方法**: architecture-executor によるシステム全体の第2巡監査。ISSUE-098 の既知指摘（🔴1・🟡5・🔵7）と是正記録（🔴-1 Presenter 分割／🟡-2 MaSlope fail-fast／🟡-3/-4 CandleSource 契約明文化／🟡-5 profit_band 隔離／🟡-6 call_binding フック化）を精読して重複を除外し、是正の実コード再検証＋第1巡「残存スコープ」に申し送られた `ReplayIndicatorController` の必須検証を実施。全指摘は file:line 実証、prompt-validation-workflow（Pre-mortem）＋upstream-input-validation の自己レビューを通過（一次候補 4 件を棄却）。prototype_* は対象外。
+- **総括**: 第1巡是正はいずれも現行コードで正しく成立し、NotImplementedError スタブ・部分履行の再導入なし。ただし **CandleSource の是正明文化に取り漏らし 1 件**（volume の NaN 事後条件非対称＝🟡）と契約記述の例外型網羅欠落 1 件（🔵）を検出。必須検証対象 `ReplayIndicatorController` は基底 override 契約を全て充足（LSP 遵守・非破綻）。
+
+### 🟡 中（新規・是正明文化の取り漏らし）
+1. **`CandleSource` の `Candle.volume` 事後条件が Dukascopy/CSV 間で非対称**。契約 `marketdata/port.py:19-21` は「抽出元が値を持たない場合は 0.0 で補う」を全実装対称の事後条件として文書化。Dukascopy 実装は充足（`dukascopy_source.py:88` — `v = 0.0 if pd.isna(raw_v) else float(raw_v)`）だが、CSV 実装（`csv_source.py:61`）は volume **列は存在するがセルが NaN** の場合に `pd.isna` ガードがなく `volume: nan` を返す（列不在時のみ 0.0）。「volume は常に有限 float」に依存する利用側（Candle→Bar 写像・volume 集計）を CSV 実装へ差し替えると NaN が下流へ伝播（Dukascopy では起きない）。第1巡 🟡-3/-4 の W3 是正は time の順序・一意性・ValueError のみ対称化しており volume 補填は未対応＝取り漏らし。実データでの manifestation（実 CSV に NaN セルが実在するか）は**未実測・未検証**（LSP 判定は文書化済み事後条件の非対称の存在で成立）。対処案: `csv_source.py:61` を `pd.isna` ガードで Dukascopy と対称化し、NaN volume ケースの契約テストを `test_candlesource_contract.py` に固定。
+
+### 🔵 低
+2. **`CandleSource` 契約明文化が `FileNotFoundError` を網羅せず例外契約が非対称のまま**（是正の取り漏らし・新規指摘ではなく第1巡 🟡-4 本文で言及済みの型）。`port.py:38-48` の W3 明文化は ValueError のみ対称化し、`csv_source.py:40`（`pd.read_csv` のファイル不在→FileNotFoundError）を契約記述から落とした。Dukascopy は同例外を送出しえない。CSV パスは構築時固定でファイル不在＝デプロイ不整合の即時失敗のため実害限定。対処案: docstring に実装固有 I/O 例外の存在を明記または利用側の捕捉境界を定義。
+3. **`ReplayIndicatorController` の戻り値型 widening（記録のみ・非破綻＝第1巡残存スコープの検証完了）**。基底 `indicator_controller.js:482-490`/`:493-499`（`toggleVisible`/`removeInstance`＝void）に対しサブクラス `replay_indicator_controller.js:136-143`/`:147-154` は MP インスタンス時に値を返す（事後条件の強化）。呼出側（基底 :827/:831）は戻り値を捨てるため破綻せず LSP 遵守。
+
+### 模範例（LSP 遵守の正の参照・現行確認済み）
+- Presenter 形式別 Port 分割（`ports.py:161-197`）: 部分履行スタブが構造的に生成不能＝🔴-1 完全是正を実証。
+- `ResultSinkPort` 階層（`result_sink.py:33-69`）／`MaSlope` fail-fast（`ma_slope.py:45-58`・旧スタブ撤去確認）／profit_band 翻訳レジストリ隔離（`indicator_compute_adapter.py:60-90`）＋`pre_invoke` フック（`call_binding.py:93`）。
+- `ReplayIndicatorController` の reveal seam（`replay_indicator_controller.js:57-59`）: 基底 `_extraComputeFields` override＋`undefined` 不送信 gate で present byte 不変の置換可能設計。
+
+### 自己レビュー記録（要点）
+- Pre-mortem「是正記録を所与採用し volume 非対称を見落とす（Type-B 追従）」→ csv_source/dukascopy_source を直接 Read し非対称を実証（🟡-1 計上）。「FileNotFoundError を新規と誤計上」→ 第1巡 🟡-4 既記載を確認し取り漏らし（🔵）へ格下げ。「戻り値 widening を 🔴 と過大評価」→ 呼出側が戻り値を捨てることを実証し 🔵 記録のみ。
+- 棄却 4 件: MaSlope on_init 事前条件（=🟡-2 是正そのもの・fail-fast 許容）／集約 ReportPresenterPort への単一形式注入（型上成立せず・`test_report_ports_split.py:60-61` が not issubclass を固定）／ReplayMarketProfileActor.refresh 無描画（=🔵-13 既録）／`enterBar`/`isGrowingPush` 基底不在疑い（`market_profile_actor.js:279` に実在＋typeof ガード縮退で非破綻）。
+- 残存リスク: 🟡-1 の実データ manifestation は未実測＝是正着手時に実測で確定させる。
+
+### 裁定不要・実装フェーズへの申し送り
+🟡-1 は 1 行ガード追加＋契約テスト固定の低リスク是正（実データ実測とセットで実施）。🔵-2 は docstring 追記のみ。🔵-3 は対応不要（記録のみ）。
+## ISSUE-103: ISP（インターフェース分離の原則）第2巡アーキテクチャ監査（是正5件の実測再検証＋新規探索・自己レビュー済み）
+- **ステータス**: OPEN（2026-07-16 起票・新規違反 0 件＝検証完了の記録）
+- **調査方法**: architecture-executor によるシステム全体の第2巡監査。ISSUE-099 の既知指摘（🟡5・🔵4）と是正記録（🟡-1 Report ports 分割／🟡-2 VolBand read-write 分離／🟡-3/-4 TimeframeHost・MarketProfileHost ロール契約／🟡-5 ProfileSink・TfPeriodSink ファサード）を精読して重複を除外し、是正後の契約が実利用と乖離していないかをクライアント別実利用メソッド集合の Grep 実測で突合。新規探索（ResultSinkPort・DatasetPort・CandleSource・replay_ports/marker_ports/report_ports・共有層）も実施。prompt-validation-workflow＋upstream-input-validation の自己レビューを通過（一次候補 7 件を棄却）。prototype_* は対象外。
+- **総括**: **合格（新規 🔴0・🟡0・🔵0）**。第1巡是正 5 件は全件現行コードで成立し、宣言した狭い契約が実利用と乖離していないことを実測で確認。特に TimeframeHost（11面）・MarketProfileHost（19面）は controller の `host.X` 参照集合と**完全一致**し、`host_role_contract.test.js:87-99` の三方向テスト（依存面⊆契約／契約⊆実利用＝最小性／host面⊇契約＝充足）で過大契約を構造的に排除。ProfileSink（5面）／TfPeriodSink（2面）は `composition_root_front.js:261-282,397-416` で本番結線され各 actor が排他サブセットを維持。
+
+### 是正 5 件の再検証実測（すべて成立）
+- **🟡-1**: `ports.py:161-186` の 1 メソッド Port 3 種＋形式別 Interactor（`generate_report.py:43-69`）は各 1 メソッドのみ型依存。集約 `ReportPresenterPort` を受ける `GenerateReportInteractor` は 3 メソッド全実利用（:33,:36,:39）＝集約依存は正当。
+- **🟡-2**: `vol_band_ports.py:29-41` で Writer（save_all）/Reader（get）の 1 メソッド分離済み・未使用 `save`/`all_week_ids` 撤去済み。
+- **🟡-3/-4**: `timeframe_controller.js` の host 参照 11 面・`market_profile_controller.js` の host 参照 19 面が契約と完全一致（各 file:line 実測）。
+- **🟡-5**: `market_profile_actor.js` は ProfileSink 面のみ・`tf_period_profile_actor.js:69,168`＋hover（`composition_root_front.js:416`）は TfPeriodSink 2 面のみ＝排他維持。
+
+### 模範例（ISP 遵守の正の参照）
+- TimeframeHost/MarketProfileHost（`indicator_controller.js:44-108`）＝契約と実利用の完全一致を CI が保証する理想形。
+- 形式別 Report Port＋Interactor／`replay_ports.py`（1〜2 メソッドの単一ロール Protocol 群）／`marker_ports.py`・`report_ports.py`（単一メソッド境界の明示的別 Port 化）。
+
+### 自己レビュー記録（棄却 7 件の要点）
+- `ResultSinkPort`（3 メソッド ABC）: production クライアント 0 件（`main/__init__.py:566-568` は具象直接呼び）＝「未使用面への強制依存」が原理的に不成立。ISP でなくデッドポート（DIP/YAGNI）の論点として記録のみ。
+- `DatasetPort`: 唯一クライアント `compute_indicators.py` が 3 メソッド全利用（:114,:120,:126）＝健全。
+- `candles_controller.py:28-34` の dataset facade 部分利用＝既往 🔵-9 の追加ウィットネス（新規性なし）／MP actor typeof ガード 10 箇所＝既往 🔵-6 同一／renderer 広依存＝既往 🔵-8 同一／`CandleSource`・marker/report/replay ports＝単一ロール凝集で分割余地なし／共有層 common・common_view・api_shared＝Protocol/ABC 定義ゼロ（grep 0 件）で ISP 対象外。
+- Pre-mortem「是正済み記録への追従で実測突合を省く」→ 3 辺（依存⊆契約・契約⊆実利用・本番結線）を独立実測して遮断。
+- 残存リスク: MP actor 実装体（present/replay）のメソッド部分集合差の正式インターフェース化要否（🔵-6 内部）と、個別指標パッケージ（profit_* 等の _Chart/_Line Protocol 群）は未監査＝後続判断。
+
+### 裁定不要・実装フェーズへの申し送り
+新規是正対象なし。既往 🔵-6/-8/-9 は据置（YAGNI）のまま。ResultSinkPort のデッドポート整理（撤去 or 結線）は DIP 側の裁定事項として ISSUE-104（DIP 第2巡）の結果と併せて判断することを推奨。
+## ISSUE-104: DIP（依存関係逆転の原則）第2巡アーキテクチャ監査（Tier1/Tier2 是正後コードの再検証＋新規探索・自己レビュー済み）
+- **ステータス**: OPEN（2026-07-16 起票）
+- **調査方法**: architecture-executor によるシステム全体の第2巡監査。ISSUE-091（Tier1 是正済み）・092（Tier2 裁定待ち）の全項目と 094/097/098/099 の対応記録を精読して重複を除外し、(a) 是正済み構造（api_shared/http_contract・common_view 分離・mp_source_capability.js・TickStorePort/DatasetPort・stats_boot 共有核）の所有権・依存方向の再検証、(b) 是正リファクタが副次導入した新規の綻び探索、を実施。依存方向（内→外 import・循環）と抽象所有権の両方を Grep/Read で実測。prompt-validation-workflow（Pre-mortem）＋upstream-input-validation の自己レビューを通過（一次候補 6 件を棄却）。prototype_* は対象外。
+- **総括**: Tier1/Tier2 是正は DIP 中核（MP の I/O 具象直結・mp_stats の simulator private 越境・エラー契約分岐・indicator_ui の Output Boundary 欠落）を確実に解消し、内→外 import 違反は本巡ゼロ・循環なし・抽象所有権は概ね正配置。新規発見は是正の副次負債 2 件（🟡）＋観点記録 1 件（🔵）。
+
+### 🟡 中（是正リファクタの副次負債）
+1. **`common`（安定・本質）が `common_view`（不安定・偶有）へ逆依存（安定度逆転・ISSUE-092⑥ 分離の骨抜き）**。`common/__init__.py:41` の後方互換再エクスポート `from common_view import LEVEL_LINE_WIDTH, level_colors` により、純価格計算＋統計核（numpy のみ依存の安定層）が表示仕様層（ISSUE-093 で LEVEL_LINE_WIDTH 1→2 変更実績のある可変層）へ一方向依存（循環はないが安定→不安定の SDP 違反）。`import common` が transitive に表示層をロードし、092⑥ が企図した計算/表示のアクター分離がパッケージ依存レベルで無効化。**production 消費者は全て common_view 直参照へ移行済み**（profit_*/src の lwc_chart.py・plot.py 全件を grep 実証）で、`from common import level_colors/LEVEL_LINE_WIDTH` の残存はテスト 7 ファイルのみ（profit_rmm/oscillator/arctan/adx_needle/volatility/oscillator2 各 tests＋common/tests/test_level_style.py:13）。092⑥ の「再エクスポート温存」は当時 production 20 ファイル未移行が前提であり、現時点では撤去が YAGNI 上も妥当。対処案: `common/__init__.py:40-41,54-55` の再エクスポートを撤去しテスト 7 ファイルを common_view 直参照へ更新（production 影響ゼロは実証済み）。
+2. **indicator_ui の一部 controller が単一定義 `nested_error` を消費せず nested ボディを手組み（契約の暗黙同期）**。正典は `api_shared/http_contract.py:25-38` の `nested_error()` で、MP controller（market_profile_controller.py:134）・serve_replay（:73）・indicator_ui server.py（:121）・catalog_controller（:27）は委譲済みだが、`compute_controller.py:48-57`（`_present`）は `ERROR_STATUS.get`＋手組み dict でボディ形を複製（ISSUE-092① の Presenter 新設時に発生）、`candles_controller.py:15-23`（`_error`）は形状も乖離（`violations` 欠落・`series:[]` 追加）。正典の形が変わると compute/candles だけ静かに乖離する暗黙同期。対処案: `_present` 失敗分岐を `nested_error(...)` 委譲へ置換、`_error` は `nested_error` の body を基底に `series:[]` を合成し `violations` 欠落を解消（既存 byte 固定テストで回帰確認）。
+
+### 🔵 低（違反ではなく観点記録）
+3. **Output Boundary（DatasetPort/TickStorePort）が Composition Root で注入されず内側層の遅延自己合成のみで具象化**。`indicator_ui/api/usecase/dataset_port.py:44-51`・`market_profile/api/.../compute/tick_store_port.py:44-51` の `set_*` 注入呼出は production ゼロ（grep 実証・テストのみ）。docstring「合成はエントリポイントの責務」と実態が乖離（simulator/replay_ui のような合成集約が indicator_ui/MP に不在）。モジュールレベル脱結合という DIP 中核は達成済み（関数内 import は 091🔵/092① で受容済みパターン）のため違反認定せず。任意対処: server.py 起動時に `set_dataset_port(MarketdataDatasetGateway())` を 1 行結線（現状維持も可）。
+
+### 模範例（是正済み構造の検証結果・すべて正配置を実証）
+- mp_stats 安定度逆転解消（`stats_core.py:24-28`→`common/stats_boot`・simulator 参照ゼロ・spa/var_backtests も同核 re-export）／MP compute の I/O 隔離（compute 所有 `TickStorePort` 経由・parquet/paths 直結消滅）／HTTP 契約の中立所有（api_shared 唯一実体・marketdata/api_contract.py:11 は後方互換 re-export へ降格）／serve_replay 契約統一（nested_error 直参照）／indicator_ui usecase 純化（DatasetPort＋注入協調子のみ）／JS 層の依存方向（domain/usecase→adapter/framework の import ゼロ・mp_source_capability.js は domain 正配置）／report_ui private 越境解消（export_report_payload.py:19 は公開 API 参照）。
+
+### 自己レビュー記録（要点）
+- Pre-mortem「🟡-1 は 092⑥ と重複では」→ 092⑥ の記録は分離の事実のみで逆依存＝安定度逆転の指摘は不在（grep 実証）、かつ production 消費者ゼロは是正完了後の新状態＝非重複。「🟡-2 は DRY で DIP 外では」→ 対象 smell「プロセス間契約の暗黙同期」に明示該当＝scope 内。「🔵-3 の過大認定」→ 違反でなく観点記録と明示ラベリングで回避。
+- 棄却 6 件: compute_controller の `from marketdata import dataset`（adapter→共有ライブラリは合法方向・monkeypatch シーム温存）／ポートの関数内 gateway import（091🔵/092① 受容済み・🔵-3 に集約）／replay bridge の MP handle_market_profile 直 import（MP 配信殻の公開契約・091 A4 scope 外。MP 側に安定 Facade が無い非対称は将来負債候補として記録のみ）／mp_stats の sys.path 挿入（091#10 既記録・分析 standalone 用）／replay bridge の sys.path.insert（092⑤ が entry point フォールバック可と明文化済み）／indicator_ui ERROR_STATUS 分岐疑い（api_shared からの re-export を実証＝分岐なし）。
+- 残存リスク: 本監査は静的 import 依存・抽象所有権のみ実測。実行時 DI 差し替え・byte parity・実 HTTP 応答は未実測（🟡-2 修正時は byte 固定テストで回帰確認が必要）。
+
+### 裁定不要・実装フェーズへの申し送り
+🟡-1（再エクスポート撤去＋テスト 7 件更新・production 影響ゼロ実証済み）と 🟡-2（nested_error 委譲化）は低コスト・挙動保存で是正可能。ISSUE-103 申し送りの ResultSinkPort デッドポート整理（撤去 or 結線）は本 Issue の 🔵-3 と同カテゴリ（合成点の扱い）として一括裁定を推奨。
+## ISSUE-105: 全インジケーターのブラウザ実UI動作確認（第2巡・B方式サーバー実HTTP経路・Playwright実測）
+- **ステータス**: 一部 RESOLVED（2026-07-17 起票／🟡-2 修正済み・🔴-1 は環境要因と判明し棄却・🔵-3/-4 は裁定/承認待ち）
+- **対応記録（🔴-1 再分類＝環境要因・2026-07-17）**: 起票時の「復元インスタンス無描画」を実測で再検証した結果、**復元コードの不具合ではなく検証サーバーのティックデータ鮮度（環境要因）**と確定。決定的証拠: 制御された localStorage（mode=normal・src=zp・1D）で復元すると全期間ヒストグラム＋POC* 46162.04＋VAH 73095.31 を完全描画し参照 iss-ui-sweep-mp-1d.jpeg と一致（ui-fix-restore-zp-1d.jpeg）＝**復元処理自体は正しい**。起票時の無描画は (a) 復元 params が sessions+dwell（tf-period 委譲）だったこと、(b) `--skip ticks` 起動で tick parquet が 2026-07-15 22:52 で終端し「当日」の実ティックが無いこと、の複合。dwell forming base の当日窓 [today_start, formingStart=today_start) が空になる機序を実測（`/market_profile_forming?from=今日&base=1`→priceMin=0.0/priceMax=1.0、`from=昨日`→最終実ティック 67695-67791＝起票時のマゼンタ線）。新規追加は既定 src=zp（非増分→全期間 refresh）で全描画するため、起票時の「復元=無描画／新規=全描画」差は **src/mode 差＋ティック鮮度**であり復元バグではない。フレッシュ dwell も同一環境で当日窓が空になり同挙動（ui-fix-fresh-dwell-today.jpeg）。→ 🔴 を棄却（実データ環境では復元は正常）。
+- **対応記録（🟡-2 修正済み・2026-07-17・feature/issue-105-zombie-pane）**: 真因は `indicator_controller.recomputeAllApplied` フェーズ1 の `await _computeInstance` 中に凡例 close（removeInstance）が入ると、`_computeInstance` が **await 前スナップショット由来の `result.state` を無条件代入して除去済みインスタンスを「復活」させる**こと（フェーズ2 でこれが再描画され凡例行の無いゾンビペインが残留・ライブ購読継続）。`_computeInstance` に**競合削除ガード**を追加（await 後の live state で在席確認・除去済みなら `facadeRemove(result.state, id)` で復活を防ぎ accepted:false を返す）＋フェーズ2 描画直前の在席ガード（保険）。回帰テスト新設（gated compute の await 中に removeInstance→除去済みは `_renderInstance` を通さないことを固定）。indicator_ui web テスト緑（既存の replay_analysis/timeline_player 2 件失敗は本変更前から存在する無関係な欠損モジュール参照）。実UI無回帰確認（RSI 追加→15m 足切替で正常再描画→削除でペイン完全消滅・孤児なし・コンソールエラー0）。
+- **（起票時記録・以下は上記対応で更新）**
+- **検証方法**: B方式サーバー（framework.server・port 8000・データ更新スキップ起動）＋Playwright 実ブラウザで、カタログ全 19 指標＋market_profile（プロファイルタブ）の計 20 指標を実 UI・実 HTTP 経路のみで検証（compute 直叩き・合成データ不使用）。各指標: 追加→描画確認（スクリーンショット）→削除。代表指標で設定ダイアログの param 実反映（tgp_btlm maxbars 100→150 で系列延長＋凡例値変化、moving_averages 期間 9→50 で MA 値 67,720→68,564 に変化）を確認。時間足切替（5分→15分→30分→日→月）を指標表示のまま実施。MP は 通常/日別 × dwell/zp × 1D/1M/30分/5分 を検証し、リポジトリ内の参照スクリーンショット（iss-ui-sweep-mp-1d.jpeg 等）と照合。
+- **総括**: 20 指標すべて正常描画・param 反映・時間足追従を確認（正常系は合格）。ただし **MP の状態復元インスタンスが全モードで無描画になる機能バグ 1 件（🔴）** と、**指標削除時のゾンビペイン（間欠レース）1 件（🟡）** を発見。🔵 2 件（MA 計算時間足の 30分欠落・タイトル表記）。
+
+### 🔴 高（機能バグ・毎回のページ読込で発生）
+1. **market_profile の状態復元インスタンスが全モードで無描画（フルプロファイル取得を一度も発行しない）**。ページ読込時に localStorage から復元された MP インスタンスは、1D/1M×通常×zp でヒストグラム・POC*・VAH が一切描画されず（実測スクリーンショット ui-r2-mp-normal-1d.jpeg）、日別モードのタイルも描画されない。サーバーログ実測: 復元インスタンスは `GET /market_profile?...&from=<当日>`（成長ウィンドウ）と `/tf_period_profile`（200・columns データあり）を約 2 秒間隔で繰り返すのみで、**全期間フル取得（from なし）を一度も発行しない**（ログ全件 grep で from なしは検証用 curl の 1 件のみ）。同一条件で**インスタンスを削除→新規追加すると即座に正常描画**（ui-r2-mp-fresh2-1d.jpeg＝参照 iss-ui-sweep-mp-1d.jpeg と一致: 右端アンカーヒストグラム＋POC* 46162.04＋VAH）。日別×zp×1D のタイル、dwell のセッションヒート着色、日別×5分での zp 選択不可（option disabled）も新規インスタンスでは全て正常。推定原因（未検証・推論）: 成長状態（growing）を含む永続状態の復元経路が初回フル fetch をスキップし growing-only ループに入る（applyGrowthState 系）。対処案: 復元経路でも初回は必ずフル取得→以後 growing 増分に移行させる。回帰固定: 「復元インスタンス追加後に /market_profile（from なし）が 1 回以上発行される」ことのテスト。
+### 🟡 中（間欠・レース）
+2. **指標削除時にペイン＋系列が残留する「ゾンビペイン」（間欠）**。ライブ更新中に Oscillator2 を削除し直後に別指標（OsiMA）を追加した際、凡例行は消えたがペインと系列（oscillator2_lc/rci）が残留（ui-r2-osc2-residue.jpeg）。残留ペインは**ライブ更新を受け続け**（凡例値 -2.179→2.904 に変化＝購読未解除）、凡例行が無いため UI から削除不能（ページ再読込でのみ解消）。その後、単独削除・同一手順の再試行 2 回では再現せず＝**非決定的（レース条件）**。推定原因（未検証・推論）: 削除時に in-flight の compute/live 応答が完了後に系列を再アタッチ、または削除処理と live 更新の競合。対処案: インスタンス削除時に世代トークン等で in-flight 応答を無効化し、live 購読の解除を削除処理の同期部で保証する。
+### 🔵 低
+3. **moving_averages の計算時間足 enum に「30分」が欠落**。チャートの時間足ボタンには 30分 が存在するが、MA 設定の「時間足」選択肢は `['chart','1m','5m','15m','1h','4h','1D','1W','1M']`（catalog.js:242・MA_TIMEFRAME_LABELS:215-218）で 30m のみ欠落。バックエンドは 30m 対応済み（marketdata TIMEFRAME_RULES・forming_bar.py:8 は 1m/5m/15m/30m/1h/4h/1D を明記）。意図的除外か欠落かは仕様未定義のため**要裁定**。欠落なら enum への 1 エントリ追加のみ。
+4. **ページタイトルが「プロトタイプ A方式」固定**（web/index.html:6）。B方式サーバー（ライブ計算）配信時もタブ表示が A方式のまま。表記のみの不整合。
+
+### 検証で棄却した候補（誤検出の排除）
+- **RMMMACD の系列ラベル「RMMWMACD」**: typo 疑いだったが、MQL 参照実装の `SetIndexLabel(1, "RMMWMACD")` 準拠（profit_rmm_macd/src/lwc_chart.py:49-51）＝正当。
+- **右端の孤立足（直前終値から約 1,900pt 乖離）**: m1 履歴が 2026-07-15 22:52 UTC（67,716）で終端しているのに対しライブ forming bar は 65,5xx（実測: jp225_m1.csv / jp225_tick_m1.csv の末尾行）。検証サーバーをデータ更新スキップで起動した**環境要因**であり製品バグではない（実際の相場下落は 1D 足で連続的に確認できる）。
+- **コンソールの過去エラー（port 8144/8145 の ERR_CONNECTION_REFUSED・"Cannot update oldest data"）**: 前セッションの残留ログ。後者は既知の ISSUE-096（OPEN）。本セッション（port 8000）のページでは全操作を通じてコンソールエラー 0 件。
+
+### 正常確認一覧（全 20 指標・実測）
+tgp_btlm（mean/q5/q95）／profit_band（nOH/nOL/pOH/pOL バンド群）／price_range_power（水平レベル線）／moving_averages（MA・param 反映）／market_profile（新規インスタンスで全モード）／ADXNeedle／ArcTan／MFI（mfi+mfi_ma）／RSI（rsi+rsi_ma）／STC／Oscillator／Oscillator2（lc+rci）／OsiMA／RMM／Volatility／HLBand（オーバーレイ）／HLBandSep（別ペイン）／MFIMACD（3系列）／RMMMACD（3系列）／RSIMACD（3系列）。時間足切替（5分/15分/30分/日/月）で全て再計算・再描画、エラーなし。日別×5分の zp 選択不可制約も仕様どおり動作。
+
+### 証跡
+ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-fresh2-1d.jpeg（新規インスタンス正常＝参照一致）／ui-r2-osc2-residue.jpeg（🟡 ゾンビペイン）ほかスクリーンショット一式（リポジトリ直下 ui-r2-*.jpeg）。
