@@ -575,6 +575,15 @@ export class ChartRenderer {
       this._mergeBaseCandle(candle);
       return;
     }
+    // 後退ガード（ISSUE-096）: 時間足切替（setCandles で系列＋_lastBar が新周期へ差替）直後に、
+    //   インフライトの旧周期ライブ tick が実系列末尾より古い time で来ると、lightweight-charts の
+    //   series.update が "Cannot update oldest data" を投げる（player 内 _bar 基準の後退ガードでは
+    //   系列側が差し替わったケースを捕捉できない）。実系列末尾（_lastBar）より古い time のライブ足は
+    //   skip する（旧周期の stale tick は新周期 base へ混ぜない）。同/新 time は従来どおり反映する。
+    if (this._lastBar != null && typeof candle.time === 'number'
+        && typeof this._lastBar.time === 'number' && candle.time < this._lastBar.time) {
+      return;
+    }
     this._mainSeries.update(candle);
     // 最新足の単一源を更新し、hover していない読み取り表示が古くならないよう DTO を再発火する。
     this._lastBar = candle;

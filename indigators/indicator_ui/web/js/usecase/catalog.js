@@ -213,7 +213,7 @@ const MA_SMOOTHING_LABELS = {
   none: 'なし', sma: 'SMA', ema: 'EMA', smma: 'SMMA', wma: 'WMA', sma_bb: 'SMA + ボリンジャーバンド',
 };
 const MA_TIMEFRAME_LABELS = {
-  chart: 'チャート', '1m': '1分', '5m': '5分', '15m': '15分', '1h': '1時間',
+  chart: 'チャート', '1m': '1分', '5m': '5分', '15m': '15分', '30m': '30分', '1h': '1時間',
   '4h': '4時間', '1D': '日', '1W': '週', '1M': '月',
 };
 const MA_LINE = (seriesName) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false });
@@ -239,7 +239,7 @@ const MOVING_AVERAGES = new IndicatorDef({
       conditionalEnable: { when: { param: 'smoothing_type', equals: 'sma_bb' } },
     }),
     // --- 計算 ---
-    param('timeframe', ParamType.ENUM, 'chart', [], ['chart', '1m', '5m', '15m', '1h', '4h', '1D', '1W', '1M'], { group: '計算', order: 1, label: '時間足', enumLabels: MA_TIMEFRAME_LABELS, tooltip: 'この指標を計算する時間足（「チャート」はチャートの時間足に追従）' }),
+    param('timeframe', ParamType.ENUM, 'chart', [], ['chart', '1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M'], { group: '計算', order: 1, label: '時間足', enumLabels: MA_TIMEFRAME_LABELS, tooltip: 'この指標を計算する時間足（「チャート」はチャートの時間足に追従）' }),
     // 既定 false: 未確定の最新足も計算し MA を最新足まで描画する（true だと最終足を除外し
     //   常に1本手前で止まる）。確定足のみで計算したい場合はダイアログで ON にする。
     param('wait_for_close', ParamType.BOOL, false, [], null, { group: '計算', order: 2, label: '時間足の確定を待つ' }),

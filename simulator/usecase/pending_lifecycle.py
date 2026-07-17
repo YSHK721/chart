@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from simulator.usecase._execution import fill_pending_order
+from simulator.usecase._execution import fill_pending_order, mt5_bid_ask
 
 
 class PendingLifecycleEngine:
@@ -35,9 +35,9 @@ class PendingLifecycleEngine:
 
         bid=price（ティック価格＝OHLC）、ask=price + spread×point_size。ペンディングの
         トリガ評価・保有玉 SL/TP 判定・含み損評価で共通に用いる MT5 校正クォート規約。
-        演算は `price + spread * point_size`（乗算を先に評価）で inline 版と同一。
+        規約の実体は _execution.mt5_bid_ask（単一プリミティブ・ISSUE-100 🟡-1）へ委譲する。
         """
-        return price, price + spread * point_size
+        return mt5_bid_ask(price, spread=spread, point=point_size)
 
     @staticmethod
     def evaluate_triggers(

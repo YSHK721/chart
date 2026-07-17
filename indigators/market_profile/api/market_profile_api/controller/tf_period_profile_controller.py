@@ -363,6 +363,31 @@ def _parse_int(v: Any) -> "int | None":
     return None
 
 
+# src → 列生成関数・tf ゲート・unit フォールバックの記述子表（ISSUE-097 🔴-2）。
+#   従来は src の分岐が handle_tf_period_profile 内 6 箇所（src 検証・zp の tf ゲート・bucket_fn・
+#   bucket unit 既定・day_fn・day unit 既定）に散在し、3 つ目のソース追加時に全箇所の同期編集を
+#   要した。本表を単一情報源とし、新ソース＝1 エントリ追加で閉じる（応答 byte 不変）。
+#   キー None＝省略（最小価格単位カウント列）／"zp"＝超過占有 z(p)。allowed_tfs=None は tf ゲート無し。
+#   unit フォールバック（空列時の既定 unit）は呼出時評価に合わせ callable で保持する。
+_SRC_DESCRIPTORS: "dict[Any, dict]" = {
+    None: {
+        "day_fn": _day_columns,
+        "bucket_fn": _bucket_columns,
+        "allowed_tfs": None,
+        "day_unit_fallback": lambda: 1.0,
+        "bucket_unit_fallback": lambda: float(_mpd.GRID_W),
+    },
+    "zp": {
+        "day_fn": _day_columns_zp,
+        "bucket_fn": _bucket_columns_zp,
+        "allowed_tfs": _ZP_TF_ALLOWED,
+        "day_unit_fallback": lambda: float(_zp.GRID_W),
+        "bucket_unit_fallback": lambda: round(60000.0 * (np.exp(_zp.W_LOG) - 1.0), 6),
+    },
+}
+_SRC_MISSING = object()  # 未登録 src 判定用の番兵（None は正当なキーのため .get 既定に使えない）。
+
+
 def handle_tf_period_profile(
     ref: Any, timeframe: Any, frm: Any, to: Any, now: "float | None" = None,
     src: Any = None, live_ticks: "list | None" = None,
@@ -378,17 +403,20 @@ def handle_tf_period_profile(
     （~1分）を待たず最新ティックを列へ反映する。完了日は無視（不変列のキャッシュを汚さない）。
     None/空は従来どおり（byte 不変）。
     """
-    if src is not None and src != "zp":
-        return _error_body("validation", f"未知の src です: {src!r}（省略|zp）")
+    desc = _SRC_DESCRIPTORS.get(src, _SRC_MISSING)
+    if desc is _SRC_MISSING:
+        valid = "|".join("省略" if k is None else str(k) for k in _SRC_DESCRIPTORS)
+        return _error_body("validation", f"未知の src です: {src!r}（{valid}）")
     if not _forming_bar.is_tick_ref(ref):
         return _error_body("validation", f"tick 由来 datasetRef ではありません: {ref!r}")
     # ISSUE-086: 1W/1M はセッション日次のロールアップ（バケット列）として対応する（旧: 400）。
     if not _forming_bar.is_supported_timeframe(timeframe) and timeframe not in _BUCKET_TFS:
         return _error_body("validation", f"非対応の timeframe です: {timeframe!r}")
-    if src == "zp" and timeframe not in _ZP_TF_ALLOWED:
+    allowed_tfs = desc["allowed_tfs"]
+    if allowed_tfs is not None and timeframe not in allowed_tfs:
         return _error_body(
             "validation",
-            f"src=zp は tf {'|'.join(_ZP_TF_ALLOWED)} のみ対応です: {timeframe!r}",
+            f"src={src} は tf {'|'.join(allowed_tfs)} のみ対応です: {timeframe!r}",
         )
     tf_sec = _TF_SECONDS.get(timeframe)
     if tf_sec is None and timeframe not in _BUCKET_TFS:
@@ -402,7 +430,7 @@ def handle_tf_period_profile(
 
     # ISSUE-086: 1W/1M バケット走査（ラベル単位）。列 time はラベルの UTC 深夜＝rollup バーと同一。
     if timeframe in _BUCKET_TFS:
-        bucket_fn = _bucket_columns_zp if src == "zp" else _bucket_columns
+        bucket_fn = desc["bucket_fn"]
         columns_b: list = []
         units_b: list = []
         label = session_period_label(timeframe, from_i)
@@ -416,8 +444,7 @@ def handle_tf_period_profile(
                 columns_b.extend(picked)
                 units_b.append(unit_d)
             label = next_period_label(timeframe, label)
-        unit_b = min(units_b) if units_b else (
-            round(60000.0 * (np.exp(_zp.W_LOG) - 1.0), 6) if src == "zp" else float(_mpd.GRID_W))
+        unit_b = min(units_b) if units_b else desc["bucket_unit_fallback"]()
         return 200, {
             "ok": True,
             "tf": timeframe,
@@ -430,7 +457,7 @@ def handle_tf_period_profile(
     # per-day 組み立て: 窓が跨るカレンダー日を走査し、各日の列（完了日=キャッシュ／当日=都度計算）を
     #   集めて窓 ``[from_i, to_i)`` に入る周期のみ採用する。列は日昇順・各日内も時刻昇順ゆえ結合で整列済み。
     #   応答 unit は寄与日の unit の最小（最も細かい解像度）を採る（描画のレベル行高の基準）。
-    day_fn = _day_columns_zp if src == "zp" else _day_columns
+    day_fn = desc["day_fn"]
     columns: list = []
     units: list = []
     day = session_day_start(from_i)  # ISSUE-078: セッション日ウォーク。
@@ -442,7 +469,7 @@ def handle_tf_period_profile(
                 columns.extend(picked)
                 units.append(unit_d)
         day = next_session_day_start(day)
-    unit = min(units) if units else (float(_zp.GRID_W) if src == "zp" else 1.0)
+    unit = min(units) if units else desc["day_unit_fallback"]()
     return 200, {
         "ok": True,
         "tf": timeframe,

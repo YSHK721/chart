@@ -10,7 +10,7 @@ ISSUE-092 ①: 業務手順（datasetRef ホワイトリスト検証→データ
 
   - Controller: リクエストボディを Input Model（ComputeRequest）へ変換して usecase を呼ぶ。
   - Presenter: usecase の Output Model（ComputeResult）を (HTTPステータス, レスポンスボディ) へ
-    翻訳する（error_type→HTTPステータスは adapter.compute.ERROR_STATUS・単一定義）。
+    翻訳する（エラーボディは api_shared.http_contract.nested_error・単一定義）。
 
 usecase へ渡す協調子（forming_bar / full_compute / latest_compute / ComputeError）は本 module の
 名前解決を通す（呼出時に module グローバルを参照）。これにより既存テストの monkeypatch 経路
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from adapter.compute import ERROR_STATUS, ComputeError, IndicatorComputeAdapter
+from adapter.compute import ComputeError, IndicatorComputeAdapter
 from marketdata import dataset  # noqa: F401  # monkeypatch 対象（_cc.dataset）＋既定 gateway の委譲先。
 from adapter.compute import forming_bar as forming_bar_mod
 from adapter.compute.latest_dispatch import full_compute, latest_compute
@@ -36,8 +36,8 @@ from usecase.compute_indicators import ComputeRequest, ComputeResult, compute_in
 def _present(result: ComputeResult) -> tuple[int, dict[str, Any]]:
     """Output Model（ComputeResult）を (HTTPステータス, ボディ) へ翻訳する（Presenter）。
 
-    成功は (200, {ok, generation, series})。失敗は error_type→HTTPステータス
-    （adapter.compute.ERROR_STATUS・単一定義）で翻訳し §6.3.4 のエラーボディを返す。
+    成功は (200, {ok, generation, series})。失敗は nested_error（api_shared.http_contract・
+    単一定義）で §6.3.4 のエラーボディへ翻訳する（ISSUE-104 🟡-2: ボディ整形の暗黙同期を解消）。
     """
     if result.ok:
         return 200, {
@@ -45,16 +45,9 @@ def _present(result: ComputeResult) -> tuple[int, dict[str, Any]]:
             "generation": result.generation,
             "series": result.series,
         }
-    status = ERROR_STATUS.get(result.error_type, 500)
-    return status, {
-        "ok": False,
-        "generation": result.generation,
-        "error": {
-            "type": result.error_type,
-            "message": result.error_message,
-            "violations": [],
-        },
-    }
+    from api_shared.http_contract import nested_error
+
+    return nested_error(result.error_type, result.error_message, generation=result.generation)
 
 
 def handle_compute(
