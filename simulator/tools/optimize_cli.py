@@ -67,19 +67,10 @@ def _build_search_port(args) -> Any:
 
 
 def _build_objective_port(args) -> Any:
-    from simulator.usecase.optimize_strategies import (
-        NetProfitObjective,
-        PfObjective,
-        RecoveryObjective,
-        SharpeObjective,
-    )
+    # 目的関数の唯一の登録表（usecase.OBJECTIVE_REGISTRY・ISSUE-101 🔵-1）から生成する。
+    from simulator.usecase.optimize_strategies import OBJECTIVE_REGISTRY
 
-    return {
-        "pf": PfObjective,
-        "net": NetProfitObjective,
-        "sharpe": SharpeObjective,
-        "recovery": RecoveryObjective,
-    }[args.objective]()
+    return OBJECTIVE_REGISTRY[args.objective]()
 
 
 # --- 出力整形（SP1 L-1 方針継承・新規 presenter なし） -------------------------
@@ -188,11 +179,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--config-override", action="append", default=[])
     # 探索固有
     p.add_argument("--search-param", action="append", default=[], required=False)
-    p.add_argument("--search-algo", choices=["grid", "random"], required=True)
+    # choices は usecase の唯一の登録表から導出する（ISSUE-101 🔵-1・順序保存）。
+    from simulator.usecase.optimize_strategies import OBJECTIVE_REGISTRY, SEARCH_ALGOS
+
+    p.add_argument("--search-algo", choices=list(SEARCH_ALGOS), required=True)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--n-samples", type=int, default=None)
     p.add_argument("--max-candidates", type=int, required=True)  # M-3 必須
-    p.add_argument("--objective", choices=["pf", "net", "sharpe", "recovery"], required=True)
+    p.add_argument("--objective", choices=list(OBJECTIVE_REGISTRY), required=True)
     return p
 
 

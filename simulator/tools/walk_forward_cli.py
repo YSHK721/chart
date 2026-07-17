@@ -186,11 +186,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--config-override", action="append", default=[])
     # 探索固有（SP2 踏襲）
     p.add_argument("--search-param", action="append", default=[], required=False)
-    p.add_argument("--search-algo", choices=["grid", "random"], required=True)
+    # choices は usecase の唯一の登録表から導出する（ISSUE-101 🔵-1・optimize_cli と同源）。
+    from simulator.usecase.optimize_strategies import OBJECTIVE_REGISTRY, SEARCH_ALGOS
+
+    p.add_argument("--search-algo", choices=list(SEARCH_ALGOS), required=True)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--n-samples", type=int, default=None)
     p.add_argument("--max-candidates", type=int, required=True)
-    p.add_argument("--objective", choices=["pf", "net", "sharpe", "recovery"], required=True)
+    p.add_argument("--objective", choices=list(OBJECTIVE_REGISTRY), required=True)
     # WF 固有
     p.add_argument("--mode", choices=["anchored", "rolling"], required=True)
     p.add_argument("--global-start", required=True)

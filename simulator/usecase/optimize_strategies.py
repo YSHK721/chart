@@ -141,3 +141,19 @@ class SharpeObjective(_FieldObjective):
 class RecoveryObjective(_FieldObjective):
     def __init__(self) -> None:
         super().__init__("recovery_factor", "recovery_factor")
+
+
+# 目的関数・探索アルゴリズムの唯一の登録表（ISSUE-101 🔵-1）。
+#   従来は optimize_cli の `_build_objective_port` dict＋両 CLI の argparse `choices` に
+#   同一の許容集合が三重宣言され、新目的関数追加時に片方の choices 更新漏れで CLI が
+#   拒否する二重管理だった。本表を単一情報源とし、ディスパッチも argparse choices も
+#   ここから導出する（追加＝本表への 1 エントリで両 CLI に閉じる）。挙動は不変（同一集合・同一順序）。
+OBJECTIVE_REGISTRY: "dict[str, type]" = {
+    "pf": PfObjective,
+    "net": NetProfitObjective,
+    "sharpe": SharpeObjective,
+    "recovery": RecoveryObjective,
+}
+# 探索アルゴリズムの許容集合（順序＝従来 argparse choices と同一）。実体生成は CLI 側
+#   （seed/n_samples/max_candidates など CLI 引数依存のため）だが、許容値はここを唯一源とする。
+SEARCH_ALGOS: "tuple[str, ...]" = ("grid", "random")
