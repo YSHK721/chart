@@ -12,6 +12,17 @@ from simulator.domain.order import Order
 from simulator.domain.position import Position
 
 
+def mt5_bid_ask(base: float, *, spread: float, point: float) -> "tuple[float, float]":
+    """MT5 執行クォート規約 ``Ask = Bid + spread×point`` の単一プリミティブ（ISSUE-100 🟡-1）。
+
+    ``base`` を Bid とし ``ask = base + spread * point`` を返す。約定（open 基準）・含み損益評価
+    （close 基準）・ペンディング/SL-TP 評価（tick 価格基準）で同一規約が三重にインライン化されて
+    いたのを本関数へ一元化する（MT5 スプレッド規約の再校正時に 1 箇所修正で全経路へ反映）。
+    演算順は ``spread * point`` を先に評価し、各インライン版（`base + spread * point`）と byte 一致。
+    """
+    return base, base + spread * point
+
+
 def fill_market_order(
     order: Order,
     *,
@@ -32,7 +43,8 @@ def fill_market_order(
         既存の呼び出し・結果と完全に同一である。
     """
     if order.side == "buy":
-        entry_price = bid + spread * point_size if spread > 0 else ask
+        # spread>0 は MT5 規約 Ask=Bid+spread×point（mt5_bid_ask）で約定。spread=0 は従来 ask。
+        entry_price = mt5_bid_ask(bid, spread=spread, point=point_size)[1] if spread > 0 else ask
     else:
         entry_price = bid
     return Position(side=order.side, volume=order.volume, entry_price=entry_price)
@@ -66,8 +78,7 @@ def derive_quotes(
             spread を内包する（cycle4 バグ①）。
     """
     if entry_price_basis == "current_open":
-        bid = bar.open
-        ask = bar.open + bar.spread * point_size
+        bid, ask = mt5_bid_ask(bar.open, spread=bar.spread, point=point_size)
         return bid, ask, bar.spread, point_size
     return bar.close, bar.close, 0, 0.0
 
@@ -86,7 +97,7 @@ def resolve_eval_quote(
     close 基準では bid==ask=bar.close ゆえ買い・売りとも close 評価で従来と完全一致する。
     """
     if basis == "bid_ask":
-        return bar.close, bar.close + bar.spread * point_size
+        return mt5_bid_ask(bar.close, spread=bar.spread, point=point_size)
     return bar.close, bar.close
 
 
