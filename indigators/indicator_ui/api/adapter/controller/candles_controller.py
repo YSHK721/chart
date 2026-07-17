@@ -13,14 +13,14 @@ from adapter.compute import dataset, forming_bar as forming_bar_mod
 
 
 def _error(error_type: str, message: str) -> "tuple[int, dict]":
-    from api_shared.http_contract import ERROR_STATUS
+    # エラーボディ整形は nested_error（api_shared・単一定義）へ委譲し、正典形との暗黙同期を
+    #   解消する（ISSUE-104 🟡-2）。従来は violations 欠落＋series:[] 追加で正典と乖離していた。
+    #   candles 固有の series:[]（系列消費側の非破壊フォールバック）は基底へ合成して温存する。
+    from api_shared.http_contract import nested_error
 
-    return ERROR_STATUS.get(error_type, 500), {
-        "ok": False,
-        "generation": 0,
-        "error": {"type": error_type, "message": message},
-        "series": [],
-    }
+    status, body = nested_error(error_type, message)
+    body["series"] = []
+    return status, body
 
 
 def handle_candles(ref: Any, timeframe: Any, limit_raw: Any) -> "tuple[int, dict]":
