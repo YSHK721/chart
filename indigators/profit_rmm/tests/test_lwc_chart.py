@@ -103,7 +103,7 @@ def test_histogram_color_column_matches_level_colors():
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from common import level_colors
+    from common_view import level_colors
 
     df = _df()
     chart = FakeChart()

@@ -7,12 +7,11 @@
     applied_price                      : 種別で 8 種を切り替えるディスパッチャ。
     close_price / open_price / high_price / low_price : 単純な列選択。
     median_price / typical_price / weighted_price / ohlc4_price : 算術合成。
-    level_colors                       : レベルカウント系の値→HEX 色（緑→赤・|中心からの距離|）写像。
-    LEVEL_LINE_WIDTH                   : σ水準線の既定線幅（px）。
 
-表示系の実体は common_view へ分離した（ISSUE-092 ⑥：計算仕様と表示仕様でアクターが異なるため
-SRP に基づき分割）。level_colors・LEVEL_LINE_WIDTH は後方互換のため本モジュールから再エクスポート
-し続けるが、新規コードは common_view を直接 import する。
+表示系（level_colors / LEVEL_LINE_WIDTH 等）は common_view へ分離した（ISSUE-092 ⑥）。本モジュール
+（計算・本質・安定層＝numpy のみ依存）から common_view（表示・偶有・可変層）への再エクスポートは
+安定度逆転（安定→不安定の依存）を生むため撤去した（ISSUE-104 🟡-1）。表示定数は common_view から
+直接 import すること（`from common_view import level_colors, LEVEL_LINE_WIDTH`）。
 
 典型的な使い方:
     >>> import numpy as np
@@ -37,8 +36,6 @@ from .applied_price import (
     typical_price,
     weighted_price,
 )
-# 表示系は common_view へ分離済み（ISSUE-092 ⑥）。後方互換のため再エクスポートする。
-from common_view import LEVEL_LINE_WIDTH, level_colors
 
 __all__ = [
     "AppliedPrice",
@@ -51,6 +48,4 @@ __all__ = [
     "typical_price",
     "weighted_price",
     "ohlc4_price",
-    "level_colors",
-    "LEVEL_LINE_WIDTH",
 ]
