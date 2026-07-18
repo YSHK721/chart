@@ -18,6 +18,8 @@ import {
   toggleVisible as facadeToggleVisible,
   remove as facadeRemove,
   toggleFavorite as facadeToggleFavorite,
+  setSeriesStyles,
+  reconcileSeriesStyles,
   deserialize,
 } from '../../usecase/facade.js';
 import { PropertiesDialog } from './properties_dialog.js';
@@ -266,6 +268,34 @@ export class IndicatorController {
     }
     for (const h of hlines) {
       this._renderer.renderHorizontal(instanceId, h.lines ?? []);
+    }
+    // ISSUE-109: 保存済みスタイル上書きを再適用する（redraw/restore/時間足切替で系列は
+    //   ペイロード既定色で再生成されるため、描画の最後に毎回上書きし直す＝永続反映）。
+    this._applyStoredStyles(instanceId);
+  }
+
+  // AppliedInstance.styles（系列名 -> {color?,width?,style?,visible?}）を renderer へ適用する。
+  //   未保存（null/空）や renderer 非対応（後方互換 Fake/SSR）は no-op。
+  //   ISSUE-110 🔴-1: 適用前に現在の実系列名集合と突合し、実系列に存在しない stale キー
+  //   （tgp の q_low/q_high や profit_band の probabilities 変更で系列が改名された等）を
+  //   state から剪定する（無反映キーの永続蓄積と params 復帰時の意図せぬ復活を遮断）。
+  //   実系列集合が取得不能・空のときは判定不能のため剪定しない（reconcile 側で防御）。
+  _applyStoredStyles(instanceId) {
+    const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+    if (!inst || !inst.styles || typeof this._renderer.applySeriesStyle !== 'function') {
+      return;
+    }
+    if (typeof this._renderer.getSeriesStyles === 'function') {
+      const currentNames = this._renderer.getSeriesStyles(instanceId).map((m) => m.name);
+      this._state = reconcileSeriesStyles(this._state, instanceId, currentNames);
+    }
+    const reconciled = this._state.applied.find((i) => i.instanceId === instanceId);
+    const styles = reconciled && reconciled.styles;
+    if (!styles) {
+      return;
+    }
+    for (const [name, patch] of Object.entries(styles)) {
+      this._renderer.applySeriesStyle(instanceId, name, patch);
     }
   }
 
@@ -722,6 +752,7 @@ export class IndicatorController {
       generation: i.generation,
       seq: i.seq,
       createdAt: i.createdAt,
+      styles: i.styles ?? null,
     };
   }
 
@@ -743,6 +774,8 @@ export class IndicatorController {
       tabs: doc.querySelectorAll('[data-tab]'),
       cats: doc.querySelectorAll('[data-category]'),
       timeframeBtns: doc.querySelectorAll('[data-timeframe]'),
+      // ISSUE-117: 時間足ドロップダウンのトリガーラベル（現在足の表記を syncButtons が反映）。
+      timeframeMenuLabel: doc.getElementById('tf-menu-label'),
       legend: doc.getElementById('legend'),
     };
     const e = this._el;
@@ -879,16 +912,44 @@ export class IndicatorController {
       def,
       instance: instanceForDialog,
       mode: this._mode,
-      onApply: (values, variant) => {
-        // variant 変更は実描画反映（事前計算 series が存在・§9.2）。同一 variant の
-        //   場合は null を渡し現 variant を維持。任意パラメータ変更は A 方式では未反映
-        //   （ダイアログ内に注記済み・H-1）。
-        const nextVariant = variant && variant !== inst.variant ? variant : null;
-        this.recomputeInstance(inst.instanceId, nextVariant, values);
-      },
+      // ISSUE-109: スタイル/可視性タブの行と初期値は実描画系列（renderer が保持する現スタイル）から
+      //   構築する（カタログ SeriesDef はスタイル既定を持たない＝プレースホルダ表示の是正）。
+      //   getSeriesStyles 未実装の renderer（後方互換 Fake/SSR）は null＝dialog の静的フォールバック
+      //   （ISSUE-110 🔵-1: applySeriesStyle 側と同じ typeof ガードへ統一）。
+      seriesStyles: typeof this._renderer.getSeriesStyles === 'function'
+        ? this._renderer.getSeriesStyles(inst.instanceId) : null,
+      onApply: (values, variant, extra) => this._applyDialogResult(inst, currentParams, values, variant, extra),
       onCancel: () => {},
     });
     dialog.open();
+  }
+
+  // ダイアログ OK の適用（_onGear から抽出・ISSUE-110）。
+  //   ・variant 変更は実描画反映（事前計算 series が存在・§9.2）。同一 variant は null＝現状維持。
+  //   ・スタイル差分は state へ先にマージし、recompute 後の redraw（_draw→_applyStoredStyles）で
+  //     適用される（仕様 §6.1 の適用順 recompute→スタイル適用）。
+  //   ・ISSUE-110 🟡-2: params/variant が無変更で styles のみ変更の場合は recompute（/compute 往復＋
+  //     系列 remove/redraw）を省略し、applySeriesStyle 直適用＋persist の高速経路を通す
+  //     （§6.1「スタイル変更は描画オプションのみで再計算不要」）。
+  _applyDialogResult(inst, currentParams, values, variant, extra) {
+    const nextVariant = variant && variant !== inst.variant ? variant : null;
+    const patch = extra && extra.styles;
+    const hasStyles = !!(patch && Object.keys(patch).length > 0);
+    if (hasStyles) {
+      this._state = setSeriesStyles(this._state, inst.instanceId, patch);
+    }
+    if (hasStyles && !nextVariant && this._sameParams(values, currentParams)) {
+      this._applyStoredStyles(inst.instanceId);
+      this._persistAll();
+      return Promise.resolve(true);
+    }
+    return this.recomputeInstance(inst.instanceId, nextVariant, values);
+  }
+
+  // params の等値判定（キー順・参照に依らない深い比較。FLOAT_LIST 等の配列値も対象）。
+  _sameParams(a, b) {
+    const norm = (o) => JSON.stringify(Object.keys(o ?? {}).sort().map((k) => [k, o[k]]));
+    return norm(a) === norm(b);
   }
 
   // variant トグル/最小再計算（DOM 不在時のフォールバック・従来挙動を保持）。

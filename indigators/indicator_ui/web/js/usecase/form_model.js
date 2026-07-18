@@ -221,3 +221,61 @@ export function resetToDefaults(def) {
   }
   return values;
 }
+
+// ---------------------------------------------------------------------------
+// スタイル/可視性タブの行モデル（ISSUE-110 🟡-1: 純ロジックを usecase へ集約）
+// ---------------------------------------------------------------------------
+
+// 実描画系列（renderer.getSeriesStyles の戻り）から編集行 view-model を構築する純関数。
+//   bucket 規則系列（SeriesDef.seriesNamePattern.buckets の非空トークン）は系統（bucket）粒度に
+//   畳む（内部設計_パラメータ設定ダイアログ.md §6.1「28 行は冗長」）。
+//   系列名→bucket の対応は pattern.template から接頭辞を導出して判定する
+//   （template.replace('{bucket}', b) の '{pct}' 以前）＝命名規約の知識を書式ハードコードせず
+//   pattern 自身から得る（テンプレート変更時の二重修正を不要にする）。
+// 戻り値: [{ label, names, kind, heat, color, width, style, visible }]（color/width/style は実描画値・
+//   null あり得る。kind は行の描画種別（'line'|'histogram'・bucket 行は先頭系列の種別）で、
+//   histogram 行は線幅/線種の編集対象外（ISSUE-111: 描画種別と設定項目の整合）。
+//   heat はバー別ヒート配色の histogram（ISSUE-112: 色もユーザー編集対象外＝ヒート絶対優先）。
+//   表示既定や hex 変換は呼び出し側 = adapter の責務）。
+export function buildSeriesStyleRows(def, seriesStyles) {
+  const bucketDefs = [];
+  for (const s of def?.series ?? []) {
+    const p = s.dynamic && s.seriesNamePattern;
+    if (p && Array.isArray(p.buckets)) {
+      for (const b of p.buckets) {
+        if (b) {
+          const prefix = String(p.template ?? '').replace('{bucket}', b).split('{pct}')[0];
+          if (prefix) {
+            bucketDefs.push({ bucket: b, prefix });
+          }
+        }
+      }
+    }
+  }
+  const rows = [];
+  const byBucket = new Map();
+  for (const st of seriesStyles ?? []) {
+    const name = String(st.name ?? '');
+    const hit = bucketDefs.find((bd) => name === bd.bucket || name.startsWith(bd.prefix));
+    if (hit) {
+      let row = byBucket.get(hit.bucket);
+      if (!row) {
+        row = {
+          label: hit.bucket, names: [], kind: st.kind ?? 'line', heat: st.heat === true,
+          color: st.color ?? null, width: st.width ?? null, style: st.style ?? null, visible: true,
+        };
+        byBucket.set(hit.bucket, row);
+        rows.push(row);
+      }
+      row.names.push(st.name);
+      row.visible = row.visible && st.visible !== false;
+    } else {
+      rows.push({
+        label: st.name, names: [st.name], kind: st.kind ?? 'line', heat: st.heat === true,
+        color: st.color ?? null, width: st.width ?? null, style: st.style ?? null,
+        visible: st.visible !== false,
+      });
+    }
+  }
+  return rows;
+}

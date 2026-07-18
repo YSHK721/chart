@@ -14,6 +14,7 @@
 
 import {
   buildFormModel,
+  buildSeriesStyleRows,
   computeEnabled,
   computeVisible,
   validateForm,
@@ -42,7 +43,10 @@ export class PropertiesDialog {
   //   onCancel : () => void         キャンセル/×/背景時（任意）
   // mode: 'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算・params 未反映）。
   //   既定 'a'（従来挙動・単体テスト互換）。'b' では A 方式注記を出さない（実反映されるため）。
-  constructor({ document: doc, def, instance = null, mode = 'a', context = {}, onApply = () => {}, onCancel = () => {} }) {
+  constructor({
+    document: doc, def, instance = null, mode = 'a', context = {},
+    seriesStyles = null, seriesTabs = true, onApply = () => {}, onCancel = () => {},
+  }) {
     this._doc = doc;
     this._def = def;
     this._instance = instance;
@@ -50,6 +54,13 @@ export class PropertiesDialog {
     // context: computeEnabled の関数述語へ渡す外部状態（例 { timeframe, servedMode }）。
     //   ISSUE-070: mode=sessions×対応tf の解像度グレーアウト判定に timeframe が要る（param 値外）。
     this._context = context || {};
+    // seriesStyles（ISSUE-109）: 実描画中の系列スタイル [{ name, kind, color, width, style, visible }]
+    //   （renderer.getSeriesStyles の戻り）。スタイル/可視性タブの行と初期値の実体。null=未供給
+    //   （後方互換: def.series からの静的フォールバック表示）。
+    this._seriesStyles = Array.isArray(seriesStyles) ? seriesStyles : null;
+    // seriesTabs=false（ISSUE-109・MP 等）: 系列スタイルを持たない指標はスタイル/可視性タブ自体を
+    //   出さない（ダミー行の露出をやめる）。
+    this._seriesTabs = seriesTabs !== false;
     this._onApply = onApply;
     this._onCancel = onCancel;
 
@@ -151,11 +162,13 @@ export class PropertiesDialog {
     const doc = this._doc;
     const bar = doc.createElement('div');
     bar.className = 'prop-tabs';
-    const tabs = [
-      { key: 'inputs', label: 'パラメーター' },
-      { key: 'style', label: 'スタイル' },
-      { key: 'visibility', label: '可視性' },
-    ];
+    const tabs = this._seriesTabs
+      ? [
+        { key: 'inputs', label: 'パラメーター' },
+        { key: 'style', label: 'スタイル' },
+        { key: 'visibility', label: '可視性' },
+      ]
+      : [{ key: 'inputs', label: 'パラメーター' }];
     this._tabBtns = new Map();
     for (const t of tabs) {
       const btn = doc.createElement('button');
@@ -188,13 +201,15 @@ export class PropertiesDialog {
 
     this._panes = new Map();
     const inputs = this._buildInputsPane();
-    const style = this._buildStylePane();
-    const visibility = this._buildVisibilityPane();
     this._panes.set('inputs', inputs);
-    this._panes.set('style', style);
-    this._panes.set('visibility', visibility);
-
-    body.append(inputs, style, visibility);
+    body.append(inputs);
+    if (this._seriesTabs) {
+      const style = this._buildStylePane();
+      const visibility = this._buildVisibilityPane();
+      this._panes.set('style', style);
+      this._panes.set('visibility', visibility);
+      body.append(style, visibility);
+    }
     return body;
   }
 
@@ -204,6 +219,13 @@ export class PropertiesDialog {
     const pane = doc.createElement('div');
     pane.className = 'prop-pane is-active';
     pane.dataset.propPane = 'inputs';
+
+    // A 方式注記はパラメータタブに出す（ISSUE-109 で移設）。スタイル/可視性は applyOptions 直接
+    //   反映のため A/B 両方式で実反映される＝注記の対象はパラメータ値のみになった。
+    const note = this._buildAMethodNote();
+    if (note) {
+      pane.append(note);
+    }
 
     // バリアントセレクタ（複数 variant を持つ指標のみ・global↔robust 等）。
     //   variant 変更は A/B 双方で実描画反映される（事前計算 series が存在・§9.2）。
@@ -587,85 +609,172 @@ export class PropertiesDialog {
     return wrap;
   }
 
-  // ---- スタイル タブ（SERIES_DEF 単位の色/線幅/線種・最小可・§6.1）------------
+  // ---- スタイル/可視性の行モデル（ISSUE-109）---------------------------------
+  // 行構築の純ロジック（bucket 粒度畳み込み含む）は usecase/buildSeriesStyleRows へ委譲
+  //   （ISSUE-110 🟡-1: 命名規約知識を DOM アダプタに置かない）。本メソッドは表示既定
+  //   （hex 変換・null フォールバック）だけを担う。
+  //   seriesStyles が供給されている場合はそれが実体（空配列＝スタイル編集可能な系列なし）。
+  //   null（未供給・後方互換・SSR/単体テスト）のみ def.series の静的フォールバックへ落ちる。
+  _seriesRows() {
+    if (this._rows) {
+      return this._rows;
+    }
+    let rows;
+    if (this._seriesStyles) {
+      rows = buildSeriesStyleRows(this._def, this._seriesStyles).map((r) => ({
+        ...r,
+        color: toHex(r.color ?? '#2962ff'),
+        width: r.width ?? 1,
+        style: r.style ?? 'solid',
+      }));
+    } else {
+      rows = (this._def.series ?? []).map((s, idx) => ({
+        label: s.seriesName ?? (s.dynamic ? '(動的系列)' : `系列${idx + 1}`),
+        names: s.seriesName ? [s.seriesName] : [],
+        kind: s.kind ?? 'line',
+        heat: false,
+        color: toHex(s.colorRule ?? '#2962ff'),
+        width: s.width ?? 1,
+        style: s.style ?? 'solid',
+        visible: true,
+      }));
+    }
+    this._rows = rows;
+    return rows;
+  }
+
+  // ---- スタイル タブ（実描画系列単位の色/線幅/線種・§6.1）--------------------
   _buildStylePane() {
     const doc = this._doc;
     const pane = doc.createElement('div');
     pane.className = 'prop-pane';
     pane.dataset.propPane = 'style';
 
-    const note = this._buildAMethodNote();
-    if (note) {
-      pane.append(note);
-    }
-
     this._styleState = [];
-    const series = this._def.series ?? [];
-    series.forEach((s, idx) => {
+    const rows = this._seriesRows();
+    if (rows.length === 0) {
+      const empty = doc.createElement('div');
+      empty.className = 'prop-style-empty';
+      empty.textContent = 'この指標にスタイル編集可能な系列はありません。';
+      pane.append(empty);
+      return pane;
+    }
+    for (const r of rows) {
       const row = doc.createElement('div');
       row.className = 'prop-style-row';
 
       const name = doc.createElement('span');
       name.className = 'prop-style-name';
-      name.textContent = s.seriesName ?? (s.dynamic ? '(動的系列)' : `系列${idx + 1}`);
+      name.textContent = r.label;
+      row.append(name);
 
-      const color = doc.createElement('input');
-      color.type = 'color';
-      color.className = 'prop-input prop-input-color';
-      color.value = toHex(s.colorRule ?? '#2962ff');
-
-      const width = doc.createElement('input');
-      width.type = 'number';
-      width.min = '1';
-      width.step = '1';
-      width.className = 'prop-input prop-input-number';
-      width.value = String(s.width ?? 1);
-
-      const style = doc.createElement('select');
-      style.className = 'prop-input prop-input-select';
-      for (const st of ['solid', 'dotted', 'dashed']) {
-        const o = doc.createElement('option');
-        o.value = st;
-        o.textContent = st;
-        if ((s.style ?? 'solid') === st) o.selected = true;
-        style.append(o);
+      // ISSUE-112（ユーザー裁定: ヒート絶対優先）: バー別ヒート配色の histogram は色も編集対象外。
+      //   色ピッカーを出さず「ヒート配色（自動）」と明示する（機能しない設定項目を露出しない）。
+      let color = null;
+      if (r.kind === 'histogram' && r.heat) {
+        const heatNote = doc.createElement('span');
+        heatNote.className = 'prop-style-heat';
+        heatNote.textContent = 'ヒート配色（自動）';
+        row.append(heatNote);
+      } else {
+        color = doc.createElement('input');
+        color.type = 'color';
+        color.className = 'prop-input prop-input-color';
+        color.value = r.color;
+        row.append(color);
       }
 
-      const state = { seriesName: s.seriesName, color, width, style };
-      this._styleState.push(state);
-      row.append(name, color, width, style);
+      // ISSUE-111: 線幅/線種はライン系列のみ。histogram（棒グラフ）は色のみ編集可
+      //   （renderer.applySeriesStyle も histogram には色しか適用しない＝描画種別と設定項目を一致）。
+      let width = null;
+      let style = null;
+      if (r.kind !== 'histogram') {
+        width = doc.createElement('input');
+        width.type = 'number';
+        width.min = '1';
+        width.step = '1';
+        width.className = 'prop-input prop-input-number';
+        width.value = String(r.width);
+
+        style = doc.createElement('select');
+        style.className = 'prop-input prop-input-select';
+        for (const st of ['solid', 'dotted', 'dashed']) {
+          const o = doc.createElement('option');
+          o.value = st;
+          o.textContent = st;
+          if (r.style === st) o.selected = true;
+          style.append(o);
+        }
+        // option 追加後に value を明示設定（実 DOM で選択を確定・DOM スタブでも value を保証）。
+        style.value = r.style;
+        row.append(width, style);
+      }
+
+      // initial: OK 時の差分判定基準（変更された行×フィールドのみ patch へ載せる）。
+      this._styleState.push({
+        names: r.names, color, width, style,
+        initial: { color: r.color, width: String(r.width), style: r.style },
+      });
       pane.append(row);
-    });
+    }
     return pane;
   }
 
-  // ---- 可視性 タブ（系列単位の表示/非表示・最小可・§6.2）---------------------
+  // ---- 可視性 タブ（実描画系列単位の表示/非表示・§6.2）-----------------------
   _buildVisibilityPane() {
     const doc = this._doc;
     const pane = doc.createElement('div');
     pane.className = 'prop-pane';
     pane.dataset.propPane = 'visibility';
 
-    const visNote = this._buildAMethodNote();
-    if (visNote) {
-      pane.append(visNote);
-    }
-
     this._visibilityState = [];
-    const series = this._def.series ?? [];
-    series.forEach((s, idx) => {
+    for (const r of this._seriesRows()) {
       const row = doc.createElement('label');
       row.className = 'prop-visibility-row';
       const cb = doc.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = true;
+      cb.checked = r.visible;
       const name = doc.createElement('span');
-      name.textContent = s.seriesName ?? (s.dynamic ? '(動的系列)' : `系列${idx + 1}`);
+      name.textContent = r.label;
       row.append(cb, name);
-      this._visibilityState.push({ seriesName: s.seriesName, checkbox: cb });
+      this._visibilityState.push({ names: r.names, checkbox: cb, initial: r.visible });
       pane.append(row);
-    });
+    }
     return pane;
+  }
+
+  // OK 時のスタイル/可視性差分を { seriesName: { color?, width?, style?, visible? } } に集約する。
+  //   変更が無ければ空オブジェクト。行が bucket 粒度のときは全構成系列へ展開する。
+  _collectStyleChanges() {
+    const patch = {};
+    const put = (names, fields) => {
+      for (const n of names) {
+        patch[n] = { ...(patch[n] ?? {}), ...fields };
+      }
+    };
+    for (const s of this._styleState ?? []) {
+      const fields = {};
+      // heat 行は色入力を生成しない（null・ISSUE-112）＝色は差分対象外（ヒート絶対優先）。
+      if (s.color && s.color.value !== s.initial.color) {
+        fields.color = s.color.value;
+      }
+      // histogram 行は width/style 入力を生成しない（null・ISSUE-111）＝色のみ差分対象。
+      if (s.width && s.width.value !== s.initial.width && s.width.value !== '') {
+        fields.width = Number(s.width.value);
+      }
+      if (s.style && s.style.value !== s.initial.style) {
+        fields.style = s.style.value;
+      }
+      if (Object.keys(fields).length > 0) {
+        put(s.names, fields);
+      }
+    }
+    for (const v of this._visibilityState ?? []) {
+      if (v.checkbox.checked !== v.initial) {
+        put(v.names, { visible: v.checkbox.checked });
+      }
+    }
+    return patch;
   }
 
   // A 方式の可動差を明示する注記要素（§9.3・H-1・サイレント不一致を作らない）。
@@ -838,9 +947,12 @@ export class PropertiesDialog {
     }
     const values = { ...this._values };
     const variant = this._variant;
+    // ISSUE-109: スタイル/可視性タブの変更差分を収集（変更なしは空オブジェクト）。
+    const styles = this._collectStyleChanges();
     this.close();
     // variant は params とは別経路（recompute の variant 引数）で渡す。
-    this._onApply(values, variant);
+    //   styles は第3引数（後方互換: 旧 onApply(values, variant) 消費者は無視して従来動作）。
+    this._onApply(values, variant, { styles });
   }
 
   _onCancelClick() {
