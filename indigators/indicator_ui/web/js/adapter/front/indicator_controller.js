@@ -383,10 +383,6 @@ export class IndicatorController {
     return this._mp.applyMarketProfile(def, variant, params);
   }
 
-  _enableMarketProfile(params) {
-    return this._mp.enableMarketProfile(params);
-  }
-
   _toggleMarketProfileVisible(inst) {
     return this._mp.toggleVisible(inst);
   }

@@ -18,8 +18,6 @@ import pandas as pd
 from simulator.replay_ui.adapter import _indicator_ui_bridge
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort, RefValidationPort
 
-_OHLCV = ("open", "high", "low", "close", "volume")
-
 
 class CausalComputeGateway:
     """CausalComputePort 実装。load_source（dataset）+ compute（full/latest）。"""

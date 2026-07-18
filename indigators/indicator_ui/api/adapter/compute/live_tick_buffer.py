@@ -37,7 +37,6 @@ class LiveTickBuffer:
     MAX_BACKOFF = 60.0               # 指数バックオフ上限（prototype 実測）。
     CIRCUIT_FAILS = 8                # 連続失敗閾値（サーキットブレーカ）。
     CIRCUIT_PAUSE_S = 600.0          # 10 分停止。
-    FETCH_LIMIT = 30_000             # 1 リクエスト最大行数（prototype と同一）。
 
     PAUSE_RECHECK_S = 1.0            # サーキットブレーカ停止中の再チェック粒度（prototype と同一）。
 

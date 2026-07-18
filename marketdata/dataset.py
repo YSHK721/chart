@@ -118,11 +118,6 @@ _BASE_CACHE = serving_cache._BASE_CACHE
 _RESAMPLE_CACHE = serving_cache._RESAMPLE_CACHE
 
 
-def _baked_mtime(ref: str) -> int | None:
-    """base が焼いた世代 mtime（serving_cache へ委譲・P-1 の単一真実源）。旧 API 温存。"""
-    return serving_cache.baked_mtime(ref)
-
-
 def _csv_mtime(ref: str) -> int | None:
     """ref の実 CSV の最終更新時刻（ns・serving_cache へ委譲）。取得不能は None。旧 API 温存。"""
     return serving_cache.csv_mtime(DATASET_WHITELIST[ref])

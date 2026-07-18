@@ -32,23 +32,6 @@ class TradeRow:
 
 
 @dataclass
-class OrderRow:
-    """orders[] 1 行（SPEC §2.2.2 11列互換・詳細設計 §4.4）。"""
-
-    open_time: int
-    order: int
-    symbol: str
-    type: str
-    volume: str
-    price: float
-    sl: str
-    tp: str
-    time: int
-    state: str
-    comment: str
-
-
-@dataclass
 class SummaryModel:
     """summary.{seg}（詳細設計 §4.8・§5.3）。"""
 
@@ -75,7 +58,7 @@ class SegmentModel:
     report: dict
     bars: list
     trades: list  # list[TradeRow]
-    orders: list  # list[OrderRow]（ステージ① は空配列）
+    orders: list  # 空配列（ステージ① は order 行なし）
     agg: dict
 
 

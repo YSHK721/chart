@@ -1,17 +1,16 @@
-"""spec — 接点仕様（ContactSpec）と増分1の実装（MovingAverageContact）（純・stdlib のみ）。
+"""spec — 接点仕様と増分1の実装（MovingAverageContact）（純・stdlib のみ）。
 
 参照実装 prototype_260626-01/contact_scan/spec.py と規約 bit 一致。試作は ``ScanContext.df``
 （pandas）依存だが、本移植では ``highs / lows / closes``（plain list）へ置換し usecase 層から
 pandas を排除する。挙動（level=ma[i-1] / 先頭・前足MA無しスキップ / straddle=low<=level<=high /
 tick=mid 恒等 / LEVEL_ID="ma_prev"）は不変。
 
-ContactSpec は「1 バーに対し複数の接点レベルを返す IF」として定義し、増分2（W 本体×σ 水準・
-複数 σ レベル）の拡張点を確保する。増分1（EMA）は 1 バー 1 レベル（``ma[i-1]``）。
+接点仕様は「1 バーに対し複数の接点レベルを返す」ものとし、増分2（W 本体×σ 水準・
+複数 σ レベル）を拡張点として想定する。増分1（EMA）は 1 バー 1 レベル（``ma[i-1]``）。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -34,23 +33,6 @@ class ScanContext:
     closes: list
     bar_times: list
     ma_by_time: dict
-
-
-@runtime_checkable
-class ContactSpec(Protocol):
-    """接点仕様 IF（増分2 拡張点）。バー i に対し複数レベルを返しうる。"""
-
-    def levels(self, ctx: ScanContext, i: int) -> list:
-        """バー i の候補接点レベル列。スキップ時は空リスト。"""
-        ...
-
-    def straddles(self, ctx: ScanContext, i: int, level: Level) -> bool:
-        """バー i の OHLC が level を跨ぐ（候補足）か。"""
-        ...
-
-    def tick_values(self, ctx: ScanContext, i: int, ticks: list) -> list:
-        """raw ティック ``[(sec, mid), ...]`` を比較系列 ``[(t, val), ...]`` へ写像する。"""
-        ...
 
 
 class MovingAverageContact:

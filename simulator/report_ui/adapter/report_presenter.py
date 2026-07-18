@@ -69,7 +69,7 @@ class ReportUiPresenter(ReportPayloadPresenterPort):
         return asdict(s)
 
     def _row(self, row: Any) -> dict:
-        # TradeRow / OrderRow は dataclass。dict ならそのまま通す。
+        # TradeRow は dataclass。dict ならそのまま通す。
         if is_dataclass(row) and not isinstance(row, type):
             return asdict(row)
         return row

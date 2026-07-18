@@ -18,8 +18,6 @@ let _mode = "normal";
 let _savedCwPx = 0;
 let _onResize = null; // レイアウト変更後に chart/cmpCharts を resize するコールバック注入
 
-export function currentLayoutMode() { return _mode; }
-
 // レイアウトを適用する（試作 applyLayout・点6 chart / 点10 detail / 点11 3 状態）。
 //   normal→最大化の遷移時のみ chartWrap 高さ(px)を退避し、復元で保持する（%依存を避ける）。
 export function applyLayout(mode) {

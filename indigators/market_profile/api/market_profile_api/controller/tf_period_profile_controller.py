@@ -303,16 +303,6 @@ def _bucket_columns(
     return result
 
 
-def _live_zp_day_roll(
-    symbol: Any, day_start: int, now_val: float, live_ticks: "list | None"
-) -> "dict | None":
-    """当日 zp 日次ロールアップの compute 委譲（:func:`tf_period_columns.live_zp_day_roll`・ISSUE-094）。
-
-    controller 内の呼び出し元（_bucket_columns_zp）が本 module 名で参照する委譲シンボルを温存する。
-    """
-    return _tfc.live_zp_day_roll(symbol, day_start, now_val, live_ticks)
-
-
 def _bucket_columns_zp(
     symbol: Any, tf: Any, label: str, now_val: float, live_ticks: "list | None" = None
 ) -> "tuple[float, list]":

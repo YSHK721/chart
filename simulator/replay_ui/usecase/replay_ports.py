@@ -125,16 +125,3 @@ class MarketProfilePort(Protocol):
         ``frm``/``today``/``sessions`` は増分2/日別分割の任意フラグ（None/省略は現行挙動）。
         """
         ...
-
-
-@runtime_checkable
-class ContactScanPort(Protocol):
-    """UC-R5: 接点スキャン（既存 ``simulator/usecase/scan_contacts.py`` 再利用）の境界。
-
-    replay の再生時点データに対する接点抽出を、既存 usecase へ委譲するための Port。
-    実装は adapter 層で scan_contacts を結線する（次フェーズのフロントが利用）。
-    """
-
-    def scan(self, request: Any) -> Any:
-        """ScanContactsRequest 相当を受け、events/summary を持つ結果を返す。"""
-        ...
