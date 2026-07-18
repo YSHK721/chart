@@ -1,8 +1,11 @@
-"""IntrabarWindowRepository の結線テスト（proto do_intraday 忠実）。
+"""IntrabarWindowRepository の結線テスト（proto do_intraday 忠実・ISSUE-132: m1 は dataset 委譲）。
 
-合成 m1 CSV と合成 tick parquet を tmp に置き、m1 窓抽出/cap と実ティック mid（窓+外れ値除去）を検証。
+m1 は fake bridge の ``dataset.load_atom_window``（単一権威）委譲を検証し、tick は合成 parquet を
+tmp に置いて実ティック mid（窓+外れ値除去）を検証する。
 """
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -12,14 +15,28 @@ from simulator.replay_ui.adapter.intrabar_window_repository import (
 )
 
 
-def _write_m1(path):
+def _fake_bridge(df: pd.DataFrame):
+    calls: dict = {}
+
+    def load_atom_window(ref, start, end):
+        calls["args"] = (ref, start, end)
+        secs = df.index.values.astype("datetime64[s]").astype("int64")
+        return df[(secs >= start) & (secs < end)]
+
+    return SimpleNamespace(dataset=SimpleNamespace(load_atom_window=load_atom_window)), calls
+
+
+def _m1_df():
     rows = [
         ("2020-01-01 00:00:00", 100.0, 105.0, 99.0, 101.0, 1.0),  # start=1577836800
         ("2020-01-01 00:01:00", 101.0, 106.0, 100.0, 102.0, 1.0),
         ("2020-01-01 00:02:00", 102.0, 107.0, 98.0, 103.0, 1.0),
     ]
-    df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
-    df.to_csv(path, index=False)
+    idx = pd.to_datetime([r[0] for r in rows])
+    return pd.DataFrame(
+        [list(r[1:]) for r in rows], index=idx,
+        columns=["open", "high", "low", "close", "volume"],
+    )
 
 
 def _write_parquet(root):
@@ -50,21 +67,21 @@ def _write_parquet(root):
 _D1_00_00 = 1577836800  # 2020-01-01 00:00:00 UTC
 
 
-def test_load_m1_rows_windowed(tmp_path):
-    csv = tmp_path / "m1.csv"
-    _write_m1(csv)
+def test_load_m1_rows_delegates_to_dataset_atom_window(tmp_path):
+    bridge, calls = _fake_bridge(_m1_df())
     repo = IntrabarWindowRepository(
-        tick_root=tmp_path / "ticks", tick_m1_csv=csv, m1_repair=False
+        tick_root=tmp_path / "ticks", bridge_loader=lambda *a: bridge
     )
-    # [00:00, 00:02) → 最初の 2 分のみ。
+    # [00:00, 00:02) → 最初の 2 分のみ（窓抽出は dataset.load_atom_window＝単一権威へ委譲）。
     rows = repo.load_m1_rows("jp225_tick", _D1_00_00, _D1_00_00 + 120)
+    assert calls["args"] == ("jp225_tick", _D1_00_00, _D1_00_00 + 120)
     assert rows == [[100.0, 105.0, 99.0, 101.0], [101.0, 106.0, 100.0, 102.0]]
 
 
 def test_load_ticks_window_and_outlier(tmp_path):
     root = tmp_path / "ticks"
     _write_parquet(root)
-    repo = IntrabarWindowRepository(tick_root=root, tick_m1_csv=None)
+    repo = IntrabarWindowRepository(tick_root=root)
     # 窓 [00:00, 00:01) → 00:00:10/20/30 の 3 点。中央値 mid ≈ 101、200 は +≈98% で除去。
     out = repo.load_ticks(_D1_00_00, _D1_00_00 + 60)
     secs = [s for s, _ in out]

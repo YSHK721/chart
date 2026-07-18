@@ -2,7 +2,7 @@
 
 CLEAN_ARCH §6: 偶有的技術（indicator_ui の実アダプタ・resample 規則）は adapter 層に隔離する。
 本モジュールは ``indicator_ui/api`` と repo 根（``marketdata`` パッケージ用）を ``sys.path`` へ
-挿入し、``full_compute`` / ``latest_compute`` / ``dataset`` / ``resample_ohlc`` 等を **読むだけ**で
+挿入し、``full_compute`` / ``latest_compute`` / ``dataset`` 等を **読むだけ**で
 再利用する。cwd 非依存（絶対パス insert）にして、bash 呼出間の cwd リセットに影響されない。
 
 既存 indicator_ui コードは無改変（import して呼ぶのみ）。
@@ -69,22 +69,15 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
     from market_profile_api.controller.market_profile_controller import (  # noqa: E402
         handle_market_profile,
     )
-    from marketdata.resample import (  # noqa: E402
-        TIMEFRAME_RULES,
-        is_known_timeframe,
-        resample_ohlc,
-    )
-
+    # ISSUE-131/132: resample 系（resample_ohlc/resample_ohlc_tf/TIMEFRAME_RULES/is_known_timeframe）の
+    #   export は撤去（replay 側の自前足生成の全廃で利用ゼロ化。足の集合・値は dataset 経由で一元）。
     ns = SimpleNamespace(
         dataset=dataset,
         adapter=IndicatorComputeAdapter(),
         full_compute=full_compute,
         latest_compute=latest_compute,
-        resample_ohlc=resample_ohlc,
         handle_market_profile_forming=handle_market_profile_forming,
         handle_market_profile=handle_market_profile,
-        TIMEFRAME_RULES=TIMEFRAME_RULES,
-        is_known_timeframe=is_known_timeframe,
     )
     _CACHE[key] = ns
     return ns

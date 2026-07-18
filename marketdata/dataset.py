@@ -182,6 +182,31 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
     return _clamp_outlier_bars(resampled, ref)
 
 
+# 原子窓読みの clamp 済み全期間 DataFrame キャッシュ（ref → (csv mtime, clamped df)）。
+#   replay /intraday の任意過去窓アクセス用（ISSUE-132）。live サーバは本経路を呼ばない
+#   （メモリ有界化 D-2 は load_dataframe 経路の不変条件のまま＝呼んだプロセスだけが全期間を保持）。
+_ATOM_WINDOW_CACHE: dict[str, tuple[Any, pd.DataFrame]] = {}
+
+
+def load_atom_window(ref: str, start: int, end: int) -> pd.DataFrame:
+    """原子（1m）CSV の任意時間窓 ``[start, end)``（UNIX 秒）を返す（ISSUE-132・additive）。
+
+    リプレイの /intraday（足内再生の m1 素材）用: 末尾有界の ``load_dataframe`` と異なり
+    全期間の任意窓へアクセスできる。供給・補正・キャッシュとも本モジュールが単一権威:
+    全期間原子は ``_load_base_dataframe``（mtime キャッシュ）、外れ値補正は
+    ``_clamp_outlier_bars``（clamp 単一定義）を一様適用し、clamp 済み全期間を
+    csv mtime キーでキャッシュする（窓スライスのみ毎回）。未知 ref は KeyError。
+    """
+    mt = _csv_mtime(ref)  # 未知 ref はここで KeyError（ホワイトリスト外拒否）。
+    ent = _ATOM_WINDOW_CACHE.get(ref)
+    if ent is None or ent[0] != mt:
+        clamped = _clamp_outlier_bars(_load_base_dataframe(ref), ref)
+        _ATOM_WINDOW_CACHE[ref] = (mt, clamped)
+    df = _ATOM_WINDOW_CACHE[ref][1]
+    secs = df.index.values.astype("datetime64[s]").astype("int64")
+    return df[(secs >= int(start)) & (secs < int(end))]
+
+
 def load_candles(
     ref: str, timeframe: str | None = None, limit: int | None = None
 ) -> list[dict[str, Any]]:
