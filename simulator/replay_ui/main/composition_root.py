@@ -34,8 +34,8 @@ def build_replay_app(
 ) -> ReplayApp:
     """port 実装を結線した ``ReplayApp`` を返す。
 
-    ``data_dir``: tick 由来データ根（既定 ``<repo>/data/marketdata``）。``jp225_tick_m1.csv`` と
-    ``ticks/`` を含む。``web_dir``: 静的フロント配信ディレクトリ（任意・None で静的配信無効）。
+    ``data_dir``: tick 由来データ根（既定 ``<repo>/data/marketdata``）。リプレイ固有フィードの
+    ``ticks/``（tick parquet）を含む（m1/candle は dataset 単一権威へ委譲済み・ISSUE-131/132）。``web_dir``: 静的フロント配信ディレクトリ（任意・None で静的配信無効）。
     ``shared_js_root``: 単一ソース共有のフォールバック根（既定 ``<repo>/indigators/indicator_ui/web``）。
     ただし配信を許可するのは本根の **``js/``・``css/``・``vendor/`` サブツリーのみ**（serve_replay で
     許可根を限定＝最小権限。build.mjs/package.json/data/tests/node_modules 等は露出しない）。replay
@@ -50,15 +50,14 @@ def build_replay_app(
         if shared_js_root is not None
         else root / "indigators" / "indicator_ui" / "web"
     )
-    tick_m1_csv = data / "jp225_tick_m1.csv"
+    # ISSUE-131/132: candle・m1 の供給は dataset（単一権威）へ完全委譲済み＝CSV パスの結線は
+    #   リプレイ固有フィードの tick parquet 根のみ。
     tick_root = data / "ticks"
 
-    candle_port = CausalCandleRepository(
-        tick_m1_csv=tick_m1_csv, api_path=api_path, repo_root=root
-    )
+    candle_port = CausalCandleRepository(api_path=api_path, repo_root=root)
     compute_port = CausalComputeGateway(api_path=api_path, repo_root=root)
     window_port = IntrabarWindowRepository(
-        tick_root=tick_root, tick_m1_csv=tick_m1_csv, api_path=api_path, repo_root=root
+        tick_root=tick_root, api_path=api_path, repo_root=root
     )
 
     bridge = _indicator_ui_bridge.load(api_path, root)
