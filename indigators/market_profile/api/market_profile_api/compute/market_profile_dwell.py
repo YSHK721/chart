@@ -64,6 +64,15 @@ from marketdata.session_day import (  # noqa: E402
     session_day_start,
 )
 
+# ISSUE-133（SRP）: 統計コア（純数学＝セッション認識滞在秒積分・固定グリッドロールアップ）は
+# market_profile_dwell_kernel へ分離した。本モジュール（キャッシュ協調）は公開シンボルを再エクスポート
+# し、呼出面（``mpd._session_dwell`` / ``mpd._rollup_ticks`` / ``mpd.GRID_W``）と数値を完全に温存する。
+from market_profile_api.compute.market_profile_dwell_kernel import (  # noqa: E402,F401
+    GRID_W,
+    _rollup_ticks,
+    _session_dwell,
+)
+
 
 def day_parquet_files(lo_day: Any, hi_day: Any, *, symbol: str) -> "list[_Path]":
     """正準ティック日別ファイルの列挙（TickStorePort へ委譲・read-only）。
@@ -77,7 +86,7 @@ TICK_REF_SYMBOLS: dict[str, str] = {"jp225_tick": "JP225"}
 
 # セッション認識 dwell のパラメータ（試作と一致）。規則は session_activity が唯一の規則源。
 _ACTIVE_FRAC = _session_activity.ACTIVE_FRAC   # (曜日×時) のティック数が ピーク×この割合 未満なら「休場」。
-GRID_W = 10.0         # 固定価格グリッド幅(pt)。日別集計→窓合算→表示 bin へ再集計する中間解像度。
+# GRID_W（固定価格グリッド幅 pt）は market_profile_dwell_kernel から再エクスポート済み（ISSUE-133 SRP）。
 
 # 全期間化（250日キャップ撤廃）。完了日はディスク/メモリキャッシュ経由で O(1) ロードされるため、
 # 集計窓を直近日数に切り詰めず ``[t0, t1+bar_sec)`` の全日を集計する（初回ウォーム後は高速）。
@@ -180,58 +189,17 @@ def _build_active_table(secs: np.ndarray) -> np.ndarray:
 def _active_seconds_cross(a: int, b: int, table: np.ndarray) -> int:
     """セッション認識カーネルへの委譲（:func:`session_activity.active_seconds_cross`）。
 
-    ``_session_dwell`` が本 module 名で参照する跨ぎギャップ積分。委譲シンボルを温存する。
+    kernel の ``_session_dwell`` は :mod:`session_activity` を直参照するが、本 module 名での跨ぎギャップ
+    積分（既存テストの ``mpd._active_seconds_cross`` 単一注入点）を温存するため委譲シンボルを残す。
     """
     return _session_activity.active_seconds_cross(a, b, table)
 
 
-def _session_dwell(secs: np.ndarray, table: np.ndarray) -> np.ndarray:
-    """各隣接ティック間ギャップの「活発秒」を返す（``len = len(secs)-1``）。
-
-    同一時内は活発なら ``gap``/休場なら 0。時境界を跨ぐギャップのみ :func:`_active_seconds_cross`
-    で厳密に積分する。dwell[i] はギャップ始端のティック（価格 mids[i]）に帰属する。
-    """
-    s = np.asarray(secs, dtype=np.int64)
-    if s.size < 2:
-        return np.zeros(max(s.size - 1, 0), dtype=float)
-    start = s[:-1]
-    end = s[1:]
-    gap = (end - start).astype(float)
-    wd = ((start // 86400) + 3) % 7
-    hod = (start % 86400) // 3600
-    act_start = table[wd, hod]
-    same_hour = (start // 3600) == (end // 3600)
-    # 同一時内: 活発なら gap、休場なら 0。
-    dwell = np.where(same_hour & act_start, gap, 0.0)
-    # 時境界を跨ぐギャップのみ厳密に積分（件数は僅少）。
-    for i in np.where(~same_hour)[0]:
-        dwell[i] = _active_seconds_cross(int(start[i]), int(end[i]), table)
-    return dwell
-
-
 # --------------------------------------------------------------------------- #
 # 固定グリッド日別ロールアップ（メモリキャッシュ）
+#   純数学の _session_dwell / _rollup_ticks は market_profile_dwell_kernel から再エクスポート済み
+#   （ISSUE-133 SRP・冒頭 import 参照）。以下のキャッシュ協調関数は bare name で呼ぶ。
 # --------------------------------------------------------------------------- #
-def _rollup_ticks(secs: np.ndarray, mids: np.ndarray, table: np.ndarray) -> "dict | None":
-    """ティック配列を固定グリッド ``{kmin, dwell[], cnt[]}``（k=floor(mid/GRID_W)）へ集約する。空なら None。
-
-    dwell[]: セッション認識の実ティック滞在秒（休場帯は 0）。metric='dwell'（既定）が使用する。
-    cnt[]:   生ティック数（セッションマスク**非適用**＝休場帯もカウント）。metric='count'（src=m1）が使用する。
-    """
-    if len(secs) == 0:
-        return None
-    dwell = _session_dwell(secs, table)  # len = len(secs)-1
-    k = np.floor(mids / GRID_W).astype(np.int64)
-    kmin = int(k.min())
-    size = int(k.max()) - kmin + 1
-    dwell_arr = np.zeros(size, dtype=float)
-    if dwell.size:
-        np.add.at(dwell_arr, k[:-1] - kmin, dwell)  # dwell[i] は始端ティック価格 k[i] に帰属。
-    cnt_arr = np.zeros(size, dtype=float)
-    np.add.at(cnt_arr, k - kmin, 1.0)  # 生ティック数（全ティック・セッション非依存）。
-    return {"kmin": kmin, "dwell": dwell_arr, "cnt": cnt_arr}
-
-
 def _active_table(symbol: str, at_from: int, win_to: int) -> np.ndarray:
     """symbol×窓の活動テーブルを構築してキャッシュする。
 
