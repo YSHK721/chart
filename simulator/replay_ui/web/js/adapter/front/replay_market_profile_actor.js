@@ -46,6 +46,129 @@ function _hasBaseFields(f) {
     && Array.isArray(f.baseFine);
 }
 
+// ISSUE-133（SRP）: _rebuildAt/feedTick に二重分岐で内包していた「増分 push 成長（dwell 系）」と
+//   「非増分 as-of coalesce（zp 系）」の 2 戦略を Strategy として抽出し注入化した。actor はソース能力
+//   （mpSourceCapability(src).incremental）で戦略を選び委譲する（分岐は選択のみに縮退）。各戦略は actor を
+//   context（``a``）に受け、actor 内部状態（_accumulator/_lastSec/_rebuildSeq/_gridDegenerate/_clockSec 等）を
+//   抽出前と同一手順で操作する＝挙動不変。純オブジェクト（副作用は actor 経由のみ・テストで差替可能）。
+
+// 増分 push 戦略（dwell 系）: forming を [from, now] の因果窓で base=1 取得 → accumulator を作り直し
+//   （rollover/grid 拡張）→ forming.ticks を畳み込み（present 基底 _enterTicklive と同一 fold）→ 描画。
+//   feedTick は addTick（O(1)・HTTP 無）＋ throttle snapshot。縮退グリッドは描画のみ抑止（前回描画保持）。
+const INCREMENTAL_PUSH_STRATEGY = {
+  async rebuildAt(a, now, from, syncClamp) {
+    if (!a._enabled || !a._formingClient || !a._makeAccumulator) {
+      return;
+    }
+    // ISSUE-050 同期クランプ（blank 禁止・enterBar のみ）: await fetchForming（実測 ≈180ms）の解決前に、旧
+    //   accumulator のスナップショットを新カーソルの revealed 上限へ同期クランプして即描画する（stale
+    //   プロファイル・フラッシュを断つ）。
+    if (syncClamp) {
+      a._clampDrawToRevealed();
+    }
+    let effFrom = from;
+    if (effFrom != null && Number.isFinite(Number(now))) {
+      // クランプ: from<=formingStart（不変条件）・from<=now（未来リーク禁止）。formingStart<=now ゆえ十分。
+      effFrom = Math.min(Number(effFrom), GrowthWindow.periodStart(Number(now), a._getContext().timeframe));
+    }
+    // 世代ガード（profSeq 相当）: この fetch の世代を採番し、await の戻りが最新でなければ setProfile を破棄する。
+    const seq = ++a._rebuildSeq;
+    const forming = await a._formingClient.fetchForming(
+      a._buildFormingArgs({ base: 1, since: null, now, from: effFrom }),
+    );
+    if (seq !== a._rebuildSeq) {
+      return; // 古い応答は破棄（後続 _rebuildAt が発行済み＝最新のみ反映・stale 上書き防止）。
+    }
+    if (!forming) {
+      return; // null は前回描画を保持（非破壊）。
+    }
+    if (!_hasBaseFields(forming)) {
+      return; // 空 profile（必須フィールド欠損）は前回描画を保持（NaN 混入を防ぐ）。
+    }
+    const acc = a._makeAccumulator();
+    acc.init({
+      baseFine: forming.baseFine,
+      baseKmin: forming.baseKmin,
+      activeTable: forming.activeTable,
+      priceMin: forming.priceMin,
+      priceMax: forming.priceMax,
+      nBins: forming.nBins,
+      gridW: forming.gridW,
+      formingStart: forming.formingStart,
+    });
+    a._accumulator = acc;
+    a._formingStart = forming.formingStart;
+    a._gridPriceMin = Number(forming.priceMin);
+    a._gridPriceMax = Number(forming.priceMax);
+    // forming.ticks を畳み込む（present 基底 _enterTicklive の fold と一致）。_lastSec は最終畳み込み秒。
+    a._lastSec = null;
+    const ticks = Array.isArray(forming.ticks) ? forming.ticks : [];
+    for (const t of ticks) {
+      acc.addTick(t[0], t[1]);
+      a._lastSec = t[0];
+    }
+    a._lastSnapMs = a._now();
+    // ISSUE-049: 縮退グリッド（forming tick 0 かつ priceMax-priceMin<=1）を状態化する。縮退中は描画抑止
+    //   （前回描画保持）。実グリッド確定（非縮退の rebuild）で解除＝描画再開する。init 自体は行う。
+    a._gridDegenerate = ticks.length === 0
+      && (a._gridPriceMax - a._gridPriceMin) <= 1;
+    if (a._gridDegenerate) {
+      return; // 前回描画を保持（最初の out-of-range tick で growTo が即グリッド確定）。
+    }
+    a._draw();
+  },
+
+  // ライブ tick（animateForming が 1 点ずつ供給）。addTick は常に反映（O(1)・HTTP 無）、snapshot は throttle。
+  //   de-dup: 畳み込み済み tick（sec<=_lastSec）は二重計上を防ぐため捨てる（present onLiveTick since と同型）。
+  feedTick(a, sec, mid) {
+    if (!a._accumulator) {
+      return;
+    }
+    if (a._lastSec != null && sec <= a._lastSec) {
+      return; // 畳み込み済み範囲＝二重計上防止（de-dup ガード）。
+    }
+    a._accumulator.addTick(sec, mid);
+    a._lastSec = sec;
+    // ISSUE-049: 縮退グリッド中は throttle 描画も抑止（前回描画保持）。addTick 自体は行う（範囲外 clip・O(1)）。
+    if (a._gridDegenerate) {
+      return;
+    }
+    const t = a._now();
+    if (t - a._lastSnapMs >= a._throttleMs) {
+      a._lastSnapMs = t;
+      a._draw();
+    }
+  },
+};
+
+// 非増分 as-of coalesce 戦略（zp 系）: accumulator を持たず、単一時計（_clockSec＝直近リビール秒）を
+//   前進させてから coalesce 付き as-of 再計算（super.refresh・_scheduleNonIncrementalRefresh）を発火する。
+//   実行は fire-and-forget＋最新 1 回 coalesce（再生非干渉・前回描画保持）。描画は完了時の setProfile が担う。
+const AS_OF_COALESCE_STRATEGY = {
+  rebuildAt(a, now, from, syncClamp) {
+    // ISSUE-129: 単一時計をカーソル秒（enterBar/growTo の now）で更新してから発火する。
+    // ISSUE-130: 1D はバー入場（syncClamp=true）の因果フロンティアがラベル（UTC 深夜）でなく
+    //   **セッション始端**。growTo（tick 前進）は実リビール秒のまま。
+    if (Number.isFinite(Number(now))) {
+      const n = Number(now);
+      a._clockSec = (syncClamp && a._getContext().timeframe === '1D')
+        ? sessionDayStart(n)
+        : n;
+    }
+    a._scheduleNonIncrementalRefresh();
+    return undefined;
+  },
+
+  // 足内リビール秒で単一時計を前進（単調・順不同 tick を防御）させ、coalesce 付き as-of 再計算を発火する。
+  feedTick(a, sec, _mid) {
+    const s = Number(sec);
+    if (Number.isFinite(s) && (a._clockSec == null || s > a._clockSec)) {
+      a._clockSec = s;
+    }
+    a._scheduleNonIncrementalRefresh();
+  },
+};
+
 export class ReplayMarketProfileActor extends MarketProfileActor {
   // 基底コンストラクタへ全 DI（client/primitive/mainSeries/getContext/replayBar/getCandles/renderer/
   //   formingClient/makeAccumulator）を委譲し、push 系 ticklive の throttle 時計だけ追加で保持する。
@@ -53,6 +176,10 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   constructor(opts = {}) {
     super(opts);
     const { now, throttleMs } = opts;
+    // ISSUE-133（SRP）: 増分 push（dwell）/ 非増分 as-of coalesce（zp）の 2 戦略を注入化（既定は module 定数）。
+    //   src はリクエストごとに変わりうる（setParams）ため、_rebuildAt/feedTick が能力ゲートで戦略を選ぶ。
+    this._incrementalStrategy = opts.incrementalStrategy || INCREMENTAL_PUSH_STRATEGY;
+    this._asOfStrategy = opts.asOfStrategy || AS_OF_COALESCE_STRATEGY;
     this._now = typeof now === 'function'
       ? now
       : (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now());
@@ -245,91 +372,12 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     if (!this.isGrowingPush()) {
       return; // 自己ガード: push 成長中（normal/replay+growing）以外は push 駆動しない（Phase5: 成長軸ゲート）。
     }
-    // ISSUE-120: 非増分 src（zp）は forming（src=dwell 強制・当日窓）を駆動しない。駆動すると
-    //   選択 src と異なる原子（dwell）の当日窓プロファイルへ黙って差し替わる（「zp 全期間が当日しか
-    //   出ない」不整合の実体）。as-of-T の基底 refresh へ委譲する。
-    // ISSUE-124: ただし driver は毎バー enterBar を await する（完成足フラッシュ防止設計）ため、
-    //   ここで重い as-of 再計算（zp 実測 1.2〜1.3 秒/回）を同期で返すと再生スループットが崩壊する。
-    //   fire-and-forget＋最新 coalesce（busy 中の再要求は pending に畳み、完了後に最新カーソルで
-    //   1 回だけ再実行）で await を即時解放する（前回描画保持＝非破壊・計算が追いつき次第 as-of 更新）。
+    // ISSUE-133（SRP）: 能力ゲートで戦略を選び委譲する（抽出前の二重分岐と同一手順）。
+    //   非増分 src（zp）は as-of coalesce 戦略（ISSUE-120/124/129/130）、増分 src（dwell）は push 戦略。
     if (!mpSourceCapability(this._params.src).incremental) {
-      // ISSUE-129: 単一時計をカーソル秒（enterBar/growTo の now）で更新してから発火する。
-      //   後退スクラブでも enterBar の now（新カーソルのバー time）で巻き戻る＝stale 未来時計を防ぐ。
-      // ISSUE-130: 1D はセッション日集計バー＝バー入場（syncClamp=true）時点の因果フロンティアは
-      //   ラベル（UTC 深夜＝セッション 3h 経過点）でなく**セッション始端**。ラベルのままだと窓先頭
-      //   3h（日曜夕含む）が再生前に先出しされる。growTo（tick 前進）は実リビール秒のまま。
-      if (Number.isFinite(Number(now))) {
-        const n = Number(now);
-        this._clockSec = (syncClamp && this._getContext().timeframe === '1D')
-          ? sessionDayStart(n)
-          : n;
-      }
-      this._scheduleNonIncrementalRefresh();
-      return undefined;
+      return this._asOfStrategy.rebuildAt(this, now, from, syncClamp);
     }
-    if (!this._enabled || !this._formingClient || !this._makeAccumulator) {
-      return;
-    }
-    // ISSUE-050 同期クランプ（blank 禁止・enterBar のみ）: await fetchForming（実測 ≈180ms）の解決前に、旧
-    //   accumulator のスナップショットを新カーソルの revealed 上限（_getCandles 末尾までの high 最大）へ同期
-    //   クランプして即描画する。revealed 超の bin/POC/VA（前カーソルの未来価格）を落とし、MP 上端がローソク
-    //   上端を超える stale プロファイル・フラッシュを断つ。空描画（setVisible(false)/空 snapshot）は ISSUE-049
-    //   の MP 全消滅フラッシュを招くため不可＝revealed 域内に bin が残るときだけ setProfile する。
-    if (syncClamp) {
-      this._clampDrawToRevealed();
-    }
-    let effFrom = from;
-    if (effFrom != null && Number.isFinite(Number(now))) {
-      // クランプ: from<=formingStart（不変条件）・from<=now（未来リーク禁止）。formingStart<=now ゆえ十分。
-      effFrom = Math.min(Number(effFrom), GrowthWindow.periodStart(Number(now), this._getContext().timeframe));
-    }
-    // 世代ガード（profSeq 相当）: この fetch の世代を採番し、await の戻りが最新でなければ setProfile を破棄する。
-    const seq = ++this._rebuildSeq;
-    const forming = await this._formingClient.fetchForming(
-      this._buildFormingArgs({ base: 1, since: null, now, from: effFrom }),
-    );
-    if (seq !== this._rebuildSeq) {
-      return; // 古い応答は破棄（後続 _rebuildAt が発行済み＝最新のみ反映・stale 上書き防止）。参照: fetchProfileOnly。
-    }
-    if (!forming) {
-      return; // null は前回描画を保持（非破壊）。
-    }
-    if (!_hasBaseFields(forming)) {
-      return; // 空 profile（必須フィールド欠損）は前回描画を保持（NaN 混入を防ぐ）。
-    }
-    const acc = this._makeAccumulator();
-    acc.init({
-      baseFine: forming.baseFine,
-      baseKmin: forming.baseKmin,
-      activeTable: forming.activeTable,
-      priceMin: forming.priceMin,
-      priceMax: forming.priceMax,
-      nBins: forming.nBins,
-      gridW: forming.gridW,
-      formingStart: forming.formingStart,
-    });
-    this._accumulator = acc;
-    this._formingStart = forming.formingStart;
-    this._gridPriceMin = Number(forming.priceMin);
-    this._gridPriceMax = Number(forming.priceMax);
-    // forming.ticks を畳み込む（present 基底 _enterTicklive の fold と一致）。_lastSec は最終畳み込み秒。
-    this._lastSec = null;
-    const ticks = Array.isArray(forming.ticks) ? forming.ticks : [];
-    for (const t of ticks) {
-      acc.addTick(t[0], t[1]);
-      this._lastSec = t[0];
-    }
-    this._lastSnapMs = this._now();
-    // ISSUE-049: 縮退グリッド（forming tick 0 かつ priceMax-priceMin<=1）を状態化する。縮退中は
-    //   enterBar/growTo 自身だけでなく feedTick/settleTick の throttle 描画も抑止し（前回描画保持）、
-    //   空 snapshot（[0,1]・全 bin ゼロ）による MP バー全消滅フラッシュを出さない。実グリッド確定
-    //   （非縮退の rebuild）で解除＝描画再開する。init 自体は行う（growTo の土台・従来どおり）。
-    this._gridDegenerate = ticks.length === 0
-      && (this._gridPriceMax - this._gridPriceMin) <= 1;
-    if (this._gridDegenerate) {
-      return; // 前回描画を保持（最初の out-of-range tick で growTo が即グリッド確定）。
-    }
-    this._draw();
+    return this._incrementalStrategy.rebuildAt(this, now, from, syncClamp);
   }
 
   // override（ISSUE-129・単一時計）: 非増分 src（zp）×成長 push 中は、fetch の to をリビール秒
@@ -365,37 +413,14 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     if (!this._enabled) {
       return;
     }
-    // ISSUE-129: 非増分 src（zp）は accumulator を持たない（push 畳み込み対象外）。足内リビール秒で
-    //   単一時計を前進させ（単調・順不同 tick を防御）、coalesce 付き as-of 再計算を発火する。実行は
-    //   busy 中 pending 1 個に畳まれ実測 ~1.3s/回＝ISSUE-124 と同一機構（fire-and-forget・再生非干渉）。
-    //   描画は完了時の setProfile が担う（前回描画保持＝非破壊）。
+    // ISSUE-133（SRP）: 能力ゲートで戦略を選び委譲する（抽出前の二重分岐と同一手順・同一非対称性）。
+    //   非増分 src（zp）×成長 push 中のみ as-of coalesce 戦略（accumulator を持たず単一時計を前進＋
+    //   coalesce 再計算）。それ以外（増分 src／非成長）は push 戦略（addTick＋throttle snapshot）。
     if (this.isGrowingPush() && !mpSourceCapability(this._params.src).incremental) {
-      const s = Number(sec);
-      if (Number.isFinite(s) && (this._clockSec == null || s > this._clockSec)) {
-        this._clockSec = s;
-      }
-      this._scheduleNonIncrementalRefresh();
+      this._asOfStrategy.feedTick(this, sec, mid);
       return;
     }
-    if (!this._accumulator) {
-      return;
-    }
-    if (this._lastSec != null && sec <= this._lastSec) {
-      return; // 畳み込み済み範囲＝二重計上防止（de-dup ガード）。
-    }
-    this._accumulator.addTick(sec, mid);
-    this._lastSec = sec;
-    // ISSUE-049: 縮退グリッド中は throttle 描画も抑止（前回描画保持）。addTick 自体は行う（範囲外 clip・
-    //   O(1)）が、空 snapshot（[0,1]）を setProfile しない＝MP バー全消滅フラッシュを出さない。
-    //   グリッドは最初の out-of-range tick の growTo が確定し、以降の描画が再開する。
-    if (this._gridDegenerate) {
-      return;
-    }
-    const t = this._now();
-    if (t - this._lastSnapMs >= this._throttleMs) {
-      this._lastSnapMs = t;
-      this._draw();
-    }
+    this._incrementalStrategy.feedTick(this, sec, mid);
   }
 
   // 追加（slim 移設）: 確定時の最終 snapshot を強制描画する（throttle 無視）。
