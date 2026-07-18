@@ -73,3 +73,65 @@ def test_default_store_is_marketdata_gateway(monkeypatch):
     store = tsp.tick_store()
     assert isinstance(store, MarketdataTickStore)
     assert isinstance(store, tsp.TickStorePort)  # runtime_checkable Protocol 準拠
+
+
+# --------------------------------------------------------------------------- #
+# ISSUE-136（ISP）: TickStorePort を DataRootPort ＋ TickReaderPort へ分割
+# --------------------------------------------------------------------------- #
+class _DataRootOnly:
+    """DataRootPort だけを満たすフェイク（tick 読取を持たない）。"""
+
+    def data_dir(self):
+        return Path("/fake/root")
+
+
+class _TickReaderOnly:
+    """TickReaderPort だけを満たすフェイク（data_dir を持たない）。"""
+
+    def day_files(self, lo_day, hi_day, *, symbol):
+        return []
+
+    def read_ticks(self, path, columns):
+        return None
+
+    def load_window_ticks(self, symbol, start, end, *, columns, outlier_frac):
+        return (None, None)
+
+
+def test_ports_are_split_by_role_isp():
+    """DataRootPort（基点のみ）と TickReaderPort（tick 読取のみ）は独立に満たせる（ISP）。"""
+    from market_profile_api.compute import tick_store_port as tsp
+
+    dr, tr = _DataRootOnly(), _TickReaderOnly()
+    # DataRootPort は data_dir だけを要求（tick 読取のみのフェイクは満たさない）。
+    assert isinstance(dr, tsp.DataRootPort)
+    assert not isinstance(tr, tsp.DataRootPort)
+    # TickReaderPort は tick 読取だけを要求（基点のみのフェイクは満たさない）。
+    assert isinstance(tr, tsp.TickReaderPort)
+    assert not isinstance(dr, tsp.TickReaderPort)
+    # 合成 TickStorePort は両方を要求（片面フェイクは満たさない）。
+    assert not isinstance(dr, tsp.TickStorePort)
+    assert not isinstance(tr, tsp.TickStorePort)
+
+
+def test_narrow_getters_share_single_injection_seam(monkeypatch):
+    """data_root() / tick_reader() は単一の注入シーム（tick_store）へ委譲する（既存挙動温存）。"""
+    from market_profile_api.compute import tick_store_port as tsp
+
+    fake = _FakeStore(Path("/tmp"))  # data_dir + day_files + read_ticks を満たす。
+    monkeypatch.setattr(tsp, "_STORE", fake)
+    assert tsp.data_root() is fake
+    assert tsp.tick_reader() is fake
+    assert tsp.tick_store() is fake
+
+
+def test_isp_clients_depend_on_narrow_getters():
+    """dwell/zp は tick_reader に、tf_period/composition は data_root に依存する（太い tick_store 直参照なし）。"""
+    for rel in ("compute/market_profile_dwell.py", "compute/market_profile_zp.py"):
+        src = (_PKG / rel).read_text(encoding="utf-8")
+        assert "import tick_reader" in src, f"{rel} は狭い TickReaderPort に依存すべき"
+        assert "import tick_store as" not in src, f"{rel} に太い tick_store 直依存が残存"
+    for rel in ("controller/tf_period_profile_controller.py", "gateway/composition.py"):
+        src = (_PKG / rel).read_text(encoding="utf-8")
+        assert "import data_root" in src, f"{rel} は狭い DataRootPort に依存すべき"
+        assert "import tick_store as" not in src, f"{rel} に太い tick_store 直依存が残存"

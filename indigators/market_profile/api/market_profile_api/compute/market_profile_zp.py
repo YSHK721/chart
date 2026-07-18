@@ -58,8 +58,9 @@ from market_profile_api.compute.store_port import (  # noqa: F401  (set_zp_store
     zp_store,
 )
 
-# ISSUE-091 🔴-2: ティック物理格納への依存は compute 所有の TickStorePort へ逆転（dwell と同規律）。
-from market_profile_api.compute.tick_store_port import tick_store as _tick_store
+# ISSUE-091 🔴-2: ティック物理格納への依存は compute 所有の Output Boundary へ逆転（dwell と同規律）。
+# ISSUE-136（ISP）: zp は day_files のみ（data_dir 不使用）ため狭い TickReaderPort に依存する。
+from market_profile_api.compute.tick_store_port import tick_reader as _tick_reader
 # セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源
 #（marketdata の純業務規則＝I/O 非依存のため内側 import を許容）。
 from marketdata.session_day import (  # noqa: E402
@@ -96,11 +97,11 @@ from market_profile_api.compute.market_profile_zp_kernel import (  # noqa: E402,
 
 
 def day_parquet_files(lo_day, hi_day, *, symbol: str):
-    """正準ティック日別ファイルの列挙（TickStorePort へ委譲・read-only）。
+    """正準ティック日別ファイルの列挙（TickReaderPort へ委譲・read-only）。
 
     既存テストの monkeypatch 単一注入点（``zp.day_parquet_files``）を module 属性として温存する。
     """
-    return _tick_store().day_files(lo_day, hi_day, symbol=symbol)
+    return _tick_reader().day_files(lo_day, hi_day, symbol=symbol)
 
 # 帰無パラメータ（因果・決定論・キャッシュ協調 アクター所有＝serving 時に monkeypatch される）。
 NULL_HIST_DAYS = 250   # ステップ行列のソース窓（当日から遡る完了日数）

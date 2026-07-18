@@ -26,8 +26,8 @@ from market_profile_api.compute import market_profile_zp as _zp
 from market_profile_api.compute import tf_period_columns as _tfc  # ISSUE-094 🔴-2: 集計エンジンの compute 移送先
 # ISSUE-092 ④: 日次ディスク JSON の物理 I/O は gateway 層へ抽出（ISSUE-091 #6 レイヤ責務違反の是正）。
 from market_profile_api.gateway import tf_period_disk_cache as _tf_disk_cache
-# 既定 DATA_DIR の解決は TickStorePort 経由（dwell/zp と同規律・ISSUE-092 統合検証での回帰修正）。
-from market_profile_api.compute.tick_store_port import tick_store as _tick_store
+# 既定 DATA_DIR の解決は DataRootPort 経由（ISSUE-136 ISP: data_dir のみ使用の狭いポートへ依存）。
+from market_profile_api.compute.tick_store_port import data_root as _data_root
 from market_profile_api.compute.tf_period_profile import (
     _TFP_CACHE_VERSION,
     tf_period_profiles,
@@ -93,7 +93,7 @@ def _reset_tf_period_cache() -> None:
 def _tfp_disk_root() -> "_Path | None":
     """ディスクキャッシュ基点を返す（False=無効なら None・既定は DATA_DIR/cache/tf_period）。
 
-    既定の DATA_DIR 解決は TickStorePort 経由（ISSUE-091 🔴-2 で dwell/zp と同規律）。
+    既定の DATA_DIR 解決は DataRootPort 経由（ISSUE-091 🔴-2 で dwell/zp と同規律・ISSUE-136 ISP 分割後）。
     旧 `_mpd._paths` 参照は port 化で撤去済み属性への参照となり実行時 AttributeError を
     起こしていた（ISSUE-092 統合検証の実 HTTP で検出・テストは root 注入経路のため未検出）。
     """
@@ -101,7 +101,7 @@ def _tfp_disk_root() -> "_Path | None":
         return None
     if _TFP_CACHE_ROOT is not None:
         return _Path(_TFP_CACHE_ROOT)
-    return _tick_store().data_dir() / "cache" / "tf_period"
+    return _data_root().data_dir() / "cache" / "tf_period"
 
 
 def _load_day_disk(symbol: Any, tf: Any, day_start: int) -> "tuple[float, list] | None":

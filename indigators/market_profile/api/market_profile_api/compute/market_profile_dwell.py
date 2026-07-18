@@ -62,8 +62,9 @@ from market_profile_api.compute.store_port import (  # noqa: F401  (set_dwell_st
 
 # ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 # ISSUE-091 🔴-2: ティック物理格納（day parquet・DATA_DIR）への依存は compute 所有の
-#   Output Boundary（TickStorePort）へ逆転。具象は gateway/marketdata_tick_store が実装。
-from market_profile_api.compute.tick_store_port import tick_store as _tick_store
+#   Output Boundary へ逆転。具象は gateway/marketdata_tick_store が実装。
+# ISSUE-136（ISP）: dwell は tick 読取のみ（data_dir 不使用）ため狭い TickReaderPort に依存する。
+from market_profile_api.compute.tick_store_port import tick_reader as _tick_reader
 # セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定・ラベルの唯一の規則源
 #（marketdata の純業務規則＝I/O 非依存のため内側 import を許容）。
 from marketdata.session_day import (  # noqa: E402
@@ -83,11 +84,11 @@ from market_profile_api.compute.market_profile_dwell_kernel import (  # noqa: E4
 
 
 def day_parquet_files(lo_day: Any, hi_day: Any, *, symbol: str) -> "list[_Path]":
-    """正準ティック日別ファイルの列挙（TickStorePort へ委譲・read-only）。
+    """正準ティック日別ファイルの列挙（TickReaderPort へ委譲・read-only）。
 
     既存テストの monkeypatch 単一注入点（``mpd.day_parquet_files``）を module 属性として温存する。
     """
-    return _tick_store().day_files(lo_day, hi_day, symbol=symbol)
+    return _tick_reader().day_files(lo_day, hi_day, symbol=symbol)
 
 # datasetRef → 実ティック symbol 解決（forming_bar.TICK_REFS と整合。'jp225_tick'→'JP225'）。
 TICK_REF_SYMBOLS: dict[str, str] = {"jp225_tick": "JP225"}
@@ -167,11 +168,11 @@ def _load_window_ticks(symbol: str, start: Any, end: Any) -> "tuple[np.ndarray, 
     """``[start, end)`` の実ティックを ``(secs:int64, mids:float64)`` で返す（TickStorePort へ委譲）。
 
     ISSUE-133 SRP: 日別 parquet の列挙・読取・concat・tz 除去・窓マスク・mid 算出・外れ値除去・安定
-    ソート（＝ティック格納スキーマの復号＝偶有的性質）は gateway の :class:`TickStorePort` 実装へ移設した。
+    ソート（＝ティック格納スキーマの復号＝偶有的性質）は gateway の :class:`TickReaderPort` 実装へ移設した。
     本関数はテストの単一注入点（``mpd._load_window_ticks`` の monkeypatch）を module 属性として温存する
     薄い委譲であり、ティック列（``_TICK_COLUMNS``）と外れ値しきい（``_OUTLIER_FRAC``）を注入する。
     """
-    return _tick_store().load_window_ticks(
+    return _tick_reader().load_window_ticks(
         symbol, start, end, columns=_TICK_COLUMNS, outlier_frac=_OUTLIER_FRAC
     )
 

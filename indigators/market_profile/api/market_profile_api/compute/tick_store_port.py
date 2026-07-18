@@ -9,6 +9,14 @@ compute（方針側）が所有する境界ポート。dwell/zp の集計数学�
 合成する。これは server.py の sys.path フォールバックと同じ「自己完結起動の温存」であり、compute
 からの module-level marketdata 依存は排除される（型契約は本ポートが唯一）。ISSUE-137: 既定具象名
 （``MarketdataTickStore``）は composition root へ集約し、本ポートには具象クラス名を持たせない。
+
+ISSUE-136（ISP）: 旧 ``TickStorePort`` は「キャッシュ基点（``data_dir``）」と「tick ファイルアクセス
+（``day_files`` / ``read_ticks`` / ``load_window_ticks``）」を 1 つの太い抽象に混載していた。実測では
+dwell/zp は tick アクセスのみ・``tf_period_profile_controller`` と composition の既定 root provider は
+``data_dir`` のみを使い、どのクライアントも全面は使わない。そこで役割別に :class:`DataRootPort`
+（基点）と :class:`TickReaderPort`（tick 読取）へ分割し、クライアントは自分が使う狭いポート
+（:func:`data_root` / :func:`tick_reader`）にのみ依存する。既存消費者向けに両者を合成した
+``TickStorePort`` 名と単一の注入シーム（:func:`set_tick_store` / :func:`tick_store`）は温存する。
 """
 from __future__ import annotations
 
@@ -17,8 +25,17 @@ from typing import Any, Protocol, Sequence, Tuple, runtime_checkable
 
 
 @runtime_checkable
-class TickStorePort(Protocol):
-    """保存済み正準ティック（read-only）とデータ基点の抽象。"""
+class DataRootPort(Protocol):
+    """データ基点（キャッシュ既定配置の単一基点）の抽象。tick 読取を要さないクライアント向け（ISP）。"""
+
+    def data_dir(self) -> Path:
+        """データ基点（キャッシュ既定配置の単一基点）。"""
+        ...
+
+
+@runtime_checkable
+class TickReaderPort(Protocol):
+    """保存済み正準ティック（read-only）の列挙・読取・窓復号の抽象。基点を要さないクライアント向け（ISP）。"""
 
     def day_files(self, lo_day: Any, hi_day: Any, *, symbol: str) -> "list[Path]":
         """``[lo_day, hi_day]`` の実在する日別ティックファイルを昇順で列挙する。"""
@@ -45,9 +62,14 @@ class TickStorePort(Protocol):
         """
         ...
 
-    def data_dir(self) -> Path:
-        """データ基点（キャッシュ既定配置の単一基点）。"""
-        ...
+
+@runtime_checkable
+class TickStorePort(DataRootPort, TickReaderPort, Protocol):
+    """後方互換の合成ポート（:class:`DataRootPort` ＋ :class:`TickReaderPort`）。
+
+    既存の ``TickStorePort`` 名消費者（テスト・既定具象 ``MarketdataTickStore``）向けに全メソッドを
+    保持する。新規クライアントは役割別の :class:`DataRootPort` / :class:`TickReaderPort` に依存する。
+    """
 
 
 _STORE: "TickStorePort | None" = None
@@ -67,3 +89,21 @@ def tick_store() -> TickStorePort:
 
         _STORE = default_tick_store()
     return _STORE
+
+
+def data_root() -> DataRootPort:
+    """データ基点ポート（キャッシュ基点のみ）を返す（ISSUE-136 ISP）。
+
+    単一の注入シーム（:func:`tick_store`）へ委譲し、``data_dir`` のみを要するクライアント
+    （``tf_period`` controller・composition の既定 root provider）が狭いポート型に依存できるようにする。
+    """
+    return tick_store()
+
+
+def tick_reader() -> TickReaderPort:
+    """ティック読取ポート（列挙・読取・窓復号）を返す（ISSUE-136 ISP）。
+
+    単一の注入シーム（:func:`tick_store`）へ委譲し、tick アクセスのみを要する compute（dwell/zp）が
+    ``data_dir`` を含まない狭いポート型に依存できるようにする。
+    """
+    return tick_store()

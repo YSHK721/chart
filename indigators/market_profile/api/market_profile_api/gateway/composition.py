@@ -34,11 +34,11 @@ def default_zp_store() -> Any:
     """
     from market_profile_api.gateway.zp_store import ZpStore
     from market_profile_api.compute import market_profile_zp as _zp
-    from market_profile_api.compute.tick_store_port import tick_store as _tick_store
+    from market_profile_api.compute.tick_store_port import data_root as _data_root
 
     return ZpStore(
         root_provider=lambda: _zp._ZP_CACHE_ROOT,
-        default_root_provider=lambda: _tick_store().data_dir() / "cache" / "market_profile_zp",
+        default_root_provider=lambda: _data_root().data_dir() / "cache" / "market_profile_zp",
         grid_w=_zp.ZP_BP,  # ISSUE-079: znull 格子タグは bp 値。
         hist_days=_zp.NULL_HIST_DAYS,
         m_reps=_zp.M_REPS_DAY,
@@ -56,11 +56,11 @@ def default_dwell_store() -> Any:
     """
     from market_profile_api.gateway.dwell_rollup_store import DwellRollupStore
     from market_profile_api.compute import market_profile_dwell as _mpd
-    from market_profile_api.compute.tick_store_port import tick_store as _tick_store
+    from market_profile_api.compute.tick_store_port import data_root as _data_root
 
     return DwellRollupStore(
         root_provider=lambda: _mpd._CACHE_ROOT,
-        default_root_provider=lambda: _tick_store().data_dir() / "cache" / "market_profile_dwell",
+        default_root_provider=lambda: _data_root().data_dir() / "cache" / "market_profile_dwell",
         grid_w=_mpd.GRID_W,
         cache_version_provider=lambda: _mpd._CACHE_VERSION,
         day_parquet_files=lambda *a, **k: _mpd.day_parquet_files(*a, **k),
