@@ -62,8 +62,18 @@ export class LiveUpdater {
     }
     await this._controller.recomputeAllApplied({ mode: 'latest' });
     const candles = await this._loadCandles(this._datasetRef, this._getTimeframe());
+    if (!candles || candles.length === 0) {
+      return;
+    }
+    // 欠落補完（ISSUE-106）: 休止中に確定足を取りこぼしていれば renderer が setData 全置換で
+    //   再同期する。suppressPriceUpdate でも実施する（player は現在足のみの書き手であり、
+    //   過去確定足の補完は抑止対象外。現在足の巻き戻し防止は renderer 側で保証）。
+    const resynced = typeof this._renderer.resyncMissedCandles === 'function'
+      ? this._renderer.resyncMissedCandles(candles)
+      : false;
     // 価格の最新足反映。suppressPriceUpdate 時は skip（player が唯一の書き手＝巻き戻し防止）。
-    if (candles && candles.length > 0 && !this._suppressPriceUpdate) {
+    //   再同期実施時は末尾も反映済みのため差分更新は不要。
+    if (!resynced && !this._suppressPriceUpdate) {
       this._renderer.updateLastCandle(candles[candles.length - 1]);
     }
   }

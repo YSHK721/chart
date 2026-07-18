@@ -147,3 +147,61 @@ test('tick recomputes with mode "latest" (Latest incremental compute)', async ()
   // Assert: ライブ tick は latest モードで再計算する。
   assert.deepEqual(captured.at(-1), { mode: 'latest' });
 });
+
+// ライブ欠落補完（ISSUE-106）: tick は取得 candles を renderer.resyncMissedCandles へ渡し、
+//   休止中に取りこぼした確定足の補完を renderer に委ねる。再同期実施時（true）は末尾も反映済み
+//   のため updateLastCandle を重ねない。suppressPriceUpdate でも補完は実施する（抑止対象は
+//   現在足の価格上書きのみ＝過去確定足の補完は player の書き手責務と競合しない）。
+function resyncSpies({ resyncResult } = {}) {
+  const sp = spies();
+  sp.calls.resync = [];
+  sp.renderer.resyncMissedCandles = (candles) => {
+    sp.calls.resync.push(candles);
+    return resyncResult;
+  };
+  return sp;
+}
+
+test('tick: 取得 candles 全件を resyncMissedCandles へ渡す（欠落補完の起点・ISSUE-106 回帰）', async () => {
+  const sp = resyncSpies({ resyncResult: false });
+  const { updater, t } = newUpdater({}, sp);
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.resync.length, 1);
+  assert.deepEqual(sp.calls.resync[0], sp.candles); // 末尾 1 本ではなく全件を渡す
+});
+
+test('tick: 再同期実施時（true）は updateLastCandle を重ねない（二重反映防止）', async () => {
+  const sp = resyncSpies({ resyncResult: true });
+  const { updater, t } = newUpdater({}, sp);
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.updateLast.length, 0);
+});
+
+test('tick: 再同期不要（false）なら従来どおり最新足を updateLastCandle（挙動不変）', async () => {
+  const sp = resyncSpies({ resyncResult: false });
+  const { updater, t } = newUpdater({}, sp);
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.updateLast.length, 1);
+  assert.deepEqual(sp.calls.updateLast[0], sp.candles.at(-1));
+});
+
+test('tick: suppressPriceUpdate=true でも resyncMissedCandles は実施される（補完は抑止対象外）', async () => {
+  const sp = resyncSpies({ resyncResult: true });
+  const { updater, t } = newUpdater({ suppressPriceUpdate: true }, sp);
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.resync.length, 1);       // 補完は実施
+  assert.equal(sp.calls.updateLast.length, 0);   // 価格の差分上書きは従来どおり抑止
+});
+
+test('tick: renderer が resyncMissedCandles 未実装でも従来経路で動く（後方互換）', async () => {
+  const sp = spies(); // renderer は updateLastCandle のみ
+  const { updater, t } = newUpdater({}, sp);
+  updater.start();
+  await t.tick();
+  assert.equal(sp.calls.updateLast.length, 1);
+  assert.deepEqual(sp.calls.updateLast[0], sp.candles.at(-1));
+});
