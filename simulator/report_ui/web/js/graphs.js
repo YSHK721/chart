@@ -6,7 +6,7 @@
 //
 // 連動方式（アーキ指針 §3）: グラフ要素クリック→純関数で id Set を作り linkage.applyFilter へ渡す。
 //   chart/table への直接 import は作らず、購読登録は main.js が行う（コールバック注入）。
-//   filter 純関数（filterIdsBy*/scatterIds）は DOM 非依存で export しテスト容易にする。
+//   filter 純関数（filterIdsBy*）は DOM 非依存で export しテスト容易にする。
 //
 // R-2/単一規約: hour=entry の UTC hour / wday=(getUTCDay()+6)%7（Mon=0）/ hold=hold_sec バケット。
 //   trades は data.segments[seg].trades を読む（フラット DATA.trades 参照は移植しない）。
@@ -54,13 +54,6 @@ export function filterIdsByHold(trades, lab) {
   const ids = new Set();
   if (!b) return ids;
   for (const t of trades || []) if (t.hold_sec >= b[0] && t.hold_sec < b[1]) ids.add(t.id);
-  return ids;
-}
-
-// 散布点列（[{x,y,id}]）→ trade id の Set。
-export function scatterIds(points) {
-  const ids = new Set();
-  for (const p of points || []) ids.add(p.id);
   return ids;
 }
 

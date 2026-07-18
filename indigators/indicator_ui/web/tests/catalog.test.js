@@ -353,8 +353,6 @@ test('catalog params: existing q-chain constraints survive UI-metadata extension
   const kinds = qlow.constraints.map((c) => c.kind);
   assert.ok(kinds.includes('range_open'));
   assert.ok(kinds.includes('lt'));
-  // 既定値検証は緑（evaluate 単一定義・挙動不変）
-  assert.deepEqual(def.validateParams({ fitter: 'ols', price: 'open', maxbars: 100, q_low: 0.05, q_high: 0.95 }), []);
 });
 
 

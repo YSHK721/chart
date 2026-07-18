@@ -347,7 +347,7 @@ test('regression(restore flash): refresh during growing push with cursor unset (
   });
   actor.setParams({ mode: 'normal' });
   actor.applyGrowthState({ growing: true }); // reveal は常時 growing（mpGrowthResolver=()=>true）。
-  // Act: restore() の可視 MP 復元経路（_applyMpParams→setEnabled(true)→refresh）。
+  // Act: restore() の可視 MP 復元経路（setEnabled(true)→refresh）。
   await actor.setEnabled(true);
   // Assert: 全期間 fetchProfile（未来リーク・完成形フラッシュ）を呼ばず、setProfile も一切描かない。
   assert.equal(client.calls.length, 0, 'cursor 未確定の growing push refresh は全期間 fetchProfile を呼ばない');

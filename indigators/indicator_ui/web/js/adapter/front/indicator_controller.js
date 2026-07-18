@@ -329,10 +329,6 @@ export class IndicatorController {
   //   market_profile_controller.js（MarketProfileController）へ外出しした（ISSUE-094 🔴-4）。
   //   以下は subclass の inherited 呼出（this._applyMpGrowth 等）・既存テスト・composition root 配線を
   //   温存するための薄い委譲ラッパ（挙動は抽出前と byte 等価）。_mpParams override は host 経由で尊重される。
-  _applyMpParams(p) {
-    return this._mp.applyMpParams(p);
-  }
-
   _applyMpGrowth() {
     return this._mp.applyMpGrowth();
   }

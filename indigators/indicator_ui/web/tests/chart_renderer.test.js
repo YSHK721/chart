@@ -169,32 +169,6 @@ test('coordinateToLogical delegates to chart.timeScale().coordinateToLogical', (
   assert.equal(renderer.coordinateToLogical(null), null);
 });
 
-// pixelsPerBar（スワイプ感度基準）: |logicalToCoordinate(1)-logicalToCoordinate(0)|、極小(<0.5)は 8 下限。
-//   最小 fake chart で timeScale().logicalToCoordinate を差し替えて検証する。
-function rendererWithSpacing(spacingPx) {
-  const main = { setData() {}, priceScale: () => ({ applyOptions() {} }) };
-  const chart = {
-    addSeries: () => main,
-    subscribeCrosshairMove() {},
-    timeScale: () => ({
-      logicalToCoordinate: spacingPx == null ? undefined : ((i) => (i == null ? null : i * spacingPx)),
-    }),
-  };
-  return new ChartRenderer({ chart, mainSeries: main, lwc: {} });
-}
-
-test('pixelsPerBar: 通常は barSpacing（|logicalToCoordinate(1)-(0)|）を返す', () => {
-  assert.equal(rendererWithSpacing(12).pixelsPerBar(), 12);
-});
-
-test('pixelsPerBar: barSpacing が極小(<0.5px)なら 8 を下限に使う（ズームアウト時の暴走防止・プロト準拠）', () => {
-  assert.equal(rendererWithSpacing(0.3).pixelsPerBar(), 8, '0.3px/bar → 8 下限');
-});
-
-test('pixelsPerBar: logicalToCoordinate 非提供なら 8（後方互換）', () => {
-  assert.equal(rendererWithSpacing(null).pixelsPerBar(), 8);
-});
-
 test('focusRecentBars(n): 直近 n バーを可視範囲にする（sessions の初期ズーム）', () => {
   const ranges = [];
   const main = { setData() {}, applyOptions() {}, priceScale: () => ({ applyOptions() {} }) };
@@ -1241,7 +1215,6 @@ test('handlePriceWheel: 軸領域内(x>=timeScale width)で処理し true・setV
   assert.ok(Math.abs(psState.range.from - 10) < 1e-6);
   assert.ok(Math.abs(psState.range.to - 190) < 1e-6);
   assert.equal(psState.autoScale, false);
-  assert.equal(renderer.isPriceZoomed(), true);
 });
 
 test('handlePriceWheel: 軸領域外(x<timeScale width)は false で何もしない（時間軸ズームを奪わない）', () => {
@@ -1280,21 +1253,11 @@ test('resetPriceZoom: autoScale=true へ復帰する（手動スケールの唯�
   const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
   renderer.setPaneHeight(360);
   renderer.handlePriceWheel(610, 180, -100);
-  assert.equal(renderer.isPriceZoomed(), true);
+  assert.equal(psState.autoScale, false);
   // Act: リセット（dblclick 相当）。
   renderer.resetPriceZoom();
   // Assert: 自動スケール復帰。
   assert.equal(psState.autoScale, true);
-  assert.equal(renderer.isPriceZoomed(), false);
-});
-
-test('isPriceZoomed: 軸ドラッグ由来の手動スケール（autoScale=OFF）でも true（入力手段を区別しない）', () => {
-  const { chart, mainSeries, priceScale } = fakeZoomChart(360);
-  const renderer = new ChartRenderer({ chart, mainSeries, lwc: fakeLwc() });
-  assert.equal(renderer.isPriceZoomed(), false);
-  // 軸ドラッグ相当: lwc ネイティブが autoScale=false にする。
-  priceScale.applyOptions({ autoScale: false });
-  assert.equal(renderer.isPriceZoomed(), true, 'ドラッグ由来でもズーム中扱い（縦パン許可）');
 });
 
 // ---------------------------------------------------------------------------

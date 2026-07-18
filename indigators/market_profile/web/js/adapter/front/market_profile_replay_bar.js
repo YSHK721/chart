@@ -218,26 +218,4 @@ export class MarketProfileReplayBar {
     }
     this._onScrub(time);
   }
-
-  // 増分2 スワイプ: logical index（renderer.coordinateToLogical(x) の結果）→ 足 index へ round/clamp し、
-  //   スライダ値と T（対応足 time）を同期して onScrub へ通知する（双方向同期）。
-  //   移植元 prototype_260630-01（updateCaptureMode の x→logical→candles index clamp）。
-  //   candles 未設定・null/NaN は no-op（scrub しない・例外なし）。
-  scrubToLogical(logical) {
-    if (this._candles.length === 0 || logical == null || Number.isNaN(Number(logical))) {
-      return;
-    }
-    let idx = Math.round(Number(logical));
-    idx = Math.max(0, Math.min(idx, this._candles.length - 1));
-    // スライダ値へ反映（双方向同期）。
-    if (this._range) {
-      this._range.value = String(idx);
-    }
-    const time = this._candles[idx].time;
-    this._label = formatCursorLabel(time);
-    if (this._dateLabel) {
-      this._dateLabel.textContent = this._label;
-    }
-    this._onScrub(time);
-  }
 }

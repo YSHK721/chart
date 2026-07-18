@@ -11,7 +11,6 @@ import {
   filterIdsByHour,
   filterIdsByWday,
   filterIdsByHold,
-  scatterIds,
   scatterIdAt,
   scatterPairSources,
   holdPairSources,
@@ -59,12 +58,6 @@ test("filterIdsByHold buckets by hold_sec with [lo,hi) boundaries (HB)", () => {
   assert.deepEqual([...filterIdsByHold(trades, "<1m")], [1]);
   assert.deepEqual([...filterIdsByHold(trades, "1-2m")].sort((a, b) => a - b), [2, 3]);
   assert.deepEqual([...filterIdsByHold(trades, "2-5m")], [4]);
-});
-
-test("scatterIds maps scatter points to the Set of their trade ids", () => {
-  const points = [{ x: 1.5, y: 10, id: 7 }, { x: 2.0, y: -3, id: 9 }];
-  assert.deepEqual([...scatterIds(points)].sort((a, b) => a - b), [7, 9]);
-  assert.equal(scatterIds([]).size, 0);
 });
 
 test("scatterIdAt picks IS array on datasetIndex 0", () => {

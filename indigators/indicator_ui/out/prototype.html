@@ -730,12 +730,11 @@ class ComputeError extends Error {
 
 
 // ===== js/domain/domain_models.js =====
-// domain モデル（SeriesDef / AppliedInstance / Favorite / IndicatorDef）の JS 移植。
+// domain モデル（SeriesDef / AppliedInstance / IndicatorDef）の JS 移植。
 //
-// Python series_def.py / applied_instance.py / favorite.py / indicator_def.py に対応。
-// DOM/chart/fetch 非依存の純ロジック。検索（§4.6）・generation 不変ルール（§6.6）・
-// 制約委譲（§3.1.5）を domain に集約する。
-
+// Python series_def.py / applied_instance.py / indicator_def.py に対応。
+// DOM/chart/fetch 非依存の純ロジック。検索（§4.6）・generation 不変ルール（§6.6）を
+// domain に集約する。
 
 const SeriesKind = Object.freeze({
   LINE: 'line',
@@ -778,13 +777,6 @@ class SeriesDef {
     this.axisLabelVisible = axisLabelVisible;
     Object.freeze(this);
   }
-
-  // 値列名 column に対応する描画系列名を返す（F3 照合基準＝series_name 固定）。
-  // 引数 column は将来の dynamic 展開用の予約。現状 static 系列では消費しない。
-  resolveSeriesName(column) {
-    void column;
-    return this.seriesName;
-  }
 }
 
 // チャート上に追加された 1 インスタンス（§3.1.4）。
@@ -825,14 +817,6 @@ class AppliedInstance {
   }
 }
 
-// お気に入り登録 1 件（指標 id 単位）。
-class Favorite {
-  constructor({ indicatorId }) {
-    this.indicatorId = indicatorId;
-    Object.freeze(this);
-  }
-}
-
 // レジストリ 1 件の統一メタデータ（§3.1.3）。
 class IndicatorDef {
   constructor({ id, displayNameKey, category, tab, placement, params, series, compute, descriptionKey = null }) {
@@ -849,11 +833,6 @@ class IndicatorDef {
     this.compute = compute;
     this.descriptionKey = descriptionKey;
     Object.freeze(this);
-  }
-
-  // パラメータ値の妥当性を ConstraintEvaluator.evaluate へ委譲する（§3.1.5 単一定義）。
-  validateParams(values) {
-    return evaluate(this.params, values);
   }
 
   // 検索一致（§4.6）: 表示名+id を対象、小文字化、部分一致、複数語は論理積。
@@ -2819,14 +2798,6 @@ class ChartRenderer {
     return true;
   }
 
-  // 手動スケール中（autoScale=OFF）か。軸ドラッグ由来・ホイール由来を区別しない（lwc の
-  //   同一内部状態を見る）。true のとき本体ドラッグの上下パンを許可する（全体表示では不許可）。
-  isPriceZoomed() {
-    const ps = this._rightPriceScale();
-    const opts = ps && typeof ps.options === 'function' ? ps.options() : null;
-    return !!(opts && opts.autoScale === false);
-  }
-
   // 価格軸のダブルクリック等で自動スケールへ復帰する。手動スケール（ドラッグ/ホイール）の
   //   解除点はユーザーのこの操作のみ（システムは勝手に解除しない）。
   resetPriceZoom() {
@@ -2901,22 +2872,6 @@ class ChartRenderer {
       return; // 不正レンジは触らない（現状維持）。
     }
     ts.setVisibleRange({ from, to });
-  }
-
-  // リプレイスワイプの感度基準＝1 バーあたりのピクセル幅（barSpacing）。
-  //   移植元 prototype_260630-01/js/app.js L452-453: |logicalToCoordinate(1) - logicalToCoordinate(0)|。
-  //   ★ズームアウトで barSpacing が極小（<0.5px）のときは 8px を下限に使う（プロト準拠）。これにより
-  //     少しのマウス移動でスライダが暴走するのを防ぐ（絶対マッピングの過敏さの修正）。非提供時も 8。
-  pixelsPerBar() {
-    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
-    if (ts && typeof ts.logicalToCoordinate === 'function') {
-      const c0 = ts.logicalToCoordinate(0);
-      const c1 = ts.logicalToCoordinate(1);
-      if (c0 != null && c1 != null && Math.abs(c1 - c0) > 0.5) {
-        return Math.abs(c1 - c0);
-      }
-    }
-    return 8; // barSpacing 極小/非提供時の下限（プロト準拠）。
   }
 
   // 増分2: スナップショット用のローソク局所トリム（基準 candles を time<=T へスライスして setData）。
@@ -6094,10 +6049,6 @@ class IndicatorController {
   //   market_profile_controller.js（MarketProfileController）へ外出しした（ISSUE-094 🔴-4）。
   //   以下は subclass の inherited 呼出（this._applyMpGrowth 等）・既存テスト・composition root 配線を
   //   温存するための薄い委譲ラッパ（挙動は抽出前と byte 等価）。_mpParams override は host 経由で尊重される。
-  _applyMpParams(p) {
-    return this._mp.applyMpParams(p);
-  }
-
   _applyMpGrowth() {
     return this._mp.applyMpGrowth();
   }

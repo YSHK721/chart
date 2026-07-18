@@ -1,10 +1,8 @@
-// domain モデル（SeriesDef / AppliedInstance / Favorite / IndicatorDef）の JS 移植。
+// domain モデル（SeriesDef / AppliedInstance / IndicatorDef）の JS 移植。
 //
-// Python series_def.py / applied_instance.py / favorite.py / indicator_def.py に対応。
-// DOM/chart/fetch 非依存の純ロジック。検索（§4.6）・generation 不変ルール（§6.6）・
-// 制約委譲（§3.1.5）を domain に集約する。
-
-import { evaluate } from './constraint_eval.js';
+// Python series_def.py / applied_instance.py / indicator_def.py に対応。
+// DOM/chart/fetch 非依存の純ロジック。検索（§4.6）・generation 不変ルール（§6.6）を
+// domain に集約する。
 
 export const SeriesKind = Object.freeze({
   LINE: 'line',
@@ -47,13 +45,6 @@ export class SeriesDef {
     this.axisLabelVisible = axisLabelVisible;
     Object.freeze(this);
   }
-
-  // 値列名 column に対応する描画系列名を返す（F3 照合基準＝series_name 固定）。
-  // 引数 column は将来の dynamic 展開用の予約。現状 static 系列では消費しない。
-  resolveSeriesName(column) {
-    void column;
-    return this.seriesName;
-  }
 }
 
 // チャート上に追加された 1 インスタンス（§3.1.4）。
@@ -94,14 +85,6 @@ export class AppliedInstance {
   }
 }
 
-// お気に入り登録 1 件（指標 id 単位）。
-export class Favorite {
-  constructor({ indicatorId }) {
-    this.indicatorId = indicatorId;
-    Object.freeze(this);
-  }
-}
-
 // レジストリ 1 件の統一メタデータ（§3.1.3）。
 export class IndicatorDef {
   constructor({ id, displayNameKey, category, tab, placement, params, series, compute, descriptionKey = null }) {
@@ -118,11 +101,6 @@ export class IndicatorDef {
     this.compute = compute;
     this.descriptionKey = descriptionKey;
     Object.freeze(this);
-  }
-
-  // パラメータ値の妥当性を ConstraintEvaluator.evaluate へ委譲する（§3.1.5 単一定義）。
-  validateParams(values) {
-    return evaluate(this.params, values);
   }
 
   // 検索一致（§4.6）: 表示名+id を対象、小文字化、部分一致、複数語は論理積。

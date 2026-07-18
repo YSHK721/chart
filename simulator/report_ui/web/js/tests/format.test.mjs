@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fmtT, fmtMoney, cfmt, cfmtLocale, signClass } from "../format.js";
+import { fmtT, fmtMoney, cfmtLocale, signClass } from "../format.js";
 
 test("fmtT formats a UNIX seconds timestamp in UTC with zero-padding", () => {
   // 2026-04-15 03:07:09 UTC.
@@ -25,7 +25,6 @@ test("fmtT returns empty string for null/non-finite input", () => {
 // 既存ヘルパの回帰確認（fmtT 追加で他関数を壊していない）。
 test("existing format helpers still behave", () => {
   assert.equal(fmtMoney(11370), "11,370");
-  assert.equal(cfmt(1.2345, 2), "1.23");
   assert.equal(cfmtLocale(11370, 0), "11,370");
   assert.equal(signClass(-1), "neg");
 });

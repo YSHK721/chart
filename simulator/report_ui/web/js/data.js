@@ -11,10 +11,3 @@ export function aggOf(data, seg) {
   const segment = segments[seg] || {};
   return segment.agg || {};
 }
-
-// segments[seg].agg.contacts を防御的に取得する（欠落時は [] を返す・追加のみ）。
-// 接点（コンタクトスキャン）マーカー列 [{time, price, dir}]。agg 経由の偶有的追加データで、
-// contacts 未付与（後方互換の payload）でも参照例外を起こさず空配列を返す。
-export function contactsOf(data, seg) {
-  return aggOf(data, seg).contacts || [];
-}

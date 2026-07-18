@@ -428,14 +428,6 @@ export class ChartRenderer {
     return true;
   }
 
-  // 手動スケール中（autoScale=OFF）か。軸ドラッグ由来・ホイール由来を区別しない（lwc の
-  //   同一内部状態を見る）。true のとき本体ドラッグの上下パンを許可する（全体表示では不許可）。
-  isPriceZoomed() {
-    const ps = this._rightPriceScale();
-    const opts = ps && typeof ps.options === 'function' ? ps.options() : null;
-    return !!(opts && opts.autoScale === false);
-  }
-
   // 価格軸のダブルクリック等で自動スケールへ復帰する。手動スケール（ドラッグ/ホイール）の
   //   解除点はユーザーのこの操作のみ（システムは勝手に解除しない）。
   resetPriceZoom() {
@@ -510,22 +502,6 @@ export class ChartRenderer {
       return; // 不正レンジは触らない（現状維持）。
     }
     ts.setVisibleRange({ from, to });
-  }
-
-  // リプレイスワイプの感度基準＝1 バーあたりのピクセル幅（barSpacing）。
-  //   移植元 prototype_260630-01/js/app.js L452-453: |logicalToCoordinate(1) - logicalToCoordinate(0)|。
-  //   ★ズームアウトで barSpacing が極小（<0.5px）のときは 8px を下限に使う（プロト準拠）。これにより
-  //     少しのマウス移動でスライダが暴走するのを防ぐ（絶対マッピングの過敏さの修正）。非提供時も 8。
-  pixelsPerBar() {
-    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
-    if (ts && typeof ts.logicalToCoordinate === 'function') {
-      const c0 = ts.logicalToCoordinate(0);
-      const c1 = ts.logicalToCoordinate(1);
-      if (c0 != null && c1 != null && Math.abs(c1 - c0) > 0.5) {
-        return Math.abs(c1 - c0);
-      }
-    }
-    return 8; // barSpacing 極小/非提供時の下限（プロト準拠）。
   }
 
   // 増分2: スナップショット用のローソク局所トリム（基準 candles を time<=T へスライスして setData）。

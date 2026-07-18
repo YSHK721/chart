@@ -9,7 +9,6 @@ import {
   contactToMarker, contactsToMarkers, contactsInRange,
   CONTACT_UP_COLOR, CONTACT_DOWN_COLOR, CONTACT_MARKER_CAP,
 } from "../chart.js";
-import { contactsOf } from "../data.js";
 
 // --- contactToMarker: 1 接点 → 1 マーカー（up/down で shape/position/color 分離） -----
 
@@ -106,19 +105,4 @@ test("range-filter then cap lets a large set display when zoomed in", () => {
     (_, i) => ({ time: i, price: 1, dir: "up" }));
   const zoomed = contactsInRange(total, { from: 0, to: 10 }); // 11 件
   assert.equal(contactsToMarkers(zoomed, { visible: true }).length, 11);
-});
-
-// --- contactsOf(data, seg): agg.contacts の防御的取得（R-4 防御） ------------------
-
-test("contactsOf returns agg.contacts for an existing segment", () => {
-  const contacts = [{ time: 10, price: 1, dir: "up" }];
-  const data = { segments: { is: { agg: { contacts } } } };
-  assert.deepEqual(contactsOf(data, "is"), contacts);
-});
-
-test("contactsOf returns [] when contacts missing / agg missing / segment missing", () => {
-  assert.deepEqual(contactsOf({ segments: { is: { agg: {} } } }, "is"), []);
-  assert.deepEqual(contactsOf({ segments: { is: {} } }, "is"), []);
-  assert.deepEqual(contactsOf({ segments: {} }, "is"), []);
-  assert.deepEqual(contactsOf(undefined, "is"), []);
 });
