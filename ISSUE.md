@@ -1704,7 +1704,7 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **健全性確認（違反でないと判定）**: `mp_source_capability.js` の能力ゲートは isinstance 判別でなく能力記述子＋Null Object＝LSP 健全。`ReplayMarketProfileActor extends MarketProfileActor` は設計済み seam（`_clockExtra` 等）による Template Method＝安全。`CandleSource` は事後条件対称の模範。
 - **対策案（要承認）**: source_ref の型を Port で一意化（パス解決は各実装の構築時パラメータへ隔離）し isinstance 分岐を除去。`MarketDataSourceRepository.load` で DataError へ翻訳し例外契約を対称化。TickModelPort は docstring に空列許容を明記。
 ## ISSUE-136: [SOLID/ISP] `TickStorePort` の混載と `_indicator_ui_bridge`/dataset 具象の太い依存面（アーキテクチャ調査 2026-07-18）
-- **ステータス**: OPEN（起票のみ・是正は要承認）
+- **ステータス**: RESOLVED（2026-07-18 実装・検証済み）
 - **調査方法**: ISSUE-133 と同一（ポート全メソッド×クライアント呼び出しを Grep+Read で実測マトリクス化・自己レビュー済み）。
 - **所見（重大度順）**:
   - 【高〜中】`tick_store_port.py:19-32` `TickStorePort`（day_files/read_ticks/data_dir）が「キャッシュ基点」と「tick ファイルアクセス」を混載。実測: dwell=3/3、zp=2/3（read_ticks 未使用＝否定側 Grep 0 件で裏取り済み）、`tf_period_profile_controller.py:104`=1/3（data_dir のみ）。3 クライアント 3 分化。
@@ -1712,6 +1712,12 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
   - 【中】具象 `marketdata/dataset.py` の約 5 面を各クライアントが port 迂回で subset 利用（causal_candle=2 面・intrabar=`load_atom_window` のみ・candles_controller=3 面）。`DatasetPort` は 3 メソッドのみで `load_candles`/`load_atom_window` 利用者に狭い抽象が不在。
 - **対策案（要承認）**: `DataRootPort(data_dir)`＋`TickReaderPort(day_files, read_ticks)` へ分割。bridge を `load_dataset()`/`load_compute()`/`load_mp_handlers()` の粒度別アクセサへ分割。dataset は `RefValidationPort`/`OhlcSupplyPort` 等の用途別 port 化。
 - **棄却済み候補（自己レビュー）**: `DatasetPort` 自体（唯一の port 型消費者 `compute_indicators.py` が 3/3 使用）、`replay_ports.py` 各 Port（usecase と 1:1 で全メソッド使用＝良例）、JS `MarketProfileClient`（forming 分離済み）。※`ContactScanPort`（`replay_ports.py:131`）は実装・呼出ゼロのデッドポート（ISP でなく YAGNI 観点の削除候補として記録）。
+- **是正結果（2026-07-18・承認済み実装）**:
+  - 【高〜中・是正】`compute/tick_store_port.py` の太い `TickStorePort` を役割別に `DataRootPort`（`data_dir`）＋`TickReaderPort`（`day_files`/`read_ticks`/`load_window_ticks`）へ分割。狭い getter `data_root()`/`tick_reader()` を追加し、単一の注入シーム（`set_tick_store`/`tick_store`/`_STORE`）へ委譲（挙動・自己完結起動を温存）。`TickStorePort` は両者の合成 Protocol として名を温存（既存消費者・既定具象 `MarketdataTickStore` 非破壊）。クライアント再結線: dwell/zp→`tick_reader()`（tick 読取のみ）、`tf_period_profile_controller`/`gateway/composition`（既定 root provider）→`data_root()`（基点のみ）。実測マトリクスに基づく最小分割（dwell 2/2・zp 1/1・tf_period 1/1・composition 1/1 使用）。
+  - 【中・是正】`_indicator_ui_bridge.py` の無条件 eager import する `load()`（6 メンバ）を粒度別アクセサ `load_dataset()`（dataset のみ）／`load_compute()`（dataset＋計算 Facade）／`load_mp_handlers()`（MP controller のみ）へ分割。sys.path 準備は共通 `_ensure_paths()` に集約し byte 等価を維持。全 6 非テスト消費者を再結線（causal_candle/intrabar/composition_root→`load_dataset`、causal_compute→`load_compute`、market_profile/forming gateway→`load_mp_handlers`）。`load()` は全面束ねの後方互換 API として温存（既存テスト非破壊）。dataset-only 経路が MP controller を eager import しないことを subprocess クリーン interpreter で実証。
+  - 【中・是正】`simulator/replay_ui/adapter/dataset_ports.py` に役割別 狭いポート `RefValidationPort`（`is_known`/`is_known_timeframe`）＋`OhlcSupplyPort`（`load_dataframe`/`load_atom_window`）を新設。dataset 具象の subset 利用クライアント（causal_candle/causal_compute/intrabar/composition_root）を狭いポート型経由の依存へ置換（`marketdata.dataset` が両ポートを構造的に満たすことを `runtime_checkable` isinstance で実測・挙動不変）。棄却済み候補（`DatasetPort` 自体・`replay_ports.py`・JS `MarketProfileClient`・`ContactScanPort` デッド削除）は不変（触らず・YAGNI）。
+  - **回帰ガード追加**: `test_tick_store_port.py` に `test_ports_are_split_by_role_isp`（役割別 isinstance の独立成立）／`test_narrow_getters_share_single_injection_seam`／`test_isp_clients_depend_on_narrow_getters`（狭い getter 依存・太い直参照不在の grep）。`test_bridge_isp_split.py`（新規）に各アクセサの面・後方互換 `load()`・`test_load_dataset_does_not_eager_import_mp_controllers`（subprocess 遮断実証）・dataset 具象の狭いポート適合。ISSUE-137 の依存方向ガード（`test_store_gateway_layering.py`）は非退行。
+  - **挙動不変の実証**: pytest 全通過（market_profile 307〈+3〉／indicator_ui 375〈不変〉／simulator 全 1326〈+6〉・うち replay_ui 176）。public import 面（`load()`・`TickStorePort` 名・`set_tick_store`/`tick_store`/`_STORE` 注入シーム）は grep＋テストで無変更確認。
 ## ISSUE-137: [SOLID/DIP] compute（方針層）が永続化 Store 具象を module-level 生成（TickStorePort と非対称・Port 抽象欠落）（アーキテクチャ調査 2026-07-18）
 - **ステータス**: RESOLVED（2026-07-18 実装・検証済み）
 - **調査方法**: ISSUE-133 と同一（import 全数調査＋Read 確認・TYPE_CHECKING/テスト専用 import は除外済み・自己レビュー済み）。
