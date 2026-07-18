@@ -21,6 +21,8 @@ import {
   mpSourceEnumLabels,
   MP_ZP_SESSIONS_BLOCKED_TFS,
 } from '../domain/mp_source_capability.js';
+// 表示モードの宣言的属性（splitByDay/isNormal）の単一台帳（ISSUE-134 OCP）。
+import { mpDisplayMode } from '../domain/mp_display_mode.js';
 
 // tf-period が日別列を描く対応 tf（列描画時は解像度が GRID_W 固定＝resmode/bins/range 無効）。
 //   ISSUE-070。ISSUE-086（全時間足パラメータ統一）: 1W/1M もセッション日次ロールアップの
@@ -37,7 +39,7 @@ export { MP_ZP_SESSIONS_BLOCKED_TFS };
 //   { timeframe, servedMode } を受ける（gear ダイアログが現 timeframe/mode を注入）。
 function _mpTfPeriodDrawsColumns(values, ctx) {
   if (!ctx || ctx.servedMode !== 'b') { return false; }
-  if (values.mode !== 'sessions') { return false; }
+  if (!mpDisplayMode(values.mode).splitByDay) { return false; }
   const tf = ctx.timeframe;
   if (!_MP_PLAYER_TF.has(tf)) { return false; }
   if (!mpSupportsTf(values.src, tf)) { return false; }
@@ -52,7 +54,7 @@ const _mpResolutionEnabled = (values, ctx) => !_mpTfPeriodDrawsColumns(values, c
 //   全時間足で統一）。「当日」窓＝現在セッション日はチャート tf と独立に定義できる
 //   （actor が from=セッション始端を付与・1W/1M ラベルの未来日化は actor 側で now クランプ）。
 //   日別（各営業日で分割済み）では計測窓の意味が重複するため通常モード限定は維持。
-const _mpPeriodEnabled = (values, ctx) => values.mode === 'normal';
+const _mpPeriodEnabled = (values, ctx) => mpDisplayMode(values.mode).isNormal;
 
 export function makeMarketProfileDef({
   IndicatorDef,
@@ -144,7 +146,7 @@ export function makeMarketProfileDef({
         // ISSUE-080: 日別×1m/5m では該当ソースの option を無効化（灰色・選択不可）。代替粒度は出さない。
         //   ソース別の session ブロック tf は記述子（blockedSessionTfs）が単一情報源。
         //   ctx 不在（A方式・単体テスト）は制限しない（timeframe を知り得ないため安全側＝有効）。
-        optionEnable: (value, values, ctx) => values.mode !== 'sessions'
+        optionEnable: (value, values, ctx) => !mpDisplayMode(values.mode).splitByDay
           || !ctx || ctx.timeframe == null
           || !mpSourceCapability(value).blockedSessionTfs.has(ctx.timeframe),
       }),

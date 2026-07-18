@@ -1416,6 +1416,41 @@ function mpSourceEnumLabels() {
 const MP_ZP_SESSIONS_BLOCKED_TFS = _ZP_BLOCKED_SESSION_TFS;
 
 
+// ===== js/domain/mp_display_mode.js =====
+// mp_display_mode.js — MP 表示モード enum（normal/sessions/replay/ticklive）の単一台帳（ISSUE-134 OCP）。
+//
+// 従来 mode === 'sessions' / mode !== 'sessions' / mode === 'normal' の直接比較と _applyMode の
+//   mode 別 if 連鎖が market_profile_actor.js / growth_window.js / catalog_entry.js の 3 層に散在し、
+//   モード追加（replay/sessions → ticklive/rolling の実績あり）時に複数箇所の同時修正を要した。本台帳へ
+//   per-mode の宣言的属性を集約し、各呼出面は属性名で参照する（新モードは台帳 1 箇所への追記で完結＝OCP）。
+//
+// 属性の定義（各属性は従来の boolean 比較と 1:1 一致＝挙動変更ゼロ）:
+//   - isNormal   : 通常モード（全期間累積）か（旧 mode === 'normal'）。解像度/期間パラメータの有効判定に使う。
+//   - splitByDay : 日別プロファイル分割モードか（旧 mode === 'sessions'）。セッション集計窓・tf-period 列・
+//                  src option の各判定に使う。
+//   - transition : actor._applyMode が実行する状態遷移経路 'normal'|'sessions'|'replay'|'ticklive'。
+//                  未知 mode は 'normal'（＝従来の「未知の mode は 'normal' 扱い（安全側）」の吸収先）。
+//
+// 注意（別 enum との区別）: 「リプレイバーの anchor モード（anchor/rolling）」は本表示モードとは別 enum で
+//   ある（market_profile_actor._replayExtra の replayBar.mode()＝anchor|rolling）。混同を避けるため本台帳
+//   には含めない（rolling は表示モードの値ではない）。
+
+const MP_DISPLAY_MODES = Object.freeze({
+  normal: Object.freeze({ isNormal: true, splitByDay: false, transition: 'normal' }),
+  sessions: Object.freeze({ isNormal: false, splitByDay: true, transition: 'sessions' }),
+  replay: Object.freeze({ isNormal: false, splitByDay: false, transition: 'replay' }),
+  ticklive: Object.freeze({ isNormal: false, splitByDay: false, transition: 'ticklive' }),
+});
+
+// 未知 mode のフォールバック（宣言的述語は false＝旧 === 比較と一致・遷移経路は 'normal'＝安全側）。
+const _UNKNOWN_MODE = Object.freeze({ isNormal: false, splitByDay: false, transition: 'normal' });
+
+// mode → 表示モード台帳エントリ（未知 mode は安全側フォールバックを返す）。
+function mpDisplayMode(mode) {
+  return MP_DISPLAY_MODES[mode] ?? _UNKNOWN_MODE;
+}
+
+
 // ===== js/usecase/catalog_entry.js =====
 // catalog_entry.js — Market Profile の IndicatorDef を組み立てる factory（MP モジュール所有）。
 //
@@ -1432,6 +1467,7 @@ const MP_ZP_SESSIONS_BLOCKED_TFS = _ZP_BLOCKED_SESSION_TFS;
 
 // ソース能力記述子（domain 単一情報源）。src ごとの挙動差（対応 tf・session ブロック・
 //   選択肢・ラベル・期間窓）はすべて本記述子から導出する（ISSUE-097 🟡-8/🟡-9・散在解消）。
+// 表示モードの宣言的属性（splitByDay/isNormal）の単一台帳（ISSUE-134 OCP）。
 
 // tf-period が日別列を描く対応 tf（列描画時は解像度が GRID_W 固定＝resmode/bins/range 無効）。
 //   ISSUE-070。ISSUE-086（全時間足パラメータ統一）: 1W/1M もセッション日次ロールアップの
@@ -1448,7 +1484,7 @@ const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W',
 //   { timeframe, servedMode } を受ける（gear ダイアログが現 timeframe/mode を注入）。
 function _mpTfPeriodDrawsColumns(values, ctx) {
   if (!ctx || ctx.servedMode !== 'b') { return false; }
-  if (values.mode !== 'sessions') { return false; }
+  if (!mpDisplayMode(values.mode).splitByDay) { return false; }
   const tf = ctx.timeframe;
   if (!_MP_PLAYER_TF.has(tf)) { return false; }
   if (!mpSupportsTf(values.src, tf)) { return false; }
@@ -1463,7 +1499,7 @@ const _mpResolutionEnabled = (values, ctx) => !_mpTfPeriodDrawsColumns(values, c
 //   全時間足で統一）。「当日」窓＝現在セッション日はチャート tf と独立に定義できる
 //   （actor が from=セッション始端を付与・1W/1M ラベルの未来日化は actor 側で now クランプ）。
 //   日別（各営業日で分割済み）では計測窓の意味が重複するため通常モード限定は維持。
-const _mpPeriodEnabled = (values, ctx) => values.mode === 'normal';
+const _mpPeriodEnabled = (values, ctx) => mpDisplayMode(values.mode).isNormal;
 
 function makeMarketProfileDef({
   IndicatorDef,
@@ -1555,7 +1591,7 @@ function makeMarketProfileDef({
         // ISSUE-080: 日別×1m/5m では該当ソースの option を無効化（灰色・選択不可）。代替粒度は出さない。
         //   ソース別の session ブロック tf は記述子（blockedSessionTfs）が単一情報源。
         //   ctx 不在（A方式・単体テスト）は制限しない（timeframe を知り得ないため安全側＝有効）。
-        optionEnable: (value, values, ctx) => values.mode !== 'sessions'
+        optionEnable: (value, values, ctx) => !mpDisplayMode(values.mode).splitByDay
           || !ctx || ctx.timeframe == null
           || !mpSourceCapability(value).blockedSessionTfs.has(ctx.timeframe),
       }),
@@ -8643,6 +8679,7 @@ const SESSIONS_INITIAL_SPAN_SEC = 365 * 86400;
 const PROFILE_MARGIN_FRACTION = 0.30;
 // timeframe → 足の秒長は domain/tf_meta.js（単一情報源・ISSUE-087 🔴-2）から import する。
 //   旧: growth_window.js との top-level const 衝突（IIFE 連結）で再宣言していた＝解消済み。
+// 表示モード enum の単一台帳（transition 遷移経路・未知 mode の normal 吸収／ISSUE-134 OCP）。
 
 class MarketProfileActor {
   // client: fetchProfile(context)->profile|null。primitive: setProfile/setVisible。
@@ -8714,8 +8751,12 @@ class MarketProfileActor {
     if (!this._replayBar) {
       return extra;
     }
-    const mode = typeof this._replayBar.mode === 'function' ? this._replayBar.mode() : 'anchor';
-    if (mode === 'rolling' && time != null) {
+    // 注意: ここでの mode は「リプレイバーの anchor モード」（anchor|rolling）であり、MP 表示モード
+    //   enum（normal/sessions/replay/ticklive・mp_display_mode 台帳）とは別 enum である（ISSUE-134）。
+    //   'rolling' は表示モードの値ではないため mp_display_mode 台帳には含めず、ここは replayBar 契約の
+    //   anchor モード判定として維持する。
+    const anchorMode = typeof this._replayBar.mode === 'function' ? this._replayBar.mode() : 'anchor';
+    if (anchorMode === 'rolling' && time != null) {
       const tf = this._getContext().timeframe;
       const barSec = TF_BAR_SEC[tf] ?? 86400;
       extra.from = time - ROLL_BARS * barSec;
@@ -8785,40 +8826,46 @@ class MarketProfileActor {
   //   - 'normal': 両 OFF 一式（_setReplay(false) ＋ _sessions=false ＋ _applySessions(null)）。
   //   排他が構造的に保証される（同時 ON が不可能）。未知の mode は 'normal' 扱い（安全側）。
   _applyMode(mode) {
-    if (mode === 'ticklive') {
-      // ticklive ON（tick 逐次成長）。replay/sessions 一式を解除して排他化する。
-      this._setReplay(false);
-      this._sessions = false;
-      this._applySessions(null);
-      this._ticklive = true;
-      this._growing = true;   // ticklive モード＝成長 ON（Phase1 互換: mode が _growing を立てる）。
-      return;
-    }
-    if (mode === 'sessions') {
-      this._exitTicklive();     // ticklive 解除（排他）。
-      this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
-      // 自動ズームは **非 sessions → sessions の新規入場時のみ** pending にする。既に sessions のまま
-      //   _applyMode('sessions') が再適用される（FOLLOW/ANALYSIS 遷移時の reapplyMarketProfileMode 等）
-      //   ケースで pending を再セットすると、価格更新→自動 FOLLOW 復帰のたびに focus が再発火して
-      //   ユーザーの手動ズームが「全体が初期表示」へリセットされる（実機バグ）。再適用では寄せない。
-      if (!this._sessions) {
-        this._sessionsFocusPending = true;
+    // 遷移経路は mp_display_mode 台帳（transition）が単一源。未知 mode は台帳が 'normal' へ吸収する
+    //   （旧「未知の mode は 'normal' 扱い（安全側）」を台帳側へ集約＝新モードは台帳追記で完結・OCP）。
+    switch (mpDisplayMode(mode).transition) {
+      case 'ticklive': {
+        // ticklive ON（tick 逐次成長）。replay/sessions 一式を解除して排他化する。
+        this._setReplay(false);
+        this._sessions = false;
+        this._applySessions(null);
+        this._ticklive = true;
+        this._growing = true;   // ticklive モード＝成長 ON（Phase1 互換: mode が _growing を立てる）。
+        return;
       }
-      this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
-      return;
+      case 'sessions': {
+        this._exitTicklive();     // ticklive 解除（排他）。
+        this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
+        // 自動ズームは **非 sessions → sessions の新規入場時のみ** pending にする。既に sessions のまま
+        //   _applyMode('sessions') が再適用される（FOLLOW/ANALYSIS 遷移時の reapplyMarketProfileMode 等）
+        //   ケースで pending を再セットすると、価格更新→自動 FOLLOW 復帰のたびに focus が再発火して
+        //   ユーザーの手動ズームが「全体が初期表示」へリセットされる（実機バグ）。再適用では寄せない。
+        if (!this._sessions) {
+          this._sessionsFocusPending = true;
+        }
+        this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
+        return;
+      }
+      case 'replay': {
+        this._exitTicklive();     // ticklive 解除（排他）。
+        this._sessions = false;   // sessions OFF。
+        this._applySessions(null); // sessions 一式解除（focus/ズーム/ロック・setSessions(null)・透明化解除）。
+        this._setReplay(true);    // replay ON（バー表示）。
+        return;
+      }
+      default: {
+        // 'normal'（および未知値＝台帳が transition='normal' へ吸収）: 全 OFF 一式。
+        this._exitTicklive();       // ticklive 解除（排他）。
+        this._setReplay(false);
+        this._sessions = false;
+        this._applySessions(null);
+      }
     }
-    if (mode === 'replay') {
-      this._exitTicklive();     // ticklive 解除（排他）。
-      this._sessions = false;   // sessions OFF。
-      this._applySessions(null); // sessions 一式解除（focus/ズーム/ロック・setSessions(null)・透明化解除）。
-      this._setReplay(true);    // replay ON（バー表示）。
-      return;
-    }
-    // 'normal'（および未知値）: 全 OFF 一式。
-    this._exitTicklive();       // ticklive 解除（排他）。
-    this._setReplay(false);
-    this._sessions = false;
-    this._applySessions(null);
   }
 
   // ticklive 表示中か（MP 有効かつ ticklive トグル ON のときだけ true）。

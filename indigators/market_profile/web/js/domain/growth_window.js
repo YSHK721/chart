@@ -31,6 +31,8 @@ const DAY = 86400; // 窓幅・バー数近似の基準（境界 anchor には�
 // tf → 足の秒長は domain/tf_meta.js（単一情報源・ISSUE-087 🔴-2）から import する。
 //   未知/None は 1D=86400 相当へフォールバック（従来規約不変）。
 import { TF_BAR_SEC } from './tf_meta.js';
+// 表示モードの宣言的属性（splitByDay 等）の単一台帳（ISSUE-134 OCP）。
+import { mpDisplayMode } from './mp_display_mode.js';
 
 export class GrowthWindow {
   // from: base 累積の下限（UNIX 秒・含む）。null=全期間（下限なし）。
@@ -121,7 +123,7 @@ export class GrowthWindow {
     //     数年分に対して極小で視認不能になるため（ユーザー確定・視認性優先）、当日を base 下限にする。
     //     ただし 1W/1M は formingStart（週/月始端）が当日より前になるため min で formingStart 側へ寄せ、
     //     不変条件 from<=formingStart を保つ（＝日中足は当日／上位足は当該バー期間が窓）。
-    const from = mode === 'sessions'
+    const from = mpDisplayMode(mode).splitByDay
       ? GrowthWindow.sessionStart(to)
       : Math.min(GrowthWindow.sessionStart(to), formingStart);
     return new GrowthWindow({ from, to, formingStart });

@@ -31,6 +31,7 @@ const MODULE_ORDER = [
   'js/domain/session_day.js',
   'js/domain/session_ohlc.js',
   'js/domain/mp_source_capability.js',
+  'js/domain/mp_display_mode.js',
   'js/usecase/catalog_entry.js',
   'js/usecase/catalog.js',
   'js/usecase/facade.js',

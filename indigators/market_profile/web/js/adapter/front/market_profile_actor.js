@@ -86,6 +86,8 @@ const PROFILE_MARGIN_FRACTION = 0.30;
 // timeframe → 足の秒長は domain/tf_meta.js（単一情報源・ISSUE-087 🔴-2）から import する。
 //   旧: growth_window.js との top-level const 衝突（IIFE 連結）で再宣言していた＝解消済み。
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
+// 表示モード enum の単一台帳（transition 遷移経路・未知 mode の normal 吸収／ISSUE-134 OCP）。
+import { mpDisplayMode } from '../../domain/mp_display_mode.js';
 
 export class MarketProfileActor {
   // client: fetchProfile(context)->profile|null。primitive: setProfile/setVisible。
@@ -157,8 +159,12 @@ export class MarketProfileActor {
     if (!this._replayBar) {
       return extra;
     }
-    const mode = typeof this._replayBar.mode === 'function' ? this._replayBar.mode() : 'anchor';
-    if (mode === 'rolling' && time != null) {
+    // 注意: ここでの mode は「リプレイバーの anchor モード」（anchor|rolling）であり、MP 表示モード
+    //   enum（normal/sessions/replay/ticklive・mp_display_mode 台帳）とは別 enum である（ISSUE-134）。
+    //   'rolling' は表示モードの値ではないため mp_display_mode 台帳には含めず、ここは replayBar 契約の
+    //   anchor モード判定として維持する。
+    const anchorMode = typeof this._replayBar.mode === 'function' ? this._replayBar.mode() : 'anchor';
+    if (anchorMode === 'rolling' && time != null) {
       const tf = this._getContext().timeframe;
       const barSec = TF_BAR_SEC[tf] ?? 86400;
       extra.from = time - ROLL_BARS * barSec;
@@ -228,40 +234,46 @@ export class MarketProfileActor {
   //   - 'normal': 両 OFF 一式（_setReplay(false) ＋ _sessions=false ＋ _applySessions(null)）。
   //   排他が構造的に保証される（同時 ON が不可能）。未知の mode は 'normal' 扱い（安全側）。
   _applyMode(mode) {
-    if (mode === 'ticklive') {
-      // ticklive ON（tick 逐次成長）。replay/sessions 一式を解除して排他化する。
-      this._setReplay(false);
-      this._sessions = false;
-      this._applySessions(null);
-      this._ticklive = true;
-      this._growing = true;   // ticklive モード＝成長 ON（Phase1 互換: mode が _growing を立てる）。
-      return;
-    }
-    if (mode === 'sessions') {
-      this._exitTicklive();     // ticklive 解除（排他）。
-      this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
-      // 自動ズームは **非 sessions → sessions の新規入場時のみ** pending にする。既に sessions のまま
-      //   _applyMode('sessions') が再適用される（FOLLOW/ANALYSIS 遷移時の reapplyMarketProfileMode 等）
-      //   ケースで pending を再セットすると、価格更新→自動 FOLLOW 復帰のたびに focus が再発火して
-      //   ユーザーの手動ズームが「全体が初期表示」へリセットされる（実機バグ）。再適用では寄せない。
-      if (!this._sessions) {
-        this._sessionsFocusPending = true;
+    // 遷移経路は mp_display_mode 台帳（transition）が単一源。未知 mode は台帳が 'normal' へ吸収する
+    //   （旧「未知の mode は 'normal' 扱い（安全側）」を台帳側へ集約＝新モードは台帳追記で完結・OCP）。
+    switch (mpDisplayMode(mode).transition) {
+      case 'ticklive': {
+        // ticklive ON（tick 逐次成長）。replay/sessions 一式を解除して排他化する。
+        this._setReplay(false);
+        this._sessions = false;
+        this._applySessions(null);
+        this._ticklive = true;
+        this._growing = true;   // ticklive モード＝成長 ON（Phase1 互換: mode が _growing を立てる）。
+        return;
       }
-      this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
-      return;
+      case 'sessions': {
+        this._exitTicklive();     // ticklive 解除（排他）。
+        this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
+        // 自動ズームは **非 sessions → sessions の新規入場時のみ** pending にする。既に sessions のまま
+        //   _applyMode('sessions') が再適用される（FOLLOW/ANALYSIS 遷移時の reapplyMarketProfileMode 等）
+        //   ケースで pending を再セットすると、価格更新→自動 FOLLOW 復帰のたびに focus が再発火して
+        //   ユーザーの手動ズームが「全体が初期表示」へリセットされる（実機バグ）。再適用では寄せない。
+        if (!this._sessions) {
+          this._sessionsFocusPending = true;
+        }
+        this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
+        return;
+      }
+      case 'replay': {
+        this._exitTicklive();     // ticklive 解除（排他）。
+        this._sessions = false;   // sessions OFF。
+        this._applySessions(null); // sessions 一式解除（focus/ズーム/ロック・setSessions(null)・透明化解除）。
+        this._setReplay(true);    // replay ON（バー表示）。
+        return;
+      }
+      default: {
+        // 'normal'（および未知値＝台帳が transition='normal' へ吸収）: 全 OFF 一式。
+        this._exitTicklive();       // ticklive 解除（排他）。
+        this._setReplay(false);
+        this._sessions = false;
+        this._applySessions(null);
+      }
     }
-    if (mode === 'replay') {
-      this._exitTicklive();     // ticklive 解除（排他）。
-      this._sessions = false;   // sessions OFF。
-      this._applySessions(null); // sessions 一式解除（focus/ズーム/ロック・setSessions(null)・透明化解除）。
-      this._setReplay(true);    // replay ON（バー表示）。
-      return;
-    }
-    // 'normal'（および未知値）: 全 OFF 一式。
-    this._exitTicklive();       // ticklive 解除（排他）。
-    this._setReplay(false);
-    this._sessions = false;
-    this._applySessions(null);
   }
 
   // ticklive 表示中か（MP 有効かつ ticklive トグル ON のときだけ true）。
