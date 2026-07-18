@@ -45,7 +45,6 @@ html, body {
 
 .tb-symbol { font-weight: 700; font-size: 15px; color: #fff; letter-spacing: .3px; }
 .tb-sep { width: 1px; height: 22px; background: #2a2e39; margin: 0 4px; }
-.tb-timeframe { display: inline-flex; align-items: center; gap: 2px; }
 .tb-interval {
   padding: 4px 9px; border-radius: 4px; background: transparent; color: #d1d4dc;
   border: none; cursor: pointer; font-size: 13px;
@@ -332,6 +331,45 @@ html, body {
   gap: 10px; padding: 6px 0; border-bottom: 1px solid #23272f;
 }
 .prop-style-name { color: #d1d4dc; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-style-heat { color: #787b86; font-size: 12px; white-space: nowrap; grid-column: 2 / 5; }
+
+/* 「最新のバーまでスクロール」ボタン（ISSUE-116・右下ホットゾーンホバー時のみ表示）。
+   配置はチャートペイン上の右20%×下50% 位置・形状は角丸3pxの四角（ユーザー指示 2026-07-18）。 */
+.scroll-latest-btn {
+  /* ホットゾーン（x>=80%・y>=50%）の右下＝ペイン右下に配置（ユーザー指示 2026-07-18）。
+     右は価格軸・下は時間軸に重ならないオフセットを確保（ゾーン内側なのでホバー中に隠れない）。 */
+  position: absolute; right: 90px; bottom: 50px; z-index: 6;
+  width: 56px; height: 56px; border-radius: 3px;
+  background: #2a2e39; color: #d1d4dc; border: 1px solid #363a45;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; font-size: 30px; line-height: 1; padding: 0; user-select: none;
+}
+.scroll-latest-btn:hover { background: #363a45; }
+.scroll-latest-btn.is-hidden { display: none; }
+
+/* 時間足ドロップダウン（ISSUE-117・TradingView 風カテゴリメニュー） */
+.tf-menu { position: relative; display: inline-flex; }
+.tf-menu-trigger { display: inline-flex; align-items: center; gap: 4px; }
+.tf-menu-caret { font-size: 9px; color: #787b86; }
+.tf-menu-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+  min-width: 140px; max-height: 70vh; overflow-y: auto;
+  background: #1e222d; border: 1px solid #363a45; border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5); padding: 4px 0;
+  display: flex; flex-direction: column;
+}
+.tf-menu-pop.is-hidden { display: none; }
+.tf-menu-cat {
+  padding: 6px 12px 2px; color: #787b86; font-size: 11px; user-select: none;
+  border-top: 1px solid #23272f; margin-top: 4px;
+}
+.tf-menu-cat:first-child { border-top: 0; margin-top: 0; }
+.tf-menu-item {
+  display: block; width: 100%; text-align: left; padding: 6px 16px;
+  background: transparent; border: 0; color: #d1d4dc; font-size: 13px; cursor: pointer;
+}
+.tf-menu-item:hover { background: #2a2e39; }
+.tf-menu-item.is-active { background: #2962ff; color: #fff; }
 .prop-visibility-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: #d1d4dc; font-size: 13px; cursor: pointer; }
 
 /* A 方式 未反映 注記（サイレント不一致回避・§9.3） */

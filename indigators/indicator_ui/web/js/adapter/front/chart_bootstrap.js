@@ -1,0 +1,67 @@
+// chart_bootstrap.js — チャート土台の共有生成ヘルパ（ISSUE-123・present/replay 両アプリ共有）。
+//
+// 設計入力（値渡し是正）: composition root（present 622 行 / replay 293 行）に、lwc チャート生成
+//   （createChart オプション一式＋メインローソク系列）と pane 高供給（updatePaneHeight）が
+//   複製（値渡し）されており、present 側の改善（クロスヘア Normal 化・現在値ライン固定色
+//   ISSUE-084）が replay に未伝播となるドリフトが実測された。本ヘルパへ単一ソース化し、
+//   両 composition root は呼ぶだけにする（合成ルート固有の配線は各ルートに残す＝責務不変）。
+//
+// 責務: lwc の createChart / addSeries(CandlestickSeries) / timeScale().height() の呼び出しを
+//   本所へ閉じる（composition root から upstream 生成 API の重複参照を除去）。renderer 以降の
+//   系列操作 API 隔離は従来どおり ChartRenderer が担う。
+
+// チャート＋メインローソク系列を生成して返す（present を正とした共通オプション）。
+//   - crosshair Normal(0): Magnet スナップ無効（ユーザー要望・enum 無い環境向け 0 フォールバック）。
+//   - 現在値ライン: 固定橙・常時表示（ISSUE-084。日別プロファイルのローソク透明化でも消えない）。
+export function createChartWithMainSeries({ lwc, container }) {
+  // v5: background は { type: ColorType.Solid, color }、panes のリサイズ separator は既定 ON。
+  const chart = lwc.createChart(container, {
+    layout: {
+      background: { type: lwc.ColorType.Solid, color: '#131722' },
+      textColor: '#d1d4dc',
+      // ペイン境界のドラッグ・リサイズ（separator）を有効化（高さ調整・機能④）。
+      panes: { enableResize: true, separatorColor: '#2a2e39', separatorHoverColor: 'rgba(178,181,189,0.2)' },
+    },
+    grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
+    // クロスヘアを Normal（自由追従）に。既定 Magnet(1) は水平線を最寄り足の価格へスナップさせるため、
+    //   カーソル位置どおりに動かしたいという要望で Normal(0) に変更（enum 無い環境向けに 0 フォールバック）。
+    crosshair: { mode: (lwc.CrosshairMode && lwc.CrosshairMode.Normal) || 0 },
+    rightPriceScale: { borderColor: '#2a2e39' },
+    // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
+    timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
+    autoSize: true,
+  });
+  // v5: addCandlestickSeries は廃止。addSeries(CandlestickSeries, ...) でメイン pane(0) に追加。
+  // ISSUE-084: 現在値ラインは固定色（橙）で常時表示する。lwc 既定の priceLineColor=''（バー色追従）は
+  //   日別プロファイルのローソク透明化（setCandleTransparency）で線ごと消えるため、candle 色に依存しない
+  //   固定色を明示する（POC 赤・POC* 黄・カーソル青と重ならない配色）。lastValueVisible で軸ラベルも表示。
+  const mainSeries = chart.addSeries(lwc.CandlestickSeries, {
+    upColor: '#26a69a', downColor: '#ef5350',
+    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    priceLineVisible: true,
+    priceLineColor: '#ff9800',
+    priceLineWidth: 1,
+    lastValueVisible: true,
+  });
+  return { chart, mainSeries };
+}
+
+// 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）の供給関数を作る。
+//   coordinateToPrice(paneHeight) で価格レンジ下端を読むために必要。container/timeScale 非対応
+//   （SSR/テスト）では設定できないため no-op（handlePriceWheel は pane 高未供給時に安全に false）。
+//   リサイズで container 高が変わるため、呼び出し側（wheel 発火時等）が随時再実行して追随する。
+export function makeUpdatePaneHeight({ container, chart, renderer }) {
+  return () => {
+    if (typeof renderer.setPaneHeight !== 'function') {
+      return;
+    }
+    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
+    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
+    const paneHeight = ch - th;
+    if (paneHeight > 0) {
+      renderer.setPaneHeight(paneHeight);
+    }
+  };
+}
