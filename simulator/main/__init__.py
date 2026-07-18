@@ -11,14 +11,12 @@ DI、RunBacktestInteractor を組み立てて実行、結果を Presenter/Result
         1 run を実行。終了コード（ConfigError→2 / BacktestError→1 / 成功→0）は
         BacktestController の翻訳を利用する（DESIGN §9.4）。result は Presenter/
         ResultSink へ流す（出力先指定時）。
-    compare_run(result, mt5_stats, tolerances) -> ComparisonReport
-        UC-003 compare_stats を BacktestStats(dataclass)→dict 変換して結線する。
 
 main 層は全層を import 可。コミット済 domain/usecase/adapter/framework は変更しない。
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -47,7 +45,6 @@ from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
 from simulator.domain.exceptions import BacktestError, ConfigError, DataError
 from simulator.framework.config_loader import load_config
 from simulator.main.run_config import RunConfig
-from simulator.usecase.compare_stats import ComparisonReport, compare_stats
 from simulator.usecase.models import SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
@@ -614,13 +611,3 @@ def run_backtest(
         except BacktestError:
             return 1, result
     return exit_code, result
-
-
-def compare_run(result: Any, *, mt5_stats: dict, tolerances: dict) -> ComparisonReport:
-    """UC-003 compare_stats を結線する（BacktestStats dataclass → dict 変換）。
-
-    実 MT5 期待値は未入手（ISSUE-013）。自己整合 fixture で突合機構が動くことのみを固定し、
-    実 MT5 突合は TBD（呼出側が mt5_stats に実 MT5 値を渡せばそのまま機能する）。
-    """
-    py_stats = asdict(result.stats)
-    return compare_stats(py_stats=py_stats, mt5_stats=mt5_stats, tolerances=tolerances)

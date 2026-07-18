@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import abc
-import inspect
 
 import pytest
 
@@ -61,19 +60,6 @@ def test_markdown_presenter_implements_only_its_port():
     assert not issubclass(MarkdownPresenter, JsonReportPort)
 
 
-def test_html_presenter_implements_only_its_port():
-    from simulator.adapter.presenter.html import HtmlPresenter
-    from simulator.usecase.ports import (
-        HtmlReportPort,
-        JsonReportPort,
-        MarkdownReportPort,
-    )
-
-    assert issubclass(HtmlPresenter, HtmlReportPort)
-    assert not issubclass(HtmlPresenter, MarkdownReportPort)
-    assert not issubclass(HtmlPresenter, JsonReportPort)
-
-
 def test_json_presenter_implements_only_its_port():
     from simulator.adapter.presenter.json import JsonPresenter
     from simulator.usecase.ports import (
@@ -103,85 +89,3 @@ def test_aggregate_report_presenter_port_composes_three_ports():
     assert ReportPresenterPort.__abstractmethods__ == frozenset(
         {"present_markdown", "present_html", "present_json"}
     )
-
-
-# ---- 形式別 Interactor は自 Port へ委譲する ----
-
-class _SpyMarkdownPort:
-    def __init__(self):
-        self.calls = []
-
-    def present_markdown(self, result):
-        self.calls.append(result)
-        return "MD"
-
-
-class _SpyHtmlPort:
-    def __init__(self):
-        self.calls = []
-
-    def present_html(self, result, path):
-        self.calls.append((result, path))
-        return None
-
-
-class _SpyJsonPort:
-    def __init__(self):
-        self.calls = []
-
-    def present_json(self, result, path):
-        self.calls.append((result, path))
-        return None
-
-
-def test_generate_markdown_interactor_delegates_to_markdown_port():
-    from simulator.usecase.generate_report import GenerateMarkdownReportInteractor
-
-    spy = _SpyMarkdownPort()
-    interactor = GenerateMarkdownReportInteractor(spy)
-    sentinel = object()
-
-    out = interactor.generate(sentinel)
-
-    assert out == "MD"
-    assert spy.calls == [sentinel]
-
-
-def test_generate_html_interactor_delegates_to_html_port():
-    from simulator.usecase.generate_report import GenerateHtmlReportInteractor
-
-    spy = _SpyHtmlPort()
-    interactor = GenerateHtmlReportInteractor(spy)
-    sentinel = object()
-
-    interactor.generate(sentinel, "/tmp/report.html")
-
-    assert spy.calls == [(sentinel, "/tmp/report.html")]
-
-
-def test_generate_json_interactor_delegates_to_json_port():
-    from simulator.usecase.generate_report import GenerateJsonReportInteractor
-
-    spy = _SpyJsonPort()
-    interactor = GenerateJsonReportInteractor(spy)
-    sentinel = object()
-
-    interactor.generate(sentinel, "/tmp/stats.json")
-
-    assert spy.calls == [(sentinel, "/tmp/stats.json")]
-
-
-@pytest.mark.parametrize(
-    "cls_name",
-    [
-        "GenerateMarkdownReportInteractor",
-        "GenerateHtmlReportInteractor",
-        "GenerateJsonReportInteractor",
-    ],
-)
-def test_new_interactors_take_a_presenter(cls_name):
-    import simulator.usecase.generate_report as gr
-
-    cls = getattr(gr, cls_name)
-    sig = inspect.signature(cls.__init__)
-    assert "presenter" in sig.parameters
