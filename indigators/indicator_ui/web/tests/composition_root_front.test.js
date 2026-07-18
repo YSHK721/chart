@@ -345,9 +345,9 @@ test('bootstrap wires dblclick to resetPriceZoom only when over the price axis',
   assert.equal(resetCount, 1, '本体領域のダブルクリックでは reset しない');
 });
 
-test('bootstrap: 本体ドラッグの上下パンは「価格ズーム中(isPriceZoomed)」のみ有効（全体表示では無効）', async () => {
-  // 全体表示（自動スケール）では縦パンしない＝空白露出で拡大縮小に見える不具合を出さない。
-  //   価格軸ホイールズーム後（isPriceZoomed=true）だけ縦パンを許可＝ズーム帯の外も辿れる（ユーザFB）。
+test('bootstrap: 本体ドラッグの上下パンは全体表示（未ズーム）でも常時有効（ISSUE-108）', async () => {
+  // 旧仕様の「価格ズーム中限定」ゲートは旧 override 実装の不具合回避策で、ネイティブ
+  //   setVisibleRange 置換により陳腐化したため撤去（ユーザー裁定: 全体表示でも上下移動できる）。
   const { lwc } = fakeLwcFireable();
   const container = fakeContainer();
   const { renderer } = await bootstrap({
@@ -356,18 +356,18 @@ test('bootstrap: 本体ドラッグの上下パンは「価格ズーム中(isPri
   const dys = [];
   renderer.panPriceByPixels = (dy) => { dys.push(dy); return true; };
   renderer.isOverPriceAxis = () => false; // 本体領域。
-  // (A) 未ズーム（isPriceZoomed=false）→ 縦ドラッグしても価格パンしない。
+  // (A) 未ズーム（isPriceZoomed=false）でも縦ドラッグで価格パンする。
   renderer.isPriceZoomed = () => false;
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 140 });
+  container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 140 }); // dy=40
   container.fire('pointerup', {});
-  assert.deepEqual(dys, [], '未ズームは縦パンしない（自動スケール維持）');
-  // (B) ズーム中（isPriceZoomed=true）→ 縦成分 dy で価格パン。
+  assert.deepEqual(dys, [40], '全体表示（自動スケール）でも縦パンする');
+  // (B) ズーム中（isPriceZoomed=true）→ 従来どおり縦成分 dy で価格パン。
   renderer.isPriceZoomed = () => true;
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
   container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 130 }); // dy=30
   container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 150 }); // dy=20
-  assert.deepEqual(dys, [30, 20], 'ズーム中は縦成分で価格パン');
+  assert.deepEqual(dys, [40, 30, 20], 'ズーム中も縦成分で価格パン');
 });
 
 test('bootstrap: リプレイ配線は present に存在しない（ISSUE-082: isReplay=true でもスワイプ捕捉せず通常パンのまま）', async () => {

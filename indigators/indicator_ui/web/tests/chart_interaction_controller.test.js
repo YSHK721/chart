@@ -97,17 +97,27 @@ test('dblclick: 価格軸上のみ resetPriceZoom（本体領域は無反応）'
   assert.equal(renderer.calls.resetPriceZoom, 1);
 });
 
-test('本体ドラッグ縦パン: 価格ズーム中のみ panPriceByPixels（未ズームは無効）', () => {
+test('本体ドラッグ縦パン: 全体表示（未ズーム）でも常時 panPriceByPixels（ISSUE-108）', () => {
+  // 旧仕様の「価格ズーム中限定」ゲートは旧 override 実装の不具合回避策で、ネイティブ
+  //   setVisibleRange 置換により陳腐化したため撤去（ユーザー裁定: 全体表示でも上下移動できる）。
   const renderer = fakeRenderer({ isPriceZoomed: () => false });
   const { container } = build({ renderer });
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 140 });
-  assert.deepEqual(renderer.calls.panPriceByPixels, [], '未ズームは縦パンしない');
+  container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 140 }); // dy=40
+  assert.deepEqual(renderer.calls.panPriceByPixels, [40], '全体表示（自動スケール）でも縦パンする');
   renderer.isPriceZoomed = () => true;
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
   container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 130 }); // dy=30
   container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 150 }); // dy=20
-  assert.deepEqual(renderer.calls.panPriceByPixels, [30, 20]);
+  assert.deepEqual(renderer.calls.panPriceByPixels, [40, 30, 20], 'ズーム中も従来どおり縦パンする');
+});
+
+test('本体ドラッグ縦パン: 純横ドラッグ（dy=0）は価格を触らない（自動スケール維持）', () => {
+  const renderer = fakeRenderer({ isPriceZoomed: () => false });
+  const { container } = build({ renderer });
+  container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
+  container.fire('pointermove', { buttons: 1, clientX: 160, clientY: 100 }); // dy=0（純横）
+  assert.deepEqual(renderer.calls.panPriceByPixels, [], '純横は panPriceByPixels を呼ばない');
 });
 
 test('本体ドラッグ縦パン: 左ボタン以外・価格軸上・ボタン解放では開始/継続しない', () => {

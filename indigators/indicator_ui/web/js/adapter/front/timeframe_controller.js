@@ -37,6 +37,12 @@ export class TimeframeController {
     }
     host._timeframe = timeframe;
     this.syncButtons();
+    // ISSUE-113（ユーザー裁定）: 時間足切替では手動価格スケール（軸ドラッグ/ホイール拡大/縦パン）を
+    //   自動スケールへリセットする（前の足の拡大レンジを持ち越さない）。手動スケールの解除点は
+    //   「価格軸 dblclick または時間足切替」となる。renderer 非対応（後方互換 Fake/SSR）は no-op。
+    if (typeof host._renderer?.resetPriceZoom === 'function') {
+      host._renderer.resetPriceZoom();
+    }
     // バッチ全体（candles 取得 await＋全指標再計算）を競合ガードで包む。これがないと
     //   _loadCandles の await 中は isRecomputing()=false となり、その隙にライブ tick が
     //   割り込んで二重 compute する（🟡-2）。最外で increment し finally で確実に解除する。
@@ -65,10 +71,21 @@ export class TimeframeController {
   }
 
   // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。
+  //   ISSUE-117: ドロップダウン項目も [data-timeframe] を持つため同ループで同期される。
+  //   トリガーラベル（timeframeMenuLabel）は現在足要素の表記（例「日」）へ更新する。
   syncButtons() {
     const host = this._host;
+    let currentLabel = null;
     for (const b of host._el?.timeframeBtns ?? []) {
-      b.classList.toggle('is-active', b.dataset.timeframe === host._timeframe);
+      const active = b.dataset.timeframe === host._timeframe;
+      b.classList.toggle('is-active', active);
+      if (active && currentLabel === null && typeof b.textContent === 'string') {
+        currentLabel = b.textContent;
+      }
+    }
+    const label = host._el?.timeframeMenuLabel;
+    if (label && currentLabel !== null) {
+      label.textContent = currentLabel;
     }
   }
 
