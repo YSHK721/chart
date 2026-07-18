@@ -148,14 +148,15 @@ def period_session_labels(tf: str, label: str) -> "list[str]":
 
 
 def next_period_label(tf: str, label: str) -> str:
-    """バケットラベル → 次バケットのラベル（1W: +7日 / 1M: 翌月末）。"""
-    y, m, d = (int(x) for x in str(label).split("-"))
-    cur = datetime(y, m, d).date()
-    if tf == "1W":
-        nxt = cur + timedelta(days=7)
-    elif tf == "1M":
-        first_next = (cur.replace(day=1) + timedelta(days=32)).replace(day=1)
-        nxt = (first_next + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-    else:
+    """バケットラベル → 次バケットのラベル（1W: 次金曜 / 1M: 翌月末）。
+
+    翌バケット右端ラベルの暦算術（特に 1M の翌月末＝resample の pandas ME offset と同一規則）を
+    規則源 :func:`marketdata.resample.period_label_naive` へ委譲し、月末手書き算術の二重表現を
+    解消する（ISSUE-134）。``label`` は当該バケットの右端（1W=金曜 / 1M=暦月末）なので、その翌日
+    （＝次バケット内の 1 点）を rollforward すれば次バケット右端が得られる。tf は '1W'|'1M' のみ。
+    """
+    if tf not in ("1W", "1M"):
         raise ValueError(f"next_period_label: 1W|1M のみ対応: {tf!r}")
-    return nxt.strftime("%Y-%m-%d")
+    y, m, d = (int(x) for x in str(label).split("-"))
+    day_after = pd.Timestamp(datetime(y, m, d)) + pd.Timedelta(days=1)
+    return period_label_naive(tf, day_after).strftime("%Y-%m-%d")

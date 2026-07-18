@@ -29,6 +29,10 @@ import { FORMING_MIN_INTERVAL_MS } from '../../replay/timing.js';
 // forming（足内成長）非対応 tf（backend forming_bar.is_supported_timeframe と一致＝1W/1M は固定 floor 不可で
 //   非対応）。この tf は enterBar/growTo の forming 取得が 400→null（非破壊）になり push 成長で描けないため、
 //   refresh override は基底 refresh（全期間 as-of）へ委譲して従来描画を保つ（1W/1M の描画欠落を防ぐ）。
+// ISSUE-134（OCP・言語跨ぎミラー）: 権威は Python 単一台帳 marketdata.resample.TF_DESCRIPTORS の
+//   floorable=false から導出される marketdata.tf_meta.NON_FLOORABLE_TF（＝{'1W','1M'}）。JS 側は HTTP
+//   バンドルに Python を持ち込めないため、この定数を py↔js 対で維持する既存慣行（session_day 等と同様）に
+//   従い明示ミラーとして複製する。カレンダー足を追加する際は Python 台帳と本 Set を対で更新すること。
 const _FORMING_UNSUPPORTED_TF = new Set(['1W', '1M']);
 
 // MP-05 presence ガード（present actor と同基準）: base=1 応答の必須フィールド（レンジ/グリッド/base 配列）が

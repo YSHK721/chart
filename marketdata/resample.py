@@ -14,29 +14,55 @@ indicator_ui ``dataset``（薄い再エクスポート）が共通して再利�
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import pandas as pd
 
 # candles の必須 OHLC 列（小文字正規化後）。
 _OHLC_COLUMNS = ("open", "high", "low", "close")
 
-# 時間足コード → pandas resample ルール（§チャート表示時間選択・1 分足原子）。
-# 全時間足は 1 分足（原子）を resample して生成する。"1m" は無変換（None＝原子そのもの）。
+
+class TfDescriptor(NamedTuple):
+    """時間足コードの派生属性を集約した単一台帳エントリ（ISSUE-134 OCP）。
+
+    - ``rule``: pandas resample ルール（``"5min"/"W-FRI"/"ME"`` …・``"1m"`` は None＝無変換）。
+    - ``floorable``: 単純 floor で期間始端を表せるか（日中足・1D=True / 1W・1M=False）。
+    - ``calendar``: セッション日（ブローカー暦日）で集計する上位 tf か（1D/1W/1M=True）。
+
+    従来 :data:`TIMEFRAME_RULES`（rule のみ）・:data:`SESSION_TFS`・``tf_meta.NON_FLOORABLE_TF``・
+    ``period_label_naive`` の tf 判定が各所で個別に列挙していた派生属性を本台帳へ集約し、membership
+    set を導出値化する（新カレンダー足追加時は本台帳 1 箇所の追記で全派生値が更新される）。
+    """
+
+    rule: str | None
+    floorable: bool
+    calendar: bool
+
+
+# 時間足コード → 派生属性台帳（§チャート表示時間選択・1 分足原子）。**唯一の規則源**。
+# 全時間足は 1 分足（原子）を resample して生成する。"1m" は無変換（rule=None＝原子そのもの）。
 # pandas 3 系では分/時は "5min"/"1h"、週は取引週末（金曜ラベル）、月末は "ME"（旧 "M" は廃止）。
 # ここに無いキーはすべて拒否する（is_known_timeframe）。日足ベース dataset（sample/jp225）でも
 # "1D"/"1W"/"1M" は冪等に機能する（同日 1 本の再集計は値不変）。日足未満は日足 dataset には無効
-# （フロントが dataset 別に提示足を制限する）。
+# （フロントが dataset 別に提示足を制限する）。挿入順は順序依存の消費者（build_tick_rollup 等）が
+# あるため保存する。
+TF_DESCRIPTORS: "dict[str, TfDescriptor]" = {
+    "1m": TfDescriptor(None, True, False),
+    "5m": TfDescriptor("5min", True, False),
+    "15m": TfDescriptor("15min", True, False),
+    "30m": TfDescriptor("30min", True, False),
+    "1h": TfDescriptor("1h", True, False),
+    "4h": TfDescriptor("4h", True, False),
+    "1D": TfDescriptor("1D", True, True),
+    "1W": TfDescriptor("W-FRI", False, True),
+    "1M": TfDescriptor("ME", False, True),
+}
+
+# 時間足コード → pandas resample ルール（台帳からの互換ビュー・dict[str, str|None]）。
+# 既存の外部消費者（``TIMEFRAME_RULES[tf]`` / ``set(TIMEFRAME_RULES)`` / dict 等価比較 / 挿入順反復）を
+# 非破壊にするため名称・型・内容・順序を温存し、値のみ台帳 rule から導出する。
 TIMEFRAME_RULES: dict[str, str | None] = {
-    "1m": None,
-    "5m": "5min",
-    "15m": "15min",
-    "30m": "30min",
-    "1h": "1h",
-    "4h": "4h",
-    "1D": "1D",
-    "1W": "W-FRI",
-    "1M": "ME",
+    code: d.rule for code, d in TF_DESCRIPTORS.items()
 }
 
 # OHLC 集約規則（再集計時の列別 agg）。volume は合算、その他（OHLC 外）は最終値。
@@ -50,7 +76,14 @@ def is_known_timeframe(timeframe: Any) -> bool:
 
 
 # セッション日（NY17:00 ET 基準・ISSUE-078）で集計する上位 tf。日中足（5m..4h）は UTC floor 不変。
-SESSION_TFS = ("1D", "1W", "1M")
+# 台帳 :data:`TF_DESCRIPTORS` の calendar フラグからの導出値（内容・順序を温存）。
+SESSION_TFS = tuple(code for code, d in TF_DESCRIPTORS.items() if d.calendar)
+
+# 暦ラベル tf（単純 floor 不可のカレンダー tf＝W-FRI/ME ラベル規約）。period_label_naive が扱う集合。
+# 台帳の calendar かつ非 floorable からの導出値（= {"1W", "1M"}）。
+CALENDAR_LABEL_TFS = frozenset(
+    code for code, d in TF_DESCRIPTORS.items() if d.calendar and not d.floorable
+)
 _NY_TZ = "America/New_York"
 _BROKER_SHIFT = pd.Timedelta(hours=7)  # ブローカー時間 = NY + 7h（NY17:00 → 00:00）。
 
@@ -118,7 +151,7 @@ def period_label_naive(tf: str, ts: "pd.Timestamp") -> "pd.Timestamp":
     はブローカー暦日を naive 化して本関数へ委譲し、週/月ラベル規則の二重表現（手書き暦算術）を
     解消する（ISSUE-094 🟡-10a）。``tf`` は ``'1W'|'1M'`` のみ（他は ValueError）。
     """
-    if tf not in ("1W", "1M"):
+    if tf not in CALENDAR_LABEL_TFS:
         raise ValueError(f"period_label_naive: 1W|1M のみ対応: {tf!r}")
     offset = pd.tseries.frequencies.to_offset(TIMEFRAME_RULES[tf])
     return offset.rollforward(pd.Timestamp(ts))

@@ -16,7 +16,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from marketdata import dataset_registry
-from marketdata.resample import TIMEFRAME_RULES
+from marketdata.resample import TF_DESCRIPTORS, TIMEFRAME_RULES
 from marketdata.session_day import session_day_start
 
 # 形成中バー/tf-period を供給する datasetRef（ティック由来＝ticks parquet を持つ）。値の源は
@@ -25,7 +25,11 @@ from marketdata.session_day import session_day_start
 TICK_REFS = dataset_registry.tick_refs()
 
 # カレンダー周期（W-FRI/ME）は単純 floor で期間始端を表せない。
-NON_FLOORABLE_TF = frozenset({"1W", "1M"})
+# 台帳 :data:`marketdata.resample.TF_DESCRIPTORS` の floorable フラグからの導出値（唯一源・ISSUE-134）。
+# 名称は外部消費者（indicator_ui forming_bar が import）を非破壊にするため温存する。
+NON_FLOORABLE_TF = frozenset(
+    code for code, d in TF_DESCRIPTORS.items() if not d.floorable
+)
 
 # tf → バー秒長（名目値）。1W=7日・1M=30日名目（カレンダー tf の窓幅・表示計算用。
 #   厳密な期間境界は resample/session_day のラベル規約が担う＝本表を境界計算に使わない）。
