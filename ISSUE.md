@@ -1666,7 +1666,7 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **検証（2026-07-18）**: (1) 実 HTTP: /intraday が過去窓（2025-08-26＝m1 tail 50k の外）で m1=1133 行・直近窓で ticks=159k/m1=1316 行とも ok。(2) 実 UI: 過去日（2025-05-21〜）の 1分OHLC 再生正常・コンソールエラー 0。(3) テスト: dataset.load_atom_window 新規 4 件・intrabar/candle repository テストを委譲仕様へ書換え。replay 170・market_profile api 301・indicator_ui api 375 全通過。
 - **残る言語間ミラー（意図的・対で維持）**: session_day py↔js（IANA tz 単一権威）・cap 間引き py↔js（proto bit 一致ペア）。
 ## ISSUE-133: [SOLID/SRP] MP 計算コア 2 ファイルに複数アクター（数学・キャッシュ協調・運用 CLI・tick I/O）が同居（アーキテクチャ調査 2026-07-18）
-- **ステータス**: OPEN（起票のみ・是正は要承認）
+- **ステータス**: RESOLVED（2026-07-18 実装・検証済み）
 - **調査方法**: architecture-executor によるシステム全体調査（本体系のみ・全所見 file:line 実読で裏付け・自己レビューで裏付け不足候補を棄却済み）。
 - **所見（重大度順）**:
   - 【高】`indigators/market_profile/api/market_profile_api/compute/market_profile_zp.py`（692 行）: 統計コア（`minute_close_grid` L109・`compute_zp_profile` L507 等）＋キャッシュ協調（`_MGRID_CACHE` 等 L271-277・`_zp_day_rollup` L358）＋運用バッチ CLI（`warm_zp_cache` L652・`__main__` argparse L682-692）の 3 アクター同居。定量担当の数学変更と運用担当の warm/キャッシュ変更が同一改変面を共有。
@@ -1676,6 +1676,8 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
   - 【中】`market_profile_controller.py`: `_handle_dwell` L360-385 と `_handle_zp` L436-455 に窓確定ロジック（to/from 切り出し・レンジ・barw→n_bins）がほぼ同型複製。
 - **対策案（要承認）**: zp/dwell は純数学 kernel・キャッシュ協調・warmer CLI（→tools/）の分離、`_load_window_ticks` の gateway 移設。replay.js は MP 駆動の独立ドライバ抽出。controller は `_resolve_window` 単一化。actor は Strategy 注入化。
 - **棄却済み候補（自己レビュー）**: `marketdata/dataset.py`・`framework/server.py`・`intrabar_window_repository.py`（委譲徹底済み・単一アクター）、`tick_m1.py`/`rollup.py`（単一の data-engineering アクターに凝集）。
+- **是正結果（2026-07-18・挙動変更ゼロのリファクタリング）**: ① 統計コア（純数学）を分離＝`market_profile_zp_kernel.py`（分グリッド化・観測占有・Null B モーメント・fine z・POC*・sessions エントリ＋格子定数）／`market_profile_dwell_kernel.py`（セッション認識滞在秒積分・固定グリッドロールアップ・GRID_W）。本体 zp/dwell は全公開シンボルを再エクスポートし呼出面・monkeypatch 面を温存（cache 協調関数は bare name で呼ぶ）。② 運用バッチ warmer を分離＝`market_profile_{zp,dwell}_warmer.py`。CLI（argparse）を `tools/warm_market_profile_cache.py` へ移設。本体 `warm_*_cache` は import 面温存のための薄い遅延委譲に縮退。③ tick I/O 解析（parquet 復号・tz 正規化・外れ値除去・sort）を `TickStorePort.load_window_ticks` へ移設し `MarketdataTickStore` に実装（compute 側 `_load_window_ticks` は単一注入点を温存する薄い委譲）。④ controller の窓確定を `_resolve_window`（+`_ResolvedWindow` DTO）へ単一化（`_handle_dwell`/`_handle_zp` の同型複製を排除）。⑤ replay.js の MP tick-live 成長駆動を `js/replay/mp_growth_driver.js` へ分離（growInFlight・pushGrowTo・settleGrowTo・enterBar/onFormingTick/settleMath/settleBar・await 順序と coalesce 意味論は不変）。⑥ actor の増分 push（dwell）/非増分 as-of coalesce（zp）の 2 戦略を `INCREMENTAL_PUSH_STRATEGY`/`AS_OF_COALESCE_STRATEGY` として抽出しコンストラクタ注入化（`_rebuildAt`/`feedTick` は能力ゲートで戦略選択のみに縮退・feedTick 側の非対称ゲートも温存）。
+- **検証結果（2026-07-18）**: pytest 全通過＝market_profile api 301・indicator_ui api 375・replay 170。JS（replay_ui）235 pass / 6 fail（6 は本 Issue と無関係の既存失敗＝session-day-start 由来・リファクタ前後で同一集合＝新規失敗ゼロ）。indicator_ui prototype.html は replay_ui JS を非バンドル（再生成で byte 差分ゼロ＝実測）。移設シンボルの本体再エクスポート／薄い委譲で public import 面を温存（`zp.minute_close_grid`・`mpd.warm_dwell_cache`・`mpd._load_window_ticks`・GRID_W・tf_period の `_zp.*` 等の消費者は無変更で解決＝grep 実証）。
 ## ISSUE-134: [SOLID/OCP] 種別台帳の属性不足によるハードコード分岐の散在（カレンダー tf・series kind・MP モード）（アーキテクチャ調査 2026-07-18）
 - **ステータス**: OPEN（起票のみ・是正は要承認）
 - **調査方法**: ISSUE-133 と同一（全所見 file:line 実読・自己レビュー済み）。registry 化済みの良例（`dataset_registry.REGISTRY`・`_EA_FACTORIES`・`call_binding._TABLE`）は棄却済み。
