@@ -869,6 +869,73 @@ class IndicatorDef {
 }
 
 
+// ===== js/domain/series_kind.js =====
+// series_kind.js — 系列出力種別（line / histogram / horizontal_line）の能力台帳（ISSUE-134 OCP）。
+//
+// 従来 kind === 'line' / kind === 'histogram' / kind !== 'histogram' の直接比較が
+//   indicator_controller.js / chart_renderer.js / properties_dialog.js に散在し、新 series 種別追加時に
+//   3 ファイル同時修正が必要だった。本台帳へ per-kind の能力（capability）を集約し、各呼出面は
+//   能力名で参照する（新種別は本台帳 1 箇所への追記で完結する＝OCP）。
+//
+// 能力の定義（各能力は従来の boolean 比較と 1:1 に一致させる＝挙動変更ゼロ）:
+//   - tailUpdatable   : 末尾K差分反映（updateSeriesTail）の対象か（旧 kind==='line'||'histogram'）。
+//   - seriesType      : lightweight-charts の系列種別 'line'|'histogram'|null（priceLine は null）。
+//                       renderer が LineSeries/HistogramSeries 定義を選ぶ（旧 kind==='histogram'?H:L）。
+//   - appliesLineStyle: チャート系列へ lineWidth/lineStyle を適用するか（旧 renderer kind==='line'）。
+//   - supportsHeat    : バー別ヒート配色（heat）を持ち得るか（旧 kind==='histogram'）。
+//   - overlayReadout  : overlay（pane0 重畳）時に読取欄へ載せる対象か（旧 renderer kind==='line'）。
+//   - editableLineStyle: プロパティダイアログで線幅/線種を編集可能か（旧 kind!=='histogram'）。
+//   - renderRoute     : _draw が振り分ける描画経路 'line'|'histogram'|'horizontal'（旧 kind 別 filter）。
+//                       未知 kind は null＝どの経路にも乗らない（従来: 3 種のいずれにも一致せず非描画）。
+
+const SERIES_KINDS = Object.freeze({
+  line: Object.freeze({
+    tailUpdatable: true,
+    seriesType: 'line',
+    appliesLineStyle: true,
+    supportsHeat: false,
+    overlayReadout: true,
+    editableLineStyle: true,
+    renderRoute: 'line',
+  }),
+  histogram: Object.freeze({
+    tailUpdatable: true,
+    seriesType: 'histogram',
+    appliesLineStyle: false,
+    supportsHeat: true,
+    overlayReadout: false,
+    editableLineStyle: false,
+    renderRoute: 'histogram',
+  }),
+  horizontal_line: Object.freeze({
+    tailUpdatable: false,
+    seriesType: null,
+    appliesLineStyle: false,
+    supportsHeat: false,
+    overlayReadout: false,
+    editableLineStyle: true,
+    renderRoute: 'horizontal',
+  }),
+});
+
+// 未知 kind のフォールバック能力（従来の直接比較の結果と一致させる: === 'line'/'histogram' は false、
+//   !== 'histogram' は true、どの描画経路にも乗らない）。到達しない設計だが全入力で従来挙動を保つ。
+const _UNKNOWN_KIND = Object.freeze({
+  tailUpdatable: false,
+  seriesType: 'line',
+  appliesLineStyle: false,
+  supportsHeat: false,
+  overlayReadout: false,
+  editableLineStyle: true,
+  renderRoute: null,
+});
+
+// kind → 能力台帳エントリ（未知 kind は従来比較を保つフォールバックを返す）。
+function seriesKind(kind) {
+  return SERIES_KINDS[kind] ?? _UNKNOWN_KIND;
+}
+
+
 // ===== js/domain/tf_meta.js =====
 // tf_meta.js（domain）— tf メタの単一情報源（ISSUE-087 🔴-2）。
 //
@@ -3111,7 +3178,9 @@ class ChartRenderer {
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     const slot = this._slot(instanceId);
     const pane = this._ensurePane(slot, opts);
-    const definition = kind === 'histogram' ? this._lwc.HistogramSeries : this._lwc.LineSeries;
+    const definition = seriesKind(kind).seriesType === 'histogram'
+      ? this._lwc.HistogramSeries
+      : this._lwc.LineSeries;
     for (const p of payloads ?? []) {
       const options = {
         color: p.color,
@@ -3119,7 +3188,7 @@ class ChartRenderer {
         lastValueVisible: false,
         title: p.name,
       };
-      if (kind === 'line') {
+      if (seriesKind(kind).appliesLineStyle) {
         options.lineWidth = p.width;
         options.lineStyle = toLineStyleInt(p.style);
       }
@@ -3135,14 +3204,14 @@ class ChartRenderer {
         width: p.width ?? null, style: p.style ?? null, visible: true,
         // heat（ISSUE-112）: histogram でバー別着色（data[].color＝値に応じたヒート配色）を持つか。
         //   heat=true の系列はユーザー色上書きの対象外（ヒート絶対優先・ユーザー裁定）。
-        heat: kind === 'histogram' && (p.data ?? []).some((pt) => pt && pt.color != null),
+        heat: seriesKind(kind).supportsHeat && (p.data ?? []).some((pt) => pt && pt.color != null),
       });
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }
       // overlay（pane 0 重ね描き）の line 系列のみ読み取り欄の overlay 行に載せる。
       //   color/name と末尾点 value（hover 解除時の fallback）を保持する。
-      if (!pane && kind === 'line') {
+      if (!pane && seriesKind(kind).overlayReadout) {
         this._overlayReadouts.set(key, {
           series, color: p.color, name: p.name, lastValue: lastPointValue(p.data),
           visible: true,
@@ -3365,7 +3434,7 @@ class ChartRenderer {
     // ISSUE-112（ユーザー裁定）: バー別ヒート配色（heat）の histogram は色 patch を無視する
     //   （ヒート表示が絶対優先・データ全塗り替えでヒートを潰す ISSUE-111 の機構は撤去）。
     //   heat 以外の histogram は series options.color が素で効く（バー別色が無いため上書き不要）。
-    if (patch.color != null && !(meta.kind === 'histogram' && meta.heat)) {
+    if (patch.color != null && !(seriesKind(meta.kind).supportsHeat && meta.heat)) {
       meta.color = patch.color;
     }
     if (patch.width != null) {
@@ -3378,7 +3447,7 @@ class ChartRenderer {
       meta.visible = !!patch.visible;
     }
     const options = { color: meta.color, visible: slot.visible && meta.visible };
-    if (meta.kind === 'line') {
+    if (seriesKind(meta.kind).appliesLineStyle) {
       if (meta.width != null) {
         options.lineWidth = meta.width;
       }
@@ -4765,7 +4834,7 @@ class PropertiesDialog {
       // ISSUE-112（ユーザー裁定: ヒート絶対優先）: バー別ヒート配色の histogram は色も編集対象外。
       //   色ピッカーを出さず「ヒート配色（自動）」と明示する（機能しない設定項目を露出しない）。
       let color = null;
-      if (r.kind === 'histogram' && r.heat) {
+      if (seriesKind(r.kind).supportsHeat && r.heat) {
         const heatNote = doc.createElement('span');
         heatNote.className = 'prop-style-heat';
         heatNote.textContent = 'ヒート配色（自動）';
@@ -4782,7 +4851,7 @@ class PropertiesDialog {
       //   （renderer.applySeriesStyle も histogram には色しか適用しない＝描画種別と設定項目を一致）。
       let width = null;
       let style = null;
-      if (r.kind !== 'histogram') {
+      if (seriesKind(r.kind).editableLineStyle) {
         width = doc.createElement('input');
         width.type = 'number';
         width.min = '1';
@@ -5773,7 +5842,7 @@ const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
 // 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
 //   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
 function isTailUpdatable(payload) {
-  return payload.kind === 'line' || payload.kind === 'histogram';
+  return seriesKind(payload.kind).tailUpdatable;
 }
 
 class IndicatorController {
@@ -5917,9 +5986,18 @@ class IndicatorController {
   //   （v5 ネイティブ・独立価格軸＋指標名＋高さドラッグ）。renderer が pane 生成と水準線配線を担う。
   _draw(instanceId, def, series, params = null) {
     const validated = this._validateSeriesNames(series, def, params);
-    const lines = validated.filter((p) => p.kind === 'line');
-    const histograms = validated.filter((p) => p.kind === 'histogram');
-    const hlines = validated.filter((p) => p.kind === 'horizontal_line');
+    // kind → 描画経路は series_kind 台帳（renderRoute）で一元化（新種別は台帳追記で完結・OCP）。
+    //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
+    const routed = { line: [], histogram: [], horizontal: [] };
+    for (const p of validated) {
+      const route = seriesKind(p.kind).renderRoute;
+      if (routed[route]) {
+        routed[route].push(p);
+      }
+    }
+    const lines = routed.line;
+    const histograms = routed.histogram;
+    const hlines = routed.horizontal;
     const opts = { pane: def.placement !== 'overlay', name: this._label(def) };
     if (histograms.length > 0) {
       this._renderer.renderHistogram(instanceId, histograms, opts);

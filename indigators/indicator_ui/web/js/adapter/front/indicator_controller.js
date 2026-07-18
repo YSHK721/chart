@@ -27,6 +27,7 @@ import { IndicatorLegendView } from './indicator_legend_view.js';
 import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_params.js';
 import { MarketProfileController } from './market_profile_controller.js';
 import { TimeframeController } from './timeframe_controller.js';
+import { seriesKind } from '../../domain/series_kind.js';
 
 // =========================================================================
 // フロントロール契約（ISP・ISSUE-099 🟡-3/🟡-4）
@@ -112,7 +113,7 @@ export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
 // 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
 //   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
 function isTailUpdatable(payload) {
-  return payload.kind === 'line' || payload.kind === 'histogram';
+  return seriesKind(payload.kind).tailUpdatable;
 }
 
 export class IndicatorController {
@@ -256,9 +257,18 @@ export class IndicatorController {
   //   （v5 ネイティブ・独立価格軸＋指標名＋高さドラッグ）。renderer が pane 生成と水準線配線を担う。
   _draw(instanceId, def, series, params = null) {
     const validated = this._validateSeriesNames(series, def, params);
-    const lines = validated.filter((p) => p.kind === 'line');
-    const histograms = validated.filter((p) => p.kind === 'histogram');
-    const hlines = validated.filter((p) => p.kind === 'horizontal_line');
+    // kind → 描画経路は series_kind 台帳（renderRoute）で一元化（新種別は台帳追記で完結・OCP）。
+    //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
+    const routed = { line: [], histogram: [], horizontal: [] };
+    for (const p of validated) {
+      const route = seriesKind(p.kind).renderRoute;
+      if (routed[route]) {
+        routed[route].push(p);
+      }
+    }
+    const lines = routed.line;
+    const histograms = routed.histogram;
+    const hlines = routed.horizontal;
     const opts = { pane: def.placement !== 'overlay', name: this._label(def) };
     if (histograms.length > 0) {
       this._renderer.renderHistogram(instanceId, histograms, opts);

@@ -20,6 +20,7 @@
 // DOM 非依存: chart / mainSeries / lwc は composition root から注入（テストは Fake を渡す）。
 
 import { fmtValue } from './format.js';
+import { seriesKind } from '../../domain/series_kind.js';
 
 // lineStyle 文字列 → lightweight-charts LineStyle 整数（v4/v5 共通: Solid=0 / Dotted=1 / Dashed=2）。
 const LINE_STYLE_INT = Object.freeze({ solid: 0, dotted: 1, dashed: 2 });
@@ -822,7 +823,9 @@ export class ChartRenderer {
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     const slot = this._slot(instanceId);
     const pane = this._ensurePane(slot, opts);
-    const definition = kind === 'histogram' ? this._lwc.HistogramSeries : this._lwc.LineSeries;
+    const definition = seriesKind(kind).seriesType === 'histogram'
+      ? this._lwc.HistogramSeries
+      : this._lwc.LineSeries;
     for (const p of payloads ?? []) {
       const options = {
         color: p.color,
@@ -830,7 +833,7 @@ export class ChartRenderer {
         lastValueVisible: false,
         title: p.name,
       };
-      if (kind === 'line') {
+      if (seriesKind(kind).appliesLineStyle) {
         options.lineWidth = p.width;
         options.lineStyle = toLineStyleInt(p.style);
       }
@@ -846,14 +849,14 @@ export class ChartRenderer {
         width: p.width ?? null, style: p.style ?? null, visible: true,
         // heat（ISSUE-112）: histogram でバー別着色（data[].color＝値に応じたヒート配色）を持つか。
         //   heat=true の系列はユーザー色上書きの対象外（ヒート絶対優先・ユーザー裁定）。
-        heat: kind === 'histogram' && (p.data ?? []).some((pt) => pt && pt.color != null),
+        heat: seriesKind(kind).supportsHeat && (p.data ?? []).some((pt) => pt && pt.color != null),
       });
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }
       // overlay（pane 0 重ね描き）の line 系列のみ読み取り欄の overlay 行に載せる。
       //   color/name と末尾点 value（hover 解除時の fallback）を保持する。
-      if (!pane && kind === 'line') {
+      if (!pane && seriesKind(kind).overlayReadout) {
         this._overlayReadouts.set(key, {
           series, color: p.color, name: p.name, lastValue: lastPointValue(p.data),
           visible: true,
@@ -1076,7 +1079,7 @@ export class ChartRenderer {
     // ISSUE-112（ユーザー裁定）: バー別ヒート配色（heat）の histogram は色 patch を無視する
     //   （ヒート表示が絶対優先・データ全塗り替えでヒートを潰す ISSUE-111 の機構は撤去）。
     //   heat 以外の histogram は series options.color が素で効く（バー別色が無いため上書き不要）。
-    if (patch.color != null && !(meta.kind === 'histogram' && meta.heat)) {
+    if (patch.color != null && !(seriesKind(meta.kind).supportsHeat && meta.heat)) {
       meta.color = patch.color;
     }
     if (patch.width != null) {
@@ -1089,7 +1092,7 @@ export class ChartRenderer {
       meta.visible = !!patch.visible;
     }
     const options = { color: meta.color, visible: slot.visible && meta.visible };
-    if (meta.kind === 'line') {
+    if (seriesKind(meta.kind).appliesLineStyle) {
       if (meta.width != null) {
         options.lineWidth = meta.width;
       }

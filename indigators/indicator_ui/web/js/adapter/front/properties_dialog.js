@@ -20,6 +20,7 @@ import {
   validateForm,
   resetToDefaults,
 } from '../../usecase/form_model.js';
+import { seriesKind } from '../../domain/series_kind.js';
 
 // A 方式（埋め込み事前計算）で「variant 以外のパラメータが描画へ反映されない」ことを
 // UI に明示する注記（§9.3・H-1・サイレント不一致を作らない）。
@@ -671,7 +672,7 @@ export class PropertiesDialog {
       // ISSUE-112（ユーザー裁定: ヒート絶対優先）: バー別ヒート配色の histogram は色も編集対象外。
       //   色ピッカーを出さず「ヒート配色（自動）」と明示する（機能しない設定項目を露出しない）。
       let color = null;
-      if (r.kind === 'histogram' && r.heat) {
+      if (seriesKind(r.kind).supportsHeat && r.heat) {
         const heatNote = doc.createElement('span');
         heatNote.className = 'prop-style-heat';
         heatNote.textContent = 'ヒート配色（自動）';
@@ -688,7 +689,7 @@ export class PropertiesDialog {
       //   （renderer.applySeriesStyle も histogram には色しか適用しない＝描画種別と設定項目を一致）。
       let width = null;
       let style = null;
-      if (r.kind !== 'histogram') {
+      if (seriesKind(r.kind).editableLineStyle) {
         width = doc.createElement('input');
         width.type = 'number';
         width.min = '1';
