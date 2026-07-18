@@ -125,6 +125,56 @@ def _bar_width(profile: dict[str, Any]) -> float:
     return round(span / nb, 2) if nb > 0 else 0.0
 
 
+@dataclass(frozen=True)
+class _ResolvedWindow:
+    """dwell/zp 共通の窓確定結果（ISSUE-133 SRP: _handle_dwell/_handle_zp の同型複製を単一化）。
+
+    ``dataset.load_candles`` → to/from 切り出し → 空判定 → 実期間 (t0/t1)・表示レンジ
+    (price_min/price_max)・足秒 (bar_sec)・barw→n_bins 反映 を一箇所に集約する。旧 2 handler の
+    inline 処理（load・フィルタ・空/非空分岐・スカラ導出）と byte 単位で同一の値を返す。
+    """
+
+    empty: bool
+    t0: int
+    t1: int
+    price_min: float
+    price_max: float
+    bar_sec: int
+    n_bins: int
+
+
+def _resolve_window(
+    ref: Any,
+    timeframe: Any,
+    limit_n: int | None,
+    n_bins: int,
+    barw: float,
+    to_ts: int | None,
+    from_ts: int | None,
+) -> _ResolvedWindow:
+    """tick 系（dwell/zp）の集計窓を確定する（旧 _handle_dwell/_handle_zp の inline と同一規則）。
+
+    candles を load し ``to_ts``（as-seen-at-t 上限・含む）/ ``from_ts``（ローリング窓下限・含む）で
+    切り出す。空なら実期間・レンジ 0・bar_sec=86400・n_bins 据え置き（旧空分岐と同値）。非空なら
+    t0=先頭 time・t1=末尾 time・price_min=min(low)・price_max=max(high)・bar_sec=tf 足秒・
+    barw>0 は price レンジ確定後に n_bins を上書き（旧非空分岐と同値）。
+    """
+    candles = dataset.load_candles(ref, timeframe, limit_n)
+    if to_ts is not None:
+        candles = [c for c in candles if c["time"] <= to_ts]
+    if from_ts is not None:
+        candles = [c for c in candles if c["time"] >= from_ts]
+    if not candles:
+        return _ResolvedWindow(True, 0, 0, 0.0, 0.0, 86400, n_bins)
+    t1 = candles[-1]["time"]
+    price_min = min(c["low"] for c in candles)
+    price_max = max(c["high"] for c in candles)
+    t0 = candles[0]["time"]
+    bar_sec = _bar_sec_for_tf(timeframe)
+    n_bins = _resolve_n_bins(n_bins, barw, price_min, price_max)
+    return _ResolvedWindow(False, t0, t1, price_min, price_max, bar_sec, n_bins)
+
+
 def _error_body(error_type: str, message: str) -> tuple[int, dict[str, Any]]:
     """§6.3.4 nested error（{ok:false, generation, error:{type, message, violations}}）。
 
@@ -357,37 +407,15 @@ def _handle_dwell(
         )
 
     metric = _SRC_METRIC[src]
-    candles = dataset.load_candles(ref, timeframe, limit_n)
-    if to_ts is not None:
-        # as-seen-at-t（アンカー）: t1 = min(末尾, T までの足)・recent/t0 は従来（全期間先頭）。
-        #   compute_dwell_profile の境界日 _partial_rollup が T 途中日も未来リーク無しで集計する。
-        candles = [c for c in candles if c["time"] <= to_ts]
-    if from_ts is not None:
-        # ローリング窓（増分2 A）: t0 = max(先頭, from)。from 以上の足だけに切り、集計窓の起点を繰り上げる。
-        #   compute_dwell_profile の境界日 _partial_rollup が from 途中日も過去リーク無しで集計する。
-        candles = [c for c in candles if c["time"] >= from_ts]
-    if not candles:
-        # 空データは安全に空/ゼロプロファイルを返す（500 化しない）。
-        profile = market_profile_dwell.compute_dwell_profile(
-            symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400,
-            metric=metric, want_today=want_today, want_sessions=want_sessions,
-            want_fine=want_fine,
-        )
-    else:
-        # 全期間化（250日キャップ撤廃）: レンジ（price_min/max）と実期間（t0/t1）を全 candle から
-        # 算出する。dwell 集計も全期間（各完了日はディスク/メモリキャッシュ経由）なので、レンジは
-        # 集計窓（＝全期間）に一致し、下部の空白（dwell=0 の空帯）が解消する。
-        t1 = candles[-1]["time"]
-        price_min = min(c["low"] for c in candles)
-        price_max = max(c["high"] for c in candles)
-        t0 = candles[0]["time"]  # 窓の最古 time（from 指定時は from 以降の先頭＝ローリング窓の起点）。
-        bar_sec = _bar_sec_for_tf(timeframe)
-        n_bins = _resolve_n_bins(n_bins, barw, price_min, price_max)  # barw>0 は bins に優先。
-        profile = market_profile_dwell.compute_dwell_profile(
-            symbol, t0, t1, price_min, price_max, n_bins,
-            va_pct=va_pct, bar_sec=bar_sec, metric=metric, want_today=want_today,
-            want_sessions=want_sessions, want_fine=want_fine,
-        )
+    # 窓確定（load・to/from 切り出し・空判定・t0/t1/レンジ/bar_sec/barw→n_bins）は zp と共通化した
+    #   _resolve_window に単一化（ISSUE-133 SRP）。旧空/非空分岐と同値。全期間化（250日キャップ撤廃）で
+    #   レンジ（price_min/max）と実期間（t0/t1）は全 candle から算出＝集計窓（全期間）に一致する。
+    w = _resolve_window(ref, timeframe, limit_n, n_bins, barw, to_ts, from_ts)
+    profile = market_profile_dwell.compute_dwell_profile(
+        symbol, w.t0, w.t1, w.price_min, w.price_max, w.n_bins,
+        va_pct=va_pct, bar_sec=w.bar_sec, metric=metric, want_today=want_today,
+        want_sessions=want_sessions, want_fine=want_fine,
+    )
     body = {
         "ok": True, "profile": profile, "src": src,
         "atom": _ATOM[src], "bar_width": _bar_width(profile),
@@ -433,31 +461,16 @@ def _handle_zp(
             f"src=zp はティック対応 ref のみ対応です: {ref!r}（例: 'jp225_tick'）",
         )
 
-    candles = dataset.load_candles(ref, timeframe, limit_n)
-    if to_ts is not None:
-        candles = [c for c in candles if c["time"] <= to_ts]
-    if from_ts is not None:
-        candles = [c for c in candles if c["time"] >= from_ts]
+    # 窓確定は dwell と共通の _resolve_window に単一化（ISSUE-133 SRP・旧空/非空分岐と同値）。
+    w = _resolve_window(ref, timeframe, limit_n, n_bins, barw, to_ts, from_ts)
     # ISSUE-129（単一時計）: to 指定時のみ compute の now を to（リプレイ現在時刻）で読む
     #   （None は実時計＝ライブ・後方互換）。
     now_kw = {"now": float(to_ts)} if to_ts is not None else {}
-    if not candles:
-        profile = market_profile_zp.compute_zp_profile(
-            symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400,
-            want_today=want_today, want_sessions=want_sessions, **now_kw,
-        )
-    else:
-        t1 = candles[-1]["time"]
-        price_min = min(c["low"] for c in candles)
-        price_max = max(c["high"] for c in candles)
-        t0 = candles[0]["time"]
-        bar_sec = _bar_sec_for_tf(timeframe)
-        n_bins = _resolve_n_bins(n_bins, barw, price_min, price_max)
-        profile = market_profile_zp.compute_zp_profile(
-            symbol, t0, t1, price_min, price_max, n_bins,
-            va_pct=va_pct, bar_sec=bar_sec, want_today=want_today,
-            want_sessions=want_sessions, **now_kw,
-        )
+    profile = market_profile_zp.compute_zp_profile(
+        symbol, w.t0, w.t1, w.price_min, w.price_max, w.n_bins,
+        va_pct=va_pct, bar_sec=w.bar_sec, want_today=want_today,
+        want_sessions=want_sessions, **now_kw,
+    )
     body = {
         "ok": True, "profile": profile, "src": "zp",
         "atom": _ATOM["zp"], "bar_width": _bar_width(profile),
