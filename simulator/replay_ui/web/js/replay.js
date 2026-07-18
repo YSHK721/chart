@@ -18,6 +18,7 @@ import {
   clampBar, idxForTime, visibleRange, scrollRange, presetSelection,
   degenerateModes, resumeDecision, isStale, isSuperseded,
 } from './replay/state.js';
+import { createMpGrowthDriver } from './replay/mp_growth_driver.js';
 
 const DAY = 86400;
 // 表示レンジ・テンプレート（時間足別）。期間は「秒」で持ち t 起点で [t-期間, t] を毎回算出。null=全期間。
@@ -62,6 +63,12 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   不変条件 from<=formingStart・未来リーク禁止を保つ。候補足が無ければ undefined（actor は GrowthWindow
   //   フォールバックへ委譲）。
   const mpBaseFrom = () => (candles[replayStart] ? candles[replayStart].time : undefined);
+
+  // MP tick-live 成長駆動は独立ドライバへ分離（ISSUE-133 SRP）。再生制御（render/animateForming）は
+  //   mpOn() gate の下で本ドライバへ委譲する（growInFlight・grow/settle/feed の駆動シーケンスを所有）。
+  const mpDriver = createMpGrowthDriver({
+    marketProfile, mpBaseFrom, sleepMs, animMinMs: ANIM_MIN_MS,
+  });
 
   // 指標の適用/削除（render を経ない経路）でも pane の減光を即同期する。
   for (const name of ['applyIndicator', 'removeInstance']) {
@@ -154,7 +161,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     }
     // MP tick-live: バー単位ジャンプで base を now=T（因果）で取り直す（rollover 兼・await ready で
     //   直後の animateForming feedTick 取りこぼしを防ぐ）。MP OFF/未配線時は完全に非干渉。
-    if (mpOn()) await marketProfile.enterBar(t, mpBaseFrom());
+    if (mpOn()) await mpDriver.enterBar(t);
     lastComputeMs = performance.now() - started;
     setEta();
     setStatus(`bar ${bar}/${candles.length - 1}  ${fmt(t)}  計算 ${Math.round(performance.now() - started)}ms（その場計算）`);
@@ -330,29 +337,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     catch (_e) { /* 確定着地の失敗は次フレームの full 再計算が回復 */ }
     finally { formingInFlight = false; lastFormingMs = performance.now(); }
   }
-  // MP tick-live グリッド拡張ドライバ（pushFormingMA / formingInFlight と同型の in-flight coalesce）。
-  //   1D 当日プロファイルの欠陥修正: enterBar(now=当日00:00) は base 窓空＋forming tick0 で縮退グリッド
-  //   ([0,1]) になり、以後の当日実 tick(価格~71000) が範囲外で全て捨てられ当日プロファイルが育たない。
-  //   revealed tick がグリッド外に出たら growTo(直近 revealed 秒) を発火し、now までの因果窓で forming を
-  //   再取得→グリッドを拡張して forming.ticks を畳み込む（未来リーク禁止＝now は必ず secs[i]）。
-  //   await でループを止めない fire-and-forget（完了で再描画）。in-flight 中は coalesce（多重発火抑止）。
-  let growInFlight = false;
-  function pushGrowTo(sec) {
-    if (growInFlight) return;
-    growInFlight = true;
-    marketProfile.growTo(sec, mpBaseFrom())
-      .catch(() => { /* グリッド拡張失敗はアニメ継続（次 tick が再発火・settle が最終確定） */ })
-      .finally(() => { growInFlight = false; });
-  }
-  // 確定時のグリッド拡張強制（mp_core 一致点）: in-flight を待ってから最終 secs で growTo を await し、
-  //   当日窓全 tick を畳み込んだ確定グリッドにしてから settleTick する（backend base=1 dwell と一致）。
-  async function settleGrowTo(sec) {
-    while (growInFlight) { await sleepMs(ANIM_MIN_MS); }
-    growInFlight = true;
-    try { await marketProfile.growTo(sec, mpBaseFrom()); }
-    catch (_e) { /* 確定着地の拡張失敗は次フレームの enterBar が回復 */ }
-    finally { growInFlight = false; }
-  }
+  // MP tick-live グリッド拡張の駆動（growInFlight・pushGrowTo・settleGrowTo）は mpDriver（独立ドライバ）
+  //   が所有する（ISSUE-133 SRP）。以下 animateForming は mpDriver.onFormingTick / settleMath / settleBar
+  //   へ委譲する（await 順序・coalesce 意味論は抽出前と同一）。
   let pausedForm = null;
   view.el('rp-mode').addEventListener('change', () => {
     animGen++;          // 実行中の形成を supersede
@@ -376,8 +363,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         const { winEnd } = intrabarWindow({
           timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
         });
-        if (winEnd != null && typeof marketProfile.growTo === 'function') { await settleGrowTo(winEnd); }
-        marketProfile.settleTick();
+        await mpDriver.settleMath(winEnd);
       }
       return;
     }
@@ -409,15 +395,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         pushFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: p });
         // MP tick-live: この tick を DwellAccumulator へ供給し足内成長させる（sec 並走が有るバーのみ＝
         //   real_ticks・MP 有効。secs 空バーは skip＝base 継続）。速度0凍結/supersede の既存制御に追従。
+        //   グリッド外 tick の growTo 発火（in-flight coalesce）＋feedTick は mpDriver が担う（ISSUE-133 SRP）。
         if (mpOn() && secs && secs[i] != null) {
-          // 当日プロファイル欠陥修正: revealed tick がグリッド外（縮退 [0,1] 等）なら growTo を発火し
-          //   now=secs[i] までの因果窓でグリッドを拡張する（in-flight coalesce・feedTick は継続）。
-          //   拡張完了後の tick は範囲内で feedTick が育て、確定時 settleGrowTo が全 tick を再畳み込む。
-          if (typeof marketProfile.isTickInGrid === 'function'
-              && !marketProfile.isTickInGrid(p) && !growInFlight) {
-            pushGrowTo(secs[i]);
-          }
-          marketProfile.feedTick(secs[i], p);
+          mpDriver.onFormingTick(p, secs[i]);
         }
         while (speed() <= 0 && !superseded() && !(shouldAbort && shouldAbort())) await sleepMs(80); // 速度0=凍結
         if (superseded() || (shouldAbort && shouldAbort())) continue;
@@ -436,13 +416,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       //   未来リークなし＝次足 tick は半開区間 [dayStart, winEnd) で除外）。actor は空/縮退 forming を非破壊で
       //   扱う（データ無バーは前回描画保持）。
       if (mpOn()) {
-        if (typeof marketProfile.growTo === 'function') {
-          const { winEnd } = intrabarWindow({
-            timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
-          });
-          if (winEnd != null) await settleGrowTo(winEnd);
-        }
-        marketProfile.settleTick();
+        const { winEnd } = intrabarWindow({
+          timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
+        });
+        await mpDriver.settleBar(winEnd);
       }
       if (myGen === animGen) {
         await settleFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: fc });
