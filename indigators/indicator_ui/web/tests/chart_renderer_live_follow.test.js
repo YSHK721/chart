@@ -156,3 +156,39 @@ test('setAnalysisTint: applyOptions 非提供なら no-op（例外を出さな�
 
   assert.doesNotThrow(() => renderer.setAnalysisTint(true));
 });
+
+// ---- ISSUE-119: 既定背景の参照エイリアシング回帰（in-place マージする実 lwc 相当） ----
+
+test('ISSUE-119 setAnalysisTint: options() が内部参照を返し applyOptions が in-place マージでも復元できる', () => {
+  // Arrange: 実 lwc 相当の fake — options() は内部 options オブジェクトへの「参照」を返し、
+  //   applyOptions は同一オブジェクトへ再帰マージ（in-place 書き換え）する。
+  const internal = { layout: { background: { type: 'solid', color: '#131722' } } };
+  const merge = (dst, src) => {
+    for (const k of Object.keys(src)) {
+      if (src[k] && typeof src[k] === 'object' && dst[k] && typeof dst[k] === 'object') {
+        merge(dst[k], src[k]);
+      } else {
+        dst[k] = src[k];
+      }
+    }
+  };
+  const chart = {
+    addSeries: () => ({ setData() {}, applyOptions() {} }),
+    subscribeCrosshairMove() {},
+    timeScale: () => ({}),
+    options: () => internal, // 参照をそのまま返す（コピーしない）
+    applyOptions: (o) => merge(internal, o),
+  };
+  const mainSeries = { setData() {}, applyOptions() {}, priceScale: () => ({ applyOptions() {} }) };
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: {} });
+
+  // Act: 既定捕捉（false）→ tint ON → 復元。
+  renderer.setAnalysisTint(false); // 初回捕捉（この時点の色 #131722 を snapshot）
+  renderer.setAnalysisTint(true);
+  assert.equal(internal.layout.background.color, '#1b1a24', 'tint ON で内部色が tint 色へ');
+  renderer.setAnalysisTint(false);
+
+  // Assert: 参照エイリアシングがあると tint 色のまま（旧バグ）。snapshot 化により既定色へ戻る。
+  assert.equal(internal.layout.background.color, '#131722', 'FOLLOW 復帰で既定色へ復元される');
+  assert.equal(internal.layout.background.type, 'solid', 'type も維持');
+});
