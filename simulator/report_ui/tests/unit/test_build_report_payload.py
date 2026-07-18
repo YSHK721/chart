@@ -85,15 +85,6 @@ class _FakeResult:
     equity_curve: Any = None
 
 
-@dataclass
-class _FakeBar:
-    time: int
-    high: float
-    low: float
-    open: float = 0.0
-    close: float = 0.0
-
-
 def _spec():
     @dataclass
     class S:

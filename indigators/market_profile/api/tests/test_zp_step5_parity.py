@@ -44,28 +44,6 @@ def test_constants_parity_with_analysis():
     assert np.array_equal(zp._B_OF_MINUTE, dp.calendar_bracket_of_mod(mods))
 
 
-def _analysis_session(D: int, seed: int):
-    """分析層の合成 M1 → SessionData/DailyFeatures（20000 中心・毎日リセット）。"""
-    rng = np.random.default_rng(seed)
-    mods = np.arange(61, 1439)
-    frames = []
-    for d in range(D):
-        steps = rng.normal(scale=2.0, size=mods.size)
-        closes = 20000.0 + np.cumsum(steps)
-        opens = np.concatenate([[20000.0], closes[:-1]])
-        frames.append(pd.DataFrame({
-            "epoch": 1704067200 + d * 86400 + mods * 60,
-            "open": opens,
-            "high": np.maximum(opens, closes),
-            "low": np.minimum(opens, closes),
-            "close": closes,
-        }))
-    df = pd.concat(frames, ignore_index=True)
-    sd = dp.build_session_data(df)
-    f = dp.build_daily_features(sd, variants=(dp.PRIMARY,))
-    return sd, f
-
-
 def test_null_b_moments_parity_with_step5():
     """帰無モーメントの二重実装相互一致（ISSUE-079: log 格子は analysis/zp_grid_scan と照合）。
 
@@ -89,24 +67,6 @@ def test_null_b_moments_parity_with_step5():
         b_of_minute=zp._B_OF_MINUTE)
     assert np.allclose(m_prod, m_scan, rtol=0, atol=1e-12)
     assert np.allclose(v_prod, v_scan, rtol=0, atol=1e-12)
-
-
-def _unused_legacy_step5_reference():
-    """（記録用）旧・線形格子時代は s5.null_b_day との要素一致で錨付けしていた。"""
-    b = dp.calendar_bracket_of_mod(
-        np.arange(zp.SESSION_OPEN_MOD, zp.SESSION_CLOSE_MOD + 1, dtype=np.int32)
-    )
-    d = 10
-    open_d = 20000.0
-    low, high = 20000.0, 20400.0  # row_w = 10 = GRID_W・境界整列
-    m_reps = 600
-    mean5, sd5 = s5.null_b_day(S, b, d, open_d, low, high, rng=np.random.default_rng(33), m_reps=m_reps)
-    mean_z, var_z = zp.null_b_moments_abs(
-        S, open_d, 2000, 2039, rng=np.random.default_rng(33), m_reps=m_reps
-    )
-    assert mean_z.shape == mean5.shape == (40,)
-    assert np.allclose(mean_z, mean5, rtol=0, atol=1e-12)
-    assert np.allclose(np.sqrt(var_z), sd5, rtol=0, atol=1e-12)
 
 
 def test_obs_counts_parity_with_scan_log_impl():
