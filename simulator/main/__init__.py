@@ -482,19 +482,23 @@ def build_interactor(
     # どおり data_path から構築（U6 解決＝併存）。spread 依存戦略（MA_Slope/MA_Slope_Pending/
     # StopEntryProbe＝Mt5CsvOHLCRepository）は委譲対象外で本分岐に入らず、report.json 再現性
     # （StopEntryProbe 経路無改変）を保つ。usecase IF（RunBacktestRequest.bars）は不変。
-    load_source: Any = data_path
     if marketdata_window is not None and isinstance(market_data, CsvOHLCRepository):
         from marketdata.csv_source import CsvCandleSource
 
-        market_data = MarketDataSourceRepository(CsvCandleSource(data_path))
-        load_source = marketdata_window  # C-2: (start, end) 半開窓を委譲 repo へ渡す
+        # C-2: 取得窓 (start,end) 半開は委譲 repo の構築時パラメータ（window）へ隔離する
+        # （ISSUE-135 LSP: MarketDataPort.load の source_ref を path 系 3 実装と対称化し、
+        # load_source の型別作り分けを除去）。source_ref は全実装で data_path に統一する。
+        market_data = MarketDataSourceRepository(
+            CsvCandleSource(data_path), window=marketdata_window
+        )
 
-    # bars は committed 公開 IF（market_data.load）で構築する。registry 用の DataFrame
-    # 読みと bars 用の load が分かれる（=読み複数回）のは committed adapter/usecase の
-    # IF（registry は系列・Interactor は Bar 列・controller は path 再読み）に起因する。
-    # 1 回読みへの統合は committed IF 変更が要るため範囲外＝申し送り（DESIGN 申し送り）。
-    # every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
-    bars = market_data.load(load_source, None, None)
+    # bars は committed 公開 IF（market_data.load）で構築する。source_ref は全 MarketDataPort
+    # 実装で data_path に統一する（委譲 repo は取得窓を構築時に保持し source_ref を参照しない・
+    # ISSUE-135）。registry 用の DataFrame 読みと bars 用の load が分かれる（=読み複数回）のは
+    # committed adapter/usecase の IF（registry は系列・Interactor は Bar 列・controller は path
+    # 再読み）に起因する。1 回読みへの統合は committed IF 変更が要るため範囲外＝申し送り
+    # （DESIGN 申し送り）。every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
+    bars = market_data.load(data_path, None, None)
 
     # tick_model 選択（config gated）。real_ticks（requires_real_ticks=True）のときのみ
     # ParquetTickRepository から対象期間の実ティックを load し RealTickModel に供給する

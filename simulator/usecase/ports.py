@@ -49,7 +49,18 @@ class MarketDataPort(abc.ABC):
 
     @abc.abstractmethod
     def load(self, source_ref: Any, timeframe: Any, period: Any) -> Any:
-        """OHLCFrame を返す。"""
+        """OHLCFrame（本プロジェクトでは ``list[domain.Bar]``）を返す。
+
+        ``source_ref`` 契約（ISSUE-135 LSP・全実装で対称）: データソースの所在を指す
+        **パス様の参照**（CSV/TSV/parquet の各実装はファイルパスを受ける）。取得窓や銘柄など
+        実装固有の選択軸は ``source_ref`` に載せず、各実装の**構築時パラメータへ隔離**する
+        （例: marketdata 委譲実装は取得窓 (start,end) を構築時 window に保持し ``source_ref`` を
+        参照しない）。これにより実装間で ``source_ref`` の事前条件が対称になり相互置換が可能。
+
+        例外契約（全実装で対称）: I/O 失敗・データ取得失敗は生の外側例外を漏らさず
+        ``DataError``（domain 例外）へ翻訳する。時刻昇順違反は ``TimeOrderError``、OHLC 整合
+        違反は ``OHLCInvalidError``、必須列欠損は ``MissingBarError`` を送出する。
+        """
         raise NotImplementedError
 
 
@@ -139,7 +150,14 @@ class TickModelPort(abc.ABC):
 
     @abc.abstractmethod
     def ticks_of(self, bar: "Bar", prev_close: float) -> Iterable[Any]:
-        """Tick = (price, bid, ask, time) の列を返す。"""
+        """Tick = (price, bid, ask, time) の列を返す。
+
+        **空列を許容する**（ISSUE-135 LSP・全実装で対称の事後条件）: 当該バー区間に該当する
+        ティックが無い場合は空の列を返す（例外でない）。合成実装（OhlcExpandTickModel /
+        OpenOnlyTickModel / EveryTickModel）は常に非空だが、実ティック実装（RealTickModel）は
+        バー区間 [bar.time, bar.time+足長) に実ティックが 0 件のとき空列を返しうる。呼出側
+        （Interactor）は空列を「そのバスではティック無し」として扱い非空を前提にしない。
+        """
         raise NotImplementedError
 
 

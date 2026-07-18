@@ -1689,7 +1689,13 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
   - 【低】`simulator/main/__init__.py:443-459` `strategy_params` フラット dict に各戦略専用 param を混載。
 - **対策案（要承認）**: `TIMEFRAME_RULES` を `TfDescriptor{rule, floorable, calendar}` へ昇格し membership set を導出値化・`next_period_label` は `period_label_naive` へ委譲。フロントに kind→描画レジストリ、domain に MP mode descriptor を各 1 つ新設。
 ## ISSUE-135: [SOLID/LSP] `MarketDataPort.load` の source_ref 事前条件・例外契約が実装間で非対称（composition root が isinstance で補償）（アーキテクチャ調査 2026-07-18）
-- **ステータス**: OPEN（起票のみ・是正は要承認）
+- **ステータス**: RESOLVED（2026-07-18 実装・検証済み）
+- **是正結果**:
+  - 【高】source_ref 一意化（LSP）: `MarketDataSourceRepository.load` の `start, end = source_ref` アンパックを撤去。取得窓 (start,end) を構築時パラメータ `window`（keyword-only 必須）へ隔離し、`load(source_ref, ...)` は path 系 3 実装と対称に source_ref を未使用化（path 文字列を受理・置換可能）。`simulator/main/__init__.py` は `load_source` の型別作り分け（`load_source = marketdata_window`）を除去し、全実装へ `data_path` を統一して渡す（委譲 repo 構築時に `window=marketdata_window` を注入）。残る isinstance は委譲経路の DI 選択のみ（LSP 補償でなく composition root の実装選択）。
+  - 【中】例外契約対称化: `MarketDataSourceRepository.load` の `fetch_candles` 呼び出しを try/except で包み、fetch 段の失敗（永続実体不在の I/O 例外・CandleSource の fail-fast ValueError 等）を生例外でなく `DataError` へ翻訳（元例外を `__cause__` に chain・path 系 `read_csv_or_data_error`/`ohlc_parquet` と同一のメッセージ+context 規約）。写像段の domain 検証（OHLCInvalidError/TimeOrderError）は try 外で送出を維持（`frame_to_bars` と対称）。
+  - 【低】`TickModelPort.ticks_of` docstring に「空列許容（全実装で対称の事後条件・RealTickModel は区間 0 件で空列）」を明記（コード変更なし）。`MarketDataPort.load` docstring にも source_ref/例外の対称契約を明文化。
+- **検証結果**: TDD（Red 10 件失敗 → Green 全通過）。simulator 全 1320 passed（baseline 1317＋契約対称性テスト 3 件・replay 約 170 含む）。市場データ委譲のバイト一致 oracle・委譲結線回帰・StopEntryProbe 非委譲回帰いずれも通過（挙動変更ゼロ）。market_profile api＋indicator_ui api 679 passed（回帰なし）。
+- **健全性確認（違反でないと判定・不変更）**: `mp_source_capability.js` 能力ゲート・`ReplayMarketProfileActor` 継承 seam・`CandleSource` 事後条件対称は健全のため未変更。
 - **調査方法**: ISSUE-133 と同一（ポート定義と全実装の突き合わせ・自己レビュー済み）。
 - **所見（重大度順）**:
   - 【高】`simulator/usecase/ports.py:47-53` `MarketDataPort.load(source_ref, ...)` の source_ref が実装 4 種で非対称: CSV パス（`ohlc_csv.py:50`）・TSV パス（`ohlc_mt5_csv.py:72`）・parquet パス（`ohlc_parquet.py:27`）に対し `marketdata_source.py:64-68` のみ `(start, end)` タプルをアンパック。`simulator/main/__init__.py:485-497` が `isinstance(market_data, CsvOHLCRepository)` で分岐し `load_source` を作り分け＝置換不能を型判別で補償。相互差し替えで ValueError/TypeError。
