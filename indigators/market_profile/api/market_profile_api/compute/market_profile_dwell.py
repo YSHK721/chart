@@ -518,67 +518,17 @@ def compute_dwell_profile(
 
 
 # --------------------------------------------------------------------------- #
-# ウォーマー（事前ビルド）: 完了日ロールアップをディスクへ一括構築（冪等）
+# ウォーマー（運用バッチ）: 実体は market_profile_dwell_warmer へ分離（ISSUE-133 SRP）
 # --------------------------------------------------------------------------- #
-def _day_start_from_tick_path(p: Any) -> int:
-    """ティック parquet パス ``.../YYYY/MM/DD/<symbol>_ticks.parquet`` から day_start(UTC 秒) を得る。"""
-    parts = _Path(p).parts
-    y, m, d = int(parts[-4]), int(parts[-3]), int(parts[-2])
-    return int(pd.Timestamp(f"{y:04d}-{m:02d}-{d:02d}", tz="UTC").timestamp())
-
-
+# 完了日ロールアップの一括ビルド（運用バッチ アクター）は :mod:`market_profile_dwell_warmer` へ移設した。
+# 本 module 属性 ``warm_dwell_cache`` は既存 import 面（テスト ``mpd.warm_dwell_cache``）を温存する薄い
+# 遅延委譲（module ロード時の循環 import を避けるため関数内 import）。CLI は tools/warm_market_profile_cache へ。
 def warm_dwell_cache(
     symbol: str, start: Any = None, end: Any = None, now: float | None = None
 ) -> dict:
-    """全 or 指定期間の完了日ロールアップをディスクへ一括構築する（冪等・進捗 print）。
+    """完了日ロールアップの一括ビルドへの遅延委譲（実体は :mod:`market_profile_dwell_warmer`）。"""
+    from market_profile_api.compute.market_profile_dwell_warmer import (
+        warm_dwell_cache as _impl,
+    )
 
-    :func:`marketdata.tick_m1.day_parquet_files` で実在日を列挙し、各完了日を :func:`_day_rollup` で
-    構築・保存する。既にディスクにある完了日はスキップ（冪等）。当日（未確定日）は永続化しない。
-    一度回せば以降の全期間 dwell はディスクから高速ロードできる。
-
-    Args:
-        symbol: 実ティック symbol（例 'JP225'）。
-        start/end: 期間端（None は start=2000-01-01 / end=当日。存在日のみ処理）。
-        now: 完了日判定の基準時刻（既定は現在時刻。テスト注入用）。
-
-    Returns:
-        ``{built, skipped, days}``（構築数・スキップ数・列挙された実在日数）。
-    """
-    now_val = _time.time() if now is None else float(now)
-    lo = pd.Timestamp("2000-01-01") if start is None else pd.Timestamp(start)
-    hi = pd.Timestamp(now_val, unit="s").normalize() if end is None else pd.Timestamp(end)
-    files = day_parquet_files(lo, hi, symbol=symbol)
-    built = skipped = 0
-    # ISSUE-078: 実在 parquet（UTC 日）から被覆セッション日集合を導出する（同一セッションは 2 UTC 日に
-    #   跨るため set で重複排除）。セッション完了判定は next_session_day_start（DST 23h/25h 対応）。
-    session_days = sorted({session_day_start(_day_start_from_tick_path(p)) for p in files}
-                          | {session_day_start(_day_start_from_tick_path(p) + 86399) for p in files})
-    for day_start in session_days:
-        if next_session_day_start(day_start) > now_val:  # 未確定の当日セッションは永続化しない。
-            continue
-        # ISSUE-089: スキップは「現行版として有効なキャッシュ」のみ（旧: 存在チェックのみで
-        #   版数不一致の stale ファイルもスキップしていた）。署名照合込みの実ロードで検証する。
-        disk, cached_sig = _load_day_rollup(_cache_path(symbol, day_start))
-        if disk is not _CACHE_MISS and cached_sig == _day_source_signature(symbol, day_start):
-            skipped += 1
-            continue
-        _day_rollup(symbol, day_start, None, now_val)
-        built += 1
-        if built % 25 == 0:
-            print(f"[warm] {symbol}: {built} built / {skipped} skipped ...")
-    print(f"[warm] {symbol}: done — {built} built, {skipped} skipped, {len(files)} days enumerated")
-    return {"built": built, "skipped": skipped, "days": len(files)}
-
-
-if __name__ == "__main__":  # 小さな CLI エントリ（例: python -m adapter.compute.market_profile_dwell --warm jp225_tick）
-    import argparse
-
-    _parser = argparse.ArgumentParser(description="Market Profile dwell 日別ロールアップのディスクキャッシュ・ウォーマー")
-    _parser.add_argument("--warm", metavar="REF_OR_SYMBOL", required=True,
-                         help="datasetRef（例 jp225_tick）または実ティック symbol（例 JP225）")
-    _parser.add_argument("--start", default=None, help="期間開始（例 2020-01-01・既定 全期間）")
-    _parser.add_argument("--end", default=None, help="期間終了（例 2024-12-31・既定 当日）")
-    _args = _parser.parse_args()
-    _sym = resolve_symbol(_args.warm) or _args.warm  # ref なら symbol へ解決、それ以外は symbol とみなす。
-    print(f"[warm] cache root = {_cache_root()}")
-    warm_dwell_cache(_sym, start=_args.start, end=_args.end)
+    return _impl(symbol, start=start, end=end, now=now)

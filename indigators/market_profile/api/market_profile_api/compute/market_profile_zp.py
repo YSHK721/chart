@@ -647,46 +647,15 @@ def compute_zp_profile(
 
 
 # --------------------------------------------------------------------------- #
-# ウォーマー（事前ビルド）: 完了日の mgrid + znull をディスクへ一括構築（冪等）
+# ウォーマー（運用バッチ）: 実体は market_profile_zp_warmer へ分離（ISSUE-133 SRP）
 # --------------------------------------------------------------------------- #
+# 完了日 mgrid＋znull の一括ビルド（運用バッチ アクター）は :mod:`market_profile_zp_warmer` へ移設した。
+# 本 module 属性 ``warm_zp_cache`` は既存 import 面を温存する薄い遅延委譲（module ロード時の循環 import を
+# 避けるため関数内 import）。CLI は tools/warm_market_profile_cache へ分離した。
 def warm_zp_cache(
     symbol: str, start: Any = None, end: Any = None, now: float | None = None
 ) -> dict:
-    """全 or 指定期間の完了日 z 成果物（mgrid＋znull）をディスクへ一括構築する（冪等・進捗 print）。
+    """完了日 mgrid＋znull の一括ビルドへの遅延委譲（実体は :mod:`market_profile_zp_warmer`）。"""
+    from market_profile_api.compute.market_profile_zp_warmer import warm_zp_cache as _impl
 
-    日付昇順に走査し、各完了日の mgrid → znull を構築・保存する。既にディスクにある完了日は
-    スキップ（冪等）。ステップ行列 S は _hist_step_matrix 経由（mgrid ディスクヒットで高速）。
-    """
-    now_val = _time.time() if now is None else float(now)
-    lo = pd.Timestamp("2000-01-01") if start is None else pd.Timestamp(start)
-    hi = pd.Timestamp(now_val, unit="s").normalize() if end is None else pd.Timestamp(end)
-    files = day_parquet_files(lo, hi, symbol=symbol)
-    built = skipped = 0
-    # ISSUE-078: 実在 parquet（UTC 日）から被覆セッション日集合を導出（dwell warm と同規則）。
-    session_days = sorted({session_day_start(_mpd._day_start_from_tick_path(p)) for p in files}
-                          | {session_day_start(_mpd._day_start_from_tick_path(p) + 86399) for p in files})
-    for day_start in session_days:
-        if next_session_day_start(day_start) > now_val:
-            continue
-        if _STORE.null_path(symbol, day_start).is_file():
-            skipped += 1
-            continue
-        _zp_day_rollup(symbol, day_start, now_val)
-        built += 1
-        if built % 25 == 0:
-            print(f"[warm-zp] {symbol}: {built} built / {skipped} skipped ...")
-    print(f"[warm-zp] {symbol}: done — {built} built, {skipped} skipped, {len(files)} days enumerated")
-    return {"built": built, "skipped": skipped, "days": len(files)}
-
-
-if __name__ == "__main__":  # 例: python -m market_profile_api.compute.market_profile_zp --warm jp225_tick
-    import argparse
-
-    _parser = argparse.ArgumentParser(description="Market Profile z(p) 日別成果物のディスクキャッシュ・ウォーマー")
-    _parser.add_argument("--warm", metavar="REF_OR_SYMBOL", required=True)
-    _parser.add_argument("--start", default=None)
-    _parser.add_argument("--end", default=None)
-    _args = _parser.parse_args()
-    _sym = _mpd.resolve_symbol(_args.warm) or _args.warm
-    print(f"[warm-zp] cache root = {_STORE.cache_root()}")
-    warm_zp_cache(_sym, start=_args.start, end=_args.end)
+    return _impl(symbol, start=start, end=end, now=now)
