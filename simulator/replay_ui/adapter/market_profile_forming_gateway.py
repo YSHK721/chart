@@ -26,8 +26,11 @@ class MarketProfileFormingGateway:
     ) -> None:
         self._api_path = api_path
         self._repo_root = repo_root
-        # 既定は実 bridge の load。テストは fake loader を注入して indicator_ui 実体に依存しない。
-        self._loader = bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load
+        # 既定は MP handlers のみのアクセサ（ISSUE-136 ISP: dataset/compute Facade を import しない）。
+        # テストは fake loader を注入して indicator_ui 実体に依存しない。
+        self._loader = (
+            bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load_mp_handlers
+        )
 
     def forming(
         self,

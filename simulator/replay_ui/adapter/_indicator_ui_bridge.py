@@ -6,6 +6,12 @@ CLEAN_ARCH §6: 偶有的技術（indicator_ui の実アダプタ・resample 規
 再利用する。cwd 非依存（絶対パス insert）にして、bash 呼出間の cwd リセットに影響されない。
 
 既存 indicator_ui コードは無改変（import して呼ぶのみ）。
+
+ISSUE-136（ISP）: 旧 ``load()`` は dataset・compute・MP controller を 1 つの太い namespace に
+まとめて **無条件 eager import** していたため、dataset のみ使う経路（intrabar / causal_candle）まで
+MP controller の import 健全性へ巻き込まれていた。粒度別アクセサ（:func:`load_dataset` /
+:func:`load_compute` / :func:`load_mp_handlers`）へ分割し、各クライアントは自分が使う面のみを
+import する。``load()`` は全面を束ねた後方互換 API として温存する（既存呼出元・テスト非破壊）。
 """
 from __future__ import annotations
 
@@ -16,21 +22,22 @@ from typing import Any
 # repo 根 = simulator/replay_ui/adapter/_indicator_ui_bridge.py の parents[3]。
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[3]
 
-_CACHE: "dict[tuple[str, str], SimpleNamespace]" = {}
+# アクセサ種別ごとに独立キャッシュ（(api, root) キー）。種別を跨いだ instance 共有はしない。
+_CACHE: "dict[tuple[str, str, str], SimpleNamespace]" = {}
 
 
-def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
-    """indicator_ui / marketdata の公開シンボルを束ねた namespace を返す（結果はキャッシュ）。"""
+def _ensure_paths(api_path: Any, repo_root: Any) -> "tuple[Path, Path]":
+    """``indicator_ui/api``（＋フォールバックで repo 根・MP api）を ``sys.path`` へ挿入する（冪等）。
+
+    ``(api, root)`` を返す。挙動は旧 ``load()`` の sys.path 準備と byte 等価（同じ探索順・同じ
+    フォールバック条件）。cwd 非依存（絶対パス insert）。import 実体は各アクセサが必要分のみ行う。
+    """
     root = Path(repo_root).resolve() if repo_root is not None else _DEFAULT_REPO_ROOT
     api = (
         Path(api_path).resolve()
         if api_path is not None
         else root / "indigators" / "indicator_ui" / "api"
     )
-    key = (str(api), str(root))
-    cached = _CACHE.get(key)
-    if cached is not None:
-        return cached
 
     import sys
 
@@ -51,16 +58,67 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
     for p in paths:
         if p not in sys.path:
             sys.path.insert(0, p)
+    return api, root
 
-    # dataset 実体は marketdata へ移設済み（最下層 peer 依存）。IndicatorComputeAdapter /
-    # full_compute / latest_compute は indicator_ui の安定公開 Facade ``adapter.compute``
-    # （ISSUE-092 ②）1 点から import する＝compute の内部モジュール構成へ密結合しない。
+
+def load_dataset(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
+    """dataset 面のみを束ねた namespace を返す（MP controller を import しない・ISSUE-136 ISP）。
+
+    dataset のみ使うクライアント（intrabar / causal_candle / composition の ref 検証）向け。
+    dataset 実体は marketdata へ移設済み（最下層 peer 依存）。
+    """
+    api, root = _ensure_paths(api_path, repo_root)
+    key = ("dataset", str(api), str(root))
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
+    from marketdata import dataset  # noqa: E402
+
+    ns = SimpleNamespace(dataset=dataset)
+    _CACHE[key] = ns
+    return ns
+
+
+def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
+    """dataset ＋ indicator 計算面（adapter / full_compute / latest_compute）を束ねた namespace を返す。
+
+    IndicatorComputeAdapter / full_compute / latest_compute は indicator_ui の安定公開 Facade
+    ``adapter.compute``（ISSUE-092 ②）1 点から import する＝compute の内部モジュール構成へ密結合しない。
+    /compute 経路（causal_compute）向け。MP controller は import しない（ISSUE-136 ISP）。
+    """
+    api, root = _ensure_paths(api_path, repo_root)
+    key = ("compute", str(api), str(root))
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
     from marketdata import dataset  # noqa: E402
     from adapter.compute import (  # noqa: E402
         IndicatorComputeAdapter,
         full_compute,
         latest_compute,
     )
+
+    ns = SimpleNamespace(
+        dataset=dataset,
+        adapter=IndicatorComputeAdapter(),
+        full_compute=full_compute,
+        latest_compute=latest_compute,
+    )
+    _CACHE[key] = ns
+    return ns
+
+
+def load_mp_handlers(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
+    """MarketProfile controller の純ロジック（handle_market_profile{,_forming}）を束ねた namespace を返す。
+
+    MP normal/sessions/replay/forming 経路向け。dataset / compute Facade は import しない
+    （ISSUE-136 ISP: MP 経路だけが MP controller の import 健全性に依存する）。
+    """
+    api, root = _ensure_paths(api_path, repo_root)
+    key = ("mp", str(api), str(root))
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
     # MP サブバー tick 逐次成長: forming controller の純ロジックを read-only 再利用（無改変・DRY）。
     from market_profile_api.controller.market_profile_forming_controller import (  # noqa: E402
         handle_market_profile_forming,
@@ -69,15 +127,38 @@ def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
     from market_profile_api.controller.market_profile_controller import (  # noqa: E402
         handle_market_profile,
     )
+
+    ns = SimpleNamespace(
+        handle_market_profile_forming=handle_market_profile_forming,
+        handle_market_profile=handle_market_profile,
+    )
+    _CACHE[key] = ns
+    return ns
+
+
+def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
+    """dataset ＋ compute ＋ MP handlers を束ねた後方互換 namespace を返す（結果はキャッシュ）。
+
+    ISSUE-136 以降の推奨は粒度別アクセサ（:func:`load_dataset` / :func:`load_compute` /
+    :func:`load_mp_handlers`）。本関数は全面を束ねる旧 API を温存する（既存呼出元・テスト非破壊）。
+    dataset/adapter 実体は各アクセサのキャッシュを共有し、同一 instance を保つ。
+    """
+    api, root = _ensure_paths(api_path, repo_root)
+    key = ("all", str(api), str(root))
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
+    compute = load_compute(api_path, repo_root)
+    mp = load_mp_handlers(api_path, repo_root)
     # ISSUE-131/132: resample 系（resample_ohlc/resample_ohlc_tf/TIMEFRAME_RULES/is_known_timeframe）の
     #   export は撤去（replay 側の自前足生成の全廃で利用ゼロ化。足の集合・値は dataset 経由で一元）。
     ns = SimpleNamespace(
-        dataset=dataset,
-        adapter=IndicatorComputeAdapter(),
-        full_compute=full_compute,
-        latest_compute=latest_compute,
-        handle_market_profile_forming=handle_market_profile_forming,
-        handle_market_profile=handle_market_profile,
+        dataset=compute.dataset,
+        adapter=compute.adapter,
+        full_compute=compute.full_compute,
+        latest_compute=compute.latest_compute,
+        handle_market_profile_forming=mp.handle_market_profile_forming,
+        handle_market_profile=mp.handle_market_profile,
     )
     _CACHE[key] = ns
     return ns

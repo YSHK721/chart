@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from simulator.replay_ui.adapter import _indicator_ui_bridge
+from simulator.replay_ui.adapter.dataset_ports import RefValidationPort
 from simulator.replay_ui.adapter.causal_candle_repository import CausalCandleRepository
 from simulator.replay_ui.adapter.causal_compute_gateway import CausalComputeGateway
 from simulator.replay_ui.adapter.intrabar_window_repository import (
@@ -60,7 +61,10 @@ def build_replay_app(
         tick_root=tick_root, api_path=api_path, repo_root=root
     )
 
-    bridge = _indicator_ui_bridge.load(api_path, root)
+    # ISSUE-136 ISP: ref ホワイトリスト検証（is_known）だけを要するため dataset のみのアクセサを使い、
+    #   dataset 具象を検証専用の狭いポート型で受ける。
+    bridge = _indicator_ui_bridge.load_dataset(api_path, root)
+    ref_validation: RefValidationPort = bridge.dataset
 
     # MP サブバー tick 逐次成長: forming gateway（bridge 委譲）を Port として注入する。
     forming_port = MarketProfileFormingGateway(api_path=api_path, repo_root=root)
@@ -72,7 +76,7 @@ def build_replay_app(
         candle_port=candle_port,
         compute_port=compute_port,
         window_port=window_port,
-        is_known_ref=bridge.dataset.is_known,
+        is_known_ref=ref_validation.is_known,
         web_dir=web_dir,
         shared_js_root=shared_js,
         forming_port=forming_port,

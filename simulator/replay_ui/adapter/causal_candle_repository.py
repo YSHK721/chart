@@ -18,6 +18,7 @@ import math
 from typing import Any, Callable
 
 from simulator.replay_ui.adapter import _indicator_ui_bridge
+from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort, RefValidationPort
 
 class CausalCandleRepository:
     """CausalCandlePort 実装。untilTime 切断はしない（proto /candles と同一）。"""
@@ -30,9 +31,11 @@ class CausalCandleRepository:
     ) -> None:
         self._api_path = api_path
         self._repo_root = repo_root
-        # 既定は実 bridge の load。テストは fake loader を注入して indicator_ui 実体に依存しない
-        # （MarketProfileGateway と同型）。
-        self._loader = bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load
+        # 既定は dataset のみのアクセサ（ISSUE-136 ISP: MP controller を eager import しない）。
+        # テストは fake loader を注入して indicator_ui 実体に依存しない（MarketProfileGateway と同型）。
+        self._loader = (
+            bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load_dataset
+        )
 
     # ---- CausalCandlePort ----
 
@@ -40,11 +43,14 @@ class CausalCandleRepository:
         self, ref: str, timeframe: "str | None", limit: "int | None"
     ) -> "list[dict]":
         bridge = self._loader(self._api_path, self._repo_root)
-        if not bridge.dataset.is_known(ref):
+        # ISSUE-136 ISP: dataset 具象を役割別の狭いポート型で受ける（検証／供給の 2 面のみに依存）。
+        refs: RefValidationPort = bridge.dataset
+        ohlc: OhlcSupplyPort = bridge.dataset
+        if not refs.is_known(ref):
             raise ValueError(f"unknown {ref}")
         # ライブと同一の単一配信路（rollup 正典・clamp 補正込み）。tail(limit) も dataset.load_candles
         #   と同一規則（末尾 N 本）。volume 列を tickvol へ写すため candles JSON でなく DataFrame を受ける。
-        df = bridge.dataset.load_dataframe(ref, timeframe)
+        df = ohlc.load_dataframe(ref, timeframe)
         if isinstance(limit, int) and limit > 0:
             df = df.tail(limit)
         lower = {str(c).lower(): c for c in df.columns}

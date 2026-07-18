@@ -19,6 +19,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from simulator.replay_ui.adapter import _indicator_ui_bridge
+from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort
 from simulator.replay_ui.domain.tick_mid_series import OUTLIER_THRESHOLD, mid_series
 
 _M1_CAP = 1500
@@ -57,14 +58,19 @@ class IntrabarWindowRepository:
         self._repo_root = repo_root
         self._m1_cap = m1_cap
         self._threshold = outlier_threshold  # tick mid 系列の中央値外れ値除去（domain E-4）用。
-        # 既定は実 bridge の load。テストは fake loader を注入（MarketProfileGateway と同型）。
-        self._loader = bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load
+        # 既定は dataset のみのアクセサ（ISSUE-136 ISP: MP controller を eager import しない）。
+        # テストは fake loader を注入（MarketProfileGateway と同型）。
+        self._loader = (
+            bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load_dataset
+        )
 
     # ---- IntrabarWindowPort ----
 
     def load_m1_rows(self, ref: str, start: int, end: int) -> "list[list[float]]":
         bridge = self._loader(self._api_path, self._repo_root)
-        sub = bridge.dataset.load_atom_window(ref, start, end)
+        # ISSUE-136 ISP: OHLC 供給の狭いポート型で受ける（load_atom_window の 1 面のみに依存）。
+        ohlc: OhlcSupplyPort = bridge.dataset
+        sub = ohlc.load_atom_window(ref, start, end)
         rows = [
             [float(r.open), float(r.high), float(r.low), float(r.close)]
             for r in sub.itertuples(index=False)

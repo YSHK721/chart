@@ -16,6 +16,7 @@ from typing import Any
 import pandas as pd
 
 from simulator.replay_ui.adapter import _indicator_ui_bridge
+from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort, RefValidationPort
 
 _OHLCV = ("open", "high", "low", "close", "volume")
 
@@ -28,17 +29,21 @@ class CausalComputeGateway:
         self._repo_root = repo_root
 
     def _bridge(self):
-        return _indicator_ui_bridge.load(self._api_path, self._repo_root)
+        # ISSUE-136 ISP: /compute は dataset ＋ 計算 Facade のみを要する（MP controller を import しない）。
+        return _indicator_ui_bridge.load_compute(self._api_path, self._repo_root)
 
     # ---- CausalComputePort ----
 
     def load_source(self, ref: str, timeframe: "str | None") -> "list[dict]":
         bridge = self._bridge()
-        if not bridge.dataset.is_known(ref):
+        # ISSUE-136 ISP: dataset 具象を役割別の狭いポート型で受ける（検証 2 面／供給 1 面のみに依存）。
+        refs: RefValidationPort = bridge.dataset
+        ohlc: OhlcSupplyPort = bridge.dataset
+        if not refs.is_known(ref):
             raise ValueError(f"unknown datasetRef {ref!r}")
-        if timeframe is not None and not bridge.dataset.is_known_timeframe(timeframe):
+        if timeframe is not None and not refs.is_known_timeframe(timeframe):
             raise ValueError(f"unknown timeframe {timeframe!r}")
-        df = bridge.dataset.load_dataframe(ref, timeframe)
+        df = ohlc.load_dataframe(ref, timeframe)
         return self._df_to_bars(df)
 
     def compute(
