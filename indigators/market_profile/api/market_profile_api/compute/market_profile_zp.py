@@ -47,7 +47,16 @@ from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute import null_b_kernel as _null_b  # ISSUE-094 🔴-2: 帰無サロゲート純カーネル（step5 と共有）
 from market_profile_api.compute.market_profile import _value_area
 from market_profile_api.compute.market_profile_dwell import GRID_W  # noqa: F401  (dwell 互換・zp 内部では不使用)
-from market_profile_api.gateway.zp_store import ZpStore  # ISSUE-092 ④: gateway 移設（旧 compute パスは互換シム）
+
+# ISSUE-137（DIP）: z(p) 永続キャッシュ Store への依存は compute 所有の Output Boundary
+#   （StorePort）へ逆転（tick I/O と同規律）。具象 ZpStore の結線は composition root（gateway/
+#   composition）が担い、compute は本ポート（zp_store()）にのみ依存する（module-level 直 new を撤去）。
+from market_profile_api.compute.store_port import (  # noqa: F401  (set_zp_store は注入 API として再エクスポート)
+    ZpStorePort,
+    set_zp_store,
+    zp_cache_miss,
+    zp_store,
+)
 
 # ISSUE-091 🔴-2: ティック物理格納への依存は compute 所有の TickStorePort へ逆転（dwell と同規律）。
 from market_profile_api.compute.tick_store_port import tick_store as _tick_store
@@ -110,16 +119,12 @@ M_REPS_LIVE = 1000     # 当日/部分日の都度計算用
 _ZP_CACHE_VERSION = 3  # v3: bp 相対 log 格子（ISSUE-079）＝znull を全無効化（mgrid は格子非依存で温存）。
 _ZP_CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_zp)。テストは tmp を注入。
 
-_STORE = ZpStore(
-    root_provider=lambda: _ZP_CACHE_ROOT,
-    default_root_provider=lambda: _tick_store().data_dir() / "cache" / "market_profile_zp",
-    grid_w=ZP_BP,  # ISSUE-079: znull パスの格子タグは bp 値（b1 等・旧 g10 と不混在）。
-    hist_days=NULL_HIST_DAYS,
-    m_reps=M_REPS_DAY,
-    cache_version_provider=lambda: _ZP_CACHE_VERSION,
-    day_parquet_files=lambda *a, **k: day_parquet_files(*a, **k),
-)
-_CACHE_MISS = ZpStore.CACHE_MISS
+# ISSUE-137（DIP）: 既定 ZpStore の合成は composition root（gateway/composition.default_zp_store）へ
+#   移設した。本 module の設定変数（_ZP_CACHE_ROOT / NULL_HIST_DAYS / M_REPS_DAY / ZP_BP /
+#   _ZP_CACHE_VERSION / day_parquet_files）は composition の provider が call-time に読む（monkeypatch
+#   経路を温存）。永続化 I/O は zp_store()（未注入時は composition の既定・注入時は set_zp_store の実体）
+#   へ委譲する。CACHE_MISS 番兵は gateway 具象のクラス属性で identity 一致（旧 ZpStore.CACHE_MISS と同一）。
+_CACHE_MISS = zp_cache_miss()
 
 # プロセス内キャッシュ。完了日のみメモ化（Y2a・dwell と同規約）。
 _MGRID_CACHE: "dict[tuple[str, int], tuple[np.ndarray, float] | None]" = {}
@@ -155,10 +160,11 @@ def _mgrid_of_day(symbol: str, day_start: int, now: float) -> "tuple[np.ndarray,
         return _MGRID_CACHE[key]
     day_end = next_session_day_start(int(day_start))  # ISSUE-078: DST 切替日は 23h/25h。
     completed = day_end <= now
-    path = _STORE.mgrid_path(symbol, int(day_start))
-    cur_sig = _STORE.day_source_signature(symbol, int(day_start)) if completed else ""
+    _store = zp_store()
+    path = _store.mgrid_path(symbol, int(day_start))
+    cur_sig = _store.day_source_signature(symbol, int(day_start)) if completed else ""
     if completed:
-        disk, cached_sig = _STORE.load_mgrid(path)
+        disk, cached_sig = _store.load_mgrid(path)
         if disk is not _CACHE_MISS and cached_sig == cur_sig:
             if disk is not None:
                 _MGRID_CACHE[key] = disk  # 非空のみメモ化（stale-empty はディスク署名照合に委ねる）。
@@ -169,7 +175,7 @@ def _mgrid_of_day(symbol: str, day_start: int, now: float) -> "tuple[np.ndarray,
         if grid is not None:
             _MGRID_CACHE[key] = grid
         try:
-            _STORE.save_mgrid(path, grid, cur_sig)
+            _store.save_mgrid(path, grid, cur_sig)
         except Exception:
             pass
     return grid
@@ -224,10 +230,11 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
     completed = next_session_day_start(int(day_start)) <= now  # ISSUE-078。
     if completed and key in _NULL_CACHE:
         return _NULL_CACHE[key]
-    path = _STORE.null_path(symbol, int(day_start))
-    cur_sig = _STORE.day_source_signature(symbol, int(day_start)) if completed else ""
+    _store = zp_store()
+    path = _store.null_path(symbol, int(day_start))
+    cur_sig = _store.day_source_signature(symbol, int(day_start)) if completed else ""
     if completed:
-        disk, cached_sig = _STORE.load_null(path)
+        disk, cached_sig = _store.load_null(path)
         if disk is not _CACHE_MISS and cached_sig == cur_sig:
             if disk is not None:
                 _NULL_CACHE[key] = disk
@@ -237,7 +244,7 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
     if grid is None:
         if completed:
             try:
-                _STORE.save_null(path, None, cur_sig)
+                _store.save_null(path, None, cur_sig)
             except Exception:
                 pass
         return None
@@ -269,7 +276,7 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
         if roll is not None:
             _NULL_CACHE[key] = roll
         try:
-            _STORE.save_null(path, roll, cur_sig)
+            _store.save_null(path, roll, cur_sig)
         except Exception:
             pass
     else:

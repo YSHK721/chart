@@ -48,9 +48,17 @@ from market_profile_api.compute.market_profile import _session_entry, _value_are
 # セッション認識（活発/休場地図）の純カーネル（ISSUE-094 🔴-2）。集計側は下段の委譲ラッパー
 #   （_build_active_table / _active_seconds_cross / _table_for_day）で monkeypatch 経路と byte を温存する。
 from market_profile_api.compute import session_activity as _session_activity
-# ディスクキャッシュ Repository（ISSUE-040(b) SRP 分離 / ISSUE-092 ④ gateway 移設）。集計数学は本
-# モジュール、永続化 I/O は gateway 層の Store が担う（旧 compute パスは互換シムとして温存）。
-from market_profile_api.gateway.dwell_rollup_store import DwellRollupStore
+# ディスクキャッシュ Repository（ISSUE-040(b) SRP 分離 / ISSUE-092 ④ gateway 移設 / ISSUE-137 DIP 逆転）。
+# 集計数学は本モジュール、永続化 I/O は gateway 層の Store が担う（旧 compute パスは互換シムとして温存）。
+# ISSUE-137: 永続化 Store への依存は compute 所有の Output Boundary（StorePort）へ逆転（tick I/O と同規律）。
+#   具象 DwellRollupStore の結線は composition root（gateway/composition）が担い、compute は本ポート
+#   （dwell_store()）にのみ依存する（module-level 直 new を撤去）。
+from market_profile_api.compute.store_port import (  # noqa: F401  (set_dwell_store は注入 API として再エクスポート)
+    DwellStorePort,
+    dwell_cache_miss,
+    dwell_store,
+    set_dwell_store,
+)
 
 # ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 # ISSUE-091 🔴-2: ティック物理格納（day parquet・DATA_DIR）への依存は compute 所有の
@@ -104,18 +112,13 @@ _CACHE_VERSION = 4  # ISSUE-089: active table 窓キー化に伴い、先勝ち�
 #       届いても署名変化で自動再計算する（無効化ロジック・stale-empty 修正）。v1 は不一致で全再計算。
 _CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_dwell)。テストは tmp を注入。
 
-# ディスクキャッシュ Repository（ISSUE-040(b)）。永続化 I/O（save/load/署名/無効化・parquet/tempfile）は
-# DwellRollupStore に分離した。可変設定（cache root / 形式バージョン / 正準ティック列挙）は provider の
-# クロージャで注入し、本体 module 変数 _CACHE_ROOT / _CACHE_VERSION / day_parquet_files の **テスト注入
-# （monkeypatch）経路を温存**する（call-time に読むため）。集計数学は本モジュールに残す（下段）。
-_STORE = DwellRollupStore(
-    root_provider=lambda: _CACHE_ROOT,
-    default_root_provider=lambda: _tick_store().data_dir() / "cache" / "market_profile_dwell",
-    grid_w=GRID_W,
-    cache_version_provider=lambda: _CACHE_VERSION,
-    day_parquet_files=lambda *a, **k: day_parquet_files(*a, **k),
-)
-_CACHE_MISS = DwellRollupStore.CACHE_MISS  # 番兵は Store と同一オブジェクト（identity 一致を保つ）。
+# ディスクキャッシュ Repository（ISSUE-040(b) / ISSUE-137 DIP）。永続化 I/O（save/load/署名/無効化・
+# parquet/tempfile）は DwellRollupStore に分離済み。ISSUE-137: 既定 Store の合成は composition root
+# （gateway/composition.default_dwell_store）へ移設した。本体 module 変数（_CACHE_ROOT / _CACHE_VERSION /
+# GRID_W / day_parquet_files）は composition の provider が call-time に読む（monkeypatch 経路を温存）。
+# 永続化 I/O は dwell_store()（未注入時は composition の既定・注入時は set_dwell_store の実体）へ委譲する。
+# CACHE_MISS 番兵は gateway 具象のクラス属性で identity 一致（旧 DwellRollupStore.CACHE_MISS と同一）。
+_CACHE_MISS = dwell_cache_miss()
 
 # 生ティック parquet の必須列（marketdata.tick_m1._TICK_COLUMNS と同じ意味）。
 _TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
@@ -240,27 +243,27 @@ def _table_for_day(symbol: str, day_start: int) -> np.ndarray:
 # `_day_source_signature` / `_CACHE_ROOT` / `_CACHE_VERSION`）と byte 出力を温存する（ISSUE-040(b)）。
 def _cache_root() -> _Path:
     """ディスクキャッシュの基点 ``DATA_DIR/cache/market_profile_dwell`` を返す（テストは _CACHE_ROOT で差替）。"""
-    return _STORE.cache_root()
+    return dwell_store().cache_root()
 
 
 def _cache_path(symbol: str, day_start: int) -> _Path:
     """日別ロールアップの保存パス ``<root>/<symbol>/g<GRID_W>/<day_start>.npz``（Store へ委譲）。"""
-    return _STORE.cache_path(symbol, day_start)
+    return dwell_store().cache_path(symbol, day_start)
 
 
 def _day_source_signature(symbol: str, day_start: int) -> str:
     """完了日 ``day_start`` のソースティック署名（無効化用・Store へ委譲）。ファイル無しは空文字。"""
-    return _STORE.day_source_signature(symbol, day_start)
+    return dwell_store().day_source_signature(symbol, day_start)
 
 
 def _save_day_rollup(path: _Path, roll: "dict | None", sig: str = "") -> None:
     """ロールアップ（None=実データ無し完了日を含む）を ``.npz`` へ原子的に保存する（Store へ委譲）。"""
-    _STORE.save_day_rollup(path, roll, sig)
+    dwell_store().save_day_rollup(path, roll, sig)
 
 
 def _load_day_rollup(path: _Path) -> "tuple[Any, str]":
     """ディスクから日別ロールアップと署名を読む（Store へ委譲）。未ヒット/破損/不整合は ``(_CACHE_MISS, "")``。"""
-    return _STORE.load_day_rollup(path)
+    return dwell_store().load_day_rollup(path)
 
 
 def _day_rollup(symbol: str, day_start: int, table: "np.ndarray | None", now: float) -> "dict | None":

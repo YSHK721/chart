@@ -3,7 +3,7 @@
 dwell / zp / tf-period のディスクキャッシュは世代付き subdir（バージョン・グリッド・パラメータを
 パスへ埋め込む）で無効化される。世代を上げるたび旧 subdir が残置されるため、GC ツール
 （:mod:`tools.cache_gc`）は「現行コードが参照する世代」を知る必要がある。従来 GC は MP の private
-（``mpd._cache_root()`` / ``zp._STORE`` / ``tfp._tfp_disk_root()`` / グリッド定数）へ直結していた
+（``mpd._cache_root()`` / ``zp.zp_store()`` / ``tfp._tfp_disk_root()`` / グリッド定数）へ直結していた
 （アクター横断の結合＝MP の内部変更が GC を壊す）。
 
 本モジュールは **MP 側が所有する公開関数** :func:`current_layouts` を提供し、GC は本関数のみを参照する。
@@ -62,7 +62,7 @@ def current_layouts() -> "list[dict[str, Any]]":
     ))
 
     # zp znull: <root>/znull/<sym>/b<ZP_BP> のうち現行 b{ZP_BP:g} 以外が孤児（mgrid は格子非依存＝温存）。
-    zn_root = Path(_zp._STORE.cache_root()) / "znull"
+    zn_root = Path(_zp.zp_store().cache_root()) / "znull"  # ISSUE-137: StorePort 経由（旧 _zp._STORE）。
     layouts.append(CacheLayout(
         name="zp-znull",
         root=zn_root,

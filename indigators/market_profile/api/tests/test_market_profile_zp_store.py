@@ -64,7 +64,7 @@ def test_completed_day_persists_and_disk_hit(zp_env):
     assert roll1 is not None
     assert set(roll1) == {"kmin", "obs", "mean", "var"}
     assert roll1["obs"].sum() == zp.G_MINUTES  # 完了日は全分カウント
-    path = zp._STORE.null_path("SYN", _day(30))
+    path = zp.zp_store().null_path("SYN", _day(30))
     assert path.is_file()
     # メモリ消去 → ディスクヒットで同値（tick 再読込は mgrid 不要のため増えない）
     zp._reset_caches()
@@ -80,7 +80,7 @@ def test_today_not_persisted_and_column_limited(zp_env):
     now = day + (zp.SESSION_OPEN_MOD + 120) * 60  # セッション開始から 120 分経過の当日
     roll = zp._zp_day_rollup("SYN", day, now)
     assert roll is not None
-    assert not zp._STORE.null_path("SYN", day).is_file()  # 当日は永続化しない
+    assert not zp.zp_store().null_path("SYN", day).is_file()  # 当日は永続化しない
     assert roll["obs"].sum() <= 121  # 経過分までに限定（ffill 幻影滞在を数えない）
     assert roll["mean"].sum() <= 121 + 1e-9  # 帰無も同一カラム範囲
 
@@ -90,7 +90,7 @@ def test_insufficient_history_gives_none(zp_env, monkeypatch):
     now = _day(40)
     assert zp._zp_day_rollup("SYN", _day(21), now) is None
     # None も完了日として永続化され、再計算なしで None が返る
-    assert zp._STORE.null_path("SYN", _day(21)).is_file()
+    assert zp.zp_store().null_path("SYN", _day(21)).is_file()
 
 
 def test_version_mismatch_forces_recompute(zp_env, monkeypatch):
@@ -98,7 +98,7 @@ def test_version_mismatch_forces_recompute(zp_env, monkeypatch):
     zp._zp_day_rollup("SYN", _day(30), now)
     zp._reset_caches()
     monkeypatch.setattr(zp, "_ZP_CACHE_VERSION", 99)
-    disk, _sig = zp._STORE.load_null(zp._STORE.null_path("SYN", _day(30)))
+    disk, _sig = zp.zp_store().load_null(zp.zp_store().null_path("SYN", _day(30)))
     assert disk is zp._CACHE_MISS  # 版数不一致は fail-safe で MISS
 
 

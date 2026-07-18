@@ -40,7 +40,7 @@ def warm_zp_cache(
     for day_start in session_days:
         if next_session_day_start(day_start) > now_val:
             continue
-        if _zp._STORE.null_path(symbol, day_start).is_file():
+        if _zp.zp_store().null_path(symbol, day_start).is_file():  # ISSUE-137: StorePort 経由（旧 _zp._STORE）。
             skipped += 1
             continue
         _zp._zp_day_rollup(symbol, day_start, now_val)

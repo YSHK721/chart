@@ -5,9 +5,10 @@ compute（方針側）が所有する境界ポート。dwell/zp の集計数学�
 具象実装は :mod:`market_profile_api.gateway.marketdata_tick_store`（marketdata 結線）が担い、
 エントリポイントは :func:`set_tick_store` で差し替えできる。
 
-未注入時は既定実装（marketdata gateway）を遅延合成する。これは server.py の sys.path
-フォールバックと同じ「自己完結起動の温存」であり、compute からの module-level marketdata
-依存は排除される（型契約は本ポートが唯一）。
+未注入時は既定実装を composition root（:mod:`market_profile_api.gateway.composition`）から遅延
+合成する。これは server.py の sys.path フォールバックと同じ「自己完結起動の温存」であり、compute
+からの module-level marketdata 依存は排除される（型契約は本ポートが唯一）。ISSUE-137: 既定具象名
+（``MarketdataTickStore``）は composition root へ集約し、本ポートには具象クラス名を持たせない。
 """
 from __future__ import annotations
 
@@ -59,10 +60,10 @@ def set_tick_store(store: "TickStorePort | None") -> None:
 
 
 def tick_store() -> TickStorePort:
-    """現在のティックストアを返す。未注入なら既定 gateway を遅延合成する（自己完結起動）。"""
+    """現在のティックストアを返す。未注入なら composition root の既定を遅延合成する（自己完結起動）。"""
     global _STORE
     if _STORE is None:
-        from market_profile_api.gateway.marketdata_tick_store import MarketdataTickStore
+        from market_profile_api.gateway.composition import default_tick_store
 
-        _STORE = MarketdataTickStore()
+        _STORE = default_tick_store()
     return _STORE
