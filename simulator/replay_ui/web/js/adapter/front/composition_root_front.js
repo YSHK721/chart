@@ -16,6 +16,9 @@
 // candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
 import { ChartRenderer } from './chart_renderer.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
+import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
+import { ScrollToLatestButton } from './scroll_to_latest_button.js';
+import { TimeframeMenu } from './timeframe_menu.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
@@ -95,27 +98,9 @@ export async function bootstrap({
 } = {}) {
   const mode = modeForProtocol(protocol);
 
-  // チャート生成（組み立て点。系列追加系 API は ChartRenderer に隠蔽）。
-  // v5: background は { type: ColorType.Solid, color }、panes のリサイズ separator は既定 ON。
-  const chart = lwc.createChart(container, {
-    layout: {
-      background: { type: lwc.ColorType.Solid, color: '#131722' },
-      textColor: '#d1d4dc',
-      // ペイン境界のドラッグ・リサイズ（separator）を有効化（高さ調整・機能④）。
-      panes: { enableResize: true, separatorColor: '#2a2e39', separatorHoverColor: 'rgba(178,181,189,0.2)' },
-    },
-    grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
-    rightPriceScale: { borderColor: '#2a2e39' },
-    // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
-    timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
-    autoSize: true,
-  });
-  // v5: addCandlestickSeries は廃止。addSeries(CandlestickSeries, ...) でメイン pane(0) に追加。
-  const mainSeries = chart.addSeries(lwc.CandlestickSeries, {
-    upColor: '#26a69a', downColor: '#ef5350',
-    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
-    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
-  });
+  // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123・
+  //   present と単一ソース＝クロスヘア Normal・現在値ライン橙 ISSUE-084 も replay へ自動伝播）。
+  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container });
 
   // ポート実装の組み立て（モード別）。
   //   B方式: ComputeHttpClient（fetch /compute）— params 実反映。candles は /candles から取得し、
@@ -146,19 +131,8 @@ export async function bootstrap({
   //   coordinateToPrice(paneHeight) で価格レンジ下端を読むために必要。container/timeScale 非対応
   //   （SSR/テスト）では設定できないため no-op（handlePriceWheel は pane 高未供給時に安全に false）。
   //   リサイズで container 高が変わるため、autoSize 変化に追随できるよう wheel 発火時にも再計算する。
-  //   （参照実装 indigators/indicator_ui/web/js/adapter/front/composition_root_front.js L181-193 を忠実移植）
-  const updatePaneHeight = () => {
-    if (typeof renderer.setPaneHeight !== 'function') {
-      return;
-    }
-    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
-    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
-    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
-    const paneHeight = ch - th;
-    if (paneHeight > 0) {
-      renderer.setPaneHeight(paneHeight);
-    }
-  };
+  //   実体は共有ヘルパ chart_bootstrap.makeUpdatePaneHeight（ISSUE-123 単一ソース・旧忠実移植コピーを廃止）。
+  const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
   updatePaneHeight();
 
   // A方式の初期ローソクは renderer.setCandles で描画する（直接 mainSeries.setData ではなく
@@ -185,18 +159,33 @@ export async function bootstrap({
     mpGrowthResolver: () => true,
   });
 
-  // チャート操作（価格軸 wheel ズーム・dblclick 自動スケール復帰・ズーム中の本体縦パン）の配線は
-  //   ChartInteractionController（adapter/front）へ分離する。Composition Root は new して install する
-  //   だけに縮小する（配線専用）。振る舞い本体・座標計算・イベント登録順・分岐・オプションは参照実装
-  //   （indigators/indicator_ui/.../chart_interaction_controller.js L103-176）から忠実移植（挙動不変）。
-  //   参照実装のリプレイ横スワイプスクラブ（L39-101）は simulator/replay_ui スコープ外のため移植せず、
-  //   その専用依存 replayBar も本コントローラには渡さない。getController は controller を遅延参照する
-  //   （() => controller）。updatePaneHeight は初期供給（上記）と同一関数を注入する。
+  // チャート操作（価格軸 wheel ズーム・dblclick 自動スケール復帰・本体縦パン）の配線。
+  //   ISSUE-123: 旧・独立コピーを廃止し present と同一実体（symlink 単一ソース）を参照する。
+  //   旧コピー固有だった「MP リプレイモード中は縦パンを開始しない」ゲート（_isReplayOn）は
+  //   isVerticalPanBlocked オプション注入で維持する（挙動保存・controller は遅延参照）。
   new ChartInteractionController({
     container,
     renderer,
     getController: () => controller,
     updatePaneHeight,
+    isVerticalPanBlocked: () => !!(controller && controller._marketProfile
+      && typeof controller._marketProfile.isReplay === 'function'
+      && controller._marketProfile.isReplay()),
+  }).install();
+
+  // ISSUE-122（第1段・UI 共有化）: present と同一の共有 UI 部品（symlink 単一ソース）を replay へも配線。
+  //   ・ScrollToLatestButton: 右下ホットゾーンホバーで » 表示→クリックで最新（revealed 末尾）足へ復帰。
+  //   ・TimeframeMenu: 時間足ドロップダウンの開閉制御（選択・active/ラベル同期は既存 [data-timeframe] 配線）。
+  //   いずれも DOM 不在は install 内防御で no-op。
+  new ScrollToLatestButton({ container, renderer, document: doc }).install();
+  // replay の対応時間足（サーバ TIMEFRAME_RULES と一致・30m 非対応）。DOM は共有コンポーネントが生成。
+  new TimeframeMenu({
+    document: doc,
+    groups: [
+      { cat: '分', items: [['1m', '1分'], ['5m', '5分'], ['15m', '15分']] },
+      { cat: '時間', items: [['1h', '1時間'], ['4h', '4時間']] },
+      { cat: '日', items: [['1D', '日'], ['1W', '週'], ['1M', '月']] },
+    ],
   }).install();
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。

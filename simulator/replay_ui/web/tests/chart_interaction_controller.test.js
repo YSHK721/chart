@@ -1,13 +1,10 @@
-// ChartInteractionController（adapter/front/chart_interaction_controller.js）の単体検証。
+// ChartInteractionController（adapter/front/chart_interaction_controller.js）の replay 側検証。
 //
-// 参照実装（正）: indigators/indicator_ui/web/tests/chart_interaction_controller.test.js。
-//   本テストは参照テストから **価格軸ホイールズーム（wheel）・自動スケール復帰（dblclick）・
-//   本体縦ドラッグの価格パン** に該当するケースのみを移植・適応したもの。
-//   参照実装固有の **リプレイ横スワイプスクラブ**（pointer swipe による T スクラブ）ブロックは
-//   simulator/replay_ui のスコープ外のため移植対象外＝当該テスト群（swipe 系）は含めない。
-//   併せて replayBar 依存（swipe 専用）を落としたため、constructor は replayBar を受け取らない。
-// 観点: install() が container の wheel/dblclick/pointer を配線し、注入依存（renderer / getController /
-//   updatePaneHeight）へ参照実装と同一の呼出を行う。
+// ISSUE-123（値渡し是正）: 旧・独立コピーを廃止し、present と同一実体（symlink 単一ソース）を参照する。
+//   旧コピー固有だった「MP リプレイモード中は縦パンを開始しない」ゲートは isVerticalPanBlocked
+//   オプション注入（replay composition root が供給）で維持する。本テストは replay 配線視点の観点
+//   （wheel/dblclick/縦パン＋ゲート注入）を固定する。ISSUE-108（常時縦パン）は symlink 化により
+//   replay へも自動伝播する（旧コピーの「ズーム中のみ縦パン」は撤去済み仕様）。
 // 構造: Arrange-Act-Assert。container/renderer は Fake を注入（DOM/実描画非依存）。
 
 import { test } from 'node:test';
@@ -58,6 +55,9 @@ function build({ replay = false, renderer } = {}) {
   const updatePaneHeight = () => { paneCalls.push(1); };
   const ctl = new ChartInteractionController({
     container, renderer: r, getController, updatePaneHeight,
+    // composition root と同型のゲート注入（controller._marketProfile.isReplay() を遅延参照）。
+    isVerticalPanBlocked: () => !!(ctrl && ctrl._marketProfile
+      && typeof ctrl._marketProfile.isReplay === 'function' && ctrl._marketProfile.isReplay()),
   });
   ctl.install();
   return { container, renderer: r, ctrl, paneCalls, ctl };
@@ -98,17 +98,18 @@ test('dblclick: 価格軸上のみ resetPriceZoom（本体領域は無反応）'
   assert.equal(renderer.calls.resetPriceZoom, 1);
 });
 
-test('本体ドラッグ縦パン: 非リプレイ・価格ズーム中のみ panPriceByPixels（未ズームは無効）', () => {
+test('本体ドラッグ縦パン: 非リプレイは全体表示（未ズーム）でも常時 panPriceByPixels（ISSUE-108 伝播）', () => {
+  // ISSUE-123 の symlink 化により present の ISSUE-108（常時縦パン）が replay へも自動伝播する。
   const renderer = fakeRenderer({ isPriceZoomed: () => false });
   const { container } = build({ renderer, replay: false });
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
-  container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 140 });
-  assert.deepEqual(renderer.calls.panPriceByPixels, [], '未ズームは縦パンしない');
+  container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 140 }); // dy=40
+  assert.deepEqual(renderer.calls.panPriceByPixels, [40], '全体表示（自動スケール）でも縦パンする');
   renderer.isPriceZoomed = () => true;
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });
   container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 130 }); // dy=30
   container.fire('pointermove', { buttons: 1, clientX: 100, clientY: 150 }); // dy=20
-  assert.deepEqual(renderer.calls.panPriceByPixels, [30, 20]);
+  assert.deepEqual(renderer.calls.panPriceByPixels, [40, 30, 20], 'ズーム中も従来どおり縦パンする');
 });
 
 test('本体ドラッグ縦パン: 左ボタン以外・価格軸上・ボタン解放では開始/継続しない', () => {
@@ -128,7 +129,7 @@ test('本体ドラッグ縦パン: 左ボタン以外・価格軸上・ボタン
   assert.deepEqual(renderer.calls.panPriceByPixels, [], 'ボタン解放後は縦パンしない');
 });
 
-test('本体ドラッグ縦パン: リプレイ中は開始しない（isReplayOn2 ゲート）', () => {
+test('本体ドラッグ縦パン: リプレイ中は開始しない（isVerticalPanBlocked ゲート注入・ISSUE-123）', () => {
   const renderer = fakeRenderer({ isPriceZoomed: () => true });
   const { container } = build({ renderer, replay: true });
   container.fire('pointerdown', { button: 0, clientX: 100, clientY: 100 });

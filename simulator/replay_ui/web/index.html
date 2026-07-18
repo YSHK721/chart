@@ -60,18 +60,9 @@
     <div class="toolbar">
       <span class="tb-symbol">NI225</span>
       <span class="tb-sep"></span>
-      <!-- 時間足セレクタ（1 分足原子から resample・§チャート表示時間選択）。data-timeframe は
-           サーバの TIMEFRAME_RULES と一致。既定 1D を is-active。 -->
-      <div class="tb-timeframe" role="group" aria-label="時間足">
-        <button class="tb-interval" data-timeframe="1m" type="button">1分</button>
-        <button class="tb-interval" data-timeframe="5m" type="button">5分</button>
-        <button class="tb-interval" data-timeframe="15m" type="button">15分</button>
-        <button class="tb-interval" data-timeframe="1h" type="button">1時間</button>
-        <button class="tb-interval" data-timeframe="4h" type="button">4時間</button>
-        <button class="tb-interval is-active" data-timeframe="1D" type="button">日</button>
-        <button class="tb-interval" data-timeframe="1W" type="button">週</button>
-        <button class="tb-interval" data-timeframe="1M" type="button">月</button>
-      </div>
+      <!-- 時間足ドロップダウンのマウント（ISSUE-122/123）。DOM は共有 timeframe_menu.js（symlink 単一
+           ソース）が生成する。replay の対応 8 足（30m なし）は composition root が groups 注入で指定。 -->
+      <div class="tf-menu" id="tf-menu"></div>
       <span class="tb-sep"></span>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
         <span class="ic">∿</span>
