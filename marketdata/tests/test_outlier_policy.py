@@ -117,3 +117,61 @@ def test_acquisition_facade_preserves_bimodal_bar():
     assert (r["open"], r["high"], r["low"], r["close"]) == (42419.0, 42454.0, 15155.0, 15156.0)
     assert log == []
     assert r["volume"] == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# repair_day_outliers（日内中央値式・M1 行除去・ISSUE-107）
+#   参照実装 proto_server._repair_day_outliers / replay_ui _m1_repair と同一式。
+# --------------------------------------------------------------------------- #
+def _m1_df(rows: list[tuple[str, float, float, float, float]]) -> pd.DataFrame:
+    idx = pd.DatetimeIndex(pd.to_datetime([r[0] for r in rows]), name="date")
+    return pd.DataFrame(
+        {
+            "open": [r[1] for r in rows],
+            "high": [r[2] for r in rows],
+            "low": [r[3] for r in rows],
+            "close": [r[4] for r in rows],
+            "volume": [1.0] * len(rows),
+        },
+        index=idx,
+    )
+
+
+def test_repair_day_outliers_removes_phantom_run_rows():
+    # 2025-08-26 実事象の縮約: 日内中央値 ~42,400 に対し ~15,100 帯の連続不良行のみ除去される。
+    rows = [
+        ("2025-08-26 06:32", 42420.0, 42430.0, 42410.0, 42425.0),
+        ("2025-08-26 06:33", 42425.0, 42435.0, 42415.0, 42430.0),
+        ("2025-08-26 06:34", 15150.0, 15160.0, 15140.0, 15155.0),  # 不良（全4値）
+        ("2025-08-26 06:35", 42430.0, 15150.0, 15100.0, 15144.0),  # 不良（一部値でも除去）
+        ("2025-08-26 09:10", 42280.0, 42290.0, 42270.0, 42285.0),
+        ("2025-08-26 09:11", 42285.0, 42295.0, 42275.0, 42290.0),
+    ]
+    out = outlier_policy.repair_day_outliers(_m1_df(rows))
+    assert list(out.index.strftime("%H:%M")) == ["06:32", "06:33", "09:10", "09:11"]
+    assert float(out["low"].min()) > 42000.0
+
+
+def test_repair_day_outliers_clean_day_is_noop_same_object():
+    # 正常日（±30% 以内）は行を落とさず同一オブジェクトを返す（冪等・不破壊）。
+    df = _m1_df(
+        [
+            ("2025-08-25 00:00", 42420.0, 42430.0, 42410.0, 42425.0),
+            ("2025-08-25 00:01", 42425.0, 42435.0, 42415.0, 42430.0),
+        ]
+    )
+    assert outlier_policy.repair_day_outliers(df) is df
+    assert outlier_policy.repair_day_outliers(_m1_df([])) is not None
+
+
+def test_repair_day_outliers_median_is_per_day():
+    # 中央値は日ごとに独立（別日の水準に引きずられない）。日次で価格帯が違っても除去しない。
+    df = _m1_df(
+        [
+            ("2025-08-25 00:00", 42420.0, 42430.0, 42410.0, 42425.0),
+            ("2025-08-25 00:01", 42425.0, 42435.0, 42415.0, 42430.0),
+            ("2025-08-26 00:00", 30000.0, 30010.0, 29990.0, 30005.0),
+            ("2025-08-26 00:01", 30005.0, 30015.0, 29995.0, 30010.0),
+        ]
+    )
+    assert outlier_policy.repair_day_outliers(df) is df

@@ -206,10 +206,13 @@ def test_load_dataframe_non_market_ref_unaffected(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# 統合（実データ・slow）: jp225_tick 1D 2025-08-26 がクランプ、2025-08-25 は不変。
+# 統合（実データ・slow）: jp225_tick 1D 2025-08-26 に配信欠損ファントムが無い（ISSUE-107）。
+#   旧前提（M1 素材に ~15,098 が残り serving クランプで low==min(open,close) になる）は、
+#   M1 素材化段での日内中央値クリーニング（tick_m1._clean_m1_day）導入により廃止。
+#   現在は素材が清浄＝実在の下ヒゲ（~42,135）がそのまま供給される（クランプ痕にならない）。
 # --------------------------------------------------------------------------- #
 @pytest.mark.slow
-def test_jp225_tick_2025_08_26_low_is_clamped_and_neighbor_unchanged():
+def test_jp225_tick_2025_08_26_has_no_phantom_and_neighbor_unchanged():
     ref = "jp225_tick"
     try:
         df = dataset.load_dataframe(ref, "1D")
@@ -223,10 +226,11 @@ def test_jp225_tick_2025_08_26_low_is_clamped_and_neighbor_unchanged():
     if target not in df.index or neighbor not in df.index:
         pytest.skip("対象日が実データ範囲外")
     row = df.loc[target]
-    # 8/26 の low は open/close 近傍（~42,477）へクランプ（15,098 ではない）。
+    # 8/26 の low はファントム（~15,098）ではなく実勢帯（>40,000）にある。
     assert float(row[lm["low"]]) > 40000.0
+    # OHLC 整合（low は open/close 以下＝実在の下ヒゲとして供給される・クランプ痕に依存しない）。
     ref_lo = min(float(row[lm["open"]]), float(row[lm["close"]]))
-    assert float(row[lm["low"]]) == pytest.approx(ref_lo)
+    assert float(row[lm["low"]]) <= ref_lo
     # 8/25（正常バー）は不変（クランプで動かない）。
     n = df.loc[neighbor]
     n_ref_lo = min(float(n[lm["open"]]), float(n[lm["close"]]))
