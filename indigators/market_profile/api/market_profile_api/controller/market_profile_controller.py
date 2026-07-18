@@ -259,6 +259,8 @@ def handle_market_profile(
     if not math.isfinite(barw_val) or barw_val < 0:
         barw_val = 0.0
     # to（リプレイ時間カーソル・UNIX 秒）— 不正・None は None（全期間・後方互換）。
+    #   ISSUE-129: to はリプレイの単一時計（as-seen-at-t の T）。zp はこれをそのまま「現在時刻」
+    #   として読む（now=to・_handle_zp）。旧 ``asof`` パラメータは廃止（受信しても無視＝無害）。
     to_ts = _parse_to(to)
     # from（ローリング窓の下限 time・増分2 A）／today（スナップショット・増分2 C）。予約語 from は kwargs 経由。
     from_ts = _parse_from(kwargs.get("from"))
@@ -418,6 +420,11 @@ def _handle_zp(
     は同一規則で、集計のみ :func:`market_profile_zp.compute_zp_profile`（分単位滞在の Null B 超過）
     を呼ぶ。応答スキーマは candle/dwell 版と同一（tpo=z 値・norm=clip(z,0) 正規化・poc=POC*）＋
     additive（z_max/poc_star）。want_fine（forming accumulator 経路）は zp 非対応のため受けない。
+
+    ISSUE-129（単一時計）: ``to_ts`` はリプレイの現在時刻そのもの（as-seen-at-t の T・リビール秒粒度）。
+    指定時は compute の「現在時刻」now を to_ts で読む＝境界日はライブと同一機構（未完了日の経過分
+    クランプ）で [セッション始端, to] の部分 z になり、1D でも日内推移が成長する。None は実時計
+    （ライブ＝全期間・現行挙動）。旧 ``asof`` パラメータは廃止（now の二重化を排除）。
     """
     symbol = market_profile_dwell.resolve_symbol(ref)
     if symbol is None:
@@ -431,10 +438,13 @@ def _handle_zp(
         candles = [c for c in candles if c["time"] <= to_ts]
     if from_ts is not None:
         candles = [c for c in candles if c["time"] >= from_ts]
+    # ISSUE-129（単一時計）: to 指定時のみ compute の now を to（リプレイ現在時刻）で読む
+    #   （None は実時計＝ライブ・後方互換）。
+    now_kw = {"now": float(to_ts)} if to_ts is not None else {}
     if not candles:
         profile = market_profile_zp.compute_zp_profile(
             symbol, 0, 0, 0.0, 0.0, n_bins, va_pct=va_pct, bar_sec=86400,
-            want_today=want_today, want_sessions=want_sessions,
+            want_today=want_today, want_sessions=want_sessions, **now_kw,
         )
     else:
         t1 = candles[-1]["time"]
@@ -446,7 +456,7 @@ def _handle_zp(
         profile = market_profile_zp.compute_zp_profile(
             symbol, t0, t1, price_min, price_max, n_bins,
             va_pct=va_pct, bar_sec=bar_sec, want_today=want_today,
-            want_sessions=want_sessions,
+            want_sessions=want_sessions, **now_kw,
         )
     body = {
         "ok": True, "profile": profile, "src": "zp",
@@ -484,7 +494,7 @@ def _dispatch_dwell(request: _MPRequest) -> tuple[int, dict[str, Any]]:
 
 
 def _dispatch_zp(request: _MPRequest) -> tuple[int, dict[str, Any]]:
-    """src=zp の dispatch（_handle_zp へ委譲）。"""
+    """src=zp の dispatch（_handle_zp へ委譲）。to_ts が単一時計（now=to・ISSUE-129）。"""
     return _handle_zp(
         request.ref, request.timeframe, request.limit_n, request.n_bins, request.va_pct,
         request.barw_val, request.to_ts, request.from_ts, request.want_today,

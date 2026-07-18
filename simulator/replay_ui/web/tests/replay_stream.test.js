@@ -19,6 +19,7 @@ import {
   ANIM_FINE,
   ANIM_COARSE,
 } from '../js/replay/stream.js';
+import { sessionDayStart, nextSessionDayStart } from '../js/domain/session_day.js';
 
 // --- cap（極値＋先頭/末尾を必ず保持しつつ n 点へ間引く） ------------------------- //
 test('cap returns the same array when length <= n', () => {
@@ -51,14 +52,24 @@ test('durationSecs maps timeframe to seconds and defaults unknown to 86400', () 
   assert.equal(durationSecs('zz'), 86400);
 });
 
-// --- intrabarWindow（左ラベル＝[t,次足)／右ラベル(1W,1M)＝[前足+1日, 今足+1日)） --- //
-test('intrabarWindow (left-labeled 1D) is [cd.time, next.time)', () => {
-  const w = intrabarWindow({ timeframe: '1D', cd: { time: 1000 }, prevCandle: null, nextCandle: { time: 1086400 } });
-  assert.deepEqual(w, { winStart: 1000, winEnd: 1086400 });
+// --- intrabarWindow（日中＝[t,次足)／1D＝セッション窓（ISSUE-130）／右ラベル(1W,1M)＝[前足+1日, 今足+1日)） --- //
+test('intrabarWindow (1D, ISSUE-130) is the SESSION window [sessionDayStart(cd), sessionDayStart(next))', () => {
+  // 2026-04-24(金) → 次バー 2026-04-27(月)。月曜バーのセッションは日曜 21:00 UTC 始まり（夏時間）。
+  const w = intrabarWindow({ timeframe: '1D', cd: { time: 1777248000 }, prevCandle: { time: 1776988800 }, nextCandle: { time: 1777334400 } });
+  assert.deepEqual(w, { winStart: sessionDayStart(1777248000), winEnd: sessionDayStart(1777334400) });
+  assert.equal(w.winStart, 1777237200, '月曜バーの窓始端＝日曜 21:00 UTC（日曜夕データは月曜バーに属する）');
 });
-test('intrabarWindow (left-labeled 1D) with no next uses cd.time + durationSecs', () => {
-  const w = intrabarWindow({ timeframe: '1D', cd: { time: 1000 }, prevCandle: null, nextCandle: null });
-  assert.deepEqual(w, { winStart: 1000, winEnd: 1000 + 86400 });
+test('intrabarWindow (1D) with no next uses nextSessionDayStart (DST-safe)', () => {
+  const w = intrabarWindow({ timeframe: '1D', cd: { time: 1777248000 }, prevCandle: null, nextCandle: null });
+  assert.deepEqual(w, { winStart: sessionDayStart(1777248000), winEnd: nextSessionDayStart(1777248000) });
+});
+test('intrabarWindow (left-labeled intraday 15m) is [cd.time, next.time)', () => {
+  const w = intrabarWindow({ timeframe: '15m', cd: { time: 1000 }, prevCandle: null, nextCandle: { time: 1900 } });
+  assert.deepEqual(w, { winStart: 1000, winEnd: 1900 });
+});
+test('intrabarWindow (left-labeled intraday 15m) with no next uses cd.time + durationSecs', () => {
+  const w = intrabarWindow({ timeframe: '15m', cd: { time: 1000 }, prevCandle: null, nextCandle: null });
+  assert.deepEqual(w, { winStart: 1000, winEnd: 1000 + 900 });
 });
 test('intrabarWindow (right-labeled 1W) is [prev.time+DAY, cd.time+DAY)', () => {
   const w = intrabarWindow({ timeframe: '1W', cd: { time: 5000000 }, prevCandle: { time: 4000000 }, nextCandle: null });

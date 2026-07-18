@@ -23,6 +23,7 @@
 import { MarketProfileActor } from './market_profile_actor.js';
 import { GrowthWindow } from '../../domain/growth_window.js';
 import { mpSourceCapability } from '../../domain/mp_source_capability.js';
+import { sessionDayStart } from '../../domain/session_day.js';
 import { FORMING_MIN_INTERVAL_MS } from '../../replay/timing.js';
 
 // forming（足内成長）非対応 tf（backend forming_bar.is_supported_timeframe と一致＝1W/1M は固定 floor 不可で
@@ -71,6 +72,10 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     // ISSUE-049: 現在の accumulator グリッドが縮退（[0,1]・base 空/tick 0）か。縮退中は feedTick/
     //   settleTick/growTo の描画も抑止する（前回描画保持＝バー全消滅フラッシュを出さない）。
     this._gridDegenerate = false;
+    // ISSUE-129（単一時計）: 非増分 src（zp）の現在時刻＝直近リビール秒（to をバー粒度から秒粒度へ
+    //   細粒度化する）。enterBar/growTo の now と feedTick の sec で前進し、後退スクラブは
+    //   enterBar(now=旧バー time) が巻き戻す（stale 未来時計を引き回さない）。null=未確定（上書きしない）。
+    this._clockSec = null;
   }
 
   // override: push 成長中（normal/replay+growing＝isGrowingPush）は enterBar/feedTick が駆動するため
@@ -248,6 +253,17 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     //   fire-and-forget＋最新 coalesce（busy 中の再要求は pending に畳み、完了後に最新カーソルで
     //   1 回だけ再実行）で await を即時解放する（前回描画保持＝非破壊・計算が追いつき次第 as-of 更新）。
     if (!mpSourceCapability(this._params.src).incremental) {
+      // ISSUE-129: 単一時計をカーソル秒（enterBar/growTo の now）で更新してから発火する。
+      //   後退スクラブでも enterBar の now（新カーソルのバー time）で巻き戻る＝stale 未来時計を防ぐ。
+      // ISSUE-130: 1D はセッション日集計バー＝バー入場（syncClamp=true）時点の因果フロンティアは
+      //   ラベル（UTC 深夜＝セッション 3h 経過点）でなく**セッション始端**。ラベルのままだと窓先頭
+      //   3h（日曜夕含む）が再生前に先出しされる。growTo（tick 前進）は実リビール秒のまま。
+      if (Number.isFinite(Number(now))) {
+        const n = Number(now);
+        this._clockSec = (syncClamp && this._getContext().timeframe === '1D')
+          ? sessionDayStart(n)
+          : n;
+      }
       this._scheduleNonIncrementalRefresh();
       return undefined;
     }
@@ -316,6 +332,21 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     this._draw();
   }
 
+  // override（ISSUE-129・単一時計）: 非増分 src（zp）×成長 push 中は、fetch の to をリビール秒
+  //   （_clockSec）へ細粒度化する（ctx の後に spread され to を上書き）。to はリプレイの現在時刻
+  //   そのもの（as-seen-at-t の T）であり、backend は now=to で境界日をライブ同一の経過分クランプ
+  //   ＝1D でも日内推移が成長する。candle 切断（time<=to）はバー粒度でも秒粒度でも同一集合＝挙動不変。
+  //   静止（非成長）は ctx.to（＝untilTime＝T）がそのまま時計なので上書き不要。増分 src・時計未確定は
+  //   空＝従来 URL 不変（present は基底の no-op seam のまま非波及）。
+  //   ISSUE-127: 契約は UNIX 秒（整数）。1分OHLC 等の合成 tick は小数秒を生むため必ず floor する。
+  _clockExtra() {
+    if (this.isGrowingPush() && this._clockSec != null
+        && !mpSourceCapability(this._params.src).incremental) {
+      return { to: Math.floor(this._clockSec) };
+    }
+    return {};
+  }
+
   // 追加: mid が直近 forming グリッドの価格レンジ内か（replay.js driver の growTo 発火判定に使用）。
   //   グリッド未確定（null）は false＝out-of-grid 扱いで growTo を促す。範囲は present-mode に忠実な
   //   forming の priceMin/priceMax（両端含む）。
@@ -331,7 +362,22 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   snapshot は throttle。停止/OFF/未 enter は no-op（addTick 停止＝停止で成長しない・MP OFF 無干渉）。
   //   de-dup: 畳み込み済み tick（sec<=_lastSec）は二重計上を防ぐため捨てる（present onLiveTick since と同型）。
   feedTick(sec, mid) {
-    if (!this._enabled || !this._accumulator) {
+    if (!this._enabled) {
+      return;
+    }
+    // ISSUE-129: 非増分 src（zp）は accumulator を持たない（push 畳み込み対象外）。足内リビール秒で
+    //   単一時計を前進させ（単調・順不同 tick を防御）、coalesce 付き as-of 再計算を発火する。実行は
+    //   busy 中 pending 1 個に畳まれ実測 ~1.3s/回＝ISSUE-124 と同一機構（fire-and-forget・再生非干渉）。
+    //   描画は完了時の setProfile が担う（前回描画保持＝非破壊）。
+    if (this.isGrowingPush() && !mpSourceCapability(this._params.src).incremental) {
+      const s = Number(sec);
+      if (Number.isFinite(s) && (this._clockSec == null || s > this._clockSec)) {
+        this._clockSec = s;
+      }
+      this._scheduleNonIncrementalRefresh();
+      return;
+    }
+    if (!this._accumulator) {
       return;
     }
     if (this._lastSec != null && sec <= this._lastSec) {

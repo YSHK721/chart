@@ -43,6 +43,8 @@ export function buildMarketProfileUrl({
   }
   // to（リプレイ時間カーソル・UNIX 秒）— 指定時のみ付与（省略時=全期間＝現行挙動・後方互換）。
   //   移植元 prototype_260630-01（as-seen-at-t・アンカー）。backend が time<=to の足だけで集計する。
+  //   ISSUE-129: to はリプレイの単一時計（リビール秒粒度可）。zp は backend が now=to として
+  //   現在時刻に読む（境界日はライブ同一の経過分クランプで部分集計＝日内推移）。旧 asof は廃止。
   if (to != null) {
     url += `&to=${encodeURIComponent(to)}`;
   }

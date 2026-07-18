@@ -49,5 +49,6 @@ class MarketProfileGateway:
         #   from/today/sessions を **kwargs で受ける）。None も透過（handle 側で現行挙動＝後方互換）。
         return bridge.handle_market_profile(
             ref, timeframe=timeframe, limit=limit, bins=bins, va=va, src=src,
-            barw=barw, to=to, **{"from": frm, "today": today, "sessions": sessions},
+            barw=barw, to=to,
+            **{"from": frm, "today": today, "sessions": sessions},
         )

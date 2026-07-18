@@ -175,8 +175,9 @@ class ReplayApp:
     ) -> "tuple[int, dict]":
         """MP normal/sessions/replay データを返す（to は必ずリビール T＝as-seen-at-t・未来リーク防止）。
 
-        ``to`` 指定時は ``time<=to`` の足だけで集計する（因果）。``frm``/``today``/``sessions`` は
-        増分2/日別分割の任意フラグ（None/省略は現行挙動）。
+        ``to`` 指定時は ``time<=to`` の足だけで集計する（因果）。``to`` はリプレイの単一時計
+        （リビール秒粒度・ISSUE-129: zp は now=to として現在時刻に読む）。``frm``/``today``/
+        ``sessions`` は増分2/日別分割の任意フラグ（None/省略は現行挙動）。
         """
         req = MarketProfileRequest(
             ref=ref, timeframe=timeframe, limit=limit, bins=bins, va=va, src=src,

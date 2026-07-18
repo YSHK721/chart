@@ -363,6 +363,10 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
     （帰無を全日分で評価すると mean が膨らみ z が負へ系統偏向するため）。
     """
     key = (symbol, int(day_start))
+    # ISSUE-128: now（as-of）より未来に始まるセッション日は観測ゼロ＝寄与なし。ガードしないと
+    #   下の max(1, elapsed) の下限 1 が「未来日の最初の 1 分」を混入させる（as-of 因果違反）。
+    if now < int(day_start):
+        return None
     completed = next_session_day_start(int(day_start)) <= now  # ISSUE-078。
     if completed and key in _NULL_CACHE:
         return _NULL_CACHE[key]
@@ -426,9 +430,17 @@ def _zp_partial_rollup(symbol: str, lo: int, hi: int, now: float) -> "dict | Non
     メモ化（dwell _partial_rollup と同規約・ディスクには載せない＝キー空間が広いため）。
     """
     key = ("partial", symbol, int(lo), int(hi))
-    if key in _LIVE_CACHE:
+    # ISSUE-127: メモは「完了窓（hi<=now）」でのみ有効。完了窓の roll は now 非依存（経過分クランプが
+    #   効かない）ため安全に共有できるが、未完了窓（as-of 部分・now<hi）は now ごとに結果が異なるため
+    #   キャッシュを読まず都度計算する（ライブ当日と同一規約）。読み出しゲートが無いと、実時計要求が
+    #   メモ化した全日 roll を以後の asof 要求が同 (lo,hi) キーで受け取り、全日確定形へ化ける（毒）。
+    if int(hi) <= now and key in _LIVE_CACHE:
         return _LIVE_CACHE[key]
     day_start = session_day_start(int(lo))  # ISSUE-078: 属セッションの始端。
+    # ISSUE-128: now より未来に始まるセッション日は観測ゼロ＝寄与なし（_zp_day_rollup と同一ガード。
+    #   max(1, elapsed) の下限 1 による「未来日の最初の 1 分」混入を遮断する）。
+    if now < day_start:
+        return None
     grid = _mgrid_of_day(symbol, day_start, now)
     roll: "dict | None" = None
     if grid is not None:

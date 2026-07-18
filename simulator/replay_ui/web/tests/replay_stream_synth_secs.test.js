@@ -18,7 +18,8 @@ import {
 
 const CD = { time: 200, open: 10, high: 20, low: 5, close: 15 };
 const M1 = [[10, 20, 5, 15], [15, 25, 12, 18]];
-// 1D 最新足の足内窓（intrabarWindow: 左ラベル [time, time+DAY)）と一致させる。
+// 任意の足内窓（buildStreamFromResponse は与えられた winStart/winEnd を等分するのみ＝窓導出は
+//   intrabarWindow の責務。ISSUE-130 以降 1D はセッション窓だが本テストの検証対象は等分規則）。
 const WIN = { winStart: 200, winEnd: 86600 };
 
 function assertEquidistantWindow(secs, winStart, winEnd) {

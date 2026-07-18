@@ -80,7 +80,7 @@ function fakeClock(seq) {
 
 function makeActor({
   formingClient, makeAccumulator, primitive, mainSeries, client, now, throttleMs = 120, ctxTo,
-  getCandles,
+  getCandles, ctxTimeframe = '1h',
 } = {}) {
   const p = primitive ?? fakePrimitive();
   const ms = mainSeries ?? fakeMainSeries();
@@ -89,7 +89,7 @@ function makeActor({
     client: c,
     primitive: p,
     mainSeries: ms,
-    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '1h', to: ctxTo }),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: ctxTimeframe, to: ctxTo }),
     formingClient,
     makeAccumulator,
     getCandles,
@@ -1128,7 +1128,8 @@ test('ISSUE-120/124 enterBar/growTo: src=zp は forming せず、非ブロッキ
   assert.ok(client.calls.length >= 1 && client.calls.length <= 2,
     `coalesce（busy+pending）で fetch は 1〜2 回に畳まれる（実測 ${client.calls.length}）`);
   assert.equal(client.calls.at(-1).src, 'zp');
-  assert.equal(client.calls.at(-1).to, 7000, '実行時点の getContext().to（最新カーソル）で as-of 取得');
+  assert.equal(client.calls.at(-1).to, 6960,
+    'ISSUE-129: to は単一時計＝実行時点の最新リビール秒（enterBar(6960)）で as-of 取得');
 });
 
 test('ISSUE-120 対称性: 増分 src（dwell）は従来どおり forming 経路（回帰なし）', async () => {
@@ -1145,4 +1146,154 @@ test('ISSUE-120 対称性: 増分 src（dwell）は従来どおり forming 経�
   // Assert
   assert.equal(forming.calls.length, 1, 'dwell は forming（因果 base）で描く（従来どおり）');
   assert.equal(client.calls.length, fetchBefore, '全期間 fetchProfile は呼ばない（従来どおり）');
+});
+
+// --- ISSUE-129（単一時計）: 非増分 src（zp）×成長 push 中は fetch の to をリビール秒へ細粒度化する ---
+//   to はリプレイの現在時刻そのもの（as-seen-at-t の T）。backend は now=to で境界日をライブと同一の
+//   経過分クランプ＝1D でも当日 z が日内で成長する。静止は ctx.to がそのまま時計（上書き不要）。
+//   増分 src・時計未確定は上書きしない（従来 URL 不変・present は基底 _clockExtra()={} のまま非波及）。
+
+test('ISSUE-129 単一時計: enterBar の now がリビール秒として fetch context の to に載る（ctx.to を上書き）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 7000,
+  });
+  actor.setParams({ mode: 'normal', src: 'zp' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  actor.enterBar(6900);
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(client.calls.length >= 1, '基底 refresh の fetchProfile が走る');
+  assert.equal(client.calls.at(-1).to, 6900, 'enterBar(now)＝リビール秒が to（単一時計）として載る');
+  assert.equal(client.calls.at(-1).asof, undefined, '旧 asof パラメータは送らない（廃止）');
+});
+
+test('ISSUE-129 単一時計: feedTick のリビール秒で to が前進し、順不同 tick は巻き戻さない（単調）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 7000,
+  });
+  actor.setParams({ mode: 'normal', src: 'zp' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  actor.enterBar(6900);
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  actor.feedTick(6910, 71000);
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(client.calls.at(-1).to, 6910, 'feedTick(sec) が単一時計 to を前進させ再計算を発火する');
+  actor.feedTick(6905, 71000); // 順不同（過去秒）
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(client.calls.at(-1).to, 6910, '過去秒 tick では時計を巻き戻さない（単調）');
+});
+
+test('ISSUE-129 単一時計: 後退スクラブは enterBar(now=旧カーソル) が時計を巻き戻す（stale 未来時計防止）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 7000,
+  });
+  actor.setParams({ mode: 'normal', src: 'zp' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  actor.enterBar(6900);
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  actor.enterBar(5000); // 後退
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(client.calls.at(-1).to, 5000, 'enterBar は単一時計を直接更新（後退も反映）');
+});
+
+test('ISSUE-129 単一時計: 非成長（static）refresh は ctx.to がそのまま時計（stale _clockSec で上書きしない）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 5000,
+  });
+  actor.setParams({ mode: 'normal', src: 'zp' });
+  actor._enabled = true;
+  actor._clockSec = 4900; // 直前の成長の残骸（stale）があっても
+  await actor.refresh(); // growing=false（static）
+  assert.ok(client.calls.length >= 1);
+  assert.equal(client.calls.at(-1).to, 5000,
+    'static の to は ctx.to（＝untilTime＝T）のまま＝backend が now=to で部分集計（stale _clockSec は参照しない）');
+  assert.equal(client.calls.at(-1).asof, undefined, '旧 asof パラメータは送らない（廃止）');
+});
+
+test('ISSUE-129 単一時計: カーソル未確定（to=null・restore 前）は to を載せない（実時計＝従来 URL 不変）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: undefined,
+  });
+  actor.setParams({ mode: 'normal', src: 'zp' });
+  actor._enabled = true;
+  await actor.refresh(); // growing=false（static）・cursor なし
+  if (client.calls.length >= 1) {
+    assert.equal(client.calls.at(-1).to, undefined, 'cursor 不在では to なし＝backend は実時計（ライブ同一）');
+  }
+});
+
+test('ISSUE-127/129: 小数秒の tick（1分OHLC 合成等）でも to は整数秒で送る（backend 契約 UNIX 秒）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 7000,
+  });
+  actor.setParams({ mode: 'normal', src: 'zp' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  actor.feedTick(6910.6237624, 71000); // 合成 tick の小数秒
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(client.calls.at(-1).to, 6910,
+    '小数秒は floor した整数を送る（backend _parse_to は小数文字列を None へ落とすため）');
+});
+
+test('ISSUE-130 単一時計×1D: enterBar（バー入場）はラベルでなくセッション始端を時計にする（3h 先出し防止）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make,
+    ctxTo: 1777248000, ctxTimeframe: '1D',
+  });
+  actor.setParams({ mode: 'normal', src: 'zp' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  actor.enterBar(1777248000); // 2026-04-27(月) ラベル＝セッション 3h 経過点
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(client.calls.at(-1).to, 1777237200,
+    'バー入場の時計＝セッション始端（日曜 21:00 UTC）＝未リビール分（窓先頭 3h）を先出ししない');
+  actor.growTo(1777240000, undefined); // 足内 tick 前進（実リビール秒）
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(client.calls.at(-1).to, 1777240000, 'growTo は実リビール秒のまま（写像しない）');
+});
+
+test('ISSUE-129 単一時計: 増分 src（dwell）は時計上書きの対象外（to=ctx.to のまま・従来 URL 不変）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 5000,
+  });
+  actor.setParams({ mode: 'normal', src: 'dwell' });
+  actor._enabled = true;
+  actor._clockSec = 4900; // 時計が残っていても dwell へは波及しない
+  await actor.refresh(); // growing=false（static）
+  assert.ok(client.calls.length >= 1);
+  assert.equal(client.calls.at(-1).to, 5000, 'dwell の to は ctx.to のまま（上書きなし）');
+  assert.equal(client.calls.at(-1).asof, undefined, '旧 asof パラメータは送らない（廃止）');
+});
+
+test('ISSUE-129 対称性: 増分 src（dwell）の feedTick は as-of 再計算を発火しない（従来経路のみ）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 5000,
+  });
+  actor.setParams({ mode: 'normal', src: 'dwell' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  const before = client.calls.length;
+  actor.feedTick(4900, 71000); // accumulator 未確立 → 従来どおり no-op
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(client.calls.length, before, 'dwell は fetchProfile を発火しない（回帰なし）');
 });

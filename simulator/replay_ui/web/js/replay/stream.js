@@ -5,6 +5,7 @@
 //   純変換（buildStreamFromResponse）のみを抽出＝分岐・境界・数式を 1つも足さず/削らず。
 
 import { ANIM_FINE, ANIM_COARSE } from './timing.js';
+import { sessionDayStart, nextSessionDayStart } from '../domain/session_day.js';
 
 export { ANIM_FINE, ANIM_COARSE };
 
@@ -46,13 +47,22 @@ export function synthM1(m1) {
 }
 
 // 足内窓を足境界から決める（ラベル規約依存）:
-//   左ラベル(1m..1D・time=期間始端) → [time, 次足)。
+//   左ラベル(1m..日中・time=期間始端) → [time, 次足)。
+//   1D（ISSUE-130・セッション日集計）→ [セッション始端, 次足のセッション始端)。バーは dataset
+//     rollup と同一のセッション日（NY 前日17:00＝夏21:00/冬22:00 UTC 起点・ラベルはブローカー暦日の
+//     UTC 深夜）で集計されるため、足内 tick 窓もラベルでなくセッション境界で切る（日曜夕データは
+//     月曜バーの窓先頭に属する）。
 //   右ラベル(1W=W-FRI/1M=ME・time=期間終端) → [前足+1日, 今足+1日)。（replay.js: buildStream 窓算出）
 export function intrabarWindow({ timeframe, cd, prevCandle, nextCandle }) {
   const rightLabeled = (timeframe === '1W' || timeframe === '1M');
   if (rightLabeled) {
     const winStart = (prevCandle ? prevCandle.time : cd.time - durationSecs(timeframe)) + DAY;
     const winEnd = cd.time + DAY;
+    return { winStart, winEnd };
+  }
+  if (timeframe === '1D') {
+    const winStart = sessionDayStart(cd.time);
+    const winEnd = nextCandle ? sessionDayStart(nextCandle.time) : nextSessionDayStart(cd.time);
     return { winStart, winEnd };
   }
   const winStart = cd.time;

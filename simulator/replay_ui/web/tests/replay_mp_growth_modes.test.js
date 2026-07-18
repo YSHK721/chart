@@ -61,12 +61,13 @@ const CANDLES = [
   { time: 100, open: 1, high: 2, low: 0.5, close: 1.5 },
   { time: 200, open: 1.5, high: 2.5, low: 1, close: 2 },
 ];
-// 最新足 time=200・1D → intrabarWindow 左ラベル [200, 200+86400)=winEnd 86600。
-const WIN_END = 86600;
+// 最新足 time=200・1D → intrabarWindow はセッション窓（ISSUE-130）: winEnd = nextSessionDayStart(200)
+//   ＝1970-01-01 22:00 UTC（冬時間 EST）＝79200。
+const WIN_END = 79200;
 // real_ticks の最終実 tick 秒 t_k。**実データ条件 t_k < winEnd**（足終端より前で最終 tick が着く）を再現し、
 //   残差を assume-away しない（前回は t_k=winEnd に合わせて等価を仮定していた）。是正案 B は settle を全モード
 //   winEnd 統一するため、t_k < winEnd でも real_ticks は winEnd で settle する（t_k では settle しない）。
-const T_K = 80000; // 80000 < 86600（winEnd）。
+const T_K = 70000; // 70000 < 79200（winEnd）。
 
 // /intraday の応答をモード別に返す（url の mode= で分岐）。
 function fakeFetch() {

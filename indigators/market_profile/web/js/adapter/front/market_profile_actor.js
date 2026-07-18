@@ -666,6 +666,14 @@ export class MarketProfileActor {
     return { from: sessionDayStart(t) }; // ISSUE-078: セッション日始端。
   }
 
+  // 単一時計 seam（ISSUE-129）: present は常に空＝URL byte 不変（実時計＝ライブの現在がそのまま正）。
+  //   replay subclass が override し、成長 push 中の zp でリビール tick 秒を to（as-seen-at-t の T＝
+  //   リプレイの現在時刻）として細粒度化する（backend が now=to で境界日をライブ同一の経過分クランプ
+  //   ＝1D でも日内推移が成長）。ctx の後に spread されるため to を上書きできる。
+  _clockExtra() {
+    return {};
+  }
+
   // 表示幅(bp)→barw(pt) 写像（ISSUE-079 二層構造: 計算=1bp 固定・見せ方=自由）。
   //   dispbp 指定時、最新終値 close から barw = close × bp/1e4 を導出し、既存の resmode='range'
   //   ＋range(pt) 経路（client の &barw=・forming の base 整列・barw ロックまで全て再利用）へ写像する。
@@ -768,7 +776,7 @@ export class MarketProfileActor {
       //   getContext が limit(recentBars) を含んでも client.buildMarketProfileUrl が破棄する（全期間集計）。
       const profile = await this._client.fetchProfile({
         ...this._getContext(), ...this._params, ...this._sessionsExtra(), ...this._periodExtra(),
-        ...this._dispExtra(),
+        ...this._dispExtra(), ...this._clockExtra(),
       });
       if (profile) {
         this._primitive.setProfile(profile);

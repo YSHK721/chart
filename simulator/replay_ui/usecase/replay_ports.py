@@ -120,8 +120,9 @@ class MarketProfilePort(Protocol):
     ) -> "tuple[int, dict]":
         """``(status, body)`` を返す（未知 ref / 未知 tf は 400 nested error）。
 
-        ``to``（任意）: リプレイ時間カーソル（UNIX 秒）。指定時は ``time<=to`` の足だけで集計する
-        （as-seen-at-t）。``frm``/``today``/``sessions`` は増分2/日別分割の任意フラグ（None/省略は現行挙動）。
+        ``to``（任意）: リプレイ時間カーソル（UNIX 秒・リビール秒粒度＝単一時計・ISSUE-129）。指定時は
+        ``time<=to`` の足だけで集計し（as-seen-at-t）、zp は now=to として現在時刻に読む。
+        ``frm``/``today``/``sessions`` は増分2/日別分割の任意フラグ（None/省略は現行挙動）。
         """
         ...
 
