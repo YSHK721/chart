@@ -152,36 +152,16 @@ def _reset_caches() -> None:
 # 窓ティック読込（単一注入点。テストはここを monkeypatch して合成ティックを注入する）
 # --------------------------------------------------------------------------- #
 def _load_window_ticks(symbol: str, start: Any, end: Any) -> "tuple[np.ndarray, np.ndarray]":
-    """``[start, end)`` の実ティックを ``(secs:int64, mids:float64)`` で返す（メモリ有界・時系列順）。
+    """``[start, end)`` の実ティックを ``(secs:int64, mids:float64)`` で返す（TickStorePort へ委譲）。
 
-    正準ティック経路 :func:`marketdata.tick_m1.day_parquet_files` で日別 parquet を列挙し、各を
-    ``timestamp/bidPrice/askPrice`` 列で読む → concat → tz 除去し UTC 秒 int64 へ → 窓 ``[start,end)``
-    マスク → mid=(bid+ask)/2 → 窓内 mid 中央値 ±30% の外れ値除去 → secs で安定ソート。空なら空配列。
+    ISSUE-133 SRP: 日別 parquet の列挙・読取・concat・tz 除去・窓マスク・mid 算出・外れ値除去・安定
+    ソート（＝ティック格納スキーマの復号＝偶有的性質）は gateway の :class:`TickStorePort` 実装へ移設した。
+    本関数はテストの単一注入点（``mpd._load_window_ticks`` の monkeypatch）を module 属性として温存する
+    薄い委譲であり、ティック列（``_TICK_COLUMNS``）と外れ値しきい（``_OUTLIER_FRAC``）を注入する。
     """
-    s, e = int(start), int(end)
-    lo_day = pd.Timestamp(s, unit="s").normalize()
-    hi_day = pd.Timestamp(max(s, e - 1), unit="s").normalize()
-    files = day_parquet_files(lo_day, hi_day, symbol=symbol)
-    if not files:
-        return _EMPTY_SECS, _EMPTY_MIDS
-    frames = [_tick_store().read_ticks(p, _TICK_COLUMNS) for p in files]
-    tdf = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
-
-    ts = pd.to_datetime(tdf["timestamp"])
-    if getattr(ts.dt, "tz", None) is not None:
-        ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
-    secs = ts.to_numpy().astype("datetime64[s]").astype("int64")
-    win = (secs >= s) & (secs < e)
-    secs = secs[win]
-    mids = ((tdf["bidPrice"].to_numpy(dtype="float64") + tdf["askPrice"].to_numpy(dtype="float64"))
-            / 2.0)[win]
-    if len(mids):
-        m = float(np.median(mids))
-        if m > 0:
-            keep = np.abs(mids / m - 1.0) <= _OUTLIER_FRAC
-            secs, mids = secs[keep], mids[keep]
-    order = np.argsort(secs, kind="stable")
-    return secs[order].astype(np.int64), mids[order].astype(np.float64)
+    return _tick_store().load_window_ticks(
+        symbol, start, end, columns=_TICK_COLUMNS, outlier_frac=_OUTLIER_FRAC
+    )
 
 
 # --------------------------------------------------------------------------- #

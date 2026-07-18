@@ -12,7 +12,7 @@ compute（方針側）が所有する境界ポート。dwell/zp の集計数学�
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, Sequence, Tuple, runtime_checkable
 
 
 @runtime_checkable
@@ -25,6 +25,23 @@ class TickStorePort(Protocol):
 
     def read_ticks(self, path: Path, columns: "Sequence[str]") -> Any:
         """日別ティックファイルを指定列で読み、DataFrame 互換で返す。"""
+        ...
+
+    def load_window_ticks(
+        self,
+        symbol: str,
+        start: Any,
+        end: Any,
+        *,
+        columns: "Sequence[str]",
+        outlier_frac: float,
+    ) -> "Tuple[Any, Any]":
+        """``[start, end)`` の正準ティックを ``(secs:int64, mids:float64)`` で返す（ISSUE-133 SRP）。
+
+        日別ファイルの列挙・読取・concat・tz 正規化・窓マスク・mid 算出・窓内中央値 ±``outlier_frac``
+        の外れ値除去・secs 安定ソートまで（＝ティック格納スキーマの復号＝偶有的性質）を実装側に隔離する。
+        窓内ティックゼロは空配列。compute（方針側）は本境界にのみ依存し tick I/O 解析を持たない。
+        """
         ...
 
     def data_dir(self) -> Path:
