@@ -1066,10 +1066,10 @@ test('setCandleTrim(T) updates the readout last-bar to the trimmed bar and re-em
 
 // ---------------------------------------------------------------------------
 // MP プロファイル専用の右マージン（試作 PROFILE_FRAC 移植・バーとローソクの重なり回避）:
-//   setRightMarginFraction(frac) → timeScale.applyOptions({rightOffset: width*frac/barSpacing}) ／
-//   null → rightOffset:0（復元）。
+//   setRightMarginFraction(frac) → 実効比率 max(frac, 常設 5%) を px 換算した rightOffset を適用 ／
+//   null → 常設 5% 余白へ復元（ISSUE-114/115: 0 でなく px 基準の常設右余白＝右端張り付き防止）。
 // ---------------------------------------------------------------------------
-test('setRightMarginFraction: sets rightOffset bars from width*frac/barSpacing and restores on null', () => {
+test('setRightMarginFraction: sets rightOffset bars from width*frac/barSpacing and restores to base on null', () => {
   // Arrange: timeScale の width/options/applyOptions を fake
   const { renderer, chart } = newRenderer();
   const applied = [];
@@ -1078,12 +1078,12 @@ test('setRightMarginFraction: sets rightOffset bars from width*frac/barSpacing a
     options: () => ({ barSpacing: 6 }),
     applyOptions: (o) => applied.push(o),
   });
-  // Act: frac=0.30 → 1200*0.30/6 = 60 bars
+  // Act: frac=0.30 → 1200*0.30/6 = 60 bars（常設 5% との max 合成でも 60）
   renderer.setRightMarginFraction(0.30);
   assert.deepEqual(applied.at(-1), { rightOffset: 60 });
-  // Act: null → 復元（rightOffset: 0）
+  // Act: null → 復元は常設 5% 余白（1200*0.05/6 = 10 バー・ISSUE-115 px 基準）
   renderer.setRightMarginFraction(null);
-  assert.deepEqual(applied.at(-1), { rightOffset: 0 });
+  assert.deepEqual(applied.at(-1), { rightOffset: 10 });
 });
 
 // ===========================================================================

@@ -152,8 +152,39 @@ def repair_ohlc_outliers_envelope(
     return repaired, log_lines
 
 
+# --------------------------------------------------------------------------- #
+# 日内中央値式の外れ M1 行除去（参照実装 proto_server._repair_day_outliers /
+#   simulator.replay_ui.adapter._m1_repair.repair_day_outliers と bit 一致の式）。
+#   エンベロープ式（バー内 open/close 基準）は open/close 自体が不正な連続不良ラン
+#   （例 2025-08-26 06:34〜09:09 UTC の ~15,100 帯）を補正できないため、M1 素材の
+#   生成段（tick_m1）ではこちらの日内クロスバー基準で行ごと除去する。
+# --------------------------------------------------------------------------- #
+def repair_day_outliers(
+    df: pd.DataFrame, threshold: float = OUTLIER_THRESHOLD
+) -> pd.DataFrame:
+    """日内 close 中央値から OHLC のいずれかが threshold 超で乖離する M1 行を除去する（純粋）。
+
+    Dukascopy の区間欠損で 1 分足が極端に乖離する（例: 2025-08-26 の ~15,100＝当日 ~42,600 から
+    約 -64%）外れバーのみを安全に分離する。指数は日中に中央値比 ±30% も動かないため、
+    配信欠損ファントムのみが該当する。入力 df は ``DatetimeIndex``（UTC naive）＋
+    OHLC 列を持つこと。正常のみなら同一オブジェクトを返す（冪等・不破壊）。
+    """
+    if len(df) == 0:
+        return df
+    day = df.index.normalize()                          # 暦日キー（UTC・tz-naive）
+    med = df.groupby(day)["close"].transform("median")  # 各行＝その日の close 中央値
+    dev = pd.concat(
+        [(df[c] / med - 1.0).abs() for c in ("open", "high", "low", "close")], axis=1
+    ).max(axis=1)
+    mask = (med > 0) & (dev > threshold)
+    if not bool(mask.any()):
+        return df
+    return df[~mask]
+
+
 __all__ = [
     "OUTLIER_THRESHOLD",
     "clamp_ohlc_envelope",
     "repair_ohlc_outliers_envelope",
+    "repair_day_outliers",
 ]

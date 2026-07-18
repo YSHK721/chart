@@ -58,8 +58,10 @@ export class SeriesDef {
 
 // チャート上に追加された 1 インスタンス（§3.1.4）。
 // generation の単調増加と accepts（現行世代の応答のみ採用）を不変ルールとして集約する。
+// styles（ISSUE-109）: 系列名 -> { color?, width?, style?, visible? } のユーザー上書き（差分のみ保持・
+//   null=上書きなし）。実描画既定は compute ペイロード由来のため、ここには変更分だけを持つ。
 export class AppliedInstance {
-  constructor({ indicatorId, variant, params, visible, generation, seq, createdAt }) {
+  constructor({ indicatorId, variant, params, visible, generation, seq, createdAt, styles = null }) {
     this.indicatorId = indicatorId;
     this.variant = variant;
     this.params = params;
@@ -67,6 +69,7 @@ export class AppliedInstance {
     this.generation = generation;
     this.seq = seq;
     this.createdAt = createdAt;
+    this.styles = styles;
     this.instanceId = `${indicatorId}#${seq}`;
     Object.freeze(this);
   }
@@ -81,6 +84,7 @@ export class AppliedInstance {
       generation: this.generation + 1,
       seq: this.seq,
       createdAt: this.createdAt,
+      styles: this.styles,
     });
   }
 

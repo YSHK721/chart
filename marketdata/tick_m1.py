@@ -36,6 +36,7 @@ from typing import Any, List
 
 import pandas as pd
 
+from marketdata import outlier_policy
 from marketdata.paths import DATA_DIR
 
 # ロールアップ互換の M1 CSV 列・date 書式は marketdata.csv_schema が唯一の規則源
@@ -90,6 +91,8 @@ def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
 
     戻り値は ``date`` を index（名前 ``"date"``・``DatetimeIndex`` 昇順）に持つ OHLCV DataFrame。
     入力が空なら空（列のみ）を返す。必須列を欠く場合は :class:`ValueError`（fail-fast）。
+    本関数は**純粋な集計のみ**を担う（外れ分バーの除去は :func:`_clean_m1_day` ＝ CSV 素材化
+    経路の責務・本関数は行除去しない）。
     """
     missing = [c for c in _TICK_COLUMNS if c not in ticks.columns]
     if missing:
@@ -121,6 +124,20 @@ def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
     )
     m1.index.name = "date"
     return m1
+
+
+def _clean_m1_day(m1_day: pd.DataFrame) -> pd.DataFrame:
+    """日別 M1 から配信欠損ファントム行を除去する（CSV 素材化経路の単一クリーニング点・ISSUE-107）。
+
+    日内 close 中央値から OHLC のいずれかが ±30% 超乖離する分バーを
+    :func:`marketdata.outlier_policy.repair_day_outliers`（参照実装 proto_server /
+    replay_ui `_m1_repair` と同一式）で行ごと除去する。バー内エンベロープ式（open/close 基準・
+    serving クランプ）は open/close 自体が不正な連続不良ラン（例 jp225_tick 2025-08-26
+    06:34〜09:09 UTC の ~15,100 帯）を補正できないため、M1 素材の生成段で除去し
+    全時間足（rollup 含む）へ清浄な素材を供給する。ティック parquet は UTC 日 partition の
+    ため日別適用＝全体への日 groupby 適用と同値。正常日は no-op（同一オブジェクト）。
+    """
+    return outlier_policy.repair_day_outliers(m1_day)
 
 
 def tick_root(data_dir: Any = DATA_DIR) -> Path:
@@ -246,7 +263,7 @@ def build_m1_from_ticks(
         )
     daily_m1: List[pd.DataFrame] = []
     for p in files:
-        m1_day = ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS))
+        m1_day = _clean_m1_day(ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS)))
         if not m1_day.empty:
             daily_m1.append(m1_day)
     if daily_m1:
@@ -353,7 +370,7 @@ def append_m1_from_ticks(
 
     daily_m1: List[pd.DataFrame] = []
     for p in files:
-        m1_day = ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS))
+        m1_day = _clean_m1_day(ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS)))
         if not m1_day.empty:
             daily_m1.append(m1_day)
     if not daily_m1:

@@ -52,7 +52,6 @@ html, body {
 
 .tb-symbol { font-weight: 700; font-size: 15px; color: #fff; letter-spacing: .3px; }
 .tb-sep { width: 1px; height: 22px; background: #2a2e39; margin: 0 4px; }
-.tb-timeframe { display: inline-flex; align-items: center; gap: 2px; }
 .tb-interval {
   padding: 4px 9px; border-radius: 4px; background: transparent; color: #d1d4dc;
   border: none; cursor: pointer; font-size: 13px;
@@ -339,6 +338,45 @@ html, body {
   gap: 10px; padding: 6px 0; border-bottom: 1px solid #23272f;
 }
 .prop-style-name { color: #d1d4dc; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-style-heat { color: #787b86; font-size: 12px; white-space: nowrap; grid-column: 2 / 5; }
+
+/* 「最新のバーまでスクロール」ボタン（ISSUE-116・右下ホットゾーンホバー時のみ表示）。
+   配置はチャートペイン上の右20%×下50% 位置・形状は角丸3pxの四角（ユーザー指示 2026-07-18）。 */
+.scroll-latest-btn {
+  /* ホットゾーン（x>=80%・y>=50%）の右下＝ペイン右下に配置（ユーザー指示 2026-07-18）。
+     右は価格軸・下は時間軸に重ならないオフセットを確保（ゾーン内側なのでホバー中に隠れない）。 */
+  position: absolute; right: 90px; bottom: 50px; z-index: 6;
+  width: 56px; height: 56px; border-radius: 3px;
+  background: #2a2e39; color: #d1d4dc; border: 1px solid #363a45;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; font-size: 30px; line-height: 1; padding: 0; user-select: none;
+}
+.scroll-latest-btn:hover { background: #363a45; }
+.scroll-latest-btn.is-hidden { display: none; }
+
+/* 時間足ドロップダウン（ISSUE-117・TradingView 風カテゴリメニュー） */
+.tf-menu { position: relative; display: inline-flex; }
+.tf-menu-trigger { display: inline-flex; align-items: center; gap: 4px; }
+.tf-menu-caret { font-size: 9px; color: #787b86; }
+.tf-menu-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+  min-width: 140px; max-height: 70vh; overflow-y: auto;
+  background: #1e222d; border: 1px solid #363a45; border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5); padding: 4px 0;
+  display: flex; flex-direction: column;
+}
+.tf-menu-pop.is-hidden { display: none; }
+.tf-menu-cat {
+  padding: 6px 12px 2px; color: #787b86; font-size: 11px; user-select: none;
+  border-top: 1px solid #23272f; margin-top: 4px;
+}
+.tf-menu-cat:first-child { border-top: 0; margin-top: 0; }
+.tf-menu-item {
+  display: block; width: 100%; text-align: left; padding: 6px 16px;
+  background: transparent; border: 0; color: #d1d4dc; font-size: 13px; cursor: pointer;
+}
+.tf-menu-item:hover { background: #2a2e39; }
+.tf-menu-item.is-active { background: #2962ff; color: #fff; }
 .prop-visibility-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: #d1d4dc; font-size: 13px; cursor: pointer; }
 
 /* A 方式 未反映 注記（サイレント不一致回避・§9.3） */
@@ -372,24 +410,17 @@ html, body {
     <div class="toolbar">
       <span class="tb-symbol">NI225</span>
       <span class="tb-sep"></span>
-      <!-- 時間足セレクタ（1 分足原子から resample・§チャート表示時間選択）。data-timeframe は
-           サーバの TIMEFRAME_RULES と一致。既定 1D を is-active。A方式では controller が無効化。 -->
-      <div class="tb-timeframe" role="group" aria-label="時間足">
-        <button class="tb-interval" data-timeframe="1m" type="button">1分</button>
-        <button class="tb-interval" data-timeframe="5m" type="button">5分</button>
-        <button class="tb-interval" data-timeframe="15m" type="button">15分</button>
-        <button class="tb-interval" data-timeframe="30m" type="button">30分</button>
-        <button class="tb-interval" data-timeframe="1h" type="button">1時間</button>
-        <button class="tb-interval" data-timeframe="4h" type="button">4時間</button>
-        <button class="tb-interval is-active" data-timeframe="1D" type="button">日</button>
-        <button class="tb-interval" data-timeframe="1W" type="button">週</button>
-        <button class="tb-interval" data-timeframe="1M" type="button">月</button>
-      </div>
+      <!-- 時間足ドロップダウンのマウント（ISSUE-117/123）。DOM は timeframe_menu.js（共有・単一ソース）が
+           生成する（項目集合の index.html 直書き＝値渡し複製を廃止）。 -->
+      <div class="tf-menu" id="tf-menu"></div>
+      <!-- 旧・時間足ボタン row は ISSUE-117 追記で撤去（選択はドロップダウンの
+           data-timeframe 項目が担う。TIMEFRAME_RULES との一致・A方式無効化は従来どおり bind() 側）。 -->
       <span class="tb-sep"></span>
       <!-- ライブ追従トグル（present/B方式）。FOLLOW（点灯）=ライブ更新＋新足で右端追従、
-           ANALYSIS（消灯）=ライブ更新停止＋背景 tint で状態明示。右端離脱で自動 ANALYSIS／復帰で自動 FOLLOW。
-           配線・点灯は composition root の LiveFollowController.install()（B方式のみ）。A方式（file://）は
-           controller 未生成のため disabled のまま非活性。 -->
+           ANALYSIS（消灯）=ライブ更新停止＋背景 tint で状態明示。切替はこのボタンのクリックのみ
+           （ISSUE-118: 右端離脱/復帰の自動遷移は削除）。配線・点灯は composition root の
+           LiveFollowController.install()（B方式のみ）。A方式（file://）は controller 未生成のため
+           disabled のまま非活性。 -->
       <button id="live-follow-toggle" class="tb-interval" type="button" aria-pressed="false" title="ライブ追従（点灯=ライブ／消灯=分析）" disabled>ライブ</button>
       <span class="tb-sep"></span>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
@@ -758,8 +789,10 @@ class SeriesDef {
 
 // チャート上に追加された 1 インスタンス（§3.1.4）。
 // generation の単調増加と accepts（現行世代の応答のみ採用）を不変ルールとして集約する。
+// styles（ISSUE-109）: 系列名 -> { color?, width?, style?, visible? } のユーザー上書き（差分のみ保持・
+//   null=上書きなし）。実描画既定は compute ペイロード由来のため、ここには変更分だけを持つ。
 class AppliedInstance {
-  constructor({ indicatorId, variant, params, visible, generation, seq, createdAt }) {
+  constructor({ indicatorId, variant, params, visible, generation, seq, createdAt, styles = null }) {
     this.indicatorId = indicatorId;
     this.variant = variant;
     this.params = params;
@@ -767,6 +800,7 @@ class AppliedInstance {
     this.generation = generation;
     this.seq = seq;
     this.createdAt = createdAt;
+    this.styles = styles;
     this.instanceId = `${indicatorId}#${seq}`;
     Object.freeze(this);
   }
@@ -781,6 +815,7 @@ class AppliedInstance {
       generation: this.generation + 1,
       seq: this.seq,
       createdAt: this.createdAt,
+      styles: this.styles,
     });
   }
 
@@ -1694,7 +1729,7 @@ const MA_SMOOTHING_LABELS = {
   none: 'なし', sma: 'SMA', ema: 'EMA', smma: 'SMMA', wma: 'WMA', sma_bb: 'SMA + ボリンジャーバンド',
 };
 const MA_TIMEFRAME_LABELS = {
-  chart: 'チャート', '1m': '1分', '5m': '5分', '15m': '15分', '1h': '1時間',
+  chart: 'チャート', '1m': '1分', '5m': '5分', '15m': '15分', '30m': '30分', '1h': '1時間',
   '4h': '4時間', '1D': '日', '1W': '週', '1M': '月',
 };
 const MA_LINE = (seriesName) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false });
@@ -1720,7 +1755,7 @@ const MOVING_AVERAGES = new IndicatorDef({
       conditionalEnable: { when: { param: 'smoothing_type', equals: 'sma_bb' } },
     }),
     // --- 計算 ---
-    param('timeframe', ParamType.ENUM, 'chart', [], ['chart', '1m', '5m', '15m', '1h', '4h', '1D', '1W', '1M'], { group: '計算', order: 1, label: '時間足', enumLabels: MA_TIMEFRAME_LABELS, tooltip: 'この指標を計算する時間足（「チャート」はチャートの時間足に追従）' }),
+    param('timeframe', ParamType.ENUM, 'chart', [], ['chart', '1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M'], { group: '計算', order: 1, label: '時間足', enumLabels: MA_TIMEFRAME_LABELS, tooltip: 'この指標を計算する時間足（「チャート」はチャートの時間足に追従）' }),
     // 既定 false: 未確定の最新足も計算し MA を最新足まで描画する（true だと最終足を除外し
     //   常に1本手前で止まる）。確定足のみで計算したい場合はダイアログで ON にする。
     param('wait_for_close', ParamType.BOOL, false, [], null, { group: '計算', order: 2, label: '時間足の確定を待つ' }),
@@ -2002,8 +2037,63 @@ function rebuildInstance(base, overrides = {}) {
     generation: base.generation,
     seq: base.seq,
     createdAt: base.createdAt,
+    styles: base.styles ?? null,
     ...overrides,
   });
+}
+
+// スタイル整合（ISSUE-110 🔴-1）: styles のキーを「現在の実系列名集合」と突合し、実系列に
+//   存在しない stale キー（params 変更で系列が改名された等）を剪定した新 state を返す。
+//   剪定対象が無ければ同一 state（無変更）。全キー剪定で空になったら styles=null へ戻す。
+//   currentNames が空集合のとき（描画前・renderer 未対応）は判定不能のため剪定しない。
+function reconcileSeriesStyles(state, instanceId, currentNames) {
+  const names = currentNames instanceof Set ? currentNames : new Set(currentNames ?? []);
+  if (names.size === 0) {
+    return state;
+  }
+  const inst = state.applied.find((i) => i.instanceId === instanceId);
+  const styles = inst && inst.styles;
+  if (!styles) {
+    return state;
+  }
+  const staleKeys = Object.keys(styles).filter((n) => !names.has(n));
+  if (staleKeys.length === 0) {
+    return state;
+  }
+  const next = cloneState(state);
+  next.applied = next.applied.map((i) => {
+    if (i.instanceId !== instanceId) {
+      return i;
+    }
+    const kept = {};
+    for (const [n, v] of Object.entries(styles)) {
+      if (names.has(n)) {
+        kept[n] = v;
+      }
+    }
+    return rebuildInstance(i, { styles: Object.keys(kept).length > 0 ? kept : null });
+  });
+  return next;
+}
+
+// スタイル上書き（ISSUE-109）: 系列名 -> { color?, width?, style?, visible? } の差分 patch を
+//   既存 styles へフィールド単位でマージした新 state を返す。patch が空なら無変更。
+function setSeriesStyles(state, instanceId, patch) {
+  if (!patch || Object.keys(patch).length === 0) {
+    return state;
+  }
+  const next = cloneState(state);
+  next.applied = next.applied.map((i) => {
+    if (i.instanceId !== instanceId) {
+      return i;
+    }
+    const merged = { ...(i.styles ?? {}) };
+    for (const [name, fields] of Object.entries(patch)) {
+      merged[name] = { ...(merged[name] ?? {}), ...fields };
+    }
+    return rebuildInstance(i, { styles: merged });
+  });
+  return next;
 }
 
 function remove(state, instanceId) {
@@ -2101,6 +2191,7 @@ function instanceToJson(i) {
     generation: i.generation,
     seq: i.seq,
     createdAt: i.createdAt,
+    styles: i.styles ?? null,
   };
 }
 
@@ -2230,6 +2321,12 @@ function toLineStyleInt(style) {
 //   ユーザーは pane separator のドラッグ（機能④）で後から自由に調整できる。
 const MAIN_PANE_STRETCH = 3;
 const INDICATOR_PANE_STRETCH = 1;
+
+// ISSUE-114/115: チャート右端の常設余白（チャート幅比率）。最新足の右側に常時 幅×この比率 の
+//   空きを px 基準で確保する。lwc rightOffset は論理バー単位のため、バー数固定では全体表示
+//   （微小 barSpacing）で余白が消える（ISSUE-115）＝_syncRightOffset が width×frac÷barSpacing を
+//   都度再計算して適用する。MP プロファイル右マージン（setRightMarginFraction）とは比率の max 合成。
+const BASE_RIGHT_MARGIN_FRACTION = 0.05;
 
 const WATERMARK_COLOR = 'rgba(209, 212, 220, 0.9)';
 
@@ -2381,6 +2478,18 @@ class ChartRenderer {
     // 価格パンの px→価格換算に使う pane 高（container 高 - timeScale().height() 相当）。
     //   composition root が setPaneHeight で供給する。
     this._paneHeight = null;
+    // ISSUE-114/115: チャート右端の常設余白（幅比率基準・px 一定）。最新足が右端に張り付く
+    //   ストレスの解消。rightOffset は scrollToRealTime / FOLLOW 追従で尊重されるため、ライブ新足
+    //   でも余白が維持される。ズーム（barSpacing 変化）時は可視範囲購読で bars を再計算し px 幅を
+    //   一定に保つ（同値スキップでループ防止）。timeScale 非対応 Fake は no-op。
+    this._lastRightOffsetBars = null;
+    this._syncRightOffset();
+    {
+      const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+      if (ts && typeof ts.subscribeVisibleLogicalRangeChange === 'function') {
+        ts.subscribeVisibleLogicalRangeChange(() => this._syncRightOffset());
+      }
+    }
     // 機能③: クロスヘア移動で pane ウォーターマークへ系列値を追記。
     if (typeof this._chart.subscribeCrosshairMove === 'function') {
       this._chart.subscribeCrosshairMove((param) => this._onCrosshairMove(param));
@@ -2395,16 +2504,25 @@ class ChartRenderer {
     this._baseCandles = arr;
     // 増分2: 基準 candles が入れ替わったのでトリム位置キャッシュをリセット（次の setCandleTrim で再 set）。
     this._lastTrimIdx = null;
-    // 価格スケールの手動状態（軸ドラッグ/ホイールズーム）には触れない。ズームは「この価格帯を
-    //   見たい」というユーザーの明示操作であり、解除の判断はユーザーに属する（dblclick=
-    //   resetPriceZoom が唯一の解除点）。手動スケールは lwc 内部状態なので setData 全置換
-    //   （時間足切替・リプレイの足リビール）でも lwc 自身が保持する＝ここで何もしなくてよい。
-    //   （旧実装は自前 override をここで破棄していたため、時間足切替に加え、setCandles を
-    //     毎バー呼ぶ replay_ui の足リビールでもバー境界のたびにホイールズームだけが消えていた）。
+    // 価格スケールの手動状態（軸ドラッグ/ホイールズーム）には本メソッドでは触れない。setCandles は
+    //   replay_ui の足リビールで毎バー呼ばれるため、ここで解除するとバー境界のたびにズームが消える
+    //   （旧実装の不具合）。解除点は「価格軸 dblclick（resetPriceZoom）」と「時間足切替
+    //   （TimeframeController.setTimeframe が resetPriceZoom を呼ぶ・ISSUE-113 ユーザー裁定）」の 2 点で、
+    //   いずれも呼び出し側の責務。手動スケールは lwc 内部状態なので setData 全置換でも lwc 自身が保持する。
     this._replayViewSpan = null; // スクラブ span キャッシュのみリセット（価格ズームとは別物）。
+    // ISSUE-114: fitContent は全データを幅いっぱいへフィットし右余白を潰すため、直後に
+    //   scrollToRealTime で常設 rightOffset を反映する（barSpacing は fitContent の結果を維持）。
+    //   scrollToRealTime 非提供（後方互換 Fake）は no-op（下の呼出し済みガードに委ねる）。
     // 読み取り欄の最新足の単一源を更新（配列末尾の足）。空配列なら null。
     this._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
-    this._chart.timeScale().fitContent();
+    const ts = this._chart.timeScale();
+    ts.fitContent();
+    // fitContent で barSpacing が確定した直後に余白バー数を再計算してから右端へスクロール
+    //   （ISSUE-115: px 基準余白の反映順）。
+    this._syncRightOffset({ force: true });
+    if (typeof ts.scrollToRealTime === 'function') {
+      ts.scrollToRealTime();
+    }
     // v6: candle 変更を observer へ通知（ChartRenderer 起点同期＝hover 中なら highlight 解除へ）。
     this._onCandlesChanged();
   }
@@ -2437,17 +2555,32 @@ class ChartRenderer {
     // スクラブ時の表示フィット（setCandleTrim → setVisibleLogicalRange の blank）にも使う margin 率を保持。
     //   プロト applyAsofView の PROFILE_FRAC と同義（右プロファイル領域の割合）。0=マージンなし。
     this._profileMarginFraction = (frac != null && frac > 0 && frac < 1) ? frac : 0;
+    // 実適用は単一権威 _syncRightOffset（常設余白 5% と max 合成・ISSUE-115）。解除（frac=null）でも
+    //   0 へ戻さず常設余白へ復元される（ISSUE-114: 右端張り付き防止）。
+    this._syncRightOffset({ force: true });
+  }
+
+  // 右端余白の単一権威（ISSUE-115）: 実効比率 = max(常設 5%, MP プロファイル余白率) を px 換算し、
+  //   rightOffset バー数 = width×frac ÷ barSpacing（小数のまま＝px 幅一定）で適用する。
+  //   可視範囲購読（ズームで barSpacing 変化）からも呼ばれるため、同値（±0.01 バー）はスキップして
+  //   applyOptions→範囲変化→再購読のループを防ぐ。width 未確定（レイアウト前）は何もしない。
+  _syncRightOffset({ force = false } = {}) {
     const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
     if (!ts || typeof ts.applyOptions !== 'function') {
       return;
     }
-    if (frac == null || !(frac > 0)) {
-      ts.applyOptions({ rightOffset: 0 }); // 復元（lwc 既定）。
-      return;
-    }
     const w = typeof ts.width === 'function' ? ts.width() : 0;
     const bs = (typeof ts.options === 'function' && ts.options() && ts.options().barSpacing) || 6;
-    const bars = w > 0 ? Math.max(0, Math.round((w * frac) / bs)) : 0;
+    if (!(w > 0) || !(bs > 0)) {
+      return;
+    }
+    const frac = Math.max(BASE_RIGHT_MARGIN_FRACTION, this._profileMarginFraction || 0);
+    const bars = (w * frac) / bs;
+    if (!force && this._lastRightOffsetBars !== null
+        && Math.abs(bars - this._lastRightOffsetBars) < 0.01) {
+      return;
+    }
+    this._lastRightOffsetBars = bars;
     ts.applyOptions({ rightOffset: bars });
   }
 
@@ -2598,6 +2731,22 @@ class ChartRenderer {
     if (ps && typeof ps.applyOptions === 'function') {
       ps.applyOptions({ autoScale: true });
     }
+  }
+
+  // ISSUE-116: 最新足が可視範囲内か（「最新のバーまでスクロール」ボタンの表示判定用）。
+  //   getVisibleLogicalRange().to が末尾 index 以上なら可視（右余白ぶん to は末尾より大きくなる）。
+  //   API 非提供・データ無し・レンジ不明は true（＝最新扱い・ボタンを出さない安全側）。
+  isLatestBarVisible() {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    const arr = this._baseCandles;
+    if (!ts || typeof ts.getVisibleLogicalRange !== 'function' || !arr || arr.length === 0) {
+      return true;
+    }
+    const range = ts.getVisibleLogicalRange();
+    if (!range || !Number.isFinite(range.to)) {
+      return true;
+    }
+    return range.to >= arr.length - 1;
   }
 
   // 価格軸領域判定の小ヘルパ（x >= timeScale().width()）。composition root の dblclick 判定用（任意）。
@@ -2773,6 +2922,15 @@ class ChartRenderer {
       this._mergeBaseCandle(candle);
       return;
     }
+    // 後退ガード（ISSUE-096）: 時間足切替（setCandles で系列＋_lastBar が新周期へ差替）直後に、
+    //   インフライトの旧周期ライブ tick が実系列末尾より古い time で来ると、lightweight-charts の
+    //   series.update が "Cannot update oldest data" を投げる（player 内 _bar 基準の後退ガードでは
+    //   系列側が差し替わったケースを捕捉できない）。実系列末尾（_lastBar）より古い time のライブ足は
+    //   skip する（旧周期の stale tick は新周期 base へ混ぜない）。同/新 time は従来どおり反映する。
+    if (this._lastBar != null && typeof candle.time === 'number'
+        && typeof this._lastBar.time === 'number' && candle.time < this._lastBar.time) {
+      return;
+    }
     this._mainSeries.update(candle);
     // 最新足の単一源を更新し、hover していない読み取り表示が古くならないよう DTO を再発火する。
     this._lastBar = candle;
@@ -2781,6 +2939,55 @@ class ChartRenderer {
     this._emitReadout(null);
     // v6: candle 変更を observer へ通知（live tick でも hover 中なら highlight 解除させる）。
     this._onCandlesChanged();
+  }
+
+  // ライブ欠落補完（ISSUE-106）: タブ休止（PC スリープ・バックグラウンドタイマー抑制）や更新停止で
+  //   足境界を 2 本以上またぐと、差分経路（updateLastCandle＝末尾 1 本前提）では途中の確定足を挿入
+  //   できず（lwc の series.update は末尾より古い time を受け付けない）恒久的な歯抜けになる。
+  //   fetched（サーバー正の /candles 全件・time 昇順）に「実系列末尾より新しい足が 2 本以上」または
+  //   「既知範囲内の未保持 time（穴）」を検出したときのみ setData 全置換で再同期する。
+  //   通常運転（差分 0〜1 本・全 time 既知）は何もせず false（従来差分経路のまま挙動不変）。
+  //   fitContent は呼ばない（ユーザーのズーム・スクロール位置を保持）。
+  //   現在足の後退防止（ISSUE-049 系）: 置換前末尾（LiveTickPlayer が書いた最新値）の time が
+  //   新データ末尾以上なら置換後に復元する（最大 60 秒古いサーバー値で価格を巻き戻さない）。
+  //   スナップショット（トリム）中は不介入（updateLastCandle と同方針・解除後の tick で再同期される）。
+  resyncMissedCandles(candles) {
+    const arr = Array.isArray(candles) ? candles : [];
+    if (arr.length === 0 || this._lastTrimIdx !== null) {
+      return false;
+    }
+    const base = this._baseCandles;
+    if (!base || base.length === 0 || this._lastBar == null) {
+      return false; // 初期ロード前は setCandles（全置換）の責務。
+    }
+    const lastTime = this._lastBar.time;
+    const known = new Set(base.map((b) => b.time));
+    let newer = 0;
+    let hole = false;
+    for (const c of arr) {
+      if (c.time > lastTime) {
+        newer += 1;
+      } else if (!known.has(c.time)) {
+        hole = true;
+      }
+    }
+    if (newer < 2 && !hole) {
+      return false;
+    }
+    const prevLast = this._lastBar;
+    const newest = arr[arr.length - 1];
+    this._mainSeries.setData(arr);
+    this._baseCandles = arr;
+    this._lastBar = newest;
+    if (typeof prevLast.time === 'number' && typeof newest.time === 'number'
+        && prevLast.time >= newest.time) {
+      this._mainSeries.update(prevLast);
+      this._lastBar = prevLast;
+      this._mergeBaseCandle(prevLast);
+    }
+    this._emitReadout(null);
+    this._onCandlesChanged();
+    return true;
   }
 
   // v6: candle 変更 observer を後から据える（composition root の renderer/markers 生成順序差を吸収）。
@@ -2841,6 +3048,10 @@ class ChartRenderer {
         // priceLineHost: 水準線（createPriceLine）を載せた系列（pane=scaleHost / overlay=mainSeries）。
         // pane/watermark/paneName: pane 指標のみ（機能①②）。overlay 指標は pane 0 のため null。
         scaleHost: null, priceLineHost: null, pane: null, watermark: null, paneName: null,
+        // styleMeta（ISSUE-109）: 系列キー -> { name, kind, color, width, style, visible }。
+        //   生成時スタイルの記録＋applySeriesStyle の上書き結果を保持し、スタイルタブの
+        //   初期表示（実描画値）と instance 単位 setVisible との可視性合成に使う。
+        styleMeta: new Map(),
       };
       this._instances.set(instanceId, slot);
     }
@@ -2919,6 +3130,13 @@ class ChartRenderer {
       series.setData(p.data ?? []);
       const key = `${instanceId}::${p.name}`;
       slot.lines.set(key, series);
+      slot.styleMeta.set(key, {
+        name: p.name, kind, color: p.color ?? null,
+        width: p.width ?? null, style: p.style ?? null, visible: true,
+        // heat（ISSUE-112）: histogram でバー別着色（data[].color＝値に応じたヒート配色）を持つか。
+        //   heat=true の系列はユーザー色上書きの対象外（ヒート絶対優先・ユーザー裁定）。
+        heat: kind === 'histogram' && (p.data ?? []).some((pt) => pt && pt.color != null),
+      });
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }
@@ -3061,6 +3279,8 @@ class ChartRenderer {
   // seriesKey の系列を全 instance から引き当て apply(series) を実行し、overlay 読み取りの
   //   fallback 値（末尾点 value）を points 末尾で更新する。未知 seriesKey は no-op。
   //   series への upstream 呼び出し（setData / update）は apply 内＝本所に閉じる（隔離維持）。
+  //   ISSUE-112: 流入 points は写像せず素通しする（バー別ヒート配色はユーザー色より絶対優先＝
+  //   ユーザー裁定。ISSUE-111 の userColor 写像機構は撤去）。
   _withSeries(seriesKey, points, apply) {
     for (const slot of this._instances.values()) {
       const series = slot.lines.get(seriesKey);
@@ -3092,21 +3312,22 @@ class ChartRenderer {
   }
 
   // UC-04 表示/非表示。line/histogram は applyOptions({visible})、priceLine は除去/再生成。
+  //   ISSUE-109: 系列単位の可視性（styleMeta.visible）と AND 合成する（インスタンス eye ON へ
+  //   戻しても、スタイル設定で個別非表示にした系列は非表示のまま）。
   setVisible(instanceId, visible) {
     const slot = this._instances.get(instanceId);
     if (!slot) {
       return;
     }
     slot.visible = visible;
-    // 読み取り欄の overlay 行も表示状態へ追従させる（非表示は欄から除外）。
-    for (const key of slot.lines.keys()) {
+    for (const [key, series] of slot.lines) {
+      const seriesVisible = visible && (slot.styleMeta.get(key)?.visible ?? true);
+      series.applyOptions({ visible: seriesVisible });
+      // 読み取り欄の overlay 行も表示状態へ追従させる（非表示は欄から除外）。
       const meta = this._overlayReadouts.get(key);
       if (meta) {
-        meta.visible = visible;
+        meta.visible = seriesVisible;
       }
-    }
-    for (const series of slot.lines.values()) {
-      series.applyOptions({ visible });
     }
     if (slot.hlinePayloads !== null) {
       if (visible && slot.priceLines.length === 0) {
@@ -3115,6 +3336,63 @@ class ChartRenderer {
         this._removePriceLines(slot);
       }
     }
+  }
+
+  // ISSUE-109: 現在の系列スタイル（実描画値）を返す。スタイルタブの初期表示用。
+  //   [{ name, kind, color, width, style, visible }]（生成順）。未知 instance は空配列。
+  getSeriesStyles(instanceId) {
+    const slot = this._instances.get(instanceId);
+    if (!slot) {
+      return [];
+    }
+    return [...slot.styleMeta.values()].map((m) => ({ ...m }));
+  }
+
+  // ISSUE-109: 系列単位のスタイル上書き（色/線幅/線種/可視性）。patch は差分のみ指定可。
+  //   lwc series.applyOptions で即時反映（再計算不要・仕様 §6.1）。styleMeta と overlay 読み取り欄の
+  //   色/可視性も同期する。未知系列は no-op（false）。可視性はインスタンス可視と AND 合成。
+  applySeriesStyle(instanceId, seriesName, patch = {}) {
+    const slot = this._instances.get(instanceId);
+    if (!slot) {
+      return false;
+    }
+    const key = `${instanceId}::${seriesName}`;
+    const series = slot.lines.get(key);
+    const meta = slot.styleMeta.get(key);
+    if (!series || !meta) {
+      return false;
+    }
+    // ISSUE-112（ユーザー裁定）: バー別ヒート配色（heat）の histogram は色 patch を無視する
+    //   （ヒート表示が絶対優先・データ全塗り替えでヒートを潰す ISSUE-111 の機構は撤去）。
+    //   heat 以外の histogram は series options.color が素で効く（バー別色が無いため上書き不要）。
+    if (patch.color != null && !(meta.kind === 'histogram' && meta.heat)) {
+      meta.color = patch.color;
+    }
+    if (patch.width != null) {
+      meta.width = patch.width;
+    }
+    if (patch.style != null) {
+      meta.style = patch.style;
+    }
+    if (patch.visible !== undefined && patch.visible !== null) {
+      meta.visible = !!patch.visible;
+    }
+    const options = { color: meta.color, visible: slot.visible && meta.visible };
+    if (meta.kind === 'line') {
+      if (meta.width != null) {
+        options.lineWidth = meta.width;
+      }
+      if (meta.style != null) {
+        options.lineStyle = toLineStyleInt(meta.style);
+      }
+    }
+    series.applyOptions(options);
+    const ro = this._overlayReadouts.get(key);
+    if (ro) {
+      ro.color = meta.color;
+      ro.visible = slot.visible && meta.visible;
+    }
+    return true;
   }
 
   _removePriceLines(slot) {
@@ -3185,14 +3463,39 @@ class ChartRenderer {
     });
   }
 
-  // 最新足（リアルタイム端）へスナップする（再FOLLOW の catch-up 用）。
+  // 最新足（リアルタイム端）へスナップする（再FOLLOW の catch-up・» ボタン）。
   //   timeScale/scrollToRealTime 非提供時は no-op（後方互換）。
-  scrollToRealTime() {
+  //   speed（ISSUE-116 追記3）: >1 で lwc 既定アニメ（約 1000ms・速度指定不可）の代わりに自前
+  //   イージング（ease-out cubic・1000/speed ms）で scrollToPosition(pos, false) を毎フレーム刻む。
+  //   必要 API（scrollPosition/scrollToPosition/requestAnimationFrame）が欠ける環境は lwc 既定へ
+  //   フォールバック（SSR/テスト・後方互換）。既存呼出し（speed 省略=1）は挙動不変。
+  scrollToRealTime({ speed = 1 } = {}) {
     const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
     if (!ts || typeof ts.scrollToRealTime !== 'function') {
       return;
     }
-    ts.scrollToRealTime();
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
+    if (!(speed > 1) || !raf
+        || typeof ts.scrollPosition !== 'function' || typeof ts.scrollToPosition !== 'function') {
+      ts.scrollToRealTime();
+      return;
+    }
+    const from = ts.scrollPosition();
+    const to = (typeof ts.options === 'function' && ts.options() && ts.options().rightOffset) || 0;
+    const duration = 1000 / speed;
+    let t0 = null;
+    const step = (now) => {
+      if (t0 === null) {
+        t0 = now;
+      }
+      const k = Math.min(1, (now - t0) / duration);
+      const eased = 1 - (1 - k) ** 3; // ease-out cubic
+      ts.scrollToPosition(from + (to - from) * eased, false);
+      if (k < 1) {
+        raf(step);
+      }
+    };
+    raf(step);
   }
 
   // 分析モードの背景 tint を適用/解除する（on=true で薄い tint、off で既定背景へ復元）。
@@ -3208,11 +3511,14 @@ class ChartRenderer {
     // options 取得不能時の既定背景フォールバック色（composition root の layout.background と同値）。
     const DEFAULT_BACKGROUND_COLOR = '#131722';
     // 既定背景を一度だけ捕捉（構築子外・遅延初期化）。以降の tint on/off はこの基準へ復元する。
+    //   ISSUE-119: options() が返す background は lwc 内部 options への参照でありうる。applyOptions は
+    //   内部オブジェクトへの in-place マージのため、参照のまま保持すると tint ON で基準色まで tint 色に
+    //   書き換わり復元が無変化になる。浅いコピーで snapshot 化して内部と切り離す。
     if (this._analysisTintBase === undefined) {
       let base = null;
       if (typeof this._chart.options === 'function') {
         const o = this._chart.options();
-        base = (o && o.layout && o.layout.background) ? o.layout.background : null;
+        base = (o && o.layout && o.layout.background) ? { ...o.layout.background } : null;
       }
       this._analysisTintBase = base;
     }
@@ -3734,6 +4040,64 @@ function resetToDefaults(def) {
   return values;
 }
 
+// ---------------------------------------------------------------------------
+// スタイル/可視性タブの行モデル（ISSUE-110 🟡-1: 純ロジックを usecase へ集約）
+// ---------------------------------------------------------------------------
+
+// 実描画系列（renderer.getSeriesStyles の戻り）から編集行 view-model を構築する純関数。
+//   bucket 規則系列（SeriesDef.seriesNamePattern.buckets の非空トークン）は系統（bucket）粒度に
+//   畳む（内部設計_パラメータ設定ダイアログ.md §6.1「28 行は冗長」）。
+//   系列名→bucket の対応は pattern.template から接頭辞を導出して判定する
+//   （template.replace('{bucket}', b) の '{pct}' 以前）＝命名規約の知識を書式ハードコードせず
+//   pattern 自身から得る（テンプレート変更時の二重修正を不要にする）。
+// 戻り値: [{ label, names, kind, heat, color, width, style, visible }]（color/width/style は実描画値・
+//   null あり得る。kind は行の描画種別（'line'|'histogram'・bucket 行は先頭系列の種別）で、
+//   histogram 行は線幅/線種の編集対象外（ISSUE-111: 描画種別と設定項目の整合）。
+//   heat はバー別ヒート配色の histogram（ISSUE-112: 色もユーザー編集対象外＝ヒート絶対優先）。
+//   表示既定や hex 変換は呼び出し側 = adapter の責務）。
+function buildSeriesStyleRows(def, seriesStyles) {
+  const bucketDefs = [];
+  for (const s of def?.series ?? []) {
+    const p = s.dynamic && s.seriesNamePattern;
+    if (p && Array.isArray(p.buckets)) {
+      for (const b of p.buckets) {
+        if (b) {
+          const prefix = String(p.template ?? '').replace('{bucket}', b).split('{pct}')[0];
+          if (prefix) {
+            bucketDefs.push({ bucket: b, prefix });
+          }
+        }
+      }
+    }
+  }
+  const rows = [];
+  const byBucket = new Map();
+  for (const st of seriesStyles ?? []) {
+    const name = String(st.name ?? '');
+    const hit = bucketDefs.find((bd) => name === bd.bucket || name.startsWith(bd.prefix));
+    if (hit) {
+      let row = byBucket.get(hit.bucket);
+      if (!row) {
+        row = {
+          label: hit.bucket, names: [], kind: st.kind ?? 'line', heat: st.heat === true,
+          color: st.color ?? null, width: st.width ?? null, style: st.style ?? null, visible: true,
+        };
+        byBucket.set(hit.bucket, row);
+        rows.push(row);
+      }
+      row.names.push(st.name);
+      row.visible = row.visible && st.visible !== false;
+    } else {
+      rows.push({
+        label: st.name, names: [st.name], kind: st.kind ?? 'line', heat: st.heat === true,
+        color: st.color ?? null, width: st.width ?? null, style: st.style ?? null,
+        visible: st.visible !== false,
+      });
+    }
+  }
+  return rows;
+}
+
 
 // ===== js/adapter/front/properties_dialog.js =====
 // PropertiesDialog（adapter/front/properties_dialog.js）— インジケーター・プロパティ ダイアログ DOM。
@@ -3773,7 +4137,10 @@ class PropertiesDialog {
   //   onCancel : () => void         キャンセル/×/背景時（任意）
   // mode: 'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算・params 未反映）。
   //   既定 'a'（従来挙動・単体テスト互換）。'b' では A 方式注記を出さない（実反映されるため）。
-  constructor({ document: doc, def, instance = null, mode = 'a', context = {}, onApply = () => {}, onCancel = () => {} }) {
+  constructor({
+    document: doc, def, instance = null, mode = 'a', context = {},
+    seriesStyles = null, seriesTabs = true, onApply = () => {}, onCancel = () => {},
+  }) {
     this._doc = doc;
     this._def = def;
     this._instance = instance;
@@ -3781,6 +4148,13 @@ class PropertiesDialog {
     // context: computeEnabled の関数述語へ渡す外部状態（例 { timeframe, servedMode }）。
     //   ISSUE-070: mode=sessions×対応tf の解像度グレーアウト判定に timeframe が要る（param 値外）。
     this._context = context || {};
+    // seriesStyles（ISSUE-109）: 実描画中の系列スタイル [{ name, kind, color, width, style, visible }]
+    //   （renderer.getSeriesStyles の戻り）。スタイル/可視性タブの行と初期値の実体。null=未供給
+    //   （後方互換: def.series からの静的フォールバック表示）。
+    this._seriesStyles = Array.isArray(seriesStyles) ? seriesStyles : null;
+    // seriesTabs=false（ISSUE-109・MP 等）: 系列スタイルを持たない指標はスタイル/可視性タブ自体を
+    //   出さない（ダミー行の露出をやめる）。
+    this._seriesTabs = seriesTabs !== false;
     this._onApply = onApply;
     this._onCancel = onCancel;
 
@@ -3882,11 +4256,13 @@ class PropertiesDialog {
     const doc = this._doc;
     const bar = doc.createElement('div');
     bar.className = 'prop-tabs';
-    const tabs = [
-      { key: 'inputs', label: 'パラメーター' },
-      { key: 'style', label: 'スタイル' },
-      { key: 'visibility', label: '可視性' },
-    ];
+    const tabs = this._seriesTabs
+      ? [
+        { key: 'inputs', label: 'パラメーター' },
+        { key: 'style', label: 'スタイル' },
+        { key: 'visibility', label: '可視性' },
+      ]
+      : [{ key: 'inputs', label: 'パラメーター' }];
     this._tabBtns = new Map();
     for (const t of tabs) {
       const btn = doc.createElement('button');
@@ -3919,13 +4295,15 @@ class PropertiesDialog {
 
     this._panes = new Map();
     const inputs = this._buildInputsPane();
-    const style = this._buildStylePane();
-    const visibility = this._buildVisibilityPane();
     this._panes.set('inputs', inputs);
-    this._panes.set('style', style);
-    this._panes.set('visibility', visibility);
-
-    body.append(inputs, style, visibility);
+    body.append(inputs);
+    if (this._seriesTabs) {
+      const style = this._buildStylePane();
+      const visibility = this._buildVisibilityPane();
+      this._panes.set('style', style);
+      this._panes.set('visibility', visibility);
+      body.append(style, visibility);
+    }
     return body;
   }
 
@@ -3935,6 +4313,13 @@ class PropertiesDialog {
     const pane = doc.createElement('div');
     pane.className = 'prop-pane is-active';
     pane.dataset.propPane = 'inputs';
+
+    // A 方式注記はパラメータタブに出す（ISSUE-109 で移設）。スタイル/可視性は applyOptions 直接
+    //   反映のため A/B 両方式で実反映される＝注記の対象はパラメータ値のみになった。
+    const note = this._buildAMethodNote();
+    if (note) {
+      pane.append(note);
+    }
 
     // バリアントセレクタ（複数 variant を持つ指標のみ・global↔robust 等）。
     //   variant 変更は A/B 双方で実描画反映される（事前計算 series が存在・§9.2）。
@@ -4318,85 +4703,172 @@ class PropertiesDialog {
     return wrap;
   }
 
-  // ---- スタイル タブ（SERIES_DEF 単位の色/線幅/線種・最小可・§6.1）------------
+  // ---- スタイル/可視性の行モデル（ISSUE-109）---------------------------------
+  // 行構築の純ロジック（bucket 粒度畳み込み含む）は usecase/buildSeriesStyleRows へ委譲
+  //   （ISSUE-110 🟡-1: 命名規約知識を DOM アダプタに置かない）。本メソッドは表示既定
+  //   （hex 変換・null フォールバック）だけを担う。
+  //   seriesStyles が供給されている場合はそれが実体（空配列＝スタイル編集可能な系列なし）。
+  //   null（未供給・後方互換・SSR/単体テスト）のみ def.series の静的フォールバックへ落ちる。
+  _seriesRows() {
+    if (this._rows) {
+      return this._rows;
+    }
+    let rows;
+    if (this._seriesStyles) {
+      rows = buildSeriesStyleRows(this._def, this._seriesStyles).map((r) => ({
+        ...r,
+        color: toHex(r.color ?? '#2962ff'),
+        width: r.width ?? 1,
+        style: r.style ?? 'solid',
+      }));
+    } else {
+      rows = (this._def.series ?? []).map((s, idx) => ({
+        label: s.seriesName ?? (s.dynamic ? '(動的系列)' : `系列${idx + 1}`),
+        names: s.seriesName ? [s.seriesName] : [],
+        kind: s.kind ?? 'line',
+        heat: false,
+        color: toHex(s.colorRule ?? '#2962ff'),
+        width: s.width ?? 1,
+        style: s.style ?? 'solid',
+        visible: true,
+      }));
+    }
+    this._rows = rows;
+    return rows;
+  }
+
+  // ---- スタイル タブ（実描画系列単位の色/線幅/線種・§6.1）--------------------
   _buildStylePane() {
     const doc = this._doc;
     const pane = doc.createElement('div');
     pane.className = 'prop-pane';
     pane.dataset.propPane = 'style';
 
-    const note = this._buildAMethodNote();
-    if (note) {
-      pane.append(note);
-    }
-
     this._styleState = [];
-    const series = this._def.series ?? [];
-    series.forEach((s, idx) => {
+    const rows = this._seriesRows();
+    if (rows.length === 0) {
+      const empty = doc.createElement('div');
+      empty.className = 'prop-style-empty';
+      empty.textContent = 'この指標にスタイル編集可能な系列はありません。';
+      pane.append(empty);
+      return pane;
+    }
+    for (const r of rows) {
       const row = doc.createElement('div');
       row.className = 'prop-style-row';
 
       const name = doc.createElement('span');
       name.className = 'prop-style-name';
-      name.textContent = s.seriesName ?? (s.dynamic ? '(動的系列)' : `系列${idx + 1}`);
+      name.textContent = r.label;
+      row.append(name);
 
-      const color = doc.createElement('input');
-      color.type = 'color';
-      color.className = 'prop-input prop-input-color';
-      color.value = toHex(s.colorRule ?? '#2962ff');
-
-      const width = doc.createElement('input');
-      width.type = 'number';
-      width.min = '1';
-      width.step = '1';
-      width.className = 'prop-input prop-input-number';
-      width.value = String(s.width ?? 1);
-
-      const style = doc.createElement('select');
-      style.className = 'prop-input prop-input-select';
-      for (const st of ['solid', 'dotted', 'dashed']) {
-        const o = doc.createElement('option');
-        o.value = st;
-        o.textContent = st;
-        if ((s.style ?? 'solid') === st) o.selected = true;
-        style.append(o);
+      // ISSUE-112（ユーザー裁定: ヒート絶対優先）: バー別ヒート配色の histogram は色も編集対象外。
+      //   色ピッカーを出さず「ヒート配色（自動）」と明示する（機能しない設定項目を露出しない）。
+      let color = null;
+      if (r.kind === 'histogram' && r.heat) {
+        const heatNote = doc.createElement('span');
+        heatNote.className = 'prop-style-heat';
+        heatNote.textContent = 'ヒート配色（自動）';
+        row.append(heatNote);
+      } else {
+        color = doc.createElement('input');
+        color.type = 'color';
+        color.className = 'prop-input prop-input-color';
+        color.value = r.color;
+        row.append(color);
       }
 
-      const state = { seriesName: s.seriesName, color, width, style };
-      this._styleState.push(state);
-      row.append(name, color, width, style);
+      // ISSUE-111: 線幅/線種はライン系列のみ。histogram（棒グラフ）は色のみ編集可
+      //   （renderer.applySeriesStyle も histogram には色しか適用しない＝描画種別と設定項目を一致）。
+      let width = null;
+      let style = null;
+      if (r.kind !== 'histogram') {
+        width = doc.createElement('input');
+        width.type = 'number';
+        width.min = '1';
+        width.step = '1';
+        width.className = 'prop-input prop-input-number';
+        width.value = String(r.width);
+
+        style = doc.createElement('select');
+        style.className = 'prop-input prop-input-select';
+        for (const st of ['solid', 'dotted', 'dashed']) {
+          const o = doc.createElement('option');
+          o.value = st;
+          o.textContent = st;
+          if (r.style === st) o.selected = true;
+          style.append(o);
+        }
+        // option 追加後に value を明示設定（実 DOM で選択を確定・DOM スタブでも value を保証）。
+        style.value = r.style;
+        row.append(width, style);
+      }
+
+      // initial: OK 時の差分判定基準（変更された行×フィールドのみ patch へ載せる）。
+      this._styleState.push({
+        names: r.names, color, width, style,
+        initial: { color: r.color, width: String(r.width), style: r.style },
+      });
       pane.append(row);
-    });
+    }
     return pane;
   }
 
-  // ---- 可視性 タブ（系列単位の表示/非表示・最小可・§6.2）---------------------
+  // ---- 可視性 タブ（実描画系列単位の表示/非表示・§6.2）-----------------------
   _buildVisibilityPane() {
     const doc = this._doc;
     const pane = doc.createElement('div');
     pane.className = 'prop-pane';
     pane.dataset.propPane = 'visibility';
 
-    const visNote = this._buildAMethodNote();
-    if (visNote) {
-      pane.append(visNote);
-    }
-
     this._visibilityState = [];
-    const series = this._def.series ?? [];
-    series.forEach((s, idx) => {
+    for (const r of this._seriesRows()) {
       const row = doc.createElement('label');
       row.className = 'prop-visibility-row';
       const cb = doc.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = true;
+      cb.checked = r.visible;
       const name = doc.createElement('span');
-      name.textContent = s.seriesName ?? (s.dynamic ? '(動的系列)' : `系列${idx + 1}`);
+      name.textContent = r.label;
       row.append(cb, name);
-      this._visibilityState.push({ seriesName: s.seriesName, checkbox: cb });
+      this._visibilityState.push({ names: r.names, checkbox: cb, initial: r.visible });
       pane.append(row);
-    });
+    }
     return pane;
+  }
+
+  // OK 時のスタイル/可視性差分を { seriesName: { color?, width?, style?, visible? } } に集約する。
+  //   変更が無ければ空オブジェクト。行が bucket 粒度のときは全構成系列へ展開する。
+  _collectStyleChanges() {
+    const patch = {};
+    const put = (names, fields) => {
+      for (const n of names) {
+        patch[n] = { ...(patch[n] ?? {}), ...fields };
+      }
+    };
+    for (const s of this._styleState ?? []) {
+      const fields = {};
+      // heat 行は色入力を生成しない（null・ISSUE-112）＝色は差分対象外（ヒート絶対優先）。
+      if (s.color && s.color.value !== s.initial.color) {
+        fields.color = s.color.value;
+      }
+      // histogram 行は width/style 入力を生成しない（null・ISSUE-111）＝色のみ差分対象。
+      if (s.width && s.width.value !== s.initial.width && s.width.value !== '') {
+        fields.width = Number(s.width.value);
+      }
+      if (s.style && s.style.value !== s.initial.style) {
+        fields.style = s.style.value;
+      }
+      if (Object.keys(fields).length > 0) {
+        put(s.names, fields);
+      }
+    }
+    for (const v of this._visibilityState ?? []) {
+      if (v.checkbox.checked !== v.initial) {
+        put(v.names, { visible: v.checkbox.checked });
+      }
+    }
+    return patch;
   }
 
   // A 方式の可動差を明示する注記要素（§9.3・H-1・サイレント不一致を作らない）。
@@ -4569,9 +5041,12 @@ class PropertiesDialog {
     }
     const values = { ...this._values };
     const variant = this._variant;
+    // ISSUE-109: スタイル/可視性タブの変更差分を収集（変更なしは空オブジェクト）。
+    const styles = this._collectStyleChanges();
     this.close();
     // variant は params とは別経路（recompute の variant 引数）で渡す。
-    this._onApply(values, variant);
+    //   styles は第3引数（後方互換: 旧 onApply(values, variant) 消費者は無視して従来動作）。
+    this._onApply(values, variant, { styles });
   }
 
   _onCancelClick() {
@@ -5054,6 +5529,9 @@ class MarketProfileController {
       def,
       instance: { ...inst, params: currentParams },
       mode: host._mode,
+      // ISSUE-109: MP は line/histogram 系列を持たない（TPO 描画は primitive・SeriesDef は
+      //   ダミー 1 件）ため、機能しないスタイル/可視性タブ自体を出さない。
+      seriesTabs: false,
       // ISSUE-070: MP 解像度パラメータのグレーアウト判定に現 timeframe と served/A方式を渡す
       //   （tf-period が日別列を描くとき resmode/bins/range は無効＝GRID_W 固定のため）。
       context: { timeframe: host._timeframe, servedMode: host._mode },
@@ -5132,6 +5610,12 @@ class TimeframeController {
     }
     host._timeframe = timeframe;
     this.syncButtons();
+    // ISSUE-113（ユーザー裁定）: 時間足切替では手動価格スケール（軸ドラッグ/ホイール拡大/縦パン）を
+    //   自動スケールへリセットする（前の足の拡大レンジを持ち越さない）。手動スケールの解除点は
+    //   「価格軸 dblclick または時間足切替」となる。renderer 非対応（後方互換 Fake/SSR）は no-op。
+    if (typeof host._renderer?.resetPriceZoom === 'function') {
+      host._renderer.resetPriceZoom();
+    }
     // バッチ全体（candles 取得 await＋全指標再計算）を競合ガードで包む。これがないと
     //   _loadCandles の await 中は isRecomputing()=false となり、その隙にライブ tick が
     //   割り込んで二重 compute する（🟡-2）。最外で increment し finally で確実に解除する。
@@ -5160,10 +5644,21 @@ class TimeframeController {
   }
 
   // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。
+  //   ISSUE-117: ドロップダウン項目も [data-timeframe] を持つため同ループで同期される。
+  //   トリガーラベル（timeframeMenuLabel）は現在足要素の表記（例「日」）へ更新する。
   syncButtons() {
     const host = this._host;
+    let currentLabel = null;
     for (const b of host._el?.timeframeBtns ?? []) {
-      b.classList.toggle('is-active', b.dataset.timeframe === host._timeframe);
+      const active = b.dataset.timeframe === host._timeframe;
+      b.classList.toggle('is-active', active);
+      if (active && currentLabel === null && typeof b.textContent === 'string') {
+        currentLabel = b.textContent;
+      }
+    }
+    const label = host._el?.timeframeMenuLabel;
+    if (label && currentLabel !== null) {
+      label.textContent = currentLabel;
     }
   }
 
@@ -5435,6 +5930,34 @@ class IndicatorController {
     for (const h of hlines) {
       this._renderer.renderHorizontal(instanceId, h.lines ?? []);
     }
+    // ISSUE-109: 保存済みスタイル上書きを再適用する（redraw/restore/時間足切替で系列は
+    //   ペイロード既定色で再生成されるため、描画の最後に毎回上書きし直す＝永続反映）。
+    this._applyStoredStyles(instanceId);
+  }
+
+  // AppliedInstance.styles（系列名 -> {color?,width?,style?,visible?}）を renderer へ適用する。
+  //   未保存（null/空）や renderer 非対応（後方互換 Fake/SSR）は no-op。
+  //   ISSUE-110 🔴-1: 適用前に現在の実系列名集合と突合し、実系列に存在しない stale キー
+  //   （tgp の q_low/q_high や profit_band の probabilities 変更で系列が改名された等）を
+  //   state から剪定する（無反映キーの永続蓄積と params 復帰時の意図せぬ復活を遮断）。
+  //   実系列集合が取得不能・空のときは判定不能のため剪定しない（reconcile 側で防御）。
+  _applyStoredStyles(instanceId) {
+    const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+    if (!inst || !inst.styles || typeof this._renderer.applySeriesStyle !== 'function') {
+      return;
+    }
+    if (typeof this._renderer.getSeriesStyles === 'function') {
+      const currentNames = this._renderer.getSeriesStyles(instanceId).map((m) => m.name);
+      this._state = reconcileSeriesStyles(this._state, instanceId, currentNames);
+    }
+    const reconciled = this._state.applied.find((i) => i.instanceId === instanceId);
+    const styles = reconciled && reconciled.styles;
+    if (!styles) {
+      return;
+    }
+    for (const [name, patch] of Object.entries(styles)) {
+      this._renderer.applySeriesStyle(instanceId, name, patch);
+    }
   }
 
   // =========================================================================
@@ -5581,8 +6104,14 @@ class IndicatorController {
     this._recomputeDepth += 1;
     try {
       const result = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
-      this._state = result.state;
-      if (!result.accepted) {
+      // 競合削除ガード（ISSUE-105 🟡-2）: recompute の await 中に凡例 close（removeInstance）で
+      //   当該インスタンスが state から除去されると、result.state は除去前スナップショット由来のため
+      //   そのまま代入すると除去済みインスタンスが「復活」する。これがフェーズ2 で再描画されると
+      //   凡例行の無い残留系列（ゾンビペイン）＋永続化汚染を生む。await 後の live state で在席を
+      //   確認し、除去済みなら復活させず（result.state から当該のみ除去）accepted:false を返す。
+      const removedDuringAwait = !this._state.applied.some((i) => i.instanceId === instanceId);
+      this._state = removedDuringAwait ? facadeRemove(result.state, instanceId) : result.state;
+      if (removedDuringAwait || !result.accepted) {
         return { instanceId, accepted: false };
       }
       const inst = this._state.applied.find((i) => i.instanceId === instanceId);
@@ -5713,6 +6242,15 @@ class IndicatorController {
       return;
     }
     for (const job of jobs) {
+      // 競合ガード（ISSUE-105 🟡-2）: フェーズ1 の await 中に凡例 close（removeInstance）で
+      //   当該インスタンスが state から除去されていた場合、accepted 済み job を _renderInstance で
+      //   描画すると renderer に系列/ペインが再生成され、凡例行の無い「ゾンビペイン」が残留し
+      //   ライブ更新を受け続ける。描画直前に state 在席を確認し、除去済みなら描画せず（保険で
+      //   renderer からも除く）。通常時（削除なし）は必ず在席＝従来挙動と不変。
+      if (!this._state.applied.some((i) => i.instanceId === job.instanceId)) {
+        this._renderer.remove(job.instanceId);
+        continue;
+      }
       this._renderInstance(job);
     }
     this._persistAll();
@@ -5875,6 +6413,7 @@ class IndicatorController {
       generation: i.generation,
       seq: i.seq,
       createdAt: i.createdAt,
+      styles: i.styles ?? null,
     };
   }
 
@@ -5896,6 +6435,8 @@ class IndicatorController {
       tabs: doc.querySelectorAll('[data-tab]'),
       cats: doc.querySelectorAll('[data-category]'),
       timeframeBtns: doc.querySelectorAll('[data-timeframe]'),
+      // ISSUE-117: 時間足ドロップダウンのトリガーラベル（現在足の表記を syncButtons が反映）。
+      timeframeMenuLabel: doc.getElementById('tf-menu-label'),
       legend: doc.getElementById('legend'),
     };
     const e = this._el;
@@ -6032,16 +6573,44 @@ class IndicatorController {
       def,
       instance: instanceForDialog,
       mode: this._mode,
-      onApply: (values, variant) => {
-        // variant 変更は実描画反映（事前計算 series が存在・§9.2）。同一 variant の
-        //   場合は null を渡し現 variant を維持。任意パラメータ変更は A 方式では未反映
-        //   （ダイアログ内に注記済み・H-1）。
-        const nextVariant = variant && variant !== inst.variant ? variant : null;
-        this.recomputeInstance(inst.instanceId, nextVariant, values);
-      },
+      // ISSUE-109: スタイル/可視性タブの行と初期値は実描画系列（renderer が保持する現スタイル）から
+      //   構築する（カタログ SeriesDef はスタイル既定を持たない＝プレースホルダ表示の是正）。
+      //   getSeriesStyles 未実装の renderer（後方互換 Fake/SSR）は null＝dialog の静的フォールバック
+      //   （ISSUE-110 🔵-1: applySeriesStyle 側と同じ typeof ガードへ統一）。
+      seriesStyles: typeof this._renderer.getSeriesStyles === 'function'
+        ? this._renderer.getSeriesStyles(inst.instanceId) : null,
+      onApply: (values, variant, extra) => this._applyDialogResult(inst, currentParams, values, variant, extra),
       onCancel: () => {},
     });
     dialog.open();
+  }
+
+  // ダイアログ OK の適用（_onGear から抽出・ISSUE-110）。
+  //   ・variant 変更は実描画反映（事前計算 series が存在・§9.2）。同一 variant は null＝現状維持。
+  //   ・スタイル差分は state へ先にマージし、recompute 後の redraw（_draw→_applyStoredStyles）で
+  //     適用される（仕様 §6.1 の適用順 recompute→スタイル適用）。
+  //   ・ISSUE-110 🟡-2: params/variant が無変更で styles のみ変更の場合は recompute（/compute 往復＋
+  //     系列 remove/redraw）を省略し、applySeriesStyle 直適用＋persist の高速経路を通す
+  //     （§6.1「スタイル変更は描画オプションのみで再計算不要」）。
+  _applyDialogResult(inst, currentParams, values, variant, extra) {
+    const nextVariant = variant && variant !== inst.variant ? variant : null;
+    const patch = extra && extra.styles;
+    const hasStyles = !!(patch && Object.keys(patch).length > 0);
+    if (hasStyles) {
+      this._state = setSeriesStyles(this._state, inst.instanceId, patch);
+    }
+    if (hasStyles && !nextVariant && this._sameParams(values, currentParams)) {
+      this._applyStoredStyles(inst.instanceId);
+      this._persistAll();
+      return Promise.resolve(true);
+    }
+    return this.recomputeInstance(inst.instanceId, nextVariant, values);
+  }
+
+  // params の等値判定（キー順・参照に依らない深い比較。FLOAT_LIST 等の配列値も対象）。
+  _sameParams(a, b) {
+    const norm = (o) => JSON.stringify(Object.keys(o ?? {}).sort().map((k) => [k, o[k]]));
+    return norm(a) === norm(b);
   }
 
   // variant トグル/最小再計算（DOM 不在時のフォールバック・従来挙動を保持）。
@@ -6127,8 +6696,18 @@ class LiveUpdater {
     }
     await this._controller.recomputeAllApplied({ mode: 'latest' });
     const candles = await this._loadCandles(this._datasetRef, this._getTimeframe());
+    if (!candles || candles.length === 0) {
+      return;
+    }
+    // 欠落補完（ISSUE-106）: 休止中に確定足を取りこぼしていれば renderer が setData 全置換で
+    //   再同期する。suppressPriceUpdate でも実施する（player は現在足のみの書き手であり、
+    //   過去確定足の補完は抑止対象外。現在足の巻き戻し防止は renderer 側で保証）。
+    const resynced = typeof this._renderer.resyncMissedCandles === 'function'
+      ? this._renderer.resyncMissedCandles(candles)
+      : false;
     // 価格の最新足反映。suppressPriceUpdate 時は skip（player が唯一の書き手＝巻き戻し防止）。
-    if (candles && candles.length > 0 && !this._suppressPriceUpdate) {
+    //   再同期実施時は末尾も反映済みのため差分更新は不要。
+    if (!resynced && !this._suppressPriceUpdate) {
       this._renderer.updateLastCandle(candles[candles.length - 1]);
     }
   }
@@ -8735,6 +9314,76 @@ class MarketProfileActor {
 }
 
 
+// ===== js/adapter/front/chart_bootstrap.js =====
+// chart_bootstrap.js — チャート土台の共有生成ヘルパ（ISSUE-123・present/replay 両アプリ共有）。
+//
+// 設計入力（値渡し是正）: composition root（present 622 行 / replay 293 行）に、lwc チャート生成
+//   （createChart オプション一式＋メインローソク系列）と pane 高供給（updatePaneHeight）が
+//   複製（値渡し）されており、present 側の改善（クロスヘア Normal 化・現在値ライン固定色
+//   ISSUE-084）が replay に未伝播となるドリフトが実測された。本ヘルパへ単一ソース化し、
+//   両 composition root は呼ぶだけにする（合成ルート固有の配線は各ルートに残す＝責務不変）。
+//
+// 責務: lwc の createChart / addSeries(CandlestickSeries) / timeScale().height() の呼び出しを
+//   本所へ閉じる（composition root から upstream 生成 API の重複参照を除去）。renderer 以降の
+//   系列操作 API 隔離は従来どおり ChartRenderer が担う。
+
+// チャート＋メインローソク系列を生成して返す（present を正とした共通オプション）。
+//   - crosshair Normal(0): Magnet スナップ無効（ユーザー要望・enum 無い環境向け 0 フォールバック）。
+//   - 現在値ライン: 固定橙・常時表示（ISSUE-084。日別プロファイルのローソク透明化でも消えない）。
+function createChartWithMainSeries({ lwc, container }) {
+  // v5: background は { type: ColorType.Solid, color }、panes のリサイズ separator は既定 ON。
+  const chart = lwc.createChart(container, {
+    layout: {
+      background: { type: lwc.ColorType.Solid, color: '#131722' },
+      textColor: '#d1d4dc',
+      // ペイン境界のドラッグ・リサイズ（separator）を有効化（高さ調整・機能④）。
+      panes: { enableResize: true, separatorColor: '#2a2e39', separatorHoverColor: 'rgba(178,181,189,0.2)' },
+    },
+    grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
+    // クロスヘアを Normal（自由追従）に。既定 Magnet(1) は水平線を最寄り足の価格へスナップさせるため、
+    //   カーソル位置どおりに動かしたいという要望で Normal(0) に変更（enum 無い環境向けに 0 フォールバック）。
+    crosshair: { mode: (lwc.CrosshairMode && lwc.CrosshairMode.Normal) || 0 },
+    rightPriceScale: { borderColor: '#2a2e39' },
+    // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
+    timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
+    autoSize: true,
+  });
+  // v5: addCandlestickSeries は廃止。addSeries(CandlestickSeries, ...) でメイン pane(0) に追加。
+  // ISSUE-084: 現在値ラインは固定色（橙）で常時表示する。lwc 既定の priceLineColor=''（バー色追従）は
+  //   日別プロファイルのローソク透明化（setCandleTransparency）で線ごと消えるため、candle 色に依存しない
+  //   固定色を明示する（POC 赤・POC* 黄・カーソル青と重ならない配色）。lastValueVisible で軸ラベルも表示。
+  const mainSeries = chart.addSeries(lwc.CandlestickSeries, {
+    upColor: '#26a69a', downColor: '#ef5350',
+    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    priceLineVisible: true,
+    priceLineColor: '#ff9800',
+    priceLineWidth: 1,
+    lastValueVisible: true,
+  });
+  return { chart, mainSeries };
+}
+
+// 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）の供給関数を作る。
+//   coordinateToPrice(paneHeight) で価格レンジ下端を読むために必要。container/timeScale 非対応
+//   （SSR/テスト）では設定できないため no-op（handlePriceWheel は pane 高未供給時に安全に false）。
+//   リサイズで container 高が変わるため、呼び出し側（wheel 発火時等）が随時再実行して追随する。
+function makeUpdatePaneHeight({ container, chart, renderer }) {
+  return () => {
+    if (typeof renderer.setPaneHeight !== 'function') {
+      return;
+    }
+    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
+    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
+    const paneHeight = ch - th;
+    if (paneHeight > 0) {
+      renderer.setPaneHeight(paneHeight);
+    }
+  };
+}
+
+
 // ===== js/adapter/front/chart_interaction_controller.js =====
 // ChartInteractionController（adapter/front/chart_interaction_controller.js）—
 //   チャートコンテナのポインタ/ホイール操作（振る舞い）を composition root から分離したアダプター。
@@ -8751,14 +9400,20 @@ class MarketProfileActor {
 //   - 依存（container / renderer / getController / updatePaneHeight）は constructor 注入。
 //   - getController は controller を遅延参照する（composition root では controller 代入前に install するため、
 //     () => controller のクロージャで呼出時点の controller を読む＝旧実装の外側 let クロージャと同一挙動）。
+//   - isVerticalPanBlocked（任意・ISSUE-123）: 縦パンの開始を外部条件でブロックする述語（() => bool）。
+//     replay_ui が「MP リプレイモード中は本体縦パンを開始しない」（旧・独立コピーの _isReplayOn ゲート）を
+//     注入するために使う。未注入＝ブロックなし（present は従来どおり）。本オプション化により両アプリが
+//     同一実体（symlink 単一ソース）を参照できる＝値渡しコピーの廃止。
 //   - container 不在/pointer 非対応（SSR/テスト）では install が no-op（防御）。
 
 class ChartInteractionController {
-  constructor({ container, renderer, getController, updatePaneHeight }) {
+  constructor({ container, renderer, getController, updatePaneHeight, isVerticalPanBlocked }) {
     this._container = container;
     this._renderer = renderer;
     this._getController = getController;
     this._updatePaneHeight = updatePaneHeight;
+    this._isVerticalPanBlocked = typeof isVerticalPanBlocked === 'function'
+      ? isVerticalPanBlocked : () => false;
   }
 
   // container の wheel・dblclick・pointerdown/move/up/leave（本体縦パン）を配線する。
@@ -8803,16 +9458,19 @@ class ChartInteractionController {
         }
       });
 
-      // 本体ドラッグの縦成分で価格パン（上下移動）を **価格ズーム中（override 有効時）に限り** 行う。
-      //   ・全体表示（自動スケール）では縦パンしない＝空白が出て拡大縮小に見える不具合を出さない（撤去理由）。
-      //   ・価格軸ホイールズーム後（renderer.isPriceZoomed()）は縦パンを許可＝拡大した価格帯の外も辿れる
-      //     （ユーザFB「その価格帯以外確認できないのは問題」への対応）。横は lwc の時間パンに委ねる。
+      // 本体ドラッグの縦成分で価格パン（上下移動）を **常時** 行う（ISSUE-108・ユーザー裁定）。
+      //   ・旧仕様の「価格ズーム中限定」ゲートは、旧 override 実装（provider 差し替え）で全体表示の
+      //     縦パンが空白露出を起こした時代の回避策。ネイティブ setVisibleRange 置換（6a61c54）で
+      //     発生機構が消滅したため撤去した。全体表示からの縦ドラッグは初回 panPriceByPixels が
+      //     手動スケール（autoScale=OFF）へ遷移させるだけで、lwc が表示を戻すことはない。
+      //   ・純横ドラッグ（dy=0）は panPriceByPixels 内で no-op＝自動スケール維持。横は lwc の時間パン。
+      //   ・自動スケール復帰は価格軸 dblclick（resetPriceZoom）のみ（既存仕様のまま）。
       //   価格軸上は対象外（軸は lwc ネイティブ）。
       let vpanActive = false;
       let lastVpanY = 0;
       container.addEventListener('pointerdown', (e) => {
-        if (e.button !== 0) {
-          return;
+        if (this._isVerticalPanBlocked() || e.button !== 0) {
+          return; // 外部ブロック述語（replay の MP リプレイ中ゲート等・ISSUE-123）または非左ボタン。
         }
         if (renderer.isOverPriceAxis(containerXY(e).x)) {
           return; // 価格軸上は lwc ネイティブのスケールに委ねる。
@@ -8830,8 +9488,8 @@ class ChartInteractionController {
         }
         const dy = e.clientY - lastVpanY;
         lastVpanY = e.clientY;
-        // ★価格ズーム中のみ縦パン（全体表示では価格を触らず自動スケール維持）。
-        if (typeof renderer.isPriceZoomed === 'function' && renderer.isPriceZoomed()) {
+        // ★常時縦パン（ISSUE-108）。dy=0（純横）は価格を触らない＝自動スケール維持。
+        if (dy !== 0) {
           updatePaneHeight();
           renderer.panPriceByPixels(dy);
         }
@@ -8839,6 +9497,214 @@ class ChartInteractionController {
       const endVpan = () => { vpanActive = false; };
       container.addEventListener('pointerup', endVpan);
       container.addEventListener('pointerleave', endVpan);
+    }
+  }
+}
+
+
+// ===== js/adapter/front/scroll_to_latest_button.js =====
+// scroll_to_latest_button.js — 「最新のバーまでスクロール」ボタン（ISSUE-116・DOM アダプター）。
+//
+// 設計入力: ユーザー指示（2026-07-18）「過去に遡って現在に戻りたい場合の UI を追加。常時表示ではなく、
+//   特定の範囲にマウスオーバーされたときに表示する」＝ TradingView の » ボタン相当（ss2026071891636.jpg）。
+//
+// 仕様:
+//   - ホットゾーン: チャート右 HOT_ZONE_X_FRAC（20%）× 下 HOT_ZONE_Y_FRAC（50%）の領域。
+//   - 表示条件: ホットゾーン内へのポインタホバー かつ 最新足が可視範囲外（renderer.isLatestBarVisible()
+//     が false）。最新足が見えている間はホバーしても出さない（戻る操作が不要なため）。
+//   - クリック: renderer.scrollToRealTime()（常設右余白 rightOffset を尊重して最新足へ復帰）→非表示。
+//   - pointerleave（チャート外へ退出）: 非表示。
+//
+// 責務（SRP）: ボタン DOM の生成・表示制御・クリック委譲に限定。lwc へは触れない（renderer の
+//   isLatestBarVisible / scrollToRealTime のみに依存＝DIP）。container/doc 不在（SSR/テスト）は no-op。
+
+const HOT_ZONE_X_FRAC = 0.8; // x >= width×0.8（右 20%）でホットゾーン
+const HOT_ZONE_Y_FRAC = 0.5; // y >= height×0.5（下半分）でホットゾーン
+
+class ScrollToLatestButton {
+  // { container, renderer, document }
+  //   container: チャートコンテナ要素（pointer イベント購読・ボタンの親）。
+  //   renderer : ChartRenderer（isLatestBarVisible / scrollToRealTime を消費）。
+  constructor({ container, renderer, document: doc }) {
+    this._container = container;
+    this._renderer = renderer;
+    this._doc = doc;
+    this._btn = null;
+  }
+
+  install() {
+    const doc = this._doc;
+    const container = this._container;
+    if (!doc || typeof doc.createElement !== 'function'
+        || !container || typeof container.addEventListener !== 'function'
+        || typeof container.appendChild !== 'function') {
+      return; // DOM 不在（SSR/テスト最小 fake）は no-op（防御）。
+    }
+    const btn = doc.createElement('button');
+    btn.type = 'button';
+    btn.className = 'scroll-latest-btn is-hidden';
+    btn.textContent = '»';
+    btn.title = '最新のバーまでスクロール';
+    btn.addEventListener('click', () => {
+      if (typeof this._renderer.scrollToRealTime === 'function') {
+        // 速度 x2（ユーザー指示 2026-07-18）。ライブ追従の catch-up は従来速度のまま。
+        this._renderer.scrollToRealTime({ speed: 2 });
+      }
+      this._setVisible(false); // 復帰後は不要（最新足が可視になる）。
+    });
+    container.appendChild(btn);
+    this._btn = btn;
+
+    container.addEventListener('pointermove', (e) => this._onPointerMove(e));
+    container.addEventListener('pointerleave', () => this._setVisible(false));
+  }
+
+  _onPointerMove(e) {
+    this._setVisible(this._inHotZone(e) && !this._isLatestVisible());
+  }
+
+  _inHotZone(e) {
+    const rect = typeof this._container.getBoundingClientRect === 'function'
+      ? this._container.getBoundingClientRect() : null;
+    if (!rect || !(rect.width > 0) || !(rect.height > 0)) {
+      return false;
+    }
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    return x >= rect.width * HOT_ZONE_X_FRAC && y >= rect.height * HOT_ZONE_Y_FRAC;
+  }
+
+  _isLatestVisible() {
+    // isLatestBarVisible 非提供（後方互換 Fake）は true＝最新扱い（ボタンを出さない安全側）。
+    return typeof this._renderer.isLatestBarVisible === 'function'
+      ? !!this._renderer.isLatestBarVisible()
+      : true;
+  }
+
+  _setVisible(on) {
+    const btn = this._btn;
+    if (!btn || !btn.classList || typeof btn.classList.toggle !== 'function') {
+      return;
+    }
+    btn.classList.toggle('is-hidden', !on);
+  }
+}
+
+
+// ===== js/adapter/front/timeframe_menu.js =====
+// timeframe_menu.js — 時間足ドロップダウン（ISSUE-117/122/123・DOM アダプター・両アプリ共有）。
+//
+// 設計入力: ユーザー指示（2026-07-18）「時間足を選択できる UI を追加」＝ TradingView の
+//   時間足カテゴリメニュー相当（ss2026071894749.jpg）。
+//
+// ISSUE-123（値渡し是正）: メニュー DOM（トリガー＋カテゴリ＋項目）は本コンポーネントが生成する。
+//   旧実装は index.html 側に項目 DOM を直書きしており、present/replay の 2 つの index.html へ
+//   複製（値渡し）されて時間足集合の二重管理が生じていた。現方式は index.html に空マウント
+//   `<div class="tf-menu" id="tf-menu"></div>` のみを置き、項目集合は groups 注入（既定＝present の
+//   9 足）で単一ソース化する。replay は対応 8 足（30m なし）を composition root から注入する。
+//
+// 責務（SRP）: メニュー DOM 生成と開閉（トリガークリック・項目選択後クローズ・外側クリッククローズ）。
+//   時間足の選択実行・active/トリガーラベル同期は既存機構に委譲する＝項目は data-timeframe を持ち、
+//   IndicatorController.bind() の一括配線と TimeframeController.syncButtons() に乗る
+//   （本コンポーネントは controller を知らない・DIP）。install は controller.bind() より前
+//   （bootstrap 内）に呼ばれる前提（bind が [data-timeframe] を収集するため）。
+//   DOM 不在（SSR/テスト）は no-op。
+
+// 既定の時間足メニュー（present＝バックエンド対応 9 足）。サーバ TIMEFRAME_RULES と一致させる。
+const DEFAULT_GROUPS = [
+  { cat: '分', items: [['1m', '1分'], ['5m', '5分'], ['15m', '15分'], ['30m', '30分']] },
+  { cat: '時間', items: [['1h', '1時間'], ['4h', '4時間']] },
+  { cat: '日', items: [['1D', '日'], ['1W', '週'], ['1M', '月']] },
+];
+
+class TimeframeMenu {
+  // { document, groups }（マウントは id で解決: #tf-menu（空 div）。groups 省略＝present 既定 9 足）。
+  constructor({ document: doc, groups } = {}) {
+    this._doc = doc;
+    this._groups = Array.isArray(groups) && groups.length > 0 ? groups : DEFAULT_GROUPS;
+    this._pop = null;
+  }
+
+  install() {
+    const doc = this._doc;
+    if (!doc || typeof doc.getElementById !== 'function' || typeof doc.createElement !== 'function') {
+      return; // DOM 不在（SSR/テスト最小 fake）は no-op（防御）。
+    }
+    const mount = doc.getElementById('tf-menu');
+    if (!mount || typeof mount.appendChild !== 'function') {
+      return;
+    }
+
+    // トリガー（現在足ラベルは TimeframeController.syncButtons が #tf-menu-label へ反映）。
+    const trigger = doc.createElement('button');
+    trigger.type = 'button';
+    trigger.id = 'tf-menu-trigger';
+    trigger.className = 'tb-interval tf-menu-trigger';
+    trigger.title = '時間足を選択';
+    const label = doc.createElement('span');
+    label.id = 'tf-menu-label';
+    const caret = doc.createElement('span');
+    caret.className = 'tf-menu-caret';
+    caret.textContent = '▾';
+    trigger.append(label, caret);
+
+    // ポップ（カテゴリ見出し＋項目）。項目は data-timeframe を持ち bind()/syncButtons に乗る。
+    const pop = doc.createElement('div');
+    pop.id = 'tf-menu-pop';
+    pop.className = 'tf-menu-pop is-hidden';
+    for (const g of this._groups) {
+      const cat = doc.createElement('div');
+      cat.className = 'tf-menu-cat';
+      cat.textContent = g.cat;
+      pop.append(cat);
+      for (const [tf, text] of g.items) {
+        const item = doc.createElement('button');
+        item.type = 'button';
+        item.className = 'tf-menu-item';
+        item.dataset.timeframe = tf;
+        item.textContent = text;
+        pop.append(item);
+      }
+    }
+
+    mount.appendChild(trigger);
+    mount.appendChild(pop);
+    this._pop = pop;
+
+    trigger.addEventListener('click', (e) => {
+      if (e && typeof e.stopPropagation === 'function') {
+        e.stopPropagation(); // document の外側クリッククローズに拾わせない。
+      }
+      this._toggle();
+    });
+    // 項目クリック: 選択自体は bind() の data-timeframe 配線が行う。ここでは閉じるだけ。
+    pop.addEventListener('click', (e) => {
+      const t = e && e.target;
+      if (t && t.dataset && t.dataset.timeframe) {
+        this._setOpen(false);
+      }
+    });
+    // 外側クリックで閉じる（メニュー内クリックは pop/trigger 側で stopPropagation/処理済み）。
+    if (typeof doc.addEventListener === 'function') {
+      doc.addEventListener('click', () => this._setOpen(false));
+    }
+    pop.addEventListener('pointerdown', (e) => {
+      if (e && typeof e.stopPropagation === 'function') {
+        e.stopPropagation();
+      }
+    });
+  }
+
+  _toggle() {
+    const pop = this._pop;
+    const isOpen = !!(pop.classList && pop.classList.contains && !pop.classList.contains('is-hidden'));
+    this._setOpen(!isOpen);
+  }
+
+  _setOpen(on) {
+    const pop = this._pop;
+    if (pop && pop.classList && typeof pop.classList.toggle === 'function') {
+      pop.classList.toggle('is-hidden', !on);
     }
   }
 }
@@ -8854,7 +9720,9 @@ class ChartInteractionController {
 //       ボタン点灯。
 //   - ANALYSIS（分析モード）: LiveUpdater.stop()＋右端追従なし＋背景 tint で状態明示。ボタン消灯。
 //       サーバ watch は継続するため、再FOLLOW で catch-up（scrollToRealTime）できる。
-//   - 自動遷移: 可視範囲購読で右端離脱→ANALYSIS／右端復帰→FOLLOW。手動ボタンでも切替。
+//   - 切替は**ライブボタンのクリックのみ**（ISSUE-118 ユーザー裁定 2026-07-18）。旧仕様の自動遷移
+//     （可視範囲購読の右端離脱→ANALYSIS／右端復帰→FOLLOW・EPS/抑制機構つき）は削除した。
+//     過去へスクロールしてもモード・背景は変わらず、再FOLLOW クリックで catch-up scroll する。
 //   - A方式（mode!=='b'）: ボタン disabled・配線しない（非活性）。
 //
 // 依存注入・隔離方針（DOM/lwc 非依存・全注入）:
@@ -8883,15 +9751,7 @@ class LiveFollowController {
     this._mode = MODE_FOLLOW; // 初期 FOLLOW。
     this._served = mode === 'b'; // B方式のみ活性。
     this._button = null;
-    // programmatic scroll（scrollToRealTime）由来の可視範囲イベント抑制フラグ。
-    //   実 lwc の scrollToRealTime は非同期/アニメで、右端収束前に stale(panned) な範囲を報告する。
-    //   その stale(atRightEdge=false) で FOLLOW→ANALYSIS へ auto-off されると手動 FOLLOW が即取消されるため、
-    //   scroll 発火中は auto-off を抑止し、右端収束(atRightEdge=true)を観測した時点で解除する。
-    this._suppressAutoOff = false;
-    // 直近の右端在否（range イベントで更新）。初期は右端（fitContent 初期表示は通常右端＝true）と仮定する。
-    //   _applyFollow は「既に右端なら scrollToRealTime は no-op でイベントを発火せず arm が解除されず stuck する」
-    //   ため、この値を見て『実際に移動する時（右端に居ない時）だけ』arm + scroll する（code-review 🔴 の是正）。
-    this._lastAtRightEdge = true;
+    // 旧・自動遷移用の状態（_suppressAutoOff / _lastAtRightEdge）は ISSUE-118 で自動遷移ごと削除。
   }
 
   // 現在モード（'FOLLOW' | 'ANALYSIS'）の読み取り専用アクセサ。
@@ -8919,10 +9779,7 @@ class LiveFollowController {
       this._button.addEventListener('click', () => this.toggleManual());
     }
 
-    // 可視範囲購読 → 自動遷移（renderer 不在・API 未提供は配線しない＝no-op 防御）。
-    if (this._renderer && typeof this._renderer.subscribeVisibleRange === 'function') {
-      this._renderer.subscribeVisibleRange((atRightEdge) => this._onRangeChange(atRightEdge));
-    }
+    // 自動遷移（可視範囲購読の右端離脱/復帰）は ISSUE-118 で削除＝切替は手動クリックのみ。
 
     // 初期 FOLLOW の「表示」を適用する（点灯＋tint 解除）。ただし LiveUpdater の初回 start は
     //   ここでは行わない: 初回起動はデータ ready 後に入口（index.html）が既存経路で担う（データ未取得
@@ -8946,45 +9803,16 @@ class LiveFollowController {
     }
   }
 
-  // 可視範囲変化ハンドラ（振動防止の核）:
-  //   FOLLOW && !atRightEdge → ANALYSIS ／ ANALYSIS && atRightEdge → FOLLOW ／ 同状態 no-op。
-  _onRangeChange(atRightEdge) {
-    // 直近の右端在否を常に記録する（_applyFollow の scroll 要否判定に使う）。stale イベントも含め更新するが、
-    //   scroll 収束後の最終イベントは true になるため、収束後は正しく true が残る。
-    this._lastAtRightEdge = atRightEdge;
-    // programmatic scroll（scrollToRealTime）由来の stale イベント抑制:
-    //   武装中（_suppressAutoOff）は FOLLOW→ANALYSIS の auto-off を抑止する。scroll が右端へ収束し
-    //   atRightEdge=true を観測した時点で武装解除する（以降の genuine パン離脱では通常どおり auto-off）。
-    //   （arch の「programmatic scroll 由来イベントは atRightEdge=true で no-op 吸収＝suppression 不要」前提は
-    //     実機の非同期 scroll で崩れる＝収束前に panned 範囲を報告するため、明示的 suppression を置く。）
-    if (this._suppressAutoOff) {
-      if (atRightEdge) {
-        this._suppressAutoOff = false; // scroll が右端へ収束。以降は通常判定へ戻す。
-      }
-      return; // 収束前の stale(false) では auto-off しない（不具合の核）。
-    }
-    if (this._mode === MODE_FOLLOW && !atRightEdge) {
-      this._applyAnalysis();
-    } else if (this._mode === MODE_ANALYSIS && atRightEdge) {
-      this._applyFollow(true);
-    }
-    // 同状態は no-op（何もしない）。
-  }
-
-  // FOLLOW を適用: LiveUpdater 起動＋（再FOLLOW時のみ）最新足へ catch-up＋tint 解除＋ボタン点灯。
+  // FOLLOW を適用: LiveUpdater 起動＋（再FOLLOW時）最新足へ catch-up＋tint 解除＋ボタン点灯。
+  //   ISSUE-118: 自動遷移が無くなったため catch-up は無条件（右端に既に居る場合の scroll は無害な no-op。
+  //   旧実装の抑制機構 _suppressAutoOff/_lastAtRightEdge は auto-off が存在しないため不要）。
   _applyFollow(scroll) {
     this._mode = MODE_FOLLOW;
     // ライブ更新系（LiveUpdater＋LiveTickPlayer＋FormingBarUpdater）を全て起動（冪等・多重 start 無害）。
     for (const a of this._liveActors) {
       if (a && typeof a.start === 'function') a.start();
     }
-    // 実際に移動する時（＝まだ右端に居ない時）だけ arm + scrollToRealTime する。既に右端(_lastAtRightEdge=true)
-    //   なら scroll は no-op で range イベントを発火せず、arm が解除イベントを得られず stuck するため呼ばない
-    //   （既に右端なので catch-up scroll 自体も不要）＝code-review 🔴 の是正。
-    if (scroll && !this._lastAtRightEdge
-        && this._renderer && typeof this._renderer.scrollToRealTime === 'function') {
-      // scroll 発火の前に武装する（実 lwc は非同期・fake は同期発火 — どちらも収束前 stale を抑止するため先に立てる）。
-      this._suppressAutoOff = true;
+    if (scroll && this._renderer && typeof this._renderer.scrollToRealTime === 'function') {
       this._renderer.scrollToRealTime();
     }
     if (this._renderer && typeof this._renderer.setAnalysisTint === 'function') {
@@ -8999,10 +9827,8 @@ class LiveFollowController {
   // ANALYSIS を適用: LiveUpdater 停止＋背景 tint＋ボタン消灯（サーバ watch は継続）。
   _applyAnalysis() {
     this._mode = MODE_ANALYSIS;
-    // ANALYSIS 化で programmatic scroll の抑制窓を閉じる（ANALYSIS 中に true が来たら auto-on を正しく通す）。
-    this._suppressAutoOff = false;
     // ライブ更新系を全て停止（ANALYSIS＝ライブ更新停止＝価格を凍結）。これで ANALYSIS 中に価格が更新されず、
-    //   自動 FOLLOW 復帰も起きず、手動ズームがリセットされない（Bug A/B の根治）。
+    //   手動ズームがリセットされない（Bug A/B の根治）。
     for (const a of this._liveActors) {
       if (a && typeof a.stop === 'function') a.stop();
     }
@@ -9791,37 +10617,9 @@ async function bootstrap({
 } = {}) {
   const mode = modeForProtocol(protocol);
 
-  // チャート生成（組み立て点。系列追加系 API は ChartRenderer に隠蔽）。
-  // v5: background は { type: ColorType.Solid, color }、panes のリサイズ separator は既定 ON。
-  const chart = lwc.createChart(container, {
-    layout: {
-      background: { type: lwc.ColorType.Solid, color: '#131722' },
-      textColor: '#d1d4dc',
-      // ペイン境界のドラッグ・リサイズ（separator）を有効化（高さ調整・機能④）。
-      panes: { enableResize: true, separatorColor: '#2a2e39', separatorHoverColor: 'rgba(178,181,189,0.2)' },
-    },
-    grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
-    // クロスヘアを Normal（自由追従）に。既定 Magnet(1) は水平線を最寄り足の価格へスナップさせるため、
-    //   カーソル位置どおりに動かしたいという要望で Normal(0) に変更（enum 無い環境向けに 0 フォールバック）。
-    crosshair: { mode: (lwc.CrosshairMode && lwc.CrosshairMode.Normal) || 0 },
-    rightPriceScale: { borderColor: '#2a2e39' },
-    // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
-    timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
-    autoSize: true,
-  });
-  // v5: addCandlestickSeries は廃止。addSeries(CandlestickSeries, ...) でメイン pane(0) に追加。
-  // ISSUE-084: 現在値ラインは固定色（橙）で常時表示する。lwc 既定の priceLineColor=''（バー色追従）は
-  //   日別プロファイルのローソク透明化（setCandleTransparency）で線ごと消えるため、candle 色に依存しない
-  //   固定色を明示する（POC 赤・POC* 黄・カーソル青と重ならない配色）。lastValueVisible で軸ラベルも表示。
-  const mainSeries = chart.addSeries(lwc.CandlestickSeries, {
-    upColor: '#26a69a', downColor: '#ef5350',
-    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
-    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
-    priceLineVisible: true,
-    priceLineColor: '#ff9800',
-    priceLineWidth: 1,
-    lastValueVisible: true,
-  });
+  // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123・
+  //   present/replay 単一ソース）に集約。系列追加系 API は以後 ChartRenderer に隠蔽。
+  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container });
 
   // ポート実装の組み立て（モード別）。
   //   B方式: ComputeHttpClient（fetch /compute）— params 実反映。candles は /candles から取得し、
@@ -9852,18 +10650,8 @@ async function bootstrap({
   //   coordinateToPrice(paneHeight) で価格レンジ下端を読むために必要。container/timeScale 非対応
   //   （SSR/テスト）では設定できないため no-op（handlePriceWheel は pane 高未供給時に安全に false）。
   //   リサイズで container 高が変わるため、autoSize 変化に追随できるよう wheel 発火時にも再計算する。
-  const updatePaneHeight = () => {
-    if (typeof renderer.setPaneHeight !== 'function') {
-      return;
-    }
-    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
-    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
-    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
-    const paneHeight = ch - th;
-    if (paneHeight > 0) {
-      renderer.setPaneHeight(paneHeight);
-    }
-  };
+  //   実体は共有ヘルパ chart_bootstrap.makeUpdatePaneHeight（ISSUE-123 単一ソース）。
+  const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
   updatePaneHeight();
 
   // A方式の初期ローソクは renderer.setCandles で描画する（直接 mainSeries.setData ではなく
@@ -9973,6 +10761,14 @@ async function bootstrap({
     getController: () => controller,
     updatePaneHeight,
   }).install();
+
+  // ISSUE-116: 「最新のバーまでスクロール」ボタン（» ・TradingView 相当）。過去へ遡った状態で
+  //   チャート右下ホットゾーンへホバーしたときのみ表示し、クリックで最新足へ復帰する。
+  //   DOM 不在（SSR/テスト）は install 内の防御で no-op。
+  new ScrollToLatestButton({ container, renderer, document: doc }).install();
+
+  // ISSUE-117: 時間足ドロップダウンの開閉制御（選択・active 同期は bind() の data-timeframe 配線）。
+  new TimeframeMenu({ document: doc }).install();
 
   // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）を MP の成長状態へ
   //   連動させる共有協調役（Model A 直交化）。表示モードは gear 選択を維持し、FOLLOW→growing=true（足内成長）／

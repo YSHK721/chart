@@ -12,24 +12,17 @@
     <div class="toolbar">
       <span class="tb-symbol">NI225</span>
       <span class="tb-sep"></span>
-      <!-- 時間足セレクタ（1 分足原子から resample・§チャート表示時間選択）。data-timeframe は
-           サーバの TIMEFRAME_RULES と一致。既定 1D を is-active。A方式では controller が無効化。 -->
-      <div class="tb-timeframe" role="group" aria-label="時間足">
-        <button class="tb-interval" data-timeframe="1m" type="button">1分</button>
-        <button class="tb-interval" data-timeframe="5m" type="button">5分</button>
-        <button class="tb-interval" data-timeframe="15m" type="button">15分</button>
-        <button class="tb-interval" data-timeframe="30m" type="button">30分</button>
-        <button class="tb-interval" data-timeframe="1h" type="button">1時間</button>
-        <button class="tb-interval" data-timeframe="4h" type="button">4時間</button>
-        <button class="tb-interval is-active" data-timeframe="1D" type="button">日</button>
-        <button class="tb-interval" data-timeframe="1W" type="button">週</button>
-        <button class="tb-interval" data-timeframe="1M" type="button">月</button>
-      </div>
+      <!-- 時間足ドロップダウンのマウント（ISSUE-117/123）。DOM は timeframe_menu.js（共有・単一ソース）が
+           生成する（項目集合の index.html 直書き＝値渡し複製を廃止）。 -->
+      <div class="tf-menu" id="tf-menu"></div>
+      <!-- 旧・時間足ボタン row は ISSUE-117 追記で撤去（選択はドロップダウンの
+           data-timeframe 項目が担う。TIMEFRAME_RULES との一致・A方式無効化は従来どおり bind() 側）。 -->
       <span class="tb-sep"></span>
       <!-- ライブ追従トグル（present/B方式）。FOLLOW（点灯）=ライブ更新＋新足で右端追従、
-           ANALYSIS（消灯）=ライブ更新停止＋背景 tint で状態明示。右端離脱で自動 ANALYSIS／復帰で自動 FOLLOW。
-           配線・点灯は composition root の LiveFollowController.install()（B方式のみ）。A方式（file://）は
-           controller 未生成のため disabled のまま非活性。 -->
+           ANALYSIS（消灯）=ライブ更新停止＋背景 tint で状態明示。切替はこのボタンのクリックのみ
+           （ISSUE-118: 右端離脱/復帰の自動遷移は削除）。配線・点灯は composition root の
+           LiveFollowController.install()（B方式のみ）。A方式（file://）は controller 未生成のため
+           disabled のまま非活性。 -->
       <button id="live-follow-toggle" class="tb-interval" type="button" aria-pressed="false" title="ライブ追従（点灯=ライブ／消灯=分析）" disabled>ライブ</button>
       <span class="tb-sep"></span>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">

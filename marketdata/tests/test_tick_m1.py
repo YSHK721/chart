@@ -329,3 +329,34 @@ def test_until_none_matches_legacy_output_build_and_append(tmp_path: Path) -> No
     lp = tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=legacy_app)
     up = tick_m1.append_m1_from_ticks("2025-01-01", "2025-01-02", data_dir=until_app, until=None)
     assert up.read_text(encoding="utf-8") == lp.read_text(encoding="utf-8")
+
+
+def test_clean_m1_day_drops_day_median_outlier_minutes() -> None:
+    # 配信欠損ファントム（日内中央値±30%超の分バー）は CSV 素材化経路（_clean_m1_day）で
+    # 除去される（ISSUE-107・
+    # 2025-08-26 06:34〜09:09 UTC の ~15,100 帯ラン相当）。正常分バーは保全。
+    good = [(f"2025-08-26 06:{m:02d}:00", 42420.0, 42430.0) for m in range(0, 5)]
+    bad = [(f"2025-08-26 06:{m:02d}:00", 15140.0, 15160.0) for m in range(5, 7)]
+    good_after = [(f"2025-08-26 06:{m:02d}:00", 42410.0, 42420.0) for m in range(7, 10)]
+    m1 = tick_m1._clean_m1_day(tick_m1.ticks_to_m1(_ticks(good + bad + good_after)))
+    assert len(m1) == 8  # 10 分中、不良 2 分バーのみ除去
+    assert float(m1["low"].min()) > 42000.0
+    assert "2025-08-26 06:05:00" not in m1.index.astype(str).tolist()
+
+
+def test_build_m1_from_ticks_materializes_cleaned_csv(tmp_path: Path) -> None:
+    # 全構築（build_m1_from_ticks）の出力 CSV に不良分バーが乗らない（素材段での遮断）。
+    rows = (
+        [(f"2025-08-26 06:{m:02d}:00", 42420.0, 42430.0) for m in range(0, 5)]
+        + [("2025-08-26 06:05:00", 15140.0, 15160.0)]
+        + [(f"2025-08-26 06:{m:02d}:00", 42410.0, 42420.0) for m in range(6, 10)]
+    )
+    pq = tmp_path / "ticks" / "2025" / "08" / "26" / "JP225_ticks.parquet"
+    pq.parent.mkdir(parents=True)
+    _ticks(rows).to_parquet(pq)
+    out = tick_m1.build_m1_from_ticks(
+        "2025-08-26", "2025-08-26", data_dir=tmp_path, ref="t"
+    )
+    df = pd.read_csv(out, parse_dates=["date"], index_col="date")
+    assert len(df) == 9  # 不良 1 分バーのみ除去
+    assert float(df["low"].min()) > 42000.0

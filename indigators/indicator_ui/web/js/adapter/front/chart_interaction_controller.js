@@ -13,14 +13,20 @@
 //   - 依存（container / renderer / getController / updatePaneHeight）は constructor 注入。
 //   - getController は controller を遅延参照する（composition root では controller 代入前に install するため、
 //     () => controller のクロージャで呼出時点の controller を読む＝旧実装の外側 let クロージャと同一挙動）。
+//   - isVerticalPanBlocked（任意・ISSUE-123）: 縦パンの開始を外部条件でブロックする述語（() => bool）。
+//     replay_ui が「MP リプレイモード中は本体縦パンを開始しない」（旧・独立コピーの _isReplayOn ゲート）を
+//     注入するために使う。未注入＝ブロックなし（present は従来どおり）。本オプション化により両アプリが
+//     同一実体（symlink 単一ソース）を参照できる＝値渡しコピーの廃止。
 //   - container 不在/pointer 非対応（SSR/テスト）では install が no-op（防御）。
 
 export class ChartInteractionController {
-  constructor({ container, renderer, getController, updatePaneHeight }) {
+  constructor({ container, renderer, getController, updatePaneHeight, isVerticalPanBlocked }) {
     this._container = container;
     this._renderer = renderer;
     this._getController = getController;
     this._updatePaneHeight = updatePaneHeight;
+    this._isVerticalPanBlocked = typeof isVerticalPanBlocked === 'function'
+      ? isVerticalPanBlocked : () => false;
   }
 
   // container の wheel・dblclick・pointerdown/move/up/leave（本体縦パン）を配線する。
@@ -65,16 +71,19 @@ export class ChartInteractionController {
         }
       });
 
-      // 本体ドラッグの縦成分で価格パン（上下移動）を **価格ズーム中（override 有効時）に限り** 行う。
-      //   ・全体表示（自動スケール）では縦パンしない＝空白が出て拡大縮小に見える不具合を出さない（撤去理由）。
-      //   ・価格軸ホイールズーム後（renderer.isPriceZoomed()）は縦パンを許可＝拡大した価格帯の外も辿れる
-      //     （ユーザFB「その価格帯以外確認できないのは問題」への対応）。横は lwc の時間パンに委ねる。
+      // 本体ドラッグの縦成分で価格パン（上下移動）を **常時** 行う（ISSUE-108・ユーザー裁定）。
+      //   ・旧仕様の「価格ズーム中限定」ゲートは、旧 override 実装（provider 差し替え）で全体表示の
+      //     縦パンが空白露出を起こした時代の回避策。ネイティブ setVisibleRange 置換（6a61c54）で
+      //     発生機構が消滅したため撤去した。全体表示からの縦ドラッグは初回 panPriceByPixels が
+      //     手動スケール（autoScale=OFF）へ遷移させるだけで、lwc が表示を戻すことはない。
+      //   ・純横ドラッグ（dy=0）は panPriceByPixels 内で no-op＝自動スケール維持。横は lwc の時間パン。
+      //   ・自動スケール復帰は価格軸 dblclick（resetPriceZoom）のみ（既存仕様のまま）。
       //   価格軸上は対象外（軸は lwc ネイティブ）。
       let vpanActive = false;
       let lastVpanY = 0;
       container.addEventListener('pointerdown', (e) => {
-        if (e.button !== 0) {
-          return;
+        if (this._isVerticalPanBlocked() || e.button !== 0) {
+          return; // 外部ブロック述語（replay の MP リプレイ中ゲート等・ISSUE-123）または非左ボタン。
         }
         if (renderer.isOverPriceAxis(containerXY(e).x)) {
           return; // 価格軸上は lwc ネイティブのスケールに委ねる。
@@ -92,8 +101,8 @@ export class ChartInteractionController {
         }
         const dy = e.clientY - lastVpanY;
         lastVpanY = e.clientY;
-        // ★価格ズーム中のみ縦パン（全体表示では価格を触らず自動スケール維持）。
-        if (typeof renderer.isPriceZoomed === 'function' && renderer.isPriceZoomed()) {
+        // ★常時縦パン（ISSUE-108）。dy=0（純横）は価格を触らない＝自動スケール維持。
+        if (dy !== 0) {
           updatePaneHeight();
           renderer.panPriceByPixels(dy);
         }

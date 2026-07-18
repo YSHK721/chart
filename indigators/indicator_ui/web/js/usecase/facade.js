@@ -77,8 +77,63 @@ function rebuildInstance(base, overrides = {}) {
     generation: base.generation,
     seq: base.seq,
     createdAt: base.createdAt,
+    styles: base.styles ?? null,
     ...overrides,
   });
+}
+
+// スタイル整合（ISSUE-110 🔴-1）: styles のキーを「現在の実系列名集合」と突合し、実系列に
+//   存在しない stale キー（params 変更で系列が改名された等）を剪定した新 state を返す。
+//   剪定対象が無ければ同一 state（無変更）。全キー剪定で空になったら styles=null へ戻す。
+//   currentNames が空集合のとき（描画前・renderer 未対応）は判定不能のため剪定しない。
+export function reconcileSeriesStyles(state, instanceId, currentNames) {
+  const names = currentNames instanceof Set ? currentNames : new Set(currentNames ?? []);
+  if (names.size === 0) {
+    return state;
+  }
+  const inst = state.applied.find((i) => i.instanceId === instanceId);
+  const styles = inst && inst.styles;
+  if (!styles) {
+    return state;
+  }
+  const staleKeys = Object.keys(styles).filter((n) => !names.has(n));
+  if (staleKeys.length === 0) {
+    return state;
+  }
+  const next = cloneState(state);
+  next.applied = next.applied.map((i) => {
+    if (i.instanceId !== instanceId) {
+      return i;
+    }
+    const kept = {};
+    for (const [n, v] of Object.entries(styles)) {
+      if (names.has(n)) {
+        kept[n] = v;
+      }
+    }
+    return rebuildInstance(i, { styles: Object.keys(kept).length > 0 ? kept : null });
+  });
+  return next;
+}
+
+// スタイル上書き（ISSUE-109）: 系列名 -> { color?, width?, style?, visible? } の差分 patch を
+//   既存 styles へフィールド単位でマージした新 state を返す。patch が空なら無変更。
+export function setSeriesStyles(state, instanceId, patch) {
+  if (!patch || Object.keys(patch).length === 0) {
+    return state;
+  }
+  const next = cloneState(state);
+  next.applied = next.applied.map((i) => {
+    if (i.instanceId !== instanceId) {
+      return i;
+    }
+    const merged = { ...(i.styles ?? {}) };
+    for (const [name, fields] of Object.entries(patch)) {
+      merged[name] = { ...(merged[name] ?? {}), ...fields };
+    }
+    return rebuildInstance(i, { styles: merged });
+  });
+  return next;
 }
 
 export function remove(state, instanceId) {
@@ -176,6 +231,7 @@ function instanceToJson(i) {
     generation: i.generation,
     seq: i.seq,
     createdAt: i.createdAt,
+    styles: i.styles ?? null,
   };
 }
 

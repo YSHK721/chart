@@ -39,6 +39,9 @@ import { TF_BAR_SEC } from '../../domain/tf_meta.js';
 import { TfPeriodTooltip, formatPeriodLabel } from './tf_period_tooltip.js';
 import { MarketProfileActor } from './market_profile_actor.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
+import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
+import { ScrollToLatestButton } from './scroll_to_latest_button.js';
+import { TimeframeMenu } from './timeframe_menu.js';
 // GrowthCoordinator は共有 market_profile モジュール（usecase/growth_coordinator.js）へ移設済み。
 //   present は adapter/front/mp_live_mode_coordinator.js（symlink）経由で import（byte 不変 retarget）。
 import { GrowthCoordinator } from './mp_live_mode_coordinator.js';
@@ -150,37 +153,9 @@ export async function bootstrap({
 } = {}) {
   const mode = modeForProtocol(protocol);
 
-  // チャート生成（組み立て点。系列追加系 API は ChartRenderer に隠蔽）。
-  // v5: background は { type: ColorType.Solid, color }、panes のリサイズ separator は既定 ON。
-  const chart = lwc.createChart(container, {
-    layout: {
-      background: { type: lwc.ColorType.Solid, color: '#131722' },
-      textColor: '#d1d4dc',
-      // ペイン境界のドラッグ・リサイズ（separator）を有効化（高さ調整・機能④）。
-      panes: { enableResize: true, separatorColor: '#2a2e39', separatorHoverColor: 'rgba(178,181,189,0.2)' },
-    },
-    grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
-    // クロスヘアを Normal（自由追従）に。既定 Magnet(1) は水平線を最寄り足の価格へスナップさせるため、
-    //   カーソル位置どおりに動かしたいという要望で Normal(0) に変更（enum 無い環境向けに 0 フォールバック）。
-    crosshair: { mode: (lwc.CrosshairMode && lwc.CrosshairMode.Normal) || 0 },
-    rightPriceScale: { borderColor: '#2a2e39' },
-    // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
-    timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
-    autoSize: true,
-  });
-  // v5: addCandlestickSeries は廃止。addSeries(CandlestickSeries, ...) でメイン pane(0) に追加。
-  // ISSUE-084: 現在値ラインは固定色（橙）で常時表示する。lwc 既定の priceLineColor=''（バー色追従）は
-  //   日別プロファイルのローソク透明化（setCandleTransparency）で線ごと消えるため、candle 色に依存しない
-  //   固定色を明示する（POC 赤・POC* 黄・カーソル青と重ならない配色）。lastValueVisible で軸ラベルも表示。
-  const mainSeries = chart.addSeries(lwc.CandlestickSeries, {
-    upColor: '#26a69a', downColor: '#ef5350',
-    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
-    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
-    priceLineVisible: true,
-    priceLineColor: '#ff9800',
-    priceLineWidth: 1,
-    lastValueVisible: true,
-  });
+  // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123・
+  //   present/replay 単一ソース）に集約。系列追加系 API は以後 ChartRenderer に隠蔽。
+  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container });
 
   // ポート実装の組み立て（モード別）。
   //   B方式: ComputeHttpClient（fetch /compute）— params 実反映。candles は /candles から取得し、
@@ -211,18 +186,8 @@ export async function bootstrap({
   //   coordinateToPrice(paneHeight) で価格レンジ下端を読むために必要。container/timeScale 非対応
   //   （SSR/テスト）では設定できないため no-op（handlePriceWheel は pane 高未供給時に安全に false）。
   //   リサイズで container 高が変わるため、autoSize 変化に追随できるよう wheel 発火時にも再計算する。
-  const updatePaneHeight = () => {
-    if (typeof renderer.setPaneHeight !== 'function') {
-      return;
-    }
-    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
-    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
-    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
-    const paneHeight = ch - th;
-    if (paneHeight > 0) {
-      renderer.setPaneHeight(paneHeight);
-    }
-  };
+  //   実体は共有ヘルパ chart_bootstrap.makeUpdatePaneHeight（ISSUE-123 単一ソース）。
+  const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
   updatePaneHeight();
 
   // A方式の初期ローソクは renderer.setCandles で描画する（直接 mainSeries.setData ではなく
@@ -332,6 +297,14 @@ export async function bootstrap({
     getController: () => controller,
     updatePaneHeight,
   }).install();
+
+  // ISSUE-116: 「最新のバーまでスクロール」ボタン（» ・TradingView 相当）。過去へ遡った状態で
+  //   チャート右下ホットゾーンへホバーしたときのみ表示し、クリックで最新足へ復帰する。
+  //   DOM 不在（SSR/テスト）は install 内の防御で no-op。
+  new ScrollToLatestButton({ container, renderer, document: doc }).install();
+
+  // ISSUE-117: 時間足ドロップダウンの開閉制御（選択・active 同期は bind() の data-timeframe 配線）。
+  new TimeframeMenu({ document: doc }).install();
 
   // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）を MP の成長状態へ
   //   連動させる共有協調役（Model A 直交化）。表示モードは gear 選択を維持し、FOLLOW→growing=true（足内成長）／
