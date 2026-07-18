@@ -22,6 +22,7 @@
 
 import { MarketProfileActor } from './market_profile_actor.js';
 import { GrowthWindow } from '../../domain/growth_window.js';
+import { mpSourceCapability } from '../../domain/mp_source_capability.js';
 import { FORMING_MIN_INTERVAL_MS } from '../../replay/timing.js';
 
 // forming（足内成長）非対応 tf（backend forming_bar.is_supported_timeframe と一致＝1W/1M は固定 floor 不可で
@@ -100,14 +101,17 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   async refresh() {
     const ctx = this._getContext();
     const cursor = ctx.to;
-    if (this.isGrowingPush() && !_FORMING_UNSUPPORTED_TF.has(ctx.timeframe)) {
+    if (this.isGrowingPush() && !_FORMING_UNSUPPORTED_TF.has(ctx.timeframe)
+        && mpSourceCapability(this._params.src).incremental) {
       if (cursor == null) {
         return undefined; // cursor 未確定＝未来リーク禁止で描かない（再生 1 フレーム目の enterBar が初描画）。
       }
       return this.enterBar(cursor); // 因果 base 窓（driver 未配線 from はフォールバック）。
     }
-    // 非 growing push（sessions/static）・forming 非対応 tf（1W/1M）は基底 refresh へ委譲。
-    //   1W/1M は forming で描けない（enterBar→null）ため従来の全期間 as-of 描画を保つ（描画欠落を防ぐ）。
+    // 非 growing push（sessions/static）・forming 非対応 tf（1W/1M）・非増分 src（zp・ISSUE-120）は
+    //   基底 refresh へ委譲。1W/1M は forming で描けない（enterBar→null）ため従来の全期間 as-of 描画を保つ。
+    //   非増分 src は forming（dwell 原子・当日窓）を駆動すると選択 src と異なる原子の当日窓に差し替わる
+    //   （present の _isIncremental と同じ能力ゲート＝ゲート規則の対称化）。
     return super.refresh();
   }
 
@@ -199,6 +203,30 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     return this._rebuildAt(now, from, false);
   }
 
+  // ISSUE-124: 非増分 src の as-of refresh を直列 coalesce で走らせる（多重発火は最新 1 回に畳む）。
+  //   super.refresh() は実行時点の getContext().to を読む＝pending 消化時に最新カーソルで再計算される。
+  //   例外は握って busy を確実に解放する（以降のバーで再スケジュールされる＝自己回復）。
+  _scheduleNonIncrementalRefresh() {
+    if (this._nonIncRefreshBusy) {
+      this._nonIncRefreshPending = true;
+      return;
+    }
+    this._nonIncRefreshBusy = true;
+    const run = async () => {
+      try {
+        do {
+          this._nonIncRefreshPending = false;
+          await super.refresh();
+        } while (this._nonIncRefreshPending);
+      } catch {
+        // 取得失敗は前回描画保持（非破壊）。busy 解放は finally が担う。
+      } finally {
+        this._nonIncRefreshBusy = false;
+      }
+    };
+    run();
+  }
+
   // enterBar/growTo の共通実体: base=1/src=dwell/now/from で forming を [from, now] の因果窓で取得 →
   //   accumulator を作り直し（rollover/grid 拡張）→ forming.ticks を畳み込み（present 基底 _enterTicklive と
   //   同一 fold semantics）→ _lastSec/レンジ設定 → 描画。取得失敗（null）・base 欠損は前回描画を保持（非破壊）。
@@ -211,6 +239,17 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   async _rebuildAt(now, from, syncClamp = false) {
     if (!this.isGrowingPush()) {
       return; // 自己ガード: push 成長中（normal/replay+growing）以外は push 駆動しない（Phase5: 成長軸ゲート）。
+    }
+    // ISSUE-120: 非増分 src（zp）は forming（src=dwell 強制・当日窓）を駆動しない。駆動すると
+    //   選択 src と異なる原子（dwell）の当日窓プロファイルへ黙って差し替わる（「zp 全期間が当日しか
+    //   出ない」不整合の実体）。as-of-T の基底 refresh へ委譲する。
+    // ISSUE-124: ただし driver は毎バー enterBar を await する（完成足フラッシュ防止設計）ため、
+    //   ここで重い as-of 再計算（zp 実測 1.2〜1.3 秒/回）を同期で返すと再生スループットが崩壊する。
+    //   fire-and-forget＋最新 coalesce（busy 中の再要求は pending に畳み、完了後に最新カーソルで
+    //   1 回だけ再実行）で await を即時解放する（前回描画保持＝非破壊・計算が追いつき次第 as-of 更新）。
+    if (!mpSourceCapability(this._params.src).incremental) {
+      this._scheduleNonIncrementalRefresh();
+      return undefined;
     }
     if (!this._enabled || !this._formingClient || !this._makeAccumulator) {
       return;

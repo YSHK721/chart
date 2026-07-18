@@ -1081,3 +1081,68 @@ test('growTo that stays degenerate does NOT draw; real grid re-enables drawing (
   actor.feedTick(dayStart + 110, 71010);   // throttle 経過後の feedTick も描画する（解除確認）
   assert.equal(primitive.profiles.length, before + 2, '実グリッド確定後は feedTick 描画が再開する');
 });
+
+// --- ISSUE-120: 非増分 src（zp）は再生中（growing push）でも forming へ倒さず as-of-T 全期間 refresh ---
+//   present の _isIncremental と同じ能力ゲート（mp_source_capability.incremental）を replay の push 分岐にも
+//   適用する（ゲート規則の対称化）。forming は src='dwell' 強制＋当日窓のため、zp のまま forming へ倒すと
+//   「選択 src と異なる原子の当日窓」に黙って差し替わる（ユーザー報告「zp 全期間が当日しか出ない」の実体）。
+
+test('ISSUE-120 refresh: src=zp は growing push 中でも forming せず基底 refresh（as-of-T・src 維持）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 5000,
+  });
+  actor.setParams({ mode: 'normal', src: 'zp' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  assert.equal(actor.isGrowingPush(), true, '成長 push 状態（ゲートは src 能力で判定される）');
+  // Act
+  await actor.refresh();
+  // Assert
+  assert.equal(forming.calls.length, 0, 'forming（dwell 原子・当日窓）を駆動しない');
+  assert.ok(client.calls.length >= 1, '基底 refresh の fetchProfile が走る');
+  const last = client.calls.at(-1);
+  assert.equal(last.to, 5000, 'as-of-T（to=カーソル）で取得＝因果は維持');
+  assert.equal(last.src, 'zp', '選択 src=zp を維持（dwell へ差し替えない）');
+  assert.equal(last.from, undefined, 'from（当日窓）を載せない＝全期間');
+});
+
+test('ISSUE-120/124 enterBar/growTo: src=zp は forming せず、非ブロッキング＋最新 coalesce で基底 refresh', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 7000,
+  });
+  actor.setParams({ mode: 'normal', src: 'zp' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  // Act: driver がバー入場/グリッド拡張で直接呼ぶ経路（ISSUE-124: await は即時解放される）。
+  //   in-flight 中の連打は busy+pending の coalesce で fetch 最大 2 回（最新カーソル勝ち）に畳まれる
+  //   （await を挟まず同期連打＝再生中の高速バー送りを模擬）。
+  actor.enterBar(6900);
+  actor.growTo(6950);
+  actor.enterBar(6960);
+  await new Promise((r) => setTimeout(r, 0)); // fire-and-forget の消化を待つ
+  await new Promise((r) => setTimeout(r, 0));
+  // Assert
+  assert.equal(forming.calls.length, 0, 'enterBar/growTo とも forming を駆動しない');
+  assert.ok(client.calls.length >= 1 && client.calls.length <= 2,
+    `coalesce（busy+pending）で fetch は 1〜2 回に畳まれる（実測 ${client.calls.length}）`);
+  assert.equal(client.calls.at(-1).src, 'zp');
+  assert.equal(client.calls.at(-1).to, 7000, '実行時点の getContext().to（最新カーソル）で as-of 取得');
+});
+
+test('ISSUE-120 対称性: 増分 src（dwell）は従来どおり forming 経路（回帰なし）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const { actor, client } = makeActor({
+    formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, ctxTo: 5000,
+  });
+  actor.setParams({ mode: 'normal', src: 'dwell' });
+  actor._enabled = true;
+  actor.applyGrowthState({ growing: true });
+  const fetchBefore = client.calls.length;
+  // Act
+  await actor.refresh();
+  // Assert
+  assert.equal(forming.calls.length, 1, 'dwell は forming（因果 base）で描く（従来どおり）');
+  assert.equal(client.calls.length, fetchBefore, '全期間 fetchProfile は呼ばない（従来どおり）');
+});
