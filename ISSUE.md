@@ -1616,3 +1616,100 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **🟡-2 スタイルのみ変更でも必ず full recompute（/compute 往復＋系列 remove/redraw）が走る**: `applySeriesStyle` の設計目的（§6.1 再計算不要の即時反映）が OK 経路で未活用。compute 失敗時にスタイル変更も巻き添えで失われる不要な結合。対策案: 「params/variant 無変更かつ styles のみ」判定時は recompute を省略し `applySeriesStyle` 直適用＋persist。
 - **🔵（将来検討・4 件）**: ①`getSeriesStyles` 呼出の typeof ガード欠如（`applySeriesStyle` 側と防御非対称）②horizontal_line 系列のスタイル編集は対象外のまま（機能ギャップ・整合自体は保たれている）③styleMeta（派生キャッシュ）と AppliedInstance.styles（単一権威）の整合が「系列再生成直後に _applyStoredStyles を呼ぶ」暗黙不変条件依存＝構造的強制なし ④generation 競合 reject 時に styles がメモリ残留・未 persist（次回 redraw まで非表示の稀ケース）。
 - **監査で確認済み（問題なし）**: 依存方向・domain 純度・styles の永続往復・可視性 AND 合成の規則一致・onApply 第3引数の後方互換（MP ほか）・replay_ui への波及（独立コピーは存在せず symlink 共有ベースの継承で自動追随）・`_drawLatest` 末尾差分経路とスタイルの整合・YAGNI。
+## ISSUE-125: リプレイ×MP zp×期間「当日」で日内推移が描けない — 1D は当日確定形が最初から表示（経過分析不能・日内ルックアヘッド）
+- **ステータス**: RESOLVED（2026-07-18 実装・検証済み）
+- **是正結果（実装＝対策案①②③のとおり・承認済み y）**: backend は `/market_profile` に任意 `asof`（UNIX 秒）を追加し `_handle_zp` が `compute_zp_profile(..., now=asof)` で「現在時刻」をカーソル秒に上書き（省略時は実時計＝後方互換）。経路は present server（server.py）と replay 鎖（serve_replay→usecase→gateway→bridge）の両方に透過。フロントは共有 client/actor に asof seam（基底は常に空＝present 不変）を追加し、replay actor が enterBar/feedTick の revealed tick 秒を単調前進（後退スクラブは enterBar で巻き戻し）で保持、ISSUE-124 coalesce 機構で zp 再計算を発火。
+- **検証（2026-07-18）**: (1) 実 HTTP: 同一 from/to の 1D×zp が asof=+3h/+9h/+15h で tpo_units=2/362/722 と線形成長・md5 全相違、asof 省略時は従来どおり 1335（全日）。(2) 実 UI（Playwright・8281・2025-08-26 セッション再生）: `&asof=` がリビール tick 秒で単調前進する要求が coalesce 間隔で連続発行され全 200、同一バー再生中に POC が 42532.22→42443.00 へ更新・プロファイル histogram が視認可能に成長＝日内推移の経過分析が可能に。コンソールエラーは favicon 404 のみ（無関係）。(3) テスト: JS 新規 5 件（asof 透過・単調・後退巻き戻し・static 非付与・dwell 非干渉）＋Python 新規 3 件（asof→now 上書き・省略時実時計・不正 asof 無視）全通過。replay web 229 通過/6 失敗（全て既知 ISSUE-121・HEAD ベースラインと同一）、indicator_ui web 682 通過/2 失敗（既知モジュール欠落）、market_profile api pytest 299 全通過。A方式バンドル（out/prototype.html）再生成済み。
+- **事象**: ユーザー報告「リプレイモードの MP 指標 zp で当日を選択したときの更新が、当日の推移が分からない。当日結果が表示されるだけで経過分析検証ができない」。
+- **原因（実測 2026-07-18・実 HTTP 8281）**: `GET /market_profile?src=zp&timeframe=1D&from=<セッション始端>&to=<日内カーソル>` は、to を日内 3 点（2025-08-26 セッション: 00:00/06:00/12:00 UTC）で動かしても応答が byte 一致（md5 同一・tpo_units=1335＝全セッション分）＝当日確定形が固定表示。実体は 2 段: ①client の as-of カーソル `to` はバー時刻粒度＝1D では当日中ずっと同一値（当日バー label）②controller `_handle_zp` が集計窓終端を `win_to = t1 + bar_sec`（1D=86400）で最終足の全期間へ拡張するため、境界日が完全日 `_zp_day_rollup`（確定 z）に落ちる。よって日足バーが reveal された瞬間に当日確定 z が描かれ、以降不変＝日内ルックアヘッド。なお 15m では to がバーごとに進み応答も毎バー変化（md5 相違・実測）＝バー粒度の as-of 推移は既に成立している（バックエンド `_zp_partial_rollup` は分カラム粒度のサブ日窓集計を実装済み）。
+- **対策案（未着手・要承認）**: ① backend `/market_profile` に任意パラメータ `asof`（UNIX 秒・forming 系の `now` と同規約）を追加し、zp（必要なら dwell も対称）の窓終端を `min(t1 + bar_sec, asof)` へクランプ→境界日は既存 `_zp_partial_rollup` の分粒度 as-of に自然に落ちる（省略時は現行挙動＝後方互換）② replay actor: 非増分 src の refresh（`_scheduleNonIncrementalRefresh`）へ driver の revealed tick 秒（enterBar/growTo/feedTick の now）を asof として透過し、足内 tick でも throttle＋既存 coalesce（ISSUE-124 機構）で再計算を発火＝1D でも当日 z が分粒度で成長 ③ 更新周期は zp 再計算実測 1.2〜1.3 秒/回に coalesce されるため再生スループットへの影響なし（ISSUE-124 と同型）。
+## ISSUE-126: ISSUE-125 是正の仕様乖離 — asof を「再生中のみ」に勝手に限定し、静止カーソルで当日確定形が表示される（指示は「ライブモードと同じ仕様」）
+- **ステータス**: RESOLVED（2026-07-18 是正・検証済み）
+- **是正結果**: replay actor `_asofExtra()` のゲートを「zp × カーソル存在中は常に付与」へ是正（成長中=リビール tick 秒 `_asofSec`／静止=主機能 as-seen-at-t の単一時計 `getContext().to`＝untilTime を参照。カーソル未確定・増分 src は従来 URL 不変）。主機能・基底 actor・present・backend は無改変（基本設計: 現在時刻の定義を主機能の T に一元化し、zp は参照のみ＝OCP）。誤仕様を固定していた static テストを正仕様（asof=T 付与）へ書き換え、cursor 不在・dwell 不変の 2 件を追加。
+- **検証（2026-07-18 実UI・8281）**: 静止スクラブ bar 1221（2025-08-26）で再生なしに `&asof=1756166400`（=T）付き要求が発行され応答は部分形 tpo_units=2（従来は確定形 1335 の先出し）。再生開始で asof がリビール秒で前進し成長継続（全 200・スループット正常）。restore 直後（cursor 未確定）は asof 非付与＝従来。JS スイート 231 通過・失敗は既知 ISSUE-121 の 6 件のみ（回帰ゼロ）。
+- **事象**: ユーザー動作確認で「最初に当日結果分が表示される」。静止カーソル設置時の初回描画が asof なし＝実時計判定となり、過去日が完了日扱いで当日確定形（全日 z）を表示。承認された指示は「ライブモードと同じ仕様」（ライブは静止表示でも常に経過分の部分形）であり、asof の付与を isGrowingPush()（再生中）に限定したのは実装者の無承認スコープ縮小＝仕様乖離。
+- **対策案**: replay actor の asof 付与ゲートから isGrowingPush() 条件を外し、「リプレイカーソルが存在する間は常に」zp の fetch に asof（リビール済み末端秒）を付与する（ライブ完全対称: リプレイ期間の時計＝現在時刻）。主機能（共有基底 actor・present・backend・他 src）は無改変で、replay 側 seam（_asofExtra/_asofSec）の参照のみで実現する。静止テスト（asof 非付与を主張）は正仕様（付与）へ書き換える。
+## ISSUE-127: リプレイしても当日確定形が表示される（ISSUE-126 後の残存不具合・ユーザー報告）— 小数秒 asof の破棄＋partial rollup キャッシュ毒
+- **ステータス**: RESOLVED（2026-07-18 是正・検証済み）
+- **是正結果**: ① replay actor `_asofExtra()` が asof を Math.floor で整数秒化（契約 UNIX 秒準拠・送信側是正）② `_zp_partial_rollup` のキャッシュ読み出しを `hi<=now`（現要求の now で窓完了）のときのみにゲート（完了窓 roll は now 非依存で共有安全・未完了窓は都度計算＝ライブ当日と同一規約）。
+- **検証（2026-07-18）**: (1) 実 HTTP（再起動後 8281）: 事象再現ペア to=1756252800&from=1756242000 で asof 5 点 → tpo_units=1/2/165/788/1216 と単調成長・md5 全相違。毒順（実時計 1335 → asof）でも 165 と非汚染。(2) 実 UI（1分OHLC 再生＝報告条件）: asof が全て整数で単調前進・UI 発行 URL の応答が部分形（187→1328）。(3) テスト: Python 新規 1 件（毒順回帰・修正なしで失敗確認済み）＋JS 新規 1 件（小数秒 floor）。市場プロファイル pytest 300 全通過・replay web 232 通過（失敗は既知 ISSUE-121 の 6 件のみ）。
+- **事象**: ユーザー動作確認「リプレイしても当日分が表示される」。実測再現: `to=1756252800&from=1756242000` で asof を日内 5 点に振っても応答 byte 一致（tpo_units=1335=全日）。
+- **原因（実測・コード確認）**: 複合 2 件。①最新足更新=1分OHLC 等の合成 tick は小数秒を生み、client が `asof=1756262637.6237624` を送出。controller `_parse_to` の str 分岐が `isdigit()` のため小数文字列で None → 実時計 → 全日確定形（契約は UNIX 秒=整数）。② `market_profile_zp._zp_partial_rollup` のメモ化キーが `("partial",symbol,lo,hi)` で now 非依存。①や実時計要求が全日 roll をメモ化すると、同 (lo,hi) の以後の asof 要求がキャッシュヒットで全日形を返し続ける（キャッシュ毒・読み出し時に now 妥当性検査なし）。
+- **対策案（明示バグ・即時実施）**: ① replay actor `_asofExtra()` が asof を Math.floor で整数秒化して送出（契約準拠・送信側是正）② `_zp_partial_rollup` のキャッシュ読み出しを「現要求の now で窓完了（hi<=now）のときのみ」にゲート（完了窓 roll は now 非依存で安全・未完了窓は都度計算=ライブ同一）。
+## ISSUE-128: zp as-of で「未来セッションの最初の 1 分」が混入（max(1, elapsed) の下限）— 未訪問価格帯バーの一因（ユーザー報告起点）
+- **ステータス**: RESOLVED（2026-07-18 是正・検証済み）
+- **事象**: ユーザー報告「まだ価格形成されていない部分にバーが形成される」。実測（2026-07-08・安値形成前 asof）: 応答の norm>0 bin はすべて訪問済み帯の内側＝主表示は因果的に正。ただし tpo_units が経過分＋1 になる余剰を確認（例 60 分経過で 62）。
+- **原因（実測・コード確認）**: `_zp_day_rollup`/`_zp_partial_rollup` の `col_hi = max(1, min(G, elapsed))` は now が当日開始前（未来セッション）でも下限 1 を与え、窓末尾に食い込む次セッションの最初の 1 分（ffill 現物価格）を観測へ混入させる（as-of 因果違反）。ライブでは未来日が窓に入らないため潜在していた。
+- **対策（明示バグ・即時実施）**: 両 rollup に「now < day_start は寄与なし（None）」ガードを追加（当日セッションの寄り付き 1 時間の max(1,·) 挙動＝ライブ既存仕様は不変）。
+- **ステータス更新**: RESOLVED（2026-07-18）。検証: 8/26 asof=+4h の tpo_units 62→61（余剰 1 分消失・残る 1 は now を含む進行中の分＝ライブ同一）。7/8 安値形成前 asof で未訪問帯の norm>0 bin=0 維持。pytest 301 全通過（未来日 None ガードの回帰テスト追加）。
+## ISSUE-129: 単一時計化 — asof/now の二重時刻を廃止し「リプレイの現在時刻 = to（リビール秒粒度）」へ統一（依頼者承認 y・2026-07-18）
+- **ステータス**: RESOLVED（2026-07-18 実装・検証済み）
+- **設計**: 基本設計として時計を一元化。`to`（as-seen-at-t の T）がリプレイの現在時刻そのもの。candle 切断（time<=to）はバー粒度でも秒粒度でも同一集合＝主機能の挙動不変のまま、zp は backend が now=to として読む（境界日はライブ同一の経過分クランプ＝日内推移）。ライブは to なし＝実時計＝従来どおりで、as-of 概念の追加実装が構造的に不要になる（ISSUE-125〜127 の asof パラメータ・now 上書き・二重時刻の不整合クラスを根絶）。
+- **実装**: backend: controller から asof_ts を撤去し `_handle_zp` が `now=to_ts` を読む（旧 asof 受信は無視＝無害）。server.py／serve_replay→usecase→ports→gateway の asof 透過を撤去。frontend: client の &asof= 撤去、基底 actor の seam を `_clockExtra()`（no-op）へ改称、replay actor は成長 push 中の zp のみ fetch の to をリビール秒（`_clockSec`・floor 整数）へ細粒度化（静止は ctx.to がそのまま時計＝上書き不要）。
+- **検証（2026-07-18）**: (1) 実 HTTP: to のみで日内 as-of 推移（tpo_units=1/164/787/1215・md5 全相違）、旧 asof 付与は無視（to と同値）。(2) 実 UI: 静止スクラブ＝to=バー time で部分形、再生中＝to がリビール秒で単調前進（全 200・asof パラメータ消滅・スループット正常）。(3) テスト: pytest 301（market_profile api）＋171（replay_ui）全通過、JS: market_profile web 300 全通過・replay web 232 通過（失敗は既知 ISSUE-121 の 6 件のみ）・indicator_ui web 682 通過（既知 2 件のみ）。バンドル再生成済み。
+## ISSUE-130: リプレイ×MP zp でバーが表示されない日がある（日曜ほか 492 バー）— チャート足と backend dataset の 1D 足集合の不一致（ユーザー報告）
+- **ステータス**: RESOLVED（2026-07-18 案 A 実装・検証済み・依頼者承認）
+- **是正結果（案 A: 足集合の統一）**: ① replay `causal_candle_repository` の時間足化を正典単一入口 `resample_ohlc_tf`（marketdata・1D/1W/1M=セッション日集計＝dataset rollup と同一規則）へ委譲（bridge へ read-only 公開追加・tickvol 集約は維持）② `intrabarWindow` の 1D をセッション窓 [sessionDayStart(cd), sessionDayStart(next)) へ（日曜夕 tick は月曜バーの窓先頭で再生）③ replay actor: 1D バー入場（enterBar）の zp 時計をラベル（セッション 3h 経過点）でなくセッション始端へ写像（窓先頭 3h の先出し防止・growTo/feedTick は実リビール秒のまま）。session_day.js を replay domain へ symlink 追加。
+- **検証（2026-07-18）**: (1) 足集合: replay /candles 1D が 4163→3676 本になり dataset と**集合完全一致**（差分 0・日曜バー消滅）。(2) 実 UI（8281・4/27 月曜バー再生）: from=to=セッション始端（日曜 21:00 UTC）から to がセッション終端（月曜 21:00）まで tick 前進し全 200、旧・日曜相当時点（日曜夕+3.5h）で norm>0=15 bin・tpo_units=34＝**従来空だった期間が描画**。バー中途のセッション切替の従来の歪みも消滅（1 バー=1 セッション日に整列）。(3) テスト: replay pytest 172 全通過（日曜畳み込みの回帰テスト追加）・replay web 235 通過（失敗は既知 ISSUE-121 の 6 件のみ・1D 窓テストをセッション窓仕様へ更新・actor 1D 時計テスト追加）。
+- **事象**: 特定の日でプロファイルが全く描画されない（例: 2026-04-26 日曜バー・実測 tpo_units=0・グリッド range=1.0-2.0＝空 candles フォールバック）。
+- **原因（実測）**: リプレイのチャート足（tick 直リサンプル・カレンダー日 4163 本）には日曜バー等が存在するが、backend dataset の 1D（3671 本）には存在しない（日曜夕データは月曜バーへ畳まれる集計規約・実測: dataset 月曜 O=59874.5=日曜 21:00 始値）。不一致は 492 本（日曜 479＋祝日等 13）。カーソルがこれらのバー上にあるとき、MP の当日窓 [セッション始端, to] に dataset candle が 1 本も入らず `_handle_zp` の空 candles 分岐（price 0/0→グリッド 1.0-2.0・寄与ゼロ）に落ち、プロファイル空＝バー非表示。src=candle でも同窓は bins=0（同根）。
+- **対策案（要承認・いずれか）**: A) 足集合の統一（基本設計・本筋）: replay /candles の 1D を dataset と同一集合にする（チャートから日曜バーが消える＝UI 変更）。B) zp の当日窓を candle 非依存化: candles 空でも from/to から窓を構成し価格レンジを as-of tick 範囲から導出（zp のみ・candle 主機能不変・日曜セッションも描ける）。C) 暫定: 空 candles 時に from フィルタを外し直近 candle からレンジ借用（最小変更・窓不整合が残る）。
+## ISSUE-131: 価格データ配信の完全同一設計 — リプレイ自前足生成を全廃し dataset（ライブ単一権威）へ完全委譲（依頼者承認・2026-07-18）
+- **ステータス**: RESOLVED（2026-07-18 実装・検証済み）
+- **設計**: `CausalCandleRepository` の jp225_tick 特例（tick M1 CSV 実行時リサンプル＋独自外れ値補正 `repair_day_outliers`）を全廃し、全 ref・全時間足を `dataset.load_dataframe`（ライブと同一の配信路: 事前生成ロールアップ／1m 末尾 50,000 行 tail・clamp 外れ値補正・mtime キャッシュ）へ委譲。リプレイ固有の追加は tickvol（ISSUE-044 ETA 用・dataset DataFrame の volume 列を additive に写すのみ）だけ。ISSUE-130 で導入した replay 側 resample_ohlc_tf 呼び出しも撤去（bridge_loader 注入で単体テスト可能化＝MarketProfileGateway 同型）。
+- **検証（2026-07-18）**: (1) 実測: /candles が 1D=3676・15m/1h=50,000 本すべて dataset と**集合・OHLC 値相違 0**・tickvol 全バー付与。(2) 実 UI: スクラブ→再生→ETA 表示（tickvol 経路）正常・コンソールエラー 0。(3) replay pytest 171 全通過（repository テストを fake bridge 委譲検証へ全面書き換え）。
+- **効果**: 足の集合・値・外れ値補正・鮮度管理が全時間足で構造的にライブと同一（設計一致）。残る相違はリプレイの本質差（reveal 切断・tick 再生・as-of 時計）のみ。
+## ISSUE-132: /intraday の m1 供給を dataset へ委譲 — 配信路の重複を完全削除（依頼者承認・2026-07-18）
+- **ステータス**: RESOLVED（2026-07-18 実装・検証済み）
+- **背景（監査 2026-07-18）**: ISSUE-131 後も `IntrabarWindowRepository`（/intraday の m1 素材）だけが生 CSV 全読み＋独自外れ値補正（`_m1_repair.repair_day_outliers`）＋独自 mtime キャッシュの第二経路で、M1 の供給・補正・キャッシュが二重実装だった。
+- **是正結果**: ① marketdata/dataset.py に additive API `load_atom_window(ref, start, end)` を新設（全期間原子=_load_base_dataframe・clamp 補正=_clamp_outlier_bars・csv mtime キーの clamp 済みキャッシュ＝供給/補正/キャッシュの単一権威。末尾有界 load_dataframe と異なり任意過去窓へ届く。live サーバは不使用＝D-2 メモリ有界化の不変条件は不変）② IntrabarWindowRepository の m1 を全 ref 本 API へ委譲（jp225_tick 特例・tick_m1_csv・m1_repair・独自キャッシュを撤去。tick parquet フィードはリプレイ固有として現状維持）③ `_m1_repair.py` を削除（利用ゼロ化・しきい値 0.3 の二重定義も解消）④ bridge の resample 系 export 4 件（利用ゼロ）と composition_root の tick_m1_csv 結線を撤去。
+- **検証（2026-07-18）**: (1) 実 HTTP: /intraday が過去窓（2025-08-26＝m1 tail 50k の外）で m1=1133 行・直近窓で ticks=159k/m1=1316 行とも ok。(2) 実 UI: 過去日（2025-05-21〜）の 1分OHLC 再生正常・コンソールエラー 0。(3) テスト: dataset.load_atom_window 新規 4 件・intrabar/candle repository テストを委譲仕様へ書換え。replay 170・market_profile api 301・indicator_ui api 375 全通過。
+- **残る言語間ミラー（意図的・対で維持）**: session_day py↔js（IANA tz 単一権威）・cap 間引き py↔js（proto bit 一致ペア）。
+## ISSUE-133: [SOLID/SRP] MP 計算コア 2 ファイルに複数アクター（数学・キャッシュ協調・運用 CLI・tick I/O）が同居（アーキテクチャ調査 2026-07-18）
+- **ステータス**: OPEN（起票のみ・是正は要承認）
+- **調査方法**: architecture-executor によるシステム全体調査（本体系のみ・全所見 file:line 実読で裏付け・自己レビューで裏付け不足候補を棄却済み）。
+- **所見（重大度順）**:
+  - 【高】`indigators/market_profile/api/market_profile_api/compute/market_profile_zp.py`（692 行）: 統計コア（`minute_close_grid` L109・`compute_zp_profile` L507 等）＋キャッシュ協調（`_MGRID_CACHE` 等 L271-277・`_zp_day_rollup` L358）＋運用バッチ CLI（`warm_zp_cache` L652・`__main__` argparse L682-692）の 3 アクター同居。定量担当の数学変更と運用担当の warm/キャッシュ変更が同一改変面を共有。
+  - 【高】`market_profile_dwell.py`（604 行）: 上記 3 系に加え tick I/O 解析（`_load_window_ticks` L154-184 が parquet 読込・tz 変換・外れ値除去まで compute 内で実施）の 4 アクター同居。tick 格納スキーマ変更と dwell 統計変更が同一ファイル。
+  - 【中】`simulator/replay_ui/web/js/replay.js` `setupReplay`（L38-484）: 再生制御・ETA 表示（`setEta` L199）・足内アニメ（`animateForming` L363）・MP tick-live 成長駆動（`pushGrowTo` L340 等）が単一クロージャに混在（MP 変更が再生制御の回帰面）。
+  - 【中】`replay_market_profile_actor.js`（499 行）: 増分 push 成長（dwell 系）と非増分 as-of coalesce（zp 系）の 2 戦略を `_rebuildAt`/`feedTick` の二重分岐で内包。
+  - 【中】`market_profile_controller.py`: `_handle_dwell` L360-385 と `_handle_zp` L436-455 に窓確定ロジック（to/from 切り出し・レンジ・barw→n_bins）がほぼ同型複製。
+- **対策案（要承認）**: zp/dwell は純数学 kernel・キャッシュ協調・warmer CLI（→tools/）の分離、`_load_window_ticks` の gateway 移設。replay.js は MP 駆動の独立ドライバ抽出。controller は `_resolve_window` 単一化。actor は Strategy 注入化。
+- **棄却済み候補（自己レビュー）**: `marketdata/dataset.py`・`framework/server.py`・`intrabar_window_repository.py`（委譲徹底済み・単一アクター）、`tick_m1.py`/`rollup.py`（単一の data-engineering アクターに凝集）。
+## ISSUE-134: [SOLID/OCP] 種別台帳の属性不足によるハードコード分岐の散在（カレンダー tf・series kind・MP モード）（アーキテクチャ調査 2026-07-18）
+- **ステータス**: OPEN（起票のみ・是正は要承認）
+- **調査方法**: ISSUE-133 と同一（全所見 file:line 実読・自己レビュー済み）。registry 化済みの良例（`dataset_registry.REGISTRY`・`_EA_FACTORIES`・`call_binding._TABLE`）は棄却済み。
+- **所見（重大度順）**:
+  - 【中】カレンダー tf（1W/1M）の派生属性が registry 化されず 5 箇所以上で再導出: `marketdata/resample.py:53`（`SESSION_TFS`）・`:99-106`・`:121`、`marketdata/session_day.py:136-141`・`:150-161`（月末算術を手書き再実装＝`resample.py:123` の pandas ME offset と同一規則の二重表現）、`marketdata/tf_meta.py:28`（`NON_FLOORABLE_TF`）・`:61`、`replay_market_profile_actor.js:32`（`_FORMING_UNSUPPORTED_TF`＝言語跨ぎ複製）。新カレンダー足追加時に全箇所同時修正。
+  - 【中】系列出力種別（line/histogram/horizontal_line）分岐がフロント散在: `indicator_controller.js:115`・`:259-261`、`chart_renderer.js:825`（三項ハードコード）・`:833,849,856,1092`、`properties_dialog.js:674`。新 series 種別追加＝3 ファイル同時修正。
+  - 【中】MP 表示モード enum（normal/sessions/replay/ticklive/rolling）分岐が 3 層に散在: `market_profile_actor.js:230-265`・`:161`、`growth_window.js:124`、`catalog_entry.js:40,55`。モード追加実績あり（replay/sessions→ticklive/rolling）で変更軸は実在。
+  - 【低】`call_binding.py:362` `if self._kind == "btlm"` の呼出規約分岐（単一種のため YAGNI 観点で現状維持も許容）。
+  - 【低】`simulator/main/__init__.py:443-459` `strategy_params` フラット dict に各戦略専用 param を混載。
+- **対策案（要承認）**: `TIMEFRAME_RULES` を `TfDescriptor{rule, floorable, calendar}` へ昇格し membership set を導出値化・`next_period_label` は `period_label_naive` へ委譲。フロントに kind→描画レジストリ、domain に MP mode descriptor を各 1 つ新設。
+## ISSUE-135: [SOLID/LSP] `MarketDataPort.load` の source_ref 事前条件・例外契約が実装間で非対称（composition root が isinstance で補償）（アーキテクチャ調査 2026-07-18）
+- **ステータス**: OPEN（起票のみ・是正は要承認）
+- **調査方法**: ISSUE-133 と同一（ポート定義と全実装の突き合わせ・自己レビュー済み）。
+- **所見（重大度順）**:
+  - 【高】`simulator/usecase/ports.py:47-53` `MarketDataPort.load(source_ref, ...)` の source_ref が実装 4 種で非対称: CSV パス（`ohlc_csv.py:50`）・TSV パス（`ohlc_mt5_csv.py:72`）・parquet パス（`ohlc_parquet.py:27`）に対し `marketdata_source.py:64-68` のみ `(start, end)` タプルをアンパック。`simulator/main/__init__.py:485-497` が `isinstance(market_data, CsvOHLCRepository)` で分岐し `load_source` を作り分け＝置換不能を型判別で補償。相互差し替えで ValueError/TypeError。
+  - 【中】同 Port の例外契約非対称: path 系 3 実装は I/O 失敗を `DataError` へ翻訳（`_ohlc_frame.py:35-43`・`ohlc_parquet.py:30-34`）するが `marketdata_source.py` は try/except なしで生 `FileNotFoundError` が漏出（`marketdata/port.py:51-55` が固有 I/O 例外送出を明記）。
+  - 【低】`TickModelPort.ticks_of`（`ports.py:137-143`）: 合成 2 実装は常に非空、`RealTickModel`（`tick_model.py:161-189`）のみ空列を返しうる（Port に非空保証の記述なし・データ実態差の可能性あり）。
+- **健全性確認（違反でないと判定）**: `mp_source_capability.js` の能力ゲートは isinstance 判別でなく能力記述子＋Null Object＝LSP 健全。`ReplayMarketProfileActor extends MarketProfileActor` は設計済み seam（`_clockExtra` 等）による Template Method＝安全。`CandleSource` は事後条件対称の模範。
+- **対策案（要承認）**: source_ref の型を Port で一意化（パス解決は各実装の構築時パラメータへ隔離）し isinstance 分岐を除去。`MarketDataSourceRepository.load` で DataError へ翻訳し例外契約を対称化。TickModelPort は docstring に空列許容を明記。
+## ISSUE-136: [SOLID/ISP] `TickStorePort` の混載と `_indicator_ui_bridge`/dataset 具象の太い依存面（アーキテクチャ調査 2026-07-18）
+- **ステータス**: OPEN（起票のみ・是正は要承認）
+- **調査方法**: ISSUE-133 と同一（ポート全メソッド×クライアント呼び出しを Grep+Read で実測マトリクス化・自己レビュー済み）。
+- **所見（重大度順）**:
+  - 【高〜中】`tick_store_port.py:19-32` `TickStorePort`（day_files/read_ticks/data_dir）が「キャッシュ基点」と「tick ファイルアクセス」を混載。実測: dwell=3/3、zp=2/3（read_ticks 未使用＝否定側 Grep 0 件で裏取り済み）、`tf_period_profile_controller.py:104`=1/3（data_dir のみ）。3 クライアント 3 分化。
+  - 【中】`simulator/replay_ui/adapter/_indicator_ui_bridge.py:74-81` の SimpleNamespace（6 メンバ）: intrabar/causal_candle は dataset のみ（1/6）だが `load()` が MP controller 2 本を無条件 eager import＝dataset-only クライアントが MP の import 健全性に巻き込まれる。
+  - 【中】具象 `marketdata/dataset.py` の約 5 面を各クライアントが port 迂回で subset 利用（causal_candle=2 面・intrabar=`load_atom_window` のみ・candles_controller=3 面）。`DatasetPort` は 3 メソッドのみで `load_candles`/`load_atom_window` 利用者に狭い抽象が不在。
+- **対策案（要承認）**: `DataRootPort(data_dir)`＋`TickReaderPort(day_files, read_ticks)` へ分割。bridge を `load_dataset()`/`load_compute()`/`load_mp_handlers()` の粒度別アクセサへ分割。dataset は `RefValidationPort`/`OhlcSupplyPort` 等の用途別 port 化。
+- **棄却済み候補（自己レビュー）**: `DatasetPort` 自体（唯一の port 型消費者 `compute_indicators.py` が 3/3 使用）、`replay_ports.py` 各 Port（usecase と 1:1 で全メソッド使用＝良例）、JS `MarketProfileClient`（forming 分離済み）。※`ContactScanPort`（`replay_ports.py:131`）は実装・呼出ゼロのデッドポート（ISP でなく YAGNI 観点の削除候補として記録）。
+## ISSUE-137: [SOLID/DIP] compute（方針層）が永続化 Store 具象を module-level 生成（TickStorePort と非対称・Port 抽象欠落）（アーキテクチャ調査 2026-07-18）
+- **ステータス**: OPEN（起票のみ・是正は要承認）
+- **調査方法**: ISSUE-133 と同一（import 全数調査＋Read 確認・TYPE_CHECKING/テスト専用 import は除外済み・自己レビュー済み）。
+- **所見（重大度順）**:
+  - 【高】`market_profile_zp.py:50`（`from market_profile_api.gateway.zp_store import ZpStore`）・`:259`（`_STORE = ZpStore(...)`）、`market_profile_dwell.py:53`・`:102`（`_STORE = DwellRollupStore(...)`）: compute（内側・方針層＝`tick_store_port.py` docstring で自認）が gateway 具象を module-level で直接 new＝composition root 迂回。同ファイルの tick I/O は `TickStorePort`＋`set_tick_store()` で逆転済みなのに永続化 Store のみ非対称。`test_store_gateway_layering.py` は I/O プリミティブ不在のみ検証し依存方向は素通し。
+  - 【中】内側 Port の既定フォールバックが外側具象を名指し遅延 import: `dataset_port.py:48`（`MarketdataDatasetGateway`）・`tick_store_port.py:48`（`MarketdataTickStore`）。`set_*()` 注入シームあり・自己完結起動の意図明示済みの緩和済みトレードオフだが、composition root の責務が内側へ漏出。
+  - 【低】`tf_period_profile_controller.py:28` の gateway 具象直 import（外側同士の水平結線＝Dependency Rule 違反ではない・YAGNI 上維持可）。
+- **健全性確認（違反でないと判定）**: compute→`marketdata.session_day`/`tf_meta` は I/O 非依存の最内側共有カーネル＝適法。simulator の adapter→bridge→具象 peer は adapter 層内で許容。composition_root は全層 import＋Port 注入の教科書的 DI。過剰抽象（YAGNI 違反）は未検出。
+- **対策案（要承認）**: compute に `StorePort`（Output Boundary）を新設し ZpStore/DwellRollupStore に実装させ `set_zp_store()`/`set_dwell_store()` 注入へ（TickStorePort と同規律に統一）。Port 既定フォールバックの具象名指しは composition root へ移設（併せて `market_profile_zp_store.py`/`market_profile_dwell_store.py` の互換再エクスポートシム撤去を検討）。
