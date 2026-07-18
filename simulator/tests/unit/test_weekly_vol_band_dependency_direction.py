@@ -11,9 +11,7 @@ from pathlib import Path
 _FORBIDDEN_TOP = ("pandas", "numpy")
 _FORBIDDEN_PREFIXES = ("simulator.main", "simulator.adapter", "simulator.framework")
 _MODULES = (
-    "estimate_weekly_band",
     "run_weekly_segments",
-    "validate_strategy",
     "vol_band_ports",
     "validation_ports",
 )

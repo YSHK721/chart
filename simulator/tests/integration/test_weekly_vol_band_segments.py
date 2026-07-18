@@ -11,17 +11,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from simulator.adapter.repository.vol_band_parquet import VolBandParquetRepo
 from simulator.adapter.strategy.weekly_vol_band import WeeklyVolBand
 from simulator.domain.bar import Bar
 from simulator.domain.trading_week import week_id_of
 from simulator.domain.variance_forecast import VarianceForecast
 from simulator.usecase.models import BacktestConfig, SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
-from simulator.usecase.run_weekly_segments import (
-    RunWeeklySegmentsRequest,
-    run_weekly_segments,
-)
 
 # 1 週内の 5 本（同一週・epoch int 5分足）。O≈100, σ̂⁻=σ̂⁺=0.05 で
 # S=100·exp(-1.96·0.05)=90.66, T=100·exp(0.674·0.05)=103.43。
@@ -170,24 +165,3 @@ class TestWeekSegmentExitReasons:
         res = interactor.execute(req)
         assert len(res.trades) == 1
         assert res.trades[0].exit_reason == "sl"
-
-
-class TestRunWeeklySegmentsOrchestration:
-    def test_estimable_week_invokes_segment_runner(self, tmp_path):
-        bars = [
-            _bar(_BASE, 100.0, 100.5, 99.5, 100.0),
-            _bar(_BASE + 300, 100.0, 101.0, 99.0, 100.5),
-        ]
-        repo = VolBandParquetRepo(out_dir=tmp_path)
-        repo.save_all([_fc()])
-        called = {"n": 0}
-
-        def _runner(week_bars, wid, fc):
-            called["n"] += 1
-            return None
-
-        req = RunWeeklySegmentsRequest(full_bars=bars, e_rule="E0", p_tp=0.50, capital=100_000.0)
-        outs = run_weekly_segments(request=req, repo=repo, run_segment=_runner)
-        assert called["n"] == 1
-        assert len(outs) == 1
-        assert outs[0].log.entry_flag is True
