@@ -446,7 +446,11 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     autoFrame = true;
     applyView();
   };
-  for (const btn of doc.querySelectorAll('.tb-interval')) {
+  // 時間足の再駆動は data-timeframe を持つ要素（共有 TimeframeMenu の項目）に結線する。
+  //   旧静的ボタン（.tb-interval ＋ data-timeframe 併持）が共有メニュー化（ISSUE-122/123）で
+  //   トリガー（.tb-interval のみ・tf 属性なし）と項目（data-timeframe のみ）に分離されたため、
+  //   .tb-interval 選択ではトリガーに誤結線し loadTimeframe(undefined) が走る（ISSUE-142）。
+  for (const btn of doc.querySelectorAll('[data-timeframe]')) {
     btn.addEventListener('click', () => setTimeout(() => loadTimeframe(btn.dataset.timeframe), 60));
   }
   view.bindManualBrowse(() => { autoFrame = false; });
