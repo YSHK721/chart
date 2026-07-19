@@ -238,7 +238,18 @@ test('btlm_trail: readout_only 系列は価格軸オートスケールから除�
   }]);
   const opts = chart.created[0]._createOpts;
   assert.equal(typeof opts.autoscaleInfoProvider, 'function');
-  assert.equal(opts.autoscaleInfoProvider(), null, 'オートスケール情報 null＝価格軸に影響しない');
+  // 価格軸から除外する正しい契約は { priceRange: null }（null 返却は既定オートスケール＝除外にならない）。
+  assert.deepEqual(opts.autoscaleInfoProvider(), { priceRange: null }, 'priceRange:null＝価格軸に寄与しない');
+});
+
+test('btlm_trail: point_markers_radius を pointMarkersRadius へ写像（ドット視認性）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#4', [{
+    name: 'btlm_trail_mean', kind: 'line', style: 'solid', width: 2, color: '#7b68ee',
+    point_markers: true, line_visible: false, point_markers_radius: 4,
+    data: [{ time: 1, value: 10 }],
+  }]);
+  assert.equal(chart.created[0]._createOpts.pointMarkersRadius, 4);
 });
 
 test('readout_only 無しの系列は autoscaleInfoProvider を設定しない（後方互換）', () => {

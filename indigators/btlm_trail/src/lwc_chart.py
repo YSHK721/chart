@@ -65,8 +65,12 @@ def _quantile_series_name(q: float) -> str:
     return f"btlm_trail_q{int(round(q * 100))}"
 
 
+_POINT_RADIUS = 3.5  # ドット（サークル）の明示半径（px）。ズームアウトでも円と視認できる大きさ。
+
+
 def _emit(chart, name, times, values, color, *, style="solid", width=1,
-          point_markers=None, line_visible=None, readout_only=None):
+          point_markers=None, line_visible=None, readout_only=None,
+          point_markers_radius=None):
     """1 系列を chart へ追加する（値列名は系列名と一致・NaN は除外）。
 
     描画ヒント（表示層で lightweight-charts のオプションへ写像される・後方互換で任意）:
@@ -87,6 +91,8 @@ def _emit(chart, name, times, values, color, *, style="solid", width=1,
         kwargs["line_visible"] = line_visible
     if readout_only is not None:
         kwargs["readout_only"] = readout_only
+    if point_markers_radius is not None:
+        kwargs["point_markers_radius"] = point_markers_radius
     line = chart.create_line(**kwargs)
     series = pd.DataFrame({"time": times, name: np.asarray(values, dtype=float)}).dropna()
     line.set(series)
@@ -153,11 +159,13 @@ def add_btlm_trail(
     times = _resolve_times(df, time_column)
     dots = str(display_mode).lower() == "dots"
     pm, lv = (True, False) if dots else (False, True)
+    radius = _POINT_RADIUS if dots else None  # ドット時のみ明示半径（視認性）。
 
     lines: dict[str, object] = {}
     lines["btlm_trail_mean"] = _emit(
         chart, "btlm_trail_mean", times, res.mean, color,
         style="solid", width=2, point_markers=pm, line_visible=lv,
+        point_markers_radius=radius,
     )
     # バンド端（分位ペアごと）。display_mode に追随。
     first_band = None
@@ -165,9 +173,11 @@ def add_btlm_trail(
         lo_name = _quantile_series_name(ql)
         hi_name = _quantile_series_name(qh)
         lines[lo_name] = _emit(chart, lo_name, times, low, _COLOR_BAND,
-                               style="dotted", point_markers=pm, line_visible=lv)
+                               style="dotted", point_markers=pm, line_visible=lv,
+                               point_markers_radius=radius)
         lines[hi_name] = _emit(chart, hi_name, times, high, _COLOR_BAND,
-                               style="dotted", point_markers=pm, line_visible=lv)
+                               style="dotted", point_markers=pm, line_visible=lv,
+                               point_markers_radius=radius)
         if first_band is None:
             first_band = (low, high)
 

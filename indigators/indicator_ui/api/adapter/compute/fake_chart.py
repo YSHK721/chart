@@ -90,7 +90,8 @@ class FakeLineChart:
             }
             # 描画ヒント（ドット/ライン切替）は付与された系列のみ載せる（後方互換: 既存
             #   指標は create_line にこれらを渡さないため payload に現れない＝挙動不変）。
-            for hint in ("point_markers", "line_visible", "readout_only"):
+            for hint in ("point_markers", "line_visible", "readout_only",
+                         "point_markers_radius"):
                 if hint in line.kwargs:
                     payload[hint] = line.kwargs[hint]
             payloads.append(payload)

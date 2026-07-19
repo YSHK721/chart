@@ -107,6 +107,16 @@ def test_display_mode_dots_sets_point_markers_hint():
     mean = next(ln for ln in chart.lines if ln.name == "btlm_trail_mean")
     assert mean.kwargs.get("point_markers") is True
     assert mean.kwargs.get("line_visible") is False
+    # ドット視認性のため明示半径を付す（ズームアウトでラインに見える問題への対処）。
+    assert mean.kwargs.get("point_markers_radius", 0) >= 3
+
+
+def test_display_mode_line_omits_point_radius():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100, display_mode="line")
+    mean = next(ln for ln in chart.lines if ln.name == "btlm_trail_mean")
+    # ライン表示ではドット半径ヒントを付けない。
+    assert "point_markers_radius" not in mean.kwargs
 
 
 def test_display_mode_line_sets_line_hint():
