@@ -205,7 +205,7 @@ def add_btlm_trail(
         for name, vals in (
             ("btlm_trail_beta", res.beta),
             ("btlm_trail_sigma", res.sigma),
-            ("btlm_trail_coverage", cov),
+            ("btlm_trail_band_hit_rate", cov),
         ):
             if vals is None:
                 continue

@@ -164,14 +164,14 @@ const BTLM_TRAIL = new IndicatorDef({
       group: 'group.display', order: 2, label: '外れ値オフセット %', step: 0.1, min: 0,
       tooltip: 'バンド端から上下対称に引く補助線の距離（%）。0 でオフ。24h・90% 生存 ≒ 2.77%（実測）。',
     }),
-    // 数値表示（β・実現被覆率・残差 σ）を読取欄に出す。
+    // 数値表示（β・バンド内実績率〔実現被覆率〕・残差 σ）を読取欄に出す。
     param('show_metrics', ParamType.BOOL, true, [], null, {
-      group: 'group.display', order: 3, label: 'β・被覆率・σ を表示',
-      tooltip: 'β＝回帰直線の傾き（トレンド方向の正式判定値。符号が向き・大きさが勢い）／被覆率＝直近N本で確定バー終値が帯に収まった実測割合（帯の信頼度の実績。名目との乖離を監視）／σ＝回帰直線まわりの価格の散らばり（σの倍数でボラ追随型ストップ幅を設計する物差し）。3値とも読取欄への表示専用で、チャート描画・帯の計算には影響しない。',
+      group: 'group.display', order: 3, label: 'β・バンド内実績率・σ を表示',
+      tooltip: 'β＝回帰直線の傾き（トレンド方向の正式判定値。符号が向き・大きさが勢い）／バンド内実績率＝直近N本で確定バー終値が帯に収まった実測割合（帯の信頼度の実績。名目との乖離を監視）／σ＝回帰直線まわりの価格の散らばり（σの倍数でボラ追随型ストップ幅を設計する物差し）。3値とも読取欄への表示専用で、チャート描画・帯の計算には影響しない。',
     }),
-    // 実現被覆率のローリング本数（既定 250）。
+    // バンド内実績率（実現被覆率）のローリング本数（既定 250）。
     param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
-      group: 'group.display', order: 4, label: '被覆率の本数', step: 1, min: 2, unit: 'unit.bars',
+      group: 'group.display', order: 4, label: 'バンド内実績率の本数', step: 1, min: 2, unit: 'unit.bars',
       conditionalEnable: { when: { param: 'show_metrics', equals: true } },
     }),
     // --- MA 参考線（btlm_mean へ moving_averages を適用・方向確認用・既定オフ）---
@@ -203,7 +203,7 @@ const BTLM_TRAIL = new IndicatorDef({
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_ma', seriesName: 'btlm_trail_ma', dynamic: false }),
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_beta', seriesName: 'btlm_trail_beta', dynamic: false }),
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_sigma', seriesName: 'btlm_trail_sigma', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_coverage', seriesName: 'btlm_trail_coverage', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_band_hit_rate', seriesName: 'btlm_trail_band_hit_rate', dynamic: false }),
   ],
   compute: { computeId: 'btlm_trail', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });

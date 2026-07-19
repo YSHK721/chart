@@ -185,7 +185,7 @@ def test_metric_series_emitted_invisible_for_readout():
     add_btlm_trail(chart, _df(400, seed=5), source="close", maxbars=100,
                    q_low=0.05, q_high=0.95, show_metrics=True, n_cov=250)
     names = {ln.name for ln in chart.lines}
-    assert {"btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_coverage"} <= names
+    assert {"btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_band_hit_rate"} <= names
     beta = next(ln for ln in chart.lines if ln.name == "btlm_trail_beta")
     # 読取欄専用: チャート上は不可視（line_visible=False かつ point_markers=False）。
     assert beta.kwargs.get("line_visible") is False

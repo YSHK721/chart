@@ -66,7 +66,7 @@ def test_btlm_trail_payload_carries_display_and_extra_series():
     assert payloads["btlm_trail_mean"]["line_visible"] is False
     # 拡張系列。
     assert {"btlm_trail_off_hi", "btlm_trail_off_lo", "btlm_trail_ma",
-            "btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_coverage"} <= set(payloads)
+            "btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_band_hit_rate"} <= set(payloads)
 
 
 def test_btlm_trail_payload_no_hints_when_absent():
@@ -94,7 +94,7 @@ def test_runtime_compute_propagates_display_hints_end_to_end():
         assert by_name[name]["line_visible"] is False
         assert by_name[name]["point_markers_radius"] >= 3
     # 数値読取系列は価格軸除外ヒント（readout_only）付き。
-    for name in ("btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_coverage"):
+    for name in ("btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_band_hit_rate"):
         assert by_name[name]["readout_only"] is True, f"{name} に readout_only が無い"
         assert by_name[name]["line_visible"] is False
 
