@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from adapter.compute import CallBinding, FakeLineChart
+from adapter.compute import CallBinding, FakeLineChart, IndicatorComputeAdapter
 from adapter.compute.catalog_schema import PARAM_DEFAULTS
 
 
@@ -76,3 +76,36 @@ def test_btlm_trail_payload_no_hints_when_absent():
     chart.create_line(name="X", color="red", width=1, style="solid")
     p = chart.to_payloads()[0]
     assert "point_markers" not in p and "line_visible" not in p
+
+
+# --- 実 runtime 経路（IndicatorComputeAdapter → 統合 FakeChart → to_payloads）の end-to-end ---
+#   実 UI/`/compute` と同一経路。単体（FakeLineChart 直叩き）ではなく本経路でヒント伝搬を固定する。
+def test_runtime_compute_propagates_display_hints_end_to_end():
+    adapter = IndicatorComputeAdapter()
+    series = adapter.compute("btlm_trail", "default", _ohlcv(300), {
+        "source": "close", "maxbars": 100, "q_low": 0.05, "q_high": 0.95,
+        "display_mode": "dots", "band_method": "ols", "empirical_n": 500,
+        "show_metrics": True, "n_cov": 250,
+    })
+    by_name = {s["name"]: s for s in series}
+    # ドット既定: mean/q5/q95 に描画ヒントが載る（実応答に反映される）。
+    for name in ("btlm_trail_mean", "btlm_trail_q5", "btlm_trail_q95"):
+        assert by_name[name]["point_markers"] is True, f"{name} に point_markers が無い"
+        assert by_name[name]["line_visible"] is False
+        assert by_name[name]["point_markers_radius"] >= 3
+    # 数値読取系列は価格軸除外ヒント（readout_only）付き。
+    for name in ("btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_coverage"):
+        assert by_name[name]["readout_only"] is True, f"{name} に readout_only が無い"
+        assert by_name[name]["line_visible"] is False
+
+
+def test_runtime_compute_line_mode_hints_end_to_end():
+    adapter = IndicatorComputeAdapter()
+    series = adapter.compute("btlm_trail", "default", _ohlcv(300), {
+        "source": "close", "maxbars": 100, "q_low": 0.05, "q_high": 0.95,
+        "display_mode": "line",
+    })
+    mean = next(s for s in series if s["name"] == "btlm_trail_mean")
+    assert mean["line_visible"] is True
+    assert mean["point_markers"] is False
+    assert "point_markers_radius" not in mean  # ライン時は半径ヒント無し
