@@ -27,6 +27,7 @@
   | v1.0.4 | 2026-07-19 | **ISSUE-141 是正**：経験分位の窓を §4.3 の「当該バー除外」（`d_{t-N}..d_{t-1}`）へ実装是正（従来 `[start:t+1]`＝当該バー込みの不整合）。経験分位バンド本体・外れ値分位の両方に適用（規約一致・自己参照遮断）。仕様（§4.3）は不変・実装のみ是正。経験分位帯の値が約 1 ランク変わる（想定内） |
   | v1.0.5 | 2026-07-19 | **MA 参考線をユーザー指示で削除**。設定「MA 参考線／種別／期間」（`ma_reference`/`ma_type`/`ma_length`）・系列 `btlm_trail_ma`・MA 配管（`ma_reference.py`・adapter 生成・`moving_averages.core` 動的ロード結線）をテストごと撤去（catalog/schema/golden 同期）。`moving_averages` 本体・`applied_price` は無改変。他機能（ドット/ライン・バンド 2 方式・q_out・β/バンド内実績率/σ・単一ペア・8 択ソース）は byte 不変 |
   | v1.0.6 | 2026-07-19 | **「系列表示（ドット/ライン）」をパラメーター（`display_mode`）から設定ダイアログ「スタイル」タブへ移設**（ユーザー確定・案A＝系列単位・既定ドット）。ゲート = SeriesDef 新フラグ `pointStyleEditable`（btlm_trail の mean/分位線のみ付与＝他指標のスタイルタブ挙動は不変）。永続化は既存 per-series style patch へ `display` 属性を追加（schema 変更不要）。`applySeriesStyle` に `display→pointMarkersVisible/lineVisible` 写像を追加（display 未指定系列は不変）。adapter は `display_mode` 撤去・常にドット既定 emit（計算 byte 不変）。catalog/schema/golden 同期 |
+  | v1.0.7 | 2026-07-19 | **スタイルタブの「線種」と「ドット/ライン」を 1 つの 4 択（`dot`／`solid`／`dotted`／`dashed`・既定 `dot`）へ統合**（ユーザー確定）。対象系列（pointStyleEditable）の行は 色・線幅・統合 4 択 の 1 行構成（折返し解消）。`dot`＝サークル（`display=dots`）、線種＝ライン描画＋当該 `lineStyle`（`display=line`＋`style`）へ分解し既存 per-series patch へ整合保存（`{display, style}` スキーマ不変・移行不要・往復整合）。未付与系列（補助線・読取・全他指標）は従来 3 択（solid/dotted/dashed）で byte 不変。UI（properties_dialog）のみ変更・renderer/form_model/adapter/catalog は不変 |
 
 - 確定仕様の正本：`/root/.claude/plans/kind-twirling-hollerith.md`（全項目を本書に反映）。
 - 実証知見の正本：`.doc/BTLM_TRACK_ANALYSIS_FINDINGS.md`（結論 A〜E。非保証事項・数値は本書 §9.4／§10.1 に出典付き引用）。

@@ -459,23 +459,40 @@ const TRAIL_STYLES = [
   { name: 'btlm_trail_beta', kind: 'line', color: '#a0a0a0', width: 1, style: 'solid', visible: true, display: null },
 ];
 
-test('案A _buildStylePane: pointStyleEditable 系列のみ display コントロールを持ち初期値=dots', () => {
+test('案A統合: pointStyleEditable 系列は 4 択 unified（dot/solid/dotted/dashed）で初期値=dot・別体 style/display は無し', () => {
   const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: TRAIL_DEF, seriesStyles: TRAIL_STYLES });
   dialog._buildStylePane();
   const mean = dialog._styleState.find((s) => s.names[0] === 'btlm_trail_mean');
   const beta = dialog._styleState.find((s) => s.names[0] === 'btlm_trail_beta');
-  assert.ok(mean.display, 'mean は display コントロールを持つ');
-  assert.equal(mean.display.value, 'dots');
-  assert.equal(mean.initial.display, 'dots');
-  assert.equal(beta.display, null, 'beta（未付与）は display コントロールを持たない');
+  // 対象系列: 統合 4 択のみ（別体 style/display コントロールは持たない＝1 行構成）。
+  assert.ok(mean.unified, 'mean は統合 4 択コントロールを持つ');
+  assert.equal(mean.unified.value, 'dot', '既定は dot（display=dots 由来）');
+  assert.equal(mean.initial.unified, 'dot');
+  assert.equal(mean.style, null, '別体の線種 select は無い');
+  assert.ok(!mean.display, '別体の display select は無い');
+  // 未付与系列（beta）: 従来の 3 択 style（unified なし）。
+  assert.equal(beta.unified, null);
+  assert.ok(beta.style, 'beta は従来の 3 択 style');
 });
 
-test('案A _collectStyleChanges: display 変更のみ patch 化（dots→line）', () => {
+test('案A統合 _collectStyleChanges: dot→dotted は {display:line, style:dotted}、→dot は {display:dots}', () => {
   const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: TRAIL_DEF, seriesStyles: TRAIL_STYLES });
   dialog._buildStylePane();
   dialog._buildVisibilityPane();
   assert.deepEqual(dialog._collectStyleChanges(), {});
   const mean = dialog._styleState.find((s) => s.names[0] === 'btlm_trail_mean');
-  mean.display.value = 'line';
-  assert.deepEqual(dialog._collectStyleChanges(), { btlm_trail_mean: { display: 'line' } });
+  mean.unified.value = 'dotted';
+  assert.deepEqual(dialog._collectStyleChanges(), { btlm_trail_mean: { display: 'line', style: 'dotted' } });
+});
+
+test('案A統合 _collectStyleChanges: 線種→dot は {display:dots}（線種は保持・display のみ）', () => {
+  const styles = [{ name: 'btlm_trail_mean', kind: 'line', color: '#7b68ee', width: 2, style: 'dashed', visible: true, display: 'line' }];
+  const def = { id: 'btlm_trail', params: [], series: [{ seriesName: 'btlm_trail_mean', dynamic: false, kind: 'line', pointStyleEditable: true }], compute: { variants: ['default'] } };
+  const dialog = new PropertiesDialog({ document: styleFakeDoc(), def, seriesStyles: styles });
+  dialog._buildStylePane();
+  dialog._buildVisibilityPane();
+  const mean = dialog._styleState[0];
+  assert.equal(mean.unified.value, 'dashed', '初期は dashed（display=line, style=dashed 由来）');
+  mean.unified.value = 'dot';
+  assert.deepEqual(dialog._collectStyleChanges(), { btlm_trail_mean: { display: 'dots' } });
 });

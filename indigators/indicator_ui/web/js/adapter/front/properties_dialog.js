@@ -689,6 +689,9 @@ export class PropertiesDialog {
       //   （renderer.applySeriesStyle も histogram には色しか適用しない＝描画種別と設定項目を一致）。
       let width = null;
       let style = null;
+      let unified = null;
+      // 統合 4 択（案A・btlm_trail 対象系列）の初期値: display=='dots' なら 'dot'、それ以外は線種。
+      const unifiedInit = (r.display === 'dots') ? 'dot' : (r.style ?? 'solid');
       if (seriesKind(r.kind).editableLineStyle) {
         width = doc.createElement('input');
         width.type = 'number';
@@ -697,41 +700,41 @@ export class PropertiesDialog {
         width.className = 'prop-input prop-input-number';
         width.value = String(r.width);
 
-        style = doc.createElement('select');
-        style.className = 'prop-input prop-input-select';
-        for (const st of ['solid', 'dotted', 'dashed']) {
-          const o = doc.createElement('option');
-          o.value = st;
-          o.textContent = st;
-          if (r.style === st) o.selected = true;
-          style.append(o);
+        if (r.pointStyleEditable) {
+          // 対象系列（案A）: 線種と「ドット/ライン」を統合した 1 つの 4 択（dot/solid/dotted/dashed）。
+          //   dot=サークル描画、solid/dotted/dashed=その線種のライン描画。既定 dot。1 行構成（折返し解消）。
+          unified = doc.createElement('select');
+          unified.className = 'prop-input prop-input-select';
+          for (const st of ['dot', 'solid', 'dotted', 'dashed']) {
+            const o = doc.createElement('option');
+            o.value = st;
+            o.textContent = st;
+            if (unifiedInit === st) o.selected = true;
+            unified.append(o);
+          }
+          unified.value = unifiedInit;
+          row.append(width, unified);
+        } else {
+          // 未付与系列（補助線・読取・全他指標）: 従来どおり 3 択（solid/dotted/dashed）＝byte 不変。
+          style = doc.createElement('select');
+          style.className = 'prop-input prop-input-select';
+          for (const st of ['solid', 'dotted', 'dashed']) {
+            const o = doc.createElement('option');
+            o.value = st;
+            o.textContent = st;
+            if (r.style === st) o.selected = true;
+            style.append(o);
+          }
+          // option 追加後に value を明示設定（実 DOM で選択を確定・DOM スタブでも value を保証）。
+          style.value = r.style;
+          row.append(width, style);
         }
-        // option 追加後に value を明示設定（実 DOM で選択を確定・DOM スタブでも value を保証）。
-        style.value = r.style;
-        row.append(width, style);
-      }
-
-      // 系列表示（ドット/ライン）: pointStyleEditable の系列のみ（案A・btlm_trail）。
-      //   ゲート未付与の系列（他指標）には項目を出さない＝スタイルタブ挙動は不変（非波及）。
-      let display = null;
-      if (r.pointStyleEditable) {
-        display = doc.createElement('select');
-        display.className = 'prop-input prop-input-select';
-        for (const dm of ['dots', 'line']) {
-          const o = doc.createElement('option');
-          o.value = dm;
-          o.textContent = dm === 'dots' ? 'ドット' : 'ライン';
-          if ((r.display ?? 'dots') === dm) o.selected = true;
-          display.append(o);
-        }
-        display.value = r.display ?? 'dots';
-        row.append(display);
       }
 
       // initial: OK 時の差分判定基準（変更された行×フィールドのみ patch へ載せる）。
       this._styleState.push({
-        names: r.names, color, width, style, display,
-        initial: { color: r.color, width: String(r.width), style: r.style, display: r.display ?? 'dots' },
+        names: r.names, color, width, style, unified,
+        initial: { color: r.color, width: String(r.width), style: r.style, unified: unifiedInit },
       });
       pane.append(row);
     }
@@ -783,9 +786,15 @@ export class PropertiesDialog {
       if (s.style && s.style.value !== s.initial.style) {
         fields.style = s.style.value;
       }
-      // 系列表示（ドット/ライン）: pointStyleEditable 行のみ display コントロールを持つ。
-      if (s.display && s.display.value !== s.initial.display) {
-        fields.display = s.display.value;
+      // 統合 4 択（案A・pointStyleEditable 行）: dot は display=dots、線種はライン描画＋当該線種へ分解する。
+      //   永続化スキーマは既存の per-series {display, style} のまま（往復整合・移行不要）。
+      if (s.unified && s.unified.value !== s.initial.unified) {
+        if (s.unified.value === 'dot') {
+          fields.display = 'dots';
+        } else {
+          fields.display = 'line';
+          fields.style = s.unified.value;
+        }
       }
       if (Object.keys(fields).length > 0) {
         put(s.names, fields);
