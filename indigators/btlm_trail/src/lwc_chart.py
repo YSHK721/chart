@@ -107,11 +107,6 @@ def add_btlm_trail(
     maxbars: int = DEFAULT_MAXBARS,
     q_low: float = DEFAULT_Q_LOW,
     q_high: float = DEFAULT_Q_HIGH,
-    q_low2: Optional[float] = None,
-    q_high2: Optional[float] = None,
-    q_low3: Optional[float] = None,
-    q_high3: Optional[float] = None,
-    quantile_pairs=None,
     band_method: str = "ols",
     empirical_n: int = DEFAULT_EMP_N,
     display_mode: str = "dots",
@@ -124,7 +119,7 @@ def add_btlm_trail(
     time_column: Optional[str] = None,
     color: str = _COLOR_MEAN,
 ) -> dict[str, object]:
-    """``chart`` へ btlm_trail の系列一式を追加する。
+    """``chart`` へ btlm_trail の系列一式を追加する（単一分位ペア）。
 
     系列:
         - btlm_trail_mean / btlm_trail_q{pct}: トレンド現在位置とバンド端（display_mode で
@@ -133,13 +128,12 @@ def add_btlm_trail(
         - btlm_trail_ma: MA 参考線（btlm_mean へ moving_averages を適用・既定オフ）。
         - btlm_trail_beta/sigma/coverage: β・残差 σ・実現被覆率（読取欄オーバーレイ用・不可視）。
 
-    分位ペアは 2 経路: ``quantile_pairs`` 明示で複数ペア、未指定なら UI 由来のスカラ
-    q_low/q_high から単一ペア（tgp_btlm と対称）。
+    分位ペアは UI 由来のスカラ q_low/q_high（0<q_low<q_high<1）を用いる（tgp_btlm と対称）。
 
     Args:
         chart: ``create_line(name=...)`` を持つオブジェクト（duck typing）。
         df: OHLC DataFrame（時刻は time / date / DatetimeIndex で解決）。
-        source: 8 択ソース。maxbars: 回帰窓。q_low/q_high/quantile_pairs: 分位ペア。
+        source: 8 択ソース。maxbars: 回帰窓。q_low/q_high: 分位ペア。
         band_method: "ols"/"empirical"。empirical_n: 経験分位の参照本数。
         display_mode: "dots"（サークル・既定）/"line"。
         offset_pct: 外れ値オフセット %（0=オフ）。
@@ -154,23 +148,16 @@ def add_btlm_trail(
         ValueError: source / 分位ペア / band_method / ma_type 不正時。
         KeyError: 時刻が解決できない場合。
     """
-    if quantile_pairs is not None:
-        pairs = quantile_pairs
-    else:
-        # 主ペア＋固定スロット（空欄=None・不正=0<lo<hi<1 を満たさない）を除外して構成する。
-        pairs = [(q_low, q_high)]
-        for lo, hi in ((q_low2, q_high2), (q_low3, q_high3)):
-            if lo is not None and hi is not None and 0.0 < float(lo) < float(hi) < 1.0:
-                pairs.append((float(lo), float(hi)))
     res = build_btlm_trail(
         df, source=source, maxbars=maxbars,
-        quantile_pairs=pairs, band_method=band_method,
+        q_low=q_low, q_high=q_high, band_method=band_method,
         empirical_n=empirical_n,
     )
     times = _resolve_times(df, time_column)
     dots = str(display_mode).lower() == "dots"
     pm, lv = (True, False) if dots else (False, True)
     radius = _POINT_RADIUS if dots else None  # ドット時のみ明示半径（視認性）。
+    low, high = res.band_low, res.band_high
 
     lines: dict[str, object] = {}
     lines["btlm_trail_mean"] = _emit(
@@ -178,23 +165,18 @@ def add_btlm_trail(
         style="solid", width=2, point_markers=pm, line_visible=lv,
         point_markers_radius=radius,
     )
-    # バンド端（分位ペアごと）。display_mode に追随。
-    first_band = None
-    for (ql, qh), (low, high) in res.bands.items():
-        lo_name = _quantile_series_name(ql)
-        hi_name = _quantile_series_name(qh)
-        lines[lo_name] = _emit(chart, lo_name, times, low, _COLOR_BAND,
-                               style="dotted", point_markers=pm, line_visible=lv,
-                               point_markers_radius=radius)
-        lines[hi_name] = _emit(chart, hi_name, times, high, _COLOR_BAND,
-                               style="dotted", point_markers=pm, line_visible=lv,
-                               point_markers_radius=radius)
-        if first_band is None:
-            first_band = (low, high)
+    # バンド端（下側 q_low・上側 q_high）。display_mode に追随。
+    lo_name = _quantile_series_name(q_low)
+    hi_name = _quantile_series_name(q_high)
+    lines[lo_name] = _emit(chart, lo_name, times, low, _COLOR_BAND,
+                           style="dotted", point_markers=pm, line_visible=lv,
+                           point_markers_radius=radius)
+    lines[hi_name] = _emit(chart, hi_name, times, high, _COLOR_BAND,
+                           style="dotted", point_markers=pm, line_visible=lv,
+                           point_markers_radius=radius)
 
     # 外れ値オフセットライン（バンド端から ±offset_pct% 外側・上下対称・既定オフ）。
-    if offset_pct and offset_pct > 0 and first_band is not None:
-        low, high = first_band
+    if offset_pct and offset_pct > 0:
         frac = float(offset_pct) / 100.0
         lines["btlm_trail_off_hi"] = _emit(
             chart, "btlm_trail_off_hi", times, high * (1.0 + frac), _COLOR_OFFSET,
@@ -216,11 +198,10 @@ def add_btlm_trail(
     # 数値表示（β・残差 σ・実現被覆率）: 読取欄オーバーレイ用の不可視系列として供給する。
     if show_metrics:
         cov = None
-        if first_band is not None:
-            lower = {str(c).lower(): c for c in df.columns}
-            if "close" in lower:
-                close = df[lower["close"]].to_numpy(dtype=float)
-                cov = rolling_coverage(close, first_band[0], first_band[1], n_cov)
+        lower = {str(c).lower(): c for c in df.columns}
+        if "close" in lower:
+            close = df[lower["close"]].to_numpy(dtype=float)
+            cov = rolling_coverage(close, low, high, n_cov)
         for name, vals in (
             ("btlm_trail_beta", res.beta),
             ("btlm_trail_sigma", res.sigma),

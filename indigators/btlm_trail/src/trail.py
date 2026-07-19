@@ -38,33 +38,30 @@ class TrailResult:
     """btlm_trail のローリング成果。各配列は入力バーと同順・同長。
 
     Attributes:
-        mean:  窓末尾 btlm_mean（トレンド現在位置＝ドットの原子）。
-        beta:  回帰傾き β（方向の正式判定値）。
-        sigma: 残差 σ（σ 正規化ストップ距離の計算資源）。
-        bands: {(q_low, q_high): (low[], high[])}。分位ペアごとのバンド。
+        mean:      窓末尾 btlm_mean（トレンド現在位置＝ドットの原子）。
+        beta:      回帰傾き β（方向の正式判定値）。
+        sigma:     残差 σ（σ 正規化ストップ距離の計算資源）。
+        band_low:  下側分位バンド（q_low）。
+        band_high: 上側分位バンド（q_high）。
         band_method: "ols" / "empirical"。
     """
 
     mean: np.ndarray
     beta: np.ndarray
     sigma: np.ndarray
-    bands: dict
+    band_low: np.ndarray
+    band_high: np.ndarray
     band_method: str
 
 
-def _validate_pairs(quantile_pairs) -> list[tuple[float, float]]:
-    """分位ペアを検証する（0 < q_low < q_high < 1）。空・重複順序違反は ValueError。"""
-    if not quantile_pairs:
-        raise ValueError("分位ペアが空です。")
-    out: list[tuple[float, float]] = []
-    for pair in quantile_pairs:
-        ql, qh = float(pair[0]), float(pair[1])
-        if not (0.0 < ql < qh < 1.0):
-            raise ValueError(
-                f"分位ペアは 0 < q_low < q_high < 1 が必要です: {pair}"
-            )
-        out.append((ql, qh))
-    return out
+def _validate_pair(q_low: float, q_high: float) -> tuple[float, float]:
+    """単一分位ペアを検証する（0 < q_low < q_high < 1）。違反は ValueError。"""
+    ql, qh = float(q_low), float(q_high)
+    if not (0.0 < ql < qh < 1.0):
+        raise ValueError(
+            f"分位ペアは 0 < q_low < q_high < 1 が必要です: q_low={q_low}, q_high={q_high}"
+        )
+    return ql, qh
 
 
 def _empirical_quantile_causal(
@@ -91,17 +88,18 @@ def build_btlm_trail(
     *,
     source: str = "close",
     maxbars: int = DEFAULT_MAXBARS,
-    quantile_pairs=((DEFAULT_Q_LOW, DEFAULT_Q_HIGH),),
+    q_low: float = DEFAULT_Q_LOW,
+    q_high: float = DEFAULT_Q_HIGH,
     band_method: str = "ols",
     empirical_n: int = DEFAULT_EMP_N,
 ) -> TrailResult:
-    """価格 DataFrame から btlm_trail のローリング成果を組む。
+    """価格 DataFrame から btlm_trail のローリング成果を組む（単一分位ペア）。
 
     Args:
         df: OHLC 列を持つ DataFrame（列名の大小不問）。
         source: 8 択ソース（close/open/high/low/hl2/hlc3/ohlc4/hlcc4）。回帰対象。
         maxbars: 回帰窓の本数（既定 100）。
-        quantile_pairs: 分位ペアの列（各 0<q_low<q_high<1）。複数指定で複数バンド。
+        q_low/q_high: 分位ペア（0<q_low<q_high<1）。
         band_method: "ols"（名目）/ "empirical"（経験分位）。
         empirical_n: 経験分位バンドの参照本数（既定 500）。
 
@@ -111,7 +109,7 @@ def build_btlm_trail(
     Raises:
         ValueError: 分位ペア不正・未知ソース・未知バンド方式・maxbars<3。
     """
-    pairs = _validate_pairs(quantile_pairs)
+    ql, qh = _validate_pair(q_low, q_high)
     method = str(band_method).lower()
     if method not in ("ols", "empirical"):
         raise ValueError(f"未知のバンド方式です: {band_method}")
@@ -119,12 +117,9 @@ def build_btlm_trail(
     prices = resolve_source(df, source)
     mean, pred_sd, beta, sigma = rolling_ols_window_end(prices, maxbars)
 
-    bands: dict[tuple[float, float], tuple[np.ndarray, np.ndarray]] = {}
     if method == "ols":
-        for ql, qh in pairs:
-            low = mean + norm_ppf(ql) * pred_sd
-            high = mean + norm_ppf(qh) * pred_sd
-            bands[(ql, qh)] = (low, high)
+        band_low = mean + norm_ppf(ql) * pred_sd
+        band_high = mean + norm_ppf(qh) * pred_sd
     else:
         # 経験分位: 乖離率 (close - mean)/mean の直近 emp_n 本の経験 q（因果）。
         lower = {str(c).lower(): c for c in df.columns}
@@ -133,12 +128,15 @@ def build_btlm_trail(
         close = df[lower["close"]].to_numpy(dtype=np.float64)
         with np.errstate(invalid="ignore", divide="ignore"):
             deviations = (close - mean) / mean
-        for ql, qh in pairs:
-            emp_lo = _empirical_quantile_causal(deviations, empirical_n, ql)
-            emp_hi = _empirical_quantile_causal(deviations, empirical_n, qh)
-            bands[(ql, qh)] = (mean * (1.0 + emp_lo), mean * (1.0 + emp_hi))
+        emp_lo = _empirical_quantile_causal(deviations, empirical_n, ql)
+        emp_hi = _empirical_quantile_causal(deviations, empirical_n, qh)
+        band_low = mean * (1.0 + emp_lo)
+        band_high = mean * (1.0 + emp_hi)
 
-    return TrailResult(mean=mean, beta=beta, sigma=sigma, bands=bands, band_method=method)
+    return TrailResult(
+        mean=mean, beta=beta, sigma=sigma,
+        band_low=band_low, band_high=band_high, band_method=method,
+    )
 
 
 def rolling_coverage(
@@ -166,13 +164,12 @@ def rolling_coverage(
 
 
 def realized_coverage_latest(
-    close: np.ndarray, band: tuple[np.ndarray, np.ndarray], n_cov: int = DEFAULT_N_COV
+    close: np.ndarray, low: np.ndarray, high: np.ndarray, n_cov: int = DEFAULT_N_COV
 ) -> float:
     """最新確定バーの実現被覆率（直近 n_cov 本で close がバンド内の割合）を返す。
 
     有限被覆値が 1 つも無ければ NaN。
     """
-    low, high = band
     cov = rolling_coverage(close, low, high, n_cov)
     finite = cov[np.isfinite(cov)]
     return float(finite[-1]) if finite.size else float("nan")

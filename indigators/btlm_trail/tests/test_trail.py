@@ -77,7 +77,7 @@ def test_ols_window_end_matches_reference_within_1e6():
     maxbars = 100
     res = build_btlm_trail(
         df, source="close", maxbars=maxbars,
-        quantile_pairs=[(0.05, 0.95)], band_method="ols",
+        q_low=0.05, q_high=0.95, band_method="ols",
     )
     # 各確定バー t で df[:t+1] に参照実装を当て、窓末尾値と一致するか（複数点抽出）。
     close = df["close"].to_numpy(dtype=float)
@@ -91,8 +91,8 @@ def test_ols_window_end_matches_reference_within_1e6():
         exp_lo = bands["btlm_q5"].to_numpy()[-1]
         exp_hi = bands["btlm_q95"].to_numpy()[-1]
         assert res.mean[t] == pytest.approx(exp_mean, abs=1e-6)
-        assert res.bands[(0.05, 0.95)][0][t] == pytest.approx(exp_lo, abs=1e-6)
-        assert res.bands[(0.05, 0.95)][1][t] == pytest.approx(exp_hi, abs=1e-6)
+        assert res.band_low[t] == pytest.approx(exp_lo, abs=1e-6)
+        assert res.band_high[t] == pytest.approx(exp_hi, abs=1e-6)
 
 
 def test_beta_matches_reference_slope():
@@ -128,38 +128,30 @@ def test_empirical_band_is_non_repaint_and_causal():
     df_prefix = df_full.iloc[:250].reset_index(drop=True)
     res_full = build_btlm_trail(
         df_full, source="close", maxbars=100,
-        quantile_pairs=[(0.05, 0.95)], band_method="empirical", empirical_n=200,
+        q_low=0.05, q_high=0.95, band_method="empirical", empirical_n=200,
     )
     res_prefix = build_btlm_trail(
         df_prefix, source="close", maxbars=100,
-        quantile_pairs=[(0.05, 0.95)], band_method="empirical", empirical_n=200,
+        q_low=0.05, q_high=0.95, band_method="empirical", empirical_n=200,
     )
-    lo_full, hi_full = res_full.bands[(0.05, 0.95)]
-    lo_pre, hi_pre = res_prefix.bands[(0.05, 0.95)]
     # 経験分位バンドも確定バーで不変（未来情報を使わない＝因果）。
-    np.testing.assert_allclose(lo_full[:250], lo_pre, atol=1e-9, equal_nan=True)
-    np.testing.assert_allclose(hi_full[:250], hi_pre, atol=1e-9, equal_nan=True)
+    np.testing.assert_allclose(res_full.band_low[:250], res_prefix.band_low, atol=1e-9, equal_nan=True)
+    np.testing.assert_allclose(res_full.band_high[:250], res_prefix.band_high, atol=1e-9, equal_nan=True)
 
 
 # --- 分位ペア検証 ----------------------------------------------------------
-def test_invalid_quantile_pairs_raise():
+def test_invalid_pair_raises():
     df = _df(120)
-    for bad in [(0.9, 0.1), (0.0, 0.95), (0.05, 1.0), (0.5, 0.5)]:
+    for lo, hi in [(0.9, 0.1), (0.0, 0.95), (0.05, 1.0), (0.5, 0.5)]:
         with pytest.raises(ValueError):
-            build_btlm_trail(df, quantile_pairs=[bad])
+            build_btlm_trail(df, q_low=lo, q_high=hi)
 
 
-def test_multiple_quantile_pairs_produce_multiple_bands():
+def test_band_low_below_mean_below_band_high():
     df = _df(200, seed=5)
-    pairs = [(0.05, 0.95), (0.25, 0.75)]
-    res = build_btlm_trail(df, source="close", maxbars=100, quantile_pairs=pairs)
-    assert set(res.bands.keys()) == set(pairs)
-    lo05, hi05 = res.bands[(0.05, 0.95)]
-    lo25, hi25 = res.bands[(0.25, 0.75)]
+    res = build_btlm_trail(df, source="close", maxbars=100, q_low=0.05, q_high=0.95)
     t = 150
-    # 内側ペア(25/75)は外側ペア(5/95)より幅が狭い。
-    assert (hi25[t] - lo25[t]) < (hi05[t] - lo05[t])
-    assert lo05[t] < lo25[t] < res.mean[t] < hi25[t] < hi05[t]
+    assert res.band_low[t] < res.mean[t] < res.band_high[t]
 
 
 # --- 経験分位バンドの因果性（明示的な未来遮断） ---------------------------
@@ -167,19 +159,17 @@ def test_empirical_band_ignores_future_deviations():
     df = _df(300, seed=6)
     res = build_btlm_trail(
         df, source="close", maxbars=100,
-        quantile_pairs=[(0.05, 0.95)], band_method="empirical", empirical_n=150,
+        q_low=0.05, q_high=0.95, band_method="empirical", empirical_n=150,
     )
-    lo, hi = res.bands[(0.05, 0.95)]
     # 未来のデータを差し替えても過去確定バーのバンドは不変。
     df2 = df.copy()
     df2.loc[260:, "close"] = df2.loc[260:, "close"] + 50.0
     res2 = build_btlm_trail(
         df2, source="close", maxbars=100,
-        quantile_pairs=[(0.05, 0.95)], band_method="empirical", empirical_n=150,
+        q_low=0.05, q_high=0.95, band_method="empirical", empirical_n=150,
     )
-    lo2, hi2 = res2.bands[(0.05, 0.95)]
-    np.testing.assert_allclose(lo[:260], lo2[:260], atol=1e-9, equal_nan=True)
-    np.testing.assert_allclose(hi[:260], hi2[:260], atol=1e-9, equal_nan=True)
+    np.testing.assert_allclose(res.band_low[:260], res2.band_low[:260], atol=1e-9, equal_nan=True)
+    np.testing.assert_allclose(res.band_high[:260], res2.band_high[:260], atol=1e-9, equal_nan=True)
 
 
 # --- 実現被覆率 ------------------------------------------------------------
@@ -194,9 +184,9 @@ def test_rolling_coverage_counts_close_inside_band():
 
 def test_realized_coverage_latest_uses_confirmed_bars():
     df = _df(400, seed=7)
-    res = build_btlm_trail(df, source="close", maxbars=100, quantile_pairs=[(0.05, 0.95)])
+    res = build_btlm_trail(df, source="close", maxbars=100, q_low=0.05, q_high=0.95)
     cov = realized_coverage_latest(
-        df["close"].to_numpy(dtype=float), res.bands[(0.05, 0.95)], n_cov=250
+        df["close"].to_numpy(dtype=float), res.band_low, res.band_high, n_cov=250
     )
     assert 0.0 <= cov <= 1.0
 
