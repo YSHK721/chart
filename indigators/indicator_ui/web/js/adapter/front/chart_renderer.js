@@ -813,6 +813,25 @@ export class ChartRenderer {
         options.lineWidth = p.width;
         options.lineStyle = toLineStyleInt(p.style);
       }
+      // btlm_trail 表示層: ドット/ライン切替ヒント（point_markers/line_visible）を
+      //   lightweight-charts v5 の LineSeries オプションへ写像する。ヒント未付与の payload
+      //   （既存指標）はキーを設定しない＝従来挙動を保つ（後方互換）。
+      if (p.point_markers !== undefined) {
+        options.pointMarkersVisible = !!p.point_markers;
+      }
+      if (p.line_visible !== undefined) {
+        options.lineVisible = !!p.line_visible;
+      }
+      if (p.point_markers_radius !== undefined) {
+        options.pointMarkersRadius = p.point_markers_radius;
+      }
+      // 読取欄専用系列（β・被覆率・σ 等の小値系列）は価格軸オートスケールから除外する。
+      //   lightweight-charts の契約: autoscaleInfoProvider が { priceRange: null } を返すと
+      //   当該系列は価格レンジに寄与しない。null を返すと「既定オートスケール（系列データを含む）」
+      //   となり除外にならない（実 UI で価格軸が 0 まで拡張しローソクが圧縮した不具合の原因）。
+      if (p.readout_only) {
+        options.autoscaleInfoProvider = () => ({ priceRange: null });
+      }
       // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
       const series = pane
         ? pane.addSeries(definition, options)

@@ -1,0 +1,233 @@
+"""btlm_trail 出力アダプタ（add_btlm_trail）の検証（TDD）。
+
+duck typing の FakeChart で系列収集を固定する（描画ライブラリ非依存・ガイド §2/§6）。
+"""
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+_PKG_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_PKG_DIR))
+
+from src.lwc_chart import add_btlm_trail  # noqa: E402
+
+
+class FakeLine:
+    def __init__(self, name, **kwargs):
+        self.name = name
+        self.kwargs = kwargs
+        self.data = None
+
+    def set(self, data):
+        self.data = data
+
+
+class FakeChart:
+    def __init__(self):
+        self.lines = []
+
+    def create_line(self, name, **kwargs):
+        line = FakeLine(name, **kwargs)
+        self.lines.append(line)
+        return line
+
+
+def _df(n=200, seed=0):
+    rng = np.random.default_rng(seed)
+    prices = np.cumsum(rng.normal(0, 1, n)) + 100.0
+    times = pd.date_range("2020-01-01", periods=n, freq="D")
+    return pd.DataFrame({
+        "time": times, "open": prices, "high": prices + 0.5,
+        "low": prices - 0.5, "close": prices + 0.1,
+    })
+
+
+def test_emits_mean_and_band_lines():
+    chart = FakeChart()
+    lines = add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                           quantile_pairs=[(0.05, 0.95)])
+    names = {ln.name for ln in chart.lines}
+    assert "btlm_trail_mean" in names
+    assert "btlm_trail_q5" in names
+    assert "btlm_trail_q95" in names
+    assert set(lines.keys()) >= {"btlm_trail_mean", "btlm_trail_q5", "btlm_trail_q95"}
+
+
+def test_multiple_pairs_emit_multiple_bands():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                   quantile_pairs=[(0.05, 0.95), (0.25, 0.75)])
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_q5", "btlm_trail_q95", "btlm_trail_q25", "btlm_trail_q75"} <= names
+
+
+def test_series_value_column_matches_line_name_and_drops_nan():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(150), source="close", maxbars=100,
+                   quantile_pairs=[(0.05, 0.95)])
+    mean_line = next(ln for ln in chart.lines if ln.name == "btlm_trail_mean")
+    assert "time" in mean_line.data.columns
+    assert "btlm_trail_mean" in mean_line.data.columns
+    # NaN（先頭ウォームアップ）は除外されている。
+    assert mean_line.data["btlm_trail_mean"].notna().all()
+
+
+def test_empirical_method_emits_bands():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(300), source="close", maxbars=100,
+                   quantile_pairs=[(0.05, 0.95)], band_method="empirical",
+                   empirical_n=150)
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_mean", "btlm_trail_q5", "btlm_trail_q95"} <= names
+
+
+def test_scalar_q_low_q_high_form_single_pair():
+    # UI 由来のスカラ q_low/q_high 経路（quantile_pairs 未指定）で単一バンドを構成する。
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                   q_low=0.10, q_high=0.90)
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_mean", "btlm_trail_q10", "btlm_trail_q90"} <= names
+
+
+def test_invalid_source_raises():
+    with pytest.raises(ValueError):
+        add_btlm_trail(FakeChart(), _df(100), source="vwap")
+
+
+# --- 複数分位ペア（固定スロット・空欄は無効） ----------------------------
+def test_extra_pair_slots_add_bands_when_filled():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                   q_low=0.05, q_high=0.95, q_low2=0.25, q_high2=0.75)
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_q5", "btlm_trail_q95", "btlm_trail_q25", "btlm_trail_q75"} <= names
+
+
+def test_empty_or_invalid_extra_slots_are_ignored():
+    # 空欄（None）・不正（q_low>=q_high・範囲外）のスロットは無効化（例外にしない）。
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                   q_low=0.05, q_high=0.95,
+                   q_low2=None, q_high2=0.75,     # 片側欠損 → 無効
+                   q_low3=0.9, q_high3=0.1)       # 逆順 → 無効
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_q5", "btlm_trail_q95"} <= names
+    assert not any(n in names for n in ("btlm_trail_q10", "btlm_trail_q90", "btlm_trail_q75"))
+
+
+def test_explicit_quantile_pairs_override_slots():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                   quantile_pairs=[(0.1, 0.9)], q_low2=0.25, q_high2=0.75)
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_q10", "btlm_trail_q90"} <= names
+    # quantile_pairs 明示時はスロットを無視（q25/q75 は出ない）。
+    assert not any(n in names for n in ("btlm_trail_q25", "btlm_trail_q75"))
+
+
+# --- 表示層: ドット/ライン切替（display_mode） ----------------------------
+def test_display_mode_dots_sets_point_markers_hint():
+    # 既定はドット（サークル）: mean/q 系列に point_markers=True, line_visible=False を付す。
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100, display_mode="dots")
+    mean = next(ln for ln in chart.lines if ln.name == "btlm_trail_mean")
+    assert mean.kwargs.get("point_markers") is True
+    assert mean.kwargs.get("line_visible") is False
+    # ドット視認性のため明示半径を付す（ズームアウトでラインに見える問題への対処）。
+    assert mean.kwargs.get("point_markers_radius", 0) >= 3
+
+
+def test_display_mode_line_omits_point_radius():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100, display_mode="line")
+    mean = next(ln for ln in chart.lines if ln.name == "btlm_trail_mean")
+    # ライン表示ではドット半径ヒントを付けない。
+    assert "point_markers_radius" not in mean.kwargs
+
+
+def test_display_mode_line_sets_line_hint():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100, display_mode="line")
+    mean = next(ln for ln in chart.lines if ln.name == "btlm_trail_mean")
+    assert mean.kwargs.get("point_markers") is False
+    assert mean.kwargs.get("line_visible") is True
+
+
+# --- 外れ値オフセットライン（offset_pct・既定オフ） ------------------------
+def test_offset_lines_emitted_only_when_pct_positive():
+    chart_off = FakeChart()
+    add_btlm_trail(chart_off, _df(200), source="close", maxbars=100, offset_pct=0.0)
+    assert not any(ln.name.startswith("btlm_trail_off_") for ln in chart_off.lines)
+
+    chart_on = FakeChart()
+    add_btlm_trail(chart_on, _df(200), source="close", maxbars=100,
+                   q_low=0.05, q_high=0.95, offset_pct=2.5)
+    names = {ln.name for ln in chart_on.lines}
+    assert {"btlm_trail_off_hi", "btlm_trail_off_lo"} <= names
+
+
+def test_offset_lines_are_outside_band_edges():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(300, seed=3), source="close", maxbars=100,
+                   q_low=0.05, q_high=0.95, offset_pct=3.0)
+    lines = {ln.name: ln for ln in chart.lines}
+    off_hi = lines["btlm_trail_off_hi"].data.set_index("time")["btlm_trail_off_hi"]
+    hi = lines["btlm_trail_q95"].data.set_index("time")["btlm_trail_q95"]
+    common = off_hi.index.intersection(hi.index)
+    # オフセット上側はバンド上端より外側（大きい）。
+    assert (off_hi.loc[common] > hi.loc[common]).all()
+
+
+# --- MA 参考線（btlm_mean のみ・既定オフ・種別同期） ----------------------
+def test_ma_reference_emitted_only_when_enabled():
+    chart_off = FakeChart()
+    add_btlm_trail(chart_off, _df(200), source="close", maxbars=100, ma_reference=False)
+    assert not any(ln.name == "btlm_trail_ma" for ln in chart_off.lines)
+
+    chart_on = FakeChart()
+    add_btlm_trail(chart_on, _df(200), source="close", maxbars=100,
+                   ma_reference=True, ma_type="sma", ma_length=21)
+    assert any(ln.name == "btlm_trail_ma" for ln in chart_on.lines)
+
+
+def test_ma_reference_matches_moving_averages_sma_on_btlm_mean():
+    # MA は moving_averages（無改変）を btlm_mean へ適用したものと一致する。
+    import numpy as np
+    from src.core import rolling_ols_window_end, resolve_source
+    from src.ma_reference import moving_average_on_series
+    df = _df(200, seed=4)
+    chart = FakeChart()
+    add_btlm_trail(chart, df, source="close", maxbars=100,
+                   ma_reference=True, ma_type="sma", ma_length=10)
+    mean, _, _, _ = rolling_ols_window_end(resolve_source(df, "close"), 100)
+    expected = moving_average_on_series(mean, "sma", 10)
+    ma_line = next(ln for ln in chart.lines if ln.name == "btlm_trail_ma")
+    got = ma_line.data.set_index("time")["btlm_trail_ma"]
+    exp_series = expected[np.isfinite(expected)]
+    np.testing.assert_allclose(got.to_numpy(), exp_series, atol=1e-9)
+
+
+# --- 数値表示（β・実現被覆率・残差 σ）を読取欄オーバーレイ系列で供給 -------
+def test_metric_series_emitted_invisible_for_readout():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(400, seed=5), source="close", maxbars=100,
+                   q_low=0.05, q_high=0.95, show_metrics=True, n_cov=250)
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_coverage"} <= names
+    beta = next(ln for ln in chart.lines if ln.name == "btlm_trail_beta")
+    # 読取欄専用: チャート上は不可視（line_visible=False かつ point_markers=False）。
+    assert beta.kwargs.get("line_visible") is False
+    assert beta.kwargs.get("point_markers") is False
+    # 価格軸オートスケールから除外（小値系列がローソクを圧縮しないように）。
+    assert beta.kwargs.get("readout_only") is True
+
+
+def test_metrics_suppressed_when_disabled():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(300), source="close", maxbars=100, show_metrics=False)
+    assert not any(ln.name.startswith("btlm_trail_beta") for ln in chart.lines)

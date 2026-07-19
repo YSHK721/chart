@@ -199,3 +199,61 @@ test('ISSUE-112 setData/updateSeriesTail: 流入点は常に素通し（ユー�
   renderer.updateSeriesTail('adx#1::adx_needle', [{ time: 10, value: 2, color: '#654321' }]);
   assert.deepEqual(chart.created[0]._updates, [{ time: 10, value: 2, color: '#654321' }], 'tail 素通し');
 });
+
+// btlm_trail 表示層: ドット/ライン切替ヒント（point_markers/line_visible）を
+//   lightweight-charts の系列オプション（pointMarkersVisible/lineVisible）へ写像する。
+test('btlm_trail: payload の point_markers/line_visible を lwc オプションへ写像（ドット）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#1', [{
+    name: 'btlm_trail_mean', kind: 'line', style: 'solid', width: 2, color: '#7b68ee',
+    point_markers: true, line_visible: false, data: [{ time: 1, value: 10 }],
+  }]);
+  assert.equal(chart.created[0]._createOpts.pointMarkersVisible, true);
+  assert.equal(chart.created[0]._createOpts.lineVisible, false);
+});
+
+test('btlm_trail: line_visible=true/point_markers=false でライン描画へ写像', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#2', [{
+    name: 'btlm_trail_mean', kind: 'line', style: 'solid', width: 2, color: '#7b68ee',
+    point_markers: false, line_visible: true, data: [{ time: 1, value: 10 }],
+  }]);
+  assert.equal(chart.created[0]._createOpts.pointMarkersVisible, false);
+  assert.equal(chart.created[0]._createOpts.lineVisible, true);
+});
+
+test('既存 payload（ヒント無し）はオプションに pointMarkersVisible/lineVisible を含めない（後方互換）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#9', MA_PAYLOADS);
+  assert.equal('pointMarkersVisible' in chart.created[0]._createOpts, false);
+  assert.equal('lineVisible' in chart.created[0]._createOpts, false);
+});
+
+test('btlm_trail: readout_only 系列は価格軸オートスケールから除外（autoscaleInfoProvider→null）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#3', [{
+    name: 'btlm_trail_beta', kind: 'line', style: 'solid', width: 1, color: '#a0a0a0',
+    line_visible: false, point_markers: false, readout_only: true,
+    data: [{ time: 1, value: 0.02 }],
+  }]);
+  const opts = chart.created[0]._createOpts;
+  assert.equal(typeof opts.autoscaleInfoProvider, 'function');
+  // 価格軸から除外する正しい契約は { priceRange: null }（null 返却は既定オートスケール＝除外にならない）。
+  assert.deepEqual(opts.autoscaleInfoProvider(), { priceRange: null }, 'priceRange:null＝価格軸に寄与しない');
+});
+
+test('btlm_trail: point_markers_radius を pointMarkersRadius へ写像（ドット視認性）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#4', [{
+    name: 'btlm_trail_mean', kind: 'line', style: 'solid', width: 2, color: '#7b68ee',
+    point_markers: true, line_visible: false, point_markers_radius: 4,
+    data: [{ time: 1, value: 10 }],
+  }]);
+  assert.equal(chart.created[0]._createOpts.pointMarkersRadius, 4);
+});
+
+test('readout_only 無しの系列は autoscaleInfoProvider を設定しない（後方互換）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#10', MA_PAYLOADS);
+  assert.equal('autoscaleInfoProvider' in chart.created[0]._createOpts, false);
+});

@@ -39,6 +39,33 @@ def _line_points(df: pd.DataFrame, value_column: str) -> list[dict[str, Any]]:
     return points
 
 
+# 描画ヒント（表示層で lightweight-charts オプションへ写像される・後方互換で任意）。
+#   ドット/ライン切替（point_markers/line_visible）・ドット半径（point_markers_radius）・
+#   価格軸オートスケール除外（readout_only）。付与された系列のみ payload へ載せる（既存指標は
+#   create_line にこれらを渡さないため現れない＝挙動不変）。
+_DISPLAY_HINTS = ("point_markers", "line_visible", "readout_only", "point_markers_radius")
+
+
+def _line_payload(name: str, kind: str, kwargs: dict, data: list) -> dict[str, Any]:
+    """line/histogram 系列の payload を組む（両 to_payloads 経路の単一情報源）。
+
+    ヒント伝搬を 1 箇所へ集約し、FakeLineChart（単体テスト用）と FakeChart（実 runtime）で
+    payload 契約が乖離するのを構造的に防ぐ（乖離が実 UI ヒント欠落を招いた再発防止）。
+    """
+    payload = {
+        "name": name,
+        "kind": kind,
+        "style": kwargs.get("style"),
+        "width": kwargs.get("width"),
+        "color": kwargs.get("color"),
+        "data": data,
+    }
+    for hint in _DISPLAY_HINTS:
+        if hint in kwargs:
+            payload[hint] = kwargs[hint]
+    return payload
+
+
 class _FakeLine:
     """``create_line`` が返すライン。``set(df)`` で系列データを収集する。"""
 
@@ -80,16 +107,7 @@ class FakeLineChart:
                 if line.points is not None
                 else []
             )
-            payloads.append(
-                {
-                    "name": line.name,
-                    "kind": "line",
-                    "style": line.kwargs.get("style"),
-                    "width": line.kwargs.get("width"),
-                    "color": line.kwargs.get("color"),
-                    "data": data,
-                }
-            )
+            payloads.append(_line_payload(line.name, "line", line.kwargs, data))
         return payloads
 
 
@@ -198,16 +216,9 @@ class FakeChart:
         payloads: list[dict[str, Any]] = []
         for s in self.series:
             data = _line_points(s.points, s.name) if s.points is not None else []
-            payloads.append(
-                {
-                    "name": s.name,
-                    "kind": s.kind,
-                    "style": s.kwargs.get("style"),
-                    "width": s.kwargs.get("width"),
-                    "color": s.kwargs.get("color"),
-                    "data": data,
-                }
-            )
+            # 実 runtime 経路（IndicatorComputeAdapter.compute）。FakeLineChart と同一の
+            #   _line_payload を用い、描画ヒント契約の乖離を構造的に排除する。
+            payloads.append(_line_payload(s.name, s.kind, s.kwargs, data))
         if self.hlines:
             lines = [
                 {

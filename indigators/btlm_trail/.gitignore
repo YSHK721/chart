@@ -1,0 +1,11 @@
+# Python キャッシュ
+__pycache__/
+.pytest_cache/
+
+# 生成物（描画デモ出力 / HTML / 出力ディレクトリ）
+*.png
+*.html
+out/
+
+# OS
+.DS_Store
