@@ -182,6 +182,8 @@ def test_metric_series_emitted_invisible_for_readout():
     # 読取欄専用: チャート上は不可視（line_visible=False かつ point_markers=False）。
     assert beta.kwargs.get("line_visible") is False
     assert beta.kwargs.get("point_markers") is False
+    # 価格軸オートスケールから除外（小値系列がローソクを圧縮しないように）。
+    assert beta.kwargs.get("readout_only") is True
 
 
 def test_metrics_suppressed_when_disabled():

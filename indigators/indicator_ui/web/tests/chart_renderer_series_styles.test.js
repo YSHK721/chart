@@ -228,3 +228,21 @@ test('既存 payload（ヒント無し）はオプションに pointMarkersVisib
   assert.equal('pointMarkersVisible' in chart.created[0]._createOpts, false);
   assert.equal('lineVisible' in chart.created[0]._createOpts, false);
 });
+
+test('btlm_trail: readout_only 系列は価格軸オートスケールから除外（autoscaleInfoProvider→null）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#3', [{
+    name: 'btlm_trail_beta', kind: 'line', style: 'solid', width: 1, color: '#a0a0a0',
+    line_visible: false, point_markers: false, readout_only: true,
+    data: [{ time: 1, value: 0.02 }],
+  }]);
+  const opts = chart.created[0]._createOpts;
+  assert.equal(typeof opts.autoscaleInfoProvider, 'function');
+  assert.equal(opts.autoscaleInfoProvider(), null, 'オートスケール情報 null＝価格軸に影響しない');
+});
+
+test('readout_only 無しの系列は autoscaleInfoProvider を設定しない（後方互換）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#10', MA_PAYLOADS);
+  assert.equal('autoscaleInfoProvider' in chart.created[0]._createOpts, false);
+});

@@ -822,6 +822,12 @@ export class ChartRenderer {
       if (p.line_visible !== undefined) {
         options.lineVisible = !!p.line_visible;
       }
+      // 読取欄専用系列（β・被覆率・σ 等の小値系列）は価格軸オートスケールから除外する
+      //   （autoscaleInfoProvider→null）。0..1 等の値が pane0 の価格スケールを歪め、ローソクを
+      //   圧縮するのを防ぐ（読取欄への値供給のみが目的で、チャート描画・スケールには寄与しない）。
+      if (p.readout_only) {
+        options.autoscaleInfoProvider = () => null;
+      }
       // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
       const series = pane
         ? pane.addSeries(definition, options)

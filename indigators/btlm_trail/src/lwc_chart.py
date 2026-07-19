@@ -66,12 +66,15 @@ def _quantile_series_name(q: float) -> str:
 
 
 def _emit(chart, name, times, values, color, *, style="solid", width=1,
-          point_markers=None, line_visible=None):
+          point_markers=None, line_visible=None, readout_only=None):
     """1 系列を chart へ追加する（値列名は系列名と一致・NaN は除外）。
 
     描画ヒント（表示層で lightweight-charts のオプションへ写像される・後方互換で任意）:
         point_markers: ドット（サークル）描画の有無（pointMarkersVisible）。
         line_visible : 接続線の可視性（lineVisible）。
+        readout_only : 読取欄専用（β/σ/被覆率など）。価格軸オートスケールから除外する
+                       （autoscaleInfoProvider→null）。0..1 等の小値系列が価格スケールを歪め
+                       ローソクを圧縮するのを防ぐ。
     None は従来挙動（ヒント未付与）。
     """
     kwargs = dict(
@@ -82,6 +85,8 @@ def _emit(chart, name, times, values, color, *, style="solid", width=1,
         kwargs["point_markers"] = point_markers
     if line_visible is not None:
         kwargs["line_visible"] = line_visible
+    if readout_only is not None:
+        kwargs["readout_only"] = readout_only
     line = chart.create_line(**kwargs)
     series = pd.DataFrame({"time": times, name: np.asarray(values, dtype=float)}).dropna()
     line.set(series)
@@ -205,5 +210,6 @@ def add_btlm_trail(
             lines[name] = _emit(
                 chart, name, times, vals, _COLOR_METRIC,
                 style="solid", width=1, line_visible=False, point_markers=False,
+                readout_only=True,
             )
     return lines
