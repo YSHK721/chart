@@ -449,7 +449,7 @@
 
 ### 10.3 参考資料
 
-- `simulator/main/__init__.py`（`build_interactor` L256-394 / `run_backtest` / `compare_run`）
+- `simulator/main/__init__.py`（`build_interactor` L256-394 / `run_backtest` / `compare_stats`。`compare_run` は削除済み・2026-07-18）
 - `simulator/adapter/controller.py`（`BacktestController.run` L37-64＝`market_data.load` 再ロード L50 ／ `_interactor` private 属性 L35 ＝B-1 根拠）
 - `simulator/usecase/run_backtest.py`（`RunBacktestRequest` / `trading_start` warmup 機構 L79-84/L208-209 / bar-mode `enumerate(bars)` L203 / every-tick L488）
 - `simulator/adapter/indicator/registry.py`（`PandasIndicatorRegistry`＝full df 事前計算系列・位置インデックス保持・`update()` no-op L53＝B-2 根拠）

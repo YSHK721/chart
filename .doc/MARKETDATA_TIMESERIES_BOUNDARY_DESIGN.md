@@ -23,10 +23,10 @@
 | `MarketDataPort` | `abc.load(source_ref, timeframe, period) -> Any(=list[Bar])` | `simulator/usecase/ports.py:47-53` |
 | `TickDataPort` | `abc.load_ticks(symbol, start, end, columns=None) -> TickFrame` | `simulator/usecase/ports.py:56-64` |
 | `TickStorePort` | `abc.write_ticks(symbol, frame_or_csv, mode="overwrite") -> TickWriteResult` | `simulator/usecase/ports.py:67-78` |
-| simulator OHLC 具象 | `CsvOHLCRepository` / `ParquetOHLCRepository` / `Mt5CsvOHLCRepository`（いずれも `MarketDataPort` 実装・`_ohlc_frame.frame_to_bars` 共有） | `simulator/adapter/repository/{ohlc_csv,ohlc_parquet,ohlc_mt5_csv,_ohlc_frame}.py` |
+| simulator OHLC 具象 | `CsvOHLCRepository` / `Mt5CsvOHLCRepository` ＋ `MarketDataSourceRepository`（いずれも `MarketDataPort` 実装・`_ohlc_frame.frame_to_bars` 共有）。`ParquetOHLCRepository` は撤去済み（コミット b62bcc3） | `simulator/adapter/repository/{ohlc_csv,ohlc_mt5_csv,marketdata_source,_ohlc_frame}.py` |
 | simulator tick 具象 | `ParquetTickRepository(TickDataPort, TickStorePort)`・hive partition | `simulator/adapter/repository/tick_parquet.py:42` |
 | simulator 合成点 | `simulator/main/__init__.py` が ea_name 別に具象を**直接 new** し `market_data.load(data_path, None, None)` で `list[Bar]` 取得 | `simulator/main/__init__.py:329-374` |
-| indicator_ui resample | `dataset.resample_ohlc(df, rule)` ＋ `TIMEFRAME_RULES` が唯一の規則源 | `indigators/indicator_ui/api/adapter/compute/dataset.py:60-117` |
+| indicator_ui resample | `dataset.resample_ohlc(df, rule)` ＋ `TF_DESCRIPTORS`（`marketdata/resample.py`）が唯一の規則源・`TIMEFRAME_RULES` は導出値（ISSUE-134） | `indigators/indicator_ui/api/adapter/compute/dataset.py:60-117` |
 | indicator_ui rollup | `rollup_builder`（`dataset.resample_ohlc` を**再利用**してロールアップ CSV 生成）＋ `rollup_store`（読取）＋ `rollup_state.json` | `indigators/indicator_ui/tools/rollup_builder.py`, `api/adapter/compute/rollup_store.py` |
 | volume 必須経路の port 迂回 | `export_jp225_m1.py` は **Candle に volume が無いため** dukascopy_python を直接呼ぶ（enabler①の対象） | `indigators/indicator_ui/tools/export_jp225_m1.py:11-14, 42-43, 127-133` |
 | indicator_ui の marketdata 直利用 | `prototype_inject_marketdata` / `prototype_swap_data` / `jp225_chart` / `export_jp225_csv` が `marketdata` から `DukascopyCandleSource/INTERVALS/repair_ohlc_outliers` を import | 各 tools の import 行 |
@@ -237,8 +237,9 @@ class MarketDataSourceRepository(MarketDataPort):
         self._source = source                            # DI: 構築時に CandleSource 注入
 
     def load(self, source_ref, timeframe=None, period=None) -> list[Bar]:
-        # source_ref は (start, end) 期間 or 期間導出元。fetch_candles へ委譲。
-        start, end = _resolve_window(source_ref, period)
+        # source_ref は path 系実装との API 対称性のため受けるが未使用（ISSUE-135）。
+        # 取得窓は構築時 self._window から解決し fetch_candles へ委譲。
+        start, end = self._window  # (start, end) は半開・§10.1 C-2
         candles = self._source.fetch_candles(start, end)
         return _candles_to_bars(candles)                 # 写像＋検証（§2.3）
 
@@ -264,7 +265,7 @@ def _candles_to_bars(candles) -> list[Bar]:
 
 ### 4.1 現状の規則源（単一）と移設方針
 
-`dataset.resample_ohlc` ＋ `TIMEFRAME_RULES`（`dataset.py:60-117`）が**唯一の resample 規則源**。`rollup_builder` は `dataset.resample_ohlc` を**再利用**（`rollup_builder.py:33,40,228-234,312,447`）し、再実装しない。`rollup_store` は読取専用（`rollup_store.py`）。
+`dataset.resample_ohlc` ＋ `TF_DESCRIPTORS`（`marketdata/resample.py:49-85`）が**唯一の resample 規則源**。`TIMEFRAME_RULES`・`SESSION_TFS`・`NON_FLOORABLE_TF` は台帳より導出される値（ISSUE-134）。`rollup_builder` は `dataset.resample_ohlc` を**再利用**（`rollup_builder.py:33,40,228-234,312,447`）し、再実装しない。`rollup_store` は読取専用（`rollup_store.py`）。
 
 **移設設計（再実装ではなく規則源の物理移動）**:
 
@@ -345,7 +346,7 @@ def _rollup_path(out_dir, tf, ref_prefix="jp225_m1") -> Path:
 | **S2** | enabler②: `TickSource` 新設＋`DukascopyTickSource`（fetch_ticks_dukascopy 移管）。`ingest_ticks.to_canonical_ticks` は marketdata service へ移設可（任意） | `ParquetTickRepository`（store 読み書き）/ `TickDataPort`/`TickStorePort` / tick-store hive layout | `test_ingest_ticks.py` / `test_tick_parquet.py` 全緑。canonical 変換（last=mid・naive UTC）バイト不変 |
 | **S3** | enabler①解消: `export_jp225_m1.py` の dukascopy 直呼びを `DukascopyCandleSource`（volume 付き）委譲へ置換 | jp225_m1.csv の出力列・date 書式・外れ値補正結果 | `test_export_jp225_m1_incremental.py` 全緑。CSV 出力バイト一致 |
 | **S4** | enabler④: 銘柄/足種を構築時パラメータへ昇格（`ref_prefix` 引数等）。既定 JP225 で全経路不変 | 全既存呼出（既定値で不変） | 全 tools テスト緑（既定パスはバイト不変） |
-| **S5** | simulator strangler: marketdata に CSV/MT5/Parquet adapter を新設し、simulator 既存3 repo を marketdata 委譲の薄いラッパへ（**実体移管**）。`MarketDataSourceRepository` で Candle→Bar 写像 | simulator usecase（domain のみ依存・無改変）/ `MarketDataPort` abc / `Bar` / `frame_to_bars` の検証規則 | `test_ohlc_csv_repository.py` / `test_ohlc_parquet_repository.py` / `test_ohlc_mt5_csv.py` / `test_usecase_ports.py` 全緑。**`market_data.load(...)` の Bar 出力が写像前後でバイト一致** |
+| **S5** | simulator strangler: marketdata に CSV/MT5 adapter を新設し、simulator 既存2 repo を marketdata 委譲の薄いラッパへ（**実体移管**）。`MarketDataSourceRepository` で Candle→Bar 写像。`ParquetOHLCRepository` は撤去済み（コミット b62bcc3） | simulator usecase（domain のみ依存・無改変）/ `MarketDataPort` abc / `Bar` / `frame_to_bars` の検証規則 | `test_ohlc_csv_repository.py` / `test_ohlc_mt5_csv.py` / `test_usecase_ports.py` 全緑。**`market_data.load(...)` の Bar 出力が写像前後でバイト一致** |
 | **S6** | U1: 孤児 `fetch_dukascopy.py`（消費者不在）を削除し「足取得スクリプト」の選択肢を整理 | 他の取得経路すべて（参照ゼロを再確認してから削除） | 削除後に全テスト緑（参照不在＝回帰なし）。`grep fetch_dukascopy` が 0 件 |
 
 > **Sd・S0〜S4 は indicator_ui/marketdata に閉じる。例外は Sd が `simulator/tools/export_trade_markers.py` の path 定数 1 箇所を `DATA_DIR` 参照へ置換する点のみ**（tools 層・§10.2 H-5）。**simulator の usecase/domain/adapter は Sd〜S4 で無改変**。S5 のみ simulator adapter を触る（usecase は無改変）。S5 は simulator backtest の Bar 出力不変が最重要不変条件（report.json 再現性）。S6（孤児削除）は独立・最後。
@@ -363,7 +364,7 @@ def _rollup_path(out_dir, tf, ref_prefix="jp225_m1") -> Path:
 | `test_rollup_builder.py` / `test_rollup_store.py` / `test_dataset_rollup_routing.py` | ロールアップ CSV バイト一致・state 不変 | S1 |
 | `test_ingest_ticks.py` / `test_tick_parquet.py` | canonical 変換・store 読み書き不変 | S2 |
 | `test_export_jp225_m1_incremental.py` | jp225_m1.csv 出力バイト一致 | S3 |
-| `test_ohlc_csv_repository.py` / `test_ohlc_parquet_repository.py` / `test_ohlc_mt5_csv.py` / `test_usecase_ports.py` | Bar 列出力・検証規則・MarketDataPort 契約不変 | S5 |
+| `test_ohlc_csv_repository.py` / `test_ohlc_mt5_csv.py` / `test_usecase_ports.py` | Bar 列出力・検証規則・MarketDataPort 契約不変。`test_ohlc_parquet_repository.py` は撤去済み（コミット b62bcc3） | S5 |
 
 **カバレッジ目標**: 既存テストは**全件緑が S0〜S5 各段の必須通過条件**（カバレッジ低下＝不合格）。
 
@@ -414,7 +415,7 @@ S1/S3 は「移設前出力を golden として保存→移設後出力と diff 
 | U3 | Stooq 日足 adapter の要否（週次ボラ戦略向け） | **保留（ポートは対応可能のまま）・ユーザー承認済** | 今回は `StooqCandleSource` を作らない（2026-06-25 承認）。`CandleSource` ポートは差替可能なため、週次ボラ戦略を実データで回す段で別小タスクとして追加すればよい（利用側無改変）。本書はポート口の存在のみ保証する |
 | U4 | TickSource の Iterator 化（大容量 chunk streaming・§3.2.1 案C） | 申し送り | 初版は DataFrame 直返し（案A）。tick 量が RSS 上限を超えたら案C へ。memory `perf-minimize-heavy-ops` に従い計測で判断 |
 | U5 | `ingest_ticks.to_canonical_ticks` の marketdata service 移設 | 任意（S2 で選択） | 移設しても simulator 無改変だが、last=mid 規約が tick-store 契約に密結合。移設可否は S2 着手時に確定 |
-| U6 | `MarketDataSourceRepository` の `source_ref→(start,end)` 解決仕様 | 要詳細化（S5） | 既存 `load(data_path, ...)` は CSV パスを受ける（`main/__init__.py:374`）。marketdata 委譲版は期間を受ける必要があり、composition での引数変換規約を S5 着手時に確定（usecase IF は不変） |
+| U6 | `MarketDataSourceRepository` の `source_ref→(start,end)` 解決仕様 | **ISSUE-135 で確定** | 取得窓は構築時パラメータ `window` で隔離・`load` の `source_ref` は path 系実装との対称性のため受けるが未使用（usecase IF は不変）。composition root が ea_name 別に振り分け（`main/__init__.py:374`） |
 
 ---
 
@@ -451,7 +452,7 @@ def incremental_update(m1_csv_path, state, tf_list, out_dir, ref_prefix="jp225_m
 
 # simulator/adapter/repository/marketdata_source.py（新設・委譲＋写像）
 class MarketDataSourceRepository(MarketDataPort):
-    __init__(self, source: CandleSource)
+    __init__(self, source: CandleSource, *, window: tuple[datetime, datetime])  # ISSUE-135: 取得窓（半開 [start,end)）を構築時パラメータ化
     def load(self, source_ref, timeframe=None, period=None) -> list[Bar]   # Candle→Bar 写像（§2.3）
 ```
 
@@ -467,9 +468,11 @@ spec-reviewer 判定＝**修正後 GO**（Blocker 0 / Critical 2 / High 5）。�
   `_REPO_ROOT = Path(__file__).resolve().parents[1]`（marketdata 直上＝唯一の基点）。
   env が指す path 不在は `FileNotFoundError` で fail-fast（fallback 禁止）。
   現状の多基点（`dataset.py` parents[5] / `export_jp225_m1.py` parents[3] / `export_trade_markers.py` parents[2]）を**全て DATA_DIR 経由へ置換**。Sd 完了条件 = `rg "marketdata/data" --type py` が定義行を除き 0 件、かつ移動前後で全データファイルの SHA-256 一致。
-- **C-2 `source_ref` 期間化規約（S5）**: `MarketDataSourceRepository.load(source_ref, ...)` の `source_ref` は
-  `tuple[datetime, datetime]`（半開 [start,end)）に固定。composition root（`main/__init__.py`）が
-  ea_name 別分岐で「既存 CSV path 経路」と「委譲経路（(start,end) 渡し）」を振り分ける。
+- **C-2 `source_ref` 対称化規約（S5・ISSUE-135 で確定改定）**: `MarketDataPort.load(source_ref, ...)` の
+  `source_ref` は**全実装対称の path 様参照**に統一（コミット c39799d）。`MarketDataSourceRepository` 固有の
+  取得窓 `tuple[datetime, datetime]`（半開 [start,end)）は**構築時パラメータ `window` へ隔離**し、`load` 内で
+  `source_ref` は未使用。composition root（`main/__init__.py`）は ea_name 別に repository を構築するのみで、
+  旧規約にあった `isinstance` による `load_source` 作り分けは撤去済み（全実装へ `data_path` を統一的に渡す）。
   **usecase IF（`RunBacktestRequest.bars`）は不変**。
 
 ### 10.2 High

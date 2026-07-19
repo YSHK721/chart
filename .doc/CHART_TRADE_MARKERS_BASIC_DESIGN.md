@@ -179,7 +179,7 @@ export class TradeMarkersRenderer {
 
 | 判断点 | 採用 | 代替 | 理由 |
 |---|---|---|---|
-| 描画先 | **ブラウザ UI（mainSeries）** | HtmlPresenter（equity 線） | HtmlPresenter は bars 非保持で価格チャート不可。candles を既に持つ UI が自然 |
+| 描画先 | **ブラウザ UI（mainSeries）** | HtmlPresenter（撤去済み・2026-07-18）（equity 線） | HtmlPresenter は bars 非保持で価格チャート不可。candles を既に持つ UI が自然。設計判断は歴史記録として保存 |
 | 出力境界 | **新規 `TradeMarkerPresenterPort`** | `ReportPresenterPort` に method 追加 | ISP・既存 presenter/Base を不変に保つ |
 | 配信 | **案A static（推奨）** | 案B 追加 route | C1 最尊重（server.py 無改変）。一貫性重視なら案B（review 判断） |
 | 時刻 | **UTC UNIX 秒へ正規化** | bar.time 生値 | candles 軸（UNIX 秒）に一致させないと描画ズレ |

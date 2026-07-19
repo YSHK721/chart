@@ -8,6 +8,8 @@
 
 > **改訂履歴**: 初版は SPEC/PROCESS 不在を前提に StrategyPort/TickModelPort 抽象で吸収。本改訂で両文書を反映し、(a) TBD#1 を解消、(b) TickModelPort を「削除候補→維持」へ訂正、(c) E-Order の保留注文・E-TradeRecord の決済理由・BacktestConfig の決定論ポリシーを追記。
 
+> **【状態注記 2026-07-18】** 本書§1.3〜§10 のうち、**UC-004 レポート生成系・ReportPresenterPort 実装（HtmlPresenter）・ResultSinkPort 実装**は死滅コード監査により撤去済み（コミット f6d5860）。現存実装は Presenter 2 種（Markdown/Json）・ResultSinkPort 実装なし（メモリ完結・出力はコンソール）。本文書は設計記録として保存する。
+
 ---
 
 ## 1. 入力検証結果
@@ -64,11 +66,13 @@ SRP（Martin 2017 第7章）: 5 アクターは独立して変更要求を出す
 - 関連エンティティ: なし（純粋比較）
 - 例外ケース: 突合キー欠落
 
-### UC-004: 結果レポートを生成する
+### UC-004: 結果レポートを生成する（撤去済み：2026-07-18 コミット f6d5860）
+> **【撤去済み】** UC-004・generate_report.py Interactor・HtmlPresenter は死滅コード監査で撤去。現存は Markdown/Json Presenter のみ。以下は設計記録。
+
 - アクター: レポート閲覧者
 - 目的: BacktestResult を Markdown/HTML/JSON 表現へ変換
 - Input Model: BacktestResult
-- Output Model: `{ markdown: str }` / `{ html_path: Path }` / `{ json_path: Path }`
+- Output Model: `{ markdown: str }` / `{ html_path: Path }` / `{ json_path: Path }`（現存は markdown/json のみ）
 - 関連エンティティ: なし（表示変換）
 - 例外ケース: テンプレート不在・出力先書込不可
 
@@ -136,11 +140,12 @@ SRP（Martin 2017 第7章）: 5 アクターは独立して変更要求を出す
 
 ## Output Boundary: MarketDataPort（Repository）  ← データ取得の隔離
 - load(source_ref, timeframe, period) -> OHLCFrame
-  実装: CsvOHLCRepository / ParquetOHLCRepository /（将来）DukascopyGateway
+  実装: CsvOHLCRepository / Mt5CsvOHLCRepository / MarketDataSourceRepository（Dukascopy 委譲）
+  > **【撤去済み】** ParquetOHLCRepository は 2026-07-18 撤去（コミット b62bcc3）。Dukascopy は marketdata.CandleSource へ移行。
 
 ## Output Boundary: ResultSinkPort（Repository）  ← 永続化の隔離
 - save_trades(df, path) / save_stats(dict, path) / save_report(html, path)
-  実装: ParquetResultRepository / JsonResultRepository
+  > **【撤去済み】** ResultSinkPort の全実装（Parquet/Json）は 2026-07-18 撤去（コミット f6d5860）。現在は出力をコンソール/メモリで管理（BacktestResult で直返し）。Port 抽象は温存（API 契約用）。
 
 ## Output Boundary: StrategyPort（= EAStrategy, §7.3）  ← 戦略の隔離
 - on_init(config, indicators)
@@ -174,18 +179,20 @@ DIP（Martin 2017 第11章）: UC-001 Interactor は各 Port を**呼び出す**
 - 委譲先: RunBacktestInputBoundary
 - 終了コード翻訳: ConfigError→2 / BacktestError→1 / 成功→0（§9.4）
 
-## Adapter: MarkdownPresenter / HtmlPresenter / JsonPresenter（UC-004）
-- 実装 Port: ReportPresenterPort
-- 出力先: str / HTML（lightweight-charts 埋込）/ stats.json
-- 変換: BacktestResult → §8.2 テンプレート
+## Adapter: MarkdownPresenter / JsonPresenter（UC-004・HtmlPresenter 撤去済み）
+- 実装 Port: ReportPresenterPort（撤去：HtmlPresenter / UC-004 実装全体）
+- 出力先: str / stats.json（HTML 廃止：2026-07-18 撤去）
+- 変換: BacktestResult → §8.2 テンプレート（Markdown/Json のみ）
 
-## Adapter: CsvOHLCRepository / ParquetOHLCRepository
+## Adapter: CsvOHLCRepository / Mt5CsvOHLCRepository / MarketDataSourceRepository
 - 実装 Port: MarketDataPort
-- 永続化先: CSV/Parquet（既存 loader.py 規約に整合）
+- 永続化先: CSV（既存 loader.py 規約に整合）
 - 例外翻訳: pandas 例外 → DataError / MissingBarError / OHLCInvalidError / TimeOrderError
+- > **【撤去済み】** ParquetOHLCRepository は 2026-07-18 撤去（コミット b62bcc3）
 
-## Adapter: ParquetResultRepository / JsonResultRepository
-- 実装 Port: ResultSinkPort
+## Adapter: ResultSinkPort 実装（撤去済み：2026-07-18）
+> **【撤去済み】** ParquetResultRepository / JsonResultRepository は 2026-07-18 撤去（コミット f6d5860）。現在は ResultSinkPort が Port 抽象のみ（実装なし）。出力は BacktestResult をコンソール/メモリで管理。
+- 実装 Port: ResultSinkPort（実装なし）
 - 例外翻訳: I/O 例外 → BacktestError（context 付与）
 
 ## Adapter: PandasIndicatorRegistry
@@ -208,9 +215,9 @@ DIP（Martin 2017 第11章）: UC-001 Interactor は各 Port を**呼び出す**
 ## Framework & Drivers
 - 言語/数値: Python 3.11+ / pandas 2.x / numpy 1.26+（DESIGN §4.1）
 - 設定モデル: pydantic v2 — BacktestConfig/SymbolSpec の検証は Controller/Composition Root 境界でのみ使用
-- 永続化ドライバ: pyarrow（parquet）/ csv — Repository 内のみ
-- チャート: lightweight-charts-python — HtmlPresenter 内のみ（§4.1）
-- テンプレ: jinja2 — HtmlPresenter/MarkdownPresenter 内のみ
+- 永続化ドライバ: csv — Repository 内のみ。Parquet は撤去済み（2026-07-18）
+- チャート: lightweight-charts-python — HtmlPresenter 撤去済み（2026-07-18）
+- テンプレ: jinja2 — MarkdownPresenter 内のみ（HtmlPresenter は撤去）
 - データ取得（将来）: Dukascopy フィード — DukascopyGateway（MarketDataPort 実装）内のみ
 - 隔離方針: 上記技術は §6 アダプター実装の内部に限定。domain/usecase からの import を禁止
 ```
@@ -262,7 +269,7 @@ backtest/
 │   ├── run_backtest.py          # UC-001 Interactor + RunBacktestInputBoundary
 │   ├── compute_stats.py         # UC-002 ドメインサービス（STAT_* 純粋算出）
 │   ├── compare_stats.py         # UC-003 Interactor（ComparisonReport）
-│   ├── generate_report.py       # UC-004 Interactor
+│   ├── generate_report.py       # UC-004 Interactor（撤去済み：2026-07-18 コミット f6d5860）
 │   ├── ports.py                 # MarketDataPort/ResultSinkPort/StrategyPort/
 │   │                            #   IndicatorPort/TickModelPort/ReportPresenterPort
 │   └── models.py                # BacktestConfig/SymbolSpec/BacktestStats/BacktestResult
@@ -274,8 +281,10 @@ backtest/
 │   ├── controller.py            # BacktestController（CLI/Notebook）
 │   ├── repository/
 │   │   ├── ohlc_csv.py          # CsvOHLCRepository（既存 loader.py 流用）
-│   │   ├── ohlc_parquet.py      # ParquetOHLCRepository
-│   │   └── result_sink.py       # Parquet/Json ResultRepository
+│   │   ├── ohlc_mt5_csv.py      # Mt5CsvOHLCRepository
+│   │   ├── ohlc_parquet.py      # ParquetOHLCRepository（撤去済み：2026-07-18 コミット b62bcc3）
+│   │   ├── marketdata_source.py # MarketDataSourceRepository（Dukascopy 委譲・ISSUE-135）
+│   │   └── result_sink.py       # ResultSinkPort 実装（撤去済み：2026-07-18 コミット f6d5860）
 │   ├── indicator/
 │   │   ├── registry.py          # PandasIndicatorRegistry（IndicatorPort 実装）
 │   │   ├── madiff.py            # MADiff（SPEC §2 確定後充填）
@@ -290,9 +299,9 @@ backtest/
 │   │   └── tick_model.py        # EveryTick/OhlcExpand/OpenOnly TickModel（TickModelPort 実装）
 │   └── presenter/
 │       ├── markdown.py          # MarkdownPresenter
-│       ├── html.py              # HtmlPresenter（lightweight-charts）
+│       ├── html.py              # HtmlPresenter（撤去済み：2026-07-18 コミット f6d5860）
 │       ├── json.py              # JsonPresenter
-│       └── templates/
+│       └── templates/（Markdown/Json のみ現存）
 ├── framework/
 │   └── config_loader.py         # config.yaml → BacktestConfig（pydantic v2 検証）
 └── main/
@@ -321,10 +330,10 @@ tests/
 |---|---|---|---|
 | StrategyPort（EAStrategy） | 実在（Phase1→3 で複数 EA。§2.1） | 複数実装あり（TC24051901/902/PRO!fit_Band） | 維持 |
 | IndicatorPort（Registry） | 実在（MADiff/EMA/ADX/DI 複数指標） | 複数実装あり | 維持 |
-| MarketDataPort | 実在（CSV/Parquet 現存 + Dukascopy ロードマップ） | 複数実装あり（csv/parquet/将来 dukascopy） | 維持 |
-| ResultSinkPort | 実在（§7.1 永続化は呼出側責務・parquet/json/html） | 複数実装あり | 維持 |
+| MarketDataPort | 実在（CSV/MT5CSV + Dukascopy 委譲） | 複数実装あり（csv/mt5csv/marketdata委譲）。Parquet は撤去済み（2026-07-18） | 維持 |
+| ResultSinkPort | 実在（§7.1 永続化は呼出側責務・port 抽象のみ） | 実装 0（撤去済み：2026-07-18）。Port 抽象は温存（API 契約用） | **維持（抽象のみ）** |
 | TickModelPort | **実在（初版から訂正）**（PROCESS §0.2/§7-#1 が全ティック/OHLC4展開/始値のみの3モデルを「結果を左右する設定軸」と明記。§7 決定論チェックリスト #1 で選択を要求） | 複数実装あり（EveryTick/OhlcExpand/OpenOnly） | **維持**（当初の削除判断を撤回。Phase1 でも全ティック＋OHLC 展開近似の2実装が早期に必要） |
-| ReportPresenterPort | 実在（Markdown/HTML/JSON の 3 表現。§8.1） | 複数実装あり | 維持 |
+| ReportPresenterPort | 実在（Markdown/JSON の 2 表現。§8.1。HTML は撤去）| 実装 2 あり（Markdown/Json）。HTML は撤去済み（2026-07-18） | 維持 |
 | CompareStats を独立 UseCase 化 | 実在（突合は検証者アクター固有・許容誤差は変更対象 §1） | — | 維持（SRP 根拠。Port は不要・直接呼び） |
 | パラメータスイープ/並列化の抽象 | 仮想（§4.4・§2.3 で Phase2 以降と明示） | — | **削除候補**（呼出側で複数 Engine 並走） |
 | DB 永続化抽象（SQLAlchemy 等） | 仮想（§4.2 不採用・メモリ完結 §7.1） | — | **削除候補**（ResultSinkPort のファイル実装で充足） |

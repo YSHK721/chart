@@ -8,6 +8,8 @@
   - 分析結果の用語・算出式: [`./BACKTEST_METRICS.md`](./BACKTEST_METRICS.md)
   - MQL5 → Python 移植ガイド: [`./PORTING_GUIDE.md`](./PORTING_GUIDE.md)
 
+> **【注記 2026-07-18】** 本書に記載される Parquet OHLC リポジトリ経路・HTML レポート生成経路は死滅コード監査により撤去済み。テスト仕様（§7）・ファイル構成（§6）等の該当箇所は設計記録として保存される。現在は CSV/MT5CSV/marketdata 委譲・Markdown/Json Presenter のみ存在。
+
 ---
 
 ## 1. Objective（目的）

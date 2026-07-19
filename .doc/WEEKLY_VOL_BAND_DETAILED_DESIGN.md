@@ -20,6 +20,8 @@
   - `simulator/report_ui/usecase/derive.py`（epoch int→曜日 UTC 規約：`datetime.fromtimestamp(int_ts, tz=timezone.utc).weekday()`・Mon=0）
 - 設計レベル：内部設計（クラス／関数 signature・数式擬似コード・look-ahead 依存グラフ・物理データ・テスト計画）。誰が実装しても同一結果になる決定論水準。
 
+> **【状態注記 2026-07-18】** 本書に記載される推定・検証系システム（WV1・WV3）の実装（`run_weekly_vol_band_cli.py`・`estimate_weekly_band.py`・`validate_strategy.py`・`gk_har_estimator.py`・`vol_band_parquet.py`）は死滅コード監査により撤去済み（コミット 0b1a1bd）。現存は WV2 実行系（`run_weekly_segments`・`vol_band_ports`・`validation_ports`・戦略・domain VO）と `spa.py`/`var_backtests.py`（common.stats_boot への互換シム）である。本文書は設計記録として保存する。
+
 ### 1.1 確定事項（メイン会話が一意確定・D1〜D5）の継承
 
 本書は依頼の確定事項 D1〜D5 を所与とし、再議論しない。各章で D1〜D5 をどの signature／数式へ落としたかを明示する。上流前提の実証検証は本書末尾「自己レビュー」「上流入力前提検証」で記録する。
