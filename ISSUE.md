@@ -1756,3 +1756,9 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **ステータス**: OPEN
 - **事象**: リプレイ UI（日足・日別プロファイル選択状態）で、ペイン上端に 2 桁程度の数字列が全幅にわたり描画される。btlm_trail 検証中に発見したが、MP の 👁 非表示で消失し btlm_trail 非表示では消えない＝**発生源は market_profile**（canvas 描画・DOM ではない実測）。
 - **未確定**: 発生条件（ズーム・モード依存）と起源（既存挙動か ISSUE-138 是正の影響か）は未切り分け。ISSUE-138 変更はトリガー粒度のみで描画コード無改変のため既存挙動の可能性が高い（未検証・要バイセクト）。
+## ISSUE-140: [表示] btlm_trail の読取専用系列（β・σ・被覆率）の価格軸ラベルが軸下部に露出する（2026-07-19 ユーザー報告）
+- **ステータス**: RESOLVED（2026-07-19・commit 8f29355）
+- **事象**: 価格軸レンジに 0 付近が入る状態（手動スケール等）で、価格軸下部に btlm_trail_sigma/beta/coverage の軸ラベルが表示される（ユーザー実UIスクリーンショットで確認・表示モード=ライン）。
+- **原因（実測・是正）**: `/compute` payload は正常（readout_only 付与済み）。`lastValueVisible`/`priceLineVisible` は既に全系列 false（chart_renderer L808-809）だった。露出ラベルは系列 *名*（=`series.title`・"btlm_trail_sigma"等）で、lightweight-charts bundle 実装上 title ラベルは lastValueVisible とは独立に価格軸へ描画される（軸レンジが系列値域を含むと露出）。当初仮説（lastValueVisible 未無効化）は実コードで否定。
+- **対策（実施済）**: readout_only 写像へ `title=''`（名前ラベル抑止＝根本）＋ `crosshairMarkerVisible=false` を追加。`lastValueVisible`/`priceLineVisible=false` も明示（globals 変更耐性）。autoscale 契約 `() => ({ priceRange: null })` は bundle 消費コード（ki.Ph）で範囲寄与なしと確認済＝現状維持。renderer テスト追加・bundle 再生成。
+- **検証**: web 686 pass（既存死滅2のみ）・renderer 単体で title/lastValueVisible/priceLineVisible/crosshairMarkerVisible=false を固定。実ブラウザ最終確認は親会話。
