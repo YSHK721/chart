@@ -1762,3 +1762,9 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **原因（実測・是正）**: `/compute` payload は正常（readout_only 付与済み）。`lastValueVisible`/`priceLineVisible` は既に全系列 false（chart_renderer L808-809）だった。露出ラベルは系列 *名*（=`series.title`・"btlm_trail_sigma"等）で、lightweight-charts bundle 実装上 title ラベルは lastValueVisible とは独立に価格軸へ描画される（軸レンジが系列値域を含むと露出）。当初仮説（lastValueVisible 未無効化）は実コードで否定。
 - **対策（実施済）**: readout_only 写像へ `title=''`（名前ラベル抑止＝根本）＋ `crosshairMarkerVisible=false` を追加。`lastValueVisible`/`priceLineVisible=false` も明示（globals 変更耐性）。autoscale 契約 `() => ({ priceRange: null })` は bundle 消費コード（ki.Ph）で範囲寄与なしと確認済＝現状維持。renderer テスト追加・bundle 再生成。
 - **検証**: web 686 pass（既存死滅2のみ）・renderer 単体で title/lastValueVisible/priceLineVisible/crosshairMarkerVisible=false を固定。実ブラウザ最終確認は親会話。
+## ISSUE-141: [仕様不整合] btlm_trail 経験分位の窓が設計書「当該バー除外」に対し実装は当該バーを含む（2026-07-19 検出）
+- **ステータス**: RESOLVED（2026-07-19）
+- **事象**: 設計書 `BTLM_TRAIL_BASIC_DESIGN.md` §4.3/§7.2 は経験分位を「当該バー除外の直近 N 本」で定義（実証時の被覆率 88.6% も同手法で測定）。実装 `_empirical_quantile_causal` は `deviations[start:t+1]`＝当該バーを含む。外れ値分位（q_out）実装時にエージェントが矛盾として検出・報告。
+- **影響**: 因果性・非リペイントは維持されるが、当該バー自身の乖離が自分を判定する分位に混入（N=500 で約 1 ランク＝軽微だが、実証済み手法・設計書定義と不一致）。
+- **対策（実施済）**: `_empirical_quantile_causal` の窓を `deviations[max(0,t-N):t]`（当該バー除外＝`d_{t-N}..d_{t-1}`）へ是正。経験分位バンド本体・外れ値分位（q_out）の両方に適用（規約一致）。設計書 §4.3 は現行どおり（F-08 の当方追記のみ「当該バー除外」へ整合）。
+- **検証**: 自己参照遮断テストを追加（source=open で mean を close 変更から独立させ、当該バーの乖離のみ変更→当該バーの帯/off が不変・後続バーは変化を固定）。btlm_trail 35 pass・api 387 pass・web 686 pass（既存死滅2のみ）。commit で是正。

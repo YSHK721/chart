@@ -71,16 +71,18 @@ def _validate_pair(q_low: float, q_high: float) -> tuple[float, float]:
 def _empirical_quantile_causal(
     deviations: np.ndarray, emp_n: int, q: float
 ) -> np.ndarray:
-    """各バー t で直近 emp_n 本（t を含む・因果）の有限乖離の経験分位 q を返す。
+    """各バー t で **当該バー t を除く** 直近 emp_n 本（d_{t-N}..d_{t-1}）の経験分位 q を返す。
 
+    設計書 §4.3・C-4 の因果境界（当該バー除外）に従う。当該バー自身の乖離を分位算出に
+    含めない＝「自分の乖離が自分を判定する分位に混入する」自己参照を遮断する（ISSUE-141）。
     未来のバーは参照しない（確定バーの値は不変＝非リペイント）。有限本数が
     ``_MIN_EMP_OBS`` 未満のバーは NaN。
     """
     n = deviations.size
     out = np.full(n, np.nan)
     for t in range(n):
-        start = max(0, t - emp_n + 1)
-        window = deviations[start: t + 1]
+        start = max(0, t - emp_n)
+        window = deviations[start: t]  # 当該バー t を除く（... t-1 まで）。
         finite = window[np.isfinite(window)]
         if finite.size >= _MIN_EMP_OBS:
             out[t] = float(np.quantile(finite, q))
@@ -138,7 +140,7 @@ def build_btlm_trail(
         band_low = mean + norm_ppf(ql) * pred_sd
         band_high = mean + norm_ppf(qh) * pred_sd
     else:
-        # 経験分位: 乖離率 (close - mean)/mean の直近 emp_n 本の経験 q（因果・t を含む＝バンドと同一機構）。
+        # 経験分位: 乖離率 (close - mean)/mean の直近 emp_n 本の経験 q（因果・当該バー除外＝設計書 §4.3）。
         lower = {str(c).lower(): c for c in df.columns}
         if "close" not in lower:
             raise ValueError("経験分位バンドには close 列が必要です。")

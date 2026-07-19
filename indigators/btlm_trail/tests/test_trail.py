@@ -295,3 +295,23 @@ def test_outlier_lines_non_repaint():
     res_prefix = build_btlm_trail(df_prefix, **kw)
     np.testing.assert_allclose(res_full.off_high[:250], res_prefix.off_high, atol=1e-9, equal_nan=True)
     np.testing.assert_allclose(res_full.off_low[:250], res_prefix.off_low, atol=1e-9, equal_nan=True)
+
+
+# --- ISSUE-141: 経験分位の窓は「当該バー除外」（自己参照の遮断） ------------
+def test_empirical_current_bar_deviation_does_not_affect_same_bar():
+    # source=open で mean を close 変更から独立させ、乖離 d_t=(close-mean)/mean のみを動かす。
+    df = _df(400, seed=41)
+    kw = dict(source="open", maxbars=100, q_low=0.05, q_high=0.95,
+              band_method="empirical", empirical_n=150, q_out=0.99)
+    res = build_btlm_trail(df, **kw)
+    t0 = 300
+    df2 = df.copy()
+    df2.loc[t0, "close"] = float(df2.loc[t0, "close"]) + 30.0  # 当該バーの乖離のみ変更
+    res2 = build_btlm_trail(df2, **kw)
+    # 当該バー t0 の帯・off は「自身の乖離」に影響されない（当該バー除外＝自己参照遮断）。
+    assert res2.band_low[t0] == res.band_low[t0]
+    assert res2.band_high[t0] == res.band_high[t0]
+    assert res2.off_low[t0] == res.off_low[t0]
+    assert res2.off_high[t0] == res.off_high[t0]
+    # ただし後続バー（t0 の乖離が窓に入る）では変化する＝伝播は起きる（除外が「窓から常に落とす」ではない）。
+    assert res2.band_high[t0 + 1] != res.band_high[t0 + 1]
