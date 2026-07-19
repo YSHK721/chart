@@ -26,6 +26,7 @@
   | v1.0.3 | 2026-07-19 | **「外れ値オフセット %」（`offset_pct`）を「外れ値分位」（`q_out`）へ置換**（ユーザー確定）。上側 `q_out`／下側 `1-q_out` に補助線を描画し、選択中のバンド方式（ols／経験分位）と同一規約で算出。有効条件 `q_high<q_out<1`・無効/空はオフ。`offset_pct` と %オフセット計算経路を到達不能化のため撤去（catalog/schema/golden/テスト同期）。帯本体・読取系列は byte 不変 |
   | v1.0.4 | 2026-07-19 | **ISSUE-141 是正**：経験分位の窓を §4.3 の「当該バー除外」（`d_{t-N}..d_{t-1}`）へ実装是正（従来 `[start:t+1]`＝当該バー込みの不整合）。経験分位バンド本体・外れ値分位の両方に適用（規約一致・自己参照遮断）。仕様（§4.3）は不変・実装のみ是正。経験分位帯の値が約 1 ランク変わる（想定内） |
   | v1.0.5 | 2026-07-19 | **MA 参考線をユーザー指示で削除**。設定「MA 参考線／種別／期間」（`ma_reference`/`ma_type`/`ma_length`）・系列 `btlm_trail_ma`・MA 配管（`ma_reference.py`・adapter 生成・`moving_averages.core` 動的ロード結線）をテストごと撤去（catalog/schema/golden 同期）。`moving_averages` 本体・`applied_price` は無改変。他機能（ドット/ライン・バンド 2 方式・q_out・β/バンド内実績率/σ・単一ペア・8 択ソース）は byte 不変 |
+  | v1.0.6 | 2026-07-19 | **「系列表示（ドット/ライン）」をパラメーター（`display_mode`）から設定ダイアログ「スタイル」タブへ移設**（ユーザー確定・案A＝系列単位・既定ドット）。ゲート = SeriesDef 新フラグ `pointStyleEditable`（btlm_trail の mean/分位線のみ付与＝他指標のスタイルタブ挙動は不変）。永続化は既存 per-series style patch へ `display` 属性を追加（schema 変更不要）。`applySeriesStyle` に `display→pointMarkersVisible/lineVisible` 写像を追加（display 未指定系列は不変）。adapter は `display_mode` 撤去・常にドット既定 emit（計算 byte 不変）。catalog/schema/golden 同期 |
 
 - 確定仕様の正本：`/root/.claude/plans/kind-twirling-hollerith.md`（全項目を本書に反映）。
 - 実証知見の正本：`.doc/BTLM_TRACK_ANALYSIS_FINDINGS.md`（結論 A〜E。非保証事項・数値は本書 §9.4／§10.1 に出典付き引用）。
@@ -68,7 +69,7 @@
 | 要件 ID | 要件 | 出所 |
 |---|---|---|
 | FR-01 | 各バーで直近 `maxbars` 本に OLS をローリング当てはめし、窓末尾値 3 系列（`btlm_mean`／分位下端／上端）を時系列連結する | plan §2（計算仕様） |
-| FR-02 | 3 系列の描画形式をドット（サークル・既定）／ライン接続で切替可能にする | plan §3 |
+| FR-02 | 3 系列の描画形式をドット（サークル・既定）／ライン接続で切替可能にする。**切替は設定ダイアログ「スタイル」タブで系列単位に行う（v1.0.6・案A。`display_mode` param は撤去）** | plan §3／v1.0.6 |
 | FR-03 | バンド方式を名目 ols バンド／経験分位バンドの 2 種から選択可能にする | plan §2（バンド方式） |
 | FR-04 | 単一分位ペア `q_low`／`q_high`（既定 `[0.05, 0.95]`・`0<q_low<q_high<1` 検証・任意値可）をバンド描画する。**複数ペアは v1.0.1 でユーザー指示により撤回** | plan §2（分位パラメータ）／v1.0.1 改訂 |
 | FR-05 | 分位ペアを帯として表示可能にする（ライン／塗りエリア選択・既定オフ） | plan §3（バンド表示） |

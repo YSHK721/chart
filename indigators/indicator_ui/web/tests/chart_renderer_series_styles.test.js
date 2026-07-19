@@ -68,8 +68,8 @@ test('ISSUE-109 getSeriesStyles: 生成時ペイロードのスタイルを実�
   renderer.renderLine('ma#1', MA_PAYLOADS);
   const styles = renderer.getSeriesStyles('ma#1');
   assert.equal(styles.length, 2);
-  assert.deepEqual(styles[0], { name: 'MA', kind: 'line', color: '#2962ff', width: 1, style: 'solid', visible: true, heat: false });
-  assert.deepEqual(styles[1], { name: 'Smoothing', kind: 'line', color: '#00aa00', width: 2, style: 'dotted', visible: true, heat: false });
+  assert.deepEqual(styles[0], { name: 'MA', kind: 'line', color: '#2962ff', width: 1, style: 'solid', visible: true, heat: false, display: null });
+  assert.deepEqual(styles[1], { name: 'Smoothing', kind: 'line', color: '#00aa00', width: 2, style: 'dotted', visible: true, heat: false, display: null });
 });
 
 test('ISSUE-109 getSeriesStyles: 未知 instance は空配列（防御）', () => {
@@ -278,4 +278,45 @@ test('通常系列は title に系列名を維持（後方互換）', () => {
   renderer.renderLine('ma#11', MA_PAYLOADS);
   assert.equal(chart.created[0]._createOpts.title, 'MA');
   assert.equal('crosshairMarkerVisible' in chart.created[0]._createOpts, false);
+});
+
+// 案A（btlm_trail）: スタイルタブの「系列表示（ドット/ライン）」= applySeriesStyle の display patch を
+//   pointMarkersVisible/lineVisible へ写像する。styleMeta にも反映し getSeriesStyles が現在値を返す。
+test('btlm_trail: applySeriesStyle({display:"line"}) → pointMarkersVisible=false/lineVisible=true', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#d1', [{
+    name: 'btlm_trail_mean', kind: 'line', style: 'solid', width: 2, color: '#7b68ee',
+    point_markers: true, line_visible: false, point_markers_radius: 3.5,
+    data: [{ time: 1, value: 10 }],
+  }]);
+  // 初期は payload 由来で dots。
+  assert.equal(renderer.getSeriesStyles('trail#d1')[0].display, 'dots');
+  const ok = renderer.applySeriesStyle('trail#d1', 'btlm_trail_mean', { display: 'line' });
+  assert.equal(ok, true);
+  assert.equal(chart.created[0]._options.pointMarkersVisible, false);
+  assert.equal(chart.created[0]._options.lineVisible, true);
+  assert.equal(renderer.getSeriesStyles('trail#d1')[0].display, 'line');
+});
+
+test('btlm_trail: applySeriesStyle({display:"dots"}) → pointMarkersVisible=true/lineVisible=false', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#d2', [{
+    name: 'btlm_trail_mean', kind: 'line', style: 'solid', width: 2, color: '#7b68ee',
+    point_markers: false, line_visible: true, data: [{ time: 1, value: 10 }],
+  }]);
+  assert.equal(renderer.getSeriesStyles('trail#d2')[0].display, 'line');
+  renderer.applySeriesStyle('trail#d2', 'btlm_trail_mean', { display: 'dots' });
+  assert.equal(chart.created[0]._options.pointMarkersVisible, true);
+  assert.equal(chart.created[0]._options.lineVisible, false);
+  assert.equal(renderer.getSeriesStyles('trail#d2')[0].display, 'dots');
+});
+
+test('display 未指定の patch は pointMarkersVisible/lineVisible を触らない（非破壊）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#d3', MA_PAYLOADS);
+  renderer.applySeriesStyle('ma#d3', 'MA', { color: '#ff0000' });
+  assert.equal('pointMarkersVisible' in chart.created[0]._options, false);
+  assert.equal('lineVisible' in chart.created[0]._options, false);
+  // ヒント無し系列は display=null。
+  assert.equal(renderer.getSeriesStyles('ma#d3')[0].display, null);
 });

@@ -42,7 +42,6 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "q_high": 0.95,
         "band_method": "ols",
         "empirical_n": 500,
-        "display_mode": "dots",
         "q_out": None,
         "show_metrics": True,
         "n_cov": 250,

@@ -31,6 +31,7 @@ export class SeriesDef {
     colorRule = null,
     priceScaleId = null,
     axisLabelVisible = false,
+    pointStyleEditable = false,
   }) {
     this.kind = kind;
     this.sourceColumn = sourceColumn;
@@ -43,6 +44,9 @@ export class SeriesDef {
     this.colorRule = colorRule;
     this.priceScaleId = priceScaleId;
     this.axisLabelVisible = axisLabelVisible;
+    // pointStyleEditable（案A・btlm_trail）: この系列がスタイルタブで「系列表示（ドット/ライン）」を
+    //   編集可能かのゲート。既定 false＝未付与系列にはドット/ライン項目を出さない（他指標へ非波及）。
+    this.pointStyleEditable = pointStyleEditable;
     Object.freeze(this);
   }
 }

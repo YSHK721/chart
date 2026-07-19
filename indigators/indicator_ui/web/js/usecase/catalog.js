@@ -128,7 +128,6 @@ const BTLM_TRAIL_SOURCE_LABELS = {
   ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
 };
 const BTLM_TRAIL_METHOD_LABELS = { ols: '名目 ols バンド', empirical: '経験分位バンド' };
-const BTLM_TRAIL_DISPLAY_LABELS = { dots: 'ドット（サークル）', line: 'ライン' };
 const BTLM_TRAIL = new IndicatorDef({
   id: 'btlm_trail',
   displayNameKey: 'ind.btlm_trail',
@@ -156,8 +155,8 @@ const BTLM_TRAIL = new IndicatorDef({
       conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
     }),
     // --- 表示 ---
-    // 系列表示: ドット（サークル・既定）/ライン切替。表示層が pointMarkersVisible/lineVisible へ写像。
-    param('display_mode', ParamType.ENUM, 'dots', [], ['dots', 'line'], { group: 'group.display', order: 1, label: '系列表示', enumLabels: BTLM_TRAIL_DISPLAY_LABELS }),
+    // 系列表示（ドット/ライン）はパラメーターから移設（案A・2026-07-19）。設定ダイアログの
+    //   「スタイル」タブで系列単位に切替（既定ドット）。ゲート = 下記 SeriesDef の pointStyleEditable。
     // 外れ値分位: 上側 q_out／下側 1-q_out に補助線を上下対称で描画。空/無効はオフ（既定）。
     //   有効条件 q_high < q_out < 1。範囲外・q_out<=q_high は黙って無効化（補助線なし）。
     param('q_out', ParamType.FLOAT, null, [], null, {
@@ -180,9 +179,10 @@ const BTLM_TRAIL = new IndicatorDef({
   // 系列: btlm_trail_mean（静的）＋ 動的分位線 btlm_trail_q{pct}＋オフセット/数値（読取欄）系列。
   //   数値系列（beta/sigma/band_hit_rate）は不可視 line（表示層が readout オーバーレイへ載せる）。
   series: [
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false }),
+    // pointStyleEditable（案A）: mean と分位線のみスタイルタブで「系列表示（ドット/ライン）」編集可。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false, pointStyleEditable: true }),
     new SeriesDef({
-      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, pointStyleEditable: true,
       seriesNamePattern: {
         template: 'btlm_trail_q{pct}', buckets: [''],
         pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),

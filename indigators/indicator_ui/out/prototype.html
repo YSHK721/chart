@@ -763,6 +763,7 @@ class SeriesDef {
     colorRule = null,
     priceScaleId = null,
     axisLabelVisible = false,
+    pointStyleEditable = false,
   }) {
     this.kind = kind;
     this.sourceColumn = sourceColumn;
@@ -775,6 +776,9 @@ class SeriesDef {
     this.colorRule = colorRule;
     this.priceScaleId = priceScaleId;
     this.axisLabelVisible = axisLabelVisible;
+    // pointStyleEditable（案A・btlm_trail）: この系列がスタイルタブで「系列表示（ドット/ライン）」を
+    //   編集可能かのゲート。既定 false＝未付与系列にはドット/ライン項目を出さない（他指標へ非波及）。
+    this.pointStyleEditable = pointStyleEditable;
     Object.freeze(this);
   }
 }
@@ -1726,7 +1730,6 @@ const BTLM_TRAIL_SOURCE_LABELS = {
   ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
 };
 const BTLM_TRAIL_METHOD_LABELS = { ols: '名目 ols バンド', empirical: '経験分位バンド' };
-const BTLM_TRAIL_DISPLAY_LABELS = { dots: 'ドット（サークル）', line: 'ライン' };
 const BTLM_TRAIL = new IndicatorDef({
   id: 'btlm_trail',
   displayNameKey: 'ind.btlm_trail',
@@ -1754,8 +1757,8 @@ const BTLM_TRAIL = new IndicatorDef({
       conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
     }),
     // --- 表示 ---
-    // 系列表示: ドット（サークル・既定）/ライン切替。表示層が pointMarkersVisible/lineVisible へ写像。
-    param('display_mode', ParamType.ENUM, 'dots', [], ['dots', 'line'], { group: 'group.display', order: 1, label: '系列表示', enumLabels: BTLM_TRAIL_DISPLAY_LABELS }),
+    // 系列表示（ドット/ライン）はパラメーターから移設（案A・2026-07-19）。設定ダイアログの
+    //   「スタイル」タブで系列単位に切替（既定ドット）。ゲート = 下記 SeriesDef の pointStyleEditable。
     // 外れ値分位: 上側 q_out／下側 1-q_out に補助線を上下対称で描画。空/無効はオフ（既定）。
     //   有効条件 q_high < q_out < 1。範囲外・q_out<=q_high は黙って無効化（補助線なし）。
     param('q_out', ParamType.FLOAT, null, [], null, {
@@ -1778,9 +1781,10 @@ const BTLM_TRAIL = new IndicatorDef({
   // 系列: btlm_trail_mean（静的）＋ 動的分位線 btlm_trail_q{pct}＋オフセット/数値（読取欄）系列。
   //   数値系列（beta/sigma/band_hit_rate）は不可視 line（表示層が readout オーバーレイへ載せる）。
   series: [
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false }),
+    // pointStyleEditable（案A）: mean と分位線のみスタイルタブで「系列表示（ドット/ライン）」編集可。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false, pointStyleEditable: true }),
     new SeriesDef({
-      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, pointStyleEditable: true,
       seriesNamePattern: {
         template: 'btlm_trail_q{pct}', buckets: [''],
         pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
@@ -2479,6 +2483,10 @@ function fmtValue(v) {
 
 // lineStyle 文字列 → lightweight-charts LineStyle 整数（v4/v5 共通: Solid=0 / Dotted=1 / Dashed=2）。
 const LINE_STYLE_INT = Object.freeze({ solid: 0, dotted: 1, dashed: 2 });
+
+// ドット（サークル）表示の明示半径（px）。スタイルタブで dots へ切替時に付与し視認性を確保する
+//   （lwc 既定 pointMarkersRadius は lineWidth/2+2＝細い）。adapter 既定 emit（_POINT_RADIUS=3.5）と一致。
+const _POINT_MARKERS_RADIUS = 3.5;
 
 function toLineStyleInt(style) {
   return LINE_STYLE_INT[style] ?? LINE_STYLE_INT.solid;
@@ -3308,6 +3316,9 @@ class ChartRenderer {
         // heat（ISSUE-112）: histogram でバー別着色（data[].color＝値に応じたヒート配色）を持つか。
         //   heat=true の系列はユーザー色上書きの対象外（ヒート絶対優先・ユーザー裁定）。
         heat: seriesKind(kind).supportsHeat && (p.data ?? []).some((pt) => pt && pt.color != null),
+        // display（案A・btlm_trail）: 系列表示（ドット/ライン）の現在値。payload の描画ヒント
+        //   （point_markers/line_visible）から導出。ヒント無し系列は null（＝この属性を持たない）。
+        display: p.point_markers ? 'dots' : (p.line_visible ? 'line' : null),
       });
       if (!slot.scaleHost) {
         slot.scaleHost = series;
@@ -3556,6 +3567,18 @@ class ChartRenderer {
       }
       if (meta.style != null) {
         options.lineStyle = toLineStyleInt(meta.style);
+      }
+    }
+    // display（案A・btlm_trail）: 系列表示（dots/line）を lightweight-charts の
+    //   pointMarkersVisible/lineVisible へ写像する。patch.display 未指定なら一切触らない（非破壊・
+    //   他指標の系列は display を持たないため影響なし）。dots は明示半径で視認性を確保する。
+    if (patch.display === 'dots' || patch.display === 'line') {
+      meta.display = patch.display;
+      const dots = patch.display === 'dots';
+      options.pointMarkersVisible = dots;
+      options.lineVisible = !dots;
+      if (dots) {
+        options.pointMarkersRadius = _POINT_MARKERS_RADIUS;
       }
     }
     series.applyOptions(options);
@@ -4227,6 +4250,53 @@ function resetToDefaults(def) {
 //   histogram 行は線幅/線種の編集対象外（ISSUE-111: 描画種別と設定項目の整合）。
 //   heat はバー別ヒート配色の histogram（ISSUE-112: 色もユーザー編集対象外＝ヒート絶対優先）。
 //   表示既定や hex 変換は呼び出し側 = adapter の責務）。
+// 正規表現メタ文字をエスケープする（動的系列パターン照合用）。
+function _escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 動的 SeriesDef の seriesNamePattern（template/{bucket}/{pct}）が実系列名に一致するか。
+function _dynamicPatternMatches(pattern, name) {
+  const tpl = String(pattern?.template ?? '');
+  if (!tpl) {
+    return false;
+  }
+  const buckets = (Array.isArray(pattern.buckets) ? pattern.buckets : ['']).map(
+    (b) => (b == null ? '' : String(b)),
+  );
+  const parts = tpl.split(/\{bucket\}|\{pct\}/);
+  const tokens = tpl.match(/\{bucket\}|\{pct\}/g) ?? [];
+  let re = '^';
+  for (let i = 0; i < parts.length; i += 1) {
+    re += _escapeRegex(parts[i]);
+    if (i < tokens.length) {
+      re += tokens[i] === '{pct}'
+        ? '\\d+'
+        : `(?:${buckets.map(_escapeRegex).join('|')})`;
+    }
+  }
+  re += '$';
+  return new RegExp(re).test(name);
+}
+
+// 案A（btlm_trail）: 実系列名 name が「pointStyleEditable=true」の SeriesDef に一致するか。
+//   静的は seriesName 完全一致、動的は seriesNamePattern 照合。未付与指標は常に false（非波及ゲート）。
+function _pointStyleEditableFor(def, name) {
+  for (const sd of def?.series ?? []) {
+    if (!sd || sd.pointStyleEditable !== true) {
+      continue;
+    }
+    if (sd.dynamic && sd.seriesNamePattern) {
+      if (_dynamicPatternMatches(sd.seriesNamePattern, name)) {
+        return true;
+      }
+    } else if (sd.seriesName != null && sd.seriesName === name) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function buildSeriesStyleRows(def, seriesStyles) {
   const bucketDefs = [];
   for (const s of def?.series ?? []) {
@@ -4253,6 +4323,8 @@ function buildSeriesStyleRows(def, seriesStyles) {
         row = {
           label: hit.bucket, names: [], kind: st.kind ?? 'line', heat: st.heat === true,
           color: st.color ?? null, width: st.width ?? null, style: st.style ?? null, visible: true,
+          display: st.display ?? null,
+          pointStyleEditable: _pointStyleEditableFor(def, st.name),
         };
         byBucket.set(hit.bucket, row);
         rows.push(row);
@@ -4264,6 +4336,8 @@ function buildSeriesStyleRows(def, seriesStyles) {
         label: st.name, names: [st.name], kind: st.kind ?? 'line', heat: st.heat === true,
         color: st.color ?? null, width: st.width ?? null, style: st.style ?? null,
         visible: st.visible !== false,
+        display: st.display ?? null,
+        pointStyleEditable: _pointStyleEditableFor(def, st.name),
       });
     }
   }
@@ -4976,10 +5050,27 @@ class PropertiesDialog {
         row.append(width, style);
       }
 
+      // 系列表示（ドット/ライン）: pointStyleEditable の系列のみ（案A・btlm_trail）。
+      //   ゲート未付与の系列（他指標）には項目を出さない＝スタイルタブ挙動は不変（非波及）。
+      let display = null;
+      if (r.pointStyleEditable) {
+        display = doc.createElement('select');
+        display.className = 'prop-input prop-input-select';
+        for (const dm of ['dots', 'line']) {
+          const o = doc.createElement('option');
+          o.value = dm;
+          o.textContent = dm === 'dots' ? 'ドット' : 'ライン';
+          if ((r.display ?? 'dots') === dm) o.selected = true;
+          display.append(o);
+        }
+        display.value = r.display ?? 'dots';
+        row.append(display);
+      }
+
       // initial: OK 時の差分判定基準（変更された行×フィールドのみ patch へ載せる）。
       this._styleState.push({
-        names: r.names, color, width, style,
-        initial: { color: r.color, width: String(r.width), style: r.style },
+        names: r.names, color, width, style, display,
+        initial: { color: r.color, width: String(r.width), style: r.style, display: r.display ?? 'dots' },
       });
       pane.append(row);
     }
@@ -5030,6 +5121,10 @@ class PropertiesDialog {
       }
       if (s.style && s.style.value !== s.initial.style) {
         fields.style = s.style.value;
+      }
+      // 系列表示（ドット/ライン）: pointStyleEditable 行のみ display コントロールを持つ。
+      if (s.display && s.display.value !== s.initial.display) {
+        fields.display = s.display.value;
       }
       if (Object.keys(fields).length > 0) {
         put(s.names, fields);

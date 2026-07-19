@@ -97,32 +97,17 @@ def test_invalid_source_raises():
         add_btlm_trail(FakeChart(), _df(100), source="vwap")
 
 
-# --- 表示層: ドット/ライン切替（display_mode） ----------------------------
-def test_display_mode_dots_sets_point_markers_hint():
-    # 既定はドット（サークル）: mean/q 系列に point_markers=True, line_visible=False を付す。
+# --- 表示層: 既定はドット emit（ドット/ライン切替はスタイルタブ・案A） --------
+def test_default_emit_is_dots_with_radius():
+    # display_mode param は撤去。adapter は常にドット（サークル）ヒント＋明示半径を既定 emit。
+    #   ドット/ライン切替は front のスタイルタブ（applySeriesStyle の display）が描画後に上書きする。
     chart = FakeChart()
-    add_btlm_trail(chart, _df(200), source="close", maxbars=100, display_mode="dots")
-    mean = next(ln for ln in chart.lines if ln.name == "btlm_trail_mean")
-    assert mean.kwargs.get("point_markers") is True
-    assert mean.kwargs.get("line_visible") is False
-    # ドット視認性のため明示半径を付す（ズームアウトでラインに見える問題への対処）。
-    assert mean.kwargs.get("point_markers_radius", 0) >= 3
-
-
-def test_display_mode_line_omits_point_radius():
-    chart = FakeChart()
-    add_btlm_trail(chart, _df(200), source="close", maxbars=100, display_mode="line")
-    mean = next(ln for ln in chart.lines if ln.name == "btlm_trail_mean")
-    # ライン表示ではドット半径ヒントを付けない。
-    assert "point_markers_radius" not in mean.kwargs
-
-
-def test_display_mode_line_sets_line_hint():
-    chart = FakeChart()
-    add_btlm_trail(chart, _df(200), source="close", maxbars=100, display_mode="line")
-    mean = next(ln for ln in chart.lines if ln.name == "btlm_trail_mean")
-    assert mean.kwargs.get("point_markers") is False
-    assert mean.kwargs.get("line_visible") is True
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100)
+    for name in ("btlm_trail_mean", "btlm_trail_q5", "btlm_trail_q95"):
+        ln = next(l for l in chart.lines if l.name == name)
+        assert ln.kwargs.get("point_markers") is True
+        assert ln.kwargs.get("line_visible") is False
+        assert ln.kwargs.get("point_markers_radius", 0) >= 3
 
 
 # --- 外れ値分位ライン（q_out・既定オフ・q_high<q_out<1 のみ有効） ----------

@@ -56,7 +56,7 @@ def test_btlm_trail_payload_carries_display_and_extra_series():
     binding = CallBinding.resolve("btlm_trail", "default")
     binding.invoke(chart, _ohlcv(300), {
         "source": "close", "maxbars": 100, "q_low": 0.05, "q_high": 0.95,
-        "display_mode": "dots", "q_out": 0.99,
+        "q_out": 0.99,
         "show_metrics": True, "n_cov": 250,
     })
     payloads = {p["name"]: p for p in chart.to_payloads()}
@@ -83,7 +83,7 @@ def test_runtime_compute_propagates_display_hints_end_to_end():
     adapter = IndicatorComputeAdapter()
     series = adapter.compute("btlm_trail", "default", _ohlcv(300), {
         "source": "close", "maxbars": 100, "q_low": 0.05, "q_high": 0.95,
-        "display_mode": "dots", "band_method": "ols", "empirical_n": 500,
+        "band_method": "ols", "empirical_n": 500,
         "show_metrics": True, "n_cov": 250,
     })
     by_name = {s["name"]: s for s in series}
@@ -98,13 +98,14 @@ def test_runtime_compute_propagates_display_hints_end_to_end():
         assert by_name[name]["line_visible"] is False
 
 
-def test_runtime_compute_line_mode_hints_end_to_end():
+def test_runtime_compute_always_emits_dots_default():
+    # display_mode param は撤去（案A）。実 runtime は常にドット既定 emit。ドット/ライン切替は
+    #   front のスタイルタブ（applySeriesStyle の display）が描画後に上書きする。
     adapter = IndicatorComputeAdapter()
     series = adapter.compute("btlm_trail", "default", _ohlcv(300), {
         "source": "close", "maxbars": 100, "q_low": 0.05, "q_high": 0.95,
-        "display_mode": "line",
     })
     mean = next(s for s in series if s["name"] == "btlm_trail_mean")
-    assert mean["line_visible"] is True
-    assert mean["point_markers"] is False
-    assert "point_markers_radius" not in mean  # ライン時は半径ヒント無し
+    assert mean["point_markers"] is True
+    assert mean["line_visible"] is False
+    assert mean["point_markers_radius"] >= 3

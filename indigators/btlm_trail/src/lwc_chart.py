@@ -107,7 +107,6 @@ def add_btlm_trail(
     q_high: float = DEFAULT_Q_HIGH,
     band_method: str = "ols",
     empirical_n: int = DEFAULT_EMP_N,
-    display_mode: str = "dots",
     q_out=None,
     show_metrics: bool = True,
     n_cov: int = DEFAULT_N_COV,
@@ -117,8 +116,8 @@ def add_btlm_trail(
     """``chart`` へ btlm_trail の系列一式を追加する（単一分位ペア）。
 
     系列:
-        - btlm_trail_mean / btlm_trail_q{pct}: トレンド現在位置とバンド端（display_mode で
-          ドット（サークル・既定）/ライン切替）。
+        - btlm_trail_mean / btlm_trail_q{pct}: トレンド現在位置とバンド端。既定はドット（サークル）で
+          emit し、ドット/ライン切替は設定ダイアログ「スタイル」タブで系列単位に行う（案A）。
         - btlm_trail_off_hi/lo: 外れ値分位ライン（上側 q_out／下側 1-q_out・既定オフ）。
         - btlm_trail_beta/sigma/band_hit_rate: β・残差 σ・バンド内実績率（読取欄オーバーレイ用・不可視）。
 
@@ -129,7 +128,6 @@ def add_btlm_trail(
         df: OHLC DataFrame（時刻は time / date / DatetimeIndex で解決）。
         source: 8 択ソース。maxbars: 回帰窓。q_low/q_high: 分位ペア。
         band_method: "ols"/"empirical"。empirical_n: 経験分位の参照本数。
-        display_mode: "dots"（サークル・既定）/"line"。
         q_out: 外れ値分位（q_high<q_out<1 のみ有効・無効/空はオフ＝補助線なし）。バンド方式と同一規約で算出。
         show_metrics: β/σ/バンド内実績率の読取欄系列を出すか。n_cov: 被覆率のローリング本数。
         time_column: 時刻列。color: btlm_mean の色。
@@ -147,9 +145,10 @@ def add_btlm_trail(
         empirical_n=empirical_n, q_out=q_out,
     )
     times = _resolve_times(df, time_column)
-    dots = str(display_mode).lower() == "dots"
-    pm, lv = (True, False) if dots else (False, True)
-    radius = _POINT_RADIUS if dots else None  # ドット時のみ明示半径（視認性）。
+    # 既定はドット（サークル）で emit。ドット/ライン切替はスタイルタブ（applySeriesStyle の display）が
+    #   描画後に上書きする（案A）。ここでは常に dots ヒント＋明示半径を付す（従来 display_mode='dots' と同一）。
+    pm, lv = True, False
+    radius = _POINT_RADIUS
     low, high = res.band_low, res.band_high
 
     lines: dict[str, object] = {}
@@ -158,7 +157,7 @@ def add_btlm_trail(
         style="solid", width=2, point_markers=pm, line_visible=lv,
         point_markers_radius=radius,
     )
-    # バンド端（下側 q_low・上側 q_high）。display_mode に追随。
+    # バンド端（下側 q_low・上側 q_high）。既定ドット emit（切替はスタイルタブ・案A）。
     lo_name = _quantile_series_name(q_low)
     hi_name = _quantile_series_name(q_high)
     lines[lo_name] = _emit(chart, lo_name, times, low, _COLOR_BAND,

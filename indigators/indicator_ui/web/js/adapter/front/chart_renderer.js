@@ -25,6 +25,10 @@ import { seriesKind } from '../../domain/series_kind.js';
 // lineStyle 文字列 → lightweight-charts LineStyle 整数（v4/v5 共通: Solid=0 / Dotted=1 / Dashed=2）。
 const LINE_STYLE_INT = Object.freeze({ solid: 0, dotted: 1, dashed: 2 });
 
+// ドット（サークル）表示の明示半径（px）。スタイルタブで dots へ切替時に付与し視認性を確保する
+//   （lwc 既定 pointMarkersRadius は lineWidth/2+2＝細い）。adapter 既定 emit（_POINT_RADIUS=3.5）と一致。
+const _POINT_MARKERS_RADIUS = 3.5;
+
 function toLineStyleInt(style) {
   return LINE_STYLE_INT[style] ?? LINE_STYLE_INT.solid;
 }
@@ -853,6 +857,9 @@ export class ChartRenderer {
         // heat（ISSUE-112）: histogram でバー別着色（data[].color＝値に応じたヒート配色）を持つか。
         //   heat=true の系列はユーザー色上書きの対象外（ヒート絶対優先・ユーザー裁定）。
         heat: seriesKind(kind).supportsHeat && (p.data ?? []).some((pt) => pt && pt.color != null),
+        // display（案A・btlm_trail）: 系列表示（ドット/ライン）の現在値。payload の描画ヒント
+        //   （point_markers/line_visible）から導出。ヒント無し系列は null（＝この属性を持たない）。
+        display: p.point_markers ? 'dots' : (p.line_visible ? 'line' : null),
       });
       if (!slot.scaleHost) {
         slot.scaleHost = series;
@@ -1101,6 +1108,18 @@ export class ChartRenderer {
       }
       if (meta.style != null) {
         options.lineStyle = toLineStyleInt(meta.style);
+      }
+    }
+    // display（案A・btlm_trail）: 系列表示（dots/line）を lightweight-charts の
+    //   pointMarkersVisible/lineVisible へ写像する。patch.display 未指定なら一切触らない（非破壊・
+    //   他指標の系列は display を持たないため影響なし）。dots は明示半径で視認性を確保する。
+    if (patch.display === 'dots' || patch.display === 'line') {
+      meta.display = patch.display;
+      const dots = patch.display === 'dots';
+      options.pointMarkersVisible = dots;
+      options.lineVisible = !dots;
+      if (dots) {
+        options.pointMarkersRadius = _POINT_MARKERS_RADIUS;
       }
     }
     series.applyOptions(options);

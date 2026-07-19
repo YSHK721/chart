@@ -237,6 +237,53 @@ export function resetToDefaults(def) {
 //   histogram 行は線幅/線種の編集対象外（ISSUE-111: 描画種別と設定項目の整合）。
 //   heat はバー別ヒート配色の histogram（ISSUE-112: 色もユーザー編集対象外＝ヒート絶対優先）。
 //   表示既定や hex 変換は呼び出し側 = adapter の責務）。
+// 正規表現メタ文字をエスケープする（動的系列パターン照合用）。
+function _escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 動的 SeriesDef の seriesNamePattern（template/{bucket}/{pct}）が実系列名に一致するか。
+function _dynamicPatternMatches(pattern, name) {
+  const tpl = String(pattern?.template ?? '');
+  if (!tpl) {
+    return false;
+  }
+  const buckets = (Array.isArray(pattern.buckets) ? pattern.buckets : ['']).map(
+    (b) => (b == null ? '' : String(b)),
+  );
+  const parts = tpl.split(/\{bucket\}|\{pct\}/);
+  const tokens = tpl.match(/\{bucket\}|\{pct\}/g) ?? [];
+  let re = '^';
+  for (let i = 0; i < parts.length; i += 1) {
+    re += _escapeRegex(parts[i]);
+    if (i < tokens.length) {
+      re += tokens[i] === '{pct}'
+        ? '\\d+'
+        : `(?:${buckets.map(_escapeRegex).join('|')})`;
+    }
+  }
+  re += '$';
+  return new RegExp(re).test(name);
+}
+
+// 案A（btlm_trail）: 実系列名 name が「pointStyleEditable=true」の SeriesDef に一致するか。
+//   静的は seriesName 完全一致、動的は seriesNamePattern 照合。未付与指標は常に false（非波及ゲート）。
+function _pointStyleEditableFor(def, name) {
+  for (const sd of def?.series ?? []) {
+    if (!sd || sd.pointStyleEditable !== true) {
+      continue;
+    }
+    if (sd.dynamic && sd.seriesNamePattern) {
+      if (_dynamicPatternMatches(sd.seriesNamePattern, name)) {
+        return true;
+      }
+    } else if (sd.seriesName != null && sd.seriesName === name) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function buildSeriesStyleRows(def, seriesStyles) {
   const bucketDefs = [];
   for (const s of def?.series ?? []) {
@@ -263,6 +310,8 @@ export function buildSeriesStyleRows(def, seriesStyles) {
         row = {
           label: hit.bucket, names: [], kind: st.kind ?? 'line', heat: st.heat === true,
           color: st.color ?? null, width: st.width ?? null, style: st.style ?? null, visible: true,
+          display: st.display ?? null,
+          pointStyleEditable: _pointStyleEditableFor(def, st.name),
         };
         byBucket.set(hit.bucket, row);
         rows.push(row);
@@ -274,6 +323,8 @@ export function buildSeriesStyleRows(def, seriesStyles) {
         label: st.name, names: [st.name], kind: st.kind ?? 'line', heat: st.heat === true,
         color: st.color ?? null, width: st.width ?? null, style: st.style ?? null,
         visible: st.visible !== false,
+        display: st.display ?? null,
+        pointStyleEditable: _pointStyleEditableFor(def, st.name),
       });
     }
   }

@@ -2,7 +2,6 @@
   "btlm_trail": {
     "band_method": "ols",
     "color": "rgba(123, 104, 238, 1)",
-    "display_mode": "dots",
     "empirical_n": 500,
     "maxbars": 100,
     "n_cov": 250,

@@ -63,7 +63,7 @@ test('ISSUE-109 _seriesRows: 実描画系列から 1 系列=1 行を構築し初
   const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: STATIC_DEF, seriesStyles: MA_STYLES });
   const rows = dialog._seriesRows();
   assert.equal(rows.length, 2);
-  assert.deepEqual(rows[0], { label: 'MA', names: ['MA'], kind: 'line', heat: false, color: '#2962ff', width: 1, style: 'solid', visible: true });
+  assert.deepEqual(rows[0], { label: 'MA', names: ['MA'], kind: 'line', heat: false, color: '#2962ff', width: 1, style: 'solid', visible: true, display: null, pointStyleEditable: false });
   assert.deepEqual(rows[1].names, ['Smoothing']);
   assert.equal(rows[1].color, '#00aa00');
   assert.equal(rows[1].style, 'dotted');
@@ -208,6 +208,16 @@ test('ISSUE-109 永続化: styles が serialize/deserialize を往復して保�
   const restored = deserialize(serialize(styled));
   const inst = restored.applied.find((i) => i.instanceId === instance.instanceId);
   assert.deepEqual(inst.styles, { MA: { color: '#ff0000', style: 'dashed' } });
+});
+
+test('案A 永続化: display（ドット/ライン）patch が serialize/deserialize を往復する', async () => {
+  const { state, instance } = await stateWithOneInstance();
+  const styled = setSeriesStyles(state, instance.instanceId, { btlm_trail_mean: { display: 'line' } });
+  const restored = deserialize(serialize(styled));
+  const inst = restored.applied.find((i) => i.instanceId === instance.instanceId);
+  assert.deepEqual(inst.styles, { btlm_trail_mean: { display: 'line' } });
+  // 世代前進（recompute→redraw→_applyStoredStyles）でも display は引き継がれる。
+  assert.deepEqual(inst.nextGeneration().styles, { btlm_trail_mean: { display: 'line' } });
 });
 
 test('ISSUE-109 永続化: styles 無しの旧データも styles:null で復元される（後方互換）', async () => {
@@ -400,4 +410,72 @@ test('ISSUE-112 heat histogram でも可視性タブのチェックは有効（v
   dialog._buildVisibilityPane();
   dialog._visibilityState[0].checkbox.checked = false;
   assert.deepEqual(dialog._collectStyleChanges(), { adx_needle: { visible: false } });
+});
+
+// ---- 案A（btlm_trail）: buildSeriesStyleRows の display 伝搬 + pointStyleEditable ゲート ----
+test('案A buildSeriesStyleRows: display を styleMeta から行へ伝搬する', () => {
+  const rows = buildSeriesStyleRows(
+    { series: [] },
+    [{ name: 'btlm_trail_mean', kind: 'line', color: '#7b68ee', width: 2, style: 'solid', visible: true, display: 'dots' }],
+  );
+  assert.equal(rows[0].display, 'dots');
+});
+
+test('案A buildSeriesStyleRows: pointStyleEditable は SeriesDef 一致（静的/動的）で解決・未付与は false', () => {
+  const def = { series: [
+    { seriesName: 'btlm_trail_mean', dynamic: false, pointStyleEditable: true },
+    { dynamic: true, seriesNamePattern: { template: 'btlm_trail_q{pct}', buckets: [''], pcts: ['5', '95'] }, pointStyleEditable: true },
+    { seriesName: 'btlm_trail_beta', dynamic: false, pointStyleEditable: false },
+  ] };
+  const styles = [
+    { name: 'btlm_trail_mean', kind: 'line', color: '#7b68ee', visible: true, display: 'dots' },
+    { name: 'btlm_trail_q5', kind: 'line', color: '#7b68ee', visible: true, display: 'dots' },
+    { name: 'btlm_trail_beta', kind: 'line', color: '#aaa', visible: true, display: null },
+  ];
+  const rows = buildSeriesStyleRows(def, styles);
+  const byName = Object.fromEntries(rows.map((r) => [r.names[0], r]));
+  assert.equal(byName.btlm_trail_mean.pointStyleEditable, true);   // 静的一致
+  assert.equal(byName.btlm_trail_q5.pointStyleEditable, true);     // 動的パターン一致
+  assert.equal(byName.btlm_trail_beta.pointStyleEditable, false);  // フラグ false
+});
+
+test('案A buildSeriesStyleRows: フラグ未付与指標（他指標）は pointStyleEditable=false（非波及）', () => {
+  const def = { series: [{ seriesName: 'MA', dynamic: false }] }; // pointStyleEditable 未指定
+  const rows = buildSeriesStyleRows(def, [{ name: 'MA', kind: 'line', color: '#2962ff', visible: true }]);
+  assert.equal(rows[0].pointStyleEditable, false);
+});
+
+// ---- 案A（btlm_trail）: スタイルタブの「系列表示（ドット/ライン）」ゲート付きコントロール ----
+const TRAIL_DEF = {
+  id: 'btlm_trail', displayNameKey: 'ind.btlm_trail', params: [],
+  series: [
+    { seriesName: 'btlm_trail_mean', dynamic: false, kind: 'line', pointStyleEditable: true },
+    { seriesName: 'btlm_trail_beta', dynamic: false, kind: 'line' },
+  ],
+  compute: { variants: ['default'] },
+};
+const TRAIL_STYLES = [
+  { name: 'btlm_trail_mean', kind: 'line', color: '#7b68ee', width: 2, style: 'solid', visible: true, display: 'dots' },
+  { name: 'btlm_trail_beta', kind: 'line', color: '#a0a0a0', width: 1, style: 'solid', visible: true, display: null },
+];
+
+test('案A _buildStylePane: pointStyleEditable 系列のみ display コントロールを持ち初期値=dots', () => {
+  const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: TRAIL_DEF, seriesStyles: TRAIL_STYLES });
+  dialog._buildStylePane();
+  const mean = dialog._styleState.find((s) => s.names[0] === 'btlm_trail_mean');
+  const beta = dialog._styleState.find((s) => s.names[0] === 'btlm_trail_beta');
+  assert.ok(mean.display, 'mean は display コントロールを持つ');
+  assert.equal(mean.display.value, 'dots');
+  assert.equal(mean.initial.display, 'dots');
+  assert.equal(beta.display, null, 'beta（未付与）は display コントロールを持たない');
+});
+
+test('案A _collectStyleChanges: display 変更のみ patch 化（dots→line）', () => {
+  const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: TRAIL_DEF, seriesStyles: TRAIL_STYLES });
+  dialog._buildStylePane();
+  dialog._buildVisibilityPane();
+  assert.deepEqual(dialog._collectStyleChanges(), {});
+  const mean = dialog._styleState.find((s) => s.names[0] === 'btlm_trail_mean');
+  mean.display.value = 'line';
+  assert.deepEqual(dialog._collectStyleChanges(), { btlm_trail_mean: { display: 'line' } });
 });

@@ -711,10 +711,27 @@ export class PropertiesDialog {
         row.append(width, style);
       }
 
+      // 系列表示（ドット/ライン）: pointStyleEditable の系列のみ（案A・btlm_trail）。
+      //   ゲート未付与の系列（他指標）には項目を出さない＝スタイルタブ挙動は不変（非波及）。
+      let display = null;
+      if (r.pointStyleEditable) {
+        display = doc.createElement('select');
+        display.className = 'prop-input prop-input-select';
+        for (const dm of ['dots', 'line']) {
+          const o = doc.createElement('option');
+          o.value = dm;
+          o.textContent = dm === 'dots' ? 'ドット' : 'ライン';
+          if ((r.display ?? 'dots') === dm) o.selected = true;
+          display.append(o);
+        }
+        display.value = r.display ?? 'dots';
+        row.append(display);
+      }
+
       // initial: OK 時の差分判定基準（変更された行×フィールドのみ patch へ載せる）。
       this._styleState.push({
-        names: r.names, color, width, style,
-        initial: { color: r.color, width: String(r.width), style: r.style },
+        names: r.names, color, width, style, display,
+        initial: { color: r.color, width: String(r.width), style: r.style, display: r.display ?? 'dots' },
       });
       pane.append(row);
     }
@@ -765,6 +782,10 @@ export class PropertiesDialog {
       }
       if (s.style && s.style.value !== s.initial.style) {
         fields.style = s.style.value;
+      }
+      // 系列表示（ドット/ライン）: pointStyleEditable 行のみ display コントロールを持つ。
+      if (s.display && s.display.value !== s.initial.display) {
+        fields.display = s.display.value;
       }
       if (Object.keys(fields).length > 0) {
         put(s.names, fields);
