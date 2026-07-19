@@ -2,10 +2,17 @@
   "btlm_trail": {
     "band_method": "ols",
     "color": "rgba(123, 104, 238, 1)",
+    "display_mode": "dots",
     "empirical_n": 500,
+    "ma_length": 21,
+    "ma_reference": false,
+    "ma_type": "ema",
     "maxbars": 100,
+    "n_cov": 250,
+    "offset_pct": 0.0,
     "q_high": 0.95,
     "q_low": 0.05,
+    "show_metrics": true,
     "source": "close"
   },
   "moving_averages": {

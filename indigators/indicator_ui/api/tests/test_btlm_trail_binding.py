@@ -48,3 +48,31 @@ def test_btlm_trail_invoke_synthetic_source_and_empirical_method():
     })
     names = {p["name"] for p in chart.to_payloads()}
     assert {"btlm_trail_mean", "btlm_trail_q5", "btlm_trail_q95"} <= names
+
+
+def test_btlm_trail_payload_carries_display_and_extra_series():
+    # 表示層ヒント（point_markers/line_visible）と拡張系列（offset/ma/metrics）が payload に載る。
+    chart = FakeLineChart()
+    binding = CallBinding.resolve("btlm_trail", "default")
+    binding.invoke(chart, _ohlcv(300), {
+        "source": "close", "maxbars": 100, "q_low": 0.05, "q_high": 0.95,
+        "display_mode": "dots", "offset_pct": 2.5,
+        "ma_reference": True, "ma_type": "sma", "ma_length": 21,
+        "show_metrics": True, "n_cov": 250,
+    })
+    payloads = {p["name"]: p for p in chart.to_payloads()}
+    # ドット既定: mean payload に描画ヒントが載る（表示層が lwc オプションへ写像）。
+    assert payloads["btlm_trail_mean"]["point_markers"] is True
+    assert payloads["btlm_trail_mean"]["line_visible"] is False
+    # 拡張系列。
+    assert {"btlm_trail_off_hi", "btlm_trail_off_lo", "btlm_trail_ma",
+            "btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_coverage"} <= set(payloads)
+
+
+def test_btlm_trail_payload_no_hints_when_absent():
+    # 既存指標（ヒント未付与）の payload は従来どおり（point_markers/line_visible を持たない）。
+    from adapter.compute.fake_chart import FakeLineChart as FLC
+    chart = FLC()
+    chart.create_line(name="X", color="red", width=1, style="solid")
+    p = chart.to_payloads()[0]
+    assert "point_markers" not in p and "line_visible" not in p

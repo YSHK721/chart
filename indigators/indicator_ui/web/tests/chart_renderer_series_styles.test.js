@@ -199,3 +199,32 @@ test('ISSUE-112 setData/updateSeriesTail: 流入点は常に素通し（ユー�
   renderer.updateSeriesTail('adx#1::adx_needle', [{ time: 10, value: 2, color: '#654321' }]);
   assert.deepEqual(chart.created[0]._updates, [{ time: 10, value: 2, color: '#654321' }], 'tail 素通し');
 });
+
+// btlm_trail 表示層: ドット/ライン切替ヒント（point_markers/line_visible）を
+//   lightweight-charts の系列オプション（pointMarkersVisible/lineVisible）へ写像する。
+test('btlm_trail: payload の point_markers/line_visible を lwc オプションへ写像（ドット）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#1', [{
+    name: 'btlm_trail_mean', kind: 'line', style: 'solid', width: 2, color: '#7b68ee',
+    point_markers: true, line_visible: false, data: [{ time: 1, value: 10 }],
+  }]);
+  assert.equal(chart.created[0]._createOpts.pointMarkersVisible, true);
+  assert.equal(chart.created[0]._createOpts.lineVisible, false);
+});
+
+test('btlm_trail: line_visible=true/point_markers=false でライン描画へ写像', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#2', [{
+    name: 'btlm_trail_mean', kind: 'line', style: 'solid', width: 2, color: '#7b68ee',
+    point_markers: false, line_visible: true, data: [{ time: 1, value: 10 }],
+  }]);
+  assert.equal(chart.created[0]._createOpts.pointMarkersVisible, false);
+  assert.equal(chart.created[0]._createOpts.lineVisible, true);
+});
+
+test('既存 payload（ヒント無し）はオプションに pointMarkersVisible/lineVisible を含めない（後方互換）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#9', MA_PAYLOADS);
+  assert.equal('pointMarkersVisible' in chart.created[0]._createOpts, false);
+  assert.equal('lineVisible' in chart.created[0]._createOpts, false);
+});

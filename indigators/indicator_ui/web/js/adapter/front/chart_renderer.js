@@ -813,6 +813,15 @@ export class ChartRenderer {
         options.lineWidth = p.width;
         options.lineStyle = toLineStyleInt(p.style);
       }
+      // btlm_trail 表示層: ドット/ライン切替ヒント（point_markers/line_visible）を
+      //   lightweight-charts v5 の LineSeries オプションへ写像する。ヒント未付与の payload
+      //   （既存指標）はキーを設定しない＝従来挙動を保つ（後方互換）。
+      if (p.point_markers !== undefined) {
+        options.pointMarkersVisible = !!p.point_markers;
+      }
+      if (p.line_visible !== undefined) {
+        options.lineVisible = !!p.line_visible;
+      }
       // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
       const series = pane
         ? pane.addSeries(definition, options)

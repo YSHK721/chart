@@ -1674,7 +1674,10 @@ const TGP_BTLM = new IndicatorDef({
   params: [
     param('fitter', ParamType.ENUM, 'ols', [], ['ols', 'tgp'], { group: 'group.calc', order: 1 }),
     // price（ソース）: add_btlm の price="open"（lwc_chart.py:68・core.py 既定 open）。
-    param('price', ParamType.ENUM, 'open', [], ['open', 'high', 'low', 'close'], { group: 'group.calc', order: 2 }),
+    // 8 択化（kind-twirling-hollerith.md §4）: 既存 4 択（open/high/low/close・既定 open・byte 不変）に
+    // 合成 4 択（hl2/hlc3/ohlc4/hlcc4）を追加拡張。合成ソースは結線層（call_binding._resolve_btlm_price）が
+    // 共有 applied_price で解決する（tgp_btlm src は無改変）。moving_averages の source と同一写像。
+    param('price', ParamType.ENUM, 'open', [], ['open', 'high', 'low', 'close', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 2 }),
     // maxbars 既定 40→100 是正（M-1・core.py:33 DEFAULT_MAXBARS=100）。
     param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, unit: 'unit.bars' }),
     param('q_low', ParamType.FLOAT, 0.05, [
@@ -1708,6 +1711,96 @@ const TGP_BTLM = new IndicatorDef({
     }),
   ],
   compute: { computeId: 'tgp_btlm', requiredColumns: OHLC, timeRequired: true, backendParam: 'fitter', variants: ['default'] },
+});
+
+// --- btlm_trail（トレンド現在位置トレイル・OVERLAY）----------------------
+// 新インジケーター（kind-twirling-hollerith.md）。各バーで直近 maxbars 本に ols を当てはめ、
+// 窓末尾の btlm_mean/q_low/q_high を当日値とする（確定バー不変＝非リペイント）。ソースは
+// moving_averages と同一 8 択（applied_price 参照・既定 close）。バンドは名目 ols / 経験分位の
+// 2 方式（band_method）。分位ペアは q_low/q_high（0<q_low<q_high<1）。
+// 実バインディング add_btlm_trail（indigators/btlm_trail/src/lwc_chart.py）。
+// 系列名: btlm_trail_mean（静的）＋ btlm_trail_q{pct}（動的・q_low/q_high に依存）。
+const BTLM_TRAIL_SOURCE_LABELS = {
+  close: '終値', open: '始値', high: '高値', low: '安値',
+  hl2: '(高値 + 安値)/2', hlc3: '(高値 + 安値 + 終値)/3',
+  ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
+};
+const BTLM_TRAIL_METHOD_LABELS = { ols: '名目 ols バンド', empirical: '経験分位バンド' };
+const BTLM_TRAIL_DISPLAY_LABELS = { dots: 'ドット（サークル）', line: 'ライン' };
+const BTLM_TRAIL_MA_TYPE_LABELS = { sma: 'SMA', ema: 'EMA', smma: 'SMMA', lwma: 'LWMA' };
+const BTLM_TRAIL = new IndicatorDef({
+  id: 'btlm_trail',
+  displayNameKey: 'ind.btlm_trail',
+  category: { group: 'builtin', nameKey: 'cat.technical' },
+  tab: 'indicator',
+  placement: 'overlay',
+  params: [
+    // ソース: moving_averages と同一 8 択（applied_price 参照・既定 close）。
+    param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
+    // maxbars: 回帰窓（既定 100・core DEFAULT_MAXBARS）。
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars' }),
+    // 分位ペア（0<q_low<q_high<1）。tgp_btlm と対称の q-chain 制約。
+    param('q_low', ParamType.FLOAT, 0.05, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
+      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
+    ], null, { group: 'group.calc', order: 3, step: 0.01, min: 0, max: 1 }),
+    param('q_high', ParamType.FLOAT, 0.95, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
+    ], null, { group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1 }),
+    // バンド方式: ols（名目・norm_ppf(q)·pred_sd）/ empirical（経験分位・因果ウォークフォワード）。
+    param('band_method', ParamType.ENUM, 'ols', [], ['ols', 'empirical'], { group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS }),
+    // 経験分位バンドの参照本数（既定 500・band_method==empirical のときのみ有効）。
+    param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
+      group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars',
+      conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
+    }),
+    // --- 表示 ---
+    // 系列表示: ドット（サークル・既定）/ライン切替。表示層が pointMarkersVisible/lineVisible へ写像。
+    param('display_mode', ParamType.ENUM, 'dots', [], ['dots', 'line'], { group: 'group.display', order: 1, label: '系列表示', enumLabels: BTLM_TRAIL_DISPLAY_LABELS }),
+    // 外れ値オフセットライン: バンド端 ±offset_pct%（0=オフ・既定）。ストップ距離の可視化（結論 E: 24h・90%≒2.77%）。
+    param('offset_pct', ParamType.FLOAT, 0.0, [{ kind: ConstraintKind.MIN_VALUE, operands: ['offset_pct', 0], messageKey: 'err.offset_pct' }], null, {
+      group: 'group.display', order: 2, label: '外れ値オフセット %', step: 0.1, min: 0,
+      tooltip: 'バンド端から上下対称に引く補助線の距離（%）。0 でオフ。24h・90% 生存 ≒ 2.77%（実測）。',
+    }),
+    // 数値表示（β・実現被覆率・残差 σ）を読取欄に出す。
+    param('show_metrics', ParamType.BOOL, true, [], null, { group: 'group.display', order: 3, label: 'β・被覆率・σ を表示' }),
+    // 実現被覆率のローリング本数（既定 250）。
+    param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
+      group: 'group.display', order: 4, label: '被覆率の本数', step: 1, min: 2, unit: 'unit.bars',
+      conditionalEnable: { when: { param: 'show_metrics', equals: true } },
+    }),
+    // --- MA 参考線（btlm_mean へ moving_averages を適用・方向確認用・既定オフ）---
+    param('ma_reference', ParamType.BOOL, false, [], null, { group: 'group.ma', order: 1, label: 'MA 参考線' }),
+    param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], {
+      group: 'group.ma', order: 2, label: '種別', enumLabels: BTLM_TRAIL_MA_TYPE_LABELS,
+      conditionalEnable: { when: { param: 'ma_reference', equals: true } },
+    }),
+    param('ma_length', ParamType.INT, 21, [{ kind: ConstraintKind.MIN_VALUE, operands: ['ma_length', 2], messageKey: 'err.length' }], null, {
+      group: 'group.ma', order: 3, label: '期間', step: 1, min: 2, unit: 'unit.bars',
+      conditionalEnable: { when: { param: 'ma_reference', equals: true } },
+    }),
+    // color は btlm_mean（トレンド現在位置）の色。スタイルタブへ移譲。
+    param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
+  ],
+  // 系列: btlm_trail_mean（静的）＋ 動的分位線 btlm_trail_q{pct}＋オフセット/MA/数値（読取欄）系列。
+  //   数値系列（beta/sigma/coverage）は不可視 line（表示層が readout オーバーレイへ載せる）。
+  series: [
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false }),
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      seriesNamePattern: {
+        template: 'btlm_trail_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_hi', seriesName: 'btlm_trail_off_hi', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_lo', seriesName: 'btlm_trail_off_lo', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_ma', seriesName: 'btlm_trail_ma', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_beta', seriesName: 'btlm_trail_beta', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_sigma', seriesName: 'btlm_trail_sigma', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_coverage', seriesName: 'btlm_trail_coverage', dynamic: false }),
+  ],
+  compute: { computeId: 'btlm_trail', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
 
 // --- profit_band（global / robust・OVERLAY）------------------------------
@@ -1993,7 +2086,7 @@ const MARKET_PROFILE = makeMarketProfileDef({
 });
 
 const REGISTRY = Object.freeze([
-  TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
+  TGP_BTLM, BTLM_TRAIL, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,
@@ -3182,6 +3275,15 @@ class ChartRenderer {
       if (seriesKind(kind).appliesLineStyle) {
         options.lineWidth = p.width;
         options.lineStyle = toLineStyleInt(p.style);
+      }
+      // btlm_trail 表示層: ドット/ライン切替ヒント（point_markers/line_visible）を
+      //   lightweight-charts v5 の LineSeries オプションへ写像する。ヒント未付与の payload
+      //   （既存指標）はキーを設定しない＝従来挙動を保つ（後方互換）。
+      if (p.point_markers !== undefined) {
+        options.pointMarkersVisible = !!p.point_markers;
+      }
+      if (p.line_visible !== undefined) {
+        options.lineVisible = !!p.line_visible;
       }
       // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
       const series = pane

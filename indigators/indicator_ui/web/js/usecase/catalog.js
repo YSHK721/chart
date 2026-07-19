@@ -128,6 +128,8 @@ const BTLM_TRAIL_SOURCE_LABELS = {
   ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
 };
 const BTLM_TRAIL_METHOD_LABELS = { ols: '名目 ols バンド', empirical: '経験分位バンド' };
+const BTLM_TRAIL_DISPLAY_LABELS = { dots: 'ドット（サークル）', line: 'ライン' };
+const BTLM_TRAIL_MA_TYPE_LABELS = { sma: 'SMA', ema: 'EMA', smma: 'SMMA', lwma: 'LWMA' };
 const BTLM_TRAIL = new IndicatorDef({
   id: 'btlm_trail',
   displayNameKey: 'ind.btlm_trail',
@@ -154,10 +156,36 @@ const BTLM_TRAIL = new IndicatorDef({
       group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars',
       conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
     }),
+    // --- 表示 ---
+    // 系列表示: ドット（サークル・既定）/ライン切替。表示層が pointMarkersVisible/lineVisible へ写像。
+    param('display_mode', ParamType.ENUM, 'dots', [], ['dots', 'line'], { group: 'group.display', order: 1, label: '系列表示', enumLabels: BTLM_TRAIL_DISPLAY_LABELS }),
+    // 外れ値オフセットライン: バンド端 ±offset_pct%（0=オフ・既定）。ストップ距離の可視化（結論 E: 24h・90%≒2.77%）。
+    param('offset_pct', ParamType.FLOAT, 0.0, [{ kind: ConstraintKind.MIN_VALUE, operands: ['offset_pct', 0], messageKey: 'err.offset_pct' }], null, {
+      group: 'group.display', order: 2, label: '外れ値オフセット %', step: 0.1, min: 0,
+      tooltip: 'バンド端から上下対称に引く補助線の距離（%）。0 でオフ。24h・90% 生存 ≒ 2.77%（実測）。',
+    }),
+    // 数値表示（β・実現被覆率・残差 σ）を読取欄に出す。
+    param('show_metrics', ParamType.BOOL, true, [], null, { group: 'group.display', order: 3, label: 'β・被覆率・σ を表示' }),
+    // 実現被覆率のローリング本数（既定 250）。
+    param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
+      group: 'group.display', order: 4, label: '被覆率の本数', step: 1, min: 2, unit: 'unit.bars',
+      conditionalEnable: { when: { param: 'show_metrics', equals: true } },
+    }),
+    // --- MA 参考線（btlm_mean へ moving_averages を適用・方向確認用・既定オフ）---
+    param('ma_reference', ParamType.BOOL, false, [], null, { group: 'group.ma', order: 1, label: 'MA 参考線' }),
+    param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], {
+      group: 'group.ma', order: 2, label: '種別', enumLabels: BTLM_TRAIL_MA_TYPE_LABELS,
+      conditionalEnable: { when: { param: 'ma_reference', equals: true } },
+    }),
+    param('ma_length', ParamType.INT, 21, [{ kind: ConstraintKind.MIN_VALUE, operands: ['ma_length', 2], messageKey: 'err.length' }], null, {
+      group: 'group.ma', order: 3, label: '期間', step: 1, min: 2, unit: 'unit.bars',
+      conditionalEnable: { when: { param: 'ma_reference', equals: true } },
+    }),
     // color は btlm_mean（トレンド現在位置）の色。スタイルタブへ移譲。
     param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
   ],
-  // btlm_trail_mean（静的）＋ 動的分位線 btlm_trail_q{pct}（pct=1..99・q_low/q_high に依存）。
+  // 系列: btlm_trail_mean（静的）＋ 動的分位線 btlm_trail_q{pct}＋オフセット/MA/数値（読取欄）系列。
+  //   数値系列（beta/sigma/coverage）は不可視 line（表示層が readout オーバーレイへ載せる）。
   series: [
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false }),
     new SeriesDef({
@@ -167,6 +195,12 @@ const BTLM_TRAIL = new IndicatorDef({
         pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
       },
     }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_hi', seriesName: 'btlm_trail_off_hi', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_lo', seriesName: 'btlm_trail_off_lo', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_ma', seriesName: 'btlm_trail_ma', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_beta', seriesName: 'btlm_trail_beta', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_sigma', seriesName: 'btlm_trail_sigma', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_coverage', seriesName: 'btlm_trail_coverage', dynamic: false }),
   ],
   compute: { computeId: 'btlm_trail', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });

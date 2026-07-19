@@ -42,6 +42,13 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "q_high": 0.95,
         "band_method": "ols",
         "empirical_n": 500,
+        "display_mode": "dots",
+        "offset_pct": 0.0,
+        "show_metrics": True,
+        "n_cov": 250,
+        "ma_reference": False,
+        "ma_type": "ema",
+        "ma_length": 21,
         "color": "rgba(123, 104, 238, 1)",
     },
     "profit_band": {
