@@ -35,6 +35,15 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "mcmc_samples": "standard",
         "color": "rgba(123, 104, 238, 1)",
     },
+    "btlm_trail": {
+        "source": "close",
+        "maxbars": 100,
+        "q_low": 0.05,
+        "q_high": 0.95,
+        "band_method": "ols",
+        "empirical_n": 500,
+        "color": "rgba(123, 104, 238, 1)",
+    },
     "profit_band": {
         "probabilities": [0.51, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99],
         "buckets": ["nOH", "pOL", "pOH", "nOL"],

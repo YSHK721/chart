@@ -274,6 +274,10 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "loader": lambda: _load_callable("tgp_btlm", "add_btlm"),
         "output_kind": "line", "kind": "btlm",
     },
+    ("btlm_trail", "default"): {
+        "loader": lambda: _load_callable("btlm_trail", "add_btlm_trail"),
+        "output_kind": "line", "kind": "kw",
+    },
     ("profit_band", "global"): {
         "loader": lambda: _load_callable("profit_band", "add_profit_band"),
         "output_kind": "line", "kind": "kw",

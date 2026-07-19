@@ -1,4 +1,13 @@
 {
+  "btlm_trail": {
+    "band_method": "ols",
+    "color": "rgba(123, 104, 238, 1)",
+    "empirical_n": 500,
+    "maxbars": 100,
+    "q_high": 0.95,
+    "q_low": 0.05,
+    "source": "close"
+  },
   "moving_averages": {
     "bb_stddev": 2.0,
     "length": 9,

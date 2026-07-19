@@ -115,6 +115,62 @@ const TGP_BTLM = new IndicatorDef({
   compute: { computeId: 'tgp_btlm', requiredColumns: OHLC, timeRequired: true, backendParam: 'fitter', variants: ['default'] },
 });
 
+// --- btlm_trail（トレンド現在位置トレイル・OVERLAY）----------------------
+// 新インジケーター（kind-twirling-hollerith.md）。各バーで直近 maxbars 本に ols を当てはめ、
+// 窓末尾の btlm_mean/q_low/q_high を当日値とする（確定バー不変＝非リペイント）。ソースは
+// moving_averages と同一 8 択（applied_price 参照・既定 close）。バンドは名目 ols / 経験分位の
+// 2 方式（band_method）。分位ペアは q_low/q_high（0<q_low<q_high<1）。
+// 実バインディング add_btlm_trail（indigators/btlm_trail/src/lwc_chart.py）。
+// 系列名: btlm_trail_mean（静的）＋ btlm_trail_q{pct}（動的・q_low/q_high に依存）。
+const BTLM_TRAIL_SOURCE_LABELS = {
+  close: '終値', open: '始値', high: '高値', low: '安値',
+  hl2: '(高値 + 安値)/2', hlc3: '(高値 + 安値 + 終値)/3',
+  ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
+};
+const BTLM_TRAIL_METHOD_LABELS = { ols: '名目 ols バンド', empirical: '経験分位バンド' };
+const BTLM_TRAIL = new IndicatorDef({
+  id: 'btlm_trail',
+  displayNameKey: 'ind.btlm_trail',
+  category: { group: 'builtin', nameKey: 'cat.technical' },
+  tab: 'indicator',
+  placement: 'overlay',
+  params: [
+    // ソース: moving_averages と同一 8 択（applied_price 参照・既定 close）。
+    param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
+    // maxbars: 回帰窓（既定 100・core DEFAULT_MAXBARS）。
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars' }),
+    // 分位ペア（0<q_low<q_high<1）。tgp_btlm と対称の q-chain 制約。
+    param('q_low', ParamType.FLOAT, 0.05, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
+      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
+    ], null, { group: 'group.calc', order: 3, step: 0.01, min: 0, max: 1 }),
+    param('q_high', ParamType.FLOAT, 0.95, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
+    ], null, { group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1 }),
+    // バンド方式: ols（名目・norm_ppf(q)·pred_sd）/ empirical（経験分位・因果ウォークフォワード）。
+    param('band_method', ParamType.ENUM, 'ols', [], ['ols', 'empirical'], { group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS }),
+    // 経験分位バンドの参照本数（既定 500・band_method==empirical のときのみ有効）。
+    param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
+      group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars',
+      conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
+    }),
+    // color は btlm_mean（トレンド現在位置）の色。スタイルタブへ移譲。
+    param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
+  ],
+  // btlm_trail_mean（静的）＋ 動的分位線 btlm_trail_q{pct}（pct=1..99・q_low/q_high に依存）。
+  series: [
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false }),
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      seriesNamePattern: {
+        template: 'btlm_trail_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
+  ],
+  compute: { computeId: 'btlm_trail', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
+});
+
 // --- profit_band（global / robust・OVERLAY）------------------------------
 // バンド値は始値±分位点を価格水準へ復元した price-level（bands.py / robust_bands.py）。
 // よって価格 pane(0) のローソクへ重畳する（§下部コメント「価格バンドは 'overlay'」準拠）。
@@ -398,7 +454,7 @@ const MARKET_PROFILE = makeMarketProfileDef({
 });
 
 const REGISTRY = Object.freeze([
-  TGP_BTLM, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
+  TGP_BTLM, BTLM_TRAIL, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,
