@@ -218,7 +218,19 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     if (this.isGrowingPush()) {
       return undefined; // push が育てる＝pull は駆動しない（二重駆動遮断）。
     }
-    return super.refresh(); // 非 push: as-of-T（getContext().to）で再取得（因果）。
+    // ISSUE-138（日別 sessions の足内育成×逆スクラブ）: sessions は accumulator/forming を使わず as-of
+    //   refresh（機構A）で育てるため、本メソッド（reveal seam onLiveRecompute が毎バー呼ぶ）が as-of refresh の
+    //   バー入場点になる。ここで単一時計 _clockSec をリビールフロンティア（getContext().to＝現在バー T）へ
+    //   巻き戻し、後退スクラブで stale な未来時計（feedTick が足内で前進させた値）を引き回さない
+    //   （＝zp の enterBar 巻き戻し規約と同義。直接代入＝後退も反映・単調 max ではない）。cursor 未確定
+    //   （to=null・restore 前）は上書きしない。非 sessions は _clockSec を触らず従来不変（回帰ゼロ）。
+    if (this._sessions) {
+      const cursor = this._getContext().to;
+      if (cursor != null) {
+        this._clockSec = Number(cursor);
+      }
+    }
+    return super.refresh(); // 非 push: as-of-T（getContext().to／sessions は _clockSec）で再取得（因果）。
   }
 
   // override: reveal 成長中（growing push）の refresh を因果 base（enterBar）へ振り替える。
@@ -392,11 +404,21 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   空＝従来 URL 不変（present は基底の no-op seam のまま非波及）。
   //   ISSUE-127: 契約は UNIX 秒（整数）。1分OHLC 等の合成 tick は小数秒を生むため必ず floor する。
   _clockExtra() {
-    if (this.isGrowingPush() && this._clockSec != null
-        && !mpSourceCapability(this._params.src).incremental) {
+    if (this._usesAsOfClock() && this._clockSec != null) {
       return { to: Math.floor(this._clockSec) };
     }
     return {};
+  }
+
+  // ISSUE-138（as-of 時計の適用条件・SRP）: 非増分 as-of coalesce 戦略（単一時計 _clockSec を feedTick で
+  //   足内前進＋coalesce 再計算・onLiveTick でバー入場巻き戻し）で駆動するか。
+  //   - 日別 sessions: accumulator/forming を使わず as-of refresh で当日を育てる（機構A）ため src 能力に
+  //     依らず対象＝ライブ同一の「リビール tick 毎に当日プロファイル再計算」を成立させる。
+  //   - 非 sessions: 従来どおり「成長 push 中×非増分 src（zp）」のみ。!_sessions のとき本式は
+  //     (isGrowingPush() && !incremental) へ厳密一致する＝非 sessions（normal/replay/ticklive）は 1 バイト不変。
+  _usesAsOfClock() {
+    return !!this._sessions
+      || (this.isGrowingPush() && !mpSourceCapability(this._params.src).incremental);
   }
 
   // 追加: mid が直近 forming グリッドの価格レンジ内か（replay.js driver の growTo 発火判定に使用）。
@@ -418,9 +440,10 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
       return;
     }
     // ISSUE-133（SRP）: 能力ゲートで戦略を選び委譲する（抽出前の二重分岐と同一手順・同一非対称性）。
-    //   非増分 src（zp）×成長 push 中のみ as-of coalesce 戦略（accumulator を持たず単一時計を前進＋
-    //   coalesce 再計算）。それ以外（増分 src／非成長）は push 戦略（addTick＋throttle snapshot）。
-    if (this.isGrowingPush() && !mpSourceCapability(this._params.src).incremental) {
+    //   非増分 as-of coalesce 戦略（accumulator を持たず単一時計を前進＋coalesce 再計算）の対象は
+    //   _usesAsOfClock()＝「日別 sessions（機構A）または 成長 push 中×非増分 src（zp）」（ISSUE-138）。
+    //   それ以外（増分 src／非成長・非 sessions）は push 戦略（addTick＋throttle snapshot・従来経路不変）。
+    if (this._usesAsOfClock()) {
       this._asOfStrategy.feedTick(this, sec, mid);
       return;
     }

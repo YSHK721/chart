@@ -1297,3 +1297,81 @@ test('ISSUE-129 対称性: 増分 src（dwell）の feedTick は as-of 再計算
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(client.calls.length, before, 'dwell は fetchProfile を発火しない（回帰なし）');
 });
+
+// --- ISSUE-138（日別 sessions の足内育成）: リプレイの日別（sessions）プロファイルを、ライブ同一の
+//   「受信（リビール）した価格ティック毎に当日プロファイルが再計算される」挙動へ是正する。sessions は
+//   accumulator/forming を使わず as-of refresh（機構A）で育てるため、非増分 as-of coalesce 戦略（zp 系）へ
+//   合流させ、単一時計 _clockSec を feedTick で足内前進・onLiveTick（バー入場 reveal seam）で巻き戻す。
+//   非 sessions 経路（normal/replay/ticklive）の feedTick/_clockExtra は 1 バイトも変えない（回帰ガード）。
+
+test('ISSUE-138 sessions 単一時計: feedTick のリビール秒で _clockExtra().to が tick 秒へ前進する（単調）', async () => {
+  const { actor } = makeActor({ ctxTo: 7000, ctxTimeframe: '1h' });
+  actor.setParams({ mode: 'sessions', src: 'zp' }); // 日別・非増分（isGrowingPush=false／!_sessions で従来ゲート外）
+  actor._enabled = true;
+  // Act: 足内リビール tick を供給する（バー時刻 7000 に対し実リビール秒 6910）。
+  actor.feedTick(6910, 71000);
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  // Assert: sessions でも単一時計が前進し _clockExtra().to（fetch の to seam）に tick 秒が載る。
+  assert.equal(actor._clockExtra().to, 6910, 'sessions の feedTick(sec) が単一時計 to を tick 秒へ前進させる');
+  actor.feedTick(6905, 71000); // 順不同（過去秒）は巻き戻さない（単調）
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(actor._clockExtra().to, 6910, 'sessions でも過去秒 tick は時計を巻き戻さない（単調）');
+});
+
+test('ISSUE-138 sessions 足内育成: feedTick が coalesce 経由で refresh を発火し to=tick 秒・sessions=1 で fetch する', async () => {
+  const { actor, client } = makeActor({ ctxTo: 7000, ctxTimeframe: '1h' });
+  actor.setParams({ mode: 'sessions', src: 'zp' });
+  actor._enabled = true;
+  const before = client.calls.length;
+  // Act
+  actor.feedTick(6910, 71000);
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  // Assert: 足内 tick 毎に as-of coalesce refresh が発火し、バー粒度でなくリビール秒で日別を再集計する。
+  assert.ok(client.calls.length > before, 'sessions の feedTick が as-of coalesce refresh（fetchProfile）を発火する');
+  assert.equal(client.calls.at(-1).to, 6910, 'refresh の fetch to はリビール tick 秒（足内・バー粒度でない）');
+  assert.equal(client.calls.at(-1).sessions, true, 'sessions=1 を維持したまま足内 to で当日を再集計する');
+});
+
+test('ISSUE-138 sessions 逆スクラブ: バー入場（onLiveTick reveal seam）が単一時計を後退フロンティアへ巻き戻し to が後退に追随する', async () => {
+  // getContext().to を可変にしてスクラブ（カーソル後退）を模す。
+  const ctx = { datasetRef: 'jp225_tick', timeframe: '1h', to: 7000 };
+  const client = fakeClient();
+  const actor = new ReplayMarketProfileActor({
+    client, primitive: fakePrimitive(), mainSeries: fakeMainSeries(),
+    getContext: () => ctx, now: () => 0,
+  });
+  actor.setParams({ mode: 'sessions', src: 'zp' });
+  actor._enabled = true;
+  // 足内で単一時計を未来（6950）へ前進させる。
+  actor.feedTick(6950, 71000);
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(actor._clockExtra().to, 6950, '前提: 足内 tick で時計が 6950 へ前進している');
+  // Act: 後退スクラブ（カーソルを 5000 へ）。reveal seam（recomputeAllApplied→onLiveRecompute）が毎バー
+  //   onLiveTick を呼ぶ＝バー入場でリビールフロンティア（getContext().to）へ時計を巻き戻す。
+  ctx.to = 5000;
+  await actor.onLiveTick();
+  // Assert: stale な未来時計（6950）を引き回さず to が後退に追随する（未来リーク防止）。
+  assert.equal(actor._clockExtra().to, 5000, 'バー入場で単一時計が後退フロンティア（5000）へ巻き戻る');
+  assert.equal(client.calls.at(-1).to, 5000, 'onLiveTick の as-of refresh も to=5000（後退追随・未来リークなし）');
+  assert.equal(client.calls.at(-1).sessions, true, 'sessions=1 を維持する');
+});
+
+test('ISSUE-138 回帰ガード: 非 sessions（normal ticklive/dwell 増分 push）は _clockExtra()={} 不変・feedTick は増分 accumulator 経路（as-of 時計に載らない）', async () => {
+  const forming = fakeFormingClient([BASE_FULL]);
+  const facc = fakeAccumulatorFactory();
+  const { actor, client } = makeActor({ formingClient: forming, makeAccumulator: facc.make, ctxTo: 1030 });
+  await actor.setEnabled(true);
+  actor.setParams({ mode: 'ticklive' }); // 非 sessions・増分 push（isGrowingPush=true・src=dwell）
+  await actor.enterBar(1030);
+  const fetchBefore = client.calls.length;
+  // Act
+  actor.feedTick(1040, 1005);
+  await new Promise((r) => setTimeout(r, 0));
+  // Assert: 非 sessions は as-of 時計に載らない（_clockExtra は空＝URL byte 不変）。
+  assert.deepEqual(actor._clockExtra(), {}, '非 sessions ticklive は _clockExtra()={}（従来不変）');
+  // 増分 push の feedTick は accumulator を進めるのみで as-of refresh（fetchProfile）を発火しない。
+  assert.equal(client.calls.length, fetchBefore, '非 sessions 増分 push の feedTick は as-of refresh を発火しない（従来経路）');
+});
