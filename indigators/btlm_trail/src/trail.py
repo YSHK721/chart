@@ -43,6 +43,8 @@ class TrailResult:
         sigma:     残差 σ（σ 正規化ストップ距離の計算資源）。
         band_low:  下側分位バンド（q_low）。
         band_high: 上側分位バンド（q_high）。
+        off_low:   外れ値分位ラインの下側（分位 1-q_out）。q_out 無効時は None。
+        off_high:  外れ値分位ラインの上側（分位 q_out）。q_out 無効時は None。
         band_method: "ols" / "empirical"。
     """
 
@@ -52,6 +54,8 @@ class TrailResult:
     band_low: np.ndarray
     band_high: np.ndarray
     band_method: str
+    off_low: "np.ndarray | None" = None
+    off_high: "np.ndarray | None" = None
 
 
 def _validate_pair(q_low: float, q_high: float) -> tuple[float, float]:
@@ -92,6 +96,7 @@ def build_btlm_trail(
     q_high: float = DEFAULT_Q_HIGH,
     band_method: str = "ols",
     empirical_n: int = DEFAULT_EMP_N,
+    q_out=None,
 ) -> TrailResult:
     """価格 DataFrame から btlm_trail のローリング成果を組む（単一分位ペア）。
 
@@ -102,6 +107,9 @@ def build_btlm_trail(
         q_low/q_high: 分位ペア（0<q_low<q_high<1）。
         band_method: "ols"（名目）/ "empirical"（経験分位）。
         empirical_n: 経験分位バンドの参照本数（既定 500）。
+        q_out: 外れ値分位（上側 q_out・下側 1-q_out で補助線）。有効条件 q_high < q_out < 1。
+            None・範囲外・q_out<=q_high は無効化（off_low=off_high=None＝補助線なし）。
+            算出はバンド方式と同一規約（ols=mean±norm_ppf(q_out)·pred_sd／経験分位=既存機構）。
 
     Returns:
         TrailResult。
@@ -117,11 +125,20 @@ def build_btlm_trail(
     prices = resolve_source(df, source)
     mean, pred_sd, beta, sigma = rolling_ols_window_end(prices, maxbars)
 
+    # 外れ値分位の有効性（黙って無効化＝補助線なし）。
+    qo = None
+    try:
+        if q_out is not None and qh < float(q_out) < 1.0:
+            qo = float(q_out)
+    except (TypeError, ValueError):
+        qo = None
+
+    deviations = None
     if method == "ols":
         band_low = mean + norm_ppf(ql) * pred_sd
         band_high = mean + norm_ppf(qh) * pred_sd
     else:
-        # 経験分位: 乖離率 (close - mean)/mean の直近 emp_n 本の経験 q（因果）。
+        # 経験分位: 乖離率 (close - mean)/mean の直近 emp_n 本の経験 q（因果・t を含む＝バンドと同一機構）。
         lower = {str(c).lower(): c for c in df.columns}
         if "close" not in lower:
             raise ValueError("経験分位バンドには close 列が必要です。")
@@ -133,9 +150,22 @@ def build_btlm_trail(
         band_low = mean * (1.0 + emp_lo)
         band_high = mean * (1.0 + emp_hi)
 
+    # 外れ値分位ライン（バンド方式と同一規約・上側 q_out／下側 1-q_out で上下対称）。
+    off_low = off_high = None
+    if qo is not None:
+        if method == "ols":
+            off_high = mean + norm_ppf(qo) * pred_sd
+            off_low = mean + norm_ppf(1.0 - qo) * pred_sd
+        else:
+            emp_off_hi = _empirical_quantile_causal(deviations, empirical_n, qo)
+            emp_off_lo = _empirical_quantile_causal(deviations, empirical_n, 1.0 - qo)
+            off_high = mean * (1.0 + emp_off_hi)
+            off_low = mean * (1.0 + emp_off_lo)
+
     return TrailResult(
         mean=mean, beta=beta, sigma=sigma,
         band_low=band_low, band_high=band_high, band_method=method,
+        off_low=off_low, off_high=off_high,
     )
 
 

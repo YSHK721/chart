@@ -1757,10 +1757,11 @@ const BTLM_TRAIL = new IndicatorDef({
     // --- 表示 ---
     // 系列表示: ドット（サークル・既定）/ライン切替。表示層が pointMarkersVisible/lineVisible へ写像。
     param('display_mode', ParamType.ENUM, 'dots', [], ['dots', 'line'], { group: 'group.display', order: 1, label: '系列表示', enumLabels: BTLM_TRAIL_DISPLAY_LABELS }),
-    // 外れ値オフセットライン: バンド端 ±offset_pct%（0=オフ・既定）。ストップ距離の可視化（結論 E: 24h・90%≒2.77%）。
-    param('offset_pct', ParamType.FLOAT, 0.0, [{ kind: ConstraintKind.MIN_VALUE, operands: ['offset_pct', 0], messageKey: 'err.offset_pct' }], null, {
-      group: 'group.display', order: 2, label: '外れ値オフセット %', step: 0.1, min: 0,
-      tooltip: 'バンド端から上下対称に引く補助線の距離（%）。0 でオフ。24h・90% 生存 ≒ 2.77%（実測）。',
+    // 外れ値分位: 上側 q_out／下側 1-q_out に補助線を上下対称で描画。空/無効はオフ（既定）。
+    //   有効条件 q_high < q_out < 1。範囲外・q_out<=q_high は黙って無効化（補助線なし）。
+    param('q_out', ParamType.FLOAT, null, [], null, {
+      group: 'group.display', order: 2, label: '外れ値分位', step: 0.01, min: 0, max: 1,
+      tooltip: 'バンドより外側の極端分位（例 0.99＝片側1%の極値水準）に補助線を引く。上側は分位 q_out、下側は 1-q_out。選択中のバンド方式（ols／経験分位）と同じ規約で算出する。ストップ位置の目安。空欄・q_high 以下・範囲外はオフ。',
     }),
     // 数値表示（β・バンド内実績率〔実現被覆率〕・残差 σ）を読取欄に出す。
     param('show_metrics', ParamType.BOOL, true, [], null, {

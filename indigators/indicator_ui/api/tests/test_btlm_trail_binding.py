@@ -56,7 +56,7 @@ def test_btlm_trail_payload_carries_display_and_extra_series():
     binding = CallBinding.resolve("btlm_trail", "default")
     binding.invoke(chart, _ohlcv(300), {
         "source": "close", "maxbars": 100, "q_low": 0.05, "q_high": 0.95,
-        "display_mode": "dots", "offset_pct": 2.5,
+        "display_mode": "dots", "q_out": 0.99,
         "ma_reference": True, "ma_type": "sma", "ma_length": 21,
         "show_metrics": True, "n_cov": 250,
     })

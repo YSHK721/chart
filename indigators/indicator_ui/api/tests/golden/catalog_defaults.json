@@ -9,9 +9,9 @@
     "ma_type": "ema",
     "maxbars": 100,
     "n_cov": 250,
-    "offset_pct": 0.0,
     "q_high": 0.95,
     "q_low": 0.05,
+    "q_out": null,
     "show_metrics": true,
     "source": "close"
   },

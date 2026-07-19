@@ -125,28 +125,31 @@ def test_display_mode_line_sets_line_hint():
     assert mean.kwargs.get("line_visible") is True
 
 
-# --- 外れ値オフセットライン（offset_pct・既定オフ） ------------------------
-def test_offset_lines_emitted_only_when_pct_positive():
-    chart_off = FakeChart()
-    add_btlm_trail(chart_off, _df(200), source="close", maxbars=100, offset_pct=0.0)
-    assert not any(ln.name.startswith("btlm_trail_off_") for ln in chart_off.lines)
+# --- 外れ値分位ライン（q_out・既定オフ・q_high<q_out<1 のみ有効） ----------
+def test_outlier_lines_emitted_only_when_qout_valid():
+    # 未入力（None）・無効（q_out<=q_high）は補助線なし。
+    for bad in (None, 0.95, 0.90):
+        chart = FakeChart()
+        add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                       q_low=0.05, q_high=0.95, q_out=bad)
+        assert not any(ln.name.startswith("btlm_trail_off_") for ln in chart.lines), f"q_out={bad}"
 
     chart_on = FakeChart()
     add_btlm_trail(chart_on, _df(200), source="close", maxbars=100,
-                   q_low=0.05, q_high=0.95, offset_pct=2.5)
+                   q_low=0.05, q_high=0.95, q_out=0.99)
     names = {ln.name for ln in chart_on.lines}
     assert {"btlm_trail_off_hi", "btlm_trail_off_lo"} <= names
 
 
-def test_offset_lines_are_outside_band_edges():
+def test_outlier_lines_are_outside_band_edges():
     chart = FakeChart()
     add_btlm_trail(chart, _df(300, seed=3), source="close", maxbars=100,
-                   q_low=0.05, q_high=0.95, offset_pct=3.0)
+                   q_low=0.05, q_high=0.95, band_method="ols", q_out=0.99)
     lines = {ln.name: ln for ln in chart.lines}
     off_hi = lines["btlm_trail_off_hi"].data.set_index("time")["btlm_trail_off_hi"]
     hi = lines["btlm_trail_q95"].data.set_index("time")["btlm_trail_q95"]
     common = off_hi.index.intersection(hi.index)
-    # オフセット上側はバンド上端より外側（大きい）。
+    # 外れ値分位（0.99）はバンド上端（0.95）より外側（大きい）。
     assert (off_hi.loc[common] > hi.loc[common]).all()
 
 

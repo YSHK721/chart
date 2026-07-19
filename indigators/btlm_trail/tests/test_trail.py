@@ -29,6 +29,7 @@ from src import (  # noqa: E402
     DEFAULT_MAXBARS,
     DEFAULT_N_COV,
     build_btlm_trail,
+    norm_ppf,
     realized_coverage_latest,
     resolve_source,
     rolling_coverage,
@@ -245,3 +246,52 @@ def test_warmup_bars_below_three_are_nan():
     assert np.isnan(res.mean[0])
     assert np.isnan(res.mean[1])
     assert np.isfinite(res.mean[2])
+
+
+# --- 外れ値分位ライン（q_out・バンド方式と同一規約） -----------------------
+def test_outlier_lines_ols_position_and_symmetry():
+    df = _df(300, seed=20)
+    q_high, q_out = 0.95, 0.99
+    res = build_btlm_trail(df, source="close", maxbars=100,
+                           q_low=0.05, q_high=q_high, band_method="ols", q_out=q_out)
+    assert res.off_low is not None and res.off_high is not None
+    t = 200
+    # ols: pred_sd を band_high から復元し、off_high = mean + norm_ppf(q_out)*pred_sd。
+    pred_sd = (res.band_high[t] - res.mean[t]) / norm_ppf(q_high)
+    assert res.off_high[t] == pytest.approx(res.mean[t] + norm_ppf(q_out) * pred_sd, rel=1e-9)
+    # 上下対称（mean を中心に off_hi と off_lo が等距離）。
+    assert (res.off_high[t] - res.mean[t]) == pytest.approx(res.mean[t] - res.off_low[t], rel=1e-9)
+    # q_out>q_high ゆえ off はバンド端より外側。
+    assert res.off_high[t] > res.band_high[t] > res.mean[t] > res.band_low[t] > res.off_low[t]
+
+
+def test_outlier_lines_empirical_outside_band():
+    df = _df(400, seed=21)
+    res = build_btlm_trail(df, source="close", maxbars=100,
+                           q_low=0.05, q_high=0.95, band_method="empirical",
+                           empirical_n=200, q_out=0.99)
+    assert res.off_low is not None and res.off_high is not None
+    t = 350
+    # 経験分位 0.99 は 0.95 より外側 → off_high > band_high、off_low < band_low。
+    assert res.off_high[t] > res.band_high[t]
+    assert res.off_low[t] < res.band_low[t]
+
+
+def test_outlier_invalid_qout_yields_none():
+    df = _df(200, seed=22)
+    # 未入力（None）・q_out<=q_high・範囲外 は無効化＝off ライン無し。
+    for bad in (None, 0.95, 0.90, 1.0, 1.5, 0.0):
+        res = build_btlm_trail(df, source="close", maxbars=100,
+                               q_low=0.05, q_high=0.95, q_out=bad)
+        assert res.off_low is None and res.off_high is None, f"q_out={bad} は無効のはず"
+
+
+def test_outlier_lines_non_repaint():
+    df_full = _df(400, seed=23)
+    df_prefix = df_full.iloc[:250].reset_index(drop=True)
+    kw = dict(source="close", maxbars=100, q_low=0.05, q_high=0.95,
+              band_method="empirical", empirical_n=150, q_out=0.99)
+    res_full = build_btlm_trail(df_full, **kw)
+    res_prefix = build_btlm_trail(df_prefix, **kw)
+    np.testing.assert_allclose(res_full.off_high[:250], res_prefix.off_high, atol=1e-9, equal_nan=True)
+    np.testing.assert_allclose(res_full.off_low[:250], res_prefix.off_low, atol=1e-9, equal_nan=True)

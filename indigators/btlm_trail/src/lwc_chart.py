@@ -110,7 +110,7 @@ def add_btlm_trail(
     band_method: str = "ols",
     empirical_n: int = DEFAULT_EMP_N,
     display_mode: str = "dots",
-    offset_pct: float = 0.0,
+    q_out=None,
     ma_reference: bool = False,
     ma_type: str = "ema",
     ma_length: int = 21,
@@ -124,9 +124,9 @@ def add_btlm_trail(
     系列:
         - btlm_trail_mean / btlm_trail_q{pct}: トレンド現在位置とバンド端（display_mode で
           ドット（サークル・既定）/ライン切替）。
-        - btlm_trail_off_hi/lo: 外れ値オフセットライン（バンド端 ±offset_pct%・既定オフ）。
+        - btlm_trail_off_hi/lo: 外れ値分位ライン（上側 q_out／下側 1-q_out・既定オフ）。
         - btlm_trail_ma: MA 参考線（btlm_mean へ moving_averages を適用・既定オフ）。
-        - btlm_trail_beta/sigma/coverage: β・残差 σ・実現被覆率（読取欄オーバーレイ用・不可視）。
+        - btlm_trail_beta/sigma/band_hit_rate: β・残差 σ・バンド内実績率（読取欄オーバーレイ用・不可視）。
 
     分位ペアは UI 由来のスカラ q_low/q_high（0<q_low<q_high<1）を用いる（tgp_btlm と対称）。
 
@@ -136,7 +136,7 @@ def add_btlm_trail(
         source: 8 択ソース。maxbars: 回帰窓。q_low/q_high: 分位ペア。
         band_method: "ols"/"empirical"。empirical_n: 経験分位の参照本数。
         display_mode: "dots"（サークル・既定）/"line"。
-        offset_pct: 外れ値オフセット %（0=オフ）。
+        q_out: 外れ値分位（q_high<q_out<1 のみ有効・無効/空はオフ＝補助線なし）。バンド方式と同一規約で算出。
         ma_reference: MA 参考線の有無。ma_type/ma_length: MA 種別・期間（btlm_mean へ適用）。
         show_metrics: β/σ/被覆率の読取欄系列を出すか。n_cov: 被覆率のローリング本数。
         time_column: 時刻列。color: btlm_mean の色。
@@ -151,7 +151,7 @@ def add_btlm_trail(
     res = build_btlm_trail(
         df, source=source, maxbars=maxbars,
         q_low=q_low, q_high=q_high, band_method=band_method,
-        empirical_n=empirical_n,
+        empirical_n=empirical_n, q_out=q_out,
     )
     times = _resolve_times(df, time_column)
     dots = str(display_mode).lower() == "dots"
@@ -175,15 +175,15 @@ def add_btlm_trail(
                            style="dotted", point_markers=pm, line_visible=lv,
                            point_markers_radius=radius)
 
-    # 外れ値オフセットライン（バンド端から ±offset_pct% 外側・上下対称・既定オフ）。
-    if offset_pct and offset_pct > 0:
-        frac = float(offset_pct) / 100.0
+    # 外れ値分位ライン（上側 q_out／下側 1-q_out・バンド方式と同一規約・既定オフ）。
+    #   q_out 無効（None/範囲外/q_out<=q_high）は compute が off_low/off_high=None＝補助線なし。
+    if res.off_low is not None and res.off_high is not None:
         lines["btlm_trail_off_hi"] = _emit(
-            chart, "btlm_trail_off_hi", times, high * (1.0 + frac), _COLOR_OFFSET,
+            chart, "btlm_trail_off_hi", times, res.off_high, _COLOR_OFFSET,
             style="dashed", line_visible=True, point_markers=False,
         )
         lines["btlm_trail_off_lo"] = _emit(
-            chart, "btlm_trail_off_lo", times, low * (1.0 - frac), _COLOR_OFFSET,
+            chart, "btlm_trail_off_lo", times, res.off_low, _COLOR_OFFSET,
             style="dashed", line_visible=True, point_markers=False,
         )
 
