@@ -22,11 +22,15 @@ from typing import Optional, Protocol, runtime_checkable
 import numpy as np
 import pandas as pd
 
-from .core import DEFAULT_EMP_N, DEFAULT_MAXBARS, DEFAULT_Q_HIGH, DEFAULT_Q_LOW
-from .trail import build_btlm_trail
+from .core import DEFAULT_EMP_N, DEFAULT_MAXBARS, DEFAULT_N_COV, DEFAULT_Q_HIGH, DEFAULT_Q_LOW
+from .ma_reference import moving_average_on_series
+from .trail import build_btlm_trail, rolling_coverage
 
 _COLOR_MEAN = "rgba(123, 104, 238, 1)"   # MediumSlateBlue（tgp_btlm と同系色）
 _COLOR_BAND = "rgba(123, 104, 238, 0.6)"
+_COLOR_OFFSET = "rgba(210, 67, 58, 0.8)"  # 外れ値オフセット（赤系・ストップ距離の可視化）
+_COLOR_MA = "rgba(255, 152, 0, 1)"        # MA 参考線（橙・moving_averages と同系色）
+_COLOR_METRIC = "rgba(160, 160, 160, 1)"  # 数値表示（読取欄用・不可視系列）
 
 
 @runtime_checkable
@@ -61,12 +65,24 @@ def _quantile_series_name(q: float) -> str:
     return f"btlm_trail_q{int(round(q * 100))}"
 
 
-def _emit(chart, name, times, values, color, *, style="solid", width=1):
-    """1 系列を chart へ追加する（値列名は系列名と一致・NaN は除外）。"""
-    line = chart.create_line(
+def _emit(chart, name, times, values, color, *, style="solid", width=1,
+          point_markers=None, line_visible=None):
+    """1 系列を chart へ追加する（値列名は系列名と一致・NaN は除外）。
+
+    描画ヒント（表示層で lightweight-charts のオプションへ写像される・後方互換で任意）:
+        point_markers: ドット（サークル）描画の有無（pointMarkersVisible）。
+        line_visible : 接続線の可視性（lineVisible）。
+    None は従来挙動（ヒント未付与）。
+    """
+    kwargs = dict(
         name=name, color=color, style=style, width=width,
         price_line=False, price_label=False,
     )
+    if point_markers is not None:
+        kwargs["point_markers"] = point_markers
+    if line_visible is not None:
+        kwargs["line_visible"] = line_visible
+    line = chart.create_line(**kwargs)
     series = pd.DataFrame({"time": times, name: np.asarray(values, dtype=float)}).dropna()
     line.set(series)
     return line
@@ -83,31 +99,44 @@ def add_btlm_trail(
     quantile_pairs=None,
     band_method: str = "ols",
     empirical_n: int = DEFAULT_EMP_N,
+    display_mode: str = "dots",
+    offset_pct: float = 0.0,
+    ma_reference: bool = False,
+    ma_type: str = "ema",
+    ma_length: int = 21,
+    show_metrics: bool = True,
+    n_cov: int = DEFAULT_N_COV,
     time_column: Optional[str] = None,
     color: str = _COLOR_MEAN,
 ) -> dict[str, object]:
-    """``chart`` へ btlm_trail の系列（btlm_mean ＋ 分位ペアごとのバンド端）を追加する。
+    """``chart`` へ btlm_trail の系列一式を追加する。
 
-    分位ペアは 2 経路: ``quantile_pairs`` を明示すれば複数ペア、未指定なら UI 由来の
-    スカラ ``q_low`` / ``q_high`` から単一ペアを構成する（tgp_btlm と対称の結線様式）。
+    系列:
+        - btlm_trail_mean / btlm_trail_q{pct}: トレンド現在位置とバンド端（display_mode で
+          ドット（サークル・既定）/ライン切替）。
+        - btlm_trail_off_hi/lo: 外れ値オフセットライン（バンド端 ±offset_pct%・既定オフ）。
+        - btlm_trail_ma: MA 参考線（btlm_mean へ moving_averages を適用・既定オフ）。
+        - btlm_trail_beta/sigma/coverage: β・残差 σ・実現被覆率（読取欄オーバーレイ用・不可視）。
+
+    分位ペアは 2 経路: ``quantile_pairs`` 明示で複数ペア、未指定なら UI 由来のスカラ
+    q_low/q_high から単一ペア（tgp_btlm と対称）。
 
     Args:
         chart: ``create_line(name=...)`` を持つオブジェクト（duck typing）。
         df: OHLC DataFrame（時刻は time / date / DatetimeIndex で解決）。
-        source: 8 択ソース（close/open/high/low/hl2/hlc3/ohlc4/hlcc4）。
-        maxbars: 回帰窓の本数（既定 100）。
-        q_low/q_high: 単一分位ペア（quantile_pairs 未指定時に使用）。
-        quantile_pairs: 分位ペアの列（各 0<q_low<q_high<1・複数可）。明示時は q_low/q_high に優先。
-        band_method: "ols"（名目）/ "empirical"（経験分位）。
-        empirical_n: 経験分位バンドの参照本数（既定 500）。
-        time_column: 時刻列の明示指定。
-        color: btlm_mean の色。
+        source: 8 択ソース。maxbars: 回帰窓。q_low/q_high/quantile_pairs: 分位ペア。
+        band_method: "ols"/"empirical"。empirical_n: 経験分位の参照本数。
+        display_mode: "dots"（サークル・既定）/"line"。
+        offset_pct: 外れ値オフセット %（0=オフ）。
+        ma_reference: MA 参考線の有無。ma_type/ma_length: MA 種別・期間（btlm_mean へ適用）。
+        show_metrics: β/σ/被覆率の読取欄系列を出すか。n_cov: 被覆率のローリング本数。
+        time_column: 時刻列。color: btlm_mean の色。
 
     Returns:
         ``{series_name: Line}``。
 
     Raises:
-        ValueError: source / 分位ペア / band_method 不正時。
+        ValueError: source / 分位ペア / band_method / ma_type 不正時。
         KeyError: 時刻が解決できない場合。
     """
     pairs = quantile_pairs if quantile_pairs is not None else [(q_low, q_high)]
@@ -117,14 +146,64 @@ def add_btlm_trail(
         empirical_n=empirical_n,
     )
     times = _resolve_times(df, time_column)
+    dots = str(display_mode).lower() == "dots"
+    pm, lv = (True, False) if dots else (False, True)
 
     lines: dict[str, object] = {}
     lines["btlm_trail_mean"] = _emit(
-        chart, "btlm_trail_mean", times, res.mean, color, style="solid", width=2
+        chart, "btlm_trail_mean", times, res.mean, color,
+        style="solid", width=2, point_markers=pm, line_visible=lv,
     )
+    # バンド端（分位ペアごと）。display_mode に追随。
+    first_band = None
     for (ql, qh), (low, high) in res.bands.items():
         lo_name = _quantile_series_name(ql)
         hi_name = _quantile_series_name(qh)
-        lines[lo_name] = _emit(chart, lo_name, times, low, _COLOR_BAND, style="dotted")
-        lines[hi_name] = _emit(chart, hi_name, times, high, _COLOR_BAND, style="dotted")
+        lines[lo_name] = _emit(chart, lo_name, times, low, _COLOR_BAND,
+                               style="dotted", point_markers=pm, line_visible=lv)
+        lines[hi_name] = _emit(chart, hi_name, times, high, _COLOR_BAND,
+                               style="dotted", point_markers=pm, line_visible=lv)
+        if first_band is None:
+            first_band = (low, high)
+
+    # 外れ値オフセットライン（バンド端から ±offset_pct% 外側・上下対称・既定オフ）。
+    if offset_pct and offset_pct > 0 and first_band is not None:
+        low, high = first_band
+        frac = float(offset_pct) / 100.0
+        lines["btlm_trail_off_hi"] = _emit(
+            chart, "btlm_trail_off_hi", times, high * (1.0 + frac), _COLOR_OFFSET,
+            style="dashed", line_visible=True, point_markers=False,
+        )
+        lines["btlm_trail_off_lo"] = _emit(
+            chart, "btlm_trail_off_lo", times, low * (1.0 - frac), _COLOR_OFFSET,
+            style="dashed", line_visible=True, point_markers=False,
+        )
+
+    # MA 参考線（btlm_mean へ moving_averages を適用・方向確認用・既定オフ）。
+    if ma_reference:
+        ma_vals = moving_average_on_series(res.mean, ma_type, ma_length)
+        lines["btlm_trail_ma"] = _emit(
+            chart, "btlm_trail_ma", times, ma_vals, _COLOR_MA,
+            style="solid", width=1, line_visible=True, point_markers=False,
+        )
+
+    # 数値表示（β・残差 σ・実現被覆率）: 読取欄オーバーレイ用の不可視系列として供給する。
+    if show_metrics:
+        cov = None
+        if first_band is not None:
+            lower = {str(c).lower(): c for c in df.columns}
+            if "close" in lower:
+                close = df[lower["close"]].to_numpy(dtype=float)
+                cov = rolling_coverage(close, first_band[0], first_band[1], n_cov)
+        for name, vals in (
+            ("btlm_trail_beta", res.beta),
+            ("btlm_trail_sigma", res.sigma),
+            ("btlm_trail_coverage", cov),
+        ):
+            if vals is None:
+                continue
+            lines[name] = _emit(
+                chart, name, times, vals, _COLOR_METRIC,
+                style="solid", width=1, line_visible=False, point_markers=False,
+            )
     return lines
