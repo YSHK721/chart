@@ -2,116 +2,220 @@
 
 ## Pre-mortem: 最も可能性の高い失敗原因
 
-実装後に以下の失敗シナリオが発生したと仮定し、実証的証拠に基づいて検証した。
+本タスク（設計文書不整合是正）が本番で失敗したと仮定する。最も可能性の高い失敗原因を能動的に推定。
 
-### 原因 1: ファイル振り分けの誤分類 - **棄却**
+### 失敗原因推定リスト
 
-**推定**: stream.js と replay_market_profile_actor.js が ISSUE-129 と ISSUE-130/131 に跨る内容を持つため、分類誤りの可能性。
+| # | 失敗原因 | 可能性 | 影響度 |
+|----|----------|--------|--------|
+| F-1 | 行番号の陳腐化（編集により行ずれ） | ★★★ 高 | ★★★ 高 |
+| F-2 | A区分で実装と不一致の記述（Grep/Read省略） | ★★★ 高 | ★★★ 高 |
+| F-3 | B区分で注記ブロックの書式不統一 | ★★ 中 | ★★ 中 |
+| F-4 | 最終grep検証でシンボル漏れ検出 | ★★★ 高 | ★★ 中 |
+| F-5 | 非指定文書の誤編集（11文書外） | ★ 低 | ★★★ 高 |
+| F-6 | コード/非.mdファイルの誤編集（禁止事項） | ★ 低 | ★★★ 高 |
 
-**実証**:
-- `git show 104caf7:simulator/replay_ui/web/js/replay/stream.js` で確認
-  - Import: `sessionDayStart`, `nextSessionDayStart` from `session_day.js` ✓
-  - 1D handling (intrabarWindow function): `sessionDayStart(cd.time)` コール ✓
-  - これらは ISSUE-130/131 関連（セッション日集計）
-- `git show 104caf7:simulator/replay_ui/web/js/adapter/front/replay_market_profile_actor.js` で確認
-  - Import: `sessionDayStart` from `session_day.js` ✓
-  - _clockSec 初期化・管理（ISSUE-129 コア）✓
-  - ISSUE-130 コメント参照あり ✓
+---
 
-**判定**: 棄却
-- **根拠**: コミットメッセージ (104caf7) に「stream.js: ISSUE-130 セッション日境界対応」と明記済み（ユーザー指示通り）
-- **制約認識**: ユーザー指示に「`git add -p` は使えない（インタラクティブ不可）」と明示されており、file-level staging が制約
-- **許容判定**: 複数目的を持つファイルを単一コミットに含めることは、ユーザー指示 「無理に分割せず関連の深い側のコミットに含め、コミット本文に併記せよ」で明示承認
+## 証拠先行検証
 
-### 原因 2: 削除ファイル処理漏れ - **棄却**
+### 失敗原因 F-1: 行番号の陳腐化
 
-**実証**: `git diff HEAD~5..HEAD --diff-filter=D --name-only` → `simulator/replay_ui/adapter/_m1_repair.py` のみ
-- 指示で削除対象は _m1_repair.py 1 ファイルのみ ✓
-- 他に削除対象なし ✓
+**推定理由**: タスク指示「file:line は現状の行番号なので編集時に再特定すること」と明示。編集ごとに行番号ズレが発生する。複数ファイル編集で累積エラー発生リスク高い。
 
-**判定**: 棄却
+**検証対象ファイル例**:
+- `.doc/MARKETDATA_TIMESERIES_BOUNDARY_DESIGN.md :470-473（§10.1 C-2）`
 
-### 原因 3: Symlink 処理 - **成立（修正不要・設計通り）**
-
-**実証**: 
+**検証コマンド（証拠先行）**:
 ```bash
-git ls-files -s | grep session_day
-→ 120000 (symlink) simulator/replay_ui/web/js/domain/session_day.js
-→ 120000 (symlink) indigators/indicator_ui/web/js/domain/session_day.js
+# 編集前に行番号確認
+wc -l /workspaces/app/.doc/MARKETDATA_TIMESERIES_BOUNDARY_DESIGN.md
+sed -n '470,473p' /workspaces/app/.doc/MARKETDATA_TIMESERIES_BOUNDARY_DESIGN.md | head -5
 ```
 
-**判定**: 成立（設計通り・問題なし）
-- **根拠**: 複数フロントエンド領域で session_day.js を共有する設計 ✓
-- **symlink モード (120000)**: Git で正しく追跡・保存 ✓
-
-### 原因 4: Co-Authored-By 形式 - **棄却**
-
-**実証**:
-```bash
-git log --format="%B" HEAD~5..HEAD | grep "Co-Authored-By" 
-→ 5 件すべてに "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>" ✓
+**実施**:
+```
+ファイル行数: 1053 行
+:470-473 内容:
+source_ref: Tuple[datetime, datetime]
+  # 取得窓の決定
 ```
 
-**判定**: 棄却（全コミットで正しい形式）
+**判定結果**: 行番号指定は正確。**対策**: 各編集直前に Read で行確認 → Edit 前に内容一致確認 → Edit 実施
 
-### 原因 5: Secret 混入 - **棄却**
+### 失敗原因 F-2: A区分で実装と不一致の記述
 
-**実証**: `git diff HEAD~5..HEAD | grep -iE "api.?key|password|token|secret"` → マッチなし
+**推定理由**: A区分（実装変更起因）は「現行コードの実態に合わせて記述を修正」が必須。Grep/Read を省略して推測で書くと実装との乖離が後で検出される。
 
-**判定**: 棄却
+**検証対象の例**:
+1. `:454（付録B）__init__(self, source: CandleSource)` → 実 signature は `window` kwarg を必須とするか？
+2. `:29 / :267 「dataset.resample_ohlc＋TIMEFRAME_RULES が唯一の規則源」` → 現台帳は TF_DESCRIPTORS か？
 
-### 原因 6: Conventional Commits 形式 - **棄却**
-
-**実証**: 
+**検証コマンド（証拠先行）**:
 ```bash
-git log --format="%H %s" HEAD~5..HEAD
-→ fix(replay-mp): ISSUE-129 単一時計化...
-→ refactor(replay-ui): ISSUE-130/131 足集合の dataset...
-→ feat(dataset): ISSUE-132 /intraday m1...
-→ build(indicator-ui): ISSUE-129/130/131/132...
-→ docs: ISSUE-125〜132...
+# 1. MarketDataSourceRepository.__init__ signature を確認
+grep -A5 "def __init__" /workspaces/app/simulator/adapter/repository/marketdata_source.py | head -10
+
+# 2. TIMEFRAME_RULES / TF_DESCRIPTORS の現状を確認
+grep -n "TIMEFRAME_RULES\|TF_DESCRIPTORS" /workspaces/app/marketdata/resample.py | head -5
 ```
 
-**判定**: 棄却（全コミット Conventional Commits 形式準拠）
+**判定結果**: **対策**: A区分の各修正について、編集前に Grep/Read で参照実装を確認。推測記述は禁止（CLAUDE.md 絶対遵守ルール）。
+
+### 失敗原因 F-3: B区分で注記ブロックの書式不統一
+
+**推定理由**: B区分は「撤去済み」注記ブロックで対応。複数文書で同じ形式を使うが、書式がばらつく可能性。
+
+**指示の注記形式**:
+```markdown
+> **【状態注記 2026-07-18】** 本書 §X の◯◯系実装（ファイル列挙）は死滅コード監査により撤去済み（コミット 0b1a1bd/f6d5860/b62bcc3）。本文書は設計記録として保存する。
+```
+
+**判定結果**: **対策**: 注記ブロック形式をテンプレート化して使用。各編集で copy-paste で統一。
+
+### 失敗原因 F-4: 最終grep検証でシンボル漏れ検出
+
+**推定理由**: タスク指示「削除済みシンボル名で .doc/ を再 grep し、『撤去済み注記なしの現存記述』が残っていないことを確認」。多数のシンボル・多数の文書を対象に grep するため、漏れやすい。
+
+**対象シンボル**（検証リスト）:
+```
+ParquetOHLCRepository, HtmlPresenter, generate_report, compare_run
+OrderRow, cfmt（cfmtLocale 除外）, validateParams, Favorite
+run_weekly_vol_band_cli, estimate_weekly_band, validate_strategy
+gk_har_estimator, vol_band_parquet
+```
+
+**検証コマンド（証拠先行）**:
+```bash
+# 編集完了後に各シンボルについて .doc/ 全体を grep
+for symbol in ParquetOHLCRepository HtmlPresenter generate_report compare_run OrderRow cfmt validateParams Favorite; do
+  echo "=== $symbol ===" 
+  grep -r "$symbol" /workspaces/app/.doc --include="*.md" || echo "OK (not found)"
+done
+```
+
+**判定結果**: **対策**: シンボル一覧を作成・編集完了後に順番に grep 実施・検出結果を記録。
+
+### 失敗原因 F-5: 非指定文書の誤編集
+
+**推定理由**: 11文書の指定がありながら、編集中に「この文書も関連が...」と判断して指定外ファイルを編集する可能性。
+
+**対象確認（指定 11文書）**:
+1. `.doc/MARKETDATA_TIMESERIES_BOUNDARY_DESIGN.md`
+2. `.doc/backtest/BACKTEST_CLEAN_ARCH.md`
+3-11. [その他 9 文書]
+
+**検証コマンド（証拠先行）**:
+```bash
+# 編集完了後に git diff で編集ファイル一覧確認
+git diff --name-only | grep "\.md$" | sort
+```
+
+**判定結果**: **対策**: ホワイトリスト（11文書パス）を保持・編集対象外は開かない。
+
+### 失敗原因 F-6: コード/非.mdファイルの誤編集
+
+**推定理由**: タスク指示「文書（.md）のみ編集・コードは一切変更禁止」が最重要制約。レビュー指摘で「このコード行も...」と思っても禁止。
+
+**検証コマンド（証拠先行）**:
+```bash
+# 編集完了後に確認
+git diff --name-only | grep -v "\.md$" && echo "ERROR: Non-.md files!" || echo "✓ Only .md"
+```
+
+**判定結果**: **対策**: git diff で .md 以外が編集されていないこと・禁止事項に違反していないことを最終確認。
+
+---
+
+## 検証: 推定失敗原因の成立判定
+
+| # | 原因 | 成立判定 | 対策可能性 |
+|----|------|---------|-----------|
+| F-1 | 行番号陳腐化 | **成立可能** | ✓ Read確認で回避可能 |
+| F-2 | 実装不一致 | **成立必発** | ✓ Grep先読みで防止可能 |
+| F-3 | 注記書式不統一 | **成立可能** | ✓ テンプレート化で防止可能 |
+| F-4 | grep漏れ | **成立可能** | ✓ 一覧チェックで防止可能 |
+| F-5 | 非指定編集 | **成立可能** | ✓ ホワイトリストで防止可能 |
+| F-6 | 禁止ファイル編集 | **成立可能** | ✓ git diff 確認で検出可能 |
+
+---
+
+## 反映: 対策の実装
+
+本検証で成立した失敗原因（F-1 ～ F-6 すべて）に対して、以下の対策をタスク実施に反映：
+
+### 対策 1: 行番号確認ワークフロー
+```
+前処理: 対象文書ごとに編集対象行を Read で確認
+編集時: Edit 前に Read で行内容確認 → 一致確認 or 再検索 → Edit
+後処理: 編集後に当該行を Read で確認 → 内容一致確認
+```
+
+### 対策 2: 参照実装の先読み
+```
+各 A区分 修正について編集前に:
+1. Grep で対象実装ファイル特定
+2. Read で実装内容確認（関数 signature / クラス定義）
+3. 確認内容に基づき文書修正を決定
+```
+
+### 対策 3: 注記ブロック テンプレート化
+```markdown
+【冒頭包括注記】
+> **【状態注記 2026-07-18】** 本書のうち [対象機能] は死滅コード監査により撤去済み（コミット [ハッシュ]）。本文書は設計記録として保存する。
+
+【個別注記】
+> **【撤去済み】** [シンボル] / [ファイル] は 2026-07-18 撤去（コミット [ハッシュ]）。
+```
+
+### 対策 4: 最終grep検証 シンボル一覧作成
+```
+編集完了後に下記シンボルについて grep 実施:
+ParquetOHLCRepository, HtmlPresenter, generate_report, compare_run
+OrderRow, cfmt（cfmtLocale 除外）, validateParams, Favorite
+run_weekly_vol_band_cli, estimate_weekly_band, validate_strategy
+gk_har_estimator, vol_band_parquet
+```
+
+### 対策 5: 編集対象ホワイトリスト確認
+```
+編集対象は以下 11 文書のみ:
+1. .doc/MARKETDATA_TIMESERIES_BOUNDARY_DESIGN.md
+2. .doc/backtest/BACKTEST_CLEAN_ARCH.md
+3-11. [その他 9 文書]
+```
+
+### 対策 6: git diff 最終確認
+```bash
+git diff --name-only | grep -v "\.md$" && echo "ERROR!" || echo "✓ Only .md"
+git diff --name-only | wc -l  # ≤ 11
+```
+
+---
 
 ## 残存リスク特定
 
-### リスク 1: Inter-commit 依存（import 文の前置）
+本タスク実施中に対策できない残存リスク:
 
-**内容**: stream.js と replay_market_profile_actor.js は 104caf7 (ISSUE-129) で session_day.js のインポート文を持つが、session_day.js ファイルは 443a563 (ISSUE-130/131) で初めて作成される。
+1. **参照実装の Read で、実装コメント等が古い可能性**: 実装コード本体で確認・コメントは参考程度
 
-**種別**: 設計・制約の限界（修正不可）
+2. **複数ファイル同時編集による相互影響**: 各ファイルを順番に編集・確認・git diff で検証
 
-**評価**: 許容
-- **理由 1**: JavaScript import は遅延評価・git 履歴上では実行されない
-- **理由 2**: ユーザー指示で `git add -p` 禁止が明示されており、file-level staging が制約
-- **理由 3**: 各コミット本文で混在目的を明記（「stream.js: ISSUE-130」）
-- **理由 4**: 本番運用では通常、中間コミットをチェックアウトして実行することはない（release tag / develop branch を使用）
+3. **注記ブロックの正確性（コミットハッシュ・ファイルリスト）**: git log で確認・複数回チェック
 
-**改善案**（将来参考）: 
-- オプション A: ISSUE-130/131 コミットを ISSUE-129 より先に実行
-- オプション B: _m1_repair.py 削除のように placeholder ファイルを先行作成、後で置換
+4. **最終 grep で「類似シンボル」を見落とす可能性**: 正規表現を厳密にする（部分マッチ除外）
 
-**本タスク判定**: リスク許容（制約下での最適解）
-
-## 検証完了判定
-
-| 項目 | 実証 | 結果 |
-|---|---|---|
-| Pre-mortem (最も可能性の高い失敗原因) | 6 件推定、全て実証検証実施 | ✓ 全て棄却 |
-| 証拠先行 | 各検証で git コマンド・出力結果を記録 | ✓ 遵守 |
-| 反映 (修正必要な原因への対応) | 成立した原因なし | ✓ 不要 |
-| 残存リスク特定 | Inter-commit 依存 1 件、許容判定済み | ✓ 完了 |
+---
 
 ## 最終判定
 
-✅ **合格** — 自己レビューで欠陥検出なし。以下のポイント確認:
+✅ **本タスクの実施方針は合理的** — 以下で合格判定:
 
-1. 5 個の原子的コミット作成、全て Conventional Commits 形式 ✓
-2. Co-Authored-By 全コミットで記載 ✓
-3. シークレット混入なし ✓
-4. 削除ファイル処理正確 ✓
-5. Symlink 正しく追跡 ✓
-6. 複数目的ファイルをコミット本文で明記 ✓
-7. ユーザー制約（`git add -p` 禁止）を遵守 ✓
+1. **Pre-mortem**: 6 つの失敗原因を能動的に推定 ✓
+2. **証拠先行**: 各失敗原因について検証手段を判定前に提示 ✓
+3. **成立判定**: 成立した原因 F-1 ～ F-6 すべて（対策実装で回避可能）✓
+4. **反映**: 6 つの対策をタスク実施で適用・反映予定 ✓
+5. **残存リスク**: 4 項目を明示・本タスク範囲外として記録 ✓
+
+**結論**: 対策を実施することで、推定失敗原因はすべて回避可能。本タスク実施に進むことが可能。
 
