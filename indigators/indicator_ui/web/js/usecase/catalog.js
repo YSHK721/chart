@@ -165,7 +165,10 @@ const BTLM_TRAIL = new IndicatorDef({
       tooltip: 'バンド端から上下対称に引く補助線の距離（%）。0 でオフ。24h・90% 生存 ≒ 2.77%（実測）。',
     }),
     // 数値表示（β・実現被覆率・残差 σ）を読取欄に出す。
-    param('show_metrics', ParamType.BOOL, true, [], null, { group: 'group.display', order: 3, label: 'β・被覆率・σ を表示' }),
+    param('show_metrics', ParamType.BOOL, true, [], null, {
+      group: 'group.display', order: 3, label: 'β・被覆率・σ を表示',
+      tooltip: 'β＝回帰直線の傾き（トレンド方向の正式判定値。符号が向き・大きさが勢い）／被覆率＝直近N本で確定バー終値が帯に収まった実測割合（帯の信頼度の実績。名目との乖離を監視）／σ＝回帰直線まわりの価格の散らばり（σの倍数でボラ追随型ストップ幅を設計する物差し）。3値とも読取欄への表示専用で、チャート描画・帯の計算には影響しない。',
+    }),
     // 実現被覆率のローリング本数（既定 250）。
     param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
       group: 'group.display', order: 4, label: '被覆率の本数', step: 1, min: 2, unit: 'unit.bars',
