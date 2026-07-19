@@ -1727,7 +1727,6 @@ const BTLM_TRAIL_SOURCE_LABELS = {
 };
 const BTLM_TRAIL_METHOD_LABELS = { ols: '名目 ols バンド', empirical: '経験分位バンド' };
 const BTLM_TRAIL_DISPLAY_LABELS = { dots: 'ドット（サークル）', line: 'ライン' };
-const BTLM_TRAIL_MA_TYPE_LABELS = { sma: 'SMA', ema: 'EMA', smma: 'SMMA', lwma: 'LWMA' };
 const BTLM_TRAIL = new IndicatorDef({
   id: 'btlm_trail',
   displayNameKey: 'ind.btlm_trail',
@@ -1773,21 +1772,11 @@ const BTLM_TRAIL = new IndicatorDef({
       group: 'group.display', order: 4, label: 'バンド内実績率の本数', step: 1, min: 2, unit: 'unit.bars',
       conditionalEnable: { when: { param: 'show_metrics', equals: true } },
     }),
-    // --- MA 参考線（btlm_mean へ moving_averages を適用・方向確認用・既定オフ）---
-    param('ma_reference', ParamType.BOOL, false, [], null, { group: 'group.ma', order: 1, label: 'MA 参考線' }),
-    param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], {
-      group: 'group.ma', order: 2, label: '種別', enumLabels: BTLM_TRAIL_MA_TYPE_LABELS,
-      conditionalEnable: { when: { param: 'ma_reference', equals: true } },
-    }),
-    param('ma_length', ParamType.INT, 21, [{ kind: ConstraintKind.MIN_VALUE, operands: ['ma_length', 2], messageKey: 'err.length' }], null, {
-      group: 'group.ma', order: 3, label: '期間', step: 1, min: 2, unit: 'unit.bars',
-      conditionalEnable: { when: { param: 'ma_reference', equals: true } },
-    }),
     // color は btlm_mean（トレンド現在位置）の色。スタイルタブへ移譲。
     param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
   ],
-  // 系列: btlm_trail_mean（静的）＋ 動的分位線 btlm_trail_q{pct}＋オフセット/MA/数値（読取欄）系列。
-  //   数値系列（beta/sigma/coverage）は不可視 line（表示層が readout オーバーレイへ載せる）。
+  // 系列: btlm_trail_mean（静的）＋ 動的分位線 btlm_trail_q{pct}＋オフセット/数値（読取欄）系列。
+  //   数値系列（beta/sigma/band_hit_rate）は不可視 line（表示層が readout オーバーレイへ載せる）。
   series: [
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false }),
     new SeriesDef({
@@ -1799,7 +1788,6 @@ const BTLM_TRAIL = new IndicatorDef({
     }),
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_hi', seriesName: 'btlm_trail_off_hi', dynamic: false }),
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_lo', seriesName: 'btlm_trail_off_lo', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_ma', seriesName: 'btlm_trail_ma', dynamic: false }),
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_beta', seriesName: 'btlm_trail_beta', dynamic: false }),
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_sigma', seriesName: 'btlm_trail_sigma', dynamic: false }),
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_band_hit_rate', seriesName: 'btlm_trail_band_hit_rate', dynamic: false }),

@@ -23,13 +23,11 @@ import numpy as np
 import pandas as pd
 
 from .core import DEFAULT_EMP_N, DEFAULT_MAXBARS, DEFAULT_N_COV, DEFAULT_Q_HIGH, DEFAULT_Q_LOW
-from .ma_reference import moving_average_on_series
 from .trail import build_btlm_trail, rolling_coverage
 
 _COLOR_MEAN = "rgba(123, 104, 238, 1)"   # MediumSlateBlue（tgp_btlm と同系色）
 _COLOR_BAND = "rgba(123, 104, 238, 0.6)"
 _COLOR_OFFSET = "rgba(210, 67, 58, 0.8)"  # 外れ値オフセット（赤系・ストップ距離の可視化）
-_COLOR_MA = "rgba(255, 152, 0, 1)"        # MA 参考線（橙・moving_averages と同系色）
 _COLOR_METRIC = "rgba(160, 160, 160, 1)"  # 数値表示（読取欄用・不可視系列）
 
 
@@ -111,9 +109,6 @@ def add_btlm_trail(
     empirical_n: int = DEFAULT_EMP_N,
     display_mode: str = "dots",
     q_out=None,
-    ma_reference: bool = False,
-    ma_type: str = "ema",
-    ma_length: int = 21,
     show_metrics: bool = True,
     n_cov: int = DEFAULT_N_COV,
     time_column: Optional[str] = None,
@@ -125,7 +120,6 @@ def add_btlm_trail(
         - btlm_trail_mean / btlm_trail_q{pct}: トレンド現在位置とバンド端（display_mode で
           ドット（サークル・既定）/ライン切替）。
         - btlm_trail_off_hi/lo: 外れ値分位ライン（上側 q_out／下側 1-q_out・既定オフ）。
-        - btlm_trail_ma: MA 参考線（btlm_mean へ moving_averages を適用・既定オフ）。
         - btlm_trail_beta/sigma/band_hit_rate: β・残差 σ・バンド内実績率（読取欄オーバーレイ用・不可視）。
 
     分位ペアは UI 由来のスカラ q_low/q_high（0<q_low<q_high<1）を用いる（tgp_btlm と対称）。
@@ -137,15 +131,14 @@ def add_btlm_trail(
         band_method: "ols"/"empirical"。empirical_n: 経験分位の参照本数。
         display_mode: "dots"（サークル・既定）/"line"。
         q_out: 外れ値分位（q_high<q_out<1 のみ有効・無効/空はオフ＝補助線なし）。バンド方式と同一規約で算出。
-        ma_reference: MA 参考線の有無。ma_type/ma_length: MA 種別・期間（btlm_mean へ適用）。
-        show_metrics: β/σ/被覆率の読取欄系列を出すか。n_cov: 被覆率のローリング本数。
+        show_metrics: β/σ/バンド内実績率の読取欄系列を出すか。n_cov: 被覆率のローリング本数。
         time_column: 時刻列。color: btlm_mean の色。
 
     Returns:
         ``{series_name: Line}``。
 
     Raises:
-        ValueError: source / 分位ペア / band_method / ma_type 不正時。
+        ValueError: source / 分位ペア / band_method 不正時。
         KeyError: 時刻が解決できない場合。
     """
     res = build_btlm_trail(
@@ -187,15 +180,7 @@ def add_btlm_trail(
             style="dashed", line_visible=True, point_markers=False,
         )
 
-    # MA 参考線（btlm_mean へ moving_averages を適用・方向確認用・既定オフ）。
-    if ma_reference:
-        ma_vals = moving_average_on_series(res.mean, ma_type, ma_length)
-        lines["btlm_trail_ma"] = _emit(
-            chart, "btlm_trail_ma", times, ma_vals, _COLOR_MA,
-            style="solid", width=1, line_visible=True, point_markers=False,
-        )
-
-    # 数値表示（β・残差 σ・実現被覆率）: 読取欄オーバーレイ用の不可視系列として供給する。
+    # 数値表示（β・残差 σ・バンド内実績率）: 読取欄オーバーレイ用の不可視系列として供給する。
     if show_metrics:
         cov = None
         lower = {str(c).lower(): c for c in df.columns}

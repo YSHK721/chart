@@ -46,9 +46,6 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "q_out": None,
         "show_metrics": True,
         "n_cov": 250,
-        "ma_reference": False,
-        "ma_type": "ema",
-        "ma_length": 21,
         "color": "rgba(123, 104, 238, 1)",
     },
     "profit_band": {

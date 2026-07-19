@@ -153,35 +153,6 @@ def test_outlier_lines_are_outside_band_edges():
     assert (off_hi.loc[common] > hi.loc[common]).all()
 
 
-# --- MA 参考線（btlm_mean のみ・既定オフ・種別同期） ----------------------
-def test_ma_reference_emitted_only_when_enabled():
-    chart_off = FakeChart()
-    add_btlm_trail(chart_off, _df(200), source="close", maxbars=100, ma_reference=False)
-    assert not any(ln.name == "btlm_trail_ma" for ln in chart_off.lines)
-
-    chart_on = FakeChart()
-    add_btlm_trail(chart_on, _df(200), source="close", maxbars=100,
-                   ma_reference=True, ma_type="sma", ma_length=21)
-    assert any(ln.name == "btlm_trail_ma" for ln in chart_on.lines)
-
-
-def test_ma_reference_matches_moving_averages_sma_on_btlm_mean():
-    # MA は moving_averages（無改変）を btlm_mean へ適用したものと一致する。
-    import numpy as np
-    from src.core import rolling_ols_window_end, resolve_source
-    from src.ma_reference import moving_average_on_series
-    df = _df(200, seed=4)
-    chart = FakeChart()
-    add_btlm_trail(chart, df, source="close", maxbars=100,
-                   ma_reference=True, ma_type="sma", ma_length=10)
-    mean, _, _, _ = rolling_ols_window_end(resolve_source(df, "close"), 100)
-    expected = moving_average_on_series(mean, "sma", 10)
-    ma_line = next(ln for ln in chart.lines if ln.name == "btlm_trail_ma")
-    got = ma_line.data.set_index("time")["btlm_trail_ma"]
-    exp_series = expected[np.isfinite(expected)]
-    np.testing.assert_allclose(got.to_numpy(), exp_series, atol=1e-9)
-
-
 # --- 数値表示（β・実現被覆率・残差 σ）を読取欄オーバーレイ系列で供給 -------
 def test_metric_series_emitted_invisible_for_readout():
     chart = FakeChart()

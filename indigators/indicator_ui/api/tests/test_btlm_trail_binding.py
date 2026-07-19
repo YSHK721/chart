@@ -57,7 +57,6 @@ def test_btlm_trail_payload_carries_display_and_extra_series():
     binding.invoke(chart, _ohlcv(300), {
         "source": "close", "maxbars": 100, "q_low": 0.05, "q_high": 0.95,
         "display_mode": "dots", "q_out": 0.99,
-        "ma_reference": True, "ma_type": "sma", "ma_length": 21,
         "show_metrics": True, "n_cov": 250,
     })
     payloads = {p["name"]: p for p in chart.to_payloads()}
@@ -65,7 +64,7 @@ def test_btlm_trail_payload_carries_display_and_extra_series():
     assert payloads["btlm_trail_mean"]["point_markers"] is True
     assert payloads["btlm_trail_mean"]["line_visible"] is False
     # 拡張系列。
-    assert {"btlm_trail_off_hi", "btlm_trail_off_lo", "btlm_trail_ma",
+    assert {"btlm_trail_off_hi", "btlm_trail_off_lo",
             "btlm_trail_beta", "btlm_trail_sigma", "btlm_trail_band_hit_rate"} <= set(payloads)
 
 
