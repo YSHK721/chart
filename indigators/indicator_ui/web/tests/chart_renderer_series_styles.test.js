@@ -257,3 +257,25 @@ test('readout_only 無しの系列は autoscaleInfoProvider を設定しない�
   renderer.renderLine('ma#10', MA_PAYLOADS);
   assert.equal('autoscaleInfoProvider' in chart.created[0]._createOpts, false);
 });
+
+test('btlm_trail: readout_only 系列は軸ラベル/プライスライン/クロスヘアマーカーを一切出さない', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('trail#5', [{
+    name: 'btlm_trail_sigma', kind: 'line', style: 'solid', width: 1, color: '#a0a0a0',
+    line_visible: false, point_markers: false, readout_only: true,
+    data: [{ time: 1, value: 2500 }],
+  }]);
+  const o = chart.created[0]._createOpts;
+  // 価格軸の名前ラベルは series.title 由来（lastValueVisible とは独立）。読取専用は空 title で抑止。
+  assert.equal(o.title, '', 'readout_only は title を空にして軸の名前ラベルを出さない');
+  assert.equal(o.lastValueVisible, false);
+  assert.equal(o.priceLineVisible, false);
+  assert.equal(o.crosshairMarkerVisible, false);
+});
+
+test('通常系列は title に系列名を維持（後方互換）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#11', MA_PAYLOADS);
+  assert.equal(chart.created[0]._createOpts.title, 'MA');
+  assert.equal('crosshairMarkerVisible' in chart.created[0]._createOpts, false);
+});

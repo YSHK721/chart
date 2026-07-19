@@ -825,12 +825,20 @@ export class ChartRenderer {
       if (p.point_markers_radius !== undefined) {
         options.pointMarkersRadius = p.point_markers_radius;
       }
-      // 読取欄専用系列（β・被覆率・σ 等の小値系列）は価格軸オートスケールから除外する。
-      //   lightweight-charts の契約: autoscaleInfoProvider が { priceRange: null } を返すと
-      //   当該系列は価格レンジに寄与しない。null を返すと「既定オートスケール（系列データを含む）」
-      //   となり除外にならない（実 UI で価格軸が 0 まで拡張しローソクが圧縮した不具合の原因）。
+      // 読取欄専用系列（β・被覆率・σ 等の小値系列）はチャート/価格軸に一切の視覚要素を出さない
+      //   （値供給は crosshair 読取欄のみ）。以下を無効化する:
+      //   - autoscaleInfoProvider→{priceRange:null}: 価格軸オートスケールへ寄与しない（bundle 実装
+      //     で確認済: 返値 {priceRange:null} は範囲寄与なし。null 返しは既定＝系列データを含むため誤り）。
+      //   - title='': 価格軸の名前ラベルは series.title 由来（lastValueVisible とは独立に描画される）。
+      //     手動スケール/ズームで軸レンジが系列値域（0〜数千）を含むと露出するため空にして抑止する。
+      //   - lastValueVisible/priceLineVisible=false: 最終値ラベル・プライスライン（既定 false だが明示）。
+      //   - crosshairMarkerVisible=false: ホバー時のクロスヘアマーカー（点）も出さない。
       if (p.readout_only) {
         options.autoscaleInfoProvider = () => ({ priceRange: null });
+        options.title = '';
+        options.lastValueVisible = false;
+        options.priceLineVisible = false;
+        options.crosshairMarkerVisible = false;
       }
       // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
       const series = pane
