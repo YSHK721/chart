@@ -11,7 +11,11 @@
     "n_cov": 250,
     "offset_pct": 0.0,
     "q_high": 0.95,
+    "q_high2": null,
+    "q_high3": null,
     "q_low": 0.05,
+    "q_low2": null,
+    "q_low3": null,
     "show_metrics": true,
     "source": "close"
   },

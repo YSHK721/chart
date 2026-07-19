@@ -107,6 +107,10 @@ def add_btlm_trail(
     maxbars: int = DEFAULT_MAXBARS,
     q_low: float = DEFAULT_Q_LOW,
     q_high: float = DEFAULT_Q_HIGH,
+    q_low2: Optional[float] = None,
+    q_high2: Optional[float] = None,
+    q_low3: Optional[float] = None,
+    q_high3: Optional[float] = None,
     quantile_pairs=None,
     band_method: str = "ols",
     empirical_n: int = DEFAULT_EMP_N,
@@ -150,7 +154,14 @@ def add_btlm_trail(
         ValueError: source / 分位ペア / band_method / ma_type 不正時。
         KeyError: 時刻が解決できない場合。
     """
-    pairs = quantile_pairs if quantile_pairs is not None else [(q_low, q_high)]
+    if quantile_pairs is not None:
+        pairs = quantile_pairs
+    else:
+        # 主ペア＋固定スロット（空欄=None・不正=0<lo<hi<1 を満たさない）を除外して構成する。
+        pairs = [(q_low, q_high)]
+        for lo, hi in ((q_low2, q_high2), (q_low3, q_high3)):
+            if lo is not None and hi is not None and 0.0 < float(lo) < float(hi) < 1.0:
+                pairs.append((float(lo), float(hi)))
     res = build_btlm_trail(
         df, source=source, maxbars=maxbars,
         quantile_pairs=pairs, band_method=band_method,

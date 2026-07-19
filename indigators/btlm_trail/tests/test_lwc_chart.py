@@ -99,6 +99,37 @@ def test_invalid_source_raises():
         add_btlm_trail(FakeChart(), _df(100), source="vwap")
 
 
+# --- 複数分位ペア（固定スロット・空欄は無効） ----------------------------
+def test_extra_pair_slots_add_bands_when_filled():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                   q_low=0.05, q_high=0.95, q_low2=0.25, q_high2=0.75)
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_q5", "btlm_trail_q95", "btlm_trail_q25", "btlm_trail_q75"} <= names
+
+
+def test_empty_or_invalid_extra_slots_are_ignored():
+    # 空欄（None）・不正（q_low>=q_high・範囲外）のスロットは無効化（例外にしない）。
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                   q_low=0.05, q_high=0.95,
+                   q_low2=None, q_high2=0.75,     # 片側欠損 → 無効
+                   q_low3=0.9, q_high3=0.1)       # 逆順 → 無効
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_q5", "btlm_trail_q95"} <= names
+    assert not any(n in names for n in ("btlm_trail_q10", "btlm_trail_q90", "btlm_trail_q75"))
+
+
+def test_explicit_quantile_pairs_override_slots():
+    chart = FakeChart()
+    add_btlm_trail(chart, _df(200), source="close", maxbars=100,
+                   quantile_pairs=[(0.1, 0.9)], q_low2=0.25, q_high2=0.75)
+    names = {ln.name for ln in chart.lines}
+    assert {"btlm_trail_q10", "btlm_trail_q90"} <= names
+    # quantile_pairs 明示時はスロットを無視（q25/q75 は出ない）。
+    assert not any(n in names for n in ("btlm_trail_q25", "btlm_trail_q75"))
+
+
 # --- 表示層: ドット/ライン切替（display_mode） ----------------------------
 def test_display_mode_dots_sets_point_markers_hint():
     # 既定はドット（サークル）: mean/q 系列に point_markers=True, line_visible=False を付す。

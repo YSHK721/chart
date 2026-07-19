@@ -149,6 +149,14 @@ const BTLM_TRAIL = new IndicatorDef({
     param('q_high', ParamType.FLOAT, 0.95, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
     ], null, { group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1 }),
+    // 追加分位ペア（固定スロット・空欄=無効・両側入力かつ 0<lo<hi<1 のときのみ帯を追加描画）。
+    //   動的リスト UI は既存規約に無いため、既定 null の固定 2 スロットで複数ペアを公開する
+    //   （backend build_btlm_trail は quantile_pairs で任意ペアに対応済み）。範囲外・逆順・片側欠損は
+    //   adapter が無効化する（例外にしない）。
+    param('q_low2', ParamType.FLOAT, null, [], null, { group: 'group.calc', order: 7, step: 0.01, min: 0, max: 1, label: '追加ペア2 下側分位' }),
+    param('q_high2', ParamType.FLOAT, null, [], null, { group: 'group.calc', order: 8, step: 0.01, min: 0, max: 1, label: '追加ペア2 上側分位' }),
+    param('q_low3', ParamType.FLOAT, null, [], null, { group: 'group.calc', order: 9, step: 0.01, min: 0, max: 1, label: '追加ペア3 下側分位' }),
+    param('q_high3', ParamType.FLOAT, null, [], null, { group: 'group.calc', order: 10, step: 0.01, min: 0, max: 1, label: '追加ペア3 上側分位' }),
     // バンド方式: ols（名目・norm_ppf(q)·pred_sd）/ empirical（経験分位・因果ウォークフォワード）。
     param('band_method', ParamType.ENUM, 'ols', [], ['ols', 'empirical'], { group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS }),
     // 経験分位バンドの参照本数（既定 500・band_method==empirical のときのみ有効）。
