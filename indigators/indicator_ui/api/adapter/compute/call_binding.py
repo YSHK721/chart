@@ -207,6 +207,48 @@ def _load_callable(indicator: str, attr: str) -> Callable:
     return getattr(lwc, attr)
 
 
+# tgp_btlm ソース 8 択化（kind-twirling-hollerith.md §4）。既存 4 択（open/high/low/close）は
+# 参照実装 build_btlm_bands が列名を直接参照する経路をそのまま使う（byte 不変）。合成 4 択
+# （hl2/hlc3/ohlc4/hlcc4）は本結線層が共有 applied_price で列を先に合成し、その列名を price
+# として渡す（tgp_btlm src は無改変・追加拡張のみ・非破壊）。moving_averages と同一の写像。
+from common.applied_price import AppliedPrice, applied_price  # noqa: E402
+
+_BTLM_SYNTHETIC_SOURCES = {
+    "hl2": AppliedPrice.MEDIAN,
+    "hlc3": AppliedPrice.TYPICAL,
+    "ohlc4": AppliedPrice.OHLC4,
+    "hlcc4": AppliedPrice.WEIGHTED,
+}
+
+
+def _resolve_btlm_price(df: Any, price: str) -> tuple[Any, str]:
+    """tgp_btlm の price を 8 択解決する（結線拡張・src 無改変）。
+
+    既存列（open/high/low/close 等）はコピーせず素通しし、build_btlm_bands の直接列参照を
+    そのまま使う（byte 不変）。合成ソース（hl2/hlc3/ohlc4/hlcc4）は applied_price で列を合成し
+    df のコピーへ一意列名で足し、その列名を返す。未知ソースは素通しし、build_btlm_bands の
+    KeyError 契約に委ねる。
+    """
+    key = str(price).lower()
+    lower = {str(c).lower(): c for c in df.columns}
+    if key in lower:
+        return df, price  # 既存列は素通し（byte 不変）
+    kind = _BTLM_SYNTHETIC_SOURCES.get(key)
+    if kind is None:
+        return df, price  # 未知は build_btlm_bands の KeyError へ委ねる
+
+    def col(name: str) -> Any:
+        if name not in lower:
+            raise KeyError(f"合成ソース計算に必要な列がありません: {name}")
+        return df[lower[name]].to_numpy(dtype=float)
+
+    series = applied_price(kind, col("open"), col("high"), col("low"), col("close"))
+    col_name = f"_btlm_src_{key}"
+    df2 = df.copy()
+    df2[col_name] = series
+    return df2, col_name
+
+
 class _BindingSpec(TypedDict):
     """_TABLE のエントリ形状（compute_id+variant ごとの呼出規約）。
 
@@ -363,6 +405,8 @@ class CallBinding:
             kw = dict(params)
             # mcmc_samples は fitter 構築用（add_btlm の kwarg ではない）→ pop して factory へ。
             fitter = _fitter_factory(kw.pop("fitter"), kw.pop("mcmc_samples", _DEFAULT_SAMPLES))
+            # ソース 8 択化: 合成ソースは applied_price で列合成し price を差し替える（src 無改変）。
+            df, kw["price"] = _resolve_btlm_price(df, kw.get("price", "open"))
             callable_(chart, df, fitter, **_accepted_kwargs(callable_, kw))
         else:
             kw = _accepted_kwargs(callable_, params)

@@ -76,7 +76,10 @@ const TGP_BTLM = new IndicatorDef({
   params: [
     param('fitter', ParamType.ENUM, 'ols', [], ['ols', 'tgp'], { group: 'group.calc', order: 1 }),
     // price（ソース）: add_btlm の price="open"（lwc_chart.py:68・core.py 既定 open）。
-    param('price', ParamType.ENUM, 'open', [], ['open', 'high', 'low', 'close'], { group: 'group.calc', order: 2 }),
+    // 8 択化（kind-twirling-hollerith.md §4）: 既存 4 択（open/high/low/close・既定 open・byte 不変）に
+    // 合成 4 択（hl2/hlc3/ohlc4/hlcc4）を追加拡張。合成ソースは結線層（call_binding._resolve_btlm_price）が
+    // 共有 applied_price で解決する（tgp_btlm src は無改変）。moving_averages の source と同一写像。
+    param('price', ParamType.ENUM, 'open', [], ['open', 'high', 'low', 'close', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 2 }),
     // maxbars 既定 40→100 是正（M-1・core.py:33 DEFAULT_MAXBARS=100）。
     param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, unit: 'unit.bars' }),
     param('q_low', ParamType.FLOAT, 0.05, [
