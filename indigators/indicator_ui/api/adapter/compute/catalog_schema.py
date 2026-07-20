@@ -47,6 +47,11 @@ PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
         "n_cov": 250,
         "color": "rgba(123, 104, 238, 1)",
     },
+    "btlm_trail_marod": {
+        "source": "close",
+        "maxbars": 100,
+        "color": "rgba(123, 104, 238, 1)",
+    },
     "profit_band": {
         "probabilities": [0.51, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99],
         "buckets": ["nOH", "pOL", "pOH", "nOL"],

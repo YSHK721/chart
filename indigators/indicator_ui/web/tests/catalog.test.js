@@ -17,18 +17,56 @@ function paramOf(def, name) {
   return def.params.find((p) => p.name === name);
 }
 
-test('catalog: list returns the 21 registered indicators (基本4 + btlm_trail + profit_* 15 + market_profile)', () => {
+test('catalog: list returns the 22 registered indicators (基本4 + btlm_trail + btlm_trail_marod + profit_* 15 + market_profile)', () => {
   // Act
   const defs = list();
-  // Assert: 既存4（tgp_btlm / profit_band / price_range_power / moving_averages）+ btlm_trail（新規）
-  //   + profit_* 15 + market_profile（プロファイルタブ・アクター委譲型）= 21。
+  // Assert: 既存4（tgp_btlm / profit_band / price_range_power / moving_averages）+ btlm_trail
+  //   + btlm_trail_marod（新規・MAROD 別 pane オシレータ）+ profit_* 15 + market_profile = 22。
   const ids = defs.map((d) => d.id);
-  for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm', 'btlm_trail']) {
+  for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm', 'btlm_trail', 'btlm_trail_marod']) {
     assert.ok(ids.includes(base), `missing ${base}`);
   }
-  assert.equal(defs.length, 21);
+  assert.equal(defs.length, 22);
 });
 
+test('catalog: btlm_trail_marod is a pane oscillator (source 8択 / maxbars min3 / color + 0% 基準線)', () => {
+  const d = get('btlm_trail_marod');
+  assert.equal(d.id, 'btlm_trail_marod');
+  assert.equal(d.placement, 'pane');
+  assert.equal(d.category.nameKey, 'cat.oscillator');
+  // params は source / maxbars / color の 3 つ（back golden 契約と対称）。
+  assert.deepEqual(d.params.map((p) => p.name).sort(), ['color', 'maxbars', 'source']);
+  assert.equal(paramOf(d, 'source').type, ParamType.ENUM);
+  assert.equal(paramOf(d, 'source').default, 'close');
+  assert.deepEqual(paramOf(d, 'source').enumValues, ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4']);
+  assert.equal(paramOf(d, 'maxbars').type, ParamType.INT);
+  assert.equal(paramOf(d, 'maxbars').default, 100);
+  assert.equal(paramOf(d, 'color').type, ParamType.COLOR);
+  // 系列: MAROD line ＋ 0% 水平基準線（いずれも seriesName=btlm_trail_marod）。
+  const seriesNames = d.series.map((s) => s.seriesName);
+  assert.deepEqual(seriesNames, ['btlm_trail_marod', 'btlm_trail_marod']);
+  assert.equal(d.compute.computeId, 'btlm_trail_marod');
+});
+
+// 案A（MAROD 棒グラフ）: MAROD line SeriesDef のみ barStyleEditable=true（スタイルタブで棒切替）。
+//   0% 水平基準線・他指標系列は false（非波及ゲート・SeriesDef 既定 false）。
+test('catalog: btlm_trail_marod の line 系列は barStyleEditable=true・水平線と他指標は false', () => {
+  const marod = get('btlm_trail_marod');
+  // series[0] = MAROD line（棒切替対象）、series[1] = 0% 水平基準線（非対象）。
+  assert.equal(marod.series[0].kind, 'line');
+  assert.equal(marod.series[0].barStyleEditable, true, 'MAROD line は棒スタイル編集可');
+  assert.equal(marod.series[1].barStyleEditable, false, '水平基準線は非対象');
+  // 他指標（moving_averages）は未付与＝既定 false（非波及）。
+  const ma = get('moving_averages');
+  for (const s of ma.series) {
+    assert.equal(s.barStyleEditable, false, `${s.seriesName ?? '(dynamic)'} は barStyleEditable=false`);
+  }
+  // btlm_trail の mean/分位線は pointStyleEditable のみで barStyleEditable=false（棒対象外）。
+  const trail = get('btlm_trail');
+  for (const s of trail.series) {
+    assert.equal(s.barStyleEditable, false);
+  }
+});
 test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース/オフセット + 平滑化 + 計算)', () => {
   const d = get('moving_averages');
   assert.equal(d.id, 'moving_averages');

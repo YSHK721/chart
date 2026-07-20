@@ -690,45 +690,65 @@ export class PropertiesDialog {
       let width = null;
       let style = null;
       let unified = null;
-      // 統合 4 択（案A・btlm_trail 対象系列）の初期値: display=='dots' なら 'dot'、それ以外は線種。
-      const unifiedInit = (r.display === 'dots') ? 'dot' : (r.style ?? 'solid');
-      if (seriesKind(r.kind).editableLineStyle) {
-        width = doc.createElement('input');
-        width.type = 'number';
-        width.min = '1';
-        width.step = '1';
-        width.className = 'prop-input prop-input-number';
-        width.value = String(r.width);
-
-        if (r.pointStyleEditable) {
-          // 対象系列（案A）: 線種と「ドット/ライン」を統合した 1 つの 4 択（dot/solid/dotted/dashed）。
-          //   dot=サークル描画、solid/dotted/dashed=その線種のライン描画。既定 dot。1 行構成（折返し解消）。
-          unified = doc.createElement('select');
-          unified.className = 'prop-input prop-input-select';
-          for (const st of ['dot', 'solid', 'dotted', 'dashed']) {
-            const o = doc.createElement('option');
-            o.value = st;
-            o.textContent = st;
-            if (unifiedInit === st) o.selected = true;
-            unified.append(o);
-          }
-          unified.value = unifiedInit;
+      // 統合 select（案A）の初期値: display=='bar' なら 'bar'、'dots' なら 'dot'、それ以外は線種。
+      //   'bar'（btlm_trail_marod・棒グラフ）と 'dot'（btlm_trail・ドット）は排他（各系列のゲート次第）。
+      const unifiedInit = (r.display === 'bar')
+        ? 'bar'
+        : (r.display === 'dots') ? 'dot' : (r.style ?? 'solid');
+      // 線幅入力を生成するヘルパ（line 描画時のみ・histogram は lineWidth 非適用）。
+      const buildWidthInput = () => {
+        const w = doc.createElement('input');
+        w.type = 'number';
+        w.min = '1';
+        w.step = '1';
+        w.className = 'prop-input prop-input-number';
+        w.value = String(r.width);
+        return w;
+      };
+      const lineEditable = seriesKind(r.kind).editableLineStyle;
+      if (r.pointStyleEditable || r.barStyleEditable) {
+        // 対象系列（案A）: 線種と系列表示を統合した 1 つの select を kind に依らず出す。base=[solid,dotted,
+        //   dashed]。pointStyleEditable なら先頭に 'dot'（サークル描画）＝btlm_trail の
+        //   [dot,solid,dotted,dashed] を厳密再現（挙動不変）。barStyleEditable なら末尾に 'bar'（棒グラフ・
+        //   0% 中心）＝MAROD の [solid,dotted,dashed,bar]（dot は出さない）。両ゲートは直交。棒表示中
+        //   （kind='histogram'）でも select を出して line/dot へ戻せるようにする（editableLineStyle に依存
+        //   しない＝往復可能性を担保）。線幅入力は line 描画時のみ（histogram では lineWidth 非適用）。
+        if (lineEditable) {
+          width = buildWidthInput();
+        }
+        unified = doc.createElement('select');
+        unified.className = 'prop-input prop-input-select';
+        const opts = ['solid', 'dotted', 'dashed'];
+        if (r.pointStyleEditable) opts.unshift('dot');
+        if (r.barStyleEditable) opts.push('bar');
+        for (const st of opts) {
+          const o = doc.createElement('option');
+          o.value = st;
+          o.textContent = st;
+          if (unifiedInit === st) o.selected = true;
+          unified.append(o);
+        }
+        unified.value = unifiedInit;
+        if (width) {
           row.append(width, unified);
         } else {
-          // 未付与系列（補助線・読取・全他指標）: 従来どおり 3 択（solid/dotted/dashed）＝byte 不変。
-          style = doc.createElement('select');
-          style.className = 'prop-input prop-input-select';
-          for (const st of ['solid', 'dotted', 'dashed']) {
-            const o = doc.createElement('option');
-            o.value = st;
-            o.textContent = st;
-            if (r.style === st) o.selected = true;
-            style.append(o);
-          }
-          // option 追加後に value を明示設定（実 DOM で選択を確定・DOM スタブでも value を保証）。
-          style.value = r.style;
-          row.append(width, style);
+          row.append(unified);
         }
+      } else if (lineEditable) {
+        // 未付与系列（補助線・読取・全他指標）: 従来どおり 線幅 ＋ 3 択（solid/dotted/dashed）＝byte 不変。
+        width = buildWidthInput();
+        style = doc.createElement('select');
+        style.className = 'prop-input prop-input-select';
+        for (const st of ['solid', 'dotted', 'dashed']) {
+          const o = doc.createElement('option');
+          o.value = st;
+          o.textContent = st;
+          if (r.style === st) o.selected = true;
+          style.append(o);
+        }
+        // option 追加後に value を明示設定（実 DOM で選択を確定・DOM スタブでも value を保証）。
+        style.value = r.style;
+        row.append(width, style);
       }
 
       // initial: OK 時の差分判定基準（変更された行×フィールドのみ patch へ載せる）。
@@ -786,11 +806,14 @@ export class PropertiesDialog {
       if (s.style && s.style.value !== s.initial.style) {
         fields.style = s.style.value;
       }
-      // 統合 4 択（案A・pointStyleEditable 行）: dot は display=dots、線種はライン描画＋当該線種へ分解する。
-      //   永続化スキーマは既存の per-series {display, style} のまま（往復整合・移行不要）。
+      // 統合 select（案A）: dot は display=dots、bar は display=bar（棒・線種概念なし＝style を載せない）、
+      //   線種（solid/dotted/dashed）はライン描画＋当該線種へ分解する。永続化スキーマは既存の
+      //   per-series {display?, style?} のまま（display 値域に 'bar' を加算・往復整合・移行不要）。
       if (s.unified && s.unified.value !== s.initial.unified) {
         if (s.unified.value === 'dot') {
           fields.display = 'dots';
+        } else if (s.unified.value === 'bar') {
+          fields.display = 'bar';
         } else {
           fields.display = 'line';
           fields.style = s.unified.value;

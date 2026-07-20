@@ -28,6 +28,7 @@ import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_p
 import { MarketProfileController } from './market_profile_controller.js';
 import { TimeframeController } from './timeframe_controller.js';
 import { seriesKind } from '../../domain/series_kind.js';
+import { barStyleEditableFor } from '../../usecase/form_model.js';
 
 // =========================================================================
 // フロントロール契約（ISP・ISSUE-099 🟡-3/🟡-4）
@@ -261,6 +262,13 @@ export class IndicatorController {
     //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
     const routed = { line: [], histogram: [], horizontal: [] };
     for (const p of validated) {
+      // 案A（btlm_trail_marod）: barStyleEditable 一致系列（front カタログ由来・backend 非関与）へ
+      //   bar_editable=true を注入する。renderer はこのヒントで line ⇄ histogram スワップ対象を識別
+      //   し保持データを退避する（p.kind を消費する本ループが唯一の front 系列メタ付与点＝同所）。
+      //   非一致系列にはキーを付けない（renderer の bar_editable===true ゲートが false のまま＝非波及）。
+      if (barStyleEditableFor(def, p.name)) {
+        p.bar_editable = true;
+      }
       const route = seriesKind(p.kind).renderRoute;
       if (routed[route]) {
         routed[route].push(p);

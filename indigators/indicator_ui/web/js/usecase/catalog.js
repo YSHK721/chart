@@ -197,6 +197,37 @@ const BTLM_TRAIL = new IndicatorDef({
   compute: { computeId: 'btlm_trail', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
 
+// --- btlm_trail_marod（MAROD＝移動平均乖離率・別 pane オシレータ）----------
+// 新指標（btlm-trail-marod-concurrent-aho.md）。btlm_trail core の OLS 窓末尾トレンド（基準線）と
+//   8 択ソース合成価格を参照し、基準線からの相対偏差（%）= (source - mean)/mean*100 を別 pane の
+//   line オシレータとして描く（0% 基準線付き）。確定バー不変（非リペイント・btlm_trail core 由来）。
+//   独立インスタンス（自前の source/maxbars で OLS トレンドを算出＝チャート上の btlm_trail に非依存）。
+//   実バインディング add_btlm_trail_marod（indigators/btlm_trail_marod/src/lwc_chart.py）。
+//   系列名: btlm_trail_marod（line）＋ btlm_trail_marod（0% 水平基準線群 payload・compute_id 一致）。
+const BTLM_TRAIL_MAROD = new IndicatorDef({
+  id: 'btlm_trail_marod',
+  displayNameKey: 'ind.btlm_trail_marod',
+  category: { group: 'builtin', nameKey: 'cat.oscillator' },
+  tab: 'indicator',
+  placement: 'pane',
+  params: [
+    // ソース: btlm_trail と同一 8 択（applied_price 参照・既定 close）。
+    param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
+    // maxbars: 回帰窓（既定 100・min 3・btlm_trail core DEFAULT_MAXBARS）。
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars' }),
+    // color は MAROD 線の色（スタイルタブへ移譲）。既定は add_btlm_trail_marod の _COLOR_MAROD。
+    param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
+  ],
+  // 系列: MAROD line（別 pane オシレータ）＋ 0% 水平基準線（群 payload name = compute_id）。
+  series: [
+    // barStyleEditable（案A）: MAROD line のみスタイルタブで「棒グラフ（histogram）」表示を選択可
+    //   （選択時 renderer が LineSeries→HistogramSeries に再生成し 0% 中心の棒表示にする）。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_marod', seriesName: 'btlm_trail_marod', dynamic: false, barStyleEditable: true }),
+    new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'btlm_trail_marod', dynamic: false }),
+  ],
+  compute: { computeId: 'btlm_trail_marod', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
+});
+
 // --- profit_band（global / robust・OVERLAY）------------------------------
 // バンド値は始値±分位点を価格水準へ復元した price-level（bands.py / robust_bands.py）。
 // よって価格 pane(0) のローソクへ重畳する（§下部コメント「価格バンドは 'overlay'」準拠）。
@@ -480,7 +511,7 @@ const MARKET_PROFILE = makeMarketProfileDef({
 });
 
 const REGISTRY = Object.freeze([
-  TGP_BTLM, BTLM_TRAIL, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
+  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,

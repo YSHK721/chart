@@ -744,6 +744,10 @@ export class ChartRenderer {
         //   生成時スタイルの記録＋applySeriesStyle の上書き結果を保持し、スタイルタブの
         //   初期表示（実描画値）と instance 単位 setVisible との可視性合成に使う。
         styleMeta: new Map(),
+        // seriesData（案A・btlm_trail_marod）: 系列キー -> 直近 setData 済みポイント配列。
+        //   bar_editable ゲート済み系列のみ保持し（MAROD 限定・メモリ極小）、line ⇄ histogram の
+        //   系列スワップ時に新系列へ再設定する（旧系列除去後にデータを失わないため）。
+        seriesData: new Map(),
       };
       this._instances.set(instanceId, slot);
     }
@@ -851,7 +855,7 @@ export class ChartRenderer {
       series.setData(p.data ?? []);
       const key = `${instanceId}::${p.name}`;
       slot.lines.set(key, series);
-      slot.styleMeta.set(key, {
+      const metaEntry = {
         name: p.name, kind, color: p.color ?? null,
         width: p.width ?? null, style: p.style ?? null, visible: true,
         // heat（ISSUE-112）: histogram でバー別着色（data[].color＝値に応じたヒート配色）を持つか。
@@ -860,7 +864,16 @@ export class ChartRenderer {
         // display（案A・btlm_trail）: 系列表示（ドット/ライン）の現在値。payload の描画ヒント
         //   （point_markers/line_visible）から導出。ヒント無し系列は null（＝この属性を持たない）。
         display: p.point_markers ? 'dots' : (p.line_visible ? 'line' : null),
-      });
+      };
+      // 案A（btlm_trail_marod）: barStyleEditable ゲート系列（controller が bar_editable=true を注入）は
+      //   line ⇄ histogram スワップの対象。styleMeta へ barEditable=true を刻み（applySeriesStyle の
+      //   二重ゲート源）、保持データを seriesData へ退避する（旧系列除去後の再設定用）。非ゲート系列は
+      //   barEditable キーを持たず seriesData にも載せない（native histogram 他指標へ非波及＝挙動不変）。
+      if (p.bar_editable === true) {
+        metaEntry.barEditable = true;
+        slot.seriesData.set(key, p.data ?? []);
+      }
+      slot.styleMeta.set(key, metaEntry);
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }
@@ -1101,6 +1114,26 @@ export class ChartRenderer {
     if (patch.visible !== undefined && patch.visible !== null) {
       meta.visible = !!patch.visible;
     }
+    // 案A（btlm_trail_marod・二重ゲート）: barEditable ゲート済み系列のみ line ⇄ histogram の系列種別を
+    //   スワップする。meta.barEditable===true 以外（native histogram 他指標・全 line 他指標）は本分岐に
+    //   一切入らず現行 applyOptions 経路のみ（棒→線の誤変換を構造的に遮断）。color/width/style/visible は
+    //   上で meta へ反映済みのため、_swapSeriesType が新系列の生成オプションへそのまま引き継ぐ。
+    if (meta.barEditable === true) {
+      // 現在の描画種別は能力台帳（seriesType）で判定する（raw kind 文字列比較を持ち込まない・ISSUE-134）。
+      const isHistogram = seriesKind(meta.kind).seriesType === 'histogram';
+      const toBar = patch.display === 'bar' && !isHistogram;
+      const toLine = isHistogram
+        && (patch.display === 'line' || patch.display === 'dots');
+      if (toBar || toLine) {
+        if (toLine) {
+          // 棒→線: 統合 select は {display:'line', style} か {display:'dots'} を渡す。線種は meta へ
+          //   反映済み（上の patch.style 分岐）。display を確定してから line 系列を再生成する。
+          meta.display = patch.display;
+        }
+        this._swapSeriesType(slot, key, meta, toBar ? 'histogram' : 'line');
+        return true;
+      }
+    }
     const options = { color: meta.color, visible: slot.visible && meta.visible };
     if (seriesKind(meta.kind).appliesLineStyle) {
       if (meta.width != null) {
@@ -1131,6 +1164,69 @@ export class ChartRenderer {
     return true;
   }
 
+  // 案A（btlm_trail_marod）: 系列の描画種別を line ⇄ histogram へ差し替える（同一キー維持・保持データ
+  //   再設定）。既存の remove()/価格線機構を再構成した最小再生成。barEditable ゲート済み系列のみが本
+  //   経路へ入る（applySeriesStyle の二重ゲート）。順序規律は remove() と同一（価格線を系列除去より先に外す）。
+  _swapSeriesType(slot, key, meta, toKind) {
+    const oldSeries = slot.lines.get(key);
+    if (!oldSeries) {
+      return false;
+    }
+    // 1. 0% 基準線（priceLine）を旧 host（当の系列）から先に外す（pane 配置では host が当の系列のため）。
+    const hadPriceLines = slot.priceLines.length > 0;
+    this._removePriceLines(slot);
+    // 2. 旧系列を除去（pane 系列も chart.removeSeries で除去＝remove() と同一経路）。
+    this._chart.removeSeries(oldSeries);
+    // 3. 遷移先種別の系列定義（histogram/line）を選ぶ。
+    const toHistogram = seriesKind(toKind).seriesType === 'histogram';
+    const definition = toHistogram ? this._lwc.HistogramSeries : this._lwc.LineSeries;
+    // 4. 生成オプション。histogram は 0% 中心（base:0・lineWidth/lineStyle/pointMarkers は出さない）。
+    //    line は幅/線種と display 写像（pointMarkers/lineVisible）を meta から復元する。色は両者で活かす。
+    const options = {
+      color: meta.color,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      title: meta.name,
+      visible: slot.visible && meta.visible,
+    };
+    if (toHistogram) {
+      options.base = 0;
+    } else {
+      options.lineWidth = meta.width ?? 1;
+      options.lineStyle = toLineStyleInt(meta.style);
+      const dots = meta.display === 'dots';
+      options.pointMarkersVisible = dots;
+      options.lineVisible = !dots;
+      if (dots) {
+        options.pointMarkersRadius = _POINT_MARKERS_RADIUS;
+      }
+    }
+    // 5. 新系列を生成し保持データ（seriesData）を再設定する（pane 指標は pane 経由・overlay は chart）。
+    const newSeries = slot.pane
+      ? slot.pane.addSeries(definition, options)
+      : this._chart.addSeries(definition, options);
+    newSeries.setData(slot.seriesData.get(key) ?? []);
+    // 6. 同一キーで差し替え（クロスヘア走査・setData/updateSeriesTail が自然追従する）。
+    slot.lines.set(key, newSeries);
+    // 7. scaleHost が旧系列だったら新系列へ張り替える（pane 価格軸の基準）。
+    if (slot.scaleHost === oldSeries) {
+      slot.scaleHost = newSeries;
+    }
+    // 8. meta 更新: kind と display（histogram は 'bar'・往復整合）。
+    meta.kind = toKind;
+    meta.display = toHistogram ? 'bar' : meta.display;
+    // overlay 読取欄に載っている場合は series 参照を張り替える（MAROD は pane のため通常無い）。
+    const ro = this._overlayReadouts.get(key);
+    if (ro) {
+      ro.series = newSeries;
+    }
+    // 9. 0% 基準線を新 host（新系列）へ再生成する（元々あった場合のみ実体を持つ＝可視性不変）。
+    if (hadPriceLines) {
+      this._createPriceLines(slot, slot.hlinePayloads);
+    }
+    return true;
+  }
+
   _removePriceLines(slot) {
     const host = slot.priceLineHost ?? this._mainSeries;
     for (const pl of slot.priceLines) {
@@ -1151,6 +1247,9 @@ export class ChartRenderer {
       // 読み取り欄の overlay メタも掃除する（残ると削除済み指標が読み取り欄に残る）。
       this._overlayReadouts.delete(key);
     }
+    // 案A（btlm_trail_marod）: スワップ用に退避した保持データ（seriesData）も掃除する（slot 破棄で
+    //   GC 対象になるが、保持配列を明示解放して即時開放する）。
+    slot.seriesData.clear();
     for (const series of slot.lines.values()) {
       this._chart.removeSeries(series);
     }
