@@ -47,6 +47,26 @@ test('catalog: btlm_trail_marod is a pane oscillator (source 8択 / maxbars min3
   assert.deepEqual(seriesNames, ['btlm_trail_marod', 'btlm_trail_marod']);
   assert.equal(d.compute.computeId, 'btlm_trail_marod');
 });
+
+// 案A（MAROD 棒グラフ）: MAROD line SeriesDef のみ barStyleEditable=true（スタイルタブで棒切替）。
+//   0% 水平基準線・他指標系列は false（非波及ゲート・SeriesDef 既定 false）。
+test('catalog: btlm_trail_marod の line 系列は barStyleEditable=true・水平線と他指標は false', () => {
+  const marod = get('btlm_trail_marod');
+  // series[0] = MAROD line（棒切替対象）、series[1] = 0% 水平基準線（非対象）。
+  assert.equal(marod.series[0].kind, 'line');
+  assert.equal(marod.series[0].barStyleEditable, true, 'MAROD line は棒スタイル編集可');
+  assert.equal(marod.series[1].barStyleEditable, false, '水平基準線は非対象');
+  // 他指標（moving_averages）は未付与＝既定 false（非波及）。
+  const ma = get('moving_averages');
+  for (const s of ma.series) {
+    assert.equal(s.barStyleEditable, false, `${s.seriesName ?? '(dynamic)'} は barStyleEditable=false`);
+  }
+  // btlm_trail の mean/分位線は pointStyleEditable のみで barStyleEditable=false（棒対象外）。
+  const trail = get('btlm_trail');
+  for (const s of trail.series) {
+    assert.equal(s.barStyleEditable, false);
+  }
+});
 test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース/オフセット + 平滑化 + 計算)', () => {
   const d = get('moving_averages');
   assert.equal(d.id, 'moving_averages');

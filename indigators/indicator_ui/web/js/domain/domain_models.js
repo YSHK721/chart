@@ -32,6 +32,7 @@ export class SeriesDef {
     priceScaleId = null,
     axisLabelVisible = false,
     pointStyleEditable = false,
+    barStyleEditable = false,
   }) {
     this.kind = kind;
     this.sourceColumn = sourceColumn;
@@ -47,6 +48,10 @@ export class SeriesDef {
     // pointStyleEditable（案A・btlm_trail）: この系列がスタイルタブで「系列表示（ドット/ライン）」を
     //   編集可能かのゲート。既定 false＝未付与系列にはドット/ライン項目を出さない（他指標へ非波及）。
     this.pointStyleEditable = pointStyleEditable;
+    // barStyleEditable（案A・btlm_trail_marod）: この系列がスタイルタブで「棒グラフ（histogram）」表示を
+    //   選択可能かのゲート。既定 false＝未付与系列には棒項目を出さず、renderer 系列スワップの対象にも
+    //   しない（native histogram 他指標を線化しない二重ゲート）。pointStyleEditable と同型・直交。
+    this.barStyleEditable = barStyleEditable;
     Object.freeze(this);
   }
 }

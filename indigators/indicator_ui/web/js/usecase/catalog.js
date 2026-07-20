@@ -220,7 +220,9 @@ const BTLM_TRAIL_MAROD = new IndicatorDef({
   ],
   // 系列: MAROD line（別 pane オシレータ）＋ 0% 水平基準線（群 payload name = compute_id）。
   series: [
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_marod', seriesName: 'btlm_trail_marod', dynamic: false }),
+    // barStyleEditable（案A）: MAROD line のみスタイルタブで「棒グラフ（histogram）」表示を選択可
+    //   （選択時 renderer が LineSeries→HistogramSeries に再生成し 0% 中心の棒表示にする）。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_marod', seriesName: 'btlm_trail_marod', dynamic: false, barStyleEditable: true }),
     new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'btlm_trail_marod', dynamic: false }),
   ],
   compute: { computeId: 'btlm_trail_marod', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },

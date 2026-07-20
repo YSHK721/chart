@@ -320,3 +320,100 @@ test('display 未指定の patch は pointMarkersVisible/lineVisible を触ら�
   // ヒント無し系列は display=null。
   assert.equal(renderer.getSeriesStyles('ma#d3')[0].display, null);
 });
+
+// ==========================================================================
+// 案A（MAROD 棒グラフ）: bar_editable ゲート + line ⇄ histogram 系列スワップ
+// ==========================================================================
+
+const MAROD_LINE_PAYLOAD = {
+  name: 'btlm_trail_marod', kind: 'line', color: '#7b68ee', width: 2, style: 'solid',
+  bar_editable: true, data: [{ time: 1, value: 0.5 }, { time: 2, value: -0.3 }],
+};
+
+test('案A(MAROD) _renderSeries: bar_editable 系列は seriesData を保持し styleMeta.barEditable=true', () => {
+  const { renderer } = newRenderer();
+  renderer.renderLine('marod#1', [MAROD_LINE_PAYLOAD], { pane: true, name: 'MAROD' });
+  const slot = renderer._instances.get('marod#1');
+  assert.deepEqual(slot.seriesData.get('marod#1::btlm_trail_marod'), MAROD_LINE_PAYLOAD.data, '保持データ');
+  const meta = slot.styleMeta.get('marod#1::btlm_trail_marod');
+  assert.equal(meta.barEditable, true);
+});
+
+test('案A(MAROD) _renderSeries: 非ゲート系列は seriesData 非保持・barEditable キーを持たない（挙動不変）', () => {
+  const { renderer } = newRenderer();
+  renderer.renderLine('ma#g', MA_PAYLOADS);
+  const slot = renderer._instances.get('ma#g');
+  assert.equal(slot.seriesData.size, 0, '非ゲート系列は seriesData に載せない');
+  assert.equal('barEditable' in slot.styleMeta.get('ma#g::MA'), false);
+});
+
+test('案A(MAROD) applySeriesStyle({display:"bar"}): LineSeries→HistogramSeries へ再生成（base:0・データ保持・同一キー）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('marod#2', [MAROD_LINE_PAYLOAD], { pane: true, name: 'MAROD' });
+  const before = chart.created.length;
+  const ok = renderer.applySeriesStyle('marod#2', 'btlm_trail_marod', { display: 'bar' });
+  assert.equal(ok, true);
+  // 新系列は HistogramSeries で base:0。
+  const newSeries = chart.created[chart.created.length - 1];
+  assert.equal(chart.created.length, before + 1, '系列を 1 本再生成');
+  assert.equal(newSeries._def, HistogramSeries, 'HistogramSeries へ差し替え');
+  assert.equal(newSeries._createOpts.base, 0, '0% 中心（base:0）');
+  assert.equal('lineWidth' in newSeries._createOpts, false, 'histogram は lineWidth を出さない');
+  assert.equal('lineStyle' in newSeries._createOpts, false, 'histogram は lineStyle を出さない');
+  assert.equal(newSeries._createOpts.color, '#7b68ee', '色は活かす');
+  assert.deepEqual(newSeries._data, MAROD_LINE_PAYLOAD.data, '保持データを再設定');
+  // 同一キーで slot.lines を差し替え。
+  const slot = renderer._instances.get('marod#2');
+  assert.equal(slot.lines.get('marod#2::btlm_trail_marod'), newSeries, '同一キー維持');
+  // meta.kind=histogram / display=bar。getSeriesStyles も往復。
+  assert.equal(slot.styleMeta.get('marod#2::btlm_trail_marod').kind, 'histogram');
+  const styles = renderer.getSeriesStyles('marod#2');
+  assert.equal(styles[0].display, 'bar', 'getSeriesStyles は display=bar を読み戻す');
+  assert.equal(styles[0].kind, 'histogram');
+});
+
+test('案A(MAROD) applySeriesStyle: histogram→{display:line,style:dotted} で LineSeries へ戻す（線種復元・データ保持）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('marod#3', [MAROD_LINE_PAYLOAD], { pane: true, name: 'MAROD' });
+  renderer.applySeriesStyle('marod#3', 'btlm_trail_marod', { display: 'bar' }); // line→histogram
+  const ok = renderer.applySeriesStyle('marod#3', 'btlm_trail_marod', { display: 'line', style: 'dotted' });
+  assert.equal(ok, true);
+  const back = chart.created[chart.created.length - 1];
+  assert.equal(back._def, LineSeries, 'LineSeries へ戻す');
+  assert.equal(back._createOpts.lineStyle, 1, 'dotted → lineStyle 1');
+  assert.deepEqual(back._data, MAROD_LINE_PAYLOAD.data, '保持データを再設定');
+  const slot = renderer._instances.get('marod#3');
+  assert.equal(slot.styleMeta.get('marod#3::btlm_trail_marod').kind, 'line');
+  assert.equal(renderer.getSeriesStyles('marod#3')[0].display, 'line');
+});
+
+test('案A(MAROD) 二重ゲート: barEditable でない系列は {display:"bar"} でもスワップしない（native histogram を線化しない）', () => {
+  const { renderer, chart } = newRenderer();
+  // barEditable ヒント無しの histogram（他指標＝profit_band 等）。
+  renderer.renderHistogram('vol#1', [{ name: 'vol', kind: 'histogram', color: '#888888', data: [{ time: 1, value: 3 }] }]);
+  const before = chart.created.length;
+  renderer.applySeriesStyle('vol#1', 'vol', { display: 'bar' });
+  assert.equal(chart.created.length, before, '系列再生成なし（スワップ不発）');
+  assert.equal(renderer.getSeriesStyles('vol#1')[0].kind, 'histogram', 'kind 不変');
+  // barEditable でない line も display:bar でスワップしない。
+  renderer.renderLine('ma#g2', MA_PAYLOADS);
+  const before2 = chart.created.length;
+  renderer.applySeriesStyle('ma#g2', 'MA', { display: 'bar' });
+  assert.equal(chart.created.length, before2, 'line も再生成なし');
+  assert.equal(renderer.getSeriesStyles('ma#g2')[0].kind, 'line');
+});
+
+test('案A(MAROD) スワップ: 0% 基準線（priceLine）を新 host へ再生成し scaleHost を張り替える', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('marod#4', [MAROD_LINE_PAYLOAD], { pane: true, name: 'MAROD' });
+  renderer.renderHorizontal('marod#4', [{ price: 0, color: '#888888', width: 1, style: 'dashed', text: '0%' }]);
+  const slot = renderer._instances.get('marod#4');
+  const oldSeries = slot.lines.get('marod#4::btlm_trail_marod');
+  assert.equal(slot.scaleHost, oldSeries, 'スワップ前は line が scaleHost');
+  assert.equal(slot.priceLines.length, 1, '0% 線が 1 本');
+  renderer.applySeriesStyle('marod#4', 'btlm_trail_marod', { display: 'bar' });
+  const newSeries = chart.created[chart.created.length - 1];
+  assert.equal(slot.scaleHost, newSeries, 'scaleHost を新系列へ張り替え');
+  assert.equal(slot.priceLineHost, newSeries, '0% 線 host も新系列');
+  assert.equal(slot.priceLines.length, 1, '0% 線は再生成されて 1 本を維持');
+});

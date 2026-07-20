@@ -284,6 +284,31 @@ function _pointStyleEditableFor(def, name) {
   return false;
 }
 
+// 案A（btlm_trail_marod）: 実系列名 name が「barStyleEditable=true」の SeriesDef に一致するか。
+//   _pointStyleEditableFor と同型（静的は seriesName 完全一致、動的は seriesNamePattern 照合）。
+//   未付与指標は常に false（非波及ゲート）。棒グラフ表示（スタイルタブ）と renderer 系列スワップの
+//   二重ゲートの単一判定源（indicator_controller が payload 注入に、form_model が行モデルに使う）。
+function _barStyleEditableFor(def, name) {
+  for (const sd of def?.series ?? []) {
+    if (!sd || sd.barStyleEditable !== true) {
+      continue;
+    }
+    if (sd.dynamic && sd.seriesNamePattern) {
+      if (_dynamicPatternMatches(sd.seriesNamePattern, name)) {
+        return true;
+      }
+    } else if (sd.seriesName != null && sd.seriesName === name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// 公開版（adapter が payload 注入に用いる単一判定源。DOM/renderer 非依存の純関数）。
+export function barStyleEditableFor(def, name) {
+  return _barStyleEditableFor(def, name);
+}
+
 export function buildSeriesStyleRows(def, seriesStyles) {
   const bucketDefs = [];
   for (const s of def?.series ?? []) {
@@ -312,6 +337,7 @@ export function buildSeriesStyleRows(def, seriesStyles) {
           color: st.color ?? null, width: st.width ?? null, style: st.style ?? null, visible: true,
           display: st.display ?? null,
           pointStyleEditable: _pointStyleEditableFor(def, st.name),
+          barStyleEditable: _barStyleEditableFor(def, st.name),
         };
         byBucket.set(hit.bucket, row);
         rows.push(row);
@@ -325,6 +351,7 @@ export function buildSeriesStyleRows(def, seriesStyles) {
         visible: st.visible !== false,
         display: st.display ?? null,
         pointStyleEditable: _pointStyleEditableFor(def, st.name),
+        barStyleEditable: _barStyleEditableFor(def, st.name),
       });
     }
   }

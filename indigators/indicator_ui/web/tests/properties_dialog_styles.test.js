@@ -63,7 +63,7 @@ test('ISSUE-109 _seriesRows: 実描画系列から 1 系列=1 行を構築し初
   const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: STATIC_DEF, seriesStyles: MA_STYLES });
   const rows = dialog._seriesRows();
   assert.equal(rows.length, 2);
-  assert.deepEqual(rows[0], { label: 'MA', names: ['MA'], kind: 'line', heat: false, color: '#2962ff', width: 1, style: 'solid', visible: true, display: null, pointStyleEditable: false });
+  assert.deepEqual(rows[0], { label: 'MA', names: ['MA'], kind: 'line', heat: false, color: '#2962ff', width: 1, style: 'solid', visible: true, display: null, pointStyleEditable: false, barStyleEditable: false });
   assert.deepEqual(rows[1].names, ['Smoothing']);
   assert.equal(rows[1].color, '#00aa00');
   assert.equal(rows[1].style, 'dotted');
@@ -495,4 +495,88 @@ test('案A統合 _collectStyleChanges: 線種→dot は {display:dots}（線種�
   assert.equal(mean.unified.value, 'dashed', '初期は dashed（display=line, style=dashed 由来）');
   mean.unified.value = 'dot';
   assert.deepEqual(dialog._collectStyleChanges(), { btlm_trail_mean: { display: 'dots' } });
+});
+
+// ==========================================================================
+// 案A（MAROD 棒グラフ）: barStyleEditable ゲート + 統合 select の 'bar' 追加
+// ==========================================================================
+
+// MAROD line 相当（barStyleEditable=true・pointStyleEditable=false）の def/styles。
+const MAROD_DEF = {
+  id: 'btlm_trail_marod', displayNameKey: 'ind.btlm_trail_marod', params: [],
+  series: [
+    { seriesName: 'btlm_trail_marod', dynamic: false, kind: 'line', barStyleEditable: true },
+  ],
+  compute: { variants: ['default'] },
+};
+const MAROD_STYLES = [
+  { name: 'btlm_trail_marod', kind: 'line', color: '#7b68ee', width: 2, style: 'solid', visible: true, display: null },
+];
+
+test('案A(MAROD) buildSeriesStyleRows: barStyleEditable を SeriesDef 一致（静的）で解決・未付与は false', () => {
+  const rows = buildSeriesStyleRows(MAROD_DEF, MAROD_STYLES);
+  assert.equal(rows[0].barStyleEditable, true, '静的 seriesName 一致で棒編集可');
+  // 未付与指標（他指標）は barStyleEditable=false（非波及）。
+  const other = buildSeriesStyleRows(
+    { series: [{ seriesName: 'MA', dynamic: false }] },
+    [{ name: 'MA', kind: 'line', color: '#2962ff', visible: true }],
+  );
+  assert.equal(other[0].barStyleEditable, false);
+  // pointStyleEditable のみの btlm_trail は barStyleEditable=false（棒対象外）。
+  const trail = buildSeriesStyleRows(
+    { series: [{ seriesName: 'btlm_trail_mean', dynamic: false, pointStyleEditable: true }] },
+    [{ name: 'btlm_trail_mean', kind: 'line', color: '#7b68ee', visible: true, display: 'dots' }],
+  );
+  assert.equal(trail[0].barStyleEditable, false);
+  assert.equal(trail[0].pointStyleEditable, true);
+});
+
+test('案A(MAROD) スタイルタブ: barStyleEditable 系列は統合 4 択 [solid,dotted,dashed,bar]（dot なし）', () => {
+  const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: MAROD_DEF, seriesStyles: MAROD_STYLES });
+  dialog._buildStylePane();
+  const marod = dialog._styleState.find((s) => s.names[0] === 'btlm_trail_marod');
+  assert.ok(marod.unified, 'MAROD は統合 select を持つ');
+  const opts = marod.unified.children.map((o) => o.value);
+  assert.deepEqual(opts, ['solid', 'dotted', 'dashed', 'bar'], 'dot は出さず末尾に bar');
+  assert.equal(marod.unified.value, 'solid', '既定は style=solid');
+  assert.equal(marod.initial.unified, 'solid');
+  assert.equal(marod.style, null, '別体の線種 select は無い');
+});
+
+test('案A(MAROD) スタイルタブ: display=bar の系列は初期値 bar', () => {
+  const styles = [{ name: 'btlm_trail_marod', kind: 'histogram', color: '#7b68ee', width: 2, style: 'solid', visible: true, display: 'bar' }];
+  const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: MAROD_DEF, seriesStyles: styles });
+  dialog._buildStylePane();
+  const marod = dialog._styleState[0];
+  assert.equal(marod.unified.value, 'bar', 'display=bar 由来で初期値 bar');
+  assert.equal(marod.initial.unified, 'bar');
+});
+
+test('案A(MAROD) _collectStyleChanges: bar 選択は {display:"bar"}（style を載せない）', () => {
+  const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: MAROD_DEF, seriesStyles: MAROD_STYLES });
+  dialog._buildStylePane();
+  dialog._buildVisibilityPane();
+  assert.deepEqual(dialog._collectStyleChanges(), {}, '無変更は空');
+  const marod = dialog._styleState[0];
+  marod.unified.value = 'bar';
+  assert.deepEqual(dialog._collectStyleChanges(), { btlm_trail_marod: { display: 'bar' } });
+});
+
+test('案A(MAROD) _collectStyleChanges: bar→dotted は {display:line, style:dotted}（棒解除で線種へ）', () => {
+  const styles = [{ name: 'btlm_trail_marod', kind: 'histogram', color: '#7b68ee', width: 2, style: 'solid', visible: true, display: 'bar' }];
+  const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: MAROD_DEF, seriesStyles: styles });
+  dialog._buildStylePane();
+  dialog._buildVisibilityPane();
+  const marod = dialog._styleState[0];
+  assert.equal(marod.unified.value, 'bar');
+  marod.unified.value = 'dotted';
+  assert.deepEqual(dialog._collectStyleChanges(), { btlm_trail_marod: { display: 'line', style: 'dotted' } });
+});
+
+test('案A(MAROD) 回帰: btlm_trail（pointStyleEditable のみ）の統合 4 択は従来どおり [dot,solid,dotted,dashed]（bar なし）', () => {
+  const dialog = new PropertiesDialog({ document: styleFakeDoc(), def: TRAIL_DEF, seriesStyles: TRAIL_STYLES });
+  dialog._buildStylePane();
+  const mean = dialog._styleState.find((s) => s.names[0] === 'btlm_trail_mean');
+  const opts = mean.unified.children.map((o) => o.value);
+  assert.deepEqual(opts, ['dot', 'solid', 'dotted', 'dashed'], 'btlm_trail は bar を出さない（挙動不変）');
 });

@@ -157,3 +157,61 @@ test('ISSUE-110 🔴-1 _applyStoredStyles: 実系列に無い stale キーを剪
   const after = ctrl._state.applied.find((i) => i.instanceId === inst.instanceId);
   assert.deepEqual(after.styles, { 'btlm_q5': { color: '#ff0000' } }, 'state からも剪定される（永続蓄積の遮断）');
 });
+
+// ==========================================================================
+// 案A（MAROD 棒グラフ）: _draw が barStyleEditable 系列の payload へ bar_editable を注入
+// ==========================================================================
+
+test('案A(MAROD) _draw: barStyleEditable 一致 payload に bar_editable=true を注入・非一致には注入しない', async () => {
+  const noop = () => {};
+  const lineCalls = [];
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: {
+      compute: async (req) => ({
+        ok: true, generation: req.generation ?? 0,
+        // MAROD line（barStyleEditable 対象）＋ readout 用の非対象 line を混在させる。
+        series: [
+          { name: 'btlm_trail_marod', kind: 'line', color: '#7b68ee', width: 2, style: 'solid', data: [{ time: 1, value: 0.5 }] },
+        ],
+      }),
+    },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: {
+      renderLine: (id, payloads) => { lineCalls.push(payloads); },
+      renderHistogram: noop, renderHorizontal: noop, setData: noop, setVisible: noop, remove: noop,
+      getSeriesStyles: () => [], applySeriesStyle: () => true,
+    },
+    document: null, mode: 'b', datasetRef: 'jp225_m1', timeframe: '1D',
+  });
+  const inst = await ctrl.applyIndicator('btlm_trail_marod', 'default');
+  assert.ok(inst);
+  const payloads = lineCalls.at(-1);
+  const marod = payloads.find((p) => p.name === 'btlm_trail_marod');
+  assert.equal(marod.bar_editable, true, 'MAROD line に bar_editable 注入');
+});
+
+test('案A(MAROD) _draw: 他指標（barStyleEditable 未付与）の payload には bar_editable を注入しない（非波及）', async () => {
+  const noop = () => {};
+  const lineCalls = [];
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: {
+      compute: async (req) => ({
+        ok: true, generation: req.generation ?? 0,
+        series: [{ name: 'MA', kind: 'line', color: '#2962ff', width: 1, style: 'solid', data: [{ time: 1, value: 10 }] }],
+      }),
+    },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: {
+      renderLine: (id, payloads) => { lineCalls.push(payloads); },
+      renderHistogram: noop, renderHorizontal: noop, setData: noop, setVisible: noop, remove: noop,
+      getSeriesStyles: () => [], applySeriesStyle: () => true,
+    },
+    document: null, mode: 'b', datasetRef: 'jp225_m1', timeframe: '1D',
+  });
+  const inst = await ctrl.applyIndicator('moving_averages', 'default');
+  assert.ok(inst);
+  const ma = lineCalls.at(-1).find((p) => p.name === 'MA');
+  assert.equal('bar_editable' in ma, false, '他指標には bar_editable キーを付けない');
+});
