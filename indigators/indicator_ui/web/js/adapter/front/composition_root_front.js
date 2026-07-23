@@ -16,6 +16,7 @@
 // candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
 import { ChartRenderer } from './chart_renderer.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
+import { CurrentPriceView } from './current_price_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
 import { LiveFollowController } from './live_follow_controller.js';
@@ -548,7 +549,13 @@ export async function bootstrap({
   //   ISSUE-026: document / container を注入し、ポップアップ配置の基準を bootstrap が受け取った
   //   container（チャート要素）に固定する（getElementById('chart') リテラルフォールバックを回避）。
   const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart, chartRenderer: renderer, document: doc, container });
-  renderer.setCandleObserver(() => tradeMarkers.onCandlesChanged());
+  // 現在値の大型表示（#current-price・サイズは CSS 規定）。candle 変更 observer は単一スロットのため
+  //   tradeMarkers への通知と同一コールバック内で現在値ビューも更新する（ユーザー指示 2026-07-23）。
+  const currentPriceView = new CurrentPriceView({ document: doc, elementId: 'current-price' });
+  renderer.setCandleObserver(() => {
+    tradeMarkers.onCandlesChanged();
+    currentPriceView.render(renderer.lastClose());
+  });
 
   // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
   //   初期時間足を反映し、以降は controller の時間足購読で連動する。

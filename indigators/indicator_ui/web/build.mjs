@@ -59,6 +59,7 @@ const MODULE_ORDER = [
   'js/adapter/front/forming_bar_updater.js',
   'js/adapter/front/live_tick_player.js',
   'js/adapter/front/crosshair_readout_view.js',
+  'js/adapter/front/current_price_view.js',
   'js/adapter/front/pair_render_constants.js',
   'js/adapter/front/pair_primitive_base.js',
   'js/adapter/front/pair_lines_primitive.js',

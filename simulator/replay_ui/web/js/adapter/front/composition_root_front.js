@@ -20,6 +20,7 @@ import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstr
 import { ScrollToLatestButton } from './scroll_to_latest_button.js';
 import { TimeframeMenu } from './timeframe_menu.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
+import { CurrentPriceView } from './current_price_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
 import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
@@ -225,7 +226,13 @@ export async function bootstrap({
   //   ISSUE-026: document / container を注入し、ポップアップ配置の基準を bootstrap が受け取った
   //   container（チャート要素）に固定する（getElementById('chart') リテラルフォールバックを回避）。
   const tradeMarkers = new TradeMarkersRenderer({ lwc, mainSeries, chart, chartRenderer: renderer, document: doc, container });
-  renderer.setCandleObserver(() => tradeMarkers.onCandlesChanged());
+  // 現在値の大型表示（#current-price・サイズは CSS 規定・ライブと同一設計）。candle 変更 observer は
+  //   単一スロットのため tradeMarkers への通知と同一コールバック内で現在値ビューも更新する。
+  const currentPriceView = new CurrentPriceView({ document: doc, elementId: 'current-price' });
+  renderer.setCandleObserver(() => {
+    tradeMarkers.onCandlesChanged();
+    currentPriceView.render(renderer.lastClose());
+  });
 
   // Market Profile 全モード（MP DI 集約点）。共有 present MarketProfileActor を extends した
   //   ReplayMarketProfileActor を組み立て、戻り値に marketProfile として公開する（replay.js/setupReplay は

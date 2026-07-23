@@ -93,6 +93,19 @@ html, body {
   align-items: flex-start;
 }
 
+/* 現在値の大型表示（凡例スタック先頭・視認性の要件で 32px 固定・ユーザー指示 2026-07-23 改）。
+   上げ下げのカラースキームはローソクと同一（up #26a69a / down #ef5350・chart_bootstrap と同値）。
+   方向クラスは CurrentPriceView が前回表示値との比較で付け替える（同値は据え置き）。 */
+#current-price {
+  font-size: 32px; font-weight: 700; line-height: 1.1;
+  color: #d1d4dc; /* 初回・方向未確定の中立色 */
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .55); /* 背後のローソクと分離して視認性を確保 */
+  pointer-events: none; white-space: nowrap;
+}
+#current-price.is-up { color: #26a69a; }
+#current-price.is-down { color: #ef5350; }
+#current-price:empty { display: none; } /* 値未着（起動直後）はスペースを占有しない */
+
 /* クロスヘア価格読み取り欄（日時 + OHLC + overlay 各行）。 */
 #crosshair-readout {
   display: flex; flex-direction: column; gap: 3px;

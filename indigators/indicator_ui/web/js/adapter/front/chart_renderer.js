@@ -391,6 +391,12 @@ export class ChartRenderer {
     this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
   }
 
+  // 現在値（最新足の終値・単一源 _lastBar 由来）。現在値ビュー等の読み手向け（無ければ null）。
+  //   setCandles / updateLastCandle / リビールトリムのいずれでも _lastBar が更新される。
+  lastClose() {
+    return this._lastBar ? (this._lastBar.close ?? null) : null;
+  }
+
   // v6: 基準 candles の末尾足の差分マージ（実体は CandleFeed._mergeBaseCandle・SOLID 是正 🔴-2）。
   _mergeBaseCandle(candle) {
     this._candleFeed._mergeBaseCandle(candle);
