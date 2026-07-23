@@ -84,10 +84,38 @@
   <script src="./vendor/lightweight-charts.js"></script>
   <script type="module">
     import { bootstrap } from './js/adapter/front/composition_root_front.js';
+    // ISSUE-166: vendor（lightweight-charts.js）の読込失敗ガード＋再試行。
+    //   配信の途中切断（ERR_CONTENT_LENGTH_MISMATCH・serve.sh 再起動との競合等）で
+    //   window.LightweightCharts が未定義のまま bootstrap すると createChart で即死し、
+    //   UI は表示されるがチャート無し・全操作無反応で F5 まで回復しない。cache-bust 付きで
+    //   最大 3 回再読込し、成功してから bootstrap する（ユーザー承認 2026-07-23）。
+    async function ensureLwc(retries = 3, baseDelayMs = 500) {
+      if (window.LightweightCharts) {
+        return window.LightweightCharts;
+      }
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        await new Promise((resolve) => {
+          const s = document.createElement('script');
+          s.src = `./vendor/lightweight-charts.js?retry=${attempt}-${Date.now()}`;
+          s.onload = resolve;
+          s.onerror = resolve; // 失敗も resolve し、下の存在検査と待機で判定する。
+          document.head.appendChild(s);
+        });
+        if (window.LightweightCharts) {
+          return window.LightweightCharts;
+        }
+        await new Promise((r) => setTimeout(r, baseDelayMs * attempt));
+      }
+      return undefined;
+    }
+    const lwc = await ensureLwc();
+    if (!lwc) {
+      console.error('ISSUE-166: lightweight-charts.js の読込に 3 回失敗しました。ページを再読込してください。');
+    }
     // served（http://localhost:8000/）なら B方式（ライブ API・params 実反映）、file:// なら A方式。
     //   protocol / fetch は composition root が location/globalThis から既定取得する。
     // bootstrap は async（A方式のみ SAMPLE_DATA を動的 import。B方式は 635KB を読み込まない）。
-    bootstrap({
+    lwc && bootstrap({
       lwc: window.LightweightCharts,
       container: document.getElementById('chart'),
       doc: document,

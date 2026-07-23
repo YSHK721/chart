@@ -130,7 +130,34 @@
     //   untilTime をフレーム駆動し controller.recomputeAllApplied で「その時点」を因果計算する。
     import { bootstrap, RECENT_BARS } from './js/adapter/front/composition_root_front.js';
     import { setupReplay } from './js/replay.js';
-    bootstrap({
+    // ISSUE-166: vendor（lightweight-charts.js）の読込失敗ガード＋再試行（ライブ側と同一設計）。
+    //   配信の途中切断で window.LightweightCharts が未定義のまま bootstrap すると createChart で
+    //   即死し全操作無反応になるため、cache-bust 付きで最大 3 回再読込してから bootstrap する
+    //   （ユーザー承認 2026-07-23）。
+    async function ensureLwc(retries = 3, baseDelayMs = 500) {
+      if (window.LightweightCharts) {
+        return window.LightweightCharts;
+      }
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        await new Promise((resolve) => {
+          const s = document.createElement('script');
+          s.src = `./vendor/lightweight-charts.js?retry=${attempt}-${Date.now()}`;
+          s.onload = resolve;
+          s.onerror = resolve; // 失敗も resolve し、下の存在検査と待機で判定する。
+          document.head.appendChild(s);
+        });
+        if (window.LightweightCharts) {
+          return window.LightweightCharts;
+        }
+        await new Promise((r) => setTimeout(r, baseDelayMs * attempt));
+      }
+      return undefined;
+    }
+    const lwc = await ensureLwc();
+    if (!lwc) {
+      console.error('ISSUE-166: lightweight-charts.js の読込に 3 回失敗しました。ページを再読込してください。');
+    }
+    lwc && bootstrap({
       lwc: window.LightweightCharts,
       container: document.getElementById('chart'),
       doc: document,
