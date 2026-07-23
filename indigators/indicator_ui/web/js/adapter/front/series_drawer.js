@@ -132,11 +132,12 @@ export class SeriesDrawer {
       ? this._h._lwc.HistogramSeries
       : this._h._lwc.LineSeries;
     for (const p of payloads ?? []) {
+      // 価格軸（画面右端）のラベルは系列名ではなく現在値（数値・系列色チップ）を表示する
+      //   （ユーザー指示 2026-07-23。旧: title=系列名＋lastValueVisible=false＝名前チップ）。
       const options = {
         color: p.color,
         priceLineVisible: false,
-        lastValueVisible: false,
-        title: p.name,
+        lastValueVisible: true,
       };
       if (seriesKind(kind).appliesLineStyle) {
         options.lineWidth = p.width;
@@ -160,7 +161,8 @@ export class SeriesDrawer {
       //     で確認済: 返値 {priceRange:null} は範囲寄与なし。null 返しは既定＝系列データを含むため誤り）。
       //   - title='': 価格軸の名前ラベルは series.title 由来（lastValueVisible とは独立に描画される）。
       //     手動スケール/ズームで軸レンジが系列値域（0〜数千）を含むと露出するため空にして抑止する。
-      //   - lastValueVisible/priceLineVisible=false: 最終値ラベル・プライスライン（既定 false だが明示）。
+      //   - lastValueVisible/priceLineVisible=false: 最終値ラベル・プライスライン（通常系列は
+      //     lastValueVisible=true＝数値チップ表示のため、読取専用はここで必ず無効化する）。
       //   - crosshairMarkerVisible=false: ホバー時のクロスヘアマーカー（点）も出さない。
       if (p.readout_only) {
         options.autoscaleInfoProvider = () => ({ priceRange: null });
@@ -369,11 +371,11 @@ export class SeriesDrawer {
     const definition = toHistogram ? this._h._lwc.HistogramSeries : this._h._lwc.LineSeries;
     // 4. 生成オプション。histogram は 0% 中心（base:0・lineWidth/lineStyle/pointMarkers は出さない）。
     //    line は幅/線種と display 写像（pointMarkers/lineVisible）を meta から復元する。色は両者で活かす。
+    // 価格軸ラベルは現在値（数値）表示（_renderSeries と同一仕様・ユーザー指示 2026-07-23）。
     const options = {
       color: meta.color,
       priceLineVisible: false,
-      lastValueVisible: false,
-      title: meta.name,
+      lastValueVisible: true,
       visible: slot.visible && meta.visible,
     };
     if (toHistogram) {

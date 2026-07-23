@@ -273,10 +273,13 @@ test('btlm_trail: readout_only 系列は軸ラベル/プライスライン/ク�
   assert.equal(o.crosshairMarkerVisible, false);
 });
 
-test('通常系列は title に系列名を維持（後方互換）', () => {
+// 価格軸（画面右端）のラベル仕様（ユーザー指示 2026-07-23）: 系列名チップ（title）ではなく
+//   現在値（数値・lastValueVisible=true）を表示する。
+test('通常系列は価格軸に現在値（数値）を表示する（title 無し・lastValueVisible=true）', () => {
   const { renderer, chart } = newRenderer();
   renderer.renderLine('ma#11', MA_PAYLOADS);
-  assert.equal(chart.created[0]._createOpts.title, 'MA');
+  assert.equal('title' in chart.created[0]._createOpts, false, '名前チップ（title）は設定しない');
+  assert.equal(chart.created[0]._createOpts.lastValueVisible, true, '現在値ラベルを表示する');
   assert.equal('crosshairMarkerVisible' in chart.created[0]._createOpts, false);
 });
 
