@@ -102,6 +102,7 @@ def fetch_ticks_since(
     *,
     instrument: str = JP225,
     limit: int = 30_000,
+    with_volumes: bool = False,
 ) -> List[tuple]:
     """``cursor_ms`` より後の増分 tick を ``(unix_ms, bid, ask)`` 昇順で返す（ベンダ隔離）。
 
@@ -129,6 +130,15 @@ def fetch_ticks_since(
         last_update=cursor_ms,
         limit=limit,
     )
+    # with_volumes=True は生行の出来高 2 列も返す（(ms, bid, ask, bidVol, askVol)・ISSUE-161
+    #   ストリーミング watch が日別 parquet スキーマで追記するために使う）。既定 False は
+    #   従来どおり 3 要素＝既存呼出（live_tick_buffer 等）へ非干渉。
+    if with_volumes:
+        return [
+            (int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]))
+            for r in rows
+            if int(r[0]) > cursor_ms
+        ]
     return [
         (int(r[0]), float(r[1]), float(r[2]))
         for r in rows

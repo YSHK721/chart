@@ -253,3 +253,38 @@ def test_cli_once_flag_and_defaults() -> None:
     assert args.once is True
     assert args.interval == 60
     assert args.full_start == dt.date(2012, 6, 14)
+
+
+# --------------------------------------------------------------------------- #
+# ISSUE-161 根治: ストリーミング（増分カーソル）の純関数
+# --------------------------------------------------------------------------- #
+import datetime as _dt
+
+import pandas as _pd
+
+from tools.live_tick_watch import _TICK_COLUMNS, _cursor_ms_of, _rows_to_frame
+
+
+def test_rows_to_frame_matches_day_parquet_schema():
+    rows = [(1784807642333, 66132.999, 66137.532, 12000.0, 12000.0)]
+    df = _rows_to_frame(rows)
+    assert list(df.columns) == _TICK_COLUMNS
+    assert str(df["timestamp"].dtype) == "datetime64[ms, UTC]"
+    assert all(str(df[c].dtype) == "float64" for c in _TICK_COLUMNS[1:])
+
+
+def test_rows_to_frame_normalizes_volume_units():
+    # 増分 API の出来高は日次取得の 1e6 倍（実測）→ 日別 parquet の単位へ正規化する。
+    df = _rows_to_frame([(1784807642333, 1.0, 2.0, 12000.0, 34000.0)])
+    assert df["bidVolume"].iloc[0] == 0.012
+    assert df["askVolume"].iloc[0] == 0.034
+
+
+def test_cursor_ms_uses_last_tick_or_30min_window():
+    df = _rows_to_frame([(1784807642333, 1.0, 2.0, 0.0, 0.0), (1784807650000, 1.0, 2.0, 0.0, 0.0)])
+    now = _dt.datetime(2026, 7, 23, 12, 0)
+    assert _cursor_ms_of(df, now) == 1784807650000
+    # 空バッファ: now-30 分（参照実装 prototype_260707-01 と同じ catch-up 窓）
+    expected = int((_pd.Timestamp(now, tz="UTC").timestamp() - 1800) * 1000)
+    assert _cursor_ms_of(None, now) == expected
+    assert _cursor_ms_of(df.iloc[0:0], now) == expected

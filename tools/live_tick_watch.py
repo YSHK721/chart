@@ -40,6 +40,7 @@ import datetime as dt
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -258,6 +259,162 @@ def update_once(
     _rollup_update(data_dir)
 
 
+
+
+# --------------------------------------------------------------------------- #
+# ストリーミング取得（ISSUE-161 根治・参照実装 prototype_260707-01 _poll_loop 踏襲）
+# --------------------------------------------------------------------------- #
+# 参照実装のセマンティクス（絶対遵守）: 増分カーソル（厳密 > cursor）・直列 1 接続・
+#   失敗は指数バックオフ（interval→×2・上限 60s）・連続 8 失敗でサーキットブレーカ（600s 停止）。
+#   取得間隔 5 秒は参照実装で実機実証済み（feed lag 3.8〜5.5s・fetch ~1.2s・枯渇なし）。
+STREAM_DEFAULT_INTERVAL = 5.0
+STREAM_MIN_INTERVAL = 2.0            # 参照実装より短くしない下限（過剰ポーリング抑止）
+_STREAM_BREAK_ERRORS = 8             # 参照実装: 連続失敗数の閾値
+_STREAM_PAUSE_SECONDS = 600.0        # 参照実装: サーキットブレーカ停止秒
+_STREAM_BACKOFF_MAX = 60.0           # 参照実装: バックオフ上限
+_STREAM_RECONCILE_SECONDS = 1800.0   # 当日全量再取得による自己修復周期（増分ドリフトの恒久補正）
+# M1 確定の猶予秒。分境界直後は feed 側遅延（実測最大 5.5s）＋ポーリング間隔ぶんの末尾 tick が
+#   未着でありうる。即時確定すると閉じたバーが欠けたまま焼かれ、resume 規則（追記のみ）では
+#   二度と直らない。参照実装の固定遅延と同じ根拠（5.5 + 5 + 余裕）で 12 秒待ってから確定する。
+_STREAM_M1_GRACE_SECONDS = 12.0
+
+# 日別 parquet の正準列（fetch_ticks_ymd / refresh_day_parquet と同一の raw ネイティブ列）。
+_TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice", "bidVolume", "askVolume"]
+
+
+def _rows_to_frame(rows: Sequence[tuple]) -> pd.DataFrame:
+    """増分 API 行 (unix_ms, bid, ask, bidVol, askVol) を日別 parquet と同一スキーマの DataFrame へ。"""
+    df = pd.DataFrame(rows, columns=_TICK_COLUMNS)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).astype("datetime64[ms, UTC]")
+    for c in _TICK_COLUMNS[1:]:
+        df[c] = df[c].astype("float64")
+    # 出来高の単位正規化: 増分 API は日次取得の 1e6 倍の生値を返す（実測: 同時間帯で
+    #   12000.0 vs 0.012）。日別 parquet の単位（日次取得系）へ揃える。M1 合成は volume 列を
+    #   使わない（ティック数集計・tick_m1 参照）ため計算結果には無影響＝ファイル整合のみ。
+    df["bidVolume"] = df["bidVolume"] / 1_000_000.0
+    df["askVolume"] = df["askVolume"] / 1_000_000.0
+    return df
+
+
+def _write_day_parquet(day: dt.date, df: pd.DataFrame, data_dir: Path) -> None:
+    """日別 parquet を原子スワップで書く（refresh_day_parquet の書込部と同一手順）。"""
+    from marketdata.tick_m1 import day_parquet_path
+
+    out = day_parquet_path(day, data_dir=data_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(out.parent), prefix=out.name + ".", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        df.to_parquet(tmp, index=False)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    out.with_suffix(".empty").unlink(missing_ok=True)
+
+
+def _load_day_frame(day: dt.date, data_dir: Path) -> "pd.DataFrame | None":
+    """日別 parquet を読み込む（無ければ None）。"""
+    from marketdata.tick_m1 import day_parquet_path
+
+    p = day_parquet_path(day, data_dir=data_dir)
+    if not p.exists():
+        return None
+    return pd.read_parquet(p)
+
+
+def _cursor_ms_of(df: "pd.DataFrame | None", now: dt.datetime) -> int:
+    """増分カーソル初期値: 既存 df の最終 tick ms。無ければ now-30 分（参照実装と同じ catch-up 窓）。"""
+    if df is not None and len(df):
+        return int(pd.Timestamp(df["timestamp"].iloc[-1]).timestamp() * 1000)
+    return int((pd.Timestamp(now, tz="UTC").timestamp() - 30 * 60) * 1000)
+
+
+def _chain_m1_rollup(now: dt.datetime, data_dir: Path, full_start: dt.date) -> None:
+    """分確定の連鎖処理: M1 増分追記（形成中分バー除外）→ rollups 差分更新（update_once と同一）。
+
+    until は ``floor(now - 猶予12s)``: 分境界直後の末尾 tick 未着（feed 遅延）を待ってから
+    確定する（欠けた確定バーを焼かない・ISSUE-161 ストリーミング化の正確性ガード）。
+    """
+    end = now.date() + dt.timedelta(days=1)
+    until = pd.Timestamp(now - dt.timedelta(seconds=_STREAM_M1_GRACE_SECONDS)).floor("min")
+    _append_m1(full_start.isoformat(), end.isoformat(), until, data_dir=data_dir)
+    _rollup_update(data_dir)
+
+
+def stream_loop(
+    data_dir: Path,
+    *,
+    interval: float = STREAM_DEFAULT_INTERVAL,
+    full_start: dt.date = _DEFAULT_FULL_START,
+) -> None:
+    """増分カーソルストリーミング常駐ループ（参照実装踏襲・ISSUE-161 根治）。
+
+    5 秒ごとに増分 tick（差分数 KB・公式ライブウィジェット同一経路）を取得して当日 parquet へ
+    原子追記し、分境界を跨いだ時だけ M1 増分追記＋rollups 差分更新を連鎖実行する。
+    30 分ごとに当日全量再取得（refresh_day_parquet）で自己修復する（増分ドリフト・欠落の恒久補正。
+    再取得が空を返した場合は既存 parquet 温存＝増分で貯めた当日データを失わない）。
+    日跨ぎでは前日を全量再取得で確定し、当日バッファを新規に始める。
+    """
+    from marketdata.dukascopy_source import fetch_ticks_since
+
+    now = _utc_now()
+    today = now.date()
+    refresh_day_parquet(today, data_dir)                 # スキーマ正の seed（空なら温存）
+    day_df = _load_day_frame(today, data_dir)
+    cursor = _cursor_ms_of(day_df, now)
+    _chain_m1_rollup(now, data_dir, full_start)          # 起動直後に確定分を追い付き
+    last_minute = pd.Timestamp(now - dt.timedelta(seconds=_STREAM_M1_GRACE_SECONDS)).floor("min")
+    last_reconcile = time.monotonic()
+    backoff = float(interval)
+    errors_in_row = 0
+    paused_until = 0.0
+    LOG.info("stream: 開始 interval=%.1fs cursor=%s", interval, cursor)
+    while True:
+        if time.monotonic() < paused_until:
+            time.sleep(1.0)
+            continue
+        t0 = time.monotonic()
+        try:
+            now = _utc_now()
+            if now.date() != today:                      # 日跨ぎ: 前日確定→当日バッファ新規
+                refresh_day_parquet(today, data_dir)
+                today = now.date()
+                day_df = _load_day_frame(today, data_dir)
+            rows = fetch_ticks_since(cursor, with_volumes=True)
+            if rows:
+                inc = _rows_to_frame(rows)
+                day_df = inc if day_df is None or not len(day_df) else pd.concat(
+                    [day_df, inc], ignore_index=True)
+                day_df["timestamp"] = day_df["timestamp"].astype("datetime64[ms, UTC]")
+                _write_day_parquet(today, day_df, data_dir)
+                cursor = int(rows[-1][0])
+            minute = pd.Timestamp(now - dt.timedelta(seconds=_STREAM_M1_GRACE_SECONDS)).floor("min")
+            if minute > last_minute:                     # 分確定（猶予後）の瞬間だけ M1/rollup を連鎖
+                _chain_m1_rollup(now, data_dir, full_start)
+                last_minute = minute
+            if time.monotonic() - last_reconcile >= _STREAM_RECONCILE_SECONDS:
+                refresh_day_parquet(today, data_dir)     # 自己修復（空なら温存）
+                day_df = _load_day_frame(today, data_dir)
+                cursor = max(cursor, _cursor_ms_of(day_df, now))
+                last_reconcile = time.monotonic()
+            backoff = float(interval)
+            errors_in_row = 0
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 参照実装: 一過性障害はバックオフして継続
+            errors_in_row += 1
+            LOG.warning("stream: 取得失敗 %d/%d: %s: %s",
+                        errors_in_row, _STREAM_BREAK_ERRORS, type(exc).__name__, exc)
+            if errors_in_row >= _STREAM_BREAK_ERRORS:
+                paused_until = time.monotonic() + _STREAM_PAUSE_SECONDS
+                errors_in_row = 0
+                LOG.warning("stream: サーキットブレーカ発動（%.0fs 停止）", _STREAM_PAUSE_SECONDS)
+            backoff = min(backoff * 2, _STREAM_BACKOFF_MAX)
+        time.sleep(max(0.0, backoff - (time.monotonic() - t0)))
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -305,6 +462,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_FULL_START,
         help=f"catch_up の全期間起点 YYYY-MM-DD（既定 {_DEFAULT_FULL_START.isoformat()}）",
     )
+    p.add_argument(
+        "--stream",
+        action="store_true",
+        help="増分カーソルストリーミング（参照実装 prototype_260707-01 準拠・ISSUE-161 根治）。"
+        "5 秒周期の差分取得＋分確定ごとの M1/rollups 連鎖（--interval は無視される）",
+    )
+    p.add_argument(
+        "--stream-interval",
+        type=float,
+        default=STREAM_DEFAULT_INTERVAL,
+        help=f"ストリーミング取得間隔秒（既定 {STREAM_DEFAULT_INTERVAL} / 下限 {STREAM_MIN_INTERVAL}）",
+    )
     p.add_argument("--quiet", action="store_true", help="ログを抑制する")
     return p
 
@@ -318,6 +487,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # 起動時 1 回の丸日追い付き（昨日まで）。
     catch_up(data_dir, today, full_start=args.full_start)
+
+    if args.stream:
+        if args.stream_interval < STREAM_MIN_INTERVAL:
+            raise SystemExit(
+                f"--stream-interval は {STREAM_MIN_INTERVAL} 秒以上を指定してください"
+                f"（指定値: {args.stream_interval}・過剰ポーリング抑止）"
+            )
+        stream_loop(data_dir, interval=args.stream_interval, full_start=args.full_start)
+        return 0
 
     if args.once:
         update_once(_utc_now(), data_dir, interval=args.interval, full_start=args.full_start)
