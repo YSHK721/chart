@@ -88,12 +88,17 @@ html, body {
   position: absolute; top: 10px; left: 12px; z-index: 6;
   display: flex; flex-direction: column; gap: 6px;
   pointer-events: none;
+  /* 各行は自身の内容幅で独立させる（flex 既定 stretch だと最長行＝読み取り欄の幅に
+     凡例行が引き伸ばされ、行幅が連動して可変になる。ユーザー指示 2026-07-23 で削除）。 */
+  align-items: flex-start;
 }
 
 /* クロスヘア価格読み取り欄（日時 + OHLC + overlay 各行）。 */
 #crosshair-readout {
   display: flex; flex-direction: column; gap: 3px;
   font-size: 12px;
+  /* 行ごとの内容幅（stretch による行幅連動を撤廃・#chart-overlay-tl と同旨）。 */
+  align-items: flex-start;
 }
 #crosshair-readout .readout-ohlc {
   display: inline-flex; align-items: center; gap: 10px;
@@ -122,6 +127,8 @@ html, body {
    （固定 top を撤廃したので読み取り欄の高さに追従し重ならない）。 */
 #legend {
   display: flex; flex-direction: column; gap: 4px;
+  /* 凡例行も自身の内容幅で独立（読み取り欄の幅に連動して伸びない）。 */
+  align-items: flex-start;
 }
 .legend-row {
   display: inline-flex; align-items: center; gap: 8px;
