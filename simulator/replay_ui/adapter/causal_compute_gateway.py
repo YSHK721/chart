@@ -59,16 +59,15 @@ class CausalComputeGateway:
     @staticmethod
     def _df_to_bars(df: "pd.DataFrame") -> "list[dict]":
         # candle.time と同一符号化（untilTime と同基準・tz 非依存 UTC epoch）。
+        # ISSUE-158 ①: 列単位ベクトル化（旧: 行ループ df.iloc＝50k 行で ~1.2s・compute 1 回の 69%）。
+        #   出力は旧実装と完全同一（キー順 time→列順・time は int・値は float。等価性は
+        #   tests/unit/test_plain_bars_vectorized.py が参照実装との一致で固定）。
         secs = df.index.values.astype("datetime64[s]").astype("int64")
-        cols = list(df.columns)
-        bars: "list[dict]" = []
-        for pos in range(len(df)):
-            row = df.iloc[pos]
-            bar: dict = {"time": int(secs[pos])}
-            for c in cols:
-                bar[str(c).lower()] = float(row[c])
-            bars.append(bar)
-        return bars
+        keys = ["time"] + [str(c).lower() for c in df.columns]
+        columns = [secs.tolist()] + [
+            df[c].to_numpy(dtype="float64").tolist() for c in df.columns
+        ]
+        return [dict(zip(keys, row)) for row in zip(*columns)]
 
     @staticmethod
     def _bars_to_df(bars: "list[dict]") -> "pd.DataFrame":

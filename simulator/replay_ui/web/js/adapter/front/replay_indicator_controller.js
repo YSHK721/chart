@@ -17,20 +17,23 @@
 //     （mode/resmode/range/src/bins/va 全 param）を再利用し、全 4 モードを機能させる。
 
 import { IndicatorController } from './indicator_controller.js';
+import { CAUSAL_REVEAL_IDS } from '../../usecase/causal_reveal_ids.js';
 
-// [reveal] 足内（ティック粒度）追従の対象指標。形成中バーを末尾へ差し込み、line/histogram の
-//   最終点だけを updateSeriesTail で更新する（horizontal_line の水準線は据え置き）。移動平均に加え、
-//   標準化窓を持たない profit_* 8 指標を対象とする（混在 kind は forceTail で末尾差分経路へ倒す）。
-const INTRABAR_FORMING_IDS = new Set([
-  'moving_averages',
-  'profit_mfi', 'profit_rsi', 'profit_stc', 'profit_oscillator2',
-  'profit_osi_ma', 'profit_hlband', 'profit_mfi_macd', 'profit_rsi_macd',
-  // 標準化窓 W を持つ profit_* のうち、本体（line/histogram）を持つ 6 指標を追加（推奨A）。
-  //   因果窓ゆえ過去点は repaint せず、最新点のみ forming で動く（実証済み）。profit_hl_band は
-  //   horizontal_line のみ（アニメ可能な本体なし）のため対象外＝末尾差分では動かない。
-  'profit_adx_needle', 'profit_arctan', 'profit_oscillator',
-  'profit_rmm', 'profit_volatility', 'profit_rmm_macd',
-]);
+// [reveal 一括] ソート済み time 配列で t 以下の点数を返す（二分探索・revealTo のスライス位置）。
+function upperBound(ts, t) {
+  let lo = 0;
+  let hi = Array.isArray(ts) ? ts.length : 0;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ts[mid] <= t) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+// [reveal] 足内追従の対象指標リストは共有モジュール（usecase/intrabar_forming_ids.js・symlink 経由
+//   ＝ライブと同一実体）へ移管した（2026-07-22 統一設計・リスト内容は不変）。末尾差分の実体も
+//   基底 IndicatorController.recomputeFormingTails（forceTail 差分）に単一化し、本 subclass は
+//   forming seam（形成中バーの素通し）だけを担う。
 
 export class ReplayIndicatorController extends IndicatorController {
   constructor(opts) {
@@ -40,6 +43,117 @@ export class ReplayIndicatorController extends IndicatorController {
     this._untilTime = undefined;
     // [reveal] forming（足内更新中の形成中バー暫定 OHLC）。undefined=確定足のまま計算。
     this._forming = undefined;
+    // [reveal 一括・ISSUE-158 ②] 事前一括計算の基底キャッシュ。instanceId →
+    //   { def, params, series（F3 検証済み全レンジ payload）, times（系列名→ソート済 time 配列）}。
+    //   対象は CAUSAL_REVEAL_IDS（実測で per-step と乖離 0 を確認済みの因果指標）のみ。
+    this._revealCache = new Map();
+    // 無効化世代（clearRevealCache/invalidate 後に届いた遅延応答を破棄する）。
+    this._revealEpoch = 0;
+  }
+
+  // ================= [reveal 一括・ISSUE-158 ②] =================
+  //   再生開始時に全レンジを 1 回計算し（buildRevealBase）、以降のバー送りは revealTo(t) の
+  //   同期スライス描画のみ（バーごとの HTTP を発行しない）。値の同一性は登録リストの実測
+  //   ゲートで担保（causal_reveal_ids.js 参照）。未登録指標・MP は従来経路のまま。
+
+  // リビール対象（適用済み ∩ 登録リスト ∩ 非 MP）。
+  _revealTargets() {
+    return [...this._state.applied].filter((inst) => {
+      if (!CAUSAL_REVEAL_IDS.has(inst.indicatorId)) return false;
+      const meta = this._meta.get(inst.instanceId);
+      return !!meta && !this._isMarketProfile(meta.def);
+    });
+  }
+
+  // 当該インスタンスの基底キャッシュ有無（replay.js が per-step 計算のスキップ判定に使う）。
+  hasRevealFor(instanceId) {
+    return this._revealCache.has(instanceId);
+  }
+
+  // 基底の構築が必要か（時間足切替・指標追加・params 変更後の初回フレームで true）。
+  revealNeedsBuild() {
+    return this._revealTargets().some((inst) => !this._revealCache.has(inst.instanceId));
+  }
+
+  // 基底キャッシュ全破棄（時間足切替時に replay.js が呼ぶ）。
+  clearRevealCache() {
+    this._revealCache.clear();
+    this._revealEpoch += 1;
+  }
+
+  // 当該インスタンスの基底を破棄（params/variant 変更で陳腐化したとき）。
+  _invalidateReveal(instanceId) {
+    if (this._revealCache.delete(instanceId)) {
+      this._revealEpoch += 1;
+    }
+  }
+
+  // 基底構築: 対象の未キャッシュ指標を全レンジ（untilTime=tEnd・limit=totalBars＝candles 全本数）で
+  //   1 回計算してキャッシュする。per-step（limit=bar+1）と同じ左端 candles[0] 起点の窓＝各バー値が
+  //   完全一致（実測ゲート）。失敗した指標はキャッシュされず per-step へフォールバック（次フレーム再試行）。
+  async buildRevealBase(tEnd, totalBars) {
+    const epoch = this._revealEpoch;
+    const targets = this._revealTargets().filter((inst) => !this._revealCache.has(inst.instanceId));
+    await Promise.all(targets.map(async (inst) => {
+      const meta = this._meta.get(inst.instanceId);
+      const params = this._paramsObject(inst.params);
+      try {
+        const result = await this._compute.compute({
+          indicatorId: inst.indicatorId,
+          variant: inst.variant ?? this._defaultVariant(meta.def),
+          params,
+          datasetRef: this._datasetRef,
+          generation: 0,
+          timeframe: this._timeframe,
+          limit: totalBars,
+          mode: 'full',
+          untilTime: tEnd,
+        });
+        if (epoch !== this._revealEpoch) {
+          return;   // 構築中に無効化された（時間足切替等）＝遅延応答を破棄
+        }
+        const series = this._validateSeriesNames(result.series ?? [], meta.def, params);
+        const times = new Map();
+        for (const p of series) {
+          if (Array.isArray(p.data)) {
+            times.set(p.name, p.data.map((pt) => pt.time));
+          }
+        }
+        this._revealCache.set(inst.instanceId, { def: meta.def, params, series, times });
+      } catch (err) {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('reveal 基底計算失敗（per-step へフォールバック）:', inst.indicatorId, err && err.message);
+        }
+      }
+    }));
+  }
+
+  // 同期リビール描画: キャッシュ系列を t 以下へスライスし、既存の描画経路（_renderInstance＝
+  //   remove(keepPane)+redraw）で反映する。await を挟まない＝足リビールと同一同期ブロックで呼べる
+  //   （完成足チラ見せ防止の不変条件を保つ）。horizontal_line はスライス対象外（t 不変を実測済み）。
+  revealTo(t) {
+    for (const [instanceId, cache] of this._revealCache) {
+      const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+      if (!inst) {
+        continue;   // 削除済みインスタンス（描画しない・掃除は removeInstance が担う）
+      }
+      const series = cache.series.map((p) => {
+        const ts = cache.times.get(p.name);
+        if (!Array.isArray(p.data) || !ts) {
+          return p;
+        }
+        return { ...p, data: p.data.slice(0, upperBound(ts, t)) };
+      });
+      this._renderInstance({
+        instanceId,
+        accepted: true,
+        def: cache.def,
+        params: cache.params,
+        wantLatest: false,
+        series,
+        hidden: !inst.visible,
+      });
+    }
   }
 
   // [reveal] untilTime を設定（以降の再計算がこの時点で計算される＝ライブ同一・df[:t+1]）。
@@ -58,24 +172,14 @@ export class ReplayIndicatorController extends IndicatorController {
     return { untilTime: this._untilTime, forming: this._forming };
   }
 
-  // [reveal] 足内更新: 形成中バーを差し込み、対象指標（INTRABAR_FORMING_IDS）の末尾点のみ latest 差分
-  //   再計算する。混在 kind（line+horizontal_line）でも forceTail=true で末尾差分経路へ倒し、line/histogram
-  //   の最終点のみ更新（水準線は据え置き＝履歴潰れなし）。tgp 帯等の対象外は足確定値のまま（触らない）。
+  // [reveal] 足内更新: 形成中バーを差し込み、登録指標（共有 INTRABAR_FORMING_IDS）の末尾点のみ
+  //   latest 差分再計算する。実体は基底 recomputeFormingTails（forceTail 差分＝ライブと同一機構・
+  //   2026-07-22 統一設計）へ委譲し、本メソッドは forming seam（素通し・解除）だけを担う。
   //   forming 解除は finally で必ず行い、後続の確定足計算に forming を残さない。
   async recomputeFormingLatest(forming) {
     this.setForming(forming);
     try {
-      for (const inst of [...this._state.applied]) {
-        if (!INTRABAR_FORMING_IDS.has(inst.indicatorId)) {
-          continue;                                        // 足内 latest 対象外（帯系等）は触らない
-        }
-        if (!this._meta.has(inst.instanceId)) {
-          continue;
-        }
-        await this.recomputeInstance(
-          inst.instanceId, null, this._paramsObject(inst.params), { mode: 'latest', forceTail: true },
-        );
-      }
+      await this.recomputeFormingTails();
     } finally {
       this.setForming(undefined);                          // 確定計算へ forming を残さない
     }
@@ -95,6 +199,12 @@ export class ReplayIndicatorController extends IndicatorController {
     const meta = this._meta.get(instanceId);
     if (meta && this._isMarketProfile(meta.def)) {
       return this._recomputeMarketProfile(instanceId, newParams);
+    }
+    // [reveal 一括・ISSUE-158 ②] params/variant 変更（gear 等）は基底を陳腐化させる→破棄
+    //   （次フレームの revealNeedsBuild が再構築）。足内更新の latest 差分は基底に影響しない
+    //   （末尾点のみ・確定系列は不変）ため破棄しない。
+    if (opts.mode !== 'latest') {
+      this._invalidateReveal(instanceId);
     }
     return super.recomputeInstance(instanceId, newVariant, newParams, opts);
   }
@@ -145,6 +255,8 @@ export class ReplayIndicatorController extends IndicatorController {
   // UC-05 削除。MP は renderer.remove を持たず actor.setEnabled(false)+detach（あれば）へ委譲する
   //   （present の MP 専用ハンドラ _removeMarketProfile を再利用）。非 MP は共有ベースへ委譲する。
   removeInstance(instanceId) {
+    // [reveal 一括・ISSUE-158 ②] 基底キャッシュも掃除（MP は元々エントリ無し＝no-op）。
+    this._invalidateReveal(instanceId);
     const inst = this._state.applied.find((i) => i.instanceId === instanceId);
     const def = inst ? this._catalog.get(inst.indicatorId) : null;
     if (inst && this._isMarketProfile(def)) {

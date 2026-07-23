@@ -127,17 +127,34 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
 
     controller.setUntilTime(t);
     controller._recentBars = bar + 1; // 計算窓＝リビール範囲
+    // [ISSUE-158 ②] 一括リビール基底: 登録指標（causal_reveal_ids）は全レンジを 1 回だけ計算して
+    //   キャッシュし、以降のバー送りは同期スライス描画のみ（per-step HTTP を発行しない）。
+    //   必要時（時間足切替・指標追加・params 変更後の初回フレーム）のみ構築する。
+    if (typeof controller.revealNeedsBuild === 'function' && controller.revealNeedsBuild()) {
+      setStatus(`${fmt(t)} 一括計算中…`);
+      try {
+        await controller.buildRevealBase(candles[candles.length - 1].time, candles.length);
+      } catch (e) {
+        // 構築失敗は per-step 計算へフォールバック（描画は止めない）。
+      }
+      if (isStale(g, generation)) return;
+    }
     setStatus(`${fmt(t)} 計算中…`);
     const started = performance.now();
     try {
-      // 計算後、preRender（足リビール＋ビュー）→ 帯描画が await を挟まず 1 ブロック＝アトミック。
+      // 計算後、preRender（足リビール＋ビュー＋一括リビール）→ 帯描画が await を挟まず
+      //   1 ブロック＝アトミック（完成足チラ見せ防止の不変条件は revealTo が同期のため保たれる）。
       await controller.recomputeAllApplied({
         mode: 'full',
+        // 一括リビール済み指標は per-step 計算から除外（revealTo が同フレームで描画する）。
+        skip: (inst) => typeof controller.hasRevealFor === 'function'
+          && controller.hasRevealFor(inst.instanceId),
         preRender: () => {
           const saved = (!autoFrame) ? view.getVisibleLogicalRange() : null;
           view.setCandles(candles.slice(0, bar + 1));
           if (saved) { view.setVisibleLogicalRange(saved); }
           else applyView();
+          if (typeof controller.revealTo === 'function') controller.revealTo(t);
         },
       });
     } catch (e) {
@@ -191,6 +208,8 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     timeframe = tf;
     replayStart = 0; activeSecs = null; activePeriodBars = null;
     syncModeOptions(tf);
+    // [ISSUE-158 ②] 時間足切替で一括リビール基底を全破棄（次フレームで新 tf のレンジを再構築）。
+    if (typeof controller.clearRevealCache === 'function') controller.clearRevealCache();
     candles = await fetchCandles(tf);
     syncBoundary();
     view.setSliderBounds(0, Math.max(0, candles.length - 1));

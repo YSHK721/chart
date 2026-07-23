@@ -57,18 +57,20 @@ class CausalCandleRepository:
         secs = df.index.values.astype("datetime64[s]").astype("int64")
         col_o, col_h, col_l, col_c = (lower["open"], lower["high"], lower["low"], lower["close"])
         col_v = lower.get("volume")
+        # ISSUE-158 ①: 列単位ベクトル化（旧: df.iterrows 行ループ）。出力は旧実装と完全同一
+        #   （tickvol の isfinite 規則込み。等価性は tests/unit/test_plain_bars_vectorized.py が固定）。
+        times = secs.tolist()
+        o = df[col_o].to_numpy(dtype="float64").tolist()
+        h = df[col_h].to_numpy(dtype="float64").tolist()
+        lo = df[col_l].to_numpy(dtype="float64").tolist()
+        c = df[col_c].to_numpy(dtype="float64").tolist()
+        v = df[col_v].to_numpy(dtype="float64").tolist() if col_v is not None else None
         out: "list[dict]" = []
-        for i, (_, row) in enumerate(df.iterrows()):
-            d = {
-                "time": int(secs[i]),
-                "open": float(row[col_o]),
-                "high": float(row[col_h]),
-                "low": float(row[col_l]),
-                "close": float(row[col_c]),
-            }
-            if col_v is not None:
-                v = float(row[col_v])
-                if math.isfinite(v):  # NaN/Inf 行は載せない（int(NaN)→ValueError の 500 を防ぐ・JS はフォールバック）
-                    d["tickvol"] = int(v)
+        for i in range(len(times)):
+            d = {"time": times[i], "open": o[i], "high": h[i], "low": lo[i], "close": c[i]}
+            if v is not None:
+                vv = v[i]
+                if math.isfinite(vv):  # NaN/Inf 行は載せない（int(NaN)→ValueError の 500 を防ぐ・JS はフォールバック）
+                    d["tickvol"] = int(vv)
             out.append(d)
         return out
