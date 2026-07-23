@@ -3,8 +3,9 @@
 // 設計入力: チャート 1 分間隔ライブ更新（served のみ）。
 //   - start()/stop() で setInterval/clearInterval を制御（intervalMs 既定 60000）。
 //   - 多重 start 防止（稼働中の再 start で二重に setInterval しない）。
-//   - tick: controller.isRecomputing() が true ならスキップ。false なら
-//     controller 経由の再計算 → /candles 再取得 → renderer.updateLastCandle(最新足)。
+//   - tick: controller.isRecomputing() が true ならスキップ。false なら /candles 再取得 →
+//     新確定足（末尾バー time の前進）を検知したときのみ full 再計算（統一設計 2026-07-22:
+//     全再計算はバー確定時のみ。足内は tick 粒度の末尾差分が担う）→ updateLastCandle(最新足)。
 //   - 競合ガードは controller.isRecomputing() の単一権威（LiveUpdater 独自フラグなし）。
 // 構造: Arrange-Act-Assert（AAA）。実タイマー・実ネット・実 DOM 非依存（全注入）。
 
@@ -29,10 +30,11 @@ function fakeTimers() {
 
 // recompute / candles 取得 / updateLastCandle の呼び出しを記録する spy 一式。
 function spies({ recomputing = false } = {}) {
-  const calls = { recompute: 0, loadCandles: [], updateLast: [] };
+  const calls = { recompute: 0, recomputeMode: null, loadCandles: [], updateLast: [] };
   const controller = {
     isRecomputing: () => recomputing,
-    recomputeAllApplied: async () => { calls.recompute += 1; },
+    // ISSUE-151: バー確定検知は requestFullRecompute（coalesce/pending 付き）要求へ変更。
+    requestFullRecompute: () => { calls.recompute += 1; calls.recomputeMode = 'full'; },
   };
   const renderer = { updateLastCandle: (c) => calls.updateLast.push(c) };
   const candles = [
@@ -59,17 +61,24 @@ function newUpdater(overrides = {}, sp = spies()) {
   return { updater, t, sp };
 }
 
-test('start: each tick recomputes, refetches candles, and updates the last candle', async () => {
+test('start: tick refetches candles and updates the last candle; full recompute only on NEW bar', async () => {
   // Arrange
   const { updater, t, sp } = newUpdater();
-  // Act
+  // Act: 初回 tick は baseline 取り＝full 再計算しない（統一設計: 全再計算はバー確定時のみ）。
   updater.start();
   await t.tick();
-  // Assert: 再計算 1 回・candles 再取得（現 datasetRef/timeframe）・最新足を updateLastCandle へ。
-  assert.equal(sp.calls.recompute, 1);
+  assert.equal(sp.calls.recompute, 0);
   assert.deepEqual(sp.calls.loadCandles.at(-1), ['jp225_m1', '1D']);
   assert.equal(sp.calls.updateLast.length, 1);
   assert.deepEqual(sp.calls.updateLast[0], sp.candles.at(-1)); // 最新足
+  // Act: 同じ末尾バーのままの tick → full 再計算しない。
+  await t.tick();
+  assert.equal(sp.calls.recompute, 0);
+  // Act: 新確定足（末尾バー time 前進）→ full 再計算 1 回。
+  sp.candles.push({ time: 3, open: 2.5, high: 4, low: 2, close: 3.5 });
+  await t.tick();
+  assert.equal(sp.calls.recompute, 1);
+  assert.equal(sp.calls.recomputeMode, 'full');
 });
 
 test('start registers exactly one interval at the configured intervalMs', () => {
@@ -96,28 +105,33 @@ test('calling start twice does not register a second interval (multi-start guard
   assert.equal(t.intervals.size, 1);
 });
 
-test('tick is skipped while controller.isRecomputing() is true (no recompute/fetch)', async () => {
-  // Arrange: 再計算中の controller を注入（独自フラグではなく controller 権威を参照）。
+test('while isRecomputing: bar-close detection still runs (starvation-proof), only price part skips', async () => {
+  // ISSUE-151 追補: 検知は再計算中でも実行（requestFullRecompute は pending 必達）。価格反映のみスキップ。
   const sp = spies({ recomputing: true });
   const { updater, t } = newUpdater({}, sp);
-  // Act
   updater.start();
-  await t.tick();
-  // Assert: 再計算も candles 取得も updateLastCandle も走らない。
+  await t.tick();                                  // baseline（検知は動く）
+  assert.equal(sp.calls.loadCandles.length, 1);    // candles 取得は行う
+  assert.equal(sp.calls.updateLast.length, 0);     // 価格は書かない（混線防止）
   assert.equal(sp.calls.recompute, 0);
-  assert.equal(sp.calls.loadCandles.length, 0);
-  assert.equal(sp.calls.updateLast.length, 0);
+  sp.candles.push({ time: 3, open: 2.5, high: 4, low: 2, close: 3.5 });
+  await t.tick();                                  // 新確定足 → 再計算中でも full 要求が積まれる
+  assert.equal(sp.calls.recompute, 1);
 });
 
 // suppressPriceUpdate（ISSUE-049）: LiveTickPlayer が価格の唯一の書き手になるとき、LiveUpdater は
 //   価格の巻き戻し（12 秒より古い candles 末尾での updateLastCandle）を止める。再計算は従来どおり。
-test('suppressPriceUpdate=true skips updateLastCandle but still recomputes (latest)', async () => {
+test('suppressPriceUpdate=true skips updateLastCandle (price writer is the player)', async () => {
   const sp = spies();
   const { updater, t } = newUpdater({ suppressPriceUpdate: true }, sp);
   updater.start();
   await t.tick();
-  assert.equal(sp.calls.recompute, 1);           // 再計算は従来どおり
-  assert.equal(sp.calls.updateLast.length, 0);   // が価格は書かない（player が唯一の書き手）
+  assert.equal(sp.calls.updateLast.length, 0);   // 価格は書かない（player が唯一の書き手）
+  // 統一設計: 初回 tick は baseline 取り＝full 再計算なし。新バー到来時のみ full。
+  assert.equal(sp.calls.recompute, 0);
+  sp.candles.push({ time: 3, open: 2.5, high: 4, low: 2, close: 3.5 });
+  await t.tick();
+  assert.equal(sp.calls.recompute, 1);
 });
 
 test('suppressPriceUpdate default (unset) preserves existing behavior (updateLastCandle called)', async () => {
@@ -129,23 +143,25 @@ test('suppressPriceUpdate default (unset) preserves existing behavior (updateLas
   assert.deepEqual(sp.calls.updateLast[0], sp.candles.at(-1));
 });
 
-// Latest 増分計算: tick は recomputeAllApplied({mode:'latest'}) を呼ぶ（末尾K差分反映）。
-test('tick recomputes with mode "latest" (Latest incremental compute)', async () => {
-  // Arrange: recomputeAllApplied の引数を捕捉する controller を注入。
+// 統一設計（2026-07-22）: 全再計算はバー確定時のみ（requestFullRecompute 要求・ISSUE-151）。
+test('full recompute request fires only when the last bar time advances (bar close)', async () => {
   const captured = [];
+  const candles = [{ time: 1, open: 1, high: 2, low: 0, close: 1.5 }];
   const controller = {
     isRecomputing: () => false,
-    recomputeAllApplied: async (opts) => { captured.push(opts); },
+    requestFullRecompute: () => { captured.push('full'); },
   };
   const renderer = { updateLastCandle: () => {} };
-  const loadCandles = async () => [{ time: 1, open: 1, high: 2, low: 0, close: 1.5 }];
-  const sp = { controller, renderer, loadCandles, candles: [] };
+  const loadCandles = async () => candles;
+  const sp = { controller, renderer, loadCandles, candles };
   const { updater, t } = newUpdater({}, sp);
-  // Act
   updater.start();
+  await t.tick();            // baseline
+  await t.tick();            // 同一バー → full なし
+  assert.equal(captured.length, 0);
+  candles.push({ time: 2, open: 1.5, high: 3, low: 1, close: 2.5 });  // 新確定足
   await t.tick();
-  // Assert: ライブ tick は latest モードで再計算する。
-  assert.deepEqual(captured.at(-1), { mode: 'latest' });
+  assert.equal(captured.length, 1);
 });
 
 // ライブ欠落補完（ISSUE-106）: tick は取得 candles を renderer.resyncMissedCandles へ渡し、

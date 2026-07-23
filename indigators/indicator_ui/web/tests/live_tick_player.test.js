@@ -370,3 +370,31 @@ test('1D: 日曜夜 UTC の tick はセッション 1D バー（ラベル深夜 
   assert.equal(calls[0].time, 1783900800, 'バー time は 1D 規約（セッション日ラベルの UTC 深夜）');
   assert.equal(calls[0].high, 105.0);
 });
+
+// ISSUE-151: 期間ロールオーバー（新しい期間の最初の tick）でバー確定フック onBarClose を 1 回呼ぶ。
+test('onBarClose fires exactly once when a tick rolls into a new period (bar close event)', async () => {
+  const updates = [];
+  const closes = [];
+  const renderer = { updateLastCandle: (b) => updates.push({ ...b }) };
+  const player = new LiveTickPlayer({
+    renderer,
+    fetchLiveTicks: async () => ({ ok: true, ticks: [], serverNowMs: 0 }),
+    loadFormingBar: async () => ({ time: 0, open: 1, high: 1, low: 1, close: 1, volume: 1 }),
+    datasetRef: 'jp225_tick',
+    getTimeframe: () => '1m',
+    setInterval: () => 1,
+    clearInterval: () => {},
+    now: () => 10 * 60 * 1000,
+    onBarClose: () => closes.push(1),
+  });
+  await player._seed('1m');
+  // 同一期間内の tick → 確定なし
+  player._applyTick(30 * 1000, 100);
+  assert.equal(closes.length, 0);
+  // 次の 1 分期間へロールオーバー → 直前バー確定＝onBarClose 1 回
+  player._applyTick(70 * 1000, 101);
+  assert.equal(closes.length, 1);
+  // 同じ新期間内の続き tick → 追加発火なし
+  player._applyTick(80 * 1000, 102);
+  assert.equal(closes.length, 1);
+});

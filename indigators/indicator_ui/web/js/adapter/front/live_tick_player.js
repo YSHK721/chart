@@ -47,6 +47,15 @@ export class LiveTickPlayer {
     delayMs = DELAY_MS,
     pollMs = POLL_MS,
     playbackMs = PLAYBACK_MS,
+    // tick 粒度の指標末尾追従フック（2026-07-22 統一設計）。tick を形成中バーへ適用するたびに
+    //   呼ぶ（composition root が controller.requestFormingRecompute を注入・coalesce は controller 側）。
+    //   null は従来挙動（価格のみ・後方互換）。
+    onFormingUpdate = null,
+    // バー確定フック（ISSUE-151）。tick が新しい期間へロールオーバーした瞬間＝直前バーの確定を
+    //   通知する（composition root が controller.requestFullRecompute を注入）。60 秒タイマー
+    //   （LiveUpdater）だけに頼ると衝突スキップで確定イベントを取り落とし、非登録指標（帯系）が
+    //   バー境界で停止する（1 分足で実測）。null は従来挙動。
+    onBarClose = null,
   }) {
     this._renderer = renderer;
     this._fetchLiveTicks = fetchLiveTicks;
@@ -59,6 +68,8 @@ export class LiveTickPlayer {
     this._delayMs = delayMs;
     this._pollMs = pollMs;
     this._playbackMs = playbackMs;
+    this._onFormingUpdate = (typeof onFormingUpdate === 'function') ? onFormingUpdate : null;
+    this._onBarClose = (typeof onBarClose === 'function') ? onBarClose : null;
 
     // 再生状態。
     this._queue = [];         // 未適用 tick [(ms, mid)] 昇順。
@@ -203,6 +214,10 @@ export class LiveTickPlayer {
       }
       this._bar = { time: periodSec, open: mid, high: mid, low: mid, close: mid, volume: 1 };
       this._renderer.updateLastCandle(this._bar);
+      // 指標の末尾点も tick 粒度で追従（統一設計。coalesce は controller 側＝毎 tick 呼んでよい）。
+      if (this._onFormingUpdate) {
+        this._onFormingUpdate();
+      }
       this._applied += 1;
       this._lastTickMs = ms;
       return;
@@ -216,10 +231,18 @@ export class LiveTickPlayer {
       this._bar.close = mid;
       this._bar.volume += 1; // volume は適用 tick 数の近似（シード値＋適用数）。
     } else {
-      // 新しい期間 → 新バー（open=mid）。
+      // 新しい期間 → 新バー（open=mid）。直前バーはこの瞬間に確定＝バー確定イベントを通知する
+      //   （ISSUE-151: 全指標の full 再計算をバー確定駆動にする。coalesce/pending は controller 側）。
       this._bar = { time: periodSec, open: mid, high: mid, low: mid, close: mid, volume: 1 };
+      if (this._onBarClose) {
+        this._onBarClose();
+      }
     }
     this._renderer.updateLastCandle(this._bar);
+    // 指標の末尾点も tick 粒度で追従（統一設計。coalesce は controller 側＝毎 tick 呼んでよい）。
+    if (this._onFormingUpdate) {
+      this._onFormingUpdate();
+    }
     this._applied += 1;
     this._lastTickMs = ms;
   }

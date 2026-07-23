@@ -42,6 +42,9 @@ export class FormingBarUpdater {
     this._suppressPriceUpdate = suppressPriceUpdate;
     // 稼働中の interval ハンドル（null=停止中）。多重 start 防止の判定にも用いる。
     this._timerId = null;
+    // バー確定検知の第 2 経路（ISSUE-151 追補）: /forming_bar の period（bar.time）前進＝直前バー
+    //   確定。LiveTickPlayer（第 1 経路）が死んでいるセッションでも確定 full 再計算を必ず駆動する。
+    this._lastFormingTime = null;
   }
 
   // ライブ足内更新を開始する。多重 start は無視する（稼働中なら二重に setInterval しない）。
@@ -82,8 +85,20 @@ export class FormingBarUpdater {
       if (!suppress) {
         this._renderer.updateLastCandle(bar);
       }
-      // 指標も最新点を再計算（mode:'latest'）。backend が形成中バーを最新足として計算へ織り込む。
-      await this._controller.recomputeAllApplied({ mode: 'latest' });
+      // バー確定検知（第 2 経路・ISSUE-151 追補）: forming bar の period 前進＝直前バー確定。
+      //   requestFullRecompute は coalesce/pending 必達＝タイミングに依らず取り落とさない。
+      //   第 1 経路（LiveTickPlayer.onBarClose）と重複しても coalesce で無害。
+      if (this._lastFormingTime !== null && bar.time > this._lastFormingTime
+          && typeof this._controller.requestFullRecompute === 'function') {
+        this._controller.requestFullRecompute();
+      }
+      this._lastFormingTime = bar.time;
+      // 指標は登録オシレーターの末尾差分のみ（統一設計 2026-07-22）。従来の
+      //   recomputeAllApplied({mode:'latest'}) は marod 系（horizontal_line 持ち）が末尾差分に
+      //   乗れず 5 秒ごと全再計算＋全再描画へフォールバックしていた。requestFormingRecompute は
+      //   リプレイと同一の forceTail 末尾差分（coalesce 付き）で、全再計算はバー確定時のみになる。
+      //   player 対応 tf では tick 粒度の同フックと重複するが coalesce（latest-wins）で無害。
+      this._controller.requestFormingRecompute();
     } catch (err) {
       if (typeof console !== 'undefined' && console.warn) {
         console.warn('FormingBarUpdater: tick 失敗（次 tick で回復）:', err && err.message);

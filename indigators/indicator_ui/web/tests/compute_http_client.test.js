@@ -207,3 +207,27 @@ test('compute body keys are unchanged when untilTime/forming are not provided (i
     ['datasetRef', 'generation', 'indicatorId', 'limit', 'params', 'timeframe', 'variant'],
   );
 });
+
+// ISSUE-157: 応答が永久に返らない fetch はタイムアウトで abort され ComputeError(network) になる。
+//   （放置すると呼び出し側の coalesce busy ラッチが解放されず全指標更新が凍結する。）
+test('compute aborts a never-resolving fetch after timeoutMs (ISSUE-157)', async () => {
+  // Arrange: signal の abort まで永久に pending する Fake fetch（実ストールの再現）。
+  const fakeFetch = (_url, opts) => new Promise((_resolve, reject) => {
+    opts.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+  });
+  const client = new ComputeHttpClient({ fetch: fakeFetch, timeoutMs: 30 });
+  // Act & Assert: network 型 ComputeError（pending 機構の自動再試行対象）へ翻訳される。
+  await assert.rejects(
+    client.compute({ indicatorId: 'x', variant: 'default', params: {}, datasetRef: 'sample' }),
+    (err) => err instanceof ComputeError && err.error_type === 'network' && /タイムアウト/.test(err.message),
+  );
+});
+
+// ISSUE-157: 正常応答時はタイムアウトが発火しない（クリーンアップ・挙動不変）。
+test('compute resolves normally well within timeoutMs (ISSUE-157)', async () => {
+  const series = [{ name: 's', kind: 'line', data: [] }];
+  const fakeFetch = async () => fakeResponse(200, { ok: true, generation: 0, series });
+  const client = new ComputeHttpClient({ fetch: fakeFetch, timeoutMs: 30 });
+  const result = await client.compute({ indicatorId: 'x', variant: 'default', params: {}, datasetRef: 'sample' });
+  assert.deepEqual(result.series, series);
+});

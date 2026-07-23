@@ -529,6 +529,12 @@ export async function bootstrap({
         getTimeframe: () => controller._timeframe,
         setInterval: setIntervalImpl,
         clearInterval: clearIntervalImpl,
+        // tick 粒度の指標末尾追従（統一設計 2026-07-22）: tick 適用のたびに登録オシレーターの
+        //   末尾差分再計算を要求する（coalesce は controller 側＝過負荷にならない）。
+        onFormingUpdate: () => controller.requestFormingRecompute(),
+        // バー確定駆動の full 再計算（ISSUE-151）: 期間ロールオーバー＝直前バー確定で全指標を
+        //   再計算する（リプレイの毎バーその場計算と同一意味論。coalesce/pending は controller 側）。
+        onBarClose: () => controller.requestFullRecompute(),
       })
     : null;
 

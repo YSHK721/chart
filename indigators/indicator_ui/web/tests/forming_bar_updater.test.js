@@ -28,8 +28,10 @@ function spies({ recomputing = false, bar = { time: 100, open: 1, high: 2, low: 
   const calls = { recompute: 0, recomputeOpts: null, loadForming: [], updateLast: [] };
   const controller = {
     isRecomputing: () => recomputing,
-    // 指標の最新点再計算（mode:'latest'）。呼び出し回数と引数を記録する。
-    recomputeAllApplied: async (opts) => { calls.recompute += 1; calls.recomputeOpts = opts; },
+    // 統一設計（2026-07-22）: 指標は登録オシレーターの末尾差分要求（coalesce 付き）へ変更。
+    requestFormingRecompute: () => { calls.recompute += 1; calls.recomputeOpts = 'forming-tails'; },
+    // ISSUE-151 追補: バー確定（forming period 前進）の第 2 検知経路。
+    requestFullRecompute: () => { calls.full = (calls.full || 0) + 1; },
   };
   const renderer = { updateLastCandle: (c) => calls.updateLast.push(c) };
   const loadFormingBar = async (ref, tf) => { calls.loadForming.push([ref, tf]); return bar; };
@@ -59,8 +61,8 @@ test('start: each tick updates last candle AND recomputes indicators latest (tic
   assert.deepEqual(sp.calls.loadForming.at(-1), ['jp225_tick', '1D']);
   assert.equal(sp.calls.updateLast.length, 1);
   assert.deepEqual(sp.calls.updateLast[0], sp.bar);
-  assert.equal(sp.calls.recompute, 1);                       // 指標も最新点を再計算。
-  assert.deepEqual(sp.calls.recomputeOpts, { mode: 'latest' }); // mode=latest（頻度分離・最新点のみ）。
+  assert.equal(sp.calls.recompute, 1);                       // 指標は末尾差分要求（統一設計）。
+  assert.equal(sp.calls.recomputeOpts, 'forming-tails');     // requestFormingRecompute 経由。
 });
 
 test('start registers exactly one interval at the configured intervalMs (5000)', () => {
@@ -114,8 +116,8 @@ test('suppressPriceUpdate=true skips updateLastCandle but still recomputes indic
   await t.tick();
   assert.equal(sp.calls.loadForming.length, 1);  // 形成中バー取得は行う（指標材料）
   assert.equal(sp.calls.updateLast.length, 0);   // が価格は書かない（player が唯一の書き手）
-  assert.equal(sp.calls.recompute, 1);           // 指標の最新点再計算は従来どおり
-  assert.deepEqual(sp.calls.recomputeOpts, { mode: 'latest' });
+  assert.equal(sp.calls.recompute, 1);           // 指標の末尾差分要求は従来どおり
+  assert.equal(sp.calls.recomputeOpts, 'forming-tails');
 });
 
 test('suppressPriceUpdate default (unset) preserves existing behavior (updateLastCandle called)', async () => {
@@ -140,4 +142,22 @@ test('suppressPriceUpdate as a function is evaluated each tick (draw when it ret
   suppress = false;
   await t.tick();
   assert.equal(sp.calls.updateLast.length, 1);   // 関数が false → 価格を書く
+});
+
+
+// ISSUE-151 追補: /forming_bar の period（bar.time）前進＝バー確定 → requestFullRecompute を要求する
+//   （LiveTickPlayer が死んでいるセッションでも確定 full 再計算が駆動される第 2 経路）。
+test('forming period advance triggers requestFullRecompute (2nd bar-close detector)', async () => {
+  let barTime = 100;
+  const sp = spies();
+  sp.loadFormingBar = async () => ({ time: barTime, open: 1, high: 2, low: 0, close: 1.5, volume: 1 });
+  const { updater, t } = newUpdater({}, sp);
+  updater.start();
+  await t.tick();                       // baseline（発火しない）
+  assert.equal(sp.calls.full || 0, 0);
+  await t.tick();                       // 同一 period → 発火しない
+  assert.equal(sp.calls.full || 0, 0);
+  barTime = 160;                        // period 前進＝直前バー確定
+  await t.tick();
+  assert.equal(sp.calls.full, 1);
 });

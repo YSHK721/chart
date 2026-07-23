@@ -600,3 +600,4 @@ test('MP restore: re-enables actor from saved params/visibility without touching
   assert.equal(marketProfile.calls.params[0].bins, '30', '保存 bins を actor へ復元');
   assert.equal(marketProfile.calls.params[0].va, 0.8);
 });
+

@@ -43,10 +43,19 @@ export class TimeframeController {
     if (typeof host._renderer?.resetPriceZoom === 'function') {
       host._renderer.resetPriceZoom();
     }
+    // ISSUE-163: pane（オシレータ）価格軸も同裁定を適用。ISSUE-150 の手動スケール保持（keepPane
+    //   退避/復元）は同一時間足の再計算のみを守り、切替では破棄して自動スケールへ戻す
+    //   （旧レンジ持ち越し＝新値域のクリップ・全高ブロック化を防ぐ。実 UI 再現済み 2026-07-23）。
+    if (typeof host._renderer?.resetPaneScales === 'function') {
+      host._renderer.resetPaneScales();
+    }
     // バッチ全体（candles 取得 await＋全指標再計算）を競合ガードで包む。これがないと
     //   _loadCandles の await 中は isRecomputing()=false となり、その隙にライブ tick が
     //   割り込んで二重 compute する（🟡-2）。最外で increment し finally で確実に解除する。
     host._recomputeDepth += 1;
+    // isRecomputing() の時限判定（ISSUE-157）: バッチ開始時刻を記録する（未記録だと
+    //   時限ゲートが即座に開き、candles fetch await 中の tick スキップ保証が壊れる）。
+    host._recomputeLastStartMs = Date.now();
     try {
       // candles を新時間足で再取得（取得のみ・描画は下のバッチへ遅延）。
       let candles = null;

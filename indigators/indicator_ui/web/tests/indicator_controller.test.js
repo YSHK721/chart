@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { IndicatorController, STALL_DEADLINE_MS } from '../js/adapter/front/indicator_controller.js';
 import { get } from '../js/usecase/catalog.js';
 
 // DOM/port を使わない純ロジック検証のため、ports は最小スタブで生成。
@@ -412,4 +412,67 @@ test('restore notifies the timeframe observer with the restored timeframe (trade
   ctrl.setTimeframeObserver((tf) => seen.push(tf));
   await ctrl.restore();
   assert.ok(seen.includes('1m'), `restore は復元時間足 1m を購読者へ通知する（実際: ${JSON.stringify(seen)}）`);
+});
+
+// =============================================================================
+// ISSUE-157 クロック駆動設計: coalesce/latest-wins/full 必達/ハング無視のロジック本体は
+//   UpdateScheduler へ抽出した（SOLID 是正 🔴-1・単体テストは tests/update_scheduler.test.js）。
+//   ここでは controller 側に残る配線（requestFormingRecompute/requestFullRecompute の委譲・
+//   runForming/runFull/isBlocked の実体注入）と isRecomputing の時限式を固定する。
+//   実体 recomputeFormingTails は登録指標（INTRABAR_FORMING_IDS）のみを forceTail 差分で回す
+//   （登録判定・forceTail 転送はリプレイ側テスト indicator_controller_latest.test.js が固定済み）。
+// =============================================================================
+
+// 委譲配線: requestFormingRecompute → scheduler → recomputeFormingTails、
+//   requestFullRecompute → scheduler → recomputeAllApplied({mode:'full'})、
+//   isBlocked → isRecomputing()（再計算バッチ中は実行しない）。
+test('requestFormingRecompute / requestFullRecompute delegate through the UpdateScheduler wiring', async () => {
+  const ctrl = new IndicatorController({
+    catalog: { get: () => null },
+    compute: {},
+    persistence: {},
+    renderer: {},
+    document: null,
+  });
+  const calls = [];
+  ctrl.recomputeFormingTails = async () => { calls.push('forming'); };
+  ctrl.recomputeAllApplied = async (opts) => { calls.push(`full:${opts.mode}`); };
+  ctrl.requestFormingRecompute();
+  await new Promise((r) => setTimeout(r, 0));
+  ctrl.requestFullRecompute();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(calls, ['forming', 'full:full']);
+  // isBlocked 配線: 再計算バッチ中（isRecomputing=true）は要求を実行しない（フラグ保持）。
+  ctrl._recomputeDepth = 1;
+  ctrl._recomputeLastStartMs = Date.now();
+  ctrl.requestFormingRecompute();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(calls, ['forming', 'full:full'], 'isRecomputing 中は scheduler が実行を保留する');
+});
+
+// ISSUE-157: 外部バッチ（_recomputeDepth）がハングで残留しても isRecomputing は時限で開く
+//   （深さカウンタの恒久ラッチでゲートが閉じ続けない）。
+test('isRecomputing self-opens when a batch hangs past STALL_DEADLINE_MS', () => {
+  const ctrl = Object.create(IndicatorController.prototype);
+  ctrl._recomputeDepth = 1;
+  ctrl._recomputeLastStartMs = Date.now();
+  assert.equal(ctrl.isRecomputing(), true, '健全なバッチ中は true');
+  ctrl._recomputeLastStartMs = Date.now() - (STALL_DEADLINE_MS + 1);
+  assert.equal(ctrl.isRecomputing(), false, 'ハング残留した深さカウンタではゲートを閉じ続けない');
+});
+
+// ISSUE-153: restore（_state 丸ごと置換）と applyIndicator の競合ガード。復元中の適用は
+//   復元完了を待ってから実行される（先適用→復元上書きで「描画だけ残る孤児」を作らない）。
+test('applyIndicator waits for an in-flight restore before applying (ISSUE-153)', async () => {
+  const ctrl = Object.create(IndicatorController.prototype);
+  const order = [];
+  let releaseRestore;
+  ctrl._restoreInFlight = new Promise((res) => { releaseRestore = () => { order.push('restore-done'); res(); }; });
+  ctrl._catalog = { get: () => null };   // def 解決前に await されることだけを検証（null で即 return）
+  const p = ctrl.applyIndicator('btlm_trail', 'default').then(() => order.push('apply-done'));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(order, [], '復元完了前に apply が進まない');
+  releaseRestore();
+  await p;
+  assert.deepEqual(order, ['restore-done', 'apply-done']);
 });

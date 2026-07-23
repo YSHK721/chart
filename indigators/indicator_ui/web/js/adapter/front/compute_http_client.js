@@ -20,10 +20,18 @@ export { ComputeError };
 
 const COMPUTE_ENDPOINT = '/compute';
 
+// ISSUE-157: /compute 応答タイムアウト（ms）。応答が返らない要求（接続ストール等）を放置すると
+//   呼び出し側の coalesce ラッチ（_formingBusy）が永久に解放されず全指標更新が凍結するため、
+//   一定時間で abort して ComputeError(network) に転換する（pending 機構が自動再試行する）。
+//   実測の compute 最大 ~1s に対し十分な余裕（サーバ飽和時のキュー待ちも許容）。
+const COMPUTE_TIMEOUT_MS = 30000;
+
 export class ComputeHttpClient {
   // deps.fetch: 注入された fetch（既定はグローバル fetch）。
-  constructor({ fetch } = {}) {
+  // deps.timeoutMs: 応答タイムアウト（既定 30s・テストで短縮可能）。
+  constructor({ fetch, timeoutMs = COMPUTE_TIMEOUT_MS } = {}) {
     this._fetch = fetch;
+    this._timeoutMs = timeoutMs;
   }
 
   // ComputeRequest -> series（§7.1.1）。非200/ネットワーク例外は ComputeError へ翻訳。
@@ -48,19 +56,44 @@ export class ComputeHttpClient {
     }
     const body = JSON.stringify(reqBody);
 
-    let response;
-    try {
-      response = await this._fetch(COMPUTE_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-      });
-    } catch (cause) {
-      // ネットワーク例外（タイムアウト・接続断等）を翻訳（§7.1.1 例外翻訳）。
-      throw new ComputeError(`計算 API への接続に失敗しました: ${cause.message}`, { error_type: 'network' });
-    }
+    // ISSUE-157: AbortController でタイムアウトを課す（signal は本文読み取りまで有効＝
+    //   response.json() のストールも中断される）。AbortController 非提供環境（旧テスト等）は
+    //   従来どおり無タイムアウト（後方互換）。
+    const hasAbort = typeof AbortController === 'function';
+    const aborter = hasAbort ? new AbortController() : null;
+    const timerId = aborter ? setTimeout(() => aborter.abort(), this._timeoutMs) : null;
 
-    const payload = await response.json();
+    let response;
+    let payload;
+    try {
+      try {
+        response = await this._fetch(COMPUTE_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          ...(aborter ? { signal: aborter.signal } : {}),
+        });
+      } catch (cause) {
+        // ネットワーク例外（タイムアウト・接続断等）を翻訳（§7.1.1 例外翻訳）。
+        const reason = aborter && aborter.signal.aborted
+          ? `応答タイムアウト（${this._timeoutMs}ms）`
+          : cause.message;
+        throw new ComputeError(`計算 API への接続に失敗しました: ${reason}`, { error_type: 'network' });
+      }
+
+      try {
+        payload = await response.json();
+      } catch (cause) {
+        if (aborter && aborter.signal.aborted) {
+          throw new ComputeError(`計算 API への接続に失敗しました: 応答タイムアウト（${this._timeoutMs}ms）`, { error_type: 'network' });
+        }
+        throw cause;
+      }
+    } finally {
+      if (timerId !== null) {
+        clearTimeout(timerId);
+      }
+    }
 
     if (!response.ok) {
       const error = (payload && payload.error) || {};

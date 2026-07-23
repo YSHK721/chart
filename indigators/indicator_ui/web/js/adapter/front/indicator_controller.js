@@ -29,6 +29,16 @@ import { MarketProfileController } from './market_profile_controller.js';
 import { TimeframeController } from './timeframe_controller.js';
 import { seriesKind } from '../../domain/series_kind.js';
 import { barStyleEditableFor } from '../../usecase/form_model.js';
+import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
+import { isActorDriven } from '../../usecase/actor_driven_ids.js';
+import { STALL_DEADLINE_MS, UpdateScheduler } from './update_scheduler.js';
+
+// STALL_DEADLINE_MS の単一ソースは update_scheduler.js（ISSUE-157・SOLID 是正 🔴-1 で抽出）。
+//   既存 import（テスト・他ファイル）を壊さないため本モジュールからも再 export する。
+//   ※ 「export { X } from モジュール」の再 export 構文は build.mjs の stripModuleSyntax
+//     （import 行剥がし）で壊れるため、import 済みシンボルの別行 export
+//     （剥がし後は無害なブロック文）にする。
+export { STALL_DEADLINE_MS };
 
 // =========================================================================
 // フロントロール契約（ISP・ISSUE-099 🟡-3/🟡-4）
@@ -89,7 +99,7 @@ export const TIMEFRAME_HOST_CONTRACT = Object.freeze({
   role: 'TimeframeHost',
   methods: Object.freeze(['recomputeAllApplied', '_persistAll']),
   fields: Object.freeze([
-    '_timeframe', '_recomputeDepth', '_datasetRef', '_recentBars',
+    '_timeframe', '_recomputeDepth', '_recomputeLastStartMs', '_datasetRef', '_recentBars',
     '_state', '_renderer', '_loadCandles', '_timeframeObserver',
   ]),
   // bind() 後のみ在席（fresh インスタンスでは未在席・controller は optional chaining で許容）。
@@ -172,6 +182,18 @@ export class IndicatorController {
     //   recomputeInstance をネスト呼びするため。bool だと内側 finally がバッチ途中で解除し、
     //   その隙に tick が割り込む（torn なバッチ）。カウンタなら最外バッチ終了まで true を維持する。
     this._recomputeDepth = 0;
+    // ISSUE-157（クロック駆動設計）: 指標更新の「要求フラグ＋クロック」駆動は UpdateScheduler へ
+    //   委譲する（SOLID 是正 🔴-1・設計意図の詳細は update_scheduler.js 冒頭コメント参照）。
+    //   実体（末尾差分/full 再計算）と外部バッチ述語（isRecomputing・時限式）を依存注入する。
+    this._scheduler = new UpdateScheduler({
+      runForming: () => this.recomputeFormingTails(),
+      runFull: () => this.recomputeAllApplied({ mode: 'full' }),
+      isBlocked: () => this.isRecomputing(),
+    });
+    // isRecomputing() の時限化に使う（外部バッチのハングでゲートが恒久 true にならない）。
+    this._recomputeLastStartMs = 0;
+    // ISSUE-153: 復元実行中の Promise（null=非実行）。applyIndicator が完了待ちに使う。
+    this._restoreInFlight = null;
     // MP（A7）アクター駆動のオーケストレーションを委譲する協働子（ISSUE-094 🔴-4）。
     //   host=this を渡し、apply/enable/toggle/remove/gear/reapply/restore/live-recompute を委譲する。
     //   subclass の inherited メソッド呼出（this._toggleMarketProfileVisible 等）・_mpParams override を
@@ -183,8 +205,48 @@ export class IndicatorController {
   }
 
   // 競合ガード: 再計算バッチ実行中なら true。LiveUpdater が tick 先頭で参照しスキップ判定する。
+  //   ISSUE-157: 時限式。深さカウンタはバッチの await がハングすると finally が走らず永久に
+  //   正のままになる（＝全ゲートが恒久閉鎖）。STALL_DEADLINE_MS を超えて「実行中」のバッチは
+  //   ハングとみなし false を返す（守るべき健全なバッチはもう存在しない）。
   isRecomputing() {
-    return this._recomputeDepth > 0;
+    if (this._recomputeDepth <= 0) {
+      return false;
+    }
+    return (Date.now() - this._recomputeLastStartMs) <= STALL_DEADLINE_MS;
+  }
+
+  // =========================================================================
+  // 足内（形成中バー）末尾差分再計算 — ライブ・リプレイ同一設計（2026-07-22 ユーザー裁定）
+  //   指標の末尾点は「価格（形成中バー）の更新と同じ粒度」で追従する。全再計算（remove+redraw）
+  //   はバー確定時のみ。対象は共有登録リスト INTRABAR_FORMING_IDS（ISSUE-145 規約）。
+  // =========================================================================
+
+  // 登録指標（INTRABAR_FORMING_IDS）の末尾点のみを latest 差分で再計算する。
+  //   forceTail=true で混在 kind（line+horizontal_line＝marod 系）でも末尾差分経路へ倒す
+  //   （replay の recomputeFormingLatest と同一機構＝両モードの実体を単一化）。
+  //   非登録指標（帯系等）は触らない（因果窓ゆえ足内で動くべき値がない）。
+  async recomputeFormingTails() {
+    // ISSUE-156（C）: 登録指標を並列リクエストする（サーバは計算プール化済み＝指標間の
+    //   レイテンシが重ならない）。各 recomputeInstance は自身の job.series で独立に描画するため
+    //   並列安全（_recomputeDepth は深さカウンタ＝並列でも整合）。失敗は個別に握りつぶし
+    //   （Promise.allSettled）、他指標の末尾更新を道連れにしない。
+    const targets = [...this._state.applied].filter(
+      (inst) => INTRABAR_FORMING_IDS.has(inst.indicatorId) && this._meta.has(inst.instanceId),
+    );
+    await Promise.allSettled(targets.map((inst) => this.recomputeInstance(
+      inst.instanceId, null, this._paramsObject(inst.params), { mode: 'latest', forceTail: true },
+    )));
+  }
+
+  // tick 粒度の末尾差分要求（UpdateScheduler へ委譲・ISSUE-157 クロック駆動設計）。
+  //   呼び出し元 API 温存のための薄い委譲（coalesce/latest-wins は scheduler 側）。
+  requestFormingRecompute() {
+    this._scheduler.requestForming();
+  }
+
+  // バー確定時の full 再計算要求（ISSUE-151: 必達・UpdateScheduler へ委譲）。
+  requestFullRecompute() {
+    this._scheduler.requestFull();
   }
 
   // =========================================================================
@@ -322,8 +384,12 @@ export class IndicatorController {
   // =========================================================================
 
   // MP 種別（アクター委譲型）判定。真なら _draw / _gatewayAdapter をバイパスする。
+  // アクター駆動型（/compute を持たない）指標かの判定。具体名分岐は usecase の能力台帳
+  //   （actor_driven_ids.js）へ移譲した（SOLID 是正 🔴-4・OCP: 新しいアクター駆動指標の追加は
+  //   台帳への 1 行追記で完結し本 controller は不変）。メソッド名は host 契約
+  //   （MARKET_PROFILE_HOST_CONTRACT）・subclass override 互換のため温存する。
   _isMarketProfile(def) {
-    return def?.compute?.computeId === 'market_profile';
+    return isActorDriven(def);
   }
 
   // MP アクターへ渡す取得 params（resmode/bins/va/src/range）を組み立てる（apply/gear/restore 共通）。
@@ -358,6 +424,11 @@ export class IndicatorController {
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
   //   MP 種別（computeId==='market_profile'）は /compute をバイパスし MarketProfileActor へ委譲する。
   async applyIndicator(indicatorId, variant) {
+    // ISSUE-153: 復元（restore＝_state 丸ごと置換）と競合すると、先に適用した instance が
+    //   state から消えて描画だけ残る（孤児化）。復元中は完了を待ってから適用する。
+    if (this._restoreInFlight) {
+      await this._restoreInFlight;
+    }
     const def = this._catalog.get(indicatorId);
     if (!def) {
       return null;
@@ -450,14 +521,16 @@ export class IndicatorController {
     const gateway = this._gatewayAdapter(newVariant, wantLatest ? 'latest' : 'full');
     // 競合ガード: 再計算中は isRecomputing()=true（ライブ更新の tick がスキップ判定に参照）。
     //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
+    //   開始時刻の記録は isRecomputing() の時限判定（ISSUE-157）に使う。
     this._recomputeDepth += 1;
+    this._recomputeLastStartMs = Date.now();
     try {
       const result = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
       // 競合削除ガード（ISSUE-105 🟡-2）: recompute の await 中に凡例 close（removeInstance）で
       //   当該インスタンスが state から除去されると、result.state は除去前スナップショット由来のため
-      //   そのまま代入すると除去済みインスタンスが「復活」する。これがフェーズ2 で再描画されると
+      //   反映すると除去済みインスタンスが「復活」する。これがフェーズ2 で再描画されると
       //   凡例行の無い残留系列（ゾンビペイン）＋永続化汚染を生む。await 後の live state で在席を
-      //   確認し、除去済みなら復活させず（result.state から当該のみ除去）accepted:false を返す。
+      //   確認し、除去済みなら live state に触れず accepted:false を返す。
       const removedDuringAwait = !this._state.applied.some((i) => i.instanceId === instanceId);
       this._state = removedDuringAwait ? facadeRemove(result.state, instanceId) : result.state;
       if (removedDuringAwait || !result.accepted) {
@@ -493,7 +566,9 @@ export class IndicatorController {
       // params 変更で系列名が変わりうる（tgp の分位線 btlm_q{N}＝q_low/q_high 依存）ため、
       // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
       // 全系列を現在名で再生成する（line / horizontal_line 共通）。
-      this._renderer.remove(job.instanceId);
+      // ISSUE-149: keepPane=true で pane を温存（従来の全除去→末尾 addPane は更新のたびに
+      //   pane が最下段へ移動していた）。redraw は既存 pane（同じ位置）へ再生成される。
+      this._renderer.remove(job.instanceId, { keepPane: true });
       this._draw(job.instanceId, job.def, job.series, job.params);
     }
     // 非表示状態を維持（redraw は可視で再生成するため）。
@@ -563,10 +638,15 @@ export class IndicatorController {
   //   フェーズ2（同期一括描画）: await を挟まず全 job を描画する。中間ペイントが起きないため、
   //     メイン系列（opts.preRender＝setCandles）と全指標が同時に更新される（ISSUE-023）。
   //   persist/legend は描画後に1回だけ。適用 0 でも preRender（候補：メイン系列差し替え）は実行する。
-  async recomputeAllApplied({ mode = 'full', preRender = null } = {}) {
+  async recomputeAllApplied({ mode = 'full', preRender = null, skip = null } = {}) {
     // フェーズ1: 直列計算（描画なし）。
     const jobs = [];
     for (const inst of [...this._state.applied]) {
+      // skip 述語（ISSUE-158 ②・replay 専用 additive）: 一括リビール済み指標の per-step 計算を
+      //   省略する。present（ライブ）は skip を渡さない＝挙動不変。
+      if (skip && skip(inst)) {
+        continue;
+      }
       const meta = this._meta.get(inst.instanceId);
       if (!meta) {
         continue;
@@ -626,7 +706,21 @@ export class IndicatorController {
     this._persistence.saveUiState(this._state.uiState);
   }
 
+  // ISSUE-153: restore は保存状態で _state を丸ごと置換するため、読込直後〜復元完了の間に
+  //   applyIndicator された指標が state から消え「描画だけ残る孤児」になる（以後どの再計算にも
+  //   乗らず凍結＝『ライブで btlm_trail が更新されない』の真因）。復元中フラグを公開し、
+  //   applyIndicator 側が完了を待つことで競合を排除する。
   async restore() {
+    const run = this._restoreRun();
+    this._restoreInFlight = run;
+    try {
+      await run;
+    } finally {
+      this._restoreInFlight = null;
+    }
+  }
+
+  async _restoreRun() {
     const json = {
       applied: this._persistence.loadApplied(),
       favorites: this._persistence.loadFavorites(),
