@@ -394,6 +394,64 @@ test('recomputeAllApplied skips drawing an instance removed during the compute a
   assert.ok(removeCalls.includes(instId), 'ガードが renderer.remove を確実に呼ぶ');
 });
 
+// ISSUE-165 回帰: 時間足切替 1 秒以内の必達要件のため、フェーズ1 の /compute は並列に発行する。
+//   併せて旧・直列必須の根拠だった 2 つの共有状態レースの恒久是正を固定する:
+//   (a) series は per-call gateway 捕捉＝完了順が前後（out-of-order）しても取り違えない。
+//   (b) state は当該 instance 行のみマージ＝兄弟インスタンスの世代前進が失われない（lost update なし）。
+test('recomputeAllApplied issues computes in parallel without series cross-talk or generation lost update (ISSUE-165)', async () => {
+  const noop = () => {};
+  // indicatorId ごとに手動解決できる compute スタブ（apply 時はゲート前＝即時解決）。
+  const pending = new Map(); // indicatorId → resolve(series)
+  let gateArmed = false;
+  const seriesFor = {
+    tgp_btlm: [{ name: 'btlm_mean', kind: 'line', data: [] }],
+    profit_band: [{ name: 'pOL 99%', kind: 'line', data: [] }],
+  };
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: {
+      compute: async (req) => {
+        if (!gateArmed) {
+          return { ok: true, generation: req.generation ?? 0, series: seriesFor[req.indicatorId] };
+        }
+        return new Promise((resolve) => {
+          pending.set(req.indicatorId, () =>
+            resolve({ ok: true, generation: req.generation ?? 0, series: seriesFor[req.indicatorId] }));
+        });
+      },
+    },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop, setVisible: noop, remove: noop },
+    document: null,
+  });
+  // Arrange: 異なる 2 指標を適用（series 取り違えを名前で判別できるようにする）。
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  await ctrl.applyIndicator('profit_band', 'default');
+  const [tgpId, bandId] = ctrl._state.applied.map((i) => i.instanceId);
+  // フェーズ2 の描画 job（instanceId → series）を観測する spy。
+  const jobSeries = new Map();
+  ctrl._renderInstance = (job) => { jobSeries.set(job.instanceId, job.series); };
+
+  // Act: バッチ開始 → 双方が同時に in-flight（並列発行）→ 完了順を逆転させて解決。
+  gateArmed = true;
+  const batch = ctrl.recomputeAllApplied();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(pending.size, 2, 'フェーズ1 は全指標の compute を並列に発行する（直列なら 1 件のみ）');
+  pending.get('profit_band')();  // 後発（2 番目）の指標が先に完了する out-of-order。
+  await Promise.resolve();
+  await Promise.resolve();
+  pending.get('tgp_btlm')();
+  await batch;
+
+  // Assert (a): series の取り違えなし（各 job は自 instance の compute 応答を保持する）。
+  assert.deepEqual(jobSeries.get(tgpId).map((s) => s.name), ['btlm_mean']);
+  assert.deepEqual(jobSeries.get(bandId).map((s) => s.name), ['pOL 99%']);
+  // Assert (b): 兄弟の世代前進が失われない（丸ごと代入なら最後の代入が勝ち片方が 0 に戻る）。
+  const generations = ctrl._state.applied.map((i) => i.generation);
+  assert.deepEqual(generations, [1, 1], `両 instance の generation が前進する（実際: ${JSON.stringify(generations)}）`);
+});
+
 // restore で永続化時間足を復元した際、時間足購読者へ通知する。
 //   回帰: code-review 🔴。通知欠落だと売買マーカーの該当時間足フィルタが
 //   restore 後の現在時間足を旧値のまま誤判定し、該当時間足なのに非表示になる（逆動作）。

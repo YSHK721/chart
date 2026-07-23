@@ -500,8 +500,11 @@ export class IndicatorController {
   // 計算フェーズ（async）: state を更新し、描画に必要な series を job へ退避して返す（ISSUE-023）。
   //   renderer は呼ばない。複数指標を一括描画する recomputeAllApplied は全 job を集めてから
   //   _renderInstance を await を挟まない同期パスで呼び、中間ペイント（バラバラ更新）を防ぐ。
-  //   ※ this._lastSeries は gateway compute が上書きする共有フィールドのため、compute 直後に
-  //     job へ確保する（描画まで遅延すると次指標の series で上書きされ取り違える）。
+  //   ISSUE-165: 並列実行しても安全（recomputeAllApplied / recomputeFormingTails が並列に呼ぶ）。
+  //   - series は per-call gateway（gateway.lastSeries）から取る。共有 this._lastSeries だと
+  //     並列時に他インスタンスの compute 完了が microtask 間へ割り込んで上書きし取り違える。
+  //   - state は丸ごと代入せず当該 instance 行のみマージする。丸ごと代入は並列時に同一
+  //     スナップショット由来の最後の代入が勝ち、兄弟インスタンスの世代前進が失われる（lost update）。
   async _computeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
     const meta = this._meta.get(instanceId);
     if (!meta) {
@@ -532,9 +535,20 @@ export class IndicatorController {
       //   凡例行の無い残留系列（ゾンビペイン）＋永続化汚染を生む。await 後の live state で在席を
       //   確認し、除去済みなら live state に触れず accepted:false を返す。
       const removedDuringAwait = !this._state.applied.some((i) => i.instanceId === instanceId);
-      this._state = removedDuringAwait ? facadeRemove(result.state, instanceId) : result.state;
       if (removedDuringAwait || !result.accepted) {
+        // 非採用（世代競合破棄・除去済み）は state 変更なし＝live state を据え置く（ISSUE-165:
+        //   スナップショット丸ごと代入をやめ、並列時に兄弟の変更を巻き戻さない）。
         return { instanceId, accepted: false };
+      }
+      // 採用: result.state（スナップショット＋自行のみ更新）から当該 instance 行だけを
+      //   live state へマージする（ISSUE-165: 丸ごと代入の lost update 恒久解消）。
+      //   facade.recompute の差分は applied[idx] の 1 行のみ（seqCounters/uiState は不変）。
+      const row = result.state.applied.find((i) => i.instanceId === instanceId);
+      if (row) {
+        this._state = {
+          ...this._state,
+          applied: this._state.applied.map((i) => (i.instanceId === instanceId ? row : i)),
+        };
       }
       const inst = this._state.applied.find((i) => i.instanceId === instanceId);
       return {
@@ -543,8 +557,9 @@ export class IndicatorController {
         def: meta.def,
         params,
         wantLatest,
-        // compute 直後の series を job へ確保（共有 _lastSeries の上書き対策）。
-        series: this._lastSeries,
+        // per-call gateway に捕捉された series を job へ確保（ISSUE-165: 共有 _lastSeries は
+        //   並列時に他インスタンスの完了割り込みで上書きされ取り違えるため使わない）。
+        series: gateway.lastSeries,
         // 非表示状態を描画時に維持するためのフラグ（redraw は可視で再生成するため）。
         hidden: !!(inst && !inst.visible),
       };
@@ -633,14 +648,17 @@ export class IndicatorController {
   // 適用済み全指標を現在の params / 時間足で再計算・再描画する（ライブ更新の再計算入口）。
   //   competition ガード（generation+1・accepts 破棄）は recomputeInstance に集約済み。
   //   適用が無ければ何もしない（no-op）。
-  //   フェーズ1（直列計算）: 各指標を順に計算し state を更新する（this._state は呼び出し時 clone・
-  //     最後の代入が勝つため並列化は generation の lost update を生む＝直列必須）。描画はしない。
+  //   フェーズ1（並列計算・ISSUE-165）: /compute 系指標は全件を並列に要求する（サーバは計算
+  //     プール化済み＝指標間のレイテンシが重ならない。時間足切替 1 秒以内の必達要件）。
+  //     旧・直列必須の根拠だった 2 つの共有状態は _computeInstance 側で恒久是正済み
+  //     （series=per-call gateway 捕捉・state=当該 instance 行のみマージ）。いずれかの compute が
+  //     例外なら従来どおり本メソッドは reject し、フェーズ2（描画・persist）へ進まない。描画はしない。
   //   フェーズ2（同期一括描画）: await を挟まず全 job を描画する。中間ペイントが起きないため、
   //     メイン系列（opts.preRender＝setCandles）と全指標が同時に更新される（ISSUE-023）。
   //   persist/legend は描画後に1回だけ。適用 0 でも preRender（候補：メイン系列差し替え）は実行する。
   async recomputeAllApplied({ mode = 'full', preRender = null, skip = null } = {}) {
-    // フェーズ1: 直列計算（描画なし）。
-    const jobs = [];
+    // フェーズ1: 並列計算（描画なし）。
+    const targets = [];
     for (const inst of [...this._state.applied]) {
       // skip 述語（ISSUE-158 ②・replay 専用 additive）: 一括リビール済み指標の per-step 計算を
       //   省略する。present（ライブ）は skip を渡さない＝挙動不変。
@@ -658,11 +676,20 @@ export class IndicatorController {
         await this._mp.onLiveRecompute(inst);
         continue;
       }
-      const job = await this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode });
-      if (job && job.accepted) {
-        jobs.push(job);
-      }
+      targets.push(inst);
     }
+    const settled = await Promise.allSettled(targets.map((inst) =>
+      this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode })));
+    // 例外は従来（直列 await）と同じく呼び出し元へ伝播する（描画・persist はしない）。
+    //   全 settled 後に投げるため、他指標の in-flight compute が宙に残らない。
+    const rejected = settled.find((s) => s.status === 'rejected');
+    if (rejected) {
+      throw rejected.reason;
+    }
+    // jobs は applied 順（targets 順）＝フェーズ2 の描画順は従来と不変。
+    const jobs = settled
+      .map((s) => s.value)
+      .filter((job) => job && job.accepted);
     // フェーズ2: ここから await を挟まない同期一括描画。
     if (preRender) {
       preRender();
@@ -823,7 +850,10 @@ export class IndicatorController {
   _gatewayAdapter(variantOverride, mode) {
     const compute = this._compute;
     const self = this;
-    return {
+    const gw = {
+      // per-call series 捕捉（ISSUE-165）: 本 adapter は呼び出しごとに生成されるため、
+      //   compute 応答の series を自身へ保持すれば並列実行でも取り違えない。
+      lastSeries: null,
       async compute(req) {
         // 計算.時間足（params.timeframe）の per-indicator override は TimeframeController が解決する。
         //   backend は params.timeframe を受理引数に含めない（_accepted_kwargs で除外）ため副作用なし。
@@ -840,10 +870,13 @@ export class IndicatorController {
           //   replay subclass が _extraComputeFields を override して untilTime/forming を注入する。
           ...self._extraComputeFields(),
         });
+        gw.lastSeries = result.series;
+        // 共有 _lastSeries は applyIndicator/restore の単発（直列）経路が読むため併記維持。
         self._lastSeries = result.series;
         return result;
       },
     };
+    return gw;
   }
 
   _toJson(i) {
