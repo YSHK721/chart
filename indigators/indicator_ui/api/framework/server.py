@@ -22,12 +22,66 @@ HTTP の入出力・静的配信・パストラバーサル防止のみを担う
 from __future__ import annotations
 
 import json
+import queue
 import sys
+import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
+
+
+class _ComputeWorker:
+    """重い計算を専用スレッド 1 本で直列実行するワーカー（ISSUE-155）。
+
+    背景: 旧実装は単一スレッド HTTPServer で全リクエストを直列化していた（rpy2/R が
+    スレッド非安全のため）。その結果、重い /compute の背後に静的 JS・/candles まで並び、
+    ページ起動が数秒〜ハング相当まで遅延した（別タブ併用時に顕著）。
+
+    本ワーカーは「重い計算だけを常に同一スレッドで直列実行」する。rpy2/R はスレッド親和
+    （同一スレッドからの呼び出しなら安全）のため旧実装と同じ安全性を保ちながら、静的配信・
+    /candles・/live_ticks 等の軽量応答は ThreadingHTTPServer で並行化できる。
+    """
+
+    def __init__(self) -> None:
+        self._q: "queue.Queue[tuple]" = queue.Queue()
+        self._thread = threading.Thread(target=self._loop, name="compute-worker", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while True:
+            fn, done, box = self._q.get()
+            try:
+                box["result"] = fn()
+            except BaseException as exc:  # noqa: BLE001（呼び出し側スレッドへ再送出）
+                box["error"] = exc
+            finally:
+                done.set()
+
+    def run(self, fn):
+        """fn をワーカースレッドで実行し、結果を返す（例外は呼び出し側へ再送出）。"""
+        done = threading.Event()
+        box: dict = {}
+        self._q.put((fn, done, box))
+        done.wait()
+        if "error" in box:
+            raise box["error"]
+        return box.get("result")
+
+
+_COMPUTE_WORKER = _ComputeWorker()
+
+# ISSUE-156（B/A）: ワーカー分離とプール化。
+#   - _COMPUTE_WORKER: rpy2/R スレッド親和が必要な tgp_btlm 専用（従来どおり単一スレッド固定）。
+#   - _MP_WORKER: Market Profile 系 GET 専用（重い zp 計算が指標計算をブロックしない分離・
+#     MP 内部状態は単一ワーカーで従来どおり直列）。
+#   - _COMPUTE_POOL: rpy2 非依存の指標 /compute 用プール（純 numpy/pandas＝スレッド安全。
+#     動的モジュールロードは call_binding 側の import ロック、データ供給は serving_cache 側の
+#     ロックで保護）。GIL 下でも numpy の C 区間が並列化され、指標間のレイテンシが重ならない。
+_MP_WORKER = _ComputeWorker()
+_COMPUTE_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="compute-pool")
 
 # ISSUE-087 🟡-3（正規化）: 固有名パッケージ（marketdata / market_profile_api）の恒久解決は
 #   venv の .pth（tools/install_dev_paths.py）が担う。本殻はエントリポイントとして
@@ -51,6 +105,7 @@ except ImportError:  # フォールバック（未登録環境の自己完結起
 from marketdata import dataset  # noqa: E402
 from api_shared import http_contract as _contract  # noqa: E402  (nested_error 単一定義・ISSUE-094 🔵-11)
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
+from adapter.compute.call_binding import requires_dedicated_worker  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
 from market_profile_api.controller.market_profile_controller import handle_market_profile  # noqa: E402
 from market_profile_api.controller.market_profile_forming_controller import (  # noqa: E402
@@ -191,7 +246,15 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            status, payload = handle_compute(body)
+            # ISSUE-155/156: スレッド親和必須（rpy2/R 等）の指標は専用ワーカーで単一スレッド固定、
+            #   それ以外の指標は純 numpy/pandas のためプールで並列実行（指標間のレイテンシが
+            #   重ならない）。応答書き出しはリクエストスレッド側。どの指標が親和必須かは
+            #   call_binding の宣言（thread_affinity）が唯一の真実源＝本殻は指標名を知らない
+            #   （SOLID 是正 🔴-3・OCP: 親和指標の追加はテーブル宣言のみで完結する）。
+            if requires_dedicated_worker(body.get("indicatorId")):
+                status, payload = _COMPUTE_WORKER.run(lambda: handle_compute(body))
+            else:
+                status, payload = _COMPUTE_POOL.submit(handle_compute, body).result()
         except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
             self._send_json(500, _nested_error("internal", f"サーバ内部エラー: {exc}"))
             return
@@ -208,13 +271,13 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             self._handle_forming_bar(parse_qs(parsed.query))
             return
         if parsed.path == "/market_profile":
-            self._handle_market_profile(parse_qs(parsed.query))
+            _MP_WORKER.run(lambda: self._handle_market_profile(parse_qs(parsed.query)))
             return
         if parsed.path == "/market_profile_forming":
-            self._handle_market_profile_forming(parse_qs(parsed.query))
+            _MP_WORKER.run(lambda: self._handle_market_profile_forming(parse_qs(parsed.query)))
             return
         if parsed.path == "/tf_period_profile":
-            self._handle_tf_period_profile(parse_qs(parsed.query))
+            _MP_WORKER.run(lambda: self._handle_tf_period_profile(parse_qs(parsed.query)))
             return
         if parsed.path == "/live_ticks":
             self._handle_live_ticks(parse_qs(parsed.query))
@@ -376,12 +439,14 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
 def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     """localhost で HTTP サーバを起動する（§7.3 localhost バインドのみ）。
 
-    単一スレッドの ``HTTPServer`` を用いる：fitter="tgp" は rpy2 経由で埋め込み R を呼ぶが、
-    R はスレッド非安全で、リクエストごとに別スレッドで処理する ``ThreadingHTTPServer`` だと
-    2 回目以降の R 呼び出しが失敗する。全リクエストを同一（メイン）スレッドで直列処理して
-    R をスレッド安全に保つ（ローカル単一ユーザー前提のため直列化の影響は無視できる）。
+    ISSUE-155: ``ThreadingHTTPServer`` で軽量応答（静的 JS・/candles・/live_ticks 等）を
+    並行化し、重い計算（/compute・market_profile 系）は ``_ComputeWorker``（専用スレッド
+    1 本）へ直列送致する。fitter="tgp" の rpy2/R はスレッド非安全だが、常に同一ワーカー
+    スレッドから呼ばれるため旧・単一スレッド実装と同じ安全性を保つ。これにより重い計算の
+    背後で静的配信までもが待たされてページ起動が遅延/ハングする問題を構造的に解消する。
     """
-    httpd = HTTPServer((host, port), IndicatorUIRequestHandler)
+    httpd = ThreadingHTTPServer((host, port), IndicatorUIRequestHandler)
+    httpd.daemon_threads = True
     url = f"http://{host}:{port}/"
     sys.stdout.write(f"インジケーター管理 UI（B方式）を起動しました: {url}\n")
     sys.stdout.write("  POST /compute  GET /candles?datasetRef=sample  GET /（web/ 静的配信）\n")

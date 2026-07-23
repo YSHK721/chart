@@ -18,6 +18,7 @@ CLEAN_ARCH §6: HTTP・スレッド・静的配信という偶有的技術を最
 from __future__ import annotations
 
 import json
+import queue
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -73,6 +74,39 @@ def _error_response(
     return nested_error(error_type, message, generation=generation)
 
 
+class _HeavyWorker:
+    """重い処理を専用スレッド 1 本で直列実行するワーカー（ISSUE-156・ライブ ISSUE-155 と同一設計）。
+
+    rpy2/R はスレッド親和（常に同一スレッドからの呼び出しが必要）のため、ロック直列だけでは
+    リクエストごとに実行スレッドが変わる ThreadingHTTPServer 下で安全性が保証されない。
+    本ワーカーが heavy 経路（candles resample / compute / intraday）を常に同一スレッドで実行する。
+    """
+
+    def __init__(self) -> None:
+        self._q: "queue.Queue[tuple]" = queue.Queue()
+        self._thread = threading.Thread(target=self._loop, name="replay-heavy-worker", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while True:
+            fn, done, box = self._q.get()
+            try:
+                box["result"] = fn()
+            except BaseException as exc:  # noqa: BLE001（呼び出し側スレッドへ再送出）
+                box["error"] = exc
+            finally:
+                done.set()
+
+    def run(self, fn):
+        done = threading.Event()
+        box: dict = {}
+        self._q.put((fn, done, box))
+        done.wait()
+        if "error" in box:
+            raise box["error"]
+        return box.get("result")
+
+
 class ReplayApp:
     """UC 結線を保持し、HTTP ハンドラから呼ばれるアプリケーション面（framework 層）。
 
@@ -106,6 +140,11 @@ class ReplayApp:
         #   web_dir / shared_js_root から本クラス内で導出する（配信面・応答 byte は不変）。
         self.static_server = StaticFileServer(self.web_dir, self.shared_js_root)
         self._lock = heavy_lock if heavy_lock is not None else threading.Lock()
+        # ISSUE-156（H）: 重い処理をロック直列に加えて「常に同一スレッド」で実行する専用ワーカー。
+        #   ロックだけでは rpy2/R（スレッド親和＝同一スレッドからの呼び出しが必要）の安全性が
+        #   保証されないため、ライブサーバ（indicator_ui ISSUE-155）と同一設計へ統一する。
+        #   既存の heavy_lock 注入 API・ロックの意味（外部共有直列化）は温存（ワーカー内でも取得）。
+        self._heavy_worker = _HeavyWorker()
         # MP サブバー tick 逐次成長の Port（任意注入）。None のときは /market_profile_forming
         #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
         self._forming_port = forming_port
@@ -117,8 +156,10 @@ class ReplayApp:
 
     def candles(self, ref: str, tf: "str | None", limit: "int | None") -> "list[dict]":
         req = RevealCandlesRequest(ref=ref, timeframe=tf, limit=limit)
-        with self._lock:  # 巨大 resample を直列化（並行多重で OOM 防止）
-            return reveal_candles(request=req, candle_port=self._candle_port)
+        def _run():
+            with self._lock:  # 巨大 resample を直列化（並行多重で OOM 防止）
+                return reveal_candles(request=req, candle_port=self._candle_port)
+        return self._heavy_worker.run(_run)
 
     def compute(self, body: dict) -> "list[dict]":
         req = CausalComputeRequest(
@@ -132,16 +173,20 @@ class ReplayApp:
             forming=body.get("forming"),
             params=dict(body.get("params") or {}),
         )
-        with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
-            return causal_compute(request=req, compute_port=self._compute_port)
+        def _run():
+            with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
+                return causal_compute(request=req, compute_port=self._compute_port)
+        return self._heavy_worker.run(_run)
 
     def intraday(self, ref: str, start: int, end: int, mode: str, want_secs: bool = False) -> dict:
         # proto do_GET /intraday: 非 tick の未知 ref は事前に validation 拒否する。
         if self._is_known_ref is not None and ref != "jp225_tick" and not self._is_known_ref(ref):
             raise ValueError(f"unknown {ref}")
         req = IntrabarWindowRequest(ref=ref, start=start, end=end, mode=mode, want_secs=want_secs)
-        with self._lock:  # ティック読込/集計を直列化（OOM 防止）
-            res = intrabar_window(request=req, window_port=self._window_port)
+        def _run():
+            with self._lock:  # ティック読込/集計を直列化（OOM 防止）
+                return intrabar_window(request=req, window_port=self._window_port)
+        res = self._heavy_worker.run(_run)
         payload: dict = {"ok": res.ok, "m1": res.m1, "ticks": res.ticks}
         if res.m1_error is not None:
             payload["m1_error"] = res.m1_error

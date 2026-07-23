@@ -31,6 +31,7 @@ dataset を逆 import しない（循環禁止）。tail_reader / rollup_store �
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,6 +46,11 @@ _BASE_CACHE: "dict[str, tuple[int, pd.DataFrame]]" = {}
 
 # resample 結果キャッシュ（load_dataframe の1段）。(ref, tf) → (mtime, resampled_df)。
 _RESAMPLE_CACHE: "dict[tuple[str, str | None], tuple[int | None, pd.DataFrame]]" = {}
+
+# ISSUE-156（A）: 供給キャッシュの直列化ロック（計算プール並列時の重複ビルド・torn-read 防止）。
+#   粗粒度 RLock（本モジュールの公開 3 関数全体を包む）。キャッシュヒットはメモリ参照のみで
+#   軽く、ミス時の重い CSV 読込/resample は従来どおり実質直列化される（多重ビルド防止）。
+_CACHE_LOCK = threading.RLock()
 
 
 def csv_mtime(path: Path) -> "int | None":
@@ -65,7 +71,7 @@ def baked_mtime(ref: str) -> "int | None":
     return cached[0] if cached is not None else None
 
 
-def load_base_dataframe(
+def _load_base_dataframe_unlocked(
     ref: str,
     *,
     path: Path,
@@ -98,7 +104,7 @@ def load_base_dataframe(
     return df
 
 
-def resolve_rollup_dataframe(
+def _resolve_rollup_dataframe_unlocked(
     ref: str,
     timeframe: "str | None",
     *,
@@ -117,7 +123,7 @@ def resolve_rollup_dataframe(
     return rollup_store.read(ref, timeframe)
 
 
-def resample_cached(
+def _resample_cached_unlocked(
     ref: str,
     timeframe: "str | None",
     base: pd.DataFrame,
@@ -140,6 +146,25 @@ def resample_cached(
     _RESAMPLE_CACHE[key] = (mtime, resampled)
     return resampled
 
+
+
+
+def load_base_dataframe(*args, **kwargs):
+    """ロック付き公開ラッパ（ISSUE-156・挙動不変）。実体は ``_load_base_dataframe_unlocked``。"""
+    with _CACHE_LOCK:
+        return _load_base_dataframe_unlocked(*args, **kwargs)
+
+
+def resolve_rollup_dataframe(*args, **kwargs):
+    """ロック付き公開ラッパ（ISSUE-156・挙動不変）。実体は ``_resolve_rollup_dataframe_unlocked``。"""
+    with _CACHE_LOCK:
+        return _resolve_rollup_dataframe_unlocked(*args, **kwargs)
+
+
+def resample_cached(*args, **kwargs):
+    """ロック付き公開ラッパ（ISSUE-156・挙動不変）。実体は ``_resample_cached_unlocked``。"""
+    with _CACHE_LOCK:
+        return _resample_cached_unlocked(*args, **kwargs)
 
 __all__ = [
     "csv_mtime",

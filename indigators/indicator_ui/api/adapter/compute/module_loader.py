@@ -17,8 +17,12 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType
+
+# ISSUE-156（A）: 動的パッケージロードの直列化ロック（計算プール並列時の初回競合防止）。
+_LOAD_LOCK = threading.Lock()
 
 
 def load_package(name: str, pkg_dir: Path) -> ModuleType:
@@ -30,6 +34,16 @@ def load_package(name: str, pkg_dir: Path) -> ModuleType:
     if cached is not None:
         return cached
 
+    # ISSUE-156（A）: 計算プール並列時の初回同時ロード競合を防ぐ（exec 途中の半構築モジュールを
+    #   他スレッドが観測しない）。ロック内で再チェックし、二重 exec も防止する。
+    with _LOAD_LOCK:
+        cached = sys.modules.get(name)
+        if cached is not None:
+            return cached
+        return _load_package_locked(name, pkg_dir)
+
+
+def _load_package_locked(name: str, pkg_dir: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         name,
         pkg_dir / "__init__.py",
@@ -53,6 +67,16 @@ def load_module(name: str, file_path: Path) -> ModuleType:
     if cached is not None:
         return cached
 
+    # ISSUE-156（A）: 計算プール並列時の初回同時ロード競合を防ぐ（exec 途中の半構築モジュールを
+    #   他スレッドが観測しない）。ロック内で再チェックし、二重 exec も防止する。
+    with _LOAD_LOCK:
+        cached = sys.modules.get(name)
+        if cached is not None:
+            return cached
+        return _load_module_locked(name, file_path)
+
+
+def _load_module_locked(name: str, file_path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, file_path)
     if spec is None or spec.loader is None:  # pragma: no cover - 環境異常（spec 解決不能）
         raise ImportError(f"モジュールを読み込めません: {name} ({file_path})")
