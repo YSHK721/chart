@@ -13,8 +13,26 @@
   },
   "btlm_trail_marod": {
     "color": "rgba(123, 104, 238, 1)",
+    "event_agg": "episode",
+    "k_events": 50,
     "maxbars": 100,
-    "source": "close"
+    "q_high": 0.95,
+    "q_low": 0.05,
+    "q_out": 0.99,
+    "source": "close",
+    "window_n": 500
+  },
+  "ma_marod": {
+    "color": "rgba(255, 152, 0, 1)",
+    "event_agg": "episode",
+    "k_events": 50,
+    "length": 50,
+    "ma_type": "ema",
+    "q_high": 0.95,
+    "q_low": 0.05,
+    "q_out": 0.99,
+    "source": "close",
+    "window_n": 500
   },
   "moving_averages": {
     "bb_stddev": 2.0,

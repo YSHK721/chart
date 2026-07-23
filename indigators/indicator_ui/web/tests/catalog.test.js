@@ -17,16 +17,16 @@ function paramOf(def, name) {
   return def.params.find((p) => p.name === name);
 }
 
-test('catalog: list returns the 22 registered indicators (基本4 + btlm_trail + btlm_trail_marod + profit_* 15 + market_profile)', () => {
+test('catalog: list returns the 23 registered indicators (基本4 + btlm_trail + btlm_trail_marod + ma_marod + profit_* 15 + market_profile)', () => {
   // Act
   const defs = list();
   // Assert: 既存4（tgp_btlm / profit_band / price_range_power / moving_averages）+ btlm_trail
   //   + btlm_trail_marod（新規・MAROD 別 pane オシレータ）+ profit_* 15 + market_profile = 22。
   const ids = defs.map((d) => d.id);
-  for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm', 'btlm_trail', 'btlm_trail_marod']) {
+  for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm', 'btlm_trail', 'btlm_trail_marod', 'ma_marod']) {
     assert.ok(ids.includes(base), `missing ${base}`);
   }
-  assert.equal(defs.length, 22);
+  assert.equal(defs.length, 23);
 });
 
 test('catalog: btlm_trail_marod is a pane oscillator (source 8択 / maxbars min3 / color + 0% 基準線)', () => {
@@ -34,18 +34,102 @@ test('catalog: btlm_trail_marod is a pane oscillator (source 8択 / maxbars min3
   assert.equal(d.id, 'btlm_trail_marod');
   assert.equal(d.placement, 'pane');
   assert.equal(d.category.nameKey, 'cat.oscillator');
-  // params は source / maxbars / color の 3 つ（back golden 契約と対称）。
-  assert.deepEqual(d.params.map((p) => p.name).sort(), ['color', 'maxbars', 'source']);
+  // params は source / maxbars / q_low / q_high / q_out / k_events / event_agg / window_n /
+  //   color（back golden 契約と対称・外れ値 3 パラメータは共有ビルダー EVQ_PARAMS）。
+  assert.deepEqual(
+    d.params.map((p) => p.name).sort(),
+    ['color', 'event_agg', 'k_events', 'maxbars', 'q_high', 'q_low', 'q_out', 'source', 'window_n'],
+  );
   assert.equal(paramOf(d, 'source').type, ParamType.ENUM);
   assert.equal(paramOf(d, 'source').default, 'close');
   assert.deepEqual(paramOf(d, 'source').enumValues, ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4']);
   assert.equal(paramOf(d, 'maxbars').type, ParamType.INT);
   assert.equal(paramOf(d, 'maxbars').default, 100);
+  assert.equal(paramOf(d, 'q_low').default, 0.05);
+  assert.equal(paramOf(d, 'q_high').default, 0.95);
+  // 外れ値イベント分位 3 パラメータ（ma_marod と対称・共有ビルダー）。
+  assert.equal(paramOf(d, 'q_out').default, 0.99);
+  assert.equal(paramOf(d, 'k_events').default, 50);
+  assert.equal(paramOf(d, 'event_agg').default, 'episode');
+  assert.deepEqual(paramOf(d, 'event_agg').enumValues, ['episode', 'bar']);
+  assert.equal(paramOf(d, 'window_n').type, ParamType.INT);
+  assert.equal(paramOf(d, 'window_n').default, 500);
   assert.equal(paramOf(d, 'color').type, ParamType.COLOR);
-  // 系列: MAROD line ＋ 0% 水平基準線（いずれも seriesName=btlm_trail_marod）。
+  // 系列: MAROD line ＋ 0% 水平基準線 ＋ 分位バンド（動的）＋ イベント分位水準線 4 本。
+  //   σ バンドは描画廃止（認知負荷削減・ユーザー裁定 2026-07-21）。
   const seriesNames = d.series.map((s) => s.seriesName);
-  assert.deepEqual(seriesNames, ['btlm_trail_marod', 'btlm_trail_marod']);
+  assert.deepEqual(seriesNames, [
+    'btlm_trail_marod', 'btlm_trail_marod', null,
+    'btlm_trail_marod_evq_med_hi', 'btlm_trail_marod_evq_med_lo',
+    'btlm_trail_marod_evq_ext_hi', 'btlm_trail_marod_evq_ext_lo',
+  ]);
+  // 動的分位 SeriesDef（btlm_trail_marod_q{pct}）が存在する。
+  const dyn = d.series.find((s) => s.dynamic && s.seriesNamePattern);
+  assert.ok(dyn, '動的分位 SeriesDef が存在する');
+  assert.equal(dyn.seriesNamePattern.template, 'btlm_trail_marod_q{pct}');
   assert.equal(d.compute.computeId, 'btlm_trail_marod');
+});
+
+test('catalog: ma_marod is a pane oscillator (source 8択 / ma_type 4択 / length min2 / color + 0% 基準線)', () => {
+  const d = get('ma_marod');
+  assert.equal(d.id, 'ma_marod');
+  assert.equal(d.placement, 'pane');
+  assert.equal(d.category.nameKey, 'cat.oscillator');
+  // params は source / ma_type / length / q_low / q_high / q_out / k_events / event_agg /
+  //   window_n / color（back golden 契約と対称）。
+  assert.deepEqual(
+    d.params.map((p) => p.name).sort(),
+    ['color', 'event_agg', 'k_events', 'length', 'ma_type', 'q_high', 'q_low', 'q_out', 'source', 'window_n'],
+  );
+  assert.equal(paramOf(d, 'source').type, ParamType.ENUM);
+  assert.equal(paramOf(d, 'source').default, 'close');
+  assert.deepEqual(paramOf(d, 'source').enumValues, ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4']);
+  // 基準線 MA: moving_averages と同一 4 択・既定 ema（計算の原子＝ソース解決も同期・§2.1）。
+  assert.equal(paramOf(d, 'ma_type').type, ParamType.ENUM);
+  assert.equal(paramOf(d, 'ma_type').default, 'ema');
+  assert.deepEqual(paramOf(d, 'ma_type').enumValues, ['sma', 'ema', 'smma', 'lwma']);
+  // source/ma_type のラベルは moving_averages と同一オブジェクト（同期の恒久固定）。
+  const ma = get('moving_averages');
+  assert.equal(paramOf(d, 'source').enumLabels, paramOf(ma, 'source').enumLabels);
+  assert.equal(paramOf(d, 'ma_type').enumLabels, paramOf(ma, 'ma_type').enumLabels);
+  assert.equal(paramOf(d, 'length').type, ParamType.INT);
+  assert.equal(paramOf(d, 'length').default, 50);
+  assert.equal(paramOf(d, 'q_low').default, 0.05);
+  assert.equal(paramOf(d, 'q_high').default, 0.95);
+  // 外れ値イベント分位（極端分位 q_out 既定 0.99・直近イベント K 既定 50・裁定 2026-07-21）。
+  assert.equal(paramOf(d, 'q_out').type, ParamType.FLOAT);
+  assert.equal(paramOf(d, 'q_out').default, 0.99);
+  assert.equal(paramOf(d, 'k_events').type, ParamType.INT);
+  assert.equal(paramOf(d, 'k_events').default, 50);
+  // 集計単位（episode＝エピソード極値が既定・bar＝旧方式へ切替可能・裁定 2026-07-21）。
+  assert.equal(paramOf(d, 'event_agg').type, ParamType.ENUM);
+  assert.equal(paramOf(d, 'event_agg').default, 'episode');
+  assert.deepEqual(paramOf(d, 'event_agg').enumValues, ['episode', 'bar']);
+  assert.equal(paramOf(d, 'window_n').type, ParamType.INT);
+  assert.equal(paramOf(d, 'window_n').default, 500);
+  assert.equal(paramOf(d, 'color').type, ParamType.COLOR);
+  assert.equal(paramOf(d, 'color').default, 'rgba(255, 152, 0, 1)');
+  // 系列: MA_MAROD line ＋ 0% 水平基準線 ＋ 正常バンド（動的）＋ イベント分位水準線 4 本
+  //   （{med|ext} × {hi|lo}）。σ バンド・_all 系列は描画廃止（認知負荷削減・裁定 2026-07-21）。
+  const seriesNames = d.series.map((s) => s.seriesName);
+  assert.deepEqual(seriesNames, [
+    'ma_marod', 'ma_marod', null,
+    'ma_marod_evq_med_hi', 'ma_marod_evq_med_lo',
+    'ma_marod_evq_ext_hi', 'ma_marod_evq_ext_lo',
+  ]);
+  // 動的分位 SeriesDef（ma_marod_q{pct}）が存在する。
+  const dyn2 = d.series.find((s) => s.dynamic && s.seriesNamePattern);
+  assert.ok(dyn2, '動的分位 SeriesDef が存在する');
+  assert.equal(dyn2.seriesNamePattern.template, 'ma_marod_q{pct}');
+  assert.equal(d.compute.computeId, 'ma_marod');
+});
+
+// ma_marod 棒グラフ（btlm_trail_marod 案A と同一の非波及ゲート）: line 系列のみ barStyleEditable=true。
+test('catalog: ma_marod の line 系列は barStyleEditable=true・水平線は false', () => {
+  const d = get('ma_marod');
+  assert.equal(d.series[0].kind, 'line');
+  assert.equal(d.series[0].barStyleEditable, true, 'MA_MAROD line は棒スタイル編集可');
+  assert.equal(d.series[1].barStyleEditable, false, '水平基準線は非対象');
 });
 
 // 案A（MAROD 棒グラフ）: MAROD line SeriesDef のみ barStyleEditable=true（スタイルタブで棒切替）。

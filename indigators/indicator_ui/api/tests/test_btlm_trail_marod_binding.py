@@ -28,7 +28,33 @@ def test_marod_registered_in_table_and_schema():
     binding = CallBinding.resolve("btlm_trail_marod", "default")
     assert binding.output_kind == "line"
     assert "btlm_trail_marod" in PARAM_DEFAULTS
-    assert set(PARAM_DEFAULTS["btlm_trail_marod"]) == {"source", "maxbars", "color"}
+    assert set(PARAM_DEFAULTS["btlm_trail_marod"]) == {
+        "source", "maxbars", "q_low", "q_high", "q_out", "k_events", "event_agg",
+        "window_n", "color",
+    }
+    # 外れ値イベント分位の既定は ma_marod と対称（共有プリミティブ common.event_quantiles が正）。
+    assert PARAM_DEFAULTS["btlm_trail_marod"]["q_out"] == 0.99
+    assert PARAM_DEFAULTS["btlm_trail_marod"]["k_events"] == 50
+    assert PARAM_DEFAULTS["btlm_trail_marod"]["event_agg"] == "episode"
+
+
+def test_marod_invoke_emits_quantile_band_and_event_quantile_levels():
+    # 実 runtime 経路: MAROD line ＋ 0% 基準線に加え、正常バンド＋イベント分位水準線 4 本を
+    #   emit する。σ バンドは描画廃止（認知負荷削減・ユーザー裁定 2026-07-21）。
+    chart = FakeChart(name="btlm_trail_marod")
+    binding = CallBinding.resolve("btlm_trail_marod", "default")
+    binding.invoke(chart, _ohlc(400, seed=7), {
+        "source": "close", "maxbars": 100, "q_low": 0.05, "q_high": 0.95,
+        "q_out": 0.99, "k_events": 10, "event_agg": "episode", "window_n": 200,
+    })
+    line_names = {p["name"] for p in chart.to_payloads() if p["kind"] == "line"}
+    assert {
+        "btlm_trail_marod",
+        "btlm_trail_marod_q5", "btlm_trail_marod_q95",
+        "btlm_trail_marod_evq_med_hi", "btlm_trail_marod_evq_med_lo",
+        "btlm_trail_marod_evq_ext_hi", "btlm_trail_marod_evq_ext_lo",
+    } <= line_names
+    assert "btlm_trail_marod_sig_hi" not in line_names
 
 
 def test_marod_invoke_emits_line_and_zero_baseline():

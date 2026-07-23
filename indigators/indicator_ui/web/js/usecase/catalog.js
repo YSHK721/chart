@@ -197,6 +197,36 @@ const BTLM_TRAIL = new IndicatorDef({
   compute: { computeId: 'btlm_trail', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
 
+// --- 外れ値イベント分位（共有ビルダー・ユーザー裁定 2026-07-21）------------
+// 採用指標（MAROD 系を初出とする別 pane オシレータ）で共通の 3 パラメータ
+//   （q_out / k_events / event_agg）と水準線 SeriesDef 4 本
+//   （{prefix}_evq_{med|ext}_{hi|lo}）を生成する単一情報源。計算・表示規約の正は
+//   common/event_quantiles.py（back）。仕様変更は本ビルダーと back 共有層のみで完結する。
+const EVQ_EVENT_AGG_LABELS = { episode: 'エピソード極値', bar: 'バー値（旧方式）' };
+const EVQ_PARAMS = (orderStart) => [
+  // q_out: イベントの極端分位（有効条件 max(q_high, 0.5) < q_out < 1・空欄/範囲外は極端線のみ黙ってオフ）。
+  param('q_out', ParamType.FLOAT, 0.99, [], null, {
+    group: 'group.calc', order: orderStart, label: '外れ値の極端分位', step: 0.01, min: 0, max: 1,
+    tooltip: '正常バンド（下側/上側分位）を超えた「外れ値イベント」値の集合に対する極端分位（既定 0.99・上側は分位 q_out／下側は 1-q_out・赤破線）。典型深度（イベント中央値・赤実線）と併せ、「外れたら典型的に／極端にどこまで行くか」の水準を描く。水準は当該バーより前のイベントのみから計算（因果・非リペイント）＝事前に把握できる。空欄・上側分位以下・範囲外は極端線のみオフ。',
+  }),
+  // k_events: イベント分位ローリングの直近観測件数（分散非定常対策・実測 2026-07-20）。
+  param('k_events', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['k_events', 1], messageKey: 'err.k_events' }], null, {
+    group: 'group.calc', order: orderStart + 1, step: 1, min: 1, label: '外れ値イベント数 K',
+    tooltip: '外れ値イベント分位（中央値・極端分位）を直近何件の観測から計算するか（既定 50。集計単位がエピソードのときはエピソード数）。乖離率は分散非定常のため直近観測に限定して推定する。',
+  }),
+  // event_agg: episode＝連続超過を 1 エピソード＝極値 1 点に declustering（既定。バー単位は
+  //   持続時間の重み付けで典型深度を歪める実測 +24.6% vs +19.1%）。bar＝旧方式（復帰用に保持）。
+  param('event_agg', ParamType.ENUM, 'episode', [], ['episode', 'bar'], {
+    group: 'group.calc', order: orderStart + 2, label: '外れ値の集計単位',
+    enumLabels: EVQ_EVENT_AGG_LABELS,
+    tooltip: '外れ値イベントの数え方。エピソード極値＝連続して外れている区間を 1 回と数え、その極値（上側は最大・下側は最小）を 1 観測にする（推奨。「1 回の外れでどこまで行くか」を直接測る）。バー値＝外れているバー 1 本ごとに 1 観測（旧方式。長引いた外れが重複カウントされ典型深度が深めに歪む）。',
+  }),
+];
+// 水準線 SeriesDef 4 本（中央値 hi/lo ＋ 極端 hi/lo・静的名）。表示順は emit 順と同一。
+const EVQ_SERIES_DEFS = (prefix) => ['med_hi', 'med_lo', 'ext_hi', 'ext_lo'].map(
+  (k) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: `${prefix}_evq_${k}`, seriesName: `${prefix}_evq_${k}`, dynamic: false }),
+);
+
 // --- btlm_trail_marod（MAROD＝移動平均乖離率・別 pane オシレータ）----------
 // 新指標（btlm-trail-marod-concurrent-aho.md）。btlm_trail core の OLS 窓末尾トレンド（基準線）と
 //   8 択ソース合成価格を参照し、基準線からの相対偏差（%）= (source - mean)/mean*100 を別 pane の
@@ -215,18 +245,48 @@ const BTLM_TRAIL_MAROD = new IndicatorDef({
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
     // maxbars: 回帰窓（既定 100・min 3・btlm_trail core DEFAULT_MAXBARS）。
     param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars' }),
+    // 分位ペア（0<q_low<q_high<1・btlm_trail と対称の q-chain 制約）。σ・分位バンドの下側/上側分位。
+    param('q_low', ParamType.FLOAT, 0.05, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
+      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
+    ], null, { group: 'group.calc', order: 3, step: 0.01, min: 0, max: 1, label: '下側分位' }),
+    param('q_high', ParamType.FLOAT, 0.95, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
+    ], null, { group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1, label: '上側分位' }),
+    // 外れ値イベント分位の 3 パラメータ（共有ビルダー・ma_marod と対称＝ユーザー裁定 2026-07-21）。
+    ...EVQ_PARAMS(5),
+    // window_n: 正常バンド（分位バンド）の因果ローリング窓（既定 500・min 2）。実測で MAROD は
+    //   分散非定常のため固定でなくこの窓で局所再計算する（当該バー除外＝非リペイント）。
+    param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
+      group: 'group.calc', order: 8, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓',
+      tooltip: '正常バンド（経験分位バンド・下側/上側分位）を算出する因果ローリング窓の本数。MAROD は分散非定常のため固定でなくこの窓で局所再計算する。当該バーは除外（非リペイント）。',
+    }),
     // color は MAROD 線の色（スタイルタブへ移譲）。既定は add_btlm_trail_marod の _COLOR_MAROD。
     param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
   ],
-  // 系列: MAROD line（別 pane オシレータ）＋ 0% 水平基準線（群 payload name = compute_id）。
+  // 系列: MAROD line（別 pane オシレータ）＋ 0% 水平基準線＋ 正常バンド＋イベント分位水準線。
+  //   σ バンドは描画廃止（認知負荷削減・ユーザー裁定 2026-07-21。core 計算は温存）。
   series: [
     // barStyleEditable（案A）: MAROD line のみスタイルタブで「棒グラフ（histogram）」表示を選択可
     //   （選択時 renderer が LineSeries→HistogramSeries に再生成し 0% 中心の棒表示にする）。
     new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_marod', seriesName: 'btlm_trail_marod', dynamic: false, barStyleEditable: true }),
     new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'btlm_trail_marod', dynamic: false }),
+    // 分位バンド（動的・q_low/q_high に依存＝btlm_trail_marod_q{pct}）。btlm_trail_q{pct} と対称の命名。
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      seriesNamePattern: {
+        template: 'btlm_trail_marod_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
+    // 外れ値イベント分位の水準線（共有ビルダー・4 本）。
+    ...EVQ_SERIES_DEFS('btlm_trail_marod'),
   ],
   compute: { computeId: 'btlm_trail_marod', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
+
+// （ma_marod は MA_TYPE_LABELS / MA_SOURCE_LABELS 定義後＝MOVING_AVERAGES 直後に定義する。
+//   const の TDZ 制約による配置であり、REGISTRY 上は BTLM_TRAIL_MAROD の直後に並ぶ。）
 
 // --- profit_band（global / robust・OVERLAY）------------------------------
 // バンド値は始値±分位点を価格水準へ復元した price-level（bands.py / robust_bands.py）。
@@ -363,6 +423,67 @@ const MOVING_AVERAGES = new IndicatorDef({
   // 固定系列（dynamic=false）: backend が平滑化タイプに応じて部分集合を出力する。
   series: [MA_LINE('MA'), MA_LINE('Smoothing'), MA_LINE('Upper'), MA_LINE('Lower')],
   compute: { computeId: 'moving_averages', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
+});
+
+// --- ma_marod（移動平均乖離率・MA 種別選択式・別 pane オシレータ）----------
+// 新指標（.doc/MA_MAROD_BASIC_DESIGN.md）。moving_averages core の 4 種 MA（sma/ema/smma/lwma）
+//   を基準線の参照実装とし、(price - ma)/ma*100 を別 pane の line オシレータとして描く
+//   （0% 基準線・σ／分位バンド付き＝btlm_trail_marod と同一仕様）。計算の原子（価格ソース）は
+//   moving_averages と同期（同一写像・単一経路）。確定バー不変（非リペイント・前進逐次計算）。
+//   実バインディング add_ma_marod（indigators/ma_marod/src/lwc_chart.py）。
+//   系列名: ma_marod（line）＋ ma_marod（0% 水平基準線群 payload・compute_id 一致）。
+const MA_MAROD = new IndicatorDef({
+  id: 'ma_marod',
+  displayNameKey: 'ind.ma_marod',
+  category: { group: 'builtin', nameKey: 'cat.oscillator' },
+  tab: 'indicator',
+  placement: 'pane',
+  params: [
+    // ソース: moving_averages と同一 8 択・同一ラベル（計算の原子の同期を UI 側でも維持）。
+    param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: MA_SOURCE_LABELS }),
+    // 基準線 MA 種別（moving_averages と同一 4 択・同一ラベル・既定 ema）。
+    param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], { group: 'group.calc', order: 2, label: '種別', enumLabels: MA_TYPE_LABELS }),
+    // length: MA 本数（既定 50・min 2＝参照実装 *_on_buffer の契約）。
+    param('length', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { group: 'group.calc', order: 3, label: '期間', step: 1, min: 2, unit: 'unit.bars' }),
+    // 分位ペア（0<q_low<q_high<1・btlm_trail_marod と対称の q-chain 制約）。σ・分位バンドの下側/上側分位。
+    param('q_low', ParamType.FLOAT, 0.05, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
+      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
+    ], null, { group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1, label: '下側分位' }),
+    param('q_high', ParamType.FLOAT, 0.95, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
+    ], null, { group: 'group.calc', order: 5, step: 0.01, min: 0, max: 1, label: '上側分位' }),
+    // 外れ値イベント分位の 3 パラメータ（共有ビルダー・btlm_trail_marod と対称＝ユーザー裁定
+    //   2026-07-21）。q_out＝極端分位／k_events＝直近観測件数／event_agg＝集計単位。
+    ...EVQ_PARAMS(6),
+    // window_n: 正常バンド（分位バンド）の因果ローリング窓（既定 500・min 2）。乖離率は
+    //   分散非定常（実測）のため固定でなくこの窓で局所再計算する（当該バー除外＝非リペイント）。
+    param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
+      group: 'group.calc', order: 9, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓',
+      tooltip: '正常バンド（経験分位バンド・下側/上側分位）を算出する因果ローリング窓の本数。乖離率は分散非定常のため固定でなくこの窓で局所再計算する。当該バーは除外（非リペイント）。',
+    }),
+    // color は MA_MAROD 線の色（スタイルタブへ移譲）。既定は add_ma_marod の _COLOR_MA_MAROD。
+    param('color', ParamType.COLOR, 'rgba(255, 152, 0, 1)', [], null, { group: 'group.style', order: 1 }),
+  ],
+  // 系列: MA_MAROD line（別 pane オシレータ）＋ 0% 水平基準線＋ 正常バンド＋イベント分位水準線。
+  series: [
+    // barStyleEditable: MA_MAROD line のみスタイルタブで「棒グラフ（histogram）」表示を選択可
+    //   （btlm_trail_marod 案A と同一の非波及ゲート）。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'ma_marod', seriesName: 'ma_marod', dynamic: false, barStyleEditable: true }),
+    new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'ma_marod', dynamic: false }),
+    // 分位バンド（動的・q_low/q_high に依存＝ma_marod_q{pct}）。btlm_trail_marod_q{pct} と対称の命名。
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      seriesNamePattern: {
+        template: 'ma_marod_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
+    // 外れ値イベント分位の水準線（共有ビルダー・4 本）。σ バンドと全履歴（_all）系列は
+    //   認知負荷削減のため描画廃止（ユーザー裁定 2026-07-21）。
+    ...EVQ_SERIES_DEFS('ma_marod'),
+  ],
+  compute: { computeId: 'ma_marod', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
 
 // ===========================================================================
@@ -511,7 +632,7 @@ const MARKET_PROFILE = makeMarketProfileDef({
 });
 
 const REGISTRY = Object.freeze([
-  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
+  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,

@@ -266,6 +266,7 @@ class _BindingSpec(TypedDict):
     kind: str
     latest_meta: NotRequired[Callable[[dict[str, Any]], tuple[str, int | None, int | None]]]
     preprocess: NotRequired[Callable[[Any, dict[str, Any]], dict[str, Any]]]
+    thread_affinity: NotRequired[str]
 
 
 # compute_id(+variant) → 規約。loader は import を遅延し、指標 src 同名衝突を回避する。
@@ -273,6 +274,10 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("tgp_btlm", "default"): {
         "loader": lambda: _load_callable("tgp_btlm", "add_btlm"),
         "output_kind": "line", "kind": "btlm",
+        # rpy2/R はスレッド親和（常に同一スレッドからの呼出）が必須＝専用ワーカーで実行する。
+        #   未宣言の指標は純 numpy/pandas＝計算プールで並行実行してよい（SOLID 是正 🔴-3:
+        #   スレッド親和性は HTTP 殻のハードコードでなく本テーブルの宣言で決まる）。
+        "thread_affinity": "dedicated",
     },
     ("btlm_trail", "default"): {
         "loader": lambda: _load_callable("btlm_trail", "add_btlm_trail"),
@@ -280,6 +285,10 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     },
     ("btlm_trail_marod", "default"): {
         "loader": lambda: _load_callable("btlm_trail_marod", "add_btlm_trail_marod"),
+        "output_kind": "line", "kind": "kw",
+    },
+    ("ma_marod", "default"): {
+        "loader": lambda: _load_callable("ma_marod", "add_ma_marod"),
         "output_kind": "line", "kind": "kw",
     },
     ("profit_band", "global"): {
@@ -368,6 +377,21 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "output_kind": "line", "kind": "kw",
     },
 }
+
+
+def requires_dedicated_worker(indicator_id: "str | None") -> bool:
+    """指標がスレッド親和専用ワーカーでの実行を要するか（SOLID 是正 🔴-3・宣言参照）。
+
+    _TABLE の ``thread_affinity: "dedicated"`` 宣言を唯一の真実源とする（HTTP 殻は本関数を
+    呼ぶだけで指標名を知らない）。未知 id・未宣言は False＝計算プールで並行実行してよい。
+    """
+    if not indicator_id:
+        return False
+    return any(
+        spec.get("thread_affinity") == "dedicated"
+        for (cid, _variant), spec in _TABLE.items()
+        if cid == indicator_id
+    )
 
 
 def latest_meta_fields(

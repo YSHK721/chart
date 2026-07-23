@@ -9,12 +9,36 @@
 
 from __future__ import annotations
 
-from .core import DEFAULT_MAXBARS, DEFAULT_SOURCE, marod_series
+from .core import (
+    DEFAULT_EVENT_AGG,
+    DEFAULT_K_EVENTS,
+    DEFAULT_MAXBARS,
+    DEFAULT_Q_HIGH,
+    DEFAULT_Q_LOW,
+    DEFAULT_Q_OUT,
+    DEFAULT_SOURCE,
+    DEFAULT_WINDOW_N,
+    SIGMA_MULT,
+    marod_outlier_event_quantiles,
+    marod_quantile_bands,
+    marod_series,
+    marod_sigma_band,
+)
 from .lwc_chart import add_btlm_trail_marod
 
 __all__ = [
+    "DEFAULT_EVENT_AGG",
+    "DEFAULT_K_EVENTS",
     "DEFAULT_MAXBARS",
+    "DEFAULT_Q_HIGH",
+    "DEFAULT_Q_LOW",
+    "DEFAULT_Q_OUT",
     "DEFAULT_SOURCE",
+    "DEFAULT_WINDOW_N",
+    "SIGMA_MULT",
     "add_btlm_trail_marod",
+    "marod_outlier_event_quantiles",
+    "marod_quantile_bands",
     "marod_series",
+    "marod_sigma_band",
 ]

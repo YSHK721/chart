@@ -26,9 +26,9 @@ import { AppliedInstance } from '../js/domain/domain_models.js';
 // UC-01 listForView（タブ∧カテゴリ∧検索∧お気に入りの論理積 §4.6）
 // ===========================================================================
 
-test('UC-01 listForView: empty filter returns all 22', () => {
+test('UC-01 listForView: empty filter returns all 23', () => {
   const result = listForView({});
-  assert.equal(result.length, 22);
+  assert.equal(result.length, 23);
 });
 
 test('UC-01 listForView: filters by query (id/display partial, case-insensitive)', () => {
@@ -44,9 +44,9 @@ test('UC-01 listForView: filters by category conjunctively', () => {
 });
 
 test('UC-01 listForView: filters by tab', () => {
-  // 21 指標（既存 19 + btlm_trail + btlm_trail_marod）は tab=indicator、market_profile のみ tab=profile。strategy は 0 件。
+  // 22 指標（既存 19 + btlm_trail + btlm_trail_marod + ma_marod）は tab=indicator、market_profile のみ tab=profile。strategy は 0 件。
   assert.equal(listForView({ tab: 'strategy' }).length, 0);
-  assert.equal(listForView({ tab: 'indicator' }).length, 21);
+  assert.equal(listForView({ tab: 'indicator' }).length, 22);
   assert.equal(listForView({ tab: 'profile' }).length, 1);
   assert.deepEqual(listForView({ tab: 'profile' }).map((d) => d.id), ['market_profile']);
 });

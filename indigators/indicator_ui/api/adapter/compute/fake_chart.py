@@ -27,14 +27,20 @@ def _line_points(df: pd.DataFrame, value_column: str) -> list[dict[str, Any]]:
     ``color`` 列があれば per-point の色（histogram のバー別着色・add_adx_needle 等）を
     {time,value,color} として載せる（line 系列には color 列が無いため不変）。
     """
+    # ISSUE-154（性能是正）: 旧 iterrows は 1,500 行 × 7 系列で ~0.5 秒（ライブ再計算の最大
+    #   ボトルネック＝計算でなく直列化）。時刻・値を配列で一括変換し、python zip で組む
+    #   （出力は旧実装と同一: time=UNIX 秒 int・value=float・color は非 null 行のみ付与）。
     has_color = "color" in df.columns
+    times = (pd.to_datetime(df["time"]).astype("datetime64[s]").astype("int64")).tolist()
+    values = df[value_column].astype(float).tolist()
+    if not has_color:
+        return [{"time": t, "value": v} for t, v in zip(times, values)]
+    colors = df["color"].tolist()
     points: list[dict[str, Any]] = []
-    for _, row in df.iterrows():
-        point = {"time": _to_unix_seconds(row["time"]), "value": float(row[value_column])}
-        if has_color:
-            color = row["color"]
-            if color is not None and not (isinstance(color, float) and pd.isna(color)):
-                point["color"] = color
+    for t, v, c in zip(times, values, colors):
+        point = {"time": t, "value": v}
+        if c is not None and not (isinstance(c, float) and pd.isna(c)):
+            point["color"] = c
         points.append(point)
     return points
 
