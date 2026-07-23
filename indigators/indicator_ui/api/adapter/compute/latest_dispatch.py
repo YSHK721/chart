@@ -43,10 +43,19 @@ def _trail(series: list[dict[str, Any]], k: int | None) -> list[dict[str, Any]]:
 
 
 def latest_compute(
-    adapter: Any, compute_id: str, variant: str, df: Any, params: dict[str, Any]
+    adapter: Any, compute_id: str, variant: str, df: Any, params: dict[str, Any],
+    *, min_tail: "int | None" = None,
 ) -> list[dict[str, Any]]:
-    """Latest（末尾K）計算: df を min_window で tail → 不変計算 → 末尾K切り。"""
+    """Latest（末尾K）計算: df を min_window で tail → 不変計算 → 末尾K切り。
+
+    min_tail（ISSUE-162・additive）: 末尾切りの下限点数。形成中バー注入で欠落閉周期を
+    合成した場合、合成バーぶん応答に含めないとクライアント側が歯抜けになるため、
+    trailing_k との大きい方を採用する。None は従来どおり（後方互換）。
+    """
     meta = latest_meta(compute_id, variant, params)
     sub = df if meta.min_window is None else df.tail(meta.min_window)
     series = adapter.compute(compute_id, variant, sub, params)
-    return _trail(series, meta.trailing_k)
+    k = meta.trailing_k
+    if k is not None and min_tail is not None and min_tail > k:
+        k = min_tail
+    return _trail(series, k)

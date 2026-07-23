@@ -78,7 +78,8 @@ class _RecordingCompute:
         self.series = series
         self.calls: list = []
 
-    def __call__(self, adapter, compute_id, variant, df, params):  # noqa: ANN001
+    def __call__(self, adapter, compute_id, variant, df, params, **kwargs):  # noqa: ANN001
+        # min_tail（ISSUE-162・additive kwarg）は契約上受理する（既定 None＝挙動不変）。
         self.calls.append((adapter, compute_id, variant, df, params))
         return self.series
 

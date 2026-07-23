@@ -54,6 +54,15 @@ from marketdata.tf_meta import (  # noqa: E402
 # （base）から周期始端を得るため、1W/1M も floor 不要で対応できる（rollup ラベル＝始端）。
 ROLLUP_FORMING_TF = frozenset(TIMEFRAME_RULES)
 
+# ISSUE-162（歯抜けゼロ橋渡し）: 欠落閉周期の tick 合成対象＝固定長 tf の周期秒。
+#   1W/1M は周期が可変かつライブ中に閉周期が欠落し得ないため対象外。
+_FIXED_TF_SECONDS = {
+    "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+    "1h": 3600, "4h": 14400, "1D": 86400,
+}
+# 欠落閉周期の最大合成本数（暴走防御。定常運転の欠落は高々 1〜2 周期）。
+_MAX_GAP_FILL_PERIODS = 5
+
 
 def forming_bar(ref: str, tf: str, now_unix: int) -> Optional[dict]:
     """``ref``/``tf`` の現在形成中バーを返す（対象外 ref/tf・ティック無しは ``None``）。
@@ -220,15 +229,50 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int) -> "
     except Exception as exc:  # noqa: BLE001 — parquet torn-read/IO 失敗は注入せず df 素通し（live 経路堅牢化）
         logger.warning("形成中バー算出に失敗（注入せず継続）: %s/%s (%s)", ref, tf, exc)
         return df
-    if bar is None or df is None or len(df) == 0:
+    if df is None or len(df) == 0:
         return df
-    t = pd.Timestamp(int(bar["time"]), unit="s")  # naive UTC（df.index と同基準）
-    if t < df.index[-1]:
-        return df  # 形成中バーが既存末尾より過去 → 触らない（異常時の防御）。
+    if bar is not None:
+        t = pd.Timestamp(int(bar["time"]), unit="s")  # naive UTC（df.index と同基準）
+        if t < df.index[-1]:
+            return df  # 形成中バーが既存末尾より過去 → 触らない（異常時の防御）。
+
+    # ISSUE-162: 注入するバーを先に確定する（欠落閉周期の tick 合成＋形成中バー）。
+    #   欠落閉周期: M1/rollup の焼き込み（+12s 猶予）を待つ間、df 末尾と形成中周期の間の
+    #   閉じた周期（例: 12:12 確定済・12:14 形成中のときの 12:13）を実 tick の完結窓
+    #   ``forming_bar_from_ticks(s, s+period)`` で合成する。本注入は mode='latest'（足内更新＝
+    #   ライブ領域の表示）専用経路であり、full（確定値の焼き込み）は従来どおり M1 のみ＝
+    #   確定値は一度だけ書かれ以後不変（非リペイント維持・ユーザー承認設計 2026-07-23）。
+    #   形成中バーが None（新周期の tick 未着＝境界直後の数秒）でも閉周期合成は独立に行う
+    #   （巻き添え早期 return は境界直後の歯抜け再発になる）。固定長 tf のみ対象・tick 無し
+    #   周期（週末等）は合成せず skip（実データが無いバーを捏造しない）。
+    to_inject = []
+    # ref ゲート: tick 系 ref のみ（forming_bar と同一条件）。非 tick ref（sample 等）へ実 tick の
+    #   合成バーを混入させない（データ源の混線防止）。
+    period = _FIXED_TF_SECONDS.get(tf or "1m") if is_tick_ref(ref) else None
+    if period is not None:
+        last_unix = int(df.index[-1].timestamp())
+        now_i = int(now_unix)
+        forming_start = int(bar["time"]) if bar is not None else now_i - (now_i % period)
+        gap_starts = range(last_unix + period, forming_start, period)
+        for gs in list(gap_starts)[-_MAX_GAP_FILL_PERIODS:]:
+            try:
+                closed = forming_bar_from_ticks(gs, gs + period)  # 完結窓 [gs, gs+period)
+            except Exception as exc:  # noqa: BLE001 — 橋渡しは表示補完・失敗しても本計算を落とさない
+                logger.warning("欠落閉周期の合成に失敗（skip）: %s/%s t=%s (%s)", ref, tf, gs, exc)
+                continue
+            if closed is not None:
+                to_inject.append(closed)
+    if bar is not None:
+        to_inject.append(bar)
+    if not to_inject:
+        return df  # 注入なし＝同一オブジェクトで素通し（従来挙動・コピーもしない）。
+
     out = df.copy()
     lower = {str(c).lower(): c for c in out.columns}
-    for key in ("open", "high", "low", "close", "volume"):
-        col = lower.get(key)
-        if col is not None:
-            out.loc[t, col] = float(bar[key])
+    for b in to_inject:
+        bt = pd.Timestamp(int(b["time"]), unit="s")
+        for key in ("open", "high", "low", "close", "volume"):
+            col = lower.get(key)
+            if col is not None:
+                out.loc[bt, col] = float(b[key])
     return out.sort_index()

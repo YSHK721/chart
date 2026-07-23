@@ -348,3 +348,52 @@ def test_apply_forming_bar_passthrough_when_none_or_empty(monkeypatch) -> None:
     monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: {"time": _unix("2025-01-02 09:05:00"),
                         "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0})
     assert fb.apply_forming_bar(empty, "jp225_tick", "5m", 999) is empty  # 空 df も素通し
+
+
+# ---------------------------------------------------------------------------
+# ISSUE-162: 欠落した閉周期の tick 合成注入（歯抜けゼロ橋渡し・mode='latest' 専用経路）
+# ---------------------------------------------------------------------------
+
+def test_apply_forming_bar_fills_missing_closed_period(monkeypatch) -> None:
+    # M1 末尾 09:00・形成中 09:02 → 欠落閉周期 09:01 を tick から合成して注入する。
+    df = _df([("2025-01-02 09:00:00", 1.0, 2.0, 0.5, 1.5, 10.0)])
+    forming = {"time": _unix("2025-01-02 09:02:00"), "open": 3.0, "high": 3.5, "low": 2.9,
+               "close": 3.2, "volume": 4.0}
+    closed = {"time": _unix("2025-01-02 09:01:00"), "open": 2.0, "high": 2.5, "low": 1.9,
+              "close": 2.2, "volume": 6.0}
+    calls = []
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: forming)
+    def fake_from_ticks(start, end):
+        calls.append((start, end))
+        return closed if start == closed["time"] else None
+    monkeypatch.setattr(fb, "forming_bar_from_ticks", fake_from_ticks)
+    out = fb.apply_forming_bar(df, "jp225_tick", "1m", 999)
+    assert len(out) == 3  # 09:00 確定 + 09:01 合成閉周期 + 09:02 形成中（歯抜けなし）
+    assert calls == [(closed["time"], closed["time"] + 60)]  # 完結窓 [s, s+period)
+    mid = out.loc[pd.Timestamp("2025-01-02 09:01:00")]
+    assert (mid["open"], mid["close"], mid["volume"]) == (2.0, 2.2, 6.0)
+    assert out.index[-1] == pd.Timestamp("2025-01-02 09:02:00")
+
+
+def test_apply_forming_bar_skips_tickless_gap_periods(monkeypatch) -> None:
+    # tick の無い周期（週末等）は合成しない（実データの無いバーを捏造しない）。
+    df = _df([("2025-01-02 09:00:00", 1.0, 2.0, 0.5, 1.5, 10.0)])
+    forming = {"time": _unix("2025-01-02 09:03:00"), "open": 3.0, "high": 3.5, "low": 2.9,
+               "close": 3.2, "volume": 4.0}
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: forming)
+    monkeypatch.setattr(fb, "forming_bar_from_ticks", lambda s, e: None)
+    out = fb.apply_forming_bar(df, "jp225_tick", "1m", 999)
+    assert len(out) == 2  # 確定 + 形成中のみ（合成なし・従来挙動に一致）
+
+
+def test_apply_forming_bar_gap_fill_is_capped(monkeypatch) -> None:
+    # 暴走防御: 欠落が大きくても合成は直近 _MAX_GAP_FILL_PERIODS 本まで。
+    df = _df([("2025-01-02 09:00:00", 1.0, 2.0, 0.5, 1.5, 10.0)])
+    forming = {"time": _unix("2025-01-02 10:00:00"), "open": 3.0, "high": 3.5, "low": 2.9,
+               "close": 3.2, "volume": 4.0}
+    seen = []
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: forming)
+    monkeypatch.setattr(fb, "forming_bar_from_ticks", lambda s, e: seen.append(s) or None)
+    fb.apply_forming_bar(df, "jp225_tick", "1m", 999)
+    assert len(seen) == fb._MAX_GAP_FILL_PERIODS
+    assert seen[-1] == _unix("2025-01-02 09:59:00")  # 直近側を優先して埋める

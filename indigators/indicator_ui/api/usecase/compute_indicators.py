@@ -128,9 +128,21 @@ def compute_indicators(
     mode = request.mode
 
     # 5. ライブ足内更新（mode="latest"）: 形成中バーを注入してから計算する。full は不変。
+    #    ISSUE-162: 注入で増えたバー数（欠落閉周期の合成＋形成中）を数え、末尾切りの下限
+    #    （min_tail）として計算側へ渡す（合成バーが応答から切り落とされる歯抜けを防ぐ）。
+    injected_tail = None
     if mode == "latest":
         now_unix = forming_bar.resolve_now_unix(request.forming_now)
+        try:
+            n_before = len(df)
+        except TypeError:  # len 非対応の注入 fake（テスト）＝従来挙動（min_tail なし）
+            n_before = None
         df = forming_bar.apply_forming_bar(df, request.dataset_ref, request.timeframe, now_unix)
+        if n_before is not None:
+            try:
+                injected_tail = max(1, len(df) - n_before + 1)
+            except TypeError:
+                injected_tail = None
 
     # 6. 表示範囲制限（直近 N 本）。
     limit = request.limit
@@ -141,7 +153,8 @@ def compute_indicators(
     compute_params = dict(request.params)
     try:
         series = (
-            latest_compute(compute_adapter, request.indicator_id, request.variant, df, compute_params)
+            latest_compute(compute_adapter, request.indicator_id, request.variant, df,
+                           compute_params, min_tail=injected_tail)
             if mode == "latest"
             else full_compute(compute_adapter, request.indicator_id, request.variant, df, compute_params)
         )
