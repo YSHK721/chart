@@ -1774,3 +1774,212 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **原因（実測確定）**: `replay.js` の時間足クリック結線が旧静的ボタン前提の `.tb-interval` セレクタのまま。ISSUE-122/123（c1389e1）の共有 TimeframeMenu 化でトリガー（`.tb-interval`・`data-timeframe` なし）と項目（`.tf-menu-item`・`data-timeframe` あり）に分離されたため、(1) メニューを開くトリガークリックで `loadTimeframe(undefined)` が走り `/candles?timeframe=undefined`→500・`candles=[]`・slider max=0＝再生駆動が破壊、(2) 項目クリックは共有 `[data-timeframe]` 配線（setTimeframe→recompute）のみが処理し、`untilTime` が旧時間足の最終駆動バー時刻（日足=当日 00:00）のまま `/compute` へ送信→ `truncate` が 00:00 以降の足を計算から切断。日足はバー時刻が常に 00:00 のため `untilTime` 陳腐化が可視化されない（＝「日足だけ問題ない」）。実ブラウザで /compute body `untilTime:1784246400`（2026-07-17 00:00）と 500 応答を実測確認。計算層（btlm_trail compute）は時間足非依存で正常（1D/1h/5m とも df 末尾まで出力・実測一致）。
 - **対策（実施済）**: `replay.js` の結線セレクタを `.tb-interval` → `[data-timeframe]`（共有 bind と同一）へ是正。トリガーへの誤結線が消え、項目クリックで従来どおり 60ms 遅延の `loadTimeframe(tf)` 再駆動（candles 再取得・slider 再設定・present バーへ drive＝untilTime 更新）が復元される。replay 専用ファイルのみ変更（共有 base・present は無改変）。
 - **検証（実測）**: 実UI（Playwright・実HTTP・稼働中サーバ 8280）で確認。(1) 1h 切替後 `timeframe=undefined` の 500 消失・slider 上限 1499 復元・`untilTime=1784318400`（2026-07-17 20:00＝1h 最終バー）で /compute 送信・btlm_trail 全系列（mean/q5/q95/off_hi/off_lo＋読取3種）が 20:00 まで到達（スクショ fix-1h-midreplay.png: bar 1389 リビール途中でも最前線まで追従）。(2) 5m 切替でも untilTime=2026-07-17 20:10（5m 最終バー）・右端まで描画（fix-5m.png）。(3) 1週プリセット→1足送りの再駆動も正常。replay_ui web `node --test`: 236 pass / 9 fail＝修正前ベースラインと完全一致（既存不備・本件無関係）。計算層は無改変（1D/1h/5m とも compute 単体で df 末尾一致を事前実測済み）。
+
+## ISSUE-143（btlm_trail_marod σ/分位バンドの分位線が視認できない）
+- **ステータス**: RESOLVED（2026-07-20・実UIスクショ確認済み）
+- **事象**: オシレーターペインで MAROD の分位バンド（q5/q95）が「表示されていない」とユーザー報告。
+- **原因（実測確定）**: 2点。(1) ユーザー稼働サーバ（ポート8000・08:05起動）が新バンド実装の**前の旧コード**のままで、`/compute` が `btlm_trail_marod` 本体1本のみ返す（σ・分位とも不在）＝要サーバ再起動。実測: 8000 `/compute` line series=['btlm_trail_marod']・`/catalog` marod keys=color/maxbars/source（window_n/q_low/q_high 無し）。(2) 新コードでも分位線の色が `rgba(120,120,180,0.9)`（青紫系）で MAROD 本体（紫 rgba(123,104,238)）とほぼ同系＋点線細線のため、描画されていても視認不能。実測: 実UI pixel走査で quantile=3312px 描画済み（＝存在するが見えない）。
+- **対策（実施済）**: `btlm_trail_marod/src/lwc_chart.py` の `_COLOR_QUANTILE` をシアン `rgba(38,198,218,1)`、`_COLOR_SIGMA` を明橙 `rgba(240,160,70,1)` へ変更し、MAROD（紫）/σ（橙）/分位（シアン）を判別可能に。計算層・系列名・パラメータは無改変（色のみ）。
+- **検証（実測）**: 新コードサーバ(8100)実UIで q5/q95 のシアン点線がペインを横断表示されることをスクショ確認（marod-fixed.png）。marod 全21テスト・binding 4テスト緑。**残対応: ユーザーの 8000 サーバ再起動で新コード反映が必要**（コード修正のみでは稼働中プロセスに未反映）。
+
+## ISSUE-144（btlm_trail_marod バンドが 0% 基準に対し非対称で“おかしく見える”）
+- **ステータス**: REVERTED（2026-07-20・ユーザー要請で修正前へ復旧）。「q5」は分位5%水準のラベルにすぎず（値ではない）、非対称の符号付き経験分位表示で問題ないとの結論に基づき、0中心・対称化（下記対策）を撤回。core を修正前（分位＝符号付き経験分位／σ＝ローリング平均±mult·σ）へ戻した。色（ISSUE-143）は維持。
+- **事象**: MAROD の基準は 0%（乖離ゼロ）なのに、分位バンド（q5/q95）が符号付き MAROD の経験分位で左右非対称に表示され「0中心の対称バンドでない」＝おかしく見えるとユーザー指摘（バグ扱い）。σ帯もローリング平均中心で 0 中心でなかった。
+- **原因**: 初版はゼロ基準を反映せず、分位＝符号付き MAROD の (q_low, q_high) 経験分位、σ帯＝ローリング平均 ± mult·σ（いずれも 0 中心でない）。
+- **対策（実施済）**: 両バンドを **0 中心・対称** へ是正（`btlm_trail_marod/src/core.py`）。(1) 分位: `±X`, X=`|MAROD|` の被覆率 `coverage=q_high−q_low`（既定0.90）分位。(2) σ: `0 ± mult·σ`（σ=ローリング標本標準偏差, ddof=1）。パラメータ集合（q_low/q_high/window_n）・系列名・カタログ契約は無改変（core 計算のみ変更）。σ の 0 中心化は以前の mean±2σ 選択をユーザーの 0 基準原則へ合わせる変更。
+- **検証（実測）**: jp225 日足/15m で `lo == −hi`（対称）を最大差 0.00e+00 で確認。marod 全21テスト緑（対称性テスト追加）。実UI スクショで 0 中心対称の帯を確認予定。
+
+## ISSUE-145（リプレイでオシレーター btlm_trail_marod の足内更新粒度が足と異なり「途中経過が見えない」）
+- **ステータス**: RESOLVED（2026-07-20・実原因＝足内更新対象への未登録。修正実施済み・実UI検証は下記）
+- **実原因（確定）**: 再生中、最新足は tick 単位（足内 forming）で更新されるが、MAROD オシレーターは足確定時に最終値へジャンプするだけで途中経過が見えない（ユーザー報告：「最新足とオシレーターの更新粒度が違う／最新結果しか表示せず過程を検証できない」）。原因は `simulator/replay_ui/web/js/adapter/front/replay_indicator_controller.js` の足内更新対象集合 `INTRABAR_FORMING_IDS` に `btlm_trail_marod` が未登録で、`recomputeFormingLatest`（形成中バーの末尾点差分再計算）の対象外だったこと。
+- **対策（実施済）**: `INTRABAR_FORMING_IDS` に `'btlm_trail_marod'` を追加（1行）。再生中に MAROD 線の末尾点が足内 tick で追従し過程を可視化。σ/分位バンドは当該バー除外の因果窓ゆえ非リペイントで据え置き（profit_* 6 指標と同一規約）。
+- **迷走記録（正直）**: 当初「リプレイ計算窓が bar+1 でライブと乖離＝ローリング warmup 不足」と誤診し `replay.js` の計算窓を固定1500へ変更したが、これは履歴スパンの話で足内更新粒度とは無関係＝的外れ。反実仮想（limit=61）でも 1D ではバンドが 57/61 有限で「当日だけ」を再現できず誤診が露見。当該窓変更は撤回（revert）済み。
+- **検証（実UI・実HTTP・実 jp225_tick）**: リプレイ中間 bar 800 で本番メソッド `recomputeFormingLatest` を形成中バーの終値を変えて実行し、MAROD 末尾点が追従（終値31820→MAROD1.135／32085→1.943／32350→2.751）＝足内 tick で過程が可視化されることを確認。修正前は確定値2.598に固定。replay_ui web `node --test` 236 pass/9 fail＝修正前ベースラインと一致（回帰ゼロ・失敗9件は既存 MP/catalog 系で本件無関係）。`replay.js` の誤診修正は完全 revert（git 差分ゼロ）。
+
+## ISSUE-146（indicator_ui web の replay_analysis / timeline_player テストが参照先モジュール不在で常時失敗）
+- **ステータス**: OPEN
+- **事象**: `indigators/indicator_ui/web/tests/replay_analysis.test.js` と `timeline_player.test.js` が `ERR_MODULE_NOT_FOUND`（`js/usecase/replay_analysis.js` / `timeline_player.js` が存在しない）で常時失敗する（`npm test` 716 件中 2 件）。
+- **実測（2026-07-21）**: git stash による HEAD 復元状態でも同一 2 件が失敗＝ma_marod 追加とは無関係の既存問題。両テストは保全コミット 79982b8（未追跡ソースの一括コミット）で入ったが、対応する usecase モジュールはコミットされていない。
+- **対策案**: (a) 対応モジュールの実体を復元コミットする、または (b) 参照先が存在しない 2 テストを撤去する。いずれもユーザー裁定が必要（承認待ち）。
+
+## ISSUE-147（replay_ui web の catalog 系テスト 3 件が指標数 20 の陳腐化した期待値で常時失敗）
+- **ステータス**: OPEN
+- **事象**: `simulator/replay_ui/web/tests` の `listIndicators returns the 20 registered indicators` / `UC-01 listForView: empty filter returns all 20` / `UC-01 listForView: filters by tab` が失敗する（期待 20＝基本4+profit_*15+market_profile）。実カタログは btlm_trail / btlm_trail_marod / ma_marod 追加後で 23 指標（indicator_ui 側テストは 23 で更新済み・全通過）。
+- **実測（2026-07-21）**: 今回のイベント分位共有化はパラメータ・系列定義のみで指標数は不変＝本件と無関係。残る 6 件の既存失敗は ISSUE-121 記録済み（sessionDayStart 期待値不備ほか）。
+- **対策案**: replay_ui 側の 3 テストの期待数を 23（indicator_ui カタログと同期）へ更新する。実施はユーザー裁定（承認待ち）。
+
+## ISSUE-148（チャートで過去へ遡って時間スケールを拡大すると最新足の位置へ戻る）
+- **ステータス**: RESOLVED
+- **事象**: 過去へスクロールした状態でホイールズーム（時間スケール拡大）すると、表示が最新足の位置までジャンプする（ライブ・リプレイ共通。実 UI で再現確認: 2022–2024 表示→ズーム→右端が 2026-07 最新足へ）。
+- **原因**: `chart_renderer.js` の右端余白同期 `_syncRightOffset`（ISSUE-114/115）が可視範囲購読（ズームで barSpacing 変化）から `timeScale.applyOptions({rightOffset})` を再適用する。lightweight-charts では rightOffset の適用が「最新足基準へのスクロール位置設定」として働くため、過去閲覧中の再適用が最新足へのジャンプになる。
+- **対策（実施済み 2026-07-22）**: `_syncRightOffset` に過去閲覧ガードを追加——`timeScale.scrollPosition() < -0.5`（最新足が右端より先＝過去閲覧中）のときは rightOffset を適用しない。右端復帰（スクロール/FOLLOW）で購読が再発火し余白は再同期される。chart_renderer は replay へ symlink 共有のため両 UI 同時に修正。
+- **検証**: 単体テスト追加（過去閲覧中スキップ・右端復帰で適用）＋実 UI 再現手順の再実行でジャンプ消失を確認。chart_renderer.test.js 全通過。
+
+## ISSUE-149（オシレーター系インジケーターを更新すると pane の位置（並び順）が変わる）
+- **ステータス**: RESOLVED
+- **事象**: 設定ダイアログ（⚙）でパラメータを変更して OK すると、当該指標の pane が最下段へ移動する（実 UI 再現: btlm_trail_marod（上）＋ma_marod（下）で btlm_trail_marod を更新→ma_marod の下へ移動。ライブ・リプレイ共通）。
+- **原因**: 再計算の redraw 経路（`indicator_controller.js` `_renderInstance`）が「全除去（`remove`＝`removePane`）→再描画（`addPane` で末尾へ新規追加）」のため、更新のたびに pane がチャート最下段へ付け直される。
+- **対策（実施済み 2026-07-22）**: `chart_renderer.remove()` に `keepPane` オプションを追加——pane・watermark・slot を温存して系列のみ除去し（scaleHost/priceLineHost は初期化）、redraw は `_ensurePane` の既存 pane 再利用により同じ位置へ再生成される。再計算経路のみ `remove(id, { keepPane: true })` に変更（完全削除・ゾンビ掃除は従来どおり全除去）。共有ファイルのため両 UI 同時に解消。
+- **検証**: 単体テスト追加（keepPane で pane 数・同一実体・位置維持／既定は従来どおり除去）＋実 UI 再実行で並び順維持を確認（リプレイ 2 pane・ライブ recompute）。web 全 718 中 716 通過（残 2 件は ISSUE-146 既知）。
+
+## ISSUE-150（ライブ: オシレーター pane の価格軸手動スケールが 60 秒再計算で解除される）
+- **ステータス**: RESOLVED
+- **事象**: btlm_trail_marod 等の pane の右価格軸をドラッグして手動スケールにしても、再計算（remove+redraw）で自動スケールへ戻る。**ライブ（60 秒周期再計算）・リプレイ（足送りその場計算）の両モードで実 UI 実測・同一挙動を確認（2026-07-22）＝モード間の設計差異なし（共有経路の同一欠陥）**。メイン価格軸の手動スケールは lwc が保持し解除されない＝pane との非対称。
+- **原因（推定・要実証）**: 再計算 redraw は pane 内の全系列を除去→再追加する。pane の priceScale の手動状態は系列全除去で失われる（メインは mainSeries が除去されないため保持される）。
+- **対策案**: redraw 前に当該 pane の priceScale 状態（autoScale/visibleRange）を退避し、再追加後に復元する。ISSUE-149 の keepPane 機構に退避/復元を追加する形で実装可能。承認後に着手。
+
+## ISSUE-152（indicator_ui/serve.sh のデータ watch がシステム python3 起動で即死し確定足が伸びない）
+- **ステータス**: RESOLVED
+- **事象**: serve.sh がデータ更新（acquire_marketdata）と watch 2 種（export_jp225_m1 --watch / live_tick_watch）を `python3` で起動するため、pandas を持たないシステム python3 環境では ModuleNotFoundError で即死し、確定足・tick 素材が伸びない（＝ライブでチャート/指標が更新されない複合要因。venv が PATH にあるシェルからの起動では顕在化しない環境依存バグ）。
+- **対策（実施済み 2026-07-22）**: 3 箇所の `python3` を既定義の `"$VENV_PY"`（pandas 入り venv）へ変更。
+- **検証**: 修正後の serve.sh 起動で watch 2 プロセスの生存とログ正常を確認。
+
+## ISSUE-151（ライブ 1 分足で btlm_trail（非登録・帯系指標）が数バー更新されない）
+- **ステータス**: RESOLVED
+- **事象**: ライブ 1 分足でローソクは進むのに btlm_trail の mean/バンドが数バー前で停止する（ユーザー報告・スクリーンショットあり）。
+- **原因（複合 3 層）**: ①統一設計移行時、バー確定の検知が LiveUpdater（60 秒タイマー）のみで、tick 駆動の末尾差分再計算と衝突すると isRecomputing スキップで確定イベントを取り落とし飢餓する（非登録指標は full 再計算でしか動かないため停止して見える）。②検証用サーバの生起動（framework/server.py 直接）がデータ watch を欠き確定足が伸びない（→ISSUE-152 で serve.sh 側も修正）。③臨時ポート乱立で新旧コード・新旧プロセスの画面を混視。
+- **対策（実施済み 2026-07-22）**: (1) LiveTickPlayer に onBarClose フック（tick の期間ロールオーバー＝バー確定で即 full 再計算要求）。(2) controller に requestFullRecompute（coalesce/pending・forming 完了時に必達ドレイン＝取り落とし構造の排除）。(3) LiveUpdater は補完網へ格下げ（新確定足検知時に requestFullRecompute 要求）。(4) ポートをライブ=8000/リプレイ=8280 に固定・serve.sh 起動を必須化（メモリに恒久記録）。
+- **検証**: 単体テスト（onBarClose 発火・coalesce・pending ドレイン・バー境界 full）全通過＋実 UI（8000・1 分足）で btlm_trail/btlm_trail_marod が最新バーまで追従・継続更新を確認。
+
+## ISSUE-153（ページ読込直後に適用した指標が restore に上書きされ「描画だけ残る孤児」になる）
+- **ステータス**: RESOLVED
+- **事象**: ページ読込〜復元（restore）完了までの数秒間にダイアログから指標を適用すると、compute・描画は行われるが直後の restore が `_state` を保存済みスナップショットで丸ごと置換するため、適用した instance が状態・凡例から消える。系列だけがチャートに残り（孤児描画）、以後どの再計算（バー確定 full・足内末尾差分・60 秒補完）にも乗らず凍結する。ISSUE-151 の「btlm_trail が更新されない」の主要因（どの指標・どの時間足でも発生。ライブ/リプレイ共通の共有経路）。
+- **原因**: `restore()` が `this._state = deserialize(storage)` の全置換で、読込後に適用済みの in-memory instance を保持しない。apply と restore の順序保証がなかった。
+- **対策（実施済み 2026-07-22）**: restore 実行中 Promise（`_restoreInFlight`）を導入し、`applyIndicator` は復元完了を待ってから適用する（競合排除・適用は必ず復元後の状態に積まれる）。
+- **検証**: 単体テスト（復元中の適用は完了待ち）＋実 UI（8000・1 分足）で復元後適用 → `btlm_trail#1` の永続化・凡例登録・バー確定 full 再計算への参加を確認。
+
+## ISSUE-151 追補（2026-07-22 深夜）: バー確定検知の二重化と飢餓の完全排除
+- **経緯**: 修正後もユーザー環境で「足内の孤立末尾バーのみ動き、確定バーが埋まらない」症状が継続（末尾差分は稼働・バー確定 full のみ不発＝第 1 検知経路 LiveTickPlayer.onBarClose がセッション状態により沈黙するケース）。
+- **追補対策（実施済み）**: ①第 2 検知経路: FormingBarUpdater が /forming_bar の period（bar.time）前進＝バー確定で requestFullRecompute を要求（player 死亡セッションでも駆動）。②LiveUpdater の検知を isRecomputing 非依存化（旧: 再計算中は tick 全体スキップ＝高頻度 forming 下で 60 秒検知が連続被弾し飢餓。新: 検知＋full 要求は毎 tick 必達・価格反映のみ回避）。
+- **検証**: 単体（period 前進発火・再計算中でも検知継続）＋実 UI 継続観測。
+
+## ISSUE-151 追補2（2026-07-22 深夜）: 一時障害での full 要求喪失と stale 点によるバッチ中断
+- **経緯**: ユーザー DevTools 実ログで 2 欠陥を確認。①`requestFullRecompute 失敗: Failed to fetch`＝バー確定 full がフェッチ一時障害（単一スレッドサーバへの多重クライアント負荷・応答切断 ERR_CONTENT_LENGTH_MISMATCH）で捨てられ、当該バーの確定描画が欠落。②`Cannot update oldest data` 多発＝バー確定直後の full 再描画と確定前発行の latest 応答の交錯で stale 点が lwc 例外を投げ、末尾更新バッチ全体が中断（残り系列まで未更新＝停止に見える）。検証用ブラウザの同時アクセスが負荷要因だった点も特定（以後、ユーザー使用中のサーバへ計測ページを並走させない）。
+- **対策（実施済み）**: ①full 失敗は pending に保持し次の外部トリガ（forming 完了ドレイン・約 2〜5 秒後）で再試行（即時自己リトライなし＝恒久障害時のタイトループ防止）。②updateSeriesTail は点単位 try/catch で stale 点のみ破棄しバッチを最後まで適用。
+- **検証**: 単体（失敗→pending→再試行・即時リトライなし）全通過。web 726 中 724（既知 2 件のみ）。
+
+## ISSUE-154（ライブ再計算のサーバ処理が遅くシングルスレッドが飽和・表示が累積遅延する）
+- **ステータス**: RESOLVED
+- **事象**: 1 分足 1,500 本で marod 系 1 リクエスト 0.84 秒。tick 駆動再計算×適用指標数でシングルスレッドサーバ（rpy2 制約で threading 不可）が飽和し、処理待ち行列で全指標の表示が数バー累積遅延（ユーザー実環境で発生・検証環境は指標数が少なく境界内＝再現差の正体）。
+- **原因（プロファイル実測）**: ①最大: 系列 JSON 直列化が pandas iterrows（0.64 秒/リクエスト）②因果ローリング分位の純 python ループ（~0.4 秒）③イベント分位のバー毎 numpy 呼出（~0.25 秒）＋バンド二重計算・非描画 _all の計算。
+- **対策（実施済み 2026-07-22 深夜・全て出力完全一致）**: ①fake_chart._line_points を配列一括変換へ ②_rolling_causal_fast（sliding_window_view＋nan 集約・満杯窓ベクトル化、部分窓のみ従来ループ。ループ版との全一致を回帰テストで恒久固定）③イベント分位を「観測数ごとの水準テーブル」方式へ（水準は確定観測数のみに依存する性質を利用）④アダプタからバンド受け渡し＋include_all=False（戻り値の形は不変）。
+- **効果（実測）**: 1 サイクル（4 指標 latest）2.2 秒 → **0.94 秒**（marod 系 0.84→0.28-0.31 秒）＝飽和解消・累積遅延の構造消滅。
+- **検証**: 数値パリティ全通過（btlm_trail_marod 23 / ma_marod 33 / api 398 / common 20）＋サーバ実測。
+
+## ISSUE-155（ページ起動が遅い・ローディングのまま表示されないことがある）
+- **ステータス**: RESOLVED
+- **事象**: ブラウザ起動〜チャート表示が遅く、まれにローディングのまま進まない（ユーザー報告・目標 1 秒以内）。
+- **原因**: ライブサーバが単一スレッド HTTPServer（rpy2/R のスレッド非安全対策）で、重い /compute の背後に起動時の静的 JS 数十件・/candles まで直列に並ぶ。別タブが tick 駆動再計算を流していると起動リクエスト群が数秒〜実質ハングまで遅延（実測: compute 稼働中の静的 JS 取得が秒単位）。
+- **対策（実施済み 2026-07-22 深夜）**: ThreadingHTTPServer 化＋重い計算（POST /compute・market_profile 系 GET）だけを専用ワーカースレッド 1 本へ直列送致する _ComputeWorker を導入。rpy2/R は常に同一ワーカースレッドから呼ばれ旧実装と同じ安全性（スレッド親和）を保ちつつ、静的配信・/candles・/live_ticks・/catalog は並行応答。リプレイサーバは既に ThreadingHTTPServer のため変更なし。
+- **効果（実測）**: compute 3 並行の最中でも静的 JS 4ms・/catalog 1ms・/candles 261ms（自身のコストのみ）。実ブラウザの起動〜ローソク表示 144/133/132ms（3 回連続・ライブ稼働状態での再読込）＝目標 1 秒を大幅達成。api 398 テスト全通過。
+
+## ISSUE-156（マルチスレッド化の拡張 B/H/A/C：ワーカー分離・リプレイ統一・計算プール・クライアント並列）
+- **ステータス**: RESOLVED（実装完了・効果は項目により実測どおり）
+- **実施内容（2026-07-23 未明）**:
+  - **B**: ライブサーバの Market Profile 系 GET を専用ワーカー `_MP_WORKER` へ分離（MP の重い zp 計算が指標 /compute の待ち行列を塞がない。MP 内部は従来どおり単一スレッド直列）。
+  - **H**: リプレイサーバの heavy 経路（candles resample／compute／intraday）を `_HeavyWorker`（専用スレッド 1 本）経由に統一。従来のロック直列では rpy2/R のスレッド親和性（常に同一スレッドからの呼び出し）が未保証だった。heavy_lock 注入 API・ロック意味は温存（ワーカー内で取得）。ライブ（ISSUE-155）と同一設計。
+  - **A**: ライブ /compute を tgp_btlm（rpy2）＝専用ワーカー固定・他指標＝ThreadPoolExecutor(3) に分離。安全化として module_loader に import ロック（半構築モジュール観測・二重 exec 防止）、marketdata/serving_cache に粗粒度 RLock（重複ビルド・torn-read 防止）を追加。
+  - **C**: クライアント recomputeFormingTails を Promise.allSettled 並列化（個別失敗が他指標を道連れにしない）。
+- **実測（正直な結果）**: A/C のスループット効果は **無し**（4 指標 latest: 逐次 0.86s vs 並列 0.91s＝GIL 支配。計算の python ループ区間が直列化されるため）。B/H は待ち行列分離・rpy2 安全性の確実化として有効（レイテンシ隔離）。起動 151ms・全テスト既知ベースライン（api 398 / replay py 176 / web 724+236）・コンソールエラー 0。
+- **結論**: これ以上のスループット向上には multiprocessing が必要だが、DataFrame 直列化コストと複雑性から**非推奨**（現状の 1 サイクル ~0.9s・duty ~40% で実用十分）。
+- **対策（実施済み 2026-07-23）**: keepPane 除去時（chart_renderer.remove）に pane 価格軸の手動レンジ（autoScale=false 時の getVisibleRange）を slot へ退避し、_renderSeries の系列再追加後に setVisibleRange で復元（lwc 内部で autoScale=false 再設定＝軸ドラッグと同一状態）。自動スケール中は退避しない＝挙動不変。ライブ・リプレイ共有ファイルのため両モード同時解消。
+- **検証（2026-07-23 実 UI）**: 実ブラウザで最下段 pane 右軸を実ドラッグ→確定足 full 再計算（毎分）をまたいで軸描画の画素一致を確認（dragChangedAxis=true / axisPreservedAcrossFull=true）。ユニット回帰 2 件追加（web 728 pass・既知失敗のみ）。
+
+## ISSUE-157（ライブ: 指標更新が数分〜のち全指標同時に停止する（ローソクは前進継続）・間欠再発）
+- **ステータス**: RESOLVED（クロック駆動設計へ再設計・2026-07-23）
+- **事象（2026-07-23 朝 ユーザー報告 2 回）**: 開きっぱなしのページで、ある時点から全指標（btlm_trail・marod 系）の描画が同一バーで停止し、ローソクだけ前進する。F5 で回復。サーバは全 200・データ 2 系統（tick/M1）フレッシュ・新規ページは毎分追随（実測）＝クライアント側の間欠停止。
+- **原因（構造欠陥として特定・当該事象での実証は監視中）**: /compute の fetch にタイムアウトが無く、応答が返らない要求が 1 本でもあると requestFormingRecompute の `_formingBusy` ラッチが永久に解放されない（recomputeFormingTails の Promise.allSettled が全 settle 待ち）。以降の forming/full 要求はすべて pending に畳まれたまま実行されず、全指標更新が凍結する。ローソク・forming_bar・live_ticks の各ポーラーは reentrancy ラッチを持たず自己回復するため、ローソクだけ前進する＝症状と完全一致。
+- **対策（実施済み 2026-07-23）**:
+  1. compute_http_client に AbortController タイムアウト 30s（本文読取ストールも中断）。タイムアウトは ComputeError(network) へ翻訳され、既存 pending 機構が自動再試行する（凍結→最大 30s の一時停止に転換）。
+  2. busy ラッチのウォッチドッグ（BUSY_WATCHDOG_MS=90s・最後の砦）: busy 保持が異常長時間なら次要求時に強制解放して実行を通す（未知の非解決 await でも自己復旧）。
+- **検証**: ユニット 2 件追加（タイムアウト abort→network 翻訳・正常系不変）。web 728 pass / replay web 236 pass（既知失敗のみ）。実 UI はユーザー同等構成（ズーム＋pane 手動スケール）で 14 分監視＝正常系の非退行を確認（compute 鮮度 0〜5s・描画右端メイン＝pane 一致・エラー 0）。事象自体は間欠のため監視中に再現せず＝当該事象での実地実証は未（原因は症状と一致する唯一の構造欠陥として特定）。再発時は最大 30s（ウォッチドッグ経路でも 90s）で自己回復する設計。再発報告があれば console の ISSUE-157 警告有無で経路を確定できる。
+- **再設計（2026-07-23・ユーザー裁定「30 秒で自己回復する時点で設計失格」を受け恒久設計へ）**: タイムアウト復旧（緩和策）を廃し、更新機構を「ラッチ待ち」から**クロック駆動**へ全面変更。requestForming/FullRecompute は要求フラグを立てて _drive() を呼ぶだけで、**実行中要求の完了を一切待たない**（await をゲートにしない）。各ポーラー（LiveTickPlayer 2.5s/100ms・FormingBarUpdater 5s・LiveUpdater 60s）が自走クロックとなり、STALL_DEADLINE_MS=10s を超えた試行はハングとみなして無視し新試行を発行。遅延応答は per-instance generation の latest-wins が破棄（競合安全）。isRecomputing() も時限化（深さカウンタのハング残留でゲートが恒久閉鎖しない）。**凍結という吸収状態が構造的に存在しない**（ローソク側ポーラーと同一の自己回復構造）。fetch 30s タイムアウトは資源掃除として残置（生存機構ではない）。全時間足・ライブ/リプレイ共通（共有ファイル）。
+- **検証（2026-07-23）**: ユニット: 新設計 7 件（coalesce 維持・full 必達維持・isRecomputing 衝突回避維持・**ハング中でも新試行発行**・時限ゲート自己開放）を含め web 730 pass / replay web 236 pass（既知失敗のみ）。実 UI: 3.3 分監視で compute 160 回・コンソールエラー 0・全指標が最新確定足を追随（毎分）。
+
+## ISSUE-158（リプレイ再生が遅すぎる：①変換ベクトル化＋②一括リビール）
+- **ステータス**: RESOLVED（2026-07-23 実装・実 UI 検証済み）
+- **事象**: リプレイのバー送りが 1 ステップ数秒（体感で遅すぎる・ユーザー報告）。実測で 1 compute=1.45s、うち 69%（1.17s）が「全履歴 50,000 行を Python 行ループ（df.iloc/iterrows）で dict 化→直後に 48,500 行を廃棄」する変換だった（指標計算自体は 0.13s）。マルチスレッド化は無効（GIL 実測 0.9x・rpy2 安全のため重処理は単一スレッド必須）。
+- **対策①（変換ベクトル化・挙動完全同一）**: causal_compute_gateway._df_to_bars と causal_candle_repository の行ループを列単位ベクトル化。旧実装を参照実装としてテスト内に凍結し完全一致を固定（test_plain_bars_vectorized.py・9 件）。実測: 変換 1,165ms→21ms（55 倍）、compute 1.7s→0.25〜0.32s。
+- **対策②（一括リビール・値同一を実測ゲート）**: 再生開始時に全レンジを 1 回計算し、バー送りは t 以下への同期スライス描画のみ（per-step HTTP 廃止）。リプレイの per-step は limit=bar+1＝左端固定窓（candles[0] 起点）のため、因果指標では「全レンジ 1 回計算の各バー値」＝「バーごとその場計算値」が厳密に成立。実データ検証: btlm_trail / btlm_trail_marod / ma_marod / moving_averages の全系列（evq 4 系列・hlines 含む）で 444 比較点 max_dev=0。登録リスト CAUSAL_REVEAL_IDS（replay 専用・fail-closed＝未検証指標は従来経路）で管理。gear/削除/時間足切替は基底を無効化し次フレーム再構築（世代ガードで遅延応答破棄）。足内更新（最新足更新モード）は対象外＝従来どおりその場計算（粒度・値とも不変）。
+- **検証**: replay web 243 pass（+7 新規）/ live web 730 pass / replay py 185 pass（+9 新規）＝既知失敗のみ。実 UI（8280 実再生・指標 3 適用）: **ステップ計算 31ms（改修前は数秒）・12.05 bars/s**（速度プリセット上限側）・足内更新モード共存確認（55ms・エラー 0）・コンソールエラー 0（favicon 404 は既存）。リプレイサーバ再起動済み。
+
+## ISSUE-159（SOLID 是正 🔴-2: chart_renderer 協働子抽出時に series_kind 台帳消費契約テストが一時 fail）
+- **ステータス**: RESOLVED（2026-07-23）
+- **事象**: SeriesDrawer 抽出（series_drawer.js）で能力分岐（seriesKind 参照）を全て移設した結果、series_kind.test.js「registry is the only kind ledger」が chart_renderer.js に要求する `from '../../domain/series_kind.js'` の import 残存契約を破り 1 件 fail（web 731→730）。
+- **対策（実施済み）**: chart_renderer.js に seriesKind の import を契約の固定点として復帰（能力分岐の実体は SeriesDrawer へ委譲済み・raw kind 文字列比較なしの契約は両ファイルで維持）。テストファイルは 1 行も変更していない。
+- **検証**: web 733 tests / 731 pass / fail 2（既知: replay_analysis・timeline_player のみ）・replay web 252 / 243 pass / fail 9（既知のみ）・node build.mjs 成功＝ベースライン完全一致。
+
+## ISSUE-160（SOLID 監査 改善提案 1→4 の実装：振る舞い完全不変リファクタリング）
+- **ステータス**: RESOLVED（2026-07-23 実装・全スイート＋実 UI 検証済み）
+- **実施内容（監査報告の優先度順・すべて挙動不変）**:
+  1. **🔴-3 スレッド親和性の宣言化**: server.py の `indicatorId=="tgp_btlm"` 名指し分岐を廃し、call_binding `_BindingSpec.thread_affinity: "dedicated"` 宣言＋ `requires_dedicated_worker()` 参照へ（殻から計算知識を排除・OCP）。回帰テスト 4 件（宣言集合が旧ハードコードと完全一致を固定）。
+  2. **🔴-4 MP 述語の台帳化**: `_isMarketProfile` の具象名直判定を usecase 能力台帳 `actor_driven_ids.js`（ACTOR_DRIVEN_COMPUTE_IDS）へ移譲（series_kind と同型・新アクター駆動指標は台帳 1 行で追加可能）。replay symlink・build.mjs 台帳へ登録。
+  3. **🔴-1/🔴-2 フロント 2 大クラスの責務抽出**: indicator_controller から `UpdateScheduler`（update_scheduler.js・クロック駆動 1:1 移植・STALL_DEADLINE_MS 再 export で互換維持）、chart_renderer（1463→783 行）から `ScaleController`／`CandleFeed`／`SeriesDrawer`（公開 API・export・コンストラクタ署名 1 バイト不変・chart_renderer 既存テスト無変更で green＝公開面互換の証明）。
+  4. **🟡-10 バンドプリミティブの common 抽出**: `common/marod_bands.py` 新設（rolling_causal/fast・quantile_bands・sigma_band・outlier_event_quantiles を btlm_trail_marod core から移設・例外文言込み同一）。btlm core は委譲へ縮退（公開 API・既定値不変）、ma_marod は兄弟具象への動的ロード依存を廃し common 直参照（DIP 対称化）。
+- **検証**: 全スイート green＝api 402（+4）/ replay py 185 / btlm 23 / ma_marod 33 / common 20 / web 731＋243（既知失敗のみ）。両サーバ再起動後の実 UI：ライブ compute 正常（15s で 28 回・エラー 0）・リプレイ 11.9 bars/s・ステップ 40ms・エラー 0。
+- **未実施（監査指摘のうち対象外）**: 🟡-1/2（狭い Port 実注入・ChartRenderer のロール Port 分割）・🟡-3（合成ルートの業務ロジック抽出）ほか 🔵 群＝提案のみ（推奨順 1→4 の範囲で完了）。
+
+## ISSUE-161（ライブ: 指標ラインが周期的に 1〜3 バー遅れ・オシレーター歯抜け→約 2 分で追いつく反復）
+- **ステータス**: RESOLVED（ストリーミング化 2026-07-23）
+- **事象（2026-07-23 19:47 JST ユーザー報告）**: ライブでラインの更新が遅れ、オシレーターは最新足付近が歯抜け（連続バー→空白→最新 1 本）。約 2 分で正常に戻り、また遅れる反復。
+- **原因（実測で特定・凍結バグ ISSUE-157 とは別問題）**: ローソクの最新部はブラウザが tick から直接合成するのに対し、指標はサーバの M1 確定足 CSV からのみ計算される。この M1 供給が周期的に遅れる（実測 10:50:44 時点で最終行 10:48＝約 2 バー遅れ）。差分のバーが「ローソクはあるが指標値が無い」＝歯抜けとして現れ、M1 追記が追いつくと回復する。tick 取得は live_tick_watch --interval 60（60 秒バッチ）のため、確定足の供給遅延は構造的に最大 ~2 分。
+- **増悪要因（推論・未実証と明示）**: 本日 serve.sh を複数回再起動した際、データ watch（export_jp225_m1 / live_tick_watch）が一時多重起動し書き込み競合した可能性。10:41 に 1 組へ収束していることをプロセス実測で確認済み（現在は健全）。
+- **対策案（承認待ち）**: ①現状（watch 1 組）で遅延分布を実測監視し、多重起動が原因だったかを切り分ける（推奨・まず観察）②tick 取得間隔 60s の短縮（取得 API 負荷とのトレードオフ＝ユーザー判断）③serve.sh に watch 多重起動ガード（既存プロセス検出）を追加。
+- **訂正**: 当初記載の「M1 変換が別プロセスで位相ずれ」は誤り（M1/rollup は live_tick_watch 内で連鎖済み）。真因は「取得だけが 60 秒周期の当日全量再取得（1 回 ~10 秒）」で、参照実装（prototype_260707-01 _poll_loop＝増分カーソル 5 秒）から本番だけが乖離していたこと。
+- **対策（実施済み）**: live_tick_watch に --stream を新設（参照実装踏襲: 増分カーソル・厳密>cursor・バックオフ・サーキットブレーカ・5 秒周期）。fetch_ticks_since に with_volumes 追加（既定不変・既存呼出非干渉）。分確定は猶予 12 秒後に M1/rollup 連鎖（末尾 tick 未着のまま確定バーを焼かない）。30 分毎の当日全量再取得で自己修復。出来高単位差（1e6 倍）は正規化（M1 はティック数集計のため計算無影響）。serve.sh を --stream へ切替。
+- **検証**: tools 63 pass（+3）。実測: tick 遅延 4〜7 秒（旧 最大 ~70 秒）・M1 確定はバー終了+16〜32 秒（旧 最大 ~2 分）・取得エラー 0。実 UI 90 秒監視: compute 182 回・指標最終値の鮮度 30 秒（最新確定バー）・コンソールエラー 0。
+
+## ISSUE-162（ライブ: 分境界直後の歯抜け・ライン途切れの恒久解消＝閉周期の tick 合成橋渡し）
+- **ステータス**: RESOLVED（2026-07-23 実装・実測検証済み）
+- **事象**: ストリーミング化（ISSUE-161）後も、バー確定から M1 焼き込み（+12 秒猶予）までの十数秒間、「確定済みの前バーが空白・形成中バーだけ点灯」の歯抜けとライン途切れが分境界ごとに発生。
+- **設計（ユーザー承認）**: 表示と確定の分離。閉じた直後のバーは足内更新（mode='latest'）経路が実 tick の完結窓から合成して途切れなく描き続け、最終値は M1 焼き込みで一度だけ確定（非リペイント厳守・売買トリガーは確定値のみ）。更新粒度・ライブ/リプレイ機構は無変更。
+- **実装**: apply_forming_bar を拡張——df 末尾と形成中周期の間の欠落閉周期を forming_bar_from_ticks の完結窓で合成注入（固定長 tf のみ・tick 無し周期は捏造しない・最大 5 本・tick 系 ref 限定）。形成中バー None（境界直後の tick 未着）でも閉周期合成は独立実行。latest_compute に min_tail（additive・注入バー数ぶん末尾切り下限を拡張）。
+- **是正過程で捕捉した不具合**: (1) 末尾切り trailing_k が合成バーを応答から切落とし（min_tail で解消）(2) 形成中 None の巻き添え早期 return（分離で解消）(3) ref ゲート漏れで sample データへ実 tick 混入（is_tick_ref ゲートで解消・テスト済）。
+- **検証**: api 405 pass（+3 gap-fill テスト）・replay py 185 pass。実測: 分境界 +4 秒の 3 連続試行すべて「系列が現在分まで 60 秒間隔で連続・欠落ゼロ」（12:54/12:55/12:56）。クライアント無変更＝F5 不要（サーバ側のみ）。
+
+## ISSUE-163（ライブ: 時間足切替後にオシレーター pane が全高ブロック状に潰れる）
+- **ステータス**: RESOLVED（2026-07-23 実装・実 UI 再現/検証済み）
+- **事象（ユーザー報告 22:00 JST）**: 時間足切替後、marod 系 pane のヒストグラムが全高のブロック状に潰れ、ラインもクリップして異常表示。
+- **原因（実 UI 再現で確定）**: ISSUE-150 の pane 手動スケール保持（keepPane 退避/復元）が**時間足切替をまたいで**旧レンジを復元していた。1m で作った狭い手動レンジ（例 ±0.1 相当）が 30m の値域（±4）に適用され、全系列がクリップ＝全高ブロック化。メイン価格軸には ISSUE-113（ユーザー裁定: 切替で手動スケールをリセット）が既適用で、pane 側だけ裁定に反していた。
+- **対策**: ChartRenderer.resetPaneScales() を新設（全 pane の退避破棄＋autoScale=true）。TimeframeController.setTimeframe の ISSUE-113 リセット直後に呼ぶ（メイン軸と同裁定へ統一）。ISSUE-150 の保持は「同一時間足での再計算」に限定＝本来の意図どおり。
+- **検証**: 再現手順（1m で pane 軸を狭レンジ手動化 → 30m 切替）で修正前クリップ・修正後 ±4 自動スケール正常表示を実 UI 確認。web 732 pass / replay 243 pass（既知失敗のみ）。
+
+## ISSUE-164（ズーム操作への自動介入の全廃＝「指示なき追加実装」の抜本掃除・ユーザー裁定）
+- **ステータス**: RESOLVED（2026-07-23 実装・全数監査・実 UI 検証済み）
+- **裁定（ユーザー 2026-07-23）**: 「単一機能（右端常設余白）の指示に対し、実装が勝手な自動補正（ズームのたびに余白 px を一定へ再適用する購読）を同梱していた。この副作用が『過去へ遡って拡大すると右端へ戻る』ジャンプ（ISSUE-148 系）の根本原因であり、148 の修正はガードで隠しただけだった。ビューを動かしてよいのはユーザーの明示イベントのみ。ユーザビリティを下げる自動介入はやめろ」。
+- **対策**:
+  1. 可視範囲変化（ズーム/ドラッグ）→ rightOffset 再適用の購読を撤去（chart_renderer 構築子）。余白の適用点は明示イベントのみ＝初期表示・時間足切替（setCandles）・MP 余白率変更・最新足へ戻る操作。ズーム中の余白 px 一定性は保証しない（仕様として明文化）。旧仕様のテストは新裁定のテスト（ズーム非反応）へ置換。
+  2. **全数監査**（専用エージェント・全ビュー操作 API の起点を経路追跡）: 補正型の自動ビュー書換えは本件撤去後 **残存ゼロ** を確認。他の呼出はすべて明示操作起点（A 判定）。例外は ISSUE-150 の pane スケール同値復元のみ（ユーザー自身のレンジをそのまま戻す・ビューは動かない・除去すると 150 再発のため温存）。
+  3. 掃除: 撤去済み機能を指す陳腐化コメント 2 箇所を是正・呼出ゼロの死メソッド focusRecentBars を削除（対応する死テストも削除）。
+- **検証**: web 731 pass / replay 243 pass（既知失敗のみ）・build 成功。実 UI（クロスヘア日時を判定器に採用）: 右端 12:28 → 過去 22:58 へスクロール → ズーム後 23:35（過去のまま） → **バー確定跨ぎ 75 秒後も 23:35 で不動**＝ジャンプ消滅。なお前回の「修正後も再現」は検証側のジェスチャ誤り（時間軸右ドラッグ＝右端まで縮小する操作）による誤判定と特定した。
+- **教訓（記録）**: 指示された単一機能に「気を利かせた自動補正」を同梱しない。症状をガードで隠さず原因を除去する。
+
+## ISSUE-165（時間足切替が 1 秒超過＝指標 /compute のフロント直列実行×サーバ飽和の複合）
+- **ステータス**: RESOLVED（2026-07-23 実装・実 UI 検証済み）
+- **結果（実 UI 再実測・全時間足掃引）**: 切替クリック→全系列描画 15m 0.54s / 30m 0.62s / 1h 0.70s / **4h 0.75s / 1D 0.32〜0.60s** / 1W 0.19s / 1M 0.09s / 1m 0.65s＝全時間足 1 秒以内を達成（旧 4h 1.13s・1D 1.26s）。並列発行（2 compute 同時開始）を resource timing で確認。コンソールエラーなし・描画健全（series 取り違え/pane 崩れなし）。web 732 pass / replay 243 pass（既知失敗のみ・新規失敗なし）・build 成功。回帰テスト追加（並列発行・series 取り違えなし・generation lost update なし）。
+- **事象（ユーザー報告 2026-07-23）**: 時間足切替が遅すぎる。選択後 1 秒以内の表示を要求。
+- **実測（実 UI・ライブ 8000・適用 2 指標 btlm_trail_marod + btlm_trail）**: 切替クリック→全系列描画まで 1m 0.66s / 5m 0.52s / 15m 0.56s / 30m 0.67s / 1h 0.35s / **4h 1.13s / 1D 1.26s** / 1W 0.68s。単発 /compute はサーバ負荷時 最大 1.6s を実測。
+- **原因（実測で確定）**:
+  1. フロントの切替バッチ（recomputeAllApplied フェーズ1）が指標ごと**直列** await（合算課金）。直列必須の理由は state 丸ごと代入の lost update と共有 _lastSeries の取り違えガード。
+  2. サーバ側の膨張: 足内更新（tick 駆動 mode=latest）が実質フル計算（marod min_window≒全量）でほぼ連続発火し、compute プール（GIL）が飽和。単独実測 marod 180ms / trail 50ms が、実 UI では 200〜1030ms へ膨張（3〜5 倍）。
+  3. 毎分の CSV 書換で resample キャッシュが失効し、直後の切替に読込 30〜160ms が上乗せ。
+- **対策（ユーザー承認 y・実施済み）**: フェーズ1 の /compute を並列化する。前提是正として (a) series 受け渡しを共有 _lastSeries から per-call gateway 捕捉へ（取り違え race の恒久解消・既存並列の足内更新経路 ISSUE-156(C) に潜在する同 race も同時解消）、(b) state 反映を丸ごと代入から当該 instance 行のみのマージへ（lost update 恒久解消）。並列時の実測 0.52〜0.65s（4h/1D・ライブ負荷下）＝全時間足で 1 秒以内見込み。描画は従来どおりフェーズ2 同期一括（ISSUE-023 同時更新は不変）。
+
+## ISSUE-166（起動後に UI は表示されるがチャートが表示されないときがある・間欠）
+- **ステータス**: RESOLVED（2026-07-23 対策実装・実 UI 検証済み）
+- **対策（ユーザー承認: 読込ガード＋再試行）**: 両 UI の入口（index.html）に ensureLwc を追加——window.LightweightCharts 未定義なら cache-bust 付きで最大 3 回再読込（500ms×attempt の待機）し、成功してから bootstrap する。3 回失敗時は console.error で明示し bootstrap しない（未定義のまま createChart で即死する経路を遮断）。自動ページリロードは実装しない（承認範囲どおり）。
+- **検証（実 UI）**: Playwright の経路遮断で vendor 初回読込を強制失敗→再試行 1 回で復帰し、ライブ・リプレイともチャート描画/現在値表示まで正常（page error 0）。通常起動（介入なし）も無影響。web 737 pass / replay 243 pass（既知失敗のみ）・build 成功。
+- **一次証拠（ユーザー提供 2026-07-23）**: `lightweight-charts.js: net::ERR_CONTENT_LENGTH_MISMATCH` → `chart_bootstrap.js:18 TypeError: Cannot read properties of undefined (reading 'createChart')`（bootstrap 内 createChartWithMainSeries・composition_root_front.js:159 経由）。
+- **原因（確定・フロント連鎖）**: vendor/lightweight-charts.js の配信が Content-Length 未満で途中切断→ window.LightweightCharts が undefined のまま bootstrap → lwc.createChart で TypeError → bind()/restore()/更新系の起動前に全滅。静的 HTML/CSS のみ表示され、チャート無し・時間足切替も無反応＝全症状と一致。リトライ・エラー表示が無いため F5 まで回復しない。
+- **途中切断のサーバ側トリガ（推定・未検証と明示）**: serve.sh 再起動の際、旧サーバプロセス終了時に daemon スレッドが応答書き込み途中で殺される（ThreadingHTTPServer.daemon_threads=True）レースが最有力。ページ読込と再起動の重なりで間欠発生する頻度感とも整合。
+- **次回発生時の採取手順（このセクション参照）**: (1) F12 → Console タブの赤エラーを全文コピー (2) Network タブで赤行（failed/4xx/5xx）の URL とステータス (3) 画面スクショ（チャート領域に軸・目盛が出ているか） (4) serve.sh を起動した端末に Traceback が出ていないか。この 4 点で「フロント配線死（bootstrap 例外）」か「/candles 失敗」かが一意に切り分く。
+- **事象（ユーザー報告 2026-07-23）**: 起動後、UI は表示されるがチャート（ローソク）が表示されないことがある。
+- **再現試行（実測・現条件では未再現）**: ライブ 8000 で 15 回・リプレイ 8280 で 6 回のページ再読込＝全回 candles 1500 本取得・canvas 描画あり。/candles?timeframe=1m を 80 秒間 251 連打（分確定の非原子追記を跨ぐ）＝全 200。watch ログにエラー 0。
+- **コード確認で判明した構造的脆弱点（事実・症状との因果は未確定）**:
+  1. B方式の初回 /candles が失敗（非200/ok:false/例外）すると fetchCandles が null を返し**無描画のまま**（フォールバック・リトライ・エラー表示なし）。永続 tf が既定 1D と同一の場合、restore でも再取得されず手動の時間足切替まで空白が続く。
+  2. サーバ・コールド起動直後は torn-read フォールバック（直前良好キャッシュ返却）が**キャッシュ不在で機能せず**、読込失敗が即エラー応答になる（serving_cache/rollup_store とも「良好キャッシュが無ければ送出」）。
+  3. 1m 経路（原子 tail 読み）は毎回 read_tail 直読みでフォールバック自体が無い。tick_m1 の末尾追記は非原子（tick_m1.py 319 に明記）。
+- **ユーザー回答（2026-07-23）**: ライブ・リプレイ両方で発生／serve.sh 起動直後に発生／**時間足切替でも回復しない**。
+- **追加再現試行（両サーバをクリーン再起動して起動直後の窓を計装付きで検証・未再現）**: ライブ再起動→直後 8 連続ロード・リプレイ再起動→直後 6 連続ロード＝全回描画あり・window.onerror/unhandledrejection 0 件・失敗リクエスト 0 件。CSV 全 18 ファイル不正行 0（torn 焼き付き無し）。再起動後の watch 稼働・CSV 末尾健全性も確認済み。
+- **考察（未検証と明示）**: 「切替でも回復しない」は初回 /candles 失敗（脆弱点 1）単独では説明できない（切替は再取得するため回復するはず）。フロント bootstrap が bind() 前に死ぬ経路（vendor/lightweight-charts.js やモジュール読込失敗→ createChart 例外→全機能死亡）なら症状全体と整合するが、35 回のロード試行では観測されず。発生時の一次証拠（コンソール・ネットワーク・スクショ）が確定に必要。
+- **今回の再現試行との条件差（記録）**: ユーザーの実起動は長時間分の増分取得＋初回全量再取得の重負荷・OS コールドキャッシュを伴う可能性。本試行はデータ最新状態の軽量起動だった。
