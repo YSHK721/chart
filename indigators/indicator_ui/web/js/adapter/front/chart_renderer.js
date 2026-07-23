@@ -20,31 +20,20 @@
 // DOM 非依存: chart / mainSeries / lwc は composition root から注入（テストは Fake を渡す）。
 
 import { fmtValue } from './format.js';
+// series_kind 台帳の消費契約（series_kind.test.js「registry is the only kind ledger」）: 本ファイルは
+//   台帳消費 3 ファイルの一角であり、能力分岐の実体は SeriesDrawer（series_drawer.js・SOLID 是正 🔴-2 で
+//   抽出）へ委譲した。委譲後も raw kind 文字列比較を持ち込まない契約の固定点として import を維持する。
 import { seriesKind } from '../../domain/series_kind.js';
+import { ScaleController, zoomedPriceRange, clampPriceRange } from './scale_controller.js';
+import { CandleFeed } from './candle_feed.js';
+import { SeriesDrawer, WATERMARK_COLOR, lastPointValue } from './series_drawer.js';
 
-// lineStyle 文字列 → lightweight-charts LineStyle 整数（v4/v5 共通: Solid=0 / Dotted=1 / Dashed=2）。
-const LINE_STYLE_INT = Object.freeze({ solid: 0, dotted: 1, dashed: 2 });
-
-// ドット（サークル）表示の明示半径（px）。スタイルタブで dots へ切替時に付与し視認性を確保する
-//   （lwc 既定 pointMarkersRadius は lineWidth/2+2＝細い）。adapter 既定 emit（_POINT_RADIUS=3.5）と一致。
-const _POINT_MARKERS_RADIUS = 3.5;
-
-function toLineStyleInt(style) {
-  return LINE_STYLE_INT[style] ?? LINE_STYLE_INT.solid;
-}
-
-// メイン（ローソク）pane と オシレータ pane の高さ相対比。ローソクを大きく見せる初期値。
-//   ユーザーは pane separator のドラッグ（機能④）で後から自由に調整できる。
-const MAIN_PANE_STRETCH = 3;
-const INDICATOR_PANE_STRETCH = 1;
-
-// ISSUE-114/115: チャート右端の常設余白（チャート幅比率）。最新足の右側に常時 幅×この比率 の
-//   空きを px 基準で確保する。lwc rightOffset は論理バー単位のため、バー数固定では全体表示
-//   （微小 barSpacing）で余白が消える（ISSUE-115）＝_syncRightOffset が width×frac÷barSpacing を
-//   都度再計算して適用する。MP プロファイル右マージン（setRightMarginFraction）とは比率の max 合成。
-const BASE_RIGHT_MARGIN_FRACTION = 0.05;
-
-const WATERMARK_COLOR = 'rgba(209, 212, 220, 0.9)';
+// zoomedPriceRange/clampPriceRange の単一ソースは scale_controller.js（SOLID 是正 🔴-2 で抽出）。
+//   既存 import（テスト・他ファイル）を壊さないため本モジュールからも再 export する。
+//   ※ 「export { X } from モジュール」の再 export 構文は build.mjs の stripModuleSyntax
+//     （import 行剥がし）で壊れるため、import 済みシンボルの別行 export
+//     （剥がし後は無害なブロック文）にする。
+export { zoomedPriceRange, clampPriceRange };
 
 // v6（§12）: ホバー中ペア外のローソク足に被せる極暗色（背景 #131722 に近い不透明暗色）。
 //   per-bar color/borderColor/wickColor を本色で上書きし、ローソクのみを限りなく減光する
@@ -56,99 +45,6 @@ const DIM_CANDLE_COLOR = '#16191f';
 const TRANSPARENT_COLOR = 'rgba(0,0,0,0)';
 const CANDLE_UP_COLOR = '#26a69a';
 const CANDLE_DOWN_COLOR = '#ef5350';
-
-// σ 水準線のカラースキーム（histogram の level_colors と同義: 中心からの距離で 緑→赤）。
-// 端点は common/level_colors.py の _CALM/_HOT（#2e7d32 / #d32f2f）に一致させる。
-const SCHEME_CALM = [46, 125, 50]; // 緑（中心＝穏やか）
-const SCHEME_HOT = [211, 47, 47]; // 赤（両極端＝過熱）
-// 明度係数（背景 #131722 に馴染ませる。小さいほど暗い。0..1）。灰一色より色で識別でき、かつ控えめ。
-const LEVEL_LINE_DIM = 0.55;
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
-// 価格軸ホイールズームの中核式（純関数・単体テスト用に export）。
-//   range: { min, max } 現在の価格レンジ、price: カーソル位置の価格、deltaY: wheel の deltaY。
-//   ズーム係数 f = 0.9^(-deltaY/100)（deltaY<0=上=ズームイン=レンジ×0.90／deltaY>0=下=×1/0.90）。
-//   トラックパッド（微小 deltaY 連続）は指数で滑らかに比例。1 イベントの暴れ防止で f∈[0.5, 2] にクランプ。
-//   カーソル価格 p を中心に newMin = p-(p-min)*f / newMax = p+(max-p)*f。
-//   span を現 span×1e-4 未満に縮めない（最小 span クランプ）。price が range 外なら中央基準。
-const PRICE_ZOOM_F_MIN = 0.5;
-const PRICE_ZOOM_F_MAX = 2;
-const PRICE_ZOOM_SPAN_MIN_RATIO = 1e-4;
-
-// データ全幅に対する絶対クランプ（暴走防止・実機バグ修正）: ホイール連打/慣性スクロールで
-//   「読む→係数→書く」のフィードバックが複利増幅し 1e24 等へ発散したため、ズーム結果を
-//   データ（baseCandles の low/high）由来の絶対範囲に制限する。span ∈ [dataSpan×1e-4, dataSpan×5]、
-//   さらに表示中心（c）をデータ範囲内 [dataRange.min, dataRange.max] にクランプする（最大ズームアウトでも
-//   ローソクが視界から消えない）。純関数。
-const PRICE_ZOOM_MAX_SPAN_RATIO = 5;
-const PRICE_ZOOM_ABS_MIN_SPAN_RATIO = 1e-4;
-
-export function clampPriceRange(range, dataRange) {
-  if (!dataRange || !(dataRange.max > dataRange.min)) {
-    return range; // データレンジ不明時はそのまま（従来挙動）。
-  }
-  const dataSpan = dataRange.max - dataRange.min;
-  const maxSpan = dataSpan * PRICE_ZOOM_MAX_SPAN_RATIO;
-  const minSpan = dataSpan * PRICE_ZOOM_ABS_MIN_SPAN_RATIO;
-  let span = range.max - range.min;
-  let c = (range.min + range.max) / 2;
-  if (span > maxSpan) span = maxSpan;
-  if (span < minSpan) span = minSpan;
-  // 中心はデータ範囲内に保つ（最大ズームアウトでもローソクが視界から消えない）。
-  const cMin = dataRange.min;
-  const cMax = dataRange.max;
-  if (c < cMin) c = cMin;
-  if (c > cMax) c = cMax;
-  return { min: c - span / 2, max: c + span / 2 };
-}
-
-export function zoomedPriceRange(range, price, deltaY) {
-  const min = range.min;
-  const max = range.max;
-  const span = max - min;
-  if (!Number.isFinite(deltaY) || deltaY === 0) {
-    return { min, max }; // deltaY 不正/0 は無変化（NaN 伝播防止）。
-  }
-  let f = Math.pow(0.9, -deltaY / 100);
-  if (f < PRICE_ZOOM_F_MIN) {
-    f = PRICE_ZOOM_F_MIN;
-  } else if (f > PRICE_ZOOM_F_MAX) {
-    f = PRICE_ZOOM_F_MAX;
-  }
-  // price が range 外なら中央（(min+max)/2）を基準にする。
-  const p = (price >= min && price <= max) ? price : (min + max) / 2;
-  let newMin = p - (p - min) * f;
-  let newMax = p + (max - p) * f;
-  // 最小 span クランプ: 現 span×1e-4 未満へは縮めない（p 中心を保ったまま拡げる）。
-  const minSpan = span * PRICE_ZOOM_SPAN_MIN_RATIO;
-  if ((newMax - newMin) < minSpan) {
-    const c = (newMin + newMax) / 2;
-    newMin = c - minSpan / 2;
-    newMax = c + minSpan / 2;
-  }
-  return { min: newMin, max: newMax };
-}
-
-// 中心からの距離比 t∈[0,1] を 緑→赤 へ補間し dim で減光した rgb 文字列にする。
-function schemeColor(t, dim) {
-  const r = Math.round(lerp(SCHEME_CALM[0], SCHEME_HOT[0], t) * dim);
-  const g = Math.round(lerp(SCHEME_CALM[1], SCHEME_HOT[1], t) * dim);
-  const b = Math.round(lerp(SCHEME_CALM[2], SCHEME_HOT[2], t) * dim);
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-// 系列データ末尾点の value を取り出す（読み取り欄の hover 解除時 fallback 用）。空なら null。
-function lastPointValue(data) {
-  const arr = data ?? [];
-  if (arr.length === 0) {
-    return null;
-  }
-  const last = arr[arr.length - 1];
-  return (last && last.value !== undefined) ? last.value : null;
-}
 
 export class ChartRenderer {
   // chart: LightweightCharts.createChart(...) の戻り（addSeries/addPane/panes/removePane を持つ）。
@@ -194,53 +90,57 @@ export class ChartRenderer {
     // 価格パンの px→価格換算に使う pane 高（container 高 - timeScale().height() 相当）。
     //   composition root が setPaneHeight で供給する。
     this._paneHeight = null;
-    // ISSUE-114/115: チャート右端の常設余白（幅比率基準・px 一定）。最新足が右端に張り付く
-    //   ストレスの解消。rightOffset は scrollToRealTime / FOLLOW 追従で尊重されるため、ライブ新足
-    //   でも余白が維持される。ズーム（barSpacing 変化）時は可視範囲購読で bars を再計算し px 幅を
-    //   一定に保つ（同値スキップでループ防止）。timeScale 非対応 Fake は no-op。
+    // ISSUE-114/115: チャート右端の常設余白（幅比率基準）。最新足が右端に張り付くストレスの解消。
+    //   rightOffset は scrollToRealTime / FOLLOW 追従で尊重されるため、ライブ新足でも余白が維持される。
+    //   ISSUE-164（ユーザー裁定）: ズームへの自動追従（可視範囲購読での再適用）は廃止済み。
+    //   余白の適用は明示イベント（初期表示・時間足切替・MP 余白率変更・最新足へ戻る）のみで、
+    //   ズーム中の余白 px 一定性は保証しない（ユーザー操作の意思を優先）。
     this._lastRightOffsetBars = null;
+    // SOLID 是正 🔴-2: 価格軸ズーム/パン数学（handlePriceWheel/panPriceByPixels/resetPriceZoom・
+    //   ISSUE-150 の pane スケール退避/復元）は ScaleController（協働子）へ委譲する。共有状態は
+    //   本クラスが所有し続け、協働子には this（host）参照を注入する（公開面・挙動は不変）。
+    this._scale = new ScaleController(this);
+    // SOLID 是正 🔴-2: ローソクデータ所有と更新（setCandles/updateLastCandle/resync 系・
+    //   rightOffset 同期 _syncRightOffset）は CandleFeed（協働子）へ委譲する（公開面・挙動は不変）。
+    this._candleFeed = new CandleFeed(this);
+    // SOLID 是正 🔴-2: 系列生成・スタイル（_renderSeries/applySeriesStyle/_swapSeriesType/
+    //   setVisible の実体）は SeriesDrawer（協働子）へ委譲する（公開面・挙動は不変）。
+    this._drawer = new SeriesDrawer(this);
     this._syncRightOffset();
-    {
-      const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
-      if (ts && typeof ts.subscribeVisibleLogicalRangeChange === 'function') {
-        ts.subscribeVisibleLogicalRangeChange(() => this._syncRightOffset());
-      }
-    }
+    // ISSUE-164（ユーザー裁定 2026-07-23）: ズーム/ドラッグ（可視範囲変化）に反応して右余白を
+    //   再適用する購読は撤去した。ユーザーの拡大縮小操作と無関係に rightOffset を適用し直すのは
+    //   lwc では「最新足基準へのスクロール」副作用を持ち、『過去へ遡って拡大すると右端へ戻る』
+    //   ジャンプの根本原因だった（ISSUE-148 はガードで蓋をしただけで隙間から再発）。
+    //   余白の適用点は明示イベントのみ: 初期表示（直上）・時間足切替（setCandles）・
+    //   MP 余白率変更（setRightMarginFraction）・最新足へ戻る操作（scrollToRealTime）。
+    //   ズーム中の余白 px 一定性は保証しない（ユーザー操作の意思を優先する）。
     // 機能③: クロスヘア移動で pane ウォーターマークへ系列値を追記。
     if (typeof this._chart.subscribeCrosshairMove === 'function') {
       this._chart.subscribeCrosshairMove((param) => this._onCrosshairMove(param));
     }
   }
 
-  // 時間足切替: メインローソク系列のデータを差し替え、可視範囲を全体へ合わせる。
+  // 時間足切替: メインローソク系列のデータ差し替え（実体は CandleFeed.setCandles・SOLID 是正 🔴-2）。
   setCandles(candles) {
-    const arr = candles ?? [];
-    this._mainSeries.setData(arr);
-    // v6: 基準 candles を全置換で更新（per-bar 減光/復元の元集合）。
-    this._baseCandles = arr;
-    // 増分2: 基準 candles が入れ替わったのでトリム位置キャッシュをリセット（次の setCandleTrim で再 set）。
-    this._lastTrimIdx = null;
-    // 価格スケールの手動状態（軸ドラッグ/ホイールズーム）には本メソッドでは触れない。setCandles は
-    //   replay_ui の足リビールで毎バー呼ばれるため、ここで解除するとバー境界のたびにズームが消える
-    //   （旧実装の不具合）。解除点は「価格軸 dblclick（resetPriceZoom）」と「時間足切替
-    //   （TimeframeController.setTimeframe が resetPriceZoom を呼ぶ・ISSUE-113 ユーザー裁定）」の 2 点で、
-    //   いずれも呼び出し側の責務。手動スケールは lwc 内部状態なので setData 全置換でも lwc 自身が保持する。
-    this._replayViewSpan = null; // スクラブ span キャッシュのみリセット（価格ズームとは別物）。
-    // ISSUE-114: fitContent は全データを幅いっぱいへフィットし右余白を潰すため、直後に
-    //   scrollToRealTime で常設 rightOffset を反映する（barSpacing は fitContent の結果を維持）。
-    //   scrollToRealTime 非提供（後方互換 Fake）は no-op（下の呼出し済みガードに委ねる）。
-    // 読み取り欄の最新足の単一源を更新（配列末尾の足）。空配列なら null。
-    this._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
-    const ts = this._chart.timeScale();
-    ts.fitContent();
-    // fitContent で barSpacing が確定した直後に余白バー数を再計算してから右端へスクロール
-    //   （ISSUE-115: px 基準余白の反映順）。
-    this._syncRightOffset({ force: true });
-    if (typeof ts.scrollToRealTime === 'function') {
-      ts.scrollToRealTime();
+    this._candleFeed.setCandles(candles);
+  }
+
+  // ISSUE-163: 全 pane 価格軸の手動スケールを破棄し自動スケールへ戻す（時間足切替用）。
+  //   ISSUE-150 の手動スケール保持（keepPane 退避/復元）は「同一時間足での再計算」を守るための
+  //   機構であり、値域が変わる時間足切替で旧レンジを持ち越すと系列がクリップして全高ブロック化する
+  //   （実 UI 再現済み 2026-07-23）。切替時は退避を破棄し autoScale=true へ戻す。
+  resetPaneScales() {
+    for (const slot of this._instances.values()) {
+      slot.savedPaneScaleRange = null;
+      const host = slot.pane ? slot.scaleHost : null;
+      if (!host || typeof host.priceScale !== 'function') {
+        continue;
+      }
+      const ps = host.priceScale();
+      if (ps && typeof ps.applyOptions === 'function') {
+        ps.applyOptions({ autoScale: true });
+      }
     }
-    // v6: candle 変更を observer へ通知（ChartRenderer 起点同期＝hover 中なら highlight 解除へ）。
-    this._onCandlesChanged();
   }
 
   // 基準 candles（_baseCandles）の読み取り専用アクセサ。リプレイバーが slider の min/max・
@@ -276,28 +176,9 @@ export class ChartRenderer {
     this._syncRightOffset({ force: true });
   }
 
-  // 右端余白の単一権威（ISSUE-115）: 実効比率 = max(常設 5%, MP プロファイル余白率) を px 換算し、
-  //   rightOffset バー数 = width×frac ÷ barSpacing（小数のまま＝px 幅一定）で適用する。
-  //   可視範囲購読（ズームで barSpacing 変化）からも呼ばれるため、同値（±0.01 バー）はスキップして
-  //   applyOptions→範囲変化→再購読のループを防ぐ。width 未確定（レイアウト前）は何もしない。
-  _syncRightOffset({ force = false } = {}) {
-    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
-    if (!ts || typeof ts.applyOptions !== 'function') {
-      return;
-    }
-    const w = typeof ts.width === 'function' ? ts.width() : 0;
-    const bs = (typeof ts.options === 'function' && ts.options() && ts.options().barSpacing) || 6;
-    if (!(w > 0) || !(bs > 0)) {
-      return;
-    }
-    const frac = Math.max(BASE_RIGHT_MARGIN_FRACTION, this._profileMarginFraction || 0);
-    const bars = (w * frac) / bs;
-    if (!force && this._lastRightOffsetBars !== null
-        && Math.abs(bars - this._lastRightOffsetBars) < 0.01) {
-      return;
-    }
-    this._lastRightOffsetBars = bars;
-    ts.applyOptions({ rightOffset: bars });
+  // 右端余白の単一権威（ISSUE-115・実体は CandleFeed._syncRightOffset・SOLID 是正 🔴-2）。
+  _syncRightOffset(opts) {
+    this._candleFeed._syncRightOffset(opts);
   }
 
   // sessions（日別プロファイル分割）: ローソクを透明化して価格軸のみ残す/復元する（移植元 prototype_260630-01）。
@@ -324,121 +205,24 @@ export class ChartRenderer {
     }
   }
 
-  // 縦パンの px→価格換算に使う pane 高（container 高 - timeScale().height() 相当）を設定。
-  //   composition root が resize 時などに供給する。消費者は panPriceByPixels のみ（未設定時は
-  //   false＝安全側）。handlePriceWheel は getVisibleRange を使うため pane 高に依存しない。
+  // 縦パンの px→価格換算に使う pane 高の設定（実体は ScaleController・SOLID 是正 🔴-2）。
   setPaneHeight(h) {
-    this._paneHeight = (typeof h === 'number' && h > 0) ? h : null;
+    this._scale.setPaneHeight(h);
   }
 
-  // 右価格軸ハンドル（mainSeries.priceScale('right') 優先、無ければ chart.priceScale('right')）。
-  //   lwc 直叩きは本所に隔離。いずれも非提供なら null（後方互換）。
-  _rightPriceScale() {
-    if (typeof this._mainSeries.priceScale === 'function') {
-      return this._mainSeries.priceScale('right');
-    }
-    if (typeof this._chart.priceScale === 'function') {
-      return this._chart.priceScale('right');
-    }
-    return null;
-  }
-
-  // baseCandles の価格全幅 {min,max}（絶対クランプの基準）。未設定/空は null。
-  _candlesPriceRange() {
-    const arr = this._baseCandles;
-    if (!arr || arr.length === 0) {
-      return null;
-    }
-    let min = Infinity;
-    let max = -Infinity;
-    for (const c of arr) {
-      if (c.low < min) min = c.low;
-      if (c.high > max) max = c.high;
-    }
-    return (Number.isFinite(min) && Number.isFinite(max) && max > min) ? { min, max } : null;
-  }
-
-  // 価格軸ホイールズームの本体。x が価格軸領域（x >= timeScale().width()）のときだけ処理する。
-  //   lwc v5.2 の priceScale ネイティブ API（getVisibleRange/setVisibleRange）で実装する。
-  //   setVisibleRange は lwc 内部で autoScale=false を設定する＝軸ドラッグの手動スケールと
-  //   同一の内部状態。よってドラッグ/ホイールの区別なく「手動スケールは dblclick まで維持」で
-  //   統一され、setData 全置換（時間足切替・足リビール）でも lwc 自身が状態を保持する。
-  //   カーソル価格 p=coordinateToPrice(y) を不動点に zoomedPriceRange で新レンジを算出し、
-  //   clampPriceRange（baseCandles 全幅基準）で発散を封じる。処理したら true（呼び出し側が
-  //   preventDefault する）。軸領域外・API 非提供・レンジ不明は false（時間軸ズームへ委ねる）。
+  // 価格軸ホイールズームの本体（実体は ScaleController.handlePriceWheel・SOLID 是正 🔴-2）。
   handlePriceWheel(x, y, deltaY) {
-    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
-    if (!ts || typeof ts.width !== 'function') {
-      return false;
-    }
-    if (x < ts.width()) {
-      return false; // チャート本体領域＝時間軸ズームに委ねる。
-    }
-    const ps = this._rightPriceScale();
-    if (!ps || typeof ps.getVisibleRange !== 'function' || typeof ps.setVisibleRange !== 'function') {
-      return false; // ネイティブ API 非提供（後方互換 Fake 等）は安全側で何もしない。
-    }
-    const vr = ps.getVisibleRange();
-    if (!vr || !Number.isFinite(vr.from) || !Number.isFinite(vr.to)) {
-      return false; // データ無し等で表示レンジ不明。
-    }
-    const base = { min: Math.min(vr.from, vr.to), max: Math.max(vr.from, vr.to) };
-    if (!(base.max > base.min)) {
-      return false; // 縮退レンジ。
-    }
-    // ズームの不動点はカーソル価格（取得不能時は zoomedPriceRange がレンジ中央へフォールバック）。
-    const p = typeof this._mainSeries.coordinateToPrice === 'function'
-      ? this._mainSeries.coordinateToPrice(y) : null;
-    const next = clampPriceRange(
-      zoomedPriceRange(base, (p == null ? NaN : p), deltaY), this._candlesPriceRange(),
-    );
-    if (!(next.max > next.min)) {
-      return false;
-    }
-    ps.setVisibleRange({ from: next.min, to: next.max });
-    return true;
+    return this._scale.handlePriceWheel(x, y, deltaY);
   }
 
-  // チャート本体の縦ドラッグによる価格パン（上下移動）。dy=ポインタ縦移動量[px]（下+）。
-  //   横方向は lwc の時間軸パンに委ね（本メソッドは価格のみ操作）、両者が合成されて 2D パンになる。
-  //   ドラッグ下げ（dy>0）＝内容を下へ引く＝表示レンジを上へ（min/max とも +）。span は不変。
-  //   ネイティブ getVisibleRange で現レンジを読み、dy ぶん平行移動して setVisibleRange で書く。
-  //   px→価格の換算に pane 高（setPaneHeight 供給）を使う。結果は clampPriceRange
-  //   （span 保存・中心はデータ範囲内）で制限。処理したら true。
+  // チャート本体の縦ドラッグによる価格パン（実体は ScaleController.panPriceByPixels・SOLID 是正 🔴-2）。
   panPriceByPixels(dy) {
-    const paneHeight = this._paneHeight;
-    if (!(paneHeight > 0) || !(Math.abs(dy) > 0)) {
-      return false;
-    }
-    const ps = this._rightPriceScale();
-    if (!ps || typeof ps.getVisibleRange !== 'function' || typeof ps.setVisibleRange !== 'function') {
-      return false;
-    }
-    const vr = ps.getVisibleRange();
-    if (!vr || !Number.isFinite(vr.from) || !Number.isFinite(vr.to)) {
-      return false;
-    }
-    const min = Math.min(vr.from, vr.to);
-    const max = Math.max(vr.from, vr.to);
-    if (!(max > min)) {
-      return false;
-    }
-    const span = max - min;
-    const shift = (dy / paneHeight) * span; // dy>0（下げ）→表示レンジを上へ。
-    const next = clampPriceRange(
-      { min: min + shift, max: max + shift }, this._candlesPriceRange(),
-    );
-    ps.setVisibleRange({ from: next.min, to: next.max });
-    return true;
+    return this._scale.panPriceByPixels(dy);
   }
 
-  // 価格軸のダブルクリック等で自動スケールへ復帰する。手動スケール（ドラッグ/ホイール）の
-  //   解除点はユーザーのこの操作のみ（システムは勝手に解除しない）。
+  // 価格軸のダブルクリック等で自動スケールへ復帰する（実体は ScaleController.resetPriceZoom）。
   resetPriceZoom() {
-    const ps = this._rightPriceScale();
-    if (ps && typeof ps.applyOptions === 'function') {
-      ps.applyOptions({ autoScale: true });
-    }
+    this._scale.resetPriceZoom();
   }
 
   // ISSUE-116: 最新足が可視範囲内か（「最新のバーまでスクロール」ボタンの表示判定用）。
@@ -457,13 +241,9 @@ export class ChartRenderer {
     return range.to >= arr.length - 1;
   }
 
-  // 価格軸領域判定の小ヘルパ（x >= timeScale().width()）。composition root の dblclick 判定用（任意）。
+  // 価格軸領域判定の小ヘルパ（実体は ScaleController.isOverPriceAxis・SOLID 是正 🔴-2）。
   isOverPriceAxis(x) {
-    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
-    if (!ts || typeof ts.width !== 'function') {
-      return false;
-    }
-    return x >= ts.width();
+    return this._scale.isOverPriceAxis(x);
   }
 
   // 増分2: x 座標 → 論理 index（timeScale().coordinateToLogical）。リプレイスワイプの x→足 index 変換。
@@ -477,25 +257,8 @@ export class ChartRenderer {
     return ts.coordinateToLogical(x);
   }
 
-  // 直近 n バーを可視範囲にフィットさせる（sessions=日別プロファイルの時間軸連動タイルを見せる初期ズーム）。
-  //   全期間表示だと 1 日=barSpacing が極小でタイルが潰れるため、sessions 有効化時に直近 n 日へ寄せる。
-  //   lwc の timeScale().setVisibleLogicalRange 直叩きは本所（ChartRenderer）に閉じる。
-  focusRecentBars(n) {
-    const total = this._baseCandles ? this._baseCandles.length : 0;
-    if (!(total > 0) || !(n > 0)) {
-      return;
-    }
-    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
-    if (!ts || typeof ts.setVisibleLogicalRange !== 'function') {
-      return;
-    }
-    const from = Math.max(-0.5, total - n - 0.5);
-    const to = total - 0.5 + Math.max(1, n * 0.04); // 右端に僅かな余白（最新タイルが切れないように）。
-    ts.setVisibleLogicalRange({ from, to });
-  }
-
   // 指定の時間レンジ [from, to]（UNIX 秒）を可視範囲にする（日別プロファイルの被覆日を全 tf で表示する）。
-  //   focusRecentBars は論理バー数基準のため、1m では「日数」を「分数」と解釈して日別列（日境界時刻）が
+  //   （旧 focusRecentBars＝論理バー数基準は ISSUE-164 掃除で削除済み。バー数基準だと 1m で「日数」を「分数」と解釈して日別列が
   //   画面外に落ちる。本メソッドは時間ベース（setVisibleRange）でズームし、全 tf で列を可視化する。
   focusTimeRange(from, to) {
     const ts = (this._chart && typeof this._chart.timeScale === 'function') ? this._chart.timeScale() : null;
@@ -603,34 +366,9 @@ export class ChartRenderer {
     ts.setVisibleLogicalRange({ from, to });
   }
 
-  // ライブ更新: 最新足を差分反映する（series.update を呼ぶのは本所のみ・upstream 隔離維持）。
-  //   既存 time なら上書き、新しい time なら追加（lightweight-charts の update 仕様）。
+  // ライブ更新: 最新足の差分反映（実体は CandleFeed.updateLastCandle・SOLID 是正 🔴-2）。
   updateLastCandle(candle) {
-    // ★スナップショット（トリム）中は series へ現在足を入れない。トリム系列（過去 T 時点まで）へ
-    //   ライブの現在足（time=now・現在価格）を append すると、トリム範囲外の不可解な位置にバーが
-    //   プロットされる（放置でライブ更新が発火し発生・実機バグの修正）。基準 _baseCandles は更新し、
-    //   トリム解除後に最新足へ正しく復帰できるようにする（読み取り欄は T 時点のまま維持）。
-    if (this._lastTrimIdx !== null) {
-      this._mergeBaseCandle(candle);
-      return;
-    }
-    // 後退ガード（ISSUE-096）: 時間足切替（setCandles で系列＋_lastBar が新周期へ差替）直後に、
-    //   インフライトの旧周期ライブ tick が実系列末尾より古い time で来ると、lightweight-charts の
-    //   series.update が "Cannot update oldest data" を投げる（player 内 _bar 基準の後退ガードでは
-    //   系列側が差し替わったケースを捕捉できない）。実系列末尾（_lastBar）より古い time のライブ足は
-    //   skip する（旧周期の stale tick は新周期 base へ混ぜない）。同/新 time は従来どおり反映する。
-    if (this._lastBar != null && typeof candle.time === 'number'
-        && typeof this._lastBar.time === 'number' && candle.time < this._lastBar.time) {
-      return;
-    }
-    this._mainSeries.update(candle);
-    // 最新足の単一源を更新し、hover していない読み取り表示が古くならないよう DTO を再発火する。
-    this._lastBar = candle;
-    // v6: 基準 candles の末尾を差分反映（同 time は置換・新 time は追加）。減光の元集合を同期。
-    this._mergeBaseCandle(candle);
-    this._emitReadout(null);
-    // v6: candle 変更を observer へ通知（live tick でも hover 中なら highlight 解除させる）。
-    this._onCandlesChanged();
+    this._candleFeed.updateLastCandle(candle);
   }
 
   // ライブ欠落補完（ISSUE-106）: タブ休止（PC スリープ・バックグラウンドタイマー抑制）や更新停止で
@@ -643,43 +381,9 @@ export class ChartRenderer {
   //   現在足の後退防止（ISSUE-049 系）: 置換前末尾（LiveTickPlayer が書いた最新値）の time が
   //   新データ末尾以上なら置換後に復元する（最大 60 秒古いサーバー値で価格を巻き戻さない）。
   //   スナップショット（トリム）中は不介入（updateLastCandle と同方針・解除後の tick で再同期される）。
+  //   （実体は CandleFeed.resyncMissedCandles・SOLID 是正 🔴-2）
   resyncMissedCandles(candles) {
-    const arr = Array.isArray(candles) ? candles : [];
-    if (arr.length === 0 || this._lastTrimIdx !== null) {
-      return false;
-    }
-    const base = this._baseCandles;
-    if (!base || base.length === 0 || this._lastBar == null) {
-      return false; // 初期ロード前は setCandles（全置換）の責務。
-    }
-    const lastTime = this._lastBar.time;
-    const known = new Set(base.map((b) => b.time));
-    let newer = 0;
-    let hole = false;
-    for (const c of arr) {
-      if (c.time > lastTime) {
-        newer += 1;
-      } else if (!known.has(c.time)) {
-        hole = true;
-      }
-    }
-    if (newer < 2 && !hole) {
-      return false;
-    }
-    const prevLast = this._lastBar;
-    const newest = arr[arr.length - 1];
-    this._mainSeries.setData(arr);
-    this._baseCandles = arr;
-    this._lastBar = newest;
-    if (typeof prevLast.time === 'number' && typeof newest.time === 'number'
-        && prevLast.time >= newest.time) {
-      this._mainSeries.update(prevLast);
-      this._lastBar = prevLast;
-      this._mergeBaseCandle(prevLast);
-    }
-    this._emitReadout(null);
-    this._onCandlesChanged();
-    return true;
+    return this._candleFeed.resyncMissedCandles(candles);
   }
 
   // v6: candle 変更 observer を後から据える（composition root の renderer/markers 生成順序差を吸収）。
@@ -687,18 +391,9 @@ export class ChartRenderer {
     this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
   }
 
-  // v6: 基準 candles の末尾足を差分マージする（updateLastCandle 用）。基準未保持なら単一要素配列。
+  // v6: 基準 candles の末尾足の差分マージ（実体は CandleFeed._mergeBaseCandle・SOLID 是正 🔴-2）。
   _mergeBaseCandle(candle) {
-    if (!candle) {
-      return;
-    }
-    const base = this._baseCandles ? this._baseCandles.slice() : [];
-    if (base.length > 0 && base[base.length - 1].time === candle.time) {
-      base[base.length - 1] = candle;
-    } else {
-      base.push(candle);
-    }
-    this._baseCandles = base;
+    this._candleFeed._mergeBaseCandle(candle);
   }
 
   // v6（§12）: ホバー中ペア [from,to] 外のローソク足を per-bar 極暗色へ上書きして mainSeries へ反映する。
@@ -731,66 +426,9 @@ export class ChartRenderer {
     this._mainSeries.setData(this._baseCandles);
   }
 
+  // instanceId の描画スロット取得/生成（実体は SeriesDrawer._slot・SOLID 是正 🔴-2）。
   _slot(instanceId) {
-    let slot = this._instances.get(instanceId);
-    if (!slot) {
-      slot = {
-        lines: new Map(), priceLines: [], hlinePayloads: null, visible: true,
-        // scaleHost: 当該 instance の line/histogram 系列の先頭（水準線の載せ先・pane の価格軸基準）。
-        // priceLineHost: 水準線（createPriceLine）を載せた系列（pane=scaleHost / overlay=mainSeries）。
-        // pane/watermark/paneName: pane 指標のみ（機能①②）。overlay 指標は pane 0 のため null。
-        scaleHost: null, priceLineHost: null, pane: null, watermark: null, paneName: null,
-        // styleMeta（ISSUE-109）: 系列キー -> { name, kind, color, width, style, visible }。
-        //   生成時スタイルの記録＋applySeriesStyle の上書き結果を保持し、スタイルタブの
-        //   初期表示（実描画値）と instance 単位 setVisible との可視性合成に使う。
-        styleMeta: new Map(),
-        // seriesData（案A・btlm_trail_marod）: 系列キー -> 直近 setData 済みポイント配列。
-        //   bar_editable ゲート済み系列のみ保持し（MAROD 限定・メモリ極小）、line ⇄ histogram の
-        //   系列スワップ時に新系列へ再設定する（旧系列除去後にデータを失わないため）。
-        seriesData: new Map(),
-      };
-      this._instances.set(instanceId, slot);
-    }
-    return slot;
-  }
-
-  // pane 指標なら専用 pane を生成し指標名ウォーターマーク（機能①②）を立てる。overlay は null（pane 0）。
-  _ensurePane(slot, opts) {
-    if (!opts.pane) {
-      return null;
-    }
-    if (slot.pane) {
-      return slot.pane;
-    }
-    // 初回 pane 追加時にメイン（ローソク）pane を大きめへ（以後ユーザーのドラッグを尊重し再設定しない）。
-    if (!this._mainStretchSet) {
-      const panes = this._chart.panes ? this._chart.panes() : [];
-      if (panes[0] && typeof panes[0].setStretchFactor === 'function') {
-        panes[0].setStretchFactor(MAIN_PANE_STRETCH);
-      }
-      this._mainStretchSet = true;
-    }
-    // v5 は空 pane を既定で自動削除する。系列の再計算（remove→redraw）で一時的に空になった
-    // 瞬間に pane が消えて index がずれ、直後の removePane が誤 pane を対象化／例外となり、
-    // 再描画前に処理が中断して指標が消える。preserveEmptyPane=true で pane の寿命を removePane
-    // のみの単一権威にする（ISSUE: period 変更で Volatility 等が消える不具合の根治）。
-    const pane = this._chart.addPane(true);
-    if (pane && typeof pane.setPreserveEmptyPane === 'function') {
-      pane.setPreserveEmptyPane(true);
-    }
-    if (pane && typeof pane.setStretchFactor === 'function') {
-      pane.setStretchFactor(INDICATOR_PANE_STRETCH);
-    }
-    slot.pane = pane;
-    slot.paneName = opts.name ?? '';
-    if (typeof this._lwc.createTextWatermark === 'function') {
-      slot.watermark = this._lwc.createTextWatermark(pane, {
-        horzAlign: 'left',
-        vertAlign: 'top',
-        lines: [{ text: slot.paneName, color: WATERMARK_COLOR, fontSize: 12 }],
-      });
-    }
-    return pane;
+    return this._drawer._slot(instanceId);
   }
 
   // line 系列群を生成（§7.1.2: 系列キー {instanceId}::{name}）。opts.pane=true で専用 pane。
@@ -803,89 +441,9 @@ export class ChartRenderer {
     this._renderSeries(instanceId, payloads, 'histogram', opts);
   }
 
-  // line / histogram を共通生成する（upstream API 名 addSeries は本所のみ）。
+  // line / histogram を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
   _renderSeries(instanceId, payloads, kind, opts = {}) {
-    const slot = this._slot(instanceId);
-    const pane = this._ensurePane(slot, opts);
-    const definition = seriesKind(kind).seriesType === 'histogram'
-      ? this._lwc.HistogramSeries
-      : this._lwc.LineSeries;
-    for (const p of payloads ?? []) {
-      const options = {
-        color: p.color,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        title: p.name,
-      };
-      if (seriesKind(kind).appliesLineStyle) {
-        options.lineWidth = p.width;
-        options.lineStyle = toLineStyleInt(p.style);
-      }
-      // btlm_trail 表示層: ドット/ライン切替ヒント（point_markers/line_visible）を
-      //   lightweight-charts v5 の LineSeries オプションへ写像する。ヒント未付与の payload
-      //   （既存指標）はキーを設定しない＝従来挙動を保つ（後方互換）。
-      if (p.point_markers !== undefined) {
-        options.pointMarkersVisible = !!p.point_markers;
-      }
-      if (p.line_visible !== undefined) {
-        options.lineVisible = !!p.line_visible;
-      }
-      if (p.point_markers_radius !== undefined) {
-        options.pointMarkersRadius = p.point_markers_radius;
-      }
-      // 読取欄専用系列（β・被覆率・σ 等の小値系列）はチャート/価格軸に一切の視覚要素を出さない
-      //   （値供給は crosshair 読取欄のみ）。以下を無効化する:
-      //   - autoscaleInfoProvider→{priceRange:null}: 価格軸オートスケールへ寄与しない（bundle 実装
-      //     で確認済: 返値 {priceRange:null} は範囲寄与なし。null 返しは既定＝系列データを含むため誤り）。
-      //   - title='': 価格軸の名前ラベルは series.title 由来（lastValueVisible とは独立に描画される）。
-      //     手動スケール/ズームで軸レンジが系列値域（0〜数千）を含むと露出するため空にして抑止する。
-      //   - lastValueVisible/priceLineVisible=false: 最終値ラベル・プライスライン（既定 false だが明示）。
-      //   - crosshairMarkerVisible=false: ホバー時のクロスヘアマーカー（点）も出さない。
-      if (p.readout_only) {
-        options.autoscaleInfoProvider = () => ({ priceRange: null });
-        options.title = '';
-        options.lastValueVisible = false;
-        options.priceLineVisible = false;
-        options.crosshairMarkerVisible = false;
-      }
-      // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
-      const series = pane
-        ? pane.addSeries(definition, options)
-        : this._chart.addSeries(definition, options);
-      series.setData(p.data ?? []);
-      const key = `${instanceId}::${p.name}`;
-      slot.lines.set(key, series);
-      const metaEntry = {
-        name: p.name, kind, color: p.color ?? null,
-        width: p.width ?? null, style: p.style ?? null, visible: true,
-        // heat（ISSUE-112）: histogram でバー別着色（data[].color＝値に応じたヒート配色）を持つか。
-        //   heat=true の系列はユーザー色上書きの対象外（ヒート絶対優先・ユーザー裁定）。
-        heat: seriesKind(kind).supportsHeat && (p.data ?? []).some((pt) => pt && pt.color != null),
-        // display（案A・btlm_trail）: 系列表示（ドット/ライン）の現在値。payload の描画ヒント
-        //   （point_markers/line_visible）から導出。ヒント無し系列は null（＝この属性を持たない）。
-        display: p.point_markers ? 'dots' : (p.line_visible ? 'line' : null),
-      };
-      // 案A（btlm_trail_marod）: barStyleEditable ゲート系列（controller が bar_editable=true を注入）は
-      //   line ⇄ histogram スワップの対象。styleMeta へ barEditable=true を刻み（applySeriesStyle の
-      //   二重ゲート源）、保持データを seriesData へ退避する（旧系列除去後の再設定用）。非ゲート系列は
-      //   barEditable キーを持たず seriesData にも載せない（native histogram 他指標へ非波及＝挙動不変）。
-      if (p.bar_editable === true) {
-        metaEntry.barEditable = true;
-        slot.seriesData.set(key, p.data ?? []);
-      }
-      slot.styleMeta.set(key, metaEntry);
-      if (!slot.scaleHost) {
-        slot.scaleHost = series;
-      }
-      // overlay（pane 0 重ね描き）の line 系列のみ読み取り欄の overlay 行に載せる。
-      //   color/name と末尾点 value（hover 解除時の fallback）を保持する。
-      if (!pane && seriesKind(kind).overlayReadout) {
-        this._overlayReadouts.set(key, {
-          series, color: p.color, name: p.name, lastValue: lastPointValue(p.data),
-          visible: true,
-        });
-      }
-    }
+    this._drawer._renderSeries(instanceId, payloads, kind, opts);
   }
 
   // horizontal_line 群を priceLine として生成。当該 instance に line/histogram 系列が
@@ -896,35 +454,9 @@ export class ChartRenderer {
     this._createPriceLines(slot, slot.hlinePayloads);
   }
 
+  // 水準線の生成（実体は SeriesDrawer._createPriceLines・SOLID 是正 🔴-2）。
   _createPriceLines(slot, hlines) {
-    const host = slot.scaleHost ?? this._mainSeries;
-    slot.priceLineHost = host;
-    // pane 指標（オシレータ）の σ 水準線には histogram と同じカラースキーム（中心からの距離で
-    // 緑→赤）を減光して適用し、灰一色で背景に埋もれる問題を改善する。overlay バンド
-    // （price_range_power / hl_band 等）は bull/bear 等の意味付き色を持つため backend 色を維持。
-    const lines = hlines ?? [];
-    const useScheme = !!slot.pane && lines.length > 0;
-    let center = 0;
-    let maxDist = 0;
-    if (useScheme) {
-      const prices = lines.map((h) => h.price);
-      center = (Math.max(...prices) + Math.min(...prices)) / 2;
-      maxDist = Math.max(...prices.map((p) => Math.abs(p - center)));
-    }
-    for (const h of lines) {
-      const color = useScheme
-        ? schemeColor(maxDist > 0 ? Math.abs(h.price - center) / maxDist : 0, LEVEL_LINE_DIM)
-        : h.color;
-      const pl = host.createPriceLine({
-        price: h.price,
-        color,
-        lineWidth: h.width,
-        lineStyle: toLineStyleInt(h.style),
-        title: h.text,
-        axisLabelVisible: h.axis_label_visible ?? false,
-      });
-      slot.priceLines.push(pl);
-    }
+    this._drawer._createPriceLines(slot, hlines);
   }
 
   // 機能③: クロスヘア移動で各 pane のウォーターマークを「指標名  値1  値2 …」へ更新。
@@ -1040,39 +572,25 @@ export class ChartRenderer {
   // Latest 末尾K差分反映: 末尾K点を series.update で 1 点ずつ反映する（過去確定足は不変）。
   //   series.update を呼ぶのは ChartRenderer のみ（upstream 隔離維持）。既存 time は上書き、
   //   新しい time は追加（lightweight-charts の update 仕様）。未知 seriesKey は no-op。
+  //   ISSUE-151 追補2: バー確定直後は「full 再描画（新バーまで反映済み）」と「確定前に発行された
+  //   latest 応答（旧バーまで）」が交錯し、旧 time の点で lwc が 'Cannot update oldest data' を
+  //   投げる。従来は例外がバッチ全体を中断し残り系列の末尾更新まで失われていた（止まって見える）。
+  //   stale 点は 1 点単位で黙って捨て、バッチは最後まで適用する（正しい最新値は次の応答で届く）。
   updateSeriesTail(seriesKey, points) {
     this._withSeries(seriesKey, points, (series) => {
       for (const p of points ?? []) {
-        series.update(p);
+        try {
+          series.update(p);
+        } catch (_e) {
+          // stale（系列末尾より古い time）は捨てる。他の例外もバッチ継続を優先（点単位で無害化）。
+        }
       }
     });
   }
 
-  // UC-04 表示/非表示。line/histogram は applyOptions({visible})、priceLine は除去/再生成。
-  //   ISSUE-109: 系列単位の可視性（styleMeta.visible）と AND 合成する（インスタンス eye ON へ
-  //   戻しても、スタイル設定で個別非表示にした系列は非表示のまま）。
+  // UC-04 表示/非表示（実体は SeriesDrawer.setVisible・SOLID 是正 🔴-2）。
   setVisible(instanceId, visible) {
-    const slot = this._instances.get(instanceId);
-    if (!slot) {
-      return;
-    }
-    slot.visible = visible;
-    for (const [key, series] of slot.lines) {
-      const seriesVisible = visible && (slot.styleMeta.get(key)?.visible ?? true);
-      series.applyOptions({ visible: seriesVisible });
-      // 読み取り欄の overlay 行も表示状態へ追従させる（非表示は欄から除外）。
-      const meta = this._overlayReadouts.get(key);
-      if (meta) {
-        meta.visible = seriesVisible;
-      }
-    }
-    if (slot.hlinePayloads !== null) {
-      if (visible && slot.priceLines.length === 0) {
-        this._createPriceLines(slot, slot.hlinePayloads);
-      } else if (!visible && slot.priceLines.length > 0) {
-        this._removePriceLines(slot);
-      }
-    }
+    this._drawer.setVisible(instanceId, visible);
   }
 
   // ISSUE-109: 現在の系列スタイル（実描画値）を返す。スタイルタブの初期表示用。
@@ -1085,161 +603,43 @@ export class ChartRenderer {
     return [...slot.styleMeta.values()].map((m) => ({ ...m }));
   }
 
-  // ISSUE-109: 系列単位のスタイル上書き（色/線幅/線種/可視性）。patch は差分のみ指定可。
-  //   lwc series.applyOptions で即時反映（再計算不要・仕様 §6.1）。styleMeta と overlay 読み取り欄の
-  //   色/可視性も同期する。未知系列は no-op（false）。可視性はインスタンス可視と AND 合成。
+  // ISSUE-109: 系列単位のスタイル上書き（実体は SeriesDrawer.applySeriesStyle・SOLID 是正 🔴-2）。
   applySeriesStyle(instanceId, seriesName, patch = {}) {
-    const slot = this._instances.get(instanceId);
-    if (!slot) {
-      return false;
-    }
-    const key = `${instanceId}::${seriesName}`;
-    const series = slot.lines.get(key);
-    const meta = slot.styleMeta.get(key);
-    if (!series || !meta) {
-      return false;
-    }
-    // ISSUE-112（ユーザー裁定）: バー別ヒート配色（heat）の histogram は色 patch を無視する
-    //   （ヒート表示が絶対優先・データ全塗り替えでヒートを潰す ISSUE-111 の機構は撤去）。
-    //   heat 以外の histogram は series options.color が素で効く（バー別色が無いため上書き不要）。
-    if (patch.color != null && !(seriesKind(meta.kind).supportsHeat && meta.heat)) {
-      meta.color = patch.color;
-    }
-    if (patch.width != null) {
-      meta.width = patch.width;
-    }
-    if (patch.style != null) {
-      meta.style = patch.style;
-    }
-    if (patch.visible !== undefined && patch.visible !== null) {
-      meta.visible = !!patch.visible;
-    }
-    // 案A（btlm_trail_marod・二重ゲート）: barEditable ゲート済み系列のみ line ⇄ histogram の系列種別を
-    //   スワップする。meta.barEditable===true 以外（native histogram 他指標・全 line 他指標）は本分岐に
-    //   一切入らず現行 applyOptions 経路のみ（棒→線の誤変換を構造的に遮断）。color/width/style/visible は
-    //   上で meta へ反映済みのため、_swapSeriesType が新系列の生成オプションへそのまま引き継ぐ。
-    if (meta.barEditable === true) {
-      // 現在の描画種別は能力台帳（seriesType）で判定する（raw kind 文字列比較を持ち込まない・ISSUE-134）。
-      const isHistogram = seriesKind(meta.kind).seriesType === 'histogram';
-      const toBar = patch.display === 'bar' && !isHistogram;
-      const toLine = isHistogram
-        && (patch.display === 'line' || patch.display === 'dots');
-      if (toBar || toLine) {
-        if (toLine) {
-          // 棒→線: 統合 select は {display:'line', style} か {display:'dots'} を渡す。線種は meta へ
-          //   反映済み（上の patch.style 分岐）。display を確定してから line 系列を再生成する。
-          meta.display = patch.display;
-        }
-        this._swapSeriesType(slot, key, meta, toBar ? 'histogram' : 'line');
-        return true;
-      }
-    }
-    const options = { color: meta.color, visible: slot.visible && meta.visible };
-    if (seriesKind(meta.kind).appliesLineStyle) {
-      if (meta.width != null) {
-        options.lineWidth = meta.width;
-      }
-      if (meta.style != null) {
-        options.lineStyle = toLineStyleInt(meta.style);
-      }
-    }
-    // display（案A・btlm_trail）: 系列表示（dots/line）を lightweight-charts の
-    //   pointMarkersVisible/lineVisible へ写像する。patch.display 未指定なら一切触らない（非破壊・
-    //   他指標の系列は display を持たないため影響なし）。dots は明示半径で視認性を確保する。
-    if (patch.display === 'dots' || patch.display === 'line') {
-      meta.display = patch.display;
-      const dots = patch.display === 'dots';
-      options.pointMarkersVisible = dots;
-      options.lineVisible = !dots;
-      if (dots) {
-        options.pointMarkersRadius = _POINT_MARKERS_RADIUS;
-      }
-    }
-    series.applyOptions(options);
-    const ro = this._overlayReadouts.get(key);
-    if (ro) {
-      ro.color = meta.color;
-      ro.visible = slot.visible && meta.visible;
-    }
-    return true;
+    return this._drawer.applySeriesStyle(instanceId, seriesName, patch);
   }
 
-  // 案A（btlm_trail_marod）: 系列の描画種別を line ⇄ histogram へ差し替える（同一キー維持・保持データ
-  //   再設定）。既存の remove()/価格線機構を再構成した最小再生成。barEditable ゲート済み系列のみが本
-  //   経路へ入る（applySeriesStyle の二重ゲート）。順序規律は remove() と同一（価格線を系列除去より先に外す）。
+  // 案A（btlm_trail_marod）: 系列の描画種別の line ⇄ histogram 差し替え（実体は SeriesDrawer._swapSeriesType・SOLID 是正 🔴-2）。
   _swapSeriesType(slot, key, meta, toKind) {
-    const oldSeries = slot.lines.get(key);
-    if (!oldSeries) {
-      return false;
-    }
-    // 1. 0% 基準線（priceLine）を旧 host（当の系列）から先に外す（pane 配置では host が当の系列のため）。
-    const hadPriceLines = slot.priceLines.length > 0;
-    this._removePriceLines(slot);
-    // 2. 旧系列を除去（pane 系列も chart.removeSeries で除去＝remove() と同一経路）。
-    this._chart.removeSeries(oldSeries);
-    // 3. 遷移先種別の系列定義（histogram/line）を選ぶ。
-    const toHistogram = seriesKind(toKind).seriesType === 'histogram';
-    const definition = toHistogram ? this._lwc.HistogramSeries : this._lwc.LineSeries;
-    // 4. 生成オプション。histogram は 0% 中心（base:0・lineWidth/lineStyle/pointMarkers は出さない）。
-    //    line は幅/線種と display 写像（pointMarkers/lineVisible）を meta から復元する。色は両者で活かす。
-    const options = {
-      color: meta.color,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      title: meta.name,
-      visible: slot.visible && meta.visible,
-    };
-    if (toHistogram) {
-      options.base = 0;
-    } else {
-      options.lineWidth = meta.width ?? 1;
-      options.lineStyle = toLineStyleInt(meta.style);
-      const dots = meta.display === 'dots';
-      options.pointMarkersVisible = dots;
-      options.lineVisible = !dots;
-      if (dots) {
-        options.pointMarkersRadius = _POINT_MARKERS_RADIUS;
-      }
-    }
-    // 5. 新系列を生成し保持データ（seriesData）を再設定する（pane 指標は pane 経由・overlay は chart）。
-    const newSeries = slot.pane
-      ? slot.pane.addSeries(definition, options)
-      : this._chart.addSeries(definition, options);
-    newSeries.setData(slot.seriesData.get(key) ?? []);
-    // 6. 同一キーで差し替え（クロスヘア走査・setData/updateSeriesTail が自然追従する）。
-    slot.lines.set(key, newSeries);
-    // 7. scaleHost が旧系列だったら新系列へ張り替える（pane 価格軸の基準）。
-    if (slot.scaleHost === oldSeries) {
-      slot.scaleHost = newSeries;
-    }
-    // 8. meta 更新: kind と display（histogram は 'bar'・往復整合）。
-    meta.kind = toKind;
-    meta.display = toHistogram ? 'bar' : meta.display;
-    // overlay 読取欄に載っている場合は series 参照を張り替える（MAROD は pane のため通常無い）。
-    const ro = this._overlayReadouts.get(key);
-    if (ro) {
-      ro.series = newSeries;
-    }
-    // 9. 0% 基準線を新 host（新系列）へ再生成する（元々あった場合のみ実体を持つ＝可視性不変）。
-    if (hadPriceLines) {
-      this._createPriceLines(slot, slot.hlinePayloads);
-    }
-    return true;
+    return this._drawer._swapSeriesType(slot, key, meta, toKind);
   }
 
+  // ISSUE-150: pane 価格軸の手動スケールレンジの退避（実体は ScaleController・SOLID 是正 🔴-2）。
+  _capturePaneScaleRange(slot) {
+    return this._scale._capturePaneScaleRange(slot);
+  }
+
+  // ISSUE-150: 退避済み手動レンジの復元（実体は ScaleController・SOLID 是正 🔴-2）。
+  _restorePaneScaleRange(slot) {
+    this._scale._restorePaneScaleRange(slot);
+  }
+
+  // 水準線の除去（実体は SeriesDrawer._removePriceLines・SOLID 是正 🔴-2）。
   _removePriceLines(slot) {
-    const host = slot.priceLineHost ?? this._mainSeries;
-    for (const pl of slot.priceLines) {
-      host.removePriceLine(pl);
-    }
-    slot.priceLines = [];
+    this._drawer._removePriceLines(slot);
   }
 
   // UC-05 削除（冪等）。系列・水準線・ウォーターマーク・専用 pane をまとめて除去する。
-  remove(instanceId) {
+  remove(instanceId, { keepPane = false } = {}) {
     const slot = this._instances.get(instanceId);
     if (!slot) {
       return;
+    }
+    // ISSUE-150: 再計算 redraw（keepPane=true）は pane の全系列を除去→再追加するため、pane 価格軸の
+    //   手動スケール（軸ドラッグで autoScale=false になった状態）が失われる（メイン軸は mainSeries が
+    //   残るため保持される＝非対称）。除去前に手動レンジを退避し、_renderSeries の再追加後に復元する。
+    //   自動スケール中（autoScale !== false）は退避しない＝挙動不変。
+    if (keepPane) {
+      slot.savedPaneScaleRange = this._capturePaneScaleRange(slot);
     }
     // 価格線は系列除去より先に外す（pane 配置では水準線の host が当の系列のため）。
     this._removePriceLines(slot);
@@ -1252,6 +652,19 @@ export class ChartRenderer {
     slot.seriesData.clear();
     for (const series of slot.lines.values()) {
       this._chart.removeSeries(series);
+    }
+    // ISSUE-149: 再計算の redraw（keepPane=true）は pane・watermark・slot を温存し系列だけを
+    //   除去する。従来の全除去→末尾 addPane では pane の並び順が更新のたびに最下段へ移動していた
+    //   （オシレーター更新で位置が変わる）。_ensurePane は slot.pane 既存時に再利用するため、
+    //   直後の redraw が同じ pane（同じ位置）へ再生成される。
+    if (keepPane) {
+      slot.lines.clear();
+      slot.styleMeta.clear();
+      slot.scaleHost = null;       // 除去済み系列を指すため必ず初期化（水準線 host の再解決に必要）
+      slot.priceLineHost = null;
+      slot.hlinePayloads = null;
+      slot.visible = true;         // 全除去→新規 slot と同じ初期状態（非表示は呼び出し側が再適用）
+      return;
     }
     if (slot.watermark && typeof slot.watermark.detach === 'function') {
       slot.watermark.detach();

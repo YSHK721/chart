@@ -25,6 +25,23 @@ function fakeSeries(def) {
     applyOptions(opts) { Object.assign(this._options, opts); },
     createPriceLine(opt) { const pl = { opt }; this._priceLines.push(pl); return pl; },
     removePriceLine(pl) { this._priceLines = this._priceLines.filter((x) => x !== pl); },
+    // ISSUE-150: 価格軸ハンドル（v5 の series.priceScale()）。autoScale/getVisibleRange/
+    //   setVisibleRange を記録する（setVisibleRange は lwc 同様 autoScale=false を内部設定）。
+    _ps: null,
+    priceScale() {
+      if (!this._ps) {
+        this._ps = {
+          _options: { autoScale: true }, _visibleRange: null, _setCalls: [],
+          options() { return this._options; },
+          applyOptions(o) { Object.assign(this._options, o); },
+          getVisibleRange() { return this._visibleRange; },
+          setVisibleRange(r) {
+            this._visibleRange = r; this._options.autoScale = false; this._setCalls.push(r);
+          },
+        };
+      }
+      return this._ps;
+    },
   };
 }
 
@@ -169,24 +186,7 @@ test('coordinateToLogical delegates to chart.timeScale().coordinateToLogical', (
   assert.equal(renderer.coordinateToLogical(null), null);
 });
 
-test('focusRecentBars(n): 直近 n バーを可視範囲にする（sessions の初期ズーム）', () => {
-  const ranges = [];
-  const main = { setData() {}, applyOptions() {}, priceScale: () => ({ applyOptions() {} }) };
-  const ts = {
-    fitContent() {}, applyOptions() {}, setVisibleLogicalRange: (r) => ranges.push(r),
-  };
-  const chart = { addSeries: () => main, subscribeCrosshairMove() {}, timeScale: () => ts };
-  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: {} });
-  const candles = Array.from({ length: 100 }, (_, i) => ({ time: i + 1, open: 1, high: 2, low: 0, close: 1 }));
-  renderer.setCandles(candles); // total=100
-  ranges.length = 0;
-  renderer.focusRecentBars(20);
-  const r = ranges.at(-1);
-  // from = 100-20-0.5 = 79.5、to = 100-0.5 + max(1,20*0.04)=99.5+1=100.5。
-  assert.ok(Math.abs(r.from - 79.5) < 1e-9, 'from=total-n-0.5');
-  assert.ok(Math.abs(r.to - 100.5) < 1e-9, 'to=total-0.5+右余白');
-});
-
+// focusRecentBars は呼出元ゼロの死コードとして ISSUE-164 掃除で削除済み（focusTimeRange が後継）。
 test('focusTimeRange(from,to): 時間ベースで可視範囲を設定する（日別プロファイルの全tf対応）', () => {
   const ranges = [];
   const main = { setData() {}, applyOptions() {}, priceScale: () => ({ applyOptions() {} }) };
@@ -565,6 +565,59 @@ test('remove: detaches the watermark and removes the dedicated pane (機能①�
   renderer.remove('rsi#1');
   assert.equal(chart.panes().length, 1);            // 専用 pane が消える
   assert.equal(lwc._watermarks[0]._detached, true); // ウォーターマーク detach
+});
+
+// ISSUE-149: 再計算の redraw（keepPane=true）は pane を温存し、pane の並び順を変えない。
+//   従来の全除去→末尾 addPane は「オシレーター更新で pane が最下段へ移動する」バグだった。
+test('remove({keepPane:true})+redraw reuses the same pane and preserves pane order (ISSUE-149)', () => {
+  const { renderer, chart } = newRenderer();
+  // 2 つの pane 指標（A の下に B）を描画 → panes = [candle, A, B]
+  renderer.renderHistogram('oscA#1', [{ name: 'a_lc', kind: 'histogram', data: [] }], { pane: true, name: 'A' });
+  renderer.renderHistogram('oscB#1', [{ name: 'b_lc', kind: 'histogram', data: [] }], { pane: true, name: 'B' });
+  assert.equal(chart.panes().length, 3);
+  const paneA = chart.panes()[1];
+  // A を再計算相当（keepPane=true → redraw）
+  renderer.remove('oscA#1', { keepPane: true });
+  assert.equal(chart.panes().length, 3, 'keepPane では pane を除去しない');
+  renderer.renderHistogram('oscA#1', [{ name: 'a_lc', kind: 'histogram', data: [] }], { pane: true, name: 'A' });
+  assert.equal(chart.panes().length, 3, 'redraw で pane を追加しない（既存 pane を再利用）');
+  assert.equal(chart.panes()[1], paneA, 'A の pane は同一実体・同じ位置（index 1）のまま');
+  // 完全削除（既定）は従来どおり pane を除去する
+  renderer.remove('oscA#1');
+  assert.equal(chart.panes().length, 2);
+});
+
+// ISSUE-150: pane 価格軸の手動スケール（軸ドラッグ＝autoScale=false）は再計算 redraw
+//   （remove({keepPane:true})→再描画）で失われていた（系列全除去で priceScale 状態が消える）。
+//   退避→再追加後に setVisibleRange で復元する（メイン軸と同じ「保持される」挙動へ）。
+test('remove({keepPane:true})+redraw restores the pane manual price scale (ISSUE-150)', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderHistogram('osc#1', [{ name: 'marod_lc', kind: 'histogram', data: [] }], { pane: true, name: 'OSC' });
+  const first = chart.created[0];
+  // 軸ドラッグ相当: 手動スケール（autoScale=false・可視レンジ確定）を fake priceScale に立てる。
+  const ps0 = first.priceScale();
+  ps0._options.autoScale = false;
+  ps0._visibleRange = { from: -7.5, to: 2.5 };
+  // 再計算相当（keepPane redraw）。
+  renderer.remove('osc#1', { keepPane: true });
+  renderer.renderHistogram('osc#1', [{ name: 'marod_lc', kind: 'histogram', data: [] }], { pane: true, name: 'OSC' });
+  // 新系列の priceScale へ退避レンジが復元される（setVisibleRange＝lwc 内部で autoScale=false）。
+  const second = chart.created[1];
+  assert.notEqual(second, first);
+  const ps1 = second.priceScale();
+  assert.deepEqual(ps1._setCalls, [{ from: -7.5, to: 2.5 }], '手動レンジを 1 回だけ復元する');
+  assert.equal(ps1._options.autoScale, false, '復元後は手動スケールのまま');
+});
+
+test('remove({keepPane:true})+redraw keeps auto scale untouched when no manual scale (ISSUE-150)', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderHistogram('osc#1', [{ name: 'marod_lc', kind: 'histogram', data: [] }], { pane: true, name: 'OSC' });
+  // 自動スケールのまま（既定 autoScale=true）redraw する。
+  renderer.remove('osc#1', { keepPane: true });
+  renderer.renderHistogram('osc#1', [{ name: 'marod_lc', kind: 'histogram', data: [] }], { pane: true, name: 'OSC' });
+  const second = chart.created[1];
+  assert.deepEqual(second.priceScale()._setCalls, [], '自動スケール中は setVisibleRange を呼ばない');
+  assert.equal(second.priceScale()._options.autoScale, true, '自動スケールのまま（挙動不変）');
 });
 
 test('remove+redraw survives v5 empty-pane auto-removal (regression: period 変更で消える)', () => {
@@ -1060,6 +1113,28 @@ test('setRightMarginFraction: sets rightOffset bars from width*frac/barSpacing a
   assert.deepEqual(applied.at(-1), { rightOffset: 10 });
 });
 
+// ISSUE-148: 過去閲覧中（scrollPosition < -0.5＝右端から離れている）は rightOffset を再適用しない。
+//   lwc では rightOffset 適用が最新足基準へのスクロールとして働くため、ズーム由来の再同期が
+//   「過去へ遡って拡大すると最新足へ戻る」ジャンプになる（実 UI 再現済み）。右端（>= -0.5）では従来どおり適用。
+test('_syncRightOffset: skips applyOptions while viewing the past (ISSUE-148) and applies at right edge', () => {
+  const { renderer, chart } = newRenderer();
+  const applied = [];
+  let pos = -120;                       // 過去閲覧中（最新足は右端の遥か先）
+  chart.timeScale = () => ({
+    width: () => 1200,
+    options: () => ({ barSpacing: 6 }),
+    applyOptions: (o) => applied.push(o),
+    scrollPosition: () => pos,
+  });
+  // Act: 過去閲覧中の再同期（ズーム由来の可視範囲購読と同経路）→ 適用しない（ジャンプ防止）
+  renderer.setRightMarginFraction(0.30);
+  assert.equal(applied.length, 0, '過去閲覧中は rightOffset を適用しない');
+  // Act: 右端復帰（scrollPosition >= -0.5）→ 従来どおり適用される
+  pos = 0;
+  renderer.setRightMarginFraction(0.30);
+  assert.deepEqual(applied.at(-1), { rightOffset: 60 });
+});
+
 // ===========================================================================
 // zoomedPriceRange（純関数・価格軸ホイールズームの中核式）
 //   f = 0.9^(-deltaY/100) を [0.5, 2] にクランプ。カーソル価格 p を中心に
@@ -1341,4 +1416,27 @@ test('panPriceByPixels: pane 高未供給/ dy=0 は false（何もしない）',
   assert.equal(renderer.panPriceByPixels(20), false, 'pane 高未供給→false');
   renderer.setPaneHeight(360);
   assert.equal(renderer.panPriceByPixels(0), false, 'dy=0→false');
+});
+
+// ISSUE-163: 時間足切替用 resetPaneScales — pane の手動スケール退避を破棄し autoScale へ戻す
+//   （ISSUE-150 の保持は同一時間足の再計算のみ。切替で旧レンジを持ち越すと新値域がクリップし
+//   全高ブロック化する・実 UI 再現済み）。
+test('resetPaneScales clears saved ranges and restores auto scale on pane axes (ISSUE-163)', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderHistogram('osc#1', [{ name: 'marod_lc', kind: 'histogram', data: [] }], { pane: true, name: 'OSC' });
+  const first = chart.created[0];
+  const ps = first.priceScale();
+  ps._options.autoScale = false;                       // 軸ドラッグ相当（手動スケール）
+  ps._visibleRange = { from: -0.1, to: 0.1 };
+  renderer.remove('osc#1', { keepPane: true });        // 退避が作られる
+  renderer.renderHistogram('osc#1', [{ name: 'marod_lc', kind: 'histogram', data: [] }], { pane: true, name: 'OSC' });
+  // Act: 時間足切替相当
+  renderer.resetPaneScales();
+  const ps1 = chart.created[1].priceScale();
+  assert.equal(ps1._options.autoScale, true, 'pane 軸は自動スケールへ戻る');
+  // 以後の keepPane redraw で旧レンジが復元されない（退避は破棄済み）
+  renderer.remove('osc#1', { keepPane: true });
+  renderer.renderHistogram('osc#1', [{ name: 'marod_lc', kind: 'histogram', data: [] }], { pane: true, name: 'OSC' });
+  const ps2 = chart.created[2].priceScale();
+  assert.deepEqual(ps2._setCalls, [], '切替後の redraw で旧手動レンジを復元しない');
 });

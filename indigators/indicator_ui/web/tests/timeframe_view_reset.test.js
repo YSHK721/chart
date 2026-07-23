@@ -144,16 +144,19 @@ test('ISSUE-115 生成時: rightOffset = width×5% ÷ barSpacing（600×0.05/6 =
   assert.equal(ts._options.rightOffset, 5);
 });
 
-test('ISSUE-115 ズーム追従: barSpacing 変化の可視範囲イベントで bars を再計算し px 幅を一定に保つ', () => {
+// ISSUE-164（ユーザー裁定 2026-07-23・旧 ISSUE-115 ズーム追従仕様を廃止）:
+//   ズーム（可視範囲変化）イベントで rightOffset を再適用しない。ユーザーの拡大縮小操作と
+//   無関係な余白の再適用は lwc で「右端スクロール」副作用を持ち、過去閲覧中のジャンプの根本原因
+//   だった。余白の適用点は明示イベント（初期表示・時間足切替・MP 余白率変更・最新足へ戻る）のみ。
+test('ISSUE-164 ズーム非反応: barSpacing 変化の可視範囲イベントでは rightOffset を再適用しない', () => {
   const { ts, setBarSpacing, fireRangeChange } = zoomableRenderer();
-  // 全体表示相当（barSpacing 0.5）→ 30px 余白 = 60 バー
+  const before = ts._options.rightOffset;
   setBarSpacing(0.5);
   fireRangeChange();
-  assert.equal(ts._options.rightOffset, 60, '微小 barSpacing ではバー数を増やし px 一定');
-  // 拡大（barSpacing 15）→ 30px 余白 = 2 バー
+  assert.equal(ts._options.rightOffset, before, 'ズームで余白を書き換えない（ユーザー操作優先）');
   setBarSpacing(15);
   fireRangeChange();
-  assert.equal(ts._options.rightOffset, 2, '拡大時はバー数を減らし px 一定');
+  assert.equal(ts._options.rightOffset, before, '拡大でも書き換えない');
 });
 
 test('ISSUE-115 ループ防止: barSpacing 不変の可視範囲イベントでは applyOptions を再発行しない', () => {
