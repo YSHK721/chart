@@ -360,3 +360,39 @@ def test_build_m1_from_ticks_materializes_cleaned_csv(tmp_path: Path) -> None:
     df = pd.read_csv(out, parse_dates=["date"], index_col="date")
     assert len(df) == 9  # 不良 1 分バーのみ除去
     assert float(df["low"].min()) > 42000.0
+
+
+def test_dedupe_minutes_keeps_last_on_duplicate_index() -> None:
+    # ISSUE-167: 日 partition 跨ぎ等で境界分（例 23:59）が二重集計されても keep-last で 1 本へ畳む。
+    idx = pd.to_datetime(
+        [
+            "2026-07-23 23:58:00",
+            "2026-07-23 23:59:00",
+            "2026-07-23 23:59:00",  # 重複（後勝ちで残る）
+            "2026-07-24 00:00:00",
+        ]
+    )
+    m1 = pd.DataFrame(
+        {
+            "open": [1.0, 2.0, 20.0, 3.0],
+            "high": [1.0, 2.0, 20.0, 3.0],
+            "low": [1.0, 2.0, 20.0, 3.0],
+            "close": [1.0, 2.0, 20.0, 3.0],
+            "volume": [1.0, 1.0, 5.0, 1.0],
+        },
+        index=idx,
+    )
+    out = tick_m1._dedupe_minutes(m1)
+    assert not out.index.has_duplicates
+    assert len(out) == 3
+    assert out.loc[pd.Timestamp("2026-07-23 23:59:00"), "close"] == 20.0  # keep-last
+
+
+def test_dedupe_minutes_noop_on_unique_index() -> None:
+    idx = pd.to_datetime(["2026-07-23 23:58:00", "2026-07-23 23:59:00"])
+    m1 = pd.DataFrame(
+        {"open": [1.0, 2.0], "high": [1.0, 2.0], "low": [1.0, 2.0], "close": [1.0, 2.0], "volume": [1.0, 1.0]},
+        index=idx,
+    )
+    out = tick_m1._dedupe_minutes(m1)
+    assert out is m1  # 正常データは同一オブジェクトを返す（挙動不変・冪等）

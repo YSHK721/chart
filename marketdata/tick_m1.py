@@ -140,6 +140,23 @@ def _clean_m1_day(m1_day: pd.DataFrame) -> pd.DataFrame:
     return outlier_policy.repair_day_outliers(m1_day)
 
 
+def _dedupe_minutes(m1: pd.DataFrame) -> pd.DataFrame:
+    """同一分（date index の重複）を keep-last で 1 行へ畳む（ISSUE-167・冪等・純粋）。
+
+    ``ticks_to_m1`` は 1 つの日 parquet を分 groupby するため単一 parquet 内は一意だが、
+    build/append は日別結果を ``pd.concat`` するため、境界分のティックが複数 parquet に分散
+    （日 partition 跨ぎ・再取得の重畳等）していると同一分バーが二重に混じる。この重複が
+    素材 CSV → /candles(1m 原子) → フロント series へ伝播すると lightweight-charts が
+    「厳密増加 time」不変条件違反で candlestick 描画を毎フレーム "Value is null" で落とす
+    （実測: 1m 切替で 31 秒フリーズ）。5m 以上は resample が融合するため露見せず 1m のみ発症する。
+    本 dedupe を build/append の concat 直後（sort 済み）に適用し、素材段で分一意を保証する
+    （後勝ち＝最新集計を採用）。正常データは ``has_duplicates`` が偽で同一オブジェクトを返す＝no-op。
+    """
+    if m1.index.has_duplicates:
+        return m1[~m1.index.duplicated(keep="last")]
+    return m1
+
+
 def tick_root(data_dir: Any = DATA_DIR) -> Path:
     """ティック parquet の基点（``<DATA_DIR>/ticks``）。"""
     return Path(data_dir) / "ticks"
@@ -267,7 +284,7 @@ def build_m1_from_ticks(
         if not m1_day.empty:
             daily_m1.append(m1_day)
     if daily_m1:
-        m1 = pd.concat(daily_m1).sort_index()
+        m1 = _dedupe_minutes(pd.concat(daily_m1).sort_index())  # ISSUE-167: 境界分の二重を畳む。
     else:
         # parquet は在るが全日空（0 行）。ヘッダのみの空 M1 を出力する。
         m1 = ticks_to_m1(pd.DataFrame({c: [] for c in _TICK_COLUMNS}))
@@ -375,7 +392,7 @@ def append_m1_from_ticks(
             daily_m1.append(m1_day)
     if not daily_m1:
         return out_path
-    m1_new = pd.concat(daily_m1).sort_index()
+    m1_new = _dedupe_minutes(pd.concat(daily_m1).sort_index())  # ISSUE-167: 境界分の二重を畳む。
     m1_new = m1_new[m1_new.index > last_date]  # 厳密に既存最終 date より後のみ追記（重複防止）。
     m1_new = _drop_forming_bars(m1_new, until)  # 形成中分バー（>= until）を確定値として書かない。
     if m1_new.empty:

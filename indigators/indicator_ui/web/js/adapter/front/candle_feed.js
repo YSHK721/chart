@@ -13,6 +13,27 @@
 //   都度再計算して適用する。MP プロファイル右マージン（setRightMarginFraction）とは比率の max 合成。
 const BASE_RIGHT_MARGIN_FRACTION = 0.05;
 
+// ISSUE-167: lightweight-charts は系列データに「厳密増加する time」を要求する。上流（/candles）に
+//   同一 time の重複バー（例: jp225_tick_m1 の日境界 23:59 が二重集計＝発生源 tick_m1 の分 dedupe 漏れ）
+//   が混じると、candlestick 描画が内部 bar↔time 対応の破綻で毎 rAF フレーム "Value is null" を throw し、
+//   時間足切替後の再描画が完了せず長時間フリーズする（実測: 1m 切替で 31 秒）。しかも例外は update/setData
+//   の同期呼出ではなく後続の rAF ペイントで飛ぶため、呼出側の try/catch では捕捉できない。
+//   本 dedupe は series へ渡す直前の防壁として、時刻昇順配列の連続同一 time を keep-last（後勝ち）で 1 本へ
+//   畳み、厳密増加を保証する（上流が既に清浄なら実質 no-op＝配列同一長で挙動不変）。後退 time（想定外）も
+//   捨てて不変条件を守る。発生源（backend）修正と多重防御（本所）の二段構え。
+export function dedupeCandlesByTime(arr) {
+  const out = [];
+  for (const p of arr) {
+    const n = out.length;
+    if (n > 0 && typeof p?.time === 'number' && typeof out[n - 1].time === 'number') {
+      if (p.time === out[n - 1].time) { out[n - 1] = p; continue; } // 同 time は後勝ち（keep-last）
+      if (p.time < out[n - 1].time) { continue; } // 後退（想定外）は捨て厳密増加を維持
+    }
+    out.push(p);
+  }
+  return out;
+}
+
 export class CandleFeed {
   // host: ChartRenderer インスタンス（共有状態の所有者）。
   constructor(host) {
@@ -21,7 +42,8 @@ export class CandleFeed {
 
   // 時間足切替: メインローソク系列のデータを差し替え、可視範囲を全体へ合わせる。
   setCandles(candles) {
-    const arr = candles ?? [];
+    // ISSUE-167: 上流の重複 time バーで lwc が毎フレーム "Value is null" クラッシュするのを防ぐ防壁。
+    const arr = dedupeCandlesByTime(candles ?? []);
     this._h._mainSeries.setData(arr);
     // v6: 基準 candles を全置換で更新（per-bar 減光/復元の元集合）。
     this._h._baseCandles = arr;
@@ -125,7 +147,8 @@ export class CandleFeed {
   //   新データ末尾以上なら置換後に復元する（最大 60 秒古いサーバー値で価格を巻き戻さない）。
   //   スナップショット（トリム）中は不介入（updateLastCandle と同方針・解除後の tick で再同期される）。
   resyncMissedCandles(candles) {
-    const arr = Array.isArray(candles) ? candles : [];
+    // ISSUE-167: 全置換経路も setData 前に重複 time を畳む（setCandles と同じ防壁・厳密増加保証）。
+    const arr = dedupeCandlesByTime(Array.isArray(candles) ? candles : []);
     if (arr.length === 0 || this._h._lastTrimIdx !== null) {
       return false;
     }

@@ -71,7 +71,16 @@ def _clamp_outlier_bars(df: pd.DataFrame, ref: str) -> pd.DataFrame:
     :func:`marketdata.outlier_policy.clamp_ohlc_envelope`（単一補正コア・唯一の定義）へ委譲する
     （ISSUE-094 🔴-3: 書込側 cleaning と閾値を単一化／ISSUE-095 項目1: 補正式をエンベロープへ一本化・
     acquisition/serving の両経路が本コアへ委譲）。非対象 ref は素通し。
+
+    ISSUE-167（重複 time の serving 無害化）: 全 ref・全返却経路が通る本 hygiene 漏斗で、
+    同一 time（index 重複）を keep-last で畳み「厳密増加 time」を保証する。素材 CSV
+    （jp225_tick_m1）に日境界の二重分バーが既に残っていても、serving でチャート/指標へ渡る前に
+    無害化される（フロントの lwc 厳密増加不変条件違反＝毎フレーム "Value is null" クラッシュを遮断）。
+    冪等・純粋（正常データは has_duplicates 偽で素通し＝挙動不変）。発生源（tick_m1._dedupe_minutes）と
+    多重防御（本所）の二段構え。
     """
+    if df.index.has_duplicates:
+        df = df[~df.index.duplicated(keep="last")]
     if ref not in _OUTLIER_CLAMP_REFS_SET:
         return df
     return outlier_policy.clamp_ohlc_envelope(df, threshold=OUTLIER_CLAMP_THRESHOLD)
