@@ -151,6 +151,12 @@ export async function bootstrap({
   liveIntervalMs = 60000,
   // 形成中バー（最新足の足内更新）のポーリング間隔。インジ再計算とは分離（高頻度・価格のみ）。
   formingIntervalMs = 5000,
+  // [統合レイヤ・オプション注入] 未指定（スタンドアロン live）は現状のコードパスを 1 バイトも
+  //   変えない（IndicatorController・リプレイ層なし）。統合レイヤ（unified_ui）だけが
+  //   `{ ReplayIndicatorController, setupReplay }` を注入し、controller を派生クラスで生成して
+  //   （untilTime=undefined＝live byte 等価）リプレイ層を配線する。live root はリプレイのコードを
+  //   import しない（注入のみ）＝スタンドアロン live で 404／結合を生まない。
+  replay = undefined,
 } = {}) {
   const mode = modeForProtocol(protocol);
 
@@ -320,7 +326,10 @@ export async function bootstrap({
       })
     : null;
 
-  controller = new IndicatorController({
+  // 未注入（スタンドアロン）は IndicatorController（既存経路・runtime byte 不変）。統合レイヤ注入時のみ
+  //   ReplayIndicatorController（untilTime=undefined で live 等価）で生成する。opts は同一（下記 verbatim）。
+  const IndicatorControllerCtor = (replay && replay.ReplayIndicatorController) || IndicatorController;
+  controller = new IndicatorControllerCtor({
     catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
     timeframe, recentBars, loadCandles, marketProfile,
     // 連動配線時のみ resolver を注入（未注入＝MP へ渡す mode をそのまま＝byte 不変）。
@@ -592,7 +601,22 @@ export async function bootstrap({
     liveFollowController.install();
   }
 
+  // [統合レイヤ・オプション注入] 全 live 配線の後にリプレイ層を配線する（注入時のみ）。setupReplay は
+  //   chart/mainSeries/controller/renderer を受けて再生ドライバの外殻ハンドル { enable, disable, destroy }
+  //   を返す。統合レイヤは初期 live で即 disable()（untilTime=undefined＝live 等価）し、トグルで
+  //   enable/disable する。chart は本 bootstrap の 1 回生成のみ（リプレイ層は同一 chart を共有＝再構築なし）。
+  //   MP は当面モード別アクター差替が対象外のため setupReplay へ marketProfile を渡さない（null）＝リプレイ
+  //   駆動フックが live MP を触らない（ライブ MP 挙動不変を最優先）。未注入（スタンドアロン）は呼ばない。
+  let replayHandle = null;
+  if (replay && typeof replay.setupReplay === 'function') {
+    replayHandle = await replay.setupReplay({
+      chart, mainSeries, controller, renderer,
+      datasetRef, recentBars, document: doc, fetchImpl: fetch,
+      marketProfile: null,
+    });
+  }
+
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle };
 }

@@ -1,135 +1,37 @@
-// 統合エントリのブートストラップ（Green — 本体実装）。基本設計書 §3 / §4。
+// 統合エントリのブートストラップ（単一 mount + リプレイ層のオン・オフ）。
 //
 // 役割:
-//   - live / replay の composition root を **動的 import** で配線する（起動時はアクティブモード
-//     のみ・反対モードはトグル時に読み込む＝障害隔離）。
-//   - モードトグルで「反対 core 事前ロード（失敗＝現モード継続）→ 現状態 capture → SW へアクティブ
-//     モード通知 → 現配線 teardown（timer clearAll + chart dispose + mode-ui pristine 復元）→
-//     反対モード bootstrap（replay は setupReplay 併用）→ restore」を実行する。
-//   - Service Worker（/sw.js）を登録し、既存フロントの root 相対 API fetch をモード別 prefix へ
+//   - **単一 chart を 1 回だけ生成**する。live root（indicator_ui）の bootstrap を 1 回呼び、
+//     リプレイ部品 { ReplayIndicatorController, setupReplay } を **オプション注入**して「リプレイ層」を
+//     同一 chart 上へ配線する（controller は ReplayIndicatorController＝untilTime=undefined で live 等価）。
+//   - モード切替は chart/ローソク/指標を **dispose も再生成もしない**。live pollers（LiveUpdater/
+//     FormingBarUpdater/LiveTickPlayer）の start/stop と、リプレイ層ハンドルの enable/disable、
+//     controller.clearRevealCache、body クラス、SW アクティブモード通知だけで切り替える（チラつき・重複ゼロ）。
+//   - Service Worker（/sw.js）を登録し、root 相対 API fetch をアクティブモード prefix（/live・/replay）へ
 //     リライトさせる。SW が制御に入れない環境は **フェイルクローズ**（明示エラー・mount しない）。
 //
-// 無波及順守（既存 indigators/** · simulator/** は 1 行も編集しない）:
-//   - 既存 bootstrap は setInterval/clearInterval/storage の注入口を持つ（実証済み）。
-//     timer_registry.wrap でラップしたタイマを注入し、切替時に clearAll で一括停止する。
-//   - localStorage 名前空間分離は storage ポート（getItem/setItem/removeItem）を mode_storage の
-//     scopedStorage でラップして注入する（既存 LocalStorageGateway は無改変）。
-//   - bind() は永続ツールバー/ダイアログへ removeEventListener 無しで addEventListener する
-//     （indicator_controller.js:900-951 で実証）。teardown で mode-ui サブツリーを pristine
-//     innerHTML へ戻すことで、**要素スコープ**のリスナは新ノード置換で根絶する（🟡-6）。
-//     ただし既存無編集モジュールが document/body スコープへ張るリスナ（例 timeframe_menu.js:95 の
-//     `doc.addEventListener('click', …)`）は innerHTML 復元では消えず、**トグル毎に +1 残存**する
-//     ＝無波及制約下の既知限界（機能影響は軽微・有界／ISSUE-169）。完全根絶は既存改変を要するため
-//     将来別承認課題。
+// 無波及順守:
+//   - live root はリプレイのコードを import しない（統合レイヤが注入する）＝スタンドアロン live は byte 不変。
+//   - MP は当面モード別アクター差替が対象外。live MP stack は無改変で維持し、リプレイ層へは marketProfile を
+//     渡さない（live root 側で null 注入）。既定ビュー（MP 無効）で単一化・チラつき解消を成立させる。
 
 import { wrap as wrapTimers } from './timer_registry.js';
-import { captureState, restoreState } from './view_state.js';
 import { scopedStorage } from './mode_storage.js';
 
 const DATASET_REF = 'jp225_tick';
 const MODE = Object.freeze({ LIVE: 'live', REPLAY: 'replay' });
 
-// 各モードの core モジュール URL（動的 import 対象＝反対 core への起動時依存を持たない）。
-const CORE_SPEC = {
-  [MODE.LIVE]: { root: '/live/js/adapter/front/composition_root_front.js' },
-  [MODE.REPLAY]: {
-    root: '/replay/js/adapter/front/composition_root_front.js',
-    replay: '/replay/js/replay.js',
-  },
-};
+// 単一 mount の live root と、注入するリプレイ部品の URL（/replay プロキシ経由で取得）。
+const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';
+const REPLAY_CONTROLLER = '/replay/js/adapter/front/replay_indicator_controller.js';
+const REPLAY_DRIVER = '/replay/js/replay.js';
 
-let current = null; // { mode, boot, registry }
-let activeMode = MODE.LIVE;
-let switching = false;
-let pristineModeUi = null; // #mode-ui の初期 innerHTML（teardown 復元源）。
+let modeController = null; // createModeController の実体（トグルボタンが参照）。
 let lwcLoaded = false;
 
-// ---- capture/restore 用の view アダプタ（controller/chart 実体を抽象化）--------
-// timeframe・indicators はモード別 scoped localStorage が復元源（controller.restore()）。
-// ここでは可視レンジ（scroll 位置＝非永続）の carry-over を担う。既存 setter 署名は推測しない。
-function viewAdapter(boot) {
-  const chart = boot && boot.chart;
-  const controller = boot && boot.controller;
-  const timeScale = () => {
-    try {
-      return chart && typeof chart.timeScale === 'function' ? chart.timeScale() : null;
-    } catch {
-      return null;
-    }
-  };
-  return {
-    getTimeframe: () => (controller ? controller._timeframe : null),
-    getIndicators: () => null, // モード別 scoped 永続が復元源（cross-mode 強制適用はしない）。
-    getVisibleRange: () => {
-      const ts = timeScale();
-      try {
-        const r = ts && typeof ts.getVisibleRange === 'function' ? ts.getVisibleRange() : null;
-        return r && r.from != null && r.to != null
-          ? { from: Number(r.from), to: Number(r.to) }
-          : null;
-      } catch {
-        return null;
-      }
-    },
-    setTimeframe: () => {
-      /* controller.restore() がモード別 scoped localStorage から復元（署名推測回避）。 */
-    },
-    setIndicators: () => {
-      /* 同上（指標構成はモード別永続が復元源）。 */
-    },
-    setVisibleRange: (range) => {
-      if (!range) {
-        return;
-      }
-      const ts = timeScale();
-      try {
-        if (ts && typeof ts.setVisibleRange === 'function') {
-          ts.setVisibleRange(range);
-        }
-      } catch {
-        /* 可視レンジ復元は best-effort（データ差でレンジ外なら無視）。 */
-      }
-    },
-  };
-}
-
-// ---- 反対モードの bootstrap 用の共通注入を組む --------------------------------
-function buildInjection(mode) {
-  const registry = wrapTimers({
-    setInterval: globalThis.setInterval.bind(globalThis),
-    clearInterval: globalThis.clearInterval.bind(globalThis),
-  });
-  const injection = {
-    lwc: window.LightweightCharts,
-    container: document.getElementById('chart'),
-    doc: document,
-    storage: scopedStorage(globalThis.localStorage, mode),
-    datasetRef: DATASET_REF,
-    // 既存 bootstrap の setInterval/clearInterval 注入口へラップ済みタイマを渡す。
-    setInterval: registry.setInterval,
-    clearInterval: registry.clearInterval,
-  };
-  return { registry, injection };
-}
-
-// ---- core モジュールの動的ロード（🔴-1: 反対 core は toggle 時のみ・失敗は呼び出し側で捕捉）--
-async function loadCore(mode) {
-  const spec = CORE_SPEC[mode];
-  const rootMod = await import(spec.root);
-  if (mode === MODE.REPLAY) {
-    const replayMod = await import(spec.replay);
-    return {
-      bootstrap: rootMod.bootstrap,
-      recentBars: rootMod.RECENT_BARS,
-      setupReplay: replayMod.setupReplay,
-    };
-  }
-  return { bootstrap: rootMod.bootstrap };
-}
-
-// ---- lightweight-charts（vendor）を **アクティブモードの prefix** から動的ロード（🔴-1 隔離）--
+// ---- lightweight-charts（vendor）を live prefix から動的ロード（両 core とも同一 vendor を配信）----
 function loadVendor(mode) {
-  if (lwcLoaded || window.LightweightCharts) {
+  if (lwcLoaded || (typeof window !== 'undefined' && window.LightweightCharts)) {
     lwcLoaded = true;
     return Promise.resolve(true);
   }
@@ -143,81 +45,6 @@ function loadVendor(mode) {
     s.onerror = () => resolve(false);
     document.head.appendChild(s);
   });
-}
-
-// ---- 各モードのマウント（preloaded module を受けて起動シーケンスを実行）----------
-async function mountLive(mod) {
-  const { registry, injection } = buildInjection(MODE.LIVE);
-  const boot = await mod.bootstrap(injection);
-  boot.controller.bind();
-  await boot.ready;
-  boot.controller.restore();
-  if (boot.liveUpdater) {
-    boot.liveUpdater.start();
-  }
-  if (boot.formingBarUpdater) {
-    boot.formingBarUpdater.start();
-  }
-  if (boot.liveTickPlayer) {
-    boot.liveTickPlayer.start();
-  }
-  // 売買マーカーの初回 load（entry が制御する URL＝モード prefix を明示して router へ回す）。
-  if (boot.tradeMarkers) {
-    boot.tradeMarkers.load('/live/data/trade_markers.json');
-  }
-  return { mode: MODE.LIVE, boot, registry };
-}
-
-async function mountReplay(mod) {
-  const { registry, injection } = buildInjection(MODE.REPLAY);
-  const boot = await mod.bootstrap(injection);
-  boot.controller.bind();
-  await boot.ready;
-  boot.controller.restore();
-  await mod.setupReplay({
-    chart: boot.chart,
-    mainSeries: boot.mainSeries,
-    controller: boot.controller,
-    renderer: boot.renderer,
-    datasetRef: DATASET_REF,
-    recentBars: mod.recentBars,
-    document,
-    marketProfile: boot.marketProfile,
-  });
-  return { mode: MODE.REPLAY, boot, registry };
-}
-
-function mount(mode, mod) {
-  return mode === MODE.REPLAY ? mountReplay(mod) : mountLive(mod);
-}
-
-// ---- teardown（旧配線の停止・破棄・DOM 冪等化）--------------------------------
-function teardown(state) {
-  if (state) {
-    // 1. 旧モードのタイマを一括停止（ライブ更新・forming・tick 再生・replay ループ）。
-    try {
-      state.registry.clearAll();
-    } catch {
-      /* no-op */
-    }
-    // 2. チャート実体を dispose（lightweight-charts の canvas/購読を解放）。
-    try {
-      const chart = state.boot && state.boot.chart;
-      if (chart && typeof chart.remove === 'function') {
-        chart.remove();
-      }
-    } catch {
-      /* no-op */
-    }
-  }
-  // 3. mode-ui サブツリーを pristine へ復元。innerHTML 置換で全ノードが無リスナの新規要素へ入れ替わり、
-  //    **要素スコープ**の bind() リスナは多重化しない。ただし既存無編集モジュールが document/body スコープ
-  //    へ張るリスナ（timeframe_menu.js:95 の doc click 等）は消えず、トグル毎に +1 残存する（既知限界・
-  //    軽微有界・ISSUE-169）。完全根絶は既存改変が必要＝無波及制約下では不可（将来別承認課題）。
-  const modeUi = document.getElementById('mode-ui');
-  if (modeUi && pristineModeUi != null) {
-    modeUi.innerHTML = pristineModeUi;
-  }
 }
 
 // ---- Service Worker: アクティブモード通知（ack 待ち）--------------------------
@@ -248,23 +75,29 @@ function notifySwMode(mode) {
       done(false);
       return;
     }
-    // ack が来ない環境でも進行を止めない（保険）。
-    setTimeout(() => done(false), 500);
+    setTimeout(() => done(false), 500); // ack が来ない環境でも進行を止めない（保険）。
   });
 }
 
 // ---- エラー表示（フェイルクローズ / モード読込失敗）--------------------------
 function showModeError(message) {
-  const el = document.getElementById('mode-error');
-  if (el) {
-    el.textContent = message;
-    el.style.display = 'block';
+  if (typeof document !== 'undefined') {
+    const el = document.getElementById('mode-error');
+    if (el) {
+      el.textContent = message;
+      el.style.display = 'block';
+    }
   }
-  // eslint-disable-next-line no-console
-  console.error('[unified_root]', message);
+  if (typeof console !== 'undefined') {
+    // eslint-disable-next-line no-console
+    console.error('[unified_root]', message);
+  }
 }
 
 function clearModeError() {
+  if (typeof document === 'undefined') {
+    return;
+  }
   const el = document.getElementById('mode-error');
   if (el) {
     el.style.display = 'none';
@@ -272,86 +105,113 @@ function clearModeError() {
   }
 }
 
-// ---- モード UI 反映（css 切替・body クラス・リプレイトグル点灯）------------------
-//   body クラス um-mode-live / um-mode-replay が replay-bar / live-follow-toggle の表示を
-//   CSS で制御する。「リプレイ」トグルは両モードで表示し、aria-pressed で on/off を反映する。
+// ---- モード UI 反映（body クラス・リプレイトグル点灯）--------------------------
+//   mode-css の付替えは不要（live/replay の app.css は同一・index.html は /live 固定）。body クラス
+//   um-mode-live / um-mode-replay が replay-bar / live-follow-toggle の表示を CSS で制御する。
 function applyModeUi(mode) {
-  const css = document.getElementById('mode-css');
-  if (css) {
-    css.setAttribute('href', `/${mode}/css/app.css`);
+  if (typeof document === 'undefined') {
+    return;
   }
   document.body.classList.toggle('um-mode-live', mode === MODE.LIVE);
   document.body.classList.toggle('um-mode-replay', mode === MODE.REPLAY);
-  // 「リプレイ」トグルの点灯状態（replay=on / live=off）。
   const replayToggle = document.getElementById('enter-replay');
   if (replayToggle) {
     replayToggle.setAttribute('aria-pressed', mode === MODE.REPLAY ? 'true' : 'false');
   }
 }
 
-// ---- トグル動作（🔴-1 隔離: 反対 core を先にロードし、失敗時は現モードを壊さない）--------
-async function toggle(nextMode) {
-  if (switching || nextMode === activeMode) {
-    return;
+// ---- モード切替ステートマシン（純ロジック・単一 mount 前提）------------------------
+//   chart/controller/pollers/replayHandle は注入。**chart を dispose も再生成もしない**（本関数は
+//   remove を一切呼ばない＝再構築なしの構造的実証）。切替は pollers の start/stop、replayHandle の
+//   enable/disable、controller.clearRevealCache、SW モード通知、body クラスのみで行う。
+//   - replay ON:  pollers stop → clearRevealCache → SW=replay → replayHandle.enable → um-mode-replay
+//   - live  ON:   replayHandle.disable → clearRevealCache → SW=live → pollers start → um-mode-live
+export function createModeController({
+  controller,
+  replayHandle,
+  pollers = [],
+  setSwMode = () => Promise.resolve(false),
+  applyMode = () => {},
+  initialMode = MODE.LIVE,
+} = {}) {
+  let activeMode = initialMode;
+  let switching = false;
+
+  const startPollers = () => {
+    for (const p of pollers) {
+      if (p && typeof p.start === 'function') {
+        p.start();
+      }
+    }
+  };
+  const stopPollers = () => {
+    for (const p of pollers) {
+      if (p && typeof p.stop === 'function') {
+        p.stop();
+      }
+    }
+  };
+  const clearReveal = () => {
+    if (controller && typeof controller.clearRevealCache === 'function') {
+      controller.clearRevealCache();
+    }
+  };
+
+  async function enterReplay() {
+    stopPollers();
+    clearReveal();
+    // SW を先に replay へ（enable の loadTimeframe が /replay/candles・/replay/compute を叩く）。
+    await setSwMode(MODE.REPLAY);
+    if (replayHandle && typeof replayHandle.enable === 'function') {
+      await replayHandle.enable();
+    }
+    activeMode = MODE.REPLAY;
+    applyMode(MODE.REPLAY);
   }
-  switching = true;
-  try {
-    // 1. 反対モードの vendor（lightweight-charts）と core を **teardown 前に** 事前ロードする。
-    //    landing core が停止していて vendor/core 未ロードでも、健全な反対モード core から取得できる
-    //    （🟡-A: 隔離の非対称解消＝どちらの core がダウンでも健全側へ到達可能）。ロード済みなら
-    //    loadVendor は即返し（lwcLoaded ガード）、import はブラウザキャッシュで再取得しない。
-    //    いずれか失敗＝当該モード core 停止なら、現表示を一切壊さず離脱する。
-    const vendorOk = await loadVendor(nextMode);
-    if (!vendorOk) {
-      showModeError(
-        `${nextMode} モードを起動できません（${nextMode} core 停止中の可能性・vendor 未取得）。`
-          + `現在の ${activeMode} 表示は継続します。`,
-      );
-      return;
+
+  async function enterLive() {
+    // SW を先に live へ（disable の全長復帰 fetch が /live/candles を叩く＝ライブ末尾へ確実に戻す）。
+    await setSwMode(MODE.LIVE);
+    clearReveal();
+    if (replayHandle && typeof replayHandle.disable === 'function') {
+      await replayHandle.disable(); // reveal トリム解除＋ライブ全長再描画（chart 再構築なし）。
     }
-    let mod;
-    try {
-      mod = await loadCore(nextMode);
-    } catch {
-      showModeError(
-        `${nextMode} モードを起動できません（${nextMode} core が停止中の可能性）。`
-          + `現在の ${activeMode} モードは継続します。`,
-      );
-      return;
-    }
-    // 2. 現状態 capture（未マウント時は null）。
-    const captured = current ? captureState(viewAdapter(current.boot)) : null;
-    // 3. SW へアクティブモード通知（以降の API fetch が新 prefix で回る）。
-    await notifySwMode(nextMode);
-    // 4. 現配線 teardown（timer clearAll + chart dispose + mode-ui pristine 復元）。
-    teardown(current);
-    current = null;
-    // 5. 反対モード bootstrap（＋replay は setupReplay）。
-    activeMode = nextMode;
-    applyModeUi(nextMode);
-    try {
-      current = await mount(nextMode, mod);
-      // pristine 復元で作り直された「リプレイ」トグル（#enter-replay）を再配線する。
-      wireModeSwitchButtons();
-      clearModeError();
-    } catch (err) {
-      showModeError(`${nextMode} モードの初期化に失敗しました: ${err && err.message ? err.message : err}`);
-      return;
-    }
-    // 6. restore（可視レンジ carry-over。timeframe/指標はモード別 scoped 永続が復元）。
-    if (captured && current) {
-      restoreState(viewAdapter(current.boot), captured);
-    }
-  } finally {
-    switching = false;
+    startPollers();
+    activeMode = MODE.LIVE;
+    applyMode(MODE.LIVE);
   }
+
+  async function toggle(next) {
+    const target = next || (activeMode === MODE.REPLAY ? MODE.LIVE : MODE.REPLAY);
+    if (switching || target === activeMode) {
+      return;
+    }
+    switching = true;
+    try {
+      if (target === MODE.REPLAY) {
+        await enterReplay();
+      } else {
+        await enterLive();
+      }
+    } finally {
+      switching = false;
+    }
+  }
+
+  return {
+    toggle,
+    enterReplay,
+    enterLive,
+    startPollers,
+    stopPollers,
+    getMode: () => activeMode,
+  };
 }
 
 // ---- Service Worker 登録（フェイルクローズ判定つき）--------------------------
-// 戻り値: SW がページを制御している（＝API リライトが効く）なら true。
 async function registerServiceWorker() {
   if (typeof navigator === 'undefined' || !navigator.serviceWorker) {
-    return false; // 非対応ブラウザ（module SW 非対応等）。呼び出し側でフェイルクローズ。
+    return false; // 非対応ブラウザ。呼び出し側でフェイルクローズ。
   }
   try {
     await navigator.serviceWorker.register('/sw.js', { type: 'module', scope: '/' });
@@ -369,30 +229,24 @@ async function registerServiceWorker() {
     location.reload();
     await new Promise(() => {}); // reload 後に再実行されるため待機。
   }
-  // リロード後も制御下に入れない＝この環境では SW が機能しない。
   return !!navigator.serviceWorker.controller;
 }
 
-// ---- リプレイ トグルボタン配線（#mode-ui 内＝mount 毎に新ノードへ再配線）--------
-//   「リプレイ」(#enter-replay) はオン・オフのトグル＝現モードに応じて反対モードへ切替える
-//   （live→replay / replay→live）。ツールバー内＝teardown の pristine 復元で作り直されるため
-//   mount 毎に再配線する（毎回新要素＝リスナ蓄積なし）。landing mount 前にも 1 回配線しておく
-//   ことで、landing core ダウンで mount に失敗しても反対モードへ切替できる（🟡-A: 隔離の非対称解消）。
+// ---- リプレイ トグルボタン配線（単一 mount: DOM は永続＝1 回だけ配線）--------------
 function wireModeSwitchButtons() {
   const btn = document.getElementById('enter-replay');
   if (btn) {
-    btn.addEventListener('click', () => toggle(activeMode === MODE.REPLAY ? MODE.LIVE : MODE.REPLAY));
+    btn.addEventListener('click', () => {
+      if (modeController) {
+        modeController.toggle();
+      }
+    });
   }
 }
 
-// ---- 起動 --------------------------------------------------------------------
+// ---- 単一 mount 起動 ----------------------------------------------------------
 async function main() {
-  // mode-ui の pristine スナップショット（bind() 前＝無リスナ状態）を保持する（🟡-6 復元源）。
-  const modeUi = document.getElementById('mode-ui');
-  pristineModeUi = modeUi ? modeUi.innerHTML : null;
-
-  // Service Worker が制御下に入れないと root 相対 API fetch がリライトされず router が 404 する。
-  //   → フェイルクローズ（🟡-3）: 明示エラーを出し mount しない（silent 404 を避ける）。
+  // SW が制御下に入れないと root 相対 API fetch がリライトされず router が 404 する→フェイルクローズ。
   const swControlled = await registerServiceWorker();
   if (!swControlled) {
     showModeError(
@@ -403,45 +257,96 @@ async function main() {
     return;
   }
 
-  // 切替ボタンは **landing mount 前** に配線する（🟡-A: landing core がダウンで初期 mount に失敗しても、
-  //   ユーザーは健全な反対モードへ切替できる＝隔離の非対称を解消）。以降は toggle 毎に mount 後へ再配線。
-  wireModeSwitchButtons();
-  applyModeUi(activeMode);
-  await notifySwMode(activeMode);
+  // 初期 live: 以降の API fetch を /live へ回す（vendor/core/candles すべて live prefix）。
+  await notifySwMode(MODE.LIVE);
 
-  // landing mount 区間を switching で相互排他保護する（landing-vs-toggle レースの確定的封鎖）。
-  //   toggle() 冒頭の `if (switching || …) return` が landing 中のクリックを弾き、landing 完了まで
-  //   トグルは no-op（トグル配線自体は上で完了済み＝存在はする）。finally で必ず false へ戻すため、
-  //   landing が早期 return（core ダウン）する経路でも解除漏れは起きない＝二重 mount は構造的に不可能。
-  switching = true;
-  try {
-    // landing（アクティブモード）の vendor（lightweight-charts）を当該 core からロードする（🔴-1 隔離）。
-    //   失敗＝landing core 停止でも、トグルは既に配線済み＝反対モードへ切替可能（早期 return で可）。
-    const ok = await loadVendor(activeMode);
-    if (!ok) {
-      showModeError(
-        `${activeMode} モードを起動できません（${activeMode} core 停止中の可能性・vendor 未取得）。`
-          + `ツールバーの「リプレイ」ボタンで反対モードへ切り替えてください。`,
-      );
-      return;
-    }
-    try {
-      const mod = await loadCore(activeMode);
-      current = await mount(activeMode, mod);
-    } catch (err) {
-      showModeError(
-        `${activeMode} モードを起動できません（${activeMode} core 停止中の可能性・ツールバーの「リプレイ」ボタンで反対モードへ）: `
-          + `${err && err.message ? err.message : err}`,
-      );
-    }
-  } finally {
-    switching = false;
+  const vendorOk = await loadVendor(MODE.LIVE);
+  if (!vendorOk) {
+    showModeError('live core を起動できません（vendor 未取得・live core 停止の可能性）。');
+    return;
   }
+
+  // live root（bootstrap）と、注入するリプレイ部品を動的ロードする。
+  let bootstrap;
+  let ReplayIndicatorController;
+  let setupReplay;
+  try {
+    ({ bootstrap } = await import(LIVE_ROOT));
+    ({ ReplayIndicatorController } = await import(REPLAY_CONTROLLER));
+    ({ setupReplay } = await import(REPLAY_DRIVER));
+  } catch (err) {
+    showModeError(`モジュール読込に失敗しました: ${err && err.message ? err.message : err}`);
+    return;
+  }
+
+  // 既存 bootstrap の setInterval/clearInterval 注入口へラップ済みタイマを渡す（一括停止の受け皿）。
+  const registry = wrapTimers({
+    setInterval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
+  });
+
+  // ★ 単一 mount: chart/mainSeries/renderer/controller(=ReplayIndicatorController)/live pollers/
+  //   リプレイ層ハンドルを 1 回だけ生成する（以降 toggle で再生成しない）。
+  let boot;
+  try {
+    boot = await bootstrap({
+      lwc: window.LightweightCharts,
+      container: document.getElementById('chart'),
+      doc: document,
+      storage: scopedStorage(globalThis.localStorage, MODE.LIVE),
+      datasetRef: DATASET_REF,
+      setInterval: registry.setInterval,
+      clearInterval: registry.clearInterval,
+      // リプレイ層のオプション注入（live root はこの注入時のみリプレイを配線する）。
+      replay: { ReplayIndicatorController, setupReplay },
+    });
+  } catch (err) {
+    showModeError(`初期化に失敗しました: ${err && err.message ? err.message : err}`);
+    return;
+  }
+
+  // mount シーケンス（standalone live と同順＋初期 disable でリプレイ層を live 等価へ倒す）。
+  boot.controller.bind();
+  if (boot.replayHandle && typeof boot.replayHandle.disable === 'function') {
+    // 初期 live: playing=false・untilTime=undefined・_recentBars 復帰（wasEnabled=false＝軽量停止のみ・
+    //   全長再取得はしない＝下の ready+restore が live 全長を描く）。
+    await boot.replayHandle.disable();
+  }
+  if (typeof boot.controller.setUntilTime === 'function') {
+    boot.controller.setUntilTime(undefined); // 冗長だが明示（null でなく undefined＝live 等価 gate）。
+  }
+  await boot.ready;
+  boot.controller.restore(); // 復元・再計算は untilTime=undefined＝live 経路で走る。
+  if (typeof boot.controller.clearRevealCache === 'function') {
+    boot.controller.clearRevealCache(); // 初期 setup の一括リビール基底を破棄（live に不要）。
+  }
+
+  modeController = createModeController({
+    controller: boot.controller,
+    replayHandle: boot.replayHandle,
+    pollers: [boot.liveUpdater, boot.formingBarUpdater, boot.liveTickPlayer],
+    setSwMode: notifySwMode,
+    applyMode: applyModeUi,
+    initialMode: MODE.LIVE,
+  });
+
+  // 初期 live: pollers を明示 start（standalone live と同じ・start は冪等）。
+  modeController.startPollers();
+  if (boot.tradeMarkers && typeof boot.tradeMarkers.load === 'function') {
+    boot.tradeMarkers.load('/live/data/trade_markers.json');
+  }
+  applyModeUi(MODE.LIVE);
+  wireModeSwitchButtons();
+  clearModeError();
 }
 
-main().catch((err) => {
-  showModeError(`初期化に失敗しました: ${err && err.message ? err.message : err}`);
-});
+// ブラウザ（DOM/SW あり）でのみ起動する。node（vitest）import 時は起動しない＝
+//   createModeController を純ロジックとして単体検証できる。
+if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+  main().catch((err) => {
+    showModeError(`初期化に失敗しました: ${err && err.message ? err.message : err}`);
+  });
+}
 
-// テスト・診断用途に公開（実 UI 動作には影響しない）。
-export { toggle, MODE };
+// テスト・診断用途に公開。
+export { MODE };
