@@ -130,7 +130,6 @@ export class MarketProfileActor {
     //   立てる互換維持（_ticklive とロックステップ＝挙動不変）。Phase2 で mode 非依存の applyGrowthState が
     //   直接トグルできるようにする（FOLLOW+normal 成長など）。
     this._growing = false;
-    this._asOf = null;            // 因果基準秒（as-seen-at-t）の布石。present は常にライブ（now）ゆえ未使用。
     this._accumulator = null;     // 現在の DwellAccumulator（null＝未 enter）。
     this._formingStart = null;    // 現在足の formingStart（rollover 検出用）。
     this._lastSec = null;         // 最後に addTick した tick 秒（base=0 尾部 since）。
@@ -295,13 +294,9 @@ export class MarketProfileActor {
   // Model A 直交化: 成長状態を表示モードと独立に設定する単一信号（境界追加・actor ロジックは不変）。
   //   growing=true で成長エンジン（_isIncremental→onLiveTick/_enterTicklive/forming）を有効化する。
   //   これにより mode を維持したまま（例: FOLLOW+normal）成長 ON/OFF を切替えられる（present #2 の直交化）。
-  //   asOf は因果基準秒（as-seen-at-t）の布石。present は常にライブ（now）ゆえ未使用（保持のみ）。
   //   growing=false へ遷移する際は成長エンジンの累積器/尾部を破棄する（static 復帰＝_enterTicklive 再入の初期化）。
-  applyGrowthState({ growing, asOf } = {}) {
+  applyGrowthState({ growing } = {}) {
     const next = !!growing;
-    if (asOf !== undefined) {
-      this._asOf = asOf;
-    }
     if (next === !!this._growing) {
       return; // 同状態は no-op（冪等）。
     }
