@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Unified UI (Live / Replay)</title>
+  <!-- モード別スタイル（既存 core の css/app.css をプロキシ経由で読む・byte 不変）。
+       href は unified_root.js が activeMode に応じて切り替える（初期 = live）。 -->
+  <link id="mode-css" rel="stylesheet" href="/live/css/app.css" />
+  <style>
+    /* 統合層固有の最小スタイル（既存 css へ波及させないための局所定義）。 */
+    #unified-modebar { display: flex; gap: 8px; padding: 6px 10px; align-items: center; }
+    #unified-modebar .um-btn { cursor: pointer; }
+    #unified-modebar .um-btn.is-active { font-weight: 700; text-decoration: underline; }
+    .um-mode-live #replay-bar { display: none; }
+    .um-mode-replay #live-follow-toggle { display: none; }
+  </style>
+</head>
+<body class="um-mode-live">
+  <!-- 統合エントリ。モードトグル（Live / Replay）は unified_root.js が配線する。
+       #unified-modebar・#mode-error は teardown 対象外（永続・リスナは 1 回だけ配線）。 -->
+  <div id="unified-modebar">
+    <span>表示:</span>
+    <button id="mode-live" class="um-btn is-active" type="button">Live</button>
+    <button id="mode-replay" class="um-btn" type="button">Replay</button>
+  </div>
+  <!-- フェイルクローズ用のエラー表示（🟡-3: SW 未制御／モード読込失敗を明示）。 -->
+  <div id="mode-error" role="alert" style="display:none;padding:8px 10px;background:#7a1f1f;color:#fff"></div>
+
+  <!-- モード切替のたびに丸ごと pristine 復元する UI サブツリー（🟡-6: bind() のリスナ蓄積を根絶）。
+       teardown で innerHTML を初期スナップショットへ戻し、次 mount は無リスナの新 DOM へ配線する。 -->
+  <div id="mode-ui">
+  <div id="app">
+    <!-- ツールバー（時間足メニュー・ライブ追従・インジケーター）。DOM 実体は共有 UI 部品が生成。 -->
+    <div class="toolbar">
+      <span class="tb-symbol">NI225</span>
+      <span class="tb-sep"></span>
+      <div class="tf-menu" id="tf-menu"></div>
+      <span class="tb-sep"></span>
+      <button id="live-follow-toggle" class="tb-interval" type="button" aria-pressed="false" title="ライブ追従（点灯=ライブ／消灯=分析）" disabled>ライブ</button>
+      <span class="tb-sep"></span>
+      <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
+        <span class="ic">∿</span>
+        <span class="lbl">インジケーター</span>
+      </button>
+    </div>
+
+    <!-- リプレイ操作バー（replay モードのみ表示・live では CSS で非表示）。 -->
+    <div class="replay-bar" id="replay-bar">
+      <button id="rp-prev">◀ 1足</button>
+      <button id="rp-play">▶ 再生</button>
+      <button id="rp-next">1足 ▶</button>
+      <label title="再生速度（1.00=最速。小さいほど遅い＝観察用）">速度<input id="rp-speed" type="range" min="0" max="1" step="0.01" value="1" style="vertical-align:middle;width:90px" /><span id="rp-speed-val" style="display:inline-block;min-width:2.6em;text-align:right">1.00</span></label>
+      <span id="rp-speed-presets"></span>
+      <span id="rp-eta" title="完了予想時間（残り足 × 実測の1足あたり所要）">完了予想 —</span>
+      <label title="最新足を足内で更新する方法（MT5 モデリング相当）">最新足更新<select id="rp-mode"></select></label>
+      <button id="rp-follow">再生追従</button>
+      <button id="rp-view-left" title="チャート表示を左端へスクロール（再生位置は変えない）">⇤ 表示左端</button>
+      <button id="rp-view-right" title="チャート表示を右端へスクロール（再生位置は変えない）">表示右端 ⇥</button>
+      <span id="rp-presets"></span>
+      <input id="rp-slider" type="range" min="0" max="0" value="0" />
+      <span id="rp-status" style="min-width:0"></span>
+    </div>
+
+    <!-- チャート + クロスヘア価格読み取り欄 + 凡例（両モード共有ホスト）。 -->
+    <div class="chart-wrap">
+      <div id="chart"></div>
+      <div id="chart-overlay-tl">
+        <div id="current-price"></div>
+        <div id="crosshair-readout"></div>
+        <div id="legend"></div>
+      </div>
+    </div>
+    <!-- Market Profile リプレイバーのホスト（replay の MP replay=ON で動的生成）。 -->
+    <div id="mp-replay-bar-host"></div>
+  </div>
+
+  <!-- インジケーターダイアログ（両モード共有）。 -->
+  <div id="indicator-dialog" class="dialog-backdrop">
+    <div class="dialog" role="dialog" aria-label="インジケーター">
+      <div class="dialog-head">
+        <span class="dialog-title">インジケーター、メトリクス、ストラテジー</span>
+        <button id="indicator-dialog-close" class="dialog-close" type="button" aria-label="閉じる">×</button>
+      </div>
+      <div class="dialog-tabs">
+        <button class="dialog-tab is-active" data-tab="indicator" type="button">インジケーター</button>
+        <button class="dialog-tab" data-tab="strategy" type="button">ストラテジー</button>
+        <button class="dialog-tab" data-tab="profile" type="button">プロファイル</button>
+        <button class="dialog-tab" data-tab="pattern" type="button">パターン</button>
+      </div>
+      <div class="dialog-body">
+        <div class="dialog-side">
+          <button class="side-item is-active" data-category="" type="button">すべて</button>
+          <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
+          <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
+          <button class="side-item" data-category="cat.statistics" type="button">統計</button>
+          <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+        </div>
+        <div class="dialog-main">
+          <div class="search-wrap">
+            <input id="indicator-search" type="text" placeholder="検索" autocomplete="off" />
+          </div>
+          <div id="indicator-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div><!-- /#mode-ui -->
+
+  <!-- lightweight-charts（global LightweightCharts）は unified_root.js が **アクティブモードの
+       prefix**（/live または /replay）から動的ロードする（🔴-1 隔離: 起動時に反対モード core へ
+       依存しない）。両 core とも vendor/lightweight-charts.js を配信するため active 側から取得できる。 -->
+  <script type="module" src="/js/unified_root.js"></script>
+</body>
+</html>

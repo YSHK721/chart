@@ -1,0 +1,8 @@
+# unified_ui 自己完結ハーネスのビルド/依存成果物（コミット対象外）。
+# 既存ルート .gitignore は無編集。本ファイルは unified_ui スコープ限定。
+web/node_modules/
+.pytest_cache/
+__pycache__/
+
+# lockfile は再現性のためコミット対象に戻す（ルート .gitignore の除外を上書き）。
+!web/package-lock.json
