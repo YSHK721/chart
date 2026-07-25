@@ -80,9 +80,15 @@ export class ReplayView {
   }
   // メイン系列の足を全置換（内部 fitContent を含む）。（renderer.setCandles）
   setCandles(candles) { this._renderer.setCandles(candles); }
-  // 最新足の足内更新（1 ティック）。（mainSeries.update）
+  // 最新足の足内更新（1 ティック）。ライブ同一設計: mainSeries.update 直呼びは renderer（＝
+  //   ChartRenderer の candle observer）を迂回し、価格legend（currentPriceView）が確定足リビール
+  //   （setCandles）でしか更新されず粒度が bar 単位に落ちる。ライブは足内 tick を renderer.updateLastCandle
+  //   経由で流し tick 毎に observer を発火させて凡例を追従させる（live_tick_player→CandleFeed.updateLastCandle）。
+  //   リプレイも同経路へ一本化し tick 粒度へ揃える。forming の time は常にリビール末尾足と同一のため
+  //   updateLastCandle の後退ガードに抵触せず、trim は replay では未使用（setCandles が毎リビールで
+  //   _lastTrimIdx=null）＝ガード非該当で従来同様に描画される。
   updateForming(bar) {
-    try { this._mainSeries.update(bar); } catch (_e) { /* noop */ }
+    try { this._renderer.updateLastCandle(bar); } catch (_e) { /* noop */ }
   }
 
   // ---- 減光境界（メイン＋全 pane を同一境界で同期） ---- //
