@@ -9,21 +9,34 @@
   <link id="mode-css" rel="stylesheet" href="/live/css/app.css" />
   <style>
     /* 統合層固有の最小スタイル（既存 css へ波及させないための局所定義）。 */
-    #unified-modebar { display: flex; gap: 8px; padding: 6px 10px; align-items: center; }
-    #unified-modebar .um-btn { cursor: pointer; }
-    #unified-modebar .um-btn.is-active { font-weight: 700; text-decoration: underline; }
     .um-mode-live #replay-bar { display: none; }
-    .um-mode-replay #live-follow-toggle { display: none; }
+    /* リプレイ中はライブ追従「ライブ」ボタンを消さず、グレーアウト＋操作不可にする
+       （UI 要素の増減による認知負荷を避ける＝両モードで同じ配置を保つ）。 */
+    .um-mode-replay #live-follow-toggle { opacity: .4; pointer-events: none; }
+    /* 「リプレイ」はオン・オフのトグル（両モードで常に表示）。リプレイモード選択中は
+       aria-pressed=true でアクセント青に点灯させ、どのモードかが一目で分かるようにする
+       （既存 css の tb-interval は id 指定でないと点灯しないため、ここで明示指定する）。 */
+    #enter-replay[aria-pressed="true"] { background: #2962ff; color: #fff; border-color: #2962ff; }
+
+    /* 再生バーのダークテーマ配色（参照実装 simulator/replay_ui/web/index.html の忠実移植）。
+       これが無いと再生バーのボタン/セレクトが既定の白ボタンになり、ライブと色が食い違う。 */
+    .replay-bar{display:flex;gap:8px;align-items:center;padding:6px 12px;background:#10141d;border-bottom:1px solid #2a2e39;flex-wrap:wrap;font-size:13px;color:#d1d4dc}
+    .replay-bar button,.replay-bar select{background:#1b2230;color:#d1d4dc;border:1px solid #2a2e39;border-radius:4px;padding:4px 9px;cursor:pointer}
+    .replay-bar .rp-badge{padding:2px 8px;border-radius:4px;background:#2962ff33;color:#7aa2ff;font-weight:600}
+    .replay-bar #rp-slider{flex:1;min-width:200px}
+    .replay-bar .rp-sep{width:1px;align-self:stretch;background:#2a2e39;margin:0 2px}
+    .replay-bar button.rp-disabled{opacity:.4;cursor:not-allowed}
+    .replay-bar #rp-play.rp-playing{background:#16a34a;color:#fff;border-color:#16a34a}
+    .replay-bar #rp-play{min-width:84px;text-align:center}
+    .replay-bar .on{outline:2px solid #2962ff}
+    #rp-presets{display:inline-flex;gap:4px}
+    #rp-presets .rp-preset{padding:3px 8px}
+    #rp-presets .rp-preset.on{background:#2962ff;color:#fff;border-color:#2962ff}
   </style>
 </head>
 <body class="um-mode-live">
-  <!-- 統合エントリ。モードトグル（Live / Replay）は unified_root.js が配線する。
-       #unified-modebar・#mode-error は teardown 対象外（永続・リスナは 1 回だけ配線）。 -->
-  <div id="unified-modebar">
-    <span>表示:</span>
-    <button id="mode-live" class="um-btn is-active" type="button">Live</button>
-    <button id="mode-replay" class="um-btn" type="button">Replay</button>
-  </div>
+  <!-- 統合エントリ。モード切替は #mode-ui 内ツールバーの「リプレイ」オン・オフトグル
+       （#enter-replay）で行う（unified_root.js が mount 毎に配線）。 -->
   <!-- フェイルクローズ用のエラー表示（🟡-3: SW 未制御／モード読込失敗を明示）。 -->
   <div id="mode-error" role="alert" style="display:none;padding:8px 10px;background:#7a1f1f;color:#fff"></div>
 
@@ -43,6 +56,10 @@
         <span class="ic">∿</span>
         <span class="lbl">インジケーター</span>
       </button>
+      <span class="tb-sep"></span>
+      <!-- リプレイのオン・オフトグル（両モードで表示。off=ライブ / on=リプレイ）。unified_root.js が
+           activeMode に応じて toggle し、aria-pressed で点灯状態を反映する。 -->
+      <button id="enter-replay" class="tb-interval" type="button" aria-pressed="false" title="リプレイ表示のオン・オフ">リプレイ</button>
     </div>
 
     <!-- リプレイ操作バー（replay モードのみ表示・live では CSS で非表示）。 -->

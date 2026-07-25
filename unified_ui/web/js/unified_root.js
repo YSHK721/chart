@@ -272,7 +272,9 @@ function clearModeError() {
   }
 }
 
-// ---- モード UI 反映（トグル active・css 切替・body クラス）--------------------
+// ---- モード UI 反映（css 切替・body クラス・リプレイトグル点灯）------------------
+//   body クラス um-mode-live / um-mode-replay が replay-bar / live-follow-toggle の表示を
+//   CSS で制御する。「リプレイ」トグルは両モードで表示し、aria-pressed で on/off を反映する。
 function applyModeUi(mode) {
   const css = document.getElementById('mode-css');
   if (css) {
@@ -280,13 +282,10 @@ function applyModeUi(mode) {
   }
   document.body.classList.toggle('um-mode-live', mode === MODE.LIVE);
   document.body.classList.toggle('um-mode-replay', mode === MODE.REPLAY);
-  const liveBtn = document.getElementById('mode-live');
-  const replayBtn = document.getElementById('mode-replay');
-  if (liveBtn) {
-    liveBtn.classList.toggle('is-active', mode === MODE.LIVE);
-  }
-  if (replayBtn) {
-    replayBtn.classList.toggle('is-active', mode === MODE.REPLAY);
+  // 「リプレイ」トグルの点灯状態（replay=on / live=off）。
+  const replayToggle = document.getElementById('enter-replay');
+  if (replayToggle) {
+    replayToggle.setAttribute('aria-pressed', mode === MODE.REPLAY ? 'true' : 'false');
   }
 }
 
@@ -332,6 +331,8 @@ async function toggle(nextMode) {
     applyModeUi(nextMode);
     try {
       current = await mount(nextMode, mod);
+      // pristine 復元で作り直された「リプレイ」トグル（#enter-replay）を再配線する。
+      wireModeSwitchButtons();
       clearModeError();
     } catch (err) {
       showModeError(`${nextMode} モードの初期化に失敗しました: ${err && err.message ? err.message : err}`);
@@ -372,15 +373,15 @@ async function registerServiceWorker() {
   return !!navigator.serviceWorker.controller;
 }
 
-// ---- トグルボタン配線（永続要素＝1 回だけ配線・teardown 対象外）---------------
-function wireToggleButtons() {
-  const liveBtn = document.getElementById('mode-live');
-  const replayBtn = document.getElementById('mode-replay');
-  if (liveBtn) {
-    liveBtn.addEventListener('click', () => toggle(MODE.LIVE));
-  }
-  if (replayBtn) {
-    replayBtn.addEventListener('click', () => toggle(MODE.REPLAY));
+// ---- リプレイ トグルボタン配線（#mode-ui 内＝mount 毎に新ノードへ再配線）--------
+//   「リプレイ」(#enter-replay) はオン・オフのトグル＝現モードに応じて反対モードへ切替える
+//   （live→replay / replay→live）。ツールバー内＝teardown の pristine 復元で作り直されるため
+//   mount 毎に再配線する（毎回新要素＝リスナ蓄積なし）。landing mount 前にも 1 回配線しておく
+//   ことで、landing core ダウンで mount に失敗しても反対モードへ切替できる（🟡-A: 隔離の非対称解消）。
+function wireModeSwitchButtons() {
+  const btn = document.getElementById('enter-replay');
+  if (btn) {
+    btn.addEventListener('click', () => toggle(activeMode === MODE.REPLAY ? MODE.LIVE : MODE.REPLAY));
   }
 }
 
@@ -402,9 +403,9 @@ async function main() {
     return;
   }
 
-  // トグルボタンは **mount 前** に配線する（🟡-A: landing core がダウンで初期 mount に失敗しても、
-  //   ユーザーは健全な反対モードへ切替できる＝隔離の非対称を解消）。永続要素＝1 回だけ配線。
-  wireToggleButtons();
+  // 切替ボタンは **landing mount 前** に配線する（🟡-A: landing core がダウンで初期 mount に失敗しても、
+  //   ユーザーは健全な反対モードへ切替できる＝隔離の非対称を解消）。以降は toggle 毎に mount 後へ再配線。
+  wireModeSwitchButtons();
   applyModeUi(activeMode);
   await notifySwMode(activeMode);
 
@@ -420,7 +421,7 @@ async function main() {
     if (!ok) {
       showModeError(
         `${activeMode} モードを起動できません（${activeMode} core 停止中の可能性・vendor 未取得）。`
-          + `上部トグルで反対モードへ切り替えてください。`,
+          + `ツールバーの「リプレイ」ボタンで反対モードへ切り替えてください。`,
       );
       return;
     }
@@ -429,7 +430,7 @@ async function main() {
       current = await mount(activeMode, mod);
     } catch (err) {
       showModeError(
-        `${activeMode} モードを起動できません（${activeMode} core 停止中の可能性・上部トグルで反対モードへ）: `
+        `${activeMode} モードを起動できません（${activeMode} core 停止中の可能性・ツールバーの「リプレイ」ボタンで反対モードへ）: `
           + `${err && err.message ? err.message : err}`,
       );
     }
