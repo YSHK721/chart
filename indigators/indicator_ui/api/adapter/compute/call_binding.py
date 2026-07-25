@@ -207,6 +207,17 @@ def _load_callable(indicator: str, attr: str) -> Callable:
     return getattr(lwc, attr)
 
 
+def profit_band_empty_bucket_error() -> type:
+    """profit_band src の ``EmptyBucketError`` 型を返す（LSP 是正・型識別用）。
+
+    profit_band src を一意パッケージ名で遅延ロードし専用例外型を返す。adapter はこの型で
+    ``isinstance`` 判定し、「必須バケット空(empty_series)」と「検証失敗(validation)」の二意味を
+    日本語メッセージ片照合でなく型で区別する。ロードは sys.modules キャッシュ済みのため、
+    invoke で送出された例外インスタンスの型と同一クラスオブジェクトを返す（isinstance が成立）。
+    """
+    return _load_src_package("profit_band").EmptyBucketError
+
+
 # tgp_btlm ソース 8 択化（kind-twirling-hollerith.md §4）。既存 4 択（open/high/low/close）は
 # 参照実装 build_btlm_bands が列名を直接参照する経路をそのまま使う（byte 不変）。合成 4 択
 # （hl2/hlc3/ohlc4/hlcc4）は本結線層が共有 applied_price で列を先に合成し、その列名を price
@@ -259,6 +270,10 @@ class _BindingSpec(TypedDict):
                   params → (archetype, min_window, trailing_k)。未宣言は安全既定へ落ちる。
     preprocess  : invoke 前の kw 変換フック（任意・ISSUE-097 🟡-7）。(df, kw) → kw。
                   未宣言（既定 None）は変換なし。invoke から指標名直判定を排するための昇格点。
+    time_required : time 列（time/date/DatetimeIndex）が必須か（任意・SOLID 是正 OCP-1）。
+                  True の指標で時刻解決に失敗した KeyError は missing_time へ翻訳される。
+                  未宣言（既定 False）の指標は missing_column 扱い。adapter のハードコード集合を
+                  廃し本宣言を唯一の真実源とする（time 必須指標の追加で adapter 本体を改変しない）。
     """
 
     loader: Callable[[], Callable]
@@ -267,6 +282,7 @@ class _BindingSpec(TypedDict):
     latest_meta: NotRequired[Callable[[dict[str, Any]], tuple[str, int | None, int | None]]]
     preprocess: NotRequired[Callable[[Any, dict[str, Any]], dict[str, Any]]]
     thread_affinity: NotRequired[str]
+    time_required: NotRequired[bool]
 
 
 # compute_id(+variant) → 規約。loader は import を遅延し、指標 src 同名衝突を回避する。
@@ -278,6 +294,8 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         #   未宣言の指標は純 numpy/pandas＝計算プールで並行実行してよい（SOLID 是正 🔴-3:
         #   スレッド親和性は HTTP 殻のハードコードでなく本テーブルの宣言で決まる）。
         "thread_affinity": "dedicated",
+        # line 系（時系列トレンド線/帯）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
+        "time_required": True,
     },
     ("btlm_trail", "default"): {
         "loader": lambda: _load_callable("btlm_trail", "add_btlm_trail"),
@@ -294,10 +312,13 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("profit_band", "global"): {
         "loader": lambda: _load_callable("profit_band", "add_profit_band"),
         "output_kind": "line", "kind": "kw",
+        # line 系（始値基準バンド）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
+        "time_required": True,
     },
     ("profit_band", "robust"): {
         "loader": lambda: _load_callable("profit_band", "add_robust_profit_band"),
         "output_kind": "line", "kind": "kw",
+        "time_required": True,
     },
     ("price_range_power", "default"): {
         "loader": lambda: _load_callable("price_range_power", "add_price_range_power"),
@@ -391,6 +412,22 @@ def requires_dedicated_worker(indicator_id: "str | None") -> bool:
         spec.get("thread_affinity") == "dedicated"
         for (cid, _variant), spec in _TABLE.items()
         if cid == indicator_id
+    )
+
+
+def requires_time(compute_id: "str | None") -> bool:
+    """指標が time 列（time/date/DatetimeIndex）を必須とするか（SOLID 是正 OCP-1・宣言参照）。
+
+    _TABLE の ``time_required: True`` 宣言を唯一の真実源とする（adapter は集合ハードコードでなく
+    本関数を呼ぶだけで指標名を知らない）。time 必須指標の追加時に adapter 本体の改変は不要。
+    未知 id・未宣言・空/None は False（missing_column 扱い）。いずれかの variant が True なら True。
+    """
+    if not compute_id:
+        return False
+    return any(
+        spec.get("time_required") is True
+        for (cid, _variant), spec in _TABLE.items()
+        if cid == compute_id
     )
 
 

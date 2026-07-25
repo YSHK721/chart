@@ -28,6 +28,17 @@ _BAND_SIGNS: dict[str, int] = {
 }
 
 
+class EmptyBucketError(ValueError):
+    """描画必須バケット(pOL/nOH/pOH/nOL)が空でバンド生成が不能な場合の例外。
+
+    ``ValueError`` のサブクラス（後方互換）: 既存の ``except ValueError`` /
+    ``pytest.raises(ValueError)`` はそのまま本例外を捕捉する。メッセージ・送出条件は従来と
+    同一で、型のみを特殊化する。結線層（indicator_ui の compute adapter）が「必須バケット空」
+    (empty_series) と「normalize 不正等の検証失敗」(validation) を、日本語メッセージ片照合でなく
+    *型* で識別できるようにするための専用型（LSP 是正）。
+    """
+
+
 def _percent_tag(probability: float) -> str:
     """0.51 -> '51'、0.99 -> '99' のように百分率表記へ変換する。"""
     return str(int(round(probability * 100)))
@@ -54,7 +65,7 @@ def build_bands(
 
     Raises:
         KeyError: 必須の OHLC 列が欠けている場合。
-        ValueError: require_full=True で必須バケットが空の場合。
+        EmptyBucketError: require_full=True で必須バケットが空の場合（ValueError サブクラス）。
     """
     cols = {c.lower(): c for c in df.columns}
     missing = [k for k in ("open", "high", "low", "close") if k not in cols]
@@ -72,7 +83,7 @@ def build_bands(
     if require_full:
         empty = [b for b in _BAND_SIGNS if np.isnan(quantiles[b]).all()]
         if empty:
-            raise ValueError(
+            raise EmptyBucketError(
                 f"バンド生成に必要なバケットが空です: {empty}。"
                 "対象データに該当する陽線/陰線が存在するか確認してください。"
             )
