@@ -7,7 +7,7 @@
 // Red: rewritePath は未実装で throw するため全ケース失敗。
 
 import { describe, test, expect } from 'vitest';
-import { rewritePath } from '../js/sw_rewrite.js';
+import { rewritePath, LIVE_ONLY_SEGMENTS } from '../js/sw_rewrite.js';
 
 describe('rewritePath', () => {
   // --- B1: live モードで API パスへ /live prefix 付与 ---
@@ -34,6 +34,22 @@ describe('rewritePath', () => {
       .toBe('/live/tf_period_profile?datasetRef=jp225_tick&timeframe=1D&from=1&to=2');
     // live モードでも当然 /live。
     expect(rewritePath('live', '/tf_period_profile?x=1')).toBe('/live/tf_period_profile?x=1');
+  });
+
+  // --- B2c: OCP 是正の表駆動回帰 — LIVE_ONLY_SEGMENTS の各セグメントはモード非依存で常に /live ---
+  test('all_live_only_segments_route_to_live_in_both_modes', () => {
+    expect(LIVE_ONLY_SEGMENTS.size).toBeGreaterThan(0);
+    for (const seg of LIVE_ONLY_SEGMENTS) {
+      for (const mode of ['live', 'replay']) {
+        expect(rewritePath(mode, `/${seg}`)).toBe(`/live/${seg}`);
+        expect(rewritePath(mode, `/${seg}?x=1`)).toBe(`/live/${seg}?x=1`);
+      }
+    }
+  });
+
+  test('live_only_table_matches_legacy_hardcode', () => {
+    // 従来 rewritePath 本体にハードコードしていた特例集合と表が完全一致＝振る舞い不変の回帰壁。
+    expect([...LIVE_ONLY_SEGMENTS].sort()).toEqual(['tf_period_profile']);
   });
 
   // --- B3: 既に prefix 付きは不変（二重付与しない）---
