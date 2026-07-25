@@ -25,6 +25,7 @@ const MODE = Object.freeze({ LIVE: 'live', REPLAY: 'replay' });
 const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';
 const REPLAY_CONTROLLER = '/replay/js/adapter/front/replay_indicator_controller.js';
 const REPLAY_DRIVER = '/replay/js/replay.js';
+const REPLAY_MP_ACTOR = '/replay/js/adapter/front/replay_market_profile_actor.js';
 
 let modeController = null; // createModeController の実体（トグルボタンが参照）。
 let lwcLoaded = false;
@@ -270,10 +271,12 @@ async function main() {
   let bootstrap;
   let ReplayIndicatorController;
   let setupReplay;
+  let ReplayMarketProfileActor;
   try {
     ({ bootstrap } = await import(LIVE_ROOT));
     ({ ReplayIndicatorController } = await import(REPLAY_CONTROLLER));
     ({ setupReplay } = await import(REPLAY_DRIVER));
+    ({ ReplayMarketProfileActor } = await import(REPLAY_MP_ACTOR));
   } catch (err) {
     showModeError(`モジュール読込に失敗しました: ${err && err.message ? err.message : err}`);
     return;
@@ -298,7 +301,16 @@ async function main() {
       setInterval: registry.setInterval,
       clearInterval: registry.clearInterval,
       // リプレイ層のオプション注入（live root はこの注入時のみリプレイを配線する）。
-      replay: { ReplayIndicatorController, setupReplay },
+      // リプレイ層のオプション注入（live root はこの注入時のみリプレイを配線する）。MP 単一化:
+      //   ReplayMarketProfileActor を単一 MP アクターとして注入し、isLiveMode で 3状態 to を切替える
+      //   （live→MP_TO_LATEST＝base byte 等価／replay→controller._untilTime＝pull-at-T）。アクター/chart は
+      //   1 回生成のみ＝toggle で getMpTo の返す to だけが live↔replay で切り替わる（再構築なし）。
+      replay: {
+        ReplayIndicatorController,
+        setupReplay,
+        ReplayMarketProfileActor,
+        isLiveMode: () => (modeController ? modeController.getMode() === MODE.LIVE : true),
+      },
     });
   } catch (err) {
     showModeError(`初期化に失敗しました: ${err && err.message ? err.message : err}`);

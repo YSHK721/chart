@@ -27,7 +27,7 @@ import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
 import { IndicatorController } from './indicator_controller.js';
 import { TradeMarkersRenderer } from './trade_markers_renderer.js';
-import { MarketProfileClient } from './market_profile_client.js';
+import { MarketProfileClient, MP_TO_LATEST } from './market_profile_client.js';
 import { MarketProfileFormingClient } from './market_profile_forming_client.js';
 import { DwellAccumulator } from '../../domain/market_profile_dwell_accumulator.js';
 import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
@@ -249,7 +249,11 @@ export async function bootstrap({
   const isTfPeriodTimeframe = (tf) => isPlayerTimeframe(tf) || tf === '1W' || tf === '1M';
   let refreshTfPeriodNow = () => {};
   let liveGrowTfPeriod = () => {};
-  const marketProfile = new MarketProfileActor({
+  // [統合レイヤ・MP 単一化] 未注入（standalone live）は base MarketProfileActor（無改変）。統合レイヤ注入時のみ
+  //   ReplayMarketProfileActor（3状態 to: LATEST=ライブ byte 等価／int=リプレイ pull-at-T／null=restore）で
+  //   生成する。opts は同一（base 継承＝tfPeriod hooks/formingClient/makeAccumulator をそのまま受ける）。
+  const MpActorCtor = (replay && replay.ReplayMarketProfileActor) || MarketProfileActor;
+  const marketProfile = new MpActorCtor({
     client: new MarketProfileClient({ fetch }),
     primitive: mpProfileSink,
     mainSeries,
@@ -287,6 +291,12 @@ export async function bootstrap({
         if (last && last.time != null) {
           ctx.to = last.time;
         }
+      }
+      // [統合レイヤ・MP 単一化] sessions 因果カーソルが to を立てなかった経路（normal 等）で、統合レイヤ注入時のみ
+      //   mode 連動 to を載せる。ライブ＝MP_TO_LATEST（client が clock 省略へ翻訳＝base byte 等価・実証済み）、
+      //   リプレイ＝controller._untilTime（int T＝pull-at-T）。standalone（未注入）は ctx.to 未設定のまま＝不変。
+      if (ctx.to == null && replay && typeof replay.isLiveMode === 'function') {
+        ctx.to = replay.isLiveMode() ? MP_TO_LATEST : controller._untilTime;
       }
       return ctx;
     },
@@ -605,14 +615,16 @@ export async function bootstrap({
   //   chart/mainSeries/controller/renderer を受けて再生ドライバの外殻ハンドル { enable, disable, destroy }
   //   を返す。統合レイヤは初期 live で即 disable()（untilTime=undefined＝live 等価）し、トグルで
   //   enable/disable する。chart は本 bootstrap の 1 回生成のみ（リプレイ層は同一 chart を共有＝再構築なし）。
-  //   MP は当面モード別アクター差替が対象外のため setupReplay へ marketProfile を渡さない（null）＝リプレイ
-  //   駆動フックが live MP を触らない（ライブ MP 挙動不変を最優先）。未注入（スタンドアロン）は呼ばない。
+  //   MP 単一化: setupReplay へ**単一 MP アクター**（上で ReplayMarketProfileActor を注入生成）を渡す。
+  //   ライブ（to=LATEST）は再生ドライバ非駆動（disable で playing=false＝render/animate 停止）＝mpDriver 不発火で
+  //   base 経路のみ。リプレイ（to=int T）は再生中に mpDriver が push 駆動（standalone replay と同一・onLiveTick の
+  //   int 経路は isGrowingPush で no-op＝二重駆動なし）。未注入（standalone live）は呼ばない。
   let replayHandle = null;
   if (replay && typeof replay.setupReplay === 'function') {
     replayHandle = await replay.setupReplay({
       chart, mainSeries, controller, renderer,
       datasetRef, recentBars, document: doc, fetchImpl: fetch,
-      marketProfile: null,
+      marketProfile,
     });
   }
 

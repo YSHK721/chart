@@ -468,3 +468,64 @@ test('bootstrap: 時間足切替で tf-period 列を即時再適用する（旧 
   controller._timeframeObserver && controller._timeframeObserver('1W');
   assert.ok(refreshes >= 1, 'tf 切替で tf-period を即時再適用する');
 });
+
+// ===========================================================================
+// MP 単一化（統合レイヤ配線）: replay 注入時のみ MP アクターを ReplayMarketProfileActor へ差し替え、
+//   getContext().to を mode 連動（ライブ=MP_TO_LATEST＝clock省略＝base byte 等価／リプレイ=untilTime）に
+//   する。未注入（standalone live）は base のまま＝上の 742 テスト群で byte 不変を担保。
+// ===========================================================================
+
+test('bootstrap(replay注入): MP アクターを差し替え、ライブ(isLiveMode=true)は getContext().to=MP_TO_LATEST', async () => {
+  const { IndicatorController } = await import('../js/adapter/front/indicator_controller.js');
+  const { MP_TO_LATEST } = await import('../js/adapter/front/market_profile_client.js');
+  const { lwc } = fakeLwc();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  let capturedGetContext = null;
+  class StubMpActor {
+    constructor(opts) { capturedGetContext = opts.getContext; }
+    isSessions() { return false; }
+    setEnabled() {} isEnabled() { return false; }
+  }
+  const { marketProfile, ready } = await bootstrap({
+    lwc, container: fakeContainer(), doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    replay: {
+      // 派生の代わりに base IndicatorController で bootstrap を成立させる（controller._timeframe 等を使用）。
+      ReplayIndicatorController: IndicatorController,
+      ReplayMarketProfileActor: StubMpActor,
+      setupReplay: async () => ({ enable() {}, disable() {}, destroy() {} }),
+      isLiveMode: () => true,
+    },
+  });
+  await ready;
+  assert.ok(marketProfile instanceof StubMpActor, '注入時は単一 MP アクター（ReplayMarketProfileActor 相当）へ差し替える');
+  assert.equal(capturedGetContext().to, MP_TO_LATEST, 'ライブ（isLiveMode=true）は to=MP_TO_LATEST（clock 省略＝base byte 等価）');
+});
+
+test('bootstrap(replay注入): リプレイ(isLiveMode=false)は getContext().to=controller._untilTime（int T＝pull-at-T）', async () => {
+  const { IndicatorController } = await import('../js/adapter/front/indicator_controller.js');
+  const { lwc } = fakeLwc();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  let capturedGetContext = null;
+  let theController = null;
+  // controller._untilTime を後から差せるよう、bootstrap が生成した controller を捕捉する派生を注入する。
+  class CapturingController extends IndicatorController {
+    constructor(opts) { super(opts); theController = this; }
+  }
+  class StubMpActor {
+    constructor(opts) { capturedGetContext = opts.getContext; }
+    isSessions() { return false; }
+    setEnabled() {} isEnabled() { return false; }
+  }
+  const { ready } = await bootstrap({
+    lwc, container: fakeContainer(), doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    replay: {
+      ReplayIndicatorController: CapturingController,
+      ReplayMarketProfileActor: StubMpActor,
+      setupReplay: async () => ({ enable() {}, disable() {}, destroy() {} }),
+      isLiveMode: () => false, // リプレイ
+    },
+  });
+  await ready;
+  theController._untilTime = 1704074400; // リプレイの現在時刻 T
+  assert.equal(capturedGetContext().to, 1704074400, 'リプレイは to=controller._untilTime（pull-at-T）');
+});
