@@ -53,7 +53,13 @@
       <label title="再生速度（1.00=最速。小さいほど遅い＝観察用）">速度<input id="rp-speed" type="range" min="0" max="1" step="0.01" value="1" style="vertical-align:middle;width:90px" /><span id="rp-speed-val" style="display:inline-block;min-width:2.6em;text-align:right">1.00</span></label>
       <span id="rp-speed-presets"></span>
       <span id="rp-eta" title="完了予想時間（残り足 × 実測の1足あたり所要）">完了予想 —</span>
-      <label title="最新足を足内で更新する方法（MT5 モデリング相当）">最新足更新<select id="rp-mode"></select></label>
+      <label title="最新足を足内で更新する方法（MT5 モデリング相当）">最新足更新<select id="rp-mode">
+        <option value="real_ticks">実ティック</option>
+        <option value="every_tick">全ティック合成</option>
+        <option value="ohlc_1min" selected>1分OHLC</option>
+        <option value="open_only">始値のみ</option>
+        <option value="math">数学計算(終値)</option>
+      </select></label>
       <button id="rp-follow">再生追従</button>
       <button id="rp-view-left" title="チャート表示を左端へスクロール（再生位置は変えない）">⇤ 表示左端</button>
       <button id="rp-view-right" title="チャート表示を右端へスクロール（再生位置は変えない）">表示右端 ⇥</button>
