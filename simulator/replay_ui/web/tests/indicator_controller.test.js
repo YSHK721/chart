@@ -436,9 +436,9 @@ test('MP apply: setEnabled(true)+setParams and enterBar(current bar T), never to
   // Assert: actor を有効化（setEnabled(true)）＋現在バーで即 enterBar（base 描画）。
   assert.deepEqual(marketProfile.calls.setEnabled, [true]);
   assert.deepEqual(marketProfile.calls.enter, [1704074400], '現在バー T で即 enterBar');
-  // setParams で bins/va を渡す（effective 経路）。
+  // setParams で dispbp/va を渡す（effective 経路。旧 bins/range は ISSUE-079 で dispbp へ一本化）。
   assert.equal(marketProfile.calls.params.length, 1);
-  assert.equal(marketProfile.calls.params[0].bins, '60');
+  assert.equal(marketProfile.calls.params[0].dispbp, 3);
   assert.equal(marketProfile.calls.params[0].va, 0.70);
   // /compute へは一切流さない（MP は forming 委譲）。
   const mpCompute = computeCalls.filter((r) => r.indicatorId === 'market_profile');

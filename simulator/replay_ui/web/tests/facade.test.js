@@ -26,10 +26,10 @@ import { AppliedInstance } from '../js/domain/domain_models.js';
 // UC-01 listForView（タブ∧カテゴリ∧検索∧お気に入りの論理積 §4.6）
 // ===========================================================================
 
-test('UC-01 listForView: empty filter returns all 20', () => {
-  // 空フィルタ（tab 指定なし）は全指標を返す＝既存19 + market_profile（プロファイルタブ）= 20。
+test('UC-01 listForView: empty filter returns all 23', () => {
+  // 空フィルタ（tab 指定なし）は全指標を返す＝既存22（indicator） + market_profile（プロファイルタブ）= 23。
   const result = listForView({});
-  assert.equal(result.length, 20);
+  assert.equal(result.length, 23);
 });
 
 test('UC-01 listForView: filters by query (id/display partial, case-insensitive)', () => {
@@ -45,10 +45,10 @@ test('UC-01 listForView: filters by category conjunctively', () => {
 });
 
 test('UC-01 listForView: filters by tab', () => {
-  // 既存19指標は tab=indicator なので strategy では 0 件。market_profile は tab=profile ゆえ
-  //   indicator タブには出ない（19 のまま＝既存タブ内訳は不変・追加は profile タブ）。
+  // 既存22指標は tab=indicator なので strategy では 0 件。market_profile は tab=profile ゆえ
+  //   indicator タブには出ない（22＝btlm_trail/btlm_trail_marod/ma_marod 追加後・追加は profile タブなし）。
   assert.equal(listForView({ tab: 'strategy' }).length, 0);
-  assert.equal(listForView({ tab: 'indicator' }).length, 19);
+  assert.equal(listForView({ tab: 'indicator' }).length, 22);
   // market_profile は profile タブに 1 件だけ現れる（present-mode と同導線）。
   assert.equal(listForView({ tab: 'profile' }).length, 1);
 });

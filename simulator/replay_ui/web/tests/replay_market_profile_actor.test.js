@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { ReplayMarketProfileActor } from '../js/adapter/front/replay_market_profile_actor.js';
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
 import { DwellAccumulator } from '../js/domain/market_profile_dwell_accumulator.js';
+import { sessionDayStart } from '../js/domain/session_day.js';
 
 const BASE_FULL = {
   ok: true, formingStart: 1000, ticks: [],
@@ -158,7 +159,7 @@ test('enterBar is a no-op when NOT ticklive (self-guard — existing render hook
 //   from を「絞った窓」min(当日始まり, formingStart) へ戻す（ユーザー確定）。日中足は当日始端が base 下限。
 test('_buildFormingArgs merges now(=getContext().to) and delegates from to GrowthWindow (normal→絞った窓 当日始端)', () => {
   const to = 1782985000; // 日途中
-  const daySt = Math.floor(to / 86400) * 86400; // 当日始端
+  const daySt = sessionDayStart(to); // 当日始端（セッション日=NY17:00 ET 基準・ISSUE-078）
   const { actor } = makeActor({ formingClient: fakeFormingClient([BASE_FULL]), makeAccumulator: fakeAccumulatorFactory().make, ctxTo: to });
   actor.setParams({ mode: 'ticklive', bins: '30', va: 0.9 });
   // Act
@@ -191,9 +192,9 @@ test('_buildFormingArgs preserves an explicit from over GrowthWindow (backward-c
 //   GrowthWindow(ctxTo) 由来（getCandles 由来ではない）であることを検証する。 ---
 test('replay override wins: base present-window (getCandles) does NOT leak into replay _buildFormingArgs from', () => {
   const to = 1782985000;                       // 因果 T（replay の getContext().to）
-  const daySt = Math.floor(to / 86400) * 86400; // GrowthWindow(normal,1h,to) 由来の当日始端
+  const daySt = sessionDayStart(to); // GrowthWindow(normal,1h,to) 由来の当日始端（セッション日）
   const candleNow = to - 10 * 86400;            // getCandles 由来（base が使う）を別日に置く
-  const candleDaySt = Math.floor(candleNow / 86400) * 86400;
+  const candleDaySt = sessionDayStart(candleNow);
   assert.notEqual(candleDaySt, daySt, '前提: getCandles 由来の当日始端は GrowthWindow(ctxTo) と別日');
   const actor = new ReplayMarketProfileActor({
     primitive: fakePrimitive(),
@@ -319,15 +320,17 @@ test('regression: setEnabled(true) during growing push does NOT fetch all-period
   const client = fakeClient();
   const forming = fakeFormingClient([BASE_FULL]);
   const { actor } = makeActor({ formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make, client, ctxTo: now });
-  actor.setParams({ mode: 'normal' });
+  actor.setParams({ mode: 'normal', src: 'dwell' }); // 増分 src（ISSUE-120: 既定 src=zp は非増分ゆえ forming 経路対象外）
   actor.applyGrowthState({ growing: true }); // reveal は常時 growing（composition mpGrowthResolver=()=>true 相当）
   const fetchBefore = client.calls.length;
-  // Act: MP 有効化（indicator メニュー applyIndicator→setEnabled(true) 経路）。
+  // Act: MP 有効化（applyIndicator→setEnabled(true)）＋再生 1 フレーム目相当の enterBar。
+  //   reveal の pull/push 分離（ISSUE-127/129）: growing push では setEnabled の onLiveTick は no-op で、
+  //   最初の描画は enterBar（因果 base）が駆動する（完成形フラッシュを描かない）。
   await actor.setEnabled(true);
-  // Assert: 基底 setEnabled の refresh（全期間）は growing push override で forming（因果 base）へ転送され、
-  //   全期間 fetchProfile（未来リーク・完成形フラッシュ）を一切呼ばない。
-  assert.equal(client.calls.length, fetchBefore, 'growing push の setEnabled は全期間 fetchProfile を呼ばない（完成形フラッシュ無し）');
-  assert.ok(forming.calls.length >= 1, 'setEnabled は forming（因果 base）で描く');
+  await actor.enterBar(now);
+  // Assert: 全期間 fetchProfile（未来リーク・完成形フラッシュ）を一切呼ばない。
+  assert.equal(client.calls.length, fetchBefore, 'growing push は全期間 fetchProfile を呼ばない（完成形フラッシュ無し）');
+  assert.ok(forming.calls.length >= 1, '最初の描画は enterBar の forming（因果 base）');
 });
 
 // --- 再発報告（restore 経路）: index.html は controller.restore() を setupReplay()（＝untilTime を設定する
@@ -361,7 +364,7 @@ test('regression(restore flash): refresh during growing push with cursor unset (
 //   非空テストにする（全期間 profile が描かれた瞬間に fail）。 ---
 test('regression(recurring flash): start sequence never draws the all-period (completed) profile; first draw is the causal forming base', async () => {
   const now = 1782985000;
-  const daySt = Math.floor(now / 86400) * 86400;
+  const daySt = sessionDayStart(now);
   // 全期間 refresh の描画を一意マーカーで識別する（描かれたら完成足フラッシュ＝bug 再発）。
   const ALL_PERIOD = { __allPeriod: true, poc: 12345, bins: [] };
   const client = fakeClient(ALL_PERIOD);
@@ -372,10 +375,12 @@ test('regression(recurring flash): start sequence never draws the all-period (co
     formingClient: forming, makeAccumulator: fakeAccumulatorFactory().make,
     client, primitive, ctxTo: now,
   });
-  actor.setParams({ mode: 'normal' });
+  actor.setParams({ mode: 'normal', src: 'dwell' }); // 増分 src（ISSUE-120: 既定 src=zp は非増分ゆえ forming 経路対象外）
   actor.applyGrowthState({ growing: true }); // reveal は常時 growing。
-  // Act: MP 有効化（applyIndicator→setEnabled(true) の開始シーケンス）。
+  // Act: MP 有効化（applyIndicator→setEnabled(true)）＋再生 1 フレーム目相当の enterBar（reveal 駆動点）。
+  //   growing push では setEnabled の onLiveTick は no-op（pull/push 分離）ゆえ、開始形は enterBar が描く。
   await actor.setEnabled(true);
+  await actor.enterBar(now);
   // Assert 1: 全期間プロファイル（完成足フラッシュ）を一度も描かない（誤シーケンスが起きたら fail）。
   const drewAllPeriod = primitive.profiles.some((p) => p && p.__allPeriod === true);
   assert.equal(drewAllPeriod, false, '開始シーケンスで全期間 as-of プロファイル（完成足）を setProfile しない');
@@ -389,7 +394,7 @@ test('regression(recurring flash): start sequence never draws the all-period (co
 //   （controller seam / gear 経路）。primary は上の explicit-from（replayStart）テストが固定する。 ---
 test('enterBar (ticklive, no explicit from) falls back to GrowthWindow today-window: base=1/src=dwell/now=T/from=当日始端', async () => {
   const now = 1782985000;
-  const daySt = Math.floor(now / 86400) * 86400; // 当日始端
+  const daySt = sessionDayStart(now); // 当日始端（セッション日）
   const forming = fakeFormingClient([BASE_FULL]);
   const facc = fakeAccumulatorFactory();
   const { actor, primitive } = makeActor({ formingClient: forming, makeAccumulator: facc.make, ctxTo: now });
