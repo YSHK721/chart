@@ -55,6 +55,14 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   let activeSecs = null;
   let activePeriodBars = null;
 
+  // [統合レイヤ外殻] live 既定の計算窓（disable で復帰させる基準）。DOM リスナ／monkey-patch の
+  //   解除記録（destroy で原状復帰）。いずれも「駆動の停止／解除／リスナ解除」の外殻であり、
+  //   render/animateForming/値算出には一切関与しない（計算ロジック無改変）。
+  const liveDefaultRecentBars = controller._recentBars;
+  const disposers = [];
+  const patched = [];
+  let wasEnabled = false; // enable() 済み（＝reveal トリムが起きうる）か。disable の全長復帰の発火条件。
+
   const syncBoundary = () => view.syncBoundary({ replayStart, candles });
 
   // MP normal 成長の base 累積下限（UNIX 秒）= 再生開始点 replayStart のバー時刻。
@@ -74,6 +82,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   for (const name of ['applyIndicator', 'removeInstance']) {
     const orig = (typeof controller[name] === 'function') ? controller[name].bind(controller) : null;
     if (!orig) continue;
+    // 原状復帰のため、置換前の own プロパティ有無と値を記録する（destroy で復元）。
+    const hadOwn = Object.prototype.hasOwnProperty.call(controller, name);
+    const prev = controller[name];
+    patched.push({ name, hadOwn, prev });
     controller[name] = (...a) => {
       const r = orig(...a);
       if (r && typeof r.then === 'function') return r.then((v) => { syncBoundary(); return v; });
@@ -307,8 +319,11 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     rescheduleFrameWait();
   }
   view.el('rp-speed').addEventListener('input', syncSpeedUI);
+  disposers.push(() => { const e = view.el('rp-speed'); if (e) e.removeEventListener('input', syncSpeedUI); });
   for (const b of view.speedPresets()) {
-    b.addEventListener('click', () => { view.writeSpeed(b.dataset.spd); syncSpeedUI(); });
+    const onSpeedPreset = () => { view.writeSpeed(b.dataset.spd); syncSpeedUI(); };
+    b.addEventListener('click', onSpeedPreset);
+    disposers.push(() => b.removeEventListener('click', onSpeedPreset));
   }
 
   // Market Profile の有効化は indicator メニュー（controller.applyIndicator('market_profile')）へ
@@ -360,12 +375,14 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   が所有する（ISSUE-133 SRP）。以下 animateForming は mpDriver.onFormingTick / settleMath / settleBar
   //   へ委譲する（await 順序・coalesce 意味論は抽出前と同一）。
   let pausedForm = null;
-  view.el('rp-mode').addEventListener('change', () => {
+  const onModeChange = () => {
     animGen++;          // 実行中の形成を supersede
     pausedForm = null;
     emaPeriodMs = null;
     setEta();
-  });
+  };
+  view.el('rp-mode').addEventListener('change', onModeChange);
+  disposers.push(() => { const e = view.el('rp-mode'); if (e) e.removeEventListener('change', onModeChange); });
   async function animateForming(shouldAbort, resume) {
     if (!candles.length) return;
     const cd = candles[bar];
@@ -470,9 +487,18 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   トリガー（.tb-interval のみ・tf 属性なし）と項目（data-timeframe のみ）に分離されたため、
   //   .tb-interval 選択ではトリガーに誤結線し loadTimeframe(undefined) が走る（ISSUE-142）。
   for (const btn of doc.querySelectorAll('[data-timeframe]')) {
-    btn.addEventListener('click', () => setTimeout(() => loadTimeframe(btn.dataset.timeframe), 60));
+    const onTf = () => setTimeout(() => loadTimeframe(btn.dataset.timeframe), 60);
+    btn.addEventListener('click', onTf);
+    disposers.push(() => btn.removeEventListener('click', onTf));
   }
   view.bindManualBrowse(() => { autoFrame = false; });
+  // onclick/oninput 代入系（rp-play/next/prev/view-left/view-right/slider/follow）を destroy で解除する。
+  disposers.push(() => {
+    for (const id of ['rp-play', 'rp-next', 'rp-prev', 'rp-view-left', 'rp-view-right', 'rp-follow']) {
+      const e = view.el(id); if (e) e.onclick = null;
+    }
+    const sl = view.el('rp-slider'); if (sl) sl.oninput = null;
+  });
 
   // ---- 起動 ----
   window.__rpChart = view.chart();
@@ -481,4 +507,68 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   window.__rpAuto = () => autoFrame;
   await loadTimeframe(controller._timeframe);
   window.__rpReady = true;
+
+  // ---- モード外殻ハンドル（統合レイヤ用・計算ロジックは無改変） --------------------
+  //   単一 mount の統合レイヤが「リプレイ層」をオン・オフするための最小外殻。駆動の停止／
+  //   untilTime の解除／計算窓の復帰／リスナ・monkey-patch の解除のみを担い、render/
+  //   animateForming/値算出には一切触れない。
+  //   - disable(): 再生停止＋in-flight を supersede＋settleFrameWait＋untilTime=undefined
+  //                （ライブ等価・compute gate 不送信）＋_recentBars を live 既定へ復帰。
+  //   - enable():  現在バー T を untilTime に設定し、計算窓をリビール範囲へ（:128-129 相当）。
+  //   - destroy(): disable() ＋追加 DOM リスナ解除＋applyIndicator/removeInstance の monkey-patch を復元。
+  async function disable() {
+    playing = false;
+    generation += 1; // in-flight render を supersede（isStale で破棄させる）
+    animGen += 1;    // in-flight animateForming を supersede（isSuperseded で破棄させる）
+    view.setPlayLabel('▶ 再生');
+    view.setPlaying(false);
+    settleFrameWait();                              // フレーム待機を即解除
+    controller.setUntilTime(undefined);             // ライブ等価（undefined＝!==undefined gate で不送信）
+    controller._recentBars = liveDefaultRecentBars; // 計算窓を live 既定へ復帰
+    // reveal トリム未発生（初期 mount 等・enable 未経由）なら全長復帰は不要＝軽量停止のみ。
+    if (!wasEnabled) {
+      return;
+    }
+    wasEnabled = false;
+    // reveal 表示解除: render() が view.setCandles(candles.slice(0,bar+1)) で切り詰めたメイン系列と、
+    //   revealTo(t) で切り詰めた指標を、**ライブ全長**へ戻す。再構築ではなく既存 API での再描画:
+    //   (1) ライブ全長 candles を再取得（fetchCandles＝既存経路）→ driver 状態も現在へ同期（次 enable の
+    //       陳腐化防止）、(2) view.setCandles(full)＝renderer.setCandles で全置換＋内部 fitContent＋_lastBar
+    //       復帰（現在値 observer がライブ末尾値へ更新）、(3) controller.recomputeAllApplied({mode:'full'})
+    //       ＝base（live と同一）入口で untilTime=undefined のまま全指標を全長再描画。値算出は無改変。
+    try {
+      const live = await fetchCandles(controller._timeframe);
+      if (live && live.length) {
+        candles = live;
+        bar = candles.length - 1;
+        replayStart = 0; activeSecs = null; activePeriodBars = null; autoFrame = true;
+        view.setSliderBounds(0, Math.max(0, candles.length - 1));
+        view.setSliderValue(bar);
+        view.setCandles(candles); // 全長表示（内部 fitContent・_lastBar＝ライブ末尾へ復帰）
+        syncBoundary();           // 減光境界を全長（末尾）へ＝リプレイ減光の消去
+      }
+      await controller.recomputeAllApplied({ mode: 'full' }); // 指標を live 全長で再描画
+    } catch (_e) {
+      // 復帰の取得/再計算失敗は次の live poller（LiveUpdater 等）が回復する（描画は止めない）。
+    }
+  }
+  async function enable() {
+    wasEnabled = true;
+    // 現在の live データから再取得して present（最新足）へ駆動する（＝リプレイ現在バー＝ライブ最新）。
+    //   loadTimeframe は既存の入口（fetch＋slider/preset 同期＋drive(present)）で、drive→render が
+    //   :128-129（setUntilTime(現在バー)＋_recentBars=bar+1）を確立する。値算出・分岐は無改変。
+    await loadTimeframe(controller._timeframe);
+  }
+  function destroy() {
+    disable();
+    for (const off of disposers) { try { off(); } catch (_e) { /* noop */ } }
+    disposers.length = 0;
+    for (const { name, hadOwn, prev } of patched) {
+      if (hadOwn) { controller[name] = prev; }
+      else { try { delete controller[name]; } catch (_e) { controller[name] = prev; } }
+    }
+    patched.length = 0;
+  }
+
+  return { enable, disable, destroy };
 }
