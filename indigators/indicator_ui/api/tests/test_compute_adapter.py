@@ -412,6 +412,37 @@ def test_adapter_required_bucket_empty_translates_to_empty_series():
     assert exc.value.error_type == "empty_series"
 
 
+def test_profit_band_value_error_translation_is_type_based_not_message_based():
+    # LSP 是正 LSP-3: 翻訳は EmptyBucketError 型で識別する（日本語メッセージ片照合ではない）。
+    from adapter.compute.call_binding import profit_band_empty_bucket_error
+    from adapter.compute.indicator_compute_adapter import (
+        _translate_profit_band_value_error,
+    )
+
+    empty_bucket_cls = profit_band_empty_bucket_error()
+    assert issubclass(empty_bucket_cls, ValueError)  # 後方互換（サブクラス）
+
+    # 型が EmptyBucketError → empty_series（メッセージに "バケット" が無くても型で判定）。
+    got_empty = _translate_profit_band_value_error(empty_bucket_cls("必須系統なし"))
+    assert got_empty.error_type == "empty_series"
+
+    # 素の ValueError（型が EmptyBucketError でない）→ validation。
+    #   従来のメッセージ照合なら "バケット" を含めば empty_series になったが、型判定では validation。
+    got_validation = _translate_profit_band_value_error(ValueError("バケットという語を含むが型は素の ValueError"))
+    assert got_validation.error_type == "validation"
+
+
+def test_adapter_profit_band_robust_invalid_normalize_translates_to_validation():
+    # robust 経路の normalize 不正（EmptyBucketError ではない素の ValueError）→ validation。
+    adapter = IndicatorComputeAdapter()
+    df = _ohlcv(60)
+    with pytest.raises(ComputeError) as exc:
+        adapter.compute("profit_band", "robust", df,
+                        {"probabilities": (0.99,), "buckets": ("pOL",),
+                         "min_obs": 5, "normalize": "zscore"})
+    assert exc.value.error_type == "validation"
+
+
 def test_adapter_tgp_fitter_without_rpy2_translates_to_backend_unavailable(monkeypatch):
     # Arrange: tgp バックエンド不在を再現 → ImportError を backend_unavailable へ翻訳
     _patch_tgp_unavailable(monkeypatch)

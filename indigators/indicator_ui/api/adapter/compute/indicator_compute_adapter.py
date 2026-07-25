@@ -11,14 +11,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from adapter.compute.call_binding import CallBinding
+from adapter.compute.call_binding import (
+    CallBinding,
+    profit_band_empty_bucket_error,
+    requires_time,
+)
 from adapter.compute.fake_chart import FakeChart
 
 # 必須 OHLC 列（全 3 指標共通。ComputeEntry.required_columns と一致・§3.1.3）。
 _REQUIRED_COLUMNS = ("open", "high", "low", "close")
 
-# time が必須な compute_id（line 系。price_range_power は価格軸分布で time 非必須・§3.1.3）。
-_TIME_REQUIRED = {"tgp_btlm", "profit_band"}
+# time 必須の判定は call_binding._TABLE の per-指標宣言（``time_required``）を唯一の真実源とし、
+# ``requires_time(compute_id)`` で参照する（SOLID 是正 OCP-1: 従来の adapter ハードコード集合
+# ``{"tgp_btlm", "profit_band"}`` を廃止。time 必須指標を増やしても本 adapter は改変不要）。
 
 # error.type → HTTP ステータス対応（§6.3.4 / §7.4）の単一定義は中立共有パッケージ
 #   api_shared.http_contract へ移設（ISSUE-094 🔵-11: HTTP 契約の所有者は配信殻であり
@@ -44,28 +49,28 @@ def _has_columns(df: Any) -> bool:
 
 
 # =========================================================================== #
-# profit_band 専用の例外翻訳境界（ISSUE-098 🟡-5・LSP）
+# profit_band 専用の例外翻訳境界（ISSUE-098 🟡-5・LSP 是正 LSP-3）
 #
-# profit_band は「必須バケット空」(empty_series) と「normalize 不正」(validation) の双方を
-# *同じ* 素の ``ValueError`` 型で投げる（bands.build_bands(require_full=True)→ValueError・
-# profit_band/src/bands.py:75／robust_bands.py:140）。既存 src は read-only（改変禁止）で
-# 型・属性による区別ができないため、profit_band に限り message を最小照合する。他の指標
-# プラグインは「型で識別可能な例外」という暗黙契約に沿うため照合不要。
+# profit_band は「必須バケット空」(empty_series) と「normalize 不正等」(validation) を区別して
+# 翻訳する必要がある。従来は双方が素の ``ValueError`` だったため日本語メッセージ片 "バケット" を
+# 照合していたが、profit_band src に専用型 ``EmptyBucketError``（ValueError サブクラス・後方互換）
+# を導入し、本境界は *型* で識別する（bands.build_bands(require_full=True)→EmptyBucketError・
+# profit_band/src/bands.py／normalize 不正は素の ValueError・robust_bands.py:140）。
+# メッセージ片への依存を排し、送出条件・ユーザ向けメッセージ・HTTP ステータスは従来と同一。
 #
-# LSP 是正: この profit_band 固有知識（指標名 "profit_band"・日本語メッセージ片 "バケット"）を
-# 本境界 1 箇所に閉じ込め、汎用計算経路（compute / _translate_value_error）からは指標名も
-# 日本語片も参照しない。汎用経路は _VALUE_ERROR_TRANSLATORS への登録有無だけで一様に扱う。
-# なお「空入力」由来の ValueError（bands.py:65 / core.py:75 の "空です"）は compute 冒頭の
-#   ``len(df) == 0`` pre-check で確定済みのため invoke 後には到達せず、ここでは扱わない。
-_BUCKET_EMPTY_MARKER = "バケット"
+# LSP 是正: この profit_band 固有知識（指標名 "profit_band"・型 EmptyBucketError）を本境界 1 箇所に
+# 閉じ込め、汎用計算経路（compute / _translate_value_error）からは指標名も型も参照しない。汎用経路は
+# _VALUE_ERROR_TRANSLATORS への登録有無だけで一様に扱う。なお「空入力」由来の ValueError（core.py の
+# "空です"）は compute 冒頭の ``len(df) == 0`` pre-check で確定済みのため invoke 後には到達しない。
 
 
 def _translate_profit_band_value_error(exc: ValueError) -> ComputeError:
-    """profit_band の素 ValueError を二意味（empty_series / validation）へ翻訳する。
+    """profit_band の ValueError を二意味（empty_series / validation）へ翻訳する。
 
-    message 照合（"バケット"）はこの境界の内側にのみ存在する。
+    型識別（``EmptyBucketError``）はこの境界の内側にのみ存在する。EmptyBucketError は
+    ValueError サブクラスのため、既存の except ValueError 経路（compute）はそのまま捕捉する。
     """
-    if _BUCKET_EMPTY_MARKER in str(exc):
+    if isinstance(exc, profit_band_empty_bucket_error()):
         return ComputeError("empty_series", str(exc))
     return ComputeError("validation", str(exc))
 
@@ -94,10 +99,10 @@ def _translate_key_error(compute_id: str, exc: KeyError) -> ComputeError:
     """invoke 中の KeyError を error.type へ翻訳する（§7.4）。
 
     OHLC 列は compute 冒頭で確認済みのため、ここでの KeyError は time 必須指標での時刻解決
-    失敗（missing_time）か、それ以外の列解決失敗（missing_column）。判定は time 必須カテゴリ
-    集合（_TIME_REQUIRED）の membership のみで、日本語メッセージ片には依存しない。
+    失敗（missing_time）か、それ以外の列解決失敗（missing_column）。判定は _TABLE の per-指標
+    宣言（``requires_time``）のみで、日本語メッセージ片には依存しない。
     """
-    if compute_id in _TIME_REQUIRED:
+    if requires_time(compute_id):
         return ComputeError("missing_time", str(exc))
     return ComputeError("missing_column", str(exc))
 

@@ -29,6 +29,14 @@ function isApiSegment(segment) {
   return API_SEGMENTS.has(segment) || segment.startsWith('market_profile');
 }
 
+// ライブ core 専用セグメント（replay core=serve_replay 未実装＝/replay だと 404）。
+//   応答は mode 非依存（完成期間の履歴プロファイル）ゆえアクティブモードに関わらず常にライブ core へ回す。
+//   OCP 是正: 従来 rewritePath 本体にハードコードしていた ``segment === 'tf_period_profile'`` 特例を
+//   本ルーティング表へ外出しし、本体は表参照で分岐する（ライブ専用 API 追加時に本体を改変しない）。
+export const LIVE_ONLY_SEGMENTS = new Set([
+  'tf_period_profile',
+]);
+
 /**
  * @param {'live'|'replay'} mode アクティブモード
  * @param {string} path ブラウザが出すリクエストパス（root 相対 or 絶対 URL）
@@ -59,10 +67,9 @@ export function rewritePath(mode, path) {
   if (!isApiSegment(segment)) {
     return path;
   }
-  // tf_period_profile はライブ core 専用エンドポイント（replay core=serve_replay は未実装＝/replay だと 404）。
-  //   応答は完成期間の履歴プロファイル（mode 非依存）ゆえ、アクティブモードに関わらず常にライブ core へ回す。
-  //   これが無いと「日別プロファイル」がリプレイ中に 404 で描画されない。
-  if (segment === 'tf_period_profile') {
+  // ライブ core 専用セグメント（LIVE_ONLY_SEGMENTS）はアクティブモードに関わらず常に /live へ回す。
+  //   これが無いと「日別プロファイル」等がリプレイ中に 404（replay core 未実装）で描画されない。
+  if (LIVE_ONLY_SEGMENTS.has(segment)) {
     return `/live${path}`;
   }
   return `/${mode}${path}`;

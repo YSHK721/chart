@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from .bands import build_bands
+from .bands import EmptyBucketError, build_bands
 from .core import (
     BUCKETS,
     PROBABILITIES,
@@ -28,6 +28,7 @@ from .robust_bands import build_robust_bands
 
 __all__ = [
     "build_bands",
+    "EmptyBucketError",
     "build_robust_bands",
     "load_ohlc_csv",
     "collect_distance_samples",

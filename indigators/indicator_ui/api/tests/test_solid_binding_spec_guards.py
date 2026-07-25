@@ -121,7 +121,7 @@ def test_prp_invoke_still_adapts_interval_end_to_end():
 
 
 # =========================================================================== #
-# 🟡-5: profit_band 例外翻訳境界の隔離（メッセージ照合を1箇所へ・型で識別不能な二意味 ValueError）
+# 🟡-5 / LSP 是正 LSP-3: profit_band 例外翻訳境界の隔離（型 EmptyBucketError で識別・1箇所へ）
 # =========================================================================== #
 def test_profit_band_value_error_translator_registered():
     # profit_band 専用翻訳境界が registry に1箇所登録される。
@@ -135,8 +135,17 @@ def test_empty_series_indicator_set_removed_from_generic_scope():
 
 
 def test_profit_band_bucket_empty_translates_to_empty_series():
-    err = ica._translate_value_error("profit_band", ValueError("必須バケットが空です"))
+    # LSP 是正 LSP-3: 型 EmptyBucketError で empty_series へ翻訳する（日本語メッセージ片照合ではない）。
+    #   実 profit_band src が送出する型（bands.py の EmptyBucketError）を用いる＝実挙動と等価。
+    empty_bucket_cls = call_binding.profit_band_empty_bucket_error()
+    err = ica._translate_value_error("profit_band", empty_bucket_cls("必須バケットが空です"))
     assert err.error_type == "empty_series"
+
+
+def test_profit_band_plain_value_error_translates_to_validation_even_with_marker():
+    # 型が EmptyBucketError でなければ message に "バケット" を含んでも validation（メッセージ非依存の実証）。
+    err = ica._translate_value_error("profit_band", ValueError("バケットという語を含む素の ValueError"))
+    assert err.error_type == "validation"
 
 
 def test_profit_band_other_value_error_translates_to_validation():

@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src import (  # noqa: E402
     PROBABILITIES,
+    EmptyBucketError,
     build_bands,
     collect_distance_samples,
     compute_quantiles,
@@ -116,3 +117,16 @@ def test_empty_required_bucket_raises():
     # require_full=False なら NaN 列で返る。
     bands = build_bands(df, require_full=False)
     assert np.isnan(bands["nOH_99"]).all()
+
+
+def test_empty_required_bucket_raises_empty_bucket_error_subclass_of_value_error():
+    # LSP 是正 LSP-3: 必須バケット空は専用型 EmptyBucketError で送出される（型で識別可能）。
+    # 後方互換: EmptyBucketError は ValueError サブクラスゆえ既存 except ValueError も捕捉する。
+    df = pd.DataFrame(
+        {"open": [100.0], "high": [110.0], "low": [95.0], "close": [108.0]}
+    )
+    assert issubclass(EmptyBucketError, ValueError)
+    with pytest.raises(EmptyBucketError) as exc:
+        build_bands(df)
+    # メッセージは従来と同一（挙動保存）。
+    assert "バンド生成に必要なバケットが空です" in str(exc.value)
