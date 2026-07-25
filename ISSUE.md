@@ -2004,3 +2004,10 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **① `_asOf` デッドコード削除（実施）**: `market_profile_actor.js:133/300-303` の `_asOf` フィールド・`applyGrowthState({growing, asOf})` の `asOf` 分割代入・代入行を削除。実証: `applyGrowthState` の全呼出元（`market_profile_controller.js:66` ほか）で `asOf` を渡す箇所は皆無・読み出しも 0・テスト参照も 0＝完全デッド（ISSUE-129 で単一時計 `to` へ一本化され不要化した「布石」の残骸。稼働中の `_asOfStrategy` は別物で無関係）。挙動不変の非破壊リファクタ。検証: market_profile web 295／indicator_ui web 742／replay_ui web 252 全緑（回帰ゼロ）。
 - **② CandleFeed dedupe 上流バグ（→ ISSUE-167 で是正）**: 3 段多重防御は ISSUE-167 で実装済み。残件の CSV 実体重複は本対応で恒久除去（ISSUE-167 申し送り参照＝同種 3 件除去＋rollup 再構築）。
 - **③ リプレイ LiveUpdater 配線（確認のみ・対応不要）**: `composition_root_front.js:206` は mode='b' で LiveUpdater を生成するが、`index.html` は `setupReplay()` のみ呼び `liveUpdater.start()` を呼ばない（129 行コメント明記・実測で呼出不在）。60 秒ポーリングは起動せず＝設計どおりで問題なし（当初の「start 呼出未確認」懸念を解消）。
+
+## ISSUE-169: [既知限界] 統合UIトグルで既存 document スコープリスナが線形蓄積・無波及制約下の既知限界（2026-07-25）
+- **ステータス**: OPEN
+- **背景**: ライブ/リプレイ統合UI（`unified_ui/`・ルータ方式・既存モジュール無編集厳守）のモードトグルで、`unified_root.js` の teardown は `#mode-ui` サブツリーを pristine innerHTML へ復元し、**要素スコープ**の `bind()` リスナ（indicator_controller.js:900-951 が張る click/input）は新ノード置換で根絶する。
+- **限界**: 既存無編集モジュールが **document/body スコープ**へ張るリスナは innerHTML 復元では除去できず残存する。実証: `timeframe_menu.js:94-95` が `new TimeframeMenu().install()`（＝mount 毎）で `doc.addEventListener('click', () => this._setOpen(false))` を removeEventListener 無しで登録＝**トグル毎に document click リスナが +1 蓄積**（線形）。
+- **影響**: 軽微・有界。各リスナは `_setOpen(false)`（ドロップダウン閉）の冪等操作のみで副作用は実質無。DOM ノードは pristine 置換で解放されるためリーク源は当該クロージャのみ。
+- **完全根絶の条件**: `timeframe_menu.js` 等の既存モジュールへ removeEventListener／dispose を追加する改変が必要＝無波及制約（`indigators/**`・`simulator/**` byte 不変）に抵触するため本スコープでは不可。将来、統合を正式機能化する際の別承認課題（既存改変を伴う恒久対処）。
