@@ -15,6 +15,19 @@
 //     それ以外（'bins' / 未指定）は bins を送り barw は送らない。bins は ENUM プリセット化で文字列
 //     （'30'/'60'/'100'）が渡るため、文字列プリセット（非空）または有限数（後方互換）を付与し、
 //     NaN・空文字・null は排除する（backend の _parse_int が '60' を解釈可）。
+// MP 単一化: 単一時計 to の 3 状態マーカー。null=restore一過性（無描画・現行仕様温存）／
+//   MP_TO_LATEST=ライブ（描画・clock パラメータ省略＝server の wall-clock now を解決）／int=リプレイ
+//   （as-seen-at-t カーソル）。LATEST は非 null（restore の null と区別）だが URL 上は「clock 省略」へ
+//   翻訳する（数値 now を送ると zp/forming が server 壁時計と skew して byte 非等価になるため・厳守）。
+//   標準の to 経路（null / int）を通る standalone live/replay は本マーカーを渡さないため byte 不変。
+//   【重要】値比較可能な**文字列**センチネルにする（Symbol 不可）。統合レイヤは /live と /replay を別 URL で
+//   配信するため、同一 market_profile_client.js（symlink）でも **ES モジュール実体が URL 単位で分裂**し、
+//   `Symbol()` が2回評価されて別 Symbol になる → live の getContext が載せた LATEST と replay アクターの
+//   ガード `=== MP_TO_LATEST` が identity 不一致で **すり抜け→Number(Symbol) クラッシュ**（実UI回帰）。
+//   文字列は値等価（モジュール実体を跨いで ===）で確実にガードが効き、万一の漏れも Number('..')=NaN で
+//   例外にならない（多重防御）。`to` は UNIX 秒 or 本マーカーのみ＝衝突しない distinctive 文字列にする。
+export const MP_TO_LATEST = '__MP_TO_LATEST__';
+
 export function buildMarketProfileUrl({
   datasetRef, timeframe, bins, va, src, range, resmode, to, from, today, sessions,
 } = {}) {
@@ -45,7 +58,9 @@ export function buildMarketProfileUrl({
   //   移植元 prototype_260630-01（as-seen-at-t・アンカー）。backend が time<=to の足だけで集計する。
   //   ISSUE-129: to はリプレイの単一時計（リビール秒粒度可）。zp は backend が now=to として
   //   現在時刻に読む（境界日はライブ同一の経過分クランプで部分集計＝日内推移）。旧 asof は廃止。
-  if (to != null) {
+  //   MP_TO_LATEST（ライブマーカー）は「clock 省略」へ翻訳＝&to= を出さない（server が wall-clock now を
+  //   解決＝現行ライブと byte 一致）。null / int のみが標準経路（省略 / カーソル）＝standalone 無退行。
+  if (to != null && to !== MP_TO_LATEST) {
     url += `&to=${encodeURIComponent(to)}`;
   }
   // from（ローリング窓の下限 time・UNIX 秒）— 指定時のみ付与（省略時=全期間・後方互換）。増分2 A。

@@ -59,5 +59,11 @@ export function rewritePath(mode, path) {
   if (!isApiSegment(segment)) {
     return path;
   }
+  // tf_period_profile はライブ core 専用エンドポイント（replay core=serve_replay は未実装＝/replay だと 404）。
+  //   応答は完成期間の履歴プロファイル（mode 非依存）ゆえ、アクティブモードに関わらず常にライブ core へ回す。
+  //   これが無いと「日別プロファイル」がリプレイ中に 404 で描画されない。
+  if (segment === 'tf_period_profile') {
+    return `/live${path}`;
+  }
   return `/${mode}${path}`;
 }

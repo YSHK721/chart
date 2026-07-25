@@ -21,6 +21,7 @@
 //   保持する（NaN 混入を防ぐ＝既存 fetch null と同じ）。
 
 import { MarketProfileActor } from './market_profile_actor.js';
+import { MP_TO_LATEST } from './market_profile_client.js';
 import { GrowthWindow } from '../../domain/growth_window.js';
 import { mpSourceCapability } from '../../domain/mp_source_capability.js';
 import { sessionDayStart } from '../../domain/session_day.js';
@@ -56,6 +57,48 @@ function _hasBaseFields(f) {
 //   context（``a``）に受け、actor 内部状態（_accumulator/_lastSec/_rebuildSeq/_gridDegenerate/_clockSec 等）を
 //   抽出前と同一手順で操作する＝挙動不変。純オブジェクト（副作用は actor 経由のみ・テストで差替可能）。
 
+// [過去不変] 成長セッション中の表示グリッド固定（絶対格子・classic MP 固定ティックサイズ）。
+//   問題: backend base=1 forming の表示レンジ priceMin/priceMax は成長窓 [from,to] の実データ min(low)/max(high)
+//   由来（controller 170-171）。再生で to が伸びる→レンジ拡大→binw=(priceMax-priceMin)/nBins 変化→
+//   不変 fine 格子（k=floor(mid/gridW)）を動くグリッドで再ビニング（DwellAccumulator.snapshot の
+//   disp=floor((centerFine-priceMin)/binw)）→過去ビンが再分配され動く（既存バグ）。
+//   参照 prototype_260630-01/mp_core.py: fine=絶対格子（floor(price/GRID_W=10)・不変・:126）、表示 bin は
+//   price_min/price_max/n_bins から静的導出（:227,254）で成長中に再導出しない。
+//   本関数: セッション（from|tf|bins）内で binw を初回レンジから固定し、原点を絶対格子（floor(dataMin/binw)*binw）
+//   へアンカーし、nBins をレンジ拡大に応じて端に追加するのみ（既存 bin 境界を動かさない）＝確定済み価格帯の
+//   bin 高さ・POC・VA が不変。fine ロールアップ・backend・base actor・DwellAccumulator の fine 計算は無改変
+//   （表示グリッドの固定のみ）。異常（レンジ不成立）は backend 値そのまま＝非破壊（縮退検知を温存）。
+//   replay subclass の push 経路（INCREMENTAL_PUSH_STRATEGY.rebuildAt）限定＝ライブ（base _enterTicklive）
+//   非経由・byte 不変。
+export function lockedDisplayGrid(a, forming, from) {
+  const dataMin = Number(forming.priceMin);
+  const dataMax = Number(forming.priceMax);
+  const rawNBins = Math.max(1, Number(forming.nBins) || 1);
+  if (!Number.isFinite(dataMin) || !Number.isFinite(dataMax) || dataMax <= dataMin) {
+    return { priceMin: dataMin, priceMax: dataMax, nBins: rawNBins };
+  }
+  const tf = (typeof a._getContext === 'function' && a._getContext().timeframe) || null;
+  const binsParam = a._params ? a._params.bins : undefined;
+  // セッション鍵: from（replayStart 累積下限）| tf | bins（gear）。変更で再ロック（新レンジ基準の binw を採る）。
+  const key = `${from == null ? '' : from}|${tf == null ? '' : tf}|${binsParam == null ? rawNBins : binsParam}`;
+  if (!a._displayGridLock || a._displayGridLock.key !== key) {
+    // セッション初回: backend グリッド（binw・原点）をロック源として確定し、**そのまま返す**
+    //   （非整数 binw の float drift を避け、初回は backend と完全一致）。以降は origin+k*binw の絶対格子へ snap。
+    const binw = (dataMax - dataMin) / rawNBins;
+    a._displayGridLock = { key, binw: binw > 0 ? binw : (dataMax - dataMin), origin: dataMin };
+    return { priceMin: dataMin, priceMax: dataMax, nBins: rawNBins };
+  }
+  const { binw, origin } = a._displayGridLock;
+  // 絶対格子（origin + k*binw・binw 固定）へ snap。dataMin を覆う下端 index（負可＝下方拡大）／dataMax を覆う
+  //   上端 index。EPS で境界一致時の over/under-shoot を防ぐ。既存 bin 境界（origin+k*binw）は不動＝過去不変。
+  const eps = binw * 1e-9;
+  const startIdx = Math.floor((dataMin - origin + eps) / binw);
+  const endIdx = Math.ceil((dataMax - origin - eps) / binw);
+  const nBins = Math.max(1, endIdx - startIdx);
+  const priceMin = origin + startIdx * binw;
+  return { priceMin, priceMax: origin + (startIdx + nBins) * binw, nBins };
+}
+
 // 増分 push 戦略（dwell 系）: forming を [from, now] の因果窓で base=1 取得 → accumulator を作り直し
 //   （rollover/grid 拡張）→ forming.ticks を畳み込み（present 基底 _enterTicklive と同一 fold）→ 描画。
 //   feedTick は addTick（O(1)・HTTP 無）＋ throttle snapshot。縮退グリッドは描画のみ抑止（前回描画保持）。
@@ -89,21 +132,24 @@ const INCREMENTAL_PUSH_STRATEGY = {
     if (!_hasBaseFields(forming)) {
       return; // 空 profile（必須フィールド欠損）は前回描画を保持（NaN 混入を防ぐ）。
     }
+    // [過去不変] 表示グリッドをセッション内で固定（binw 固定＋絶対格子アンカー＋端に bin 追加）。fine
+    //   （baseFine/baseKmin/gridW）は backend 値のまま＝絶対格子・不変。表示レンジのみ差し替える。
+    const grid = lockedDisplayGrid(a, forming, from);
     const acc = a._makeAccumulator();
     acc.init({
       baseFine: forming.baseFine,
       baseKmin: forming.baseKmin,
       activeTable: forming.activeTable,
-      priceMin: forming.priceMin,
-      priceMax: forming.priceMax,
-      nBins: forming.nBins,
+      priceMin: grid.priceMin,
+      priceMax: grid.priceMax,
+      nBins: grid.nBins,
       gridW: forming.gridW,
       formingStart: forming.formingStart,
     });
     a._accumulator = acc;
     a._formingStart = forming.formingStart;
-    a._gridPriceMin = Number(forming.priceMin);
-    a._gridPriceMax = Number(forming.priceMax);
+    a._gridPriceMin = Number(grid.priceMin);
+    a._gridPriceMax = Number(grid.priceMax);
     // forming.ticks を畳み込む（present 基底 _enterTicklive の fold と一致）。_lastSec は最終畳み込み秒。
     a._lastSec = null;
     const ticks = Array.isArray(forming.ticks) ? forming.ticks : [];
@@ -215,6 +261,12 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   refresh(to,sessions) が育て（機構A）、非成長は as-of-T 再取得。
   //   Phase5: ゲートを isTicklive()（表示モード）から isGrowingPush()（成長軸）へ移行（ticklive セグメント撤去）。
   async onLiveTick() {
+    // [3状態 to・ライブ対称ガード] to===MP_TO_LATEST（ライブマーカー・非null）は基底 onLiveTick へ委譲＝
+    //   base MarketProfileActor と byte 等価（standalone live 無影響）。null=restore は下の従来分岐で無描画温存、
+    //   int=リプレイは従来の as-of/push 分岐（standalone replay 無退行）。
+    if (this._getContext().to === MP_TO_LATEST) {
+      return super.onLiveTick();
+    }
     if (this.isGrowingPush()) {
       return undefined; // push が育てる＝pull は駆動しない（二重駆動遮断）。
     }
@@ -226,7 +278,7 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     //   （to=null・restore 前）は上書きしない。非 sessions は _clockSec を触らず従来不変（回帰ゼロ）。
     if (this._sessions) {
       const cursor = this._getContext().to;
-      if (cursor != null) {
+      if (cursor != null && cursor !== MP_TO_LATEST) { // LATEST は上のガードで到達しない（多重防御で NaN 化も阻止）。
         this._clockSec = Number(cursor);
       }
     }
@@ -249,6 +301,12 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   async refresh() {
     const ctx = this._getContext();
     const cursor = ctx.to;
+    // [3状態 to・ライブ対称ガード] LATEST は基底 refresh へ委譲（/market_profile を to 省略で引く＝
+    //   client が LATEST→&to= 省略へ翻訳済み＝現状ライブと byte 一致）。null=restore は下で無描画温存、
+    //   int=リプレイは下の enterBar(cursor) pull-at-T（従来）。
+    if (cursor === MP_TO_LATEST) {
+      return super.refresh();
+    }
     if (this.isGrowingPush() && !_FORMING_UNSUPPORTED_TF.has(ctx.timeframe)
         && mpSourceCapability(this._params.src).incremental) {
       if (cursor == null) {
@@ -274,8 +332,16 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   全時間足の bar-period 成長は backend forming_ticks の period_start_unix(now,tf)（tf 依存 formingStart）が担う
   //   （reveal 窓 stream.js は不変）。
   _buildFormingArgs({ base, since, now, from } = {}) {
+    // [3状態 to・ライブ対称ガード] LATEST は基底 forming 引数へ委譲＝now/from の override を載せない
+    //   （base のローカル導出＝現状ライブと byte 一致）。Number(LATEST)（NaN/例外）到達も構造的に回避。
+    if (this._getContext().to === MP_TO_LATEST) {
+      return super._buildFormingArgs({ base, since });
+    }
     const args = super._buildFormingArgs({ base, since });
-    const effNow = now != null ? now : this._getContext().to;
+    // 多重防御: now/getContext().to が LATEST（ライブマーカー）なら effNow を undefined 相当へ落とし、
+    //   GrowthWindow.forCurrent(Number(LATEST)) へ到達させない（base のローカル from 導出＝byte 等価）。
+    const rawNow = now != null ? now : this._getContext().to;
+    const effNow = rawNow === MP_TO_LATEST ? undefined : rawNow;
     if (effNow != null) {
       args.now = effNow;
       if (from != null) {
@@ -404,6 +470,10 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
   //   空＝従来 URL 不変（present は基底の no-op seam のまま非波及）。
   //   ISSUE-127: 契約は UNIX 秒（整数）。1分OHLC 等の合成 tick は小数秒を生むため必ず floor する。
   _clockExtra() {
+    // [3状態 to・ライブ対称ガード] LATEST は基底 _clockExtra（={} の no-op seam）へ委譲＝現状ライブと同一。
+    if (this._getContext().to === MP_TO_LATEST) {
+      return super._clockExtra();
+    }
     if (this._usesAsOfClock() && this._clockSec != null) {
       return { to: Math.floor(this._clockSec) };
     }

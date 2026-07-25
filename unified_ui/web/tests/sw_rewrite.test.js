@@ -27,6 +27,15 @@ describe('rewritePath', () => {
     expect(rewritePath('replay', '/intraday')).toBe('/replay/intraday');
   });
 
+  // --- B2b: tf_period_profile はライブ core 専用（replay core 未実装）＝モードに関わらず常に /live ---
+  test('tf_period_profile_always_routes_to_live_regardless_of_mode', () => {
+    // replay モードでも /replay ではなく /live（replay core は 404 を返すため）。
+    expect(rewritePath('replay', '/tf_period_profile?datasetRef=jp225_tick&timeframe=1D&from=1&to=2'))
+      .toBe('/live/tf_period_profile?datasetRef=jp225_tick&timeframe=1D&from=1&to=2');
+    // live モードでも当然 /live。
+    expect(rewritePath('live', '/tf_period_profile?x=1')).toBe('/live/tf_period_profile?x=1');
+  });
+
   // --- B3: 既に prefix 付きは不変（二重付与しない）---
   test('already_prefixed_live_path_is_unchanged', () => {
     expect(rewritePath('live', '/live/compute')).toBe('/live/compute');

@@ -8,6 +8,8 @@
 //            忠実 binning 用）。失敗時 {ok:false, error:{...}}。
 //   純関数（buildFormingUrl / parseForming）を公開し単体検証を容易にする（SRP）。
 
+import { MP_TO_LATEST } from './market_profile_client.js';
+
 // datasetRef を必須、timeframe/since/base/now と bins|barw（resmode で排他）を与えられた場合のみ付加する。
 //   base=1（既定 full・base+activeTable 同梱）/ base=0（軽量・forming tick 尾部のみ）。
 //   resmode==='range' のとき range（レンジpt）を backend param barw へ写像し bins は送らない（base の
@@ -25,7 +27,9 @@ export function buildFormingUrl({
   if (base != null) {
     url += `&base=${encodeURIComponent(base)}`;
   }
-  if (now != null) {
+  // MP 単一化: now===MP_TO_LATEST（ライブマーカー）は clock 省略へ翻訳＝&now= を出さない（server が
+  //   wall-clock now を解決＝現状ライブと byte 一致）。null / int（リプレイの因果 now）は従来どおり。
+  if (now != null && now !== MP_TO_LATEST) {
     url += `&now=${encodeURIComponent(now)}`;
   }
   // from（セッション窓 MP の base 累積下限 time＝当日始まり）。省略（null/undefined）時は付けない

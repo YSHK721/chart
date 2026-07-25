@@ -13,6 +13,7 @@ import {
   buildMarketProfileUrl,
   parseProfileResponse,
   MarketProfileClient,
+  MP_TO_LATEST,
 } from '../js/adapter/front/market_profile_client.js';
 
 const OK_PAYLOAD = {
@@ -372,4 +373,45 @@ test('parseProfileResponse omits sessions when absent (後方互換)', () => {
   };
   const out = parseProfileResponse(payload);
   assert.ok(!('sessions' in out));
+});
+
+// ===========================================================================
+// MP 単一化: to の 3 状態化（null=restore一過性 / MP_TO_LATEST=ライブ / int=リプレイ）。
+//   ライブ MP byte 不変の要: LATEST は「clock パラメータ省略」翻訳＝数値 now を送らず server の
+//   wall-clock now を解決させる（zp/forming の skew による byte 非等価を回避）。よって
+//   buildMarketProfileUrl は to===MP_TO_LATEST を「&to= を出さない」＝to 省略と byte 一致に翻訳する。
+// ===========================================================================
+
+test('MP_TO_LATEST is a non-null sentinel (null=restore と区別できる非 null マーカー)', () => {
+  // ライブ判定に使う LATEST は非 null でなければ restore（to==null 無描画）と区別できない。
+  assert.notEqual(MP_TO_LATEST, null);
+  assert.notEqual(MP_TO_LATEST, undefined);
+});
+
+test('MP_TO_LATEST は値比較可能な文字列（Symbol 禁止）: /live と /replay の別モジュール実体を跨いで === が効く', () => {
+  // 回帰ゲート: 統合レイヤは /live と /replay を別 URL で配信＝ES モジュール実体が URL 単位で分裂する。
+  //   Symbol だと `Symbol()` が2回評価され identity 不一致でガードすり抜け→Number(Symbol) クラッシュ（実UI回帰）。
+  //   文字列なら value 等価でモジュール実体を跨いで === が成立し、万一漏れても Number('..')=NaN で例外にならない。
+  assert.equal(typeof MP_TO_LATEST, 'string', 'LATEST は文字列（Symbol は identity 分裂でガード無効化）');
+  assert.equal('__MP_TO_LATEST__', MP_TO_LATEST, '別リテラル（≒別モジュール実体）でも value 等価で === が成立');
+  assert.ok(Number.isNaN(Number(MP_TO_LATEST)), '万一の漏れも Number(LATEST)=NaN で非例外（多重防御）');
+});
+
+test('buildMarketProfileUrl: to=MP_TO_LATEST は clock 省略へ翻訳＝to 省略と byte 一致（ライブ byte 不変）', () => {
+  // Arrange: 現行ライブ（to 省略）と LATEST（ライブマーカー）を同一 params で組む。
+  const live = buildMarketProfileUrl({ datasetRef: 'jp225_tick', timeframe: '1D', bins: 24, src: 'dwell' });
+  const latest = buildMarketProfileUrl({ datasetRef: 'jp225_tick', timeframe: '1D', bins: 24, src: 'dwell', to: MP_TO_LATEST });
+  // Assert: byte 一致（&to= を出さない＝server が wall-clock now を解決）。
+  assert.equal(latest, live);
+  assert.ok(!latest.includes('&to='), 'LATEST 時は &to= を出さない');
+});
+
+test('buildMarketProfileUrl: int cursor は従来どおり &to= を送る（standalone replay 無退行）', () => {
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick', to: 1690000000 });
+  assert.ok(url.includes('&to=1690000000'), 'int T（リプレイ）は &to= を送る');
+});
+
+test('buildMarketProfileUrl: to 省略は &to= を出さない（standalone live 無退行）', () => {
+  const url = buildMarketProfileUrl({ datasetRef: 'jp225_tick' });
+  assert.ok(!url.includes('&to='), 'to 省略は従来どおり &to= 無し');
 });
