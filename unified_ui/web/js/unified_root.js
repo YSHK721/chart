@@ -17,9 +17,17 @@
 
 import { wrap as wrapTimers } from './timer_registry.js';
 import { scopedStorage } from './mode_storage.js';
+import { registerServiceWorker, notifySwMode } from './sw_client.js';
+import {
+  MODE,
+  loadVendor,
+  showModeError,
+  clearModeError,
+  applyModeUi,
+  wireModeSwitchButtons,
+} from './mode_ui_view.js';
 
 const DATASET_REF = 'jp225_tick';
-const MODE = Object.freeze({ LIVE: 'live', REPLAY: 'replay' });
 
 // 単一 mount の live root と、注入するリプレイ部品の URL（/replay プロキシ経由で取得）。
 const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';
@@ -28,98 +36,11 @@ const REPLAY_DRIVER = '/replay/js/replay.js';
 const REPLAY_MP_ACTOR = '/replay/js/adapter/front/replay_market_profile_actor.js';
 
 let modeController = null; // createModeController の実体（トグルボタンが参照）。
-let lwcLoaded = false;
 
-// ---- lightweight-charts（vendor）を live prefix から動的ロード（両 core とも同一 vendor を配信）----
-function loadVendor(mode) {
-  if (lwcLoaded || (typeof window !== 'undefined' && window.LightweightCharts)) {
-    lwcLoaded = true;
-    return Promise.resolve(true);
-  }
-  return new Promise((resolve) => {
-    const s = document.createElement('script');
-    s.src = `/${mode}/vendor/lightweight-charts.js`;
-    s.onload = () => {
-      lwcLoaded = !!window.LightweightCharts;
-      resolve(lwcLoaded);
-    };
-    s.onerror = () => resolve(false);
-    document.head.appendChild(s);
-  });
-}
-
-// ---- Service Worker: アクティブモード通知（ack 待ち）--------------------------
-function notifySwMode(mode) {
-  return new Promise((resolve) => {
-    const ctrl =
-      typeof navigator !== 'undefined' && navigator.serviceWorker
-        ? navigator.serviceWorker.controller
-        : null;
-    if (!ctrl) {
-      resolve(false);
-      return;
-    }
-    const channel = new MessageChannel();
-    let settled = false;
-    const done = (ok) => {
-      if (!settled) {
-        settled = true;
-        resolve(ok);
-      }
-    };
-    channel.port1.onmessage = (event) => {
-      done(!!(event.data && event.data.ok));
-    };
-    try {
-      ctrl.postMessage({ type: 'set-mode', mode }, [channel.port2]);
-    } catch {
-      done(false);
-      return;
-    }
-    setTimeout(() => done(false), 500); // ack が来ない環境でも進行を止めない（保険）。
-  });
-}
-
-// ---- エラー表示（フェイルクローズ / モード読込失敗）--------------------------
-function showModeError(message) {
-  if (typeof document !== 'undefined') {
-    const el = document.getElementById('mode-error');
-    if (el) {
-      el.textContent = message;
-      el.style.display = 'block';
-    }
-  }
-  if (typeof console !== 'undefined') {
-    // eslint-disable-next-line no-console
-    console.error('[unified_root]', message);
-  }
-}
-
-function clearModeError() {
-  if (typeof document === 'undefined') {
-    return;
-  }
-  const el = document.getElementById('mode-error');
-  if (el) {
-    el.style.display = 'none';
-    el.textContent = '';
-  }
-}
-
-// ---- モード UI 反映（body クラス・リプレイトグル点灯）--------------------------
-//   mode-css の付替えは不要（live/replay の app.css は同一・index.html は /live 固定）。body クラス
-//   um-mode-live / um-mode-replay が replay-bar / live-follow-toggle の表示を CSS で制御する。
-function applyModeUi(mode) {
-  if (typeof document === 'undefined') {
-    return;
-  }
-  document.body.classList.toggle('um-mode-live', mode === MODE.LIVE);
-  document.body.classList.toggle('um-mode-replay', mode === MODE.REPLAY);
-  const replayToggle = document.getElementById('enter-replay');
-  if (replayToggle) {
-    replayToggle.setAttribute('aria-pressed', mode === MODE.REPLAY ? 'true' : 'false');
-  }
-}
+// vendor ロード / SW 通知 / エラー表示 / モード UI 反映は葉モジュールへ抽出済み:
+//   - loadVendor / showModeError / clearModeError / applyModeUi / wireModeSwitchButtons: ./mode_ui_view.js
+//   - registerServiceWorker / notifySwMode: ./sw_client.js
+//   （MODE も applyModeUi の依存定数として mode_ui_view.js に置き、ここでは import して再 export する）
 
 // ---- モード切替ステートマシン（純ロジック・単一 mount 前提）------------------------
 //   chart/controller/pollers/replayHandle は注入。**chart を dispose も再生成もしない**（本関数は
@@ -207,42 +128,6 @@ export function createModeController({
     stopPollers,
     getMode: () => activeMode,
   };
-}
-
-// ---- Service Worker 登録（フェイルクローズ判定つき）--------------------------
-async function registerServiceWorker() {
-  if (typeof navigator === 'undefined' || !navigator.serviceWorker) {
-    return false; // 非対応ブラウザ。呼び出し側でフェイルクローズ。
-  }
-  try {
-    await navigator.serviceWorker.register('/sw.js', { type: 'module', scope: '/' });
-    await navigator.serviceWorker.ready;
-  } catch {
-    return false;
-  }
-  if (navigator.serviceWorker.controller) {
-    return true;
-  }
-  // まだ制御下でない（初回訪問）。一度だけリロードして制御下に入る。
-  const RELOAD_GUARD = 'unified_sw_reloaded';
-  if (!sessionStorage.getItem(RELOAD_GUARD)) {
-    sessionStorage.setItem(RELOAD_GUARD, '1');
-    location.reload();
-    await new Promise(() => {}); // reload 後に再実行されるため待機。
-  }
-  return !!navigator.serviceWorker.controller;
-}
-
-// ---- リプレイ トグルボタン配線（単一 mount: DOM は永続＝1 回だけ配線）--------------
-function wireModeSwitchButtons() {
-  const btn = document.getElementById('enter-replay');
-  if (btn) {
-    btn.addEventListener('click', () => {
-      if (modeController) {
-        modeController.toggle();
-      }
-    });
-  }
 }
 
 // ---- 単一 mount 起動 ----------------------------------------------------------
@@ -348,7 +233,7 @@ async function main() {
     boot.tradeMarkers.load('/live/data/trade_markers.json');
   }
   applyModeUi(MODE.LIVE);
-  wireModeSwitchButtons();
+  wireModeSwitchButtons(modeController);
   clearModeError();
 }
 
