@@ -6,6 +6,7 @@
     AppliedPrice                       : 適用価格の種別（MQL ENUM_APPLIED_PRICE 互換 ＋ OHLC4 拡張）。
     applied_price                      : 種別で 8 種を切り替えるディスパッチャ。
     close_price / open_price / high_price / low_price : 単純な列選択。
+    SOURCE_TO_APPLIED                  : UI ソース値（catalog の source enum 8 択）→ 種別の写像。
     median_price / typical_price / weighted_price / ohlc4_price : 算術合成。
 
 表示系（level_colors / LEVEL_LINE_WIDTH 等）は common_view へ分離した（ISSUE-092 ⑥）。本モジュール
@@ -25,6 +26,7 @@
 from __future__ import annotations
 
 from .applied_price import (
+    SOURCE_TO_APPLIED,
     AppliedPrice,
     applied_price,
     close_price,
@@ -39,6 +41,7 @@ from .applied_price import (
 
 __all__ = [
     "AppliedPrice",
+    "SOURCE_TO_APPLIED",
     "applied_price",
     "close_price",
     "open_price",

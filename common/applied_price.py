@@ -148,3 +148,23 @@ def applied_price(
     if kind == AppliedPrice.OHLC4:
         return ohlc4_price(open_, high, low, close)
     raise ValueError(f"未知の適用価格種別です: {kind!r}")
+
+
+# ---------------------------------------------------------------------------
+# UI ソース値 → 適用価格種別（ISSUE-179 項目 4: 3 重複製の 1 本化）
+# ---------------------------------------------------------------------------
+# ``moving_averages/src/lwc_chart.py`` ↔ ``btlm_trail/src/core.py`` ↔ ``ma_marod/src/core.py``
+# が個別に持っていた同一写像をここへ集約する（写像 1 行の追加が 3 ファイルの同時改変を
+# 要求する状態＝OCP 違反の解消）。値・キーは移設元と完全に同一（無改変移設）。
+#
+# キーは catalog の source enum（小文字）。呼び出し側は ``str(source).lower()`` で引く。
+SOURCE_TO_APPLIED: dict[str, AppliedPrice] = {
+    "close": AppliedPrice.CLOSE,
+    "open": AppliedPrice.OPEN,
+    "high": AppliedPrice.HIGH,
+    "low": AppliedPrice.LOW,
+    "hl2": AppliedPrice.MEDIAN,
+    "hlc3": AppliedPrice.TYPICAL,
+    "hlcc4": AppliedPrice.WEIGHTED,
+    "ohlc4": AppliedPrice.OHLC4,
+}
