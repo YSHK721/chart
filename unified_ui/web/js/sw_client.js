@@ -39,6 +39,37 @@ export function notifySwMode(mode) {
   });
 }
 
+// 一度だけリロードしたことを示すセッションフラグ（無限リロード防止）。
+const RELOAD_GUARD = 'unified_sw_reloaded';
+
+// SW の activate 中 `clients.claim()` が完了して制御下へ入るまでの待ち上限（ms）。
+//   `navigator.serviceWorker.ready` は「アクティブな登録がある」時点で解決するため、claim が
+//   まだ届かず controller が null のことがある（競合）。ここで controllerchange を待たないと
+//   「制御下でない」と誤判定してリロード（or フェイルクローズ）に落ちる。
+const CLAIM_WAIT_MS = 3000;
+
+// controllerchange（＝clients.claim() 到達）を上限つきで待つ。
+function waitForController(timeoutMs) {
+  return new Promise((resolve) => {
+    const sw = navigator.serviceWorker;
+    if (sw.controller) {
+      resolve(true);
+      return;
+    }
+    let timer = null;
+    const onChange = () => {
+      if (timer !== null) clearTimeout(timer);
+      sw.removeEventListener('controllerchange', onChange);
+      resolve(!!sw.controller);
+    };
+    sw.addEventListener('controllerchange', onChange);
+    timer = setTimeout(() => {
+      sw.removeEventListener('controllerchange', onChange);
+      resolve(!!sw.controller);
+    }, timeoutMs);
+  });
+}
+
 // ---- Service Worker 登録（フェイルクローズ判定つき）--------------------------
 export async function registerServiceWorker() {
   if (typeof navigator === 'undefined' || !navigator.serviceWorker) {
@@ -50,11 +81,15 @@ export async function registerServiceWorker() {
   } catch {
     return false;
   }
-  if (navigator.serviceWorker.controller) {
+  // ready 直後に未制御でも、claim が届けば制御下に入る（リロード不要）。
+  if (await waitForController(CLAIM_WAIT_MS)) {
+    // 制御下に入れたのでリロードフラグを解除する。これが無いと、SW 登録解除や更新で
+    // 同一タブが再び未制御になったとき「既にリロード済み」と見なされ、タブを閉じるまで
+    // 二度と起動できない（＝報告された起動中止の再現条件）。
+    sessionStorage.removeItem(RELOAD_GUARD);
     return true;
   }
   // まだ制御下でない（初回訪問）。一度だけリロードして制御下に入る。
-  const RELOAD_GUARD = 'unified_sw_reloaded';
   if (!sessionStorage.getItem(RELOAD_GUARD)) {
     sessionStorage.setItem(RELOAD_GUARD, '1');
     location.reload();

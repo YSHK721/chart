@@ -84,6 +84,41 @@ describe('notifySwMode — アクティブモード通知（ack 待ち）', () =
   });
 });
 
+// 最小 sessionStorage fake（getItem/setItem/removeItem のみ）。
+function fakeSessionStorage(initial = {}) {
+  const store = { ...initial };
+  return {
+    getItem: (k) => (k in store ? store[k] : null),
+    setItem: (k, v) => { store[k] = String(v); },
+    removeItem: (k) => { delete store[k]; },
+    _store: store,
+  };
+}
+
+// 最小 navigator.serviceWorker fake。
+//   claimAfterMs: activate 中の clients.claim() が controller を立てるまでの遅延（null=永久に立たない）。
+function fakeServiceWorker({ claimAfterMs = null } = {}) {
+  const listeners = { controllerchange: [] };
+  const sw = {
+    controller: null,
+    register: async () => ({}),
+    ready: Promise.resolve({}),
+    addEventListener: (type, fn) => { (listeners[type] || (listeners[type] = [])).push(fn); },
+    removeEventListener: (type, fn) => {
+      const arr = listeners[type] || [];
+      const i = arr.indexOf(fn);
+      if (i >= 0) arr.splice(i, 1);
+    },
+  };
+  if (claimAfterMs != null) {
+    setTimeout(() => {
+      sw.controller = {};
+      for (const fn of [...(listeners.controllerchange || [])]) fn({});
+    }, claimAfterMs);
+  }
+  return sw;
+}
+
 describe('registerServiceWorker — 登録とフェイルクローズ判定', () => {
   test('serviceWorker非対応_falseをresolveする', async () => {
     // Arrange: navigator はあるが serviceWorker を持たない。
@@ -92,5 +127,44 @@ describe('registerServiceWorker — 登録とフェイルクローズ判定', ()
     const ok = await registerServiceWorker();
     // Assert
     expect(ok).toBe(false);
+  });
+
+  test('ready直後はcontroller不在_claim後のcontrollerchange_リロードせずtrueを返す', async () => {
+    // Arrange: ready 解決時点では未制御。20ms 後に clients.claim() 相当で制御下へ入る。
+    const reloads = [];
+    vi.stubGlobal('navigator', { serviceWorker: fakeServiceWorker({ claimAfterMs: 20 }) });
+    vi.stubGlobal('sessionStorage', fakeSessionStorage());
+    vi.stubGlobal('location', { reload: () => reloads.push(1) });
+    // Act
+    const ok = await registerServiceWorker();
+    // Assert: claim を待って true（リロード不要＝チラつき無し）。
+    expect(ok).toBe(true);
+    expect(reloads).toHaveLength(0);
+  });
+
+  test('リロード済みフラグ有り_claimで制御下に入る_trueを返しフラグを解除する', async () => {
+    // Arrange: 同一セッションで既に 1 回リロード済み（SW 登録解除→再読込などで再び未制御になった状況）。
+    const storage = fakeSessionStorage({ unified_sw_reloaded: '1' });
+    vi.stubGlobal('navigator', { serviceWorker: fakeServiceWorker({ claimAfterMs: 20 }) });
+    vi.stubGlobal('sessionStorage', storage);
+    vi.stubGlobal('location', { reload: () => {} });
+    // Act
+    const ok = await registerServiceWorker();
+    // Assert: 起動できる＋フラグは解除（次に未制御化しても再度 1 回リロードできる）。
+    expect(ok).toBe(true);
+    expect(storage.getItem('unified_sw_reloaded')).toBe(null);
+  });
+
+  test('claimが来ずリロード済みフラグ有り_falseを返す（フェイルクローズ維持）', async () => {
+    // Arrange: 永久に未制御 かつ 既にリロード済み。
+    const reloads = [];
+    vi.stubGlobal('navigator', { serviceWorker: fakeServiceWorker({ claimAfterMs: null }) });
+    vi.stubGlobal('sessionStorage', fakeSessionStorage({ unified_sw_reloaded: '1' }));
+    vi.stubGlobal('location', { reload: () => reloads.push(1) });
+    // Act
+    const ok = await registerServiceWorker();
+    // Assert: 無限リロードはせず false（呼び出し側でフェイルクローズ）。
+    expect(ok).toBe(false);
+    expect(reloads).toHaveLength(0);
   });
 });
