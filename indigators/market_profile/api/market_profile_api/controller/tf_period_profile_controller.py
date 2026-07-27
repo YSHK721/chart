@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import time as _time
-from collections import OrderedDict
 from pathlib import Path as _Path
 from typing import Any
 
@@ -26,6 +25,8 @@ from market_profile_api.compute import market_profile_zp as _zp
 from market_profile_api.compute import tf_period_columns as _tfc  # ISSUE-094 🔴-2: 集計エンジンの compute 移送先
 # ISSUE-092 ④: 日次ディスク JSON の物理 I/O は gateway 層へ抽出（ISSUE-091 #6 レイヤ責務違反の是正）。
 from market_profile_api.gateway import tf_period_disk_cache as _tf_disk_cache
+# ISSUE-183 item5: 永続化設定（zp 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _cache_settings
 # 既定 DATA_DIR の解決は DataRootPort 経由（ISSUE-136 ISP: data_dir のみ使用の狭いポートへ依存）。
 from market_profile_api.compute.tick_store_port import data_root as _data_root
 from market_profile_api.compute.tf_period_profile import (
@@ -33,6 +34,10 @@ from market_profile_api.compute.tf_period_profile import (
     tf_period_profiles,
 )
 from market_profile_api.controller.market_profile_controller import _error_body
+# ISSUE-172: 配置記述子（GC 契約 DTO）。tf-period の世代 subdir を所有する当事者は本 controller。
+from market_profile_api.cache_layout import CacheLayout as _CacheLayout
+# ISSUE-179 項目 B: per-entry キャッシュ協調（メモリ LRU ＋ ディスクの 2 層）の単一実装。
+from market_profile_api.controller.tf_period_cache import TfPeriodDayCache as _TfPeriodDayCache
 
 # セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・完了判定の唯一の規則源。
 from marketdata.session_day import (  # noqa: E402
@@ -77,17 +82,94 @@ _ZP_TF_ALLOWED = ("15m", "30m", "1h", "4h", "1D", "1W", "1M")  # ISSUE-086: 1W/1
 #   高速化する。窓端がずれても日粒度でヒットする（窓単位キャッシュより頑健）。副次効果として、同一日を
 #   常に同じ日内 unit で量子化する＝ローリングで窓ごとに unit が揺れて同一日の描画が変わる現行の不整合も解消。
 #   メモリはホット層（有界 LRU）、ディスクは JSON で跨プロセス永続（dwell の日別ディスクキャッシュと同方針）。
-_DAY_MEM_MAX = 1024  # ISSUE-088 🔵-4: 1M バケット（当月~22日次）×年単位スクロールでの LRU スラッシュ回避（旧 256）。  # メモリ LRU 上限（日エントリ数）。5m の 1 日は数百列で数百 KB になり得るため有界化。
-_DAY_MEM: "OrderedDict[tuple, tuple]" = OrderedDict()  # (symbol, tf, day_start) -> (unit, columns)。完了日のみ。
+# ISSUE-179 項目 B: 協調手順と**その状態（LRU 辞書・上限）**は :class:`TfPeriodDayCache` が所有する
+#   （本 module に生の辞書を残すと「協働子が host の private を触る」分割不全になる）。
+_DAY_MEM_ENTRY_MAX = 1024  # ISSUE-088 🔵-4: 1M バケット（当月~22日次）×年単位スクロールでの LRU スラッシュ回避（旧 256）。  # メモリ LRU 上限（日エントリ数）。5m の 1 日は数百列で数百 KB になり得るため有界化。
 
 # ディスクキャッシュ根。None=既定（DATA_DIR/cache/tf_period）。False=ディスク無効（テスト隔離用）。
 #   Path/str=差替（テストは tmp を注入）。完了日のみ JSON 保存し、当日（未確定）は保存しない。
 _TFP_CACHE_ROOT: "Any" = None
 
 
+class _DayDiskCache:
+    """:class:`TfPeriodDayCache` へ渡すディスク層（``DayCacheDiskPort`` 実装）。
+
+    ``_TFP_CACHE_ROOT`` の解決は本 controller の責務のまま（ISSUE-092 ④ の分担）。協働子は
+    root も世代規約も知らず、``disk_tf`` を素通しで受ける。module 関数を **call-time に名前解決**
+    するため、既存テストの ``_TFP_CACHE_ROOT`` monkeypatch は従来どおり効く。
+    """
+
+    def load(self, symbol: Any, disk_tf: Any, disk_key: Any) -> "tuple[float, list] | None":
+        return _load_day_disk(symbol, disk_tf, disk_key)
+
+    def save(self, symbol: Any, disk_tf: Any, disk_key: Any, unit: float, columns: list) -> None:
+        _save_day_disk(symbol, disk_tf, disk_key, unit, columns)
+
+
+#: 4 経路（日次 count / 日次 zp / バケット count / バケット zp）が共有する唯一の協調子。
+_DAY_CACHE = _TfPeriodDayCache(_DayDiskCache(), max_entries=_DAY_MEM_ENTRY_MAX)
+
+
 def _reset_tf_period_cache() -> None:
     """per-day メモリキャッシュを全消去する（テスト隔離用・ディスクは触らない）。"""
-    _DAY_MEM.clear()
+    _DAY_CACHE.clear()
+
+
+# --------------------------------------------------------------------------- #
+# ディスク配置（世代 subdir）の単一情報源（ISSUE-172）
+# --------------------------------------------------------------------------- #
+# 完了日 JSON の実配置は ``<root>/<symbol>/<disk_tf>/<key>.json``（``disk_tf`` は下記ビルダが
+# 組み立てる ``<tf>/<gen>/<sub>`` の 2 段 subdir）。世代 dir は disk_tf の 2 segment 目で、
+# 書込経路は count 日次 / count バケット / zp の 3 系統ある。GC 記述子（:func:`layout`）は
+# **この 3 ビルダの出力そのもの**から現行世代名を導出する（世代タグの二重定義を排除する）。
+_DISK_TF_GEN_INDEX = 1  # disk_tf("<tf>/<gen>/<sub>") 内の世代 segment 位置（0 起点）。
+_TFP_GEN_DEPTH = 1 + _DISK_TF_GEN_INDEX + 1  # root からの階層数（<sym> の 1 段 ＋ disk_tf 内位置）。
+_TFP_BUCKET_GEN = "s1"  # ISSUE-086: 1W/1M バケット count 列の世代（日次 count 世代とは独立に据置）。
+_TFP_ZP_GEN = "s3"  # ISSUE-085: VA 修正世代（zp 列・count 世代とは独立）。
+
+
+def _disk_tf_count(tf: Any, unit: float) -> str:
+    """日次 count 列の disk_tf。世代は生成本体の ``_TFP_CACHE_VERSION`` に連動（ISSUE-091 A3）。"""
+    return f"{tf}/s{_TFP_CACHE_VERSION}/g{unit:g}"
+
+
+def _disk_tf_bucket(tf: Any, unit: float) -> str:
+    """1W/1M バケット count 列の disk_tf（ISSUE-086）。"""
+    return f"{tf}/{_TFP_BUCKET_GEN}/g{unit:g}"
+
+
+def _disk_tf_zp(tf: Any) -> str:
+    """zp 列（日次・バケット共通）の disk_tf。ISSUE-088 🔵-3: zp 内部世代へ連動。
+
+    ISSUE-183 item5: zp の形式版数は gateway 側 ``cache_settings.ZP_CACHE_VERSION``（単一情報源）
+    から call-time に読む（旧: compute の module private ``_zp._ZP_CACHE_VERSION``）。
+    """
+    return f"{tf}/{_TFP_ZP_GEN}/zp-v{_cache_settings.ZP_CACHE_VERSION}"
+
+
+def _disk_tf_variants(tf: Any, unit: float) -> "tuple[str, ...]":
+    """本 controller がディスクへ書く全 disk_tf を列挙する（GC 記述子の導出元・ISSUE-172）。"""
+    return (_disk_tf_count(tf, unit), _disk_tf_bucket(tf, unit), _disk_tf_zp(tf))
+
+
+def layout() -> _CacheLayout:
+    """GC 向けの現行世代記述子（:class:`CacheLayout`）を返す（ISSUE-172）。
+
+    ``current`` は :func:`_disk_tf_variants` の各出力から世代 segment を抜き出して構成するため、
+    書込経路が使う世代タグと定義上一致する（片方だけ bump して使用中 dir が孤児化する事故を防ぐ）。
+    ``root`` はディスク無効時（``_TFP_CACHE_ROOT is False``）に ``None``＝走査対象外。
+    """
+    root = _tfp_disk_root()
+    gens = frozenset(
+        tf.split("/")[_DISK_TF_GEN_INDEX] for tf in _disk_tf_variants("_", float(_mpd.GRID_W))
+    )
+    return _CacheLayout(
+        name="tf-period",
+        root=_Path(root) if root else None,
+        gen_depth=_TFP_GEN_DEPTH,  # <sym>/<tf>/<gen>
+        current=gens,
+        reason=f"tf-period 旧世代（現行 {' / '.join(sorted(gens))}）",
+    )
 
 
 def _tfp_disk_root() -> "_Path | None":
@@ -150,7 +232,6 @@ def _day_columns(
     day_start = int(day_start)
     day_end = next_session_day_start(day_start)  # ISSUE-078: セッション日窓（DST 切替日は 23h/25h）。
     completed = day_end <= now_val
-    key = (symbol, tf, day_start)
     # ISSUE-068: 列のビニング解像度を最小価格単位→GRID_W(=10pt) へ粗くする（依頼者承認・2026-07-12）。
     #   最小単位（≈0.0255）は 1 期間に数百レベルを生み可視1年で 37MB → parse/描画でメインスレッドが
     #   5.4s ブロックしていた。列幅~10px では最小単位は視認不能ゆえ表示損失なし。GRID_W 化で 37MB→~1-2MB。
@@ -159,50 +240,38 @@ def _day_columns(
     unit = float(_UNIT_BY_TF.get(str(tf), _mpd.GRID_W))
     # ISSUE-078: セッション日キー世代 subdir（旧 UTC 日と不混在）。ISSUE-091 A3: 世代は生成本体の
     #   _TFP_CACHE_VERSION に連動（手書きリテラル排除・zp/dwell と同規律。v1 = 従来 's1' と同一パス）。
-    disk_tf = f"{tf}/s{_TFP_CACHE_VERSION}/g{unit:g}"
-    if completed:
-        hit = _DAY_MEM.get(key)
-        if hit is not None:
-            _DAY_MEM.move_to_end(key)
-            return hit
-        disk = _load_day_disk(symbol, disk_tf, day_start)
-        if disk is not None:
-            _DAY_MEM[key] = disk
-            _DAY_MEM.move_to_end(key)
-            while len(_DAY_MEM) > _DAY_MEM_MAX:
-                _DAY_MEM.popitem(last=False)
-            return disk
-    # ISSUE-078: 周期は「始端が本セッション日に属する」もので構成する。周期グリッドは従来どおり
-    #   UTC floor（チャートのバー時刻と一致）。tf<=1h は境界（毎時 21/22:00 UTC）に整列するため従来と
-    #   同形。4h はセッション境界を跨ぐ最終周期が生じるが始端所属で一意に割当（重複列を作らない）。
-    #   1D はセッション日そのもの＝1 周期（time=セッション始端）。
-    if tf_sec >= _DAY:
-        secs, mids = _mpd._load_window_ticks(symbol, day_start, day_end)
-        if not completed:
-            # ISSUE-083 追補: 当日のみ live buffer 末尾を合成（最新ティックの即時反映・完了日は不変）。
-            secs, mids = _merge_live_tail(secs, mids, live_ticks, day_start, day_end)
-        # 単一周期化: 秒を始端相対へシフトし全ティックを period 0 に畳む → time をセッション始端へ戻す。
-        shifted = np.asarray(secs, dtype=np.int64) - day_start if len(secs) else secs
-        cols = tf_period_profiles(shifted, mids, int(day_end - day_start), unit, 0, int(day_end - day_start))
-        for c in cols:
-            # 1D 列の time は 1D バー時刻規約（セッション日ラベルの UTC 深夜＝rollup/forming と同一）。
-            c["time"] = int(session_bar_time(day_start))
-    else:
-        p_first = ((day_start + tf_sec - 1) // tf_sec) * tf_sec       # 始端が本セッションに属す最初の周期。
-        p_last = ((day_end - 1) // tf_sec) * tf_sec                    # 始端が day_end 未満の最後の周期。
-        secs, mids = _mpd._load_window_ticks(symbol, p_first, p_last + tf_sec)
-        if not completed:
-            # ISSUE-083 追補: 当日のみ live buffer 末尾を合成（最新ティックの即時反映・完了日は不変）。
-            secs, mids = _merge_live_tail(secs, mids, live_ticks, p_first, p_last + tf_sec)
-        cols = tf_period_profiles(secs, mids, tf_sec, unit, p_first, day_end)
-    result = (unit, cols)
-    if completed:
-        _DAY_MEM[key] = result
-        _DAY_MEM.move_to_end(key)
-        while len(_DAY_MEM) > _DAY_MEM_MAX:
-            _DAY_MEM.popitem(last=False)
-        _save_day_disk(symbol, disk_tf, day_start, unit, cols)  # ISSUE-068: GRID_W subdir。
-    return result
+    # ISSUE-172: パス構成は単一情報源のビルダへ（GC 記述子 layout() と同一式）。
+
+    def _compute() -> "tuple[float, list]":
+        # ISSUE-078: 周期は「始端が本セッション日に属する」もので構成する。周期グリッドは従来どおり
+        #   UTC floor（チャートのバー時刻と一致）。tf<=1h は境界（毎時 21/22:00 UTC）に整列するため従来と
+        #   同形。4h はセッション境界を跨ぐ最終周期が生じるが始端所属で一意に割当（重複列を作らない）。
+        #   1D はセッション日そのもの＝1 周期（time=セッション始端）。
+        if tf_sec >= _DAY:
+            secs, mids = _mpd._load_window_ticks(symbol, day_start, day_end)
+            if not completed:
+                # ISSUE-083 追補: 当日のみ live buffer 末尾を合成（最新ティックの即時反映・完了日は不変）。
+                secs, mids = _merge_live_tail(secs, mids, live_ticks, day_start, day_end)
+            # 単一周期化: 秒を始端相対へシフトし全ティックを period 0 に畳む → time をセッション始端へ戻す。
+            shifted = np.asarray(secs, dtype=np.int64) - day_start if len(secs) else secs
+            cols = tf_period_profiles(shifted, mids, int(day_end - day_start), unit, 0, int(day_end - day_start))
+            for c in cols:
+                # 1D 列の time は 1D バー時刻規約（セッション日ラベルの UTC 深夜＝rollup/forming と同一）。
+                c["time"] = int(session_bar_time(day_start))
+        else:
+            p_first = ((day_start + tf_sec - 1) // tf_sec) * tf_sec       # 始端が本セッションに属す最初の周期。
+            p_last = ((day_end - 1) // tf_sec) * tf_sec                    # 始端が day_end 未満の最後の周期。
+            secs, mids = _mpd._load_window_ticks(symbol, p_first, p_last + tf_sec)
+            if not completed:
+                # ISSUE-083 追補: 当日のみ live buffer 末尾を合成（最新ティックの即時反映・完了日は不変）。
+                secs, mids = _merge_live_tail(secs, mids, live_ticks, p_first, p_last + tf_sec)
+            cols = tf_period_profiles(secs, mids, tf_sec, unit, p_first, day_end)
+        return unit, cols
+
+    return _DAY_CACHE.resolve(  # ISSUE-179 項目 B: 協調は単一実装（ISSUE-068: GRID_W subdir）。
+        key=(symbol, tf, day_start), symbol=symbol, disk_tf=_disk_tf_count(tf, unit),
+        disk_key=day_start, completed=completed, compute=_compute,
+    )
 
 
 def _day_columns_zp(
@@ -220,32 +289,18 @@ def _day_columns_zp(
     day_start = int(day_start)
     day_end = next_session_day_start(day_start)  # ISSUE-078。
     completed = day_end <= now_val
-    key = (symbol, tf, day_start, "zp")
-    disk_tf = f"{tf}/s3/zp-v{_zp._ZP_CACHE_VERSION}"  # ISSUE-085: VA 修正世代 s3。ISSUE-088 🔵-3: zp 内部世代（_ZP_CACHE_VERSION）へ連動（bump 時の陳腐値配信を防ぐ）。
-    if completed:
-        hit = _DAY_MEM.get(key)
-        if hit is not None:
-            _DAY_MEM.move_to_end(key)
-            return hit
-        disk = _load_day_disk(symbol, disk_tf, day_start)
-        if disk is not None:
-            _DAY_MEM[key] = disk
-            _DAY_MEM.move_to_end(key)
-            while len(_DAY_MEM) > _DAY_MEM_MAX:
-                _DAY_MEM.popitem(last=False)
-            return disk
-    # ISSUE-094 🔴-2: 集計エンジン（z 統計直計算・周期分割・ライブ合成）は compute 層へ移送。
-    unit, cols = _tfc.day_columns_zp_compute(
-        symbol, tf_sec, day_start, day_end, completed, now_val, live_ticks
+
+    def _compute() -> "tuple[float, list]":
+        # ISSUE-094 🔴-2: 集計エンジン（z 統計直計算・周期分割・ライブ合成）は compute 層へ移送。
+        return _tfc.day_columns_zp_compute(
+            symbol, tf_sec, day_start, day_end, completed, now_val, live_ticks
+        )
+
+    return _DAY_CACHE.resolve(  # ISSUE-179 項目 B: 協調は単一実装。
+        key=(symbol, tf, day_start, "zp"), symbol=symbol,
+        disk_tf=_disk_tf_zp(tf),  # ISSUE-085/088 🔵-3 の世代規約はビルダが所有（ISSUE-172）。
+        disk_key=day_start, completed=completed, compute=_compute,
     )
-    result = (unit, cols)
-    if completed:
-        _DAY_MEM[key] = result
-        _DAY_MEM.move_to_end(key)
-        while len(_DAY_MEM) > _DAY_MEM_MAX:
-            _DAY_MEM.popitem(last=False)
-        _save_day_disk(symbol, disk_tf, day_start, unit, cols)
-    return result
 
 
 def _label_midnight(label: str) -> int:
@@ -276,31 +331,18 @@ def _bucket_columns(
     unit = float(_mpd.GRID_W)
     bar_time = _label_midnight(label)
     completed = _bucket_completed(tf, label, now_val)
-    key = (symbol, tf, bar_time)
-    disk_tf = f"{tf}/s1/g{unit:g}"
-    if completed:
-        hit = _DAY_MEM.get(key)
-        if hit is not None:
-            _DAY_MEM.move_to_end(key)
-            return hit
-        disk = _load_day_disk(symbol, disk_tf, bar_time)
-        if disk is not None:
-            _DAY_MEM[key] = disk
-            _DAY_MEM.move_to_end(key)
-            while len(_DAY_MEM) > _DAY_MEM_MAX:
-                _DAY_MEM.popitem(last=False)
-            return disk
-    # ISSUE-094 🔴-2: バケット合成エンジンは compute 層へ移送（1D 列取得は完了日キャッシュ経路を DIP 注入）。
-    result: "tuple[float, list]" = _tfc.bucket_columns_compute(
-        symbol, tf, label, bar_time, now_val, live_ticks, day_columns_fn=_day_columns
+
+    def _compute() -> "tuple[float, list]":
+        # ISSUE-094 🔴-2: バケット合成エンジンは compute 層へ移送（1D 列取得は完了日キャッシュ経路を DIP 注入）。
+        return _tfc.bucket_columns_compute(
+            symbol, tf, label, bar_time, now_val, live_ticks, day_columns_fn=_day_columns
+        )
+
+    return _DAY_CACHE.resolve(  # ISSUE-179 項目 B: 協調は単一実装。
+        key=(symbol, tf, bar_time), symbol=symbol,
+        disk_tf=_disk_tf_bucket(tf, unit),  # ISSUE-172: 世代 s1 はビルダが所有（GC 記述子と同一式）。
+        disk_key=bar_time, completed=completed, compute=_compute,
     )
-    if completed:
-        _DAY_MEM[key] = result
-        _DAY_MEM.move_to_end(key)
-        while len(_DAY_MEM) > _DAY_MEM_MAX:
-            _DAY_MEM.popitem(last=False)
-        _save_day_disk(symbol, disk_tf, bar_time, result[0], result[1])
-    return result
 
 
 def _bucket_columns_zp(
@@ -308,8 +350,9 @@ def _bucket_columns_zp(
 ) -> "tuple[float, list]":
     """1W/1M バケットの zp 列（ISSUE-086）。
 
-    z は加算不可のため、セッション日次の {obs, mean, var}（:func:`_zp_day_rollup`＝znull キャッシュ
-    再利用・独立日ゆえモーメント加算可）を k 空間（絶対 log 格子＝日間で整列）で合成し、
+    z は加算不可のため、セッション日次の :class:`ZpRollup`（``obs``/``mean``/``var``・ISSUE-178 の
+    不変 DTO。:func:`_zp_day_rollup`＝znull キャッシュ再利用・独立日ゆえモーメント加算可）を
+    k 空間（絶対 log 格子＝日間で整列）で合成し、
     z = (Σobs − Σmean)/√Σvar を再計算する（compute_zp_profile の窓合成と同一規約）。
     levels/poc*/va/price 範囲は _day_columns_zp と同じ導出（levels=z>0＋POC セル・va=_value_area）。
     price_min/max は占有セル（Σobs>0）の格子境界（実 close との差は 1bp セル内）。
@@ -317,30 +360,16 @@ def _bucket_columns_zp(
     """
     bar_time = _label_midnight(label)
     completed = _bucket_completed(tf, label, now_val)
-    key = (symbol, tf, bar_time, "zp")
-    disk_tf = f"{tf}/s3/zp-v{_zp._ZP_CACHE_VERSION}"  # ISSUE-088 🔵-3: zp 内部世代へ連動。
-    if completed:
-        hit = _DAY_MEM.get(key)
-        if hit is not None:
-            _DAY_MEM.move_to_end(key)
-            return hit
-        disk = _load_day_disk(symbol, disk_tf, bar_time)
-        if disk is not None:
-            _DAY_MEM[key] = disk
-            _DAY_MEM.move_to_end(key)
-            while len(_DAY_MEM) > _DAY_MEM_MAX:
-                _DAY_MEM.popitem(last=False)
-            return disk
-    # ISSUE-094 🔴-2: バケット zp 合成エンジン（モーメント k 空間合成・z 再計算）は compute 層へ移送。
-    unit, cols = _tfc.bucket_columns_zp_compute(symbol, tf, label, bar_time, now_val, live_ticks)
-    result = (unit, cols)
-    if completed:
-        _DAY_MEM[key] = result
-        _DAY_MEM.move_to_end(key)
-        while len(_DAY_MEM) > _DAY_MEM_MAX:
-            _DAY_MEM.popitem(last=False)
-        _save_day_disk(symbol, disk_tf, bar_time, unit, cols)
-    return result
+
+    def _compute() -> "tuple[float, list]":
+        # ISSUE-094 🔴-2: バケット zp 合成エンジン（モーメント k 空間合成・z 再計算）は compute 層へ移送。
+        return _tfc.bucket_columns_zp_compute(symbol, tf, label, bar_time, now_val, live_ticks)
+
+    return _DAY_CACHE.resolve(  # ISSUE-179 項目 B: 協調は単一実装。
+        key=(symbol, tf, bar_time, "zp"), symbol=symbol,
+        disk_tf=_disk_tf_zp(tf),  # ISSUE-088 🔵-3 の世代規約はビルダが所有（ISSUE-172）。
+        disk_key=bar_time, completed=completed, compute=_compute,
+    )
 
 
 def _parse_int(v: Any) -> "int | None":

@@ -24,6 +24,8 @@ import numpy as np
 
 from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute import market_profile_zp as _zp
+# ISSUE-178: 層間 DTO（不変）。日別 z ロールアップは frozen dataclass で受け渡す。
+from market_profile_api.compute.rollup_dto import ZpRollup
 from market_profile_api.compute.market_profile import _value_area
 from market_profile_api.compute.tf_period_profile import _value_area_sparse
 from marketdata.session_day import (
@@ -71,7 +73,7 @@ def merge_live_tail(
 
 def live_zp_day_roll(
     symbol: Any, day_start: int, now_val: float, live_ticks: "list | None"
-) -> "dict | None":
+) -> "ZpRollup | None":
     """当日（未完了セッション）の zp 日次ロールアップを live buffer 合成グリッドで都度計算する。
 
     :func:`market_profile_zp._zp_day_rollup` の未完了分岐と同一規約（elapsed cap・M_REPS_LIVE・
@@ -88,8 +90,7 @@ def live_zp_day_roll(
     if grid is None:
         return None
     closes, open_d = grid
-    elapsed = int((now_val - day_start) // 60) - _zp.SESSION_OPEN_MOD + 1
-    col_hi = max(1, min(_zp.G_MINUTES, elapsed))
+    col_hi = _zp.asof_col_hi(now_val, day_start)  # ISSUE-179: as-of 経過分クランプの単一情報源。
     obs_closes = closes[:col_hi]
     klo = int(np.floor(np.log(float(obs_closes.min())) / _zp.W_LOG))
     khi = int(np.floor(np.log(float(obs_closes.max())) / _zp.W_LOG))
@@ -101,7 +102,7 @@ def live_zp_day_roll(
         S, open_d, klo, khi, rng=rng, m_reps=_zp.M_REPS_LIVE, col_hi=col_hi
     )
     obs = _zp.obs_cell_counts(closes, klo, khi, col_hi=col_hi)
-    return {"kmin": klo, "obs": obs, "mean": mean, "var": var}
+    return ZpRollup(kmin=klo, obs=obs, mean=mean, var=var)
 
 
 def day_columns_zp_compute(
@@ -133,8 +134,7 @@ def day_columns_zp_compute(
                 col_cap = g
                 m_reps = _zp.M_REPS_DAY
             else:
-                elapsed = int((now_val - day_start) // 60) - _zp.SESSION_OPEN_MOD + 1
-                col_cap = max(1, min(g, elapsed))
+                col_cap = _zp.asof_col_hi(now_val, day_start)  # ISSUE-179: 同上（単一情報源）。
                 m_reps = _zp.M_REPS_LIVE
             seg_all = closes[:col_cap]
             # ISSUE-079: zp 内部格子は 1bp log 一様（W_LOG）。セル中心価格は exp((k+0.5)·W_LOG)。
@@ -242,12 +242,12 @@ def bucket_columns_zp_compute(
 ) -> "tuple[float, list]":
     """1W/1M バケットの zp 列 ``(unit, columns)`` を計算する（ISSUE-086・キャッシュ非依存）。
 
-    z は加算不可のため、セッション日次の {obs, mean, var}（:func:`market_profile_zp._zp_day_rollup`＝
+    z は加算不可のため、セッション日次の :class:`ZpRollup`（:func:`market_profile_zp._zp_day_rollup`＝
     znull キャッシュ再利用・独立日ゆえモーメント加算可）を k 空間（絶対 log 格子＝日間で整列）で合成し、
     z = (Σobs − Σmean)/√Σvar を再計算する（compute_zp_profile の窓合成と同一規約）。当日を含むセッションは
     :func:`live_zp_day_roll` で都度計算。controller の :func:`_bucket_columns_zp` が完了判定・保存で包む。
     """
-    rolls: "list[dict]" = []
+    rolls: "list[ZpRollup]" = []
     for lab in period_session_labels(tf, label):
         day = session_label_to_start(lab)
         if day >= now_val:
@@ -260,17 +260,19 @@ def bucket_columns_zp_compute(
             rolls.append(roll)
     cols: list = []
     if rolls:
-        klo = min(r["kmin"] for r in rolls)
-        khi = max(r["kmin"] + len(r["obs"]) - 1 for r in rolls)
+        klo = min(r.kmin for r in rolls)
+        khi = max(r.kmin + len(r.obs) - 1 for r in rolls)
         size = khi - klo + 1
         obs_sum = np.zeros(size)
         mean_sum = np.zeros(size)
         var_sum = np.zeros(size)
         for r in rolls:
-            off = r["kmin"] - klo
-            obs_sum[off:off + len(r["obs"])] += r["obs"]
-            mean_sum[off:off + len(r["mean"])] += r["mean"]
-            var_sum[off:off + len(r["var"])] += r["var"]
+            # ISSUE-178: 書込先 obs_sum/mean_sum/var_sum は本関数所有の可変配列。DTO 配列（r.obs 等）は
+            #   右辺＝読み取りのみのため read-only 化と両立する（in-place 更新は行わない）。
+            off = r.kmin - klo
+            obs_sum[off:off + len(r.obs)] += r.obs
+            mean_sum[off:off + len(r.mean)] += r.mean
+            var_sum[off:off + len(r.var)] += r.var
         centers = np.exp((klo + np.arange(size) + 0.5) * _zp.W_LOG)
         z = _zp._fine_z(obs_sum, mean_sum, var_sum)
         mid = (centers[0] + centers[-1]) / 2.0

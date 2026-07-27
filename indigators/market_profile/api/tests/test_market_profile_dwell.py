@@ -20,7 +20,10 @@ import pandas as pd
 import pytest
 
 from market_profile_api.compute import market_profile_dwell as mpd
+from market_profile_api.compute.rollup_dto import DayRollup
 from market_profile_api.controller.market_profile_controller import handle_market_profile
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
 _DAY = 86400
 # 2024-01-01 00:00 UTC（月曜・UTC 真夜中）。weekday = ((s//86400)+3)%7 = 0（月）。
@@ -39,7 +42,7 @@ def _isolate_caches(tmp_path, monkeypatch):
     ディスクキャッシュ基点を tmp へ差し替え、実データ DATA_DIR/cache への書込を完全に防ぐ
     （既存データ非破壊・cache ディレクトリのみ書込の制約を保証する）。
     """
-    monkeypatch.setattr(mpd, "_CACHE_ROOT", tmp_path / "mp_dwell_cache")
+    monkeypatch.setattr(_mp_cache_settings, "DWELL_CACHE_ROOT", tmp_path / "mp_dwell_cache")
     # 既存テストは署名(ソースティック署名)チェックを中和する（cur_sig="" ＝保存時の既定 "" と一致）。
     #   無効化(署名変化→再計算)は専用テスト TestCacheInvalidation で個別に検証する。
     monkeypatch.setattr(mpd, "_day_source_signature", lambda symbol, day_start: "")
@@ -289,11 +292,11 @@ class TestDayRollupCaching:
 class TestDiskCache:
     def test_roundtrip_preserves_kmin_and_variable_length_arrays(self):
         # Arrange: 可変長 dwell/cnt・kmin を持つロールアップ。
-        roll = {
-            "kmin": 97,
-            "dwell": np.array([1.0, 0.0, 5.5, 2.25], dtype=float),
-            "cnt": np.array([3.0, 0.0, 7.0, 4.0], dtype=float),
-        }
+        roll = DayRollup(
+            kmin=97,
+            dwell=np.array([1.0, 0.0, 5.5, 2.25], dtype=float),
+            cnt=np.array([3.0, 0.0, 7.0, 4.0], dtype=float),
+        )
         path = mpd._cache_path("JP225", _DAY0)
 
         # Act: 保存 → 別プロセス相当（メモリ非依存）で読込。
@@ -301,13 +304,15 @@ class TestDiskCache:
         loaded, _sig = mpd._load_day_rollup(path)
 
         # Assert: kmin・可変長配列が完全一致。
-        assert loaded is not mpd._CACHE_MISS and loaded is not None
-        assert loaded["kmin"] == 97
-        assert np.array_equal(loaded["dwell"], roll["dwell"])
-        assert np.array_equal(loaded["cnt"], roll["cnt"])
+        assert loaded is not mpd.dwell_cache_miss() and loaded is not None
+        assert loaded.kmin == 97
+        assert np.array_equal(loaded.dwell, roll.dwell)
+        assert np.array_equal(loaded.cnt, roll.cnt)
+        # ISSUE-178: 層間 DTO は不変（読込側も write=False）。
+        assert not loaded.dwell.flags.writeable and not loaded.cnt.flags.writeable
 
     def test_roundtrip_empty_day_is_none(self):
-        # 実データ無しの完了日（None）は None として往復し、_CACHE_MISS と区別される。
+        # 実データ無しの完了日（None）は None として往復し、CACHE_MISS と区別される。
         path = mpd._cache_path("JP225", _DAY0)
         mpd._save_day_rollup(path, None)
         loaded, _sig = mpd._load_day_rollup(path)
@@ -315,7 +320,7 @@ class TestDiskCache:
 
     def test_missing_file_returns_cache_miss(self):
         path = mpd._cache_path("JP225", _DAY0)
-        assert mpd._load_day_rollup(path)[0] is mpd._CACHE_MISS
+        assert mpd._load_day_rollup(path)[0] is mpd.dwell_cache_miss()
 
     def test_completed_day_is_persisted_to_disk(self, monkeypatch):
         # 完了日ロールアップはディスクにファイルが作られる。
@@ -346,7 +351,7 @@ class TestDiskCache:
         table = np.ones((7, 24), dtype=bool)
         day = _DAY0
         now = day + _DAY + 1
-        roll = {"kmin": 100, "dwell": np.array([9.0]), "cnt": np.array([2.0])}
+        roll = DayRollup(kmin=100, dwell=np.array([9.0]), cnt=np.array([2.0]))
         mpd._save_day_rollup(mpd._cache_path("JP225", day), roll)  # 事前にディスクへ配置。
 
         calls = []
@@ -357,8 +362,8 @@ class TestDiskCache:
         got = mpd._day_rollup("JP225", day, table, now)
 
         assert calls == []                       # 計算は行われない（ディスクヒット）。
-        assert got["kmin"] == 100
-        assert np.array_equal(got["dwell"], roll["dwell"])
+        assert got.kmin == 100
+        assert np.array_equal(got.dwell, roll.dwell)
         assert ("JP225", day) in mpd._DAY_CACHE   # 以後はメモリからも返る。
 
     def test_search_order_both_empty_computes_and_saves(self, monkeypatch):
@@ -386,7 +391,7 @@ class TestDiskCache:
         path = mpd._cache_path("JP225", day)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"not-a-valid-npz")  # 破損データ。
-        assert mpd._load_day_rollup(path)[0] is mpd._CACHE_MISS
+        assert mpd._load_day_rollup(path)[0] is mpd.dwell_cache_miss()
 
         secs, mids = _synthetic_master()
         calls = []
@@ -403,16 +408,16 @@ class TestDiskCache:
         assert got is not None
 
     def test_version_mismatch_is_ignored(self):
-        # バージョン不整合は無視して _CACHE_MISS（再計算に委ねる）。
+        # バージョン不整合は無視して CACHE_MISS（再計算に委ねる）。
         day = _DAY0
         path = mpd._cache_path("JP225", day)
-        roll = {"kmin": 5, "dwell": np.array([1.0]), "cnt": np.array([1.0])}
+        roll = DayRollup(kmin=5, dwell=np.array([1.0]), cnt=np.array([1.0]))
         mpd._save_day_rollup(path, roll)
-        monkeypatch_version = mpd._CACHE_VERSION + 999
+        monkeypatch_version = _mp_cache_settings.DWELL_CACHE_VERSION + 999
         # 保存済みファイルの version を実行時定数からずらして読む（不整合を模す）。
         import unittest.mock as _mock
-        with _mock.patch.object(mpd, "_CACHE_VERSION", monkeypatch_version):
-            assert mpd._load_day_rollup(path)[0] is mpd._CACHE_MISS
+        with _mock.patch.object(_mp_cache_settings, "DWELL_CACHE_VERSION", monkeypatch_version):
+            assert mpd._load_day_rollup(path)[0] is mpd.dwell_cache_miss()
 
 
 # --------------------------------------------------------------------------- #
@@ -453,7 +458,7 @@ class TestCacheInvalidation:
         now = day + _DAY + 1
         path = mpd._cache_path("JP225", day)
         monkeypatch.setattr(mpd, "_day_source_signature", lambda s, d: "sameSig")
-        roll = {"kmin": 100, "dwell": np.array([9.0]), "cnt": np.array([2.0])}
+        roll = DayRollup(kmin=100, dwell=np.array([9.0]), cnt=np.array([2.0]))
         mpd._save_day_rollup(path, roll, "sameSig")
         mpd._reset_caches()
         calls = []
@@ -463,7 +468,7 @@ class TestCacheInvalidation:
         )
         got = mpd._day_rollup("JP225", day, np.ones((7, 24), dtype=bool), now)
         assert calls == [], "署名一致なら再計算しない"
-        assert got["kmin"] == 100
+        assert got.kmin == 100
 
     def test_empty_completed_day_is_not_memoized_and_recomputes_same_process(self, monkeypatch):
         # 🟡-1: 空(None)完了日はメモリにメモ化しない → 同一プロセス内でティック到着(署名変化)しても

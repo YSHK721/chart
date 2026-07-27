@@ -32,7 +32,8 @@ def warm_zp_cache(
     now_val = _time.time() if now is None else float(now)
     lo = pd.Timestamp("2000-01-01") if start is None else pd.Timestamp(start)
     hi = pd.Timestamp(now_val, unit="s").normalize() if end is None else pd.Timestamp(end)
-    files = _zp.day_parquet_files(lo, hi, symbol=symbol)
+    # ISSUE-183: 列挙ポートの契約は UNIX 秒 int（dwell warmer と同規則）。
+    files = _zp.day_parquet_files(int(lo.timestamp()), int(hi.timestamp()), symbol=symbol)
     built = skipped = 0
     # ISSUE-078: 実在 parquet（UTC 日）から被覆セッション日集合を導出（dwell warm と同規則）。
     session_days = sorted({session_day_start(_day_start_from_tick_path(p)) for p in files}
@@ -40,7 +41,8 @@ def warm_zp_cache(
     for day_start in session_days:
         if next_session_day_start(day_start) > now_val:
             continue
-        if _zp.zp_store().null_path(symbol, day_start).is_file():  # ISSUE-137: StorePort 経由（旧 _zp._STORE）。
+        # ISSUE-137: StorePort 経由（旧 _zp._STORE）。ISSUE-182 item3: null_path のみ＝znull 役割の狭いポート。
+        if _zp.zp_null_store().null_path(symbol, day_start).is_file():
             skipped += 1
             continue
         _zp._zp_day_rollup(symbol, day_start, now_val)

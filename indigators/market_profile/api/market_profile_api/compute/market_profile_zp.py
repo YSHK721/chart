@@ -28,7 +28,7 @@ from __future__ import annotations
 import time as _time
 import math as _math
 import zlib as _zlib
-from pathlib import Path as _Path
+# ISSUE-183 item5: Path は _ZP_CACHE_ROOT 注釈専用だったため、設定の gateway 移送に伴い不要。
 from typing import Any
 
 import numpy as np
@@ -47,14 +47,22 @@ from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute import null_b_kernel as _null_b  # ISSUE-094 🔴-2: 帰無サロゲート純カーネル（step5 と共有）
 from market_profile_api.compute.market_profile import _value_area
 from market_profile_api.compute.market_profile_dwell import GRID_W  # noqa: F401  (dwell 互換・zp 内部では不使用)
+# ISSUE-178: 層間 DTO（不変）。日別 z ロールアップは生 dict でなく :class:`ZpRollup` で受け渡す。
+from market_profile_api.compute.rollup_dto import ZpRollup
 
 # ISSUE-137（DIP）: z(p) 永続キャッシュ Store への依存は compute 所有の Output Boundary
 #   （StorePort）へ逆転（tick I/O と同規律）。具象 ZpStore の結線は composition root（gateway/
 #   composition）が担い、compute は本ポート（zp_store()）にのみ依存する（module-level 直 new を撤去）。
-from market_profile_api.compute.store_port import (  # noqa: F401  (set_zp_store は注入 API として再エクスポート)
+# ISSUE-182 item3（ISP）: 太い ZpStorePort は役割別（mgrid 系 / znull 系）へ分割済み。本モジュールの
+#   2 クライアントは自分の役割 getter にのみ依存する（_mgrid_of_day → zp_mgrid_store、
+#   _zp_day_rollup → zp_null_store）。``zp_store`` は既存消費者（tests・cache_layout・warmer 互換）
+#   向けに再エクスポートを温存する。
+from market_profile_api.compute.store_port import (  # noqa: F401  (set_zp_store/zp_store は注入・互換 API として再エクスポート)
     ZpStorePort,
     set_zp_store,
     zp_cache_miss,
+    zp_mgrid_store,
+    zp_null_store,
     zp_store,
 )
 
@@ -87,6 +95,7 @@ from market_profile_api.compute.market_profile_zp_kernel import (  # noqa: E402,
     _fine_z,
     _poc_star_from_fine,
     _session_entry_zp,
+    asof_col_hi,
     build_step_matrix,
     day_seed,
     minute_close_grid,
@@ -96,9 +105,10 @@ from market_profile_api.compute.market_profile_zp_kernel import (  # noqa: E402,
 )
 
 
-def day_parquet_files(lo_day, hi_day, *, symbol: str):
+def day_parquet_files(lo_day: int, hi_day: int, *, symbol: str):
     """正準ティック日別ファイルの列挙（TickReaderPort へ委譲・read-only）。
 
+    ISSUE-183: 引数は UNIX 秒（int・UTC 日始端）。``pd.Timestamp`` 変換は gateway 実装が担う。
     既存テストの monkeypatch 単一注入点（``zp.day_parquet_files``）を module 属性として温存する。
     """
     return _tick_reader().day_files(lo_day, hi_day, symbol=symbol)
@@ -117,21 +127,26 @@ M_REPS_LIVE = 1000     # 当日/部分日の都度計算用
 # --------------------------------------------------------------------------- #
 # ディスク永続キャッシュ（ZpStore）とプロセス内キャッシュ
 # --------------------------------------------------------------------------- #
-_ZP_CACHE_VERSION = 3  # v3: bp 相対 log 格子（ISSUE-079）＝znull を全無効化（mgrid は格子非依存で温存）。
-_ZP_CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_zp)。テストは tmp を注入。
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数＝偶有的性質）は本質層である本モジュールから
+#   gateway 側 :mod:`market_profile_api.gateway.cache_settings`（``ZP_CACHE_ROOT`` / ``ZP_CACHE_VERSION``）
+#   へ**移送**した（旧 module private ``_ZP_CACHE_ROOT`` / ``_ZP_CACHE_VERSION``）。移送であり複製では
+#   ない（二重情報源を作らない）。テストの tmp 隔離・版数 bump も gateway 側を差し替える。
 
 # ISSUE-137（DIP）: 既定 ZpStore の合成は composition root（gateway/composition.default_zp_store）へ
-#   移設した。本 module の設定変数（_ZP_CACHE_ROOT / NULL_HIST_DAYS / M_REPS_DAY / ZP_BP /
-#   _ZP_CACHE_VERSION / day_parquet_files）は composition の provider が call-time に読む（monkeypatch
-#   経路を温存）。永続化 I/O は zp_store()（未注入時は composition の既定・注入時は set_zp_store の実体）
-#   へ委譲する。CACHE_MISS 番兵は gateway 具象のクラス属性で identity 一致（旧 ZpStore.CACHE_MISS と同一）。
-_CACHE_MISS = zp_cache_miss()
+#   移設した。本 module の本質パラメータ（NULL_HIST_DAYS / M_REPS_DAY / ZP_BP / day_parquet_files）は
+#   composition の provider が call-time に読む（monkeypatch 経路を温存）。永続化 I/O は zp_store()
+#   （未注入時は composition の既定・注入時は set_zp_store の実体）へ委譲する。
+# ISSUE-177（LSP）: CACHE_MISS 番兵は **call-time** に :func:`zp_cache_miss` で取得する（module 定数
+#   への import 時束縛を撤去）。定数化すると既定具象 ``ZpStore.CACHE_MISS`` が焼き込まれ、
+#   ``ZpStorePort`` 準拠だが既定具象非派生の Store を :func:`set_zp_store` で注入したとき、その Store の
+#   番兵と identity 不一致になり「キャッシュミス番兵を実データとして受理」する（Port 準拠実装が既定具象と
+#   置換不能＝LSP 破綻。実測: `closes, open_d = grid` で TypeError）。番兵の所有者は常に現在の Store。
 
 # プロセス内キャッシュ。完了日のみメモ化（Y2a・dwell と同規約）。
 _MGRID_CACHE: "dict[tuple[str, int], tuple[np.ndarray, float] | None]" = {}
-_NULL_CACHE: "dict[tuple[str, int], dict | None]" = {}
+_NULL_CACHE: "dict[tuple[str, int], ZpRollup | None]" = {}
 # 当日/部分窓の都度計算メモ（同一クエリ内・同一分内の再計算吸収。キーに範囲・経過分を含む）。
-_LIVE_CACHE: "dict[tuple, dict | None]" = {}
+_LIVE_CACHE: "dict[tuple, ZpRollup | None]" = {}
 _LIVE_CACHE_MAX = 32
 # 直近 S（ステップ行列）の単一エントリメモ（当日 refresh の連続呼び出し用）。
 _S_CACHE: "dict[str, tuple[int, np.ndarray]]" = {}
@@ -145,7 +160,7 @@ def _reset_caches() -> None:
     _S_CACHE.clear()
 
 
-def _live_memo_put(key: tuple, value: "dict | None") -> None:
+def _live_memo_put(key: tuple, value: "ZpRollup | None") -> None:
     if len(_LIVE_CACHE) >= _LIVE_CACHE_MAX:
         _LIVE_CACHE.pop(next(iter(_LIVE_CACHE)))
     _LIVE_CACHE[key] = value
@@ -161,12 +176,12 @@ def _mgrid_of_day(symbol: str, day_start: int, now: float) -> "tuple[np.ndarray,
         return _MGRID_CACHE[key]
     day_end = next_session_day_start(int(day_start))  # ISSUE-078: DST 切替日は 23h/25h。
     completed = day_end <= now
-    _store = zp_store()
+    _store = zp_mgrid_store()  # ISSUE-182 item3: mgrid 役割の狭いポート（znull 系は使わない）。
     path = _store.mgrid_path(symbol, int(day_start))
     cur_sig = _store.day_source_signature(symbol, int(day_start)) if completed else ""
     if completed:
         disk, cached_sig = _store.load_mgrid(path)
-        if disk is not _CACHE_MISS and cached_sig == cur_sig:
+        if disk is not _store.CACHE_MISS and cached_sig == cur_sig:
             if disk is not None:
                 _MGRID_CACHE[key] = disk  # 非空のみメモ化（stale-empty はディスク署名照合に委ねる）。
             return disk
@@ -216,8 +231,8 @@ def _hist_step_matrix(symbol: str, day_start: int, now: float) -> "np.ndarray | 
 # --------------------------------------------------------------------------- #
 # 日別 z ロールアップ（観測占有＋Null B モーメント）
 # --------------------------------------------------------------------------- #
-def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
-    """1 カレンダー日の ``{kmin, obs[], mean[], var[]}``。
+def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "ZpRollup | None":
+    """1 カレンダー日の :class:`ZpRollup`（``kmin, obs[], mean[], var[]``・不変 DTO）。
 
     探索順: メモリ → ディスク（完了日のみ・署名照合） → 計算（完了日なら保存）。
     当日は経過分（col_hi）までに観測・帰無とも限定し、M_REPS_LIVE で都度計算する
@@ -231,12 +246,12 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
     completed = next_session_day_start(int(day_start)) <= now  # ISSUE-078。
     if completed and key in _NULL_CACHE:
         return _NULL_CACHE[key]
-    _store = zp_store()
+    _store = zp_null_store()  # ISSUE-182 item3: znull 役割の狭いポート（mgrid 系は使わない）。
     path = _store.null_path(symbol, int(day_start))
     cur_sig = _store.day_source_signature(symbol, int(day_start)) if completed else ""
     if completed:
         disk, cached_sig = _store.load_null(path)
-        if disk is not _CACHE_MISS and cached_sig == cur_sig:
+        if disk is not _store.CACHE_MISS and cached_sig == cur_sig:
             if disk is not None:
                 _NULL_CACHE[key] = disk
             return disk
@@ -254,8 +269,7 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
         col_hi = G_MINUTES
         m_reps = M_REPS_DAY
     else:
-        elapsed = int((now - int(day_start)) // 60) - SESSION_OPEN_MOD + 1
-        col_hi = max(1, min(G_MINUTES, elapsed))
+        col_hi = asof_col_hi(now, day_start)  # ISSUE-179: as-of 経過分クランプの単一情報源。
         m_reps = M_REPS_LIVE
         live_key = (symbol, int(day_start), col_hi)
         if live_key in _LIVE_CACHE:
@@ -272,7 +286,7 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
             S, open_d, klo, khi, rng=rng, m_reps=m_reps, col_hi=col_hi
         )
         obs = obs_cell_counts(closes, klo, khi, col_hi=col_hi)
-        roll = {"kmin": klo, "obs": obs, "mean": mean, "var": var}
+        roll = ZpRollup(kmin=klo, obs=obs, mean=mean, var=var)
     if completed:
         if roll is not None:
             _NULL_CACHE[key] = roll
@@ -285,7 +299,7 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "dict | None":
     return roll
 
 
-def _zp_partial_rollup(symbol: str, lo: int, hi: int, now: float) -> "dict | None":
+def _zp_partial_rollup(symbol: str, lo: int, hi: int, now: float) -> "ZpRollup | None":
     """境界日（サブ日窓 ``[lo, hi)``）の部分 z ロールアップ（replay の from/to 途中日用）。
 
     観測・帰無ともカラム範囲 [col_lo, col_hi) に限定して評価する。完了窓（hi <= now）のみ
@@ -304,15 +318,17 @@ def _zp_partial_rollup(symbol: str, lo: int, hi: int, now: float) -> "dict | Non
     if now < day_start:
         return None
     grid = _mgrid_of_day(symbol, day_start, now)
-    roll: "dict | None" = None
+    roll: "ZpRollup | None" = None
     if grid is not None:
         closes, open_d = grid
         col_lo = max(0, (int(lo) - day_start) // 60 - SESSION_OPEN_MOD)
         col_hi_t = min(G_MINUTES, (int(hi) - day_start) // 60 - SESSION_OPEN_MOD)
         # 当日はさらに経過分まで（未来分の ffill 幻影滞在を数えない）。
+        # ISSUE-179: クランプ規則は共有ヘルパ（単一情報源）。col_hi_t は直上で min(G_MINUTES, ...)
+        #   済みのため、``min(col_hi_t, max(1, elapsed))`` との値一致は G>=1 で恒真
+        #   （test_asof_clamp_single_source.test_partial_window_composition_is_equivalent が実証）。
         if next_session_day_start(day_start) > now:  # ISSUE-078。
-            elapsed = int((now - day_start) // 60) - SESSION_OPEN_MOD + 1
-            col_hi_t = min(col_hi_t, max(1, elapsed))
+            col_hi_t = min(col_hi_t, asof_col_hi(now, day_start))
         if col_hi_t > col_lo:
             seg = closes[col_lo:col_hi_t]
             klo = int(np.floor(np.log(float(seg.min())) / W_LOG))
@@ -325,7 +341,7 @@ def _zp_partial_rollup(symbol: str, lo: int, hi: int, now: float) -> "dict | Non
                     col_lo=col_lo, col_hi=col_hi_t,
                 )
                 obs = obs_cell_counts(closes, klo, khi, col_lo=col_lo, col_hi=col_hi_t)
-                roll = {"kmin": klo, "obs": obs, "mean": mean, "var": var}
+                roll = ZpRollup(kmin=klo, obs=obs, mean=mean, var=var)
     if int(hi) <= now:
         _live_memo_put(key, roll)
     return roll
@@ -351,7 +367,7 @@ def compute_zp_profile(
 ) -> dict:
     """超過占有 z(p) プロファイル（candle/dwell 版と同一スキーマ・値の意味のみ z）。
 
-    実期間 ``[t0, t1+bar_sec)`` を日単位に走査し、日別 ``{obs, mean, var}`` を
+    実期間 ``[t0, t1+bar_sec)`` を日単位に走査し、日別 :class:`ZpRollup`（obs/mean/var）を
     :func:`_zp_day_rollup`（完全日）/ :func:`_zp_partial_rollup`（境界日）で得て
     obs_sum/mean_sum/var_sum を GRID_W fine grid へ加算する。
     窓 z: z_win(k) = (Σobs − Σmean)/√(Σvar)（日間・セル間とも独立近似。サロゲート内の
@@ -407,19 +423,19 @@ def compute_zp_profile(
             else:
                 roll = _zp_partial_rollup(symbol, lo_t, hi_t, now_val)
             if roll is not None:
-                _accumulate(obs_sum, roll["obs"], roll["kmin"])
-                _accumulate(mean_sum, roll["mean"], roll["kmin"])
-                _accumulate(var_sum, roll["var"], roll["kmin"])
+                _accumulate(obs_sum, roll.obs, roll.kmin)
+                _accumulate(mean_sum, roll.mean, roll.kmin)
+                _accumulate(var_sum, roll.var, roll.kmin)
                 if want_sessions or want_today:
-                    z_day = _fine_z(roll["obs"], roll["mean"], roll["var"])
+                    z_day = _fine_z(roll.obs, roll.mean, roll.var)
                     fine_day = np.zeros(max(size, 1))
-                    _accumulate(fine_day, z_day, roll["kmin"])
+                    _accumulate(fine_day, z_day, roll.kmin)
                     disp_day = np.zeros(n_bins)
                     cd = np.exp((kw0 + np.arange(size) + 0.5) * W_LOG)
                     dd = np.clip(((cd - price_min) / binw).astype(int), 0, n_bins - 1)
                     np.add.at(disp_day, dd, fine_day[:size])
                     poc_day = _poc_star_from_fine(
-                        z_day, roll["kmin"], (price_min + price_max) / 2.0
+                        z_day, roll.kmin, (price_min + price_max) / 2.0
                     )
                     last_z_disp = disp_day
                     last_poc = poc_day

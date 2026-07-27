@@ -108,21 +108,74 @@ def test_default_store_wiring_lives_in_gateway_composition():
     assert "def default_tick_store" in comp and "MarketdataTickStore(" in comp
 
 
+class _FakeZp:
+    """``ZpStorePort`` を満たす代替実装（ディスクの代わりにプロセス内 dict へ保存する）。
+
+    ISSUE-177: ``set_zp_store`` の ``isinstance`` ガード導入に伴い、Port の**全**必須属性を備える。
+    ダミー返却ではなく Port の意味論（save→load の往復／未保存は :attr:`CACHE_MISS`／``None`` は
+    「実データ無しの完了日」として ``CACHE_MISS`` と区別）を実際に満たすため、代替実装が既定具象と
+    置換可能であること（LSP）をテストが実挙動で検出できる。
+    """
+
+    CACHE_MISS = object()
+
+    def __init__(self, root: Path = Path("/fake/zp")) -> None:
+        self._root = root
+        self._saved: dict = {}
+
+    def cache_root(self) -> Path:
+        return self._root
+
+    def mgrid_path(self, symbol, day_start):  # noqa: ANN001
+        return self._root / "mgrid" / str(symbol) / f"{int(day_start)}.npz"
+
+    def null_path(self, symbol, day_start):  # noqa: ANN001
+        return self._root / "znull" / str(symbol) / f"{int(day_start)}.npz"
+
+    def save_mgrid(self, path, grid, sig: str = "") -> None:  # noqa: ANN001
+        self._saved[path] = (grid, sig)
+
+    def load_mgrid(self, path):  # noqa: ANN001
+        return self._saved.get(path, (self.CACHE_MISS, ""))
+
+    def save_null(self, path, roll, sig: str = "") -> None:  # noqa: ANN001
+        self._saved[path] = (roll, sig)
+
+    def load_null(self, path):  # noqa: ANN001
+        return self._saved.get(path, (self.CACHE_MISS, ""))
+
+    def day_source_signature(self, symbol, day_start) -> str:  # noqa: ANN001
+        return f"{symbol}:{int(day_start)}"
+
+
+class _FakeDwell:
+    """``DwellStorePort`` を満たす代替実装（プロセス内 dict 保存・意味論は :class:`_FakeZp` と同じ）。"""
+
+    CACHE_MISS = object()
+
+    def __init__(self, root: Path = Path("/fake/dwell")) -> None:
+        self._root = root
+        self._saved: dict = {}
+
+    def cache_root(self) -> Path:
+        return self._root
+
+    def cache_path(self, symbol, day_start):  # noqa: ANN001
+        return self._root / str(symbol) / f"{int(day_start)}.npz"
+
+    def save_day_rollup(self, path, roll, sig: str = "") -> None:  # noqa: ANN001
+        self._saved[path] = (roll, sig)
+
+    def load_day_rollup(self, path):  # noqa: ANN001
+        return self._saved.get(path, (self.CACHE_MISS, ""))
+
+    def day_source_signature(self, symbol, day_start) -> str:  # noqa: ANN001
+        return f"{symbol}:{int(day_start)}"
+
+
 def test_store_port_injection_round_trip(monkeypatch):
     """ISSUE-137: set_zp_store / set_dwell_store 注入シームが compute から機能する（TickStorePort と同規律）。"""
     from market_profile_api.compute import store_port as sp
-
-    class _FakeZp:
-        CACHE_MISS = object()
-
-        def null_path(self, symbol, day_start):  # noqa: ANN001
-            return Path(f"/fake/zp/{symbol}/{day_start}.npz")
-
-    class _FakeDwell:
-        CACHE_MISS = object()
-
-        def cache_path(self, symbol, day_start):  # noqa: ANN001
-            return Path(f"/fake/dwell/{symbol}/{day_start}.npz")
 
     fz, fd = _FakeZp(), _FakeDwell()
     monkeypatch.setattr(sp, "_ZP_STORE", None)
@@ -136,16 +189,34 @@ def test_store_port_injection_round_trip(monkeypatch):
     # 注入すると getter は注入実体を返す。
     sp.set_zp_store(fz)
     sp.set_dwell_store(fd)
-    assert sp.zp_store() is fz
-    assert sp.dwell_store() is fd
-    assert sp.zp_cache_miss() is _FakeZp.CACHE_MISS
-    assert sp.dwell_cache_miss() is _FakeDwell.CACHE_MISS
-    sp.set_zp_store(None)
-    sp.set_dwell_store(None)
+    try:
+        assert sp.zp_store() is fz
+        assert sp.dwell_store() is fd
+        assert sp.zp_cache_miss() is _FakeZp.CACHE_MISS
+        assert sp.dwell_cache_miss() is _FakeDwell.CACHE_MISS
+        # 代替実装が Port の意味論を満たす（未保存は CACHE_MISS・save→load で往復・sig 併記）。
+        zpath = fz.null_path("SYN", 1704067200)
+        assert fz.load_null(zpath)[0] is _FakeZp.CACHE_MISS
+        fz.save_null(zpath, {"probe": 1}, "sig-z")
+        assert fz.load_null(zpath) == ({"probe": 1}, "sig-z")
+        dpath = fd.cache_path("SYN", 1704067200)
+        assert fd.load_day_rollup(dpath)[0] is _FakeDwell.CACHE_MISS
+        fd.save_day_rollup(dpath, None, "sig-d")
+        assert fd.load_day_rollup(dpath) == (None, "sig-d")  # None は「実データ無し」＝MISS と別物。
+    finally:
+        sp.set_zp_store(None)
+        sp.set_dwell_store(None)
 
 
 def test_old_compute_store_paths_reexport():
-    """旧 compute パスは gateway への薄い再エクスポートとして温存される（既存 import 無変更で動く）。"""
+    """旧 compute パスは gateway への薄い再エクスポートとして温存される（既存 import 無変更で動く）。
+
+    ISSUE-183: シムの**消費者**（``test_market_profile_dwell_store`` / ``test_market_profile_zp_store``）は
+    gateway 直参照へ移行済みで、旧 compute パスを import するのは本テスト（＝シム自身の契約テスト）
+    のみになった。本テストを gateway 直参照へ書き換えると ``GwDwell is GwDwell`` の恒真式に退化して
+    契約検証が消えるため、シムが現存する限り本テストは旧パス参照のまま残す
+    （``_REEXPORT_SHIMS`` 免除の根拠もこれ）。シム 2 ファイルの削除は要承認事項。
+    """
     from market_profile_api.compute.market_profile_dwell_store import DwellRollupStore
     from market_profile_api.compute.market_profile_zp_store import ZpStore
     from market_profile_api.gateway.dwell_rollup_store import (

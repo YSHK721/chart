@@ -10,8 +10,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pandas as pd
-
 _PKG = Path(__file__).resolve().parents[1] / "market_profile_api"
 
 # I/O 具象（物理格納・配置）とみなす marketdata サブモジュール。純業務規則（session_day/tf_meta）は許容。
@@ -40,12 +38,9 @@ class _FakeStore:
         self.calls: list[tuple] = []
 
     def day_files(self, lo_day, hi_day, *, symbol):
-        self.calls.append(("day_files", str(lo_day), str(hi_day), symbol))
+        # ISSUE-183: ポート契約は UNIX 秒 int。受領値をそのまま記録し型の貫通を検出可能にする。
+        self.calls.append(("day_files", lo_day, hi_day, symbol))
         return []
-
-    def read_ticks(self, path, columns):
-        self.calls.append(("read_ticks", str(path), tuple(columns)))
-        return pd.DataFrame(columns=list(columns))
 
     def data_dir(self):
         return self._tmp
@@ -60,9 +55,13 @@ def test_set_tick_store_injects_into_dwell_and_zp(tmp_path, monkeypatch):
     monkeypatch.setattr(tsp, "_STORE", fake)
 
     # dwell / zp の列挙シム（monkeypatch 温存の module 属性）がポートへ委譲する。
-    assert mpd.day_parquet_files(pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-06"), symbol="JP225") == []
-    assert zp.day_parquet_files(pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-06"), symbol="JP225") == []
+    # ISSUE-183: ポート契約は UNIX 秒 int（pandas 型はポートを貫通しない）。
+    day0, day1 = 1767571200, 1767657600  # 2026-01-05 / 2026-01-06 00:00 UTC。
+    assert mpd.day_parquet_files(day0, day1, symbol="JP225") == []
+    assert zp.day_parquet_files(day0, day1, symbol="JP225") == []
     assert [c[0] for c in fake.calls] == ["day_files", "day_files"]
+    # 実引数が int のまま実装へ届く（int→pd.Timestamp 変換は gateway 実装の内側に閉じる）。
+    assert [(c[1], c[2]) for c in fake.calls] == [(day0, day1), (day0, day1)]
 
 
 def test_default_store_is_marketdata_gateway(monkeypatch):
@@ -86,13 +85,13 @@ class _DataRootOnly:
 
 
 class _TickReaderOnly:
-    """TickReaderPort だけを満たすフェイク（data_dir を持たない）。"""
+    """TickReaderPort だけを満たすフェイク（data_dir を持たない）。
+
+    ISSUE-182 item3: ``read_ticks`` は Port から降格したため実装しない（Port が要求しない）。
+    """
 
     def day_files(self, lo_day, hi_day, *, symbol):
         return []
-
-    def read_ticks(self, path, columns):
-        return None
 
     def load_window_ticks(self, symbol, start, end, *, columns, outlier_frac):
         return (None, None)
@@ -118,7 +117,7 @@ def test_narrow_getters_share_single_injection_seam(monkeypatch):
     """data_root() / tick_reader() は単一の注入シーム（tick_store）へ委譲する（既存挙動温存）。"""
     from market_profile_api.compute import tick_store_port as tsp
 
-    fake = _FakeStore(Path("/tmp"))  # data_dir + day_files + read_ticks を満たす。
+    fake = _FakeStore(Path("/tmp"))  # data_dir + day_files を満たす。
     monkeypatch.setattr(tsp, "_STORE", fake)
     assert tsp.data_root() is fake
     assert tsp.tick_reader() is fake
