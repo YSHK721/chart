@@ -12,7 +12,6 @@
 
 import {
   emptyState,
-  listForView,
   apply,
   recompute,
   toggleVisible as facadeToggleVisible,
@@ -20,18 +19,25 @@ import {
   toggleFavorite as facadeToggleFavorite,
   setSeriesStyles,
   reconcileSeriesStyles,
-  deserialize,
 } from '../../usecase/facade.js';
 import { PropertiesDialog } from './properties_dialog.js';
 import { IndicatorLegendView } from './indicator_legend_view.js';
 import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_params.js';
 import { MarketProfileController } from './market_profile_controller.js';
 import { TimeframeController } from './timeframe_controller.js';
-import { seriesKind } from '../../domain/series_kind.js';
-import { barStyleEditableFor } from '../../usecase/form_model.js';
+import { IndicatorDialogController } from './indicator_dialog_controller.js';
+// F3 系列名照合（§3.3.6）の純ロジック（ISSUE-181・SRP で外出し）。
+import {
+  expandSeriesNamePattern,
+  expectedSeriesNames,
+  validateSeriesNames,
+} from './series_name_matcher.js';
 import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
 import { isActorDriven } from '../../usecase/actor_driven_ids.js';
 import { STALL_DEADLINE_MS, UpdateScheduler } from './update_scheduler.js';
+import { RecomputeGate } from './recompute_gate.js';
+import { SeriesRenderRouter } from './series_render_router.js';
+import { IndicatorStateStore } from './indicator_state_store.js';
 
 // STALL_DEADLINE_MS の単一ソースは update_scheduler.js（ISSUE-157・SOLID 是正 🔴-1 で抽出）。
 //   既存 import（テスト・他ファイル）を壊さないため本モジュールからも再 export する。
@@ -56,14 +62,10 @@ export { STALL_DEADLINE_MS };
  * TimeframeController（時間足取得・切替ロール・A3）が host に要求する最小契約。
  *
  * @typedef {object} TimeframeHost
- * @property {string} _timeframe             現在の表示時間足（read/write）。
- * @property {number} _recomputeDepth        再計算バッチの競合ガード深さ（read/write）。
+ * @property {function} recomputeGate        再計算バッチの競合ガード（RecomputeGate）を返す。
  * @property {string} _datasetRef            計算対象データセット参照（read）。
- * @property {?number} _recentBars           直近表示本数（compute の limit）。null=制限なし（read）。
  * @property {{uiState: object}} _state      UI 永続状態を保持する純状態オブジェクト（read/write: uiState）。
  * @property {{setCandles: function}} _renderer  メイン系列差替に用いる renderer（read: setCandles を呼ぶ）。
- * @property {?function} _loadCandles        時間足切替時の candles 再取得ローダ（B方式のみ・A方式は null）。
- * @property {?function} _timeframeObserver  時間足変更の購読者（任意・1 個）。
  * @property {function} recomputeAllApplied  適用済み全指標の再計算入口（ライブ更新と共通・host 温存）。
  * @property {function} _persistAll          applied/favorites/uiState を永続化する。
  * @property {{timeframeBtns?: Iterable}} [_el]  時間足ボタン DOM（bind() 後のみ在席・optional）。
@@ -91,17 +93,19 @@ export { STALL_DEADLINE_MS };
  * @property {function} _withParams          state の instance params を差し替える。
  * @property {function} _defaultParams       def の既定 params を返す。
  * @property {function} _persistAll          applied/favorites/uiState を永続化する。
+ * @property {function} _commitState         協働子が算出した次 state を確定する（直接代入の代替）。
  * @property {?number} [_untilTime]          reveal（replay）の現在バー T。present は非在席（optional）。
  */
 
 // TimeframeHost 契約の実体列挙（構造充足テスト・依存面部分集合テストの固定点）。
 export const TIMEFRAME_HOST_CONTRACT = Object.freeze({
   role: 'TimeframeHost',
-  methods: Object.freeze(['recomputeAllApplied', '_persistAll']),
-  fields: Object.freeze([
-    '_timeframe', '_recomputeDepth', '_recomputeLastStartMs', '_datasetRef', '_recentBars',
-    '_state', '_renderer', '_loadCandles', '_timeframeObserver',
-  ]),
+  // ISSUE-181: 深さカウンタ（旧 _recomputeDepth / _recomputeLastStartMs）は RecomputeGate が
+  //   所有するため契約から外し、ゲート取得メソッド recomputeGate を契約面に置く。
+  methods: Object.freeze(['recomputeAllApplied', '_persistAll', 'recomputeGate']),
+  // ISSUE-181: 時間足ロールの状態（_timeframe / _recentBars / _loadCandles / 変更購読者）は
+  //   TimeframeController が所有するため契約から外れた。host に残るのは他アクターの持ち物のみ。
+  fields: Object.freeze(['_datasetRef', '_state', '_renderer']),
   // bind() 後のみ在席（fresh インスタンスでは未在席・controller は optional chaining で許容）。
   optionalFields: Object.freeze(['_el']),
 });
@@ -112,6 +116,8 @@ export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
   methods: Object.freeze([
     '_mpParams', '_isMarketProfile', '_paramsObject', '_renderLegend',
     '_defaultVariant', '_withParams', '_defaultParams', '_persistAll',
+    // ISSUE-181: state 更新は host のフィールドへ直接代入せず本メソッド経由で依頼する。
+    '_commitState',
   ]),
   fields: Object.freeze([
     '_marketProfile', '_mpModeResolver', '_mpGrowthResolver', '_state',
@@ -120,12 +126,6 @@ export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
   // reveal seam: replay subclass のみ在席（present base では非在席・controller は != null で許容）。
   optionalFields: Object.freeze(['_untilTime']),
 });
-
-// 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
-//   せず全件返るため対象外（latest 経路に乗らず remove+redraw へフォールバックする）。
-function isTailUpdatable(payload) {
-  return seriesKind(payload.kind).tailUpdatable;
-}
 
 export class IndicatorController {
   // mode: 計算モード。'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算）。
@@ -144,6 +144,10 @@ export class IndicatorController {
     //   controller は行の view-model＋コールバックを注入するだけ。doc=null でも構築でき、
     //   その場合 View 各メソッドは要素不在で no-op（node 単体テスト互換）。
     this._legendView = new IndicatorLegendView({ document: doc });
+    // 描画振分（A9・ISSUE-181）を委譲する協働子。描画先 renderer を自身の出力ポートとして所有する。
+    this._router = new SeriesRenderRouter(this, renderer);
+    // 永続化・復元（UC-07・A10・ISSUE-181）を委譲する協働子。復元中 Promise は協働子が所有する。
+    this._store = new IndicatorStateStore(this);
     this._mode = mode;
     // Market Profile アクター（任意注入）。computeId==='market_profile' の指標を
     //   /compute 経由でなく本アクター（GET /market_profile → primitive）へ委譲する。
@@ -159,29 +163,22 @@ export class IndicatorController {
     this._mpGrowthResolver = typeof mpGrowthResolver === 'function' ? mpGrowthResolver : null;
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
-    // 時間足（§チャート表示時間選択・1 分足原子から resample）。compute/candles に伝搬する。
-    this._timeframe = timeframe;
-    // 直近表示本数（§配信設計: リサンプル＋直近 N 本）。compute の limit に伝搬する。null=制限なし。
-    this._recentBars = recentBars;
-    // 時間足切替時に candles を再取得するローダ (datasetRef, timeframe) → Promise<candles|null>。
-    //   B方式のみ注入される（A方式は SAMPLE_DATA・再集計不可のため null）。
-    this._loadCandles = loadCandles;
-    // 時間足変更の購読者（任意・1 個）。setTimeframe 適用後に新時間足を通知する。
-    //   売買マーカーの該当時間足フィルタ等、時間足に連動する描画の配線点。
-    this._timeframeObserver = null;
+    // 時間足取得・切替（A3）を委譲する協働子（ISSUE-094 🔴-4 / ISSUE-181）。setTimeframe /
+    //   ボタン同期 / gateway の timeframe・limit 注入を担う。ISSUE-181: 時間足ロールの状態
+    //   （現在足・直近表示本数・candles ローダ・変更購読者）は本協働子が所有する（host は
+    //   下の互換アクセサで委譲するだけでフィールドを持たない）。ライブ再計算入口
+    //   （recomputeAllApplied）は controller 温存。
+    this._tf = new TimeframeController(this, { timeframe, recentBars, loadCandles });
 
     // メモリ状態（facade の純状態オブジェクト）。
     this._state = emptyState();
     // instanceId -> { def } 描画済みメタ（凡例再描画・recompute 用）。
     this._meta = new Map();
-    // ダイアログ絞り込み UI 状態。
-    this._filter = { tab: 'indicator', category: null, query: '', favoriteOnly: false };
-    // 再計算実行中の深さ（競合ガードの単一権威）。ライブ更新（LiveUpdater）は独自フラグを
-    //   持たず isRecomputing() を参照し、再計算中の tick をスキップする。bool ではなく深さ
-    //   カウンタにするのは、setTimeframe（candles 取得 await＋全指標再計算）が内側の
-    //   recomputeInstance をネスト呼びするため。bool だと内側 finally がバッチ途中で解除し、
-    //   その隙に tick が割り込む（torn なバッチ）。カウンタなら最外バッチ終了まで true を維持する。
-    this._recomputeDepth = 0;
+    // 再計算バッチの競合ガード（深さカウンタ＋時限）は RecomputeGate が所有する
+    //   （ISSUE-181: 状態も一緒に移す。TimeframeController の host フィールド直接代入も解消）。
+    //   ライブ更新（LiveUpdater）は独自フラグを持たず isRecomputing() を参照し、再計算中の
+    //   tick をスキップする。
+    this._gate = new RecomputeGate();
     // ISSUE-157（クロック駆動設計）: 指標更新の「要求フラグ＋クロック」駆動は UpdateScheduler へ
     //   委譲する（SOLID 是正 🔴-1・設計意図の詳細は update_scheduler.js 冒頭コメント参照）。
     //   実体（末尾差分/full 再計算）と外部バッチ述語（isRecomputing・時限式）を依存注入する。
@@ -190,18 +187,14 @@ export class IndicatorController {
       runFull: () => this.recomputeAllApplied({ mode: 'full' }),
       isBlocked: () => this.isRecomputing(),
     });
-    // isRecomputing() の時限化に使う（外部バッチのハングでゲートが恒久 true にならない）。
-    this._recomputeLastStartMs = 0;
-    // ISSUE-153: 復元実行中の Promise（null=非実行）。applyIndicator が完了待ちに使う。
-    this._restoreInFlight = null;
     // MP（A7）アクター駆動のオーケストレーションを委譲する協働子（ISSUE-094 🔴-4）。
     //   host=this を渡し、apply/enable/toggle/remove/gear/reapply/restore/live-recompute を委譲する。
     //   subclass の inherited メソッド呼出（this._toggleMarketProfileVisible 等）・_mpParams override を
     //   温存するため base の各 MP メソッドは本協働子への薄いラッパへ縮退する（byte 挙動不変）。
     this._mp = new MarketProfileController(this);
-    // 時間足取得・切替（A3）を委譲する協働子（ISSUE-094 🔴-4）。setTimeframe / ボタン同期 /
-    //   gateway の timeframe・limit 注入を担う。ライブ再計算入口（recomputeAllApplied）は controller 温存。
-    this._tf = new TimeframeController(this);
+    // 指標追加ダイアログ（一覧・絞り込み・開閉）を委譲する協働子（ISSUE-181・A8）。
+    //   絞り込み UI 状態（旧 this._filter）は協働子が所有する（状態も一緒に移す）。
+    this._dialog = new IndicatorDialogController(this);
   }
 
   // 競合ガード: 再計算バッチ実行中なら true。LiveUpdater が tick 先頭で参照しスキップ判定する。
@@ -209,11 +202,39 @@ export class IndicatorController {
   //   正のままになる（＝全ゲートが恒久閉鎖）。STALL_DEADLINE_MS を超えて「実行中」のバッチは
   //   ハングとみなし false を返す（守るべき健全なバッチはもう存在しない）。
   isRecomputing() {
-    if (this._recomputeDepth <= 0) {
-      return false;
-    }
-    return (Date.now() - this._recomputeLastStartMs) <= STALL_DEADLINE_MS;
+    return this._gate.isBusy();
   }
+
+  // 競合ガード本体（RecomputeGate）を協働子へ公開する（TimeframeController が enter/exit する）。
+  recomputeGate() {
+    return this._gate;
+  }
+
+  // ---- 互換アクセサ: 旧 host フィールド面（_recomputeDepth / _recomputeLastStartMs）----
+  //   実体は RecomputeGate が所有する（host はフィールドを持たない）。既存テストが任意の
+  //   深さ・開始時刻を注入して時限挙動を検証するため、読み書き両方を委譲で維持する。
+  get _recomputeDepth() { return this._gate.depth(); }
+
+  set _recomputeDepth(value) { this._gate.setDepth(value); }
+
+  get _recomputeLastStartMs() { return this._gate.lastStartMs(); }
+
+  set _recomputeLastStartMs(value) { this._gate.setLastStartMs(value); }
+
+  // ---- 互換アクセサ: 旧 host フィールド面（時間足ロール・ISSUE-181）----
+  //   実体は TimeframeController が所有する。既存の読み書き（restore の時間足確定、
+  //   replay.js の計算窓 _recentBars 差し替え、composition root/テストの参照）を温存する。
+  get _timeframe() { return this._tf.current(); }
+
+  set _timeframe(value) { this._tf.setCurrent(value); }
+
+  get _recentBars() { return this._tf.recentBars(); }
+
+  set _recentBars(value) { this._tf.setRecentBars(value); }
+
+  get _loadCandles() { return this._tf.loader(); }
+
+  get _timeframeObserver() { return this._tf.observer(); }
 
   // =========================================================================
   // 足内（形成中バー）末尾差分再計算 — ライブ・リプレイ同一設計（2026-07-22 ユーザー裁定）
@@ -253,105 +274,25 @@ export class IndicatorController {
   // F3 系列名照合（§3.3.6・DOM 非依存の純ロジック）
   // =========================================================================
 
-  // SeriesDef.series_name（dynamic は series_name_pattern 展開）の期待集合を返す。
-  //   params を渡すと、pattern が *FromParam を宣言する系列は現在の params から期待名を
-  //   生成する（moving_averages: 任意期間 252 等を許容・§3.3.6 拡張）。params 省略時は
-  //   pattern の静的 buckets/pcts へフォールバック（profit_band 等・後方互換）。
+  // 期待集合の算出は series_name_matcher.js（純関数）へ外出しした（ISSUE-181・SRP）。
+  //   以下 3 メソッドは replay subclass の this._validateSeriesNames 呼出・差し替えテスト・
+  //   既存単体テスト（ctrl._expectedSeriesNames 等）を温存する薄い委譲（挙動不変）。
   _expectedSeriesNames(def, params = null) {
-    const names = new Set();
-    for (const s of def.series ?? []) {
-      if (s.dynamic && s.seriesNamePattern) {
-        for (const name of this._expandPattern(s.seriesNamePattern, params)) {
-          names.add(name);
-        }
-      } else if (s.seriesName) {
-        names.add(s.seriesName);
-      }
-    }
-    return names;
+    return expectedSeriesNames(def, params);
   }
 
-  // series_name_pattern を展開（{bucket} {pct} 形式）。
-  //   pattern.bucketsFromParam / pctsFromParam が指定され params が与えられた場合は、当該 param
-  //   値リストからトークンを生成する（bucketsUpper=大文字化 / pctsInt=整数文字列化）。これにより
-  //   ユーザが入力した任意期間（pcts 静的リスト外の 252 等）も期待集合に含まれ F3 を通過する。
-  //   未指定・params 無し時は従来どおり静的 buckets/pcts を直積展開する（profit_band 28 系列等）。
   _expandPattern(pattern, params = null) {
-    const template = pattern.template ?? '';
-    let buckets = pattern.buckets ?? [''];
-    let pcts = pattern.pcts ?? [''];
-    if (params) {
-      if (pattern.bucketsFromParam && Array.isArray(params[pattern.bucketsFromParam])) {
-        buckets = params[pattern.bucketsFromParam].map(
-          (v) => (pattern.bucketsUpper ? String(v).toUpperCase() : String(v)),
-        );
-      }
-      if (pattern.pctsFromParam && Array.isArray(params[pattern.pctsFromParam])) {
-        pcts = params[pattern.pctsFromParam].map(
-          (v) => (pattern.pctsInt ? String(Math.round(Number(v))) : String(v)),
-        );
-      }
-    }
-    const out = [];
-    for (const bucket of buckets) {
-      for (const pct of pcts) {
-        out.push(template.replace('{bucket}', bucket).replace('{pct}', pct));
-      }
-    }
-    return out;
+    return expandSeriesNamePattern(pattern, params);
   }
 
-  // F3: 期待集合に含まれない系列はスキップ（renderLine に渡さない）＋ console.warn 記録。
-  //   params は dynamic pattern の *FromParam 展開に用いる（省略時は静的フォールバック）。
   _validateSeriesNames(payloads, def, params = null) {
-    const expected = this._expectedSeriesNames(def, params);
-    return (payloads ?? []).filter((p) => {
-      const ok = expected.has(p.name);
-      if (!ok && typeof console !== 'undefined' && console.warn) {
-        console.warn(`[F3] 系列名不一致のためスキップ: instance=${def.id} name=${p.name}`);
-      }
-      return ok;
-    });
+    return validateSeriesNames(payloads, def, params);
   }
 
-  // 描画: F3 通過系列を kind 別に renderer へ渡す（line / histogram / horizontal_line）。
-  //   params は F3 期待名の動的生成（moving_averages の任意期間）に用いる。
-  //   placement='overlay' は価格 pane(0) のローソクへ重畳（バンド等）、'pane' は専用 pane
-  //   （v5 ネイティブ・独立価格軸＋指標名＋高さドラッグ）。renderer が pane 生成と水準線配線を担う。
+  // 描画振分（kind 別の renderer 呼び分け）は SeriesRenderRouter（A9）へ外出しした（ISSUE-181）。
+  //   以下は subclass の inherited 呼出・既存テストを温存する薄い委譲（挙動不変）。
   _draw(instanceId, def, series, params = null) {
-    const validated = this._validateSeriesNames(series, def, params);
-    // kind → 描画経路は series_kind 台帳（renderRoute）で一元化（新種別は台帳追記で完結・OCP）。
-    //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
-    const routed = { line: [], histogram: [], horizontal: [] };
-    for (const p of validated) {
-      // 案A（btlm_trail_marod）: barStyleEditable 一致系列（front カタログ由来・backend 非関与）へ
-      //   bar_editable=true を注入する。renderer はこのヒントで line ⇄ histogram スワップ対象を識別
-      //   し保持データを退避する（p.kind を消費する本ループが唯一の front 系列メタ付与点＝同所）。
-      //   非一致系列にはキーを付けない（renderer の bar_editable===true ゲートが false のまま＝非波及）。
-      if (barStyleEditableFor(def, p.name)) {
-        p.bar_editable = true;
-      }
-      const route = seriesKind(p.kind).renderRoute;
-      if (routed[route]) {
-        routed[route].push(p);
-      }
-    }
-    const lines = routed.line;
-    const histograms = routed.histogram;
-    const hlines = routed.horizontal;
-    const opts = { pane: def.placement !== 'overlay', name: this._label(def) };
-    if (histograms.length > 0) {
-      this._renderer.renderHistogram(instanceId, histograms, opts);
-    }
-    if (lines.length > 0) {
-      this._renderer.renderLine(instanceId, lines, opts);
-    }
-    for (const h of hlines) {
-      this._renderer.renderHorizontal(instanceId, h.lines ?? []);
-    }
-    // ISSUE-109: 保存済みスタイル上書きを再適用する（redraw/restore/時間足切替で系列は
-    //   ペイロード既定色で再生成されるため、描画の最後に毎回上書きし直す＝永続反映）。
-    this._applyStoredStyles(instanceId);
+    return this._router.draw(instanceId, def, series, params);
   }
 
   // AppliedInstance.styles（系列名 -> {color?,width?,style?,visible?}）を renderer へ適用する。
@@ -470,6 +411,24 @@ export class IndicatorController {
     return this._mp.onGear(inst, def);
   }
 
+  // 協働子が算出した次 state を確定する（ISSUE-181: 協働子が host の private フィールドへ
+  //   直接代入しない＝状態の所有者は host、更新の依頼は本メソッド経由に一本化する）。
+  _commitState(state) {
+    this._state = state;
+  }
+
+  // 直近 compute 応答 series を確定する（協働子が host のフィールドへ直接代入しないための依頼口）。
+  //   applyIndicator/restore の単発（直列）経路が _lastSeries を読むため面を維持する。
+  _commitLastSeries(series) {
+    this._lastSeries = series;
+  }
+
+  // 復元した時間足を確定する（所有者は TimeframeController。協働子が host のフィールドへ
+  //   直接代入しないための依頼口）。
+  _commitTimeframe(timeframe) {
+    this._tf.setCurrent(timeframe);
+  }
+
   // AppliedInstance（不変・凍結）の params のみ差し替えた state を返す（_withVariant と同型）。
   _withParams(state, instanceId, values) {
     const pairs = Object.entries(values ?? {});
@@ -525,8 +484,7 @@ export class IndicatorController {
     // 競合ガード: 再計算中は isRecomputing()=true（ライブ更新の tick がスキップ判定に参照）。
     //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
     //   開始時刻の記録は isRecomputing() の時限判定（ISSUE-157）に使う。
-    this._recomputeDepth += 1;
-    this._recomputeLastStartMs = Date.now();
+    this._gate.enter();
     try {
       const result = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
       // 競合削除ガード（ISSUE-105 🟡-2）: recompute の await 中に凡例 close（removeInstance）で
@@ -564,54 +522,22 @@ export class IndicatorController {
         hidden: !!(inst && !inst.visible),
       };
     } finally {
-      this._recomputeDepth -= 1;
+      this._gate.exit();
     }
   }
 
-  // 描画フェーズ（同期）: 退避済み job の series を renderer へ反映する。await を挟まないため
-  //   複数 job を連続実行しても中間ペイントが起きず、全指標が同時に更新される（ISSUE-023）。
+  // 描画フェーズ（同期・実体は SeriesRenderRouter）。replay subclass が this._renderInstance を
+  //   呼び、既存テストが差し替えるためメソッド面を温存する（ISSUE-181・薄い委譲）。
   _renderInstance(job) {
-    if (!job || !job.accepted) {
-      return;
-    }
-    if (job.wantLatest) {
-      // Latest: 末尾K点を series.update で差分反映（過去確定足は不変・全描画しない）。
-      this._drawLatest(job.instanceId, job.def, job.series, job.params);
-    } else {
-      // params 変更で系列名が変わりうる（tgp の分位線 btlm_q{N}＝q_low/q_high 依存）ため、
-      // setData 差し替えでは改名系列が更新されず古い系列が残留・消失する。remove+redraw で
-      // 全系列を現在名で再生成する（line / horizontal_line 共通）。
-      // ISSUE-149: keepPane=true で pane を温存（従来の全除去→末尾 addPane は更新のたびに
-      //   pane が最下段へ移動していた）。redraw は既存 pane（同じ位置）へ再生成される。
-      this._renderer.remove(job.instanceId, { keepPane: true });
-      this._draw(job.instanceId, job.def, job.series, job.params);
-    }
-    // 非表示状態を維持（redraw は可視で再生成するため）。
-    if (job.hidden) {
-      this._renderer.setVisible(job.instanceId, false);
-    }
+    return this._router.renderJob(job);
   }
 
-  // def の全系列が末尾K差分可能（line/histogram のみ・horizontal_line を含まない）か。
-  //   latest 要求の可否を「計算前」に def の系列定義から判定する（結果データの kind ではない）。
-  //   混在/horizontal 指標は backend が line/histogram を末尾K点へ trim する一方フロントは全差替に
-  //   落ちるため、trim 済みデータで全描画＝ライン履歴が 1 点に潰れる。よって最初から full を要求する。
   _defCanTailUpdate(def) {
-    const series = def?.series ?? [];
-    if (series.length === 0) {
-      return false;
-    }
-    return series.every(isTailUpdatable);
+    return this._router.canTailUpdate(def);
   }
 
-  // Latest: F3 通過系列の末尾K点を {instanceId}::{name} キーで updateSeriesTail へ差分反映する。
   _drawLatest(instanceId, def, series, params = null) {
-    const validated = this._validateSeriesNames(series, def, params);
-    for (const p of validated) {
-      if (isTailUpdatable(p)) {
-        this._renderer.updateSeriesTail(`${instanceId}::${p.name}`, p.data ?? []);
-      }
-    }
+    return this._router.drawLatest(instanceId, def, series, params);
   }
 
   // UC-04 表示/非表示。
@@ -642,7 +568,7 @@ export class IndicatorController {
 
   // 時間足変更の購読者を登録する（任意・1 個）。setTimeframe 適用後に新時間足で呼ばれる。
   setTimeframeObserver(observer) {
-    this._timeframeObserver = observer;
+    this._tf.setObserver(observer);
   }
 
   // 適用済み全指標を現在の params / 時間足で再計算・再描画する（ライブ更新の再計算入口）。
@@ -726,80 +652,22 @@ export class IndicatorController {
     this._renderDialogList();
   }
 
-  // UC-07 永続化・復元。
+  // UC-07 永続化・復元は IndicatorStateStore（A10）へ外出しした（ISSUE-181）。
+  //   以下は subclass の inherited 呼出（this._persistAll）・composition root（controller.restore）・
+  //   既存テストを温存する薄い委譲（挙動不変）。
   _persistAll() {
-    this._persistence.saveApplied(this._state.applied.map((i) => this._toJson(i)));
-    this._persistence.saveFavorites(this._state.favorites);
-    this._persistence.saveUiState(this._state.uiState);
+    return this._store.persistAll();
   }
 
-  // ISSUE-153: restore は保存状態で _state を丸ごと置換するため、読込直後〜復元完了の間に
-  //   applyIndicator された指標が state から消え「描画だけ残る孤児」になる（以後どの再計算にも
-  //   乗らず凍結＝『ライブで btlm_trail が更新されない』の真因）。復元中フラグを公開し、
-  //   applyIndicator 側が完了を待つことで競合を排除する。
   async restore() {
-    const run = this._restoreRun();
-    this._restoreInFlight = run;
-    try {
-      await run;
-    } finally {
-      this._restoreInFlight = null;
-    }
+    return this._store.restore();
   }
 
-  async _restoreRun() {
-    const json = {
-      applied: this._persistence.loadApplied(),
-      favorites: this._persistence.loadFavorites(),
-      uiState: this._persistence.loadUiState(),
-    };
-    this._state = deserialize(JSON.stringify({ ...json, seqCounters: {} }));
-    // 永続化された時間足を復元（compute は gateway 経由で this._timeframe を注入するため再計算前に確定）。
-    //   初期足（constructor 値・composition root が candles 取得済み）と異なる場合のみ candles を再取得。
-    const savedTimeframe = this._state.uiState?.timeframe;
-    if (savedTimeframe && savedTimeframe !== this._timeframe) {
-      this._timeframe = savedTimeframe;
-      if (typeof this._loadCandles === 'function') {
-        const candles = await this._loadCandles(this._datasetRef, savedTimeframe);
-        if (candles && candles.length > 0) {
-          this._renderer.setCandles(candles);
-        }
-      }
-    }
-    this._syncTimeframeButtons();
-    // 復元した時間足を購読者へ通知する（売買マーカーの該当時間足フィルタが restore 後の
-    //   現在時間足を正しく評価できるようにする。通知欠落だと該当時間足でも非表示になる逆動作）。
-    this._timeframeObserver?.(this._timeframe);
-    // 各 instance を再計算して再描画（A方式は variant 事前計算データで復元）。
-    for (const inst of this._state.applied) {
-      const def = this._catalog.get(inst.indicatorId);
-      if (!def) {
-        continue;
-      }
-      this._meta.set(inst.instanceId, { def });
-      // MP 種別は /compute で計算しようとして失敗させない。復元は MP 側協働子へ委譲する
-      //   （保存 params を actor へ渡し、可視だった場合のみ有効化して再取得・表示・ISSUE-094 🔴-4）。
-      if (this._isMarketProfile(def)) {
-        await this._mp.restoreInstance(inst);
-        continue;
-      }
-      try {
-        const gateway = this._gatewayAdapter(inst.variant);
-        // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
-        const restoreParams = this._paramsObject(inst.params);
-        const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: restoreParams, datasetRef: this._datasetRef, generation: inst.generation });
-        this._lastSeries = result.series;
-        this._draw(inst.instanceId, def, this._lastSeries, restoreParams);
-        if (!inst.visible) {
-          this._renderer.setVisible(inst.instanceId, false);
-        }
-      } catch {
-        // 事前計算未収録 variant はスキップ（A方式制限）。
-      }
-    }
-    this._renderLegend();
-    this._renderDialogList();
-  }
+  // 復元実行中 Promise の互換アクセサ（実体は IndicatorStateStore が所有する）。
+  //   applyIndicator の競合ガードと、既存テストの直接注入を温存する。
+  get _restoreInFlight() { return this._store.inFlight(); }
+
+  set _restoreInFlight(value) { this._store.setInFlight(value); }
 
   // =========================================================================
   // ヘルパ
@@ -880,17 +748,7 @@ export class IndicatorController {
   }
 
   _toJson(i) {
-    return {
-      instanceId: i.instanceId,
-      indicatorId: i.indicatorId,
-      variant: i.variant,
-      params: i.params,
-      visible: i.visible,
-      generation: i.generation,
-      seq: i.seq,
-      createdAt: i.createdAt,
-      styles: i.styles ?? null,
-    };
+    return this._store.toJson(i);
   }
 
   // =========================================================================
@@ -916,26 +774,9 @@ export class IndicatorController {
       legend: doc.getElementById('legend'),
     };
     const e = this._el;
-    if (e.openBtn) {
-      e.openBtn.addEventListener('click', () => this._openDialog());
-    }
-    if (e.closeBtn) {
-      e.closeBtn.addEventListener('click', () => this._closeDialog());
-    }
-    if (e.search) {
-      e.search.addEventListener('input', (ev) => { this._filter.query = ev.target.value; this._renderDialogList(); });
-    }
-    for (const t of e.tabs ?? []) {
-      t.addEventListener('click', () => { this._setActive(e.tabs, t); this._filter.tab = t.dataset.tab; this._renderDialogList(); });
-    }
-    for (const c of e.cats ?? []) {
-      c.addEventListener('click', () => {
-        this._setActive(e.cats, c);
-        this._filter.category = c.dataset.category || null;
-        this._filter.favoriteOnly = c.dataset.category === '__favorites__';
-        this._renderDialogList();
-      });
-    }
+    // 指標追加ダイアログ（開閉・検索・タブ・カテゴリ）の配線は IndicatorDialogController へ
+    //   委譲する（ISSUE-181・絞り込み状態 _filter ごと移送済み）。
+    this._dialog.bindElements(e);
     // 時間足セレクタ（日/週/月…）。A方式（SAMPLE_DATA・再集計不可）は無効化する。
     for (const b of e.timeframeBtns ?? []) {
       if (this._mode === 'a') {
@@ -950,21 +791,14 @@ export class IndicatorController {
     this._renderLegend();
   }
 
-  // ダイアログ開: DOM の is-open トグルは View へ委譲。uiState 更新・リスト再描画は controller に残す
-  //   （dialog 要素在席時のみ状態を進める従来ガードを保持＝byte 挙動不変）。
+  // ダイアログ開閉・一覧描画は IndicatorDialogController（A8）へ外出しした（ISSUE-181）。
+  //   以下は subclass の inherited 呼出・既存テスト（ctrl._renderDialogList）を温存する薄い委譲。
   _openDialog() {
-    if (this._el?.dialog) {
-      this._legendView.setDialogOpen(true);
-      this._state.uiState = { ...this._state.uiState, dialogOpen: true };
-      this._renderDialogList();
-    }
+    return this._dialog.open();
   }
 
   _closeDialog() {
-    if (this._el?.dialog) {
-      this._legendView.setDialogOpen(false);
-      this._state.uiState = { ...this._state.uiState, dialogOpen: false };
-    }
+    return this._dialog.close();
   }
 
   // グループ内 active トグル（純 DOM）は View へ委譲する（bind の tab/category 配線から呼ばれる）。
@@ -978,20 +812,8 @@ export class IndicatorController {
     return k.includes('.') ? k.split('.').pop() : k;
   }
 
-  // ダイアログの指標リストを再描画する。行の view-model（label/category/favorite）＋コールバックを
-  //   組み立て、DOM 構築は IndicatorLegendView へ委譲する（ISSUE-038・SRP 是正）。挙動不変:
-  //   お気に入り絞り込み（listForView）・star の stopPropagation・row クリックの apply+close を保持。
   _renderDialogList() {
-    const favorites = this._state.favorites;
-    const defs = listForView({ ...this._filter, favorites });
-    const rows = defs.map((def) => ({
-      label: this._label(def),
-      category: (def.category?.nameKey ?? '').split('.').pop(),
-      favorite: favorites.includes(def.id),
-      onToggleFavorite: () => this.toggleFavorite(def.id),
-      onPick: () => { this.applyIndicator(def.id, this._defaultVariant(def)); this._closeDialog(); },
-    }));
-    this._legendView.renderDialogList(rows);
+    return this._dialog.renderList();
   }
 
   // 凡例を再描画する。行の view-model（label/visible）＋コールバックを組み立て、DOM 構築は

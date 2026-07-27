@@ -10,6 +10,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { IndicatorController, STALL_DEADLINE_MS } from '../js/adapter/front/indicator_controller.js';
+import { RecomputeGate } from '../js/adapter/front/recompute_gate.js';
+import { IndicatorStateStore } from '../js/adapter/front/indicator_state_store.js';
 import { get } from '../js/usecase/catalog.js';
 
 // DOM/port を使わない純ロジック検証のため、ports は最小スタブで生成。
@@ -512,6 +514,9 @@ test('requestFormingRecompute / requestFullRecompute delegate through the Update
 //   （深さカウンタの恒久ラッチでゲートが閉じ続けない）。
 test('isRecomputing self-opens when a batch hangs past STALL_DEADLINE_MS', () => {
   const ctrl = Object.create(IndicatorController.prototype);
+  // ISSUE-181: 深さカウンタ・開始時刻の所有者は RecomputeGate（host はフィールドを持たない）。
+  //   prototype 直生成のため constructor を経ないゲートをここで用意する（host 面の読み書きは不変）。
+  ctrl._gate = new RecomputeGate();
   ctrl._recomputeDepth = 1;
   ctrl._recomputeLastStartMs = Date.now();
   assert.equal(ctrl.isRecomputing(), true, '健全なバッチ中は true');
@@ -525,6 +530,9 @@ test('applyIndicator waits for an in-flight restore before applying (ISSUE-153)'
   const ctrl = Object.create(IndicatorController.prototype);
   const order = [];
   let releaseRestore;
+  // ISSUE-181: 復元中 Promise の所有者は IndicatorStateStore（host はフィールドを持たない）。
+  //   prototype 直生成のため constructor を経ない協働子をここで用意する（host 面の読み書きは不変）。
+  ctrl._store = new IndicatorStateStore(ctrl);
   ctrl._restoreInFlight = new Promise((res) => { releaseRestore = () => { order.push('restore-done'); res(); }; });
   ctrl._catalog = { get: () => null };   // def 解決前に await されることだけを検証（null で即 return）
   const p = ctrl.applyIndicator('btlm_trail', 'default').then(() => order.push('apply-done'));

@@ -47,7 +47,9 @@ test('unknown kind falls back to legacy comparison semantics', () => {
 
 test('registry is the only kind ledger (consumers reference it, no raw kind literals for capability branches)', () => {
   // 消費 3 ファイルは能力台帳を import し、能力分岐は seriesKind()/SERIES_KINDS 参照であること。
-  for (const f of ['indicator_controller.js', 'chart_renderer.js', 'properties_dialog.js']) {
+  // ISSUE-181: kind 別の描画振分は indicator_controller.js から series_render_router.js へ
+  //   移設した（消費者＝実際に kind で分岐するファイルを対象にする）。
+  for (const f of ['series_render_router.js', 'chart_renderer.js', 'properties_dialog.js']) {
     const src = readFileSync(path.join(FRONT, f), 'utf8');
     assert.ok(
       /from '\.\.\/\.\.\/domain\/series_kind\.js'/.test(src),

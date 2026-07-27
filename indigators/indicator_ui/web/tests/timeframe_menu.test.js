@@ -133,13 +133,14 @@ test('ISSUE-117 防御: DOM 不在・マウント欠落でも install は例外�
 
 // ---- syncButtons のトリガーラベル同期 ---------------------------------------
 
-function labelHost(timeframe) {
+// ISSUE-181: 現在足は TimeframeController が所有する（host のフィールドではない）。
+//   host は DOM 参照（_el）のみを提供し、時間足は構築時に協働子へ渡す。
+function labelHost() {
   const mk = (tf, text) => ({
     dataset: { timeframe: tf }, textContent: text,
     classList: { toggle() {} },
   });
   return {
-    _timeframe: timeframe,
     _el: {
       timeframeBtns: [mk('1m', '1分'), mk('1h', '1時間'), mk('1D', '日')],
       timeframeMenuLabel: { textContent: '' },
@@ -148,16 +149,15 @@ function labelHost(timeframe) {
 }
 
 test('ISSUE-117 syncButtons: トリガーラベルを現在足の表記へ更新する', () => {
-  const host = labelHost('1h');
-  new TimeframeController(host).syncButtons();
+  const host = labelHost();
+  new TimeframeController(host, { timeframe: '1h' }).syncButtons();
   assert.equal(host._el.timeframeMenuLabel.textContent, '1時間');
-  host._timeframe = '1D';
-  new TimeframeController(host).syncButtons();
+  new TimeframeController(host, { timeframe: '1D' }).syncButtons();
   assert.equal(host._el.timeframeMenuLabel.textContent, '日');
 });
 
 test('ISSUE-117 syncButtons: ラベル要素不在（旧 DOM）は従来どおり例外なく同期のみ', () => {
-  const host = labelHost('1m');
+  const host = labelHost();
   delete host._el.timeframeMenuLabel;
-  assert.doesNotThrow(() => new TimeframeController(host).syncButtons());
+  assert.doesNotThrow(() => new TimeframeController(host, { timeframe: '1m' }).syncButtons());
 });

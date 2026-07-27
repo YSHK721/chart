@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { ReplayIndicatorController } from '../js/adapter/front/replay_indicator_controller.js';
 import { CAUSAL_REVEAL_IDS } from '../js/usecase/causal_reveal_ids.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { TimeframeController } from '../js/adapter/front/timeframe_controller.js';
 
 const SERIES = [
   { name: 'btlm_trail_mean', kind: 'line', data: [
@@ -39,7 +40,9 @@ function newRevealCtrl({ applied, computeImpl } = {}) {
   ctrl._defaultVariant = () => 'default';
   ctrl._validateSeriesNames = (series) => series;
   ctrl._datasetRef = 'jp225_tick';
-  ctrl._timeframe = '1m';
+  // ISSUE-181: 時間足ロールの状態は TimeframeController が所有する（host はフィールドを持たない）。
+  //   prototype 直生成のため constructor を経ない協働子をここで用意する（host 面の読みは不変）。
+  ctrl._tf = new TimeframeController(ctrl, { timeframe: '1m' });
   ctrl._revealCache = new Map();
   ctrl._revealEpoch = 0;
   ctrl._computeCalls = [];

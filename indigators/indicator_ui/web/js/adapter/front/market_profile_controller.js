@@ -122,7 +122,7 @@ export class MarketProfileController {
       { indicatorId: def.id, variant: variant ?? host._defaultVariant(def), params, datasetRef: host._datasetRef },
       { compute: async () => ({ generation: 0 }) },
     );
-    host._state = state;
+    host._commitState(state);
     host._meta.set(instance.instanceId, { def });
     await this.enableMarketProfile(params);
     host._persistAll();
@@ -149,7 +149,7 @@ export class MarketProfileController {
   // MP 凡例 eye: 表示/非表示トグル（state.visible を反転し actor.setEnabled へ同期）。
   async toggleVisible(inst) {
     const host = this._host;
-    host._state = mpFacadeToggleVisible(host._state, inst.instanceId);
+    host._commitState(mpFacadeToggleVisible(host._state, inst.instanceId));
     const updated = host._state.applied.find((i) => i.instanceId === inst.instanceId);
     if (host._marketProfile && updated) {
       await host._marketProfile.setEnabled(updated.visible);
@@ -168,7 +168,7 @@ export class MarketProfileController {
         host._marketProfile.detach();
       }
     }
-    host._state = mpFacadeRemove(host._state, inst.instanceId);
+    host._commitState(mpFacadeRemove(host._state, inst.instanceId));
     host._meta.delete(inst.instanceId);
     host._persistAll();
     host._renderLegend();
@@ -184,7 +184,7 @@ export class MarketProfileController {
       ? stored
       : host._defaultParams(def);
     const applyParams = async (values) => {
-      host._state = host._withParams(host._state, inst.instanceId, values);
+      host._commitState(host._withParams(host._state, inst.instanceId, values));
       if (host._marketProfile) {
         this.applyMpParams(values);
         // [reveal seam] reveal（replay）かつ **push 成長中**（isGrowingPush＝growing かつ非 sessions）のときだけ

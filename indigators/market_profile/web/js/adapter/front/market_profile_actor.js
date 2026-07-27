@@ -10,84 +10,38 @@
 
 // セッション日境界（ISSUE-078・NY17:00 ET 基準）。日切り・当日窓・日別集計の唯一の規則源。
 import { sessionDayStart } from '../../domain/session_day.js';
-// セッション日 OHLC 集計（domain 純関数・ISSUE-094 V6 抽出）。集計数学を actor から分離。
-import { aggregateSessionOhlc } from '../../domain/session_ohlc.js';
 // ソース能力記述子（domain 単一情報源）: src 別の増分可否・期間窓・session ブロックを導出する
 //   （ISSUE-097 🟡-9・散在した src==='zp' 述語の集約）。
 import { mpSourceCapability } from '../../domain/mp_source_capability.js';
 
-// sessions の 'YYYY-MM-DD' → UNIX 秒（UTC 深夜）。candle.time との突合に使う（primitive dateToUnix と同一規則）。
-function _sessionDateToUnix(dateStr) {
-  const parts = String(dateStr).split('-');
-  const y = Number(parts[0]);
-  const m = Number(parts[1]);
-  const d = Number(parts[2]);
-  return (y > 0 && m > 0 && d > 0) ? Date.UTC(y, m - 1, d) / 1000 : NaN;
-}
-
-// sessions 応答を表示用に組み立てる純変換（SRP: actor は制御に留め、変換は本関数へ）。
-//   ① 各セッションへ当日 candle の OHLC を **セッション日集計**で付与（列内 OHLC 描画用・ISSUE-078:
-//      日曜夜 UTC の足も月曜セッションへ束ねる）。1D は日=バー 1:1 で date→time 突合と同値。
-//      日中足（1m 等）は当日全バーの集計 OHLC になる（ISSUE-072 の日集計を セッション日へ一般化）。
-//   ② 当日の実在バー範囲 tFirst/tLast（当日最初/最後のバー time）を付与する。primitive の日別タイルが
-//      日中足で「日の実在バー範囲」へ整列するための時間軸アンカー（深夜 00:00 バー不在でも解決できる）。
-//   ③ 当日 MP（POC/VAH/VAL）の time→mp Map を作る。VA/POC は backend が _value_area 単一定義で算出済み
-//      （poc/va_low/va_high）＝frontend は表示に写すだけ（DRY・VA 定義は backend に一元化）。
-//   戻り値 { list, mp }。list=OHLC/tFirst/tLast 付与済みセッション配列、mp=time→{poc,vah,val} の Map。
-function _buildSessionView(list, candles) {
-  // セッション日ラベル → { tFirst, tLast, open, high, low, close }（当日全バーの範囲と日次 OHLC）。
-  //   集計数学は domain/session_ohlc.js（純関数）へ外出しした（ISSUE-094 V6）。actor は表示組立に専念する。
-  const byDay = aggregateSessionOhlc(candles);
-  const out = [];
-  const mp = new Map();
-  for (const s of list) {
-    const t = _sessionDateToUnix(s.date);
-    const agg = byDay.get(String(s.date)); // ラベル同士で突合（backend sessions ラベルもセッション日）。
-    out.push(agg ? {
-      ...s,
-      open: agg.open, high: agg.high, low: agg.low, close: agg.close,
-      tFirst: agg.tFirst, tLast: agg.tLast,
-    } : s);
-    if (s.poc != null && s.va_low != null && s.va_high != null && Number.isFinite(t)) {
-      mp.set(t, { poc: s.poc, vah: s.va_high, val: s.va_low });
-    }
-  }
-  return { list: out, mp };
-}
-
-// MP-05: ticklive base=1 応答が DwellAccumulator.init を NaN 汚染せず駆動できるかの presence ガード。
-//   無ローソク等で空 profile が返ると priceMin/priceMax/nBins/gridW が欠損し、init の binw/kw0 が NaN と
-//   なり snapshot が NaN 価格を出す。必須フィールド（レンジ/グリッド/base 配列）がすべて有限/配列のときだけ
-//   true を返し、欠損時は呼び出し側で null 扱い（増分に入らず前回描画を保持＝既存 fetch null と同じ非破壊）。
-//   baseKmin は init が priceMin/gridW から導出フォールバックするため必須に含めない。
-//   注意: JSON の明示 null は Number(null)===0（有限）で誤通過するため、各必須数値は `!= null`（null/
-//   undefined 双方を除外）を先に課してから有限性を判定する（欠損 = 増分に入れない）。
-function _finiteNum(x) {
-  return x != null && Number.isFinite(Number(x));
-}
-function _hasBaseFields(f) {
-  return !!f
-    && _finiteNum(f.priceMin)
-    && _finiteNum(f.priceMax)
-    && _finiteNum(f.nBins) && Number(f.nBins) > 0
-    && _finiteNum(f.gridW) && Number(f.gridW) > 0
-    && Array.isArray(f.baseFine);
-}
-
-// 増分2 定数（試作 prototype_260630-01 と一致）。
-const ROLL_BARS = 60; // ローリング窓の本数（from = T - ROLL_BARS*bar_sec）。
-// 日別（sessions）初回オートズームの最大遡り期間（直近1年）。ISSUE-055: 全期間（1D で最大3.6年）を初回に
-//   映すと tf-period 列が可視域ぶん一括取得され応答肥大（実測 87MB・warm でも数秒）で初回表示が重い。初回は
-//   直近1年に限定し（古い範囲はスクロールで＝A案デバウンス＋per-day キャッシュで滑らか）、初回取得量/描画を抑える。
-//   データが1年未満（intraday 等）のときは実効的に全期間（下限＝最古足）で不変。
-const SESSIONS_INITIAL_SPAN_SEC = 365 * 86400;
-// MP 表示中の右マージン（プロファイル専用領域＝試作 PROFILE_FRAC。バーとローソクの重なり回避）。
-const PROFILE_MARGIN_FRACTION = 0.30;
+// 日別（sessions）表示の純変換（_sessionDateToUnix / _buildSessionView）と初回オートズームの
+//   スパン定数（SESSIONS_INITIAL_SPAN_SEC）は mp_session_tiles.js（日別タイル ロール）が所有する
+//   （ISSUE-181）。A方式バンドルは ES Modules を単一 IIFE スコープへ連結するため、同名の top-level
+//   宣言を両モジュールへ置かない（build.mjs 冒頭の衝突禁止規律）。
+// base=1 応答の presence ガード（_hasBaseFields）は mp_tick_growth.js（tick 逐次成長 ロール）が
+//   所有する（ISSUE-181）。A方式バンドルは ES Modules を単一 IIFE スコープへ連結するため、同名の
+//   top-level 宣言を両モジュールへ置かない（build.mjs 冒頭の衝突禁止規律）。
+// 増分2 定数（ROLL_BARS）は mp_replay_scrub.js（リプレイ・スクラブ ロール）が所有する（ISSUE-181）。
+//   A方式バンドルは ES Modules を単一 IIFE スコープへ連結するため、同名 top-level const を
+//   両モジュールに置くと二重宣言でバンドルが壊れる（build.mjs 冒頭の衝突禁止規律）。
+// 右マージン率（PROFILE_MARGIN_FRACTION）は mp_chart_layout.js が所有する（ISSUE-181）。
+//   A方式バンドル（単一 IIFE 連結）で同名 top-level const を二重宣言しないため本体からは削除する。
 // timeframe → 足の秒長は domain/tf_meta.js（単一情報源・ISSUE-087 🔴-2）から import する。
 //   旧: growth_window.js との top-level const 衝突（IIFE 連結）で再宣言していた＝解消済み。
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
-// 表示モード enum の単一台帳（transition 遷移経路・未知 mode の normal 吸収／ISSUE-134 OCP）。
-import { mpDisplayMode } from '../../domain/mp_display_mode.js';
+// 表示モード遷移ロール（ISSUE-181・SRP で外出し。状態も移送済み）。mpDisplayMode 台帳の参照は
+//   本ロールが持つ（host からは import しない＝A方式バンドルでの重複束縛を作らない）。
+import { MpModeTransition } from './mp_mode_transition.js';
+// リプレイ・スクラブ ロール（ISSUE-181・SRP で外出し。状態も移送済み）。
+import { MpReplayScrubController } from './mp_replay_scrub.js';
+// チャートレイアウト（attach／右マージン）ロール（ISSUE-181・SRP で外出し。状態も移送済み）。
+import { MpChartLayout } from './mp_chart_layout.js';
+// 取得パラメータ・URL コンテキスト写像ロール（ISSUE-181・SRP で外出し。状態も移送済み）。
+import { MpFetchParams } from './mp_fetch_params.js';
+// tick 逐次成長（forming/accumulator の足内 pull 成長）ロール（ISSUE-181・SRP で外出し。状態も移送済み）。
+import { MpTickGrowth } from './mp_tick_growth.js';
+// 日別（sessions）タイル反映＋初回オートズーム ロール（ISSUE-181・SRP で外出し。状態も移送済み）。
+import { MpSessionTiles } from './mp_session_tiles.js';
 
 export class MarketProfileActor {
   // client: fetchProfile(context)->profile|null。primitive: setProfile/setVisible。
@@ -112,82 +66,89 @@ export class MarketProfileActor {
     // 現在時刻源（秒・ISSUE-086: 1W/1M ラベルの未来日クランプ用）。テスト注入可・既定 Date.now。
     this._nowSec = typeof nowSecFn === 'function' ? nowSecFn : () => Date.now() / 1000;
     this._primitive = primitive;
-    this._mainSeries = mainSeries;
-    this._replayBar = replayBar ?? null;
+    // リプレイ・スクラブ（ISSUE-181・A2）を委譲する協働子。replay ON/OFF・当時カーソル T・
+    //   スクラブ coalesce 状態・リプレイバー参照は本協働子が所有する（host はフィールドを持たない）。
+    this._replayScrub = new MpReplayScrubController(this, replayBar);
     this._renderer = renderer ?? null;
+    // チャートレイアウト（ISSUE-181・A5）を委譲する協働子。attach 済みフラグ・attach 先
+    //   （mainSeries）・右マージン設定先（renderer）は本協働子が所有する（host は持たない）。
+    this._layout = new MpChartLayout({ primitive, mainSeries, renderer: this._renderer });
     // 日別（sessions）モードで、日別プロファイルを tf-period 列（別 actor）が描くか否かの述語（注入）。
     //   true のとき本 actor は日別タイル（_drawSessions 用の setSessions）を描かず、candle 透明化も tf-period
     //   側（列が描けた時点）へ委ねる（初回の「日別(candle)→(tf-period)」ちらつき防止・ISSUE-055）。未注入は
     //   常に false＝従来どおり本 actor がタイル描画＋透明化（tf-period 非配線の A方式・非対応 tf で不変）。
     this._sessionsDrawnByTfPeriod = typeof sessionsDrawnByTfPeriod === 'function'
       ? sessionsDrawnByTfPeriod : () => false;
-    // tick 逐次成長（ticklive・増分2 系とは独立の 4 つ目の排他モード）。未注入時は非増分（refresh 委譲）。
-    this._formingClient = formingClient ?? null;
-    this._makeAccumulator = typeof makeAccumulator === 'function' ? makeAccumulator : null;
-    this._ticklive = false;       // ticklive モード ON/OFF（既定 OFF＝非増分・後方互換）。
-    // Model A 直交化: 成長状態（growing/static）。成長エンジン（_isIncremental/onLiveTick/_enterTicklive）は
-    //   この _growing で駆動する（表示モードと成長状態の分離）。Phase1 は mode='ticklive' が唯一 _growing=true を
-    //   立てる互換維持（_ticklive とロックステップ＝挙動不変）。Phase2 で mode 非依存の applyGrowthState が
-    //   直接トグルできるようにする（FOLLOW+normal 成長など）。
-    this._growing = false;
-    this._accumulator = null;     // 現在の DwellAccumulator（null＝未 enter）。
-    this._formingStart = null;    // 現在足の formingStart（rollover 検出用）。
-    this._lastSec = null;         // 最後に addTick した tick 秒（base=0 尾部 since）。
+    // tick 逐次成長（ISSUE-181・A1）を委譲する協働子。成長フラグ（_growing）・累積器（_accumulator）・
+    //   現在足 formingStart・尾部秒（_lastSec）・注入依存（formingClient / makeAccumulator）は本協働子が
+    //   所有する（host は own field を持たず、下の prototype アクセサで旧フィールド面のみ維持する）。
+    this._growth = new MpTickGrowth(this, { formingClient, makeAccumulator });
+    // 表示モード遷移（ISSUE-181・A3）を委譲する協働子。ticklive トグル（_ticklive）と sessions
+    //   トグル（_sessions）は本協働子が所有する（host は own field を持たず、下の prototype
+    //   アクセサで旧読み取り面のみ維持する）。
+    this._mode = new MpModeTransition(this);
+    // 日別タイル＋初回オートズーム（ISSUE-181・A4）を委譲する協働子。初回オートズームの pending
+    //   （_sessionsFocusPending）は本協働子が所有する（host は own field を持たない）。
+    //   ISSUE-164: ビュー介入（focusTimeRange）の呼び出し箇所・ガード・発火順序は抽出前と同一。
+    this._tiles = new MpSessionTiles(this);
     this._getCandles = typeof getCandles === 'function' ? getCandles : () => [];
     this._getContext = typeof getContext === 'function' ? getContext : () => ({});
     this._enabled = false;
-    this._attached = false;
-    // sessions（日別プロファイル分割）ON/OFF。既定 false（通常の累積プロファイル・後方互換）。
-    this._sessions = false;
-    // 取得パラメータ（bins/va/src/range）。setParams で更新し refresh 時に getContext へ重畳する。
-    //   未設定時は空＝getContext のみ（サーバ既定・後方互換）。
-    this._params = {};
-    // リプレイ（増分1）状態。replay=ON でバー表示・T スクラブで to 付き再取得（coalesce）。
-    this._replay = false;
-    this._replayTo = null;      // 現在の T（UNIX 秒）。null=最新（全期間）。
-    this._scrubRunning = false;  // in-flight フラグ（scrubProfile coalesce・移植元 prototype_260630-01）。
-    this._scrubQueued = null;    // in-flight 中に来た最後の T（末尾実行用）。
+    // 取得パラメータ（bins/va/src/range 等）は MpFetchParams（A6・ISSUE-181）が所有する。
+    //   host は下の読み取り専用アクセサ _params で参照するだけ（フィールドを持たない）。
+    this._fetchParams = new MpFetchParams(this);
   }
 
-  // 増分2: リプレイ取得の追加コンテキスト（from/today）を現在のモード/スナップショット状態から組む。
-  //   - ローリングモード: from = T - ROLL_BARS*bar_sec（T 直前 60 本の窓）。アンカーは from を載せない。
-  //   - スナップショット ON: today=true（当日強調用の today[]/today_max を要求）。OFF は載せない。
-  //   移植元 prototype_260630-01 params()（asofmode/asoftrim）。replayBar 未注入時は空（後方互換）。
+  // リプレイ・スクラブ関連は MpReplayScrubController（A2）へ外出しした（ISSUE-181）。
+  //   以下は subclass（ReplayMarketProfileActor）の inherited 呼出・既存テストを温存する薄い委譲。
   _replayExtra(time) {
-    const extra = {};
-    if (!this._replayBar) {
-      return extra;
-    }
-    // 注意: ここでの mode は「リプレイバーの anchor モード」（anchor|rolling）であり、MP 表示モード
-    //   enum（normal/sessions/replay/ticklive・mp_display_mode 台帳）とは別 enum である（ISSUE-134）。
-    //   'rolling' は表示モードの値ではないため mp_display_mode 台帳には含めず、ここは replayBar 契約の
-    //   anchor モード判定として維持する。
-    const anchorMode = typeof this._replayBar.mode === 'function' ? this._replayBar.mode() : 'anchor';
-    if (anchorMode === 'rolling' && time != null) {
-      const tf = this._getContext().timeframe;
-      const barSec = TF_BAR_SEC[tf] ?? 86400;
-      extra.from = time - ROLL_BARS * barSec;
-    }
-    if (typeof this._replayBar.isSnapshot === 'function' && this._replayBar.isSnapshot()) {
-      extra.today = true;
-    }
-    return extra;
+    return this._replayScrub.replayExtra(time);
   }
 
-  // 増分2: スナップショット状態を反映する（ローソクトリム＋primitive の減光/today 描画）。
-  //   snapshot ON: ローソクを T までトリム（renderer.setCandleTrim(T)）・primitive.setSnapshot(true)。
-  //   snapshot OFF: トリム解除（setCandleTrim(null)）・primitive.setSnapshot(false)。
-  //   renderer/primitive の該当メソッド非提供時は skip（後方互換）。
   _applySnapshot(time) {
-    const on = !!(this._replayBar && typeof this._replayBar.isSnapshot === 'function'
-      && this._replayBar.isSnapshot());
-    if (this._renderer && typeof this._renderer.setCandleTrim === 'function') {
-      this._renderer.setCandleTrim(on && time != null ? time : null);
-    }
-    if (this._primitive && typeof this._primitive.setSnapshot === 'function') {
-      this._primitive.setSnapshot(on);
-    }
+    return this._replayScrub.applySnapshot(time);
   }
+
+  // 取得パラメータの読み取り専用アクセサ（実体は MpFetchParams が所有・ISSUE-181）。
+  //   `...this._params` の重畳・`this._params.src` の参照（replay subclass 含む）を温存する。
+  get _params() {
+    return this._fetchParams.values();
+  }
+
+  // ---- 互換アクセサ: 旧 host フィールド面（tick 逐次成長ロール・ISSUE-181・A1）----
+  //   実体は MpTickGrowth が所有する（host は own field を持たない）。replay subclass
+  //   （replay_market_profile_actor.js の push 戦略）が `a._accumulator = acc` /
+  //   `a._formingStart = ...` / `a._lastSec = ...` で直接書き込み、`a._formingClient` /
+  //   `a._makeAccumulator()` を直接読むため、読み書き両方向を委譲で維持する（面は 1 バイト不変）。
+  //   ISSUE-145（足内 tick 更新＝INTRABAR_FORMING_IDS 登録）の駆動経路もこの面の上に成立する。
+  get _growing() { return this._growth.growing(); }
+
+  set _growing(value) { this._growth.setGrowing(value); }
+
+  get _accumulator() { return this._growth.accumulator(); }
+
+  set _accumulator(value) { this._growth.setAccumulator(value); }
+
+  get _formingStart() { return this._growth.formingStart(); }
+
+  set _formingStart(value) { this._growth.setFormingStart(value); }
+
+  get _lastSec() { return this._growth.lastSec(); }
+
+  set _lastSec(value) { this._growth.setLastSec(value); }
+
+  get _formingClient() { return this._growth.formingClient(); }
+
+  get _makeAccumulator() { return this._growth.accumulatorFactory(); }
+
+  // ---- 互換アクセサ: 旧 host フィールド面（表示モード遷移ロール・ISSUE-181・A3）----
+  //   実体は MpModeTransition が所有する（host は own field を持たない）。読み取り専用:
+  //   `this._sessions` は host 自身・MpFetchParams・MpTickGrowth・replay subclass
+  //   （replay_market_profile_actor.js:279,350,490）が参照するだけで、書き込みは遷移経路
+  //   （MpModeTransition.apply / applyParams）に限られる（＝排他遷移の単一入口を保つ）。
+  get _ticklive() { return this._mode.ticklive(); }
+
+  get _sessions() { return this._mode.sessions(); }
 
   isEnabled() {
     return this._enabled;
@@ -196,83 +157,28 @@ export class MarketProfileActor {
   // 取得パラメータ（bins/va/src/range）を設定する。null/undefined のキーは無視する
   //   （getContext の値やサーバ既定を潰さない）。次回 refresh から反映される。
   //   range（レンジpt）は client.buildMarketProfileUrl が barw へ写像する（'auto' は付与しない）。
+  //   表示モードの決定（mode 分岐・legacy トグル受理）は MpModeTransition（A3）へ外出しした
+  //   （ISSUE-181）。抽出前の 2 経路（mode 指定 / legacy）はいずれも「最後に _onParamsChanged を
+  //   1 回」で終わるため、決定を委譲してから 1 回発火する形と同一（ISSUE-066 の伝播タイミング不変）。
   setParams(params = {}) {
-    const next = {};
-    for (const key of ['bins', 'va', 'src', 'range', 'resmode', 'period', 'dispbp']) {
-      if (params[key] != null) {
-        next[key] = params[key];
-      }
-    }
-    this._params = next;
+    this._fetchParams.set(params);
     // mode（表示モード・排他統合）: 旧 replay/sessions の 2 トグルを 1 つの排他 ENUM へ統合。
     //   明示指定時のみ反映する（undefined は現状維持）。mode は legacy replay/sessions に優先する
     //   （競合時は mode を採用＝二重管理を避ける）。normal|replay|sessions のいずれかへ状態遷移する。
-    if (params.mode != null) {
-      this._applyMode(params.mode);
-      this._onParamsChanged(); // ISSUE-066: mode 変更を tf-period 列へ伝播（可視レンジ変化を待たない）。
-      return; // mode 指定時は legacy 分岐を評価しない（mode 優先）。
-    }
-    // legacy 受理（後方互換・mode 未指定時のみ）。旧 replay:true / sessions:true を引き続き受理する。
-    //   sessions（日別プロファイル分割）トグル: true で refresh 時に context へ sessions:true を載せ、
-    //   応答の profile.sessions を primitive/renderer へ反映。false で通常モードへ復帰。
-    if (params.sessions != null) {
-      this._sessions = !!params.sessions;
-    }
-    // replay トグル（増分1）。明示指定時のみ反映する（undefined は現状維持）。
-    if (params.replay != null) {
-      this._setReplay(!!params.replay);
-    }
-    this._onParamsChanged(); // ISSUE-066: src/bins/va 等の変更を tf-period 列へ伝播（即時再取得）。
+    this._mode.applyParams(params);
+    this._onParamsChanged(); // ISSUE-066: mode/src/bins/va 等の変更を tf-period 列へ伝播（即時再取得）。
   }
 
-  // 表示モードの排他遷移。既存の _setReplay / _applySessions 復元経路を再利用する（重複実装しない）。
-  //   - 'sessions': replay 一式 OFF（_setReplay(false)＝バー非表示・T 縦線/トリム/スナップショット解除・
-  //     カーソル null・チャート操作復元）＋ sessions ON（_sessions=true）。応答反映は後続 refresh で行う。
-  //   - 'replay': sessions 一式 OFF（_sessions=false ＋ _applySessions(null)＝setSessions(null)・透明化解除）
-  //     ＋ replay ON（_setReplay(true)）。
-  //   - 'normal': 両 OFF 一式（_setReplay(false) ＋ _sessions=false ＋ _applySessions(null)）。
-  //   排他が構造的に保証される（同時 ON が不可能）。未知の mode は 'normal' 扱い（安全側）。
+  // 表示モードの排他遷移（実体は MpModeTransition・ISSUE-181）。以下は subclass の inherited 呼出・
+  //   既存テスト・composition root 配線を温存する薄い委譲。
   _applyMode(mode) {
-    // 遷移経路は mp_display_mode 台帳（transition）が単一源。未知 mode は台帳が 'normal' へ吸収する
-    //   （旧「未知の mode は 'normal' 扱い（安全側）」を台帳側へ集約＝新モードは台帳追記で完結・OCP）。
-    switch (mpDisplayMode(mode).transition) {
-      case 'ticklive': {
-        // ticklive ON（tick 逐次成長）。replay/sessions 一式を解除して排他化する。
-        this._setReplay(false);
-        this._sessions = false;
-        this._applySessions(null);
-        this._ticklive = true;
-        this._growing = true;   // ticklive モード＝成長 ON（Phase1 互換: mode が _growing を立てる）。
-        return;
-      }
-      case 'sessions': {
-        this._exitTicklive();     // ticklive 解除（排他）。
-        this._setReplay(false);   // replay 一式解除（バー/カーソル/トリム/スナップショット/操作）。
-        // 自動ズームは **非 sessions → sessions の新規入場時のみ** pending にする。既に sessions のまま
-        //   _applyMode('sessions') が再適用される（FOLLOW/ANALYSIS 遷移時の reapplyMarketProfileMode 等）
-        //   ケースで pending を再セットすると、価格更新→自動 FOLLOW 復帰のたびに focus が再発火して
-        //   ユーザーの手動ズームが「全体が初期表示」へリセットされる（実機バグ）。再適用では寄せない。
-        if (!this._sessions) {
-          this._sessionsFocusPending = true;
-        }
-        this._sessions = true;    // sessions ON（応答の profile.sessions は refresh の _applySessions で反映）。
-        return;
-      }
-      case 'replay': {
-        this._exitTicklive();     // ticklive 解除（排他）。
-        this._sessions = false;   // sessions OFF。
-        this._applySessions(null); // sessions 一式解除（focus/ズーム/ロック・setSessions(null)・透明化解除）。
-        this._setReplay(true);    // replay ON（バー表示）。
-        return;
-      }
-      default: {
-        // 'normal'（および未知値＝台帳が transition='normal' へ吸収）: 全 OFF 一式。
-        this._exitTicklive();       // ticklive 解除（排他）。
-        this._setReplay(false);
-        this._sessions = false;
-        this._applySessions(null);
-      }
-    }
+    return this._mode.apply(mode);
+  }
+
+  // 日別（sessions）初回オートズームの pending を立てる（MpModeTransition が非 sessions→sessions の
+  //   新規入場でのみ呼ぶ）。実体のフラグは MpSessionTiles が持つ（ISSUE-164: 発火条件・順序は不変）。
+  _markSessionsFocusPending() {
+    return this._tiles.markFocusPending();
   }
 
   // ticklive 表示中か（MP 有効かつ ticklive トグル ON のときだけ true）。
@@ -296,17 +202,7 @@ export class MarketProfileActor {
   //   これにより mode を維持したまま（例: FOLLOW+normal）成長 ON/OFF を切替えられる（present #2 の直交化）。
   //   growing=false へ遷移する際は成長エンジンの累積器/尾部を破棄する（static 復帰＝_enterTicklive 再入の初期化）。
   applyGrowthState({ growing } = {}) {
-    const next = !!growing;
-    if (next === !!this._growing) {
-      return; // 同状態は no-op（冪等）。
-    }
-    this._growing = next;
-    if (!next) {
-      // static 復帰: 累積器/形成足/尾部を破棄（次回 growing=true で _enterTicklive が再取得・再 init）。
-      this._accumulator = null;
-      this._formingStart = null;
-      this._lastSec = null;
-    }
+    return this._growth.applyState({ growing });
   }
 
   // 増分（forming/accumulator）成長が可能か: growing かつ formingClient・accumulator factory 注入済み、
@@ -320,13 +216,12 @@ export class MarketProfileActor {
   //   非増分＝refresh 委譲へ倒す（onLiveTick はライブ足更新周期＝数秒に 1 回。backend は当日 null を
   //   経過分キーでメモし 0.05〜0.2s 程度で応答する）。
   _isIncremental() {
-    return !!this._growing && !this._sessions && mpSourceCapability(this._params.src).incremental
-      && !!this._formingClient && !!this._makeAccumulator;
+    return this._growth.isIncremental();
   }
 
   // 現在選択中の src（未設定は null）。composition root が tf-period 列への src 透過判定に使う。
   srcParam() {
-    return this._params.src ?? null;
+    return this._fetchParams.src();
   }
 
   // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
@@ -384,87 +279,29 @@ export class MarketProfileActor {
   // ライブ tick 契機。増分（ticklive）: 未 enter なら _enterTicklive、以降は base=0 尾部を addTick して
   //   snapshot を反映。formingStart 変化（rollover）で _enterTicklive を再実行。
   //   非増分: this.refresh() へ byte-identical 委譲（ticklive OFF / formingClient 未注入＝回帰ゼロ）。
+  //   tick 逐次成長の実体は MpTickGrowth（A1）へ外出しした（ISSUE-181）。以下は subclass
+  //   （ReplayMarketProfileActor）の inherited 呼出・既存テストを温存する薄い委譲。
   async onLiveTick() {
-    if (!this._isIncremental()) {
-      return this.refresh(); // 非増分＝既存 refresh と同一（後方互換・回帰ゼロ）。
-    }
-    if (!this._enabled) {
-      return undefined;
-    }
-    if (!this._accumulator) {
-      return this._enterTicklive(); // 初回＝UC-01。
-    }
-    const forming = await this._formingClient.fetchForming(
-      this._buildFormingArgs({ base: 0, since: this._lastSec }),
-    );
-    if (!forming) {
-      return undefined; // null は前回描画を保持（非破壊）。
-    }
-    if (forming.formingStart !== this._formingStart) {
-      return this._enterTicklive(); // rollover: base を取り直して reset。
-    }
-    for (const t of forming.ticks) {
-      this._accumulator.addTick(t[0], t[1]);
-      this._lastSec = t[0];
-    }
-    this._primitive.setProfile(this._accumulator.snapshot());
-    return undefined;
+    return this._growth.onLiveTick();
   }
 
   // UC-01: base=1 を取得して accumulator を init、forming tick 列を畳み込み、snapshot を描画する。
   async _enterTicklive() {
-    if (!this._enabled || !this._isIncremental()) {
-      return;
-    }
-    const forming = await this._formingClient.fetchForming(
-      this._buildFormingArgs({ base: 1, since: null }),
-    );
-    if (!forming) {
-      return; // null は前回描画を保持（非破壊）。
-    }
-    // MP-05 是正: base=1 応答の必須フィールド（レンジ/グリッド/base 配列）が欠損（無ローソク等の空
-    //   profile）なら init へ NaN が伝播し snapshot が NaN 価格を出す。presence ガードで欠損時は null と
-    //   同じ扱い（増分に入らず前回描画を保持＝既存 fetch null と同じ非破壊挙動）にする。
-    if (!_hasBaseFields(forming)) {
-      return; // 空 profile（必須フィールド欠損）は前回描画を保持（非破壊・NaN 混入を防ぐ）。
-    }
-    const acc = this._makeAccumulator();
-    acc.init({
-      baseFine: forming.baseFine,
-      baseKmin: forming.baseKmin,
-      activeTable: forming.activeTable,
-      priceMin: forming.priceMin,
-      priceMax: forming.priceMax,
-      nBins: forming.nBins,
-      gridW: forming.gridW,
-      formingStart: forming.formingStart,
-    });
-    this._accumulator = acc;
-    this._formingStart = forming.formingStart;
-    this._lastSec = null;
-    for (const t of forming.ticks) {
-      acc.addTick(t[0], t[1]);
-      this._lastSec = t[0];
-    }
-    this._primitive.setProfile(acc.snapshot());
+    return this._growth.enter();
   }
 
-  // ticklive を解除する（累積器破棄・通常経路復帰・冪等）。
+  // ticklive を解除する（累積器破棄・通常経路復帰・冪等）。表示モードの ticklive トグルは
+  //   MpModeTransition（A3）、成長エンジンの累積器/尾部は MpTickGrowth（A1）が所有する。
   _exitTicklive() {
-    this._ticklive = false;
-    this._growing = false;  // モード離脱＝成長 OFF（Phase1 互換: _ticklive とロックステップ）。
-    this._accumulator = null;
-    this._formingStart = null;
-    this._lastSec = null;
+    this._mode.setTicklive(false);
+    this._growth.exit();
   }
 
   // MP 表示中の右マージン（プロファイル専用領域）を renderer へ委譲する。
   //   on=true で PROFILE_MARGIN_FRACTION（=0.30）ぶんローソクを左へ寄せ、false で復元。
   //   renderer.setRightMarginFraction 非提供時は no-op（後方互換）。冪等。
   _applyProfileMargin(on) {
-    if (this._renderer && typeof this._renderer.setRightMarginFraction === 'function') {
-      this._renderer.setRightMarginFraction(on ? PROFILE_MARGIN_FRACTION : null);
-    }
+    return this._layout.applyProfileMargin(on);
   }
 
   // sessions（日別プロファイル分割）を表示中か。
@@ -473,161 +310,26 @@ export class MarketProfileActor {
     return this._enabled && !!this._sessions;
   }
 
-  // sessions（日別プロファイル分割）を primitive/renderer へ反映する。
-  //   on: primitive.setSessions(profile.sessions)・renderer.setCandleTransparency(true)（ローソク透明化）。
-  //   off: primitive.setSessions(null)（通常モード）・renderer.setCandleTransparency(false)（復元）。
-  //   該当メソッド非提供時は skip（後方互換）。移植元 prototype_260630-01 drawSessions。
+  // 日別タイル反映＋初回オートズームは MpSessionTiles（A4）へ外出しした（ISSUE-181）。
+  //   以下は subclass（ReplayMarketProfileActor）の inherited 呼出・既存テストを温存する薄い委譲。
   _applySessions(profile) {
-    const on = !!this._sessions;
-    // tf-period 列が日別プロファイルを描くモード（player tf の日別）か。true のとき本 actor は日別タイルを
-    //   描かず（先に届く sessions 応答での一瞬のタイル描画→tf-period 列への差し替えちらつきを防ぐ）、candle
-    //   透明化も tf-period 側（列描画時）へ委ねる（それまで candle 可視＝空白回避）。ISSUE-055。
-    const tfDraws = on && this._sessionsDrawnByTfPeriod();
-    // 表示用ビュー（OHLC 付与済みリスト＋当日 MP Map）を純変換で一括構築する（SRP）。読取欄は tfDraws でも要る。
-    const rawList = on && profile && Array.isArray(profile.sessions) ? profile.sessions : null;
-    const view = (rawList && rawList.length)
-      ? _buildSessionView(rawList, (typeof this._getCandles === 'function' ? this._getCandles() : []))
-      : null;
-    if (this._primitive && typeof this._primitive.setSessions === 'function') {
-      // tfDraws のときは日別タイルを描かない（tf-period 列が描く）＝setSessions(null)。
-      this._primitive.setSessions(tfDraws ? null : (view ? view.list : null));
-    }
-    // 読み取り欄: クロスヘアが当日を指したとき OHLC に加え当日 MP（POC/VAH/VAL）を出す（sessions のみ・tfDraws でも供給）。
-    if (this._renderer && typeof this._renderer.setSessionMP === 'function') {
-      this._renderer.setSessionMP(view ? view.mp : null);
-    }
-    // candle 透明化: tfDraws のときはここで触らず tf-period 側（列描画時に true / 無効化時に false）へ委ねる。
-    //   非 tfDraws（通常の日別タイル or OFF）は従来どおり on で透明化/復元する。
-    if (!tfDraws && this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
-      this._renderer.setCandleTransparency(on);
-    }
-    // sessions を有効化した初回のみ、被覆セッション日の時間レンジへズームを寄せる（時間軸連動タイルが
-    //   潰れない／短周期でも日別列が画面内に入るように）。以後は寄せない（手動ズーム/スクロール尊重）。
-    //   時間ベース（focusTimeRange）にすることで、1m（1日=1440本）でも「日数」を「バー数」と誤解して
-    //   列が画面外に落ちる不具合を解消する。off 遷移でフラグをクリア。
-    if (on) {
-      if (this._sessionsFocusPending && rawList && rawList.length
-          && this._renderer && typeof this._renderer.focusTimeRange === 'function') {
-        const candles = (typeof this._getCandles === 'function' ? this._getCandles() : []) || [];
-        if (candles.length) {
-          this._sessionsFocusPending = false;
-          // 被覆日の下限＝最古セッション日始端（ただしロード済み candle の左端より前へは行かない＝空白回避）。
-          const sessStart = _sessionDateToUnix(rawList[0].date);
-          const oldest = Number.isFinite(sessStart)
-            ? Math.max(sessStart, candles[0].time)
-            : candles[0].time;
-          const to = candles[candles.length - 1].time; // 右端＝最新足（now）。
-          // 初回は直近 SESSIONS_INITIAL_SPAN_SEC（1年）に限定する（初回 tf-period 取得量/描画負荷の抑制・
-          //   ISSUE-055）。1年未満のデータでは oldest が下限となり実効全期間で不変。
-          const from = Math.max(oldest, to - SESSIONS_INITIAL_SPAN_SEC);
-          this._renderer.focusTimeRange(from, to);
-        }
-      }
-    } else {
-      this._sessionsFocusPending = false;
-    }
+    return this._tiles.applySessions(profile);
   }
 
-  // replay ON/OFF を反映する。ON: バー表示（candles は composition root が別途 setCandles 済み）。
-  //   OFF: バー非表示・T 縦線消去・T をリセット（全期間へ復帰）。移植元 prototype_260630-01。
   _setReplay(on) {
-    this._replay = on;
-    if (this._replayBar) {
-      // ON 時に最新 candles をバーへ供給（min/max・index→time の元）。timeframe 切替後も現在足に追従。
-      if (on && typeof this._replayBar.setCandles === 'function') {
-        this._replayBar.setCandles(this._getCandles());
-      }
-      // 初期カーソルを現在のスライダ位置（既定=右端=最新）に設定して T 縦線を即描画する。
-      //   スライダは右端から始まるため、スクラブ前でも線が出る（ユーザFB「スナップショットONで
-      //   T 縦線が出ない」の修正）。fetch はしない（線＝setCursorTime のみ）。onReplayControlsChange の
-      //   初期化元にもなり、スクラブ前にスナップショットを ON にしても当時 T が確定する。
-      if (on && this._replayTo == null && typeof this._replayBar.currentTime === 'function') {
-        const t0 = this._replayBar.currentTime();
-        if (t0 != null) {
-          this._replayTo = t0;
-          if (this._primitive && typeof this._primitive.setCursorTime === 'function') {
-            this._primitive.setCursorTime(t0);
-          }
-        }
-      }
-      if (typeof this._replayBar.setVisible === 'function') {
-        this._replayBar.setVisible(on);
-      }
-    }
-    if (!on) {
-      // OFF: 当時カーソルを解除し、T 縦線を消す（primitive.setCursorTime(null)）。
-      this._replayTo = null;
-      this._scrubQueued = null;
-      if (this._primitive && typeof this._primitive.setCursorTime === 'function') {
-        this._primitive.setCursorTime(null);
-      }
-      // 増分2: スナップショットのローソクトリムを解除し（全ローソク復元）、primitive の減光を消す。
-      if (this._renderer && typeof this._renderer.setCandleTrim === 'function') {
-        this._renderer.setCandleTrim(null);
-      }
-      if (this._primitive && typeof this._primitive.setSnapshot === 'function') {
-        this._primitive.setSnapshot(false);
-      }
-      // 防御: スワイプ捕捉中（setUserInteraction(false)）のまま gear で OFF にされても
-      // チャート操作を必ず復元する（冪等・未捕捉時も無害）。
-      if (this._renderer && typeof this._renderer.setUserInteraction === 'function') {
-        this._renderer.setUserInteraction(true);
-      }
-    }
+    return this._replayScrub.setReplay(on);
   }
 
-  // 増分2: リプレイバーのモード（アンカー/ローリング）・スナップショット変更を受け、現在 T で再取得する。
-  //   replayBar.onChange から配線する。無効時（replay OFF / disabled / T 未設定）は no-op。
   async onReplayControlsChange() {
-    if (!this._enabled || !this._replay) {
-      return;
-    }
-    // カーソル未設定（スクラブ前）でも、現在のスライダ位置（既定=最新）を当時 T として初期化する。
-    //   これによりスクラブせずスナップショットを ON にしても当時プロファイル・T 縦線が反映される。
-    let t = this._replayTo;
-    if (t == null && this._replayBar && typeof this._replayBar.currentTime === 'function') {
-      t = this._replayBar.currentTime();
-    }
-    if (t == null) {
-      return;
-    }
-    await this.setReplayCursor(t);
+    return this._replayScrub.onControlsChange();
   }
 
   isReplay() {
-    return this._replay;
+    return this._replayScrub.isReplay();
   }
 
-  // リプレイ T スクラブ: T（対応足の time・UNIX 秒）を当時カーソルに設定し、to=T で当時プロファイルを
-  //   再取得して primitive へ反映する。連続スクラブは coalesce（in-flight 中は最後の T だけ末尾実行＝
-  //   移植元 prototype_260630-01 scrubProfile）。無効時（replay OFF / disabled）は no-op。
   async setReplayCursor(time) {
-    if (!this._enabled || !this._replay) {
-      return;
-    }
-    this._replayTo = time;
-    // T 縦線は即時反映（fetch 完了を待たずカーソルを動かす＝プロト applyAsofView 相当）。
-    if (this._primitive && typeof this._primitive.setCursorTime === 'function') {
-      this._primitive.setCursorTime(time);
-    }
-    // 増分2: スナップショットのローソクトリム/減光を即時反映（fetch を待たず＝プロト applyAsofView）。
-    this._applySnapshot(time);
-    // coalesce: in-flight 中は最後の要求だけを queue し、完了後に末尾実行する。
-    if (this._scrubRunning) {
-      this._scrubQueued = time;
-      return;
-    }
-    this._scrubRunning = true;
-    try {
-      await this._fetchAt(time);
-    } finally {
-      this._scrubRunning = false;
-    }
-    if (this._scrubQueued != null) {
-      const last = this._scrubQueued;
-      this._scrubQueued = null;
-      await this.setReplayCursor(last); // 末尾実行（最後の T のみ）。
-    }
+    return this._replayScrub.setCursor(time);
   }
 
   // to=T（＋増分2 の from/today／sessions）を重畳して 1 回取得し、profile を反映する（null は前回描画保持）。
@@ -643,34 +345,14 @@ export class MarketProfileActor {
   }
 
   // sessions ON 時のみ context へ sessions:true を載せる（client が &sessions=1 を付与）。OFF は載せない（後方互換）。
+  // 取得パラメータの URL コンテキスト写像は MpFetchParams（A6）へ外出しした（ISSUE-181）。
+  //   以下は subclass の inherited 呼出・既存テストを温存する薄い委譲（挙動不変・URL byte 不変）。
   _sessionsExtra() {
-    return this._sessions ? { sessions: true } : {};
+    return this._fetchParams.sessionsExtra();
   }
 
-  // 期間パラメータ（ISSUE-071 (b)案）: period='day' かつ zp かつ通常モードのとき、計測窓下限
-  //   from=当日始端（最新ローソク time の属する UTC 日始端＝_sessionFrom の sessionStart と同規則）を
-  //   fetch context へ載せる（client が &from= を付与し backend が candles を time>=from に限定）。
-  //   それ以外（period 未設定/'all'・dwell・replay・sessions）は空＝従来 URL byte 不変（後方互換）。
-  //   dwell を対象外にするのは、成長時の forming 経路が既に当日絞り（ISSUE-065）でありrefresh 窓まで
-  //   絞ると static（ANALYSIS）の全期間表示という既存確定挙動を壊すため（zp は非増分＝refresh のみで安全）。
   _periodExtra() {
-    if (this._params.period !== 'day' || !mpSourceCapability(this._params.src).hasPeriodWindow
-        || this._sessions || this._replay) {
-      return {};
-    }
-    const candles = this._getCandles();
-    const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;
-    let t = last && last.time != null ? Number(last.time) : NaN;
-    if (!Number.isFinite(t)) {
-      return {}; // ローソク未取得＝窓を成さず全期間へ縮退（既存 fetch と同じ非破壊）。
-    }
-    // ISSUE-086: 1W/1M バーの time はラベル（週末金曜/月末）＝未来日になり得るため、now で
-    //   クランプして「現在のセッション日」へ正しく写像する（1m..1D はラベル=当日で不変）。
-    const nowSec = this._nowSec();
-    if (Number.isFinite(nowSec) && nowSec < t) {
-      t = nowSec;
-    }
-    return { from: sessionDayStart(t) }; // ISSUE-078: セッション日始端。
+    return this._fetchParams.periodExtra();
   }
 
   // 単一時計 seam（ISSUE-129）: present は常に空＝URL byte 不変（実時計＝ライブの現在がそのまま正）。
@@ -688,18 +370,7 @@ export class MarketProfileActor {
   //   ある場合（legacy 保存インスタンス）はそれを優先（後方互換）。ローソク未取得は写像せず
   //   サーバ既定（bins=60）へ縮退（非破壊）。
   _dispExtra() {
-    const bp = Number(this._params.dispbp);
-    if (!(bp > 0) || this._params.resmode != null || this._params.range != null) {
-      return {};
-    }
-    const candles = this._getCandles();
-    const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;
-    const close = last && last.close != null ? Number(last.close) : NaN;
-    if (!Number.isFinite(close) || !(close > 0)) {
-      return {};
-    }
-    const barw = close * bp / 1e4;
-    return { resmode: 'range', range: String(Math.round(barw * 10000) / 10000) };
+    return this._fetchParams.dispExtra();
   }
 
   // トグル。ON: 初回のみ attach → 取得して反映 → 表示。OFF: 非表示（取得しない）。
@@ -800,53 +471,26 @@ export class MarketProfileActor {
   }
 
   // ISSUE-067: 日別 focus を candle 範囲だけで行う（sessions フェッチをスキップする tfDraws 経路用）。
-  //   _applySessions の focus ブロックと同一規則（初回のみ・直近 SESSIONS_INITIAL_SPAN_SEC＝1年に限定・
-  //   candle 左端より前へ行かない）。sessStart（セッション応答由来の下限引き上げ）は使わない＝candle 左端が下限。
+  //   実体は MpSessionTiles（A4）が持つ（ISSUE-181）。以下は既存呼出面を温存する薄い委譲。
   _focusSessionsPending() {
-    if (!this._sessionsFocusPending || !this._renderer
-        || typeof this._renderer.focusTimeRange !== 'function') {
-      return;
-    }
-    const candles = (typeof this._getCandles === 'function' ? this._getCandles() : []) || [];
-    if (!candles.length) {
-      return;
-    }
-    this._sessionsFocusPending = false;
-    const to = candles[candles.length - 1].time;
-    const from = Math.max(candles[0].time, to - SESSIONS_INITIAL_SPAN_SEC);
-    this._renderer.focusTimeRange(from, to);
+    return this._tiles.focusPending();
   }
 
   // attach 対象の ISeriesPrimitive を解決する（ISSUE-099 🟡-5）。primitive が ProfileSink
   //   ファサードのとき下層 primitive（seriesPrimitive()）を返し、生 primitive（既存テストの fake）は
   //   そのまま返す＝単一 attach 点を維持しつつ挙動不変。
+  // チャートレイアウト（attach／右マージン／detach 時の復元）は MpChartLayout（A5）へ外出しした
+  //   （ISSUE-181）。以下は subclass の inherited 呼出・既存テスト・composition root 配線を温存する
+  //   薄い委譲（挙動不変）。
   _attachTarget() {
-    const p = this._primitive;
-    return (p && typeof p.seriesPrimitive === 'function') ? p.seriesPrimitive() : p;
+    return this._layout.attachTarget();
   }
 
-  // primitive を mainSeries へ一度だけ attach する（attachPrimitive 非提供時は skip）。
   _ensureAttached() {
-    if (this._attached) {
-      return;
-    }
-    if (this._mainSeries && typeof this._mainSeries.attachPrimitive === 'function') {
-      this._mainSeries.attachPrimitive(this._attachTarget());
-      this._attached = true;
-    }
+    return this._layout.ensureAttached();
   }
 
-  // primitive を mainSeries から取り外す（detachPrimitive 非提供時は skip＝後方互換）。
-  //   凡例からの削除（close）で呼び、次回有効化で再 attach できるよう _attached を戻す。
   detach() {
-    if (this._attached && this._mainSeries && typeof this._mainSeries.detachPrimitive === 'function') {
-      this._mainSeries.detachPrimitive(this._attachTarget());
-    }
-    this._attached = false;
-    this._applyProfileMargin(false); // 右マージン復元（MP 削除で取り残さない）。
-    // sessions のローソク透明化を必ず復元する（MP 削除でローソクを不透明へ戻す＝取り残さない）。
-    if (this._renderer && typeof this._renderer.setCandleTransparency === 'function') {
-      this._renderer.setCandleTransparency(false);
-    }
+    return this._layout.detach();
   }
 }
