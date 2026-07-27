@@ -32,7 +32,7 @@ function fakeDoc(mode) {
   const els = {
     'rp-speed': fakeEl({ value: '1' }),
     'rp-mode': fakeEl({ value: mode }),
-    'rp-slider': fakeEl(),
+    'rp-prev': fakeEl(),
   };
   return {
     getElementById: (id) => (els[id] || (els[id] = fakeEl())),

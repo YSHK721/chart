@@ -26,23 +26,21 @@ export class ReplayView {
   // ---- DOM ヘルパ ---- //
   el(id) { return this._doc.getElementById(id); }
   setText(id, text) { const e = this.el(id); if (e) e.textContent = text; }
-  createButton(label, className) {
-    const b = this._doc.createElement('button');
-    b.textContent = label;
-    if (className) b.className = className;
-    return b;
-  }
 
-  // ---- スライダー ---- //
-  setSliderValue(v) { const e = this.el('rp-slider'); if (e) e.value = v; }
-  setSliderBounds(min, max) { const e = this.el('rp-slider'); if (e) { e.min = min; e.max = max; } }
-  setSliderMin(min) { const e = this.el('rp-slider'); if (e) e.min = min; }
+  // ---- 期間ラベル（[ 3か月 ] 表示部） ---- //
+  setRangeLabel(text) { this.setText('rp-range', text); }
 
   // ---- 速度 UI ---- //
-  readSpeed() { const e = this.el('rp-speed'); return e ? parseFloat(e.value) : NaN; }
-  writeSpeed(v) { const e = this.el('rp-speed'); if (e) e.value = v; }
-  setSpeedVal(text) { this.setText('rp-speed-val', text); }
-  speedPresets() { return [...this._doc.querySelectorAll('#rp-speed-presets .rp-preset')]; }
+  //   値の保持先は #rp-speed ボタンの data-speed（唯一の現在値）。表示は "x1.00" 形式。
+  //   値域のクランプは replay/timing.js の clampSpeed が権威（View は素の値を読み書きする）。
+  readSpeed() { const e = this.el('rp-speed'); return e ? parseFloat(e.dataset.speed) : NaN; }
+  writeSpeed(v) {
+    const e = this.el('rp-speed');
+    if (!e) return;
+    const n = parseFloat(v);
+    e.dataset.speed = String(n);
+    e.textContent = `x${Number.isFinite(n) ? n.toFixed(2) : '—'}`;
+  }
 
   // ---- モード UI ---- //
   readMode() { const e = this.el('rp-mode'); return e ? e.value : 'real_ticks'; }
@@ -67,9 +65,6 @@ export class ReplayView {
     e.classList.toggle('rp-disabled', !enabled);
     e.title = enabled ? '' : disabledMsg;
   }
-
-  // ---- follow トグル ---- //
-  setFollow(on) { const e = this.el('rp-follow'); if (e) e.classList.toggle('on', on); }
 
   // ---- チャート表示 ---- //
   setVisibleLogicalRange(range) {
@@ -116,18 +111,6 @@ export class ReplayView {
     }
     for (const series of [...this._paneDims.keys()]) { // 再生成/削除で消えた系列の追跡を破棄
       if (!live.has(series)) this._paneDims.delete(series);
-    }
-  }
-
-  // ---- 期間プリセット描画（時間足別・onSelect で純ロジックへ委譲） ---- //
-  renderPresets({ presets, activeSecs, onSelect }) {
-    const host = this.el('rp-presets');
-    if (!host) return;
-    host.innerHTML = '';
-    for (const [label, secs] of presets) {
-      const btn = this.createButton(label, 'rp-preset' + (secs === activeSecs ? ' on' : ''));
-      btn.onclick = () => onSelect(secs);
-      host.appendChild(btn);
     }
   }
 

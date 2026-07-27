@@ -35,7 +35,7 @@ function fakeDoc() {
   const els = {
     'rp-speed': fakeEl({ value: '1' }),
     'rp-mode': fakeEl({ value: 'real_ticks' }),
-    'rp-slider': fakeEl(),
+    'rp-prev': fakeEl(),
   };
   return {
     getElementById: (id) => (els[id] || (els[id] = fakeEl())),
@@ -189,15 +189,14 @@ test('during play, the revealed bar is collapsed to its open BEFORE the MP enter
     fetchImpl,
     marketProfile: mp,
   });
-  // 起動 drive は最新足（bar=2）。スライダーで bar=0 へ戻してから再生する。
-  const slider = doc._els['rp-slider'];
-  slider.value = '0';
-  await slider.oninput({ target: slider });
+  // 起動 drive は最新足（bar=2）。「1足戻る」×2 で bar=0 へ戻してから再生する。
+  await doc._els['rp-prev'].onclick();
+  await doc._els['rp-prev'].onclick();
   events.length = 0;
   // Act: ▶再生（playLoop: drive(bar+1)=リビール → animateForming）。完走を待つ。
   doc._els['rp-play'].onclick();
   const playBtn = doc._els['rp-play'];
-  for (let i = 0; i < 200 && playBtn.textContent !== '▶ 再生'; i += 1) {
+  for (let i = 0; i < 200 && playBtn.textContent !== '▷'; i += 1) {
     await new Promise((r) => { setTimeout(r, 25); });
   }
   // Assert: バー time=200 について「始値へ畳む update（O=H=L=C=open=1.5）」が enterBar(200) より先。
@@ -254,11 +253,9 @@ test('manual navigation (playing=false) does NOT collapse the revealed bar (comp
     fetchImpl,
     marketProfile: mp,
   });
-  // 起動 drive（playing=false・最新足 bar=2）に続き、スライダーで bar=1 へ手動ナビ（playing=false のまま）。
+  // 起動 drive（playing=false・最新足 bar=2）に続き、「1足戻る」で bar=1 へ手動ナビ（playing=false のまま）。
   events.length = 0;
-  const slider = doc._els['rp-slider'];
-  slider.value = '1';
-  await slider.oninput({ target: slider });
+  await doc._els['rp-prev'].onclick();
   // Assert: enterBar は呼ばれるが、始値畳み込み update（O=H=L=C=open）は一切発火しない（完成足のまま）。
   assert.ok(events.some((e) => e.kind === 'enter' && e.t === 200), '手動ナビでも enterBar は呼ばれる（前提）');
   const collapsed = events.filter((e) => e.kind === 'update'

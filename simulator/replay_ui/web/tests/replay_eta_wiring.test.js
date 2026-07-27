@@ -28,7 +28,7 @@ function fakeDoc(mode) {
   const els = {
     'rp-speed': fakeEl({ value: '1' }),
     'rp-mode': fakeEl({ value: mode }),
-    'rp-slider': fakeEl(),
+    'rp-prev': fakeEl(),
   };
   return {
     getElementById: (id) => (els[id] || (els[id] = fakeEl())),
@@ -91,8 +91,8 @@ const CANDLES_TV = [
 
 test('setEta (real_ticks + tickvol): ETA は残り足の実 tick 総数から算出される（旧 800 点 cap モデルでない）', async () => {
   const { doc } = await boot({ mode: 'real_ticks', candles: CANDLES_TV });
-  // Act: スライダで bar=0 へ（drive→render→setEta。残り 1 足＝tickvol 30000）。
-  await doc._els['rp-slider']._oninput({ target: { value: '0' } });
+  // Act: 「1足戻る」で bar=0 へ（drive→render→setEta。残り 1 足＝tickvol 30000）。
+  await doc._els['rp-prev']._onclick();
   // Assert: 30000×6ms≒180秒 → 「3分00秒（残り1足）」。旧モデルは「5秒」（800×6ms+固定費）だった。
   const text = doc._els['rp-eta'].textContent;
   assert.match(text, /完了予想 3分00秒（残り1足）/, `実 tick 数由来の ETA を表示する（actual: ${text}）`);
@@ -101,14 +101,14 @@ test('setEta (real_ticks + tickvol): ETA は残り足の実 tick 総数から算
 test('setEta (real_ticks, tickvol 欠損): 従来モデルへフォールバック（回帰なし）', async () => {
   const noTv = CANDLES_TV.map(({ tickvol, ...c }) => c);
   const { doc } = await boot({ mode: 'real_ticks', candles: noTv });
-  await doc._els['rp-slider']._oninput({ target: { value: '0' } });
+  await doc._els['rp-prev']._onclick();
   // 従来モデル: compute(実測数ms) + (800×6+50)/1 ≒ 4.85 秒 → 「5秒（残り1足）」。
   assert.match(doc._els['rp-eta'].textContent, /完了予想 5秒（残り1足）/);
 });
 
 test('setEta (非 real_ticks): tickvol が有っても従来モデルのまま（他モード回帰なし）', async () => {
   const { doc } = await boot({ mode: 'ohlc_1min', candles: CANDLES_TV });
-  await doc._els['rp-slider']._oninput({ target: { value: '0' } });
+  await doc._els['rp-prev']._onclick();
   // ohlc_1min モデル: compute + (200×6+50)/1 ≒ 1.3 秒 → 「1秒（残り1足）」。
   assert.match(doc._els['rp-eta'].textContent, /完了予想 1秒（残り1足）/);
 });

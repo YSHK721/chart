@@ -1,6 +1,6 @@
 // replay_view.test.js — 再生層副作用アダプタの検証（fake chart/series/renderer/DOM 注入・AAA）。
 //   参照実装＝プロト replay.js の副作用（attachPrimitive / setVisibleLogicalRange / setCandles /
-//   syncPaneDims / syncModeOptions / renderPresets）。lwc/DOM 実体には触れない。
+//   syncPaneDims / syncModeOptions / 速度・期間ラベル）。lwc/DOM 実体には触れない。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -81,13 +81,19 @@ test('applyModeDegeneration hides degenerate options and retreats selection to r
   assert.equal(modeEl.value, 'real_ticks'); // 縮退モード選択中→退避
 });
 
-test('renderPresets builds a button per preset and wires onSelect with its secs', () => {
-  const host = fakeEl();
-  const v = new ReplayView({ chart: { timeScale: () => ({}) }, mainSeries: fakeSeries(), renderer: {}, document: fakeDoc({ 'rp-presets': host }) });
-  const picked = [];
-  v.renderPresets({ presets: [['3か月', 100], ['全期間', null]], activeSecs: null, onSelect: (s) => picked.push(s) });
-  assert.equal(host.children.length, 2);
-  host.children[0].onclick(); // 3か月
-  host.children[1].onclick(); // 全期間
-  assert.deepEqual(picked, [100, null]);
+// 速度は #rp-speed ボタンの data-speed が唯一の現在値（旧: range input の value）。
+test('writeSpeed stores the value in data-speed and renders it as "x0.25"', () => {
+  const speedEl = fakeEl({ dataset: {} });
+  const v = new ReplayView({ chart: { timeScale: () => ({}) }, mainSeries: fakeSeries(), renderer: {}, document: fakeDoc({ 'rp-speed': speedEl }) });
+  v.writeSpeed(0.25);
+  assert.equal(speedEl.dataset.speed, '0.25');
+  assert.equal(speedEl.textContent, 'x0.25');
+  assert.equal(v.readSpeed(), 0.25);
+});
+
+test('setRangeLabel writes the current range into #rp-range', () => {
+  const rangeEl = fakeEl();
+  const v = new ReplayView({ chart: { timeScale: () => ({}) }, mainSeries: fakeSeries(), renderer: {}, document: fakeDoc({ 'rp-range': rangeEl }) });
+  v.setRangeLabel('3か月');
+  assert.equal(rangeEl.textContent, '3か月');
 });
