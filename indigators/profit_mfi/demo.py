@@ -18,6 +18,9 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# ISSUE-174: 兄弟パッケージ（moving_averages / mql_builtins / profit_system）の解決点は
+#   entry point が持つ（src/core.py 側の sys.path 改変は撤去済み）。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # = indigators/
 
 
 def main() -> None:

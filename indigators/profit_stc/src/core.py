@@ -33,15 +33,12 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
-# 共有ライブラリ mql_builtins を indicators/ パス経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
-from mql_builtins import compute_stochastic  # noqa: E402,F401  # 正準 iStochastic 生 %K（再公開して in-package 参照面を維持）
+# 共有ライブラリ mql_builtins（indigators/ 直下）を絶対 import で再利用する。
+from mql_builtins import compute_stochastic  # noqa: F401  # 正準 iStochastic 生 %K（再公開して in-package 参照面を維持）
 
 # 元 input inpPeriodOscillator の既定値（PRO!fitSTC.mq4 L25）。
 DEFAULT_PERIOD: int = 70

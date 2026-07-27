@@ -27,10 +27,14 @@ from __future__ import annotations
 
 from typing import Optional, Protocol, runtime_checkable
 
-import numpy as np
 import pandas as pd
 
 from common.event_quantiles import emit_event_quantile_lines
+from common_view.lwc_adapter import (  # noqa: E402
+    emit_line as _emit_line,
+    resolve_times as _resolve_times,
+)
+from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
 from .core import (
     DEFAULT_EVENT_AGG,
@@ -65,46 +69,13 @@ def _quantile_series_name(q: float) -> str:
     return f"{_SERIES_NAME}_q{int(round(q * 100))}"
 
 
-@runtime_checkable
-class _Line(Protocol):
-    def set(self, data: pd.DataFrame) -> None: ...
+_Line = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
 
 
 @runtime_checkable
 class _Chart(Protocol):
     def create_line(self, name: str, **kwargs) -> _Line: ...
     def horizontal_line(self, price: float, **kwargs): ...
-
-
-def _resolve_times(df: pd.DataFrame, time_column: Optional[str]) -> pd.Series:
-    """時刻系列を解決する（明示指定 > time 列 > date 列 > DatetimeIndex の順）。
-
-    btlm_trail_marod/src/lwc_chart.py の実装を踏襲する。
-    """
-    lower_map = {str(c).lower(): c for c in df.columns}
-    if time_column is not None:
-        tcol = lower_map.get(time_column.lower(), time_column)
-        if tcol not in df.columns:
-            raise KeyError(f"指定された時刻列が存在しません: {time_column}")
-        return pd.to_datetime(df[tcol]).reset_index(drop=True)
-    if "time" in lower_map:
-        return pd.to_datetime(df[lower_map["time"]]).reset_index(drop=True)
-    if "date" in lower_map:
-        return pd.to_datetime(df[lower_map["date"]]).reset_index(drop=True)
-    if isinstance(df.index, pd.DatetimeIndex):
-        return pd.Series(df.index, name="time").reset_index(drop=True)
-    raise KeyError("時刻を解決できません（time/date 列、または DatetimeIndex が必要）。")
-
-
-def _emit_line(chart: _Chart, name: str, times: pd.Series, values, color: str, style: str) -> object:
-    """1 本の line 系列を emit する（NaN 除外・別 pane オシレータ）。marod の _emit_line と同様式。"""
-    line = chart.create_line(
-        name=name, color=color, style=style, width=1,
-        price_line=False, price_label=False,
-    )
-    series = pd.DataFrame({"time": times, name: np.asarray(values, dtype=float)}).dropna()
-    line.set(series)
-    return line
 
 
 def add_ma_marod(

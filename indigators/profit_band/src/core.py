@@ -28,6 +28,8 @@ class DistanceSamples:
     """分類別に集計した値幅サンプル（分位点計算の入力）。
 
     各配列は対象ローソク足から収集した値幅の絶対値（並び順は出現順）。
+    全配列は ``__post_init__`` で float64 化のうえ ``writeable=False`` に固定する
+    （ガイド §2「DTO は不変」）。
     """
 
     pOH: np.ndarray
@@ -36,6 +38,12 @@ class DistanceSamples:
     nOH: np.ndarray
     nOL: np.ndarray
     nHL: np.ndarray
+
+    def __post_init__(self) -> None:
+        for name in BUCKETS:
+            arr = np.asarray(getattr(self, name), dtype=np.float64)
+            arr.setflags(write=False)  # DTO は不変（ガイド §2）
+            object.__setattr__(self, name, arr)
 
     def as_dict(self) -> dict[str, np.ndarray]:
         return {b: getattr(self, b) for b in BUCKETS}

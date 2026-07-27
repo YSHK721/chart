@@ -25,6 +25,7 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH  # noqa: E402
+from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
 from .core import DEFAULT_PERIOD
 from .stc import OSC_COLUMN, build_stc, stc_levels
@@ -37,9 +38,7 @@ _LEVEL_COLOR = "rgba(84, 84, 84, 1)"   # 元 indicator_levelcolor C'84,84,84'
 _LEVEL_KEYS: tuple[str, ...] = ("P1", "P2", "M1", "M2")
 
 
-@runtime_checkable
-class _Line(Protocol):
-    def set(self, data: pd.DataFrame) -> None: ...
+_Line = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
 
 
 @runtime_checkable

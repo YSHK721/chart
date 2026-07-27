@@ -27,32 +27,29 @@ oscillator2_lc 等の命名で衝突回避）。
 依存:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
     共有: common（applied_price/AppliedPrice/typical_price）,
-          moving_averages（exponential_ma_on_buffer）。pandas/描画 import は禁止。
+          moving_averages（ma）。pandas/描画 import は禁止。
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
-# 共有ライブラリ moving_averages / mql_builtins を indicators/ パス経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
-from moving_averages import exponential_ma_on_buffer  # noqa: E402
-from mql_builtins import (  # noqa: E402,F401  # 正準 iWPR/iRSI/iMFI/iStochastic（再公開して in-package 参照面を維持）
+# 共有ライブラリ moving_averages / mql_builtins（indigators/ 直下）を絶対 import で再利用する。
+from moving_averages import ma
+from mql_builtins import (  # noqa: F401  # 正準 iWPR/iRSI/iMFI/iStochastic（再公開して in-package 参照面を維持）
     compute_mfi,
     compute_rsi,
     compute_stochastic,
     compute_wpr,
 )
-from profit_system import (  # noqa: E402,F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
+from profit_system import (  # noqa: F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
     compute_marod,
     level_count_score,
 )
 
-from common import AppliedPrice, applied_price, typical_price  # noqa: E402
+from common import AppliedPrice, applied_price, typical_price
 
 # 元 input の既定値（PRO!fitOscillator.mq4）。
 DEFAULT_OSC_PERIOD: int = 6
@@ -91,7 +88,7 @@ def compute_istoch_main_signal(
         main  = EMA(rawK, slowing=stc_slow)             # MODE_MAIN（slowing 平滑）
         signal= EMA(main, d_period=stc_slow)            # MODE_SIGNAL（D 平滑）
 
-    EMA は共有 ``exponential_ma_on_buffer`` を使用する（in-package 再実装はしない）。
+    EMA は共有 ``ma(..., "ema", ...)`` を使用する（in-package 再実装はしない）。
 
     Args:
         high/low/close: 昇順 HLC（同長）。
@@ -102,11 +99,8 @@ def compute_istoch_main_signal(
         (main, signal) の組（各 float64 ndarray・入力と同長）。
     """
     raw_k = compute_stochastic(high, low, close, period=osc_period)
-    n = raw_k.shape[0]
-    main = np.zeros(n, dtype=np.float64)
-    exponential_ma_on_buffer(n, 0, 0, stc_slow, raw_k, main)
-    signal = np.zeros(n, dtype=np.float64)
-    exponential_ma_on_buffer(n, 0, 0, stc_slow, main, signal)
+    main = ma(raw_k, "ema", stc_slow)
+    signal = ma(main, "ema", stc_slow)
     return main, signal
 
 
@@ -248,12 +242,9 @@ def compute_level_count(
     wpr = compute_wpr(h, l, c, period=osc_period) + 100.0
     mfi = compute_mfi(h, l, c, volume, period=osc_period)
 
-    ma_t = np.zeros_like(typical)
-    exponential_ma_on_buffer(typical.shape[0], 0, 0, ma_period, typical, ma_t)
-    ma_h = np.zeros_like(high_p)
-    exponential_ma_on_buffer(high_p.shape[0], 0, 0, ma_period, high_p, ma_h)
-    ma_l = np.zeros_like(low_p)
-    exponential_ma_on_buffer(low_p.shape[0], 0, 0, ma_period, low_p, ma_l)
+    ma_t = ma(typical, "ema", ma_period)
+    ma_h = ma(high_p, "ema", ma_period)
+    ma_l = ma(low_p, "ema", ma_period)
 
     marod_t = compute_marod(typical, ma_t)
     marod_h = compute_marod(high_p, ma_h)

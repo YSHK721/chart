@@ -22,39 +22,23 @@ import pandas as pd
 # 適用価格（合成価格）は共有プリミティブ層に一本化する（自前実装を持たない）。
 #   ロード境界（adapter/compute/call_binding.py）がワークスペース根を sys.path に追加するため
 #   絶対 import で解決できる。UI のソース値 → AppliedPrice 種別の写像のみ本ファイルで持つ。
-from common.applied_price import AppliedPrice, applied_price
+from common.applied_price import SOURCE_TO_APPLIED, applied_price
+from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
-from .core import (
-    exponential_ma_on_buffer,
-    linear_weighted_ma_on_buffer,
-    simple_ma_on_buffer,
-    smoothed_ma_on_buffer,
-)
+from .core import MA_FROM_ZERO, _MA_ON_BUFFER
 
 # UI ソース値（catalog の source enum） → 共有 AppliedPrice 種別。
 #   合成価格は applied_price() に委譲（hl2=MEDIAN / hlc3=TYPICAL / hlcc4=WEIGHTED /
-#   ohlc4=OHLC4・MQL 外拡張）。
-_SOURCE_TO_APPLIED = {
-    "close": AppliedPrice.CLOSE,
-    "open": AppliedPrice.OPEN,
-    "high": AppliedPrice.HIGH,
-    "low": AppliedPrice.LOW,
-    "hl2": AppliedPrice.MEDIAN,
-    "hlc3": AppliedPrice.TYPICAL,
-    "hlcc4": AppliedPrice.WEIGHTED,
-    "ohlc4": AppliedPrice.OHLC4,
-}
+#   ohlc4=OHLC4・MQL 外拡張）。写像の実体は共有プリミティブへ 1 本化した（ISSUE-179 項目 4）。
+_SOURCE_TO_APPLIED = SOURCE_TO_APPLIED
 
 # 主 MA 種別（小文字） → core バッファ関数（``(rates_total, prev, begin, period, price, buffer)``）。
-_MA_FUNCS = {
-    "sma": simple_ma_on_buffer,
-    "ema": exponential_ma_on_buffer,
-    "smma": smoothed_ma_on_buffer,
-    "lwma": linear_weighted_ma_on_buffer,
-}
+#   実体は core の ``_MA_ON_BUFFER``（``MA_TYPES`` の導出元）と同一オブジェクト＝単一情報源。
+_MA_FUNCS = _MA_ON_BUFFER
 
 # core が「最初の有効値」を index=0 から定義する種別（warm-up マスク不要）。他は period-1 までマスク。
-_FROM_ZERO = {"ema"}
+#   実体は core の ``MA_FROM_ZERO``（MA 種別の規約は core が所有する）。
+_FROM_ZERO = MA_FROM_ZERO
 
 # 系列の描画色。
 _COLOR_MA = "rgba(41, 98, 255, 1)"        # 青（主 MA）
@@ -74,9 +58,7 @@ _DEFAULTS = {
 }
 
 
-@runtime_checkable
-class _Line(Protocol):
-    def set(self, data: "pd.DataFrame") -> None: ...
+_Line = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
 
 
 @runtime_checkable

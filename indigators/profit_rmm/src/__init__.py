@@ -21,7 +21,7 @@
     複合レベルカウント指標）を昇順=古→新へ 1:1 変換する。
 
 依存:
-    core: numpy ＋ 共有（common.typical_price / moving_averages.exponential_ma_on_buffer）。
+    core: numpy ＋ 共有（common.typical_price / moving_averages.ma）。
     rmm:  pandas（成果物層）。loader: pandas。lwc_chart: numpy/pandas（描画 lib 非 import）。
 """
 

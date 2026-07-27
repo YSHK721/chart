@@ -16,28 +16,26 @@
     iMFI(period)         → compute_mfi。TP=(H+L+C)/3, MF=TP*Volume。窓内で
         TP[j]>TP[j-1]→正MF, TP[j]<TP[j-1]→負MF, 等しければ加算しない（§4.4 非対称）。
         MFI=100*正MF/(正MF+負MF)。warm-up（i<period）は 0（元 iMFI/SetIndexDrawBegin）。
-    iMAOnArray(EMA, ma_period) → exponential_ma_on_buffer（共有再利用）。warm-up 0
-        を含めて通す（元 iMAOnArray と同じ）。ma_period<=1 は未計算 0 返し。
+    iMAOnArray(EMA, ma_period) → moving_averages.ma(..., "ema", ...)（共有再利用。
+        中身は exponential_ma_on_buffer と bit 等価）。warm-up 0 を含めて通す
+        （元 iMAOnArray と同じ）。ma_period<=1 は未計算 0 返し。
     σ 水準（全系列 iBandsOnArray 相当） → compute_mfi_levels。中心=全平均、
         偏差=母標準偏差（÷N・warm-up 0 込み）。
 
 依存（PORTING_GUIDE §8）:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
-    共有: moving_averages（exponential_ma_on_buffer）。pandas/描画 import は禁止。
+    共有: moving_averages（ma）。pandas/描画 import は禁止。
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
-# 共有ライブラリ moving_averages / mql_builtins を indicators/ パス経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
-from moving_averages import exponential_ma_on_buffer  # noqa: E402
-from mql_builtins import compute_mfi  # noqa: E402,F401  # 正準 iMFI（再公開して in-package 参照面を維持）
+# 共有ライブラリ moving_averages / mql_builtins（indigators/ 直下）を絶対 import で再利用する。
+from moving_averages import ma
+from mql_builtins import compute_mfi  # noqa: F401  # 正準 iMFI（再公開して in-package 参照面を維持）
 
 # 元 input の既定値（PORTING_GUIDE / 依頼仕様）。
 DEFAULT_MFI_PERIOD: int = 14
@@ -92,11 +90,11 @@ class MfiResult:
 
     def __post_init__(self) -> None:
         mfi = np.asarray(self.mfi, dtype=np.float64)
-        ma = np.asarray(self.ma, dtype=np.float64)
+        ma_arr = np.asarray(self.ma, dtype=np.float64)
         mfi.setflags(write=False)  # DTO は不変（profit_stc 準拠）
-        ma.setflags(write=False)
+        ma_arr.setflags(write=False)
         object.__setattr__(self, "mfi", mfi)
-        object.__setattr__(self, "ma", ma)
+        object.__setattr__(self, "ma", ma_arr)
 
 
 def compute_mfi_full(
@@ -111,7 +109,7 @@ def compute_mfi_full(
     """iMFI ＋ EMA 平滑 ＋ σ 水準を統合し MfiResult（frozen DTO）として返す。
 
     iMFI を ``compute_mfi`` で算出し、その出力（warm-up 0 込み）を共有
-    ``exponential_ma_on_buffer`` で EMA(ma_period) 化する。σ 水準は EMA 系列
+    ``ma(..., "ema", ma_period)`` で EMA(ma_period) 化する。σ 水準は EMA 系列
     全体から ``compute_mfi_levels`` で算出する。
 
     Args:
@@ -127,7 +125,6 @@ def compute_mfi_full(
         ValueError: ``mfi_period < 2`` または OHLCV 長不一致（compute_mfi 経由）。
     """
     mfi = compute_mfi(high, low, close, volume, period=mfi_period)
-    ma = np.zeros(mfi.shape[0], dtype=np.float64)
-    exponential_ma_on_buffer(mfi.shape[0], 0, 0, ma_period, mfi, ma)
-    levels = compute_mfi_levels(ma)
-    return MfiResult(mfi=mfi, ma=ma, levels=levels)
+    ma_values = ma(mfi, "ema", ma_period)
+    levels = compute_mfi_levels(ma_values)
+    return MfiResult(mfi=mfi, ma=ma_values, levels=levels)

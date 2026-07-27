@@ -15,8 +15,8 @@
 
 元 MQL4 / PS.mqh の対応:
     * ``iADX(NULL,0,inpPeriod,PRICE_*,0,i)``             → ``compute_adx``
-    * ``PS_GetLevelCountValue`` / ``PS_GetUnitConversion``→ ``ps_level_count`` / ``_unit_conversion``
-    * ``PS_GetAverage`` / ``PS_GetStandardDeviationValue``→ ``_ps_average`` / ``_ps_std_ema`` / ``_ps_band``
+    * ``PS_GetLevelCountValue`` / ``PS_GetUnitConversion``→ ``ps_level_count`` / ``ps_unit_conversion``
+    * ``PS_GetAverage`` / ``PS_GetStandardDeviationValue``→ ``ps_average`` / ``ps_std_ema``
     * ``iBandsOnArray(...,deviation,...,MODE_UPPER/LOWER,0)`` → ``compute_sigma_levels``
     * ``ExtBufferLevelCount`` のクランプ（SD_1S6/SD_2S6）  → ``compute_adx_needle`` の clip
 
@@ -33,30 +33,30 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Mapping
 
 import numpy as np
 
-# 共有層 import: profit_system（PS プリミティブの正準実装）は indicators 配下。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # indicators → profit_system
-
 # PS レベルカウント系プリミティブは profit_system に集約済み（本パッケージが正準供給元）。
-from profit_system import (  # noqa: E402
+# ISSUE-182 項目 1: 4 プリミティブは public 名へ昇格済み。深い ``profit_system.src.core``
+# ではなくパッケージの公開面（``__all__``）だけを参照する。
+from profit_system import (
     SIGMA_LEVELS,
     compute_sigma_levels,
+    ps_average,
     ps_level_count,
+    ps_normalize,
+    ps_std_ema,
+    ps_unit_conversion,
 )
 
-# 本パッケージのテスト・既存参照面を維持するための private ヘルパー再エクスポート。
-from profit_system.src.core import (  # noqa: E402
-    _normalize,
-    _ps_average,
-    _ps_std_ema,
-    _unit_conversion,
-)
+# 本パッケージの既存参照面（tests/test_core.py）を維持するための旧名別名。
+# 束縛先は上の public 名と同一オブジェクト＝値は 1 ビットも変わらない。
+_normalize = ps_normalize
+_ps_average = ps_average
+_ps_std_ema = ps_std_ema
+_unit_conversion = ps_unit_conversion
 
 # 既定パラメータ（元 ``input int inpPeriod = 6``）。
 DEFAULT_PERIOD: int = 6

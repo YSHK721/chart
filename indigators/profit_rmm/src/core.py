@@ -27,37 +27,34 @@
         （現バー含む）の最大/最小。maxH!=minL → -(maxH-close)*100/(maxH-minL)、
         maxH==minL → wpr[i-1]（前値）。n<period → 全 0。
     funLevelCount → level_count_score（4 ケース・ゼロ割ガードなし）。
-    iMAOnArray(EMA) → exponential_ma_on_buffer（共有再利用）。
+    iMAOnArray(EMA) → moving_averages.ma(..., "ema", ...)（共有再利用）。
     typical_price → common.typical_price（共有再利用）。
 
 依存:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
-    共有: common（typical_price）, moving_averages（exponential_ma_on_buffer）。
+    共有: common（typical_price）, moving_averages（ma）。
     pandas/描画 import は禁止。
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
-# 共有ライブラリ moving_averages / mql_builtins を indicators/ パス経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
-from moving_averages import exponential_ma_on_buffer  # noqa: E402
-from mql_builtins import (  # noqa: E402,F401  # 正準 iWPR/iRSI/iMFI（再公開して in-package 参照面を維持）
+# 共有ライブラリ moving_averages / mql_builtins（indigators/ 直下）を絶対 import で再利用する。
+from moving_averages import ma
+from mql_builtins import (  # noqa: F401  # 正準 iWPR/iRSI/iMFI（再公開して in-package 参照面を維持）
     compute_mfi,
     compute_rsi,
     compute_wpr,
 )
-from profit_system import (  # noqa: E402,F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
+from profit_system import (  # noqa: F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
     compute_marod,
     level_count_score,
 )
 
-from common import typical_price  # noqa: E402
+from common import typical_price
 
 # 元 input の既定値（PRO!fitRMM.mq4）。
 DEFAULT_OSC_PERIOD: int = 6
@@ -233,7 +230,7 @@ def compute_rmm(
         rsi = compute_rsi(typical, period=osc_period)
         mfi = compute_mfi(H,L,C,V, period=osc_period)
         wpr = compute_wpr(H,L,C, osc_period) + 100.0
-        ma  = EMA(typical, ma_period)（exponential_ma_on_buffer）
+        ma  = EMA(typical, ma_period)（moving_averages.ma(..., "ema", ...)）
         marod = compute_marod(typical, ma)
         span: rsi/wpr/mfi は clamp=True、marod は clamp=False。
         各バー i:
@@ -277,9 +274,8 @@ def compute_rmm(
     mfi = compute_mfi(high, low, close, volume, period=osc_period)
     wpr = compute_wpr(high, low, close, period=osc_period) + 100.0
 
-    ma = np.zeros(typical.shape[0], dtype=np.float64)
-    exponential_ma_on_buffer(typical.shape[0], 0, 0, ma_period, typical, ma)
-    marod = compute_marod(typical, ma)
+    ma_values = ma(typical, "ema", ma_period)
+    marod = compute_marod(typical, ma_values)
 
     n = close.shape[0]
     # スパン（採点の分母）を全期間スカラ（window=None）か因果ローリング（window=W）で用意。

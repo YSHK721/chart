@@ -14,6 +14,10 @@ from .src import (  # noqa: F401
     compute_marod,
     compute_sigma_levels,
     level_count_score,
+    ps_average,
     ps_level_count,
+    ps_normalize,
+    ps_std_ema,
+    ps_unit_conversion,
 )
 from .src import __all__  # 公開 API を src と一致させる

@@ -23,6 +23,7 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH  # noqa: E402
+from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
 from .core import DEFAULT_MA_MODE, DEFAULT_MA_PERIOD
 from .osi_ma import KAIRI_COLUMN, build_osi_ma, osi_ma_levels
@@ -34,9 +35,7 @@ _LEVEL_COLOR = "rgba(84, 84, 84, 0.6)"  # 水準線（点線）
 _LEVEL_VALUES: tuple[float, ...] = tuple(osi_ma_levels().values())
 
 
-@runtime_checkable
-class _Histogram(Protocol):
-    def set(self, data: pd.DataFrame) -> None: ...
+_Histogram = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
 
 
 @runtime_checkable

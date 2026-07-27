@@ -43,6 +43,7 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH  # noqa: E402
+from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
 from .hlband import (
     RANGE_COLUMN,
@@ -72,9 +73,7 @@ _OVERLAY_KEYS: tuple[str, ...] = (
 )
 
 
-@runtime_checkable
-class _Histogram(Protocol):
-    def set(self, data: pd.DataFrame) -> None: ...
+_Histogram = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
 
 
 @runtime_checkable

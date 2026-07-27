@@ -3,7 +3,7 @@
 元 MQL5 標準ライブラリ ``MovingAverages.mqh`` を Python へ移植したもの。
 入出力・描画を一切含まない純粋な数値計算層であり、依存は numpy のみ。
 
-提供する関数は 2 系統:
+提供する関数は 3 系統:
 
 スカラー版（指定位置 1 点の値を返す）
     simple_ma            : 単純移動平均（SMA）
@@ -17,6 +17,10 @@
     linear_weighted_ma_on_buffer        : LWMA（classic, スライド和）
     linear_weighted_ma_on_buffer_fast   : LWMA（fast, weight_sum を保持）
     smoothed_ma_on_buffer
+
+狭いラッパ（純粋関数・種別ディスパッチ。ISSUE-182 項目 2）
+    ma                   : ``ma(price, ma_type, length) -> ndarray``
+    MA_TYPES             : 受理する種別キー（"sma"/"ema"/"smma"/"lwma"）
 
 移植上の注意:
     - MQL の ``ArrayGetAsSeries`` / ``ArraySetAsSeries`` による時系列向き調整は、
@@ -373,3 +377,63 @@ def smoothed_ma_on_buffer(
     for i in range(start_position, rates_total):
         buffer[i] = (buffer[i - 1] * (period - 1) + price[i]) / period
     return rates_total
+
+
+# ---------------------------------------------------------------------------
+# 狭いラッパ（純粋関数・種別ディスパッチ）
+#
+# 上のバッファ版は MQL ``MovingAverages.mqh`` の 1:1 移植資産であり、
+# ``(rates_total, prev_calculated, begin, period, price, buffer)`` の 6 引数
+# out-param 契約を持つ。しかし本番の全呼出は ``prev_calculated=0`` / ``begin=0``
+# 固定かつ ``np.zeros(n)`` の事前確保という単一の作法しか使っていない
+# （ISSUE-182 の Grep 実測）。そこで、その作法だけを固定した狭い純粋関数面を
+# **追加**する（既存 6 引数版は無改変で残置する）。
+# ---------------------------------------------------------------------------
+
+# 種別キー → バッファ版関数。種別追加は本表への 1 行追加だけで済む（分岐を書かない）。
+# キー集合は既存の種別写像（lwc_chart._MA_FUNCS / ma_marod._MA_FUNCS）と同一。
+_MA_ON_BUFFER = {
+    "sma": simple_ma_on_buffer,
+    "ema": exponential_ma_on_buffer,
+    "smma": smoothed_ma_on_buffer,
+    "lwma": linear_weighted_ma_on_buffer,
+}
+
+# 受理する MA 種別キー（表から導出＝単一情報源）。
+MA_TYPES: tuple[str, ...] = tuple(_MA_ON_BUFFER)
+
+# 「最初の有効値」を index=0 から定義する種別（warm-up マスク不要）。他は period-1 までマスク。
+# MA 種別ごとの warm-up 規約は本 core（種別の所有者）が単一情報源として持つ
+# （ISSUE-179 項目 4: lwc_chart の ``_FROM_ZERO`` はここへの別名になった）。
+MA_FROM_ZERO: frozenset[str] = frozenset({"ema"})
+
+
+def ma(price: np.ndarray, ma_type: str, length: int) -> np.ndarray:
+    """移動平均系列を新規配列で返す（バッファ版の狭いラッパ・出力は bit 等価）。
+
+    ``buffer = np.zeros(n); <type>_ma_on_buffer(n, 0, 0, length, price, buffer)``
+    と厳密に同一の計算を行い、``buffer`` を返す。呼び出し側は未使用の
+    ``prev_calculated`` / ``begin`` と事前確保から解放される。
+
+    Args:
+        price: 価格配列（昇順。float64 以外は float64 へ変換して扱う）。
+        ma_type: 種別キー（``MA_TYPES`` のいずれか。大文字小文字は区別しない）。
+        length: 期間。
+
+    Returns:
+        ``price`` と同長の float64 配列（新規確保）。``length<=1`` または
+        ``length>len(price)`` のときバッファ版は何も書かないため全 0 が返る
+        （既存契約をそのまま踏襲する）。
+
+    Raises:
+        ValueError: ``ma_type`` が ``MA_TYPES`` に無い場合。
+    """
+    key = str(ma_type).lower()
+    fn = _MA_ON_BUFFER.get(key)
+    if fn is None:
+        raise ValueError(f"未知の MA 種別です: {ma_type}")
+    values = np.asarray(price, dtype=np.float64)
+    n = int(values.shape[0])
+    buffer = np.zeros(n, dtype=np.float64)
+    fn(n, 0, 0, length, values, buffer)
+    return buffer
