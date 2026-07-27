@@ -12,6 +12,8 @@ from market_profile_api.controller.market_profile_controller import (
 )
 
 from test_market_profile_zp_store import _synth_ticks_for_day, _DAY0  # 合成ティック再利用
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
 
 def test_allowed_src_contains_zp():
@@ -50,7 +52,7 @@ def test_zp_response_schema(monkeypatch, tmp_path):
 
     monkeypatch.setattr(zp._mpd, "_load_window_ticks", fake_load)
     monkeypatch.setattr(zp, "day_parquet_files", lambda *a, **k: [])
-    monkeypatch.setattr(zp, "_ZP_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(_mp_cache_settings, "ZP_CACHE_ROOT", tmp_path)
     monkeypatch.setattr(zp, "NULL_HIST_DAYS", 15)
     monkeypatch.setattr(zp, "NULL_MIN_DAYS", 8)
     monkeypatch.setattr(zp, "M_REPS_DAY", 200)
@@ -152,7 +154,7 @@ def _setup_zp_synthetic(monkeypatch, tmp_path):
 
     monkeypatch.setattr(zp._mpd, "_load_window_ticks", fake_load)
     monkeypatch.setattr(zp, "day_parquet_files", lambda *a, **k: [])
-    monkeypatch.setattr(zp, "_ZP_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(_mp_cache_settings, "ZP_CACHE_ROOT", tmp_path)
     monkeypatch.setattr(zp, "NULL_HIST_DAYS", 15)
     monkeypatch.setattr(zp, "NULL_MIN_DAYS", 8)
     monkeypatch.setattr(zp, "M_REPS_DAY", 200)

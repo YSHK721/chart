@@ -29,6 +29,8 @@ from market_profile_api.controller import market_profile_controller as mpc
 from market_profile_api.controller.market_profile_forming_controller import (
     handle_market_profile_forming,
 )
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
 _DAY0 = 1704067200      # 2024-01-01 00:00 UTC（月曜）。
 _H2 = _DAY0 + 7200      # hr2:00（floor(1h) 境界＝formingStart）。
@@ -39,7 +41,7 @@ _FORM = 1025.0          # forming 期間にのみ現れる価格（base 排除�
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch, tmp_path):
-    monkeypatch.setattr(mpd, "_CACHE_ROOT", tmp_path / "cache")
+    monkeypatch.setattr(_mp_cache_settings, "DWELL_CACHE_ROOT", tmp_path / "cache")
     monkeypatch.setattr(mpd, "_day_source_signature", lambda symbol, day_start: "")
     mpd._reset_caches()
     yield

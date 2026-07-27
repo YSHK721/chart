@@ -8,7 +8,7 @@
 
 含む構造:
     * 既定パラメータ定数（maxbars / 分位ペア / 経験分位 N / 被覆率 N）
-    * norm_ppf          : 標準正規の逆累積分布（Acklam 有理近似・scipy 非依存）
+    * norm_ppf          : 標準正規の逆累積分布（実体は共有 ``common.normal_dist``・再エクスポート）
     * resolve_source    : 8 択ソース（applied_price 参照）→ 価格系列
     * rolling_ols_window_end : 系列 → (mean, pred_sd, beta, sigma) の窓末尾ローリング
 
@@ -17,14 +17,21 @@
     その窓末尾値を閉形式で再現し、回帰テスト（test_trail）で 1e-6 一致を固定する。
 
 依存:
-    標準: __future__ / 外部: numpy / プロジェクト内: common.applied_price
+    標準: __future__ / 外部: numpy /
+    プロジェクト内: common.applied_price, common.normal_dist, common.ols_fit
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from common.applied_price import AppliedPrice, applied_price
+from common.applied_price import SOURCE_TO_APPLIED, applied_price
+from common.ols_fit import ols_fit, pred_sd_at
+
+# Acklam 有理近似の実体は共有プリミティブへ 1 本化した（ISSUE-179 項目 3）。スカラ経路が
+# 旧ローカル実装と **ビット一致** することを実測（14,007 点で tobytes 不一致 0）してから統合。
+# 本モジュールの公開面（``src/__init__.py`` の ``__all__``）を保つため同名で再エクスポートする。
+from common.normal_dist import norm_ppf
 
 # 既定値（正本仕様 kind-twirling-hollerith.md §2 / FINDINGS §3）。
 DEFAULT_MAXBARS: int = 100            # 回帰窓（tgp_btlm core.py DEFAULT_MAXBARS と同値）
@@ -35,46 +42,8 @@ DEFAULT_N_COV: int = 250             # 実現被覆率のローリング本数
 _MIN_OBS: int = 3                    # 分散推定に必要な最小観測数（OlsBtlmFitter と同一）
 
 # UI ソース値（catalog の source enum）→ 共有 AppliedPrice 種別（moving_averages と同期）。
-_SOURCE_TO_APPLIED = {
-    "close": AppliedPrice.CLOSE,
-    "open": AppliedPrice.OPEN,
-    "high": AppliedPrice.HIGH,
-    "low": AppliedPrice.LOW,
-    "hl2": AppliedPrice.MEDIAN,
-    "hlc3": AppliedPrice.TYPICAL,
-    "hlcc4": AppliedPrice.WEIGHTED,
-    "ohlc4": AppliedPrice.OHLC4,
-}
-
-
-def norm_ppf(p: float) -> float:
-    """標準正規分布の逆累積分布関数（Acklam の有理近似・scipy 非依存）。
-
-    tgp_btlm/src/core.norm_ppf と同一係数（参照実装との数値一致を保つため）。
-    """
-    a = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
-         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
-    b = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
-         6.680131188771972e+01, -1.328068155288572e+01)
-    c = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
-         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00)
-    d = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
-         3.754408661907416e+00)
-    if not (0.0 < p < 1.0):
-        raise ValueError("p は 0 < p < 1 の範囲で指定してください。")
-    plow, phigh = 0.02425, 1.0 - 0.02425
-    if p < plow:
-        q = np.sqrt(-2.0 * np.log(p))
-        return (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
-               ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
-    if p > phigh:
-        q = np.sqrt(-2.0 * np.log(1.0 - p))
-        return -(((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
-                ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
-    q = p - 0.5
-    r = q * q
-    return (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q / \
-           (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1.0)
+#   写像の実体は共有プリミティブへ 1 本化した（ISSUE-179 項目 4）。
+_SOURCE_TO_APPLIED = SOURCE_TO_APPLIED
 
 
 def resolve_source(df, source: str) -> np.ndarray:
@@ -109,17 +78,12 @@ def _window_end_scalar(z: np.ndarray) -> tuple[float, float, float, float]:
     if w < _MIN_OBS:
         return (np.nan, np.nan, np.nan, np.nan)
     x = np.arange(1.0, w + 1.0)
-    phi = np.column_stack([np.ones(w), x])
-    xtx_inv = np.linalg.inv(phi.T @ phi)
-    beta = xtx_inv @ phi.T @ z
-    fitted = phi @ beta
-    residual = z - fitted
-    s2 = float(residual @ residual) / (w - 2)
-    phi_end = np.array([1.0, float(w)])
-    leverage = float(phi_end @ xtx_inv @ phi_end)
-    pred_sd = float(np.sqrt(s2 * (1.0 + leverage)))
-    mean_end = float(fitted[-1])
-    return (mean_end, pred_sd, float(beta[1]), float(np.sqrt(s2)))
+    fit = ols_fit(x, z)
+    # leverage は端点ベクトル形（``pred_sd_at``）を用いる。全行 einsum 形の末尾要素とは
+    # 総和順序が異なり最終ビットが一致しないため、共有側でも 2 形を統合していない。
+    pred_sd = pred_sd_at(np.array([1.0, float(w)]), fit.xtx_inv, fit.s2)
+    mean_end = float(fit.fitted[-1])
+    return (mean_end, pred_sd, float(fit.beta[1]), float(np.sqrt(fit.s2)))
 
 
 def rolling_ols_window_end(

@@ -71,6 +71,22 @@ class _FakeFormingBar:
         return _FakeDF(tag="formed")
 
 
+class _FakeComputeAdapter:
+    """IndicatorComputePort を満たす fake（ISSUE-182 item4）。
+
+    usecase は本オブジェクトのメソッドを呼ばず（ディスパッチへ素通し）、fake ディスパッチも
+    ``compute`` を呼ばないため呼出は記録のみ。旧版は ``object()`` を注入しており Port 非準拠
+    だった（契約の実在をテストが検出できない）。ISSUE-177 と同方針で fake を Port 準拠へ拡充する。
+    """
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def compute(self, compute_id, variant, df, params):  # noqa: ANN001
+        self.calls.append((compute_id, variant, df, params))
+        return []
+
+
 class _RecordingCompute:
     """full_compute / latest_compute の呼出を記録し、固定 series を返す。"""
 
@@ -95,7 +111,7 @@ def _kw(**over):
     """compute_indicators の既定協調子キーワードを組む（テストで一部だけ差し替え）。"""
     kw = dict(
         dataset_port=_FakeDatasetPort(),
-        compute_adapter=object(),
+        compute_adapter=_FakeComputeAdapter(),
         forming_bar=_FakeFormingBar(),
         full_compute=_RecordingCompute([{"name": "full", "kind": "line", "data": []}]),
         latest_compute=_RecordingCompute([{"name": "latest", "kind": "line", "data": []}]),
@@ -168,7 +184,7 @@ def test_full_mode_calls_full_compute_and_returns_series():
     port = _FakeDatasetPort()
     full = _RecordingCompute([{"name": "MA", "kind": "line", "data": [1]}])
     latest = _RecordingCompute([{"name": "X"}])
-    adapter = object()
+    adapter = _FakeComputeAdapter()
     result = compute_indicators(
         _req(mode="full", params={"p": 9}),
         **_kw(dataset_port=port, full_compute=full, latest_compute=latest,

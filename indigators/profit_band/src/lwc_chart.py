@@ -4,10 +4,12 @@
 (`lightweight-charts-python`) のチャート上に Line シリーズとして追加する。
 
 設計方針:
-  * 本モジュールは ``lightweight_charts`` を import しない。``chart`` 引数は
-    ``create_line`` / ``legend`` を備えたオブジェクト（``AbstractChart`` 系）であれば
-    よく、ダックタイピングで受ける。これにより profit_band パッケージは
-    numpy / pandas のみの依存を維持する。
+  * 本モジュールは ``lightweight_charts`` を import しない。層境界は
+    ``typing.Protocol``（``@runtime_checkable``）の ``_Chart`` / ``_Line`` で宣言し
+    （PORTING_GUIDE §2）、``create_line`` を備えたオブジェクト（``AbstractChart`` 系）
+    であればダックタイピングで受ける。``legend`` は任意（``hasattr`` で判定するため
+    Protocol には含めない）。これにより profit_band パッケージは numpy / pandas のみの
+    依存を維持する。
   * ラッパーの公開 API は ``create_line`` のみで、2 線間の塗り(fill)は非対応。
     そのため MT5 の塗りバンドは上端/下端ラインで表現する:
       - ``nOH``(下) / ``pOL``(上): 塗りバンド端 → 実線
@@ -26,9 +28,10 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional, Union
+from typing import Dict, Iterable, Optional, Protocol, Union, runtime_checkable
 
 import pandas as pd
+from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
 from .bands import build_bands
 from .core import PROBABILITIES
@@ -49,6 +52,14 @@ _ALPHA: Dict[int, float] = {51: 0.95, 80: 0.80, 85: 0.70, 90: 0.60, 95: 0.50, 98
 
 # 既定の描画系統と順序（下端→上端→外側点線）。
 DEFAULT_BUCKETS = ("nOH", "pOL", "pOH", "nOL")
+
+
+_Line = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
+
+
+@runtime_checkable
+class _Chart(Protocol):
+    def create_line(self, name: str, **kwargs) -> _Line: ...
 
 
 def _percent_tag(probability: float) -> str:
@@ -87,7 +98,7 @@ def _resolve_times(df: pd.DataFrame, time_column: Optional[str]) -> pd.Series:
 
 
 def add_profit_band(
-    chart,
+    chart: _Chart,
     df: pd.DataFrame,
     *,
     probabilities: Iterable[float] = PROBABILITIES,
@@ -156,7 +167,7 @@ def add_profit_band(
 
 
 def add_robust_profit_band(
-    chart,
+    chart: _Chart,
     df: pd.DataFrame,
     *,
     probabilities: Iterable[float] = PROBABILITIES,

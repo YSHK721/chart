@@ -30,20 +30,28 @@ test('unknown mode falls back to legacy semantics and normal transition', () => 
 });
 
 test('registry is the single mode ledger (consumers reference it, no raw mode literals for capability branches)', () => {
+  // ISSUE-181: actor の mode 分岐（_applyMode の switch）は表示モード遷移ロール
+  //   adapter/front/mp_mode_transition.js へ外出しした。台帳を import する「消費者」は移設先である。
+  //   actor 側は raw 文字列比較が戻らないこと（非退行）を引き続き課す（下の noRawLiterals）。
   const files = {
     'domain/growth_window.js': J('domain', 'growth_window.js'),
     'usecase/catalog_entry.js': J('usecase', 'catalog_entry.js'),
-    'adapter/front/market_profile_actor.js': J('adapter', 'front', 'market_profile_actor.js'),
+    'adapter/front/mp_mode_transition.js': J('adapter', 'front', 'mp_mode_transition.js'),
   };
-  for (const [label, src] of Object.entries(files)) {
-    assert.ok(/mp_display_mode\.js'/.test(src), `${label} が mp_display_mode 台帳を import していない`);
+  const noRawLiterals = (label, src) => {
     // 表示モードの capability を表す raw 文字列比較が残存しないこと。
     assert.ok(!/mode\s*===\s*'sessions'/.test(src), `${label} に mode === 'sessions' が残存`);
     assert.ok(!/mode\s*!==\s*'sessions'/.test(src), `${label} に mode !== 'sessions' が残存`);
     assert.ok(!/mode\s*===\s*'normal'/.test(src), `${label} に mode === 'normal' が残存`);
     assert.ok(!/mode\s*===\s*'replay'/.test(src), `${label} に mode === 'replay' が残存`);
     assert.ok(!/mode\s*===\s*'ticklive'/.test(src), `${label} に mode === 'ticklive' が残存`);
+  };
+  for (const [label, src] of Object.entries(files)) {
+    assert.ok(/mp_display_mode\.js'/.test(src), `${label} が mp_display_mode 台帳を import していない`);
+    noRawLiterals(label, src);
   }
+  // 分岐の移設元（actor）にも raw 文字列比較の非退行を課す（台帳参照は移設先が担う）。
+  noRawLiterals('adapter/front/market_profile_actor.js', J('adapter', 'front', 'market_profile_actor.js'));
 });
 
 test('MP_DISPLAY_MODES is frozen and covers the four display modes', () => {

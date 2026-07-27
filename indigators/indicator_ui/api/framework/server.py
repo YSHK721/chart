@@ -120,6 +120,12 @@ from adapter.controller.candles_controller import (  # noqa: E402
     handle_forming_bar,
 )
 from adapter.controller.catalog_controller import handle_catalog  # noqa: E402
+from adapter.gateway.composition import install_default_ports  # noqa: E402
+
+# ISSUE-183（DIP）: 本モジュールが真の Composition Root。usecase の Output Boundary
+#   （DatasetPort）へ既定 factory を **起動時に 1 回** 登録する。これによりポート側から
+#   ``adapter.gateway.composition`` を pull する遅延 import（内側 → 外側の逆流）を撤去できる。
+install_default_ports()
 
 # 静的配信ルート（web/）。api/ → parents[1]=api → parents[2]=indicator_ui → web。
 _WEB_ROOT = (_API_ROOT.parent / "web").resolve()

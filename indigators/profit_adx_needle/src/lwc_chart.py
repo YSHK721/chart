@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH, level_colors  # noqa: E402
+from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
 from .core import DEFAULT_PERIOD, DEFAULT_WINDOW
 from .needle import NEEDLE_COLUMN, build_adx_needle, needle_levels
@@ -34,9 +35,7 @@ _LEVEL_COLOR = "rgba(84, 84, 84, 0.6)"  # 元 indicator_levelcolor C'84,84,84'
 _LEVEL_KEYS: tuple[str, ...] = ("up_067", "up_128", "up_165", "up_196", "up_258", "up_329")
 
 
-@runtime_checkable
-class _Histogram(Protocol):
-    def set(self, data: pd.DataFrame) -> None: ...
+_Histogram = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
 
 
 @runtime_checkable

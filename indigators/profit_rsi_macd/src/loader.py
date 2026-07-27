@@ -17,17 +17,34 @@
     CSV から行う。出来高は参照しない（iMFI ではなく iRSI 起点）。
 
 依存（PORTING_GUIDE §8）:
-    標準: __future__, pathlib / 外部: pandas / プロジェクト内: なし
+    標準: __future__, pathlib, sys / 外部: なし / プロジェクト内: marketdata.ohlc_csv_loader
 """
 
 from __future__ import annotations
 
+# ISSUE-179 項目 1: CSV 読み込みの実体は最下層共有パッケージ marketdata.ohlc_csv_loader に
+#   一本化した。本モジュールは「自パッケージの読み込み方針（必須列・列名 cast・空 CSV
+#   ガード）」だけを宣言して共有機構へ委譲する薄い shim であり、挙動は一本化前と一致する。
+#   profit_band/src/loader.py と対称に repo 根を sys.path へ挿入し、パッケージを standalone
+#   実行/import する文脈（demo.py・lwc_demo.py・単体テスト）で cwd が repo 根でない場合の
+#   ModuleNotFoundError: marketdata を防ぐ。
+import sys as _sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pandas as pd
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]  # src→profit_rsi_macd→indigators→repo 根
+if str(_WORKSPACE_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_WORKSPACE_ROOT))
+
+from marketdata.ohlc_csv_loader import read_ohlc_csv_with_policy  # noqa: E402
+
+if TYPE_CHECKING:  # 型注釈専用（PEP 563 により実行時評価されない）
+    import pandas as pd
 
 # RSIMACD 必須列（volume は不要）。open は計算に不使用だが OHLC 整合のため必須化。
 _REQUIRED = ("open", "high", "low", "close")
+
+__all__ = ["load_ohlc_csv"]
 
 
 def load_ohlc_csv(
@@ -52,24 +69,10 @@ def load_ohlc_csv(
         FileNotFoundError: ファイルが存在しない場合。
         KeyError: 必須列が欠けている場合、または指定の時刻列が存在しない場合。
     """
-    csv_path = Path(path)
-    if not csv_path.is_file():
-        raise FileNotFoundError(f"CSV が見つかりません: {csv_path}")
-
-    df = pd.read_csv(csv_path, **read_csv_kwargs)
-    lower_map = {str(c).lower(): c for c in df.columns}
-
-    missing = [k for k in require if k not in lower_map]
-    if missing:
-        raise KeyError(
-            f"CSV に必須列が不足しています: {missing}（存在する列: {list(df.columns)}）"
-        )
-
-    if time_column is not None:
-        tcol = lower_map.get(time_column.lower(), time_column)
-        if tcol not in df.columns:
-            raise KeyError(f"指定された時刻列が存在しません: {time_column}")
-        df[tcol] = pd.to_datetime(df[tcol])
-        df = df.set_index(tcol)
-
-    return df
+    return read_ohlc_csv_with_policy(
+        path,
+        read_csv_kwargs,
+        time_column=time_column,
+        require=require,
+        cast_column_names=True,
+    )

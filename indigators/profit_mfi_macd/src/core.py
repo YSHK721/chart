@@ -20,31 +20,28 @@
 
 元 MQL 対応（``PRO!fitMFIMACD.mq4`` を昇順=古→新へ 1:1 変換）:
     iMFI(MFIperiod=13)            → compute_mfi（profit_mfi と同一ロジック）。
-    iMAOnArray(EMA, FastEMA=4)    → exponential_ma_on_buffer（共有再利用）。
-    iMAOnArray(EMA, SlowEMA=8)    → exponential_ma_on_buffer（共有再利用）。
+    iMAOnArray(EMA, FastEMA=4)    → moving_averages.ma(..., "ema", ...)（共有再利用）。
+    iMAOnArray(EMA, SlowEMA=8)    → moving_averages.ma(..., "ema", ...)（共有再利用）。
     MACD = fast - slow            → macd[i] = fast[i] - slow[i]。
-    Signal = iMAOnArray(MACD,EMA,SignalEMA=4) → exponential_ma_on_buffer。
+    Signal = iMAOnArray(MACD,EMA,SignalEMA=4) → moving_averages.ma(..., "ema", ...)。
     Histogram = 2.618*(MACD-Signal) → histogram[i] = 2.618*(macd[i]-signal[i])。
     σ7水準（iBandsOnArray 相当・全系列）→ compute_mfimacd_levels。中心=全平均、
         偏差=母標準偏差（÷N・warm-up 0 込み）。histogram（=2.618 適用後）に掛かる。
 
 依存（PORTING_GUIDE §8）:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
-    共有: moving_averages（exponential_ma_on_buffer）。pandas/描画 import は禁止。
+    共有: moving_averages（ma）。pandas/描画 import は禁止。
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
-# 共有ライブラリ moving_averages / mql_builtins を indicators/ パス経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
-from moving_averages import exponential_ma_on_buffer  # noqa: E402
-from mql_builtins import compute_mfi  # noqa: E402,F401  # 正準 iMFI（再公開して in-package 参照面を維持）
+# 共有ライブラリ moving_averages / mql_builtins（indigators/ 直下）を絶対 import で再利用する。
+from moving_averages import ma
+from mql_builtins import compute_mfi  # noqa: F401  # 正準 iMFI（再公開して in-package 参照面を維持）
 
 # 元 extern の既定値（PORTING_GUIDE / 依頼仕様）。
 DEFAULT_MFI_PERIOD: int = 13
@@ -159,17 +156,13 @@ def compute_mfimacd(
         ValueError: ``mfi_period < 2`` または OHLCV 長不一致（compute_mfi 経由）。
     """
     mfi = compute_mfi(high, low, close, volume, period=mfi_period)
-    n = mfi.shape[0]
 
-    fast_buf = np.zeros(n, dtype=np.float64)
-    exponential_ma_on_buffer(n, 0, 0, fast, mfi, fast_buf)
-    slow_buf = np.zeros(n, dtype=np.float64)
-    exponential_ma_on_buffer(n, 0, 0, slow, mfi, slow_buf)
+    fast_buf = ma(mfi, "ema", fast)
+    slow_buf = ma(mfi, "ema", slow)
 
     macd = fast_buf - slow_buf
 
-    signal_buf = np.zeros(n, dtype=np.float64)
-    exponential_ma_on_buffer(n, 0, 0, signal, macd, signal_buf)
+    signal_buf = ma(macd, "ema", signal)
 
     histogram = _HIST_COEFFICIENT * (macd - signal_buf)
 

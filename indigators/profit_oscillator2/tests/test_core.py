@@ -20,7 +20,6 @@ import numpy as np
 import pytest
 
 # 共有層（複製元との数値一致確認に使用）。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
 from moving_averages import exponential_ma_on_buffer  # noqa: E402
 
 # テスト対象（src パッケージ）。parents[1] = profit_oscillator2/。

@@ -1642,7 +1642,7 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **事象**: ユーザー報告「まだ価格形成されていない部分にバーが形成される」。実測（2026-07-08・安値形成前 asof）: 応答の norm>0 bin はすべて訪問済み帯の内側＝主表示は因果的に正。ただし tpo_units が経過分＋1 になる余剰を確認（例 60 分経過で 62）。
 - **原因（実測・コード確認）**: `_zp_day_rollup`/`_zp_partial_rollup` の `col_hi = max(1, min(G, elapsed))` は now が当日開始前（未来セッション）でも下限 1 を与え、窓末尾に食い込む次セッションの最初の 1 分（ffill 現物価格）を観測へ混入させる（as-of 因果違反）。ライブでは未来日が窓に入らないため潜在していた。
 - **対策（明示バグ・即時実施）**: 両 rollup に「now < day_start は寄与なし（None）」ガードを追加（当日セッションの寄り付き 1 時間の max(1,·) 挙動＝ライブ既存仕様は不変）。
-- **ステータス更新**: RESOLVED（2026-07-18）。検証: 8/26 asof=+4h の tpo_units 62→61（余剰 1 分消失・残る 1 は now を含む進行中の分＝ライブ同一）。7/8 安値形成前 asof で未訪問帯の norm>0 bin=0 維持。pytest 301 全通過（未来日 None ガードの回帰テスト追加）。
+- **対応日**: RESOLVED（2026-07-18）。検証: 8/26 asof=+4h の tpo_units 62→61（余剰 1 分消失・残る 1 は now を含む進行中の分＝ライブ同一）。7/8 安値形成前 asof で未訪問帯の norm>0 bin=0 維持。pytest 301 全通過（未来日 None ガードの回帰テスト追加）。
 ## ISSUE-129: 単一時計化 — asof/now の二重時刻を廃止し「リプレイの現在時刻 = to（リビール秒粒度）」へ統一（依頼者承認 y・2026-07-18）
 - **ステータス**: RESOLVED（2026-07-18 実装・検証済み）
 - **設計**: 基本設計として時計を一元化。`to`（as-seen-at-t の T）がリプレイの現在時刻そのもの。candle 切断（time<=to）はバー粒度でも秒粒度でも同一集合＝主機能の挙動不変のまま、zp は backend が now=to として読む（境界日はライブ同一の経過分クランプ＝日内推移）。ライブは to なし＝実時計＝従来どおりで、as-of 概念の追加実装が構造的に不要になる（ISSUE-125〜127 の asof パラメータ・now 上書き・二重時刻の不整合クラスを根絶）。
@@ -1996,6 +1996,7 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **対策（3段・発生源＋serving＋front の多重防御）**: (1) **発生源** `marketdata/tick_m1._dedupe_minutes`（index 重複を keep-last で畳む・純粋冪等）を新設し build/append の `concat(...).sort_index()` 直後へ適用＝素材段で分一意を保証（以後の再構築・増分で二重混入しない）。(2) **serving 無害化** `marketdata/dataset._clamp_outlier_bars`（全 ref・全返却経路が通る hygiene 漏斗）に index dedupe(keep-last) を追加＝既存 CSV の重複が残っていても serving でチャート/指標へ渡る前に無害化（データ無断編集は不実施＝非破壊）。(3) **front 防壁** `CandleFeed.dedupeCandlesByTime` を新設し `setCandles`/`resyncMissedCandles` の `setData` 直前に適用＝上流異常が二度とチャートを壊さない厳密増加保証。
 - **テスト**: web `candle_feed_dedupe.test.js`（5本: 純関数 keep-last/no-op/後退除去・setCandles/resync 統合が厳密増加）／marketdata `test_tick_m1.py`（+2: `_dedupe_minutes` keep-last/no-op）・`test_dataset_dedupe_index.py`（2本: 全 ref dedupe/no-op）。
 - **申し送り（RESOLVED 2026-07-25・ユーザー承認の上で恒久除去実施）**: CSV 実体の重複行を除去し rollup 全再構築（ISSUE-107 と同手順）。実測で重複は **同種の日境界分重複が 3 件**（`2020-05-29 00:00`／`2025-10-01 00:00`／`2026-07-23 23:59`・いずれも vol 小の単発 tick と正常バーの二重）と判明し、範囲承認の上で 3 件とも除去。手順: (a) live_tick_watch(PID 32659) を一時停止（ライブ 8000 は継続）(b) CSV を `_dedupe_minutes` keep-last と同値のテキスト削除で置換（3 行削除のみ・他行バイト完全一致を dry-run 実証・バックアップ `jp225_tick_m1.csv.bak-utc20260725`）(c) `build_tick_rollup --only rollup --full` で全 8 TF 再構築（rollups_backup_utc20260725_jp225_tick へ旧物退避）(d) live_tick_watch 再起動。検証: 5m〜1W の実差分は 3 重複日/週のみ・1M も改行正規化後は 3 重複月のみ（見かけの全月差は旧 1M が LF・新は全 TF CRLF 統一の改行差＝無害）・rollup_state（2026-07-24 20:14）が CSV 最終足と一致し watch 増分継続可・再起動後 0 ticks 間隙で正常。
+- **再観測（2026-07-27・REOPEN せず記録のみ）**: ISSUE-172〜187 対応後の実 UI 検証（ライブ 8000・ma_marod 適用済み）で、**ページ読込後の最初の時間足切替（日→5分）で `Value is null` が 1 回だけ発火**。以後の 8 回の切替（日→5分 ×2・15分・1時間・日 ×2・1分を含む）では**0 件**で、10 秒間の監視でも反復 0＝本 ISSUE の「~10 件/秒の持続 flood」とは性質が異なる。サーバ応答は健全（`/candles?5m` は 50,000 本・null 0・重複 time 0・昇順）。描画・フリーズとも実害なし（1 分足も正常表示）。**原因未特定・再現条件不明**のため対策は未実施。再現したら本 ISSUE を REOPEN するか別起票して切り分ける。
 - **関連**: ISSUE-107（M1 素材化の外れ値クリーニング漏斗＝本件は同漏斗の「重複」ギャップ）・ISSUE-048/049/053（jp225_tick ライブ供給）・[[jp225-tick-20250826-phantom-run]]（同 CSV の別クラス素材不良）。ブランチ fix/jp225-tick-m1-duplicate-minute。
 
 ## ISSUE-168: [整理] ライブ/リプレイ設計差異調査の「未修正・要注意」項目（B 群）の是正（2026-07-25）
@@ -2011,3 +2012,283 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **限界**: 既存無編集モジュールが **document/body スコープ**へ張るリスナは innerHTML 復元では除去できず残存する。実証: `timeframe_menu.js:94-95` が `new TimeframeMenu().install()`（＝mount 毎）で `doc.addEventListener('click', () => this._setOpen(false))` を removeEventListener 無しで登録＝**トグル毎に document click リスナが +1 蓄積**（線形）。
 - **影響**: 軽微・有界。各リスナは `_setOpen(false)`（ドロップダウン閉）の冪等操作のみで副作用は実質無。DOM ノードは pristine 置換で解放されるためリーク源は当該クロージャのみ。
 - **完全根絶の条件**: `timeframe_menu.js` 等の既存モジュールへ removeEventListener／dispose を追加する改変が必要＝無波及制約（`indigators/**`・`simulator/**` byte 不変）に抵触するため本スコープでは不可。将来、統合を正式機能化する際の別承認課題（既存改変を伴う恒久対処）。
+
+## ISSUE-170: [既存不具合] replay_mp_wiring の ISSUE-048 前後関係テストが常時 fail（本変更前から）（2026-07-26）
+- **ステータス**: OPEN
+- **事象**: `simulator/replay_ui/web/tests/replay_mp_wiring.test.js` の「during play, the revealed bar is collapsed to its open BEFORE the MP enterBar await (no completed-bar flash — ISSUE-048)」が fail する（`再生リビール時に始値畳み込み update が発火する` で AssertionError）。他 260 件は緑。
+- **本変更（リプレイバー UI 刷新）との無関係を実証**: 変更一式を `git stash -u` して HEAD の状態で当該ファイルのみ実行 → **同一テストのみ fail（5 pass / 1 fail）**。すなわち本変更以前から存在する既存 fail。
+- **推定原因（未検証・推論）**: テストの fake が `renderer` に `updateLastCandle` を持たない一方、`ReplayView.updateForming` は `renderer.updateLastCandle` を呼ぶ（try/catch で握り潰す）ため、期待している `mainSeries.update` イベントが記録されない。ライブ同一経路化（renderer 経由へ一本化）の際に fake が追随していない可能性。プロダクトコード側の退行かテスト fake の陳腐化かは未確定。
+- **対応方針**: 本件はリプレイバー UI 刷新のスコープ外のため未修正。修正時は「畳み込みが enterBar の await より先」という ISSUE-048 の不変条件を維持したまま fake を実経路（renderer.updateLastCandle）へ合わせるか、プロダクト側の退行有無を先に実測で確定する。
+
+## ISSUE-171: 統合UI が「Service Worker を有効化できないため起動を中止しました」で起動不能（SW 再登録直後の未制御＋リロード1回制限）（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-26 起票・同日修正。TDD Red→Green。unified_ui web 42 緑（新規3含む）。実 UI（8000・Chrome）で「リロード済みフラグ有り＋SW 登録解除」状態からの起動成功・console error 0 を実測）
+- **事象**: ユーザー報告のコンソール `mode_ui_view.js:49 [unified_root] Service Worker を有効化できないため起動を中止しました。…`（`unified_root.js:138` の main が return＝UI 起動せず）。直前に別件（ISSUE 無し・`/available_days` 404）の対処として DevTools で SW を登録解除→再読込していた。
+- **原因（コード読取で確定）**: `unified_ui/web/js/sw_client.js:registerServiceWorker` が (a) `navigator.serviceWorker.ready` 解決直後の `controller` だけで制御下判定していた。`ready` は「アクティブな登録がある」時点で解決するため、SW 側 activate の `clients.claim()` が届く前は `controller===null` になり得る（競合）。(b) 未制御時の救済は `sessionStorage['unified_sw_reloaded']` による**セッション内 1 回限りのリロード**で、フラグは成功後も解除されない。よって同一タブで一度でもフラグが立った後に SW 登録解除・更新で再び未制御になると、リロードもされず即 false＝**タブを閉じるまで永続的に起動中止**。
+- **対策**: `sw_client.js` に (1) `waitForController(CLAIM_WAIT_MS=3000)` を追加し、`ready` 後に未制御でも `controllerchange`（＝clients.claim 到達）を上限つきで待ってから判定（リロード不要でチラつき無し）。(2) 制御下に入れた時点で `RELOAD_GUARD` を `removeItem`＝次に未制御化しても再度 1 回だけリロードできる。フェイルクローズ（claim 来ず・フラグ有り→false）と無限リロード防止は維持。
+- **テスト**: `unified_ui/web/tests/sw_client.test.js` +3（ready 直後未制御→claim 後 true・リロード無し／フラグ有り＋claim→true かつフラグ解除／claim 来ず＋フラグ有り→false かつリロードしない）。
+- **関連**: `/available_days` 404 は本件とは別（旧 SW 常駐で `sw_rewrite.js` の `available_days` 追加が未反映だったもの。サーバ側は `/replay/available_days` 200 を実測確認済み）。
+
+## ISSUE-172: [要注意/潜在破壊] cache_gc が現行世代 dwell キャッシュを孤児として削除対象に列挙（配置記述子の二重情報源ドリフト）（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27）
+- **対応結果**: `CacheLayout` の生成責務を各 Store（`DwellRollupStore` / `ZpStore` / tf-period）へ移し、`cache_path()` と同一式から `gen_depth` / `current` を導出。`cache_layout.current_layouts()` は 3 所有者の `layout()` を集約するだけに縮退（ハードコード 0）。テストは固定値 assert を廃し `cache_path(...).relative_to(root).parts` との整合を全レイアウトへ課す形へ変更。`market_profile_dwell.py` の旧形 docstring も訂正。
+- **実測（dry-run・`--delete` 未実行）**: 修正前＝現行世代 `JP225/v4` が孤児列挙・旧 `g10` が温存（**判定が完全逆転**）。修正後＝`v4` 非列挙・旧 `g10` のみ孤児。zp znull / tf-period は前後とも孤児 0。market_profile 309→ 全通過（byte-parity 含む）。
+- **ISSUE 記述の訂正**: 「世代 dir 2 段＝`gen_depth=3`」を字義どおり採ると旧 `g10` を列挙できない（`JP225/g10` の subdir 数が 0 のため）。GC の掃除単位を版数 dir とし `gen_depth=2, current={v4}` を採用した。
+- **残存**: `_CACHE_VERSION` を上げずに `GRID_W` だけ変えると版数 dir 配下の旧格子 dir が回収されない（従来も同様＝退行ではない）。恒久解は記述子の多階層化だが、`cache_gc` の入れ子孤児の重複排除が先に必要。
+- **事象（コード実測で確定）**: dwell ロールアップの実配置は `indigators/market_profile/api/market_profile_api/gateway/dwell_rollup_store.py:88-89` により `<root>/<sym>/v{version}/g{grid_w}/<day>.npz`（世代 dir が `v4` と `g10` の 2 段＝深さ 3）。一方 `market_profile_api/cache_layout.py:58-60` は `gen_depth=2` かつ `current=frozenset({f"g{GRID_W:g}"})`＝深さ 2 の `v4` を `{"g10"}` と照合する。`tools/cache_gc.py:67-69,90` は `gen.name not in current` の dir を孤児とみなし `shutil.rmtree` する。
+- **影響**: `<dwell_root>/JP225/v4` が丸ごと削除対象に列挙される。発火時は全期間 dwell キャッシュ喪失（再ウォームは per-day parquet 逐次読込＝数千日ぶん）。zp znull 側は `<root>/znull/<sym>/b<bp>/` で `gen_depth=2` が正しく、dwell のみ不整合。
+- **未検証**: 実ディスク上に `<dwell_root>/JP225/v4/` が現存するか（`ls` 未実施）。ISSUE.md 内に「孤児ゼロ確認」の実行記録があるため、実環境で既に発火したか否かは未確定。**コード上の不整合のみ確定**。
+- **原因（SRP 違反）**: 「ディスク配置」というひとつの決定を `dwell_rollup_store.cache_path` と `cache_layout.current_layouts` の 2 箇所が独立に所有している。`market_profile_dwell.py:251` の docstring も旧形 `<root>/<symbol>/g<GRID_W>/...` のまま。`tests/test_cache_layout.py:38` は `gen_depth == 2` を固定値で assert しており実配置と突き合わせないため検出できない。
+- **対応方針**: `CacheLayout` の生成責務を各 Store（`DwellRollupStore` / `ZpStore` / `tf_period_disk_cache`）へ移し、`cache_path()` と同一の式から `gen_depth` / `current` を導出させる。`cache_layout.current_layouts()` は各 Store の `layout()` を集約するだけにする。テストは固定値 assert をやめ、`cache_path(sym, day).relative_to(cache_root()).parts` の長さと `gen_depth` の整合を assert する形へ変更する。
+- **関連**: ISSUE-091/092/094（tf-period キャッシュ世代）・ISSUE-184（本件を含む SOLID 監査の総括）。
+
+## ISSUE-173: [設計] 参照実装 profit_band が PORTING_GUIDE §2 の 2 規約を未達＝判定基準が逆転（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27・案 a をユーザー承認）
+- **事象（実測）**: `indigators/PORTING_GUIDE.md:8-9` は `profit_band` を「本書の原則はすべてこの実装で実証済み」の参照実装と宣言するが、同 `:46-47` の 2 規約を profit_band 自身が満たしていない。
+  - 「層境界は `typing.Protocol`（`@runtime_checkable`）で定義」→ `profit_band/src/lwc_chart.py` に Protocol 定義が **0 件**（裸のダックタイピング）。他 9 パッケージは `@runtime_checkable Protocol` を実装済み。
+  - 「numpy 配列は `__post_init__` で `writeable=False`」→ `profit_band/src/core.py:26-41` の `DistanceSamples` は frozen のみで `__post_init__` を持たない。他 9 パッケージは `setflags(write=False)` 実装済み。
+- **影響**: 「参照実装が基準に従っていない」状態のため、以後の移植者がどちらを模倣すべきか判定できない。実際に参照先の連鎖が発生している（`profit_hlband/src/core.py:196` は「profit_stc 準拠」、`profit_hl_band/src/core.py:178` は「profit_hlband 準拠」と記述し、profit_band を参照していない）。
+- **対応方針（いずれかの選択が必要＝承認事項）**:
+  - 案 a（推奨）: `profit_band/src/lwc_chart.py` に `_Line` / `_Chart` Protocol を追加し、`DistanceSamples` に `__post_init__`（`setflags(write=False)`）を追加して参照実装を規約へ合わせる（後発 9 パッケージが既に採る形）。
+  - 案 b: 規約側を「Protocol 推奨・ダックタイピング可」「配列不変化は DTO が層をまたぐ場合に限る」と緩和し `PORTING_GUIDE.md` §2 を改訂する。
+- **備考**: PORTING_GUIDE §2 の最重要含意（core が pandas/matplotlib/lightweight-charts を非 import・出力アダプタが `lightweight_charts` を非 import）は監査対象 26 パッケージ**全数で遵守**されている。本件は残る 2 規約に限定。
+- **対応日**: RESOLVED（2026-07-27・**案 a をユーザー承認**）
+- **対応結果**: `profit_band/src/lwc_chart.py` に `@runtime_checkable` な `_Line` / `_Chart` Protocol を追加（模倣元＝`btlm_trail/src/lwc_chart.py:34-41`。`profit_stc` 形は `horizontal_line` を要求するが profit_band は非使用のため線のみの形を採用）。`DistanceSamples.__post_init__` で BUCKETS 6 件を `setflags(write=False)`（模倣元＝`price_range_power/src/core.py:157-161`）。配列への書き込みは repo 内 0 件を Grep で事前確認。profit_band 28 passed。
+- **関連**: ISSUE-184、ISSUE-187（同じ profit_band の `_resolve_times` 系列名乖離＝未裁定）。
+
+## ISSUE-174: [設計/DIP] core 層 13 本が sys.path を改変し、自身が解決できない repo 根パッケージへ依存（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27・案 a ＋案 a-2 をユーザー承認）
+- **事象（実測）**: 以下の `src/core.py` が最内層で `sys.path.insert` を実行する — `profit_adx_needle:44`, `profit_arctan:49`, `profit_mfi:38`, `profit_mfi_macd:45`, `profit_oscillator:51`, `profit_oscillator2:42`, `profit_osi_ma:26`, `profit_rmm:48`, `profit_rmm_macd:54`, `profit_rsi:46`, `profit_rsi_macd:47`, `profit_stc:43`, `profit_volatility:56`。
+- **不整合の核心**: 挿入先は `parents[2]`＝`indigators/` のみだが、`from common import typical_price`（`profit_rmm:60`・`profit_rsi:50`・`profit_rsi_macd:51`・`profit_rmm_macd:66`・`profit_oscillator:53`・`profit_arctan:51`）の `common` 実体は repo 根 `/workspaces/app/common/`。`indigators/common` は Glob 実測で不在。**repo 根を sys.path に入れる `src/*.py` は `profit_band/src/loader.py:17-19` の 1 件のみ**。同様に `common_view` を import する 13 箇所（`lwc_chart.py` 9・`plot.py` 4）もどれも repo 根を通さない。
+- **影響**: 当該パッケージの import 可否が「cwd が repo 根であること」という暗黙の外部状態に依存し、パッケージが自身の依存解決に責任を持てていない。`indigators/` 配下に `conftest.py` / `pytest.ini` / `pyproject.toml` は不在（Glob 実測）で、`PYTHONPATH` 設定は `indicator_ui/serve.sh` のみ。テスト側の補填も順序が後（`profit_oscillator/tests/test_core.py:23` で `from src import core` を実行した**後**の `:25` で `parents[3]` を挿入）。
+- **未検証**: 実際に `pytest` 実行で ImportError が再現するかは未実施（静的構造としての不整合のみ確定）。
+- **対応方針（承認事項＝共有モジュール移動を伴う案を含む）**:
+  - 案 a: repo 根に `pyproject.toml` の `[tool.pytest.ini_options] pythonpath = ["."]` を置き、`indigators/` 直下に `conftest.py` を追加して解決点を単一化。各 core の `sys.path.insert` 13 本を削除し素の import にする。
+  - 案 b: `common` / `common_view` を `indigators/` 配下へ移し `parents[2]` 挿入だけで自己解決可能にする（他パッケージへの波及大）。
+- **対応日**: RESOLVED（2026-07-27・**案 a ＋案 a-2 をユーザー承認**）
+- **本文の事実誤り 2 件を訂正**:
+  1. 「cwd が repo 根であることに依存」は**誤り**。真の供給源は venv の `.pth`（`lightweight-charts-python-main/.venv/.../jp225_chart_paths.pth`＝`/workspaces/app` と `market_profile/api` を登録。生成元 `tools/install_dev_paths.py`）。**repo 根は cwd に関係なく常に sys.path にある**ため、実環境で ImportError は再現しない（`.pth` を除いた条件でのみ FAIL を実測＝潜在）。
+  2. 「`common_view` を import する 13 箇所（`lwc_chart.py` 9・`plot.py` 4）」は実測 **20 箇所**（14・6）。
+- **対応結果**: repo 根に `pyproject.toml`（`[tool.pytest.ini_options] pythonpath = ["."]` のみ。`[project]` / `[build-system]` / 依存宣言は置かない）と `indigators/conftest.py` を新設し pytest 経路の解決点を単一化。**案 a 単独では本番が壊れる**ことを実測で確定したため（`indigators/` を sys.path に載せる供給源が 13 本の insert だけであり、削除すると `cd api` 起動の本番ロードが `ModuleNotFoundError`。しかも `indicator_ui/api` の pytest は rootdir 経由で `conftest.py` を読むため**本番が壊れていても緑になる**）、案 a-2 として `adapter/compute/call_binding.py` に冪等な `_ensure_indigators_on_path()` を新設し、実行時の解決点をロード境界へ一本化した（同ファイルが元々 docstring で宣言していた設計）。13 本の `sys.path.insert` を削除。
+- **検証**: 36 スイート 3311 件で件数・合否の差分 0 行／本番ロード 13/13・全 24 パッケージ成功／`.pth` を除いた fresh clone 条件でも 13/13 成立／`serve.sh` のツール経路 OK。sys.path の重複登録も 13→1 に改善。
+- **副次対応**: 13 本の `demo.py`（standalone entry point）へ `indigators/` の登録を追加。A/B 実測で「core から削除すると demo.py が `No module named 'moving_averages'` で壊れる」ことを検出したため、最内層から entry point へ移設した（既存慣行 `profit_adx_needle/analysis/adx_step1_causality.py:17-18` と同型）。
+- **未実施**: `profit_band/src/loader.py` の repo 根挿入は寄せられない（`lwc_demo.py` は call_binding も pytest も経由しないため単一解決点の射程外。削除すると `No module named 'marketdata'` を実測）。
+- **関連**: ISSUE-176（同種の DIP 違反の別形態）・ISSUE-184。
+
+## ISSUE-175: [潜在バグ] profit_rmm と profit_rmm_macd の複製コードが NaN 伝播で既に挙動乖離（2026-07-26）
+- **ステータス**: BLOCKED（2026-07-27・元 MQL 不在で裁定不能。裁定保留をユーザー承認）
+- **事象（実測）**: `profit_rmm_macd/src/core.py:97-192, 201-302`（`_series_avg` / `_series_std` / `oscillator_span` / `rolling_span` / level_count 合算パイプライン）は `profit_rmm/src/core.py:80-181, 262-317` の複製。同 `core.py:214-216` の docstring は「verbatim 複製」と主張するが、**実測では `profit_rmm_macd/src/core.py:293-299` に span の NaN 伝播ブロックがあり、`profit_rmm/src/core.py:298-317` には存在しない**＝既に分岐している。
+- **影響**: 同一と宣言された 2 実装が異なる値を返し得る。片方だけ修正すると乖離が拡大する。同一アクター（funLevelCount / スパン定義の変更者）が 2 ファイルの同時変更を強いられる（SRP / OCP / LSP の複合違反）。
+- **未確定（要調査）**: どちらが正解かは**未確定**。元 MQL（`PRO!fitRMM.mq4` / `PRO!fitRMMMACD.mq4`）を未読のため、NaN 伝播の有無どちらが移植元の挙動かを判定できていない。
+- **対応方針**: 1. 元 MQL 2 本を読み、NaN 伝播の正解を確定する（**この裁定が先**）。2. 確定後、共通部を `profit_system`（または新規の統計共有カーネル）へ 1 本化し、両 core は再公開のみにする。
+- **対応日**: BLOCKED（2026-07-27・**裁定保留をユーザー承認**。コード変更なし）
+- **裁定不能の確定**: `PRO!fitRMM.mq4` / `PRO!fitRMMMACD.mq4` は **`find / -iname "*.mq4"` でファイルシステム全体に 0 件**。参照実装が存在しないため、NaN 伝播の正解を裁定できない。ユーザー厳命（実証なき憶測で進めない）に従い、**どちらへも寄せず現状の挙動を維持**した。
+- **追加実測**: 乱数 400 バー＋完全フラット 200 バーの 2 データセットで `compute_rmm(window=120).level_count` と `compute_rmm_level_count(window=120)` を比較 → **数値差 0 件**。両者が分かれ得るのは「非有限 span が存在し、かつ 4 採点のいずれも NaN を生まないバー」に限られ、当該入力は未確認。**乖離は構造上のみで、確認済みの範囲では出力は一致**。
+- **実施したこと（記録の是正のみ）**: `profit_rmm_macd/src/core.py` の「verbatim 複製」という虚偽記述 3 箇所（module docstring・含む構造・関数 docstring・セクションコメント）を実態へ訂正し、未裁定である旨を明記。計算ロジックは 1 行も変更していない。58 passed。
+- **再開条件**: 元 MQL 2 本の入手。
+- **関連**: ISSUE-179（同種のコピペ重複群）・ISSUE-184。
+
+## ISSUE-176: [設計/DIP] btlm_trail_marod・ma_marod の core が兄弟パッケージを絶対パスで動的ロード（並列ロック欠落）（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27）
+- **事象（実測）**:
+  - `btlm_trail_marod/src/core.py:57` `_BTLM_TRAIL_SRC = Path(__file__).resolve().parents[2] / "btlm_trail" / "src"`、同 `:61-80` でファイルパスから動的ロード。
+  - `ma_marod/src/core.py:79` `_MOVING_AVERAGES_CORE = _INDIGATORS_DIR / "moving_averages" / "src" / "core.py"`、同 `:86-102` で同様。
+  - いずれも `importlib` / `sys` / `pathlib` を core 層が保持し、抽象も注入点も持たない。
+- **影響 1（DIP・SRP）**: 最も抽象度の高い層が兄弟パッケージのファイルシステム配置に直接依存。`btlm_trail/` を移動・改名すると core が壊れる。core が「計算式の変更者」に加え「ディレクトリ配置・モジュール解決方式の変更者」の 2 アクターを負う。
+- **影響 2（並列ロック欠落）**: 同一関心の共有実装 `indicator_ui/api/adapter/compute/module_loader.py:25,39-43` は ISSUE-156 対策の `threading.Lock` を持つが、**両コピーともロックを欠く**。`_load_btlm_trail()` / `_load_moving_averages()` は compute 呼出時に遅延実行され（`core.py:100` / `:149`）、compute は `indicator_ui/api/framework/server.py:84` の `ThreadPoolExecutor(max_workers=3)` 上で走る＝初回同時ロードの競合が構造的に露出している。
+- **未検証**: 並列 compute 下でのレース実発生は未再現。証拠は「ロックの不在」と「並列実行経路の存在」の 2 点のみ。
+- **対応方針**: 1. 暫定（低リスク）: `_load_*` を `module_loader.load_package/load_module` へ委譲するだけで並列リスクは解消する。2. 恒久: core に `TrendLine` 等の Protocol を置いて注入形へ変え、組み立てを Composition Root（`indicator_ui/api/adapter/compute/call_binding.py`）へ移す。`common/marod_bands.py:9-11` が「兄弟具象への依存＝DIP 半成立を common 抽出で対称化」として一度是正した手順と同型（MA・トレンド線側に未適用のまま残存）。
+- **対応日**: RESOLVED（2026-07-27・ステップ 1・2 とも実施）
+- **対応結果**: ISSUE.md の暫定案（`indicator_ui` の `module_loader` へ委譲）は**採らなかった**。採ると indigators の core 層（最内層）→ indicator_ui の adapter 層（外層）という新規の依存逆流を作り、DIP 違反を別の DIP 違反に置き換えるだけになるため。代わりに `common/module_loader.py` を新設（`common/marod_bands.py` の抽出手順と同型）し、両 core をそこへ委譲。さらにステップ 2 として core に `TrendLineReference` / `MovingAverageReference` の `@runtime_checkable` Protocol と `set_*_reference` 注入点を新設し、未注入時は従来の動的ロード（ロック付き）へフォールバックする形にした（既存呼出元の挙動は完全不変）。
+- **レースの実再現に成功（ISSUE 本文の「未検証」を解消）**: 支配的な障害は重複ロードではなく**半構築モジュールの観測**（公開関数が未定義＝呼出時 AttributeError）。`switchinterval=1e-6` × 3 スレッド（`server.py` の `max_workers=3` 相当）で 5 回中 5 回 RACE（`missing_attrs_example=['resolve_source','rolling_ols_window_end']`）。16 スレッドでは重複ロードも観測。**修正後は 16 実行すべて OK**。
+- **重要な発見**: `indicator_ui` 版と同形の実装（ロック前に `sys.modules` を素引きする二重チェック）では**半構築観測を防げない**（並置比較で 7/8 vs 0/8）。`sys.modules[name] = module` は相対 import 解決のため exec **前**に登録する必要があり、その登録をロック外の高速経路が読むため。`common` 版は「exec 完了まではキャッシュ命中と見なさない」`_LOADING` ゲートを追加し、`RLock` で入れ子ロードのハングも回避した。→ **ISSUE-185 として別起票し、後に是正済み**。
+- **検証**: bit-for-bit 一致（`btlm_trail_marod` 276 配列 296.7 万要素／`ma_marod` 1158 配列 1244.8 万要素、差 0）。btlm_trail_marod 30 passed／ma_marod 43 passed／common 26 passed。
+- **残存**: core が兄弟パッケージのパスを `Path` で保持するフォールバック経路は残存。完全な解消は Composition Root（`call_binding.py`）からの注入が前提。
+- **関連**: ISSUE-156（module_loader の並列ロック）・ISSUE-174・ISSUE-184・**ISSUE-185（本件の過程で発見した indicator_ui 版の同種欠陥）**。
+
+## ISSUE-177: [潜在破綻/LSP] market_profile の _CACHE_MISS が import 時に既定具象へ束縛され、Port 代替実装で番兵判定が破綻（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27）
+- **事象（実測）**: `market_profile/api/market_profile_api/compute/market_profile_zp.py:128` `_CACHE_MISS = zp_cache_miss()` は module import 時に 1 回だけ評価され、既定具象 `ZpStore.CACHE_MISS` を束縛する。判定は `:169, :239` の identity 比較 `if disk is not _CACHE_MISS`。`market_profile_dwell.py:122` も同型。
+- **原因**: `compute/store_port.py:29` は `CACHE_MISS: ClassVar[Any]` を Protocol の一部として宣言し、`set_zp_store()`（`:97-101`）は `isinstance` 検査なしで任意の実装を受理する。Port 準拠だが `ZpStore` 派生でない実装を注入すると、その実装が返す `CACHE_MISS` が `_CACHE_MISS` と identity 不一致になる。
+- **影響**: `_mgrid_of_day`（`:168-172`）が**キャッシュミス番兵を実データとして受理**し `_MGRID_CACHE` に格納、`closes, open_d = grid`（`:252`）で TypeError。`set_zp_store` / `set_dwell_store` は `market_profile_zp.py:56` / `market_profile_dwell.py:60` から再エクスポートされた公開注入 API のため、既定具象派生以外の注入が全て潜在破綻。
+- **現状**: 既存テスト（`tests/test_store_gateway_layering.py:115-119,137` が `_FakeZp.CACHE_MISS = object()` を注入）は `_mgrid_of_day` を通らないため緑。**潜在**であり実発火は未確認。
+- **対応方針**: 1. module 定数 `_CACHE_MISS` を削除し、比較箇所（zp:169,239 / dwell:289）を `disk is not zp_cache_miss()` の call-time 評価へ変更。2. `set_zp_store` / `set_dwell_store` / `set_tick_store` に `isinstance(store, ZpStorePort)` ガードを追加（`@runtime_checkable` は付与済み）し、Protocol を宣言だけでなく強制にする。
+- **対応日**: RESOLVED（2026-07-27・方針 1・2 とも実施）
+- **対応結果（方針 1）**: module 定数を削除し call-time 評価へ。**ISSUE 未記載の第 4 の比較箇所** `compute/market_profile_dwell_warmer.py:64` を発見し同様に修正。再現テストを新規追加し **Red→Green を実出力で確認**（Red 時に ISSUE の予測どおり `TypeError: cannot unpack non-iterable object object` が実発火＝「潜在」が実害であることを実証）。
+- **対応結果（方針 2）**: 3 setter に `isinstance` ガードを追加。導入時に既存 fake が Port を満たしていないことが判明（`_FakeZp` は 9 要求中 2 個・`_FakeDwell` は 6 要求中 2 個）。**テストを緩めるのではなく fake を Port 準拠の in-memory 実装へ拡充**し、既存テストに往復 assert を追加して強化した。ガードは CPython 非公開属性 `__protocol_attrs__` に依存しない形へ自己修正済み（欠落列挙はメッセージのみ・判定は `isinstance`）。
+- **検証**: 334 passed（byte-parity / layering / cache_layout を含む）。本番結線は setter を経由しない（呼出元 0 件）ことを Grep で実証。`cache_layout.current_layouts()` の `layout()` 呼び出し（ISSUE-172）と両立。
+- **残存**: `layout()` は方針どおり Port 契約外のため、`layout()` を持たない Port 準拠の代替 Store を注入すると `current_layouts()` が `AttributeError`（ガードの対象外＝設計上の意図的な範囲外）。
+- **関連**: ISSUE-184。
+
+## ISSUE-178: [設計] market_profile の層間 DTO が不変化されておらず、プロセス内キャッシュと呼出元が同一配列を共有（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27）
+- **事象（実測）**: `market_profile` 配下で `writeable` / `setflags` の出現は **0 件**（PORTING_GUIDE:47 の「numpy 配列は `__post_init__` で `writeable=False`」未実装）。frozen dataclass は 4 件のみで全て controller / cache_layout 側＝**compute↔gateway 境界の DTO は 0 件**。実際に層を跨ぐのは生 dict（`market_profile_dwell_kernel.py:63` の `{"kmin","dwell","cnt"}`、`market_profile_zp.py:275` の `{"kmin","obs","mean","var"}`）とタプル `(secs, mids)`。
+- **影響**: `market_profile_zp.py:241` `_NULL_CACHE[key] = disk` / `market_profile_dwell.py:291` `_DAY_CACHE[key] = disk` はプロセス内キャッシュへ**参照を格納**し、そのまま呼出元へ返す。`tf_period_columns.py:271-273` は `obs_sum[off:...] += r["obs"]` で読み出す。可変配列がプロセス全体で共有されており、in-place 更新が 1 箇所でも混入すればキャッシュが汚染される。
+- **未検証**: 現時点で in-place 更新を行う箇所は発見していない（構造的リスクの指摘であり、実害の発生は未確認）。
+- **対応方針**: `compute/` に `@dataclass(frozen=True)` の `DayRollup(kmin, dwell, cnt)` / `ZpRollup(kmin, obs, mean, var)` / `TickWindow(secs, mids)` を定義し、`__post_init__` で `arr.setflags(write=False)` を課す。Store の save/load・`_day_rollup`・`_zp_day_rollup`・`_rollup_ticks`・`load_window_ticks` の戻り値をこれに揃える。
+- **対応日**: RESOLVED（2026-07-27）
+- **対応結果**: `compute/rollup_dto.py` を新設し `DayRollup(kmin,dwell,cnt)` / `ZpRollup(kmin,obs,mean,var)` / `TickWindow(secs,mids)` を frozen dataclass ＋ `__post_init__` の `setflags(write=False)` で定義（模倣元＝`price_range_power/src/core.py:157-161`）。`_rollup_ticks` / `_day_rollup` / `_zp_day_rollup` / `load_window_ticks` と Store の save/load、`tf_period_columns` の読み出しを DTO へ統一。
+- **前提確認の結果**: in-place 書き込み箇所は **0 件**（`tf_period_columns` の `obs_sum[...] += r.obs` は `obs_sum` が呼出元所有の自前確保、`r.obs` は右辺のみ）。DTO 化による dtype 変換も 0 件（元から float64）。
+- **検証**: 323 passed。`.npz` の byte 等価を 3 系統（メンバ名／各メンバの dtype・shape・生 bytes の SHA-256／日時フィールドを零化した raw bytes）で確認し dwell・zp とも BYTE-EQUIVALENT。`load_window_ticks` も値・dtype が HEAD と完全一致。
+- **ISSUE 記述の訂正**: 「`controller/tf_period_columns.py`」の実パスは `compute/tf_period_columns.py`。
+- **残存**: `_freeze` は `np.asarray` が同一オブジェクトを返す場合に呼出元の配列を in-place で read-only 化する（参照実装 `price_range_power` と同じ性質）。全 7 構築サイトで入力が新規配列であることを確認済みだが、既存配列から DTO を構築する新規コードには注意が必要。`compute` 内シム `_load_window_ticks` は範囲外 consumer（`analysis/mp_stats/tick_dwell_check.py:84`）があるため 2 値タプルのまま残置。
+- **関連**: ISSUE-173（同規約の参照実装側の未達）・ISSUE-184。
+
+## ISSUE-179: [設計/OCP] 横断コピペ重複（loader 11・_resolve_times 約18・norm_ppf/OLS・MA 写像）（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27・一部は挙動差のため意図的に未統合）
+- **事象（実測）**:
+  - `loader.py` が 11 パッケージで重複（`profit_adx_needle:24-64`・`profit_osi_ma:24-64`・`profit_hlband:25-71`・`tgp_btlm:25-66`・`price_range_power:24-64` ほか）。共有実装 `marketdata/ohlc_csv_loader.py:16-57` が既に存在し `profit_band/src/loader.py:21` は shim 化済みなのに未使用。**`profit_hlband:61-62` のみ空 CSV ガードを持ち既に乖離**。
+  - `_resolve_times`（PORTING_GUIDE §5 の時刻解決順序）が約 18 箇所へ複製（`profit_band/src/lwc_chart.py:66` ほか全指標パッケージ）。戻り値型も `moving_averages` のみ `list`、他は `pd.Series` で非一貫。
+  - `norm_ppf` の Acklam 係数 20 個と分岐しきい値 `0.02425` が完全一致（`tgp_btlm/src/core.py:124-174` ↔ `btlm_trail/src/core.py:50-77`）。OLS 窓当てはめも同様（`tgp_btlm/src/reference.py:46-69` ↔ `btlm_trail/src/core.py:99-122`）。
+  - `_SOURCE_TO_APPLIED` 8 択写像・`_MA_FUNCS` 種別写像・`_FROM_ZERO` warm-up 規約が `moving_averages/src/lwc_chart.py:37-57` ↔ `btlm_trail/src/core.py:38-47` ↔ `ma_marod/src/core.py:66-75,83,105-113` の 3 重複製。
+  - `market_profile`: as-of 経過分クランプ規則が 3 箇所（`market_profile_zp.py:257-259`・`tf_period_columns.py:91-92,136-138`）。tf-period キャッシュ協調が 4 メソッドへ複製（`tf_period_profile_controller.py:141-343`）。
+  - `indicator_ui`: tf→秒テーブルが `forming_bar.py:59-62` と `marketdata/tf_meta.py:36-39` で 7 エントリ二重定義。
+- **影響**: 単一規約の変更が最大 18 ファイルの同時修正を要求する（拡張ではなく改変＝OCP 違反）。既に 2 箇所で乖離が発生済み（空 CSV ガード・ISSUE-175 の NaN 伝播）。
+- **対応方針**: 1. `loader.py` を `marketdata.ohlc_csv_loader` への shim へ統一（空 CSV ガードの採否を先に確定）。2. `_resolve_times` / `_emit_line` / `_Chart`・`_Line` Protocol を `common_view` または新規 `common/lwc_adapter.py` へ 1 本化。3. `norm_ppf` / OLS を `common/` の共有プリミティブへ抽出（`common/marod_bands.py` で実績のある手順）。4. `_SOURCE_TO_APPLIED` を `common/applied_price.py` へ移送。5. tf→秒は `TF_BAR_SEC` から `NON_FLOORABLE_TF` を除外する導出へ置換。
+- **対応日**: RESOLVED（2026-07-27・全 5 項目＋market_profile 部を実施。一部は挙動差のため意図的に未統合）
+- **本文の事実誤り 3 件を訂正（いずれも実測）**: 1. loader は「11 パッケージ」でなく **17 本＋shim 1 本**。2. 空 CSV ガードは「`profit_hlband` のみ」でなく **`profit_hlband` と `profit_hl_band` の 2 本**。3. `_resolve_times` は「約 18 箇所」でなく **21 箇所**。
+- **項目 1（loader・ユーザー承認＝挙動不変の一本化）**: AST 同値ハッシュで同値類 4 種を確定（`load_ohlcv_csv`/OHLCV 6 本・`c.lower()` 5 本・`str(c).lower()` 4 本・空ガード付き 2 本）。乖離は 4 軸（`require=` kwarg / 列名 cast / 空 CSV ガード / 関数名・必須列）。共有実装 `marketdata/ohlc_csv_loader.py` に `read_ohlc_csv_with_policy(...)` を新設して 4 軸をパラメータ化した上位集合とし、17 本を薄い shim 化。**既存公開 API `load_ohlc_csv` はシグネチャ・既定挙動とも不変**。
+  - 検証: 19 対象 × 52 観測点 = **1026 点で差分 0**（例外の型・メッセージ文字列・`signature` 文字列・戻り値の dtype/index/`to_csv` の SHA-256 まで比較）。ネガティブコントロール 5 種で 124/94/9/6/18 件の差分検出を実証。
+  - 設計上の要点: `read_csv_kwargs` を `**kwargs` でなく位置引数の Mapping で受ける（`**kwargs` だと方針名 `require` が pandas 行きを横取りし、現行の `TypeError` が消える）。関数はモジュール直下の `def` で維持（factory closure 化すると `TypeError` メッセージに qualname が漏れる）。注釈は `TYPE_CHECKING` で導入（クォート注釈は PEP 563 下でシグネチャが変わる）。
+- **項目 2（`_resolve_times` ほか）**: `common_view/lwc_adapter.py` を新設（`common/` は「numpy のみ依存」を明示しており pandas を持ち込めないため表示仕様層を選択）。`_resolve_times` 定義 **21→9**（AST 同値の 12 本のみ統合）、系列 Protocol のクラス定義 **20→0**、`_emit_line` **2→0**。残り 9 本は挙動差のため意図的に未統合（7 本は `c.lower()` で非 str 列名に `AttributeError`／`moving_averages` のみ `list` 返し／`profit_band` は DatetimeIndex 経路の系列名が異なる＝**ISSUE-187** として別起票）。`_Chart` は要求メソッドが 7 形に分かれるため共通化せず各パッケージに残置。
+- **項目 3（norm_ppf / OLS）**: `common/normal_dist.py` / `common/ols_fit.py` を新設。`norm_ppf` 定義 **2→0**（3 分岐を跨ぐ 14,007 点で `tobytes()` 不一致 0 を確認して統合）。**OLS の leverage は 2 形を分離保持**（端点ベクトル形と einsum 全行形は 3000 試行中 232 件で最終ビット不一致＝統合不可を実測）。
+- **項目 4（`_SOURCE_TO_APPLIED`）**: `common/applied_price.py` へ移送。`_MA_FUNCS` は `moving_averages` の `_MA_ON_BUFFER`（`MA_TYPES` の導出元）への別名にして二重情報源を作らず、`_FROM_ZERO` は `core.MA_FROM_ZERO` を単一情報源化。`ma_marod` の `_FROM_ZERO` のみ残置（ISSUE-176 の Protocol 設計＝兄弟具象への静的依存を断つ形と衝突するため。Protocol へ定数を持たせるのは契約変更＝要裁定）。
+- **項目 5（tf→秒）**: `forming_bar.py` の `_FIXED_TF_SECONDS` を `TF_BAR_SEC - NON_FLOORABLE_TF` の導出へ置換。事前実測で値・反復順とも既存リテラルと完全一致を確認してから実施。
+- **market_profile 部**: as-of 経過分クランプは **ISSUE 未記載の 4 箇所目**（`market_profile_zp._zp_partial_rollup`）を発見。合成形が異なるが `max(1,min(G,e)) == min(G,max(1,e))`（G≥1）で恒等であることを総当たりで実証し、kernel（`market_profile_zp_kernel.asof_col_hi`）へ一本化。tf-period キャッシュ協調 4 メソッドは共通部を `controller/tf_period_cache.py` の `TfPeriodDayCache.resolve(...)` へ抽出し、**LRU 辞書と上限も協働子へ移送**（host の private を触らないことを AST ガードテストで固定）。ISSUE-172 の世代タグビルダを唯一の情報源として維持。
+- **検証（全体）**: 678 比較項目 差分 0（項目 2〜5）＋1026 点 差分 0（項目 1）＋54 ケース bit 一致（market_profile 部）。ネガティブコントロールは計 19 種で全て差分検出を実証。全 36 スイート **3445 passed / skip 0 / fail 0**。本番ロード 24/24・standalone 20/20。JS 4 スイートも緑（311 / 749 / 266+既知1 / 42）。
+- **検証手順の教訓**: stale pyc により「復元後も差分 6 件」という偽差分を実際に踏んだため、全ハーネスで `__pycache__` 全消去＋`PYTHONDONTWRITEBYTECODE=1` を必須手順とした。対照は `git show HEAD:` ではなく**着手前の作業ツリー全体のスナップショット**（並列作業の未コミット変更が混入するため）。
+- **関連**: ISSUE-175・ISSUE-184・ISSUE-185・ISSUE-187。
+
+## ISSUE-180: [設計/OCP] 指標 1 件の追加に 4〜5 ファイル・2 言語の同時改変が必要（2026-07-26）
+- **ステータス**: PARTIALLY RESOLVED（2026-07-27・back 側完了で確定。front は現状維持をユーザー承認）
+- **事象（実測）**: 指標を 1 件追加するには `indicator_ui/api/adapter/compute/call_binding.py:289`（`_TABLE`）／`api/adapter/compute/catalog_schema.py:28`（`PARAM_DEFAULTS`）／`web/js/usecase/catalog.js:634`（`REGISTRY`）／`api/tests/golden/catalog_defaults.json` の同時改変が必要。足内更新対象なら `web/js/usecase/intrabar_forming_ids.js:13` も加わる。`api/tests/test_catalog_schema.py:23-47` は乖離を検出するが、拡張点の単一化はしていない。
+- **併存する良好な実装**: `call_binding.py:263-286` の `_BindingSpec` 宣言テーブルは `thread_affinity` / `time_required` / `latest_meta` / `preprocess` をデータ宣言化済みで、`framework/server.py:254` らは指標名を一切知らない（`test_solid_binding_spec_guards.py:43-108` がガード）。問題は宣言テーブルの適用範囲が params / series 定義まで及んでいないこと。
+- **対応方針**: `call_binding._TABLE` を「指標記述子」へ拡張し `params_defaults` / `series_defs` / `intrabar_forming` / `actor_driven` を同一エントリへ集約。`catalog_schema.PARAM_DEFAULTS` は `_TABLE` からの導出関数に置換。front の `catalog.js` は起動時 `GET /catalog` の payload から `IndicatorDef` を組み立て、静的リテラルは最小 fallback のみ残す。指標追加を 1 ファイル 1 エントリへ。
+- **対応日**: PARTIALLY RESOLVED（2026-07-27・**back 側完了で確定・front は現状維持をユーザー承認**）
+- **対応結果（back）**: `_BindingSpec` に `params_defaults` を追加し `_TABLE` を指標記述子化（全 22 compute_id の param 既定値を同一エントリへ集約）。`indicator_param_defaults()` を新設（deep copy 返却・宣言漏れ/二重宣言を `ValueError` 検出）し、`catalog_schema.PARAM_DEFAULTS` の既定値リテラル 149 行を導出値へ置換。`_DEFAULT_SAMPLES` も `_TABLE` 由来へ変え `catalog_schema` への依存を反転。指標追加手順を `call_binding.py` の docstring に明記。**back 側は「指標追加＝`_TABLE` 1 エントリ」になった**。
+- **検証**: 418→418（+新規 6 件で 418）。`golden/catalog_defaults.json` は**無改変**のまま `PARAM_DEFAULTS == json.load(golden)` を確認。`handle_catalog()` の応答を編集前に退避して文字列完全一致（`BYTE_EQUAL: True`。key 順維持のため `_TABLE` のエントリ順を配信順へ揃え、順序をテストで固定）。新規テストの Red 観測（変更前コードに当てて 6 failed）で検出力も実証。import 順反転による循環リスクを 5 経路で実行検証。
+- **未実施（front・方針 3）とその理由**: 現行 `/catalog` は `{ok, catalog:{compute_id:{param:default}}}` で **param 既定値しか運ばない**。`IndicatorDef` の構築には `displayNameKey` / `category` / `placement` / 制約式 / `seriesNamePattern` / 日本語ラベル・tooltip が必要だが back 側に情報源がなく、これらを back へ移すのは責務の逆流（`catalog_schema.py` の現行設計注記「純 UI 情報は front に残す」に反する）。**ユーザー裁定により front は現状維持で確定**。front は引き続き `catalog.js`（足内更新対象なら `intrabar_forming_ids.js`）の宣言が必要。
+- **実施不能と判明した項目**: `actor_driven` の `_TABLE` 集約は不能（`ACTOR_DRIVEN_COMPUTE_IDS` の唯一の要素 `market_profile` は独立アクター所有で `_TABLE` に登録されていない）。`intrabar_forming` の集約は消費側が module-level `Set` を同期 import しており runtime fetch 化で初期値が空になるため停止。
+- **残存**: `indicator_param_defaults()` は import 時評価のため、`_TABLE` に `params_defaults` 未宣言のエントリを足すと `adapter.compute` の import 自体が失敗する（従来はテスト失敗のみ）。fail-fast の強度が上がった点は意図的変更。
+- **関連**: ISSUE-184。
+
+## ISSUE-181: [設計/SRP] 神クラス 3 件（indicator_controller.js 1103 行・properties_dialog.js 1057 行・market_profile_actor.js 852 行）（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27・主要アクターの抽出を完了）
+- **事象（実測）**:
+  - `indicator_ui/web/js/adapter/front/indicator_controller.js:130-1103` — 50 超メソッド。系列名照合(`:260-315`)／描画振分(`:321-380,607-615`)／compute オーケストレーション・並行制御(`:211-239,488-714`)／永続化・復元(`:730-802`)／DOM 配線・ダイアログ・凡例(`:900-1102`) の 5 アクターが同居。
+  - `indicator_ui/web/js/adapter/front/properties_dialog.js:39-1041` — ダイアログ枠＋8 種コントロール生成(`:346-618`)＋スタイルペイン(`:648-763`)＋可視性ペイン(`:765-788`)＋検証(`:883-996`)。加えて `_buildControl` の switch(`:323-344`) が OCP 違反（usecase 側 `form_model.js:16-25` はテーブル化済みで adapter だけ取り残し）。
+  - `market_profile/web/js/adapter/front/market_profile_actor.js:92-852` — 注入依存 14 個。表示モード遷移／リプレイ・スクラブ／日別タイル＋自動ズーム／tick 逐次成長／チャートレイアウト／URL パラメータ写像の 6 アクター。
+- **関連する分割不全**: `timeframe_controller.js:38,55,58,74,76` / `market_profile_controller.js:125,152,171,187` は抽出済み協働子が host の private フィールドを直接代入しており、クラスは分割されたが**状態所有は host のまま＝責務は未分離**。
+- **対応方針**: いずれも「状態も一緒に移す」抽出を行う（協働子が host ではなく自身の状態を持つ）。`mp_primitive_roles.js:14-42` の ProfileSink / TfPeriodSink 分割が同手法の成功例。`properties_dialog` はコントロール生成を `CONTROL_BUILDERS` registry（純関数モジュール）へ外出しし `_buildControl` を 1 行へ。
+- **対応日**: RESOLVED（2026-07-27・主要アクターの抽出を完了。残置分は下記）
+- **対応結果（行数）**: `properties_dialog.js` 1057→770／`indicator_controller.js` 1103→925／`market_profile_actor.js` 852→**496**。
+- **新規協働子 9 件（すべて状態ごと移送）**: `property_control_builders.js`（`CONTROL_BUILDERS` 凍結表・`_buildControl` は 1 行委譲）／`series_name_matcher.js`（純関数化）／`indicator_dialog_controller.js`（`_filter` 所有）／`recompute_gate.js`（`_depth`・`_lastStartMs` 所有）／`series_render_router.js`（描画振分）／`indicator_state_store.js`（`_restoreInFlight` 所有）／`mp_replay_scrub.js`／`mp_chart_layout.js`／`mp_fetch_params.js`／`mp_tick_growth.js`／`mp_mode_transition.js`／`mp_session_tiles.js`。
+- **分割不全の解消**: `timeframe_controller.js` の `host._timeframe = / host._recomputeDepth += / -= / host._recomputeLastStartMs =` と `market_profile_controller.js` の `host._state =` ×4、計 **8 箇所の host private 直接代入を全廃**。`TIMEFRAME_HOST_CONTRACT` / `MARKET_PROFILE_HOST_CONTRACT` も同時更新。
+- **検証**: 4 スイート緑（indicator_ui 749／market_profile 311／replay_ui 266+既知1（ISSUE-170）／unified_ui 42）。**Red 観測**（新規の構造テストを `git show HEAD:` で差し戻した変更前コードに当てて失敗することを実出力で確認）と**変異検出**（抽出後のロジックに意図的変異を入れて既存テストが失敗＝検出力が移設後も及ぶことを実証）を各段階で実施。`node build.mjs` で `out/prototype.html` を再生成（1,330,265 bytes・`node --check` 通過・新規 const/class はバンドル内で各 1 回のみ宣言）。
+- **ISSUE-164 領域の保全**: `_applySessions` / `_focusSessionsPending` の抽出時、`setVisibleRange` / `fitContent` / `scrollTo` / `applyOptions` / `autoScale` / `setUserInteraction` / `focusTimeRange` の**実行行を before/after で diff して差分 0 行**を実測。発火順序も逐語コピー。
+- **未実施（残タスク）**: 1. `indicator_controller.js` の compute オーケストレーション本体（`applyIndicator` / `recomputeInstance` / `_computeInstance` / `recomputeAllApplied`）は UC-02/03 そのもの＝host の本務と判断し残置（切り出すと `_state` の所有権も動き影響半径が大きい）。2. 凡例・歯車ダイアログ（`_renderLegend` / `_onGear` / `_applyDialogResult` / `_gearRecompute`）は `_legendView` を dialog controller と共有しており View 所有権の再設計が必要。
+- **残存リスク**: ブラウザ実 UI での確認は未実施（サーバ起動禁止）。挙動不変の根拠は 4 スイート緑・A/B スモーク・変異検出・バンドル静的検証に限られる。
+- **関連**: ISSUE-184。
+
+## ISSUE-182: [設計/ISP・LSP] 公開契約の越境・太いポート・戻り値契約の非一貫（2026-07-26）
+- **ステータス**: PARTIALLY RESOLVED（2026-07-27・項目 1〜4 完了。項目 5 は挙動変更のため未実施）
+- **事象（実測）**:
+  - `profit_adx_needle/src/core.py:54-59` が `profit_system.src.core` の非公開 `_normalize` / `_ps_average` / `_ps_std_ema` / `_unit_conversion` を直接 import。`profit_system/src/__init__.py:30-36` の `__all__` は別の 5 件のみ＝公開面が機能していない。
+  - `moving_averages/src/core.py:143,186,227,279,336` の `(rates_total, prev_calculated, begin, period, price, buffer)` 6 引数 out-param 契約。`exponential_ma_on_buffer` の本番呼出 17 本すべてが `prev_calculated=0, begin=0` 固定（Grep 実測）。全クライアントが未使用 2 引数と事前 `np.zeros(n)` 確保を強制される。
+  - `market_profile/compute/tick_store_port.py:44-46` の `read_ticks` は外部クライアント 0 件（gateway 自クラス内部とテストのみ）。`compute/store_port.py:26-62` の `ZpStorePort` は 7 メソッド混載（cache_root / mgrid×3 / znull×3 / signature）で、`tick_store_port` が自ら実施した役割別分割が未適用。
+  - `indicator_ui/api/usecase/compute_indicators.py:80-89` は 5 依存のうち `DatasetPort` のみ Protocol で、残り 4 つが `Any` / `Callable`＝契約未定義（PORTING_GUIDE:46 と不整合）。
+  - LSP: `profit_rsi_macd/src/rsimacd.py:90,125` が `compute_rsimacd(high, high, low, close, ...)` と `open_` にダミーで `high` を渡す。`profit_hl_band/src/hl_band.py:78,103` は `-> dict[str, float]` 宣言に bool `available` を混入。`build_*` の戻り値契約が「指標列のみの新規 DataFrame」8 件 vs 「入力 df.copy() に列追加」4 件で分裂。
+- **対応方針**: 1. `profit_system` の 4 関数を public 名へ昇格し `__all__` に載せる（または「これらは公開契約」と明記する）。どちらかに決める。2. `moving_averages` に `ma(price, ma_type, length) -> ndarray` 形の狭いラッパを追加（既存 6 引数版は MQL 1:1 資産として残置）。3. `read_ticks` をポートから削除し gateway の private へ降格、`ZpStorePort` を役割別に 3 分割。4. `FormingBarPort` / `IndicatorComputePort` / `ComputeDispatchPort` を `@runtime_checkable Protocol` で定義。5. `compute_rsimacd` から `open_` を削除、`hl_band_levels` の異種混在を frozen dataclass へ、`build_*` を「指標列のみの新規 DataFrame」へ統一（**4 件は挙動変更＝要承認**）。
+- **対応日**: PARTIALLY RESOLVED（2026-07-27・項目 1〜4 完了。**項目 5 はユーザー裁定により未実施**）
+- **項目 1（`profit_system` 公開契約）**: 「public 名へ昇格」を採用。根拠 2 点（実測）: (a) `profit_adx_needle/src/core.py` が façade を素通りして `profit_system.src.core` の深い経路を叩いており、「明記」では `__all__` が依然機能しない。(b) 既存の公開命名が MQL 名 1:1 写像（`PS_GetLevelCountValue`→`ps_level_count`）で確立済みで、`ps_average` / `ps_unit_conversion` は同規則の延長。`_normalize`→`ps_normalize` ほか 4 件を改名し façade に載せ、**旧名は同一関数オブジェクトの別名として残置**（`is` 同一性をテストで固定）。越境参照は Grep で全数特定済み。
+- **項目 2（`ma` 狭いラッパ）**: `moving_averages` に `_MA_ON_BUFFER` 表・`MA_TYPES`・`ma(price, ma_type, length)` を**追加のみ**で新設（既存 6 引数版は 1 行も変更せず）。呼出元 **16/17 本**を移行。`profit_rmm_macd/src/core.py` の `_ema_from` 1 本のみ意図的に直呼び残置（buffer が `np.full(m, np.nan)` 初期化で、0 初期化だと偽の 0.0 が活性区間へ混入するとコードで明示されているため）。
+  - 検証: 実データ 50,000 本 × 4 種別 × 14 長さ = **56 組合せで bit-for-bit 一致**（`period>n` / `period<=1` の退化系含む）。core 層 8 パッケージ・lwc_chart 層 16 指標でも差分 0。**ネガティブコントロール**で `+1e-3` の摂動を core 層 8/8 検出（`+1e-12` で 6/8 なのは PS プリミティブの `NormalizeDouble(_,5)` が吸収するため）＝ハーネスの検出感度を実証。
+  - 途中で `RsiResult` / `MfiResult` のローカル変数 `ma` と module-level `ma` のシャドウイングによるバグを自ら混入 → テストで即検出 → `ma_arr` へ改名して修正。
+- **項目 3（ISP 分割）**: `read_ticks` は外部クライアント **0 件**（gateway 自クラス内部とテストのみ。ISSUE-133 で窓復号を gateway へ移した際に呼出が消え、Port 上の宣言だけが取り残されていた）を確認して `_read_ticks` へ private 降格。`ZpStorePort` は `ZpCacheRootPort` / `ZpDayInvalidationPort` / `ZpMgridStorePort` / `ZpNullStorePort` の 4 Protocol ＋合成へ分割（`day_source_signature` は `_mgrid_of_day` と `_zp_day_rollup` の双方が呼ぶため `CACHE_MISS` とともに共通基底へ）。狭い getter `zp_mgrid_store()` / `zp_null_store()` を追加。
+  - 検証: **メンバ集合と `isinstance` 判定が分割前後で完全一致**（既定具象 3・fake・部分実装 4 の計 7 型で全判定が AGREE）。
+- **項目 4（usecase の契約定義）**: `usecase/compute_ports.py` を新設し 5 Protocol を定義。「4 つ目の依存」の実体は `compute_error`（例外**型**として注入され `exc.error_type` / `exc.message` が `ComputeResult` に載る＝独立契約）と実測で特定。ディスパッチは `min_tail`（キーワード専用）が latest のみに存在するため単一 Port に束ねられず 2 Protocol に分割。Port 宣言が具象の実シグネチャと一致することを照合テストで固定（推測を排除）。`isinstance` 強制は挙動不変を優先して入れず、型注釈＋回帰ガードで固定（参照実装 `DatasetPort` と同じ扱い）。fake は Port 準拠へ拡充（テストの緩和は 0 件）。
+- **項目 5（未実施・要承認のまま）**: `compute_rsimacd` からの `open_` 削除 / `hl_band_levels` の frozen dataclass 化 / `build_*` の戻り値契約統一（8 件 vs 4 件の分裂）。**ユーザーが「挙動不変の範囲に限定」を選択したため今回は着手していない**。
+- **検証（全体）**: indicator_ui/api 426 passed・market_profile/api 344 passed・analysis 66・marketdata 194（いずれも skip 0）。本番ロード 22/22 → 24/24 成功。
+- **残存**: `usecase/serve_candles.py` の `forming_bar: Any` は同じ欠陥クラスだが指定範囲外で未着手（7 メソッド面のため別 Port が必要）。`ZpStorePort.cache_root` も Port 経由の外部クライアント 0 件で降格候補だが、メンバ集合不変の要請から合成 Port に残置（降格は `isinstance` の意味論を変えるため要承認）。
+- **関連**: ISSUE-184。
+
+## ISSUE-183: [設計/DIP] 依存方向の残穴（usecase→adapter 逆流・compute→gateway 循環・ポートの pandas 漏出）（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27・shim のファイル削除のみ保留）
+- **事象（実測）**:
+  - `indicator_ui/api/usecase/dataset_port.py:50` が `from adapter.gateway.composition import default_dataset_port`＝**内側が外側を import**（関数スコープの遅延 import）。`tests/test_no_usecase_dependency.py:20` は行頭 import のみを禁止し本箇所を明示的に許容している。
+  - `market_profile/compute/market_profile_dwell_store.py:11` / `market_profile_zp_store.py:11` が `from ...gateway.… import *`＝**module-level の内→外**。本番参照ゼロ（テスト 3 ファイルのみ）。`tests/test_store_gateway_layering.py:90` が `_REEXPORT_SHIMS` として免除する既知の穴。
+  - `market_profile/compute/store_port.py:118` → `gateway/composition.py:36` → `compute/market_profile_zp.py:54` の遅延 import 循環（Service Locator 化）。
+  - `market_profile/compute/tick_store_port.py:40,44` — compute 所有のポート契約が pandas 型で規定（`day_files` の実引数は実測で `pd.Timestamp`、`read_ticks` は "DataFrame 互換" を返す）。DIP でインフラ依存を切ったつもりが型契約で貫通。
+  - `market_profile/gateway/composition.py:40,45,62,65` — Composition Root が compute の module private（`_ZP_CACHE_ROOT` / `_ZP_CACHE_VERSION` / `_CACHE_ROOT` / `_CACHE_VERSION`）を読む。永続化設定（偶有的性質）が本質層に居住。
+  - `indicator_ui/api/adapter/controller/candles_controller.py:12,28,30,34` — `/candles`・`/forming_bar` が `DatasetPort` を経由せず `marketdata.dataset` を直呼び。DIP 適用が `/compute` のみに限定＝非対称。
+- **対応方針**: 1. `dataset_port()` の遅延 import を廃し、`framework/server.py`（真の Composition Root）で起動時に `set_dataset_port(...)` を 1 回呼ぶ。同時に `/candles`・`/forming_bar` の業務手順を usecase へ移し `DatasetPort` 経由へ統一。2. compute 側 shim 2 ファイルはテストの import を gateway へ書き換えたうえで削除し、`_REEXPORT_SHIMS` 免除も撤去（**既存ファイル削除＝要承認**）。3. `TickReaderPort.day_files` の引数を UNIX 秒 int へ変え、`pd.Timestamp` 変換を gateway 内部へ押し込む。4. `_CACHE_ROOT` / `_CACHE_VERSION` を gateway 側へ移送。
+- **対応日**: RESOLVED（2026-07-27・6 項目すべて実装。**shim のファイル削除のみユーザー裁定により保留**）
+- **項目 1（usecase→adapter 逆流）**: `framework/server.py`（真の Composition Root）で `install_default_ports()` を import 時に 1 回呼ぶ push 形へ反転し、`usecase/dataset_port.py` から adapter への import を撤去。併せて ISP 分割（`RefValidationPort` / `OhlcFramePort` / `CandleSeriesPort` ＋合成 `DatasetPort`（メンバ集合不変）/ `CandleDatasetPort`）。`tests/test_no_usecase_dependency.py` の**明示的許容を撤去**し、正規表現を `^(from|import)` → `^\s*(from|import)` に強化して関数スコープの遅延 import も違反扱いに。変異検査（インデント付き import を注入）で強化の実効性を実証。
+- **項目 2（compute 側 shim）**: **ファイル削除は保留**（ユーザーが「挙動不変の範囲に限定」を選択）。テストの import を gateway 直参照へ移行し**消費者側の参照はゼロ**になった。`test_store_gateway_layering.py::test_old_compute_store_paths_reexport` のみ旧パス参照を残置（gateway 直参照に書き換えると `assert GwDwell is GwDwell` の恒真式に退化し契約検証が消えるため）。**次段の承認事項**: shim 2 ファイル＋当該テスト＋`_REEXPORT_SHIMS` 免除を同時撤去する形。
+- **項目 3（遅延 import 循環）**: `market_profile_api/__init__.py` をパッケージの Composition Root 化（`install_default_stores()` を 1 回）。Python が submodule より先に親 `__init__` を実行するため**結線漏れが原理的に起こらない**（6 通りの import 起点で検証）。`store_port` / `tick_store_port` は `set_default_*_store_factory` の push 形へ。
+- **項目 4（ポートの pandas 漏出）**: `TickReaderPort.day_files` を **UNIX 秒 int 契約**へ。`pd.Timestamp(int(v), unit="s")` の変換を gateway 内部へ押し込み（`unit="s"` 必須＝素の int は ns 解釈）。`gateway/day_bounds.py` を新設し日境界を整数演算化。**呼出元 8 件を全数 Grep で特定して追随**（範囲外 consumer `analysis/mp_stats/tick_dwell_check.py` は `day_files` を使わないことも確認）。`zp_store` / `dwell_rollup_store` は pandas import が不要化したため撤去。実データ 12 窓（最大 164,827 tick）で新旧一致、`utc_day_start` は `pd.Timestamp(s,unit="s").normalize()` と 7 値で一致、誤って `pd.Timestamp` を渡すと TypeError で loud に失敗することも確認。
+- **項目 5（永続化設定の移送）**: `gateway/cache_settings.py` を新設し `DWELL_CACHE_ROOT/VERSION` / `ZP_CACHE_ROOT/VERSION` の単一情報源に。compute から `_ZP_CACHE_ROOT` 等の module private を**移送ではなく撤去**（複製を作らない）。
+- **項目 6（`/candles`・`/forming_bar`）**: 業務手順を `usecase/serve_candles.py` へ移し `DatasetPort` 経由へ統一。`candles_controller.py` は Controller（`limit`/`now` の文字列解釈）＋ Presenter のみへ縮退。
+  - **byte 等価の検証**: 当初は変更前後を別プロセスで採取したが、`live_tick_watch.py --stream` の非原子的追記によるデータドリフトで 10 ケースが不一致になった（→ **ISSUE-186** として起票）。**変更前 handler を写経して同一プロセス・同一データ状態で新旧を交互に呼ぶ**方式へ切替え、**30 ケースで mismatch 0**（正常系・境界・エラー系・パストラバーサル・internal 500・monkeypatch シーム・buffer 第 3 段フォールバックを含む。`json.dumps(sort_keys=True)` の文字列完全一致）。
+- **検証（全体）**: 4 スイートがベースライン一致（indicator_ui/api 418／market_profile/api 334／analysis 66／marketdata 194）。`-rs` で skip 0 も確認。
+- **挙動差分（1 点・要認識）**: `dataset_port()` と MP の 3 getter は Composition Root 未実行のまま呼ばれると `RuntimeError`（旧: その場で既定を遅延合成）。MP 側は `__init__.py` 結線により構造的に発生し得ない。indicator_ui 側は `framework/server.py` と `api/tests/conftest.py` の 2 箇所で結線済み（実エントリポイントを全数 Grep で確認）。**新規エントリポイントを足す際は結線が必要**。
+- **関連**: ISSUE-172（配置記述子）・ISSUE-177・ISSUE-184・ISSUE-186（本件の検証中に発見）。
+
+## ISSUE-184: [記録] indigators 全 26 パッケージ SOLID アーキテクチャ監査の総括（2026-07-26）
+- **ステータス**: CLOSED（2026-07-27・記録用エントリ。個別対応は ISSUE-172〜183・185〜187）
+- **実施内容**: `indigators/` 配下 26 パッケージ（Python 394・JS 154 ファイル）をアーキテクチャエージェント 5 体で分割監査。判定基準は `indigators/PORTING_GUIDE.md` §2、参照実装は `profit_band`。全指摘を実 Read + Grep で裏付け、ファイル変更ゼロ（読み取り専用）。
+- **結果**: 違反 **99 件（高 20 / 中 44 / 低 35）**。全 26 パッケージ中、全項目準拠は **`mql_builtins` / `tgp_btlm` / `price_range_power` の 3 件のみ**。
+  - `mql_builtins`: core=numpy のみ・プロジェクト内依存ゼロ・循環なし・`__all__` で公開面限定。
+  - `tgp_btlm`: `core.py:82-99` の `BtlmFitter` Protocol で R/rpy2 を最外へ隔離＝**リポジトリ内の DIP 正解形**。
+  - `price_range_power`: core / ratio / loader / plot / lwc_chart がアクター 1:1 で分離。
+- **全数で遵守されている点**: 26 パッケージすべてで `core.py` が pandas / matplotlib / lightweight-charts を非 import、かつ全 `lwc_chart.py` が `lightweight_charts` を非 import（PORTING_GUIDE §2 の最重要含意）。frozen DTO ＋ `writeable=False` は指標パッケージ側では概ね実装済み（未達は参照実装 profit_band 側＝ISSUE-173）。
+- **高重大度の内訳（ISSUE 対応）**: DIP 6 件（172/174/176/183）・OCP 5 件（175/179/180）・SRP 4 件（181）・LSP 3 件（175/177）・不変性/ISP 2 件（178/182）。
+- **中/低 79 件**: 個別 ISSUE 化していない。主な内容は 各 `plot.py` の未 Read 分を含む重複、`profit_osi_ma` の DTO 不在、`profit_volatility` の 49 系列レガシー公開 API（本番参照 0）、再エクスポート 2〜3 段、`market_profile` の README/SPEC 不在、`indicator_ui` の lwc 隔離宣言と実態の乖離（`chart_renderer.js:4-7` の「唯一の隔離点」宣言が実測 5 ファイルで破られ、`trade_markers_renderer.js:5` も同時に唯一を主張）など。
+- **監査の限界（未検証項目）**: 1. 静的読解のみ。SOLID 違反の実行時影響（ISSUE-174 の ImportError 再現、ISSUE-176 のレース発生、ISSUE-172 の実ディスク状態）は未実測。2. 各パッケージの `tests/` 内部品質、一部 `plot.py` 本体、`market_profile_primitive.js:120-551` の描画本体、`market_profile_zp_kernel.py` 本体は未読。3. 改善提案の挙動不変性（byte 等価）は未検証。適用時は各パッケージの既存テスト（特に `test_market_profile_byte_parity.py` / `py_parity_golden.test.js` の byte 一致縛り）による回帰確認が必須。
+- **着手推奨順**: ISSUE-172（即時リスク回避）→ ISSUE-173（基準の確立）→ ISSUE-174/176（依存解決の一元化）→ ISSUE-175（正解の裁定）→ ISSUE-177/178 → ISSUE-179/180/181/182/183。ISSUE-173 以降はいずれもスコープ外の実装変更・アーキテクチャ判断に当たり、着手には承認が必要。
+
+### 対応の総括（2026-07-27・ISSUE-172〜184 の一括対応を完了）
+- **完了状況**: RESOLVED 9 件（172 / 173 / 176 / 177 / 178 / 179 / 181 / 183 / 185）・PARTIALLY RESOLVED 2 件（180 は back 側で確定・182 は項目 1〜4）・BLOCKED 1 件（175＝元 MQL 不在で裁定不能）・記録用 1 件（184）。派生して ISSUE-185 / 186 / 187 を新規起票（185 は同時に是正済み）。
+- **ユーザー承認事項（7 件）**: 173＝案 a（参照実装を規約へ合わせる）／174＝案 a ＋案 a-2（ロード境界への一本化）／175＝裁定保留・記録のみ／180＝back 側完了で確定・front は現状維持／179 項目 1＝挙動不変の一本化（共有実装をパラメータ化した上位集合＋薄い shim）／185＝今回修正／182・183 の挙動変更・ファイル削除＝挙動不変の範囲に限定。
+- **最終テスト状況**: Python 36 スイート **3445 passed / skip 0 / fail 0**。JS 4 スイート緑（indicator_ui 749 / market_profile 311 / replay_ui 266+既知 1 = ISSUE-170 / unified_ui 42）。本番ロード経路 24/24・standalone 20/20。
+- **「監査の限界（未検証項目）」の解消状況**: 1. **実行時影響は実測で確定**した。ISSUE-172 は実ディスクに `JP225/{g10, v4}` が併存し**判定が完全逆転**していることを dry-run で確認（未発火）。ISSUE-176 のレースは再現に成功し、支配的障害が重複ロードではなく**半構築モジュールの観測**であることが判明（ISSUE-185 の発見に直結）。ISSUE-174 の ImportError は実環境では venv `.pth` により再現せず（ISSUE 記述の因果が誤り）。2. 未読だった `market_profile_zp_kernel.py` / `market_profile_primitive.js` の周辺は対応の過程で読解済み。3. **挙動不変性は byte 等価・bit-for-bit で実証**した（累計 1700 超の比較項目で差分 0）。
+- **検証手法として確立したもの（今後の同種作業で踏襲すべき）**:
+  1. **pytest 単独を合格判定にしない**。ISSUE-174 で「`indicator_ui/api` の 418 件が緑でも本番ロードは `ModuleNotFoundError`」を実証。本番相当ロード（`cd api` + `env -u PYTHONPATH` + `_load_src_package`）を必ず併走させる。
+  2. **対照は `git show HEAD:` ではなく着手前の作業ツリー全体のスナップショット**（並列作業の未コミット変更が混入するため）。
+  3. **stale pyc の排除**（`__pycache__` 全消去＋`PYTHONDONTWRITEBYTECODE=1`）。実際に「復元後も差分 6 件」の偽差分を踏んだ。
+  4. **ネガティブコントロール必須**。比較ハーネスに意図的欠陥を注入して検出できることを示さないと、「常に一致」を返す偽陽性ハーネスを合格と誤認する。ISSUE-179 では初版ハーネス（36 観測点）が判定順序の退行を検出できず、観測点 10 種の追加で初めて検出できた。
+  5. **Red 観測と変異検出**。新規テストを変更前コードに当てて失敗すること、および抽出後のロジックへの変異で既存テストが失敗することを実出力で示す。
+- **ISSUE 本文に含まれていた事実誤り（実測で訂正済み）**: ISSUE-172 の `gen_depth`（3→2 が正）／ISSUE-174 の依存の因果（cwd→`.pth`）と `common_view` 箇所数（13→20）／ISSUE-179 の loader 本数（11→17+shim 1）・空 CSV ガード保持数（1→2）・`_resolve_times` 箇所数（18→21）／ISSUE-178 の `tf_period_columns.py` のパス（`controller/`→`compute/`）／ISSUE-179 の as-of クランプ箇所数（3→4）。**静的読解ベースの監査結果は、着手前に必ず実測で再確認すること。**
+- **残タスク（未承認・未着手）**: ISSUE-175（元 MQL 入手待ち）／ISSUE-180 front（`/catalog` スキーマ拡張の是非）／ISSUE-181 の compute オーケストレーション本体・凡例/歯車ダイアログ／ISSUE-182 項目 5（挙動変更 4 件）／ISSUE-183 の shim 2 ファイル削除／ISSUE-186（CSV 非原子追記）／ISSUE-187（profit_band の `_resolve_times` 乖離）／中・低重大度 79 件は未着手のまま。
+
+## ISSUE-185: [不具合/実測再現] indicator_ui の module_loader が ISSUE-156 対策後も半構築モジュールを露出（ロック外の二重チェックが exec 前登録を読む）（2026-07-26）
+- **ステータス**: RESOLVED（2026-07-27・ユーザー承認を得て是正）
+- **対応結果**: `indicator_ui` 版の独自実装（72 行）を全削除し `common/module_loader.py` への純再エクスポート shim に置換して**動的ロード実装を 1 本化**。両版の API は名前・シグネチャ・戻り値・例外メッセージまで完全一致していたため上位集合化は不要だった。呼出元は `call_binding.py:39,190` の `load_package` 1 経路のみ（全数 Grep。`load_module` の呼出元は 0 件＝未使用の公開 API、旧 docstring が主張する「controller の `_load_loader`」も不成立の陳腐化記述）。
+- **レース是正の実測（20 条件＝switchinterval {0.005, 1e-6} × スレッド {3, 16} × 各 5 試行）**: BEFORE は**全 20 試行 RACE**（3 スレッドで半構築 2/3・16 スレッドで 15/16）。AFTER は**全 20 試行 OK**（半構築 0/3・0/16）。CONTROL（`common` 版）も 20/20 OK。本番経路での 6 指標同時ロードも errors=0。
+- **副次的な発見**: 旧 `threading.Lock` は**入れ子ロードで自己デッドロック**する（回帰テストで Red を実測）。`common` 版の `RLock` はこれも回避する。
+- **検証**: indicator_ui/api 430→437 passed（+7 は新規テストのみ・skip 0）。common 46／btlm_trail_marod 30／ma_marod 43 はいずれも不変。本番ロード 24/24 成功。`.pth` を除いた条件でも `framework/server.py` の自己結線フォールバック経由で `common` が解決することを実測。
+- **残存**: adapter 側と `common` 側で別々だったロックが単一 `RLock` に統合されたため、異なるモジュールの**初回ロード同士**が相互に直列化する（正当性への影響なし・初回のみ・デッドロックは実測でなし）。
+- **事象（実測で再現成功）**: `indigators/indicator_ui/api/adapter/compute/module_loader.py:25,39-43` は ISSUE-156 対策の `threading.Lock` と二重チェックを持つが、**高速経路がロックを取らずに `sys.modules` を素引きする**。動的ロードは相対 import 解決のため `sys.modules[name] = module` を **exec 前**に登録する必要があり、その未初期化オブジェクトを高速経路が読む。結果、重複 exec は防げるが「公開関数がまだ定義されていないモジュール」を掴む。
+- **実測（同一条件での並置比較）**: `indicator_ui` 版＝`distinct=1 / half_constructed_observations=7/8`、`common/module_loader.py`（ISSUE-176 で新設・`_LOADING` ゲート付き）＝`distinct=1 / half_constructed_observations=0/8`。修正前の `btlm_trail_marod` / `ma_marod` の複製実装でも、`switchinterval=1e-6` × 3 スレッド（`framework/server.py:84` の `ThreadPoolExecutor(max_workers=3)` 相当）で 5 回中 5 回 `RACE`（`missing_attrs_example=['resolve_source','rolling_ols_window_end']`）を再現。
+- **影響**: 初回 compute が複数スレッドから同時に同一パッケージをロードした場合、呼出時 `AttributeError` になり得る。発火は初回ロード時の競合に限られるため間欠。
+- **対応方針**: `common/module_loader.py` の `_LOADING` ゲート方式（「exec 完了まではキャッシュ命中と見なさない」）を正とし、`indicator_ui` 版をこれへ寄せる。ISSUE-179 の「loader 重複の一本化」と同時に行うのが自然。
+- **関連**: ISSUE-156（不完全だった当該対策）・ISSUE-176（発見経緯・common 側の正解実装）・ISSUE-179（重複の一本化）。
+
+## ISSUE-186: [不具合] tick CSV の非原子的追記により実データ依存テストが間欠一斉失敗（2026-07-26）
+- **ステータス**: OPEN（ISSUE-183 対応の過程で発見。修正は未着手＝スコープ外・要承認）
+- **事象（実測）**: `indigators/indicator_ui/api` の全スイートが 1 回だけ `13 failed / 405 passed` を記録し、直後から 14 回連続で `418 passed`。再現性なし。
+- **原因**: `tools/live_tick_watch.py --stream` / `tools/export_jp225_m1.py --watch` が常駐し、`jp225_tick_m1.csv`（276MB）/ 同 M1 CSV（300MB）へ**非原子的に追記**している。`marketdata/tick_m1.py:336` に「末尾追記は原子化を持たない」と既知として明記済み。読み取り側が部分行を掴むと実データ依存テストが一斉に落ちる。
+- **影響**: テスト結果が非決定的になり、回帰判定の信頼性が落ちる。**リファクタリングの挙動不変検証を実データ比較で行う際に偽陽性・偽陰性の両方を生む**（ISSUE-183 では `/candles` の byte 等価比較が実際にこれで 10 ケース不一致となり、同一プロセス並置比較へ切り替えて回避した）。
+- **対応方針**: 追記を原子化する（一時ファイルへ書いて `os.replace`、または追記時に排他ロック）。あるいは読み取り側に部分行の検出・再読取を入れる。どちらを採るかは書き手・読み手の性能要件を実測してから決める。
+- **関連**: ISSUE-183（発見経緯）。
+
+## ISSUE-187: [仕様裁定待ち] 参照実装 profit_band の `_resolve_times` だけ DatetimeIndex 経路の系列名が他 20 本と異なる（2026-07-27）
+- **ステータス**: OPEN（**裁定保留をユーザー承認**。ISSUE-179 項目 2 の過程で発見。コード変更なし）
+- **事象（実測）**: `_resolve_times` の DatetimeIndex 経路で、`profit_band/src/lwc_chart.py` は `df.index.to_series()` を返すため**系列名が `time` にならない**。他 20 本は系列名を `time` に揃える。例外文言も profit_band だけ別。
+- **なぜ問題か**: `profit_band` は `indigators/PORTING_GUIDE.md:8-9` が「本書の原則はすべてこの実装で実証済み」と宣言する**参照実装**でありながら少数派である。参照実装を正とするなら他 20 本が誤り、多数派を正とするなら参照実装が誤り。**どちらとも決められないため `_resolve_times` の完全な一本化ができない**（ISSUE-179 項目 2 は AST 同値の 12 本のみ統合し、9 本を挙動差のため未統合として残した）。
+- **同種の先行事例**: ISSUE-173 で profit_band が PORTING_GUIDE §2 の 2 規約を満たしていなかった件（案 a＝参照実装を規約へ合わせる、で解決済み）。本件も同じ「参照実装が基準に従っていない」構図だが、**こちらは挙動変更を伴う**点が異なる。
+- **対応方針（いずれかの裁定が必要）**:
+  - 案 a: 参照実装 profit_band を正とし、他 20 本を profit_band の形へ寄せる（20 パッケージの挙動が変わる）。
+  - 案 b: 多数派 20 本を正とし、profit_band を寄せる（profit_band の挙動が変わる。ISSUE-173 と同じ「参照実装側を直す」方向）。
+  - 案 c: 系列名の差が下流（lwc への payload・JS 側パリティ）に実影響を持つかを先に実測し、無影響なら差異を許容して PORTING_GUIDE §5 に明記する。
+- **未検証**: 系列名 `time` の有無が実際に描画・payload・JS 側の byte 一致縛りへ波及するかは未測定。**裁定の前にこれを実測すべき**。
+- **関連**: ISSUE-173（同じ参照実装の規約未達）・ISSUE-179（発見経緯）・ISSUE-184。

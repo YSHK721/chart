@@ -11,6 +11,8 @@ import market_profile_api.controller.tf_period_profile_controller as tfp
 from market_profile_api.compute import market_profile_zp as zp
 
 from test_market_profile_zp_store import _synth_ticks_for_day, _DAY0
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
 
 @pytest.fixture()
@@ -32,7 +34,7 @@ def tfp_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tfp._mpd, "_load_window_ticks", fake_load)
     monkeypatch.setattr(zp, "day_parquet_files", lambda *a, **k: [])
-    monkeypatch.setattr(zp, "_ZP_CACHE_ROOT", tmp_path / "zpcache")
+    monkeypatch.setattr(_mp_cache_settings, "ZP_CACHE_ROOT", tmp_path / "zpcache")
     monkeypatch.setattr(tfp, "_TFP_CACHE_ROOT", tmp_path / "tfp")
     monkeypatch.setattr(zp, "NULL_HIST_DAYS", 15)
     monkeypatch.setattr(zp, "NULL_MIN_DAYS", 8)
@@ -101,7 +103,7 @@ def test_zp_disk_cache_subdir(tfp_env, tmp_path):
     now = _day(40)
     tfp.handle_tf_period_profile("jp225_tick", "1h", _day(29), _day(30), now=now, src="zp")
     from market_profile_api.compute import market_profile_zp as _zpm
-    disk = (tmp_path / "tfp" / "JP225" / "1h" / "s3" / f"zp-v{_zpm._ZP_CACHE_VERSION}"
+    disk = (tmp_path / "tfp" / "JP225" / "1h" / "s3" / f"zp-v{_mp_cache_settings.ZP_CACHE_VERSION}"
             / f"{_day(29)}.json")  # ISSUE-085: s3 世代 + ISSUE-088 🔵-3: zp 内部世代連動。
     assert disk.is_file()
     data = json.loads(disk.read_text())

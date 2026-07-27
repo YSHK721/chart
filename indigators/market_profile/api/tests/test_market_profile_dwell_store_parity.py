@@ -20,6 +20,8 @@ import numpy as np
 import pytest
 
 from market_profile_api.compute import market_profile_dwell as mpd
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
 _DAY = 86400
 _DAY0 = 1704067200
@@ -59,7 +61,7 @@ def _make_loader(master_secs, master_mids):
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
-    monkeypatch.setattr(mpd, "_CACHE_ROOT", tmp_path / "mp_dwell_cache")
+    monkeypatch.setattr(_mp_cache_settings, "DWELL_CACHE_ROOT", tmp_path / "mp_dwell_cache")
     monkeypatch.setattr(mpd, "_day_source_signature", lambda symbol, day_start: "")
     monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(*_synthetic_master()))
     # ISSUE-089: golden は旧表セマンティクス（窓ティック由来）の合成値＝表をピンして意味を保存。

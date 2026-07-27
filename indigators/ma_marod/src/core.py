@@ -19,25 +19,28 @@
     0 除算（ma == 0）は errstate で抑制し、生じた inf/NaN は NaN に落として描画から除外。
 
 参照機構（無改変・btlm_trail_marod ``_load_btlm_trail`` の前例踏襲）:
-    moving_averages の core.py をファイルパスから一意名でロードして公開関数をそのまま
-    利用する（read-only・無改変）。
+    基準線 MA の供給元は :class:`MovingAverageReference` Protocol（本 core が所有する抽象）で
+    表す。:func:`set_moving_average_reference` で外側（Composition Root）から具象を注入でき、
+    **未注入時は従来どおり moving_averages の core.py を動的ロードする**（既存呼出元の挙動は
+    完全不変・ISSUE-176）。フォールバックの動的ロードは共有ローダ ``common.module_loader``
+    （ロック付き）へ委譲し、importlib / sys の機構は本 core が保持しない（SRP / DIP）。
 
 依存:
-    標準: __future__, importlib, sys, pathlib / 外部: numpy /
-    プロジェクト内: common.applied_price・common.marod_bands（絶対 import）、
-    moving_averages/src/core.py（動的ロード）
+    標準: __future__, pathlib, typing / 外部: numpy /
+    プロジェクト内: common.applied_price・common.marod_bands・common.module_loader
+    （絶対 import）、moving_averages/src/core.py（既定の参照具象・動的ロード）
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from common.applied_price import AppliedPrice, applied_price
+from common.applied_price import SOURCE_TO_APPLIED, AppliedPrice, applied_price
 from common import marod_bands as _bands
+from common import module_loader as _module_loader
 
 # 既定パラメータ（ma_type/length はユーザー裁定 2026-07-21: moving_averages 既定と対称の
 #   ema・length は sma 実測最良の 50。バンド既定は btlm_trail_marod と同値）。
@@ -63,16 +66,8 @@ _MIN_LENGTH: int = 2
 
 # UI ソース値 → 共有 AppliedPrice 種別。moving_averages/src/lwc_chart.py の
 #   _SOURCE_TO_APPLIED と同一写像（同一性はテストで恒久固定＝計算の原子の同期・§2.1）。
-_SOURCE_TO_APPLIED: dict[str, AppliedPrice] = {
-    "close": AppliedPrice.CLOSE,
-    "open": AppliedPrice.OPEN,
-    "high": AppliedPrice.HIGH,
-    "low": AppliedPrice.LOW,
-    "hl2": AppliedPrice.MEDIAN,
-    "hlc3": AppliedPrice.TYPICAL,
-    "hlcc4": AppliedPrice.WEIGHTED,
-    "ohlc4": AppliedPrice.OHLC4,
-}
+#   写像の実体は共有プリミティブへ 1 本化した（ISSUE-179 項目 4）。
+_SOURCE_TO_APPLIED: dict[str, AppliedPrice] = SOURCE_TO_APPLIED
 
 # ma_marod/src/core.py → parents[2] = indigators/。参照する 2 パッケージの core.py。
 _INDIGATORS_DIR = Path(__file__).resolve().parents[2]
@@ -83,18 +78,34 @@ _MOVING_AVERAGES_MODNAME = "_moving_averages_src_for_ma_marod"
 _FROM_ZERO: frozenset[str] = frozenset({"ema"})
 
 
+@runtime_checkable
+class MovingAverageReference(Protocol):
+    """基準線 MA の供給元が満たすべき契約（本 core が所有する抽象）。
+
+    既定の具象は moving_averages の core.py（同名メソッドをモジュール関数として公開）。
+    シグネチャは MQL 由来の ``*_on_buffer(rates_total, prev_calculated, begin, period,
+    price, buffer)``（``buffer`` へ書き込む）。
+    """
+
+    def simple_ma_on_buffer(self, rates_total, prev_calculated, begin, period, price, buffer): ...
+
+    def exponential_ma_on_buffer(self, rates_total, prev_calculated, begin, period, price, buffer): ...
+
+    def smoothed_ma_on_buffer(self, rates_total, prev_calculated, begin, period, price, buffer): ...
+
+    def linear_weighted_ma_on_buffer(self, rates_total, prev_calculated, begin, period, price, buffer): ...
+
+
+# 注入された具象（None＝未注入＝動的ロードへフォールバック）。差し替えは set_moving_average_reference。
+_MOVING_AVERAGE_REF: "MovingAverageReference | None" = None
+
+
 def _load_module(modname: str, path: Path):
-    """core.py をファイルパスから一意名でロードする（read-only・無改変参照・キャッシュ付き）。"""
-    cached = sys.modules.get(modname)
-    if cached is not None:
-        return cached
-    spec = importlib.util.spec_from_file_location(modname, path)
-    if spec is None or spec.loader is None:  # pragma: no cover - 環境異常（spec 解決不能）
-        raise ImportError(f"参照実装を読み込めません: {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[modname] = module
-    spec.loader.exec_module(module)
-    return module
+    """core.py をファイルパスから一意名でロードする（read-only・無改変参照・キャッシュ付き）。
+
+    実体は共有ローダ ``common.module_loader.load_module``（ロック付き・ISSUE-176）。
+    """
+    return _module_loader.load_module(modname, path)
 
 
 def _load_moving_averages():
@@ -102,9 +113,32 @@ def _load_moving_averages():
     return _load_module(_MOVING_AVERAGES_MODNAME, _MOVING_AVERAGES_CORE)
 
 
+def set_moving_average_reference(ref: "MovingAverageReference | None") -> None:
+    """基準線 MA の供給元を注入する（``None`` で既定＝moving_averages 動的ロードへ戻す）。
+
+    Raises:
+        TypeError: ``MovingAverageReference``（4 種バッファ関数）を満たさないとき。
+    """
+    global _MOVING_AVERAGE_REF
+    if ref is not None and not isinstance(ref, MovingAverageReference):
+        raise TypeError(
+            "MovingAverageReference（sma/ema/smma/lwma の *_on_buffer）を満たしません: "
+            f"{type(ref).__name__}"
+        )
+    _MOVING_AVERAGE_REF = ref
+
+
+def moving_average_reference() -> "MovingAverageReference":
+    """現在有効な MA 供給元を返す（未注入時は moving_averages の動的ロード＝従来挙動）。"""
+    ref = _MOVING_AVERAGE_REF
+    if ref is not None:
+        return ref
+    return _load_moving_averages()
+
+
 def _ma_funcs() -> dict:
     """ma_type → 参照実装バッファ関数（moving_averages lwc_chart _MA_FUNCS と同一写像）。"""
-    mv = _load_moving_averages()
+    mv = moving_average_reference()
     return {
         "sma": mv.simple_ma_on_buffer,
         "ema": mv.exponential_ma_on_buffer,

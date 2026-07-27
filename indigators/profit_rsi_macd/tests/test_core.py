@@ -42,11 +42,9 @@ from src import (  # noqa: E402
 )
 
 # 共有 EMA 関数（照合用）。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from moving_averages import exponential_ma_on_buffer  # noqa: E402
 
 # 共有 common（適用価格・照合用）。
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from common import typical_price  # noqa: E402
 
 

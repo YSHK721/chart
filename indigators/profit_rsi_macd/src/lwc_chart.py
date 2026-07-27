@@ -31,6 +31,8 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH  # noqa: E402
+from common_view.lwc_adapter import resolve_times as _resolve_times  # noqa: E402
+from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
 from .core import (
     DEFAULT_FAST_EMA,
@@ -61,9 +63,7 @@ _LEVEL_COLOR = "rgba(84, 84, 84, 1)"       # 元 indicator_levelcolor C'84,84,84
 _LEVEL_KEYS: tuple[str, ...] = ("p1", "p2", "p3", "m1", "m2", "m3", "mid50")
 
 
-@runtime_checkable
-class _Series(Protocol):
-    def set(self, data: pd.DataFrame) -> None: ...
+_Series = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
 
 
 @runtime_checkable
@@ -71,23 +71,6 @@ class _Chart(Protocol):
     def create_histogram(self, name: str, **kwargs) -> _Series: ...
     def create_line(self, name: str, **kwargs) -> _Series: ...
     def horizontal_line(self, price: float, **kwargs): ...
-
-
-def _resolve_times(df: pd.DataFrame, time_column: str | None) -> pd.Series:
-    """時刻系列を解決する（明示指定 > time 列 > date 列 > DatetimeIndex の順）。"""
-    lower_map = {str(c).lower(): c for c in df.columns}
-    if time_column is not None:
-        tcol = lower_map.get(time_column.lower(), time_column)
-        if tcol not in df.columns:
-            raise KeyError(f"指定された時刻列が存在しません: {time_column}")
-        return pd.to_datetime(df[tcol]).reset_index(drop=True)
-    if "time" in lower_map:
-        return pd.to_datetime(df[lower_map["time"]]).reset_index(drop=True)
-    if "date" in lower_map:
-        return pd.to_datetime(df[lower_map["date"]]).reset_index(drop=True)
-    if isinstance(df.index, pd.DatetimeIndex):
-        return pd.Series(df.index, name="time").reset_index(drop=True)
-    raise KeyError("時刻を解決できません（time/date 列、または DatetimeIndex が必要）。")
 
 
 def add_rsimacd(

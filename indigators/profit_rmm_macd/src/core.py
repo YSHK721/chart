@@ -5,9 +5,12 @@
     共有層のみで行う層。入出力・描画・pandas を含まない。
 
     level_count（4 オシレーター funLevelCount 合算）は profit_rmm/src/core.py の
-    level_count 生成パイプライン全体を **verbatim 複製**する（iWPR/iRSI/iMFI/
+    level_count 生成パイプライン全体を複製する（iWPR/iRSI/iMFI/
     oscillator_span/level_count_score・クランプ非対称・funLevelCount4ケース・合算・
     warm-up・iWPR 権威・flat→50/負MF==0→100 を完全保持・ロジック改変禁止）。
+    **ただし ``compute_rmm_level_count`` の採点ループは profit_rmm 側に無い span NaN
+    伝播ブロックを持ち、構造上は verbatim ではない**（ISSUE-175・未裁定。詳細は同関数
+    の docstring 参照）。
     その level_count に MACD 連鎖を適用する。**ただし MFIMACD/RSIMACD とは 2 点が
     異なる**:
 
@@ -23,7 +26,8 @@
         rolling_span / level_count_score : profit_rmm の level_count 算出部の verbatim
         複製（_series_avg/_series_std/oscillator_span/rolling_span は姉妹 profit_rmm と
         同一実装の複製。将来の共有層集約候補。本フェーズでは集約しない）。
-    compute_rmm_level_count : 上記を採点・合算して level_count を返す（複製。window で
+    compute_rmm_level_count : 上記を採点・合算して level_count を返す（複製だが span
+        NaN 伝播ブロックが profit_rmm 側に無い＝ISSUE-175 未裁定。window で
         全期間スカラ span / 因果ローリング span を切替）。
     _first_finite_index / _ema_chain_from_first_finite : EMA 開始位置ずらし＋warm-up
         NaN 埋めを局所化するヘルパ（共有 EMA の NaN 汚染回避。振る舞い不変）。
@@ -33,37 +37,35 @@
 
 元 MQL 対応（``PRO!fitRMMMACD.mq4`` L162-280 を昇順=古→新へ 1:1 変換）:
     level_count 部 = PRO!fitRMM.mq4 と同一（iRSI/iWPR/iMFI/MAROD funLevelCount 合算）。
-    iMAOnArray(EMA, FastEMA=4 / SlowEMA=8 / SignalEMA=4) → exponential_ma_on_buffer。
+    iMAOnArray(EMA, FastEMA=4 / SlowEMA=8 / SignalEMA=4) → moving_averages.ma /
+    exponential_ma_on_buffer（後者は NaN 初期化 buffer が必要な _ema_from の 1 箇所のみ）。
     MACD = Slow - Fast（L272）。Histogram = MACD - Signal（L280・係数なし）。
 
 依存:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
-    共有: common（typical_price）, moving_averages（exponential_ma_on_buffer）。
+    共有: common（typical_price）, moving_averages（ma, exponential_ma_on_buffer）。
     pandas/描画 import は禁止。
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
-# 共有ライブラリ moving_averages / mql_builtins を indicators/ パス経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
-from moving_averages import exponential_ma_on_buffer  # noqa: E402
-from mql_builtins import (  # noqa: E402,F401  # 正準 iWPR/iRSI/iMFI（再公開して in-package 参照面を維持）
+# 共有ライブラリ moving_averages / mql_builtins（indigators/ 直下）を絶対 import で再利用する。
+from moving_averages import exponential_ma_on_buffer, ma
+from mql_builtins import (  # noqa: F401  # 正準 iWPR/iRSI/iMFI（再公開して in-package 参照面を維持）
     compute_mfi,
     compute_rsi,
     compute_wpr,
 )
-from profit_system import (  # noqa: E402,F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
+from profit_system import (  # noqa: F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
     compute_marod,
     level_count_score,
 )
 
-from common import typical_price  # noqa: E402
+from common import typical_price
 
 # 元 input の既定値（PRO!fitRMMMACD.mq4）。
 DEFAULT_OSC_PERIOD: int = 6
@@ -196,7 +198,8 @@ def rolling_span(
 
 
 # ===========================================================================
-# level_count 合算（profit_rmm/src/core.py compute_rmm の level_count 部の複製）
+# level_count 合算（profit_rmm/src/core.py compute_rmm の level_count 部の複製。
+# ただし span NaN 伝播ブロックの有無で構造差あり＝ISSUE-175 未裁定・下記 docstring 参照）
 # ===========================================================================
 def compute_rmm_level_count(
     high: np.ndarray,
@@ -211,12 +214,27 @@ def compute_rmm_level_count(
 ) -> np.ndarray:
     """iRSI / iWPR / iMFI / MAROD を funLevelCount で採点・合算した level_count を返す。
 
-    profit_rmm/src/core.py ``compute_rmm`` の level_count 算出パイプライン全体を
-    verbatim 複製する。``window=None`` 時は全期間スカラ span（従来 1:1。同一入力で
+    profit_rmm/src/core.py ``compute_rmm`` の level_count 算出パイプラインを移植した
+    もの。``window=None`` 時は全期間スカラ span（従来 1:1。同一入力で
     ``compute_rmm(..., window=None).level_count`` と bit-for-bit 一致）。``window=W``
     時は因果ローリング span 配列で各バー span[i] を採点する（look-ahead 除去・repaint
     しない）。warm-up（``i<window-1``）は span NaN → level_count_score NaN →
     level_count NaN（非描画）。
+
+    profit_rmm との差分（ISSUE-175・未裁定）:
+        本関数は採点ループ末尾に ``if window is not None and (not np.isfinite(...))``
+        で ``lc`` を NaN へ上書きする明示ブロックを持つ。profit_rmm/src/core.py
+        ``compute_rmm`` の対応ループに当該ブロックは無く、span NaN は
+        ``level_count_score`` の戻り値経由でのみ伝播する。両者の出力が分かれ得るのは
+        「非有限 span が存在し、かつ 4 採点のいずれも NaN を生まないバー」（4 オシレー
+        ターすべてが境界ちょうど（rsi/wpr/mfi == 50.0・marod == 0.0）または NaN で
+        採点分岐がスキップされる場合等）に限られ、それ以外のバーは profit_rmm 側も
+        採点値経由で NaN となり一致する。実測（乱数 400 バー＋完全フラット 200 バーの
+        2 データセット）では数値差 0 件であり、本ブロックが数値差を生む入力は未確認。
+        したがって構造上は verbatim 複製ではないが、確認済みの範囲では出力は一致する。
+        どちらが移植元の正解かは元 MQL（``PRO!fitRMM.mq4`` /
+        ``PRO!fitRMMMACD.mq4``）が未入手のため未裁定であり、本変更では計算ロジックを
+        一切変更せず現状の挙動を維持する。
 
     Args:
         high/low/close/volume: 昇順 OHLCV（同長）。
@@ -251,9 +269,8 @@ def compute_rmm_level_count(
     mfi = compute_mfi(high, low, close, volume, period=osc_period)
     wpr = compute_wpr(high, low, close, period=osc_period) + 100.0
 
-    ma = np.zeros(typical.shape[0], dtype=np.float64)
-    exponential_ma_on_buffer(typical.shape[0], 0, 0, ma_period, typical, ma)
-    marod = compute_marod(typical, ma)
+    ma_values = ma(typical, "ema", ma_period)
+    marod = compute_marod(typical, ma_values)
 
     n = close.shape[0]
     # スパン（採点の分母）を全期間スカラ（window=None）か因果ローリング（window=W）で用意。

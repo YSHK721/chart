@@ -15,15 +15,44 @@ export class TimeframeController {
   //   時間足ロール専用の狭い契約 TimeframeHost にのみ依存する。契約の単一ソースは
   //   indicator_controller.js（@typedef TimeframeHost ＋ TIMEFRAME_HOST_CONTRACT）で明文化し、
   //   IndicatorController（present）/ ReplayIndicatorController（replay・symlink 継承）が
-  //   メンバー名・挙動不変のまま構造的に本契約を満たす（依存面 = getter/setter: _timeframe/
-  //   _recomputeDepth/_datasetRef/_recentBars/_state/_renderer/_loadCandles/_timeframeObserver、
-  //   method: recomputeAllApplied/_persistAll、optional: _el）。
+  //   メンバー名・挙動不変のまま構造的に本契約を満たす。ISSUE-181 で時間足ロールの状態
+  //   （_timeframe/_recentBars/_loadCandles/observer）と競合ガードを host から移送したため、
+  //   依存面は field: _datasetRef/_state/_renderer、method: recomputeAllApplied/_persistAll/
+  //   recomputeGate、optional: _el のみになった（host のフィールドへは一切代入しない）。
   /**
    * @param {import('./indicator_controller.js').TimeframeHost} host 時間足ロール契約を満たすホスト。
+   * @param {{timeframe?: string, recentBars?: ?number, loadCandles?: ?function}} [state]
+   *   時間足ロールが所有する状態の初期値（ISSUE-181: 状態も一緒に移す）。
    */
-  constructor(host) {
+  constructor(host, { timeframe = '1D', recentBars = null, loadCandles = null } = {}) {
     this._host = host;
+    // ISSUE-181: 時間足ロールの状態は本協働子が所有する（host のフィールドではない）。
+    //   現在の表示時間足（1 分足原子から resample・compute/candles に伝搬する）。
+    this._timeframe = timeframe;
+    // 直近表示本数（§配信設計: リサンプル＋直近 N 本）。compute の limit に伝搬する。null=制限なし。
+    this._recentBars = recentBars;
+    // 時間足切替時に candles を再取得するローダ (datasetRef, timeframe) → Promise<candles|null>。
+    //   B方式のみ注入される（A方式は SAMPLE_DATA・再集計不可のため null）。
+    this._loadCandles = loadCandles;
+    // 時間足変更の購読者（任意・1 個）。setTimeframe 適用後に新時間足を通知する。
+    this._observer = null;
   }
+
+  // ---- 所有状態のアクセサ（host は本協働子へ委譲するだけでフィールドを持たない）----
+  current() { return this._timeframe; }
+
+  // 副作用なしの現在値差し替え（restore が保存済み時間足を確定する経路で使う）。
+  setCurrent(timeframe) { this._timeframe = timeframe; }
+
+  recentBars() { return this._recentBars; }
+
+  setRecentBars(value) { this._recentBars = value; }
+
+  loader() { return this._loadCandles; }
+
+  observer() { return this._observer; }
+
+  setObserver(observer) { this._observer = observer; }
 
   // 時間足切替（§チャート表示時間選択・1 分足原子から resample）。
   //   1) candles を新時間足で再取得しメイン系列を差し替え（B方式のみ・直近 recentBars 本）。
@@ -32,10 +61,10 @@ export class TimeframeController {
   //   A方式（loadCandles 無し・SAMPLE_DATA）では candles 再取得を行わない（再集計不可）。
   async setTimeframe(timeframe) {
     const host = this._host;
-    if (!timeframe || timeframe === host._timeframe) {
+    if (!timeframe || timeframe === this._timeframe) {
       return;
     }
-    host._timeframe = timeframe;
+    this._timeframe = timeframe;
     this.syncButtons();
     // ISSUE-113（ユーザー裁定）: 時間足切替では手動価格スケール（軸ドラッグ/ホイール拡大/縦パン）を
     //   自動スケールへリセットする（前の足の拡大レンジを持ち越さない）。手動スケールの解除点は
@@ -52,15 +81,16 @@ export class TimeframeController {
     // バッチ全体（candles 取得 await＋全指標再計算）を競合ガードで包む。これがないと
     //   _loadCandles の await 中は isRecomputing()=false となり、その隙にライブ tick が
     //   割り込んで二重 compute する（🟡-2）。最外で increment し finally で確実に解除する。
-    host._recomputeDepth += 1;
-    // isRecomputing() の時限判定（ISSUE-157）: バッチ開始時刻を記録する（未記録だと
-    //   時限ゲートが即座に開き、candles fetch await 中の tick スキップ保証が壊れる）。
-    host._recomputeLastStartMs = Date.now();
+    //   ISSUE-181: 深さカウンタ・開始時刻は host のフィールドではなく RecomputeGate が所有する
+    //   （enter が開始時刻の記録も行う。未記録だと時限ゲートが即座に開き、candles fetch await 中の
+    //   tick スキップ保証が壊れる）。
+    const gate = host.recomputeGate();
+    gate.enter();
     try {
       // candles を新時間足で再取得（取得のみ・描画は下のバッチへ遅延）。
       let candles = null;
-      if (typeof host._loadCandles === 'function') {
-        candles = await host._loadCandles(host._datasetRef, timeframe);
+      if (typeof this._loadCandles === 'function') {
+        candles = await this._loadCandles(host._datasetRef, timeframe);
       }
       // メイン系列差し替えを指標の再描画と同じ同期バッチへ含め、全要素を同時更新する（ISSUE-023）。
       //   取得失敗・A方式（candles 無し）は preRender=null でメイン系列を据え置く。
@@ -71,12 +101,12 @@ export class TimeframeController {
       //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
       await host.recomputeAllApplied({ preRender });
     } finally {
-      host._recomputeDepth -= 1;
+      gate.exit();
     }
     host._state.uiState = { ...host._state.uiState, timeframe };
     host._persistAll();
     // 時間足購読者へ新時間足を通知する（売買マーカーの該当時間足フィルタ等）。
-    host._timeframeObserver?.(host._timeframe);
+    this._observer?.(this._timeframe);
   }
 
   // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。
@@ -86,7 +116,7 @@ export class TimeframeController {
     const host = this._host;
     let currentLabel = null;
     for (const b of host._el?.timeframeBtns ?? []) {
-      const active = b.dataset.timeframe === host._timeframe;
+      const active = b.dataset.timeframe === this._timeframe;
       b.classList.toggle('is-active', active);
       if (active && currentLabel === null && typeof b.textContent === 'string') {
         currentLabel = b.textContent;
@@ -99,13 +129,13 @@ export class TimeframeController {
   }
 
   // 計算.時間足（params.timeframe）の per-indicator override を解決する（_gatewayAdapter が注入に使う）。
-  //   'chart'/未指定はグローバル時間足（host._timeframe）に追従、特定足（1h 等）は当該足で計算（MTF）。
+  //   'chart'/未指定はグローバル時間足（本協働子が所有）に追従、特定足（1h 等）は当該足で計算（MTF）。
   effectiveTimeframe(tfParam) {
-    return tfParam && tfParam !== 'chart' ? tfParam : this._host._timeframe;
+    return tfParam && tfParam !== 'chart' ? tfParam : this._timeframe;
   }
 
   // 直近表示本数（compute の limit・§配信設計: リサンプル＋直近 N 本）。null=制限なし（undefined 送出）。
   limit() {
-    return this._host._recentBars ?? undefined;
+    return this._recentBars ?? undefined;
   }
 }

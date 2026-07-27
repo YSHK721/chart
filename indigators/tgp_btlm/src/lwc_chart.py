@@ -19,6 +19,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
+from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
 from .bands import build_btlm_bands
 from .core import (
@@ -33,9 +34,7 @@ from .core import (
 _COLOR = "rgba(123, 104, 238, 1)"  # MediumSlateBlue
 
 
-@runtime_checkable
-class _Line(Protocol):
-    def set(self, data: pd.DataFrame) -> None: ...
+_Line = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
 
 
 @runtime_checkable

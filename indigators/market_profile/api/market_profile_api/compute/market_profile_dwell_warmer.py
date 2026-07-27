@@ -48,7 +48,9 @@ def warm_dwell_cache(
     now_val = _time.time() if now is None else float(now)
     lo = pd.Timestamp("2000-01-01") if start is None else pd.Timestamp(start)
     hi = pd.Timestamp(now_val, unit="s").normalize() if end is None else pd.Timestamp(end)
-    files = _mpd.day_parquet_files(lo, hi, symbol=symbol)
+    # ISSUE-183: 列挙ポートの契約は UNIX 秒 int（pd.Timestamp 変換は gateway 内に閉じた）。
+    #   本モジュールは CLI 由来の日付表現（str / Timestamp）を受けるため、境界でのみ秒へ落とす。
+    files = _mpd.day_parquet_files(int(lo.timestamp()), int(hi.timestamp()), symbol=symbol)
     built = skipped = 0
     # ISSUE-078: 実在 parquet（UTC 日）から被覆セッション日集合を導出する（同一セッションは 2 UTC 日に
     #   跨るため set で重複排除）。セッション完了判定は next_session_day_start（DST 23h/25h 対応）。
@@ -60,7 +62,8 @@ def warm_dwell_cache(
         # ISSUE-089: スキップは「現行版として有効なキャッシュ」のみ（旧: 存在チェックのみで
         #   版数不一致の stale ファイルもスキップしていた）。署名照合込みの実ロードで検証する。
         disk, cached_sig = _mpd._load_day_rollup(_mpd._cache_path(symbol, day_start))
-        if disk is not _mpd._CACHE_MISS and cached_sig == _mpd._day_source_signature(symbol, day_start):
+        # ISSUE-177（LSP）: 番兵は call-time に現在の Store から取得する（module 定数への import 時束縛は撤去）。
+        if disk is not _mpd.dwell_cache_miss() and cached_sig == _mpd._day_source_signature(symbol, day_start):
             skipped += 1
             continue
         _mpd._day_rollup(symbol, day_start, None, now_val)

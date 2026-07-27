@@ -14,8 +14,9 @@ Repository / tick 読込）のうち、**ディスクキャッシュ Repository*
     market_profile_dwell（集計数学 + 走査オーケストレーション） → market_profile_dwell_store（本 I/O）
     本 Store は :mod:`market_profile_dwell` を import しない（循環なし）。可変な設定（cache root /
     形式バージョン / 正準ティック列挙 day_parquet_files）は provider として注入で受け取る。これにより
-    本体側の module 変数 ``_CACHE_ROOT`` / ``_CACHE_VERSION`` / ``day_parquet_files`` の**テスト注入
-    （monkeypatch）経路を壊さず**（call-time にクロージャで読む）、Store は純 I/O に保つ。
+    設定の**テスト注入（monkeypatch）経路を壊さず**（call-time にクロージャで読む）、Store は純 I/O に
+    保つ。ISSUE-183 item5: cache root / 形式バージョンの単一情報源は
+    :mod:`market_profile_api.gateway.cache_settings`（``DWELL_CACHE_ROOT`` / ``DWELL_CACHE_VERSION``）。
 
 byte 不変（回帰ゼロ）: 保存形式（version/grid_w/empty/sig メタ + kmin + 可変長 dwell/cnt）・
 tempfile→os.replace の原子的確定・fail-safe（破損/不整合は CACHE_MISS）は抽出前と同一挙動。
@@ -29,19 +30,26 @@ from pathlib import Path as _Path
 from typing import Any, Callable
 
 import numpy as np
-import pandas as pd
+# ISSUE-183: pandas 依存は撤去（日始端算出は gateway/day_bounds の整数演算へ移行）。
+
+from market_profile_api.cache_layout import CacheLayout
+# ISSUE-178: 層間 DTO（不変）。gateway（外側）が compute（内側）の DTO を import する＝依存方向は内向き。
+from market_profile_api.compute.rollup_dto import DayRollup
+# ISSUE-183: 日始端の算出は gateway 内の単一定義（``pd.Timestamp(...).normalize()`` と同値）。
+from market_profile_api.gateway.day_bounds import next_utc_day_start, utc_day_start
 
 
 class DwellRollupStore:
     """dwell 日別ロールアップのディスク永続キャッシュ Repository（純 I/O・fail-safe）。
 
-    保存単位は完了日 1 日ぶんの固定グリッドロールアップ ``{kmin:int, dwell:float[], cnt:float[]}``
+    保存単位は完了日 1 日ぶんの固定グリッドロールアップ :class:`DayRollup`（不変 DTO・ISSUE-178）
     または ``None``（実データ無しの完了日）。読込は ``(status, sig)`` を返し、``status`` は
-    :attr:`CACHE_MISS`（要再計算） / ``None``（実データ無し完了日） / ``dict``（ロールアップ）。
+    :attr:`CACHE_MISS`（要再計算） / ``None``（実データ無し完了日） / :class:`DayRollup`。
 
     Args:
         root_provider: 注入 cache root を返す（``None`` で default_root_provider にフォールバック）。
-            本体側は ``lambda: market_profile_dwell._CACHE_ROOT`` を渡し、テストの tmp 注入を温存する。
+            既定結線は ``lambda: cache_settings.DWELL_CACHE_ROOT``（ISSUE-183 item5）。テストは
+            ``cache_settings.DWELL_CACHE_ROOT`` を差し替えることで tmp 隔離する。
         default_root_provider: 既定 cache root（``DATA_DIR/cache/market_profile_dwell``）を返す。
         grid_w: 固定価格グリッド幅(pt)。パスキー ``g<grid_w>`` と読込時の grid 整合検証に使う。
         cache_version_provider: 形式バージョンを返す（call-time 読取＝バージョン切替テストを温存）。
@@ -50,6 +58,10 @@ class DwellRollupStore:
 
     #: ディスク未ヒット/破損/不整合の番兵（``None``＝「実データ無しの完了日」と区別する）。
     CACHE_MISS = object()
+
+    #: :meth:`_relative_parts` のうち世代 dir に当たる位置（0 起点）。GC の掃除単位＝版数 dir。
+    #: ISSUE-172: 記述子（:meth:`layout`）はこの位置から導出し、書込パスと同一式を共有する。
+    GEN_PART_INDEX = 1
 
     def __init__(
         self,
@@ -76,6 +88,19 @@ class DwellRollupStore:
             return _Path(override)
         return self._default_root_provider()
 
+    def _relative_parts(self, symbol: str, day_start: int) -> "tuple[str, ...]":
+        """cache root からの相対パス segment 列 ``(<symbol>, v<version>, g<grid_w>, <day>.npz)``。
+
+        ISSUE-172: 配置の**唯一の定義**。:meth:`cache_path`（書込・読込）と :meth:`layout`
+        （GC 記述子）の双方が本メソッドから導出され、二重定義によるドリフトを構造的に排除する。
+        """
+        return (
+            str(symbol),
+            f"v{self._cache_version_provider()}",
+            f"g{self._grid_w:g}",
+            f"{int(day_start)}.npz",
+        )
+
     def cache_path(self, symbol: str, day_start: int) -> _Path:
         """日別ロールアップの保存パス ``<root>/<symbol>/v<version>/g<grid_w>/<day_start>.npz``。
 
@@ -85,13 +110,28 @@ class DwellRollupStore:
         新プロセスの間で実際に発生＝byte-parity 再赤化の直接原因）。版数ディレクトリ分離で
         世代間のファイル奪い合いを構造的に排除する（旧世代 dir は GC ツールの孤児対象）。
         """
-        return (self.cache_root() / str(symbol) / f"v{self._cache_version_provider()}"
-                / f"g{self._grid_w:g}" / f"{int(day_start)}.npz")
+        return self.cache_root().joinpath(*self._relative_parts(symbol, day_start))
+
+    def layout(self) -> CacheLayout:
+        """GC 向けの現行世代記述子（:class:`CacheLayout`）を返す（ISSUE-172）。
+
+        世代 dir は :attr:`GEN_PART_INDEX` が指す版数 segment（``v<version>``）。旧レイアウト
+        （``<sym>/g<grid_w>/`` 直下）も同階層に現れるため、同一の走査で孤児として列挙される。
+        ``current`` は :meth:`_relative_parts` から導出するため、版数 bump に自動追随する。
+        """
+        gen = self._relative_parts("", 0)[self.GEN_PART_INDEX]
+        return CacheLayout(
+            name="dwell",
+            root=self.cache_root(),
+            gen_depth=self.GEN_PART_INDEX + 1,  # <sym>/<gen>
+            current=frozenset({gen}),
+            reason=f"dwell 旧世代（現行 {gen}）",
+        )
 
     # ------------------------------------------------------------------ #
     # 保存 / 読込（.npz・原子的・fail-safe）
     # ------------------------------------------------------------------ #
-    def save_day_rollup(self, path: _Path, roll: "dict | None", sig: str = "") -> None:
+    def save_day_rollup(self, path: _Path, roll: "DayRollup | None", sig: str = "") -> None:
         """ロールアップ（``None``=実データ無し完了日を含む）を ``.npz`` へ原子的に保存する。
 
         可変長 ``dwell``/``cnt`` と ``kmin`` を保持し、``version``/``grid_w``/``empty``/``sig`` メタを併記する。
@@ -111,9 +151,9 @@ class DwellRollupStore:
         else:
             arrs = dict(
                 **common, empty=np.bool_(False),
-                kmin=np.int64(int(roll["kmin"])),
-                dwell=np.asarray(roll["dwell"], dtype=float),
-                cnt=np.asarray(roll["cnt"], dtype=float),
+                kmin=np.int64(int(roll.kmin)),
+                dwell=np.asarray(roll.dwell, dtype=float),
+                cnt=np.asarray(roll.cnt, dtype=float),
             )
         fd, tmp_name = _tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp.npz")
         _os.close(fd)
@@ -130,7 +170,7 @@ class DwellRollupStore:
         """ディスクから日別ロールアップと署名を読む。未ヒット/破損/不整合は ``(CACHE_MISS, "")``。
 
         戻り値 ``(status, sig)``: status は :attr:`CACHE_MISS`（要再計算） / ``None``（実データ無しの
-        完了日） / ``dict``（ロールアップ）。sig は保存時のソースティック署名（旧形式は ""）。
+        完了日） / :class:`DayRollup`（不変 DTO）。sig は保存時のソースティック署名（旧形式は ""）。
         破損・形式/グリッド不整合は例外を握り潰し ``(CACHE_MISS, "")`` として再計算に委ねる（fail-safe）。
         """
         if not path.is_file():
@@ -144,11 +184,11 @@ class DwellRollupStore:
                 sig = str(z["sig"]) if "sig" in z.files else ""
                 if bool(z["empty"]):
                     return None, sig
-                return {
-                    "kmin": int(z["kmin"]),
-                    "dwell": np.asarray(z["dwell"], dtype=float),
-                    "cnt": np.asarray(z["cnt"], dtype=float),
-                }, sig
+                return DayRollup(
+                    kmin=int(z["kmin"]),
+                    dwell=np.asarray(z["dwell"], dtype=float),
+                    cnt=np.asarray(z["cnt"], dtype=float),
+                ), sig
         except Exception:
             return self.CACHE_MISS, ""
 
@@ -164,9 +204,10 @@ class DwellRollupStore:
         ISSUE-078: セッション日 [start, end) は UTC 暦日を 2 日跨ぐ（境界=夏21:00/冬22:00 UTC・
         DST 25h 日でも終端は翌 UTC 日内）ため、start の UTC 日と翌 UTC 日の両 parquet を署名に含める。
         """
-        day = pd.Timestamp(int(day_start), unit="s").normalize()
+        # ISSUE-183: 列挙は UNIX 秒（int・UTC 日始端）契約。旧 ``pd.Timestamp(...).normalize()`` と同値。
+        day = utc_day_start(day_start)
         parts: list[str] = []
-        for p in self._day_parquet_files(day, day + pd.Timedelta(days=1), symbol=symbol):
+        for p in self._day_parquet_files(day, next_utc_day_start(day), symbol=symbol):
             try:
                 st = p.stat()
                 parts.append(f"{p.name}:{int(st.st_mtime)}:{int(st.st_size)}")

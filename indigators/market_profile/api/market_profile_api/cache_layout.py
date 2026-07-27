@@ -10,19 +10,34 @@ dwell / zp / tf-period のディスクキャッシュは世代付き subdir（�
 キャッシュ形式（root・世代 subdir の深さ・現行世代名）を知るのは MP の責務であり、GC は「記述子に
 従って孤児 subdir を列挙する」汎用ロジックに縮退できる（SRP・境界衛生）。
 
+ISSUE-172（配置記述子の単一情報源化）: 記述子の**生成**は本モジュールではなく、書込パスを組み立てる
+当事者（:class:`~market_profile_api.gateway.dwell_rollup_store.DwellRollupStore` /
+:class:`~market_profile_api.gateway.zp_store.ZpStore` /
+:mod:`~market_profile_api.controller.tf_period_profile_controller`）が所有する。本モジュールは
+:func:`current_layouts` で各所有者の記述子を**集約するだけ**であり、パス構成の知識を持たない。
+
+    経緯: 従来は本モジュールが root / 世代深さ / 世代名を独自に書き下していたため、dwell が
+    ``<sym>/g<grid>/`` から ``<sym>/v<version>/g<grid>/``（ISSUE-089）へ移行した際に記述子だけが
+    旧形（``gen_depth=2`` + ``current={"g10"}``）に取り残された。結果、深さ 2 の実体である現行世代
+    ``v4`` が ``{"g10"}`` と照合されて**孤児判定**され、旧 ``g10`` は温存される逆転が生じていた。
+
 記述子の形（:class:`CacheLayout`）:
     - ``name``     : 表示名（"dwell" / "zp-znull" / "tf-period"）。
     - ``root``     : 走査基点（``Path`` または未解決/無効時 ``None``）。
     - ``gen_depth``: root から世代 subdir までのディレクトリ階層数（世代 dir を含む）。
     - ``current``  : 現行世代 subdir 名の集合（これ以外の同階層 dir が孤児候補）。
     - ``reason``   : 孤児として列挙する際の理由文。
+
+不変条件（所有者側で担保・``tests/test_cache_layout.py`` が実書込パスと突き合わせて検証する）:
+    書込パスの root 相対 parts について ``parts[gen_depth - 1] in current`` が常に成り立つ
+    （＝GC は現に書き込んでいるディレクトリを孤児として列挙しない）。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -36,51 +51,37 @@ class CacheLayout:
     reason: str
 
 
+@runtime_checkable
+class CacheLayoutSource(Protocol):
+    """自身のディスク配置から世代記述子を導出できる当事者（GC 向けの最小境界）。
+
+    永続化 Store の本務ポート（:mod:`market_profile_api.compute.store_port`）とは分離する
+    （ISP: Store 実装者に GC 都合のメソッドを強制しない）。
+    """
+
+    def layout(self) -> CacheLayout:
+        """自身の書込パス構成から導いた現行世代記述子を返す。"""
+        ...
+
+
 def current_layouts() -> "list[dict[str, Any]]":
     """現行コードが参照する MP ディスクキャッシュ世代の記述子一覧を返す。
 
     各要素は :class:`CacheLayout` を dict 化したもの（``name`` / ``root`` / ``gen_depth`` /
-    ``current`` / ``reason``）。``root`` は :class:`Path` または ``None``（未設定/無効）。世代名は
-    実コード定数（``GRID_W`` / ``ZP_BP`` / ``_TFP_CACHE_VERSION``）から導出するため、定数 bump に
-    追随する（GC 側のハードコードを排除）。
+    ``current`` / ``reason``）。``root`` は :class:`Path` または ``None``（未設定/無効）。
+
+    ISSUE-172: 記述子の中身は本関数では組み立てず、書込パスの所有者
+    （dwell Store / zp Store / tf-period controller）の ``layout()`` をそのまま集約する。
+    世代名・世代深さは各所有者が自身のパス構成式から導出するため、パス変更・定数 bump の双方に
+    構造的に追随する（本関数側のハードコードは 0）。
     """
     # 遅延 import（GC 実行時のみ・重い controller import 連鎖を module import 時に走らせない）。
-    from market_profile_api.compute import market_profile_dwell as _mpd
-    from market_profile_api.compute import market_profile_zp as _zp
+    from market_profile_api.compute.store_port import dwell_store as _dwell_store
+    from market_profile_api.compute.store_port import zp_store as _zp_store
     from market_profile_api.controller import tf_period_profile_controller as _tfp
 
-    layouts: "list[CacheLayout]" = []
-
-    # dwell: <root>/<sym>/g<GRID_W> のうち現行 g{GRID_W:g} 以外の g* が孤児（npz メタ版はファイル内）。
-    dwell_root = Path(_mpd._cache_root())
-    layouts.append(CacheLayout(
-        name="dwell",
-        root=dwell_root,
-        gen_depth=2,  # <sym>/<gen>
-        current=frozenset({f"g{_mpd.GRID_W:g}"}),
-        reason=f"dwell 旧グリッド世代（現行 g{_mpd.GRID_W:g}）",
-    ))
-
-    # zp znull: <root>/znull/<sym>/b<ZP_BP> のうち現行 b{ZP_BP:g} 以外が孤児（mgrid は格子非依存＝温存）。
-    zn_root = Path(_zp.zp_store().cache_root()) / "znull"  # ISSUE-137: StorePort 経由（旧 _zp._STORE）。
-    layouts.append(CacheLayout(
-        name="zp-znull",
-        root=zn_root,
-        gen_depth=2,  # <sym>/<gen>
-        current=frozenset({f"b{_zp.ZP_BP:g}"}),
-        reason=f"zp znull 旧格子世代（現行 b{_zp.ZP_BP:g}）",
-    ))
-
-    # tf-period: <root>/<sym>/<tf>/s<gen> のうち現行 {count=s{_TFP_CACHE_VERSION}, zp=s3} 以外が孤児。
-    tfp_root = _tfp._tfp_disk_root()
-    tfp_current = frozenset({f"s{_tfp._TFP_CACHE_VERSION}", "s3"})
-    layouts.append(CacheLayout(
-        name="tf-period",
-        root=Path(tfp_root) if tfp_root else None,
-        gen_depth=3,  # <sym>/<tf>/<gen>
-        current=tfp_current,
-        reason=f"tf-period 旧世代（現行 count=s{_tfp._TFP_CACHE_VERSION} / zp=s3）",
-    ))
+    sources: "list[CacheLayoutSource]" = [_dwell_store(), _zp_store(), _tfp]
+    layouts: "list[CacheLayout]" = [src.layout() for src in sources]
 
     return [
         {

@@ -17,12 +17,9 @@ import pytest
 
 # src（profit_oscillator 配下）
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-# 複製元（profit_arctan / profit_rsi / profit_mfi / profit_stc）と突き合わせるため indicators を path に追加
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src import core  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root → common
 from common import AppliedPrice, applied_price  # noqa: E402
 
 # 複製元モジュール（数値一致の検証用）。各 core.py をファイルパスから一意名でロードし、

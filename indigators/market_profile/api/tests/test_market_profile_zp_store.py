@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
 from market_profile_api.compute import market_profile_zp as zp
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
 # ISSUE-078: 合成日列の起点をセッション日始端へ整列（2023-12-31 22:00 UTC＝2024-01-01 セッション始端・
 #   冬時間で 2024-03 の DST 切替前区間のみ使用＝全日 86400 秒で next_session_day_start と整合）。
@@ -44,7 +48,7 @@ def zp_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(zp._mpd, "_load_window_ticks", fake_load)
     monkeypatch.setattr(zp, "day_parquet_files", lambda *a, **k: [])
-    monkeypatch.setattr(zp, "_ZP_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(_mp_cache_settings, "ZP_CACHE_ROOT", tmp_path)
     monkeypatch.setattr(zp, "NULL_HIST_DAYS", 20)
     monkeypatch.setattr(zp, "NULL_MIN_DAYS", 10)
     monkeypatch.setattr(zp, "M_REPS_DAY", 300)
@@ -62,8 +66,10 @@ def test_completed_day_persists_and_disk_hit(zp_env):
     now = _day(40)  # day30 は完了日・履歴 20 日は十分
     roll1 = zp._zp_day_rollup("SYN", _day(30), now)
     assert roll1 is not None
-    assert set(roll1) == {"kmin", "obs", "mean", "var"}
-    assert roll1["obs"].sum() == zp.G_MINUTES  # 完了日は全分カウント
+    # ISSUE-178: 層間 DTO（frozen dataclass）。フィールド構成は生 dict のキー集合と同一。
+    assert {f.name for f in dataclasses.fields(roll1)} == {"kmin", "obs", "mean", "var"}
+    assert not roll1.obs.flags.writeable  # DTO は不変（PORTING_GUIDE §2）
+    assert roll1.obs.sum() == zp.G_MINUTES  # 完了日は全分カウント
     path = zp.zp_store().null_path("SYN", _day(30))
     assert path.is_file()
     # メモリ消去 → ディスクヒットで同値（tick 再読込は mgrid 不要のため増えない）
@@ -71,8 +77,8 @@ def test_completed_day_persists_and_disk_hit(zp_env):
     before = zp_env["load"]
     roll2 = zp._zp_day_rollup("SYN", _day(30), now)
     assert zp_env["load"] == before
-    assert np.array_equal(roll1["obs"], roll2["obs"])
-    assert np.array_equal(roll1["mean"], roll2["mean"])
+    assert np.array_equal(roll1.obs, roll2.obs)
+    assert np.array_equal(roll1.mean, roll2.mean)
 
 
 def test_today_not_persisted_and_column_limited(zp_env):
@@ -81,8 +87,8 @@ def test_today_not_persisted_and_column_limited(zp_env):
     roll = zp._zp_day_rollup("SYN", day, now)
     assert roll is not None
     assert not zp.zp_store().null_path("SYN", day).is_file()  # 当日は永続化しない
-    assert roll["obs"].sum() <= 121  # 経過分までに限定（ffill 幻影滞在を数えない）
-    assert roll["mean"].sum() <= 121 + 1e-9  # 帰無も同一カラム範囲
+    assert roll.obs.sum() <= 121  # 経過分までに限定（ffill 幻影滞在を数えない）
+    assert roll.mean.sum() <= 121 + 1e-9  # 帰無も同一カラム範囲
 
 
 def test_insufficient_history_gives_none(zp_env, monkeypatch):
@@ -97,9 +103,9 @@ def test_version_mismatch_forces_recompute(zp_env, monkeypatch):
     now = _day(40)
     zp._zp_day_rollup("SYN", _day(30), now)
     zp._reset_caches()
-    monkeypatch.setattr(zp, "_ZP_CACHE_VERSION", 99)
+    monkeypatch.setattr(_mp_cache_settings, "ZP_CACHE_VERSION", 99)
     disk, _sig = zp.zp_store().load_null(zp.zp_store().null_path("SYN", _day(30)))
-    assert disk is zp._CACHE_MISS  # 版数不一致は fail-safe で MISS
+    assert disk is zp.zp_cache_miss()  # 版数不一致は fail-safe で MISS
 
 
 def test_compute_zp_profile_schema_and_sessions(zp_env):
@@ -137,7 +143,7 @@ def test_partial_rollup_columns(zp_env):
     hi = day + (zp.SESSION_OPEN_MOD + 300) * 60
     roll = zp._zp_partial_rollup("SYN", lo, hi, now)
     assert roll is not None
-    assert roll["obs"].sum() == 200  # カラム範囲 [100, 300) の 200 分ぶん
+    assert roll.obs.sum() == 200  # カラム範囲 [100, 300) の 200 分ぶん
 
 
 def test_window_aggregation_identity(zp_env):
@@ -154,11 +160,11 @@ def test_window_aggregation_identity(zp_env):
     mean = np.zeros(size)
     var = np.zeros(size)
     for r in rolls:
-        off = r["kmin"] - kw0
-        n = len(r["obs"])
-        obs[off:off + n] += r["obs"]
-        mean[off:off + n] += r["mean"]
-        var[off:off + n] += r["var"]
+        off = r.kmin - kw0
+        n = len(r.obs)
+        obs[off:off + n] += r.obs
+        mean[off:off + n] += r.mean
+        var[off:off + n] += r.var
     with np.errstate(invalid="ignore", divide="ignore"):
         z_manual = (obs - mean) / np.sqrt(var)
     z_manual[~np.isfinite(z_manual)] = 0.0
@@ -175,7 +181,8 @@ def test_window_aggregation_identity(zp_env):
 def test_day_source_signature_covers_two_utc_days(tmp_path):
     """ISSUE-078: セッション日は UTC 2 日を跨ぐため署名も両日 parquet を覆う。"""
     import pandas as pd
-    from market_profile_api.compute.market_profile_zp_store import ZpStore
+    # ISSUE-183: 実体（gateway）を直参照する（旧 compute 側再エクスポートシム経由を撤去）。
+    from market_profile_api.gateway.zp_store import ZpStore
     calls = []
 
     def dpf(lo, hi, symbol=None):
@@ -192,5 +199,6 @@ def test_day_source_signature_covers_two_utc_days(tmp_path):
         day_parquet_files=dpf,
     )
     store.day_source_signature("JP225", 1783890000)  # 2026-07-12 21:00 UTC（夏セッション始端）。
-    assert calls and calls[0][0] == pd.Timestamp("2026-07-12")
-    assert calls[0][1] == pd.Timestamp("2026-07-13")
+    # ISSUE-183: 列挙契約は UNIX 秒 int（旧 pd.Timestamp 契約と同値の日始端）。
+    assert calls and calls[0][0] == int(pd.Timestamp("2026-07-12").timestamp())
+    assert calls[0][1] == int(pd.Timestamp("2026-07-13").timestamp())

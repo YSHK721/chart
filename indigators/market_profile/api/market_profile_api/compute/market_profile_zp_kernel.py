@@ -44,6 +44,24 @@ def day_seed(symbol: str, day_start: int) -> int:
     return _zlib.crc32(f"zp:{symbol}:{int(day_start)}".encode())
 
 
+def asof_col_hi(now: float, day_start: int) -> int:
+    """as-of 経過分クランプ: 未完了セッションで評価してよいカラム上限（半開・排他）を返す。
+
+    ISSUE-179（項目 A）: 同一式が 4 箇所（``_zp_day_rollup`` / ``_zp_partial_rollup`` /
+    ``live_zp_day_roll`` / ``day_columns_zp_compute``）へ複製されていたため本関数へ 1 本化した。
+    規則の所有層を kernel としたのは、式が参照する ``SESSION_OPEN_MOD`` / ``G_MINUTES`` の
+    単一定義が本モジュールにあり、式自体が I/O・キャッシュ非依存の純関数だからである。
+
+    規約: セッション窓 index 0 は ``SESSION_OPEN_MOD`` 分。``now`` がその分の途中でも
+    「その 1 分は観測対象」として +1 する（未完了分の ffill 幻影滞在を数えないための上限）。
+    下限 1（開場前・日始端より前でも最初の 1 分は評価対象＝呼出側の既存規約。未来セッションの
+    混入は呼出側の as-of ガードが遮断する: ``market_profile_zp._zp_day_rollup`` の ISSUE-128）、
+    上限 ``G_MINUTES``（セッション窓長で飽和）。
+    """
+    elapsed = int((now - int(day_start)) // 60) - SESSION_OPEN_MOD + 1
+    return max(1, min(G_MINUTES, elapsed))
+
+
 # --------------------------------------------------------------------------- #
 # 分グリッド（ティック → 分末 mid ffill）
 # --------------------------------------------------------------------------- #

@@ -21,20 +21,22 @@ import {
   resetToDefaults,
 } from '../../usecase/form_model.js';
 import { seriesKind } from '../../domain/series_kind.js';
+// control_type → コントロール生成器のテーブル（ISSUE-181・OCP）。生成手続き本体と
+//   ラベル化/色変換の純関数は adapter/front/property_control_builders.js が所有する。
+import {
+  buildControl,
+  buildSegmented,
+  humanizeKey,
+  toHex,
+} from './property_control_builders.js';
+
+// toHex は本モジュールの公開面として維持する（既存の import 元を変えない・ISSUE-181）。
+export { toHex };
 
 // A 方式（埋め込み事前計算）で「variant 以外のパラメータが描画へ反映されない」ことを
 // UI に明示する注記（§9.3・H-1・サイレント不一致を作らない）。
 const A_METHOD_NOTE =
   'この値の反映は B 方式（ライブ API）で有効です。現プロトタイプ（A 方式）では variant 以外の値の変更は描画へ未反映です。';
-
-// i18n 解決器を持たないプロトタイプ向けの簡易ラベル化（キー末尾を表示）。
-function humanizeKey(key) {
-  if (key === null || key === undefined) {
-    return '';
-  }
-  const s = String(key);
-  return s.includes('.') ? s.split('.').pop() : s;
-}
 
 export class PropertiesDialog {
   // { document, def, instance, onApply, onCancel }
@@ -84,6 +86,16 @@ export class PropertiesDialog {
     this._okBtn = null;
     this._drag = null;
     this._offset = { x: 0, y: 0 };
+
+    // コントロール生成器との結合面（ControlContext）。値の所有者は本クラス（_values）のまま。
+    //   getValue/setValue は呼び出し時解決の遅延アクセサ＝デフォルト復元で _values を
+    //   差し替えても従来どおり最新の入れ物を参照する（挙動不変）。
+    this._controlCtx = {
+      doc: this._doc,
+      getValue: (name) => this._values[name],
+      setValue: (name, value) => { this._values[name] = value; },
+      onChange: () => this._onChange(),
+    };
   }
 
   // ダイアログ DOM を生成し document.body へ追加・配線する（§2・§7）。
@@ -319,295 +331,14 @@ export class PropertiesDialog {
     return row;
   }
 
-  // control_type 別レンダリング（§3.1）。
+  // control_type 別レンダリング（§3.1）。生成器テーブルへ委譲する（switch 廃止・OCP・ISSUE-181）。
   _buildControl(field) {
-    switch (field.controlType) {
-      case 'number':
-        return this._buildNumber(field);
-      case 'select':
-        return this._buildSelect(field);
-      case 'segmented':
-        return this._buildSegmented(field);
-      case 'checkbox':
-        return this._buildCheckbox(field);
-      case 'list':
-        return this._buildFloatList(field);
-      case 'multiselect':
-        return this._buildMultiselect(field);
-      case 'color':
-        return this._buildColor(field);
-      case 'window_compound':
-        return this._buildWindowCompound(field);
-      default:
-        return this._buildText(field);
-    }
+    return buildControl(field, this._controlCtx);
   }
 
-  _buildNumber(field) {
-    const doc = this._doc;
-    const input = doc.createElement('input');
-    input.type = 'number';
-    input.className = 'prop-input prop-input-number';
-    input.dataset.propName = field.name;
-    if (field.step !== null) input.step = String(field.step);
-    if (field.min !== null) input.min = String(field.min);
-    if (field.max !== null) input.max = String(field.max);
-    input.value = field.value === null || field.value === undefined ? '' : String(field.value);
-    input.addEventListener('input', () => {
-      const raw = input.value;
-      this._values[field.name] = raw === '' ? null : Number(raw);
-      this._onChange();
-    });
-    return input;
-  }
-
-  _buildSelect(field) {
-    const doc = this._doc;
-    const sel = doc.createElement('select');
-    sel.className = 'prop-input prop-input-select';
-    sel.dataset.propName = field.name;
-    for (const v of field.enumValues ?? []) {
-      const opt = doc.createElement('option');
-      opt.value = String(v);
-      // enumLabels（日本語表示マップ）優先。未指定はキー末尾を表示（従来挙動）。
-      opt.textContent = (field.enumLabels && field.enumLabels[v] != null)
-        ? field.enumLabels[v]
-        : humanizeKey(String(v));
-      if (v === field.value) opt.selected = true;
-      sel.append(opt);
-    }
-    sel.addEventListener('change', () => {
-      // enum 値は raw（文字列/数値）。数値 enum は元型へ復元。
-      const picked = (field.enumValues ?? []).find((v) => String(v) === sel.value);
-      this._values[field.name] = picked !== undefined ? picked : sel.value;
-      this._onChange();
-    });
-    return sel;
-  }
-
-  // segmented: ENUM を「横並びセグメントボタン群」で描く（ドロップダウンでなくトグル・§3.1 拡張）。
-  //   試作 prototype_260630-01 の解像度トグル（ビン ⇄ レンジ）移植。各 option をボタン化し、
-  //   選択中に is-active を付与。クリックで this._values[name] を更新後、既存 _onChange() を呼ぶ
-  //   （→ _refreshVisible/_revalidate が走り bins/range 行が即出没する）。
+  // segmented 単体の生成（既存テストが直接叩く接合面のため、委譲メソッドとして残す）。
   _buildSegmented(field) {
-    const doc = this._doc;
-    const wrap = doc.createElement('div');
-    wrap.className = 'prop-input prop-segmented';
-    wrap.dataset.propName = field.name;
-    const options = field.enumValues ?? [];
-    const buttons = [];
-    const setActive = (val) => {
-      for (const b of buttons) {
-        b.classList.toggle('is-active', String(b.dataset.segValue) === String(val));
-      }
-    };
-    for (const v of options) {
-      const btn = doc.createElement('button');
-      btn.type = 'button';
-      btn.className = 'prop-seg-btn';
-      btn.dataset.segValue = String(v);
-      // enumLabels（日本語表示マップ）優先。未指定はキー末尾を表示（select と同挙動）。
-      btn.textContent = (field.enumLabels && field.enumLabels[v] != null)
-        ? field.enumLabels[v]
-        : humanizeKey(String(v));
-      btn.addEventListener('click', () => {
-        // v は走査中の option 値そのもの（enum の raw な元型＝文字列/数値を保持）。
-        //   options.find で自分自身を引き直す必要はないため直接代入する。
-        this._values[field.name] = v;
-        setActive(this._values[field.name]);
-        this._onChange();
-      });
-      buttons.push(btn);
-      wrap.append(btn);
-    }
-    setActive(field.value);
-    return wrap;
-  }
-
-  _buildCheckbox(field) {
-    const doc = this._doc;
-    const input = doc.createElement('input');
-    input.type = 'checkbox';
-    input.className = 'prop-input prop-input-checkbox';
-    input.dataset.propName = field.name;
-    input.checked = Boolean(field.value);
-    input.addEventListener('change', () => {
-      this._values[field.name] = input.checked;
-      this._onChange();
-    });
-    return input;
-  }
-
-  _buildText(field) {
-    const doc = this._doc;
-    const input = doc.createElement('input');
-    input.type = 'text';
-    input.className = 'prop-input prop-input-text';
-    input.dataset.propName = field.name;
-    input.value = field.value === null || field.value === undefined ? '' : String(field.value);
-    input.addEventListener('input', () => {
-      this._values[field.name] = input.value === '' ? null : input.value;
-      this._onChange();
-    });
-    return input;
-  }
-
-  _buildColor(field) {
-    const doc = this._doc;
-    const input = doc.createElement('input');
-    input.type = 'color';
-    input.className = 'prop-input prop-input-color';
-    input.dataset.propName = field.name;
-    // <input type=color> は #rrggbb のみ。rgba 既定はそのまま値として保持し、
-    // ピッカーには近似 hex を表示する（プロトタイプ・スタイルタブは最小可）。
-    input.value = toHex(field.value);
-    input.addEventListener('input', () => {
-      this._values[field.name] = input.value;
-      this._onChange();
-    });
-    return input;
-  }
-
-  // FLOAT_LIST（probabilities）リスト編集（§3.2）。各要素=数値入力＋削除、末尾に追加。
-  _buildFloatList(field) {
-    const doc = this._doc;
-    const wrap = doc.createElement('div');
-    wrap.className = 'prop-input prop-list';
-    wrap.dataset.propName = field.name;
-
-    const list = Array.isArray(field.value) ? field.value.slice() : [];
-    this._values[field.name] = list;
-
-    const rows = doc.createElement('div');
-    rows.className = 'prop-list-rows';
-
-    const renderRows = () => {
-      rows.innerHTML = '';
-      const cur = this._values[field.name];
-      cur.forEach((val, idx) => {
-        const r = doc.createElement('div');
-        r.className = 'prop-list-row';
-        const num = doc.createElement('input');
-        num.type = 'number';
-        num.step = 'any';
-        num.className = 'prop-input prop-input-number';
-        num.value = String(val);
-        num.addEventListener('input', () => {
-          const arr = this._values[field.name].slice();
-          arr[idx] = num.value === '' ? null : Number(num.value);
-          this._values[field.name] = arr;
-          this._onChange();
-        });
-        const del = doc.createElement('button');
-        del.type = 'button';
-        del.className = 'prop-list-del';
-        del.textContent = '−';
-        del.addEventListener('click', () => {
-          const arr = this._values[field.name].slice();
-          // 空リスト禁止（最低 1 要素・§3.2）。
-          if (arr.length <= 1) return;
-          arr.splice(idx, 1);
-          this._values[field.name] = arr;
-          renderRows();
-          this._onChange();
-        });
-        r.append(num, del);
-        rows.append(r);
-      });
-    };
-    renderRows();
-
-    const add = doc.createElement('button');
-    add.type = 'button';
-    add.className = 'prop-list-add';
-    add.textContent = '＋追加';
-    add.addEventListener('click', () => {
-      const arr = this._values[field.name].slice();
-      arr.push(0.95); // 既定追加値（§3.2）。
-      this._values[field.name] = arr;
-      renderRows();
-      this._onChange();
-    });
-
-    wrap.append(rows, add);
-    return wrap;
-  }
-
-  // ENUM_LIST（buckets）マルチセレクト（候補からチェックで複数選択・§3.1）。
-  _buildMultiselect(field) {
-    const doc = this._doc;
-    const wrap = doc.createElement('div');
-    wrap.className = 'prop-input prop-multiselect';
-    wrap.dataset.propName = field.name;
-    const selected = new Set(Array.isArray(field.value) ? field.value : []);
-    this._values[field.name] = [...selected];
-
-    for (const opt of field.enumValues ?? []) {
-      const chip = doc.createElement('label');
-      chip.className = 'prop-chip';
-      const cb = doc.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = selected.has(opt);
-      cb.addEventListener('change', () => {
-        if (cb.checked) selected.add(opt);
-        else selected.delete(opt);
-        // 元の候補順を保持して配列化。
-        this._values[field.name] = (field.enumValues ?? []).filter((v) => selected.has(v));
-        this._onChange();
-      });
-      chip.append(cb, doc.createTextNode(' ' + humanizeKey(String(opt))));
-      wrap.append(chip);
-    }
-    return wrap;
-  }
-
-  // window（Union[str,int]）複合: ラジオ expanding/固定窓 ＋ 数値（§4.3.1）。
-  _buildWindowCompound(field) {
-    const doc = this._doc;
-    const wrap = doc.createElement('div');
-    wrap.className = 'prop-input prop-window-compound';
-    wrap.dataset.propName = field.name;
-
-    const isExpanding = field.value === 'expanding' || field.value === null || field.value === undefined;
-
-    const radioExp = doc.createElement('label');
-    const rExp = doc.createElement('input');
-    rExp.type = 'radio';
-    rExp.name = `prop-window-${field.name}`;
-    rExp.checked = isExpanding;
-    radioExp.append(rExp, doc.createTextNode(' 展開(expanding)'));
-
-    const radioFixed = doc.createElement('label');
-    const rFixed = doc.createElement('input');
-    rFixed.type = 'radio';
-    rFixed.name = `prop-window-${field.name}`;
-    rFixed.checked = !isExpanding;
-    radioFixed.append(rFixed, doc.createTextNode(' 固定窓'));
-
-    const num = doc.createElement('input');
-    num.type = 'number';
-    num.min = '1';
-    num.step = '1';
-    num.className = 'prop-input prop-input-number';
-    num.disabled = isExpanding;
-    num.value = isExpanding ? '' : String(field.value);
-
-    const sync = () => {
-      if (rExp.checked) {
-        num.disabled = true;
-        this._values[field.name] = 'expanding';
-      } else {
-        num.disabled = false;
-        this._values[field.name] = num.value === '' ? null : Number(num.value);
-      }
-      this._onChange();
-    };
-    rExp.addEventListener('change', sync);
-    rFixed.addEventListener('change', sync);
-    num.addEventListener('input', sync);
-
-    wrap.append(radioExp, radioFixed, num);
-    return wrap;
+    return buildSegmented(field, this._controlCtx);
   }
 
   // ---- スタイル/可視性の行モデル（ISSUE-109）---------------------------------
@@ -1036,22 +767,4 @@ export class PropertiesDialog {
     };
     this._panel.style.transform = `translate(${this._offset.x}px, ${this._offset.y}px)`;
   }
-}
-
-// rgba(...)/#rgb/#rrggbb を <input type=color> 用の #rrggbb へ近似変換する。
-// 解析不能な値は安全な既定（#2962ff）を返す（プロトタイプ・スタイルタブ最小可）。
-export function toHex(value) {
-  if (typeof value !== 'string') return '#2962ff';
-  const v = value.trim();
-  if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
-  if (/^#[0-9a-fA-F]{3}$/.test(v)) {
-    return ('#' + v.slice(1).split('').map((c) => c + c).join('')).toLowerCase();
-  }
-  const m = v.match(/^rgba?\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)/i);
-  if (m) {
-    const toByte = (n) => Math.max(0, Math.min(255, Math.round(Number(n))));
-    const hex = (n) => toByte(n).toString(16).padStart(2, '0');
-    return ('#' + hex(m[1]) + hex(m[2]) + hex(m[3])).toLowerCase();
-  }
-  return '#2962ff';
 }

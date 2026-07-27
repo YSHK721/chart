@@ -8,10 +8,26 @@ df 以降キーワード専用（§5.5.4.1）。fitter enum 文字列 → Fitter
 3 指標はいずれも top-level パッケージ名 ``src`` を使うため、``import src`` では同名衝突し
 1 つしか読めない。本モジュールは各指標 src を **ファイルパスから一意なパッケージ名で
 読み込む**（既存 src は read-only・改変しない）。描画ライブラリは import しない。
+
+指標を 1 件追加する手順（ISSUE-180・back 側）:
+    1. ``_TABLE`` へ ``(compute_id, variant)`` のエントリを 1 件足す。呼出規約（loader /
+       output_kind / kind）に加え、必要なら thread_affinity / time_required / latest_meta /
+       preprocess を、そして param 既定値 ``params_defaults`` を **同一エントリ内に** 宣言する。
+       variant を複数持つ指標は先頭 variant にのみ ``params_defaults`` を書く。
+    2. back 側の改変はこれで完了する。``catalog_schema.PARAM_DEFAULTS``（``GET /catalog`` の
+       配信値）・``requires_time`` ・``requires_dedicated_worker`` ・``latest_meta`` はいずれも
+       本エントリからの導出であり、追加登録は不要（宣言漏れは
+       ``indicator_param_defaults`` が ValueError で、テストが構造検査で検出する）。
+    3. 既定値を追加・変更したときは front 同期契約 ``api/tests/golden/catalog_defaults.json``
+       を更新する（back 配信値 == front 静的フォールバック値のオラクル）。
+    4. front（``web/js/usecase/catalog.js`` の IndicatorDef、足内更新対象なら
+       ``intrabar_forming_ids.js``）は別アクターの所有物であり、本テーブルからは導出されない
+       （``GET /catalog`` は param 既定値のみを配信する契約のため）。front 側の宣言は別途必要。
 """
 
 from __future__ import annotations
 
+import copy
 import importlib
 import inspect
 import sys
@@ -27,6 +43,8 @@ from adapter.compute.module_loader import load_package
 #   を解決できるよう、ワークスペース根（このファイル: api/adapter/compute/ → parents[5]）を
 #   sys.path に追加する（ロード境界で一括設定し、各 src に sys.path ハックを散らさない）。
 # ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
+# ISSUE-174: 兄弟パッケージ層（``moving_averages`` / ``mql_builtins`` / ``profit_system``）の解決点は
+#   本ロード境界（_ensure_indigators_on_path）に一本化した。各 src の ``sys.path.insert`` は撤去済み。
 
 
 def _accepted_kwargs(callable_: Callable, params: dict[str, Any]) -> dict[str, Any]:
@@ -147,57 +165,35 @@ def _src_module_name(indicator: str) -> str:
     return f"{_SRC_MODULE_PREFIX}{indicator}{_SRC_MODULE_SUFFIX}"
 
 
+def _ensure_indigators_on_path() -> None:
+    """``indigators/`` を sys.path へ 1 回だけ登録する（ISSUE-174・冪等）。
+
+    指標 src は兄弟パッケージ（``moving_averages`` / ``mql_builtins`` / ``profit_system``）を
+    top-level 名で import する。その解決点を **ロード境界であるここ 1 か所**に置き、各 src の
+    最内層に散っていた ``sys.path.insert``（13 本）を撤去する。既に登録済みなら何もしない。
+    """
+    path = str(_INDIGATORS)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+
 def _load_src_package(indicator: str) -> ModuleType:
     """指標 src パッケージを一意なパッケージ名で読み込む（同名 ``src`` 衝突を回避）。
 
     importlib 機構は ``module_loader.load_package`` に集約（重複解消・振る舞い不変）。
     一意名 ``_<indicator>_src`` を与え、相対 import（``from .bands import``）と
     sys.modules キャッシュは load_package が担保する。
+
+    exec 前に ``indigators/`` を sys.path へ載せる（src 内の兄弟パッケージ絶対 import の解決点）。
     """
+    _ensure_indigators_on_path()
     return load_package(_src_module_name(indicator), _INDIGATORS / indicator / "src")
 
 
-# tgp::btlm は MCMC（非決定的）。seed 未設定だと再当てはめ（ライブの毎分再計算）ごとに
-# 結果が揺れ、トレンド線/帯が更新間で動いて見える。固定 seed で「同じ窓→毎回同一結果」にし、
-# ライブ表示を静的表示と一致させる（rbridge は fit_predict ごとに set.seed する＝各 fit が決定的）。
-# 値は任意だが固定であることが重要（再現性確保）。
-_TGP_SEED = 20260101
-
-# MCMC サンプル量プリセット（BTE=Burn-in, Total, Every）。Total を増やすほど posterior が
-# 収束し分位帯が安定するが計算は重い（おおよそ Total 比例）。catalog.js の mcmc_samples と対応。
-# ⚠️ 運用注意（性能）: server は R スレッド非安全のため単一スレッド（framework/server.py）。
-#   tgp 計算中は全リクエストがブロックされる。ライブは 60 秒間隔で再計算するため、"max"（Total
-#   4倍）は実 R btlm が 60 秒を超えると当該指標がライブ中ほとんど更新されない場合がある。
-#   重い設定は静的分析向け。既定 standard は従来どおり軽量（後方互換）。
-_BTE_PRESETS: dict[str, tuple[int, int, int]] = {
-    "standard": (2000, 15000, 2),  # 既定（保持サンプル ~6500）
-    "high": (4000, 30000, 2),      # ~13000・約2倍重い
-    "max": (8000, 60000, 2),       # ~26000・約4倍重い（ライブ再計算で server をブロックし得る）
-}
-# 既定サンプル。param 既定値の単一情報源（catalog_schema.PARAM_DEFAULTS）の tgp_btlm
-# mcmc_samples 既定から解決する（ISSUE-092 ③・back 内二重定義の解消）。front（catalog.js）とは
-# catalog_defaults.json 契約経由で back/front 双方のテストが一致を固定する。
-from adapter.compute import catalog_schema  # noqa: E402（single source 参照・循環なし）
-
-_DEFAULT_SAMPLES = catalog_schema.PARAM_DEFAULTS["tgp_btlm"]["mcmc_samples"]
-
-
-def _fitter_factory(name: str, samples: str = _DEFAULT_SAMPLES) -> Any:
-    """fitter enum 文字列 → Fitter 実体（§3.3.3 fitter_factory）。
-
-    "ols" → OlsBtlmFitter()、"tgp" → TgpBtlmFitter(seed=_TGP_SEED, bte=preset)。
-    rpy2/R 不在でも TgpBtlmFitter の実体化自体は成功し、fit_predict 時に ImportError。
-    tgp は MCMC のため seed を固定し（再現性確保）、``samples`` で BTE プリセットを選んで
-    分位帯の安定性を調整する。未知の ``samples`` は standard へフォールバック。``ols`` は
-    解析解のため ``samples`` を無視する。
-    """
-    src = _load_src_package("tgp_btlm")
-    if name == "ols":
-        return src.OlsBtlmFitter()
-    if name == "tgp":
-        bte = _BTE_PRESETS.get(samples, _BTE_PRESETS[_DEFAULT_SAMPLES])
-        return src.TgpBtlmFitter(seed=_TGP_SEED, bte=bte)
-    raise ValueError(f"未知の fitter です: {name}")
+# tgp::btlm の MCMC 設定（_TGP_SEED / _BTE_PRESETS / _DEFAULT_SAMPLES / _fitter_factory）は
+# _TABLE の直後に定義する。_DEFAULT_SAMPLES は指標記述子 _TABLE の tgp_btlm
+# ``params_defaults["mcmc_samples"]`` から導出するため、_TABLE の定義後でなければ解決できない
+# （ISSUE-180: param 既定値の単一情報源を _TABLE へ統合）。
 
 
 def _load_callable(indicator: str, attr: str) -> Callable:
@@ -261,7 +257,7 @@ def _resolve_btlm_price(df: Any, price: str) -> tuple[Any, str]:
 
 
 class _BindingSpec(TypedDict):
-    """_TABLE のエントリ形状（compute_id+variant ごとの呼出規約）。
+    """_TABLE のエントリ形状（compute_id+variant ごとの指標記述子）。
 
     loader      : add_* を遅延ロードする callable（指標 src 同名衝突を回避するため遅延）。
     output_kind : 系列 JSON 種別（"line" / "horizontal_line"・§6.3）。
@@ -274,6 +270,13 @@ class _BindingSpec(TypedDict):
                   True の指標で時刻解決に失敗した KeyError は missing_time へ翻訳される。
                   未宣言（既定 False）の指標は missing_column 扱い。adapter のハードコード集合を
                   廃し本宣言を唯一の真実源とする（time 必須指標の追加で adapter 本体を改変しない）。
+    params_defaults : param 既定値 {param_name: default}（ISSUE-180・OCP）。``GET /catalog`` が
+                  配信する既定値の単一情報源。従来 ``catalog_schema.PARAM_DEFAULTS`` に別置き
+                  されていた定義を本記述子へ集約し、catalog_schema は本宣言からの導出だけを行う
+                  （指標追加時に既定値を別ファイルへ二重登録しない）。複数 variant を持つ
+                  compute_id では **先頭 variant の 1 エントリにのみ** 宣言する（variant 間で
+                  既定値は共有＝front の 1 指標 = 1 param セットと同一契約）。二重宣言・宣言漏れは
+                  ``indicator_param_defaults`` が ValueError で検出する。
     """
 
     loader: Callable[[], Callable]
@@ -283,9 +286,16 @@ class _BindingSpec(TypedDict):
     preprocess: NotRequired[Callable[[Any, dict[str, Any]], dict[str, Any]]]
     thread_affinity: NotRequired[str]
     time_required: NotRequired[bool]
+    params_defaults: NotRequired[dict[str, Any]]
 
 
-# compute_id(+variant) → 規約。loader は import を遅延し、指標 src 同名衝突を回避する。
+# compute_id(+variant) → 指標記述子。loader は import を遅延し、指標 src 同名衝突を回避する。
+#
+# ISSUE-180（OCP）: 指標 1 件の追加で改変するファイルを減らすため、param 既定値
+# （``params_defaults``）を本テーブルへ集約した。``catalog_schema.PARAM_DEFAULTS`` は本宣言からの
+# 導出値であり、独立した定義を持たない。エントリの並び順は ``GET /catalog`` 応答の compute_id
+# 出現順そのものであるため、既存応答の byte 等価を保つ目的で従来の配信順を維持する
+# （並び替えは応答 JSON の key 順を変える＝挙動変更）。
 _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("tgp_btlm", "default"): {
         "loader": lambda: _load_callable("tgp_btlm", "add_btlm"),
@@ -296,24 +306,79 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "thread_affinity": "dedicated",
         # line 系（時系列トレンド線/帯）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
         "time_required": True,
+        "params_defaults": {
+            "fitter": "ols",
+            "price": "open",
+            "maxbars": 100,
+            "q_low": 0.05,
+            "q_high": 0.95,
+            "mcmc_samples": "standard",
+            "color": "rgba(123, 104, 238, 1)",
+        },
     },
     ("btlm_trail", "default"): {
         "loader": lambda: _load_callable("btlm_trail", "add_btlm_trail"),
         "output_kind": "line", "kind": "kw",
+        "params_defaults": {
+            "source": "close",
+            "maxbars": 100,
+            "q_low": 0.05,
+            "q_high": 0.95,
+            "band_method": "ols",
+            "empirical_n": 500,
+            "q_out": None,
+            "show_metrics": True,
+            "n_cov": 250,
+            "color": "rgba(123, 104, 238, 1)",
+        },
     },
     ("btlm_trail_marod", "default"): {
         "loader": lambda: _load_callable("btlm_trail_marod", "add_btlm_trail_marod"),
         "output_kind": "line", "kind": "kw",
+        "params_defaults": {
+            "source": "close",
+            "maxbars": 100,
+            "q_low": 0.05,
+            "q_high": 0.95,
+            "q_out": 0.99,
+            "k_events": 50,
+            "event_agg": "episode",
+            "window_n": 500,
+            "color": "rgba(123, 104, 238, 1)",
+        },
     },
     ("ma_marod", "default"): {
         "loader": lambda: _load_callable("ma_marod", "add_ma_marod"),
         "output_kind": "line", "kind": "kw",
+        "params_defaults": {
+            "source": "close",
+            "ma_type": "ema",
+            "length": 50,
+            "q_low": 0.05,
+            "q_high": 0.95,
+            "q_out": 0.99,
+            "k_events": 50,
+            "event_agg": "episode",
+            "window_n": 500,
+            "color": "rgba(255, 152, 0, 1)",
+        },
     },
     ("profit_band", "global"): {
         "loader": lambda: _load_callable("profit_band", "add_profit_band"),
         "output_kind": "line", "kind": "kw",
         # line 系（始値基準バンド）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
         "time_required": True,
+        # params_defaults は compute_id 単位（variant 間で共有）。先頭 variant にのみ宣言する。
+        "params_defaults": {
+            "probabilities": [0.51, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99],
+            "buckets": ["nOH", "pOL", "pOH", "nOL"],
+            "require_full": True,
+            "legend": False,
+            "normalize": "return",
+            "window": "expanding",
+            "atr_period": 14,
+            "min_obs": 30,
+        },
     },
     ("profit_band", "robust"): {
         "loader": lambda: _load_callable("profit_band", "add_robust_profit_band"),
@@ -325,79 +390,246 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "output_kind": "horizontal_line", "kind": "kw",
         "latest_meta": _price_range_power_latest_meta,
         "preprocess": _prp_preprocess,
+        "params_defaults": {
+            "interval": 0.1,
+            "range_from": None,
+            "range_to": None,
+            "top_n": 5,
+            "width": 2,
+            "bull_color": "rgba(46, 158, 91, 0.9)",
+            "bear_color": "rgba(210, 67, 58, 0.9)",
+        },
     },
     ("moving_averages", "default"): {
         "loader": lambda: _load_callable("moving_averages", "add_moving_averages"),
         "output_kind": "line", "kind": "kw",
         "latest_meta": _moving_averages_latest_meta,
+        "params_defaults": {
+            "ma_type": "ema",
+            "length": 9,
+            "source": "close",
+            "offset": 0,
+            "smoothing_type": "none",
+            "smoothing_length": 9,
+            "bb_stddev": 2.0,
+            "timeframe": "chart",
+            "wait_for_close": False,
+        },
     },
     # --- profit_* 系（MQL 移植・lwc 仕様）。統合 FakeChart が line/histogram/水平線を
     #     一括収集するため output_kind は分岐に不使用（resolve 互換のため残置）。kind は全て kw。---
     ("profit_adx_needle", "default"): {
         "loader": lambda: _load_callable("profit_adx_needle", "add_adx_needle"),
         "output_kind": "histogram", "kind": "kw",
+        "params_defaults": {
+            "period": 6,
+            "window": 120,
+        },
     },
     ("profit_arctan", "default"): {
         "loader": lambda: _load_callable("profit_arctan", "add_arctan"),
         "output_kind": "histogram", "kind": "kw",
+        "params_defaults": {
+            "period": 6,
+            "ma_method": 1,
+            "bar_width": 0.1,
+            "window": 120,
+        },
+    },
+    ("profit_mfi", "default"): {
+        "loader": lambda: _load_callable("profit_mfi", "add_mfi"),
+        "output_kind": "line", "kind": "kw",
+        "params_defaults": {
+            "mfi_period": 14,
+            "ma_period": 5,
+        },
+    },
+    ("profit_rsi", "default"): {
+        "loader": lambda: _load_callable("profit_rsi", "add_rsi"),
+        "output_kind": "line", "kind": "kw",
+        "params_defaults": {
+            "rsi_period": 6,
+            "apply": 5,
+            "ma_period": 5,
+        },
+    },
+    ("profit_stc", "default"): {
+        "loader": lambda: _load_callable("profit_stc", "add_stc"),
+        "output_kind": "line", "kind": "kw",
+        "params_defaults": {
+            "period": 70,
+        },
+    },
+    ("profit_oscillator", "default"): {
+        "loader": lambda: _load_callable("profit_oscillator", "add_oscillator"),
+        "output_kind": "histogram", "kind": "kw",
+        "params_defaults": {
+            "period_a": 6,
+            "period_b": 60,
+            "window": 120,
+        },
+    },
+    ("profit_oscillator2", "default"): {
+        "loader": lambda: _load_callable("profit_oscillator2", "add_oscillator2"),
+        "output_kind": "histogram", "kind": "kw",
+        "params_defaults": {
+            "osc_period": 6,
+            "stc_slow": 6,
+            "ma_period": 60,
+            "rci_period": 12,
+            "direction": False,
+        },
+    },
+    ("profit_osi_ma", "default"): {
+        "loader": lambda: _load_callable("profit_osi_ma", "add_osi_ma"),
+        "output_kind": "histogram", "kind": "kw",
+        "params_defaults": {
+            "ma_mode": 1,
+            "ma_period": 21,
+        },
+    },
+    ("profit_rmm", "default"): {
+        "loader": lambda: _load_callable("profit_rmm", "add_rmm"),
+        "output_kind": "histogram", "kind": "kw",
+        "params_defaults": {
+            "osc_period": 6,
+            "ma_period": 6,
+            "window": 120,
+        },
+    },
+    ("profit_volatility", "default"): {
+        "loader": lambda: _load_callable("profit_volatility", "add_volatility"),
+        "output_kind": "line", "kind": "kw",
+        "params_defaults": {
+            "period": 6,
+            "window": 120,
+        },
     },
     ("profit_hl_band", "default"): {
         "loader": lambda: _load_callable("profit_hl_band", "add_hl_band"),
         "output_kind": "horizontal_line", "kind": "kw",
+        "params_defaults": {
+            "window": 120,
+        },
     },
     ("profit_hlband", "separate"): {
         "loader": lambda: _load_callable("profit_hlband", "add_hlband_separate"),
         "output_kind": "histogram", "kind": "kw",
+        # params_defaults は compute_id 単位（variant 間で共有）。先頭 variant にのみ宣言する。
+        "params_defaults": {
+            "draw_levels": True,
+        },
     },
     ("profit_hlband", "overlay"): {
         "loader": lambda: _load_callable("profit_hlband", "add_hlband_overlay"),
         "output_kind": "horizontal_line", "kind": "kw",
     },
-    ("profit_mfi", "default"): {
-        "loader": lambda: _load_callable("profit_mfi", "add_mfi"),
-        "output_kind": "line", "kind": "kw",
-    },
     ("profit_mfi_macd", "default"): {
         "loader": lambda: _load_callable("profit_mfi_macd", "add_mfimacd"),
         "output_kind": "histogram", "kind": "kw",
-    },
-    ("profit_oscillator", "default"): {
-        "loader": lambda: _load_callable("profit_oscillator", "add_oscillator"),
-        "output_kind": "histogram", "kind": "kw",
-    },
-    ("profit_oscillator2", "default"): {
-        "loader": lambda: _load_callable("profit_oscillator2", "add_oscillator2"),
-        "output_kind": "histogram", "kind": "kw",
-    },
-    ("profit_osi_ma", "default"): {
-        "loader": lambda: _load_callable("profit_osi_ma", "add_osi_ma"),
-        "output_kind": "histogram", "kind": "kw",
-    },
-    ("profit_rmm", "default"): {
-        "loader": lambda: _load_callable("profit_rmm", "add_rmm"),
-        "output_kind": "histogram", "kind": "kw",
+        "params_defaults": {
+            "mfi_period": 13,
+            "fast": 4,
+            "slow": 8,
+            "signal": 4,
+        },
     },
     ("profit_rmm_macd", "default"): {
         "loader": lambda: _load_callable("profit_rmm_macd", "add_rmmmacd"),
         "output_kind": "histogram", "kind": "kw",
-    },
-    ("profit_rsi", "default"): {
-        "loader": lambda: _load_callable("profit_rsi", "add_rsi"),
-        "output_kind": "line", "kind": "kw",
+        "params_defaults": {
+            "osc_period": 6,
+            "ma_period": 6,
+            "fast": 4,
+            "slow": 8,
+            "signal": 4,
+            "window": 120,
+        },
     },
     ("profit_rsi_macd", "default"): {
         "loader": lambda: _load_callable("profit_rsi_macd", "add_rsimacd"),
         "output_kind": "histogram", "kind": "kw",
-    },
-    ("profit_stc", "default"): {
-        "loader": lambda: _load_callable("profit_stc", "add_stc"),
-        "output_kind": "line", "kind": "kw",
-    },
-    ("profit_volatility", "default"): {
-        "loader": lambda: _load_callable("profit_volatility", "add_volatility"),
-        "output_kind": "line", "kind": "kw",
+        "params_defaults": {
+            "rsi_period": 13,
+            "fast": 4,
+            "slow": 8,
+            "signal": 4,
+        },
     },
 }
+
+
+def indicator_param_defaults() -> dict[str, dict[str, Any]]:
+    """_TABLE の ``params_defaults`` 宣言から compute_id → param 既定値を導出する（ISSUE-180）。
+
+    ``catalog_schema.PARAM_DEFAULTS``（``GET /catalog`` の配信値）の唯一の生成元。返り値は deep copy
+    のため、呼び出し側の変更は _TABLE へ波及しない。
+
+    整合検査（宣言漏れ・二重宣言の構造的検出）:
+      - _TABLE の compute_id は必ず 1 つの ``params_defaults`` 宣言を持つ（漏れは ValueError）。
+      - 同一 compute_id の複数 variant が宣言することを禁ずる（二重定義の再発を ValueError で防ぐ）。
+    dict の挿入順は _TABLE のエントリ順（＝従来の配信順）を保つ。
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for (compute_id, variant), spec in _TABLE.items():
+        defaults = spec.get("params_defaults")
+        if defaults is None:
+            continue
+        if compute_id in out:
+            raise ValueError(
+                f"params_defaults が重複宣言されています: {compute_id} (variant={variant})。"
+                "compute_id ごとに先頭 variant の 1 エントリにのみ宣言してください。"
+            )
+        out[compute_id] = copy.deepcopy(defaults)
+    missing = {compute_id for (compute_id, _variant) in _TABLE} - set(out)
+    if missing:
+        raise ValueError(
+            f"params_defaults が未宣言の指標があります: {sorted(missing)}。"
+            "_TABLE のエントリへ params_defaults を宣言してください。"
+        )
+    return out
+
+
+# --- tgp::btlm の MCMC 設定（_TABLE 導出値 _DEFAULT_SAMPLES に依存するため _TABLE の後に置く）---
+# tgp::btlm は MCMC（非決定的）。seed 未設定だと再当てはめ（ライブの毎分再計算）ごとに
+# 結果が揺れ、トレンド線/帯が更新間で動いて見える。固定 seed で「同じ窓→毎回同一結果」にし、
+# ライブ表示を静的表示と一致させる（rbridge は fit_predict ごとに set.seed する＝各 fit が決定的）。
+# 値は任意だが固定であることが重要（再現性確保）。
+_TGP_SEED = 20260101
+
+# MCMC サンプル量プリセット（BTE=Burn-in, Total, Every）。Total を増やすほど posterior が
+# 収束し分位帯が安定するが計算は重い（おおよそ Total 比例）。catalog.js の mcmc_samples と対応。
+# ⚠️ 運用注意（性能）: server は R スレッド非安全のため単一スレッド（framework/server.py）。
+#   tgp 計算中は全リクエストがブロックされる。ライブは 60 秒間隔で再計算するため、"max"（Total
+#   4倍）は実 R btlm が 60 秒を超えると当該指標がライブ中ほとんど更新されない場合がある。
+#   重い設定は静的分析向け。既定 standard は従来どおり軽量（後方互換）。
+_BTE_PRESETS: dict[str, tuple[int, int, int]] = {
+    "standard": (2000, 15000, 2),  # 既定（保持サンプル ~6500）
+    "high": (4000, 30000, 2),      # ~13000・約2倍重い
+    "max": (8000, 60000, 2),       # ~26000・約4倍重い（ライブ再計算で server をブロックし得る）
+}
+# 既定サンプル。param 既定値の単一情報源（_TABLE の tgp_btlm ``params_defaults``）から解決する
+# （ISSUE-092 ③ / ISSUE-180・back 内二重定義の解消）。front（catalog.js）とは catalog_defaults.json
+# 契約経由で back/front 双方のテストが一致を固定する。
+_DEFAULT_SAMPLES = _TABLE[("tgp_btlm", "default")]["params_defaults"]["mcmc_samples"]
+
+
+def _fitter_factory(name: str, samples: str = _DEFAULT_SAMPLES) -> Any:
+    """fitter enum 文字列 → Fitter 実体（§3.3.3 fitter_factory）。
+
+    "ols" → OlsBtlmFitter()、"tgp" → TgpBtlmFitter(seed=_TGP_SEED, bte=preset)。
+    rpy2/R 不在でも TgpBtlmFitter の実体化自体は成功し、fit_predict 時に ImportError。
+    tgp は MCMC のため seed を固定し（再現性確保）、``samples`` で BTE プリセットを選んで
+    分位帯の安定性を調整する。未知の ``samples`` は standard へフォールバック。``ols`` は
+    解析解のため ``samples`` を無視する。
+    """
+    src = _load_src_package("tgp_btlm")
+    if name == "ols":
+        return src.OlsBtlmFitter()
+    if name == "tgp":
+        bte = _BTE_PRESETS.get(samples, _BTE_PRESETS[_DEFAULT_SAMPLES])
+        return src.TgpBtlmFitter(seed=_TGP_SEED, bte=bte)
+    raise ValueError(f"未知の fitter です: {name}")
 
 
 def requires_dedicated_worker(indicator_id: "str | None") -> bool:

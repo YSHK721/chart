@@ -21,6 +21,8 @@ import pytest
 
 from market_profile_api.compute import market_profile_dwell as mpd
 from market_profile_api.controller.market_profile_controller import handle_market_profile
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
 _DAY = 86400
 # 2024-01-01 00:00 UTC（月曜・UTC 真夜中）。weekday = ((s//86400)+3)%7 = 0（月）。
@@ -32,7 +34,7 @@ _COLD = 1100.0  # 休場時間帯にのみ現れる価格（dwell では 0・cou
 @pytest.fixture(autouse=True)
 def _isolate_caches(tmp_path, monkeypatch):
     # ディスクキャッシュ基点を tmp へ差し替え、実データ DATA_DIR/cache への書込を防ぐ。
-    monkeypatch.setattr(mpd, "_CACHE_ROOT", tmp_path / "mp_dwell_cache")
+    monkeypatch.setattr(_mp_cache_settings, "DWELL_CACHE_ROOT", tmp_path / "mp_dwell_cache")
     mpd._reset_caches()
     yield
     mpd._reset_caches()

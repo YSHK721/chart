@@ -33,33 +33,27 @@
 
 依存:
     標準: __future__, dataclasses, sys, pathlib, typing / 外部: numpy
-    共有: common（applied_price, AppliedPrice）, moving_averages（exponential_ma_on_buffer）。
+    共有: common（applied_price, AppliedPrice）, moving_averages（ma）。
     pandas/描画 import は禁止。
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Mapping
 
 import numpy as np
 
-# 共有層 import:
-#   moving_averages … indicators（parents[2]）配下。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # indicators → moving_averages
-
-from common import AppliedPrice, applied_price  # noqa: E402
-from moving_averages import exponential_ma_on_buffer  # noqa: E402
-from mql_builtins import (  # noqa: E402,F401  # 正準 iRSI/iMFI/iStochastic（再公開して in-package 参照面を維持）
+from common import AppliedPrice, applied_price
+from moving_averages import ma
+from mql_builtins import (  # noqa: F401  # 正準 iRSI/iMFI/iStochastic（再公開して in-package 参照面を維持）
     compute_mfi,
     compute_rsi,
     compute_stochastic,
 )
 
 # PS レベルカウント系プリミティブは共有層 profit_system に集約済み（indicators 配下）。
-from profit_system import (  # noqa: E402
+from profit_system import (
     SIGMA_LEVELS,
     compute_sigma_levels,
     ps_level_count,
@@ -212,12 +206,11 @@ def compute_mard(
         num_price = applied_price(applied, o, h, l, c)
 
     denom_price = applied_price(applied, o, h, l, c)  # common 標準（分母の iMA 入力）
-    ma = np.zeros(denom_price.size, dtype=np.float64)
-    exponential_ma_on_buffer(denom_price.size, 0, 0, period, denom_price, ma)
+    ma_values = ma(denom_price, "ema", period)
 
     out = np.zeros(num_price.size, dtype=np.float64)
-    nonzero = ma != 0.0
-    out[nonzero] = (num_price[nonzero] - ma[nonzero]) / ma[nonzero]
+    nonzero = ma_values != 0.0
+    out[nonzero] = (num_price[nonzero] - ma_values[nonzero]) / ma_values[nonzero]
     return out
 
 

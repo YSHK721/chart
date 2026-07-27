@@ -89,10 +89,6 @@ def test_histogram_name_matches_value_column():
 
 def test_histogram_color_column_matches_level_colors():
     # per-bar 色（緑→赤・中心からの距離ベース）が level_colors と一致することを固定する。
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from common_view import level_colors
 
     from src import build_arctan

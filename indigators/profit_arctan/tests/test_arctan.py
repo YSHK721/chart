@@ -14,7 +14,6 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src import (  # noqa: E402
     LEVEL_COUNT_COLUMN,

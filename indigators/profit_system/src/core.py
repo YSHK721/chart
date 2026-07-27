@@ -8,11 +8,19 @@
 
 提供するプリミティブ（profit_adx_needle/src/core.py から無改変集約）:
     * ``PS_GetLevelCountValue``  → ``ps_level_count``
-    * ``PS_GetUnitConversion``   → ``_unit_conversion``
+    * ``PS_GetUnitConversion``   → ``ps_unit_conversion``
     * ``iBandsOnArray(...,deviation,...,MODE_UPPER/LOWER,0)`` → ``compute_sigma_levels``
-    * ``PS_GetAverage`` / ``PS_GetStandardDeviationValue``   → ``_ps_average`` / ``_ps_std_ema`` / ``_ps_band``
+    * ``PS_GetAverage`` / ``PS_GetStandardDeviationValue``   → ``ps_average`` / ``ps_std_ema`` / ``_ps_band``
     * ``iMAOnArray(..., MODE_EMA)`` → ``_ema``
-    * ``NormalizeDouble(_, 5)``    → ``_normalize``
+    * ``NormalizeDouble(_, 5)``    → ``ps_normalize``
+
+公開契約について（ISSUE-182 項目 1）:
+    ``ps_normalize`` / ``ps_average`` / ``ps_std_ema`` / ``ps_unit_conversion`` は
+    パッケージ境界を越えて参照される実績がある（profit_adx_needle）。したがって
+    アンダースコア名のままにせず **public 名へ昇格し ``__all__`` に載せる**。
+    旧名（``_normalize`` / ``_ps_average`` / ``_ps_std_ema`` / ``_unit_conversion``）は
+    既存参照面を壊さないため **同一オブジェクトの別名**として残置する（値は不変）。
+    ``_ema`` / ``_ps_band`` / ``_causal_z`` は越境参照が無いため private のまま。
 
 追加集約（profit_rmm/src/core.py の正準形を無改変集約。AST 一致を確認した
 profit_rmm / profit_rmm_macd / profit_oscillator2 の重複定義を統一する）:
@@ -47,7 +55,7 @@ _UPSIDE: int = 1
 _DOWNSIDE: int = 2
 
 
-def _normalize(x: float) -> float:
+def ps_normalize(x: float) -> float:
     """MQL ``NormalizeDouble(x, 5)`` 相当（小数 5 桁へ丸める）。"""
     return float(round(x, _NORMALIZE_DECIMALS))
 
@@ -78,12 +86,12 @@ def _ema(values: np.ndarray, period: int) -> np.ndarray:
     return out
 
 
-def _ps_average(array: np.ndarray) -> float:
+def ps_average(array: np.ndarray) -> float:
     """元 ``PS_GetAverage`` 相当（算術平均, NormalizeDouble 5）。"""
-    return _normalize(float(np.mean(array)))
+    return ps_normalize(float(np.mean(array)))
 
 
-def _ps_std_ema(array: np.ndarray) -> float:
+def ps_std_ema(array: np.ndarray) -> float:
     """元 ``iStdDevOnArray(array,0,length,0,MODE_EMA,0)`` 相当の標準偏差。
 
     全要素を対象に MA=EMA（period=length, α=2/(length+1)）の最終値 ma を基準とし、
@@ -106,14 +114,14 @@ def _ps_std_ema(array: np.ndarray) -> float:
 
 def _ps_band(array: np.ndarray, sigma: float, mode: int) -> float:
     """元 ``PS_GetStandardDeviationValue`` 相当（平均 ± σ×EMA標準偏差, Normalize 5）。"""
-    avg = _ps_average(array)
-    std = _ps_std_ema(array)
+    avg = ps_average(array)
+    std = ps_std_ema(array)
     if mode == _UPSIDE:
-        return _normalize(avg + std * sigma)
-    return _normalize(avg - std * sigma)
+        return ps_normalize(avg + std * sigma)
+    return ps_normalize(avg - std * sigma)
 
 
-def _unit_conversion(
+def ps_unit_conversion(
     osi: float, avg: float, band: float, distant: float, mode: int
 ) -> float:
     """元 ``PS_GetUnitConversion`` 相当（オシレーター値を σ 距離単位へ変換）。
@@ -144,7 +152,7 @@ def _unit_conversion(
         res = ((osi - avg) / length) / 100.0
     else:
         res = ((avg - osi) / length) / 100.0
-    return _normalize(res)
+    return ps_normalize(res)
 
 
 def _causal_z(array: np.ndarray, window: int, *, freeze_last: bool = False) -> np.ndarray:
@@ -182,7 +190,7 @@ def _causal_z(array: np.ndarray, window: int, *, freeze_last: bool = False) -> n
         mean = (csum[i + 1] - csum[lo]) / window
         var = (csq[i + 1] - csq[lo]) / window - mean * mean
         std = np.sqrt(var) if var > 0.0 else 0.0
-        out[i] = _normalize((a[i] - mean) / std) if std > 0.0 else 0.0
+        out[i] = ps_normalize((a[i] - mean) / std) if std > 0.0 else 0.0
     if freeze_last:
         # 最終点 out[-1] のみ、基準窓を確定足 [n-1-window .. n-2]（最終点を除く直前
         # window 本）へ差し替える。out[0..n-2] は上のループ結果のまま不変。
@@ -194,7 +202,7 @@ def _causal_z(array: np.ndarray, window: int, *, freeze_last: bool = False) -> n
             mean = (csum[hi] - csum[lo]) / window
             var = (csq[hi] - csq[lo]) / window - mean * mean
             std = np.sqrt(var) if var > 0.0 else 0.0
-            out[-1] = _normalize((a[-1] - mean) / std) if std > 0.0 else 0.0
+            out[-1] = ps_normalize((a[-1] - mean) / std) if std > 0.0 else 0.0
     return out
 
 
@@ -245,15 +253,15 @@ def ps_level_count(
         # 因果ローリング窓: 各系列の σ 距離（z）を加算。warm-up は NaN 加算で合算も NaN。
         return out + _causal_z(a, window, freeze_last=freeze_last)
 
-    avg = _ps_average(a)
+    avg = ps_average(a)
     up = _ps_band(a, sigma, _UPSIDE)
     down = _ps_band(a, sigma, _DOWNSIDE)
 
     for i in range(n):
         if a[i] > avg:
-            out[i] = out[i] + _unit_conversion(a[i], avg, up, distant, _UPSIDE)
+            out[i] = out[i] + ps_unit_conversion(a[i], avg, up, distant, _UPSIDE)
         elif a[i] < avg:
-            out[i] = out[i] + _unit_conversion(a[i], avg, down, distant, _DOWNSIDE)
+            out[i] = out[i] + ps_unit_conversion(a[i], avg, down, distant, _DOWNSIDE)
         else:
             out[i] = 0.0
     return out
@@ -281,8 +289,8 @@ def compute_sigma_levels(level_count: np.ndarray) -> Mapping[str, float]:
     levels: dict[str, float] = {}
     for sigma in SIGMA_LEVELS:
         key = f"{int(round(sigma * 100)):03d}"
-        levels[f"up_{key}"] = _normalize(mean + std * sigma)
-        levels[f"dn_{key}"] = _normalize(mean - std * sigma)
+        levels[f"up_{key}"] = ps_normalize(mean + std * sigma)
+        levels[f"dn_{key}"] = ps_normalize(mean - std * sigma)
     return levels
 
 
@@ -334,3 +342,17 @@ def level_count_score(osi: float, span: float, case: int) -> float:
     # case == 3
     r = (span / 2.0) / 200.0
     return float(-((r - osi) / r) / 100.0)
+
+
+# ===========================================================================
+# 旧アンダースコア名（後方互換の別名。ISSUE-182 項目 1）
+#
+# public 昇格前の名前で参照している既存面（profit_adx_needle/src/core.py の
+# 再エクスポート、profit_system / profit_adx_needle の既存テスト）を壊さないため、
+# **同一の関数オブジェクト**を旧名でも束縛しておく。関数は 1 つしか無いので
+# 値・丸め・例外は 1 ビットも変わらない。新規コードは public 名を使うこと。
+# ===========================================================================
+_normalize = ps_normalize
+_ps_average = ps_average
+_ps_std_ema = ps_std_ema
+_unit_conversion = ps_unit_conversion

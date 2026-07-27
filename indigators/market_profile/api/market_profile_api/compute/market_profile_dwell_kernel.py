@@ -14,6 +14,8 @@ import numpy as np
 
 # セッション認識（活発/休場地図）の純カーネル。跨ぎギャップの活発秒積分はこの唯一の規則源へ委譲する。
 from market_profile_api.compute import session_activity as _session_activity
+# ISSUE-178: 層間 DTO（不変・PORTING_GUIDE §2）。ロールアップは生 dict でなく frozen dataclass で返す。
+from market_profile_api.compute.rollup_dto import DayRollup
 
 GRID_W = 10.0         # 固定価格グリッド幅(pt)。日別集計→窓合算→表示 bin へ再集計する中間解像度。
 
@@ -43,11 +45,14 @@ def _session_dwell(secs: np.ndarray, table: np.ndarray) -> np.ndarray:
     return dwell
 
 
-def _rollup_ticks(secs: np.ndarray, mids: np.ndarray, table: np.ndarray) -> "dict | None":
-    """ティック配列を固定グリッド ``{kmin, dwell[], cnt[]}``（k=floor(mid/GRID_W)）へ集約する。空なら None。
+def _rollup_ticks(secs: np.ndarray, mids: np.ndarray, table: np.ndarray) -> "DayRollup | None":
+    """ティック配列を固定グリッド :class:`DayRollup`（k=floor(mid/GRID_W)）へ集約する。空なら None。
 
     dwell[]: セッション認識の実ティック滞在秒（休場帯は 0）。metric='dwell'（既定）が使用する。
     cnt[]:   生ティック数（セッションマスク**非適用**＝休場帯もカウント）。metric='count'（src=m1）が使用する。
+
+    ISSUE-178: 戻り値は不変 DTO（``dwell``/``cnt`` は ``writeable=False``）。プロセス内キャッシュと
+    呼出元が同一配列を共有しても in-place 更新で汚染されない（数値・格子・空判定は不変）。
     """
     if len(secs) == 0:
         return None
@@ -60,4 +65,4 @@ def _rollup_ticks(secs: np.ndarray, mids: np.ndarray, table: np.ndarray) -> "dic
         np.add.at(dwell_arr, k[:-1] - kmin, dwell)  # dwell[i] は始端ティック価格 k[i] に帰属。
     cnt_arr = np.zeros(size, dtype=float)
     np.add.at(cnt_arr, k - kmin, 1.0)  # 生ティック数（全ティック・セッション非依存）。
-    return {"kmin": kmin, "dwell": dwell_arr, "cnt": cnt_arr}
+    return DayRollup(kmin=kmin, dwell=dwell_arr, cnt=cnt_arr)

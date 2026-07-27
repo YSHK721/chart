@@ -17,14 +17,10 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 
-# 共有ライブラリ moving_averages を indicators/ パス経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
-from moving_averages import (  # noqa: E402
+# 共有ライブラリ moving_averages（indigators/ 直下）を絶対 import で再利用する。
+from moving_averages import (
     exponential_ma_on_buffer,
     linear_weighted_ma_on_buffer,
     simple_ma_on_buffer,

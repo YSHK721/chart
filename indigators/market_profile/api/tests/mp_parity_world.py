@@ -15,6 +15,8 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
 DAY0 = 1704067200  # 2024-01-01 00:00 UTC（月曜）。
 SPAN_DAYS = 5
@@ -91,7 +93,7 @@ def apply(setattr_fn=None) -> None:
 
     _sa(mpd, "_load_window_ticks", load_window_ticks)
     _sa(mpd, "_day_source_signature", lambda symbol, day_start: "synthetic")
-    _sa(mpd, "_CACHE_ROOT", Path(tempfile.mkdtemp(prefix="mp_parity_cache_")))
+    _sa(_mp_cache_settings, "DWELL_CACHE_ROOT", Path(tempfile.mkdtemp(prefix="mp_parity_cache_")))
     # controller は `from marketdata import dataset` 済み＝dataset モジュール属性を差し替える。
     _sa(md_dataset, "load_candles", load_candles)
     mpd._reset_caches()

@@ -1,0 +1,1 @@
+../../../../../../indigators/market_profile/web/js/adapter/front/mp_replay_scrub.js

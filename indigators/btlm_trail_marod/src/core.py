@@ -13,27 +13,33 @@
     （mean == 0）は errstate で抑制し、生じた inf/NaN は NaN に落として描画から除外する。
 
 参照機構（無改変・撤去済み btlm_trail/src/ma_reference.py の前例踏襲）:
+    基準線の供給元は :class:`TrendLineReference` Protocol（本 core が所有する抽象）で表す。
+    :func:`set_trend_line_reference` で外側（Composition Root）から具象を注入でき、**未注入時は
+    従来どおり btlm_trail の src を動的ロードする**（既存呼出元の挙動は完全不変・ISSUE-176）。
+
+    フォールバックの動的ロードは共有ローダ ``common.module_loader``（ロック付き）へ委譲する。
     btlm_trail のパッケージ src は top-level 名 ``src`` を用い ``import src`` では衝突するため、
     その ``__init__.py`` をファイルパスから一意名でロードして公開関数をそのまま利用する
-    （btlm_trail src は read-only・無改変）。相対 import（``from .trail import`` 等）を解決
-    できるよう ``submodule_search_locations`` を与え、exec 前に sys.modules へ登録する。
+    （btlm_trail src は read-only・無改変）。importlib / sys の機構は本 core が保持しない
+    （core が「ディレクトリ配置・モジュール解決方式の変更者」を負わない＝SRP / DIP）。
 
 依存:
-    標準: __future__, importlib, sys, pathlib / 外部: numpy /
-    プロジェクト内: btlm_trail/src（動的ロード。内部で common.applied_price を絶対 import）、
+    標準: __future__, pathlib, typing / 外部: numpy /
+    プロジェクト内: common.module_loader（ロック付き動的ロード）、
+    btlm_trail/src（既定の参照具象。内部で common.applied_price を絶対 import）、
     common.event_quantiles（外れ値イベント分位の共有プリミティブ・絶対 import）
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from common import event_quantiles as _evq
 from common import marod_bands as _bands
+from common import module_loader as _module_loader
 
 # 既定パラメータ（btlm_trail core DEFAULT_MAXBARS と同値・8 択ソース既定 close）。
 DEFAULT_SOURCE: str = "close"
@@ -58,26 +64,52 @@ _BTLM_TRAIL_SRC = Path(__file__).resolve().parents[2] / "btlm_trail" / "src"
 _BTLM_TRAIL_MODNAME = "_btlm_trail_src_for_marod"
 
 
+@runtime_checkable
+class TrendLineReference(Protocol):
+    """基準線（分母）と対象価格（分子）の供給元が満たすべき契約（本 core が所有する抽象）。
+
+    既定の具象は btlm_trail の src パッケージ（同名メソッドをモジュール関数として公開）。
+    """
+
+    def resolve_source(self, df, source: str) -> np.ndarray: ...
+
+    def rolling_ols_window_end(self, prices: np.ndarray, maxbars: int) -> tuple: ...
+
+
+# 注入された具象（None＝未注入＝動的ロードへフォールバック）。差し替えは set_trend_line_reference。
+_TREND_LINE_REF: "TrendLineReference | None" = None
+
+
 def _load_btlm_trail():
     """btlm_trail の src パッケージを一意名でロードする（``src`` 名衝突を回避・無改変参照）。
 
-    キャッシュ: ``sys.modules[_BTLM_TRAIL_MODNAME]`` が存在すれば再 exec せず返す。
+    実体は共有ローダ ``common.module_loader.load_package``（ロック付き・ISSUE-176）。
+    キャッシュ: ``sys.modules[_BTLM_TRAIL_MODNAME]`` に exec 完了済みがあれば再 exec しない。
     """
-    cached = sys.modules.get(_BTLM_TRAIL_MODNAME)
-    if cached is not None:
-        return cached
-    spec = importlib.util.spec_from_file_location(
-        _BTLM_TRAIL_MODNAME,
-        _BTLM_TRAIL_SRC / "__init__.py",
-        submodule_search_locations=[str(_BTLM_TRAIL_SRC)],
-    )
-    if spec is None or spec.loader is None:  # pragma: no cover - 環境異常（spec 解決不能）
-        raise ImportError(f"btlm_trail core を読み込めません: {_BTLM_TRAIL_SRC}")
-    module = importlib.util.module_from_spec(spec)
-    # exec 前に登録する（btlm_trail src 内の相対 import が自モジュールを参照できるように）。
-    sys.modules[_BTLM_TRAIL_MODNAME] = module
-    spec.loader.exec_module(module)
-    return module
+    return _module_loader.load_package(_BTLM_TRAIL_MODNAME, _BTLM_TRAIL_SRC)
+
+
+def set_trend_line_reference(ref: "TrendLineReference | None") -> None:
+    """基準線の供給元を注入する（``None`` で既定＝btlm_trail 動的ロードへ戻す）。
+
+    Raises:
+        TypeError: ``TrendLineReference`` を満たさないオブジェクトを渡したとき。
+    """
+    global _TREND_LINE_REF
+    if ref is not None and not isinstance(ref, TrendLineReference):
+        raise TypeError(
+            "TrendLineReference（resolve_source / rolling_ols_window_end）を満たしません: "
+            f"{type(ref).__name__}"
+        )
+    _TREND_LINE_REF = ref
+
+
+def trend_line_reference() -> "TrendLineReference":
+    """現在有効な基準線供給元を返す（未注入時は btlm_trail の動的ロード＝従来挙動）。"""
+    ref = _TREND_LINE_REF
+    if ref is not None:
+        return ref
+    return _load_btlm_trail()
 
 
 def marod_series(df, *, source: str = DEFAULT_SOURCE, maxbars: int = DEFAULT_MAXBARS) -> np.ndarray:
@@ -97,7 +129,7 @@ def marod_series(df, *, source: str = DEFAULT_SOURCE, maxbars: int = DEFAULT_MAX
     Raises:
         ValueError: source 不正、または maxbars < 3（btlm_trail core の契約）。
     """
-    bt = _load_btlm_trail()
+    bt = trend_line_reference()
     prices = np.asarray(bt.resolve_source(df, source), dtype=np.float64).ravel()
     mean = np.asarray(bt.rolling_ols_window_end(prices, maxbars)[0], dtype=np.float64).ravel()
     with np.errstate(divide="ignore", invalid="ignore"):

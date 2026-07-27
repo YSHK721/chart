@@ -17,12 +17,14 @@
     本実装は正規近似（``core.norm_ppf``）で分位点を構成する。
 
 依存:
-    標準: __future__ / 外部: numpy / プロジェクト内: core
+    標準: __future__ / 外部: numpy / プロジェクト内: core, common.ols_fit
 """
 
 from __future__ import annotations
 
 import numpy as np
+
+from common.ols_fit import ols_fit, pred_sd_rows
 
 from .core import DEFAULT_Q_HIGH, DEFAULT_Q_LOW, BtlmResult, norm_ppf
 
@@ -49,18 +51,12 @@ class OlsBtlmFitter:
         if n < 3:
             raise ValueError("分散推定には 3 点以上が必要です。")
 
-        phi = np.column_stack([np.ones(n), x])          # [1, x]
-        xtx_inv = np.linalg.inv(phi.T @ phi)
-        beta = xtx_inv @ phi.T @ z                       # OLS 係数
-        mean = phi @ beta
+        # Φ=[1, x] の OLS 当てはめ（β̂・fitted・残差分散 s²）は共有プリミティブへ 1 本化した。
+        fit = ols_fit(x, z)
+        mean = fit.fitted
 
-        residual = z - mean
-        dof = n - phi.shape[1]
-        s2 = float(residual @ residual) / dof            # 残差分散
-
-        # 予測分散（推定平均の不確実性 + 観測ノイズ）
-        leverage = np.einsum("ij,jk,ik->i", phi, xtx_inv, phi)
-        pred_sd = np.sqrt(s2 * (1.0 + leverage))
+        # 予測分散（推定平均の不確実性 + 観測ノイズ）。全行 leverage（einsum 形）。
+        pred_sd = pred_sd_rows(fit.phi, fit.xtx_inv, fit.s2)
 
         return BtlmResult(
             mean=mean,

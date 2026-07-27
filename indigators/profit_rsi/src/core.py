@@ -23,31 +23,29 @@
         rates_total<=period は全 0（元 RSI.mq5 の早期 return）。
     Apply（独自 input） → APPLY_TO_PRICE で common.AppliedPrice へ写像し
         applied_price(kind, o,h,l,c) で価格系列を選択。既定 Apply=5 → TYPICAL。
-    iMAOnArray(EMA, ma_period) → exponential_ma_on_buffer（共有再利用）。warm-up 0
-        を含めて通す（元 iMAOnArray と同じ）。ma_period<=1 は未計算 0 返し。
+    iMAOnArray(EMA, ma_period) → moving_averages.ma(..., "ema", ...)（共有再利用。
+        中身は exponential_ma_on_buffer と bit 等価）。warm-up 0 を含めて通す
+        （元 iMAOnArray と同じ）。ma_period<=1 は未計算 0 返し。
     σ 水準（全系列 iStdDevOnArray 相当）→ compute_rsi_levels（**生 RSI 系列に掛ける**）。
         中心=全平均、偏差=母標準偏差（÷N・warm-up 0 込み）。mid50=50（元の固定 50 水準）。
 
 依存（PORTING_GUIDE §8）:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
-    共有: moving_averages（exponential_ma_on_buffer）, common（applied_price, AppliedPrice）。
+    共有: moving_averages（ma）, common（applied_price, AppliedPrice）。
     pandas/描画 import は禁止。
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
-# 共有ライブラリ moving_averages / mql_builtins を indicators/ パス経由で再利用する。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # = indicators/
-from moving_averages import exponential_ma_on_buffer  # noqa: E402
-from mql_builtins import compute_rsi  # noqa: E402,F401  # 正準 iRSI（再公開して in-package 参照面を維持）
+# 共有ライブラリ moving_averages / mql_builtins（indigators/ 直下）を絶対 import で再利用する。
+from moving_averages import ma
+from mql_builtins import compute_rsi  # noqa: F401  # 正準 iRSI（再公開して in-package 参照面を維持）
 
-from common import AppliedPrice, applied_price  # noqa: E402
+from common import AppliedPrice, applied_price
 
 # 元 input の既定値（PRO!fitRSI.mq4: InpRSIPeriod=6, InpMAPeriod=5, Apply=5）。
 DEFAULT_RSI_PERIOD: int = 6
@@ -121,11 +119,11 @@ class RsiResult:
 
     def __post_init__(self) -> None:
         rsi = np.asarray(self.rsi, dtype=np.float64)
-        ma = np.asarray(self.ma, dtype=np.float64)
+        ma_arr = np.asarray(self.ma, dtype=np.float64)
         rsi.setflags(write=False)  # DTO は不変（profit_mfi/profit_stc 準拠）
-        ma.setflags(write=False)
+        ma_arr.setflags(write=False)
         object.__setattr__(self, "rsi", rsi)
-        object.__setattr__(self, "ma", ma)
+        object.__setattr__(self, "ma", ma_arr)
 
 
 def compute_rsi_full(
@@ -142,7 +140,7 @@ def compute_rsi_full(
 
     ``apply`` を ``APPLY_TO_PRICE`` で common.AppliedPrice へ写像し、共有
     ``applied_price`` で価格系列を選択する。iRSI を ``compute_rsi`` で算出し、その出力
-    （warm-up 0 込み）を共有 ``exponential_ma_on_buffer`` で EMA(ma_period) 化する。
+    （warm-up 0 込み）を共有 ``ma(..., "ema", ma_period)`` で EMA(ma_period) 化する。
     σ 水準は **生 RSI 系列**（ma ではない）全体から ``compute_rsi_levels`` で算出する。
 
     Args:
@@ -171,7 +169,6 @@ def compute_rsi_full(
     kind = APPLY_TO_PRICE(apply)
     price = applied_price(kind, open_, high, low, close)
     rsi = compute_rsi(price, period=rsi_period)
-    ma = np.zeros(rsi.shape[0], dtype=np.float64)
-    exponential_ma_on_buffer(rsi.shape[0], 0, 0, ma_period, rsi, ma)
+    ma_values = ma(rsi, "ema", ma_period)
     levels = compute_rsi_levels(rsi)  # 生 RSI 系列に掛ける（ma ではない）
-    return RsiResult(rsi=rsi, ma=ma, levels=levels)
+    return RsiResult(rsi=rsi, ma=ma_values, levels=levels)

@@ -1,86 +1,35 @@
 """module_loader — 指標 src（top-level 名 ``src`` 同名衝突）を一意名で読み込む共通機構。
 
 3 指標はいずれも top-level パッケージ名 ``src`` を使うため ``import src`` では 1 つしか
-読めない。本モジュールは「ファイルパスから一意なモジュール名で exec する」共通手順を
-1 か所へ集約する（call_binding の ``_load_src_package`` と controller の ``_load_loader`` が
-個別に持っていた importlib 機構の重複を解消する・振る舞い不変）。
+読めない。「ファイルパスから一意なモジュール名で exec する」共通手順は 1 か所へ集約する。
+
+本モジュールは **共有プリミティブ層 ``common.module_loader`` への委譲**（再エクスポート）
+であり、独自の実装を持たない。``adapter.compute.module_loader`` という既存の import 面
+（``call_binding._load_src_package``）を維持したまま、実装を 1 本化する。
 
 - ``load_package(name, pkg_dir)``  : ``__init__.py`` を持つパッケージを一意名で読み込む
   （相対 import ``from .bands import`` が解決するよう submodule_search_locations を設定）。
 - ``load_module(name, file_path)`` : 単一の .py ファイルをモジュールとして読み込む。
 
-いずれも ``sys.modules`` を唯一のキャッシュとし、同名の 2 回目以降は再 exec しない。
+一本化の経緯（ISSUE-185）:
+    旧実装は ISSUE-156 対策の ``threading.Lock`` と二重チェックを持っていたが、**高速経路が
+    ロックを取らずに ``sys.modules`` を素引きする**欠陥があった。動的ロードは相対 import 解決
+    のため ``sys.modules[name] = module`` を exec **前**に登録する必要があり、その未初期化
+    オブジェクトを高速経路が読む（重複 exec は防げるが、公開関数が未定義のモジュールを掴み
+    呼出時 ``AttributeError`` になり得る）。実測は 3 スレッドで 2/3、16 スレッドで 15/16 が
+    半構築を観測。``common.module_loader`` は「exec 完了までキャッシュ命中と見なさない」
+    ``_LOADING`` ゲート（+ 入れ子ロード用 ``RLock``）で本欠陥を持たないため、そちらを正として
+    委譲する。半構築観測の是正以外の挙動（キャッシュ命中の返り値・例外の型とメッセージ・
+    二重ロードの抑止・exec 失敗時に壊れたモジュールが ``sys.modules`` に残ること）は不変。
+
+依存: ``common`` は venv の ``.pth``（tools/install_dev_paths.py）およびエントリポイントの
+自己結線フォールバック（``framework/server.py``）でリポジトリ根が sys.path に載ることで解決する
+（本モジュールは sys.path を改変しない・ISSUE-087 🟡-3 / ISSUE-174 の解決点一本化に従う）。
 既存指標 src は read-only（改変しない）。描画ライブラリは import しない。
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-import threading
-from pathlib import Path
-from types import ModuleType
+from common.module_loader import load_module, load_package
 
-# ISSUE-156（A）: 動的パッケージロードの直列化ロック（計算プール並列時の初回競合防止）。
-_LOAD_LOCK = threading.Lock()
-
-
-def load_package(name: str, pkg_dir: Path) -> ModuleType:
-    """``pkg_dir/__init__.py`` を一意名 ``name`` で読み込む（相対 import を解決可能にする）。
-
-    キャッシュ: ``sys.modules[name]`` が存在すれば再 exec せず返す。
-    """
-    cached = sys.modules.get(name)
-    if cached is not None:
-        return cached
-
-    # ISSUE-156（A）: 計算プール並列時の初回同時ロード競合を防ぐ（exec 途中の半構築モジュールを
-    #   他スレッドが観測しない）。ロック内で再チェックし、二重 exec も防止する。
-    with _LOAD_LOCK:
-        cached = sys.modules.get(name)
-        if cached is not None:
-            return cached
-        return _load_package_locked(name, pkg_dir)
-
-
-def _load_package_locked(name: str, pkg_dir: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        name,
-        pkg_dir / "__init__.py",
-        submodule_search_locations=[str(pkg_dir)],
-    )
-    if spec is None or spec.loader is None:  # pragma: no cover - 環境異常（spec 解決不能）
-        raise ImportError(f"パッケージを読み込めません: {name} ({pkg_dir})")
-    module = importlib.util.module_from_spec(spec)
-    # exec 前に登録する（src 内の相対 import が自モジュールを参照できるように）。
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def load_module(name: str, file_path: Path) -> ModuleType:
-    """単一の .py ファイルを一意名 ``name`` のモジュールとして読み込む。
-
-    キャッシュ: ``sys.modules[name]`` が存在すれば再 exec せず返す。
-    """
-    cached = sys.modules.get(name)
-    if cached is not None:
-        return cached
-
-    # ISSUE-156（A）: 計算プール並列時の初回同時ロード競合を防ぐ（exec 途中の半構築モジュールを
-    #   他スレッドが観測しない）。ロック内で再チェックし、二重 exec も防止する。
-    with _LOAD_LOCK:
-        cached = sys.modules.get(name)
-        if cached is not None:
-            return cached
-        return _load_module_locked(name, file_path)
-
-
-def _load_module_locked(name: str, file_path: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, file_path)
-    if spec is None or spec.loader is None:  # pragma: no cover - 環境異常（spec 解決不能）
-        raise ImportError(f"モジュールを読み込めません: {name} ({file_path})")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+__all__ = ["load_module", "load_package"]

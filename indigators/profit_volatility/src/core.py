@@ -45,17 +45,13 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Mapping
 
 import numpy as np
 
-# PS レベルカウント系プリミティブは共有層 profit_system に集約済み（indicators 配下）。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # indicators → profit_system
-
-from profit_system import (  # noqa: E402
+# PS レベルカウント系プリミティブは共有層 profit_system に集約済み（indigators/ 直下）。
+from profit_system import (
     SIGMA_LEVELS,
     compute_sigma_levels,
     ps_level_count,

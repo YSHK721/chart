@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 
 from market_profile_api.compute import market_profile_zp as zp
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
+from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
 
 # --------------------------------------------------------------------------- #
@@ -169,7 +171,7 @@ class TestSessionDayWindow:
     def test_compute_walker_requests_session_windows(self, monkeypatch, tmp_path):
         # 日ウォークが [セッション始端, 翌始端) 窓で tick を読む（UTC 深夜切りでない）。
         from market_profile_api.compute import market_profile_dwell as mpd
-        monkeypatch.setattr(zp, "_ZP_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(_mp_cache_settings, "ZP_CACHE_ROOT", tmp_path)
         zp._reset_caches()
         windows = []
 

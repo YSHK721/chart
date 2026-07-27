@@ -81,11 +81,14 @@ from market_profile_api.compute.market_profile_dwell_kernel import (  # noqa: E4
     _rollup_ticks,
     _session_dwell,
 )
+# ISSUE-178: 層間 DTO（不変）。日別ロールアップは生 dict でなく :class:`DayRollup` で受け渡す。
+from market_profile_api.compute.rollup_dto import DayRollup  # noqa: E402,F401
 
 
-def day_parquet_files(lo_day: Any, hi_day: Any, *, symbol: str) -> "list[_Path]":
+def day_parquet_files(lo_day: int, hi_day: int, *, symbol: str) -> "list[_Path]":
     """正準ティック日別ファイルの列挙（TickReaderPort へ委譲・read-only）。
 
+    ISSUE-183: 引数は UNIX 秒（int・UTC 日始端）。``pd.Timestamp`` 変換は gateway 実装が担う。
     既存テストの monkeypatch 単一注入点（``mpd.day_parquet_files``）を module 属性として温存する。
     """
     return _tick_reader().day_files(lo_day, hi_day, symbol=symbol)
@@ -106,20 +109,22 @@ _ACTIVE_TABLE_DAYS = 120  # active table 構築に用いる直近日数（試作
 
 # ディスク永続キャッシュ（日別ロールアップ）。既存の生データ/ticks/CSV は触らず、新規 cache
 # ディレクトリのみに読み書きする。完了日（UTC 確定日）のみ永続化し、当日（未確定）は都度計算する。
-_CACHE_VERSION = 4  # ISSUE-089: active table 窓キー化に伴い、先勝ち表が焼き込まれた v3 日次 npz を全再計算        # 形式バージョン。読込時に不一致なら無視して再計算（fail-safe）。
-#   v3: セッション日切り（ISSUE-078・NY17:00 ET 基準）。日キーが UTC 深夜→セッション始端へ変わるため
-#       旧 UTC 日ロールアップ（v2）を全無効化する。
-#   v2: 日次ロールアップに「ソースティック署名(sig)」を併記。完了日を空でキャッシュした後にティックが
-#       届いても署名変化で自動再計算する（無効化ロジック・stale-empty 修正）。v1 は不一致で全再計算。
-_CACHE_ROOT: "_Path | None" = None  # None=既定(DATA_DIR/cache/market_profile_dwell)。テストは tmp を注入。
+# ISSUE-183 item5: 永続化設定（cache root / 形式版数＝偶有的性質）は本質層である本モジュールから
+#   gateway 側 :mod:`market_profile_api.gateway.cache_settings`（``DWELL_CACHE_ROOT`` /
+#   ``DWELL_CACHE_VERSION``）へ**移送**した。旧 module private（``_CACHE_ROOT`` / ``_CACHE_VERSION``）は
+#   Composition Root に層外から読まれており、カプセル化の破れかつ偶有的性質の本質層居住だった。
+#   移送であり複製ではない（二重情報源を作らない）。テストの tmp 隔離・版数 bump も gateway 側を差し替える。
 
 # ディスクキャッシュ Repository（ISSUE-040(b) / ISSUE-137 DIP）。永続化 I/O（save/load/署名/無効化・
 # parquet/tempfile）は DwellRollupStore に分離済み。ISSUE-137: 既定 Store の合成は composition root
-# （gateway/composition.default_dwell_store）へ移設した。本体 module 変数（_CACHE_ROOT / _CACHE_VERSION /
-# GRID_W / day_parquet_files）は composition の provider が call-time に読む（monkeypatch 経路を温存）。
+# （gateway/composition.default_dwell_store）へ移設した。本体 module 変数（GRID_W / day_parquet_files）は
+# composition の provider が call-time に読む（monkeypatch 経路を温存）。
 # 永続化 I/O は dwell_store()（未注入時は composition の既定・注入時は set_dwell_store の実体）へ委譲する。
-# CACHE_MISS 番兵は gateway 具象のクラス属性で identity 一致（旧 DwellRollupStore.CACHE_MISS と同一）。
-_CACHE_MISS = dwell_cache_miss()
+# ISSUE-177（LSP）: CACHE_MISS 番兵は **call-time** に :func:`dwell_cache_miss` で取得する（module 定数
+#   への import 時束縛を撤去）。定数化すると既定具象 ``DwellRollupStore.CACHE_MISS`` が焼き込まれ、
+#   ``DwellStorePort`` 準拠だが既定具象非派生の Store を :func:`set_dwell_store` で注入したとき、その
+#   Store の番兵と identity 不一致になり「キャッシュミス番兵を実データとして受理」する（Port 準拠実装が
+#   既定具象と置換不能＝LSP 破綻）。番兵の所有者は常に現在の Store。
 
 # 生ティック parquet の必須列（marketdata.tick_m1._TICK_COLUMNS と同じ意味）。
 _TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
@@ -127,8 +132,8 @@ _OUTLIER_FRAC = 0.30      # 窓内 mid 中央値 ±30% の外れ値除去（tick
 
 # プロセス内キャッシュ（AB 兼用・perf）。走査した過去日ぶんが累積する（各エントリは小配列＝緩く有界）。
 # 完了した過去日/窓のみ登録し、現在進行中の当日はキャッシュしない（Y2a・_day_rollup/_partial_rollup 参照）。
-_DAY_CACHE: dict[tuple[str, int], "dict | None"] = {}      # (symbol, day_start) → rollup or None
-_PARTIAL_CACHE: dict[tuple[str, int, int], "dict | None"] = {}  # (symbol, lo, hi) → rollup or None
+_DAY_CACHE: dict[tuple[str, int], "DayRollup | None"] = {}      # (symbol, day_start) → rollup or None
+_PARTIAL_CACHE: dict[tuple[str, int, int], "DayRollup | None"] = {}  # (symbol, lo, hi) → rollup or None
 _ACTIVE_TABLE: dict[str, np.ndarray] = {}                  # symbol → 7×24 bool 活動テーブル
 
 _EMPTY_SECS = np.array([], dtype=np.int64)
@@ -167,14 +172,21 @@ def _reset_caches() -> None:
 def _load_window_ticks(symbol: str, start: Any, end: Any) -> "tuple[np.ndarray, np.ndarray]":
     """``[start, end)`` の実ティックを ``(secs:int64, mids:float64)`` で返す（TickStorePort へ委譲）。
 
+    ISSUE-178: Port（:meth:`TickReaderPort.load_window_ticks`）は不変 DTO :class:`TickWindow` を返す。
+    本シムはその 2 配列（read-only）をタプルへ展開して既存呼出面を保つ。
+
     ISSUE-133 SRP: 日別 parquet の列挙・読取・concat・tz 除去・窓マスク・mid 算出・外れ値除去・安定
     ソート（＝ティック格納スキーマの復号＝偶有的性質）は gateway の :class:`TickReaderPort` 実装へ移設した。
     本関数はテストの単一注入点（``mpd._load_window_ticks`` の monkeypatch）を module 属性として温存する
     薄い委譲であり、ティック列（``_TICK_COLUMNS``）と外れ値しきい（``_OUTLIER_FRAC``）を注入する。
     """
-    return _tick_reader().load_window_ticks(
+    win = _tick_reader().load_window_ticks(
         symbol, start, end, columns=_TICK_COLUMNS, outlier_frac=_OUTLIER_FRAC
     )
+    # ISSUE-178: 境界（Port）は不変 DTO :class:`TickWindow`。本シムは compute 内部の既存呼出面
+    #   （``secs, mids = _load_window_ticks(...)`` の 2 値タプル・テストの monkeypatch 単一注入点）を
+    #   温存するため展開して返す。配列自体は read-only のまま＝プロセス内共有でも in-place 汚染しない。
+    return win.secs, win.mids
 
 
 # --------------------------------------------------------------------------- #
@@ -241,14 +253,22 @@ def _table_for_day(symbol: str, day_start: int) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # 以下は :class:`DwellRollupStore`（永続化 Repository）への薄い委譲。公開/内部シンボル名は不変に保ち、
 # 既存テストの monkeypatch 経路（`mpd._cache_path` / `_save_day_rollup` / `_load_day_rollup` /
-# `_day_source_signature` / `_CACHE_ROOT` / `_CACHE_VERSION`）と byte 出力を温存する（ISSUE-040(b)）。
+# `_day_source_signature`）と byte 出力を温存する（ISSUE-040(b)）。永続化設定（cache root / 形式版数）の
+# 差し替えは gateway 側 `cache_settings.DWELL_CACHE_ROOT` / `DWELL_CACHE_VERSION`（ISSUE-183 item5）。
 def _cache_root() -> _Path:
-    """ディスクキャッシュの基点 ``DATA_DIR/cache/market_profile_dwell`` を返す（テストは _CACHE_ROOT で差替）。"""
+    """ディスクキャッシュの基点 ``DATA_DIR/cache/market_profile_dwell`` を返す。
+
+    差替は gateway 側 ``cache_settings.DWELL_CACHE_ROOT``（ISSUE-183 item5）。
+    """
     return dwell_store().cache_root()
 
 
 def _cache_path(symbol: str, day_start: int) -> _Path:
-    """日別ロールアップの保存パス ``<root>/<symbol>/g<GRID_W>/<day_start>.npz``（Store へ委譲）。"""
+    """日別ロールアップの保存パス ``<root>/<symbol>/v<version>/g<GRID_W>/<day_start>.npz``。
+
+    ISSUE-089 で版数 dir を挟む実配置へ移行済み（本 docstring は旧形のまま残置していた＝ISSUE-172）。
+    構成の唯一の定義は :meth:`DwellRollupStore._relative_parts`（本関数は Store へ委譲するのみ）。
+    """
     return dwell_store().cache_path(symbol, day_start)
 
 
@@ -257,17 +277,17 @@ def _day_source_signature(symbol: str, day_start: int) -> str:
     return dwell_store().day_source_signature(symbol, day_start)
 
 
-def _save_day_rollup(path: _Path, roll: "dict | None", sig: str = "") -> None:
+def _save_day_rollup(path: _Path, roll: "DayRollup | None", sig: str = "") -> None:
     """ロールアップ（None=実データ無し完了日を含む）を ``.npz`` へ原子的に保存する（Store へ委譲）。"""
     dwell_store().save_day_rollup(path, roll, sig)
 
 
 def _load_day_rollup(path: _Path) -> "tuple[Any, str]":
-    """ディスクから日別ロールアップと署名を読む（Store へ委譲）。未ヒット/破損/不整合は ``(_CACHE_MISS, "")``。"""
+    """ディスクから日別ロールアップと署名を読む（Store へ委譲）。未ヒット/破損/不整合は ``(CACHE_MISS, "")``。"""
     return dwell_store().load_day_rollup(path)
 
 
-def _day_rollup(symbol: str, day_start: int, table: "np.ndarray | None", now: float) -> "dict | None":
+def _day_rollup(symbol: str, day_start: int, table: "np.ndarray | None", now: float) -> "DayRollup | None":
     """1 セッション日 ``[day_start, next_session_day_start)`` を固定グリッドへ集約する（ISSUE-078）。
 
     ``day_start`` はセッション日始端（NY17:00 ET＝夏21:00/冬22:00 UTC・session_day が唯一の規則源）。
@@ -286,7 +306,7 @@ def _day_rollup(symbol: str, day_start: int, table: "np.ndarray | None", now: fl
         disk, cached_sig = _load_day_rollup(path)
         # ソースティック署名が一致するときのみディスクを信頼する。空でキャッシュした完了日に後から
         #   ティックが届く/更新された場合は署名が変わり再計算する（stale-empty の無効化）。
-        if disk is not _CACHE_MISS and cached_sig == cur_sig:
+        if disk is not dwell_cache_miss() and cached_sig == cur_sig:
             if disk is not None:
                 _DAY_CACHE[key] = disk  # 非空のみメモ化。
             return disk
@@ -307,7 +327,7 @@ def _day_rollup(symbol: str, day_start: int, table: "np.ndarray | None", now: fl
     return roll
 
 
-def _partial_rollup(symbol: str, lo: int, hi: int, table: np.ndarray, now: float) -> "dict | None":
+def _partial_rollup(symbol: str, lo: int, hi: int, table: np.ndarray, now: float) -> "DayRollup | None":
     """境界日（サブ日足）用の部分集計 ``[lo, hi)`` を固定グリッドへ集約する。
 
     Y2a: 窓終端が完了した（``hi <= now``）場合のみキャッシュする。当日の部分足（``hi > now``）は
@@ -348,7 +368,7 @@ def compute_dwell_profile(
         非適用のため、薄商いの時間帯（休場帯）の価格もカウントされ、dwell とは分布が異なる。
 
     実期間 ``[t0, t1+bar_sec)`` を日単位に走査する。完全日は :func:`_day_rollup`（メモリ→ディスク→計算）、
-    境界日は :func:`_partial_rollup` で固定グリッド ``{dwell[], cnt[]}`` を得て、metric に対応する配列を
+    境界日は :func:`_partial_rollup` で固定グリッド :class:`DayRollup` を得て、metric に対応する配列を
     ``fine[]`` に加算し、固定グリッド中心を表示 bin へ再集計して tpo[] を得る。POC/VA は
     :func:`market_profile._value_area` を再利用する（dwell/count で同一定義）。
 
@@ -358,7 +378,7 @@ def compute_dwell_profile(
 
     ``want_sessions=True`` のとき、応答に ``sessions[]``（各カレンダー日の表示 bin プロファイル
     ``[{"date":"YYYY-MM-DD","tpo":[...]}]``・日付昇順）を付加する。走査中の日別ロールアップ
-    ``roll[roll_key]``（metric に従い dwell/cnt）を表示 bin へ再集計し、境界分割日は同一 date で合算する
+    ``roll`` の metric 対応配列（dwell/cnt）を表示 bin へ再集計し、境界分割日は同一 date で合算する
     （移植元 prototype_260630-01/mp_core.py want_sessions）。既定 False は不変（sessions キーを付けない）。
 
     全期間化: 250 日キャップは撤廃し ``[t0, t1+bar_sec)`` の全日を集計する。各完了日はディスク/メモリ
@@ -409,15 +429,15 @@ def compute_dwell_profile(
                 roll = _partial_rollup(symbol, lo_t, hi_t, table, now_val)  # 境界日=完了窓のみキャッシュ。
             if roll is not None:
                 last_roll = roll  # 走査順＝時系列昇順のため、最後に非 None だったのが窓最終日ぶん。
-                arr = roll[roll_key]  # metric に応じて dwell 秒 / 生ティック数 を集計。
-                off = roll["kmin"] - kw0
+                arr = getattr(roll, roll_key)  # metric に応じて dwell 秒 / 生ティック数 を集計。
+                off = roll.kmin - kw0
                 lo = max(0, off)
                 hi = min(size, off + len(arr))
                 if hi > lo:
                     fine[lo:hi] += arr[(lo - off):(hi - off)]
                 if want_sessions:
-                    # その日の roll[roll_key] を表示 bin へ再集計＝日別プロファイルの形（試作 mp_core と同）。
-                    cd = (roll["kmin"] + np.arange(len(arr)) + 0.5) * GRID_W
+                    # その日の metric 対応配列を表示 bin へ再集計＝日別プロファイルの形（試作 mp_core と同）。
+                    cd = (roll.kmin + np.arange(len(arr)) + 0.5) * GRID_W
                     dd = np.clip(((cd - price_min) / binw).astype(int), 0, n_bins - 1)
                     da = np.zeros(n_bins, dtype=float)
                     np.add.at(da, dd, arr)
@@ -469,8 +489,8 @@ def compute_dwell_profile(
         #   移植元 prototype_260630-01/mp_core.py want_today（dwell/m1=最終日ロールアップの再ビン）。
         today = np.zeros(n_bins, dtype=float)
         if last_roll is not None:
-            arr = last_roll[roll_key]
-            off = last_roll["kmin"] - kw0
+            arr = getattr(last_roll, roll_key)
+            off = last_roll.kmin - kw0
             ft = np.zeros(max(size, 1), dtype=float)
             lo = max(0, off)
             hi = min(size, off + len(arr))
