@@ -7,6 +7,8 @@
   <!-- モード別スタイル（既存 core の css/app.css をプロキシ経由で読む・byte 不変）。
        href は unified_root.js が activeMode に応じて切り替える（初期 = live）。 -->
   <link id="mode-css" rel="stylesheet" href="/live/css/app.css" />
+  <!-- リプレイバーのスタイルは replay core の単一ソースを link で共有する（複製しない）。 -->
+  <link rel="stylesheet" href="/replay/css/replay_bar.css" />
   <style>
     /* 統合層固有の最小スタイル（既存 css へ波及させないための局所定義）。 */
     .um-mode-live #replay-bar { display: none; }
@@ -17,21 +19,6 @@
        aria-pressed=true でアクセント青に点灯させ、どのモードかが一目で分かるようにする
        （既存 css の tb-interval は id 指定でないと点灯しないため、ここで明示指定する）。 */
     #enter-replay[aria-pressed="true"] { background: #2962ff; color: #fff; border-color: #2962ff; }
-
-    /* 再生バーのダークテーマ配色（参照実装 simulator/replay_ui/web/index.html の忠実移植）。
-       これが無いと再生バーのボタン/セレクトが既定の白ボタンになり、ライブと色が食い違う。 */
-    .replay-bar{display:flex;gap:8px;align-items:center;padding:6px 12px;background:#10141d;border-bottom:1px solid #2a2e39;flex-wrap:wrap;font-size:13px;color:#d1d4dc}
-    .replay-bar button,.replay-bar select{background:#1b2230;color:#d1d4dc;border:1px solid #2a2e39;border-radius:4px;padding:4px 9px;cursor:pointer}
-    .replay-bar .rp-badge{padding:2px 8px;border-radius:4px;background:#2962ff33;color:#7aa2ff;font-weight:600}
-    .replay-bar #rp-slider{flex:1;min-width:200px}
-    .replay-bar .rp-sep{width:1px;align-self:stretch;background:#2a2e39;margin:0 2px}
-    .replay-bar button.rp-disabled{opacity:.4;cursor:not-allowed}
-    .replay-bar #rp-play.rp-playing{background:#16a34a;color:#fff;border-color:#16a34a}
-    .replay-bar #rp-play{min-width:84px;text-align:center}
-    .replay-bar .on{outline:2px solid #2962ff}
-    #rp-presets{display:inline-flex;gap:4px}
-    #rp-presets .rp-preset{padding:3px 8px}
-    #rp-presets .rp-preset.on{background:#2962ff;color:#fff;border-color:#2962ff}
   </style>
 </head>
 <body class="um-mode-live">
@@ -62,29 +49,6 @@
       <button id="enter-replay" class="tb-interval" type="button" aria-pressed="false" title="リプレイ表示のオン・オフ">リプレイ</button>
     </div>
 
-    <!-- リプレイ操作バー（replay モードのみ表示・live では CSS で非表示）。 -->
-    <div class="replay-bar" id="replay-bar">
-      <button id="rp-prev">◀ 1足</button>
-      <button id="rp-play">▶ 再生</button>
-      <button id="rp-next">1足 ▶</button>
-      <label title="再生速度（1.00=最速。小さいほど遅い＝観察用）">速度<input id="rp-speed" type="range" min="0" max="1" step="0.01" value="1" style="vertical-align:middle;width:90px" /><span id="rp-speed-val" style="display:inline-block;min-width:2.6em;text-align:right">1.00</span></label>
-      <span id="rp-speed-presets"></span>
-      <span id="rp-eta" title="完了予想時間（残り足 × 実測の1足あたり所要）">完了予想 —</span>
-      <label title="最新足を足内で更新する方法（MT5 モデリング相当）">最新足更新<select id="rp-mode">
-        <option value="real_ticks">実ティック</option>
-        <option value="every_tick">全ティック合成</option>
-        <option value="ohlc_1min" selected>1分OHLC</option>
-        <option value="open_only">始値のみ</option>
-        <option value="math">数学計算(終値)</option>
-      </select></label>
-      <button id="rp-follow">再生追従</button>
-      <button id="rp-view-left" title="チャート表示を左端へスクロール（再生位置は変えない）">⇤ 表示左端</button>
-      <button id="rp-view-right" title="チャート表示を右端へスクロール（再生位置は変えない）">表示右端 ⇥</button>
-      <span id="rp-presets"></span>
-      <input id="rp-slider" type="range" min="0" max="0" value="0" />
-      <span id="rp-status" style="min-width:0"></span>
-    </div>
-
     <!-- チャート + クロスヘア価格読み取り欄 + 凡例（両モード共有ホスト）。 -->
     <div class="chart-wrap">
       <div id="chart"></div>
@@ -96,6 +60,33 @@
     </div>
     <!-- Market Profile リプレイバーのホスト（replay の MP replay=ON で動的生成）。 -->
     <div id="mp-replay-bar-host"></div>
+
+    <!-- リプレイ操作バー（replay モードのみ表示・live では CSS で非表示）。チャート下端・中央寄せ。
+         DOM は replay core（simulator/replay_ui/web/index.html）と同一構成＋「リプレイ終了（✕）」。 -->
+    <div class="replay-bar" id="replay-bar">
+      <div class="rp-group">
+        <button id="rp-range" type="button" title="表示期間 / 再生開始日">全期間</button>
+        <button id="rp-range-caret" type="button" aria-haspopup="true" title="カレンダー / 期間プリセット">⌄</button>
+        <span class="rp-sep"></span>
+        <button id="rp-view-left" class="rp-icon" type="button" title="チャート表示を左端へスクロール（再生位置は変えない）">‖◁</button>
+        <button id="rp-prev" class="rp-icon" type="button" title="1足戻る">|◁</button>
+        <button id="rp-play" class="rp-icon" type="button" title="再生 / 一時停止（再生中は再生位置に追随）">▷</button>
+        <button id="rp-next" class="rp-icon" type="button" title="1足進む">▷|</button>
+        <button id="rp-view-right" class="rp-icon" type="button" title="チャート表示を右端へスクロール（再生位置は変えない）">▷‖</button>
+        <span class="rp-sep"></span>
+        <button id="rp-speed" type="button" data-speed="1" aria-haspopup="true" title="再生速度（1.00=最速・0.00=一時停止）">x1.00</button>
+        <select id="rp-mode" class="rp-select" title="最新足を足内で更新する方法（MT5 モデリング相当）">
+          <option value="real_ticks">実ティック</option>
+          <option value="every_tick">全ティック合成</option>
+          <option value="ohlc_1min" selected>1分OHLC</option>
+          <option value="open_only">始値のみ</option>
+          <option value="math">数学計算(終値)</option>
+        </select>
+        <span id="rp-eta" class="rp-eta" title="完了予想時間（残り足 × 実測の1足あたり所要）">完了予想 —</span>
+      </div>
+      <!-- リプレイ終了（= ツールバーの「リプレイ」トグル OFF と同一動作＝ライブへ戻る）。 -->
+      <button id="rp-close" type="button" title="リプレイ終了">✕</button>
+    </div>
   </div>
 
   <!-- インジケーターダイアログ（両モード共有）。 -->

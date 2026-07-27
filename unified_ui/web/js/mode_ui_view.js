@@ -79,12 +79,16 @@ export function applyModeUi(mode) {
 // ---- リプレイ トグルボタン配線（単一 mount: DOM は永続＝1 回だけ配線）--------------
 //   modeController は呼び出し側（Composition Root）が注入する（従前は module 内状態を参照）。
 export function wireModeSwitchButtons(modeController) {
-  const btn = document.getElementById('enter-replay');
-  if (btn) {
-    btn.addEventListener('click', () => {
-      if (modeController) {
-        modeController.toggle();
-      }
-    });
+  // リプレイバー右端の ✕（リプレイ終了）もトグルと同一動作にする。バーは replay モードでのみ
+  //   表示されるため、✕ は常に「リプレイ ON → OFF（ライブへ戻る）」を意味する。
+  for (const id of ['enter-replay', 'rp-close']) {
+    const btn = document.getElementById(id);
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (modeController) {
+          modeController.toggle();
+        }
+      });
+    }
   }
 }

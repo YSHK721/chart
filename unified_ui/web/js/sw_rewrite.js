@@ -22,6 +22,7 @@ const API_SEGMENTS = new Set([
   'tf_period_profile',
   'catalog',
   'intraday',
+  'available_days',
 ]);
 
 // market_profile / market_profile_forming など market_profile 系はまとめて API 扱い。
