@@ -94,3 +94,60 @@ def test_no_volume_column_yields_no_tickvol():
     candles = repo.load_candles("sample", "1D", None)
     assert "tickvol" not in candles[0]
 
+
+# ---- WindowedCandlePort / AvailableDaysPort（リプレイバーのカレンダー） ---- #
+
+
+def test_load_candles_from_starts_at_the_selected_day_with_pre_bars():
+    """``start`` 以降の最初の足の ``pre`` 本手前から ``limit`` 本を返す。"""
+    df = _df([
+        ("2020-01-01 00:00:00", 1.0, 1.0, 1.0, 1.0, 1.0),
+        ("2020-01-02 00:00:00", 2.0, 2.0, 2.0, 2.0, 1.0),
+        ("2020-01-03 00:00:00", 3.0, 3.0, 3.0, 3.0, 1.0),
+        ("2020-01-06 00:00:00", 4.0, 4.0, 4.0, 4.0, 1.0),
+        ("2020-01-07 00:00:00", 5.0, 5.0, 5.0, 5.0, 1.0),
+    ])
+    bridge, _ = _fake_bridge(df)
+    repo = CausalCandleRepository(bridge_loader=lambda *a: bridge)
+    start = 1578268800  # 2020-01-06 00:00:00 UTC
+    candles = repo.load_candles_from("jp225_tick", "1D", start, 1, 3)
+    assert [c["open"] for c in candles] == [3.0, 4.0, 5.0]  # 1 本前置き（01-03）から 3 本
+
+
+def test_load_candles_from_clamps_pre_at_the_head_and_end_of_data():
+    df = _df([
+        ("2020-01-01 00:00:00", 1.0, 1.0, 1.0, 1.0, 1.0),
+        ("2020-01-02 00:00:00", 2.0, 2.0, 2.0, 2.0, 1.0),
+    ])
+    bridge, _ = _fake_bridge(df)
+    repo = CausalCandleRepository(bridge_loader=lambda *a: bridge)
+    head = repo.load_candles_from("jp225_tick", "1D", 1577836800, 999, 10)
+    assert [c["open"] for c in head] == [1.0, 2.0]  # 前置きは先頭で頭打ち・末尾は素材で打ち切り
+
+
+def test_load_candles_from_matches_load_candles_shape():
+    """窓の取り方だけが違い、足の形（tickvol 込み）は load_candles と同一。"""
+    df = _df([("2020-01-03 00:00:00", 100.0, 105.0, 99.0, 101.0, 3.0)])
+    bridge, _ = _fake_bridge(df)
+    repo = CausalCandleRepository(bridge_loader=lambda *a: bridge)
+    assert repo.load_candles_from("jp225_tick", "1D", 0, 0, None) == repo.load_candles(
+        "jp225_tick", "1D", None
+    )
+
+
+def test_load_days_lists_distinct_utc_days_ascending():
+    df = _df([
+        ("2020-01-03 09:00:00", 1.0, 1.0, 1.0, 1.0, 1.0),
+        ("2020-01-03 23:59:00", 1.0, 1.0, 1.0, 1.0, 1.0),
+        ("2020-01-06 00:00:00", 1.0, 1.0, 1.0, 1.0, 1.0),
+    ])
+    bridge, _ = _fake_bridge(df)
+    repo = CausalCandleRepository(bridge_loader=lambda *a: bridge)
+    assert repo.load_days("jp225_tick", "1D") == ["2020-01-03", "2020-01-06"]
+
+
+def test_load_days_rejects_unknown_ref():
+    bridge, _ = _fake_bridge(_df([("2020-01-01", 1.0, 1.0, 1.0, 1.0, 1.0)]))
+    repo = CausalCandleRepository(bridge_loader=lambda *a: bridge)
+    with pytest.raises(ValueError):
+        repo.load_days("totally_unknown_ref", "1D")

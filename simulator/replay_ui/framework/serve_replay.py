@@ -1,7 +1,8 @@
 """serve_replay — 因果リビール再生バックエンドの HTTP フレームワーク層（proto_server 忠実）。
 
 エンドポイント（proto と同一プロトコル）:
-    GET  /candles?datasetRef=&timeframe=&limit=            → {ok, candles}
+    GET  /candles?datasetRef=&timeframe=&limit=[&from=&pre=] → {ok, candles}
+    GET  /available_days?datasetRef=&timeframe=             → {ok, days}
     POST /compute {indicatorId,variant,params,datasetRef,timeframe,limit,generation,mode,
                    untilTime,forming}                       → {ok, generation, series}
     GET  /intraday?datasetRef=&start=&end=&mode=            → {ok, m1, ticks[, *_error]}
@@ -32,6 +33,10 @@ from api_shared.http_contract import nested_error
 # 静的資産配信＋パストラバーサル防御（ISSUE-094 🟡-8: 殻から独立クラスへ抽出）。
 from simulator.replay_ui.framework.static_file_server import StaticFileServer
 
+from simulator.replay_ui.usecase.available_days import (
+    AvailableDaysRequest,
+    available_days,
+)
 from simulator.replay_ui.usecase.causal_compute import (
     CausalComputeRequest,
     causal_compute,
@@ -126,8 +131,13 @@ class ReplayApp:
         heavy_lock: "Optional[threading.Lock]" = None,
         forming_port: Any = None,
         market_profile_port: Any = None,
+        days_port: Any = None,
     ) -> None:
         self._candle_port = candle_port
+        # カレンダー（再生開始日）の選択可能日を返す Port。None のとき /available_days ルートを
+        #   持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
+        self._days_port = days_port
+        self.available_days_enabled = days_port is not None
         self._compute_port = compute_port
         self._window_port = window_port
         self._is_known_ref = is_known_ref
@@ -154,11 +164,25 @@ class ReplayApp:
         self._market_profile_port = market_profile_port
         self.market_profile_enabled = market_profile_port is not None
 
-    def candles(self, ref: str, tf: "str | None", limit: "int | None") -> "list[dict]":
-        req = RevealCandlesRequest(ref=ref, timeframe=tf, limit=limit)
+    def candles(
+        self,
+        ref: str,
+        tf: "str | None",
+        limit: "int | None",
+        start: "int | None" = None,
+        pre: int = 0,
+    ) -> "list[dict]":
+        req = RevealCandlesRequest(ref=ref, timeframe=tf, limit=limit, start=start, pre=pre)
         def _run():
             with self._lock:  # 巨大 resample を直列化（並行多重で OOM 防止）
                 return reveal_candles(request=req, candle_port=self._candle_port)
+        return self._heavy_worker.run(_run)
+
+    def available_days(self, ref: str, tf: "str | None") -> "list[str]":
+        req = AvailableDaysRequest(ref=ref, timeframe=tf)
+        def _run():
+            with self._lock:  # 全期間 index 走査を直列化（巨大 1m でも OOM 防止）
+                return available_days(request=req, days_port=self._days_port)
         return self._heavy_worker.run(_run)
 
     def compute(self, body: dict) -> "list[dict]":
@@ -255,9 +279,22 @@ def make_handler(app: ReplayApp):
                 ref = (q.get("datasetRef") or ["jp225_m1"])[0]
                 tf = (q.get("timeframe") or [None])[0]
                 lim = int(q["limit"][0]) if "limit" in q else None
+                # カレンダー選択（再生開始日）用の窓指定。未指定は従来の tail(limit)＝挙動不変。
                 try:
-                    candles = app.candles(ref, tf, lim)
+                    start = int(q["from"][0]) if "from" in q else None
+                    pre = int(q["pre"][0]) if "pre" in q else 0
+                except Exception:  # noqa: BLE001
+                    return self._json(*nested_error("validation", "from/pre must be int"))
+                try:
+                    candles = app.candles(ref, tf, lim, start=start, pre=pre)
                     return self._json(200, {"ok": True, "candles": candles})
+                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
+                    return self._json(*_error_response(e))
+            if u.path == "/available_days" and app.available_days_enabled:
+                ref = (q.get("datasetRef") or ["jp225_m1"])[0]
+                tf = (q.get("timeframe") or [None])[0]
+                try:
+                    return self._json(200, {"ok": True, "days": app.available_days(ref, tf)})
                 except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
                     return self._json(*_error_response(e))
             if u.path == "/intraday":

@@ -81,4 +81,6 @@ def build_replay_app(
         shared_js_root=shared_js,
         forming_port=forming_port,
         market_profile_port=market_profile_port,
+        # カレンダー（再生開始日）の選択可能日。足の供給と同一実体＝同一配信路で日を数える。
+        days_port=candle_port,
     )

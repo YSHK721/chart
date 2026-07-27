@@ -26,6 +26,36 @@ class CausalCandlePort(Protocol):
 
 
 @runtime_checkable
+class WindowedCandlePort(Protocol):
+    """/candles の「開始時刻起点」窓取得（リプレイバーのカレンダー選択＝再生開始日）。
+
+    ``load_candles`` が末尾 N 本（tail）なのに対し、本 Port は ``start``（UNIX 秒・含む）以降の
+    足を先頭から ``limit`` 本返す。``pre`` は ``start`` の直前に付ける前置き本数（指標のウォーム
+    アップ＋開始日より前の相場文脈）。返す足の形は ``load_candles`` と完全同一（``tickvol`` 込み）。
+    """
+
+    def load_candles_from(
+        self,
+        ref: str,
+        timeframe: "str | None",
+        start: int,
+        pre: int,
+        limit: "int | None",
+    ) -> "list[dict]":
+        """``time >= start`` の最初の足の ``pre`` 本手前から ``limit`` 本を返す。"""
+        ...
+
+
+@runtime_checkable
+class AvailableDaysPort(Protocol):
+    """/available_days 用の「足が存在する日」列挙（カレンダーのグレーアウト判定）。"""
+
+    def load_days(self, ref: str, timeframe: "str | None") -> "list[str]":
+        """足が 1 本以上存在する UTC 日を ``"YYYY-MM-DD"`` の昇順 list で返す。"""
+        ...
+
+
+@runtime_checkable
 class CausalComputePort(Protocol):
     """/compute 用の計算源ロード + 指標計算（dataset.load_dataframe + full/latest_compute）。"""
 

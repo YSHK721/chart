@@ -15,13 +15,18 @@ volume の集約値・ISSUE-044 real_ticks ETA 用）を additive に付与す�
 from __future__ import annotations
 
 import math
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from simulator.replay_ui.adapter import _indicator_ui_bridge
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort, RefValidationPort
 
 class CausalCandleRepository:
-    """CausalCandlePort 実装。untilTime 切断はしない（proto /candles と同一）。"""
+    """CausalCandlePort / WindowedCandlePort / AvailableDaysPort 実装。
+
+    untilTime 切断はしない（proto /candles と同一）。3 Port とも同一の ``_frame``（＝ライブと
+    同一の配信路）と ``_bars`` を通すため、窓の取り方（tail / start 起点）だけが違う。
+    """
 
     def __init__(
         self,
@@ -37,24 +42,76 @@ class CausalCandleRepository:
             bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load_dataset
         )
 
-    # ---- CausalCandlePort ----
+    # ---- 供給路（全 Port 共通の単一入口） ----
 
-    def load_candles(
-        self, ref: str, timeframe: "str | None", limit: "int | None"
-    ) -> "list[dict]":
+    def _frame(self, ref: str, timeframe: "str | None"):
+        """ライブと同一の単一配信路（rollup 正典・clamp 補正込み）の DataFrame を返す。
+
+        volume 列を tickvol へ写すため candles JSON でなく DataFrame を受ける。
+        """
         bridge = self._loader(self._api_path, self._repo_root)
         # ISSUE-136 ISP: dataset 具象を役割別の狭いポート型で受ける（検証／供給の 2 面のみに依存）。
         refs: RefValidationPort = bridge.dataset
         ohlc: OhlcSupplyPort = bridge.dataset
         if not refs.is_known(ref):
             raise ValueError(f"unknown {ref}")
-        # ライブと同一の単一配信路（rollup 正典・clamp 補正込み）。tail(limit) も dataset.load_candles
-        #   と同一規則（末尾 N 本）。volume 列を tickvol へ写すため candles JSON でなく DataFrame を受ける。
-        df = ohlc.load_dataframe(ref, timeframe)
+        return ohlc.load_dataframe(ref, timeframe)
+
+    @staticmethod
+    def _index_secs(df):
+        """DataFrame の index（UTC 時刻）を UNIX 秒の ndarray で返す。"""
+        return df.index.values.astype("datetime64[s]").astype("int64")
+
+    # ---- CausalCandlePort ----
+
+    def load_candles(
+        self, ref: str, timeframe: "str | None", limit: "int | None"
+    ) -> "list[dict]":
+        # tail(limit) は dataset.load_candles と同一規則（末尾 N 本）。
+        df = self._frame(ref, timeframe)
         if isinstance(limit, int) and limit > 0:
             df = df.tail(limit)
+        return self._bars(df)
+
+    # ---- WindowedCandlePort（カレンダー選択＝再生開始日を起点にした窓） ----
+
+    def load_candles_from(
+        self,
+        ref: str,
+        timeframe: "str | None",
+        start: int,
+        pre: int,
+        limit: "int | None",
+    ) -> "list[dict]":
+        """``time >= start`` の最初の足の ``pre`` 本手前から ``limit`` 本を返す。
+
+        末尾側は素材の終端で自然に打ち切られる（開始日が新しいほど短い窓になる）。足の形・値・
+        補正は ``load_candles`` と完全に同一（同じ ``_frame``／``_bars`` を通す）。
+        """
+        df = self._frame(ref, timeframe)
+        secs = self._index_secs(df)
+        begin = max(0, int(secs.searchsorted(int(start), side="left")) - max(0, int(pre or 0)))
+        if isinstance(limit, int) and limit > 0:
+            df = df.iloc[begin: begin + limit]
+        else:
+            df = df.iloc[begin:]
+        return self._bars(df)
+
+    # ---- AvailableDaysPort（カレンダーのグレーアウト判定） ----
+
+    def load_days(self, ref: str, timeframe: "str | None") -> "list[str]":
+        """足が 1 本以上存在する UTC 日を ``"YYYY-MM-DD"`` 昇順で返す。"""
+        df = self._frame(ref, timeframe)
+        secs = self._index_secs(df)
+        days = sorted({int(s) // 86400 for s in secs.tolist()})
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return [(epoch + timedelta(days=d)).strftime("%Y-%m-%d") for d in days]
+
+    # ---- 足列の組み立て（全 Port 共通・出力 byte 不変） ----
+
+    def _bars(self, df) -> "list[dict]":
         lower = {str(c).lower(): c for c in df.columns}
-        secs = df.index.values.astype("datetime64[s]").astype("int64")
+        secs = self._index_secs(df)
         col_o, col_h, col_l, col_c = (lower["open"], lower["high"], lower["low"], lower["close"])
         col_v = lower.get("volume")
         # ISSUE-158 ①: 列単位ベクトル化（旧: df.iterrows 行ループ）。出力は旧実装と完全同一
