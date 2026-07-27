@@ -1,0 +1,12 @@
+# pytest の依存解決点を単一化するための最小設定（ISSUE-174 案 a）。
+#
+# ここには pytest 設定のみを置く。Python バージョン・依存ライブラリの宣言は
+# requirements.txt / requirements-dev.txt を単一情報源とし、本ファイルへ移さない
+# （ビルドバックエンドも導入しない＝[build-system] / [project] は置かない）。
+#
+# pythonpath: rootdir（= 本ファイルのあるリポジトリ根）を sys.path へ載せる。
+#   repo 根直下の固有名パッケージ（common / common_view / marketdata / api_shared /
+#   tools）を、どのパッケージディレクトリから pytest を起動しても解決可能にする。
+#   実行時（サーバ起動）の同解決は venv の .pth（tools/install_dev_paths.py）が担う。
+[tool.pytest.ini_options]
+pythonpath = ["."]
