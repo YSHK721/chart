@@ -42,6 +42,7 @@ from marketdata.session_day import session_bar_time, session_day_start  # noqa: 
 #   market_profile_api は adapter.compute を経由せず marketdata.tf_meta を直接参照する（裸依存排除）。
 from marketdata.tf_meta import (  # noqa: E402
     NON_FLOORABLE_TF as _NON_FLOORABLE_TF,
+    TF_BAR_SEC as _TF_BAR_SEC,
     TICK_REFS,
     floor_freq as _floor_freq,
     is_supported_timeframe,
@@ -56,9 +57,12 @@ ROLLUP_FORMING_TF = frozenset(TIMEFRAME_RULES)
 
 # ISSUE-162（歯抜けゼロ橋渡し）: 欠落閉周期の tick 合成対象＝固定長 tf の周期秒。
 #   1W/1M は周期が可変かつライブ中に閉周期が欠落し得ないため対象外。
+# ISSUE-179 項目 5: tf→秒のリテラル二重定義（本表 7 件 ↔ ``marketdata.tf_meta.TF_BAR_SEC``）を
+#   解消し、台帳からの **導出** へ置換した。除外規則は同台帳の ``NON_FLOORABLE_TF``
+#   （＝``TF_DESCRIPTORS.floorable`` の導出値）を唯一源とする。置換前後で内容・反復順とも
+#   完全一致することを実測済み（差分 0）。
 _FIXED_TF_SECONDS = {
-    "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
-    "1h": 3600, "4h": 14400, "1D": 86400,
+    tf: sec for tf, sec in _TF_BAR_SEC.items() if tf not in _NON_FLOORABLE_TF
 }
 # 欠落閉周期の最大合成本数（暴走防御。定常運転の欠落は高々 1〜2 周期）。
 _MAX_GAP_FILL_PERIODS = 5

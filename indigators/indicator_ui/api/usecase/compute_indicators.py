@@ -20,8 +20,16 @@ error_type と message のみを ComputeResult に載せる（HTTP 依存を内�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
+# ISSUE-182 item4: 協調子 4 依存の契約（Protocol）。是正前は Any / Callable / type ＝契約未定義だった。
+from usecase.compute_ports import (
+    ComputeDispatchPort,
+    ComputeErrorPort,
+    FormingBarPort,
+    IndicatorComputePort,
+    LatestComputeDispatchPort,
+)
 from usecase.dataset_port import DatasetPort, dataset_port as _default_dataset_port
 
 
@@ -81,22 +89,25 @@ def compute_indicators(
     request: ComputeRequest,
     *,
     dataset_port: "Optional[DatasetPort]" = None,
-    compute_adapter: Any,
-    forming_bar: Any,
-    full_compute: Callable[..., list],
-    latest_compute: Callable[..., list],
-    compute_error: type,
+    compute_adapter: "IndicatorComputePort",
+    forming_bar: "FormingBarPort",
+    full_compute: "ComputeDispatchPort",
+    latest_compute: "LatestComputeDispatchPort",
+    compute_error: "type[ComputeErrorPort]",
 ) -> ComputeResult:
     """POST /compute の業務手順（純関数）。
 
     Args:
         request: Input Model（ComputeRequest）。
         dataset_port: DatasetPort。None のとき既定 gateway を遅延合成する（未注入時の既定）。
-        compute_adapter: IndicatorComputeAdapter 互換（full/latest_compute の第 1 引数）。
-        forming_bar: resolve_now_unix / apply_forming_bar を持つ協調子（呼出時注入）。
-        full_compute: 全件計算ディスパッチ（adapter, id, variant, df, params）。
-        latest_compute: Latest（末尾 K）計算ディスパッチ（同上）。
-        compute_error: 指標計算が送出する ComputeError 型（error_type/message を持つ）。
+        compute_adapter: IndicatorComputePort（full/latest_compute の第 1 引数）。
+        forming_bar: FormingBarPort（resolve_now_unix / apply_forming_bar）。
+        full_compute: ComputeDispatchPort（全件計算・adapter, id, variant, df, params）。
+        latest_compute: LatestComputeDispatchPort（Latest 計算・上記 ＋ キーワード専用 min_tail）。
+        compute_error: 指標計算が送出する例外の型（ComputeErrorPort＝error_type/message を持つ）。
+
+    契約（ISSUE-182 item4）は型注釈と ``tests/test_usecase_compute_ports.py`` で固定する。
+    実行時の ``isinstance`` 強制は行わない（挙動不変・DatasetPort と同じ扱い）。
 
     Returns:
         ComputeResult（成功は series、失敗は error_type/message）。

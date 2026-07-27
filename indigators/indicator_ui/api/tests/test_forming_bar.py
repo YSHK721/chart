@@ -397,3 +397,68 @@ def test_apply_forming_bar_gap_fill_is_capped(monkeypatch) -> None:
     fb.apply_forming_bar(df, "jp225_tick", "1m", 999)
     assert len(seen) == fb._MAX_GAP_FILL_PERIODS
     assert seen[-1] == _unix("2025-01-02 09:59:00")  # 直近側を優先して埋める
+
+
+# ---------------------------------------------------------------------------
+# ISSUE-179 項目 5: tf→秒テーブルの二重定義解消（TF_BAR_SEC からの導出）
+# ---------------------------------------------------------------------------
+def _reexec_forming_bar():
+    """forming_bar を別モジュール実体として再 exec する（本物の fb は汚さない）。"""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_fb_probe", fb.__file__)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_fixed_tf_seconds_follows_tf_bar_sec_ledger_changes(monkeypatch) -> None:
+    """台帳 ``TF_BAR_SEC`` への追加が固定長 tf 表へ自動追随する（＝導出であり複製でない）。
+
+    リテラルの独立表であれば台帳を変えても追随しないため、本アサートが失敗する。
+    """
+    from marketdata import tf_meta
+
+    # Arrange: 台帳へ floorable な tf を 1 件足す。
+    monkeypatch.setitem(tf_meta.TF_BAR_SEC, "2h", 7200)
+
+    # Act: 台帳を読み直す実体として forming_bar を再 exec する。
+    probe = _reexec_forming_bar()
+
+    # Assert
+    assert probe._FIXED_TF_SECONDS.get("2h") == 7200
+
+
+def test_fixed_tf_seconds_excludes_non_floorable_timeframes(monkeypatch) -> None:
+    """台帳へ非 floorable tf を足しても固定長 tf 表には入らない（除外規則の導出）。"""
+    from marketdata import tf_meta
+
+    # Arrange
+    monkeypatch.setitem(tf_meta.TF_BAR_SEC, "1Q", 7776000)
+    monkeypatch.setattr(
+        tf_meta, "NON_FLOORABLE_TF", frozenset(tf_meta.NON_FLOORABLE_TF | {"1Q"})
+    )
+
+    # Act
+    probe = _reexec_forming_bar()
+
+    # Assert
+    assert "1Q" not in probe._FIXED_TF_SECONDS
+
+
+def test_fixed_tf_seconds_matches_ledger_derivation() -> None:
+    """現在値が ``TF_BAR_SEC - NON_FLOORABLE_TF`` と一致する（値・反復順とも）。"""
+    from marketdata.tf_meta import NON_FLOORABLE_TF, TF_BAR_SEC
+
+    expected = {k: v for k, v in TF_BAR_SEC.items() if k not in NON_FLOORABLE_TF}
+
+    assert fb._FIXED_TF_SECONDS == expected
+    assert list(fb._FIXED_TF_SECONDS) == list(expected)
+
+
+def test_fixed_tf_seconds_covers_exactly_the_seven_floorable_timeframes() -> None:
+    """固定長 tf は 1m/5m/15m/30m/1h/4h/1D の 7 件（既存値の固定）。"""
+    assert fb._FIXED_TF_SECONDS == {
+        "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+        "1h": 3600, "4h": 14400, "1D": 86400,
+    }
