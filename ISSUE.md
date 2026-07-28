@@ -2343,3 +2343,16 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **事象**: チャートテンプレートの新規テストに compute 呼び出し回数・計算時間足を検証するアサーションが 1 件も無かった。実挙動は成立していた（レビュー側実測・当方の追加アサーションでも `{id:'ma_marod', tf:'1m'}` の 1 件のみを確認）が、**回帰検出力が無い**状態だった（将来バッチ除去入口を入れて旧構成が新しい足で計算される退行が起きても、既存の協働子テストは pass し続ける）。
 - **対応**: 結線ハーネス（`buildWiring`）の fake compute に呼び出し記録（`indicatorId` / `timeframe`）を追加し、TC-P02 へ「旧構成は新しい足で計算されない」「新構成に対して計算は 1 回のみ」「計算は切替後の新しい足で行う」の 3 アサーションを追加した。記録の検出力は TC-P08 の Red（`computeCalls` が `[]` で失敗）で実証済み。
 - **関連**: 設計書 §7.4 受入基準 3・§5.4 適用手順ステップ 3。
+
+## ISSUE-194: [不具合] 追い越された compute 応答が破棄されず、ライブの EMA 末尾 1 点が旧時間足の値で上書きされる（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日修正。TDD Red→Green で確認）
+- **事象（ユーザー報告・スクリーンショット実測）**: ライブモードで移動平均（EMA）を 2 本表示すると、**長期側の線だけ**が最終バーで真下へ急落する（短期側は正常）。スクリーンショットの画素解析で、長期線は直前 3 バーが実効 α≈0.077（期間 25 相当）で推移したのち、最終 1 点のみ α≈0.45（期間 3.5 相当）で動いており、EMA の再帰として成立しない値であることを確認した。短期線は同バーで異常なし。
+- **バックエンドは正常（実測）**: 稼働中のライブ API に対し `/candles` の実データから `moving_averages/src/core.py` の `exponential_ma_on_buffer` を参照実装として再計算し、`mode=full` の応答と **差分 0.000** で一致することを確認（1m/5m/15m/1h × 期間 9/25/50/100/200 × `wait_for_close` 両値の全 40 組で `full` と `latest` も整合）。したがって計算層に欠陥は無く、フロントの末尾差分反映（`updateSeriesTail`）が原因。
+- **原因**: `facade.recompute` の generation は「**呼び出し時スナップショット**の `instance.generation` + 1」で発番される。よって同一 instance への再計算が**並行**すると両者が**同じ generation** を発番し、どちらも `advanced.accepts()` を通る。generation は「自分が発番した番号との照合」しかできず、他要求による追い越しを構造的に検出できない。ライブ更新設計（`update_scheduler.js` 冒頭・`chart_renderer.js` の `updateSeriesTail` コメント）は「遅れて届いた古い応答は per-instance generation の latest-wins が破棄する」ことを前提にしているが、この同値発番のため**破棄が一度も働いていなかった**。
+  - 再現系列（node 単体テストで決定論的に再現）: 足内 `latest`（5m・gen=1）を発行 → 応答保留中に `setTimeframe('1h')` の `full`（**gen=1**）が先に完了・描画 → 遅れて届いた 5m の応答も `accepts(1)=true` となり `updateSeriesTail` で末尾 1 点を 5m の値へ上書きする。
+  - 症状が長期 EMA でのみ目立つ理由: 同時刻の EMA 値の時間足間の差が期間に強く依存するため（実測 EMA9 は 5m 62338 / 1h 62426＝差 88 に対し、EMA200 は 5m 62720 / 1h 65308＝差 2588）。短期線はほぼ動かず、長期線だけが急落して見える。
+  - 同型の経路: params 変更（プロパティ OK）・チャートテンプレート適用（全除去 → 同一 instanceId で再追加）も並行 latest と競合しうる。
+- **対応**: 発行順の権威を live state の所有者である `IndicatorController` が持つ。instanceId ごとの発行チケット（`_issueTickets`）を `_computeInstance` の要求発行時に採番し、`await` 後に自分が最新でなければ（＝追い越されていれば）`accepted:false` として描画も state 反映も行わない。`removeInstance` でもチケットを進め、除去→同一 instanceId 再追加時に除去前の在飛行応答が新しい instance へ適用されるのを防ぐ。`facade` の純粋性・compute プロトコル・generation の既存意味論はいずれも変更しない（加法）。
+- **回帰テスト**: `tests/indicator_controller_stale_response.test.js`（TC-S01 追い越された latest 応答が末尾へ反映されないこと＋「両要求が同一 generation で発番される」ことの固定／TC-S02 追い越されていない latest は従来どおり反映される非退行）。web スイート全体 844 件 pass。
+- **未検証（申し送り）**: 本欠陥がユーザーのスクリーンショット当該フレームの直接原因であることは、症状の一致（長期のみ急落・短期正常）と決定論的再現による**推論**であり、当該操作列の再現までは確認していない。
+- **関連**: `update_scheduler.js` 冒頭コメント（latest-wins 前提）・`chart_renderer.js:581-584`（stale 点の握り潰し＝旧 time のみ救済）・ISSUE-157 / ISSUE-165。

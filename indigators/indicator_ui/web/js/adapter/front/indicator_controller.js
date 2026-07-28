@@ -195,6 +195,27 @@ export class IndicatorController {
     // 指標追加ダイアログ（一覧・絞り込み・開閉）を委譲する協働子（ISSUE-181・A8）。
     //   絞り込み UI 状態（旧 this._filter）は協働子が所有する（状態も一緒に移す）。
     this._dialog = new IndicatorDialogController(this);
+    // ISSUE-194（stale 応答の latest-wins 復旧）: instanceId -> 最後に発行した要求の通し番号。
+    //   facade.recompute の generation は「呼び出し時スナップショットの instance.generation + 1」で
+    //   決まるため、同一 instance に対する再計算が**並行**すると両者が同じ generation を発番し、
+    //   どちらも accepts() を通ってしまう（＝古い応答が新しい描画を上書きする）。
+    //   generation はこの構造上「自分が発番した番号との照合」しかできず、他要求の追い越しを
+    //   検出できない。そこで発行順の権威を controller（live state の所有者）が持つ。
+    this._issueTickets = new Map();
+  }
+
+  // ISSUE-194: 当該 instance の要求発行チケットを 1 つ進めて返す（発行時に呼ぶ）。
+  //   除去時にも進める（remove → 同一 instanceId で再追加した場合に、除去前の在飛行応答が
+  //   新しい instance へ適用されるのを防ぐ）。
+  _issueTicket(instanceId) {
+    const next = (this._issueTickets.get(instanceId) ?? 0) + 1;
+    this._issueTickets.set(instanceId, next);
+    return next;
+  }
+
+  // ISSUE-194: 発行後に自分より新しい要求が出ていないか（＝自分が最新か）を判定する。
+  _isLatestTicket(instanceId, ticket) {
+    return this._issueTickets.get(instanceId) === ticket;
   }
 
   // 競合ガード: 再計算バッチ実行中なら true。LiveUpdater が tick 先頭で参照しスキップ判定する。
@@ -481,6 +502,8 @@ export class IndicatorController {
     //   forceTail 既定 false ＝ this._defCanTailUpdate 判定のみ（byte 挙動不変）。
     const wantLatest = mode === 'latest' && (forceTail || this._defCanTailUpdate(meta.def));
     const gateway = this._gatewayAdapter(newVariant, wantLatest ? 'latest' : 'full');
+    // ISSUE-194: 発行順チケットを取る（await 後に「自分が最新の要求か」を判定するため）。
+    const ticket = this._issueTicket(instanceId);
     // 競合ガード: 再計算中は isRecomputing()=true（ライブ更新の tick がスキップ判定に参照）。
     //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
     //   開始時刻の記録は isRecomputing() の時限判定（ISSUE-157）に使う。
@@ -493,7 +516,14 @@ export class IndicatorController {
       //   凡例行の無い残留系列（ゾンビペイン）＋永続化汚染を生む。await 後の live state で在席を
       //   確認し、除去済みなら live state に触れず accepted:false を返す。
       const removedDuringAwait = !this._state.applied.some((i) => i.instanceId === instanceId);
-      if (removedDuringAwait || !result.accepted) {
+      // ISSUE-194: 追い越し検出（latest-wins）。await 中に同一 instance へ新しい要求が発行されて
+      //   いれば、本応答は古い前提（旧 timeframe / 旧 params / 旧バー）で計算された stale であり、
+      //   採用すると新しい描画を上書きする。generation は同値発番のため検出できない（下記）:
+      //     forming latest（5m・gen=1）発行 → setTimeframe full（1h・gen=1）発行・先に完了
+      //     → 遅れて届いた 5m の応答も accepts(1)=true となり末尾点を 5m 値で上書きしていた。
+      //   長期 EMA ほど時間足間の値差が大きく、末尾 1 点だけが急落する描画になる。
+      const outrunDuringAwait = !this._isLatestTicket(instanceId, ticket);
+      if (removedDuringAwait || outrunDuringAwait || !result.accepted) {
         // 非採用（世代競合破棄・除去済み）は state 変更なし＝live state を据え置く（ISSUE-165:
         //   スナップショット丸ごと代入をやめ、並列時に兄弟の変更を巻き戻さない）。
         return { instanceId, accepted: false };
@@ -554,6 +584,9 @@ export class IndicatorController {
   // UC-05 削除。
   removeInstance(instanceId) {
     this._renderer.remove(instanceId);
+    // ISSUE-194: 除去でもチケットを進める。テンプレート適用（全除去 → 同一 instanceId で再追加）
+    //   の最中に届いた除去前の在飛行応答が、新しい instance へ適用されるのを防ぐ。
+    this._issueTicket(instanceId);
     this._state = facadeRemove(this._state, instanceId);
     this._meta.delete(instanceId);
     this._persistAll();
