@@ -2343,3 +2343,41 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **事象**: チャートテンプレートの新規テストに compute 呼び出し回数・計算時間足を検証するアサーションが 1 件も無かった。実挙動は成立していた（レビュー側実測・当方の追加アサーションでも `{id:'ma_marod', tf:'1m'}` の 1 件のみを確認）が、**回帰検出力が無い**状態だった（将来バッチ除去入口を入れて旧構成が新しい足で計算される退行が起きても、既存の協働子テストは pass し続ける）。
 - **対応**: 結線ハーネス（`buildWiring`）の fake compute に呼び出し記録（`indicatorId` / `timeframe`）を追加し、TC-P02 へ「旧構成は新しい足で計算されない」「新構成に対して計算は 1 回のみ」「計算は切替後の新しい足で行う」の 3 アサーションを追加した。記録の検出力は TC-P08 の Red（`computeCalls` が `[]` で失敗）で実証済み。
 - **関連**: 設計書 §7.4 受入基準 3・§5.4 適用手順ステップ 3。
+
+## ISSUE-194: [設計書の記述誤り] 「replay_ui 側の変更は不要」が新規 usecase モジュールに当てはまらない（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日是正）
+- **事象**: 基本設計_期間プリセット.md v0.1.0 §8.1 は E-7（symlink 単一ソース共有）を根拠に「replay_ui 側の変更は不要」と断定していた。実装時、新規追加した `web/js/usecase/period_presets.js` は replay_ui 側に実体が無く、リプレイのページから `../../usecase/period_presets.js` が **404** になることが判明した。
+- **原因**: E-7 は *既存* 共有ファイルについての事実であり、**新規モジュールには symlink 作成が別途必要**である。v0.1.0 はこの区別をせず一般化して書いていた（設計書内の過剰一般化）。
+- **対応**: `simulator/replay_ui/web/js/usecase/period_presets.js` の symlink を作成。設計書 §8.1 を「既存共有ファイルは変更不要／新規モジュールは symlink が必要」へ是正し、v0.1.1 §12.2-1 に実装で判明した事実として記録した。
+- **検証**: 統合 UI（8000）で `/live/js/usecase/period_presets.js`・`/replay/js/usecase/period_presets.js` とも HTTP 200 を実測。リプレイモードの実 UI でプリセット提示（日足 5/21/65/129/258）と `5d` 換算が成立することをブラウザで確認（ページエラー 0）。
+- **関連**: 基本設計_期間プリセット.md §8.1・§12.2。
+
+## ISSUE-195: [設計書の記述漏れ] 期間プリセットの変更ファイル一覧に配線・バンドル定義が欠落（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日是正）
+- **事象**: 基本設計_期間プリセット.md v0.1.0 §8.1 の変更ファイル一覧に、(1) `indicator_controller.js`（歯車ダイアログへの `context` 供給）、(2) `build.mjs`（A方式バンドルの MODULE_ORDER 登録）が載っていなかった。いずれも欠くと機能が成立しない（前者はプリセット非提示へ退化、後者は A方式でシンボル未定義）。
+- **原因**: 設計時に「adapter 側の変更は `property_control_builders` と `properties_dialog` のみ」と見積もったが、`context` の供給元（controller）とバンドル定義を数え落とした。チャートテンプレート ISSUE でも同型の欠落が起きている（v0.1.2 の CSS・ダイアログ view の追記）。
+- **対応**: §8.1 の表へ 2 行（配線・バンドル）を追加。あわせて `timeframe_menu.js` を MODULE_ORDER の前方へ移した理由（`properties_dialog` が `timeframeLabels` を参照する／当該モジュールは相対 import を持たない葉のため前方移動は安全）を明記した。
+- **検証**: `tests/build_module_order.test.js`（相対 import が MODULE_ORDER に全て登録されていることを構造的に固定）が緑。web 902 緑・api 437 緑。
+- **関連**: 基本設計_期間プリセット.md §8.1・§12.2-2。
+
+## ISSUE-196: [既存不具合・原因特定] 統合 UI の時間足切替で `Value is null` が発火する（ISSUE-167 の未解明個体の真因）（2026-07-28）
+- **ステータス**: OPEN（2026-07-28 起票・**原因特定済み／対策は未実施＝承認待ち**）
+- **事象**: 統合 UI（8000）で指標を 1 件以上適用した状態で時間足を切り替えると、lightweight-charts が `Error: Value is null` を 2〜3 回 throw する。実害（描画・値の誤り）は観測されない。ISSUE-167 本体（M1 日境界の重複行）は 2026-07-24 に解消済みで、2026-07-27 に「原因未特定・再現条件不明」として再観測記録のみ残っていた個体が本件である。
+- **切り分け（実測 2026-07-28）**:
+  - 指標 0 件で時間足切替 → **0 件**。指標 1 件（moving_averages）で切替 → **3 件**。
+  - live core 単体（`/live/`・SW なし）で同一操作 → **0 件**。統合ページ（`/`）でのみ発火＝**統合固有**。
+  - 期間プリセット UI に一切触れない対照実行でも発火＝当該実装とは無関係。
+- **機序（vendor 逆アセンブル ＋ 実行時計測で確定）**:
+  1. lightweight-charts の `Lh`（`$n` に対する完全一致の二分探索）は、ローソク系列が持たない time-point index を引かれると null を返し、candlestick colorer の `ensureNotNull`（`a()`）が `Value is null` を throw する（スタック: `a` ← `xt.Candlestick` ← `xt.Sh` ← `Ke.xb` ← `Ke.DM`）。つまり**「時間軸の点集合にあるが、ローソク系列には無い index」**が存在すると必ず throw する。
+  2. 実行時計測（series API フック）で得た時系列:
+     ```
+     +0.314s setData Candlestick#1 n=1500 first=1777345200 last=1785268800
+             ← preRender (timeframe_controller.js:98) ← recomputeAllApplied ← setTimeframe
+     +0.319s ★Value is null
+     +0.373s ★Value is null
+     +0.374s setData Candlestick#1 (同内容・別 preRender: replay.js:196 ← ReplayView.setCandles)
+     +0.378s removeSeries Line#2 → addSeries Line#3 → setData Line#3（新時間足の指標系列）
+     ```
+  3. **真因**: 統合ページでは時間足切替が `recomputeAllApplied` を **2 バッチ**起動する（base の `TimeframeController.setTimeframe` 経由と、replay 層 `replay.js:196` 経由）。先行バッチは generation ガードで全 job が不採択になり `jobs.length === 0` となるが、`indicator_controller.js:620-624` は **`preRender()`（＝メインローソク系列を新時間足へ差し替え）を実行した後に early return** するため、指標系列は**旧時間足のデータを保持したまま**残る。この間（実測 約 60ms）チャートは「ローソク＝新足の狭い範囲／指標系列＝旧足の広い範囲」という不整合状態にあり、時間軸の点集合は指標系列由来の旧 index を含む。ここで paint / hit-test が走ると 1. の条件が成立して throw する。後続バッチが指標系列を差し替えた時点で不整合は解消するため、実害は残らない。
+- **対策案（未実施・要承認）**: `recomputeAllApplied` の `jobs.length === 0` 早期 return を、**preRender の実行前**へ移す（描画すべき指標が無いなら メインローソク系列も差し替えない）。ただし「指標 0 件で時間足だけ切り替える」正常系も `jobs.length === 0` を通るため、単純な順序入替では時間足切替が効かなくなる。適用済み指標が 0 件のときのみ preRender を実行する、あるいは先行バッチ側で二重起動を抑止する等、条件の切り分けが必要。**共有ベース（live/replay 両モードが載る主機能）の変更**であり、影響範囲の評価と承認を要する。
+- **関連**: ISSUE-167（本体は解消済み・本件はその未解明個体）／ISSUE-188。
