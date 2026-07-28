@@ -315,6 +315,50 @@ html, body {
 .prop-input-checkbox { width: 16px; height: 16px; accent-color: #2962ff; }
 .prop-input-color { width: 40px; height: 26px; padding: 1px; cursor: pointer; }
 
+/* 期間入力＋プリセット（基本設計_期間プリセット §7）。数値入力の右にトリガーを置き、
+   ポップは時間足メニュー（.tf-menu-pop）と同型の見た目に揃える。 */
+.prop-period {
+  position: relative; display: inline-flex; align-items: center; gap: 4px;
+  padding: 0; border: 0; background: transparent; border-radius: 0;
+}
+/* 数値入力の幅は number コントロールと同一（期間表記も収まる）。 */
+.prop-period-input { width: 96px; }
+.prop-period-trigger {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  background: #131722; border: 1px solid #2a2e39; border-radius: 5px;
+  color: #787b86; font-size: 13px; cursor: pointer;
+}
+.prop-period-trigger:hover { color: #d1d4dc; border-color: #363a45; }
+.prop-period-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+  min-width: 160px; max-height: 60vh; overflow-y: auto;
+  background: #1e222d; border: 1px solid #363a45; border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5); padding: 4px 0;
+  display: flex; flex-direction: column;
+}
+.prop-period-pop.is-hidden { display: none; }
+.prop-period-head {
+  padding: 6px 12px 4px; color: #787b86; font-size: 11px; user-select: none;
+}
+.prop-period-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  width: 100%; padding: 6px 12px;
+  background: transparent; border: 0; color: #d1d4dc; font-size: 13px; cursor: pointer;
+}
+.prop-period-item:hover { background: #2a2e39; }
+.prop-period-item.is-active { background: #2962ff; color: #fff; }
+.prop-period-item-bars { color: #787b86; font-variant-numeric: tabular-nums; }
+.prop-period-item:hover .prop-period-item-bars { color: #d1d4dc; }
+.prop-period-item.is-active .prop-period-item-bars { color: #fff; }
+.prop-period-empty { padding: 8px 12px; color: #787b86; font-size: 12px; }
+/* 換算エラー（F-P1）。行の検証エラー（.prop-field-error）とは別枠で、_revalidate に消されない。 */
+.prop-period-error {
+  position: absolute; top: calc(100% + 2px); left: 0; white-space: nowrap;
+  color: #ef5350; font-size: 11px;
+}
+.prop-period.has-error .prop-period-input { border-color: #ef5350; }
+
 /* segmented（ENUM を横並びセグメントボタンで描く・解像度トグル移植）。最小装飾・選択中ハイライト。 */
 .prop-segmented { display: inline-flex; gap: 0; padding: 0; border: none; background: transparent; }
 .prop-seg-btn {

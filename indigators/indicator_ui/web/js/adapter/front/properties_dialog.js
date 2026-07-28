@@ -29,6 +29,11 @@ import {
   humanizeKey,
   toHex,
 } from './property_control_builders.js';
+// 期間プリセット（基本設計_期間プリセット.md §6.5）: 実効計算時間足の解決は usecase の純関数へ委譲する。
+import { effectiveTimeframe } from '../../usecase/period_presets.js';
+// 時間足 → 表示ラベル（'1h'→'1時間'）の単一情報源（timeframe_menu.js・ISSUE-123）。
+//   期間プリセット一覧の見出し「◯◯足 基準」に使う（ラベルを二重定義しない）。
+import { timeframeLabels } from './timeframe_menu.js';
 
 // toHex は本モジュールの公開面として維持する（既存の import 元を変えない・ISSUE-181）。
 export { toHex };
@@ -95,6 +100,12 @@ export class PropertiesDialog {
       getValue: (name) => this._values[name],
       setValue: (name, value) => { this._values[name] = value; },
       onChange: () => this._onChange(),
+      // 期間プリセットの基準（基本設計_期間プリセット.md §6.5・§8.2）。
+      //   呼び出し時解決の遅延アクセサ＝ダイアログ内で `timeframe` パラメータを変えると、
+      //   次にプリセットを開いたときの提示集合が新しい実効足で引き直される。
+      //   datasetRef／timeframe のいずれかが未供給（旧ホスト・SSR/単体テスト）は null を返し、
+      //   コントロール側はプリセット非提示へ退化する（F-P2/F-P3 と同じ扱い）。
+      periodContext: () => this._periodContext(),
     };
   }
 
@@ -334,6 +345,29 @@ export class PropertiesDialog {
   // control_type 別レンダリング（§3.1）。生成器テーブルへ委譲する（switch 廃止・OCP・ISSUE-181）。
   _buildControl(field) {
     return buildControl(field, this._controlCtx);
+  }
+
+  // 期間プリセットの基準（datasetRef ＋ 実効計算時間足）を解決する。
+  //   実効足＝指標の `timeframe` パラメータ（'chart' 以外なら MTF override）→ チャートの現在足。
+  //   規則は usecase/period_presets.js の effectiveTimeframe が唯一の判定源（二重定義しない）。
+  _periodContext() {
+    const datasetRef = this._context.datasetRef;
+    const chartTf = this._context.timeframe;
+    if (!datasetRef || !chartTf) {
+      return null;
+    }
+    const timeframe = effectiveTimeframe(this._values, chartTf);
+    return {
+      datasetRef,
+      timeframe,
+      timeframeLabel: this._timeframeLabel(timeframe),
+    };
+  }
+
+  // 時間足 → 見出し表示（'1h' → '1時間足'）。未知足はコードをそのまま出す。
+  _timeframeLabel(timeframe) {
+    const label = timeframeLabels()[timeframe];
+    return label ? `${label}足` : String(timeframe);
   }
 
   // segmented 単体の生成（既存テストが直接叩く接合面のため、委譲メソッドとして残す）。

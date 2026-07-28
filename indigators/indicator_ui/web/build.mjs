@@ -49,6 +49,12 @@ const MODULE_ORDER = [
   'js/adapter/front/local_storage_gateway.js',
   'js/adapter/front/catalog_client.js',
   'js/usecase/form_model.js',
+  // 期間プリセット: 換算表 v1 と純関数（property_control_builders / properties_dialog が参照）。
+  'js/usecase/period_presets.js',
+  // 時間足ラベルの単一情報源（timeframeLabels）。properties_dialog が期間プリセットの
+  //   見出し表示に使うため、従来位置（indicator_controller 群の後）から前へ移す。
+  //   本モジュールは相対 import を持たない葉であり、前方移動で依存順は壊れない。
+  'js/adapter/front/timeframe_menu.js',
   'js/adapter/front/property_control_builders.js',
   'js/adapter/front/properties_dialog.js',
   'js/adapter/front/indicator_legend_view.js',
@@ -85,7 +91,8 @@ const MODULE_ORDER = [
   'js/adapter/front/chart_bootstrap.js',
   'js/adapter/front/chart_interaction_controller.js',
   'js/adapter/front/scroll_to_latest_button.js',
-  'js/adapter/front/timeframe_menu.js',
+  // timeframe_menu.js は前方（form_model の直後）へ移動済み（期間プリセットの見出し表示で
+  //   properties_dialog が timeframeLabels を参照するため）。
   'js/adapter/front/local_storage_template_gateway.js',
   'js/adapter/front/chart_template_menu.js',
   'js/adapter/front/chart_template_dialogs.js',

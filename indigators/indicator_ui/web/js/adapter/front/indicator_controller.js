@@ -877,6 +877,11 @@ export class IndicatorController {
       //   （ISSUE-110 🔵-1: applySeriesStyle 側と同じ typeof ガードへ統一）。
       seriesStyles: typeof this._renderer.getSeriesStyles === 'function'
         ? this._renderer.getSeriesStyles(inst.instanceId) : null,
+      // 期間プリセット（基本設計_期間プリセット.md §6.5）: 換算の基準となる datasetRef と
+      //   チャートの現在足を渡す。指標側の計算時間足 override（params.timeframe）はダイアログが
+      //   values から解決するため、ここでは override 前のチャート足を渡す。
+      //   MP 側（market_profile_controller.js）は既に context を渡しており本項と同型。
+      context: { timeframe: this._timeframe, datasetRef: this._datasetRef },
       onApply: (values, variant, extra) => this._applyDialogResult(inst, currentParams, values, variant, extra),
       onCancel: () => {},
     });

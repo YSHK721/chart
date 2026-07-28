@@ -42,6 +42,11 @@ const UI_DEFAULTS = Object.freeze({
   label: null,
   // enumLabels: enum 値 → 表示名のマップ（select の選択肢を日本語表示する。省略時は値をそのまま表示）。
   enumLabels: null,
+  // isPeriod: 期間フラグ（基本設計_期間プリセット.md §5.1）。true のとき「その値は直近 N 本の
+  //   バーを意味する」＝期間プリセット UI の対象になる（controlType 既定が 'period' になる）。
+  //   判定源はこのフラグのみ。unit:'unit.bars' は単位表示のためのメタデータであり流用しない
+  //   （承認事項 A-7。現に moving_averages.length 等の明白な期間パラメータへ付いていない）。
+  isPeriod: false,
 });
 
 // ui オブジェクトから UI_DEFAULTS のキーのみを既定フォールバック付きで抽出する。
@@ -81,7 +86,7 @@ const TGP_BTLM = new IndicatorDef({
     // 共有 applied_price で解決する（tgp_btlm src は無改変）。moving_averages の source と同一写像。
     param('price', ParamType.ENUM, 'open', [], ['open', 'high', 'low', 'close', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 2 }),
     // maxbars 既定 40→100 是正（M-1・core.py:33 DEFAULT_MAXBARS=100）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, unit: 'unit.bars' }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, unit: 'unit.bars', isPeriod: true }),
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
       { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
@@ -138,7 +143,7 @@ const BTLM_TRAIL = new IndicatorDef({
     // ソース: moving_averages と同一 8 択（applied_price 参照・既定 close）。
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
     // maxbars: 回帰窓（既定 100・core DEFAULT_MAXBARS）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars' }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', isPeriod: true }),
     // 分位ペア（0<q_low<q_high<1）。tgp_btlm と対称の q-chain 制約。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
@@ -151,7 +156,7 @@ const BTLM_TRAIL = new IndicatorDef({
     param('band_method', ParamType.ENUM, 'ols', [], ['ols', 'empirical'], { group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS }),
     // 経験分位バンドの参照本数（既定 500・band_method==empirical のときのみ有効）。
     param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
-      group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars',
+      group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars', isPeriod: true,
       conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
     }),
     // --- 表示 ---
@@ -170,7 +175,7 @@ const BTLM_TRAIL = new IndicatorDef({
     }),
     // バンド内実績率（実現被覆率）のローリング本数（既定 250）。
     param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
-      group: 'group.display', order: 4, label: 'バンド内実績率の本数', step: 1, min: 2, unit: 'unit.bars',
+      group: 'group.display', order: 4, label: 'バンド内実績率の本数', step: 1, min: 2, unit: 'unit.bars', isPeriod: true,
       conditionalEnable: { when: { param: 'show_metrics', equals: true } },
     }),
     // color は btlm_mean（トレンド現在位置）の色。スタイルタブへ移譲。
@@ -244,7 +249,7 @@ const BTLM_TRAIL_MAROD = new IndicatorDef({
     // ソース: btlm_trail と同一 8 択（applied_price 参照・既定 close）。
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
     // maxbars: 回帰窓（既定 100・min 3・btlm_trail core DEFAULT_MAXBARS）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars' }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', isPeriod: true }),
     // 分位ペア（0<q_low<q_high<1・btlm_trail と対称の q-chain 制約）。σ・分位バンドの下側/上側分位。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
@@ -258,7 +263,7 @@ const BTLM_TRAIL_MAROD = new IndicatorDef({
     // window_n: 正常バンド（分位バンド）の因果ローリング窓（既定 500・min 2）。実測で MAROD は
     //   分散非定常のため固定でなくこの窓で局所再計算する（当該バー除外＝非リペイント）。
     param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
-      group: 'group.calc', order: 8, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓',
+      group: 'group.calc', order: 8, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓', isPeriod: true,
       tooltip: '正常バンド（経験分位バンド・下側/上側分位）を算出する因果ローリング窓の本数。MAROD は分散非定常のため固定でなくこの窓で局所再計算する。当該バーは除外（非リペイント）。',
     }),
     // color は MAROD 線の色（スタイルタブへ移譲）。既定は add_btlm_trail_marod の _COLOR_MAROD。
@@ -316,7 +321,7 @@ const PROFIT_BAND = new IndicatorDef({
     // atr_period=14（INT・normalize=="atr" のときのみ ATR 計算で使用・robust_bands.py:135-138）。
     // 条件付き有効化（§3.5）: normalize==atr で有効、return で無効。
     param('atr_period', ParamType.INT, 14, [], null, {
-      group: 'group.robust', order: 3, step: 1, min: 1, unit: 'unit.bars',
+      group: 'group.robust', order: 3, step: 1, min: 1, unit: 'unit.bars', isPeriod: true,
       conditionalEnable: { when: { param: 'normalize', equals: 'atr' } },
     }),
     // min_obs=30（INT・lwc_chart.py:167）。
@@ -402,12 +407,12 @@ const MOVING_AVERAGES = new IndicatorDef({
   params: [
     // --- 基本（無見出しの先頭セクション）---
     param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], { order: 1, label: '種別', enumLabels: MA_TYPE_LABELS }),
-    param('length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { order: 2, label: '期間', step: 1, min: 2 }),
+    param('length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { order: 2, label: '期間', step: 1, min: 2, isPeriod: true }),
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { order: 3, label: 'ソース', enumLabels: MA_SOURCE_LABELS }),
     param('offset', ParamType.INT, 0, [], null, { order: 4, label: 'オフセット', step: 1 }),
     // --- 平滑化 ---
     param('smoothing_type', ParamType.ENUM, 'none', [], ['none', 'sma', 'ema', 'smma', 'wma', 'sma_bb'], { group: '平滑化', order: 1, label: 'タイプ', enumLabels: MA_SMOOTHING_LABELS }),
-    param('smoothing_length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['smoothing_length', 2], messageKey: 'err.length' }], null, { group: '平滑化', order: 2, label: '期間', step: 1, min: 2 }),
+    param('smoothing_length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['smoothing_length', 2], messageKey: 'err.length' }], null, { group: '平滑化', order: 2, label: '期間', step: 1, min: 2, isPeriod: true }),
     // BB標準偏差: smoothing_type==sma_bb のときのみ有効（conditionalEnable で他はグレーアウト＝画像準拠）。
     param('bb_stddev', ParamType.FLOAT, 2.0, [], null, {
       group: '平滑化', order: 3, label: 'BB標準偏差', step: 0.001, min: 0.001,
@@ -444,7 +449,7 @@ const MA_MAROD = new IndicatorDef({
     // 基準線 MA 種別（moving_averages と同一 4 択・同一ラベル・既定 ema）。
     param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], { group: 'group.calc', order: 2, label: '種別', enumLabels: MA_TYPE_LABELS }),
     // length: MA 本数（既定 50・min 2＝参照実装 *_on_buffer の契約）。
-    param('length', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { group: 'group.calc', order: 3, label: '期間', step: 1, min: 2, unit: 'unit.bars' }),
+    param('length', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { group: 'group.calc', order: 3, label: '期間', step: 1, min: 2, unit: 'unit.bars', isPeriod: true }),
     // 分位ペア（0<q_low<q_high<1・btlm_trail_marod と対称の q-chain 制約）。σ・分位バンドの下側/上側分位。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
@@ -459,7 +464,7 @@ const MA_MAROD = new IndicatorDef({
     // window_n: 正常バンド（分位バンド）の因果ローリング窓（既定 500・min 2）。乖離率は
     //   分散非定常（実測）のため固定でなくこの窓で局所再計算する（当該バー除外＝非リペイント）。
     param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
-      group: 'group.calc', order: 9, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓',
+      group: 'group.calc', order: 9, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓', isPeriod: true,
       tooltip: '正常バンド（経験分位バンド・下側/上側分位）を算出する因果ローリング窓の本数。乖離率は分散非定常のため固定でなくこの窓で局所再計算する。当該バーは除外（非リペイント）。',
     }),
     // color は MA_MAROD 線の色（スタイルタブへ移譲）。既定は add_ma_marod の _COLOR_MA_MAROD。
@@ -501,7 +506,7 @@ const PF_HIST = (seriesName) => new SeriesDef({ kind: SeriesKind.HISTOGRAM, sour
 const PF_INT = (name, def, extraUi = {}) => param(
   name, ParamType.INT, def,
   [{ kind: ConstraintKind.MIN_VALUE, operands: [name, 1], messageKey: `err.${name}` }],
-  null, { group: 'group.calc', step: 1, min: 1, ...extraUi },
+  null, { group: 'group.calc', step: 1, min: 1, isPeriod: true, ...extraUi },
 );
 // 標準化窓 W（直近 W 本の過去のみで標準化＝look-ahead 除去・repaint しない）。
 // profit_* の因果化済み 6 指標で共通の window パラメータ（def=120・min:2・専用ラベル）。
