@@ -21,6 +21,7 @@ import { deserialize } from '../../usecase/facade.js';
 import { humanizeKey } from './property_control_builders.js';
 import {
   deleteTemplate as deleteTemplateUc,
+  findTemplateByName as findTemplateByNameUc,
   renameTemplate as renameTemplateUc,
   resolveBinding,
   saveTemplate,
@@ -112,6 +113,11 @@ export class ChartTemplateController {
   // activeTemplateId は uiState（既存キー `indicatorUi.uiState.v1` への加法・§4.2）に載る。
   activeTemplateId() {
     return this._host._state.uiState?.activeTemplateId ?? null;
+  }
+
+  // 正規化名が一致する既存テンプレートを返す（無ければ null）。保存時の上書き確認の判定源。
+  findTemplateByName(name) {
+    return findTemplateByNameUc({ templates: this._templates, name });
   }
 
   // 時間足の表示ラベル（'1D'→'日'）。未注入・未知キーはキーをそのまま返す。
@@ -307,6 +313,9 @@ export class ChartTemplateController {
     this._dialogs.openSave({
       timeframeLabel: this.timeframeLabel(host._timeframe),
       indicatorNames: host._state.applied.map((i) => this._labelOf(i)),
+      // 上書き確認（ユーザー指示 2026-07-28）の判定器。判定は usecase の純関数のみが行い、
+      //   ダイアログは結果（既存テンプレート or null）を受け取るだけ（DIP・判定源の一本化）。
+      findExisting: (name) => this.findTemplateByName(name),
       onSubmit: ({ name, bindCurrentTimeframe }) => this.saveCurrent({ name, bindCurrentTimeframe }),
     });
   }

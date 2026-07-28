@@ -42,6 +42,18 @@ export function displayTemplateName(name) {
   return String(name ?? '').trim();
 }
 
+// 正規化名が一致する既存テンプレートを返す（無ければ null）。
+//   同名保存の上書き判定（§5.1 処理 2）と、その確認 1 段（ユーザー指示 2026-07-28）の
+//   単一の判定源。呼び出し側（ダイアログ等）で文字列比較を再実装しない。
+//   空名（trim 後 0 文字）は一致なし＝確認に入らず、名前検証（F-T1）へ委ねる。
+export function findTemplateByName({ templates = [], name } = {}) {
+  const normalized = normalizeTemplateName(name);
+  if (normalized.length === 0) {
+    return null;
+  }
+  return (templates ?? []).find((t) => t && normalizeTemplateName(t.name) === normalized) ?? null;
+}
+
 // 名前検証（§4.1: 1〜40 文字・前後空白は trim／§5.5: 正規化名の重複不可）。
 //   excludeTemplateId: 改名時に「自分自身との一致」を重複から除外する（§5.5）。
 export function validateTemplateName(name, { templates = [], excludeTemplateId = null } = {}) {
@@ -148,7 +160,7 @@ export function recoverLastSeq(lastSeq, templates = []) {
 //   - 一致しない → 新規採番して追加（上限 50 件で拒否・§5.1 例外「上書き更新は可」）。
 export function saveTemplate({ templates = [], lastSeq = 0, name, applied = [], now = 0 } = {}) {
   const list = templates ?? [];
-  const existing = list.find((t) => t && normalizeTemplateName(t.name) === normalizeTemplateName(name));
+  const existing = findTemplateByName({ templates: list, name });
   // 重複は「上書き」であって検証エラーではないため、自分自身を除外して検証する。
   const verdict = validateTemplateName(name, {
     templates: list,

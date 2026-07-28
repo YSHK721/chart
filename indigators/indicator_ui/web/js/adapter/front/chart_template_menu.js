@@ -107,7 +107,7 @@ export class ChartTemplateMenu {
     manage.type = 'button';
     manage.className = 'tpl-menu-item tpl-menu-action';
     manage.dataset.tplAction = 'manage';
-    manage.textContent = '管理（改名・削除）…';
+    manage.textContent = '管理（名前を変更・削除）…';
     pop.append(manage);
 
     mount.appendChild(trigger);

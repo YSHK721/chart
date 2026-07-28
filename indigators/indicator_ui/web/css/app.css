@@ -463,6 +463,8 @@ html, body {
 .tpl-dialog-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .tpl-dialog-error { color: #e0564a; font-size: 12px; padding: 0 14px; min-height: 0; }
 .tpl-dialog-error:empty { display: none; }
+/* 上書き確認のインライン表示（同じ場所・同じ機構だがエラーではないため配色を分ける） */
+.tpl-dialog-error.is-confirm { color: #d1d4dc; }
 .tpl-dialog-foot {
   display: flex; align-items: center; justify-content: flex-end; gap: 8px;
   padding: 10px 14px; border-top: 1px solid #2a2e39;

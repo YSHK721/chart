@@ -113,8 +113,13 @@ export class ChartTemplateDialogs {
    * @param {string}   [opts.timeframeLabel] 現在の時間足の表示名（例「日」）。
    * @param {string[]} [opts.indicatorNames] 保存対象の指標名（読み取り専用プレビュー）。
    * @param {function} [opts.onSubmit] ({ name, bindCurrentTimeframe }) => { ok, code }。
+   * @param {?function} [opts.findExisting] (name) => CHART_TEMPLATE|null。正規化名が一致する既存
+   *   テンプレートを返す判定器（usecase の純関数を注入する。本ダイアログは文字列比較を持たない）。
+   *   未注入時は確認を挟まない（従来挙動）。
    */
-  openSave({ timeframeLabel = '', indicatorNames = [], onSubmit = () => ({ ok: true }) } = {}) {
+  openSave({
+    timeframeLabel = '', indicatorNames = [], onSubmit = () => ({ ok: true }), findExisting = null,
+  } = {}) {
     if (!this._usable()) {
       return null;
     }
@@ -166,12 +171,40 @@ export class ChartTemplateDialogs {
     const cancel = this._button('キャンセル', 'cancel', 'tpl-dialog-btn');
     cancel.addEventListener('click', () => this.close());
     const submit = this._button('保存', 'submit', 'tpl-dialog-btn is-primary');
+    // 上書き確認（ユーザー指示 2026-07-28）: 正規化名が既存と一致する場合は保存前に確認 1 段を挟む。
+    //   確認状態＝「上書きする」ラベル＋対象名のインライン表示。名前を編集したら解除する
+    //   （§5.5 削除の確認 1 段と同型のイディオム）。判定は注入された usecase 純関数のみが行う。
+    let pendingOverwrite = null; // 確認中の対象テンプレート（null=通常の保存状態）。
+    const clearOverwriteConfirm = () => {
+      if (!pendingOverwrite) {
+        return;
+      }
+      pendingOverwrite = null;
+      submit.textContent = '保存';
+      error.textContent = '';
+      error.classList.remove('is-confirm');
+    };
+    // 名前の編集で確認を解除する（編集後の名前が別テンプレートと一致すれば再度確認に入る）。
+    nameInput.addEventListener('input', clearOverwriteConfirm);
+    nameInput.addEventListener('change', clearOverwriteConfirm);
     submit.addEventListener('click', () => {
+      if (!pendingOverwrite) {
+        const existing = typeof findExisting === 'function' ? findExisting(nameInput.value) : null;
+        if (existing) {
+          // 保存せず確認へ入る。エラーではないため配色はエラー色にしない（is-confirm）。
+          pendingOverwrite = existing;
+          submit.textContent = '上書きする';
+          error.textContent = `「${existing.name}」を上書きします。`;
+          error.classList.add('is-confirm');
+          return;
+        }
+      }
       const result = onSubmit({ name: nameInput.value, bindCurrentTimeframe: !!bindInput.checked }) ?? { ok: true };
       if (result.ok) {
         this.close();
         return;
       }
+      clearOverwriteConfirm();
       error.textContent = messageFor(result.code); // F-T1: ダイアログ内インライン表示。
     });
     foot.append(cancel, submit);
@@ -236,7 +269,7 @@ export class ChartTemplateDialogs {
     rename.type = 'button';
     rename.className = 'tpl-dialog-btn';
     rename.dataset.tplRename = t.templateId;
-    rename.textContent = '改名';
+    rename.textContent = '名前を変更';
     rename.addEventListener('click', () => {
       renameInput.classList.remove('is-hidden');
       renameCommit.classList.remove('is-hidden');

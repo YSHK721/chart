@@ -431,6 +431,45 @@ test('TC-C16 削除: 紐付けと activeTemplateId を掃除し、現在の構�
 // ビューモデル（U3・U6）
 // ---------------------------------------------------------------------------
 
+test('TC-C21 上書き: 保存ダイアログへ既存テンプレート判定器（usecase 純関数）を渡す（上書き確認の判定源）', () => {
+  // Arrange
+  const host = fakeHost({ applied: [], timeframe: '1D' });
+  const opened = [];
+  const dialogs = { openSave: (arg) => opened.push(arg), openManage: () => {} };
+  const ctl = new ChartTemplateController(host, {
+    gateway: fakeGateway({ templates: [TPL_A], lastSeq: 1 }), dialogs,
+    validTimeframes: VALID_TIMEFRAMES, now: () => 2000,
+  });
+  // Act
+  ctl.openSaveDialog();
+  // Assert
+  assert.equal(typeof opened[0].findExisting, 'function', '判定器を注入する（ダイアログは文字列比較を持たない）');
+  assert.equal(opened[0].findExisting('  すいんぐ  '), null, '正規化名が一致しなければ null');
+  assert.equal(opened[0].findExisting('  スイング  ').templateId, 'tpl#1', '前後空白を吸収して既存を返す');
+});
+
+test('TC-C22 上書き: templateId と紐付けが保持され createdAt 不変・updatedAt が進む（§5.1 処理 2・値の扱いは不変）', () => {
+  // Arrange: tpl#1 が 1D へ紐付け済み・現構成は 1 件
+  const host = fakeHost({ applied: [appliedJson({ indicatorId: 'tgp_btlm' })], timeframe: '1D' });
+  const gateway = fakeGateway({ templates: [TPL_A], bindings: { '1D': 'tpl#1' }, lastSeq: 1 });
+  const { ctl } = build({ host, gateway });
+  // Act: 同名（正規化一致）で保存＝上書き
+  const res = ctl.saveCurrent({ name: '  すいんぐ  '.replace('すいんぐ', 'スイング'), bindCurrentTimeframe: true });
+  // Assert
+  assert.equal(res.ok, true);
+  assert.equal(res.templateId, 'tpl#1', 'templateId を保持する');
+  assert.equal(gateway.saved.templates.length, 1, '新規追加ではなく上書き');
+  assert.equal(gateway.saved.templates[0].createdAt, 1000, 'createdAt は不変');
+  assert.equal(gateway.saved.templates[0].updatedAt, 2000, 'updatedAt を更新する');
+  assert.deepEqual(
+    gateway.saved.templates[0].instances.map((i) => i.indicatorId), ['tgp_btlm'],
+    'instances は現在の構成で置換する',
+  );
+  assert.deepEqual(gateway.saved.bindings, { '1D': 'tpl#1' }, '紐付けは保持される');
+  assert.equal(gateway.saved.lastSeq, null, '上書きでは採番しない');
+  assert.equal(host._state.uiState.activeTemplateId, 'tpl#1', 'activeTemplateId は当該 id に設定する');
+});
+
 test('TC-C19 保存ダイアログ入口: 現在足と保存対象の指標名（凡例と同一表記）を dialogs へ渡す（§6.2）', () => {
   // Arrange
   const host = fakeHost({
