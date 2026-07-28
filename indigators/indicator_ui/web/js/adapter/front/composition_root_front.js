@@ -42,7 +42,14 @@ import { MarketProfileActor } from './market_profile_actor.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
 import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
 import { ScrollToLatestButton } from './scroll_to_latest_button.js';
-import { TimeframeMenu } from './timeframe_menu.js';
+import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
+// チャートテンプレート（基本設計_チャートテンプレート v0.1.1 §7.1）: gateway・menu・dialogs・協働子を
+//   ここで生成・注入する。統合 UI の唯一の bootstrap 経路（E-9）であるため、この配線でライブ・
+//   リプレイ両モードに同時成立する。
+import { LocalStorageTemplateGateway } from './local_storage_template_gateway.js';
+import { ChartTemplateMenu } from './chart_template_menu.js';
+import { ChartTemplateDialogs } from './chart_template_dialogs.js';
+import { ChartTemplateController } from './chart_template_controller.js';
 // GrowthCoordinator は共有 market_profile モジュール（usecase/growth_coordinator.js）へ移設済み。
 //   present は adapter/front/mp_live_mode_coordinator.js（symlink）経由で import（byte 不変 retarget）。
 import { GrowthCoordinator } from './mp_live_mode_coordinator.js';
@@ -203,6 +210,9 @@ export async function bootstrap({
     renderer.setCandles(initialCandles);
   }
   const persistence = new LocalStorageGateway(storage);
+  // テンプレート永続化（§4.2 の 3 キー）。既存 LocalStorageGateway は無改変（ISP）。接頭辞は
+  //   注入された storage（統合 UI は scopedStorage）が付けるため gateway は自前で付けない。
+  const templateStore = new LocalStorageTemplateGateway(storage);
   const catalog = new IndicatorCatalogClient();
   // param 既定値の単一情報源（back catalog_schema）を GET /catalog で解決する（ISSUE-092 ③）。
   //   B方式のみ取得し、失敗時は静的既定（catalog.js リテラル）へフォールバック（オフライン耐性・UI 不変）。
@@ -323,6 +333,22 @@ export async function bootstrap({
   // ISSUE-117: 時間足ドロップダウンの開閉制御（選択・active 同期は bind() の data-timeframe 配線）。
   new TimeframeMenu({ document: doc }).install();
 
+  // チャートテンプレートのメニュー・ダイアログ（§6.1・§6.2）。項目 DOM は共有 JS が生成し、
+  //   index.html には空マウント（#tpl-menu）のみを置く。メニューは協働子を import せず
+  //   コールバック注入で結ぶ（DIP）。協働子は controller 生成後に代入されるため遅延参照する。
+  let chartTemplates = null;
+  const chartTemplateDialogs = new ChartTemplateDialogs({ document: doc });
+  const chartTemplateMenu = new ChartTemplateMenu({
+    document: doc,
+    // U6: 開くたびに最新のビューモデルで再描画する（restore() との順序依存を作らない）。
+    provide: () => (chartTemplates ? chartTemplates.viewModel() : {}),
+    onSelect: (templateId) => (chartTemplates ? chartTemplates.applyTemplate(templateId) : undefined),
+    onSave: () => (chartTemplates ? chartTemplates.openSaveDialog() : undefined),
+    onBind: (templateId) => (chartTemplates ? chartTemplates.bindCurrentTimeframe(templateId) : undefined),
+    onManage: () => (chartTemplates ? chartTemplates.openManageDialog() : undefined),
+  });
+  chartTemplateMenu.install();
+
   // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）を MP の成長状態へ
   //   連動させる共有協調役（Model A 直交化）。表示モードは gear 選択を維持し、FOLLOW→growing=true（足内成長）／
   //   ANALYSIS→growing=false（static）。defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定
@@ -347,6 +373,24 @@ export async function bootstrap({
     mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
     mpGrowthResolver: mpLiveModeCoordinator ? () => mpLiveModeCoordinator.isGrowing() : null,
   });
+
+  // テンプレート協働子（§7.1）。有効時間足集合は composition root から注入する（U1・present は
+  //   既定 9 足＝時間足メニューと同一集合。単一情報源は domain/tf_meta.js の TF_BAR_SEC＝
+  //   LAYERING_CONVENTIONS「UI の時間足ボタン集合もこの集合から乖離させない」）。
+  chartTemplates = new ChartTemplateController(controller, {
+    gateway: templateStore,
+    menu: chartTemplateMenu,
+    dialogs: chartTemplateDialogs,
+    validTimeframes: Object.keys(TF_BAR_SEC),
+    // 保存ダイアログの文言「この時間足（日）に紐付ける」用のラベル写像（§6.2）。
+    //   単一情報源は timeframe_menu.js の groups（キーとラベルを二重定義しない）。
+    timeframeLabels: timeframeLabels(),
+  });
+  // 時間足切替への介入（§7.2）: 購読スロット（setTimeframeObserver）は単数かつ売買マーカーで
+  //   使用済み（E-7）のため使わず、own property での差し替え 1 行で行う。順序（除去 → 切替 →
+  //   適用）と再入防止は協働子が所有する（root はここに手続きを持たない）。
+  const proceedSetTimeframe = controller.setTimeframe.bind(controller);
+  controller.setTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
 
   // 時間足毎profile列（tf-period・最小価格単位・ローリング窓＋ジッターバッファ）の配線（served のみ）。
   //   sessions モード（marketProfile.isSessions()）かつ対応 tf（1m..1D）のとき、可視レンジぶんの列を
@@ -630,5 +674,5 @@ export async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
 }

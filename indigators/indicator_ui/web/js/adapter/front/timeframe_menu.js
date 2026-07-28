@@ -23,6 +23,21 @@ const DEFAULT_GROUPS = [
   { cat: '日', items: [['1D', '日'], ['1W', '週'], ['1M', '月']] },
 ];
 
+// 時間足キー → 表示ラベル（'1m'→'1分'・'1D'→'日'）の写像を groups から導出する。
+//   ラベルの単一情報源は本モジュールの groups 定義（既定＝present 9 足）であり、利用側は
+//   キーとラベルを二重定義しない（チャートテンプレートの保存ダイアログ文言が本写像を使う。
+//   基本設計_チャートテンプレート §6.2「この時間足（例：日）に紐付ける」）。
+//   replay の 8 足は既定 groups の部分集合（30m 非対応）でラベル語彙は同一のため既定で足りる。
+export function timeframeLabels(groups = DEFAULT_GROUPS) {
+  const map = {};
+  for (const g of groups ?? []) {
+    for (const [tf, text] of g.items ?? []) {
+      map[tf] = text;
+    }
+  }
+  return map;
+}
+
 export class TimeframeMenu {
   // { document, groups }（マウントは id で解決: #tf-menu（空 div）。groups 省略＝present 既定 9 足）。
   constructor({ document: doc, groups } = {}) {

@@ -92,8 +92,31 @@ export class IndicatorStateStore {
     // 復元した時間足を購読者へ通知する（売買マーカーの該当時間足フィルタが restore 後の
     //   現在時間足を正しく評価できるようにする。通知欠落だと該当時間足でも非表示になる逆動作）。
     host._timeframeObserver?.(host._timeframe);
+    await this.rebuildApplied(host._state.applied);
+    host._renderLegend();
+    host._renderDialogList();
+  }
+
+  /**
+   * 適用済みインスタンス配列を、現在の時間足のまま再計算して再描画する（公開入口）。
+   *
+   * 基本設計_チャートテンプレート.md v0.1.1 §7.2 S2（承認済み）: `_restoreRun` の
+   * 「再構築ループ」部を挙動不変で抽出した唯一の実体。復元（restore）とテンプレート適用
+   * （UC-T02 手順 2〜4）が同一手順（MP 復元経路・styles 再適用・個別失敗の局所化）を共有する。
+   * 時間足復元・保存状態の読込・凡例/ダイアログ再描画は含まない（呼び出し側の責務）。
+   *
+   * ★ 事前条件（違反すると styles が黙って失われる）:
+   *   呼び出し前に `host._state.applied` へ当該 instance が在席していること。
+   *   `_draw` → `series_render_router.js:74` → `indicator_controller.js:305` が
+   *   `_state.applied.find` を読んで保存済みスタイルを再適用するため、state 未在席のまま
+   *   本入口を呼ぶと描画は成功するが styles 上書きだけが無反映になる（サイレント欠落）。
+   *
+   * @param {Array} appliedList 再構築対象（AppliedInstance またはその JSON 形の配列）。
+   */
+  async rebuildApplied(appliedList) {
+    const host = this._host;
     // 各 instance を再計算して再描画（A方式は variant 事前計算データで復元）。
-    for (const inst of host._state.applied) {
+    for (const inst of appliedList ?? []) {
       const def = host._catalog.get(inst.indicatorId);
       if (!def) {
         continue;
@@ -119,7 +142,5 @@ export class IndicatorStateStore {
         // 事前計算未収録 variant はスキップ（A方式制限）。
       }
     }
-    host._renderLegend();
-    host._renderDialogList();
   }
 }

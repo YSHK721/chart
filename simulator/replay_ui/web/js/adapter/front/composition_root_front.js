@@ -18,7 +18,14 @@ import { ChartRenderer } from './chart_renderer.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
 import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
 import { ScrollToLatestButton } from './scroll_to_latest_button.js';
-import { TimeframeMenu } from './timeframe_menu.js';
+import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
+// チャートテンプレート（基本設計_チャートテンプレート v0.1.1 §7.1）: standalone replay_ui を単体起動
+//   した場合の同等配線（統合 UI 経由では live root 側の配線が使われる）。実体は indicator_ui 側の
+//   単一ソースを symlink 共有する＝両モードの挙動一致を構造的に保証する（E-5）。
+import { LocalStorageTemplateGateway } from './local_storage_template_gateway.js';
+import { ChartTemplateMenu } from './chart_template_menu.js';
+import { ChartTemplateDialogs } from './chart_template_dialogs.js';
+import { ChartTemplateController } from './chart_template_controller.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
 import { CurrentPriceView } from './current_price_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
@@ -142,6 +149,8 @@ export async function bootstrap({
     renderer.setCandles(initialCandles);
   }
   const persistence = new LocalStorageGateway(storage);
+  // テンプレート永続化（§4.2 の 3 キー）。既存 LocalStorageGateway は無改変（ISP）。
+  const templateStore = new LocalStorageTemplateGateway(storage);
   const catalog = new IndicatorCatalogClient();
 
   // 時間足切替で candles を再取得するためのローダ（B方式のみ）。A方式（SAMPLE_DATA・再集計不可）は null。
@@ -159,6 +168,22 @@ export async function bootstrap({
     //   refresh(to) 成長（機構A）。mode 解決役は注入しない＝gear 選択モードをそのまま維持（present と同型）。
     mpGrowthResolver: () => true,
   });
+
+  // テンプレート協働子（§7.1）。有効時間足集合は composition root から注入する（U1・replay は
+  //   下の TimeframeMenu へ注入する 8 足＝サーバ TIMEFRAME_RULES と一致・30m 非対応）。
+  //   メニュー・ダイアログは下（共有 UI 部品の配線位置）で生成し attachUi で結ぶ。
+  const chartTemplates = new ChartTemplateController(controller, {
+    gateway: templateStore,
+    validTimeframes: ['1m', '5m', '15m', '1h', '4h', '1D', '1W', '1M'],
+    // 保存ダイアログの文言用ラベル写像（§6.2）。単一情報源は timeframe_menu.js の groups
+    //   （replay の 8 足は既定 groups の部分集合でラベル語彙は同一）。
+    timeframeLabels: timeframeLabels(),
+  });
+  // 時間足切替への介入（§7.2）: 購読スロット（setTimeframeObserver）は単数かつ売買マーカーで
+  //   使用済み（E-7）のため使わず、own property での差し替え 1 行で行う。順序（除去 → 切替 →
+  //   適用）と再入防止は協働子が所有する。
+  const proceedSetTimeframe = controller.setTimeframe.bind(controller);
+  controller.setTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
 
   // チャート操作（価格軸 wheel ズーム・dblclick 自動スケール復帰・本体縦パン）の配線。
   //   ISSUE-123: 旧・独立コピーを廃止し present と同一実体（symlink 単一ソース）を参照する。
@@ -188,6 +213,21 @@ export async function bootstrap({
       { cat: '日', items: [['1D', '日'], ['1W', '週'], ['1M', '月']] },
     ],
   }).install();
+  // チャートテンプレートのメニュー・ダイアログ（§6.1・§6.2）。項目 DOM は共有 JS が生成し、
+  //   index.html には空マウント（#tpl-menu）のみを置く。メニューは協働子を import せず
+  //   コールバック注入で結ぶ（DIP）。
+  const chartTemplateDialogs = new ChartTemplateDialogs({ document: doc });
+  const chartTemplateMenu = new ChartTemplateMenu({
+    document: doc,
+    // U6: 開くたびに最新のビューモデルで再描画する（restore() との順序依存を作らない）。
+    provide: () => chartTemplates.viewModel(),
+    onSelect: (templateId) => chartTemplates.applyTemplate(templateId),
+    onSave: () => chartTemplates.openSaveDialog(),
+    onBind: (templateId) => chartTemplates.bindCurrentTimeframe(templateId),
+    onManage: () => chartTemplates.openManageDialog(),
+  });
+  chartTemplateMenu.install();
+  chartTemplates.attachUi({ menu: chartTemplateMenu, dialogs: chartTemplateDialogs });
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
   //   初期は既定時間足・直近 recentBars 本。取得失敗時は SAMPLE_DATA のまま（フォールバック）。
@@ -276,5 +316,5 @@ export async function bootstrap({
   tradeMarkers.setCurrentTimeframe(timeframe);
   controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
 
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers, marketProfile, replayBar };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers, marketProfile, replayBar, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
 }

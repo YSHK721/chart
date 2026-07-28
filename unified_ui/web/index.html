@@ -39,6 +39,9 @@
       <span class="tb-sep"></span>
       <button id="live-follow-toggle" class="tb-interval" type="button" aria-pressed="false" title="ライブ追従（点灯=ライブ／消灯=分析）" disabled>ライブ</button>
       <span class="tb-sep"></span>
+      <!-- チャートテンプレートのドロップダウンのマウント（基本設計_チャートテンプレート §6.1）。
+           DOM は共有 chart_template_menu.js が生成する（HTML 直書きの複製を作らない）。 -->
+      <div class="tpl-menu" id="tpl-menu"></div>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
         <span class="ic">∿</span>
         <span class="lbl">インジケーター</span>

@@ -1,0 +1,1 @@
+../../../../../indigators/indicator_ui/web/js/usecase/chart_templates.js
