@@ -116,7 +116,7 @@ test('初期表示は本数（text 入力・A-8）で、プリセットは閉じ
 
 // ---- UC-P01 提示（§6.1）----------------------------------------------------
 
-test('トリガー押下でプリセットが実効足の集合で描かれる（1h → 4時間/1日/1週間/1ヶ月/3ヶ月）', () => {
+test('トリガー押下でプリセットが実効足の集合で描かれる（表 v2・1h は 13 件）', () => {
   const ctx = makeCtx({ periodContext: PC_1H });
   const wrap = buildPeriod(FIELD, ctx);
   const { trigger, pop } = parts(wrap);
@@ -127,7 +127,9 @@ test('トリガー押下でプリセットが実効足の集合で描かれる�
   const items = pop.children.filter((c) => c.className.includes('prop-period-item'));
   assert.deepEqual(
     items.map((i) => [i.children[0].textContent, i.children[1].textContent]),
-    [['4時間', '4'], ['1日', '23'], ['1週間', '115'], ['1ヶ月', '496'], ['3ヶ月', '1480']],
+    [['2時間', '2'], ['4時間', '4'], ['6時間', '6'], ['12時間', '11'], ['1日', '23'],
+      ['2日', '46'], ['3日', '56'], ['1週間', '115'], ['2週間', '230'], ['3週間', '341'],
+      ['1ヶ月', '495'], ['2ヶ月', '981'], ['3ヶ月', '1481']],
   );
 });
 
@@ -147,7 +149,8 @@ test('パラメータの min 制約でプリセットが絞られる（§6.1-3�
   const { trigger, pop } = parts(wrap);
   trigger.dispatch('click');
   const items = pop.children.filter((c) => c.className.includes('prop-period-item'));
-  assert.deepEqual(items.map((i) => i.children[1].textContent), ['8', '45', '225', '971']);
+  assert.deepEqual(items.map((i) => i.children[1].textContent),
+    ['4', '8', '12', '22', '45', '90', '108', '225', '450', '668', '969']);
 });
 
 test('候補 0 件のときは空メッセージを出す（未登録 datasetRef・F-P3）', () => {
@@ -208,7 +211,7 @@ test('Enter でも確定する', () => {
   const { input } = parts(wrap);
   input.value = '3M';
   input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
-  assert.equal(ctx._values.length, 1480);
+  assert.equal(ctx._values.length, 1481);
 });
 
 test('純数値の入力は即時反映される（従来の number コントロールと同じ即時検証）', () => {

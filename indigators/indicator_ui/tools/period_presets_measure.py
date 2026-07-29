@@ -45,14 +45,26 @@ TF_SEC = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800,
           "1h": 3600, "4h": 14400, "1D": 86400, "1W": 604800, "1M": 2592000}
 
 # 表の単位（キーは period_presets.js の UNIT_ORDER と一致させる）。
+#   v2（2026-07-29・提示数拡充）: v1 の 11 単位に中間刻み 9 単位を加法した 20 単位。
+#   追加分は 2h/6h/12h（日内）・2d/3d（数日）・2w/3w（数週）・2mo/9mo（数ヶ月）で、
+#   いずれも v1 と同一の換算プリミティブ（§4.1）で実測する。v1 の単位・値は変更しない。
 UNITS = [
     ("1h", pd.DateOffset(hours=1), 3600),
+    ("2h", pd.DateOffset(hours=2), 7200),
     ("4h", pd.DateOffset(hours=4), 14400),
+    ("6h", pd.DateOffset(hours=6), 21600),
+    ("12h", pd.DateOffset(hours=12), 43200),
     ("1d", pd.DateOffset(days=1), 86400),
+    ("2d", pd.DateOffset(days=2), 172800),
+    ("3d", pd.DateOffset(days=3), 259200),
     ("1w", pd.DateOffset(weeks=1), 604800),
+    ("2w", pd.DateOffset(weeks=2), 1209600),
+    ("3w", pd.DateOffset(weeks=3), 1814400),
     ("1mo", pd.DateOffset(months=1), 2629746),
+    ("2mo", pd.DateOffset(months=2), 5259492),
     ("3mo", pd.DateOffset(months=3), 7889238),
     ("6mo", pd.DateOffset(months=6), 15778476),
+    ("9mo", pd.DateOffset(months=9), 23667714),
     ("1y", pd.DateOffset(years=1), 31556952),
     ("2y", pd.DateOffset(years=2), 63113904),
     ("3y", pd.DateOffset(years=3), 94670856),
