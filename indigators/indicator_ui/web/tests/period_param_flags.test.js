@@ -17,6 +17,9 @@ const EXPECTED_PERIOD_PARAMS = {
   btlm_trail: ['maxbars', 'empirical_n', 'n_cov'],
   btlm_trail_marod: ['maxbars', 'window_n'],
   ma_marod: ['length', 'window_n'],
+  // cvfe: n_har は「直近 N 本のバーを学習に使う」＝§5.1 の付与基準に該当。
+  //   refit_every は再学習の周期（N 本ごと）であり「直近 N 本」ではないため対象外。
+  cvfe: ['n_har'],
   moving_averages: ['length', 'smoothing_length'],
   profit_band: ['atr_period'],
   profit_adx_needle: ['period', 'window'],

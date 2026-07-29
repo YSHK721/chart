@@ -363,6 +363,23 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "color": "rgba(255, 152, 0, 1)",
         },
     },
+    # cvfe（条件付ボラティリティ予測 σ̂・別 pane オシレータ）。実バインディングは
+    #   add_cvfe（indigators/cvfe/src/lwc_chart.py）。UI 計算経路が渡せるのは OHLC だけで
+    #   仕様 §3.1 のティック列が無いため、§4.1-6 の FAIL 行が定める縮退
+    #   （measure_id="PARK"）で算出する（精度は仕様 §7-6 のとおり低下する）。
+    #   line 系（時系列）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
+    ("cvfe", "default"): {
+        "loader": lambda: _load_callable("cvfe", "add_cvfe"),
+        "output_kind": "line", "kind": "kw",
+        "time_required": True,
+        "params_defaults": {
+            "n_har": 500,
+            "lam_gap": 0.97,
+            "refit_every": 0,
+            "show_components": True,
+            "color": "rgba(233, 30, 99, 1)",
+        },
+    },
     ("profit_band", "global"): {
         "loader": lambda: _load_callable("profit_band", "add_profit_band"),
         "output_kind": "line", "kind": "kw",

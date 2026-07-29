@@ -22,6 +22,13 @@
     "source": "close",
     "window_n": 500
   },
+  "cvfe": {
+    "color": "rgba(233, 30, 99, 1)",
+    "lam_gap": 0.97,
+    "n_har": 500,
+    "refit_every": 0,
+    "show_components": true
+  },
   "ma_marod": {
     "color": "rgba(255, 152, 0, 1)",
     "event_agg": "episode",

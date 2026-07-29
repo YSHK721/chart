@@ -17,7 +17,7 @@ function paramOf(def, name) {
   return def.params.find((p) => p.name === name);
 }
 
-test('catalog: list returns the 23 registered indicators (基本4 + btlm_trail + btlm_trail_marod + ma_marod + profit_* 15 + market_profile)', () => {
+test('catalog: list returns the 24 registered indicators (基本4 + btlm_trail + btlm_trail_marod + ma_marod + cvfe + profit_* 15 + market_profile)', () => {
   // Act
   const defs = list();
   // Assert: 既存4（tgp_btlm / profit_band / price_range_power / moving_averages）+ btlm_trail
@@ -26,7 +26,7 @@ test('catalog: list returns the 23 registered indicators (基本4 + btlm_trail +
   for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm', 'btlm_trail', 'btlm_trail_marod', 'ma_marod']) {
     assert.ok(ids.includes(base), `missing ${base}`);
   }
-  assert.equal(defs.length, 23);
+  assert.equal(defs.length, 24);
 });
 
 test('catalog: btlm_trail_marod is a pane oscillator (source 8択 / maxbars min3 / color + 0% 基準線)', () => {

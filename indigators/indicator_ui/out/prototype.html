@@ -2406,8 +2406,57 @@ const MARKET_PROFILE = makeMarketProfileDef({
   IndicatorDef, SeriesDef, SeriesKind, ParamType, ConstraintKind, param, OHLC,
 });
 
+// --- cvfe（条件付ボラティリティ予測 σ̂・別 pane オシレータ）--------------
+// 正本仕様 indigators/cvfe/CVFE_spec_v1.0.md。次バーの条件付ボラティリティ σ̂_{t+1}
+//   （対数価格の標準偏差）を HAR-CJ-L で 1 期先予測し、ギャップ分散を加算して合成する
+//   （§4.5〜§4.8）。確定バー不変（非リペイント・切詰め不変をテストで固定）。
+//   実バインディング add_cvfe（indigators/cvfe/src/lwc_chart.py）。
+//   UI 計算経路が渡せるのは OHLC だけでティック列が無いため、仕様 §4.1-6 の
+//   quality_gate="FAIL" 行が定める縮退（measure_id="PARK"）で算出する。精度は
+//   仕様 §7-6 のとおり低下する（附録 A: Var(ln σ̂) は PARK 0.086 / RV 288 本 0.0017）。
+//   表示は % 換算（σ̂ × 100）。系列名: cvfe / cvfe_oc / cvfe_co。
+const CVFE = new IndicatorDef({
+  id: 'cvfe',
+  displayNameKey: 'ind.cvfe',
+  category: { group: 'builtin', nameKey: 'cat.oscillator' },
+  tab: 'indicator',
+  placement: 'pane',
+  params: [
+    // n_har: HAR の学習本数（仕様 §3.1 の下限 500）。先頭 n_har + 22 本は warm-up。
+    param('n_har', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_har', 500], messageKey: 'err.n_har' }], null, {
+      group: 'group.calc', order: 1, step: 1, min: 500, unit: 'unit.bars', label: '学習本数', isPeriod: true,
+      tooltip: 'HAR-CJ-L の学習に用いるバー本数（仕様 §3.1・下限 500）。先頭 n_har + 22 本は warm-up として σ̂ を出力しない。',
+    }),
+    // lam_gap: ギャップ分散 EWMA の減衰係数（仕様 §3.1: 0.90 以上 1.0 未満）。
+    param('lam_gap', ParamType.FLOAT, 0.97, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0.89, 'lam_gap', 1], messageKey: 'err.lam_gap.range' },
+    ], null, {
+      group: 'group.calc', order: 2, step: 0.01, min: 0.9, max: 0.999, label: 'ギャップ減衰',
+      tooltip: 'ギャップ分散 EWMA の減衰係数 λ（仕様 §4.7-3）。大きいほど過去のギャップを長く引きずる。',
+    }),
+    // refit_every: 再学習の周期（仕様 §3.1・0 は初回学習後に係数を凍結）。
+    param('refit_every', ParamType.INT, 0, [{ kind: ConstraintKind.MIN_VALUE, operands: ['refit_every', 0], messageKey: 'err.refit_every' }], null, {
+      group: 'group.calc', order: 3, step: 1, min: 0, unit: 'unit.bars', label: '再学習周期',
+      tooltip: 'HAR 係数を再推定する周期（仕様 §4.5-6）。0 は初回学習後に凍結。再学習は t−1 以前のみを用いる（因果）。',
+    }),
+    // 成分 2 本（場中・ギャップ）の表示切替。
+    param('show_components', ParamType.BOOL, true, [], null, {
+      group: 'group.calc', order: 4, label: '成分を表示',
+      tooltip: '場中成分 σ̂_OC（§4.6）とギャップ成分 σ̂_CO（§4.7）を点線で併せて描く。',
+    }),
+    param('color', ParamType.COLOR, 'rgba(233, 30, 99, 1)', [], null, { group: 'group.style', order: 1 }),
+  ],
+  // 系列: σ̂（実線）＋ 場中成分・ギャップ成分（点線）。いずれも別 pane。
+  series: [
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe', seriesName: 'cvfe', dynamic: false, barStyleEditable: true }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_oc', seriesName: 'cvfe_oc', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_co', seriesName: 'cvfe_co', dynamic: false }),
+  ],
+  compute: { computeId: 'cvfe', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
+});
+
 const REGISTRY = Object.freeze([
-  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
+  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, CVFE, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,
