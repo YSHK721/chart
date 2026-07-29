@@ -2410,3 +2410,17 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **回帰テスト**: `chart_renderer.test.js`（clearInstanceData の空化・系列非再生成・未知 id no-op／updateSeriesTail の空系列スキップと非空系列の従来動作）、`timeframe_controller.test.js`（取得直後 setCandles・preRender=null・空化→差し替えの順序・candles 空時は何もしない）、`indicator_controller.test.js`（preRender 前に「描画されない指標」を空化する／描画される指標は空化しない／ローソクは compute 完了前・指標は完了後一括）。replay 側の同名テストも新仕様へ同期。
 - **残件（別 ISSUE）**: 指標ラインが出そろうまでの時間は compute に律速（実測 5.6 秒・`/market_profile` 単発 5.4 秒）＝サーバ側施策は別枠。ISSUE-197（`Cannot update oldest data` の多発）／ISSUE-198（SW 経由 `/live_ticks` の network error）。
 - **関連**: ISSUE-167（重複 time の応急防壁＝本件は同じ不変条件の「欠落」側）／ISSUE-023（同時更新仕様の改訂元）／ISSUE-165（compute 並列化だけでは律速が残っていた）／ISSUE-188。
+
+## ISSUE-197: [不具合] ライブ core（8001）で `Cannot update oldest data` が多発する（2026-07-29）
+- **ステータス**: OPEN（2026-07-29 起票・ISSUE-196 の実測中に検出。未調査）
+- **事象（実測）**: ライブ core 単体（`http://127.0.0.1:8001/`・SW なし・指標 5 件）で日→1分の切替後 45 秒に、`THROW Line#72.update: Cannot update oldest data, last time=…` が **203 件**発生。統合 UI（8000）側では未観測。
+- **切り分け済みの事実**: 例外は `series.update` の同期呼び出しで発生し、`chart_renderer.updateSeriesTail` の try/catch が点単位で握って捨てている（バッチは継続＝可視の実害は未確認）。ISSUE-151 追補2 で「バー確定直後の stale 点」として想定済みの経路だが、203 件は想定頻度を大きく超える。
+- **未検証**: 発生源（full 再描画と latest 応答の交錯か／別クロックの重複駆動か）・実害（最新値の欠落有無）。
+- **関連**: ISSUE-151（stale 点の無害化）／ISSUE-196（本件の検出契機）。
+
+## ISSUE-198: [不具合] SW 経由の `/live_ticks` が network error になる（2026-07-29）
+- **ステータス**: OPEN（2026-07-29 起票・ユーザー報告のコンソールログに存在。未調査）
+- **事象（ユーザー報告）**: `The FetchEvent for "http://127.0.0.1:8000/live_ticks?since=0" resulted in a network error response: the promise was rejected.`（`sw.js:68`）が複数回。併せて `update_scheduler` の `full 再計算失敗: Failed to fetch` も観測。
+- **確認済みの事実（2026-07-29）**: ルータ直叩きでは `/live/live_ticks?since=0` は 200（79KB）、prefix 無し `/live_ticks` は 404。SW は `/live_ticks` を `/live/live_ticks` へリライトする実装で、`proxyRewritten` の `fetch` が reject した場合に当該メッセージになる。当方の Playwright 実測（統合 8000・ライブ）では再現せず。
+- **未検証**: reject の実体（起動直後の SW activate 競合／サーバ再起動と重なった接続断／SW 制御開始前の要求）。
+- **関連**: ISSUE-171（SW claim 到達待ち）／ISSUE-196。
