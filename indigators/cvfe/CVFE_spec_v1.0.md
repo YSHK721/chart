@@ -1,0 +1,449 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━
+仕様書：Conditional Volatility Forecast Engine (CVFE)
+バージョン：1.0 / 作成日：2026-07-29
+対象：Nikkei 225 CFD（Dukascopy JP225）
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 0. 位置づけ
+
+本仕様は `CEB_spec_v1.0.md`（Conditional Excursion Band）の §4 手順 2〜6、すなわち
+`σ̂_t` 生成部を置換する。CEB は本エンジンの出力 `sigma_hat` を消費する。
+CEB v1.0 の `σ̂_OC` は日次 Parkinson 推定量に基づく HAR であったが、本仕様は測定量を
+高頻度データへ移行する。移行の根拠は §附録 A の効率比較（`Var(ln σ̂)` が 0.0858 →
+0.00174、49.3 倍の改善）である。
+
+---
+
+## 1. 概要
+
+- **機能名**：Conditional Volatility Forecast Engine (CVFE)
+- **目的**：次バーの条件付ボラティリティ `σ̂_{t+1}`（対数価格の標準偏差）を、
+  気配品質に応じて決定論的に選択された測定量から 1 期先予測として出力する。
+- **スコープ**：
+  - **含む**：気配品質診断、測定量の自動選択、ジャンプ分離、HAR 型予測、
+    ギャップ分散の独立推定、予測精度の評価手続き。
+  - **含まない**：区間バンドの構築（CEB の責務）、方向性予測、ポジションサイズ決定、
+    注文執行、複数銘柄の共分散推定、多期先予測。
+- **利用者・呼び出し元**：CEB v1.1 以降の `compute_ceb()`。および検証用バッチ。
+- **使用技術**：Python 3.11+ / `numpy` のみ（`scipy`・`pandas` 不使用）。macOS。
+
+---
+
+## 2. 設計原理（5 項・すべて必須）
+
+| ID | 原理 | 根拠 |
+|----|------|------|
+| P1 | 測定量の選択をモデル選択より優先する | `Var(ln σ̂)` の改善幅（14.4→708 倍）がモデル改良の効果を上回る（附録 A） |
+| P2 | 気配品質診断を実行の前提ゲートとする | CFD/OTC 気配はスロットリング・合成を含み、高頻度化が精度を逆に悪化させ得る |
+| P3 | 対数尺度で HAR 型階層加重を用い、ジャンプとレバレッジを分離する | Corsi (2009); Andersen, Bollerslev & Diebold (2007); Corsi & Renò (2012) |
+| P4 | ギャップ分散 `σ̂_CO²` を独立にモデル化して加算する | CEB §5.2 で条件付被覆の成立に必須と確認済み（LR_ind 110.3 → 3.5） |
+| P5 | 評価損失関数を QLIKE に固定する | 代理変数がノイズを含む場合、真のモデル順位を保存する損失関数は限定される（Patton 2011） |
+
+---
+
+## 3. インターフェース定義
+
+### 3.1 入力
+
+| パラメータ名 | 型 | 必須/任意 | 制約 | 例 |
+|------------|-----|---------|------|-----|
+| `ticks` | `np.ndarray` shape `(K,2)` float64 | 必須 | 列 `[unix_time_sec, mid_price]`。時刻は狭義単調増加。価格は全要素 `> 0`。`K ≥ 1` | `(4.2e7, 2)` |
+| `bar_edges` | `np.ndarray` shape `(N+1,)` float64 | 必須 | バー境界の unix 秒。狭義単調増加。`N ≥ n_har + 22 = 1522` | `(1523,)` |
+| `bar_interval_sec` | `int` | 必須 | `≥ 60`。バー公称長 | `86400` |
+| `n_har` | `int` | 任意 | 既定 `1500`。`≥ 500` | `1500` |
+| `lam_gap` | `float` | 任意 | 既定 `0.97`。`0.90 ≤ lam_gap < 1.0` | `0.97` |
+| `jump_alpha` | `float` | 任意 | 既定 `0.999`。`0.99 ≤ jump_alpha ≤ 0.9999` | `0.999` |
+| `freeze_thresh` | `float` | 任意 | 既定 `0.05`。§4.1 の気配凍結率上限 | `0.05` |
+| `refit_every` | `int` | 任意 | 既定 `0`（＝初回学習後は係数凍結）。`≥ 0` | `0` |
+
+### 3.2 出力
+
+| フィールド名 | 型 | 説明 | 例 |
+|------------|-----|------|-----|
+| `sigma_hat` | `np.ndarray` shape `(N,)` float64 | 各バー `t` に対する `σ̂_t`（`t−1` までの情報のみで算出）。未確定期間は `nan` | `[nan, ..., 0.0118]` |
+| `sigma_oc` | `np.ndarray` `(N,)` | 場中成分 `σ̂_OC,t` | `[..., 0.0104]` |
+| `sigma_co` | `np.ndarray` `(N,)` | ギャップ成分 `σ̂_CO,t`。ギャップ無しバーは `0.0` | `[..., 0.0056]` |
+| `measure_id` | `str` | `"TSRV"` / `"RV"` / `"RRANGE"` / `"PARK"` のいずれか | `"TSRV"` |
+| `delta_star_sec` | `int` | 採用したサンプリング間隔（秒）。`RRANGE`/`PARK` では `0` | `300` |
+| `omega2_hat` | `float` | 推定マイクロストラクチャノイズ分散 | `2.1e-9` |
+| `freeze_ratio` | `float` | 気配凍結率（§4.1） | `0.031` |
+| `jump_flag` | `np.ndarray` `(N,)` bool | ジャンプ検出フラグ | `[False, ..., True]` |
+| `har_coef` | `np.ndarray` `(6,)` | HAR 係数 `[β0..β5]` | `[-0.42, 0.31, ...]` |
+| `har_resid_var` | `float` | 学習残差分散 `s²` | `0.184` |
+| `quality_gate` | `str` | `"PASS"` / `"DEGRADED"` / `"FAIL"` | `"PASS"` |
+| `available` | `np.ndarray` `(N,)` bool | `sigma_hat` が有効なバー | `[False, ..., True]` |
+
+### 3.3 エラーレスポンス
+
+| エラーコード | 発生条件 | 返却する値 |
+|------------|---------|-----------|
+| `E01_INSUFFICIENT_BARS` | `len(bar_edges) − 1 < n_har + 22` | `ValueError` を送出 |
+| `E02_TICKS_NOT_MONOTONIC` | `ticks[:,0]` が狭義単調増加でない | `ValueError` を送出 |
+| `E03_NONPOSITIVE_PRICE` | `ticks[:,1]` に `≤ 0` を含む | `ValueError` を送出 |
+| `E04_EDGES_NOT_MONOTONIC` | `bar_edges` が狭義単調増加でない | `ValueError` を送出 |
+| `E05_PARAM_RANGE` | §3.1 のいずれかの制約に違反 | `ValueError` を送出 |
+| `E06_EMPTY_BAR` | 1 本のバーに含まれるティックが `< 2` | 当該バーの `available = False`、`sigma_hat = nan`。`WARN` ログを出力。処理は継続 |
+| `E07_QUALITY_FAIL` | §4.1 の判定が `FAIL` | 例外を送出せず `quality_gate = "FAIL"`、`measure_id = "PARK"` へ縮退。`ERROR` ログを出力 |
+| `E08_HAR_SINGULAR` | HAR の設計行列のランクが `6` 未満、または条件数 `> 1e10` | `ValueError` を送出 |
+| `E09_NONFINITE_SIGMA` | `σ̂_t` が非有限または `≤ 0` | 当該バーの `available = False`、`sigma_hat = nan` |
+
+---
+
+## 4. 処理フロー
+
+すべて対数価格 `p = ln(mid)` 上で行う。バー `t` の `σ̂_t` を算出する際、参照可能な情報は
+`bar_edges[t]`（バー `t` の開始時刻）より厳密に前のティックに限る。
+
+### 4.1 段階 0：気配品質診断（ゲート）
+
+1. 診断対象期間を先頭 `n_har` 本のバーに限定する。
+2. サンプリング間隔集合 `D = {5, 10, 15, 30, 60, 120, 300, 600, 900, 1800}`（秒）の各要素
+   について、前値補間（previous-tick）でカレンダー時間サンプリングし、全期間平均の
+   実現分散 `RV̄(Δ)` を算出する。
+3. ノイズ分散を推定する。`n_min = 診断期間の Δ=5 秒の総サンプル数` として
+   ```
+   ω̂² = RV_total(5秒) / (2 · n_min)
+   ```
+4. 気配凍結率を算出する。
+   ```
+   freeze_ratio = (mid が 60 秒以上連続して不変であった時間の総和) / (診断期間の総時間)
+   ```
+5. シグネチャ勾配を算出する。
+   ```
+   S = ( RV̄(5秒) − RV̄(300秒) ) / RV̄(300秒)
+   ```
+6. 判定（この順に評価し、最初に成立した分岐を採用する）。
+
+   | 条件 | `quality_gate` | 帰結 |
+   |------|---------------|------|
+   | `freeze_ratio > freeze_thresh` | `"FAIL"` | 高頻度データを使用しない。`measure_id = "PARK"` |
+   | `S > 0.50` | `"DEGRADED"` | ノイズ大。`measure_id = "TSRV"` |
+   | `0.10 < S ≤ 0.50` | `"PASS"` | `measure_id = "RV"`、`delta_star_sec = 300` |
+   | `S ≤ 0.10` | `"PASS"` | `measure_id = "RV"`、`delta_star_sec` は §4.2 で決定 |
+
+### 4.2 段階 1：サンプリング間隔の決定
+
+`measure_id = "RV"` かつ `S ≤ 0.10` の場合のみ実行する。それ以外は §4.1 の値を用いる。
+
+`D` を昇順に走査し、次を満たす最小の `Δ` を `delta_star_sec` とする。
+```
+すべての Δ' ∈ D, Δ' ≥ Δ について  | RV̄(Δ') − RV̄(300) | / RV̄(300) < 0.05
+```
+該当する `Δ` が存在しない場合は `delta_star_sec = 300` とする。
+
+### 4.3 段階 2：バー別ボラティリティ測定量の算出
+
+`measure_id` に応じて分岐する。バー `t` 内のサンプリング済み対数価格差を
+`r_1..r_n` とする。
+
+- **`"RV"`**：`RV_t = Σ r_i²`
+- **`"TSRV"`**：Two-Scale Realized Variance（Zhang, Mykland & Aït-Sahalia 2005）
+  ```
+  K   = ceil( n^(2/3) )                      ← 既定。TBD-1 参照
+  RV^(k)_t = Σ (k 番目のサブグリッドの二乗和)   （k = 1..K）
+  RV^avg_t = (1/K) Σ_k RV^(k)_t
+  n̄       = (n − K + 1) / K
+  TSRV_t  = (1 − n̄/n)^(-1) · ( RV^avg_t − (n̄/n) · RV_all_t )
+  ```
+  `TSRV_t ≤ 0` の場合は `RV^avg_t` で代替し、`WARN` ログを出力する。
+- **`"RRANGE"`**：実現レンジ。バーを `m = 12` の等長サブ区間に分割し
+  ```
+  RR_t = (1/(4 ln 2)) · Σ_{j=1}^{m} (max_j p − min_j p)²
+  ```
+- **`"PARK"`**：日次 Parkinson。`PK_t = (ln H_t − ln L_t)² / (4 ln 2)`
+
+以降、採用された測定量を一律 `V_t` と表記する。
+
+### 4.4 段階 3：ジャンプ分離
+
+`measure_id ∈ {"RV", "TSRV"}` の場合のみ実行する。それ以外は `C_t = V_t`、
+`J_t = 0`、`jump_flag[t] = False` とする。
+
+```
+μ1     = sqrt(2/π)
+μ_{4/3} = 2^(2/3) · Γ(7/6) / Γ(1/2)
+BPV_t  = μ1^(-2) · (n/(n−1)) · Σ_{i=2}^{n} |r_i| · |r_{i−1}|
+TQ_t   = n · μ_{4/3}^(-3) · (n/(n−2)) · Σ_{i=3}^{n} |r_i|^(4/3)·|r_{i−1}|^(4/3)·|r_{i−2}|^(4/3)
+z_t    = (ln V_t − ln BPV_t) / sqrt( ((π²/4) + π − 5) · (1/n) · max(1, TQ_t / BPV_t²) )
+c      = Φ^(-1)(jump_alpha)                     （既定 jump_alpha=0.999 → c = 3.0902）
+```
+- `z_t > c` の場合：`jump_flag[t] = True`、`C_t = BPV_t`、`J_t = V_t − BPV_t`
+- `z_t ≤ c` の場合：`jump_flag[t] = False`、`C_t = V_t`、`J_t = 0`
+
+`BPV_t ≤ 0` の場合は `C_t = V_t`、`J_t = 0` とし、`WARN` ログを出力する。
+
+### 4.5 段階 4：HAR-CJ-L 回帰
+
+1. 説明変数を構成する（すべて時刻 `t` までの確定値）。
+   ```
+   x1_t = ln( C_t )
+   x2_t = ln( (1/5)  Σ_{j=0}^{4}  C_{t−j} )
+   x3_t = ln( (1/22) Σ_{j=0}^{21} C_{t−j} )
+   x4_t = ln( 1 + J_t / C_t )
+   x5_t = min( ρ_t , 0 )        ここで ρ_t = p_close,t − p_close,t−1
+   ```
+   `C_t < 1e-16` の場合は `1e-16` にクリップする。
+2. 目的変数を `y_{t+1} = ln( C_{t+1} )` とする。
+3. 学習標本を `t ∈ [t0 − n_har − 1, t0 − 2]` とする（`y` の添字が `t0 − 1` を超えない）。
+4. 通常最小二乗で `β = [β0..β5]` を推定する。設計行列のランクが 6 未満、または条件数が
+   `1e10` を超える場合は `E08` を送出する。
+5. 残差分散 `s² = Var(ε)`（不偏、自由度 `n_har − 6`）を保存する。
+6. 再学習：`refit_every = 0` の場合は係数を凍結する。`refit_every = q > 0` の場合、
+   バー番号が `q` の倍数となる時点で、直近 `n_har` 本（すべて `t−1` 以前）を用いて
+   再推定する。
+
+### 4.6 段階 5：場中成分の予測
+
+```
+ŷ_t       = β0 + β1·x1_{t−1} + β2·x2_{t−1} + β3·x3_{t−1} + β4·x4_{t−1} + β5·x5_{t−1}
+σ̂_OC,t    = exp( ŷ_t / 2 + s² / 8 )
+```
+第 2 項は対数正規の Jensen 補正である（`y = ln σ²`、`σ = exp(y/2)` より
+`E[σ] = exp(E[y]/2 + Var(y)/8)`）。
+
+### 4.7 段階 6：ギャップ成分の推定
+
+1. バー `t` が「ギャップ保有バー」であるかを判定する。
+   ```
+   ギャップ保有 ⇔ bar_edges[t] − bar_edges[t−1] > 1.5 × bar_interval_sec
+                  または（バー t の最初のティック時刻 − バー t−1 の最後のティック時刻）
+                        > 1.5 × delta_star_sec
+   ```
+2. ギャップ保有バーについてのみ `g_t = p_open,t − p_close,t−1` を算出する。
+3. EWMA を更新する（ギャップ保有バーのみで更新し、非保有バーでは値を持ち越す）。
+   ```
+   v_t = lam_gap · v_{t−1} + (1 − lam_gap) · g_t²
+   ```
+   初期値 `v` は先頭 200 本のギャップ保有バーの `g²` の平均とする。ギャップ保有バーが
+   200 本未満の場合は存在する全本数の平均とする。
+4. `σ̂_CO,t = sqrt( v_{t−1} )`（バー `t` がギャップ保有と判定される場合）。
+   非保有バーの場合は `σ̂_CO,t = 0.0` とする。
+
+### 4.8 段階 7：合成と出力
+
+```
+σ̂_t = sqrt( σ̂_OC,t² + σ̂_CO,t² )
+```
+`σ̂_t` が非有限または `≤ 0` の場合は `E09` により `available[t] = False` とする。
+出力 DTO は不変（frozen）とし、配列は `setflags(write=False)` を適用する。
+
+---
+
+## 5. 評価手続き（P5 の実装）
+
+### 5.1 損失関数
+
+代理変数 `V^proxy_t`（`delta_star_sec` での `RV`、`measure_id = "PARK"` 時は `PK_t`）に対し
+```
+QLIKE_t = V^proxy_t / σ̂_t²  −  ln( V^proxy_t / σ̂_t² )  −  1
+MSE_t   = ( V^proxy_t − σ̂_t² )²
+```
+主指標は QLIKE、副指標は MSE とする。MAE・MAPE・R² は使用しない。
+
+### 5.2 モデル比較
+
+- 2 モデル比較：Diebold–Mariano (1995) 統計量。分散は Newey–West HAC、ラグ
+  `floor(4·(T/100)^(2/9))`。両側 5% で判定する。
+- 3 モデル以上：Model Confidence Set（Hansen, Lunde & Nason 2011）。
+  信頼水準 `1 − α_MCS = 0.90`、stationary bootstrap（Politis & Romano 1994）、
+  平均ブロック長 20、反復 `B = 10,000`、乱数シード固定。
+
+### 5.3 比較対象（固定・変更禁止）
+
+| ID | モデル |
+|----|--------|
+| M0 | 単純移動平均（直近 20 本の `V_t` の平均） |
+| M1 | EWMA（`λ = 0.94`） |
+| M2 | GARCH(1,1)（日次終値収益） |
+| M3 | HAR（ジャンプ・レバレッジ項なし） |
+| M4 | **HAR-CJ-L（本仕様）** |
+
+---
+
+## 6. 非機能要件
+
+| 項目 | 要件 | 測定方法 |
+|------|------|---------|
+| 段階 0 の実行時間 | `K = 4.2e7` ティックで p99 < 180 s | `time.perf_counter` 20 回試行の p99 |
+| 段階 2〜7 の一括実行 | `N = 5,000` バーで p99 < 60 s | 同上 |
+| 1 バー増分更新 | p99 < 50 ms（単一コア） | 同上 |
+| メモリ | 常駐ピーク 4 GB 未満（`K = 4.2e7`） | `tracemalloc` のピーク値 |
+| 数値再現性 | 同一入力で 2 回実行し全出力配列が bit 一致 | `np.array_equal` |
+| Look-ahead 不在 | 一括計算と 1 バーずつの逐次計算の `sigma_hat` が bit 一致 | 同上 |
+| 依存 | `numpy` のみ | `pip show` |
+| ログ | `E06`/`E07`/`TSRV≤0`/`BPV≤0` の各発生時に JSON Lines 1 行を出力。フィールドは `{ts, level, code, bar_index, detail}` | ログ行数と `code` の照合 |
+
+---
+
+## 7. 制約・前提条件
+
+1. `ticks` は単一銘柄の連続気配であり、ブローカー側の欠測期間を含まない。
+   欠測がある場合は呼び出し側が事前に区間分割する。
+2. `mid_price` は bid/ask の単純平均である。約定価格ではない。
+3. バー境界は期間中に変更されない。時間足の変更は系列の分割を要する。
+4. 本エンジンは 1 期先予測のみを対象とする。多期先（週次戦略等）へは適用しない。
+5. `measure_id` は 1 回の実行内で不変とする。期間途中での切替は行わない。
+6. `quality_gate = "FAIL"` の場合、本エンジンの出力精度は CEB v1.0 と同等まで低下する
+   （附録 A の `PARK` 行を参照）。この場合の CEB 側の被覆率は別途再検証を要する。
+
+---
+
+## 8. 既知の制約
+
+| ID | 内容 | 定量値 | 対処方針 |
+|----|------|--------|---------|
+| K1 | TSRV の `K` 最適値は理論式に定数が含まれるが、本仕様は `K = ceil(n^(2/3))` を既定とする | 未測定 | TBD-1 |
+| K2 | `freeze_thresh = 0.05` は理論的根拠を持たない暫定値 | — | TBD-2 |
+| K3 | `RRANGE` のサブ区間数 `m = 12` は暫定値 | — | TBD-3 |
+| K4 | 実現カーネル（Barndorff-Nielsen et al. 2008）は本仕様に含まない。TSRV より効率が高いが帯域選択が複雑 | 未測定 | v2.0 で検討 |
+| K5 | ジャンプ検定は `n` が小さいと検出力が不足する | `n < 50` で検出力未測定 | `n < 50` のバーは `jump_flag = False` に固定 |
+| K6 | HAR 係数凍結は構造変化に追随しない | 未測定 | TBD-4 |
+
+---
+
+## 9. 検証基準（Definition of Done）
+
+以下の 8 段階をこの順に実施し、**すべて合格した場合にのみ**本エンジンを採用する。
+
+### 段階 1：単体テスト（決定論的）
+- [ ] `E01`〜`E09` の各条件で規定の例外または戻り値が返る（各 1 ケース以上）。
+- [ ] σ = 1 の合成 GBM（バー内 1440 ステップ、100,000 バー、シード固定）に対し、
+      `RV` の平均が `1.000 ± 0.005`、`TSRV` の平均が `1.000 ± 0.010` に収まる。
+- [ ] ジャンプを含まない合成 GBM に対し、`jump_flag` の発生率が
+      `1 − jump_alpha` の 3 倍以内（既定で 0.3% 以内）に収まる。
+- [ ] 既知の大きさのジャンプ（`5σ`）を注入したバーの `jump_flag` 検出率が 90% 以上。
+- [ ] 一括計算と逐次計算の `sigma_hat` が bit 一致する（look-ahead 不在）。
+
+### 段階 2：モンテカルロ
+- [ ] 確率ボラ DGP（`ln σ_t` の AR(1)、`φ = 0.98`）上で、M4 の QLIKE 平均が
+      M0・M1・M3 のいずれよりも小さい。
+- [ ] マイクロストラクチャノイズ（`ω/σ = 0.1, 0.5, 1.0`）を注入した条件で、
+      §4.1 の判定が `ω/σ ≥ 0.5` のとき `"DEGRADED"` 以上を返す。
+
+### 段階 3：気配品質診断（実データ・ゲート）
+- 対象：Dukascopy JP225、2010-01-01 〜 2019-12-31。
+- [ ] `freeze_ratio`、`S`、`ω̂²` を算出して記録する。
+- [ ] TSE 昼休み帯（11:30–12:30 JST）と場中帯の `freeze_ratio` を分離して算出し、
+      両者の差を記録する（TBD-5 の判定材料）。
+- [ ] `quality_gate` の判定結果を記録する。`"FAIL"` の場合、段階 4 以降は
+      `measure_id = "PARK"` で実施する。
+
+### 段階 4：In-Sample（実データ）
+- 対象：段階 3 と同一期間。
+- [ ] M0〜M4 の QLIKE 平均を算出し、M4 が最小であること。
+- [ ] `sd(ln σ̂_t)` を実測して記録する（予測 R² 上限の算定に必須）。
+
+### 段階 5：パラメータ事前登録
+- [ ] §3.1 の全パラメータ値、§4.1 の判定閾値、§5 の評価手続き、§9 段階 6〜8 の
+      合否判定規則を凍結し、タイムスタンプ付きで記録する。
+- [ ] **段階 6 以降でのパラメータ変更を禁止する。**
+
+### 段階 6：検出力の事前計算
+- [ ] OOS 期間の標本数 `T_oos` に対し、M4 と対抗モデルの QLIKE 差を検出する
+      Diebold–Mariano 検定の検出力を、段階 4 で得た損失系列の
+      stationary bootstrap（平均ブロック長 20、`B = 10,000`）で算出する。
+- [ ] 検出力が 80% に満たない比較対については、段階 7 の合否判定から除外し
+      「判定保留」として記録する。**検出力を計算せずに合格判定を下すことを禁止する。**
+
+### 段階 7：Out-of-Sample（実データ）
+- 対象：2020-01-01 〜 最新。段階 3・4 のデータは一切使用しない。
+- [ ] M4 が Model Confidence Set（`α_MCS = 0.10`）に含まれること。
+- [ ] M4 の QLIKE 平均が M0（単純移動平均）より小さく、Diebold–Mariano 検定で
+      5% 有意であること（段階 6 で検出力 80% 以上と判定された場合に限る）。
+
+### 段階 8：下流影響の確認
+- [ ] CVFE の `sigma_hat` を CEB へ供給し、CEB 仕様書 §9 段階 5〜7 を再実行して
+      すべて合格すること。
+
+### 不合格時の扱い
+段階 7 以降で 1 つでも棄却された場合、**本仕様は棄却とし、パラメータの部分修正による
+再試行を禁止する。** 修正を行う場合は段階 1 から新規仕様として再実行し、
+OOS 期間を新たに確保する。
+
+---
+
+## 10. 未解決事項（TBD）
+
+| ID | 項目 | 決定が必要な理由 | 決定者 | 期限 |
+|----|------|----------------|--------|------|
+| TBD-1 | TSRV の `K` 最適値。Zhang, Mykland & Aït-Sahalia (2005) の理論式 `K* = c*·n^(2/3)` における `c*` の定義を原論文で確認する | 既定値 `c* = 1` は根拠を持たない。`c*` の誤りは TSRV のバイアスに直結する | よしひこ | 段階 1 前 |
+| TBD-2 | `freeze_thresh = 0.05` の根拠 | 気配凍結率と RV バイアスの関係が未測定。閾値の誤りは測定量選択を誤らせる | よしひこ | 段階 3 前 |
+| TBD-3 | `RRANGE` のサブ区間数 `m` | `m` は効率とノイズ耐性のトレードオフを決める。`m = 12` は暫定 | よしひこ | 段階 3 前 |
+| TBD-4 | HAR 係数の再学習頻度（`refit_every`） | 構造変化への追随と look-ahead リスクのトレードオフ。既定の凍結は MC のみで検証済み | よしひこ | 段階 5 前 |
+| TBD-5 | TSE 昼休み帯（11:30–12:30 JST）の気配が合成か実約定か | 合成の場合、当該帯の `r_i` が人工的にゼロとなり `RV` が下方に偏る。除外の要否を決定する必要がある | よしひこ | 段階 3 完了時 |
+| TBD-6 | `ρ = Var(r^CO)/Var(r^OC)` の実測値 | §4.7 のギャップ成分の寄与度が `ρ` に依存する。CEB 側の TBD-1 と同一項目 | よしひこ | 段階 4 前 |
+| TBD-7 | 適用時間足（日足 / H4 / H1） | `N ≥ 1522` の充足可否、ギャップの定義、`n`（バー内サンプル数）がすべて時間足に依存する | よしひこ | 段階 1 前 |
+
+---
+
+## 附録 A：測定量の効率比較（本仕様の設計根拠）
+
+σ = 1 の標準ブラウン運動（バー内 1440 ステップ）、200,000 バー、シード 11。
+`Var(ln σ̂)` は σ 尺度の対数分散であり、予測 R² の上限を直接決定する。
+
+| 測定量 | `E[σ̂²]` | `Var(ln σ̂)` | 効率（対 終値収益²） |
+|--------|---------|-------------|---------------------|
+| 終値収益² | 0.9987 | 1.23208 | 1.0x |
+| Rogers-Satchell | 0.9528 | 0.10490 | 11.7x |
+| Parkinson（CEB v1.0 の測定量） | 0.9652 | 0.08575 | 14.4x |
+| Garman-Klass | 0.9523 | 0.06764 | 18.2x |
+| RV（78 本） | 0.9995 | 0.00635 | 194.0x |
+| **RV（288 本）** | **1.0001** | **0.00174** | **707.8x** |
+
+RV の理論値 `Var(ln σ̂) = 0.5/n` と一致する（`0.5/288 = 0.00174`）。
+
+**予測 R² の上限**（`R² = Var(ln σ_t) / (Var(ln σ_t) + Var(ln σ̂))`）：
+
+| `sd(ln σ_t)` | 終値収益² | Parkinson | RV（288 本） |
+|---|---|---|---|
+| 0.20 | 3.1% | 31.8% | 95.8% |
+| 0.25 | 4.8% | 42.2% | 97.3% |
+| 0.30 | 6.8% | 51.2% | 98.1% |
+| 0.40 | 11.5% | 65.1% | 98.9% |
+
+上表はマイクロストラクチャノイズがゼロの理想値である。実データでの値は段階 3・4 で
+実測する。`sd(ln σ_t)` は未測定であり、段階 4 の必須成果物とする。
+
+---
+
+## 附録 B：参考文献
+
+- Andersen, T. G., Bollerslev, T., Diebold, F. X. & Labys, P. (2000). Great Realizations.
+  *Risk* 13(1), 105–108.
+- Andersen, T. G., Bollerslev, T. & Diebold, F. X. (2007). Roughing It Up: Including Jump
+  Components in the Measurement, Modeling, and Forecasting of Return Volatility.
+  *Review of Economics and Statistics* 89(4), 701–720.
+- Barndorff-Nielsen, O. E. & Shephard, N. (2006). Econometrics of Testing for Jumps in
+  Financial Economics Using Bipower Variation. *Journal of Financial Econometrics* 4(1), 1–30.
+- Barndorff-Nielsen, O. E., Hansen, P. R., Lunde, A. & Shephard, N. (2008). Designing
+  Realized Kernels to Measure the Ex Post Variation of Equity Prices in the Presence of
+  Noise. *Econometrica* 76(6), 1481–1536.
+- Bandi, F. M. & Russell, J. R. (2006). Separating Microstructure Noise from Volatility.
+  *Journal of Financial Economics* 79(3), 655–692.
+- Corsi, F. (2009). A Simple Approximate Long-Memory Model of Realized Volatility.
+  *Journal of Financial Econometrics* 7(2), 174–196.
+- Corsi, F. & Renò, R. (2012). Discrete-Time Volatility Forecasting with Persistent
+  Leverage Effect and the Link with Continuous-Time Volatility Modeling.
+  *Journal of Business & Economic Statistics* 30(3), 368–380.
+- Diebold, F. X. & Mariano, R. S. (1995). Comparing Predictive Accuracy.
+  *Journal of Business & Economic Statistics* 13(3), 253–263.
+- Garman, M. B. & Klass, M. J. (1980). *Journal of Business* 53(1), 67–78.
+- Hansen, P. R., Lunde, A. & Nason, J. M. (2011). The Model Confidence Set.
+  *Econometrica* 79(2), 453–497.
+- Huang, X. & Tauchen, G. (2005). The Relative Contribution of Jumps to Total Price
+  Variance. *Journal of Financial Econometrics* 3(4), 456–499.
+- Martens, M. & van Dijk, D. (2007). Measuring Volatility with the Realized Range.
+  *Journal of Econometrics* 138(1), 181–207.
+- Parkinson, M. (1980). *Journal of Business* 53(1), 61–65.
+- Patton, A. J. (2011). Volatility Forecast Comparison Using Imperfect Volatility Proxies.
+  *Journal of Econometrics* 160(1), 246–256.
+- Politis, D. N. & Romano, J. P. (1994). The Stationary Bootstrap.
+  *Journal of the American Statistical Association* 89(428), 1303–1313.
+- Rogers, L. C. G. & Satchell, S. E. (1991). *Annals of Applied Probability* 1(4), 504–512.
+- Zhang, L., Mykland, P. A. & Aït-Sahalia, Y. (2005). A Tale of Two Time Scales:
+  Determining Integrated Volatility with Noisy High-Frequency Data.
+  *Journal of the American Statistical Association* 100(472), 1394–1411.
+
+DOI は本セッションで検証していないため付記していない。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
