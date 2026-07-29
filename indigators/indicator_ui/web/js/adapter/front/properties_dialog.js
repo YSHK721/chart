@@ -88,6 +88,8 @@ export class PropertiesDialog {
     this._activeTab = 'inputs';
     this._root = null; // ダイアログ最上位要素
     this._fieldEls = new Map(); // name -> { row, control, error, info }
+    // 値へ反映できていない入力エラー（name -> message）。在席中は OK を押せない。
+    this._pendingErrors = new Map();
     this._okBtn = null;
     this._drag = null;
     this._offset = { x: 0, y: 0 };
@@ -106,6 +108,18 @@ export class PropertiesDialog {
       //   datasetRef／timeframe のいずれかが未供給（旧ホスト・SSR/単体テスト）は null を返し、
       //   コントロール側はプリセット非提示へ退化する（F-P2/F-P3 と同じ扱い）。
       periodContext: () => this._periodContext(),
+      // 未解決の入力エラー（期間表記の換算失敗など・値へ反映できていない状態）を登録する。
+      //   登録されている間は OK を抑止する（§5 F-11 の OK 制御と同じ扱い）。これが無いと、
+      //   エラー表示のまま OK を押せてしまい、旧値が黙って確定して『設定しても元に戻る』
+      //   という症状になる（2026-07-29 ユーザー報告の実体）。
+      setPendingError: (name, message) => {
+        if (message) {
+          this._pendingErrors.set(name, message);
+        } else {
+          this._pendingErrors.delete(name);
+        }
+        this._revalidate();
+      },
     };
   }
 
@@ -671,7 +685,9 @@ export class PropertiesDialog {
         els.row.classList.add('is-invalid');
       }
     }
-    const ok = effective.length === 0;
+    // 未解決の入力エラー（期間表記の換算失敗など）がある間は確定させない。
+    //   当該欄のエラー文言はコントロール側が自前で表示済みのため、ここでは OK 制御のみ行う。
+    const ok = effective.length === 0 && this._pendingErrors.size === 0;
     if (this._okBtn) {
       this._okBtn.disabled = !ok;
     }

@@ -363,6 +363,11 @@ export function buildPeriod(field, ctx) {
   const setError = (message) => {
     err.textContent = message ?? '';
     wrap.classList.toggle('has-error', !!message);
+    // 未解決の入力エラーは OK を抑止する（ホストが対応している場合のみ。非対応ホスト＝
+    //   単体テストの簡易 ctx や旧ホストでは従来どおり表示のみ）。
+    if (typeof ctx.setPendingError === 'function') {
+      ctx.setPendingError(field.name, message ?? null);
+    }
   };
 
   const setOpen = (on) => {
@@ -455,8 +460,31 @@ export function buildPeriod(field, ctx) {
     }
     // 失敗時は代入せず直前の有効値を保持する（F-P1）。表示は入力文字列のまま残し、
     //   ユーザーが修正できるようにする。
+    //   さらに「未解決の入力エラーがある状態で OK を押すと、旧値が黙って確定する」
+    //   （＝ユーザーには『設定しても元に戻る』と見える）事故を防ぐため、OK を抑止する
+    //   （§5 F-11 の OK 制御と同じ扱い）。エラーが解消されるまで確定できない。
     setError(r.message);
   };
+
+  // フォーカス時に全選択する。期間欄は「本数（例 180）」を表示しているため、選択せずに
+  //   `3h` と打つと既存値へ追記されて `1803h` になり、換算が上限超で失敗 → 代入されないまま
+  //   OK で旧値が確定する（ユーザーには『設定しても元に戻る』と見える）。入力＝置き換えを
+  //   既定にして、この事故を構造的に起こさない。
+  const selectAll = () => {
+    if (typeof input.select === 'function') {
+      input.select();
+    }
+  };
+  input.addEventListener('focus', selectAll);
+  // 実 UI 実測（2026-07-29）: focus だけでは不十分。既にフォーカスがある欄を再度クリックしても
+  //   focus は発火しないため、2 回目以降の打鍵が既存値へ追記された（`180` → `1801803h`）。
+  //   クリック時にも選択が潰れている（キャレットのみ）なら全選択し直し、「クリック→打鍵＝置き換え」
+  //   を常に成立させる。部分編集したい場合はクリック後に矢印キー／ドラッグ選択で行える。
+  input.addEventListener('click', () => {
+    if (input.selectionStart === input.selectionEnd) {
+      selectAll();
+    }
+  });
 
   input.addEventListener('input', () => {
     // 純数値は即時反映（従来の number コントロールと同じ即時検証を保つ）。
@@ -465,6 +493,12 @@ export function buildPeriod(field, ctx) {
       setError(null);
       ctx.setValue(field.name, Number(raw));
       ctx.onChange();
+      return;
+    }
+    // 数値以外を打ち始めた時点で直前のエラー表示は消す（確定時に再判定する）。
+    //   これが無いと、一度エラーになった欄が修正中もエラー扱いのままで OK が押せない。
+    if (err.textContent) {
+      setError(null);
     }
   });
   input.addEventListener('blur', commit);

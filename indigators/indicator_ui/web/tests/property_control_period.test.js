@@ -67,9 +67,9 @@ const fakeDoc = { createElement: (tag) => makeEl(tag) };
 // ctx（ControlContext）を作る。periodContext は基本設計 §8.2 の供給面。
 // values の既定は「ホストが FieldDesc の初期値で seed 済み」の状態を再現する
 //   （PropertiesDialog は buildFormModel の値で _values を先に埋める）。
-function makeCtx({ values = { length: 50 }, periodContext = null } = {}) {
+function makeCtx({ values = { length: 50 }, periodContext = null, setPendingError = null } = {}) {
   const changes = [];
-  return {
+  const ctx = {
     doc: fakeDoc,
     getValue: (name) => values[name],
     setValue: (name, v) => { values[name] = v; },
@@ -78,6 +78,11 @@ function makeCtx({ values = { length: 50 }, periodContext = null } = {}) {
     _values: values,
     _changes: changes,
   };
+  // 未解決入力エラーの通知面（ホストが対応している場合のみ渡される）。
+  if (setPendingError) {
+    ctx.setPendingError = setPendingError;
+  }
+  return ctx;
 }
 
 const FIELD = { name: 'length', value: 50, min: 2, max: null };
@@ -301,4 +306,93 @@ test('ポップ内へフォーカスが移っても閉じない', () => {
   wrap.dispatch('focusout', { relatedTarget: item });
 
   assert.ok(!pop.classList.contains('is-hidden'));
+});
+
+// ===========================================================================
+// 2026-07-29 ユーザー報告の是正:
+//   (1)「3h」と入力したら「1803h」になる＝既存値へ追記される（フォーカス時に全選択しない）。
+//   (2) その結果 換算が失敗し代入されないまま OK で旧値が確定する＝「設定しても元に戻る」。
+// ===========================================================================
+
+test('フォーカスで入力欄を全選択する（既存値への追記＝1803h を構造的に防ぐ）', () => {
+  const ctx = makeCtx({ periodContext: PC_1H });
+  const wrap = buildPeriod({ name: 'length', value: 180, min: null, max: null }, ctx);
+  const { input } = parts(wrap);
+  let selected = 0;
+  input.select = () => { selected += 1; };
+
+  input.dispatch('focus');
+
+  assert.equal(selected, 1, 'フォーカス時に select() を呼ぶ');
+});
+
+// 実 UI 実測（2026-07-29）: focus だけでは 2 回目以降のクリックで発火せず追記が起きた
+//   （`180` → `1801803h`）。キャレットのみ（選択なし）のクリックでも全選択し直す。
+test('フォーカス済みの欄を再クリックしても全選択する（2 回目以降の追記防止）', () => {
+  const ctx = makeCtx({ periodContext: PC_1H });
+  const wrap = buildPeriod({ name: 'length', value: 180, min: null, max: null }, ctx);
+  const { input } = parts(wrap);
+  let selected = 0;
+  input.select = () => { selected += 1; };
+  input.selectionStart = 3;
+  input.selectionEnd = 3;   // キャレットのみ＝選択されていない
+
+  input.dispatch('click');
+
+  assert.equal(selected, 1, 'クリック時にも select() を呼ぶ');
+});
+
+test('範囲選択中のクリックは選択を潰さない（部分編集の余地を残す）', () => {
+  const ctx = makeCtx({ periodContext: PC_1H });
+  const wrap = buildPeriod({ name: 'length', value: 180, min: null, max: null }, ctx);
+  const { input } = parts(wrap);
+  let selected = 0;
+  input.select = () => { selected += 1; };
+  input.selectionStart = 0;
+  input.selectionEnd = 2;   // 既にユーザーが範囲選択している
+
+  input.dispatch('click');
+
+  assert.equal(selected, 0, '選択済みなら select() を呼ばない');
+});
+
+test('換算に失敗した入力は OK を抑止する（旧値の暗黙確定を防ぐ）', () => {
+  const pending = [];
+  const ctx = makeCtx({
+    periodContext: PC_1H,
+    setPendingError: (name, message) => pending.push([name, message]),
+  });
+  const wrap = buildPeriod({ name: 'length', value: 180, min: null, max: null }, ctx);
+  const { input } = parts(wrap);
+
+  // 追記されたような不正入力（1803h → 1803 × 1時間 = 上限超）で確定を試みる。
+  input.value = '1803h';
+  input.dispatch('blur');
+
+  assert.equal(pending.at(-1)[0], 'length');
+  assert.ok(pending.at(-1)[1], '未解決エラーとして登録される（OK 抑止）');
+  assert.equal(ctx._values.length, 50, '値は代入されない（F-P1・直前の有効値のまま）');
+});
+
+test('入力を打ち直すとエラーは解除され OK 抑止も外れる', () => {
+  const pending = [];
+  const ctx = makeCtx({
+    periodContext: PC_1H,
+    setPendingError: (name, message) => pending.push([name, message]),
+  });
+  const wrap = buildPeriod({ name: 'length', value: 180, min: null, max: null }, ctx);
+  const { input } = parts(wrap);
+  input.value = '1803h';
+  input.dispatch('blur');
+  assert.ok(pending.at(-1)[1]);
+
+  // 修正中（数値以外）でもエラー表示は消え、抑止が解ける。
+  input.value = '3h';
+  input.dispatch('input');
+  assert.equal(pending.at(-1)[1], null, 'エラー解除が通知される');
+
+  // 確定すると換算値が入る（1時間足の 3h = 3 本＝表 '1h'=1 の 3 倍）。
+  input.dispatch('blur');
+  assert.equal(ctx._values.length, 3);
+  assert.equal(input.value, '3');
 });
