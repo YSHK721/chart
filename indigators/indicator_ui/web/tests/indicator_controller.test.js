@@ -607,3 +607,71 @@ test('applyIndicator waits for an in-flight restore before applying (ISSUE-153)'
   await p;
   assert.deepEqual(order, ['restore-done', 'apply-done']);
 });
+
+// ===========================================================================
+// ISSUE-201（同一インスタンスの lost update・2026-07-29 実測）
+//   ライブ再計算はバッチ開始時のスナップショット params で計算し、完了時に当該行を live state へ
+//   マージする。よって計算中に歯車で params を変えると旧 params の行が新 params を上書きし、
+//   ユーザーには「価格が更新されると設定が元に戻る」と見えていた（実測: OK 直後 200 →
+//   0.5 秒後に旧値 9 の tick 計算が完了し保存値が 9 に戻る）。
+//   対策 (a) 明示操作は await 前に params を確定 / (b) await 中に行が差し替わった結果は破棄。
+// ===========================================================================
+
+test('recomputeInstance(commitParams): params は計算完了を待たず即確定する（ISSUE-201-a）', async () => {
+  const noop = () => {};
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let armed = false;
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => { if (armed) { await gate; } return { ok: true, generation: req.generation ?? 0, series: [] }; } },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop, setVisible: noop, remove: noop },
+    document: null,
+  });
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const id = ctrl._state.applied[0].instanceId;
+
+  armed = true;
+  const p = ctrl.recomputeInstance(id, null, { length: 200 }, { commitParams: true });
+  await Promise.resolve();
+
+  // 計算は未完了だが state の params は既に新しい（in-flight の完了順に依存しない）。
+  assert.deepEqual(
+    Object.fromEntries(ctrl._state.applied[0].params).length, 200,
+    '計算完了前に params が確定している',
+  );
+  release();
+  await p;
+  assert.equal(Object.fromEntries(ctrl._state.applied[0].params).length, 200);
+});
+
+test('_computeInstance: await 中に行が差し替わった結果は破棄する（ISSUE-201-b）', async () => {
+  const noop = () => {};
+  const rendered = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let armed = false;
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => { if (armed) { await gate; } return { ok: true, generation: req.generation ?? 0, series: [] }; } },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop, setVisible: noop, remove: noop },
+    document: null,
+  });
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const id = ctrl._state.applied[0].instanceId;
+  ctrl._renderInstance = (job) => { rendered.push(job.instanceId); };
+
+  // ライブ相当のバッチ（旧 params）を開始してから、歯車 OK 相当で params を確定する。
+  armed = true;
+  const live = ctrl._computeInstance(id, null, { length: 9 });
+  await Promise.resolve();
+  ctrl._state = ctrl._withParams(ctrl._state, id, { length: 200 });   // 明示操作の即確定に相当
+  release();
+  const job = await live;
+
+  assert.equal(job.accepted, false, '旧 params 由来の結果は採用しない');
+  assert.equal(Object.fromEntries(ctrl._state.applied[0].params).length, 200, 'params は巻き戻らない');
+  assert.deepEqual(rendered, [], '破棄された結果は描画しない');
+});

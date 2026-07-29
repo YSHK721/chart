@@ -444,8 +444,10 @@ export class IndicatorController {
   // UC-03 再計算（設定変更・variant 切替）: generation 競合破棄は facade.recompute に集約（§6.6）。
   //   opts.mode='latest' は Latest 増分計算（gateway へ mode 伝播・末尾K点を updateSeriesTail へ
   //   差分反映し remove+_draw の全描画はしない）。既定 'full' は従来どおり remove+redraw。
-  async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
-    const job = await this._computeInstance(instanceId, newVariant, newParams, { mode, forceTail });
+  //   commitParams=true（ユーザーの明示操作＝歯車 OK / variant 切替 / デフォルト復元）は、
+  //   計算の完了を待たずに params を live state へ確定する（ISSUE-201。下記 _computeInstance 参照）。
+  async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false, commitParams = false } = {}) {
+    const job = await this._computeInstance(instanceId, newVariant, newParams, { mode, forceTail, commitParams });
     if (!job || !job.accepted) {
       return job ? job.accepted : false;
     }
@@ -464,7 +466,18 @@ export class IndicatorController {
   //     並列時に他インスタンスの compute 完了が microtask 間へ割り込んで上書きし取り違える。
   //   - state は丸ごと代入せず当該 instance 行のみマージする。丸ごと代入は並列時に同一
   //     スナップショット由来の最後の代入が勝ち、兄弟インスタンスの世代前進が失われる（lost update）。
-  async _computeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
+  //   ISSUE-201（同一インスタンスの lost update・2026-07-29 実測）: バッチは開始時の
+  //     スナップショット params で計算し、完了時にその行を live state へマージする。よって
+  //     計算中にユーザーが歯車で params を変えると、**旧 params の行が新 params を上書きする**
+  //     （実測: OK 直後に length=200 で 1 回計算 → 0.5 秒後に length=9 の tick 計算が完了 →
+  //      保存値が 9 に戻り、以後ずっと 9。ユーザーには「価格が更新されると設定が元に戻る」と見える）。
+  //     恒久対策は 2 点セット:
+  //       (a) ユーザーの明示操作（commitParams=true）は **await 前に** params を live state へ確定する
+  //           ＝ params の正はユーザー操作であり、計算結果ではない。
+  //       (b) await 中に当該行が差し替わっていたら（他の確定・他バッチの反映）、この結果は
+  //           旧設定由来なので **破棄**する（accepted:false）。描画も state も触らない。次のクロックが
+  //           新しい params で計算し直す。ISSUE-105 の「await 中に除去されたら破棄」と同型の規律。
+  async _computeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false, commitParams = false } = {}) {
     const meta = this._meta.get(instanceId);
     if (!meta) {
       return null;
@@ -474,6 +487,10 @@ export class IndicatorController {
       this._state = this._withVariant(this._state, instanceId, newVariant);
     }
     const params = newParams ?? this._defaultParams(meta.def);
+    // (a) ユーザーの明示操作は計算を待たずに params を確定する（in-flight 計算の完了順に依存しない）。
+    if (commitParams) {
+      this._state = this._withParams(this._state, instanceId, params);
+    }
     // Latest 差分可否を「要求前」に def から確定する（混在/horizontal 指標は full を要求し
     //   trim されない full データで全描画する＝混在バグ回避）。
     // [reveal seam] forceTail=true（replay 足内追従）は混在指標でも末尾差分（updateSeriesTail）経路へ
@@ -485,6 +502,9 @@ export class IndicatorController {
     //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
     //   開始時刻の記録は isRecomputing() の時限判定（ISSUE-157）に使う。
     this._gate.enter();
+    // (b) 破棄判定の基準。行オブジェクトは変更のたびに差し替えられる（_withParams/_withVariant/
+    //   マージのいずれも新しい行を作る）ため、同一性比較で「await 中に変わったか」が判定できる。
+    const rowAtCall = this._state.applied.find((i) => i.instanceId === instanceId);
     try {
       const result = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
       // 競合削除ガード（ISSUE-105 🟡-2）: recompute の await 中に凡例 close（removeInstance）で
@@ -493,7 +513,10 @@ export class IndicatorController {
       //   凡例行の無い残留系列（ゾンビペイン）＋永続化汚染を生む。await 後の live state で在席を
       //   確認し、除去済みなら live state に触れず accepted:false を返す。
       const removedDuringAwait = !this._state.applied.some((i) => i.instanceId === instanceId);
-      if (removedDuringAwait || !result.accepted) {
+      // (b) await 中に当該行が差し替わった＝この結果は旧 params/variant 由来。state も描画も触らない。
+      const supersededDuringAwait = !!rowAtCall
+        && this._state.applied.find((i) => i.instanceId === instanceId) !== rowAtCall;
+      if (removedDuringAwait || supersededDuringAwait || !result.accepted) {
         // 非採用（世代競合破棄・除去済み）は state 変更なし＝live state を据え置く（ISSUE-165:
         //   スナップショット丸ごと代入をやめ、並列時に兄弟の変更を巻き戻さない）。
         return { instanceId, accepted: false };
@@ -923,7 +946,8 @@ export class IndicatorController {
       this._persistAll();
       return Promise.resolve(true);
     }
-    return this.recomputeInstance(inst.instanceId, nextVariant, values);
+    // ユーザーの明示操作＝params の正。in-flight のライブ計算に上書きされないよう即確定する（ISSUE-201）。
+    return this.recomputeInstance(inst.instanceId, nextVariant, values, { commitParams: true });
   }
 
   // params の等値判定（キー順・参照に依らない深い比較。FLOAT_LIST 等の配列値も対象）。
@@ -938,9 +962,9 @@ export class IndicatorController {
     if (variants.length > 1) {
       const idx = variants.indexOf(inst.variant);
       const nextVariant = variants[(idx + 1) % variants.length];
-      this.recomputeInstance(inst.instanceId, nextVariant, this._defaultParams(def));
+      this.recomputeInstance(inst.instanceId, nextVariant, this._defaultParams(def), { commitParams: true });
     } else {
-      this.recomputeInstance(inst.instanceId, null, this._defaultParams(def));
+      this.recomputeInstance(inst.instanceId, null, this._defaultParams(def), { commitParams: true });
     }
   }
 }
