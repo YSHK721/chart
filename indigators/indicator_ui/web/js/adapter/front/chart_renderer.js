@@ -584,6 +584,13 @@ export class ChartRenderer {
   //   stale 点は 1 点単位で黙って捨て、バッチは最後まで適用する（正しい最新値は次の応答で届く）。
   updateSeriesTail(seriesKey, points) {
     this._withSeries(seriesKey, points, (series) => {
+      // ISSUE-196（不変条件の構造的保証）: 時間足切替で空にした系列（clearInstanceData 済み）へ
+      //   遅延到着した末尾差分を書き込むと、旧時間足の time を 1 点だけ持つ系列が生まれ、
+      //   時間軸に「ローソクに存在しない time」が復活する（= `Value is null` の発生条件）。
+      //   空系列への末尾差分は捨てる（正しい全点は直後の full 再計算が setData で描く）。
+      if (typeof series.data === 'function' && series.data().length === 0) {
+        return;
+      }
       for (const p of points ?? []) {
         try {
           series.update(p);
@@ -592,6 +599,28 @@ export class ChartRenderer {
         }
       }
     });
+  }
+
+  // ISSUE-196（不変条件の構造的保証）: 当該 instance の全系列データを空にする（系列・pane・
+  //   スタイル・水準線は温存＝再生成なしで data のみ空）。
+  //   lightweight-charts は「時間軸に載る time は当該系列にも存在する」ことを要求し、満たさないと
+  //   colorer が ensureNotNull で `Value is null` を throw する（実測: 旧時間足の指標系列が残った
+  //   まま新時間足のローソクを setData した瞬間に throw・その例外が再計算バッチを中断させ、
+  //   指標が旧足のまま固着して以後の再計算も同じ throw で失敗し続ける）。
+  //   時間足切替のように「ローソクの time 集合が入れ替わる」局面では、旧足の指標データを
+  //   同一同期ブロック内で空にすることで違反状態を発生させない（描画は後続の再計算が行う）。
+  clearInstanceData(instanceId) {
+    const slot = this._instances.get(instanceId);
+    if (!slot) {
+      return;
+    }
+    for (const [key, series] of slot.lines.entries()) {
+      series.setData([]);
+      const meta = this._overlayReadouts.get(key);
+      if (meta) {
+        meta.lastValue = null;
+      }
+    }
   }
 
   // UC-04 表示/非表示（実体は SeriesDrawer.setVisible・SOLID 是正 🔴-2）。

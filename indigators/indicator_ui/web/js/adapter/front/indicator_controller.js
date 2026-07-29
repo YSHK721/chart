@@ -618,6 +618,22 @@ export class IndicatorController {
       .filter((job) => job && job.accepted);
     // フェーズ2: ここから await を挟まない同期一括描画。
     if (preRender) {
+      // ISSUE-196（不変条件の構造的保証）: preRender はメインローソク系列の time 集合を入れ替える
+      //   （時間足切替・リプレイの足リビール）。本バッチで再描画されない指標の系列は旧 time を
+      //   持ち続けるため、lwc の「時間軸の time は当該系列にも存在する」不変条件が破れ、
+      //   preRender 内の setData（および以後の全ペイント）が `Value is null` を throw する。
+      //   その例外は本バッチを中断させ、指標が旧足のまま固着して次クロックの再計算も同じ throw で
+      //   失敗し続ける（実測 102〜160 件/30〜45 秒・full 再計算失敗が反復）。
+      //   ここで「再描画されない指標」の系列データを同一同期ブロック内で空にし、違反状態を
+      //   発生させない（try/catch で例外を握る応急処置は行わない＝原因側を消す）。
+      //   skip 述語で除外した一括リビール指標（replay）は preRender 内の revealTo が同期で
+      //   描き直すため、空化 → preRender の順序で結果は不変。
+      const drawnIds = new Set(jobs.map((job) => job.instanceId));
+      for (const inst of this._state.applied) {
+        if (!drawnIds.has(inst.instanceId) && typeof this._renderer.clearInstanceData === 'function') {
+          this._renderer.clearInstanceData(inst.instanceId);
+        }
+      }
       preRender();
     }
     if (jobs.length === 0) {

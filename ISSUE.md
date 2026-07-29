@@ -2360,8 +2360,8 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **検証**: `tests/build_module_order.test.js`（相対 import が MODULE_ORDER に全て登録されていることを構造的に固定）が緑。web 902 緑・api 437 緑。
 - **関連**: 基本設計_期間プリセット.md §8.1・§12.2-2。
 
-## ISSUE-196: [既存不具合・原因特定] 統合 UI の時間足切替で `Value is null` が発火する（ISSUE-167 の未解明個体の真因）（2026-07-28）
-- **ステータス**: OPEN（2026-07-28 起票・**原因特定済み／対策は未実施＝承認待ち**）
+## ISSUE-196: [不具合] 時間足切替で `Value is null` が発火し指標が更新されなくなる／切替が遅い（ISSUE-167 の未解明個体の真因）（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・原因特定 → 2026-07-29 抜本対策を実装・実 UI 実測で検証。web 910 緑／replay 266 緑（既知失敗 1 件のみ・本件前から fail）／unified 42 緑／A方式 build 成功）
 - **事象**: 統合 UI（8000）で指標を 1 件以上適用した状態で時間足を切り替えると、lightweight-charts が `Error: Value is null` を 2〜3 回 throw する。実害（描画・値の誤り）は観測されない。ISSUE-167 本体（M1 日境界の重複行）は 2026-07-24 に解消済みで、2026-07-27 に「原因未特定・再現条件不明」として再観測記録のみ残っていた個体が本件である。
 - **切り分け（実測 2026-07-28）**:
   - 指標 0 件で時間足切替 → **0 件**。指標 1 件（moving_averages）で切替 → **3 件**。
@@ -2389,4 +2389,24 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
   ⇒ **`Value is null` は期間プリセット実装の前から発生している**（12 件）。本症状は当該実装が持ち込んだものではない。件数の 12→16 は試行ごとの揺れ（同一 commit 内でも 4／8 と変動）と同程度であり、有意差とは言えない。
 - **重篤な現れ（ローソク未描画・時間軸が旧足のまま）**: `market_profile` ＋ 足内更新指標を適用した状態で 1 分足へ切り替えると、時間軸が旧足のまま残りローソクが 1 本も描画されない状態を実 UI で 1 度観測した（スクリーンショット取得）。ただし統制した 3 試行 × 3 commit では 0/3 で再現せず、**発生率が低い競合**である。再現手順は「MP ＋ 足内更新指標 ＋ 1 分足への切替」。
 - **対策 A の扱い**: 症状を減らさない（上表）一方で「後続バッチが来なければ `preRender` を抑止したまま candles が差し替わらない」＝ローソク未描画を招きうる副作用を持つ。ブランチ `fix/issue-196-recompute-prerender-atomicity` に温存し、**develop へは入れない**。配信ブランチは `feature/chart-template`（対策 A を含まない）へ戻した。
-- **関連**: ISSUE-167（本体は解消済み・本件はその未解明個体）／ISSUE-188。
+- **追加実測（2026-07-29・実 UI・統合 8000・ライブ・指標 5 件 = market_profile + ma_marod + btlm_trail + btlm_trail_marod + moving_averages）**: lwc に計装フック（createChart→series の setData/update/setMarkers/removeSeries と例外を時系列採取＋「時間軸に載るが当該系列に無い time」の計数）を入れて日→1分の切替を観測した。
+  - クリック → ローソクが 1 分足へ差し替わるまで **5.63 秒**（`/candles` の応答は **1.03 秒**で到着済み＝待ちの実体は「全指標 compute の完了待ち」）。指標 1 件なら 1.84 秒＝**指標構成に比例して遅くなる構造**。
+  - その差し替え（`setData`）**の内側で** `Value is null` が throw されることを直接捕捉（`THROW Candlestick#1.setData: Value is null`）。差し替え時点で 21 本の指標系列は旧日足の time（例 `1785283200`）を保持していた。
+  - throw が `recomputeAllApplied` を中断（`[replay] 計算エラー`）→ 指標の再描画が行われず旧足のまま固着 → 以後 5 秒クロックの full 再計算も同じ throw で連続失敗（`full 再計算失敗` 3〜5 回／`Value is null` **102〜160 件 / 30〜45 秒**）。悪いケースでは 30 秒経っても全指標が旧足のまま（「指標が表示されない」の実体）。
+  - **層の切り分け**: ライブ core 単体（8001・SW/replay 層なし）は同一操作・同一 5 指標で `Value is null` **0 件**。ローソク `setData` と指標の `removeSeries/setData` が**同一同期ブロック**で完了するため。統合 UI ではこのブロックが replay 層の `preRender` で分断される＝統合固有。
+- **真因の再定義（実測に基づく）**: lwc は「時間軸に載る time は当該系列にも存在する」ことを要求する（違反時 colorer の `ensureNotNull` が throw）。この不変条件を守る責務がどのコードにも無く、「全指標 compute 完了 → ローソク差し替え → 指標描画」という**非原子な順序**が、(a) 切替の律速（最遅 compute）と (b) 差し替え瞬間の不変条件違反を同時に生んでいた。ISSUE-167 の対策（重複 time の dedupe）は「重複」だけを塞いだ応急防壁で、「欠落」側は無防備だったため別経路で同型の例外が再発した。
+- **抜本対策（2026-07-29 実装・ユーザー承認済み。応急防壁＝try/catch や dedupe 追加は行わない）**:
+  1. `chart_renderer.clearInstanceData(instanceId)` を新設（加法）: 当該 instance の全系列 data を空にする（系列・pane・スタイル・水準線は温存＝再生成なし）。
+  2. `timeframe_controller.setTimeframe`: candles 取得直後に「**全適用指標の系列を空にする → `setCandles`**」を **await を挟まない同一同期ブロック**で実行し、`recomputeAllApplied` へ `preRender` を渡さない。これで時間軸に旧 time が存在する瞬間が構造的に消え、ローソク・時間軸は candles 到着直後に切り替わる（compute 非依存）。
+  3. `indicator_controller.recomputeAllApplied`: `preRender` を伴うバッチ（リプレイのリビール経路・世代不採択バッチ）では、**本バッチで描画されない指標の系列を `preRender` の直前に空にする**（同一同期ブロック内）。これで「preRender だけが走るバッチ」も不変条件を破らない。
+  4. `chart_renderer.updateSeriesTail`: 空化済み（data 長 0）の系列への遅延末尾差分は捨てる（旧足 time を 1 点だけ復活させる経路を封鎖）。
+- **仕様変更点（UI 挙動・記録）**: 時間足切替で「ローソクと全指標を同時に更新する」（ISSUE-023 の一部）を改め、**ローソクを先に（約 1 秒で）差し替え、指標は compute 完了後に一括描画**する。指標同士の同時更新（1 指標ずつバラバラに出ない）は不変。切替直後の数秒は指標が空表示になる（従来は「チャート全体が 5 秒以上旧足のまま」だった）。
+- **検証（実 UI・実測 2026-07-29）**: 指標 5 件で全時間足を掃引（1分/15分/1時間/日/5分/1時間）。
+  | モード | click→ローソク差し替え | `Value is null` | full 再計算失敗 | 不整合点（軸にあり系列に無い time） |
+  |---|---|---|---|---|
+  | ライブ | 0.19〜1.22 秒 | 0 | 0 | 0 |
+  | リプレイ | 0.09〜0.25 秒 | 0 | 0 | 0 |
+  リプレイ再生（一括リビール経路）12 秒: 例外 0・全 15 系列が非空・不整合 0。切替前後のアイドル各 20〜30 秒も `Value is null` 0・`full 再計算失敗` 0（旧: 160 件 / 5 回）。
+- **回帰テスト**: `chart_renderer.test.js`（clearInstanceData の空化・系列非再生成・未知 id no-op／updateSeriesTail の空系列スキップと非空系列の従来動作）、`timeframe_controller.test.js`（取得直後 setCandles・preRender=null・空化→差し替えの順序・candles 空時は何もしない）、`indicator_controller.test.js`（preRender 前に「描画されない指標」を空化する／描画される指標は空化しない／ローソクは compute 完了前・指標は完了後一括）。replay 側の同名テストも新仕様へ同期。
+- **残件（別 ISSUE）**: 指標ラインが出そろうまでの時間は compute に律速（実測 5.6 秒・`/market_profile` 単発 5.4 秒）＝サーバ側施策は別枠。ISSUE-197（`Cannot update oldest data` の多発）／ISSUE-198（SW 経由 `/live_ticks` の network error）。
+- **関連**: ISSUE-167（重複 time の応急防壁＝本件は同じ不変条件の「欠落」側）／ISSUE-023（同時更新仕様の改訂元）／ISSUE-165（compute 並列化だけでは律速が残っていた）／ISSUE-188。

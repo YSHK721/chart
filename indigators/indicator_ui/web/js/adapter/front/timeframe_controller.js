@@ -92,14 +92,33 @@ export class TimeframeController {
       if (typeof this._loadCandles === 'function') {
         candles = await this._loadCandles(host._datasetRef, timeframe);
       }
-      // メイン系列差し替えを指標の再描画と同じ同期バッチへ含め、全要素を同時更新する（ISSUE-023）。
-      //   取得失敗・A方式（candles 無し）は preRender=null でメイン系列を据え置く。
-      const preRender = candles && candles.length > 0
-        ? () => host._renderer.setCandles(candles)
-        : null;
+      // ISSUE-196（抜本対策・2026-07-29 実測に基づく設計変更）:
+      //   旧: メイン系列差し替え（setCandles）を「全指標 compute 完了後」の同期バッチへ入れて
+      //       全要素を同時更新していた（ISSUE-023）。この順序は 2 つの実測不具合の原因だった。
+      //     1) 切替の所要が「最も遅い指標 compute」に律速される。/candles は 1.0 秒で届いているのに
+      //        チャートが変わるのは 5.63 秒後（指標 5 件・market_profile 単発 5.4 秒）。
+      //     2) その setData 時点で指標系列が旧足の time を保持しているため lwc が `Value is null` を
+      //        throw し、例外がバッチを中断して指標が旧足のまま固着する（以後の再計算も同じ throw で
+      //        失敗し続ける）。
+      //   新: 「旧足の指標系列を空にする」→「新足ローソクへ差し替える」を **await を挟まない
+      //       同一同期ブロック** で実行する。これで
+      //     - 時間軸に載る time は常にローソク系列に存在する（不変条件を構造的に保証＝1) の原因が消える）
+      //     - ローソク・時間軸は candles 取得直後（実測 約 1 秒）に切り替わる（指標構成に非依存）
+      //   指標は後続の recomputeAllApplied フェーズ2 が同期一括で描く（指標同士の同時更新は不変）。
+      //   切替直後の短時間は指標が空になる（compute 完了まで）。これは「5 秒以上チャート全体が
+      //   旧足のまま」だった従来挙動に対する意図的な変更（UI 挙動の変更点）。
+      if (candles && candles.length > 0) {
+        if (typeof host._renderer?.clearInstanceData === 'function') {
+          for (const inst of host._state?.applied ?? []) {
+            host._renderer.clearInstanceData(inst.instanceId);
+          }
+        }
+        host._renderer.setCandles(candles);
+      }
       // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
       //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
-      await host.recomputeAllApplied({ preRender });
+      //   preRender は渡さない（メイン系列は上で差し替え済み）。
+      await host.recomputeAllApplied({ preRender: null });
     } finally {
       gate.exit();
     }

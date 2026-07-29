@@ -20,6 +20,8 @@ function fakeSeries(def) {
     _def: def, _data: null, _options: {}, _createOpts: null, _priceLines: [], _updates: [],
     _kind: def === HistogramSeries ? 'histogram' : (def === LineSeries ? 'line' : 'candle'),
     setData(points) { this._data = points; },
+    // ISSUE-196: 実 lwc の series.data()（現在の点列）。空系列判定・不変条件検査で参照する。
+    data() { return this._data ?? []; },
     // 末尾K差分反映: series.update を点ぶん呼ぶ（過去確定足は触らない・隔離維持）。
     update(point) { this._updates.push(point); },
     applyOptions(opts) { Object.assign(this._options, opts); },
@@ -1439,4 +1441,55 @@ test('resetPaneScales clears saved ranges and restores auto scale on pane axes (
   renderer.renderHistogram('osc#1', [{ name: 'marod_lc', kind: 'histogram', data: [] }], { pane: true, name: 'OSC' });
   const ps2 = chart.created[2].priceScale();
   assert.deepEqual(ps2._setCalls, [], '切替後の redraw で旧手動レンジを復元しない');
+});
+
+// ===========================================================================
+// ISSUE-196: lwc 不変条件（時間軸の time は当該系列にも存在する）の構造的保証
+//   時間足切替では「旧足の指標系列を空にする → 新足ローソクを setData」を同一同期ブロックで
+//   実行する。その空化入口（clearInstanceData）と、空化後に遅延到着した末尾差分を捨てる
+//   ガード（updateSeriesTail）を固定する。
+// ===========================================================================
+
+test('clearInstanceData: 当該 instance の全系列 data を空にする（系列・pane は温存）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#1', [
+    { name: 'ma_fast', kind: 'line', data: [{ time: 10, value: 1 }, { time: 20, value: 2 }] },
+    { name: 'ma_slow', kind: 'line', data: [{ time: 10, value: 3 }, { time: 20, value: 4 }] },
+  ]);
+  const createdBefore = chart.created.length;
+
+  renderer.clearInstanceData('ma#1');
+
+  for (const s of chart.created.slice(-2)) {
+    assert.deepEqual(s.data(), [], '系列データが空になる');
+  }
+  assert.equal(chart.created.length, createdBefore, '系列は再生成しない（data のみ空化）');
+  assert.equal(chart.removed.length, 0, '系列を除去しない');
+});
+
+test('clearInstanceData: 未知 instanceId は no-op（防御）', () => {
+  const { renderer } = newRenderer();
+  assert.doesNotThrow(() => renderer.clearInstanceData('unknown#9'));
+});
+
+test('updateSeriesTail: 空化済み系列への遅延末尾差分は捨てる（旧足 time を復活させない）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#1', [{ name: 'ma_fast', kind: 'line', data: [{ time: 10, value: 1 }] }]);
+  const series = chart.created.at(-1);
+  renderer.clearInstanceData('ma#1');
+
+  renderer.updateSeriesTail('ma#1::ma_fast', [{ time: 20, value: 9 }]);
+
+  assert.deepEqual(series._updates, [], '空系列へは 1 点も書き込まない');
+  assert.deepEqual(series.data(), [], '系列は空のまま');
+});
+
+test('updateSeriesTail: 非空系列へは従来どおり末尾点を反映する（回帰）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#1', [{ name: 'ma_fast', kind: 'line', data: [{ time: 10, value: 1 }] }]);
+  const series = chart.created.at(-1);
+
+  renderer.updateSeriesTail('ma#1::ma_fast', [{ time: 20, value: 9 }]);
+
+  assert.deepEqual(series._updates, [{ time: 20, value: 9 }], '非空系列は従来どおり update する');
 });

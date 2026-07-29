@@ -25,8 +25,12 @@ function makeHost(overrides = {}) {
   const host = {
     _datasetRef: 'sample',
     recomputeGate: () => gate,
-    _renderer: { setCandles: (c) => calls.push(['setCandles', c]) },
-    _state: { uiState: {} },
+    _renderer: {
+      setCandles: (c) => calls.push(['setCandles', c]),
+      // ISSUE-196: 旧足の指標系列を空にする入口（setCandles と同一同期ブロックで呼ばれる）。
+      clearInstanceData: (id) => calls.push(['clearInstanceData', id]),
+    },
+    _state: { uiState: {}, applied: overrides._applied ?? [] },
     _el: overrides._el,
     _persistAll: () => calls.push(['persist']),
     recomputeAllApplied: async (opts) => calls.push(['recompute', opts]),
@@ -80,15 +84,48 @@ test('setTimeframe: 新時間足を host に反映し recompute→persist→obse
   assert.deepEqual(seen, ['1W']);
 });
 
-test('setTimeframe: loadCandles 有り（B方式）は候補を取得し preRender で setCandles を渡す', async () => {
+// ISSUE-196（抜本対策・2026-07-29）: 旧仕様は「全指標 compute 完了後の同期バッチで setCandles」
+//   （preRender 渡し）だった。実測で 2 つの不具合の原因と確定したため設計を変更した:
+//   (a) 切替所要が最も遅い指標 compute に律速（実測 5.63 秒）、(b) 差し替え時点で旧足の指標系列が
+//   残るため lwc が `Value is null` を throw しバッチが中断・指標が旧足で固着。
+//   新仕様: candles 取得直後に「指標系列の空化 → setCandles」を同一同期ブロックで実行し、
+//   recomputeAllApplied には preRender を渡さない（指標はフェーズ2 が描く）。
+test('setTimeframe: loadCandles 有り（B方式）は取得直後に setCandles し preRender は渡さない', async () => {
   const candles = [{ time: 1, open: 1, high: 1, low: 1, close: 1 }];
   const { calls, make } = makeHost({ _loadCandles: async () => candles });
   const tf = make();
   await tf.setTimeframe('1W');
+  assert.equal(calls.some((c) => c[0] === 'setCandles'), true, '取得直後に setCandles する');
   const rc = calls.find((c) => c[0] === 'recompute');
-  assert.equal(typeof rc[1].preRender, 'function');
-  rc[1].preRender();
-  assert.equal(calls.some((c) => c[0] === 'setCandles'), true);
+  assert.equal(rc[1].preRender, null, 'preRender は渡さない（メイン系列は既に差し替え済み）');
+  // 順序: setCandles → recompute（旧仕様は recompute の内側で setCandles だった）。
+  assert.ok(calls.findIndex((c) => c[0] === 'setCandles') < calls.findIndex((c) => c[0] === 'recompute'));
+});
+
+test('setTimeframe: 適用済み指標の系列を空にしてから setCandles する（lwc 不変条件・ISSUE-196）', async () => {
+  const candles = [{ time: 1, open: 1, high: 1, low: 1, close: 1 }];
+  const { calls, make } = makeHost({
+    _loadCandles: async () => candles,
+    _applied: [{ instanceId: 'ma_marod#1' }, { instanceId: 'btlm_trail#1' }],
+  });
+  const tf = make();
+  await tf.setTimeframe('1W');
+  const cleared = calls.filter((c) => c[0] === 'clearInstanceData').map((c) => c[1]);
+  assert.deepEqual(cleared, ['ma_marod#1', 'btlm_trail#1'], '全適用指標の系列を空にする');
+  const lastClear = calls.map((c) => c[0]).lastIndexOf('clearInstanceData');
+  const setIdx = calls.map((c) => c[0]).indexOf('setCandles');
+  assert.ok(lastClear < setIdx, '空化はローソク差し替えより前（同一同期ブロック内）');
+});
+
+test('setTimeframe: candles 取得が空なら setCandles も空化も行わない（メイン系列据え置き）', async () => {
+  const { calls, make } = makeHost({
+    _loadCandles: async () => [],
+    _applied: [{ instanceId: 'ma_marod#1' }],
+  });
+  const tf = make();
+  await tf.setTimeframe('1W');
+  assert.equal(calls.some((c) => c[0] === 'setCandles'), false);
+  assert.equal(calls.some((c) => c[0] === 'clearInstanceData'), false);
 });
 
 test('effectiveTimeframe: chart/未指定は host._timeframe に追従し、特定足はそのまま', () => {
