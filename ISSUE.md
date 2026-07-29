@@ -2651,3 +2651,57 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
   2. UI 表示は PARK 縮退のままとし、高精度が要る用途（CEB v1.1 への `sigma_hat` 供給）はバッチ経路（`compute_cvfe`）に限定すると仕様へ明記する。
   3. 仕様 §3.1 の入力に OHLC 経路を第 2 の正式入力として追加する。
 - **関連**: ISSUE-209（`delta_star_sec = 0` のギャップ判定）／仕様 §10 TBD-7（適用時間足）。
+
+## ISSUE-219: [不具合・再現済み] common.module_loader が exec 失敗モジュールをキャッシュし、2 回目以降に壊れたモジュールを配布する（2026-07-29）
+- **ステータス**: OPEN（2026-07-29 起票・SOLID 全体監査で検出・**本エージェントが独立再現**）
+- **事象**: `common/module_loader.py:69-79` の `_exec_into_sys_modules` は `finally` で `_LOADING` を落とすが、`exec_module` が例外を送出した場合でも `sys.modules[name]` に**半構築のモジュールが残る**。以降は `_cached_ready`（:59-66）が「exec 完了済み」と判定して当該モジュールを返すため、2 回目以降の呼び出しは**例外を出さずに壊れたモジュールを配布する**。
+- **実測（2026-07-29・再現コード）**:
+  ```
+  boom.py = "VALUE = 1 / raise RuntimeError('exec 失敗') / VALUE = 2"
+  1 回目: RuntimeError: exec 失敗
+  2 回目: 例外なし → VALUE=1        ← 壊れたモジュールを配布
+  sys.modules に残存: True
+  参考 CPython 標準 import: 1 回目 RuntimeError / 2 回目も RuntimeError（毎回失敗）
+  ```
+  CPython は import 失敗時に `sys.modules` から削除するため、本ローダは**標準機構と挙動が乖離**している。
+- **影響**: 指標 src の動的ロード（`ma_marod` / `btlm_trail_marod` の参照実装解決、`call_binding._load_src_package`）で src に構文誤り以外の実行時例外があると、初回だけエラーになり以降は「一部だけ定義された」モジュールで計算が進む。**沈黙した誤計算**になりうる。
+- **既知性**: ISSUE-185 は「ロック外二重チェックによる半構築露出（並行性）」であり、本件は exec 失敗時のキャッシュ汚染で**別欠陥**。
+- **対策案（未実施・要承認）**: `_exec_into_sys_modules` の `except` で `sys.modules.pop(name, None)` してから再送出する（CPython と同一の後始末）。共有プリミティブの変更のため影響範囲の評価を要する。
+
+## ISSUE-220: [不具合・再現済み] インジケーター追加ダイアログの「★ お気に入り」が常に 0 件になる（2026-07-29）
+- **ステータス**: OPEN（2026-07-29 起票・SOLID 全体監査で検出・**本エージェントが実行で再現**）
+- **事象**: `indicator_dialog_controller.js:49-50` が `data-category="__favorites__"` のセンチネルを **category チャネルにも代入**する。
+  ```js
+  this._filter.category = c.dataset.category || null;              // ← '__favorites__' が入る
+  this._filter.favoriteOnly = c.dataset.category === '__favorites__';
+  ```
+  受け手の `facade.js:33` は `d.category.nameKey !== category` で除外するため、どの指標のカテゴリも `'__favorites__'` と一致せず**全件が落ちる**。
+- **実測（2026-07-29・facade を直接実行）**:
+  | 呼び出し | 件数 |
+  |---|---|
+  | 全件（tab=indicator） | 23 |
+  | 現行の呼ばれ方（category='__favorites__' + favoriteOnly=true・お気に入り 2 件登録） | **0 件** |
+  | category=null に直した場合 | 2 件（ma_marod / cvfe） |
+- **既存テストが検出しない理由**: web 919 件は `listForView` を正しい引数（category=null）で呼ぶ単体テストのみで、`IndicatorDialogController` 経由の結線を通していない。
+- **対策案（未実施・要承認）**: `this._filter.category = c.dataset.category === '__favorites__' ? null : (c.dataset.category || null);`。併せて controller 経由の回帰テストを追加する。UI 挙動の変更にあたるため承認を要する。
+
+## ISSUE-221: [不具合・確認済み] インジケーター一覧のカテゴリ絞り込みに 2 カテゴリのボタンが無く、24 指標中 12 件が到達不能（2026-07-29）
+- **ステータス**: OPEN（2026-07-29 起票・SOLID 全体監査で検出・**本エージェントが実測**）
+- **事象**: カタログ側のカテゴリ（`catalog.js`）と、サイドバーの静的ボタン（`web/index.html:70-74`）が二重定義で乖離している。
+- **実測（2026-07-29）**:
+  | カテゴリ | カタログ登録数 | サイドバーのボタン |
+  |---|---|---|
+  | `cat.technical` | 3 | あり |
+  | `cat.statistics` | 1 | あり |
+  | `cat.volume` | 8 | あり |
+  | `cat.oscillator` | **10** | **なし** |
+  | `cat.band` | **2** | **なし** |
+  ⇒ **24 指標中 12 件**（cvfe を含む）がカテゴリ絞り込みから漏れる。「すべて」と検索からは到達できるため機能全損ではない。
+- **原因**: カテゴリ軸がデータ（`catalog.js`）と静的マークアップ（`index.html`）の 2 箇所に定義され、新カテゴリの指標追加が HTML の同時改変を要する（OCP 違反）。
+- **対策案（未実施・要承認）**: サイドバーを `list()` のカテゴリ集合から動的生成する（テンプレートメニュー `#tpl-menu` が既に採る方式）。UI 変更のため承認を要する。
+
+## ISSUE-222: [設計欠陥] indicator_ui の DatasetPort が無検査キャストで、結線漏れが HTTP 500 へ沈黙劣化する（2026-07-29）
+- **ステータス**: OPEN（2026-07-29 起票・SOLID 全体監査（indicator_ui API 領域）で検出）
+- **事象**: `usecase/dataset_port.py:116-123` の `candle_dataset_port()` が `return dataset_port()  # type: ignore[return-value]` と無検査キャストする。`DatasetPort` と `CandleDatasetPort` を ISP で分割したのに注入シームは `set_dataset_port` 1 本しかなく、注入された実装が両インターフェースを満たすか誰も検証しない（LSP/ISP）。
+- **実測（監査エージェント）**: `is_known` / `is_known_timeframe` / `load_dataframe` のみを持つ**合法な `DatasetPort` 実装**を注入すると `isinstance(p, DatasetPort)` は True のまま `/candles` が `internal: 'OnlyDatasetPort' object has no attribute 'load_candles'`（HTTP 500）へ劣化する。
+- **対策案（未実施・要承認）**: `set_candle_dataset_port` を別シームに分離するか、`candle_dataset_port()` で `isinstance(_PORT, CandleSeriesPort)` を検査し、未充足時は ISSUE-183 の未注入時と対称に `RuntimeError` を送出する。
