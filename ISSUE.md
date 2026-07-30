@@ -805,11 +805,16 @@
 - **関連**: ISSUE-056/057、mp_stats パッケージ（57テスト）。
 
 ## ISSUE-059: test_market_profile_byte_parity の 8 件が develop 時点で失敗（golden 陳腐化の疑い）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **発生日**: 2026-07-11（src=zp 追加作業中の回帰確認で発見）
 - **概要**: `indigators/market_profile/api/tests/test_market_profile_byte_parity.py` のうち dwell/m1（to=1780666320）5 件・forming 3 件が、**作業変更を stash した素の develop でも同一に失敗**する（8 failed / 19 passed で一致確認済み）。src=zp 追加とは無関係の既存問題。
 - **推定原因（未検証）**: golden 作成後の実データ（ticks parquet）更新または dwell キャッシュ／active table 依存のドリフト。
 - **対応方針**: 本 Issue では修正しない（golden 再生成は挙動確定の判断を要するため依頼者承認待ち）。zp 作業の回帰判定は「この 8 件を既知ベースラインとし、それ以外の全テスト green」を基準とする。
+- **決着（2026-07-30・再実測）**: **27 passed（3 連続緑・0.6s）**。当時失敗していた `forming:*` および `to=1780666320` 系を含む全 27 件が通る。
+- **解消したコミット（特定済み）**: `d3aad36`（2026-07-15・ISSUE-089 対応）「byte-parity を決定論の合成世界へ移行」。
+  - 真因は推定どおり実データ側だった: 実 `jp225_tick` の 1m 原子ストアが**ローリング保持**（窓左端が壁時計とともに前進）するため byte 固定が原理的に不能だった。
+  - 対処は golden 再生成ではなく、jp225_tick 系 12 ケースへ合成世界（`mp_parity_world`）を注入して**決定論化**（16s→0.6s）。
+- **本 Issue 側の作業は無し**（別 Issue の対応で解消）。クローズが漏れていた記録を是正する。
 
 ## ISSUE-060: src=zp×日別×非対応tf（1m/5m）で日別タイルが消える（委譲述語の片側更新）
 - **ステータス**: RESOLVED（2026-07-11）
@@ -1459,7 +1464,7 @@ front `_ZP_SUPPORTED_TFS` と back `_ZP_TF_ALLOWED` の同値並行（言語跨�
 ### 裁定不要・実装フェーズへの申し送り
 🟡-1 は 1 行ガード追加＋契約テスト固定の低リスク是正（実データ実測とセットで実施）。🔵-2 は docstring 追記のみ。🔵-3 は対応不要（記録のみ）。
 ## ISSUE-103: ISP（インターフェース分離の原則）第2巡アーキテクチャ監査（是正5件の実測再検証＋新規探索・自己レビュー済み）
-- **ステータス**: OPEN（2026-07-16 起票・新規違反 0 件＝検証完了の記録）
+- **ステータス**: RESOLVED
 - **調査方法**: architecture-executor によるシステム全体の第2巡監査。ISSUE-099 の既知指摘（🟡5・🔵4）と是正記録（🟡-1 Report ports 分割／🟡-2 VolBand read-write 分離／🟡-3/-4 TimeframeHost・MarketProfileHost ロール契約／🟡-5 ProfileSink・TfPeriodSink ファサード）を精読して重複を除外し、是正後の契約が実利用と乖離していないかをクライアント別実利用メソッド集合の Grep 実測で突合。新規探索（ResultSinkPort・DatasetPort・CandleSource・replay_ports/marker_ports/report_ports・共有層）も実施。prompt-validation-workflow＋upstream-input-validation の自己レビューを通過（一次候補 7 件を棄却）。prototype_* は対象外。
 - **総括**: **合格（新規 🔴0・🟡0・🔵0）**。第1巡是正 5 件は全件現行コードで成立し、宣言した狭い契約が実利用と乖離していないことを実測で確認。特に TimeframeHost（11面）・MarketProfileHost（19面）は controller の `host.X` 参照集合と**完全一致**し、`host_role_contract.test.js:87-99` の三方向テスト（依存面⊆契約／契約⊆実利用＝最小性／host面⊇契約＝充足）で過大契約を構造的に排除。ProfileSink（5面）／TfPeriodSink（2面）は `composition_root_front.js:261-282,397-416` で本番結線され各 actor が排他サブセットを維持。
 
@@ -1482,6 +1487,8 @@ front `_ZP_SUPPORTED_TFS` と back `_ZP_TF_ALLOWED` の同値並行（言語跨�
 
 ### 裁定不要・実装フェーズへの申し送り
 新規是正対象なし。既往 🔵-6/-8/-9 は据置（YAGNI）のまま。ResultSinkPort のデッドポート整理（撤去 or 結線）は DIP 側の裁定事項として ISSUE-104（DIP 第2巡）の結果と併せて判断することを推奨。
+- **クローズ（2026-07-30）**: 本エントリは「第2巡監査の結果、新規違反 0 件＝検証完了」の**記録**であり、対応を要する未解決事項を含まない（🔴0・🟡0・🔵0）。OPEN のまま残っていたのは起票時の取り違え。RESOLVED へ是正する。
+
 ## ISSUE-104: DIP（依存関係逆転の原則）第2巡アーキテクチャ監査（Tier1/Tier2 是正後コードの再検証＋新規探索・自己レビュー済み）
 - **ステータス**: RESOLVED（2026-07-16 起票／🟡-1・🟡-2 を 2026-07-17 是正・🔵-3 は観点記録のため対応不要）
 - **対応記録（🟡-1・2026-07-17）**: common（計算・安定層＝numpy のみ依存）→ common_view（表示・可変層）の後方互換再エクスポート（level_colors/LEVEL_LINE_WIDTH）を撤去し、安定度逆転（安定→不安定の SDP 違反）を解消。production 消費者は全て common_view 直参照へ移行済み（実 import 0 件を実測）。表示定数の唯一の公開元を common_view に一本化。テスト 7 ファイルを common_view 直参照へ更新＋逆依存撤去の回帰固定（common.__all__ に表示定数が無いことを assert）。common 20・profit_* 各緑。
@@ -2330,7 +2337,7 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **関連**: ISSUE-183（発見経緯）。
 
 ## ISSUE-187: [仕様裁定待ち] 参照実装 profit_band の `_resolve_times` だけ DatetimeIndex 経路の系列名が他 20 本と異なる（2026-07-27）
-- **ステータス**: OPEN（**裁定保留をユーザー承認**。ISSUE-179 項目 2 の過程で発見。コード変更なし）
+- **ステータス**: OPEN（実測完了・裁定待ち）
 - **事象（実測）**: `_resolve_times` の DatetimeIndex 経路で、`profit_band/src/lwc_chart.py` は `df.index.to_series()` を返すため**系列名が `time` にならない**。他 20 本は系列名を `time` に揃える。例外文言も profit_band だけ別。
 - **なぜ問題か**: `profit_band` は `indigators/PORTING_GUIDE.md:8-9` が「本書の原則はすべてこの実装で実証済み」と宣言する**参照実装**でありながら少数派である。参照実装を正とするなら他 20 本が誤り、多数派を正とするなら参照実装が誤り。**どちらとも決められないため `_resolve_times` の完全な一本化ができない**（ISSUE-179 項目 2 は AST 同値の 12 本のみ統合し、9 本を挙動差のため未統合として残した）。
 - **同種の先行事例**: ISSUE-173 で profit_band が PORTING_GUIDE §2 の 2 規約を満たしていなかった件（案 a＝参照実装を規約へ合わせる、で解決済み）。本件も同じ「参照実装が基準に従っていない」構図だが、**こちらは挙動変更を伴う**点が異なる。
@@ -2340,6 +2347,12 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
   - 案 c: 系列名の差が下流（lwc への payload・JS 側パリティ）に実影響を持つかを先に実測し、無影響なら差異を許容して PORTING_GUIDE §5 に明記する。
 - **未検証**: 系列名 `time` の有無が実際に描画・payload・JS 側の byte 一致縛りへ波及するかは未測定。**裁定の前にこれを実測すべき**。
 - **関連**: ISSUE-173（同じ参照実装の規約未達）・ISSUE-179（発見経緯）・ISSUE-184。
+- **未検証事項の実測（2026-07-30・裁定の前提として測定。コード変更なし）**: 「系列名 `time` の有無が描画・payload・JS 側の byte 一致縛りへ波及するか」を測定した。**結論: 波及しない。**
+  - **消費者の全数調査**: `resolve_times` / `_resolve_times` の戻り値を使う 21 本の `lwc_chart.py` を全て確認した。用法は (a) `pd.DataFrame({"time": times, ...})` の**辞書値**（キー `"time"` が列名を上書きするため `Series.name` は捨てられる）、(b) `times.to_numpy()`（profit_band 自身・名前は消える）、(c) 位置スライス／添字（`moving_averages` の `times[:-1]` / `times[j]`）のみ。**`.name` を読む消費者は 0 件**。
+  - **payload 一致の実測**: `index.name` を `None` / `Date` / `time`、さらに tz-aware(UTC) / tz-aware(JST) / 重複あり / 非単調の各ケースで両実装を並置比較。**値・dtype・index はすべて一致**し、差は `Series.name`（多数派 `'time'` 固定 vs profit_band は index 名を継承）のみ。`emit_line` が作る DataFrame と、そこから JS へ渡る JSON は**全ケースで byte 一致**。
+  - **例外文言の差**: 文言をアサートするテストは**全体で 0 件**（grep 実測）。
+- **裁定への含意**: 差は**観測不能**であるため、案 b（多数派へ寄せる）は当初想定と異なり**挙動変更を伴わない**（＝`_resolve_times` の完全一本化が実行可能）。案 c（差異を許容して PORTING_GUIDE §5 に明記）も同じ実測で正当化できる。
+- **ステータス**: 21 パッケージ共有の実装統一はアーキテクチャ判断のため**未実施・裁定待ち**（案 b と案 c のいずれか）。
 
 ## ISSUE-188: [不具合] テンプレート自動適用後に `applied.v1` が空のまま残りリロードで構成が消える（2026-07-28）
 - **ステータス**: RESOLVED（2026-07-28 起票・同日修正。実 UI 検証 D-1。TDD Red→Green。live 829 緑（既存 749 無改変全通過）／replay 266 pass・1 fail は ISSUE-048 のみで不変／unified 42 緑）
@@ -2762,10 +2775,15 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **実 UI 確認**: サイドバーは すべて / ★お気に入り / テクニカル / **オシレーター** / 統計 / 出来高 / **バンド**（重複なし）。各カテゴリの件数は 4 / 9 / 1 / 7 / 2 で合計 23＝`tab=indicator` の全件。
 
 ## ISSUE-222: [設計欠陥] indicator_ui の DatasetPort が無検査キャストで、結線漏れが HTTP 500 へ沈黙劣化する（2026-07-29）
-- **ステータス**: OPEN（2026-07-29 起票・SOLID 全体監査（indicator_ui API 領域）で検出）
+- **ステータス**: RESOLVED
 - **事象**: `usecase/dataset_port.py:116-123` の `candle_dataset_port()` が `return dataset_port()  # type: ignore[return-value]` と無検査キャストする。`DatasetPort` と `CandleDatasetPort` を ISP で分割したのに注入シームは `set_dataset_port` 1 本しかなく、注入された実装が両インターフェースを満たすか誰も検証しない（LSP/ISP）。
 - **実測（監査エージェント）**: `is_known` / `is_known_timeframe` / `load_dataframe` のみを持つ**合法な `DatasetPort` 実装**を注入すると `isinstance(p, DatasetPort)` は True のまま `/candles` が `internal: 'OnlyDatasetPort' object has no attribute 'load_candles'`（HTTP 500）へ劣化する。
 - **対策案（未実施・要承認）**: `set_candle_dataset_port` を別シームに分離するか、`candle_dataset_port()` で `isinstance(_PORT, CandleSeriesPort)` を検査し、未充足時は ISSUE-183 の未注入時と対称に `RuntimeError` を送出する。
+- **対応（2026-07-30・対策案のうち「面の充足を検査して RuntimeError」を採用）**:
+  - **再現を先に実測**（監査エージェントの報告を鵜呑みにせず自分で確認）: `is_known`/`is_known_timeframe`/`load_dataframe` のみを持つ実装は `isinstance(p, DatasetPort)=True` / `isinstance(p, CandleDatasetPort)=False` で、`candle_dataset_port()` は**例外を出さずそのまま返す**。失敗は `load_candles` 呼び出し時の `AttributeError` まで潜伏し、`framework/server.py:265` の総括 catch が HTTP 500 `internal` へ変換する＝**沈黙劣化を確認**。
+  - `usecase/dataset_port.py` の `candle_dataset_port()` で `isinstance(port, CandleSeriesPort)` を検査し、未充足は結線漏れとして `RuntimeError` を送出する。ISSUE-183 の**未注入時と対称**（欠落を serving 中へ先送りしない）。
+  - シーム分離（`set_candle_dataset_port` 追加）は採らない。注入点が 2 本になると「片方だけ注入」という新しい不整合を生むため、単一シーム＋取得時検査の方が状態空間が小さい。
+- **検証**: 回帰テスト 2 件を追加（`tests/test_dataset_port.py`）。DatasetPort だけを満たす合法実装で `RuntimeError`、既定 gateway では素通し（ガードが過剰でないこと）。**変異注入**で無検査キャストへ戻すと `DID NOT RAISE` で失敗することを確認。`indicator_ui/api` **441 passed**。
 
 ## ISSUE-223: [仕様変更] CVFE の表示を別 pane オシレータから価格スケール上のバンドへ変更（2026-07-30）
 - **ステータス**: RESOLVED（2026-07-30 起票・依頼者指示により実施・**正本仕様への反映は未裁定**）

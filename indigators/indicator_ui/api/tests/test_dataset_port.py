@@ -13,7 +13,13 @@ from __future__ import annotations
 
 import pytest
 
-from usecase.dataset_port import DatasetPort, dataset_port, set_dataset_port
+from usecase.dataset_port import (
+    CandleDatasetPort,
+    DatasetPort,
+    candle_dataset_port,
+    dataset_port,
+    set_dataset_port,
+)
 
 
 class _FakePort:
@@ -63,6 +69,33 @@ def test_default_gateway_delegates_to_marketdata_dataset():
     assert port.is_known("____nope____") == md_dataset.is_known("____nope____")
     assert port.is_known_timeframe("1D") == md_dataset.is_known_timeframe("1D")
     assert port.is_known_timeframe("9z") == md_dataset.is_known_timeframe("9z")
+
+
+def test_candle_face_rejects_port_that_lacks_load_candles():
+    """配信面を満たさない実装の注入は、その場で RuntimeError（ISSUE-222）。
+
+    `_FakePort` は `DatasetPort`（is_known / is_known_timeframe / load_dataframe）を満たす
+    **合法な実装**だが `load_candles` を持たない。注入シームが 1 本しか無いため注入自体は通る。
+    無検査キャストのままだと欠落は `/candles` の実行時 AttributeError まで潜伏し、
+    `framework.server` の総括 catch で HTTP 500 `internal` へ沈黙劣化していた。
+    結線漏れは serving 中ではなく取得時点で落ちること（未注入時と対称）を固定する。
+    """
+    fake = _FakePort()
+    assert isinstance(fake, DatasetPort)          # 前提: DatasetPort としては合法
+    assert not isinstance(fake, CandleDatasetPort)  # 配信面は満たさない
+    set_dataset_port(fake)
+
+    assert dataset_port() is fake                 # /compute 側は従来どおり通る
+    with pytest.raises(RuntimeError, match="CandleSeriesPort"):
+        candle_dataset_port()
+
+
+def test_candle_face_returns_default_gateway_which_implements_both():
+    """既定 gateway は両面を実装する＝正常系は素通しする（上のガードが過剰でないこと）。"""
+    set_dataset_port(None)
+    port = candle_dataset_port()
+    assert isinstance(port, CandleDatasetPort)
+    assert port is dataset_port()
 
 
 def test_default_gateway_load_dataframe_sees_monkeypatched_module(monkeypatch):
