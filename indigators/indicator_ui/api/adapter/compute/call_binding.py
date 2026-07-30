@@ -368,25 +368,25 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     #   仕様 §3.1 のティック列が無いため、§4.1-6 の FAIL 行が定める縮退
     #   （measure_id="PARK"）で算出する（精度は仕様 §7-6 のとおり低下する）。
     #   line 系（時系列）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
+    # cvfe（条件付ボラティリティ予測 σ̂・価格スケール上の水平ダッシュ）。実バインディングは
+    #   add_cvfe（indigators/cvfe/src/lwc_chart.py）。UI 計算経路が渡せるのは OHLC だけで
+    #   仕様 §3.1 のティック列が無いため、§4.1-6 の FAIL 行が定める縮退
+    #   （measure_id="PARK"）で算出する（精度は仕様 §7-6 のとおり低下・ISSUE-218）。
+    #   line 系（時系列）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
+    #
+    #   公開パラメータは 6 個に絞る（認知負荷の最小化・ユーザー厳命 2026-07-30）。
+    #   ここに無いパラメータは add_cvfe の既定値が使われる（refit_every=0・lam_gap=0.97・
+    #   外れ値判定のしきい値群）。いずれも「既定から動かす根拠が無い」ことを実測または
+    #   仕様で確認済み（詳細は catalog.js の CVFE 定義コメント）。
     ("cvfe", "default"): {
         "loader": lambda: _load_callable("cvfe", "add_cvfe"),
         "output_kind": "line", "kind": "kw",
         "time_required": True,
         "params_defaults": {
             "n_har": 500,
-            "lam_gap": 0.97,
-            "refit_every": 0,
             "sigma_inner": 1.0,
             "sigma_outer": 2.0,
-            "show_outer": True,
-            "show_mid": False,
             "show_outliers": True,
-            "q_low": 0.05,
-            "q_high": 0.95,
-            "q_out": 0.99,
-            "k_events": 50,
-            "event_agg": "episode",
-            "window_n": 500,
             "display_mode": "dashes",
             "dash_opacity": 0.5,
             "color": "rgba(233, 30, 99, 1)",

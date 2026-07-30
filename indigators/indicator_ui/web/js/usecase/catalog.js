@@ -86,7 +86,7 @@ const TGP_BTLM = new IndicatorDef({
     // 共有 applied_price で解決する（tgp_btlm src は無改変）。moving_averages の source と同一写像。
     param('price', ParamType.ENUM, 'open', [], ['open', 'high', 'low', 'close', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 2 }),
     // maxbars 既定 40→100 是正（M-1・core.py:33 DEFAULT_MAXBARS=100）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, unit: 'unit.bars', isPeriod: true }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, unit: 'unit.bars', label: '移動期間', isPeriod: true }),
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
       { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
@@ -143,7 +143,7 @@ const BTLM_TRAIL = new IndicatorDef({
     // ソース: moving_averages と同一 8 択（applied_price 参照・既定 close）。
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
     // maxbars: 回帰窓（既定 100・core DEFAULT_MAXBARS）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', isPeriod: true }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', label: '移動期間（回帰）', isPeriod: true }),
     // 分位ペア（0<q_low<q_high<1）。tgp_btlm と対称の q-chain 制約。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
@@ -156,7 +156,7 @@ const BTLM_TRAIL = new IndicatorDef({
     param('band_method', ParamType.ENUM, 'ols', [], ['ols', 'empirical'], { group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS }),
     // 経験分位バンドの参照本数（既定 500・band_method==empirical のときのみ有効）。
     param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
-      group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars', isPeriod: true,
+      group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（分位）', isPeriod: true,
       conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
     }),
     // --- 表示 ---
@@ -175,7 +175,7 @@ const BTLM_TRAIL = new IndicatorDef({
     }),
     // バンド内実績率（実現被覆率）のローリング本数（既定 250）。
     param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
-      group: 'group.display', order: 4, label: 'バンド内実績率の本数', step: 1, min: 2, unit: 'unit.bars', isPeriod: true,
+      group: 'group.display', order: 4, label: '移動期間（実績率）', step: 1, min: 2, unit: 'unit.bars', isPeriod: true,
       conditionalEnable: { when: { param: 'show_metrics', equals: true } },
     }),
     // color は btlm_mean（トレンド現在位置）の色。スタイルタブへ移譲。
@@ -249,7 +249,7 @@ const BTLM_TRAIL_MAROD = new IndicatorDef({
     // ソース: btlm_trail と同一 8 択（applied_price 参照・既定 close）。
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
     // maxbars: 回帰窓（既定 100・min 3・btlm_trail core DEFAULT_MAXBARS）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', isPeriod: true }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', label: '移動期間（回帰）', isPeriod: true }),
     // 分位ペア（0<q_low<q_high<1・btlm_trail と対称の q-chain 制約）。σ・分位バンドの下側/上側分位。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
@@ -263,7 +263,7 @@ const BTLM_TRAIL_MAROD = new IndicatorDef({
     // window_n: 正常バンド（分位バンド）の因果ローリング窓（既定 500・min 2）。実測で MAROD は
     //   分散非定常のため固定でなくこの窓で局所再計算する（当該バー除外＝非リペイント）。
     param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
-      group: 'group.calc', order: 8, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓', isPeriod: true,
+      group: 'group.calc', order: 8, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（分位）', isPeriod: true,
       tooltip: '正常バンド（経験分位バンド・下側/上側分位）を算出する因果ローリング窓の本数。MAROD は分散非定常のため固定でなくこの窓で局所再計算する。当該バーは除外（非リペイント）。',
     }),
     // color は MAROD 線の色（スタイルタブへ移譲）。既定は add_btlm_trail_marod の _COLOR_MAROD。
@@ -321,7 +321,7 @@ const PROFIT_BAND = new IndicatorDef({
     // atr_period=14（INT・normalize=="atr" のときのみ ATR 計算で使用・robust_bands.py:135-138）。
     // 条件付き有効化（§3.5）: normalize==atr で有効、return で無効。
     param('atr_period', ParamType.INT, 14, [], null, {
-      group: 'group.robust', order: 3, step: 1, min: 1, unit: 'unit.bars', isPeriod: true,
+      group: 'group.robust', order: 3, step: 1, min: 1, unit: 'unit.bars', label: '移動期間', isPeriod: true,
       conditionalEnable: { when: { param: 'normalize', equals: 'atr' } },
     }),
     // min_obs=30（INT・lwc_chart.py:167）。
@@ -407,12 +407,12 @@ const MOVING_AVERAGES = new IndicatorDef({
   params: [
     // --- 基本（無見出しの先頭セクション）---
     param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], { order: 1, label: '種別', enumLabels: MA_TYPE_LABELS }),
-    param('length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { order: 2, label: '期間', step: 1, min: 2, isPeriod: true }),
+    param('length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { order: 2, label: '移動期間（平均）', step: 1, min: 2, isPeriod: true }),
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { order: 3, label: 'ソース', enumLabels: MA_SOURCE_LABELS }),
     param('offset', ParamType.INT, 0, [], null, { order: 4, label: 'オフセット', step: 1 }),
     // --- 平滑化 ---
     param('smoothing_type', ParamType.ENUM, 'none', [], ['none', 'sma', 'ema', 'smma', 'wma', 'sma_bb'], { group: '平滑化', order: 1, label: 'タイプ', enumLabels: MA_SMOOTHING_LABELS }),
-    param('smoothing_length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['smoothing_length', 2], messageKey: 'err.length' }], null, { group: '平滑化', order: 2, label: '期間', step: 1, min: 2, isPeriod: true }),
+    param('smoothing_length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['smoothing_length', 2], messageKey: 'err.length' }], null, { group: '平滑化', order: 2, label: '移動期間（平滑）', step: 1, min: 2, isPeriod: true }),
     // BB標準偏差: smoothing_type==sma_bb のときのみ有効（conditionalEnable で他はグレーアウト＝画像準拠）。
     param('bb_stddev', ParamType.FLOAT, 2.0, [], null, {
       group: '平滑化', order: 3, label: 'BB標準偏差', step: 0.001, min: 0.001,
@@ -449,7 +449,7 @@ const MA_MAROD = new IndicatorDef({
     // 基準線 MA 種別（moving_averages と同一 4 択・同一ラベル・既定 ema）。
     param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], { group: 'group.calc', order: 2, label: '種別', enumLabels: MA_TYPE_LABELS }),
     // length: MA 本数（既定 50・min 2＝参照実装 *_on_buffer の契約）。
-    param('length', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { group: 'group.calc', order: 3, label: '期間', step: 1, min: 2, unit: 'unit.bars', isPeriod: true }),
+    param('length', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { group: 'group.calc', order: 3, label: '移動期間（平均）', step: 1, min: 2, unit: 'unit.bars', isPeriod: true }),
     // 分位ペア（0<q_low<q_high<1・btlm_trail_marod と対称の q-chain 制約）。σ・分位バンドの下側/上側分位。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
@@ -464,7 +464,7 @@ const MA_MAROD = new IndicatorDef({
     // window_n: 正常バンド（分位バンド）の因果ローリング窓（既定 500・min 2）。乖離率は
     //   分散非定常（実測）のため固定でなくこの窓で局所再計算する（当該バー除外＝非リペイント）。
     param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
-      group: 'group.calc', order: 9, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓', isPeriod: true,
+      group: 'group.calc', order: 9, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（分位）', isPeriod: true,
       tooltip: '正常バンド（経験分位バンド・下側/上側分位）を算出する因果ローリング窓の本数。乖離率は分散非定常のため固定でなくこの窓で局所再計算する。当該バーは除外（非リペイント）。',
     }),
     // color は MA_MAROD 線の色（スタイルタブへ移譲）。既定は add_ma_marod の _COLOR_MA_MAROD。
@@ -511,7 +511,7 @@ const PF_INT = (name, def, extraUi = {}) => param(
 // 標準化窓 W（直近 W 本の過去のみで標準化＝look-ahead 除去・repaint しない）。
 // profit_* の因果化済み 6 指標で共通の window パラメータ（def=120・min:2・専用ラベル）。
 // PF_INT('window', ...) リテラルの DRY 集約（生成 param は従来と完全同一）。
-const PF_WINDOW = () => PF_INT('window', 120, { min: 2, label: '標準化窓 W（直近本数）' });
+const PF_WINDOW = () => PF_INT('window', 120, { min: 2, label: '移動期間（標準化）' });
 const MA_METHOD_ENUM_LABELS = { 0: 'SMA', 1: 'EMA', 2: 'SMMA', 3: 'LWMA' };
 // compute 共通（OHLCV サンプルを前提に requiredColumns は OHLC、時刻必須）。
 const PF_COMPUTE = (id, variants = ['default']) => ({
@@ -636,21 +636,26 @@ const MARKET_PROFILE = makeMarketProfileDef({
   IndicatorDef, SeriesDef, SeriesKind, ParamType, ConstraintKind, param, OHLC,
 });
 
-// --- cvfe（条件付ボラティリティ予測バンド・OVERLAY）----------------------
-// 正本仕様 indigators/cvfe/CVFE_spec_v1.0.md。次バーの条件付ボラティリティ σ̂_{t+1}
-//   （対数価格の標準偏差）を HAR-CJ-L で 1 期先予測し、ギャップ分散を加算して合成する
-//   （§4.5〜§4.8）。σ̂ は当該バーが開く前に確定するため、**1 本前の確定終値を中心**に
-//   置いた価格帯として価格 pane(0) のローソクへ重畳する（placement='overlay'）。
-//       中心 mid_t = close_{t−1} ／ 上下 = mid_t · exp(± k · σ̂_t)
-//   k は内側（既定 1.0）と外側（既定 2.0）の 2 段。確定バー不変（非リペイント）。
+// --- cvfe（条件付ボラティリティ予測・OVERLAY）------------------------------
+// 正本仕様 indigators/cvfe/CVFE_spec_v1.0.md。次バーの条件付ボラティリティ σ̂_{t+1} を
+//   HAR-CJ-L で 1 期先予測し、各バーの水準を「ローソク足幅の水平ダッシュ」で並べる
+//   （バー間を繋がない＝傾きという誤った情報を与えない）。確定バー不変（非リペイント）。
 //   実バインディング add_cvfe（indigators/cvfe/src/lwc_chart.py）。
-//   ⚠ 仕様 §1 は「区間バンドの構築」を CEB v1.1 の責務としてスコープ外にしている。
-//     本バンドは表示のための派生量で CEB の条件付被覆の保証を持たない（ISSUE-223）。
-//   ⚠ UI 計算経路はティックを渡せないため §4.1-6 の FAIL 縮退（PARK）で算出する
-//     （精度は仕様 §7-6 のとおり低下・ISSUE-218）。
-//   加えて外れ値水準（共有プリミティブ common.event_quantiles を無改変参照。標準化残差の
-//   正常バンド超イベントの典型深度・極端深度）を価格へ写して描く。
-//   系列名: cvfe_mid / cvfe_u1 / cvfe_l1 / cvfe_u2 / cvfe_l2 / cvfe_evq_{med|ext}_{hi|lo}。
+//
+// 認知負荷の最小化（ユーザー厳命 2026-07-30）: 公開パラメータは 6 個に絞る。
+//   内部固定にしたもの（いずれも「動かす根拠が無い」ことを実測または仕様で確認済み）:
+//     refit_every=0   実測: 1/20/100 いずれも凍結に対し DM 検定で有意差なし（p=0.94〜0.97）。
+//                     毎バー再学習は約 200 倍遅い（0.09s → 17.79s・2,600 本）。
+//     lam_gap=0.97    窓開けが無い時間足では効果ゼロ。既定から動かす根拠が仕様 §10 に無い。
+//     q_low/q_high/window_n/q_out/k_events/event_agg
+//                     外れ値判定の内部しきい値。対応する線を持たず、名前と系列名が
+//                     対応しないことが混乱の原因になっていた。共有既定のまま固定する。
+//     show_outer/show_mid  σ線②は主要 2 本の一方なので常時表示。中心線は既定どおり非表示。
+//
+//   系列名: cvfe_u1 / cvfe_l1（σ線①）・cvfe_u2 / cvfe_l2（σ線②）・
+//           cvfe_evq_{med|ext}_{hi|lo}（外れ値線・極端線）・cvfe_mid（中心・非表示）
+//   ⚠ 仕様 §1 はバンド構築を CEB の責務としてスコープ外にしている（ISSUE-223）。
+//   ⚠ UI 経路はティックを渡せず §4.1-6 の FAIL 縮退（PARK）で算出する（ISSUE-218）。
 const CVFE_DISPLAY_LABELS = { dashes: '水平ダッシュ（バー毎）', bands: '線で繋いだ帯' };
 const CVFE = new IndicatorDef({
   id: 'cvfe',
@@ -659,105 +664,52 @@ const CVFE = new IndicatorDef({
   tab: 'indicator',
   placement: 'overlay',
   params: [
-    // n_har: HAR の学習本数（仕様 §3.1 の下限 500）。先頭 n_har + 22 本は warm-up。
+    // 窓系パラメータの呼称は「移動期間」に統一する（ユーザー裁定 2026-07-30）。従来は同一概念に
+    //   期間／学習本数／分位の窓／バンド内実績率の本数／… と 6 通りの呼び名が混在していた。
+    //   cvfe は公開する窓が 1 つだけなので用途の注釈を付けない（専門用語を持ち込まない）。
     param('n_har', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_har', 500], messageKey: 'err.n_har' }], null, {
-      group: 'group.calc', order: 1, step: 1, min: 500, unit: 'unit.bars', label: '学習本数', isPeriod: true,
-      tooltip: 'HAR-CJ-L の学習に用いるバー本数（仕様 §3.1・下限 500）。先頭 n_har + 22 本は warm-up としてバンドを描かない。',
+      group: 'group.calc', order: 1, step: 1, min: 500, unit: 'unit.bars', label: '移動期間', isPeriod: true,
+      tooltip: '【全ての線に影響】「過去の変動幅から次の変動幅を出す式」を作るのに、何本さかのぼるか（下限 500）。長いほど安定し、短いほど直近の地合いに追随する。先頭 本数+22 本は準備期間として何も描かない。',
     }),
-    // lam_gap: ギャップ分散 EWMA の減衰係数（仕様 §3.1: 0.90 以上 1.0 未満）。
-    param('lam_gap', ParamType.FLOAT, 0.97, [
-      { kind: ConstraintKind.RANGE_OPEN, operands: [0.89, 'lam_gap', 1], messageKey: 'err.lam_gap.range' },
-    ], null, {
-      group: 'group.calc', order: 2, step: 0.01, min: 0.9, max: 0.999, label: 'ギャップ減衰',
-      tooltip: 'ギャップ分散 EWMA の減衰係数 λ（仕様 §4.7-3）。大きいほど過去の窓開けを長く引きずる。',
-    }),
-    // refit_every: 再学習の周期（仕様 §3.1・0 は初回学習後に係数を凍結）。
-    param('refit_every', ParamType.INT, 0, [{ kind: ConstraintKind.MIN_VALUE, operands: ['refit_every', 0], messageKey: 'err.refit_every' }], null, {
-      group: 'group.calc', order: 3, step: 1, min: 0, unit: 'unit.bars', label: '再学習周期',
-      tooltip: 'HAR 係数を再推定する周期（仕様 §4.5-6）。0 は初回学習後に凍結。再学習は t−1 以前のみを用いる（因果）。',
-    }),
-    // --- 表示（バンド倍率）---
+    // σ線①/②: 描かれる線と 1:1 で対応する名前にする。
     param('sigma_inner', ParamType.FLOAT, 1.0, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'sigma_inner', 10], messageKey: 'err.sigma_inner.range' },
       { kind: ConstraintKind.LT, operands: ['sigma_inner', 'sigma_outer'], messageKey: 'err.sigma_order' },
     ], null, {
-      group: 'group.display', order: 1, step: 0.1, min: 0.1, max: 10, label: '内側バンド（σ倍）',
-      tooltip: '内側の帯を σ̂ の何倍に置くか。1.0 なら次のバーの約 68% がこの帯に収まる想定（正規近似）。',
+      group: 'group.display', order: 1, step: 0.1, min: 0.1, max: 10, label: 'σ線①の倍率',
+      tooltip: '系列 cvfe_u1 / cvfe_l1 の位置。予測変動幅 σ̂ の何倍に置くか。実測（jp225 5 分足）では 1.0 で高安の 62% が到達する。',
     }),
     param('sigma_outer', ParamType.FLOAT, 2.0, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'sigma_outer', 10], messageKey: 'err.sigma_outer.range' },
     ], null, {
-      group: 'group.display', order: 2, step: 0.1, min: 0.1, max: 10, label: '外側バンド（σ倍）',
-      tooltip: '外側の帯を σ̂ の何倍に置くか。2.0 なら約 95%。損切り幅の目安に使う。',
+      group: 'group.display', order: 2, step: 0.1, min: 0.1, max: 10, label: 'σ線②の倍率',
+      tooltip: '系列 cvfe_u2 / cvfe_l2 の位置。予測変動幅 σ̂ の何倍に置くか。実測（jp225 5 分足）では 2.0 で高安の 15%・終値の 7.8% が超える。',
     }),
-    param('show_outer', ParamType.BOOL, true, [], null, {
-      group: 'group.display', order: 3, label: '外側バンドを表示',
+    param('show_outliers', ParamType.BOOL, true, [], null, {
+      group: 'group.display', order: 3, label: '外れ値線・極端線を表示',
+      tooltip: '系列 cvfe_evq_med_hi / med_lo（外れ値線）と cvfe_evq_ext_hi / ext_lo（極端線）。正規分布の仮定ではなく、過去に実際に外れた履歴から測った水準。実測の到達率は外れ値線 4.8%・極端線 0.26%。',
     }),
-    param('show_mid', ParamType.BOOL, false, [], null, {
-      group: 'group.display', order: 4, label: '中心線を表示',
-      tooltip: 'バンドの中心（1 本前の確定終値）を点線で描く。',
-    }),
-    // --- 外れ値水準（共有プリミティブ・ma_marod / btlm_trail_marod と同一規約）---
-    // σ 倍の帯は「標準化残差が正規分布」を仮定する。実際の収益は裾が厚くこの仮定は
-    //   被覆不足になるため、**実際に外れた履歴**から水準を測る。標準化残差
-    //   z = ln(C_t/C_{t−1})/σ̂_t の因果ローリング正常バンド超をイベントとし、その典型深度
-    //   （中央値）と極端深度（q_out 分位）を common.event_quantiles で求めて価格へ写す。
-    //   連続超過は episode declustering で 1 回に畳む（実測根拠は MA_MAROD 基本設計）。
-    // 表示形式。既定は水平ライン。バー毎の帯を線で繋ぐことに情報上の意味はほぼ無い
-    //   （実測 jp225_tick 5 分足 3,477 本: 上端の分散寄与は価格成分 100.4% / σ̂ 成分 15.3%、
-    //    相関は価格 0.924 / σ̂ 0.191。σ̂ の情報は帯の「幅」にしかなく、各点は別バーに対する
-    //    独立した 1 期先予測区間で点間を結ぶ線分に対応する量が無い）。ユーザー裁定 2026-07-30。
     param('display_mode', ParamType.ENUM, 'dashes', [], ['dashes', 'bands'], {
-      group: 'group.display', order: 0, label: '表示形式', enumLabels: CVFE_DISPLAY_LABELS,
-      tooltip: '水平ダッシュ＝各バーの水準を、そのバーの幅だけの短い水平線で並べる（推奨。バー間を繋がないので傾きに誤った意味が乗らず、どのバーのどの水準かが一意に読める）。線で繋いだ帯＝上下端を折れ線で結ぶ（検証用。傾きは価格そのものの動きで σ̂ の情報を持たない）。',
+      group: 'group.display', order: 4, label: '表示形式', enumLabels: CVFE_DISPLAY_LABELS,
+      tooltip: '水平ダッシュ＝各バーの水準を、そのバーの幅だけの短い水平線で並べる（推奨。バー間を繋がないので傾きに誤った意味が乗らない）。線で繋いだ帯＝上下端を折れ線で結ぶ（検証用。傾きは価格そのものの動きで σ̂ の情報を持たない）。',
     }),
-    // ダッシュの幅はローソク足幅に自動追従するため調整できない。主張の強さは不透明度で調整する。
     param('dash_opacity', ParamType.FLOAT, 0.5, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'dash_opacity', 1.01], messageKey: 'err.dash_opacity.range' },
     ], null, {
-      group: 'group.display', order: 1, step: 0.05, min: 0.05, max: 1, label: 'ダッシュの濃さ',
+      group: 'group.display', order: 5, step: 0.05, min: 0.05, max: 1, label: 'ダッシュの濃さ',
       conditionalEnable: { when: { param: 'display_mode', equals: 'dashes' } },
-      tooltip: '水平ダッシュの不透明度の倍率（既定 0.5）。幅はローソク足の幅に自動で合うため、主張の強さはここで調整する。小さくするほど価格が読みやすくなる。',
-    }),
-    param('show_outliers', ParamType.BOOL, true, [], null, {
-      group: 'group.display', order: 5, label: '外れ値水準を表示',
-      tooltip: '過去に正常バンドを超えた「外れ値イベント」の典型深度（赤実線）と極端深度（赤破線）を価格に写して描く。正規仮定の σ 倍ではなく実績から測った「外れたらどこまで行くか」の水準。',
-    }),
-    // 正常バンドの分位ペア（0<q_low<q_high<1・ma_marod と対称の q-chain 制約）。
-    param('q_low', ParamType.FLOAT, 0.05, [
-      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
-      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
-    ], null, {
-      group: 'group.display', order: 6, step: 0.01, min: 0, max: 1, label: '正常バンド下側分位',
-      conditionalEnable: { when: { param: 'show_outliers', equals: true } },
-    }),
-    param('q_high', ParamType.FLOAT, 0.95, [
-      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
-    ], null, {
-      group: 'group.display', order: 7, step: 0.01, min: 0, max: 1, label: '正常バンド上側分位',
-      conditionalEnable: { when: { param: 'show_outliers', equals: true } },
-    }),
-    // 外れ値イベント分位の 3 パラメータ（共有ビルダー・ma_marod / btlm_trail_marod と対称）。
-    ...EVQ_PARAMS(8),
-    // window_n: 正常バンドの因果ローリング窓。
-    param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
-      group: 'group.calc', order: 11, step: 1, min: 2, unit: 'unit.bars', label: '正常バンドの窓', isPeriod: true,
-      tooltip: '標準化残差の正常バンド（下側/上側分位）を算出する因果ローリング窓の本数。当該バーは除外（非リペイント）。',
+      tooltip: '【全ての線に影響】水平ダッシュの不透明度（既定 0.5）。幅はローソク足の幅に自動で合うため、主張の強さはここで調整する。',
     }),
     param('color', ParamType.COLOR, 'rgba(233, 30, 99, 1)', [], null, { group: 'group.style', order: 1 }),
   ],
-  // 系列: 中心＋内側 2 本＋外側 2 本。すべて価格スケール上（overlay）。
+  // 系列: σ線①②（各上下）＋ 外れ値線・極端線（各上下）＋ 中心線。すべて価格スケール上。
+  //   display_mode='dashes'（既定）は level_dash、'bands' は line で届くため同名で両 kind を宣言する。
   series: [
-    // display_mode='dashes'（既定）は level_dash、'bands' は line で届く。F3 照合は
-    //   系列名の集合で行われるため、同名で両 kind を宣言して切替に追随する。
     ...['cvfe_mid', 'cvfe_u1', 'cvfe_l1', 'cvfe_u2', 'cvfe_l2'].flatMap((n) => [
       new SeriesDef({ kind: SeriesKind.LEVEL_DASH, sourceColumn: n, seriesName: n, dynamic: false }),
       new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
     ]),
-    // 外れ値水準の 4 本（共有ビルダー＝表示規約の単一情報源）。q_out 無効時は極端線が
-    //   空系列になる（core が全 NaN を返す＝描画なしと等価）。
     ...EVQ_SERIES_DEFS('cvfe'),
-    // 外れ値水準も dashes では level_dash で届くため同名で両 kind を宣言する。
     ...['med_hi', 'med_lo', 'ext_hi', 'ext_lo'].map((k) => new SeriesDef({
       kind: SeriesKind.LEVEL_DASH, sourceColumn: `cvfe_evq_${k}`, seriesName: `cvfe_evq_${k}`, dynamic: false,
     })),
