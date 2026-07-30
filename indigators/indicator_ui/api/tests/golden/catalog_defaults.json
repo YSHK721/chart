@@ -24,10 +24,20 @@
   },
   "cvfe": {
     "color": "rgba(233, 30, 99, 1)",
+    "event_agg": "episode",
+    "k_events": 50,
     "lam_gap": 0.97,
     "n_har": 500,
+    "q_high": 0.95,
+    "q_low": 0.05,
+    "q_out": 0.99,
     "refit_every": 0,
-    "show_components": true
+    "show_mid": false,
+    "show_outer": true,
+    "show_outliers": true,
+    "sigma_inner": 1.0,
+    "sigma_outer": 2.0,
+    "window_n": 500
   },
   "ma_marod": {
     "color": "rgba(255, 152, 0, 1)",

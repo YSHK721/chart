@@ -2406,51 +2406,109 @@ const MARKET_PROFILE = makeMarketProfileDef({
   IndicatorDef, SeriesDef, SeriesKind, ParamType, ConstraintKind, param, OHLC,
 });
 
-// --- cvfe（条件付ボラティリティ予測 σ̂・別 pane オシレータ）--------------
+// --- cvfe（条件付ボラティリティ予測バンド・OVERLAY）----------------------
 // 正本仕様 indigators/cvfe/CVFE_spec_v1.0.md。次バーの条件付ボラティリティ σ̂_{t+1}
 //   （対数価格の標準偏差）を HAR-CJ-L で 1 期先予測し、ギャップ分散を加算して合成する
-//   （§4.5〜§4.8）。確定バー不変（非リペイント・切詰め不変をテストで固定）。
+//   （§4.5〜§4.8）。σ̂ は当該バーが開く前に確定するため、**1 本前の確定終値を中心**に
+//   置いた価格帯として価格 pane(0) のローソクへ重畳する（placement='overlay'）。
+//       中心 mid_t = close_{t−1} ／ 上下 = mid_t · exp(± k · σ̂_t)
+//   k は内側（既定 1.0）と外側（既定 2.0）の 2 段。確定バー不変（非リペイント）。
 //   実バインディング add_cvfe（indigators/cvfe/src/lwc_chart.py）。
-//   UI 計算経路が渡せるのは OHLC だけでティック列が無いため、仕様 §4.1-6 の
-//   quality_gate="FAIL" 行が定める縮退（measure_id="PARK"）で算出する。精度は
-//   仕様 §7-6 のとおり低下する（附録 A: Var(ln σ̂) は PARK 0.086 / RV 288 本 0.0017）。
-//   表示は % 換算（σ̂ × 100）。系列名: cvfe / cvfe_oc / cvfe_co。
+//   ⚠ 仕様 §1 は「区間バンドの構築」を CEB v1.1 の責務としてスコープ外にしている。
+//     本バンドは表示のための派生量で CEB の条件付被覆の保証を持たない（ISSUE-223）。
+//   ⚠ UI 計算経路はティックを渡せないため §4.1-6 の FAIL 縮退（PARK）で算出する
+//     （精度は仕様 §7-6 のとおり低下・ISSUE-218）。
+//   加えて外れ値水準（共有プリミティブ common.event_quantiles を無改変参照。標準化残差の
+//   正常バンド超イベントの典型深度・極端深度）を価格へ写して描く。
+//   系列名: cvfe_mid / cvfe_u1 / cvfe_l1 / cvfe_u2 / cvfe_l2 / cvfe_evq_{med|ext}_{hi|lo}。
 const CVFE = new IndicatorDef({
   id: 'cvfe',
   displayNameKey: 'ind.cvfe',
-  category: { group: 'builtin', nameKey: 'cat.oscillator' },
+  category: { group: 'builtin', nameKey: 'cat.technical' },
   tab: 'indicator',
-  placement: 'pane',
+  placement: 'overlay',
   params: [
     // n_har: HAR の学習本数（仕様 §3.1 の下限 500）。先頭 n_har + 22 本は warm-up。
     param('n_har', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_har', 500], messageKey: 'err.n_har' }], null, {
       group: 'group.calc', order: 1, step: 1, min: 500, unit: 'unit.bars', label: '学習本数', isPeriod: true,
-      tooltip: 'HAR-CJ-L の学習に用いるバー本数（仕様 §3.1・下限 500）。先頭 n_har + 22 本は warm-up として σ̂ を出力しない。',
+      tooltip: 'HAR-CJ-L の学習に用いるバー本数（仕様 §3.1・下限 500）。先頭 n_har + 22 本は warm-up としてバンドを描かない。',
     }),
     // lam_gap: ギャップ分散 EWMA の減衰係数（仕様 §3.1: 0.90 以上 1.0 未満）。
     param('lam_gap', ParamType.FLOAT, 0.97, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0.89, 'lam_gap', 1], messageKey: 'err.lam_gap.range' },
     ], null, {
       group: 'group.calc', order: 2, step: 0.01, min: 0.9, max: 0.999, label: 'ギャップ減衰',
-      tooltip: 'ギャップ分散 EWMA の減衰係数 λ（仕様 §4.7-3）。大きいほど過去のギャップを長く引きずる。',
+      tooltip: 'ギャップ分散 EWMA の減衰係数 λ（仕様 §4.7-3）。大きいほど過去の窓開けを長く引きずる。',
     }),
     // refit_every: 再学習の周期（仕様 §3.1・0 は初回学習後に係数を凍結）。
     param('refit_every', ParamType.INT, 0, [{ kind: ConstraintKind.MIN_VALUE, operands: ['refit_every', 0], messageKey: 'err.refit_every' }], null, {
       group: 'group.calc', order: 3, step: 1, min: 0, unit: 'unit.bars', label: '再学習周期',
       tooltip: 'HAR 係数を再推定する周期（仕様 §4.5-6）。0 は初回学習後に凍結。再学習は t−1 以前のみを用いる（因果）。',
     }),
-    // 成分 2 本（場中・ギャップ）の表示切替。
-    param('show_components', ParamType.BOOL, true, [], null, {
-      group: 'group.calc', order: 4, label: '成分を表示',
-      tooltip: '場中成分 σ̂_OC（§4.6）とギャップ成分 σ̂_CO（§4.7）を点線で併せて描く。',
+    // --- 表示（バンド倍率）---
+    param('sigma_inner', ParamType.FLOAT, 1.0, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'sigma_inner', 10], messageKey: 'err.sigma_inner.range' },
+      { kind: ConstraintKind.LT, operands: ['sigma_inner', 'sigma_outer'], messageKey: 'err.sigma_order' },
+    ], null, {
+      group: 'group.display', order: 1, step: 0.1, min: 0.1, max: 10, label: '内側バンド（σ倍）',
+      tooltip: '内側の帯を σ̂ の何倍に置くか。1.0 なら次のバーの約 68% がこの帯に収まる想定（正規近似）。',
+    }),
+    param('sigma_outer', ParamType.FLOAT, 2.0, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'sigma_outer', 10], messageKey: 'err.sigma_outer.range' },
+    ], null, {
+      group: 'group.display', order: 2, step: 0.1, min: 0.1, max: 10, label: '外側バンド（σ倍）',
+      tooltip: '外側の帯を σ̂ の何倍に置くか。2.0 なら約 95%。損切り幅の目安に使う。',
+    }),
+    param('show_outer', ParamType.BOOL, true, [], null, {
+      group: 'group.display', order: 3, label: '外側バンドを表示',
+    }),
+    param('show_mid', ParamType.BOOL, false, [], null, {
+      group: 'group.display', order: 4, label: '中心線を表示',
+      tooltip: 'バンドの中心（1 本前の確定終値）を点線で描く。',
+    }),
+    // --- 外れ値水準（共有プリミティブ・ma_marod / btlm_trail_marod と同一規約）---
+    // σ 倍の帯は「標準化残差が正規分布」を仮定する。実際の収益は裾が厚くこの仮定は
+    //   被覆不足になるため、**実際に外れた履歴**から水準を測る。標準化残差
+    //   z = ln(C_t/C_{t−1})/σ̂_t の因果ローリング正常バンド超をイベントとし、その典型深度
+    //   （中央値）と極端深度（q_out 分位）を common.event_quantiles で求めて価格へ写す。
+    //   連続超過は episode declustering で 1 回に畳む（実測根拠は MA_MAROD 基本設計）。
+    param('show_outliers', ParamType.BOOL, true, [], null, {
+      group: 'group.display', order: 5, label: '外れ値水準を表示',
+      tooltip: '過去に正常バンドを超えた「外れ値イベント」の典型深度（赤実線）と極端深度（赤破線）を価格に写して描く。正規仮定の σ 倍ではなく実績から測った「外れたらどこまで行くか」の水準。',
+    }),
+    // 正常バンドの分位ペア（0<q_low<q_high<1・ma_marod と対称の q-chain 制約）。
+    param('q_low', ParamType.FLOAT, 0.05, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
+      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
+    ], null, {
+      group: 'group.display', order: 6, step: 0.01, min: 0, max: 1, label: '正常バンド下側分位',
+      conditionalEnable: { when: { param: 'show_outliers', equals: true } },
+    }),
+    param('q_high', ParamType.FLOAT, 0.95, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
+    ], null, {
+      group: 'group.display', order: 7, step: 0.01, min: 0, max: 1, label: '正常バンド上側分位',
+      conditionalEnable: { when: { param: 'show_outliers', equals: true } },
+    }),
+    // 外れ値イベント分位の 3 パラメータ（共有ビルダー・ma_marod / btlm_trail_marod と対称）。
+    ...EVQ_PARAMS(8),
+    // window_n: 正常バンドの因果ローリング窓。
+    param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
+      group: 'group.calc', order: 11, step: 1, min: 2, unit: 'unit.bars', label: '正常バンドの窓', isPeriod: true,
+      tooltip: '標準化残差の正常バンド（下側/上側分位）を算出する因果ローリング窓の本数。当該バーは除外（非リペイント）。',
     }),
     param('color', ParamType.COLOR, 'rgba(233, 30, 99, 1)', [], null, { group: 'group.style', order: 1 }),
   ],
-  // 系列: σ̂（実線）＋ 場中成分・ギャップ成分（点線）。いずれも別 pane。
+  // 系列: 中心＋内側 2 本＋外側 2 本。すべて価格スケール上（overlay）。
   series: [
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe', seriesName: 'cvfe', dynamic: false, barStyleEditable: true }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_oc', seriesName: 'cvfe_oc', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_co', seriesName: 'cvfe_co', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_mid', seriesName: 'cvfe_mid', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_u1', seriesName: 'cvfe_u1', dynamic: false, pointStyleEditable: true }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_l1', seriesName: 'cvfe_l1', dynamic: false, pointStyleEditable: true }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_u2', seriesName: 'cvfe_u2', dynamic: false }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_l2', seriesName: 'cvfe_l2', dynamic: false }),
+    // 外れ値水準の 4 本（共有ビルダー＝表示規約の単一情報源）。q_out 無効時は極端線が
+    //   空系列になる（core が全 NaN を返す＝描画なしと等価）。
+    ...EVQ_SERIES_DEFS('cvfe'),
   ],
   compute: { computeId: 'cvfe', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });

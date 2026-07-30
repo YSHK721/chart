@@ -2705,3 +2705,27 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **事象**: `usecase/dataset_port.py:116-123` の `candle_dataset_port()` が `return dataset_port()  # type: ignore[return-value]` と無検査キャストする。`DatasetPort` と `CandleDatasetPort` を ISP で分割したのに注入シームは `set_dataset_port` 1 本しかなく、注入された実装が両インターフェースを満たすか誰も検証しない（LSP/ISP）。
 - **実測（監査エージェント）**: `is_known` / `is_known_timeframe` / `load_dataframe` のみを持つ**合法な `DatasetPort` 実装**を注入すると `isinstance(p, DatasetPort)` は True のまま `/candles` が `internal: 'OnlyDatasetPort' object has no attribute 'load_candles'`（HTTP 500）へ劣化する。
 - **対策案（未実施・要承認）**: `set_candle_dataset_port` を別シームに分離するか、`candle_dataset_port()` で `isinstance(_PORT, CandleSeriesPort)` を検査し、未充足時は ISSUE-183 の未注入時と対称に `RuntimeError` を送出する。
+
+## ISSUE-223: [仕様変更] CVFE の表示を別 pane オシレータから価格スケール上のバンドへ変更（2026-07-30）
+- **ステータス**: RESOLVED（2026-07-30 起票・依頼者指示により実施・**正本仕様への反映は未裁定**）
+- **依頼**: 「CVFE をチャートパネルのローソク足にバンドとして表示する仕様に変更」「外れ値だけの POT も追加」（2026-07-30）。
+- **仕様との関係（重要）**: 正本仕様 `CVFE_spec_v1.0.md` §1 スコープは「**含まない**：区間バンドの構築（CEB の責務）」と明記しており、本変更は当該スコープの拡張にあたる。**σ̂ の算出（§4.1〜§4.8）は一切変更していない**。バンドは σ̂ からの表示用派生量であり、CEB v1.1 が定める条件付被覆の保証（LR_ind 等）を持たない。
+- **バンドの定義（新設・表示仕様）**: σ̂_t はバー t が開く前に確定するため、中心を**1 本前の確定終値**に置く。
+  ```
+  中心 mid_t = close_{t−1}
+  上下       = mid_t · exp(± k · σ̂_t)      k は内側 1.0 / 外側 2.0（可変）
+  ```
+  対数収益の標準偏差なので価格への写像は指数（比率）。当該バーの値動きでは動かない（非リペイント・`tests/test_bands.py` で固定）。
+- **外れ値水準の方式（裁定 2026-07-30）**: 当初 POT（一般化パレート分布・Hosking-Wallis PWM）を自作したが、**リポジトリ内に既存の外れ値水準プリミティブが存在する**ことを確認したため破棄し、そちらを無改変参照する方式へ差し替えた。
+  | 選択肢 | 判定 |
+  |---|---|
+  | `common.event_quantiles.outlier_event_quantiles` を参照 | **採用**（ma_marod / btlm_trail_marod と同一規約・episode declustering 済み・表示規約も単一情報源） |
+  | 自作 GPD（POT） | 破棄（repo 初出の新規実装・保守対象増） |
+  | `scipy.stats.genpareto` | 不採用（scipy 未インストール・仕様 §6「numpy のみ」違反・技術スタック変更） |
+  - 調査実測: `genpareto|GPD|peaks_over|pickands|hill_estimator|tail_index|extreme_value` の grep ヒット **0 件**（`.venv`・worktree 除外）。scipy は `ModuleNotFoundError`。
+  - 実装: 標準化残差 `z_t = ln(C_t/C_{t−1})/σ̂_t` → `common.marod_bands.quantile_bands` で因果正常バンド → `outlier_event_quantiles` で典型深度・極端深度 → `mid · exp(evq · σ̂_t)` で価格へ写す。表示は `emit_event_quantile_lines` に委譲。
+- **系列（7 本）**: `cvfe_mid` / `cvfe_u1` / `cvfe_l1` / `cvfe_u2` / `cvfe_l2` / `cvfe_evq_{med|ext}_{hi|lo}`。placement は `pane` → `overlay`、カテゴリは `oscillator` → `technical`。
+- **実 UI 検証（2026-07-30・ライブ 8000・NI225 5 分足）**: 価格パネル上に 8 本描画。水準の順序が `ext_lo 61,672 < l2 61,891 < l1 61,958 < 価格 62,015 < u1 62,091 < u2 62,158 < med_hi 62,179 < ext_hi 63,118` となり、外れ値水準が 2σ の外側に出ることを実測で確認。コンソールエラー 0 件。
+- **テスト**: cvfe 116 passed / 4 xfailed、indicator_ui API 438 passed、web 919 passed。
+- **要裁定**: 正本仕様 §1 のスコープ記述（バンド構築は CEB の責務）を改訂するか、本バンドを「表示専用の派生量であり CEB の被覆保証を持たない」と仕様へ明記するか。
+
