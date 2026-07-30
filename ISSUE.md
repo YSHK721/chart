@@ -2806,3 +2806,18 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **是正 3（名前と系列の対応）**: 残した項目のラベルを、動かす系列名と 1:1 で対応させた（`σ線①の倍率` → `cvfe_u1`/`cvfe_l1` 等）。ツールチップに系列名と実測到達率を明記した。
 - **検証**: 実 UI（ライブ 8000）で設定ダイアログが 6 項目になることを確認。コンソールエラー 0 件。web 920 passed / API 438 passed / cvfe 124 passed / ma_marod 43 / btlm_trail 31 / btlm_trail_marod 30 / moving_averages 61。
 - **恒久ルール化**: 本件の教訓をメモリ `minimize-cognitive-load` へ記録した（UI・命名・パラメータは削る判断を先に行う／同一概念に複数の呼び名を作らない／比喩を持ち込まない／根拠のない項目は出さない）。
+
+## ISSUE-226: [不具合・再現済み] cvfe のスタイルで色を変更しても反映されない（2026-07-30）
+- **ステータス**: RESOLVED（2026-07-30 起票・同日修正・実 UI 検証済み）
+- **事象**: 設定ダイアログの「スタイル」タブで cvfe の系列色を変更しても、チャート上の色が変わらない。エラーは出ず黙って無視される。
+- **原因**: ISSUE-223 で追加した系列種別 `level_dash` は `CandlestickSeries` で描画するが、**CandlestickSeries に `color` オプションは存在しない**（着色は `upColor` / `downColor` / `borderUpColor` / `borderDownColor` / `wickUpColor` / `wickDownColor` の 6 経路）。
+  - 生成時（`series_drawer._renderSeries`）は 6 経路へ単色を複製していた。
+  - 一方 変更時（`series_drawer.applySeriesStyle:347`）は `{ color: meta.color }` を `applyOptions` へ渡すだけで、CandlestickSeries はこれを無視していた。
+  - ⇒ **生成時と変更時で色の写像が乖離**していたことが原因。
+- **修正**: 色写像を `_levelDashColors(color)` として抽出し、**生成時と変更時の唯一の写像点**にした。乖離が再発しない構造にしてある。
+- **検証**:
+  - 回帰テスト 4 件を `tests/chart_renderer_series_styles.test.js` へ追加（生成時の 6 経路複製・同値 4 値への展開・`applySeriesStyle` の 6 経路反映・可視性・line 系列への非波及）。
+  - **検出力を実証**: 修正を戻すと `applySeriesStyle の色が 6 経路すべてへ反映される（回帰）` が失敗することを確認。
+  - 実 UI（ライブ 8000・NI225 5 分足）で `cvfe_u1` を緑へ変更 → チャートのダッシュと価格軸ラベルが即時に緑へ変わることを確認。元の色へ戻して終了。
+  - web 924 passed / API 438 passed / cvfe 124 passed。
+- **関連**: ISSUE-223（`level_dash` の追加）。

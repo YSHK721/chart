@@ -3781,6 +3781,19 @@ class SeriesDrawer {
     return slot;
   }
 
+  // level_dash（同値 4 値の Candlestick）の色オプション写像。CandlestickSeries は `color` を
+  //   持たず up/down/border/wick の 6 経路で着色するため、単色をすべてへ複製する。
+  //   open==close の同事は上下判定が処理系依存なので、どちらに転んでも同色になるようにする。
+  //   **生成時（_renderSeries）と変更時（applySeriesStyle）の唯一の写像点**（乖離すると
+  //   「スタイルで色を変えても反映されない」不具合になる・ISSUE-226）。
+  _levelDashColors(color) {
+    return {
+      upColor: color, downColor: color,
+      borderUpColor: color, borderDownColor: color,
+      wickUpColor: color, wickDownColor: color,
+    };
+  }
+
   // pane 指標なら専用 pane を生成し指標名ウォーターマーク（機能①②）を立てる。overlay は null（pane 0）。
   _ensurePane(slot, opts) {
     if (!opts.pane) {
@@ -3877,12 +3890,7 @@ class SeriesDrawer {
       //   （open==close は上下判定が処理系依存のため、どちらに転んでも同色にする）。
       if (seriesType === 'level_dash') {
         options.wickVisible = false;
-        options.upColor = p.color;
-        options.downColor = p.color;
-        options.borderUpColor = p.color;
-        options.borderDownColor = p.color;
-        options.wickUpColor = p.color;
-        options.wickDownColor = p.color;
+        Object.assign(options, this._levelDashColors(p.color));
       }
       const series = pane
         ? pane.addSeries(definition, options)
@@ -4041,6 +4049,11 @@ class SeriesDrawer {
       }
     }
     const options = { color: meta.color, visible: slot.visible && meta.visible };
+    // level_dash は CandlestickSeries であり `color` オプションを持たない。生成時と同じ
+    //   写像を通さないと色変更が黙って無視される（ISSUE-226）。
+    if (seriesKind(meta.kind).seriesType === 'level_dash' && meta.color != null) {
+      Object.assign(options, this._levelDashColors(meta.color));
+    }
     if (seriesKind(meta.kind).appliesLineStyle) {
       if (meta.width != null) {
         options.lineWidth = meta.width;
