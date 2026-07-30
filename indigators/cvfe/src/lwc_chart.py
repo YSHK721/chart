@@ -210,6 +210,35 @@ DISPLAY_DASHES = "dashes"
 DISPLAY_BANDS = "bands"
 
 
+#: 水平ダッシュ既定の不透明度（1.0 に対する倍率）。ローソク足へ重畳するため、
+#: 主役である価格を邪魔しない濃さにする（ユーザー裁定 2026-07-30: 従来の半分）。
+DEFAULT_DASH_OPACITY: float = 0.5
+
+_RGBA_RE = None
+
+
+def scale_alpha(color: str, factor: float) -> str:
+    """``rgba(r, g, b, a)`` / ``rgb(r, g, b)`` の alpha を ``factor`` 倍した色を返す。
+
+    共有プリミティブの色定数（``common.event_quantiles.EVQ_COLOR`` 等）を**書き換えずに**
+    薄い派生色を作るためのローカルヘルパー。解釈できない書式はそのまま返す
+    （色指定の自由度を狭めない）。
+    """
+    import re
+
+    global _RGBA_RE
+    if _RGBA_RE is None:
+        _RGBA_RE = re.compile(
+            r"^\s*rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)\s*$")
+    m = _RGBA_RE.match(str(color))
+    if m is None:
+        return color
+    r, g, b = m.group(1), m.group(2), m.group(3)
+    a = float(m.group(4)) if m.group(4) is not None else 1.0
+    a = max(0.0, min(1.0, a * float(factor)))
+    return f"rgba({r}, {g}, {b}, {a:g})"
+
+
 def _emit_dash(chart, name: str, times, values, color: str):
     """ローソク足幅の水平ダッシュ系列を 1 本追加する（NaN 行は除外）。
 
@@ -243,6 +272,7 @@ def add_cvfe(
     event_agg: str = DEFAULT_EVENT_AGG,
     window_n: int = DEFAULT_WINDOW_N,
     display_mode: str = DISPLAY_DASHES,
+    dash_opacity: float = DEFAULT_DASH_OPACITY,
     time_column: Optional[str] = None,
     color: str = COLOR_BAND,
 ) -> list:
@@ -266,6 +296,8 @@ def add_cvfe(
         window_n: 正常バンドの因果ローリング窓（本数）。
         display_mode: ``"dashes"``（各バーの水準を水平ダッシュで並べる・既定）／
             ``"bands"``（上下端を線で繋ぐ・検証用）。
+        dash_opacity: 水平ダッシュの不透明度の倍率（既定 0.5）。幅はローソク足幅に
+            自動追従するため、主張の強さはこの値で調整する。
         time_column: 時刻列の明示指定。
         color: 内側バンドの色。
 
@@ -297,7 +329,8 @@ def add_cvfe(
         return _emit_bands(chart, times, mid, u1, l1, u2, l2, evq_price,
                            show_outer=show_outer, show_mid=show_mid, color=color)
     return _emit_dashes(chart, times, mid, u1, l1, u2, l2, evq_price,
-                        show_outer=show_outer, show_mid=show_mid, color=color)
+                        show_outer=show_outer, show_mid=show_mid, color=color,
+                        opacity=dash_opacity)
 
 
 def _emit_bands(chart, times, mid, u1, l1, u2, l2, evq_price, *,
@@ -320,24 +353,30 @@ def _emit_bands(chart, times, mid, u1, l1, u2, l2, evq_price, *,
 
 
 def _emit_dashes(chart, times, mid, u1, l1, u2, l2, evq_price, *,
-                 show_outer: bool, show_mid: bool, color: str) -> list:
+                 show_outer: bool, show_mid: bool, color: str,
+                 opacity: float = DEFAULT_DASH_OPACITY) -> list:
     """各バーの水準を「ローソク足幅の水平ダッシュ」で並べる（既定・``display_mode="dashes"``）。
 
     バーごとに独立した 1 期先予測区間なので、点間を線で繋がない。繋ぐと線の傾きに
     情報があるかのように見えるが、実測では上端の分散寄与は価格成分 100.4% /
     σ̂ 成分 15.3%（jp225_tick 5 分足・3,477 本）で、傾きは価格そのものの動きに過ぎない。
     ダッシュはバー幅と一致するため、どのバーのどの水準かが一意に読める。
+
+    幅はローソク足に自動追従するため調整できない。主張の強さは ``opacity``（不透明度の
+    倍率）で調整する。価格が主役なので既定は 0.5（従来の半分）。
     """
+    dim = lambda c: scale_alpha(c, opacity)      # noqa: E731 - 局所の色写像
     created: list = []
     if show_mid:
-        created.append(_emit_dash(chart, _SERIES_MID, times, mid, COLOR_MID))
-    created.append(_emit_dash(chart, _SERIES_U1, times, u1, color))
-    created.append(_emit_dash(chart, _SERIES_L1, times, l1, color))
+        created.append(_emit_dash(chart, _SERIES_MID, times, mid, dim(COLOR_MID)))
+    created.append(_emit_dash(chart, _SERIES_U1, times, u1, dim(color)))
+    created.append(_emit_dash(chart, _SERIES_L1, times, l1, dim(color)))
     if show_outer:
-        created.append(_emit_dash(chart, _SERIES_U2, times, u2, COLOR_OUTER))
-        created.append(_emit_dash(chart, _SERIES_L2, times, l2, COLOR_OUTER))
+        created.append(_emit_dash(chart, _SERIES_U2, times, u2, dim(COLOR_OUTER)))
+        created.append(_emit_dash(chart, _SERIES_L2, times, l2, dim(COLOR_OUTER)))
     if evq_price is not None:
         # 系列名は共有プリミティブの規約（{prefix}_evq_{med|ext}_{hi|lo}）に合わせる。
+        #   色は共有定数から薄い派生を作る（EVQ_COLOR 自体は書き換えない）。
         for key, _style in EVQ_LINE_SPECS:
-            created.append(_emit_dash(chart, f"cvfe_evq_{key}", times, evq_price[key], EVQ_COLOR))
+            created.append(_emit_dash(chart, f"cvfe_evq_{key}", times, evq_price[key], dim(EVQ_COLOR)))
     return created

@@ -283,3 +283,44 @@ def test_falls_back_to_create_line_when_level_dash_is_unsupported():
     chart = _OldChart()
     add_cvfe(chart, _ohlc_frame(), n_har=500, time_column="date")
     assert "cvfe_u1" in chart.lines and "cvfe_l1" in chart.lines
+
+
+def test_scale_alpha_halves_opacity_without_touching_shared_constants():
+    """共有定数を書き換えず、薄い派生色を作る（rgba/rgb 両対応・未知書式は素通し）。"""
+    from common.event_quantiles import EVQ_COLOR
+    from src.lwc_chart import scale_alpha
+
+    before = EVQ_COLOR
+    assert scale_alpha("rgba(233, 30, 99, 1)", 0.5) == "rgba(233, 30, 99, 0.5)"
+    assert scale_alpha("rgba(233, 30, 99, 0.55)", 0.5) == "rgba(233, 30, 99, 0.275)"
+    assert scale_alpha("rgb(210, 67, 58)", 0.5) == "rgba(210, 67, 58, 0.5)"
+    assert scale_alpha("#ff0000", 0.5) == "#ff0000"          # 解釈不能はそのまま
+    assert scale_alpha("rgba(1, 2, 3, 0.8)", 5.0) == "rgba(1, 2, 3, 1)"   # 1.0 で飽和
+    assert EVQ_COLOR == before, "共有定数が書き換えられている"
+
+
+def test_dash_opacity_is_applied_to_all_dash_series():
+    """dash_opacity が全ダッシュ系列の色へ効く（既定 0.5）。"""
+    from src.lwc_chart import DEFAULT_DASH_OPACITY, add_cvfe
+
+    assert DEFAULT_DASH_OPACITY == 0.5
+
+    class _ColorChart(_FakeChart):
+        def __init__(self):
+            super().__init__()
+            self.colors = {}
+
+        def create_level_dash(self, name, **kwargs):
+            self.colors[name] = kwargs.get("color")
+            return super().create_level_dash(name, **kwargs)
+
+    strong = _ColorChart()
+    add_cvfe(strong, _ohlc_frame(), n_har=500, time_column="date", dash_opacity=1.0)
+    faint = _ColorChart()
+    add_cvfe(faint, _ohlc_frame(), n_har=500, time_column="date", dash_opacity=0.25)
+
+    assert set(strong.colors) == set(faint.colors) and strong.colors
+    for name in strong.colors:
+        a_strong = float(strong.colors[name].rsplit(",", 1)[1].rstrip(" )"))
+        a_faint = float(faint.colors[name].rsplit(",", 1)[1].rstrip(" )"))
+        assert a_faint < a_strong, name

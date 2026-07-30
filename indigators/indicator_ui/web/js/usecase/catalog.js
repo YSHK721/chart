@@ -711,6 +711,14 @@ const CVFE = new IndicatorDef({
       group: 'group.display', order: 0, label: '表示形式', enumLabels: CVFE_DISPLAY_LABELS,
       tooltip: '水平ダッシュ＝各バーの水準を、そのバーの幅だけの短い水平線で並べる（推奨。バー間を繋がないので傾きに誤った意味が乗らず、どのバーのどの水準かが一意に読める）。線で繋いだ帯＝上下端を折れ線で結ぶ（検証用。傾きは価格そのものの動きで σ̂ の情報を持たない）。',
     }),
+    // ダッシュの幅はローソク足幅に自動追従するため調整できない。主張の強さは不透明度で調整する。
+    param('dash_opacity', ParamType.FLOAT, 0.5, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'dash_opacity', 1.01], messageKey: 'err.dash_opacity.range' },
+    ], null, {
+      group: 'group.display', order: 1, step: 0.05, min: 0.05, max: 1, label: 'ダッシュの濃さ',
+      conditionalEnable: { when: { param: 'display_mode', equals: 'dashes' } },
+      tooltip: '水平ダッシュの不透明度の倍率（既定 0.5）。幅はローソク足の幅に自動で合うため、主張の強さはここで調整する。小さくするほど価格が読みやすくなる。',
+    }),
     param('show_outliers', ParamType.BOOL, true, [], null, {
       group: 'group.display', order: 5, label: '外れ値水準を表示',
       tooltip: '過去に正常バンドを超えた「外れ値イベント」の典型深度（赤実線）と極端深度（赤破線）を価格に写して描く。正規仮定の σ 倍ではなく実績から測った「外れたらどこまで行くか」の水準。',

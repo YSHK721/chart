@@ -24,6 +24,7 @@
   },
   "cvfe": {
     "color": "rgba(233, 30, 99, 1)",
+    "dash_opacity": 0.5,
     "display_mode": "dashes",
     "event_agg": "episode",
     "k_events": 50,
