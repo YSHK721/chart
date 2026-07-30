@@ -19,7 +19,7 @@
     ``k`` は内側（既定 1.0）と外側（既定 2.0）の 2 段。対数収益の標準偏差であるため
     価格への写像は指数（比率）で行う（加減算ではない）。
 
-表示形式（既定は水平ライン・ユーザー裁定 2026-07-30）:
+表示形式（既定はバー毎の水平ダッシュ・ユーザー裁定 2026-07-30）:
     バー毎の帯を線で繋ぐことに情報上の意味はほとんど無い。上端の対数差分は
     ``Δln(mid_t) + k·Δσ̂_t`` に厳密分解でき、実測（jp225_tick 5 分足・3,477 本）で
     **分散寄与は価格成分 100.4% / σ̂ 成分 15.3%、上端との相関は価格 0.924 / σ̂ 0.191**。
@@ -27,9 +27,9 @@
     加えて各点は別々のバーに対する独立した 1 期先予測区間であり、点間を結ぶ線分に
     対応する量が存在しない（移動平均のように連続推移する量を繋ぐのとは異なる）。
 
-    よって既定 ``display_mode="levels"`` では**最新の確定水準を水平ラインで 1 組だけ**
-    描く（次の 1 本がどこまで行くかを価格軸のラベルで直読できる）。過去の推移を見たい
-    場合のみ ``display_mode="bands"`` でバー毎の帯を描く。
+    よって既定 ``display_mode="dashes"`` では、各バーの水準を**そのバーの幅だけの
+    水平ダッシュ**として並べる（バー間は繋がない）。傾きという誤った情報を与えず、
+    かつドットより接点が読める。線で繋いだ帯を見たい場合のみ ``"bands"`` を選ぶ。
 
 外れ値水準（共有プリミティブの無改変参照）:
     正規仮定の ``k = 2`` が 95% に対応するのは標準化残差が正規分布のときだけで、実際の
@@ -204,16 +204,24 @@ def cvfe_bands(close: np.ndarray, sigma_hat: np.ndarray, available: np.ndarray, 
     return mid, u1, l1, u2, l2
 
 
-#: 表示形式。levels＝最新水準の水平ライン（既定）／bands＝バー毎の帯。
-DISPLAY_LEVELS = "levels"
+#: 表示形式。dashes＝各バーの水準をローソク足幅の水平ダッシュで並べる（既定）／
+#: bands＝上下端を線で繋いだ帯（傾きに情報が無いため非推奨・検証用）。
+DISPLAY_DASHES = "dashes"
 DISPLAY_BANDS = "bands"
 
 
-def _last_finite(arr: np.ndarray) -> float:
-    """末尾から最初に見つかる有限値（無ければ nan）。"""
-    a = np.asarray(arr, dtype=np.float64)
-    idx = np.nonzero(np.isfinite(a))[0]
-    return float(a[idx[-1]]) if idx.size else float("nan")
+def _emit_dash(chart, name: str, times, values, color: str):
+    """ローソク足幅の水平ダッシュ系列を 1 本追加する（NaN 行は除外）。
+
+    ``create_level_dash`` を持たない chart（旧 duck type・単体テストの簡易 Fake）では
+    ``create_line`` へ落とす。系列名・データは同一なので描画種別だけが変わる。
+    """
+    factory = getattr(chart, "create_level_dash", None) or chart.create_line
+    series = factory(name, color=color, width=1, style="solid")
+    frame = pd.DataFrame({"time": pd.Series(times).reset_index(drop=True),
+                          name: pd.Series(np.asarray(values, dtype=np.float64))})
+    series.set(frame.dropna())
+    return series
 
 
 def add_cvfe(
@@ -234,7 +242,7 @@ def add_cvfe(
     k_events: int = DEFAULT_K_EVENTS,
     event_agg: str = DEFAULT_EVENT_AGG,
     window_n: int = DEFAULT_WINDOW_N,
-    display_mode: str = DISPLAY_LEVELS,
+    display_mode: str = DISPLAY_DASHES,
     time_column: Optional[str] = None,
     color: str = COLOR_BAND,
 ) -> list:
@@ -256,7 +264,8 @@ def add_cvfe(
         k_events: 外れ値水準を測る直近イベント件数。
         event_agg: 外れ値の集計単位（``episode`` / ``bar``）。
         window_n: 正常バンドの因果ローリング窓（本数）。
-        display_mode: ``"levels"``（最新水準の水平ライン・既定）／``"bands"``（バー毎の帯）。
+        display_mode: ``"dashes"``（各バーの水準を水平ダッシュで並べる・既定）／
+            ``"bands"``（上下端を線で繋ぐ・検証用）。
         time_column: 時刻列の明示指定。
         color: 内側バンドの色。
 
@@ -287,7 +296,7 @@ def add_cvfe(
     if str(display_mode).lower() == DISPLAY_BANDS:
         return _emit_bands(chart, times, mid, u1, l1, u2, l2, evq_price,
                            show_outer=show_outer, show_mid=show_mid, color=color)
-    return _emit_levels(chart, mid, u1, l1, u2, l2, evq_price,
+    return _emit_dashes(chart, times, mid, u1, l1, u2, l2, evq_price,
                         show_outer=show_outer, show_mid=show_mid, color=color)
 
 
@@ -310,33 +319,25 @@ def _emit_bands(chart, times, mid, u1, l1, u2, l2, evq_price, *,
     return created
 
 
-def _emit_levels(chart, mid, u1, l1, u2, l2, evq_price, *,
+def _emit_dashes(chart, times, mid, u1, l1, u2, l2, evq_price, *,
                  show_outer: bool, show_mid: bool, color: str) -> list:
-    """最新の確定水準を水平ラインで描く（``display_mode="levels"``・既定）。
+    """各バーの水準を「ローソク足幅の水平ダッシュ」で並べる（既定・``display_mode="dashes"``）。
 
-    価格軸にラベルを出し、次の 1 本がどこまで行くかを直読できるようにする。
-    水準は当該バーより前の情報のみで確定している（因果・非リペイント）。
+    バーごとに独立した 1 期先予測区間なので、点間を線で繋がない。繋ぐと線の傾きに
+    情報があるかのように見えるが、実測では上端の分散寄与は価格成分 100.4% /
+    σ̂ 成分 15.3%（jp225_tick 5 分足・3,477 本）で、傾きは価格そのものの動きに過ぎない。
+    ダッシュはバー幅と一致するため、どのバーのどの水準かが一意に読める。
     """
-    specs: list[tuple[float, str, str, str]] = []
-    if show_mid:
-        specs.append((_last_finite(mid), COLOR_MID, "dotted", "基準"))
-    specs.append((_last_finite(u1), color, "solid", "+1σ"))
-    specs.append((_last_finite(l1), color, "solid", "-1σ"))
-    if show_outer:
-        specs.append((_last_finite(u2), COLOR_OUTER, "dashed", "+2σ"))
-        specs.append((_last_finite(l2), COLOR_OUTER, "dashed", "-2σ"))
-    if evq_price is not None:
-        labels = {"med_hi": "外れ値+", "med_lo": "外れ値-",
-                  "ext_hi": "極端+", "ext_lo": "極端-"}
-        for key, style in EVQ_LINE_SPECS:
-            specs.append((_last_finite(evq_price[key]), EVQ_COLOR, style, labels[key]))
-
     created: list = []
-    for price, col, style, text in specs:
-        if not np.isfinite(price) or price <= 0.0:
-            continue                      # 未確定・推定不能な水準は引かない
-        created.append(chart.horizontal_line(
-            price=price, color=col, width=1, style=style,
-            text=text, axis_label_visible=True,
-        ))
+    if show_mid:
+        created.append(_emit_dash(chart, _SERIES_MID, times, mid, COLOR_MID))
+    created.append(_emit_dash(chart, _SERIES_U1, times, u1, color))
+    created.append(_emit_dash(chart, _SERIES_L1, times, l1, color))
+    if show_outer:
+        created.append(_emit_dash(chart, _SERIES_U2, times, u2, COLOR_OUTER))
+        created.append(_emit_dash(chart, _SERIES_L2, times, l2, COLOR_OUTER))
+    if evq_price is not None:
+        # 系列名は共有プリミティブの規約（{prefix}_evq_{med|ext}_{hi|lo}）に合わせる。
+        for key, _style in EVQ_LINE_SPECS:
+            created.append(_emit_dash(chart, f"cvfe_evq_{key}", times, evq_price[key], EVQ_COLOR))
     return created

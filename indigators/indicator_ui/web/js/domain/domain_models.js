@@ -8,6 +8,10 @@ export const SeriesKind = Object.freeze({
   LINE: 'line',
   HISTOGRAM: 'histogram',
   HORIZONTAL_LINE: 'horizontal_line',
+  // ローソク足の幅に合わせた水平ダッシュ（1 バー 1 本・バー間を繋がない）。
+  //   バー毎に確定する水準（例: 1 期先予測区間の上下端）を、傾きという誤った情報を
+  //   与えずに並べるための種別。実体は同値 4 値の Candlestick（同事＝水平線 1 本）。
+  LEVEL_DASH: 'level_dash',
 });
 
 export const LineStyle = Object.freeze({

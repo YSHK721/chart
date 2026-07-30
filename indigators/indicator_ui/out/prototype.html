@@ -903,6 +903,10 @@ const SeriesKind = Object.freeze({
   LINE: 'line',
   HISTOGRAM: 'histogram',
   HORIZONTAL_LINE: 'horizontal_line',
+  // ローソク足の幅に合わせた水平ダッシュ（1 バー 1 本・バー間を繋がない）。
+  //   バー毎に確定する水準（例: 1 期先予測区間の上下端）を、傾きという誤った情報を
+  //   与えずに並べるための種別。実体は同値 4 値の Candlestick（同事＝水平線 1 本）。
+  LEVEL_DASH: 'level_dash',
 });
 
 const LineStyle = Object.freeze({
@@ -1057,6 +1061,20 @@ const SERIES_KINDS = Object.freeze({
     overlayReadout: false,
     editableLineStyle: false,
     renderRoute: 'histogram',
+  }),
+  // level_dash: ローソク足幅の水平ダッシュ（同値 4 値の Candlestick で描く）。
+  //   payload 契約は line と同一（{time, value}）で、OHLC への展開は表示層が担う
+  //   （back の payload 形状を増やさない＝既存 3 種別の契約に非波及）。
+  //   tailUpdatable=false: 末尾差分更新は {time,value} を series.update へ渡す経路であり
+  //   Candlestick 系列とは形が合わない。full 再描画のみを対象とする。
+  level_dash: Object.freeze({
+    tailUpdatable: false,
+    seriesType: 'level_dash',
+    appliesLineStyle: false,
+    supportsHeat: false,
+    overlayReadout: false,
+    editableLineStyle: false,
+    renderRoute: 'level_dash',
   }),
   horizontal_line: Object.freeze({
     tailUpdatable: false,
@@ -2421,7 +2439,7 @@ const MARKET_PROFILE = makeMarketProfileDef({
 //   加えて外れ値水準（共有プリミティブ common.event_quantiles を無改変参照。標準化残差の
 //   正常バンド超イベントの典型深度・極端深度）を価格へ写して描く。
 //   系列名: cvfe_mid / cvfe_u1 / cvfe_l1 / cvfe_u2 / cvfe_l2 / cvfe_evq_{med|ext}_{hi|lo}。
-const CVFE_DISPLAY_LABELS = { levels: '水平ライン（最新水準）', bands: 'バー毎の帯' };
+const CVFE_DISPLAY_LABELS = { dashes: '水平ダッシュ（バー毎）', bands: '線で繋いだ帯' };
 const CVFE = new IndicatorDef({
   id: 'cvfe',
   displayNameKey: 'ind.cvfe',
@@ -2477,9 +2495,9 @@ const CVFE = new IndicatorDef({
     //   （実測 jp225_tick 5 分足 3,477 本: 上端の分散寄与は価格成分 100.4% / σ̂ 成分 15.3%、
     //    相関は価格 0.924 / σ̂ 0.191。σ̂ の情報は帯の「幅」にしかなく、各点は別バーに対する
     //    独立した 1 期先予測区間で点間を結ぶ線分に対応する量が無い）。ユーザー裁定 2026-07-30。
-    param('display_mode', ParamType.ENUM, 'levels', [], ['levels', 'bands'], {
+    param('display_mode', ParamType.ENUM, 'dashes', [], ['dashes', 'bands'], {
       group: 'group.display', order: 0, label: '表示形式', enumLabels: CVFE_DISPLAY_LABELS,
-      tooltip: '水平ライン＝最新の確定水準だけを価格軸ラベル付きの水平線で引く（推奨。次の1本がどこまで行くかを直読できる）。バー毎の帯＝過去の推移も帯で描く（検証用。ジグザグになり視認性は落ちる）。',
+      tooltip: '水平ダッシュ＝各バーの水準を、そのバーの幅だけの短い水平線で並べる（推奨。バー間を繋がないので傾きに誤った意味が乗らず、どのバーのどの水準かが一意に読める）。線で繋いだ帯＝上下端を折れ線で結ぶ（検証用。傾きは価格そのものの動きで σ̂ の情報を持たない）。',
     }),
     param('show_outliers', ParamType.BOOL, true, [], null, {
       group: 'group.display', order: 5, label: '外れ値水準を表示',
@@ -2510,17 +2528,19 @@ const CVFE = new IndicatorDef({
   ],
   // 系列: 中心＋内側 2 本＋外側 2 本。すべて価格スケール上（overlay）。
   series: [
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_mid', seriesName: 'cvfe_mid', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_u1', seriesName: 'cvfe_u1', dynamic: false, pointStyleEditable: true }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_l1', seriesName: 'cvfe_l1', dynamic: false, pointStyleEditable: true }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_u2', seriesName: 'cvfe_u2', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'cvfe_l2', seriesName: 'cvfe_l2', dynamic: false }),
+    // display_mode='dashes'（既定）は level_dash、'bands' は line で届く。F3 照合は
+    //   系列名の集合で行われるため、同名で両 kind を宣言して切替に追随する。
+    ...['cvfe_mid', 'cvfe_u1', 'cvfe_l1', 'cvfe_u2', 'cvfe_l2'].flatMap((n) => [
+      new SeriesDef({ kind: SeriesKind.LEVEL_DASH, sourceColumn: n, seriesName: n, dynamic: false }),
+      new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
+    ]),
     // 外れ値水準の 4 本（共有ビルダー＝表示規約の単一情報源）。q_out 無効時は極端線が
     //   空系列になる（core が全 NaN を返す＝描画なしと等価）。
     ...EVQ_SERIES_DEFS('cvfe'),
-    // display_mode='levels'（既定）で引く水平線群。統合 FakeChart は compute_id 名 1 件に
-    //   まとめるため seriesName は指標 id と一致させる（profit_* 水準線と同一規約）。
-    new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'cvfe', dynamic: false }),
+    // 外れ値水準も dashes では level_dash で届くため同名で両 kind を宣言する。
+    ...['med_hi', 'med_lo', 'ext_hi', 'ext_lo'].map((k) => new SeriesDef({
+      kind: SeriesKind.LEVEL_DASH, sourceColumn: `cvfe_evq_${k}`, seriesName: `cvfe_evq_${k}`, dynamic: false,
+    })),
   ],
   compute: { computeId: 'cvfe', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
@@ -3844,9 +3864,13 @@ class SeriesDrawer {
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     const slot = this._slot(instanceId);
     const pane = this._ensurePane(slot, opts);
-    const definition = seriesKind(kind).seriesType === 'histogram'
+    // seriesType → lightweight-charts の系列定義。台帳（series_kind）の宣言のみで決まる。
+    const seriesType = seriesKind(kind).seriesType;
+    const definition = seriesType === 'histogram'
       ? this._h._lwc.HistogramSeries
-      : this._h._lwc.LineSeries;
+      : seriesType === 'level_dash'
+        ? this._h._lwc.CandlestickSeries
+        : this._h._lwc.LineSeries;
     for (const p of payloads ?? []) {
       // 価格軸（画面右端）のラベルは系列名ではなく現在値（数値・系列色チップ）を表示する
       //   （ユーザー指示 2026-07-23。旧: title=系列名＋lastValueVisible=false＝名前チップ）。
@@ -3888,10 +3912,27 @@ class SeriesDrawer {
         options.crosshairMarkerVisible = false;
       }
       // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
+      // level_dash: 同値 4 値の同事（doji）＝実体が潰れて水平線 1 本になり、幅は
+      //   ローソク足と一致する。ヒゲは消す。色は 4 経路すべてへ同じ値を入れる
+      //   （open==close は上下判定が処理系依存のため、どちらに転んでも同色にする）。
+      if (seriesType === 'level_dash') {
+        options.wickVisible = false;
+        options.upColor = p.color;
+        options.downColor = p.color;
+        options.borderUpColor = p.color;
+        options.borderDownColor = p.color;
+        options.wickUpColor = p.color;
+        options.wickDownColor = p.color;
+      }
       const series = pane
         ? pane.addSeries(definition, options)
         : this._h._chart.addSeries(definition, options);
-      series.setData(p.data ?? []);
+      // payload 契約は line と同一（{time, value}）。level_dash のみ表示層で 4 値へ展開する
+      //   （back の payload 形状を増やさないための写像点＝ここが唯一）。
+      const data = p.data ?? [];
+      series.setData(seriesType === 'level_dash'
+        ? data.map((d) => ({ time: d.time, open: d.value, high: d.value, low: d.value, close: d.value }))
+        : data);
       const key = `${instanceId}::${p.name}`;
       slot.lines.set(key, series);
       const metaEntry = {
@@ -4587,7 +4628,12 @@ class ChartRenderer {
     this._renderSeries(instanceId, payloads, 'histogram', opts);
   }
 
-  // line / histogram を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
+  // level_dash 系列群を生成（ローソク足幅の水平ダッシュ・同値 4 値の Candlestick）。
+  renderLevelDash(instanceId, payloads, opts = {}) {
+    this._renderSeries(instanceId, payloads, 'level_dash', opts);
+  }
+
+  // line / histogram / level_dash を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     this._drawer._renderSeries(instanceId, payloads, kind, opts);
   }
@@ -8319,7 +8365,7 @@ class SeriesRenderRouter {
     const validated = host._validateSeriesNames(series, def, params);
     // kind → 描画経路は series_kind 台帳（renderRoute）で一元化（新種別は台帳追記で完結・OCP）。
     //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
-    const routed = { line: [], histogram: [], horizontal: [] };
+    const routed = { line: [], histogram: [], horizontal: [], level_dash: [] };
     for (const p of validated) {
       // 案A（btlm_trail_marod）: barStyleEditable 一致系列（front カタログ由来・backend 非関与）へ
       //   bar_editable=true を注入する。renderer はこのヒントで line ⇄ histogram スワップ対象を識別
@@ -8336,12 +8382,16 @@ class SeriesRenderRouter {
     const lines = routed.line;
     const histograms = routed.histogram;
     const hlines = routed.horizontal;
+    const levelDashes = routed.level_dash;
     const opts = { pane: def.placement !== 'overlay', name: host._label(def) };
     if (histograms.length > 0) {
       this._renderer.renderHistogram(instanceId, histograms, opts);
     }
     if (lines.length > 0) {
       this._renderer.renderLine(instanceId, lines, opts);
+    }
+    if (levelDashes.length > 0) {
+      this._renderer.renderLevelDash(instanceId, levelDashes, opts);
     }
     for (const h of hlines) {
       this._renderer.renderHorizontal(instanceId, h.lines ?? []);

@@ -170,20 +170,31 @@ def test_band_does_not_move_with_current_bar():
 # --------------------------------------------------------------------------------------
 
 class _FakeChart:
-    """`create_line` / `horizontal_line` を記録するだけのダミー（duck typing）。"""
+    """`create_line` / `create_level_dash` を記録するダミー（duck typing）。
+
+    実 runtime の FakeChart（api/adapter/compute/fake_chart.py）と同じ 2 メソッドを持つ。
+    """
 
     def __init__(self):
         self.lines = []
-        self.hlines = []
+        self.dashes = []
+        self.rows = {}
+
+    def _series(self, bucket, name):
+        rows = self.rows
+
+        class _S:
+            def set(self, df):
+                rows[name] = df
+
+        bucket.append(name)
+        return _S()
 
     def create_line(self, name, **kwargs):
-        obj = type("L", (), {"set": lambda self, df: None})()
-        self.lines.append(name)
-        return obj
+        return self._series(self.lines, name)
 
-    def horizontal_line(self, price, **kwargs):
-        self.hlines.append((price, kwargs.get("text"), kwargs.get("style")))
-        return object()
+    def create_level_dash(self, name, **kwargs):
+        return self._series(self.dashes, name)
 
 
 def _ohlc_frame(n=700, seed=11):
@@ -197,53 +208,78 @@ def _ohlc_frame(n=700, seed=11):
     return pd.DataFrame({"date": t, "open": op, "high": hi, "low": lo, "close": c})
 
 
-def test_levels_mode_emits_horizontal_lines_only():
-    """既定（levels）は水平ラインのみを引き、バー毎の line 系列を作らない。"""
+def test_dashes_mode_emits_level_dash_series_only():
+    """既定（dashes）は level_dash 系列のみを作り、line 系列を作らない。"""
     from src.lwc_chart import add_cvfe
 
     chart = _FakeChart()
     add_cvfe(chart, _ohlc_frame(), n_har=500, time_column="date")
-    assert chart.lines == [], f"levels なのに line 系列が出ている: {chart.lines}"
-    assert len(chart.hlines) >= 4, chart.hlines
-
-    labels = [t for _p, t, _s in chart.hlines]
-    assert "+1σ" in labels and "-1σ" in labels
-    prices = {t: p for p, t, _s in chart.hlines}
-    assert prices["+1σ"] > prices["-1σ"]
-    if "+2σ" in prices:
-        assert prices["+2σ"] > prices["+1σ"] and prices["-2σ"] < prices["-1σ"]
+    assert chart.lines == [], f"dashes なのに line 系列が出ている: {chart.lines}"
+    assert "cvfe_u1" in chart.dashes and "cvfe_l1" in chart.dashes
+    assert "cvfe_evq_med_hi" in chart.dashes
 
 
-def test_levels_are_monotone_outward():
-    """水準の並びが内側から外側へ単調（1σ < 2σ < 外れ値 < 極端）。"""
+def test_dashes_are_per_bar_not_a_single_level():
+    """ダッシュは全バー分の水準を持つ（最新 1 点だけの水平線ではない）。"""
     from src.lwc_chart import add_cvfe
 
     chart = _FakeChart()
-    add_cvfe(chart, _ohlc_frame(seed=23), n_har=500, time_column="date")
-    p = {t: v for v, t, _s in chart.hlines}
-    if {"+1σ", "+2σ", "外れ値+"} <= set(p):
-        assert p["+1σ"] < p["+2σ"] < p["外れ値+"], p
-    if {"-1σ", "-2σ", "外れ値-"} <= set(p):
-        assert p["-1σ"] > p["-2σ"] > p["外れ値-"], p
+    add_cvfe(chart, _ohlc_frame(n=800), n_har=500, time_column="date")
+    rows = chart.rows["cvfe_u1"]
+    assert len(rows) > 100, f"バー毎になっていない（{len(rows)} 行）"
+    # 各行が別の水準を持つ（同一値の水平線を全バーへ引いたのではない）。
+    assert rows["cvfe_u1"].nunique() > 50
+
+
+def test_dashes_levels_are_ordered_outward_per_bar():
+    """同一バー上で 1σ < 2σ < 外れ値 の順に外側へ並ぶ。"""
+    from src.lwc_chart import add_cvfe
+
+    chart = _FakeChart()
+    add_cvfe(chart, _ohlc_frame(n=900, seed=23), n_har=500, time_column="date")
+    import pandas as pd
+    u1 = chart.rows["cvfe_u1"].set_index("time")["cvfe_u1"]
+    u2 = chart.rows["cvfe_u2"].set_index("time")["cvfe_u2"]
+    common = u1.index.intersection(u2.index)
+    assert len(common) > 50
+    assert (u2.loc[common] > u1.loc[common]).all(), "2σ が 1σ の内側にある"
 
 
 def test_bands_mode_emits_line_series():
-    """display_mode='bands' はバー毎の line 系列を引き、水平ラインを引かない。"""
+    """display_mode='bands' は line 系列を引き、level_dash を作らない。"""
     from src.lwc_chart import add_cvfe
 
     chart = _FakeChart()
     add_cvfe(chart, _ohlc_frame(), n_har=500, time_column="date", display_mode="bands")
-    assert chart.hlines == []
+    assert chart.dashes == []
     assert "cvfe_u1" in chart.lines and "cvfe_l1" in chart.lines
     assert "cvfe_evq_med_hi" in chart.lines
 
 
-def test_levels_skip_unavailable_levels():
-    """推定不能な水準は引かない（外れ値をオフにすれば σ 水準だけになる）。"""
+def test_toggles_limit_emitted_series():
+    """外れ値・外側をオフにすれば 1σ の 2 本だけになる。"""
     from src.lwc_chart import add_cvfe
 
     chart = _FakeChart()
     add_cvfe(chart, _ohlc_frame(), n_har=500, time_column="date",
              show_outliers=False, show_outer=False)
-    labels = sorted(t for _p, t, _s in chart.hlines)
-    assert labels == ["+1σ", "-1σ"], labels
+    assert sorted(chart.dashes) == ["cvfe_l1", "cvfe_u1"], chart.dashes
+
+
+def test_falls_back_to_create_line_when_level_dash_is_unsupported():
+    """create_level_dash を持たない chart では create_line へ落ちる（後方互換）。"""
+    from src.lwc_chart import add_cvfe
+
+    class _OldChart:
+        """create_line しか持たない旧 duck type。"""
+
+        def __init__(self):
+            self.lines = []
+
+        def create_line(self, name, **kwargs):
+            self.lines.append(name)
+            return type("S", (), {"set": lambda self, df: None})()
+
+    chart = _OldChart()
+    add_cvfe(chart, _ohlc_frame(), n_har=500, time_column="date")
+    assert "cvfe_u1" in chart.lines and "cvfe_l1" in chart.lines

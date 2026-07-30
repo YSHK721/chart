@@ -15,10 +15,14 @@ const FRONT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)), '..', 'js', 'adapter', 'front',
 );
 
-const KINDS = ['line', 'histogram', 'horizontal_line'];
+// 旧ハードコード比較が存在した 3 種別。この回帰壁は緩めない（新種別は別テストで固定する）。
+const LEGACY_KINDS = ['line', 'histogram', 'horizontal_line'];
+// level_dash はローソク足幅の水平ダッシュ（同値 4 値の Candlestick）。ISSUE-223 で追加。
+const ADDED_KINDS = ['level_dash'];
+const KINDS = [...LEGACY_KINDS, ...ADDED_KINDS];
 
 test('capabilities match legacy kind comparisons 1:1', () => {
-  for (const kind of KINDS) {
+  for (const kind of LEGACY_KINDS) {
     const cap = seriesKind(kind);
     // 旧: isTailUpdatable = kind==='line' || kind==='histogram'
     assert.equal(cap.tailUpdatable, kind === 'line' || kind === 'histogram', kind);
@@ -34,6 +38,20 @@ test('capabilities match legacy kind comparisons 1:1', () => {
       assert.equal(cap.seriesType, 'histogram', kind);
     }
   }
+});
+
+test('level_dash declares the capabilities its renderer path requires', () => {
+  // 追加種別は legacy 比較の対象外。宣言値を明示的に固定し、暗黙の変更を禁じる。
+  const cap = seriesKind('level_dash');
+  // 末尾差分更新は {time,value} を series.update へ渡す経路であり Candlestick と形が合わない。
+  assert.equal(cap.tailUpdatable, false);
+  // 線幅/線種を持たない（実体はローソクの同事＝1px の水平線）。
+  assert.equal(cap.appliesLineStyle, false);
+  assert.equal(cap.editableLineStyle, false);
+  assert.equal(cap.supportsHeat, false);
+  assert.equal(cap.overlayReadout, false);
+  assert.equal(cap.seriesType, 'level_dash');
+  assert.equal(cap.renderRoute, 'level_dash');
 });
 
 test('unknown kind falls back to legacy comparison semantics', () => {
@@ -72,7 +90,7 @@ test('registry is the only kind ledger (consumers reference it, no raw kind lite
   }
 });
 
-test('SERIES_KINDS is frozen and covers the three kinds', () => {
+test('SERIES_KINDS is frozen and covers the registered kinds', () => {
   assert.deepEqual(Object.keys(SERIES_KINDS).sort(), [...KINDS].sort());
   assert.ok(Object.isFrozen(SERIES_KINDS));
 });

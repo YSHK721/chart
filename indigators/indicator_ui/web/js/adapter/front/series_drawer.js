@@ -128,9 +128,13 @@ export class SeriesDrawer {
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     const slot = this._slot(instanceId);
     const pane = this._ensurePane(slot, opts);
-    const definition = seriesKind(kind).seriesType === 'histogram'
+    // seriesType → lightweight-charts の系列定義。台帳（series_kind）の宣言のみで決まる。
+    const seriesType = seriesKind(kind).seriesType;
+    const definition = seriesType === 'histogram'
       ? this._h._lwc.HistogramSeries
-      : this._h._lwc.LineSeries;
+      : seriesType === 'level_dash'
+        ? this._h._lwc.CandlestickSeries
+        : this._h._lwc.LineSeries;
     for (const p of payloads ?? []) {
       // 価格軸（画面右端）のラベルは系列名ではなく現在値（数値・系列色チップ）を表示する
       //   （ユーザー指示 2026-07-23。旧: title=系列名＋lastValueVisible=false＝名前チップ）。
@@ -172,10 +176,27 @@ export class SeriesDrawer {
         options.crosshairMarkerVisible = false;
       }
       // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
+      // level_dash: 同値 4 値の同事（doji）＝実体が潰れて水平線 1 本になり、幅は
+      //   ローソク足と一致する。ヒゲは消す。色は 4 経路すべてへ同じ値を入れる
+      //   （open==close は上下判定が処理系依存のため、どちらに転んでも同色にする）。
+      if (seriesType === 'level_dash') {
+        options.wickVisible = false;
+        options.upColor = p.color;
+        options.downColor = p.color;
+        options.borderUpColor = p.color;
+        options.borderDownColor = p.color;
+        options.wickUpColor = p.color;
+        options.wickDownColor = p.color;
+      }
       const series = pane
         ? pane.addSeries(definition, options)
         : this._h._chart.addSeries(definition, options);
-      series.setData(p.data ?? []);
+      // payload 契約は line と同一（{time, value}）。level_dash のみ表示層で 4 値へ展開する
+      //   （back の payload 形状を増やさないための写像点＝ここが唯一）。
+      const data = p.data ?? [];
+      series.setData(seriesType === 'level_dash'
+        ? data.map((d) => ({ time: d.time, open: d.value, high: d.value, low: d.value, close: d.value }))
+        : data);
       const key = `${instanceId}::${p.name}`;
       slot.lines.set(key, series);
       const metaEntry = {

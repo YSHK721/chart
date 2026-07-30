@@ -447,7 +447,12 @@ export class ChartRenderer {
     this._renderSeries(instanceId, payloads, 'histogram', opts);
   }
 
-  // line / histogram を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
+  // level_dash 系列群を生成（ローソク足幅の水平ダッシュ・同値 4 値の Candlestick）。
+  renderLevelDash(instanceId, payloads, opts = {}) {
+    this._renderSeries(instanceId, payloads, 'level_dash', opts);
+  }
+
+  // line / histogram / level_dash を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     this._drawer._renderSeries(instanceId, payloads, kind, opts);
   }

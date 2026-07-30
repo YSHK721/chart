@@ -35,6 +35,20 @@ export const SERIES_KINDS = Object.freeze({
     editableLineStyle: false,
     renderRoute: 'histogram',
   }),
+  // level_dash: ローソク足幅の水平ダッシュ（同値 4 値の Candlestick で描く）。
+  //   payload 契約は line と同一（{time, value}）で、OHLC への展開は表示層が担う
+  //   （back の payload 形状を増やさない＝既存 3 種別の契約に非波及）。
+  //   tailUpdatable=false: 末尾差分更新は {time,value} を series.update へ渡す経路であり
+  //   Candlestick 系列とは形が合わない。full 再描画のみを対象とする。
+  level_dash: Object.freeze({
+    tailUpdatable: false,
+    seriesType: 'level_dash',
+    appliesLineStyle: false,
+    supportsHeat: false,
+    overlayReadout: false,
+    editableLineStyle: false,
+    renderRoute: 'level_dash',
+  }),
   horizontal_line: Object.freeze({
     tailUpdatable: false,
     seriesType: null,

@@ -24,7 +24,7 @@
   },
   "cvfe": {
     "color": "rgba(233, 30, 99, 1)",
-    "display_mode": "levels",
+    "display_mode": "dashes",
     "event_agg": "episode",
     "k_events": 50,
     "lam_gap": 0.97,
