@@ -1,6 +1,11 @@
 """E-4 TickMidSeries — 窓内の実ティック mid 列算出（domain・依存ゼロ）。
 
-contact_scan.tick_window.window_ticks の純ロジックを移植（parquet IO は adapter へ隔離）。
+接点検証の tick 窓算出（中央値ベースの外れ値除去）の純ロジック。parquet IO は adapter へ隔離する。
+
+移植元の ``contact_scan.tick_window.window_ticks`` は**現行ツリーに存在しない**（2026-07-30 の
+全体 grep で 0 件。``simulator/usecase/contact_scan`` は現存するが tick_window を持たない）。
+したがって「参照実装と bit 一致」を主張する根拠は残っておらず、現時点で挙動を固定しているのは
+``tests/unit/test_tick_mid_series.py``（境界値 AAA）である。ISSUE-036(b) の是正。
 入力 ``(sec, bid, ask)`` の列に対し、bit 一致で:
 
     1. 窓 [start, end) フィルタ（secs>=start & secs<end）

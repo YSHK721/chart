@@ -58,6 +58,18 @@ class CausalComputeGateway:
 
     @staticmethod
     def _df_to_bars(df: "pd.DataFrame") -> "list[dict]":
+        """DataFrame → plain bars。**全列が数値（float 変換可能）であることが前提**。
+
+        契約（ISSUE-034 の暗黙契約を明示化）:
+            - 列名は ``str(c).lower()`` へ正規化する。大文字を保持したい列があっても失われる。
+            - 値は ``float64`` へ強制する。非数値列（文字列・カテゴリ等）が入ると
+              ``ValueError`` / ``TypeError`` になる。
+            - すなわち本ゲートウェイは **OHLCV 相当の数値列のみ**を運ぶ経路である。
+
+        現状これが安全な理由: 源データの CSV 列は小文字（open/high/low/close/volume）で、
+        compute 側は列名を case-insensitive に解決する。非数値列を持つ指標・大文字前提の
+        指標を通す必要が生じた場合は、本メソッドで非対象列を保存扱いにするガードが要る。
+        """
         # candle.time と同一符号化（untilTime と同基準・tz 非依存 UTC epoch）。
         # ISSUE-158 ①: 列単位ベクトル化（旧: 行ループ df.iloc＝50k 行で ~1.2s・compute 1 回の 69%）。
         #   出力は旧実装と完全同一（キー順 time→列順・time は int・値は float。等価性は

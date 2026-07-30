@@ -501,35 +501,60 @@
 
 ## ISSUE-033: replay_ui backend — 未消費の抽象（E-3 window / ContactScanPort）のフロント確定時精査
 - **重大度**: Low（YAGNI）
-- **ステータス**: OPEN
+- **ステータス**: IN_PROGRESS
 - **検出**: arch レビュー（YAGNI 削除候補・2026-07-04）。
 - **背景**: `domain/intrabar_window.window`（足境界→窓算出 E-3）と `replay_ports.ContactScanPort` は backend に production caller 不在（テストのみ）。窓はフロント replay.js が算出し `/intraday` に start/end で渡す設計、接点は次フェーズ想定＝将来仮説が根拠。
 - **対策（提案）**: フロント増分で「消費者が生じるか」確定し、生じなければ削除。窓をサーバ側算出する usecase に倒す選択肢も検討。
 - **関連**: replay_ui フロント増分で判断。
+- **実測（2026-07-30）**: フロント増分は完了しており、消費者の有無が確定した。
+  | 対象 | 本番消費者 | 判定 |
+  |---|---|---|
+  | `replay_ports.ContactScanPort` | **0 件**（全体 grep でヒット無し＝**既に削除済み**） | 決着 |
+  | `domain/intrabar_window.window` | **0 件**（`tests/unit/test_intrabar_window.py` からのみ） | 削除候補（YAGNI 確定） |
+  - `usecase/intrabar_window` は `serve_replay.py:219` から使われており**別物**（こちらは現役）。削除候補は `domain` 層の窓算出関数のみ。
+  - 設計どおりフロント `replay.js` が窓を算出し `/intraday` へ `start/end` で渡しているため、サーバ側の窓算出は消費者が生じなかった。
+- **ステータス**: 既存ファイル（`domain/intrabar_window.py`）の削除は承認事項のため**削除は未実施**。承認待ち。
 
 ## ISSUE-034: replay_ui backend — df 往復の列名 lower()/float() 強制が暗黙契約
 - **重大度**: Low（現状安全）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: code レビュー（🔵-1・2026-07-04）。
 - **背景**: `adapter/causal_compute_gateway._df_to_bars` が全列を `str(c).lower()`＋`float(row[c])` へ強制。現状は源 CSV 列が小文字＋compute の case-insensitive アクセスで安全（SMA round-trip 同値テスト合格）。非数値列・大文字前提指標が将来入ると `float()` 例外/列名不一致。
 - **対策（提案）**: 「OHLCV 数値列前提」を docstring 明記、または非対象列を保存扱いにするガード追加。
 - **関連**: replay_ui バックエンド増分。
+- **対応（2026-07-30・提案の「docstring 明記」を採用）**: `_df_to_bars` に契約を明示した。
+  - 列名は `str(c).lower()` へ正規化する（大文字は保持されない）
+  - 値は `float64` へ強制する（非数値列は例外になる）
+  - すなわち本経路は **OHLCV 相当の数値列のみ**を運ぶ
+  - 現状安全な理由（源 CSV が小文字・compute が case-insensitive）と、破れる条件（非数値列／大文字前提の指標）も併記した。
+- **ガード追加は見送り**: 破れる指標が現存せず（YAGNI）、追加すると全 compute 経路へ分岐が入るため。契約違反時は `float()` が例外で落ちる＝沈黙しない。
+- **検証**: `simulator/replay_ui` 198 passed。
 
 ## ISSUE-035: replay_ui backend — 静的配信のパストラバーサル判定が prefix 一致のみ（proto 継承）
 - **重大度**: Low（web_dir 既定 None＝静的配信オフ）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: code レビュー（🔵-3・2026-07-04）。
 - **背景**: `framework/serve_replay.py` の静的配信が `str(fp).startswith(str(web_dir))`。区切り無し prefix のため `web_dir="/a/web"` で `/a/webevil` が通過しうる（proto_server と同一弱点）。既定 web_dir=None で影響は低いが、フロント配信有効化時に露見。
 - **対策（提案）**: `os.path.commonpath([fp, web_dir]) == str(web_dir)` もしくは末尾セパレータ付き比較へ。
 - **関連**: replay_ui フロント増分（静的配信有効化）時に対応。
+- **対応（2026-07-30・調査の結果、本体は是正済みと判明。テストのみ補完）**:
+  - `replay_ui` の静的配信は `framework/static_file_server.py` へ抽出され、`resolve()` 後の `Path.is_relative_to`（区切り境界一致）で CWE-22 を封じ済み。docstring に `startswith` が危険な理由（接頭辞共有の兄弟へ逸脱できる）まで明記されている。回帰テスト `tests/unit/test_static_file_server.py::test_prefix_sibling_traversal_is_rejected` が攻撃ケース（`replay_web_SECRET`）を固定している。
+  - 全体 grep で `startswith(str(...))` による経路判定は**残存 0 件**。
+  - **一方 `unified_ui/router.py`（実際に 8000 で配信される側）は防御は正しい（`os.sep` 付き比較）が回帰テストが無かった**ため、同じ攻撃ケースを追加した（`unified_ui/tests/test_router.py`）。
+- **検証設計の補足**: 当初 生の `..` だけでテストを書いたが、`_serve_static` 手前の `rel.startswith("..")` で弾かれ **realpath ガードまで到達せず空虚**だった（ガードを弱める変異を検出できなかった）。`web_root` 内から外を指す **symlink** 経路へ組み直し、変異注入で「機密が漏洩した」を検出できることを実証した。
+- **検証**: `unified_ui` 15 passed。
 
 ## ISSUE-036: replay_ui backend — /candles 非tick分岐の過剰直列化＋失効 docstring 参照
 - **重大度**: Low
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: code レビュー（🔵-4/🔵-5・2026-07-04）。
 - **背景**: (a) `serve_replay` が `/candles` の非 tick 軽量経路も `_HEAVY_LOCK` で直列化（proto は tick のみ施錠・出力不変の過剰直列化）。(b) `domain/tick_mid_series` 等の docstring が本 worktree 不在の `contact_scan.tick_window.window_ticks` を bit 一致対象と引用（実挙動は proto `do_intraday` tick 経路で検証済）。
 - **対策（提案）**: (a) 非 tick 軽量経路を施錠外へ、または保守的直列化の意図をコメント明記。(b) 参照を「proto_server.do_intraday tick 経路」へ更新。
 - **関連**: replay_ui バックエンド増分。
+- **対応（2026-07-30）**:
+  - **(b) 失効参照の是正**: `contact_scan.tick_window.window_ticks` は**現行ツリーに存在しない**（全体 grep 0 件。`simulator/usecase/contact_scan` は現存するが `tick_window` を持たない）。「参照実装と bit 一致」の主張は根拠を失っているため撤回し、実際に挙動を固定している `tests/unit/test_tick_mid_series.py` を指すよう `domain/tick_mid_series.py` と `adapter/intrabar_window_repository.py`（2 箇所）を書き換えた。
+  - **(a) 過剰直列化は意図として明記（据え置き）**: 非 tick の軽量経路も同じ錠の内側にある点を、理由付きでコメント化した。緩めない理由: `/candles` は timeframe により resample の有無が実行時に決まり呼び出し前に軽量判定できない（判定を足すと分岐の二重管理になる）／並行化の利得が未実測。緩めるなら所要時間の実測と OOM 耐性の確認を先に行う。
+- **検証**: `simulator/replay_ui` 198 passed。
 
 ## ISSUE-037: replay_ui frontend(再生層) — controller への結合＋View fallback の堅牢化
 - **重大度**: Low（挙動非差・parity 由来）

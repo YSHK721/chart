@@ -6,7 +6,9 @@ m1  : 区間 [start,end) の 1 分足 OHLC 行（``[o,h,l,c]``）。供給は **
       ペイロードは ``_cap_m1_rows`` で 1500 行へ間引く（先頭/末尾＋窓内 高値最大/安値最小は必ず残す）。
 ticks: 区間 [start,end) の実ティック ``(sec, mid)``。tick parquet（Y/M/D）を [start,end) 跨ぎで走査し
       ``(sec, bid, ask)`` を組み、**domain E-4 ``tick_mid_series.mid_series``** で mid 算出＋窓フィルタ
-      ＋中央値外れ値除去を行う（cap 無し・接点検証の絶対仕様）。tick_window.window_ticks と bit 一致。
+      ＋中央値外れ値除去を行う（cap 無し・接点検証の絶対仕様）。挙動を固定しているのは
+      ``tests/unit/test_tick_mid_series.py``（旧 ``tick_window.window_ticks`` は現行ツリーに
+      存在しないため bit 一致の主張は撤回した・ISSUE-036(b)）。
 
 技術隔離（CLEAN_ARCH §6）: pandas / parquet IO は本ファイル内に閉じる。
 """
@@ -86,7 +88,7 @@ class IntrabarWindowRepository:
     def _load_raw_ticks(self, start: int, end: int) -> "list[tuple[int, float, float]]":
         """[start,end) を跨ぐ全 UTC 日の parquet から ``(sec, bid, ask)`` を組む（窓フィルタは domain）。
 
-        tick_window.window_ticks と同一の日走査・秒符号化。窓外/外れ値の除去は
+        日走査・秒符号化の規約は ``domain.tick_mid_series`` と一致させる。窓外/外れ値の除去は
         ``tick_mid_series.mid_series`` に一元化する（bit 一致）。
         """
         frames: "list[pd.DataFrame]" = []

@@ -346,3 +346,68 @@ def test_bare_api_path_without_prefix_returns_404(router):
     assert resp.status == 404, f"expected 404 for bare api path, got {resp.status}/{resp.error}"
     assert len(live_srv.records) == 0
     assert len(replay_srv.records) == 0
+
+
+# ---- ISSUE-035 系: 静的配信のパストラバーサル防御 -----------------------------
+# replay_ui の StaticFileServer は同型の弱点（区切り境界を見ない prefix 一致）を
+#   is_relative_to へ是正済みで回帰テストも持つ（tests/unit/test_static_file_server.py）。
+#   ルータ側は os.sep 付き比較で安全だが**回帰テストが無かった**ため、実際に 8000 で
+#   配信される本経路にも同じ攻撃ケースを固定する。
+#
+# 検証設計の注意: 生の `..` は _serve_static 手前の `rel.startswith("..")` で弾かれ、
+#   realpath 比較まで到達しない。**realpath ガードそのもの**を検証するには、rel に `..` を
+#   含まないまま実体が root 外を指す経路＝ web_root 内の symlink が必要である
+#   （当初 `..` だけで書いたところ、ガードを弱める変異を検出できず空虚と判明した）。
+
+@pytest.fixture()
+def router_with_secret_sibling(upstreams, tmp_path):
+    """web_root と**接頭辞を共有する兄弟**に機密を置き、root 内から symlink を張ったルータ。"""
+    web_root = tmp_path / "unified_web"
+    web_root.mkdir()
+    (web_root / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+    secret = tmp_path / "unified_web_SECRET"      # 区切り無し prefix 一致なら通過しうる
+    secret.mkdir()
+    (secret / "leak.txt").write_text("TOP_SECRET", encoding="utf-8")
+    # rel に `..` を含まないまま root 外へ出る唯一の経路（realpath ガードの検証点）。
+    (web_root / "link").symlink_to(secret, target_is_directory=True)
+
+    live_srv, replay_srv = upstreams
+    server = router_mod.create_router_server(
+        ("127.0.0.1", 0),
+        live_upstream=_base_url(live_srv),
+        replay_upstream=_base_url(replay_srv),
+        web_root=str(web_root),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+
+
+def test_static_symlink_escaping_web_root_is_rejected(router_with_secret_sibling):
+    """web_root 内の symlink が外（接頭辞共有の兄弟）を指しても配信しない（CWE-22）。
+
+    realpath 比較を区切り境界なしの prefix 一致へ弱めると本テストが失敗する
+    （検出力を変異注入で実証済み）。
+    """
+    resp = _request(router_with_secret_sibling, "GET", "/link/leak.txt")
+    assert resp.body is None or b"TOP_SECRET" not in resp.body, "機密が漏洩した"
+    assert resp.status in (400, 404), f"逸脱要求が {resp.status} で通過している"
+
+
+@pytest.mark.parametrize("path", [
+    "/../unified_web_SECRET/leak.txt",             # 生 `..`（手前の正規化で弾かれる想定）
+    "/subdir/../../unified_web_SECRET/leak.txt",   # 深い階層からの逸脱
+])
+def test_static_dotdot_traversal_is_rejected(router_with_secret_sibling, path):
+    """生の `..` による逸脱も拒否する（正規化段の防御）。"""
+    resp = _request(router_with_secret_sibling, "GET", path)
+    assert resp.body is None or b"TOP_SECRET" not in resp.body
+    assert resp.status in (400, 404)
+
+
+def test_static_normal_file_is_still_served(router_with_secret_sibling):
+    """正規の配信は従来どおり成功する（防御が過剰に効いていない）。"""
+    resp = _request(router_with_secret_sibling, "GET", "/")
+    assert resp.status == 200
+    assert b"ok" in resp.body

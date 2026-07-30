@@ -174,7 +174,14 @@ class ReplayApp:
     ) -> "list[dict]":
         req = RevealCandlesRequest(ref=ref, timeframe=tf, limit=limit, start=start, pre=pre)
         def _run():
-            with self._lock:  # 巨大 resample を直列化（並行多重で OOM 防止）
+            # 巨大 resample を直列化（並行多重で OOM 防止）。
+            # ISSUE-036(a): 非 tick の軽量経路も同じ錠の内側に置いている（proto は tick のみ施錠）。
+            #   出力は変わらず**保守的な直列化**であり、意図的に据え置く:
+            #     - /candles は timeframe により resample の有無が実行時に決まるため、呼び出し前に
+            #       「軽量である」と判定できない（判定を足すと分岐が二重管理になる）。
+            #     - 並行実行のメリットが実測されていない。緩めるならまず所要時間を計測し、
+            #       OOM 耐性が落ちないことを確認してから行う（未実施）。
+            with self._lock:
                 return reveal_candles(request=req, candle_port=self._candle_port)
         return self._heavy_worker.run(_run)
 
