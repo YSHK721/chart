@@ -387,6 +387,7 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "k_events": 50,
             "event_agg": "episode",
             "window_n": 500,
+            "display_mode": "levels",
             "color": "rgba(233, 30, 99, 1)",
         },
     },

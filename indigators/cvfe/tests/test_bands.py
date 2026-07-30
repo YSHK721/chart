@@ -163,3 +163,87 @@ def test_band_does_not_move_with_current_bar():
         if not np.isclose(b[3], a[3]):
             moved_any = True
     assert moved_any, "次バーに一切反映されていない＝検定が空虚"
+
+
+# --------------------------------------------------------------------------------------
+# 表示形式（display_mode）
+# --------------------------------------------------------------------------------------
+
+class _FakeChart:
+    """`create_line` / `horizontal_line` を記録するだけのダミー（duck typing）。"""
+
+    def __init__(self):
+        self.lines = []
+        self.hlines = []
+
+    def create_line(self, name, **kwargs):
+        obj = type("L", (), {"set": lambda self, df: None})()
+        self.lines.append(name)
+        return obj
+
+    def horizontal_line(self, price, **kwargs):
+        self.hlines.append((price, kwargs.get("text"), kwargs.get("style")))
+        return object()
+
+
+def _ohlc_frame(n=700, seed=11):
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    c = 10_000.0 * np.exp(np.cumsum(rng.standard_normal(n) * 0.004))
+    hi = c * (1 + np.abs(rng.standard_normal(n)) * 0.002)
+    lo = c * (1 - np.abs(rng.standard_normal(n)) * 0.002)
+    op = np.concatenate([[c[0]], c[:-1]])
+    t = pd.date_range("2024-01-01", periods=n, freq="1h")
+    return pd.DataFrame({"date": t, "open": op, "high": hi, "low": lo, "close": c})
+
+
+def test_levels_mode_emits_horizontal_lines_only():
+    """既定（levels）は水平ラインのみを引き、バー毎の line 系列を作らない。"""
+    from src.lwc_chart import add_cvfe
+
+    chart = _FakeChart()
+    add_cvfe(chart, _ohlc_frame(), n_har=500, time_column="date")
+    assert chart.lines == [], f"levels なのに line 系列が出ている: {chart.lines}"
+    assert len(chart.hlines) >= 4, chart.hlines
+
+    labels = [t for _p, t, _s in chart.hlines]
+    assert "+1σ" in labels and "-1σ" in labels
+    prices = {t: p for p, t, _s in chart.hlines}
+    assert prices["+1σ"] > prices["-1σ"]
+    if "+2σ" in prices:
+        assert prices["+2σ"] > prices["+1σ"] and prices["-2σ"] < prices["-1σ"]
+
+
+def test_levels_are_monotone_outward():
+    """水準の並びが内側から外側へ単調（1σ < 2σ < 外れ値 < 極端）。"""
+    from src.lwc_chart import add_cvfe
+
+    chart = _FakeChart()
+    add_cvfe(chart, _ohlc_frame(seed=23), n_har=500, time_column="date")
+    p = {t: v for v, t, _s in chart.hlines}
+    if {"+1σ", "+2σ", "外れ値+"} <= set(p):
+        assert p["+1σ"] < p["+2σ"] < p["外れ値+"], p
+    if {"-1σ", "-2σ", "外れ値-"} <= set(p):
+        assert p["-1σ"] > p["-2σ"] > p["外れ値-"], p
+
+
+def test_bands_mode_emits_line_series():
+    """display_mode='bands' はバー毎の line 系列を引き、水平ラインを引かない。"""
+    from src.lwc_chart import add_cvfe
+
+    chart = _FakeChart()
+    add_cvfe(chart, _ohlc_frame(), n_har=500, time_column="date", display_mode="bands")
+    assert chart.hlines == []
+    assert "cvfe_u1" in chart.lines and "cvfe_l1" in chart.lines
+    assert "cvfe_evq_med_hi" in chart.lines
+
+
+def test_levels_skip_unavailable_levels():
+    """推定不能な水準は引かない（外れ値をオフにすれば σ 水準だけになる）。"""
+    from src.lwc_chart import add_cvfe
+
+    chart = _FakeChart()
+    add_cvfe(chart, _ohlc_frame(), n_har=500, time_column="date",
+             show_outliers=False, show_outer=False)
+    labels = sorted(t for _p, t, _s in chart.hlines)
+    assert labels == ["+1σ", "-1σ"], labels

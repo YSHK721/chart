@@ -651,6 +651,7 @@ const MARKET_PROFILE = makeMarketProfileDef({
 //   加えて外れ値水準（共有プリミティブ common.event_quantiles を無改変参照。標準化残差の
 //   正常バンド超イベントの典型深度・極端深度）を価格へ写して描く。
 //   系列名: cvfe_mid / cvfe_u1 / cvfe_l1 / cvfe_u2 / cvfe_l2 / cvfe_evq_{med|ext}_{hi|lo}。
+const CVFE_DISPLAY_LABELS = { levels: '水平ライン（最新水準）', bands: 'バー毎の帯' };
 const CVFE = new IndicatorDef({
   id: 'cvfe',
   displayNameKey: 'ind.cvfe',
@@ -702,6 +703,14 @@ const CVFE = new IndicatorDef({
     //   z = ln(C_t/C_{t−1})/σ̂_t の因果ローリング正常バンド超をイベントとし、その典型深度
     //   （中央値）と極端深度（q_out 分位）を common.event_quantiles で求めて価格へ写す。
     //   連続超過は episode declustering で 1 回に畳む（実測根拠は MA_MAROD 基本設計）。
+    // 表示形式。既定は水平ライン。バー毎の帯を線で繋ぐことに情報上の意味はほぼ無い
+    //   （実測 jp225_tick 5 分足 3,477 本: 上端の分散寄与は価格成分 100.4% / σ̂ 成分 15.3%、
+    //    相関は価格 0.924 / σ̂ 0.191。σ̂ の情報は帯の「幅」にしかなく、各点は別バーに対する
+    //    独立した 1 期先予測区間で点間を結ぶ線分に対応する量が無い）。ユーザー裁定 2026-07-30。
+    param('display_mode', ParamType.ENUM, 'levels', [], ['levels', 'bands'], {
+      group: 'group.display', order: 0, label: '表示形式', enumLabels: CVFE_DISPLAY_LABELS,
+      tooltip: '水平ライン＝最新の確定水準だけを価格軸ラベル付きの水平線で引く（推奨。次の1本がどこまで行くかを直読できる）。バー毎の帯＝過去の推移も帯で描く（検証用。ジグザグになり視認性は落ちる）。',
+    }),
     param('show_outliers', ParamType.BOOL, true, [], null, {
       group: 'group.display', order: 5, label: '外れ値水準を表示',
       tooltip: '過去に正常バンドを超えた「外れ値イベント」の典型深度（赤実線）と極端深度（赤破線）を価格に写して描く。正規仮定の σ 倍ではなく実績から測った「外れたらどこまで行くか」の水準。',
@@ -739,6 +748,9 @@ const CVFE = new IndicatorDef({
     // 外れ値水準の 4 本（共有ビルダー＝表示規約の単一情報源）。q_out 無効時は極端線が
     //   空系列になる（core が全 NaN を返す＝描画なしと等価）。
     ...EVQ_SERIES_DEFS('cvfe'),
+    // display_mode='levels'（既定）で引く水平線群。統合 FakeChart は compute_id 名 1 件に
+    //   まとめるため seriesName は指標 id と一致させる（profit_* 水準線と同一規約）。
+    new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'cvfe', dynamic: false }),
   ],
   compute: { computeId: 'cvfe', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
