@@ -488,11 +488,16 @@
 
 ## ISSUE-032: replay_ui backend — 外れ値閾値 0.3 の二重定義（用途別だが同値）
 - **重大度**: Low
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: arch レビュー（🔵-3・2026-07-04）。
 - **背景**: `domain/tick_mid_series.OUTLIER_THRESHOLD`（足内 mid 外れ値）と `adapter/_m1_repair.M1_OUTLIER_THRESHOLD`（M1 日内補正）が各 0.3。アルゴリズムは別物だが値・意図（±30%）同一で source が分岐＝値乖離リスク。
 - **対策（提案）**: 単一 source-of-truth へ集約、または「別用途で独立の定数」である旨を両所へ明記して意図を固定。
 - **関連**: replay_ui バックエンド増分。
+- **対応（2026-07-30・提案の第 2 案「独立である旨を明記」を採用）**:
+  - ISSUE-032 が指摘した重複相手 `adapter/_m1_repair.M1_OUTLIER_THRESHOLD` は**モジュールごと削除済みで現存しない**（grep 0 件）。旧コメントが参照していた `proto_server` も同様。
+  - 現存する同値定数は `marketdata.outlier_policy.OUTLIER_THRESHOLD`（0.3）だが、**統合しない**と裁定した。理由: (1) 対象が別物（本定数はバー内 tick の mid 系列に対する中央値ベース除去、marketdata 側は確定足 OHLC のクランプ）、(2) 層が別（replay_ui の domain 層から データ取得基盤 marketdata へ依存させると domain → infrastructure の逆流になる）。
+  - `tick_mid_series.py` のコメントを実態へ改め、独立の定数である理由を明記した（値の一致は偶然であり一方の調整が他方へ波及してはならない旨）。
+- **検証**: `simulator/replay_ui` 198 passed。
 
 ## ISSUE-033: replay_ui backend — 未消費の抽象（E-3 window / ContactScanPort）のフロント確定時精査
 - **重大度**: Low（YAGNI）
@@ -604,10 +609,16 @@
 - **関連**: feature/replay-price-wheel-zoom。zoomedPriceRange/clampPriceRange（純関数・発散クランプ）は温存。
 
 ## ISSUE-046: indicator_ui の既存テスト2件が参照先モジュール欠損で失敗（既存・今回変更と無関係）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: 2026-07-06 ISSUE-045 対応中の全体テスト実行で検出。HEAD（変更前）でも同一失敗を確認済み。
 - **内容**: `tests/replay_analysis.test.js` と `tests/timeline_player.test.js` が `js/usecase/replay_analysis.js` 等の不存在モジュールを import して ERR_MODULE_NOT_FOUND。79982b8「未追跡のソース/ドキュメントを保全コミット」でテストのみ保全されソース側が欠落した可能性。
 - **対策案**: 対応方針は依頼者判断待ち（欠損ソースの復元 or テスト撤去）。
+- **対応（2026-07-30・調査の結果、対処不要と判明）**: 現行コードから当該テストも参照先モジュールも**消滅済み**。
+  - `indigators/indicator_ui/web/tests/` に `replay_analysis.test.js` / `timeline_player.test.js` は存在しない。
+  - `js/usecase/replay_analysis.js` / `timeline_player.js` も存在しない。
+  - 残存は旧プロトタイプ `prototype_260626-01/web/tests/` のみで、維持対象のテストスイートには含まれない。
+  - 現行 web スイートは 932 passed / 0 failed（ERR_MODULE_NOT_FOUND なし）。
+  ⇒ 「欠損ソースの復元 or テスト撤去」の判断待ちだったが、**撤去済み**として決着。
 
 ## ISSUE-047: replay_ui MP — 再生中にプロファイルのバーのスケールが変動する（表示 bin 幅 binw が累積レンジ拡大のたびに再導出される）
 - **重大度**: Medium（視覚バグ・再生中の分析可読性を毀損）
@@ -2014,11 +2025,23 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **完全根絶の条件**: `timeframe_menu.js` 等の既存モジュールへ removeEventListener／dispose を追加する改変が必要＝無波及制約（`indigators/**`・`simulator/**` byte 不変）に抵触するため本スコープでは不可。将来、統合を正式機能化する際の別承認課題（既存改変を伴う恒久対処）。
 
 ## ISSUE-170: [既存不具合] replay_mp_wiring の ISSUE-048 前後関係テストが常時 fail（本変更前から）（2026-07-26）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **事象**: `simulator/replay_ui/web/tests/replay_mp_wiring.test.js` の「during play, the revealed bar is collapsed to its open BEFORE the MP enterBar await (no completed-bar flash — ISSUE-048)」が fail する（`再生リビール時に始値畳み込み update が発火する` で AssertionError）。他 260 件は緑。
 - **本変更（リプレイバー UI 刷新）との無関係を実証**: 変更一式を `git stash -u` して HEAD の状態で当該ファイルのみ実行 → **同一テストのみ fail（5 pass / 1 fail）**。すなわち本変更以前から存在する既存 fail。
 - **推定原因（未検証・推論）**: テストの fake が `renderer` に `updateLastCandle` を持たない一方、`ReplayView.updateForming` は `renderer.updateLastCandle` を呼ぶ（try/catch で握り潰す）ため、期待している `mainSeries.update` イベントが記録されない。ライブ同一経路化（renderer 経由へ一本化）の際に fake が追随していない可能性。プロダクトコード側の退行かテスト fake の陳腐化かは未確定。
 - **対応方針**: 本件はリプレイバー UI 刷新のスコープ外のため未修正。修正時は「畳み込みが enterBar の await より先」という ISSUE-048 の不変条件を維持したまま fake を実経路（renderer.updateLastCandle）へ合わせるか、プロダクト側の退行有無を先に実測で確定する。
+- **原因の確定（2026-07-30・実測）**: **テスト fake の陳腐化**であり、製品側の退行ではない。
+  - 製品は `replay.js` → `ReplayView.updateForming` → `renderer.updateLastCandle` へ**意図的に一本化**済み（ライブ同一経路化・`replay_view.js:78-87` の docstring に明記）。`mainSeries.update` の直呼びは経由しない。
+  - テストの fake は `renderer: { setCandles() {} }` で `updateLastCandle` を持たず、`updateForming` の `try/catch` が例外を握り潰すため、期待していた `mainSeries.update` イベントが記録されなかった。
+- **対応**: fake に `updateLastCandle` を追加し、**観測点を実経路へ合わせた**。ISSUE-048 の不変条件（畳み込みが `enterBar` の await より先）は変更していない。
+- **併せて判明**: 対になる `manual navigation ... does NOT collapse` テストも同じ fake を使っており、**以前は空虚に通っていた**（記録されないので「畳み込み 0 件」が常に成立）。同様に是正した。
+- **検出力の実証（2 方向）**:
+  | 変異 | 結果 |
+  |---|---|
+  | 畳み込みを `enterBar` の後ろへ移す | `during play ... BEFORE the MP enterBar await` が fail |
+  | `playing &&` ガードを外す | `manual navigation ... does NOT collapse` が fail |
+  ⇒ 6/6 pass。両テストとも実効性を持つようになった。
+- **残る観察（未対応）**: `ReplayView.updateForming` の `try/catch (_e) { noop }` が例外を無条件に握り潰すため、本件のような結線断が沈黙する。撤去は他呼出元への影響評価を要するため本件では触れていない。
 
 ## ISSUE-171: 統合UI が「Service Worker を有効化できないため起動を中止しました」で起動不能（SW 再登録直後の未制御＋リロード1回制限）（2026-07-26）
 - **ステータス**: RESOLVED（2026-07-26 起票・同日修正。TDD Red→Green。unified_ui web 42 緑（新規3含む）。実 UI（8000・Chrome）で「リロード済みフラグ有り＋SW 登録解除」状態からの起動成功・console error 0 を実測）
