@@ -693,6 +693,8 @@ const CVFE = new IndicatorDef({
       group: 'group.display', order: 4, label: '表示形式', enumLabels: CVFE_DISPLAY_LABELS,
       tooltip: '水平ダッシュ＝各バーの水準を、そのバーの幅だけの短い水平線で並べる（推奨。バー間を繋がないので傾きに誤った意味が乗らない）。線で繋いだ帯＝上下端を折れ線で結ぶ（検証用。傾きは価格そのものの動きで σ̂ の情報を持たない）。',
     }),
+    // color はここに置かない。系列色は「スタイル」タブが系列ごとに持っており重複するため
+    //   （ユーザー裁定 2026-07-30・認知負荷の最小化）。初期色は add_cvfe の既定値。
     param('dash_opacity', ParamType.FLOAT, 0.5, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'dash_opacity', 1.01], messageKey: 'err.dash_opacity.range' },
     ], null, {
@@ -700,7 +702,6 @@ const CVFE = new IndicatorDef({
       conditionalEnable: { when: { param: 'display_mode', equals: 'dashes' } },
       tooltip: '【全ての線に影響】水平ダッシュの不透明度（既定 0.5）。幅はローソク足の幅に自動で合うため、主張の強さはここで調整する。',
     }),
-    param('color', ParamType.COLOR, 'rgba(233, 30, 99, 1)', [], null, { group: 'group.style', order: 1 }),
   ],
   // 系列: σ線①②（各上下）＋ 外れ値線・極端線（各上下）＋ 中心線。すべて価格スケール上。
   //   display_mode='dashes'（既定）は level_dash、'bands' は line で届くため同名で両 kind を宣言する。

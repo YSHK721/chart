@@ -389,7 +389,6 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "show_outliers": True,
             "display_mode": "dashes",
             "dash_opacity": 0.5,
-            "color": "rgba(233, 30, 99, 1)",
         },
     },
     ("profit_band", "global"): {

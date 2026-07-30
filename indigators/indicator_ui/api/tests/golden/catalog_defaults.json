@@ -23,7 +23,6 @@
     "window_n": 500
   },
   "cvfe": {
-    "color": "rgba(233, 30, 99, 1)",
     "dash_opacity": 0.5,
     "display_mode": "dashes",
     "n_har": 500,
