@@ -95,6 +95,12 @@ def measures_from_ohlc(open_: np.ndarray, high: np.ndarray, low: np.ndarray,
         p_open, p_high = float(np.log(o[i])), float(np.log(h[i]))
         p_low, p_close = float(np.log(lo_[i])), float(np.log(c[i]))
         v = parkinson(p_high, p_low)
+        if not (v > 0.0):
+            # レンジ 0（high == low）。ボラティリティの情報を持たないバーは無効とする
+            #   （§3.3 E06 と同じ扱い・ISSUE-224）。測定量にも学習標本にも入れない。
+            out.append(BarMeasure(i, 0, nan, nan, 0.0, False, nan, nan, nan, nan,
+                                  nan, nan, float(bar_edges[i]), False))
+            continue
         out.append(BarMeasure(i, 1, v, v, 0.0, False,
                               p_open, p_close, p_high, p_low,
                               nan, nan, float(bar_edges[i]), True))

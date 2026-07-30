@@ -625,9 +625,9 @@ html, body {
         <div class="dialog-side">
           <button class="side-item is-active" data-category="" type="button">すべて</button>
           <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
-          <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
-          <button class="side-item" data-category="cat.statistics" type="button">統計</button>
-          <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+          <!-- カテゴリのボタンはカタログから動的生成する（ISSUE-221）。ここへ直書きすると
+               新カテゴリの指標を足したときに HTML の同時改変が必要になり、実際に
+               oscillator(10) と band(2) が欠落して 24 指標中 12 件が到達不能になっていた。 -->
         </div>
         <div class="dialog-main">
           <div class="search-wrap">
@@ -2513,6 +2513,30 @@ const REGISTRY = Object.freeze([
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,
 ]);
 const BY_ID = new Map(REGISTRY.map((d) => [d.id, d]));
+
+// カテゴリ key → 表示名。従来は index.html に 3 件だけ直書きされており、oscillator(10) と
+//   band(2) のボタンが無いまま 24 指標中 12 件が絞り込みから到達不能だった（ISSUE-221）。
+//   ここを単一情報源とし、サイドバーは categories() から動的生成する（新カテゴリの指標を
+//   足しても HTML の同時改変が不要＝OCP）。
+const CATEGORY_LABELS = Object.freeze({
+  'cat.technical': 'テクニカル',
+  'cat.oscillator': 'オシレーター',
+  'cat.statistics': '統計',
+  'cat.volume': '出来高',
+  'cat.band': 'バンド',
+});
+
+// 登録済み指標が実際に持つカテゴリを、REGISTRY の出現順で返す（key と件数）。
+//   未知 key は表示名を key そのものにフォールバックする（登録漏れで消えないこと）。
+function categories() {
+  const counts = new Map();
+  for (const d of REGISTRY) {
+    const key = d.category?.nameKey;
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts].map(([key, count]) => ({ key, count, label: CATEGORY_LABELS[key] ?? key }));
+}
 
 // 全 IndicatorDef を返す（読み取り専用配列の複製）。
 function list() {
@@ -8707,6 +8731,10 @@ function validateSeriesNames(payloads, def, params = null) {
 // ★ upstream JS API（addLineSeries 等）は一切参照しない（indicator_controller.js と同一規律）。
 
 
+// サイドバーの「★ お気に入り」ボタンが持つ data-category 値。カテゴリ名ではなく
+//   「お気に入りのみ」を意味するセンチネル（index.html と対応・ISSUE-220）。
+const FAVORITES_SENTINEL = '__favorites__';
+
 class IndicatorDialogController {
   constructor(host) {
     this._host = host;
@@ -8733,8 +8761,12 @@ class IndicatorDialogController {
     for (const c of e.cats ?? []) {
       c.addEventListener('click', () => {
         host._setActive(e.cats, c);
-        this._filter.category = c.dataset.category || null;
-        this._filter.favoriteOnly = c.dataset.category === '__favorites__';
+        // '__favorites__' は「お気に入りのみ」を表すセンチネルであってカテゴリ名ではない。
+        //   category チャネルへ入れると facade の `d.category.nameKey !== category` が全件
+        //   真になり、お気に入りが常に 0 件になる（ISSUE-220）。両チャネルを分離する。
+        const isFavorites = c.dataset.category === FAVORITES_SENTINEL;
+        this._filter.category = isFavorites ? null : (c.dataset.category || null);
+        this._filter.favoriteOnly = isFavorites;
         host._renderDialogList();
       });
     }
@@ -9548,11 +9580,37 @@ class IndicatorController {
   // DOM 配線（ブラウザ/バンドルでのみ実行。node 単体テストは触らない）
   // =========================================================================
 
+  // 指標カタログのカテゴリからサイドバー項目を生成する（冪等・既存の「すべて」「お気に入り」
+  //   の後ろへ追加）。DOM 不在・要素不在では何もしない（node 単体テストの部分 DOM を許容）。
+  _renderCategorySideItems(doc) {
+    const side = doc.querySelector?.('.dialog-side');
+    if (!side || typeof doc.createElement !== 'function') {
+      return;
+    }
+    // 再バインド時の二重生成を防ぐ（生成済み項目のみ除去し、静的 2 件は残す）。
+    for (const el of side.querySelectorAll?.('[data-generated-category]') ?? []) {
+      el.remove?.();
+    }
+    for (const c of catalogCategories()) {
+      const b = doc.createElement('button');
+      b.className = 'side-item';
+      b.type = 'button';
+      b.dataset.category = c.key;
+      b.dataset.generatedCategory = '1';
+      b.textContent = c.label;
+      side.appendChild(b);
+    }
+  }
+
   bind() {
     const doc = this._document;
     if (!doc) {
       return;
     }
+    // カテゴリのサイドバー項目をカタログから生成してから DOM 参照を採る（ISSUE-221）。
+    //   静的 HTML に直書きすると新カテゴリの指標追加時に同時改変が必要になり、実際に
+    //   oscillator(10)・band(2) が欠落して 24 指標中 12 件が絞り込みから到達不能だった。
+    this._renderCategorySideItems(doc);
     this._el = {
       openBtn: doc.getElementById('indicator-open-btn'),
       dialog: doc.getElementById('indicator-dialog'),
@@ -9726,6 +9784,7 @@ class IndicatorController {
 const facadeToggleVisible = toggleVisible;
 const facadeRemove = remove;
 const facadeToggleFavorite = toggleFavorite;
+const catalogCategories = categories;
 
 
 // ===== js/adapter/front/live_updater.js =====

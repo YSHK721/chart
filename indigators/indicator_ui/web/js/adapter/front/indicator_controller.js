@@ -20,6 +20,7 @@ import {
   setSeriesStyles,
   reconcileSeriesStyles,
 } from '../../usecase/facade.js';
+import { categories as catalogCategories } from '../../usecase/catalog.js';
 import { PropertiesDialog } from './properties_dialog.js';
 import { IndicatorLegendView } from './indicator_legend_view.js';
 import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_params.js';
@@ -794,11 +795,37 @@ export class IndicatorController {
   // DOM 配線（ブラウザ/バンドルでのみ実行。node 単体テストは触らない）
   // =========================================================================
 
+  // 指標カタログのカテゴリからサイドバー項目を生成する（冪等・既存の「すべて」「お気に入り」
+  //   の後ろへ追加）。DOM 不在・要素不在では何もしない（node 単体テストの部分 DOM を許容）。
+  _renderCategorySideItems(doc) {
+    const side = doc.querySelector?.('.dialog-side');
+    if (!side || typeof doc.createElement !== 'function') {
+      return;
+    }
+    // 再バインド時の二重生成を防ぐ（生成済み項目のみ除去し、静的 2 件は残す）。
+    for (const el of side.querySelectorAll?.('[data-generated-category]') ?? []) {
+      el.remove?.();
+    }
+    for (const c of catalogCategories()) {
+      const b = doc.createElement('button');
+      b.className = 'side-item';
+      b.type = 'button';
+      b.dataset.category = c.key;
+      b.dataset.generatedCategory = '1';
+      b.textContent = c.label;
+      side.appendChild(b);
+    }
+  }
+
   bind() {
     const doc = this._document;
     if (!doc) {
       return;
     }
+    // カテゴリのサイドバー項目をカタログから生成してから DOM 参照を採る（ISSUE-221）。
+    //   静的 HTML に直書きすると新カテゴリの指標追加時に同時改変が必要になり、実際に
+    //   oscillator(10)・band(2) が欠落して 24 指標中 12 件が絞り込みから到達不能だった。
+    this._renderCategorySideItems(doc);
     this._el = {
       openBtn: doc.getElementById('indicator-open-btn'),
       dialog: doc.getElementById('indicator-dialog'),

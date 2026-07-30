@@ -20,6 +20,10 @@
 
 import { listForView } from '../../usecase/facade.js';
 
+// サイドバーの「★ お気に入り」ボタンが持つ data-category 値。カテゴリ名ではなく
+//   「お気に入りのみ」を意味するセンチネル（index.html と対応・ISSUE-220）。
+export const FAVORITES_SENTINEL = '__favorites__';
+
 export class IndicatorDialogController {
   constructor(host) {
     this._host = host;
@@ -46,8 +50,12 @@ export class IndicatorDialogController {
     for (const c of e.cats ?? []) {
       c.addEventListener('click', () => {
         host._setActive(e.cats, c);
-        this._filter.category = c.dataset.category || null;
-        this._filter.favoriteOnly = c.dataset.category === '__favorites__';
+        // '__favorites__' は「お気に入りのみ」を表すセンチネルであってカテゴリ名ではない。
+        //   category チャネルへ入れると facade の `d.category.nameKey !== category` が全件
+        //   真になり、お気に入りが常に 0 件になる（ISSUE-220）。両チャネルを分離する。
+        const isFavorites = c.dataset.category === FAVORITES_SENTINEL;
+        this._filter.category = isFavorites ? null : (c.dataset.category || null);
+        this._filter.favoriteOnly = isFavorites;
         host._renderDialogList();
       });
     }

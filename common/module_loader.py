@@ -67,12 +67,24 @@ def _cached_ready(name: str) -> "ModuleType | None":
 
 
 def _exec_into_sys_modules(name: str, module: ModuleType, loader) -> ModuleType:
-    """`_LOADING` を立ててから `sys.modules` へ登録し exec する（順序が判別可能性の根拠）。"""
+    """`_LOADING` を立ててから `sys.modules` へ登録し exec する（順序が判別可能性の根拠）。
+
+    exec が例外を送出した場合は `sys.modules` から**半構築モジュールを取り除いてから**
+    再送出する（ISSUE-219）。取り除かないと `_cached_ready` が「exec 完了済み」と誤判定し、
+    2 回目以降の呼び出しが**例外を出さずに壊れたモジュールを配布する**（実測: 1 回目
+    RuntimeError → 2 回目は例外なしで途中まで定義された値を返す）。CPython 標準の import
+    機構も失敗時に `sys.modules` から削除しており、本実装をそれに合わせる。
+    """
     _LOADING[name] = threading.get_ident()
     # exec 前に登録する（src 内の相対 import が自モジュールを参照できるように）。
     sys.modules[name] = module
     try:
         loader.exec_module(module)
+    except BaseException:
+        # 自分が登録した実体のみ取り除く（循環 import で他が差し替えた場合は触らない）。
+        if sys.modules.get(name) is module:
+            del sys.modules[name]
+        raise
     finally:
         _LOADING.pop(name, None)
     return module

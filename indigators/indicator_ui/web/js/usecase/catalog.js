@@ -726,6 +726,30 @@ const REGISTRY = Object.freeze([
 ]);
 const BY_ID = new Map(REGISTRY.map((d) => [d.id, d]));
 
+// カテゴリ key → 表示名。従来は index.html に 3 件だけ直書きされており、oscillator(10) と
+//   band(2) のボタンが無いまま 24 指標中 12 件が絞り込みから到達不能だった（ISSUE-221）。
+//   ここを単一情報源とし、サイドバーは categories() から動的生成する（新カテゴリの指標を
+//   足しても HTML の同時改変が不要＝OCP）。
+export const CATEGORY_LABELS = Object.freeze({
+  'cat.technical': 'テクニカル',
+  'cat.oscillator': 'オシレーター',
+  'cat.statistics': '統計',
+  'cat.volume': '出来高',
+  'cat.band': 'バンド',
+});
+
+// 登録済み指標が実際に持つカテゴリを、REGISTRY の出現順で返す（key と件数）。
+//   未知 key は表示名を key そのものにフォールバックする（登録漏れで消えないこと）。
+export function categories() {
+  const counts = new Map();
+  for (const d of REGISTRY) {
+    const key = d.category?.nameKey;
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts].map(([key, count]) => ({ key, count, label: CATEGORY_LABELS[key] ?? key }));
+}
+
 // 全 IndicatorDef を返す（読み取り専用配列の複製）。
 export function list() {
   return [...REGISTRY];

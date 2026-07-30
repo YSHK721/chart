@@ -90,9 +90,9 @@
         <div class="dialog-side">
           <button class="side-item is-active" data-category="" type="button">すべて</button>
           <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
-          <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
-          <button class="side-item" data-category="cat.statistics" type="button">統計</button>
-          <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+          <!-- カテゴリのボタンはカタログから動的生成する（ISSUE-221）。ここへ直書きすると
+               新カテゴリの指標を足したときに HTML の同時改変が必要になり、実際に
+               oscillator(10) と band(2) が欠落して 24 指標中 12 件が到達不能になっていた。 -->
         </div>
         <div class="dialog-main">
           <div class="search-wrap">
