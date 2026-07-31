@@ -127,11 +127,24 @@ const TGP_BTLM = new IndicatorDef({
 // 2 方式（band_method）。分位ペアは q_low/q_high（0<q_low<q_high<1）。
 // 実バインディング add_btlm_trail（indigators/btlm_trail/src/lwc_chart.py）。
 // 系列名: btlm_trail_mean（静的）＋ btlm_trail_q{pct}（動的・q_low/q_high に依存）。
-const BTLM_TRAIL_SOURCE_LABELS = {
+// 適用価格（ソース）の表示名。**単一情報源**（同一概念に複数の呼び名を作らない）。
+//   共有 common/applied_price.py の AppliedPrice と 1:1 で対応する。
+const APPLIED_PRICE_LABELS = {
   close: '終値', open: '始値', high: '高値', low: '安値',
   hl2: '(高値 + 安値)/2', hlc3: '(高値 + 安値 + 終値)/3',
   ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
 };
+// profit_rsi の `apply` は MQL 由来の**数値**（1..6）で選ぶ。数値のままでは何に適用されるか
+//   読めないため（ユーザー報告 2026-07-31）、上の単一情報源から表示名を導く。
+//   写像は参照実装 `indigators/profit_rsi/src/core.py` の `_APPLY_MAP` と一致させる:
+//     1=OPEN / 2=HIGH / 3=LOW / 4=MEDIAN / 5=TYPICAL（既定）/ 6=WEIGHTED
+//   ※ 終値は選択肢に無い（元 MQL の Apply が 1..6 のため）。範囲外を渡すと計算側は
+//     CLOSE へ縮退するが、UI からその値は選べない。
+const RSI_APPLY_TO_SOURCE = { 1: 'open', 2: 'high', 3: 'low', 4: 'hl2', 5: 'hlc3', 6: 'hlcc4' };
+const RSI_APPLY_LABELS = Object.fromEntries(
+  Object.entries(RSI_APPLY_TO_SOURCE).map(([value, src]) => [value, APPLIED_PRICE_LABELS[src]]),
+);
+const BTLM_TRAIL_SOURCE_LABELS = APPLIED_PRICE_LABELS;
 const BTLM_TRAIL_METHOD_LABELS = { ols: '名目 ols バンド', empirical: '経験分位バンド' };
 const BTLM_TRAIL = new IndicatorDef({
   id: 'btlm_trail',
@@ -385,11 +398,7 @@ const PRICE_RANGE_POWER = new IndicatorDef({
 //   "MA"/"Smoothing"/"Upper"/"Lower"（4 静的 SeriesDef）。backend は平滑化タイプに応じて部分集合を
 //   出力し F3 を通過する。ダイアログは 3 セクション（基本 / 平滑化 / 計算）で画像レイアウトに準拠。
 const MA_TYPE_LABELS = { sma: 'SMA', ema: 'EMA', smma: 'SMMA', lwma: 'LWMA' };
-const MA_SOURCE_LABELS = {
-  close: '終値', open: '始値', high: '高値', low: '安値',
-  hl2: '(高値 + 安値)/2', hlc3: '(高値 + 安値 + 終値)/3',
-  ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
-};
+const MA_SOURCE_LABELS = APPLIED_PRICE_LABELS;   // 同一概念＝同一情報源
 const MA_SMOOTHING_LABELS = {
   none: 'なし', sma: 'SMA', ema: 'EMA', smma: 'SMMA', wma: 'WMA', sma_bb: 'SMA + ボリンジャーバンド',
 };
@@ -552,7 +561,10 @@ const PROFIT_RSI = pfDef({
   id: 'profit_rsi', name: 'RSI', cat: 'oscillator', placement: 'pane',
   params: [
     PF_INT('rsi_period', 6),
-    param('apply', ParamType.ENUM, 5, [], [1, 2, 3, 4, 5, 6], { group: 'group.calc' }),
+    // 適用価格（何に対して RSI を計算するか）。数値のままでは意味が読めないため表示名を与える。
+    param('apply', ParamType.ENUM, 5, [], [1, 2, 3, 4, 5, 6],
+      { group: 'group.calc', label: 'ソース', enumLabels: RSI_APPLY_LABELS,
+        tooltip: 'RSI を計算する価格。既定は (高値 + 安値 + 終値)/3' }),
     PF_INT('ma_period', 5),
   ],
   series: [PF_LINE('rsi'), PF_LINE('rsi_ma'), PF_HLINE('profit_rsi')],
