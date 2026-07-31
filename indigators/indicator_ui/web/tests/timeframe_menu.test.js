@@ -161,3 +161,73 @@ test('ISSUE-117 syncButtons: ラベル要素不在（旧 DOM）は従来どお�
   delete host._el.timeframeMenuLabel;
   assert.doesNotThrow(() => new TimeframeController(host, { timeframe: '1m' }).syncButtons());
 });
+
+
+// ---------------------------------------------------------------------------
+// ISSUE-169: document スコープのリスナが mount 毎に線形蓄積しないこと
+//
+// 統合 UI（unified_ui）のモードトグルは #mode-ui を pristine innerHTML へ復元する。要素スコープの
+// リスナは新ノード置換で根絶されるが、document スコープのリスナは残る。本メニューは mount 毎に
+// install() されるため、トグルのたびに document の click リスナが +1 蓄積していた。
+//
+// 呼び出し側（統合 UI の teardown）が本モジュールを知らなくても効くよう、install 時に前回ぶんを
+// 自分で外す。これは「無波及制約のため恒久対処は不可」という当初判定を、既存モジュールの改変が
+// 可能になった時点で覆したもの。
+// ---------------------------------------------------------------------------
+
+function countingDoc() {
+  const listeners = [];
+  return {
+    listeners,
+    createElement: () => fakeEl(),
+    getElementById: (id) => (id === 'tf-menu' ? fakeEl() : null),
+    addEventListener: (ev, fn) => { if (ev === 'click') listeners.push(fn); },
+    removeEventListener: (ev, fn) => {
+      if (ev !== 'click') return;
+      const i = listeners.indexOf(fn);
+      if (i >= 0) listeners.splice(i, 1);
+    },
+  };
+}
+
+test('ISSUE-169 再 install で document click リスナが蓄積しない（1 個に有界）', () => {
+  const doc = countingDoc();
+
+  for (let i = 0; i < 10; i += 1) {
+    new TimeframeMenu({ document: doc }).install();   // 統合 UI のモードトグル 10 回に相当
+  }
+
+  assert.equal(doc.listeners.length, 1,
+    `document click リスナは 1 個に留まること（実際 ${doc.listeners.length} 個）`);
+});
+
+test('ISSUE-169 最後に install したインスタンスのハンドラが生き残る（機能を壊さない）', () => {
+  const doc = countingDoc();
+  new TimeframeMenu({ document: doc }).install();
+  const menu = new TimeframeMenu({ document: doc });
+  menu.install();
+
+  assert.equal(doc.listeners.length, 1);
+  assert.equal(doc.listeners[0], menu._docCloseHandler, '生き残るのは最新の mount のもの');
+});
+
+test('ISSUE-169 dispose() で document リスナを外す（明示 teardown 経路）', () => {
+  const doc = countingDoc();
+  const menu = new TimeframeMenu({ document: doc });
+  menu.install();
+  assert.equal(doc.listeners.length, 1);
+
+  menu.dispose();
+
+  assert.equal(doc.listeners.length, 0, 'dispose 後は 0 個');
+  assert.doesNotThrow(() => menu.dispose(), '二重 dispose は no-op');
+});
+
+test('ISSUE-169 removeEventListener を持たない document でも install は落ちない（防御）', () => {
+  const doc = {
+    createElement: () => fakeEl(),
+    getElementById: () => fakeEl(),
+    addEventListener: () => {},
+  };
+  assert.doesNotThrow(() => new TimeframeMenu({ document: doc }).install());
+});

@@ -16,6 +16,8 @@
 //   （bootstrap 内）に呼ばれる前提（bind が [data-timeframe] を収集するため）。
 //   DOM 不在（SSR/テスト）は no-op。
 
+import { installDocumentCloseHandler, removeDocumentCloseHandler } from './menu_document_close.js';
+
 // 既定の時間足メニュー（present＝バックエンド対応 9 足）。サーバ TIMEFRAME_RULES と一致させる。
 const DEFAULT_GROUPS = [
   { cat: '分', items: [['1m', '1分'], ['5m', '5分'], ['15m', '15分'], ['30m', '30分']] },
@@ -106,14 +108,22 @@ export class TimeframeMenu {
       }
     });
     // 外側クリックで閉じる（メニュー内クリックは pop/trigger 側で stopPropagation/処理済み）。
-    if (typeof doc.addEventListener === 'function') {
-      doc.addEventListener('click', () => this._setOpen(false));
-    }
+    // ISSUE-169: 前 mount ぶんの document リスナを外してから張る（線形蓄積の停止）。
+    this._docCloseHandler = () => this._setOpen(false);
+    this._doc = doc;
+    installDocumentCloseHandler(doc, 'timeframe', this._docCloseHandler);
     pop.addEventListener('pointerdown', (e) => {
       if (e && typeof e.stopPropagation === 'function') {
         e.stopPropagation();
       }
     });
+  }
+
+  // ISSUE-169: 明示的な後片付け。document スコープのリスナを外す（DOM は呼び出し側が破棄する）。
+  //   呼ばれなくても install 時の自己修復で蓄積は有界（document あたり 1 個）になる。
+  dispose() {
+    removeDocumentCloseHandler(this._doc, 'timeframe', this._docCloseHandler);
+    this._docCloseHandler = null;
   }
 
   _toggle() {

@@ -54,6 +54,9 @@ const MODULE_ORDER = [
   // 時間足ラベルの単一情報源（timeframeLabels）。properties_dialog が期間プリセットの
   //   見出し表示に使うため、従来位置（indicator_controller 群の後）から前へ移す。
   //   本モジュールは相対 import を持たない葉であり、前方移動で依存順は壊れない。
+  // ISSUE-169: 外側クリッククローズの共有ヘルパ。両メニューより **前** に置く
+  //   （A方式バンドルはトップレベル連結のため、依存は先に宣言されている必要がある）。
+  'js/adapter/front/menu_document_close.js',
   'js/adapter/front/timeframe_menu.js',
   'js/adapter/front/property_control_builders.js',
   'js/adapter/front/properties_dialog.js',

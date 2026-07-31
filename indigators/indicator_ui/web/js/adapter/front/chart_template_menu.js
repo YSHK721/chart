@@ -14,6 +14,8 @@
 // 再描画（U3/U6）: 一覧はビューモデル注入 render(vm) で更新し、かつ**開くたびに再描画**する
 //   （provide 注入時）。これにより restore() 完了と install() の順序依存を構造的に作らない。
 
+
+import { installDocumentCloseHandler, removeDocumentCloseHandler } from './menu_document_close.js';
 export class ChartTemplateMenu {
   /**
    * @param {object} opts
@@ -151,9 +153,10 @@ export class ChartTemplateMenu {
       }
     });
     // 外側クリックで閉じる（メニュー内クリックは pop/trigger 側で処理済み）。
-    if (typeof doc.addEventListener === 'function') {
-      doc.addEventListener('click', () => this._setOpen(false));
-    }
+    // ISSUE-169: 前 mount ぶんの document リスナを外してから張る（線形蓄積の停止）。
+    this._docCloseHandler = () => this._setOpen(false);
+    this._doc = doc;
+    installDocumentCloseHandler(doc, 'chart-template', this._docCloseHandler);
     pop.addEventListener('pointerdown', (e) => {
       if (e && typeof e.stopPropagation === 'function') {
         e.stopPropagation();
@@ -253,6 +256,13 @@ export class ChartTemplateMenu {
     item.dataset.tplBind = templateId;
     item.textContent = text;
     return item;
+  }
+
+  // ISSUE-169: 明示的な後片付け。document スコープのリスナを外す（DOM は呼び出し側が破棄する）。
+  //   呼ばれなくても install 時の自己修復で蓄積は有界（document あたり 1 個）になる。
+  dispose() {
+    removeDocumentCloseHandler(this._doc, 'chart-template', this._docCloseHandler);
+    this._docCloseHandler = null;
   }
 
   _toggle() {

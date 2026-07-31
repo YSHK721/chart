@@ -2068,11 +2068,19 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **③ リプレイ LiveUpdater 配線（確認のみ・対応不要）**: `composition_root_front.js:206` は mode='b' で LiveUpdater を生成するが、`index.html` は `setupReplay()` のみ呼び `liveUpdater.start()` を呼ばない（129 行コメント明記・実測で呼出不在）。60 秒ポーリングは起動せず＝設計どおりで問題なし（当初の「start 呼出未確認」懸念を解消）。
 
 ## ISSUE-169: [既知限界] 統合UIトグルで既存 document スコープリスナが線形蓄積・無波及制約下の既知限界（2026-07-25）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **背景**: ライブ/リプレイ統合UI（`unified_ui/`・ルータ方式・既存モジュール無編集厳守）のモードトグルで、`unified_root.js` の teardown は `#mode-ui` サブツリーを pristine innerHTML へ復元し、**要素スコープ**の `bind()` リスナ（indicator_controller.js:900-951 が張る click/input）は新ノード置換で根絶する。
 - **限界**: 既存無編集モジュールが **document/body スコープ**へ張るリスナは innerHTML 復元では除去できず残存する。実証: `timeframe_menu.js:94-95` が `new TimeframeMenu().install()`（＝mount 毎）で `doc.addEventListener('click', () => this._setOpen(false))` を removeEventListener 無しで登録＝**トグル毎に document click リスナが +1 蓄積**（線形）。
 - **影響**: 軽微・有界。各リスナは `_setOpen(false)`（ドロップダウン閉）の冪等操作のみで副作用は実質無。DOM ノードは pristine 置換で解放されるためリーク源は当該クロージャのみ。
 - **完全根絶の条件**: `timeframe_menu.js` 等の既存モジュールへ removeEventListener／dispose を追加する改変が必要＝無波及制約（`indigators/**`・`simulator/**` byte 不変）に抵触するため本スコープでは不可。将来、統合を正式機能化する際の別承認課題（既存改変を伴う恒久対処）。
+- **前提の失効（2026-07-31）**: 本 Issue が「恒久対処は不可」とした根拠は**無波及制約**（`indigators/**`・`simulator/**` byte 不変）だったが、本セッションで当該ツリーを承認のうえ改変しているため制約は既に失効している。よって恒久対処を実施した。
+- **実測（実 UI・統合 8000・`#enter-replay` を 6 往復）**: **document の click リスナは 0 増 0 減**（モードは replay/live を 6 回正しく往復）。起票時に記録された「トグル毎に +1 蓄積」は**現行コードでは再現しない**。
+  - 理由（コードで確認）: `unified_root.js` は現在「**単一 chart を 1 回だけ生成し、live root の bootstrap を 1 回呼ぶ**」設計であり、モードトグルでツールバーを再 mount しない。起票時（2026-07-25）の「`#mode-ui` を pristine innerHTML へ復元する teardown」方式から変わっている。
+- **対応（構造的な再発防止として実施）**: 蓄積が再現しなくなった今も、`install()` が再度呼ばれれば同じ欠陥が復活する。共有ヘルパ `menu_document_close.js` を新設し、**install 時に同一 document・同一キーの前回リスナを自分で外す**（自己修復）＋ `dispose()` を提供した。呼び出し側が本モジュールを知らなくても蓄積は「document × キーあたり 1 個」に有界化する。対象は `timeframe_menu.js` と `chart_template_menu.js`（同じ欠陥を持っていた）。
+- **⚠ 途中で検出した自分の不具合（既存ガードによる）**: ヘルパを両ファイルへ複製したところ、
+  1. `pair_dim_alpha_single_source.test.js` が **A方式バンドルでの `const` 二重宣言（SyntaxError）** を検出。→ 単一モジュールへ抽出して解消。
+  2. `build_module_order.test.js` が **`MODULE_ORDER` 未登録**（バンドルでシンボル未定義）を検出。→ 両メニューより前へ登録して解消。
+- **検証**: 回帰テスト 4 件を追加（10 回 install で 1 個に有界・最後の install が生き残る・`dispose()` で 0 個・`removeEventListener` 非対応 document でも落ちない）。**変異注入**（前回ぶんを外さない）で該当 2 件が失敗することを確認。`indicator_ui/web` **948 passed**。
 
 ## ISSUE-170: [既存不具合] replay_mp_wiring の ISSUE-048 前後関係テストが常時 fail（本変更前から）（2026-07-26）
 - **ステータス**: RESOLVED
