@@ -333,13 +333,26 @@ def _append_m1_csv(m1_new: pd.DataFrame, path: Path) -> None:
     既存行は読み込まず（メモリ有界）末尾追記のみ行う。呼び出し側が ``m1_new`` の全 index を既存
     最終 date より後に保証するため、追記後も date 昇順（loader 前提）が保たれる。
 
-    原子性（注意・:func:`_write_m1_csv` との非対称）: 末尾追記は tmp→``os.replace`` の原子化を持たず、
-    クラッシュ時に末尾へ torn 行を残しうる。その torn 行は次回 :func:`append_m1_from_ticks` の
-    :func:`_is_healthy_m1_row` 検出で全構築フォールバックされ自己修復する（無検出の永続破損を避ける）。
+    原子性（注意・:func:`_write_m1_csv` との非対称）: 末尾追記は tmp→``os.replace`` の原子化を
+    持たない（既存 276MB を読み直さない設計＝メモリ有界のため）。クラッシュ時に末尾へ torn 行を
+    残しうるが、その torn 行は次回 :func:`append_m1_from_ticks` の :func:`_is_healthy_m1_row`
+    検出で全構築フォールバックされ自己修復する（無検出の永続破損を避ける）。
+
+    ISSUE-186（並行読取との競合）: ``DataFrame.to_csv(fh)`` は行を**複数回の write に分けて**
+    流し込むため、常駐 watch が追記している最中に読み手（実データ依存テスト・loader）が読むと
+    **行の途中**を掴み、無関係なテストが一斉に落ちた（実測: 1 回だけ 13 failed / 405 passed、
+    直後から 14 回連続 418 passed）。ここでは CSV 本文を**メモリ上で組み立ててから 1 回の
+    ``write`` で流す**ことで、torn 行が観測される時間窓を実質消す。
+    完全な保証は読み手側が担う（:func:`marketdata.ohlc_csv_loader` が末尾の不完全行を捨てる）。
+    書き手・読み手の**両方**で守るのは、どちらか片方だけでは競合が残るため:
+      - 書き手だけ: 単一 write でも巨大バッファは分割されうる
+      - 読み手だけ: torn 行が末尾以外に現れる経路（複数追記の交錯）を救えない
     """
     out = _format_m1_for_csv(m1_new)
+    text = out.to_csv(header=False, index_label=_HEADER[0])
     with open(Path(path), "a", newline="", encoding="utf-8") as fh:
-        out.to_csv(fh, header=False, index_label=_HEADER[0])
+        fh.write(text)
+        fh.flush()
 
 
 def append_m1_from_ticks(
