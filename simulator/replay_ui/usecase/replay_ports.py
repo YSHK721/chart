@@ -91,8 +91,15 @@ class IntrabarWindowPort(Protocol):
         """区間 ``[start,end)`` の m1 OHLC 行（``[o,h,l,c]``・上位足は cap 済）を返す。"""
         ...
 
-    def load_ticks(self, start: int, end: int) -> "list[tuple[int, float]]":
-        """区間 ``[start,end)`` の実ティック ``[(sec, mid), ...]``（cap 無し）を返す。"""
+    def load_raw_ticks(self, start: int, end: int) -> "list[tuple[int, float, float]]":
+        """区間を跨ぐ**生ティック** ``[(sec, bid, ask), ...]`` を返す（cap 無し・整形しない）。
+
+        ISSUE-031: 以前は ``load_ticks`` が mid 算出・窓フィルタ・外れ値除去（domain E-4）まで
+        済ませた ``(sec, mid)`` を返していた。これは**本質ルールの適用を各 adapter に委ねる**契約で、
+        tick 源を差し替えるたびに `mid_series` を再結線する必要があり、結線漏れが静かに
+        「外れ値除去なしの mid 列」を生む。契約を「素の観測値を運ぶ」ことに限定し、
+        本質ルールの適用は usecase（:func:`~usecase.intrabar_window.intrabar_window`）へ寄せる。
+        """
         ...
 
 

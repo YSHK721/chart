@@ -480,11 +480,17 @@
 
 ## ISSUE-031: replay_ui backend — 足内 mid 算出/外れ値除去の orchestration が adapter に在る
 - **重大度**: Low（依存方向違反ではない・設計整理）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: 因果リビール再生バックエンド arch レビュー（2026-07-04・🟡-1）。
 - **背景**: `usecase/intrabar_window.py` は `window_port.load_ticks()` を素通しし、mid=(bid+ask)/2＋窓フィルタ＋外れ値除去（本質不変 E-4）の呼び出しが `adapter/intrabar_window_repository.py` に在る。domain `tick_mid_series.mid_series` 自体は純化済だが、tick 源差替のたび各 adapter が mid_series を再結線＝本質ルールが adapter ごとに分散し得る。
 - **対策（提案）**: Port を `load_raw_ticks(start,end)->[(sec,bid,ask)]` へ変え usecase 側で `mode=='real_ticks'` 時のみ domain `mid_series` を適用（mode ゲートは usecase 既存＝軽量性不変）。
 - **関連**: replay_ui バックエンド増分（branch feature/contact-scan-replay）。
+- **対応（2026-07-31・提案どおり実施）**: `IntrabarWindowPort` を `load_ticks(start,end) -> [(sec, mid)]` から **`load_raw_ticks(start,end) -> [(sec, bid, ask)]`** へ変え、domain E-4（mid 算出＋窓フィルタ＋外れ値除去 `tick_mid_series.mid_series`）の適用を **usecase 側の 1 か所**へ寄せた。
+  - `mode=='real_ticks'` のゲートは usecase に既存のため**軽量性は不変**（他モードは tick を読まない）。
+  - 外れ値しきい値は adapter のコンストラクタ引数から `IntrabarWindowRequest.outlier_threshold` へ移した（本質ルールのパラメータは本質を適用する層が持つ）。adapter から `tick_mid_series` への依存は消滅し、責務が「保管形式（parquet の日別レイアウト）→ 素の観測値」の変換に閉じた（偶有的性質のみ）。
+- **これで何が防げるか**: tick 源を差し替えるたびに各 adapter が `mid_series` を再結線する必要がなくなる。結線漏れが静かに「外れ値除去なしの mid 列」を生む経路が構造的に消える。
+- **挙動不変の実証（実データ A/B）**: `jp225_tick` の 2026-07-30 00:00 UTC から 1 時間（**生ティック 190,901 件**）で、旧経路（adapter 内で `mid_series` 適用）と新経路（usecase で適用）の結果が **20,631 件で byte 一致**。
+- **検証**: `simulator/replay_ui` **187 passed**。Port 契約の変更に伴い、テストのフェイク 8 件を新契約（`load_raw_ticks` が `(sec, bid, ask)` を返す）へ更新し、adapter の統合テストは「**外れ値も窓外も落とさない**＝整形しない契約」を固定する形に書き替えた。
 
 ## ISSUE-032: replay_ui backend — 外れ値閾値 0.3 の二重定義（用途別だが同値）
 - **重大度**: Low

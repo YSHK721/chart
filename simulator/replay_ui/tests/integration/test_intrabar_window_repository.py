@@ -78,16 +78,23 @@ def test_load_m1_rows_delegates_to_dataset_atom_window(tmp_path):
     assert rows == [[100.0, 105.0, 99.0, 101.0], [101.0, 106.0, 100.0, 102.0]]
 
 
-def test_load_ticks_window_and_outlier(tmp_path):
+def test_load_raw_ticks_returns_unfiltered_bid_ask(tmp_path):
+    """ISSUE-031: Port は**素の観測値**を運ぶ（mid 算出・窓・外れ値除去はしない）。
+
+    以前の ``load_ticks`` は domain E-4 を適用済みの ``(sec, mid)`` を返していた。本 adapter の
+    責務は保管形式（parquet の日別レイアウト）→ 素の観測値の変換に閉じ、本質ルールの適用は
+    usecase（:func:`~usecase.intrabar_window.intrabar_window`）が 1 か所で行う。
+    """
     root = tmp_path / "ticks"
     _write_parquet(root)
     repo = IntrabarWindowRepository(tick_root=root)
-    # 窓 [00:00, 00:01) → 00:00:10/20/30 の 3 点。中央値 mid ≈ 101、200 は +≈98% で除去。
-    out = repo.load_ticks(_D1_00_00, _D1_00_00 + 60)
-    secs = [s for s, _ in out]
-    mids = [m for _, m in out]
-    assert secs == [_D1_00_00 + 10, _D1_00_00 + 20]  # 外れ(30 秒)除去・窓外(1:40)除外
-    assert mids == [100.0, 102.0]  # (99+101)/2, (101+103)/2
+
+    out = repo.load_raw_ticks(_D1_00_00, _D1_00_00 + 60)
+
+    # 外れ値（30 秒の 200）も窓外（1:40）も**落とさない**＝整形しない契約。
+    assert all(len(t) == 3 for t in out), "(sec, bid, ask) の 3 要素で返す"
+    secs = [t[0] for t in out]
+    assert _D1_00_00 + 30 in secs, "外れ値も adapter は落とさない（除去は usecase の責務）"
 
 
 def test_cap_m1_rows_keeps_extremes_and_bounds():

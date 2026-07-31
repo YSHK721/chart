@@ -2,12 +2,18 @@
 
 m1 は常に取得する（失敗は m1_error へ翻訳し計算全体は落とさない）。ticks は
 mode=='real_ticks' のときのみ取得（他モードは tick 読込スキップ＝軽量維持）。
-IntrabarWindowPort のみに依存し、domain E-4（mid 算出）は adapter 側の load_ticks に閉じる。
+ISSUE-031: **domain E-4（mid 算出・窓フィルタ・外れ値除去）は本 usecase が適用する**。
+以前は adapter の ``load_ticks`` が済ませて返していたが、それでは tick 源を差し替えるたびに
+各 adapter が ``mid_series`` を再結線する必要があり、結線漏れが静かに「外れ値除去なしの mid 列」を
+生む。Port は素の観測値 ``(sec, bid, ask)`` を運ぶだけにし、本質ルールの適用点を 1 か所に固定した。
+``mode=='real_ticks'`` のときだけ tick を読む軽量性は従来どおり（ゲートは本 usecase に既存）。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from simulator.replay_ui.domain.tick_mid_series import OUTLIER_THRESHOLD, mid_series
 
 if TYPE_CHECKING:
     from simulator.replay_ui.usecase.replay_ports import IntrabarWindowPort
@@ -25,6 +31,10 @@ class IntrabarWindowRequest:
     end: int
     mode: str = "real_ticks"
     want_secs: bool = False
+    #: tick mid 系列の中央値外れ値除去のしきい値（domain E-4）。既定は domain の定数。
+    #:   ISSUE-031 で adapter のコンストラクタ引数から要求パラメータへ移した（本質ルールの
+    #:   パラメータは本質を適用する層が持つ）。
+    outlier_threshold: float = OUTLIER_THRESHOLD
 
 
 @dataclass
@@ -54,7 +64,10 @@ def intrabar_window(
     if request.mode != "real_ticks":
         return result  # 他モードは m1 のみで足りる＝tick 読込スキップ（軽量維持）
     try:
-        rows = window_port.load_ticks(request.start, request.end)
+        raw = window_port.load_raw_ticks(request.start, request.end)
+        # domain E-4: mid 算出＋窓フィルタ＋外れ値除去（適用点はここ 1 か所・ISSUE-031）。
+        rows = mid_series(raw, request.start, request.end,
+                          threshold=request.outlier_threshold)
         result.ticks = [mid for _sec, mid in rows]  # 既存契約不変（mid のみ）
         # MP tick-live 用: want_secs のときだけ sec 並行配列を追加（ticks と同順・同長）。
         if request.want_secs:
