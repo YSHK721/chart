@@ -716,7 +716,7 @@
 
 ## ISSUE-054: market_profile 日別プロファイル（src=dwell）でレンジ(barw)変更が描画へ反映されない（バーが更新されない）
 - **重大度**: Medium（パラメータが無効・ユーザー操作が効かない。データ取得は正常だが描画が固着）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: 依頼者報告（2026-07-11）「レンジを500に設定したが更新されない」（ソース=滞在時間(実ティック)/表示モード=日別プロファイル）。実UIで再現・確定。
 - **原因（実UI実測・切り分け済み）**: バックエンド／リクエストは正常、描画のみが barw を無視する。
   - フロント送信は正常: OK 押下で `GET /market_profile?...&barw=500&src=dwell&sessions=1` を送出（barw を正しく写像）。レンジ25 では `barw=25`。
@@ -743,6 +743,20 @@
   - 実装前に依頼者の方向決定を得る。
 - **検証環境**: served B方式（framework.server・port 8137）・datasetRef=jp225_tick・Playwright(実ブラウザ)・実HTTP。
 - **関連**: market_profile_dwell.py（sessions は n_bins を反映＝バックエンド正常）・market_profile_client.js:29-31（barw 写像）・ISSUE-052（dwell accumulator 縮退グリッド）・ISSUE-055（描画遅延＝本件の真因）。
+- **対応（2026-07-31）**: tf-period 列を**描画時に barw 幅へ束ねる**（取得・キャッシュ・API は一切変更しない）。
+  - **なぜ描画時か**: tf-period 列は測定としては最小価格単位で保持する（粗いビンで測ると分布が退行して見えるアーティファクトを持ち込むため。[[short-tf-profile-not-degenerate]]）。一方「レンジ」はユーザーが選ぶ**表示解像度**である。両者を分離し、束ねるのは描画とホバー読取のみとした。`/tf_period_profile` にパラメータを足さないためディスクキャッシュのキー設計にも影響しない。
+  - 実装: 純関数 `aggregateLevelsToBins(levels, binWidth)`（価格 0 起点の絶対格子＝列間で行がずれない）／`MarketProfileHistogramPrimitive.setTfBinWidth()`／`TfPeriodSink` に 1 面追加／`MpFetchParams.barw()`（明示 range と dispbp 写像後の range を 1 か所で解決）／composition root の `syncTfBinWidth()`。
+  - 描画とホバー読取は**同じ行**を見る（`_effectiveLevels` / `_effectiveRowWidth` を共有）。片方だけ束ねるとカーソル位置と描画行がずれる。POC は束ねたとき「poc を含むビン」を POC 色にする。
+- **UI 名称の変化（起票時との差）**: 起票時の「レンジ(pt)」は現行 UI では **「表示幅(bp)」** になっており、`MpFetchParams.dispExtra()` が最新終値から `barw = close × bp/1e4` へ写像している（ISSUE-079 の二層構造）。欠陥は同一で、写像後の barw が tf-period 経路へ届いていなかった。
+- **検証（実 UI・ライブ 8001・日別プロファイル）**: 描画行数を直接計測し、表示幅(bp) に**単調反応**することを確認した。
+  | 表示幅(bp) | 1 列あたり描画行数（中央値） | 最大 |
+  |---|---|---|
+  | 3 | 4 | 19 |
+  | 40 | 1 | 3 |
+  | 120 | 1 | 2 |
+  - **⚠ 検証手法の失敗と是正**: 当初 canvas のピクセルハッシュで A/B しようとしたが、**修正前でも 4/11 の canvas が変化**した。ライブ更新（tick・forming bar）が毎秒 canvas を書き換えるため、この指標では分離できない。描画行数の直接計測へ切り替えて確定させた。
+  - 単体テスト 9 件を追加（束ねの合算・絶対格子・昇順・非正/空/非有限の防御・後方互換・同値再設定で再描画しない）。`indicator_ui/web` 944 passed / `market_profile/web` 311 passed / `replay_ui/web` 267 passed。
+- **ISP 契約の更新**: `TfPeriodSink` は 2 面 → 3 面。最小性テストは「面数の固定」ではなく「宣言した面がすべて実利用されること」を意味するため、実利用箇所（`syncTfBinWidth`）を明記して更新した。
 
 ## ISSUE-055: market_profile 日別プロファイル（dwell・tf-period列）の描画完了が遅い（1Dで約8秒・体感ストレス）
 - **重大度**: High（主要操作のたびに数秒待ち・実用性を損なう。ISSUE-054 で barw を荒くした動機＝この遅延の回避策だった＝本件が真因）

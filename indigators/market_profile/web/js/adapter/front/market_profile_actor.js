@@ -224,6 +224,12 @@ export class MarketProfileActor {
     return this._fetchParams.src();
   }
 
+  // 現在有効な barw（レンジ pt・未設定は null）。composition root が tf-period 列の束ね幅に使う
+  //   （ISSUE-054: 「レンジ」を日別プロファイルの全描画経路で効かせる）。
+  barwParam() {
+    return this._fetchParams.barw();
+  }
+
   // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
   //   MP-04 是正: ticklive は dwell（滞在秒 time-at-price）を原子とする機能。base（確定足累積）は backend
   //   controller が src='dwell' を強制し、forming tick から DwellAccumulator が dwell 原子を計算する。

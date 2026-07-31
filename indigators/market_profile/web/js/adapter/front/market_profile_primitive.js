@@ -74,6 +74,38 @@ const C_TFP_BG_DOWN = 'rgba(239, 83, 80, 0.1)';  // 陰線周期（薄赤）
 // ISSUE-085 改: VA 外の占有レンジ背景（減光）。VA 帯（通常 α0.1）との2トーンで VA 幅を表現する。
 const C_TFP_BG_UP_DIM = 'rgba(38, 166, 154, 0.04)';
 const C_TFP_BG_DOWN_DIM = 'rgba(239, 83, 80, 0.04)';
+// tf-period 列の最小価格単位 levels を、価格幅 `binWidth` のビンへ束ねる純関数（ISSUE-054）。
+//
+// 「レンジ」はユーザーが設定する**表示解像度**である。tf-period 列は測定としては最小価格単位で
+// 保持する（粗いビンで測ると分布が退行して見えるアーティファクトを避けるため）。したがって
+// 束ねるのは**描画時のみ**とし、取得・キャッシュ・API は一切変更しない。
+//
+// ビン境界は価格 0 起点の絶対格子（`floor(price / binWidth)`）に取る。列ごとに相対格子を作ると
+// 同じ価格が列によって別のビンへ落ち、横に並べたとき行がずれる。
+// 返す価格はビン**中心**（`(idx + 0.5) * binWidth`）で昇順。count は同一ビン内の総和。
+export function aggregateLevelsToBins(levels, binWidth) {
+  if (!Array.isArray(levels) || !levels.length || !(binWidth > 0)) {
+    return Array.isArray(levels) ? levels : [];
+  }
+  const sums = new Map();
+  for (let i = 0; i < levels.length; i += 1) {
+    const price = Number(levels[i][0]);
+    const count = Number(levels[i][1]);
+    if (!Number.isFinite(price) || !Number.isFinite(count)) {
+      continue;
+    }
+    const idx = Math.floor(price / binWidth);
+    sums.set(idx, (sums.get(idx) || 0) + count);
+  }
+  const out = [];
+  for (const [idx, count] of sums) {
+    out.push([(idx + 0.5) * binWidth, count]);
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  return out;
+}
+
+
 export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -92,6 +124,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     // 時間足毎profile列（tf-period・最小価格単位）: [{time, levels:[[price,count]...], poc, ...}]。
     //   null=非適用。non-null で各周期の min-unit 列を時間軸連動で描く（sessions の tf 一般化）。
     this._tfPeriods = null;
+    this._tfBinWidth = null;   // tf-period 列の束ね幅（barw pt）。null＝最小価格単位のまま。
     this._tfUnit = null;
     this._lastTfColW = null;
   }
@@ -111,6 +144,31 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     this._update();
   }
 
+  // tf-period 列を束ねる価格幅（barw pt）。null/0 以下で最小価格単位のまま（ISSUE-054）。
+  //   「レンジ」を日別プロファイルの**全**描画経路で効かせるための表示専用パラメータ。
+  //   取得・キャッシュ・API は変更しない（束ねるのは描画とホバー読取のみ）。
+  setTfBinWidth(width) {
+    const w = Number(width);
+    const next = Number.isFinite(w) && w > 0 ? w : null;
+    if (next === this._tfBinWidth) {
+      return;
+    }
+    this._tfBinWidth = next;
+    this._update();
+  }
+
+  // 束ね適用後の levels（束ねないときは元の levels）。描画とホバー読取で共有する
+  //   （片方だけ束ねるとカーソル位置と描画行がずれる）。
+  _effectiveLevels(col) {
+    const raw = (col && col.levels) || [];
+    return this._tfBinWidth ? aggregateLevelsToBins(raw, this._tfBinWidth) : raw;
+  }
+
+  // 行高に用いる価格幅（束ねているときは barw、そうでなければ最小価格単位）。
+  _effectiveRowWidth() {
+    return this._tfBinWidth || this._tfUnit;
+  }
+
   // tf-period ホバー読取（依頼者指示 2026-07-13・a案ツールチップ）: 周期 time とカーソル価格から
   //   該当列の**最近傍占有レベル**を引く純ロジック。0.0255 等の微細格子では行高がサブピクセルで
   //   正確な行へカーソルを合わせるのが実質不可能なため、縦 HOVER_TOL_PX（3px）相当の価格幅以内で
@@ -119,7 +177,9 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   //   tpoUnits, unit } を返し、非表示・列不在・許容外（近傍に占有なし）は null。
   tfPeriodLevelAt(time, price) {
     const cols = this._tfPeriods;
-    const unit = this._tfUnit;
+    // ISSUE-054: 束ね幅（barw）指定時は**描画と同じ行**を引く（片方だけ束ねるとカーソル位置と
+    //   描画行がずれ、読み取り値が隣の行のものになる）。許容幅の基準も行の幅に合わせる。
+    const unit = this._effectiveRowWidth();
     if (!this._visible || !cols || !cols.length || !(unit > 0)
         || time == null || !Number.isFinite(Number(price))) {
       return null;
@@ -129,7 +189,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     if (!col) {
       return null;
     }
-    const levels = col.levels || [];
+    const levels = this._effectiveLevels(col);
     if (!levels.length) {
       return null;
     }
@@ -368,9 +428,11 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     const colW = gaps.length ? gaps[Math.floor(gaps.length / 2)] : (this._lastTfColW || 18);
     this._lastTfColW = colW;
     const tileW = Math.max(3, colW * 0.85);
+    // 行高は「束ね幅（barw）」があればそれ、無ければ最小価格単位で決める（ISSUE-054）。
+    const rowW = this._effectiveRowWidth();
     let lvlH = 1;
-    if (this._tfUnit && cols[0] && cols[0].poc != null) {
-      const yA = toY(cols[0].poc); const yB = toY(cols[0].poc + this._tfUnit);
+    if (rowW && cols[0] && cols[0].poc != null) {
+      const yA = toY(cols[0].poc); const yB = toY(cols[0].poc + rowW);
       if (yA != null && yB != null) lvlH = Math.max(1, Math.abs(yA - yB));
     }
     ctx.save();
@@ -379,7 +441,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       if (cx == null) continue; // 視野外＝スクロールで可視化。
       const left = cx - tileW / 2;
       const c = cols[i];
-      const levels = c.levels || [];
+      const levels = this._effectiveLevels(c);   // barw 指定時はビンへ束ねる（ISSUE-054）。
       // 方向背景（依頼者指示 2026-07-13）: 列の占有レンジ（levels 昇順の先頭〜末尾）を陽/陰色で塗る。
       //   dirUp 未注釈（null/undefined＝candle 不在・旧呼び出し）は描かない。
       // ISSUE-085 改（依頼者指示 2026-07-15）: VA 幅は**背景の2トーン**で表現する。VA 帯
@@ -419,8 +481,11 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         const y = toY(price);
         if (y == null) continue;
         const w = Math.max(SESS_MIN_BAR_PX, (cnt / cmax) * (tileW - 2));
-        ctx.fillStyle = (pocPrice != null && Math.abs(price - pocPrice) < 1e-9)
-          ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
+        // 束ねたときは元 poc 価格と行の中心が一致しないため、poc を**含むビン**を POC 色にする。
+        const isPoc = pocPrice != null && (this._tfBinWidth
+          ? Math.abs(price - pocPrice) <= this._tfBinWidth / 2
+          : Math.abs(price - pocPrice) < 1e-9);
+        ctx.fillStyle = isPoc ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
         ctx.fillRect(left + 1, y - lvlH / 2, w, lvlH);
       }
     }

@@ -465,14 +465,26 @@ export async function bootstrap({
     // ISSUE-066: MP パラメータ変更時の tf-period 即時再適用。tfpShouldOn なら setEnabled(true)＝
     //   refresh→ensure で jitter buffer の src 差分キャッシュ破棄→新 src 再fetch→再描画。不成立
     //   （sessions 解除/非対応 tf）は列を消す。可視レンジ変化のデバウンスと違い**即時**（src 切替の反映）。
+    // ISSUE-054: 「レンジ」(barw) を tf-period 列にも効かせる。日別プロファイルの描画を tf-period が
+    //   担う経路では、レンジを変えても列は最小価格単位のままで、`/market_profile` 由来の POC/VA だけが
+    //   変わる＝**パラメータが部分的にしか効かない**状態だった。列は取得・キャッシュを変えずに
+    //   **描画時に barw 幅へ束ねる**（測定は最小単位のまま保つ＝粗ビンのアーティファクトを持ち込まない）。
+    const syncTfBinWidth = () => {
+      if (typeof mpTfPeriodSink.setTfBinWidth === 'function'
+          && typeof marketProfile.barwParam === 'function') {
+        mpTfPeriodSink.setTfBinWidth(marketProfile.barwParam());
+      }
+    };
     refreshTfPeriodNow = () => {
       if (!tfPeriodActor) { return; }
+      syncTfBinWidth();                     // レンジ変更を列へ即時反映（取得の要否と独立）。
       if (!tfpShouldOn()) {
         if (tfPeriodActor.isEnabled()) { tfPeriodActor.setEnabled(false); }
         return;
       }
       tfPeriodActor.setEnabled(true);
     };
+    syncTfBinWidth();                       // 初期値（保存済みインスタンスのレンジ）を反映する。
     // ISSUE-083: MP の live tick（sessions×tfDraws×growing）→ 当日チャンクの stale-while-revalidate
     //   再取得（tfPeriodActor.onLiveTick→jitterBuffer.refreshAt）。throttle は actor 側（既定 5s）。
     //   列非描画中（isEnabled=false＝日別解除・非対応 tf）は発火しない。

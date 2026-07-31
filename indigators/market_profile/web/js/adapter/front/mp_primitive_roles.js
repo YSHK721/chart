@@ -38,5 +38,8 @@ export class TfPeriodSink {
 
   setTfPeriods(columns, unit) { return this._primitive.setTfPeriods(columns, unit); }
 
+  // tf-period 列を束ねる価格幅（barw）。null で最小価格単位のまま（ISSUE-054）。
+  setTfBinWidth(width) { return this._primitive.setTfBinWidth(width); }
+
   tfPeriodLevelAt(time, price) { return this._primitive.tfPeriodLevelAt(time, price); }
 }
