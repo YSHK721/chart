@@ -411,3 +411,86 @@ def test_static_normal_file_is_still_served(router_with_secret_sibling):
     resp = _request(router_with_secret_sibling, "GET", "/")
     assert resp.status == 200
     assert b"ok" in resp.body
+
+
+# ---- ISSUE-198: 接続の扱い（keep-alive / backlog / ヘッダ重複） ----------------
+#
+# 真因の確定（2026-07-31・実 UI 実測）:
+#   報告された「SW 経由の /live_ticks が network error」は **ルータ 8000 の一時停止**
+#   （再起動・瞬断）で再現する。ポーリング中に 8000 を落とすと `net::ERR_FAILED @
+#   /live_ticks?since=0` が連続して出る（実測 89 回中 8 回失敗）。SW はこの失敗を忠実に
+#   伝えているだけで、リライト論理の欠陥ではない。ページ側は次の poll で自動復帰する。
+#
+# 併せて実測で見つかったルータ自身の欠陥を以下で固定する。
+
+def _raw_headers(server, path):
+    """1 接続で 1 GET を行い、生のステータス行とヘッダ（重複込み）を返す。"""
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    try:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        resp.read()
+        return resp.version, resp.getheaders()
+    finally:
+        conn.close()
+
+
+def test_proxied_response_has_no_duplicate_date_or_server_header(router):
+    """上流の Date/Server を転送しない（RFC 7231 §7.1.1.2 は Date の重複を禁ずる）。
+
+    `send_response()` がルータ自身の Date/Server を必ず出すため、上流の同名ヘッダを
+    そのまま転送すると 1 応答に 2 回現れる（修正前は `curl -D -` で実測できた）。
+    """
+    server, _live, _replay = router
+    _version, headers = _raw_headers(server, "/live/candles?datasetRef=x")
+    for name in ("date", "server"):
+        n = sum(1 for key, _ in headers if key.lower() == name)
+        assert n == 1, f"{name} ヘッダが {n} 個ある（重複）: {headers}"
+
+
+def test_router_speaks_http_1_1_and_keeps_the_connection_alive(router):
+    """HTTP/1.1 で応答し、1 接続で複数リクエストを処理できる（ISSUE-198）。
+
+    既定の HTTP/1.0 では 1 リクエスト = 1 TCP 接続になり、1 画面で多数の API を並行に
+    叩く本 UI では接続生成が集中する。`_proxy` は上流本体を全読みして自前で
+    `Content-Length` を付与し、`_serve_static` / `_send_simple` も明示するため、
+    HTTP/1.1 の応答長確定要件を全経路で満たす。
+    """
+    server, _live, _replay = router
+    version, _headers = _raw_headers(server, "/live/candles?datasetRef=x")
+    assert version == 11, f"HTTP/1.1 で応答すること（実際: {version}）"
+
+    # 同一接続で 3 回。keep-alive が効いていなければ 2 回目以降が失敗する。
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    try:
+        statuses = []
+        for _ in range(3):
+            conn.request("GET", "/live/candles?datasetRef=x")
+            resp = conn.getresponse()
+            resp.read()
+            statuses.append(resp.status)
+        assert statuses == [200, 200, 200], f"1 接続で 3 回処理できること: {statuses}"
+    finally:
+        conn.close()
+
+
+def test_router_widens_accept_backlog_without_touching_stdlib_default():
+    """accept backlog を広げる。ただし stdlib のクラス属性は書き換えない（ISSUE-198）。
+
+    `ThreadingHTTPServer.request_queue_size` を直接書き換えると同一プロセス内の他サーバへ
+    波及するため、サブクラス `RouterServer` に閉じ込める。
+    """
+    import socketserver
+
+    assert router_mod.RouterServer.request_queue_size > ThreadingHTTPServer.request_queue_size
+    assert socketserver.TCPServer.request_queue_size == 5, "stdlib 既定を書き換えていないこと"
+
+
+def test_router_handler_reaps_idle_keep_alive_connections(router):
+    """idle な keep-alive 接続に上限秒を設ける（HTTP/1.1 化の副作用対策・ISSUE-198）。
+
+    ThreadingHTTPServer は 1 接続 = 1 スレッド。timeout が無いと、到達しなかったタブや
+    中断されたロードの接続がスレッドを保持し続ける。
+    """
+    assert isinstance(router_mod.RouterHandler.timeout, (int, float))
+    assert 0 < router_mod.RouterHandler.timeout <= 300

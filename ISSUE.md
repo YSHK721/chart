@@ -2504,11 +2504,22 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
   - `indicator_ui/web` **935 passed**。
 
 ## ISSUE-198: [不具合] SW 経由の `/live_ticks` が network error になる（2026-07-29）
-- **ステータス**: OPEN（2026-07-29 起票・ユーザー報告のコンソールログに存在。未調査）
+- **ステータス**: RESOLVED
 - **事象（ユーザー報告）**: `The FetchEvent for "http://127.0.0.1:8000/live_ticks?since=0" resulted in a network error response: the promise was rejected.`（`sw.js:68`）が複数回。併せて `update_scheduler` の `full 再計算失敗: Failed to fetch` も観測。
 - **確認済みの事実（2026-07-29）**: ルータ直叩きでは `/live/live_ticks?since=0` は 200（79KB）、prefix 無し `/live_ticks` は 404。SW は `/live_ticks` を `/live/live_ticks` へリライトする実装で、`proxyRewritten` の `fetch` が reject した場合に当該メッセージになる。当方の Playwright 実測（統合 8000・ライブ）では再現せず。
 - **未検証**: reject の実体（起動直後の SW activate 競合／サーバ再起動と重なった接続断／SW 制御開始前の要求）。
 - **関連**: ISSUE-171（SW claim 到達待ち）／ISSUE-196。
+- **真因の確定（2026-07-31・実 UI 決定実験）**: **ルータ 8000 の一時停止（再起動・瞬断）**。SW のリライト論理の欠陥ではない。
+  - 実験: 統合 UI（8000・SW 制御下）で `/live_ticks` を 500ms 間隔で叩き続けながらルータを停止 → 4 秒後に再起動。
+  - 結果: **89 回中 8 回が失敗**し、コンソールに `net::ERR_FAILED @ http://127.0.0.1:8000/live_ticks?since=0` が **8 件**。ページ側の例外は `TypeError: Failed to fetch`＝ユーザー報告の `update_scheduler` の「full 再計算失敗: Failed to fetch」と一致する。
+  - SW は `event.respondWith(fetch(...))` の失敗を忠実に伝えているだけで、ブラウザがそれを「the promise was rejected」と表示する。**ページは次の poll で自動復帰する**（`fetchLiveTicks` は失敗時 null を返し巻き戻さない）。起票時の 3 仮説のうち「サーバ再起動と重なった接続断」が正しく、「SW activate 競合」「SW 制御開始前の要求」は否定された（SW 制御確立後にのみ発生）。
+- **併せて是正したルータ自身の欠陥（実測で発見）**:
+  1. **HTTP/1.0 で応答していた**（`protocol_version` 未設定）。1 リクエスト = 1 TCP 接続になり、1 画面で多数の API を並行に叩く本 UI では接続生成が集中する。`_proxy` は上流本体を全読みして自前で `Content-Length` を付与し、`_serve_static`/`_send_simple` も明示するため、全経路が HTTP/1.1 の応答長確定要件を満たす。→ `protocol_version = "HTTP/1.1"`。
+  2. **`Date` / `Server` ヘッダが重複していた**（`send_response()` が出す値に加えて上流の同名ヘッダも転送していた。`curl -D -` で実測）。RFC 7231 §7.1.1.2 は `Date` の重複を明確に禁じる。→ 転送対象から除外。
+  3. **accept backlog が既定 5**（`listen(5)`）。溢れた SYN は落とされる。→ `RouterServer` サブクラスで 128 へ（stdlib のクラス属性は書き換えない）。
+  4. HTTP/1.1 化の副作用として idle な keep-alive 接続がスレッドを保持し続けるため、`RouterHandler.timeout = 65` を追加。
+- **⚠ 当初仮説の訂正**: 「backlog 枯渇が network error の原因」という私の仮説は**実測で否定された**。240 同時接続で 38 件失敗したのは 200KB × 240 ＝ 48MB の帯域律速であり、小応答なら **400 同時接続でも全数 200（0.18 秒）**。ブラウザは同一オリジンへ 6 接続までしか開かないため、この経路は元々成立しない。backlog 拡大は初回ロードのバースト耐性としては妥当だが、本件の真因ではない。
+- **検証**: 回帰テスト 4 件を追加（HTTP/1.1 と 1 接続 3 リクエスト・Date/Server 非重複・backlog 拡大と stdlib 不変・idle timeout）。**変異注入 3 種すべてで当該テストが失敗**することを確認。`unified_ui` 19 passed。
 
 ## ISSUE-199: [不具合] 期間パラメータ欄で入力が既存値へ追記され、確定できないまま旧値が戻る（2026-07-29）
 - **ステータス**: RESOLVED（2026-07-29 起票・同日修正。実 UI 実測で検証。web 917 緑）
