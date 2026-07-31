@@ -23,7 +23,20 @@ function fakeSeries(def) {
     // ISSUE-196: 実 lwc の series.data()（現在の点列）。空系列判定・不変条件検査で参照する。
     data() { return this._data ?? []; },
     // 末尾K差分反映: series.update を点ぶん呼ぶ（過去確定足は触らない・隔離維持）。
-    update(point) { this._updates.push(point); },
+    // ISSUE-197: 実 lwc は **末尾より古い time の update を throw で拒否する**。この拒否契約を
+    //   フェイクにも写す（写さないと「例外駆動をやめた」ことを検証できない＝空虚なテストになる）。
+    //   拒否された点は _rejected に記録する（_updates には積まない）。`_data` の書き換えは
+    //   従来どおり行わない（既存テストの「過去 setData は不変」判定を保つ）。
+    _rejected: [],
+    update(point) {
+      const last = (this._data ?? []).slice(-1)[0];
+      if (last && typeof last.time === 'number' && typeof point?.time === 'number'
+          && point.time < last.time) {
+        this._rejected.push(point);
+        throw new Error(`Cannot update oldest data, last time=${last.time}, new time=${point.time}`);
+      }
+      this._updates.push(point);
+    },
     applyOptions(opts) { Object.assign(this._options, opts); },
     createPriceLine(opt) { const pl = { opt }; this._priceLines.push(pl); return pl; },
     removePriceLine(pl) { this._priceLines = this._priceLines.filter((x) => x !== pl); },
@@ -1482,6 +1495,49 @@ test('updateSeriesTail: 空化済み系列への遅延末尾差分は捨てる�
 
   assert.deepEqual(series._updates, [], '空系列へは 1 点も書き込まない');
   assert.deepEqual(series.data(), [], '系列は空のまま');
+});
+
+// ---------------------------------------------------------------------------
+// ISSUE-197: latest 応答の末尾 K 点のうち「系列末尾より古い」点を、例外ではなく比較で捨てる。
+//   実UI実測（1分足ライブ・指標5件）: 単一パターン `n=2 ok=1 ng=1 times=T-60,T before=T after=T`
+//   が 45 秒で 798 回＝約 18 回/秒。最新値の欠落は無い（after == before）が、正常動作のさなかに
+//   例外が出続けていた。捨てる集合と更新後の末尾は不変のまま、update を呼ばないようにする。
+// ---------------------------------------------------------------------------
+
+test('updateSeriesTail: 末尾より古い点は update を呼ばずに捨てる（例外を発生させない・ISSUE-197）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#1', [{ name: 'ma_fast', kind: 'line', data: [{ time: 10, value: 1 }] }]);
+  const series = chart.created.at(-1);
+
+  // latest 応答の定常形: 末尾 K=2 点 [T-1, T] に対し、系列末尾は既に T。
+  renderer.updateSeriesTail('ma#1::ma_fast', [{ time: 9, value: 8 }, { time: 10, value: 9 }]);
+
+  assert.deepEqual(series._rejected, [],
+    '末尾より古い点で series.update を呼ばない（実 lwc なら throw する呼び出しを発生させない）');
+  assert.deepEqual(series._updates, [{ time: 10, value: 9 }],
+    '捨てる点・反映する点は従来と同一（最新値は欠落しない）');
+});
+
+test('updateSeriesTail: 末尾と同一 time は反映する（上書き・境界）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#1', [{ name: 'ma_fast', kind: 'line', data: [{ time: 10, value: 1 }] }]);
+  const series = chart.created.at(-1);
+
+  renderer.updateSeriesTail('ma#1::ma_fast', [{ time: 10, value: 42 }]);
+
+  assert.deepEqual(series._updates, [{ time: 10, value: 42 }], '同一 time は捨てず上書きする');
+  assert.deepEqual(series._rejected, []);
+});
+
+test('updateSeriesTail: 非数値 time は事前判定せず update へ渡し例外で無害化する（防御）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#1', [{ name: 'ma_fast', kind: 'line', data: [{ time: 10, value: 1 }] }]);
+  const series = chart.created.at(-1);
+
+  // business day 形式など大小比較の意味が自明でない時刻表現は従来経路（update → catch）へ倒す。
+  const bd = { year: 2026, month: 1, day: 1 };
+  assert.doesNotThrow(() => renderer.updateSeriesTail('ma#1::ma_fast', [{ time: bd, value: 5 }]));
+  assert.deepEqual(series._updates, [{ time: bd, value: 5 }], '事前判定でスキップしない');
 });
 
 test('updateSeriesTail: 非空系列へは従来どおり末尾点を反映する（回帰）', () => {

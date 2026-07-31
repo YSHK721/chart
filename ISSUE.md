@@ -501,7 +501,7 @@
 
 ## ISSUE-033: replay_ui backend — 未消費の抽象（E-3 window / ContactScanPort）のフロント確定時精査
 - **重大度**: Low（YAGNI）
-- **ステータス**: IN_PROGRESS
+- **ステータス**: RESOLVED
 - **検出**: arch レビュー（YAGNI 削除候補・2026-07-04）。
 - **背景**: `domain/intrabar_window.window`（足境界→窓算出 E-3）と `replay_ports.ContactScanPort` は backend に production caller 不在（テストのみ）。窓はフロント replay.js が算出し `/intraday` に start/end で渡す設計、接点は次フェーズ想定＝将来仮説が根拠。
 - **対策（提案）**: フロント増分で「消費者が生じるか」確定し、生じなければ削除。窓をサーバ側算出する usecase に倒す選択肢も検討。
@@ -514,6 +514,10 @@
   - `usecase/intrabar_window` は `serve_replay.py:219` から使われており**別物**（こちらは現役）。削除候補は `domain` 層の窓算出関数のみ。
   - 設計どおりフロント `replay.js` が窓を算出し `/intraday` へ `start/end` で渡しているため、サーバ側の窓算出は消費者が生じなかった。
 - **ステータス**: 既存ファイル（`domain/intrabar_window.py`）の削除は承認事項のため**削除は未実施**。承認待ち。
+- **対応（2026-07-30・ユーザー承認のうえ提案どおり削除）**: 消費者が生じないことが確定したため、`simulator/replay_ui/domain/intrabar_window.py`（59 行）と `tests/unit/test_intrabar_window.py`（79 行）を削除した。
+  - `usecase/intrabar_window` は窓を**受け取る**だけで算出しない（`request.start` / `request.end`）。窓の算出はフロント `replay.js` が行い `/intraday` へ渡す設計であり、サーバ側の算出関数は最後まで呼ばれなかった。
+  - `ContactScanPort` は既に消滅済み（実チェックアウトで grep 0 件。残存 24 件は `.claude/worktrees/agent-*` の古い作業ツリー内のみ）。
+- **検証**: `simulator/replay_ui` **187 passed**（削除した 11 件ぶん減・他は全緑）。
 
 ## ISSUE-034: replay_ui backend — df 往復の列名 lower()/float() 強制が暗黙契約
 - **重大度**: Low（現状安全）
@@ -2337,7 +2341,7 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **関連**: ISSUE-183（発見経緯）。
 
 ## ISSUE-187: [仕様裁定待ち] 参照実装 profit_band の `_resolve_times` だけ DatetimeIndex 経路の系列名が他 20 本と異なる（2026-07-27）
-- **ステータス**: OPEN（実測完了・裁定待ち）
+- **ステータス**: RESOLVED
 - **事象（実測）**: `_resolve_times` の DatetimeIndex 経路で、`profit_band/src/lwc_chart.py` は `df.index.to_series()` を返すため**系列名が `time` にならない**。他 20 本は系列名を `time` に揃える。例外文言も profit_band だけ別。
 - **なぜ問題か**: `profit_band` は `indigators/PORTING_GUIDE.md:8-9` が「本書の原則はすべてこの実装で実証済み」と宣言する**参照実装**でありながら少数派である。参照実装を正とするなら他 20 本が誤り、多数派を正とするなら参照実装が誤り。**どちらとも決められないため `_resolve_times` の完全な一本化ができない**（ISSUE-179 項目 2 は AST 同値の 12 本のみ統合し、9 本を挙動差のため未統合として残した）。
 - **同種の先行事例**: ISSUE-173 で profit_band が PORTING_GUIDE §2 の 2 規約を満たしていなかった件（案 a＝参照実装を規約へ合わせる、で解決済み）。本件も同じ「参照実装が基準に従っていない」構図だが、**こちらは挙動変更を伴う**点が異なる。
@@ -2353,6 +2357,12 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
   - **例外文言の差**: 文言をアサートするテストは**全体で 0 件**（grep 実測）。
 - **裁定への含意**: 差は**観測不能**であるため、案 b（多数派へ寄せる）は当初想定と異なり**挙動変更を伴わない**（＝`_resolve_times` の完全一本化が実行可能）。案 c（差異を許容して PORTING_GUIDE §5 に明記）も同じ実測で正当化できる。
 - **ステータス**: 21 パッケージ共有の実装統一はアーキテクチャ判断のため**未実施・裁定待ち**（案 b と案 c のいずれか）。
+- **裁定（2026-07-30・案 b を採用しユーザー承認のうえ実施）**: 参照実装 `profit_band` を多数派の形へ寄せ、共有実装 `common_view.lwc_adapter.resolve_times` を import する形に一本化した（ローカル定義を削除）。
+  - **選定理由**: 上記実測で差が観測不能＝案 b は当初想定と違い**挙動変更を伴わない**。挙動が同じなら、二重実装を残す案 c より実装が 1 つ減る案 b が優る（[[minimize-cognitive-load]] と同じ規律＝同一概念に複数の実体を作らない）。ISSUE-173 と同じ「参照実装側を直す」方向でもある。
+  - **挙動不変の実証（A/B byte 比較）**: 変更前のローカル実装を復元して同一入力に流し、`add_profit_band` が生成する **28 系列すべての payload が byte 一致**することを、`index.name` = None / `Date` / `time` × tz-aware(UTC) の 4 ケースで確認した。
+  - 共有実装は `{str(c).lower(): c}` で非文字列列名にも耐えるため、堅牢性はむしろ向上する。
+- **検証**: `profit_band` **28 passed**。
+- **残件（本 Issue の範囲外）**: `_resolve_times` のローカル定義は 9 本 → **8 本**へ減った（`moving_averages` / `profit_adx_needle` / `profit_hl_band` / `profit_hlband` / `profit_mfi` / `profit_osi_ma` / `profit_stc` / `tgp_btlm`）。これらは ISSUE-179 が「挙動差あり」として未統合に残したもので、個別に差の実測が必要。
 
 ## ISSUE-188: [不具合] テンプレート自動適用後に `applied.v1` が空のまま残りリロードで構成が消える（2026-07-28）
 - **ステータス**: RESOLVED（2026-07-28 起票・同日修正。実 UI 検証 D-1。TDD Red→Green。live 829 緑（既存 749 無改変全通過）／replay 266 pass・1 fail は ISSUE-048 のみで不変／unified 42 緑）
@@ -2473,11 +2483,25 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **関連**: ISSUE-167（重複 time の応急防壁＝本件は同じ不変条件の「欠落」側）／ISSUE-023（同時更新仕様の改訂元）／ISSUE-165（compute 並列化だけでは律速が残っていた）／ISSUE-188。
 
 ## ISSUE-197: [不具合] ライブ core（8001）で `Cannot update oldest data` が多発する（2026-07-29）
-- **ステータス**: OPEN（2026-07-29 起票・ISSUE-196 の実測中に検出。未調査）
+- **ステータス**: RESOLVED
 - **事象（実測）**: ライブ core 単体（`http://127.0.0.1:8001/`・SW なし・指標 5 件）で日→1分の切替後 45 秒に、`THROW Line#72.update: Cannot update oldest data, last time=…` が **203 件**発生。統合 UI（8000）側では未観測。
 - **切り分け済みの事実**: 例外は `series.update` の同期呼び出しで発生し、`chart_renderer.updateSeriesTail` の try/catch が点単位で握って捨てている（バッチは継続＝可視の実害は未確認）。ISSUE-151 追補2 で「バー確定直後の stale 点」として想定済みの経路だが、203 件は想定頻度を大きく超える。
 - **未検証**: 発生源（full 再描画と latest 応答の交錯か／別クロックの重複駆動か）・実害（最新値の欠落有無）。
 - **関連**: ISSUE-151（stale 点の無害化）／ISSUE-196（本件の検出契機）。
+- **原因（2026-07-30・実UI実測で確定）**: 時間足切替とは無関係の**定常発生**だった。
+  - 計測法: `updateSeriesTail` の catch に一時プローブを入れ、ライブ core 8001・指標 5 件・1 分足で 45 秒観測（計測後にプローブは撤去）。
+  - 結果は**単一パターンのみ** 798 件（約 18 回/秒）: `n=2 ok=1 ng=1 times=T-60,T before=T after=T`。
+    - latest 応答は末尾 **K=2** 点 `[T-60, T]` を返す。
+    - しかし系列末尾は既に `T` へ進んでいる（forming/full 経路が先に反映済み）。
+    - lightweight-charts の `update` は last より古い time を throw で拒否するため、**毎回 K-1 点が必ず例外になる**。
+  - **実害は無い**（未検証項目への回答）: 同一バッチの新しい点 `T` は成功し、`after == before` ＝最新値は欠落しない。問題は「正常動作のさなかに例外が出続ける」こと（コストとログ汚染、および本物の異常が埋もれること）。
+  - ISSUE-197 起票時の「日→1分 切替後 45 秒で 203 件」は切替固有の現象ではなく、この定常発生を切替直後に観測したものだった。
+- **対応**: `chart_renderer.updateSeriesTail` で、系列末尾より古い点は **比較で判定して `update` を呼ばない**（例外駆動の制御フローを撤去）。捨てる点の集合も更新後の末尾も従来と同一。非数値 time（business day 形式）は比較の意味が自明でないため従来どおり `update` → catch へ倒す。
+- **検証**:
+  - 回帰テスト 3 件を追加。あわせて**フェイク系列に実 lwc の拒否契約（古い time で throw）を写した**（写さないと「例外をやめた」ことを検証できず空虚なテストになるため）。拒否された点は `_rejected` に記録し、`update` を呼んでいないことを直接判定する。
+  - **変異注入**: 事前判定を撤去すると当該テストが失敗することを確認。
+  - **実UI再測（同条件 45 秒）**: 例外 **798 → 0 件**、比較でスキップ 2,213 点、コンソールエラー 0、指標 5 件は継続描画。
+  - `indicator_ui/web` **935 passed**。
 
 ## ISSUE-198: [不具合] SW 経由の `/live_ticks` が network error になる（2026-07-29）
 - **ステータス**: OPEN（2026-07-29 起票・ユーザー報告のコンソールログに存在。未調査）

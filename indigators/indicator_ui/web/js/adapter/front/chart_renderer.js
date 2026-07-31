@@ -596,11 +596,27 @@ export class ChartRenderer {
       if (typeof series.data === 'function' && series.data().length === 0) {
         return;
       }
+      // ISSUE-197（例外駆動の制御フローを撤去・2026-07-30 実UI実測）: latest 応答は末尾 K 点を返すため、
+      //   系列末尾が既に最新バーへ進んでいる定常状態では **毎回 K-1 点が「末尾より古い」** として届く。
+      //   lightweight-charts の update は last より古い time を throw で拒否するので、これを try/catch
+      //   任せにすると正常動作のさなかに例外が出続ける（実測: 1分足ライブで単一パターン
+      //   `n=2 ok=1 ng=1 times=T-60,T before=T after=T` が 45 秒 798 回＝約 18 回/秒。ISSUE-197 が
+      //   「日→1分 切替後 45 秒で 203 件」と記録したものは切替固有ではなく定常発生だった）。
+      //   捨てる点は **比較で判定して update を呼ばない**。捨てる点の集合も更新後の末尾も従来と同一
+      //   （実測: after == before ＝最新値は欠落していない＝実害は無く、コストとログ汚染だけがあった）。
+      const lastPoint = typeof series.data === 'function' ? series.data().slice(-1)[0] : undefined;
+      const lastTime = lastPoint ? lastPoint.time : undefined;
       for (const p of points ?? []) {
+        // 事前判定は time が数値（UTCTimestamp）同士のときだけ行う。business day 形式など
+        //   大小比較の意味が自明でない時刻表現は従来どおり update へ渡し、下の catch で無害化する。
+        if (typeof lastTime === 'number' && typeof p?.time === 'number' && p.time < lastTime) {
+          continue;
+        }
         try {
           series.update(p);
         } catch (_e) {
-          // stale（系列末尾より古い time）は捨てる。他の例外もバッチ継続を優先（点単位で無害化）。
+          // 事前判定で拾えない stale（非数値 time）や想定外の例外もバッチ継続を優先し、
+          //   点単位で無害化する（残り系列の末尾更新まで失わせない）。
         }
       }
     });
