@@ -72,7 +72,7 @@ def test_previous_tick_sampling_holds_last_observed_price():
 
 
 def test_two_scale_rv_matches_specification_formula():
-    """TSRV の閉形式が §4.3 の 5 行の定義と一致すること（決定論的照合）。"""
+    """TSRV の閉形式が §4.3 の定義（端点欠損補正を含む）と一致すること（決定論的照合）。"""
     rng = np.random.default_rng(3)
     logp = np.concatenate([[0.0], np.cumsum(rng.standard_normal(400) * 0.001)])
     n = logp.size - 1
@@ -85,9 +85,34 @@ def test_two_scale_rv_matches_specification_formula():
     rv_avg = rv_sub / K
     n_bar = (n - K + 1) / K
     rv_all = float((np.diff(logp) ** 2).sum())
-    expect = (rv_avg - (n_bar / n) * rv_all) / (1.0 - n_bar / n)
+    # 端点欠損補正 n/(n−K+1)（ISSUE-204 の裁定で §4.3 へ追加）。
+    expect = (rv_avg - (n_bar / n) * rv_all) / (1.0 - n_bar / n) * (n / (n - K + 1))
 
     assert two_scale_rv(logp) == pytest.approx(expect, rel=1e-12)
+
+
+def test_two_scale_rv_edge_correction_is_actually_applied():
+    """補正係数 ``n/(n−K+1)`` が実際に乗じられていることを独立に固定する（ISSUE-204）。
+
+    上の同値検証は期待値側にも同じ式を書くため、「実装と期待値の双方から補正を落とす」
+    変異を検出できない。ここでは補正の**向きと大きさ**を式と独立に判定する。
+    """
+    rng = np.random.default_rng(5)
+    logp = np.concatenate([[0.0], np.cumsum(rng.standard_normal(400) * 0.001)])
+    n = logp.size - 1
+    K = int(np.ceil(n ** (2.0 / 3.0)))
+    factor = n / (n - K + 1)
+    assert factor > 1.0, "補正係数は 1 より大きい（端点欠損を埋める向き）"
+
+    # 補正前の v1.0 形を素直に組み立てて比較する（実装の式を再利用しない）。
+    rv_avg = sum(float((np.diff(logp[k::K]) ** 2).sum()) for k in range(K)) / K
+    n_bar = (n - K + 1) / K
+    rv_all = float((np.diff(logp) ** 2).sum())
+    v1_form = (rv_avg - (n_bar / n) * rv_all) / (1.0 - n_bar / n)
+
+    got = two_scale_rv(logp)
+    assert got > v1_form, "補正後は補正前より大きい（過小バイアスを埋める）"
+    assert got / v1_form == pytest.approx(factor, rel=1e-12)
 
 
 def test_two_scale_rv_falls_back_to_rv_avg_and_logs_when_nonpositive():
@@ -146,36 +171,34 @@ def test_stage1_rv_is_unbiased_on_synthetic_gbm(stage1_means):
     assert rv_mean == pytest.approx(1.0, abs=0.005), f"RV mean = {rv_mean!r}"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "仕様 §10 TBD-1 未決（K* = c*·n^(2/3) の c* が未確定）。既定 c* = 1 では "
-    "E[TSRV] = 0.9112（実測・§9 段階 1 の許容 1.000 ± 0.010 を外れる）。"
-    "TBD-1 の裁定前に式を変更しない。ISSUE-204 参照。"))
 def test_stage1_tsrv_is_unbiased_on_synthetic_gbm(stage1_means):
     """TSRV の平均が 1.000 ± 0.010（§9 段階 1）。
 
-    既定 ``K = ceil(n^(2/3))``（仕様 §4.3・TBD-1 で c* 未確定）での実測値を判定する。
+    ISSUE-204 の裁定（TBD-1 解決）で §4.3 に端点欠損補正 ``n/(n−K+1)`` を追加した結果、
+    v1.0 の 0.9112（不合格）から **0.9993**（合格）へ是正された。
     """
     _, ts_mean = stage1_means
     assert ts_mean == pytest.approx(1.0, abs=0.010), f"TSRV mean = {ts_mean!r}"
 
 
-def test_stage1_tsrv_bias_matches_edge_deficit_theory(stage1_means):
-    """TSRV の過小バイアスが「サブグリッドの端点欠損」で説明できることを固定する。
+def test_stage1_tsrv_bias_without_edge_correction_matches_theory(stage1_means):
+    """補正を外すと端点欠損の理論値に一致することを固定する（原因の恒久的な記録）。
 
     K 個のサブグリッドが覆う増分は全 ``n`` 本のうち ``n − K + 1`` 本にとどまるため
-    ``E[RV^avg] = ((n − K + 1)/n)·σ²`` となる。仕様 §4.3 の補正係数
-    ``(1 − n̄/n)^(-1)`` はノイズ項のみを補正し、この端点欠損（``O(K/n) = n^(-1/3)``）を
-    補正しない。したがって
+    ``E[RV^avg] = ((n − K + 1)/n)·σ²`` となる。仕様 §4.3 の補正係数 ``(1 − n̄/n)^(-1)`` は
+    ノイズ項のみを補正し、この端点欠損（``O(K/n) = n^(-1/3)``）を補正しない。したがって
+    補正を外した推定量の期待値は
 
-        ``E[TSRV] = ( (n−K+1)/n − n̄/n ) / (1 − n̄/n)``
+        ``( (n−K+1)/n − n̄/n ) / (1 − n̄/n)``
 
-    が予測値となる。本テストはこの理論値と実測値の一致を固定し、将来 TBD-1 の裁定で
-    ``K`` を変更した際に「何が原因のバイアスだったか」を失わないようにする。
+    となる。ISSUE-204 の裁定はこの欠損を ``n/(n−K+1)`` で埋めるものであり、本テストは
+    「補正が何を埋めているか」を将来にわたって失わないために残す。
     """
     _, ts_mean = stage1_means
     n = _STAGE1_STEPS
     k = int(np.ceil(n ** (2.0 / 3.0)))
     n_bar = (n - k + 1) / k
-    predicted = ((n - k + 1) / n - n_bar / n) / (1.0 - n_bar / n)
-    assert ts_mean == pytest.approx(predicted, abs=0.002), (
-        f"TSRV mean = {ts_mean!r}, 端点欠損理論値 = {predicted!r}")
+    predicted_uncorrected = ((n - k + 1) / n - n_bar / n) / (1.0 - n_bar / n)
+    uncorrected = ts_mean / (n / (n - k + 1))       # 実測値から補正を外す
+    assert uncorrected == pytest.approx(predicted_uncorrected, abs=0.002), (
+        f"補正を外した TSRV mean = {uncorrected!r}, 端点欠損理論値 = {predicted_uncorrected!r}")

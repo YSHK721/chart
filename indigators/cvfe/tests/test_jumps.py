@@ -157,7 +157,11 @@ def test_stage1_five_sigma_jump_detection_rate(detection_rate_bar_sigma):
 # --------------------------------------------------------------------------------------
 
 def _tsrv_path_flag_rate(bar_sec: int):
-    """ノイズ注入で DEGRADED（TSRV）へ落ちる構成の end-to-end ジャンプ検出率を返す。"""
+    """ノイズ注入で DEGRADED（TSRV）へ落ちる構成の end-to-end 結果を返す。
+
+    Returns:
+        ``(quality, jump_flag 率, n の中央値, BarMeasure のリスト)``
+    """
     import sys as _sys
     from pathlib import Path as _Path
     _here = str(_Path(__file__).resolve().parent)
@@ -178,25 +182,40 @@ def _tsrv_path_flag_rate(bar_sec: int):
     quality = diagnose_quality(times, logp, e, params.n_har, params.freeze_thresh)
     measures = measure_all_bars(times, logp, e, quality, params)
     flags = np.array([m.jump_flag for m in measures])
-    return quality, float(flags.mean()), int(np.median([m.n for m in measures]))
+    return (quality, float(flags.mean()), int(np.median([m.n for m in measures])), measures)
 
 
 def test_tsrv_path_is_actually_exercised():
     """本テスト群が TSRV 分岐を実際に通ること（RV 分岐だけを測る空虚な検定を防ぐ）。"""
-    quality, _rate, n_med = _tsrv_path_flag_rate(21_600)
+    quality, _rate, n_med, _measures = _tsrv_path_flag_rate(21_600)
     assert quality.quality_gate == "DEGRADED"
     assert quality.measure_id == "TSRV"
     assert n_med >= JUMP_MIN_N, "n < 50 では K5 により検定が無効化され測定にならない"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "仕様の欠陥（ISSUE-215）。§4.4 の z 統計量の分散 (π²/4+π−5)/n·max(1,TQ/BPV²) は "
-    "Barndorff-Nielsen & Shephard (2006) が RV/BPV 比について導いた漸近分布であり、"
-    "ノイズ補正済みの TSRV を分子に据えた場合には妥当しない。ジャンプ無し DGP の "
-    "end-to-end 実測で誤検出率 13.57%（bar_sec=21600）／16.79%（43200）となり、"
-    "§9 段階 1 の許容 0.3% を 45〜56 倍超過する。式の変更は裁定後に行う。"))
 def test_stage1_false_positive_rate_on_tsrv_path():
-    """TSRV 経路でも誤検出率が 3 × (1 − jump_alpha) 以内であること（§9 段階 1）。"""
-    _quality, rate, _n = _tsrv_path_flag_rate(21_600)
-    limit = 3.0 * (1.0 - _ALPHA)
-    assert rate <= limit, f"TSRV 経路の誤検出率 = {rate:.4%} > {limit:.2%}"
+    """TSRV（DEGRADED）経路では誤検出が起こりえないこと（§4.4・ISSUE-215 の裁定）。
+
+    §4.4 の z 統計量の分散 ``((π²/4)+π−5)·(1/n)·max(1, TQ/BPV²)`` は
+    Barndorff-Nielsen & Shephard (2006) が **RV と BPV の比**について導いた漸近分布であり、
+    ノイズ補正済みの TSRV を ``V_t`` に据えた場合の帰無分布として妥当しない（分子だけが
+    ノイズ補正され分母 BPV は補正されないため z が系統的に膨らむ）。v1.0 のまま TSRV を
+    §4.4 に通すと、ジャンプ無し DGP の end-to-end 実測で誤検出率が 13.57%（bar_sec=21600）／
+    16.79%（43200）に達し、§9 段階 1 の許容 0.3% を 45〜56 倍超過した（RV 経路は 0.10% で合格）。
+    裁定は「§4.4 の適用条件から TSRV を外す」＝ DEGRADED では RRANGE / PARK と同じく
+    ``C_t = V_t`` / ``J_t = 0`` / ``jump_flag = False`` へ縮退する。
+    """
+    quality, rate, _n, _measures = _tsrv_path_flag_rate(21_600)
+    assert quality.measure_id == "TSRV", "TSRV 分岐を実際に通っていること（テストの非空虚性）"
+    assert rate == 0.0, f"TSRV 経路ではジャンプ分離を実行しない。実測 = {rate:.4%}"
+
+
+def test_tsrv_path_leaves_c_equal_to_v_and_j_zero():
+    """TSRV 経路の縮退が測定量レベルで成立すること（C_t = V_t・J_t = 0・ISSUE-215）。"""
+    quality, _rate, _n, measures = _tsrv_path_flag_rate(21_600)
+    assert quality.measure_id == "TSRV"
+    valid = [m for m in measures if m.valid]
+    assert valid, "有効バーが存在すること"
+    assert all(m.c == m.v for m in valid), "C_t = V_t"
+    assert all(m.j == 0.0 for m in valid), "J_t = 0"
+    assert not any(m.jump_flag for m in valid), "jump_flag は全て False"

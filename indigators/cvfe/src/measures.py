@@ -64,7 +64,14 @@ def two_scale_rv(logp_samples: np.ndarray, *,
     if ratio >= 1.0:
         return rv_avg
 
-    tsrv = (rv_avg - ratio * rv_all) / (1.0 - ratio)
+    # 端点欠損補正（仕様 §4.3・TBD-1 裁定 / ISSUE-204）。
+    #   K 個のサブグリッドが覆う増分は全 n 本のうち n−K+1 本にとどまる（各サブグリッドが端点の
+    #   増分を落とす）ため E[RV^avg] = ((n−K+1)/n)·σ² となる。仕様の補正係数 (1 − n̄/n)^(-1) は
+    #   ノイズ項のみを補正し、この欠損（O(K/n) = n^(-1/3)）を補正しない。よって n/(n−K+1) を乗じる。
+    #   実測（σ=1 の合成 GBM・n=1440・100,000 バー・シード 11）:
+    #     補正前 0.9112100（理論値 0.91186 と一致）→ 補正後 0.9993468（§9 段階 1 の許容 ±0.010 内）。
+    edge_correction = n / (n - k + 1)
+    tsrv = (rv_avg - ratio * rv_all) / (1.0 - ratio) * edge_correction
     if not np.isfinite(tsrv) or tsrv <= 0.0:
         resolve(logger).emit(
             "WARN", W01_TSRV_NONPOSITIVE, bar_index,

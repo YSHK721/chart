@@ -13,9 +13,13 @@
       * 気配凍結  ``freeze_fraction`` の時間割合だけ mid を直前値で固定
       * ギャップ  ``session_sec < bar_sec`` のとき場間が空き、バー始値に
         ``N(0, gap_sigma**2)`` のギャップを与える
-      * 部分的なギャップ  ``late_open_bars`` に指定したバーだけ最初の
-        ``late_open_sec`` 秒のティックを落とす（＝当該バーのみギャップ保有にする）。
-        ギャップ保有バーを任意本数に絞りたい検証で用いる
+      * 部分的なギャップ  ``early_close_bars`` に指定したバーだけ引けを早める
+        （§4.7-1 条件 2 は `bar_edges[t] − バー t−1 の最後のティック` で判定するため、
+         バー ``i`` を早仕舞いさせるとバー ``i+1`` がギャップ保有になる）。
+      * 寄り遅れ        ``late_open_bars`` に指定したバーだけ最初の
+        ``late_open_sec`` 秒のティックを落とす（当該バーの寄りを遅らせる）。
+        ISSUE-216 の裁定後、これはギャップ判定には効かない（条件 2 が当該バーの
+        ティックを見ないため）。バー内サンプル数を減らす用途で用いる
 
 すべて ``numpy`` の Generator（シード固定）で生成し、同一シードで bit 再現する。
 """
@@ -46,6 +50,8 @@ def make_dataset(
     empty_bars: tuple[int, ...] = (),
     late_open_bars: tuple[int, ...] = (),
     late_open_sec: int = 1_200,
+    early_close_bars: tuple[int, ...] = (),
+    early_close_sec: int = 1_200,
     jump_bars: tuple[int, ...] = (),
     jump_size_sigma: float = 0.0,
     t0: float = T0_DEFAULT,
@@ -81,6 +87,10 @@ def make_dataset(
 
     empty = set(int(i) for i in empty_bars)
     late = set(int(i) for i in late_open_bars)
+    # ISSUE-216 の裁定後、§4.7-1 の条件 2 は `bar_edges[t] − バー t−1 の最後のティック` で
+    #   判定する。したがって「バー t をギャップ保有にする」操作子は **バー t−1 の早仕舞い**
+    #   である（寄り遅れ late_open は当該バーのティックを見ないため判定に効かない）。
+    early = set(int(i) for i in early_close_bars)
     jumps = set(int(i) for i in jump_bars)
 
     times_all: list[np.ndarray] = []
@@ -112,6 +122,10 @@ def make_dataset(
         if i in late:                       # 当該バーだけ寄り付きを遅らせる
             keep = offsets >= float(late_open_sec)
             t, p_obs = t[keep], p_obs[keep]
+        if i in early:                      # 当該バーだけ早く引ける（＝次バーがギャップ保有）
+            keep = (t - bar_edges[i]) < float(session_sec - early_close_sec)
+            if keep.sum() >= 2:
+                t, p_obs = t[keep], p_obs[keep]
         if i in empty:
             t, p_obs = t[:1], p_obs[:1]     # ティック 1 本 ＝ E06 の条件
 

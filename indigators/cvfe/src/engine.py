@@ -78,8 +78,20 @@ def measure_bar(index: int, bar_times: np.ndarray, bar_logp: np.ndarray,
         r = np.diff(s) if s.size >= 2 else np.empty(0, dtype=np.float64)
         v = (realized_variance(s) if measure_id == "RV"
              else two_scale_rv(s, logger=logger, bar_index=index))
-        jr = jump_test(v, r, jump_alpha, logger=logger, bar_index=index)
-        c, j, flag = jr.c, jr.j, jr.flag
+        if measure_id == "RV":
+            jr = jump_test(v, r, jump_alpha, logger=logger, bar_index=index)
+            c, j, flag = jr.c, jr.j, jr.flag
+        else:
+            # ISSUE-215 の裁定（§4.4 改訂・適用条件から TSRV を除外）:
+            #   §4.4 の z 統計量の分散 ((π²/4)+π−5)·(1/n)·max(1, TQ/BPV²) は
+            #   Barndorff-Nielsen & Shephard (2006) が **RV と BPV の比**について導いた漸近分布で
+            #   あり、ノイズ補正済みの TSRV を V_t に代入した場合の帰無分布として妥当しない
+            #   （TSRV は分子だけがノイズ補正され、分母の BPV は補正されないため z が系統的に
+            #   膨らむ）。実測（ジャンプ無し DGP・ω/σ=1.0 で DEGRADED へ落とす）で誤検出率は
+            #   13.57% / 16.79%＝§9 段階 1 の許容 0.3% の 45〜56 倍に達した（RV 経路は 0.10% で合格）。
+            #   TSRV 用の帰無分布を導出するのは研究課題であるため、DEGRADED 経路では
+            #   ジャンプ分離を行わない（RRANGE / PARK と同じ縮退）。
+            c, j, flag = float(v), 0.0, False
         n = int(r.size)
     elif measure_id == "RRANGE":
         v = realized_range(bar_times, bar_logp, float(edge_start), float(edge_end))
@@ -318,9 +330,15 @@ def compute_cvfe(ticks: np.ndarray, bar_edges: np.ndarray, bar_interval_sec: int
     edges = validate_edges(bar_edges)
 
     n_bars = edges.size - 1
-    if n_bars < params.n_har + WARMUP_LAGS:
+    # ISSUE-212 の裁定（§3.1 / §3.3 E01 改訂）: 下限は `n_har + 22` ではなく **`n_har + 23`**。
+    #   `t0 = n_har + 22` は「予測を開始できる最初のバー番号」であり、`N = n_har + 22` では
+    #   バー番号 `t0` が範囲外になって `available` が全て False になる（実測・n_har=500:
+    #   N=522 → 0 本 / 523 → 1 本 / 524 → 2 本）。すなわち v1.0 の下限では出力が必ず 0 本だった。
+    min_bars = params.n_har + WARMUP_LAGS + 1
+    if n_bars < min_bars:
         raise CvfeError(E01_INSUFFICIENT_BARS,
-                        f"バー数 {n_bars} < n_har + {WARMUP_LAGS} = {params.n_har + WARMUP_LAGS}")
+                        f"バー数 {n_bars} < n_har + {WARMUP_LAGS + 1} = {min_bars}"
+                        f"（N = n_har + {WARMUP_LAGS} では σ̂ を 1 本も出力できない）")
 
     quality = diagnose_quality(times, logp, edges, params.n_har, params.freeze_thresh,
                                logger=logger)

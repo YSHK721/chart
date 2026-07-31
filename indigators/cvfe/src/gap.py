@@ -27,20 +27,37 @@ def is_gap_bar(edge_t: float, edge_prev: float, bar_interval_sec: float,
                t_first: float, t_last_prev: float, delta_star_sec: float) -> bool:
     """仕様 §4.7-1 のギャップ保有判定。
 
-    ``bar_edges[t] − bar_edges[t−1] > 1.5 × bar_interval_sec``
-    または ``(バー t の最初のティック時刻 − バー t−1 の最後のティック時刻) > 1.5 × delta_star_sec``。
+    条件 1: ``bar_edges[t] − bar_edges[t−1] > 1.5 × bar_interval_sec``
+    条件 2: ``bar_edges[t] − (バー t−1 の最後のティック時刻) > 1.5 × delta_star_sec``
+            （``delta_star_sec > 0`` のときのみ評価する）
 
-    注意（仕様の未定義域）: ``measure_id`` が ``RRANGE`` / ``PARK`` のとき仕様 §3.2 は
-    ``delta_star_sec = 0`` と定める。このとき第 2 条件は「ティック間隔 > 0」となり、
-    ティック時刻が狭義単調増加である以上つねに成立する（＝全バーがギャップ保有）。
-    仕様はこの帰結を明示していない。本実装は仕様の式をそのまま適用する。
+    ISSUE-216 の裁定（§4.7-1 改訂）:
+        条件 2 の被減数は v1.0 では「**バー t の最初の**ティック時刻」だったが、
+        ``t_first ∈ [bar_edges[t], bar_edges[t+1])`` であるため §4 柱書「参照可能な情報は
+        ``bar_edges[t]`` より厳密に前のティックに限る」に違反し、``σ̂_t`` をバー開始時点で
+        確定できなかった（当該バーの最初のティック到着まで待つ必要があった）。被減数を
+        ``bar_edges[t]`` へ改めて因果律を回復する。``bar_edges[t]`` は入力として既知、
+        ``t_last_prev`` はバー ``t−1`` の確定値であるため判定はバー開始時点で確定する。
+        ``t_first ≥ bar_edges[t]`` であるから、判定は「ギャップと認めにくくなる」方向へのみ動く。
+
+    ISSUE-209 の裁定（§4.7-1 改訂）:
+        ``measure_id ∈ {"RRANGE", "PARK"}`` のとき §3.2 は ``delta_star_sec = 0`` と定める。
+        v1.0 の式にそのまま代入すると条件 2 は「差 > 0」となり、ティック時刻が狭義単調増加で
+        ある以上**つねに成立**した（＝全バーがギャップ保有と判定され、実際にはギャップの無い
+        バーにも ``σ̂_CO,t = sqrt(v_{t−1}) > 0`` が加算されて ``σ̂_t`` が系統的に過大になった）。
+        ``delta_star_sec = 0`` は「サンプリング間隔を持たない」ことを表す番兵であって閾値 0 秒を
+        意味しないため、この場合は条件 2 を評価せず条件 1 のみで判定する。
+
+    Args:
+        t_first: 後方互換のため受け取るが**判定には用いない**（ISSUE-216 の裁定で条件 2 の
+            被減数が ``bar_edges[t]`` へ変わったため）。
     """
     if not np.isfinite(edge_t) or not np.isfinite(edge_prev):
         return False
     if (edge_t - edge_prev) > GAP_FACTOR * bar_interval_sec:
         return True
-    if np.isfinite(t_first) and np.isfinite(t_last_prev):
-        return bool((t_first - t_last_prev) > GAP_FACTOR * delta_star_sec)
+    if delta_star_sec > 0.0 and np.isfinite(t_last_prev):
+        return bool((edge_t - t_last_prev) > GAP_FACTOR * delta_star_sec)
     return False
 
 

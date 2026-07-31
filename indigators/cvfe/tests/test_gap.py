@@ -36,21 +36,47 @@ def test_bar_length_criterion():
 
 
 def test_tick_interval_criterion():
-    """(バー t の最初のティック − バー t−1 の最後のティック) > 1.5 × Δ* でも成立（§4.7-1）。"""
+    """``bar_edges[t] − バー t−1 の最後のティック > 1.5 × Δ*`` でも成立（§4.7-1・ISSUE-216 改訂後）。"""
     assert is_gap_bar(3600.0, 0.0, 3600.0, t_first=3600.0, t_last_prev=2000.0,
-                      delta_star_sec=300.0)          # 間隔 1600 > 450
+                      delta_star_sec=300.0)          # 3600 − 2000 = 1600 > 450
     assert not is_gap_bar(3600.0, 0.0, 3600.0, t_first=3600.0, t_last_prev=3300.0,
-                          delta_star_sec=300.0)      # 間隔 300 <= 450
+                          delta_star_sec=300.0)      # 3600 − 3300 = 300 <= 450
 
 
-def test_zero_delta_star_makes_every_bar_a_gap_bar():
-    """Δ* = 0（RRANGE / PARK）では第 2 条件が常に成立する（仕様の未定義域・ISSUE-209）。
+def test_tick_interval_criterion_does_not_read_current_bar_ticks():
+    """条件 2 は当該バーのティックを参照しない（§4 柱書の因果律・ISSUE-216 の裁定）。
 
-    仕様 §3.2 は RRANGE / PARK で ``delta_star_sec = 0`` と定め、§4.7-1 は
-    ``> 1.5 × delta_star_sec`` を課す。ティック時刻は狭義単調増加であるから
-    差は必ず正であり、判定は常に真になる。本テストはこの帰結を明示的に固定する。
+    v1.0 は被減数が「バー t の**最初の**ティック時刻」であったため、``σ̂_t`` をバー開始時点で
+    確定できなかった（``t_first ∈ [bar_edges[t], bar_edges[t+1])``）。裁定後は被減数が
+    ``bar_edges[t]`` であるから、``t_first`` をどう動かしても判定は変わらない。
     """
-    assert is_gap_bar(3600.0, 0.0, 3600.0, t_first=3600.0, t_last_prev=3599.9,
+    base = dict(edge_t=3600.0, edge_prev=0.0, bar_interval_sec=3600.0,
+                t_last_prev=2000.0, delta_star_sec=300.0)
+    verdicts = {is_gap_bar(t_first=tf, **base) for tf in (3600.0, 3900.0, 7199.0, float("nan"))}
+    assert verdicts == {True}, "t_first の値・欠損に依らず判定が一定であること"
+
+    base_no = dict(base, t_last_prev=3300.0)
+    verdicts_no = {is_gap_bar(t_first=tf, **base_no) for tf in (3600.0, 3900.0, 7199.0)}
+    assert verdicts_no == {False}
+
+
+def test_zero_delta_star_disables_the_second_criterion():
+    """Δ* = 0（RRANGE / PARK）では条件 2 を評価しない（§4.7-1・ISSUE-209 の裁定）。
+
+    v1.0 の式へ ``delta_star_sec = 0`` を代入すると条件 2 は「差 > 0」となり、ティック時刻が
+    狭義単調増加である以上つねに成立した（＝全バーがギャップ保有と判定され、実際にはギャップの
+    無いバーにも ``σ̂_CO,t > 0`` が加算されて ``σ̂_t`` が系統的に過大になった）。
+    ``delta_star_sec = 0`` は「サンプリング間隔を持たない」ことを表す番兵であって閾値 0 秒では
+    ないため、裁定後は条件 1 のみで判定する。
+    """
+    # 公称どおりの長さ＝条件 1 は不成立。Δ*=0 でもギャップ保有にはならない。
+    assert not is_gap_bar(3600.0, 0.0, 3600.0, t_first=3600.0, t_last_prev=3599.9,
+                          delta_star_sec=0.0)
+    # 前バーの最後のティックがどれだけ古くても、Δ*=0 では条件 2 を見ない。
+    assert not is_gap_bar(3600.0, 0.0, 3600.0, t_first=3600.0, t_last_prev=0.0,
+                          delta_star_sec=0.0)
+    # 条件 1（バー長）は Δ*=0 でも従来どおり効く。
+    assert is_gap_bar(7200.0, 0.0, 3600.0, t_first=7200.0, t_last_prev=7195.0,
                       delta_star_sec=0.0)
 
 

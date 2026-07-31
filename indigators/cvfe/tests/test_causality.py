@@ -210,15 +210,20 @@ def test_gap_ewma_init_is_causal_when_fewer_than_200_gap_bars():
     ``σ̂`` へ漏れる（ISSUE-214）。
 
     ``SESSION_SEC < BAR_SEC`` の通常フィクスチャは**全バーがギャップ保有**になるため
-    この経路を構造的に通れない。ここでは寄り付きを遅らせたバーだけをギャップ保有に
-    して、`t0` 前後にまたがる 120 本の構成を作る。
+    この経路を構造的に通れない。ここでは一部のバーだけを早仕舞いさせ、その**翌バー**を
+    ギャップ保有にして、`t0` 前後にまたがる 120 本の構成を作る。
+
+    ISSUE-216 の裁定後、§4.7-1 の条件 2 は ``bar_edges[t] − バー t−1 の最後のティック``
+    で判定する（当該バーのティックを参照しない＝因果律を満たす）。したがってギャップを
+    作る操作子は「翌バーの寄り遅れ」ではなく「前バーの早仕舞い」である。
     """
     n_bars = 560
     t0 = N_HAR + 22
     # t0 の前に 100 本、後に 20 本のギャップ保有バーを置く（合計 120 < 200）。
-    late = tuple(range(100, 600, 5))[:100] + tuple(range(t0 + 1, t0 + 21))
+    gap_bars = tuple(range(100, 600, 5))[:100] + tuple(range(t0 + 1, t0 + 21))
+    early = tuple(b - 1 for b in gap_bars)      # 前バーを早仕舞い＝当該バーがギャップ保有
     ticks, edges = make_dataset(n_bars, bar_sec=BAR_SEC, tick_sec=TICK_SEC,
-                                seed=57, late_open_bars=late)
+                                seed=57, early_close_bars=early)
     full = _run(ticks, edges)
 
     n_gap = int((full.sigma_co > 0.0).sum())
