@@ -4775,11 +4775,27 @@ class ChartRenderer {
       if (typeof series.data === 'function' && series.data().length === 0) {
         return;
       }
+      // ISSUE-197（例外駆動の制御フローを撤去・2026-07-30 実UI実測）: latest 応答は末尾 K 点を返すため、
+      //   系列末尾が既に最新バーへ進んでいる定常状態では **毎回 K-1 点が「末尾より古い」** として届く。
+      //   lightweight-charts の update は last より古い time を throw で拒否するので、これを try/catch
+      //   任せにすると正常動作のさなかに例外が出続ける（実測: 1分足ライブで単一パターン
+      //   `n=2 ok=1 ng=1 times=T-60,T before=T after=T` が 45 秒 798 回＝約 18 回/秒。ISSUE-197 が
+      //   「日→1分 切替後 45 秒で 203 件」と記録したものは切替固有ではなく定常発生だった）。
+      //   捨てる点は **比較で判定して update を呼ばない**。捨てる点の集合も更新後の末尾も従来と同一
+      //   （実測: after == before ＝最新値は欠落していない＝実害は無く、コストとログ汚染だけがあった）。
+      const lastPoint = typeof series.data === 'function' ? series.data().slice(-1)[0] : undefined;
+      const lastTime = lastPoint ? lastPoint.time : undefined;
       for (const p of points ?? []) {
+        // 事前判定は time が数値（UTCTimestamp）同士のときだけ行う。business day 形式など
+        //   大小比較の意味が自明でない時刻表現は従来どおり update へ渡し、下の catch で無害化する。
+        if (typeof lastTime === 'number' && typeof p?.time === 'number' && p.time < lastTime) {
+          continue;
+        }
         try {
           series.update(p);
         } catch (_e) {
-          // stale（系列末尾より古い time）は捨てる。他の例外もバッチ継続を優先（点単位で無害化）。
+          // 事前判定で拾えない stale（非数値 time）や想定外の例外もバッチ継続を優先し、
+          //   点単位で無害化する（残り系列の末尾更新まで失わせない）。
         }
       }
     });
@@ -6011,6 +6027,75 @@ function finalize(bars, label, { min, max, maxBars }) {
 }
 
 
+// ===== js/adapter/front/menu_document_close.js =====
+// menu_document_close.js — ドロップダウンの「外側クリックで閉じる」を document へ張る共有ヘルパ。
+//
+// ISSUE-169: document スコープのリスナが mount 毎に線形蓄積するのを止める。
+//
+// 統合 UI（`unified_ui/`）のモードトグルは `#mode-ui` サブツリーを pristine innerHTML へ復元する。
+// **要素スコープ**のリスナは新ノード置換で根絶されるが、**document スコープ**のリスナは残る。
+// 各メニューは mount 毎に `install()` されるため、トグルのたびに document の click リスナが
+// +1 蓄積していた（各リスナは「閉じる」の冪等操作なので実害は軽微だが、蓄積は無限に続く）。
+//
+// 対策は 2 段構え:
+//   1. **自己修復**: install 時に、同一 document へ同一キーで張った前回のリスナを自分で外す。
+//      呼び出し側（統合 UI の teardown）が本モジュールを知らなくても効き、蓄積を
+//      「document × キーあたり 1 個」に有界化する。
+//   2. **明示 teardown**: `removeDocumentCloseHandler` を提供し、dispose を書ける呼び出し側は
+//      そちらで確実に外す。
+//
+// 単一モジュールに置くのは A方式バンドル（全モジュールをトップレベルで連結する配信形態）で
+// **同名 const の二重宣言＝SyntaxError** になるため。各メニューへコピーすると
+// `pair_dim_alpha_single_source.test.js` の二重宣言ガードが落ちる（実際に検出された）。
+
+//: document ごと・キーごとに、現在張っている click ハンドラを保持する。
+//  キーを持つのは、複数のメニュー（時間足／チャートテンプレート）が同じ document に
+//  それぞれ 1 個ずつリスナを持てるようにするため（互いを外し合わない）。
+const _HANDLERS = new WeakMap();
+
+/**
+ * 外側クリッククローズのハンドラを document へ張る（同一キーの前回ぶんは外す）。
+ *
+ * @param {Document} doc 対象 document（`addEventListener` を持たなければ no-op）。
+ * @param {string} key メニュー種別の識別子（例 'timeframe'）。
+ * @param {Function} handler 張るハンドラ。
+ */
+function installDocumentCloseHandler(doc, key, handler) {
+  if (!doc || typeof doc.addEventListener !== 'function' || typeof handler !== 'function') {
+    return;
+  }
+  let byKey = _HANDLERS.get(doc);
+  if (!byKey) {
+    byKey = new Map();
+    _HANDLERS.set(doc, byKey);
+  }
+  const previous = byKey.get(key);
+  if (previous && typeof doc.removeEventListener === 'function') {
+    doc.removeEventListener('click', previous);   // 前 mount ぶんを外す（蓄積の停止）。
+  }
+  doc.addEventListener('click', handler);
+  byKey.set(key, handler);
+}
+
+/**
+ * 張ったハンドラを外す（明示 teardown 経路）。二重呼び出しは no-op。
+ *
+ * @param {Document} doc 対象 document。
+ * @param {string} key メニュー種別の識別子。
+ * @param {Function} handler 外すハンドラ。
+ */
+function removeDocumentCloseHandler(doc, key, handler) {
+  if (!doc || typeof doc.removeEventListener !== 'function' || !handler) {
+    return;
+  }
+  doc.removeEventListener('click', handler);
+  const byKey = _HANDLERS.get(doc);
+  if (byKey && byKey.get(key) === handler) {
+    byKey.delete(key);
+  }
+}
+
+
 // ===== js/adapter/front/timeframe_menu.js =====
 // timeframe_menu.js — 時間足ドロップダウン（ISSUE-117/122/123・DOM アダプター・両アプリ共有）。
 //
@@ -6029,6 +6114,7 @@ function finalize(bars, label, { min, max, maxBars }) {
 //   （本コンポーネントは controller を知らない・DIP）。install は controller.bind() より前
 //   （bootstrap 内）に呼ばれる前提（bind が [data-timeframe] を収集するため）。
 //   DOM 不在（SSR/テスト）は no-op。
+
 
 // 既定の時間足メニュー（present＝バックエンド対応 9 足）。サーバ TIMEFRAME_RULES と一致させる。
 const DEFAULT_GROUPS = [
@@ -6120,14 +6206,22 @@ class TimeframeMenu {
       }
     });
     // 外側クリックで閉じる（メニュー内クリックは pop/trigger 側で stopPropagation/処理済み）。
-    if (typeof doc.addEventListener === 'function') {
-      doc.addEventListener('click', () => this._setOpen(false));
-    }
+    // ISSUE-169: 前 mount ぶんの document リスナを外してから張る（線形蓄積の停止）。
+    this._docCloseHandler = () => this._setOpen(false);
+    this._doc = doc;
+    installDocumentCloseHandler(doc, 'timeframe', this._docCloseHandler);
     pop.addEventListener('pointerdown', (e) => {
       if (e && typeof e.stopPropagation === 'function') {
         e.stopPropagation();
       }
     });
+  }
+
+  // ISSUE-169: 明示的な後片付け。document スコープのリスナを外す（DOM は呼び出し側が破棄する）。
+  //   呼ばれなくても install 時の自己修復で蓄積は有界（document あたり 1 個）になる。
+  dispose() {
+    removeDocumentCloseHandler(this._doc, 'timeframe', this._docCloseHandler);
+    this._docCloseHandler = null;
   }
 
   _toggle() {
@@ -9150,7 +9244,35 @@ class IndicatorController {
 
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
   //   MP 種別（computeId==='market_profile'）は /compute をバイパスし MarketProfileActor へ委譲する。
+  // 指標の適用/削除の**完了**を購読する（任意・1 個）。ISSUE-037。
+  //
+  //   リプレイ層（`replay.js`）は「適用/削除のあとに減光境界を再同期する」必要があるが、
+  //   render を経ない経路のため、従来は `controller.applyIndicator` / `removeInstance` を
+  //   **実行時に monkeypatch** して後処理を差し込んでいた（destroy で原状復帰）。
+  //   monkeypatch は (1) 差し替え順序に依存して壊れる (2) 復元漏れが静かに残る
+  //   (3) subclass の override と二重に噛む、という脆さがある。
+  //   購読スロットを公開して置き換える（`setTimeframeObserver` と同型の規律）。
+  //
+  //   通知は「適用・削除が完了した後」に 1 回。適用が no-op（未知 id 等）でも通知する
+  //   ＝ monkeypatch 時代と同一（呼び出しごとに後処理が走っていた）。
+  setAppliedObserver(observer) {
+    this._appliedObserver = typeof observer === 'function' ? observer : null;
+  }
+
+  _notifyApplied() {
+    if (this._appliedObserver) {
+      this._appliedObserver();
+    }
+  }
+
+  // 適用（購読者への通知を伴う薄いラッパ）。実処理は _applyIndicatorInner。
   async applyIndicator(indicatorId, variant) {
+    const result = await this._applyIndicatorInner(indicatorId, variant);
+    this._notifyApplied();
+    return result;
+  }
+
+  async _applyIndicatorInner(indicatorId, variant) {
     // ISSUE-153: 復元（restore＝_state 丸ごと置換）と競合すると、先に適用した instance が
     //   state から消えて描画だけ残る（孤児化）。復元中は完了を待ってから適用する。
     if (this._restoreInFlight) {
@@ -9361,7 +9483,14 @@ class IndicatorController {
   }
 
   // UC-05 削除。
+  // 削除（購読者への通知を伴う薄いラッパ）。実処理は _removeInstanceInner（ISSUE-037）。
   removeInstance(instanceId) {
+    const result = this._removeInstanceInner(instanceId);
+    this._notifyApplied();
+    return result;
+  }
+
+  _removeInstanceInner(instanceId) {
     this._renderer.remove(instanceId);
     this._state = facadeRemove(this._state, instanceId);
     this._meta.delete(instanceId);
@@ -11209,6 +11338,9 @@ class TfPeriodSink {
 
   setTfPeriods(columns, unit) { return this._primitive.setTfPeriods(columns, unit); }
 
+  // tf-period 列を束ねる価格幅（barw）。null で最小価格単位のまま（ISSUE-054）。
+  setTfBinWidth(width) { return this._primitive.setTfBinWidth(width); }
+
   tfPeriodLevelAt(time, price) { return this._primitive.tfPeriodLevelAt(time, price); }
 }
 
@@ -11521,6 +11653,21 @@ class MpFetchParams {
   // 現在選択中の src（未設定は null）。composition root が tf-period 列への src 透過判定に使う。
   src() {
     return this._params.src ?? null;
+  }
+
+  // 現在有効な barw（レンジ pt）。resmode='range' のときのみ値を持ち、それ以外は null。
+  //
+  // ISSUE-054: 「レンジ」は日別プロファイルの解像度としてユーザーが設定する値だが、日別描画を
+  //   tf-period 列（最小価格単位）が担う経路では効かず、`/market_profile` 由来の POC/VA だけが
+  //   変わるという**部分的にしか効かない**状態だった。tf-period 側でも同じ幅で束ねるため、
+  //   明示 range と dispbp 写像後の range の**両方**を 1 か所で解決する。
+  barw() {
+    const explicit = this._params.resmode === 'range' ? Number(this._params.range) : NaN;
+    if (Number.isFinite(explicit) && explicit > 0) {
+      return explicit;
+    }
+    const mapped = Number(this.dispExtra().range);
+    return Number.isFinite(mapped) && mapped > 0 ? mapped : null;
   }
 
   // 取得パラメータを設定する。null/undefined のキーは無視する（getContext の値やサーバ既定を潰さない）。
@@ -12165,6 +12312,38 @@ const C_TFP_BG_DOWN = 'rgba(239, 83, 80, 0.1)';  // 陰線周期（薄赤）
 // ISSUE-085 改: VA 外の占有レンジ背景（減光）。VA 帯（通常 α0.1）との2トーンで VA 幅を表現する。
 const C_TFP_BG_UP_DIM = 'rgba(38, 166, 154, 0.04)';
 const C_TFP_BG_DOWN_DIM = 'rgba(239, 83, 80, 0.04)';
+// tf-period 列の最小価格単位 levels を、価格幅 `binWidth` のビンへ束ねる純関数（ISSUE-054）。
+//
+// 「レンジ」はユーザーが設定する**表示解像度**である。tf-period 列は測定としては最小価格単位で
+// 保持する（粗いビンで測ると分布が退行して見えるアーティファクトを避けるため）。したがって
+// 束ねるのは**描画時のみ**とし、取得・キャッシュ・API は一切変更しない。
+//
+// ビン境界は価格 0 起点の絶対格子（`floor(price / binWidth)`）に取る。列ごとに相対格子を作ると
+// 同じ価格が列によって別のビンへ落ち、横に並べたとき行がずれる。
+// 返す価格はビン**中心**（`(idx + 0.5) * binWidth`）で昇順。count は同一ビン内の総和。
+function aggregateLevelsToBins(levels, binWidth) {
+  if (!Array.isArray(levels) || !levels.length || !(binWidth > 0)) {
+    return Array.isArray(levels) ? levels : [];
+  }
+  const sums = new Map();
+  for (let i = 0; i < levels.length; i += 1) {
+    const price = Number(levels[i][0]);
+    const count = Number(levels[i][1]);
+    if (!Number.isFinite(price) || !Number.isFinite(count)) {
+      continue;
+    }
+    const idx = Math.floor(price / binWidth);
+    sums.set(idx, (sums.get(idx) || 0) + count);
+  }
+  const out = [];
+  for (const [idx, count] of sums) {
+    out.push([(idx + 0.5) * binWidth, count]);
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  return out;
+}
+
+
 class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -12183,6 +12362,7 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     // 時間足毎profile列（tf-period・最小価格単位）: [{time, levels:[[price,count]...], poc, ...}]。
     //   null=非適用。non-null で各周期の min-unit 列を時間軸連動で描く（sessions の tf 一般化）。
     this._tfPeriods = null;
+    this._tfBinWidth = null;   // tf-period 列の束ね幅（barw pt）。null＝最小価格単位のまま。
     this._tfUnit = null;
     this._lastTfColW = null;
   }
@@ -12202,6 +12382,31 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     this._update();
   }
 
+  // tf-period 列を束ねる価格幅（barw pt）。null/0 以下で最小価格単位のまま（ISSUE-054）。
+  //   「レンジ」を日別プロファイルの**全**描画経路で効かせるための表示専用パラメータ。
+  //   取得・キャッシュ・API は変更しない（束ねるのは描画とホバー読取のみ）。
+  setTfBinWidth(width) {
+    const w = Number(width);
+    const next = Number.isFinite(w) && w > 0 ? w : null;
+    if (next === this._tfBinWidth) {
+      return;
+    }
+    this._tfBinWidth = next;
+    this._update();
+  }
+
+  // 束ね適用後の levels（束ねないときは元の levels）。描画とホバー読取で共有する
+  //   （片方だけ束ねるとカーソル位置と描画行がずれる）。
+  _effectiveLevels(col) {
+    const raw = (col && col.levels) || [];
+    return this._tfBinWidth ? aggregateLevelsToBins(raw, this._tfBinWidth) : raw;
+  }
+
+  // 行高に用いる価格幅（束ねているときは barw、そうでなければ最小価格単位）。
+  _effectiveRowWidth() {
+    return this._tfBinWidth || this._tfUnit;
+  }
+
   // tf-period ホバー読取（依頼者指示 2026-07-13・a案ツールチップ）: 周期 time とカーソル価格から
   //   該当列の**最近傍占有レベル**を引く純ロジック。0.0255 等の微細格子では行高がサブピクセルで
   //   正確な行へカーソルを合わせるのが実質不可能なため、縦 HOVER_TOL_PX（3px）相当の価格幅以内で
@@ -12210,7 +12415,9 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   //   tpoUnits, unit } を返し、非表示・列不在・許容外（近傍に占有なし）は null。
   tfPeriodLevelAt(time, price) {
     const cols = this._tfPeriods;
-    const unit = this._tfUnit;
+    // ISSUE-054: 束ね幅（barw）指定時は**描画と同じ行**を引く（片方だけ束ねるとカーソル位置と
+    //   描画行がずれ、読み取り値が隣の行のものになる）。許容幅の基準も行の幅に合わせる。
+    const unit = this._effectiveRowWidth();
     if (!this._visible || !cols || !cols.length || !(unit > 0)
         || time == null || !Number.isFinite(Number(price))) {
       return null;
@@ -12220,7 +12427,7 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     if (!col) {
       return null;
     }
-    const levels = col.levels || [];
+    const levels = this._effectiveLevels(col);
     if (!levels.length) {
       return null;
     }
@@ -12459,9 +12666,11 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     const colW = gaps.length ? gaps[Math.floor(gaps.length / 2)] : (this._lastTfColW || 18);
     this._lastTfColW = colW;
     const tileW = Math.max(3, colW * 0.85);
+    // 行高は「束ね幅（barw）」があればそれ、無ければ最小価格単位で決める（ISSUE-054）。
+    const rowW = this._effectiveRowWidth();
     let lvlH = 1;
-    if (this._tfUnit && cols[0] && cols[0].poc != null) {
-      const yA = toY(cols[0].poc); const yB = toY(cols[0].poc + this._tfUnit);
+    if (rowW && cols[0] && cols[0].poc != null) {
+      const yA = toY(cols[0].poc); const yB = toY(cols[0].poc + rowW);
       if (yA != null && yB != null) lvlH = Math.max(1, Math.abs(yA - yB));
     }
     ctx.save();
@@ -12470,7 +12679,7 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       if (cx == null) continue; // 視野外＝スクロールで可視化。
       const left = cx - tileW / 2;
       const c = cols[i];
-      const levels = c.levels || [];
+      const levels = this._effectiveLevels(c);   // barw 指定時はビンへ束ねる（ISSUE-054）。
       // 方向背景（依頼者指示 2026-07-13）: 列の占有レンジ（levels 昇順の先頭〜末尾）を陽/陰色で塗る。
       //   dirUp 未注釈（null/undefined＝candle 不在・旧呼び出し）は描かない。
       // ISSUE-085 改（依頼者指示 2026-07-15）: VA 幅は**背景の2トーン**で表現する。VA 帯
@@ -12510,8 +12719,11 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         const y = toY(price);
         if (y == null) continue;
         const w = Math.max(SESS_MIN_BAR_PX, (cnt / cmax) * (tileW - 2));
-        ctx.fillStyle = (pocPrice != null && Math.abs(price - pocPrice) < 1e-9)
-          ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
+        // 束ねたときは元 poc 価格と行の中心が一致しないため、poc を**含むビン**を POC 色にする。
+        const isPoc = pocPrice != null && (this._tfBinWidth
+          ? Math.abs(price - pocPrice) <= this._tfBinWidth / 2
+          : Math.abs(price - pocPrice) < 1e-9);
+        ctx.fillStyle = isPoc ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
         ctx.fillRect(left + 1, y - lvlH / 2, w, lvlH);
       }
     }
@@ -12858,6 +13070,12 @@ class MarketProfileActor {
   // 現在選択中の src（未設定は null）。composition root が tf-period 列への src 透過判定に使う。
   srcParam() {
     return this._fetchParams.src();
+  }
+
+  // 現在有効な barw（レンジ pt・未設定は null）。composition root が tf-period 列の束ね幅に使う
+  //   （ISSUE-054: 「レンジ」を日別プロファイルの全描画経路で効かせる）。
+  barwParam() {
+    return this._fetchParams.barw();
   }
 
   // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
@@ -13556,6 +13774,7 @@ class LocalStorageTemplateGateway {
 // 再描画（U3/U6）: 一覧はビューモデル注入 render(vm) で更新し、かつ**開くたびに再描画**する
 //   （provide 注入時）。これにより restore() 完了と install() の順序依存を構造的に作らない。
 
+
 class ChartTemplateMenu {
   /**
    * @param {object} opts
@@ -13693,9 +13912,10 @@ class ChartTemplateMenu {
       }
     });
     // 外側クリックで閉じる（メニュー内クリックは pop/trigger 側で処理済み）。
-    if (typeof doc.addEventListener === 'function') {
-      doc.addEventListener('click', () => this._setOpen(false));
-    }
+    // ISSUE-169: 前 mount ぶんの document リスナを外してから張る（線形蓄積の停止）。
+    this._docCloseHandler = () => this._setOpen(false);
+    this._doc = doc;
+    installDocumentCloseHandler(doc, 'chart-template', this._docCloseHandler);
     pop.addEventListener('pointerdown', (e) => {
       if (e && typeof e.stopPropagation === 'function') {
         e.stopPropagation();
@@ -13795,6 +14015,13 @@ class ChartTemplateMenu {
     item.dataset.tplBind = templateId;
     item.textContent = text;
     return item;
+  }
+
+  // ISSUE-169: 明示的な後片付け。document スコープのリスナを外す（DOM は呼び出し側が破棄する）。
+  //   呼ばれなくても install 時の自己修復で蓄積は有界（document あたり 1 個）になる。
+  dispose() {
+    removeDocumentCloseHandler(this._doc, 'chart-template', this._docCloseHandler);
+    this._docCloseHandler = null;
   }
 
   _toggle() {
@@ -15791,14 +16018,26 @@ async function bootstrap({
     // ISSUE-066: MP パラメータ変更時の tf-period 即時再適用。tfpShouldOn なら setEnabled(true)＝
     //   refresh→ensure で jitter buffer の src 差分キャッシュ破棄→新 src 再fetch→再描画。不成立
     //   （sessions 解除/非対応 tf）は列を消す。可視レンジ変化のデバウンスと違い**即時**（src 切替の反映）。
+    // ISSUE-054: 「レンジ」(barw) を tf-period 列にも効かせる。日別プロファイルの描画を tf-period が
+    //   担う経路では、レンジを変えても列は最小価格単位のままで、`/market_profile` 由来の POC/VA だけが
+    //   変わる＝**パラメータが部分的にしか効かない**状態だった。列は取得・キャッシュを変えずに
+    //   **描画時に barw 幅へ束ねる**（測定は最小単位のまま保つ＝粗ビンのアーティファクトを持ち込まない）。
+    const syncTfBinWidth = () => {
+      if (typeof mpTfPeriodSink.setTfBinWidth === 'function'
+          && typeof marketProfile.barwParam === 'function') {
+        mpTfPeriodSink.setTfBinWidth(marketProfile.barwParam());
+      }
+    };
     refreshTfPeriodNow = () => {
       if (!tfPeriodActor) { return; }
+      syncTfBinWidth();                     // レンジ変更を列へ即時反映（取得の要否と独立）。
       if (!tfpShouldOn()) {
         if (tfPeriodActor.isEnabled()) { tfPeriodActor.setEnabled(false); }
         return;
       }
       tfPeriodActor.setEnabled(true);
     };
+    syncTfBinWidth();                       // 初期値（保存済みインスタンスのレンジ）を反映する。
     // ISSUE-083: MP の live tick（sessions×tfDraws×growing）→ 当日チャンクの stale-while-revalidate
     //   再取得（tfPeriodActor.onLiveTick→jitterBuffer.refreshAt）。throttle は actor 側（既定 5s）。
     //   列非描画中（isEnabled=false＝日別解除・非対応 tf）は発火しない。
