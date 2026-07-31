@@ -675,3 +675,91 @@ test('_computeInstance: await 中に行が差し替わった結果は破棄す�
   assert.equal(Object.fromEntries(ctrl._state.applied[0].params).length, 200, 'params は巻き戻らない');
   assert.deepEqual(rendered, [], '破棄された結果は描画しない');
 });
+
+
+// ---------------------------------------------------------------------------
+// ISSUE-037: 適用/削除の完了を購読するスロット（monkeypatch の置き換え）
+//
+// リプレイ層（replay.js）は「適用/削除のあとに減光境界を再同期する」必要があるが、render を
+// 経ない経路のため、従来は controller.applyIndicator / removeInstance を実行時に monkeypatch
+// して後処理を差し込んでいた（destroy で原状復帰）。monkeypatch は差し替え順序に依存して壊れ、
+// 復元漏れが静かに残り、subclass の override と二重に噛む。setTimeframeObserver と同型の
+// 購読スロットへ置き換えた。
+// ---------------------------------------------------------------------------
+
+function ctrlForObserver() {
+  const noop = () => {};
+  const get = (id) => ({
+    id, label: id, category: 'technical', variants: ['default'], params: [],
+    series: [{ name: id, kind: 'line' }],
+  });
+  return new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => ({ ok: true, generation: req.generation ?? 0, series: [] }) },
+    persistence: {
+      loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop,
+      loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1,
+    },
+    renderer: {
+      renderLine: noop, renderHorizontal: noop, renderHistogram: noop,
+      setData: noop, setVisible: noop, remove: noop,
+    },
+    document: null,
+  });
+}
+
+test('ISSUE-037 setAppliedObserver: 適用の完了後に 1 回通知する', async () => {
+  const ctrl = ctrlForObserver();
+  let calls = 0;
+  let appliedAtNotify = -1;
+  ctrl.setAppliedObserver(() => { calls += 1; appliedAtNotify = ctrl._state.applied.length; });
+
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+
+  assert.equal(calls, 1);
+  assert.equal(appliedAtNotify, 1, '通知時点で適用は完了している（後処理が正しい状態を見る）');
+});
+
+test('ISSUE-037 setAppliedObserver: 削除の完了後に 1 回通知する', async () => {
+  const ctrl = ctrlForObserver();
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const id = ctrl._state.applied[0].instanceId;
+  let calls = 0;
+  let appliedAtNotify = -1;
+  ctrl.setAppliedObserver(() => { calls += 1; appliedAtNotify = ctrl._state.applied.length; });
+
+  ctrl.removeInstance(id);
+
+  assert.equal(calls, 1);
+  assert.equal(appliedAtNotify, 0, '通知時点で削除は完了している');
+});
+
+test('ISSUE-037 setAppliedObserver: 未知 id の適用でも通知する（monkeypatch 時代と同一）', async () => {
+  const ctrl = ctrlForObserver();
+  ctrl._catalog.get = () => null;      // 未知 id ＝ 適用は no-op
+  let calls = 0;
+  ctrl.setAppliedObserver(() => { calls += 1; });
+
+  const result = await ctrl.applyIndicator('____unknown____', 'default');
+
+  assert.equal(result, null, '適用自体は no-op');
+  assert.equal(calls, 1, '呼び出しごとに後処理が走る挙動を保つ');
+});
+
+test('ISSUE-037 setAppliedObserver: null で購読解除できる（destroy 経路）', async () => {
+  const ctrl = ctrlForObserver();
+  let calls = 0;
+  ctrl.setAppliedObserver(() => { calls += 1; });
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  assert.equal(calls, 1);
+
+  ctrl.setAppliedObserver(null);
+  await ctrl.applyIndicator('btlm_trail', 'default');
+
+  assert.equal(calls, 1, '解除後は通知されない');
+});
+
+test('ISSUE-037 未登録なら通知は no-op（購読者不在で落ちない）', async () => {
+  const ctrl = ctrlForObserver();
+  await assert.doesNotReject(() => ctrl.applyIndicator('tgp_btlm', 'default'));
+});

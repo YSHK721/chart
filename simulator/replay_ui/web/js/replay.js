@@ -68,7 +68,6 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   render/animateForming/値算出には一切関与しない（計算ロジック無改変）。
   const liveDefaultRecentBars = controller._recentBars;
   const disposers = [];
-  const patched = [];
   let wasEnabled = false; // enable() 済み（＝reveal トリムが起きうる）か。disable の全長復帰の発火条件。
 
   const syncBoundary = () => view.syncBoundary({ replayStart, candles });
@@ -87,19 +86,15 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   });
 
   // 指標の適用/削除（render を経ない経路）でも pane の減光を即同期する。
-  for (const name of ['applyIndicator', 'removeInstance']) {
-    const orig = (typeof controller[name] === 'function') ? controller[name].bind(controller) : null;
-    if (!orig) continue;
-    // 原状復帰のため、置換前の own プロパティ有無と値を記録する（destroy で復元）。
-    const hadOwn = Object.prototype.hasOwnProperty.call(controller, name);
-    const prev = controller[name];
-    patched.push({ name, hadOwn, prev });
-    controller[name] = (...a) => {
-      const r = orig(...a);
-      if (r && typeof r.then === 'function') return r.then((v) => { syncBoundary(); return v; });
-      syncBoundary();
-      return r;
-    };
+  //
+  // ISSUE-037: 以前は `controller.applyIndicator` / `removeInstance` を実行時に **monkeypatch**
+  //   して後処理を差し込み、destroy で原状復帰していた。monkeypatch は (1) 差し替え順序に依存して
+  //   壊れる (2) 復元漏れが静かに残る (3) subclass の override と二重に噛む、という脆さがある。
+  //   controller が公開する購読スロット（`setAppliedObserver`・`setTimeframeObserver` と同型）へ
+  //   置き換えた。通知は適用/削除の**完了後**に 1 回で、monkeypatch 時代と同じ位置に入る。
+  const hasAppliedObserver = typeof controller.setAppliedObserver === 'function';
+  if (hasAppliedObserver) {
+    controller.setAppliedObserver(() => syncBoundary());
   }
 
   // ---- データ取得 ----
@@ -623,11 +618,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     disable();
     for (const off of disposers) { try { off(); } catch (_e) { /* noop */ } }
     disposers.length = 0;
-    for (const { name, hadOwn, prev } of patched) {
-      if (hadOwn) { controller[name] = prev; }
-      else { try { delete controller[name]; } catch (_e) { controller[name] = prev; } }
+    if (hasAppliedObserver) {
+      controller.setAppliedObserver(null);   // ISSUE-037: 購読解除（monkeypatch 復元の置き換え）。
     }
-    patched.length = 0;
   }
 
   return { enable, disable, destroy };

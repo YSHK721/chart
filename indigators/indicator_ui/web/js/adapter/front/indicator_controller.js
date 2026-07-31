@@ -365,7 +365,35 @@ export class IndicatorController {
 
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
   //   MP 種別（computeId==='market_profile'）は /compute をバイパスし MarketProfileActor へ委譲する。
+  // 指標の適用/削除の**完了**を購読する（任意・1 個）。ISSUE-037。
+  //
+  //   リプレイ層（`replay.js`）は「適用/削除のあとに減光境界を再同期する」必要があるが、
+  //   render を経ない経路のため、従来は `controller.applyIndicator` / `removeInstance` を
+  //   **実行時に monkeypatch** して後処理を差し込んでいた（destroy で原状復帰）。
+  //   monkeypatch は (1) 差し替え順序に依存して壊れる (2) 復元漏れが静かに残る
+  //   (3) subclass の override と二重に噛む、という脆さがある。
+  //   購読スロットを公開して置き換える（`setTimeframeObserver` と同型の規律）。
+  //
+  //   通知は「適用・削除が完了した後」に 1 回。適用が no-op（未知 id 等）でも通知する
+  //   ＝ monkeypatch 時代と同一（呼び出しごとに後処理が走っていた）。
+  setAppliedObserver(observer) {
+    this._appliedObserver = typeof observer === 'function' ? observer : null;
+  }
+
+  _notifyApplied() {
+    if (this._appliedObserver) {
+      this._appliedObserver();
+    }
+  }
+
+  // 適用（購読者への通知を伴う薄いラッパ）。実処理は _applyIndicatorInner。
   async applyIndicator(indicatorId, variant) {
+    const result = await this._applyIndicatorInner(indicatorId, variant);
+    this._notifyApplied();
+    return result;
+  }
+
+  async _applyIndicatorInner(indicatorId, variant) {
     // ISSUE-153: 復元（restore＝_state 丸ごと置換）と競合すると、先に適用した instance が
     //   state から消えて描画だけ残る（孤児化）。復元中は完了を待ってから適用する。
     if (this._restoreInFlight) {
@@ -576,7 +604,14 @@ export class IndicatorController {
   }
 
   // UC-05 削除。
+  // 削除（購読者への通知を伴う薄いラッパ）。実処理は _removeInstanceInner（ISSUE-037）。
   removeInstance(instanceId) {
+    const result = this._removeInstanceInner(instanceId);
+    this._notifyApplied();
+    return result;
+  }
+
+  _removeInstanceInner(instanceId) {
     this._renderer.remove(instanceId);
     this._state = facadeRemove(this._state, instanceId);
     this._meta.delete(instanceId);

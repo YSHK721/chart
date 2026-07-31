@@ -568,11 +568,18 @@
 
 ## ISSUE-037: replay_ui frontend(再生層) — controller への結合＋View fallback の堅牢化
 - **重大度**: Low（挙動非差・parity 由来）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: 再生層(INC-F2) arch/code レビュー（🔵・2026-07-04）。
 - **背景**: (a) `web/js/replay.js` が `controller._timeframe`/`_recentBars` の private を直接参照＋`applyIndicator`/`removeInstance` を実行時 monkeypatch（syncBoundary ラップ）。プロト replay.js の忠実移植由来で依存方向違反ではないが結合が強い。(b) `replay_view.readSpeed/readMode` は要素欠落時 NaN→既定退避（clampSpeed→1/real_ticks）。プロトは `null.value` で throw。現行 index.html では rp-speed/rp-mode 常設のため到達不能。(c) `syncSpeedUI` の `clampSpeed(parseFloat())` はプロトの `+value` と [0,1] 範囲で等価。
 - **対策（提案）**: (a) controller 側に public accessor / フック（onApplied 等）を設け private 参照・monkeypatch を解消。(b)(c) 現行 DOM では非到達＝現状維持可。厳密忠実化するなら proto 準拠へ寄せる。
 - **関連**: replay_ui フロント増分（INC-F2）。
+- **対応（2026-07-31）**:
+  - **(a-1) private 参照は既に解消済みだった**（コードで確認）。`controller._timeframe` / `_recentBars` は ISSUE-181 で `TimeframeController` へ実体を移した際に **getter/setter の互換アクセサ**として明示公開されており（「旧 host フィールド面」とコメント済み）、`replay.js` の読み書きは正規の面を通っている。本 Issue 起票時の指摘はこの時点で失効していた。
+  - **(a-2) monkeypatch を購読スロットへ置換（実施）**: `IndicatorController.setAppliedObserver(fn)` を新設し（`setTimeframeObserver` と同型の規律）、`applyIndicator` / `removeInstance` を「薄いラッパ＋内部実装（`_applyIndicatorInner` / `_removeInstanceInner`）」に分けて完了後に 1 回通知する。`replay.js` は monkeypatch と `patched` 配列による原状復帰を捨て、購読登録／`destroy()` での解除に置き換えた。
+    - monkeypatch の何が問題だったか: (1) 差し替え順序に依存して壊れる (2) 復元漏れが静かに残る (3) subclass の override（`ReplayIndicatorController.removeInstance`）と二重に噛む。
+    - **通知位置は monkeypatch 時代と同一**にした。未知 id で適用が no-op のときも通知する（従来は呼び出しごとに後処理が走っていたため）。
+  - **(b)(c) は現状維持**（起票時の判定どおり）。`readSpeed/readMode` の要素欠落フォールバックと `clampSpeed(parseFloat())` は、現行 `index.html` が `rp-speed`/`rp-mode` を常設するため**到達不能**であり、プロト忠実化のためだけに挙動を変える利得がない。
+- **検証**: 回帰テスト 5 件を追加（適用/削除の完了後に 1 回・通知時点で状態が確定済み・未知 id でも通知・null で解除・購読者不在で落ちない）。**変異注入**（通知を外す）で 3 件が失敗することを確認。`indicator_ui/web` **953 passed** / `replay_ui/web` 267 passed / `market_profile/web` 311 passed。実 UI（リプレイ 8281）で指標の追加・削除を実行し、凡例 1→2→1・コンソールエラー 0 を確認した。
 
 ## ISSUE-038: indicator_ui — indicator_controller.js(994行) SRP違反（View分離）
 - **重大度**: Medium（設計整理・正しさ影響なし。監査は「依存方向違反0・破壊的変更不要」と明言）
