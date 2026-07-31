@@ -616,11 +616,19 @@
 
 ## ISSUE-043: replay_ui MP sessions — restore 経路（cursor 未確定）で全期間 sessions → as-of-T への縮小ジャンプの疑い
 - **重大度**: Low（視覚バグ疑い・未目視・ISSUE-042 と同クラス）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: ISSUE-042 の code-review（🟡・2026-07-06）。
 - **背景**: sessions モードは `isGrowingPush()=false`（`_growing && !_sessions` を満たさない）のため、ISSUE-042 の cursor 未確定ガードの対象外。ページ読込 restore（`_untilTime` 未設定＝`to=undefined`）で基底 refresh が全期間 sessions 分割を setProfile し、再生開始後の `refresh(to=T)`（機構A・as-of-T）で縮小ジャンプが起きうる。1W/1M（forming 非対応 tf）は enterBar→null で後続リセットが無くフラッシュ不成立＝対象外（妥当判定済み）。
 - **対策（案）**: sessions は描画経路が別（共有グリッド＋各日 tpo 整列）のため個別ハンドリング要。まずブラウザ目視で実挙動を確認してから対策設計する（ISSUE-042 のガードをそのまま流用しない）。
 - **関連**: ISSUE-042・ISSUE-041（機構A: refresh(to,sessions)）。
+- **目視・実測（2026-07-31・リプレイ UI 8281・対策案どおり「まずブラウザで実挙動を確認」を実施）**: **縮小ジャンプは起きない。疑いは否定される。**
+  - 手順: MP を日別プロファイル（sessions）で有効化 → **ページ再読込**（＝ restore 経路・`_untilTime` 未設定）→ カーソル移動で `refresh(to=T)` を発火。`setSessions` の呼び出しごとにセッション数と日付範囲を記録した。
+  - restore 直後: `n=60`（2026-05-11 〜 2026-07-31）。
+  - カーソルを 25 バー戻す間の `setSessions`: `n=60`（05-08〜07-30）→ `n=60`（05-07〜07-29）→ `n=60`（05-06〜07-28）。
+  - すなわち as-of-T は「全期間から縮小」するのではなく、**セッション数を 60 に保ったまま窓がスライド**する。restore の全期間表示と as-of-T の間に本数差が生じないため、ISSUE-042 と同クラスのフラッシュは成立しない。
+- **対応**: コード変更なし（対策不要）。ISSUE-042 のガードを流用しないという判断も維持する（そもそも縮小が無いため）。
+- **⚠ 検証手法の失敗と是正**: 最初は `rp-play` を押して計測したが、再生が始まっておらず（ボタン表記が `▷` のまま・表示も不変）`setSessions` が 1 回も呼ばれない**空虚な計測**だった。`rp-next` / `rp-prev` による確実なカーソル移動へ切り替えて確定させた。
+- **検証**: `simulator/replay_ui` 187 passed / `replay_ui/web` 267 passed（計測用プローブは撤去済み）。
 
 ## ISSUE-044: replay_ui — real_ticks（実ティック）再生の完了予想（ETA）が旧 800 点 cap モデルのままで実測と桁違いに乖離
 - **重大度**: Medium（表示バグ・月足×実ティックで約 1,900 倍の過小推定）
