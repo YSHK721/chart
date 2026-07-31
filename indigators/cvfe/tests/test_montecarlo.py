@@ -146,11 +146,7 @@ def noise_reports():
 
 
 @pytest.mark.parametrize("ratio", [
-    pytest.param(0.5, marks=pytest.mark.xfail(strict=True, reason=(
-        "仕様の内部不整合（ISSUE-207）。ω/σ = 0.5 での実測 S = 0.4718 は §4.1-6 の "
-        "DEGRADED 閾値 S > 0.50 に届かず PASS と判定される。一方 §9 段階 2 は "
-        "ω/σ >= 0.5 で DEGRADED 以上を要求する。閾値 0.50 は仕様が根拠を示していない "
-        "固定値であり、裁定前に変更しない。"))),
+    0.5,
     1.0,
 ])
 def test_stage2_noise_triggers_degraded_or_worse(noise_reports, ratio):
@@ -158,6 +154,26 @@ def test_stage2_noise_triggers_degraded_or_worse(noise_reports, ratio):
     rep = noise_reports[ratio]
     assert rep.quality_gate in ("DEGRADED", "FAIL"), (
         f"ω/σ={ratio}: gate={rep.quality_gate}, S={rep.signature_slope!r}")
+
+
+def test_stage2_degraded_threshold_admits_omega_sigma_half(noise_reports):
+    """閾値 0.45 が ``ω/σ = 0.5`` を DEGRADED として拾えること（ISSUE-207 の裁定）。
+
+    ``S = (2 − 1/30)r² / (1 + r²/30)``（``r = ω/σ``）であるから ``r = 0.5`` の理論値は
+    0.4877。v1.0 の閾値 0.50 はこれを構造的に下回れず、§9 段階 2 の「``ω/σ ≥ 0.5`` のとき
+    DEGRADED 以上」を満たせなかった（実測 S = 0.4718 で PASS 判定）。裁定は「§9 の設計意図を
+    正とし閾値を 0.45 へ下げる」。本テストは閾値と要求の間に余裕があることを直接固定する。
+    """
+    from src.quality import S_DEGRADED
+
+    r = 0.5
+    theoretical = (2.0 - 1.0 / 30.0) * r ** 2 / (1.0 + r ** 2 / 30.0)
+    assert theoretical == pytest.approx(0.4877, abs=0.001)
+    assert S_DEGRADED < theoretical, (
+        f"閾値 {S_DEGRADED} は ω/σ=0.5 の理論値 {theoretical:.4f} を下回る必要がある")
+
+    measured = noise_reports[0.5].signature_slope
+    assert S_DEGRADED < measured, f"実測 S = {measured:.4f} も閾値を超えること"
 
 
 def test_stage2_low_noise_stays_pass(noise_reports):
