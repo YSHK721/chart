@@ -22,6 +22,7 @@
 ④含む構造:
     intervals_estimator       : 超過時刻列 → θ̂（本体）。
     extremal_index_of_series  : 系列＋閾値 → θ̂・超過数・有効クラスタ数。
+    intervals_decluster       : θ̂ を使った宣言クラスタリング（クラスタ極値の抽出）。
     armax_series              : 検証用の既知 θ 過程（θ = 1 − α）。
 
 ⑤依存: 標準 __future__ / 外部 numpy。
@@ -118,3 +119,68 @@ def armax_series(n: int, alpha: float, *, rng) -> "np.ndarray":
     for i in range(1, n):
         x[i] = max(alpha * x[i - 1], (1.0 - alpha) * z[i])
     return x
+
+
+def intervals_decluster(
+    exceedance_times: "np.ndarray", theta: "float | None" = None
+) -> "np.ndarray":
+    """intervals declustering: 超過時刻列を独立クラスタへ分割し、各クラスタの**先頭 index**を返す。
+
+    Ferro & Segers (2003) が intervals 推定量と対で与える宣言方式。``C = ceil(θ̂ · N)`` 個の
+    クラスタになるよう、超過間隔 ``S`` の**大きい方から ``C − 1`` 本**をクラスタ境界に採る。
+    run length などの追加パラメータを要さず、θ̂ と整合する点が runs declustering に対する利点。
+
+    Args:
+        exceedance_times: 超過が起きた時点の整数 index（昇順）。
+        theta: 極値指標。``None`` なら :func:`intervals_estimator` で推定する。
+
+    Returns:
+        各クラスタの先頭 index を並べた配列（``exceedance_times`` の部分列）。
+        推定不能・超過が空なら空配列。
+
+    Notes:
+        GPD 当てはめ・適合度検定は超過の**独立**を前提にする。生の超過を渡すと有効標本を
+        過大に見積もり、検定は棄却側へ、標準誤差は過小へ偏る。本関数の出力（クラスタごとに
+        1 点）を渡すこと。
+    """
+    t = np.asarray(exceedance_times, dtype=np.int64).ravel()
+    if t.size == 0:
+        return t
+    th = intervals_estimator(t) if theta is None else float(theta)
+    if not np.isfinite(th) or th <= 0.0:
+        return t[:1]
+    n_clusters = int(np.ceil(th * t.size))
+    n_clusters = max(1, min(n_clusters, t.size))
+    if n_clusters == 1 or t.size < 2:
+        return t[:1]
+    gaps = np.diff(t)
+    # 大きい間隔ほどクラスタ境界。同値は先（早い時刻）を優先して決定論的にする。
+    order = np.argsort(-gaps, kind="stable")
+    boundary = np.sort(order[: n_clusters - 1])
+    starts = np.concatenate([[0], boundary + 1])
+    return t[starts]
+
+
+def cluster_peaks(
+    values: "np.ndarray", exceedance_times: "np.ndarray", cluster_starts: "np.ndarray",
+    *, upper: bool = True
+) -> "np.ndarray":
+    """各クラスタ内の極値（上側なら最大・下側なら最小）の index を返す。
+
+    ``cluster_starts`` は :func:`intervals_decluster` の出力（クラスタ先頭 index）。
+    """
+    t = np.asarray(exceedance_times, dtype=np.int64).ravel()
+    cs = np.asarray(cluster_starts, dtype=np.int64).ravel()
+    v = np.asarray(values, dtype=np.float64).ravel()
+    if t.size == 0 or cs.size == 0:
+        return np.empty(0, dtype=np.int64)
+    edges = np.searchsorted(t, cs)
+    edges = np.append(edges, t.size)
+    out = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        seg = t[a:b]
+        if seg.size == 0:
+            continue
+        pick = seg[int(np.argmax(v[seg]))] if upper else seg[int(np.argmin(v[seg]))]
+        out.append(pick)
+    return np.asarray(out, dtype=np.int64)
