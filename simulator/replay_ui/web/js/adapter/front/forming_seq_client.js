@@ -30,7 +30,14 @@ export class FormingSeqClient {
     const aborter = hasAbort ? new AbortController() : null;
     const timerId = aborter ? setTimeout(() => aborter.abort(), this._timeoutMs) : null;
     try {
-      const response = await this._fetch(COMPUTE_ENDPOINT, {
+      // ISSUE-233（実 UI 実測で確定した不具合）: `this._fetch(...)` はレシーバ付き呼出になり、
+      //   注入されたのがブラウザの素の `fetch`（replay.js の既定値 `fetchImpl = fetch`）のとき
+      //   "Failed to execute 'fetch' on 'Window': Illegal invocation" で必ず失敗する。
+      //   呼び出し側は失敗を握り潰して従来経路へ落とすため（replay.js の .catch(() => null)）、
+      //   **足内一括計算が 1 度も成立していなかった**（実 UI 実測: 指標更新回数 0）。
+      //   関数参照として呼び（this=undefined）、束縛の有無に依らず動くようにする。
+      const doFetch = this._fetch;
+      const response = await doFetch(COMPUTE_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
