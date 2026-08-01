@@ -3269,3 +3269,213 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **影響範囲**: 変更はリプレイ専用 6 ファイルのみ（`causal_compute.py` / `serve_replay.py` / `replay_indicator_controller.js` / `replay.js` / 新規 2 モジュール）。**共有モジュール・ライブ側のファイルは 1 つも変更していない**（`compute_http_client.js` は symlink 共有のため使わず専用クライアントを新設）。
 - **既知の残件（本 Issue の対象外）**: `cvfe` は足内追従の登録リスト `INTRABAR_FORMING_IDS` に無いため、従来どおりバー確定時のみ更新される（ISSUE-145 の登録規約による既存仕様）。足内でも動かすかは別途判断が必要。
 - **テスト**: Python 新規 5 件（窓ロード 1 回・単発同値・窓一致・空入力）、JS 新規 15 件（サンプリング／形成中 OHLC／署名 8 件、駆動配線 7 件＝同期反映・待たない・fail-open・後方互換・先読み・settle 省略・ライブ非発火）。既存は全通過（JS 286 + 957 / Python 192）。
+
+---
+
+## ISSUE-233: [不具合・実測再現] リプレイ再生が耐え難く遅い — 足内一括先読み（ISSUE-232）が 1 バーあたり 83 秒を要し確定足計算を待たせる（2026-08-01）
+
+- **重大度**: Critical（実用不能。再生が主機能であり、その主機能が高速化目的の変更によって劣化している）
+- **ステータス**: RESOLVED（2026-08-01・feature/latest-incremental-compute・S1〜S5 完了＋実 UI 通過条件を達成）
+- **報告**: ユーザー（2026-08-01）「とにかく再生が遅すぎる。耐え難いほど遅すぎる」「更新粒度が低く結果のみが表示される」
+- **再現条件**（`simulator/replay_ui/tools/replay_diag.js` による実 UI 吸い出し）:
+  - 時間足 `1h` / 再生モード `ohlc_1min` / 速度 `x1.00`（最速）/ 表示期間 1週 / 計算窓 `limit=1386`・`untilTime=1785103200`
+  - 適用指標 7 件: `ma_marod` / `moving_averages`×3 / `btlm_trail`(`band_method=empirical`,`maxbars=115`,`empirical_n=495`,`n_cov=495`) / `btlm_trail_marod`(`maxbars=266`,`window_n=500`) / `market_profile`
+  - 足内のティック点数 196・**指標更新回数 0**（`window.__rpForm` の `planned=0`）
+
+### 実測（同一設定・実 HTTP 経路・`127.0.0.1:8281`）
+
+| 指標 | 足内一括計算 `latest_seq`（32 ステップ） | 確定足 `full`（毎バー 1 回） |
+|---|---|---|
+| `ma_marod` | 28.54s | 0.21s |
+| `moving_averages`（hlc3 / high / low） | 1.23s / 0.27s / 3.37s | 0.05s ×3 |
+| `btlm_trail` | **41.71s** | 0.39s |
+| `btlm_trail_marod` | 7.99s | 0.25s |
+| **合計** | **83.10s** | **1.00s** |
+
+- 1 バーの再生所要は `196 点 × PER_POINT_MS(6ms) ≒ 1.2s`。**先読みに必要な 83s との比は約 70 倍**であり、計画は原理的に間に合わない。
+- 完了予想の実測値も一致: 残り 114 足で 2 分 26 秒 ＝ 1.28s/足（＝アニメ点数律速）。別時点では残り 105 足で 19 分 45 秒 ＝ 11.3s/足（先読みキューが確定足計算を待たせている状態）。
+
+### 真因（3 点）
+
+1. **`latest` 1 ステップが `full` 1 回より高コスト**。`btlm_trail` は 1 ステップ 1.30s に対し full 0.39s。ISSUE-232 の設計前提「`load_source` 242ms に対し latest 計算は 6.6ms」は、軽量指標・小窓での実測であり、本件の設定（経験分位バンド・`n_cov=495`・`window_n=495/500`・窓 1386 本）では成立しない。窓ロードを 1 回へ畳んでも、32 回の latest 計算そのものが支配的になる。
+2. **`btlm_trail` は原理的に計画へ載らない**。41.71s は `forming_seq_client.js` の `SEQ_TIMEOUT_MS = 30000` を超えるため必ず abort → `.catch(() => null)` → `steps` が空 → `planned=0`。ゆえに「足内で指標が一切動かず、確定時に結果だけが現れる」。
+3. **先読みが確定足計算を待たせている**。`serve_replay.py` の `self._lock` と単一 `compute-worker` により `/compute` は直列化される。fire-and-forget の先読み 83s ぶんがキューを占有し、本来 1.00s の毎バー full 計算がその後ろに並ぶ。「計画は決して await しない」という速度の不変条件は**フロントの制御フローについてのみ成立**しており、**バックエンドのキューについては成立していない**（ISSUE-232 の設計の穴）。
+
+### 影響
+
+- ISSUE-232 の一括先読みは、本設定において高速化ではなく**純粋な負荷追加**になっている。
+- 症状「更新粒度が低く結果のみが表示される」は真因 2 の直接の帰結。
+- 別途報告された「結果表示のバグ（線が垂直に落ちる）」は、実 UI の描画データ吸い出し（末尾 3 点・最大跳躍）では再現しなかった。`btlm_trail_mean` は 65505.68 → 65444.96 → 65420.25（最大跳躍 82.39）と連続。**本 Issue とは分離して別途調査する**（未確定）。
+
+### 対策案（未承認・要判断）
+
+- **案 A（即時・回帰の切り戻し相当）**: 足内一括先読みを既定で無効化する。毎バーの計算は full 1.00s のみとなり、足内の指標追従は ISSUE-232 以前の経路（120ms スロットル）へ戻る。ISSUE-232 が解こうとした「指標が約 100ms 遅れる」は再発するが、83s の負荷は消える。
+- **案 B（恒久）**: 先読みを**実測コストに基づく予算制**にする。(1) 指標ごとに 1 ステップの所要を実測して保持し、(2) 「1 バーの再生所要 × 安全率」を超える計画は発行しない、(3) `MAX_FORMING_STEPS` を固定 32 ではなく予算から逆算する（重い指標は 2〜4 ステップ、軽い指標は 32）。
+- **案 C（バックエンド）**: 先読みを確定足計算より**低優先度**のキューへ回し、確定足計算が先読みを追い越せるようにする（現在は単一 FIFO で追い越し不可）。
+- 案 A は即時の実用性回復、案 B・C は恒久解。A → B/C の順を推奨するが、**いずれも挙動変更のため未実施**。
+
+### 実測の訂正（2026-08-01）— 「足内更新は動いていない」は誤り
+
+当初「指標の足内更新は 0 回＝機能していない」と報告したが、**実測で誤りと判明した**。実 UI（1h / ohlc_1min / x1.00）で本番メソッド（`applyFormingStep` と `recomputeFormingLatest`）の呼び出し回数を直接数えた結果:
+
+| 構成 | 指標更新/足 | ローソク更新/足 | 秒/足 |
+|---|---|---|---|
+| `moving_averages` のみ | **27.2 回** | 202 | 1.40 |
+| ＋ `btlm_trail`（経験分位・`n_cov=495`） | **4.0 回** | 201 | 1.45 |
+| ＋ `ma_marod`（3 指標） | **0 回** | 201 | 1.49 |
+
+足内更新は**壊れていない**。指標を重くすると 27 → 4 → 0 と静かに落ちる。したがって ISSUE-145（2026-07-20 RESOLVED）の対策は**当時の構成では実際に機能していた**。「解決していなかった」という本 Issue 当初の記述は撤回する。正しくは「**解決していたが、指標の重さに応じて黙って劣化する**」。
+
+### 応急処置の撤回（2026-08-01・ユーザー厳命）
+
+一度実装した**予算制（実測コストからステップ数を逆算し、超過時は発行しない）を全面撤回した**（`replay.js` / `forming_plan.js` / `forming_seq_client.js` / 追加テストを revert）。
+
+撤回理由（ユーザー厳命「今後は抜本的解決方法のみ提示しろ。応急処置は絶対に提示するな」）:
+
+1. 予算制は根本原因（`latest_compute` が末尾 1 点のために窓全体を再計算する設計）に一切触れていない。速くなったのは**仕事を減らしたから**である。
+2. さらに悪く、予算制は**劣化を自動化・不可視化する**。指標を足すたびに更新粒度が黙って落ち、原因が見えなくなる。ISSUE-145 以来この症状が繰り返し再発している構造そのものを強化していた。
+
+撤回により重い構成の再生は 2.27 秒/足へ戻る。
+
+### 真因（唯一・確定）
+
+`indigators/indicator_ui/api/adapter/compute/latest_dispatch.py:57`
+
+```python
+sub = df if meta.min_window is None else df.tail(meta.min_window)
+series = adapter.compute(compute_id, variant, sub, params)
+```
+
+`latest` は増分計算ではなく、**末尾 1 点（`trailing_k=1`）のために窓全体を計算し直して最後の 1 点だけ切り出す**実装である。`moving_averages` は `ma_type` によらず `min_window=None`（＝tail せず全件・`call_binding.py:138-144`）。実測の 1 ステップ所要は `btlm_trail` 334ms / `ma_marod` 159ms / `moving_averages` 8〜105ms で、固定費（窓ロード）は 0.05s に過ぎない。
+
+この設計である限り、更新粒度は「1 足の長さ ÷ 1 往復の所要」で上限が決まり、指標を重くすれば必ず落ちる。ISSUE-145・ISSUE-232 のいずれもこの点に触れていない。
+
+### 抜本的解決（設計待ち）
+
+**`latest` を真の増分計算にする**（前回の状態を保持し 1 点だけ進める）。1 回 159〜334ms が数ミリ秒になり、指標の重さに関係なくローソクと同じ粒度（1分OHLC で 201 回/足）が成立する。
+
+| 対象 | 保持する状態 | 難度 |
+|---|---|---|
+| `ema` / `smma` | 前回値 1 個 | 低 |
+| `sma` / `lwma` | 環状バッファ（`length` 本） | 低 |
+| 経験分位バンド（`n_cov` / `window_n` / `empirical_n`） | 順序統計構造（挿入・削除・分位取得） | 中 |
+| イベント分位（`k_events`・エピソード declustering） | エピソード状態機械 | 高 |
+
+検証方式は ISSUE-158 で確立済みのものを流用する（現行 `full` を参照実装とし、全系列で `max_dev = 0` を固定）。各段階の通過条件は「`full` との全系列 `max_dev = 0`」かつ「1 ステップ所要 < 5ms」。
+
+### 副産物（撤回せず残置）
+
+- 診断ツール `simulator/replay_ui/tools/replay_diag.js`。実 UI の設定・描画値・足内粒度を 1 回で吸い出す（読み取りのみ・副作用なし）。本 Issue の実測はすべてこれで取得した。
+
+### 抜本的解決の実装記録（feature/latest-incremental-compute）
+
+内部設計 `.doc/indicator-management-ui/内部設計_latest増分計算.md` §8 を全承認（2026-08-01）のうえ実装。
+
+#### S1: moving_averages（4 種）＝完了
+
+- **真因の除去**: `latest` を「窓全体を再計算して末尾 1 点を切り出す」から「確定バーまでの MA バッファを状態として保持し、形成中バー 1 本ぶんだけ漸化を進める」へ置換した。所要は窓長に依らず一定になる。
+- **src への追加（ユーザー承認 2026-08-01）**: `linear_weighted_ma_on_buffer` は `prev_calculated>0` 分岐で走行和 `total`/`lsum` を窓から再構築するため、full の漸化を継続できず末尾値が bit 一致しない（実測 max_dev 2.1e-09 @ n=1400）。`buffer[i]=total_i/weight` は丸め済みで `total_i` を復元できないため、src 外からの継続は原理的に不可能。走行和を授受する `linear_weighted_ma_on_buffer_stateful` / `LwmaState` を `moving_averages/src/core.py` へ追加し、**既存 `linear_weighted_ma_on_buffer` はその共有部品（`_lwma_seed` / `_lwma_advance`）へ委譲**させた（漸化式の定義は 1 箇所のみ・二重定義を作らない）。既存関数の出力は凍結オラクルとの bit 一致テストで恒久固定。
+- **実測（窓 1386 本 / length=24 / 1 ステップ）**:
+
+| ma_type | full | latest（増分・定常） | 倍率 |
+|---|---|---|---|
+| sma | 3.59ms | **0.140ms** | 25.6x |
+| ema | 3.38ms | **0.137ms** | 24.7x |
+| smma | 3.38ms | **0.144ms** | 23.5x |
+| lwma | 3.58ms | **0.132ms** | 27.1x |
+
+  窓 5000 本では full 11.7〜12.8ms に対し latest 0.157〜0.173ms（70〜81x）。**latest は窓長に依らずほぼ一定**であり、通過条件「1 ステップ < 5ms」を満たす。
+- **一致検証**: 4 種 × length{2,9,24,50} × offset{-3,-1,0,1,3} × source 8 択 × wait_for_close × min_tail{2,5,30} で `full` と **完全一致（max_dev = 0）**。足内更新の非破壊性（同一確定状態から形成中バー 10 通り）・バー確定の前進（窓を 1 本ずつ伸長）・窓の縮小/再伸長・左端シフトでも一致を確認。
+- **回帰**: indicator_ui Python 554 / replay_ui Python 192 / moving_averages 167 / replay_ui JS 286 / indicator_ui JS 957 いずれも全通過。
+- **未対応（従来経路のまま・挙動不変）**: `smoothing_type != none`（平滑化は MA 系列に対する pandas rolling/ewm であり、末尾だけを bit 一致で求める手段が src の公開面に無い）。本数が `length+3` 未満の warm-up 直後。
+
+#### S2/S3/S4: btlm_trail（窓末尾 OLS・経験分位バンド・被覆率）＝完了
+
+- **真因の除去**: 末尾 1 点しか要らない latest 経路が、各バーで同じ計算を繰り返すローリング全体を走っていた。src に「1 バーぶんの計算」の公開入口を置き、**ローリング版がその入口を各バーで呼ぶ構成**へ変えた（定義は 1 箇所のまま）。増分器は確定バーまでの各系列を状態として保持し、形成中バー 1 本ぶんだけを 1 バー入口で計算する。
+- **src への追加（B-2 承認の範囲・計算式は不変）**:
+  - `core.window_end_scalar`（非公開 `_window_end_scalar` を公開化。旧名は同一オブジェクトの別名として残置）
+  - `trail.empirical_quantile_latest` / `trail.coverage_latest` / `trail.deviation_ratio` / `trail.ols_band` / `trail.empirical_band`（いずれも 1 バー／1 窓ぶんの唯一の定義。`_empirical_quantile_causal` と `rolling_coverage` と `build_btlm_trail` がこれらを呼ぶ）
+  - `TrailResult.deviations`（乖離率。増分器が次バーの経験分位を求めるために要る・既定 None で後方互換）
+- **実測（窓 1386 本・1 ステップ）**:
+
+| 構成 | full | latest（増分・定常） | 倍率 |
+|---|---|---|---|
+| 実測構成（empirical・maxbars=115・empirical_n=495・n_cov=495） | 143.1ms | **0.356ms** | 402x |
+| ols 既定（maxbars=100・q_out=0.99・n_cov=250） | 44.0ms | **0.368ms** | 120x |
+
+  内訳の改善: 窓末尾 OLS 28.9ms→0.021ms／経験分位 1 本 51.4ms→0.037ms／被覆率 5.0ms→O(n_cov) の numpy 和。
+- **一致検証**: band_method{ols,empirical} × maxbars{50,100,115} × q_out{無効/有効} × source 8 択 × show_metrics × min_tail{2,5,30} で `full` と **完全一致（max_dev = 0）**。対象系列は mean / q5 / q95 / off_hi / off_lo / beta / sigma / band_hit_rate の全 8 系列。足内更新の非破壊性・バー確定の前進・窓の縮小/再伸長・左端シフトも一致。
+- **設計との差分**: S3 は内部設計が「順序統計構造（挿入・削除・分位取得）で O(log n)」としていたが、**当該バーを除く因果境界**（分位は確定済みの乖離率のみを使う）により、足内更新では分位窓が動かない。確定バーの前進時に末尾 emp_n 本を `np.quantile` へ 1 回渡すだけで足り（実測 0.037ms）、順序統計構造は不要だった。構造を持たないぶん、参照実装と同じ配列を同じ関数へ渡す＝bit 一致が構造的に保証される。
+- **回帰**: indicator_ui Python 592 / replay_ui Python 192 / btlm_trail 31 / moving_averages 167 / ma_marod 43 / btlm_trail_marod 30 / common 81 全通過。
+
+#### S5: ma_marod / btlm_trail_marod（因果分位バンド・イベント分位）＝完了
+
+B-6（S1〜S4 後に再測定して着手可否を判断）に従い再測定した結果、`ma_marod` 117.8ms / `btlm_trail_marod` 152.4ms が残り、この 2 つを残すと 7 指標構成の更新粒度は達成不能と確定したため着手した。
+
+- **真因の除去**: 分位バンドもイベント分位も **当該バーを除く** 因果統計（ISSUE-141 の規約）であり、形成中バーの水準は確定済みの観測だけで決まる。足内更新のたびに窓全体を走り直す必要はない。確定バーまでの値系列とイベント観測列を状態に保持し、形成中バーは 1 バー入口で 1 点だけ求める。
+- **両指標は構造が同一**（値系列＝乖離率 → 因果ローリング分位バンド → 外れ値イベント分位水準）で、差は基準線だけ（移動平均 / OLS 窓末尾トレンド）。増分器は 1 実装を共有し、基準線のみ差し替える。
+- **共有プリミティブへの追加（計算式は不変・既存経路が委譲）**:
+  - `common/marod_bands.py`: `causal_stat_latest`（1 バーぶんの因果統計・`rolling_causal` が委譲）／`stat_reducer`／`marod_percent`（乖離率の唯一の定義。ma_marod・btlm_trail_marod の両 core が委譲＝既存の二重定義も解消）
+  - `common/event_quantiles.py`: `step_events`（1 バーぶんのイベント検出・エピソード確定）／`levels_at`（観測 m 件時点の水準）／`event_levels_latest`（次バーの水準 4 値）。本体ループがこれらを呼ぶ構成へ変更
+- **実測（窓 1386 本・1 ステップ）**:
+
+| 指標 | full | latest（増分・定常） | 倍率 |
+|---|---|---|---|
+| `ma_marod`（ema・length=50・window_n=495） | 117.8ms | **0.356ms** | 331x |
+| `btlm_trail_marod`（maxbars=266・window_n=500） | 152.4ms | **0.427ms** | 357x |
+
+- **一致検証**: 基準線種別（ma_marod は sma/ema/smma/lwma 全種）× window_n × q_out{無効/有効} × k_events × event_agg{episode,bar} × source × min_tail で `full` と **完全一致（max_dev = 0）**。対象は本体・0% 基準線（horizontal_line）・分位バンド 2 本・イベント分位水準線 4 本の全系列。エピソード declustering の状態がバー確定で参照実装と同一に進むことも、窓を 1 本ずつ伸ばす検証で固定した。
+
+### 実測構成（7 指標）の 1 ステップ合計
+
+| 指標 | 対応前 | 対応後 |
+|---|---|---|
+| `moving_averages` × 3 | 約 10〜24ms | 0.42ms |
+| `btlm_trail`（empirical） | 143.1ms | 0.356ms |
+| `ma_marod` | 117.8ms | 0.356ms |
+| `btlm_trail_marod` | 152.4ms | 0.427ms |
+| **合計** | **約 425ms** | **約 1.56ms** |
+
+1 足（1h・1分OHLC・201 点）は 1.21 秒であり、更新粒度の上限は 1.21s ÷ 1.56ms ≈ 775 回/足。**要求（ローソクと同じ 201 回/足）に対し 3.8 倍の余裕**がある。指標を足しても粒度が落ちない構造になった。
+
+- **回帰**: indicator_ui Python 639 / replay_ui Python 192 / btlm_trail 31 / moving_averages 167 / ma_marod 43 / btlm_trail_marod 30 / common 81 / replay_ui JS 286 / indicator_ui JS 957 全通過。
+
+### 実 UI 検証（§6.2）と、そこで判明した 2 つの真因
+
+バックエンドの増分化（S1〜S5）だけでは実 UI の粒度は 0 のままだった。実 UI 実測（serve.sh・ポート 8280・jp225_tick・1h・`ohlc_1min`・x1.00・指標 5 件＝`btlm_trail`×3 / `btlm_trail_marod` / `ma_marod`）で、残る 2 つの真因を特定して除去した。
+
+#### 真因 A: 足内 1 ステップごとに窓を DataFrame へ組み直していた
+
+`causal_compute_seq` は時点ごとに `apply_forming(bars, forming)` で窓全体（1492 本）を plain dict へコピーし、ゲートウェイがそのたびに DataFrame を組み直していた。実測の内訳（実 HTTP・formingSeq 点数を変えて回帰）:
+
+| formingSeq 点数 | 対応前 | 対応後 |
+|---|---|---|
+| 1 点（固定費） | 38ms | 47ms |
+| 50 点 | 143ms | 69ms |
+| 201 点 | 458ms | 158ms |
+| 400 点 | 902ms | 269ms |
+| **1 ステップの限界費用** | **2.1ms** | **0.56ms** |
+
+指標計算そのもの（0.36ms）より変換費用（1.7ms）の方が大きい状態だった。`apply` は末尾しか触らないため（同値性は `test_forming_bar.py` の分割テストで固定）、確定プレフィクスと時点ごとの末尾差分に分けて渡し、**窓の変換を 1 回に畳んだ**（`CausalComputePort.compute_latest_seq`）。値は単発 `latest` と bit 同値（ゲートウェイの一致テストで固定）。
+
+#### 真因 B: 足内一括計算が 1 度も成立していなかった（フロントの呼出バグ）
+
+`FormingSeqClient` が注入された fetch を `this._fetch(...)` とレシーバ付きで呼んでいた。`replay.js` の既定値は束縛していない素の `fetch` のため、ブラウザでは **必ず** `Failed to execute 'fetch' on 'Window': Illegal invocation` になる。呼び出し側は失敗を握り潰して従来経路へ落とす（`.catch(() => null)`）ため、**ISSUE-232 の足内一括計算は実 UI で 1 度も成立していなかった**。本 Issue の「指標更新回数 0」はこれが直接原因である（計算速度の問題ではなかった）。関数参照として呼ぶよう是正し、束縛の有無に依らず動くことをテストで固定した（`tests/forming_seq_client.test.js`）。
+
+#### サンプリング上限（`MAX_FORMING_STEPS = 32`）の廃止（ユーザー承認 2026-08-01）
+
+「1 ステップ 6.6ms〜170ms なので全ティック計算は現実的でない」という前提で置かれていた上限を撤去し、**指標の更新回数は常にローソクの更新回数と一致する**ようにした（点間でローソクだけが動く区間を作らない）。上限を残す／値を上げるのは §7 が却下する応急処置である。`real_ticks`（月足で数十万ティック）も間引かない方針をユーザーが選択（全モードで廃止）。
+
+#### 通過条件の達成（実 UI・連続 6 足）
+
+| バー | ローソク更新回数 | 指標更新回数 |
+|---|---|---|
+| 1491〜1495 | 201 | **201** |
+| 1496 | 202 | **202** |
+
+指標 5 件適用のまま **指標更新回数 == ローソク更新回数** を満たした（対応前は 0）。描画も正常（`btlm_trail` の帯 3 本・MAROD 系 2 pane・読取欄の値すべて表示）。
+
+### 最終回帰
+
+indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages 167 / ma_marod 43 / btlm_trail_marod 30 / common 81 / indicator_ui JS 957 / replay_ui JS 290 — 全通過。
+
