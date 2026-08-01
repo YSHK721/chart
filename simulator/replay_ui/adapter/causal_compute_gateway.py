@@ -54,6 +54,31 @@ class CausalComputeGateway:
             return bridge.latest_compute(bridge.adapter, indicator, variant, df, p)
         return bridge.full_compute(bridge.adapter, indicator, variant, df, p)
 
+    def compute_latest_seq(
+        self, indicator: str, variant: str, prefix_bars: "list[dict]",
+        tails: "list[list[dict]]", params: dict,
+    ) -> "list[list[dict]]":
+        """足内推移の各時点を計算する（共通の窓は 1 回だけ DataFrame へ変換する）。
+
+        ISSUE-233: 時点ごとに窓全体（実測 1492 本）を plain dict から DataFrame へ組み直すと
+        1 ステップ 2.1ms を要し、指標計算そのもの（0.36ms）を上回る。確定プレフィクスの
+        変換を 1 回に畳み、時点ごとには末尾差分（1〜2 本）だけを結合する。出力は
+        ``compute(..., "latest", prefix_bars + tails[i], ...)`` と同値。
+        """
+        bridge = self._bridge()
+        p = dict(params or {})
+        prefix_df = self._bars_to_df(prefix_bars)
+        out: "list[list[dict]]" = []
+        for tail in tails:
+            tail_df = self._bars_to_df(tail)
+            if len(prefix_df) == 0:
+                df = tail_df
+            else:
+                # 列は確定プレフィクス側に合わせる（_bars_to_df の列順契約を保つ）。
+                df = pd.concat([prefix_df, tail_df.reindex(columns=prefix_df.columns)])
+            out.append(bridge.latest_compute(bridge.adapter, indicator, variant, df, p))
+        return out
+
     # ---- internal (pandas ↔ plain) ----
 
     @staticmethod

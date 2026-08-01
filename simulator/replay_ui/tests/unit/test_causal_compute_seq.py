@@ -7,6 +7,9 @@
   2. 各ステップは mode='latest' の単発計算と **完全同値**（同一窓・同一 apply_forming・
      同一 latest 呼び出し）。値が変わってはならない。
   3. 空 forming_seq / 空窓は [] （呼び出しを無害化）。
+  4. ISSUE-233: 窓は「共通の確定プレフィクス」と「時点ごとの末尾差分」に分けて計算側へ渡す
+     （計算側が窓の変換を 1 回に畳めるようにするため）。分けても各ステップへ渡る bars は
+     単発と 1 バーずつ一致しなければならない。
 """
 from __future__ import annotations
 
@@ -37,6 +40,14 @@ class _FakeComputePort:
         })
         # 末尾バーの close をそのまま返す＝forming の反映を値で観測できるようにする。
         return [{"name": "MA", "kind": "line", "data": [{"time": bars[-1]["time"], "value": bars[-1]["close"]}]}]
+
+    def compute_latest_seq(self, indicator, variant, prefix_bars, tails, params):
+        # ポートの契約（replay_ports）: compute(..., "latest", prefix_bars + tails[i], ...) と同値。
+        #   fake は契約どおり素直に展開する（実装側の畳み込みが同値かをテストが判定できる）。
+        return [
+            self.compute(indicator, variant, "latest", list(prefix_bars) + list(tail), params)
+            for tail in tails
+        ]
 
 
 def _source():

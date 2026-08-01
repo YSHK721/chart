@@ -82,6 +82,26 @@ class CausalComputePort(Protocol):
         """
         ...
 
+    def compute_latest_seq(
+        self,
+        indicator: str,
+        variant: str,
+        prefix_bars: "list[dict]",
+        tails: "list[list[dict]]",
+        params: dict,
+    ) -> "list[list[dict]]":
+        """足内推移の各時点の latest series を同順で返す（ISSUE-233・窓の再変換を排す）。
+
+        ``prefix_bars`` は全時点で共通の確定バー列、``tails[i]`` は時点 i の末尾差分
+        （``forming_bar.apply`` を末尾へ適用した 1〜2 本）。``compute(..., "latest",
+        prefix_bars + tails[i], ...)`` を各 i について呼んだ結果と **同値**である。
+
+        差は「共通の窓を 1 回だけ計算源の表現へ変換し、時点ごとには末尾だけを差し替える」
+        点だけ。1 ステップの限界費用を指標計算そのものだけにするために要る（実測: 変換を
+        毎回行うと 1 ステップ 2.1ms・指標計算は 0.36ms）。
+        """
+        ...
+
 
 @runtime_checkable
 class IntrabarWindowPort(Protocol):

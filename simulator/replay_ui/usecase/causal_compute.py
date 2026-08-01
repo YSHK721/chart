@@ -97,10 +97,12 @@ def causal_compute_seq(
         bars = bars[-limit:]
     if len(bars) == 0:
         return []
-    return [
-        compute_port.compute(
-            request.indicator, request.variant, "latest", apply_forming(bars, forming),
-            request.params,
-        )
-        for forming in seq
-    ]
+    # ISSUE-233: 形成中バーの適用は **末尾しか変えない**（apply は先頭側を触らない）。
+    #   よって「共通の確定プレフィクス」と「時点ごとの末尾差分」に分けて渡し、計算側が窓を
+    #   1 回だけ変換できるようにする。値は apply_forming(bars, forming) 全体を渡すのと同値
+    #   （同値性は tests/unit/test_causal_compute_seq.py と forming_bar のテストで固定）。
+    prefix = bars[:-1]
+    tails = [apply_forming(bars[-1:], forming) for forming in seq]
+    return compute_port.compute_latest_seq(
+        request.indicator, request.variant, prefix, tails, request.params
+    )
