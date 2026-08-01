@@ -18,6 +18,7 @@
 
 import { IndicatorController } from './indicator_controller.js';
 import { CAUSAL_REVEAL_IDS } from '../../usecase/causal_reveal_ids.js';
+import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
 
 // [reveal 一括] ソート済み time 配列で t 以下の点数を返す（二分探索・revealTo のスライス位置）。
 function upperBound(ts, t) {
@@ -153,6 +154,46 @@ export class ReplayIndicatorController extends IndicatorController {
         series,
         hidden: !inst.visible,
       });
+    }
+  }
+
+  // ================= [足内一括計算・ISSUE-232] =================
+  //   再生中の足内更新は、従来は 1 ティックごとに /compute を往復していた（実測 ~100ms 遅延＋
+  //   throttle＝ローソクだけ先に動いて指標が遅れて追いつく）。本経路は「そのバーの足内推移の
+  //   各時点」をバー開始前に一括計算しておき、描画時は計算済み値を同期反映するだけにする
+  //   （＝ローソクと同一同期ブロック＝遅延ゼロ）。計算は replay.js が先読みで発行する。
+
+  // 足内追従の対象（適用済み ∩ 共有 INTRABAR_FORMING_IDS）。一括計算の要求単位でもある。
+  //   MP は /compute を持たないため対象外（_isMarketProfile で除外）。
+  formingSeqTargets() {
+    return [...this._state.applied].filter((inst) => {
+      if (!INTRABAR_FORMING_IDS.has(inst.indicatorId)) return false;
+      const meta = this._meta.get(inst.instanceId);
+      return !!meta && !this._isMarketProfile(meta.def);
+    }).map((inst) => ({
+      instanceId: inst.instanceId,
+      indicatorId: inst.indicatorId,
+      variant: inst.variant ?? this._defaultVariant(this._meta.get(inst.instanceId).def),
+      params: this._paramsObject(inst.params),
+    }));
+  }
+
+  // 一括計算済みの 1 ステップを同期描画する。step は { instanceId: series } の写像。
+  //   描画実体は末尾差分（_drawLatest＝従来の足内更新と同一経路）。await を挟まないため
+  //   呼び出し側はローソク更新と同一同期ブロックで呼べる（＝同時に動く）。
+  //   削除済みインスタンス・未知系列は無視する（描画しない）。
+  applyFormingStep(step) {
+    if (!step) {
+      return;
+    }
+    for (const [instanceId, series] of Object.entries(step)) {
+      const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+      const meta = this._meta.get(instanceId);
+      if (!inst || !meta || !Array.isArray(series)) {
+        continue;
+      }
+      const params = this._paramsObject(inst.params);
+      this._drawLatest(instanceId, meta.def, this._validateSeriesNames(series, meta.def, params), params);
     }
   }
 
