@@ -10,6 +10,7 @@
     * 既定パラメータ定数（maxbars / 分位ペア / 経験分位 N / 被覆率 N）
     * norm_ppf          : 標準正規の逆累積分布（実体は共有 ``common.normal_dist``・再エクスポート）
     * resolve_source    : 8 択ソース（applied_price 参照）→ 価格系列
+    * window_end_scalar : 1 窓 → (mean, pred_sd, beta, sigma)（末尾 1 点だけ要る増分経路の入口）
     * rolling_ols_window_end : 系列 → (mean, pred_sd, beta, sigma) の窓末尾ローリング
 
 参照実装（無改変）:
@@ -65,7 +66,7 @@ def resolve_source(df, source: str) -> np.ndarray:
     return applied_price(kind, col("open"), col("high"), col("low"), col("close"))
 
 
-def _window_end_scalar(z: np.ndarray) -> tuple[float, float, float, float]:
+def window_end_scalar(z: np.ndarray) -> tuple[float, float, float, float]:
     """1 窓（昇順 z・x=1..w）に OLS を当て、窓末尾値を返す。
 
     Returns:
@@ -73,6 +74,11 @@ def _window_end_scalar(z: np.ndarray) -> tuple[float, float, float, float]:
 
     参照実装 OlsBtlmFitter.fit_predict の末尾要素と同一の線形代数（Φ=[1,x]、
     予測分散 s²·(1+leverage)）。
+
+    ISSUE-233（B-2 承認）: 増分計算が「末尾 1 窓だけ」を計算するための公開入口。
+    ``rolling_ols_window_end`` は本関数を各バーで呼ぶループであり、末尾 1 点だけ要る
+    経路が窓全体（実測 1386 窓 = 28.9ms）を走る必要は無い（本関数 1 回 = 0.021ms）。
+    計算式・分岐・境界は非公開時から 1 文字も変えていない。
     """
     w = z.size
     if w < _MIN_OBS:
@@ -84,6 +90,11 @@ def _window_end_scalar(z: np.ndarray) -> tuple[float, float, float, float]:
     pred_sd = pred_sd_at(np.array([1.0, float(w)]), fit.xtx_inv, fit.s2)
     mean_end = float(fit.fitted[-1])
     return (mean_end, pred_sd, float(fit.beta[1]), float(np.sqrt(fit.s2)))
+
+
+# 旧非公開名の別名（実体は同一オブジェクト＝二重定義を作らない）。既存の内部参照・
+# ドキュメント記述との互換のために残す。
+_window_end_scalar = window_end_scalar
 
 
 def rolling_ols_window_end(
@@ -114,6 +125,6 @@ def rolling_ols_window_end(
         if w < _MIN_OBS:
             continue
         z = prices[t - w + 1: t + 1]
-        m, ps, b1, s = _window_end_scalar(z)
+        m, ps, b1, s = window_end_scalar(z)
         mean[t], pred_sd[t], beta[t], sigma[t] = m, ps, b1, s
     return mean, pred_sd, beta, sigma
