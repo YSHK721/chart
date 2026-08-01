@@ -28,21 +28,55 @@ from common import event_quantiles as _evq
 MIN_STAT_OBS: int = 2
 
 
+def marod_percent(values: np.ndarray, mean: np.ndarray) -> np.ndarray:
+    """MAROD（乖離率・%）= (values - mean) / mean * 100（**唯一の定義**）。
+
+    warm-up（mean=NaN）・0 除算（mean=0→inf）由来の非有限値は NaN に落とす（描画除外）。
+    ma_marod / btlm_trail_marod の両 core が本関数へ委譲する（式の二重定義を作らない）。
+    スカラでも配列でも同じ規約で使える。
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        marod = (values - mean) / mean * 100.0
+    return np.where(np.isfinite(marod), marod, np.nan)
+
+
+def causal_stat_latest(prior_values: np.ndarray, window_n: int, reducer) -> float:
+    """``prior_values`` の **次のバー** に適用する因果統計（当該バー除外）を返す。
+
+    窓 = ``prior_values[-window_n:]``。有限本数が :data:`MIN_STAT_OBS` 未満なら NaN。
+    1 バーぶんの算出の **唯一の定義** であり、:func:`rolling_causal` は本関数を各バーで
+    呼ぶループである。ISSUE-233 の増分計算が末尾 1 点だけを求めるための公開入口。
+    """
+    vals = np.asarray(prior_values, dtype=np.float64).ravel()
+    window = vals[max(0, vals.size - window_n):]
+    finite = window[np.isfinite(window)]
+    if finite.size < MIN_STAT_OBS:
+        return float("nan")
+    return float(reducer(finite))
+
+
 def rolling_causal(values: np.ndarray, window_n: int, reducer) -> np.ndarray:
     """各バー t で **当該バー t を除く** 直近 window_n 本（v_{t-N}..v_{t-1}）に reducer を適用する。
 
     有限本数が :data:`MIN_STAT_OBS` 未満のバーは NaN。窓 = ``values[max(0, t-window_n): t]``。
+    1 バーぶんの算出は :func:`causal_stat_latest` へ委譲する（定義は 1 箇所）。
     """
     vals = np.asarray(values, dtype=np.float64).ravel()
     n = vals.size
     out = np.full(n, np.nan)
     for t in range(n):
-        start = max(0, t - window_n)
-        window = vals[start:t]  # 当該バー t を除く（... t-1 まで）。
-        finite = window[np.isfinite(window)]
-        if finite.size >= MIN_STAT_OBS:
-            out[t] = float(reducer(finite))
+        out[t] = causal_stat_latest(vals[:t], window_n, reducer)
     return out
+
+
+# 因果統計の種別 → reducer（rolling_causal_fast の kind と同一定義・単一情報源）。
+def stat_reducer(kind: str, q: "float | None" = None):
+    """kind（quantile/mean/std）→ reducer 関数（``rolling_causal_fast`` と同一）。"""
+    return {
+        "quantile": (lambda f: np.quantile(f, q)),
+        "mean": (lambda f: f.mean()),
+        "std": (lambda f: f.std(ddof=1)),
+    }[kind]
 
 
 def rolling_causal_fast(
@@ -57,11 +91,7 @@ def rolling_causal_fast(
     """
     vals = np.asarray(values, dtype=np.float64).ravel()
     n = vals.size
-    reducer = {
-        "quantile": (lambda f: np.quantile(f, q)),
-        "mean": (lambda f: f.mean()),
-        "std": (lambda f: f.std(ddof=1)),
-    }[kind]
+    reducer = stat_reducer(kind, q)
     head = min(n, window_n)
     out = np.full(n, np.nan)
     # 先頭の部分窓（t < window_n）は従来ループ（最大 window_n 本＝コスト一定）。
