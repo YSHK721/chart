@@ -19,9 +19,16 @@ def _moving_averages() -> Any:
     return MovingAveragesIncrementer()
 
 
+def _btlm_trail() -> Any:
+    from adapter.compute.incremental.btlm_trail import BtlmTrailIncrementer
+
+    return BtlmTrailIncrementer()
+
+
 # 名前 → 増分器 factory（遅延生成・生成後はプロセス内で使い回す）。
 _FACTORIES: dict[str, Callable[[], Any]] = {
     "moving_averages": _moving_averages,
+    "btlm_trail": _btlm_trail,
 }
 
 _INSTANCES: dict[str, Any] = {}

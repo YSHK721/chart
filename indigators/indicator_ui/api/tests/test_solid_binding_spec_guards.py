@@ -28,6 +28,8 @@ from adapter.compute.latest_meta import latest_meta
 _LATEST_GOLDEN_EMPTY_PARAMS = {
     # ISSUE-233: moving_averages は増分計算へ移行（archetype=incremental）。min_window/K は不変。
     ("moving_averages", "default"): ("incremental", None, 1),
+    # ISSUE-233 S2/S3/S4: btlm_trail も増分計算へ移行（min_window/K は不変）。
+    ("btlm_trail", "default"): ("incremental", None, 1),
     ("price_range_power", "default"): ("axis_distribution", None, None),
 }
 
@@ -45,6 +47,7 @@ def test_latest_meta_archetype_declared_in_binding_spec():
     # 移設の実証: archetype 解決子は _BindingSpec 側に宣言される（if 連鎖の撤去）。
     assert _TABLE[("price_range_power", "default")].get("latest_meta") is not None
     assert _TABLE[("moving_averages", "default")].get("latest_meta") is not None
+    assert _TABLE[("btlm_trail", "default")].get("latest_meta") is not None
     # 未宣言指標は field を持たない（安全既定 recurrence/full/K=1 へ落ちる）。
     assert _TABLE[("profit_band", "global")].get("latest_meta") is None
     assert _TABLE[("tgp_btlm", "default")].get("latest_meta") is None

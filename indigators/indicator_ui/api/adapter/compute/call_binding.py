@@ -332,6 +332,10 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("btlm_trail", "default"): {
         "loader": lambda: _load_callable("btlm_trail", "add_btlm_trail"),
         "output_kind": "line", "kind": "kw",
+        # ISSUE-233 S2/S3/S4: 窓末尾 OLS・経験分位・被覆率をいずれも「末尾 1 点だけ」計算する
+        #   増分計算へ移す（従来は 1 ステップで窓全体を再計算し実測 334ms）。増分器が扱えない
+        #   パラメータは従来経路（min_window=None＝full）で計算される＝挙動不変。
+        "latest_meta": lambda params: ("incremental", None, 1, "btlm_trail"),
         "params_defaults": {
             "source": "close",
             "maxbars": 100,
