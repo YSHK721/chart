@@ -166,3 +166,54 @@ test('setTimeframe: バッチ全体を RecomputeGate で包む（enter→recompu
   assert.ok(names.indexOf('recompute') < names.indexOf('gate-exit'), 'recompute より後に exit していない');
   assert.equal(gate.depth, 0, 'バッチ終了後に深さが 0 へ戻っていない');
 });
+
+// ISSUE-231（リプレイの非同時描画・二重実行の恒久解消）: 時間足切替の「反映役」seam。
+//   ライブの反映（ISSUE-196: ローソク先行 → 指標は compute 完了後）はリプレイの不変条件
+//   （その時点 T のローソクと指標が同時に現れる）に反する。反映役が登録されているときは
+//   ライブ反映を行わず委譲し、時間足の確定（_timeframe / 永続化 / 購読者通知）は共通のまま保つ。
+test('setApplier: 反映役ありのとき candles 取得・setCandles・recompute を行わず委譲する（ISSUE-231）', async () => {
+  const seen = [];
+  const { calls, make } = makeHost({
+    _loadCandles: async () => { calls.push(['loadCandles']); return [{ time: 1, open: 1, high: 1, low: 1, close: 1 }]; },
+    _applied: [{ instanceId: 'ma_marod#1' }],
+  });
+  const tf = make();
+  tf.setApplier(async (t) => seen.push(t));
+  await tf.setTimeframe('1W');
+  assert.deepEqual(seen, ['1W'], '反映役へ新時間足で委譲していない');
+  assert.equal(calls.some((c) => c[0] === 'loadCandles'), false, 'ライブ経路の candles 取得が走っている（二重取得）');
+  assert.equal(calls.some((c) => c[0] === 'setCandles'), false, 'ライブ経路のローソク先行差替えが走っている（非同時描画の原因）');
+  assert.equal(calls.some((c) => c[0] === 'clearInstanceData'), false, 'ライブ経路の指標空化が走っている');
+  assert.equal(calls.some((c) => c[0] === 'recompute'), false, 'ライブ経路の全指標再計算が走っている（二重計算）');
+});
+
+test('setApplier: 反映役ありでも時間足の確定・永続化・購読者通知は共通で行う（ISSUE-231）', async () => {
+  const seen = [];
+  const { host, calls, gate, make } = makeHost({ _timeframeObserver: (t) => seen.push(t) });
+  const tf = make();
+  tf.setApplier(async () => {});
+  await tf.setTimeframe('1W');
+  assert.equal(tf.current(), '1W');
+  assert.equal(host._state.uiState.timeframe, '1W');
+  assert.equal(calls.some((c) => c[0] === 'persist'), true);
+  assert.deepEqual(seen, ['1W']);
+  assert.equal(gate.depth, 0, '委譲後もゲート深さが 0 へ戻っていない');
+});
+
+test('setApplier(null): 既定のライブ経路へ戻る（登録解除・ISSUE-231）', async () => {
+  const { calls, make } = makeHost({ _loadCandles: async () => [{ time: 1, open: 1, high: 1, low: 1, close: 1 }] });
+  const tf = make();
+  tf.setApplier(async () => { throw new Error('反映役が解除されていない'); });
+  tf.setApplier(null);
+  await tf.setTimeframe('1W');
+  assert.equal(calls.some((c) => c[0] === 'setCandles'), true);
+  assert.equal(calls.some((c) => c[0] === 'recompute'), true);
+});
+
+test('setApplier: 反映役が投げてもゲートは解放される（ISSUE-231）', async () => {
+  const { gate, make } = makeHost();
+  const tf = make();
+  tf.setApplier(async () => { throw new Error('boom'); });
+  await assert.rejects(() => tf.setTimeframe('1W'), /boom/);
+  assert.equal(gate.depth, 0, '例外時にゲートが解放されていない');
+});

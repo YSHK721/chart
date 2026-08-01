@@ -22,6 +22,25 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class CausalComputeSeqRequest:
+    """/compute mode='latest_seq' の入力（足内一括計算・ISSUE-232）。
+
+    ``forming_seq`` は 1 本のバーの足内推移（ティックごとの暫定 OHLC）を昇順に並べたもの。
+    各要素へ ``latest`` 計算を適用した結果を同順で返す。窓のロード・truncate・tail は
+    **1 回だけ**行い、以降は forming の差し替えのみを繰り返す（1 ステップあたりの限界費用が
+    指標計算そのものだけになる＝実測 load_source 242ms / latest 6.6ms）。
+    """
+    indicator: str
+    variant: str
+    ref: str
+    timeframe: "str | None"
+    limit: "int | None"
+    until_time: "int | None"
+    forming_seq: "list[dict]"
+    params: dict
+
+
+@dataclass
 class CausalComputeRequest:
     """/compute の入力（proto body 準拠）。"""
     indicator: str
@@ -54,3 +73,34 @@ def causal_compute(
     return compute_port.compute(
         request.indicator, request.variant, "full", bars, request.params
     )
+
+
+def causal_compute_seq(
+    *, request: CausalComputeSeqRequest, compute_port: "CausalComputePort"
+) -> "list[list[dict]]":
+    """足内推移の各時点の latest series を同順で返す（ISSUE-232）。
+
+    ``causal_compute`` の mode='latest' を ``forming_seq`` の各要素へ繰り返し適用したものと
+    **完全同値**である（同一の窓・同一の apply_forming・同一の latest 計算を通す）。差は
+    「窓のロード / truncate / tail を 1 回に畳む」点だけで、値には影響しない。同値性は
+    ``tests/unit/test_causal_compute_seq.py`` と実データのゲート実測で固定する。
+
+    空 ``forming_seq`` は ``[]``（呼び出し自体を無害化）。空窓も ``[]``。
+    """
+    seq = request.forming_seq or []
+    if not seq:
+        return []
+    bars = compute_port.load_source(request.ref, request.timeframe)
+    bars = truncate(bars, request.until_time)
+    limit = request.limit
+    if isinstance(limit, int) and limit > 0:
+        bars = bars[-limit:]
+    if len(bars) == 0:
+        return []
+    return [
+        compute_port.compute(
+            request.indicator, request.variant, "latest", apply_forming(bars, forming),
+            request.params,
+        )
+        for forming in seq
+    ]

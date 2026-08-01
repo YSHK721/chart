@@ -39,7 +39,9 @@ from simulator.replay_ui.usecase.available_days import (
 )
 from simulator.replay_ui.usecase.causal_compute import (
     CausalComputeRequest,
+    CausalComputeSeqRequest,
     causal_compute,
+    causal_compute_seq,
 )
 from simulator.replay_ui.usecase.intrabar_window import (
     IntrabarWindowRequest,
@@ -209,6 +211,27 @@ class ReplayApp:
                 return causal_compute(request=req, compute_port=self._compute_port)
         return self._heavy_worker.run(_run)
 
+    def compute_seq(self, body: dict) -> "list[list[dict]]":
+        """POST /compute mode='latest_seq' — 足内推移の各時点の latest を一括で返す（ISSUE-232）。
+
+        既存 ``compute``（単発）とは別メソッドに分ける（既存経路の分岐を増やさない＝挙動不変）。
+        直列化・heavy worker の扱いは ``compute`` と同一（R/rpy2 のスレッド親和とメモリのため）。
+        """
+        req = CausalComputeSeqRequest(
+            indicator=body.get("indicatorId"),
+            variant=body.get("variant", "default"),
+            ref=body.get("datasetRef"),
+            timeframe=body.get("timeframe"),
+            limit=body.get("limit"),
+            until_time=body.get("untilTime"),
+            forming_seq=body.get("formingSeq") or [],
+            params=dict(body.get("params") or {}),
+        )
+        def _run():
+            with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
+                return causal_compute_seq(request=req, compute_port=self._compute_port)
+        return self._heavy_worker.run(_run)
+
     def intraday(self, ref: str, start: int, end: int, mode: str, want_secs: bool = False) -> dict:
         # proto do_GET /intraday: 非 tick の未知 ref は事前に validation 拒否する。
         if self._is_known_ref is not None and ref != "jp225_tick" and not self._is_known_ref(ref):
@@ -371,6 +394,19 @@ def make_handler(app: ReplayApp):
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
             gen = body.get("generation", 0)
+            # ISSUE-232: 足内一括計算（mode='latest_seq'）。応答キーは steps（series とは別キー＝
+            #   既存クライアントの読み取り面に影響しない）。エラー翻訳は既存と同一の中央経路。
+            if body.get("mode") == "latest_seq":
+                try:
+                    steps = app.compute_seq(body)
+                except MemoryError as e:
+                    return self._json(*_error_response(e, generation=gen, message="memory limit"))
+                except ValueError as e:
+                    return self._json(*_error_response(e, generation=gen))
+                except Exception as e:  # noqa: BLE001
+                    return self._json(*_error_response(
+                        e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
+                return self._json(200, {"ok": True, "generation": gen, "steps": steps})
             try:
                 series = app.compute(body)
             # 分類（status/type）は _error_response へ集約（ISSUE-097 🟡-4）。except ブロックは
