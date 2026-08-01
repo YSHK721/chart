@@ -115,6 +115,10 @@ def _skeleton(
 
     骨格を参照実装（``adapter.compute`` → 各指標 add_*）から採ることで、系列名・色・描画
     ヒントを増分器側へ書き写さない。空応答（計算不能）は増分計算の対象外を意味する。
+
+    ``data`` は落とすが **キーは残す**（値は None）。``data`` を持たない payload
+    （horizontal_line 群＝価格軸要素）と区別するためで、増分器は ``"data" in entry`` で
+    「時系列データを差し替える系列か」を判定できる。
     """
     cached = _cache_get(_SKELETONS, key)
     if cached is not None:
@@ -122,7 +126,9 @@ def _skeleton(
     series = adapter.compute(compute_id, variant, df, params)
     if not series:
         return None
-    skeleton = [{k: v for k, v in s.items() if k != "data"} for s in series]
+    skeleton = [
+        ({**s, "data": None} if "data" in s else dict(s)) for s in series
+    ]
     _cache_put(_SKELETONS, key, skeleton)
     return skeleton
 

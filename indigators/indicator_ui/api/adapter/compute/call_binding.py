@@ -352,6 +352,8 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("btlm_trail_marod", "default"): {
         "loader": lambda: _load_callable("btlm_trail_marod", "add_btlm_trail_marod"),
         "output_kind": "line", "kind": "kw",
+        # ISSUE-233 S5: 因果ローリング分位バンド・イベント分位を末尾 1 点だけの計算へ移す。
+        "latest_meta": lambda params: ("incremental", None, 1, "btlm_trail_marod"),
         "params_defaults": {
             "source": "close",
             "maxbars": 100,
@@ -367,6 +369,8 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("ma_marod", "default"): {
         "loader": lambda: _load_callable("ma_marod", "add_ma_marod"),
         "output_kind": "line", "kind": "kw",
+        # ISSUE-233 S5: 因果ローリング分位バンド・イベント分位を末尾 1 点だけの計算へ移す。
+        "latest_meta": lambda params: ("incremental", None, 1, "ma_marod"),
         "params_defaults": {
             "source": "close",
             "ma_type": "ema",

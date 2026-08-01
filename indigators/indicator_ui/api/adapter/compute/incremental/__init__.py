@@ -25,10 +25,24 @@ def _btlm_trail() -> Any:
     return BtlmTrailIncrementer()
 
 
+def _ma_marod() -> Any:
+    from adapter.compute.incremental.marod import MarodIncrementer, _MovingAverageBaseline
+
+    return MarodIncrementer(_MovingAverageBaseline(), "ma_marod")
+
+
+def _btlm_trail_marod() -> Any:
+    from adapter.compute.incremental.marod import MarodIncrementer, _TrendLineBaseline
+
+    return MarodIncrementer(_TrendLineBaseline(), "btlm_trail_marod")
+
+
 # 名前 → 増分器 factory（遅延生成・生成後はプロセス内で使い回す）。
 _FACTORIES: dict[str, Callable[[], Any]] = {
     "moving_averages": _moving_averages,
     "btlm_trail": _btlm_trail,
+    "ma_marod": _ma_marod,
+    "btlm_trail_marod": _btlm_trail_marod,
 }
 
 _INSTANCES: dict[str, Any] = {}

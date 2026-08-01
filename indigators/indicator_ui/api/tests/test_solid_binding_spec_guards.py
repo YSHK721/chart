@@ -28,8 +28,10 @@ from adapter.compute.latest_meta import latest_meta
 _LATEST_GOLDEN_EMPTY_PARAMS = {
     # ISSUE-233: moving_averages は増分計算へ移行（archetype=incremental）。min_window/K は不変。
     ("moving_averages", "default"): ("incremental", None, 1),
-    # ISSUE-233 S2/S3/S4: btlm_trail も増分計算へ移行（min_window/K は不変）。
+    # ISSUE-233 S2/S3/S4/S5: btlm_trail・MAROD 系も増分計算へ移行（min_window/K は不変）。
     ("btlm_trail", "default"): ("incremental", None, 1),
+    ("btlm_trail_marod", "default"): ("incremental", None, 1),
+    ("ma_marod", "default"): ("incremental", None, 1),
     ("price_range_power", "default"): ("axis_distribution", None, None),
 }
 
