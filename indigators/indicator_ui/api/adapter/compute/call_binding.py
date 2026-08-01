@@ -203,6 +203,16 @@ def _load_callable(indicator: str, attr: str) -> Callable:
     return getattr(lwc, attr)
 
 
+def indicator_src(indicator: str) -> ModuleType:
+    """指標 src パッケージを一意名で読み込んで返す（read-only・無改変参照）。
+
+    増分器（``adapter.compute.incremental``）が指標 src の **公開関数**（``*_on_buffer`` /
+    ``rolling_ols_window_end`` 等）を呼ぶための唯一の入口。ロード機構（同名 ``src`` 衝突の
+    回避・sys.path の解決点）を本モジュールへ閉じ込め、増分器側へ importlib を散らさない。
+    """
+    return _load_src_package(indicator)
+
+
 def profit_band_empty_bucket_error() -> type:
     """profit_band src の ``EmptyBucketError`` 型を返す（LSP 是正・型識別用）。
 
