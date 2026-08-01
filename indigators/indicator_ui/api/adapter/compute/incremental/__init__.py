@@ -13,9 +13,16 @@ from __future__ import annotations
 from typing import Any, Callable
 
 
+def _moving_averages() -> Any:
+    from adapter.compute.incremental.moving_averages import MovingAveragesIncrementer
+
+    return MovingAveragesIncrementer()
+
+
 # 名前 → 増分器 factory（遅延生成・生成後はプロセス内で使い回す）。
-#   指標ごとの増分器は本表への 1 行追加だけで載る（latest_dispatch / incremental_state は不変）。
-_FACTORIES: dict[str, Callable[[], Any]] = {}
+_FACTORIES: dict[str, Callable[[], Any]] = {
+    "moving_averages": _moving_averages,
+}
 
 _INSTANCES: dict[str, Any] = {}
 

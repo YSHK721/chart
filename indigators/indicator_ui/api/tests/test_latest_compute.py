@@ -65,19 +65,22 @@ def test_latest_meta_unregistered_defaults_to_recurrence_full_k1():
     assert meta.trailing_k == 1
 
 
-def test_latest_meta_moving_averages_sma_is_window_full_fallback_k1():
-    # window 系（sma）。2*length は float 完全一致しないため full フォールバックを既定に
-    # する（min_window=None）。archetype は window として記録、K=1。
+def test_latest_meta_moving_averages_sma_is_incremental_full_fallback_k1():
+    # ISSUE-233: sma は増分計算（archetype=incremental・状態器 moving_averages）で計算する。
+    # 増分器が扱えないパラメータで落ちる従来経路は、2*length が float 完全一致しないため
+    # full フォールバック（min_window=None）を維持する。K=1。
     meta = latest_meta("moving_averages", "default", {"ma_type": "sma", "length": 9})
-    assert meta.archetype == "window"
+    assert meta.archetype == "incremental"
+    assert meta.incremental == "moving_averages"
     assert meta.min_window is None  # full フォールバック（spec の分岐に従う）
     assert meta.trailing_k == 1
 
 
-def test_latest_meta_moving_averages_ema_is_recurrence_full_k1():
-    # recurrence 系（ema）は full・K=1。
+def test_latest_meta_moving_averages_ema_is_incremental_full_fallback_k1():
+    # ema も同じく増分計算。落ちたときの従来経路は full・K=1。
     meta = latest_meta("moving_averages", "default", {"ma_type": "ema", "length": 9})
-    assert meta.archetype == "recurrence"
+    assert meta.archetype == "incremental"
+    assert meta.incremental == "moving_averages"
     assert meta.min_window is None
     assert meta.trailing_k == 1
 
@@ -96,8 +99,8 @@ def test_latest_meta_price_range_power_is_axis_distribution_full_no_trail():
 @pytest.mark.parametrize("ma_type", ["sma", "ema"])
 def test_latest_line_tail_equals_full_tail_exact_for_moving_averages(ma_type):
     # 最重要: latest_compute の各 line 系列 data[-K:] が full_compute の対応 data[-K:] と
-    # float 完全一致する（SMA=window/full・EMA=recurrence/full の双方）。
-    # K は production の trailing_k（moving_averages は両 archetype とも 1）を用いる。
+    # float 完全一致する（増分計算・従来経路のどちらを通っても同値）。
+    # K は production の trailing_k（moving_averages は 1）を用いる。
     adapter = IndicatorComputeAdapter()
     df = _ohlcv(200)
     params = {
@@ -105,7 +108,7 @@ def test_latest_line_tail_equals_full_tail_exact_for_moving_averages(ma_type):
         "smoothing_type": "none", "offset": 0,
     }
     k = latest_meta("moving_averages", "default", params).trailing_k
-    assert k == 1  # window/recurrence とも full フォールバック・K=1
+    assert k == 1  # 増分計算・従来経路とも K=1
     full = full_compute(adapter, "moving_averages", "default", df, dict(params))
     latest = latest_compute(adapter, "moving_averages", "default", df, dict(params))
 

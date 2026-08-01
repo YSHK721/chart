@@ -128,20 +128,23 @@ def _prp_preprocess(df: Any, kw: dict[str, Any]) -> dict[str, Any]:
 # recurrence/full/K=1 へ落ちる（従来不変）。LatestMeta 型はここで import しない
 # （latest_meta.py が本 resolver の戻り tuple から構築＝call_binding との循環を回避）。
 
-# ma_type → archetype の分類。sma / lwma は窓系（理論上は窓 length 確定）だが core が
-# スライド和の再帰のため、df.tail で開始点を変えると末尾値に浮動小数ドリフトが乗る。
-# spec の分岐「2*length が float 完全一致を満たさなければ full フォールバック」に従い
-# min_window=None（full）を既定とする。ema / smma ほかは先頭シード必須の再帰で full。K は両者 1。
-_MA_WINDOW_TYPES = {"sma", "lwma"}
+# ISSUE-233: moving_averages は 4 種すべて「保持した状態を 1 点進める」増分計算
+#   （archetype="incremental"・状態器 "moving_averages"）で計算する。full 再計算を行わない
+#   ため所要は窓長に依らず一定になる。値は full と bit 一致する（sma/ema/smma は
+#   ``*_on_buffer`` の prev_calculated 契約、lwma は走行和を授受する
+#   ``linear_weighted_ma_on_buffer_stateful`` が full の漸化をそのまま継続するため）。
+#
+#   min_window は None（full）のままにする。増分器が扱えないパラメータ（平滑化あり等）で
+#   落ちる従来経路は、tail による短縮を行わない厳密一致設計を維持する必要があるため
+#   （sma/lwma は core がスライド和の再帰であり、tail で開始点を変えると末尾値に浮動小数
+#   ドリフト ~1e-15 が乗る）。この理由で従来 sma/lwma を "window" と分類していた。
 
 
 def _moving_averages_latest_meta(
     params: dict[str, Any],
-) -> tuple[str, int | None, int | None]:
-    ma_type = str(params.get("ma_type", "ema")).lower()
-    if ma_type in _MA_WINDOW_TYPES:
-        return ("window", None, 1)
-    return ("recurrence", None, 1)
+) -> tuple[str, int | None, int | None, str | None]:
+    del params  # 4 種・全パラメータで同一宣言（適用可否の判定は増分器 prepare が持つ）。
+    return ("incremental", None, 1, "moving_averages")
 
 
 def _price_range_power_latest_meta(
