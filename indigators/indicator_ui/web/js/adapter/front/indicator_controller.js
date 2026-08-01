@@ -630,6 +630,16 @@ export class IndicatorController {
     this._tf.setObserver(observer);
   }
 
+  // 時間足切替の「反映役」を差し替える（任意・1 個。null=既定＝ライブ経路）。ISSUE-231。
+  //   反映役＝「新時間足の candles 取得 → メイン系列差替え → 全指標再計算・再描画」の実行主体。
+  //   時間足の確定（_timeframe 更新・ボタン同期・スケールリセット・永続化・購読者通知）は
+  //   差し替えても共通のまま TimeframeController が担う（＝反映方法だけの差し替え）。
+  //   リプレイ層（setupReplay）が自身の loadTimeframe を登録し、ローソクと指標を同一同期ブロックで
+  //   描く経路へ一本化する。ライブは未登録＝従来経路（byte 挙動不変）。
+  setTimeframeApplier(applier) {
+    this._tf.setApplier(applier);
+  }
+
   // 適用済み全指標を現在の params / 時間足で再計算・再描画する（ライブ更新の再計算入口）。
   //   competition ガード（generation+1・accepts 破棄）は recomputeInstance に集約済み。
   //   適用が無ければ何もしない（no-op）。

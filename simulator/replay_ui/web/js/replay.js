@@ -538,14 +538,21 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   }
   view.el('rp-view-left').onclick = () => scrollViewTo('left');
   view.el('rp-view-right').onclick = () => scrollViewTo('right');
-  // 時間足の再駆動は data-timeframe を持つ要素（共有 TimeframeMenu の項目）に結線する。
-  //   旧静的ボタン（.tb-interval ＋ data-timeframe 併持）が共有メニュー化（ISSUE-122/123）で
-  //   トリガー（.tb-interval のみ・tf 属性なし）と項目（data-timeframe のみ）に分離されたため、
-  //   .tb-interval 選択ではトリガーに誤結線し loadTimeframe(undefined) が走る（ISSUE-142）。
-  for (const btn of doc.querySelectorAll('[data-timeframe]')) {
-    const onTf = () => setTimeout(() => loadTimeframe(btn.dataset.timeframe), 60);
-    btn.addEventListener('click', onTf);
-    disposers.push(() => btn.removeEventListener('click', onTf));
+  // 時間足の再駆動は controller の「反映役」スロット（setTimeframeApplier）で受ける（ISSUE-231）。
+  //   旧実装は [data-timeframe] へ独自リスナ（setTimeout 60ms）を追加していたが、時間足ボタンには
+  //   共有ベースの bind() が張るライブ経路（controller.setTimeframe）も結線されているため、
+  //   リプレイ中は 1 クリックで 2 経路が走っていた（実測 2026-08-01）:
+  //     1) ライブ経路が先着し、ISSUE-196 の裁定どおり **ローソクだけ先に** 新足へ差し替える
+  //        （指標は空にされ compute 完了後に描かれる＝実測 359ms 遅延）。
+  //     2) その約 750ms 後にリプレイ経路が同じ切替をもう一度やり直す（全再計算の二重実行）。
+  //   リプレイの不変条件は「その時点（T）のローソクと指標が同時に現れる」ことであり、1) の中間状態は
+  //   これに反する。反映役として loadTimeframe を登録し、切替をリプレイの単一経路
+  //   （render → preRender でローソク＋指標を await を挟まず同期一括描画）へ一本化する。
+  //   時間足の確定（_timeframe 更新・ボタン active 同期・スケールリセット・永続化・購読者通知）は
+  //   共有ベース側が従来どおり担う（＝ライブと同一の入口・リプレイは反映方法だけが異なる）。
+  if (typeof controller.setTimeframeApplier === 'function') {
+    controller.setTimeframeApplier(loadTimeframe);
+    disposers.push(() => controller.setTimeframeApplier(null));
   }
   view.bindManualBrowse(() => { autoFrame = false; });
   // onclick 代入系（rp-play/next/prev/view-left/view-right）を destroy で解除する。
@@ -579,6 +586,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     view.setPlayLabel(PLAY_GLYPH);
     view.setPlaying(false);
     settleFrameWait();                              // フレーム待機を即解除
+    // 時間足切替の反映役を外す＝ライブ既定経路（ISSUE-196）へ戻す（ISSUE-231）。
+    if (typeof controller.setTimeframeApplier === 'function') {
+      controller.setTimeframeApplier(null);
+    }
     controller.setUntilTime(undefined);             // ライブ等価（undefined＝!==undefined gate で不送信）
     controller._recentBars = liveDefaultRecentBars; // 計算窓を live 既定へ復帰
     // reveal トリム未発生（初期 mount 等・enable 未経由）なら全長復帰は不要＝軽量停止のみ。
@@ -609,6 +620,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   }
   async function enable() {
     wasEnabled = true;
+    // 時間足切替の反映役を再登録＝リプレイ単一経路（同期一括描画）へ戻す（ISSUE-231）。
+    if (typeof controller.setTimeframeApplier === 'function') {
+      controller.setTimeframeApplier(loadTimeframe);
+    }
     // 現在の live データから再取得して present（最新足）へ駆動する（＝リプレイ現在バー＝ライブ最新）。
     //   loadTimeframe は既存の入口（fetch＋slider/preset 同期＋drive(present)）で、drive→render が
     //   :128-129（setUntilTime(現在バー)＋_recentBars=bar+1）を確立する。値算出・分岐は無改変。
