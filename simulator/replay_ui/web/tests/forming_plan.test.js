@@ -1,7 +1,8 @@
 // forming_plan.test.js — 足内一括計算の純ロジック（ISSUE-232）。
 //
 // 固定する契約:
-//   - sampleIndices: 昇順ユニーク・末尾 n-1 を必ず含む（末尾＝バー確定値。欠けると確定に往復が要る）
+//   - sampleIndices: ローソクが動く全点（間引かない・ISSUE-233）。昇順ユニーク・末尾 n-1 を含む
+//     （末尾＝バー確定値。欠けると確定に往復が要る）
 //   - formingStatesAt: animateForming と同一の畳み方（open 固定・hi/lo 累積・close=当該ティック）
 //   - planSignature: 指標構成・variant・params・窓のいずれかが変われば必ず変わる（誤描画の遮断）
 
@@ -9,25 +10,29 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  sampleIndices, formingStatesAt, planSignature, MAX_FORMING_STEPS,
+  sampleIndices, formingStatesAt, planSignature,
 } from '../js/replay/forming_plan.js';
 
-test('sampleIndices: 上限以下なら全ティックを対象にする', () => {
-  assert.deepEqual(sampleIndices(5, 32), [0, 1, 2, 3, 4]);
+test('sampleIndices: 全ティックを対象にする（間引かない）', () => {
+  assert.deepEqual(sampleIndices(5), [0, 1, 2, 3, 4]);
 });
 
-test('sampleIndices: 上限超過は等間隔へ縮退し、先頭と末尾を必ず含む', () => {
-  const idx = sampleIndices(1000, 10);
-  assert.equal(idx.length, 10);
-  assert.equal(idx[0], 0);
-  assert.equal(idx[idx.length - 1], 999, '末尾を含まないとバー確定値に往復が必要になる');
-  for (let i = 1; i < idx.length; i++) {
-    assert.ok(idx[i] > idx[i - 1], '昇順ユニークでない');
+test('sampleIndices: 指標の更新回数はローソクの更新回数と一致する（ISSUE-233）', () => {
+  // 上限を設けない＝「点間でローソクだけが動く」区間を作らない。上限を戻すと粒度が
+  // 人手の定数で決まり、指標を足すほど黙って落ちる構造（応急処置）へ退行する。
+  for (const n of [1, 32, 201, 1000, 30000]) {
+    const idx = sampleIndices(n);
+    assert.equal(idx.length, n, `n=${n} で全点が対象になっていない`);
+    assert.equal(idx[0], 0);
+    assert.equal(idx[idx.length - 1], n - 1, '末尾を含まないとバー確定値に往復が必要になる');
   }
 });
 
-test('sampleIndices: 実 tick 数（数万）でも上限で頭打ちになる', () => {
-  assert.ok(sampleIndices(30000).length <= MAX_FORMING_STEPS + 1);
+test('sampleIndices: 昇順ユニーク', () => {
+  const idx = sampleIndices(1000);
+  for (let i = 1; i < idx.length; i++) {
+    assert.ok(idx[i] > idx[i - 1], '昇順ユニークでない');
+  }
 });
 
 test('sampleIndices: 空・不正は空配列', () => {

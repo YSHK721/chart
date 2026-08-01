@@ -7,32 +7,23 @@
 // 本モジュールが持つのは「どの時点を計算するか（サンプリング）」と「その時点の形成中バー
 //   OHLC をどう作るか」の 2 点だけ。HTTP は forming_seq_client、駆動は replay.js が担う。
 
-// 1 バーあたりの最大計算ステップ数。ティック数がこれを超えるモード（real_ticks の数千〜数万）
-//   では等間隔サンプリングへ縮退する（全ティック計算は現実的でない＝実測 1 ステップ 6.6ms〜170ms）。
-//   サンプル点では常にローソクと同時に動く（遅延ゼロ）。点間はローソクのみが動く。
-export const MAX_FORMING_STEPS = 32;
-
-// 足内の計算対象インデックス（昇順ユニーク・末尾 n-1 を必ず含む）。
-//   末尾を必ず含めるのは、バー確定値（settle）を追加の往復なしで確定させるため。
-export function sampleIndices(n, maxSteps = MAX_FORMING_STEPS) {
+// 足内の計算対象インデックス＝**ローソクが動く全点**（昇順・末尾 n-1 を含む）。
+//
+// ISSUE-233（間引きの廃止・ユーザー承認 2026-08-01）:
+//   かつては 1 バーあたり 32 点の上限（MAX_FORMING_STEPS）で等間隔サンプリングへ縮退させて
+//   いた。根拠は「1 ステップ 6.6ms〜170ms なので全ティック計算は現実的でない」だったが、
+//   その所要は latest 計算が末尾 1 点のために窓全体を再計算していたことに由来する。真因を
+//   除去した結果、実測構成 7 指標の 1 ステップ合計は約 425ms → 約 1.56ms になり、前提が
+//   消滅した（1h・1分OHLC の 201 点で 0.31 秒 / 1 足 1.21 秒）。
+//
+//   上限を残す（あるいは値を上げる）のは「粒度の上限を人手で決める」応急処置であり、指標を
+//   足すほど粒度が黙って落ちる構造を温存する。よって上限を持たず、**指標の更新回数は常に
+//   ローソクの更新回数と一致する**（点間でローソクだけが動く区間を作らない）。
+export function sampleIndices(n) {
   if (!Number.isFinite(n) || n <= 0) {
     return [];
   }
-  const cap = Math.max(1, Math.floor(maxSteps));
-  if (n <= cap) {
-    return Array.from({ length: n }, (_, i) => i);
-  }
-  const out = [];
-  for (let k = 0; k < cap; k++) {
-    const idx = Math.round((k * (n - 1)) / (cap - 1));
-    if (out.length === 0 || out[out.length - 1] !== idx) {
-      out.push(idx);
-    }
-  }
-  if (out[out.length - 1] !== n - 1) {
-    out.push(n - 1);
-  }
-  return out;
+  return Array.from({ length: Math.floor(n) }, (_, i) => i);
 }
 
 // 各インデックス時点の形成中バー OHLC。replay.js の animateForming と同一の畳み方
