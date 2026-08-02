@@ -102,7 +102,8 @@ def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
     if ticks.empty:
         empty_idx = pd.DatetimeIndex([], name="date")
         return pd.DataFrame(
-            {c: pd.Series(dtype="float64") for c in ("open", "high", "low", "close", "volume")},
+            {c: pd.Series(dtype="float64")
+             for c in ("open", "high", "low", "close", "volume", "up", "dn")},
             index=empty_idx,
         )
 
@@ -112,7 +113,17 @@ def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
     work = pd.DataFrame({"ts": ts.to_numpy(), "mid": mid.to_numpy()})
     work = work.sort_values("ts", kind="stable", ignore_index=True)
     work["date"] = work["ts"].dt.floor("min")
+    # 方向内訳（up/dn）: 直前ティックとの mid 差の符号を **その分バーの中で** 取る。
+    #   分をまたいで比べない理由は チャンク独立性の契約: 本関数は日 parquet ごとに呼ばれ、結果を
+    #   concat して全体とする（tests/test_tick_m1 の per-day concat == whole）。前の分／前の日の
+    #   最終ティックを参照すると、どこで切って処理したかで値が変わり、この契約が壊れる。
+    #   その代償として各分の先頭ティックは方向を持たず、up+dn は volume より「分数」だけ小さい。
+    #   実測（jp225_tick）で等値ティックは 0.0%。等値は up/dn のどちらにも数えない。
+    diff = work.groupby("date", sort=False)["mid"].diff()
+    work["up"] = (diff > 0).astype("float64")
+    work["dn"] = (diff < 0).astype("float64")
     g = work.groupby("date", sort=True)["mid"]
+    gd = work.groupby("date", sort=True)
     m1 = pd.DataFrame(
         {
             "open": g.first(),
@@ -120,6 +131,8 @@ def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
             "low": g.min(),
             "close": g.last(),
             "volume": g.size().astype("float64"),  # その 1 分のティック数。
+            "up": gd["up"].sum(),                  # うち mid が上がったティック数。
+            "dn": gd["dn"].sum(),                  # うち mid が下がったティック数。
         }
     )
     m1.index.name = "date"
@@ -207,7 +220,10 @@ def _format_m1_for_csv(m1: pd.DataFrame) -> pd.DataFrame:
     全構築（:func:`_write_m1_csv`）と増分追記（:func:`_append_m1_csv`）の双方がこれを呼び、列射影・
     date 書式・昇順を一致させる（書式の二重定義による drift を防ぐ）。
     """
-    out = m1[_OHLCV_COLUMNS].sort_index().copy()
+    # 方向内訳（up/dn）は tick 由来データだけが持つ任意列。持つときだけ末尾へ足す
+    #   （持たない CSV は従来と 1 バイトも変わらない・列順の規則源は csv_schema.header_for）。
+    cols = [c for c in (*_OHLCV_COLUMNS, *_csv_schema.UPDOWN_COLUMNS) if c in m1.columns]
+    out = m1[cols].sort_index().copy()
     out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
     out.index.name = _HEADER[0]
     return out
@@ -229,7 +245,7 @@ def _write_m1_csv(m1: pd.DataFrame, path: Path) -> None:
     try:
         out = _format_m1_for_csv(m1)
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
-            out.to_csv(fh, header=_HEADER[1:], index_label=_HEADER[0])
+            out.to_csv(fh, header=list(out.columns), index_label=_HEADER[0])
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)

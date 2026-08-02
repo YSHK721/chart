@@ -18,6 +18,8 @@ from typing import Any, NamedTuple
 
 import pandas as pd
 
+from marketdata import csv_schema as _csv_schema
+
 # candles の必須 OHLC 列（小文字正規化後）。
 _OHLC_COLUMNS = ("open", "high", "low", "close")
 
@@ -67,7 +69,9 @@ TIMEFRAME_RULES: dict[str, str | None] = {
 
 # OHLC 集約規則（再集計時の列別 agg）。volume は合算、その他（OHLC 外）は最終値。
 _OHLC_AGG = {"open": "first", "high": "max", "low": "min", "close": "last"}
-_VOLUME_NAMES = ("volume", "vol")
+# 合算集約する列（volume と、tick 由来データが持つ方向内訳 up/dn）。規則源は csv_schema。
+#   ここに無い列は従来どおり "last"（最終値）で集約される（既存挙動不変）。
+_VOLUME_NAMES = tuple(_csv_schema.SUM_COLUMNS)
 
 
 def is_known_timeframe(timeframe: Any) -> bool:
