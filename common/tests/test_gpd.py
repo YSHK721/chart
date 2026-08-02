@@ -18,9 +18,11 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from common.gpd import (  # noqa: E402
+    MIN_GPD_EVENTS,
     anderson_darling,
     forward_stop,
     gpd_cdf,
+    gpd_excess_quantile,
     gpd_fit,
     gpd_gof_pvalue,
     gpd_neg_loglik,
@@ -170,3 +172,51 @@ def test_select_threshold_returns_none_when_nothing_fits():
     bad = np.exp(rng.standard_normal(400) * 1.2)
     sel = select_threshold([(0.0, bad), (0.1, bad)], alpha=0.05, n_boot=99, rng=rng)
     assert sel.threshold is None
+
+
+# ---------------------------------------------------------------------------
+# 超過分の q 分位（外れ値水準の単一定義・tickvol / profit_rsi が参照する）
+# ---------------------------------------------------------------------------
+
+def test_excess_quantile_matches_closed_form():
+    # 既知 (ξ, β) を回復できる大標本で、当てはめ値からの閉形式と一致することを固定する。
+    rng = np.random.default_rng(7)
+    y = gpd_rvs(4000, 0.2, 1.5, rng=rng)
+    fit = gpd_fit(y)
+    tail = 1.0 - 0.99
+    expect = fit.beta / fit.xi * (tail ** (-fit.xi) - 1.0)
+    assert gpd_excess_quantile(y, 0.99) == pytest.approx(expect, rel=1e-12)
+
+
+def test_excess_quantile_exponential_limit_when_xi_is_zero():
+    # ξ→0 の極限は指数分布の分位 −β·ln(1−q)。ξ=0 の標本（指数）で連続に振る舞う。
+    rng = np.random.default_rng(8)
+    y = gpd_rvs(4000, 0.0, 2.0, rng=rng)
+    fit = gpd_fit(y)
+    got = gpd_excess_quantile(y, 0.99)
+    # 当てはめ ξ̂ は厳密 0 ではないため、指数極限との相対差が小さいことで固定する。
+    assert got == pytest.approx(-fit.beta * np.log(0.01), rel=0.05)
+
+
+def test_excess_quantile_is_nan_below_min_events_or_invalid_q():
+    ex = np.arange(1.0, MIN_GPD_EVENTS + 1.0)
+    assert np.isnan(gpd_excess_quantile(ex[: MIN_GPD_EVENTS - 1], 0.99))   # 観測不足
+    assert np.isfinite(gpd_excess_quantile(ex, 0.99))                      # 境界ちょうどは可
+    assert np.isnan(gpd_excess_quantile(ex, None))                         # q 無効
+    assert np.isnan(gpd_excess_quantile(ex, 1.0))                          # 裾 0
+
+
+def test_excess_quantile_is_monotone_in_q():
+    rng = np.random.default_rng(9)
+    y = gpd_rvs(500, -0.3, 1.0, rng=rng)
+    assert gpd_excess_quantile(y, 0.90) < gpd_excess_quantile(y, 0.99)
+
+
+def test_excess_quantile_respects_finite_endpoint_when_xi_negative():
+    # ξ<0 の GPD は有限終端 β/|ξ| を持つ。どの q でも終端を超えない（有界量へ使える根拠）。
+    rng = np.random.default_rng(10)
+    y = gpd_rvs(2000, -0.4, 1.0, rng=rng)
+    fit = gpd_fit(y)
+    assert fit.xi < 0
+    endpoint = fit.beta / abs(fit.xi)
+    assert gpd_excess_quantile(y, 0.999) < endpoint

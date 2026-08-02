@@ -514,6 +514,13 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "params_defaults": {
             "rsi_period": 6,
             "apply": 5,
+            # 正常帯（因果ローリング分位＝POT 閾値）と外れ値水準（経験的分位 / GPD 外挿）。
+            #   既定は tickvol と同値（同じ意味の設定は指標間で同名・同既定）。
+            "window_n": 500,
+            "q_low": 0.10,
+            "q_high": 0.90,
+            "q_out": 0.99,
+            "k_events": 50,
         },
     },
     ("profit_stc", "default"): {

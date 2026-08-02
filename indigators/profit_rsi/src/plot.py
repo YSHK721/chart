@@ -4,22 +4,22 @@
     出力アダプタ。計算は成果物層（rsi）へ委譲し、本層は「取り出し→描画」のみ。
     ヘッドレスで完結（Agg）。元 MQL4 は ``indicator_separate_window`` の RSI 線
     （DRAW_LINE, clrLime）を [0,100] のペインに描いたため、別ペイン
-    のオシレーター線 1 本として再現する。σ 水準線 7 本（±1/2/3σ ＝ 点線グレー、
-    中央線 50 ＝ 実線）を重ねる。subwindow の y 範囲は元 indicator_minimum 0 〜
+    のオシレーター線 1 本として再現する。正常帯 2 本（因果ローリング分位・点線）と
+    外れ値水準 4 本（経験的 ext / GPD 外挿・破線）を重ねる。subwindow の y 範囲は元
+    indicator_minimum 0 〜
     indicator_maximum 100 に合わせる。RSI 線の凡例は元 ``IndicatorShortName`` の
     "RSI-{適用価格名} ({period})"（Apply で適用価格名が変わる）を再現する。
     具体描画ライブラリ（matplotlib）を core/成果物層へ侵入させない（依存内向き）。
 
 元 MQL4 対応:
     ``#property indicator_separate_window`` + ``SetIndexStyle(0, DRAW_LINE)`` +
-    ``indicator_color1 clrLime``（元 ExtMABuffer の EMA 平滑線は ma_period 削除に伴い
-    非対応・承認 2026-08-02）、OnInit の ``IndicatorShortName`` switch（Apply→
+    ``indicator_color1 clrLime``、OnInit の ``IndicatorShortName`` switch（Apply→
     "RSI-Open/High/Low/Median/Typical/Weighted close/Close price (period)"）、
-    σ 水準線（StDevA1..A6 ±1/2/3σ ＋ 中央線 50, indicator_levelcolor C'84,84,84' /
-    indicator_levelstyle STYLE_SOLID）、``indicator_minimum 0`` / ``indicator_maximum 100``。
+    ``indicator_minimum 0`` / ``indicator_maximum 100``。元 ExtMABuffer（EMA 平滑線）と
+    σ 7 水準（StDevA1..A6 ＋ 中央線 50）は非対応（SPEC §2 / §5.4・承認 2026-08-02）。
 
 依存（PORTING_GUIDE §8）:
-    標準: __future__ / 外部: numpy, pandas, matplotlib / プロジェクト内: rsi, core
+    標準: __future__ / 外部: numpy, pandas, matplotlib / プロジェクト内: rsi, levels, core
 """
 
 from __future__ import annotations
@@ -31,14 +31,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from common.event_quantiles import DEFAULT_K_EVENTS, DEFAULT_Q_OUT
+
 from .core import DEFAULT_APPLY, DEFAULT_RSI_PERIOD
-from .rsi import RSI_COLUMN, build_rsi, rsi_levels
+from .levels import DEFAULT_Q_HIGH, DEFAULT_Q_LOW, DEFAULT_WINDOW_N
+from .rsi import LEVEL_COLUMNS, RSI_COLUMN, build_rsi, quantile_column
 
-_RSI_COLOR = "#00ff00"     # 元 indicator_color1 clrLime
-_LEVEL_COLOR = "#545454"   # 元 indicator_levelcolor C'84,84,84'
-
-# σ 水準線（±1/2/3σ は点線、中央線 50 は実線）。
-_SIGMA_KEYS: tuple[str, ...] = ("p1", "p2", "p3", "m1", "m2", "m3")
+_RSI_COLOR = "#00ff00"       # 元 indicator_color1 clrLime
+_QUANTILE_COLOR = "#26c6da"  # 正常帯（lwc の _QUANTILE_COLOR と同色）
+_EVQ_COLOR = "#d2433a"       # 経験的極端分位（共有 EVQ_COLOR と同色）
+_GPD_COLOR = "#ffa726"       # GPD 外挿（lwc の _GPD_COLOR と同色）
 
 # 元 indicator_minimum / indicator_maximum。
 _Y_MIN = 0.0
@@ -75,12 +77,17 @@ def plot_rsi(
     *,
     rsi_period: int = DEFAULT_RSI_PERIOD,
     apply: int = DEFAULT_APPLY,
+    window_n: int = DEFAULT_WINDOW_N,
+    q_low: float = DEFAULT_Q_LOW,
+    q_high: float = DEFAULT_Q_HIGH,
+    q_out: "float | None" = DEFAULT_Q_OUT,
+    k_events: int = DEFAULT_K_EVENTS,
     title: str = "PRO!fitRSI",
 ) -> str:
-    """RSI 線を別ペイン風に PNG 出力する。
+    """RSI 線と正常帯・外れ値水準を別ペイン風に PNG 出力する。
 
-    上段: 終値（参照）。下段: RSI 線（Lime）＋ σ 水準線 7 本
-    （±1/2/3σ は点線グレー、50 は実線）。下段 y 範囲は [0,100]。warm-up
+    上段: 終値（参照）。下段: RSI 線（Lime）＋ 正常帯 2 本（点線シアン）＋ 外れ値水準
+    4 本（経験的＝赤系破線 / GPD 外挿＝琥珀破線）。下段 y 範囲は [0,100]。warm-up
     （i<rsi_period）は元 iRSI 既定どおり 0 で描画される（NaN 無し）。RSI 線の凡例は
     "RSI-{適用価格名} ({period})"（Apply 依存）。
 
@@ -89,13 +96,16 @@ def plot_rsi(
         out_path: 出力 PNG パス。
         rsi_period: RSI 期間（既定 6）。
         apply: 適用価格選択（既定 5 -> Typical price）。
+        window_n / q_low / q_high / q_out / k_events: 水準パラメータ（``levels`` 参照）。
         title: 図のタイトル。
 
     Returns:
         書き出した PNG のパス。
     """
-    built = build_rsi(df, rsi_period=rsi_period, apply=apply)
-    levels = rsi_levels(df, rsi_period=rsi_period, apply=apply)
+    built = build_rsi(
+        df, rsi_period=rsi_period, apply=apply, window_n=window_n,
+        q_low=q_low, q_high=q_high, q_out=q_out, k_events=k_events,
+    )
     rsi = built[RSI_COLUMN].to_numpy(dtype=np.float64)
     x = np.arange(len(df))
 
@@ -115,13 +125,17 @@ def plot_rsi(
     # 別ウィンドウ相当: RSI 線（DRAW_LINE, clrLime）。
     ax_ind.plot(x, rsi, color=_RSI_COLOR, linewidth=1.4,
                 label=rsi_short_name(apply, rsi_period))
-    # σ 水準線（±1/2/3σ は点線グレー）。
-    for key in _SIGMA_KEYS:
-        ax_ind.axhline(levels[key], color=_LEVEL_COLOR, linewidth=0.8,
-                       linestyle=":", alpha=0.7)
-    # 中央線 50（実線）。
-    ax_ind.axhline(levels["mid50"], color=_LEVEL_COLOR, linewidth=1.0,
-                   linestyle="-", alpha=0.8)
+    # 正常帯（因果ローリング分位・点線シアン）。
+    for q in (q_low, q_high):
+        name = quantile_column(q)
+        ax_ind.plot(x, built[name].to_numpy(dtype=np.float64), color=_QUANTILE_COLOR,
+                    linewidth=0.9, linestyle=":", label=name)
+    # 外れ値水準（経験的 ext ＝赤系 / GPD 外挿＝琥珀・いずれも破線）。
+    for key, color in (("ext_hi", _EVQ_COLOR), ("ext_lo", _EVQ_COLOR),
+                       ("gpd_hi", _GPD_COLOR), ("gpd_lo", _GPD_COLOR)):
+        name = LEVEL_COLUMNS[key]
+        ax_ind.plot(x, built[name].to_numpy(dtype=np.float64), color=color,
+                    linewidth=1.0, linestyle="--", label=name)
     # 別ウィンドウ y 範囲（元 indicator_minimum 0 〜 indicator_maximum 100）。
     ax_ind.set_ylim(_Y_MIN, _Y_MAX)
     ax_ind.set_ylabel("RSI")

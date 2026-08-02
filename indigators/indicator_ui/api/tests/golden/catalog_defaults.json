@@ -142,7 +142,12 @@
   },
   "profit_rsi": {
     "apply": 5,
-    "rsi_period": 6
+    "k_events": 50,
+    "q_high": 0.9,
+    "q_low": 0.1,
+    "q_out": 0.99,
+    "rsi_period": 6,
+    "window_n": 500
   },
   "profit_rsi_macd": {
     "fast": 4,

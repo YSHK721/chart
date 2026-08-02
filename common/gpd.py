@@ -29,6 +29,7 @@
     covariate_gpd_fit: スケールを共変量の関数とする GPD（log β = Xγ・ξ 一定）。
     lr_test_gamma    : H0: 最後の共変量の係数 = 0 の尤度比検定。
     power_curve      : 想定効果量に対する検出力（ゲート 3）。
+    gpd_excess_quantile: 超過分へ当てはめた GPD の q 分位（外れ値水準の単一定義）。
 
 ⑤依存: 標準 __future__ / dataclasses / math / 外部 numpy。
 """
@@ -42,6 +43,12 @@ import numpy as np
 
 #: ξ がこの絶対値未満なら指数分布の極限式を使う（数値的な 0 除算回避）。
 _XI_EPS: float = 1e-8
+
+#: GPD を当てはめる最小観測数。未満は水準を出さない（NaN）。
+#: 根拠（tickvol 実測 2026-08-01・窓をずらした 10 標本の変動係数）: m=5 で 0.95、
+#: m=10〜20 で 0.71〜0.73、m=30 で 0.245、m>=50 で 0.14〜0.21。30 未満は推定量が
+#: 自身の値と同じ大きさで揺れる。
+MIN_GPD_EVENTS: int = 30
 
 
 def gpd_neg_loglik(params: "np.ndarray", excess: "np.ndarray") -> float:
@@ -139,6 +146,32 @@ def gpd_rvs(n: int, xi: float, beta: float, *, rng) -> "np.ndarray":
     if abs(xi) < _XI_EPS:
         return -beta * np.log1p(-u)
     return beta * ((1.0 - u) ** (-xi) - 1.0) / xi
+
+
+def gpd_excess_quantile(excesses, q: "float | None") -> float:
+    """超過分へ GPD を当てはめ、その **q 分位**（超過分のスケール）を返す。
+
+    ``level = β/ξ · ((1−q)^(−ξ) − 1)``（ξ→0 は指数分布の極限 ``−β·ln(1−q)``）。
+    観測が :data:`MIN_GPD_EVENTS` 未満、q 無効、当てはめ失敗はいずれも NaN。
+
+    当てはめ自体は :func:`gpd_fit`（最尤・scipy 非依存）へ委譲する。外れ値水準を出す
+    指標（tickvol / profit_rsi）はいずれも本関数を参照し、式を写さない（単一定義）。
+    """
+    if q is None:
+        return float("nan")
+    y = np.asarray(excesses, dtype=np.float64).ravel()
+    y = y[np.isfinite(y) & (y > 0.0)]
+    if y.size < MIN_GPD_EVENTS:
+        return float("nan")
+    fit = gpd_fit(y)
+    if not np.isfinite(fit.xi) or not np.isfinite(fit.beta) or fit.beta <= 0.0:
+        return float("nan")
+    tail = 1.0 - float(q)
+    if tail <= 0.0:
+        return float("nan")
+    if abs(fit.xi) < _XI_EPS:
+        return float(-fit.beta * np.log(tail))
+    return float(fit.beta / fit.xi * (tail ** (-fit.xi) - 1.0))
 
 
 def anderson_darling(excess: "np.ndarray", xi: float, beta: float) -> float:

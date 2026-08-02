@@ -1,12 +1,13 @@
 """PRO!fitRSI lightweight-charts 出力アダプタの検証（Fake チャート）。
 
-描画ライブラリ（lightweight_charts）に依存させず、create_line /
-horizontal_line を持つ Fake で本数（線 1 本・水平線 7 本）・名前・値・
-name 一致・異常系（必須列欠落・時刻欠落）を確認する
-（PORTING_GUIDE §6/§7）。テストファースト（Red→Green）。
+描画ライブラリ（lightweight_charts）に依存させず、create_line を持つ Fake で本数
+（RSI 1 本＋正常帯 2 本＋外れ値水準 4 本）・名前・値・name 一致・異常系（必須列欠落・
+時刻欠落）を確認する（PORTING_GUIDE §6/§7）。
 
-RSI は volume 不要（OHLC のみ）。lwc のライン name は値列名（rsi）に
-一致させる（Apply 依存の短名は plot 凡例側の関心事であり lwc line name ではない）。
+RSI は volume 不要（OHLC のみ）。lwc のライン name は値列名（rsi / rsi_q10 / rsi_evq_ext_hi …）
+に一致させる（Apply 依存の短名は plot 凡例側の関心事であり lwc line name ではない）。
+水準はすべて時系列（line）であり、水平線（horizontal_line）は使わない — 水準が
+当該バー除外の因果ローリング分位に基づき時間で動くためである（σ 7 本からの置換）。
 """
 
 import sys
@@ -18,8 +19,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src import RSI_COLUMN  # noqa: E402
-from src.lwc_chart import _LEVEL_KEYS, add_rsi  # noqa: E402
+from src import LEVEL_COLUMNS, RSI_COLUMN, quantile_column  # noqa: E402
+from src.lwc_chart import add_rsi  # noqa: E402
 
 
 class FakeLine:
@@ -35,18 +36,11 @@ class FakeLine:
 class FakeChart:
     def __init__(self):
         self.lines = []
-        self.hlines = []
 
     def create_line(self, name, **kwargs):
         line = FakeLine(name, **kwargs)
         self.lines.append(line)
         return line
-
-    def horizontal_line(self, price, **kwargs):
-        line = {"price": price, **kwargs}
-        self.hlines.append(line)
-        return line
-
 
 def _df(n=40):
     # 合成 OHLC（volume なし）。RSI に起伏を出すため緩やかな振動を与える。
@@ -64,71 +58,68 @@ def _df(n=40):
 
 
 # ---------------------------------------------------------------------------
-# TC-31 線 1 本（RSI）＋ 水準線 7 本（±1/2/3σ, mid50）を生成する
+# TC-31 RSI 線 1 本 ＋ 正常帯 2 本 ＋ 外れ値水準 4 本 を生成する
 # ---------------------------------------------------------------------------
-def test_creates_one_line_and_seven_level_lines():
+def test_creates_rsi_line_bands_and_outlier_levels():
     chart = FakeChart()
-    created = add_rsi(chart, _df(), rsi_period=6, apply=5)
-    assert len(chart.lines) == 1
-    assert len(chart.hlines) == 7
-    assert len(_LEVEL_KEYS) == 7
-    assert len(created) == 1 + 7
+    created = add_rsi(chart, _df(), rsi_period=6, apply=5, window_n=10, k_events=5)
+    assert len(chart.lines) == 1 + 2 + 4
+    assert len(created) == 1 + 2 + 4
 
 
 # ---------------------------------------------------------------------------
-# TC-32 ライン名が値列名（rsi）と一致する
+# TC-32 ライン名が値列名（rsi / rsi_q10 / rsi_q90 / 水準 4 本）と一致する
 # ---------------------------------------------------------------------------
 def test_line_names_match_value_columns():
     chart = FakeChart()
-    add_rsi(chart, _df(), rsi_period=6, apply=5)
+    add_rsi(chart, _df(), rsi_period=6, apply=5, window_n=10, k_events=5)
     names = [ln.name for ln in chart.lines]
-    assert names == [RSI_COLUMN]  # EMA 平滑線は持たない（ma_period 削除）
+    assert names == [
+        RSI_COLUMN, quantile_column(0.10), quantile_column(0.90),
+        LEVEL_COLUMNS["ext_hi"], LEVEL_COLUMNS["ext_lo"],
+        LEVEL_COLUMNS["gpd_hi"], LEVEL_COLUMNS["gpd_lo"],
+    ]
     for ln in chart.lines:
         assert ln.name in ln.data.columns
         assert "time" in ln.data.columns
 
 
 # ---------------------------------------------------------------------------
-# TC-33 ライン値が build_rsi の出力と一致する
+# TC-33 ライン値が build_rsi の出力と一致する（NaN 行は emit 側で除外される）
 # ---------------------------------------------------------------------------
 def test_line_values_match_build_output():
     from src import build_rsi
 
     df = _df()
     chart = FakeChart()
-    add_rsi(chart, df, rsi_period=6, apply=5)
-    built = build_rsi(df, rsi_period=6, apply=5)
-    for col, line in zip((RSI_COLUMN,), chart.lines):
-        expected = built[col].to_numpy()
-        got = line.data[col].to_numpy()
-        assert len(got) == len(df)
+    add_rsi(chart, df, rsi_period=6, apply=5, window_n=10, k_events=5)
+    built = build_rsi(df, rsi_period=6, apply=5, window_n=10, k_events=5)
+    for line in chart.lines:
+        expected = built[line.name].to_numpy(dtype=float)
+        expected = expected[np.isfinite(expected)]
+        got = line.data[line.name].to_numpy(dtype=float)
         assert np.allclose(got, expected)
 
 
 # ---------------------------------------------------------------------------
-# TC-34 水準線の価格が rsi_levels の 7 水準と一致する
+# TC-34 水準線は水平線ではなく時系列（因果ローリング＝時間で動く）
 # ---------------------------------------------------------------------------
-def test_level_prices_match_rsi_levels():
-    from src import rsi_levels
-
-    df = _df()
+def test_levels_are_time_series_not_horizontal_lines():
     chart = FakeChart()
-    add_rsi(chart, df, rsi_period=6, apply=5)
-    levels = rsi_levels(df, rsi_period=6, apply=5)
-    prices = sorted(h["price"] for h in chart.hlines)
-    expected = sorted(levels[k] for k in _LEVEL_KEYS)
-    assert np.allclose(prices, expected)
-    assert any(np.isclose(p, 50.0) for p in prices)  # mid50 が含まれる
+    add_rsi(chart, _df(), rsi_period=6, apply=5, window_n=10, k_events=5)
+    assert not hasattr(chart, "horizontal_line")   # 水平線 API 自体を使わない
+    band = next(ln for ln in chart.lines if ln.name == quantile_column(0.90))
+    assert band.data[band.name].nunique() > 1      # 時間で動く
 
 
 # ---------------------------------------------------------------------------
-# TC-35 draw_levels=False で水準線を抑止できる
+# TC-35 draw_levels=False で水準線を抑止できる（RSI 線のみ）
 # ---------------------------------------------------------------------------
 def test_levels_can_be_disabled():
     chart = FakeChart()
     add_rsi(chart, _df(), rsi_period=6, apply=5, draw_levels=False)
-    assert len(chart.hlines) == 0
     assert len(chart.lines) == 1
+    assert chart.lines[0].name == RSI_COLUMN
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +127,7 @@ def test_levels_can_be_disabled():
 # ---------------------------------------------------------------------------
 def test_line_price_flags_off():
     chart = FakeChart()
-    add_rsi(chart, _df(), rsi_period=6, apply=5)
+    add_rsi(chart, _df(), rsi_period=6, apply=5, draw_levels=False)
     for ln in chart.lines:
         assert ln.kwargs["price_line"] is False
         assert ln.kwargs["price_label"] is False

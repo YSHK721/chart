@@ -566,10 +566,51 @@ const PROFIT_RSI = pfDef({
     param('apply', ParamType.ENUM, 5, [], [1, 2, 3, 4, 5, 6],
       { group: 'group.calc', label: 'ソース', enumLabels: RSI_APPLY_LABELS,
         tooltip: 'RSI を計算する価格。既定は (高値 + 安値 + 終値)/3' }),
+    // 水準パラメータ（tickvol と同名・同既定＝同じ意味の設定は指標間で同じ名前にする）。
+    //   元 MQL の σ 7 水準は全系列＝未来を含む非因果な水準だったため、因果ローリング分位＋
+    //   POT/GPD へ全面置換した（承認 2026-08-02）。
+    param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
+      group: 'group.calc', order: 3, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（閾値）', isPeriod: true,
+      tooltip: '「普段どのあたりの RSI か」を測る因果ローリング窓の本数（既定 500）。当該バーは除外する（非リペイント）。元の σ 水準は全期間（未来を含む）で 1 本に固定されていたが、この窓で局所的に測り直す。',
+    }),
+    param('q_low', ParamType.FLOAT, 0.10, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
+      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
+    ], null, {
+      group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1, label: '下側分位',
+      tooltip: '正常帯の下端（既定 0.10＝下位 10%）。これを下回る RSI を「売られ過ぎイベント」として数える。下側 POT の閾値でもある。',
+    }),
+    param('q_high', ParamType.FLOAT, 0.90, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
+    ], null, {
+      group: 'group.calc', order: 5, step: 0.01, min: 0, max: 1, label: '上側分位（外れ値の境目）',
+      tooltip: '正常帯の上端（既定 0.90＝上位 10%）。これを超えた RSI を「買われ過ぎイベント」として数える。上側 POT の閾値でもある。閾値の自動選択（GPD 適合度＋ForwardStop）は実測で時間足ごとに 0.80〜0.95 へ散り、直近 50 件の当てはめでは 0.80〜0.95 のどこでも適合するため、観測数を確保できる 0.90 を既定にしている。',
+    }),
+    param('q_out', ParamType.FLOAT, 0.99, [], null, {
+      group: 'group.calc', order: 6, label: '外れ値の極端分位', step: 0.01, min: 0, max: 1,
+      tooltip: '過熱イベントの「極端にはどこまで行くか」の分位（既定 0.99）。経験的分位線（赤破線）と GPD 線（橙破線）は同じこの分位を推定しており、差は外挿量そのもの。空欄・上側分位以下・範囲外は極端線と GPD 線のみオフ。',
+    }),
+    param('k_events', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['k_events', 1], messageKey: 'err.k_events' }], null, {
+      group: 'group.calc', order: 7, step: 1, min: 1, label: '外れ値イベント数 K',
+      tooltip: '水準を直近何件の過熱イベントから計算するか（既定 50・経験的分位と GPD で共通）。全履歴で当てはめると分布が非定常なため適合度検定に落ちるが、直近 50 件なら落ちない＝ローリングでこそ成立する。GPD 線は観測が 30 件に満たない区間では描かない（推定値が自身と同じ大きさで揺れるため）。',
+    }),
   ],
-  // 元 MQL の InpMAPeriod（RSI の EMA 平滑線 rsi_ma）は削除済み（承認 2026-08-02）。
-  //   σ 水準線は元から**生 RSI**由来のため水準値は不変。
-  series: [PF_LINE('rsi'), PF_HLINE('profit_rsi')],
+  // 系列: RSI 本線＋正常帯 2 本（動的名 rsi_q{pct}）＋外れ値水準 4 本（経験的 evq_ext・GPD の
+  //   上下）。水準は当該バー除外の因果ローリング分位に基づき時間で動くため、水平線ではなく
+  //   時系列（line）で出す。命名は共有規約（common.event_quantiles / btlm_trail_q{pct}）に従う。
+  series: [
+    PF_LINE('rsi'),
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      seriesNamePattern: {
+        template: 'rsi_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
+    ...['rsi_evq_ext_hi', 'rsi_evq_ext_lo', 'rsi_gpd_hi', 'rsi_gpd_lo'].map(
+      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
+    ),
+  ],
 });
 const PROFIT_STC = pfDef({
   id: 'profit_stc', name: 'STC', cat: 'oscillator', placement: 'pane',

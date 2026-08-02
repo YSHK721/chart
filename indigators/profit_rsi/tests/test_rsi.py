@@ -1,8 +1,9 @@
 """PRO!fitRSI 成果物層（pandas）の検証。
 
-``build_rsi`` が OHLC DataFrame から apply で適用価格を選び core を呼び、RSI 列を
-付与した DataFrame（元 index 継承）を返すこと、``rsi_levels`` が生 RSI 由来の σ 水準辞書
-（7 要素）を返すこと、必須列欠落で KeyError を送出することを固定する。
+``build_rsi`` が OHLC DataFrame から apply で適用価格を選び core を呼び、RSI 列と水準列
+（正常帯 2・外れ値 4）を付与した DataFrame（元 index 継承）を返すこと、列名が分位から導かれる
+こと、必須列欠落で KeyError を送出することを固定する。水準そのものの定義は
+``tests/test_levels.py``。
 """
 
 import sys
@@ -15,11 +16,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src import (  # noqa: E402
+    LEVEL_COLUMNS,
     RSI_COLUMN,
     build_rsi,
     compute_rsi_full,
-    compute_rsi_levels,
-    rsi_levels,
+    quantile_column,
 )
 
 
@@ -97,17 +98,32 @@ def test_build_rsi_raises_keyerror_on_missing_column():
 
 
 # ---------------------------------------------------------------------------
-# TC-20 rsi_levels は生 RSI 由来の σ 水準辞書（7 要素）を返す
+# TC-20 build_rsi は正常帯 2 列・外れ値 4 列を付け、列名は分位から導かれる
 # ---------------------------------------------------------------------------
-def test_rsi_levels_returns_seven_level_dict_from_raw_rsi():
+def test_build_rsi_appends_band_and_outlier_level_columns():
     df = _ohlc()
-    levels = rsi_levels(df, rsi_period=3, apply=0)
-    assert set(levels.keys()) == {"p1", "p2", "p3", "m1", "m2", "m3", "mid50"}
-    full = compute_rsi_full(
-        df["open"].to_numpy(float), df["high"].to_numpy(float),
-        df["low"].to_numpy(float), df["close"].to_numpy(float),
-        rsi_period=3, apply=0,
-    )
-    # 生 RSI 由来であることを直接固定。
-    assert levels == pytest.approx(compute_rsi_levels(full.rsi))
-    assert levels == pytest.approx(full.levels)
+    out = build_rsi(df, rsi_period=3, apply=0, window_n=3, q_low=0.2, q_high=0.8, k_events=5)
+
+    # 正常帯の列名は分位から導く（tickvol と同規約）。
+    assert quantile_column(0.2) == "rsi_q20"
+    assert "rsi_q20" in out.columns and "rsi_q80" in out.columns
+    # 外れ値水準は経験的（evq）と GPD 外挿の上下 4 本。
+    assert set(LEVEL_COLUMNS.values()) == {
+        "rsi_evq_ext_hi", "rsi_evq_ext_lo", "rsi_gpd_hi", "rsi_gpd_lo"
+    }
+    for column in LEVEL_COLUMNS.values():
+        assert column in out.columns
+    assert list(out.index) == list(df.index)
+
+
+# ---------------------------------------------------------------------------
+# TC-21 水準は [0,100] を出ない（RSI は有界・余地割合スケールの構成上の不変条件）
+# ---------------------------------------------------------------------------
+def test_level_columns_stay_inside_rsi_bounds():
+    df = _ohlc()
+    out = build_rsi(df, rsi_period=3, apply=0, window_n=3, q_low=0.2, q_high=0.8, k_events=5)
+    level_columns = ["rsi_q20", "rsi_q80", *LEVEL_COLUMNS.values()]
+    values = out[level_columns].to_numpy(dtype=float)
+    finite = values[np.isfinite(values)]
+    assert finite.min() >= 0.0
+    assert finite.max() <= 100.0
