@@ -40,17 +40,15 @@ def _ohlcv(n: int = 200) -> pd.DataFrame:
 
 
 # front（web/js/usecase/catalog.js の SeriesDef）と一致させる系列名の全集合（emit 順）。
-#   帯 2 種は分位依存の動的名（既定 q_low=0.10 / q_high=0.90）。トレンド系は btlm_trail 仕様。
+#   帯は分位依存の動的名（既定 q_low=0.10 / q_high=0.90）。
+#   回帰トレンド系（tickvol_trend_*）は ISSUE-244 で UI から外した。
 _SERIES_NAMES = (
     "tickvol", "tickvol_q10", "tickvol_q90",
     "tickvol_evq_med_hi", "tickvol_evq_ext_hi", "tickvol_gpd_hi",
-    "tickvol_trend_mean", "tickvol_trend_q10", "tickvol_trend_q90",
-    "tickvol_trend_off_hi", "tickvol_trend_off_lo",
-    "tickvol_trend_beta", "tickvol_trend_sigma", "tickvol_trend_band_hit_rate",
 )
 
 
-def test_compute_returns_the_histogram_bands_levels_and_trend():
+def test_compute_returns_the_histogram_bands_and_levels():
     adapter = IndicatorComputeAdapter()
     df = _ohlcv(400)
     series = adapter.compute("tickvol", "default", df, {})
@@ -62,26 +60,21 @@ def test_compute_returns_the_histogram_bands_levels_and_trend():
 
 
 def test_band_series_names_follow_the_quantile_pair():
-    # 命名は btlm_trail_q{pct} と対称（分位値そのものが名前に出る）。水準帯とトレンド帯は
-    #   分位を共有するため、接頭辞で区別されていること（同名にならないこと）も固定する。
+    # 命名は btlm_trail_q{pct} と対称（分位値そのものが名前に出る）。
     adapter = IndicatorComputeAdapter()
     series = adapter.compute("tickvol", "default", _ohlcv(400),
                              {"q_low": 0.05, "q_high": 0.95})
     names = [s["name"] for s in series]
     assert "tickvol_q5" in names and "tickvol_q95" in names
-    assert "tickvol_trend_q5" in names and "tickvol_trend_q95" in names
     assert len(names) == len(set(names))
 
 
-def test_trend_series_are_absent_when_disabled():
-    # q_out 無効なら外れ値分位線を、show_metrics=False なら読取欄系列を出さない
-    #   （btlm_trail F-08 / F-09 と同一規約）。
+def test_trend_series_are_not_emitted_anymore():
+    # ISSUE-244: 回帰トレンド（btlm_trail 仕様）は UI から外した。計算は
+    #   indigators/tickvol/src/trend.py にアーカイブとして残るが、結線からは出ない。
     adapter = IndicatorComputeAdapter()
-    names = [s["name"] for s in adapter.compute(
-        "tickvol", "default", _ohlcv(400), {"q_out": None, "show_metrics": False})]
-    assert not any(n.startswith("tickvol_trend_off") for n in names)
-    assert not any(n.endswith(("_beta", "_sigma", "_band_hit_rate")) for n in names)
-    assert "tickvol_trend_mean" in names
+    names = [s["name"] for s in adapter.compute("tickvol", "default", _ohlcv(400), {})]
+    assert not any(n.startswith("tickvol_trend") for n in names)
 
 
 def test_histogram_values_are_the_source_volume_unchanged():

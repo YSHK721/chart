@@ -3963,3 +3963,57 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   1 件も無い**（両者がほぼ同一の判定を出す）ため、既知の SMA 日足エッジは疑似VWAP でも同様に出るはずで、
   失われてはいない。両者に差が出るのは日中足のみで、そこでは双方ともエッジが無い。
 
+
+## ISSUE-244: [整理] ティックボリューム系の指標を整理する（上昇下落を UI から撤去・tickvol から回帰トレンドを撤去）（2026-08-02）
+
+- **重大度**: —（機能整理。データ基盤・計算コードは残す）
+- **ステータス**: RESOLVED（2026-08-02・feature/latest-incremental-compute）
+- **依頼**: 「ティックボリューム系の指標を整理する。上昇下落ティックボリュームを UI 上から削除しろ。
+  ソースコードはアーカイブとして保持しておく」「ティックボリュームから、btlm_trail を削除しろ」
+  （依頼者指示 2026-08-02）。
+- **方針**: UI から外す／計算コードはアーカイブとして残す／**データ基盤には触らない**。
+
+### 作業 1: 上昇下落ティックボリューム（`tickvol_updown`）を UI から撤去
+
+- **外した理由（実測）**: 上昇と下落がほぼ鏡像（移動累積の相関 0.9993〜0.9999・全期間累積
+  1.000000・最終差 0.188%）。1 本化しても残差はコイン投げ以下（分散比 0.83〜0.97）。
+  符号付きティックに方向情報が無いことは ISSUE-241 の 18 条件で確定済み。
+- **外した結線**: `call_binding.py`（`_TABLE` エントリ・`_tickvol_updown_latest_meta`・
+  `_TICKVOL_UPDOWN_MARGIN`）／`golden/catalog_defaults.json`／`test_solid_binding_spec_guards.py`／
+  `catalog.js`（`IndicatorDef` と `REGISTRY`）／JS テスト 6 本の件数。
+- **削除**: `api/tests/test_tickvol_updown_binding.py`（結線そのもののテスト・依頼者承認済み）。
+- **残したもの**: パッケージ `indigators/tickvol_updown/`（単体テスト 12 件は通る）、
+  `marketdata` の `up`/`dn` 列と再生成済み CSV。
+- **front だけ外せない理由**: `catalog_schema_sync.test.js` が golden の全 compute_id を front
+  レジストリに要求するため、back `_TABLE` と golden も同時に外す必要がある。
+
+### 作業 2: ティックボリューム（`tickvol`）から回帰トレンド（btlm_trail 仕様・ISSUE-240）を撤去
+
+- **外した系列 7 本**: `tickvol_trend_mean` / `_q{pct}`（動的）/ `_off_hi` / `_off_lo` /
+  `_beta` / `_sigma` / `_band_hit_rate`。
+- **外したパラメータ 5 個**: `maxbars` / `band_method` / `empirical_n` / `show_metrics` / `n_cov`。
+- **残したもの**: 本体ヒストグラム・正常帯 `tickvol_q{pct}`・外れ値水準 3 本（ISSUE-239）と、
+  パラメータ `window_n` / `q_low` / `q_high` / `q_out` / `k_events`。
+- **触った層**: 指標（`tickvol/src/{__init__,lwc_chart}.py`）／結線（`call_binding.py` の
+  `params_defaults`）／増分（`incremental/tickvol.py` の `_State.trend`・`deviations`・`_trend_at`・
+  emit のトレンド節。帯の割当が 4 本 → 2 本）／golden／front `catalog.js`／テスト 4 本。
+- **`indigators/tickvol/src/trend.py` は残す**（アーカイブ）。単体テスト `test_trend.py` も通る。
+
+### アーカイブの所在
+
+`indigators/tickvol_updown/ARCHIVE.md` に両方の「外した理由」「残したもの」「復活手順（触る
+ファイルの完全なリスト）」を記録した。`tickvol_updown/src/__init__.py` と
+`tickvol/src/trend.py` の docstring 冒頭にも「UI 未結線のアーカイブ」を明記した。
+
+### 検証
+
+- 回帰: indicator_ui Py 674 / JS 1009、replay Py 236 / JS 301、marketdata 217、common 81、
+  tickvol 51、tickvol_updown 12、btlm_trail 31 — **全通過**。
+  （指標パッケージは top-level 名 `src` が衝突するため 1 パッケージずつ実行する。）
+- 同期契約: `test_catalog_schema.py` ↔ `catalog_schema_sync.test.js` が両方緑
+  （結線の外し漏れはここで落ちる）。
+- 実 UI（8000・NI225 5 分足・ライブ／リプレイ両モード）: 指標一覧に「上昇下落ティックボリューム」が
+  出ないこと、`tickvol` ペインが本体＋正常帯 2 本＋水準線 3 本のみ（紫のトレンド線・帯が出ない）で
+  あること、パラメータ欄が 5 個であること、コンソールエラー 0 件を確認。
+  なお本検証中に ISSUE-245（撤去した指標の凡例行が保存状態から残る）を検出し、同時に是正した。
+

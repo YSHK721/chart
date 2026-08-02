@@ -1,5 +1,9 @@
 """tickvol trend — ティックボリュームの回帰トレンドと帯（btlm_trail 仕様の参照拡張）。
 
+⚠ **本モジュールは UI 未結線のアーカイブ**（ISSUE-244 で `tickvol` から外した）。`lwc_chart` /
+`__init__` / 結線層のいずれからも参照されない。単体テスト `tests/test_trend.py` は残してあり通る。
+外した理由と復活手順は `indigators/tickvol_updown/ARCHIVE.md` の末尾（tickvol トレンド節）を参照。
+
 ①層名/責務:
     core（純粋計算層）。tick 数系列に **btlm_trail の仕様をそのまま適用**する。すなわち各バーで
     直近 ``maxbars`` 本に OLS を当て、窓末尾の値（トレンド現在位置 mean）・傾き β・残差 σ、

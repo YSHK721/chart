@@ -17,8 +17,7 @@
     step_excess_event    : 1 バーぶんのイベント確定（増分計算の入口）。
     gpd_excess_quantile  : 超過分への GPD 当てはめによる分位。
     causal_threshold     : 正常帯上端（＝POT 閾値）の因果ローリング分位。
-    tickvol_trend        : 回帰トレンド・帯・外れ値分位線・β/σ/実績率（btlm_trail 仕様）。
-    add_tickvol          : 出力アダプタ（ヒストグラム＋正常帯＋水準線＋トレンド系）。
+    add_tickvol          : 出力アダプタ（ヒストグラム＋正常帯＋水準線）。
     TICKVOL_COLUMN       : 出力系列名（front の SeriesDef.seriesName と一致）。
 """
 
@@ -39,15 +38,6 @@ from .levels import (
     step_excess_event,
     tickvol_levels,
 )
-from .trend import (
-    BAND_METHODS,
-    DEFAULT_BAND_METHOD,
-    DEFAULT_EMP_N,
-    DEFAULT_MAXBARS,
-    DEFAULT_N_COV,
-    TREND_KEYS,
-    tickvol_trend,
-)
 from .lwc_chart import add_tickvol
 
 __all__ = [
@@ -67,11 +57,4 @@ __all__ = [
     "DEFAULT_Q_HIGH",
     "MIN_GPD_EVENTS",
     "LEVEL_KEYS",
-    "tickvol_trend",
-    "TREND_KEYS",
-    "BAND_METHODS",
-    "DEFAULT_BAND_METHOD",
-    "DEFAULT_MAXBARS",
-    "DEFAULT_EMP_N",
-    "DEFAULT_N_COV",
 ]

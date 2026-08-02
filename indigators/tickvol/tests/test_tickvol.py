@@ -96,8 +96,8 @@ def test_build_tickvol_coerces_non_numeric_to_nan():
 def test_add_tickvol_creates_single_histogram_named_tickvol():
     chart = FakeChart()
     out = add_tickvol(chart, _ohlcv(6))
-    # ヒストグラム 1 + 正常帯 2 + 水準線 3 + トレンド（mean 1 + 帯 2 + off 2 + 読取 3）。
-    assert len(out) == 14
+    # ヒストグラム 1 + 正常帯 2 + 水準線 3（回帰トレンドは ISSUE-244 で UI から外した）。
+    assert len(out) == 6
     assert len(chart.histograms) == 1
     h = chart.histograms[0]
     # 系列名は front の SeriesDef.seriesName（usecase/catalog.js）と一致させる契約。

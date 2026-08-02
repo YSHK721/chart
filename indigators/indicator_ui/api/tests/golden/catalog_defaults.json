@@ -168,15 +168,10 @@
     "q_low": 0.05
   },
   "tickvol": {
-    "band_method": "empirical",
-    "empirical_n": 500,
     "k_events": 50,
-    "maxbars": 100,
-    "n_cov": 250,
     "q_high": 0.9,
     "q_low": 0.1,
     "q_out": 0.99,
-    "show_metrics": true,
     "window_n": 500
   }
 }

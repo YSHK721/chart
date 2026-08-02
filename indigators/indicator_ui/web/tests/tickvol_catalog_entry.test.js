@@ -23,7 +23,7 @@ test('tickvol: 出来高カテゴリの専用ペイン・ヒストグラム＋�
   assert.equal(d.placement, 'pane');            // 価格スケールを共有しない（単位が違う）
   assert.equal(d.tab, 'indicator');
   assert.equal(d.category.nameKey, 'cat.volume');
-  assert.equal(d.series.length, 12);            // 本体1 + 水準帯(動的1) + 水準線3 + トレンド(mean1 + 帯 動的1 + off2 + 読取3)
+  assert.equal(d.series.length, 5);             // 本体1 + 水準帯(動的1) + 水準線3（回帰トレンドは ISSUE-244 で撤去）
   assert.equal(d.series[0].kind, SeriesKind.HISTOGRAM);
   assert.ok(d.series.slice(1).every((s) => s.kind === SeriesKind.LINE));
 });
@@ -50,49 +50,41 @@ test('tickvol: back 結線（compute_id / 系列名 / variant）が add_tickvol 
   // 静的名の系列（帯 2 種は動的名のため seriesName=null）。順序は lwc_chart の emit 順。
   assert.deepEqual(d.series.map((s) => s.seriesName), [
     'tickvol', null, 'tickvol_evq_med_hi', 'tickvol_evq_ext_hi', 'tickvol_gpd_hi',
-    'tickvol_trend_mean', null,
-    'tickvol_trend_off_hi', 'tickvol_trend_off_lo',
-    'tickvol_trend_beta', 'tickvol_trend_sigma', 'tickvol_trend_band_hit_rate',
   ]);
 });
 
-test('tickvol: パラメータ 10 件（既定は back の params_defaults と同値）', () => {
+test('tickvol: パラメータ 5 件（既定は back の params_defaults と同値）', () => {
   const d = get('tickvol');
   const byName = Object.fromEntries(d.params.map((p) => [p.name, p]));
   assert.deepEqual(Object.keys(byName).sort(), [
-    'band_method', 'empirical_n', 'k_events', 'maxbars', 'n_cov',
-    'q_high', 'q_low', 'q_out', 'show_metrics', 'window_n',
+    'k_events', 'q_high', 'q_low', 'q_out', 'window_n',
   ]);
   assert.equal(byName.window_n.default, 500);
   assert.equal(byName.q_low.default, 0.10);
   assert.equal(byName.q_high.default, 0.90);
   assert.equal(byName.q_out.default, 0.99);
   assert.equal(byName.k_events.default, 50);
-  // 回帰トレンド（btlm_trail 仕様）。maxbars/empirical_n/n_cov は btlm_trail 本体と同じ既定。
-  assert.equal(byName.maxbars.default, 100);
-  assert.equal(byName.empirical_n.default, 500);
-  assert.equal(byName.n_cov.default, 250);
-  assert.equal(byName.show_metrics.default, true);
-  // 閾値窓・回帰窓・分位窓・実績率窓はバー本数＝期間プリセットの対象（isPeriod）。
-  for (const n of ['window_n', 'maxbars', 'empirical_n', 'n_cov']) {
-    assert.equal(byName[n].isPeriod, true, n);
-  }
-  for (const n of ['q_low', 'q_high', 'q_out', 'k_events', 'band_method', 'show_metrics']) {
+  // 閾値窓だけがバー本数＝期間プリセットの対象（isPeriod）。
+  assert.equal(byName.window_n.isPeriod, true);
+  for (const n of ['q_low', 'q_high', 'q_out', 'k_events']) {
     assert.notEqual(byName[n].isPeriod, true, n);
   }
 });
 
-test('tickvol: トレンド帯の既定は経験分位（btlm_trail 本体の ols とは実測により変える）', () => {
-  const p = get('tickvol').params.find((x) => x.name === 'band_method');
-  assert.equal(p.default, 'empirical');
-  assert.deepEqual(p.enumValues, ['ols', 'empirical']);
+test('tickvol: 回帰トレンド（btlm_trail 仕様）は UI から外してある（ISSUE-244）', () => {
+  const d = get('tickvol');
+  assert.equal(d.series.some((s) => String(s.seriesName ?? '').startsWith('tickvol_trend')), false);
+  assert.equal(d.series.some(
+    (s) => String(s.seriesNamePattern?.template ?? '').startsWith('tickvol_trend')), false);
+  for (const n of ['maxbars', 'band_method', 'empirical_n', 'show_metrics', 'n_cov']) {
+    assert.equal(d.params.some((p) => p.name === n), false, n);
+  }
 });
 
-test('tickvol: トレンド帯は水準帯と別の動的名（tickvol_trend_q{pct}）で衝突しない', () => {
+test('tickvol: 動的名は水準帯 1 本だけ（tickvol_q{pct}）', () => {
   const dyn = get('tickvol').series.filter((s) => s.dynamic === true);
-  assert.equal(dyn.length, 2);
-  assert.deepEqual(dyn.map((s) => s.seriesNamePattern.template),
-    ['tickvol_q{pct}', 'tickvol_trend_q{pct}']);
+  assert.equal(dyn.length, 1);
+  assert.deepEqual(dyn.map((s) => s.seriesNamePattern.template), ['tickvol_q{pct}']);
 });
 
 test('tickvol: 集計単位（event_agg）は公開しない（GPD の独立前提を壊さないため固定）', () => {

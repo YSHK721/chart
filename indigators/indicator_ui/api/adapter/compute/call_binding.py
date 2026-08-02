@@ -634,16 +634,12 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "q_high": 0.90,
             "q_out": 0.99,
             "k_events": 50,
-            # 回帰トレンド（btlm_trail 仕様の参照拡張）。band_method の既定だけ btlm_trail 本体
-            #   （ols）と違う＝tick 数の乖離率が右に強く歪み正規仮定が成立しないため（実測根拠は
-            #   indigators/tickvol/src/trend.py の docstring）。
-            "maxbars": 100,
-            "band_method": "empirical",
-            "empirical_n": 500,
-            "show_metrics": True,
-            "n_cov": 250,
+            # 回帰トレンド（btlm_trail 仕様の参照拡張）は ISSUE-244 で UI から外した。
+            #   計算は indigators/tickvol/src/trend.py にアーカイブとして残っている。
         },
     },
+    # --- tickvol_updown は UI から外した（ISSUE-244）。パッケージ
+    #   `indigators/tickvol_updown/` はアーカイブとして残す（同梱 ARCHIVE.md に復活手順）。
 }
 
 

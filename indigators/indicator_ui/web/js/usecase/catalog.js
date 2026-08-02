@@ -798,32 +798,6 @@ const TICKVOL = new IndicatorDef({
       group: 'group.calc', order: 5, step: 1, min: 1, label: '外れ値イベント数 K',
       tooltip: '水準を直近何件の外れ値イベントから計算するか（既定 50・経験的分位と GPD で共通）。全履歴で当てはめると分布が非定常なため適合度検定に落ちるが、直近 50 件なら落ちない＝ローリングでこそ成立する。GPD 線は観測が 30 件に満たない区間では描かない（推定値が自身と同じ大きさで揺れるため）。',
     }),
-    // --- 回帰トレンド（btlm_trail 仕様の参照拡張・依頼者指示 2026-08-01）-----
-    //   btlm_trail の F-01/F-05/F-06/F-08/F-09（回帰窓末尾 OLS＋帯＋外れ値分位線＋β/σ/実績率）を
-    //   tick 数系列へそのまま適用する。分位値（q_low/q_high/q_out）は水準帯と共有し、同じ分位で
-    //   「水準の帯」と「トレンドの帯」を並べて読む。btlm_trail 本体は無改変（OCP）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, {
-      group: 'group.calc', order: 6, step: 1, min: 3, unit: 'unit.bars', label: '移動期間（回帰）', isPeriod: true,
-      tooltip: 'tick 数の回帰トレンドを当てはめる窓の本数（既定 100・btlm_trail と同一既定）。トレンド線（紫のドット）は各バーでこの窓に直線を当てた「窓末尾の位置」。β はその傾き。',
-    }),
-    param('band_method', ParamType.ENUM, 'empirical', [], ['ols', 'empirical'], {
-      group: 'group.calc', order: 7, label: 'トレンド帯の方式', enumLabels: BTLM_TRAIL_METHOD_LABELS,
-      tooltip: 'トレンド帯の作り方。経験分位＝トレンドからの乖離率の実測分位（既定）。名目 ols＝正規分布を仮定した幅。既定を btlm_trail 本体（名目 ols）と変えているのは実測根拠による: tick 数の乖離率は右に強く歪み（歪度 5 分足 +35.5）、名目 ols だと最大 57.5% のバーで帯の下端が「tick 数として成立しない値（1 未満）」になり、バンド内実績率も名目から最大 4.4pp ずれる。経験分位は乖離 0.8pp 以内・下端割れ 0〜4.8%。',
-    }),
-    param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
-      group: 'group.calc', order: 8, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（トレンド帯の分位）', isPeriod: true,
-      conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
-      tooltip: 'トレンド帯（経験分位方式）が参照する乖離率の本数（既定 500）。当該バーは除外する（因果・非リペイント）。',
-    }),
-    // --- 表示（btlm_trail F-09 と同一）---
-    param('show_metrics', ParamType.BOOL, true, [], null, {
-      group: 'group.display', order: 1, label: 'β・バンド内実績率・σ を表示',
-      tooltip: 'β＝tick 数トレンドの傾き（符号が向き・大きさが勢い）／バンド内実績率＝直近 N 本で確定足の tick 数がトレンド帯に収まった実測割合（帯の信頼度の実績）／σ＝トレンド線まわりの tick 数の散らばり。3 値とも読取欄への表示専用で、描画・帯の計算には影響しない。',
-    }),
-    param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
-      group: 'group.display', order: 2, label: '移動期間（実績率）', step: 1, min: 2, unit: 'unit.bars', isPeriod: true,
-      conditionalEnable: { when: { param: 'show_metrics', equals: true } },
-    }),
   ],
   // 系列: 本体ヒストグラム＋正常帯 2 本（動的名）＋水準線 3 本（典型深度＝実線／経験的極端
   //   分位・GPD＝破線）。命名 `_evq_{med|ext}_{hi}` と `_q{pct}` はいずれも共有規約に従う
@@ -840,20 +814,6 @@ const TICKVOL = new IndicatorDef({
       },
     }),
     ...['tickvol_evq_med_hi', 'tickvol_evq_ext_hi', 'tickvol_gpd_hi'].map(
-      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
-    ),
-    // 回帰トレンド（btlm_trail 仕様）。mean と帯はドット/ライン切替可（btlm_trail と同じ）。
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'tickvol_trend_mean', seriesName: 'tickvol_trend_mean', dynamic: false, pointStyleEditable: true }),
-    // トレンド帯（動的・q_low/q_high 依存）。水準帯 tickvol_q{pct} とは接頭辞で区別する。
-    new SeriesDef({
-      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, pointStyleEditable: true,
-      seriesNamePattern: {
-        template: 'tickvol_trend_q{pct}', buckets: [''],
-        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
-      },
-    }),
-    ...['tickvol_trend_off_hi', 'tickvol_trend_off_lo',
-        'tickvol_trend_beta', 'tickvol_trend_sigma', 'tickvol_trend_band_hit_rate'].map(
       (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
     ),
   ],

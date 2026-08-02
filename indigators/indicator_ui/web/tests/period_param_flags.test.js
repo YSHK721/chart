@@ -41,9 +41,9 @@ const EXPECTED_PERIOD_PARAMS = {
   market_profile: [],
   // 取引密度帯: sessions は「参照セッション日数」でバー本数ではない＝期間パラメータではない。
   tickvol_bands: [],
-  // ティックボリューム: バー本数を意味する窓が期間パラメータ（水準の閾値窓・回帰窓・
-  //   トレンド帯の分位窓・実績率窓）。分位（q_low/q_high/q_out）と観測件数（k_events）は対象外。
-  tickvol: ['window_n', 'maxbars', 'empirical_n', 'n_cov'],
+  // ティックボリューム: バー本数を意味する窓が期間パラメータ（水準の閾値窓のみ。回帰トレンドは
+  //   ISSUE-244 で UI から外した）。分位（q_low/q_high/q_out）と観測件数（k_events）は対象外。
+  tickvol: ['window_n'],
 };
 
 function periodParamsOf(id) {

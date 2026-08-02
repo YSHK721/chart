@@ -48,18 +48,6 @@ _LEVEL_NAMES = {
     "ext": "tickvol_evq_ext_hi",
     "gpd": "tickvol_gpd_hi",
 }
-#: 回帰トレンド（btlm_trail 仕様）の固定名系列。帯 2 本は分位依存の動的名（別扱い）。
-_TREND_FIXED_NAMES = {
-    "mean": "tickvol_trend_mean",
-    "off_high": "tickvol_trend_off_hi",
-    "off_low": "tickvol_trend_off_lo",
-    "beta": "tickvol_trend_beta",
-    "sigma": "tickvol_trend_sigma",
-    "band_hit_rate": "tickvol_trend_band_hit_rate",
-}
-#: トレンド成果の全キー（確定配列として状態が持つもの）。
-_TREND_KEYS = ("mean", "band_low", "band_high", "off_low", "off_high",
-               "beta", "sigma", "band_hit_rate")
 
 
 @dataclass(frozen=True)
@@ -72,11 +60,6 @@ class _Request:
     q_high: float
     q_out: Any
     k_events: int
-    maxbars: int
-    band_method: str
-    empirical_n: int
-    show_metrics: bool
-    n_cov: int
 
 
 @dataclass(frozen=True)
@@ -90,8 +73,6 @@ class _State:
     next_band_low: float               # 次バーへ適用する帯下端（確定系列のみから決まる）
     next_threshold: float              # 次バーへ適用する閾値（同上）
     next_levels: dict                  # 次バーへ適用する水準（超過分スケール）
-    deviations: np.ndarray             # 確定 乖離率 (v-mean)/mean（長さ m・経験分位帯の材料）
-    trend: dict                        # キー → 確定トレンド系列（長さ m。未算出は None）
     m: int
 
 
@@ -129,18 +110,6 @@ class TickvolIncrementer:
         k_events = int(params.get("k_events", _evq.DEFAULT_K_EVENTS))
         if k_events < 1:
             return None
-        maxbars = int(params.get("maxbars", src.DEFAULT_MAXBARS))
-        if maxbars < 3:
-            return None
-        band_method = str(params.get("band_method", src.DEFAULT_BAND_METHOD)).lower()
-        if band_method not in src.BAND_METHODS:
-            return None
-        empirical_n = int(params.get("empirical_n", src.DEFAULT_EMP_N))
-        if empirical_n < 2:
-            return None
-        n_cov = int(params.get("n_cov", src.DEFAULT_N_COV))
-        if n_cov < 2:
-            return None
 
         values = np.asarray(src.build_tickvol(df), dtype=np.float64).ravel()
         n = int(values.size)
@@ -157,8 +126,6 @@ class TickvolIncrementer:
             values=values, times=times, n=n, window_n=window_n,
             q_low=q_low, q_high=q_high,
             q_out=params.get("q_out", _evq.DEFAULT_Q_OUT), k_events=k_events,
-            maxbars=maxbars, band_method=band_method, empirical_n=empirical_n,
-            show_metrics=bool(params.get("show_metrics", True)), n_cov=n_cov,
         )
 
     def _qo(self, req: "_Request") -> "float | None":
@@ -178,21 +145,15 @@ class TickvolIncrementer:
         )
         thr = levels["band_high"]
         up, run_up = _replay_events(confirmed, thr, src)
-        trend = src.tickvol_trend(
-            confirmed, maxbars=req.maxbars, q_low=req.q_low, q_high=req.q_high,
-            band_method=req.band_method, empirical_n=req.empirical_n, q_out=req.q_out,
-            n_cov=req.n_cov, with_metrics=req.show_metrics,
-        )
-        deviations = _deviation(confirmed, trend["mean"], src)
         return self._with_next(
             req, values=confirmed, band_low=levels["band_low"], threshold=thr,
             levels={key: levels[key] for key in _LEVEL_NAMES},
-            up=up, run_up=run_up, deviations=deviations, trend=trend, m=m,
+            up=up, run_up=run_up, m=m,
         )
 
     def _with_next(
         self, req: "_Request", *, values, band_low, threshold, levels, up, run_up,
-        deviations, trend, m: int
+        m: int
     ) -> "_State":
         """状態を組み、**次バーへ適用する閾値・水準を 1 度だけ**求めて持たせる。
 
@@ -212,7 +173,7 @@ class TickvolIncrementer:
             values=values, band_low=band_low, threshold=threshold, levels=levels,
             up=tuple(up), run_up=tuple(run_up),
             next_band_low=next_low, next_threshold=next_thr,
-            next_levels=next_levels, deviations=deviations, trend=trend, m=m,
+            next_levels=next_levels, m=m,
         )
 
     def _extend(self, state: "_State", req: "_Request", target: int) -> "_State":
@@ -224,7 +185,6 @@ class TickvolIncrementer:
             lv = cur.next_levels
             up, run_up = list(cur.up), list(cur.run_up)
             src.step_excess_event(value - thr, up, run_up)
-            bar = self._trend_at(req, cur, i, value)
             cur = self._with_next(
                 req,
                 values=np.append(cur.values, value),
@@ -232,8 +192,6 @@ class TickvolIncrementer:
                 threshold=np.append(cur.threshold, thr),
                 levels={k: np.append(cur.levels[k], thr + lv[k]) for k in _LEVEL_NAMES},
                 up=up, run_up=run_up,
-                deviations=np.append(cur.deviations, bar["deviation"]),
-                trend=_append_trend(cur.trend, bar),
                 m=i + 1,
             )
         return cur
@@ -256,60 +214,11 @@ class TickvolIncrementer:
                 threshold=state.threshold[:m_conf],
                 levels={k: state.levels[k][:m_conf] for k in _LEVEL_NAMES},
                 up=up, run_up=run_up,
-                deviations=state.deviations[:m_conf],
-                trend={k: (None if v is None else v[:m_conf]) for k, v in state.trend.items()},
                 m=m_conf,
             )
         if not np.array_equal(state.values, req.values[:state.m]):
             return None
         return self._extend(state, req, m_conf)
-
-    def _trend_at(self, req: "_Request", state: "_State", i: int, value: float) -> dict:
-        """バー ``i`` の回帰トレンド 1 点を確定済み ``state``（長さ i）から求める。
-
-        トレンド（mean/β/σ/pred_sd）は **当該バーを含む** 窓の OLS 窓末尾値であり、形成中バーの
-        値が変われば動く（btlm_trail F-01 の定義そのもの）。帯（経験分位）は **当該バー除外** の
-        乖離率から決まるため確定状態だけで足りる。いずれも btlm_trail の 1 バー入口へ委譲する
-        （``window_end_scalar`` / ``empirical_quantile_latest`` / ``ols_band`` / ``empirical_band`` /
-        ``deviation_ratio`` / ``coverage_latest``）＝計算式を写さない。
-        """
-        trail = _trail_src()
-        w = min(int(req.maxbars), i + 1)
-        window = np.append(state.values[i - w + 1:i], value) if w > 1 else np.array([value])
-        mean, pred_sd, beta, sigma = trail.window_end_scalar(window)
-
-        qo = _trend_q_out(req)
-        if req.band_method == "ols":
-            low = trail.ols_band(mean, pred_sd, req.q_low)
-            high = trail.ols_band(mean, pred_sd, req.q_high)
-            off_hi = trail.ols_band(mean, pred_sd, qo) if qo is not None else None
-            off_lo = trail.ols_band(mean, pred_sd, 1.0 - qo) if qo is not None else None
-        else:
-            prior = state.deviations
-            emp = lambda q: trail.empirical_quantile_latest(prior, req.empirical_n, q)  # noqa: E731
-            low = trail.empirical_band(mean, emp(req.q_low))
-            high = trail.empirical_band(mean, emp(req.q_high))
-            off_hi = trail.empirical_band(mean, emp(qo)) if qo is not None else None
-            off_lo = trail.empirical_band(mean, emp(1.0 - qo)) if qo is not None else None
-
-        cov = None
-        if req.show_metrics:
-            n_cov = int(req.n_cov)
-            start = max(0, state.m - n_cov + 1)
-            cov = trail.coverage_latest(
-                np.append(state.values[start:], value),
-                np.append(state.trend["band_low"][start:], low),
-                np.append(state.trend["band_high"][start:], high),
-                n_cov,
-            )
-        return {
-            "mean": mean, "band_low": low, "band_high": high,
-            "off_low": off_lo, "off_high": off_hi,
-            "beta": beta if req.show_metrics else None,
-            "sigma": sigma if req.show_metrics else None,
-            "band_hit_rate": cov,
-            "deviation": float(trail.deviation_ratio(value, mean)),
-        }
 
     # ------------------------------------------------------------------ #
     # emit（非破壊・末尾 K 点）
@@ -324,25 +233,15 @@ class TickvolIncrementer:
         fixed = {_HIST_NAME: (state.values, value)}
         for key, name in _LEVEL_NAMES.items():
             fixed[name] = (state.levels[key], thr + state.next_levels[key])
-        # 回帰トレンドは形成中バーの値に依存する（当該バーを含む窓の OLS）＝ここで 1 点求める。
-        bar = self._trend_at(req, state, req.n - 1, value)
-        for key, name in _TREND_FIXED_NAMES.items():
-            confirmed = state.trend.get(key)
-            if confirmed is None:
-                continue          # q_out 無効 / show_metrics=False＝系列自体が無い
-            fixed[name] = (confirmed, bar[key])
-        # 帯は分位依存の動的名。水準帯（tickvol_q{pct}）とトレンド帯（tickvol_trend_q{pct}）の
-        #   4 本を出現順（lwc_chart の emit 順＝水準 下,上 → トレンド 下,上）で割り当てる。
+        # 正常帯は分位依存の動的名（tickvol_q{pct}）。出現順（lwc_chart の emit 順＝下,上）で割り当てる。
         band_names = [
             s.get("name") for s in skeleton
             if "data" in s and s.get("name") not in fixed
         ]
-        if len(band_names) != 4 or len(set(band_names)) != 4:
+        if len(band_names) != 2 or len(set(band_names)) != 2:
             return None
         fixed[band_names[0]] = (state.band_low, state.next_band_low)
         fixed[band_names[1]] = (state.threshold, thr)
-        fixed[band_names[2]] = (state.trend["band_low"], bar["band_low"])
-        fixed[band_names[3]] = (state.trend["band_high"], bar["band_high"])
 
         out: list[dict[str, Any]] = []
         for entry in skeleton:
@@ -381,30 +280,3 @@ def _tail_points(
     return points
 
 
-def _trail_src() -> Any:
-    """btlm_trail src（1 バー入口の提供元）を一意名でロードする（read-only）。"""
-    return indicator_src("btlm_trail")
-
-
-def _trend_q_out(req: "_Request") -> "float | None":
-    """外れ値分位の有効性（btlm_trail F-08 と同一規約: q_high < q_out < 1）。"""
-    try:
-        qo = float(req.q_out)
-    except (TypeError, ValueError):
-        return None
-    return qo if req.q_high < qo < 1.0 else None
-
-
-def _deviation(values: np.ndarray, mean: np.ndarray, src: Any) -> np.ndarray:
-    """確定系列の乖離率（経験分位帯の材料）。定義は btlm_trail の deviation_ratio。"""
-    del src
-    return np.asarray(_trail_src().deviation_ratio(values, mean), dtype=np.float64)
-
-
-def _append_trend(trend: dict, bar: dict) -> dict:
-    """確定トレンド配列へ 1 点追記した新しい dict を返す（None のキーは None のまま）。"""
-    out = {}
-    for key in _TREND_KEYS:
-        cur = trend.get(key)
-        out[key] = None if cur is None else np.append(cur, bar[key])
-    return out
