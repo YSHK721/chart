@@ -128,20 +128,23 @@ def _prp_preprocess(df: Any, kw: dict[str, Any]) -> dict[str, Any]:
 # recurrence/full/K=1 へ落ちる（従来不変）。LatestMeta 型はここで import しない
 # （latest_meta.py が本 resolver の戻り tuple から構築＝call_binding との循環を回避）。
 
-# ma_type → archetype の分類。sma / lwma は窓系（理論上は窓 length 確定）だが core が
-# スライド和の再帰のため、df.tail で開始点を変えると末尾値に浮動小数ドリフトが乗る。
-# spec の分岐「2*length が float 完全一致を満たさなければ full フォールバック」に従い
-# min_window=None（full）を既定とする。ema / smma ほかは先頭シード必須の再帰で full。K は両者 1。
-_MA_WINDOW_TYPES = {"sma", "lwma"}
+# ISSUE-233: moving_averages は 4 種すべて「保持した状態を 1 点進める」増分計算
+#   （archetype="incremental"・状態器 "moving_averages"）で計算する。full 再計算を行わない
+#   ため所要は窓長に依らず一定になる。値は full と bit 一致する（sma/ema/smma は
+#   ``*_on_buffer`` の prev_calculated 契約、lwma は走行和を授受する
+#   ``linear_weighted_ma_on_buffer_stateful`` が full の漸化をそのまま継続するため）。
+#
+#   min_window は None（full）のままにする。増分器が扱えないパラメータ（平滑化あり等）で
+#   落ちる従来経路は、tail による短縮を行わない厳密一致設計を維持する必要があるため
+#   （sma/lwma は core がスライド和の再帰であり、tail で開始点を変えると末尾値に浮動小数
+#   ドリフト ~1e-15 が乗る）。この理由で従来 sma/lwma を "window" と分類していた。
 
 
 def _moving_averages_latest_meta(
     params: dict[str, Any],
-) -> tuple[str, int | None, int | None]:
-    ma_type = str(params.get("ma_type", "ema")).lower()
-    if ma_type in _MA_WINDOW_TYPES:
-        return ("window", None, 1)
-    return ("recurrence", None, 1)
+) -> tuple[str, int | None, int | None, str | None]:
+    del params  # 4 種・全パラメータで同一宣言（適用可否の判定は増分器 prepare が持つ）。
+    return ("incremental", None, 1, "moving_averages")
 
 
 def _price_range_power_latest_meta(
@@ -149,6 +152,21 @@ def _price_range_power_latest_meta(
 ) -> tuple[str, int | None, int | None]:
     # 価格軸分布（非時系列）。末尾K切りしない（全件・trailing_k=None）。
     return ("axis_distribution", None, None)
+
+
+# tickvol は本体（点ごとの写像）と外れ値水準（因果ローリング＋イベント蓄積）の複合である。
+#   水準はバー t までに**確定したイベント観測**すべてに依存し、必要な履歴長は上限を持たない
+#   （イベント頻度はデータ依存。実測 5m で 1 件 / 35.7 バー＝直近 50 件に 1,800 バー必要）。
+#   よって有限 tail は取れず、full 再計算では足内更新のたびに全窓を走り直すことになる。
+#   ISSUE-233 と同じ真因なので同じ解を採る＝「保持した状態を 1 点進める」増分計算を宣言する。
+#   増分器が扱えないパラメータでは prepare が None を返し従来の full 経路へ落ちる。
+
+
+def _tickvol_latest_meta(
+    params: dict[str, Any],
+) -> tuple[str, int | None, int | None, str | None]:
+    del params  # 全パラメータで同一宣言（適用可否の判定は増分器 prepare が持つ）。
+    return ("incremental", None, 1, "tickvol")
 
 
 # indigators/ ルート（このファイル: api/adapter/compute/ → parents[4] = indigators/）。
@@ -201,6 +219,16 @@ def _load_callable(indicator: str, attr: str) -> Callable:
     src = _load_src_package(indicator)
     lwc = importlib.import_module(src.__name__ + ".lwc_chart")
     return getattr(lwc, attr)
+
+
+def indicator_src(indicator: str) -> ModuleType:
+    """指標 src パッケージを一意名で読み込んで返す（read-only・無改変参照）。
+
+    増分器（``adapter.compute.incremental``）が指標 src の **公開関数**（``*_on_buffer`` /
+    ``rolling_ols_window_end`` 等）を呼ぶための唯一の入口。ロード機構（同名 ``src`` 衝突の
+    回避・sys.path の解決点）を本モジュールへ閉じ込め、増分器側へ importlib を散らさない。
+    """
+    return _load_src_package(indicator)
 
 
 def profit_band_empty_bucket_error() -> type:
@@ -319,6 +347,10 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("btlm_trail", "default"): {
         "loader": lambda: _load_callable("btlm_trail", "add_btlm_trail"),
         "output_kind": "line", "kind": "kw",
+        # ISSUE-233 S2/S3/S4: 窓末尾 OLS・経験分位・被覆率をいずれも「末尾 1 点だけ」計算する
+        #   増分計算へ移す（従来は 1 ステップで窓全体を再計算し実測 334ms）。増分器が扱えない
+        #   パラメータは従来経路（min_window=None＝full）で計算される＝挙動不変。
+        "latest_meta": lambda params: ("incremental", None, 1, "btlm_trail"),
         "params_defaults": {
             "source": "close",
             "maxbars": 100,
@@ -335,6 +367,8 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("btlm_trail_marod", "default"): {
         "loader": lambda: _load_callable("btlm_trail_marod", "add_btlm_trail_marod"),
         "output_kind": "line", "kind": "kw",
+        # ISSUE-233 S5: 因果ローリング分位バンド・イベント分位を末尾 1 点だけの計算へ移す。
+        "latest_meta": lambda params: ("incremental", None, 1, "btlm_trail_marod"),
         "params_defaults": {
             "source": "close",
             "maxbars": 100,
@@ -350,6 +384,8 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("ma_marod", "default"): {
         "loader": lambda: _load_callable("ma_marod", "add_ma_marod"),
         "output_kind": "line", "kind": "kw",
+        # ISSUE-233 S5: 因果ローリング分位バンド・イベント分位を末尾 1 点だけの計算へ移す。
+        "latest_meta": lambda params: ("incremental", None, 1, "ma_marod"),
         "params_defaults": {
             "source": "close",
             "ma_type": "ema",
@@ -361,6 +397,34 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "event_agg": "episode",
             "window_n": 500,
             "color": "rgba(255, 152, 0, 1)",
+        },
+    },
+    # cvfe（条件付ボラティリティ予測 σ̂・別 pane オシレータ）。実バインディングは
+    #   add_cvfe（indigators/cvfe/src/lwc_chart.py）。UI 計算経路が渡せるのは OHLC だけで
+    #   仕様 §3.1 のティック列が無いため、§4.1-6 の FAIL 行が定める縮退
+    #   （measure_id="PARK"）で算出する（精度は仕様 §7-6 のとおり低下する）。
+    #   line 系（時系列）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
+    # cvfe（条件付ボラティリティ予測 σ̂・価格スケール上の水平ダッシュ）。実バインディングは
+    #   add_cvfe（indigators/cvfe/src/lwc_chart.py）。UI 計算経路が渡せるのは OHLC だけで
+    #   仕様 §3.1 のティック列が無いため、§4.1-6 の FAIL 行が定める縮退
+    #   （measure_id="PARK"）で算出する（精度は仕様 §7-6 のとおり低下・ISSUE-218）。
+    #   line 系（時系列）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
+    #
+    #   公開パラメータは 6 個に絞る（認知負荷の最小化・ユーザー厳命 2026-07-30）。
+    #   ここに無いパラメータは add_cvfe の既定値が使われる（refit_every=0・lam_gap=0.97・
+    #   外れ値判定のしきい値群）。いずれも「既定から動かす根拠が無い」ことを実測または
+    #   仕様で確認済み（詳細は catalog.js の CVFE 定義コメント）。
+    ("cvfe", "default"): {
+        "loader": lambda: _load_callable("cvfe", "add_cvfe"),
+        "output_kind": "line", "kind": "kw",
+        "time_required": True,
+        "params_defaults": {
+            "n_har": 500,
+            "sigma_inner": 1.0,
+            "sigma_outer": 2.0,
+            "show_outliers": True,
+            "display_mode": "dashes",
+            "dash_opacity": 0.5,
         },
     },
     ("profit_band", "global"): {
@@ -556,6 +620,26 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "signal": 4,
         },
     },
+    # --- tickvol（ティックボリューム・専用ペインのヒストグラム＋外れ値水準線）-------
+    #   本体は供給側 volume 列（＝当該足の tick 数）を加工せず描く点ごとの写像。水準線は
+    #   POT（エピソード宣言クラスタリング）で作った同一観測集合の同一分位を、経験的分位と
+    #   GPD の 2 通りで推定して並べる（indigators/tickvol/src/levels.py）。
+    ("tickvol", "default"): {
+        "loader": lambda: _load_callable("tickvol", "add_tickvol"),
+        "output_kind": "histogram", "kind": "kw",
+        "latest_meta": _tickvol_latest_meta,
+        "params_defaults": {
+            "window_n": 500,
+            "q_low": 0.10,
+            "q_high": 0.90,
+            "q_out": 0.99,
+            "k_events": 50,
+            # 回帰トレンド（btlm_trail 仕様の参照拡張）は ISSUE-244 で UI から外した。
+            #   計算は indigators/tickvol/src/trend.py にアーカイブとして残っている。
+        },
+    },
+    # --- tickvol_updown は UI から外した（ISSUE-244）。パッケージ
+    #   `indigators/tickvol_updown/` はアーカイブとして残す（同梱 ARCHIVE.md に復活手順）。
 }
 
 

@@ -1,6 +1,11 @@
 """E-4 TickMidSeries — 窓内の実ティック mid 列算出（domain・依存ゼロ）。
 
-contact_scan.tick_window.window_ticks の純ロジックを移植（parquet IO は adapter へ隔離）。
+接点検証の tick 窓算出（中央値ベースの外れ値除去）の純ロジック。parquet IO は adapter へ隔離する。
+
+移植元の ``contact_scan.tick_window.window_ticks`` は**現行ツリーに存在しない**（2026-07-30 の
+全体 grep で 0 件。``simulator/usecase/contact_scan`` は現存するが tick_window を持たない）。
+したがって「参照実装と bit 一致」を主張する根拠は残っておらず、現時点で挙動を固定しているのは
+``tests/unit/test_tick_mid_series.py``（境界値 AAA）である。ISSUE-036(b) の是正。
 入力 ``(sec, bid, ask)`` の列に対し、bit 一致で:
 
     1. 窓 [start, end) フィルタ（secs>=start & secs<end）
@@ -16,7 +21,19 @@ from __future__ import annotations
 from statistics import median
 from typing import Iterable, Sequence, Tuple
 
-# 外れ値補正の許容相対乖離（0.3=±30%）。proto_server / tick_window と同一基準。
+# 外れ値補正の許容相対乖離（0.3 = ±30%）。
+#
+# ISSUE-032 の裁定（2026-07-30）: 本定数は ``marketdata.outlier_policy.OUTLIER_THRESHOLD``
+#   （同値 0.3）とは **意図的に独立** の定数である。統合しない理由:
+#     - 対象が異なる: 本定数は「バー内 tick の mid 系列」に対する中央値ベースの外れ値除去、
+#       marketdata 側は「確定足 OHLC」に対するクランプで、アルゴリズムが別物である。
+#     - 層が異なる: 本モジュールは replay_ui の domain 層であり、データ取得基盤である
+#       marketdata へ依存させると domain → infrastructure の逆流になる。
+#   値が偶々一致しているだけなので、一方の調整が他方へ波及してはならない。
+#
+# なお ISSUE-032 が指摘したもう一方の重複（``adapter/_m1_repair.M1_OUTLIER_THRESHOLD``）は
+#   当該モジュールごと削除済みで現存しない（2026-07-30 の grep で確認）。旧コメントが参照して
+#   いた ``proto_server`` も同様に現存しないため記述を改めた。
 OUTLIER_THRESHOLD = 0.3
 
 

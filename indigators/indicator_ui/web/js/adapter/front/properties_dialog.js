@@ -29,6 +29,11 @@ import {
   humanizeKey,
   toHex,
 } from './property_control_builders.js';
+// 期間プリセット（基本設計_期間プリセット.md §6.5）: 実効計算時間足の解決は usecase の純関数へ委譲する。
+import { effectiveTimeframe } from '../../usecase/period_presets.js';
+// 時間足 → 表示ラベル（'1h'→'1時間'）の単一情報源（timeframe_menu.js・ISSUE-123）。
+//   期間プリセット一覧の見出し「◯◯足 基準」に使う（ラベルを二重定義しない）。
+import { timeframeLabels } from './timeframe_menu.js';
 
 // toHex は本モジュールの公開面として維持する（既存の import 元を変えない・ISSUE-181）。
 export { toHex };
@@ -83,6 +88,8 @@ export class PropertiesDialog {
     this._activeTab = 'inputs';
     this._root = null; // ダイアログ最上位要素
     this._fieldEls = new Map(); // name -> { row, control, error, info }
+    // 値へ反映できていない入力エラー（name -> message）。在席中は OK を押せない。
+    this._pendingErrors = new Map();
     this._okBtn = null;
     this._drag = null;
     this._offset = { x: 0, y: 0 };
@@ -95,6 +102,24 @@ export class PropertiesDialog {
       getValue: (name) => this._values[name],
       setValue: (name, value) => { this._values[name] = value; },
       onChange: () => this._onChange(),
+      // 期間プリセットの基準（基本設計_期間プリセット.md §6.5・§8.2）。
+      //   呼び出し時解決の遅延アクセサ＝ダイアログ内で `timeframe` パラメータを変えると、
+      //   次にプリセットを開いたときの提示集合が新しい実効足で引き直される。
+      //   datasetRef／timeframe のいずれかが未供給（旧ホスト・SSR/単体テスト）は null を返し、
+      //   コントロール側はプリセット非提示へ退化する（F-P2/F-P3 と同じ扱い）。
+      periodContext: () => this._periodContext(),
+      // 未解決の入力エラー（期間表記の換算失敗など・値へ反映できていない状態）を登録する。
+      //   登録されている間は OK を抑止する（§5 F-11 の OK 制御と同じ扱い）。これが無いと、
+      //   エラー表示のまま OK を押せてしまい、旧値が黙って確定して『設定しても元に戻る』
+      //   という症状になる（2026-07-29 ユーザー報告の実体）。
+      setPendingError: (name, message) => {
+        if (message) {
+          this._pendingErrors.set(name, message);
+        } else {
+          this._pendingErrors.delete(name);
+        }
+        this._revalidate();
+      },
     };
   }
 
@@ -334,6 +359,29 @@ export class PropertiesDialog {
   // control_type 別レンダリング（§3.1）。生成器テーブルへ委譲する（switch 廃止・OCP・ISSUE-181）。
   _buildControl(field) {
     return buildControl(field, this._controlCtx);
+  }
+
+  // 期間プリセットの基準（datasetRef ＋ 実効計算時間足）を解決する。
+  //   実効足＝指標の `timeframe` パラメータ（'chart' 以外なら MTF override）→ チャートの現在足。
+  //   規則は usecase/period_presets.js の effectiveTimeframe が唯一の判定源（二重定義しない）。
+  _periodContext() {
+    const datasetRef = this._context.datasetRef;
+    const chartTf = this._context.timeframe;
+    if (!datasetRef || !chartTf) {
+      return null;
+    }
+    const timeframe = effectiveTimeframe(this._values, chartTf);
+    return {
+      datasetRef,
+      timeframe,
+      timeframeLabel: this._timeframeLabel(timeframe),
+    };
+  }
+
+  // 時間足 → 見出し表示（'1h' → '1時間足'）。未知足はコードをそのまま出す。
+  _timeframeLabel(timeframe) {
+    const label = timeframeLabels()[timeframe];
+    return label ? `${label}足` : String(timeframe);
   }
 
   // segmented 単体の生成（既存テストが直接叩く接合面のため、委譲メソッドとして残す）。
@@ -637,7 +685,9 @@ export class PropertiesDialog {
         els.row.classList.add('is-invalid');
       }
     }
-    const ok = effective.length === 0;
+    // 未解決の入力エラー（期間表記の換算失敗など）がある間は確定させない。
+    //   当該欄のエラー文言はコントロール側が自前で表示済みのため、ここでは OK 制御のみ行う。
+    const ok = effective.length === 0 && this._pendingErrors.size === 0;
     if (this._okBtn) {
       this._okBtn.disabled = !ok;
     }

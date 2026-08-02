@@ -74,3 +74,28 @@ def test_only_provided_keys_are_updated_others_preserved():
     assert out[1]["open"] == 1.5
     assert out[1]["high"] == 2.5
     assert out[1]["close"] == 2.9
+
+
+# --------------------------------------------------------------------------- #
+# ISSUE-233: 末尾分割の同値性（足内一括計算が窓の再変換を畳める根拠）
+#
+# apply は先頭側のバーを一切触らない（末尾を置換するか 1 本追加するだけ）。したがって
+#   apply(bars, forming) == bars[:-1] + apply(bars[-1:], forming)
+# が常に成り立つ。causal_compute_seq はこの性質に依拠して「共通の確定プレフィクス」と
+# 「時点ごとの末尾差分」に分けて計算側へ渡す。破れると各ステップの窓が変わり値が壊れる。
+# --------------------------------------------------------------------------- #
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("forming", [
+    {"time": 60, "open": 1.7, "high": 4.0, "low": 0.8, "close": 3.9},  # 末尾を置換
+    {"time": 120, "open": 2.0, "high": 3.0, "low": 1.0, "close": 2.2},  # 新しい足を追加
+    {"time": 0, "close": 99.0},                                        # 過去＝触らない
+    {"close": 9.0},                                                    # time 欠落＝無変更
+    None,                                                              # forming なし
+])
+def test_tail_split_equals_whole_apply(forming):
+    bars = _bars()
+    whole = apply(bars, forming)
+    split = [dict(b) for b in bars[:-1]] + apply(bars[-1:], forming)
+    assert whole == split, "末尾分割が全体適用と一致しない（一括計算の窓が壊れる）"

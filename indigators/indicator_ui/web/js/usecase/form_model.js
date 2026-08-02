@@ -24,10 +24,15 @@ const CONTROL_BY_TYPE = Object.freeze({
   [ParamType.ENUM_LIST]: 'multiselect',
 });
 
-// ParamDef からコントロール種別を一意に決定（明示 controlType 優先→ParamType 写像）。
+// ParamDef からコントロール種別を一意に決定（明示 controlType 優先→期間フラグ→ParamType 写像）。
+//   isPeriod（基本設計_期間プリセット.md §5.1）が真なら 'period'（期間入力＋プリセット）を既定とする。
+//   明示 controlType は従来どおり最優先（期間パラメータでも個別に別コントロールへ倒せる）。
 function resolveControlType(pdef) {
   if (pdef.controlType !== null && pdef.controlType !== undefined) {
     return pdef.controlType;
+  }
+  if (pdef.isPeriod === true) {
+    return 'period';
   }
   return CONTROL_BY_TYPE[pdef.type] ?? 'text';
 }
@@ -51,6 +56,9 @@ const FIELD_META_DEFAULTS = Object.freeze({
   // optionEnable: ENUM の option 単位の有効述語 (value, values, ctx)->bool（ISSUE-080）。
   //   偽の option は select 上で disabled（灰色・選択不可）。行全体の conditionalEnable と直交。
   optionEnable: null,
+  // isPeriod: 期間フラグ（基本設計_期間プリセット.md §5.1）。FieldDesc へ透過し、
+  //   adapter（buildPeriod）が min/max とともにプリセット提示の判定に使う。
+  isPeriod: false,
 });
 
 // pdef の任意メタデータを FIELD_META_DEFAULTS のキーで既定フォールバック付きに解決する。

@@ -112,3 +112,18 @@ test('setEta (非 real_ticks): tickvol が有っても従来モデルのまま�
   // ohlc_1min モデル: compute + (200×6+50)/1 ≒ 1.3 秒 → 「1秒（残り1足）」。
   assert.match(doc._els['rp-eta'].textContent, /完了予想 1秒（残り1足）/);
 });
+
+// --- 実時間再生「リアルタイム」の ETA 配線（依頼者指示 2026-08-01） ---------------------------- //
+//   実時間再生は 1足＝時間足の長さ＝ETA は残り足数から厳密に決まる（点数・実測 EMA に依らない）。
+//   番兵値 'realtime' が数値へ落ちると clampSpeed が 1.00（最速）へ化け、月足でも「3分00秒」等の
+//   比モデル ETA が出る（Red 実証点）。1M×残り1足＝2,592,000秒＝720時間00分。
+test('setEta (リアルタイム): ETA は残り足数×時間足の長さ（比モデルでない）', async () => {
+  const { doc } = await boot({ mode: 'real_ticks', candles: CANDLES_TV });
+  // Arrange: テンポを実時間再生へ（#rp-speed の data-speed が唯一の現在値）。
+  doc._els['rp-speed'].dataset.speed = 'realtime';
+  // Act: 「1足戻る」で bar=0 へ（drive→render→setEta。残り 1 足）。
+  await doc._els['rp-prev']._onclick();
+  // Assert: 1M＝2592000秒/足 → 720時間00分。tickvol(30000) 由来の比モデル ETA ではない。
+  const text = doc._els['rp-eta'].textContent;
+  assert.match(text, /完了予想 720時間00分（残り1足）/, `実時間 ETA を表示する（actual: ${text}）`);
+});

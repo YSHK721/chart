@@ -49,12 +49,58 @@ _HOP_BY_HOP = frozenset(
 )
 
 
+#: `send_response()` がルータ自身の値を必ず出すため、上流の同名ヘッダは転送しない。
+#: 転送すると 1 応答に `Date` / `Server` が 2 回現れる（RFC 7231 §7.1.1.2 は `Date` の
+#: 重複を明確に禁じる）。実測（`curl -D -` / `/live/live_ticks`）で重複を確認済み。
+_GENERATED_BY_ROUTER = frozenset({"date", "server"})
+
+
+class RouterServer(ThreadingHTTPServer):
+    """accept backlog を広げた `ThreadingHTTPServer`（ISSUE-198）。
+
+    既定の `request_queue_size = 5` は `listen(5)` を意味し、溢れたぶんの SYN は落とされる。
+    ブラウザ側ではこれが原因不明の接続失敗（fetch の reject）として現れるため、初回ロードの
+    ように多数の静的資産と API を一斉に要求する局面に耐える値へ広げる。
+
+    `ThreadingHTTPServer` のクラス属性を直接書き換えると同一プロセス内の他サーバへも
+    波及するため、**サブクラスとして閉じ込める**。
+    """
+
+    request_queue_size = 128
+
+
 class RouterHandler(BaseHTTPRequestHandler):
     """8000 で待ち受けるルータのリクエストハンドラ。
 
     live_upstream / replay_upstream / web_root は `create_router_server` が
     サーバインスタンスへ格納した値を参照する。
     """
+
+    #: HTTP/1.1（keep-alive）で応答する（ISSUE-198）。
+    #:
+    #: 既定の HTTP/1.0 では **1 リクエスト = 1 TCP 接続**になり、応答ごとに接続が閉じる。
+    #: 本 UI は 1 画面で多数の API を並行に叩く（/live_ticks 2.5 秒周期・/forming_bar 5 秒周期・
+    #: 指標ごとの /compute・/candles・/market_profile・静的資産）ため接続生成が集中し、
+    #: accept backlog（既定 5）を溢れさせて接続が確立できなくなる。ブラウザ側ではこれが
+    #: fetch の reject となり、Service Worker の `event.respondWith` が拒否されて
+    #: 「The FetchEvent for … resulted in a network error response: the promise was rejected」
+    #: として現れる。
+    #:
+    #: 実測（`/live/live_ticks?since=0`・200KB 応答・同時接続数を変えて計測）:
+    #:   HTTP/1.0 + backlog 5 … 20/60/120 本は全数 200、**240 本で 38 件が TimeoutError**
+    #:
+    #: 安全性: HTTP/1.1 は応答長の確定を要求するが、本ハンドラの応答経路は 3 つとも
+    #: `Content-Length` を明示している（`_proxy` は上流本体を全読みして自前で付与、
+    #: `_serve_static` / `_send_simple` も明示）。未知メソッドの 501 は基底が付与する。
+    protocol_version = "HTTP/1.1"
+
+    #: idle な keep-alive 接続を回収する上限秒（HTTP/1.1 化の副作用対策）。
+    #:
+    #: `ThreadingHTTPServer` は **1 接続 = 1 スレッド**である。HTTP/1.1 では接続が応答後も
+    #: 開いたままになるため、timeout を持たないとブラウザが閉じるまでスレッドが解放されない。
+    #: 到達しなかったタブや中断されたロードの接続が積み上がるのを防ぐ。基底は socket の
+    #: timeout 発生時に `close_connection` を立てるため、応答の途中切断は起きない。
+    timeout = 65
 
     def _handle(self) -> None:
         prefix, upstream = self._match_prefix(self.path)
@@ -129,7 +175,10 @@ class RouterHandler(BaseHTTPRequestHandler):
 
         self.send_response(status)
         for key, value in resp_headers:
-            if key.lower() in _HOP_BY_HOP:
+            lowered = key.lower()
+            # hop-by-hop はプロキシが終端する。ルータ自身が生成するヘッダ（Date/Server）は
+            #   転送すると重複するため落とす（ISSUE-198）。
+            if lowered in _HOP_BY_HOP or lowered in _GENERATED_BY_ROUTER:
                 continue
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(data)))
@@ -226,7 +275,7 @@ def create_router_server(
     http.server.ThreadingHTTPServer
         `serve_forever()` 可能なサーバ。ハンドラは設定を参照してプロキシ／静的配信する。
     """
-    server = ThreadingHTTPServer(bind_addr, RouterHandler)
+    server = RouterServer(bind_addr, RouterHandler)
     server.live_upstream = live_upstream
     server.replay_upstream = replay_upstream
     server.web_root = web_root

@@ -39,10 +39,19 @@ import { TfPeriodProfileActor } from './tf_period_profile_actor.js';
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
 import { TfPeriodTooltip, formatPeriodLabel } from './tf_period_tooltip.js';
 import { MarketProfileActor } from './market_profile_actor.js';
+import { TickvolBandsActor } from './tickvol_bands_actor.js';
+import { TickvolBandsController } from './tickvol_bands_controller.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
 import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
 import { ScrollToLatestButton } from './scroll_to_latest_button.js';
-import { TimeframeMenu } from './timeframe_menu.js';
+import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
+// チャートテンプレート（基本設計_チャートテンプレート v0.1.1 §7.1）: gateway・menu・dialogs・協働子を
+//   ここで生成・注入する。統合 UI の唯一の bootstrap 経路（E-9）であるため、この配線でライブ・
+//   リプレイ両モードに同時成立する。
+import { LocalStorageTemplateGateway } from './local_storage_template_gateway.js';
+import { ChartTemplateMenu } from './chart_template_menu.js';
+import { ChartTemplateDialogs } from './chart_template_dialogs.js';
+import { ChartTemplateController } from './chart_template_controller.js';
 // GrowthCoordinator は共有 market_profile モジュール（usecase/growth_coordinator.js）へ移設済み。
 //   present は adapter/front/mp_live_mode_coordinator.js（symlink）経由で import（byte 不変 retarget）。
 import { GrowthCoordinator } from './mp_live_mode_coordinator.js';
@@ -203,6 +212,9 @@ export async function bootstrap({
     renderer.setCandles(initialCandles);
   }
   const persistence = new LocalStorageGateway(storage);
+  // テンプレート永続化（§4.2 の 3 キー）。既存 LocalStorageGateway は無改変（ISP）。接頭辞は
+  //   注入された storage（統合 UI は scopedStorage）が付けるため gateway は自前で付けない。
+  const templateStore = new LocalStorageTemplateGateway(storage);
   const catalog = new IndicatorCatalogClient();
   // param 既定値の単一情報源（back catalog_schema）を GET /catalog で解決する（ISSUE-092 ③）。
   //   B方式のみ取得し、失敗時は静的既定（catalog.js リテラル）へフォールバック（オフライン耐性・UI 不変）。
@@ -323,6 +335,22 @@ export async function bootstrap({
   // ISSUE-117: 時間足ドロップダウンの開閉制御（選択・active 同期は bind() の data-timeframe 配線）。
   new TimeframeMenu({ document: doc }).install();
 
+  // チャートテンプレートのメニュー・ダイアログ（§6.1・§6.2）。項目 DOM は共有 JS が生成し、
+  //   index.html には空マウント（#tpl-menu）のみを置く。メニューは協働子を import せず
+  //   コールバック注入で結ぶ（DIP）。協働子は controller 生成後に代入されるため遅延参照する。
+  let chartTemplates = null;
+  const chartTemplateDialogs = new ChartTemplateDialogs({ document: doc });
+  const chartTemplateMenu = new ChartTemplateMenu({
+    document: doc,
+    // U6: 開くたびに最新のビューモデルで再描画する（restore() との順序依存を作らない）。
+    provide: () => (chartTemplates ? chartTemplates.viewModel() : {}),
+    onSelect: (templateId) => (chartTemplates ? chartTemplates.applyTemplate(templateId) : undefined),
+    onSave: () => (chartTemplates ? chartTemplates.openSaveDialog() : undefined),
+    onBind: (templateId) => (chartTemplates ? chartTemplates.bindCurrentTimeframe(templateId) : undefined),
+    onManage: () => (chartTemplates ? chartTemplates.openManageDialog() : undefined),
+  });
+  chartTemplateMenu.install();
+
   // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）を MP の成長状態へ
   //   連動させる共有協調役（Model A 直交化）。表示モードは gear 選択を維持し、FOLLOW→growing=true（足内成長）／
   //   ANALYSIS→growing=false（static）。defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定
@@ -347,6 +375,53 @@ export async function bootstrap({
     mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
     mpGrowthResolver: mpLiveModeCoordinator ? () => mpLiveModeCoordinator.isGrowing() : null,
   });
+
+  // テンプレート協働子（§7.1）。有効時間足集合は composition root から注入する（U1・present は
+  //   既定 9 足＝時間足メニューと同一集合。単一情報源は domain/tf_meta.js の TF_BAR_SEC＝
+  //   LAYERING_CONVENTIONS「UI の時間足ボタン集合もこの集合から乖離させない」）。
+  chartTemplates = new ChartTemplateController(controller, {
+    gateway: templateStore,
+    menu: chartTemplateMenu,
+    dialogs: chartTemplateDialogs,
+    validTimeframes: Object.keys(TF_BAR_SEC),
+    // 保存ダイアログの文言「この時間足（日）に紐付ける」用のラベル写像（§6.2）。
+    //   単一情報源は timeframe_menu.js の groups（キーとラベルを二重定義しない）。
+    timeframeLabels: timeframeLabels(),
+  });
+  // 時間足切替への介入（§7.2）: 購読スロット（setTimeframeObserver）は単数かつ売買マーカーで
+  //   使用済み（E-7）のため使わず、own property での差し替え 1 行で行う。順序（除去 → 切替 →
+  //   適用）と再入防止は協働子が所有する（root はここに手続きを持たない）。
+  const proceedSetTimeframe = controller.setTimeframe.bind(controller);
+  const proceedTemplateTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
+
+  // 取引密度帯（時刻帯の背景色・1 時間足以下）。アクター駆動型のためレジストリへ登録する
+  //   （台帳 actor_driven_ids.js の 1 行追記と本登録で完結＝IndicatorController は不変）。
+  //   統合 UI では live root だけが実行されるため、この配線でライブ・リプレイ双方に効く。
+  //   getUntil: リプレイは単一時計 to（controller._untilTime）＝当日を集計に含めない因果窓の基準。
+  //   ライブは _untilTime 非在席（undefined）＝null を返す＝サーバの現在時刻。
+  const tickvolBands = new TickvolBandsActor({
+    fetch, datasetRef, renderer,
+    getTimeframe: () => controller._timeframe,
+    getUntil: () => (controller._untilTime != null ? controller._untilTime : null),
+  });
+  controller.registerActorController('tickvol_bands', new TickvolBandsController(controller, tickvolBands));
+  // 時間足切替: 帯は時間足に依存しない（サーバは常に 1 分足原子で集計）ので再取得せず、塗る足だけ引き直す。
+  //   購読スロット（setTimeframeObserver）は売買マーカーが占有済みのため、テンプレート協働子と同じ
+  //   own property 差し替えを**その内側へ**チェーンする（既存の介入順序を壊さない）。
+  controller.setTimeframe = (tf) => {
+    const done = proceedTemplateTimeframe(tf);
+    tickvolBands.onTimeframeChange();
+    return done;
+  };
+  // リプレイ時計の前進: セッション日が変わったときだけ再取得する（日内は応答不変＝当日非参照）。
+  if (typeof controller.setUntilTime === 'function') {
+    const proceedUntil = controller.setUntilTime.bind(controller);
+    controller.setUntilTime = (t) => {
+      const done = proceedUntil(t);
+      tickvolBands.onClock();
+      return done;
+    };
+  }
 
   // 時間足毎profile列（tf-period・最小価格単位・ローリング窓＋ジッターバッファ）の配線（served のみ）。
   //   sessions モード（marketProfile.isSessions()）かつ対応 tf（1m..1D）のとき、可視レンジぶんの列を
@@ -421,14 +496,26 @@ export async function bootstrap({
     // ISSUE-066: MP パラメータ変更時の tf-period 即時再適用。tfpShouldOn なら setEnabled(true)＝
     //   refresh→ensure で jitter buffer の src 差分キャッシュ破棄→新 src 再fetch→再描画。不成立
     //   （sessions 解除/非対応 tf）は列を消す。可視レンジ変化のデバウンスと違い**即時**（src 切替の反映）。
+    // ISSUE-054: 「レンジ」(barw) を tf-period 列にも効かせる。日別プロファイルの描画を tf-period が
+    //   担う経路では、レンジを変えても列は最小価格単位のままで、`/market_profile` 由来の POC/VA だけが
+    //   変わる＝**パラメータが部分的にしか効かない**状態だった。列は取得・キャッシュを変えずに
+    //   **描画時に barw 幅へ束ねる**（測定は最小単位のまま保つ＝粗ビンのアーティファクトを持ち込まない）。
+    const syncTfBinWidth = () => {
+      if (typeof mpTfPeriodSink.setTfBinWidth === 'function'
+          && typeof marketProfile.barwParam === 'function') {
+        mpTfPeriodSink.setTfBinWidth(marketProfile.barwParam());
+      }
+    };
     refreshTfPeriodNow = () => {
       if (!tfPeriodActor) { return; }
+      syncTfBinWidth();                     // レンジ変更を列へ即時反映（取得の要否と独立）。
       if (!tfpShouldOn()) {
         if (tfPeriodActor.isEnabled()) { tfPeriodActor.setEnabled(false); }
         return;
       }
       tfPeriodActor.setEnabled(true);
     };
+    syncTfBinWidth();                       // 初期値（保存済みインスタンスのレンジ）を反映する。
     // ISSUE-083: MP の live tick（sessions×tfDraws×growing）→ 当日チャンクの stale-while-revalidate
     //   再取得（tfPeriodActor.onLiveTick→jitterBuffer.refreshAt）。throttle は actor 側（既定 5s）。
     //   列非描画中（isEnabled=false＝日別解除・非対応 tf）は発火しない。
@@ -574,6 +661,21 @@ export async function bootstrap({
   renderer.setCandleObserver(() => {
     tradeMarkers.onCandlesChanged();
     currentPriceView.render(renderer.lastClose());
+    // 足の差し替え（時間足・期間プリセット・カレンダー・リビール）で塗る足を引き直す。
+    //   帯そのものは時間足・足集合に依存しないため再取得は起きない（写像のやり直しのみ）。
+    tickvolBands.onCandlesChanged();
+  });
+
+  // 指標の追加・削除で pane（と pane 内の系列）が作り直されるため、背景プリミティブを張り直す。
+  //   購読スロットは単数で、統合レイヤでは後から replay.js が自分の購読を入れる。上書きで本フックが
+  //   消えないよう setAppliedObserver 自体を合成する（後続購読者の挙動は不変・解除も従来どおり）。
+  const proceedSetAppliedObserver = controller.setAppliedObserver.bind(controller);
+  proceedSetAppliedObserver(() => tickvolBands.onPanesChanged());
+  controller.setAppliedObserver = (observer) => proceedSetAppliedObserver(() => {
+    if (typeof observer === 'function') {
+      observer();
+    }
+    tickvolBands.onPanesChanged();
   });
 
   // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
@@ -630,5 +732,5 @@ export async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle };
+  return { chart, mainSeries, renderer, controller, mode, ready, tickvolBands, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
 }

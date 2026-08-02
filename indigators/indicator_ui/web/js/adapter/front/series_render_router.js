@@ -42,7 +42,7 @@ export class SeriesRenderRouter {
     const validated = host._validateSeriesNames(series, def, params);
     // kind → 描画経路は series_kind 台帳（renderRoute）で一元化（新種別は台帳追記で完結・OCP）。
     //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
-    const routed = { line: [], histogram: [], horizontal: [] };
+    const routed = { line: [], histogram: [], horizontal: [], level_dash: [] };
     for (const p of validated) {
       // 案A（btlm_trail_marod）: barStyleEditable 一致系列（front カタログ由来・backend 非関与）へ
       //   bar_editable=true を注入する。renderer はこのヒントで line ⇄ histogram スワップ対象を識別
@@ -59,12 +59,16 @@ export class SeriesRenderRouter {
     const lines = routed.line;
     const histograms = routed.histogram;
     const hlines = routed.horizontal;
+    const levelDashes = routed.level_dash;
     const opts = { pane: def.placement !== 'overlay', name: host._label(def) };
     if (histograms.length > 0) {
       this._renderer.renderHistogram(instanceId, histograms, opts);
     }
     if (lines.length > 0) {
       this._renderer.renderLine(instanceId, lines, opts);
+    }
+    if (levelDashes.length > 0) {
+      this._renderer.renderLevelDash(instanceId, levelDashes, opts);
     }
     for (const h of hlines) {
       this._renderer.renderHorizontal(instanceId, h.lines ?? []);

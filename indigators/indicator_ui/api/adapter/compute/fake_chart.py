@@ -181,7 +181,7 @@ class _FakeSeries:
 
 
 class FakeChart:
-    """line / histogram / horizontal_line を一括収集する統合 duck type。
+    """line / histogram / level_dash / horizontal_line を一括収集する統合 duck type。
 
     既存 add_* は指標により ``create_line`` / ``create_histogram`` / ``horizontal_line``
     を任意に組み合わせて呼ぶ（オシレータ＝histogram or line ＋ 水準線）。FakeLineChart /
@@ -205,6 +205,17 @@ class FakeChart:
 
     def create_histogram(self, name: str, **kwargs: Any) -> _FakeSeries:
         s = _FakeSeries(name, "histogram", **kwargs)
+        self.series.append(s)
+        return s
+
+    def create_level_dash(self, name: str, **kwargs: Any) -> _FakeSeries:
+        """ローソク足幅の水平ダッシュ系列（1 バー 1 本・バー間を繋がない）。
+
+        payload の形状は line と同一（``{time, value}``）で、表示層が同値 4 値の
+        Candlestick（同事＝水平線 1 本）へ展開する。back 側は新しい payload 形状を
+        持たない＝既存 3 種別の契約に非波及。
+        """
+        s = _FakeSeries(name, "level_dash", **kwargs)
         self.series.append(s)
         return s
 

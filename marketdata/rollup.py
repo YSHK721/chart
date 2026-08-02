@@ -66,13 +66,18 @@ def merge_same_period(prev_bar: dict[str, Any], new_bar: dict[str, Any]) -> dict
     結合的（``merge(merge(a,b),c) == merge(a,merge(b,c))``）であり、チャンク跨ぎ carry-over の
     正しさ（D-1）の根拠となる。
     """
-    return {
+    merged = {
         "open": prev_bar["open"],
         "high": max(prev_bar["high"], new_bar["high"]),
         "low": min(prev_bar["low"], new_bar["low"]),
         "close": new_bar["close"],
         "volume": prev_bar["volume"] + new_bar["volume"],
     }
+    # 方向内訳（up/dn）も volume と同じく合算する（両者が持つときのみ・結合的）。
+    for col in _csv_schema.UPDOWN_COLUMNS:
+        if col in prev_bar and col in new_bar:
+            merged[col] = prev_bar[col] + new_bar[col]
+    return merged
 
 
 @dataclass
@@ -106,13 +111,25 @@ def _rollup_path(out_dir: Path, tf: str, ref_prefix: str = _REF_PREFIX) -> Path:
 
 
 def _bar_to_dict(row: pd.Series) -> dict[str, Any]:
-    return {
+    bar = {
         "open": float(row["open"]),
         "high": float(row["high"]),
         "low": float(row["low"]),
         "close": float(row["close"]),
         "volume": float(row["volume"]),
     }
+    # 方向内訳（up/dn）は tick 由来データだけが持つ任意列。持つときだけ運ぶ（無い素材は不変）。
+    for col in _csv_schema.UPDOWN_COLUMNS:
+        if col in row.index:
+            bar[col] = float(row[col])
+    return bar
+
+
+def _header_for_bars(bars: "dict[Any, dict[str, Any]]") -> list[str]:
+    """bars の内容からロールアップ CSV ヘッダを決める（up/dn を持つときだけ末尾へ足す）。"""
+    sample = next(iter(bars.values()), {})
+    return _csv_schema.header_for([c for c in (*_csv_schema.OHLCV_COLUMNS,
+                                               *_csv_schema.UPDOWN_COLUMNS) if c in sample])
 
 
 def _bar_to_csv_row(period: Any, bar: dict[str, Any]) -> list[Any]:
@@ -121,10 +138,12 @@ def _bar_to_csv_row(period: Any, bar: dict[str, Any]) -> list[Any]:
     ``_write_rollup``（全件一括書き）と :class:`_RollupWriter`（逐次 flush）で同一フォーマットを
     共用し、両経路の出力 CSV をバイト一致させるための行整形の単一真実源。
     """
-    return [
+    row = [
         pd.Timestamp(period).strftime(_DATE_FMT),
         bar["open"], bar["high"], bar["low"], bar["close"], bar["volume"],
     ]
+    row.extend(bar[c] for c in _csv_schema.UPDOWN_COLUMNS if c in bar)
+    return row
 
 
 def _write_rollup(
@@ -147,7 +166,7 @@ def _write_rollup(
     try:
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
             w = _csv.writer(fh)
-            w.writerow(_HEADER)
+            w.writerow(_header_for_bars(bars))
             for period in sorted(bars):
                 w.writerow(_bar_to_csv_row(period, bars[period]))
         os.replace(tmp, final)
@@ -177,7 +196,7 @@ def _write_rollup_df(
         out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
         out.index.name = "date"
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
-            out.to_csv(fh, header=_HEADER[1:], index_label=_HEADER[0])
+            out.to_csv(fh, header=list(out.columns), index_label=_HEADER[0])
         os.replace(tmp, final)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -210,17 +229,27 @@ class _RollupWriter:
         self._tmp: Optional[Path] = Path(tmp_name)
         self._fh = os.fdopen(fd, "w", newline="", encoding="utf-8")
         self._w = _csv.writer(self._fh)
-        self._w.writerow(_HEADER)
+        # ヘッダは最初の bar が来るまで書かない（up/dn を持つ素材かは bar を見ないと決まらない）。
+        #   1 行も書かれなければ commit 時に既定ヘッダを書く＝従来の空 CSV と同一。
+        self._header_written = False
         self._committed = False
+
+    def _ensure_header(self, bar: "dict[str, Any] | None") -> None:
+        if self._header_written:
+            return
+        self._w.writerow(_header_for_bars({0: bar} if bar is not None else {}))
+        self._header_written = True
 
     def write(self, period: Any, bar: dict[str, Any]) -> None:
         """確定済み 1 バーを 1 行 flush する（呼び出しは date 昇順であること）。"""
+        self._ensure_header(bar)
         self._w.writerow(_bar_to_csv_row(period, bar))
 
     def commit(self) -> None:
         """tmp を閉じ確定パスへ原子スワップする（成功時のみ呼ぶ）。"""
         if self._committed:
             return
+        self._ensure_header(None)
         self._fh.close()
         os.replace(self._tmp, self._final)
         self._committed = True

@@ -24,6 +24,7 @@ function fakePrimitive() {
     setSessions: rec('setSessions'),
     setCursorTime: rec('setCursorTime'),
     setTfPeriods: rec('setTfPeriods'),
+    setTfBinWidth: rec('setTfBinWidth'),
     tfPeriodLevelAt: rec('tfPeriodLevelAt'),
   };
 }
@@ -44,9 +45,12 @@ test('ProfileSink はプロファイル役の 5 メソッド＋attach 用 series
   assert.equal(typeof sink.tfPeriodLevelAt, 'undefined');
 });
 
-test('TfPeriodSink は tf-period 役の 2 メソッドのみ公開する', () => {
+test('TfPeriodSink は tf-period 役の 3 メソッドのみ公開する', () => {
+  // ISSUE-054 で setTfBinWidth（列を束ねる価格幅＝「レンジ」の反映）が加わり 2 → 3 面。
+  //   ISP の最小性は「宣言した面がすべて実利用されること」であり、面数の固定ではない。
+  //   本面は composition_root_front.js の syncTfBinWidth が実際に呼ぶ（未使用面ではない）。
   const sink = new TfPeriodSink(fakePrimitive());
-  assert.deepEqual(ownMethods(sink), ['setTfPeriods', 'tfPeriodLevelAt']);
+  assert.deepEqual(ownMethods(sink), ['setTfBinWidth', 'setTfPeriods', 'tfPeriodLevelAt']);
   // プロファイル役のメソッドは持たない。
   for (const m of ['setProfile', 'setVisible', 'setSnapshot', 'setSessions', 'setCursorTime']) {
     assert.equal(typeof sink[m], 'undefined', `${m} は非公開`);

@@ -24,7 +24,7 @@ class _FakeWindowPort:
             raise self._m1_exc
         return self._m1
 
-    def load_ticks(self, start, end):
+    def load_raw_ticks(self, start, end):   # ISSUE-031: 生ティック (sec, bid, ask)
         self.tick_called = True
         if self._ticks_exc:
             raise self._ticks_exc
@@ -37,7 +37,7 @@ def _req(mode="real_ticks"):
 
 def test_real_ticks_returns_m1_and_tick_mids():
     port = _FakeWindowPort(
-        m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 100.0), (20, 101.0)]
+        m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 99.5, 100.5), (20, 100.5, 101.5)]
     )
     res = intrabar_window(request=_req("real_ticks"), window_port=port)
     assert res.ok is True
@@ -47,7 +47,7 @@ def test_real_ticks_returns_m1_and_tick_mids():
 
 
 def test_non_real_ticks_skips_tick_loading():
-    port = _FakeWindowPort(m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 100.0)])
+    port = _FakeWindowPort(m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 99.5, 100.5)])
     res = intrabar_window(request=_req("ohlc_1min"), window_port=port)
     assert res.m1 == [[1.0, 2.0, 0.5, 1.5]]
     assert res.ticks == []
@@ -55,7 +55,7 @@ def test_non_real_ticks_skips_tick_loading():
 
 
 def test_m1_error_translated_and_does_not_block():
-    port = _FakeWindowPort(m1_exc=RuntimeError("boom-m1"), ticks=[(10, 100.0)])
+    port = _FakeWindowPort(m1_exc=RuntimeError("boom-m1"), ticks=[(10, 99.5, 100.5)])
     res = intrabar_window(request=_req("real_ticks"), window_port=port)
     assert res.m1 == []
     assert res.m1_error is not None and "boom-m1" in res.m1_error

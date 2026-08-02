@@ -12,6 +12,7 @@ import { ChartRenderer } from '../js/adapter/front/chart_renderer.js';
 
 const LineSeries = { kind: 'Line' };
 const HistogramSeries = { kind: 'Histogram' };
+const CandlestickSeries = { kind: 'Candlestick' };
 
 function fakeSeries(def) {
   return {
@@ -53,7 +54,7 @@ function newRenderer() {
   const chart = fakeChart();
   const main = { setData() {}, applyOptions() {}, priceScale: () => ({ applyOptions() {} }) };
   const renderer = new ChartRenderer({
-    chart, mainSeries: main, lwc: { LineSeries, HistogramSeries },
+    chart, mainSeries: main, lwc: { LineSeries, HistogramSeries, CandlestickSeries },
   });
   return { renderer, chart };
 }
@@ -419,4 +420,53 @@ test('案A(MAROD) スワップ: 0% 基準線（priceLine）を新 host へ再生
   assert.equal(slot.scaleHost, newSeries, 'scaleHost を新系列へ張り替え');
   assert.equal(slot.priceLineHost, newSeries, '0% 線 host も新系列');
   assert.equal(slot.priceLines.length, 1, '0% 線は再生成されて 1 本を維持');
+});
+
+
+// --- level_dash（ローソク足幅の水平ダッシュ・ISSUE-226）------------------------
+// CandlestickSeries は `color` オプションを持たず up/down/border/wick の 6 経路で着色する。
+//   生成時と applySeriesStyle で同じ写像を通さないと「色を変えても反映されない」不具合になる。
+
+const DASH_PAYLOADS = [
+  { name: 'cvfe_u1', kind: 'level_dash', color: 'rgba(233, 30, 99, 0.5)', data: [{ time: 1, value: 10 }, { time: 2, value: 11 }] },
+];
+
+test('ISSUE-226 level_dash: 生成時に単色が 6 つの色経路へ複製され、値は同値 4 値へ展開される', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLevelDash('cvfe#1', DASH_PAYLOADS);
+  const s = chart.created[0];
+  assert.equal(s._def, CandlestickSeries, 'CandlestickSeries で生成されること');
+  for (const k of ['upColor', 'downColor', 'borderUpColor', 'borderDownColor', 'wickUpColor', 'wickDownColor']) {
+    assert.equal(s._createOpts[k], 'rgba(233, 30, 99, 0.5)', k);
+  }
+  assert.equal(s._createOpts.wickVisible, false, 'ヒゲは出さない');
+  assert.deepEqual(s.data()[0], { time: 1, open: 10, high: 10, low: 10, close: 10 });
+});
+
+test('ISSUE-226 level_dash: applySeriesStyle の色が 6 経路すべてへ反映される（回帰）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLevelDash('cvfe#1', DASH_PAYLOADS);
+  const ok = renderer.applySeriesStyle('cvfe#1', 'cvfe_u1', { color: '#00ff00' });
+  assert.equal(ok, true);
+  const s = chart.created[0];
+  for (const k of ['upColor', 'downColor', 'borderUpColor', 'borderDownColor', 'wickUpColor', 'wickDownColor']) {
+    assert.equal(s._options[k], '#00ff00', `${k} が更新されていない＝色変更が無視される`);
+  }
+  assert.equal(renderer.getSeriesStyles('cvfe#1')[0].color, '#00ff00', 'styleMeta も同期');
+});
+
+test('ISSUE-226 level_dash: 可視性の切替は従来どおり visible で効く', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLevelDash('cvfe#1', DASH_PAYLOADS);
+  renderer.applySeriesStyle('cvfe#1', 'cvfe_u1', { visible: false });
+  assert.equal(chart.created[0]._options.visible, false);
+});
+
+test('ISSUE-226 line 系列の色経路は従来どおり color のみ（非波及）', () => {
+  const { renderer, chart } = newRenderer();
+  renderer.renderLine('ma#1', MA_PAYLOADS);
+  renderer.applySeriesStyle('ma#1', 'MA', { color: '#123456' });
+  const s = chart.created[0];
+  assert.equal(s._options.color, '#123456');
+  assert.equal(s._options.upColor, undefined, 'line 系列に candlestick 用オプションが漏れていない');
 });

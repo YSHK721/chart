@@ -322,6 +322,50 @@ html, body {
 .prop-input-checkbox { width: 16px; height: 16px; accent-color: #2962ff; }
 .prop-input-color { width: 40px; height: 26px; padding: 1px; cursor: pointer; }
 
+/* 期間入力＋プリセット（基本設計_期間プリセット §7）。数値入力の右にトリガーを置き、
+   ポップは時間足メニュー（.tf-menu-pop）と同型の見た目に揃える。 */
+.prop-period {
+  position: relative; display: inline-flex; align-items: center; gap: 4px;
+  padding: 0; border: 0; background: transparent; border-radius: 0;
+}
+/* 数値入力の幅は number コントロールと同一（期間表記も収まる）。 */
+.prop-period-input { width: 96px; }
+.prop-period-trigger {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  background: #131722; border: 1px solid #2a2e39; border-radius: 5px;
+  color: #787b86; font-size: 13px; cursor: pointer;
+}
+.prop-period-trigger:hover { color: #d1d4dc; border-color: #363a45; }
+.prop-period-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+  min-width: 160px; max-height: 60vh; overflow-y: auto;
+  background: #1e222d; border: 1px solid #363a45; border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5); padding: 4px 0;
+  display: flex; flex-direction: column;
+}
+.prop-period-pop.is-hidden { display: none; }
+.prop-period-head {
+  padding: 6px 12px 4px; color: #787b86; font-size: 11px; user-select: none;
+}
+.prop-period-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  width: 100%; padding: 6px 12px;
+  background: transparent; border: 0; color: #d1d4dc; font-size: 13px; cursor: pointer;
+}
+.prop-period-item:hover { background: #2a2e39; }
+.prop-period-item.is-active { background: #2962ff; color: #fff; }
+.prop-period-item-bars { color: #787b86; font-variant-numeric: tabular-nums; }
+.prop-period-item:hover .prop-period-item-bars { color: #d1d4dc; }
+.prop-period-item.is-active .prop-period-item-bars { color: #fff; }
+.prop-period-empty { padding: 8px 12px; color: #787b86; font-size: 12px; }
+/* 換算エラー（F-P1）。行の検証エラー（.prop-field-error）とは別枠で、_revalidate に消されない。 */
+.prop-period-error {
+  position: absolute; top: calc(100% + 2px); left: 0; white-space: nowrap;
+  color: #ef5350; font-size: 11px;
+}
+.prop-period.has-error .prop-period-input { border-color: #ef5350; }
+
 /* segmented（ENUM を横並びセグメントボタンで描く・解像度トグル移植）。最小装飾・選択中ハイライト。 */
 .prop-segmented { display: inline-flex; gap: 0; padding: 0; border: none; background: transparent; }
 .prop-seg-btn {
@@ -397,6 +441,100 @@ html, body {
 }
 .tf-menu-item:hover { background: #2a2e39; }
 .tf-menu-item.is-active { background: #2962ff; color: #fff; }
+
+/* チャートテンプレート ドロップダウン（基本設計_チャートテンプレート §6.1/§6.2・時間足メニューと同型） */
+.tpl-menu { position: relative; display: inline-flex; }
+.tpl-menu-trigger { display: inline-flex; align-items: center; gap: 4px; }
+.tpl-menu-caret { font-size: 9px; color: #787b86; }
+.tpl-menu-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+  min-width: 240px; max-height: 70vh; overflow-y: auto;
+  background: #1e222d; border: 1px solid #363a45; border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5); padding: 4px 0;
+  display: flex; flex-direction: column;
+}
+.tpl-menu-pop.is-hidden { display: none; }
+.tpl-menu-cat {
+  padding: 6px 12px 2px; color: #787b86; font-size: 11px; user-select: none;
+  border-top: 1px solid #23272f; margin-top: 4px;
+}
+.tpl-menu-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; text-align: left; padding: 6px 16px;
+  background: transparent; border: 0; color: #d1d4dc; font-size: 13px; cursor: pointer;
+}
+.tpl-menu-item:hover { background: #2a2e39; }
+.tpl-menu-item.is-active { background: #2962ff; color: #fff; }
+.tpl-menu-badge { color: #787b86; font-size: 11px; pointer-events: none; }
+.tpl-menu-item.is-active .tpl-menu-badge { color: #cfd8ff; }
+.tpl-menu-name { pointer-events: none; }
+.tpl-menu-mark { width: 10px; color: #2962ff; font-size: 9px; pointer-events: none; }
+.tpl-menu-item.is-active .tpl-menu-mark { color: #fff; }
+.tpl-menu-list:empty::after {
+  content: '（保存済みテンプレートはありません）';
+  display: block; padding: 6px 16px; color: #787b86; font-size: 12px;
+}
+
+/* テンプレートの保存／管理ダイアログ（§6.2・prop-dialog と同型） */
+.tpl-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .45);
+  display: none; align-items: center; justify-content: center;
+}
+.tpl-dialog-backdrop.is-open { display: flex; }
+.tpl-dialog {
+  width: 420px; max-width: 92vw; max-height: 86vh;
+  background: #1e222d; border: 1px solid #2a2e39; border-radius: 8px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+}
+.tpl-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border-bottom: 1px solid #2a2e39; user-select: none;
+}
+.tpl-dialog-title { font-size: 14px; font-weight: 600; color: #fff; }
+.tpl-dialog-close {
+  background: transparent; border: none; color: #9aa0ad; font-size: 18px; cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.tpl-dialog-close:hover { color: #fff; background: #2a2e39; }
+.tpl-dialog-body { padding: 12px 14px; overflow-y: auto; color: #d1d4dc; font-size: 13px; }
+.tpl-dialog-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.tpl-dialog-label { color: #b2b5be; font-size: 12px; white-space: nowrap; }
+.tpl-dialog-input {
+  flex: 1 1 auto; background: #131722; border: 1px solid #2a2e39; border-radius: 5px;
+  color: #d1d4dc; font-size: 13px; padding: 6px 8px;
+}
+.tpl-dialog-preview {
+  background: #131722; border: 1px solid #2a2e39; border-radius: 5px;
+  padding: 8px 10px; margin-bottom: 10px; max-height: 30vh; overflow-y: auto;
+}
+.tpl-dialog-preview-head { color: #787b86; font-size: 11px; margin-bottom: 4px; }
+.tpl-dialog-preview-item { color: #b2b5be; font-size: 12px; line-height: 1.6; }
+.tpl-dialog-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.tpl-dialog-error { color: #e0564a; font-size: 12px; padding: 0 14px; min-height: 0; }
+.tpl-dialog-error:empty { display: none; }
+/* 上書き確認のインライン表示（同じ場所・同じ機構だがエラーではないため配色を分ける） */
+.tpl-dialog-error.is-confirm { color: #d1d4dc; }
+.tpl-dialog-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 10px 14px; border-top: 1px solid #2a2e39;
+}
+.tpl-dialog-btn {
+  padding: 5px 12px; border-radius: 5px; font-size: 12px; cursor: pointer;
+  background: transparent; border: 1px solid #2a2e39; color: #d1d4dc;
+}
+.tpl-dialog-btn:hover { background: #2a2e39; color: #fff; }
+.tpl-dialog-btn.is-primary { background: #2962ff; border-color: #2962ff; color: #fff; }
+.tpl-dialog-btn.is-primary:hover { background: #1e53e5; }
+.tpl-dialog-btn.is-danger { background: #b03a30; border-color: #b03a30; color: #fff; }
+.tpl-dialog-btn.is-hidden { display: none; }
+.tpl-dialog-list-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-bottom: 1px solid #23272f;
+}
+.tpl-dialog-list-name { flex: 1 1 auto; }
+.tpl-dialog-rename.is-hidden { display: none; }
 .prop-visibility-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: #d1d4dc; font-size: 13px; cursor: pointer; }
 
 /* A 方式 未反映 注記（サイレント不一致回避・§9.3） */
@@ -443,6 +581,9 @@ html, body {
            disabled のまま非活性。 -->
       <button id="live-follow-toggle" class="tb-interval" type="button" aria-pressed="false" title="ライブ追従（点灯=ライブ／消灯=分析）" disabled>ライブ</button>
       <span class="tb-sep"></span>
+      <!-- チャートテンプレートのドロップダウンのマウント（基本設計_チャートテンプレート §6.1）。
+           DOM は共有 chart_template_menu.js が生成する（HTML 直書きの複製を作らない）。 -->
+      <div class="tpl-menu" id="tpl-menu"></div>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
         <span class="ic">∿</span>
         <span class="lbl">インジケーター</span>
@@ -484,9 +625,9 @@ html, body {
         <div class="dialog-side">
           <button class="side-item is-active" data-category="" type="button">すべて</button>
           <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
-          <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
-          <button class="side-item" data-category="cat.statistics" type="button">統計</button>
-          <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+          <!-- カテゴリのボタンはカタログから動的生成する（ISSUE-221）。ここへ直書きすると
+               新カテゴリの指標を足したときに HTML の同時改変が必要になり、実際に
+               oscillator(10) と band(2) が欠落して 24 指標中 12 件が到達不能になっていた。 -->
         </div>
         <div class="dialog-main">
           <div class="search-wrap">
@@ -762,6 +903,10 @@ const SeriesKind = Object.freeze({
   LINE: 'line',
   HISTOGRAM: 'histogram',
   HORIZONTAL_LINE: 'horizontal_line',
+  // ローソク足の幅に合わせた水平ダッシュ（1 バー 1 本・バー間を繋がない）。
+  //   バー毎に確定する水準（例: 1 期先予測区間の上下端）を、傾きという誤った情報を
+  //   与えずに並べるための種別。実体は同値 4 値の Candlestick（同事＝水平線 1 本）。
+  LEVEL_DASH: 'level_dash',
 });
 
 const LineStyle = Object.freeze({
@@ -916,6 +1061,20 @@ const SERIES_KINDS = Object.freeze({
     overlayReadout: false,
     editableLineStyle: false,
     renderRoute: 'histogram',
+  }),
+  // level_dash: ローソク足幅の水平ダッシュ（同値 4 値の Candlestick で描く）。
+  //   payload 契約は line と同一（{time, value}）で、OHLC への展開は表示層が担う
+  //   （back の payload 形状を増やさない＝既存 3 種別の契約に非波及）。
+  //   tailUpdatable=false: 末尾差分更新は {time,value} を series.update へ渡す経路であり
+  //   Candlestick 系列とは形が合わない。full 再描画のみを対象とする。
+  level_dash: Object.freeze({
+    tailUpdatable: false,
+    seriesType: 'level_dash',
+    appliesLineStyle: false,
+    supportsHeat: false,
+    overlayReadout: false,
+    editableLineStyle: false,
+    renderRoute: 'level_dash',
   }),
   horizontal_line: Object.freeze({
     tailUpdatable: false,
@@ -1671,6 +1830,11 @@ const UI_DEFAULTS = Object.freeze({
   label: null,
   // enumLabels: enum 値 → 表示名のマップ（select の選択肢を日本語表示する。省略時は値をそのまま表示）。
   enumLabels: null,
+  // isPeriod: 期間フラグ（基本設計_期間プリセット.md §5.1）。true のとき「その値は直近 N 本の
+  //   バーを意味する」＝期間プリセット UI の対象になる（controlType 既定が 'period' になる）。
+  //   判定源はこのフラグのみ。unit:'unit.bars' は単位表示のためのメタデータであり流用しない
+  //   （承認事項 A-7。現に moving_averages.length 等の明白な期間パラメータへ付いていない）。
+  isPeriod: false,
 });
 
 // ui オブジェクトから UI_DEFAULTS のキーのみを既定フォールバック付きで抽出する。
@@ -1710,7 +1874,7 @@ const TGP_BTLM = new IndicatorDef({
     // 共有 applied_price で解決する（tgp_btlm src は無改変）。moving_averages の source と同一写像。
     param('price', ParamType.ENUM, 'open', [], ['open', 'high', 'low', 'close', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 2 }),
     // maxbars 既定 40→100 是正（M-1・core.py:33 DEFAULT_MAXBARS=100）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, unit: 'unit.bars' }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 1], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 3, step: 1, min: 1, unit: 'unit.bars', label: '移動期間', isPeriod: true }),
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
       { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
@@ -1767,7 +1931,7 @@ const BTLM_TRAIL = new IndicatorDef({
     // ソース: moving_averages と同一 8 択（applied_price 参照・既定 close）。
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
     // maxbars: 回帰窓（既定 100・core DEFAULT_MAXBARS）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars' }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', label: '移動期間（回帰）', isPeriod: true }),
     // 分位ペア（0<q_low<q_high<1）。tgp_btlm と対称の q-chain 制約。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
@@ -1780,7 +1944,7 @@ const BTLM_TRAIL = new IndicatorDef({
     param('band_method', ParamType.ENUM, 'ols', [], ['ols', 'empirical'], { group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS }),
     // 経験分位バンドの参照本数（既定 500・band_method==empirical のときのみ有効）。
     param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
-      group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars',
+      group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（分位）', isPeriod: true,
       conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
     }),
     // --- 表示 ---
@@ -1799,7 +1963,7 @@ const BTLM_TRAIL = new IndicatorDef({
     }),
     // バンド内実績率（実現被覆率）のローリング本数（既定 250）。
     param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
-      group: 'group.display', order: 4, label: 'バンド内実績率の本数', step: 1, min: 2, unit: 'unit.bars',
+      group: 'group.display', order: 4, label: '移動期間（実績率）', step: 1, min: 2, unit: 'unit.bars', isPeriod: true,
       conditionalEnable: { when: { param: 'show_metrics', equals: true } },
     }),
     // color は btlm_mean（トレンド現在位置）の色。スタイルタブへ移譲。
@@ -1873,7 +2037,7 @@ const BTLM_TRAIL_MAROD = new IndicatorDef({
     // ソース: btlm_trail と同一 8 択（applied_price 参照・既定 close）。
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
     // maxbars: 回帰窓（既定 100・min 3・btlm_trail core DEFAULT_MAXBARS）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars' }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', label: '移動期間（回帰）', isPeriod: true }),
     // 分位ペア（0<q_low<q_high<1・btlm_trail と対称の q-chain 制約）。σ・分位バンドの下側/上側分位。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
@@ -1887,7 +2051,7 @@ const BTLM_TRAIL_MAROD = new IndicatorDef({
     // window_n: 正常バンド（分位バンド）の因果ローリング窓（既定 500・min 2）。実測で MAROD は
     //   分散非定常のため固定でなくこの窓で局所再計算する（当該バー除外＝非リペイント）。
     param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
-      group: 'group.calc', order: 8, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓',
+      group: 'group.calc', order: 8, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（分位）', isPeriod: true,
       tooltip: '正常バンド（経験分位バンド・下側/上側分位）を算出する因果ローリング窓の本数。MAROD は分散非定常のため固定でなくこの窓で局所再計算する。当該バーは除外（非リペイント）。',
     }),
     // color は MAROD 線の色（スタイルタブへ移譲）。既定は add_btlm_trail_marod の _COLOR_MAROD。
@@ -1945,7 +2109,7 @@ const PROFIT_BAND = new IndicatorDef({
     // atr_period=14（INT・normalize=="atr" のときのみ ATR 計算で使用・robust_bands.py:135-138）。
     // 条件付き有効化（§3.5）: normalize==atr で有効、return で無効。
     param('atr_period', ParamType.INT, 14, [], null, {
-      group: 'group.robust', order: 3, step: 1, min: 1, unit: 'unit.bars',
+      group: 'group.robust', order: 3, step: 1, min: 1, unit: 'unit.bars', label: '移動期間', isPeriod: true,
       conditionalEnable: { when: { param: 'normalize', equals: 'atr' } },
     }),
     // min_obs=30（INT・lwc_chart.py:167）。
@@ -2031,12 +2195,12 @@ const MOVING_AVERAGES = new IndicatorDef({
   params: [
     // --- 基本（無見出しの先頭セクション）---
     param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], { order: 1, label: '種別', enumLabels: MA_TYPE_LABELS }),
-    param('length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { order: 2, label: '期間', step: 1, min: 2 }),
+    param('length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { order: 2, label: '移動期間（平均）', step: 1, min: 2, isPeriod: true }),
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { order: 3, label: 'ソース', enumLabels: MA_SOURCE_LABELS }),
     param('offset', ParamType.INT, 0, [], null, { order: 4, label: 'オフセット', step: 1 }),
     // --- 平滑化 ---
     param('smoothing_type', ParamType.ENUM, 'none', [], ['none', 'sma', 'ema', 'smma', 'wma', 'sma_bb'], { group: '平滑化', order: 1, label: 'タイプ', enumLabels: MA_SMOOTHING_LABELS }),
-    param('smoothing_length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['smoothing_length', 2], messageKey: 'err.length' }], null, { group: '平滑化', order: 2, label: '期間', step: 1, min: 2 }),
+    param('smoothing_length', ParamType.INT, 9, [{ kind: ConstraintKind.MIN_VALUE, operands: ['smoothing_length', 2], messageKey: 'err.length' }], null, { group: '平滑化', order: 2, label: '移動期間（平滑）', step: 1, min: 2, isPeriod: true }),
     // BB標準偏差: smoothing_type==sma_bb のときのみ有効（conditionalEnable で他はグレーアウト＝画像準拠）。
     param('bb_stddev', ParamType.FLOAT, 2.0, [], null, {
       group: '平滑化', order: 3, label: 'BB標準偏差', step: 0.001, min: 0.001,
@@ -2073,7 +2237,7 @@ const MA_MAROD = new IndicatorDef({
     // 基準線 MA 種別（moving_averages と同一 4 択・同一ラベル・既定 ema）。
     param('ma_type', ParamType.ENUM, 'ema', [], ['sma', 'ema', 'smma', 'lwma'], { group: 'group.calc', order: 2, label: '種別', enumLabels: MA_TYPE_LABELS }),
     // length: MA 本数（既定 50・min 2＝参照実装 *_on_buffer の契約）。
-    param('length', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { group: 'group.calc', order: 3, label: '期間', step: 1, min: 2, unit: 'unit.bars' }),
+    param('length', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['length', 2], messageKey: 'err.length' }], null, { group: 'group.calc', order: 3, label: '移動期間（平均）', step: 1, min: 2, unit: 'unit.bars', isPeriod: true }),
     // 分位ペア（0<q_low<q_high<1・btlm_trail_marod と対称の q-chain 制約）。σ・分位バンドの下側/上側分位。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
@@ -2088,7 +2252,7 @@ const MA_MAROD = new IndicatorDef({
     // window_n: 正常バンド（分位バンド）の因果ローリング窓（既定 500・min 2）。乖離率は
     //   分散非定常（実測）のため固定でなくこの窓で局所再計算する（当該バー除外＝非リペイント）。
     param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
-      group: 'group.calc', order: 9, step: 1, min: 2, unit: 'unit.bars', label: '分位の窓',
+      group: 'group.calc', order: 9, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（分位）', isPeriod: true,
       tooltip: '正常バンド（経験分位バンド・下側/上側分位）を算出する因果ローリング窓の本数。乖離率は分散非定常のため固定でなくこの窓で局所再計算する。当該バーは除外（非リペイント）。',
     }),
     // color は MA_MAROD 線の色（スタイルタブへ移譲）。既定は add_ma_marod の _COLOR_MA_MAROD。
@@ -2130,12 +2294,12 @@ const PF_HIST = (seriesName) => new SeriesDef({ kind: SeriesKind.HISTOGRAM, sour
 const PF_INT = (name, def, extraUi = {}) => param(
   name, ParamType.INT, def,
   [{ kind: ConstraintKind.MIN_VALUE, operands: [name, 1], messageKey: `err.${name}` }],
-  null, { group: 'group.calc', step: 1, min: 1, ...extraUi },
+  null, { group: 'group.calc', step: 1, min: 1, isPeriod: true, ...extraUi },
 );
 // 標準化窓 W（直近 W 本の過去のみで標準化＝look-ahead 除去・repaint しない）。
 // profit_* の因果化済み 6 指標で共通の window パラメータ（def=120・min:2・専用ラベル）。
 // PF_INT('window', ...) リテラルの DRY 集約（生成 param は従来と完全同一）。
-const PF_WINDOW = () => PF_INT('window', 120, { min: 2, label: '標準化窓 W（直近本数）' });
+const PF_WINDOW = () => PF_INT('window', 120, { min: 2, label: '移動期間（標準化）' });
 const MA_METHOD_ENUM_LABELS = { 0: 'SMA', 1: 'EMA', 2: 'SMMA', 3: 'LWMA' };
 // compute 共通（OHLCV サンプルを前提に requiredColumns は OHLC、時刻必須）。
 const PF_COMPUTE = (id, variants = ['default']) => ({
@@ -2260,13 +2424,119 @@ const MARKET_PROFILE = makeMarketProfileDef({
   IndicatorDef, SeriesDef, SeriesKind, ParamType, ConstraintKind, param, OHLC,
 });
 
+// --- cvfe（条件付ボラティリティ予測・OVERLAY）------------------------------
+// 正本仕様 indigators/cvfe/CVFE_spec_v1.0.md。次バーの条件付ボラティリティ σ̂_{t+1} を
+//   HAR-CJ-L で 1 期先予測し、各バーの水準を「ローソク足幅の水平ダッシュ」で並べる
+//   （バー間を繋がない＝傾きという誤った情報を与えない）。確定バー不変（非リペイント）。
+//   実バインディング add_cvfe（indigators/cvfe/src/lwc_chart.py）。
+//
+// 認知負荷の最小化（ユーザー厳命 2026-07-30）: 公開パラメータは 6 個に絞る。
+//   内部固定にしたもの（いずれも「動かす根拠が無い」ことを実測または仕様で確認済み）:
+//     refit_every=0   実測: 1/20/100 いずれも凍結に対し DM 検定で有意差なし（p=0.94〜0.97）。
+//                     毎バー再学習は約 200 倍遅い（0.09s → 17.79s・2,600 本）。
+//     lam_gap=0.97    窓開けが無い時間足では効果ゼロ。既定から動かす根拠が仕様 §10 に無い。
+//     q_low/q_high/window_n/q_out/k_events/event_agg
+//                     外れ値判定の内部しきい値。対応する線を持たず、名前と系列名が
+//                     対応しないことが混乱の原因になっていた。共有既定のまま固定する。
+//     show_outer/show_mid  σ線②は主要 2 本の一方なので常時表示。中心線は既定どおり非表示。
+//
+//   系列名: cvfe_u1 / cvfe_l1（σ線①）・cvfe_u2 / cvfe_l2（σ線②）・
+//           cvfe_evq_{med|ext}_{hi|lo}（外れ値線・極端線）・cvfe_mid（中心・非表示）
+//   ⚠ 仕様 §1 はバンド構築を CEB の責務としてスコープ外にしている（ISSUE-223）。
+//   ⚠ UI 経路はティックを渡せず §4.1-6 の FAIL 縮退（PARK）で算出する（ISSUE-218）。
+const CVFE_DISPLAY_LABELS = { dashes: '水平ダッシュ（バー毎）', bands: '線で繋いだ帯' };
+const CVFE = new IndicatorDef({
+  id: 'cvfe',
+  displayNameKey: 'ind.cvfe',
+  category: { group: 'builtin', nameKey: 'cat.technical' },
+  tab: 'indicator',
+  placement: 'overlay',
+  params: [
+    // 窓系パラメータの呼称は「移動期間」に統一する（ユーザー裁定 2026-07-30）。従来は同一概念に
+    //   期間／学習本数／分位の窓／バンド内実績率の本数／… と 6 通りの呼び名が混在していた。
+    //   cvfe は公開する窓が 1 つだけなので用途の注釈を付けない（専門用語を持ち込まない）。
+    param('n_har', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_har', 500], messageKey: 'err.n_har' }], null, {
+      group: 'group.calc', order: 1, step: 1, min: 500, unit: 'unit.bars', label: '移動期間', isPeriod: true,
+      tooltip: '【全ての線に影響】「過去の変動幅から次の変動幅を出す式」を作るのに、何本さかのぼるか（下限 500）。長いほど安定し、短いほど直近の地合いに追随する。先頭 本数+22 本は準備期間として何も描かない。',
+    }),
+    // σ線①/②: 描かれる線と 1:1 で対応する名前にする。
+    param('sigma_inner', ParamType.FLOAT, 1.0, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'sigma_inner', 10], messageKey: 'err.sigma_inner.range' },
+      { kind: ConstraintKind.LT, operands: ['sigma_inner', 'sigma_outer'], messageKey: 'err.sigma_order' },
+    ], null, {
+      group: 'group.display', order: 1, step: 0.1, min: 0.1, max: 10, label: 'σ線①の倍率',
+      tooltip: '系列 cvfe_u1 / cvfe_l1 の位置。予測変動幅 σ̂ の何倍に置くか。実測（jp225 5 分足）では 1.0 で高安の 62% が到達する。',
+    }),
+    param('sigma_outer', ParamType.FLOAT, 2.0, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'sigma_outer', 10], messageKey: 'err.sigma_outer.range' },
+    ], null, {
+      group: 'group.display', order: 2, step: 0.1, min: 0.1, max: 10, label: 'σ線②の倍率',
+      tooltip: '系列 cvfe_u2 / cvfe_l2 の位置。予測変動幅 σ̂ の何倍に置くか。実測（jp225 5 分足）では 2.0 で高安の 15%・終値の 7.8% が超える。',
+    }),
+    param('show_outliers', ParamType.BOOL, true, [], null, {
+      group: 'group.display', order: 3, label: '外れ値線・極端線を表示',
+      tooltip: '系列 cvfe_evq_med_hi / med_lo（外れ値線）と cvfe_evq_ext_hi / ext_lo（極端線）。正規分布の仮定ではなく、過去に実際に外れた履歴から測った水準。実測の到達率は外れ値線 4.8%・極端線 0.26%。',
+    }),
+    param('display_mode', ParamType.ENUM, 'dashes', [], ['dashes', 'bands'], {
+      group: 'group.display', order: 4, label: '表示形式', enumLabels: CVFE_DISPLAY_LABELS,
+      tooltip: '水平ダッシュ＝各バーの水準を、そのバーの幅だけの短い水平線で並べる（推奨。バー間を繋がないので傾きに誤った意味が乗らない）。線で繋いだ帯＝上下端を折れ線で結ぶ（検証用。傾きは価格そのものの動きで σ̂ の情報を持たない）。',
+    }),
+    // color はここに置かない。系列色は「スタイル」タブが系列ごとに持っており重複するため
+    //   （ユーザー裁定 2026-07-30・認知負荷の最小化）。初期色は add_cvfe の既定値。
+    param('dash_opacity', ParamType.FLOAT, 0.5, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'dash_opacity', 1.01], messageKey: 'err.dash_opacity.range' },
+    ], null, {
+      group: 'group.display', order: 5, step: 0.05, min: 0.05, max: 1, label: 'ダッシュの濃さ',
+      conditionalEnable: { when: { param: 'display_mode', equals: 'dashes' } },
+      tooltip: '【全ての線に影響】水平ダッシュの不透明度（既定 0.5）。幅はローソク足の幅に自動で合うため、主張の強さはここで調整する。',
+    }),
+  ],
+  // 系列: σ線①②（各上下）＋ 外れ値線・極端線（各上下）＋ 中心線。すべて価格スケール上。
+  //   display_mode='dashes'（既定）は level_dash、'bands' は line で届くため同名で両 kind を宣言する。
+  series: [
+    ...['cvfe_mid', 'cvfe_u1', 'cvfe_l1', 'cvfe_u2', 'cvfe_l2'].flatMap((n) => [
+      new SeriesDef({ kind: SeriesKind.LEVEL_DASH, sourceColumn: n, seriesName: n, dynamic: false }),
+      new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
+    ]),
+    ...EVQ_SERIES_DEFS('cvfe'),
+    ...['med_hi', 'med_lo', 'ext_hi', 'ext_lo'].map((k) => new SeriesDef({
+      kind: SeriesKind.LEVEL_DASH, sourceColumn: `cvfe_evq_${k}`, seriesName: `cvfe_evq_${k}`, dynamic: false,
+    })),
+  ],
+  compute: { computeId: 'cvfe', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
+});
+
 const REGISTRY = Object.freeze([
-  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
+  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, CVFE, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,
 ]);
 const BY_ID = new Map(REGISTRY.map((d) => [d.id, d]));
+
+// カテゴリ key → 表示名。従来は index.html に 3 件だけ直書きされており、oscillator(10) と
+//   band(2) のボタンが無いまま 24 指標中 12 件が絞り込みから到達不能だった（ISSUE-221）。
+//   ここを単一情報源とし、サイドバーは categories() から動的生成する（新カテゴリの指標を
+//   足しても HTML の同時改変が不要＝OCP）。
+const CATEGORY_LABELS = Object.freeze({
+  'cat.technical': 'テクニカル',
+  'cat.oscillator': 'オシレーター',
+  'cat.statistics': '統計',
+  'cat.volume': '出来高',
+  'cat.band': 'バンド',
+});
+
+// 登録済み指標が実際に持つカテゴリを、REGISTRY の出現順で返す（key と件数）。
+//   未知 key は表示名を key そのものにフォールバックする（登録漏れで消えないこと）。
+function categories() {
+  const counts = new Map();
+  for (const d of REGISTRY) {
+    const key = d.category?.nameKey;
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts].map(([key, count]) => ({ key, count, label: CATEGORY_LABELS[key] ?? key }));
+}
 
 // 全 IndicatorDef を返す（読み取り専用配列の複製）。
 function list() {
@@ -2669,6 +2939,305 @@ const ACTOR_DRIVEN_COMPUTE_IDS = new Set([
 // def（カタログ定義）がアクター駆動型かの述語。def 形状は catalog.js の compute.computeId。
 function isActorDriven(def) {
   return ACTOR_DRIVEN_COMPUTE_IDS.has(def?.compute?.computeId);
+}
+
+
+// ===== js/usecase/chart_templates.js =====
+// chart_templates.js — チャートテンプレート（usecase・純関数）。
+//
+// 設計入力（唯一の仕様源）: .doc/indicator-management-ui/基本設計_チャートテンプレート.md v0.1.1
+//   §4.1（CHART_TEMPLATE / TEMPLATE_INSTANCE・保存しない属性）、§4.2（永続化スキーマ）、
+//   §4.3（templateId 採番 `tpl#{seq}`・単調増加・破損時復旧）、§5.1（UC-T01 保存）、
+//   §5.3（UC-T03 紐付け）、§5.4（UC-T04 再適用判定）、§5.5（UC-T05 改名・削除）、
+//   §5.6（F-T1 / F-T3 / F-T6）、§7.1（DOM・Storage 非依存の純関数）、
+//   §8.1 A-2（テンプレート最大 50 件・名前最大 40 文字）。
+//
+// 責務（SRP）: テンプレート集合の追加／更新／改名／削除、紐付け解決、
+//   AppliedInstance ⇄ TEMPLATE_INSTANCE 写像、名前検証。
+// 非責務: DOM・Storage・chart への一切のアクセス（import ゼロ＝最内層）。
+//
+// 純粋性の規律: すべての関数は入力（templates 配列・その要素・bindings）を破壊しない。
+//   更新は新しい配列・オブジェクトを返す（呼び出し側が確定・永続化する）。
+
+// §8.1 A-2 で確定した上限値。
+const MAX_TEMPLATES = 50;
+const MAX_NAME_LENGTH = 40;
+
+// 検証・保存結果の code 語彙（呼び出し側が UI 文言へ写像する）。
+const CODE = Object.freeze({
+  ok: 'ok',
+  empty: 'empty',
+  tooLong: 'too_long',
+  duplicate: 'duplicate',
+  limit: 'limit',
+  notFound: 'not_found',
+});
+
+// ---------------------------------------------------------------------------
+// 名前（§4.1 name・§5.1 処理 2・§5.5・F-T1）
+// ---------------------------------------------------------------------------
+
+// 正規化名 = trim ＋小文字化（§5.1 処理 2）。同名判定はこの値で行う。
+function normalizeTemplateName(name) {
+  return String(name ?? '').trim().toLowerCase();
+}
+
+// 表示用に採用する名前 = trim のみ（表記は入力のまま・§5.1 処理 2「name は入力の表記を採用」）。
+function displayTemplateName(name) {
+  return String(name ?? '').trim();
+}
+
+// 正規化名が一致する既存テンプレートを返す（無ければ null）。
+//   同名保存の上書き判定（§5.1 処理 2）と、その確認 1 段（ユーザー指示 2026-07-28）の
+//   単一の判定源。呼び出し側（ダイアログ等）で文字列比較を再実装しない。
+//   空名（trim 後 0 文字）は一致なし＝確認に入らず、名前検証（F-T1）へ委ねる。
+function findTemplateByName({ templates = [], name } = {}) {
+  const normalized = normalizeTemplateName(name);
+  if (normalized.length === 0) {
+    return null;
+  }
+  return (templates ?? []).find((t) => t && normalizeTemplateName(t.name) === normalized) ?? null;
+}
+
+// 名前検証（§4.1: 1〜40 文字・前後空白は trim／§5.5: 正規化名の重複不可）。
+//   excludeTemplateId: 改名時に「自分自身との一致」を重複から除外する（§5.5）。
+function validateTemplateName(name, { templates = [], excludeTemplateId = null } = {}) {
+  const display = displayTemplateName(name);
+  if (display.length === 0) {
+    return { ok: false, code: CODE.empty };
+  }
+  if (display.length > MAX_NAME_LENGTH) {
+    return { ok: false, code: CODE.tooLong };
+  }
+  const normalized = normalizeTemplateName(name);
+  const clash = (templates ?? []).some(
+    (t) => t && t.templateId !== excludeTemplateId && normalizeTemplateName(t.name) === normalized,
+  );
+  if (clash) {
+    return { ok: false, code: CODE.duplicate };
+  }
+  return { ok: true, code: CODE.ok };
+}
+
+// ---------------------------------------------------------------------------
+// 写像（§4.1 TEMPLATE_INSTANCE・保存しない属性）
+// ---------------------------------------------------------------------------
+
+// params（[k,v] ペア配列・facade 形／オブジェクト）を平坦オブジェクトへ正規化する。
+//   既存 IndicatorController._paramsObject と同一の正規化（§4.1）。
+function paramsObject(params) {
+  if (Array.isArray(params)) {
+    return Object.fromEntries(params);
+  }
+  return { ...(params ?? {}) };
+}
+
+// AppliedInstance（または其の JSON 形）→ TEMPLATE_INSTANCE（§4.1 の 5 属性のみ）。
+//   instanceId / seq / createdAt / generation / datasetRef / timeframe は保存しない
+//   （§4.1「保存しない属性と理由」＝適用時の再採番・決定論性の担保）。
+function toTemplateInstance(instance) {
+  return {
+    indicatorId: instance.indicatorId,
+    variant: instance.variant,
+    params: paramsObject(instance.params),
+    visible: !!instance.visible,
+    styles: instance.styles ?? null,
+  };
+}
+
+// TEMPLATE_INSTANCE[] → AppliedInstance の JSON 形[]（facade.deserialize が読む形）。
+//   instanceId は `${indicatorId}#${seq}` で導出されるため、seq を seqCounters（§5.7 単調カウンタ）
+//   で再採番する（§4.1「適用時に seqCounters で再採番する」＝系列名衝突の回避）。
+//   入力 seqCounters は破壊せず、更新後のカウンタを併せて返す。
+function toAppliedJsonList(instances, seqCounters = {}) {
+  const counters = { ...(seqCounters ?? {}) };
+  const applied = (instances ?? []).map((t) => {
+    const seq = (counters[t.indicatorId] ?? 0) + 1;
+    counters[t.indicatorId] = seq;
+    return {
+      instanceId: `${t.indicatorId}#${seq}`,
+      indicatorId: t.indicatorId,
+      variant: t.variant,
+      params: paramsObject(t.params),
+      visible: !!t.visible,
+      generation: 0,
+      seq,
+      createdAt: null,
+      styles: t.styles ?? null,
+    };
+  });
+  return { applied, seqCounters: counters };
+}
+
+// ---------------------------------------------------------------------------
+// templateId 採番（§4.3）
+// ---------------------------------------------------------------------------
+
+// 次の templateId を発行する。形式 `tpl#{seq}`・seq は lastSeq + 1（§4.3）。
+function nextTemplateId(lastSeq) {
+  const seq = (Number.isInteger(lastSeq) ? lastSeq : 0) + 1;
+  return { templateId: `tpl#${seq}`, lastSeq: seq };
+}
+
+// templateSeq.v1 破損時の復旧（§4.3）: 初期化後の lastSeq を、templates 内の既存 `tpl#N` の
+//   最大 N 以上へ引き上げる（id の再利用・衝突を避ける）。
+function recoverLastSeq(lastSeq, templates = []) {
+  let max = Number.isInteger(lastSeq) ? lastSeq : 0;
+  for (const t of templates ?? []) {
+    const m = /^tpl#(\d+)$/.exec(t && t.templateId ? String(t.templateId) : '');
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isInteger(n) && n > max) {
+        max = n;
+      }
+    }
+  }
+  return max;
+}
+
+// ---------------------------------------------------------------------------
+// UC-T01 保存（§5.1）
+// ---------------------------------------------------------------------------
+
+// 現在の適用済み構成をテンプレートとして保存する。
+//   - 正規化名が既存と一致 → その既存テンプレートを上書き更新（templateId 保持＝紐付けは維持・
+//     name は入力の表記・createdAt 不変・updatedAt 更新）。
+//   - 一致しない → 新規採番して追加（上限 50 件で拒否・§5.1 例外「上書き更新は可」）。
+function saveTemplate({ templates = [], lastSeq = 0, name, applied = [], now = 0 } = {}) {
+  const list = templates ?? [];
+  const existing = findTemplateByName({ templates: list, name });
+  // 重複は「上書き」であって検証エラーではないため、自分自身を除外して検証する。
+  const verdict = validateTemplateName(name, {
+    templates: list,
+    excludeTemplateId: existing ? existing.templateId : null,
+  });
+  if (!verdict.ok) {
+    return { ok: false, code: verdict.code, templates: list, lastSeq, templateId: null };
+  }
+  const instances = (applied ?? []).map(toTemplateInstance);
+  if (existing) {
+    const updated = {
+      ...existing,
+      name: displayTemplateName(name),
+      instances,
+      updatedAt: now,
+    };
+    return {
+      ok: true,
+      code: CODE.ok,
+      templates: list.map((t) => (t.templateId === existing.templateId ? updated : t)),
+      lastSeq,
+      templateId: existing.templateId,
+    };
+  }
+  if (list.length >= MAX_TEMPLATES) {
+    return { ok: false, code: CODE.limit, templates: list, lastSeq, templateId: null };
+  }
+  const issued = nextTemplateId(lastSeq);
+  const created = {
+    templateId: issued.templateId,
+    name: displayTemplateName(name),
+    instances,
+    createdAt: now,
+    updatedAt: now,
+  };
+  return {
+    ok: true,
+    code: CODE.ok,
+    templates: [...list, created],
+    lastSeq: issued.lastSeq,
+    templateId: issued.templateId,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// UC-T05 改名・削除（§5.5）
+// ---------------------------------------------------------------------------
+
+// 改名: name を検証（1〜40 文字・他テンプレートとの正規化名重複不可）して更新し updatedAt を進める。
+//   templateId・紐付け・activeTemplateId は不変（本関数は templates のみを返す）。
+function renameTemplate({ templates = [], templateId, name, now = 0 } = {}) {
+  const list = templates ?? [];
+  const target = list.find((t) => t && t.templateId === templateId);
+  if (!target) {
+    return { ok: false, code: CODE.notFound, templates: list };
+  }
+  const verdict = validateTemplateName(name, { templates: list, excludeTemplateId: templateId });
+  if (!verdict.ok) {
+    return { ok: false, code: verdict.code, templates: list };
+  }
+  const updated = { ...target, name: displayTemplateName(name), updatedAt: now };
+  return {
+    ok: true,
+    code: CODE.ok,
+    templates: list.map((t) => (t.templateId === templateId ? updated : t)),
+  };
+}
+
+// 削除: 当該テンプレートを除去し、当該 id を参照する紐付けを削除、activeTemplateId が
+//   当該 id なら null にする（§5.5）。現在チャート上の構成は変更しない（本関数は状態を返すだけ）。
+function deleteTemplate({ templates = [], bindings = {}, templateId, activeTemplateId = null } = {}) {
+  const list = templates ?? [];
+  const nextBindings = {};
+  for (const [tf, id] of Object.entries(bindings ?? {})) {
+    if (id !== templateId) {
+      nextBindings[tf] = id;
+    }
+  }
+  return {
+    templates: list.filter((t) => !t || t.templateId !== templateId),
+    bindings: nextBindings,
+    activeTemplateId: activeTemplateId === templateId ? null : activeTemplateId,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// UC-T03 紐付け設定・解除（§5.3）
+// ---------------------------------------------------------------------------
+
+// 当該時間足の紐付けを設定（templateId）または解除（null）した bindings を返す。
+//   入力 bindings は破壊しない。紐付け操作そのものは構成を変更しない（§5.3）。
+function setBinding({ bindings = {}, timeframe, templateId = null } = {}) {
+  const next = { ...(bindings ?? {}) };
+  if (templateId === null || templateId === undefined || templateId === '') {
+    delete next[timeframe];
+  } else {
+    next[timeframe] = templateId;
+  }
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// UC-T04 紐付け解決・再適用判定（§5.4・F-T3・F-T6）
+// ---------------------------------------------------------------------------
+
+// 切替先時間足に対して「適用すべきテンプレート id」を解決する。
+//   templateId === null は「適用しない」（＝現行挙動を維持する）。
+//   - 有効時間足集合外のキーは解決対象にしない・削除もしない（F-T6 将来足の温存）。
+//   - 参照先テンプレートが不在（dangling）なら適用せず、当該紐付けを削除する（F-T3 遅延クリーンアップ）。
+//   - 解決した id が activeTemplateId と同一なら適用しない（§5.4 発火条件 3・決定論性）。
+//   changed は bindings に変更（dangling クリーンアップ）が生じたかを示す（呼び出し側が永続化判断に使う）。
+function resolveBinding({
+  bindings = {}, templates = [], timeframe, validTimeframes = null, activeTemplateId = null,
+} = {}) {
+  const next = { ...(bindings ?? {}) };
+  const valid = Array.isArray(validTimeframes) ? new Set(validTimeframes) : null;
+  if (valid && !valid.has(timeframe)) {
+    return { templateId: null, bindings: next, changed: false };
+  }
+  const boundId = next[timeframe];
+  if (boundId === undefined || boundId === null) {
+    return { templateId: null, bindings: next, changed: false };
+  }
+  const exists = (templates ?? []).some((t) => t && t.templateId === boundId);
+  if (!exists) {
+    delete next[timeframe];
+    return { templateId: null, bindings: next, changed: true };
+  }
+  if (boundId === activeTemplateId) {
+    return { templateId: null, bindings: next, changed: false };
+  }
+  return { templateId: boundId, bindings: next, changed: false };
 }
 
 
@@ -3237,6 +3806,19 @@ class SeriesDrawer {
     return slot;
   }
 
+  // level_dash（同値 4 値の Candlestick）の色オプション写像。CandlestickSeries は `color` を
+  //   持たず up/down/border/wick の 6 経路で着色するため、単色をすべてへ複製する。
+  //   open==close の同事は上下判定が処理系依存なので、どちらに転んでも同色になるようにする。
+  //   **生成時（_renderSeries）と変更時（applySeriesStyle）の唯一の写像点**（乖離すると
+  //   「スタイルで色を変えても反映されない」不具合になる・ISSUE-226）。
+  _levelDashColors(color) {
+    return {
+      upColor: color, downColor: color,
+      borderUpColor: color, borderDownColor: color,
+      wickUpColor: color, wickDownColor: color,
+    };
+  }
+
   // pane 指標なら専用 pane を生成し指標名ウォーターマーク（機能①②）を立てる。overlay は null（pane 0）。
   _ensurePane(slot, opts) {
     if (!opts.pane) {
@@ -3280,9 +3862,13 @@ class SeriesDrawer {
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     const slot = this._slot(instanceId);
     const pane = this._ensurePane(slot, opts);
-    const definition = seriesKind(kind).seriesType === 'histogram'
+    // seriesType → lightweight-charts の系列定義。台帳（series_kind）の宣言のみで決まる。
+    const seriesType = seriesKind(kind).seriesType;
+    const definition = seriesType === 'histogram'
       ? this._h._lwc.HistogramSeries
-      : this._h._lwc.LineSeries;
+      : seriesType === 'level_dash'
+        ? this._h._lwc.CandlestickSeries
+        : this._h._lwc.LineSeries;
     for (const p of payloads ?? []) {
       // 価格軸（画面右端）のラベルは系列名ではなく現在値（数値・系列色チップ）を表示する
       //   （ユーザー指示 2026-07-23。旧: title=系列名＋lastValueVisible=false＝名前チップ）。
@@ -3324,10 +3910,22 @@ class SeriesDrawer {
         options.crosshairMarkerVisible = false;
       }
       // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
+      // level_dash: 同値 4 値の同事（doji）＝実体が潰れて水平線 1 本になり、幅は
+      //   ローソク足と一致する。ヒゲは消す。色は 4 経路すべてへ同じ値を入れる
+      //   （open==close は上下判定が処理系依存のため、どちらに転んでも同色にする）。
+      if (seriesType === 'level_dash') {
+        options.wickVisible = false;
+        Object.assign(options, this._levelDashColors(p.color));
+      }
       const series = pane
         ? pane.addSeries(definition, options)
         : this._h._chart.addSeries(definition, options);
-      series.setData(p.data ?? []);
+      // payload 契約は line と同一（{time, value}）。level_dash のみ表示層で 4 値へ展開する
+      //   （back の payload 形状を増やさないための写像点＝ここが唯一）。
+      const data = p.data ?? [];
+      series.setData(seriesType === 'level_dash'
+        ? data.map((d) => ({ time: d.time, open: d.value, high: d.value, low: d.value, close: d.value }))
+        : data);
       const key = `${instanceId}::${p.name}`;
       slot.lines.set(key, series);
       const metaEntry = {
@@ -3476,6 +4074,11 @@ class SeriesDrawer {
       }
     }
     const options = { color: meta.color, visible: slot.visible && meta.visible };
+    // level_dash は CandlestickSeries であり `color` オプションを持たない。生成時と同じ
+    //   写像を通さないと色変更が黙って無視される（ISSUE-226）。
+    if (seriesKind(meta.kind).seriesType === 'level_dash' && meta.color != null) {
+      Object.assign(options, this._levelDashColors(meta.color));
+    }
     if (seriesKind(meta.kind).appliesLineStyle) {
       if (meta.width != null) {
         options.lineWidth = meta.width;
@@ -4023,7 +4626,12 @@ class ChartRenderer {
     this._renderSeries(instanceId, payloads, 'histogram', opts);
   }
 
-  // line / histogram を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
+  // level_dash 系列群を生成（ローソク足幅の水平ダッシュ・同値 4 値の Candlestick）。
+  renderLevelDash(instanceId, payloads, opts = {}) {
+    this._renderSeries(instanceId, payloads, 'level_dash', opts);
+  }
+
+  // line / histogram / level_dash を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     this._drawer._renderSeries(instanceId, payloads, kind, opts);
   }
@@ -4160,14 +4768,59 @@ class ChartRenderer {
   //   stale 点は 1 点単位で黙って捨て、バッチは最後まで適用する（正しい最新値は次の応答で届く）。
   updateSeriesTail(seriesKey, points) {
     this._withSeries(seriesKey, points, (series) => {
+      // ISSUE-196（不変条件の構造的保証）: 時間足切替で空にした系列（clearInstanceData 済み）へ
+      //   遅延到着した末尾差分を書き込むと、旧時間足の time を 1 点だけ持つ系列が生まれ、
+      //   時間軸に「ローソクに存在しない time」が復活する（= `Value is null` の発生条件）。
+      //   空系列への末尾差分は捨てる（正しい全点は直後の full 再計算が setData で描く）。
+      if (typeof series.data === 'function' && series.data().length === 0) {
+        return;
+      }
+      // ISSUE-197（例外駆動の制御フローを撤去・2026-07-30 実UI実測）: latest 応答は末尾 K 点を返すため、
+      //   系列末尾が既に最新バーへ進んでいる定常状態では **毎回 K-1 点が「末尾より古い」** として届く。
+      //   lightweight-charts の update は last より古い time を throw で拒否するので、これを try/catch
+      //   任せにすると正常動作のさなかに例外が出続ける（実測: 1分足ライブで単一パターン
+      //   `n=2 ok=1 ng=1 times=T-60,T before=T after=T` が 45 秒 798 回＝約 18 回/秒。ISSUE-197 が
+      //   「日→1分 切替後 45 秒で 203 件」と記録したものは切替固有ではなく定常発生だった）。
+      //   捨てる点は **比較で判定して update を呼ばない**。捨てる点の集合も更新後の末尾も従来と同一
+      //   （実測: after == before ＝最新値は欠落していない＝実害は無く、コストとログ汚染だけがあった）。
+      const lastPoint = typeof series.data === 'function' ? series.data().slice(-1)[0] : undefined;
+      const lastTime = lastPoint ? lastPoint.time : undefined;
       for (const p of points ?? []) {
+        // 事前判定は time が数値（UTCTimestamp）同士のときだけ行う。business day 形式など
+        //   大小比較の意味が自明でない時刻表現は従来どおり update へ渡し、下の catch で無害化する。
+        if (typeof lastTime === 'number' && typeof p?.time === 'number' && p.time < lastTime) {
+          continue;
+        }
         try {
           series.update(p);
         } catch (_e) {
-          // stale（系列末尾より古い time）は捨てる。他の例外もバッチ継続を優先（点単位で無害化）。
+          // 事前判定で拾えない stale（非数値 time）や想定外の例外もバッチ継続を優先し、
+          //   点単位で無害化する（残り系列の末尾更新まで失わせない）。
         }
       }
     });
+  }
+
+  // ISSUE-196（不変条件の構造的保証）: 当該 instance の全系列データを空にする（系列・pane・
+  //   スタイル・水準線は温存＝再生成なしで data のみ空）。
+  //   lightweight-charts は「時間軸に載る time は当該系列にも存在する」ことを要求し、満たさないと
+  //   colorer が ensureNotNull で `Value is null` を throw する（実測: 旧時間足の指標系列が残った
+  //   まま新時間足のローソクを setData した瞬間に throw・その例外が再計算バッチを中断させ、
+  //   指標が旧足のまま固着して以後の再計算も同じ throw で失敗し続ける）。
+  //   時間足切替のように「ローソクの time 集合が入れ替わる」局面では、旧足の指標データを
+  //   同一同期ブロック内で空にすることで違反状態を発生させない（描画は後続の再計算が行う）。
+  clearInstanceData(instanceId) {
+    const slot = this._instances.get(instanceId);
+    if (!slot) {
+      return;
+    }
+    for (const [key, series] of slot.lines.entries()) {
+      series.setData([]);
+      const meta = this._overlayReadouts.get(key);
+      if (meta) {
+        meta.lastValue = null;
+      }
+    }
   }
 
   // UC-04 表示/非表示（実体は SeriesDrawer.setVisible・SOLID 是正 🔴-2）。
@@ -4705,10 +5358,15 @@ const CONTROL_BY_TYPE = Object.freeze({
   [ParamType.ENUM_LIST]: 'multiselect',
 });
 
-// ParamDef からコントロール種別を一意に決定（明示 controlType 優先→ParamType 写像）。
+// ParamDef からコントロール種別を一意に決定（明示 controlType 優先→期間フラグ→ParamType 写像）。
+//   isPeriod（基本設計_期間プリセット.md §5.1）が真なら 'period'（期間入力＋プリセット）を既定とする。
+//   明示 controlType は従来どおり最優先（期間パラメータでも個別に別コントロールへ倒せる）。
 function resolveControlType(pdef) {
   if (pdef.controlType !== null && pdef.controlType !== undefined) {
     return pdef.controlType;
+  }
+  if (pdef.isPeriod === true) {
+    return 'period';
   }
   return CONTROL_BY_TYPE[pdef.type] ?? 'text';
 }
@@ -4732,6 +5390,9 @@ const FIELD_META_DEFAULTS = Object.freeze({
   // optionEnable: ENUM の option 単位の有効述語 (value, values, ctx)->bool（ISSUE-080）。
   //   偽の option は select 上で disabled（灰色・選択不可）。行全体の conditionalEnable と直交。
   optionEnable: null,
+  // isPeriod: 期間フラグ（基本設計_期間プリセット.md §5.1）。FieldDesc へ透過し、
+  //   adapter（buildPeriod）が min/max とともにプリセット提示の判定に使う。
+  isPeriod: false,
 });
 
 // pdef の任意メタデータを FIELD_META_DEFAULTS のキーで既定フォールバック付きに解決する。
@@ -5040,6 +5701,544 @@ function buildSeriesStyleRows(def, seriesStyles) {
 }
 
 
+// ===== js/usecase/period_presets.js =====
+// 期間プリセット（usecase/period_presets.js）。
+//
+// 設計入力: `.doc/indicator-management-ui/基本設計_期間プリセット.md` v0.1.0
+//   §4 換算モデル / §5 対象パラメータ / §6.1 提示 / §6.3 期間表記入力 / §6.5 実効計算時間足。
+//
+// 責務: 「暦期間 ⇄ バー本数」の換算に関する純ロジックのみ。DOM・fetch・localStorage 非依存
+//   （母体「純ロジック分離」方針・基本設計書 §10.4）。DOM 生成は adapter
+//   （property_control_builders.js の buildPeriod）が担う。
+//
+// 換算プリミティブ（設計 §4.1・唯一の定義）:
+//   bars(tf, P) = 半開ローリング窓 [t - P, t) に含まれる実バー本数の中央値
+//   （右端 t は実バー時刻のみを走査。窓の左端が実測期間の外に出る t は除外）
+// プリセット値（§6.1）と期間表記入力の換算値（§6.3）は、いずれもこの 1 つの表から導く。
+
+// ---------------------------------------------------------------------------
+// 換算表 v1（設計 §4.3・実測値）
+// ---------------------------------------------------------------------------
+// 版         : v1
+// 計測日     : 2026-07-28
+// データ     : data/marketdata/rollups/jp225_tick/jp225_tick_{tf}.csv
+//              （1m のみ data/marketdata/jp225_tick_m1.csv）
+// 実測期間   : 日中足（1m〜4h）= 2021-01-01 以降（セッション構造が現行値で定常な区間・設計 §4.5 検証 1）
+//              1D/1W/1M     = 全期間（2012 年〜。日足以上の本数は取引日カレンダーのみに依存する）
+// 日切り規約 : marketdata.session_day（ブローカー時間＝NY +7h・境界は NY 前日 17:00）
+// 再現手順   : 設計書 §11
+//
+// ★ 表は静的定数として凍結する（設計 §4.4）。実行時の再計測・サーバ問い合わせは行わない。
+//   更新は明示的な版上げ（v2 の追加）でのみ行い、v1 は削除しない。保存済みパラメータは
+//   本数として保存されているため、版上げによって遡って変化しない。
+const TABLE_V1 = Object.freeze({
+  jp225_tick: Object.freeze({
+    '1m': Object.freeze({ '1h': 60, '4h': 237, '1d': 1281, '1w': 6425, '1mo': 27505, '3mo': 82560, '6mo': 164788, '1y': 328956, '2y': 645585, '3y': 976826, '5y': 1634898 }),
+    '5m': Object.freeze({ '1h': 12, '4h': 48, '1d': 266, '1w': 1329, '1mo': 5731, '3mo': 17099, '6mo': 34011, '1y': 68151, '2y': 136153, '3y': 204185, '5y': 340504 }),
+    '15m': Object.freeze({ '1h': 4, '4h': 16, '1d': 89, '1w': 445, '1mo': 1921, '3mo': 5730, '6mo': 11400, '1y': 22814, '2y': 45585, '3y': 68373, '5y': 113987 }),
+    '30m': Object.freeze({ '1h': 2, '4h': 8, '1d': 45, '1w': 225, '1mo': 971, '3mo': 2897, '6mo': 5765, '1y': 11538, '2y': 23052, '3y': 34578, '5y': 57646 }),
+    '1h': Object.freeze({ '1h': 1, '4h': 4, '1d': 23, '1w': 115, '1mo': 496, '3mo': 1480, '6mo': 2946, '1y': 5895, '2y': 11781, '3y': 17670, '5y': 29456 }),
+    '4h': Object.freeze({ '4h': 1, '1d': 6, '1w': 31, '1mo': 134, '3mo': 401, '6mo': 798, '1y': 1597, '2y': 3195, '3y': 4789, '5y': 7985 }),
+    '1D': Object.freeze({ '1d': 1, '1w': 5, '1mo': 21, '3mo': 65, '6mo': 129, '1y': 258, '2y': 516, '3y': 774, '5y': 1291 }),
+    '1W': Object.freeze({ '1w': 1, '1mo': 4, '3mo': 13, '6mo': 26, '1y': 52, '2y': 104, '3y': 156, '5y': 260 }),
+    '1M': Object.freeze({ '1mo': 1, '3mo': 3, '6mo': 6, '1y': 12, '2y': 24, '3y': 36, '5y': 60 }),
+  }),
+});
+
+// ---------------------------------------------------------------------------
+// 換算表 v2（設計 §4.3 v2・実測値・2026-07-29 計測）
+// ---------------------------------------------------------------------------
+// 目的     : 提示できる期間の刻みが粗く選択肢が少ないというユーザー要求（2026-07-29）への対応。
+//            v1 の 11 単位に中間刻み 9 単位（2h/6h/12h/2d/3d/2w/3w/2mo/9mo）を**加法**した 20 単位。
+// 計測     : v1 と同一手順・同一定義（§4.1／§11・tools/period_presets_measure.py）で全単位を再計測。
+// 実測期間 : 日中足（1m〜4h）= 2021-01-01 以降 ／ 1D/1W/1M = 2015-01-01 以降
+// 版管理   : v1 は削除しない（§4.4-3）。保存済みパラメータは本数で保存されているため版上げで
+//            遡って変化しない。v1 との差は右端サンプル格子の移動による ±（大きな本数のセルほど
+//            絶対差が出る。例 1m の '1mo' 27505→27515）で、提示対象（≤1500 本）のセルは
+//            1D '1w'=5・1h '1w'=115 等いずれも v1 と一致するか ±1 以内。
+const TABLE_V2 = Object.freeze({
+  jp225_tick: Object.freeze({
+    '1m': Object.freeze({ '1h': 60, '2h': 120, '4h': 237, '6h': 352, '12h': 615, '1d': 1281, '2d': 2455, '3d': 3107, '1w': 6424, '2w': 12788, '3w': 19118, '1mo': 27515, '2mo': 54692, '3mo': 82563, '6mo': 164817, '9mo': 246610, '1y': 328975, '2y': 645583, '3y': 976817, '5y': 1634919 }),
+    '5m': Object.freeze({ '1h': 12, '2h': 24, '4h': 48, '6h': 72, '12h': 131, '1d': 266, '2d': 528, '3d': 646, '1w': 1329, '2w': 2649, '3w': 3961, '1mo': 5730, '2mo': 11338, '3mo': 17098, '6mo': 34009, '9mo': 51081, '1y': 68151, '2y': 136155, '3y': 204186, '5y': 340504 }),
+    '15m': Object.freeze({ '1h': 4, '2h': 8, '4h': 16, '6h': 24, '12h': 44, '1d': 89, '2d': 178, '3d': 216, '1w': 445, '2w': 889, '3w': 1322, '1mo': 1919, '2mo': 3798, '3mo': 5729, '6mo': 11400, '9mo': 17096, '1y': 22814, '2y': 45584, '3y': 68369, '5y': 113985 }),
+    '30m': Object.freeze({ '1h': 2, '2h': 4, '4h': 8, '6h': 12, '12h': 22, '1d': 45, '2d': 90, '3d': 108, '1w': 225, '2w': 450, '3w': 668, '1mo': 969, '2mo': 1921, '3mo': 2897, '6mo': 5765, '9mo': 8646, '1y': 11538, '2y': 23052, '3y': 34576, '5y': 57645 }),
+    '1h': Object.freeze({ '1h': 1, '2h': 2, '4h': 4, '6h': 6, '12h': 11, '1d': 23, '2d': 46, '3d': 56, '1w': 115, '2w': 230, '3w': 341, '1mo': 495, '2mo': 981, '3mo': 1481, '6mo': 2947, '9mo': 4419, '1y': 5895, '2y': 11781, '3y': 17669, '5y': 29456 }),
+    '4h': Object.freeze({ '4h': 1, '6h': 1, '12h': 3, '1d': 6, '2d': 12, '3d': 15, '1w': 31, '2w': 62, '3w': 93, '1mo': 134, '2mo': 266, '3mo': 401, '6mo': 798, '9mo': 1197, '1y': 1597, '2y': 3195, '3y': 4789, '5y': 7985 }),
+    '1D': Object.freeze({ '1d': 1, '2d': 2, '3d': 2, '1w': 5, '2w': 10, '3w': 15, '1mo': 21, '2mo': 43, '3mo': 65, '6mo': 129, '9mo': 193, '1y': 258, '2y': 516, '3y': 774, '5y': 1291 }),
+    '1W': Object.freeze({ '1w': 1, '2w': 2, '3w': 3, '1mo': 4, '2mo': 8, '3mo': 13, '6mo': 26, '9mo': 39, '1y': 52, '2y': 104, '3y': 156, '5y': 260 }),
+    '1M': Object.freeze({ '1mo': 1, '2mo': 2, '3mo': 3, '6mo': 6, '9mo': 9, '1y': 12, '2y': 24, '3y': 36, '5y': 60 }),
+  }),
+});
+
+// 現行版（引き当てに使う表）。版上げ時はここを差し替え、旧版の定数は残す（§4.4-3）。
+const PRESET_TABLE_VERSION = 'v2';
+const ACTIVE_TABLE = TABLE_V2;
+
+// 単位の並び（短い順・§6.1-4 の「期間の短い順」の唯一源）。
+const UNIT_ORDER = Object.freeze([
+  '1h', '2h', '4h', '6h', '12h',
+  '1d', '2d', '3d',
+  '1w', '2w', '3w',
+  '1mo', '2mo', '3mo', '6mo', '9mo',
+  '1y', '2y', '3y', '5y',
+]);
+
+// 単位 → 表示名（設計 §4.3 の表見出しと一致させる）。
+const UNIT_LABELS = Object.freeze({
+  '1h': '1時間', '2h': '2時間', '4h': '4時間', '6h': '6時間', '12h': '12時間',
+  '1d': '1日', '2d': '2日', '3d': '3日',
+  '1w': '1週間', '2w': '2週間', '3w': '3週間',
+  '1mo': '1ヶ月', '2mo': '2ヶ月', '3mo': '3ヶ月', '6mo': '6ヶ月', '9mo': '9ヶ月',
+  '1y': '1年', '2y': '2年', '3y': '3年', '5y': '5年',
+});
+
+// 時間足 → バー秒長（名目）。分単位の換算（§6.3-3）にのみ使う。周期集合は
+//   marketdata.resample.TIMEFRAME_RULES と一致させる（front 側の名目値）。
+const TF_SEC = Object.freeze({
+  '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
+  '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000,
+});
+
+// 提示の下限（§6.1-2）。本数 1 は「期間の指定」として意味を持たない。
+const MIN_PRESET_BARS = 2;
+
+// 提示の上限（§6.1-2・承認事項 A-6）。チャートが保持するバーの上限であり、
+//   adapter/front/composition_root_front.js の RECENT_BARS と一致していなければならない。
+//   一致は tests/period_presets.test.js が固定する（usecase → adapter の依存を作らないため、
+//   ここは定数で持ち、テストで突き合わせる）。
+const MAX_PRESET_BARS = 1500;
+
+// 提示件数の上限（§6.1-4）。
+//   v1 は 5 件だったが「選択肢が少ない」というユーザー要求（2026-07-29）により、表 v2 の
+//   全候補を出せる値へ引き上げる（実測: 候補数の最大は 1h 足・1D 足の 13 件）。上限は
+//   暴走防止の安全弁として残す。ポップは max-height 60vh / overflow-y:auto のため行数が
+//   増えてもレイアウトは崩れない（CSS 変更不要）。
+const MAX_PRESETS = 14;
+
+// ---------------------------------------------------------------------------
+// 実効計算時間足（§6.5）
+// ---------------------------------------------------------------------------
+
+// 指標ごとの計算時間足 override（params.timeframe）を解決する。
+//   'chart'／未指定はチャートの現在足に追従し、特定足（1h 等）はその足で計算する（MTF）。
+//   規則は adapter/front/timeframe_controller.js の effectiveTimeframe と同一（二重定義しない
+//   ため同値の純関数として置き、adapter 側は既存メソッドを保持する）。
+function effectiveTimeframe(values, chartTimeframe) {
+  const tfParam = values && values.timeframe;
+  return tfParam && tfParam !== 'chart' ? tfParam : chartTimeframe;
+}
+
+// ---------------------------------------------------------------------------
+// 表の引き当て
+// ---------------------------------------------------------------------------
+
+// datasetRef × timeframe の行を返す（未登録は null＝F-P2/F-P3）。
+function tableRow(datasetRef, timeframe) {
+  const byRef = ACTIVE_TABLE[datasetRef];
+  if (!byRef) {
+    return null;
+  }
+  return byRef[timeframe] ?? null;
+}
+
+// 単位の表示名（未知は単位キーをそのまま返す）。
+function unitLabel(unit) {
+  return UNIT_LABELS[unit] ?? String(unit);
+}
+
+// ---------------------------------------------------------------------------
+// UC-P01 プリセットの提示（§6.1）
+// ---------------------------------------------------------------------------
+
+// 提示するプリセットを決定する。戻り値: [{ unit, label, bars }]（期間の短い順・最大 limit 件）。
+//   min/max は当該パラメータの制約（ParamDef.min / ParamDef.max）。null は制約なし。
+//   候補 0 件（未登録 datasetRef/tf・制約が厳しい）は空配列を返す＝呼び出し側は UI を出さない。
+function presetsFor({
+  datasetRef, timeframe, min = null, max = null,
+  maxBars = MAX_PRESET_BARS, limit = MAX_PRESETS,
+} = {}) {
+  const row = tableRow(datasetRef, timeframe);
+  if (!row) {
+    return [];
+  }
+  const out = [];
+  const seenBars = new Set();
+  for (const unit of UNIT_ORDER) {
+    const bars = row[unit];
+    if (bars === undefined) {
+      continue; // 当該時間足で 1 本未満になる組み合わせ（表に無い）。
+    }
+    if (bars < MIN_PRESET_BARS || bars > maxBars) {
+      continue;
+    }
+    if (min !== null && min !== undefined && bars < min) {
+      continue;
+    }
+    if (max !== null && max !== undefined && bars > max) {
+      continue;
+    }
+    // 表 v2 の細かい刻みでは、時間足によって異なる期間が同じ本数へ落ちる
+    //   （例: 1D 足の「2日」も「3日」も 2 本）。同一本数の候補は**期間の短い方だけ**を
+    //   提示する（UNIT_ORDER は短い順＝先に来た方を採る＝決定論的）。同じ値を選ぶだけの
+    //   行が並ぶのを避ける。
+    if (seenBars.has(bars)) {
+      continue;
+    }
+    seenBars.add(bars);
+    out.push({ unit, label: unitLabel(unit), bars });
+    if (out.length >= limit) {
+      break;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// UC-P03 期間表記の直接入力（§6.3）
+// ---------------------------------------------------------------------------
+
+// 入力文字列を正規化する（全角→半角・前後空白除去・内部空白除去）。
+//   NFKC は 'Ｍ'→'M' / 'ｍ'→'m' のように**大文字小文字を保存**するため、
+//   M（月）と m（分）の区別は正規化後も失われない。
+function normalizeInput(text) {
+  const s = String(text ?? '');
+  const nfkc = typeof s.normalize === 'function' ? s.normalize('NFKC') : s;
+  return nfkc.replace(/\s+/g, '');
+}
+
+// 単位トークン → 種別。'M'（月）と 'm'（分）の衝突を避けるため、
+//   分は 'min'、月は 'M'／'mo' のみを受理する（裸の 'm' は曖昧として拒否・§6.3 文法）。
+const UNIT_PATTERNS = [
+  { kind: 'min', re: /^(min|分)$/i },
+  { kind: 'h', re: /^(h|時間)$/i },
+  { kind: 'd', re: /^(d|日|営業日)$/i },
+  { kind: 'w', re: /^(w|週間|週)$/i },
+  // 月: 'M'（大文字のみ）・'mo'（大小問わず）・日本語各表記。
+  { kind: 'mo', re: /^(M|mo|MO|Mo|ヶ月|ケ月|ヵ月|カ月|か月|month|months)$/ },
+  { kind: 'y', re: /^(y|年)$/i },
+];
+
+// 種別 → 表の基本単位キー（§6.3-2 の「基本単位の N 倍」の基準）。
+const BASE_UNIT_BY_KIND = Object.freeze({ h: '1h', d: '1d', w: '1w', mo: '1mo', y: '1y' });
+
+// 種別 × 係数 → 表の直接エントリ（§6.3-1 の「直接エントリがあればその実測値」）。
+function directUnitKey(kind, n) {
+  if (!Number.isInteger(n)) {
+    return null;
+  }
+  const key = kind === 'mo' ? `${n}mo` : kind === 'y' ? `${n}y` : `${n}${kind}`;
+  return UNIT_ORDER.includes(key) ? key : null;
+}
+
+// 期間表記／本数を解釈して本数へ換算する。
+//
+// 戻り値（成功）: { ok: true, bars, label }（label は入力の期間表記。単位なし入力は null）
+// 戻り値（失敗）: { ok: false, code, message }
+//   code: 'empty' | 'syntax' | 'ambiguous_unit' | 'no_table' | 'too_small'
+//         | 'below_min' | 'above_max' | 'exceeds_capacity'
+function parsePeriodInput(text, {
+  datasetRef, timeframe, min = null, max = null, maxBars = MAX_PRESET_BARS,
+} = {}) {
+  const s = normalizeInput(text);
+  if (s === '') {
+    return { ok: false, code: 'empty', message: '値を入力してください。' };
+  }
+
+  // 単位なし＝本数そのもの（従来どおり）。
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    return finalize(Math.round(Number(s)), null, { min, max, maxBars });
+  }
+
+  const m = s.match(/^(\d+(?:\.\d+)?)(.+)$/);
+  if (!m) {
+    return { ok: false, code: 'syntax', message: '「50」「5d」「3M」のように入力してください。' };
+  }
+  const n = Number(m[1]);
+  const token = m[2];
+
+  if (token === 'm') {
+    return {
+      ok: false,
+      code: 'ambiguous_unit',
+      message: '「m」は分と月のどちらか判別できません。分は「min」、月は「M」を使ってください。',
+    };
+  }
+  const hit = UNIT_PATTERNS.find((p) => p.re.test(token));
+  if (!hit) {
+    return { ok: false, code: 'syntax', message: `単位「${token}」は使えません（min / h / d / w / M / y）。` };
+  }
+  if (!(n > 0)) {
+    return { ok: false, code: 'too_small', message: '期間は 0 より大きい値で指定してください。' };
+  }
+
+  const label = `${m[1]}${normalizeUnitLabel(hit.kind)}`;
+
+  // 分単位は名目換算（§6.3-3。セッション内で分足・時間足に欠落がないことを実測で確認済み）。
+  if (hit.kind === 'min') {
+    const sec = TF_SEC[timeframe];
+    if (!sec) {
+      return { ok: false, code: 'no_table', message: 'この時間足では期間表記を使えません。' };
+    }
+    return finalize(Math.round((n * 60) / sec), label, { min, max, maxBars });
+  }
+
+  const row = tableRow(datasetRef, timeframe);
+  if (!row) {
+    return { ok: false, code: 'no_table', message: 'この時間足では期間表記を使えません。' };
+  }
+
+  // 1) 表に直接エントリがあればその実測値を用いる。
+  const direct = directUnitKey(hit.kind, n);
+  if (direct && row[direct] !== undefined) {
+    return finalize(row[direct], label, { min, max, maxBars });
+  }
+  // 2) 無ければ基本単位の N 倍。
+  const base = row[BASE_UNIT_BY_KIND[hit.kind]];
+  if (base === undefined) {
+    return { ok: false, code: 'too_small', message: `${timeframe} では「${label}」は 1 本未満になります。` };
+  }
+  return finalize(Math.round(n * base), label, { min, max, maxBars });
+}
+
+// 種別 → 表示用単位（label 組み立て用）。
+function normalizeUnitLabel(kind) {
+  return { min: '分', h: '時間', d: '日', w: '週間', mo: 'ヶ月', y: '年' }[kind] ?? '';
+}
+
+// 換算結果を制約と突き合わせて確定する（§6.3-4/5・F-P1・F-P4）。
+function finalize(bars, label, { min, max, maxBars }) {
+  if (!Number.isFinite(bars) || bars < 1) {
+    return { ok: false, code: 'too_small', message: 'この時間足では 1 本未満になります。' };
+  }
+  if (min !== null && min !== undefined && bars < min) {
+    return { ok: false, code: 'below_min', message: `${bars} 本は下限 ${min} 本を下回ります。` };
+  }
+  if (max !== null && max !== undefined && bars > max) {
+    return { ok: false, code: 'above_max', message: `${bars} 本は上限 ${max} 本を超えます。` };
+  }
+  if (bars > maxBars) {
+    return {
+      ok: false,
+      code: 'exceeds_capacity',
+      message: `${bars} 本はチャートが保持する ${maxBars} 本を超えます。`,
+    };
+  }
+  return { ok: true, bars, label };
+}
+
+
+// ===== js/adapter/front/menu_document_close.js =====
+// menu_document_close.js — ドロップダウンの「外側クリックで閉じる」を document へ張る共有ヘルパ。
+//
+// ISSUE-169: document スコープのリスナが mount 毎に線形蓄積するのを止める。
+//
+// 統合 UI（`unified_ui/`）のモードトグルは `#mode-ui` サブツリーを pristine innerHTML へ復元する。
+// **要素スコープ**のリスナは新ノード置換で根絶されるが、**document スコープ**のリスナは残る。
+// 各メニューは mount 毎に `install()` されるため、トグルのたびに document の click リスナが
+// +1 蓄積していた（各リスナは「閉じる」の冪等操作なので実害は軽微だが、蓄積は無限に続く）。
+//
+// 対策は 2 段構え:
+//   1. **自己修復**: install 時に、同一 document へ同一キーで張った前回のリスナを自分で外す。
+//      呼び出し側（統合 UI の teardown）が本モジュールを知らなくても効き、蓄積を
+//      「document × キーあたり 1 個」に有界化する。
+//   2. **明示 teardown**: `removeDocumentCloseHandler` を提供し、dispose を書ける呼び出し側は
+//      そちらで確実に外す。
+//
+// 単一モジュールに置くのは A方式バンドル（全モジュールをトップレベルで連結する配信形態）で
+// **同名 const の二重宣言＝SyntaxError** になるため。各メニューへコピーすると
+// `pair_dim_alpha_single_source.test.js` の二重宣言ガードが落ちる（実際に検出された）。
+
+//: document ごと・キーごとに、現在張っている click ハンドラを保持する。
+//  キーを持つのは、複数のメニュー（時間足／チャートテンプレート）が同じ document に
+//  それぞれ 1 個ずつリスナを持てるようにするため（互いを外し合わない）。
+const _HANDLERS = new WeakMap();
+
+/**
+ * 外側クリッククローズのハンドラを document へ張る（同一キーの前回ぶんは外す）。
+ *
+ * @param {Document} doc 対象 document（`addEventListener` を持たなければ no-op）。
+ * @param {string} key メニュー種別の識別子（例 'timeframe'）。
+ * @param {Function} handler 張るハンドラ。
+ */
+function installDocumentCloseHandler(doc, key, handler) {
+  if (!doc || typeof doc.addEventListener !== 'function' || typeof handler !== 'function') {
+    return;
+  }
+  let byKey = _HANDLERS.get(doc);
+  if (!byKey) {
+    byKey = new Map();
+    _HANDLERS.set(doc, byKey);
+  }
+  const previous = byKey.get(key);
+  if (previous && typeof doc.removeEventListener === 'function') {
+    doc.removeEventListener('click', previous);   // 前 mount ぶんを外す（蓄積の停止）。
+  }
+  doc.addEventListener('click', handler);
+  byKey.set(key, handler);
+}
+
+/**
+ * 張ったハンドラを外す（明示 teardown 経路）。二重呼び出しは no-op。
+ *
+ * @param {Document} doc 対象 document。
+ * @param {string} key メニュー種別の識別子。
+ * @param {Function} handler 外すハンドラ。
+ */
+function removeDocumentCloseHandler(doc, key, handler) {
+  if (!doc || typeof doc.removeEventListener !== 'function' || !handler) {
+    return;
+  }
+  doc.removeEventListener('click', handler);
+  const byKey = _HANDLERS.get(doc);
+  if (byKey && byKey.get(key) === handler) {
+    byKey.delete(key);
+  }
+}
+
+
+// ===== js/adapter/front/timeframe_menu.js =====
+// timeframe_menu.js — 時間足ドロップダウン（ISSUE-117/122/123・DOM アダプター・両アプリ共有）。
+//
+// 設計入力: ユーザー指示（2026-07-18）「時間足を選択できる UI を追加」＝ TradingView の
+//   時間足カテゴリメニュー相当（ss2026071894749.jpg）。
+//
+// ISSUE-123（値渡し是正）: メニュー DOM（トリガー＋カテゴリ＋項目）は本コンポーネントが生成する。
+//   旧実装は index.html 側に項目 DOM を直書きしており、present/replay の 2 つの index.html へ
+//   複製（値渡し）されて時間足集合の二重管理が生じていた。現方式は index.html に空マウント
+//   `<div class="tf-menu" id="tf-menu"></div>` のみを置き、項目集合は groups 注入（既定＝present の
+//   9 足）で単一ソース化する。replay は対応 8 足（30m なし）を composition root から注入する。
+//
+// 責務（SRP）: メニュー DOM 生成と開閉（トリガークリック・項目選択後クローズ・外側クリッククローズ）。
+//   時間足の選択実行・active/トリガーラベル同期は既存機構に委譲する＝項目は data-timeframe を持ち、
+//   IndicatorController.bind() の一括配線と TimeframeController.syncButtons() に乗る
+//   （本コンポーネントは controller を知らない・DIP）。install は controller.bind() より前
+//   （bootstrap 内）に呼ばれる前提（bind が [data-timeframe] を収集するため）。
+//   DOM 不在（SSR/テスト）は no-op。
+
+
+// 既定の時間足メニュー（present＝バックエンド対応 9 足）。サーバ TIMEFRAME_RULES と一致させる。
+const DEFAULT_GROUPS = [
+  { cat: '分', items: [['1m', '1分'], ['5m', '5分'], ['15m', '15分'], ['30m', '30分']] },
+  { cat: '時間', items: [['1h', '1時間'], ['4h', '4時間']] },
+  { cat: '日', items: [['1D', '日'], ['1W', '週'], ['1M', '月']] },
+];
+
+// 時間足キー → 表示ラベル（'1m'→'1分'・'1D'→'日'）の写像を groups から導出する。
+//   ラベルの単一情報源は本モジュールの groups 定義（既定＝present 9 足）であり、利用側は
+//   キーとラベルを二重定義しない（チャートテンプレートの保存ダイアログ文言が本写像を使う。
+//   基本設計_チャートテンプレート §6.2「この時間足（例：日）に紐付ける」）。
+//   replay の 8 足は既定 groups の部分集合（30m 非対応）でラベル語彙は同一のため既定で足りる。
+function timeframeLabels(groups = DEFAULT_GROUPS) {
+  const map = {};
+  for (const g of groups ?? []) {
+    for (const [tf, text] of g.items ?? []) {
+      map[tf] = text;
+    }
+  }
+  return map;
+}
+
+class TimeframeMenu {
+  // { document, groups }（マウントは id で解決: #tf-menu（空 div）。groups 省略＝present 既定 9 足）。
+  constructor({ document: doc, groups } = {}) {
+    this._doc = doc;
+    this._groups = Array.isArray(groups) && groups.length > 0 ? groups : DEFAULT_GROUPS;
+    this._pop = null;
+  }
+
+  install() {
+    const doc = this._doc;
+    if (!doc || typeof doc.getElementById !== 'function' || typeof doc.createElement !== 'function') {
+      return; // DOM 不在（SSR/テスト最小 fake）は no-op（防御）。
+    }
+    const mount = doc.getElementById('tf-menu');
+    if (!mount || typeof mount.appendChild !== 'function') {
+      return;
+    }
+
+    // トリガー（現在足ラベルは TimeframeController.syncButtons が #tf-menu-label へ反映）。
+    const trigger = doc.createElement('button');
+    trigger.type = 'button';
+    trigger.id = 'tf-menu-trigger';
+    trigger.className = 'tb-interval tf-menu-trigger';
+    trigger.title = '時間足を選択';
+    const label = doc.createElement('span');
+    label.id = 'tf-menu-label';
+    const caret = doc.createElement('span');
+    caret.className = 'tf-menu-caret';
+    caret.textContent = '▾';
+    trigger.append(label, caret);
+
+    // ポップ（カテゴリ見出し＋項目）。項目は data-timeframe を持ち bind()/syncButtons に乗る。
+    const pop = doc.createElement('div');
+    pop.id = 'tf-menu-pop';
+    pop.className = 'tf-menu-pop is-hidden';
+    for (const g of this._groups) {
+      const cat = doc.createElement('div');
+      cat.className = 'tf-menu-cat';
+      cat.textContent = g.cat;
+      pop.append(cat);
+      for (const [tf, text] of g.items) {
+        const item = doc.createElement('button');
+        item.type = 'button';
+        item.className = 'tf-menu-item';
+        item.dataset.timeframe = tf;
+        item.textContent = text;
+        pop.append(item);
+      }
+    }
+
+    mount.appendChild(trigger);
+    mount.appendChild(pop);
+    this._pop = pop;
+
+    trigger.addEventListener('click', (e) => {
+      if (e && typeof e.stopPropagation === 'function') {
+        e.stopPropagation(); // document の外側クリッククローズに拾わせない。
+      }
+      this._toggle();
+    });
+    // 項目クリック: 選択自体は bind() の data-timeframe 配線が行う。ここでは閉じるだけ。
+    pop.addEventListener('click', (e) => {
+      const t = e && e.target;
+      if (t && t.dataset && t.dataset.timeframe) {
+        this._setOpen(false);
+      }
+    });
+    // 外側クリックで閉じる（メニュー内クリックは pop/trigger 側で stopPropagation/処理済み）。
+    // ISSUE-169: 前 mount ぶんの document リスナを外してから張る（線形蓄積の停止）。
+    this._docCloseHandler = () => this._setOpen(false);
+    this._doc = doc;
+    installDocumentCloseHandler(doc, 'timeframe', this._docCloseHandler);
+    pop.addEventListener('pointerdown', (e) => {
+      if (e && typeof e.stopPropagation === 'function') {
+        e.stopPropagation();
+      }
+    });
+  }
+
+  // ISSUE-169: 明示的な後片付け。document スコープのリスナを外す（DOM は呼び出し側が破棄する）。
+  //   呼ばれなくても install 時の自己修復で蓄積は有界（document あたり 1 個）になる。
+  dispose() {
+    removeDocumentCloseHandler(this._doc, 'timeframe', this._docCloseHandler);
+    this._docCloseHandler = null;
+  }
+
+  _toggle() {
+    const pop = this._pop;
+    const isOpen = !!(pop.classList && pop.classList.contains && !pop.classList.contains('is-hidden'));
+    this._setOpen(!isOpen);
+  }
+
+  _setOpen(on) {
+    const pop = this._pop;
+    if (pop && pop.classList && typeof pop.classList.toggle === 'function') {
+      pop.classList.toggle('is-hidden', !on);
+    }
+  }
+}
+
+
 // ===== js/adapter/front/property_control_builders.js =====
 // property_control_builders.js — control_type → DOM コントロール生成器のテーブル（OCP・ISSUE-181）。
 //
@@ -5059,6 +6258,9 @@ function buildSeriesStyleRows(def, seriesStyles) {
 //   従来どおり最新の入れ物を参照する（挙動不変）。
 //
 // ★ upstream JS API（addLineSeries / applyOptions 等）は一切参照しない（properties_dialog.js §8.4 と同一規律）。
+
+// 期間プリセットの換算・提示は usecase の純関数が唯一の判定源（基本設計_期間プリセット.md §8.2）。
+//   本モジュールは DOM 生成とイベント配線のみを担い、換算規則・提示規則を再実装しない。
 
 // i18n 解決器を持たないプロトタイプ向けの簡易ラベル化（キー末尾を表示）。
 function humanizeKey(key) {
@@ -5355,6 +6557,222 @@ function buildWindowCompound(field, ctx) {
   return wrap;
 }
 
+// period（期間入力＋プリセット・基本設計_期間プリセット.md §6.1/§6.3/§7）。
+//
+// 数値そのもの（`50`）に加えて期間表記（`5d` / `3M` / `1年`）を受理し、暦期間 → 実バー本数の
+//   実測換算（usecase/period_presets.js）で本数へ確定する。プリセットは当該パラメータの
+//   min/max と実効計算時間足から決まる（提示規則は usecase 側の純関数が唯一の判定源）。
+//
+// 期間コンテキスト（datasetRef・実効計算時間足）はホストが `ctx.periodContext()` で供給する。
+//   未供給（旧ホスト・SSR/単体テスト）のときはプリセットを出さず、数値のみを受け付ける
+//   テキスト入力へ退化する（機能の欠落であって障害ではない・F-P2/F-P3 と同じ扱い）。
+//
+// 値の確定タイミング（§7.3）:
+//   - 入力中の文字列が純数値なら即時 setValue（従来の number コントロールと同じ即時検証を保つ）。
+//   - 期間表記は blur / Enter で確定し、入力欄の表示を換算後の本数へ置き換える。
+function buildPeriod(field, ctx) {
+  const doc = ctx.doc;
+  const wrap = doc.createElement('div');
+  wrap.className = 'prop-input prop-period';
+  wrap.dataset.propName = field.name;
+
+  const input = doc.createElement('input');
+  input.type = 'text';
+  input.className = 'prop-input prop-input-text prop-period-input';
+  input.dataset.propName = field.name;
+  input.value = field.value === null || field.value === undefined ? '' : String(field.value);
+  input.title = '本数（例 50）または期間（例 5d / 3M / 1年）を入力できます';
+  input.placeholder = '50 / 5d / 3M';
+
+  const err = doc.createElement('div');
+  err.className = 'prop-period-error';
+  err.dataset.propPeriodError = field.name;
+
+  const trigger = doc.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'prop-period-trigger';
+  trigger.title = '期間から選ぶ';
+  trigger.textContent = '⏱';
+
+  const pop = doc.createElement('div');
+  pop.className = 'prop-period-pop is-hidden';
+
+  const periodContext = () => (
+    typeof ctx.periodContext === 'function' ? (ctx.periodContext() ?? null) : null
+  );
+
+  const setError = (message) => {
+    err.textContent = message ?? '';
+    wrap.classList.toggle('has-error', !!message);
+    // 未解決の入力エラーは OK を抑止する（ホストが対応している場合のみ。非対応ホスト＝
+    //   単体テストの簡易 ctx や旧ホストでは従来どおり表示のみ）。
+    if (typeof ctx.setPendingError === 'function') {
+      ctx.setPendingError(field.name, message ?? null);
+    }
+  };
+
+  const setOpen = (on) => {
+    if (typeof pop.classList?.toggle === 'function') {
+      pop.classList.toggle('is-hidden', !on);
+    }
+  };
+
+  const isOpen = () => !!(pop.classList?.contains && !pop.classList.contains('is-hidden'));
+
+  // プリセット一覧を開くたびに組み直す（実効計算時間足は `timeframe` パラメータの変更で動く）。
+  const renderPop = () => {
+    pop.innerHTML = '';
+    const pc = periodContext();
+    const presets = pc
+      ? presetsFor({
+        datasetRef: pc.datasetRef, timeframe: pc.timeframe, min: field.min, max: field.max,
+      })
+      : [];
+    if (presets.length === 0) {
+      const empty = doc.createElement('div');
+      empty.className = 'prop-period-empty';
+      empty.textContent = 'この時間足で使えるプリセットはありません。';
+      pop.append(empty);
+      return;
+    }
+    // 見出し: 何を基準にした値かを画面上で判別可能にする（§7.2）。
+    const head = doc.createElement('div');
+    head.className = 'prop-period-head';
+    head.textContent = `${pc.timeframeLabel ?? pc.timeframe} 基準`;
+    pop.append(head);
+    for (const p of presets) {
+      const item = doc.createElement('button');
+      item.type = 'button';
+      item.className = 'prop-period-item';
+      item.dataset.periodUnit = p.unit;
+      item.dataset.periodBars = String(p.bars);
+      const name = doc.createElement('span');
+      name.className = 'prop-period-item-label';
+      name.textContent = p.label;
+      const bars = doc.createElement('span');
+      bars.className = 'prop-period-item-bars';
+      bars.textContent = String(p.bars);
+      item.append(name, bars);
+      if (Number(field.value) === p.bars) {
+        item.classList.add('is-active');
+      }
+      item.addEventListener('click', () => {
+        input.value = String(p.bars);
+        setError(null);
+        ctx.setValue(field.name, p.bars);
+        setOpen(false);
+        ctx.onChange();
+      });
+      pop.append(item);
+    }
+  };
+
+  // 入力確定（blur / Enter）。期間表記は換算し、本数表示へ置き換える。
+  const commit = () => {
+    const raw = input.value;
+    if (raw.trim() === '') {
+      setError(null);
+      ctx.setValue(field.name, null);
+      ctx.onChange();
+      return;
+    }
+    const pc = periodContext();
+    // 期間コンテキスト未供給時は数値のみ受理（プリセット非対応ホストでの退化動作）。
+    if (!pc) {
+      const n = Number(raw);
+      if (Number.isFinite(n)) {
+        setError(null);
+        ctx.setValue(field.name, n);
+      } else {
+        setError('数値を入力してください。');
+      }
+      ctx.onChange();
+      return;
+    }
+    const r = parsePeriodInput(raw, {
+      datasetRef: pc.datasetRef, timeframe: pc.timeframe, min: field.min, max: field.max,
+    });
+    if (r.ok) {
+      input.value = String(r.bars);
+      setError(null);
+      ctx.setValue(field.name, r.bars);
+      ctx.onChange();
+      return;
+    }
+    // 失敗時は代入せず直前の有効値を保持する（F-P1）。表示は入力文字列のまま残し、
+    //   ユーザーが修正できるようにする。
+    //   さらに「未解決の入力エラーがある状態で OK を押すと、旧値が黙って確定する」
+    //   （＝ユーザーには『設定しても元に戻る』と見える）事故を防ぐため、OK を抑止する
+    //   （§5 F-11 の OK 制御と同じ扱い）。エラーが解消されるまで確定できない。
+    setError(r.message);
+  };
+
+  // フォーカス時に全選択する。期間欄は「本数（例 180）」を表示しているため、選択せずに
+  //   `3h` と打つと既存値へ追記されて `1803h` になり、換算が上限超で失敗 → 代入されないまま
+  //   OK で旧値が確定する（ユーザーには『設定しても元に戻る』と見える）。入力＝置き換えを
+  //   既定にして、この事故を構造的に起こさない。
+  const selectAll = () => {
+    if (typeof input.select === 'function') {
+      input.select();
+    }
+  };
+  input.addEventListener('focus', selectAll);
+  // 実 UI 実測（2026-07-29）: focus だけでは不十分。既にフォーカスがある欄を再度クリックしても
+  //   focus は発火しないため、2 回目以降の打鍵が既存値へ追記された（`180` → `1801803h`）。
+  //   クリック時にも選択が潰れている（キャレットのみ）なら全選択し直し、「クリック→打鍵＝置き換え」
+  //   を常に成立させる。部分編集したい場合はクリック後に矢印キー／ドラッグ選択で行える。
+  input.addEventListener('click', () => {
+    if (input.selectionStart === input.selectionEnd) {
+      selectAll();
+    }
+  });
+
+  input.addEventListener('input', () => {
+    // 純数値は即時反映（従来の number コントロールと同じ即時検証を保つ）。
+    const raw = input.value.trim();
+    if (/^\d+(\.\d+)?$/.test(raw)) {
+      setError(null);
+      ctx.setValue(field.name, Number(raw));
+      ctx.onChange();
+      return;
+    }
+    // 数値以外を打ち始めた時点で直前のエラー表示は消す（確定時に再判定する）。
+    //   これが無いと、一度エラーになった欄が修正中もエラー扱いのままで OK が押せない。
+    if (err.textContent) {
+      setError(null);
+    }
+  });
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', (ev) => {
+    if (ev && ev.key === 'Enter') {
+      if (typeof ev.preventDefault === 'function') {
+        ev.preventDefault();
+      }
+      commit();
+    }
+  });
+
+  trigger.addEventListener('click', () => {
+    const next = !isOpen();
+    if (next) {
+      renderPop();
+    }
+    setOpen(next);
+  });
+
+  // 外側クリック/フォーカス移動で閉じる。document へリスナを残さない（ダイアログは都度生成・破棄
+  //   されるため、document 常駐リスナは解除漏れになる）。
+  wrap.addEventListener('focusout', (ev) => {
+    const next = ev && ev.relatedTarget;
+    if (!next || typeof wrap.contains !== 'function' || !wrap.contains(next)) {
+      setOpen(false);
+    }
+  });
+
+  wrap.append(input, trigger, pop, err);
+  return wrap;
+}
+
 // control_type → 生成器（§3.1）。form_model.js の CONTROL_BY_TYPE と同じ「凍結テーブル」形。
 //   新しい control_type はここへ 1 行足すだけで済む（PropertiesDialog は不変＝OCP）。
 const CONTROL_BUILDERS = Object.freeze({
@@ -5366,6 +6784,7 @@ const CONTROL_BUILDERS = Object.freeze({
   multiselect: buildMultiselect,
   color: buildColor,
   window_compound: buildWindowCompound,
+  period: buildPeriod,
 });
 
 // 未知の control_type の既定（従来の switch default と同一＝テキスト入力）。
@@ -5394,6 +6813,9 @@ function buildControl(field, ctx) {
 
 // control_type → コントロール生成器のテーブル（ISSUE-181・OCP）。生成手続き本体と
 //   ラベル化/色変換の純関数は adapter/front/property_control_builders.js が所有する。
+// 期間プリセット（基本設計_期間プリセット.md §6.5）: 実効計算時間足の解決は usecase の純関数へ委譲する。
+// 時間足 → 表示ラベル（'1h'→'1時間'）の単一情報源（timeframe_menu.js・ISSUE-123）。
+//   期間プリセット一覧の見出し「◯◯足 基準」に使う（ラベルを二重定義しない）。
 
 // toHex は本モジュールの公開面として維持する（既存の import 元を変えない・ISSUE-181）。
 { toHex };
@@ -5448,6 +6870,8 @@ class PropertiesDialog {
     this._activeTab = 'inputs';
     this._root = null; // ダイアログ最上位要素
     this._fieldEls = new Map(); // name -> { row, control, error, info }
+    // 値へ反映できていない入力エラー（name -> message）。在席中は OK を押せない。
+    this._pendingErrors = new Map();
     this._okBtn = null;
     this._drag = null;
     this._offset = { x: 0, y: 0 };
@@ -5460,6 +6884,24 @@ class PropertiesDialog {
       getValue: (name) => this._values[name],
       setValue: (name, value) => { this._values[name] = value; },
       onChange: () => this._onChange(),
+      // 期間プリセットの基準（基本設計_期間プリセット.md §6.5・§8.2）。
+      //   呼び出し時解決の遅延アクセサ＝ダイアログ内で `timeframe` パラメータを変えると、
+      //   次にプリセットを開いたときの提示集合が新しい実効足で引き直される。
+      //   datasetRef／timeframe のいずれかが未供給（旧ホスト・SSR/単体テスト）は null を返し、
+      //   コントロール側はプリセット非提示へ退化する（F-P2/F-P3 と同じ扱い）。
+      periodContext: () => this._periodContext(),
+      // 未解決の入力エラー（期間表記の換算失敗など・値へ反映できていない状態）を登録する。
+      //   登録されている間は OK を抑止する（§5 F-11 の OK 制御と同じ扱い）。これが無いと、
+      //   エラー表示のまま OK を押せてしまい、旧値が黙って確定して『設定しても元に戻る』
+      //   という症状になる（2026-07-29 ユーザー報告の実体）。
+      setPendingError: (name, message) => {
+        if (message) {
+          this._pendingErrors.set(name, message);
+        } else {
+          this._pendingErrors.delete(name);
+        }
+        this._revalidate();
+      },
     };
   }
 
@@ -5699,6 +7141,29 @@ class PropertiesDialog {
   // control_type 別レンダリング（§3.1）。生成器テーブルへ委譲する（switch 廃止・OCP・ISSUE-181）。
   _buildControl(field) {
     return buildControl(field, this._controlCtx);
+  }
+
+  // 期間プリセットの基準（datasetRef ＋ 実効計算時間足）を解決する。
+  //   実効足＝指標の `timeframe` パラメータ（'chart' 以外なら MTF override）→ チャートの現在足。
+  //   規則は usecase/period_presets.js の effectiveTimeframe が唯一の判定源（二重定義しない）。
+  _periodContext() {
+    const datasetRef = this._context.datasetRef;
+    const chartTf = this._context.timeframe;
+    if (!datasetRef || !chartTf) {
+      return null;
+    }
+    const timeframe = effectiveTimeframe(this._values, chartTf);
+    return {
+      datasetRef,
+      timeframe,
+      timeframeLabel: this._timeframeLabel(timeframe),
+    };
+  }
+
+  // 時間足 → 見出し表示（'1h' → '1時間足'）。未知足はコードをそのまま出す。
+  _timeframeLabel(timeframe) {
+    const label = timeframeLabels()[timeframe];
+    return label ? `${label}足` : String(timeframe);
   }
 
   // segmented 単体の生成（既存テストが直接叩く接合面のため、委譲メソッドとして残す）。
@@ -6002,7 +7467,9 @@ class PropertiesDialog {
         els.row.classList.add('is-invalid');
       }
     }
-    const ok = effective.length === 0;
+    // 未解決の入力エラー（期間表記の換算失敗など）がある間は確定させない。
+    //   当該欄のエラー文言はコントロール側が自前で表示済みのため、ここでは OK 制御のみ行う。
+    const ok = effective.length === 0 && this._pendingErrors.size === 0;
     if (this._okBtn) {
       this._okBtn.disabled = !ok;
     }
@@ -6703,14 +8170,33 @@ class TimeframeController {
       if (typeof this._loadCandles === 'function') {
         candles = await this._loadCandles(host._datasetRef, timeframe);
       }
-      // メイン系列差し替えを指標の再描画と同じ同期バッチへ含め、全要素を同時更新する（ISSUE-023）。
-      //   取得失敗・A方式（candles 無し）は preRender=null でメイン系列を据え置く。
-      const preRender = candles && candles.length > 0
-        ? () => host._renderer.setCandles(candles)
-        : null;
+      // ISSUE-196（抜本対策・2026-07-29 実測に基づく設計変更）:
+      //   旧: メイン系列差し替え（setCandles）を「全指標 compute 完了後」の同期バッチへ入れて
+      //       全要素を同時更新していた（ISSUE-023）。この順序は 2 つの実測不具合の原因だった。
+      //     1) 切替の所要が「最も遅い指標 compute」に律速される。/candles は 1.0 秒で届いているのに
+      //        チャートが変わるのは 5.63 秒後（指標 5 件・market_profile 単発 5.4 秒）。
+      //     2) その setData 時点で指標系列が旧足の time を保持しているため lwc が `Value is null` を
+      //        throw し、例外がバッチを中断して指標が旧足のまま固着する（以後の再計算も同じ throw で
+      //        失敗し続ける）。
+      //   新: 「旧足の指標系列を空にする」→「新足ローソクへ差し替える」を **await を挟まない
+      //       同一同期ブロック** で実行する。これで
+      //     - 時間軸に載る time は常にローソク系列に存在する（不変条件を構造的に保証＝1) の原因が消える）
+      //     - ローソク・時間軸は candles 取得直後（実測 約 1 秒）に切り替わる（指標構成に非依存）
+      //   指標は後続の recomputeAllApplied フェーズ2 が同期一括で描く（指標同士の同時更新は不変）。
+      //   切替直後の短時間は指標が空になる（compute 完了まで）。これは「5 秒以上チャート全体が
+      //   旧足のまま」だった従来挙動に対する意図的な変更（UI 挙動の変更点）。
+      if (candles && candles.length > 0) {
+        if (typeof host._renderer?.clearInstanceData === 'function') {
+          for (const inst of host._state?.applied ?? []) {
+            host._renderer.clearInstanceData(inst.instanceId);
+          }
+        }
+        host._renderer.setCandles(candles);
+      }
       // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
       //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
-      await host.recomputeAllApplied({ preRender });
+      //   preRender は渡さない（メイン系列は上で差し替え済み）。
+      await host.recomputeAllApplied({ preRender: null });
     } finally {
       gate.exit();
     }
@@ -6971,7 +8457,7 @@ class SeriesRenderRouter {
     const validated = host._validateSeriesNames(series, def, params);
     // kind → 描画経路は series_kind 台帳（renderRoute）で一元化（新種別は台帳追記で完結・OCP）。
     //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
-    const routed = { line: [], histogram: [], horizontal: [] };
+    const routed = { line: [], histogram: [], horizontal: [], level_dash: [] };
     for (const p of validated) {
       // 案A（btlm_trail_marod）: barStyleEditable 一致系列（front カタログ由来・backend 非関与）へ
       //   bar_editable=true を注入する。renderer はこのヒントで line ⇄ histogram スワップ対象を識別
@@ -6988,12 +8474,16 @@ class SeriesRenderRouter {
     const lines = routed.line;
     const histograms = routed.histogram;
     const hlines = routed.horizontal;
+    const levelDashes = routed.level_dash;
     const opts = { pane: def.placement !== 'overlay', name: host._label(def) };
     if (histograms.length > 0) {
       this._renderer.renderHistogram(instanceId, histograms, opts);
     }
     if (lines.length > 0) {
       this._renderer.renderLine(instanceId, lines, opts);
+    }
+    if (levelDashes.length > 0) {
+      this._renderer.renderLevelDash(instanceId, levelDashes, opts);
     }
     for (const h of hlines) {
       this._renderer.renderHorizontal(instanceId, h.lines ?? []);
@@ -7147,35 +8637,91 @@ class IndicatorStateStore {
     // 復元した時間足を購読者へ通知する（売買マーカーの該当時間足フィルタが restore 後の
     //   現在時間足を正しく評価できるようにする。通知欠落だと該当時間足でも非表示になる逆動作）。
     host._timeframeObserver?.(host._timeframe);
-    // 各 instance を再計算して再描画（A方式は variant 事前計算データで復元）。
-    for (const inst of host._state.applied) {
+    await this.rebuildApplied(host._state.applied);
+    host._renderLegend();
+    host._renderDialogList();
+  }
+
+  /**
+   * 適用済みインスタンス配列を、現在の時間足のまま再計算して再描画する（公開入口）。
+   *
+   * 基本設計_チャートテンプレート.md v0.1.1 §7.2 S2（承認済み）: `_restoreRun` の
+   * 「再構築ループ」部を挙動不変で抽出した唯一の実体。復元（restore）とテンプレート適用
+   * （UC-T02 手順 2〜4）が同一手順（MP 復元経路・styles 再適用・個別失敗の局所化）を共有する。
+   * 時間足復元・保存状態の読込・凡例/ダイアログ再描画は含まない（呼び出し側の責務）。
+   *
+   * ★ 事前条件（違反すると styles が黙って失われる）:
+   *   呼び出し前に `host._state.applied` へ当該 instance が在席していること。
+   *   `_draw` → `series_render_router.js:74` → `indicator_controller.js:305` が
+   *   `_state.applied.find` を読んで保存済みスタイルを再適用するため、state 未在席のまま
+   *   本入口を呼ぶと描画は成功するが styles 上書きだけが無反映になる（サイレント欠落）。
+   *
+   * @param {Array} appliedList 再構築対象（AppliedInstance またはその JSON 形の配列）。
+   */
+  async rebuildApplied(appliedList) {
+    const host = this._host;
+    // ISSUE-202（起動所要・2026-07-29 実測）: 本ループは `for … await` の完全直列で、宣言順の
+    //   先頭に market_profile があるとその `/market_profile`（実測 13.0 秒）が終わるまで後続指標の
+    //   compute が 1 件も発行されず、「起動してもチャート上に指標が出ない」時間が指標数と MP の
+    //   遅さの和になっていた（実測: 5 件で全指標が出るまで 2.7〜8.3 秒・MP 待ちで最大 14.5 秒）。
+    //   恒久対策（ユーザー承認 2026-07-29）:
+    //     (a) compute を **並列**発行する。並列安全の前提は ISSUE-165 で恒久是正済み
+    //         （series は per-call gateway 捕捉・state は当該行のみマージ）。
+    //     (b) MP の復元は **待ち合わせに載せない**（actor が自分の完了時に描画する）。復元の完了は
+    //         非 MP 指標で決まり、凡例・ダイアログの再描画が MP の応答待ちで止まらない。
+    //   描画（_draw）は **宣言順に直列化**する（下記 drawChain）。pane は初回描画時に生成される
+    //   ため、完了順に描くと pane の並びが起動ごとに変わる（ISSUE-149 の並び順保証が壊れる）。
+    //   compute は並列・描画は宣言順＝「早い指標から順に、常に同じ並びで」出る。
+    const list = [];
+    for (const inst of appliedList ?? []) {
       const def = host._catalog.get(inst.indicatorId);
       if (!def) {
         continue;
       }
       host._meta.set(inst.instanceId, { def });
-      // MP 種別は /compute で計算しようとして失敗させない。復元は MP 側協働子へ委譲する
-      //   （保存 params を actor へ渡し、可視だった場合のみ有効化して再取得・表示・ISSUE-094 🔴-4）。
+      list.push({ inst, def });
+    }
+    // (b) MP は起動の待ち合わせから外す（失敗は当該 1 件に閉じる＝F-T4）。
+    for (const { inst, def } of list) {
       if (host._isMarketProfile(def)) {
-        await host._mp.restoreInstance(inst);
-        continue;
-      }
-      try {
-        const gateway = host._gatewayAdapter(inst.variant);
-        // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
-        const restoreParams = host._paramsObject(inst.params);
-        const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: restoreParams, datasetRef: host._datasetRef, generation: inst.generation });
-        host._commitLastSeries(result.series);
-        host._draw(inst.instanceId, def, result.series, restoreParams);
-        if (!inst.visible) {
-          host._renderer.setVisible(inst.instanceId, false);
-        }
-      } catch {
-        // 事前計算未収録 variant はスキップ（A方式制限）。
+        Promise.resolve(host._mp.restoreInstance(inst)).catch(() => {
+          // MP 復元の失敗は当該 1 件のみスキップ（他指標の復元・描画は継続する）。
+        });
       }
     }
-    host._renderLegend();
-    host._renderDialogList();
+    // (a) 非 MP は compute を並列発行し、描画だけを宣言順へ直列化する。
+    let drawChain = Promise.resolve();
+    const tasks = list
+      .filter(({ def }) => !host._isMarketProfile(def))
+      .map(({ inst, def }) => (async () => {
+        let computed = null;
+        try {
+          const gateway = host._gatewayAdapter(inst.variant);
+          // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
+          const restoreParams = host._paramsObject(inst.params);
+          const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: restoreParams, datasetRef: host._datasetRef, generation: inst.generation });
+          computed = { result, restoreParams };
+        } catch {
+          // 事前計算未収録 variant はスキップ（A方式制限）。描画も行わない。
+          return;
+        }
+        // 宣言順の描画ゲート: 自分より前の指標の描画が終わってから描く（pane の並び順を固定）。
+        drawChain = drawChain.then(() => {
+          try {
+            host._commitLastSeries(computed.result.series);
+            host._draw(inst.instanceId, def, computed.result.series, computed.restoreParams);
+            if (!inst.visible) {
+              host._renderer.setVisible(inst.instanceId, false);
+            }
+          } catch {
+            // 描画失敗も当該 1 件に閉じる（後続の描画を止めない）。
+          }
+        });
+        await drawChain;
+      })());
+    await Promise.allSettled(tasks);
+    // 直列化した描画の残り（最後の then）まで待ってから完了する。
+    await drawChain;
   }
 }
 
@@ -7279,6 +8825,10 @@ function validateSeriesNames(payloads, def, params = null) {
 // ★ upstream JS API（addLineSeries 等）は一切参照しない（indicator_controller.js と同一規律）。
 
 
+// サイドバーの「★ お気に入り」ボタンが持つ data-category 値。カテゴリ名ではなく
+//   「お気に入りのみ」を意味するセンチネル（index.html と対応・ISSUE-220）。
+const FAVORITES_SENTINEL = '__favorites__';
+
 class IndicatorDialogController {
   constructor(host) {
     this._host = host;
@@ -7305,8 +8855,12 @@ class IndicatorDialogController {
     for (const c of e.cats ?? []) {
       c.addEventListener('click', () => {
         host._setActive(e.cats, c);
-        this._filter.category = c.dataset.category || null;
-        this._filter.favoriteOnly = c.dataset.category === '__favorites__';
+        // '__favorites__' は「お気に入りのみ」を表すセンチネルであってカテゴリ名ではない。
+        //   category チャネルへ入れると facade の `d.category.nameKey !== category` が全件
+        //   真になり、お気に入りが常に 0 件になる（ISSUE-220）。両チャネルを分離する。
+        const isFavorites = c.dataset.category === FAVORITES_SENTINEL;
+        this._filter.category = isFavorites ? null : (c.dataset.category || null);
+        this._filter.favoriteOnly = isFavorites;
         host._renderDialogList();
       });
     }
@@ -7690,7 +9244,35 @@ class IndicatorController {
 
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
   //   MP 種別（computeId==='market_profile'）は /compute をバイパスし MarketProfileActor へ委譲する。
+  // 指標の適用/削除の**完了**を購読する（任意・1 個）。ISSUE-037。
+  //
+  //   リプレイ層（`replay.js`）は「適用/削除のあとに減光境界を再同期する」必要があるが、
+  //   render を経ない経路のため、従来は `controller.applyIndicator` / `removeInstance` を
+  //   **実行時に monkeypatch** して後処理を差し込んでいた（destroy で原状復帰）。
+  //   monkeypatch は (1) 差し替え順序に依存して壊れる (2) 復元漏れが静かに残る
+  //   (3) subclass の override と二重に噛む、という脆さがある。
+  //   購読スロットを公開して置き換える（`setTimeframeObserver` と同型の規律）。
+  //
+  //   通知は「適用・削除が完了した後」に 1 回。適用が no-op（未知 id 等）でも通知する
+  //   ＝ monkeypatch 時代と同一（呼び出しごとに後処理が走っていた）。
+  setAppliedObserver(observer) {
+    this._appliedObserver = typeof observer === 'function' ? observer : null;
+  }
+
+  _notifyApplied() {
+    if (this._appliedObserver) {
+      this._appliedObserver();
+    }
+  }
+
+  // 適用（購読者への通知を伴う薄いラッパ）。実処理は _applyIndicatorInner。
   async applyIndicator(indicatorId, variant) {
+    const result = await this._applyIndicatorInner(indicatorId, variant);
+    this._notifyApplied();
+    return result;
+  }
+
+  async _applyIndicatorInner(indicatorId, variant) {
     // ISSUE-153: 復元（restore＝_state 丸ごと置換）と競合すると、先に適用した instance が
     //   state から消えて描画だけ残る（孤児化）。復元中は完了を待ってから適用する。
     if (this._restoreInFlight) {
@@ -7770,8 +9352,10 @@ class IndicatorController {
   // UC-03 再計算（設定変更・variant 切替）: generation 競合破棄は facade.recompute に集約（§6.6）。
   //   opts.mode='latest' は Latest 増分計算（gateway へ mode 伝播・末尾K点を updateSeriesTail へ
   //   差分反映し remove+_draw の全描画はしない）。既定 'full' は従来どおり remove+redraw。
-  async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
-    const job = await this._computeInstance(instanceId, newVariant, newParams, { mode, forceTail });
+  //   commitParams=true（ユーザーの明示操作＝歯車 OK / variant 切替 / デフォルト復元）は、
+  //   計算の完了を待たずに params を live state へ確定する（ISSUE-201。下記 _computeInstance 参照）。
+  async recomputeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false, commitParams = false } = {}) {
+    const job = await this._computeInstance(instanceId, newVariant, newParams, { mode, forceTail, commitParams });
     if (!job || !job.accepted) {
       return job ? job.accepted : false;
     }
@@ -7790,7 +9374,18 @@ class IndicatorController {
   //     並列時に他インスタンスの compute 完了が microtask 間へ割り込んで上書きし取り違える。
   //   - state は丸ごと代入せず当該 instance 行のみマージする。丸ごと代入は並列時に同一
   //     スナップショット由来の最後の代入が勝ち、兄弟インスタンスの世代前進が失われる（lost update）。
-  async _computeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false } = {}) {
+  //   ISSUE-201（同一インスタンスの lost update・2026-07-29 実測）: バッチは開始時の
+  //     スナップショット params で計算し、完了時にその行を live state へマージする。よって
+  //     計算中にユーザーが歯車で params を変えると、**旧 params の行が新 params を上書きする**
+  //     （実測: OK 直後に length=200 で 1 回計算 → 0.5 秒後に length=9 の tick 計算が完了 →
+  //      保存値が 9 に戻り、以後ずっと 9。ユーザーには「価格が更新されると設定が元に戻る」と見える）。
+  //     恒久対策は 2 点セット:
+  //       (a) ユーザーの明示操作（commitParams=true）は **await 前に** params を live state へ確定する
+  //           ＝ params の正はユーザー操作であり、計算結果ではない。
+  //       (b) await 中に当該行が差し替わっていたら（他の確定・他バッチの反映）、この結果は
+  //           旧設定由来なので **破棄**する（accepted:false）。描画も state も触らない。次のクロックが
+  //           新しい params で計算し直す。ISSUE-105 の「await 中に除去されたら破棄」と同型の規律。
+  async _computeInstance(instanceId, newVariant, newParams, { mode = 'full', forceTail = false, commitParams = false } = {}) {
     const meta = this._meta.get(instanceId);
     if (!meta) {
       return null;
@@ -7800,6 +9395,10 @@ class IndicatorController {
       this._state = this._withVariant(this._state, instanceId, newVariant);
     }
     const params = newParams ?? this._defaultParams(meta.def);
+    // (a) ユーザーの明示操作は計算を待たずに params を確定する（in-flight 計算の完了順に依存しない）。
+    if (commitParams) {
+      this._state = this._withParams(this._state, instanceId, params);
+    }
     // Latest 差分可否を「要求前」に def から確定する（混在/horizontal 指標は full を要求し
     //   trim されない full データで全描画する＝混在バグ回避）。
     // [reveal seam] forceTail=true（replay 足内追従）は混在指標でも末尾差分（updateSeriesTail）経路へ
@@ -7811,6 +9410,9 @@ class IndicatorController {
     //   finally で確実にデクリメント（例外時もカウンタが残らない）。ネスト時は最外で解除。
     //   開始時刻の記録は isRecomputing() の時限判定（ISSUE-157）に使う。
     this._gate.enter();
+    // (b) 破棄判定の基準。行オブジェクトは変更のたびに差し替えられる（_withParams/_withVariant/
+    //   マージのいずれも新しい行を作る）ため、同一性比較で「await 中に変わったか」が判定できる。
+    const rowAtCall = this._state.applied.find((i) => i.instanceId === instanceId);
     try {
       const result = await recompute(this._state, instanceId, params, this._datasetRef, gateway);
       // 競合削除ガード（ISSUE-105 🟡-2）: recompute の await 中に凡例 close（removeInstance）で
@@ -7819,7 +9421,10 @@ class IndicatorController {
       //   凡例行の無い残留系列（ゾンビペイン）＋永続化汚染を生む。await 後の live state で在席を
       //   確認し、除去済みなら live state に触れず accepted:false を返す。
       const removedDuringAwait = !this._state.applied.some((i) => i.instanceId === instanceId);
-      if (removedDuringAwait || !result.accepted) {
+      // (b) await 中に当該行が差し替わった＝この結果は旧 params/variant 由来。state も描画も触らない。
+      const supersededDuringAwait = !!rowAtCall
+        && this._state.applied.find((i) => i.instanceId === instanceId) !== rowAtCall;
+      if (removedDuringAwait || supersededDuringAwait || !result.accepted) {
         // 非採用（世代競合破棄・除去済み）は state 変更なし＝live state を据え置く（ISSUE-165:
         //   スナップショット丸ごと代入をやめ、並列時に兄弟の変更を巻き戻さない）。
         return { instanceId, accepted: false };
@@ -7878,7 +9483,14 @@ class IndicatorController {
   }
 
   // UC-05 削除。
+  // 削除（購読者への通知を伴う薄いラッパ）。実処理は _removeInstanceInner（ISSUE-037）。
   removeInstance(instanceId) {
+    const result = this._removeInstanceInner(instanceId);
+    this._notifyApplied();
+    return result;
+  }
+
+  _removeInstanceInner(instanceId) {
     this._renderer.remove(instanceId);
     this._state = facadeRemove(this._state, instanceId);
     this._meta.delete(instanceId);
@@ -7944,6 +9556,22 @@ class IndicatorController {
       .filter((job) => job && job.accepted);
     // フェーズ2: ここから await を挟まない同期一括描画。
     if (preRender) {
+      // ISSUE-196（不変条件の構造的保証）: preRender はメインローソク系列の time 集合を入れ替える
+      //   （時間足切替・リプレイの足リビール）。本バッチで再描画されない指標の系列は旧 time を
+      //   持ち続けるため、lwc の「時間軸の time は当該系列にも存在する」不変条件が破れ、
+      //   preRender 内の setData（および以後の全ペイント）が `Value is null` を throw する。
+      //   その例外は本バッチを中断させ、指標が旧足のまま固着して次クロックの再計算も同じ throw で
+      //   失敗し続ける（実測 102〜160 件/30〜45 秒・full 再計算失敗が反復）。
+      //   ここで「再描画されない指標」の系列データを同一同期ブロック内で空にし、違反状態を
+      //   発生させない（try/catch で例外を握る応急処置は行わない＝原因側を消す）。
+      //   skip 述語で除外した一括リビール指標（replay）は preRender 内の revealTo が同期で
+      //   描き直すため、空化 → preRender の順序で結果は不変。
+      const drawnIds = new Set(jobs.map((job) => job.instanceId));
+      for (const inst of this._state.applied) {
+        if (!drawnIds.has(inst.instanceId) && typeof this._renderer.clearInstanceData === 'function') {
+          this._renderer.clearInstanceData(inst.instanceId);
+        }
+      }
       preRender();
     }
     if (jobs.length === 0) {
@@ -8081,11 +9709,37 @@ class IndicatorController {
   // DOM 配線（ブラウザ/バンドルでのみ実行。node 単体テストは触らない）
   // =========================================================================
 
+  // 指標カタログのカテゴリからサイドバー項目を生成する（冪等・既存の「すべて」「お気に入り」
+  //   の後ろへ追加）。DOM 不在・要素不在では何もしない（node 単体テストの部分 DOM を許容）。
+  _renderCategorySideItems(doc) {
+    const side = doc.querySelector?.('.dialog-side');
+    if (!side || typeof doc.createElement !== 'function') {
+      return;
+    }
+    // 再バインド時の二重生成を防ぐ（生成済み項目のみ除去し、静的 2 件は残す）。
+    for (const el of side.querySelectorAll?.('[data-generated-category]') ?? []) {
+      el.remove?.();
+    }
+    for (const c of catalogCategories()) {
+      const b = doc.createElement('button');
+      b.className = 'side-item';
+      b.type = 'button';
+      b.dataset.category = c.key;
+      b.dataset.generatedCategory = '1';
+      b.textContent = c.label;
+      side.appendChild(b);
+    }
+  }
+
   bind() {
     const doc = this._document;
     if (!doc) {
       return;
     }
+    // カテゴリのサイドバー項目をカタログから生成してから DOM 参照を採る（ISSUE-221）。
+    //   静的 HTML に直書きすると新カテゴリの指標追加時に同時改変が必要になり、実際に
+    //   oscillator(10)・band(2) が欠落して 24 指標中 12 件が絞り込みから到達不能だった。
+    this._renderCategorySideItems(doc);
     this._el = {
       openBtn: doc.getElementById('indicator-open-btn'),
       dialog: doc.getElementById('indicator-dialog'),
@@ -8203,6 +9857,11 @@ class IndicatorController {
       //   （ISSUE-110 🔵-1: applySeriesStyle 側と同じ typeof ガードへ統一）。
       seriesStyles: typeof this._renderer.getSeriesStyles === 'function'
         ? this._renderer.getSeriesStyles(inst.instanceId) : null,
+      // 期間プリセット（基本設計_期間プリセット.md §6.5）: 換算の基準となる datasetRef と
+      //   チャートの現在足を渡す。指標側の計算時間足 override（params.timeframe）はダイアログが
+      //   values から解決するため、ここでは override 前のチャート足を渡す。
+      //   MP 側（market_profile_controller.js）は既に context を渡しており本項と同型。
+      context: { timeframe: this._timeframe, datasetRef: this._datasetRef },
       onApply: (values, variant, extra) => this._applyDialogResult(inst, currentParams, values, variant, extra),
       onCancel: () => {},
     });
@@ -8228,7 +9887,8 @@ class IndicatorController {
       this._persistAll();
       return Promise.resolve(true);
     }
-    return this.recomputeInstance(inst.instanceId, nextVariant, values);
+    // ユーザーの明示操作＝params の正。in-flight のライブ計算に上書きされないよう即確定する（ISSUE-201）。
+    return this.recomputeInstance(inst.instanceId, nextVariant, values, { commitParams: true });
   }
 
   // params の等値判定（キー順・参照に依らない深い比較。FLOAT_LIST 等の配列値も対象）。
@@ -8243,9 +9903,9 @@ class IndicatorController {
     if (variants.length > 1) {
       const idx = variants.indexOf(inst.variant);
       const nextVariant = variants[(idx + 1) % variants.length];
-      this.recomputeInstance(inst.instanceId, nextVariant, this._defaultParams(def));
+      this.recomputeInstance(inst.instanceId, nextVariant, this._defaultParams(def), { commitParams: true });
     } else {
-      this.recomputeInstance(inst.instanceId, null, this._defaultParams(def));
+      this.recomputeInstance(inst.instanceId, null, this._defaultParams(def), { commitParams: true });
     }
   }
 }
@@ -8253,6 +9913,7 @@ class IndicatorController {
 const facadeToggleVisible = toggleVisible;
 const facadeRemove = remove;
 const facadeToggleFavorite = toggleFavorite;
+const catalogCategories = categories;
 
 
 // ===== js/adapter/front/live_updater.js =====
@@ -9677,6 +11338,9 @@ class TfPeriodSink {
 
   setTfPeriods(columns, unit) { return this._primitive.setTfPeriods(columns, unit); }
 
+  // tf-period 列を束ねる価格幅（barw）。null で最小価格単位のまま（ISSUE-054）。
+  setTfBinWidth(width) { return this._primitive.setTfBinWidth(width); }
+
   tfPeriodLevelAt(time, price) { return this._primitive.tfPeriodLevelAt(time, price); }
 }
 
@@ -9989,6 +11653,21 @@ class MpFetchParams {
   // 現在選択中の src（未設定は null）。composition root が tf-period 列への src 透過判定に使う。
   src() {
     return this._params.src ?? null;
+  }
+
+  // 現在有効な barw（レンジ pt）。resmode='range' のときのみ値を持ち、それ以外は null。
+  //
+  // ISSUE-054: 「レンジ」は日別プロファイルの解像度としてユーザーが設定する値だが、日別描画を
+  //   tf-period 列（最小価格単位）が担う経路では効かず、`/market_profile` 由来の POC/VA だけが
+  //   変わるという**部分的にしか効かない**状態だった。tf-period 側でも同じ幅で束ねるため、
+  //   明示 range と dispbp 写像後の range の**両方**を 1 か所で解決する。
+  barw() {
+    const explicit = this._params.resmode === 'range' ? Number(this._params.range) : NaN;
+    if (Number.isFinite(explicit) && explicit > 0) {
+      return explicit;
+    }
+    const mapped = Number(this.dispExtra().range);
+    return Number.isFinite(mapped) && mapped > 0 ? mapped : null;
   }
 
   // 取得パラメータを設定する。null/undefined のキーは無視する（getContext の値やサーバ既定を潰さない）。
@@ -10633,6 +12312,38 @@ const C_TFP_BG_DOWN = 'rgba(239, 83, 80, 0.1)';  // 陰線周期（薄赤）
 // ISSUE-085 改: VA 外の占有レンジ背景（減光）。VA 帯（通常 α0.1）との2トーンで VA 幅を表現する。
 const C_TFP_BG_UP_DIM = 'rgba(38, 166, 154, 0.04)';
 const C_TFP_BG_DOWN_DIM = 'rgba(239, 83, 80, 0.04)';
+// tf-period 列の最小価格単位 levels を、価格幅 `binWidth` のビンへ束ねる純関数（ISSUE-054）。
+//
+// 「レンジ」はユーザーが設定する**表示解像度**である。tf-period 列は測定としては最小価格単位で
+// 保持する（粗いビンで測ると分布が退行して見えるアーティファクトを避けるため）。したがって
+// 束ねるのは**描画時のみ**とし、取得・キャッシュ・API は一切変更しない。
+//
+// ビン境界は価格 0 起点の絶対格子（`floor(price / binWidth)`）に取る。列ごとに相対格子を作ると
+// 同じ価格が列によって別のビンへ落ち、横に並べたとき行がずれる。
+// 返す価格はビン**中心**（`(idx + 0.5) * binWidth`）で昇順。count は同一ビン内の総和。
+function aggregateLevelsToBins(levels, binWidth) {
+  if (!Array.isArray(levels) || !levels.length || !(binWidth > 0)) {
+    return Array.isArray(levels) ? levels : [];
+  }
+  const sums = new Map();
+  for (let i = 0; i < levels.length; i += 1) {
+    const price = Number(levels[i][0]);
+    const count = Number(levels[i][1]);
+    if (!Number.isFinite(price) || !Number.isFinite(count)) {
+      continue;
+    }
+    const idx = Math.floor(price / binWidth);
+    sums.set(idx, (sums.get(idx) || 0) + count);
+  }
+  const out = [];
+  for (const [idx, count] of sums) {
+    out.push([(idx + 0.5) * binWidth, count]);
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  return out;
+}
+
+
 class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
@@ -10651,6 +12362,7 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     // 時間足毎profile列（tf-period・最小価格単位）: [{time, levels:[[price,count]...], poc, ...}]。
     //   null=非適用。non-null で各周期の min-unit 列を時間軸連動で描く（sessions の tf 一般化）。
     this._tfPeriods = null;
+    this._tfBinWidth = null;   // tf-period 列の束ね幅（barw pt）。null＝最小価格単位のまま。
     this._tfUnit = null;
     this._lastTfColW = null;
   }
@@ -10670,6 +12382,31 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     this._update();
   }
 
+  // tf-period 列を束ねる価格幅（barw pt）。null/0 以下で最小価格単位のまま（ISSUE-054）。
+  //   「レンジ」を日別プロファイルの**全**描画経路で効かせるための表示専用パラメータ。
+  //   取得・キャッシュ・API は変更しない（束ねるのは描画とホバー読取のみ）。
+  setTfBinWidth(width) {
+    const w = Number(width);
+    const next = Number.isFinite(w) && w > 0 ? w : null;
+    if (next === this._tfBinWidth) {
+      return;
+    }
+    this._tfBinWidth = next;
+    this._update();
+  }
+
+  // 束ね適用後の levels（束ねないときは元の levels）。描画とホバー読取で共有する
+  //   （片方だけ束ねるとカーソル位置と描画行がずれる）。
+  _effectiveLevels(col) {
+    const raw = (col && col.levels) || [];
+    return this._tfBinWidth ? aggregateLevelsToBins(raw, this._tfBinWidth) : raw;
+  }
+
+  // 行高に用いる価格幅（束ねているときは barw、そうでなければ最小価格単位）。
+  _effectiveRowWidth() {
+    return this._tfBinWidth || this._tfUnit;
+  }
+
   // tf-period ホバー読取（依頼者指示 2026-07-13・a案ツールチップ）: 周期 time とカーソル価格から
   //   該当列の**最近傍占有レベル**を引く純ロジック。0.0255 等の微細格子では行高がサブピクセルで
   //   正確な行へカーソルを合わせるのが実質不可能なため、縦 HOVER_TOL_PX（3px）相当の価格幅以内で
@@ -10678,7 +12415,9 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   //   tpoUnits, unit } を返し、非表示・列不在・許容外（近傍に占有なし）は null。
   tfPeriodLevelAt(time, price) {
     const cols = this._tfPeriods;
-    const unit = this._tfUnit;
+    // ISSUE-054: 束ね幅（barw）指定時は**描画と同じ行**を引く（片方だけ束ねるとカーソル位置と
+    //   描画行がずれ、読み取り値が隣の行のものになる）。許容幅の基準も行の幅に合わせる。
+    const unit = this._effectiveRowWidth();
     if (!this._visible || !cols || !cols.length || !(unit > 0)
         || time == null || !Number.isFinite(Number(price))) {
       return null;
@@ -10688,7 +12427,7 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     if (!col) {
       return null;
     }
-    const levels = col.levels || [];
+    const levels = this._effectiveLevels(col);
     if (!levels.length) {
       return null;
     }
@@ -10927,9 +12666,11 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     const colW = gaps.length ? gaps[Math.floor(gaps.length / 2)] : (this._lastTfColW || 18);
     this._lastTfColW = colW;
     const tileW = Math.max(3, colW * 0.85);
+    // 行高は「束ね幅（barw）」があればそれ、無ければ最小価格単位で決める（ISSUE-054）。
+    const rowW = this._effectiveRowWidth();
     let lvlH = 1;
-    if (this._tfUnit && cols[0] && cols[0].poc != null) {
-      const yA = toY(cols[0].poc); const yB = toY(cols[0].poc + this._tfUnit);
+    if (rowW && cols[0] && cols[0].poc != null) {
+      const yA = toY(cols[0].poc); const yB = toY(cols[0].poc + rowW);
       if (yA != null && yB != null) lvlH = Math.max(1, Math.abs(yA - yB));
     }
     ctx.save();
@@ -10938,7 +12679,7 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       if (cx == null) continue; // 視野外＝スクロールで可視化。
       const left = cx - tileW / 2;
       const c = cols[i];
-      const levels = c.levels || [];
+      const levels = this._effectiveLevels(c);   // barw 指定時はビンへ束ねる（ISSUE-054）。
       // 方向背景（依頼者指示 2026-07-13）: 列の占有レンジ（levels 昇順の先頭〜末尾）を陽/陰色で塗る。
       //   dirUp 未注釈（null/undefined＝candle 不在・旧呼び出し）は描かない。
       // ISSUE-085 改（依頼者指示 2026-07-15）: VA 幅は**背景の2トーン**で表現する。VA 帯
@@ -10978,8 +12719,11 @@ class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         const y = toY(price);
         if (y == null) continue;
         const w = Math.max(SESS_MIN_BAR_PX, (cnt / cmax) * (tileW - 2));
-        ctx.fillStyle = (pocPrice != null && Math.abs(price - pocPrice) < 1e-9)
-          ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
+        // 束ねたときは元 poc 価格と行の中心が一致しないため、poc を**含むビン**を POC 色にする。
+        const isPoc = pocPrice != null && (this._tfBinWidth
+          ? Math.abs(price - pocPrice) <= this._tfBinWidth / 2
+          : Math.abs(price - pocPrice) < 1e-9);
+        ctx.fillStyle = isPoc ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
         ctx.fillRect(left + 1, y - lvlH / 2, w, lvlH);
       }
     }
@@ -11326,6 +13070,12 @@ class MarketProfileActor {
   // 現在選択中の src（未設定は null）。composition root が tf-period 列への src 透過判定に使う。
   srcParam() {
     return this._fetchParams.src();
+  }
+
+  // 現在有効な barw（レンジ pt・未設定は null）。composition root が tf-period 列の束ね幅に使う
+  //   （ISSUE-054: 「レンジ」を日別プロファイルの全描画経路で効かせる）。
+  barwParam() {
+    return this._fetchParams.barw();
   }
 
   // forming 取得の引数（getContext＋params＋base/since）。limit は buildFormingUrl が無視する（全期間 base）。
@@ -11877,85 +13627,256 @@ class ScrollToLatestButton {
 }
 
 
-// ===== js/adapter/front/timeframe_menu.js =====
-// timeframe_menu.js — 時間足ドロップダウン（ISSUE-117/122/123・DOM アダプター・両アプリ共有）。
+// ===== js/adapter/front/local_storage_template_gateway.js =====
+// LocalStorageTemplateGateway（adapter/front/local_storage_template_gateway.js）— TemplateStorePort 実装。
 //
-// 設計入力: ユーザー指示（2026-07-18）「時間足を選択できる UI を追加」＝ TradingView の
-//   時間足カテゴリメニュー相当（ss2026071894749.jpg）。
+// 設計入力（唯一の仕様源）: .doc/indicator-management-ui/基本設計_チャートテンプレート.md v0.1.1
+//   §4.2（3 論理キー `indicatorUi.templates.v1` / `indicatorUi.templateBindings.v1` /
+//        `indicatorUi.templateSeq.v1` と値スキーマ・破損時は当該キーのみ空既定へ初期化し他キーを
+//        温存＋console 警告・QuotaExceeded は当該書き込み中止で例外を投げない・
+//        **接頭辞を自前で付けず注入された storage ポートをそのまま使う**）、
+//   §4.3（templateSeq 単調性）、§5.6（F-T2 破損 / F-T5 Quota）、
+//   §7.1（既存 `LocalStorageGateway` は無改変＝ISP: 既存ポートを汚さない）。
 //
-// ISSUE-123（値渡し是正）: メニュー DOM（トリガー＋カテゴリ＋項目）は本コンポーネントが生成する。
-//   旧実装は index.html 側に項目 DOM を直書きしており、present/replay の 2 つの index.html へ
-//   複製（値渡し）されて時間足集合の二重管理が生じていた。現方式は index.html に空マウント
-//   `<div class="tf-menu" id="tf-menu"></div>` のみを置き、項目集合は groups 注入（既定＝present の
-//   9 足）で単一ソース化する。replay は対応 8 足（30m なし）を composition root から注入する。
+// 参照実装（同型元）: local_storage_gateway.js（storage 注入・破損時初期化・Quota 中止）。
+//   本ゲートウェイは既存ゲートウェイを継承も改変もせず、同一の作法で独立に実装する。
 //
-// 責務（SRP）: メニュー DOM 生成と開閉（トリガークリック・項目選択後クローズ・外側クリッククローズ）。
-//   時間足の選択実行・active/トリガーラベル同期は既存機構に委譲する＝項目は data-timeframe を持ち、
-//   IndicatorController.bind() の一括配線と TimeframeController.syncButtons() に乗る
-//   （本コンポーネントは controller を知らない・DIP）。install は controller.bind() より前
-//   （bootstrap 内）に呼ばれる前提（bind が [data-timeframe] を収集するため）。
-//   DOM 不在（SSR/テスト）は no-op。
+// 物理キーの接頭辞（統合 UI の `live:`）は scopedStorage 側が付ける（§4.2・E-10）。
+//   本クラスは注入された storage をそのまま使い、接頭辞を二重に付けない。
 
-// 既定の時間足メニュー（present＝バックエンド対応 9 足）。サーバ TIMEFRAME_RULES と一致させる。
-const DEFAULT_GROUPS = [
-  { cat: '分', items: [['1m', '1分'], ['5m', '5分'], ['15m', '15分'], ['30m', '30分']] },
-  { cat: '時間', items: [['1h', '1時間'], ['4h', '4時間']] },
-  { cat: '日', items: [['1D', '日'], ['1W', '週'], ['1M', '月']] },
-];
+const TEMPLATE_KEY = Object.freeze({
+  templates: 'indicatorUi.templates.v1',
+  bindings: 'indicatorUi.templateBindings.v1',
+  templateSeq: 'indicatorUi.templateSeq.v1',
+});
 
-class TimeframeMenu {
-  // { document, groups }（マウントは id で解決: #tf-menu（空 div）。groups 省略＝present 既定 9 足）。
-  constructor({ document: doc, groups } = {}) {
+class LocalStorageTemplateGateway {
+  constructor(storage = (typeof globalThis !== 'undefined' ? globalThis.localStorage : undefined)) {
+    this._storage = storage;
+  }
+
+  // -- 破損時フォールバック付き読み取り（§4.2: 当該キーのみ初期化・他キー温存・console 警告）----
+  _readJson(key, fallback) {
+    let raw;
+    try {
+      raw = this._storage.getItem(key);
+    } catch {
+      return fallback;
+    }
+    if (raw === null || raw === undefined) {
+      return fallback;
+    }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // F-T2: 破損キーのみ初期化（他キーは温存・全消去しない）。
+      this._warn(`[template] 破損キーを初期化: ${key}`);
+      this._removeKey(key);
+      return fallback;
+    }
+  }
+
+  // F-T5 QuotaExceeded: 当該書き込みを中止（throw しない）。メモリ状態は呼び出し側で保持。
+  _writeJson(key, value) {
+    try {
+      this._storage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      this._warn(`[template] 書き込み中止（${e && e.name ? e.name : 'error'}）: ${key}`);
+    }
+  }
+
+  _removeKey(key) {
+    try {
+      this._storage.removeItem(key);
+    } catch {
+      // 削除失敗は無視（次回読みでも fallback を返す）。
+    }
+  }
+
+  _warn(msg) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(msg);
+    }
+  }
+
+  // スキーマ不一致（JSON としては妥当だが型が違う）も当該キーのみ空既定へ倒す（F-T2）。
+  _warnSchema(key) {
+    this._warn(`[template] スキーマ不一致のため空既定を使用: ${key}`);
+  }
+
+  // -- templates（{ templates: CHART_TEMPLATE[] }）------------------------------
+  loadTemplates() {
+    const obj = this._readJson(TEMPLATE_KEY.templates, { templates: [] });
+    if (Array.isArray(obj?.templates)) {
+      return obj.templates;
+    }
+    if (obj && obj.templates !== undefined) {
+      this._warnSchema(TEMPLATE_KEY.templates);
+    }
+    return [];
+  }
+
+  saveTemplates(templates) {
+    this._writeJson(TEMPLATE_KEY.templates, { templates: Array.isArray(templates) ? templates : [] });
+  }
+
+  // -- bindings（{ bindings: { <timeframe>: <templateId> } }）--------------------
+  loadBindings() {
+    const obj = this._readJson(TEMPLATE_KEY.bindings, { bindings: {} });
+    const b = obj?.bindings;
+    if (b && typeof b === 'object' && !Array.isArray(b)) {
+      return { ...b };
+    }
+    if (b !== undefined) {
+      this._warnSchema(TEMPLATE_KEY.bindings);
+    }
+    return {};
+  }
+
+  saveBindings(bindings) {
+    const b = bindings && typeof bindings === 'object' && !Array.isArray(bindings) ? bindings : {};
+    this._writeJson(TEMPLATE_KEY.bindings, { bindings: b });
+  }
+
+  // -- templateSeq（{ lastSeq: int }・§4.3 単調増加・削除で減算しない）-----------
+  loadTemplateSeq() {
+    const obj = this._readJson(TEMPLATE_KEY.templateSeq, { lastSeq: 0 });
+    const n = obj?.lastSeq;
+    if (Number.isInteger(n) && n >= 0) {
+      return n;
+    }
+    if (n !== undefined) {
+      this._warnSchema(TEMPLATE_KEY.templateSeq);
+    }
+    return 0;
+  }
+
+  saveTemplateSeq(lastSeq) {
+    this._writeJson(TEMPLATE_KEY.templateSeq, { lastSeq: Number.isInteger(lastSeq) && lastSeq >= 0 ? lastSeq : 0 });
+  }
+}
+
+
+// ===== js/adapter/front/chart_template_menu.js =====
+// chart_template_menu.js — テンプレートドロップダウン（DOM アダプター・両アプリ共有）。
+//
+// 設計入力（唯一の仕様源）: .doc/indicator-management-ui/基本設計_チャートテンプレート.md v0.1.1
+//   §6.1（`index.html` には空マウント `<div class="tpl-menu" id="tpl-menu"></div>` のみを置き、
+//        項目 DOM は共有 JS が生成する＝`timeframe_menu.js` の ISSUE-123 方針）、
+//   §6.2（メニュー構造＝保存／保存済み一覧／この時間足に紐付け／管理・各行右側に紐付け先時間足の
+//        バッジ・`activeTemplateId` 一致行は `is-active`・開閉挙動は時間足メニューと同一）、
+//   §7.1（controller を知らない＝DIP）。
+//
+// 責務（SRP）: メニュー DOM 生成と開閉。テンプレートの保存・適用・紐付け・管理そのものは
+//   注入コールバック（onSelect / onSave / onBind / onManage）の呼び出しに委譲する
+//   （本コンポーネントは controller を import しない・DIP）。DOM 不在（SSR/テスト）は no-op。
+//
+// 再描画（U3/U6）: 一覧はビューモデル注入 render(vm) で更新し、かつ**開くたびに再描画**する
+//   （provide 注入時）。これにより restore() 完了と install() の順序依存を構造的に作らない。
+
+
+class ChartTemplateMenu {
+  /**
+   * @param {object} opts
+   * @param {object} opts.document           DOM 実装（注入。null 可＝no-op）。
+   * @param {Array}  [opts.templates]        CHART_TEMPLATE[]（宣言順に一覧表示）。
+   * @param {object} [opts.bindings]         { [timeframe]: templateId }（バッジ表示元）。
+   * @param {?string}[opts.activeTemplateId] 選択状態（is-active）にする templateId。
+   * @param {?function}[opts.provide]        開くたびに最新ビューモデルを取得するコールバック。
+   * @param {?function}[opts.onSelect]       保存済み行クリック（templateId）＝適用要求（U4）。
+   * @param {?function}[opts.onSave]         「現在の構成を保存…」クリック。
+   * @param {?function}[opts.onBind]         「この時間足に紐付け」選択（templateId|null）。
+   * @param {?function}[opts.onManage]       「管理（改名・削除）…」クリック。
+   */
+  constructor({
+    document: doc, templates = [], bindings = {}, activeTemplateId = null, timeframe = null,
+    provide = null, onSelect = null, onSave = null, onBind = null, onManage = null,
+  } = {}) {
     this._doc = doc;
-    this._groups = Array.isArray(groups) && groups.length > 0 ? groups : DEFAULT_GROUPS;
+    this._templates = Array.isArray(templates) ? templates : [];
+    this._bindings = bindings && typeof bindings === 'object' ? bindings : {};
+    this._activeTemplateId = activeTemplateId ?? null;
+    // 現在の時間足（§6.2 の「● = 現在足に紐付け」印の判定に使う。未注入なら印を出さない）。
+    this._timeframe = timeframe ?? null;
+    this._provide = typeof provide === 'function' ? provide : null;
+    this._onSelect = typeof onSelect === 'function' ? onSelect : null;
+    this._onSave = typeof onSave === 'function' ? onSave : null;
+    this._onBind = typeof onBind === 'function' ? onBind : null;
+    this._onManage = typeof onManage === 'function' ? onManage : null;
     this._pop = null;
+    this._list = null;
+    this._bindList = null;
   }
 
   install() {
     const doc = this._doc;
     if (!doc || typeof doc.getElementById !== 'function' || typeof doc.createElement !== 'function') {
-      return; // DOM 不在（SSR/テスト最小 fake）は no-op（防御）。
+      return; // DOM 不在（SSR/テスト最小 fake）は no-op（防御・timeframe_menu と同型）。
     }
-    const mount = doc.getElementById('tf-menu');
+    const mount = doc.getElementById('tpl-menu');
     if (!mount || typeof mount.appendChild !== 'function') {
       return;
     }
 
-    // トリガー（現在足ラベルは TimeframeController.syncButtons が #tf-menu-label へ反映）。
+    // トリガー（時間足メニューのトリガーと同型のボタン＋キャレット）。
     const trigger = doc.createElement('button');
     trigger.type = 'button';
-    trigger.id = 'tf-menu-trigger';
-    trigger.className = 'tb-interval tf-menu-trigger';
-    trigger.title = '時間足を選択';
+    trigger.id = 'tpl-menu-trigger';
+    trigger.className = 'tb-interval tpl-menu-trigger';
+    trigger.title = 'チャートテンプレート';
     const label = doc.createElement('span');
-    label.id = 'tf-menu-label';
+    label.id = 'tpl-menu-label';
+    label.textContent = 'テンプレート';
     const caret = doc.createElement('span');
-    caret.className = 'tf-menu-caret';
+    caret.className = 'tpl-menu-caret';
     caret.textContent = '▾';
     trigger.append(label, caret);
 
-    // ポップ（カテゴリ見出し＋項目）。項目は data-timeframe を持ち bind()/syncButtons に乗る。
+    // ポップ（保存 / 保存済み一覧 / この時間足に紐付け / 管理）。
     const pop = doc.createElement('div');
-    pop.id = 'tf-menu-pop';
-    pop.className = 'tf-menu-pop is-hidden';
-    for (const g of this._groups) {
-      const cat = doc.createElement('div');
-      cat.className = 'tf-menu-cat';
-      cat.textContent = g.cat;
-      pop.append(cat);
-      for (const [tf, text] of g.items) {
-        const item = doc.createElement('button');
-        item.type = 'button';
-        item.className = 'tf-menu-item';
-        item.dataset.timeframe = tf;
-        item.textContent = text;
-        pop.append(item);
-      }
-    }
+    pop.id = 'tpl-menu-pop';
+    pop.className = 'tpl-menu-pop is-hidden';
+
+    const save = doc.createElement('button');
+    save.type = 'button';
+    save.className = 'tpl-menu-item tpl-menu-action';
+    save.dataset.tplAction = 'save';
+    save.textContent = '現在の構成を保存…';
+    pop.append(save);
+
+    const savedCat = doc.createElement('div');
+    savedCat.className = 'tpl-menu-cat';
+    savedCat.textContent = '保存済み';
+    pop.append(savedCat);
+
+    // 一覧コンテナ（render で中身のみ差し替える）。
+    const list = doc.createElement('div');
+    list.className = 'tpl-menu-list';
+    pop.append(list);
+
+    const bindCat = doc.createElement('div');
+    bindCat.className = 'tpl-menu-cat';
+    bindCat.textContent = 'この時間足に紐付け';
+    pop.append(bindCat);
+
+    // 紐付け選択コンテナ（render で中身のみ差し替える）。
+    const bindList = doc.createElement('div');
+    bindList.className = 'tpl-menu-bind';
+    pop.append(bindList);
+
+    const manage = doc.createElement('button');
+    manage.type = 'button';
+    manage.className = 'tpl-menu-item tpl-menu-action';
+    manage.dataset.tplAction = 'manage';
+    manage.textContent = '管理（名前を変更・削除）…';
+    pop.append(manage);
 
     mount.appendChild(trigger);
     mount.appendChild(pop);
     this._pop = pop;
+    this._list = list;
+    this._bindList = bindList;
+    this._renderRows();
 
     trigger.addEventListener('click', (e) => {
       if (e && typeof e.stopPropagation === 'function') {
@@ -11963,17 +13884,38 @@ class TimeframeMenu {
       }
       this._toggle();
     });
-    // 項目クリック: 選択自体は bind() の data-timeframe 配線が行う。ここでは閉じるだけ。
+    // 項目クリック（委譲）: 行＝適用要求、紐付け＝設定/解除、アクション＝保存/管理。いずれも閉じる。
     pop.addEventListener('click', (e) => {
-      const t = e && e.target;
-      if (t && t.dataset && t.dataset.timeframe) {
+      const t = this._resolveItem(e && e.target);
+      const ds = t && t.dataset;
+      if (!ds) {
+        return;
+      }
+      if (ds.templateId) {
         this._setOpen(false);
+        this._onSelect?.(ds.templateId);
+        return;
+      }
+      if (ds.tplBind !== undefined) {
+        this._setOpen(false);
+        this._onBind?.(ds.tplBind === '' ? null : ds.tplBind);
+        return;
+      }
+      if (ds.tplAction === 'save') {
+        this._setOpen(false);
+        this._onSave?.();
+        return;
+      }
+      if (ds.tplAction === 'manage') {
+        this._setOpen(false);
+        this._onManage?.();
       }
     });
-    // 外側クリックで閉じる（メニュー内クリックは pop/trigger 側で stopPropagation/処理済み）。
-    if (typeof doc.addEventListener === 'function') {
-      doc.addEventListener('click', () => this._setOpen(false));
-    }
+    // 外側クリックで閉じる（メニュー内クリックは pop/trigger 側で処理済み）。
+    // ISSUE-169: 前 mount ぶんの document リスナを外してから張る（線形蓄積の停止）。
+    this._docCloseHandler = () => this._setOpen(false);
+    this._doc = doc;
+    installDocumentCloseHandler(doc, 'chart-template', this._docCloseHandler);
     pop.addEventListener('pointerdown', (e) => {
       if (e && typeof e.stopPropagation === 'function') {
         e.stopPropagation();
@@ -11981,19 +13923,885 @@ class TimeframeMenu {
     });
   }
 
+  // クリック対象から「項目要素」を解決する。行は名前・バッジの子 span を持つため、実 DOM では
+  //   e.target が子要素になりうる（時間足メニューの項目はテキストのみで子を持たないため不要だった）。
+  //   子要素からは closest で項目まで遡る（CSS の pointer-events に依存せず成立させる）。
+  _resolveItem(target) {
+    if (!target) {
+      return null;
+    }
+    const ds = target.dataset;
+    if (ds && (ds.templateId || ds.tplBind !== undefined || ds.tplAction)) {
+      return target;
+    }
+    if (typeof target.closest === 'function') {
+      return target.closest('[data-template-id],[data-tpl-bind],[data-tpl-action]');
+    }
+    return null;
+  }
+
+  // ビューモデル注入（U3: controller が保存・改名・削除・適用・紐付けの後に呼ぶ）。
+  render({ templates, bindings, activeTemplateId, timeframe } = {}) {
+    if (Array.isArray(templates)) {
+      this._templates = templates;
+    }
+    if (bindings && typeof bindings === 'object') {
+      this._bindings = bindings;
+    }
+    if (activeTemplateId !== undefined) {
+      this._activeTemplateId = activeTemplateId;
+    }
+    if (timeframe !== undefined) {
+      this._timeframe = timeframe;
+    }
+    this._renderRows();
+  }
+
+  // 一覧・紐付け選択の中身を作り直す（コンテナ自体は install 時の 1 個を保持する）。
+  _renderRows() {
+    const doc = this._doc;
+    if (!doc || !this._list || !this._bindList) {
+      return;
+    }
+    this._clear(this._list);
+    for (const t of this._templates) {
+      this._list.append(this._buildRow(t));
+    }
+    this._clear(this._bindList);
+    this._bindList.append(this._buildBindItem('', '紐付けなし'));
+    for (const t of this._templates) {
+      this._bindList.append(this._buildBindItem(t.templateId, t.name));
+    }
+  }
+
+  _clear(el) {
+    // IndicatorLegendView と同作法（innerHTML='' で子を落とす）。
+    el.innerHTML = '';
+  }
+
+  // 保存済み 1 行: [名前] [紐付け先バッジ]。行は data-template-id で識別できる（U4 の委譲元）。
+  _buildRow(t) {
+    const doc = this._doc;
+    const row = doc.createElement('button');
+    row.type = 'button';
+    row.className = 'tpl-menu-item tpl-menu-row';
+    row.dataset.templateId = t.templateId;
+    if (t.templateId === this._activeTemplateId) {
+      row.classList.add('is-active');
+    }
+    // 「● = 現在足に紐付け」（§6.2 のメニュー構造）。現在足が未注入・未紐付けなら空。
+    const mark = doc.createElement('span');
+    mark.className = 'tpl-menu-mark';
+    mark.textContent = this._timeframe && this._bindings[this._timeframe] === t.templateId ? '●' : '';
+    const name = doc.createElement('span');
+    name.className = 'tpl-menu-name';
+    name.textContent = t.name;
+    const badge = doc.createElement('span');
+    badge.className = 'tpl-menu-badge';
+    const tfs = Object.entries(this._bindings)
+      .filter(([, id]) => id === t.templateId)
+      .map(([tf]) => tf);
+    badge.textContent = tfs.length > 0 ? `(${tfs.join(', ')})` : '';
+    row.append(mark, name, badge);
+    return row;
+  }
+
+  // 「この時間足に紐付け」の 1 項目（templateId='' は紐付けなし＝解除）。
+  _buildBindItem(templateId, text) {
+    const doc = this._doc;
+    const item = doc.createElement('button');
+    item.type = 'button';
+    item.className = 'tpl-menu-item tpl-menu-bind-item';
+    item.dataset.tplBind = templateId;
+    item.textContent = text;
+    return item;
+  }
+
+  // ISSUE-169: 明示的な後片付け。document スコープのリスナを外す（DOM は呼び出し側が破棄する）。
+  //   呼ばれなくても install 時の自己修復で蓄積は有界（document あたり 1 個）になる。
+  dispose() {
+    removeDocumentCloseHandler(this._doc, 'chart-template', this._docCloseHandler);
+    this._docCloseHandler = null;
+  }
+
   _toggle() {
     const pop = this._pop;
-    const isOpen = !!(pop.classList && pop.classList.contains && !pop.classList.contains('is-hidden'));
+    const isOpen = !!(pop && pop.classList && pop.classList.contains && !pop.classList.contains('is-hidden'));
     this._setOpen(!isOpen);
   }
 
   _setOpen(on) {
     const pop = this._pop;
+    if (on && this._provide) {
+      // U6: 開くたびに再描画する（restore() 完了との順序依存を構造的に作らない）。
+      this.render(this._provide() ?? {});
+    }
     if (pop && pop.classList && typeof pop.classList.toggle === 'function') {
       pop.classList.toggle('is-hidden', !on);
     }
   }
 }
+
+
+// ===== js/adapter/front/chart_template_dialogs.js =====
+// chart_template_dialogs.js — テンプレートの保存／管理モーダル DOM（両アプリ共有）。
+//
+// 設計入力（唯一の仕様源）: .doc/indicator-management-ui/基本設計_チャートテンプレート.md v0.1.1
+//   §6.2（「現在の構成を保存…」ダイアログ＝名前入力（初期値＝空）・保存対象の指標一覧
+//        （読み取り専用プレビュー・件数と指標名）・「この時間足（例：日）に紐付ける」チェック
+//        （既定 ON）／「管理」ダイアログ＝一覧＋改名・削除（削除は確認 1 段））、
+//   §5.1 例外・F-T1（名前が空／40 文字超／件数上限は保存せずダイアログ内にインライン表示）、
+//   §5.5（改名は検証して更新・削除は確認を 1 段挟む）、
+//   §7.1（controller を知らない＝DIP）。
+//
+// 参照実装（同型元）: properties_dialog.js（open で DOM 構築 → document.body へ追加、close で
+//   parentNode から除去。背景クリックでは閉じない＝誤操作防止・§2.3）。
+//
+// 責務（SRP）: DOM 構築とイベント配線のみ。名前検証・永続化・テンプレート操作は
+//   注入コールバック（onSubmit / onRename / onDelete）へ委譲し、結果 { ok, code } を
+//   インライン表示へ写像する（判定ロジックは本ファイルに持たない）。
+
+// code（usecase/chart_templates.js の CODE 語彙）→ 表示文言。未知 code は既定文言へ倒す。
+const MESSAGE = Object.freeze({
+  empty: '名前を入力してください。',
+  too_long: '名前は 40 文字以内で入力してください。',
+  duplicate: '同じ名前のテンプレートが既にあります。',
+  limit: 'テンプレートは 50 件までです。不要なテンプレートを削除してください。',
+  not_found: '対象のテンプレートが見つかりません。',
+});
+
+function messageFor(code) {
+  return MESSAGE[code] ?? '保存できませんでした。';
+}
+
+class ChartTemplateDialogs {
+  // document: DOM 実装（注入）。null 可（DOM 不在時は各メソッドが no-op＝防御）。
+  constructor({ document: doc = null } = {}) {
+    this._doc = doc;
+    this._root = null;
+  }
+
+  _usable() {
+    const doc = this._doc;
+    return !!(doc && typeof doc.createElement === 'function' && doc.body && typeof doc.body.append === 'function');
+  }
+
+  close() {
+    if (this._root && this._root.parentNode) {
+      this._root.parentNode.removeChild(this._root);
+    }
+    this._root = null;
+  }
+
+  // ---- 共通の殻（背景＋パネル＋ヘッダ＋本文＋フッタ）--------------------------
+  _openShell(kind, title) {
+    this.close(); // 同時に 2 枚開かない（後勝ち）。
+    const doc = this._doc;
+    const root = doc.createElement('div');
+    root.className = 'tpl-dialog-backdrop is-open';
+    root.dataset.tplDialog = kind;
+
+    const panel = doc.createElement('div');
+    panel.className = 'tpl-dialog';
+    if (typeof panel.setAttribute === 'function') {
+      panel.setAttribute('role', 'dialog');
+    }
+
+    const head = doc.createElement('div');
+    head.className = 'tpl-dialog-head';
+    const titleEl = doc.createElement('span');
+    titleEl.className = 'tpl-dialog-title';
+    titleEl.textContent = title;
+    const closeBtn = doc.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'tpl-dialog-close';
+    closeBtn.dataset.tplAction = 'cancel';
+    closeBtn.textContent = '×';
+    closeBtn.addEventListener('click', () => this.close());
+    head.append(titleEl, closeBtn);
+
+    const body = doc.createElement('div');
+    body.className = 'tpl-dialog-body';
+
+    const error = doc.createElement('div');
+    error.className = 'tpl-dialog-error';
+    error.dataset.tplError = kind;
+    error.textContent = '';
+
+    const foot = doc.createElement('div');
+    foot.className = 'tpl-dialog-foot';
+
+    panel.append(head, body, error, foot);
+    root.append(panel);
+    // 背景クリックでは閉じない（誤操作防止・properties_dialog と同方針）。
+    root.addEventListener('mousedown', (ev) => {
+      if (ev && ev.target === root && typeof ev.stopPropagation === 'function') {
+        ev.stopPropagation();
+      }
+    });
+    doc.body.append(root);
+    this._root = root;
+    return { root, body, error, foot };
+  }
+
+  _button(label, action, className) {
+    const btn = this._doc.createElement('button');
+    btn.type = 'button';
+    btn.className = className;
+    btn.dataset.tplAction = action;
+    btn.textContent = label;
+    return btn;
+  }
+
+  // ---- UC-T01「現在の構成を保存…」-------------------------------------------
+  /**
+   * @param {object} opts
+   * @param {string}   [opts.timeframeLabel] 現在の時間足の表示名（例「日」）。
+   * @param {string[]} [opts.indicatorNames] 保存対象の指標名（読み取り専用プレビュー）。
+   * @param {function} [opts.onSubmit] ({ name, bindCurrentTimeframe }) => { ok, code }。
+   * @param {?function} [opts.findExisting] (name) => CHART_TEMPLATE|null。正規化名が一致する既存
+   *   テンプレートを返す判定器（usecase の純関数を注入する。本ダイアログは文字列比較を持たない）。
+   *   未注入時は確認を挟まない（従来挙動）。
+   */
+  openSave({
+    timeframeLabel = '', indicatorNames = [], onSubmit = () => ({ ok: true }), findExisting = null,
+  } = {}) {
+    if (!this._usable()) {
+      return null;
+    }
+    const doc = this._doc;
+    const { root, body, error, foot } = this._openShell('save', '現在の構成を保存');
+
+    // 名前入力（初期値＝空・§6.2）。
+    const nameRow = doc.createElement('div');
+    nameRow.className = 'tpl-dialog-row';
+    const nameLabel = doc.createElement('span');
+    nameLabel.className = 'tpl-dialog-label';
+    nameLabel.textContent = 'テンプレート名';
+    const nameInput = doc.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'tpl-dialog-input';
+    nameInput.dataset.tplField = 'name';
+    nameInput.value = '';
+    nameRow.append(nameLabel, nameInput);
+
+    // 保存対象の指標一覧（読み取り専用プレビュー・件数と指標名・§6.2）。
+    const preview = doc.createElement('div');
+    preview.className = 'tpl-dialog-preview';
+    const previewHead = doc.createElement('div');
+    previewHead.className = 'tpl-dialog-preview-head';
+    previewHead.textContent = `保存対象の指標: ${indicatorNames.length} 件`;
+    preview.append(previewHead);
+    for (const label of indicatorNames) {
+      const item = doc.createElement('div');
+      item.className = 'tpl-dialog-preview-item';
+      item.textContent = label;
+      preview.append(item);
+    }
+
+    // 「この時間足（例：日）に紐付ける」チェック（既定 ON・§6.2）。
+    const bindRow = doc.createElement('label');
+    bindRow.className = 'tpl-dialog-check';
+    const bindInput = doc.createElement('input');
+    bindInput.type = 'checkbox';
+    bindInput.dataset.tplField = 'bind';
+    bindInput.checked = true;
+    const bindText = doc.createElement('span');
+    bindText.textContent = timeframeLabel
+      ? `この時間足（${timeframeLabel}）に紐付ける`
+      : 'この時間足に紐付ける';
+    bindRow.append(bindInput, bindText);
+
+    body.append(nameRow, preview, bindRow);
+
+    const cancel = this._button('キャンセル', 'cancel', 'tpl-dialog-btn');
+    cancel.addEventListener('click', () => this.close());
+    const submit = this._button('保存', 'submit', 'tpl-dialog-btn is-primary');
+    // 上書き確認（ユーザー指示 2026-07-28）: 正規化名が既存と一致する場合は保存前に確認 1 段を挟む。
+    //   確認状態＝「上書きする」ラベル＋対象名のインライン表示。名前を編集したら解除する
+    //   （§5.5 削除の確認 1 段と同型のイディオム）。判定は注入された usecase 純関数のみが行う。
+    let pendingOverwrite = null; // 確認中の対象テンプレート（null=通常の保存状態）。
+    const clearOverwriteConfirm = () => {
+      if (!pendingOverwrite) {
+        return;
+      }
+      pendingOverwrite = null;
+      submit.textContent = '保存';
+      error.textContent = '';
+      error.classList.remove('is-confirm');
+    };
+    // 名前の編集で確認を解除する（編集後の名前が別テンプレートと一致すれば再度確認に入る）。
+    nameInput.addEventListener('input', clearOverwriteConfirm);
+    nameInput.addEventListener('change', clearOverwriteConfirm);
+    submit.addEventListener('click', () => {
+      if (!pendingOverwrite) {
+        const existing = typeof findExisting === 'function' ? findExisting(nameInput.value) : null;
+        if (existing) {
+          // 保存せず確認へ入る。エラーではないため配色はエラー色にしない（is-confirm）。
+          pendingOverwrite = existing;
+          submit.textContent = '上書きする';
+          error.textContent = `「${existing.name}」を上書きします。`;
+          error.classList.add('is-confirm');
+          return;
+        }
+      }
+      const result = onSubmit({ name: nameInput.value, bindCurrentTimeframe: !!bindInput.checked }) ?? { ok: true };
+      if (result.ok) {
+        this.close();
+        return;
+      }
+      clearOverwriteConfirm();
+      error.textContent = messageFor(result.code); // F-T1: ダイアログ内インライン表示。
+    });
+    foot.append(cancel, submit);
+
+    if (typeof nameInput.focus === 'function') {
+      nameInput.focus();
+    }
+    return root;
+  }
+
+  // ---- UC-T05「管理（改名・削除）…」-----------------------------------------
+  /**
+   * @param {object} opts
+   * @param {Array}    [opts.templates] CHART_TEMPLATE[]（宣言順に一覧）。
+   * @param {function} [opts.onRename] (templateId, name) => { ok, code }。
+   * @param {function} [opts.onDelete] (templateId) => void（確認 1 段の後に呼ばれる）。
+   */
+  openManage({ templates = [], onRename = () => ({ ok: true }), onDelete = () => {} } = {}) {
+    if (!this._usable()) {
+      return null;
+    }
+    const doc = this._doc;
+    const { root, body, error, foot } = this._openShell('manage', 'テンプレートの管理');
+
+    const list = doc.createElement('div');
+    list.className = 'tpl-dialog-list';
+    for (const t of templates) {
+      list.append(this._buildManageRow(t, { error, onRename, onDelete }));
+    }
+    body.append(list);
+
+    const close = this._button('閉じる', 'cancel', 'tpl-dialog-btn');
+    close.addEventListener('click', () => this.close());
+    foot.append(close);
+    return root;
+  }
+
+  // 管理ダイアログの 1 行: [名前] [改名] [削除]。改名・削除の操作面は行内で切り替える。
+  _buildManageRow(t, { error, onRename, onDelete }) {
+    const doc = this._doc;
+    const row = doc.createElement('div');
+    row.className = 'tpl-dialog-list-row';
+    row.dataset.tplRow = t.templateId;
+
+    const name = doc.createElement('span');
+    name.className = 'tpl-dialog-list-name';
+    name.textContent = t.name;
+
+    // 改名: 入力＋確定＋取消（既定は非表示クラス）。
+    const renameInput = doc.createElement('input');
+    renameInput.type = 'text';
+    renameInput.className = 'tpl-dialog-input tpl-dialog-rename is-hidden';
+    renameInput.dataset.tplRenameInput = t.templateId;
+    renameInput.value = t.name;
+    const renameCommit = doc.createElement('button');
+    renameCommit.type = 'button';
+    renameCommit.className = 'tpl-dialog-btn is-hidden';
+    renameCommit.dataset.tplRenameCommit = t.templateId;
+    renameCommit.textContent = '確定';
+
+    const rename = doc.createElement('button');
+    rename.type = 'button';
+    rename.className = 'tpl-dialog-btn';
+    rename.dataset.tplRename = t.templateId;
+    rename.textContent = '名前を変更';
+    rename.addEventListener('click', () => {
+      renameInput.classList.remove('is-hidden');
+      renameCommit.classList.remove('is-hidden');
+      rename.classList.add('is-hidden');
+    });
+    renameCommit.addEventListener('click', () => {
+      error.textContent = '';
+      const result = onRename(t.templateId, renameInput.value) ?? { ok: true };
+      if (result.ok) {
+        name.textContent = renameInput.value;
+        renameInput.classList.add('is-hidden');
+        renameCommit.classList.add('is-hidden');
+        rename.classList.remove('is-hidden');
+        return;
+      }
+      error.textContent = messageFor(result.code); // F-T1: インライン表示・閉じない。
+    });
+
+    // 削除: 確認を 1 段挟む（§5.5・取り消し不能な状態変更のため）。
+    const confirm = doc.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'tpl-dialog-btn is-danger is-hidden';
+    confirm.dataset.tplDeleteConfirm = t.templateId;
+    confirm.textContent = '削除する';
+    const remove = doc.createElement('button');
+    remove.type = 'button';
+    remove.className = 'tpl-dialog-btn';
+    remove.dataset.tplDelete = t.templateId;
+    remove.textContent = '削除';
+    remove.addEventListener('click', () => {
+      confirm.classList.remove('is-hidden');
+      remove.classList.add('is-hidden');
+    });
+    confirm.addEventListener('click', () => {
+      onDelete(t.templateId);
+      if (row.parentNode && typeof row.parentNode.removeChild === 'function') {
+        row.parentNode.removeChild(row);
+      }
+    });
+
+    row.append(name, renameInput, renameCommit, rename, confirm, remove);
+    return row;
+  }
+}
+
+
+// ===== js/adapter/front/chart_template_controller.js =====
+// chart_template_controller.js — チャートテンプレート（保存・適用・紐付け・切替時自動適用）の協働子。
+//
+// 設計入力（唯一の仕様源）: .doc/indicator-management-ui/基本設計_チャートテンプレート.md v0.1.1
+//   §5.1（UC-T01 保存）／§5.2（UC-T02 適用）／§5.3（UC-T03 紐付け）／§5.4（UC-T04 切替時自動適用）／
+//   §5.5（UC-T05 改名・削除）／§5.6（F-T1〜F-T6）／§7.1（ホスト契約にのみ依存する協働子）／
+//   §7.2（適用手順の実体は共有ベースの公開入口 `IndicatorStateStore.rebuildApplied` に単一ソース化。
+//        時間足切替への介入は購読スロット（単数・使用済み＝E-7）を使わず composition root での
+//        `setTimeframe` デコレートで行い、順序と再入防止は**本協働子が所有する**）。
+//
+// 責務（SRP）: テンプレート集合・紐付けの保持と、UC-T01〜T05 のオーケストレーション。
+// 非責務: DOM 構築（menu / dialogs）・localStorage 具象（gateway）・再構築ループ（共有ベース）。
+//
+// 多態への非依存（§5.2 手順 1）: `removeInstance` は base（`indicator_controller.js:555-561`・MP 分岐
+//   なし）と replay subclass（`replay_indicator_controller.js:257-266`・MP 分岐あり）で挙動が異なる。
+//   本協働子は多態に依存せず `_isMarketProfile(def)` で自ら分岐し、MP は `_removeMarketProfile(inst)` を
+//   呼ぶ（どちらの host 実体でも同一手順になる）。
+
+// 表示名の導出は既存の凡例（indicator_controller.js:809 _label）と同一規則の純関数を使う
+//   （host 契約を広げずに凡例と同じ表記へ揃える）。
+
+/**
+ * ChartTemplateController が host に要求する最小契約（ISP）。
+ *
+ * @typedef {object} TemplateHost
+ * @property {function} _isMarketProfile      def がアクター駆動（MP）指標かの述語。
+ * @property {function} _removeMarketProfile  MP インスタンスの除去（アクター無効化＋detach＋state 除去）。
+ * @property {function} removeInstance        非 MP インスタンスの除去（renderer 除去＋state 除去＋永続化）。
+ * @property {function} _commitState          協働子が算出した次 state を確定する。
+ * @property {function} _persistAll           applied/favorites/uiState を永続化する。
+ * @property {function} _renderLegend         凡例を再描画する。
+ * @property {{applied: Array, uiState: object, favorites: Array, seqCounters: object}} _state 純状態。
+ * @property {{get: function}} _catalog       指標定義カタログ（read: get）。
+ * @property {Map} _meta                      instanceId -> { def } 描画済みメタ。
+ * @property {object} _store                  永続化・復元ロール（read: rebuildApplied）。
+ * @property {string} _datasetRef             計算対象データセット参照（read）。
+ * @property {string} _timeframe              現在の表示時間足（read）。
+ */
+
+// TemplateHost 契約の実体列挙（構造充足テストの固定点）。既存 host（IndicatorController /
+//   ReplayIndicatorController）はいずれの面も在席済みで、追加・改変は不要（加法配線のみ）。
+//   ISSUE-099 の共有ベース契約（TIMEFRAME_HOST_CONTRACT / MARKET_PROFILE_HOST_CONTRACT）とは
+//   別の関心事のため、共有ベースへは置かず本ファイルで宣言する（U9）。
+const TEMPLATE_HOST_CONTRACT = Object.freeze({
+  role: 'TemplateHost',
+  methods: Object.freeze([
+    '_isMarketProfile', '_removeMarketProfile', 'removeInstance',
+    '_commitState', '_persistAll', '_renderLegend',
+  ]),
+  fields: Object.freeze(['_state', '_catalog', '_meta', '_store', '_datasetRef', '_timeframe']),
+});
+
+class ChartTemplateController {
+  /**
+   * @param {TemplateHost} host テンプレート契約を満たすホスト（IndicatorController 実体）。
+   * @param {object} deps
+   * @param {object} deps.gateway TemplateStorePort 実装（LocalStorageTemplateGateway）。
+   * @param {?object} [deps.menu] ChartTemplateMenu（render(vm) のみ使用・null 可）。
+   * @param {?object} [deps.dialogs] ChartTemplateDialogs（openSave / openManage・null 可）。
+   * @param {string[]} [deps.validTimeframes] 有効時間足集合（U1: composition root から注入）。
+   * @param {function} [deps.now] UNIX 秒を返す時刻源（テスト注入可）。
+   */
+  constructor(host, {
+    gateway, menu = null, dialogs = null, validTimeframes = [], timeframeLabels = null, now = null,
+  } = {}) {
+    this._host = host;
+    this._gateway = gateway;
+    this._menu = menu;
+    this._dialogs = dialogs;
+    this._validTimeframes = Array.isArray(validTimeframes) ? validTimeframes : [];
+    // 時間足キー → 表示ラベル（'1D'→'日'）。単一情報源は timeframe_menu.js の groups で、
+    //   composition root が注入する（§6.2 の文言「この時間足（例：日）に紐付ける」）。
+    //   未注入時はキーをそのまま表示する（DOM 不在テスト・後方互換）。
+    this._timeframeLabels = (timeframeLabels && typeof timeframeLabels === 'object') ? timeframeLabels : null;
+    this._now = typeof now === 'function' ? now : () => Math.floor(Date.now() / 1000);
+    // 永続層から現在値を読む（破損時は gateway が空既定へ倒す＝F-T2）。
+    this._templates = gateway.loadTemplates();
+    this._bindings = gateway.loadBindings();
+    // §4.3: templateSeq 破損時は既存 tpl#N の最大 N 以上へ復旧してから運用に入る（id 衝突回避）。
+    this._lastSeq = recoverLastSeq(gateway.loadTemplateSeq(), this._templates);
+    // §5.4 再入防止: 自動適用の実行中に発生した時間足切替要求は無視する。
+    this._switching = false;
+  }
+
+  // UI 部品（メニュー・ダイアログ）を後から結ぶ（composition root の生成順が協働子より後の場合に使う）。
+  //   結線のみで挙動は変えない（未注入時は render / ダイアログ入口が no-op）。
+  attachUi({ menu = null, dialogs = null } = {}) {
+    if (menu) {
+      this._menu = menu;
+    }
+    if (dialogs) {
+      this._dialogs = dialogs;
+    }
+    this.render();
+  }
+
+  // ---- 参照面 ---------------------------------------------------------------
+  templates() { return this._templates; }
+
+  bindings() { return this._bindings; }
+
+  // activeTemplateId は uiState（既存キー `indicatorUi.uiState.v1` への加法・§4.2）に載る。
+  activeTemplateId() {
+    return this._host._state.uiState?.activeTemplateId ?? null;
+  }
+
+  // 正規化名が一致する既存テンプレートを返す（無ければ null）。保存時の上書き確認の判定源。
+  findTemplateByName(name) {
+    return findTemplateByNameUc({ templates: this._templates, name });
+  }
+
+  // 時間足の表示ラベル（'1D'→'日'）。未注入・未知キーはキーをそのまま返す。
+  timeframeLabel(timeframe) {
+    return (this._timeframeLabels && this._timeframeLabels[timeframe]) || timeframe;
+  }
+
+  // メニュー再描画用のビューモデル（U3 の push／U6 の開くたび pull の双方で使う）。
+  viewModel() {
+    return {
+      templates: this._templates,
+      bindings: this._bindings,
+      activeTemplateId: this.activeTemplateId(),
+      // §6.2 の「● = 現在足に紐付け」印の判定に使う現在の時間足。
+      timeframe: this._host._timeframe,
+    };
+  }
+
+  render() {
+    if (this._menu && typeof this._menu.render === 'function') {
+      this._menu.render(this.viewModel());
+    }
+  }
+
+  // ---- UC-T01 保存（§5.1）----------------------------------------------------
+  saveCurrent({ name, bindCurrentTimeframe = true } = {}) {
+    const host = this._host;
+    const res = saveTemplate({
+      templates: this._templates,
+      lastSeq: this._lastSeq,
+      name,
+      applied: host._state.applied,
+      now: this._now(),
+    });
+    if (!res.ok) {
+      return res; // F-T1: 保存中止・既存データは不変（表示は dialogs 側のインライン）。
+    }
+    this._templates = res.templates;
+    this._gateway.saveTemplates(res.templates);
+    if (res.lastSeq !== this._lastSeq) {
+      this._lastSeq = res.lastSeq;
+      this._gateway.saveTemplateSeq(res.lastSeq); // §4.3: 発行と同時に永続化する。
+    }
+    if (bindCurrentTimeframe) {
+      this._bindings = setBinding({
+        bindings: this._bindings, timeframe: host._timeframe, templateId: res.templateId,
+      });
+      this._gateway.saveBindings(this._bindings);
+    }
+    this._setActiveTemplateId(res.templateId);
+    this.render();
+    return res;
+  }
+
+  // ---- UC-T02 適用（§5.2）----------------------------------------------------
+  //   現構成の「置換」（マージではない）。空テンプレートの適用は全指標除去を意味する。
+  async applyTemplate(templateId) {
+    const template = this._templates.find((t) => t && t.templateId === templateId);
+    if (!template) {
+      // §5.2 例外・F-T3: 何もしない＋当該 id を参照する紐付けの遅延クリーンアップ。
+      this._warn(`[template] 適用対象が不在: ${templateId}`);
+      this._cleanupBindingsFor(templateId);
+      this.render();
+      return false;
+    }
+    await this._removeAllApplied();   // 手順 1
+    await this._applyInstances(template); // 手順 2〜6
+    this.render();
+    return true;
+  }
+
+  // ---- UC-T03 紐付け（§5.3）--------------------------------------------------
+  //   紐付け操作そのものは構成を変更しない（適用は UC-T02／UC-T04 のみ）。
+  setBindingFor(timeframe, templateId) {
+    this._bindings = setBinding({ bindings: this._bindings, timeframe, templateId });
+    this._gateway.saveBindings(this._bindings);
+    this.render();
+    return this._bindings;
+  }
+
+  // 現在の時間足への紐付け（メニューの「この時間足に紐付け」）。null で解除。
+  bindCurrentTimeframe(templateId) {
+    return this.setBindingFor(this._host._timeframe, templateId);
+  }
+
+  // ---- UC-T04 切替時自動適用（§5.4）------------------------------------------
+  /**
+   * 時間足切替に介入する（composition root が `controller.setTimeframe` をデコレートして呼ぶ）。
+   * 順序・再入防止は本協働子が所有し、root は差し替え 1 行のみを持つ。
+   *
+   * @param {string} next 切替先の時間足。
+   * @param {function} proceed 既存の時間足切替処理（(timeframe) => Promise）。
+   */
+  async onTimeframeChange(next, proceed) {
+    if (this._switching) {
+      return undefined; // 自動適用の実行中に発生した切替要求は無視する（§5.4 再入防止）。
+    }
+    // §5.4 発火条件 1「ユーザーの明示的な時間足**切替**である」: 現在足と同じ項目のクリックは
+    //   切替が発生しないため発火条件を満たさない。既存挙動（`timeframe_controller.js:63-65` の
+    //   同一性ガードによる no-op）へそのまま委譲する。このガードが無いと、既存実装では完全な
+    //   no-op だったクリック 1 回で現構成の除去・置換・永続化まで到達する（既存挙動の破壊）。
+    //   時間足メニューは現在足の項目も clickable（`indicator_controller.js:787` が全
+    //   [data-timeframe] へ click を配線）であるため実 UI から到達可能。
+    if (!next || next === this._host._timeframe) {
+      return proceed(next);
+    }
+    const resolved = resolveBinding({
+      bindings: this._bindings,
+      templates: this._templates,
+      timeframe: next,
+      validTimeframes: this._validTimeframes,
+      activeTemplateId: this.activeTemplateId(),
+    });
+    if (resolved.changed) {
+      // F-T3: dangling 紐付けの遅延クリーンアップ（自動適用はしない）。
+      this._bindings = resolved.bindings;
+      this._gateway.saveBindings(this._bindings);
+      this.render();
+    }
+    if (resolved.templateId === null) {
+      // 紐付けなし・dangling・同一テンプレート由来 → 現行挙動を完全に維持する。
+      return proceed(next);
+    }
+    const template = this._templates.find((t) => t.templateId === resolved.templateId);
+    this._switching = true;
+    try {
+      await this._removeAllApplied(); // ステップ 1: 切替前に現構成を除去（計算はしない）。
+      // ステップ 2: 既存の切替処理（適用済み 0 件＝指標計算なし）。
+      //   ★ 失敗時も**ステップ 3 を必ず実行する**（§5.4 の順序 1→2→3 は不変。実行の有無だけを保証する）:
+      //   ステップ 1 の除去は既に永続化されている（applied.v1=[]）ため、ここで中断すると
+      //   「除去済み・未適用」＝全指標消失がそのまま永続値になり、リロードでも戻らない
+      //   （実 UI 検証 D-2 の症状）。切替の失敗は指標構成を破棄してよい理由にならない。
+      let switchError = null;
+      try {
+        await proceed(next);
+      } catch (e) {
+        switchError = e;
+        this._warn(`[template] 時間足切替が失敗（構成は適用して整合を保つ）: ${e && e.message ? e.message : e}`);
+      }
+      await this._applyInstances(template); // ステップ 3: 新しい足で 1 回だけ適用（UC-T02 手順 2 以降）。
+      this.render();
+      if (switchError) {
+        throw switchError; // 呼び出し元への例外伝播は既存の setTimeframe と同一に保つ。
+      }
+    } finally {
+      this._switching = false;
+    }
+    return undefined;
+  }
+
+  // ---- UC-T05 改名・削除（§5.5）----------------------------------------------
+  renameTemplate(templateId, name) {
+    const res = renameTemplateUc({
+      templates: this._templates, templateId, name, now: this._now(),
+    });
+    if (!res.ok) {
+      return res; // F-T1: インライン表示は dialogs 側。既存データは不変。
+    }
+    this._templates = res.templates;
+    this._gateway.saveTemplates(res.templates);
+    this.render();
+    return res;
+  }
+
+  // 削除（確認 1 段は dialogs 側）。現在チャート上の構成は変更しない。
+  deleteTemplate(templateId) {
+    const before = this._bindings;
+    const res = deleteTemplateUc({
+      templates: this._templates,
+      bindings: this._bindings,
+      templateId,
+      activeTemplateId: this.activeTemplateId(),
+    });
+    this._templates = res.templates;
+    this._gateway.saveTemplates(res.templates);
+    if (Object.keys(res.bindings).length !== Object.keys(before).length) {
+      this._bindings = res.bindings;
+      this._gateway.saveBindings(this._bindings);
+    }
+    if (res.activeTemplateId !== this.activeTemplateId()) {
+      this._setActiveTemplateId(res.activeTemplateId);
+    }
+    this.render();
+    return res;
+  }
+
+  // ---- ダイアログ入口（メニューのコールバック先・§6.2）------------------------
+  openSaveDialog() {
+    if (!this._dialogs || typeof this._dialogs.openSave !== 'function') {
+      return;
+    }
+    const host = this._host;
+    this._dialogs.openSave({
+      timeframeLabel: this.timeframeLabel(host._timeframe),
+      indicatorNames: host._state.applied.map((i) => this._labelOf(i)),
+      // 上書き確認（ユーザー指示 2026-07-28）の判定器。判定は usecase の純関数のみが行い、
+      //   ダイアログは結果（既存テンプレート or null）を受け取るだけ（DIP・判定源の一本化）。
+      findExisting: (name) => this.findTemplateByName(name),
+      onSubmit: ({ name, bindCurrentTimeframe }) => this.saveCurrent({ name, bindCurrentTimeframe }),
+    });
+  }
+
+  openManageDialog() {
+    if (!this._dialogs || typeof this._dialogs.openManage !== 'function') {
+      return;
+    }
+    this._dialogs.openManage({
+      templates: this._templates,
+      onRename: (templateId, name) => this.renameTemplate(templateId, name),
+      onDelete: (templateId) => this.deleteTemplate(templateId),
+    });
+  }
+
+  // ---- 内部（手順の実体）-----------------------------------------------------
+
+  // 手順 1: 現在の適用済みインスタンスを全件除去する（計算はしない）。
+  //   U5: バッチ除去入口は新設せず、既存 `removeInstance` を N 回呼ぶ。
+  async _removeAllApplied() {
+    const host = this._host;
+    for (const inst of [...host._state.applied]) {
+      const def = host._catalog.get(inst.indicatorId);
+      if (host._isMarketProfile(def)) {
+        await host._removeMarketProfile(inst);
+        continue;
+      }
+      host.removeInstance(inst.instanceId);
+    }
+  }
+
+  // 手順 2〜6: 宣言順に適用（instanceId 再採番）→ 現在の足で再構築 → activeTemplateId 更新＋永続化 → 凡例。
+  async _applyInstances(template) {
+    const host = this._host;
+    const instances = this._singleMarketProfile(template.instances ?? []);
+    const mapped = toAppliedJsonList(instances, host._state.seqCounters);
+    // rebuildApplied の事前条件（styles 再適用が `_state.applied.find` を読む）を満たすため、
+    //   再構築の前に state へ在席させる。deserialize で AppliedInstance（不変・凍結）へ復元する。
+    host._commitState(deserialize(JSON.stringify({
+      applied: mapped.applied,
+      favorites: host._state.favorites,
+      seqCounters: mapped.seqCounters,
+      uiState: host._state.uiState,
+    })));
+    // 手順 2〜4: 計算・描画・visible 復元・styles 再適用・個別失敗の局所化（共有ベースの単一ソース）。
+    //   ★ 失敗の局所化（§5.6 F-T4「当該 1 件のみスキップし残りの適用と描画は継続する。全体を中止しない」）:
+    //   共有ベースの再構築ループは非 MP の compute 例外のみを try/catch で握る。MP 復元経路
+    //   （`_mp.restoreInstance` → actor.setEnabled）は catch の外にあるため、MP の失敗は
+    //   rebuildApplied 全体を reject させる。ここで中断すると**手順 5（applied.v1 の永続化）が
+    //   実行されず**、手順 1 の除去が永続化した空構成 `[]` が最終値として残り、リロードで
+    //   ユーザーの構成が消える（実 UI 検証 D-1 の症状）。よって適用の完遂（永続化・凡例）は
+    //   再構築の成否に依存させない。
+    //   共有ベース側は「1 件ずつ」呼べば失敗が当該 1 件に閉じる（再構築ループの本体はインスタンス
+    //   間に共有状態を持たない: `_meta` は Map への追加、`_commitLastSeries` は毎回上書きで
+    //   反復間の読み出しが無い、gateway は呼び出しごとに生成される）。よって公開入口を増やさず
+    //   （§7.2 S2 の「公開入口 1 個」を維持）、協働子側で 1 件ずつ呼んで局所化する。
+    for (const inst of [...host._state.applied]) {
+      try {
+        await host._store.rebuildApplied([inst]);
+      } catch (e) {
+        this._warn(`[template] 適用スキップ: ${inst.instanceId} / ${e && e.message ? e.message : e}`);
+      }
+    }
+    // 手順 5: activeTemplateId 更新＋永続化（applied.v1 / uiState.v1）。
+    this._setActiveTemplateId(template.templateId);
+    // 手順 6: 凡例を再描画する。
+    host._renderLegend();
+  }
+
+  // MP は宣言順の先頭 1 件のみ適用し、後続は無視して警告する（§5.2・E-8 単一インスタンス制約）。
+  _singleMarketProfile(instances) {
+    const host = this._host;
+    const out = [];
+    let seen = false;
+    for (const t of instances) {
+      const def = host._catalog.get(t.indicatorId);
+      if (def && host._isMarketProfile(def)) {
+        if (seen) {
+          this._warn(`[template] MP は単一インスタンス制約のため後続を無視: ${t.indicatorId}`);
+          continue;
+        }
+        seen = true;
+      }
+      out.push(t);
+    }
+    return out;
+  }
+
+  // uiState へ activeTemplateId を確定して永続化する（§4.2 既存キーへの加法）。
+  _setActiveTemplateId(templateId) {
+    const host = this._host;
+    host._commitState({
+      ...host._state,
+      uiState: { ...host._state.uiState, activeTemplateId: templateId ?? null },
+    });
+    host._persistAll();
+  }
+
+  // 参照先不在テンプレートへの紐付けを削除して永続化する（F-T3 遅延クリーンアップ）。
+  _cleanupBindingsFor(templateId) {
+    const entries = Object.entries(this._bindings).filter(([, id]) => id === templateId);
+    if (entries.length === 0) {
+      return;
+    }
+    const next = { ...this._bindings };
+    for (const [tf] of entries) {
+      delete next[tf];
+    }
+    this._bindings = next;
+    this._gateway.saveBindings(next);
+  }
+
+  // 保存プレビュー用の指標ラベル（凡例と同一表記。カタログ非在席は indicatorId のまま）。
+  _labelOf(inst) {
+    const def = this._host._catalog.get(inst.indicatorId);
+    if (!def) {
+      return inst.indicatorId;
+    }
+    const label = humanizeKey(def.displayNameKey ?? def.id);
+    const variant = inst.variant && inst.variant !== 'default' ? ` (${inst.variant})` : '';
+    return `${label}${variant}`;
+  }
+
+  _warn(msg) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(msg);
+    }
+  }
+}
+
+const deleteTemplateUc = deleteTemplate;
+const findTemplateByNameUc = findTemplateByName;
+const renameTemplateUc = renameTemplate;
 
 
 // ===== js/adapter/front/live_follow_controller.js =====
@@ -12793,6 +15601,9 @@ class TfPeriodTooltip {
 
 // SAMPLE_DATA（埋め込み 635KB）は A方式（file://）でのみ動的 import する。B方式（served）は
 // candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
+// チャートテンプレート（基本設計_チャートテンプレート v0.1.1 §7.1）: gateway・menu・dialogs・協働子を
+//   ここで生成・注入する。統合 UI の唯一の bootstrap 経路（E-9）であるため、この配線でライブ・
+//   リプレイ両モードに同時成立する。
 // GrowthCoordinator は共有 market_profile モジュール（usecase/growth_coordinator.js）へ移設済み。
 //   present は adapter/front/mp_live_mode_coordinator.js（symlink）経由で import（byte 不変 retarget）。
 
@@ -12952,6 +15763,9 @@ async function bootstrap({
     renderer.setCandles(initialCandles);
   }
   const persistence = new LocalStorageGateway(storage);
+  // テンプレート永続化（§4.2 の 3 キー）。既存 LocalStorageGateway は無改変（ISP）。接頭辞は
+  //   注入された storage（統合 UI は scopedStorage）が付けるため gateway は自前で付けない。
+  const templateStore = new LocalStorageTemplateGateway(storage);
   const catalog = new IndicatorCatalogClient();
   // param 既定値の単一情報源（back catalog_schema）を GET /catalog で解決する（ISSUE-092 ③）。
   //   B方式のみ取得し、失敗時は静的既定（catalog.js リテラル）へフォールバック（オフライン耐性・UI 不変）。
@@ -13072,6 +15886,22 @@ async function bootstrap({
   // ISSUE-117: 時間足ドロップダウンの開閉制御（選択・active 同期は bind() の data-timeframe 配線）。
   new TimeframeMenu({ document: doc }).install();
 
+  // チャートテンプレートのメニュー・ダイアログ（§6.1・§6.2）。項目 DOM は共有 JS が生成し、
+  //   index.html には空マウント（#tpl-menu）のみを置く。メニューは協働子を import せず
+  //   コールバック注入で結ぶ（DIP）。協働子は controller 生成後に代入されるため遅延参照する。
+  let chartTemplates = null;
+  const chartTemplateDialogs = new ChartTemplateDialogs({ document: doc });
+  const chartTemplateMenu = new ChartTemplateMenu({
+    document: doc,
+    // U6: 開くたびに最新のビューモデルで再描画する（restore() との順序依存を作らない）。
+    provide: () => (chartTemplates ? chartTemplates.viewModel() : {}),
+    onSelect: (templateId) => (chartTemplates ? chartTemplates.applyTemplate(templateId) : undefined),
+    onSave: () => (chartTemplates ? chartTemplates.openSaveDialog() : undefined),
+    onBind: (templateId) => (chartTemplates ? chartTemplates.bindCurrentTimeframe(templateId) : undefined),
+    onManage: () => (chartTemplates ? chartTemplates.openManageDialog() : undefined),
+  });
+  chartTemplateMenu.install();
+
   // ライブ連動（present 固有・B方式のみ）: チャートのライブトグル状態（FOLLOW/ANALYSIS）を MP の成長状態へ
   //   連動させる共有協調役（Model A 直交化）。表示モードは gear 選択を維持し、FOLLOW→growing=true（足内成長）／
   //   ANALYSIS→growing=false（static）。defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定
@@ -13096,6 +15926,24 @@ async function bootstrap({
     mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
     mpGrowthResolver: mpLiveModeCoordinator ? () => mpLiveModeCoordinator.isGrowing() : null,
   });
+
+  // テンプレート協働子（§7.1）。有効時間足集合は composition root から注入する（U1・present は
+  //   既定 9 足＝時間足メニューと同一集合。単一情報源は domain/tf_meta.js の TF_BAR_SEC＝
+  //   LAYERING_CONVENTIONS「UI の時間足ボタン集合もこの集合から乖離させない」）。
+  chartTemplates = new ChartTemplateController(controller, {
+    gateway: templateStore,
+    menu: chartTemplateMenu,
+    dialogs: chartTemplateDialogs,
+    validTimeframes: Object.keys(TF_BAR_SEC),
+    // 保存ダイアログの文言「この時間足（日）に紐付ける」用のラベル写像（§6.2）。
+    //   単一情報源は timeframe_menu.js の groups（キーとラベルを二重定義しない）。
+    timeframeLabels: timeframeLabels(),
+  });
+  // 時間足切替への介入（§7.2）: 購読スロット（setTimeframeObserver）は単数かつ売買マーカーで
+  //   使用済み（E-7）のため使わず、own property での差し替え 1 行で行う。順序（除去 → 切替 →
+  //   適用）と再入防止は協働子が所有する（root はここに手続きを持たない）。
+  const proceedSetTimeframe = controller.setTimeframe.bind(controller);
+  controller.setTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
 
   // 時間足毎profile列（tf-period・最小価格単位・ローリング窓＋ジッターバッファ）の配線（served のみ）。
   //   sessions モード（marketProfile.isSessions()）かつ対応 tf（1m..1D）のとき、可視レンジぶんの列を
@@ -13170,14 +16018,26 @@ async function bootstrap({
     // ISSUE-066: MP パラメータ変更時の tf-period 即時再適用。tfpShouldOn なら setEnabled(true)＝
     //   refresh→ensure で jitter buffer の src 差分キャッシュ破棄→新 src 再fetch→再描画。不成立
     //   （sessions 解除/非対応 tf）は列を消す。可視レンジ変化のデバウンスと違い**即時**（src 切替の反映）。
+    // ISSUE-054: 「レンジ」(barw) を tf-period 列にも効かせる。日別プロファイルの描画を tf-period が
+    //   担う経路では、レンジを変えても列は最小価格単位のままで、`/market_profile` 由来の POC/VA だけが
+    //   変わる＝**パラメータが部分的にしか効かない**状態だった。列は取得・キャッシュを変えずに
+    //   **描画時に barw 幅へ束ねる**（測定は最小単位のまま保つ＝粗ビンのアーティファクトを持ち込まない）。
+    const syncTfBinWidth = () => {
+      if (typeof mpTfPeriodSink.setTfBinWidth === 'function'
+          && typeof marketProfile.barwParam === 'function') {
+        mpTfPeriodSink.setTfBinWidth(marketProfile.barwParam());
+      }
+    };
     refreshTfPeriodNow = () => {
       if (!tfPeriodActor) { return; }
+      syncTfBinWidth();                     // レンジ変更を列へ即時反映（取得の要否と独立）。
       if (!tfpShouldOn()) {
         if (tfPeriodActor.isEnabled()) { tfPeriodActor.setEnabled(false); }
         return;
       }
       tfPeriodActor.setEnabled(true);
     };
+    syncTfBinWidth();                       // 初期値（保存済みインスタンスのレンジ）を反映する。
     // ISSUE-083: MP の live tick（sessions×tfDraws×growing）→ 当日チャンクの stale-while-revalidate
     //   再取得（tfPeriodActor.onLiveTick→jitterBuffer.refreshAt）。throttle は actor 側（既定 5s）。
     //   列非描画中（isEnabled=false＝日別解除・非対応 tf）は発火しない。
@@ -13379,7 +16239,7 @@ async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle };
+  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
 }
 
 

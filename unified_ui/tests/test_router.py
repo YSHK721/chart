@@ -346,3 +346,151 @@ def test_bare_api_path_without_prefix_returns_404(router):
     assert resp.status == 404, f"expected 404 for bare api path, got {resp.status}/{resp.error}"
     assert len(live_srv.records) == 0
     assert len(replay_srv.records) == 0
+
+
+# ---- ISSUE-035 系: 静的配信のパストラバーサル防御 -----------------------------
+# replay_ui の StaticFileServer は同型の弱点（区切り境界を見ない prefix 一致）を
+#   is_relative_to へ是正済みで回帰テストも持つ（tests/unit/test_static_file_server.py）。
+#   ルータ側は os.sep 付き比較で安全だが**回帰テストが無かった**ため、実際に 8000 で
+#   配信される本経路にも同じ攻撃ケースを固定する。
+#
+# 検証設計の注意: 生の `..` は _serve_static 手前の `rel.startswith("..")` で弾かれ、
+#   realpath 比較まで到達しない。**realpath ガードそのもの**を検証するには、rel に `..` を
+#   含まないまま実体が root 外を指す経路＝ web_root 内の symlink が必要である
+#   （当初 `..` だけで書いたところ、ガードを弱める変異を検出できず空虚と判明した）。
+
+@pytest.fixture()
+def router_with_secret_sibling(upstreams, tmp_path):
+    """web_root と**接頭辞を共有する兄弟**に機密を置き、root 内から symlink を張ったルータ。"""
+    web_root = tmp_path / "unified_web"
+    web_root.mkdir()
+    (web_root / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+    secret = tmp_path / "unified_web_SECRET"      # 区切り無し prefix 一致なら通過しうる
+    secret.mkdir()
+    (secret / "leak.txt").write_text("TOP_SECRET", encoding="utf-8")
+    # rel に `..` を含まないまま root 外へ出る唯一の経路（realpath ガードの検証点）。
+    (web_root / "link").symlink_to(secret, target_is_directory=True)
+
+    live_srv, replay_srv = upstreams
+    server = router_mod.create_router_server(
+        ("127.0.0.1", 0),
+        live_upstream=_base_url(live_srv),
+        replay_upstream=_base_url(replay_srv),
+        web_root=str(web_root),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+
+
+def test_static_symlink_escaping_web_root_is_rejected(router_with_secret_sibling):
+    """web_root 内の symlink が外（接頭辞共有の兄弟）を指しても配信しない（CWE-22）。
+
+    realpath 比較を区切り境界なしの prefix 一致へ弱めると本テストが失敗する
+    （検出力を変異注入で実証済み）。
+    """
+    resp = _request(router_with_secret_sibling, "GET", "/link/leak.txt")
+    assert resp.body is None or b"TOP_SECRET" not in resp.body, "機密が漏洩した"
+    assert resp.status in (400, 404), f"逸脱要求が {resp.status} で通過している"
+
+
+@pytest.mark.parametrize("path", [
+    "/../unified_web_SECRET/leak.txt",             # 生 `..`（手前の正規化で弾かれる想定）
+    "/subdir/../../unified_web_SECRET/leak.txt",   # 深い階層からの逸脱
+])
+def test_static_dotdot_traversal_is_rejected(router_with_secret_sibling, path):
+    """生の `..` による逸脱も拒否する（正規化段の防御）。"""
+    resp = _request(router_with_secret_sibling, "GET", path)
+    assert resp.body is None or b"TOP_SECRET" not in resp.body
+    assert resp.status in (400, 404)
+
+
+def test_static_normal_file_is_still_served(router_with_secret_sibling):
+    """正規の配信は従来どおり成功する（防御が過剰に効いていない）。"""
+    resp = _request(router_with_secret_sibling, "GET", "/")
+    assert resp.status == 200
+    assert b"ok" in resp.body
+
+
+# ---- ISSUE-198: 接続の扱い（keep-alive / backlog / ヘッダ重複） ----------------
+#
+# 真因の確定（2026-07-31・実 UI 実測）:
+#   報告された「SW 経由の /live_ticks が network error」は **ルータ 8000 の一時停止**
+#   （再起動・瞬断）で再現する。ポーリング中に 8000 を落とすと `net::ERR_FAILED @
+#   /live_ticks?since=0` が連続して出る（実測 89 回中 8 回失敗）。SW はこの失敗を忠実に
+#   伝えているだけで、リライト論理の欠陥ではない。ページ側は次の poll で自動復帰する。
+#
+# 併せて実測で見つかったルータ自身の欠陥を以下で固定する。
+
+def _raw_headers(server, path):
+    """1 接続で 1 GET を行い、生のステータス行とヘッダ（重複込み）を返す。"""
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    try:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        resp.read()
+        return resp.version, resp.getheaders()
+    finally:
+        conn.close()
+
+
+def test_proxied_response_has_no_duplicate_date_or_server_header(router):
+    """上流の Date/Server を転送しない（RFC 7231 §7.1.1.2 は Date の重複を禁ずる）。
+
+    `send_response()` がルータ自身の Date/Server を必ず出すため、上流の同名ヘッダを
+    そのまま転送すると 1 応答に 2 回現れる（修正前は `curl -D -` で実測できた）。
+    """
+    server, _live, _replay = router
+    _version, headers = _raw_headers(server, "/live/candles?datasetRef=x")
+    for name in ("date", "server"):
+        n = sum(1 for key, _ in headers if key.lower() == name)
+        assert n == 1, f"{name} ヘッダが {n} 個ある（重複）: {headers}"
+
+
+def test_router_speaks_http_1_1_and_keeps_the_connection_alive(router):
+    """HTTP/1.1 で応答し、1 接続で複数リクエストを処理できる（ISSUE-198）。
+
+    既定の HTTP/1.0 では 1 リクエスト = 1 TCP 接続になり、1 画面で多数の API を並行に
+    叩く本 UI では接続生成が集中する。`_proxy` は上流本体を全読みして自前で
+    `Content-Length` を付与し、`_serve_static` / `_send_simple` も明示するため、
+    HTTP/1.1 の応答長確定要件を全経路で満たす。
+    """
+    server, _live, _replay = router
+    version, _headers = _raw_headers(server, "/live/candles?datasetRef=x")
+    assert version == 11, f"HTTP/1.1 で応答すること（実際: {version}）"
+
+    # 同一接続で 3 回。keep-alive が効いていなければ 2 回目以降が失敗する。
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    try:
+        statuses = []
+        for _ in range(3):
+            conn.request("GET", "/live/candles?datasetRef=x")
+            resp = conn.getresponse()
+            resp.read()
+            statuses.append(resp.status)
+        assert statuses == [200, 200, 200], f"1 接続で 3 回処理できること: {statuses}"
+    finally:
+        conn.close()
+
+
+def test_router_widens_accept_backlog_without_touching_stdlib_default():
+    """accept backlog を広げる。ただし stdlib のクラス属性は書き換えない（ISSUE-198）。
+
+    `ThreadingHTTPServer.request_queue_size` を直接書き換えると同一プロセス内の他サーバへ
+    波及するため、サブクラス `RouterServer` に閉じ込める。
+    """
+    import socketserver
+
+    assert router_mod.RouterServer.request_queue_size > ThreadingHTTPServer.request_queue_size
+    assert socketserver.TCPServer.request_queue_size == 5, "stdlib 既定を書き換えていないこと"
+
+
+def test_router_handler_reaps_idle_keep_alive_connections(router):
+    """idle な keep-alive 接続に上限秒を設ける（HTTP/1.1 化の副作用対策・ISSUE-198）。
+
+    ThreadingHTTPServer は 1 接続 = 1 スレッド。timeout が無いと、到達しなかったタブや
+    中断されたロードの接続がスレッドを保持し続ける。
+    """
+    assert isinstance(router_mod.RouterHandler.timeout, (int, float))
+    assert 0 < router_mod.RouterHandler.timeout <= 300

@@ -5,8 +5,10 @@ m1  : 区間 [start,end) の 1 分足 OHLC 行（``[o,h,l,c]``）。供給は **
       完全委譲する（旧: 生 CSV 全読み＋独自 repair＋独自キャッシュの第二経路を全廃）。上位足の
       ペイロードは ``_cap_m1_rows`` で 1500 行へ間引く（先頭/末尾＋窓内 高値最大/安値最小は必ず残す）。
 ticks: 区間 [start,end) の実ティック ``(sec, mid)``。tick parquet（Y/M/D）を [start,end) 跨ぎで走査し
-      ``(sec, bid, ask)`` を組み、**domain E-4 ``tick_mid_series.mid_series``** で mid 算出＋窓フィルタ
-      ＋中央値外れ値除去を行う（cap 無し・接点検証の絶対仕様）。tick_window.window_ticks と bit 一致。
+      ``(sec, bid, ask)`` を組んで返す（mid 算出＋窓フィルタ＋外れ値除去は usecase・ISSUE-031）
+      ＋中央値外れ値除去を行う（cap 無し・接点検証の絶対仕様）。挙動を固定しているのは
+      ``tests/unit/test_tick_mid_series.py``（旧 ``tick_window.window_ticks`` は現行ツリーに
+      存在しないため bit 一致の主張は撤回した・ISSUE-036(b)）。
 
 技術隔離（CLEAN_ARCH §6）: pandas / parquet IO は本ファイル内に閉じる。
 """
@@ -20,7 +22,6 @@ import pandas as pd
 
 from simulator.replay_ui.adapter import _indicator_ui_bridge
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort
-from simulator.replay_ui.domain.tick_mid_series import OUTLIER_THRESHOLD, mid_series
 
 _M1_CAP = 1500
 
@@ -50,14 +51,12 @@ class IntrabarWindowRepository:
         api_path: Any = None,
         repo_root: Any = None,
         m1_cap: int = _M1_CAP,
-        outlier_threshold: float = OUTLIER_THRESHOLD,
         bridge_loader: "Callable[..., Any] | None" = None,
     ) -> None:
         self._tick_root = Path(tick_root)
         self._api_path = api_path
         self._repo_root = repo_root
         self._m1_cap = m1_cap
-        self._threshold = outlier_threshold  # tick mid 系列の中央値外れ値除去（domain E-4）用。
         # 既定は dataset のみのアクセサ（ISSUE-136 ISP: MP controller を eager import しない）。
         # テストは fake loader を注入（MarketProfileGateway と同型）。
         self._loader = (
@@ -77,17 +76,13 @@ class IntrabarWindowRepository:
         ]
         return _cap_m1_rows(rows, self._m1_cap)
 
-    def load_ticks(self, start: int, end: int) -> "list[tuple[int, float]]":
-        raw = self._load_raw_ticks(start, end)
-        return mid_series(raw, start, end, threshold=self._threshold)
+    def load_raw_ticks(self, start: int, end: int) -> "list[tuple[int, float, float]]":
+        """[start,end) を跨ぐ全 UTC 日の parquet から ``(sec, bid, ask)`` を組む。
 
-    # ---- internal ----
-
-    def _load_raw_ticks(self, start: int, end: int) -> "list[tuple[int, float, float]]":
-        """[start,end) を跨ぐ全 UTC 日の parquet から ``(sec, bid, ask)`` を組む（窓フィルタは domain）。
-
-        tick_window.window_ticks と同一の日走査・秒符号化。窓外/外れ値の除去は
-        ``tick_mid_series.mid_series`` に一元化する（bit 一致）。
+        ISSUE-031: mid 算出・窓フィルタ・外れ値除去（domain E-4 ``tick_mid_series.mid_series``）は
+        **usecase 側で適用する**。本 adapter の責務は「保管形式（parquet の日別レイアウト）を
+        素の観測値へ変換する」ことに閉じる（偶有的性質のみを担う）。
+        日走査・秒符号化の規約は ``domain.tick_mid_series`` と一致させる。
         """
         frames: "list[pd.DataFrame]" = []
         d0 = datetime.fromtimestamp(start, tz=timezone.utc).date()

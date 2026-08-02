@@ -44,6 +44,21 @@ export class MpFetchParams {
     return this._params.src ?? null;
   }
 
+  // 現在有効な barw（レンジ pt）。resmode='range' のときのみ値を持ち、それ以外は null。
+  //
+  // ISSUE-054: 「レンジ」は日別プロファイルの解像度としてユーザーが設定する値だが、日別描画を
+  //   tf-period 列（最小価格単位）が担う経路では効かず、`/market_profile` 由来の POC/VA だけが
+  //   変わるという**部分的にしか効かない**状態だった。tf-period 側でも同じ幅で束ねるため、
+  //   明示 range と dispbp 写像後の range の**両方**を 1 か所で解決する。
+  barw() {
+    const explicit = this._params.resmode === 'range' ? Number(this._params.range) : NaN;
+    if (Number.isFinite(explicit) && explicit > 0) {
+      return explicit;
+    }
+    const mapped = Number(this.dispExtra().range);
+    return Number.isFinite(mapped) && mapped > 0 ? mapped : null;
+  }
+
   // 取得パラメータを設定する。null/undefined のキーは無視する（getContext の値やサーバ既定を潰さない）。
   //   range（レンジpt）は client.buildMarketProfileUrl が barw へ写像する（'auto' は付与しない）。
   set(params = {}) {

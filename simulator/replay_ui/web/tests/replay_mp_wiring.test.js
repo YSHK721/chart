@@ -182,7 +182,15 @@ test('during play, the revealed bar is collapsed to its open BEFORE the MP enter
     chart: fakeChart(),
     mainSeries,
     controller: fakeController(),
-    renderer: { setCandles() {} },
+    // ISSUE-170: 足内更新は ReplayView.updateForming → renderer.updateLastCandle へ一本化されており
+    //   （ライブ同一経路化・replay_view.js の docstring 参照）、mainSeries.update 直呼びは経由しない。
+    //   fake がこのメソッドを持たないと updateForming の try/catch が例外を握り潰し、畳み込みが
+    //   観測できず本テストだけが常時 fail していた。**観測点を実経路へ合わせる**（ISSUE-048 の
+    //   不変条件＝「畳み込みが enterBar の await より先」は変更していない）。
+    renderer: {
+      setCandles() {},
+      updateLastCandle(bar) { events.push({ kind: 'update', ...bar }); },
+    },
     datasetRef: 'jp225_tick',
     recentBars: 1500,
     document: doc,
@@ -246,7 +254,15 @@ test('manual navigation (playing=false) does NOT collapse the revealed bar (comp
     chart: fakeChart(),
     mainSeries,
     controller: fakeController(),
-    renderer: { setCandles() {} },
+    // ISSUE-170: 足内更新は ReplayView.updateForming → renderer.updateLastCandle へ一本化されており
+    //   （ライブ同一経路化・replay_view.js の docstring 参照）、mainSeries.update 直呼びは経由しない。
+    //   fake がこのメソッドを持たないと updateForming の try/catch が例外を握り潰し、畳み込みが
+    //   観測できず本テストだけが常時 fail していた。**観測点を実経路へ合わせる**（ISSUE-048 の
+    //   不変条件＝「畳み込みが enterBar の await より先」は変更していない）。
+    renderer: {
+      setCandles() {},
+      updateLastCandle(bar) { events.push({ kind: 'update', ...bar }); },
+    },
     datasetRef: 'jp225_tick',
     recentBars: 1500,
     document: doc,

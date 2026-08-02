@@ -23,6 +23,10 @@ const API_SEGMENTS = new Set([
   'catalog',
   'intraday',
   'available_days',
+  // 取引密度帯（時刻帯の背景色）の帯定義。ライブ core・リプレイ core の双方が同一実装を持ち
+  //   （リプレイは bridge でライブ側 controller を再利用）、同一入力で応答が byte 一致する。
+  //   よってライブ専用ではなくアクティブモードの core へ回す（/candles と同じ扱い）。
+  'tickvol_profile',
 ]);
 
 // market_profile / market_profile_forming など market_profile 系はまとめて API 扱い。

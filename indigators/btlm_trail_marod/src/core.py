@@ -132,10 +132,9 @@ def marod_series(df, *, source: str = DEFAULT_SOURCE, maxbars: int = DEFAULT_MAX
     bt = trend_line_reference()
     prices = np.asarray(bt.resolve_source(df, source), dtype=np.float64).ravel()
     mean = np.asarray(bt.rolling_ols_window_end(prices, maxbars)[0], dtype=np.float64).ravel()
-    with np.errstate(divide="ignore", invalid="ignore"):
-        marod = (prices - mean) / mean * 100.0
-    # warm-up（mean=NaN）・0 除算（mean=0→inf）由来の非有限値は NaN に落として描画除外。
-    return np.where(np.isfinite(marod), marod, np.nan)
+    # 乖離率の式は共有プリミティブ（common.marod_bands.marod_percent）が唯一の定義。
+    #   warm-up（mean=NaN）・0 除算（mean=0→inf）由来の非有限値は NaN に落として描画除外。
+    return _bands.marod_percent(prices, mean)
 
 
 def _rolling_causal(values: np.ndarray, window_n: int, reducer) -> np.ndarray:

@@ -26,10 +26,10 @@ import { AppliedInstance } from '../js/domain/domain_models.js';
 // UC-01 listForView（タブ∧カテゴリ∧検索∧お気に入りの論理積 §4.6）
 // ===========================================================================
 
-test('UC-01 listForView: empty filter returns all 23', () => {
-  // 空フィルタ（tab 指定なし）は全指標を返す＝既存22（indicator） + market_profile（プロファイルタブ）= 23。
+test('UC-01 listForView: empty filter returns all 26', () => {
+  // 空フィルタ（tab 指定なし）は全指標を返す＝indicator 24 + profile 2（market_profile / tickvol_bands）。
   const result = listForView({});
-  assert.equal(result.length, 23);
+  assert.equal(result.length, 26);
 });
 
 test('UC-01 listForView: filters by query (id/display partial, case-insensitive)', () => {
@@ -45,12 +45,12 @@ test('UC-01 listForView: filters by category conjunctively', () => {
 });
 
 test('UC-01 listForView: filters by tab', () => {
-  // 既存22指標は tab=indicator なので strategy では 0 件。market_profile は tab=profile ゆえ
-  //   indicator タブには出ない（22＝btlm_trail/btlm_trail_marod/ma_marod 追加後・追加は profile タブなし）。
+  // indicator タブの 24 指標は strategy では 0 件。market_profile は tab=profile ゆえ
+  //   indicator タブには出ない（24＝btlm_trail/btlm_trail_marod/ma_marod/cvfe/tickvol 追加後）。
   assert.equal(listForView({ tab: 'strategy' }).length, 0);
-  assert.equal(listForView({ tab: 'indicator' }).length, 22);
-  // market_profile は profile タブに 1 件だけ現れる（present-mode と同導線）。
-  assert.equal(listForView({ tab: 'profile' }).length, 1);
+  assert.equal(listForView({ tab: 'indicator' }).length, 24);
+  // profile タブは market_profile と tickvol_bands（取引密度帯）の 2 件（present-mode と同導線）。
+  assert.equal(listForView({ tab: 'profile' }).length, 2);
 });
 
 test('UC-01 listForView: favoriteOnly intersects with favorites set', () => {

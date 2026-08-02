@@ -119,5 +119,23 @@ def candle_dataset_port() -> CandleDatasetPort:
     単一の注入シーム（:func:`dataset_port`）へ委譲し、candles 供給のみを要するクライアントが
     ``load_dataframe`` を含まないポート型に依存できるようにする（参照実装
     ``market_profile_api.compute.tick_store_port`` の ``data_root`` / ``tick_reader`` と同規律）。
+
+    注入シームが 1 本しか無いため、注入された実装が **配信面まで満たすとは限らない**。
+    :class:`DatasetPort` だけを満たす合法な実装（``load_candles`` を持たない）を注入できてしまい、
+    無検査キャストではその欠落が :func:`~usecase.serve_candles` 内の ``AttributeError`` まで潜伏し、
+    ``framework.server`` の総括 catch で HTTP 500 ``internal`` へ沈黙劣化していた（ISSUE-222）。
+    ここで面の充足を検査し、未充足は結線漏れとして :func:`dataset_port` の未注入時と
+    **対称に** :class:`RuntimeError` で即時に落とす（欠落を serving 中の 500 へ先送りしない）。
+
+    Raises:
+        RuntimeError: 注入された実装が :class:`CandleSeriesPort` 面を満たさない（結線漏れ）。
     """
-    return dataset_port()  # type: ignore[return-value]  (既定 gateway は両面を実装する)
+    port = dataset_port()
+    if not isinstance(port, CandleSeriesPort):
+        raise RuntimeError(
+            "注入された DatasetPort が配信面（CandleSeriesPort.load_candles）を満たしていません: "
+            f"{type(port).__name__}。/candles・/forming_bar は candles 供給を要します。"
+            "adapter.gateway.composition.install_default_ports() を呼ぶか、"
+            "両面を実装するポートを usecase.dataset_port.set_dataset_port(...) で注入してください。"
+        )
+    return port  # type: ignore[return-value]  (RefValidationPort 面は DatasetPort が保証する)

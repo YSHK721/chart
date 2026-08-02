@@ -33,12 +33,15 @@
 from __future__ import annotations
 
 from .core import (
+    MA_FROM_ZERO,
     MA_TYPES,
+    LwmaState,
     exponential_ma,
     exponential_ma_on_buffer,
     linear_weighted_ma,
     linear_weighted_ma_on_buffer,
     linear_weighted_ma_on_buffer_fast,
+    linear_weighted_ma_on_buffer_stateful,
     ma,
     simple_ma,
     simple_ma_on_buffer,
@@ -55,7 +58,10 @@ __all__ = [
     "exponential_ma_on_buffer",
     "linear_weighted_ma_on_buffer",
     "linear_weighted_ma_on_buffer_fast",
+    "linear_weighted_ma_on_buffer_stateful",
+    "LwmaState",
     "smoothed_ma_on_buffer",
     "ma",
     "MA_TYPES",
+    "MA_FROM_ZERO",
 ]

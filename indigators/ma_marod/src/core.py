@@ -222,10 +222,9 @@ def ma_marod_series(
     """
     price = resolve_source(df, source)  # 単一の解決済み配列（分子と MA 入力で共用）。
     ma = ma_series(price, ma_type, length)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        marod = (price - ma) / ma * 100.0
-    # warm-up（ma=NaN）・0 除算（ma=0→inf）由来の非有限値は NaN に落として描画除外。
-    return np.where(np.isfinite(marod), marod, np.nan)
+    # 乖離率の式は共有プリミティブ（common.marod_bands.marod_percent）が唯一の定義。
+    #   warm-up（ma=NaN）・0 除算（ma=0→inf）由来の非有限値は NaN に落として描画除外。
+    return _bands.marod_percent(price, ma)
 
 
 def ma_marod_quantile_bands(

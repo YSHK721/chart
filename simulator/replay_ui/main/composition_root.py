@@ -19,6 +19,7 @@ from simulator.replay_ui.adapter.market_profile_forming_gateway import (
     MarketProfileFormingGateway,
 )
 from simulator.replay_ui.adapter.market_profile_gateway import MarketProfileGateway
+from simulator.replay_ui.adapter.tickvol_profile_gateway import TickvolProfileGateway
 from simulator.replay_ui.framework.serve_replay import ReplayApp
 
 # repo 根 = simulator/replay_ui/main/composition_root.py の parents[3]。
@@ -72,6 +73,10 @@ def build_replay_app(
     # MP normal/sessions/replay（as-seen-at-t）: market_profile gateway（bridge 委譲）を Port として注入する。
     market_profile_port = MarketProfileGateway(api_path=api_path, repo_root=root)
 
+    # 取引密度ハイライト（時刻帯の背景色）: tickvol_profile gateway（bridge 委譲）を Port として注入する。
+    #   帯の定義はライブ側 controller が単一実装＝ライブとリプレイで byte 一致する。
+    tickvol_profile_port = TickvolProfileGateway(api_path=api_path, repo_root=root)
+
     return ReplayApp(
         candle_port=candle_port,
         compute_port=compute_port,
@@ -81,6 +86,7 @@ def build_replay_app(
         shared_js_root=shared_js,
         forming_port=forming_port,
         market_profile_port=market_profile_port,
+        tickvol_profile_port=tickvol_profile_port,
         # カレンダー（再生開始日）の選択可能日。足の供給と同一実体＝同一配信路で日を数える。
         days_port=candle_port,
     )

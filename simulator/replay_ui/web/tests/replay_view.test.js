@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ReplayView } from '../js/adapter/front/replay_view.js';
+import { REALTIME } from '../js/replay/timing.js';
 
 // ---- 最小 fake DOM ---- //
 function fakeEl(extra = {}) {
@@ -89,6 +90,16 @@ test('writeSpeed stores the value in data-speed and renders it as "x0.25"', () =
   assert.equal(speedEl.dataset.speed, '0.25');
   assert.equal(speedEl.textContent, 'x0.25');
   assert.equal(v.readSpeed(), 0.25);
+});
+
+// 実時間再生（リアルタイム）は比でないため番兵値で保持する（依頼者指示 2026-08-01）。
+test('writeSpeed stores REALTIME as the sentinel and renders it as "リアルタイム"', () => {
+  const speedEl = fakeEl({ dataset: {} });
+  const v = new ReplayView({ chart: { timeScale: () => ({}) }, mainSeries: fakeSeries(), renderer: {}, document: fakeDoc({ 'rp-speed': speedEl }) });
+  v.writeSpeed(REALTIME);
+  assert.equal(speedEl.dataset.speed, 'realtime');
+  assert.equal(speedEl.textContent, 'リアルタイム');
+  assert.equal(v.readSpeed(), REALTIME); // NaN へ落ちない（＝clampSpeed で 1.00 に化けない）
 });
 
 test('setRangeLabel writes the current range into #rp-range', () => {

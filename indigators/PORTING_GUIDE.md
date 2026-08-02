@@ -167,8 +167,32 @@ lightweight-charts / 将来の別 UI）を、計算を一切変更せずに追�
 | 出力アダプタ | **Fake オブジェクト**（`create_line` を持つスタブ）で検証し、描画ライブラリに依存させない。本数・スタイル・値・異常系を確認。 |
 | 異常系 | 必須列欠落・時刻列欠落・空バケット・未知パラメータで適切な例外。 |
 | import 規約 | `sys.path.insert(0, parents[1])` → `from src import ...`（既存テストに準拠）。 |
+| **テストの実行単位** | **1 パッケージ = 1 pytest セッション**（§7.1 参照）。 |
 
 > 参照: `tests/test_profit_band.py`（計算）/ `tests/test_lwc_chart.py`（Fake チャート）。
+
+### 7.1 テストは 1 パッケージずつ実行する（ISSUE-210）
+
+上の import 規約が用いる `src` は **top-level 名**である。複数パッケージのテストを 1 つの
+pytest セッションで収集すると、先に import された `src` が `sys.modules` に居座り、後続の
+パッケージが自分の `src` を解決できず `ImportError` になる。
+
+```bash
+# 正: 1 パッケージずつ
+pytest indigators/cvfe/tests
+pytest indigators/btlm_trail/tests
+
+# 誤: 1 セッションで複数を収集する
+pytest indigators/btlm_trail/tests indigators/ma_marod/tests
+#   → ImportError: cannot import name 'DEFAULT_EVENT_AGG' from 'src'
+#      (.../indigators/btlm_trail/src/__init__.py)
+```
+
+これは特定パッケージの不備ではなく**規約そのものの帰結**であり、`cvfe` 追加以前から
+既存 2 パッケージ間で再現する。抜本対策（`indigators.<pkg>.src` への統一、または `src` の
+一意名への改名）は 21 パッケージのテストと本番 import 経路（`call_binding` / venv の `.pth`）
+すべてへ波及するため、**現状は運用規約として明文化するに留める**（2026-07-30 裁定）。
+一括実行が必要な場合はパッケージごとに別プロセスで起動すること。
 
 ---
 

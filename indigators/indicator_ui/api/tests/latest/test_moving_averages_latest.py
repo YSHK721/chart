@@ -3,10 +3,9 @@
 分類（本テストが接地する事実）:
   - has_binding: あり（call_binding._TABLE の ("moving_averages","default")＝line・kw、
     catalog def の compute.variants=['default']）。
-  - archetype  : core バッファ関数は recurrence（ema/smma は buffer[i-1] 漸化、
-    sma/lwma はスライド和の再帰）。latest_meta は ma_type で分類し、ema/smma→
-    "recurrence"、sma/lwma→"window"。いずれも min_window=None（full フォールバック）
-    のため latest 入力 df は full と同一＝末尾値が float 完全一致する。
+  - archetype  : ISSUE-233 以降 "incremental"（保持した状態を 1 点進める増分計算）。増分器が
+    扱えないパラメータ（平滑化あり等）は従来経路へ落ち、min_window=None（full フォールバック）
+    のため latest 入力 df は full と同一になる。いずれの経路でも末尾値は float 完全一致する。
   - series_kinds: catalog def.series は全て LINE（"MA"/"Smoothing"/"Upper"/"Lower"）。
     全て line → frontend routing="latest"（horizontal_line なし）。
 
@@ -76,15 +75,13 @@ def _base_params(ma_type: str, **overrides) -> dict:
 # --------------------------------------------------------------------------- #
 # 分類の接地（archetype / series kind / routing）
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(
-    "ma_type, expected_archetype",
-    [("sma", "window"), ("ema", "recurrence"), ("smma", "recurrence"), ("lwma", "window")],
-)
-def test_archetype_classification(ma_type, expected_archetype):
-    # latest_meta は ma_type により recurrence/window を分類し、いずれも full フォールバック
-    # （min_window=None）・K=1。これにより latest 入力は full と同一になる。
+@pytest.mark.parametrize("ma_type", _MA_TYPES)
+def test_archetype_classification(ma_type):
+    # ISSUE-233: 4 種とも増分計算を宣言する。従来経路へ落ちたときは full フォールバック
+    # （min_window=None）・K=1 のままで、latest 入力は full と同一になる。
     meta = latest_meta("moving_averages", "default", _base_params(ma_type))
-    assert meta.archetype == expected_archetype
+    assert meta.archetype == "incremental"
+    assert meta.incremental == "moving_averages"
     assert meta.min_window is None
     assert meta.trailing_k == 1
 

@@ -22,6 +22,14 @@
     "source": "close",
     "window_n": 500
   },
+  "cvfe": {
+    "dash_opacity": 0.5,
+    "display_mode": "dashes",
+    "n_har": 500,
+    "show_outliers": true,
+    "sigma_inner": 1.0,
+    "sigma_outer": 2.0
+  },
   "ma_marod": {
     "color": "rgba(255, 152, 0, 1)",
     "event_agg": "episode",
@@ -158,5 +166,12 @@
     "price": "open",
     "q_high": 0.95,
     "q_low": 0.05
+  },
+  "tickvol": {
+    "k_events": 50,
+    "q_high": 0.9,
+    "q_low": 0.1,
+    "q_out": 0.99,
+    "window_n": 500
   }
 }

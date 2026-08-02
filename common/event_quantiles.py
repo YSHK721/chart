@@ -54,6 +54,73 @@ def q_out_valid(q_out, q_high: float) -> bool:
     return max(float(q_high), 0.5) < float(q_out) < 1.0
 
 
+def step_events(
+    value: float, band_lo: float, band_hi: float, event_agg: str,
+    up: list, dn: list, run_up: list, run_dn: list,
+) -> None:
+    """1 バーぶんのイベント検出・エピソード確定を行う（**唯一の定義**・リストを更新する）。
+
+    呼び出し前に当該バーの水準を計算しておくこと（本バーの観測は次バー以降に効く＝因果）。
+    ``run_up`` / ``run_dn`` は進行中のエピソード（in-place で更新する）。
+
+    ISSUE-233: 増分計算が確定バーぶんだけ状態を進めるための公開入口。
+    :func:`outlier_event_quantiles` のバー走査は本関数を各バーで呼ぶループである。
+    """
+    finite = np.isfinite(value)
+    is_up = bool(finite and np.isfinite(band_hi) and value > band_hi)
+    is_dn = bool((not is_up) and finite and np.isfinite(band_lo) and value < band_lo)
+    if str(event_agg).lower() == "bar":
+        if is_up:
+            up.append(float(value))
+        elif is_dn:
+            dn.append(float(value))
+        return
+    # episode: 超過が途切れたバーでエピソード確定（極値を観測として登録）。
+    if not is_up and run_up:
+        up.append(max(run_up))
+        run_up.clear()
+    if not is_dn and run_dn:
+        dn.append(min(run_dn))
+        run_dn.clear()
+    if is_up:
+        run_up.append(float(value))
+    elif is_dn:
+        run_dn.append(float(value))
+
+
+def levels_at(
+    events, m: int, k_events: int, ext_q: "float | None", *, whole: bool = False
+) -> "tuple[float, float]":
+    """確定観測 ``events`` が m 件ある時点の水準 ``(中央値, 極端分位)`` を返す（**唯一の定義**）。
+
+    ``whole=False`` は直近 ``k_events`` 件、True は全履歴（``*_all``）。観測数 m が
+    :data:`_MIN_EVENTS` 未満なら (NaN, NaN)。
+    """
+    if m < _MIN_EVENTS:
+        return float("nan"), float("nan")
+    arr = np.asarray(events, dtype=np.float64)
+    window = arr[:m] if whole else arr[max(0, m - int(k_events)):m]
+    med = float(np.median(window))
+    ext = float(np.quantile(window, ext_q)) if ext_q is not None else float("nan")
+    return med, ext
+
+
+def event_levels_latest(
+    up: list, dn: list, *, q_high: float, q_out: "float | None" = DEFAULT_Q_OUT,
+    k_events: int = DEFAULT_K_EVENTS,
+) -> "dict[str, float]":
+    """確定観測列（``up`` / ``dn``）の **次のバー** に適用する水準 4 値を返す。
+
+    :func:`outlier_event_quantiles` がバー t に与える med_hi/ext_hi/med_lo/ext_lo と同値
+    （バー t の水準は t より前に確定した観測のみから決まるため）。ISSUE-233 の増分計算が
+    末尾 1 点だけを求めるための公開入口。
+    """
+    qo = float(q_out) if q_out_valid(q_out, q_high) else None
+    med_hi, ext_hi = levels_at(up, len(up), k_events, qo)
+    med_lo, ext_lo = levels_at(dn, len(dn), k_events, (1.0 - qo) if qo is not None else None)
+    return {"med_hi": med_hi, "ext_hi": ext_hi, "med_lo": med_lo, "ext_lo": ext_lo}
+
+
 def outlier_event_quantiles(
     values: np.ndarray,
     band_lo: np.ndarray,
@@ -137,48 +204,23 @@ def outlier_event_quantiles(
     for t in range(n):
         up_cnt[t] = len(up)
         dn_cnt[t] = len(dn)
-        # バー t の超過判定（バンドが未定義の warm-up 区間は判定しない）。
-        finite = np.isfinite(v[t])
-        is_up = finite and np.isfinite(hi[t]) and v[t] > hi[t]
-        is_dn = (not is_up) and finite and np.isfinite(lo[t]) and v[t] < lo[t]
-        if agg == "bar":
-            if is_up:
-                up.append(float(v[t]))
-            elif is_dn:
-                dn.append(float(v[t]))
-        else:
-            # episode: 超過が途切れたバーでエピソード確定（極値を観測として登録）。
-            #   本バー t の水準は登録前に計算済み＝観測は次バー以降に効く（因果）。
-            if not is_up and run_up:
-                up.append(max(run_up))
-                run_up = []
-            if not is_dn and run_dn:
-                dn.append(min(run_dn))
-                run_dn = []
-            if is_up:
-                run_up.append(float(v[t]))
-            elif is_dn:
-                run_dn.append(float(v[t]))
+        step_events(v[t], lo[t], hi[t], agg, up, dn, run_up, run_dn)
     # データ末尾で進行中のエピソード（run_up/run_dn 残）は未確定のため破棄（非リペイント）。
 
     def _tables(events: list[float], ext_q: float | None):
-        """観測数 m（_MIN_EVENTS..len）ごとの水準テーブル（med/ext × 直近K件/全履歴）。"""
+        """観測数 m（_MIN_EVENTS..len）ごとの水準テーブル（med/ext × 直近K件/全履歴）。
+
+        1 点ぶんの算出は :func:`levels_at` へ委譲する（定義は 1 箇所）。
+        """
         m_max = len(events)
-        arr = np.asarray(events)
         med_k = np.full(m_max + 1, np.nan)
         ext_k = np.full(m_max + 1, np.nan)
         med_a = np.full(m_max + 1, np.nan)
         ext_a = np.full(m_max + 1, np.nan)
         for m in range(_MIN_EVENTS, m_max + 1):
-            wk = arr[max(0, m - k):m]
-            med_k[m] = np.median(wk)
-            if ext_q is not None:
-                ext_k[m] = np.quantile(wk, ext_q)
+            med_k[m], ext_k[m] = levels_at(events, m, k, ext_q)
             if include_all:
-                wa = arr[:m]
-                med_a[m] = np.median(wa)
-                if ext_q is not None:
-                    ext_a[m] = np.quantile(wa, ext_q)
+                med_a[m], ext_a[m] = levels_at(events, m, k, ext_q, whole=True)
         return med_k, ext_k, med_a, ext_a
 
     for events, cnt, med_key, ext_key, ext_q in (

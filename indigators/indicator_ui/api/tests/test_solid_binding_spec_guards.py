@@ -26,8 +26,16 @@ from adapter.compute.latest_meta import latest_meta
 
 # 移設前（if 連鎖）の golden。params={} 既定での (archetype, min_window, trailing_k)。
 _LATEST_GOLDEN_EMPTY_PARAMS = {
-    ("moving_averages", "default"): ("recurrence", None, 1),  # ma_type 既定=ema→recurrence
+    # ISSUE-233: moving_averages は増分計算へ移行（archetype=incremental）。min_window/K は不変。
+    ("moving_averages", "default"): ("incremental", None, 1),
+    # ISSUE-233 S2/S3/S4/S5: btlm_trail・MAROD 系も増分計算へ移行（min_window/K は不変）。
+    ("btlm_trail", "default"): ("incremental", None, 1),
+    ("btlm_trail_marod", "default"): ("incremental", None, 1),
+    ("ma_marod", "default"): ("incremental", None, 1),
     ("price_range_power", "default"): ("axis_distribution", None, None),
+    # tickvol は外れ値水準が確定イベント全体に依存し有限 tail を取れない（必要履歴長がデータ
+    #   依存）。ISSUE-233 と同じ真因なので同じ解＝増分計算を宣言する（min_window/K は同型）。
+    ("tickvol", "default"): ("incremental", None, 1),
 }
 
 
@@ -44,19 +52,19 @@ def test_latest_meta_archetype_declared_in_binding_spec():
     # 移設の実証: archetype 解決子は _BindingSpec 側に宣言される（if 連鎖の撤去）。
     assert _TABLE[("price_range_power", "default")].get("latest_meta") is not None
     assert _TABLE[("moving_averages", "default")].get("latest_meta") is not None
+    assert _TABLE[("btlm_trail", "default")].get("latest_meta") is not None
     # 未宣言指標は field を持たない（安全既定 recurrence/full/K=1 へ落ちる）。
     assert _TABLE[("profit_band", "global")].get("latest_meta") is None
     assert _TABLE[("tgp_btlm", "default")].get("latest_meta") is None
 
 
-def test_latest_meta_moving_averages_params_split_preserved():
-    # sma/lwma は window・ema/smma/未知は recurrence（params 依存分岐が resolver 内で保存）。
-    for ma in ("sma", "lwma"):
+def test_latest_meta_moving_averages_declares_incrementer_for_all_ma_types():
+    # ISSUE-233: 全 ma_type（未知含む）で増分計算を宣言する。適用可否の判定は増分器 prepare が
+    # 持ち（未知 ma_type は扱えない＝従来経路へ落ちる）、宣言側は params で分岐しない。
+    for ma in ("sma", "lwma", "ema", "smma", "unknown"):
         meta = latest_meta("moving_averages", "default", {"ma_type": ma})
-        assert (meta.archetype, meta.min_window, meta.trailing_k) == ("window", None, 1)
-    for ma in ("ema", "smma", "unknown"):
-        meta = latest_meta("moving_averages", "default", {"ma_type": ma})
-        assert (meta.archetype, meta.min_window, meta.trailing_k) == ("recurrence", None, 1)
+        assert (meta.archetype, meta.min_window, meta.trailing_k) == ("incremental", None, 1)
+        assert meta.incremental == "moving_averages"
 
 
 def test_latest_meta_unregistered_falls_to_safe_default():

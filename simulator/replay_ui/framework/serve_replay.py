@@ -39,7 +39,9 @@ from simulator.replay_ui.usecase.available_days import (
 )
 from simulator.replay_ui.usecase.causal_compute import (
     CausalComputeRequest,
+    CausalComputeSeqRequest,
     causal_compute,
+    causal_compute_seq,
 )
 from simulator.replay_ui.usecase.intrabar_window import (
     IntrabarWindowRequest,
@@ -56,6 +58,10 @@ from simulator.replay_ui.usecase.market_profile_forming import (
 from simulator.replay_ui.usecase.reveal_candles import (
     RevealCandlesRequest,
     reveal_candles,
+)
+from simulator.replay_ui.usecase.tickvol_profile import (
+    TickvolProfileRequest,
+    tickvol_profile,
 )
 
 
@@ -132,6 +138,7 @@ class ReplayApp:
         forming_port: Any = None,
         market_profile_port: Any = None,
         days_port: Any = None,
+        tickvol_profile_port: Any = None,
     ) -> None:
         self._candle_port = candle_port
         # カレンダー（再生開始日）の選択可能日を返す Port。None のとき /available_days ルートを
@@ -163,6 +170,10 @@ class ReplayApp:
         #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
         self._market_profile_port = market_profile_port
         self.market_profile_enabled = market_profile_port is not None
+        # 取引密度ハイライト（時刻帯の背景色）の Port（任意注入）。None のときは /tickvol_profile
+        #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
+        self._tickvol_profile_port = tickvol_profile_port
+        self.tickvol_profile_enabled = tickvol_profile_port is not None
 
     def candles(
         self,
@@ -174,7 +185,14 @@ class ReplayApp:
     ) -> "list[dict]":
         req = RevealCandlesRequest(ref=ref, timeframe=tf, limit=limit, start=start, pre=pre)
         def _run():
-            with self._lock:  # 巨大 resample を直列化（並行多重で OOM 防止）
+            # 巨大 resample を直列化（並行多重で OOM 防止）。
+            # ISSUE-036(a): 非 tick の軽量経路も同じ錠の内側に置いている（proto は tick のみ施錠）。
+            #   出力は変わらず**保守的な直列化**であり、意図的に据え置く:
+            #     - /candles は timeframe により resample の有無が実行時に決まるため、呼び出し前に
+            #       「軽量である」と判定できない（判定を足すと分岐が二重管理になる）。
+            #     - 並行実行のメリットが実測されていない。緩めるならまず所要時間を計測し、
+            #       OOM 耐性が落ちないことを確認してから行う（未実施）。
+            with self._lock:
                 return reveal_candles(request=req, candle_port=self._candle_port)
         return self._heavy_worker.run(_run)
 
@@ -196,10 +214,37 @@ class ReplayApp:
             mode=body.get("mode"),
             forming=body.get("forming"),
             params=dict(body.get("params") or {}),
+            win_start=body.get("winStart"),
+            win_end=body.get("winEnd"),
         )
         def _run():
             with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
-                return causal_compute(request=req, compute_port=self._compute_port)
+                return causal_compute(request=req, compute_port=self._compute_port,
+                                      window_port=self._window_port)
+        return self._heavy_worker.run(_run)
+
+    def compute_seq(self, body: dict) -> "list[list[dict]]":
+        """POST /compute mode='latest_seq' — 足内推移の各時点の latest を一括で返す（ISSUE-232）。
+
+        既存 ``compute``（単発）とは別メソッドに分ける（既存経路の分岐を増やさない＝挙動不変）。
+        直列化・heavy worker の扱いは ``compute`` と同一（R/rpy2 のスレッド親和とメモリのため）。
+        """
+        req = CausalComputeSeqRequest(
+            indicator=body.get("indicatorId"),
+            variant=body.get("variant", "default"),
+            ref=body.get("datasetRef"),
+            timeframe=body.get("timeframe"),
+            limit=body.get("limit"),
+            until_time=body.get("untilTime"),
+            forming_seq=body.get("formingSeq") or [],
+            params=dict(body.get("params") or {}),
+            win_start=body.get("winStart"),
+            win_end=body.get("winEnd"),
+        )
+        def _run():
+            with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
+                return causal_compute_seq(request=req, compute_port=self._compute_port,
+                                          window_port=self._window_port)
         return self._heavy_worker.run(_run)
 
     def intraday(self, ref: str, start: int, end: int, mode: str, want_secs: bool = False) -> dict:
@@ -254,6 +299,18 @@ class ReplayApp:
         )
         with self._lock:  # profile 計算（candle/dwell resample）を直列化（OOM 防止）
             return market_profile(request=req, profile_port=self._market_profile_port)
+
+    def tickvol_profile(
+        self, ref: str, sessions: Any = None, pct: Any = None, until: Any = None
+    ) -> "tuple[int, dict]":
+        """取引密度の時刻帯プロファイル（背景色帯）を返す。
+
+        ``until`` は必ずリビール T（単一時計 to）を渡す。``until`` が属するセッション日は集計に
+        含まれない（当日非参照＝因果・未来リーク防止）。
+        """
+        req = TickvolProfileRequest(ref=ref, sessions=sessions, pct=pct, until=until)
+        with self._lock:  # 1 分足全期間の集計を直列化（OOM 防止・他の重い処理と同規律）
+            return tickvol_profile(request=req, profile_port=self._tickvol_profile_port)
 
 
 def make_handler(app: ReplayApp):
@@ -311,6 +368,17 @@ def make_handler(app: ReplayApp):
                     return self._json(200, payload)
                 except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
                     return self._json(*_error_response(e))
+            if u.path == "/tickvol_profile" and app.tickvol_profile_enabled:
+                # 取引密度ハイライト（時刻帯の背景色）の帯定義。until はリビール T（単一時計 to）。
+                #   until が属するセッション日は集計に含めない（当日非参照＝因果）。
+                ref = (q.get("datasetRef") or [None])[0]
+                sessions = (q.get("sessions") or [None])[0]
+                pct = (q.get("pct") or [None])[0]
+                until = (q.get("until") or [None])[0]
+                try:
+                    return self._json(*app.tickvol_profile(ref, sessions, pct, until))
+                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
+                    return self._json(*_error_response(e))
             if u.path == "/market_profile" and app.market_profile_enabled:
                 ref = (q.get("datasetRef") or [None])[0]
                 tf = (q.get("timeframe") or [None])[0]
@@ -364,6 +432,19 @@ def make_handler(app: ReplayApp):
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
             gen = body.get("generation", 0)
+            # ISSUE-232: 足内一括計算（mode='latest_seq'）。応答キーは steps（series とは別キー＝
+            #   既存クライアントの読み取り面に影響しない）。エラー翻訳は既存と同一の中央経路。
+            if body.get("mode") == "latest_seq":
+                try:
+                    steps = app.compute_seq(body)
+                except MemoryError as e:
+                    return self._json(*_error_response(e, generation=gen, message="memory limit"))
+                except ValueError as e:
+                    return self._json(*_error_response(e, generation=gen))
+                except Exception as e:  # noqa: BLE001
+                    return self._json(*_error_response(
+                        e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
+                return self._json(200, {"ok": True, "generation": gen, "steps": steps})
             try:
                 series = app.compute(body)
             # 分類（status/type）は _error_response へ集約（ISSUE-097 🟡-4）。except ブロックは

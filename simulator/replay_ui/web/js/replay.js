@@ -14,9 +14,11 @@ import { dayKey } from './replay/calendar.js';
 import {
   clampSpeed, frameMs as frameMsOf, stepMs,
   estimatePeriodMs, emaUpdate, periodMs, fmtEta, ANIM_MIN_MS, FORMING_MIN_INTERVAL_MS,
-  remainingTickvol, etaRealTicksMs,
+  remainingTickvol, etaRealTicksMs, isRealtime, realtimeOffsetsMs,
 } from './replay/timing.js';
-import { intrabarWindow, buildStreamFromResponse } from './replay/stream.js';
+import { intrabarWindow, buildStreamFromResponse, durationSecs } from './replay/stream.js';
+import { sampleIndices, formingStatesAt, planSignature } from './replay/forming_plan.js';
+import { FormingSeqClient } from './adapter/front/forming_seq_client.js';
 import {
   clampBar, idxForTime, visibleRange, scrollRange, presetSelection,
   degenerateModes, resumeDecision, isStale, isSuperseded,
@@ -68,7 +70,6 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   render/animateForming/値算出には一切関与しない（計算ロジック無改変）。
   const liveDefaultRecentBars = controller._recentBars;
   const disposers = [];
-  const patched = [];
   let wasEnabled = false; // enable() 済み（＝reveal トリムが起きうる）か。disable の全長復帰の発火条件。
 
   const syncBoundary = () => view.syncBoundary({ replayStart, candles });
@@ -87,19 +88,16 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   });
 
   // 指標の適用/削除（render を経ない経路）でも pane の減光を即同期する。
-  for (const name of ['applyIndicator', 'removeInstance']) {
-    const orig = (typeof controller[name] === 'function') ? controller[name].bind(controller) : null;
-    if (!orig) continue;
-    // 原状復帰のため、置換前の own プロパティ有無と値を記録する（destroy で復元）。
-    const hadOwn = Object.prototype.hasOwnProperty.call(controller, name);
-    const prev = controller[name];
-    patched.push({ name, hadOwn, prev });
-    controller[name] = (...a) => {
-      const r = orig(...a);
-      if (r && typeof r.then === 'function') return r.then((v) => { syncBoundary(); return v; });
-      syncBoundary();
-      return r;
-    };
+  //
+  // ISSUE-037: 以前は `controller.applyIndicator` / `removeInstance` を実行時に **monkeypatch**
+  //   して後処理を差し込み、destroy で原状復帰していた。monkeypatch は (1) 差し替え順序に依存して
+  //   壊れる (2) 復元漏れが静かに残る (3) subclass の override と二重に噛む、という脆さがある。
+  //   controller が公開する購読スロット（`setAppliedObserver`・`setTimeframeObserver` と同型）へ
+  //   置き換えた。通知は適用/削除の**完了後**に 1 回で、monkeypatch 時代と同じ位置に入る。
+  const hasAppliedObserver = typeof controller.setAppliedObserver === 'function';
+  if (hasAppliedObserver) {
+    // [ISSUE-232] 指標の適用/削除は足内一括計算の計画を陳腐化させる（対象集合が変わる）→ 破棄。
+    controller.setAppliedObserver(() => { invalidatePlans(); syncBoundary(); });
   }
 
   // ---- データ取得 ----
@@ -223,6 +221,14 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     // MP tick-live: バー単位ジャンプで base を now=T（因果）で取り直す（rollover 兼・await ready で
     //   直後の animateForming feedTick 取りこぼしを防ぐ）。MP OFF/未配線時は完全に非干渉。
     if (mpOn()) await mpDriver.enterBar(t);
+    // [ISSUE-232] このバーの足内計画を先読みする（fire-and-forget）。再生開始直後の 1 バー目や
+    //   手動ナビ後の再生開始でも計画が用意される（animateForming 側の先読みは「次バー」担当）。
+    //   **リプレイ層が起きている時だけ**発火させる（playing＝再生中／wasEnabled＝リプレイモード）。
+    //   統合レイヤは live モードのまま setupReplay を 1 回 mount するため、この gate が無いと
+    //   ライブ表示中に /intraday を要求してしまう（SW が /live へ回して 404・実測 2026-08-01）。
+    if (playing || wasEnabled) {
+      prefetchPlan(bar, view.readMode());
+    }
     lastComputeMs = performance.now() - started;
     setEta();
     setStatus(`bar ${bar}/${candles.length - 1}  ${fmt(t)}  計算 ${Math.round(performance.now() - started)}ms（その場計算）`);
@@ -257,6 +263,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     syncRangeMenu();
     // [ISSUE-158 ②] 時間足切替で一括リビール基底を全破棄（次フレームで新 tf のレンジを再構築）。
     if (typeof controller.clearRevealCache === 'function') controller.clearRevealCache();
+    invalidatePlans();  // [ISSUE-232] 時間足が変われば足内の窓も計画も別物＝破棄
     candles = await fetchCandles(tf);
     syncBoundary();
     view.setRangeLabel('全期間');
@@ -267,6 +274,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   その日の最初の足を再生開始点（減光境界）にして、そこから再生できる状態にする。
   async function loadFromDate(startUnix, key) {
     if (typeof controller.clearRevealCache === 'function') controller.clearRevealCache();
+    invalidatePlans();  // [ISSUE-232] 窓を取り直す＝既存計画は無効
     const loaded = await fetchCandles(timeframe, startUnix);
     if (!loaded.length) return; // 取得できないときは現状維持（ビューを勝手に動かさない）
     candles = loaded;
@@ -282,13 +290,25 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
 
   // ---- 速度 / フレーム待機 ----
   const speed = () => clampSpeed(view.readSpeed());
-  const frameMs = () => frameMsOf(speed());
+  // 実時間再生「リアルタイム」（依頼者指示 2026-08-01）。比の速度とは別軸のテンポで、1足の壁時計所要は
+  //   時間足の長さそのもの（1m→60秒）。足の窓 [winStart, nextCandle) ではなく時間足長を使うのは、
+  //   窓は週末・休場をまたぐと数日に伸び（winEnd=次足 time）、そこで再生が数日止まるため
+  //   ＝「市場が動いている時間だけを 1:1 で流す」が実時間再生の意味。
+  const realtime = () => isRealtime(speed());
+  const paused = () => !realtime() && speed() <= 0; // 比の 0.00＝一時停止（実時間再生に 0 は無い）
+  const rtBarMs = () => durationSecs(timeframe) * 1000;
+  let rtAnchorMs = 0; // 現在バーの「足始端」に対応する壁時計時刻（performance.now 基準）
   let emaPeriodMs = null;
   let lastComputeMs = null;
   const setEta = () => {
     const remain = Math.max(0, (candles.length - 1) - bar);
     if (remain === 0) { view.setText('rp-eta', '完了予想 —'); return; }
-    if (speed() <= 0) { view.setText('rp-eta', `完了予想 —（一時停止・残り${remain}足）`); return; }
+    if (paused()) { view.setText('rp-eta', `完了予想 —（一時停止・残り${remain}足）`); return; }
+    // 実時間再生は 1足＝時間足の長さ（計算・描画は足内に収まる前提）＝残り足数から厳密に出る。
+    if (realtime()) {
+      view.setText('rp-eta', `完了予想 ${fmtEta(remain * rtBarMs())}（残り${remain}足）`);
+      return;
+    }
     // ISSUE-044: real_ticks は cap 廃止（間引かない・絶対仕様）＝1足あたり点数が足ごとに桁で異なる
     //   （月足は数十万 tick）ため、旧 800 点 cap 前提のモデルも per-bar EMA も使わず、/candles の
     //   tickvol（実 tick 数）の残り総数から算出する。tickvol 欠損（旧データセット等）は従来モデルへ
@@ -311,25 +331,31 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     const resolve = frameResolve; frameResolve = null;
     if (resolve) resolve();
   }
+  // 現時点から見たフレーム待機の残り ms。比の速度は「固定間隔 − 経過」、実時間再生は
+  //   「足終端（アンカ＋時間足長）までの実残り」＝足内アニメで消費した分が自動的に差し引かれる。
+  const frameRemainMs = () => (realtime()
+    ? Math.max(0, rtAnchorMs + rtBarMs() - performance.now())
+    : frameMsOf(speed()) - (performance.now() - frameStart));
   function waitFrame() {
     return new Promise((resolve) => {
       frameResolve = resolve;
       frameStart = performance.now();
-      frameTimer = setTimeout(settleFrameWait, frameMs());
+      frameTimer = setTimeout(settleFrameWait, Math.max(0, frameRemainMs()));
     });
   }
   function rescheduleFrameWait() {
     if (frameResolve == null) return;
     if (frameTimer != null) { clearTimeout(frameTimer); frameTimer = null; }
-    const remaining = frameMs() - (performance.now() - frameStart);
+    const remaining = frameRemainMs();
     if (remaining <= 0) { settleFrameWait(); return; }
     frameTimer = setTimeout(settleFrameWait, remaining);
   }
   async function playLoop() {
     while (playing && bar < candles.length - 1) {
-      while (playing && speed() <= 0) await sleepMs(80); // 速度0.00=一時停止（凍結）
+      while (playing && paused()) await sleepMs(80); // 速度0.00=一時停止（凍結）
       if (!playing) break;
       const barStart = performance.now();
+      rtAnchorMs = barStart; // 実時間再生の足始端＝この足の計算（drive）も足の予算内に含める
       let resume = null;
       if (resumeDecision(pausedForm, candles[bar])) {
         resume = pausedForm; // 停止した足の続きから再開
@@ -371,8 +397,11 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     }
   };
   function applySpeed(v) {
+    const wasRealtime = realtime();
     view.writeSpeed(clampSpeed(v));
     emaPeriodMs = null; // 旧速度の実測は陳腐化
+    // 実時間再生の切替は /intraday の tick_secs 取得可否が変わる＝先読み済み計画のティック列も別物。
+    if (realtime() !== wasRealtime) invalidatePlans();
     setEta();
     rescheduleFrameWait();
   }
@@ -400,16 +429,26 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   animateForming→feedTick / settleTick）が isEnabled()=true を観測して育てる。
 
   // ---- 最新足の足内更新（MT5 モデリング 5 モード相当） ----
-  async function buildStream(cd, mode) {
+  //   idx を明示で受ける（先読みが「次のバー」の窓を作れるようにするため。現在バー固定だった
+  //   旧シグネチャ buildStream(cd, mode) は idx=bar 指定と等価＝窓の算出規則は不変）。
+  async function buildStream(idx, mode) {
+    const cd = candles[idx];
+    if (!cd) {
+      return { prices: [], secs: [] };
+    }
     if (mode === 'open_only' || mode === 'math') {
       return buildStreamFromResponse({ mode, cd }); // fetch 前短絡（窓/取得なし）
     }
     const { winStart, winEnd } = intrabarWindow({
-      timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
+      timeframe, cd, prevCandle: candles[idx - 1] || null, nextCandle: candles[idx + 1] || null,
     });
     // MP tick-live 有効かつ real_ticks のときだけ secs=1 gate を付与し tick_secs を並走取得する
     //   （他バー・MP OFF は従来 payload 不変＝forming MA/OHLC アニメ回帰ゼロ）。
-    const wantSecs = mpOn() && mode === 'real_ticks';
+    //   実時間再生（リアルタイム）でも実 tick 時刻が必須（無いと足内が等分になり実時間でなくなる）ため
+    //   同じ gate を立てる。他テンポでは従来どおり payload 不変。
+    // ISSUE-238: 形成中バーの実 tick 数はリプレイ時計 `to`（=tick_secs）を要る。MP tick-live /
+    //   実時間再生に加え、足内更新そのものが常時この時計を必要とするため real_ticks では常に要求する。
+    const wantSecs = mode === 'real_ticks';
     let url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${winStart}&end=${winEnd}&mode=${encodeURIComponent(mode)}`;
     if (wantSecs) url += '&secs=1';
     let resp = {};
@@ -418,24 +457,120 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     //   real_ticks は実 tick_secs のまま（byte 不変・窓は無視）。open_only/math は上で短絡済み。
     return buildStreamFromResponse({ mode, cd, m1: resp.m1 || [], ticks: resp.ticks || [], secs: resp.tick_secs || [], winStart, winEnd });
   }
+  // ---- 足内一括計算（ISSUE-232）: バー開始前に足内各時点の指標値を作り置きする ----
+  //   従来は 1 ティックごとに /compute を往復し（実測 ~100ms＋throttle）、ローソクだけ先に動いて
+  //   指標が遅れて追いつく状態だった。本計画は「そのバーの足内推移の各時点の値」を先読みで
+  //   用意し、描画時は同期反映するだけにする（ローソクと同一同期ブロック＝遅延ゼロ）。
+  //
+  //   **速度の不変条件（最重要）**: 計画は決して await しない。使う時点で出来ていなければ
+  //   その場で従来経路（pushFormingMA）へ落とす。よって再生が計画待ちで遅くなることはない。
+  const seqClient = new FormingSeqClient({ fetch: fetchImpl });
+  const planCache = new Map();   // idx -> { mode, tf, sig, prices, secs, steps: Map(i -> {instanceId: series}) }
+  const planInFlight = new Set(); // 二重発行の防止（idx）
+  const invalidatePlans = () => { planCache.clear(); planInFlight.clear(); };
+
+  // 現在の指標構成・窓での署名（計画の陳腐化判定）。対象 0 件なら null＝一括計算の出番なし。
+  function planSigFor(idx) {
+    if (typeof controller.formingSeqTargets !== 'function') {
+      return null;   // 一括計算に対応しない controller（テストの fake 等）＝従来経路
+    }
+    const targets = controller.formingSeqTargets();
+    if (!targets.length) {
+      return null;
+    }
+    const cd = candles[idx];
+    if (!cd) {
+      return null;
+    }
+    return { targets, sig: planSignature({ targets, timeframe, limit: idx + 1, untilTime: cd.time }) };
+  }
+
+  // 計画の構築（ティック列の取得 → 各時点の指標値を 1 リクエストで一括計算）。
+  //   失敗しても例外を投げない（計画なし＝従来経路。再生は止めない）。
+  async function buildPlan(idx, mode) {
+    const cd = candles[idx];
+    if (!cd || mode === 'math') {
+      return null;
+    }
+    const { prices, secs } = await buildStream(idx, mode);
+    const base = { mode, tf: timeframe, prices, secs, steps: null, sig: null };
+    const sigInfo = planSigFor(idx);
+    if (!sigInfo || !Array.isArray(prices) || prices.length === 0) {
+      return base;   // ティック列だけ先読みできた（それでも 1 往復ぶん速くなる）
+    }
+    const indices = sampleIndices(prices.length);
+    // ISSUE-238: 各時点へリプレイ現在時刻を添え、足内窓も送る（サーバが実 tick 数を数える）。
+    const formingSeq = formingStatesAt(cd, prices, indices, secs);
+    const { winStart, winEnd } = intrabarWindow({
+      timeframe, cd, prevCandle: candles[idx - 1] || null, nextCandle: candles[idx + 1] || null,
+    });
+    const results = await Promise.all(sigInfo.targets.map((t) => seqClient.computeSeq({
+      indicatorId: t.indicatorId, variant: t.variant, params: t.params,
+      datasetRef, timeframe, limit: idx + 1, untilTime: cd.time, formingSeq,
+      winStart, winEnd,
+    }).catch(() => null)));
+    const steps = new Map();
+    indices.forEach((i, k) => {
+      const byInstance = {};
+      sigInfo.targets.forEach((t, ti) => {
+        const series = results[ti] && results[ti][k];
+        if (series) {
+          byInstance[t.instanceId] = series;
+        }
+      });
+      if (Object.keys(byInstance).length) {
+        steps.set(i, byInstance);
+      }
+    });
+    return { ...base, steps: steps.size ? steps : null, sig: sigInfo.sig };
+  }
+
+  // 先読み（fire-and-forget）。現在バーの再生中に次バーぶんを用意する＝待ち時間を露出させない。
+  function prefetchPlan(idx, mode) {
+    if (!candles[idx] || mode === 'math' || planInFlight.has(idx) || planCache.has(idx)) {
+      return;
+    }
+    planInFlight.add(idx);
+    buildPlan(idx, mode)
+      .then((plan) => { if (plan) planCache.set(idx, plan); })
+      .catch(() => { /* 計画なし＝従来経路（再生は止めない） */ })
+      .finally(() => { planInFlight.delete(idx); });
+  }
+
+  // 使用時の受け取り。モード・時間足・指標構成（署名）が一致するものだけを採用する。
+  //   不一致＝設定が変わった＝計算済み値は誤りなので破棄して従来経路へ落とす。
+  function takePlan(idx, mode) {
+    const plan = planCache.get(idx);
+    if (!plan || plan.mode !== mode || plan.tf !== timeframe) {
+      return null;
+    }
+    if (plan.steps) {
+      const sigInfo = planSigFor(idx);
+      if (!sigInfo || sigInfo.sig !== plan.sig) {
+        return { ...plan, steps: null };  // ティック列だけ流用（値は従来経路で取り直す）
+      }
+    }
+    return plan;
+  }
+
   let animGen = 0;
   let formingInFlight = false;
   let lastFormingMs = -1e9;
-  function pushFormingMA(forming) {
+  function pushFormingMA(forming, win = null) {
     const nowMs = performance.now();
     if (formingInFlight || (nowMs - lastFormingMs) < FORMING_MIN_INTERVAL_MS) return;
     if (controller.isRecomputing()) return; // 他の再計算中は譲る
     lastFormingMs = nowMs;
     formingInFlight = true;
-    controller.recomputeFormingLatest(forming)
+    controller.recomputeFormingLatest(forming, win)
       .catch(() => { /* 足内 MA 失敗はアニメ継続 */ })
       .finally(() => { formingInFlight = false; });
   }
-  async function settleFormingMA(forming) {
+  async function settleFormingMA(forming, win = null) {
     while (formingInFlight) { await sleepMs(ANIM_MIN_MS); }
     if (controller.isRecomputing()) return;
     formingInFlight = true;
-    try { await controller.recomputeFormingLatest(forming); }
+    try { await controller.recomputeFormingLatest(forming, win); }
     catch (_e) { /* 確定着地の失敗は次フレームの full 再計算が回復 */ }
     finally { formingInFlight = false; lastFormingMs = performance.now(); }
   }
@@ -445,6 +580,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   let pausedForm = null;
   const onModeChange = () => {
     animGen++;          // 実行中の形成を supersede
+    invalidatePlans();  // [ISSUE-232] モードが変わればティック列も計画も別物＝破棄
     pausedForm = null;
     emaPeriodMs = null;
     setEta();
@@ -473,6 +609,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     }
     window.__rpAnimating = true;
     try {
+      // [ISSUE-232] 先読み済みの計画があれば受け取る（無ければ null＝従来経路。**待たない**）。
+      const plan = takePlan(bar, mode);
+      const steps = plan ? plan.steps : null;
       let prices, secs, o, hi, lo, startI;
       if (resume && resume.time === cd.time) {
         prices = resume.prices; o = resume.o; hi = resume.hi; lo = resume.lo; startI = resume.i;
@@ -482,11 +621,54 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         if (mode !== 'math') {
           view.updateForming({ time: cd.time, open: cd.open, high: cd.open, low: cd.open, close: cd.open });
         }
-        ({ prices, secs } = await buildStream(cd, mode));
+        if (plan && Array.isArray(plan.prices) && plan.prices.length) {
+          ({ prices, secs } = plan);   // 先読み済み＝ティック列取得の往復も省ける
+        } else {
+          ({ prices, secs } = await buildStream(bar, mode));
+        }
         if (superseded()) return;
         o = prices[0]; hi = prices[0]; lo = prices[0]; startI = 0;
       }
-      window.__rpForm = { mode, n: prices.length };
+      // [ISSUE-232] 次バーの計画を先読み（fire-and-forget）。本バーの再生中にサーバが計算するため
+      //   使用時点では出来上がっている＝待ち時間が表に出ない。間に合わなければ従来経路へ落ちる。
+      prefetchPlan(bar + 1, mode);
+      window.__rpForm = { mode, n: prices.length, planned: steps ? steps.size : 0 };
+      // 実時間再生: 足内各点を市場時刻どおりの壁時計位置へ置く（アンカ基準＝sleep 誤差が累積しない）。
+      //   点ごとの時刻 secs を持たないモード／欠損時は足を等分する（realtimeOffsetsMs）。
+      // 足内窓（ISSUE-238 の実 tick 数算出／実時間再生のアンカ基準で共用・算出は 1 回）。
+      let win = null;
+      const formingWindow = () => {
+        if (!win) {
+          win = intrabarWindow({
+            timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
+          });
+        }
+        return win;
+      };
+      let rtOffsets = null;
+      const rtOffsetsOf = () => {
+        if (rtOffsets) return rtOffsets;
+        const { winStart } = formingWindow();
+        rtOffsets = realtimeOffsetsMs({ n: prices.length, secs, winStart, spanMs: rtBarMs() });
+        return rtOffsets;
+      };
+      // 停止再開・途中でのテンポ切替では、再開点 startI が「今」に来るようアンカを巻き戻す。
+      if (realtime() && resume && startI > 0) rtAnchorMs = performance.now() - rtOffsetsOf()[startI];
+      // 1点分の待機。比の速度は従来の固定間隔、実時間再生は次点の到達時刻まで（末尾は待たない
+      //   ＝足終端までの残りはフレーム待機 waitFrame が担う）。停止・supersede・テンポ切替を
+      //   拾えるよう 50ms 刻みで刻む。
+      const stepWait = async (i) => {
+        if (!realtime()) { await sleepMs(stepMs(speed())); return; }
+        const off = rtOffsetsOf();
+        if (i + 1 >= off.length) return;
+        const target = rtAnchorMs + off[i + 1];
+        for (;;) {
+          const remain = target - performance.now();
+          if (remain <= 0) return;
+          if (superseded() || (shouldAbort && shouldAbort()) || !realtime()) return;
+          await sleepMs(Math.min(50, remain));
+        }
+      };
       for (let i = startI; i < prices.length; i++) {
         if (shouldAbort && shouldAbort()) {
           pausedForm = { time: cd.time, prices, secs, o, hi, lo, i };
@@ -496,16 +678,28 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         const p = prices[i];
         hi = Math.max(hi, p); lo = Math.min(lo, p); // 高安は流入ティックの極値のみ
         view.updateForming({ time: cd.time, open: o, high: hi, low: lo, close: p });
-        pushFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: p });
+        // [ISSUE-232] 計画があれば計算済み値を**同一同期ブロック**で反映する（＝ローソクと同時）。
+        //   計画が無い／この時点が計画対象でないバーは従来どおりその場計算（非同期・遅延あり）。
+        if (steps) {
+          const step = steps.get(i);
+          if (step) {
+            controller.applyFormingStep(step);
+          }
+        } else {
+          // ISSUE-238: `to`（リプレイ現在時刻）と足内窓を添える＝サーバが実 tick 数を数える。
+          const state = { time: cd.time, open: o, high: hi, low: lo, close: p };
+          if (secs && secs[i] != null) state.to = Math.floor(secs[i]);
+          pushFormingMA(state, formingWindow());
+        }
         // MP tick-live: この tick を DwellAccumulator へ供給し足内成長させる（sec 並走が有るバーのみ＝
         //   real_ticks・MP 有効。secs 空バーは skip＝base 継続）。速度0凍結/supersede の既存制御に追従。
         //   グリッド外 tick の growTo 発火（in-flight coalesce）＋feedTick は mpDriver が担う（ISSUE-133 SRP）。
         if (mpOn() && secs && secs[i] != null) {
           mpDriver.onFormingTick(p, secs[i]);
         }
-        while (speed() <= 0 && !superseded() && !(shouldAbort && shouldAbort())) await sleepMs(80); // 速度0=凍結
+        while (paused() && !superseded() && !(shouldAbort && shouldAbort())) await sleepMs(80); // 速度0=凍結
         if (superseded() || (shouldAbort && shouldAbort())) continue;
-        await sleepMs(stepMs(speed())); // 再生速度で減速（毎ステップ読込＝速度変更を即時反映）
+        await stepWait(i); // 再生速度で減速（毎ステップ読込＝速度変更を即時反映）
       }
       pausedForm = null;
       // 足確定: ティック列由来の OHLC で確定（cd.high/low へスナップしない）。
@@ -525,9 +719,12 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         });
         await mpDriver.settleBar(winEnd);
       }
-      if (myGen === animGen) {
+      // [ISSUE-232] 計画は末尾ティックを必ず含む（sampleIndices）ため、確定値はループ内で同期反映
+      //   済み＝ここで往復（実測 ~100ms/バー）を発行しない。計画が無いバーのみ従来どおり着地させる。
+      if (myGen === animGen && !(steps && steps.has(prices.length - 1))) {
         await settleFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: fc });
       }
+      planCache.delete(bar);   // 使い終えた計画は破棄（メモリ・陳腐化の抑制）
     } finally { if (myGen === animGen) window.__rpAnimating = false; }
   }
 
@@ -543,14 +740,21 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   }
   view.el('rp-view-left').onclick = () => scrollViewTo('left');
   view.el('rp-view-right').onclick = () => scrollViewTo('right');
-  // 時間足の再駆動は data-timeframe を持つ要素（共有 TimeframeMenu の項目）に結線する。
-  //   旧静的ボタン（.tb-interval ＋ data-timeframe 併持）が共有メニュー化（ISSUE-122/123）で
-  //   トリガー（.tb-interval のみ・tf 属性なし）と項目（data-timeframe のみ）に分離されたため、
-  //   .tb-interval 選択ではトリガーに誤結線し loadTimeframe(undefined) が走る（ISSUE-142）。
-  for (const btn of doc.querySelectorAll('[data-timeframe]')) {
-    const onTf = () => setTimeout(() => loadTimeframe(btn.dataset.timeframe), 60);
-    btn.addEventListener('click', onTf);
-    disposers.push(() => btn.removeEventListener('click', onTf));
+  // 時間足の再駆動は controller の「反映役」スロット（setTimeframeApplier）で受ける（ISSUE-231）。
+  //   旧実装は [data-timeframe] へ独自リスナ（setTimeout 60ms）を追加していたが、時間足ボタンには
+  //   共有ベースの bind() が張るライブ経路（controller.setTimeframe）も結線されているため、
+  //   リプレイ中は 1 クリックで 2 経路が走っていた（実測 2026-08-01）:
+  //     1) ライブ経路が先着し、ISSUE-196 の裁定どおり **ローソクだけ先に** 新足へ差し替える
+  //        （指標は空にされ compute 完了後に描かれる＝実測 359ms 遅延）。
+  //     2) その約 750ms 後にリプレイ経路が同じ切替をもう一度やり直す（全再計算の二重実行）。
+  //   リプレイの不変条件は「その時点（T）のローソクと指標が同時に現れる」ことであり、1) の中間状態は
+  //   これに反する。反映役として loadTimeframe を登録し、切替をリプレイの単一経路
+  //   （render → preRender でローソク＋指標を await を挟まず同期一括描画）へ一本化する。
+  //   時間足の確定（_timeframe 更新・ボタン active 同期・スケールリセット・永続化・購読者通知）は
+  //   共有ベース側が従来どおり担う（＝ライブと同一の入口・リプレイは反映方法だけが異なる）。
+  if (typeof controller.setTimeframeApplier === 'function') {
+    controller.setTimeframeApplier(loadTimeframe);
+    disposers.push(() => controller.setTimeframeApplier(null));
   }
   view.bindManualBrowse(() => { autoFrame = false; });
   // onclick 代入系（rp-play/next/prev/view-left/view-right）を destroy で解除する。
@@ -564,6 +768,8 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   window.__rpChart = view.chart();
   window.__rpController = controller;
   window.__rpSetAuto = (v) => { autoFrame = !!v; };
+  // [ISSUE-232] 診断: 現在保持している足内計画のバー添字（実 UI 計測・テストの観測点）。
+  window.__rpPlans = () => [...planCache.keys()];
   window.__rpAuto = () => autoFrame;
   await loadTimeframe(controller._timeframe);
   window.__rpReady = true;
@@ -584,6 +790,11 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     view.setPlayLabel(PLAY_GLYPH);
     view.setPlaying(false);
     settleFrameWait();                              // フレーム待機を即解除
+    invalidatePlans();                              // [ISSUE-232] 足内計画を破棄（ライブでは使わない）
+    // 時間足切替の反映役を外す＝ライブ既定経路（ISSUE-196）へ戻す（ISSUE-231）。
+    if (typeof controller.setTimeframeApplier === 'function') {
+      controller.setTimeframeApplier(null);
+    }
     controller.setUntilTime(undefined);             // ライブ等価（undefined＝!==undefined gate で不送信）
     controller._recentBars = liveDefaultRecentBars; // 計算窓を live 既定へ復帰
     // reveal トリム未発生（初期 mount 等・enable 未経由）なら全長復帰は不要＝軽量停止のみ。
@@ -614,6 +825,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   }
   async function enable() {
     wasEnabled = true;
+    // 時間足切替の反映役を再登録＝リプレイ単一経路（同期一括描画）へ戻す（ISSUE-231）。
+    if (typeof controller.setTimeframeApplier === 'function') {
+      controller.setTimeframeApplier(loadTimeframe);
+    }
     // 現在の live データから再取得して present（最新足）へ駆動する（＝リプレイ現在バー＝ライブ最新）。
     //   loadTimeframe は既存の入口（fetch＋slider/preset 同期＋drive(present)）で、drive→render が
     //   :128-129（setUntilTime(現在バー)＋_recentBars=bar+1）を確立する。値算出・分岐は無改変。
@@ -623,11 +838,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     disable();
     for (const off of disposers) { try { off(); } catch (_e) { /* noop */ } }
     disposers.length = 0;
-    for (const { name, hadOwn, prev } of patched) {
-      if (hadOwn) { controller[name] = prev; }
-      else { try { delete controller[name]; } catch (_e) { controller[name] = prev; } }
+    if (hasAppliedObserver) {
+      controller.setAppliedObserver(null);   // ISSUE-037: 購読解除（monkeypatch 復元の置き換え）。
     }
-    patched.length = 0;
   }
 
   return { enable, disable, destroy };

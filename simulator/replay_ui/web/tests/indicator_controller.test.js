@@ -213,10 +213,13 @@ test('setTimeframe keeps isRecomputing() true during the candles fetch await (li
   assert.equal(ctrl.isRecomputing(), false);
 });
 
-// 時間足切替の画面更新は「全計算 → 同期一括描画」で行い、メインチャートと各指標を同時に更新する。
-//   旧実装は (1) 先に setCandles でメインのみ即描画 → (2) 指標を直列ループで「compute→即描画」し、
-//   各 await でブラウザが中間状態を1指標ずつ描画＝バラバラ更新になっていた（ISSUE-023）。
-test('setTimeframe batches all renders after every compute resolves (ISSUE-023 regression)', async () => {
+// 時間足切替の画面更新（ISSUE-196 で設計変更・2026-07-29）:
+//   ローソク（メイン系列）は candles 取得直後に「指標系列の空化 → setCandles」の同一同期ブロックで
+//   差し替える（実測: 旧仕様は全 compute 完了待ちで 5.63 秒・かつ旧足の指標系列が残るため
+//   lwc が `Value is null` を throw してバッチが中断していた）。
+//   指標同士の同時更新（ISSUE-023 の本旨＝1 指標ずつバラバラに出ない）は不変で、全 compute 完了後の
+//   同期一括描画を維持する。
+test('setTimeframe: ローソクは compute 完了前に差し替え、指標は全 compute 後に一括描画（ISSUE-196/023）', async () => {
   const noop = () => {};
   const events = [];
   let releaseCompute;
@@ -242,6 +245,7 @@ test('setTimeframe batches all renders after every compute resolves (ISSUE-023 r
       setVisible: noop,
       remove: () => events.push('remove'),
       setCandles: () => events.push('setCandles'),
+      clearInstanceData: () => events.push('clearInstanceData'),
     },
     document: null,
     mode: 'b',
@@ -259,23 +263,25 @@ test('setTimeframe batches all renders after every compute resolves (ISSUE-023 r
   const p = ctrl.setTimeframe('1W');
   await new Promise((r) => setTimeout(r, 0)); // candles 取得 await＋compute 到達まで進める。
 
-  // Assert(1): compute は開始しているが、描画は一切起きていない＝メインも指標も先行描画しない。
+  // Assert(1): compute 中でも「空化→setCandles」は完了している（ローソクは待たせない・ISSUE-196）。
   assert.ok(events.includes('compute'), '指標の計算は開始している');
-  assert.ok(!events.includes('setCandles'), '計算完了前にメイン系列を描画しない');
-  assert.ok(!events.includes('remove') && !events.includes('renderLine'), '計算完了前に指標を描画しない');
+  assert.ok(events.includes('setCandles'), '計算完了を待たずメイン系列を差し替える');
+  assert.ok(events.includes('clearInstanceData'), '差し替え前に旧足の指標系列を空にする');
+  assert.ok(events.indexOf('clearInstanceData') < events.indexOf('setCandles'),
+    '空化はローソク差し替えより前（時間軸に旧 time を残さない）');
+  assert.ok(!events.includes('remove') && !events.includes('renderLine'), '計算完了前に指標は描画しない');
 
   // 計算を解放 → 同期一括描画フェーズへ。
   releaseCompute();
   await p;
 
-  // Assert(2): すべての compute が、いかなる描画よりも前に並ぶ（compute-all → render-all）。
-  const isRender = (e) => e === 'setCandles' || e === 'remove' || e === 'renderLine' || e === 'renderHistogram';
+  // Assert(2): 指標の描画は全 compute 完了後に一括で並ぶ（ISSUE-023 の本旨）。ローソク差し替えは
+  //   Assert(1) のとおり compute 前で、この判定の対象外（ISSUE-196 の設計変更点）。
+  const isRender = (e) => e === 'remove' || e === 'renderLine' || e === 'renderHistogram';
   const firstRender = events.findIndex(isRender);
   const lastCompute = events.lastIndexOf('compute');
   assert.ok(firstRender > -1 && lastCompute > -1, '計算と描画の双方が記録される');
-  assert.ok(firstRender > lastCompute, 'すべての計算が描画より前に実行される（一括描画）');
-  // メイン系列も同じバッチで描画される（メインのみ先行描画しない）。
-  assert.ok(events.includes('setCandles'), 'メイン系列が描画される');
+  assert.ok(firstRender > lastCompute, 'すべての計算が指標描画より前に実行される（一括描画）');
 });
 
 // ===========================================================================

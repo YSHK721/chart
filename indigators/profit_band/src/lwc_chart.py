@@ -32,6 +32,16 @@ from typing import Dict, Iterable, Optional, Protocol, Union, runtime_checkable
 
 import pandas as pd
 from common_view.lwc_adapter import SeriesLike  # noqa: E402
+# ISSUE-187（案 b・2026-07-30 の実測に基づく一本化）: 参照実装である本モジュールだけが
+#   `_resolve_times` をローカル定義し、DatetimeIndex 経路で `df.index.to_series()` を返して
+#   **系列名を `time` に揃えない**少数派だった。差が観測可能かを先に実測した:
+#     - 戻り値の消費者 21 本を全数調査 → `.name` を読む消費者は 0 件
+#       （用法は dict のキー `"time"` による列名上書き・`to_numpy()`・位置スライスのみ）
+#     - index.name × tz-aware / 重複 / 非単調 の全ケースで値・dtype・index が一致し、
+#       `emit_line` が作る DataFrame と JS へ渡る JSON は byte 一致
+#     - 例外文言をアサートするテストは全体で 0 件
+#   ＝**挙動不変**。よって共有実装（多数派 20 本と同一）へ寄せ、二重実装を解消する。
+from common_view.lwc_adapter import resolve_times as _resolve_times  # noqa: E402
 
 from .bands import build_bands
 from .core import PROBABILITIES
@@ -72,29 +82,6 @@ def _rgba(hex_color: str, alpha: float) -> str:
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r}, {g}, {b}, {alpha})"
-
-
-def _resolve_times(df: pd.DataFrame, time_column: Optional[str]) -> pd.Series:
-    """バンドの行に対応する時刻列を、行順を保ったまま取り出す。
-
-    優先順位: 明示指定 ``time_column`` > ``time`` 列 > ``date`` 列 > DatetimeIndex。
-    いずれも無ければ ``KeyError``。
-    """
-    cols = {c.lower(): c for c in df.columns}
-    if time_column is not None:
-        tcol = cols.get(time_column.lower(), time_column)
-        if tcol not in df.columns:
-            raise KeyError(f"指定された時刻列が存在しません: {time_column}")
-        return pd.to_datetime(df[tcol]).reset_index(drop=True)
-    if "time" in cols:
-        return pd.to_datetime(df[cols["time"]]).reset_index(drop=True)
-    if "date" in cols:
-        return pd.to_datetime(df[cols["date"]]).reset_index(drop=True)
-    if isinstance(df.index, pd.DatetimeIndex):
-        return df.index.to_series().reset_index(drop=True)
-    raise KeyError(
-        "時刻列(time/date)も DatetimeIndex も見つかりません。time_column を指定してください。"
-    )
 
 
 def add_profit_band(

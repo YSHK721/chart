@@ -214,10 +214,13 @@ test('setTimeframe keeps isRecomputing() true during the candles fetch await (li
   assert.equal(ctrl.isRecomputing(), false);
 });
 
-// 時間足切替の画面更新は「全計算 → 同期一括描画」で行い、メインチャートと各指標を同時に更新する。
-//   旧実装は (1) 先に setCandles でメインのみ即描画 → (2) 指標を直列ループで「compute→即描画」し、
-//   各 await でブラウザが中間状態を1指標ずつ描画＝バラバラ更新になっていた（ISSUE-023）。
-test('setTimeframe batches all renders after every compute resolves (ISSUE-023 regression)', async () => {
+// 時間足切替の画面更新（ISSUE-196 で設計変更・2026-07-29）:
+//   ローソク（メイン系列）は candles 取得直後に「指標系列の空化 → setCandles」の同一同期ブロックで
+//   差し替える（実測: 旧仕様は全 compute 完了待ちで 5.63 秒・かつ旧足の指標系列が残るため
+//   lwc が `Value is null` を throw してバッチが中断していた）。
+//   指標同士の同時更新（ISSUE-023 の本旨＝1 指標ずつバラバラに出ない）は不変で、全 compute 完了後の
+//   同期一括描画を維持する。
+test('setTimeframe: ローソクは compute 完了前に差し替え、指標は全 compute 後に一括描画（ISSUE-196/023）', async () => {
   const noop = () => {};
   const events = [];
   let releaseCompute;
@@ -243,6 +246,7 @@ test('setTimeframe batches all renders after every compute resolves (ISSUE-023 r
       setVisible: noop,
       remove: () => events.push('remove'),
       setCandles: () => events.push('setCandles'),
+      clearInstanceData: () => events.push('clearInstanceData'),
     },
     document: null,
     mode: 'b',
@@ -260,23 +264,26 @@ test('setTimeframe batches all renders after every compute resolves (ISSUE-023 r
   const p = ctrl.setTimeframe('1W');
   await new Promise((r) => setTimeout(r, 0)); // candles 取得 await＋compute 到達まで進める。
 
-  // Assert(1): compute は開始しているが、描画は一切起きていない＝メインも指標も先行描画しない。
+  // Assert(1): compute 中でも「空化→setCandles」は完了している（ローソクは待たせない・ISSUE-196）。
   assert.ok(events.includes('compute'), '指標の計算は開始している');
-  assert.ok(!events.includes('setCandles'), '計算完了前にメイン系列を描画しない');
-  assert.ok(!events.includes('remove') && !events.includes('renderLine'), '計算完了前に指標を描画しない');
+  assert.ok(events.includes('setCandles'), '計算完了を待たずメイン系列を差し替える');
+  assert.ok(events.includes('clearInstanceData'), '差し替え前に旧足の指標系列を空にする');
+  assert.ok(events.indexOf('clearInstanceData') < events.indexOf('setCandles'),
+    '空化はローソク差し替えより前（時間軸に旧 time を残さない）');
+  assert.ok(!events.includes('remove') && !events.includes('renderLine'), '計算完了前に指標は描画しない');
 
   // 計算を解放 → 同期一括描画フェーズへ。
   releaseCompute();
   await p;
 
-  // Assert(2): すべての compute が、いかなる描画よりも前に並ぶ（compute-all → render-all）。
-  const isRender = (e) => e === 'setCandles' || e === 'remove' || e === 'renderLine' || e === 'renderHistogram';
-  const firstRender = events.findIndex(isRender);
+  // Assert(2): 指標の描画（remove/renderLine/renderHistogram）は全 compute 完了後に一括で並ぶ
+  //   （ISSUE-023 の本旨＝1 指標ずつバラバラに描かれない）。ローソク差し替えは Assert(1) のとおり
+  //   compute 前で、この判定の対象外（ISSUE-196 の設計変更点）。
+  const isIndicatorRender = (e) => e === 'remove' || e === 'renderLine' || e === 'renderHistogram';
+  const firstRender = events.findIndex(isIndicatorRender);
   const lastCompute = events.lastIndexOf('compute');
-  assert.ok(firstRender > -1 && lastCompute > -1, '計算と描画の双方が記録される');
-  assert.ok(firstRender > lastCompute, 'すべての計算が描画より前に実行される（一括描画）');
-  // メイン系列も同じバッチで描画される（メインのみ先行描画しない）。
-  assert.ok(events.includes('setCandles'), 'メイン系列が描画される');
+  assert.ok(firstRender > -1 && lastCompute > -1, '計算と指標描画の双方が記録される');
+  assert.ok(firstRender > lastCompute, 'すべての計算が指標描画より前に実行される（一括描画）');
 });
 
 // ===========================================================================
@@ -349,6 +356,64 @@ test('recomputeAllApplied is a no-op when nothing is applied', async () => {
   const before = computeCalls.length;
   await ctrl.recomputeAllApplied();
   assert.equal(computeCalls.length, before);
+});
+
+// ISSUE-196 回帰（lwc 不変条件の構造的保証）: preRender はメイン系列の time 集合を入れ替えるため、
+//   本バッチで再描画されない指標の系列は旧 time を持ち続け、`Value is null` の発生条件が成立する。
+//   （実測: 統合 UI で 1 回の切替が 2 バッチを起動し、generation ガードで全 job が不採択になった
+//    先行バッチが preRender だけを実行 → 以後の全ペイントが throw → 指標が旧足で固着。）
+//   フェーズ2 冒頭で「描画されない指標」の系列を空にしてから preRender を呼ぶことを固定する。
+test('recomputeAllApplied: preRender 前に「本バッチで描画しない指標」の系列を空にする（ISSUE-196）', async () => {
+  const noop = () => {};
+  const order = [];
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    // 不採択（generation 不一致）を返す＝job.accepted=false ⇒ 本バッチでは描画されない。
+    compute: { compute: async () => ({ ok: true, generation: -1, series: [] }) },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: {
+      renderLine: () => order.push('renderLine'),
+      renderHorizontal: noop,
+      renderHistogram: noop,
+      setData: noop,
+      setVisible: noop,
+      remove: noop,
+      clearInstanceData: (id) => order.push(`clear:${id}`),
+    },
+    document: null,
+  });
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const instId = ctrl._state.applied[0].instanceId;
+  order.length = 0;
+
+  await ctrl.recomputeAllApplied({ preRender: () => order.push('preRender') });
+
+  assert.deepEqual(order, [`clear:${instId}`, 'preRender'],
+    '不採択（描画されない）指標の系列を空にした後に preRender を呼ぶ');
+});
+
+test('recomputeAllApplied: 本バッチで描画する指標の系列は空にしない（ISSUE-196・過剰空化の防止）', async () => {
+  const noop = () => {};
+  const cleared = [];
+  const { ctrl } = (() => {
+    const c = new IndicatorController({
+      catalog: { listIndicators: () => [], get },
+      compute: { compute: async (req) => ({ ok: true, generation: req.generation ?? 0, series: [] }) },
+      persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+      renderer: {
+        renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop,
+        setVisible: noop, remove: noop, clearInstanceData: (id) => cleared.push(id),
+      },
+      document: null,
+    });
+    return { ctrl: c };
+  })();
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  cleared.length = 0;
+
+  await ctrl.recomputeAllApplied({ preRender: () => {} });
+
+  assert.deepEqual(cleared, [], '採択され描画される指標は空化しない（同期ブロック内で描き直される）');
 });
 
 // ISSUE-105 🟡-2 回帰: フェーズ1（直列計算の await）中に凡例 close で当該インスタンスが
@@ -541,4 +606,160 @@ test('applyIndicator waits for an in-flight restore before applying (ISSUE-153)'
   releaseRestore();
   await p;
   assert.deepEqual(order, ['restore-done', 'apply-done']);
+});
+
+// ===========================================================================
+// ISSUE-201（同一インスタンスの lost update・2026-07-29 実測）
+//   ライブ再計算はバッチ開始時のスナップショット params で計算し、完了時に当該行を live state へ
+//   マージする。よって計算中に歯車で params を変えると旧 params の行が新 params を上書きし、
+//   ユーザーには「価格が更新されると設定が元に戻る」と見えていた（実測: OK 直後 200 →
+//   0.5 秒後に旧値 9 の tick 計算が完了し保存値が 9 に戻る）。
+//   対策 (a) 明示操作は await 前に params を確定 / (b) await 中に行が差し替わった結果は破棄。
+// ===========================================================================
+
+test('recomputeInstance(commitParams): params は計算完了を待たず即確定する（ISSUE-201-a）', async () => {
+  const noop = () => {};
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let armed = false;
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => { if (armed) { await gate; } return { ok: true, generation: req.generation ?? 0, series: [] }; } },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop, setVisible: noop, remove: noop },
+    document: null,
+  });
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const id = ctrl._state.applied[0].instanceId;
+
+  armed = true;
+  const p = ctrl.recomputeInstance(id, null, { length: 200 }, { commitParams: true });
+  await Promise.resolve();
+
+  // 計算は未完了だが state の params は既に新しい（in-flight の完了順に依存しない）。
+  assert.deepEqual(
+    Object.fromEntries(ctrl._state.applied[0].params).length, 200,
+    '計算完了前に params が確定している',
+  );
+  release();
+  await p;
+  assert.equal(Object.fromEntries(ctrl._state.applied[0].params).length, 200);
+});
+
+test('_computeInstance: await 中に行が差し替わった結果は破棄する（ISSUE-201-b）', async () => {
+  const noop = () => {};
+  const rendered = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let armed = false;
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => { if (armed) { await gate; } return { ok: true, generation: req.generation ?? 0, series: [] }; } },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: { renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop, setVisible: noop, remove: noop },
+    document: null,
+  });
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const id = ctrl._state.applied[0].instanceId;
+  ctrl._renderInstance = (job) => { rendered.push(job.instanceId); };
+
+  // ライブ相当のバッチ（旧 params）を開始してから、歯車 OK 相当で params を確定する。
+  armed = true;
+  const live = ctrl._computeInstance(id, null, { length: 9 });
+  await Promise.resolve();
+  ctrl._state = ctrl._withParams(ctrl._state, id, { length: 200 });   // 明示操作の即確定に相当
+  release();
+  const job = await live;
+
+  assert.equal(job.accepted, false, '旧 params 由来の結果は採用しない');
+  assert.equal(Object.fromEntries(ctrl._state.applied[0].params).length, 200, 'params は巻き戻らない');
+  assert.deepEqual(rendered, [], '破棄された結果は描画しない');
+});
+
+
+// ---------------------------------------------------------------------------
+// ISSUE-037: 適用/削除の完了を購読するスロット（monkeypatch の置き換え）
+//
+// リプレイ層（replay.js）は「適用/削除のあとに減光境界を再同期する」必要があるが、render を
+// 経ない経路のため、従来は controller.applyIndicator / removeInstance を実行時に monkeypatch
+// して後処理を差し込んでいた（destroy で原状復帰）。monkeypatch は差し替え順序に依存して壊れ、
+// 復元漏れが静かに残り、subclass の override と二重に噛む。setTimeframeObserver と同型の
+// 購読スロットへ置き換えた。
+// ---------------------------------------------------------------------------
+
+function ctrlForObserver() {
+  const noop = () => {};
+  const get = (id) => ({
+    id, label: id, category: 'technical', variants: ['default'], params: [],
+    series: [{ name: id, kind: 'line' }],
+  });
+  return new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => ({ ok: true, generation: req.generation ?? 0, series: [] }) },
+    persistence: {
+      loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop,
+      loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1,
+    },
+    renderer: {
+      renderLine: noop, renderHorizontal: noop, renderHistogram: noop,
+      setData: noop, setVisible: noop, remove: noop,
+    },
+    document: null,
+  });
+}
+
+test('ISSUE-037 setAppliedObserver: 適用の完了後に 1 回通知する', async () => {
+  const ctrl = ctrlForObserver();
+  let calls = 0;
+  let appliedAtNotify = -1;
+  ctrl.setAppliedObserver(() => { calls += 1; appliedAtNotify = ctrl._state.applied.length; });
+
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+
+  assert.equal(calls, 1);
+  assert.equal(appliedAtNotify, 1, '通知時点で適用は完了している（後処理が正しい状態を見る）');
+});
+
+test('ISSUE-037 setAppliedObserver: 削除の完了後に 1 回通知する', async () => {
+  const ctrl = ctrlForObserver();
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const id = ctrl._state.applied[0].instanceId;
+  let calls = 0;
+  let appliedAtNotify = -1;
+  ctrl.setAppliedObserver(() => { calls += 1; appliedAtNotify = ctrl._state.applied.length; });
+
+  ctrl.removeInstance(id);
+
+  assert.equal(calls, 1);
+  assert.equal(appliedAtNotify, 0, '通知時点で削除は完了している');
+});
+
+test('ISSUE-037 setAppliedObserver: 未知 id の適用でも通知する（monkeypatch 時代と同一）', async () => {
+  const ctrl = ctrlForObserver();
+  ctrl._catalog.get = () => null;      // 未知 id ＝ 適用は no-op
+  let calls = 0;
+  ctrl.setAppliedObserver(() => { calls += 1; });
+
+  const result = await ctrl.applyIndicator('____unknown____', 'default');
+
+  assert.equal(result, null, '適用自体は no-op');
+  assert.equal(calls, 1, '呼び出しごとに後処理が走る挙動を保つ');
+});
+
+test('ISSUE-037 setAppliedObserver: null で購読解除できる（destroy 経路）', async () => {
+  const ctrl = ctrlForObserver();
+  let calls = 0;
+  ctrl.setAppliedObserver(() => { calls += 1; });
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  assert.equal(calls, 1);
+
+  ctrl.setAppliedObserver(null);
+  await ctrl.applyIndicator('btlm_trail', 'default');
+
+  assert.equal(calls, 1, '解除後は通知されない');
+});
+
+test('ISSUE-037 未登録なら通知は no-op（購読者不在で落ちない）', async () => {
+  const ctrl = ctrlForObserver();
+  await assert.doesNotReject(() => ctrl.applyIndicator('tgp_btlm', 'default'));
 });

@@ -85,6 +85,19 @@ export class SeriesDrawer {
     return slot;
   }
 
+  // level_dash（同値 4 値の Candlestick）の色オプション写像。CandlestickSeries は `color` を
+  //   持たず up/down/border/wick の 6 経路で着色するため、単色をすべてへ複製する。
+  //   open==close の同事は上下判定が処理系依存なので、どちらに転んでも同色になるようにする。
+  //   **生成時（_renderSeries）と変更時（applySeriesStyle）の唯一の写像点**（乖離すると
+  //   「スタイルで色を変えても反映されない」不具合になる・ISSUE-226）。
+  _levelDashColors(color) {
+    return {
+      upColor: color, downColor: color,
+      borderUpColor: color, borderDownColor: color,
+      wickUpColor: color, wickDownColor: color,
+    };
+  }
+
   // pane 指標なら専用 pane を生成し指標名ウォーターマーク（機能①②）を立てる。overlay は null（pane 0）。
   _ensurePane(slot, opts) {
     if (!opts.pane) {
@@ -128,9 +141,13 @@ export class SeriesDrawer {
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     const slot = this._slot(instanceId);
     const pane = this._ensurePane(slot, opts);
-    const definition = seriesKind(kind).seriesType === 'histogram'
+    // seriesType → lightweight-charts の系列定義。台帳（series_kind）の宣言のみで決まる。
+    const seriesType = seriesKind(kind).seriesType;
+    const definition = seriesType === 'histogram'
       ? this._h._lwc.HistogramSeries
-      : this._h._lwc.LineSeries;
+      : seriesType === 'level_dash'
+        ? this._h._lwc.CandlestickSeries
+        : this._h._lwc.LineSeries;
     for (const p of payloads ?? []) {
       // 価格軸（画面右端）のラベルは系列名ではなく現在値（数値・系列色チップ）を表示する
       //   （ユーザー指示 2026-07-23。旧: title=系列名＋lastValueVisible=false＝名前チップ）。
@@ -172,10 +189,22 @@ export class SeriesDrawer {
         options.crosshairMarkerVisible = false;
       }
       // pane 指標は専用 pane（IPaneApi.addSeries）、overlay 指標は pane 0（IChartApi.addSeries）。
+      // level_dash: 同値 4 値の同事（doji）＝実体が潰れて水平線 1 本になり、幅は
+      //   ローソク足と一致する。ヒゲは消す。色は 4 経路すべてへ同じ値を入れる
+      //   （open==close は上下判定が処理系依存のため、どちらに転んでも同色にする）。
+      if (seriesType === 'level_dash') {
+        options.wickVisible = false;
+        Object.assign(options, this._levelDashColors(p.color));
+      }
       const series = pane
         ? pane.addSeries(definition, options)
         : this._h._chart.addSeries(definition, options);
-      series.setData(p.data ?? []);
+      // payload 契約は line と同一（{time, value}）。level_dash のみ表示層で 4 値へ展開する
+      //   （back の payload 形状を増やさないための写像点＝ここが唯一）。
+      const data = p.data ?? [];
+      series.setData(seriesType === 'level_dash'
+        ? data.map((d) => ({ time: d.time, open: d.value, high: d.value, low: d.value, close: d.value }))
+        : data);
       const key = `${instanceId}::${p.name}`;
       slot.lines.set(key, series);
       const metaEntry = {
@@ -200,9 +229,14 @@ export class SeriesDrawer {
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }
-      // overlay（pane 0 重ね描き）の line 系列のみ読み取り欄の overlay 行に載せる。
+      // overlay（pane 0 重ね描き）の line 系列を読み取り欄の overlay 行に載せる。
       //   color/name と末尾点 value（hover 解除時の fallback）を保持する。
-      if (!pane && seriesKind(kind).overlayReadout) {
+      //
+      // readout_only の系列は pane 指標でも載せる: このヒントは「描画せず読取欄だけに出す」
+      //   という意味であり（back の描画ヒント契約・fake_chart の _DISPLAY_HINTS）、pane だから
+      //   除外すると線も出ず読取欄にも出ない＝どこにも現れない死荷重になる。対象は明示的に
+      //   readout_only を付けた系列だけなので、既存指標の読取欄行は 1 行も増えない。
+      if ((!pane && seriesKind(kind).overlayReadout) || p.readout_only === true) {
         this._h._overlayReadouts.set(key, {
           series, color: p.color, name: p.name, lastValue: lastPointValue(p.data),
           visible: true,
@@ -324,6 +358,11 @@ export class SeriesDrawer {
       }
     }
     const options = { color: meta.color, visible: slot.visible && meta.visible };
+    // level_dash は CandlestickSeries であり `color` オプションを持たない。生成時と同じ
+    //   写像を通さないと色変更が黙って無視される（ISSUE-226）。
+    if (seriesKind(meta.kind).seriesType === 'level_dash' && meta.color != null) {
+      Object.assign(options, this._levelDashColors(meta.color));
+    }
     if (seriesKind(meta.kind).appliesLineStyle) {
       if (meta.width != null) {
         options.lineWidth = meta.width;

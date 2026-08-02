@@ -17,6 +17,9 @@
            ソース）が生成する。replay の対応 8 足（30m なし）は composition root が groups 注入で指定。 -->
       <div class="tf-menu" id="tf-menu"></div>
       <span class="tb-sep"></span>
+      <!-- チャートテンプレートのドロップダウンのマウント（基本設計_チャートテンプレート §6.1）。
+           DOM は共有 chart_template_menu.js が生成する（HTML 直書きの複製を作らない）。 -->
+      <div class="tpl-menu" id="tpl-menu"></div>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
         <span class="ic">∿</span>
         <span class="lbl">インジケーター</span>
@@ -57,7 +60,7 @@
         <button id="rp-next" class="rp-icon" type="button" title="1足進む">▷|</button>
         <button id="rp-view-right" class="rp-icon" type="button" title="チャート表示を右端へスクロール（再生位置は変えない）">▷‖</button>
         <span class="rp-sep"></span>
-        <button id="rp-speed" type="button" data-speed="1" aria-haspopup="true" title="再生速度（1.00=最速・0.00=一時停止）">x1.00</button>
+        <button id="rp-speed" type="button" data-speed="1" aria-haspopup="true" title="再生速度（1.00=最速・0.00=一時停止・リアルタイム＝実時間）">x1.00</button>
         <select id="rp-mode" class="rp-select" title="最新足を足内で更新する方法（MT5 モデリング相当）">
           <option value="real_ticks">実ティック</option>
           <option value="every_tick">全ティック合成</option>
@@ -87,9 +90,9 @@
         <div class="dialog-side">
           <button class="side-item is-active" data-category="" type="button">すべて</button>
           <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
-          <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
-          <button class="side-item" data-category="cat.statistics" type="button">統計</button>
-          <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+          <!-- カテゴリのボタンはカタログから動的生成する（ISSUE-221）。ここへ直書きすると
+               新カテゴリの指標を足したときに HTML の同時改変が必要になり、実際に
+               oscillator(10) と band(2) が欠落して 24 指標中 12 件が到達不能になっていた。 -->
         </div>
         <div class="dialog-main">
           <div class="search-wrap">
@@ -141,8 +144,9 @@
       container: document.getElementById('chart'),
       doc: document,
       datasetRef: 'jp225_tick',
-    }).then(({ chart, mainSeries, controller, renderer, ready, marketProfile }) => {
+    }).then(({ chart, mainSeries, controller, renderer, ready, marketProfile, tickvolBands }) => {
       controller.bind();
+      window.__rpTickvolBands = tickvolBands; // E2E フック（__rpChart と同規約・描画には不使用）
       ready.then(() => {
         controller.restore();
         // ライブ更新の代わりに再生ドライバを起動（untilTime をフレーム駆動＝ライブ同一計算）。

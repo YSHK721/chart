@@ -25,6 +25,9 @@
            disabled のまま非活性。 -->
       <button id="live-follow-toggle" class="tb-interval" type="button" aria-pressed="false" title="ライブ追従（点灯=ライブ／消灯=分析）" disabled>ライブ</button>
       <span class="tb-sep"></span>
+      <!-- チャートテンプレートのドロップダウンのマウント（基本設計_チャートテンプレート §6.1）。
+           DOM は共有 chart_template_menu.js が生成する（HTML 直書きの複製を作らない）。 -->
+      <div class="tpl-menu" id="tpl-menu"></div>
       <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
         <span class="ic">∿</span>
         <span class="lbl">インジケーター</span>
@@ -66,9 +69,9 @@
         <div class="dialog-side">
           <button class="side-item is-active" data-category="" type="button">すべて</button>
           <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
-          <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
-          <button class="side-item" data-category="cat.statistics" type="button">統計</button>
-          <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+          <!-- カテゴリのボタンはカタログから動的生成する（ISSUE-221）。ここへ直書きすると
+               新カテゴリの指標を足したときに HTML の同時改変が必要になり、実際に
+               oscillator(10) と band(2) が欠落して 24 指標中 12 件が到達不能になっていた。 -->
         </div>
         <div class="dialog-main">
           <div class="search-wrap">

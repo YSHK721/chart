@@ -480,59 +480,106 @@
 
 ## ISSUE-031: replay_ui backend — 足内 mid 算出/外れ値除去の orchestration が adapter に在る
 - **重大度**: Low（依存方向違反ではない・設計整理）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: 因果リビール再生バックエンド arch レビュー（2026-07-04・🟡-1）。
 - **背景**: `usecase/intrabar_window.py` は `window_port.load_ticks()` を素通しし、mid=(bid+ask)/2＋窓フィルタ＋外れ値除去（本質不変 E-4）の呼び出しが `adapter/intrabar_window_repository.py` に在る。domain `tick_mid_series.mid_series` 自体は純化済だが、tick 源差替のたび各 adapter が mid_series を再結線＝本質ルールが adapter ごとに分散し得る。
 - **対策（提案）**: Port を `load_raw_ticks(start,end)->[(sec,bid,ask)]` へ変え usecase 側で `mode=='real_ticks'` 時のみ domain `mid_series` を適用（mode ゲートは usecase 既存＝軽量性不変）。
 - **関連**: replay_ui バックエンド増分（branch feature/contact-scan-replay）。
+- **対応（2026-07-31・提案どおり実施）**: `IntrabarWindowPort` を `load_ticks(start,end) -> [(sec, mid)]` から **`load_raw_ticks(start,end) -> [(sec, bid, ask)]`** へ変え、domain E-4（mid 算出＋窓フィルタ＋外れ値除去 `tick_mid_series.mid_series`）の適用を **usecase 側の 1 か所**へ寄せた。
+  - `mode=='real_ticks'` のゲートは usecase に既存のため**軽量性は不変**（他モードは tick を読まない）。
+  - 外れ値しきい値は adapter のコンストラクタ引数から `IntrabarWindowRequest.outlier_threshold` へ移した（本質ルールのパラメータは本質を適用する層が持つ）。adapter から `tick_mid_series` への依存は消滅し、責務が「保管形式（parquet の日別レイアウト）→ 素の観測値」の変換に閉じた（偶有的性質のみ）。
+- **これで何が防げるか**: tick 源を差し替えるたびに各 adapter が `mid_series` を再結線する必要がなくなる。結線漏れが静かに「外れ値除去なしの mid 列」を生む経路が構造的に消える。
+- **挙動不変の実証（実データ A/B）**: `jp225_tick` の 2026-07-30 00:00 UTC から 1 時間（**生ティック 190,901 件**）で、旧経路（adapter 内で `mid_series` 適用）と新経路（usecase で適用）の結果が **20,631 件で byte 一致**。
+- **検証**: `simulator/replay_ui` **187 passed**。Port 契約の変更に伴い、テストのフェイク 8 件を新契約（`load_raw_ticks` が `(sec, bid, ask)` を返す）へ更新し、adapter の統合テストは「**外れ値も窓外も落とさない**＝整形しない契約」を固定する形に書き替えた。
 
 ## ISSUE-032: replay_ui backend — 外れ値閾値 0.3 の二重定義（用途別だが同値）
 - **重大度**: Low
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: arch レビュー（🔵-3・2026-07-04）。
 - **背景**: `domain/tick_mid_series.OUTLIER_THRESHOLD`（足内 mid 外れ値）と `adapter/_m1_repair.M1_OUTLIER_THRESHOLD`（M1 日内補正）が各 0.3。アルゴリズムは別物だが値・意図（±30%）同一で source が分岐＝値乖離リスク。
 - **対策（提案）**: 単一 source-of-truth へ集約、または「別用途で独立の定数」である旨を両所へ明記して意図を固定。
 - **関連**: replay_ui バックエンド増分。
+- **対応（2026-07-30・提案の第 2 案「独立である旨を明記」を採用）**:
+  - ISSUE-032 が指摘した重複相手 `adapter/_m1_repair.M1_OUTLIER_THRESHOLD` は**モジュールごと削除済みで現存しない**（grep 0 件）。旧コメントが参照していた `proto_server` も同様。
+  - 現存する同値定数は `marketdata.outlier_policy.OUTLIER_THRESHOLD`（0.3）だが、**統合しない**と裁定した。理由: (1) 対象が別物（本定数はバー内 tick の mid 系列に対する中央値ベース除去、marketdata 側は確定足 OHLC のクランプ）、(2) 層が別（replay_ui の domain 層から データ取得基盤 marketdata へ依存させると domain → infrastructure の逆流になる）。
+  - `tick_mid_series.py` のコメントを実態へ改め、独立の定数である理由を明記した（値の一致は偶然であり一方の調整が他方へ波及してはならない旨）。
+- **検証**: `simulator/replay_ui` 198 passed。
 
 ## ISSUE-033: replay_ui backend — 未消費の抽象（E-3 window / ContactScanPort）のフロント確定時精査
 - **重大度**: Low（YAGNI）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: arch レビュー（YAGNI 削除候補・2026-07-04）。
 - **背景**: `domain/intrabar_window.window`（足境界→窓算出 E-3）と `replay_ports.ContactScanPort` は backend に production caller 不在（テストのみ）。窓はフロント replay.js が算出し `/intraday` に start/end で渡す設計、接点は次フェーズ想定＝将来仮説が根拠。
 - **対策（提案）**: フロント増分で「消費者が生じるか」確定し、生じなければ削除。窓をサーバ側算出する usecase に倒す選択肢も検討。
 - **関連**: replay_ui フロント増分で判断。
+- **実測（2026-07-30）**: フロント増分は完了しており、消費者の有無が確定した。
+  | 対象 | 本番消費者 | 判定 |
+  |---|---|---|
+  | `replay_ports.ContactScanPort` | **0 件**（全体 grep でヒット無し＝**既に削除済み**） | 決着 |
+  | `domain/intrabar_window.window` | **0 件**（`tests/unit/test_intrabar_window.py` からのみ） | 削除候補（YAGNI 確定） |
+  - `usecase/intrabar_window` は `serve_replay.py:219` から使われており**別物**（こちらは現役）。削除候補は `domain` 層の窓算出関数のみ。
+  - 設計どおりフロント `replay.js` が窓を算出し `/intraday` へ `start/end` で渡しているため、サーバ側の窓算出は消費者が生じなかった。
+- **ステータス**: 既存ファイル（`domain/intrabar_window.py`）の削除は承認事項のため**削除は未実施**。承認待ち。
+- **対応（2026-07-30・ユーザー承認のうえ提案どおり削除）**: 消費者が生じないことが確定したため、`simulator/replay_ui/domain/intrabar_window.py`（59 行）と `tests/unit/test_intrabar_window.py`（79 行）を削除した。
+  - `usecase/intrabar_window` は窓を**受け取る**だけで算出しない（`request.start` / `request.end`）。窓の算出はフロント `replay.js` が行い `/intraday` へ渡す設計であり、サーバ側の算出関数は最後まで呼ばれなかった。
+  - `ContactScanPort` は既に消滅済み（実チェックアウトで grep 0 件。残存 24 件は `.claude/worktrees/agent-*` の古い作業ツリー内のみ）。
+- **検証**: `simulator/replay_ui` **187 passed**（削除した 11 件ぶん減・他は全緑）。
 
 ## ISSUE-034: replay_ui backend — df 往復の列名 lower()/float() 強制が暗黙契約
 - **重大度**: Low（現状安全）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: code レビュー（🔵-1・2026-07-04）。
 - **背景**: `adapter/causal_compute_gateway._df_to_bars` が全列を `str(c).lower()`＋`float(row[c])` へ強制。現状は源 CSV 列が小文字＋compute の case-insensitive アクセスで安全（SMA round-trip 同値テスト合格）。非数値列・大文字前提指標が将来入ると `float()` 例外/列名不一致。
 - **対策（提案）**: 「OHLCV 数値列前提」を docstring 明記、または非対象列を保存扱いにするガード追加。
 - **関連**: replay_ui バックエンド増分。
+- **対応（2026-07-30・提案の「docstring 明記」を採用）**: `_df_to_bars` に契約を明示した。
+  - 列名は `str(c).lower()` へ正規化する（大文字は保持されない）
+  - 値は `float64` へ強制する（非数値列は例外になる）
+  - すなわち本経路は **OHLCV 相当の数値列のみ**を運ぶ
+  - 現状安全な理由（源 CSV が小文字・compute が case-insensitive）と、破れる条件（非数値列／大文字前提の指標）も併記した。
+- **ガード追加は見送り**: 破れる指標が現存せず（YAGNI）、追加すると全 compute 経路へ分岐が入るため。契約違反時は `float()` が例外で落ちる＝沈黙しない。
+- **検証**: `simulator/replay_ui` 198 passed。
 
 ## ISSUE-035: replay_ui backend — 静的配信のパストラバーサル判定が prefix 一致のみ（proto 継承）
 - **重大度**: Low（web_dir 既定 None＝静的配信オフ）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: code レビュー（🔵-3・2026-07-04）。
 - **背景**: `framework/serve_replay.py` の静的配信が `str(fp).startswith(str(web_dir))`。区切り無し prefix のため `web_dir="/a/web"` で `/a/webevil` が通過しうる（proto_server と同一弱点）。既定 web_dir=None で影響は低いが、フロント配信有効化時に露見。
 - **対策（提案）**: `os.path.commonpath([fp, web_dir]) == str(web_dir)` もしくは末尾セパレータ付き比較へ。
 - **関連**: replay_ui フロント増分（静的配信有効化）時に対応。
+- **対応（2026-07-30・調査の結果、本体は是正済みと判明。テストのみ補完）**:
+  - `replay_ui` の静的配信は `framework/static_file_server.py` へ抽出され、`resolve()` 後の `Path.is_relative_to`（区切り境界一致）で CWE-22 を封じ済み。docstring に `startswith` が危険な理由（接頭辞共有の兄弟へ逸脱できる）まで明記されている。回帰テスト `tests/unit/test_static_file_server.py::test_prefix_sibling_traversal_is_rejected` が攻撃ケース（`replay_web_SECRET`）を固定している。
+  - 全体 grep で `startswith(str(...))` による経路判定は**残存 0 件**。
+  - **一方 `unified_ui/router.py`（実際に 8000 で配信される側）は防御は正しい（`os.sep` 付き比較）が回帰テストが無かった**ため、同じ攻撃ケースを追加した（`unified_ui/tests/test_router.py`）。
+- **検証設計の補足**: 当初 生の `..` だけでテストを書いたが、`_serve_static` 手前の `rel.startswith("..")` で弾かれ **realpath ガードまで到達せず空虚**だった（ガードを弱める変異を検出できなかった）。`web_root` 内から外を指す **symlink** 経路へ組み直し、変異注入で「機密が漏洩した」を検出できることを実証した。
+- **検証**: `unified_ui` 15 passed。
 
 ## ISSUE-036: replay_ui backend — /candles 非tick分岐の過剰直列化＋失効 docstring 参照
 - **重大度**: Low
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: code レビュー（🔵-4/🔵-5・2026-07-04）。
 - **背景**: (a) `serve_replay` が `/candles` の非 tick 軽量経路も `_HEAVY_LOCK` で直列化（proto は tick のみ施錠・出力不変の過剰直列化）。(b) `domain/tick_mid_series` 等の docstring が本 worktree 不在の `contact_scan.tick_window.window_ticks` を bit 一致対象と引用（実挙動は proto `do_intraday` tick 経路で検証済）。
 - **対策（提案）**: (a) 非 tick 軽量経路を施錠外へ、または保守的直列化の意図をコメント明記。(b) 参照を「proto_server.do_intraday tick 経路」へ更新。
 - **関連**: replay_ui バックエンド増分。
+- **対応（2026-07-30）**:
+  - **(b) 失効参照の是正**: `contact_scan.tick_window.window_ticks` は**現行ツリーに存在しない**（全体 grep 0 件。`simulator/usecase/contact_scan` は現存するが `tick_window` を持たない）。「参照実装と bit 一致」の主張は根拠を失っているため撤回し、実際に挙動を固定している `tests/unit/test_tick_mid_series.py` を指すよう `domain/tick_mid_series.py` と `adapter/intrabar_window_repository.py`（2 箇所）を書き換えた。
+  - **(a) 過剰直列化は意図として明記（据え置き）**: 非 tick の軽量経路も同じ錠の内側にある点を、理由付きでコメント化した。緩めない理由: `/candles` は timeframe により resample の有無が実行時に決まり呼び出し前に軽量判定できない（判定を足すと分岐の二重管理になる）／並行化の利得が未実測。緩めるなら所要時間の実測と OOM 耐性の確認を先に行う。
+- **検証**: `simulator/replay_ui` 198 passed。
 
 ## ISSUE-037: replay_ui frontend(再生層) — controller への結合＋View fallback の堅牢化
 - **重大度**: Low（挙動非差・parity 由来）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: 再生層(INC-F2) arch/code レビュー（🔵・2026-07-04）。
 - **背景**: (a) `web/js/replay.js` が `controller._timeframe`/`_recentBars` の private を直接参照＋`applyIndicator`/`removeInstance` を実行時 monkeypatch（syncBoundary ラップ）。プロト replay.js の忠実移植由来で依存方向違反ではないが結合が強い。(b) `replay_view.readSpeed/readMode` は要素欠落時 NaN→既定退避（clampSpeed→1/real_ticks）。プロトは `null.value` で throw。現行 index.html では rp-speed/rp-mode 常設のため到達不能。(c) `syncSpeedUI` の `clampSpeed(parseFloat())` はプロトの `+value` と [0,1] 範囲で等価。
 - **対策（提案）**: (a) controller 側に public accessor / フック（onApplied 等）を設け private 参照・monkeypatch を解消。(b)(c) 現行 DOM では非到達＝現状維持可。厳密忠実化するなら proto 準拠へ寄せる。
 - **関連**: replay_ui フロント増分（INC-F2）。
+- **対応（2026-07-31）**:
+  - **(a-1) private 参照は既に解消済みだった**（コードで確認）。`controller._timeframe` / `_recentBars` は ISSUE-181 で `TimeframeController` へ実体を移した際に **getter/setter の互換アクセサ**として明示公開されており（「旧 host フィールド面」とコメント済み）、`replay.js` の読み書きは正規の面を通っている。本 Issue 起票時の指摘はこの時点で失効していた。
+  - **(a-2) monkeypatch を購読スロットへ置換（実施）**: `IndicatorController.setAppliedObserver(fn)` を新設し（`setTimeframeObserver` と同型の規律）、`applyIndicator` / `removeInstance` を「薄いラッパ＋内部実装（`_applyIndicatorInner` / `_removeInstanceInner`）」に分けて完了後に 1 回通知する。`replay.js` は monkeypatch と `patched` 配列による原状復帰を捨て、購読登録／`destroy()` での解除に置き換えた。
+    - monkeypatch の何が問題だったか: (1) 差し替え順序に依存して壊れる (2) 復元漏れが静かに残る (3) subclass の override（`ReplayIndicatorController.removeInstance`）と二重に噛む。
+    - **通知位置は monkeypatch 時代と同一**にした。未知 id で適用が no-op のときも通知する（従来は呼び出しごとに後処理が走っていたため）。
+  - **(b)(c) は現状維持**（起票時の判定どおり）。`readSpeed/readMode` の要素欠落フォールバックと `clampSpeed(parseFloat())` は、現行 `index.html` が `rp-speed`/`rp-mode` を常設するため**到達不能**であり、プロト忠実化のためだけに挙動を変える利得がない。
+- **検証**: 回帰テスト 5 件を追加（適用/削除の完了後に 1 回・通知時点で状態が確定済み・未知 id でも通知・null で解除・購読者不在で落ちない）。**変異注入**（通知を外す）で 3 件が失敗することを確認。`indicator_ui/web` **953 passed** / `replay_ui/web` 267 passed / `market_profile/web` 311 passed。実 UI（リプレイ 8281）で指標の追加・削除を実行し、凡例 1→2→1・コンソールエラー 0 を確認した。
 
 ## ISSUE-038: indicator_ui — indicator_controller.js(994行) SRP違反（View分離）
 - **重大度**: Medium（設計整理・正しさ影響なし。監査は「依存方向違反0・破壊的変更不要」と明言）
@@ -582,11 +629,19 @@
 
 ## ISSUE-043: replay_ui MP sessions — restore 経路（cursor 未確定）で全期間 sessions → as-of-T への縮小ジャンプの疑い
 - **重大度**: Low（視覚バグ疑い・未目視・ISSUE-042 と同クラス）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: ISSUE-042 の code-review（🟡・2026-07-06）。
 - **背景**: sessions モードは `isGrowingPush()=false`（`_growing && !_sessions` を満たさない）のため、ISSUE-042 の cursor 未確定ガードの対象外。ページ読込 restore（`_untilTime` 未設定＝`to=undefined`）で基底 refresh が全期間 sessions 分割を setProfile し、再生開始後の `refresh(to=T)`（機構A・as-of-T）で縮小ジャンプが起きうる。1W/1M（forming 非対応 tf）は enterBar→null で後続リセットが無くフラッシュ不成立＝対象外（妥当判定済み）。
 - **対策（案）**: sessions は描画経路が別（共有グリッド＋各日 tpo 整列）のため個別ハンドリング要。まずブラウザ目視で実挙動を確認してから対策設計する（ISSUE-042 のガードをそのまま流用しない）。
 - **関連**: ISSUE-042・ISSUE-041（機構A: refresh(to,sessions)）。
+- **目視・実測（2026-07-31・リプレイ UI 8281・対策案どおり「まずブラウザで実挙動を確認」を実施）**: **縮小ジャンプは起きない。疑いは否定される。**
+  - 手順: MP を日別プロファイル（sessions）で有効化 → **ページ再読込**（＝ restore 経路・`_untilTime` 未設定）→ カーソル移動で `refresh(to=T)` を発火。`setSessions` の呼び出しごとにセッション数と日付範囲を記録した。
+  - restore 直後: `n=60`（2026-05-11 〜 2026-07-31）。
+  - カーソルを 25 バー戻す間の `setSessions`: `n=60`（05-08〜07-30）→ `n=60`（05-07〜07-29）→ `n=60`（05-06〜07-28）。
+  - すなわち as-of-T は「全期間から縮小」するのではなく、**セッション数を 60 に保ったまま窓がスライド**する。restore の全期間表示と as-of-T の間に本数差が生じないため、ISSUE-042 と同クラスのフラッシュは成立しない。
+- **対応**: コード変更なし（対策不要）。ISSUE-042 のガードを流用しないという判断も維持する（そもそも縮小が無いため）。
+- **⚠ 検証手法の失敗と是正**: 最初は `rp-play` を押して計測したが、再生が始まっておらず（ボタン表記が `▷` のまま・表示も不変）`setSessions` が 1 回も呼ばれない**空虚な計測**だった。`rp-next` / `rp-prev` による確実なカーソル移動へ切り替えて確定させた。
+- **検証**: `simulator/replay_ui` 187 passed / `replay_ui/web` 267 passed（計測用プローブは撤去済み）。
 
 ## ISSUE-044: replay_ui — real_ticks（実ティック）再生の完了予想（ETA）が旧 800 点 cap モデルのままで実測と桁違いに乖離
 - **重大度**: Medium（表示バグ・月足×実ティックで約 1,900 倍の過小推定）
@@ -604,10 +659,16 @@
 - **関連**: feature/replay-price-wheel-zoom。zoomedPriceRange/clampPriceRange（純関数・発散クランプ）は温存。
 
 ## ISSUE-046: indicator_ui の既存テスト2件が参照先モジュール欠損で失敗（既存・今回変更と無関係）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: 2026-07-06 ISSUE-045 対応中の全体テスト実行で検出。HEAD（変更前）でも同一失敗を確認済み。
 - **内容**: `tests/replay_analysis.test.js` と `tests/timeline_player.test.js` が `js/usecase/replay_analysis.js` 等の不存在モジュールを import して ERR_MODULE_NOT_FOUND。79982b8「未追跡のソース/ドキュメントを保全コミット」でテストのみ保全されソース側が欠落した可能性。
 - **対策案**: 対応方針は依頼者判断待ち（欠損ソースの復元 or テスト撤去）。
+- **対応（2026-07-30・調査の結果、対処不要と判明）**: 現行コードから当該テストも参照先モジュールも**消滅済み**。
+  - `indigators/indicator_ui/web/tests/` に `replay_analysis.test.js` / `timeline_player.test.js` は存在しない。
+  - `js/usecase/replay_analysis.js` / `timeline_player.js` も存在しない。
+  - 残存は旧プロトタイプ `prototype_260626-01/web/tests/` のみで、維持対象のテストスイートには含まれない。
+  - 現行 web スイートは 932 passed / 0 failed（ERR_MODULE_NOT_FOUND なし）。
+  ⇒ 「欠損ソースの復元 or テスト撤去」の判断待ちだったが、**撤去済み**として決着。
 
 ## ISSUE-047: replay_ui MP — 再生中にプロファイルのバーのスケールが変動する（表示 bin 幅 binw が累積レンジ拡大のたびに再導出される）
 - **重大度**: Medium（視覚バグ・再生中の分析可読性を毀損）
@@ -676,7 +737,7 @@
 
 ## ISSUE-054: market_profile 日別プロファイル（src=dwell）でレンジ(barw)変更が描画へ反映されない（バーが更新されない）
 - **重大度**: Medium（パラメータが無効・ユーザー操作が効かない。データ取得は正常だが描画が固着）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **検出**: 依頼者報告（2026-07-11）「レンジを500に設定したが更新されない」（ソース=滞在時間(実ティック)/表示モード=日別プロファイル）。実UIで再現・確定。
 - **原因（実UI実測・切り分け済み）**: バックエンド／リクエストは正常、描画のみが barw を無視する。
   - フロント送信は正常: OK 押下で `GET /market_profile?...&barw=500&src=dwell&sessions=1` を送出（barw を正しく写像）。レンジ25 では `barw=25`。
@@ -703,6 +764,20 @@
   - 実装前に依頼者の方向決定を得る。
 - **検証環境**: served B方式（framework.server・port 8137）・datasetRef=jp225_tick・Playwright(実ブラウザ)・実HTTP。
 - **関連**: market_profile_dwell.py（sessions は n_bins を反映＝バックエンド正常）・market_profile_client.js:29-31（barw 写像）・ISSUE-052（dwell accumulator 縮退グリッド）・ISSUE-055（描画遅延＝本件の真因）。
+- **対応（2026-07-31）**: tf-period 列を**描画時に barw 幅へ束ねる**（取得・キャッシュ・API は一切変更しない）。
+  - **なぜ描画時か**: tf-period 列は測定としては最小価格単位で保持する（粗いビンで測ると分布が退行して見えるアーティファクトを持ち込むため。[[short-tf-profile-not-degenerate]]）。一方「レンジ」はユーザーが選ぶ**表示解像度**である。両者を分離し、束ねるのは描画とホバー読取のみとした。`/tf_period_profile` にパラメータを足さないためディスクキャッシュのキー設計にも影響しない。
+  - 実装: 純関数 `aggregateLevelsToBins(levels, binWidth)`（価格 0 起点の絶対格子＝列間で行がずれない）／`MarketProfileHistogramPrimitive.setTfBinWidth()`／`TfPeriodSink` に 1 面追加／`MpFetchParams.barw()`（明示 range と dispbp 写像後の range を 1 か所で解決）／composition root の `syncTfBinWidth()`。
+  - 描画とホバー読取は**同じ行**を見る（`_effectiveLevels` / `_effectiveRowWidth` を共有）。片方だけ束ねるとカーソル位置と描画行がずれる。POC は束ねたとき「poc を含むビン」を POC 色にする。
+- **UI 名称の変化（起票時との差）**: 起票時の「レンジ(pt)」は現行 UI では **「表示幅(bp)」** になっており、`MpFetchParams.dispExtra()` が最新終値から `barw = close × bp/1e4` へ写像している（ISSUE-079 の二層構造）。欠陥は同一で、写像後の barw が tf-period 経路へ届いていなかった。
+- **検証（実 UI・ライブ 8001・日別プロファイル）**: 描画行数を直接計測し、表示幅(bp) に**単調反応**することを確認した。
+  | 表示幅(bp) | 1 列あたり描画行数（中央値） | 最大 |
+  |---|---|---|
+  | 3 | 4 | 19 |
+  | 40 | 1 | 3 |
+  | 120 | 1 | 2 |
+  - **⚠ 検証手法の失敗と是正**: 当初 canvas のピクセルハッシュで A/B しようとしたが、**修正前でも 4/11 の canvas が変化**した。ライブ更新（tick・forming bar）が毎秒 canvas を書き換えるため、この指標では分離できない。描画行数の直接計測へ切り替えて確定させた。
+  - 単体テスト 9 件を追加（束ねの合算・絶対格子・昇順・非正/空/非有限の防御・後方互換・同値再設定で再描画しない）。`indicator_ui/web` 944 passed / `market_profile/web` 311 passed / `replay_ui/web` 267 passed。
+- **ISP 契約の更新**: `TfPeriodSink` は 2 面 → 3 面。最小性テストは「面数の固定」ではなく「宣言した面がすべて実利用されること」を意味するため、実利用箇所（`syncTfBinWidth`）を明記して更新した。
 
 ## ISSUE-055: market_profile 日別プロファイル（dwell・tf-period列）の描画完了が遅い（1Dで約8秒・体感ストレス）
 - **重大度**: High（主要操作のたびに数秒待ち・実用性を損なう。ISSUE-054 で barw を荒くした動機＝この遅延の回避策だった＝本件が真因）
@@ -769,11 +844,16 @@
 - **関連**: ISSUE-056/057、mp_stats パッケージ（57テスト）。
 
 ## ISSUE-059: test_market_profile_byte_parity の 8 件が develop 時点で失敗（golden 陳腐化の疑い）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **発生日**: 2026-07-11（src=zp 追加作業中の回帰確認で発見）
 - **概要**: `indigators/market_profile/api/tests/test_market_profile_byte_parity.py` のうち dwell/m1（to=1780666320）5 件・forming 3 件が、**作業変更を stash した素の develop でも同一に失敗**する（8 failed / 19 passed で一致確認済み）。src=zp 追加とは無関係の既存問題。
 - **推定原因（未検証）**: golden 作成後の実データ（ticks parquet）更新または dwell キャッシュ／active table 依存のドリフト。
 - **対応方針**: 本 Issue では修正しない（golden 再生成は挙動確定の判断を要するため依頼者承認待ち）。zp 作業の回帰判定は「この 8 件を既知ベースラインとし、それ以外の全テスト green」を基準とする。
+- **決着（2026-07-30・再実測）**: **27 passed（3 連続緑・0.6s）**。当時失敗していた `forming:*` および `to=1780666320` 系を含む全 27 件が通る。
+- **解消したコミット（特定済み）**: `d3aad36`（2026-07-15・ISSUE-089 対応）「byte-parity を決定論の合成世界へ移行」。
+  - 真因は推定どおり実データ側だった: 実 `jp225_tick` の 1m 原子ストアが**ローリング保持**（窓左端が壁時計とともに前進）するため byte 固定が原理的に不能だった。
+  - 対処は golden 再生成ではなく、jp225_tick 系 12 ケースへ合成世界（`mp_parity_world`）を注入して**決定論化**（16s→0.6s）。
+- **本 Issue 側の作業は無し**（別 Issue の対応で解消）。クローズが漏れていた記録を是正する。
 
 ## ISSUE-060: src=zp×日別×非対応tf（1m/5m）で日別タイルが消える（委譲述語の片側更新）
 - **ステータス**: RESOLVED（2026-07-11）
@@ -784,7 +864,7 @@
 - **検証**: 実UI（Playwright・実HTTP・port 8138）で 5m×zp×日別 → MP actor の日別 z タイルが自前描画されることをスクリーンショットで確認（zp-05）。1D×zp×日別の tf-period z 列（zp-03）・normal live zp の POC* 黄線（zp-02）・src=dwell 回帰（zp-06）も確認。web テスト回帰 531/533（残 2 は既存 module-not-found・zp 無関係）。
 
 ## ISSUE-061: 過去の高 z(p) 受容水準への価格再訪時の反応計測（未実施・依頼者発行）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（主検定は決着・副次 2 指標は定義待ちで未実施）
 - **発生日**: 2026-07-12
 - **概要**: 過去に形成された高 z 水準（超過受容・POC*）へ価格が戻ってきたときの反応（反発・滞在・通過減速）を計測する。Step6 Part B で「乖離→新価格で POC 新規形成」は実証済み（p≈3.5e-6）。本 Issue はその対で「古い受容水準は再訪時に S/R として機能するか」を問う（実運用上の naked POC* 検定）。
 - **設計骨子（実装前に依頼者確定が必要）**:
@@ -797,6 +877,25 @@
 - **再開条件**: 依頼者による主検定パラメータの確定指示。
 - **関連**: ISSUE-058（Step6-8 完了）・mp_stats/step6_conditional.py（移動先検定の対）。
 - **追記（計測方法の平易な確定版・2026-07-12）**: 実験3ステップ＝①事件収集: 過去60日内形成の高z水準（z≥3）への**形成後初回**接触を15年分から全件抽出（2回目以降は別群）②反応3物差し: 跳ね返り（30分以内に逆方向4行）・滞在（水準近傍の滞在分数）・減速（帯の通過所要時間）③偽水準との比較＝計測の心臓部: 反応の絶対値でなく、偽水準A（同日の低zセル）・偽水準B（Null Bサロゲートが偶然作った偽こだわり水準）への同一物差しの反応との**差**のみを勘定する。本物への反応が両偽水準を統計的に上回って初めて「S/Rとして実在」。罠回避: 主検定1本（z≥3・L=60日・k=30分・x=4行）を事前固定、設定走査するなら最初からSPAで束ねる（Step7の教訓）。
+
+### 実施（2026-07-31）— 主検定の結論: **naked POC* は S/R として機能しない**
+
+- **実装**: `mp_stats/step9_naked_revisit.py`（既存キャッシュ `znull` / `mgrid` を読むのみ・再計算なし）。
+  - 行→価格の写像を実測で確定: **`price = exp(k · grid_w · 1e-4)`**（対数価格 1e-4 格子）。400/400 日で行域が当日の分足レンジを包含することを確認。
+  - 走査対象: znull と mgrid が**ともに非空**の **3,564 営業日**。
+- **事前登録どおりの主検定 1 本**（z_thr=3・L=60 日・k=30 分・x=4 行）。事件＝形成後**初回**接触（naked）。
+- **結果**:
+  | 群 | 事件数 | 跳ね返り率 |
+  |---|---|---|
+  | 本物（高 z セル・z≥3） | 48,833 | **30.80%** |
+  | 偽水準 A（同日の低 z セル・z≤0.5） | 381,121 | **28.24%** |
+  - 単純プール差 = **+2.55pt**（2 標本比率 z = +11.76）
+  - **日単位クラスタ（同日内で対にした差）= −1.27pt（t = −2.54・2,850 日・差が正の日は 42.4%）**
+- **結論**: プール比較は **Simpson のパラドックス**で符号が逆転する。事件は同一日に何十件も生じて独立でないため、有効標本は事件数ではなく**日数**であり、正しい比較は同日内の対である。同日内で見ると本物は偽水準 A を**上回らない**（むしろわずかに下回る）。ISSUE-061 の判定規準は「本物への反応が**両**偽水準を統計的に上回って初めて S/R として実在」であるから、偽水準 A に勝てない時点で**判定は否定**であり、偽水準 B の実装を待たずに結論が確定する。
+- **⚠ 途中で犯した単位の誤りと是正**: 最初 `x=4 行` を znull の**セル幅**（対数 1e-4 ≒ 0.9pt @9,000）で解釈し、4 行 ≒ 3.6pt として測ったところ両群とも 72% 台に張り付いた（30 分あればほぼ常に到達＝検定が飽和）。`行` は Step5/Step6 と同じ**日レンジ 1/40**（`DEPART_ROWS=4` のコメントに「日レンジの 10%」と明記）であり、是正して 30.8% / 28.2% を得た。
+- **接触判定の是正**: セル幅が細いため「セル内に入る」だけでは 1 分で跨いだ再訪を系統的に取りこぼす。「セル内 **または** 水準を跨ぐ（符号反転）」へ変更した。
+- **未実施（依頼者の操作的定義待ち）**: 反応 3 物差しのうち **滞在**（水準近傍の滞在分数）と **減速**（帯の通過所要時間）は、`水準近傍` / `帯` の幅が未確定。本 Issue 自身が「**『反応』の操作的定義は依頼者の言葉で確定してから実装する**（仮説文の解釈違い再発防止）」と定めているため、推測で幅を決めず未実装とした。**偽水準 B（Null B サロゲート）**も同様に未実施だが、上記のとおり主検定の結論は変わらない。
+- **検証**: 判定部品の単体テスト 10 件（行→価格写像・セル内接触・跨ぎ接触・未到達・x 行の要否・接近方向の取り違え防止・判定不能・k 分の窓・行単位が日レンジ/40 であること）。**10 passed**。
 
 ## ISSUE-062: MP 指標の既定ソースを candle → zp（超過占有 z(p)）へ昇格（依頼者指示）
 - **ステータス**: RESOLVED（2026-07-12）
@@ -1423,7 +1522,7 @@ front `_ZP_SUPPORTED_TFS` と back `_ZP_TF_ALLOWED` の同値並行（言語跨�
 ### 裁定不要・実装フェーズへの申し送り
 🟡-1 は 1 行ガード追加＋契約テスト固定の低リスク是正（実データ実測とセットで実施）。🔵-2 は docstring 追記のみ。🔵-3 は対応不要（記録のみ）。
 ## ISSUE-103: ISP（インターフェース分離の原則）第2巡アーキテクチャ監査（是正5件の実測再検証＋新規探索・自己レビュー済み）
-- **ステータス**: OPEN（2026-07-16 起票・新規違反 0 件＝検証完了の記録）
+- **ステータス**: RESOLVED
 - **調査方法**: architecture-executor によるシステム全体の第2巡監査。ISSUE-099 の既知指摘（🟡5・🔵4）と是正記録（🟡-1 Report ports 分割／🟡-2 VolBand read-write 分離／🟡-3/-4 TimeframeHost・MarketProfileHost ロール契約／🟡-5 ProfileSink・TfPeriodSink ファサード）を精読して重複を除外し、是正後の契約が実利用と乖離していないかをクライアント別実利用メソッド集合の Grep 実測で突合。新規探索（ResultSinkPort・DatasetPort・CandleSource・replay_ports/marker_ports/report_ports・共有層）も実施。prompt-validation-workflow＋upstream-input-validation の自己レビューを通過（一次候補 7 件を棄却）。prototype_* は対象外。
 - **総括**: **合格（新規 🔴0・🟡0・🔵0）**。第1巡是正 5 件は全件現行コードで成立し、宣言した狭い契約が実利用と乖離していないことを実測で確認。特に TimeframeHost（11面）・MarketProfileHost（19面）は controller の `host.X` 参照集合と**完全一致**し、`host_role_contract.test.js:87-99` の三方向テスト（依存面⊆契約／契約⊆実利用＝最小性／host面⊇契約＝充足）で過大契約を構造的に排除。ProfileSink（5面）／TfPeriodSink（2面）は `composition_root_front.js:261-282,397-416` で本番結線され各 actor が排他サブセットを維持。
 
@@ -1446,6 +1545,8 @@ front `_ZP_SUPPORTED_TFS` と back `_ZP_TF_ALLOWED` の同値並行（言語跨�
 
 ### 裁定不要・実装フェーズへの申し送り
 新規是正対象なし。既往 🔵-6/-8/-9 は据置（YAGNI）のまま。ResultSinkPort のデッドポート整理（撤去 or 結線）は DIP 側の裁定事項として ISSUE-104（DIP 第2巡）の結果と併せて判断することを推奨。
+- **クローズ（2026-07-30）**: 本エントリは「第2巡監査の結果、新規違反 0 件＝検証完了」の**記録**であり、対応を要する未解決事項を含まない（🔴0・🟡0・🔵0）。OPEN のまま残っていたのは起票時の取り違え。RESOLVED へ是正する。
+
 ## ISSUE-104: DIP（依存関係逆転の原則）第2巡アーキテクチャ監査（Tier1/Tier2 是正後コードの再検証＋新規探索・自己レビュー済み）
 - **ステータス**: RESOLVED（2026-07-16 起票／🟡-1・🟡-2 を 2026-07-17 是正・🔵-3 は観点記録のため対応不要）
 - **対応記録（🟡-1・2026-07-17）**: common（計算・安定層＝numpy のみ依存）→ common_view（表示・可変層）の後方互換再エクスポート（level_colors/LEVEL_LINE_WIDTH）を撤去し、安定度逆転（安定→不安定の SDP 違反）を解消。production 消費者は全て common_view 直参照へ移行済み（実 import 0 件を実測）。表示定数の唯一の公開元を common_view に一本化。テスト 7 ファイルを common_view 直参照へ更新＋逆依存撤去の回帰固定（common.__all__ に表示定数が無いことを assert）。common 20・profit_* 各緑。
@@ -2007,18 +2108,38 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **③ リプレイ LiveUpdater 配線（確認のみ・対応不要）**: `composition_root_front.js:206` は mode='b' で LiveUpdater を生成するが、`index.html` は `setupReplay()` のみ呼び `liveUpdater.start()` を呼ばない（129 行コメント明記・実測で呼出不在）。60 秒ポーリングは起動せず＝設計どおりで問題なし（当初の「start 呼出未確認」懸念を解消）。
 
 ## ISSUE-169: [既知限界] 統合UIトグルで既存 document スコープリスナが線形蓄積・無波及制約下の既知限界（2026-07-25）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **背景**: ライブ/リプレイ統合UI（`unified_ui/`・ルータ方式・既存モジュール無編集厳守）のモードトグルで、`unified_root.js` の teardown は `#mode-ui` サブツリーを pristine innerHTML へ復元し、**要素スコープ**の `bind()` リスナ（indicator_controller.js:900-951 が張る click/input）は新ノード置換で根絶する。
 - **限界**: 既存無編集モジュールが **document/body スコープ**へ張るリスナは innerHTML 復元では除去できず残存する。実証: `timeframe_menu.js:94-95` が `new TimeframeMenu().install()`（＝mount 毎）で `doc.addEventListener('click', () => this._setOpen(false))` を removeEventListener 無しで登録＝**トグル毎に document click リスナが +1 蓄積**（線形）。
 - **影響**: 軽微・有界。各リスナは `_setOpen(false)`（ドロップダウン閉）の冪等操作のみで副作用は実質無。DOM ノードは pristine 置換で解放されるためリーク源は当該クロージャのみ。
 - **完全根絶の条件**: `timeframe_menu.js` 等の既存モジュールへ removeEventListener／dispose を追加する改変が必要＝無波及制約（`indigators/**`・`simulator/**` byte 不変）に抵触するため本スコープでは不可。将来、統合を正式機能化する際の別承認課題（既存改変を伴う恒久対処）。
+- **前提の失効（2026-07-31）**: 本 Issue が「恒久対処は不可」とした根拠は**無波及制約**（`indigators/**`・`simulator/**` byte 不変）だったが、本セッションで当該ツリーを承認のうえ改変しているため制約は既に失効している。よって恒久対処を実施した。
+- **実測（実 UI・統合 8000・`#enter-replay` を 6 往復）**: **document の click リスナは 0 増 0 減**（モードは replay/live を 6 回正しく往復）。起票時に記録された「トグル毎に +1 蓄積」は**現行コードでは再現しない**。
+  - 理由（コードで確認）: `unified_root.js` は現在「**単一 chart を 1 回だけ生成し、live root の bootstrap を 1 回呼ぶ**」設計であり、モードトグルでツールバーを再 mount しない。起票時（2026-07-25）の「`#mode-ui` を pristine innerHTML へ復元する teardown」方式から変わっている。
+- **対応（構造的な再発防止として実施）**: 蓄積が再現しなくなった今も、`install()` が再度呼ばれれば同じ欠陥が復活する。共有ヘルパ `menu_document_close.js` を新設し、**install 時に同一 document・同一キーの前回リスナを自分で外す**（自己修復）＋ `dispose()` を提供した。呼び出し側が本モジュールを知らなくても蓄積は「document × キーあたり 1 個」に有界化する。対象は `timeframe_menu.js` と `chart_template_menu.js`（同じ欠陥を持っていた）。
+- **⚠ 途中で検出した自分の不具合（既存ガードによる）**: ヘルパを両ファイルへ複製したところ、
+  1. `pair_dim_alpha_single_source.test.js` が **A方式バンドルでの `const` 二重宣言（SyntaxError）** を検出。→ 単一モジュールへ抽出して解消。
+  2. `build_module_order.test.js` が **`MODULE_ORDER` 未登録**（バンドルでシンボル未定義）を検出。→ 両メニューより前へ登録して解消。
+- **検証**: 回帰テスト 4 件を追加（10 回 install で 1 個に有界・最後の install が生き残る・`dispose()` で 0 個・`removeEventListener` 非対応 document でも落ちない）。**変異注入**（前回ぶんを外さない）で該当 2 件が失敗することを確認。`indicator_ui/web` **948 passed**。
 
 ## ISSUE-170: [既存不具合] replay_mp_wiring の ISSUE-048 前後関係テストが常時 fail（本変更前から）（2026-07-26）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED
 - **事象**: `simulator/replay_ui/web/tests/replay_mp_wiring.test.js` の「during play, the revealed bar is collapsed to its open BEFORE the MP enterBar await (no completed-bar flash — ISSUE-048)」が fail する（`再生リビール時に始値畳み込み update が発火する` で AssertionError）。他 260 件は緑。
 - **本変更（リプレイバー UI 刷新）との無関係を実証**: 変更一式を `git stash -u` して HEAD の状態で当該ファイルのみ実行 → **同一テストのみ fail（5 pass / 1 fail）**。すなわち本変更以前から存在する既存 fail。
 - **推定原因（未検証・推論）**: テストの fake が `renderer` に `updateLastCandle` を持たない一方、`ReplayView.updateForming` は `renderer.updateLastCandle` を呼ぶ（try/catch で握り潰す）ため、期待している `mainSeries.update` イベントが記録されない。ライブ同一経路化（renderer 経由へ一本化）の際に fake が追随していない可能性。プロダクトコード側の退行かテスト fake の陳腐化かは未確定。
 - **対応方針**: 本件はリプレイバー UI 刷新のスコープ外のため未修正。修正時は「畳み込みが enterBar の await より先」という ISSUE-048 の不変条件を維持したまま fake を実経路（renderer.updateLastCandle）へ合わせるか、プロダクト側の退行有無を先に実測で確定する。
+- **原因の確定（2026-07-30・実測）**: **テスト fake の陳腐化**であり、製品側の退行ではない。
+  - 製品は `replay.js` → `ReplayView.updateForming` → `renderer.updateLastCandle` へ**意図的に一本化**済み（ライブ同一経路化・`replay_view.js:78-87` の docstring に明記）。`mainSeries.update` の直呼びは経由しない。
+  - テストの fake は `renderer: { setCandles() {} }` で `updateLastCandle` を持たず、`updateForming` の `try/catch` が例外を握り潰すため、期待していた `mainSeries.update` イベントが記録されなかった。
+- **対応**: fake に `updateLastCandle` を追加し、**観測点を実経路へ合わせた**。ISSUE-048 の不変条件（畳み込みが `enterBar` の await より先）は変更していない。
+- **併せて判明**: 対になる `manual navigation ... does NOT collapse` テストも同じ fake を使っており、**以前は空虚に通っていた**（記録されないので「畳み込み 0 件」が常に成立）。同様に是正した。
+- **検出力の実証（2 方向）**:
+  | 変異 | 結果 |
+  |---|---|
+  | 畳み込みを `enterBar` の後ろへ移す | `during play ... BEFORE the MP enterBar await` が fail |
+  | `playing &&` ガードを外す | `manual navigation ... does NOT collapse` が fail |
+  ⇒ 6/6 pass。両テストとも実効性を持つようになった。
+- **残る観察（未対応）**: `ReplayView.updateForming` の `try/catch (_e) { noop }` が例外を無条件に握り潰すため、本件のような結線断が沈黙する。撤去は他呼出元への影響評価を要するため本件では触れていない。
 
 ## ISSUE-171: 統合UI が「Service Worker を有効化できないため起動を中止しました」で起動不能（SW 再登録直後の未制御＋リロード1回制限）（2026-07-26）
 - **ステータス**: RESOLVED（2026-07-26 起票・同日修正。TDD Red→Green。unified_ui web 42 緑（新規3含む）。実 UI（8000・Chrome）で「リロード済みフラグ有り＋SW 登録解除」状態からの起動成功・console error 0 を実測）
@@ -2274,15 +2395,30 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **関連**: ISSUE-156（不完全だった当該対策）・ISSUE-176（発見経緯・common 側の正解実装）・ISSUE-179（重複の一本化）。
 
 ## ISSUE-186: [不具合] tick CSV の非原子的追記により実データ依存テストが間欠一斉失敗（2026-07-26）
-- **ステータス**: OPEN（ISSUE-183 対応の過程で発見。修正は未着手＝スコープ外・要承認）
+- **ステータス**: RESOLVED
 - **事象（実測）**: `indigators/indicator_ui/api` の全スイートが 1 回だけ `13 failed / 405 passed` を記録し、直後から 14 回連続で `418 passed`。再現性なし。
 - **原因**: `tools/live_tick_watch.py --stream` / `tools/export_jp225_m1.py --watch` が常駐し、`jp225_tick_m1.csv`（276MB）/ 同 M1 CSV（300MB）へ**非原子的に追記**している。`marketdata/tick_m1.py:336` に「末尾追記は原子化を持たない」と既知として明記済み。読み取り側が部分行を掴むと実データ依存テストが一斉に落ちる。
 - **影響**: テスト結果が非決定的になり、回帰判定の信頼性が落ちる。**リファクタリングの挙動不変検証を実データ比較で行う際に偽陽性・偽陰性の両方を生む**（ISSUE-183 では `/candles` の byte 等価比較が実際にこれで 10 ケース不一致となり、同一プロセス並置比較へ切り替えて回避した）。
 - **対応方針**: 追記を原子化する（一時ファイルへ書いて `os.replace`、または追記時に排他ロック）。あるいは読み取り側に部分行の検出・再読取を入れる。どちらを採るかは書き手・読み手の性能要件を実測してから決める。
 - **関連**: ISSUE-183（発見経緯）。
+- **対応（2026-07-31・書き手と読み手の両方）**: 対応方針に挙げた「追記の原子化」と「読み取り側の部分行検出・再読取」の**両方**を実施した。片方だけでは競合が残ることを実測で確認したため。
+  1. **書き手（`marketdata/tick_m1.py::_append_m1_csv`）**: `DataFrame.to_csv(fh)` は行を**複数回の write に分けて**流すため torn 窓が広い。本文をメモリ上で組み立ててから **1 回の `write`** で流すよう変更した。本番の追記点はここ 1 か所で、両 watch ツールとも `append_m1_from_ticks` 経由で通る。
+  2. **読み手（`marketdata/ohlc_csv_loader.py`）**: 「読取＋整形」を 1 単位として楽観読取＋検証を行う。失敗時に**並行追記の証拠**（末尾が改行で終わっていない／読取の前後でサイズが変化）があれば短く待って読み直し、証拠が無ければ**本物のデータ異常として即時送出**する（欠陥を隠さない・無駄な再読取もしない）。
+- **実測（3 秒間、読み手はループで読み続ける・失敗率）**:
+  | 構成 | 失敗率 |
+  |---|---|
+  | 分割 write・対策なし | **32.61%** |
+  | 単一 write・対策なし | 0.07% |
+  | 分割 write・対策あり | **0.00%** |
+  | 単一 write・対策あり（本番構成） | **0.00%** |
+- **⚠ 途中で棄却した 2 つの誤った対策（いずれも実測で否定）**:
+  1. `on_bad_lines="skip"`（列数ベースの救済）: 32.9% → 34.3% と**改善しなかった**。torn 行は列数が合うことがあり、支配的な失敗は列数ではなく**時刻列のパース**（`time data "2026-01-01 0" doesn't match format`）だったため。
+  2. `pd.read_csv` だけを再試行で包む: 最悪ケースの失敗率が 34% のまま**変わらなかった**。失敗は `read_csv` ではなく**後段の時刻変換**で起きるため、包む範囲が誤っていた。
+  3. 固定回数（4 回）での打ち切り: 1,773 回中 2 回（0.11%）が送出まで到達した。毎回 torn を踏む確率が残るため、**時間予算（250ms）**方式へ変更して 0% にした。
+- **検証**: 回帰テスト 7 件を追加（末尾不完全の O(1) 判定・空ファイル・本物の異常を送出すること・**本物の異常では再試行しないこと**・分割/単一 write 双方での競合下 0 失敗）。**変異注入**（再試行の撤去）で split_write ケースが 440 回失敗することを確認。3 連続緑。`marketdata` 201 passed / `indicator_ui/api` 441 passed。
 
 ## ISSUE-187: [仕様裁定待ち] 参照実装 profit_band の `_resolve_times` だけ DatetimeIndex 経路の系列名が他 20 本と異なる（2026-07-27）
-- **ステータス**: OPEN（**裁定保留をユーザー承認**。ISSUE-179 項目 2 の過程で発見。コード変更なし）
+- **ステータス**: RESOLVED
 - **事象（実測）**: `_resolve_times` の DatetimeIndex 経路で、`profit_band/src/lwc_chart.py` は `df.index.to_series()` を返すため**系列名が `time` にならない**。他 20 本は系列名を `time` に揃える。例外文言も profit_band だけ別。
 - **なぜ問題か**: `profit_band` は `indigators/PORTING_GUIDE.md:8-9` が「本書の原則はすべてこの実装で実証済み」と宣言する**参照実装**でありながら少数派である。参照実装を正とするなら他 20 本が誤り、多数派を正とするなら参照実装が誤り。**どちらとも決められないため `_resolve_times` の完全な一本化ができない**（ISSUE-179 項目 2 は AST 同値の 12 本のみ統合し、9 本を挙動差のため未統合として残した）。
 - **同種の先行事例**: ISSUE-173 で profit_band が PORTING_GUIDE §2 の 2 規約を満たしていなかった件（案 a＝参照実装を規約へ合わせる、で解決済み）。本件も同じ「参照実装が基準に従っていない」構図だが、**こちらは挙動変更を伴う**点が異なる。
@@ -2292,3 +2428,1619 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
   - 案 c: 系列名の差が下流（lwc への payload・JS 側パリティ）に実影響を持つかを先に実測し、無影響なら差異を許容して PORTING_GUIDE §5 に明記する。
 - **未検証**: 系列名 `time` の有無が実際に描画・payload・JS 側の byte 一致縛りへ波及するかは未測定。**裁定の前にこれを実測すべき**。
 - **関連**: ISSUE-173（同じ参照実装の規約未達）・ISSUE-179（発見経緯）・ISSUE-184。
+- **未検証事項の実測（2026-07-30・裁定の前提として測定。コード変更なし）**: 「系列名 `time` の有無が描画・payload・JS 側の byte 一致縛りへ波及するか」を測定した。**結論: 波及しない。**
+  - **消費者の全数調査**: `resolve_times` / `_resolve_times` の戻り値を使う 21 本の `lwc_chart.py` を全て確認した。用法は (a) `pd.DataFrame({"time": times, ...})` の**辞書値**（キー `"time"` が列名を上書きするため `Series.name` は捨てられる）、(b) `times.to_numpy()`（profit_band 自身・名前は消える）、(c) 位置スライス／添字（`moving_averages` の `times[:-1]` / `times[j]`）のみ。**`.name` を読む消費者は 0 件**。
+  - **payload 一致の実測**: `index.name` を `None` / `Date` / `time`、さらに tz-aware(UTC) / tz-aware(JST) / 重複あり / 非単調の各ケースで両実装を並置比較。**値・dtype・index はすべて一致**し、差は `Series.name`（多数派 `'time'` 固定 vs profit_band は index 名を継承）のみ。`emit_line` が作る DataFrame と、そこから JS へ渡る JSON は**全ケースで byte 一致**。
+  - **例外文言の差**: 文言をアサートするテストは**全体で 0 件**（grep 実測）。
+- **裁定への含意**: 差は**観測不能**であるため、案 b（多数派へ寄せる）は当初想定と異なり**挙動変更を伴わない**（＝`_resolve_times` の完全一本化が実行可能）。案 c（差異を許容して PORTING_GUIDE §5 に明記）も同じ実測で正当化できる。
+- **ステータス**: 21 パッケージ共有の実装統一はアーキテクチャ判断のため**未実施・裁定待ち**（案 b と案 c のいずれか）。
+- **裁定（2026-07-30・案 b を採用しユーザー承認のうえ実施）**: 参照実装 `profit_band` を多数派の形へ寄せ、共有実装 `common_view.lwc_adapter.resolve_times` を import する形に一本化した（ローカル定義を削除）。
+  - **選定理由**: 上記実測で差が観測不能＝案 b は当初想定と違い**挙動変更を伴わない**。挙動が同じなら、二重実装を残す案 c より実装が 1 つ減る案 b が優る（[[minimize-cognitive-load]] と同じ規律＝同一概念に複数の実体を作らない）。ISSUE-173 と同じ「参照実装側を直す」方向でもある。
+  - **挙動不変の実証（A/B byte 比較）**: 変更前のローカル実装を復元して同一入力に流し、`add_profit_band` が生成する **28 系列すべての payload が byte 一致**することを、`index.name` = None / `Date` / `time` × tz-aware(UTC) の 4 ケースで確認した。
+  - 共有実装は `{str(c).lower(): c}` で非文字列列名にも耐えるため、堅牢性はむしろ向上する。
+- **検証**: `profit_band` **28 passed**。
+- **残件（本 Issue の範囲外）**: `_resolve_times` のローカル定義は 9 本 → **8 本**へ減った（`moving_averages` / `profit_adx_needle` / `profit_hl_band` / `profit_hlband` / `profit_mfi` / `profit_osi_ma` / `profit_stc` / `tgp_btlm`）。これらは ISSUE-179 が「挙動差あり」として未統合に残したもので、個別に差の実測が必要。
+
+## ISSUE-188: [不具合] テンプレート自動適用後に `applied.v1` が空のまま残りリロードで構成が消える（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日修正。実 UI 検証 D-1。TDD Red→Green。live 829 緑（既存 749 無改変全通過）／replay 266 pass・1 fail は ISSUE-048 のみで不変／unified 42 緑）
+- **事象（実 UI・統合 8000 で実測）**: 5m（tpl#2 適用済み）で 1m（tpl#1=ma_marod + market_profile を紐付け）へ切替 → 凡例と `uiState` は正しく更新されるのに `live:indicatorUi.applied.v1` が `[]` のまま。リロードで凡例が空になり構成が失われる。
+- **原因（フォールト注入で再現確定）**: `ChartTemplateController._applyInstances` が `IndicatorStateStore.rebuildApplied` の失敗を素通しし、手順 5（`activeTemplateId` 更新＋`applied.v1` 永続化・設計書 §5.2）へ到達しないまま reject していた。共有ベースの再構築ループは**非 MP の compute 例外のみ** try/catch で握り、**MP 復元経路（`_mp.restoreInstance` → `actor.setEnabled`）は catch の外**にあるため、MP の失敗が適用全体を中止させる。手順 1 の除去は `removeInstance` × N がその都度永続化するため、中断時点の永続値は空構成 `[]` で確定する。MP 復元を失敗させた再現で「`state.applied`=2 件／`uiState.timeframe`=1m／`applied.v1`=[]」＝報告と同一の症状を再現。報告中の `activeTemplateId`=tpl#1 は**直前に成功した受入基準 2 の実行が残した値**であり、本フローで手順 5 が走った証拠ではない。
+- **対応**: 協働子側で再構築の失敗を局所化し、**適用の完遂（手順 5 永続化・手順 6 凡例）を再構築の成否に依存させない**（設計書 §5.6 F-T4「当該 1 件のみスキップし残りの適用と描画は継続する。全体を中止しない」に一致）。共有ベース `indicator_state_store.js` は無改変。
+- **回帰テスト**: `tests/chart_template_persistence_integration.test.js` TC-P01〜P03（実 IndicatorController を通した永続化の実データ固定）・TC-P05（MP 復元失敗の注入）。従来の協働子テストは host スタブの `_persistAll` をログ置換していたため永続化内容を検証できておらず、本欠陥を検出できなかった。
+- **残存（受容・2026-07-28 レビュー R-4 で裁定）**: 手順 1 の除去が `applied.v1=[]` を先に永続化するため、除去〜適用完了の間（実 UI では compute の HTTP 往復ぶん）にリロード・タブ終了が起きると構成が失われる窓が残る。解消には「除去の永続化を抑止し適用完了時に 1 回だけ書く」＝バッチ除去入口の新設が必要で、S2 の承認範囲外（U5「バッチ除去入口を新設するな」）。**コードレビューで「受容し設計書へ注記・実装は変えない」と裁定されたため本 ISSUE では対応しない**（設計書側の注記は別途）。
+- **関連**: ISSUE-189（同時に確定した切替失敗時の不整合）・設計書 `.doc/indicator-management-ui/基本設計_チャートテンプレート.md` §5.2/§5.6。
+
+## ISSUE-189: [不具合] 時間足切替が例外を投げるとテンプレート適用が実行されず全指標が消失（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日修正。実 UI 検証 D-2。lwc 例外そのものの原因究明は未完＝下記「未実証」）
+- **事象（実 UI で実測）**: 自動適用の直後（再入防止の窓の外）に次の時間足切替を行うと、時間足ラベル=1分／`uiState.timeframe`=5m（未更新）／`activeTemplateId` 未更新／`applied.v1`=[]／凡例=空 の不整合で終わる。同時に lightweight-charts 由来の `Error: Value is null at xt.Candlestick` が 2 件。
+- **原因（再現テストで確定）**: `onTimeframeChange` の (a) 除去 → (b) `await proceed(next)` → (c) 適用 のうち、(b) が throw すると (c) が実行されず「除去済み・未適用」で終わる。観測された「ラベルは新足・`uiState.timeframe` は旧足」は `TimeframeController.setTimeframe` が冒頭で `_timeframe` を進め、`uiState` 更新と永続化を末尾で行う構造（例外時は末尾未実行）と一致する。
+- **lwc 例外の出所（未実証・切り分け継続）**: `Value is null`（lightweight-charts candlestick）は**本件変更以前から存在する既知事象**（ISSUE-167 本体＝2026-07-24、および ISSUE-167 の再観測記録＝commit `c2ded05` 2026-07-27「ページ読込後の最初の時間足切替で 1 回だけ発火・原因未特定・再現条件不明」。いずれも本ブランチの祖先コミットで、チャートテンプレートのコードは 1 行も存在しない時点の記録）。ただし**今回観測された個体が同一原因かはブラウザ実測なしには断定できない**。切り分けに必要な手順: develop を 8000 で起動し、テンプレート未使用で同じ「切替直後に再切替」を反復して `Value is null` の発火有無を計測する。
+- **対応（§5.4 の順序は不変）**: (b) の失敗を捕捉して警告し、**(c) の適用と永続化を必ず実行**してから元の例外を呼び出し元へ再送出する。順序 (a)→(b)→(c) は設計書 §5.4 のまま（「旧構成を新しい足で計算しない」「二重描画を出さない」の制約に抵触しない）。切替の失敗を指標構成の破棄の理由にしない、という一点だけを保証する。
+- **実装せず報告する代替案（設計変更＝要承認）**: 除去を切替の**後**に遅らせる案（(b)→(a)→(c)）は失敗時の消失を原理的に無くすが、切替時に旧構成が新しい足で 1 回計算され、旧指標が一瞬描画される。これは設計書 §5.4「無駄な計算・二重描画を出さない順序」の明示的否定に当たるため**実装していない**。採用する場合は §5.4 の改訂承認が要る。
+- **回帰テスト**: `tests/chart_template_persistence_integration.test.js` TC-P04（`proceed` に例外を注入し、構成保持・永続化・例外伝播の 3 点を固定）。
+- **関連**: ISSUE-167（`Value is null` の既知事象）・ISSUE-188。
+
+## ISSUE-190: [仕様不一致] テンプレート保存ダイアログの時間足表記がラベルでなくキーだった（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日修正。実 UI 検証 D-3）
+- **事象（実 UI で実測）**: 保存ダイアログのチェック文言が `この時間足（1m）に紐付ける` / `（5m）` とキー表記。設計書 §6.2 は「この時間足（例：日）に紐付ける」＝時間足**ラベル**（1分・5分・日・週…）を指定している。
+- **原因**: 協働子が `host._timeframe`（キー）をそのままダイアログへ渡していた。ラベルは `timeframe_menu.js` の `groups`（`['1m','1分']` 等）だけが持ち、協働子へ供給されていなかった。
+- **対応**: `timeframe_menu.js` に `timeframeLabels(groups = DEFAULT_GROUPS)`（キー→ラベル写像を groups から導出する純関数）を**加法**で追加し、両 composition root から協働子へ注入する。ラベルの定義は既存 `groups` の 1 箇所のみで、キーとラベルの二重定義を作らない（replay の 8 足は既定 groups の部分集合でラベル語彙が同一のため同一写像で足りる）。
+- **判断（メニュー行のバッジは変更しない）**: 設計書 §6.2 のメニュー構造図はバッジを `● スイング (1D, 1W)` と**キー表記**で明示しているため、バッジはキーのまま維持した。ダイアログ文言（`（例：日）`）とバッジ（`(1D, 1W)`）で表記規約が異なるのは設計書の記述どおりであり、統一する場合は設計書側の裁定が要る。
+- **回帰テスト**: TC-P06（ダイアログへ `5分`/`日` が渡る）・TC-P07（ラベル写像が groups 由来で 9 足を網羅）。
+
+## ISSUE-191: [不具合] 現在表示中の足と同じ時間足項目のクリックでテンプレートが自動適用され構成が置換される（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日修正。code-review-executor 指摘 C-1＝マージブロッカー。TDD Red→Green で確認）
+- **事象（レビュー側の実測・当方でも Red 再現）**: 現在足 5m・手動適用の `profit_band` 在席・`bindings={'5m':'tpl#1'}`・`activeTemplateId=null` の状態で時間足メニューの「5分」（＝現在足）をクリックすると、`profit_band` が除去され `tpl#1` の構成へ置換され、永続化まで到達する（リロードしても戻らない）。当方の Red 再現でも `host.log` が `['remove:profit_band#1','proceed:5m','commitState','rebuildApplied:...','persistAll','renderLegend']` となることを確認。
+- **原因**: 既存実装の同一性ガード（`timeframe_controller.js:63-65` の `if (!timeframe || timeframe === this._timeframe) return;`）は `proceed` の**内側**にあり、`ChartTemplateController.onTimeframeChange` のデコレータは**その手前で除去・適用を実行する**。よって「切替が発生しないクリック」でも自動適用が発火した。現在足の項目は `disabled` でも `pointer-events:none` でもなく、`indicator_controller.js:787` が全 `[data-timeframe]` へ click を配線するため実 UI から到達可能（A方式のみ disabled）。
+- **既存挙動の破壊であること**: 本機能導入前、この操作は完全な no-op だった。設計書 §5.4 発火条件 1「ユーザーの明示的な時間足**切替**である」・「**切替先**の時間足に紐付けが存在し」を満たさない操作であり、加えて §5.3「紐付け操作そのものは構成を変更しない」の保証がクリック 1 回で迂回されていた。
+- **対応**: `onTimeframeChange` の冒頭（再入防止の直後）へ同一性ガードを置き、`next` が現在足または falsy なら既存挙動へそのまま委譲する（加法・§5.4 の順序は不変）。
+- **回帰テスト**: `tests/chart_template_controller.test.js` TC-C20（現在足クリックで `host.log` が `['proceed:5m']` のみ・構成と `activeTemplateId` が不変）。
+- **関連**: ISSUE-188 / ISSUE-189（同一デコレータの他の欠陥）・設計書 §5.3/§5.4。
+
+## ISSUE-192: [不具合] MP 復元の失敗が後続指標を巻き添えにし F-T4「当該 1 件のみスキップ」が不成立（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日修正。code-review-executor 指摘 C-2。TDD Red→Green で確認）
+- **事象（Red 再現）**: `instances=[market_profile, ma_marod]`（MP が宣言順の先頭）で MP の `setEnabled(true)` が失敗すると、後続の `ma_marod` の compute 呼び出しが **0 件**・renderer 描画も **0 件**になる。ISSUE-188 の修正で永続化と凡例は救済済みのため、「state と凡例には在席するが系列が描かれていない」不整合として残っていた。
+- **原因**: `IndicatorStateStore.rebuildApplied` の再構築ループは**非 MP の compute 例外のみ** try/catch で握り、MP 分岐（`_mp.restoreInstance`）は try の外にある。協働子が配列を 1 回で渡していたため、MP の reject がループ全体を打ち切っていた。
+- **対応（共有ベース無改変・公開入口も 1 個のまま）**: 協働子側で `rebuildApplied([inst])` を**1 件ずつ**呼び、各件を try/catch で局所化する。再構築ループの本体はインスタンス間に共有状態を持たない（`_meta` は Map への追加・`_commitLastSeries` は毎回上書きで反復間の読み出しが無い・gateway は呼び出しごとに生成）ことをコード確認済みで、分割しても挙動等価。設計書 §5.6 F-T4／§5.2 例外「当該 1 件のみスキップし、残りの適用と描画は継続する」に一致する。
+- **回帰テスト**: `tests/chart_template_persistence_integration.test.js` TC-P08（MP 先頭・MP 失敗で後続 `ma_marod` が計算・描画され、永続化も完遂する）。
+- **副次**: 協働子テスト TC-C05 / TC-C11 は「`rebuildApplied` が 1 回の一括呼び出しである」という実装細部に依存していたため、宣言順・再採番・二重適用なしという**意図を保ったまま**アサーションを 1 件ずつの呼び出し形へ更新した。
+- **関連**: ISSUE-188（永続化と凡例の救済＝本件の前段）・設計書 §5.2/§5.6。
+
+## ISSUE-193: [テスト不足] 受入基準 3（旧構成を新しい足で計算しない・計算は 1 回のみ）を固定する検証が無い（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日対応。code-review-executor 指摘 T-2）
+- **事象**: チャートテンプレートの新規テストに compute 呼び出し回数・計算時間足を検証するアサーションが 1 件も無かった。実挙動は成立していた（レビュー側実測・当方の追加アサーションでも `{id:'ma_marod', tf:'1m'}` の 1 件のみを確認）が、**回帰検出力が無い**状態だった（将来バッチ除去入口を入れて旧構成が新しい足で計算される退行が起きても、既存の協働子テストは pass し続ける）。
+- **対応**: 結線ハーネス（`buildWiring`）の fake compute に呼び出し記録（`indicatorId` / `timeframe`）を追加し、TC-P02 へ「旧構成は新しい足で計算されない」「新構成に対して計算は 1 回のみ」「計算は切替後の新しい足で行う」の 3 アサーションを追加した。記録の検出力は TC-P08 の Red（`computeCalls` が `[]` で失敗）で実証済み。
+- **関連**: 設計書 §7.4 受入基準 3・§5.4 適用手順ステップ 3。
+
+## ISSUE-194: [設計書の記述誤り] 「replay_ui 側の変更は不要」が新規 usecase モジュールに当てはまらない（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日是正）
+- **事象**: 基本設計_期間プリセット.md v0.1.0 §8.1 は E-7（symlink 単一ソース共有）を根拠に「replay_ui 側の変更は不要」と断定していた。実装時、新規追加した `web/js/usecase/period_presets.js` は replay_ui 側に実体が無く、リプレイのページから `../../usecase/period_presets.js` が **404** になることが判明した。
+- **原因**: E-7 は *既存* 共有ファイルについての事実であり、**新規モジュールには symlink 作成が別途必要**である。v0.1.0 はこの区別をせず一般化して書いていた（設計書内の過剰一般化）。
+- **対応**: `simulator/replay_ui/web/js/usecase/period_presets.js` の symlink を作成。設計書 §8.1 を「既存共有ファイルは変更不要／新規モジュールは symlink が必要」へ是正し、v0.1.1 §12.2-1 に実装で判明した事実として記録した。
+- **検証**: 統合 UI（8000）で `/live/js/usecase/period_presets.js`・`/replay/js/usecase/period_presets.js` とも HTTP 200 を実測。リプレイモードの実 UI でプリセット提示（日足 5/21/65/129/258）と `5d` 換算が成立することをブラウザで確認（ページエラー 0）。
+- **関連**: 基本設計_期間プリセット.md §8.1・§12.2。
+
+## ISSUE-195: [設計書の記述漏れ] 期間プリセットの変更ファイル一覧に配線・バンドル定義が欠落（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・同日是正）
+- **事象**: 基本設計_期間プリセット.md v0.1.0 §8.1 の変更ファイル一覧に、(1) `indicator_controller.js`（歯車ダイアログへの `context` 供給）、(2) `build.mjs`（A方式バンドルの MODULE_ORDER 登録）が載っていなかった。いずれも欠くと機能が成立しない（前者はプリセット非提示へ退化、後者は A方式でシンボル未定義）。
+- **原因**: 設計時に「adapter 側の変更は `property_control_builders` と `properties_dialog` のみ」と見積もったが、`context` の供給元（controller）とバンドル定義を数え落とした。チャートテンプレート ISSUE でも同型の欠落が起きている（v0.1.2 の CSS・ダイアログ view の追記）。
+- **対応**: §8.1 の表へ 2 行（配線・バンドル）を追加。あわせて `timeframe_menu.js` を MODULE_ORDER の前方へ移した理由（`properties_dialog` が `timeframeLabels` を参照する／当該モジュールは相対 import を持たない葉のため前方移動は安全）を明記した。
+- **検証**: `tests/build_module_order.test.js`（相対 import が MODULE_ORDER に全て登録されていることを構造的に固定）が緑。web 902 緑・api 437 緑。
+- **関連**: 基本設計_期間プリセット.md §8.1・§12.2-2。
+
+## ISSUE-196: [不具合] 時間足切替で `Value is null` が発火し指標が更新されなくなる／切替が遅い（ISSUE-167 の未解明個体の真因）（2026-07-28）
+- **ステータス**: RESOLVED（2026-07-28 起票・原因特定 → 2026-07-29 抜本対策を実装・実 UI 実測で検証。web 910 緑／replay 266 緑（既知失敗 1 件のみ・本件前から fail）／unified 42 緑／A方式 build 成功）
+- **事象**: 統合 UI（8000）で指標を 1 件以上適用した状態で時間足を切り替えると、lightweight-charts が `Error: Value is null` を 2〜3 回 throw する。実害（描画・値の誤り）は観測されない。ISSUE-167 本体（M1 日境界の重複行）は 2026-07-24 に解消済みで、2026-07-27 に「原因未特定・再現条件不明」として再観測記録のみ残っていた個体が本件である。
+- **切り分け（実測 2026-07-28）**:
+  - 指標 0 件で時間足切替 → **0 件**。指標 1 件（moving_averages）で切替 → **3 件**。
+  - live core 単体（`/live/`・SW なし）で同一操作 → **0 件**。統合ページ（`/`）でのみ発火＝**統合固有**。
+  - 期間プリセット UI に一切触れない対照実行でも発火＝当該実装とは無関係。
+- **機序（vendor 逆アセンブル ＋ 実行時計測で確定）**:
+  1. lightweight-charts の `Lh`（`$n` に対する完全一致の二分探索）は、ローソク系列が持たない time-point index を引かれると null を返し、candlestick colorer の `ensureNotNull`（`a()`）が `Value is null` を throw する（スタック: `a` ← `xt.Candlestick` ← `xt.Sh` ← `Ke.xb` ← `Ke.DM`）。つまり**「時間軸の点集合にあるが、ローソク系列には無い index」**が存在すると必ず throw する。
+  2. 実行時計測（series API フック）で得た時系列:
+     ```
+     +0.314s setData Candlestick#1 n=1500 first=1777345200 last=1785268800
+             ← preRender (timeframe_controller.js:98) ← recomputeAllApplied ← setTimeframe
+     +0.319s ★Value is null
+     +0.373s ★Value is null
+     +0.374s setData Candlestick#1 (同内容・別 preRender: replay.js:196 ← ReplayView.setCandles)
+     +0.378s removeSeries Line#2 → addSeries Line#3 → setData Line#3（新時間足の指標系列）
+     ```
+  3. **真因**: 統合ページでは時間足切替が `recomputeAllApplied` を **2 バッチ**起動する（base の `TimeframeController.setTimeframe` 経由と、replay 層 `replay.js:196` 経由）。先行バッチは generation ガードで全 job が不採択になり `jobs.length === 0` となるが、`indicator_controller.js:620-624` は **`preRender()`（＝メインローソク系列を新時間足へ差し替え）を実行した後に early return** するため、指標系列は**旧時間足のデータを保持したまま**残る。この間（実測 約 60ms）チャートは「ローソク＝新足の狭い範囲／指標系列＝旧足の広い範囲」という不整合状態にあり、時間軸の点集合は指標系列由来の旧 index を含む。ここで paint / hit-test が走ると 1. の条件が成立して throw する。後続バッチが指標系列を差し替えた時点で不整合は解消するため、実害は残らない。
+- **対策案（未実施・要承認）**: `recomputeAllApplied` の `jobs.length === 0` 早期 return を、**preRender の実行前**へ移す（描画すべき指標が無いなら メインローソク系列も差し替えない）。ただし「指標 0 件で時間足だけ切り替える」正常系も `jobs.length === 0` を通るため、単純な順序入替では時間足切替が効かなくなる。適用済み指標が 0 件のときのみ preRender を実行する、あるいは先行バッチ側で二重起動を抑止する等、条件の切り分けが必要。**共有ベース（live/replay 両モードが載る主機能）の変更**であり、影響範囲の評価と承認を要する。
+- **⚠「仕様追加が原因か」の検証（2026-07-28・commit 単位の A/B）**: ユーザー報告「仕様追加前は問題が無かった」を受け、**期間プリセット実装の前後**で同一手順（`market_profile` ＋ `ma_marod` を適用 → 1 分足へ切替）を各 3 試行して比較した。
+  | commit | 内容 | `Value is null`（3 試行合計） | 時間軸未更新（ローソク未描画） |
+  |---|---|---|---|
+  | `b2a2e9a` | **期間プリセット実装の前** | **12 件** | 0/3 |
+  | `44d505e` | 期間プリセット実装 | 16 件 | 0/3 |
+  | `f8178a4` | ＋対策 A | 16 件 | 0/3 |
+  ⇒ **`Value is null` は期間プリセット実装の前から発生している**（12 件）。本症状は当該実装が持ち込んだものではない。件数の 12→16 は試行ごとの揺れ（同一 commit 内でも 4／8 と変動）と同程度であり、有意差とは言えない。
+- **重篤な現れ（ローソク未描画・時間軸が旧足のまま）**: `market_profile` ＋ 足内更新指標を適用した状態で 1 分足へ切り替えると、時間軸が旧足のまま残りローソクが 1 本も描画されない状態を実 UI で 1 度観測した（スクリーンショット取得）。ただし統制した 3 試行 × 3 commit では 0/3 で再現せず、**発生率が低い競合**である。再現手順は「MP ＋ 足内更新指標 ＋ 1 分足への切替」。
+- **対策 A の扱い**: 症状を減らさない（上表）一方で「後続バッチが来なければ `preRender` を抑止したまま candles が差し替わらない」＝ローソク未描画を招きうる副作用を持つ。ブランチ `fix/issue-196-recompute-prerender-atomicity` に温存し、**develop へは入れない**。配信ブランチは `feature/chart-template`（対策 A を含まない）へ戻した。
+- **追加実測（2026-07-29・実 UI・統合 8000・ライブ・指標 5 件 = market_profile + ma_marod + btlm_trail + btlm_trail_marod + moving_averages）**: lwc に計装フック（createChart→series の setData/update/setMarkers/removeSeries と例外を時系列採取＋「時間軸に載るが当該系列に無い time」の計数）を入れて日→1分の切替を観測した。
+  - クリック → ローソクが 1 分足へ差し替わるまで **5.63 秒**（`/candles` の応答は **1.03 秒**で到着済み＝待ちの実体は「全指標 compute の完了待ち」）。指標 1 件なら 1.84 秒＝**指標構成に比例して遅くなる構造**。
+  - その差し替え（`setData`）**の内側で** `Value is null` が throw されることを直接捕捉（`THROW Candlestick#1.setData: Value is null`）。差し替え時点で 21 本の指標系列は旧日足の time（例 `1785283200`）を保持していた。
+  - throw が `recomputeAllApplied` を中断（`[replay] 計算エラー`）→ 指標の再描画が行われず旧足のまま固着 → 以後 5 秒クロックの full 再計算も同じ throw で連続失敗（`full 再計算失敗` 3〜5 回／`Value is null` **102〜160 件 / 30〜45 秒**）。悪いケースでは 30 秒経っても全指標が旧足のまま（「指標が表示されない」の実体）。
+  - **層の切り分け**: ライブ core 単体（8001・SW/replay 層なし）は同一操作・同一 5 指標で `Value is null` **0 件**。ローソク `setData` と指標の `removeSeries/setData` が**同一同期ブロック**で完了するため。統合 UI ではこのブロックが replay 層の `preRender` で分断される＝統合固有。
+- **真因の再定義（実測に基づく）**: lwc は「時間軸に載る time は当該系列にも存在する」ことを要求する（違反時 colorer の `ensureNotNull` が throw）。この不変条件を守る責務がどのコードにも無く、「全指標 compute 完了 → ローソク差し替え → 指標描画」という**非原子な順序**が、(a) 切替の律速（最遅 compute）と (b) 差し替え瞬間の不変条件違反を同時に生んでいた。ISSUE-167 の対策（重複 time の dedupe）は「重複」だけを塞いだ応急防壁で、「欠落」側は無防備だったため別経路で同型の例外が再発した。
+- **抜本対策（2026-07-29 実装・ユーザー承認済み。応急防壁＝try/catch や dedupe 追加は行わない）**:
+  1. `chart_renderer.clearInstanceData(instanceId)` を新設（加法）: 当該 instance の全系列 data を空にする（系列・pane・スタイル・水準線は温存＝再生成なし）。
+  2. `timeframe_controller.setTimeframe`: candles 取得直後に「**全適用指標の系列を空にする → `setCandles`**」を **await を挟まない同一同期ブロック**で実行し、`recomputeAllApplied` へ `preRender` を渡さない。これで時間軸に旧 time が存在する瞬間が構造的に消え、ローソク・時間軸は candles 到着直後に切り替わる（compute 非依存）。
+  3. `indicator_controller.recomputeAllApplied`: `preRender` を伴うバッチ（リプレイのリビール経路・世代不採択バッチ）では、**本バッチで描画されない指標の系列を `preRender` の直前に空にする**（同一同期ブロック内）。これで「preRender だけが走るバッチ」も不変条件を破らない。
+  4. `chart_renderer.updateSeriesTail`: 空化済み（data 長 0）の系列への遅延末尾差分は捨てる（旧足 time を 1 点だけ復活させる経路を封鎖）。
+- **仕様変更点（UI 挙動・記録）**: 時間足切替で「ローソクと全指標を同時に更新する」（ISSUE-023 の一部）を改め、**ローソクを先に（約 1 秒で）差し替え、指標は compute 完了後に一括描画**する。指標同士の同時更新（1 指標ずつバラバラに出ない）は不変。切替直後の数秒は指標が空表示になる（従来は「チャート全体が 5 秒以上旧足のまま」だった）。
+- **検証（実 UI・実測 2026-07-29）**: 指標 5 件で全時間足を掃引（1分/15分/1時間/日/5分/1時間）。
+  | モード | click→ローソク差し替え | `Value is null` | full 再計算失敗 | 不整合点（軸にあり系列に無い time） |
+  |---|---|---|---|---|
+  | ライブ | 0.19〜1.22 秒 | 0 | 0 | 0 |
+  | リプレイ | 0.09〜0.25 秒 | 0 | 0 | 0 |
+  リプレイ再生（一括リビール経路）12 秒: 例外 0・全 15 系列が非空・不整合 0。切替前後のアイドル各 20〜30 秒も `Value is null` 0・`full 再計算失敗` 0（旧: 160 件 / 5 回）。
+- **回帰テスト**: `chart_renderer.test.js`（clearInstanceData の空化・系列非再生成・未知 id no-op／updateSeriesTail の空系列スキップと非空系列の従来動作）、`timeframe_controller.test.js`（取得直後 setCandles・preRender=null・空化→差し替えの順序・candles 空時は何もしない）、`indicator_controller.test.js`（preRender 前に「描画されない指標」を空化する／描画される指標は空化しない／ローソクは compute 完了前・指標は完了後一括）。replay 側の同名テストも新仕様へ同期。
+- **残件（別 ISSUE）**: 指標ラインが出そろうまでの時間は compute に律速（実測 5.6 秒・`/market_profile` 単発 5.4 秒）＝サーバ側施策は別枠。ISSUE-197（`Cannot update oldest data` の多発）／ISSUE-198（SW 経由 `/live_ticks` の network error）。
+- **関連**: ISSUE-167（重複 time の応急防壁＝本件は同じ不変条件の「欠落」側）／ISSUE-023（同時更新仕様の改訂元）／ISSUE-165（compute 並列化だけでは律速が残っていた）／ISSUE-188。
+
+## ISSUE-197: [不具合] ライブ core（8001）で `Cannot update oldest data` が多発する（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象（実測）**: ライブ core 単体（`http://127.0.0.1:8001/`・SW なし・指標 5 件）で日→1分の切替後 45 秒に、`THROW Line#72.update: Cannot update oldest data, last time=…` が **203 件**発生。統合 UI（8000）側では未観測。
+- **切り分け済みの事実**: 例外は `series.update` の同期呼び出しで発生し、`chart_renderer.updateSeriesTail` の try/catch が点単位で握って捨てている（バッチは継続＝可視の実害は未確認）。ISSUE-151 追補2 で「バー確定直後の stale 点」として想定済みの経路だが、203 件は想定頻度を大きく超える。
+- **未検証**: 発生源（full 再描画と latest 応答の交錯か／別クロックの重複駆動か）・実害（最新値の欠落有無）。
+- **関連**: ISSUE-151（stale 点の無害化）／ISSUE-196（本件の検出契機）。
+- **原因（2026-07-30・実UI実測で確定）**: 時間足切替とは無関係の**定常発生**だった。
+  - 計測法: `updateSeriesTail` の catch に一時プローブを入れ、ライブ core 8001・指標 5 件・1 分足で 45 秒観測（計測後にプローブは撤去）。
+  - 結果は**単一パターンのみ** 798 件（約 18 回/秒）: `n=2 ok=1 ng=1 times=T-60,T before=T after=T`。
+    - latest 応答は末尾 **K=2** 点 `[T-60, T]` を返す。
+    - しかし系列末尾は既に `T` へ進んでいる（forming/full 経路が先に反映済み）。
+    - lightweight-charts の `update` は last より古い time を throw で拒否するため、**毎回 K-1 点が必ず例外になる**。
+  - **実害は無い**（未検証項目への回答）: 同一バッチの新しい点 `T` は成功し、`after == before` ＝最新値は欠落しない。問題は「正常動作のさなかに例外が出続ける」こと（コストとログ汚染、および本物の異常が埋もれること）。
+  - ISSUE-197 起票時の「日→1分 切替後 45 秒で 203 件」は切替固有の現象ではなく、この定常発生を切替直後に観測したものだった。
+- **対応**: `chart_renderer.updateSeriesTail` で、系列末尾より古い点は **比較で判定して `update` を呼ばない**（例外駆動の制御フローを撤去）。捨てる点の集合も更新後の末尾も従来と同一。非数値 time（business day 形式）は比較の意味が自明でないため従来どおり `update` → catch へ倒す。
+- **検証**:
+  - 回帰テスト 3 件を追加。あわせて**フェイク系列に実 lwc の拒否契約（古い time で throw）を写した**（写さないと「例外をやめた」ことを検証できず空虚なテストになるため）。拒否された点は `_rejected` に記録し、`update` を呼んでいないことを直接判定する。
+  - **変異注入**: 事前判定を撤去すると当該テストが失敗することを確認。
+  - **実UI再測（同条件 45 秒）**: 例外 **798 → 0 件**、比較でスキップ 2,213 点、コンソールエラー 0、指標 5 件は継続描画。
+  - `indicator_ui/web` **935 passed**。
+
+## ISSUE-198: [不具合] SW 経由の `/live_ticks` が network error になる（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象（ユーザー報告）**: `The FetchEvent for "http://127.0.0.1:8000/live_ticks?since=0" resulted in a network error response: the promise was rejected.`（`sw.js:68`）が複数回。併せて `update_scheduler` の `full 再計算失敗: Failed to fetch` も観測。
+- **確認済みの事実（2026-07-29）**: ルータ直叩きでは `/live/live_ticks?since=0` は 200（79KB）、prefix 無し `/live_ticks` は 404。SW は `/live_ticks` を `/live/live_ticks` へリライトする実装で、`proxyRewritten` の `fetch` が reject した場合に当該メッセージになる。当方の Playwright 実測（統合 8000・ライブ）では再現せず。
+- **未検証**: reject の実体（起動直後の SW activate 競合／サーバ再起動と重なった接続断／SW 制御開始前の要求）。
+- **関連**: ISSUE-171（SW claim 到達待ち）／ISSUE-196。
+- **真因の確定（2026-07-31・実 UI 決定実験）**: **ルータ 8000 の一時停止（再起動・瞬断）**。SW のリライト論理の欠陥ではない。
+  - 実験: 統合 UI（8000・SW 制御下）で `/live_ticks` を 500ms 間隔で叩き続けながらルータを停止 → 4 秒後に再起動。
+  - 結果: **89 回中 8 回が失敗**し、コンソールに `net::ERR_FAILED @ http://127.0.0.1:8000/live_ticks?since=0` が **8 件**。ページ側の例外は `TypeError: Failed to fetch`＝ユーザー報告の `update_scheduler` の「full 再計算失敗: Failed to fetch」と一致する。
+  - SW は `event.respondWith(fetch(...))` の失敗を忠実に伝えているだけで、ブラウザがそれを「the promise was rejected」と表示する。**ページは次の poll で自動復帰する**（`fetchLiveTicks` は失敗時 null を返し巻き戻さない）。起票時の 3 仮説のうち「サーバ再起動と重なった接続断」が正しく、「SW activate 競合」「SW 制御開始前の要求」は否定された（SW 制御確立後にのみ発生）。
+- **併せて是正したルータ自身の欠陥（実測で発見）**:
+  1. **HTTP/1.0 で応答していた**（`protocol_version` 未設定）。1 リクエスト = 1 TCP 接続になり、1 画面で多数の API を並行に叩く本 UI では接続生成が集中する。`_proxy` は上流本体を全読みして自前で `Content-Length` を付与し、`_serve_static`/`_send_simple` も明示するため、全経路が HTTP/1.1 の応答長確定要件を満たす。→ `protocol_version = "HTTP/1.1"`。
+  2. **`Date` / `Server` ヘッダが重複していた**（`send_response()` が出す値に加えて上流の同名ヘッダも転送していた。`curl -D -` で実測）。RFC 7231 §7.1.1.2 は `Date` の重複を明確に禁じる。→ 転送対象から除外。
+  3. **accept backlog が既定 5**（`listen(5)`）。溢れた SYN は落とされる。→ `RouterServer` サブクラスで 128 へ（stdlib のクラス属性は書き換えない）。
+  4. HTTP/1.1 化の副作用として idle な keep-alive 接続がスレッドを保持し続けるため、`RouterHandler.timeout = 65` を追加。
+- **⚠ 当初仮説の訂正**: 「backlog 枯渇が network error の原因」という私の仮説は**実測で否定された**。240 同時接続で 38 件失敗したのは 200KB × 240 ＝ 48MB の帯域律速であり、小応答なら **400 同時接続でも全数 200（0.18 秒）**。ブラウザは同一オリジンへ 6 接続までしか開かないため、この経路は元々成立しない。backlog 拡大は初回ロードのバースト耐性としては妥当だが、本件の真因ではない。
+- **検証**: 回帰テスト 4 件を追加（HTTP/1.1 と 1 接続 3 リクエスト・Date/Server 非重複・backlog 拡大と stdlib 不変・idle timeout）。**変異注入 3 種すべてで当該テストが失敗**することを確認。`unified_ui` 19 passed。
+
+## ISSUE-199: [不具合] 期間パラメータ欄で入力が既存値へ追記され、確定できないまま旧値が戻る（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 起票・同日修正。実 UI 実測で検証。web 917 緑）
+- **事象（ユーザー報告）**: 「`3h` と入力すると `1803h` と表示される」「パラメータを設定しても元に戻る」。
+- **原因（実 UI 実測で確定）**: 期間欄は本数（例 `180`）を表示しており、フォーカス時に全選択していなかったため、クリックしてそのまま打鍵すると**既存値へ追記**される（`180` + `3h` = `1803h`）。結果 `1803h` は 1803 × 1時間 = 108,180 本と解釈され上限（1500 本）超で換算に失敗する。失敗時は仕様どおり代入せず直前の有効値を保持する（F-P1）が、**OK が押せてしまう**ため旧値がそのまま確定し、ユーザーには「設定しても元に戻る」と見えていた。2 つの報告は同一原因である。
+- **対策（応急的な入力サニタイズではなく発生条件を消す）**:
+  1. `property_control_builders.buildPeriod`: `focus` で全選択。さらに実 UI 実測で「フォーカス済みの欄を再クリックしても `focus` は発火せず追記が再発する」（`180` → `1801803h`）ことを確認したため、**キャレットのみのクリックでも全選択**する（範囲選択中は潰さない）。
+  2. 未解決の換算エラーを `ctx.setPendingError(name, message)` でダイアログへ通知し、`properties_dialog._revalidate` が在席中は **OK を無効化**する（§5 F-11 の OK 制御と同じ扱い）。旧値の暗黙確定が構造的に起きない。入力を打ち直すとエラーは解除される。
+- **検証（実 UI・1分足・moving_averages）**: クリック→`3h` 打鍵→Enter で **`180`**（追記なし）。意図的な不正入力 `1803h` は OK 無効＋「108180 本はチャートが保持する 1500 本を超えます。」を表示。`6h` へ打ち直すと `352`・OK 有効・保存値 352。単体テスト 5 件を追加（focus/click の全選択・範囲選択時は非選択・エラー登録と解除・代入されないこと）。
+- **関連**: 基本設計_期間プリセット.md v0.2.0 §7.3・§6.3（F-P1）／ISSUE-200。
+
+## ISSUE-200: [改善要求] 期間プリセットの選択肢が少ない（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 ユーザー要求・同日実装。実 UI 実測で検証）
+- **事象（ユーザー要求）**: 提示されるプリセットが少なく選べない（v1 は 1分足 3 件・日足 5 件）。
+- **原因**: 換算表 v1 の単位が 11 種と粗く（1時間/4時間/1日/1週間/1ヶ月/3ヶ月/6ヶ月/1年/2年/3年/5年）、かつ提示件数の上限が 5 件で打ち切られていた（日足は 2年/3年/5年が候補にありながら出ていなかった）。
+- **対策**: (1) 換算表を **v2** へ版上げ。中間刻み 9 単位（2時間/6時間/12時間/2日/3日/2週間/3週間/2ヶ月/9ヶ月）を加法し、`tools/period_presets_measure.py` で**全単位を同一手順・同一定義（§4.1）で再計測**（推測値は入れない）。v1 の定数はコード上に残す（§4.4-3・保存値は本数のため遡って変化しない）。(2) 提示上限を 5 → 14 件へ。(3) 同一本数へ落ちる候補は期間の短い方のみ提示（1D 足の「2日」「3日」はいずれも 2 本のため重複行を出さない）。
+- **結果（実測）**: 提示件数は 1m 3→6 / 5m 4→9 / 15m 4→11 / 30m 5→12 / 1h 5→13 / 4h 5→12 / 1D 5→13 / 1W 5→11 / 1M 5→8 件。ポップは `max-height:60vh; overflow-y:auto` のため CSS 変更は不要（実 UI で確認）。
+- **副次（記録）**: v2 は v1 と同一手順の再計測のため、提示対象（≤1500 本）のセルは v1 と一致または ±1（例 1h の 1ヶ月 496→495・3ヶ月 1480→1481）。テストの期待値も同時に更新した。
+- **関連**: 基本設計_期間プリセット.md v0.2.0 §4.3.1・§6.1／ISSUE-199。
+
+## ISSUE-201: [不具合] 価格更新（ライブ再計算）でインジケーターのパラメータが元に戻る（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 起票・同日修正。実 UI 実測で検証。web 919 緑）
+- **事象（ユーザー報告 → 実測で再現）**: 歯車でパラメータを変えて OK しても、価格が更新されると設定が元に戻る。
+- **実測トレース（統合 UI 8000・ライブ・moving_averages の `length` を 9 → 200）**:
+  ```
+  OK      → /compute(length=200)          ← 新 params で 1 回計算される
+  +0.5s   → /compute(length=9)            ← 旧 params のライブ計算が完了・その行が live state へ反映
+  以後     → 保存値=9 のまま・/compute も常に 9・歯車の表示も 9
+  ```
+- **原因（コードで確定）**: `recomputeAllApplied` / `recomputeFormingTails` は**バッチ開始時のスナップショット**から各インスタンスの params を取り出して計算し、`_computeInstance` の完了時に `result.state` の当該行を live state へマージする。マージされる行は**計算開始時点の params を保持**しているため、計算中にユーザーが params を変更すると旧値で上書きされる（同一インスタンスの lost update）。ISSUE-165 は「兄弟インスタンス間」の lost update を是正したが、同一インスタンスに対する旧 params の書き戻しは残っていた。生存機構（2.5〜5 秒クロック）が常に走るライブでは、変更直後に必ずこの窓に当たる。
+- **抜本対策（2 点セット・応急的な再適用リトライ等はしない）**:
+  1. **params の正はユーザー操作**: 明示操作（歯車 OK / variant 切替 / デフォルト復元）は `commitParams: true` で **await 前に** `_withParams` で live state へ確定する。計算の完了順に依存しない。
+  2. **旧設定由来の結果は破棄**: `_computeInstance` は await 直前の行オブジェクトを保持し、完了時に当該行が差し替わっていれば（他の確定・他バッチの反映）`accepted:false` を返して **state も描画も触らない**。次のクロックが新 params で計算し直す。ISSUE-105 の「await 中に除去されたら破棄」と同型の規律。
+- **検証（実 UI 実測）**: OK 直後から 90 秒間（tick 更新 78 回・/compute 78 件）で保存値・全 `/compute` の `length` とも **200 のまま**、歯車の再表示も 200。修正前は 0.5 秒で 9 に戻り以後回復しなかった。単体テスト 2 件を追加（await 前確定 / 差し替え時の破棄で state 不変・描画なし）。
+- **関連**: ISSUE-165（兄弟インスタンス間の lost update・並列化）／ISSUE-105（await 中の除去ガード＝同型の規律）／ISSUE-199（同じ「元に戻る」と見える別原因＝入力追記と OK 抑止欠如）。
+
+## ISSUE-202: [不具合] 起動時に指標が表示されるまで遅い（復元ループが直列＋MP 待ちで全指標がブロックされる）（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 起票・同日修正。ユーザー承認 (a)(b)。実 UI 実測で検証。web 919 緑／replay 266 緑（既知失敗 1 のみ））
+- **事象（ユーザー報告）**: 最初にチャートが表示されるまで時間がかかりすぎる。指標数が多いと遅いのか。
+- **実測（リロード＝実起動と同じ復元経路・統合 UI 8000）**:
+  | 指標数 | ローソク描画 | 全指標が出るまで（修正前） | 起動時 compute 回数 |
+  |---|---|---|---|
+  | 0 | 0.47 s | — | 2 |
+  | 1 | 0.51 s | 0.77 s | 3 |
+  | 3 | 0.64 s | 1.41 s | 8 |
+  | 5（MP 含む） | 0.40〜0.64 s | 2.71 s / 8.32 s（ばらつき） | 16〜17 |
+  ⇒ **ローソク表示は指標数に依存しない**（0.4〜0.6 秒）。遅いのは「指標が出そろうまで」。JS 133 件の取得は 0.27〜0.50 秒で無罪。
+- **原因（ネットワーク時系列で確定）**: `IndicatorStateStore.rebuildApplied` は `for … await` の**完全直列**で、宣言順の先頭が `market_profile` だとその `/market_profile` 応答（実測 **13.0 秒**: +1.54s 要求 → +14.52s 応答）まで**後続 4 指標の compute が 1 件も発行されない**（+14.52s にようやく `ma_marod` の full が出る）。ISSUE-155（起動の静的配信）・ISSUE-165（時間足切替の compute 並列化）とは別経路で、復元ループは並列化されていなかった。ISSUE-192 は失敗の局所化のみで直列性を変えていない。
+- **対策（ユーザー承認 y）**:
+  - (a) 非 MP 指標の compute を **並列発行**（`Promise.allSettled`）。並列安全の前提は ISSUE-165 で恒久是正済み（series は per-call gateway 捕捉・state は当該行のみマージ）。
+  - (b) MP の復元を **待ち合わせから外す**（fire-and-forget＋失敗は当該 1 件に閉じる＝F-T4 維持）。復元完了は非 MP 指標で決まり、凡例・ダイアログ再描画が MP 応答待ちで止まらない。
+  - (c) 描画（`_draw`）は **宣言順に直列化**（描画ゲート）。pane は初回描画時に生成されるため完了順に描くと pane の並びが起動ごとに変わる（ISSUE-149 の並び順保証が壊れる）。compute は並列・描画は宣言順とした。
+- **検証（実 UI 実測）**: `/market_profile` と全 4 指標の full compute が **同時刻（+1.66s）に発行**されるようになった（修正前は +14.52s まで待機）。全指標が出るまで 5 件で **2.71→1.16 s / 8.32→2.00 s**、起動時 compute 16〜17→10 件。3 回連続リロードで凡例順・初回描画順が完全一致＝pane 並びは不変。
+- **残件（別枠）**: `/market_profile` 自体が 13 秒（サーバ側）。フロント並列化では消えないため、実測付きで別途提案する。
+- **関連**: ISSUE-155 / ISSUE-165 / ISSUE-192 / ISSUE-149。
+
+## ISSUE-203: [仕様の矛盾] CVFE `quality_gate = "FAIL"` 経路は §3.3 E07 と §3.3 E08 が両立しない（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: `CVFE_spec_v1.0.md` の以下 3 条が同時に成立しえない。
+  1. §3.3 E07：`quality_gate = "FAIL"` のとき「例外を送出せず `measure_id = "PARK"` へ縮退」する。
+  2. §4.4：`measure_id ∈ {"RRANGE", "PARK"}` では `J_t = 0`（ジャンプ分離を実行しない）。
+  3. §4.5-1／§3.3 E08：説明変数 `x4 = ln(1 + J_t/C_t)` はしたがって恒等的に 0 になり、設計行列のランクは必ず 5（< 6）へ落ち、E08 が `ValueError` を送出する。
+  ⇒ **FAIL 経路は必ず例外で終わる**。E07 の「例外を送出せず」という明示保証が実現不能。
+- **実測（2026-07-29）**: 凍結率 0.479 の合成系列で `quality_gate = FAIL` / `measure_id = PARK` となり、学習標本 500 本の x4 列の標準偏差は厳密に 0、設計行列のランク 5・条件数 9.94e21。
+- **暫定対応（実装側）**: `har.py` の `har_fit` で、x4 が学習標本内で**厳密に定数**のとき当該列を推定から外し `β4 = 0` に固定する。`har_coef` の形状 `(6,)` は §3.2 のまま不変。条件数の悪化や他列の共線性は従来どおり E08 を送出する。
+- **要裁定**: 仕様のどちらを正とするか。(a) E07 を優先し §4.5 に「x4 が定数のとき β4 = 0」を明記する（実装の現状）／(b) E08 を優先し FAIL 経路では HAR を実行しない別の縮退（例：`σ̂_OC` を PARK の EWMA とする）を §4.5 に追加する。
+- **関連**: ISSUE-205（同じ x4 の退化が標本側の理由でも起きる）。
+- **裁定（2026-07-30・ユーザー承認）**: 案 (a) を採用。§4.5-4 に「`x4` が学習標本内で厳密に定数のとき当該列を推定から外し `β4 = 0` に固定する」を明記し、§3.3 E08 に当該例外を追記した（`har_coef` の形状 `(6,)` は §3.2 のまま不変）。
+  - 理由: E07 の「例外を送出せず縮退する」は仕様が明示した**保証**であり、これを破る案 (b)（FAIL 経路で HAR を実行しない別縮退）は新しい推定量の設計＝研究課題になる。案 (a) は退化した 1 列を外すだけで残り 5 列の推定を変えず、条件数悪化など他要因の E08 は従来どおり送出する。
+- **実装**: 既に暫定対応済みの `har.py::har_fit` がそのまま正式仕様となった（コード変更なし）。
+- **検証**: `cvfe` 133 passed / 1 xfailed（残る 1 件は ISSUE-207）。
+
+## ISSUE-204: [仕様の欠陥・実測] CVFE の TSRV が既定 `K = ceil(n^(2/3))` で 8.9% 過小になる（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: 仕様 §9 段階 1 は「σ = 1 の合成 GBM（バー内 1440 ステップ・100,000 バー・シード固定）に対し TSRV の平均が 1.000 ± 0.010」を要求するが、既定 `K = ceil(n^(2/3))` では満たさない。
+- **実測（2026-07-29・シード 11・100,000 バー）**:
+  | 測定量 | 実測平均 | 仕様の許容 | 判定 |
+  |---|---|---|---|
+  | RV | 1.0001365 | 1.000 ± 0.005 | 合格 |
+  | TSRV | **0.9112100** | 1.000 ± 0.010 | **不合格（−8.88%）** |
+- **原因（解析的にも一致）**: K 個のサブグリッドが覆う増分は全 `n` 本のうち `n − K + 1` 本にとどまる（各サブグリッドが端点の増分を落とす）ため `E[RV^avg] = ((n−K+1)/n)·σ²`。仕様 §4.3 の補正係数 `(1 − n̄/n)^(-1)` はノイズ項のみを補正し、この端点欠損 `O(K/n) = n^(-1/3)` を補正しない。`n = 1440` で `n^(-1/3) = 8.83%`（実測 8.88% と一致）。理論値 `((n−K+1)/n − n̄/n)/(1 − n̄/n) = 0.91186`。
+- **これは仕様 §10 TBD-1 そのもの**（「`K* = c*·n^(2/3)` の `c*` を原論文で確認する。既定値 `c* = 1` は根拠を持たない。`c*` の誤りは TSRV のバイアスに直結する」・決定者 よしひこ・期限 段階 1 前）。
+- **対応**: 推測で式を変更しない。`tests/test_measures.py::test_stage1_tsrv_is_unbiased_on_synthetic_gbm` を `xfail(strict=True)` として実測値ごと固定し、`test_stage1_tsrv_bias_matches_edge_deficit_theory` で原因（端点欠損）を恒久的に固定した。
+- **影響範囲**: TSRV は `quality_gate = "DEGRADED"`（`S > 0.50`）のときのみ採用されるため、`PASS`（RV）・`FAIL`（PARK）経路には影響しない。
+- **要裁定**: TBD-1。`c*` の値、または端点欠損補正（`× n/(n−K+1)`）を §4.3 に加えるか。
+- **裁定（2026-07-30・ユーザー承認）**: **TBD-1 を解決**。バイアスの原因は `c*` ではなく**サブグリッドの端点欠損**であることが解析・実測の双方で確定したため、`K = ceil(n^(2/3))` を維持したまま §4.3 に補正係数 `n/(n−K+1)` を追加した。
+  - **実測（σ=1 の合成 GBM・n=1440・100,000 バー・シード 11）**: 補正前 `0.9112100`（端点欠損の理論値 `0.91186` と一致）→ 補正後 **`0.9993468`**。§9 段階 1 の許容 `1.000 ± 0.010` を満たす。
+  - `TSRV ≤ 0` 時の代替値 `RV^avg` には補正を適用しない（§4.3 の代替規定は変更しない）。
+- **検証**: `xfail(strict)` を解除して通常テスト化。補正が実際に乗じられていることを式と独立に判定する `test_two_scale_rv_edge_correction_is_actually_applied` を追加し、補正前の理論値一致も `test_stage1_tsrv_bias_without_edge_correction_matches_theory` として残した（原因の恒久記録）。
+
+## ISSUE-205: [仕様の欠落] CVFE の HAR は学習窓にジャンプが 1 本も無いと必ず E08 で停止する（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: `measure_id ∈ {"RV","TSRV"}`（ジャンプ分離を実行する経路）であっても、学習標本 `n_har` 本の中で 1 度もジャンプが検出されなければ `J_t ≡ 0` となり `x4 = ln(1 + J_t/C_t) ≡ 0`。設計行列のランクが 5 に落ちて §3.3 E08 が送出され、エンジンが停止する。
+- **発生確率**: `jump_alpha = 0.999` の下での検出率は約 0.1%。`n_har = 1500` でも学習窓のジャンプ本数はポアソン平均 1.5 であり、**0 本となる確率は e^(−1.5) ≈ 22%**。合成 GBM（ジャンプ無し DGP）では事実上つねに発生する。
+- **実測（2026-07-29）**: 560 バーの合成系列（`measure_id = RV`・Δ* = 5 秒・n = 720/バー）でジャンプ検出は全期間 2 本、学習窓 500 本では **0 本** → E08 送出。
+- **原因**: 仕様 §4.5 は `x4` が標本内で変動することを暗黙の前提としており、前提が崩れる場合の規定が無い。§3.3 E08 は「退化した回帰を検出する」ための条項であって、この構造的退化を意図したものとは読めない。
+- **暫定対応（実装側）**: ISSUE-203 と同一機構。x4 が学習標本内で厳密に定数なら当該列を外して `β4 = 0` に固定し、`W04_HAR_JUMP_COLUMN_CONSTANT` を WARN 出力する。
+- **要裁定**: §4.5 に「x4 が定数のとき β4 = 0 とする」を明記するか、`n_har` の下限をジャンプ検出本数の期待値から導出し直すか。
+- **裁定（2026-07-30・ユーザー承認）**: ISSUE-203 と同一。§4.5-4 の規定（`x4` 定数時は `β4 = 0`）が本件も同時に解決する。`n_har` の下限をジャンプ検出本数の期待値から導出し直す案は採らない（`n_har` を増やしても 0 本の確率は 0 にならず、確率的に失敗する仕様になるため）。
+- **検証**: 同上。
+
+## ISSUE-206: [仕様の曖昧性] CVFE §9 段階 2 の `ω/σ` の尺度が未定義（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: 仕様 §9 段階 2 は「マイクロストラクチャノイズ（`ω/σ = 0.1, 0.5, 1.0`）を注入」と述べるが、分母の `σ` の尺度を定義していない。
+- **2 つの解釈と帰結（実測）**:
+  | 解釈 | `ω/σ = 0.1` の S | 判定 |
+  |---|---|---|
+  | (a) 最細格子 Δ=5 秒の 1 サンプル収益の sd | 0.019 | PASS（3 水準が PASS / PASS / DEGRADED に分離し、閾値 0.10・0.50 と整合） |
+  | (b) バー全体の σ（積分ボラの平方根） | 約 14 | DEGRADED（3 水準すべて DEGRADED となり検定が空虚） |
+- **採用**: (a)。この解釈の下でのみ `RV(Δ)/IV ≈ 1 + 2(ω/σ)²` となり、§4.1-6 の閾値 0.10 / 0.50 が `ω/σ` の 0.1 / 0.5 / 1.0 と同じ尺度に載る。`tests/test_montecarlo.py` の冒頭に明記した。
+- **要裁定**: §9 段階 2 に尺度の定義を追記する。
+- **裁定（2026-07-30・ユーザー承認）**: 解釈 (a)（**最細格子 Δ=5 秒の 1 サンプル収益の標準偏差**）を §9 段階 2 に明記した。この解釈の下でのみ `RV(Δ)/IV ≈ 1 + 2(ω/σ)²` となり §4.1-6 の閾値 `0.10`/`0.50` が同じ尺度に載る。解釈 (b) では 3 水準すべてが `DEGRADED` となり検定が空虚になる。
+
+## ISSUE-207: [仕様の内部不整合] CVFE §4.1-6 の DEGRADED 閾値 0.50 は §9 段階 2 の要求を満たさない（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: 仕様 §9 段階 2 は「`ω/σ ≥ 0.5` のとき `"DEGRADED"` 以上を返す」ことを要求するが、§4.1-6 の閾値は `S > 0.50` であり、`ω/σ = 0.5` ちょうどでは届かない。
+- **実測（2026-07-29・ISSUE-206 の解釈 (a)・520 バー）**:
+  | `ω/σ` | シグネチャ勾配 S | `quality_gate` | §9 段階 2 の要求 |
+  |---|---|---|---|
+  | 0.1 | 0.0193 | PASS | （規定なし） |
+  | 0.5 | **0.4718** | **PASS** | **DEGRADED 以上 → 不適合** |
+  | 1.0 | 1.8792 | DEGRADED | 適合 |
+- **理論値**: `S = (2 − 1/30)r² / (1 + r²/30)`。`r = 0.5` で 0.4877 であり、閾値 0.50 を構造的に下回る（実測 0.4718 と整合）。
+- **対応**: 閾値 0.50 は §10 に根拠が示されていない固定値であり、裁定前に変更しない。`tests/test_montecarlo.py::test_stage2_noise_triggers_degraded_or_worse[0.5]` を `xfail(strict=True)` として実測値ごと固定した。
+- **要裁定**: (a) §4.1-6 の閾値を 0.47 未満へ引き下げる／(b) §9 段階 2 の要求を `ω/σ > 0.5` へ改める／(c) `S` の定義を変える。いずれも §9 段階 5（パラメータ事前登録）より前に確定する必要がある。
+- **裁定（2026-07-30・ユーザー承認）**: 案 (a)。§4.1-6 の `DEGRADED` 閾値を **`S > 0.50` → `S > 0.45`** へ引き下げた（`0.10 < S ≤ 0.45` が `PASS` の該当行）。
+  - 理由: 閾値 0.50 は仕様が根拠を示していない固定値であり、`S(r=0.5) = 0.4877` を計算せずに置かれた可能性が高い。一方 §9 段階 2 の要求は設計意図（ノイズが信号の半分に達したら警告する）である。意図を正とし、理論値 0.4877 を下回る丸い値として 0.45 を採る。案 (b)（要求を `> 0.5` へ緩める）は「`ω/σ = 0.5` ちょうどは検出しない」ことを仕様として認める形になり、案 (c)（`S` の再定義）は §4.1-6 の 3 閾値すべての再校正と段階 2・3 の再実測を要する。
+  - 副作用: 実データで `DEGRADED`（＝`TSRV` 採用）に落ちる範囲が広がる。`TSRV` 経路は ISSUE-215 の裁定によりジャンプ分離を行わないため、誤検出の増加は生じない。
+- **検証**: `xfail(strict)` を解除。閾値と要求の間に余裕があること（`S_DEGRADED < S(r=0.5) の理論値 0.4877`、かつ実測 `0.4718` も超えること）を式と独立に固定するテストを追加。`cvfe` **135 passed / xfail 0**。
+
+## ISSUE-208: [仕様の過少規定] CVFE §9 段階 2 の DGP では M4 が M3 に勝てない（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: 仕様 §9 段階 2 は「確率ボラ DGP（`ln σ_t` の AR(1)、`φ = 0.98`）上で M4 の QLIKE 平均が M0・M1・M3 のいずれよりも小さい」ことを要求する。しかし当該 DGP は**ジャンプもレバレッジ効果も含まない**ため、M4（HAR-CJ-L）が M3（ジャンプ・レバレッジ項なし HAR）に対して持つ 2 つの追加項に説明対象が存在せず、優位は原理的に生じない（推定分散が増える分わずかに劣る）。
+- **実測（2026-07-29・1,500 バー・共通標本 978 本・QLIKE 平均）**:
+  | 比較 | M4 | 対抗 | 判定 |
+  |---|---|---|---|
+  | M0（単純移動平均 20 本） | 0.0105268 | 0.0940 | M4 勝ち |
+  | M1（EWMA λ=0.94） | 0.0105268 | 0.0324 | M4 勝ち |
+  | M3（項なし HAR） | 0.0105268 | **0.0104954** | **M4 負け（+0.3%）** |
+- **実装の妥当性の実証**: ジャンプ（発生確率 5%・6σ）とレバレッジ（中心化した `−min(ρ,0)/σ` 項）を実際に含む DGP では M4 が M3 を下回る（`tests/test_montecarlo.py::test_m4_beats_m3_when_dgp_has_jumps_and_leverage` で固定）。したがって M3 に負ける原因は実装ではなく DGP の過少規定である。
+- **対応**: 仕様どおりの DGP での M3 比較を `xfail(strict=True)` として実測値ごと固定した。
+- **要裁定**: §9 段階 2 の DGP に「ジャンプ強度」と「レバレッジ係数」を追記するか、M3 比較を段階 2 の合否条件から外すか。
+- **裁定（2026-07-30・ユーザー承認）**: §9 段階 2 の DGP に**ジャンプ強度とレバレッジ係数を追加**した（M3 比較を合否条件から外す案は採らない。M4 の追加 2 項が説明力を持つことこそ本エンジンの主張であり、それを検証しない段階 2 は意味を失うため）。
+- **水準はグリッド探索で選定（2026-07-30・N_BARS=1500・共通標本 978 本・QLIKE 平均）**:
+  | `jump_prob` / `jump_size` / `leverage` | M4 | M0 | M1 | M3 | 判定 |
+  |---|---|---|---|---|---|
+  | 0.01 / 4σ / 0.10 | 0.15835 | 0.29263 | 0.27103 | 0.17756 | M4 勝ち |
+  | **0.02 / 4σ / 0.10** | **0.38888** | 0.49254 | 0.45639 | 0.41633 | **M4 勝ち（採用）** |
+  | 0.03 / 4σ / 0.10 | 0.42503 | 0.54516 | 0.49530 | 0.46019 | M4 勝ち |
+  | 0.05 / 6σ / 0.10 | 1.64533 | 1.38923 | 1.17773 | 1.71310 | **M4 負け** |
+  - **新たに判明した事実**: ジャンプが過大（5% × 6σ）だと §5.1 の代理変数（ジャンプを含む `RV`）がジャンプに支配され、ジャンプを除いた `C_t` を予測する M4 が**構造的に不利**になる（M0/M1 にも負ける）。当初 `0.05 / 6σ` を採ろうとして実測で棄却した。`x4` に説明対象を与えつつ代理変数を支配させない水準として `2% × 4σ` を採る。
+- **検証**: `xfail(strict)` を解除。M3 比較を含む M0/M1/M3 の 3 件すべてが合格。v1.0 の DGP では M4 が M3 に勝てないという事実は、改訂の根拠として `test_m4_cannot_beat_m3_on_the_v1_0_dgp_without_jumps_or_leverage` に残した。
+
+## ISSUE-209: [仕様の未定義域] CVFE §4.7-1 のギャップ判定は `delta_star_sec = 0` で全バーが該当する（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: 仕様 §3.2 は `measure_id ∈ {"RRANGE","PARK"}` のとき `delta_star_sec = 0` と定める。一方 §4.7-1 の第 2 条件は「(バー t の最初のティック時刻 − バー t−1 の最後のティック時刻) > 1.5 × `delta_star_sec`」であり、`delta_star_sec = 0` を代入すると「> 0」となる。ティック時刻は §3.1 により狭義単調増加であるから差は必ず正であり、**判定は常に真＝全バーがギャップ保有バー**になる。
+- **帰結**: `quality_gate = "FAIL"`（PARK 縮退）の経路では、実際にはギャップの無いバーにも `σ̂_CO,t = sqrt(v_{t−1}) > 0` が加算され、`σ̂_t` が系統的に過大になる。仕様はこの帰結を明示していない。
+- **対応**: 仕様の式をそのまま適用し、`gap.py` の docstring と `tests/test_gap.py::test_zero_delta_star_makes_every_bar_a_gap_bar` で帰結を明示的に固定した。
+- **要裁定**: `delta_star_sec = 0` のとき第 2 条件を無効化する（第 1 条件のみで判定する）か、RRANGE / PARK でも `delta_star_sec` に実効値を持たせるか。
+- **裁定（2026-07-30・ユーザー承認）**: `delta_star_sec = 0` のとき条件 2 を評価しない（条件 1 のみで判定する）。`RRANGE`/`PARK` に実効値を持たせる案は採らない（両測定量はサンプリング格子を用いないため、実効値は意味を持たない）。
+  - `delta_star_sec = 0` は「サンプリング間隔を持たない」ことを表す**番兵**であって閾値 0 秒ではない、という読みを §4.7-1 に明記した。
+- **影響範囲の実測（2026-07-30）**: 本件の退化は**ティック経路（RRANGE/PARK）限定**だった。チャート UI 経路（`ohlc.py`）は `t_first = nan` を渡すため v1.0 の式でも条件 2 を評価しておらず、実データ A/B（jp225_tick・4,000 バー）で σ̂ 中央値・σ̂_CO>0 率・σ̂ 最大値がいずれも**完全に不変**（5m: 0.1000%・0.058%／1D: 0.9682%・20.535%）。
+- **検証**: Δ*=0 で条件 2 を見ないこと、条件 1 は Δ*=0 でも効くことを固定した。
+
+## ISSUE-210: [既存の構造問題] indigators 配下の指標パッケージは同一 pytest セッションで同時実行できない（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: `indigators/<pkg>/tests/test_*.py` は `sys.path.insert(0, <pkg>)` の後に `from src import ...` する規約になっている。この `src` は top-level 名であり、複数パッケージのテストを 1 セッションで収集すると先に import された `src` が `sys.modules` に居座り、後続パッケージが自分の `src` を解決できず `ImportError` になる。
+- **実測（2026-07-29・cvfe を含めない対照）**:
+  ```
+  pytest indigators/btlm_trail/tests indigators/ma_marod/tests
+  → ImportError: cannot import name 'DEFAULT_EVENT_AGG' from 'src'
+     (.../indigators/btlm_trail/src/__init__.py)
+  ```
+  ⇒ **cvfe を除いた既存 2 パッケージだけでも衝突する**。本件は cvfe 追加以前から存在する。
+- **現行の回避**: 各指標パッケージのテストを個別セッションで実行する（`pytest indigators/cvfe/tests` のように 1 パッケージずつ）。
+- **抜本対策案（未実施・要承認）**: 各パッケージの `src` を一意な top-level 名（`cvfe_src` 等）へ改名するか、`indigators/<pkg>/__init__.py` を置いて `from indigators.<pkg>.src import ...` に統一する。**既存 3 パッケージ以上のテストと本番の import 経路（`call_binding` / venv `.pth`）へ波及する**ため、影響範囲の評価と承認を要する。
+- **cvfe の扱い**: 既存規約（`from src import`）にそのまま従った。cvfe だけ別規約にしても btlm_trail ↔ ma_marod の衝突は解消せず、規約の不統一を増やすだけであるため。
+- **関連**: ISSUE-174（indigators の依存解決点）。
+- **裁定（2026-07-30・ユーザー承認）**: **現状維持**。抜本対策（`indigators.<pkg>.src` への統一、または `src` の一意名への改名）は 21 パッケージのテストと本番 import 経路（`call_binding` / venv の `.pth`）すべてへ波及するのに対し、症状は開発時の実行単位の制約に留まり製品欠陥ではない。
+- **対応**: 運用規約として `PORTING_GUIDE.md` §7.1「テストは 1 パッケージずつ実行する」を新設し、失敗例（`btlm_trail` + `ma_marod` の同時収集で `ImportError`）と理由（`src` が top-level 名であること）、および一括実行時はパッケージごとに別プロセスを起動することを明記した。テスト規約表にも「テストの実行単位」の行を追加した。
+
+## ISSUE-211: [仕様の欠落] CVFE 学習窓の内側に空バー（E06）があると必ず E08 で停止する（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 起票・**実装側で解決済み／仕様への追記は未裁定**）
+- **事象**: 仕様 §3.3 E06 は「ティック < 2 のバーは `available=False` / `sigma_hat=nan`。**処理は継続**」を明示する。しかし §4.5-1 の説明変数は `C_t` の 22 本遡及平均を含むため、空バーの `C_t = nan` が学習標本の行に混入し、§3.3 E08（非有限値を含む設計行列）で `ValueError` となって処理が停止する。E06 の「継続」保証と直接矛盾する。
+- **実測（2026-07-29・N=560 / n_har=500 / t0=522）**:
+  | 空バー位置 | 修正前 | 修正後 |
+  |---|---|---|
+  | 100 / 300 / 520 / 521 | `E08_HAR_SINGULAR`（停止） | 継続（available 38 / 38 / 17 / 16） |
+  | 522 / 530（学習窓の外側） | 継続 | 継続 |
+  ⇒ 既存テストは学習窓**外側**の 530 のみを置いており本欠陥を検出していなかった。
+- **対応（実装）**: `engine.build_training_sample` を新設し、非有限な行（無効バー由来）を学習標本から除外して残りで推定する。除外本数を `W05_HAR_TRAINING_ROWS_DROPPED` として WARN 出力する。一括経路と逐次経路の再学習が同一関数を通る。
+- **検証**: `tests/test_errors.py::test_e06_inside_training_window_continues`（空バー位置 100/300/520/521 の 4 ケース）。
+- **要裁定**: §4.5 に「無効バーの行を学習標本から除外する」を明記するか、`C_t` の欠測補完（直前値保持等）を定めるか。
+
+## ISSUE-212: [仕様の欠陥] CVFE §3.1 の下限 `N = n_har + 22` では出力が 0 本になる（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: 仕様 §3.1 は `bar_edges` の制約を `N ≥ n_har + 22 = 1522` と定め、例も `(1523,)`（＝N=1522）を挙げる。しかし `t0 = n_har + 22` は「予測を開始できる最初のバー番号」であるため、`N = n_har + 22` ではバー番号 `t0` が範囲外となり `available` が全て `False` になる。
+- **実測（2026-07-29・n_har=500）**: `N=522 → available 0` / `523 → 1` / `524 → 2`。1 本以上の出力には `N ≥ n_har + 23` が必要。
+- **併発する現象**: 空バー（E06）の `C_t = nan` は 22 本の遡及窓を通じて**後続 22 本**の特徴量も無効化する。仕様 §3.3 E06 は「当該バーの」無効化のみを規定し、この伝播を規定していない。`N` が下限近傍だと 1 本の空バーで `available` が 0 本になりうる。
+- **対応**: 下限は仕様どおり据え置き、`available` が 1 本も得られない場合に `W06_NO_AVAILABLE_BARS` を WARN 出力するに留めた（沈黙して空の結果を返さない）。
+- **要裁定**: §3.1 の下限を `n_har + 23` へ訂正するか。併せて §3.3 E06 に伝播の扱い（欠測補完の要否）を追記するか。
+- **裁定（2026-07-30・ユーザー承認）**: §3.1 の下限を **`N ≥ n_har + 23 = 1523`**（例 `(1524,)`）へ訂正し、§3.3 E01 の条件も `< n_har + 23` へ合わせた。E06 の伝播（空バーが後続 22 本の特徴量も無効化する）は仕様どおり据え置き、`W06_NO_AVAILABLE_BARS` の WARN で沈黙を防ぐ現行動作を維持する。
+- **検証**: `cvfe` 133 passed。
+
+## ISSUE-213: [仕様の未定義域] CVFE ギャップ EWMA 初期値が 1 本の `nan` で恒久的に死ぬ（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 起票・**実装側で解決済み／仕様への追記は未裁定**）
+- **事象**: 仕様 §4.7-2 の `g_t = p_open,t − p_close,t−1` は、直前バーが無効（E06 で `p_close = nan`）のとき `nan` になる。§4.7-3 の初期値「先頭 200 本の `g²` の平均」に `nan` が 1 本でも混じると初期値が `nan` となり、以降**全ギャップ保有バーの `σ̂_CO` が `nan`** になって系列全体のギャップ成分が死ぬ。仕様は非有限 `g_t` の扱いを規定していない。
+- **到達条件**: §4.7-1 の第 1 条件（`bar_edges[t] − bar_edges[t−1] > 1.5 × bar_interval_sec`）はティックの有無を見ずに `True` を返すため、**バー長が不等間隔で直前バーが無効**な場合に到達する。等間隔バーの合成データでは第 2 条件が `t_last_prev = nan` で `False` になるため再現しない（本件は潜在欠陥として検出）。
+- **対応（実装）**: `gap.initial_gap_variance` で非有限な `g²` を平均から除外する。更新側（`GapEwma.update`）には元から `isfinite` ガードがあり、初期値側だけが欠落していた。
+- **要裁定**: §4.7 に非有限 `g_t` の扱い（除外／直前値保持）を明記するか。
+
+## ISSUE-214: [仕様と因果性の矛盾] CVFE ギャップ EWMA 初期値がギャップ保有バー 200 本未満のとき将来を参照する（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 起票・**実装側で因果性を優先して解決／仕様への追記は未裁定**）
+- **事象**: 仕様 §4.7-3 は EWMA 初期値を「先頭 200 本のギャップ保有バーの `g²` の平均。200 本未満の場合は存在する全本数の平均」と定め、対象を予測開始バー `t0` より前に限定していない。ギャップ保有バーの総数が 200 本未満の場合、`t ≥ t0` のギャップが初期値に混入し、仕様 §4 柱書（バー `t` の算出に参照可能なのは `bar_edges[t]` より厳密に前のティックのみ）に反する。
+- **実測（2026-07-29・ギャップ保有 108 本の構成）**: 修正前は `bar_edges[530]` / `bar_edges[545]` での切詰め再計算に対し `sigma_hat` が bit 不一致（`max|Δσ̂| = 8.9e-9`・相対 9.0e-7）。修正後は bit 一致。
+- **検出できなかった理由**: 既存の切詰め不変性テストは `session_sec < bar_sec` の構成であり**全バーがギャップ保有**（559 本）になるため、この経路を構造的に通れなかった。寄り付きを遅らせたバーのみをギャップ保有にするフィクスチャを追加して到達させた。
+- **対応（実装）**: 初期値の対象を `t0` より前のギャップ保有バーに限定する。200 本以上が `t0` より前に存在する通常のケースでは先頭 200 本は同一であり結果は変わらない。本数が満たない場合は `W03_GAP_INIT_LOOKAHEAD` を WARN 出力する。
+- **検証**: `tests/test_causality.py::test_gap_ewma_init_is_causal_when_fewer_than_200_gap_bars`（修正を戻すと失敗することを実測で確認）。
+- **要裁定**: §4.7-3 に「`t0` より前のギャップ保有バーに限る」を明記するか。
+
+## ISSUE-215: [仕様の欠陥・実測] CVFE の TSRV 経路でジャンプ誤検出率が許容の 45〜56 倍になる（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: 仕様 §4.4 の z 統計量の分散 `((π²/4)+π−5)·(1/n)·max(1, TQ/BPV²)` は Barndorff-Nielsen & Shephard (2006) が **RV と BPV の比**について導いた漸近分布である。`quality_gate = "DEGRADED"` の経路では §4.1-6 により `measure_id = "TSRV"` となり、**ノイズ補正済みの TSRV** が `V_t` として同じ式に代入されるが、この場合の帰無分布は妥当しない。
+- **実測（2026-07-29・ジャンプを含まない DGP・`ω/σ = 1.0` を注入して DEGRADED へ落とす）**:
+  | `bar_interval_sec` | gate / measure | Δ* | n（中央値） | jump_flag 率 | 許容（§9 段階 1） |
+  |---|---|---|---|---|---|
+  | 21,600 | DEGRADED / TSRV | 300 | 72 | **13.57%** | 0.3% |
+  | 43,200 | DEGRADED / TSRV | 300 | 144 | **16.79%** | 0.3% |
+  | 3,600 | DEGRADED / TSRV | 300 | 12 | 0.00%（§8 K5 で `n<50` は検定無効） | 0.3% |
+  ⇒ RV 経路（`n=1440`）の誤検出率は 0.10% で合格しており、TSRV 分岐に固有の問題である。
+- **併発する欠落**: §4.1-6 の DEGRADED 行は `measure_id = "TSRV"` のみを定め `delta_star_sec` を規定していない（§4.2 は `measure_id="RV"` かつ `S ≤ 0.10` にのみ適用）。一方 §3.2 は当該フィールドの値を要求する。**実装は基準間隔 300 秒を選択したが、これは仕様の規定ではない**。
+- **対応**: 式・既定値ともに変更せず、`tests/test_jumps.py::test_stage1_false_positive_rate_on_tsrv_path` を `xfail(strict=True)` として実測固定した。TSRV 分岐を実際に通ることを別テストで担保している。
+- **要裁定**: (a) TSRV 用の帰無分布を §4.4 に追加する／(b) DEGRADED 経路ではジャンプ分離を行わない（§4.4 の適用条件から TSRV を外す）／(c) §4.1-6 に TSRV の `delta_star_sec` を明記する。**§9 段階 5 の凍結前に必要**。
+- **裁定（2026-07-30・ユーザー承認）**: 案 (b) と (c) を採用。§4.4 の適用条件を `measure_id = "RV"` のみへ改め（`TSRV` は `RRANGE`/`PARK` と同じく `C_t = V_t` / `J_t = 0` / `jump_flag = False` へ縮退）、あわせて §4.1-6 の `DEGRADED` 行へ `delta_star_sec = 300` を明記した。
+  - 理由: 案 (a)（TSRV 用の帰無分布を導出）は研究課題であり、仕様凍結（§9 段階 5）に間に合わない。誤検出率 13.57%／16.79% は「ジャンプ検定が機能していない」水準であり、機能しない検定を通すより実行しない方が害が小さい。
+- **検証**: `xfail(strict)` を解除し、TSRV 経路の `jump_flag` 率が **0.0%** であること、および測定量レベルで `C_t = V_t` / `J_t = 0` が成立することを固定した（TSRV 分岐を実際に通ることも同テストで担保）。
+
+## ISSUE-216: [仕様と因果性の矛盾] CVFE §4.7-1 のギャップ判定は当該バーのティック時刻を要する（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: 仕様 §4 柱書は「バー `t` の `σ̂_t` を算出する際、参照可能な情報は `bar_edges[t]` より厳密に前のティックに限る」と定める。しかし §4.7-1 の第 2 条件は「**バー t の最初のティック時刻** − バー t−1 の最後のティック時刻」を用いる。`t_first ∈ [bar_edges[t], bar_edges[t+1])` であるから、この参照は柱書の制限を満たさない。
+- **帰結**: `σ̂_t` は `bar_edges[t]` の時点では確定できず、当該バーの最初のティックが到着するまで待つ必要がある。リアルタイム運用では「バー開始と同時に `σ̂_t` を得る」ことができない。バンド構築（CEB）側の利用形態に影響する。
+- **対応**: 仕様の式をそのまま適用し、`tests/test_causality.py` の docstring に事実を明記した。
+- **要裁定**: 第 2 条件を「バー t−1 の最後のティック時刻 と `bar_edges[t]` の差」へ改めるか、柱書に例外を明記するか。
+- **関連**: ISSUE-209（同じ §4.7-1 の `delta_star_sec = 0` 問題）。
+- **裁定（2026-07-30・ユーザー承認）**: 条件 2 の被減数を「バー `t` の最初のティック時刻」から **`bar_edges[t]`** へ改めた（§4.7-1）。柱書に例外を設ける案は採らない（因果律は本仕様の設計原理であり、例外を認めるとリアルタイム運用と CEB 側の利用形態が仕様から読めなくなる）。
+  - `bar_edges[t]` は入力として既知、`t_last_prev` はバー `t−1` の確定値であるため、判定はバー開始時点で確定する。`t_first ≥ bar_edges[t]` であるから判定は「ギャップと認めにくくなる」方向へのみ動く。
+- **副次的影響（テスト基盤）**: ギャップを作る操作子が「翌バーの寄り遅れ」から「前バーの早仕舞い」へ変わるため、合成フィクスチャに `early_close_bars` を追加した。
+- **検証**: `t_first` の値・欠損に依らず判定が一定であることを直接固定するテストを追加。
+
+## ISSUE-217: [仕様の曖昧性] CVFE §9 段階 1 の「5σ ジャンプ」の σ の尺度が未定義（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: 仕様 §9 段階 1 は「既知の大きさのジャンプ（`5σ`）を注入したバーの `jump_flag` 検出率が 90% 以上」を求めるが、`σ` の尺度を定義していない。「バー全体の σ（積分ボラティリティの平方根）」と「1 サンプル収益の σ」では 2 桁近く異なる。
+- **採用した解釈**: バー全体の σ の 5 倍（ジャンプ検定文献の慣行と一致）。この解釈での実測検出率は 100%（2,000 バー・n=1440・シード 22）で合格。
+- **要裁定**: §9 段階 1 に尺度の定義を追記する。
+- **関連**: ISSUE-206（§9 段階 2 の `ω/σ` にも同種の尺度未定義がある）。
+- **裁定（2026-07-30・ユーザー承認）**: **バー全体の σ（積分ボラティリティの平方根）**を §9 段階 1 に明記した（ジャンプ検定文献の慣行と一致。この解釈での実測検出率は 100%）。
+
+## ISSUE-218: [仕様と実装経路の乖離] CVFE のチャート UI 経路はティックを受け取れず PARK 縮退で動作する（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: `CVFE_spec_v1.0.md` §3.1 は入力を `ticks`（`(K,2)` の `[unix_time_sec, mid_price]`）と定めるが、`indicator_ui` の計算経路（`call_binding._TABLE` → `add_*(chart, df, ...)`）が渡せるのは **OHLC の DataFrame** のみである。したがって §4.1 の気配品質診断（`RV̄(Δ)` / `ω̂²` / `freeze_ratio` / `S`）は実行できない。
+- **現状の動作**: 仕様 §4.1-6 が「高頻度データを使用しない」場合の縮退先として定める `quality_gate = "FAIL"` / `measure_id = "PARK"` をそのまま採用する（`indigators/cvfe/src/ohlc.py`）。§4.3 の `PARK`（`PK_t = (ln H − ln L)²/(4 ln 2)`）は高値・安値のみで算出できるため成立する。測定量より下流（§4.4〜§4.8）は測定量に依存しないため `engine` の関数をそのまま再利用しており、UI 用の別実装は持たない。
+- **精度への影響（仕様 §7-6・附録 A）**: `Var(ln σ̂)` は `PARK` 0.08575 に対し `RV`（288 本）0.00174 で **49.3 倍の効率差**がある。本仕様が測定量の高頻度化を設計原理 P1 に掲げた根拠そのものが、UI 経路では効かない。
+- **実測（2026-07-29・実 UI・ライブ 8000・NI225 5 分足）**: 指標一覧から `cvfe` を追加 → 別 pane に σ̂ / σ̂_OC / σ̂_CO の 3 系列が描画され、レジェンドに `cvfe 0.093 0.093 0`（% 表示）を確認。コンソールエラー 0 件。再読込後も復元される。
+- **恒久対策の選択肢（要裁定）**:
+  1. `indicator_ui` の計算経路にティック供給口を新設する（`data/marketdata/ticks/**/JP225_ticks.parquet` が既に存在する）。**共有ベースの変更**であり影響範囲の評価が必要。
+  2. UI 表示は PARK 縮退のままとし、高精度が要る用途（CEB v1.1 への `sigma_hat` 供給）はバッチ経路（`compute_cvfe`）に限定すると仕様へ明記する。
+  3. 仕様 §3.1 の入力に OHLC 経路を第 2 の正式入力として追加する。
+- **関連**: ISSUE-209（`delta_star_sec = 0` のギャップ判定）／仕様 §10 TBD-7（適用時間足）。
+- **裁定（2026-07-30・ユーザー承認）**: 選択肢 2。**UI 表示は PARK 縮退のままとし、精度を要する用途はバッチ経路に限定する**旨を §3.1 へ正式に明記した。
+  - 理由: UI 表示は概形把握が目的で 49.3 倍の効率差を必要としない。選択肢 1（ティック供給口の新設）は `call_binding` の共有シグネチャ変更を伴い 21 指標パッケージ全体へ波及する。選択肢 3（OHLC を第 2 の正式入力にする）は設計原理 P1（測定量を高頻度データへ移行する）と正面から衝突し §2 の改訂まで必要になる。
+  - 明記した内容: OHLC しか渡せない経路は §4.1-6 の FAIL 行に沿って `quality_gate = "FAIL"` / `measure_id = "PARK"` へ縮退する。`sigma_hat` を CEB v1.1 へ供給する用途は `compute_cvfe`（バッチ経路）を用いる。
+- **検証**: 実 UI（8001）で cvfe を追加 → 描画・コンソールエラー 0 件を再確認。
+
+## ISSUE-219: [不具合・再現済み] common.module_loader が exec 失敗モジュールをキャッシュし、2 回目以降に壊れたモジュールを配布する（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 起票・SOLID 全体監査で検出・**本エージェントが独立再現**）
+- **事象**: `common/module_loader.py:69-79` の `_exec_into_sys_modules` は `finally` で `_LOADING` を落とすが、`exec_module` が例外を送出した場合でも `sys.modules[name]` に**半構築のモジュールが残る**。以降は `_cached_ready`（:59-66）が「exec 完了済み」と判定して当該モジュールを返すため、2 回目以降の呼び出しは**例外を出さずに壊れたモジュールを配布する**。
+- **実測（2026-07-29・再現コード）**:
+  ```
+  boom.py = "VALUE = 1 / raise RuntimeError('exec 失敗') / VALUE = 2"
+  1 回目: RuntimeError: exec 失敗
+  2 回目: 例外なし → VALUE=1        ← 壊れたモジュールを配布
+  sys.modules に残存: True
+  参考 CPython 標準 import: 1 回目 RuntimeError / 2 回目も RuntimeError（毎回失敗）
+  ```
+  CPython は import 失敗時に `sys.modules` から削除するため、本ローダは**標準機構と挙動が乖離**している。
+- **影響**: 指標 src の動的ロード（`ma_marod` / `btlm_trail_marod` の参照実装解決、`call_binding._load_src_package`）で src に構文誤り以外の実行時例外があると、初回だけエラーになり以降は「一部だけ定義された」モジュールで計算が進む。**沈黙した誤計算**になりうる。
+- **既知性**: ISSUE-185 は「ロック外二重チェックによる半構築露出（並行性）」であり、本件は exec 失敗時のキャッシュ汚染で**別欠陥**。
+- **対策案（未実施・要承認）**: `_exec_into_sys_modules` の `except` で `sys.modules.pop(name, None)` してから再送出する（CPython と同一の後始末）。共有プリミティブの変更のため影響範囲の評価を要する。
+- **対応（2026-07-30）**: `_exec_into_sys_modules` に `except BaseException` を追加し、自分が登録した実体のみ `sys.modules` から除去してから再送出する（CPython 標準 import と同一の後始末）。
+- **実測（修正後）**: 1 回目 RuntimeError → 2 回目も RuntimeError（`sys.modules` 残存なし）。修正前は 2 回目が例外なしで `VALUE=1` を返していた。
+- **回帰テスト**: `common/tests/test_module_loader.py` に 3 件追加（キャッシュ汚染なし・`_LOADING` が残らない・成功時のキャッシュは従来どおり）。**検出力を実証**（修正を戻すと失敗）。
+- **⚠ 既存の挙動壁を意図的に更新**: `indicator_ui/api/tests/test_module_loader.py::test_failed_exec_leaves_module_in_sys_modules` は ISSUE-185（ローダ一本化）で「当時の既存挙動を変えていない」ことを固定した壁だった。今回その挙動自体が欠陥と判明したため `test_failed_exec_removes_module_from_sys_modules` へ改め、変更理由を docstring に明記した。ISSUE-185 が担保した他の不変条件（相対 import 解決・成功時キャッシュ・並行安全）は維持している。
+
+## ISSUE-220: [不具合・再現済み] インジケーター追加ダイアログの「★ お気に入り」が常に 0 件になる（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 起票・SOLID 全体監査で検出・**本エージェントが実行で再現**）
+- **事象**: `indicator_dialog_controller.js:49-50` が `data-category="__favorites__"` のセンチネルを **category チャネルにも代入**する。
+  ```js
+  this._filter.category = c.dataset.category || null;              // ← '__favorites__' が入る
+  this._filter.favoriteOnly = c.dataset.category === '__favorites__';
+  ```
+  受け手の `facade.js:33` は `d.category.nameKey !== category` で除外するため、どの指標のカテゴリも `'__favorites__'` と一致せず**全件が落ちる**。
+- **実測（2026-07-29・facade を直接実行）**:
+  | 呼び出し | 件数 |
+  |---|---|
+  | 全件（tab=indicator） | 23 |
+  | 現行の呼ばれ方（category='__favorites__' + favoriteOnly=true・お気に入り 2 件登録） | **0 件** |
+  | category=null に直した場合 | 2 件（ma_marod / cvfe） |
+- **既存テストが検出しない理由**: web 919 件は `listForView` を正しい引数（category=null）で呼ぶ単体テストのみで、`IndicatorDialogController` 経由の結線を通していない。
+- **対策案（未実施・要承認）**: `this._filter.category = c.dataset.category === '__favorites__' ? null : (c.dataset.category || null);`。併せて controller 経由の回帰テストを追加する。UI 挙動の変更にあたるため承認を要する。
+- **対応（2026-07-30）**: `indicator_dialog_controller.js` でセンチネルを category チャネルから分離した。`FAVORITES_SENTINEL` を export して index.html の `data-category` と単一情報源にした。
+- **回帰テスト**: `tests/indicator_dialog_favorites.test.js` を新設（controller 経由で facade まで通し 0 件にならないこと・通常カテゴリと「すべて」への非波及）。**検出力を実証**（修正を戻すと失敗）。
+- **実 UI 確認**: お気に入り 2 件登録 → 「★ お気に入り」で **2 件表示**（修正前は 0 件）。
+
+## ISSUE-221: [不具合・確認済み] インジケーター一覧のカテゴリ絞り込みに 2 カテゴリのボタンが無く、24 指標中 12 件が到達不能（2026-07-29）
+- **ステータス**: RESOLVED（2026-07-29 起票・SOLID 全体監査で検出・**本エージェントが実測**）
+- **事象**: カタログ側のカテゴリ（`catalog.js`）と、サイドバーの静的ボタン（`web/index.html:70-74`）が二重定義で乖離している。
+- **実測（2026-07-29）**:
+  | カテゴリ | カタログ登録数 | サイドバーのボタン |
+  |---|---|---|
+  | `cat.technical` | 3 | あり |
+  | `cat.statistics` | 1 | あり |
+  | `cat.volume` | 8 | あり |
+  | `cat.oscillator` | **10** | **なし** |
+  | `cat.band` | **2** | **なし** |
+  ⇒ **24 指標中 12 件**（cvfe を含む）がカテゴリ絞り込みから漏れる。「すべて」と検索からは到達できるため機能全損ではない。
+- **原因**: カテゴリ軸がデータ（`catalog.js`）と静的マークアップ（`index.html`）の 2 箇所に定義され、新カテゴリの指標追加が HTML の同時改変を要する（OCP 違反）。
+- **対策案（未実施・要承認）**: サイドバーを `list()` のカテゴリ集合から動的生成する（テンプレートメニュー `#tpl-menu` が既に採る方式）。UI 変更のため承認を要する。
+- **対応（2026-07-30）**: カテゴリボタンをカタログから動的生成する方式へ変更した。
+  - `usecase/catalog.js` に `categories()` と `CATEGORY_LABELS` を新設（表示名の単一情報源）。
+  - `indicator_controller._renderCategorySideItems()` が bind 前に生成（冪等）。
+  - **配信される 3 ページすべて**から静的ボタンを撤去（`indicator_ui/web` / `unified_ui/web` / `simulator/replay_ui/web`）。当初 `indicator_ui/web` のみ撤去したところ、実際に配信される `unified_ui/web` の取り残しで**サイドバーが二重表示**になり、実 UI 検証で検出した。
+- **回帰テスト**: `tests/catalog_categories.test.js` を新設（全カテゴリ網羅・表示名定義・各カテゴリ 1 件以上到達・合計＝全指標数・**配信 3 ページに直書きが無いこと**）。
+- **実 UI 確認**: サイドバーは すべて / ★お気に入り / テクニカル / **オシレーター** / 統計 / 出来高 / **バンド**（重複なし）。各カテゴリの件数は 4 / 9 / 1 / 7 / 2 で合計 23＝`tab=indicator` の全件。
+
+## ISSUE-222: [設計欠陥] indicator_ui の DatasetPort が無検査キャストで、結線漏れが HTTP 500 へ沈黙劣化する（2026-07-29）
+- **ステータス**: RESOLVED
+- **事象**: `usecase/dataset_port.py:116-123` の `candle_dataset_port()` が `return dataset_port()  # type: ignore[return-value]` と無検査キャストする。`DatasetPort` と `CandleDatasetPort` を ISP で分割したのに注入シームは `set_dataset_port` 1 本しかなく、注入された実装が両インターフェースを満たすか誰も検証しない（LSP/ISP）。
+- **実測（監査エージェント）**: `is_known` / `is_known_timeframe` / `load_dataframe` のみを持つ**合法な `DatasetPort` 実装**を注入すると `isinstance(p, DatasetPort)` は True のまま `/candles` が `internal: 'OnlyDatasetPort' object has no attribute 'load_candles'`（HTTP 500）へ劣化する。
+- **対策案（未実施・要承認）**: `set_candle_dataset_port` を別シームに分離するか、`candle_dataset_port()` で `isinstance(_PORT, CandleSeriesPort)` を検査し、未充足時は ISSUE-183 の未注入時と対称に `RuntimeError` を送出する。
+- **対応（2026-07-30・対策案のうち「面の充足を検査して RuntimeError」を採用）**:
+  - **再現を先に実測**（監査エージェントの報告を鵜呑みにせず自分で確認）: `is_known`/`is_known_timeframe`/`load_dataframe` のみを持つ実装は `isinstance(p, DatasetPort)=True` / `isinstance(p, CandleDatasetPort)=False` で、`candle_dataset_port()` は**例外を出さずそのまま返す**。失敗は `load_candles` 呼び出し時の `AttributeError` まで潜伏し、`framework/server.py:265` の総括 catch が HTTP 500 `internal` へ変換する＝**沈黙劣化を確認**。
+  - `usecase/dataset_port.py` の `candle_dataset_port()` で `isinstance(port, CandleSeriesPort)` を検査し、未充足は結線漏れとして `RuntimeError` を送出する。ISSUE-183 の**未注入時と対称**（欠落を serving 中へ先送りしない）。
+  - シーム分離（`set_candle_dataset_port` 追加）は採らない。注入点が 2 本になると「片方だけ注入」という新しい不整合を生むため、単一シーム＋取得時検査の方が状態空間が小さい。
+- **検証**: 回帰テスト 2 件を追加（`tests/test_dataset_port.py`）。DatasetPort だけを満たす合法実装で `RuntimeError`、既定 gateway では素通し（ガードが過剰でないこと）。**変異注入**で無検査キャストへ戻すと `DID NOT RAISE` で失敗することを確認。`indicator_ui/api` **441 passed**。
+
+## ISSUE-223: [仕様変更] CVFE の表示を別 pane オシレータから価格スケール上のバンドへ変更（2026-07-30）
+- **ステータス**: RESOLVED（2026-07-30 起票・依頼者指示により実施・**正本仕様への反映は未裁定**）
+- **依頼**: 「CVFE をチャートパネルのローソク足にバンドとして表示する仕様に変更」「外れ値だけの POT も追加」（2026-07-30）。
+- **仕様との関係（重要）**: 正本仕様 `CVFE_spec_v1.0.md` §1 スコープは「**含まない**：区間バンドの構築（CEB の責務）」と明記しており、本変更は当該スコープの拡張にあたる。**σ̂ の算出（§4.1〜§4.8）は一切変更していない**。バンドは σ̂ からの表示用派生量であり、CEB v1.1 が定める条件付被覆の保証（LR_ind 等）を持たない。
+- **バンドの定義（新設・表示仕様）**: σ̂_t はバー t が開く前に確定するため、中心を**1 本前の確定終値**に置く。
+  ```
+  中心 mid_t = close_{t−1}
+  上下       = mid_t · exp(± k · σ̂_t)      k は内側 1.0 / 外側 2.0（可変）
+  ```
+  対数収益の標準偏差なので価格への写像は指数（比率）。当該バーの値動きでは動かない（非リペイント・`tests/test_bands.py` で固定）。
+- **外れ値水準の方式（裁定 2026-07-30）**: 当初 POT（一般化パレート分布・Hosking-Wallis PWM）を自作したが、**リポジトリ内に既存の外れ値水準プリミティブが存在する**ことを確認したため破棄し、そちらを無改変参照する方式へ差し替えた。
+  | 選択肢 | 判定 |
+  |---|---|
+  | `common.event_quantiles.outlier_event_quantiles` を参照 | **採用**（ma_marod / btlm_trail_marod と同一規約・episode declustering 済み・表示規約も単一情報源） |
+  | 自作 GPD（POT） | 破棄（repo 初出の新規実装・保守対象増） |
+  | `scipy.stats.genpareto` | 不採用（scipy 未インストール・仕様 §6「numpy のみ」違反・技術スタック変更） |
+  - 調査実測: `genpareto|GPD|peaks_over|pickands|hill_estimator|tail_index|extreme_value` の grep ヒット **0 件**（`.venv`・worktree 除外）。scipy は `ModuleNotFoundError`。
+  - 実装: 標準化残差 `z_t = ln(C_t/C_{t−1})/σ̂_t` → `common.marod_bands.quantile_bands` で因果正常バンド → `outlier_event_quantiles` で典型深度・極端深度 → `mid · exp(evq · σ̂_t)` で価格へ写す。表示は `emit_event_quantile_lines` に委譲。
+- **系列（7 本）**: `cvfe_mid` / `cvfe_u1` / `cvfe_l1` / `cvfe_u2` / `cvfe_l2` / `cvfe_evq_{med|ext}_{hi|lo}`。placement は `pane` → `overlay`、カテゴリは `oscillator` → `technical`。
+- **実 UI 検証（2026-07-30・ライブ 8000・NI225 5 分足）**: 価格パネル上に 8 本描画。水準の順序が `ext_lo 61,672 < l2 61,891 < l1 61,958 < 価格 62,015 < u1 62,091 < u2 62,158 < med_hi 62,179 < ext_hi 63,118` となり、外れ値水準が 2σ の外側に出ることを実測で確認。コンソールエラー 0 件。
+- **テスト**: cvfe 116 passed / 4 xfailed、indicator_ui API 438 passed、web 919 passed。
+- **表示形式の追補（2026-07-30・ユーザー指摘「ジグザグで視認性が悪い」）**: バー毎の帯を線で繋ぐことに情報上の意味がほぼ無いことを実測で確認し、**既定を水平ライン（最新水準のみ）へ変更**した。
+  - 恒等式 `Δln(上端) = Δln(mid_t) + k·Δσ̂_t` による分解（jp225_tick 5 分足・有効 3,477 本）:
+    | 成分 | 分散寄与 | 上端との相関 |
+    |---|---|---|
+    | 価格成分 `Δln(close_{t−1})` | **100.4%** | **0.924** |
+    | σ̂ 成分 `k·Δσ̂_t` | 15.3% | 0.191 |
+  - ⇒ 線の傾きが示すのは価格そのものの動きで、σ̂ の情報は帯の**幅**にしかない。加えて各点は別バーに対する独立した 1 期先予測区間であり、点間を結ぶ線分に対応する量が存在しない（移動平均のように連続推移する量を繋ぐのとは異なる）。
+  - 中間案として「最新水準のみをチャート幅いっぱいの水平線で 1 組」も試したが、**今日の水準を過去バーへ引き延ばすことになり誤読を招く**（過去バーには当時の別の水準があった）とのユーザー指摘により棄却。
+  - **最終形（ユーザー裁定 2026-07-30）**: 各バーの水準を「**そのバーの幅だけの短い水平ダッシュ**」として並べる。バー間を繋がないので傾きが生じず、ドットより接点が読める。`display_mode` は `dashes`（既定）／`bands`（線で繋ぐ・検証用）。
+  - **共有描画基盤への新系列種別 `level_dash` を追加**（ユーザー承認済み・下記）。
+- **共有描画基盤の拡張（`level_dash`・ユーザー承認 2026-07-30）**: 既存 3 種別（`line` / `histogram` / `horizontal_line`）はいずれも 1 時刻 1 値で、バー幅の水平ダッシュを表現できない。同値 4 値の Candlestick（同事＝実体が潰れて水平線 1 本・幅はローソク足と一致）で描く種別を追加した。
+  | 層 | ファイル | 変更 |
+  |---|---|---|
+  | domain | `domain_models.js` | `SeriesKind.LEVEL_DASH` |
+  | domain | `series_kind.js` | 能力台帳へ 1 エントリ（設計上の拡張点） |
+  | adapter | `series_render_router.js` | 経路 `level_dash` を追加 |
+  | adapter | `chart_renderer.js` | `renderLevelDash` |
+  | adapter | `series_drawer.js` | 系列定義に CandlestickSeries ＋ `{time,value}` → 同値 4 値の展開 |
+  | api | `fake_chart.py` | `create_level_dash` |
+  - **payload 契約は変更していない**。back は既存の `{time, value}` のまま出し、OHLC への展開は表示層の 1 箇所だけで行う（既存 3 種別へ非波及）。
+  - 既存 3 種別の 1:1 回帰壁（`tests/series_kind.test.js` の legacy 比較）は**緩めずに維持**し、新種別は別テストで能力値を明示固定した。
+  - `tailUpdatable=false`（末尾差分更新は `{time,value}` を `series.update` へ渡す経路で Candlestick と形が合わないため full 再描画のみ）。
+  - 旧 duck type（`create_level_dash` を持たない chart）では `create_line` へ落ちる後方互換を実装しテストで固定。
+- **主張の強さの調整（ユーザー指摘「水平ダッシュが主張しすぎ」2026-07-30）**: ダッシュの**幅**はローソク足幅へ自動追従するため調整できない。調整可能な軸は**不透明度**である（ユーザー了承）。
+  - `dash_opacity` パラメータを新設（既定 **0.5**＝従来の半分・範囲 0.05〜1.0）。全ダッシュ系列の色 alpha に一括で掛かる。
+  - 色は `scale_alpha()`（cvfe ローカル）で派生させる。**共有定数 `common.event_quantiles.EVQ_COLOR` は書き換えない**（他 2 指標へ非波及）。書式は `rgba()` / `rgb()` に対応し、解釈できない書式は素通しする。テストで固定。
+- **実 UI 検証（2026-07-30・ライブ 8000・NI225 5 分足）**: 各バーにローソク足幅の水平ダッシュが並ぶことを `barSpacing=6` へ拡大して目視確認（既定の `barSpacing=0.5` ではローソク自体が 0.5px 幅のため点に見える）。`dash_opacity=0.5` で価格ローソクの視認性を損なわないことを確認。コンソールエラー 0 件。web 920 passed / API 438 passed / cvfe 124 passed。
+- **要裁定**: 正本仕様 §1 のスコープ記述（バンド構築は CEB の責務）を改訂するか、本バンドを「表示専用の派生量であり CEB の被覆保証を持たない」と仕様へ明記するか。
+
+
+## ISSUE-224: [重大不具合・再現済み] 日足で σ̂ が 1264% と発散する（PARK=0 バーの C_FLOOR クリップが Jensen 補正を暴走させる）（2026-07-30）
+- **ステータス**: RESOLVED（2026-07-30 起票・バンド表示の検討中に検出・**本エージェントが原因まで特定**）
+- **事象**: OHLC 経路（PARK 縮退）を日足へ適用すると `σ̂` の中央値が **12.64（＝日次 1264%）** になる。同じデータの Parkinson σ 中央値は 0.0087（0.87%）で測定量そのものは正しく、**HAR 予測段で発散している**。
+- **実測（2026-07-30・jp225_tick_1D・直近 4,000 本）**:
+  ```
+  σ̂ 中央値 12.6395   最大 872.86        ← 異常
+  Parkinson σ 中央値 0.0087（0.87%）    ← 正常
+  har_resid_var s² = 65.79
+  har_coef = [11.58, 0.373, -0.251, 2.389, 0.0, -19.62]
+  ```
+- **原因（連鎖）**:
+  1. 日足 3,685 本のうち **71 本（1.9%）が high == low**（無取引日・単一プリントの日）→ `PK_t = (ln H − ln L)²/(4 ln 2) = 0`。
+  2. 仕様 §4.5-1 が「`C_t < 1e-16` は `1e-16` にクリップ」と定めるため `ln C = −36.84` になる。他のバーの `ln C` は中央値 −9.49 なので、この 71 本が極端な外れ値になる。
+  3. `ln C` の分散が **1.313 →（クリップ行を含めると）15.485** へ跳ね上がり、HAR の残差分散 `s²` が 65.79 に膨張。
+  4. 仕様 §4.6 の Jensen 補正 `σ̂ = exp(ŷ/2 + s²/8)` で `exp(65.79/8) = exp(8.22) ≈ 3,720 倍` が乗る。
+  ⇒ **仕様が定める 2 つの規定（§4.5-1 のクリップ・§4.6 の Jensen 補正）の組み合わせが、レンジ 0 のバーが存在する系列で破綻する。**
+- **時間足による差**: 5 分足では high == low が 4,000 本中 **3 本**のみで実害が小さい（実測 σ̂ ≈ 0.093% で妥当）。**バー長が長いほど無取引日が混入しやすく、日足以上で顕在化する**。仕様 §10 TBD-7（適用時間足）と直結する。
+- **対策案（未実施・要承認）**:
+  1. `PK_t = 0`（レンジ 0）のバーを §3.3 E06 と同様に**無効バー扱い**にし、測定量にも学習標本にも入れない。レンジ 0 のバーはボラティリティの情報を持たないため、これが最も抜本的。
+  2. `C_FLOOR` を系列依存（例: 有効 `C` の下側 0.1% 分位）にする。仕様 §4.5-1 の固定値 1e-16 の改訂が必要。
+  3. `s²` を外れ値耐性のある推定量（MAD ベース等）にする。仕様 §4.5-5 の改訂が必要。
+  いずれも仕様本文の改訂を伴うため裁定を要する。
+- **関連**: ISSUE-218（UI 経路が PARK 縮退である件）／仕様 §10 TBD-7（適用時間足）。
+- **対応（2026-07-30・ユーザー承認済み・案 1 を採用）**: `measures_from_ohlc` でレンジ 0 のバー（`PK_t = 0`）を **無効バー**（`valid=False`）にした。仕様 §3.3 E06（ティック < 2 のバーを `available=False` とし処理は継続）と同じ扱い。測定量にも学習標本にも入らない。
+- **実測（修正後）**:
+  | 時間足 | σ̂ 中央値 | s² | Parkinson σ 中央値 |
+  |---|---|---|---|
+  | 日足 | **0.9682%**（修正前 1264%） | **0.572**（修正前 65.79） | 0.8823% |
+  | 5 分足 | 0.0976%（修正前 0.0977%＝実質不変） | 0.719 | 0.0909% |
+- **回帰テスト**: `tests/test_ohlc.py` を新設（レンジ 0 バーの無効化・σ̂ が発散しないこと・レンジ 0 が無い系列で挙動不変）。
+- **残る要裁定**: 仕様 §3.3 E06 の定義（ティック < 2）に「レンジ 0」を加える追記。実装は先行して是正済み。
+
+## ISSUE-225: [UX] パラメータの命名が概念単位で統一されておらず認知負荷が高い（2026-07-30）
+- **ステータス**: RESOLVED（2026-07-30 起票・同日是正・ユーザー承認済み）
+- **事象**: 同一概念「直近 N 本のローリング窓」に対し、**6 通りの呼び名**が混在していた。加えて cvfe ではパラメータ名と系列名が対応せず、設定項目とチャート上の線を突き合わせられない状態だった。
+  | 旧ラベル | 該当 |
+  |---|---|
+  | （ラベルなし） | `maxbars` ×3・`empirical_n`・`atr_period` |
+  | 期間 | `length` ×2・`smoothing_length` |
+  | 分位の窓 | `window_n` ×2 |
+  | バンド内実績率の本数 | `n_cov` |
+  | 標準化窓 W（直近本数） | `window`（profit_* 共有） |
+  | 学習本数 | `n_har` |
+- **ユーザーの指摘（2026-07-30）**: 「認知負荷が重たくなっている原因が分かった。概念は同じだが、命名が統一されていない点だ」「そもそも、なぜ『窓』?」「とにかく認知負荷を軽くしろ」。
+- **是正 1（命名の統一）**: 「**移動期間**」へ一本化した。`window` の直訳「窓」は字面から実体を推測できないため廃止。同一指標に窓が 2 つ以上ある場合のみ用途を括弧で付す。
+  - 「回帰移動期間」で全部を統一する案は**実測により不採用**。窓 13 個のうち回帰は 4 個（`maxbars` ×3・`n_har`）で、移動平均 3・経験分位 3・その他 3。移動平均の窓を「回帰」と呼ぶと別の誤解を生む。
+  - 結果: 移動期間 ×3 / 移動期間（分位）×3 / 移動期間（回帰）×2 / 移動期間（平均）×2 / 移動期間（実績率）×1 / 移動期間（平滑）×1。残る 1 件は `profit_*` の共有ビルダー既定で、呼び出し側が `mfi_period` / `fast` / `slow` と個別に読める名前を持つため対象外。
+- **是正 2（cvfe のパラメータ削減）**: 公開パラメータを **14 → 6** に削減した。削った項目はいずれも「既定から動かす根拠が無い」ことを実測または仕様で確認済み。
+  | 内部固定にした項目 | 根拠 |
+  |---|---|
+  | `refit_every=0` | 実測: 1/20/100 いずれも凍結に対し DM 検定で**有意差なし**（p=0.94〜0.97）。毎バー再学習は約 200 倍遅い（0.09s → 17.79s・2,600 本） |
+  | `lam_gap=0.97` | 窓開けが無い時間足では効果ゼロ。既定から動かす根拠が仕様 §10 に無い |
+  | `q_low` / `q_high` / `window_n` / `q_out` / `k_events` / `event_agg` | 外れ値判定の内部しきい値。**対応する線を持たない**のに「正常バンド」と命名しており混乱の主因だった |
+  | `show_outer` / `show_mid` | σ線②は主要 2 本の一方なので常時表示。中心線は既定どおり非表示 |
+- **是正 3（名前と系列の対応）**: 残した項目のラベルを、動かす系列名と 1:1 で対応させた（`σ線①の倍率` → `cvfe_u1`/`cvfe_l1` 等）。ツールチップに系列名と実測到達率を明記した。
+- **検証**: 実 UI（ライブ 8000）で設定ダイアログが 6 項目になることを確認。コンソールエラー 0 件。web 920 passed / API 438 passed / cvfe 124 passed / ma_marod 43 / btlm_trail 31 / btlm_trail_marod 30 / moving_averages 61。
+- **是正 4（色設定の重複解消・2026-07-30）**: パラメータータブの `STYLE` グループにあった `color` を削除した。系列色は「スタイル」タブが**系列ごとに 8 件**持っており、同じ設定が 2 箇所に存在していた。パラメータは **6 → 5** 個になり、パラメーター タブから `STYLE` グループ自体が消えた。初期色は `add_cvfe` の既定値を用いる。
+  - 実 UI 確認: パラメーター タブは `CALC`（移動期間）と `DISPLAY`（σ線①②の倍率・外れ値線表示・表示形式・ダッシュの濃さ）のみ。色は「スタイル」タブの 8 系列に一本化。
+  - **他指標にも同じ重複が残っている**（`tgp_btlm` / `btlm_trail` / `btlm_trail_marod` / `ma_marod` に `color`、`price_range_power` に `bull_color` / `bear_color`）。本件は cvfe のみの指示のため未着手。要裁定。
+- **恒久ルール化**: 本件の教訓をメモリ `minimize-cognitive-load` へ記録した（UI・命名・パラメータは削る判断を先に行う／同一概念に複数の呼び名を作らない／比喩を持ち込まない／根拠のない項目は出さない）。
+
+## ISSUE-226: [不具合・再現済み] cvfe のスタイルで色を変更しても反映されない（2026-07-30）
+- **ステータス**: RESOLVED（2026-07-30 起票・同日修正・実 UI 検証済み）
+- **事象**: 設定ダイアログの「スタイル」タブで cvfe の系列色を変更しても、チャート上の色が変わらない。エラーは出ず黙って無視される。
+- **原因**: ISSUE-223 で追加した系列種別 `level_dash` は `CandlestickSeries` で描画するが、**CandlestickSeries に `color` オプションは存在しない**（着色は `upColor` / `downColor` / `borderUpColor` / `borderDownColor` / `wickUpColor` / `wickDownColor` の 6 経路）。
+  - 生成時（`series_drawer._renderSeries`）は 6 経路へ単色を複製していた。
+  - 一方 変更時（`series_drawer.applySeriesStyle:347`）は `{ color: meta.color }` を `applyOptions` へ渡すだけで、CandlestickSeries はこれを無視していた。
+  - ⇒ **生成時と変更時で色の写像が乖離**していたことが原因。
+- **修正**: 色写像を `_levelDashColors(color)` として抽出し、**生成時と変更時の唯一の写像点**にした。乖離が再発しない構造にしてある。
+- **検証**:
+  - 回帰テスト 4 件を `tests/chart_renderer_series_styles.test.js` へ追加（生成時の 6 経路複製・同値 4 値への展開・`applySeriesStyle` の 6 経路反映・可視性・line 系列への非波及）。
+  - **検出力を実証**: 修正を戻すと `applySeriesStyle の色が 6 経路すべてへ反映される（回帰）` が失敗することを確認。
+  - 実 UI（ライブ 8000・NI225 5 分足）で `cvfe_u1` を緑へ変更 → チャートのダッシュと価格軸ラベルが即時に緑へ変わることを確認。元の色へ戻して終了。
+  - web 924 passed / API 438 passed / cvfe 124 passed。
+- **関連**: ISSUE-223（`level_dash` の追加）。
+
+## ISSUE-227: [計測完了] 共変量 POT 設計の必須ゲート 1 — 極値指標 θ の実測（2026-07-31）
+- **重大度**: —（設計判断の前提となる実測）
+- **ステータス**: RESOLVED
+- **背景**: 「RSI 水準を共変量とするリターン裾への POT」設計に対し、着手前の必須ゲートとして θ（極値指標）の実測が要求された。θ < 0.2 なら有効標本不足で設計自体が成立しない。
+- **道具**: `common/extremal_index.py` を新設（Ferro & Segers 2003, JRSS-B 65(2) の intervals 推定量）。閾値選択や宣言クラスタリングのパラメータを要さない。
+  - **道具の妥当性を先に検証**: θ が解析的に既知の ARMAX（θ = 1 − α）で α = 0 / 0.3 / 0.5 / 0.8 を全て ±0.05 以内で回復。iid で θ ≈ 1。単体テスト 14 件。
+- **結果 1（リターン裾・ゲート対象）**: jp225_tick の対数リターン、6 時間足 × 4 閾値 × 上下側の **48 条件すべてで θ ≥ 0.2**。
+  - θ̂ の範囲 **0.281 〜 0.736**。時間足が長いほど θ は大きい（1m ≈ 0.31–0.39 → 1D ≈ 0.37–0.71）＝高頻度ほどクラスタ化が強い。
+  - **ゲート 1 は通過**。ただし最疎条件（15m/4h の q=0.99 上側）は CI 下限が 0.2 を割り込む。当該条件で設計を組むなら再検討が要る。
+- **結果 2（RSI-14 自体・「未測定」への回答）**: 同じ推定量で RSI 系列の超過を測ると **θ̂ = 0.107 〜 0.269** で、16 条件中 14 条件が **0.2 未満**。
+  - Wilder 平滑（実質 α = 1/14 の EWMA）による強いクラスタ化が実測で確認された。RSI 自体への POT が棄却された理由 3（系列依存による有効標本の崩壊）は**数値的に裏付けられる**。
+  - 例: 1h の RSI > 70 は超過 6,303 件に対し**有効クラスタ 675**（1/9 以下）。素の GPD 当てはめは標準誤差を約 3 倍過小評価することになる。
+- **⚠ 途中で犯した誤りと是正（重要）**: 最初 CI を stationary bootstrap の**ブロック長 50** で出したところ、**点推定が CI の外**に出た（例 1m q=0.90 下側: θ̂ = 0.341 に対し CI [0.438, 0.532]）。ブロック長がクラスタ規模より短いと依存が壊れ、θ̂ が**独立側（1）へ系統的に偏る**ためである。ブロック長を変えて偏りを実測し是正した:
+  | ブロック長 | 10 | 50 | 200 | 1000 | 5000 | 20000 |
+  |---|---|---|---|---|---|---|
+  | 点推定との差 | +0.359 | +0.146 | +0.048 | +0.013 | +0.006 | +0.002 |
+  - 是正後（block = N/20）は全条件で偏り < 0.04（超過 37 件の最疎条件を除く）。**この誤りはゲートを甘く見せる方向**（θ を大きく見せる）だったため、放置すると設計を誤って通していた。
+- **未実施**: ゲート 2（ForwardStop による閾値選択の自動化）、ゲート 3（検出力計算）。ゲート 1 が通ったため次に進める状態にある。
+
+## ISSUE-228: [計測完了] 共変量 POT 設計のゲート 2（自動閾値選択）・ゲート 3（検出力）（2026-07-31）
+- **重大度**: —（設計判断の前提となる実測）
+- **ステータス**: RESOLVED
+- **道具（新設）**: `common/gpd.py`（GPD の MLE・Anderson–Darling 適合度・パラメトリック
+  ブートストラップ p 値・ForwardStop・共変量 GPD・尤度比検定・検出力）。scipy 非依存。
+  `common/extremal_index.py` に intervals declustering を追加（θ̂ と整合する宣言方式）。
+  - **道具の妥当性を先に検証**: GPD MLE は既知 (ξ, β) = (0, 1) / (0.2, 2) / (0.4, 0.5) / (−0.15, 1.5) を
+    回復。適合度検定は真の GPD を 20 回中 ≤4 回しか棄却せず、対数正規は棄却。共変量 GPD は
+    既知 γ1 = 0.35・ξ = 0.20 を回復。単体テスト計 81 件。
+- **ゲート 2（ForwardStop・α = 0.05・宣言クラスタリング後の負リターン超過）**:
+  | tf | 採択 q | 閾値 u | 棄却数 | クラスタ C | θ̂ | ξ̂ | β̂ |
+  |---|---|---|---|---|---|---|---|
+  | 5m | 0.75 | −0.00047 | 3 | 8,375 | 0.670 | +0.160 | 0.00071 |
+  | 1h | 0.75 | −0.00108 | 3 | 10,070 | 0.806 | +0.197 | 0.00175 |
+  | 4h | 0.70 | −0.00147 | 2 | 5,606 | 0.886 | +0.169 | 0.00343 |
+  | 1D | 0.70 | −0.00448 | 2 | 1,030 | 0.931 | +0.106 | 0.00860 |
+  - ξ̂ は **+0.10〜+0.24 で閾値によらず安定**（重い裾・Fréchet MDA）。GPD 近似が広い範囲で成立する典型的な兆候。
+  - **⚠ 自分の初回実行が誤り**: 最初 q ∈ [0.90, 0.99] の格子で回したところ **ForwardStop が一度も棄却せず**、格子の下端 q=0.90 がそのまま採択された。これは選択ではなく**格子の人工物**である。下方へ延長すると q ≤ 0.70 が棄却され（p = 0.005〜0.035）、採択は q = 0.75 に移った。閾値選択を自動化する目的は「都合の良い閾値を選んだ」批判に答えることなので、格子の下端が binding のまま報告していれば目的を果たさなかった。
+- **ゲート 3（検出力・α = 0.05・実データの標本数と RSI 分布をそのまま使用）**:
+  効果量 γ1 ＝「RSI が 1SD 上がったときの log β の変化」。
+  | tf | C | γ1=0（size） | 0.05 | 0.10 | 0.15 | 80% 到達 |
+  |---|---|---|---|---|---|---|
+  | 5m | 8,372 | 5.5% | 99.5% | 100% | 100% | **0.05** |
+  | 1h | 10,094 | 5.5% | 99.5% | 100% | 100% | **0.05** |
+  | 4h | 5,602 | 3.5% | 88.5% | 100% | 100% | **0.05** |
+  | 1D | 1,026 | 6.0% | 32.0% | 86.5% | 99.0% | **0.10** |
+  - **γ1 = 0 での棄却率が 3.5〜6.0%＝名目 5% と整合**。検定が正しく size を保つことを実測で確認した（機構全体の妥当性検査を兼ねる）。
+- **ゲート 3（増分版・σ̂ を統制）**: 指摘どおり「単独の γ1 ≠ 0 では不十分」であるため、`log β = γ0 + γ2 log σ̂ + γ1 RSI` として RSI の増分を検定する構成でも測った。σ̂ は CVFE（OHLC 経路）。
+  | tf | C | corr(log σ̂, RSI) | γ1=0 | 0.05 | 0.10 | 0.15 | 80% 到達 |
+  |---|---|---|---|---|---|---|---|
+  | 1h | 4,325 | −0.131 | 8.0% | 82.0% | 100% | 100% | **0.05** |
+  | 1D | 910 | −0.329 | 5.5% | 28.0% | 75.0% | 97.5% | **0.15** |
+  - σ̂ と RSI の相関は弱い（1h で −0.13）ため、統制しても 1h の検出力はほぼ落ちない。1D は相関が強く（−0.33）標本も小さいため、80% 到達が 0.10 → 0.15 へ悪化する。
+- **判定**: ゲート 2・3 ともに通過。**1h が最良の設計点**（C = 10,070／増分検定でも γ1 = 0.05 で 80%）。1D は増分検定では γ1 = 0.15 以上でないと検出できず、事前登録する効果量をそれ未満に置くなら 1D 単独では不足。
+- **未実施**: 本検定の実行（観測 γ̂1 の推定と LR 検定）、SPA による無条件経験分位・分位点回帰との比較、Kupiec / Christoffersen 校正。
+
+## ISSUE-229: [事前登録] RSI を共変量とするリターン裾 POT の主検定（2026-08-01・**結果取得前に確定**）
+- **重大度**: —（検定の事前登録。以後この内容を変更しない）
+- **ステータス**: RESOLVED（実行完了・判定規則 1 により設計を棄却）
+- **なぜ事前登録するか**: 勝敗基準を先に固定しないと、結果を見てから解釈を作れてしまう。本エントリは**主検定の実行前**にコミットする（順序は git 履歴で検証可能）。
+
+### 主検定（1 本のみ）
+| 項目 | 確定値 |
+|---|---|
+| 対象 | jp225_tick **1h**・直近 **20,000 本**（CVFE σ̂ の計算コストによる。ゲート 3 増分版と同一窓） |
+| 閾値 | **q = 0.75**（下側・ゲート 2 の ForwardStop 採択値 u = −0.00108） |
+| 独立化 | intervals declustering（θ̂ で C を決定）→ クラスタ極値のみ使用 |
+| モデル | `log β = γ₀ + γ₂ log σ̂ + γ₁ · RSI`（ξ 一定・σ̂ は CVFE OHLC 経路・RSI-14 は 1SD 標準化） |
+| 帰無仮説 | **H₀: γ₁ = 0**（σ̂ を統制したうえで RSI に裾情報なし） |
+| 検定 | 尤度比検定・自由度 1・**α = 0.05** |
+| 最小検出効果量 | **γ₁ = 0.05**（RSI が 1SD 上がると β が +5.1%）。ゲート 3 で検出力 **82%** を実測済み |
+| 標本 | C ≈ 4,325 クラスタ（ゲート 3 増分版の実測値） |
+
+### 感度分析（主検定に付随・2 本のみ）
+- **5m・4h** の同一構成。**Bonferroni 補正**（各 α = 0.05 / 2 = 0.025）。
+- **1D は主検定・感度分析から除外**する。増分検定で 80% 検出力に γ₁ ≥ 0.15 を要し、事前登録した効果量 0.05 に対して検出力不足であるため（ゲート 3 実測）。検出力不足の検定を並べると、非有意を「効果なし」と誤読する余地を残す。
+
+### 判定規則（結果を見る前に固定）
+1. **主検定が非有意（p ≥ 0.05）→ 設計を棄却して終了**。RSI は σ̂ を超える増分情報を持たない、が結論。SPA も校正も実施しない。
+2. **主検定が有意 → 対抗馬比較へ進む**。GPD-共変量 / 無条件経験分位 / 分位点回帰 を SPA（Hansen 2005）で比較し、GPD が経験分位を上回らなければ **POT は複雑性の純増として棄却**する。
+3. 2 を通過した場合にのみ Kupiec / Christoffersen 校正を実施する。
+
+### 実行結果（2026-08-01・事前登録どおり）
+
+**主検定（1h・q=0.75・C=4,325・θ̂=0.888・ξ̂=+0.137）**
+| 係数 | 推定値 |
+|---|---|
+| γ̂₀（切片） | −6.3194 |
+| γ̂₂（log σ̂） | **+0.3130** |
+| γ̂₁（RSI） | **−0.0299** |
+
+- LR 統計量 = 2.9941、**p = 0.0836** → **α = 0.05 で棄却できず（非有意）**。
+- **判定規則 1 を適用し、設計を棄却して終了する。SPA も Kupiec / Christoffersen 校正も実施しない。**
+- 観測効果量 |γ̂₁| = 0.030 は事前登録した最小検出効果量 0.05 を**下回る**。よって本結果は「データが足りない」ではなく「**登録した水準の効果は無い**」と読むのが正しい。
+
+**感度分析（Bonferroni・各 α = 0.025）**
+| tf | C | γ̂₁ | β への効き | p | 判定 |
+|---|---|---|---|---|---|
+| 5m | 3,549 | −0.0772 | −7.43% | 0.000015 | 有意 |
+| 4h | 4,827 | −0.1210 | −11.39% | < 1e−6 | 有意 |
+
+- 符号は 3 本とも**負で一貫**（RSI が高いほど下落裾のスケールが小さい）。経済的には「直近の強さが続くほど下方テールが薄い」と読める向き。
+- **ただし判定は変えない**。事前登録は 1h を主検定と定めており、感度分析が有意だからと結論を差し替えるのは「結果を見てから解釈を作る」ことそのものである。感度分析は主検定の頑健性を見る補助であって、主検定の代替ではない。
+- なお γ̂₂（log σ̂）は 3 本とも **+0.27〜+0.40 で有意に正**＝ σ̂ は下落裾スケールの説明変数として機能している。RSI が σ̂ を**超える**増分情報を持つか、が本検定の問いであり、1h ではそれが示されなかった。
+
+### この結果を受けて次に取りうる選択肢
+1. **棄却を受け入れて終了**（事前登録どおり）。RSI-共変量 POT は採用しない。
+2. **新規に事前登録し直して再検定**する。感度分析の結果を主検定へ格上げするなら、**同じデータで再検定してはならない**（p ハッキングになる）。4h を主検定とし、**本検定に使っていない期間（OOS）**を新たに確保して登録し直す必要がある。1h の 20,000 本窓は 2017-12 以降であり、それ以前の 4h/1D 期間は未使用のため OOS として確保可能。
+
+## ISSUE-230: [運用事故] `unified_ui/serve.sh` が「既に起動済み」で起動しない（2026-08-01）
+- **重大度**: Medium（ユーザーが起動できない。コードの欠陥ではなく運用手順の破壊）
+- **ステータス**: RESOLVED
+- **事象（ユーザー報告）**: `./unified_ui/serve.sh` で起動しない。
+- **真因（コード回帰ではない・私の作業手順の誤り）**: ISSUE-198 の調査でルータの挙動を A/B するため、**serve.sh 管理下のルータを停止して `python3 router.py` を直接起動**し、そのまま復元しなかった。`serve.sh` は二重起動防止として 8000 の応答を見て「既に起動済みです」と表示し `exit 0` する。すなわち**スクリプトは設計どおりに動いていた**が、8000 を占有していたのが管理外プロセスだったため、ユーザーからは「起動しない」に見えた。
+  - `unified_ui/serve.sh` は新規作成（`3a11ec8`）以降**一度も変更されていない**（`git log` 実測）。「再発」ではない。
+- **併発していた構成の乱れ**: リプレイ core も私が `setsid bash serve.sh 8281` で直接起動しており、`unified_ui/serve.sh` の管理ツリー（親 serve.sh → 各 core serve.sh → watch → router）から外れていた。
+- **復旧（2026-08-01）**: 管理外プロセスを明示 PID で全停止し、`./unified_ui/serve.sh` から正規起動し直した。
+  - 復旧後の構成: `unified_ui/serve.sh` → `indicator_ui/serve.sh 8001` → watch 2 本（`export_jp225_m1 --watch` / `live_tick_watch --stream`）→ `router.py 8000`。8000/8001/8281 すべて 200。
+  - **データの鮮度は劣化していない**: 復元前後とも最新足は `2026-07-31 20:14 UTC`。2026-08-01 は**土曜で市場休場**のため停止は正常（watch ログも `2026-08-01: 0 ticks` で整合）。
+  - 実 UI 確認: チャート描画・指標 3 件・ライブ⇄リプレイ往復・SW 制御下・コンソールエラー 0。
+- **⚠ 作業手順上の反省（再発防止）**: 調査のためにサーバを差し替えるときは、**調査終了時に必ず正規手順（serve.sh）へ戻す**。`python3 router.py` の直接起動は「生起動禁止」の趣旨（データ watch 併走が失われる）にも抵触する。今回は watch が別プロセスで生き残っていたため実害が出なかったが、偶然に依存していた。
+- **`pgrep -f` の落とし穴（今回踏んだ）**: `pgrep -f "serve.sh 8001"` は**自分のシェルのコマンドライン**にも一致し、停止コマンド自身が kill されて失敗した（exit 144）。プロセス停止は明示 PID で行うこと。
+
+## ISSUE-231: [不具合・実測再現] リプレイモードの時間足切替でローソクだけ先に描かれ、指標が遅れて追いつく（2026-08-01）
+- **重大度**: High（リプレイの不変条件「その時点 T のローソクと指標が同時に現れる」の破れ。実測 359ms の中間状態が露出する）
+- **ステータス**: RESOLVED
+- **事象（ユーザー報告）**: リプレイモードで時間足を切り替えると、時間足（ローソク）が再現された後にインジケーターが再現される。同時に再現したい。
+- **再現（実 UI・8000・リプレイモード・指標 3 件＝moving_averages ×2 / cvfe・5m→15m）**:
+
+  | 経過 | 事象 |
+  |---|---|
+  | 0ms | `controller.setTimeframe('15m')`（ライブ経路が先着） |
+  | 24–25ms | 指標系列を空化（`clearInstanceData` ×3） |
+  | 30ms | `renderer.setCandles(1500)` ← **ローソクだけ 15m へ切替・指標は空** |
+  | 389–391ms | 指標描画 ← **359ms 遅れて出現** |
+  | 779–784ms | 同じ切替をリプレイ経路が**もう一度**全実行（二重実行） |
+
+- **切り分け（同一計測）**: バー送り（`rp-next`）は `setCandles`→指標描画が 1–4ms の同一同期ブロックで完了＝**元から同時**。非同時なのは時間足切替のみ。
+- **真因**: 時間足ボタンには共有ベース `IndicatorController.bind()` が張るライブ経路（`controller.setTimeframe`）が既に結線されているのに、`replay.js` も同じ `[data-timeframe]` へ独自リスナ（`setTimeout(..., 60)` → `loadTimeframe`）を追加していた。1 クリックで 2 経路が走り、
+  1. 先着したライブ経路が ISSUE-196 の裁定どおり**ローソク先行**で差し替える（指標は空化され compute 完了後に描画）
+  2. 約 750ms 後にリプレイ経路が同じ切替をやり直す（全再計算の二重実行）
+  となっていた。ライブでは 1. は意図した仕様（切替がローソク描画の遅い指標に律速されない）だが、リプレイでは「リビール範囲のローソクと指標が同時に現れる」ことが不変条件であり、中間状態そのものが仕様違反である。
+- **対策（恒久・応急処置なし）**: 時間足切替の**反映役**（candles 取得 → メイン系列差替え → 全指標再計算）だけを差し替え可能にする seam を共有ベースへ追加し、リプレイ層がそこへ自身の `loadTimeframe` を登録して**単一経路**へ一本化した。
+  - `timeframe_controller.js`: `setApplier(fn)` を追加。`setTimeframe` は反映役があればライブ反映（`_applyLive`）を行わず委譲する。時間足の確定（`_timeframe` 更新・ボタン active 同期・スケールリセット・`uiState` 永続化・購読者通知）と競合ガードは**差し替えても共通のまま**。
+  - `indicator_controller.js`: 薄い委譲 `setTimeframeApplier(applier)` を追加（既存の `setTimeframeObserver` / `setAppliedObserver` と同型の購読スロット。monkey-patch は用いない＝ISSUE-037 の規律を維持）。
+  - `replay.js`: `[data-timeframe]` への独自リスナを撤去し、反映役として `loadTimeframe` を登録。`disable()` で解除・`enable()` で再登録（ライブは未登録＝従来経路のまま **byte 挙動不変**）。
+  - リプレイ経路は `render()` の `recomputeAllApplied({ preRender })` により、ローソク差替えと全指標描画が **await を挟まない同一同期ブロック**で行われる（ISSUE-023 / ISSUE-048 の不変条件をそのまま利用）。
+- **検証（実 UI・同一手順・修正後）**:
+
+  | 指標 | 修正前 | 修正後 |
+  |---|---|---|
+  | ローソク → 指標の間隔 | **359ms** | **13ms**（同一同期ブロック） |
+  | 切替 1 回あたりの `setCandles` | 2 回（二重実行） | **1 回** |
+  | 最初の paint（rAF）までに描画済みの指標数 | 0 / 3 | **3 / 3**（＝同一フレーム＝視覚上も同時） |
+
+  再生（`rp-play`）でのバー送り 6 本も回帰なし（各バーで指標同時描画・最終フレームも 3/3）。
+- **単体テスト**: `timeframe_controller.test.js` に反映役の 4 件（委譲時にライブ反映を行わない／確定・永続化・通知は共通／`null` で既定復帰／例外時もゲート解放）、`replay_timeframe_applier.test.js` を新規追加（独自リスナ不在・反映役登録・同一バッチ描画・disable/enable の解除/再登録）。既存テストは全通過（indicator_ui 957 / replay_ui 271 / unified_ui 42）。
+
+## ISSUE-232: [不具合・再現済み] リプレイ再生中、ローソクはティック毎に動くのに指標が約 100ms 遅れて追いつく（2026-08-01）
+- **重大度**: High（「足の再現に指標が同期しない」＝リプレイの目的である過程の可視化が成立しない）
+- **ステータス**: RESOLVED
+- **事象（ユーザー報告）**: 時間足の再現後にインジケーターが再現される。同時に再現したい。
+  - 当初 ISSUE-231（時間足切替）と解釈して着手したが、**ユーザーが見ていたのは再生中の足内更新**だった。切替の二重経路も実在の不具合だったため ISSUE-231 として別途修正済み。
+- **再現（実 UI・8000・リプレイ再生中・5m・ohlc_1min・指標 moving_averages ×2）**:
+
+  | 対象 | 実測 |
+  |---|---|
+  | ローソクの更新間隔 | 7–9ms（ティック毎・同期） |
+  | 指標の追従遅れ | **95–142ms**（平均 117ms） |
+  | 指標の更新回数 | 15 バーで **44 回**（≒3 回/バー・throttle と in-flight スキップのため） |
+
+- **真因**: 足内の指標値を**毎ティック `/compute` へ往復**して求めていた（`pushFormingMA` → `recomputeFormingLatest`）。往復は 1 回あたり実測 52ms（HTTP）で、ローソクのティック描画と同一同期ブロックに入れられない。さらに `FORMING_MIN_INTERVAL_MS` の throttle と in-flight スキップで更新が間引かれ、「足だけ先に動く」状態になっていた。
+  - サーバ内訳の実測: `load_source` **242ms**（リクエスト毎）／`latest` 計算 **6.6ms**（moving_averages）。すなわち**往復の大半が窓の読み直しで、指標計算そのものではなかった**。
+- **対策（恒久）**: 足内推移の各時点の指標値を**バー開始前に 1 リクエストで一括計算**し、描画時は同期反映するだけにする（ISSUE-158 の一括リビールと同型の構造をバー内へ適用）。
+  - バックエンド: `/compute` に `mode='latest_seq'` を追加（`formingSeq` を受け `steps` を返す）。窓のロード・truncate・tail を 1 回に畳み、以降は forming の差し替えのみ。既存 `full`/`latest` の分岐は不変。
+  - フロント（リプレイ専用）: 純ロジック `forming_plan.js`（サンプリング・形成中 OHLC・陳腐化署名）、専用クライアント `forming_seq_client.js`、`ReplayIndicatorController.formingSeqTargets/applyFormingStep`、`replay.js` の先読み駆動。
+  - **速度の不変条件**: 計画は**決して await しない**。使用時点で未完なら即座に従来経路へ落ちる（計算失敗・未対応 controller も同様＝fail-open）。よって計画待ちで再生が遅くなることは構造的に起こらない。
+  - 先読みは「現在バーの再生中に次バーぶん」を発行する（`render` 時点でも現在バーぶんを発行）。**リプレイ層が起きている時のみ**発火させる（ライブ表示中に発火して `/intraday` が 404 になる副作用を実測で発見し是正）。
+  - 計画は末尾ティックを必ず含むため、バー確定の着地往復（従来 ~100ms/バー）を発行しない。
+  - 陳腐化（指標の追加削除・params/variant 変更・時間足/モード変更）は署名照合と明示破棄で遮断し、古い値では描かない。
+- **同値性ゲート（実データ・値が変わらないことの実証）**: 一括計算の各ステップと単発 `latest` の結果が **`moving_averages` / `ma_marod` / `btlm_trail` の 3 指標で完全一致**（JSON byte 一致）。
+- **検証（実 UI・修正後）**:
+
+  | 指標 | 修正前 | 修正後 |
+  |---|---|---|
+  | ローソク→指標の時間差 | 117ms（平均） | **0.41ms（平均）/ 0.8ms（最大）** |
+  | 指標更新回数 | 44 回 / 15 バー | **260 回 / 13 バー**（全ティック） |
+  | 遅延経路（その場計算）の発火 | 常時 | **0 回** |
+  | 指標がローソクと対で反映された割合 | — | **100%**（全件が直前のローソク更新と同一同期ブロック） |
+
+- **速度（厳密 A/B・同一バー区間 1470 起点・10 本・各 2 回）**:
+
+  | | 10 本の実時間 | 1 バーあたり |
+  |---|---|---|
+  | 一括計算あり | 5112ms / 5047ms | **511ms / 505ms** |
+  | 従来経路 | 6471ms / 6804ms | 647ms / 680ms |
+
+  **約 25% 高速化**（毎ティックの往復とバー確定の往復が消えたため）。「遅くしない」要件は満たしている。
+- **影響範囲**: 変更はリプレイ専用 6 ファイルのみ（`causal_compute.py` / `serve_replay.py` / `replay_indicator_controller.js` / `replay.js` / 新規 2 モジュール）。**共有モジュール・ライブ側のファイルは 1 つも変更していない**（`compute_http_client.js` は symlink 共有のため使わず専用クライアントを新設）。
+- **既知の残件（本 Issue の対象外）**: `cvfe` は足内追従の登録リスト `INTRABAR_FORMING_IDS` に無いため、従来どおりバー確定時のみ更新される（ISSUE-145 の登録規約による既存仕様）。足内でも動かすかは別途判断が必要。
+- **テスト**: Python 新規 5 件（窓ロード 1 回・単発同値・窓一致・空入力）、JS 新規 15 件（サンプリング／形成中 OHLC／署名 8 件、駆動配線 7 件＝同期反映・待たない・fail-open・後方互換・先読み・settle 省略・ライブ非発火）。既存は全通過（JS 286 + 957 / Python 192）。
+
+---
+
+## ISSUE-233: [不具合・実測再現] リプレイ再生が耐え難く遅い — 足内一括先読み（ISSUE-232）が 1 バーあたり 83 秒を要し確定足計算を待たせる（2026-08-01）
+
+- **重大度**: Critical（実用不能。再生が主機能であり、その主機能が高速化目的の変更によって劣化している）
+- **ステータス**: RESOLVED（2026-08-01・feature/latest-incremental-compute・S1〜S5 完了＋実 UI 通過条件を達成）
+- **報告**: ユーザー（2026-08-01）「とにかく再生が遅すぎる。耐え難いほど遅すぎる」「更新粒度が低く結果のみが表示される」
+- **再現条件**（`simulator/replay_ui/tools/replay_diag.js` による実 UI 吸い出し）:
+  - 時間足 `1h` / 再生モード `ohlc_1min` / 速度 `x1.00`（最速）/ 表示期間 1週 / 計算窓 `limit=1386`・`untilTime=1785103200`
+  - 適用指標 7 件: `ma_marod` / `moving_averages`×3 / `btlm_trail`(`band_method=empirical`,`maxbars=115`,`empirical_n=495`,`n_cov=495`) / `btlm_trail_marod`(`maxbars=266`,`window_n=500`) / `market_profile`
+  - 足内のティック点数 196・**指標更新回数 0**（`window.__rpForm` の `planned=0`）
+
+### 実測（同一設定・実 HTTP 経路・`127.0.0.1:8281`）
+
+| 指標 | 足内一括計算 `latest_seq`（32 ステップ） | 確定足 `full`（毎バー 1 回） |
+|---|---|---|
+| `ma_marod` | 28.54s | 0.21s |
+| `moving_averages`（hlc3 / high / low） | 1.23s / 0.27s / 3.37s | 0.05s ×3 |
+| `btlm_trail` | **41.71s** | 0.39s |
+| `btlm_trail_marod` | 7.99s | 0.25s |
+| **合計** | **83.10s** | **1.00s** |
+
+- 1 バーの再生所要は `196 点 × PER_POINT_MS(6ms) ≒ 1.2s`。**先読みに必要な 83s との比は約 70 倍**であり、計画は原理的に間に合わない。
+- 完了予想の実測値も一致: 残り 114 足で 2 分 26 秒 ＝ 1.28s/足（＝アニメ点数律速）。別時点では残り 105 足で 19 分 45 秒 ＝ 11.3s/足（先読みキューが確定足計算を待たせている状態）。
+
+### 真因（3 点）
+
+1. **`latest` 1 ステップが `full` 1 回より高コスト**。`btlm_trail` は 1 ステップ 1.30s に対し full 0.39s。ISSUE-232 の設計前提「`load_source` 242ms に対し latest 計算は 6.6ms」は、軽量指標・小窓での実測であり、本件の設定（経験分位バンド・`n_cov=495`・`window_n=495/500`・窓 1386 本）では成立しない。窓ロードを 1 回へ畳んでも、32 回の latest 計算そのものが支配的になる。
+2. **`btlm_trail` は原理的に計画へ載らない**。41.71s は `forming_seq_client.js` の `SEQ_TIMEOUT_MS = 30000` を超えるため必ず abort → `.catch(() => null)` → `steps` が空 → `planned=0`。ゆえに「足内で指標が一切動かず、確定時に結果だけが現れる」。
+3. **先読みが確定足計算を待たせている**。`serve_replay.py` の `self._lock` と単一 `compute-worker` により `/compute` は直列化される。fire-and-forget の先読み 83s ぶんがキューを占有し、本来 1.00s の毎バー full 計算がその後ろに並ぶ。「計画は決して await しない」という速度の不変条件は**フロントの制御フローについてのみ成立**しており、**バックエンドのキューについては成立していない**（ISSUE-232 の設計の穴）。
+
+### 影響
+
+- ISSUE-232 の一括先読みは、本設定において高速化ではなく**純粋な負荷追加**になっている。
+- 症状「更新粒度が低く結果のみが表示される」は真因 2 の直接の帰結。
+- 別途報告された「結果表示のバグ（線が垂直に落ちる）」は、実 UI の描画データ吸い出し（末尾 3 点・最大跳躍）では再現しなかった。`btlm_trail_mean` は 65505.68 → 65444.96 → 65420.25（最大跳躍 82.39）と連続。**本 Issue とは分離して別途調査する**（未確定）。
+
+### 対策案（未承認・要判断）
+
+- **案 A（即時・回帰の切り戻し相当）**: 足内一括先読みを既定で無効化する。毎バーの計算は full 1.00s のみとなり、足内の指標追従は ISSUE-232 以前の経路（120ms スロットル）へ戻る。ISSUE-232 が解こうとした「指標が約 100ms 遅れる」は再発するが、83s の負荷は消える。
+- **案 B（恒久）**: 先読みを**実測コストに基づく予算制**にする。(1) 指標ごとに 1 ステップの所要を実測して保持し、(2) 「1 バーの再生所要 × 安全率」を超える計画は発行しない、(3) `MAX_FORMING_STEPS` を固定 32 ではなく予算から逆算する（重い指標は 2〜4 ステップ、軽い指標は 32）。
+- **案 C（バックエンド）**: 先読みを確定足計算より**低優先度**のキューへ回し、確定足計算が先読みを追い越せるようにする（現在は単一 FIFO で追い越し不可）。
+- 案 A は即時の実用性回復、案 B・C は恒久解。A → B/C の順を推奨するが、**いずれも挙動変更のため未実施**。
+
+### 実測の訂正（2026-08-01）— 「足内更新は動いていない」は誤り
+
+当初「指標の足内更新は 0 回＝機能していない」と報告したが、**実測で誤りと判明した**。実 UI（1h / ohlc_1min / x1.00）で本番メソッド（`applyFormingStep` と `recomputeFormingLatest`）の呼び出し回数を直接数えた結果:
+
+| 構成 | 指標更新/足 | ローソク更新/足 | 秒/足 |
+|---|---|---|---|
+| `moving_averages` のみ | **27.2 回** | 202 | 1.40 |
+| ＋ `btlm_trail`（経験分位・`n_cov=495`） | **4.0 回** | 201 | 1.45 |
+| ＋ `ma_marod`（3 指標） | **0 回** | 201 | 1.49 |
+
+足内更新は**壊れていない**。指標を重くすると 27 → 4 → 0 と静かに落ちる。したがって ISSUE-145（2026-07-20 RESOLVED）の対策は**当時の構成では実際に機能していた**。「解決していなかった」という本 Issue 当初の記述は撤回する。正しくは「**解決していたが、指標の重さに応じて黙って劣化する**」。
+
+### 応急処置の撤回（2026-08-01・ユーザー厳命）
+
+一度実装した**予算制（実測コストからステップ数を逆算し、超過時は発行しない）を全面撤回した**（`replay.js` / `forming_plan.js` / `forming_seq_client.js` / 追加テストを revert）。
+
+撤回理由（ユーザー厳命「今後は抜本的解決方法のみ提示しろ。応急処置は絶対に提示するな」）:
+
+1. 予算制は根本原因（`latest_compute` が末尾 1 点のために窓全体を再計算する設計）に一切触れていない。速くなったのは**仕事を減らしたから**である。
+2. さらに悪く、予算制は**劣化を自動化・不可視化する**。指標を足すたびに更新粒度が黙って落ち、原因が見えなくなる。ISSUE-145 以来この症状が繰り返し再発している構造そのものを強化していた。
+
+撤回により重い構成の再生は 2.27 秒/足へ戻る。
+
+### 真因（唯一・確定）
+
+`indigators/indicator_ui/api/adapter/compute/latest_dispatch.py:57`
+
+```python
+sub = df if meta.min_window is None else df.tail(meta.min_window)
+series = adapter.compute(compute_id, variant, sub, params)
+```
+
+`latest` は増分計算ではなく、**末尾 1 点（`trailing_k=1`）のために窓全体を計算し直して最後の 1 点だけ切り出す**実装である。`moving_averages` は `ma_type` によらず `min_window=None`（＝tail せず全件・`call_binding.py:138-144`）。実測の 1 ステップ所要は `btlm_trail` 334ms / `ma_marod` 159ms / `moving_averages` 8〜105ms で、固定費（窓ロード）は 0.05s に過ぎない。
+
+この設計である限り、更新粒度は「1 足の長さ ÷ 1 往復の所要」で上限が決まり、指標を重くすれば必ず落ちる。ISSUE-145・ISSUE-232 のいずれもこの点に触れていない。
+
+### 抜本的解決（設計待ち）
+
+**`latest` を真の増分計算にする**（前回の状態を保持し 1 点だけ進める）。1 回 159〜334ms が数ミリ秒になり、指標の重さに関係なくローソクと同じ粒度（1分OHLC で 201 回/足）が成立する。
+
+| 対象 | 保持する状態 | 難度 |
+|---|---|---|
+| `ema` / `smma` | 前回値 1 個 | 低 |
+| `sma` / `lwma` | 環状バッファ（`length` 本） | 低 |
+| 経験分位バンド（`n_cov` / `window_n` / `empirical_n`） | 順序統計構造（挿入・削除・分位取得） | 中 |
+| イベント分位（`k_events`・エピソード declustering） | エピソード状態機械 | 高 |
+
+検証方式は ISSUE-158 で確立済みのものを流用する（現行 `full` を参照実装とし、全系列で `max_dev = 0` を固定）。各段階の通過条件は「`full` との全系列 `max_dev = 0`」かつ「1 ステップ所要 < 5ms」。
+
+### 副産物（撤回せず残置）
+
+- 診断ツール `simulator/replay_ui/tools/replay_diag.js`。実 UI の設定・描画値・足内粒度を 1 回で吸い出す（読み取りのみ・副作用なし）。本 Issue の実測はすべてこれで取得した。
+
+### 抜本的解決の実装記録（feature/latest-incremental-compute）
+
+内部設計 `.doc/indicator-management-ui/内部設計_latest増分計算.md` §8 を全承認（2026-08-01）のうえ実装。
+
+#### S1: moving_averages（4 種）＝完了
+
+- **真因の除去**: `latest` を「窓全体を再計算して末尾 1 点を切り出す」から「確定バーまでの MA バッファを状態として保持し、形成中バー 1 本ぶんだけ漸化を進める」へ置換した。所要は窓長に依らず一定になる。
+- **src への追加（ユーザー承認 2026-08-01）**: `linear_weighted_ma_on_buffer` は `prev_calculated>0` 分岐で走行和 `total`/`lsum` を窓から再構築するため、full の漸化を継続できず末尾値が bit 一致しない（実測 max_dev 2.1e-09 @ n=1400）。`buffer[i]=total_i/weight` は丸め済みで `total_i` を復元できないため、src 外からの継続は原理的に不可能。走行和を授受する `linear_weighted_ma_on_buffer_stateful` / `LwmaState` を `moving_averages/src/core.py` へ追加し、**既存 `linear_weighted_ma_on_buffer` はその共有部品（`_lwma_seed` / `_lwma_advance`）へ委譲**させた（漸化式の定義は 1 箇所のみ・二重定義を作らない）。既存関数の出力は凍結オラクルとの bit 一致テストで恒久固定。
+- **実測（窓 1386 本 / length=24 / 1 ステップ）**:
+
+| ma_type | full | latest（増分・定常） | 倍率 |
+|---|---|---|---|
+| sma | 3.59ms | **0.140ms** | 25.6x |
+| ema | 3.38ms | **0.137ms** | 24.7x |
+| smma | 3.38ms | **0.144ms** | 23.5x |
+| lwma | 3.58ms | **0.132ms** | 27.1x |
+
+  窓 5000 本では full 11.7〜12.8ms に対し latest 0.157〜0.173ms（70〜81x）。**latest は窓長に依らずほぼ一定**であり、通過条件「1 ステップ < 5ms」を満たす。
+- **一致検証**: 4 種 × length{2,9,24,50} × offset{-3,-1,0,1,3} × source 8 択 × wait_for_close × min_tail{2,5,30} で `full` と **完全一致（max_dev = 0）**。足内更新の非破壊性（同一確定状態から形成中バー 10 通り）・バー確定の前進（窓を 1 本ずつ伸長）・窓の縮小/再伸長・左端シフトでも一致を確認。
+- **回帰**: indicator_ui Python 554 / replay_ui Python 192 / moving_averages 167 / replay_ui JS 286 / indicator_ui JS 957 いずれも全通過。
+- **未対応（従来経路のまま・挙動不変）**: `smoothing_type != none`（平滑化は MA 系列に対する pandas rolling/ewm であり、末尾だけを bit 一致で求める手段が src の公開面に無い）。本数が `length+3` 未満の warm-up 直後。
+
+#### S2/S3/S4: btlm_trail（窓末尾 OLS・経験分位バンド・被覆率）＝完了
+
+- **真因の除去**: 末尾 1 点しか要らない latest 経路が、各バーで同じ計算を繰り返すローリング全体を走っていた。src に「1 バーぶんの計算」の公開入口を置き、**ローリング版がその入口を各バーで呼ぶ構成**へ変えた（定義は 1 箇所のまま）。増分器は確定バーまでの各系列を状態として保持し、形成中バー 1 本ぶんだけを 1 バー入口で計算する。
+- **src への追加（B-2 承認の範囲・計算式は不変）**:
+  - `core.window_end_scalar`（非公開 `_window_end_scalar` を公開化。旧名は同一オブジェクトの別名として残置）
+  - `trail.empirical_quantile_latest` / `trail.coverage_latest` / `trail.deviation_ratio` / `trail.ols_band` / `trail.empirical_band`（いずれも 1 バー／1 窓ぶんの唯一の定義。`_empirical_quantile_causal` と `rolling_coverage` と `build_btlm_trail` がこれらを呼ぶ）
+  - `TrailResult.deviations`（乖離率。増分器が次バーの経験分位を求めるために要る・既定 None で後方互換）
+- **実測（窓 1386 本・1 ステップ）**:
+
+| 構成 | full | latest（増分・定常） | 倍率 |
+|---|---|---|---|
+| 実測構成（empirical・maxbars=115・empirical_n=495・n_cov=495） | 143.1ms | **0.356ms** | 402x |
+| ols 既定（maxbars=100・q_out=0.99・n_cov=250） | 44.0ms | **0.368ms** | 120x |
+
+  内訳の改善: 窓末尾 OLS 28.9ms→0.021ms／経験分位 1 本 51.4ms→0.037ms／被覆率 5.0ms→O(n_cov) の numpy 和。
+- **一致検証**: band_method{ols,empirical} × maxbars{50,100,115} × q_out{無効/有効} × source 8 択 × show_metrics × min_tail{2,5,30} で `full` と **完全一致（max_dev = 0）**。対象系列は mean / q5 / q95 / off_hi / off_lo / beta / sigma / band_hit_rate の全 8 系列。足内更新の非破壊性・バー確定の前進・窓の縮小/再伸長・左端シフトも一致。
+- **設計との差分**: S3 は内部設計が「順序統計構造（挿入・削除・分位取得）で O(log n)」としていたが、**当該バーを除く因果境界**（分位は確定済みの乖離率のみを使う）により、足内更新では分位窓が動かない。確定バーの前進時に末尾 emp_n 本を `np.quantile` へ 1 回渡すだけで足り（実測 0.037ms）、順序統計構造は不要だった。構造を持たないぶん、参照実装と同じ配列を同じ関数へ渡す＝bit 一致が構造的に保証される。
+- **回帰**: indicator_ui Python 592 / replay_ui Python 192 / btlm_trail 31 / moving_averages 167 / ma_marod 43 / btlm_trail_marod 30 / common 81 全通過。
+
+#### S5: ma_marod / btlm_trail_marod（因果分位バンド・イベント分位）＝完了
+
+B-6（S1〜S4 後に再測定して着手可否を判断）に従い再測定した結果、`ma_marod` 117.8ms / `btlm_trail_marod` 152.4ms が残り、この 2 つを残すと 7 指標構成の更新粒度は達成不能と確定したため着手した。
+
+- **真因の除去**: 分位バンドもイベント分位も **当該バーを除く** 因果統計（ISSUE-141 の規約）であり、形成中バーの水準は確定済みの観測だけで決まる。足内更新のたびに窓全体を走り直す必要はない。確定バーまでの値系列とイベント観測列を状態に保持し、形成中バーは 1 バー入口で 1 点だけ求める。
+- **両指標は構造が同一**（値系列＝乖離率 → 因果ローリング分位バンド → 外れ値イベント分位水準）で、差は基準線だけ（移動平均 / OLS 窓末尾トレンド）。増分器は 1 実装を共有し、基準線のみ差し替える。
+- **共有プリミティブへの追加（計算式は不変・既存経路が委譲）**:
+  - `common/marod_bands.py`: `causal_stat_latest`（1 バーぶんの因果統計・`rolling_causal` が委譲）／`stat_reducer`／`marod_percent`（乖離率の唯一の定義。ma_marod・btlm_trail_marod の両 core が委譲＝既存の二重定義も解消）
+  - `common/event_quantiles.py`: `step_events`（1 バーぶんのイベント検出・エピソード確定）／`levels_at`（観測 m 件時点の水準）／`event_levels_latest`（次バーの水準 4 値）。本体ループがこれらを呼ぶ構成へ変更
+- **実測（窓 1386 本・1 ステップ）**:
+
+| 指標 | full | latest（増分・定常） | 倍率 |
+|---|---|---|---|
+| `ma_marod`（ema・length=50・window_n=495） | 117.8ms | **0.356ms** | 331x |
+| `btlm_trail_marod`（maxbars=266・window_n=500） | 152.4ms | **0.427ms** | 357x |
+
+- **一致検証**: 基準線種別（ma_marod は sma/ema/smma/lwma 全種）× window_n × q_out{無効/有効} × k_events × event_agg{episode,bar} × source × min_tail で `full` と **完全一致（max_dev = 0）**。対象は本体・0% 基準線（horizontal_line）・分位バンド 2 本・イベント分位水準線 4 本の全系列。エピソード declustering の状態がバー確定で参照実装と同一に進むことも、窓を 1 本ずつ伸ばす検証で固定した。
+
+### 実測構成（7 指標）の 1 ステップ合計
+
+| 指標 | 対応前 | 対応後 |
+|---|---|---|
+| `moving_averages` × 3 | 約 10〜24ms | 0.42ms |
+| `btlm_trail`（empirical） | 143.1ms | 0.356ms |
+| `ma_marod` | 117.8ms | 0.356ms |
+| `btlm_trail_marod` | 152.4ms | 0.427ms |
+| **合計** | **約 425ms** | **約 1.56ms** |
+
+1 足（1h・1分OHLC・201 点）は 1.21 秒であり、更新粒度の上限は 1.21s ÷ 1.56ms ≈ 775 回/足。**要求（ローソクと同じ 201 回/足）に対し 3.8 倍の余裕**がある。指標を足しても粒度が落ちない構造になった。
+
+- **回帰**: indicator_ui Python 639 / replay_ui Python 192 / btlm_trail 31 / moving_averages 167 / ma_marod 43 / btlm_trail_marod 30 / common 81 / replay_ui JS 286 / indicator_ui JS 957 全通過。
+
+### 実 UI 検証（§6.2）と、そこで判明した 2 つの真因
+
+バックエンドの増分化（S1〜S5）だけでは実 UI の粒度は 0 のままだった。実 UI 実測（serve.sh・ポート 8280・jp225_tick・1h・`ohlc_1min`・x1.00・指標 5 件＝`btlm_trail`×3 / `btlm_trail_marod` / `ma_marod`）で、残る 2 つの真因を特定して除去した。
+
+#### 真因 A: 足内 1 ステップごとに窓を DataFrame へ組み直していた
+
+`causal_compute_seq` は時点ごとに `apply_forming(bars, forming)` で窓全体（1492 本）を plain dict へコピーし、ゲートウェイがそのたびに DataFrame を組み直していた。実測の内訳（実 HTTP・formingSeq 点数を変えて回帰）:
+
+| formingSeq 点数 | 対応前 | 対応後 |
+|---|---|---|
+| 1 点（固定費） | 38ms | 47ms |
+| 50 点 | 143ms | 69ms |
+| 201 点 | 458ms | 158ms |
+| 400 点 | 902ms | 269ms |
+| **1 ステップの限界費用** | **2.1ms** | **0.56ms** |
+
+指標計算そのもの（0.36ms）より変換費用（1.7ms）の方が大きい状態だった。`apply` は末尾しか触らないため（同値性は `test_forming_bar.py` の分割テストで固定）、確定プレフィクスと時点ごとの末尾差分に分けて渡し、**窓の変換を 1 回に畳んだ**（`CausalComputePort.compute_latest_seq`）。値は単発 `latest` と bit 同値（ゲートウェイの一致テストで固定）。
+
+#### 真因 B: 足内一括計算が 1 度も成立していなかった（フロントの呼出バグ）
+
+`FormingSeqClient` が注入された fetch を `this._fetch(...)` とレシーバ付きで呼んでいた。`replay.js` の既定値は束縛していない素の `fetch` のため、ブラウザでは **必ず** `Failed to execute 'fetch' on 'Window': Illegal invocation` になる。呼び出し側は失敗を握り潰して従来経路へ落とす（`.catch(() => null)`）ため、**ISSUE-232 の足内一括計算は実 UI で 1 度も成立していなかった**。本 Issue の「指標更新回数 0」はこれが直接原因である（計算速度の問題ではなかった）。関数参照として呼ぶよう是正し、束縛の有無に依らず動くことをテストで固定した（`tests/forming_seq_client.test.js`）。
+
+#### サンプリング上限（`MAX_FORMING_STEPS = 32`）の廃止（ユーザー承認 2026-08-01）
+
+「1 ステップ 6.6ms〜170ms なので全ティック計算は現実的でない」という前提で置かれていた上限を撤去し、**指標の更新回数は常にローソクの更新回数と一致する**ようにした（点間でローソクだけが動く区間を作らない）。上限を残す／値を上げるのは §7 が却下する応急処置である。`real_ticks`（月足で数十万ティック）も間引かない方針をユーザーが選択（全モードで廃止）。
+
+#### 通過条件の達成（実 UI・連続 6 足）
+
+| バー | ローソク更新回数 | 指標更新回数 |
+|---|---|---|
+| 1491〜1495 | 201 | **201** |
+| 1496 | 202 | **202** |
+
+指標 5 件適用のまま **指標更新回数 == ローソク更新回数** を満たした（対応前は 0）。描画も正常（`btlm_trail` の帯 3 本・MAROD 系 2 pane・読取欄の値すべて表示）。
+
+### 最終回帰
+
+indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages 167 / ma_marod 43 / btlm_trail_marod 30 / common 81 / indicator_ui JS 957 / replay_ui JS 290 — 全通過。
+
+
+## ISSUE-234: [不具合・実測再現] リプレイ core で `/tickvol_profile` が 500（DatasetPort 未結線）（2026-08-01）
+
+- **重大度**: High（新機能の帯定義がリプレイ側でまったく取得できない）
+- **ステータス**: RESOLVED（2026-08-01・feature/latest-incremental-compute）
+- **事象**: 8280 で `GET /tickvol_profile?datasetRef=jp225_tick` が 500 `internal`。本文は
+  「DatasetPort が未結線です。エントリポイントで adapter.gateway.composition.install_default_ports() を…」。
+- **真因**: `usecase/dataset_port.py` の既定 factory 登録は「各エントリポイントの責務」で、本番は
+  `framework/server.py`、テストは `api/tests/conftest.py` が 1 回呼ぶ規約。リプレイプロセスは
+  ライブ側 controller を bridge で再利用する**第 3 のエントリポイント**であり、どちらの登録経路も通らない。
+- **対策（根本）**: `simulator/replay_ui/adapter/_indicator_ui_bridge.py::load_tickvol_handler` が
+  handler の import 前に `install_default_ports()` を呼ぶ（冪等）。規約どおり「エントリポイントが登録する」に揃えた。
+- **検証**: 8280・8281・8001 の 3 者で同一入力の応答が md5 一致（`5d5db42d…`）。未知 ref は 400 `validation`。
+
+## ISSUE-235: [不具合・実測再現] 統合 UI で `/tickvol_profile` が 404（Service Worker のリライト表に未登録）（2026-08-01）
+
+- **重大度**: High（統合 UI では帯が一切出ない。単体起動（8280）では出るため気付きにくい）
+- **ステータス**: RESOLVED（2026-08-01・feature/latest-incremental-compute）
+- **事象**: 8000（統合）でライブモード時 `GET /tickvol_profile?…` → 404。console に
+  `Failed to load resource: 404 @ http://127.0.0.1:8000/tickvol_profile?…`。
+- **真因**: root 相対 API fetch は SW（`unified_ui/web/js/sw_rewrite.js`）が `/live|/replay` を前置する設計で、
+  対象は `API_SEGMENTS` 表の列挙のみ。新エンドポイントを表へ登録していなかった（静的資産扱い＝素通し→404）。
+- **対策（根本）**: `API_SEGMENTS` に `tickvol_profile` を追加（表駆動の拡張点をそのまま使う）。両 core が同一実装を
+  持ち応答が byte 一致するため `LIVE_ONLY_SEGMENTS` には**入れず**アクティブモードの core へ回す。
+- **検証**: 8000 のライブモードで 200・帯描画あり（帯色ピクセル 119）。リプレイモードでは `until=` 付きで
+  `/replay` 側へ振り分く。`unified_ui/web/tests/sw_rewrite.test.js` に両モードの回帰を追加（43 件緑）。
+
+## ISSUE-236: [設計欠陥・実測再現] 指標ペインへ背景プリミティブを装着すると一部ペインだけ塗られない（2026-08-01）
+
+- **重大度**: Medium（見た目の欠落。再現条件が「指標の再計算後」で分かりにくい）
+- **ステータス**: RESOLVED（2026-08-01・feature/latest-incremental-compute）
+- **事象**: 取引密度帯を全ペインへ装着する実装で、実 UI 実測の内部状態が `ranges=[68, 0, 0]`
+  （メインペインのみ塗られ、指標ペイン 2 枚が空）。
+- **真因**: lwc のプリミティブは**系列**にしか装着できず、指標ペイン内の系列は指標の再計算で作り直される。
+  作り直しのたびにプリミティブが外れるため「検知して張り直す」同期が必要になるが、検知契機
+  （`setAppliedObserver` / candle observer）は再計算完了と順序が保証されず、取りこぼしが残る。
+- **対策（根本）**: 同期そのものを不要にする。**作り直されないメイン系列（価格パネル）へ 1 度だけ装着**する
+  設計へ変更し（`ChartRenderer.attachBackgroundPrimitive`）、ペイン同期 API を廃した。依頼者の要求
+  「チャートパネルの背景色を変えたい」とも一致する。
+- **検証**: 実 UI で 時間足往復・期間プリセット往復・再読込（復元）のいずれでも塗りが追随
+  （`onLoad=68` / `4h=0` / `5m=21` / `1日プリセット=17`）。
+
+## ISSUE-237: [不具合・実測再現] 足の差し替えで取引密度帯が古い足のまま残る（2026-08-01）
+
+- **重大度**: Medium
+- **ステータス**: RESOLVED（2026-08-01・feature/latest-incremental-compute）
+- **事象**: 期間プリセット変更（足の全置換）後、帯が新しい足へ追随せず塗りが消えた。
+- **真因**: アクターの再描画契機を時間足変更とリプレイ時計にしか繋いでいなかった。足の差し替え
+  （期間プリセット・カレンダー・リビール）は `ChartRenderer` の candle observer で通知されるが未購読だった。
+- **対策**: 両 composition root の `setCandleObserver` 既存コールバックへ `onCandlesChanged()` を合成
+  （購読スロットは単数のため既存購読者と同一コールバック内で呼ぶ）。指標の増減は `setAppliedObserver` を
+  合成して拾う（統合 UI で後から `replay.js` が上書きしても本フックが消えない形）。
+- **検証**: 実 UI で期間プリセット往復後も帯が追随（17 本）。300 バー送りで再取得は 3 回のみ
+  （＝またいだセッション日数と一致・バー毎の再取得なし）。
+
+## ISSUE-238: [不具合・実測再現] リプレイの足内で tick 数が更新されず、足の先頭から確定値を表示する（2026-08-01）
+
+- **重大度**: High（未来先取り＝非リペイント原則違反。volume を読む全指標に及ぶ）
+- **ステータス**: RESOLVED（2026-08-01・feature/latest-incremental-compute）
+- **⚠ 訂正（2026-08-01）**: 起票時に真因を「形成中バーの volume が NaN になり点が立たない」と
+  記載したが、**実測で誤りと判明した**。実際は NaN にならず、**確定足の完成値がそのまま残る**。
+  症状は「点が立たない」ではなく「足の先頭から完成後の値が出て、足内で 1 度も動かない」。
+- **事象（実測 2026-08-01・8000 リプレイ・NI225 5 分足・40 サンプル）**:
+  | モード | 同一足内のローソク close 更新回数 | tickvol 更新回数 |
+  |---|---|---|
+  | 1分OHLC（既定） | 9 | **0** |
+  | 実ティック | 25 | **0** |
+  さらに足の**最初のフレームから確定値**が出ている（例: 足 1785527400 の先頭フレームで既に 627＝
+  その足の完成 tick 数。1785527700 も先頭から 722）。まだ到来していないティックを数えた値である。
+- **真因（コード上で確定）**: リプレイの形成中バーはフロントが作る
+  （`web/js/replay/forming_plan.js` の `formingStatesAt`）が、その payload は
+  `{time, open, high, low, close}` **のみで volume を持たない**。適用側
+  `simulator/replay_ui/domain/forming_bar.apply` は仕様どおり「forming に**存在するキーのみ**更新」
+  するため、**volume は確定足の完成値が保持される**。よって足内のどの時点でも tick 数は完成値。
+  サーバ応答でも確認済み（`mode=latest_seq` の 2 時点とも `tickvol=297.0`＝当該足の完成値）。
+- **影響範囲**: tickvol に限らない。`volume` を読む指標（`profit_mfi` 等）はリプレイの足内で
+  同じ未来先取りを起こす。tickvol は volume を直接描くため初めて可視化されただけである。
+- **対策（根本・実施済・依頼者承認 2026-08-01）**: 形成中バーに「足始端から**リプレイ現在時刻**までの実 tick 数」を
+  持たせる。定義はライブの参照実装と同一（`adapter/compute/forming_bar` の
+  `volume = len(mids)`＝窓 `[足始端, now)` の実 tick 数）。リプレイの `now` は `to`
+  （ISSUE-129 で確定した単一時計）で、各足内時点の `to` は既に `secs`（tick_secs）として存在する
+  （real_ticks＝実 tick 時刻／合成モード＝窓等分。MP tick-live が既に採用しユーザー裁定済み）。
+  算出はサーバ側の実 tick データから行う（フロントで点数を数える方式は real_ticks 以外で
+  実 tick 数と一致しないため採らない）。
+  | 層 | ファイル | 変更 |
+  |---|---|---|
+  | usecase | `usecase/forming_tickvol.py`（新設） | `[win_start, to]` の実 tick 数。数える集合は `/intraday` と同じ domain E-4 `mid_series`（定義を 2 つ持たない）。ティック読込は窓ごとに 1 回 |
+  | usecase | `usecase/causal_compute.py` | `window_port` 任意注入。`forming` へ volume を載せてから `apply_forming` |
+  | framework | `framework/serve_replay.py` | `winStart`/`winEnd` を受け、`_window_port` を compute へ結線 |
+  | front | `replay/forming_plan.js` | 各時点へ `to`（`secs[i]`）を添える。volume はフロントで作らない |
+  | front | `replay.js` | real_ticks で `tick_secs` を常時要求（時計が常に要るため）。窓を送出 |
+  | front | `adapter/front/forming_seq_client.js` / `compute_http_client.js` / `replay_indicator_controller.js` | `winStart`/`winEnd` の素通し seam（未指定は不送信＝ライブ・旧クライアントは挙動不変） |
+  - `forming_bar.apply` の規約（存在するキーのみ更新）は**不変**。載せるキーが 1 つ増えるだけ。
+- **収束の裏付け（実測 2026-08-01）**: `/intraday` の mid 列の件数は、同区間の確定足 tickvol と
+  **完全一致**する（[1785528000,1785528300) が 770/770、[1785528300,1785528600) が 297/297）。
+  よって足終端で形成中の値は確定値へ段差なく収束する。サーバ単体でも確認
+  （to=+0s→2 / +60s→82 / +120s→130 / +180s→192 / +240s→254 / +299s→**297**）。
+- **検証（実 UI・8000 リプレイ・NI225 5 分足）**:
+  | モード | ローソク close 更新 | tickvol 更新（対応前） | 足内の推移 → 確定値 |
+  |---|---|---|---|
+  | 1分OHLC（既定） | 9 回 | **9 回**（0 回） | 232→525→**627** / 83→223→**297** / 105→213→**262** |
+  | 実ティック | 32 回 | **32 回**（0 回） | 4→175→356…（単調・逆行 0 回） |
+  足の先頭から確定値が出る未来先取りは解消した。コンソールエラー 0 件。
+  回帰: replay Py 236 / JS 301、indicator_ui Py 673 / JS 1006 — 全通過。
+- **残る制限**: `始値のみ` / `数学計算(終値)` は足内推移を持たない設計のため `to` を載せない
+  （＝従来どおり確定値のまま）。両モードは「1 回だけ更新する」ことが仕様である。
+
+## ISSUE-239: [仕様追加] ティックボリュームに正常帯と外れ値水準（経験的分位 / GPD-POT）を追加する（2026-08-01）
+
+- **重大度**: —（機能追加）
+- **ステータス**: RESOLVED（2026-08-01・feature/latest-incremental-compute）
+- **依頼**: 「経験的分位、GPD と POT の仕様を追加しろ。確かライブラリーが存在しているので、参照実装しろ」
+  「経験的分位＋GPD を並列表示」→ 追補「下位と上位の分位を追加」（依頼者確定 2026-08-01）。
+- **参照実装（無改変で組み合わせる。計算式を写していない）**:
+  | 役割 | 参照実装 |
+  |---|---|
+  | 因果ローリング分位バンド（下側/上側・上側は POT の閾値） | `common.marod_bands.quantile_bands` / `causal_stat_latest` |
+  | エピソード宣言クラスタリング・経験的分位 | `common.event_quantiles.step_events` / `levels_at` |
+  | GPD の最尤当てはめ | `common.gpd.gpd_fit`（2026-07-31 追加・単体 81 件で妥当性検証済み） |
+  | 閾値の自動選択（既定値の根拠） | `common.gpd.select_threshold`（ForwardStop） |
+  | クラスタ化の測定（設計前提の検証） | `common.extremal_index`（Ferro–Segers intervals） |
+  `common/gpd.py` は本件まで指標からの参照が 0 件だった（研究用ゲート検証で追加された道具）。
+- **仕様**: 正常帯上端 `u_t`（当該バー除外の因果ローリング分位 `q_high`）を超えたエピソードの極値を
+  1 観測とし、その**超過分の同じ分位 `q_out`** を経験的分位と GPD の 2 通りで推定して並べる。
+  水準は `u_t + 超過分の水準`。2 本の差が「標本内で数えた値」と「裾の分布形から外挿した値」の差になる。
+  系列 6 本: `tickvol`（ヒストグラム）/ `tickvol_q{pct}`（正常帯・下側 `q_low`／上側 `q_high`・
+  シアン点線・命名は `btlm_trail_q{pct}` と対称）/ `tickvol_evq_med_hi`（典型深度・実線）/
+  `tickvol_evq_ext_hi`（経験的極端分位・破線）/ `tickvol_gpd_hi`（GPD 外挿・橙破線）。
+  上側帯は **POT の閾値そのもの**（2 つの定義を持たせない）。下側帯は「普段より極端に静かな足」を
+  示す**表示専用**で POT/GPD には使わない。
+- **設計判断の実測根拠（2026-08-01・jp225_tick 50,000 本）**:
+  - **宣言クラスタリングは必須**: 生の閾値超過は θ = 0.16〜0.27（5m/15m/1h・q=0.90）と強くクラスタ化し、
+    GPD の独立前提を満たさない。エピソード極値へ畳むと θ = 0.49〜0.89 でゲート（θ >= 0.2）を通過する。
+  - **ローリングは必須**: 水準は非定常で履歴 4 分割の中央値が 5m 170→489 / 1h 666→2049 と 3 倍動く。
+    全履歴の当てはめは AD 適合度検定で棄却（p = 0.005〜0.255）、直近 50 件では棄却されない
+    （p = 0.455〜0.720）＝ローリングでこそ GPD 近似が成立する。
+  - **GPD の最小観測数は 30**: 窓をずらした 10 標本での GPD 水準の変動係数は m=5 で 0.95、
+    m=10〜20 で 0.71〜0.73、m=30 で 0.245、m>=50 で 0.14〜0.21。30 未満は水準を出さない（NaN）。
+  - **q_high 既定 0.90**: ForwardStop の自動採択は 5m 0.95 / 15m 0.90 / 1h 0.85 と時間足で動くため、
+    採択域の内側で観測件数が最も確保できる点を採る。`q_low` は対称に 0.10。
+  - **外れ値イベントは上側のみ**: tickvol は最小 1 の計数量（0 の足は 0 本）で下側は裾でない。
+  - **`event_agg` を公開しない**: 「バー値」集計を選べるようにすると上記の独立前提が壊れる。
+- **却下した構造（実測で不成立）**: 「窓 N の生の超過へ毎バー GPD を当てはめる」案。宣言クラスタリング後の
+  有効クラスタ数が N=500 で 12 件・N=1000 で 11 件しか残らず当てはめが成立しない（N>=2000 が必要）。
+  さらに毎バー当てはめは 1500 バーで **1.5〜1.9 秒**（既存最遅 cvfe 148ms の 10 倍超）だった。
+- **性能（ISSUE-233 と同じ真因・同じ解）**: 水準は確定イベント全体に依存し有限 tail を取れない
+  （直近 50 件に 5m で 1,800 バー必要）ため、`latest_meta` は増分計算を宣言する
+  （`adapter/compute/incremental/tickvol.py`）。帯・水準は状態遷移時に 1 度だけ求めて状態へ持たせ、
+  `emit` は読むだけにした。実測 **full 151ms / 足内 1 ステップ 0.49ms**
+  （足内の GPD 再当てはめ 0 回・帯も足内で動かないことをテストで固定）。
+- **検証**: latest == full を 50 本の逐次バー送り × 6 系列・巻き戻し・パラメータ 4 通りで完全一致を確認。
+  実 UI（8000・ライブ／リプレイ両モード・NI225 5 分足）で 6 系列すべて描画し、水準の順序が
+  `本体 262 < q10 328.00 < q90 1206.20 < 典型 1342.30 < 経験的極端 1956.26 < GPD 2139.59` となり
+  GPD が経験的の外側に出ることを確認。コンソールエラー 0 件。回帰: indicator_ui Py 673 / JS 1006、
+  replay Py 213 / JS 296、unified 43、tickvol 37、common 81 — 全通過。
+
+## ISSUE-240: [仕様追加] ティックボリュームに btlm_trail の仕様（回帰トレンド・帯・β/σ/実績率）を追加する（2026-08-01）
+
+- **重大度**: —（機能追加）
+- **ステータス**: RESOLVED（2026-08-01・feature/latest-incremental-compute）
+- **依頼**: 「ティックボリュームに btlm_trail の仕様を追加しろ」。適用方式は「既存に追加（分位は共有）」
+  を依頼者が選択（2026-08-01）。
+- **参照実装（無改変・計算式を 1 行も写していない）**: `btlm_trail`（F-01 窓末尾 OLS ローリング／
+  F-05・F-06 バンド方式と分位ペア／F-08 外れ値分位ライン／F-09 バンド内実績率）。
+  `indigators/tickvol/src/trend.py` が `build_btlm_trail` / `rolling_coverage` へ委譲し、増分器は
+  1 バー入口（`window_end_scalar` / `empirical_quantile_latest` / `ols_band` / `empirical_band` /
+  `deviation_ratio` / `coverage_latest`）だけを呼ぶ。btlm_trail 本体は無改変（OCP・
+  btlm_trail_marod / ma_marod と同じ規律）。
+  - `build_btlm_trail` はソース合成（8 択）を経る契約なので、tick 数を 4 値すべてに置いた合成
+    DataFrame を渡し `source="close"` を指定する。tick 数は高値/安値/始値の区別を持たない 1 本の
+    系列であり、この写像で情報は落ちない。
+- **追加系列（8 本・計 14 本）**: `tickvol_trend_mean`（トレンド現在位置・ドット）/
+  `tickvol_trend_q{pct}`（トレンド帯・動的名）/ `tickvol_trend_off_hi`・`_off_lo`（外れ値分位線）/
+  `tickvol_trend_beta`・`_sigma`・`_band_hit_rate`（読取欄専用）。
+  - **命名の衝突回避**: 分位値（q_low/q_high/q_out）は既存の水準帯と**共有**する仕様のため、
+    帯の系列名が `tickvol_q{pct}` と完全一致してしまう。トレンド側は `tickvol_trend_q{pct}` として
+    接頭辞で分ける（同じ分位で「水準の帯」と「トレンドの帯」を並べて読む）。
+- **追加パラメータ（5 個）**: `maxbars`(100) / `band_method`(**empirical**) / `empirical_n`(500) /
+  `show_metrics`(true) / `n_cov`(250)。maxbars・empirical_n・n_cov は btlm_trail 本体と同じ既定。
+- **既定のバンド方式を btlm_trail 本体（ols）から変えた実測根拠（jp225_tick 6,000 本）**:
+  トレンドからの乖離率は右に強く歪む（歪度 5m +35.5 / 15m +4.35 / 1h +2.15）。tick 数は最小 1 の
+  計数量で、正規仮定の名目 ols は成立しない。
+  | 時間足 | 名目 | ols 実績率 | 経験分位 実績率 | ols の帯下端<1 | 経験分位の帯下端<1 |
+  |---|---|---|---|---|---|
+  | 5m | 80% | 75.6%(-4.4pp) | 79.2%(-0.8pp) | 20.6% | 1.1% |
+  | 15m | 80% | 80.8%(+0.8pp) | 79.6%(-0.4pp) | 14.8% | 0.0% |
+  | 1h | 80% | 83.2%(+3.2pp) | 80.0%(+0.0pp) | 22.6% | 0.0% |
+  | 5m | 90% | 86.0%(-4.0pp) | 89.2%(-0.8pp) | 33.8% | 4.8% |
+  | 1h | 90% | 91.6%(+1.6pp) | 89.2%(-0.8pp) | 57.5% | 0.0% |
+  経験分位は全条件で名目に近く（乖離 0.8pp 以内）、かつ帯下端が「tick 数として成立しない値」に
+  なる割合がほぼ 0。ols は最大 57.5% のバーで下端が 1 を割る。**選択肢自体は両方残す**（btlm_trail
+  と同じ語彙）。
+- **同梱の不具合是正（`readout_only` が pane 指標でどこにも出ない）**: 描画ヒント `readout_only` は
+  「描画せず読取欄だけに出す」意味だが、読取欄への登録条件が `!pane && overlayReadout` で pane 指標を
+  除外していた。そのため tickvol の β/σ/実績率は計算・配信されても**線も出ず読取欄にも出ない死荷重**
+  だった。条件へ `|| p.readout_only === true` を足す（対象は明示的にヒントを付けた系列だけなので、
+  既存指標の読取欄行は 1 行も増えない）。
+- **性能**: full 405ms（トレンド分 ≒260ms。内訳は btlm_trail の仕様どおり `_empirical_quantile_causal`
+  ×4＋回帰ローリング＋被覆率ローリング）／**足内 1 ステップ 0.93ms**。トレンドは当該バーを含む窓の
+  OLS なので形成中バーの値で動く＝`emit` で 1 点だけ求める（btlm_trail F-01 の定義どおり）。
+- **検証**: latest == full を全 14 系列で確認。実 UI（8000 ライブ）で 14 系列すべて描画し、読取欄に
+  `tickvol_trend_beta: 7.224 / _sigma: 259.864 / _band_hit_rate: 0.772` が出ることを確認。
+  コンソールエラー 0 件。回帰: indicator_ui Py 674 / JS 1009、replay Py 236 / JS 301、unified 43、
+  tickvol 51、btlm_trail 31 / marod 30 / ma_marod 43 / moving_averages 167、common 81 — 全通過。
+- **注意点（実 UI 所見）**: 1 ペインに 14 系列となり、外れ値分位線の上端（既定 q_out=0.99 で実測 3,861）
+  がペインの自動スケールを引き上げるため、本体ヒストグラムの見かけの高さが下がる。線を減らす場合は
+  `show_metrics` を切る／`q_out` を空にするのが既存の operating point（いずれもパラメータで可能）。
+
+## ISSUE-241: [調査・実測] 符号付きティック（ゼロ起点・上昇 +1／下落 −1）の有意性 → 方向情報は無い（2026-08-01）
+
+- **重大度**: —（仕様検討のための調査。実装は行っていない）
+- **ステータス**: RESOLVED（2026-08-01・結論: 方向としての採用は**却下**）
+- **依頼**: 「ゼロを起点に、ティックが上昇 +1、下落 −1 を検討したいが有意性を調査しろ。現在は積み上げ式だが、
+  上昇下落を明確に分離したい」。
+- **定義（測る前に固定）**: `mid=(bid+ask)/2`（既存の唯一規則 `marketdata.tick_m1._ts_and_mid`）／
+  `s_i = sign(mid_i − mid_{i−1})`／足の値は `n`(=現行 tickvol) / `up` / `dn` / `delta = up − dn` /
+  `imb = delta/n`。**等値 tick は実測 0.0%** のため符号判定に曖昧さは無い（tick 間隔 ~100ms・
+  mid 変化の中央値 3.0 ポイント・スプレッド中央値 5.11）。
+- **標本**: jp225_tick の生ティック parquet。学習期間 2026-02〜07（155 日・5m 34,214 バー）と
+  **別期間 2024-01〜06（155 日・5m 33,856 バー）** の 2 期間で同一手順を反復した。
+- **検定**: Newey–West（HAC）標準誤差つき回帰の t 値と、ブロック順列検定（予測子のみブロック単位で
+  並べ替え・2,000 反復）の 2 通り。系列依存を無視した t 検定は使わない。
+
+| 検定 | 5m | 15m | 1h |
+|---|---|---|---|
+| 方向 corr(delta_t, r_(t+1)) 2026 | +0.0043 (p=.58/.43) | −0.0138 (p=.26/.15) | +0.0108 (p=.64/.57) |
+| 方向 corr(delta_t, r_(t+1)) 2024 | +0.0010 (p=.90/.85) | +0.0069 (p=.65/.47) | +0.0489 (p=.02/.007) |
+| 符号一致率（2026 / 2024） | 50.32% / 49.31% | 49.91% / 50.34% | 50.36% / 50.87% |
+| **corr(up, dn)** | +0.9924 / +0.9864 | +0.9972 / +0.9950 | +0.9992 / +0.9984 |
+| 変動 corr(n, \|r_(t+1)\|) | +0.359 / +0.356 | +0.325 / +0.318 | +0.181 / +0.198 |
+| 変動 corr(\|delta\|, \|r_(t+1)\|) | +0.209 / +0.223 | +0.198 / +0.200 | +0.145 / +0.123 |
+
+- **結論 1（方向は有意でない）**: 全時間足・両期間で方向の相関はゼロ近傍・符号一致率は 50% と区別できない。
+  名目有意は 2 件だけ（2024 1h corr p=.007／2024 5m 一致率 p=.016）だが、**いずれも他期間で再現せず**
+  （2026 1h は p=.57、2026 5m 一致率は 50.32% で p=.25）、しかも 5m の一致率は 49.31%＝**50% 未満**
+  （コインより悪い）。約 24 検定に対し α=.05 の偶然期待は約 1.2 件で、この 2 件はその範囲内。
+  期間 4 分割でも符号が反転する（5m: −0.015 / −0.001 / +0.023 / +0.009）。
+- **結論 2（「上昇下落の分離」が分離になっていない）**: `corr(up, dn) = 0.986〜0.999`、`up/n` の平均は
+  0.5001〜0.5019。up と dn はほぼ同一の系列（どちらも ≒ n/2）で、`|r_(t+1)|` への相関も
+  0.3586 vs 0.3585（5m）と同値。**分けても 2 本の同じ線が並ぶだけ**で、差分 `delta` は
+  `Var(delta)/E[n] = 0.83〜0.97`（公平コイン=1.0）＝コイン投げ以下のばらつきしか持たない
+  （1 未満＝bid-ask バウンスによる tick 単位の平均回帰。トレンド構造は無い）。
+- **結論 3（現行の積み上げの方が強い）**: 変動幅の予測は `n`（現行 tickvol）が `|delta|` を全条件で上回る。
+- **結論 4（ローソクの劣化コピー）**: `corr(delta_t, r_t) = 0.72/0.65/0.53`、`sign(delta)=sign(r)` の
+  一致率は 81.9%/78.6%/72.7%。**18〜27% の足でローソクの色と符号が食い違う**（陽線なのに delta<0）ため、
+  「上昇/下落」として読ませると誤読を生む。
+- **原理的な限界（重要）**: 本配信は**気配（bid/ask）のみで約定データを持たない**。したがって真の売買
+  不均衡（order flow imbalance）は原理的に構成できない。mid の tick rule が拾うのは主に bid-ask バウンス
+  である（結論 2 の分散比がその証拠）。代替として気配数量の偏り `(bidVol−askVol)/(bidVol+askVol)` も
+  測ったが、`corr(qi_t, r_t)=+0.0006` / `corr(qi_t, r_(t+1))=+0.0041`（5m・20 日）で情報を持たない。
+- **唯一の生存項目（方向ではない）**: `n` を統制した `|delta|` は `|r_(t+1)|` に対し増分有意
+  （5m t=+7.28/+9.22、15m t=+4.79/+4.70。ただし 1h は 2024 で t=+1.73 p=.084 と非有意）。
+  これは「片寄りの**強さ**」であって上昇下落の**方向**ではない。採用するなら別提案として扱う。
+- **判定**: 依頼の形（ゼロ起点・+1/−1 で方向を分離）での採用は却下。実装は行っていない。
+
+- **追補（RS 検証・依頼 2026-08-01）**: 「RS」を 2 通りに読めるため両方測った。**結論は一致**。
+  - **(a) RS = up/dn → RSI 形式インデックス** `RSI_tick = 100 − 100/(1+RS) = 100·up/n`
+    （等値 tick が 0.0% なので `up+dn=n`＝変換がそのまま成立）。
+    | 時間足 | 分布 5%〜95% | ≧70 の出現率 | ≦30 の出現率 | 次足への corr（p） | 方向的中率 |
+    |---|---|---|---|---|---|
+    | 5m | 45.3〜54.9 | 0.275% | 0.240% | +0.0020 (.61/.70) | 50.26% |
+    | 15m | 47.3〜52.8 | 0.035% | 0.018% | −0.0086 (.27/.35) | 49.89% |
+    | 1h | 48.5〜51.4 | **0.000%** | **0.000%** | +0.0232 (.24/.21) | 50.25% |
+    **RSI として成立しない**: 1 時間足は実測レンジが 42.6〜61.0 で買われすぎ/売られすぎ水準に
+    **一度も到達しない**。閾値を狭めれば「反応」するが、それは 50 近傍の微小な揺れを拡大しているだけ。
+    予測力も全時間足で非有意（HAC・ブロック順列とも）。価格 RSI(14) との相関は 0.13〜0.15。
+  - **(b) R/S 分析（ハースト指数 H）**。推定量の有限標本バイアスを避けるため、**同じ値を並べ替えた
+    帰無分布**（200 回）と比較した。
+    | 対象 | 5m | 15m | 1h | 判定 |
+    |---|---|---|---|---|
+    | `n`（現行 tickvol） | 0.801 (z=+24.0) | 0.768 (z=+14.7) | 0.738 (z=+6.9) | **有意に持続** |
+    | `delta`（偏りの絶対量） | 0.601 (z=+5.0) | 0.615 (z=+4.5) | 0.638 (z=+3.4) | 有意 |
+    | `imb = delta/n`（偏りそのもの） | 0.553 (p=.265) | 0.561 (p=.410) | 0.562 (p=.955) | **非有意** |
+    tick 符号列 s_i（±1・n=1,502,485）の H=0.5322 に対し、同長の公平コインは H=0.5189±0.0045。
+    **`delta` に見えた持続性は偏りの持続ではなく `n`（tick 数）の持続を写したもの**で、スケールを
+    外した `imb` では帰無と区別できない＝**偏りそのものはランダムウォーク**。
+  - (a)(b) は独立の手続きだが同じ結論に到達する: 偏りを RS 化しても指標として機能しない。
+- **追補 2（コップ方式・容量・ピーク判定の実測 2026-08-02）**: 「ゼロ起点の単純累積」が却下されたのを受け、
+  依頼者提案の **コップ方式**（容量 c を超えた分だけを上下 2 つのコップへ n 区間累積）を検定した。
+  - **分離は成立する（唯一の前進）**: 閾値で切ると up/dn の相関が **0.99 → 0.53〜0.70（5m）/
+    −0.35〜+0.24（1h）** へ落ちる。当初の目的「上昇下落の分離」は、線形の差分ではなく閾値超過なら達成できる。
+  - **回数と量は別物**: 溢れた「量」は溢れた「回数」で 41〜74% が説明できない（相関 0.51〜0.76）。
+    容量を上げるほど両者は近づく（95% 点で 0.76）＝薄い裾では回数が支配的。
+  - **容量は確定できない**:
+    | 基準 | 結果 |
+    |---|---|
+    | GPD 適合（ForwardStop） | 2026 5m=95%点／**2024 5m=選択不能**（止まらず）／1h=85%点前後（両期間）＝**5m で再現しない** |
+    | 指標の安定性 | 分離度が c に対し単調（5m +0.689→+0.607）で**高原が無い**＝最適点が定義できない |
+    | 水準の期間安定性（用途「どこまで行ったら極端か」） | どの c でも 2026/2024 で 90% 点が **43〜77% ずれる**。絶対水準は定義不能 |
+    → 使えるのは相対水準（直近 N 本での分位）のみで、それは tickvol の水準線が既に採っている方式。
+  - **「今がピーク」は判定できない**: U_t が直近 k 本の最大なら宣言し、m 本以内に更新されなければ的中とする
+    ルールを 18 条件（k=20/50/100 × m=10/20/50 × 上側/差 × 2 期間）で実測。宣言時の的中率 **41.9%** に対し
+    「全時点で言い続ける」ベース率は **49.8%**＝**選ぶこと自体が逆効果**。ブロック順列帰無（41.7%）とも一致し
+    情報が無い。名目有意の 5 件はすべて帰無より**低い**方向。理由は累積が重なり窓で緩やかに動くため、
+    直近最大＝上昇中でその後も更新されやすいこと。
+  - 帰無のブロック長は窓長の 10 倍（1,000 本）に取り、窓の重なりが作る自己相関を壊さない作りにした。
+- **⚠ 本調査中の誤報告と訂正（2026-08-02）**: 「溢れの深さは強く持続（H=0.80〜0.99・両期間で再現）」と
+  報告したが、**検定が成立していなかった**。実測側は 100 本の重なり移動窓で自己相関が構成上必ず入るのに、
+  帰無側は値を並べ替えてそれを壊していたため、有意になるのが当然だった。重なりを除くと 5m で H=0.60
+  （帰無 0.55）、1h は非有意。**「深さが量のばらつきの 48〜63%」も同じ重なり窓での分解のため未確定**とする。
+  再発防止をメモリへ記録（移動窓・累積など構成上の自己相関を持つ量に並べ替え帰無を使わない）。
+- **調査全体の判定**: 符号付きティックは、単純累積・RS 化・コップ方式（容量確定・ピーク判定）のいずれの
+  形でも指標として成立しない。**実装は行っていない**。唯一の確定的な前進は「閾値超過なら上下を分離できる」
+  という構成上の事実のみで、それを使う用途は見つかっていない。
+
+
+## ISSUE-242: [仕様追加] 上昇／下落ティックボリュームを新規指標として追加する（2026-08-02）
+
+- **重大度**: —（機能追加。データ基盤の追加列を伴う）
+- **ステータス**: RESOLVED（2026-08-02・feature/latest-incremental-compute）
+- **依頼**: 「n 区間累積値のティックボリュームを計測する指標なので、新規で作成しろ」「n は動的。
+  上昇と下落を別々の 2 本でバーで描け」（依頼者指定 2026-08-02）。
+- **前提の欠落（着手前に判明）**: 配信データに方向の内訳が無く `volume`（合計ティック数）しか無い。
+  ISSUE-241 の調査で使った up/dn は生ティック parquet からその場で数えたもので、配信経路には存在
+  しなかった。よって指標追加ではなく**データ基盤の拡張**が先に要ることを報告し、承認を得て実施した。
+- **データ基盤（既存を壊さない追加のみ）**:
+  | 層 | 変更 |
+  |---|---|
+  | `marketdata/csv_schema.py` | `UPDOWN_COLUMNS`（up/dn）・`SUM_COLUMNS`・`header_for` を追加。`HEADER` は不変 |
+  | `marketdata/tick_m1.py` | `ticks_to_m1` が up/dn を集計。CSV は**持つときだけ末尾へ 2 列**追加 |
+  | `marketdata/resample.py` | up/dn を volume と同じく合算（既定の "last" では誤り） |
+  | `marketdata/rollup.py` | `_bar_to_dict` / `merge_same_period` / CSV 行・ヘッダが up/dn を運ぶ |
+  - **方向の定義**: `sign(mid_i − mid_{i−1})` を **その分バーの中で** 取る。分・日をまたいで比べない。
+    理由はチャンク独立性の契約（per-day concat == whole）で、またぐと処理単位で値が変わり壊れる。
+    代償として各分の先頭ティックは方向を持たず `up + dn = volume − 分数` になる。等値ティックは
+    どちらにも数えない（実測 0.0%）。
+  - 既存 CSV（jp225_m1 / jp225_daily / sample）は up/dn を持たないため**列も挙動も不変**。
+- **再生成**: `jp225_tick_m1.csv`（4,026,267 行・82 秒）と `rollups/jp225_tick/*`（39.9 秒）を再構築。
+  実施前に両者をバックアップ（`*.bak-updown-*`）。行数は再構築前後で一致。
+- **指標（新規パッケージ `indigators/tickvol_updown`）**: 各足の up/dn を直近 `window_n` 本ぶん合計し、
+  ゼロを起点に 2 本のバーで描く（上昇＝正・緑／下落＝負・赤）。`window_n` は動的（既定 20）。
+  `latest_meta` は窓長確定の非再帰集約として有限 tail（window_n + 8）を宣言＝latest は full と厳密一致。
+  up/dn を持たない ref は `missing_column`（値を捏造しない）。
+  **足内更新には登録しない**（形成中バーは方向内訳を持たず、窓に NaN が入ると累積が消えるため）。
+- **⚠ 実測上の性質（採用は依頼者裁定・ISSUE-241）**: 上昇と下落はほぼ同じ大きさで動くため 2 本は
+  ほぼ対称になる（移動累積の相関 0.9993〜0.9999・全期間累積 1.000000・最終差 0.188%）。実 UI でも
+  上下がほぼ鏡像に見える。差し引いた 1 本にすると残差はコイン投げ以下（分散比 0.83〜0.97）。
+- **表示形式の追補（依頼者指示 2026-08-02「1 本で表示」）**: 2 本のバーは実 UI で予測どおり
+  ほぼ鏡像になり読めなかったため、**1 本のバー（上昇 − 下落）** へ変更した。値の符号が優勢な側を
+  表し、バーごとの色を符号で切り替える（正＝緑・負＝赤。back が per-point ``color`` で与える）。
+  系列は `tickvol_updown_up` / `_dn` の 2 本から `tickvol_updown` の 1 本へ。
+- **検証**: 実 UI（8000 ライブ・NI225 5 分足・n=20）で 1 本描画・コンソールエラー 0 件
+  （最新 −62。1,481 本の内訳は負 869 / 正 612 で符号どおり色が分かれる）。
+  回帰: marketdata 217 / indicator_ui Py 683 / JS 1009 / replay Py 236 / JS 301 /
+  tickvol_updown 12 — 全通過。
+
+
+## ISSUE-243: [調査・実測] 疑似VWAP（ティック回数加重平均価格）の成立判定 → 別物だが方向情報は無く、既存列近似で 8〜9 割再現（2026-08-02）
+
+- **重大度**: —（仕様検討）
+- **ステータス**: IN_PROGRESS（Phase 1 実測完了・採否は依頼者裁定待ち）
+- **依頼**: 「疑似VWAP = (価格帯別ティック回数 × 該当価格) / ティックボリューム を検討したい」（2026-08-02）。
+  確定事項（同日 y/n）: 算出経路＝M1 に価格合計列を追加（価格帯を経由しない）／集計窓＝直近 N 本
+  ローリング／進め方＝性質の実測を先に。
+- **定義の同値性**: 依頼式は価格帯幅 → 0 の極限で「窓内全ティックの mid の単純平均」に一致する。
+  `疑似VWAP_t(N) = Σ_{i=t-N+1..t} PV_i / Σ_{i=t-N+1..t} V_i`（`PV_i` = バー内 Σmid、`V_i` = tick 数）。
+  価格帯経由は同じ量の**量子化近似**にすぎない。
+- **実測**: `tools/verify_pseudo_vwap.py`（新規・読み取り専用）。jp225_tick の生ティック parquet。
+  2024 全年（M1 333,488 本）／2026-01-01〜07-31（197,601 本）× 5m/15m/1h × N=20/50/100。
+  集計は本番の `ticks_to_m1` / `repair_day_outliers` / `resample_ohlc_tf` をそのまま使用（式を写していない）。
+
+  | 測定 | 結果 | 判定 |
+  |---|---|---|
+  | 1. 非退化（事前登録ゲート） | `median(\|疑似VWAP − SMA(close,N)\|) / median(TR)` = **0.148〜0.476**（閾値 0.10） | **通過**。SMA の再発明ではない |
+  | 1b. 時間加重との重複 | 滞在秒加重平均（既存 dwell 相当）との差は SMA との差の **0.84〜1.03 倍** | 既存 dwell とも別物 |
+  | 2. 依頼原式（価格帯経由）の量子化誤差 | 10pt グリッド＝信号の **0.20〜6.3%**／最小価格単位 0.0255＝**~1e-6%** | 帯を経由しない設計が正当 |
+  | 2b. **既存列だけの近似で足りるか** | `Σ(hlc3×volume)/Σvolume` と厳密値の差は信号の **4.1〜22.4%**（絶対 0.93〜9.06pt） | **新規列で得る増分は 1 割前後** |
+  | 3. 方向情報 | `sign(close − 疑似VWAP)` の将来 h=1/5/20 本リターン。非重複標本・ブロック順列（10N 本）・Holm 補正で **54 条件すべて非有意**（生 p 最小 0.024＝5m/N=50/h=1 → Holm 後 0.648）。2024/2026 で符号一致もしない | **情報なし** |
+  | 4. 形成中バーの厳密性 | 部分窓で `(Σ確定 pv + Σ形成中 mid)/(Σ確定 vol + 形成中 tick 数)` が厳密値と一致（最大誤差 **3.6e-11**＝float 丸めのみ） | 足内更新は厳密に可能 |
+
+- **測定 3 の作り**: 移動窓の構成上の自己相関を帰無で壊さないため、標本は h 本ごとの非重複、
+  帰無は状態系列のブロック順列（ブロック長 = 10N 本相当）。ISSUE-241 の誤報告（並べ替え帰無）の再発防止。
+- **測定 3 の限定**: 検定したのは「終値が疑似VWAP の上か下か」という**方向シグナル 1 用法のみ**。
+  乖離率（押し目買い）用法は未検定（本リポジトリでは SMA 乖離率にエッジが実測されている）。
+- **判断待ちの論点**: 「厳密な `pv` 列を足す（データ基盤 4 ファイル + M1 CSV・ロールアップ全再生成）」
+  対価が、既存列近似に対する **信号の 1 割前後の精度** と足内更新の厳密性のみである点。
+- **追加実測（測定 5・依頼者指示「乖離率の検定を先に」2026-08-02）**: 下方乖離ロング（押し目買い）で
+  疑似VWAP乖離率 と SMA乖離率 を比較。閾値は乖離率の因果ローリング経験分位（当該バー除外・
+  `common.marod_bands.quantile_bands`・q=0.10）、エントリーは h 本重ならないよう間引き、帰無は
+  将来リターン系列のブロック順列（ブロック長 10N 本）。集合は「疑似VWAP のみ成立／SMA のみ成立／
+  両方成立／各全体」の 5 つで、**「疑似VWAP のみ成立」にエッジがあるか**が pv 列を足す価値の直接判定。
+
+  | 足 | 期間 | 結果 |
+  |---|---|---|
+  | 5m/15m/1h | 2024 / 2026(1-7月) | `pvwap_only` **0/30 件有意**（Holm 後）。生 p 最小 0.012（2026 15m N=50 h=5 +12.8bp）だが 2024 同条件は −1.3bp で符号不一致。`sma_only` 0/32・`both` 0/36・各全体 0/36 |
+  | 1D | 2012-06〜2018 / 2019〜2026-07 | `pvwap_only` は**標本不足で 1 件も成立せず**＝日足では両者がほぼ同一のエントリーを出す。`both`/各全体も 0/12 |
+
+  - **日足は検出力が足りず結論不能**（エントリー 20〜76 件・帰無ブロック数 2〜9。N=100 は
+    ブロック長 1,000 本が系列長 1,700 本に迫り帰無が退化する）。かつティック履歴が **2012-06 以降**
+    しか無いため、日足の疑似VWAP はそもそも標本を増やせない**構造的な上限**がある。
+  - よって判定材料になるのは日中足であり、そこでは `pvwap_only`（エントリー 200〜500 件）に
+    エッジが無い。**疑似VWAP は SMA 乖離率を上回らない。**
+- **Phase 1 の総括**: 疑似VWAP は SMA とも滞在秒加重とも**別の量**（測定 1 通過）だが、
+  (a) 方向シグナル・(b) 乖離率押し目買い のいずれでも**情報を持たない**（測定 3・5）。
+  さらに (c) 既存列のみの `Σ(hlc3×volume)/Σvolume` が厳密値の 78〜96% を再現する（測定 2b）。
+  実装するとすれば根拠は「表示用の厳密な平均価格」と「足内更新の厳密性」のみ。
+- **追加実測（測定 6・依頼者指示「別の用法をさらに検定」2026-08-02）**: 3 用法を検定した。
+  A: pv 固有残差 `resid = 疑似VWAP − Σ(hlc3×volume)/Σvolume`／B: セッションアンカーVWAP
+  （下方乖離ロング・上方乖離反転・上抜け順張り）／C: 乖離幅 `spread = |close − 疑似VWAP|/close`
+  のボラティリティ予測。状態変数は因果分位で上位群/下位群に分け、帰無はブロック順列（10N 本）、
+  標本は h 本ごとの非重複、Holm は族内補正。5m/15m/1h × N=20/50/100 × h=5/20 × 2 期間。
+
+  | 用法 | 結果 |
+  |---|---|
+  | A: resid → 将来リターン | 0/36 有意 |
+  | A: resid → 将来 RV | 2/36（期間再現なし） |
+  | B: セッションVWAP 3 用法 → 将来リターン | いずれも 0/12 |
+  | C: spread → 将来リターン | 1/36 |
+  | C: spread → 将来 RV | 21/36。ただし**対照 `spread_sma`（SMA 版）が 25/36 でより強い**＝ボラの自己持続であり疑似VWAP 固有ではない |
+  | **C固有: Δspread = spread − spread_sma → 将来 RV** | **6/36。符号は 33/36 が負で一貫** |
+
+- **✅ 確定した唯一の有効用法（ISSUE-243 の結論）**: `Δspread`（＝疑似VWAP と SMA の乖離幅の差。
+  **pv 列を足して初めて作れる量**で、OHLCV からは作れない）は **短期実現ボラティリティの負の予測子**。
+  事前登録条件 **5m・N=20・h=5** を、一度も観測していない第三期間で確認し、交絡も潰した。
+
+  | 標本 | 上位群 RV | 下位群 RV | 群間差 | p |
+  |---|---|---|---|---|
+  | 2019–2023（OOS・事前登録）| 15.05 bp | 18.63 bp | **−3.58 bp** | 0.0001 |
+  | 2024 | 17.02 | 21.36 | −4.34 | 0.0001 |
+  | 2026(1–7月) | 22.20 | 30.31 | −8.11 | 0.0001 |
+  | 上記に `spread_sma` 中位帯を条件付加 | — | — | −3.11 / −3.81 / −8.22 | 0.0001 |
+  | さらに `tickvol` 中位帯も条件付加 | 13.39 / 14.30 / 20.34 | 16.79 / 18.51 / 26.23 | **−3.40 / −4.21 / −5.90** | 0.0001 |
+
+  - **対照が逆符号**: `spread_sma` 単体は RV を**正**に予測する（+6.94 bp）。Δspread はその裏返しではない。
+  - **既存 tickvol の言い換えでもない**: 窓合計 tickvol を中位帯へ固定しても効果はほぼ減衰しない
+    （−18〜22% の RV 低下が残る）。
+  - **限定**: 確立したのは 5m・N=20・h=5 のみ（他足・他窓は探索止まりで未確立）。方向性の情報は
+    どの用法にも無い（リターン系は全滅）。**機序は未検証**（推論を事実として述べない）。
+- **追加実測（測定 7・機序の記述統計）**: Δspread 上位群 / 下位群の共変量中央値（5m・N=20・3 期間とも同方向）。
+
+  | 共変量 | 上位群（静かになる） | 下位群（荒れる） |
+  |---|---|---|
+  | 終値 − 疑似VWAP | **+25.9 / +50.8 / +102.8 pt** | −10.1 / −17.8 / −19.8 pt |
+  | 疑似VWAP − SMA | −8.1 / −14.3 / −28.4 pt | −7.4 / −11.8 / −23.1 pt |
+  | トレンド効率（net/path）| 0.29 / 0.32 / 0.34 | 0.34 / 0.34 / 0.36 |
+  | 過去 RV（直近 N 本）| 30.1 / 33.5 / 49.0 bp | 32.5 / 36.4 / 55.6 bp |
+  | 窓 tickvol | 1841 / 2928 / 6827 | 1705 / 2906 / 6880 |
+
+  - Δspread の上位 / 下位は実質的に「終値が疑似VWAP の**上か下か**」の分離である。
+  - 窓 tickvol は両群でほぼ同一（比 0.99〜1.08）＝ 既存 tickvol 指標の言い換えではない（条件付 2 と整合）。
+  - 上位群は直近 RV が 7〜12% 低い → **過去 RV 自体が残る交絡**であることが判明したため次を実施。
+
+- **追加実測（過去 RV の交絡除去・条件付 3）**: SMA 乖離幅・tickvol に加え**過去 RV も中位帯へ固定**しても効果は
+  減衰しない（むしろ拡大）。5m・N=20・h=5。
+
+  | 期間 | 上位群 | 下位群 | 群間差 | p |
+  |---|---|---|---|---|
+  | 2019–2023 | 11.64 bp | 15.58 bp | **−3.93 bp（−25%）** | 0.0001 |
+  | 2024 | 12.80 | 16.75 | **−3.95 bp（−24%）** | 0.0011 |
+  | 2026(1–7月) | 17.36 | 23.69 | **−6.33 bp（−27%）** | 0.0006 |
+
+- **⚠ 「静かになる」の意味の確定（分解実測）**: 乖離幅は確かに縮む（上位群 −3.3/−4.0/−5.9 bp・
+  下位群は逆に +4.7/+5.6/+7.2 bp 広がる・いずれも p=0.0001）。しかしその要因は**価格の回帰ではない**。
+
+  | 25 本後の動き | 上位群 | 下位群 | 群間差の有意性 |
+  |---|---|---|---|
+  | **終値** | +0.55 / +0.82 / +1.24 bp | −0.30 / +0.45 / +3.88 bp | **無し**（p = 0.34〜0.58） |
+  | **疑似VWAP** | +3.17 / +2.83 / +6.69 bp | −0.74 / −0.52 / +0.21 bp | 有り（p = 0.0002） |
+
+  → **価格が止まっている間に平均が追いつく**のであって、疑似VWAP へ回帰するのではない。
+  方向性が全用法で非有意だったこととも整合する。
+
+- **追加実測（当日版・セッションアンカー VWAP のボラ予測）**: 当日累積の疑似VWAP で同じ検定を行った。
+  対照はセッション累積の単純終値平均（OHLCV だけで作れる版）。場中序盤 24 本（5m で 2 時間）は除外。
+
+  | 標本 | ローリング版（直近 N 本） | 当日版（セッション累積） |
+  |---|---|---|
+  | 素の状態 | −3.58 / −4.34 / −8.11 bp（全 p=0.0001）| −3.93 / −5.51 / −8.52 bp（全 p=0.0001）|
+  | ＋過去 RV・tickvol を中位帯へ固定 | **−3.93 / −3.95 / −6.33 bp（p ≤ 0.0011）残る** | **−1.00 / −0.71 / −2.31 bp（p = 0.1175 / 0.6229 / 0.3194）消える** |
+
+  → **当日版に固有の情報は無い**。素で有意に見えるのはボラの自己持続と出来密度で説明できる。
+  採用しうるのは**直近 N 本のローリング版のみ**。
+
+- **追加実測（成立域の広がり）**: 5m/15m/30m/1h/4h × N=10/20/50/100 × h=5/20 × 3 期間を
+  条件付 2 で走査。3 期間すべてで負かつ有意なのは **5m・N=10・h=5**（−2.05/−2.38/−3.99）と
+  **5m・N=20・h=5**（−3.40/−4.21/−5.90）の 2 条件のみ。15m 以上は 2024 で符号が反転し成立しない。
+  4h は標本不足で判定不能。
+
+- **⚠ 乖離率の既知エッジとの関係（誤解の防止）**: 「疑似VWAP だと乖離率の有意性が無い」のではない。
+  本検定では **SMA 乖離率も同じく全滅**している（日中足 0/32・日足 0/12）＝ 原子（四本値 vs ティック平均）の
+  差ではなく、本検定が既知の日足エッジを再現できていない。さらに**日足では「疑似VWAP だけが成立する日」が
+  1 件も無い**（両者がほぼ同一の判定を出す）ため、既知の SMA 日足エッジは疑似VWAP でも同様に出るはずで、
+  失われてはいない。両者に差が出るのは日中足のみで、そこでは双方ともエッジが無い。
+
+
+## ISSUE-244: [整理] ティックボリューム系の指標を整理する（上昇下落を UI から撤去・tickvol から回帰トレンドを撤去）（2026-08-02）
+
+- **重大度**: —（機能整理。データ基盤・計算コードは残す）
+- **ステータス**: RESOLVED（2026-08-02・feature/latest-incremental-compute）
+- **依頼**: 「ティックボリューム系の指標を整理する。上昇下落ティックボリュームを UI 上から削除しろ。
+  ソースコードはアーカイブとして保持しておく」「ティックボリュームから、btlm_trail を削除しろ」
+  （依頼者指示 2026-08-02）。
+- **方針**: UI から外す／計算コードはアーカイブとして残す／**データ基盤には触らない**。
+
+### 作業 1: 上昇下落ティックボリューム（`tickvol_updown`）を UI から撤去
+
+- **外した理由（実測）**: 上昇と下落がほぼ鏡像（移動累積の相関 0.9993〜0.9999・全期間累積
+  1.000000・最終差 0.188%）。1 本化しても残差はコイン投げ以下（分散比 0.83〜0.97）。
+  符号付きティックに方向情報が無いことは ISSUE-241 の 18 条件で確定済み。
+- **外した結線**: `call_binding.py`（`_TABLE` エントリ・`_tickvol_updown_latest_meta`・
+  `_TICKVOL_UPDOWN_MARGIN`）／`golden/catalog_defaults.json`／`test_solid_binding_spec_guards.py`／
+  `catalog.js`（`IndicatorDef` と `REGISTRY`）／JS テスト 6 本の件数。
+- **削除**: `api/tests/test_tickvol_updown_binding.py`（結線そのもののテスト・依頼者承認済み）。
+- **残したもの**: パッケージ `indigators/tickvol_updown/`（単体テスト 12 件は通る）、
+  `marketdata` の `up`/`dn` 列と再生成済み CSV。
+- **front だけ外せない理由**: `catalog_schema_sync.test.js` が golden の全 compute_id を front
+  レジストリに要求するため、back `_TABLE` と golden も同時に外す必要がある。
+
+### 作業 2: ティックボリューム（`tickvol`）から回帰トレンド（btlm_trail 仕様・ISSUE-240）を撤去
+
+- **外した系列 7 本**: `tickvol_trend_mean` / `_q{pct}`（動的）/ `_off_hi` / `_off_lo` /
+  `_beta` / `_sigma` / `_band_hit_rate`。
+- **外したパラメータ 5 個**: `maxbars` / `band_method` / `empirical_n` / `show_metrics` / `n_cov`。
+- **残したもの**: 本体ヒストグラム・正常帯 `tickvol_q{pct}`・外れ値水準 3 本（ISSUE-239）と、
+  パラメータ `window_n` / `q_low` / `q_high` / `q_out` / `k_events`。
+- **触った層**: 指標（`tickvol/src/{__init__,lwc_chart}.py`）／結線（`call_binding.py` の
+  `params_defaults`）／増分（`incremental/tickvol.py` の `_State.trend`・`deviations`・`_trend_at`・
+  emit のトレンド節。帯の割当が 4 本 → 2 本）／golden／front `catalog.js`／テスト 4 本。
+- **`indigators/tickvol/src/trend.py` は残す**（アーカイブ）。単体テスト `test_trend.py` も通る。
+
+### アーカイブの所在
+
+`indigators/tickvol_updown/ARCHIVE.md` に両方の「外した理由」「残したもの」「復活手順（触る
+ファイルの完全なリスト）」を記録した。`tickvol_updown/src/__init__.py` と
+`tickvol/src/trend.py` の docstring 冒頭にも「UI 未結線のアーカイブ」を明記した。
+
+### 検証
+
+- 回帰: indicator_ui Py 674 / JS 1009、replay Py 236 / JS 301、marketdata 217、common 81、
+  tickvol 51、tickvol_updown 12、btlm_trail 31 — **全通過**。
+  （指標パッケージは top-level 名 `src` が衝突するため 1 パッケージずつ実行する。）
+- 同期契約: `test_catalog_schema.py` ↔ `catalog_schema_sync.test.js` が両方緑
+  （結線の外し漏れはここで落ちる）。
+- 実 UI（8000・NI225 5 分足・ライブ／リプレイ両モード）: 指標一覧に「上昇下落ティックボリューム」が
+  出ないこと、`tickvol` ペインが本体＋正常帯 2 本＋水準線 3 本のみ（紫のトレンド線・帯が出ない）で
+  あること、パラメータ欄が 5 個であること、コンソールエラー 0 件を確認。
+  なお本検証中に ISSUE-245（撤去した指標の凡例行が保存状態から残る）を検出し、同時に是正した。
+
+
+## ISSUE-245: [不具合・実測再現] 指標を UI から外すと、保存済み設定に残った instance が「死んだ凡例行」として残る（2026-08-02）
+
+- **重大度**: Medium（撤去した指標を適用済みだったユーザーだけに出る。描画・計算は行われない）
+- **ステータス**: RESOLVED（2026-08-02・feature/latest-incremental-compute）
+- **事象**: ISSUE-244 で `tickvol_updown` を UI から外した直後、実 UI（8000 ライブ）の凡例に
+  `tickvol_updown` の行が残った。ラベルは翻訳されず raw な指標 ID のまま、系列もデータも無い。
+  `localStorage["live:indicatorUi.applied.v1"]` に当該 instance が残っていることが実測で確認できた。
+- **真因**: **在席の権威はカタログ 1 つなのに、保存状態がそれと独立にカタログ外の指標を保持していた。**
+  `indicator_state_store.rebuildApplied` は `_catalog.get` が無い instance を compute/描画から
+  除外する（`if (!def) continue`）が、**`_state.applied` からは落とさない**。一方
+  `indicator_controller._renderLegend`（`:960-977`）は `_state.applied` をそのまま行に写し、
+  `def` が無い場合は `inst.indicatorId` をラベルにフォールバックする。結果、状態とカタログの
+  不整合がそのまま凡例へ出た。
+- **対策（根本）**: 復元の入口で不整合を作らない。`indicator_state_store._pruneUnknown` を新設し、
+  `_restoreRun` が `loadApplied()` した直後に**カタログに存在しない indicatorId を除去**してから
+  `_commitState` する。除去が発生したときだけ `saveApplied` で永続化へ書き戻す
+  （次回起動でゴミが再登場しない・除去が無ければ書き込まない）。
+  凡例側のフォールバック表示は防御として残す（症状を隠す修正はしない）。
+- **検証**:
+  - 回帰テスト新設 `web/tests/restore_prunes_unknown_indicator.test.js`（3 件）:
+    状態に残らない／永続化へ書き戻す／全件既知なら落とさず書き込まない。
+  - 実 UI（8000）: 再読込後の凡例は `moving_averages` / `btlm_trail` / `tickvol_bands` /
+    `ティックボリューム` の 4 行のみ。`localStorage` の保存 ID も 4 件へ縮小。
+    ページ全体に `tickvol_updown` の文字列は 0 件。コンソールエラー 0 件。
+  - リプレイモードでも同一（カタログ 26 件・`tickvol` は 5 パラメータ）。
+  - 回帰: indicator_ui JS 1012（+3）・replay JS 301 — 全通過。

@@ -17,6 +17,10 @@
 //
 // ★ upstream JS API（addLineSeries / applyOptions 等）は一切参照しない（properties_dialog.js §8.4 と同一規律）。
 
+// 期間プリセットの換算・提示は usecase の純関数が唯一の判定源（基本設計_期間プリセット.md §8.2）。
+//   本モジュールは DOM 生成とイベント配線のみを担い、換算規則・提示規則を再実装しない。
+import { parsePeriodInput, presetsFor } from '../../usecase/period_presets.js';
+
 // i18n 解決器を持たないプロトタイプ向けの簡易ラベル化（キー末尾を表示）。
 export function humanizeKey(key) {
   if (key === null || key === undefined) {
@@ -312,6 +316,222 @@ export function buildWindowCompound(field, ctx) {
   return wrap;
 }
 
+// period（期間入力＋プリセット・基本設計_期間プリセット.md §6.1/§6.3/§7）。
+//
+// 数値そのもの（`50`）に加えて期間表記（`5d` / `3M` / `1年`）を受理し、暦期間 → 実バー本数の
+//   実測換算（usecase/period_presets.js）で本数へ確定する。プリセットは当該パラメータの
+//   min/max と実効計算時間足から決まる（提示規則は usecase 側の純関数が唯一の判定源）。
+//
+// 期間コンテキスト（datasetRef・実効計算時間足）はホストが `ctx.periodContext()` で供給する。
+//   未供給（旧ホスト・SSR/単体テスト）のときはプリセットを出さず、数値のみを受け付ける
+//   テキスト入力へ退化する（機能の欠落であって障害ではない・F-P2/F-P3 と同じ扱い）。
+//
+// 値の確定タイミング（§7.3）:
+//   - 入力中の文字列が純数値なら即時 setValue（従来の number コントロールと同じ即時検証を保つ）。
+//   - 期間表記は blur / Enter で確定し、入力欄の表示を換算後の本数へ置き換える。
+export function buildPeriod(field, ctx) {
+  const doc = ctx.doc;
+  const wrap = doc.createElement('div');
+  wrap.className = 'prop-input prop-period';
+  wrap.dataset.propName = field.name;
+
+  const input = doc.createElement('input');
+  input.type = 'text';
+  input.className = 'prop-input prop-input-text prop-period-input';
+  input.dataset.propName = field.name;
+  input.value = field.value === null || field.value === undefined ? '' : String(field.value);
+  input.title = '本数（例 50）または期間（例 5d / 3M / 1年）を入力できます';
+  input.placeholder = '50 / 5d / 3M';
+
+  const err = doc.createElement('div');
+  err.className = 'prop-period-error';
+  err.dataset.propPeriodError = field.name;
+
+  const trigger = doc.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'prop-period-trigger';
+  trigger.title = '期間から選ぶ';
+  trigger.textContent = '⏱';
+
+  const pop = doc.createElement('div');
+  pop.className = 'prop-period-pop is-hidden';
+
+  const periodContext = () => (
+    typeof ctx.periodContext === 'function' ? (ctx.periodContext() ?? null) : null
+  );
+
+  const setError = (message) => {
+    err.textContent = message ?? '';
+    wrap.classList.toggle('has-error', !!message);
+    // 未解決の入力エラーは OK を抑止する（ホストが対応している場合のみ。非対応ホスト＝
+    //   単体テストの簡易 ctx や旧ホストでは従来どおり表示のみ）。
+    if (typeof ctx.setPendingError === 'function') {
+      ctx.setPendingError(field.name, message ?? null);
+    }
+  };
+
+  const setOpen = (on) => {
+    if (typeof pop.classList?.toggle === 'function') {
+      pop.classList.toggle('is-hidden', !on);
+    }
+  };
+
+  const isOpen = () => !!(pop.classList?.contains && !pop.classList.contains('is-hidden'));
+
+  // プリセット一覧を開くたびに組み直す（実効計算時間足は `timeframe` パラメータの変更で動く）。
+  const renderPop = () => {
+    pop.innerHTML = '';
+    const pc = periodContext();
+    const presets = pc
+      ? presetsFor({
+        datasetRef: pc.datasetRef, timeframe: pc.timeframe, min: field.min, max: field.max,
+      })
+      : [];
+    if (presets.length === 0) {
+      const empty = doc.createElement('div');
+      empty.className = 'prop-period-empty';
+      empty.textContent = 'この時間足で使えるプリセットはありません。';
+      pop.append(empty);
+      return;
+    }
+    // 見出し: 何を基準にした値かを画面上で判別可能にする（§7.2）。
+    const head = doc.createElement('div');
+    head.className = 'prop-period-head';
+    head.textContent = `${pc.timeframeLabel ?? pc.timeframe} 基準`;
+    pop.append(head);
+    for (const p of presets) {
+      const item = doc.createElement('button');
+      item.type = 'button';
+      item.className = 'prop-period-item';
+      item.dataset.periodUnit = p.unit;
+      item.dataset.periodBars = String(p.bars);
+      const name = doc.createElement('span');
+      name.className = 'prop-period-item-label';
+      name.textContent = p.label;
+      const bars = doc.createElement('span');
+      bars.className = 'prop-period-item-bars';
+      bars.textContent = String(p.bars);
+      item.append(name, bars);
+      if (Number(field.value) === p.bars) {
+        item.classList.add('is-active');
+      }
+      item.addEventListener('click', () => {
+        input.value = String(p.bars);
+        setError(null);
+        ctx.setValue(field.name, p.bars);
+        setOpen(false);
+        ctx.onChange();
+      });
+      pop.append(item);
+    }
+  };
+
+  // 入力確定（blur / Enter）。期間表記は換算し、本数表示へ置き換える。
+  const commit = () => {
+    const raw = input.value;
+    if (raw.trim() === '') {
+      setError(null);
+      ctx.setValue(field.name, null);
+      ctx.onChange();
+      return;
+    }
+    const pc = periodContext();
+    // 期間コンテキスト未供給時は数値のみ受理（プリセット非対応ホストでの退化動作）。
+    if (!pc) {
+      const n = Number(raw);
+      if (Number.isFinite(n)) {
+        setError(null);
+        ctx.setValue(field.name, n);
+      } else {
+        setError('数値を入力してください。');
+      }
+      ctx.onChange();
+      return;
+    }
+    const r = parsePeriodInput(raw, {
+      datasetRef: pc.datasetRef, timeframe: pc.timeframe, min: field.min, max: field.max,
+    });
+    if (r.ok) {
+      input.value = String(r.bars);
+      setError(null);
+      ctx.setValue(field.name, r.bars);
+      ctx.onChange();
+      return;
+    }
+    // 失敗時は代入せず直前の有効値を保持する（F-P1）。表示は入力文字列のまま残し、
+    //   ユーザーが修正できるようにする。
+    //   さらに「未解決の入力エラーがある状態で OK を押すと、旧値が黙って確定する」
+    //   （＝ユーザーには『設定しても元に戻る』と見える）事故を防ぐため、OK を抑止する
+    //   （§5 F-11 の OK 制御と同じ扱い）。エラーが解消されるまで確定できない。
+    setError(r.message);
+  };
+
+  // フォーカス時に全選択する。期間欄は「本数（例 180）」を表示しているため、選択せずに
+  //   `3h` と打つと既存値へ追記されて `1803h` になり、換算が上限超で失敗 → 代入されないまま
+  //   OK で旧値が確定する（ユーザーには『設定しても元に戻る』と見える）。入力＝置き換えを
+  //   既定にして、この事故を構造的に起こさない。
+  const selectAll = () => {
+    if (typeof input.select === 'function') {
+      input.select();
+    }
+  };
+  input.addEventListener('focus', selectAll);
+  // 実 UI 実測（2026-07-29）: focus だけでは不十分。既にフォーカスがある欄を再度クリックしても
+  //   focus は発火しないため、2 回目以降の打鍵が既存値へ追記された（`180` → `1801803h`）。
+  //   クリック時にも選択が潰れている（キャレットのみ）なら全選択し直し、「クリック→打鍵＝置き換え」
+  //   を常に成立させる。部分編集したい場合はクリック後に矢印キー／ドラッグ選択で行える。
+  input.addEventListener('click', () => {
+    if (input.selectionStart === input.selectionEnd) {
+      selectAll();
+    }
+  });
+
+  input.addEventListener('input', () => {
+    // 純数値は即時反映（従来の number コントロールと同じ即時検証を保つ）。
+    const raw = input.value.trim();
+    if (/^\d+(\.\d+)?$/.test(raw)) {
+      setError(null);
+      ctx.setValue(field.name, Number(raw));
+      ctx.onChange();
+      return;
+    }
+    // 数値以外を打ち始めた時点で直前のエラー表示は消す（確定時に再判定する）。
+    //   これが無いと、一度エラーになった欄が修正中もエラー扱いのままで OK が押せない。
+    if (err.textContent) {
+      setError(null);
+    }
+  });
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', (ev) => {
+    if (ev && ev.key === 'Enter') {
+      if (typeof ev.preventDefault === 'function') {
+        ev.preventDefault();
+      }
+      commit();
+    }
+  });
+
+  trigger.addEventListener('click', () => {
+    const next = !isOpen();
+    if (next) {
+      renderPop();
+    }
+    setOpen(next);
+  });
+
+  // 外側クリック/フォーカス移動で閉じる。document へリスナを残さない（ダイアログは都度生成・破棄
+  //   されるため、document 常駐リスナは解除漏れになる）。
+  wrap.addEventListener('focusout', (ev) => {
+    const next = ev && ev.relatedTarget;
+    if (!next || typeof wrap.contains !== 'function' || !wrap.contains(next)) {
+      setOpen(false);
+    }
+  });
+
+  wrap.append(input, trigger, pop, err);
+  return wrap;
+}
+
 // control_type → 生成器（§3.1）。form_model.js の CONTROL_BY_TYPE と同じ「凍結テーブル」形。
 //   新しい control_type はここへ 1 行足すだけで済む（PropertiesDialog は不変＝OCP）。
 export const CONTROL_BUILDERS = Object.freeze({
@@ -323,6 +543,7 @@ export const CONTROL_BUILDERS = Object.freeze({
   multiselect: buildMultiselect,
   color: buildColor,
   window_compound: buildWindowCompound,
+  period: buildPeriod,
 });
 
 // 未知の control_type の既定（従来の switch default と同一＝テキスト入力）。

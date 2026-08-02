@@ -82,6 +82,26 @@ class CausalComputePort(Protocol):
         """
         ...
 
+    def compute_latest_seq(
+        self,
+        indicator: str,
+        variant: str,
+        prefix_bars: "list[dict]",
+        tails: "list[list[dict]]",
+        params: dict,
+    ) -> "list[list[dict]]":
+        """足内推移の各時点の latest series を同順で返す（ISSUE-233・窓の再変換を排す）。
+
+        ``prefix_bars`` は全時点で共通の確定バー列、``tails[i]`` は時点 i の末尾差分
+        （``forming_bar.apply`` を末尾へ適用した 1〜2 本）。``compute(..., "latest",
+        prefix_bars + tails[i], ...)`` を各 i について呼んだ結果と **同値**である。
+
+        差は「共通の窓を 1 回だけ計算源の表現へ変換し、時点ごとには末尾だけを差し替える」
+        点だけ。1 ステップの限界費用を指標計算そのものだけにするために要る（実測: 変換を
+        毎回行うと 1 ステップ 2.1ms・指標計算は 0.36ms）。
+        """
+        ...
+
 
 @runtime_checkable
 class IntrabarWindowPort(Protocol):
@@ -91,8 +111,15 @@ class IntrabarWindowPort(Protocol):
         """区間 ``[start,end)`` の m1 OHLC 行（``[o,h,l,c]``・上位足は cap 済）を返す。"""
         ...
 
-    def load_ticks(self, start: int, end: int) -> "list[tuple[int, float]]":
-        """区間 ``[start,end)`` の実ティック ``[(sec, mid), ...]``（cap 無し）を返す。"""
+    def load_raw_ticks(self, start: int, end: int) -> "list[tuple[int, float, float]]":
+        """区間を跨ぐ**生ティック** ``[(sec, bid, ask), ...]`` を返す（cap 無し・整形しない）。
+
+        ISSUE-031: 以前は ``load_ticks`` が mid 算出・窓フィルタ・外れ値除去（domain E-4）まで
+        済ませた ``(sec, mid)`` を返していた。これは**本質ルールの適用を各 adapter に委ねる**契約で、
+        tick 源を差し替えるたびに `mid_series` を再結線する必要があり、結線漏れが静かに
+        「外れ値除去なしの mid 列」を生む。契約を「素の観測値を運ぶ」ことに限定し、
+        本質ルールの適用は usecase（:func:`~usecase.intrabar_window.intrabar_window`）へ寄せる。
+        """
         ...
 
 
@@ -154,4 +181,24 @@ class MarketProfilePort(Protocol):
         ``time<=to`` の足だけで集計し（as-seen-at-t）、zp は now=to として現在時刻に読む。
         ``frm``/``today``/``sessions`` は増分2/日別分割の任意フラグ（None/省略は現行挙動）。
         """
+        ...
+
+
+@runtime_checkable
+class TickvolProfilePort(Protocol):
+    """/tickvol_profile 用の取引密度プロファイル源（indicator_ui bridge 委譲）。
+
+    セッション日内の時刻帯別ティック密度と、そこから決まる HIGH 帯を ``(status, body)`` で返す。
+    ``until`` は必ずリビール T（単一時計 to）を渡す。``until`` が属するセッション日は集計に含めない
+    （当日を覗かない＝因果・未来リーク防止）。実装は adapter 層（bridge 委譲）に閉じる（DIP）。
+    """
+
+    def profile(
+        self,
+        ref: str,
+        sessions: Any = None,
+        pct: Any = None,
+        until: Any = None,
+    ) -> "tuple[int, dict]":
+        """``(status, body)`` を返す（未知 ref は 400 nested error）。"""
         ...

@@ -79,7 +79,8 @@ def test_ticks_to_m1_tz_aware_floored_to_utc_minute() -> None:
 def test_ticks_to_m1_empty_returns_empty_ohlcv() -> None:
     out = tick_m1.ticks_to_m1(_ticks([]))
     assert out.empty
-    assert list(out.columns) == ["open", "high", "low", "close", "volume"]
+    # 方向内訳（up/dn）は tick 由来データが持つ任意列。空でも列は同じ形で返す。
+    assert list(out.columns) == ["open", "high", "low", "close", "volume", "up", "dn"]
     assert out.index.name == "date"
 
 
@@ -118,9 +119,10 @@ def test_build_m1_from_ticks_writes_loader_compatible_csv(tmp_path: Path) -> Non
     out = tick_m1.build_m1_from_ticks("2025-01-02", "2025-01-02", ref="jp225_tick", data_dir=tmp_path)
     assert out == tmp_path / "jp225_tick_m1.csv"
 
-    # rollup loader 互換: ヘッダ date,open,high,low,close,volume・date は "%Y-%m-%d %H:%M:%S"。
+    # rollup loader 互換: 既存列順は不変で、tick 由来の方向内訳 up/dn を末尾へ足す。
+    #   date は "%Y-%m-%d %H:%M:%S"。
     raw = out.read_text(encoding="utf-8").splitlines()
-    assert raw[0] == "date,open,high,low,close,volume"
+    assert raw[0] == "date,open,high,low,close,volume,up,dn"
     assert raw[1].startswith("2025-01-02 09:00:00,")
 
     # marketdata.resample が読める（date 列を index 化して 5m へ集計できる）。
@@ -396,3 +398,43 @@ def test_dedupe_minutes_noop_on_unique_index() -> None:
     )
     out = tick_m1._dedupe_minutes(m1)
     assert out is m1  # 正常データは同一オブジェクトを返す（挙動不変・冪等）
+
+
+def test_ticks_to_m1_counts_up_and_down_within_each_minute() -> None:
+    """方向内訳は **その分バーの中で** 直前ティックと比べた符号（分をまたがない）。
+
+    分の先頭ティックは比較対象を持たないため方向を持たず、``up + dn`` は ``volume`` より
+    「分数」だけ小さくなる。分をまたいで比べると、どの単位で切って処理したかで値が変わり
+    per-day concat == whole の契約が壊れる（本テストがその境界を固定する）。
+    """
+    out = tick_m1.ticks_to_m1(
+        _ticks(
+            [
+                ("2025-01-02 09:00:10", 100.0, 100.0),  # 分の先頭＝方向なし
+                ("2025-01-02 09:00:20", 101.0, 101.0),  # 上昇
+                ("2025-01-02 09:00:30", 100.5, 100.5),  # 下落
+                ("2025-01-02 09:00:40", 100.5, 100.5),  # 等値＝どちらにも数えない
+                ("2025-01-02 09:01:10", 200.0, 200.0),  # 次の分の先頭＝方向なし（前分と比べない）
+                ("2025-01-02 09:01:20", 201.0, 201.0),  # 上昇
+            ]
+        )
+    )
+    assert list(out["volume"]) == [4.0, 2.0]
+    assert list(out["up"]) == [1.0, 1.0]
+    assert list(out["dn"]) == [1.0, 0.0]
+    # 等値と分先頭のぶん up+dn < volume になる（捏造しない）。
+    assert (out["up"] + out["dn"] <= out["volume"]).all()
+
+
+def test_rollup_sums_up_and_down_like_volume() -> None:
+    """上位足では up/dn は volume と同じく合算される（"last" ではない）。"""
+    idx = pd.date_range("2025-01-02 09:00:00", periods=10, freq="1min")
+    df = pd.DataFrame(
+        {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
+         "volume": 10.0, "up": 6.0, "dn": 3.0},
+        index=idx,
+    )
+    got = resample.resample_ohlc(df, resample.TIMEFRAME_RULES["5m"])
+    assert list(got["volume"]) == [50.0, 50.0]
+    assert list(got["up"]) == [30.0, 30.0]
+    assert list(got["dn"]) == [15.0, 15.0]

@@ -63,6 +63,8 @@ export class ChartRenderer {
     // v6: 基準 candles の単一所有者（setCandles 全置換・updateLastCandle 差分で更新）。
     //   per-bar 減光（dimCandlesOutsidePair）・基準復元（restoreCandles）はこの基準から導出する。
     this._baseCandles = null;
+    // 背景プリミティブ（用途 key -> primitive）。attachBackgroundPrimitive が所有し、メイン系列へ 1 度だけ装着する。
+    this._backgroundPrimitives = new Map();
     // v6: candle 変更 observer（後方互換 no-op）。setCandleObserver で後から差し替え可能（生成順序吸収）。
     this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
     // 読み取り欄の最新足の単一源（lightweight-charts から逆引きしない＝upstream API 名を増やさない）。
@@ -147,6 +149,28 @@ export class ChartRenderer {
   //   index→time 変換に使う（新規追加・読取のみ＝既存描画へ非干渉）。未設定時は空配列。
   getCandles() {
     return this._baseCandles ?? [];
+  }
+
+  // メインペイン（pane 0＝価格パネル）へ背景プリミティブを 1 度だけ装着し、その実体を返す。
+  //   attachPrimitive という lwc API 名を扱うのは本クラス（隔離点）に閉じる。
+  //   key: 用途ごとの名前空間（用途が増えても互いの実体が混ざらない）。2 回目以降は同一実体を返す。
+  //
+  //   指標 pane へは装着しない: pane 内の系列は指標の再計算で作り直され、その都度プリミティブが
+  //   外れる。「作り直しを検知して張り直す」同期を持ち込むと、検知の取りこぼしが**一部の pane だけ
+  //   塗られない**という分かりにくい欠落として出る（実測で再現）。メイン系列は生成が 1 度きりで
+  //   作り直されないため、装着も 1 度で完結し同期そのものが不要になる。
+  attachBackgroundPrimitive(key, factory) {
+    const existing = this._backgroundPrimitives.get(key);
+    if (existing) {
+      return existing;
+    }
+    if (!this._mainSeries || typeof this._mainSeries.attachPrimitive !== 'function') {
+      return null;
+    }
+    const primitive = factory();
+    this._mainSeries.attachPrimitive(primitive);
+    this._backgroundPrimitives.set(key, primitive);
+    return primitive;
   }
 
   // 増分2: チャートの通常操作（スクロール/ズーム）を停止/復元する（リプレイスワイプ捕捉用）。
@@ -447,7 +471,12 @@ export class ChartRenderer {
     this._renderSeries(instanceId, payloads, 'histogram', opts);
   }
 
-  // line / histogram を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
+  // level_dash 系列群を生成（ローソク足幅の水平ダッシュ・同値 4 値の Candlestick）。
+  renderLevelDash(instanceId, payloads, opts = {}) {
+    this._renderSeries(instanceId, payloads, 'level_dash', opts);
+  }
+
+  // line / histogram / level_dash を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     this._drawer._renderSeries(instanceId, payloads, kind, opts);
   }
@@ -584,14 +613,59 @@ export class ChartRenderer {
   //   stale 点は 1 点単位で黙って捨て、バッチは最後まで適用する（正しい最新値は次の応答で届く）。
   updateSeriesTail(seriesKey, points) {
     this._withSeries(seriesKey, points, (series) => {
+      // ISSUE-196（不変条件の構造的保証）: 時間足切替で空にした系列（clearInstanceData 済み）へ
+      //   遅延到着した末尾差分を書き込むと、旧時間足の time を 1 点だけ持つ系列が生まれ、
+      //   時間軸に「ローソクに存在しない time」が復活する（= `Value is null` の発生条件）。
+      //   空系列への末尾差分は捨てる（正しい全点は直後の full 再計算が setData で描く）。
+      if (typeof series.data === 'function' && series.data().length === 0) {
+        return;
+      }
+      // ISSUE-197（例外駆動の制御フローを撤去・2026-07-30 実UI実測）: latest 応答は末尾 K 点を返すため、
+      //   系列末尾が既に最新バーへ進んでいる定常状態では **毎回 K-1 点が「末尾より古い」** として届く。
+      //   lightweight-charts の update は last より古い time を throw で拒否するので、これを try/catch
+      //   任せにすると正常動作のさなかに例外が出続ける（実測: 1分足ライブで単一パターン
+      //   `n=2 ok=1 ng=1 times=T-60,T before=T after=T` が 45 秒 798 回＝約 18 回/秒。ISSUE-197 が
+      //   「日→1分 切替後 45 秒で 203 件」と記録したものは切替固有ではなく定常発生だった）。
+      //   捨てる点は **比較で判定して update を呼ばない**。捨てる点の集合も更新後の末尾も従来と同一
+      //   （実測: after == before ＝最新値は欠落していない＝実害は無く、コストとログ汚染だけがあった）。
+      const lastPoint = typeof series.data === 'function' ? series.data().slice(-1)[0] : undefined;
+      const lastTime = lastPoint ? lastPoint.time : undefined;
       for (const p of points ?? []) {
+        // 事前判定は time が数値（UTCTimestamp）同士のときだけ行う。business day 形式など
+        //   大小比較の意味が自明でない時刻表現は従来どおり update へ渡し、下の catch で無害化する。
+        if (typeof lastTime === 'number' && typeof p?.time === 'number' && p.time < lastTime) {
+          continue;
+        }
         try {
           series.update(p);
         } catch (_e) {
-          // stale（系列末尾より古い time）は捨てる。他の例外もバッチ継続を優先（点単位で無害化）。
+          // 事前判定で拾えない stale（非数値 time）や想定外の例外もバッチ継続を優先し、
+          //   点単位で無害化する（残り系列の末尾更新まで失わせない）。
         }
       }
     });
+  }
+
+  // ISSUE-196（不変条件の構造的保証）: 当該 instance の全系列データを空にする（系列・pane・
+  //   スタイル・水準線は温存＝再生成なしで data のみ空）。
+  //   lightweight-charts は「時間軸に載る time は当該系列にも存在する」ことを要求し、満たさないと
+  //   colorer が ensureNotNull で `Value is null` を throw する（実測: 旧時間足の指標系列が残った
+  //   まま新時間足のローソクを setData した瞬間に throw・その例外が再計算バッチを中断させ、
+  //   指標が旧足のまま固着して以後の再計算も同じ throw で失敗し続ける）。
+  //   時間足切替のように「ローソクの time 集合が入れ替わる」局面では、旧足の指標データを
+  //   同一同期ブロック内で空にすることで違反状態を発生させない（描画は後続の再計算が行う）。
+  clearInstanceData(instanceId) {
+    const slot = this._instances.get(instanceId);
+    if (!slot) {
+      return;
+    }
+    for (const [key, series] of slot.lines.entries()) {
+      series.setData([]);
+      const meta = this._overlayReadouts.get(key);
+      if (meta) {
+        meta.lastValue = null;
+      }
+    }
   }
 
   // UC-04 表示/非表示（実体は SeriesDrawer.setVisible・SOLID 是正 🔴-2）。

@@ -62,3 +62,59 @@ def test_load_source_unknown_timeframe_raises_valueerror():
     gw = CausalComputeGateway()
     with pytest.raises(ValueError):
         gw.load_source("jp225_tick", "7z")
+
+
+# --------------------------------------------------------------------------- #
+# ISSUE-233: compute_latest_seq は「窓を 1 回だけ変換する」だけで、値は単発 latest と同値
+# --------------------------------------------------------------------------- #
+def _seq_bars(n: int = 60):
+    return [
+        {"time": i * 3600, "open": 100.0 + i, "high": 101.0 + i, "low": 99.0 + i,
+         "close": 100.5 + i, "volume": 1.0}
+        for i in range(n)
+    ]
+
+
+@pytest.mark.parametrize("indicator, params", [
+    ("moving_averages", {"ma_type": "ema", "length": 9, "source": "close",
+                         "smoothing_type": "none", "offset": 0, "wait_for_close": False}),
+    ("moving_averages", {"ma_type": "lwma", "length": 9, "source": "close",
+                         "smoothing_type": "none", "offset": 0, "wait_for_close": False}),
+    ("btlm_trail", {"source": "close", "maxbars": 20, "q_low": 0.05, "q_high": 0.95,
+                    "band_method": "empirical", "empirical_n": 20, "q_out": 0.99,
+                    "show_metrics": True, "n_cov": 20}),
+    ("ma_marod", {"source": "close", "ma_type": "ema", "length": 9, "q_low": 0.05,
+                  "q_high": 0.95, "q_out": 0.99, "k_events": 10, "event_agg": "episode",
+                  "window_n": 20}),
+])
+def test_compute_latest_seq_equals_repeated_single_latest(indicator, params):
+    # Arrange: 同一バーの足内推移（close が動く）を 12 時点。
+    gw = CausalComputeGateway()
+    bars = _seq_bars()
+    prefix, last = bars[:-1], bars[-1]
+    tails = [
+        [{**last, "close": last["close"] + d * 0.7, "high": last["high"] + max(d, 0) * 0.7,
+          "low": last["low"] + min(d, 0) * 0.7}]
+        for d in range(-6, 6)
+    ]
+    # Act
+    batch = gw.compute_latest_seq(indicator, "default", prefix, tails, params)
+    singles = [
+        gw.compute(indicator, "default", "latest", prefix + tail, params) for tail in tails
+    ]
+    # Assert: 全ステップ・全系列で bit 一致（畳み込みは値を変えない）。
+    assert batch == singles
+
+
+def test_compute_latest_seq_handles_appended_forming_bar():
+    # forming.time > 末尾 time（新しい足の追加）でも単発と同値。
+    gw = CausalComputeGateway()
+    bars = _seq_bars()
+    prefix, last = bars[:-1], bars[-1]
+    tails = [[dict(last), {"time": last["time"] + 3600, "open": 200.0, "high": 201.0,
+                           "low": 199.0, "close": 200.5, "volume": 1.0}]]
+    params = {"ma_type": "ema", "length": 9, "source": "close",
+              "smoothing_type": "none", "offset": 0, "wait_for_close": False}
+    batch = gw.compute_latest_seq("moving_averages", "default", prefix, tails, params)
+    singles = [gw.compute("moving_averages", "default", "latest", prefix + t, params) for t in tails]
+    assert batch == singles

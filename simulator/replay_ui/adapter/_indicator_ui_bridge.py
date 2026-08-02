@@ -136,6 +136,34 @@ def load_mp_handlers(api_path: Any = None, repo_root: Any = None) -> SimpleNames
     return ns
 
 
+def load_tickvol_handler(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
+    """取引密度プロファイル controller の純ロジック（handle_tickvol_profile）を束ねて返す。
+
+    背景色ハイライトの帯定義はライブ側 controller が単一実装であり、リプレイはそれを read-only
+    再利用する（DRY・ライブと byte 一致）。dataset / compute Facade は import しない
+    （ISSUE-136 ISP: 本経路だけが当該 controller の import 健全性に依存する）。
+    """
+    api, root = _ensure_paths(api_path, repo_root)
+    key = ("tickvol", str(api), str(root))
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
+    # 当該 controller は usecase.dataset_port（DIP の注入シーム）から DatasetPort を解決する。
+    #   その既定結線は「各エントリポイントの責務」として framework.server / api/tests/conftest が
+    #   1 回だけ行う規約であり、リプレイプロセスは第 3 のエントリポイントに当たる。ここで登録
+    #   しないと未結線 RuntimeError（500 internal）になる（実測）。冪等なので重複呼出は無害。
+    from adapter.gateway.composition import install_default_ports  # noqa: E402
+
+    install_default_ports()
+    from adapter.controller.tickvol_profile_controller import (  # noqa: E402
+        handle_tickvol_profile,
+    )
+
+    ns = SimpleNamespace(handle_tickvol_profile=handle_tickvol_profile)
+    _CACHE[key] = ns
+    return ns
+
+
 def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
     """dataset ＋ compute ＋ MP handlers を束ねた後方互換 namespace を返す（結果はキャッシュ）。
 

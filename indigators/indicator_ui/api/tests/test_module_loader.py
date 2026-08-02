@@ -148,16 +148,36 @@ def test_load_package_caches_in_sys_modules(slow_package):
     assert module_loader.load_package(name, pkg) is first
 
 
-def test_failed_exec_leaves_module_in_sys_modules(tmp_path):
-    # 挙動不変の担保: exec 失敗時も sys.modules から除去しない（既存挙動）。
+def test_failed_exec_removes_module_from_sys_modules(tmp_path):
+    """exec 失敗時は sys.modules から除去し、次回も同じ例外を出す（ISSUE-219）。
+
+    **本テストは意図的な挙動変更である。** ISSUE-185（ローダ一本化）の時点では
+    「exec 失敗時も除去しない」という当時の既存挙動を不変として固定していたが、
+    その挙動自体が欠陥であることが実測で判明した:
+
+        1 回目: RuntimeError  →  2 回目: 例外なしで VALUE=1（途中まで定義された壊れた
+        モジュール）を配布。CPython 標準の import は失敗時に sys.modules から削除する。
+
+    指標 src の動的ロードで src に実行時例外があると、初回だけエラーになり以降は
+    一部だけ定義されたモジュールで計算が進む＝**沈黙した誤計算**になりうるため是正した。
+    ISSUE-185 が担保した他の不変条件（相対 import 解決・成功時キャッシュ・並行安全）は
+    本ファイルの他テストで維持されている。
+    """
     path = tmp_path / "boom.py"
-    path.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
-    name = "_issue185_boom"
+    path.write_text("VALUE = 1\nraise RuntimeError('boom')\nVALUE = 2\n", encoding="utf-8")
+    name = "_issue219_boom"
     try:
         with pytest.raises(RuntimeError, match="boom"):
             module_loader.load_module(name, path)
-        assert name in sys.modules
-        # 壊れたモジュールは以後キャッシュ命中として返る（再 exec しない）。
-        assert module_loader.load_module(name, path) is sys.modules[name]
+        assert name not in sys.modules, "半構築モジュールが残っている"
+        # 2 回目も同じ例外（壊れたモジュールを黙って返さない）。
+        with pytest.raises(RuntimeError, match="boom"):
+            module_loader.load_module(name, path)
     finally:
         sys.modules.pop(name, None)
+
+
+def test_adapter_loader_delegates_to_common(tmp_path):
+    """adapter 側は common への再エクスポートであり、修正が両経路へ届く（ISSUE-185 の一本化）。"""
+    assert module_loader.load_module is common_module_loader.load_module
+    assert module_loader.load_package is common_module_loader.load_package

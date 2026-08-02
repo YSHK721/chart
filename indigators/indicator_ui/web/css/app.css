@@ -315,6 +315,50 @@ html, body {
 .prop-input-checkbox { width: 16px; height: 16px; accent-color: #2962ff; }
 .prop-input-color { width: 40px; height: 26px; padding: 1px; cursor: pointer; }
 
+/* 期間入力＋プリセット（基本設計_期間プリセット §7）。数値入力の右にトリガーを置き、
+   ポップは時間足メニュー（.tf-menu-pop）と同型の見た目に揃える。 */
+.prop-period {
+  position: relative; display: inline-flex; align-items: center; gap: 4px;
+  padding: 0; border: 0; background: transparent; border-radius: 0;
+}
+/* 数値入力の幅は number コントロールと同一（期間表記も収まる）。 */
+.prop-period-input { width: 96px; }
+.prop-period-trigger {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  background: #131722; border: 1px solid #2a2e39; border-radius: 5px;
+  color: #787b86; font-size: 13px; cursor: pointer;
+}
+.prop-period-trigger:hover { color: #d1d4dc; border-color: #363a45; }
+.prop-period-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+  min-width: 160px; max-height: 60vh; overflow-y: auto;
+  background: #1e222d; border: 1px solid #363a45; border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5); padding: 4px 0;
+  display: flex; flex-direction: column;
+}
+.prop-period-pop.is-hidden { display: none; }
+.prop-period-head {
+  padding: 6px 12px 4px; color: #787b86; font-size: 11px; user-select: none;
+}
+.prop-period-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  width: 100%; padding: 6px 12px;
+  background: transparent; border: 0; color: #d1d4dc; font-size: 13px; cursor: pointer;
+}
+.prop-period-item:hover { background: #2a2e39; }
+.prop-period-item.is-active { background: #2962ff; color: #fff; }
+.prop-period-item-bars { color: #787b86; font-variant-numeric: tabular-nums; }
+.prop-period-item:hover .prop-period-item-bars { color: #d1d4dc; }
+.prop-period-item.is-active .prop-period-item-bars { color: #fff; }
+.prop-period-empty { padding: 8px 12px; color: #787b86; font-size: 12px; }
+/* 換算エラー（F-P1）。行の検証エラー（.prop-field-error）とは別枠で、_revalidate に消されない。 */
+.prop-period-error {
+  position: absolute; top: calc(100% + 2px); left: 0; white-space: nowrap;
+  color: #ef5350; font-size: 11px;
+}
+.prop-period.has-error .prop-period-input { border-color: #ef5350; }
+
 /* segmented（ENUM を横並びセグメントボタンで描く・解像度トグル移植）。最小装飾・選択中ハイライト。 */
 .prop-segmented { display: inline-flex; gap: 0; padding: 0; border: none; background: transparent; }
 .prop-seg-btn {
@@ -390,6 +434,100 @@ html, body {
 }
 .tf-menu-item:hover { background: #2a2e39; }
 .tf-menu-item.is-active { background: #2962ff; color: #fff; }
+
+/* チャートテンプレート ドロップダウン（基本設計_チャートテンプレート §6.1/§6.2・時間足メニューと同型） */
+.tpl-menu { position: relative; display: inline-flex; }
+.tpl-menu-trigger { display: inline-flex; align-items: center; gap: 4px; }
+.tpl-menu-caret { font-size: 9px; color: #787b86; }
+.tpl-menu-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+  min-width: 240px; max-height: 70vh; overflow-y: auto;
+  background: #1e222d; border: 1px solid #363a45; border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5); padding: 4px 0;
+  display: flex; flex-direction: column;
+}
+.tpl-menu-pop.is-hidden { display: none; }
+.tpl-menu-cat {
+  padding: 6px 12px 2px; color: #787b86; font-size: 11px; user-select: none;
+  border-top: 1px solid #23272f; margin-top: 4px;
+}
+.tpl-menu-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; text-align: left; padding: 6px 16px;
+  background: transparent; border: 0; color: #d1d4dc; font-size: 13px; cursor: pointer;
+}
+.tpl-menu-item:hover { background: #2a2e39; }
+.tpl-menu-item.is-active { background: #2962ff; color: #fff; }
+.tpl-menu-badge { color: #787b86; font-size: 11px; pointer-events: none; }
+.tpl-menu-item.is-active .tpl-menu-badge { color: #cfd8ff; }
+.tpl-menu-name { pointer-events: none; }
+.tpl-menu-mark { width: 10px; color: #2962ff; font-size: 9px; pointer-events: none; }
+.tpl-menu-item.is-active .tpl-menu-mark { color: #fff; }
+.tpl-menu-list:empty::after {
+  content: '（保存済みテンプレートはありません）';
+  display: block; padding: 6px 16px; color: #787b86; font-size: 12px;
+}
+
+/* テンプレートの保存／管理ダイアログ（§6.2・prop-dialog と同型） */
+.tpl-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .45);
+  display: none; align-items: center; justify-content: center;
+}
+.tpl-dialog-backdrop.is-open { display: flex; }
+.tpl-dialog {
+  width: 420px; max-width: 92vw; max-height: 86vh;
+  background: #1e222d; border: 1px solid #2a2e39; border-radius: 8px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+}
+.tpl-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border-bottom: 1px solid #2a2e39; user-select: none;
+}
+.tpl-dialog-title { font-size: 14px; font-weight: 600; color: #fff; }
+.tpl-dialog-close {
+  background: transparent; border: none; color: #9aa0ad; font-size: 18px; cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.tpl-dialog-close:hover { color: #fff; background: #2a2e39; }
+.tpl-dialog-body { padding: 12px 14px; overflow-y: auto; color: #d1d4dc; font-size: 13px; }
+.tpl-dialog-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.tpl-dialog-label { color: #b2b5be; font-size: 12px; white-space: nowrap; }
+.tpl-dialog-input {
+  flex: 1 1 auto; background: #131722; border: 1px solid #2a2e39; border-radius: 5px;
+  color: #d1d4dc; font-size: 13px; padding: 6px 8px;
+}
+.tpl-dialog-preview {
+  background: #131722; border: 1px solid #2a2e39; border-radius: 5px;
+  padding: 8px 10px; margin-bottom: 10px; max-height: 30vh; overflow-y: auto;
+}
+.tpl-dialog-preview-head { color: #787b86; font-size: 11px; margin-bottom: 4px; }
+.tpl-dialog-preview-item { color: #b2b5be; font-size: 12px; line-height: 1.6; }
+.tpl-dialog-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.tpl-dialog-error { color: #e0564a; font-size: 12px; padding: 0 14px; min-height: 0; }
+.tpl-dialog-error:empty { display: none; }
+/* 上書き確認のインライン表示（同じ場所・同じ機構だがエラーではないため配色を分ける） */
+.tpl-dialog-error.is-confirm { color: #d1d4dc; }
+.tpl-dialog-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 10px 14px; border-top: 1px solid #2a2e39;
+}
+.tpl-dialog-btn {
+  padding: 5px 12px; border-radius: 5px; font-size: 12px; cursor: pointer;
+  background: transparent; border: 1px solid #2a2e39; color: #d1d4dc;
+}
+.tpl-dialog-btn:hover { background: #2a2e39; color: #fff; }
+.tpl-dialog-btn.is-primary { background: #2962ff; border-color: #2962ff; color: #fff; }
+.tpl-dialog-btn.is-primary:hover { background: #1e53e5; }
+.tpl-dialog-btn.is-danger { background: #b03a30; border-color: #b03a30; color: #fff; }
+.tpl-dialog-btn.is-hidden { display: none; }
+.tpl-dialog-list-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-bottom: 1px solid #23272f;
+}
+.tpl-dialog-list-name { flex: 1 1 auto; }
+.tpl-dialog-rename.is-hidden { display: none; }
 .prop-visibility-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: #d1d4dc; font-size: 13px; cursor: pointer; }
 
 /* A 方式 未反映 注記（サイレント不一致回避・§9.3） */

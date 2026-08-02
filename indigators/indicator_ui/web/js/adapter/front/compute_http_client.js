@@ -37,7 +37,7 @@ export class ComputeHttpClient {
   // ComputeRequest -> series（§7.1.1）。非200/ネットワーク例外は ComputeError へ翻訳。
   // generation はサーバがエコーし、recompute の競合採否（advanced.accepts(result.generation)）が
   // 参照する。転送しないと常に 0 がエコーされ recompute が破棄され params が反映されない。
-  async compute({ indicatorId, variant, params, datasetRef, generation, timeframe, limit, mode, untilTime, forming } = {}) {
+  async compute({ indicatorId, variant, params, datasetRef, generation, timeframe, limit, mode, untilTime, forming, winStart, winEnd } = {}) {
     // timeframe（時間足）/ limit（直近 N 本）はサーバで resample・表示範囲制限に使う。
     // 省略時はサーバが原子（再集計なし）・全件として扱う（後方互換）。
     // mode（full/latest）は指定時のみ載せる（未指定はサーバ既定 full・後方互換でボディに含めない）。
@@ -53,6 +53,15 @@ export class ComputeHttpClient {
     // [PROTO 再生 seam] forming（足内更新中の形成中バー暫定 OHLC）。未指定は載せない＝確定足のまま計算。
     if (forming !== undefined) {
       reqBody.forming = forming;
+    }
+    // [ISSUE-238] 足内窓。forming の `to`（リプレイ現在時刻）と対で、サーバが「その時点までに
+    //   到来した実 tick 数」を数えて形成中バーの volume にする（volume 未指定だと確定足の完成値が
+    //   残り、足の先頭から未来の値を表示してしまう）。未指定は載せない＝ライブ扱い・従来ボディ不変。
+    if (winStart !== undefined) {
+      reqBody.winStart = winStart;
+    }
+    if (winEnd !== undefined) {
+      reqBody.winEnd = winEnd;
     }
     const body = JSON.stringify(reqBody);
 

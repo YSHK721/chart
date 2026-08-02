@@ -18,6 +18,7 @@
 
 import { IndicatorController } from './indicator_controller.js';
 import { CAUSAL_REVEAL_IDS } from '../../usecase/causal_reveal_ids.js';
+import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
 
 // [reveal 一括] ソート済み time 配列で t 以下の点数を返す（二分探索・revealTo のスライス位置）。
 function upperBound(ts, t) {
@@ -43,6 +44,8 @@ export class ReplayIndicatorController extends IndicatorController {
     this._untilTime = undefined;
     // [reveal] forming（足内更新中の形成中バー暫定 OHLC）。undefined=確定足のまま計算。
     this._forming = undefined;
+    this._winStart = undefined;   // [ISSUE-238] 足内窓（形成中バーの実 tick 数算出用）
+    this._winEnd = undefined;
     // [reveal 一括・ISSUE-158 ②] 事前一括計算の基底キャッシュ。instanceId →
     //   { def, params, series（F3 検証済み全レンジ payload）, times（系列名→ソート済 time 配列）}。
     //   対象は CAUSAL_REVEAL_IDS（実測で per-step と乖離 0 を確認済みの因果指標）のみ。
@@ -156,6 +159,46 @@ export class ReplayIndicatorController extends IndicatorController {
     }
   }
 
+  // ================= [足内一括計算・ISSUE-232] =================
+  //   再生中の足内更新は、従来は 1 ティックごとに /compute を往復していた（実測 ~100ms 遅延＋
+  //   throttle＝ローソクだけ先に動いて指標が遅れて追いつく）。本経路は「そのバーの足内推移の
+  //   各時点」をバー開始前に一括計算しておき、描画時は計算済み値を同期反映するだけにする
+  //   （＝ローソクと同一同期ブロック＝遅延ゼロ）。計算は replay.js が先読みで発行する。
+
+  // 足内追従の対象（適用済み ∩ 共有 INTRABAR_FORMING_IDS）。一括計算の要求単位でもある。
+  //   MP は /compute を持たないため対象外（_isMarketProfile で除外）。
+  formingSeqTargets() {
+    return [...this._state.applied].filter((inst) => {
+      if (!INTRABAR_FORMING_IDS.has(inst.indicatorId)) return false;
+      const meta = this._meta.get(inst.instanceId);
+      return !!meta && !this._isMarketProfile(meta.def);
+    }).map((inst) => ({
+      instanceId: inst.instanceId,
+      indicatorId: inst.indicatorId,
+      variant: inst.variant ?? this._defaultVariant(this._meta.get(inst.instanceId).def),
+      params: this._paramsObject(inst.params),
+    }));
+  }
+
+  // 一括計算済みの 1 ステップを同期描画する。step は { instanceId: series } の写像。
+  //   描画実体は末尾差分（_drawLatest＝従来の足内更新と同一経路）。await を挟まないため
+  //   呼び出し側はローソク更新と同一同期ブロックで呼べる（＝同時に動く）。
+  //   削除済みインスタンス・未知系列は無視する（描画しない）。
+  applyFormingStep(step) {
+    if (!step) {
+      return;
+    }
+    for (const [instanceId, series] of Object.entries(step)) {
+      const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+      const meta = this._meta.get(instanceId);
+      if (!inst || !meta || !Array.isArray(series)) {
+        continue;
+      }
+      const params = this._paramsObject(inst.params);
+      this._drawLatest(instanceId, meta.def, this._validateSeriesNames(series, meta.def, params), params);
+    }
+  }
+
   // [reveal] untilTime を設定（以降の再計算がこの時点で計算される＝ライブ同一・df[:t+1]）。
   setUntilTime(t) {
     this._untilTime = t;
@@ -166,22 +209,34 @@ export class ReplayIndicatorController extends IndicatorController {
     this._forming = forming;
   }
 
-  // 共有ベースの compute リクエスト seam を実装: untilTime/forming を素通しする。undefined は
-  //   compute_http_client の `!== undefined` gate で不送信＝ライブ扱い（後方互換）。
+  // [ISSUE-238] 足内窓（winStart/winEnd）を設定。サーバは形成中バーの `to` とこの窓から
+  //   「その時点までに到来した実 tick 数」を数えて volume にする。undefined で解除。
+  setFormingWindow(win) {
+    this._winStart = win ? win.winStart : undefined;
+    this._winEnd = win ? win.winEnd : undefined;
+  }
+
+  // 共有ベースの compute リクエスト seam を実装: untilTime/forming/足内窓を素通しする。
+  //   undefined は compute_http_client の `!== undefined` gate で不送信＝ライブ扱い（後方互換）。
   _extraComputeFields() {
-    return { untilTime: this._untilTime, forming: this._forming };
+    return {
+      untilTime: this._untilTime, forming: this._forming,
+      winStart: this._winStart, winEnd: this._winEnd,
+    };
   }
 
   // [reveal] 足内更新: 形成中バーを差し込み、登録指標（共有 INTRABAR_FORMING_IDS）の末尾点のみ
   //   latest 差分再計算する。実体は基底 recomputeFormingTails（forceTail 差分＝ライブと同一機構・
   //   2026-07-22 統一設計）へ委譲し、本メソッドは forming seam（素通し・解除）だけを担う。
   //   forming 解除は finally で必ず行い、後続の確定足計算に forming を残さない。
-  async recomputeFormingLatest(forming) {
+  async recomputeFormingLatest(forming, win = null) {
     this.setForming(forming);
+    this.setFormingWindow(win);
     try {
       await this.recomputeFormingTails();
     } finally {
       this.setForming(undefined);                          // 確定計算へ forming を残さない
+      this.setFormingWindow(null);                         // 窓も残さない（確定計算はライブ扱い）
     }
   }
 

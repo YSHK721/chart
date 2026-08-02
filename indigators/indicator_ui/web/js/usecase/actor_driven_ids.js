@@ -8,6 +8,8 @@
 // ライブ・リプレイ共有（replay 側は symlink 参照＝単一実体）。
 export const ACTOR_DRIVEN_COMPUTE_IDS = new Set([
   'market_profile',
+  // 取引密度帯（時刻帯の背景色）。系列を持たず、背景プリミティブをアクターが駆動する。
+  'tickvol_bands',
 ]);
 
 // def（カタログ定義）がアクター駆動型かの述語。def 形状は catalog.js の compute.computeId。
