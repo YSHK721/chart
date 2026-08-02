@@ -120,6 +120,9 @@ from adapter.controller.candles_controller import (  # noqa: E402
     handle_forming_bar,
 )
 from adapter.controller.catalog_controller import handle_catalog  # noqa: E402
+from adapter.controller.tickvol_profile_controller import (  # noqa: E402
+    handle_tickvol_profile,
+)
 from adapter.gateway.composition import install_default_ports  # noqa: E402
 
 # ISSUE-183（DIP）: 本モジュールが真の Composition Root。usecase の Output Boundary
@@ -288,10 +291,25 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/live_ticks":
             self._handle_live_ticks(parse_qs(parsed.query))
             return
+        if parsed.path == "/tickvol_profile":
+            self._handle_tickvol_profile(parse_qs(parsed.query))
+            return
         if parsed.path == "/catalog":
             self._handle_catalog()
             return
         self._handle_static(parsed.path)
+
+    def _handle_tickvol_profile(self, query: dict[str, list[str]]) -> None:
+        """GET /tickvol_profile — 取引密度の時刻帯プロファイル（背景色帯の唯一源）を配信する薄殻。
+
+        検証・集計は handle_tickvol_profile（純ロジック）へ委譲する（/candles と同規律）。
+        """
+        ref = (query.get("datasetRef") or [None])[0]
+        sessions = (query.get("sessions") or [None])[0]
+        pct = (query.get("pct") or [None])[0]
+        until = (query.get("until") or [None])[0]
+        status, payload = handle_tickvol_profile(ref, sessions, pct, until)
+        self._send_json(status, payload)
 
     def _handle_catalog(self) -> None:
         """GET /catalog — param 既定値スキーマ（単一情報源）を配信する薄殻（ISSUE-092 ③）。

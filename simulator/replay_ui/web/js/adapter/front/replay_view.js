@@ -8,6 +8,7 @@
 
 import { ReplayBoundaryDimPrimitive } from './replay_boundary_dim.js';
 import { boundaryTimeValue } from '../../replay/state.js';
+import { REALTIME, isRealtime } from '../../replay/timing.js';
 
 export class ReplayView {
   constructor({ chart, mainSeries, renderer, document: doc }) {
@@ -33,10 +34,16 @@ export class ReplayView {
   // ---- 速度 UI ---- //
   //   値の保持先は #rp-speed ボタンの data-speed（唯一の現在値）。表示は "x1.00" 形式。
   //   値域のクランプは replay/timing.js の clampSpeed が権威（View は素の値を読み書きする）。
-  readSpeed() { const e = this.el('rp-speed'); return e ? parseFloat(e.dataset.speed) : NaN; }
+  //   実時間テンポ（リアルタイム）は比でないため data-speed="realtime" の番兵値で保持し "リアルタイム" と表示する。
+  readSpeed() {
+    const e = this.el('rp-speed');
+    if (!e) return NaN;
+    return isRealtime(e.dataset.speed) ? REALTIME : parseFloat(e.dataset.speed);
+  }
   writeSpeed(v) {
     const e = this.el('rp-speed');
     if (!e) return;
+    if (isRealtime(v)) { e.dataset.speed = REALTIME; e.textContent = 'リアルタイム'; return; }
     const n = parseFloat(v);
     e.dataset.speed = String(n);
     e.textContent = `x${Number.isFinite(n) ? n.toFixed(2) : '—'}`;

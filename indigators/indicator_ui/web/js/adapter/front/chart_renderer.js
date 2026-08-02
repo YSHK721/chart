@@ -63,6 +63,8 @@ export class ChartRenderer {
     // v6: 基準 candles の単一所有者（setCandles 全置換・updateLastCandle 差分で更新）。
     //   per-bar 減光（dimCandlesOutsidePair）・基準復元（restoreCandles）はこの基準から導出する。
     this._baseCandles = null;
+    // 背景プリミティブ（用途 key -> primitive）。attachBackgroundPrimitive が所有し、メイン系列へ 1 度だけ装着する。
+    this._backgroundPrimitives = new Map();
     // v6: candle 変更 observer（後方互換 no-op）。setCandleObserver で後から差し替え可能（生成順序吸収）。
     this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
     // 読み取り欄の最新足の単一源（lightweight-charts から逆引きしない＝upstream API 名を増やさない）。
@@ -147,6 +149,28 @@ export class ChartRenderer {
   //   index→time 変換に使う（新規追加・読取のみ＝既存描画へ非干渉）。未設定時は空配列。
   getCandles() {
     return this._baseCandles ?? [];
+  }
+
+  // メインペイン（pane 0＝価格パネル）へ背景プリミティブを 1 度だけ装着し、その実体を返す。
+  //   attachPrimitive という lwc API 名を扱うのは本クラス（隔離点）に閉じる。
+  //   key: 用途ごとの名前空間（用途が増えても互いの実体が混ざらない）。2 回目以降は同一実体を返す。
+  //
+  //   指標 pane へは装着しない: pane 内の系列は指標の再計算で作り直され、その都度プリミティブが
+  //   外れる。「作り直しを検知して張り直す」同期を持ち込むと、検知の取りこぼしが**一部の pane だけ
+  //   塗られない**という分かりにくい欠落として出る（実測で再現）。メイン系列は生成が 1 度きりで
+  //   作り直されないため、装着も 1 度で完結し同期そのものが不要になる。
+  attachBackgroundPrimitive(key, factory) {
+    const existing = this._backgroundPrimitives.get(key);
+    if (existing) {
+      return existing;
+    }
+    if (!this._mainSeries || typeof this._mainSeries.attachPrimitive !== 'function') {
+      return null;
+    }
+    const primitive = factory();
+    this._mainSeries.attachPrimitive(primitive);
+    this._backgroundPrimitives.set(key, primitive);
+    return primitive;
   }
 
   // 増分2: チャートの通常操作（スクロール/ズーム）を停止/復元する（リプレイスワイプ捕捉用）。

@@ -60,7 +60,7 @@
         <button id="rp-next" class="rp-icon" type="button" title="1足進む">▷|</button>
         <button id="rp-view-right" class="rp-icon" type="button" title="チャート表示を右端へスクロール（再生位置は変えない）">▷‖</button>
         <span class="rp-sep"></span>
-        <button id="rp-speed" type="button" data-speed="1" aria-haspopup="true" title="再生速度（1.00=最速・0.00=一時停止）">x1.00</button>
+        <button id="rp-speed" type="button" data-speed="1" aria-haspopup="true" title="再生速度（1.00=最速・0.00=一時停止・リアルタイム＝実時間）">x1.00</button>
         <select id="rp-mode" class="rp-select" title="最新足を足内で更新する方法（MT5 モデリング相当）">
           <option value="real_ticks">実ティック</option>
           <option value="every_tick">全ティック合成</option>
@@ -144,8 +144,9 @@
       container: document.getElementById('chart'),
       doc: document,
       datasetRef: 'jp225_tick',
-    }).then(({ chart, mainSeries, controller, renderer, ready, marketProfile }) => {
+    }).then(({ chart, mainSeries, controller, renderer, ready, marketProfile, tickvolBands }) => {
       controller.bind();
+      window.__rpTickvolBands = tickvolBands; // E2E フック（__rpChart と同規約・描画には不使用）
       ready.then(() => {
         controller.restore();
         // ライブ更新の代わりに再生ドライバを起動（untilTime をフレーム駆動＝ライブ同一計算）。

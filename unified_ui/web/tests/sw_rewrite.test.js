@@ -27,6 +27,16 @@ describe('rewritePath', () => {
     expect(rewritePath('replay', '/intraday')).toBe('/replay/intraday');
   });
 
+  // --- B2a: tickvol_profile（取引密度帯）は両 core 実装済み＝アクティブモードの core へ回す ---
+  test('tickvol_profile_routes_to_the_active_mode_core', () => {
+    // ライブ core・リプレイ core の双方が同一実装を持ち応答が byte 一致するため、live 固定にしない。
+    expect(rewritePath('live', '/tickvol_profile?datasetRef=jp225_tick&sessions=20'))
+      .toBe('/live/tickvol_profile?datasetRef=jp225_tick&sessions=20');
+    expect(rewritePath('replay', '/tickvol_profile?datasetRef=jp225_tick&until=1785528000'))
+      .toBe('/replay/tickvol_profile?datasetRef=jp225_tick&until=1785528000');
+    expect(LIVE_ONLY_SEGMENTS.has('tickvol_profile')).toBe(false);
+  });
+
   // --- B2b: tf_period_profile はライブ core 専用（replay core 未実装）＝モードに関わらず常に /live ---
   test('tf_period_profile_always_routes_to_live_regardless_of_mode', () => {
     // replay モードでも /replay ではなく /live（replay core は 404 を返すため）。

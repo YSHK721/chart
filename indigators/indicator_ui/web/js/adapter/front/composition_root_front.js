@@ -39,6 +39,8 @@ import { TfPeriodProfileActor } from './tf_period_profile_actor.js';
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
 import { TfPeriodTooltip, formatPeriodLabel } from './tf_period_tooltip.js';
 import { MarketProfileActor } from './market_profile_actor.js';
+import { TickvolBandsActor } from './tickvol_bands_actor.js';
+import { TickvolBandsController } from './tickvol_bands_controller.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
 import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
 import { ScrollToLatestButton } from './scroll_to_latest_button.js';
@@ -390,7 +392,36 @@ export async function bootstrap({
   //   使用済み（E-7）のため使わず、own property での差し替え 1 行で行う。順序（除去 → 切替 →
   //   適用）と再入防止は協働子が所有する（root はここに手続きを持たない）。
   const proceedSetTimeframe = controller.setTimeframe.bind(controller);
-  controller.setTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
+  const proceedTemplateTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
+
+  // 取引密度帯（時刻帯の背景色・1 時間足以下）。アクター駆動型のためレジストリへ登録する
+  //   （台帳 actor_driven_ids.js の 1 行追記と本登録で完結＝IndicatorController は不変）。
+  //   統合 UI では live root だけが実行されるため、この配線でライブ・リプレイ双方に効く。
+  //   getUntil: リプレイは単一時計 to（controller._untilTime）＝当日を集計に含めない因果窓の基準。
+  //   ライブは _untilTime 非在席（undefined）＝null を返す＝サーバの現在時刻。
+  const tickvolBands = new TickvolBandsActor({
+    fetch, datasetRef, renderer,
+    getTimeframe: () => controller._timeframe,
+    getUntil: () => (controller._untilTime != null ? controller._untilTime : null),
+  });
+  controller.registerActorController('tickvol_bands', new TickvolBandsController(controller, tickvolBands));
+  // 時間足切替: 帯は時間足に依存しない（サーバは常に 1 分足原子で集計）ので再取得せず、塗る足だけ引き直す。
+  //   購読スロット（setTimeframeObserver）は売買マーカーが占有済みのため、テンプレート協働子と同じ
+  //   own property 差し替えを**その内側へ**チェーンする（既存の介入順序を壊さない）。
+  controller.setTimeframe = (tf) => {
+    const done = proceedTemplateTimeframe(tf);
+    tickvolBands.onTimeframeChange();
+    return done;
+  };
+  // リプレイ時計の前進: セッション日が変わったときだけ再取得する（日内は応答不変＝当日非参照）。
+  if (typeof controller.setUntilTime === 'function') {
+    const proceedUntil = controller.setUntilTime.bind(controller);
+    controller.setUntilTime = (t) => {
+      const done = proceedUntil(t);
+      tickvolBands.onClock();
+      return done;
+    };
+  }
 
   // 時間足毎profile列（tf-period・最小価格単位・ローリング窓＋ジッターバッファ）の配線（served のみ）。
   //   sessions モード（marketProfile.isSessions()）かつ対応 tf（1m..1D）のとき、可視レンジぶんの列を
@@ -630,6 +661,21 @@ export async function bootstrap({
   renderer.setCandleObserver(() => {
     tradeMarkers.onCandlesChanged();
     currentPriceView.render(renderer.lastClose());
+    // 足の差し替え（時間足・期間プリセット・カレンダー・リビール）で塗る足を引き直す。
+    //   帯そのものは時間足・足集合に依存しないため再取得は起きない（写像のやり直しのみ）。
+    tickvolBands.onCandlesChanged();
+  });
+
+  // 指標の追加・削除で pane（と pane 内の系列）が作り直されるため、背景プリミティブを張り直す。
+  //   購読スロットは単数で、統合レイヤでは後から replay.js が自分の購読を入れる。上書きで本フックが
+  //   消えないよう setAppliedObserver 自体を合成する（後続購読者の挙動は不変・解除も従来どおり）。
+  const proceedSetAppliedObserver = controller.setAppliedObserver.bind(controller);
+  proceedSetAppliedObserver(() => tickvolBands.onPanesChanged());
+  controller.setAppliedObserver = (observer) => proceedSetAppliedObserver(() => {
+    if (typeof observer === 'function') {
+      observer();
+    }
+    tickvolBands.onPanesChanged();
   });
 
   // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
@@ -686,5 +732,5 @@ export async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
+  return { chart, mainSeries, renderer, controller, mode, ready, tickvolBands, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
 }

@@ -54,6 +54,10 @@ function fakeHost({ defs = {}, computeFails = new Set(), savedTimeframe = '1m', 
     },
     _mp: { restoreInstance: async (i) => { log.push(`mp.restoreInstance:${i.instanceId}`); } },
     _isMarketProfile: (def) => !!(def && def.isMp),
+    // アクター駆動指標の復元先は computeId で解決する（未登録は MP＝レジストリ化前の挙動）。
+    _actorControllerFor(def) {
+      return (def && def.actor) ? def.actor : this._mp;
+    },
     _paramsObject: (params) => (Array.isArray(params) ? Object.fromEntries(params) : (params ?? {})),
     _gatewayAdapter: (variant) => ({
       compute: async (req) => {

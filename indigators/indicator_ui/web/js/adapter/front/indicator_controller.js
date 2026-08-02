@@ -193,6 +193,12 @@ export class IndicatorController {
     //   subclass の inherited メソッド呼出（this._toggleMarketProfileVisible 等）・_mpParams override を
     //   温存するため base の各 MP メソッドは本協働子への薄いラッパへ縮退する（byte 挙動不変）。
     this._mp = new MarketProfileController(this);
+    // アクター駆動指標（/compute を持たない）の computeId → アクターコントローラ。
+    //   台帳（actor_driven_ids.js）が「どの指標がアクター駆動か」を、本レジストリが「誰が処理するか」を
+    //   持つ。以前は台帳で分岐した後に必ず this._mp（MP 専用）へ委譲しており、2 つ目のアクター駆動
+    //   指標を足すと MP のコントローラへ誤配送された（「台帳への 1 行追記で完結」という本 controller の
+    //   主張が成立していなかった）。追加は composition root からの registerActorController で完結する。
+    this._actorControllers = new Map([['market_profile', this._mp]]);
     // 指標追加ダイアログ（一覧・絞り込み・開閉）を委譲する協働子（ISSUE-181・A8）。
     //   絞り込み UI 状態（旧 this._filter）は協働子が所有する（状態も一緒に移す）。
     this._dialog = new IndicatorDialogController(this);
@@ -334,6 +340,24 @@ export class IndicatorController {
     return isActorDriven(def);
   }
 
+  // アクター駆動指標のコントローラを登録する（composition root が結線時に 1 回呼ぶ）。
+  //   台帳（ACTOR_DRIVEN_COMPUTE_IDS）への追記と本登録の 2 点で新指標が完結し、本 controller は不変。
+  registerActorController(computeId, controller) {
+    this._actorControllers.set(computeId, controller);
+  }
+
+  // def に対応するアクターコントローラ。未登録は this._mp（レジストリ化前の挙動）へ退避する
+  //   ＝台帳にあるが未結線の指標は従来どおり MP 経路を辿る（本リファクタで挙動が変わらない）。
+  _actorControllerFor(def) {
+    const id = def && def.compute && def.compute.computeId;
+    return this._actorControllers.get(id) || this._mp;
+  }
+
+  // instance からアクターコントローラを解決する（凡例の eye/close は def を持たないため）。
+  _actorControllerForInstance(inst) {
+    return this._actorControllerFor(this._catalog.get(inst && inst.indicatorId));
+  }
+
   // MP アクターへ渡す取得 params（resmode/bins/va/src/range）を組み立てる（apply/gear/restore 共通）。
   //   ISSUE-094 🔴-4: MP のパラメータ・スキーマ写像は market_profile_params.js（純関数）へ外出しした。
   //   本メソッドは薄い委譲のみ（subclass の super._mpParams / 既存テストの ctrl._mpParams 呼出を温存）。
@@ -425,19 +449,19 @@ export class IndicatorController {
   //   （this._toggleMarketProfileVisible / this._removeMarketProfile）と既存テスト（ctrl._onGearMarketProfile）を
   //   温存するための薄い委譲（挙動は抽出前と byte 等価）。
   _applyMarketProfile(def, variant, params) {
-    return this._mp.applyMarketProfile(def, variant, params);
+    return this._actorControllerFor(def).applyMarketProfile(def, variant, params);
   }
 
   _toggleMarketProfileVisible(inst) {
-    return this._mp.toggleVisible(inst);
+    return this._actorControllerForInstance(inst).toggleVisible(inst);
   }
 
   _removeMarketProfile(inst) {
-    return this._mp.removeInstance(inst);
+    return this._actorControllerForInstance(inst).removeInstance(inst);
   }
 
   _onGearMarketProfile(inst, def) {
-    return this._mp.onGear(inst, def);
+    return this._actorControllerFor(def).onGear(inst, def);
   }
 
   // 協働子が算出した次 state を確定する（ISSUE-181: 協働子が host の private フィールドへ
@@ -668,7 +692,7 @@ export class IndicatorController {
       //   足切替）で /compute へ流出させると例外→setTimeframe では preRender 前で全スキップ。
       //   /compute を通さず MP 側協働子（actor.onLiveTick／refresh 委譲）へ外出しする（ISSUE-094 🔴-4）。
       if (this._isMarketProfile(meta.def)) {
-        await this._mp.onLiveRecompute(inst);
+        await this._actorControllerFor(meta.def).onLiveRecompute(inst);
         continue;
       }
       targets.push(inst);

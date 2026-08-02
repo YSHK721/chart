@@ -40,6 +40,8 @@ import { MarketProfileClient } from './market_profile_client.js';
 import { MarketProfileHistogramPrimitive } from './market_profile_primitive.js';
 import { MarketProfileReplayBar } from './market_profile_replay_bar.js';
 import { ReplayMarketProfileActor } from './replay_market_profile_actor.js';
+import { TickvolBandsActor } from './tickvol_bands_actor.js';
+import { TickvolBandsController } from './tickvol_bands_controller.js';
 import { DwellAccumulator } from '../../domain/market_profile_dwell_accumulator.js';
 
 // 既定時間足（1 分足原子からの初期表示足）と直近表示本数（§配信設計: リサンプル＋直近 N 本）。
@@ -183,7 +185,30 @@ export async function bootstrap({
   //   使用済み（E-7）のため使わず、own property での差し替え 1 行で行う。順序（除去 → 切替 →
   //   適用）と再入防止は協働子が所有する。
   const proceedSetTimeframe = controller.setTimeframe.bind(controller);
-  controller.setTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
+  const proceedTemplateTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
+
+  // 取引密度帯（時刻帯の背景色・1 時間足以下）。standalone replay（8280）用の配線。統合 UI では
+  //   live root だけが実行されるため、そちらの同名配線が効く（本 root は単体起動時のみ通る）。
+  //   getUntil: リビール T（controller._untilTime）＝当日を集計に含めない因果窓の基準。
+  const tickvolBands = new TickvolBandsActor({
+    fetch, datasetRef, renderer,
+    getTimeframe: () => controller._timeframe,
+    getUntil: () => (controller._untilTime != null ? controller._untilTime : null),
+  });
+  controller.registerActorController('tickvol_bands', new TickvolBandsController(controller, tickvolBands));
+  // 時間足切替: 帯は時間足に依存しないので再取得せず、塗る足だけ引き直す（テンプレート介入の内側へチェーン）。
+  controller.setTimeframe = (tf) => {
+    const done = proceedTemplateTimeframe(tf);
+    tickvolBands.onTimeframeChange();
+    return done;
+  };
+  // リプレイ時計の前進: セッション日が変わったときだけ再取得する（日内は応答不変＝当日非参照）。
+  const proceedUntil = controller.setUntilTime.bind(controller);
+  controller.setUntilTime = (t) => {
+    const done = proceedUntil(t);
+    tickvolBands.onClock();
+    return done;
+  };
 
   // チャート操作（価格軸 wheel ズーム・dblclick 自動スケール復帰・本体縦パン）の配線。
   //   ISSUE-123: 旧・独立コピーを廃止し present と同一実体（symlink 単一ソース）を参照する。
@@ -272,6 +297,21 @@ export async function bootstrap({
   renderer.setCandleObserver(() => {
     tradeMarkers.onCandlesChanged();
     currentPriceView.render(renderer.lastClose());
+    // 足の差し替え（時間足・期間プリセット・カレンダー・リビール）で塗る足を引き直す。
+    //   帯そのものは時間足・足集合に依存しないため再取得は起きない（写像のやり直しのみ）。
+    tickvolBands.onCandlesChanged();
+  });
+
+  // 指標の追加・削除で pane（と pane 内の系列）が作り直されるため、背景プリミティブを張り直す。
+  //   購読スロットは単数で、統合レイヤでは後から replay.js が自分の購読を入れる。上書きで本フックが
+  //   消えないよう setAppliedObserver 自体を合成する（後続購読者の挙動は不変・解除も従来どおり）。
+  const proceedSetAppliedObserver = controller.setAppliedObserver.bind(controller);
+  proceedSetAppliedObserver(() => tickvolBands.onPanesChanged());
+  controller.setAppliedObserver = (observer) => proceedSetAppliedObserver(() => {
+    if (typeof observer === 'function') {
+      observer();
+    }
+    tickvolBands.onPanesChanged();
   });
 
   // Market Profile 全モード（MP DI 集約点）。共有 present MarketProfileActor を extends した
@@ -316,5 +356,5 @@ export async function bootstrap({
   tradeMarkers.setCurrentTimeframe(timeframe);
   controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
 
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, tradeMarkers, marketProfile, replayBar, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
+  return { chart, mainSeries, renderer, controller, mode, ready, tickvolBands, liveUpdater, tradeMarkers, marketProfile, replayBar, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
 }

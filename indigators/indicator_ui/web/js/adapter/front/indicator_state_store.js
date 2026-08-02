@@ -9,10 +9,11 @@
 //   本クラスが所有する。host は inFlight() を参照するだけになる（applyIndicator の競合ガード）。
 //
 // host 契約（IndicatorStateHost）が要求する最小メンバー（すべて read/呼び出し。フィールドへは代入しない）:
-//   field : _persistence / _state / _catalog / _meta / _datasetRef / _renderer / _mp
+//   field : _persistence / _state / _catalog / _meta / _datasetRef / _renderer
 //           _timeframe（read のみ。確定は _commitTimeframe 経由＝所有者は TimeframeController）
 //           _loadCandles / _timeframeObserver
 //   method: _commitState / _commitLastSeries / _commitTimeframe / _paramsObject / _isMarketProfile /
+//           _actorControllerFor（アクター駆動指標の復元先を computeId で解決する）/
 //           _gatewayAdapter / _draw / _renderLegend / _renderDialogList / _syncTimeframeButtons
 //
 // ★ upstream JS の系列追加系 API は一切参照しない（renderer 経由のみ・§2.2 隔離）。
@@ -139,7 +140,7 @@ export class IndicatorStateStore {
     // (b) MP は起動の待ち合わせから外す（失敗は当該 1 件に閉じる＝F-T4）。
     for (const { inst, def } of list) {
       if (host._isMarketProfile(def)) {
-        Promise.resolve(host._mp.restoreInstance(inst)).catch(() => {
+        Promise.resolve(host._actorControllerFor(def).restoreInstance(inst)).catch(() => {
           // MP 復元の失敗は当該 1 件のみスキップ（他指標の復元・描画は継続する）。
         });
       }

@@ -182,3 +182,23 @@ class MarketProfilePort(Protocol):
         ``frm``/``today``/``sessions`` は増分2/日別分割の任意フラグ（None/省略は現行挙動）。
         """
         ...
+
+
+@runtime_checkable
+class TickvolProfilePort(Protocol):
+    """/tickvol_profile 用の取引密度プロファイル源（indicator_ui bridge 委譲）。
+
+    セッション日内の時刻帯別ティック密度と、そこから決まる HIGH 帯を ``(status, body)`` で返す。
+    ``until`` は必ずリビール T（単一時計 to）を渡す。``until`` が属するセッション日は集計に含めない
+    （当日を覗かない＝因果・未来リーク防止）。実装は adapter 層（bridge 委譲）に閉じる（DIP）。
+    """
+
+    def profile(
+        self,
+        ref: str,
+        sessions: Any = None,
+        pct: Any = None,
+        until: Any = None,
+    ) -> "tuple[int, dict]":
+        """``(status, body)`` を返す（未知 ref は 400 nested error）。"""
+        ...

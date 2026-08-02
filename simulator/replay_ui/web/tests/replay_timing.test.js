@@ -24,6 +24,8 @@ import {
   emaUpdate,
   periodMs,
   fmtEta,
+  REALTIME,
+  realtimeOffsetsMs,
 } from '../js/replay/timing.js';
 
 // --- clampSpeed（0 は falsy でも 0 のまま＝一時停止。NaN/非有限のみ 1） ------------ //
@@ -131,4 +133,27 @@ test('fmtEta formats >=1 hour as H時間MM分 (approved extension; minutes/secon
   assert.equal(fmtEta(90 * 1000), '1分30秒');        // 既存挙動不変
   assert.equal(fmtEta(3599 * 1000), '59分59秒');     // 分ブランチ最大値（境界固定・review 🟡）
   assert.equal(fmtEta(3690 * 1000), '1時間01分');    // 剰余秒（30秒）切り捨ての明示検証（review 🟡）
+});
+
+// --- 実時間再生「リアルタイム」（依頼者指示 2026-08-01・新規拡張） ------------------------------- //
+//   比の速度（0.00〜1.00）とは別軸のテンポ。値域外の番兵値であり clampSpeed は素通しする
+//   （数値へ落ちると NaN→既定 1.00 に化けて「最速」になる＝Red 実証点）。
+test('clampSpeed passes the REALTIME sentinel through (does not fall back to 1)', () => {
+  assert.equal(clampSpeed(REALTIME), REALTIME);
+  assert.equal(clampSpeed(0.25), 0.25); // 既存挙動不変
+});
+
+// 足内スケジュール: secs 有り＝実時刻どおり／無し＝足の等分。いずれも [0, spanMs] へクランプ。
+test('realtimeOffsetsMs places points at their market timestamps when secs are present', () => {
+  const off = realtimeOffsetsMs({ n: 3, secs: [1000, 1015, 1050], winStart: 1000, spanMs: 60000 });
+  assert.deepEqual(off, [0, 15000, 50000]); // 15秒後の tick は 15秒後に描く＝リアルタイム
+});
+test('realtimeOffsetsMs splits the bar evenly when secs are missing or mismatched', () => {
+  assert.deepEqual(realtimeOffsetsMs({ n: 5, secs: [], winStart: 1000, spanMs: 60000 }), [0, 15000, 30000, 45000, 60000]);
+  assert.deepEqual(realtimeOffsetsMs({ n: 2, secs: [1000], winStart: 1000, spanMs: 60000 }), [0, 60000]); // 点数不一致
+  assert.deepEqual(realtimeOffsetsMs({ n: 1, secs: [], winStart: 1000, spanMs: 60000 }), [0]);            // 単点
+});
+test('realtimeOffsetsMs clamps out-of-window timestamps into [0, spanMs] (playback never stalls)', () => {
+  const off = realtimeOffsetsMs({ n: 3, secs: [900, 1030, 9999], winStart: 1000, spanMs: 60000 });
+  assert.deepEqual(off, [0, 30000, 60000]);
 });

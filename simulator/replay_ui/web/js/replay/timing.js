@@ -13,10 +13,37 @@ export const ANIM_COARSE = 200;     // 1分OHLC の点数上限
 export const ANIM_MIN_MS = 5;       // 1ステップ最小間隔（速すぎ防止）
 export const FORMING_MIN_INTERVAL_MS = 120; // 足内 MA 追従の最小間隔
 
+// --- 実時間再生「リアルタイム」（依頼者指示 2026-08-01・参照実装に対応物なしの新規拡張） --------- //
+//   既存の速度 0.00〜1.00 は「最速（=1.00）に対する遅さの比」であって時間の比ではない（1足あたり
+//   の所要は点数×PER_POINT_MS で決まり、時間足の長さと無関係）。「リアルタイム」は市場時刻 1 秒を実時間
+//   1 秒で流す別軸のテンポ＝1足の所要は時間足の長さそのもの（1m→60秒）。よって比の値域には
+//   収まらず、数値でない番兵値で表す（clampSpeed はこれを素通しする）。
+export const REALTIME = 'realtime';
+export function isRealtime(v) { return v === REALTIME; }
+
 // 速度の parse は `||1` を使わない（0 は falsy で 0||1=1＝「0.00で停止しない」バグの原因）。
 //   NaN/非有限のみ既定 1 へ。0 は 0 のまま許容＝一時停止。（replay.js: speed()）
 export function clampSpeed(v) {
+  if (isRealtime(v)) return REALTIME; // 実時間テンポは比の値域外＝そのまま通す
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
+}
+
+// 実時間再生の足内スケジュール＝各点の「足始端からの経過ミリ秒」。
+//   secs（点ごとの市場時刻・秒）が点数と一致すれば実時刻どおりに配置する（実ティックの粗密が
+//   そのまま実時間の粗密になる）。無い／不一致なら足を等分する（時刻を持たないモードでも
+//   「1足＝時間足の長さ」は厳密に保つ）。[0, spanMs] へクランプする＝窓外の時刻（データ不整合）
+//   で再生が止まらないようにする。
+export function realtimeOffsetsMs({ n, secs, winStart, spanMs }) {
+  const usable = Array.isArray(secs) && secs.length === n
+    && secs.every((s) => Number.isFinite(Number(s)));
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const raw = usable
+      ? (Number(secs[i]) - winStart) * 1000
+      : (n <= 1 ? 0 : spanMs * i / (n - 1));
+    out[i] = Math.min(spanMs, Math.max(0, raw));
+  }
+  return out;
 }
 
 // 時間計算用（0除算/Infinity 回避。0保持はループ側ゲート）。（replay.js: effSpeed()）
