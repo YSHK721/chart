@@ -1,6 +1,6 @@
 """PRO!fitRSI 成果物層（pandas）の検証。
 
-``build_rsi`` が OHLC DataFrame から apply で適用価格を選び core を呼び、RSI 列・MA 列を
+``build_rsi`` が OHLC DataFrame から apply で適用価格を選び core を呼び、RSI 列を
 付与した DataFrame（元 index 継承）を返すこと、``rsi_levels`` が生 RSI 由来の σ 水準辞書
 （7 要素）を返すこと、必須列欠落で KeyError を送出することを固定する。
 """
@@ -15,7 +15,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src import (  # noqa: E402
-    MA_COLUMN,
     RSI_COLUMN,
     build_rsi,
     compute_rsi_full,
@@ -37,26 +36,25 @@ def _ohlc():
 
 
 # ---------------------------------------------------------------------------
-# TC-16 build_rsi は RSI/MA 列を付与し元 index を継承する（apply=0 -> close）
+# TC-16 build_rsi は RSI 列を付与し元 index を継承する（apply=0 -> close）
 # ---------------------------------------------------------------------------
-def test_build_rsi_appends_rsi_and_ma_columns_preserving_index():
+def test_build_rsi_appends_rsi_column_preserving_index():
     # Arrange
     df = _ohlc()
 
     # Act
-    out = build_rsi(df, rsi_period=3, apply=0, ma_period=2)
+    out = build_rsi(df, rsi_period=3, apply=0)
 
     # Assert: 列付与・index 継承・close ベースの core 出力と一致。
     assert RSI_COLUMN in out.columns
-    assert MA_COLUMN in out.columns
+    assert "rsi_ma" not in out.columns  # EMA 平滑列は持たない（ma_period 削除）
     assert list(out.index) == list(df.index)
     full = compute_rsi_full(
         df["open"].to_numpy(float), df["high"].to_numpy(float),
         df["low"].to_numpy(float), df["close"].to_numpy(float),
-        rsi_period=3, apply=0, ma_period=2,
+        rsi_period=3, apply=0,
     )
     np.testing.assert_allclose(out[RSI_COLUMN].to_numpy(), full.rsi, rtol=1e-12)
-    np.testing.assert_allclose(out[MA_COLUMN].to_numpy(), full.ma, rtol=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +67,10 @@ def test_build_rsi_default_apply_uses_typical_price():
     high = df["high"].to_numpy(float)
     low = df["low"].to_numpy(float)
     close = df["close"].to_numpy(float)
-    expected = compute_rsi_full(open_, high, low, close, rsi_period=3, ma_period=2)
+    expected = compute_rsi_full(open_, high, low, close, rsi_period=3)
 
     # Act（apply 省略 = 既定 5 -> TYPICAL）。
-    out = build_rsi(df, rsi_period=3, ma_period=2)
+    out = build_rsi(df, rsi_period=3)
 
     # Assert
     np.testing.assert_allclose(out[RSI_COLUMN].to_numpy(), expected.rsi, rtol=1e-12)
@@ -85,7 +83,7 @@ def test_build_rsi_is_case_insensitive_for_columns():
     df = _ohlc().rename(
         columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}
     )
-    out = build_rsi(df, rsi_period=3, apply=0, ma_period=2)
+    out = build_rsi(df, rsi_period=3, apply=0)
     assert RSI_COLUMN in out.columns
 
 
@@ -95,7 +93,7 @@ def test_build_rsi_is_case_insensitive_for_columns():
 def test_build_rsi_raises_keyerror_on_missing_column():
     df = _ohlc().drop(columns=["high"])
     with pytest.raises(KeyError):
-        build_rsi(df, rsi_period=3, ma_period=2)
+        build_rsi(df, rsi_period=3)
 
 
 # ---------------------------------------------------------------------------
@@ -103,12 +101,12 @@ def test_build_rsi_raises_keyerror_on_missing_column():
 # ---------------------------------------------------------------------------
 def test_rsi_levels_returns_seven_level_dict_from_raw_rsi():
     df = _ohlc()
-    levels = rsi_levels(df, rsi_period=3, apply=0, ma_period=2)
+    levels = rsi_levels(df, rsi_period=3, apply=0)
     assert set(levels.keys()) == {"p1", "p2", "p3", "m1", "m2", "m3", "mid50"}
     full = compute_rsi_full(
         df["open"].to_numpy(float), df["high"].to_numpy(float),
         df["low"].to_numpy(float), df["close"].to_numpy(float),
-        rsi_period=3, apply=0, ma_period=2,
+        rsi_period=3, apply=0,
     )
     # 生 RSI 由来であることを直接固定。
     assert levels == pytest.approx(compute_rsi_levels(full.rsi))

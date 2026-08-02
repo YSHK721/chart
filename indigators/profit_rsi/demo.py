@@ -48,7 +48,6 @@ def main() -> None:
         out_path=str(Path(__file__).parent / "profit_rsi_demo.png"),
         rsi_period=6,
         apply=5,
-        ma_period=5,
         title="PRO!fitRSI (demo / synthetic OHLC)",
     )
     print("saved:", out)

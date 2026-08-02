@@ -595,14 +595,14 @@ def test_fake_chart_reproduces_price_range_power_horizontal_payload():
     assert payloads[0]["kind"] == "horizontal_line"
 
 
-def test_adapter_profit_rsi_emits_two_lines_and_levels():
+def test_adapter_profit_rsi_emits_one_line_and_levels():
     # line+水準線併用指標が統合 FakeChart 経由で系列名どおり出る（F3 照合対象名）。
     adapter = IndicatorComputeAdapter()
     df = _ohlcv(120)
-    series = adapter.compute("profit_rsi", "default", df, {"rsi_period": 6, "apply": 5, "ma_period": 5})
+    series = adapter.compute("profit_rsi", "default", df, {"rsi_period": 6, "apply": 5})
     names = {p["name"]: p["kind"] for p in series}
     assert names["rsi"] == "line"
-    assert names["rsi_ma"] == "line"
+    assert "rsi_ma" not in names  # EMA 平滑線は持たない（ma_period 削除）
     assert names["profit_rsi"] == "horizontal_line"
 
 

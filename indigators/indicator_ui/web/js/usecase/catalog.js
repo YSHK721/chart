@@ -566,9 +566,10 @@ const PROFIT_RSI = pfDef({
     param('apply', ParamType.ENUM, 5, [], [1, 2, 3, 4, 5, 6],
       { group: 'group.calc', label: 'ソース', enumLabels: RSI_APPLY_LABELS,
         tooltip: 'RSI を計算する価格。既定は (高値 + 安値 + 終値)/3' }),
-    PF_INT('ma_period', 5),
   ],
-  series: [PF_LINE('rsi'), PF_LINE('rsi_ma'), PF_HLINE('profit_rsi')],
+  // 元 MQL の InpMAPeriod（RSI の EMA 平滑線 rsi_ma）は削除済み（承認 2026-08-02）。
+  //   σ 水準線は元から**生 RSI**由来のため水準値は不変。
+  series: [PF_LINE('rsi'), PF_HLINE('profit_rsi')],
 });
 const PROFIT_STC = pfDef({
   id: 'profit_stc', name: 'STC', cat: 'oscillator', placement: 'pane',

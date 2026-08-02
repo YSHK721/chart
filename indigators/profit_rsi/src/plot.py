@@ -3,16 +3,17 @@
 責務:
     出力アダプタ。計算は成果物層（rsi）へ委譲し、本層は「取り出し→描画」のみ。
     ヘッドレスで完結（Agg）。元 MQL4 は ``indicator_separate_window`` の RSI 線
-    ＋ EMA 平滑線（共に DRAW_LINE, clrLime）を [0,100] のペインに描いたため、別ペイン
-    のオシレーター線 2 本として再現する。σ 水準線 7 本（±1/2/3σ ＝ 点線グレー、
+    （DRAW_LINE, clrLime）を [0,100] のペインに描いたため、別ペイン
+    のオシレーター線 1 本として再現する。σ 水準線 7 本（±1/2/3σ ＝ 点線グレー、
     中央線 50 ＝ 実線）を重ねる。subwindow の y 範囲は元 indicator_minimum 0 〜
     indicator_maximum 100 に合わせる。RSI 線の凡例は元 ``IndicatorShortName`` の
     "RSI-{適用価格名} ({period})"（Apply で適用価格名が変わる）を再現する。
     具体描画ライブラリ（matplotlib）を core/成果物層へ侵入させない（依存内向き）。
 
 元 MQL4 対応:
-    ``#property indicator_separate_window`` + ``SetIndexStyle(0/1, DRAW_LINE)`` +
-    ``indicator_color1/2 clrLime``、OnInit の ``IndicatorShortName`` switch（Apply→
+    ``#property indicator_separate_window`` + ``SetIndexStyle(0, DRAW_LINE)`` +
+    ``indicator_color1 clrLime``（元 ExtMABuffer の EMA 平滑線は ma_period 削除に伴い
+    非対応・承認 2026-08-02）、OnInit の ``IndicatorShortName`` switch（Apply→
     "RSI-Open/High/Low/Median/Typical/Weighted close/Close price (period)"）、
     σ 水準線（StDevA1..A6 ±1/2/3σ ＋ 中央線 50, indicator_levelcolor C'84,84,84' /
     indicator_levelstyle STYLE_SOLID）、``indicator_minimum 0`` / ``indicator_maximum 100``。
@@ -30,11 +31,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from .core import DEFAULT_APPLY, DEFAULT_MA_PERIOD, DEFAULT_RSI_PERIOD
-from .rsi import MA_COLUMN, RSI_COLUMN, build_rsi, rsi_levels
+from .core import DEFAULT_APPLY, DEFAULT_RSI_PERIOD
+from .rsi import RSI_COLUMN, build_rsi, rsi_levels
 
 _RSI_COLOR = "#00ff00"     # 元 indicator_color1 clrLime
-_MA_COLOR = "#1b8f1b"      # 元 indicator_color2 clrLime（識別性のため濃緑で重畳）
 _LEVEL_COLOR = "#545454"   # 元 indicator_levelcolor C'84,84,84'
 
 # σ 水準線（±1/2/3σ は点線、中央線 50 は実線）。
@@ -75,12 +75,11 @@ def plot_rsi(
     *,
     rsi_period: int = DEFAULT_RSI_PERIOD,
     apply: int = DEFAULT_APPLY,
-    ma_period: int = DEFAULT_MA_PERIOD,
     title: str = "PRO!fitRSI",
 ) -> str:
-    """RSI 線・EMA 平滑線を別ペイン風に PNG 出力する。
+    """RSI 線を別ペイン風に PNG 出力する。
 
-    上段: 終値（参照）。下段: RSI 線（Lime）＋ EMA 平滑線 ＋ σ 水準線 7 本
+    上段: 終値（参照）。下段: RSI 線（Lime）＋ σ 水準線 7 本
     （±1/2/3σ は点線グレー、50 は実線）。下段 y 範囲は [0,100]。warm-up
     （i<rsi_period）は元 iRSI 既定どおり 0 で描画される（NaN 無し）。RSI 線の凡例は
     "RSI-{適用価格名} ({period})"（Apply 依存）。
@@ -90,16 +89,14 @@ def plot_rsi(
         out_path: 出力 PNG パス。
         rsi_period: RSI 期間（既定 6）。
         apply: 適用価格選択（既定 5 -> Typical price）。
-        ma_period: EMA 期間（既定 5）。
         title: 図のタイトル。
 
     Returns:
         書き出した PNG のパス。
     """
-    built = build_rsi(df, rsi_period=rsi_period, apply=apply, ma_period=ma_period)
-    levels = rsi_levels(df, rsi_period=rsi_period, apply=apply, ma_period=ma_period)
+    built = build_rsi(df, rsi_period=rsi_period, apply=apply)
+    levels = rsi_levels(df, rsi_period=rsi_period, apply=apply)
     rsi = built[RSI_COLUMN].to_numpy(dtype=np.float64)
-    ma = built[MA_COLUMN].to_numpy(dtype=np.float64)
     x = np.arange(len(df))
 
     cols = {str(c).lower(): c for c in df.columns}
@@ -115,11 +112,9 @@ def plot_rsi(
     ax_price.legend(loc="upper left", fontsize=9)
     ax_price.grid(True, alpha=0.2)
 
-    # 別ウィンドウ相当: RSI 線・EMA 平滑線（DRAW_LINE, clrLime）。
+    # 別ウィンドウ相当: RSI 線（DRAW_LINE, clrLime）。
     ax_ind.plot(x, rsi, color=_RSI_COLOR, linewidth=1.4,
                 label=rsi_short_name(apply, rsi_period))
-    ax_ind.plot(x, ma, color=_MA_COLOR, linewidth=1.2,
-                label=f"RSI MA ({ma_period})")
     # σ 水準線（±1/2/3σ は点線グレー）。
     for key in _SIGMA_KEYS:
         ax_ind.axhline(levels[key], color=_LEVEL_COLOR, linewidth=0.8,

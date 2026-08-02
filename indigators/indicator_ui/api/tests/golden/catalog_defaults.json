@@ -142,7 +142,6 @@
   },
   "profit_rsi": {
     "apply": 5,
-    "ma_period": 5,
     "rsi_period": 6
   },
   "profit_rsi_macd": {

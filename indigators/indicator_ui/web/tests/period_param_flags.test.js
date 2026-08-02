@@ -25,7 +25,7 @@ const EXPECTED_PERIOD_PARAMS = {
   profit_adx_needle: ['period', 'window'],
   profit_arctan: ['period', 'window'],
   profit_mfi: ['mfi_period', 'ma_period'],
-  profit_rsi: ['rsi_period', 'ma_period'],
+  profit_rsi: ['rsi_period'],   // ma_period は削除済み（承認 2026-08-02）
   profit_stc: ['period'],
   profit_oscillator: ['period_a', 'period_b', 'window'],
   profit_oscillator2: ['osc_period', 'stc_slow', 'ma_period', 'rci_period'],
