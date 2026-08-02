@@ -8,6 +8,7 @@
 import { ConstraintKind, ParamType } from '../domain/constraint_eval.js';
 import { IndicatorDef, SeriesDef, SeriesKind } from '../domain/domain_models.js';
 import { makeMarketProfileDef } from './catalog_entry.js';
+import { makeTickvolBandsDef } from './tickvol_bands_catalog_entry.js';
 
 const OHLC = ['open', 'high', 'low', 'close'];
 
@@ -648,6 +649,13 @@ const MARKET_PROFILE = makeMarketProfileDef({
   IndicatorDef, SeriesDef, SeriesKind, ParamType, ConstraintKind, param, OHLC,
 });
 
+// --- tickvol_bands（プロファイルタブ・アクター委譲型）----------------------
+// 一日の取引時間のうちティックが集中する時刻帯のチャートパネル背景色を変える（1 時間足以下）。
+//   定義は tickvol_bands_catalog_entry.js（MP と同じ factory 注入方式）。
+const TICKVOL_BANDS = makeTickvolBandsDef({
+  IndicatorDef, SeriesDef, SeriesKind, ParamType, ConstraintKind, param, OHLC,
+});
+
 // --- cvfe（条件付ボラティリティ予測・OVERLAY）------------------------------
 // 正本仕様 indigators/cvfe/CVFE_spec_v1.0.md。次バーの条件付ボラティリティ σ̂_{t+1} を
 //   HAR-CJ-L で 1 期先予測し、各バーの水準を「ローソク足幅の水平ダッシュ」で並べる
@@ -730,8 +738,130 @@ const CVFE = new IndicatorDef({
   compute: { computeId: 'cvfe', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
 
+// --- tickvol（ティックボリューム・専用ペインのヒストグラム＋外れ値水準）------
+// その足の間に到来した tick 数を、専用ペインのヒストグラム 1 本で描く（依頼者確定 2026-08-01）。
+//   実バインディング add_tickvol（indigators/tickvol/src/lwc_chart.py）は供給側 volume 列
+//   （＝tick 数。確定足はロールアップ、形成中足は forming_bar の len(mids)）を加工せず渡す。
+// placement='pane': ローソクと価格スケールを共有しない（tick 数は価格と単位が異なる）。
+//
+// 外れ値水準（依頼者指示 2026-08-01「経験的分位＋GPD を並列表示」）:
+//   正常帯上端（当該バー除外の因果ローリング分位＝POT の閾値）を超えた**エピソード極値**を
+//   1 観測とし（宣言クラスタリング）、その超過分の同じ分位を経験的分位と GPD の 2 通りで
+//   推定して並べる。2 本の差が「標本内で数えた値」と「裾の分布形から外挿した値」の差になる。
+//   計算は既存の共有プリミティブ（common.marod_bands / common.event_quantiles / common.gpd）を
+//   無改変参照する（indigators/tickvol/src/levels.py に実測根拠を記載）。
+//
+// 集計単位（event_agg）を公開しない理由: GPD は超過の独立を前提にする。実測（2026-08-01）で
+//   生の閾値超過は θ=0.16〜0.27 と強くクラスタ化し、エピソード極値へ畳んで初めて θ=0.49〜0.89
+//   （ゲート θ>=0.2）を満たす。「バー値」集計を選べるようにすると前提が壊れるため固定する。
+const TICKVOL = new IndicatorDef({
+  id: 'tickvol',
+  displayNameKey: 'ind.ティックボリューム',
+  category: { group: 'builtin', nameKey: 'cat.volume' },
+  tab: 'indicator',
+  placement: 'pane',
+  params: [
+    // window_n: 正常帯（＝POT 閾値）の因果ローリング窓。tickvol は水準そのものが非定常
+    //   （実測: 履歴 4 分割の中央値が 5m 170→489・1h 666→2049）ため固定閾値は使えない。
+    param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
+      group: 'group.calc', order: 1, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（閾値）', isPeriod: true,
+      tooltip: '「普段どれくらいの tick 数か」を測る因果ローリング窓の本数（既定 500）。当該バーは除外する（非リペイント）。tick 数の水準は数か月スケールで数倍動くため、固定値ではなくこの窓で局所的に測り直す。',
+    }),
+    // 分位ペア（0<q_low<q_high<1・MAROD 系と対称の q-chain 制約）。正常帯の下側/上側分位で、
+    //   上側は POT の閾値そのもの。下側は「普段より極端に静かな足」を示す表示専用
+    //   （tick 数は最小 1 の計数量で下側は裾でないため GPD の対象にしない）。
+    param('q_low', ParamType.FLOAT, 0.10, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
+      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
+    ], null, {
+      group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: '下側分位',
+      tooltip: '正常帯の下端（既定 0.10＝下位 10%）。これを下回る足は「普段より極端に静か」。表示専用で、外れ値イベント・GPD の算出には使わない。',
+    }),
+    // q_high: 正常帯の上側分位＝POT の閾値分位。ForwardStop（common.gpd.select_threshold）の
+    //   自動選択は実測で 5m 0.95 / 15m 0.90 / 1h 0.85 と時間足で動くため、採択域の内側で
+    //   観測件数が最も確保できる 0.90 を既定にする。
+    param('q_high', ParamType.FLOAT, 0.90, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
+    ], null, {
+      group: 'group.calc', order: 3, step: 0.01, min: 0, max: 1, label: '上側分位（外れ値の境目）',
+      tooltip: '正常帯の上端。この分位を超えた足を「外れ値イベント」として数える（既定 0.90＝上位 10%）。この閾値が GPD の当てはめ開始点（POT の閾値）でもある。閾値の自動選択（GPD 適合度＋ForwardStop）は実測で 5 分足 0.95・1 時間足 0.85 と時間足で動くため、その内側の 0.90 を既定にしている。',
+    }),
+    // q_out: イベント超過分の極端分位。経験的線と GPD 線は**同じ q_out** を推定する
+    //   （だから 2 本を並べて読める）。無効値は共有規約 q_out_valid で黙ってオフ。
+    param('q_out', ParamType.FLOAT, 0.99, [], null, {
+      group: 'group.calc', order: 4, label: '外れ値の極端分位', step: 0.01, min: 0, max: 1,
+      tooltip: '外れ値イベントの「極端にはどこまで行くか」の分位（既定 0.99）。経験的分位線（赤破線）と GPD 線（橙破線）は同じこの分位を推定しており、差は外挿量そのもの。空欄・上側分位以下・範囲外は極端線と GPD 線のみオフ。',
+    }),
+    // k_events: 水準に使う直近観測件数（経験的・GPD で共通）。実測で全履歴の当てはめは
+    //   AD 適合度検定で棄却され（p=0.005〜0.255）、直近 50 件では棄却されない（p=0.455〜0.720）。
+    param('k_events', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['k_events', 1], messageKey: 'err.k_events' }], null, {
+      group: 'group.calc', order: 5, step: 1, min: 1, label: '外れ値イベント数 K',
+      tooltip: '水準を直近何件の外れ値イベントから計算するか（既定 50・経験的分位と GPD で共通）。全履歴で当てはめると分布が非定常なため適合度検定に落ちるが、直近 50 件なら落ちない＝ローリングでこそ成立する。GPD 線は観測が 30 件に満たない区間では描かない（推定値が自身と同じ大きさで揺れるため）。',
+    }),
+    // --- 回帰トレンド（btlm_trail 仕様の参照拡張・依頼者指示 2026-08-01）-----
+    //   btlm_trail の F-01/F-05/F-06/F-08/F-09（回帰窓末尾 OLS＋帯＋外れ値分位線＋β/σ/実績率）を
+    //   tick 数系列へそのまま適用する。分位値（q_low/q_high/q_out）は水準帯と共有し、同じ分位で
+    //   「水準の帯」と「トレンドの帯」を並べて読む。btlm_trail 本体は無改変（OCP）。
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, {
+      group: 'group.calc', order: 6, step: 1, min: 3, unit: 'unit.bars', label: '移動期間（回帰）', isPeriod: true,
+      tooltip: 'tick 数の回帰トレンドを当てはめる窓の本数（既定 100・btlm_trail と同一既定）。トレンド線（紫のドット）は各バーでこの窓に直線を当てた「窓末尾の位置」。β はその傾き。',
+    }),
+    param('band_method', ParamType.ENUM, 'empirical', [], ['ols', 'empirical'], {
+      group: 'group.calc', order: 7, label: 'トレンド帯の方式', enumLabels: BTLM_TRAIL_METHOD_LABELS,
+      tooltip: 'トレンド帯の作り方。経験分位＝トレンドからの乖離率の実測分位（既定）。名目 ols＝正規分布を仮定した幅。既定を btlm_trail 本体（名目 ols）と変えているのは実測根拠による: tick 数の乖離率は右に強く歪み（歪度 5 分足 +35.5）、名目 ols だと最大 57.5% のバーで帯の下端が「tick 数として成立しない値（1 未満）」になり、バンド内実績率も名目から最大 4.4pp ずれる。経験分位は乖離 0.8pp 以内・下端割れ 0〜4.8%。',
+    }),
+    param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
+      group: 'group.calc', order: 8, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（トレンド帯の分位）', isPeriod: true,
+      conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
+      tooltip: 'トレンド帯（経験分位方式）が参照する乖離率の本数（既定 500）。当該バーは除外する（因果・非リペイント）。',
+    }),
+    // --- 表示（btlm_trail F-09 と同一）---
+    param('show_metrics', ParamType.BOOL, true, [], null, {
+      group: 'group.display', order: 1, label: 'β・バンド内実績率・σ を表示',
+      tooltip: 'β＝tick 数トレンドの傾き（符号が向き・大きさが勢い）／バンド内実績率＝直近 N 本で確定足の tick 数がトレンド帯に収まった実測割合（帯の信頼度の実績）／σ＝トレンド線まわりの tick 数の散らばり。3 値とも読取欄への表示専用で、描画・帯の計算には影響しない。',
+    }),
+    param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
+      group: 'group.display', order: 2, label: '移動期間（実績率）', step: 1, min: 2, unit: 'unit.bars', isPeriod: true,
+      conditionalEnable: { when: { param: 'show_metrics', equals: true } },
+    }),
+  ],
+  // 系列: 本体ヒストグラム＋正常帯 2 本（動的名）＋水準線 3 本（典型深度＝実線／経験的極端
+  //   分位・GPD＝破線）。命名 `_evq_{med|ext}_{hi}` と `_q{pct}` はいずれも共有規約に従う
+  //   （前者 common.event_quantiles・後者 btlm_trail_q{pct} と対称）。イベント水準の下側
+  //   （_evq_*_lo）は持たない（tick 数は 1 以上の計数量で下側は裾でない・実測 min=1）。
+  series: [
+    PF_HIST('tickvol'),
+    // 正常帯（動的・q_low/q_high に依存＝tickvol_q{pct}）。
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      seriesNamePattern: {
+        template: 'tickvol_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
+    ...['tickvol_evq_med_hi', 'tickvol_evq_ext_hi', 'tickvol_gpd_hi'].map(
+      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
+    ),
+    // 回帰トレンド（btlm_trail 仕様）。mean と帯はドット/ライン切替可（btlm_trail と同じ）。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'tickvol_trend_mean', seriesName: 'tickvol_trend_mean', dynamic: false, pointStyleEditable: true }),
+    // トレンド帯（動的・q_low/q_high 依存）。水準帯 tickvol_q{pct} とは接頭辞で区別する。
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, pointStyleEditable: true,
+      seriesNamePattern: {
+        template: 'tickvol_trend_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
+    ...['tickvol_trend_off_hi', 'tickvol_trend_off_lo',
+        'tickvol_trend_beta', 'tickvol_trend_sigma', 'tickvol_trend_band_hit_rate'].map(
+      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
+    ),
+  ],
+  compute: { computeId: 'tickvol', requiredColumns: OHLC, timeRequired: false, backendParam: null, variants: ['default'] },
+});
+
 const REGISTRY = Object.freeze([
-  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, CVFE, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
+  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, CVFE, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE, TICKVOL_BANDS, TICKVOL,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,

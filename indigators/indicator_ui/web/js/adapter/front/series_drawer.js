@@ -229,9 +229,14 @@ export class SeriesDrawer {
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }
-      // overlay（pane 0 重ね描き）の line 系列のみ読み取り欄の overlay 行に載せる。
+      // overlay（pane 0 重ね描き）の line 系列を読み取り欄の overlay 行に載せる。
       //   color/name と末尾点 value（hover 解除時の fallback）を保持する。
-      if (!pane && seriesKind(kind).overlayReadout) {
+      //
+      // readout_only の系列は pane 指標でも載せる: このヒントは「描画せず読取欄だけに出す」
+      //   という意味であり（back の描画ヒント契約・fake_chart の _DISPLAY_HINTS）、pane だから
+      //   除外すると線も出ず読取欄にも出ない＝どこにも現れない死荷重になる。対象は明示的に
+      //   readout_only を付けた系列だけなので、既存指標の読取欄行は 1 行も増えない。
+      if ((!pane && seriesKind(kind).overlayReadout) || p.readout_only === true) {
         this._h._overlayReadouts.set(key, {
           series, color: p.color, name: p.name, lastValue: lastPointValue(p.data),
           visible: true,

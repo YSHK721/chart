@@ -33,6 +33,9 @@ _LATEST_GOLDEN_EMPTY_PARAMS = {
     ("btlm_trail_marod", "default"): ("incremental", None, 1),
     ("ma_marod", "default"): ("incremental", None, 1),
     ("price_range_power", "default"): ("axis_distribution", None, None),
+    # tickvol は外れ値水準が確定イベント全体に依存し有限 tail を取れない（必要履歴長がデータ
+    #   依存）。ISSUE-233 と同じ真因なので同じ解＝増分計算を宣言する（min_window/K は同型）。
+    ("tickvol", "default"): ("incremental", None, 1),
 }
 
 

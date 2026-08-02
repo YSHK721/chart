@@ -37,12 +37,19 @@ def _btlm_trail_marod() -> Any:
     return MarodIncrementer(_TrendLineBaseline(), "btlm_trail_marod")
 
 
+def _tickvol() -> Any:
+    from adapter.compute.incremental.tickvol import TickvolIncrementer
+
+    return TickvolIncrementer()
+
+
 # 名前 → 増分器 factory（遅延生成・生成後はプロセス内で使い回す）。
 _FACTORIES: dict[str, Callable[[], Any]] = {
     "moving_averages": _moving_averages,
     "btlm_trail": _btlm_trail,
     "ma_marod": _ma_marod,
     "btlm_trail_marod": _btlm_trail_marod,
+    "tickvol": _tickvol,
 }
 
 _INSTANCES: dict[str, Any] = {}

@@ -154,6 +154,21 @@ def _price_range_power_latest_meta(
     return ("axis_distribution", None, None)
 
 
+# tickvol は本体（点ごとの写像）と外れ値水準（因果ローリング＋イベント蓄積）の複合である。
+#   水準はバー t までに**確定したイベント観測**すべてに依存し、必要な履歴長は上限を持たない
+#   （イベント頻度はデータ依存。実測 5m で 1 件 / 35.7 バー＝直近 50 件に 1,800 バー必要）。
+#   よって有限 tail は取れず、full 再計算では足内更新のたびに全窓を走り直すことになる。
+#   ISSUE-233 と同じ真因なので同じ解を採る＝「保持した状態を 1 点進める」増分計算を宣言する。
+#   増分器が扱えないパラメータでは prepare が None を返し従来の full 経路へ落ちる。
+
+
+def _tickvol_latest_meta(
+    params: dict[str, Any],
+) -> tuple[str, int | None, int | None, str | None]:
+    del params  # 全パラメータで同一宣言（適用可否の判定は増分器 prepare が持つ）。
+    return ("incremental", None, 1, "tickvol")
+
+
 # indigators/ ルート（このファイル: api/adapter/compute/ → parents[4] = indigators/）。
 _INDIGATORS = Path(__file__).resolve().parents[4]
 
@@ -603,6 +618,30 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "fast": 4,
             "slow": 8,
             "signal": 4,
+        },
+    },
+    # --- tickvol（ティックボリューム・専用ペインのヒストグラム＋外れ値水準線）-------
+    #   本体は供給側 volume 列（＝当該足の tick 数）を加工せず描く点ごとの写像。水準線は
+    #   POT（エピソード宣言クラスタリング）で作った同一観測集合の同一分位を、経験的分位と
+    #   GPD の 2 通りで推定して並べる（indigators/tickvol/src/levels.py）。
+    ("tickvol", "default"): {
+        "loader": lambda: _load_callable("tickvol", "add_tickvol"),
+        "output_kind": "histogram", "kind": "kw",
+        "latest_meta": _tickvol_latest_meta,
+        "params_defaults": {
+            "window_n": 500,
+            "q_low": 0.10,
+            "q_high": 0.90,
+            "q_out": 0.99,
+            "k_events": 50,
+            # 回帰トレンド（btlm_trail 仕様の参照拡張）。band_method の既定だけ btlm_trail 本体
+            #   （ols）と違う＝tick 数の乖離率が右に強く歪み正規仮定が成立しないため（実測根拠は
+            #   indigators/tickvol/src/trend.py の docstring）。
+            "maxbars": 100,
+            "band_method": "empirical",
+            "empirical_n": 500,
+            "show_metrics": True,
+            "n_cov": 250,
         },
     },
 }

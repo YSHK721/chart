@@ -28,4 +28,10 @@ export const INTRABAR_FORMING_IDS = new Set([
   //   「指標はティック粒度で更新」に従い登録（旧設計の帯系除外を本指標のみ解除）。OLS 端点
   //   （mean）は形成中バーでも意味を持ち、末尾差分で毎 tick 追従する。
   'btlm_trail',
+  // tickvol（ティックボリューム・専用 pane のヒストグラム）。形成中バーの tick 数は tick の
+  //   到来ごとに増えるため、登録しないと「ローソクは立っているのに直下のバーだけ無い」状態に
+  //   なる（full 再計算は確定足までしか含まない）。ライブは server の forming_bar が実 tick 数
+  //   （len(mids)）を持つので値は実測そのもの。リプレイの形成中バーは tick 数を持たない
+  //   （forming_plan.js の formingStatesAt が OHLC のみ）ため NaN＝点が立たず、確定時に入る。
+  'tickvol',
 ]);

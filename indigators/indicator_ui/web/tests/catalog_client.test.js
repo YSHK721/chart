@@ -8,13 +8,13 @@ import assert from 'node:assert/strict';
 
 import { IndicatorCatalogClient } from '../js/adapter/front/catalog_client.js';
 
-test('listIndicators returns the 24 registered indicators (基本4 + btlm_trail + btlm_trail_marod + ma_marod + cvfe + profit_* 15 + market_profile)', () => {
+test('listIndicators returns the 26 registered indicators (基本4 + btlm_trail + btlm_trail_marod + ma_marod + cvfe + profit_* 15 + market_profile + tickvol_bands + tickvol)', () => {
   const client = new IndicatorCatalogClient();
   const ids = client.listIndicators().map((d) => d.id);
   for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm', 'btlm_trail', 'btlm_trail_marod']) {
     assert.ok(ids.includes(base), `missing ${base}`);
   }
-  assert.equal(ids.length, 24);
+  assert.equal(ids.length, 26);
 });
 
 test('get returns the indicator by id', () => {
