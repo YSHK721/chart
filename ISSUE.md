@@ -4017,3 +4017,30 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   あること、パラメータ欄が 5 個であること、コンソールエラー 0 件を確認。
   なお本検証中に ISSUE-245（撤去した指標の凡例行が保存状態から残る）を検出し、同時に是正した。
 
+
+## ISSUE-245: [不具合・実測再現] 指標を UI から外すと、保存済み設定に残った instance が「死んだ凡例行」として残る（2026-08-02）
+
+- **重大度**: Medium（撤去した指標を適用済みだったユーザーだけに出る。描画・計算は行われない）
+- **ステータス**: RESOLVED（2026-08-02・feature/latest-incremental-compute）
+- **事象**: ISSUE-244 で `tickvol_updown` を UI から外した直後、実 UI（8000 ライブ）の凡例に
+  `tickvol_updown` の行が残った。ラベルは翻訳されず raw な指標 ID のまま、系列もデータも無い。
+  `localStorage["live:indicatorUi.applied.v1"]` に当該 instance が残っていることが実測で確認できた。
+- **真因**: **在席の権威はカタログ 1 つなのに、保存状態がそれと独立にカタログ外の指標を保持していた。**
+  `indicator_state_store.rebuildApplied` は `_catalog.get` が無い instance を compute/描画から
+  除外する（`if (!def) continue`）が、**`_state.applied` からは落とさない**。一方
+  `indicator_controller._renderLegend`（`:960-977`）は `_state.applied` をそのまま行に写し、
+  `def` が無い場合は `inst.indicatorId` をラベルにフォールバックする。結果、状態とカタログの
+  不整合がそのまま凡例へ出た。
+- **対策（根本）**: 復元の入口で不整合を作らない。`indicator_state_store._pruneUnknown` を新設し、
+  `_restoreRun` が `loadApplied()` した直後に**カタログに存在しない indicatorId を除去**してから
+  `_commitState` する。除去が発生したときだけ `saveApplied` で永続化へ書き戻す
+  （次回起動でゴミが再登場しない・除去が無ければ書き込まない）。
+  凡例側のフォールバック表示は防御として残す（症状を隠す修正はしない）。
+- **検証**:
+  - 回帰テスト新設 `web/tests/restore_prunes_unknown_indicator.test.js`（3 件）:
+    状態に残らない／永続化へ書き戻す／全件既知なら落とさず書き込まない。
+  - 実 UI（8000）: 再読込後の凡例は `moving_averages` / `btlm_trail` / `tickvol_bands` /
+    `ティックボリューム` の 4 行のみ。`localStorage` の保存 ID も 4 件へ縮小。
+    ページ全体に `tickvol_updown` の文字列は 0 件。コンソールエラー 0 件。
+  - リプレイモードでも同一（カタログ 26 件・`tickvol` は 5 パラメータ）。
+  - 回帰: indicator_ui JS 1012（+3）・replay JS 301 — 全通過。

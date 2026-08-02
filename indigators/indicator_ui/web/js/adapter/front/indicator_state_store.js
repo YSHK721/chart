@@ -69,10 +69,29 @@ export class IndicatorStateStore {
     }
   }
 
+  /**
+   * 保存済み applied から、**カタログに存在しない indicatorId** の instance を落とす。
+   *
+   * 在席の権威はカタログ（`_catalog.get`）1 つである。指標を UI から外した後も保存状態には
+   * その instance が残るため、除去しないと `_renderLegend` が `_state.applied` をそのまま
+   * 描いて「系列もデータも無い凡例行」が残る（`rebuildApplied` は def 無しを compute/描画から
+   * 除外するが、状態からは落とさない＝状態とカタログの不整合が残るのが真因）。
+   * 落とした結果は永続化にも書き戻し、次回起動でゴミが再登場しないようにする。
+   */
+  _pruneUnknown(instances) {
+    const host = this._host;
+    const list = Array.isArray(instances) ? instances : [];
+    const kept = list.filter((inst) => !!host._catalog.get(inst?.indicatorId));
+    if (kept.length !== list.length) {
+      host._persistence.saveApplied(kept);
+    }
+    return kept;
+  }
+
   async _restoreRun() {
     const host = this._host;
     const json = {
-      applied: host._persistence.loadApplied(),
+      applied: this._pruneUnknown(host._persistence.loadApplied()),
       favorites: host._persistence.loadFavorites(),
       uiState: host._persistence.loadUiState(),
     };
