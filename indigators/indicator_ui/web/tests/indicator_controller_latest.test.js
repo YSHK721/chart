@@ -132,16 +132,18 @@ test('latest recompute on a MIXED-kind indicator (line+horizontal_line) requests
   const renderer = recordingRenderer();
   const fullLine = (name) => ({ name, kind: 'line', data: [{ time: 1, value: 1 }, { time: 2, value: 2 }, { time: 3, value: 3 }] });
   const trimLine = (name) => ({ name, kind: 'line', data: [{ time: 3, value: 3 }] });
-  const rsiSeriesFor = (req) => {
+  // 混在 kind の代表は profit_mfi（line 2 本 + horizontal_line）。profit_rsi は水準線が
+  //   因果ローリング化され全 line になったため、混在の例ではなくなった（2026-08-02）。
+  const mfiSeriesFor = (req) => {
     const lines = req.mode === 'latest'
-      ? [trimLine('rsi')]   // backend の末尾K=1 trim
-      : [fullLine('rsi')];
-    return [...lines, { name: 'profit_rsi', kind: 'horizontal_line', lines: [{ price: 70 }] }];
+      ? [trimLine('mfi'), trimLine('mfi_ma')]   // backend の末尾K=1 trim
+      : [fullLine('mfi'), fullLine('mfi_ma')];
+    return [...lines, { name: 'profit_mfi', kind: 'horizontal_line', lines: [{ price: 70 }] }];
   };
-  const { ctrl, computeCalls } = controllerWith(renderer, rsiSeriesFor);
-  const inst = await ctrl.applyIndicator('profit_rsi', 'default');
+  const { ctrl, computeCalls } = controllerWith(renderer, mfiSeriesFor);
+  const inst = await ctrl.applyIndicator('profit_mfi', 'default');
   // Act: live tick 相当の latest 再計算。
-  await ctrl.recomputeInstance(inst.instanceId, null, ctrl._defaultParams(get('profit_rsi')), { mode: 'latest' });
+  await ctrl.recomputeInstance(inst.instanceId, null, ctrl._defaultParams(get('profit_mfi')), { mode: 'latest' });
   // Assert 1: 混在指標は latest を要求しない（full を要求し trim を回避）。
   assert.notEqual(computeCalls.at(-1).mode, 'latest', '混在指標は latest を要求しない（full へ倒す）');
   // Assert 2（核心）: renderLine に渡る line データが full 長（trim された 1 点に潰れない）。

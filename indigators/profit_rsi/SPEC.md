@@ -2,17 +2,19 @@
 
 ## 1. Objective（目的）
 適用価格（既定 Typical price）に対する相対力指数（Relative Strength Index, RSI,
-既定 period=6）を別ウィンドウ（[0,100]）の RSI 線で可視化し、
-**生 RSI 系列**全体の `平均 ±1/2/3σ`（p1/p2/p3, m1/m2/m3）と
-中央線 50（mid50）を統計的水準線として描く。上昇幅と下降幅の Wilder 平滑比から相場の
-過熱・冷却の相対強度を表現する。
+既定 period=6）を別ウィンドウ（[0,100]）の RSI 線で可視化し、**その時点までの RSI 分布**から
+「普段の範囲（正常帯）」と「過熱の極端さ（外れ値水準）」を因果的に推定して重ねる。
+上昇幅と下降幅の Wilder 平滑比から相場の過熱・冷却の相対強度を表現し、水準はそれが
+**普段と比べてどれほど異常か**を与える。
 
 ## 2. Scope（範囲・対象外）
-- 移植する: 計算（iRSI → σ 7 水準）/ 描画（separate window [0,100] の
-  RSI 線 ＋ σ 水準線 7 本）/ 入力（CSV → OHLC、**volume 不要**）。
-- 対象外: **RSI の EMA 平滑線（元 `ExtMABuffer` / `InpMAPeriod`）**。σ 水準は元から
-  **生 RSI 系列**に掛かる（§5.4）ため、平滑線は描画専用であり他の出力に影響しない。
-  設定項目 `ma_period` ごと削除した（ユーザー承認 2026-08-02）。
+- 移植する: 計算（iRSI）/ 描画（separate window [0,100] の RSI 線 ＋ 正常帯 2 本 ＋
+  外れ値水準 4 本）/ 入力（CSV → OHLC、**volume 不要**）。
+- 対象外: **RSI の EMA 平滑線（元 `ExtMABuffer` / `InpMAPeriod`）**。描画専用で他の出力に
+  影響しないため、設定項目 `ma_period` ごと削除した（ユーザー承認 2026-08-02）。
+- 対象外: **元の σ 7 水準（全系列 avg±1/2/3σ ＋ 固定 50）**。全系列＝**未来のバーを含む
+  非因果な水準**であり、ライブ表示の水準として成立しない。因果ローリング分位＋POT/GPD
+  （§5.4）へ全面置換した（ユーザー承認 2026-08-02）。
 - 対象外: ブローカー接続・チャートデータ供給、アラート、最適化入力、リアルタイム差分
   再計算（バッチ全件計算で代替。ガイド §3/§6）、OnInit の Object 一括削除・サブ
   ウィンドウラベル設定（描画フレームワーク固有の副作用）。
@@ -95,16 +97,47 @@ rates_total <= period -> 全 0            （元 RSI.mq5 の早期 return）
 元 `iMAOnArray(ExtRSIBuffer, MODE_EMA, InpMAPeriod)` の平滑線は持たない（§2 対象外・
 承認 2026-08-02）。σ 水準は元から生 RSI 系列に掛かるため、削除しても水準値は不変。
 
-### 5.4 σ 7 水準（`compute_rsi_levels`）— **生 RSI 系列**に掛ける
-**生 RSI 系列**（平滑系列ではない）**全長**（**warm-up の 0 を除外せず**）の
-算術平均 `avg` と母標準偏差 `σ = sqrt(mean((x-avg)^2))`（÷N）から:
-```
-p1 = avg + 1σ    p2 = avg + 2σ    p3 = avg + 3σ
-m1 = avg - 1σ    m2 = avg - 2σ    m3 = avg - 3σ
-mid50 = 50.0     （元 INDICATOR_LEVELVALUE index 4 = 50, 固定中央線）
-```
-元 `iStdDevOnArray(ExtRSIBuffer, ...)` / `iMAOnArray(ExtRSIBuffer, MODE_SMA,
-period=rates_total)` に対応（**引数が ExtRSIBuffer ＝ 生 RSI 系列**）。
+### 5.4 正常帯（因果ローリング分位）と外れ値水準（POT / GPD）
+実装は `src/levels.py`。共有プリミティブ（`common.marod_bands` / `common.event_quantiles` /
+`common.gpd`）を**無改変で参照**し、計算式を写さない。tickvol（`indigators/tickvol/src/levels.py`）
+と同型の構造で、**超過の測り方だけが RSI 固有**である。
+
+1. **正常帯＝POT の閾値** `u_t`: 当該バー除外の因果ローリング分位（窓 `window_n`・下側
+   `q_low` / 上側 `q_high`）。非リペイント。
+2. **超過は「余地割合」で測る（RSI 固有）**:
+
+   ```
+   上側: excess = (RSI − u_hi) / (100 − u_hi)      下側: excess = (u_lo − RSI) / u_lo
+   ```
+
+   RSI は [0,100] の有界量である。tickvol と同じ生スケール（`RSI − u`）だと「現在の閾値
+   ＋ 過去の超過量」が境界を越え、**実測で全バーの 26〜35% が [0,100] の外**へ出た。
+   余地割合なら値域が (0,1] で、水準 `u ± 割合 × 余地` は**構成上境界を出ない**。
+3. **エピソード畳み込み（宣言クラスタリング）**: 超過が続く区間を 1 エピソードへ畳み、その
+   極値を 1 観測とする（`common.event_quantiles.step_events` の `event_agg="episode"`）。
+4. **水準（同じ観測集合・同じ分位を 2 通りで推定）**: 直近 `k_events` 件から
+   経験的分位（`common.event_quantiles.levels_at`）と GPD 外挿
+   （`common.gpd.gpd_excess_quantile`）。2 本の差が外挿量そのものになる。
+   GPD は観測 30 件（`common.gpd.MIN_GPD_EVENTS`）未満では出さない（NaN＝非描画）。
+   余地割合の台は 1.0 なので、外挿値は 1.0 で頭打ちにする。
+
+**実測の根拠（2026-08-02・jp225_tick・5m/15m/1h/4h/1D × 上下側）**:
+
+| 測定 | 結果 |
+|---|---|
+| θ̂（生の閾値超過） | 0.206〜0.295（ISSUE-227 の RSI 系列 θ̂ = 0.107〜0.269 と整合） |
+| θ̂（エピソード畳み込み後） | **0.859〜0.947**（ゲート θ >= 0.2 を通過） |
+| 観測数（エピソード） | 95〜1,625 件（GPD 最小 30 を全条件で満たす） |
+| ξ̂ | 全条件で負（−0.20〜−1.08）＝有限終端 |
+| GPD 終端 vs 理論境界 | 上側 94.9〜107.0（境界 100）／下側 −3.2〜+7.4（境界 0） |
+| AD 適合度（直近 k 件） | p = 0.475〜0.960（全条件で非棄却） |
+| AD 適合度（全履歴） | 1h 下側 p=0.005・4h 下側 p=0.020 で棄却＝**ローリング必須** |
+| 水準が [0,100] の外 | 生スケール 26〜35% → 余地割合 0〜0.7%（台 1.0 で抑えて 0%） |
+
+閾値分位の既定（`q_high=0.90` / `q_low=0.10`）は、ForwardStop（`common.gpd.select_threshold`・
+全履歴）の採択が時間足ごとに 0.80〜0.95 へ散る一方、運用と同じ直近 `k_events` 件の当てはめでは
+0.80〜0.95 のいずれでも棄却率が名目 5% と整合する（窓 10 本で 0〜20%）ため、**観測数を最も
+確保できる中央値**として選んだ（tickvol と同値）。
 
 ### 5.5 丸め・補間方式
 - 元コードに `NormalizeDouble` は無く、float 精度で実装（ガイド §4.1, int 切り捨ても
@@ -116,23 +149,27 @@ period=rates_total)` に対応（**引数が ExtRSIBuffer ＝ 生 RSI 系列**�
 | 列 | 意味 |
 |---|---|
 | `rsi`（`RSI_COLUMN`） | iRSI 値（描画対象, 線）。warm-up は 0。 |
+| `rsi_q{pct}` × 2 | 正常帯（因果ローリング分位＝POT 閾値）。列名は分位から導く（`quantile_column`）。 |
+| `rsi_evq_ext_hi` / `_lo` | 経験的極端分位の水準（`LEVEL_COLUMNS`）。 |
+| `rsi_gpd_hi` / `_lo` | GPD 外挿の水準（同上）。 |
 
-σ 7 水準は `rsi_levels`（`p1/p2/p3/m1/m2/m3/mid50`）でスカラ提供（時系列ではなく価格軸の
-水平参照値のため成果物 DataFrame と分離）。EMPTY_VALUE 相当の非描画点は本指標では発生
-しない（warm-up も 0 で全バー算出）。
+水準は**時系列**（価格軸の固定水平線ではない）。因果ローリング分位に基づき時間で動くため、
+成果物 DataFrame の列として提供し、描画も line で出す。warm-up・観測不足の区間は NaN＝
+非描画（RSI 本線は元どおり warm-up も 0 で全バー算出）。
 
 ## 7. Output（描画）
 - 別ウィンドウ（separate window）型。y 範囲 [0,100]（元 indicator_minimum 0 /
   indicator_maximum 100）。
 - RSI 線の凡例: 元 `IndicatorShortName` "RSI-{適用価格名} ({period})"（Apply で適用
   価格名が変わる。例 Apply=5 → "RSI-Typical price (6)"。`plot.rsi_short_name`）。
-- matplotlib: 下段ペインに **RSI 線**（Lime）＋ σ 水準線 7 本
-  （±1/2/3σ は点線グレー C'84,84,84'、中央線 50 は実線）。
-- lightweight-charts: `create_line` 1 本（name=`rsi`, clrLime, style solid,
-  price_line/label=False）＋ σ 水準線 7 本を `horizontal_line`（SOLID, グレー）。多数線の
-  ため price_line/label=False（ガイド §6）。ライン名は値列名（`rsi`）と完全
-  一致（ガイド §5。Apply 依存の短名は lwc line name には用いず plot 凡例に限定）。
-  `lightweight_charts` は import せず duck typing で受ける。
+- matplotlib: 下段ペインに **RSI 線**（Lime）＋ 正常帯 2 本（点線シアン）＋ 外れ値水準 4 本
+  （経験的＝赤系破線・GPD＝琥珀破線）。
+- lightweight-charts: `create_line` 7 本（`rsi` / `rsi_q{low}` / `rsi_q{high}` /
+  `rsi_evq_ext_hi` / `rsi_evq_ext_lo` / `rsi_gpd_hi` / `rsi_gpd_lo`）。**水平線は使わない**
+  （水準が時間で動くため）。色・線種は共有規約（正常帯＝シアン点線 / 経験的＝`EVQ_COLOR`
+  破線 / GPD＝琥珀破線）に従い、共有定数は書き換えない。多数線のため price_line/label=False
+  （ガイド §6）。ライン名は値列名と完全一致（ガイド §5。Apply 依存の短名は lwc line name
+  には用いず plot 凡例に限定）。`lightweight_charts` は import せず duck typing で受ける。
 
 ## 8. Exception（異常系）
 - OHLC 列欠落: `KeyError`（`build_rsi` / `rsi_levels` / `lwc_chart`）。
@@ -153,17 +190,14 @@ period=rates_total)` に対応（**引数が ExtRSIBuffer ＝ 生 RSI 系列**�
 - **warm-up（`i<period`）は 0**（元 iRSI / SetIndexDrawBegin 既定。NaN ではない）。
   `rates_total<=period` は全 0（元 RSI.mq5 早期 return）。
 - 適用価格 7 種（Apply→PRICE_*）の選択。既定 Apply=5 → Typical。
-- σ 7 水準（p1/p2/p3/m1/m2/m3 ＝ **生 RSI 系列**全長の `平均 ±{1,2,3}×母標準偏差`、
-  mid50=50）。**統計に warm-up の 0 が混入する**点、**生 RSI 系列に掛ける**点
-  （ExtRSIBuffer 引数）も元挙動どおり再現する。
 - subwindow 範囲 [0,100]（元 indicator_minimum 0 / indicator_maximum 100）。
 - `rsi_period < 2` で例外（元 OnInit の INIT_FAILED）。
 - 短名 "RSI-{適用価格名} ({period})"（Apply 依存）。
 
 ### 中立記載（原挙動の 1:1 再現として保持し "改善" しない）
-- **warm-up 0・σ 統計への 0 混入・σ を生 RSI に掛ける**は統計的に平均・σ を歪める効果が
-  あるが、これは元 MQL の挙動そのものである。除外・補正は行わず**原挙動として 1:1 再現
-  する**（良し悪しの判断を持ち込まない中立記載）。
+- **warm-up 0** は統計的に不自然だが元 MQL の挙動そのものである。RSI 本線では除外・補正を
+  行わず**原挙動として 1:1 再現する**（良し悪しの判断を持ち込まない中立記載）。なお §5.4 の
+  水準は当該バー除外の因果ローリング分位を使うため、warm-up 区間は帯が NaN＝非描画になる。
 
 ### 意図的に変えた / 前提化した点（根拠）
 1. **iRSI は権威 Wilder（MetaQuotes 公式 `RSI.mq5`）準拠**: 元 `iRSI` は MT4 組込で
@@ -172,6 +206,11 @@ period=rates_total)` に対応（**引数が ExtRSIBuffer ＝ 生 RSI 系列**�
 2. **applied_price は共有層を再利用**: 適用価格 7 種を共有 `common` から再利用し、
    in-package 再実装しない（重複排除）。元 `iMAOnArray(MODE_EMA)` の EMA 平滑線は
    移植対象外（§2）。
+6. **σ 7 水準 → 因果ローリング分位＋POT/GPD へ全面置換**（§5.4・承認 2026-08-02）。
+   元の水準は `iStdDevOnArray(ExtRSIBuffer, 0, rates_total, ...)`＝**全系列**の統計であり、
+   バー t の水準が t より後のバーに依存する（非因果・リペイント）。ライブ／リプレイの
+   水準として成立しないため、当該バー除外の因果ローリング分位を閾値とする POT へ置換した。
+   水準の推定量は経験的分位と GPD 外挿の 2 本で、いずれも共有プリミティブへ委譲する。
 3. **iRSI は共有 `mql_builtins` へ集約済み・σ 統計のみ in-package**: iRSI は共有
    `mql_builtins.compute_rsi` を import 再公開して参照面を維持する。σ 統計
    （`compute_rsi_levels`）のみ本指標専用プリミティブとして `src/core.py` 内に閉じる。

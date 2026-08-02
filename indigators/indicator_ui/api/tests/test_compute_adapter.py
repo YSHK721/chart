@@ -595,15 +595,23 @@ def test_fake_chart_reproduces_price_range_power_horizontal_payload():
     assert payloads[0]["kind"] == "horizontal_line"
 
 
-def test_adapter_profit_rsi_emits_one_line_and_levels():
-    # line+水準線併用指標が統合 FakeChart 経由で系列名どおり出る（F3 照合対象名）。
+def test_adapter_profit_rsi_emits_rsi_bands_and_outlier_levels():
+    # RSI 本線＋正常帯（動的名 rsi_q{pct}）＋外れ値水準 4 本が系列名どおり出る（F3 照合対象名）。
+    #   水準は因果ローリング分位ベースで時間とともに動くため、すべて line（水平線ではない）。
     adapter = IndicatorComputeAdapter()
     df = _ohlcv(120)
-    series = adapter.compute("profit_rsi", "default", df, {"rsi_period": 6, "apply": 5})
+    series = adapter.compute(
+        "profit_rsi", "default", df,
+        {"rsi_period": 6, "apply": 5, "window_n": 20, "q_low": 0.1, "q_high": 0.9,
+         "q_out": 0.99, "k_events": 50},
+    )
     names = {p["name"]: p["kind"] for p in series}
     assert names["rsi"] == "line"
-    assert "rsi_ma" not in names  # EMA 平滑線は持たない（ma_period 削除）
-    assert names["profit_rsi"] == "horizontal_line"
+    assert "rsi_ma" not in names          # EMA 平滑線は持たない（ma_period 削除）
+    assert "profit_rsi" not in names      # σ 水平線は持たない（因果ローリング水準へ置換）
+    assert names["rsi_q10"] == "line" and names["rsi_q90"] == "line"
+    for name in ("rsi_evq_ext_hi", "rsi_evq_ext_lo", "rsi_gpd_hi", "rsi_gpd_lo"):
+        assert names[name] == "line", name
 
 
 def test_adapter_profit_adx_needle_emits_histogram_with_per_bar_color():

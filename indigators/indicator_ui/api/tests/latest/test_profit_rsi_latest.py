@@ -1,28 +1,26 @@
 """Stage B 検証: profit_rsi を Latest 増分計算フレームワークへ分類＋一致検証する。
 
 分類（仕様 §4-0）:
-  profit_rsi の出力（add_rsi）は次の 2 系列群:
+  profit_rsi の出力（add_rsi）はすべて line で、次の 3 系列群からなる:
     - rsi 線（PF_LINE 'rsi'）            : iRSI（Wilder RSI）。core.compute_rsi は
                                           seed（i==period）→ Wilder 平滑
                                           pos[i]=(pos[i-1]*(period-1)+up)/period の **再帰**
                                           （buf[i] が buf[i-1] に依存）。
-    - σ 水準線 7 本（PF_HLINE 'profit_rsi'）: **生 RSI 系列** 全体の avg±1/2/3σ＋中央 50。
-                                          全系列（先頭からの累積）に依存する大域統計。
-  rsi（Wilder）は先頭シードからの再帰であり、σ 水準も全系列依存のため、
+    - 正常帯 2 本（動的名 'rsi_q{pct}'）  : 当該バー除外の因果ローリング分位（窓 window_n）。
+    - 外れ値水準 4 本（'rsi_evq_ext_*' / 'rsi_gpd_*'）: 閾値超過エピソードの経験的分位 /
+                                          GPD 外挿。**先頭からの観測列の累積**に依存する。
+  rsi（Wilder）は先頭シードからの再帰、外れ値水準は先頭からの観測累積のため、
   指標全体としては full 必須＝archetype は **recurrence**（安全既定と一致）。
 
 系列 kind → frontend routing:
-  catalog def.series の kind 群 = {line, horizontal_line}。horizontal_line を含むため
-  frontend routing は **full**。
+  catalog def.series の kind 群 = {line} のみ（σ 水平線は因果ローリング水準へ置換済み）。
 
 不変条件:
   latest_meta は profit_rsi を明示登録していないため安全既定
   LatestMeta("recurrence", None, 1) で解決される（min_window=None＝full）。
-  latest_dispatch._trail は line/histogram のみ末尾K切りし、horizontal_line は不変で
-  素通しする。full フォールバック（tail せず全件計算）のため:
-    - rsi の line 系列は data[-K:] が full の data[-K:] と float 完全一致。
-    - σ 水準 horizontal_line は latest でも全件返る（切られない）。
-  → K=1 で line は末尾1点・horizontal_line は全件一致。
+  latest_dispatch._trail は line/histogram を末尾K切りする。full フォールバック
+  （tail せず全件計算）のため、全 line 系列で data[-K:] が full の data[-K:] と
+  float 完全一致する。→ K=1 で末尾 1 点一致。
 
 import 規約: conftest.py が api/ を sys.path へ追加済み。既存 src は read-only。
 """
@@ -44,8 +42,8 @@ _VARIANTS = ("default",)
 _TRIMMABLE_KINDS = ("line", "histogram")
 
 
-def _ohlcv(n: int = 100) -> pd.DataFrame:
-    """昇順 OHLCV（date 含む）。N>=100>rsi_period(6) を満たす合成波形。
+def _ohlcv(n: int = 400) -> pd.DataFrame:
+    """昇順 OHLCV（date 含む）。水準（正常帯・外れ値）が定義される長さを満たす合成波形。
 
     既存 test_latest_compute._ohlcv と同流儀。add_rsi は open/high/low/close と
     time/date 列を要求する（volume は不要だが既存流儀に合わせ含める）。
@@ -69,31 +67,35 @@ def _ohlcv(n: int = 100) -> pd.DataFrame:
 
 
 def _params() -> dict:
-    """catalog 既定（PF_INT rsi_period=6, apply=5）。core 既定とも整合。"""
-    return {"rsi_period": 6, "apply": 5}
+    """catalog 既定（rsi_period=6, apply=5, window_n=500, q 0.10/0.90/0.99, K=50）。
+
+    N=100 本の合成データでも水準が定義されるよう window_n だけ小さくする（既定 500 では
+    正常帯が warm-up のまま＝水準が全 NaN になり、系列の存在自体を検証できないため）。
+    """
+    return {"rsi_period": 6, "apply": 5, "window_n": 20,
+            "q_low": 0.10, "q_high": 0.90, "q_out": 0.99, "k_events": 50}
 
 
 # =========================================================================== #
 # 分類: archetype（recurrence・安全既定）と frontend routing（full）
 # =========================================================================== #
-def test_series_kinds_are_line_and_horizontal_line():
-    # 出力 kind 群 = {line, horizontal_line}（rsi 線 ＋ σ 水準）。
+def test_series_kinds_are_all_line():
+    # 出力 kind 群 = {line} のみ（rsi 線＋正常帯＋外れ値水準。すべて時系列）。
     adapter = IndicatorComputeAdapter()
-    df = _ohlcv(100)
+    df = _ohlcv(400)
     for variant in _VARIANTS:
         series = full_compute(adapter, _COMPUTE_ID, variant, df, _params())
         kinds = {s["kind"] for s in series}
-        assert kinds == {"line", "horizontal_line"}, f"{variant}: {kinds}"
-        # 線は data を持ち、水平線は lines を持ち data を持たない（trail 対象外）。
+        assert kinds == {"line"}, f"{variant}: {kinds}"
         for s in series:
-            if s["kind"] == "line":
-                assert "data" in s
-            else:
-                assert "lines" in s and "data" not in s
+            assert "data" in s and "lines" not in s
+        names = {s["name"] for s in series}
+        assert "rsi" in names
+        assert {"rsi_evq_ext_hi", "rsi_evq_ext_lo", "rsi_gpd_hi", "rsi_gpd_lo"} <= names
 
 
 def test_meta_resolves_to_safe_default_recurrence_full_k1():
-    # 未登録 → 安全既定 recurrence/full/K=1（Wilder RSI＋大域σで full 必須・正しい）。
+    # 未登録 → 安全既定 recurrence/full/K=1（Wilder RSI＋観測累積の水準で full 必須・正しい）。
     meta = latest_meta(_COMPUTE_ID, "default", _params())
     assert meta.archetype == "recurrence"  # 安全既定（明示登録なし・full フォールバック）
     assert meta.min_window is None
@@ -105,7 +107,7 @@ def test_meta_resolves_to_safe_default_recurrence_full_k1():
 # =========================================================================== #
 def test_latest_line_tail_equals_full_tail_exact():
     adapter = IndicatorComputeAdapter()
-    df = _ohlcv(100)
+    df = _ohlcv(400)
     for variant in _VARIANTS:
         params = _params()
         k = latest_meta(_COMPUTE_ID, variant, params).trailing_k
@@ -130,32 +132,27 @@ def test_latest_line_tail_equals_full_tail_exact():
                 assert len(s["lines"]) == len(f["lines"])
 
 
-def test_latest_lines_trimmed_horizontal_full():
-    # full フォールバック（min_window=None）かつ K=1。line は末尾1点に切られ、
-    # horizontal_line は全件素通しで full と一致する構造を確認する。
+def test_latest_lines_are_trimmed_to_tail():
+    # full フォールバック（min_window=None）かつ K=1。全 line が末尾 1 点に切られ、
+    # その 1 点は full の末尾と完全一致する（NaN 区間は emit 側で除外済み）。
     adapter = IndicatorComputeAdapter()
-    df = _ohlcv(100)
+    df = _ohlcv(400)
     full = full_compute(adapter, _COMPUTE_ID, "default", df, _params())
     latest = latest_compute(adapter, _COMPUTE_ID, "default", df, _params())
 
     full_by_name = {s["name"]: s for s in full}
     for s in latest:
         f = full_by_name[s["name"]]
-        if s["kind"] == "line":
-            # full は全件、latest は末尾 1 点。
-            assert len(s["data"]) == 1
-            assert len(f["data"]) == len(df)
-            assert s["data"][-1] == f["data"][-1]
-        else:
-            assert s == f  # horizontal_line は完全一致
+        assert s["kind"] == "line"
+        assert len(s["data"]) == 1
+        assert s["data"][-1] == f["data"][-1]
 
 
-def test_horizontal_line_levels_are_seven():
-    # σ 水準（p1/p2/p3/m1/m2/m3/mid50）の 7 本が latest でも全件返ること。
+def test_band_levels_are_causal_and_inside_rsi_bounds():
+    # 水準はすべて [0,100] の内側（余地割合スケールの構成上の不変条件）。
     adapter = IndicatorComputeAdapter()
-    df = _ohlcv(100)
-    latest = latest_compute(adapter, _COMPUTE_ID, "default", df, _params())
-    hl = next(s for s in latest if s["kind"] == "horizontal_line")
-    assert len(hl["lines"]) == 7
-    texts = {ln["text"] for ln in hl["lines"]}
-    assert texts == {"p1", "p2", "p3", "m1", "m2", "m3", "mid50"}
+    df = _ohlcv(400)
+    series = full_compute(adapter, _COMPUTE_ID, "default", df, _params())
+    for s in series:
+        values = [pt["value"] for pt in s["data"]]
+        assert min(values) >= 0.0 and max(values) <= 100.0, s["name"]
