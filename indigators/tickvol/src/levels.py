@@ -55,35 +55,20 @@ DEFAULT_Q_HIGH: float = 0.90
 #: を示す表示用の分位であり、POT/GPD の対象ではない（tick 数は最小 1 の計数量で下側は裾でない）。
 DEFAULT_Q_LOW: float = 0.10
 #: GPD を当てはめる最小観測数（③の変動係数の実測に基づく）。未満は NaN。
-MIN_GPD_EVENTS: int = 30
+#: 定義は共有 :data:`common.gpd.MIN_GPD_EVENTS`（他指標と単一情報源）。名前は再公開で温存する。
+MIN_GPD_EVENTS: int = _gpd.MIN_GPD_EVENTS
 
 #: 水準キー（med=典型深度 / ext=経験的極端分位 / gpd=GPD 外挿）。いずれも「超過分」の水準。
 LEVEL_KEYS: tuple[str, ...] = ("med", "ext", "gpd")
 
 
 def gpd_excess_quantile(excesses, q: "float | None") -> float:
-    """超過分へ GPD を当てはめ、その **q 分位**（超過分のスケール）を返す。
+    """超過分へ GPD を当てはめた **q 分位**（超過分のスケール）。共有実装への委譲。
 
-    ``level = β/ξ · ((1−q)^(−ξ) − 1)``（ξ→0 は指数分布の極限 ``−β·ln(1−q)``）。
-    観測が :data:`MIN_GPD_EVENTS` 未満、q 無効、当てはめ失敗はいずれも NaN。
-
-    当てはめ自体は :func:`common.gpd.gpd_fit`（最尤・scipy 非依存）へ委譲する。
+    実体は :func:`common.gpd.gpd_excess_quantile`（profit_rsi と共通の単一定義）。本名は
+    公開 API として温存する（`src/__init__.py` の再公開・既存テストの参照面）。
     """
-    if q is None:
-        return float("nan")
-    y = np.asarray(excesses, dtype=np.float64).ravel()
-    y = y[np.isfinite(y) & (y > 0.0)]
-    if y.size < MIN_GPD_EVENTS:
-        return float("nan")
-    fit = _gpd.gpd_fit(y)
-    if not np.isfinite(fit.xi) or not np.isfinite(fit.beta) or fit.beta <= 0.0:
-        return float("nan")
-    tail = 1.0 - float(q)
-    if tail <= 0.0:
-        return float("nan")
-    if abs(fit.xi) < 1e-8:
-        return float(-fit.beta * np.log(tail))
-    return float(fit.beta / fit.xi * (tail ** (-fit.xi) - 1.0))
+    return _gpd.gpd_excess_quantile(excesses, q)
 
 
 def step_excess_event(excess_value: float, up: list, run_up: list) -> None:
