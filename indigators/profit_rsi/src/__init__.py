@@ -12,7 +12,6 @@ from __future__ import annotations
 from .core import (
     APPLY_TO_PRICE,
     DEFAULT_APPLY,
-    DEFAULT_MA_PERIOD,
     DEFAULT_RSI_PERIOD,
     RsiResult,
     compute_rsi,
@@ -22,7 +21,6 @@ from .core import (
 from .loader import load_ohlc_csv
 from .lwc_chart import add_rsi
 from .rsi import (
-    MA_COLUMN,
     RSI_COLUMN,
     build_rsi,
     rsi_levels,
@@ -31,13 +29,11 @@ from .rsi import (
 __all__ = [
     "APPLY_TO_PRICE",
     "DEFAULT_APPLY",
-    "DEFAULT_MA_PERIOD",
     "DEFAULT_RSI_PERIOD",
     "RsiResult",
     "compute_rsi",
     "compute_rsi_full",
     "compute_rsi_levels",
-    "MA_COLUMN",
     "RSI_COLUMN",
     "build_rsi",
     "rsi_levels",

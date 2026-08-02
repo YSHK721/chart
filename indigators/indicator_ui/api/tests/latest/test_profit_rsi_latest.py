@@ -1,16 +1,14 @@
 """Stage B 検証: profit_rsi を Latest 増分計算フレームワークへ分類＋一致検証する。
 
 分類（仕様 §4-0）:
-  profit_rsi の出力（add_rsi）は次の 3 系列群:
+  profit_rsi の出力（add_rsi）は次の 2 系列群:
     - rsi 線（PF_LINE 'rsi'）            : iRSI（Wilder RSI）。core.compute_rsi は
                                           seed（i==period）→ Wilder 平滑
                                           pos[i]=(pos[i-1]*(period-1)+up)/period の **再帰**
                                           （buf[i] が buf[i-1] に依存）。
-    - rsi_ma 線（PF_LINE 'rsi_ma'）      : iRSI の EMA 平滑（exponential_ma_on_buffer。
-                                          先頭シードからの再帰＝buf[i] が buf[i-1] に依存）。
     - σ 水準線 7 本（PF_HLINE 'profit_rsi'）: **生 RSI 系列** 全体の avg±1/2/3σ＋中央 50。
                                           全系列（先頭からの累積）に依存する大域統計。
-  rsi（Wilder）も rsi_ma（EMA）も先頭シードからの再帰であり、σ 水準も全系列依存のため、
+  rsi（Wilder）は先頭シードからの再帰であり、σ 水準も全系列依存のため、
   指標全体としては full 必須＝archetype は **recurrence**（安全既定と一致）。
 
 系列 kind → frontend routing:
@@ -22,7 +20,7 @@
   LatestMeta("recurrence", None, 1) で解決される（min_window=None＝full）。
   latest_dispatch._trail は line/histogram のみ末尾K切りし、horizontal_line は不変で
   素通しする。full フォールバック（tail せず全件計算）のため:
-    - rsi / rsi_ma の line 系列は data[-K:] が full の data[-K:] と float 完全一致。
+    - rsi の line 系列は data[-K:] が full の data[-K:] と float 完全一致。
     - σ 水準 horizontal_line は latest でも全件返る（切られない）。
   → K=1 で line は末尾1点・horizontal_line は全件一致。
 
@@ -47,7 +45,7 @@ _TRIMMABLE_KINDS = ("line", "histogram")
 
 
 def _ohlcv(n: int = 100) -> pd.DataFrame:
-    """昇順 OHLCV（date 含む）。N>=100>rsi_period(6)・ma_period(5) を満たす合成波形。
+    """昇順 OHLCV（date 含む）。N>=100>rsi_period(6) を満たす合成波形。
 
     既存 test_latest_compute._ohlcv と同流儀。add_rsi は open/high/low/close と
     time/date 列を要求する（volume は不要だが既存流儀に合わせ含める）。
@@ -71,15 +69,15 @@ def _ohlcv(n: int = 100) -> pd.DataFrame:
 
 
 def _params() -> dict:
-    """catalog 既定（PF_INT rsi_period=6, apply=5, ma_period=5）。core 既定とも整合。"""
-    return {"rsi_period": 6, "apply": 5, "ma_period": 5}
+    """catalog 既定（PF_INT rsi_period=6, apply=5）。core 既定とも整合。"""
+    return {"rsi_period": 6, "apply": 5}
 
 
 # =========================================================================== #
 # 分類: archetype（recurrence・安全既定）と frontend routing（full）
 # =========================================================================== #
 def test_series_kinds_are_line_and_horizontal_line():
-    # 出力 kind 群 = {line, horizontal_line}（rsi/rsi_ma 線 ＋ σ 水準）。
+    # 出力 kind 群 = {line, horizontal_line}（rsi 線 ＋ σ 水準）。
     adapter = IndicatorComputeAdapter()
     df = _ohlcv(100)
     for variant in _VARIANTS:
@@ -95,7 +93,7 @@ def test_series_kinds_are_line_and_horizontal_line():
 
 
 def test_meta_resolves_to_safe_default_recurrence_full_k1():
-    # 未登録 → 安全既定 recurrence/full/K=1（Wilder RSI＋EMA 平滑＋大域σで full 必須・正しい）。
+    # 未登録 → 安全既定 recurrence/full/K=1（Wilder RSI＋大域σで full 必須・正しい）。
     meta = latest_meta(_COMPUTE_ID, "default", _params())
     assert meta.archetype == "recurrence"  # 安全既定（明示登録なし・full フォールバック）
     assert meta.min_window is None

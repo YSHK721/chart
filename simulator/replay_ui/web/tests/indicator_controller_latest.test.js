@@ -135,8 +135,8 @@ test('latest recompute on a MIXED-kind indicator (line+horizontal_line) requests
   const trimLine = (name) => ({ name, kind: 'line', data: [{ time: 3, value: 3 }] });
   const rsiSeriesFor = (req) => {
     const lines = req.mode === 'latest'
-      ? [trimLine('rsi'), trimLine('rsi_ma')]   // backend の末尾K=1 trim
-      : [fullLine('rsi'), fullLine('rsi_ma')];
+      ? [trimLine('rsi')]   // backend の末尾K=1 trim
+      : [fullLine('rsi')];
     return [...lines, { name: 'profit_rsi', kind: 'horizontal_line', lines: [{ price: 70 }] }];
   };
   const { ctrl, computeCalls } = controllerWith(renderer, rsiSeriesFor);
@@ -165,7 +165,7 @@ test('recomputeFormingLatest on a MIXED-kind indicator uses tail-update (no coll
   const trimLine = (name) => ({ name, kind: 'line', data: [{ time: 3, value: 3 }] });
   const fullLine = (name) => ({ name, kind: 'line', data: [{ time: 1, value: 1 }, { time: 2, value: 2 }, { time: 3, value: 3 }] });
   const rsiSeriesFor = (req) => {
-    const lines = req.mode === 'latest' ? [trimLine('rsi'), trimLine('rsi_ma')] : [fullLine('rsi'), fullLine('rsi_ma')];
+    const lines = req.mode === 'latest' ? [trimLine('rsi')] : [fullLine('rsi')];
     return [...lines, { name: 'profit_rsi', kind: 'horizontal_line', lines: [{ price: 70 }] }];
   };
   const { ctrl, computeCalls } = controllerWith(renderer, rsiSeriesFor);
@@ -176,7 +176,7 @@ test('recomputeFormingLatest on a MIXED-kind indicator uses tail-update (no coll
   await ctrl.recomputeFormingLatest(forming);
   // Assert 1: 末尾差分経路（updateSeriesTail）を使い、remove+全差替には落ちない（履歴潰れ回避）。
   assert.equal(renderer.calls.removes.length, removesBefore, 'forceTail は remove（全差替）を呼ばない');
-  assert.ok(renderer.calls.updateSeriesTail.length >= 2, 'line 系列の最終点を updateSeriesTail で更新');
+  assert.ok(renderer.calls.updateSeriesTail.length >= 1, 'line 系列の最終点を updateSeriesTail で更新');
   // Assert 2: gateway へ mode='latest' と forming を伝播（backend が形成中バーを差し込む）。
   const last = computeCalls.at(-1);
   assert.equal(last.mode, 'latest', '混在でも forceTail で latest を要求');

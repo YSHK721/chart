@@ -514,7 +514,6 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "params_defaults": {
             "rsi_period": 6,
             "apply": 5,
-            "ma_period": 5,
         },
     },
     ("profit_stc", "default"): {

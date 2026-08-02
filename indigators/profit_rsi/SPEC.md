@@ -2,14 +2,17 @@
 
 ## 1. Objective（目的）
 適用価格（既定 Typical price）に対する相対力指数（Relative Strength Index, RSI,
-既定 period=6）を別ウィンドウ（[0,100]）の RSI 線と、その EMA 平滑線（既定
-ma_period=5）で可視化し、**生 RSI 系列**全体の `平均 ±1/2/3σ`（p1/p2/p3, m1/m2/m3）と
+既定 period=6）を別ウィンドウ（[0,100]）の RSI 線で可視化し、
+**生 RSI 系列**全体の `平均 ±1/2/3σ`（p1/p2/p3, m1/m2/m3）と
 中央線 50（mid50）を統計的水準線として描く。上昇幅と下降幅の Wilder 平滑比から相場の
 過熱・冷却の相対強度を表現する。
 
 ## 2. Scope（範囲・対象外）
-- 移植する: 計算（iRSI → EMA 平滑 → σ 7 水準）/ 描画（separate window [0,100] の
-  RSI 線・EMA 線 ＋ σ 水準線 7 本）/ 入力（CSV → OHLC、**volume 不要**）。
+- 移植する: 計算（iRSI → σ 7 水準）/ 描画（separate window [0,100] の
+  RSI 線 ＋ σ 水準線 7 本）/ 入力（CSV → OHLC、**volume 不要**）。
+- 対象外: **RSI の EMA 平滑線（元 `ExtMABuffer` / `InpMAPeriod`）**。σ 水準は元から
+  **生 RSI 系列**に掛かる（§5.4）ため、平滑線は描画専用であり他の出力に影響しない。
+  設定項目 `ma_period` ごと削除した（ユーザー承認 2026-08-02）。
 - 対象外: ブローカー接続・チャートデータ供給、アラート、最適化入力、リアルタイム差分
   再計算（バッチ全件計算で代替。ガイド §3/§6）、OnInit の Object 一括削除・サブ
   ウィンドウラベル設定（描画フレームワーク固有の副作用）。
@@ -30,7 +33,7 @@ ma_period=5）で可視化し、**生 RSI 系列**全体の `平均 ±1/2/3σ`�
 - input パラメータ:
   - `int InpRSIPeriod = 6`（RSI 期間）。**`InpRSIPeriod < 2` で `return(INIT_FAILED)`**。
   - `int Apply = 5`（RSI Method ＝ 適用価格選択。既定 5 = PRICE_TYPICAL）。
-  - `int InpMAPeriod = 5`（EMA 平滑期間）。
+  - `int InpMAPeriod = 5`（EMA 平滑期間）。**本移植では非対応**（§2 対象外）。
 - 時系列の向き: `ArraySetAsSeries` 明示なし。`iRSI(...,i)` / `iMAOnArray(...,i)` は
   index 0 = 最新足（系列順）として埋める。本移植は**昇順（古→新）**で計算する
   （ガイド §4.3）。Wilder 平滑・全系列統計のため向きによる差は出ない。
@@ -88,13 +91,12 @@ i < period            -> RSI[i] = 0      （warm-up は 0。NaN ではない）
 rates_total <= period -> 全 0            （元 RSI.mq5 の早期 return）
 ```
 
-### 5.3 EMA 平滑（`ma_period=5`, 共有 moving_averages）
-RSI 系列（warm-up 0 込み）を共有 `moving_averages.exponential_ma_on_buffer` で
-EMA(ma_period) 化する。**EMA は in-package 再実装せず共有層を流用**する。warm-up 0 を
-除外せず通す（元 `iMAOnArray(MODE_EMA)` と同じ）。`ma_period<=1` は共有関数の挙動に従う。
+### 5.3 EMA 平滑 — 移植しない
+元 `iMAOnArray(ExtRSIBuffer, MODE_EMA, InpMAPeriod)` の平滑線は持たない（§2 対象外・
+承認 2026-08-02）。σ 水準は元から生 RSI 系列に掛かるため、削除しても水準値は不変。
 
 ### 5.4 σ 7 水準（`compute_rsi_levels`）— **生 RSI 系列**に掛ける
-**生 RSI 系列**（EMA 平滑後の ma ではない）**全長**（**warm-up の 0 を除外せず**）の
+**生 RSI 系列**（平滑系列ではない）**全長**（**warm-up の 0 を除外せず**）の
 算術平均 `avg` と母標準偏差 `σ = sqrt(mean((x-avg)^2))`（÷N）から:
 ```
 p1 = avg + 1σ    p2 = avg + 2σ    p3 = avg + 3σ
@@ -114,7 +116,6 @@ period=rates_total)` に対応（**引数が ExtRSIBuffer ＝ 生 RSI 系列**�
 | 列 | 意味 |
 |---|---|
 | `rsi`（`RSI_COLUMN`） | iRSI 値（描画対象, 線）。warm-up は 0。 |
-| `rsi_ma`（`MA_COLUMN`） | iRSI の EMA 平滑値（描画対象, 線）。 |
 
 σ 7 水準は `rsi_levels`（`p1/p2/p3/m1/m2/m3/mid50`）でスカラ提供（時系列ではなく価格軸の
 水平参照値のため成果物 DataFrame と分離）。EMPTY_VALUE 相当の非描画点は本指標では発生
@@ -125,11 +126,11 @@ period=rates_total)` に対応（**引数が ExtRSIBuffer ＝ 生 RSI 系列**�
   indicator_maximum 100）。
 - RSI 線の凡例: 元 `IndicatorShortName` "RSI-{適用価格名} ({period})"（Apply で適用
   価格名が変わる。例 Apply=5 → "RSI-Typical price (6)"。`plot.rsi_short_name`）。
-- matplotlib: 下段ペインに **RSI 線**（Lime）＋ **EMA 平滑線** ＋ σ 水準線 7 本
+- matplotlib: 下段ペインに **RSI 線**（Lime）＋ σ 水準線 7 本
   （±1/2/3σ は点線グレー C'84,84,84'、中央線 50 は実線）。
-- lightweight-charts: `create_line` 2 本（name=`rsi` / `rsi_ma`, clrLime, style solid,
+- lightweight-charts: `create_line` 1 本（name=`rsi`, clrLime, style solid,
   price_line/label=False）＋ σ 水準線 7 本を `horizontal_line`（SOLID, グレー）。多数線の
-  ため price_line/label=False（ガイド §6）。ライン名は値列名（`rsi`/`rsi_ma`）と完全
+  ため price_line/label=False（ガイド §6）。ライン名は値列名（`rsi`）と完全
   一致（ガイド §5。Apply 依存の短名は lwc line name には用いず plot 凡例に限定）。
   `lightweight_charts` は import せず duck typing で受ける。
 
@@ -168,9 +169,9 @@ period=rates_total)` に対応（**引数が ExtRSIBuffer ＝ 生 RSI 系列**�
 1. **iRSI は権威 Wilder（MetaQuotes 公式 `RSI.mq5`）準拠**: 元 `iRSI` は MT4 組込で
    ソース非公開のため、権威実装 `RSI.mq5` の Wilder 平滑・ゼロ割場合分けを採用する。
    **flat window→50**（MFI の 100 と異なる）。bit-exact は MT4 実機 CSV が無いため非保証。
-2. **EMA・applied_price は共有層を再利用**: 元 `iMAOnArray(MODE_EMA)` 相当の
-   `exponential_ma_on_buffer`、適用価格 7 種を共有 `common` から再利用し、in-package
-   再実装しない（重複排除）。
+2. **applied_price は共有層を再利用**: 適用価格 7 種を共有 `common` から再利用し、
+   in-package 再実装しない（重複排除）。元 `iMAOnArray(MODE_EMA)` の EMA 平滑線は
+   移植対象外（§2）。
 3. **iRSI は共有 `mql_builtins` へ集約済み・σ 統計のみ in-package**: iRSI は共有
    `mql_builtins.compute_rsi` を import 再公開して参照面を維持する。σ 統計
    （`compute_rsi_levels`）のみ本指標専用プリミティブとして `src/core.py` 内に閉じる。

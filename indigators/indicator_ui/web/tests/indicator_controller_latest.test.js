@@ -134,8 +134,8 @@ test('latest recompute on a MIXED-kind indicator (line+horizontal_line) requests
   const trimLine = (name) => ({ name, kind: 'line', data: [{ time: 3, value: 3 }] });
   const rsiSeriesFor = (req) => {
     const lines = req.mode === 'latest'
-      ? [trimLine('rsi'), trimLine('rsi_ma')]   // backend の末尾K=1 trim
-      : [fullLine('rsi'), fullLine('rsi_ma')];
+      ? [trimLine('rsi')]   // backend の末尾K=1 trim
+      : [fullLine('rsi')];
     return [...lines, { name: 'profit_rsi', kind: 'horizontal_line', lines: [{ price: 70 }] }];
   };
   const { ctrl, computeCalls } = controllerWith(renderer, rsiSeriesFor);

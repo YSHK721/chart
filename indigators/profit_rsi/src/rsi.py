@@ -2,12 +2,12 @@
 
 責務:
     DataFrame から OHLC を小文字正規化抽出し、core 層（compute_rsi_full）を呼んで
-    RSI 列・MA 列を付与した DataFrame（元 index 継承）と σ 水準辞書を返す薄い変換層。
+    RSI 列を付与した DataFrame（元 index 継承）と σ 水準辞書を返す薄い変換層。
     数値計算と適用価格選択は core（共有 common 経由）に委譲し、本層は列抽出・列名
     正規化・必須列欠落例外の I/O 契約のみを担う。
 
 元 MQL 対応:
-    OnCalculate 全体の入出力境界（OHLC ＋ Apply → RSI/MA バッファ ＋ σ 水準）。
+    OnCalculate 全体の入出力境界（OHLC ＋ Apply → RSI バッファ ＋ σ 水準）。
 
 依存:
     標準: __future__ / 外部: pandas, numpy
@@ -21,14 +21,12 @@ import pandas as pd
 
 from .core import (
     DEFAULT_APPLY,
-    DEFAULT_MA_PERIOD,
     DEFAULT_RSI_PERIOD,
     compute_rsi_full,
 )
 
 # 出力列名。
 RSI_COLUMN = "rsi"
-MA_COLUMN = "rsi_ma"
 
 # 抽出する必須入力列（小文字正規化後）。
 _REQUIRED_COLUMNS = ("open", "high", "low", "close")
@@ -60,18 +58,16 @@ def build_rsi(
     *,
     rsi_period: int = DEFAULT_RSI_PERIOD,
     apply: int = DEFAULT_APPLY,
-    ma_period: int = DEFAULT_MA_PERIOD,
 ) -> pd.DataFrame:
-    """RSI 列・MA 列を付与した DataFrame（元 index 継承）を返す。
+    """RSI 列を付与した DataFrame（元 index 継承）を返す。
 
     Args:
         df: open/high/low/close を含む DataFrame（列名の大小不問）。
         rsi_period: RSI 期間（既定 6）。
         apply: 適用価格選択（既定 5 -> TYPICAL。core の APPLY_TO_PRICE 写像に従う）。
-        ma_period: EMA 期間（既定 5）。
 
     Returns:
-        ``RSI_COLUMN`` / ``MA_COLUMN`` 列を付与した DataFrame（元 index 継承）。
+        ``RSI_COLUMN`` 列を付与した DataFrame（元 index 継承）。
 
     Raises:
         KeyError: 必須列欠落。
@@ -80,11 +76,10 @@ def build_rsi(
     open_, high, low, close = _extract_ohlc(df)
     full = compute_rsi_full(
         open_, high, low, close,
-        rsi_period=rsi_period, apply=apply, ma_period=ma_period,
+        rsi_period=rsi_period, apply=apply,
     )
     out = df.copy()
     out[RSI_COLUMN] = full.rsi
-    out[MA_COLUMN] = full.ma
     return out
 
 
@@ -93,7 +88,6 @@ def rsi_levels(
     *,
     rsi_period: int = DEFAULT_RSI_PERIOD,
     apply: int = DEFAULT_APPLY,
-    ma_period: int = DEFAULT_MA_PERIOD,
 ) -> dict[str, float]:
     """生 RSI 系列全体の σ 水準辞書（7 水準）を返す。
 
@@ -101,7 +95,6 @@ def rsi_levels(
         df: open/high/low/close を含む DataFrame（列名の大小不問）。
         rsi_period: RSI 期間（既定 6）。
         apply: 適用価格選択（既定 5 -> TYPICAL）。
-        ma_period: EMA 期間（既定 5）。
 
     Returns:
         ``{"p1","p2","p3","m1","m2","m3","mid50"}``。
@@ -113,6 +106,6 @@ def rsi_levels(
     open_, high, low, close = _extract_ohlc(df)
     full = compute_rsi_full(
         open_, high, low, close,
-        rsi_period=rsi_period, apply=apply, ma_period=ma_period,
+        rsi_period=rsi_period, apply=apply,
     )
     return full.levels

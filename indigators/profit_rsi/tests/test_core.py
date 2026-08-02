@@ -1,6 +1,6 @@
 """PRO!fitRSI core 層（純粋計算）の検証。
 
-元 MQL4 ``PRO!fitRSI.mq4`` が呼ぶ標準 ``iRSI``（Wilder RSI）＋ EMA 平滑 ＋ σ 水準を
+元 MQL4 ``PRO!fitRSI.mq4`` が呼ぶ標準 ``iRSI``（Wilder RSI）＋ σ 水準を
 昇順（古→新, index 0=最古）へ 1:1 変換した一意定義を固定する。
 
 確定セマンティクス（MetaQuotes 公式 ``RSI.mq5`` の iRSI 実装に厳密準拠）::
@@ -19,9 +19,9 @@
         neg == 0, pos == 0  -> 50
 
 compute_rsi_full は OHLC ＋ apply を入口に取り、Apply→適用価格 写像で共有
-common.applied_price（7 種）を選択して RSI/EMA/σ 水準を統合する。
-σ 水準は **生 RSI 系列**（ma ではない）全体（warm-up 0 込み）の平均と母標準偏差
-（÷N）で算出する。EMA 平滑は共有 moving_averages.exponential_ma_on_buffer を再利用する。
+common.applied_price（7 種）を選択して RSI/σ 水準を統合する。
+σ 水準は **生 RSI 系列**（平滑系列ではない）全体（warm-up 0 込み）の平均と母標準偏差
+（÷N）で算出する（TC-11 が平滑系列を foil に用いて固定する）。
 """
 
 import sys
@@ -35,7 +35,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src import (  # noqa: E402
     APPLY_TO_PRICE,
     DEFAULT_APPLY,
-    DEFAULT_MA_PERIOD,
     DEFAULT_RSI_PERIOD,
     RsiResult,
     compute_rsi,
@@ -43,7 +42,7 @@ from src import (  # noqa: E402
     compute_rsi_levels,
 )
 
-# 共有 EMA 関数（照合用）。
+# 共有 EMA 関数（TC-11 の foil 専用。指標本体は EMA 平滑を持たない）。
 from moving_averages import exponential_ma_on_buffer  # noqa: E402
 
 # 共有 common（適用価格・照合用）。
@@ -214,9 +213,7 @@ def test_compute_rsi_full_uses_applied_price_selected_by_apply(apply, kind):
     expected_rsi = _reference_rsi(price, 3)
 
     # Act
-    result = compute_rsi_full(
-        open_, high, low, close, rsi_period=3, apply=apply, ma_period=2
-    )
+    result = compute_rsi_full(open_, high, low, close, rsi_period=3, apply=apply)
 
     # Assert
     np.testing.assert_allclose(result.rsi, expected_rsi, rtol=1e-12)
@@ -232,7 +229,7 @@ def test_compute_rsi_full_default_apply_is_typical():
     expected = _reference_rsi(typical, 3)
 
     # Act（apply 省略 = DEFAULT_APPLY=5）。
-    result = compute_rsi_full(open_, high, low, close, rsi_period=3, ma_period=2)
+    result = compute_rsi_full(open_, high, low, close, rsi_period=3)
 
     # Assert
     assert DEFAULT_APPLY == 5
@@ -264,44 +261,40 @@ def test_compute_rsi_levels_uses_population_sigma_and_mid50():
 
 
 # ---------------------------------------------------------------------------
-# TC-11 σ は生 RSI 系列に掛かる（ma ではない！）
+# TC-11 σ は生 RSI 系列に掛かる（平滑系列ではない！ma_period 削除後も不変）
 # ---------------------------------------------------------------------------
-def test_compute_rsi_full_levels_are_computed_on_raw_rsi_not_ma():
-    # Arrange: rsi と ma が十分に異なる系列を使う。
+def test_compute_rsi_full_levels_are_computed_on_raw_rsi_not_smoothed():
+    # Arrange: 生 RSI と、foil としての EMA 平滑系列（指標本体は保持しない）。
     open_, high, low, close = _ohlc8()
-    result = compute_rsi_full(
-        open_, high, low, close, rsi_period=3, apply=0, ma_period=2
-    )
+    result = compute_rsi_full(open_, high, low, close, rsi_period=3, apply=0)
+    smoothed = np.zeros(result.rsi.shape[0])
+    exponential_ma_on_buffer(result.rsi.shape[0], 0, 0, 2, result.rsi, smoothed)
     levels_from_rsi = compute_rsi_levels(result.rsi)
-    levels_from_ma = compute_rsi_levels(result.ma)
+    levels_from_smoothed = compute_rsi_levels(smoothed)
 
-    # Assert: levels は生 RSI 由来であり、ma 由来ではない。
+    # Assert: levels は生 RSI 由来であり、平滑系列由来ではない。
     assert result.levels == pytest.approx(levels_from_rsi)
-    assert result.levels != pytest.approx(levels_from_ma)
+    assert result.levels != pytest.approx(levels_from_smoothed)
 
 
 # ---------------------------------------------------------------------------
-# TC-12 compute_rsi_full は RsiResult（rsi / ma / levels）を返し EMA は共有一致
+# TC-12 compute_rsi_full は RsiResult（rsi / levels）を返す
 # ---------------------------------------------------------------------------
-def test_compute_rsi_full_returns_result_with_shared_ema_and_levels():
+def test_compute_rsi_full_returns_result_with_rsi_and_levels():
     # Arrange
     open_, high, low, close = _ohlc8()
     price = applied_price(AppliedPrice.CLOSE, open_, high, low, close)
     rsi = _reference_rsi(price, 3)
-    ma_ref = np.zeros(rsi.shape[0])
-    exponential_ma_on_buffer(rsi.shape[0], 0, 0, 2, rsi, ma_ref)
     levels_ref = compute_rsi_levels(rsi)  # 生 RSI 由来
 
     # Act
-    result = compute_rsi_full(
-        open_, high, low, close, rsi_period=3, apply=0, ma_period=2
-    )
+    result = compute_rsi_full(open_, high, low, close, rsi_period=3, apply=0)
 
     # Assert
     assert isinstance(result, RsiResult)
     np.testing.assert_allclose(result.rsi, rsi, rtol=1e-12)
-    np.testing.assert_allclose(result.ma, ma_ref, rtol=1e-12)
     assert result.levels == pytest.approx(levels_ref)
+    assert not hasattr(result, "ma")  # EMA 平滑は保持しない（ma_period 削除）
 
 
 # ---------------------------------------------------------------------------
@@ -317,21 +310,18 @@ def test_compute_rsi_full_raises_on_ohlc_length_mismatch():
 
 
 # ---------------------------------------------------------------------------
-# TC-14 RsiResult は不変（rsi / ma が writeable=False）
+# TC-14 RsiResult は不変（rsi が writeable=False）
 # ---------------------------------------------------------------------------
 def test_rsi_result_arrays_are_immutable():
     open_, high, low, close = _ohlc8()
-    result = compute_rsi_full(open_, high, low, close, rsi_period=3, ma_period=2)
+    result = compute_rsi_full(open_, high, low, close, rsi_period=3)
     with pytest.raises(ValueError):
         result.rsi[0] = 1.0
-    with pytest.raises(ValueError):
-        result.ma[0] = 1.0
 
 
 # ---------------------------------------------------------------------------
-# TC-15 既定パラメータ（DEFAULT_RSI_PERIOD=6 / DEFAULT_MA_PERIOD=5 / DEFAULT_APPLY=5）
+# TC-15 既定パラメータ（DEFAULT_RSI_PERIOD=6 / DEFAULT_APPLY=5）
 # ---------------------------------------------------------------------------
 def test_default_parameters_match_source_inputs():
     assert DEFAULT_RSI_PERIOD == 6
-    assert DEFAULT_MA_PERIOD == 5
     assert DEFAULT_APPLY == 5

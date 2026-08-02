@@ -4,20 +4,21 @@
     出力アダプタ。``lightweight_charts`` を import せず、``create_line`` /
     ``horizontal_line`` を持つオブジェクト（chart）をダックタイピングで受ける
     （PORTING_GUIDE §2/§6）。指標パッケージの依存を numpy/pandas に保つ。元 MQL4 は
-    別ウィンドウ（[0,100]）の RSI 線 ＋ EMA 平滑線（共に DRAW_LINE, clrLime）と
+    別ウィンドウ（[0,100]）の RSI 線（DRAW_LINE, clrLime）と
     σ 水準線 7 本（±1/2/3σ, levelcolor C'84,84,84', STYLE_SOLID ＋ 中央線 50）で
-    あるため、呼び出し側が用意した（サブ）チャートにライン 2 本と水平線 7 本を追加
+    あるため、呼び出し側が用意した（サブ）チャートにライン 1 本と水平線 7 本を追加
     する。warm-up（i<rsi_period）は元 iRSI 既定どおり 0 で描画される（NaN は発生しない）。
 
-    ライン ``name`` は値列名（``rsi`` / ``rsi_ma``）と完全一致させる（ガイド §5）。
+    ライン ``name`` は値列名（``rsi``）と完全一致させる（ガイド §5）。
     Apply 依存の短名（"RSI-Typical price (6)" 等）は plot 凡例側の関心事であり、lwc の
     ライン name には用いない（lwc は値列名一致が制約のため）。
 
 元 MQL4 対応:
-    ``SetIndexStyle(0/1, DRAW_LINE)``（ExtRSIBuffer / ExtMABuffer,
-    indicator_color1/2 clrLime, separate_window, indicator_minimum 0 /
+    ``SetIndexStyle(0, DRAW_LINE)``（ExtRSIBuffer,
+    indicator_color1 clrLime, separate_window, indicator_minimum 0 /
     indicator_maximum 100）と StDevA1..A6（±1/2/3σ）＋ 中央線 50
     （indicator_levelcolor C'84,84,84' / indicator_levelstyle STYLE_SOLID）。
+    元 ExtMABuffer（EMA 平滑線）は本移植では持たない（ma_period 削除・承認 2026-08-02）。
 
 依存（PORTING_GUIDE §8）:
     標準: __future__, typing / 外部: numpy, pandas / プロジェクト内: rsi, core
@@ -33,11 +34,10 @@ from common_view import LEVEL_LINE_WIDTH  # noqa: E402
 from common_view.lwc_adapter import resolve_times as _resolve_times  # noqa: E402
 from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
-from .core import DEFAULT_APPLY, DEFAULT_MA_PERIOD, DEFAULT_RSI_PERIOD
-from .rsi import MA_COLUMN, RSI_COLUMN, build_rsi, rsi_levels
+from .core import DEFAULT_APPLY, DEFAULT_RSI_PERIOD
+from .rsi import RSI_COLUMN, build_rsi, rsi_levels
 
 _RSI_COLOR = "rgba(0, 255, 0, 1)"      # 元 indicator_color1 clrLime
-_MA_COLOR = "rgba(0, 255, 0, 1)"       # 元 indicator_color2 clrLime
 _WIDTH = 1                             # 元 indicator_width 未指定（既定 1）
 _LEVEL_COLOR = "rgba(84, 84, 84, 1)"   # 元 indicator_levelcolor C'84,84,84'
 
@@ -60,11 +60,10 @@ def add_rsi(
     *,
     rsi_period: int = DEFAULT_RSI_PERIOD,
     apply: int = DEFAULT_APPLY,
-    ma_period: int = DEFAULT_MA_PERIOD,
     time_column: str | None = None,
     draw_levels: bool = True,
 ) -> list:
-    """chart に RSI 線・EMA 平滑線（2 本）と σ 水準線（7 本）を追加する。
+    """chart に RSI 線（1 本）と σ 水準線（7 本）を追加する。
 
     Args:
         chart: ``create_line(name, **kwargs)`` と ``horizontal_line(price, **kwargs)``
@@ -72,35 +71,30 @@ def add_rsi(
         df: OHLC DataFrame（open/high/low/close 必須・列名大小不問・**volume 不要**）。
         rsi_period: RSI 期間（既定 6。元 InpRSIPeriod）。
         apply: 適用価格選択（既定 5 -> TYPICAL。元 Apply。core の APPLY_TO_PRICE 写像）。
-        ma_period: EMA 期間（既定 5。元 InpMAPeriod）。
         time_column: 時刻列の明示指定（省略時は time/date/DatetimeIndex を探索）。
         draw_levels: True で σ 水準線（±1/2/3σ ＋ 中央線 50）を水平線として追加。
 
     Returns:
-        生成したオブジェクトのリスト（[rsi_line, ma_line, *horizontal_lines]）。
+        生成したオブジェクトのリスト（[rsi_line, *horizontal_lines]）。
 
     Raises:
         KeyError: 時刻が解決できない / OHLC 列が無い場合。
     """
-    built = build_rsi(df, rsi_period=rsi_period, apply=apply, ma_period=ma_period)
+    built = build_rsi(df, rsi_period=rsi_period, apply=apply)
     times = _resolve_times(df, time_column)
 
     created: list = []
-    # RSI 線・EMA 平滑線。値列名はライン名と完全一致させる（ガイド §5）。
+    # RSI 線。値列名はライン名と完全一致させる（ガイド §5）。
     # 多数線のため price_line/label は False（§6）。warm-up は 0 で残る（NaN 無し）。
-    for col, color in ((RSI_COLUMN, _RSI_COLOR), (MA_COLUMN, _MA_COLOR)):
-        line = chart.create_line(
-            name=col, color=color, style="solid", width=_WIDTH,
-            price_line=False, price_label=False,
-        )
-        series = pd.DataFrame({"time": times, col: built[col].to_numpy()})
-        line.set(series)
-        created.append(line)
+    line = chart.create_line(
+        name=RSI_COLUMN, color=_RSI_COLOR, style="solid", width=_WIDTH,
+        price_line=False, price_label=False,
+    )
+    line.set(pd.DataFrame({"time": times, RSI_COLUMN: built[RSI_COLUMN].to_numpy()}))
+    created.append(line)
 
     if draw_levels:
-        levels = rsi_levels(
-            df, rsi_period=rsi_period, apply=apply, ma_period=ma_period
-        )
+        levels = rsi_levels(df, rsi_period=rsi_period, apply=apply)
         for key in _LEVEL_KEYS:
             created.append(chart.horizontal_line(
                 price=float(levels[key]), color=_LEVEL_COLOR, width=LEVEL_LINE_WIDTH,

@@ -4044,3 +4044,28 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
     ページ全体に `tickvol_updown` の文字列は 0 件。コンソールエラー 0 件。
   - リプレイモードでも同一（カタログ 26 件・`tickvol` は 5 パラメータ）。
   - 回帰: indicator_ui JS 1012（+3）・replay JS 301 — 全通過。
+
+## ISSUE-246: [整理] RSI から EMA 平滑線（`ma_period` / `rsi_ma`）を削除する（2026-08-02）
+
+- **重大度**: —（機能整理。RSI 本線・σ 水準の値は不変）
+- **ステータス**: RESOLVED（2026-08-02・refactor/rsi-drop-ma-period）
+- **依頼**: 「RSI の指標から `ma_period` の設定項目を削除。使用方法に意味を見出だせないが、何かあるか」
+  → 調査結果（`ma_period` の唯一の作用は EMA 平滑線 `rsi_ma` の描画。σ 水準は元から**生 RSI**由来で
+  無関係。戦略・シミュレータ側の参照はゼロ）を提示し、**パラメータと系列を同時に削除**する案で承認取得
+  （y・2026-08-02）。パラメータのみ削ると平滑線が period=5 固定で残るため不整合になる。
+- **元 MQL との差分**: 元 `PRO!fitRSI.mq4` の `ExtMABuffer`（`iMAOnArray(MODE_EMA, InpMAPeriod=5)`）を
+  移植対象外とした。参照実装からの意図的な逸脱であり、承認に基づく（SPEC §2「対象外」に明記）。
+- **触った層**: 指標（`profit_rsi/src/{core,rsi,plot,lwc_chart,__init__}.py`・`demo.py`）／
+  結線（`call_binding.py` の `params_defaults`）／golden（`catalog_defaults.json`）／
+  front（`catalog.js` の `params` と `series`。ライブ／リプレイは symlink 共有で 1 実体）／
+  ドキュメント（`profit_rsi/SPEC.md`・`README.md`）／テスト 7 本。
+- **削除した公開シンボル**: `DEFAULT_MA_PERIOD`・`MA_COLUMN`（`rsi_ma`）・`RsiResult.ma`、
+  および `compute_rsi_full` / `build_rsi` / `rsi_levels` / `plot_rsi` / `add_rsi` の `ma_period` 引数。
+
+### 検証
+
+- 回帰: profit_rsi 43／indicator_ui Py 674・JS 1012／replay JS 301 — **全通過**。
+  σ 水準が生 RSI 由来であることは TC-11（EMA 平滑系列を foil に用いる）で削除後も固定した。
+- 実 UI（8000 ライブ・NI225 1 時間足・スタック再起動後）: RSI のパラメータ欄が `rsi_period` と
+  「ソース」の 2 個のみ（`ma_period` が無い）、スタイル欄が `rsi` 1 行のみ（`rsi_ma` が無い）、
+  RSI ペインは線 1 本＋σ 水準線 7 本で描画。指標関連のコンソールエラー 0 件。
