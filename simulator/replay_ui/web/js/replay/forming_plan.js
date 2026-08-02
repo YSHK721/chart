@@ -29,7 +29,13 @@ export function sampleIndices(n) {
 // 各インデックス時点の形成中バー OHLC。replay.js の animateForming と同一の畳み方
 //   （open=prices[0] 固定・high/low は流入ティックの累積極値・close=prices[i]）。
 //   ここがずれると一括計算の値が実際の描画状態と食い違うため、同一規則であることが本質。
-export function formingStatesAt(cd, prices, indices) {
+//
+// ISSUE-238: 各時点へ **リプレイ現在時刻 `to`** を添える（`secs[i]`＝MP tick-live が使うのと
+//   同一の時計。real_ticks＝実 tick 秒／every_tick・ohlc_1min＝窓等分の合成秒）。サーバは
+//   `to` から「その時点までに到来した実 tick 数」を数えて形成中バーの volume にする。
+//   volume をフロントで数えない理由: 合成モードの点数は実 tick 数と一致しない（1分OHLC は
+//   4 点/分）。`secs` を持たないモード（始値のみ・数学計算）は `to` を載せない＝従来挙動。
+export function formingStatesAt(cd, prices, indices, secs = []) {
   if (!cd || !Array.isArray(prices) || prices.length === 0) {
     return [];
   }
@@ -37,13 +43,16 @@ export function formingStatesAt(cd, prices, indices) {
   let hi = open;
   let lo = open;
   const wanted = new Set(indices);
+  const clock = Array.isArray(secs) ? secs : [];
   const out = [];
   for (let i = 0; i < prices.length; i++) {
     const p = prices[i];
     if (p > hi) hi = p;
     if (p < lo) lo = p;
     if (wanted.has(i)) {
-      out.push({ time: cd.time, open, high: hi, low: lo, close: p });
+      const state = { time: cd.time, open, high: hi, low: lo, close: p };
+      if (clock[i] != null) state.to = Math.floor(clock[i]);
+      out.push(state);
     }
   }
   return out;

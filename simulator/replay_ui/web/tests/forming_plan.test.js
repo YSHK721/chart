@@ -82,3 +82,41 @@ test('planSignature: params / variant / 窓が変われば署名も変わる', (
     targets: [{ ...base.targets[0], variant: 'other' }],
   }), sig);
 });
+
+// --- ISSUE-238: リプレイ現在時刻 `to` の付与 --------------------------------- //
+// 形成中バーに volume が無いと `forming_bar.apply`（存在するキーのみ更新）の規約により
+// 確定足の完成 tick 数が残り、足の先頭から未来の値を表示してしまう。`to` を添えることで
+// サーバが「その時点までに到来した実 tick 数」を数えて volume にする。
+
+test('formingStatesAt: secs があれば各時点へリプレイ現在時刻 to を添える', () => {
+  const cd = { time: 1000 };
+  const out = formingStatesAt(cd, [10, 12, 11], [0, 1, 2], [1000, 1100, 1200]);
+  assert.deepEqual(out.map((s) => s.to), [1000, 1100, 1200]);
+  // OHLC の畳み方は不変（open 固定・hi/lo 累積・close=当該ティック）。
+  assert.deepEqual(out.map((s) => s.close), [10, 12, 11]);
+  assert.deepEqual(out.map((s) => s.high), [10, 12, 12]);
+});
+
+test('formingStatesAt: to は整数秒へ丸める（合成 secs は小数になりうる）', () => {
+  const out = formingStatesAt({ time: 0 }, [1, 2], [0, 1], [10.9, 20.2]);
+  assert.deepEqual(out.map((s) => s.to), [10, 20]);
+});
+
+test('formingStatesAt: secs 未提供なら to を付けない（従来 payload と同一）', () => {
+  const out = formingStatesAt({ time: 0 }, [1, 2], [0, 1]);
+  assert.ok(out.every((s) => !('to' in s)), 'to を付けてはいけない');
+  assert.deepEqual(Object.keys(out[0]).sort(), ['close', 'high', 'low', 'open', 'time']);
+});
+
+test('formingStatesAt: secs が部分的に欠けている点だけ to を付けない', () => {
+  const out = formingStatesAt({ time: 0 }, [1, 2, 3], [0, 1, 2], [10, null, 30]);
+  assert.equal(out[0].to, 10);
+  assert.ok(!('to' in out[1]));
+  assert.equal(out[2].to, 30);
+});
+
+test('formingStatesAt: volume はフロントで作らない（点数≠実 tick 数のため）', () => {
+  // 合成モードの点数は実 tick 数と一致しない（1分OHLC は 4 点/分）。数えるのはサーバの責務。
+  const out = formingStatesAt({ time: 0 }, [1, 2, 3], [0, 1, 2], [10, 20, 30]);
+  assert.ok(out.every((s) => !('volume' in s)));
+});

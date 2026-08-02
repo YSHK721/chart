@@ -44,6 +44,8 @@ export class ReplayIndicatorController extends IndicatorController {
     this._untilTime = undefined;
     // [reveal] forming（足内更新中の形成中バー暫定 OHLC）。undefined=確定足のまま計算。
     this._forming = undefined;
+    this._winStart = undefined;   // [ISSUE-238] 足内窓（形成中バーの実 tick 数算出用）
+    this._winEnd = undefined;
     // [reveal 一括・ISSUE-158 ②] 事前一括計算の基底キャッシュ。instanceId →
     //   { def, params, series（F3 検証済み全レンジ payload）, times（系列名→ソート済 time 配列）}。
     //   対象は CAUSAL_REVEAL_IDS（実測で per-step と乖離 0 を確認済みの因果指標）のみ。
@@ -207,22 +209,34 @@ export class ReplayIndicatorController extends IndicatorController {
     this._forming = forming;
   }
 
-  // 共有ベースの compute リクエスト seam を実装: untilTime/forming を素通しする。undefined は
-  //   compute_http_client の `!== undefined` gate で不送信＝ライブ扱い（後方互換）。
+  // [ISSUE-238] 足内窓（winStart/winEnd）を設定。サーバは形成中バーの `to` とこの窓から
+  //   「その時点までに到来した実 tick 数」を数えて volume にする。undefined で解除。
+  setFormingWindow(win) {
+    this._winStart = win ? win.winStart : undefined;
+    this._winEnd = win ? win.winEnd : undefined;
+  }
+
+  // 共有ベースの compute リクエスト seam を実装: untilTime/forming/足内窓を素通しする。
+  //   undefined は compute_http_client の `!== undefined` gate で不送信＝ライブ扱い（後方互換）。
   _extraComputeFields() {
-    return { untilTime: this._untilTime, forming: this._forming };
+    return {
+      untilTime: this._untilTime, forming: this._forming,
+      winStart: this._winStart, winEnd: this._winEnd,
+    };
   }
 
   // [reveal] 足内更新: 形成中バーを差し込み、登録指標（共有 INTRABAR_FORMING_IDS）の末尾点のみ
   //   latest 差分再計算する。実体は基底 recomputeFormingTails（forceTail 差分＝ライブと同一機構・
   //   2026-07-22 統一設計）へ委譲し、本メソッドは forming seam（素通し・解除）だけを担う。
   //   forming 解除は finally で必ず行い、後続の確定足計算に forming を残さない。
-  async recomputeFormingLatest(forming) {
+  async recomputeFormingLatest(forming, win = null) {
     this.setForming(forming);
+    this.setFormingWindow(win);
     try {
       await this.recomputeFormingTails();
     } finally {
       this.setForming(undefined);                          // 確定計算へ forming を残さない
+      this.setFormingWindow(null);                         // 窓も残さない（確定計算はライブ扱い）
     }
   }
 

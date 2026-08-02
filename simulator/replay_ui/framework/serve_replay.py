@@ -59,6 +59,10 @@ from simulator.replay_ui.usecase.reveal_candles import (
     RevealCandlesRequest,
     reveal_candles,
 )
+from simulator.replay_ui.usecase.tickvol_profile import (
+    TickvolProfileRequest,
+    tickvol_profile,
+)
 
 
 def _error_response(
@@ -134,6 +138,7 @@ class ReplayApp:
         forming_port: Any = None,
         market_profile_port: Any = None,
         days_port: Any = None,
+        tickvol_profile_port: Any = None,
     ) -> None:
         self._candle_port = candle_port
         # カレンダー（再生開始日）の選択可能日を返す Port。None のとき /available_days ルートを
@@ -165,6 +170,10 @@ class ReplayApp:
         #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
         self._market_profile_port = market_profile_port
         self.market_profile_enabled = market_profile_port is not None
+        # 取引密度ハイライト（時刻帯の背景色）の Port（任意注入）。None のときは /tickvol_profile
+        #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
+        self._tickvol_profile_port = tickvol_profile_port
+        self.tickvol_profile_enabled = tickvol_profile_port is not None
 
     def candles(
         self,
@@ -205,10 +214,13 @@ class ReplayApp:
             mode=body.get("mode"),
             forming=body.get("forming"),
             params=dict(body.get("params") or {}),
+            win_start=body.get("winStart"),
+            win_end=body.get("winEnd"),
         )
         def _run():
             with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
-                return causal_compute(request=req, compute_port=self._compute_port)
+                return causal_compute(request=req, compute_port=self._compute_port,
+                                      window_port=self._window_port)
         return self._heavy_worker.run(_run)
 
     def compute_seq(self, body: dict) -> "list[list[dict]]":
@@ -226,10 +238,13 @@ class ReplayApp:
             until_time=body.get("untilTime"),
             forming_seq=body.get("formingSeq") or [],
             params=dict(body.get("params") or {}),
+            win_start=body.get("winStart"),
+            win_end=body.get("winEnd"),
         )
         def _run():
             with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
-                return causal_compute_seq(request=req, compute_port=self._compute_port)
+                return causal_compute_seq(request=req, compute_port=self._compute_port,
+                                          window_port=self._window_port)
         return self._heavy_worker.run(_run)
 
     def intraday(self, ref: str, start: int, end: int, mode: str, want_secs: bool = False) -> dict:
@@ -285,6 +300,18 @@ class ReplayApp:
         with self._lock:  # profile 計算（candle/dwell resample）を直列化（OOM 防止）
             return market_profile(request=req, profile_port=self._market_profile_port)
 
+    def tickvol_profile(
+        self, ref: str, sessions: Any = None, pct: Any = None, until: Any = None
+    ) -> "tuple[int, dict]":
+        """取引密度の時刻帯プロファイル（背景色帯）を返す。
+
+        ``until`` は必ずリビール T（単一時計 to）を渡す。``until`` が属するセッション日は集計に
+        含まれない（当日非参照＝因果・未来リーク防止）。
+        """
+        req = TickvolProfileRequest(ref=ref, sessions=sessions, pct=pct, until=until)
+        with self._lock:  # 1 分足全期間の集計を直列化（OOM 防止・他の重い処理と同規律）
+            return tickvol_profile(request=req, profile_port=self._tickvol_profile_port)
+
 
 def make_handler(app: ReplayApp):
     """``app`` を束ねた BaseHTTPRequestHandler サブクラスを返す（proto H 忠実）。"""
@@ -339,6 +366,17 @@ def make_handler(app: ReplayApp):
                 try:
                     payload = app.intraday(ref, start, end, mode, want_secs=want_secs)
                     return self._json(200, payload)
+                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
+                    return self._json(*_error_response(e))
+            if u.path == "/tickvol_profile" and app.tickvol_profile_enabled:
+                # 取引密度ハイライト（時刻帯の背景色）の帯定義。until はリビール T（単一時計 to）。
+                #   until が属するセッション日は集計に含めない（当日非参照＝因果）。
+                ref = (q.get("datasetRef") or [None])[0]
+                sessions = (q.get("sessions") or [None])[0]
+                pct = (q.get("pct") or [None])[0]
+                until = (q.get("until") or [None])[0]
+                try:
+                    return self._json(*app.tickvol_profile(ref, sessions, pct, until))
                 except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
                     return self._json(*_error_response(e))
             if u.path == "/market_profile" and app.market_profile_enabled:

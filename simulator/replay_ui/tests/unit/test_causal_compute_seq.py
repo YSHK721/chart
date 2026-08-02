@@ -141,3 +141,85 @@ def test_空窓は空を返す():
     port = _FakeComputePort([])
     assert causal_compute_seq(request=_seq_req(), compute_port=port) == []
     assert port.compute_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# ISSUE-238: 形成中バーへ実 tick 数（volume）を載せる
+# --------------------------------------------------------------------------- #
+class _FakeWindowPort:
+    """``load_raw_ticks`` のみを持つ IntrabarWindowPort スタブ（秒だけ意味を持つ）。"""
+
+    def __init__(self, secs):
+        self._rows = [(s, 100.0, 101.0) for s in secs]
+        self.calls = 0
+
+    def load_m1_rows(self, ref, start, end):  # pragma: no cover — 本経路は使わない
+        raise AssertionError("load_m1_rows は呼ばれない")
+
+    def load_raw_ticks(self, start, end):
+        self.calls += 1
+        return list(self._rows)
+
+
+def _seq_with_clock():
+    """足内推移に `to`（リプレイ現在時刻）を添えたもの。"""
+    return [
+        {"time": 120, "open": 2.0, "high": 2.1, "low": 2.0, "close": 2.1, "to": 120},
+        {"time": 120, "open": 2.0, "high": 2.4, "low": 2.0, "close": 2.4, "to": 150},
+        {"time": 120, "open": 2.0, "high": 2.4, "low": 1.9, "close": 1.9, "to": 179},
+    ]
+
+
+def test_形成中バーへ実tick数がvolumeとして載る():
+    # Arrange: 窓 [120,180) に 5 tick（120/130/150/160/175）。
+    port = _FakeComputePort(_source())
+    win = _FakeWindowPort([120, 130, 150, 160, 175])
+    req = _seq_req(forming_seq=_seq_with_clock(), win_start=120, win_end=180)
+    # Act
+    causal_compute_seq(request=req, compute_port=port, window_port=win)
+    # Assert: 各時点までに到来した数が volume に載る（単調非減少・窓終端で全 5 件）。
+    vols = [c["bars"][-1]["volume"] for c in port.compute_calls]
+    assert vols == [1.0, 3.0, 5.0]
+    assert win.calls == 1                      # ティック読込は窓ごとに 1 回だけ
+
+
+def test_window_port未指定なら従来どおりvolumeを作らない():
+    port = _FakeComputePort(_source())
+    causal_compute_seq(request=_seq_req(forming_seq=_seq_with_clock(),
+                                        win_start=120, win_end=180), compute_port=port)
+    assert all("volume" not in c["bars"][-1] for c in port.compute_calls)
+
+
+def test_to無しなら従来どおりvolumeを作らない():
+    # 旧クライアント（`to` を送らない）でも挙動が 1 ビットも変わらないこと。
+    port = _FakeComputePort(_source())
+    win = _FakeWindowPort([120, 130])
+    causal_compute_seq(request=_seq_req(win_start=120, win_end=180),
+                       compute_port=port, window_port=win)
+    assert all("volume" not in c["bars"][-1] for c in port.compute_calls)
+    assert win.calls == 0                      # ティックを読みにも行かない
+
+
+def test_単発latestにも実tick数が載る():
+    port = _FakeComputePort(_source())
+    win = _FakeWindowPort([120, 130, 150])
+    req = CausalComputeRequest(
+        indicator="moving_averages", variant="default", ref="jp225_tick", timeframe="1D",
+        limit=None, until_time=None, mode="latest",
+        forming={"time": 120, "open": 2.0, "high": 2.4, "low": 2.0, "close": 2.4, "to": 140},
+        params={}, win_start=120, win_end=180,
+    )
+    causal_compute(request=req, compute_port=port, window_port=win)
+    assert port.compute_calls[-1]["bars"][-1]["volume"] == 2.0
+
+
+def test_確定足のvolumeは形成中バーの値で置換される():
+    # 真因（ISSUE-238）: forming に volume が無いと確定足の完成値が残る。載せれば置換される。
+    src = [dict(b, volume=999.0) for b in _source()]
+    port = _FakeComputePort(src)
+    win = _FakeWindowPort([120, 130])
+    causal_compute_seq(
+        request=_seq_req(forming_seq=_seq_with_clock()[:1], win_start=120, win_end=180),
+        compute_port=port, window_port=win,
+    )
+    assert port.compute_calls[-1]["bars"][-1]["volume"] == 1.0     # 999.0 ではない

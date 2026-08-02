@@ -14,9 +14,9 @@ import { dayKey } from './replay/calendar.js';
 import {
   clampSpeed, frameMs as frameMsOf, stepMs,
   estimatePeriodMs, emaUpdate, periodMs, fmtEta, ANIM_MIN_MS, FORMING_MIN_INTERVAL_MS,
-  remainingTickvol, etaRealTicksMs,
+  remainingTickvol, etaRealTicksMs, isRealtime, realtimeOffsetsMs,
 } from './replay/timing.js';
-import { intrabarWindow, buildStreamFromResponse } from './replay/stream.js';
+import { intrabarWindow, buildStreamFromResponse, durationSecs } from './replay/stream.js';
 import { sampleIndices, formingStatesAt, planSignature } from './replay/forming_plan.js';
 import { FormingSeqClient } from './adapter/front/forming_seq_client.js';
 import {
@@ -290,13 +290,25 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
 
   // ---- 速度 / フレーム待機 ----
   const speed = () => clampSpeed(view.readSpeed());
-  const frameMs = () => frameMsOf(speed());
+  // 実時間再生「リアルタイム」（依頼者指示 2026-08-01）。比の速度とは別軸のテンポで、1足の壁時計所要は
+  //   時間足の長さそのもの（1m→60秒）。足の窓 [winStart, nextCandle) ではなく時間足長を使うのは、
+  //   窓は週末・休場をまたぐと数日に伸び（winEnd=次足 time）、そこで再生が数日止まるため
+  //   ＝「市場が動いている時間だけを 1:1 で流す」が実時間再生の意味。
+  const realtime = () => isRealtime(speed());
+  const paused = () => !realtime() && speed() <= 0; // 比の 0.00＝一時停止（実時間再生に 0 は無い）
+  const rtBarMs = () => durationSecs(timeframe) * 1000;
+  let rtAnchorMs = 0; // 現在バーの「足始端」に対応する壁時計時刻（performance.now 基準）
   let emaPeriodMs = null;
   let lastComputeMs = null;
   const setEta = () => {
     const remain = Math.max(0, (candles.length - 1) - bar);
     if (remain === 0) { view.setText('rp-eta', '完了予想 —'); return; }
-    if (speed() <= 0) { view.setText('rp-eta', `完了予想 —（一時停止・残り${remain}足）`); return; }
+    if (paused()) { view.setText('rp-eta', `完了予想 —（一時停止・残り${remain}足）`); return; }
+    // 実時間再生は 1足＝時間足の長さ（計算・描画は足内に収まる前提）＝残り足数から厳密に出る。
+    if (realtime()) {
+      view.setText('rp-eta', `完了予想 ${fmtEta(remain * rtBarMs())}（残り${remain}足）`);
+      return;
+    }
     // ISSUE-044: real_ticks は cap 廃止（間引かない・絶対仕様）＝1足あたり点数が足ごとに桁で異なる
     //   （月足は数十万 tick）ため、旧 800 点 cap 前提のモデルも per-bar EMA も使わず、/candles の
     //   tickvol（実 tick 数）の残り総数から算出する。tickvol 欠損（旧データセット等）は従来モデルへ
@@ -319,25 +331,31 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     const resolve = frameResolve; frameResolve = null;
     if (resolve) resolve();
   }
+  // 現時点から見たフレーム待機の残り ms。比の速度は「固定間隔 − 経過」、実時間再生は
+  //   「足終端（アンカ＋時間足長）までの実残り」＝足内アニメで消費した分が自動的に差し引かれる。
+  const frameRemainMs = () => (realtime()
+    ? Math.max(0, rtAnchorMs + rtBarMs() - performance.now())
+    : frameMsOf(speed()) - (performance.now() - frameStart));
   function waitFrame() {
     return new Promise((resolve) => {
       frameResolve = resolve;
       frameStart = performance.now();
-      frameTimer = setTimeout(settleFrameWait, frameMs());
+      frameTimer = setTimeout(settleFrameWait, Math.max(0, frameRemainMs()));
     });
   }
   function rescheduleFrameWait() {
     if (frameResolve == null) return;
     if (frameTimer != null) { clearTimeout(frameTimer); frameTimer = null; }
-    const remaining = frameMs() - (performance.now() - frameStart);
+    const remaining = frameRemainMs();
     if (remaining <= 0) { settleFrameWait(); return; }
     frameTimer = setTimeout(settleFrameWait, remaining);
   }
   async function playLoop() {
     while (playing && bar < candles.length - 1) {
-      while (playing && speed() <= 0) await sleepMs(80); // 速度0.00=一時停止（凍結）
+      while (playing && paused()) await sleepMs(80); // 速度0.00=一時停止（凍結）
       if (!playing) break;
       const barStart = performance.now();
+      rtAnchorMs = barStart; // 実時間再生の足始端＝この足の計算（drive）も足の予算内に含める
       let resume = null;
       if (resumeDecision(pausedForm, candles[bar])) {
         resume = pausedForm; // 停止した足の続きから再開
@@ -379,8 +397,11 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     }
   };
   function applySpeed(v) {
+    const wasRealtime = realtime();
     view.writeSpeed(clampSpeed(v));
     emaPeriodMs = null; // 旧速度の実測は陳腐化
+    // 実時間再生の切替は /intraday の tick_secs 取得可否が変わる＝先読み済み計画のティック列も別物。
+    if (realtime() !== wasRealtime) invalidatePlans();
     setEta();
     rescheduleFrameWait();
   }
@@ -423,7 +444,11 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     });
     // MP tick-live 有効かつ real_ticks のときだけ secs=1 gate を付与し tick_secs を並走取得する
     //   （他バー・MP OFF は従来 payload 不変＝forming MA/OHLC アニメ回帰ゼロ）。
-    const wantSecs = mpOn() && mode === 'real_ticks';
+    //   実時間再生（リアルタイム）でも実 tick 時刻が必須（無いと足内が等分になり実時間でなくなる）ため
+    //   同じ gate を立てる。他テンポでは従来どおり payload 不変。
+    // ISSUE-238: 形成中バーの実 tick 数はリプレイ時計 `to`（=tick_secs）を要る。MP tick-live /
+    //   実時間再生に加え、足内更新そのものが常時この時計を必要とするため real_ticks では常に要求する。
+    const wantSecs = mode === 'real_ticks';
     let url = `/intraday?datasetRef=${encodeURIComponent(datasetRef)}&start=${winStart}&end=${winEnd}&mode=${encodeURIComponent(mode)}`;
     if (wantSecs) url += '&secs=1';
     let resp = {};
@@ -474,10 +499,15 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       return base;   // ティック列だけ先読みできた（それでも 1 往復ぶん速くなる）
     }
     const indices = sampleIndices(prices.length);
-    const formingSeq = formingStatesAt(cd, prices, indices);
+    // ISSUE-238: 各時点へリプレイ現在時刻を添え、足内窓も送る（サーバが実 tick 数を数える）。
+    const formingSeq = formingStatesAt(cd, prices, indices, secs);
+    const { winStart, winEnd } = intrabarWindow({
+      timeframe, cd, prevCandle: candles[idx - 1] || null, nextCandle: candles[idx + 1] || null,
+    });
     const results = await Promise.all(sigInfo.targets.map((t) => seqClient.computeSeq({
       indicatorId: t.indicatorId, variant: t.variant, params: t.params,
       datasetRef, timeframe, limit: idx + 1, untilTime: cd.time, formingSeq,
+      winStart, winEnd,
     }).catch(() => null)));
     const steps = new Map();
     indices.forEach((i, k) => {
@@ -526,21 +556,21 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   let animGen = 0;
   let formingInFlight = false;
   let lastFormingMs = -1e9;
-  function pushFormingMA(forming) {
+  function pushFormingMA(forming, win = null) {
     const nowMs = performance.now();
     if (formingInFlight || (nowMs - lastFormingMs) < FORMING_MIN_INTERVAL_MS) return;
     if (controller.isRecomputing()) return; // 他の再計算中は譲る
     lastFormingMs = nowMs;
     formingInFlight = true;
-    controller.recomputeFormingLatest(forming)
+    controller.recomputeFormingLatest(forming, win)
       .catch(() => { /* 足内 MA 失敗はアニメ継続 */ })
       .finally(() => { formingInFlight = false; });
   }
-  async function settleFormingMA(forming) {
+  async function settleFormingMA(forming, win = null) {
     while (formingInFlight) { await sleepMs(ANIM_MIN_MS); }
     if (controller.isRecomputing()) return;
     formingInFlight = true;
-    try { await controller.recomputeFormingLatest(forming); }
+    try { await controller.recomputeFormingLatest(forming, win); }
     catch (_e) { /* 確定着地の失敗は次フレームの full 再計算が回復 */ }
     finally { formingInFlight = false; lastFormingMs = performance.now(); }
   }
@@ -603,6 +633,42 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       //   使用時点では出来上がっている＝待ち時間が表に出ない。間に合わなければ従来経路へ落ちる。
       prefetchPlan(bar + 1, mode);
       window.__rpForm = { mode, n: prices.length, planned: steps ? steps.size : 0 };
+      // 実時間再生: 足内各点を市場時刻どおりの壁時計位置へ置く（アンカ基準＝sleep 誤差が累積しない）。
+      //   点ごとの時刻 secs を持たないモード／欠損時は足を等分する（realtimeOffsetsMs）。
+      // 足内窓（ISSUE-238 の実 tick 数算出／実時間再生のアンカ基準で共用・算出は 1 回）。
+      let win = null;
+      const formingWindow = () => {
+        if (!win) {
+          win = intrabarWindow({
+            timeframe, cd, prevCandle: candles[bar - 1] || null, nextCandle: candles[bar + 1] || null,
+          });
+        }
+        return win;
+      };
+      let rtOffsets = null;
+      const rtOffsetsOf = () => {
+        if (rtOffsets) return rtOffsets;
+        const { winStart } = formingWindow();
+        rtOffsets = realtimeOffsetsMs({ n: prices.length, secs, winStart, spanMs: rtBarMs() });
+        return rtOffsets;
+      };
+      // 停止再開・途中でのテンポ切替では、再開点 startI が「今」に来るようアンカを巻き戻す。
+      if (realtime() && resume && startI > 0) rtAnchorMs = performance.now() - rtOffsetsOf()[startI];
+      // 1点分の待機。比の速度は従来の固定間隔、実時間再生は次点の到達時刻まで（末尾は待たない
+      //   ＝足終端までの残りはフレーム待機 waitFrame が担う）。停止・supersede・テンポ切替を
+      //   拾えるよう 50ms 刻みで刻む。
+      const stepWait = async (i) => {
+        if (!realtime()) { await sleepMs(stepMs(speed())); return; }
+        const off = rtOffsetsOf();
+        if (i + 1 >= off.length) return;
+        const target = rtAnchorMs + off[i + 1];
+        for (;;) {
+          const remain = target - performance.now();
+          if (remain <= 0) return;
+          if (superseded() || (shouldAbort && shouldAbort()) || !realtime()) return;
+          await sleepMs(Math.min(50, remain));
+        }
+      };
       for (let i = startI; i < prices.length; i++) {
         if (shouldAbort && shouldAbort()) {
           pausedForm = { time: cd.time, prices, secs, o, hi, lo, i };
@@ -620,7 +686,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
             controller.applyFormingStep(step);
           }
         } else {
-          pushFormingMA({ time: cd.time, open: o, high: hi, low: lo, close: p });
+          // ISSUE-238: `to`（リプレイ現在時刻）と足内窓を添える＝サーバが実 tick 数を数える。
+          const state = { time: cd.time, open: o, high: hi, low: lo, close: p };
+          if (secs && secs[i] != null) state.to = Math.floor(secs[i]);
+          pushFormingMA(state, formingWindow());
         }
         // MP tick-live: この tick を DwellAccumulator へ供給し足内成長させる（sec 並走が有るバーのみ＝
         //   real_ticks・MP 有効。secs 空バーは skip＝base 継続）。速度0凍結/supersede の既存制御に追従。
@@ -628,9 +697,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         if (mpOn() && secs && secs[i] != null) {
           mpDriver.onFormingTick(p, secs[i]);
         }
-        while (speed() <= 0 && !superseded() && !(shouldAbort && shouldAbort())) await sleepMs(80); // 速度0=凍結
+        while (paused() && !superseded() && !(shouldAbort && shouldAbort())) await sleepMs(80); // 速度0=凍結
         if (superseded() || (shouldAbort && shouldAbort())) continue;
-        await sleepMs(stepMs(speed())); // 再生速度で減速（毎ステップ読込＝速度変更を即時反映）
+        await stepWait(i); // 再生速度で減速（毎ステップ読込＝速度変更を即時反映）
       }
       pausedForm = null;
       // 足確定: ティック列由来の OHLC で確定（cd.high/low へスナップしない）。
