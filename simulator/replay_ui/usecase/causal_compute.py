@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from simulator.replay_ui.domain.forming_bar import apply as apply_forming
+from common.forming_window import apply_forming, split_prefix_tails
 from simulator.replay_ui.domain.reveal_clock import truncate
 from simulator.replay_ui.usecase.forming_tickvol import forming_tick_counts, with_tick_volume
 
@@ -122,14 +122,13 @@ def causal_compute_seq(
     #   よって「共通の確定プレフィクス」と「時点ごとの末尾差分」に分けて渡し、計算側が窓を
     #   1 回だけ変換できるようにする。値は apply_forming(bars, forming) 全体を渡すのと同値
     #   （同値性は tests/unit/test_causal_compute_seq.py と forming_bar のテストで固定）。
-    prefix = bars[:-1]
     # ISSUE-238: 各時点の実 tick 数を 1 回のティック読込でまとめて数え、volume として載せる。
     #   時点ごとに読み直さない（窓は共通）。不明なら None＝従来どおり載せない。
     counts = _tick_counts_for(seq, window_port, request.win_start, request.win_end)
-    tails = [
-        apply_forming(bars[-1:], with_tick_volume(forming, count))
-        for forming, count in zip(seq, counts)
-    ]
+    # ISSUE-250 Phase 1: prefix/tails 分割は中立共有核 common.forming_window の唯一の定義。
+    prefix, tails = split_prefix_tails(
+        bars, [with_tick_volume(f, c) for f, c in zip(seq, counts)]
+    )
     return compute_port.compute_latest_seq(
         request.indicator, request.variant, prefix, tails, request.params
     )
