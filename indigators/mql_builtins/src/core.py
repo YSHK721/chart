@@ -31,6 +31,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 
@@ -65,33 +67,106 @@ def compute_rsi(price: np.ndarray, *, period: int) -> np.ndarray:
     Raises:
         ValueError: ``period < 2``。
     """
-    if period < 2:
-        raise ValueError(f"period は 2 以上である必要があります: {period}")
+    out, _ = _compute_rsi_core(price, period)
+    return out
 
-    price = np.asarray(price, dtype=np.float64)
-    n = price.shape[0]
-    out = np.zeros(n, dtype=np.float64)  # warm-up 区間は 0（元 iRSI 既定）
-    if n <= period:
-        return out  # 元 RSI.mq5: rates_total<=period -> return 0
 
-    # --- seed（i == period）: 最初の period 本の up/down を単純平均
+# ---------------------------------------------------------------------------
+# 増分計算用の状態授受（ISSUE-249・moving_averages の LwmaState と同じ先例）
+#   漸化式の定義は下の共有部品 :func:`_rsi_seed` / :func:`_rsi_advance` の 1 箇所のみ。
+#   :func:`compute_rsi`（全件）と :func:`compute_rsi_stateful`（状態継続）はどちらもこれを
+#   呼ぶため、二重定義は生じず値は構成上 bit 一致する。
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class RsiState:
+    """Wilder 平滑の継続に必要な最小状態（不変）。
+
+    Attributes:
+        pos: 平滑済み up 平均。
+        neg: 平滑済み down 平均。
+        last_price: 直前バーの価格（次バーの diff に要る）。
+        count: これまでに消費した価格本数（＝次に来るバーの index）。
+    """
+
+    pos: float
+    neg: float
+    last_price: float
+    count: int
+
+
+def _rsi_seed(price: np.ndarray, period: int) -> "tuple[float, float]":
+    """seed（i == period）: 最初の period 本の up/down を単純平均する。"""
     sum_pos = 0.0
     sum_neg = 0.0
     for i in range(1, period + 1):
         diff = price[i] - price[i - 1]
         sum_pos += diff if diff > 0.0 else 0.0
         sum_neg += -diff if diff < 0.0 else 0.0
-    pos = sum_pos / period
-    neg = sum_neg / period
-    out[period] = _rsi_from_pos_neg(pos, neg)
+    return sum_pos / period, sum_neg / period
 
-    # --- main loop（i > period）: Wilder 平滑
-    for i in range(period + 1, n):
-        diff = price[i] - price[i - 1]
-        pos = (pos * (period - 1) + (diff if diff > 0.0 else 0.0)) / period
-        neg = (neg * (period - 1) + (-diff if diff < 0.0 else 0.0)) / period
+
+def _rsi_advance(pos: float, neg: float, diff: float, period: int) -> "tuple[float, float]":
+    """main（i > period）: Wilder 平滑を 1 バーぶん進める。"""
+    pos = (pos * (period - 1) + (diff if diff > 0.0 else 0.0)) / period
+    neg = (neg * (period - 1) + (-diff if diff < 0.0 else 0.0)) / period
+    return pos, neg
+
+
+def _compute_rsi_core(
+    price: np.ndarray, period: int, state: "RsiState | None" = None
+) -> "tuple[np.ndarray, RsiState | None]":
+    """RSI 系列と最終状態を返す唯一の実装（全件・状態継続の共通経路）。
+
+    ``state`` が None なら先頭から seed する（＝従来の全件計算）。``state`` が与えられた
+    ときは ``price`` を「その状態の続き」とみなし、seed を行わず漸化のみを進める。
+    """
+    if period < 2:
+        raise ValueError(f"period は 2 以上である必要があります: {period}")
+
+    price = np.asarray(price, dtype=np.float64)
+    n = price.shape[0]
+    out = np.zeros(n, dtype=np.float64)  # warm-up 区間は 0（元 iRSI 既定）
+
+    if state is None:
+        if n <= period:
+            return out, None  # 元 RSI.mq5: rates_total<=period -> return 0
+        pos, neg = _rsi_seed(price, period)
+        out[period] = _rsi_from_pos_neg(pos, neg)
+        start = period + 1
+        prev = price[period]
+        consumed = period + 1
+    else:
+        if n == 0:
+            return out, state
+        pos, neg, prev, consumed = state.pos, state.neg, state.last_price, state.count
+        start = 0
+
+    for i in range(start, n):
+        pos, neg = _rsi_advance(pos, neg, price[i] - prev, period)
         out[i] = _rsi_from_pos_neg(pos, neg)
-    return out
+        prev = price[i]
+        consumed += 1
+    return out, RsiState(pos=pos, neg=neg, last_price=float(prev), count=consumed)
+
+
+def compute_rsi_stateful(
+    price: np.ndarray, *, period: int, state: "RsiState | None" = None
+) -> "tuple[np.ndarray, RsiState | None]":
+    """RSI 系列と継続用状態を返す（増分計算の入口）。
+
+    ``state=None`` は :func:`compute_rsi` と完全に同じ全件計算（同じ共有部品を通る）。
+    ``state`` を渡すと ``price`` をその続きのバー列として扱い、seed を行わず漸化のみ進める。
+
+    Args:
+        price: 昇順（古→新）の価格系列。``state`` 指定時はその状態の**続き**のバーのみ。
+        period: RSI 期間（>=2）。
+        state: 前回の :class:`RsiState`（None は先頭から）。
+
+    Returns:
+        ``(rsi 配列（入力と同長）, 最終 RsiState)``。seed 未達（``state=None`` かつ
+        ``len(price) <= period``）のときは ``(全 0, None)``。
+    """
+    return _compute_rsi_core(price, period, state)
 
 
 def _rsi_from_pos_neg(pos: float, neg: float) -> float:

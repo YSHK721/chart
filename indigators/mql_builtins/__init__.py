@@ -14,6 +14,8 @@ from __future__ import annotations
 from .src import (  # noqa: F401
     compute_mfi,
     compute_rsi,
+    compute_rsi_stateful,
+    RsiState,
     compute_stochastic,
     compute_wpr,
 )
