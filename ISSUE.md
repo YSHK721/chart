@@ -4210,3 +4210,12 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **設計上の位置づけ**: `serve_live_tick_tails` の docstring 自身が「ここがフロント（`live_tick_player._applyTick`）とずれると描画状態と値が食い違う（ISSUE-232 の失敗モード）」と明記しており、**自モジュールが宣言した不変条件を満たしていない**。`forming_states` は既に `seed` 引数を持つが、呼び出し側が渡していない。
 - **抜本的対策（案・未承認）**: `_handle_live_ticks` が「現在周期の始端以降の tick」をバッファから取り、`since` より前の分を畳んだ `FormingState` を `seed` として `handle_live_tick_tails` へ渡す（`LiveTickBuffer` は直近 30 分を保持するので追加の取得は不要）。これにより各 tick 時点の形成中バーがフロントの `_applyTick` の累積と一致し、`apply_forming` の同値性主張も成立する。
 - **関連**: ISSUE-250（Phase 1 本体）／ISSUE-232（フロントとサーバの形成中バー不一致）。
+
+## ISSUE-252: [不具合・実測再現] `live_tick_watch --stream` がベンダ CSV の不正行でプロセスごと落ちる（2026-08-03）
+- **ステータス**: OPEN（対策未着手・承認待ち）
+- **重大度**: 中（`jp225_tick` の確定足・ロールアップが伸びなくなる。`/live_ticks` のバッファは別経路のため足内再生は継続する）
+- **発生日時（実測）**: 2026-08-03 21:51:02 UTC にログが途切れ、以後プロセス不在。`serve.sh` が起動した watch（`tools/live_tick_watch.py --stream`）が例外で終了している。
+- **例外**: `pandas.errors.ParserError: Error tokenizing data. C error: Expected 6 fields in line 172, saw 8`（当日 tick の全量再取得時）。8 連続失敗 → サーキットブレーカ 600 秒停止 → 復帰後も同一行で再失敗、最終的に未捕捉例外でプロセス終了。
+- **問題の所在**: 不正行は「一過性の取得失敗」ではなく**恒久的な入力破損**であり、リトライ・サーキットブレーカでは復旧しない。にもかかわらず最終的に**プロセスごと落ちる**ため、`serve.sh` は起動しているのに足だけ止まる（外形上は正常に見える）。
+- **抜本的対策（案・未承認）**: (1) 取得段で不正行を検出したら**その日の parquet を温存**して次周期へ進む（既存の「取得 0 件の日は上書きしない」防御と同型の扱いへ寄せる）。(2) 恒久失敗を watch の生存と切り離す（例外でループを抜けない）。(3) 破損を沈黙させないため、状態を `/live_ticks` 等の監視面へ露出する。応急的な再起動ループは対策としない。
+- **影響（本 Issue 発見時の状況）**: ISSUE-250 の実 UI 実測中に判明。実測自体は `/live_ticks` のバッファ（`marketdata.fetch_ticks_since` の in-process ポーリング＝本 watch とは独立）で成立しており、実測結果には影響しない。
