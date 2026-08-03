@@ -542,16 +542,17 @@ test('restore notifies the timeframe observer with the restored timeframe (trade
 // =============================================================================
 // ISSUE-157 クロック駆動設計: coalesce/latest-wins/full 必達/ハング無視のロジック本体は
 //   UpdateScheduler へ抽出した（SOLID 是正 🔴-1・単体テストは tests/update_scheduler.test.js）。
-//   ここでは controller 側に残る配線（requestFormingRecompute/requestFullRecompute の委譲・
-//   runForming/runFull/isBlocked の実体注入）と isRecomputing の時限式を固定する。
-//   実体 recomputeFormingTails は登録指標（INTRABAR_FORMING_IDS）のみを forceTail 差分で回す
+//   ここでは controller 側に残る配線（requestFullRecompute の委譲・runFull/isBlocked の実体注入）と
+//   isRecomputing の時限式を固定する。
+//   ISSUE-250 Phase 1: 足内（forming）要求は scheduler から廃止された。ライブの tick 粒度追従は
+//   /live_ticks 同梱の末尾値（applyFormingTails・同期）へ移り、requestFormingRecompute は無い。
+//   recomputeFormingTails 自体はリプレイ（recomputeFormingLatest）の実体として残る
 //   （登録判定・forceTail 転送はリプレイ側テスト indicator_controller_latest.test.js が固定済み）。
 // =============================================================================
 
-// 委譲配線: requestFormingRecompute → scheduler → recomputeFormingTails、
-//   requestFullRecompute → scheduler → recomputeAllApplied({mode:'full'})、
+// 委譲配線: requestFullRecompute → scheduler → recomputeAllApplied({mode:'full'})、
 //   isBlocked → isRecomputing()（再計算バッチ中は実行しない）。
-test('requestFormingRecompute / requestFullRecompute delegate through the UpdateScheduler wiring', async () => {
+test('requestFullRecompute delegates through the UpdateScheduler wiring', async () => {
   const ctrl = new IndicatorController({
     catalog: { get: () => null },
     compute: {},
@@ -560,19 +561,17 @@ test('requestFormingRecompute / requestFullRecompute delegate through the Update
     document: null,
   });
   const calls = [];
-  ctrl.recomputeFormingTails = async () => { calls.push('forming'); };
   ctrl.recomputeAllApplied = async (opts) => { calls.push(`full:${opts.mode}`); };
-  ctrl.requestFormingRecompute();
-  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(typeof ctrl.requestFormingRecompute, 'undefined', '足内要求の面は残っていない');
   ctrl.requestFullRecompute();
   await new Promise((r) => setTimeout(r, 0));
-  assert.deepEqual(calls, ['forming', 'full:full']);
+  assert.deepEqual(calls, ['full:full']);
   // isBlocked 配線: 再計算バッチ中（isRecomputing=true）は要求を実行しない（フラグ保持）。
   ctrl._recomputeDepth = 1;
   ctrl._recomputeLastStartMs = Date.now();
-  ctrl.requestFormingRecompute();
+  ctrl.requestFullRecompute();
   await new Promise((r) => setTimeout(r, 0));
-  assert.deepEqual(calls, ['forming', 'full:full'], 'isRecomputing 中は scheduler が実行を保留する');
+  assert.deepEqual(calls, ['full:full'], 'isRecomputing 中は scheduler が実行を保留する');
 });
 
 // ISSUE-157: 外部バッチ（_recomputeDepth）がハングで残留しても isRecomputing は時限で開く

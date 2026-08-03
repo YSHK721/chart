@@ -116,12 +116,28 @@ async function fetchFormingBar(fetchImpl, datasetRef, timeframe) {
 // GET /live_ticks?since= で増分 tick を取得する（B方式・ISSUE-049）。応答
 //   {ok, ticks:[[ms,mid],...], serverNowMs}。LiveTickPlayer が clockOffset 維持と再生に使う。
 //   失敗時は null（player は次 poll で回復・巻き戻さない）。
-async function fetchLiveTicks(fetchImpl, since = 0) {
+//
+//   ISSUE-250 Phase 1: tailReq（適用中インスタンスの申告）があれば specs/datasetRef/timeframe/limit を
+//   添える。サーバはこの申告があるときだけ各ティック時点の指標末尾値を tails として同梱する
+//   （申告なし＝従来クエリ＝従来応答 byte 不変）。limit は /compute と同一規約（表示範囲＝窓長）で、
+//   これを付けないとサーバ 1 ステップの費用が全件に比例する。
+async function fetchLiveTicks(fetchImpl, since = 0, tailReq = null) {
   if (typeof fetchImpl !== 'function') {
     return null;
   }
   try {
-    const resp = await fetchImpl(`/live_ticks?since=${encodeURIComponent(since)}`);
+    let url = `/live_ticks?since=${encodeURIComponent(since)}`;
+    if (tailReq && tailReq.specs && tailReq.specs.length) {
+      url += `&specs=${encodeURIComponent(JSON.stringify(tailReq.specs))}`;
+      url += `&datasetRef=${encodeURIComponent(tailReq.datasetRef)}`;
+      if (tailReq.timeframe) {
+        url += `&timeframe=${encodeURIComponent(tailReq.timeframe)}`;
+      }
+      if (tailReq.limit !== undefined && tailReq.limit !== null) {
+        url += `&limit=${encodeURIComponent(tailReq.limit)}`;
+      }
+    }
+    const resp = await fetchImpl(url);
     if (!resp.ok) {
       return null;
     }
@@ -630,15 +646,18 @@ export async function bootstrap({
   const liveTickPlayer = playerActive
     ? new LiveTickPlayer({
         renderer,
-        fetchLiveTicks: (since) => fetchLiveTicks(fetch, since),
+        fetchLiveTicks: (since, tailReq) => fetchLiveTicks(fetch, since, tailReq),
         loadFormingBar: (ref, tf) => fetchFormingBar(fetch, ref, tf),
         datasetRef,
         getTimeframe: () => controller._timeframe,
         setInterval: setIntervalImpl,
         clearInterval: clearIntervalImpl,
-        // tick 粒度の指標末尾追従（統一設計 2026-07-22）: tick 適用のたびに登録オシレーターの
-        //   末尾差分再計算を要求する（coalesce は controller 側＝過負荷にならない）。
-        onFormingUpdate: () => controller.requestFormingRecompute(),
+        // tick 粒度の指標末尾追従（ISSUE-250 Phase 1）: poll で適用中インスタンスを申告し、
+        //   応答に同梱された各ティック時点の末尾値を tick 適用と同一同期ブロックで描く。
+        //   HTTP 往復が tick 路から消えるため「指標更新回数 == ローソク更新回数」が構成上成立する。
+        getComputeSpecs: () => controller.appliedComputeSpecs(),
+        getLimit: () => controller.computeLimit(),
+        applyFormingTails: (tails, barTime) => controller.applyFormingTails(tails, barTime),
         // バー確定駆動の full 再計算（ISSUE-151）: 期間ロールオーバー＝直前バー確定で全指標を
         //   再計算する（リプレイの毎バーその場計算と同一意味論。coalesce/pending は controller 側）。
         onBarClose: () => controller.requestFullRecompute(),

@@ -47,10 +47,20 @@ export class LiveTickPlayer {
     delayMs = DELAY_MS,
     pollMs = POLL_MS,
     playbackMs = PLAYBACK_MS,
-    // tick 粒度の指標末尾追従フック（2026-07-22 統一設計）。tick を形成中バーへ適用するたびに
-    //   呼ぶ（composition root が controller.requestFormingRecompute を注入・coalesce は controller 側）。
-    //   null は従来挙動（価格のみ・後方互換）。
-    onFormingUpdate = null,
+    // ---- 指標末尾値の同梱経路（ISSUE-250 Phase 1）--------------------------------------
+    // 旧設計は tick 適用のたびに /compute へ HTTP 往復を要求していた（onFormingUpdate →
+    //   UpdateScheduler → recomputeFormingTails）。scheduler は in-flight 1 本へ coalesce するため
+    //   「指標更新回数 == ローソク更新回数」が構成上成立しない（ISSUE-157 で確定した「1 往復 1 回」）。
+    //   本経路は poll 時に「適用中インスタンスの申告（specs）」を /live_ticks へ添え、サーバが
+    //   各ティック時点の末尾値を一括算出して同梱する。フロントは tick 適用と**同一同期ブロック**で
+    //   描くため、tick 路から往復が消えて回数一致が構成上の保証になる。
+    //   - getComputeSpecs: () => [{instanceId, indicatorId, variant, params}]（controller が申告）
+    //   - getLimit:        () => number|undefined（/compute と同一の表示範囲＝窓長）
+    //   - applyFormingTails: (tailsMap, barTimeSec) => void（controller が末尾点を描く）
+    //   いずれも null は従来挙動（価格のみ・申告なし＝サーバ応答も従来 byte）。
+    getComputeSpecs = null,
+    getLimit = null,
+    applyFormingTails = null,
     // バー確定フック（ISSUE-151）。tick が新しい期間へロールオーバーした瞬間＝直前バーの確定を
     //   通知する（composition root が controller.requestFullRecompute を注入）。60 秒タイマー
     //   （LiveUpdater）だけに頼ると衝突スキップで確定イベントを取り落とし、非登録指標（帯系）が
@@ -68,11 +78,16 @@ export class LiveTickPlayer {
     this._delayMs = delayMs;
     this._pollMs = pollMs;
     this._playbackMs = playbackMs;
-    this._onFormingUpdate = (typeof onFormingUpdate === 'function') ? onFormingUpdate : null;
+    this._getComputeSpecs = (typeof getComputeSpecs === 'function') ? getComputeSpecs : null;
+    this._getLimit = (typeof getLimit === 'function') ? getLimit : null;
+    this._applyFormingTails = (typeof applyFormingTails === 'function') ? applyFormingTails : null;
     this._onBarClose = (typeof onBarClose === 'function') ? onBarClose : null;
 
     // 再生状態。
-    this._queue = [];         // 未適用 tick [(ms, mid)] 昇順。
+    // 未適用 tick [(ms, mid, tails, tailsTf)] 昇順。tails は当該 tick 時点の指標末尾値
+    //   {instanceId: {系列名: 値}}（未同梱は null）。tailsTf は tails を要求したときの tf
+    //   （poll から適用までの 12 秒間に tf が変わった tails は適用しない）。
+    this._queue = [];
     this._cursor = 0;         // /live_ticks の since カーソル（ms）。
     this._clockOffset = 0;    // serverNowMs - now()（遅延判定をサーバ時計基準に）。
     this._tf = null;          // シード済み tf（getTimeframe 変化で再シード）。
@@ -80,6 +95,7 @@ export class LiveTickPlayer {
     this._bar = null;         // 形成中バー {time(sec), open, high, low, close, volume}。
     this._seeding = false;    // /forming_bar シード await 中フラグ（true の間は自己シードを抑止＝🟡4 保持）。
     this._applied = 0;
+    this._tailsApplied = 0;   // 指標末尾値を適用した tick 数（HUD・回数一致の監視用）。
     this._lastTickMs = 0;
 
     this._pollId = null;
@@ -108,10 +124,24 @@ export class LiveTickPlayer {
   }
 
   // poll: /live_ticks を since カーソル付き取得しキューへ。serverNowMs で clockOffset を維持。
+  //   ISSUE-250 Phase 1: 適用中インスタンスを申告し、各ティック時点の指標末尾値（tails）を
+  //   同梱させる。申告なし（未注入・適用 0 件）は従来クエリ＝従来応答（byte 不変）。
   //   1 回の失敗は握りつぶしてログ化する（次 poll で回復・unhandledRejection を出さない）。
   async _poll() {
     try {
-      const res = await this._fetchLiveTicks(this._cursor);
+      // 申告に用いる tf は「これから tick を積む tf」＝現在の選択足。適用までの 12 秒間に
+      //   足が変わった tails は捨てるため、要求時の tf を控えてキューへ持たせる。
+      const tf = this._getTimeframe();
+      const specs = this._getComputeSpecs ? this._getComputeSpecs() : null;
+      const tailReq = (specs && specs.length)
+        ? {
+          specs,
+          datasetRef: this._datasetRef,
+          timeframe: tf,
+          limit: this._getLimit ? this._getLimit() : undefined,
+        }
+        : null;
+      const res = await this._fetchLiveTicks(this._cursor, tailReq);
       if (!res || res.ok !== true) {
         return;
       }
@@ -120,8 +150,14 @@ export class LiveTickPlayer {
       }
       const ticks = res.ticks || [];
       if (ticks.length) {
-        for (const tk of ticks) {
-          this._queue.push(tk);
+        // tails は ticks と同数・同順（usecase.serve_live_tick_tails.tails_for_ticks の契約）。
+        //   保険として tickMs 一致も確認し、ずれていれば当該 tick の tails を落とす。
+        const tails = Array.isArray(res.tails) ? res.tails : null;
+        for (let i = 0; i < ticks.length; i += 1) {
+          const tk = ticks[i];
+          const entry = tails && tails[i];
+          const values = (entry && entry.tickMs === tk[0]) ? (entry.tails || null) : null;
+          this._queue.push([tk[0], tk[1], values, values ? tf : null]);
         }
         this._cursor = ticks[ticks.length - 1][0];
       }
@@ -141,8 +177,8 @@ export class LiveTickPlayer {
     const serverNow = this._now() + this._clockOffset;
     const playUntil = serverNow - this._delayMs; // この時刻以前の tick を適用してよい。
     while (this._queue.length && this._queue[0][0] <= playUntil) {
-      const [ms, mid] = this._queue.shift();
-      this._applyTick(ms, mid);
+      const [ms, mid, tails, tailsTf] = this._queue.shift();
+      this._applyTick(ms, mid, tails, tailsTf);
     }
   }
 
@@ -196,7 +232,9 @@ export class LiveTickPlayer {
   }
 
   // 1 tick を現在 tf の形成中バーへ適用する。過去期間（履歴＝/candles 済）へは後退させない。
-  _applyTick(ms, mid) {
+  //   tails（当該 tick 時点の指標末尾値）は updateLastCandle と**同一同期ブロック**で適用する
+  //   （ISSUE-250 Phase 1: 価格と指標が同じ tick で同時に動く＝回数一致の構成的保証）。
+  _applyTick(ms, mid, tails = null, tailsTf = null) {
     if (this._tfSec === null) {
       return; // 非対応 tf（1W/1M/未知）→ 何もしない。
     }
@@ -214,10 +252,7 @@ export class LiveTickPlayer {
       }
       this._bar = { time: periodSec, open: mid, high: mid, low: mid, close: mid, volume: 1 };
       this._renderer.updateLastCandle(this._bar);
-      // 指標の末尾点も tick 粒度で追従（統一設計。coalesce は controller 側＝毎 tick 呼んでよい）。
-      if (this._onFormingUpdate) {
-        this._onFormingUpdate();
-      }
+      this._applyTails(tails, tailsTf);
       this._applied += 1;
       this._lastTickMs = ms;
       return;
@@ -239,18 +274,27 @@ export class LiveTickPlayer {
       }
     }
     this._renderer.updateLastCandle(this._bar);
-    // 指標の末尾点も tick 粒度で追従（統一設計。coalesce は controller 側＝毎 tick 呼んでよい）。
-    if (this._onFormingUpdate) {
-      this._onFormingUpdate();
-    }
+    this._applyTails(tails, tailsTf);
     this._applied += 1;
     this._lastTickMs = ms;
+  }
+
+  // 当該 tick 時点の指標末尾値を、直前の updateLastCandle と同一同期ブロックで描く。
+  //   要求時と現在で tf が違う tails は捨てる（12 秒遅延中に足を切り替えた場合＝旧足の値）。
+  //   バー time は形成中バー（描いたばかりのローソク）の time＝価格と指標が必ず同じ点に載る。
+  _applyTails(tails, tailsTf) {
+    if (!this._applyFormingTails || !tails || tailsTf !== this._tf || this._bar === null) {
+      return;
+    }
+    this._applyFormingTails(tails, this._bar.time);
+    this._tailsApplied += 1;
   }
 
   // メトリクス（HUD・監視用）。
   stats() {
     return {
       applied: this._applied,
+      tailsApplied: this._tailsApplied,
       queued: this._queue.length,
       cursor: this._cursor,
       clockOffset: this._clockOffset,

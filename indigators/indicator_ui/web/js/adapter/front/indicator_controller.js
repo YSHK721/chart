@@ -182,9 +182,10 @@ export class IndicatorController {
     this._gate = new RecomputeGate();
     // ISSUE-157（クロック駆動設計）: 指標更新の「要求フラグ＋クロック」駆動は UpdateScheduler へ
     //   委譲する（SOLID 是正 🔴-1・設計意図の詳細は update_scheduler.js 冒頭コメント参照）。
-    //   実体（末尾差分/full 再計算）と外部バッチ述語（isRecomputing・時限式）を依存注入する。
+    //   ISSUE-250 Phase 1: 足内（forming）要求は scheduler から外れた。tick 粒度の末尾値は
+    //   /live_ticks 同梱（applyFormingTails）で同期に描くため、要求→往復→coalesce の経路自体が
+    //   不要になった。scheduler が担うのはバー確定 full 再計算（必達）のみ。
     this._scheduler = new UpdateScheduler({
-      runForming: () => this.recomputeFormingTails(),
       runFull: () => this.recomputeAllApplied({ mode: 'full' }),
       isBlocked: () => this.isRecomputing(),
     });
@@ -243,6 +244,12 @@ export class IndicatorController {
 
   get _timeframeObserver() { return this._tf.observer(); }
 
+  // /compute へ送る表示範囲（直近 N 本）。実体は TimeframeController が持つ単一定義で、
+  //   /live_ticks の末尾値同梱（ISSUE-250 Phase 1）も同じ窓長を使う（窓が違えば値も違う）。
+  computeLimit() {
+    return this._tf.limit();
+  }
+
   // =========================================================================
   // 足内（形成中バー）末尾差分再計算 — ライブ・リプレイ同一設計（2026-07-22 ユーザー裁定）
   //   指標の末尾点は「価格（形成中バー）の更新と同じ粒度」で追従する。全再計算（remove+redraw）
@@ -250,9 +257,11 @@ export class IndicatorController {
   // =========================================================================
 
   // 登録指標（INTRABAR_FORMING_IDS）の末尾点のみを latest 差分で再計算する。
-  //   forceTail=true で混在 kind（line+horizontal_line＝marod 系）でも末尾差分経路へ倒す
-  //   （replay の recomputeFormingLatest と同一機構＝両モードの実体を単一化）。
+  //   forceTail=true で混在 kind（line+horizontal_line＝marod 系）でも末尾差分経路へ倒す。
   //   非登録指標（帯系等）は触らない（因果窓ゆえ足内で動くべき値がない）。
+  //   ISSUE-250 Phase 1: 呼び出し元はリプレイ（recomputeFormingLatest）のみになった。ライブの
+  //   tick 粒度追従は /live_ticks 同梱の末尾値（applyFormingTails）へ移り、HTTP 往復を伴う
+  //   本経路は tick 路から外れた（往復＋coalesce が回数一致を構成上不可能にしていた）。
   async recomputeFormingTails() {
     // ISSUE-156（C）: 登録指標を並列リクエストする（サーバは計算プール化済み＝指標間の
     //   レイテンシが重ならない）。各 recomputeInstance は自身の job.series で独立に描画するため
@@ -266,10 +275,54 @@ export class IndicatorController {
     )));
   }
 
-  // tick 粒度の末尾差分要求（UpdateScheduler へ委譲・ISSUE-157 クロック駆動設計）。
-  //   呼び出し元 API 温存のための薄い委譲（coalesce/latest-wins は scheduler 側）。
-  requestFormingRecompute() {
-    this._scheduler.requestForming();
+  // /live_ticks へ添える「適用中インスタンスの申告」（ISSUE-250 Phase 1）。
+  //   サーバはこの申告から各ティック時点の指標末尾値を一括算出して応答へ同梱する
+  //   （フロントは tick 適用と同一同期ブロックで描く＝tick 路から HTTP 往復が消える）。
+  //   申告対象は足内追従の登録指標（INTRABAR_FORMING_IDS）かつ描画済み（_meta 在席）のみ。
+  //   計算.時間足 override（params.timeframe）を持つインスタンスは除く: 申告経路は
+  //   チャート足の窓で計算するため、別足の指標に別足の値を返せない（黙って別足の値を
+  //   描かない＝バー確定時の full 再計算に委ねる）。
+  //   増分器を持たない指標はサーバ側が明示的に落とす（毎ティック納期に載らないものを
+  //   黙って混ぜない＝ISSUE-233 の教訓）。
+  appliedComputeSpecs() {
+    const specs = [];
+    for (const inst of this._state.applied) {
+      if (!INTRABAR_FORMING_IDS.has(inst.indicatorId) || !this._meta.has(inst.instanceId)) {
+        continue;
+      }
+      const params = this._paramsObject(inst.params);
+      if (params.timeframe && params.timeframe !== 'chart') {
+        continue;
+      }
+      specs.push({
+        instanceId: inst.instanceId,
+        indicatorId: inst.indicatorId,
+        variant: inst.variant || 'default',
+        params,
+      });
+    }
+    return specs;
+  }
+
+  // 同梱された末尾値（{instanceId: {系列名: 値}}）を形成中バーの time へ描く（ISSUE-250 Phase 1）。
+  //   updateSeriesTail は既存系列の末尾 1 点のみを series.update する（過去確定足・
+  //   horizontal_line は不変）。未知系列キー・未描画インスタンスは no-op。
+  //   同期（await なし）＝呼び出し元 LiveTickPlayer の updateLastCandle と同一ブロックで完了する。
+  applyFormingTails(tails, barTime) {
+    if (!tails || !Number.isFinite(barTime) || typeof this._renderer.updateSeriesTail !== 'function') {
+      return;
+    }
+    for (const [instanceId, values] of Object.entries(tails)) {
+      if (!this._meta.has(instanceId) || !values) {
+        continue;
+      }
+      for (const [name, value] of Object.entries(values)) {
+        if (!Number.isFinite(value)) {
+          continue;   // NaN/null（材料不足）は描かない＝直前の点を据え置く。
+        }
+        this._renderer.updateSeriesTail(`${instanceId}::${name}`, [{ time: barTime, value }]);
+      }
+    }
   }
 
   // バー確定時の full 再計算要求（ISSUE-151: 必達・UpdateScheduler へ委譲）。
