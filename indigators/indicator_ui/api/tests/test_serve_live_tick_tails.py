@@ -12,6 +12,7 @@ from usecase.serve_live_tick_tails import (
     forming_states,
     parse_specs,
     period_of,
+    states_for_batch,
     tails_for_ticks,
 )
 
@@ -103,3 +104,43 @@ def test_parse_specs_keeps_valid_and_drops_malformed():
 
 def test_parse_specs_non_list_is_empty():
     assert parse_specs(None) == [] and parse_specs({"a": 1}) == []
+
+
+# =========================================================================== #
+# ISSUE-251: states_for_batch — 増分しか無い呼び出し側が周期の累積を保つ入口
+# =========================================================================== #
+
+def test_states_for_batch_returns_only_the_batch_states():
+    prior = [[60_000, 10.0], [61_000, 12.0]]
+    batch = [[62_000, 11.0], [63_000, 13.0]]
+    states = states_for_batch(prior, batch, 300)
+    assert [s.tick_ms for s in states] == [62_000, 63_000]
+
+
+def test_states_for_batch_keeps_the_accumulation_across_seed_and_prior():
+    seed = {"time": 0, "open": 5.0, "high": 6.0, "low": 4.0, "close": 6.0, "volume": 7}
+    prior = [[60_000, 9.0]]
+    batch = [[61_000, 8.0]]
+    last = states_for_batch(prior, batch, 300, seed=seed)[-1]
+    assert last.open == 5.0                      # 周期の最初（seed 由来）
+    assert last.high == 9.0 and last.low == 4.0  # seed ∪ prior ∪ batch の max/min
+    assert last.volume == 7 + 1 + 1              # seed + prior + batch の tick 数
+    assert last.close == 8.0                     # close は常に当該 tick
+
+
+def test_states_for_batch_drops_a_seed_from_another_period():
+    seed = {"time": -300, "open": 5.0, "high": 6.0, "low": 4.0, "close": 6.0, "volume": 7}
+    last = states_for_batch([], [[61_000, 8.0]], 300, seed=seed)[-1]
+    assert last.open == 8.0 and last.volume == 1
+
+
+def test_states_for_batch_empty_batch_is_empty():
+    assert states_for_batch([[1, 1.0]], [], 300) == []
+
+
+def test_forming_states_accepts_an_injected_period_rule():
+    """1D のセッション日境界（ISSUE-078）は UTC floor で表せないため規則を注入する。"""
+    ticks = [[86_400_000, 10.0], [86_500_000, 11.0]]
+    states = forming_states(ticks, 86_400, period_fn=lambda ms, _s: (ms // 1000) - 100)
+    assert [s.time for s in states] == [86_300, 86_400]   # 注入規則がそのまま周期キーになる
+    assert states[1].open == 11.0                          # 周期が変われば新しいバー

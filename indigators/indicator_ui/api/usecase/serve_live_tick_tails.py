@@ -20,6 +20,11 @@
     ここがフロント（``live_tick_player._applyTick``）とずれると描画状態と値が食い違う
     （ISSUE-232 で実際に起きた失敗モード）。フロントは本規則の結果を受け取るだけにする。
 
+    畳む対象は「周期の全 tick」であって「今回の poll の増分」ではない（ISSUE-251）。増分だけを
+    畳むと 2 回目以降の poll で累積が消える（実測: ローソク volume=40 に対し tickvol 末尾値=2）。
+    増分しか手元に無い呼び出し側は :func:`states_for_batch` を使い、seed（周期始端からの累積）と
+    prior_ticks（seed の被覆終端から増分先頭までの端数）で累積を復元する。
+
 依存方向: 標準ライブラリと注入された協調子のみ。pandas / HTTP / 具象 Store に依存しない。
 """
 
@@ -43,12 +48,21 @@ class FormingState:
 
 
 def period_of(ms: int, tf_sec: int) -> int:
-    """tick 時刻（ms）→ 所属周期の始端 UNIX 秒（フロントの ``_periodOf`` と同一規則）。"""
+    """tick 時刻（ms）→ 所属周期の始端 UNIX 秒（フロントの ``_periodOf`` と同一規則）。
+
+    日中足の UTC floor 規則のみを担う。``1D`` はセッション日境界（ISSUE-078）であり本関数では
+    表せないため、呼び出し側が ``period_fn`` でセッション日の規則を注入する（本モジュールは
+    marketdata に依存しない）。
+    """
     return (int(ms) // 1000 // int(tf_sec)) * int(tf_sec)
 
 
 def forming_states(
-    ticks: "Sequence[Sequence[float]]", tf_sec: int, *, seed: "dict[str, Any] | None" = None
+    ticks: "Sequence[Sequence[float]]",
+    tf_sec: int,
+    *,
+    seed: "dict[str, Any] | None" = None,
+    period_fn: "Callable[[int, int], int] | None" = None,
 ) -> "list[FormingState]":
     """ティック列 → 各時点の形成中バー（**唯一の畳み方**）。
 
@@ -57,6 +71,10 @@ def forming_states(
         tf_sec: 時間足の秒数。
         seed: 直前に確定していた形成中バー（``{"time","open","high","low","close","volume"}``）。
             同一周期なら、そこへ累積する（フロントの ``/forming_bar`` シードと同規約）。
+            **周期の累積はここでしか入らない**: 呼び出し側が増分 tick だけを渡し seed を省くと、
+            各 poll の先頭 tick で open/high/low/volume がリセットされる（ISSUE-251 の不具合）。
+        period_fn: ``(ms, tf_sec) -> 周期キー``。既定は :func:`period_of`（UTC floor）。
+            ``1D`` はセッション日境界（ISSUE-078）のため呼び出し側が注入する。
 
     Returns:
         tick ごとの :class:`FormingState`（入力と同数・同順）。周期が変わった tick では
@@ -64,10 +82,11 @@ def forming_states(
     """
     out: "list[FormingState]" = []
     cur: "dict[str, Any] | None" = dict(seed) if seed else None
+    period = period_fn or period_of
     for entry in ticks:
         ms = int(entry[0])
         mid = float(entry[1])
-        p = period_of(ms, tf_sec)
+        p = period(ms, tf_sec)
         if cur is None or int(cur["time"]) != p:
             cur = {"time": p, "open": mid, "high": mid, "low": mid, "close": mid, "volume": 1}
         else:
@@ -85,6 +104,38 @@ def forming_states(
             volume=int(cur["volume"]), tick_ms=ms,
         ))
     return out
+
+
+def states_for_batch(
+    prior_ticks: "Sequence[Sequence[float]]",
+    ticks: "Sequence[Sequence[float]]",
+    tf_sec: int,
+    *,
+    seed: "dict[str, Any] | None" = None,
+    period_fn: "Callable[[int, int], int] | None" = None,
+) -> "list[FormingState]":
+    """今回の増分 ``ticks`` ぶんの形成中バーを、**周期の累積を保ったまま**返す（ISSUE-251）。
+
+    ``/live_ticks`` は ``since`` 以降の増分しか持たないため、増分だけを畳むと周期の途中で
+    open/high/low/volume がリセットされる。累積は 2 つの材料で復元する:
+
+      seed:        周期始端から ``prior_ticks`` の直前までの形成中バー（ロールアップ方式 forming）。
+      prior_ticks: seed の被覆終端（秒境界）から ``ticks`` 先頭の直前までの tick（端数の埋め）。
+
+    seed の周期が ``ticks`` 先頭の周期と違う場合（周期をまたいだ・材料不足）は seed を捨てる
+    ＝ ``ticks`` 先頭から新しいバーを起こす（誤った周期の値を引き継がない）。
+
+    Returns:
+        ``ticks`` と同数・同順の :class:`FormingState`（``prior_ticks`` ぶんは返さない）。
+    """
+    if not ticks:
+        return []
+    period = period_fn or period_of
+    if seed is not None and int(seed.get("time", -1)) != period(int(ticks[0][0]), tf_sec):
+        seed = None
+    prior = list(prior_ticks or [])
+    states = forming_states(prior + list(ticks), tf_sec, seed=seed, period_fn=period_fn)
+    return states[len(prior):]
 
 
 @dataclass(frozen=True)

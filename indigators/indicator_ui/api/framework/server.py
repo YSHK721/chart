@@ -443,7 +443,10 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         #   フロントは tick 適用と同一同期ブロックで描けるため、tick 路から HTTP 往復が消え
         #   「指標更新回数 == ローソク更新回数」が構成上の保証になる。申告が無ければ従来応答
         #   （byte 不変・後方互換）。
-        tails = handle_live_tick_tails(query, ticks)
+        #   ISSUE-251: 形成中バーは「周期の累積」で組む必要があり、その材料（確定畳み込み＋
+        #   周期内の既適用 tick）は buffer から復元する。buffer を渡さないと増分だけで畳まれ、
+        #   poll のたびに open/high/low/volume がリセットされる。
+        tails = handle_live_tick_tails(query, ticks, buffer=buffer)
         if tails is not None:
             payload["tails"] = tails
         self._send_json(200, payload)
