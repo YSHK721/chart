@@ -105,6 +105,7 @@ except ImportError:  # フォールバック（未登録環境の自己完結起
 from marketdata import dataset  # noqa: E402
 from api_shared import http_contract as _contract  # noqa: E402  (nested_error 単一定義・ISSUE-094 🔵-11)
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
+from adapter.controller.live_tick_tails_controller import handle_live_tick_tails  # noqa: E402
 from adapter.compute.call_binding import requires_dedicated_worker  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
 from market_profile_api.controller.market_profile_controller import handle_market_profile  # noqa: E402
@@ -437,9 +438,15 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         since = int(since_raw) if since_raw.lstrip("-").isdigit() else 0
         buffer = _live_tick_buffer
         ticks = buffer.ticks_since(since) if buffer is not None else []
-        self._send_json(
-            200, {"ok": True, "ticks": ticks, "serverNowMs": int(time.time() * 1000)}
-        )
+        payload = {"ok": True, "ticks": ticks, "serverNowMs": int(time.time() * 1000)}
+        # ISSUE-250 Phase 1: 指標セットの申告があれば、各ティック時点の末尾値を同梱する。
+        #   フロントは tick 適用と同一同期ブロックで描けるため、tick 路から HTTP 往復が消え
+        #   「指標更新回数 == ローソク更新回数」が構成上の保証になる。申告が無ければ従来応答
+        #   （byte 不変・後方互換）。
+        tails = handle_live_tick_tails(query, ticks)
+        if tails is not None:
+            payload["tails"] = tails
+        self._send_json(200, payload)
 
     def _handle_static(self, url_path: str) -> None:
         target = _resolve_static(url_path)
