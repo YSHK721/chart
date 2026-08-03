@@ -59,12 +59,21 @@ def test_returns_none_without_ticks(_port):
     assert ctl.handle_live_tick_tails(_q(), []) is None
 
 
-@pytest.mark.parametrize("tf", ["1W", "1M", "unknown", None])
-def test_returns_none_for_non_fixed_period_timeframe(tf, _port):
+@pytest.mark.parametrize("tf", ["unknown", "", None])
+def test_returns_none_for_unknown_timeframe(tf, _port):
     _port(_Port(_df()))
     q = _q()
     q["timeframe"] = [tf] if tf is not None else []
     assert ctl.handle_live_tick_tails(q, _TICKS) is None
+
+
+# 全時間足が同一経路（tf 分岐なし）。暦周期（1W/1M）も日中足と同じく末尾値を返す。
+@pytest.mark.parametrize("tf", ["1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M"])
+def test_emits_tails_for_every_known_timeframe(tf, _port):
+    _port(_Port(_df(400)))
+    out = ctl.handle_live_tick_tails(_q(timeframe=tf), _TICKS)
+    assert out is not None and len(out) == len(_TICKS)
+    assert [e["tickMs"] for e in out] == [t[0] for t in _TICKS]
 
 
 def test_returns_none_for_malformed_specs_json(_port):

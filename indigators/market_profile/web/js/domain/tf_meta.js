@@ -14,8 +14,16 @@ export const TF_BAR_SEC = Object.freeze({
   '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000,
 });
 
-// 固定周期（floor 可能）tf＝LiveTickPlayer/forming の対応集合（1W/1M はカレンダー周期で対象外。
-//   Python marketdata.tf_meta.is_supported_timeframe と同一集合）。
+// 既知 tf か（台帳 TF_BAR_SEC のキー集合＝Python marketdata.resample.is_known_timeframe と同一）。
+//   ライブ tick 再生・足内更新は**全時間足で同一設計**（ISSUE-253）のため、対応判定はこの 1 つだけ。
+//   バー帰属（どの時刻がどのバーか）はサーバの唯一源が解決して配るので、フロントは
+//   floor 可否・周期秒・暦周期といった tf ごとの区別を持たない。
+export function isKnownTimeframe(tf) {
+  return Object.prototype.hasOwnProperty.call(TF_BAR_SEC, tf);
+}
+
+// 固定周期（floor 可能）tf。**ライブの更新経路では使わない**（使うと tf ごとに設計が割れる）。
+//   残る用途は「単純 floor で窓を切ってよいか」を問う近似計算のみ（MP 成長窓など）。
 export const FLOOR_TFS = Object.freeze(['1m', '5m', '15m', '30m', '1h', '4h', '1D']);
 
 export function isFloorTimeframe(tf) {

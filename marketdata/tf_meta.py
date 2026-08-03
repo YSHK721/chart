@@ -16,8 +16,13 @@ from typing import Any, Optional
 import pandas as pd
 
 from marketdata import dataset_registry
-from marketdata.resample import TF_DESCRIPTORS, TIMEFRAME_RULES
-from marketdata.session_day import session_day_start
+from marketdata.resample import (
+    CALENDAR_LABEL_TFS,
+    TF_DESCRIPTORS,
+    TIMEFRAME_RULES,
+    period_utc_start,
+)
+from marketdata.session_day import session_bar_time, session_day_start, session_period_label
 
 # 形成中バー/tf-period を供給する datasetRef（ティック由来＝ticks parquet を持つ）。値の源は
 # marketdata.dataset_registry の記述子レジストリ（唯一源・ISSUE-094 🟡-9）。定義位置は本モジュール
@@ -60,11 +65,45 @@ def is_supported_timeframe(tf: Any) -> bool:
     return floor_freq(tf) is not None
 
 
-def period_start_unix(now_unix: int, tf: str) -> int:
-    """現在期間の始端 UNIX 秒（ISSUE-078: '1D' はセッション日始端・日中足は UTC floor）。"""
+def bar_time_unix(tf: str, unix_sec: int) -> int:
+    """``unix_sec`` が属する tf バーの **time**（チャート time 規約・UNIX 秒）を返す。
+
+    「この時刻はどのバーに属するか」の**唯一の入口**（全 tf・分岐は本関数の内側だけ）。消費側
+    （ライブ tick 再生・形成中バーの畳み込み・指標末尾値）は tf ごとに規則を持たず本関数を呼ぶ。
+
+    規則そのものは既存の唯一源の**合成**であり、本関数は新しい暦計算を持たない:
+      日中足(1m..4h): UTC floor（resample の左ラベル）
+      1D            : :func:`marketdata.session_day.session_bar_time`（ブローカー暦日ラベルの UTC 深夜）
+      1W/1M         : :func:`marketdata.session_day.session_period_label`（W-FRI/ME・実体は
+                      :func:`marketdata.resample.period_label_naive`）→ ラベル日の UTC 深夜
+
+    ラベル規約はロールアップ（``resample_ohlc_tf``）が書き出すバー time と同一であり、
+    ``/candles`` の足・``/forming_bar`` の形成中バーと必ず同じ点に載る。
+    """
+    unix_sec = int(unix_sec)
+    if tf in CALENDAR_LABEL_TFS:
+        label = session_period_label(tf, unix_sec)          # 'YYYY-MM-DD'（右端ラベル）
+        return int(pd.Timestamp(label).value // 1_000_000_000)
     if tf == "1D":
-        return session_day_start(int(now_unix))
-    start = pd.Timestamp(int(now_unix), unit="s").floor(floor_freq(tf))  # naive UTC
+        return session_bar_time(unix_sec)
+    return period_start_unix(unix_sec, tf)
+
+
+def period_start_unix(now_unix: int, tf: str) -> int:
+    """``now_unix`` が属する期間の **UTC 始端** 秒（``bar_time_unix`` の time とは別物）。
+
+    time（ラベル）は表示・突合の鍵、始端は「その期間の tick 窓の左端」。セッション tf では
+    両者が一致しない（1D のラベルは暦日の UTC 深夜／始端は前日 NY17:00、1W/1M のラベルは
+    期間の右端）。規則源は :mod:`marketdata.session_day` と :func:`marketdata.resample.period_utc_start`。
+    """
+    now_unix = int(now_unix)
+    if tf in CALENDAR_LABEL_TFS:
+        label = session_period_label(tf, now_unix)
+        start = period_utc_start(tf, pd.Timestamp(label))
+        return int(start.value // 1_000_000_000)
+    if tf == "1D":
+        return session_day_start(now_unix)
+    start = pd.Timestamp(now_unix, unit="s").floor(floor_freq(tf))  # naive UTC
     return int(start.value // 1_000_000_000)
 
 

@@ -105,6 +105,7 @@ except ImportError:  # フォールバック（未登録環境の自己完結起
 from marketdata import dataset  # noqa: E402
 from api_shared import http_contract as _contract  # noqa: E402  (nested_error 単一定義・ISSUE-094 🔵-11)
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
+from adapter.controller.live_tick_bars_controller import handle_live_tick_bar_times  # noqa: E402
 from adapter.controller.live_tick_tails_controller import handle_live_tick_tails  # noqa: E402
 from adapter.compute.call_binding import requires_dedicated_worker  # noqa: E402
 from adapter.controller.compute_controller import handle_compute  # noqa: E402
@@ -438,7 +439,13 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         since = int(since_raw) if since_raw.lstrip("-").isdigit() else 0
         buffer = _live_tick_buffer
         ticks = buffer.ticks_since(since) if buffer is not None else []
-        payload = {"ok": True, "ticks": ticks, "serverNowMs": int(time.time() * 1000)}
+        now_ms = int(time.time() * 1000)
+        payload = {"ok": True, "ticks": ticks, "serverNowMs": now_ms}
+        # バー帰属（tick → どのバーに属するか）はサーバの唯一源で解決して配る。フロントに
+        #   周期規則を持たせない＝全時間足（1W/1M 含む）が同一経路・同一更新粒度になる。
+        bars = handle_live_tick_bar_times(query, ticks, now_ms)
+        if bars is not None:
+            payload.update(bars)
         # ISSUE-250 Phase 1: 指標セットの申告があれば、各ティック時点の末尾値を同梱する。
         #   フロントは tick 適用と同一同期ブロックで描けるため、tick 路から HTTP 往復が消え
         #   「指標更新回数 == ローソク更新回数」が構成上の保証になる。申告が無ければ従来応答

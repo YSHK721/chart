@@ -21,7 +21,7 @@ import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
 import { LiveFollowController } from './live_follow_controller.js';
 import { FormingBarUpdater } from './forming_bar_updater.js';
-import { LiveTickPlayer, isPlayerTimeframe } from './live_tick_player.js';
+import { LiveTickPlayer } from './live_tick_player.js';
 import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
@@ -36,7 +36,7 @@ import { mpSupportsTf, mpTfPeriodSrc } from '../../domain/mp_source_capability.j
 import { TfPeriodProfileClient } from './tf_period_profile_client.js';
 import { TfPeriodJitterBuffer } from './tf_period_jitter_buffer.js';
 import { TfPeriodProfileActor } from './tf_period_profile_actor.js';
-import { TF_BAR_SEC } from '../../domain/tf_meta.js';
+import { TF_BAR_SEC, isKnownTimeframe } from '../../domain/tf_meta.js';
 import { TfPeriodTooltip, formatPeriodLabel } from './tf_period_tooltip.js';
 import { MarketProfileActor } from './market_profile_actor.js';
 import { TickvolBandsActor } from './tickvol_bands_actor.js';
@@ -117,24 +117,31 @@ async function fetchFormingBar(fetchImpl, datasetRef, timeframe) {
 //   {ok, ticks:[[ms,mid],...], serverNowMs}。LiveTickPlayer が clockOffset 維持と再生に使う。
 //   失敗時は null（player は次 poll で回復・巻き戻さない）。
 //
-//   ISSUE-250 Phase 1: tailReq（適用中インスタンスの申告）があれば specs/datasetRef/timeframe/limit を
-//   添える。サーバはこの申告があるときだけ各ティック時点の指標末尾値を tails として同梱する
-//   （申告なし＝従来クエリ＝従来応答 byte 不変）。limit は /compute と同一規約（表示範囲＝窓長）で、
-//   これを付けないとサーバ 1 ステップの費用が全件に比例する。
-async function fetchLiveTicks(fetchImpl, since = 0, tailReq = null) {
+//   req（{specs, datasetRef, timeframe, limit}）を添えると、サーバは
+//     - barTimes / nowBarTime: 各 tick の所属バー time（timeframe があれば常に・全時間足で唯一源）
+//     - tails: 各ティック時点の指標末尾値（specs 申告時のみ）
+//   を同梱する。limit は /compute と同一規約（表示範囲＝窓長）で、これを付けないとサーバ 1 ステップの
+//   費用が全件に比例する。req なし＝従来クエリ＝従来応答（byte 不変）。
+async function fetchLiveTicks(fetchImpl, since = 0, req = null) {
   if (typeof fetchImpl !== 'function') {
     return null;
   }
   try {
     let url = `/live_ticks?since=${encodeURIComponent(since)}`;
-    if (tailReq && tailReq.specs && tailReq.specs.length) {
-      url += `&specs=${encodeURIComponent(JSON.stringify(tailReq.specs))}`;
-      url += `&datasetRef=${encodeURIComponent(tailReq.datasetRef)}`;
-      if (tailReq.timeframe) {
-        url += `&timeframe=${encodeURIComponent(tailReq.timeframe)}`;
+    if (req) {
+      // timeframe は常に付ける（各 tick の所属バー time＝barTimes の解決に必要。指標を 1 つも
+      //   適用していなくても要る）。specs があるときだけ指標末尾値（tails）も同梱される。
+      if (req.timeframe) {
+        url += `&timeframe=${encodeURIComponent(req.timeframe)}`;
       }
-      if (tailReq.limit !== undefined && tailReq.limit !== null) {
-        url += `&limit=${encodeURIComponent(tailReq.limit)}`;
+      if (req.datasetRef) {
+        url += `&datasetRef=${encodeURIComponent(req.datasetRef)}`;
+      }
+      if (req.specs && req.specs.length) {
+        url += `&specs=${encodeURIComponent(JSON.stringify(req.specs))}`;
+        if (req.limit !== undefined && req.limit !== null) {
+          url += `&limit=${encodeURIComponent(req.limit)}`;
+        }
       }
     }
     const resp = await fetchImpl(url);
@@ -272,9 +279,8 @@ export async function bootstrap({
   const zpTfOk = () => mpSupportsTf(mpSrc(), controller._timeframe);
   // ISSUE-066: MP パラメータ変更（gear の src/mode 等）を tf-period 列アクターへ即時伝播するフック。
   //   tf-period 配線（mode==='b'）で実体を代入する。未配線（A方式・非served）は no-op（byte 不変）。
-  // tf-period 列を描ける tf（ISSUE-086: 全時間足統一）。player tf（1m..1D）＋バケット tf（1W/1M）。
-  //   isPlayerTimeframe は LiveTickPlayer（tick 再生）の対応判定で別物＝ここでは列描画の判定に使わない。
-  const isTfPeriodTimeframe = (tf) => isPlayerTimeframe(tf) || tf === '1W' || tf === '1M';
+  // tf-period 列を描ける tf（ISSUE-086: 全時間足統一）＝既知 tf のすべて（台帳の 1 判定）。
+  const isTfPeriodTimeframe = (tf) => isKnownTimeframe(tf);
   let refreshTfPeriodNow = () => {};
   let liveGrowTfPeriod = () => {};
   // [統合レイヤ・MP 単一化] 未注入（standalone live）は base MarketProfileActor（無改変）。統合レイヤ注入時のみ
@@ -598,7 +604,10 @@ export async function bootstrap({
   //   （index.html）が served 時のみ呼ぶ。A方式（file://）は null（更新を配線しない）。
   // LiveTickPlayer（12 秒固定遅延の tick 再生）を配線するのは served（B方式）のみ＝価格の唯一の
   //   書き手。このとき旧 2 系統（LiveUpdater / FormingBarUpdater）の価格上書きは 12 秒より古い
-  //   データで巻き戻すため suppressPriceUpdate=true で止める（指標再計算は従来どおり）。
+  //   データで巻き戻すため suppressPriceUpdate=true で止める。
+  //   ISSUE-253: player は**全時間足**を同一経路で扱う（バー帰属はサーバ供給）。かつては
+  //   floor で周期を作っていたため 1W/1M だけ player 非対応で、価格の書き手が tf によって
+  //   入れ替わっていた（更新粒度が時間足で変わる原因）。その tf 依存の配線を廃止する。
   //   file://（A方式）は player 不在＝false で既存挙動 byte 不変。
   const playerActive = (mode === 'b');
 
@@ -632,10 +641,8 @@ export async function bootstrap({
         setInterval: setIntervalImpl,
         clearInterval: clearIntervalImpl,
         intervalMs: formingIntervalMs,
-        // 価格抑止は tf 依存: player が扱う固定周期（1m..1D）は player が唯一の書き手＝抑止する。
-        //   player 非対応の 1W/1M（カレンダー周期）は player が no-op のため、FormingBarUpdater が
-        //   /forming_bar（backend のロールアップ方式で 1W/1M も供給）を描く価格の書き手になる＝抑止しない。
-        suppressPriceUpdate: playerActive ? () => isPlayerTimeframe(controller._timeframe) : false,
+        // 価格の書き手は player ただ 1 つ（全時間足で同一）。tf による切り替えは持たない。
+        suppressPriceUpdate: playerActive,
       })
     : null;
 
@@ -646,7 +653,7 @@ export async function bootstrap({
   const liveTickPlayer = playerActive
     ? new LiveTickPlayer({
         renderer,
-        fetchLiveTicks: (since, tailReq) => fetchLiveTicks(fetch, since, tailReq),
+        fetchLiveTicks: (since, req) => fetchLiveTicks(fetch, since, req),
         loadFormingBar: (ref, tf) => fetchFormingBar(fetch, ref, tf),
         datasetRef,
         getTimeframe: () => controller._timeframe,

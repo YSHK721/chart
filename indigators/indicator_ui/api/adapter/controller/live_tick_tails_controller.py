@@ -19,49 +19,39 @@ import json
 from typing import Any
 
 from adapter.compute import forming_bar as forming_bar_mod
+from marketdata.resample import is_known_timeframe
+from marketdata.tf_meta import bar_time_unix, period_start_unix
 from adapter.compute.indicator_compute_adapter import IndicatorComputeAdapter
 from adapter.compute.latest_dispatch import latest_compute
 from adapter.compute.live_tick_tails import make_tail_at
 from usecase.dataset_port import dataset_port as _dataset_port
-from usecase.serve_live_tick_tails import (
-    parse_specs,
-    period_of,
-    states_for_batch,
-    tails_for_ticks,
-)
-
-#: tf 文字列 → 秒（フロントの TF_BAR_SEC と同じ固定周期のみ対象。1W/1M は非対象）。
-_TF_SEC = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1D": 86400}
+from usecase.serve_live_tick_tails import parse_specs, states_for_batch, tails_for_ticks
 
 
-def _period_fn(tf: str):
-    """tf の周期キー規則（フロント ``live_tick_player._periodOf`` と同一）。
+def _bar_time_fn(tf: str):
+    """``(tick ms) -> バー time`` を tf に束縛して返す。
 
-    ``1D`` はセッション日境界（ISSUE-078・NY17:00 ET 基準）で、UTC floor では表せない。規則源は
-    ``marketdata.session_day``（ロールアップ / ``/forming_bar`` と同一実体）。日中足は UTC floor。
+    規則は :func:`marketdata.tf_meta.bar_time_unix`（全時間足で唯一の入口）に閉じる。ここで
+    tf ごとに規則を分岐させない＝日中足も 1D も 1W/1M も同じ経路・同じ更新粒度になる。
     """
-    if tf != "1D":
-        return None  # 既定（usecase の period_of＝UTC floor）。
-    from marketdata.session_day import session_bar_time
-
-    return lambda ms, _tf_sec: int(session_bar_time(int(ms) // 1000))
+    return lambda ms: int(bar_time_unix(tf, int(ms) // 1000))
 
 
-def _period_seed(ref: str, tf: str, first_ms: int, period_key: int, *, buffer: Any, forming: Any):
-    """増分先頭 tick の直前までの「周期の累積」を ``(seed, prior_ticks)`` で返す（ISSUE-251）。
+def _bar_seed(ref: str, tf: str, first_ms: int, bar_time: int, *, buffer: Any, forming: Any):
+    """増分先頭 tick の直前までの「バーの累積」を ``(seed, prior_ticks)`` で返す（ISSUE-251）。
 
-    材料は 2 系統あり、**周期が一致するほうを使う**:
+    材料は 2 系統あり、**バーが一致するほうを使う**（tf による分岐は無い）:
 
     1. ロールアップ方式 forming（``rollup_forming_bar``＝確定畳み込み base ＋ バッファ tail の O(1)
-       合成・``/forming_bar`` と同一実体＝フロントのシード源）を増分先頭 tick の秒で評価する。
-       これは ``[周期始端, floor秒(first_ms))`` を被覆するので、残る端数
+       合成・``/forming_bar`` と同一実体＝フロントのシード源・全 tf 対応）を増分先頭 tick の秒で
+       評価する。これは ``[バー始端, floor秒(first_ms))`` を被覆するので、残る端数
        ``[floor秒(first_ms), first_ms)`` だけをバッファから補う（同一秒に複数 tick が来るため
        端数を捨てると volume を取りこぼす）。
-    2. 1 の周期が現周期と違うとき（周期境界直後は M1/ロールアップの焼き込みが最大 1 分遅れ、
-       base が前周期のままになる）は seed を捨て、**周期始端以降のバッファ tick を全部畳む**。
-       前周期の値を持ち込まないまま、周期の累積を復元できる（バッファ保持は直近 30 分）。
+    2. 1 のバーが現在のバーと違うとき（バー境界直後は M1/ロールアップの焼き込みが最大 1 分遅れ、
+       base が前バーのままになる）は seed を捨て、**バー始端以降のバッファ tick を全部畳む**。
+       前バーの値を持ち込まないまま、累積を復元できる（バッファ保持は直近 30 分）。
 
-    buffer 未注入（テスト既定・非 served）は ``(None, [])``＝従来どおり増分だけで畳む。
+    buffer 未注入（テスト既定・非 served）は ``(None, [])``＝増分だけで畳む。
     """
     if buffer is None:
         return None, []
@@ -72,12 +62,9 @@ def _period_seed(ref: str, tf: str, first_ms: int, period_key: int, *, buffer: A
     except Exception:  # noqa: BLE001 — seed 取得の失敗で tails 全体を落とさない。
         seed = None
     try:
-        if seed is not None and int(seed.get("time", -1)) == int(period_key):
+        if seed is not None and int(seed.get("time", -1)) == int(bar_time):
             lo_ms = cut_sec * 1000 - 1                      # seed は秒境界まで＝端数のみ補う
         else:
-            # 周期始端は tf_meta（1D はセッション日始端＝ラベルとは別）を唯一源として解決する。
-            from marketdata.tf_meta import period_start_unix
-
             seed = None
             lo_ms = int(period_start_unix(cut_sec, tf)) * 1000 - 1
         prior = [t for t in buffer.ticks_since(lo_ms) if int(t[0]) < first_ms]
@@ -107,7 +94,7 @@ def handle_live_tick_tails(
     ref = (query.get("datasetRef") or [None])[0]
     tf = (query.get("timeframe") or [None])[0]
     limit_raw = (query.get("limit") or [None])[0]
-    if not raw or not ref or tf not in _TF_SEC or not ticks:
+    if not raw or not ref or not is_known_timeframe(tf) or not ticks:
         return None
     try:
         specs = parse_specs(json.loads(raw))
@@ -132,16 +119,16 @@ def handle_live_tick_tails(
         if limit > 0:
             df = df.tail(limit)
 
-    # 形成中バーは「周期の累積」でなければならない（ISSUE-251）。増分だけを畳むと poll ごとに
+    # 「この tick はどのバーに属するか」は tf_meta.bar_time_unix ただ 1 つ（全 tf 同一経路）。
+    #   形成中バーは「バーの累積」でなければならない（ISSUE-251）。増分だけを畳むと poll ごとに
     #   open/high/low/volume がリセットされ、フロントが描いたローソクと値が食い違う。
-    tf_sec = _TF_SEC[tf]
-    period_fn = _period_fn(tf)
+    bar_time_fn = _bar_time_fn(tf)
     first_ms = int(ticks[0][0])
-    period_key = (period_fn or period_of)(first_ms, tf_sec)
-    seed, prior = _period_seed(
-        ref, tf, first_ms, period_key, buffer=buffer, forming=forming or forming_bar_mod
+    seed, prior = _bar_seed(
+        ref, tf, first_ms, bar_time_fn(first_ms),
+        buffer=buffer, forming=forming or forming_bar_mod,
     )
-    states = states_for_batch(prior, ticks, tf_sec, seed=seed, period_fn=period_fn)
+    states = states_for_batch(prior, ticks, bar_time_fn, seed=seed)
     tail_at = make_tail_at(
         df=df, adapter=adapter or IndicatorComputeAdapter(),
         latest_compute=latest_compute, set_last_bar=_set_last_bar,

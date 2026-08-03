@@ -7,26 +7,20 @@
 //
 // 設計: FormingBarUpdater（5 秒・/forming_bar を都度取得して置換）とは別系統。こちらは backend の
 //   LiveTickBuffer（5 秒周期で増分ポーリングし直近 30 分を保持）から /live_ticks で tick 列を増分取得し、
-//   「serverNow-12000 以前の tick」を 100ms 粒度で現在 tf の形成中バーへ累積して価格を滑らかに描く。
+//   「serverNow-12000 以前の tick」を 100ms 粒度で形成中バーへ累積して価格を滑らかに描く。
 //   価格の唯一の書き手にするため、composition root は稼働時に LiveUpdater/FormingBarUpdater へ
 //   suppressPriceUpdate=true を渡す（12 秒より古いデータでの巻き戻しを排除）。
+//
+// **全時間足で同一設計**（ISSUE-253）: 本プレイヤーは「この tick はどのバーに属するか」を
+//   **一切計算しない**。バー time は /live_ticks の応答（barTimes / nowBarTime）としてサーバの
+//   唯一源（marketdata.tf_meta.bar_time_unix）から届き、プレイヤーはそれを比較するだけ。
+//   かつては floor(秒 / tf秒) で周期を再計算しており、暦周期（1W/1M）を表せないため 1W/1M だけが
+//   tick 再生から脱落し、更新粒度が時間足で変わっていた（諸悪の根源＝規則の第 2 定義）。
+//   リプレイが `cd.time`（ローソク自身の time）でバーを識別しているのと同じ設計に揃える。
 //
 // 隔離・注入方針（DOM/ネット/タイマー非依存・FormingBarUpdater と同型の全注入）:
 //   - fetchLiveTicks / loadFormingBar / renderer / getTimeframe / setInterval / clearInterval / now を注入。
 //   - series.update を呼ぶのは ChartRenderer のみ（renderer.updateLastCandle 経由・隔離維持）。
-
-// セッション日境界（ISSUE-078）: 1D の期間・バー time はセッション日（NY17:00 ET 基準）で解決する。
-import { sessionBarTime } from '../../domain/session_day.js';
-
-// 固定周期 tf（floor 可能・1m..1D）と秒長は domain/tf_meta.js（単一情報源・ISSUE-087 🔴-2）を参照。
-import { TF_BAR_SEC, isFloorTimeframe } from '../../domain/tf_meta.js';
-
-// プレイヤー（floor ベースの tick 累積）が扱える固定周期 tf か。1W/1M・未知は false
-//   （＝カレンダー周期でありプレイヤーでは扱えず、/forming_bar ポーリング＝FormingBarUpdater へ委譲する側）。
-//   composition root が「1W/1M のとき FormingBarUpdater を価格の書き手にする」配線判定に用いる。
-export function isPlayerTimeframe(tf) {
-  return isFloorTimeframe(tf);
-}
 
 // 固定遅延（ms）: 実測から poll 間隔 5s + feed 側 lag 最大 5.5s + fetch 最大 1.2s + 余裕 ≒ 12s。
 //   これ未満だと feed のまとめ配信（3.8〜5.5s）で枯渇する（prototype 実測 25 polls）。
@@ -84,14 +78,14 @@ export class LiveTickPlayer {
     this._onBarClose = (typeof onBarClose === 'function') ? onBarClose : null;
 
     // 再生状態。
-    // 未適用 tick [(ms, mid, tails, tailsTf)] 昇順。tails は当該 tick 時点の指標末尾値
-    //   {instanceId: {系列名: 値}}（未同梱は null）。tailsTf は tails を要求したときの tf
-    //   （poll から適用までの 12 秒間に tf が変わった tails は適用しない）。
+    // 未適用 tick [(ms, mid, barTime, tails, tf)] 昇順。barTime は**サーバが返した**当該 tick の
+    //   所属バー time（唯一源）。tails は当該 tick 時点の指標末尾値 {instanceId: {系列名: 値}}
+    //   （未同梱は null）。tf は要求時の時間足（poll から適用までの 12 秒間に足が変われば捨てる）。
     this._queue = [];
     this._cursor = 0;         // /live_ticks の since カーソル（ms）。
     this._clockOffset = 0;    // serverNowMs - now()（遅延判定をサーバ時計基準に）。
     this._tf = null;          // シード済み tf（getTimeframe 変化で再シード）。
-    this._tfSec = null;       // 現 tf の期間秒（非対応 tf は null＝no-op）。
+    this._nowBarTime = null;  // サーバが返した「現在のバー time」（履歴後退ガードの材料）。
     this._bar = null;         // 形成中バー {time(sec), open, high, low, close, volume}。
     this._seeding = false;    // /forming_bar シード await 中フラグ（true の間は自己シードを抑止＝🟡4 保持）。
     this._applied = 0;
@@ -124,40 +118,42 @@ export class LiveTickPlayer {
   }
 
   // poll: /live_ticks を since カーソル付き取得しキューへ。serverNowMs で clockOffset を維持。
-  //   ISSUE-250 Phase 1: 適用中インスタンスを申告し、各ティック時点の指標末尾値（tails）を
-  //   同梱させる。申告なし（未注入・適用 0 件）は従来クエリ＝従来応答（byte 不変）。
+  //   応答には (1) 各 tick の所属バー time（barTimes・全時間足で唯一源）と (2) 適用中インスタンスを
+  //   申告した場合の指標末尾値（tails）が同梱される。どちらもフロントでは再計算しない。
   //   1 回の失敗は握りつぶしてログ化する（次 poll で回復・unhandledRejection を出さない）。
   async _poll() {
     try {
-      // 申告に用いる tf は「これから tick を積む tf」＝現在の選択足。適用までの 12 秒間に
-      //   足が変わった tails は捨てるため、要求時の tf を控えてキューへ持たせる。
+      // 時間足は常に申告する（barTimes の解決に必要＝指標を 1 つも適用していなくても要る）。
+      //   適用までの 12 秒間に足が変わったデータは捨てるため、要求時の tf を控えてキューへ持たせる。
       const tf = this._getTimeframe();
       const specs = this._getComputeSpecs ? this._getComputeSpecs() : null;
-      const tailReq = (specs && specs.length)
-        ? {
-          specs,
-          datasetRef: this._datasetRef,
-          timeframe: tf,
-          limit: this._getLimit ? this._getLimit() : undefined,
-        }
-        : null;
-      const res = await this._fetchLiveTicks(this._cursor, tailReq);
+      const res = await this._fetchLiveTicks(this._cursor, {
+        specs: (specs && specs.length) ? specs : null,
+        datasetRef: this._datasetRef,
+        timeframe: tf,
+        limit: this._getLimit ? this._getLimit() : undefined,
+      });
       if (!res || res.ok !== true) {
         return;
       }
       if (typeof res.serverNowMs === 'number') {
         this._clockOffset = res.serverNowMs - this._now();
       }
+      if (typeof res.nowBarTime === 'number' && tf === this._tf) {
+        this._nowBarTime = res.nowBarTime;
+      }
       const ticks = res.ticks || [];
       if (ticks.length) {
-        // tails は ticks と同数・同順（usecase.serve_live_tick_tails.tails_for_ticks の契約）。
-        //   保険として tickMs 一致も確認し、ずれていれば当該 tick の tails を落とす。
+        // barTimes / tails は ticks と同数・同順（サーバ側 controller の契約）。
+        //   保険として tails は tickMs 一致も確認し、ずれていれば当該 tick の tails を落とす。
+        const barTimes = Array.isArray(res.barTimes) ? res.barTimes : null;
         const tails = Array.isArray(res.tails) ? res.tails : null;
         for (let i = 0; i < ticks.length; i += 1) {
           const tk = ticks[i];
           const entry = tails && tails[i];
           const values = (entry && entry.tickMs === tk[0]) ? (entry.tails || null) : null;
-          this._queue.push([tk[0], tk[1], values, values ? tf : null]);
+          const barTime = barTimes && typeof barTimes[i] === 'number' ? barTimes[i] : null;
+          this._queue.push([tk[0], tk[1], barTime, values, tf]);
         }
         this._cursor = ticks[ticks.length - 1][0];
       }
@@ -168,7 +164,7 @@ export class LiveTickPlayer {
     }
   }
 
-  // playback: tf 変化ならシード → serverNow-DELAY 以前の tick を順に現在 tf の形成中バーへ適用。
+  // playback: tf 変化ならシード → serverNow-DELAY 以前の tick を順に形成中バーへ適用。
   async _playback() {
     const tf = this._getTimeframe();
     if (tf !== this._tf) {
@@ -177,26 +173,22 @@ export class LiveTickPlayer {
     const serverNow = this._now() + this._clockOffset;
     const playUntil = serverNow - this._delayMs; // この時刻以前の tick を適用してよい。
     while (this._queue.length && this._queue[0][0] <= playUntil) {
-      const [ms, mid, tails, tailsTf] = this._queue.shift();
-      this._applyTick(ms, mid, tails, tailsTf);
+      const [ms, mid, barTime, tails, tickTf] = this._queue.shift();
+      this._applyTick(ms, mid, barTime, tails, tickTf);
     }
   }
 
   // tf 切替・起動時のシード: /forming_bar で形成中バーの初期値を取得し、それをベースに以降の tick を累積。
-  //   bar=null（1W/1M・非対応 tf / 期間内ティック無し）または非固定周期 tf は _bar=null＝当該 tf で
-  //   何も描かない（既存挙動維持）。
+  //   **全時間足で同一手順**（/forming_bar はロールアップ方式で 1W/1M も供給する）。bar=null
+  //   （期間内ティック無し等）は _bar=null のまま、以降の tick から自己シードする。
   //   注記: 初回部分バーの高安は、シード（/forming_bar・最大 60 秒粒度の集約）＋ 12 秒遅延の tick で
   //   構成されるため、シード〜適用開始の隙間分だけ粗い近似になりうる（volume も適用 tick 数の近似）。
   async _seed(tf) {
     this._tf = tf;
-    this._tfSec = isFloorTimeframe(tf) ? TF_BAR_SEC[tf] : null;
+    this._nowBarTime = null;   // 新しい足の「現在のバー」は次の poll 応答で確定する。
     // シード確定まで _bar=null かつ _seeding=true に倒す。await（loadFormingBar）中に再入した
-    //   _playback は _seeding=true を見て自己シードせず（🟡4＝「新 tfSec × 旧 bar」誤描画の防止）。
+    //   _playback は _seeding=true を見て自己シードせず（🟡4＝「新足 × 旧 bar」誤描画の防止）。
     this._bar = null;
-    if (this._tfSec === null) {
-      this._seeding = false;
-      return; // 非対応 tf（1W/1M/未知）→ no-op。
-    }
     this._seeding = true;
     let bar = null;
     try {
@@ -220,70 +212,59 @@ export class LiveTickPlayer {
     this._seeding = false;
   }
 
-  // tick 時刻 → 現在 tf の期間キー（バー time）。ISSUE-078: '1D' はセッション日の 1D バー規約
-  //   （セッション日ラベルの UTC 深夜＝backend rollup/forming と同一）。日中足は UTC floor（不変）。
-  //   旧 UTC floor のままだと日曜夜 UTC（月曜セッション）の tick が「過去期間」と誤判定され、
-  //   1D ライブバーが毎日 21:00-24:00 UTC の間フリーズしていた。
-  _periodOf(sec) {
-    if (this._tf === '1D') {
-      return sessionBarTime(sec);
-    }
-    return Math.floor(sec / this._tfSec) * this._tfSec;
-  }
-
-  // 1 tick を現在 tf の形成中バーへ適用する。過去期間（履歴＝/candles 済）へは後退させない。
+  // 1 tick を形成中バーへ適用する（**全時間足で同一経路**）。過去バー（履歴＝/candles 済）へは
+  //   後退させない。バー識別は引数 barTime（サーバの唯一源）だけで行い、ここで時刻から周期を
+  //   計算しない＝日中足・1D・1W/1M の区別がコード上に存在しない。
   //   tails（当該 tick 時点の指標末尾値）は updateLastCandle と**同一同期ブロック**で適用する
   //   （ISSUE-250 Phase 1: 価格と指標が同じ tick で同時に動く＝回数一致の構成的保証）。
-  _applyTick(ms, mid, tails = null, tailsTf = null) {
-    if (this._tfSec === null) {
-      return; // 非対応 tf（1W/1M/未知）→ 何もしない。
+  _applyTick(ms, mid, barTime = null, tails = null, tickTf = null) {
+    if (typeof barTime !== 'number' || tickTf !== this._tf) {
+      return; // バー帰属が未解決 / 足が変わった後に届いた tick → 描かない。
     }
-    const periodSec = this._periodOf(ms / 1000);
     if (this._bar === null) {
-      // 自己シード（参照実装復帰）: /forming_bar seed が null でも、現周期の tick からバーを起こす。
-      //   _seeding 中（seed await 未確定）は抑止（🟡4）。現 live 周期より前の tick は自己シードしない
+      // 自己シード（参照実装復帰）: /forming_bar seed が null でも、現在のバーの tick から起こす。
+      //   _seeding 中（seed await 未確定）は抑止（🟡4）。現在より前のバーの tick は自己シードしない
       //   （/candles 済履歴を後退させない＝既存の後退ガードと同一意図）。確定後は非 null 経路へ移る。
       if (this._seeding) {
         return;
       }
-      const nowPeriod = this._periodOf((this._now() + this._clockOffset) / 1000);
-      if (periodSec < nowPeriod) {
-        return; // 現周期より前 → 履歴側。自己シードしない。
+      if (this._nowBarTime !== null && barTime < this._nowBarTime) {
+        return; // 現在のバーより前 → 履歴側。自己シードしない。
       }
-      this._bar = { time: periodSec, open: mid, high: mid, low: mid, close: mid, volume: 1 };
+      this._bar = { time: barTime, open: mid, high: mid, low: mid, close: mid, volume: 1 };
       this._renderer.updateLastCandle(this._bar);
-      this._applyTails(tails, tailsTf);
+      this._applyTails(tails);
       this._applied += 1;
       this._lastTickMs = ms;
       return;
     }
-    if (periodSec < this._bar.time) {
-      return; // シード期間より前の tick は無視（履歴を後退させない）。
+    if (barTime < this._bar.time) {
+      return; // シード済みバーより前の tick は無視（履歴を後退させない）。
     }
-    if (periodSec === this._bar.time) {
+    if (barTime === this._bar.time) {
       this._bar.high = Math.max(this._bar.high, mid);
       this._bar.low = Math.min(this._bar.low, mid);
       this._bar.close = mid;
       this._bar.volume += 1; // volume は適用 tick 数の近似（シード値＋適用数）。
     } else {
-      // 新しい期間 → 新バー（open=mid）。直前バーはこの瞬間に確定＝バー確定イベントを通知する
+      // 新しいバー（open=mid）。直前バーはこの瞬間に確定＝バー確定イベントを通知する
       //   （ISSUE-151: 全指標の full 再計算をバー確定駆動にする。coalesce/pending は controller 側）。
-      this._bar = { time: periodSec, open: mid, high: mid, low: mid, close: mid, volume: 1 };
+      this._bar = { time: barTime, open: mid, high: mid, low: mid, close: mid, volume: 1 };
       if (this._onBarClose) {
         this._onBarClose();
       }
     }
     this._renderer.updateLastCandle(this._bar);
-    this._applyTails(tails, tailsTf);
+    this._applyTails(tails);
     this._applied += 1;
     this._lastTickMs = ms;
   }
 
   // 当該 tick 時点の指標末尾値を、直前の updateLastCandle と同一同期ブロックで描く。
-  //   要求時と現在で tf が違う tails は捨てる（12 秒遅延中に足を切り替えた場合＝旧足の値）。
   //   バー time は形成中バー（描いたばかりのローソク）の time＝価格と指標が必ず同じ点に載る。
-  _applyTails(tails, tailsTf) {
-    if (!this._applyFormingTails || !tails || tailsTf !== this._tf || this._bar === null) {
+  //   足の切替で無効になった tick は _applyTick 側で既に弾かれている。
+  _applyTails(tails) {
+    if (!this._applyFormingTails || !tails || this._bar === null) {
       return;
     }
     this._applyFormingTails(tails, this._bar.time);
