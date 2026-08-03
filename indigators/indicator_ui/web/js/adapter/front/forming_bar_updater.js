@@ -1,15 +1,16 @@
 // FormingBarUpdater（adapter/front/forming_bar_updater.js）— 最新足（形成中バー）の
 //   ティック由来ライブ更新（served=B方式のみ・既定 5 秒）。
 //
-// 設計: LiveUpdater（60 秒・/candles 全件再取得＋最新点 latest 再計算）とは**別系統**で、最新足を
-//   高頻度に差分反映する。両者の分離の実体は「/candles 再取得(Live) vs /forming_bar(Forming)」「60秒
-//   vs 5秒」であり、指標再計算はどちらも mode:'latest'（重い全件 full 計算ではない）。
-//   /forming_bar?datasetRef=&timeframe= から選択 tf の「現在期間の形成中バー
-//   （mid OHLCV・1 本）」を取得し、(1) renderer.updateLastCandle で価格の最新足を反映し、(2) 指標も
-//   recomputeAllApplied({mode:'latest'}) で最新点をティック由来に再計算する（backend が mode=latest 時に
-//   形成中バーを最新足として末尾追加して計算する）。bar=null（対象外 tf / 期間内ティック無し）は
-//   価格も指標も更新しない（完全 no-op）。指標の重い再計算は確定足の LiveUpdater に委ね、ここは
-//   「最新点（latest）」のみ更新する（頻度分離）。
+// 設計: LiveUpdater（60 秒・/candles 全件再取得）とは**別系統**で、最新足を高頻度に差分反映する。
+//   /forming_bar?datasetRef=&timeframe= から選択 tf の「現在期間の形成中バー（mid OHLCV・1 本）」を
+//   取得し、(1) renderer.updateLastCandle で価格の最新足を反映する（LiveTickPlayer が価格の書き手に
+//   なる固定周期 tf では suppressPriceUpdate で抑止＝実質 1W/1M 専用）、(2) bar.time の前進＝
+//   直前バー確定を検知して full 再計算を要求する（第 2 経路）。bar=null（対象外 tf / 期間内ティック
+//   無し）は完全 no-op。
+//
+// ISSUE-250 Phase 1: 足内の指標末尾更新（旧 recomputeAllApplied({mode:'latest'})→
+//   requestFormingRecompute）は本 updater から廃止した。tick 粒度の末尾値は /live_ticks 同梱へ移り、
+//   LiveTickPlayer が価格更新と同一同期ブロックで描く。
 //
 // 隔離・注入方針（DOM/ネット/タイマー非依存）:
 //   - setInterval / clearInterval / loadFormingBar / getTimeframe は注入（テストでフェイク化）。
@@ -64,9 +65,10 @@ export class FormingBarUpdater {
     this._timerId = null;
   }
 
-  // 1 tick: 再計算中ならスキップ。形成中バーを取得し、(1) 価格の最新足を反映、(2) 指標の最新点を
-  //   ティック由来に再計算する。bar=null（更新材料なし）は完全 no-op。1 tick の失敗（取得/再計算/
-  //   描画）は握りつぶしてログ化する（5 秒周期＝unhandledRejection を毎回出さず、次 tick で回復）。
+  // 1 tick: 再計算中ならスキップ。形成中バーを取得し、(1) 価格の最新足を反映（player 非対応 tf のみ）、
+  //   (2) バー確定（bar.time 前進）を検知して full 再計算を要求する。bar=null（更新材料なし）は
+  //   完全 no-op。1 tick の失敗（取得/描画）は握りつぶしてログ化する（5 秒周期＝
+  //   unhandledRejection を毎回出さず、次 tick で回復）。
   async _tick() {
     try {
       if (this._controller.isRecomputing()) {
@@ -93,12 +95,11 @@ export class FormingBarUpdater {
         this._controller.requestFullRecompute();
       }
       this._lastFormingTime = bar.time;
-      // 指標は登録オシレーターの末尾差分のみ（統一設計 2026-07-22）。従来の
-      //   recomputeAllApplied({mode:'latest'}) は marod 系（horizontal_line 持ち）が末尾差分に
-      //   乗れず 5 秒ごと全再計算＋全再描画へフォールバックしていた。requestFormingRecompute は
-      //   リプレイと同一の forceTail 末尾差分（coalesce 付き）で、全再計算はバー確定時のみになる。
-      //   player 対応 tf では tick 粒度の同フックと重複するが coalesce（latest-wins）で無害。
-      this._controller.requestFormingRecompute();
+      // ISSUE-250 Phase 1: 足内の指標末尾更新要求はここから廃止した。tick 粒度の末尾値は
+      //   /live_ticks へ同梱され LiveTickPlayer が updateLastCandle と同一同期ブロックで描く。
+      //   5 秒周期の独立要求を残すと、tick と無関係な回数の指標更新が混ざり
+      //   「指標更新回数 == ローソク更新回数」が成立しない。本 updater に残る責務は
+      //   (1) 価格の最新足反映（player 非対応 tf のみ）(2) バー確定検知（full 要求・第 2 経路）。
     } catch (err) {
       if (typeof console !== 'undefined' && console.warn) {
         console.warn('FormingBarUpdater: tick 失敗（次 tick で回復）:', err && err.message);

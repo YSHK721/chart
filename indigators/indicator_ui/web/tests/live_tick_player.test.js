@@ -50,10 +50,11 @@ function fakeNow(start = 1_000_000_000) {
 }
 
 function spies({ seedBar = { time: 60, open: 100, high: 100, low: 100, close: 100, volume: 5 }, ticksResponses = [] } = {}) {
-  const calls = { fetchSince: [], loadForming: [], updateLast: [] };
+  const calls = { fetchSince: [], tailReq: [], loadForming: [], updateLast: [] };
   let respIdx = 0;
-  const fetchLiveTicks = async (since) => {
+  const fetchLiveTicks = async (since, tailReq) => {
     calls.fetchSince.push(since);
+    calls.tailReq.push(tailReq ?? null);
     const r = ticksResponses[respIdx] || { ok: true, ticks: [], serverNowMs: 0 };
     respIdx = Math.min(respIdx + 1, ticksResponses.length);
     return r;
@@ -397,4 +398,127 @@ test('onBarClose fires exactly once when a tick rolls into a new period (bar clo
   // 同じ新期間内の続き tick → 追加発火なし
   player._applyTick(80 * 1000, 102);
   assert.equal(closes.length, 1);
+});
+
+// --------------------------------------------------------------------------- #
+// ISSUE-250 Phase 1: 指標末尾値（tails）の同梱・同期適用
+//   poll で適用中インスタンスを申告し、応答に同梱された「各ティック時点の末尾値」を
+//   tick 適用（updateLastCandle）と**同一同期ブロック**で描く。tick 路に HTTP 往復が無いため
+//   「指標更新回数 == ローソク更新回数」が構成上成立する。
+// --------------------------------------------------------------------------- #
+
+// poll のクエリ材料（specs/datasetRef/timeframe/limit）を fetchLiveTicks へ渡す。
+test('poll declares the applied specs with datasetRef/timeframe/limit (tails request)', async () => {
+  const specs = [{ instanceId: 'profit_rsi#1', indicatorId: 'profit_rsi', variant: 'default', params: { length: 14 } }];
+  const sp = spies();
+  const { player, t } = newPlayer({
+    getComputeSpecs: () => specs,
+    getLimit: () => 1386,
+  }, sp, fakeNow(), () => '15m');
+  player.start();
+  await t.tickPoll();
+  assert.deepEqual(sp.calls.tailReq.at(-1), {
+    specs, datasetRef: 'jp225_tick', timeframe: '15m', limit: 1386,
+  });
+});
+
+// 申告が空（指標 0 件・未注入）なら従来クエリのまま＝サーバ応答も従来 byte（後方互換）。
+test('poll sends no tails request when nothing is applied (backward compatible query)', async () => {
+  const sp = spies();
+  const { player, t } = newPlayer({ getComputeSpecs: () => [] }, sp);
+  player.start();
+  await t.tickPoll();
+  assert.equal(sp.calls.tailReq.at(-1), null);
+});
+
+// 回数一致の本体: 適用した tick と同数だけ applyFormingTails が呼ばれ、その時刻は
+//   直前に描いた形成中バーの time と一致する（価格と指標が必ず同じ点に載る）。
+test('every applied tick draws its indicator tails in the same synchronous block', async () => {
+  const t0 = 1_000_000_000;
+  const ticks = [[t0 - 20_000, 200.0], [t0 - 19_000, 201.0], [t0 - 18_000, 202.0]];
+  const tails = ticks.map(([ms], i) => ({ tickMs: ms, tails: { 'profit_rsi#1': { RSI: 50 + i } } }));
+  const order = [];
+  const sp = spies({ seedBar: null, ticksResponses: [{ ok: true, ticks, tails, serverNowMs: t0 }] });
+  sp.renderer = { updateLastCandle: (b) => order.push(['candle', b.time]) };
+  const nowObj = fakeNow(t0);
+  const { player, t } = newPlayer({
+    renderer: sp.renderer,
+    getComputeSpecs: () => [{ instanceId: 'profit_rsi#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
+    applyFormingTails: (map, barTime) => order.push(['tails', barTime, map]),
+  }, sp, nowObj, () => '1m');
+  player.start();
+  await t.tickPoll();
+  await t.tickPlayback();                       // seed（tf 変化）
+  await t.tickPlayback();                       // 12 秒より古い tick を適用
+  const candles = order.filter((o) => o[0] === 'candle');
+  const applied = order.filter((o) => o[0] === 'tails');
+  assert.equal(candles.length, 3, 'ローソク更新は tick 数と同数');
+  assert.equal(applied.length, 3, '指標更新回数 == ローソク更新回数');
+  // 対で交互（candle → tails → candle → tails …）＝同一同期ブロックで描いている。
+  assert.deepEqual(order.map((o) => o[0]), ['candle', 'tails', 'candle', 'tails', 'candle', 'tails']);
+  // 時刻は直前に描いたローソクと同一。
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal(applied[i][1], candles[i][1]);
+  }
+  assert.deepEqual(applied[2][2], { 'profit_rsi#1': { RSI: 52 } });
+  assert.equal(player.stats().tailsApplied, 3);
+});
+
+// tails 非同梱（申告なし・非対応 tf・材料不足でサーバが落とした）は価格だけ描く。
+test('ticks without tails still update the candle (indicator draw is simply skipped)', async () => {
+  const t0 = 1_000_000_000;
+  const sp = spies({ seedBar: null, ticksResponses: [{ ok: true, ticks: [[t0 - 20_000, 200.0]], serverNowMs: t0 }] });
+  let tailCalls = 0;
+  const { player, t } = newPlayer({
+    applyFormingTails: () => { tailCalls += 1; },
+    getComputeSpecs: () => [{ instanceId: 'x#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
+  }, sp, fakeNow(t0), () => '1m');
+  player.start();
+  await t.tickPoll();
+  await t.tickPlayback();
+  await t.tickPlayback();
+  assert.equal(sp.calls.updateLast.length, 1);
+  assert.equal(tailCalls, 0);
+});
+
+// tickMs がずれた tails は当該 tick で捨てる（応答が ticks と対応していない異常時の保険）。
+test('a tails entry whose tickMs does not match its tick is dropped', async () => {
+  const t0 = 1_000_000_000;
+  const ticks = [[t0 - 20_000, 200.0]];
+  const sp = spies({
+    seedBar: null,
+    ticksResponses: [{ ok: true, ticks, tails: [{ tickMs: t0 - 99_999, tails: { 'x#1': { v: 1 } } }], serverNowMs: t0 }],
+  });
+  let tailCalls = 0;
+  const { player, t } = newPlayer({
+    applyFormingTails: () => { tailCalls += 1; },
+    getComputeSpecs: () => [{ instanceId: 'x#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
+  }, sp, fakeNow(t0), () => '1m');
+  player.start();
+  await t.tickPoll();
+  await t.tickPlayback();
+  await t.tickPlayback();
+  assert.equal(sp.calls.updateLast.length, 1);
+  assert.equal(tailCalls, 0);
+});
+
+// 12 秒の遅延中に時間足を切り替えたら、旧足で計算された tails は適用しない（別足の値を描かない）。
+test('queued tails computed for a previous timeframe are discarded after a tf switch', async () => {
+  const t0 = 1_000_000_000;
+  const ticks = [[t0 - 20_000, 200.0]];
+  const tails = [{ tickMs: t0 - 20_000, tails: { 'x#1': { v: 1 } } }];
+  const sp = spies({ seedBar: null, ticksResponses: [{ ok: true, ticks, tails, serverNowMs: t0 }] });
+  let tf = '1m';
+  let tailCalls = 0;
+  const { player, t } = newPlayer({
+    applyFormingTails: () => { tailCalls += 1; },
+    getComputeSpecs: () => [{ instanceId: 'x#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
+  }, sp, fakeNow(t0), () => tf);
+  player.start();
+  await t.tickPoll();                           // 1m で tails を要求・受領
+  tf = '5m';                                    // 適用前に足を切り替える
+  await t.tickPlayback();                       // 新 tf でシード
+  await t.tickPlayback();                       // tick 適用
+  assert.equal(sp.calls.updateLast.length, 1, '価格は新 tf の形成中バーへ適用する');
+  assert.equal(tailCalls, 0, '旧 tf で計算された指標値は描かない');
 });
