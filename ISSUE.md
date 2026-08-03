@@ -4181,3 +4181,32 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **期待値の更新（旧状態を固定していた 2 件）**: `test_profit_rsi_latest.py` の `recurrence` 前提 → `incremental` ／ `test_solid_binding_spec_guards.py` の golden に `("profit_rsi","default"): ("incremental", None, 1)` を追加。
 - **未対応（構造的・別 Issue 候補）**: 残り 13 指標（profit_* 系）は未宣言のまま＝**宣言が無ければ黙って重い経路へ落ちる**構造が残る。ISSUE-233 が撤回した「劣化の不可視化」と同型のため、未宣言指標の可視化（起動時警告 / 一覧化）を別途検討する。
 - **関連**: ISSUE-233（S1〜S5・増分計算の設計と先例）／ISSUE-247（RSI の水準を分位＋POT/GPD へ置換）。
+
+## ISSUE-250: [仕様追加] ライブの指標更新を「1 ティック = 1 更新」にする（依頼者指示 2026-08-03）
+- **ステータス**: RESOLVED（Phase 1・2026-08-03・feature/live-tick-tails-wiring ＋ feature/live-tick-tails-front）
+- **真因**: ライブは tick を形成中バーへ適用するたびに `/compute` へ HTTP 往復して末尾点を取り直していた。`UpdateScheduler` は進行中の試行へ coalesce する（ISSUE-157 の設計）ため、**要求 N 回に対し実行は 1 回**。よって「指標更新回数 == ローソク更新回数」は頻度調整では到達できず、**構成上成立しない**。
+- **対策（往復の除去。間引き・頻度調整は行わない）**:
+  - サーバ: `/live_ticks` が `specs` 申告時のみ、応答の各ティックへその時点の指標末尾値（`tails`）を同梱する（`usecase/serve_live_tick_tails.py` ＋ `adapter/compute/live_tick_tails.py` ＋ `adapter/controller/live_tick_tails_controller.py`）。先読みが可能な根拠はライブの 12 秒表示遅延（`live_tick_player.DELAY_MS`）＝そのままサーバの計算納期バッファ。
+  - フロント: `LiveTickPlayer` が poll で `specs/datasetRef/timeframe/limit` を申告し、同梱された末尾値を `updateLastCandle` と**同一同期ブロック**で `IndicatorController.applyFormingTails` へ渡す。`onFormingUpdate`（HTTP 要求フック）・`requestFormingRecompute`・`UpdateScheduler.requestForming`・`FormingBarUpdater` の足内要求はすべて廃止（`full` は温存）。
+- **検証（実 UI・8000・15m・実 HTTP・実 jp225_tick ライブ tick）**: 統合 UI（router 8000 → live core 8001）で 15m 表示・適用指標 3 件（moving_averages / btlm_trail / tickvol＝計 13 系列）。`ChartRenderer.updateLastCandle` と `IndicatorController.applyFormingTails` を実インスタンスの経路で計数（統合 UI の controller は `/replay/js/.../indicator_controller.js` 由来＝別モジュール実体である点に注意）。
+  | 指標 | 実測 |
+  |---|---|
+  | ローソク更新回数 | **10** |
+  | 指標更新回数 | **10**（完全一致） |
+  | 呼び出し順序 | `CTCTCTCTCTCTCTCTCTCT`＝**厳密に C→T の対**（同一同期ブロック） |
+  | 末尾点の time とローソク time の不一致 | **0 件** |
+  | `updateSeriesTail` 呼び出し | 130 回（13 系列 × 10 tick）。**全 130 回が `applyFormingTails` 内部**・外部経路 0 |
+  | full 再計算 | 0（観測窓内にバー確定なし） |
+- **副作用（意図的）**: 増分器を持たない指標（`profit_mfi` / `profit_stc` 等）はサーバ側が明示的に落とすため足内では動かず、バー確定 full でのみ更新される。1W/1M（`LiveTickPlayer` 非対応の暦周期）は足内の指標更新が無くなる。
+- **関連**: ISSUE-157（クロック駆動・1 往復 1 回）／ISSUE-233・ISSUE-249（真の増分計算）／ISSUE-251（本 Phase 1 で判明した形成中バーの累積欠落）。
+
+## ISSUE-251: [不具合・実測再現] `/live_ticks` の `tails` が「周期の累積」でなく「poll 増分だけ」で形成中バーを組む（2026-08-03）
+- **ステータス**: OPEN（対策未着手・承認待ち）
+- **重大度**: 中（close 依存の指標は正しい。high/low/open/volume 依存の指標が誤る）
+- **発生条件**: 常時（周期の 2 回目以降の poll すべて）。
+- **概要**: `framework/server.py::_handle_live_ticks` は `buffer.ticks_since(since)`（**increment のみ**）を `handle_live_tick_tails` へ渡し、そこから `usecase.serve_live_tick_tails.forming_states(ticks, tf_sec)` を `seed` 無しで呼ぶ。`forming_states` は先頭 tick で新しい形成中バーを起こすため、**poll のたびに周期内の累積（open / high / low / volume）がリセット**される。`close` だけは常にその tick の mid なので一致する。
+- **実測（実モジュール・2026-08-03）**: 同一周期の 10 tick を「一括」と「後半 5 tick のみ」で畳むと `volume 10 → 5`・`open 63400 → 63405`（`close` は一致）。
+- **実 UI 実測（8000・15m・22:30 UTC）**: ローソクの `volume=40`（フロントが周期内で累積した tick 数）に対し、同一 tick の `tickvol` 末尾値は **2**（当該 poll 増分の tick 数）。`tickvol` は「形成中バーの tick 数」そのものなので、表示が 1/20 に潰れている。
+- **設計上の位置づけ**: `serve_live_tick_tails` の docstring 自身が「ここがフロント（`live_tick_player._applyTick`）とずれると描画状態と値が食い違う（ISSUE-232 の失敗モード）」と明記しており、**自モジュールが宣言した不変条件を満たしていない**。`forming_states` は既に `seed` 引数を持つが、呼び出し側が渡していない。
+- **抜本的対策（案・未承認）**: `_handle_live_ticks` が「現在周期の始端以降の tick」をバッファから取り、`since` より前の分を畳んだ `FormingState` を `seed` として `handle_live_tick_tails` へ渡す（`LiveTickBuffer` は直近 30 分を保持するので追加の取得は不要）。これにより各 tick 時点の形成中バーがフロントの `_applyTick` の累積と一致し、`apply_forming` の同値性主張も成立する。
+- **関連**: ISSUE-250（Phase 1 本体）／ISSUE-232（フロントとサーバの形成中バー不一致）。
