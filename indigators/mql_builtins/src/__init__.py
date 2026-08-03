@@ -22,12 +22,16 @@ from __future__ import annotations
 from .core import (
     compute_mfi,
     compute_rsi,
+    compute_rsi_stateful,
+    RsiState,
     compute_stochastic,
     compute_wpr,
 )
 
 __all__ = [
     "compute_rsi",
+    "compute_rsi_stateful",
+    "RsiState",
     "compute_mfi",
     "compute_wpr",
     "compute_stochastic",
