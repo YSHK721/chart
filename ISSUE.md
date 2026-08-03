@@ -4155,3 +4155,29 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **限界（明示）**: (1) 接触・反応は zp の原子と同じ**分足 close** で測る（ヒゲ由来の接触は検出しない）。ただし本物・対照に同一規則を適用するため**群間比較にバイアスは生じない**（検出力のみ低下）。(2) ISSUE-061 の偽水準 B（Null B サロゲート）は未実装。整合偽水準が幾何交絡を直接除去し、かつ支持証拠が 1 件も出ないため結論は変わらない。(3) 対象は JP225 単一銘柄。
 - **成果物**: `indigators/market_profile/analysis/out/sr_study.json`（全数値）・`out/sr_report.html`（図 1〜5）・`out/sr_run.log`。
 - **関連**: ISSUE-061（Step9・主検定）／ISSUE-062（zp を既定 src へ昇格）。zp の用途は「意識された壁の可視化」ではなく「受容された価格帯の可視化」として解釈すべき。
+
+## ISSUE-249: [仕様追加] RSI の `latest` を真の増分計算にする（依頼者指示 2026-08-03）
+- **ステータス**: RESOLVED（2026-08-03・feature/rsi-latest-incremental）
+- **発生日**: 2026-08-03（依頼者指摘「RSI は真の増分ではないのか」）
+- **概要**: ISSUE-233 の抜本的解決（`latest` を真の増分計算にする）は、当時リプレイを遅くしていた 7 指標構成（`moving_averages` / `btlm_trail` / `btlm_trail_marod` / `ma_marod` / `tickvol`）だけに適用されていた。`profit_rsi` は `latest_meta` 未宣言で安全既定 `("recurrence", None, 1)` に落ち、**末尾 1 点のために窓全体を再計算**していた（真因が既定経路として残存）。
+- **実測（着手前・1386 本）**: `build_rsi` 合計 **152.8ms**。内訳は core 1.68ms ＋ **levels 152.3ms（100%）**。真のボトルネックは RSI 本体でなく水準（因果ローリング分位＋POT/GPD）だった。
+- **対策（同一設計への統一・計算式は 1 行も写さない）**:
+  - `mql_builtins/src/core.py` に `RsiState` ＋ `compute_rsi_stateful` を**追加**。Wilder 漸化式は共有部品 `_rsi_seed` / `_rsi_advance` の **1 箇所のみ**に集約し、既存 `compute_rsi` をそこへ委譲（`moving_averages` の `LwmaState` と同じ先例・二重定義なし）。
+  - `incremental/profit_rsi.py`（新規）: `prepare` / `build` / `adapt` / `emit` の 4 面。計算はすべて既存の公開 1 バー入口へ委譲 — `compute_rsi_stateful` / `common.marod_bands.causal_stat_latest` / `levels.excess_fraction` / `levels.headroom` / `levels.step_excess_event` / `levels.levels_latest`。
+  - 登録は `_FACTORIES` 1 行 ＋ `call_binding` の `latest_meta` 宣言 1 行（`latest_dispatch` / `incremental_state` は無改変＝OCP）。
+- **途中で犯した誤りと是正（2 件）**:
+  1. **時刻規約を自前で決めた**。`resolve_times` の datetime64 を int64 へ直接キャストしてマイクロ秒を出し、参照実装（UNIX 秒）と不一致。値は一致していたため見落としやすかった。→ `fake_chart._to_unix_seconds`（§6.3.2 time=UNIX 秒）へ委譲。
+  2. **全 n 点の時刻を毎回 Python ループで変換**しており、1 ステップが窓長に比例していた（1386 本で 5.4ms＝通過条件 5ms 超過）。→ 末尾 K 点だけ遅延変換。あわせて POT 観測列を `max(k_events, _MIN_EVENTS)` 件へ有界化（`levels_at` は直近 `k_events` 件しか読まず `m` は最小件数判定にしか使わないため**値は構成上不変**）。
+- **結果（通過条件 = `full` と完全一致 かつ 1 ステップ < 5ms）**:
+  | 本数 | max_dev | time 一致 | full → latest | 倍率 | <5ms |
+  |---|---|---|---|---|---|
+  | 400 | 0.0 | ✅ | 37.2 → 0.869ms | 43x | OK |
+  | 800 | 0.0 | ✅ | 86.7 → 2.246ms | 39x | OK |
+  | **1386（運用窓）** | **0.0** | ✅ | **184.0 → 3.740ms** | **49x** | **OK** |
+  | 5000 | 0.0 | ✅ | — → 6.100ms | — | NG |
+  - RSI 本体単体は 0.894ms → **0.0020ms（450x）**。
+- **残る線形成分（対象外・全増分器共通）**: `prepare` が毎回 `_extract_ohlc`（pandas → numpy ×4）と `applied_price` を全長に走らせるため約 1.2µs/本 で伸びる。運用窓では基準内のため本 Issue のスコープ外とした（5000 本で 6.1ms）。
+- **検証**: `tests/latest/test_profit_rsi_incremental.py` **30 件**（宣言 / full 完全一致 15 条件 / 足内非破壊 / バー前進 20 本 / 窓縮小・再伸長 / 左端シフト / seed 未達フォールバック / 状態キャッシュ再利用）。回帰は `indicator_ui/api` **684**・`mql_builtins` **18**・`profit_rsi` **54** 全通過。
+- **期待値の更新（旧状態を固定していた 2 件）**: `test_profit_rsi_latest.py` の `recurrence` 前提 → `incremental` ／ `test_solid_binding_spec_guards.py` の golden に `("profit_rsi","default"): ("incremental", None, 1)` を追加。
+- **未対応（構造的・別 Issue 候補）**: 残り 13 指標（profit_* 系）は未宣言のまま＝**宣言が無ければ黙って重い経路へ落ちる**構造が残る。ISSUE-233 が撤回した「劣化の不可視化」と同型のため、未宣言指標の可視化（起動時警告 / 一覧化）を別途検討する。
+- **関連**: ISSUE-233（S1〜S5・増分計算の設計と先例）／ISSUE-247（RSI の水準を分位＋POT/GPD へ置換）。
