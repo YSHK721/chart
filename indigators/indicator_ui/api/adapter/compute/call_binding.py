@@ -511,6 +511,10 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("profit_rsi", "default"): {
         "loader": lambda: _load_callable("profit_rsi", "add_rsi"),
         "output_kind": "line", "kind": "kw",
+        # ISSUE-249: 真の増分計算（状態器 "profit_rsi"）。従来は未宣言＝安全既定
+        #   ("recurrence", None, 1) に落ち、末尾 1 点のために窓全体を再計算していた
+        #   （実測 1386 本で 152.8ms・うち水準 152.3ms）。
+        "latest_meta": lambda params: ("incremental", None, 1, "profit_rsi"),
         "params_defaults": {
             "rsi_period": 6,
             "apply": 5,

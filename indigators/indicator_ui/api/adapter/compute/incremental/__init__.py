@@ -37,6 +37,12 @@ def _btlm_trail_marod() -> Any:
     return MarodIncrementer(_TrendLineBaseline(), "btlm_trail_marod")
 
 
+def _profit_rsi() -> Any:
+    from adapter.compute.incremental.profit_rsi import ProfitRsiIncrementer
+
+    return ProfitRsiIncrementer()
+
+
 def _tickvol() -> Any:
     from adapter.compute.incremental.tickvol import TickvolIncrementer
 
@@ -50,6 +56,7 @@ _FACTORIES: dict[str, Callable[[], Any]] = {
     "ma_marod": _ma_marod,
     "btlm_trail_marod": _btlm_trail_marod,
     "tickvol": _tickvol,
+    "profit_rsi": _profit_rsi,
 }
 
 _INSTANCES: dict[str, Any] = {}

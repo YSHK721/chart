@@ -36,6 +36,9 @@ _LATEST_GOLDEN_EMPTY_PARAMS = {
     # tickvol は外れ値水準が確定イベント全体に依存し有限 tail を取れない（必要履歴長がデータ
     #   依存）。ISSUE-233 と同じ真因なので同じ解＝増分計算を宣言する（min_window/K は同型）。
     ("tickvol", "default"): ("incremental", None, 1),
+    # ISSUE-249: profit_rsi も増分計算へ移行（Wilder 平滑・因果分位窓・POT エピソードを
+    #   状態として保持する。min_window/K は不変）。
+    ("profit_rsi", "default"): ("incremental", None, 1),
 }
 
 

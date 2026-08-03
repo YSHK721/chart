@@ -94,12 +94,14 @@ def test_series_kinds_are_all_line():
         assert {"rsi_evq_ext_hi", "rsi_evq_ext_lo", "rsi_gpd_hi", "rsi_gpd_lo"} <= names
 
 
-def test_meta_resolves_to_safe_default_recurrence_full_k1():
-    # 未登録 → 安全既定 recurrence/full/K=1（Wilder RSI＋観測累積の水準で full 必須・正しい）。
+def test_meta_resolves_to_incremental_k1():
+    # ISSUE-249: 真の増分計算へ登録済み（旧: 未登録＝安全既定 recurrence）。
+    #   Wilder 平滑・因果分位窓・POT エピソードをすべて状態として保持し 1 点だけ進める。
     meta = latest_meta(_COMPUTE_ID, "default", _params())
-    assert meta.archetype == "recurrence"  # 安全既定（明示登録なし・full フォールバック）
+    assert meta.archetype == "incremental"
     assert meta.min_window is None
     assert meta.trailing_k == 1
+    assert meta.incremental == "profit_rsi"
 
 
 # =========================================================================== #
