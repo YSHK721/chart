@@ -17,13 +17,43 @@
 //   DOM 不在（SSR/テスト）は no-op。
 
 import { installDocumentCloseHandler, removeDocumentCloseHandler } from './menu_document_close.js';
+import { TF_CODES } from '../../domain/tf_meta.js';
 
-// 既定の時間足メニュー（present＝バックエンド対応 9 足）。サーバ TIMEFRAME_RULES と一致させる。
-const DEFAULT_GROUPS = [
-  { cat: '分', items: [['1m', '1分'], ['5m', '5分'], ['15m', '15分'], ['30m', '30分']] },
-  { cat: '時間', items: [['1h', '1時間'], ['4h', '4時間']] },
-  { cat: '日', items: [['1D', '日'], ['1W', '週'], ['1M', '月']] },
-];
+// 時間足コード → 日本語ラベル。**表示名だけ**を持つ（どの足が存在するかは持たない）。
+//   ISSUE-254: かつては既定メニューが時間足の集合そのものを直書きしており、台帳へ足を足しても
+//   メニューに出ない（＝どこを直せばよいか分からない）状態だった。集合と順序は台帳
+//   （domain/tf_meta.js の TF_CODES＝Python 台帳の生成物）を唯一源にし、ここはラベルだけにする。
+//   台帳に足が増えてラベル未定義になった場合は、コード自体をラベルとして必ず表示する
+//   （黙って落とさない）。網羅は timeframe_menu.test.js が固定する。
+const TF_LABELS = {
+  '1m': '1分', '5m': '5分', '15m': '15分', '30m': '30分',
+  '1h': '1時間', '4h': '4時間',
+  '1D': '日', '1W': '週', '1M': '月',
+};
+
+// 時間足コード → カテゴリ見出し（表示のグルーピングのみ）。
+const TF_CATEGORY = {
+  '1m': '分', '5m': '分', '15m': '分', '30m': '分',
+  '1h': '時間', '4h': '時間',
+  '1D': '日', '1W': '日', '1M': '日',
+};
+
+// 既定の時間足メニュー＝**台帳の全時間足**をカテゴリ順に並べたもの（値の直書きなし）。
+function groupsFromLedger(codes = TF_CODES) {
+  const groups = [];
+  for (const code of codes) {
+    const cat = TF_CATEGORY[code] ?? 'その他';
+    let g = groups.find((x) => x.cat === cat);
+    if (!g) {
+      g = { cat, items: [] };
+      groups.push(g);
+    }
+    g.items.push([code, TF_LABELS[code] ?? code]);
+  }
+  return groups;
+}
+
+const DEFAULT_GROUPS = groupsFromLedger();
 
 // 時間足キー → 表示ラベル（'1m'→'1分'・'1D'→'日'）の写像を groups から導出する。
 //   ラベルの単一情報源は本モジュールの groups 定義（既定＝present 9 足）であり、利用側は

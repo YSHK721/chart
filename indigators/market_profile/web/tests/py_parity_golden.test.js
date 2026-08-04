@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import {
   sessionDayStart, nextSessionDayStart, sessionDateLabel, sessionBarTime,
 } from '../js/domain/session_day.js';
-import { TF_BAR_SEC } from '../js/domain/tf_meta.js';
+import { TF_BAR_SEC, TF_CODES, FLOOR_TFS, CALENDAR_TFS } from '../js/domain/tf_meta.js';
 import { valueArea } from '../js/domain/market_profile_dwell_accumulator.js';
 
 const golden = JSON.parse(
@@ -33,6 +33,36 @@ test('session_day.js は Python 実装と全境界ケースで一致する（DST
 
 test('tf_meta.js の TF_BAR_SEC は Python marketdata.tf_meta と一致する', () => {
   assert.deepEqual({ ...TF_BAR_SEC }, golden.tf_bar_sec);
+});
+
+// ISSUE-254: 値（barSec）だけでなく**派生属性**（floorable / calendar）まで一致させる。
+//   派生属性は検定の対象外だったため JS 側の手書き配列が静かにずれ、ライブの更新粒度が
+//   時間足で割れた（ISSUE-253）。判断に使う属性を残らず固定する。
+test('tf_meta.js の派生属性（floorable/calendar）と順序は Python 台帳と一致する', () => {
+  assert.ok(Array.isArray(golden.tf_ledger) && golden.tf_ledger.length > 0, 'fixture に台帳がある');
+  assert.deepEqual([...TF_CODES], golden.tf_ledger.map((d) => d.code), '時間足コードと順序');
+  assert.deepEqual(
+    [...FLOOR_TFS],
+    golden.tf_ledger.filter((d) => d.floorable).map((d) => d.code),
+    'floorable（ここがずれると更新経路が時間足で割れる）',
+  );
+  assert.deepEqual(
+    [...CALENDAR_TFS],
+    golden.tf_ledger.filter((d) => d.calendar).map((d) => d.code),
+    'calendar（セッション日集計の対象）',
+  );
+});
+
+// 生成物が手で編集されていない／再生成漏れが無いことの検出。tf_meta.js は生成台帳からの
+//   導出しか行わないため、導出結果が fixture と一致すれば生成物も一致している。
+test('tf_ledger_generated.js は fixture と同一の台帳（手編集・再生成漏れの検出）', () => {
+  const derived = TF_CODES.map((code) => ({
+    code,
+    barSec: TF_BAR_SEC[code],
+    floorable: FLOOR_TFS.includes(code),
+    calendar: CALENDAR_TFS.includes(code),
+  }));
+  assert.deepEqual(derived, golden.tf_ledger);
 });
 
 test('valueArea は Python _value_area と一致する（整数 TPO・float z の両系）', () => {

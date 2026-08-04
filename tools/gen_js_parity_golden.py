@@ -22,11 +22,14 @@ sys.path.insert(0, str(ROOT / "indigators" / "market_profile" / "api"))
 import numpy as np  # noqa: E402
 
 from marketdata import session_day as sd  # noqa: E402
+from marketdata import resample  # noqa: E402
 from marketdata import tf_meta  # noqa: E402
 # ISSUE-091 A7: private 名でなく公開 API（value_area）を参照する。
 from market_profile_api.compute.market_profile import value_area  # noqa: E402
 
 OUT = ROOT / "indigators" / "market_profile" / "web" / "tests" / "fixtures" / "py_parity_golden.json"
+#: 時間足台帳の JS 生成物（実体は market_profile 側・indicator_ui からは symlink で共有）。
+JS_OUT = ROOT / "indigators" / "market_profile" / "web" / "js" / "domain" / "tf_ledger_generated.js"
 
 
 def _utc(y, m, d, hh=0, mm=0, ss=0):
@@ -75,6 +78,52 @@ def value_area_cases() -> list[dict]:
     return out
 
 
+def tf_ledger() -> "list[dict]":
+    """時間足台帳（唯一の定義＝marketdata.resample.TF_DESCRIPTORS + tf_meta.TF_BAR_SEC）。
+
+    JS へ配るのは**派生属性まで含めた全体**にする。値（barSec）だけを同期して派生属性
+    （floorable / calendar）を JS 側で書き直していたため、``floorable`` の写しがずれて
+    ライブの更新粒度が時間足で割れた（ISSUE-253）。判断に使う属性を残らず配る。
+    """
+    return [
+        {
+            "code": code,
+            "barSec": int(tf_meta.TF_BAR_SEC[code]),
+            "floorable": bool(d.floorable),
+            "calendar": bool(d.calendar),
+        }
+        for code, d in resample.TF_DESCRIPTORS.items()
+    ]
+
+
+def render_tf_ledger_js(rows: "list[dict]") -> str:
+    """時間足台帳の JS モジュール（データのみ・自動生成）を組み立てる。"""
+    entries = ",\n".join(
+        "  {{ code: '{code}', barSec: {barSec}, floorable: {floorable}, calendar: {calendar} }}".format(
+            code=r["code"], barSec=r["barSec"],
+            floorable=str(r["floorable"]).lower(), calendar=str(r["calendar"]).lower(),
+        )
+        for r in rows
+    )
+    return (
+        "// tf_ledger_generated.js — 時間足台帳（**自動生成・手で編集しない**）。\n"
+        "//\n"
+        "// 生成元: marketdata/resample.py の TF_DESCRIPTORS ＋ marketdata/tf_meta.py の TF_BAR_SEC。\n"
+        "// 生成器: tools/gen_js_parity_golden.py（規則変更時に再実行する）。\n"
+        "//\n"
+        "// なぜ生成物なのか（ISSUE-254）: 台帳を JS 側にも書くと第 2 定義になり、派生属性\n"
+        "//   （floorable / calendar）が静かにずれる。実際 floorable の写しがずれて、ライブの\n"
+        "//   更新粒度が時間足で割れた（ISSUE-253: 1W/1M だけ tick 再生から脱落）。定義は Python\n"
+        "//   ただ 1 つとし、JS は生成された値を読むだけにする。陳腐化は parity 検定が落とす。\n"
+        "//\n"
+        "//   code      : 時間足コード（挿入順＝台帳の順序）\n"
+        "//   barSec    : 名目バー秒長（1W=7日・1M=30日。厳密境界はラベル規約が担う）\n"
+        "//   floorable : 単純 floor で期間始端を表せるか（1W/1M は false）\n"
+        "//   calendar  : セッション日（ブローカー暦日）で集計する上位足か\n"
+        "export const TF_LEDGER = Object.freeze([\n" + entries + ",\n].map(Object.freeze));\n"
+    )
+
+
 def main() -> None:
     sessions = [
         {
@@ -90,11 +139,14 @@ def main() -> None:
         "generator": "tools/gen_js_parity_golden.py",
         "session_day": sessions,
         "tf_bar_sec": dict(tf_meta.TF_BAR_SEC),
+        "tf_ledger": tf_ledger(),
         "value_area": value_area_cases(),
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(golden, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(f"wrote {OUT} (sessions={len(sessions)}, va={len(golden['value_area'])})")
+    JS_OUT.write_text(render_tf_ledger_js(tf_ledger()), encoding="utf-8")
+    print(f"wrote {JS_OUT}")
 
 
 if __name__ == "__main__":

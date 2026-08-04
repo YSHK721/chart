@@ -26,6 +26,9 @@ const MODULE_ORDER = [
   'js/domain/compute_error.js',
   'js/domain/domain_models.js',
   'js/domain/series_kind.js',
+  // 時間足台帳は Python から生成した値（tf_ledger_generated.js）を tf_meta.js が読む。
+  //   生成物が先に定義されている必要がある（A方式は連結して 1 スコープにするため）。
+  'js/domain/tf_ledger_generated.js',
   'js/domain/tf_meta.js',
   'js/domain/market_profile_dwell_accumulator.js',
   'js/domain/session_day.js',
