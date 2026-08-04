@@ -4201,21 +4201,56 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-157（クロック駆動・1 往復 1 回）／ISSUE-233・ISSUE-249（真の増分計算）／ISSUE-251（本 Phase 1 で判明した形成中バーの累積欠落）。
 
 ## ISSUE-251: [不具合・実測再現] `/live_ticks` の `tails` が「周期の累積」でなく「poll 増分だけ」で形成中バーを組む（2026-08-03）
-- **ステータス**: OPEN（対策未着手・承認待ち）
+- **ステータス**: RESOLVED（2026-08-03・fix/live-tick-tails-period-seed）
 - **重大度**: 中（close 依存の指標は正しい。high/low/open/volume 依存の指標が誤る）
 - **発生条件**: 常時（周期の 2 回目以降の poll すべて）。
 - **概要**: `framework/server.py::_handle_live_ticks` は `buffer.ticks_since(since)`（**increment のみ**）を `handle_live_tick_tails` へ渡し、そこから `usecase.serve_live_tick_tails.forming_states(ticks, tf_sec)` を `seed` 無しで呼ぶ。`forming_states` は先頭 tick で新しい形成中バーを起こすため、**poll のたびに周期内の累積（open / high / low / volume）がリセット**される。`close` だけは常にその tick の mid なので一致する。
 - **実測（実モジュール・2026-08-03）**: 同一周期の 10 tick を「一括」と「後半 5 tick のみ」で畳むと `volume 10 → 5`・`open 63400 → 63405`（`close` は一致）。
 - **実 UI 実測（8000・15m・22:30 UTC）**: ローソクの `volume=40`（フロントが周期内で累積した tick 数）に対し、同一 tick の `tickvol` 末尾値は **2**（当該 poll 増分の tick 数）。`tickvol` は「形成中バーの tick 数」そのものなので、表示が 1/20 に潰れている。
 - **設計上の位置づけ**: `serve_live_tick_tails` の docstring 自身が「ここがフロント（`live_tick_player._applyTick`）とずれると描画状態と値が食い違う（ISSUE-232 の失敗モード）」と明記しており、**自モジュールが宣言した不変条件を満たしていない**。`forming_states` は既に `seed` 引数を持つが、呼び出し側が渡していない。
-- **抜本的対策（案・未承認）**: `_handle_live_ticks` が「現在周期の始端以降の tick」をバッファから取り、`since` より前の分を畳んだ `FormingState` を `seed` として `handle_live_tick_tails` へ渡す（`LiveTickBuffer` は直近 30 分を保持するので追加の取得は不要）。これにより各 tick 時点の形成中バーがフロントの `_applyTick` の累積と一致し、`apply_forming` の同値性主張も成立する。
-- **関連**: ISSUE-250（Phase 1 本体）／ISSUE-232（フロントとサーバの形成中バー不一致）。
+- **対策（実施済み）**: 累積の材料を既存の単一実体から復元する。`states_for_batch(prior_ticks, ticks, bar_time_fn, seed)` を純ロジックへ追加し、seed は `rollup_forming_bar`（`/forming_bar` と同一実体＝フロントのシード源）から解決する。`rollup_forming_bar` は秒境界までしか畳めないため、増分先頭 tick と同一秒の既適用 tick はバッファから補う。バー境界直後は M1/ロールアップの焼き込みが最大 1 分遅れて base が前バーのままになるため、その場合は seed を捨てて「バー始端以降のバッファ tick を全部畳む」へ切り替える（前バーの値を持ち込まない）。
+- **検証（実 HTTP・8000・15m・実 jp225_tick）**: `/forming_bar` の volume=97 に対し、増分 25 tick の poll・増分 1 tick の poll のいずれも末尾 tickvol=97（修正前は 25 / 2）。追加テスト 12 件・回帰 indicator_ui/api 736 passed。
+- **関連**: ISSUE-250（Phase 1 本体）／ISSUE-232（フロントとサーバの形成中バー不一致）／ISSUE-253（バー帰属の単一権威化）。
 
-## ISSUE-252: [不具合・実測再現] `live_tick_watch --stream` がベンダ CSV の不正行でプロセスごと落ちる（2026-08-03）
-- **ステータス**: OPEN（対策未着手・承認待ち）
+## ISSUE-252: [不具合・実測再現] 自作のロールアップ CSV がヘッダ 6 列／データ 8 列で壊れ、1M と ライブ供給が止まる（2026-08-03）
+- **ステータス**: RESOLVED（2026-08-04・fix/live-tick-tails-period-seed）
+- **初報の誤り（訂正）**: 当初「ベンダ CSV の不正行」と記録したが誤り。壊れていたのは **自分たちが書いた** `data/marketdata/rollups/jp225_tick/jp225_tick_1M.csv`（ヘッダ `date,open,high,low,close,volume` の 6 列に対し 172 行目以降が `...,up,dn` の 8 列）。例外メッセージだけを見て発生源を推定したのが原因。
 - **重大度**: 中（`jp225_tick` の確定足・ロールアップが伸びなくなる。`/live_ticks` のバッファは別経路のため足内再生は継続する）
 - **発生日時（実測）**: 2026-08-03 21:51:02 UTC にログが途切れ、以後プロセス不在。`serve.sh` が起動した watch（`tools/live_tick_watch.py --stream`）が例外で終了している。
 - **例外**: `pandas.errors.ParserError: Error tokenizing data. C error: Expected 6 fields in line 172, saw 8`（当日 tick の全量再取得時）。8 連続失敗 → サーキットブレーカ 600 秒停止 → 復帰後も同一行で再失敗、最終的に未捕捉例外でプロセス終了。
 - **問題の所在**: 不正行は「一過性の取得失敗」ではなく**恒久的な入力破損**であり、リトライ・サーキットブレーカでは復旧しない。にもかかわらず最終的に**プロセスごと落ちる**ため、`serve.sh` は起動しているのに足だけ止まる（外形上は正常に見える）。
-- **抜本的対策（案・未承認）**: (1) 取得段で不正行を検出したら**その日の parquet を温存**して次周期へ進む（既存の「取得 0 件の日は上書きしない」防御と同型の扱いへ寄せる）。(2) 恒久失敗を watch の生存と切り離す（例外でループを抜けない）。(3) 破損を沈黙させないため、状態を `/live_ticks` 等の監視面へ露出する。応急的な再起動ループは対策としない。
-- **影響（本 Issue 発見時の状況）**: ISSUE-250 の実 UI 実測中に判明。実測自体は `/live_ticks` のバッファ（`marketdata.fetch_ticks_since` の in-process ポーリング＝本 watch とは独立）で成立しており、実測結果には影響しない。
+- **影響**: `GET /candles?timeframe=1M` が 500 ／ `tools/live_tick_watch.py --stream` が未捕捉例外で終了（ライブ供給が丸ごと停止）／ replay_ui の 1W/1M 統合テスト 2 件が失敗。1 ファイルの破損が広範囲を止めていた。
+- **壊れた経路（2 つの欠陥の合わせ技）**:
+  1. 全件 rewrite 経路のマージが agg 対象列を `open/high/low/close/volume` と**直書き**しており、`csv_schema` へ増えた `up`/`dn` を落としていた → その tf だけヘッダが 6 列で書き直される。
+  2. 速い経路（末尾 truncate+append）は既存ヘッダを確認せず `_bar_to_csv_row`（＝全列）の行を追記する → 6 列ヘッダのファイルへ 8 列行が入り、以後恒久的に読めなくなる。
+- **対策（原因側の除去）**: `_merge_agg(columns)` で集約規則を**実在列から導出**する（列名を呼び出し側へ直書きしない）。追記前に `_header_of(path) == _header_for_bars(bars)` を確認し、不一致なら追記せず全件 rewrite でヘッダごと書き直す（次回以降は一致して速い経路へ戻る＝自己修復）。不一致は warning でログへ出す。
+- **データ復旧**: 破損済みファイルは読めないため本修正では直らない。派生物なので 1 分足から `rollup.stream_build(m1, ["1M"], ...)` で再生成した（破損版は `jp225_tick_1M.csv.corrupt-20260804T034032` に保持）。復旧後 `/candles?timeframe=1M` は 200。
+- **検証**: marketdata 220 passed（追加 3 件）。indicator_ui/api 765 passed。indicator_ui web 1058 passed。
+
+## ISSUE-253: [設計是正] 時間足によって更新粒度と設計が変わる（バー帰属の第 2 定義）（依頼者厳命 2026-08-03）
+- **ステータス**: RESOLVED（2026-08-04・fix/live-tick-tails-period-seed）
+- **諸悪の根源**: ライブのフロントが「この tick はどのバーに属するか」を `floor(秒 / tf秒)` で**再計算**していた。これは規則の第 2 定義であり、暦周期（W-FRI / ME）を表せない。結果として 1W/1M だけが tick 再生から構造的に脱落し、ローソクは 1m..1D がティック粒度／1W・1M が 5 秒粒度、指標は 1m..1D がティック粒度／1W・1M が更新なし、と**時間足によって更新粒度と設計が変わって**いた。1D も同じ理由でセッション日の特例分岐を抱えていた。時間足を足すたびに同じ分岐が増える構造そのものが問題。
+- **参照実装（リプレイは元から正しかった）**: `forming_plan.formingStatesAt` はローソク自身の time（`cd.time`）でバーを識別し、周期を計算しない。だから 1W/1M も同粒度で動く。ライブをこの設計へ揃えた。
+- **対策**:
+  - `marketdata/tf_meta.py` に `bar_time_unix(tf, unix_sec)` を追加＝「この時刻はどのバーに属するか」の**唯一の入口**（全 tf・分岐は本関数の内側だけ）。規則は既存の唯一源の合成で、新しい暦計算を持たない（日中足=UTC floor / 1D=`session_bar_time` / 1W・1M=`session_period_label`→ラベル日の UTC 深夜）。`period_start_unix` も 1W/1M へ拡張。
+  - `/live_ticks` が `timeframe` 申告時に `barTimes`（tick と同数・同順）と `nowBarTime` を返す（`live_tick_bars_controller`）。
+  - 純ロジック `serve_live_tick_tails` から `tf_sec` / `period_of` / `period_fn` を撤去し `bar_time_fn(ms)` 1 本へ。時間足を一切知らない。
+  - `live_tick_tails_controller` の `_TF_SEC` ホワイトリスト（1W/1M 除外）を撤去。
+  - フロント `live_tick_player.js` から `_periodOf` / `_tfSec` / `isFloorTimeframe` / `isPlayerTimeframe` を削除。バー帰属はサーバ供給値の比較のみ＝コード上に時間足の区別が存在しない。`barTimes` が無い応答は描かない（推測でバーを埋めない）。
+  - 価格の書き手は `LiveTickPlayer` ただ 1 つ（tf 依存の `suppressPriceUpdate` 関数を廃止）。
+- **検証（実 UI・8000・実 HTTP・実 jp225_tick・約 134 tick/分。各足とも切替後 20 秒静定 → 50 秒計測）**:
+  | 時間足 | ローソク更新 | 指標更新 | 一致 | C→T 対 | 時刻不一致 |
+  |---|---|---|---|---|---|
+  | 1m | 144 | 144 | ✅ | ✅ | 0 |
+  | 5m | 113 | 113 | ✅ | ✅ | 0 |
+  | 15m | 117 | 117 | ✅ | ✅ | 0 |
+  | 30m | 159 | 159 | ✅ | ✅ | 0 |
+  | 1h | 177 | 177 | ✅ | ✅ | 0 |
+  | 4h | 123 | 123 | ✅ | ✅ | 0 |
+  | 1D | 59 | 59 | ✅ | ✅ | 0 |
+  | 1W | 101 | 101 | ✅ | ✅ | 0 |
+  | 1M | 139 | 139 | ✅ | ✅ | 0 |
+  - 時間足の切替は実 UI のボタンを実クリック。計測点は `ChartRenderer.updateLastCandle` と `IndicatorController.applyFormingTails` の実インスタンス経路。
+  - 1M のみ描画系列が 7→5（`ma_marod_evq_med_lo` / `_ext_lo` が欠落）。月足の履歴本数不足で水準が算出できないためで、**更新粒度の差ではない**。
+  - 単体: indicator_ui web 1058 passed（player の中核 3 検証と tails 同期適用を **9 時間足すべて**へ同じ形で並べ、tf による差が無いことを固定）。replay_ui web 301 passed。indicator_ui/api 765 passed。marketdata 220 passed。
+- **関連**: ISSUE-078（1D セッション日）／ISSUE-250（1 ティック 1 更新）／ISSUE-251（バーの累積）。
