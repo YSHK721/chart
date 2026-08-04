@@ -4254,3 +4254,28 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - 1M のみ描画系列が 7→5（`ma_marod_evq_med_lo` / `_ext_lo` が欠落）。月足の履歴本数不足で水準が算出できないためで、**更新粒度の差ではない**。
   - 単体: indicator_ui web 1058 passed（player の中核 3 検証と tails 同期適用を **9 時間足すべて**へ同じ形で並べ、tf による差が無いことを固定）。replay_ui web 301 passed。indicator_ui/api 765 passed。marketdata 220 passed。
 - **関連**: ISSUE-078（1D セッション日）／ISSUE-250（1 ティック 1 更新）／ISSUE-251（バーの累積）。
+
+## ISSUE-254: [設計是正] 台帳の派生属性が JS/Python で二重定義され、同期検定の対象外（2026-08-04）
+- **ステータス**: OPEN
+- **重大度**: 高（同型の事故が 2 回発生済み: ISSUE-078 / ISSUE-253）
+- **現状（実測）**:
+  - 値の同期は担保されている: `tools/gen_js_parity_golden.py` → `fixtures/py_parity_golden.json` → `py_parity_golden.test.js` が `TF_BAR_SEC`（9 件）と `session_day`（160 点）の一致を検定している。
+  - **担保されていないのは派生属性**。Python は `marketdata.resample.TF_DESCRIPTORS`（`rule` / `floorable` / `calendar`）を唯一の台帳とし `NON_FLOORABLE_TF` / `SESSION_TFS` / `CALENDAR_LABEL_TFS` を導出する。一方 JS は `domain/tf_meta.js` に `FLOOR_TFS` を**直書きの配列**で持つ。両者の一致を検定するものは無い。
+  - ISSUE-253 の原因はまさにこの `floorable` の写しだった（JS 側が「1W/1M は非対応」と独自に判断し、ライブの更新粒度が時間足で割れた）。
+- **加えて、台帳の写しが 15 ファイル**（時間足リストの直書き列挙）: `timeframe_menu.js` / `usecase/catalog.js` / `period_presets.js` / `mp_source_capability.js` / `usecase/catalog_entry.js` / `replay_ui composition_root_front.js` / `replay/stream.js` / `tf_period_profile_controller.py` / `export_jp225_m1.py` ほか。新しい時間足を足すとき何箇所直すのかが誰にも分からない状態。
+- **抜本的対策**: 派生属性を JS へ**生成物として配る**（Python 台帳が唯一の定義・JS は生成された値を読むだけ）。生成の陳腐化は既存の golden 検定と同じ仕組みで落とす。直書き列挙は台帳からの導出へ置換する。
+- **関連**: ISSUE-078／ISSUE-087 🔴-2/🔴-3（台帳と parity 検定の初出）／ISSUE-253。
+
+## ISSUE-255: [設計是正] 協働子が host（IndicatorController）全体に依存している（ISP・双方向結合）（2026-08-04）
+- **ステータス**: OPEN
+- **重大度**: 中
+- **実測**: `IndicatorController` は協働子へ `this` を丸ごと渡す（`SeriesRenderRouter` / `IndicatorStateStore` / `TimeframeController` / `MarketProfileController` / `IndicatorDialogController` の 5 箇所）。協働子が実際に触る host メンバー数は `IndicatorStateStore` **21**、`MarketProfileController` **20**、`IndicatorDialogController` 11、`TimeframeController` 7、`SeriesRenderRouter` 5。
+- **問題**: 契約（`TIMEFRAME_HOST_CONTRACT` / `MARKET_PROFILE_HOST_CONTRACT`）は 5 協働子中 2 つしか宣言されておらず、内容も「ほぼ host 全体」。host→協働子・協働子→host の双方向結合で、host の private を協働子が読み書きする。責務は 9 個へ分割済みなのに結合は分割されていない。
+- **抜本的対策**: 協働子へ host を渡すのをやめ、必要な関数・値だけを束ねて注入する（ロールごとの最小 interface）。既存の分割はそのまま活かせる。
+- **関連**: ISSUE-099 🟡-3/🟡-4（契約の明文化）／ISSUE-181（協働子抽出）。
+
+## ISSUE-256: [設計是正] `replay.js` の `setupReplay` が 847 行の単一関数（SRP）（2026-08-04)
+- **ステータス**: OPEN
+- **重大度**: 中
+- **実測**: `simulator/replay_ui/web/js/replay.js` は 847 行で、トップレベルの関数定義は `setupReplay` ただ 1 つ。合成・再生駆動・足内アニメーション・MP 連動・時間足反映が同一スコープに同居する。
+- **抜本的対策**: 関心事ごとに協働子へ切り出す（合成根は配線のみ残す）。リプレイ側は既に `replay/` 配下へ純ロジック（`forming_plan` / `stream` / `timing` / `calendar` / `state`）を分離済みで、残っているのは駆動と配線の塊。
