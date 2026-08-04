@@ -4256,14 +4256,20 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-078（1D セッション日）／ISSUE-250（1 ティック 1 更新）／ISSUE-251（バーの累積）。
 
 ## ISSUE-254: [設計是正] 台帳の派生属性が JS/Python で二重定義され、同期検定の対象外（2026-08-04）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-04・refactor/tf-ledger-single-source）
 - **重大度**: 高（同型の事故が 2 回発生済み: ISSUE-078 / ISSUE-253）
 - **現状（実測）**:
   - 値の同期は担保されている: `tools/gen_js_parity_golden.py` → `fixtures/py_parity_golden.json` → `py_parity_golden.test.js` が `TF_BAR_SEC`（9 件）と `session_day`（160 点）の一致を検定している。
   - **担保されていないのは派生属性**。Python は `marketdata.resample.TF_DESCRIPTORS`（`rule` / `floorable` / `calendar`）を唯一の台帳とし `NON_FLOORABLE_TF` / `SESSION_TFS` / `CALENDAR_LABEL_TFS` を導出する。一方 JS は `domain/tf_meta.js` に `FLOOR_TFS` を**直書きの配列**で持つ。両者の一致を検定するものは無い。
   - ISSUE-253 の原因はまさにこの `floorable` の写しだった（JS 側が「1W/1M は非対応」と独自に判断し、ライブの更新粒度が時間足で割れた）。
 - **加えて、台帳の写しが 15 ファイル**（時間足リストの直書き列挙）: `timeframe_menu.js` / `usecase/catalog.js` / `period_presets.js` / `mp_source_capability.js` / `usecase/catalog_entry.js` / `replay_ui composition_root_front.js` / `replay/stream.js` / `tf_period_profile_controller.py` / `export_jp225_m1.py` ほか。新しい時間足を足すとき何箇所直すのかが誰にも分からない状態。
-- **抜本的対策**: 派生属性を JS へ**生成物として配る**（Python 台帳が唯一の定義・JS は生成された値を読むだけ）。生成の陳腐化は既存の golden 検定と同じ仕組みで落とす。直書き列挙は台帳からの導出へ置換する。
+- **対策（実施済み）**:
+  - `tools/gen_js_parity_golden.py` が時間足台帳（`code` / `barSec` / `floorable` / `calendar`）を fixture と **JS 生成物** `domain/tf_ledger_generated.js` の両方へ書き出す。JS 側には「自動生成・手で編集しない」と明記。
+  - `domain/tf_meta.js` は値を一切持たず、生成台帳からの導出だけを行う（`TF_CODES` / `TF_BAR_SEC` / `FLOOR_TFS` / `CALENDAR_TFS` / 各判定関数）。手書きだった `FLOOR_TFS` 配列は削除。
+  - 陳腐化を**双方向**で落とす: Python 側 `marketdata/tests/test_tf_ledger_parity.py`（台帳変更 → 再生成漏れ）／ JS 側 `py_parity_golden.test.js` に派生属性・順序・生成物一致の 3 検定を追加（fixture → 手編集）。
+  - 時間足メニュー（`timeframe_menu.js`）の既定集合を台帳からの導出へ置換し、モジュールにはラベルとカテゴリ見出しだけを残した。網羅は `timeframe_menu_ledger.test.js` が固定（台帳へ 1 行足せばメニューに必ず出る／ラベル付け忘れは検定が落とす）。
+- **検証**: 再生成漏れ検出が実際に働くことを実測（台帳へ `2h` を足した状態で Python 検定が失敗）。実 UI（8000）で `[data-timeframe]` の集合・順序が台帳と完全一致することを確認。回帰: indicator_ui web 1061 / market_profile web 313 / replay_ui web 301 / marketdata 223 / indicator_ui api 765 全通過。
+- **残（別 Issue 候補）**: 時間足リストの直書きは分析ツール・MP の能力表（`mp_source_capability.js` の zp 対応集合など）に残る。これらは「台帳」ではなく個別の能力宣言であり、台帳からは導出できない。
 - **関連**: ISSUE-078／ISSUE-087 🔴-2/🔴-3（台帳と parity 検定の初出）／ISSUE-253。
 
 ## ISSUE-255: [設計是正] 協働子が host（IndicatorController）全体に依存している（ISP・双方向結合）（2026-08-04）

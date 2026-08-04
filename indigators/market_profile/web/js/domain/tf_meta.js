@@ -1,31 +1,52 @@
-// tf_meta.js（domain）— tf メタの単一情報源（ISSUE-087 🔴-2）。
+// tf_meta.js（domain）— 時間足メタの公開面。**値は持たず、生成台帳から導出する**。
 //
-// 旧状態: TF_BAR_SEC/TF_SECONDS が market_profile_actor.js・growth_window.js・live_tick_player.js・
-//   composition_root_front.js（TFP_BAR_SEC）に 4 重定義され、バンドラ（build.mjs の IIFE 連結）の
-//   top-level const 衝突が共有を阻害していた。本モジュールへ一本化し、全利用側は import する
-//   （連結後も定義は 1 箇所＝衝突しない）。Python 側の単一情報源は marketdata/tf_meta.py
-//   （同一の値・同期は golden fixture 検定＝ISSUE-087 🔴-3）。
+// 旧状態(1): TF_BAR_SEC/TF_SECONDS が market_profile_actor.js・growth_window.js・
+//   live_tick_player.js・composition_root_front.js に 4 重定義され、バンドラ（build.mjs の
+//   IIFE 連結）の top-level const 衝突が共有を阻害していた（ISSUE-087 🔴-2）。本モジュールへ
+//   一本化し、全利用側は import する（連結後も定義は 1 箇所＝衝突しない）。
 //
-// 規約: 1W/1M の秒長は名目値（7日/30日）。カレンダー周期の厳密境界はラベル規約
-//   （session_day/resample）が担い、本表は窓幅・表示近似の用途に限る。
+// 旧状態(2)（ISSUE-254）: 一本化したのは **値（barSec）だけ**で、派生属性は JS 側に手書きの
+//   配列（FLOOR_TFS）として残っていた。値の一致は parity 検定（py_parity_golden）が守って
+//   いたが、派生属性は検定の対象外だったため静かにずれる余地があった。実際 floorable の写しが
+//   ずれて、ライブの更新粒度が時間足で割れた（ISSUE-253: 1W/1M だけ tick 再生から脱落）。
+//   よって**台帳そのもの**（code/barSec/floorable/calendar）を Python から生成して配り、
+//   本モジュールはそこからの導出だけを行う。判断材料を JS 側に書かない。
+//
+// 唯一の定義: marketdata/resample.py の TF_DESCRIPTORS ＋ marketdata/tf_meta.py の TF_BAR_SEC。
+//   生成物 tf_ledger_generated.js は tools/gen_js_parity_golden.py が書き、陳腐化は
+//   py_parity_golden.test.js（JS 側）と test_tf_ledger_parity.py（Python 側）が双方向に落とす。
 
-export const TF_BAR_SEC = Object.freeze({
-  '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-  '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000,
-});
+import { TF_LEDGER } from './tf_ledger_generated.js';
 
-// 既知 tf か（台帳 TF_BAR_SEC のキー集合＝Python marketdata.resample.is_known_timeframe と同一）。
-//   ライブ tick 再生・足内更新は**全時間足で同一設計**（ISSUE-253）のため、対応判定はこの 1 つだけ。
+// 台帳の順序どおりの時間足コード（時間足メニュー・検定の反復順の基準）。
+export const TF_CODES = Object.freeze(TF_LEDGER.map((d) => d.code));
+
+// tf → バー秒長（名目値）。1W/1M はカレンダー周期のため名目（7日/30日）で、厳密な期間境界は
+//   ラベル規約（session_day/resample）が担う＝本表は窓幅・表示近似の用途に限る。
+export const TF_BAR_SEC = Object.freeze(
+  Object.fromEntries(TF_LEDGER.map((d) => [d.code, d.barSec])),
+);
+
+// 既知 tf か（台帳のキー集合＝Python marketdata.resample.is_known_timeframe と同一）。
+//   ライブ tick 再生・足内更新は**全時間足で同一設計**（ISSUE-253）のため、対応判定はこれだけ。
 //   バー帰属（どの時刻がどのバーか）はサーバの唯一源が解決して配るので、フロントは
-//   floor 可否・周期秒・暦周期といった tf ごとの区別を持たない。
+//   floor 可否・周期秒・暦周期といった tf ごとの区別を更新経路に持たない。
 export function isKnownTimeframe(tf) {
   return Object.prototype.hasOwnProperty.call(TF_BAR_SEC, tf);
 }
 
-// 固定周期（floor 可能）tf。**ライブの更新経路では使わない**（使うと tf ごとに設計が割れる）。
-//   残る用途は「単純 floor で窓を切ってよいか」を問う近似計算のみ（MP 成長窓など）。
-export const FLOOR_TFS = Object.freeze(['1m', '5m', '15m', '30m', '1h', '4h', '1D']);
+// 固定周期（単純 floor で期間始端を表せる）tf。**ライブの更新経路では使わない**
+//   （使うと tf ごとに設計が割れる＝ISSUE-253 の再発）。残る用途は「floor で窓を切ってよいか」を
+//   問う近似計算のみ（MP 成長窓など）。値は台帳の floorable からの導出。
+export const FLOOR_TFS = Object.freeze(TF_LEDGER.filter((d) => d.floorable).map((d) => d.code));
 
 export function isFloorTimeframe(tf) {
   return FLOOR_TFS.includes(tf);
+}
+
+// セッション日（ブローカー暦日）で集計する上位足か。台帳の calendar からの導出。
+export const CALENDAR_TFS = Object.freeze(TF_LEDGER.filter((d) => d.calendar).map((d) => d.code));
+
+export function isCalendarTimeframe(tf) {
+  return CALENDAR_TFS.includes(tf);
 }

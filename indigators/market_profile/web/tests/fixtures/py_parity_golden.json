@@ -1133,6 +1133,62 @@
   "1W": 604800,
   "1M": 2592000
  },
+ "tf_ledger": [
+  {
+   "code": "1m",
+   "barSec": 60,
+   "floorable": true,
+   "calendar": false
+  },
+  {
+   "code": "5m",
+   "barSec": 300,
+   "floorable": true,
+   "calendar": false
+  },
+  {
+   "code": "15m",
+   "barSec": 900,
+   "floorable": true,
+   "calendar": false
+  },
+  {
+   "code": "30m",
+   "barSec": 1800,
+   "floorable": true,
+   "calendar": false
+  },
+  {
+   "code": "1h",
+   "barSec": 3600,
+   "floorable": true,
+   "calendar": false
+  },
+  {
+   "code": "4h",
+   "barSec": 14400,
+   "floorable": true,
+   "calendar": false
+  },
+  {
+   "code": "1D",
+   "barSec": 86400,
+   "floorable": true,
+   "calendar": true
+  },
+  {
+   "code": "1W",
+   "barSec": 604800,
+   "floorable": false,
+   "calendar": true
+  },
+  {
+   "code": "1M",
+   "barSec": 2592000,
+   "floorable": false,
+   "calendar": true
+  }
+ ],
  "value_area": [
   {
    "centers": [
