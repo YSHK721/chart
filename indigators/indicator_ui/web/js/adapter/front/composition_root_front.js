@@ -142,6 +142,10 @@ async function fetchLiveTicks(fetchImpl, since = 0, req = null) {
         if (req.limit !== undefined && req.limit !== null) {
           url += `&limit=${encodeURIComponent(req.limit)}`;
         }
+        // 末尾値を計算する区間（ISSUE-257）。未指定＝サーバは全 tick で計算（旧挙動）。
+        if (req.tailsWithinMs !== undefined && req.tailsWithinMs !== null) {
+          url += `&tailsWithinMs=${encodeURIComponent(req.tailsWithinMs)}`;
+        }
       }
     }
     const resp = await fetchImpl(url);

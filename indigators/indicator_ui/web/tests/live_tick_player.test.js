@@ -392,7 +392,8 @@ test('poll declares the applied specs with datasetRef/timeframe/limit (tails req
   player.start();
   await t.tickPoll();
   assert.deepEqual(sp.calls.req.at(-1), {
-    specs, datasetRef: 'jp225_tick', timeframe: '15m', limit: 1386,
+    // tailsWithinMs は「末尾値が要る区間」の申告（ISSUE-257）。specs と同じく毎 poll 添える。
+    specs, datasetRef: 'jp225_tick', timeframe: '15m', limit: 1386, tailsWithinMs: 14500,
   });
 });
 
@@ -496,4 +497,65 @@ test('a response without barTimes draws nothing (no client-side guessing of bar 
   await t.tickPoll();
   await t.tickPlayback();
   assert.equal(sp.calls.updateLast.length, 0);
+});
+
+// --------------------------------------------------------------------------- #
+// ISSUE-257: 同時要求を構成上 1 本に固定し、末尾値が要る区間を申告する
+// --------------------------------------------------------------------------- #
+
+test('a poll fired while the previous one is still in flight issues no request', async () => {
+  // 応答が poll 間隔より遅い状況を再現する（解決を手で握る）。旧実装は setInterval が
+  //   前回完了を待たないため、要求が撃つたびに積み上がった（サーバ側スレッド枯渇の起点）。
+  const t0 = 1_000_000_000;
+  let release;
+  const gate = new Promise((res) => { release = res; });
+  const calls = [];
+  const fetchLiveTicks = async (since, req) => {
+    calls.push(since);
+    await gate;
+    return { ok: true, ticks: [], serverNowMs: t0 };
+  };
+  const sp = spies();
+  const { player, t } = newPlayer(
+    { fetchLiveTicks }, sp, fakeNow(t0), () => '1m');
+  player.start();
+
+  // 追加の poll は await しない（旧コードでは gate に捕まって永久に返らず、ハングと
+  //   区別がつかなくなる。await せずに発火だけさせれば「要求が出たか」で即座に判定できる）。
+  const first = t.tickPoll();          // 1 本目（gate で滞留させる）
+  await Promise.resolve();
+  const second = t.tickPoll();         // 2 本目・3 本目は出てはならない
+  const third = t.tickPoll();
+  await Promise.resolve();
+  assert.equal(calls.length, 1, '未完了中に追加の要求を出さない');
+
+  release();
+  await Promise.all([first, second, third]);
+  await t.tickPoll();                  // 完了後は通常どおり再開する
+  assert.equal(calls.length, 2);
+});
+
+test('the in-flight guard is released even when the poll fails', async () => {
+  const t0 = 1_000_000_000;
+  let n = 0;
+  const fetchLiveTicks = async () => { n += 1; throw new Error('boom'); };
+  const { player, t } = newPlayer({ fetchLiveTicks }, spies(), fakeNow(t0), () => '1m');
+  player.start();
+  await t.tickPoll();
+  await t.tickPoll();
+  assert.equal(n, 2, '失敗しても次 poll で回復する（ガードが残らない）');
+});
+
+test('the poll declares the span that actually needs per-tick tails', async () => {
+  // 末尾値は「個別に描かれる tick」だけ要る。playback は serverNow-delayMs 以前を 1 ループで
+  //   一気に適用するため、その区間の末尾値は最後の 1 点しか画面に出ない。申告する区間長は
+  //   delayMs（地平）＋ pollMs（次 poll までに地平が進むぶん）。
+  const t0 = 1_000_000_000;
+  const sp = spies({ ticksResponses: [{ ok: true, ticks: [], serverNowMs: t0 }] });
+  const { player, t } = newPlayer({
+    getComputeSpecs: () => [{ instanceId: 'x#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
+  }, sp, fakeNow(t0), () => '1m');
+  player.start();
+  await t.tickPoll();
+  assert.equal(sp.calls.req[0].tailsWithinMs, 12000 + 2500);
 });

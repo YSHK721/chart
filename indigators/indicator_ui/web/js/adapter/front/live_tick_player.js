@@ -94,6 +94,12 @@ export class LiveTickPlayer {
 
     this._pollId = null;
     this._playbackId = null;
+    // poll の in-flight ガード（ISSUE-257）。poll は setInterval で等間隔に起きるが、応答が
+    //   間隔より遅いと**前回の完了を待たずに**次が飛び、同一内容の要求が無制限に積み上がる
+    //   （実測: サーバのスレッドが 1,392 本・22,885 本生成／19 時間・全応答が数百 ms へ悪化）。
+    //   未完了が 1 本でもある間は新しい要求を出さない＝同時要求数を構成上 1 に固定する。
+    //   取りこぼしは起きない: since カーソルは応答時にだけ進むため、次の poll が同じ範囲を続けて取る。
+    this._polling = false;
   }
 
   // 再生を開始する（冪等・稼働中の再 start は無視）。poll と playback の 2 タイマーを登録する。
@@ -122,6 +128,10 @@ export class LiveTickPlayer {
   //   申告した場合の指標末尾値（tails）が同梱される。どちらもフロントでは再計算しない。
   //   1 回の失敗は握りつぶしてログ化する（次 poll で回復・unhandledRejection を出さない）。
   async _poll() {
+    if (this._polling) {
+      return;   // 未完了の要求がある間は出さない（同時要求数を 1 に固定・ISSUE-257）。
+    }
+    this._polling = true;
     try {
       // 時間足は常に申告する（barTimes の解決に必要＝指標を 1 つも適用していなくても要る）。
       //   適用までの 12 秒間に足が変わったデータは捨てるため、要求時の tf を控えてキューへ持たせる。
@@ -132,6 +142,11 @@ export class LiveTickPlayer {
         datasetRef: this._datasetRef,
         timeframe: tf,
         limit: this._getLimit ? this._getLimit() : undefined,
+        // 末尾値が要る区間（ISSUE-257）。_playback は `serverNow - delayMs` 以前の tick を
+        //   1 同期ループで一気に適用するため、その区間の末尾値は最後の 1 点しか画面に出ない。
+        //   個別に描かれるのは「地平より新しい tick」＝ delayMs ＋ 次 poll までの猶予（pollMs）。
+        //   この区間長を知っているのは再生を持つ本 player だけなので、ここから申告する。
+        tailsWithinMs: this._delayMs + this._pollMs,
       });
       if (!res || res.ok !== true) {
         return;
@@ -161,6 +176,8 @@ export class LiveTickPlayer {
       if (typeof console !== 'undefined' && console.warn) {
         console.warn('LiveTickPlayer: poll 失敗（次 poll で回復）:', err && err.message);
       }
+    } finally {
+      this._polling = false;   // 成功・失敗・早期 return のいずれでも必ず解放する。
     }
   }
 

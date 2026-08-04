@@ -139,6 +139,8 @@ def tails_for_ticks(
     states: "Iterable[FormingState]",
     specs: "Sequence[TailSpec]",
     tail_at: "Callable[[TailSpec, FormingState], dict[str, float] | None]",
+    *,
+    wanted: "Callable[[FormingState], bool] | None" = None,
 ) -> "list[dict[str, Any]]":
     """各 tick 時点 × 各 spec の末尾値を組む。
 
@@ -148,6 +150,15 @@ def tails_for_ticks(
         tail_at: ``(spec, state) -> {系列名: 値}``（計算の実体。注入＝本モジュールは
             指標も pandas も知らない）。``None`` を返した spec はその tick で省略する
             （増分器を持たない指標＝保証対象外を**黙って劣化させず明示的に落とす**）。
+        wanted: ``(state) -> bool``。``False`` の tick は ``tail_at`` を**呼ばない**
+            （末尾値は空）。``None`` は全 tick で計算（従来どおり）。
+
+            なぜ述語が要るか（ISSUE-257）: 末尾値の費用は tick 数 × spec 数に比例する
+            （実測 0.5〜0.86 ms/tick/インスタンス）。一方フロントは「再生地平より古い tick」を
+            **1 同期ループで一気に適用**するため、その区間の末尾値は最後の 1 点しか画面に出ない。
+            全 tick ぶん計算すると、応答が poll 間隔を超えた瞬間に要求が重なり、重なるほど
+            遅くなる正のフィードバックへ入る（収束点が無い）。**どの tick が個別に描かれるかを
+            知っているのはフロント**なので、判定は注入で受け取り本モジュールは方針を持たない。
 
     Returns:
         ``[{"tickMs": ms, "tails": {instanceId: {系列名: 値}}}, ...]``（states と同順）。
@@ -155,10 +166,11 @@ def tails_for_ticks(
     out: "list[dict[str, Any]]" = []
     for st in states:
         tails: "dict[str, Any]" = {}
-        for spec in specs:
-            values = tail_at(spec, st)
-            if values:
-                tails[spec.instance_id] = values
+        if wanted is None or wanted(st):
+            for spec in specs:
+                values = tail_at(spec, st)
+                if values:
+                    tails[spec.instance_id] = values
         out.append({"tickMs": st.tick_ms, "tails": tails})
     return out
 
