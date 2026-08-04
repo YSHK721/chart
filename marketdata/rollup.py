@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -50,6 +51,8 @@ _INCREMENTAL_TAIL_PROBE_ROWS = 20_000
 # ロールアップ CSV の列・date 書式は marketdata.csv_schema が唯一の規則源
 # （旧: tick_m1._HEADER / _DATE_FMT と手動同期）。旧属性名は import 共有で温存する。
 from marketdata import csv_schema as _csv_schema
+
+logger = logging.getLogger(__name__)
 
 _HEADER = _csv_schema.HEADER
 _DATE_FMT = _csv_schema.DATE_FMT
@@ -130,6 +133,37 @@ def _header_for_bars(bars: "dict[Any, dict[str, Any]]") -> list[str]:
     sample = next(iter(bars.values()), {})
     return _csv_schema.header_for([c for c in (*_csv_schema.OHLCV_COLUMNS,
                                                *_csv_schema.UPDOWN_COLUMNS) if c in sample])
+
+
+def _merge_agg(columns: Any) -> "dict[Any, str]":
+    """既存 CSV と新規 tail をマージするときの列別集約規則（実在列から導出・単一定義）。
+
+    規則は :func:`marketdata.resample.resample_ohlc` と同一（OHLC=first/max/min/last、
+    :data:`marketdata.csv_schema.SUM_COLUMNS` は sum、その他は last）。列名を呼び出し側へ
+    直書きしないことで、csv_schema へ列が増えても本経路が列を落とさない。
+    """
+    fixed = {"open": "first", "high": "max", "low": "min", "close": "last"}
+    agg: "dict[Any, str]" = {}
+    for col in columns:
+        lc = str(col).lower()
+        if lc in fixed:
+            agg[col] = fixed[lc]
+        elif lc in _csv_schema.SUM_COLUMNS:
+            agg[col] = "sum"
+        else:
+            agg[col] = "last"
+    return agg
+
+
+def _header_of(path: Path) -> "list[str] | None":
+    """ロールアップ CSV の 1 行目（ヘッダ）を列名リストで返す（不在・空は ``None``）。"""
+    try:
+        with open(path, "r", newline="", encoding="utf-8") as fh:
+            line = fh.readline()
+    except OSError:
+        return None
+    line = line.strip()
+    return line.split(",") if line else None
 
 
 def _bar_to_csv_row(period: Any, bar: dict[str, Any]) -> list[Any]:
@@ -499,9 +533,21 @@ def incremental_update(
         ):
             suffix = _resample_suffix(probe, tf, last_period)
             if suffix:
-                offset = _last_data_line_offset(path)
-                _truncate_append_bars(path, offset, suffix)
-            continue
+                # 追記する行の列構成が既存ヘッダと一致するときだけ速い経路を使う。食い違ったまま
+                #   追記すると CSV が恒久的に読めなくなる（ヘッダ 6 列のファイルへ 8 列行が入り、
+                #   以後その tf の /candles・rollup 読取・ライブ watch が全部落ちる＝実障害）。
+                #   不一致は「列が増えた直後」に起きるので、全件 rewrite へ落として**ヘッダごと
+                #   書き直す**（次回以降は一致して速い経路へ戻る＝自己修復）。
+                if _header_of(path) == _header_for_bars(suffix):
+                    offset = _last_data_line_offset(path)
+                    _truncate_append_bars(path, offset, suffix)
+                    continue
+                logger.warning(
+                    "ロールアップ CSV の列構成が変わりました（%s）。追記でなく全件 rewrite で"
+                    "ヘッダごと書き直します。", path.name,
+                )
+            else:
+                continue
         # ---- フォールバック（全件 rewrite）: probe 不足（1M 等）・ファイル不在・空 ----
         # 追記 tail を resample（小）。既存ロールアップは DataFrame のまま扱い辞書化しない
         #   （ISSUE-012: 90 万件の dict-of-dict が RSS を 618MB へ急騰させる回帰の防止）。
@@ -523,12 +569,12 @@ def incremental_update(
                 union_tail = pd.concat([overlap, new_df])
                 # merge_same_period と同値: open=first/high=max/low=min/close=last/volume=sum。
                 #   concat 順（既存→新規）が first/last の意味（既存 open・新 close）を保証する。
+                #   集約対象の列は **実在する列から導出**する（列名をここに直書きしない）。直書きは
+                #   csv_schema へ列（up/dn）が増えたときに本経路だけ列を落とし、同じファイルへ
+                #   速い経路（_bar_to_csv_row＝全列）が追記した瞬間にヘッダと行の列数が食い違って
+                #   CSV を恒久破壊する（実際に jp225_tick_1M.csv がこれで壊れた）。
                 merged_tail = union_tail.groupby(level=0, sort=True).agg(
-                    open=("open", "first"),
-                    high=("high", "max"),
-                    low=("low", "min"),
-                    close=("close", "last"),
-                    volume=("volume", "sum"),
+                    _merge_agg(union_tail.columns)
                 )
                 merged = pd.concat([keep, merged_tail])
         else:

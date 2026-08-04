@@ -3,30 +3,26 @@
 // 参照実装: prototype_260707-01/web/index.html の poll/playback 機構（依頼者実機確認済み）。
 // 挙動:
 //   - 2.5 秒周期の poll: /live_ticks を since カーソル付き取得しキューへ。serverNowMs と now() で
-//     clockOffset を維持。cursor を最新 ms へ前進。
+//     clockOffset を維持。cursor を最新 ms へ前進。時間足は**常に**申告する（バー帰属の解決に要る）。
 //   - 100ms 周期の playback: serverNow = now()+clockOffset、playUntil = serverNow - 12000。
-//     ms <= playUntil の tick を順に適用。適用先は現在 tf の形成中バー（floor(ms, tf) が変われば
-//     新バー・同期間は high/low/close/volume 累積）→ renderer.updateLastCandle(bar)。
-//   - tf 切替・起動時: loadFormingBar(datasetRef, tf) でシード。bar=null（1W/1M 等）は当該 tf で
-//     何も描かない（no-op）。
+//     ms <= playUntil の tick を順に適用。適用先は形成中バー（サーバが返した barTime が変われば
+//     新バー・同じなら high/low/close/volume 累積）→ renderer.updateLastCandle(bar)。
+//   - tf 切替・起動時: loadFormingBar(datasetRef, tf) でシード。
 //   - start()/stop() 冪等（FormingBarUpdater と同型）。
+//
+// **全時間足で同一設計**（ISSUE-253）: プレイヤーは「この tick はどのバーに属するか」を計算しない。
+//   バー帰属はサーバの唯一源（marketdata.tf_meta.bar_time_unix）が解決して barTimes として届く。
+//   よって日中足・1D・1W/1M の区別がコード上に存在せず、更新粒度は全時間足でティック単位になる。
+//   本テストも tf ごとの分岐を持たず、**同じ検証を全時間足へ並べて**同一挙動を固定する。
 // 構造: AAA。実タイマー・実ネット・実 DOM 非依存（全注入）。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { LiveTickPlayer, isPlayerTimeframe } from '../js/adapter/front/live_tick_player.js';
+import { LiveTickPlayer } from '../js/adapter/front/live_tick_player.js';
 
-// isPlayerTimeframe: プレイヤー（floor ベース tick 累積）が扱う固定周期 tf の判定。
-//   1W/1M・未知は false（＝FormingBarUpdater/forming_bar ポーリングへ委譲する側）。
-test('isPlayerTimeframe: fixed-period tf are true, 1W/1M/unknown are false', () => {
-  for (const tf of ['1m', '5m', '15m', '30m', '1h', '4h', '1D']) {
-    assert.equal(isPlayerTimeframe(tf), true, `${tf} should be player-driven`);
-  }
-  for (const tf of ['1W', '1M', '9z', null, undefined]) {
-    assert.equal(isPlayerTimeframe(tf), false, `${String(tf)} should not be player-driven`);
-  }
-});
+// 検証対象の全時間足（台帳と同一集合）。どの足でも同じ検証が通ることが本設計の要件。
+const ALL_TF = ['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M'];
 
 // fake timers: setInterval を ms で捕捉し、poll(2500)/playback(100) を個別に手動駆動する。
 function fakeTimers() {
@@ -49,14 +45,29 @@ function fakeNow(start = 1_000_000_000) {
   return { now, box };
 }
 
-function spies({ seedBar = { time: 60, open: 100, high: 100, low: 100, close: 100, volume: 5 }, ticksResponses = [] } = {}) {
-  const calls = { fetchSince: [], tailReq: [], loadForming: [], updateLast: [] };
+// サーバのバー帰属規則の代役（本番は marketdata.tf_meta.bar_time_unix）。テストは規則の中身を
+//   検証しない（それはサーバ側テストの責務）。プレイヤーが「届いた値をそのまま使う」ことだけを見る。
+const barRule = (periodSec) => (ms) => Math.floor(ms / 1000 / periodSec) * periodSec;
+
+function spies({
+  seedBar = { time: 60, open: 100, high: 100, low: 100, close: 100, volume: 5 },
+  ticksResponses = [],
+  bars = barRule(60),
+} = {}) {
+  const calls = { fetchSince: [], req: [], loadForming: [], updateLast: [] };
   let respIdx = 0;
-  const fetchLiveTicks = async (since, tailReq) => {
+  const fetchLiveTicks = async (since, req) => {
     calls.fetchSince.push(since);
-    calls.tailReq.push(tailReq ?? null);
+    calls.req.push(req ?? null);
     const r = ticksResponses[respIdx] || { ok: true, ticks: [], serverNowMs: 0 };
     respIdx = Math.min(respIdx + 1, ticksResponses.length);
+    // サーバ相当: barTimes / nowBarTime を明示指定が無ければ規則から補う。
+    if (r.barTimes === undefined && bars) {
+      r.barTimes = (r.ticks || []).map((t) => bars(t[0]));
+    }
+    if (r.nowBarTime === undefined && bars) {
+      r.nowBarTime = bars(r.serverNowMs || 0);
+    }
     return r;
   };
   const loadFormingBar = async (ref, tf) => { calls.loadForming.push([ref, tf]); return typeof seedBar === 'function' ? seedBar(tf) : seedBar; };
@@ -107,7 +118,7 @@ test('stop clears both intervals (idempotent)', () => {
 });
 
 // --------------------------------------------------------------------------- #
-// poll: clockOffset 維持・cursor 前進
+// poll: clockOffset 維持・cursor 前進・時間足の常時申告
 // --------------------------------------------------------------------------- #
 test('poll maintains clockOffset from serverNowMs and advances the since cursor', async () => {
   const nowObj = fakeNow(1_000_000_000);
@@ -125,12 +136,23 @@ test('poll maintains clockOffset from serverNowMs and advances the since cursor'
   assert.equal(sp.calls.fetchSince[1], 800);
 });
 
+// 指標を 1 つも適用していなくても timeframe は申告する（barTimes が無いと 1 本も描けない）。
+test('poll always declares the timeframe, even with no indicators applied', async () => {
+  const sp = spies();
+  const { player, t } = newPlayer({ getComputeSpecs: () => [] }, sp, fakeNow(), () => '1W');
+  player.start();
+  await t.tickPoll();
+  const req = sp.calls.req.at(-1);
+  assert.equal(req.timeframe, '1W');
+  assert.equal(req.datasetRef, 'jp225_tick');
+  assert.equal(req.specs, null);
+});
+
 // --------------------------------------------------------------------------- #
 // playback: 12 秒遅延境界
 // --------------------------------------------------------------------------- #
 test('playback applies only ticks at or before serverNow-12000 (delay boundary)', async () => {
   const nowObj = fakeNow(1_000_000_000);
-  // serverNowMs === client now → clockOffset 0。playUntil = now - 12000 = 999_988_000。
   const t0 = 1_000_000_000;
   const sp = spies({
     seedBar: { time: Math.floor((t0 - 12001) / 1000 / 60) * 60, open: 100, high: 100, low: 100, close: 100, volume: 0 },
@@ -145,156 +167,192 @@ test('playback applies only ticks at or before serverNow-12000 (delay boundary)'
   player.start();
   await t.tickPoll();      // キューへ 2 件
   await t.tickPlayback();  // 12 秒より古い 1 件のみ適用
-  // 適用は 1 件（close=200）。11999ms のものは delay 未達で未適用。
   const last = sp.calls.updateLast.at(-1);
   assert.equal(last.close, 200.0);
   const applied = sp.calls.updateLast.length;
-  // もう一度 playback しても now 不変なら追加適用されない（境界の厳密性）。
   await t.tickPlayback();
   assert.equal(sp.calls.updateLast.length, applied);
 });
 
-// --------------------------------------------------------------------------- #
-// バー境界: floor(ms, tf) が変われば新バー
-// --------------------------------------------------------------------------- #
-test('playback opens a new bar when the tick crosses the timeframe period boundary', async () => {
-  const nowObj = fakeNow(2_000_000_000);
-  const t0 = 2_000_000_000;
-  // 1m tf。period = 60s。2 つの tick を別々の分に置き、両方 delay 境界より前にする。
-  const msA = t0 - 130_000; // 2 分以上前
-  const msB = t0 - 70_000;  // 1 分ちょっと前（別の分バケット・両方 playUntil 以前）
-  const seedPeriod = Math.floor(msA / 1000 / 60) * 60;
+test('playback uses serverNow (now+clockOffset) so a skewed client clock still gates by server time', async () => {
+  const nowObj = fakeNow(1_000_000_000);
+  const t0 = 1_000_000_000;
+  const serverNow = t0 - 5000; // clockOffset = serverNow - now = -5000
+  const msApply = t0 - 17001;  // server 基準で 12 秒以上前 → 適用
+  const msHold = t0 - 12000;   // client 基準では 12 秒だが server 基準では 7 秒 → 保留
   const sp = spies({
-    seedBar: { time: seedPeriod, open: 100, high: 100, low: 100, close: 100, volume: 0 },
-    ticksResponses: [
-      { ok: true, ticks: [[msA, 150.0], [msB, 250.0]], serverNowMs: t0 },
-    ],
+    seedBar: { time: Math.floor(msApply / 1000 / 60) * 60, open: 100, high: 100, low: 100, close: 100, volume: 0 },
+    ticksResponses: [{ ok: true, ticks: [[msApply, 200.0], [msHold, 300.0]], serverNowMs: serverNow }],
   });
   const { player, t } = newPlayer({}, sp, nowObj);
   player.start();
   await t.tickPoll();
   await t.tickPlayback();
-  // 2 本の updateLastCandle が別 time（別分）で呼ばれる（新バーが開く）。
-  const times = sp.calls.updateLast.map((b) => b.time);
-  assert.ok(new Set(times).size >= 2, 'new bar should open on period boundary crossing');
-  assert.equal(sp.calls.updateLast.at(-1).open, 250.0); // 新バーは open=mid
+  assert.equal(sp.calls.updateLast.length, 1);
+  assert.equal(sp.calls.updateLast.at(-1).close, 200.0);
 });
+
+// --------------------------------------------------------------------------- #
+// バー帰属はサーバ供給（全時間足で同一）
+//   プレイヤーは barTime を比較するだけ。以下 3 本の検証を **全時間足へ同じ形で** 並べる。
+//   ここが tf ごとに割れないことが「更新粒度が時間足で変わらない」の実体。
+// --------------------------------------------------------------------------- #
+for (const tf of ALL_TF) {
+  test(`[${tf}] every tick updates the candle at the server-supplied bar time (tick granularity)`, async () => {
+    const t0 = 2_000_000_000;
+    const ticks = [[t0 - 20_000, 100.0], [t0 - 19_000, 105.0], [t0 - 18_000, 95.0]];
+    const BAR = 12_345_678;   // サーバが返すバー time（規則の中身はプレイヤーに関係ない）
+    const sp = spies({
+      seedBar: null,
+      bars: null,
+      ticksResponses: [{ ok: true, ticks, barTimes: ticks.map(() => BAR), nowBarTime: BAR, serverNowMs: t0 }],
+    });
+    const { player, t } = newPlayer({}, sp, fakeNow(t0), () => tf);
+    player.start();
+    await t.tickPlayback();          // シード
+    await t.tickPoll();
+    await t.tickPlayback();
+    assert.equal(sp.calls.updateLast.length, ticks.length, '1 ティック = 1 更新');
+    const bar = sp.calls.updateLast.at(-1);
+    assert.equal(bar.time, BAR, 'バー time はサーバ供給値そのもの');
+    assert.equal(bar.open, 100.0);   // 最初の tick で固定
+    assert.equal(bar.high, 105.0);
+    assert.equal(bar.low, 95.0);
+    assert.equal(bar.close, 95.0);
+    assert.equal(bar.volume, 3);
+  });
+
+  test(`[${tf}] a changed bar time opens a new bar and fires onBarClose exactly once`, async () => {
+    const t0 = 2_000_000_000;
+    const ticks = [[t0 - 20_000, 100.0], [t0 - 19_000, 101.0], [t0 - 18_000, 102.0]];
+    const barTimes = [1_000, 1_000, 2_000];   // 3 本目でバーが変わる
+    const closes = [];
+    const sp = spies({
+      seedBar: null,
+      bars: null,
+      ticksResponses: [{ ok: true, ticks, barTimes, nowBarTime: 1_000, serverNowMs: t0 }],
+    });
+    const { player, t } = newPlayer({ onBarClose: () => closes.push(1) }, sp, fakeNow(t0), () => tf);
+    player.start();
+    await t.tickPlayback();
+    await t.tickPoll();
+    await t.tickPlayback();
+    assert.equal(closes.length, 1);
+    const bar = sp.calls.updateLast.at(-1);
+    assert.equal(bar.time, 2_000);
+    assert.equal(bar.open, 102.0, '新バーは open=mid');
+    assert.equal(bar.volume, 1);
+  });
+
+  test(`[${tf}] a tick belonging to an earlier bar never regresses history`, async () => {
+    const t0 = 2_000_000_000;
+    const sp = spies({
+      seedBar: { time: 5_000, open: 100, high: 100, low: 100, close: 100, volume: 1 },
+      bars: null,
+      ticksResponses: [{
+        ok: true, ticks: [[t0 - 20_000, 999.0]], barTimes: [4_000], nowBarTime: 5_000, serverNowMs: t0,
+      }],
+    });
+    const { player, t } = newPlayer({}, sp, fakeNow(t0), () => tf);
+    player.start();
+    await t.tickPlayback();
+    await t.tickPoll();
+    await t.tickPlayback();
+    assert.equal(sp.calls.updateLast.length, 0, 'シード済みバーより前の tick は描かない');
+  });
+}
 
 // --------------------------------------------------------------------------- #
 // tf 切替: シード再取得
 // --------------------------------------------------------------------------- #
 test('changing the timeframe reseeds via loadFormingBar for the new tf', async () => {
-  const nowObj = fakeNow(1_000_000_000);
   let tf = '1m';
   const sp = spies({ ticksResponses: [{ ok: true, ticks: [], serverNowMs: 1_000_000_000 }] });
-  const { player, t } = newPlayer({}, sp, nowObj, () => tf);
+  const { player, t } = newPlayer({}, sp, fakeNow(1_000_000_000), () => tf);
   player.start();
   await t.tickPlayback(); // 初回シード（1m）
   assert.deepEqual(sp.calls.loadForming.at(-1), ['jp225_tick', '1m']);
-  tf = '1h';
-  await t.tickPlayback(); // tf 変化 → 再シード（1h）
-  assert.deepEqual(sp.calls.loadForming.at(-1), ['jp225_tick', '1h']);
+  tf = '1W';
+  await t.tickPlayback(); // tf 変化 → 再シード（1W・暦周期でも同じ手順）
+  assert.deepEqual(sp.calls.loadForming.at(-1), ['jp225_tick', '1W']);
 });
 
-// --------------------------------------------------------------------------- #
-// シード null（1W/1M 等）: 当該 tf で何も描かない
-// --------------------------------------------------------------------------- #
-test('seed=null (unsupported tf like 1W/1M) makes the player a no-op for that tf', async () => {
-  const nowObj = fakeNow(1_000_000_000);
-  const t0 = 1_000_000_000;
+// 足の切替後に届いた「旧足で解決された」データは描かない（別足の値を混ぜない）。
+test('ticks resolved for a previous timeframe are discarded after a tf switch', async () => {
+  const t0 = 2_000_000_000;
+  let tf = '1m';
   const sp = spies({
-    seedBar: null, // /forming_bar が null（非対応 tf）
-    ticksResponses: [{ ok: true, ticks: [[t0 - 20000, 200.0]], serverNowMs: t0 }],
+    seedBar: null,
+    bars: null,
+    ticksResponses: [{
+      ok: true, ticks: [[t0 - 20_000, 200.0]], barTimes: [1_000], nowBarTime: 1_000, serverNowMs: t0,
+    }],
   });
-  const { player, t } = newPlayer({}, sp, nowObj, () => '1W');
+  const { player, t } = newPlayer({}, sp, fakeNow(t0), () => tf);
   player.start();
-  await t.tickPoll();
-  await t.tickPlayback();
-  // シード null → 価格を描かない（updateLastCandle 不呼出）。
+  await t.tickPoll();      // 1m として解決されたデータを受領
+  tf = '1M';               // 適用前に足を切り替える
+  await t.tickPlayback();  // 新足でシード
+  await t.tickPlayback();  // 旧足のデータは捨てる
   assert.equal(sp.calls.updateLast.length, 0);
 });
 
 // --------------------------------------------------------------------------- #
-// 自己シード（参照実装復帰）: /forming_bar seed=null（短周期で当日 parquet 窓が空）でも、
-//   現周期の live tick が来れば自力で形成中バーを起こして描く（1m/5m/15m の固着解消）。
-//   参照 prototype_260707-01/web/index.html:63-66（!bar で open=mid の新バー）。
+// 自己シード（参照実装復帰）: /forming_bar seed=null でも現在のバーの tick から起こす
 // --------------------------------------------------------------------------- #
-test('seed=null on a supported short tf self-seeds a forming bar from a current-period tick (no freeze)', async () => {
-  const nowObj = fakeNow(2_000_000_000);
+test('seed=null self-seeds a forming bar from a current-bar tick (no freeze)', async () => {
   const t0 = 2_000_000_000;
-  const tickMs = t0 - 20_000; // 20s 前（12s 遅延境界より前＝適用対象・現 5m 周期内）。
   const sp = spies({
-    seedBar: null, // /forming_bar が null（当日 parquet フロンティア遅延で現周期窓が空）。
-    ticksResponses: [{ ok: true, ticks: [[tickMs, 200.0]], serverNowMs: t0 }],
+    seedBar: null,
+    bars: null,
+    ticksResponses: [{
+      ok: true, ticks: [[t0 - 20_000, 200.0]], barTimes: [7_000], nowBarTime: 7_000, serverNowMs: t0,
+    }],
   });
-  const { player, t } = newPlayer({}, sp, nowObj, () => '5m'); // 対応する短周期 tf。
+  const { player, t } = newPlayer({}, sp, fakeNow(t0), () => '5m');
   player.start();
-  await t.tickPlayback(); // seed('5m') → null（_seeding 解除・_bar=null）。
-  await t.tickPoll();     // 現周期 tick を enqueue。
-  await t.tickPlayback(); // 自己シード: 最初の tick でバーを起こして描く。
+  await t.tickPlayback(); // seed('5m') → null
+  await t.tickPoll();
+  await t.tickPlayback(); // 自己シード
   assert.equal(sp.calls.updateLast.length, 1, 'self-seed draws instead of freezing');
   const b = sp.calls.updateLast.at(-1);
   assert.equal(b.open, 200.0);
-  assert.equal(b.close, 200.0);
-  assert.equal(b.time, Math.floor(tickMs / 1000 / 300) * 300, 'bar time = floor(tickMs, 5m)');
+  assert.equal(b.time, 7_000, 'バー time はサーバ供給値');
 });
 
-test('seed=null self-seed ignores a tick older than the current live period (protect /candles history)', async () => {
-  const nowObj = fakeNow(2_000_000_000);
+test('seed=null self-seed ignores a tick from a bar older than the current one', async () => {
   const t0 = 2_000_000_000;
-  const oldMs = t0 - 700_000; // 700s 前＝現 5m 周期より 2 期間以上前（履歴側・後退禁止）。
   const sp = spies({
     seedBar: null,
-    ticksResponses: [{ ok: true, ticks: [[oldMs, 999.0]], serverNowMs: t0 }],
+    bars: null,
+    ticksResponses: [{
+      ok: true, ticks: [[t0 - 700_000, 999.0]], barTimes: [6_000], nowBarTime: 7_000, serverNowMs: t0,
+    }],
   });
-  const { player, t } = newPlayer({}, sp, nowObj, () => '5m');
+  const { player, t } = newPlayer({}, sp, fakeNow(t0), () => '5m');
   player.start();
-  await t.tickPlayback(); // seed null。
-  await t.tickPoll();     // 過去周期の tick を enqueue。
-  await t.tickPlayback(); // 現周期より前の tick は自己シードしない（/candles 履歴を後退させない）。
-  assert.equal(sp.calls.updateLast.length, 0, 'older-than-current-period tick must not self-seed');
+  await t.tickPlayback();
+  await t.tickPoll();
+  await t.tickPlayback();
+  assert.equal(sp.calls.updateLast.length, 0, '現在より前のバーの tick は自己シードしない');
 });
 
 // --------------------------------------------------------------------------- #
-// 後退ガード: シード期間より前の tick は無視（履歴＝/candles 済を後退させない・🟡3）
-// --------------------------------------------------------------------------- #
-test('applyTick ignores a tick from a period before the seed bar (no history regression)', async () => {
-  const nowObj = fakeNow(2_000_000_000);
-  const t0 = 2_000_000_000;
-  const recentMs = t0 - 70_000;                          // seed 基準の分。
-  const seedPeriod = Math.floor(recentMs / 1000 / 60) * 60;
-  const earlyMs = t0 - 600_000;                          // 10 分前（seed period より前・playUntil 以前）。
-  assert.ok(Math.floor(earlyMs / 1000 / 60) * 60 < seedPeriod, 'test setup: early tick must precede seed period');
-  const sp = spies({
-    seedBar: { time: seedPeriod, open: 100, high: 100, low: 100, close: 100, volume: 0 },
-    ticksResponses: [{ ok: true, ticks: [[earlyMs, 999.0]], serverNowMs: t0 }],
-  });
-  const { player, t } = newPlayer({}, sp, nowObj);
-  player.start();
-  await t.tickPlayback(); // 初回シード（queue 空）。
-  await t.tickPoll();     // 過去期間の tick を enqueue。
-  await t.tickPlayback(); // 適用を試みる。
-  // periodSec < seedBar.time の tick は無視＝updateLastCandle を呼ばない（lwc 時刻単調性を守る）。
-  assert.equal(sp.calls.updateLast.length, 0);
-});
-
-// --------------------------------------------------------------------------- #
-// tf 切替の再シード直列化: 切替 seed の await 中に再入した playback が旧 tf のバーへ
-//   誤って描かない（🟡4）。初回 1m でバーを確立 → 5m へ切替（seed 保留）→ 保留中の再入で
-//   「新 tfSec(300) × 旧 1m bar」による不正描画が起きないことを固定する。
+// tf 切替の再シード直列化: 切替 seed の await 中に再入した playback が旧 tf のバーへ描かない（🟡4）
 // --------------------------------------------------------------------------- #
 test('a re-entrant playback during a tf-switch seed does not draw against the stale old-tf bar', async () => {
   const nowObj = fakeNow(2_000_000_000);
   const t0 = 2_000_000_000;
   let tf = '1m';
-  let pendingResolve = null; // 非 null の間は 2 回目以降のシードを保留する。
-  const seedFor = (which) => ({ time: Math.floor((t0 - 70_000) / 1000 / (which === '1m' ? 60 : 300)) * (which === '1m' ? 60 : 300), open: 100, high: 100, low: 100, close: 100, volume: 0 });
+  let pendingResolve = null;
+  const seedFor = () => ({ time: 1_000, open: 100, high: 100, low: 100, close: 100, volume: 0 });
   const loadFormingBar = (ref, which) => {
-    if (which === '1m') return Promise.resolve(seedFor('1m')); // 初回は即解決。
-    return new Promise((res) => { pendingResolve = () => res(seedFor('5m')); }); // 5m は保留。
+    if (which === '1m') return Promise.resolve(seedFor());
+    return new Promise((res) => { pendingResolve = () => res(seedFor()); });
   };
-  // 常に「12 秒より前・現在付近」の tick を 1 件返す（適用対象）。
-  const fetchLiveTicks = async () => ({ ok: true, ticks: [[t0 - 20_000, 200.0]], serverNowMs: t0 });
+  const fetchLiveTicks = async () => ({
+    ok: true, ticks: [[t0 - 20_000, 200.0]], barTimes: [1_000], nowBarTime: 1_000, serverNowMs: t0,
+  });
   const calls = { updateLast: [] };
   const renderer = { updateLastCandle: (b) => calls.updateLast.push({ ...b }) };
   const timers = fakeTimers();
@@ -304,100 +362,18 @@ test('a re-entrant playback during a tf-switch seed does not draw against the st
     setInterval: timers.setIntervalFake, clearInterval: timers.clearIntervalFake, now: nowObj.now,
   });
   player.start();
-  await timers.tickPoll();       // clockOffset 確立＋tick を enqueue。
-  await timers.tickPlayback();   // 初回 1m シード（即解決）→ バー確立・tick 適用。
+  await timers.tickPoll();
+  await timers.tickPlayback();
   assert.ok(calls.updateLast.length >= 1, 'setup: 1m bar established');
   const drawnAfter1m = calls.updateLast.length;
 
-  tf = '5m';                     // tf 切替。次 playback で 5m シードが走る（保留）。
-  const seeding = timers.tickPlayback(); // _seed('5m') 開始 → 保留で suspend。
-  await timers.tickPoll();       // 保留中に新しい tick を enqueue。
-  await timers.tickPlayback();   // 再入 playback: FIX は _bar=null で描かない。
-  //   旧実装は _tfSec=300（5m）× 旧 1m bar.time で誤バーを描く（この assert が回帰を捕える）。
+  tf = '5m';
+  const seeding = timers.tickPlayback(); // _seed('5m') 開始 → 保留で suspend
+  await timers.tickPoll();
+  await timers.tickPlayback();           // 再入 playback: _bar=null で描かない
   assert.equal(calls.updateLast.length, drawnAfter1m, 'no draw against stale old-tf bar during the switch seed');
-  pendingResolve();              // 5m seed 解決。
+  pendingResolve();
   await seeding;
-});
-
-// --------------------------------------------------------------------------- #
-// clockOffset がずれた時計を補正する
-// --------------------------------------------------------------------------- #
-test('playback uses serverNow (now+clockOffset) so a skewed client clock still gates by server time', async () => {
-  // client now を server より 5 秒進める。serverNowMs = now - 5000。
-  const nowObj = fakeNow(1_000_000_000);
-  const t0 = 1_000_000_000;
-  const serverNow = t0 - 5000; // clockOffset = serverNow - now = -5000
-  // playUntil(server 基準) = serverNow - 12000 = t0 - 17000。
-  const msApply = t0 - 17001;   // server 基準で 12 秒以上前 → 適用
-  const msHold = t0 - 12000;    // client 基準では 12 秒だが server 基準では 7 秒 → 保留
-  const sp = spies({
-    seedBar: { time: Math.floor(msApply / 1000 / 60) * 60, open: 100, high: 100, low: 100, close: 100, volume: 0 },
-    ticksResponses: [{ ok: true, ticks: [[msApply, 200.0], [msHold, 300.0]], serverNowMs: serverNow }],
-  });
-  const { player, t } = newPlayer({}, sp, nowObj);
-  player.start();
-  await t.tickPoll();     // clockOffset = -5000 を確立
-  await t.tickPlayback();
-  // server 基準の delay 境界で 1 件だけ適用（clockOffset を無視すると 2 件適用され落ちる）。
-  assert.equal(sp.calls.updateLast.length, 1);
-  assert.equal(sp.calls.updateLast.at(-1).close, 200.0);
-});
-
-
-// --------------------------------------------------------------------------- #
-// セッション日 1D（ISSUE-078）: 日曜夜 UTC の tick が月曜セッションの 1D バー（ラベル深夜 time）へ累積する。
-// --------------------------------------------------------------------------- #
-test('1D: 日曜夜 UTC の tick はセッション 1D バー（ラベル深夜 time）へ累積しフリーズしない', async () => {
-  const calls = [];
-  const renderer = { updateLastCandle: (b) => calls.push({ ...b }) };
-  // 2026-07-12 22:03 UTC（日曜夜＝月曜セッション）。seed は /forming_bar が新規約 time（7/13 深夜）を返す。
-  const t0ms = 1783893824000;
-  const seedBar = { time: 1783900800, open: 100, high: 101, low: 99, close: 100.5, volume: 3 };
-  const player = new LiveTickPlayer({
-    renderer,
-    fetchLiveTicks: async () => ({ ok: true, ticks: [], serverNowMs: t0ms }),
-    loadFormingBar: async () => seedBar,
-    datasetRef: 'jp225_tick',
-    getTimeframe: () => '1D',
-    setInterval: () => 1,
-    clearInterval: () => {},
-    now: () => t0ms,
-    delayMs: 0,
-  });
-  await player._seed('1D');
-  player._queue.push([t0ms - 1000, 105.0]); // 日曜 22:03 UTC の tick。
-  await player._playback();
-  assert.equal(calls.length, 1, '日曜夜 tick が適用される（旧 UTC floor では過去期間扱いで無視されていた）');
-  assert.equal(calls[0].time, 1783900800, 'バー time は 1D 規約（セッション日ラベルの UTC 深夜）');
-  assert.equal(calls[0].high, 105.0);
-});
-
-// ISSUE-151: 期間ロールオーバー（新しい期間の最初の tick）でバー確定フック onBarClose を 1 回呼ぶ。
-test('onBarClose fires exactly once when a tick rolls into a new period (bar close event)', async () => {
-  const updates = [];
-  const closes = [];
-  const renderer = { updateLastCandle: (b) => updates.push({ ...b }) };
-  const player = new LiveTickPlayer({
-    renderer,
-    fetchLiveTicks: async () => ({ ok: true, ticks: [], serverNowMs: 0 }),
-    loadFormingBar: async () => ({ time: 0, open: 1, high: 1, low: 1, close: 1, volume: 1 }),
-    datasetRef: 'jp225_tick',
-    getTimeframe: () => '1m',
-    setInterval: () => 1,
-    clearInterval: () => {},
-    now: () => 10 * 60 * 1000,
-    onBarClose: () => closes.push(1),
-  });
-  await player._seed('1m');
-  // 同一期間内の tick → 確定なし
-  player._applyTick(30 * 1000, 100);
-  assert.equal(closes.length, 0);
-  // 次の 1 分期間へロールオーバー → 直前バー確定＝onBarClose 1 回
-  player._applyTick(70 * 1000, 101);
-  assert.equal(closes.length, 1);
-  // 同じ新期間内の続き tick → 追加発火なし
-  player._applyTick(80 * 1000, 102);
-  assert.equal(closes.length, 1);
 });
 
 // --------------------------------------------------------------------------- #
@@ -406,8 +382,6 @@ test('onBarClose fires exactly once when a tick rolls into a new period (bar clo
 //   tick 適用（updateLastCandle）と**同一同期ブロック**で描く。tick 路に HTTP 往復が無いため
 //   「指標更新回数 == ローソク更新回数」が構成上成立する。
 // --------------------------------------------------------------------------- #
-
-// poll のクエリ材料（specs/datasetRef/timeframe/limit）を fetchLiveTicks へ渡す。
 test('poll declares the applied specs with datasetRef/timeframe/limit (tails request)', async () => {
   const specs = [{ instanceId: 'profit_rsi#1', indicatorId: 'profit_rsi', variant: 'default', params: { length: 14 } }];
   const sp = spies();
@@ -417,77 +391,57 @@ test('poll declares the applied specs with datasetRef/timeframe/limit (tails req
   }, sp, fakeNow(), () => '15m');
   player.start();
   await t.tickPoll();
-  assert.deepEqual(sp.calls.tailReq.at(-1), {
+  assert.deepEqual(sp.calls.req.at(-1), {
     specs, datasetRef: 'jp225_tick', timeframe: '15m', limit: 1386,
   });
 });
 
-// 申告が空（指標 0 件・未注入）なら従来クエリのまま＝サーバ応答も従来 byte（後方互換）。
-test('poll sends no tails request when nothing is applied (backward compatible query)', async () => {
-  const sp = spies();
-  const { player, t } = newPlayer({ getComputeSpecs: () => [] }, sp);
-  player.start();
-  await t.tickPoll();
-  assert.equal(sp.calls.tailReq.at(-1), null);
-});
+// 回数一致の本体（全時間足で同一）: 適用した tick と同数だけ applyFormingTails が呼ばれ、
+//   その時刻は直前に描いた形成中バーの time と一致する。
+for (const tf of ALL_TF) {
+  test(`[${tf}] every applied tick draws its indicator tails in the same synchronous block`, async () => {
+    const t0 = 1_000_000_000;
+    const ticks = [[t0 - 20_000, 200.0], [t0 - 19_000, 201.0], [t0 - 18_000, 202.0]];
+    const tails = ticks.map(([ms], i) => ({ tickMs: ms, tails: { 'profit_rsi#1': { RSI: 50 + i } } }));
+    const order = [];
+    const sp = spies({
+      seedBar: null,
+      bars: null,
+      ticksResponses: [{
+        ok: true, ticks, tails, barTimes: ticks.map(() => 9_000), nowBarTime: 9_000, serverNowMs: t0,
+      }],
+    });
+    sp.renderer = { updateLastCandle: (b) => order.push(['candle', b.time]) };
+    const { player, t } = newPlayer({
+      renderer: sp.renderer,
+      getComputeSpecs: () => [{ instanceId: 'profit_rsi#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
+      applyFormingTails: (map, barTime) => order.push(['tails', barTime, map]),
+    }, sp, fakeNow(t0), () => tf);
+    player.start();
+    await t.tickPlayback();
+    await t.tickPoll();
+    await t.tickPlayback();
+    const candles = order.filter((o) => o[0] === 'candle');
+    const applied = order.filter((o) => o[0] === 'tails');
+    assert.equal(candles.length, 3, 'ローソク更新は tick 数と同数');
+    assert.equal(applied.length, 3, '指標更新回数 == ローソク更新回数');
+    assert.deepEqual(order.map((o) => o[0]), ['candle', 'tails', 'candle', 'tails', 'candle', 'tails']);
+    for (let i = 0; i < 3; i += 1) {
+      assert.equal(applied[i][1], candles[i][1]);
+    }
+    assert.deepEqual(applied[2][2], { 'profit_rsi#1': { RSI: 52 } });
+    assert.equal(player.stats().tailsApplied, 3);
+  });
+}
 
-// 回数一致の本体: 適用した tick と同数だけ applyFormingTails が呼ばれ、その時刻は
-//   直前に描いた形成中バーの time と一致する（価格と指標が必ず同じ点に載る）。
-test('every applied tick draws its indicator tails in the same synchronous block', async () => {
-  const t0 = 1_000_000_000;
-  const ticks = [[t0 - 20_000, 200.0], [t0 - 19_000, 201.0], [t0 - 18_000, 202.0]];
-  const tails = ticks.map(([ms], i) => ({ tickMs: ms, tails: { 'profit_rsi#1': { RSI: 50 + i } } }));
-  const order = [];
-  const sp = spies({ seedBar: null, ticksResponses: [{ ok: true, ticks, tails, serverNowMs: t0 }] });
-  sp.renderer = { updateLastCandle: (b) => order.push(['candle', b.time]) };
-  const nowObj = fakeNow(t0);
-  const { player, t } = newPlayer({
-    renderer: sp.renderer,
-    getComputeSpecs: () => [{ instanceId: 'profit_rsi#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
-    applyFormingTails: (map, barTime) => order.push(['tails', barTime, map]),
-  }, sp, nowObj, () => '1m');
-  player.start();
-  await t.tickPoll();
-  await t.tickPlayback();                       // seed（tf 変化）
-  await t.tickPlayback();                       // 12 秒より古い tick を適用
-  const candles = order.filter((o) => o[0] === 'candle');
-  const applied = order.filter((o) => o[0] === 'tails');
-  assert.equal(candles.length, 3, 'ローソク更新は tick 数と同数');
-  assert.equal(applied.length, 3, '指標更新回数 == ローソク更新回数');
-  // 対で交互（candle → tails → candle → tails …）＝同一同期ブロックで描いている。
-  assert.deepEqual(order.map((o) => o[0]), ['candle', 'tails', 'candle', 'tails', 'candle', 'tails']);
-  // 時刻は直前に描いたローソクと同一。
-  for (let i = 0; i < 3; i += 1) {
-    assert.equal(applied[i][1], candles[i][1]);
-  }
-  assert.deepEqual(applied[2][2], { 'profit_rsi#1': { RSI: 52 } });
-  assert.equal(player.stats().tailsApplied, 3);
-});
-
-// tails 非同梱（申告なし・非対応 tf・材料不足でサーバが落とした）は価格だけ描く。
 test('ticks without tails still update the candle (indicator draw is simply skipped)', async () => {
   const t0 = 1_000_000_000;
-  const sp = spies({ seedBar: null, ticksResponses: [{ ok: true, ticks: [[t0 - 20_000, 200.0]], serverNowMs: t0 }] });
-  let tailCalls = 0;
-  const { player, t } = newPlayer({
-    applyFormingTails: () => { tailCalls += 1; },
-    getComputeSpecs: () => [{ instanceId: 'x#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
-  }, sp, fakeNow(t0), () => '1m');
-  player.start();
-  await t.tickPoll();
-  await t.tickPlayback();
-  await t.tickPlayback();
-  assert.equal(sp.calls.updateLast.length, 1);
-  assert.equal(tailCalls, 0);
-});
-
-// tickMs がずれた tails は当該 tick で捨てる（応答が ticks と対応していない異常時の保険）。
-test('a tails entry whose tickMs does not match its tick is dropped', async () => {
-  const t0 = 1_000_000_000;
-  const ticks = [[t0 - 20_000, 200.0]];
   const sp = spies({
     seedBar: null,
-    ticksResponses: [{ ok: true, ticks, tails: [{ tickMs: t0 - 99_999, tails: { 'x#1': { v: 1 } } }], serverNowMs: t0 }],
+    bars: null,
+    ticksResponses: [{
+      ok: true, ticks: [[t0 - 20_000, 200.0]], barTimes: [9_000], nowBarTime: 9_000, serverNowMs: t0,
+    }],
   });
   let tailCalls = 0;
   const { player, t } = newPlayer({
@@ -495,30 +449,51 @@ test('a tails entry whose tickMs does not match its tick is dropped', async () =
     getComputeSpecs: () => [{ instanceId: 'x#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
   }, sp, fakeNow(t0), () => '1m');
   player.start();
-  await t.tickPoll();
   await t.tickPlayback();
+  await t.tickPoll();
   await t.tickPlayback();
   assert.equal(sp.calls.updateLast.length, 1);
   assert.equal(tailCalls, 0);
 });
 
-// 12 秒の遅延中に時間足を切り替えたら、旧足で計算された tails は適用しない（別足の値を描かない）。
-test('queued tails computed for a previous timeframe are discarded after a tf switch', async () => {
+test('a tails entry whose tickMs does not match its tick is dropped', async () => {
   const t0 = 1_000_000_000;
-  const ticks = [[t0 - 20_000, 200.0]];
-  const tails = [{ tickMs: t0 - 20_000, tails: { 'x#1': { v: 1 } } }];
-  const sp = spies({ seedBar: null, ticksResponses: [{ ok: true, ticks, tails, serverNowMs: t0 }] });
-  let tf = '1m';
+  const sp = spies({
+    seedBar: null,
+    bars: null,
+    ticksResponses: [{
+      ok: true,
+      ticks: [[t0 - 20_000, 200.0]],
+      tails: [{ tickMs: t0 - 99_999, tails: { 'x#1': { v: 1 } } }],
+      barTimes: [9_000], nowBarTime: 9_000, serverNowMs: t0,
+    }],
+  });
   let tailCalls = 0;
   const { player, t } = newPlayer({
     applyFormingTails: () => { tailCalls += 1; },
     getComputeSpecs: () => [{ instanceId: 'x#1', indicatorId: 'profit_rsi', variant: 'default', params: {} }],
-  }, sp, fakeNow(t0), () => tf);
+  }, sp, fakeNow(t0), () => '1m');
   player.start();
-  await t.tickPoll();                           // 1m で tails を要求・受領
-  tf = '5m';                                    // 適用前に足を切り替える
-  await t.tickPlayback();                       // 新 tf でシード
-  await t.tickPlayback();                       // tick 適用
-  assert.equal(sp.calls.updateLast.length, 1, '価格は新 tf の形成中バーへ適用する');
-  assert.equal(tailCalls, 0, '旧 tf で計算された指標値は描かない');
+  await t.tickPlayback();
+  await t.tickPoll();
+  await t.tickPlayback();
+  assert.equal(sp.calls.updateLast.length, 1);
+  assert.equal(tailCalls, 0);
+});
+
+// barTimes が無い応答（未知 tf 等でサーバが解決できない）はローソクも指標も描かない
+//   ＝バー帰属を推測で埋めない（誤ったバーへ描くより描かないほうが正しい）。
+test('a response without barTimes draws nothing (no client-side guessing of bar attribution)', async () => {
+  const t0 = 1_000_000_000;
+  const sp = spies({
+    seedBar: null,
+    bars: null,
+    ticksResponses: [{ ok: true, ticks: [[t0 - 20_000, 200.0]], serverNowMs: t0 }],
+  });
+  const { player, t } = newPlayer({}, sp, fakeNow(t0), () => '1m');
+  player.start();
+  await t.tickPlayback();
+  await t.tickPoll();
+  await t.tickPlayback();
+  assert.equal(sp.calls.updateLast.length, 0);
 });
