@@ -5,8 +5,14 @@ DataFrame を当該ルールで OHLC 再集計する :func:`resample_ohlc` を�
 ``dataset.resample_ohlc`` から物理移設した「唯一の規則源」であり、rollup（:mod:`marketdata.rollup`）と
 indicator_ui ``dataset``（薄い再エクスポート）が共通して再利用する（再実装を禁ずる）。
 
-依存方向（厳守）: 本モジュールは **pandas のみ** に依存し、indicator_ui を逆 import しない
-（marketdata の循環依存禁止・設計 §4）。
+依存方向（厳守）: 本モジュールは **pandas と marketdata.csv_schema のみ** に依存し、indicator_ui を
+逆 import しない（marketdata の循環依存禁止・設計 §4）。``csv_schema`` は依存ゼロの定数モジュールで、
+合算集約する列（volume/up/dn）の唯一源＝ここで列名を書き写さないために参照する。
+
+この宣言は ``marketdata/tests/test_module_dependency_declarations.py`` が **AST 走査で強制**する
+（関数内の遅延 import も対象）。かつて本 docstring は「pandas のみ」と述べていたが実際は
+``csv_schema`` を import しており、宣言だけが事実と食い違ったまま残っていた（ISSUE-262）。
+依存を増やすときは本 docstring と当該テストの許可表を**同時に**更新する。
 
 時刻は解像度非依存。pandas 3 系では分/時は ``"5min"/"1h"``、週は取引週末（金曜ラベル ``W-FRI``）、
 月末は ``"ME"``（旧 ``"M"`` は廃止）。``"1m"`` は無変換（``None``＝原子そのもの）。

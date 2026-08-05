@@ -66,10 +66,10 @@ def _data_dir() -> Path:
 
 
 def _rollup_timeframes() -> Tuple[str, ...]:
-    """ロールアップ対象の上位足（原子 "1m" を除く全 TF・build_tick_rollup._rollup_timeframes と同規則）。"""
-    from marketdata import resample
+    """ロールアップ対象の上位足。規則は marketdata.rollup へ一本化（ISSUE-262）。"""
+    from marketdata.rollup import rollup_timeframes
 
-    return tuple(tf for tf in resample.TIMEFRAME_RULES if tf != "1m")
+    return rollup_timeframes()
 
 
 # --------------------------------------------------------------------------- #
@@ -278,8 +278,14 @@ _STREAM_RECONCILE_SECONDS = 1800.0   # 当日全量再取得による自己修�
 #   二度と直らない。参照実装の固定遅延と同じ根拠（5.5 + 5 + 余裕）で 12 秒待ってから確定する。
 _STREAM_M1_GRACE_SECONDS = 12.0
 
-# 日別 parquet の正準列（fetch_ticks_ymd / refresh_day_parquet と同一の raw ネイティブ列）。
-_TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice", "bidVolume", "askVolume"]
+# 日別 parquet の正準列。唯一源は simulator.tools.ingest_ticks.RAW_COLUMNS（ISSUE-262）。
+def _tick_columns() -> "list[str]":
+    from simulator.tools.ingest_ticks import RAW_COLUMNS
+
+    return list(RAW_COLUMNS)
+
+
+_TICK_COLUMNS = _tick_columns()
 
 
 def _rows_to_frame(rows: Sequence[tuple]) -> pd.DataFrame:

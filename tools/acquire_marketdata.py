@@ -38,8 +38,14 @@ from typing import Iterable, List, Optional, Sequence, Set
 LOG = logging.getLogger("acquire_marketdata")
 
 SYMBOL = "JP225"
-TICK_PARQUET_NAME = "JP225_ticks.parquet"
-TICK_EMPTY_NAME = "JP225_ticks.empty"
+# tick tree のファイル名はレイアウト権威（marketdata.tick_m1）から採る（ISSUE-262）。
+def _tick_names() -> "tuple[str, str]":
+    from marketdata.tick_m1 import day_parquet_name
+    name = day_parquet_name(SYMBOL)
+    return name, name[: -len(".parquet")] + ".empty"
+
+
+TICK_PARQUET_NAME, TICK_EMPTY_NAME = _tick_names()
 INGEST_STATE_NAME = "ingest_state.json"
 STAGE_NAMES = ("bars", "daily", "ticks", "ingest")
 
@@ -58,7 +64,10 @@ def _data_dir() -> Path:
 
 
 def _default_ticks_root() -> Path:
-    return _data_dir() / "ticks"
+    """ティック tree の基点。レイアウトの単一権威（marketdata.tick_m1）へ委譲する（ISSUE-262）。"""
+    from marketdata.tick_m1 import tick_root  # 遅延: import 副作用を実行時に限定
+
+    return tick_root(_data_dir())
 
 
 def _default_tickstore_root() -> Path:

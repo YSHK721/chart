@@ -32,7 +32,11 @@ from marketdata.paths import DATA_DIR  # noqa: E402
 from marketdata.tick_m1 import day_parquet_path, tick_root  # noqa: E402
 
 TOL = 1e-6  # float 比較許容（表現差を訂正と誤認しない）
-COLS = ["timestamp", "bidPrice", "askPrice", "bidVolume", "askVolume"]
+# 生ティックの正準列の唯一源（ISSUE-262）。
+from simulator.tools.ingest_ticks import RAW_COLUMNS  # noqa: E402
+
+COLS = list(RAW_COLUMNS)
+VALUE_COLS = tuple(RAW_COLUMNS[1:])  # timestamp を除く数値列
 
 
 def _saved_days() -> list[dt.date]:
@@ -56,14 +60,14 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     df = df[[c for c in COLS if c in df.columns]].copy()
     ts = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
     df["ts_ns"] = ts.astype("int64")
-    for c in ("bidPrice", "askPrice", "bidVolume", "askVolume"):
+    for c in VALUE_COLS:
         if c in df.columns:
             df[c] = (df[c].astype(float) / TOL).round().astype("int64")  # 許容誤差で量子化
     return df.sort_values("ts_ns", kind="stable").reset_index(drop=True)
 
 
 def _tuples(df: pd.DataFrame) -> list[tuple]:
-    valcols = [c for c in ("bidPrice", "askPrice", "bidVolume", "askVolume") if c in df.columns]
+    valcols = [c for c in VALUE_COLS if c in df.columns]
     return [tuple(r) for r in df[["ts_ns"] + valcols].itertuples(index=False, name=None)]
 
 

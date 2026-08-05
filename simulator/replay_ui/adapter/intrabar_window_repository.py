@@ -87,15 +87,12 @@ class IntrabarWindowRepository:
         frames: "list[pd.DataFrame]" = []
         d0 = datetime.fromtimestamp(start, tz=timezone.utc).date()
         d1 = datetime.fromtimestamp(max(start, end - 1), tz=timezone.utc).date()
+        from marketdata.tick_m1 import day_parquet_path as _day_parquet_path
+
         day = d0
         while day <= d1:
-            p = (
-                self._tick_root
-                / f"{day.year:04d}"
-                / f"{day.month:02d}"
-                / f"{day.day:02d}"
-                / "JP225_ticks.parquet"
-            )
+            # tick tree のレイアウトは marketdata.tick_m1 が単一権威（ISSUE-262）。
+            p = _day_parquet_path(day, data_dir=self._tick_root.parent)
             if p.is_file():
                 frames.append(pd.read_parquet(p, columns=["timestamp", "bidPrice", "askPrice"]))
             day += timedelta(days=1)
