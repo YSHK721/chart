@@ -4408,3 +4408,12 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **私の変更とは無関係**: 私の変更を stash した状態で再ビルドしても同じ重複が出ることを実測で確認済み。
 - **抜本的対策**: 別名束縛をバンドル全体で 1 回だけ出す（同名別名は同一シンボルを指すため重複除去は安全）。あわせて `tests/bundle_builds_and_parses.test.js` を新設し、**実際に build.mjs を走らせて `node --check` で構文検証**する（const 重複の検出・生成物の取り込み確認を含む）。追跡下生成物の陳腐化もこれで落ちる。
 - **検証**: 重複除去を外すと新規検定 2 件が Red。修正後は A方式バンドルが構文的に正しく生成される（1,486,108 bytes・`node --check` 通過）。
+
+## ISSUE-267: [設計是正] MP actor の成長窓規則の複製を GrowthWindow への委譲へ置換する（2026-08-05）
+- **ステータス**: RESOLVED（2026-08-05・refactor/mp-actor-growth-window-delegation）
+- **重大度**: Medium（規則の第 2 定義。ずれると base 窓の下限が食い違う）
+- **背景**: `market_profile_actor._sessionFrom()` が `GrowthWindow.forCurrent('normal', tf, now).from` と同一規則（`min(セッション始端, 周期始端)`）を独自実装していた。ISSUE-262 では複製を残し parity 検定で拘束するに留めていた（＝抜本的解決ではなかった）。
+- **複製の理由が誤りだったこと**: コメントは「actor と growth_window.js の双方が top-level `const TF_BAR_SEC` を持つため二重宣言衝突（bundle 破損）」と説明していたが、`const TF_BAR_SEC` の宣言は `domain/tf_meta.js` の 1 箇所のみで**前提が成立していなかった**。実際の阻害は A方式バンドル（`build.mjs` のフラット連結）が `growth_window.js` を取り込めないことだった。
+- **抜本的対策**: A方式の廃止（ISSUE-266）で制約が消えたため、複製をやめて `GrowthWindow` へ委譲する。未使用になった `TF_BAR_SEC` / `sessionDayStart` の import も撤去。
+- **検定の置換**: 「複製と唯一源の一致」を見る parity 検定を、「委譲していること」＋「式が actor へ書き戻されていないこと」を見る構造検定へ差し替えた（複製が無い以上、一致を見る検定は成立しない）。
+- **検証**: 式を actor へ書き戻すと新規検定が Red（識別力を実証）。回帰: Python 2,533 / indicator_ui web 1,075 / market_profile web 318 / replay_ui web 301 / unified_ui web 43 全通過。
