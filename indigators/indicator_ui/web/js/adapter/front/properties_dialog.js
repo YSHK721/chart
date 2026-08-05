@@ -4,7 +4,7 @@
 //   §2 ダイアログ構造（タイトル/タブ/フッター・ドラッグ・×閉じる）
 //   §3 PARAM_DEF→コントロール写像 / §3.4 グループ / §3.5 条件付き有効化 / §3.6 ツールチップ
 //   §5 リアルタイム検証（F-11・OK 制御）/ §6 スタイル・可視性タブ / §7 振る舞い・状態遷移
-//   §8.2 PropertiesDialog 署名 / §8.4 upstream JS API 非依存 / §9 A 方式可動差（H-1）。
+//   §8.2 PropertiesDialog 署名 / §8.4 upstream JS API 非依存。
 //
 // 純ロジックは usecase/form_model.js（buildFormModel/computeEnabled/validateForm/resetToDefaults）
 //   へ委譲する（DOM 非依存ロジックの分離・§10.4）。本ファイルは DOM 構築・イベント配線のみ。
@@ -38,27 +38,19 @@ import { timeframeLabels } from './timeframe_menu.js';
 // toHex は本モジュールの公開面として維持する（既存の import 元を変えない・ISSUE-181）。
 export { toHex };
 
-// A 方式（埋め込み事前計算）で「variant 以外のパラメータが描画へ反映されない」ことを
-// UI に明示する注記（§9.3・H-1・サイレント不一致を作らない）。
-const A_METHOD_NOTE =
-  'この値の反映は B 方式（ライブ API）で有効です。現プロトタイプ（A 方式）では variant 以外の値の変更は描画へ未反映です。';
-
 export class PropertiesDialog {
   // { document, def, instance, onApply, onCancel }
   //   def      : IndicatorDef（catalog.get の戻り）
   //   instance : AppliedInstance（params/variant を持つ。null 可＝既定値で開く）
   //   onApply  : (values) => void   OK 押下時に収集値を渡す（→ recomputeInstance）
   //   onCancel : () => void         キャンセル/×/背景時（任意）
-  // mode: 'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算・params 未反映）。
-  //   既定 'a'（従来挙動・単体テスト互換）。'b' では A 方式注記を出さない（実反映されるため）。
   constructor({
-    document: doc, def, instance = null, mode = 'a', context = {},
+    document: doc, def, instance = null, context = {},
     seriesStyles = null, seriesTabs = true, onApply = () => {}, onCancel = () => {},
   }) {
     this._doc = doc;
     this._def = def;
     this._instance = instance;
-    this._mode = mode;
     // context: computeEnabled の関数述語へ渡す外部状態（例 { timeframe, servedMode }）。
     //   ISSUE-070: mode=sessions×対応tf の解像度グレーアウト判定に timeframe が要る（param 値外）。
     this._context = context || {};
@@ -80,8 +72,7 @@ export class PropertiesDialog {
       this._values[f.name] = f.value;
     }
 
-    // バリアント（profit_band global↔robust 等）。OK 時に variant 変更を実反映する
-    //   経路を残す（A 方式でも variant 切替は事前計算 series があり実描画される・§9.2）。
+    // バリアント（profit_band global↔robust 等）。OK 時に variant 変更を実反映する。
     this._variants = (def.compute && def.compute.variants) || ['default'];
     this._variant = (instance && instance.variant) || this._variants[0];
 
@@ -260,10 +251,6 @@ export class PropertiesDialog {
 
     // A 方式注記はパラメータタブに出す（ISSUE-109 で移設）。スタイル/可視性は applyOptions 直接
     //   反映のため A/B 両方式で実反映される＝注記の対象はパラメータ値のみになった。
-    const note = this._buildAMethodNote();
-    if (note) {
-      pane.append(note);
-    }
 
     // バリアントセレクタ（複数 variant を持つ指標のみ・global↔robust 等）。
     //   variant 変更は A/B 双方で実描画反映される（事前計算 series が存在・§9.2）。
@@ -608,21 +595,6 @@ export class PropertiesDialog {
       }
     }
     return patch;
-  }
-
-  // A 方式の可動差を明示する注記要素（§9.3・H-1・サイレント不一致を作らない）。
-  //   B 方式（served）では params が実反映されるため注記を出さない（null を返す）。
-  //   A 方式（file://）でのみ注記を生成して返す（モード明示・サイレント化しない）。
-  _buildAMethodNote() {
-    if (this._mode === 'b') {
-      return null;
-    }
-    const doc = this._doc;
-    const note = doc.createElement('div');
-    note.className = 'prop-a-method-note';
-    note.dataset.aMethodNote = '1';
-    note.textContent = A_METHOD_NOTE;
-    return note;
   }
 
   // ---- フッター（デフォルト/キャンセル/OK）-----------------------------------

@@ -122,7 +122,7 @@ export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
   ]),
   fields: Object.freeze([
     '_marketProfile', '_mpModeResolver', '_mpGrowthResolver', '_state',
-    '_catalog', '_meta', '_datasetRef', '_document', '_mode', '_timeframe',
+    '_catalog', '_meta', '_datasetRef', '_document', '_timeframe',
   ]),
   // reveal seam: replay subclass のみ在席（present base では非在席・controller は != null で許容）。
   optionalFields: Object.freeze(['_untilTime']),
@@ -132,7 +132,7 @@ export class IndicatorController {
   // mode: 計算モード。'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算）。
   //   既定 'a'（従来挙動・単体テスト互換）。composition root が served 判定で 'b' を注入する。
   constructor({
-    catalog, compute, persistence, renderer, document: doc = null, mode = 'a',
+    catalog, compute, persistence, renderer, document: doc = null,
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
     marketProfile = null, mpModeResolver = null, mpGrowthResolver = null,
   }) {
@@ -149,7 +149,6 @@ export class IndicatorController {
     this._router = new SeriesRenderRouter(this, renderer);
     // 永続化・復元（UC-07・A10・ISSUE-181）を委譲する協働子。復元中 Promise は協働子が所有する。
     this._store = new IndicatorStateStore(this);
-    this._mode = mode;
     // Market Profile アクター（任意注入）。computeId==='market_profile' の指標を
     //   /compute 経由でなく本アクター（GET /market_profile → primitive）へ委譲する。
     //   既存トグル（#market-profile-toggle）とは別導線（二重導線）。未注入時は MP 分岐が no-op。
@@ -965,13 +964,8 @@ export class IndicatorController {
     // 指標追加ダイアログ（開閉・検索・タブ・カテゴリ）の配線は IndicatorDialogController へ
     //   委譲する（ISSUE-181・絞り込み状態 _filter ごと移送済み）。
     this._dialog.bindElements(e);
-    // 時間足セレクタ（日/週/月…）。A方式（SAMPLE_DATA・再集計不可）は無効化する。
+    // 時間足セレクタ（日/週/月…）。
     for (const b of e.timeframeBtns ?? []) {
-      if (this._mode === 'a') {
-        b.disabled = true;
-        b.title = 'A方式（file://）では時間足切替は無効です';
-        continue;
-      }
       b.addEventListener('click', () => this.setTimeframe(b.dataset.timeframe));
     }
     this._syncTimeframeButtons();
@@ -1058,7 +1052,6 @@ export class IndicatorController {
       document: doc,
       def,
       instance: instanceForDialog,
-      mode: this._mode,
       // ISSUE-109: スタイル/可視性タブの行と初期値は実描画系列（renderer が保持する現スタイル）から
       //   構築する（カタログ SeriesDef はスタイル既定を持たない＝プレースホルダ表示の是正）。
       //   getSeriesStyles 未実装の renderer（後方互換 Fake/SSR）は null＝dialog の静的フォールバック

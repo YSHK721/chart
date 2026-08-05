@@ -3,7 +3,6 @@
 // 設計入力: 内部設計書 §2.1 / §3.3.5（ComputeHttpClient）/ §6.3（/candles）、
 //   パラメータ設定ダイアログ §9（B方式 params 実反映）。
 // 観点:
-//   - modeForProtocol: http/https → 'b'、file:/その他 → 'a'。
 //   - bootstrap: served（http）時は ComputeHttpClient（/compute）を注入し /candles を取得して
 //     メイン系列を差し替える。
 // 構造: Arrange-Act-Assert。upstream JS（lwc）と fetch は Fake を注入（DOM/実ネットワーク非依存）。
@@ -11,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { bootstrap, modeForProtocol, fetchLiveTicks } from '../js/adapter/front/composition_root_front.js';
+import { bootstrap, fetchLiveTicks } from '../js/adapter/front/composition_root_front.js';
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { LiveUpdater } from '../js/adapter/front/live_updater.js';
 import { LiveTickPlayer } from '../js/adapter/front/live_tick_player.js';
@@ -48,24 +47,17 @@ function fakeLwc() {
 
 const noStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 
-test('modeForProtocol maps http/https to b and others to a', () => {
-  assert.equal(modeForProtocol('http:'), 'b');
-  assert.equal(modeForProtocol('https:'), 'b');
-  assert.equal(modeForProtocol('file:'), 'a');
-  assert.equal(modeForProtocol('about:'), 'a');
-});
 
-test('bootstrap injects ComputeHttpClient and mode=b when served over http', async () => {
+test('bootstrap injects ComputeHttpClient when served over http', async () => {
   // Arrange
   const { lwc } = fakeLwc();
   const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
   // Act
-  const { controller, mode, ready } = await bootstrap({
+  const { controller, ready } = await bootstrap({
     lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
   });
   await ready;
   // Assert
-  assert.equal(mode, 'b');
   assert.ok(controller._compute instanceof ComputeHttpClient);
 });
 

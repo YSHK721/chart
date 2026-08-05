@@ -51,30 +51,8 @@ test('toHex: returns safe default for unparseable input', () => {
 });
 
 // A 方式注記の出し分け（§9.3・H-1）: B 方式（served）では実反映されるため注記を出さない。
-test('_buildAMethodNote returns a note element in A-mode (file://) with the a-method marker', () => {
-  // Arrange
-  const dialog = new PropertiesDialog({ document: fakeDoc(), def: MIN_DEF, instance: null, mode: 'a' });
-  // Act
-  const note = dialog._buildAMethodNote();
-  // Assert
-  assert.ok(note);
-  assert.equal(note.className, 'prop-a-method-note');
-  assert.equal(note.dataset.aMethodNote, '1');
-});
 
-test('_buildAMethodNote returns null in B-mode (served) so the A-method note is hidden', () => {
-  // Arrange
-  const dialog = new PropertiesDialog({ document: fakeDoc(), def: MIN_DEF, instance: null, mode: 'b' });
-  // Act
-  const note = dialog._buildAMethodNote();
-  // Assert
-  assert.equal(note, null);
-});
 
-test('PropertiesDialog defaults to A-mode when mode is omitted (backward compatible)', () => {
-  const dialog = new PropertiesDialog({ document: fakeDoc(), def: MIN_DEF, instance: null });
-  assert.ok(dialog._buildAMethodNote());
-});
 
 // 新規インスタンス（instance=null）の既定 variant は variants[0]。catalog の
 // profit_band は variants=['robust','global'] のため、新規ダイアログ既定が是正版 robust に
@@ -243,7 +221,7 @@ test('_buildSegmented click updates _values and fires _onChange (mode=sessions �
 test('_refreshEnabled: 無効化された選択中 option は有効な先頭 option へ自動切替（日別×1m の zp→dwell）', () => {
   const dialog = new PropertiesDialog({
     document: segFakeDoc(), def: get('market_profile'), instance: null,
-    context: { timeframe: '1m', servedMode: 'b' },
+    context: { timeframe: '1m' },
   });
   dialog._fieldEls = fakeFieldEls(['dispbp', 'va', 'src', 'period', 'mode']);
   // 実 select を模す最小 fake（options 配列＋value）。

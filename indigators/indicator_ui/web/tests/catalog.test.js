@@ -246,12 +246,12 @@ test('catalog: market_profile exposes period ENUM [all,day] default all, visible
   assert.equal(period.conditionalEnable, null, 'グレーアウト述語は廃止');
   const vis = period.conditionalVisible;
   assert.equal(typeof vis, 'function');
-  assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1m', servedMode: 'b' }), true, 'zp×通常×1m は表示');
-  assert.equal(vis({ src: 'dwell', mode: 'normal' }, { timeframe: '1m', servedMode: 'b' }), false, 'dwell は非表示');
-  assert.equal(vis({ src: 'zp', mode: 'sessions' }, { timeframe: '1h', servedMode: 'b' }), false, '日別は非表示');
+  assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1m' }), true, 'zp×通常×1m は表示');
+  assert.equal(vis({ src: 'dwell', mode: 'normal' }, { timeframe: '1m' }), false, 'dwell は非表示');
+  assert.equal(vis({ src: 'zp', mode: 'sessions' }, { timeframe: '1h' }), false, '日別は非表示');
   // ISSUE-086: 全時間足統一＝1W/1M でも期間を表示（「当日」窓はチャート tf と独立に定義できる）。
-  assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1W', servedMode: 'b' }), true, '1W も表示（統一）');
-  assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1M', servedMode: 'b' }), true, '1M も表示（統一）');
+  assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1W' }), true, '1W も表示（統一）');
+  assert.equal(vis({ src: 'zp', mode: 'normal' }, { timeframe: '1M' }), true, '1M も表示（統一）');
   assert.equal(vis({ src: 'zp', mode: 'normal' }, null), true, 'ctx 不在（A方式/テスト）は mode/src 条件のみ');
   assert.equal(period.group, paramOf(d, 'dispbp').group);
 });
@@ -264,14 +264,13 @@ test('catalog: market_profile dispbp は tf-period描画時に非表示（ISSUE-
   assert.equal(dispbp.conditionalEnable, null, 'グレーアウト述語は廃止');
   assert.equal(typeof dispbp.conditionalVisible, 'function');
   const fn = dispbp.conditionalVisible;
-  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'b', timeframe: '1h' }), false);
-  assert.equal(fn({ mode: 'sessions', src: 'zp' }, { servedMode: 'b', timeframe: '1h' }), false);
-  assert.equal(fn({ mode: 'normal', src: 'dwell' }, { servedMode: 'b', timeframe: '1h' }), true);
+  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { timeframe: '1h' }), false);
+  assert.equal(fn({ mode: 'sessions', src: 'zp' }, { timeframe: '1h' }), false);
+  assert.equal(fn({ mode: 'normal', src: 'dwell' }, { timeframe: '1h' }), true);
   // ISSUE-086: 1W/1M もバケット列を描くため日別では非表示（他 tf と統一）。
-  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'b', timeframe: '1W' }), false);
-  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'b', timeframe: '1M' }), false);
-  assert.equal(fn({ mode: 'sessions', src: 'zp' }, { servedMode: 'b', timeframe: '5m' }), true);
-  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { servedMode: 'a', timeframe: '1h' }), true);
+  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { timeframe: '1W' }), false);
+  assert.equal(fn({ mode: 'sessions', src: 'dwell' }, { timeframe: '1M' }), false);
+  assert.equal(fn({ mode: 'sessions', src: 'zp' }, { timeframe: '5m' }), true);
   assert.equal(fn({ mode: 'sessions', src: 'dwell' }, {}), true);
 });
 

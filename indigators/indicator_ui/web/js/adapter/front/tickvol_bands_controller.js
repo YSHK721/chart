@@ -98,11 +98,10 @@ export class TickvolBandsController {
       document: doc,
       def,
       instance: { ...inst, params: current },
-      mode: host._mode,
       // 系列を持たない（背景プリミティブが描く）ためスタイル/可視性タブは出さない（MP と同じ）。
       seriesTabs: false,
       // 時間足ゲート（1h 以下）の述語が ctx.timeframe を読む。
-      context: { timeframe: host._timeframe, servedMode: host._mode },
+      context: { timeframe: host._timeframe },
       onApply: (values) => { runApply(values); },
       onCancel: () => {},
     });

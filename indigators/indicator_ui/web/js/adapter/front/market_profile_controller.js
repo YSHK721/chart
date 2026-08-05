@@ -219,13 +219,12 @@ export class MarketProfileController {
       document: doc,
       def,
       instance: { ...inst, params: currentParams },
-      mode: host._mode,
       // ISSUE-109: MP は line/histogram 系列を持たない（TPO 描画は primitive・SeriesDef は
       //   ダミー 1 件）ため、機能しないスタイル/可視性タブ自体を出さない。
       seriesTabs: false,
-      // ISSUE-070: MP 解像度パラメータのグレーアウト判定に現 timeframe と served/A方式を渡す
+      // ISSUE-070: MP 解像度パラメータのグレーアウト判定に現 timeframe を渡す
       //   （tf-period が日別列を描くとき resmode/bins/range は無効＝GRID_W 固定のため）。
-      context: { timeframe: host._timeframe, servedMode: host._mode },
+      context: { timeframe: host._timeframe },
       onApply: (values) => { runApply(values); },
       onCancel: () => {},
     });

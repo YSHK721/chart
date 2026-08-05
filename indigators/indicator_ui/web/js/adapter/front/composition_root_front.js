@@ -5,15 +5,7 @@
 // 依存配線: catalog / compute / persistence / renderer を IndicatorController に注入する唯一の点。
 //   - upstream JS（LightweightCharts）は ChartRenderer の生成にのみ使い、ここでは
 //     chart / mainSeries を作って渡す（系列追加系 API 名はここで参照しない）。
-//
-// 方式切替（B方式を既定に）:
-//   - served（http://・https://）: ComputeHttpClient（fetch /compute）を注入し、candles は
-//     GET /candles から取得する（same-origin・CORS/バンドル不要）。params が実再計算される。
-//   - file:// 単体時: 従来 EmbeddedComputeGateway + SAMPLE_DATA にフォールバック（A方式）。
-//   判定は location.protocol（http/https → 'b' / それ以外 → 'a'）。
 
-// SAMPLE_DATA（埋め込み 635KB）は A方式（file://）でのみ動的 import する。B方式（served）は
-// candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
 import { ChartRenderer } from './chart_renderer.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
 import { CurrentPriceView } from './current_price_view.js';
@@ -22,7 +14,6 @@ import { LiveUpdater } from './live_updater.js';
 import { LiveFollowController } from './live_follow_controller.js';
 import { FormingBarUpdater } from './forming_bar_updater.js';
 import { LiveTickPlayer } from './live_tick_player.js';
-import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
 import { IndicatorController } from './indicator_controller.js';
@@ -60,11 +51,6 @@ import { GrowthCoordinator } from './mp_live_mode_coordinator.js';
 //   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
 export const DEFAULT_TIMEFRAME = '1D';
 export const RECENT_BARS = 1500;
-
-// protocol → モード判定。http/https は served（B方式）、それ以外（file: 等）は A方式。
-export function modeForProtocol(protocol) {
-  return protocol === 'http:' || protocol === 'https:' ? 'b' : 'a';
-}
 
 // GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
 //   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
@@ -208,8 +194,6 @@ export async function bootstrap({
   //   import しない（注入のみ）＝スタンドアロン live で 404／結合を生まない。
   replay = undefined,
 } = {}) {
-  const mode = modeForProtocol(protocol);
-
   // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123・
   //   present/replay 単一ソース）に集約。系列追加系 API は以後 ChartRenderer に隠蔽。
   const { chart, mainSeries } = createChartWithMainSeries({ lwc, container });
@@ -385,7 +369,7 @@ export async function bootstrap({
   //   ReplayIndicatorController（untilTime=undefined で live 等価）で生成する。opts は同一（下記 verbatim）。
   const IndicatorControllerCtor = (replay && replay.ReplayIndicatorController) || IndicatorController;
   controller = new IndicatorControllerCtor({
-    catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
+    catalog, compute, persistence, renderer, document: doc, datasetRef,
     timeframe, recentBars, loadCandles, marketProfile,
     // 連動配線時のみ resolver を注入（未注入＝MP へ渡す mode をそのまま＝byte 不変）。
     //   mode 解決役: 選択表示モードを返す（'ticklive' 置換なし）。growth 解決役: FOLLOW/ANALYSIS→growing 信号。
@@ -713,7 +697,6 @@ export async function bootstrap({
         renderer,
         document: doc,
         buttonId: 'live-follow-toggle',
-        mode,
         // ライブ連動: FOLLOW/ANALYSIS 遷移を協調役へ通知（MP を growing↔static で連動・表示モードは維持）。
         //   協調役不在（A方式）は未注入＝既存ライブトグル挙動 byte 不変。
         onLiveStateChange: mpLiveModeCoordinator
@@ -743,5 +726,5 @@ export async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, tickvolBands, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
+  return { chart, mainSeries, renderer, controller, ready, tickvolBands, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
 }
