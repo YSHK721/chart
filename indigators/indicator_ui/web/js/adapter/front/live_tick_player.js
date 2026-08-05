@@ -27,6 +27,11 @@
 const DELAY_MS = 12000;
 const POLL_MS = 2500;      // フロント → served /live_ticks のポーリング間隔。
 const PLAYBACK_MS = 100;   // 「元の時間間隔どおり」に適用する再生粒度。
+// poll 1 本の打ち切り時間（ISSUE-263）。in-flight ガード（同時要求数 1）と組み合わさると、
+//   返らない要求が 1 本あるだけで poll が恒久停止するため上限を設ける。健全時の実測は
+//   5〜141ms・劣化時でも数百 ms なので、poll 間隔の 4 倍を上限とし、再生遅延（12 秒）より
+//   短く保って「打ち切って次で回復」が表示の穴にならないようにする。
+const FETCH_TIMEOUT_MS = 10000;
 
 export class LiveTickPlayer {
   constructor({
@@ -41,6 +46,7 @@ export class LiveTickPlayer {
     delayMs = DELAY_MS,
     pollMs = POLL_MS,
     playbackMs = PLAYBACK_MS,
+    fetchTimeoutMs = FETCH_TIMEOUT_MS,
     // ---- 指標末尾値の同梱経路（ISSUE-250 Phase 1）--------------------------------------
     // 旧設計は tick 適用のたびに /compute へ HTTP 往復を要求していた（onFormingUpdate →
     //   UpdateScheduler → recomputeFormingTails）。scheduler は in-flight 1 本へ coalesce するため
@@ -72,6 +78,7 @@ export class LiveTickPlayer {
     this._delayMs = delayMs;
     this._pollMs = pollMs;
     this._playbackMs = playbackMs;
+    this._fetchTimeoutMs = fetchTimeoutMs;
     this._getComputeSpecs = (typeof getComputeSpecs === 'function') ? getComputeSpecs : null;
     this._getLimit = (typeof getLimit === 'function') ? getLimit : null;
     this._applyFormingTails = (typeof applyFormingTails === 'function') ? applyFormingTails : null;
@@ -147,6 +154,8 @@ export class LiveTickPlayer {
         //   個別に描かれるのは「地平より新しい tick」＝ delayMs ＋ 次 poll までの猶予（pollMs）。
         //   この区間長を知っているのは再生を持つ本 player だけなので、ここから申告する。
         tailsWithinMs: this._delayMs + this._pollMs,
+        // 返らない要求で poll を止めない（ISSUE-263）。中断は失敗扱いで次 poll が回復する。
+        timeoutMs: this._fetchTimeoutMs,
       });
       if (!res || res.ok !== true) {
         return;

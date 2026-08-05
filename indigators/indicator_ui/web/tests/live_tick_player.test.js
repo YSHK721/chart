@@ -392,8 +392,10 @@ test('poll declares the applied specs with datasetRef/timeframe/limit (tails req
   player.start();
   await t.tickPoll();
   assert.deepEqual(sp.calls.req.at(-1), {
-    // tailsWithinMs は「末尾値が要る区間」の申告（ISSUE-257）。specs と同じく毎 poll 添える。
-    specs, datasetRef: 'jp225_tick', timeframe: '15m', limit: 1386, tailsWithinMs: 14500,
+    // tailsWithinMs は「末尾値が要る区間」の申告（ISSUE-257）。
+    // timeoutMs は poll 1 本の打ち切り時間（ISSUE-263）。いずれも specs と同じく毎 poll 添える。
+    specs, datasetRef: 'jp225_tick', timeframe: '15m', limit: 1386,
+    tailsWithinMs: 14500, timeoutMs: 10000,
   });
 });
 
@@ -558,4 +560,37 @@ test('the poll declares the span that actually needs per-tick tails', async () =
   player.start();
   await t.tickPoll();
   assert.equal(sp.calls.req[0].tailsWithinMs, 12000 + 2500);
+});
+
+// --------------------------------------------------------------------------- #
+// ISSUE-263: 返らない要求で poll を恒久停止させない
+// --------------------------------------------------------------------------- #
+
+test('poll は打ち切り時間を申告する（in-flight ガードと対で無いと恒久停止しうる）', async () => {
+  const t0 = 1_000_000_000;
+  const sp = spies({ ticksResponses: [{ ok: true, ticks: [], serverNowMs: t0 }] });
+  const { player, t } = newPlayer({}, sp, fakeNow(t0), () => '1m');
+  player.start();
+  await t.tickPoll();
+  assert.equal(sp.calls.req[0].timeoutMs, 10000);
+});
+
+test('打ち切り時間は poll 間隔より長く、再生遅延より短い', () => {
+  // 短すぎると健全な応答を切り、長すぎると打ち切っても表示の穴になる。
+  const t0 = 1_000_000_000;
+  const { player } = newPlayer({}, spies(), fakeNow(t0), () => '1m');
+  assert.ok(player._fetchTimeoutMs > player._pollMs, 'poll 間隔より長い');
+  assert.ok(player._fetchTimeoutMs < player._delayMs, '再生遅延より短い');
+});
+
+test('中断された poll のあとも次の poll が要求を出す（ガードが残らない）', async () => {
+  // gateway が中断を null で返す契約（fetchLiveTicks の catch）に対し、player が回復すること。
+  const t0 = 1_000_000_000;
+  let n = 0;
+  const fetchLiveTicks = async () => { n += 1; return null; };   // 中断＝null
+  const { player, t } = newPlayer({ fetchLiveTicks }, spies(), fakeNow(t0), () => '1m');
+  player.start();
+  await t.tickPoll();
+  await t.tickPoll();
+  assert.equal(n, 2, '中断後も次 poll が要求を出す');
 });

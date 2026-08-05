@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { bootstrap, modeForProtocol } from '../js/adapter/front/composition_root_front.js';
+import { bootstrap, modeForProtocol, fetchLiveTicks } from '../js/adapter/front/composition_root_front.js';
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
 import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
 import { LiveUpdater } from '../js/adapter/front/live_updater.js';
@@ -527,4 +527,41 @@ test('bootstrap(replay注入): リプレイ(isLiveMode=false)は getContext().to
   await ready;
   theController._untilTime = 1704074400; // リプレイの現在時刻 T
   assert.equal(capturedGetContext().to, 1704074400, 'リプレイは to=controller._untilTime（pull-at-T）');
+});
+
+// --------------------------------------------------------------------------- #
+// ISSUE-263: 返らない要求を打ち切る（in-flight ガードとの対）
+// --------------------------------------------------------------------------- #
+test('fetchLiveTicks は timeoutMs を過ぎた要求を中断して null を返す', async () => {
+  // 実 fetch と同じ契約の fake: signal が abort されたら reject する。
+  const hung = (url, init) => new Promise((_resolve, reject) => {
+    const sig = init && init.signal;
+    if (sig) sig.addEventListener('abort', () => reject(new Error('AbortError')));
+  });
+  // 打ち切りが無いと fetchLiveTicks は永久に返らない（＝poll 恒久停止）。テストが**ハングせず
+  //   明確に落ちる**よう監視タイマーと競争させる（実測: 打ち切りを外すとこの watchdog が勝つ）。
+  const watchdog = new Promise((resolve) => setTimeout(() => resolve('TIMED_OUT'), 3000));
+  const got = await Promise.race([
+    fetchLiveTicks(hung, 0, { timeframe: '1m', timeoutMs: 50 }),
+    watchdog,
+  ]);
+  assert.notEqual(got, 'TIMED_OUT',
+    'fetchLiveTicks が打ち切られず返りませんでした（in-flight ガードと組み合わさると poll が恒久停止する）');
+  assert.equal(got, null, '中断は失敗扱いで null（player は次 poll で回復する）');
+});
+
+test('fetchLiveTicks は timeoutMs 未指定なら従来どおり中断しない（後方互換）', async () => {
+  const ok = async (url, init) => {
+    assert.equal(init, undefined, 'timeoutMs 無しでは signal を渡さない');
+    return { ok: true, json: async () => ({ ok: true, ticks: [], serverNowMs: 1 }) };
+  };
+  const got = await fetchLiveTicks(ok, 0, { timeframe: '1m' });
+  assert.equal(got.ok, true);
+});
+
+test('正常応答でも打ち切りタイマーを残さない（ハンドルリーク防止）', async () => {
+  const ok = async () => ({ ok: true, json: async () => ({ ok: true, ticks: [], serverNowMs: 1 }) });
+  const got = await fetchLiveTicks(ok, 0, { timeframe: '1m', timeoutMs: 50 });
+  assert.equal(got.ok, true);
+  // タイマーが残っていればこのテストの終了後もプロセスが生き続ける（node:test が検出する）。
 });

@@ -122,10 +122,19 @@ async function fetchFormingBar(fetchImpl, datasetRef, timeframe) {
 //     - tails: 各ティック時点の指標末尾値（specs 申告時のみ）
 //   を同梱する。limit は /compute と同一規約（表示範囲＝窓長）で、これを付けないとサーバ 1 ステップの
 //   費用が全件に比例する。req なし＝従来クエリ＝従来応答（byte 不変）。
-async function fetchLiveTicks(fetchImpl, since = 0, req = null) {
+export async function fetchLiveTicks(fetchImpl, since = 0, req = null) {
   if (typeof fetchImpl !== 'function') {
     return null;
   }
+  // 応答が返らない接続を打ち切る（ISSUE-263）。LiveTickPlayer は未完了の poll がある間は次を
+  //   出さない（同時要求数 1・ISSUE-257）。その状態でこの fetch が永久に返らないと **poll が
+  //   恒久停止**する（ガード導入前は要求が重なることで結果的に流れ続けていた＝退行）。
+  //   中断は「失敗」として扱われ、player は次の poll で回復する（カーソルは巻き戻さない）。
+  const timeoutMs = (req && Number.isFinite(req.timeoutMs)) ? req.timeoutMs : null;
+  const controller = (timeoutMs !== null && typeof AbortController === 'function')
+    ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
     let url = `/live_ticks?since=${encodeURIComponent(since)}`;
     if (req) {
@@ -148,14 +157,19 @@ async function fetchLiveTicks(fetchImpl, since = 0, req = null) {
         }
       }
     }
-    const resp = await fetchImpl(url);
+    const resp = controller ? await fetchImpl(url, { signal: controller.signal })
+      : await fetchImpl(url);
     if (!resp.ok) {
       return null;
     }
     const payload = await resp.json();
     return payload && payload.ok ? payload : null;
   } catch {
-    return null;
+    return null;   // 中断・ネットワーク失敗とも null（player は次 poll で回復する）
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);   // 成功・失敗・中断のいずれでもタイマーを残さない
+    }
   }
 }
 

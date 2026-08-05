@@ -4379,3 +4379,13 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - `marketdata.rollup.rollup_timeframes` / `marketdata.tick_m1.ts_and_mid` を公開面として新設（重複の受け皿）。
 - **検証**: 識別力を実測で実証（台帳へ種別を 1 行足すと 2 件 Red・JS の zp 対応 tf から 1 足落とすと 2 件 Red・tick tree 検定は既知 5 違反を実際に検出）。回帰: marketdata 236 / indicator_ui api 781 / market_profile api 365 / replay_ui 236 / tools+simulator 915 / indicator_ui web 1071 / market_profile web 325 / replay_ui web 301 / unified_ui web 43 全通過。
 - **残件**: `growth_window.js` を MODULE_ORDER へ登録して MP actor の複製を消す（本 Issue では複製を残し検定で拘束）。
+
+## ISSUE-263: [不具合・自己申告] in-flight ガードとタイムアウト不在の組み合わせで poll が恒久停止しうる（2026-08-05）
+- **ステータス**: RESOLVED（2026-08-05・fix/live-ticks-fetch-timeout）
+- **重大度**: High（ライブの足・指標が無言で止まる）
+- **真因（ISSUE-257 で私が入れた退行）**: ISSUE-257 で `LiveTickPlayer._poll` に in-flight ガード（同時要求数 1）を入れたが、`fetchLiveTicks` には**タイムアウトも AbortController も無い**（素の `await fetchImpl(url)`）。応答が永久に返らない接続が 1 本できると、ガードが解けず **poll が恒久停止**する。ガード導入前は要求が重なることで結果的にデータが流れ続けていたため、これは ISSUE-257 が持ち込んだ新しい失敗モードである。
+- **実証**: タイムアウト処理を外して gateway テストを実行すると、テスト自体が返らずハングした（＝要求が永久に未完了になることの直接証明）。
+- **抜本的対策**: 打ち切り時間をフロントが申告し（`timeoutMs`）、gateway が `AbortController` で中断する。中断は既存の失敗経路（`null` を返す）へ合流させ、player は次 poll で回復する（カーソルは巻き戻さない）。`finally` でタイマーを必ず解放しハンドルを残さない。
+  - 値は `FETCH_TIMEOUT_MS = 10000`（poll 間隔 2.5 秒の 4 倍 ＞ 実測応答 5〜141ms、再生遅延 12 秒未満）。「poll 間隔より長く再生遅延より短い」ことをテストで固定した。
+- **検証**: 打ち切りを外すと gateway 検定が 3 秒で明確に Red（ハングせず落ちるよう watchdog と競争させた）。回帰: Python 2,533 / indicator_ui web 1,077 / market_profile web 325 / replay_ui web 301 / unified_ui web 43 全通過。
+- **教訓**: 「同時実行を 1 に絞る」是正は、絞った先が詰まったときの脱出路を同時に用意しなければ、可用性を下げる。ガードとタイムアウトは対で入れる。
