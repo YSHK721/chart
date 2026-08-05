@@ -214,19 +214,9 @@ export async function bootstrap({
   //   present/replay 単一ソース）に集約。系列追加系 API は以後 ChartRenderer に隠蔽。
   const { chart, mainSeries } = createChartWithMainSeries({ lwc, container });
 
-  // ポート実装の組み立て（モード別）。
-  //   B方式: ComputeHttpClient（fetch /compute）— params 実反映。candles は /candles から取得し、
-  //          SAMPLE_DATA（635KB）は読み込まない。
-  //   A方式: SAMPLE_DATA を動的 import し、初期ローソク描画 + EmbeddedComputeGateway（params 未反映）。
-  let compute;
-  let initialCandles = null; // A方式の初期ローソク（renderer 生成後に setCandles で描画する）。
-  if (mode === 'b') {
-    compute = new ComputeHttpClient({ fetch });
-  } else {
-    const { SAMPLE_DATA } = await import('../../../data/sample_data.js');
-    initialCandles = SAMPLE_DATA.candles;
-    compute = new EmbeddedComputeGateway(SAMPLE_DATA);
-  }
+  // ポート実装の組み立て。ComputeHttpClient（fetch /compute）— params 実反映。
+  //   candles は /candles から取得する。
+  const compute = new ComputeHttpClient({ fetch });
 
   // クロスヘア価格読み取り欄（左上固定オーバーレイ）のビュー。ChartRenderer の onCrosshairReadout
   //   に (dto) => view.render(dto) を注入する（#legend の指標管理行とは別物として分離・相乗りしない）。
@@ -247,11 +237,6 @@ export async function bootstrap({
   const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
   updatePaneHeight();
 
-  // A方式の初期ローソクは renderer.setCandles で描画する（直接 mainSeries.setData ではなく
-  //   経由させることで読み取り欄の最新足の単一源 _lastBar が立ち、hover 解除でも OHLC が出る）。
-  if (initialCandles) {
-    renderer.setCandles(initialCandles);
-  }
   const persistence = new LocalStorageGateway(storage);
   // テンプレート永続化（§4.2 の 3 キー）。既存 LocalStorageGateway は無改変（ISP）。接頭辞は
   //   注入された storage（統合 UI は scopedStorage）が付けるため gateway は自前で付けない。
@@ -261,15 +246,11 @@ export async function bootstrap({
   //   B方式のみ取得し、失敗時は静的既定（catalog.js リテラル）へフォールバック（オフライン耐性・UI 不変）。
   //   A方式(file:)はサーバ無しのためスキップ（静的既定）。overlay は controller 生成前に完了させ、
   //   以後のインスタンス生成が単一情報源の既定値を用いるようにする。load は例外を投げない（内部で吸収）。
-  if (mode === 'b') {
-    await catalog.load(fetch);
-  }
+  await catalog.load(fetch);
 
   // 時間足切替で candles を再取得するためのローダ（B方式のみ）。A方式（SAMPLE_DATA・再集計不可）は null。
   //   controller.setTimeframe が (datasetRef, timeframe) で呼び、直近 recentBars 本へ制限して取得する。
-  const loadCandles = (mode === 'b')
-    ? (ref, tf) => fetchCandles(fetch, ref, tf, recentBars)
-    : null;
+  const loadCandles = (ref, tf) => fetchCandles(fetch, ref, tf, recentBars);
 
   // Market Profile（独立アクター・candle 版 MVP）の組み立て。取得（client）と描画（primitive）を
   //   注入し、トグル ON まで /market_profile を fetch しない・mainSeries へ attach しない（非破壊）。
@@ -322,8 +303,7 @@ export async function bootstrap({
     // 日別プロファイルを tf-period 列（tfPeriodActor）が描くモードか（served かつ対応 tf）。true のとき
     //   MarketProfileActor は日別タイルを描かず candle 透明化も tf-period へ委ねる（初回の「日別(candle)→
     //   (tf-period)」ちらつき防止・ISSUE-055）。controller は呼び出し時に確定済み（後方参照）。
-    sessionsDrawnByTfPeriod: () => mode === 'b' && isTfPeriodTimeframe(controller._timeframe)
-      && zpTfOk(),
+    sessionsDrawnByTfPeriod: () => isTfPeriodTimeframe(controller._timeframe) && zpTfOk(),
     // 増分2: スナップショットのローソクトリム源（renderer.setCandleTrim）。lwc 直叩きは renderer に隔離。
     renderer,
     getCandles: () => renderer.getCandles(),
@@ -395,14 +375,11 @@ export async function bootstrap({
   //   連動させる共有協調役（Model A 直交化）。表示モードは gear 選択を維持し、FOLLOW→growing=true（足内成長）／
   //   ANALYSIS→growing=false（static）。defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定
   //   ＝'normal'）。reapply は controller の MP 再適用（mode 維持＋growing トグル）へ遅延束縛する（controller は
-  //   直後に代入されるため () => controller で吸収）。A方式（file://・mode!=='b'）は null＝連動を配線しない
-  //   （resolver 未注入で MP 挙動 byte 不変）。
-  const mpLiveModeCoordinator = (mode === 'b')
-    ? new GrowthCoordinator({
-        defaultMode: 'normal',
-        reapply: () => (controller ? controller.reapplyMarketProfileMode() : undefined),
-      })
-    : null;
+  //   直後に代入されるため () => controller で吸収）。
+  const mpLiveModeCoordinator = new GrowthCoordinator({
+    defaultMode: 'normal',
+    reapply: () => (controller ? controller.reapplyMarketProfileMode() : undefined),
+  });
 
   // 未注入（スタンドアロン）は IndicatorController（既存経路・runtime byte 不変）。統合レイヤ注入時のみ
   //   ReplayIndicatorController（untilTime=undefined で live 等価）で生成する。opts は同一（下記 verbatim）。
@@ -469,128 +446,126 @@ export async function bootstrap({
   //   primitive._draw は tf-period を優先＝旧 per-day sessions を上書き）。可視レンジ変化（スクロール/ズーム／
   //   sessions 有効化時の focusTimeRange）で refresh＝ローリング。先読み完了（onReady）で再描画＝ジッターバッファ。
   let tfPeriodActor = null;
-  if (mode === 'b') {
-    const getVisibleRange = () => {
-      const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
-      const r = ts && typeof ts.getVisibleRange === 'function' ? ts.getVisibleRange() : null;
-      return (r && r.from != null && r.to != null) ? { from: Number(r.from), to: Number(r.to) } : null;
-    };
-    // ISSUE-055（windowSec tf 連動）: 取得窓を tf のバー秒に比例させ、1 画面を少数チャンクで満たす。
-    //   6h 固定だと 1D は可視数十日を 6h 刻み＝274本(81%空)へ肥大する。規則 clamp(barSec×K, 6h, 45d)。
-    //   1m は 6h 据置（barSec×K<6h）、1D は 45d 上限で数本に収束。cacheMax は可視 chunk 数を上回る値
-    //   （32）にして、ローリング中に可視列が LRU 破棄される＝フラッシュを防ぐ。
-    const TFP_BAR_SEC = TF_BAR_SEC; // 単一情報源（domain/tf_meta.js・ISSUE-087 🔴-2）。
-    const TFP_WINDOW_MIN = 6 * 3600;      // 下限 6h（intraday 据置）。
-    const TFP_WINDOW_MAX = 45 * 86400;    // 上限 45 日（1D の 1 チャンク応答肥大を抑える）。
-    const TFP_PERIODS_PER_CHUNK = 96;     // 1 チャンク≒96 周期ぶん（1 画面を数チャンクに収める）。
-    const windowSecForTf = (tf) => {
-      const bar = TFP_BAR_SEC[tf] || 86400;
-      // ISSUE-086: バケット tf（1W/1M）は 1 周期=1 列で応答が軽く、45 日上限のままだと全期間表示で
-      //   チャンクが百超に分裂する（実測 192 リクエスト・LRU 上限 32 で破棄再取得のスラッシング）。
-      //   上限クランプを外し 96 周期/チャンク（1W≈1.8年・1M≈8年）で数チャンクに収める。
-      if (tf === '1W' || tf === '1M') {
-        return bar * TFP_PERIODS_PER_CHUNK;
-      }
-      return Math.max(TFP_WINDOW_MIN, Math.min(TFP_WINDOW_MAX, bar * TFP_PERIODS_PER_CHUNK));
-    };
-    const tfBuf = new TfPeriodJitterBuffer({
-      client: new TfPeriodProfileClient({ fetch }),
-      datasetRef,
-      windowSecForTf,
-      cacheMax: 32,
-      onReady: () => { if (tfPeriodActor) tfPeriodActor.onChunkReady(); },
-    });
-    // src=zp（超過占有 z(p)）の tf-period 透過: MP の src 選択が zp のとき列も zp で取得する。
-    //   backend の対応 tf 判定（zpTfOk）は上段＝委譲述語と同一定義（単一情報源）。
-    tfPeriodActor = new TfPeriodProfileActor({
-      jitterBuffer: tfBuf,
-      primitive: mpTfPeriodSink,
-      getTimeframe: () => controller._timeframe,
-      getVisibleRange,
-      renderer, // ISSUE-055: 列が描けた時点で candle 透明化（MarketProfileActor から委譲）。
-      getSrc: () => mpTfPeriodSrc(mpSrc()),
-      // 方向背景（依頼者指示 2026-07-13）: 列 time と同一周期グリッドの candle から陽/陰を注釈する。
-      getCandles: () => renderer.getCandles(),
-    });
-    // tf-period ホバー読取ツールチップ（依頼者指示 2026-07-13・a案）: クロスヘア座標 DTO（renderer）
-    //   → 該当列レベル探索（primitive.tfPeriodLevelAt）→ カーソル追従表示（TfPeriodTooltip）。
-    //   列非表示（日別モード外・非対応 tf）・レベル不在（空行）・チャート外は hide。
-    const tfpTooltip = new TfPeriodTooltip({ document: doc, container });
-    renderer.setTfPeriodHoverHandler((pos) => {
-      if (!pos || !tfPeriodActor || !tfPeriodActor.isEnabled()) {
-        tfpTooltip.hide();
-        return;
-      }
-      const hit = mpTfPeriodSink.tfPeriodLevelAt(pos.time, pos.price);
-      if (!hit) {
-        tfpTooltip.hide();
-        return;
-      }
-      tfpTooltip.show(pos.x, pos.y, { ...hit, timeLabel: formatPeriodLabel(hit.time) });
-    });
-    const tfpShouldOn = () => !!(marketProfile && typeof marketProfile.isSessions === 'function'
-      && marketProfile.isSessions()) && isTfPeriodTimeframe(controller._timeframe)
-      // src=zp は backend 対応 tf（15m..1D）のみ列を出せる（1m/5m は 400 → 列を出さない。
-      //   このとき委譲述語も false になり MP actor が日別タイルを自前描画＝フォールバック）。
-      && zpTfOk();
-    // ISSUE-066: MP パラメータ変更時の tf-period 即時再適用。tfpShouldOn なら setEnabled(true)＝
-    //   refresh→ensure で jitter buffer の src 差分キャッシュ破棄→新 src 再fetch→再描画。不成立
-    //   （sessions 解除/非対応 tf）は列を消す。可視レンジ変化のデバウンスと違い**即時**（src 切替の反映）。
-    // ISSUE-054: 「レンジ」(barw) を tf-period 列にも効かせる。日別プロファイルの描画を tf-period が
-    //   担う経路では、レンジを変えても列は最小価格単位のままで、`/market_profile` 由来の POC/VA だけが
-    //   変わる＝**パラメータが部分的にしか効かない**状態だった。列は取得・キャッシュを変えずに
-    //   **描画時に barw 幅へ束ねる**（測定は最小単位のまま保つ＝粗ビンのアーティファクトを持ち込まない）。
-    const syncTfBinWidth = () => {
-      if (typeof mpTfPeriodSink.setTfBinWidth === 'function'
-          && typeof marketProfile.barwParam === 'function') {
-        mpTfPeriodSink.setTfBinWidth(marketProfile.barwParam());
-      }
-    };
-    refreshTfPeriodNow = () => {
-      if (!tfPeriodActor) { return; }
-      syncTfBinWidth();                     // レンジ変更を列へ即時反映（取得の要否と独立）。
-      if (!tfpShouldOn()) {
-        if (tfPeriodActor.isEnabled()) { tfPeriodActor.setEnabled(false); }
-        return;
-      }
-      tfPeriodActor.setEnabled(true);
-    };
-    syncTfBinWidth();                       // 初期値（保存済みインスタンスのレンジ）を反映する。
-    // ISSUE-083: MP の live tick（sessions×tfDraws×growing）→ 当日チャンクの stale-while-revalidate
-    //   再取得（tfPeriodActor.onLiveTick→jitterBuffer.refreshAt）。throttle は actor 側（既定 5s）。
-    //   列非描画中（isEnabled=false＝日別解除・非対応 tf）は発火しない。
-    liveGrowTfPeriod = () => {
-      if (tfPeriodActor && tfPeriodActor.isEnabled()) {
-        tfPeriodActor.onLiveTick();
-      }
-    };
-    const tsSub = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
-    if (tsSub && typeof tsSub.subscribeVisibleTimeRangeChange === 'function') {
-      // ISSUE-055（A案: ローリング中は再取得/再描画しない）: 可視レンジ変化のたびに setEnabled(true)→refresh
-      //   （fetch fan-out＋全再描画）を呼ぶと、ドラッグ中に storm 化して重く・列が出入りして**フラッシュ**する。
-      //   そこで **ON 時のローリング取得は末尾デバウンス**（停止後 1 回だけ ensure+描画）にする。ドラッグ中は
-      //   既取得列が primitive の毎フレーム再描画で時間軸に固定されて滑らかにパン追従する（fetch 0・不変）。
-      //   OFF（sessions 解除/非対応 tf）は列を残さないため即時反映する。tf 非依存＝全時間足に等しく効く。
-      const TFP_ROLL_DEBOUNCE_MS = 150; // 「スクロール停止」判定の末尾待ち（体感即応と storm 抑制の均衡）。
-      let tfpRollTimer = null;
-      tsSub.subscribeVisibleTimeRangeChange(() => {
-        if (!tfpShouldOn()) {
-          if (tfpRollTimer != null) { clearTimeout(tfpRollTimer); tfpRollTimer = null; }
-          if (tfPeriodActor.isEnabled()) {
-            tfPeriodActor.setEnabled(false); // sessions OFF / 非対応 tf → 列を消す（即時）。
-          }
-          return;
-        }
-        // ON: ローリング停止後に 1 回だけ確保＋描画（ドラッグ中は既取得列がパン追従＝再取得しない）。
-        if (tfpRollTimer != null) { clearTimeout(tfpRollTimer); }
-        tfpRollTimer = setTimeout(() => {
-          tfpRollTimer = null;
-          if (tfpShouldOn()) {
-            tfPeriodActor.setEnabled(true); // enable＋ensure（可視窓の確保）＋描画を 1 回。
-          }
-        }, TFP_ROLL_DEBOUNCE_MS);
-      });
+  const getVisibleRange = () => {
+    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+    const r = ts && typeof ts.getVisibleRange === 'function' ? ts.getVisibleRange() : null;
+    return (r && r.from != null && r.to != null) ? { from: Number(r.from), to: Number(r.to) } : null;
+  };
+  // ISSUE-055（windowSec tf 連動）: 取得窓を tf のバー秒に比例させ、1 画面を少数チャンクで満たす。
+  //   6h 固定だと 1D は可視数十日を 6h 刻み＝274本(81%空)へ肥大する。規則 clamp(barSec×K, 6h, 45d)。
+  //   1m は 6h 据置（barSec×K<6h）、1D は 45d 上限で数本に収束。cacheMax は可視 chunk 数を上回る値
+  //   （32）にして、ローリング中に可視列が LRU 破棄される＝フラッシュを防ぐ。
+  const TFP_BAR_SEC = TF_BAR_SEC; // 単一情報源（domain/tf_meta.js・ISSUE-087 🔴-2）。
+  const TFP_WINDOW_MIN = 6 * 3600;      // 下限 6h（intraday 据置）。
+  const TFP_WINDOW_MAX = 45 * 86400;    // 上限 45 日（1D の 1 チャンク応答肥大を抑える）。
+  const TFP_PERIODS_PER_CHUNK = 96;     // 1 チャンク≒96 周期ぶん（1 画面を数チャンクに収める）。
+  const windowSecForTf = (tf) => {
+    const bar = TFP_BAR_SEC[tf] || 86400;
+    // ISSUE-086: バケット tf（1W/1M）は 1 周期=1 列で応答が軽く、45 日上限のままだと全期間表示で
+    //   チャンクが百超に分裂する（実測 192 リクエスト・LRU 上限 32 で破棄再取得のスラッシング）。
+    //   上限クランプを外し 96 周期/チャンク（1W≈1.8年・1M≈8年）で数チャンクに収める。
+    if (tf === '1W' || tf === '1M') {
+      return bar * TFP_PERIODS_PER_CHUNK;
     }
+    return Math.max(TFP_WINDOW_MIN, Math.min(TFP_WINDOW_MAX, bar * TFP_PERIODS_PER_CHUNK));
+  };
+  const tfBuf = new TfPeriodJitterBuffer({
+    client: new TfPeriodProfileClient({ fetch }),
+    datasetRef,
+    windowSecForTf,
+    cacheMax: 32,
+    onReady: () => { if (tfPeriodActor) tfPeriodActor.onChunkReady(); },
+  });
+  // src=zp（超過占有 z(p)）の tf-period 透過: MP の src 選択が zp のとき列も zp で取得する。
+  //   backend の対応 tf 判定（zpTfOk）は上段＝委譲述語と同一定義（単一情報源）。
+  tfPeriodActor = new TfPeriodProfileActor({
+    jitterBuffer: tfBuf,
+    primitive: mpTfPeriodSink,
+    getTimeframe: () => controller._timeframe,
+    getVisibleRange,
+    renderer, // ISSUE-055: 列が描けた時点で candle 透明化（MarketProfileActor から委譲）。
+    getSrc: () => mpTfPeriodSrc(mpSrc()),
+    // 方向背景（依頼者指示 2026-07-13）: 列 time と同一周期グリッドの candle から陽/陰を注釈する。
+    getCandles: () => renderer.getCandles(),
+  });
+  // tf-period ホバー読取ツールチップ（依頼者指示 2026-07-13・a案）: クロスヘア座標 DTO（renderer）
+  //   → 該当列レベル探索（primitive.tfPeriodLevelAt）→ カーソル追従表示（TfPeriodTooltip）。
+  //   列非表示（日別モード外・非対応 tf）・レベル不在（空行）・チャート外は hide。
+  const tfpTooltip = new TfPeriodTooltip({ document: doc, container });
+  renderer.setTfPeriodHoverHandler((pos) => {
+    if (!pos || !tfPeriodActor || !tfPeriodActor.isEnabled()) {
+      tfpTooltip.hide();
+      return;
+    }
+    const hit = mpTfPeriodSink.tfPeriodLevelAt(pos.time, pos.price);
+    if (!hit) {
+      tfpTooltip.hide();
+      return;
+    }
+    tfpTooltip.show(pos.x, pos.y, { ...hit, timeLabel: formatPeriodLabel(hit.time) });
+  });
+  const tfpShouldOn = () => !!(marketProfile && typeof marketProfile.isSessions === 'function'
+    && marketProfile.isSessions()) && isTfPeriodTimeframe(controller._timeframe)
+    // src=zp は backend 対応 tf（15m..1D）のみ列を出せる（1m/5m は 400 → 列を出さない。
+    //   このとき委譲述語も false になり MP actor が日別タイルを自前描画＝フォールバック）。
+    && zpTfOk();
+  // ISSUE-066: MP パラメータ変更時の tf-period 即時再適用。tfpShouldOn なら setEnabled(true)＝
+  //   refresh→ensure で jitter buffer の src 差分キャッシュ破棄→新 src 再fetch→再描画。不成立
+  //   （sessions 解除/非対応 tf）は列を消す。可視レンジ変化のデバウンスと違い**即時**（src 切替の反映）。
+  // ISSUE-054: 「レンジ」(barw) を tf-period 列にも効かせる。日別プロファイルの描画を tf-period が
+  //   担う経路では、レンジを変えても列は最小価格単位のままで、`/market_profile` 由来の POC/VA だけが
+  //   変わる＝**パラメータが部分的にしか効かない**状態だった。列は取得・キャッシュを変えずに
+  //   **描画時に barw 幅へ束ねる**（測定は最小単位のまま保つ＝粗ビンのアーティファクトを持ち込まない）。
+  const syncTfBinWidth = () => {
+    if (typeof mpTfPeriodSink.setTfBinWidth === 'function'
+        && typeof marketProfile.barwParam === 'function') {
+      mpTfPeriodSink.setTfBinWidth(marketProfile.barwParam());
+    }
+  };
+  refreshTfPeriodNow = () => {
+    if (!tfPeriodActor) { return; }
+    syncTfBinWidth();                     // レンジ変更を列へ即時反映（取得の要否と独立）。
+    if (!tfpShouldOn()) {
+      if (tfPeriodActor.isEnabled()) { tfPeriodActor.setEnabled(false); }
+      return;
+    }
+    tfPeriodActor.setEnabled(true);
+  };
+  syncTfBinWidth();                       // 初期値（保存済みインスタンスのレンジ）を反映する。
+  // ISSUE-083: MP の live tick（sessions×tfDraws×growing）→ 当日チャンクの stale-while-revalidate
+  //   再取得（tfPeriodActor.onLiveTick→jitterBuffer.refreshAt）。throttle は actor 側（既定 5s）。
+  //   列非描画中（isEnabled=false＝日別解除・非対応 tf）は発火しない。
+  liveGrowTfPeriod = () => {
+    if (tfPeriodActor && tfPeriodActor.isEnabled()) {
+      tfPeriodActor.onLiveTick();
+    }
+  };
+  const tsSub = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+  if (tsSub && typeof tsSub.subscribeVisibleTimeRangeChange === 'function') {
+    // ISSUE-055（A案: ローリング中は再取得/再描画しない）: 可視レンジ変化のたびに setEnabled(true)→refresh
+    //   （fetch fan-out＋全再描画）を呼ぶと、ドラッグ中に storm 化して重く・列が出入りして**フラッシュ**する。
+    //   そこで **ON 時のローリング取得は末尾デバウンス**（停止後 1 回だけ ensure+描画）にする。ドラッグ中は
+    //   既取得列が primitive の毎フレーム再描画で時間軸に固定されて滑らかにパン追従する（fetch 0・不変）。
+    //   OFF（sessions 解除/非対応 tf）は列を残さないため即時反映する。tf 非依存＝全時間足に等しく効く。
+    const TFP_ROLL_DEBOUNCE_MS = 150; // 「スクロール停止」判定の末尾待ち（体感即応と storm 抑制の均衡）。
+    let tfpRollTimer = null;
+    tsSub.subscribeVisibleTimeRangeChange(() => {
+      if (!tfpShouldOn()) {
+        if (tfpRollTimer != null) { clearTimeout(tfpRollTimer); tfpRollTimer = null; }
+        if (tfPeriodActor.isEnabled()) {
+          tfPeriodActor.setEnabled(false); // sessions OFF / 非対応 tf → 列を消す（即時）。
+        }
+        return;
+      }
+      // ON: ローリング停止後に 1 回だけ確保＋描画（ドラッグ中は既取得列がパン追従＝再取得しない）。
+      if (tfpRollTimer != null) { clearTimeout(tfpRollTimer); }
+      tfpRollTimer = setTimeout(() => {
+        tfpRollTimer = null;
+        if (tfpShouldOn()) {
+          tfPeriodActor.setEnabled(true); // enable＋ensure（可視窓の確保）＋描画を 1 回。
+        }
+      }, TFP_ROLL_DEBOUNCE_MS);
+    });
   }
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
@@ -600,8 +575,7 @@ export async function bootstrap({
   //   初回表示が重い。初回可視範囲を直近1年へ寄せ、古い範囲はスクロールで（A案デバウンス＋per-day
   //   キャッシュで滑らか）。データが1年未満（intraday 等）のときは全期間で不変。
   const INITIAL_VIEW_SPAN_SEC = 365 * 86400;
-  const ready = (mode === 'b')
-    ? fetchCandles(fetch, datasetRef, timeframe, recentBars).then((candles) => {
+  const ready = fetchCandles(fetch, datasetRef, timeframe, recentBars).then((candles) => {
         if (candles && candles.length > 0) {
           // renderer.setCandles 経由で _lastBar も立てる（読み取り欄の hover 解除フォールバック）。
           renderer.setCandles(candles);
@@ -614,8 +588,7 @@ export async function bootstrap({
             renderer.focusTimeRange(lastT - INITIAL_VIEW_SPAN_SEC, lastT);
           }
         }
-      })
-    : Promise.resolve();
+      });
 
   // ライブ更新（1 分間隔）の組み立て。served（B方式）のみ。tick は controller 経由の再計算
   //   ＋ /candles 再取得 → 最新足を renderer.updateLastCandle で差分反映する。start は入口
@@ -627,10 +600,9 @@ export async function bootstrap({
   //   floor で周期を作っていたため 1W/1M だけ player 非対応で、価格の書き手が tf によって
   //   入れ替わっていた（更新粒度が時間足で変わる原因）。その tf 依存の配線を廃止する。
   //   file://（A方式）は player 不在＝false で既存挙動 byte 不変。
-  const playerActive = (mode === 'b');
+  const playerActive = true;
 
-  const liveUpdater = (mode === 'b')
-    ? new LiveUpdater({
+  const liveUpdater = new LiveUpdater({
         controller,
         renderer,
         loadCandles: (ref, tf) => fetchCandles(fetch, ref, tf, recentBars),
@@ -640,8 +612,7 @@ export async function bootstrap({
         clearInterval: clearIntervalImpl,
         intervalMs: liveIntervalMs,
         suppressPriceUpdate: playerActive,
-      })
-    : null;
+      });
 
   // 形成中バー（最新足の足内更新）の組み立て。served（B方式）のみ。/forming_bar から選択 tf の
   //   形成中バーを取得し、(1) renderer.updateLastCandle で価格の最新足を反映、(2) 指標も
@@ -649,8 +620,7 @@ export async function bootstrap({
   //   mode=latest 時に形成中バーを最新足として計算へ織り込む）。LiveUpdater(60s) との分離の実体は
   //   「/candles 全件再取得(Live) vs /forming_bar(Forming)」であり、指標再計算はどちらも latest。
   //   start は入口（index.html）が served 時のみ呼ぶ。
-  const formingBarUpdater = (mode === 'b')
-    ? new FormingBarUpdater({
+  const formingBarUpdater = new FormingBarUpdater({
         controller,
         renderer,
         loadFormingBar: (ref, tf) => fetchFormingBar(fetch, ref, tf),
@@ -661,8 +631,7 @@ export async function bootstrap({
         intervalMs: formingIntervalMs,
         // 価格の書き手は player ただ 1 つ（全時間足で同一）。tf による切り替えは持たない。
         suppressPriceUpdate: playerActive,
-      })
-    : null;
+      });
 
   // LiveTickPlayer（12 秒固定遅延のなめらか tick 再生・ISSUE-049）の組み立て。served（B方式）のみ。
   //   /live_ticks から increment 取得しキュー → 100ms 粒度で serverNow-12000 以前の tick を現在 tf の
@@ -736,8 +705,7 @@ export async function bootstrap({
   // ライブ追従トグル（present 固有）。B方式（mode==='b'）のみ配線する。install() でボタン click＋
   //   可視範囲購読を配線し、初期 FOLLOW を適用（LiveUpdater 起動所有権を controller へ・start は冪等）。
   //   A方式（file://）は null（ボタンは index.html 側で disabled のまま非活性）。
-  const liveFollowController = (mode === 'b')
-    ? new LiveFollowController({
+  const liveFollowController = new LiveFollowController({
         liveUpdater,
         // ライブ価格の書き手も FOLLOW/ANALYSIS で start/stop（ANALYSIS で価格を凍結＝トグルを効かせる）。
         liveTickPlayer,
@@ -751,8 +719,7 @@ export async function bootstrap({
         onLiveStateChange: mpLiveModeCoordinator
           ? (isFollow) => mpLiveModeCoordinator.onLiveStateChange(isFollow)
           : undefined,
-      })
-    : null;
+      });
   if (liveFollowController) {
     liveFollowController.install();
   }
