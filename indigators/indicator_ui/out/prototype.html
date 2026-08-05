@@ -1105,29 +1105,85 @@ function seriesKind(kind) {
 }
 
 
+// ===== js/domain/tf_ledger_generated.js =====
+// tf_ledger_generated.js — 時間足台帳（**自動生成・手で編集しない**）。
+//
+// 生成元: marketdata/resample.py の TF_DESCRIPTORS ＋ marketdata/tf_meta.py の TF_BAR_SEC。
+// 生成器: tools/gen_js_parity_golden.py（規則変更時に再実行する）。
+//
+// なぜ生成物なのか（ISSUE-254）: 台帳を JS 側にも書くと第 2 定義になり、派生属性
+//   （floorable / calendar）が静かにずれる。実際 floorable の写しがずれて、ライブの
+//   更新粒度が時間足で割れた（ISSUE-253: 1W/1M だけ tick 再生から脱落）。定義は Python
+//   ただ 1 つとし、JS は生成された値を読むだけにする。陳腐化は parity 検定が落とす。
+//
+//   code      : 時間足コード（挿入順＝台帳の順序）
+//   barSec    : 名目バー秒長（1W=7日・1M=30日。厳密境界はラベル規約が担う）
+//   floorable : 単純 floor で期間始端を表せるか（1W/1M は false）
+//   calendar  : セッション日（ブローカー暦日）で集計する上位足か
+const TF_LEDGER = Object.freeze([
+  { code: '1m', barSec: 60, floorable: true, calendar: false },
+  { code: '5m', barSec: 300, floorable: true, calendar: false },
+  { code: '15m', barSec: 900, floorable: true, calendar: false },
+  { code: '30m', barSec: 1800, floorable: true, calendar: false },
+  { code: '1h', barSec: 3600, floorable: true, calendar: false },
+  { code: '4h', barSec: 14400, floorable: true, calendar: false },
+  { code: '1D', barSec: 86400, floorable: true, calendar: true },
+  { code: '1W', barSec: 604800, floorable: false, calendar: true },
+  { code: '1M', barSec: 2592000, floorable: false, calendar: true },
+].map(Object.freeze));
+
+
 // ===== js/domain/tf_meta.js =====
-// tf_meta.js（domain）— tf メタの単一情報源（ISSUE-087 🔴-2）。
+// tf_meta.js（domain）— 時間足メタの公開面。**値は持たず、生成台帳から導出する**。
 //
-// 旧状態: TF_BAR_SEC/TF_SECONDS が market_profile_actor.js・growth_window.js・live_tick_player.js・
-//   composition_root_front.js（TFP_BAR_SEC）に 4 重定義され、バンドラ（build.mjs の IIFE 連結）の
-//   top-level const 衝突が共有を阻害していた。本モジュールへ一本化し、全利用側は import する
-//   （連結後も定義は 1 箇所＝衝突しない）。Python 側の単一情報源は marketdata/tf_meta.py
-//   （同一の値・同期は golden fixture 検定＝ISSUE-087 🔴-3）。
+// 旧状態(1): TF_BAR_SEC/TF_SECONDS が market_profile_actor.js・growth_window.js・
+//   live_tick_player.js・composition_root_front.js に 4 重定義され、バンドラ（build.mjs の
+//   IIFE 連結）の top-level const 衝突が共有を阻害していた（ISSUE-087 🔴-2）。本モジュールへ
+//   一本化し、全利用側は import する（連結後も定義は 1 箇所＝衝突しない）。
 //
-// 規約: 1W/1M の秒長は名目値（7日/30日）。カレンダー周期の厳密境界はラベル規約
-//   （session_day/resample）が担い、本表は窓幅・表示近似の用途に限る。
+// 旧状態(2)（ISSUE-254）: 一本化したのは **値（barSec）だけ**で、派生属性は JS 側に手書きの
+//   配列（FLOOR_TFS）として残っていた。値の一致は parity 検定（py_parity_golden）が守って
+//   いたが、派生属性は検定の対象外だったため静かにずれる余地があった。実際 floorable の写しが
+//   ずれて、ライブの更新粒度が時間足で割れた（ISSUE-253: 1W/1M だけ tick 再生から脱落）。
+//   よって**台帳そのもの**（code/barSec/floorable/calendar）を Python から生成して配り、
+//   本モジュールはそこからの導出だけを行う。判断材料を JS 側に書かない。
+//
+// 唯一の定義: marketdata/resample.py の TF_DESCRIPTORS ＋ marketdata/tf_meta.py の TF_BAR_SEC。
+//   生成物 tf_ledger_generated.js は tools/gen_js_parity_golden.py が書き、陳腐化は
+//   py_parity_golden.test.js（JS 側）と test_tf_ledger_parity.py（Python 側）が双方向に落とす。
 
-const TF_BAR_SEC = Object.freeze({
-  '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-  '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000,
-});
 
-// 固定周期（floor 可能）tf＝LiveTickPlayer/forming の対応集合（1W/1M はカレンダー周期で対象外。
-//   Python marketdata.tf_meta.is_supported_timeframe と同一集合）。
-const FLOOR_TFS = Object.freeze(['1m', '5m', '15m', '30m', '1h', '4h', '1D']);
+// 台帳の順序どおりの時間足コード（時間足メニュー・検定の反復順の基準）。
+const TF_CODES = Object.freeze(TF_LEDGER.map((d) => d.code));
+
+// tf → バー秒長（名目値）。1W/1M はカレンダー周期のため名目（7日/30日）で、厳密な期間境界は
+//   ラベル規約（session_day/resample）が担う＝本表は窓幅・表示近似の用途に限る。
+const TF_BAR_SEC = Object.freeze(
+  Object.fromEntries(TF_LEDGER.map((d) => [d.code, d.barSec])),
+);
+
+// 既知 tf か（台帳のキー集合＝Python marketdata.resample.is_known_timeframe と同一）。
+//   ライブ tick 再生・足内更新は**全時間足で同一設計**（ISSUE-253）のため、対応判定はこれだけ。
+//   バー帰属（どの時刻がどのバーか）はサーバの唯一源が解決して配るので、フロントは
+//   floor 可否・周期秒・暦周期といった tf ごとの区別を更新経路に持たない。
+function isKnownTimeframe(tf) {
+  return Object.prototype.hasOwnProperty.call(TF_BAR_SEC, tf);
+}
+
+// 固定周期（単純 floor で期間始端を表せる）tf。**ライブの更新経路では使わない**
+//   （使うと tf ごとに設計が割れる＝ISSUE-253 の再発）。残る用途は「floor で窓を切ってよいか」を
+//   問う近似計算のみ（MP 成長窓など）。値は台帳の floorable からの導出。
+const FLOOR_TFS = Object.freeze(TF_LEDGER.filter((d) => d.floorable).map((d) => d.code));
 
 function isFloorTimeframe(tf) {
   return FLOOR_TFS.includes(tf);
+}
+
+// セッション日（ブローカー暦日）で集計する上位足か。台帳の calendar からの導出。
+const CALENDAR_TFS = Object.freeze(TF_LEDGER.filter((d) => d.calendar).map((d) => d.code));
+
+function isCalendarTimeframe(tf) {
+  return CALENDAR_TFS.includes(tf);
 }
 
 
@@ -1471,6 +1527,19 @@ function aggregateSessionOhlc(candles) {
 }
 
 
+// ===== js/domain/mp_capability_generated.js =====
+// mp_capability_generated.js — MP ソース能力（**自動生成・手で編集しない**）。
+//
+// 生成元: market_profile_api/controller/tf_period_profile_controller.py の _ZP_TF_ALLOWED。
+// 生成器: tools/gen_js_parity_golden.py（規則変更時に再実行する）。
+//
+// なぜ生成物なのか（ISSUE-264）: zp 対応 tf は台帳から導出できない『能力宣言』であり、
+//   Python と JS の両方に手書きで存在していた。同期手段が無いため、ずれるとサーバは 400 を
+//   返すのにフロントは選択可能なまま＝**無言の機能不全**になる（ISSUE-253 と同型）。
+//   定義は Python ただ 1 つとし、JS は生成された値を読むだけにする。
+const ZP_SUPPORTED_TFS = Object.freeze(['15m', '30m', '1h', '4h', '1D', '1W', '1M']);
+
+
 // ===== js/domain/mp_source_capability.js =====
 // mp_source_capability.js — Market Profile「ソース能力記述子」の単一情報源（domain）。
 //
@@ -1497,8 +1566,16 @@ function aggregateSessionOhlc(candles) {
 //   showLabels        : POC*/VAH/VAL の価格ラベルを描くか
 //   tfPeriodSrc       : tf-period 列取得時に付与する src。null = 既定（min-unit カウント）
 
-const _ZP_SUPPORTED_TFS = new Set(['15m', '30m', '1h', '4h', '1D', '1W', '1M']);
-const _ZP_BLOCKED_SESSION_TFS = new Set(['1m', '5m']);
+// zp 対応 tf は Python（tf_period_profile_controller._ZP_TF_ALLOWED）が唯一源で、JS へは
+//   **生成物**（mp_capability_generated.js）として配る（ISSUE-264）。かつてここは手書きの
+//   写しで、同期手段が無かった。ずれるとサーバは 400 を返すのにフロントは選択可能なまま
+//   ＝無言の機能不全になる（ISSUE-253 と同型）。値を変えるときは Python 側だけを変え、
+//   生成器（tools/gen_js_parity_golden.py）を再実行する。
+
+const _ZP_SUPPORTED_TFS = new Set(ZP_SUPPORTED_TFS);
+// 日別（sessions）で選択不可の tf＝player tf のうち zp 非対応のもの（**導出**・補集合）。
+//   かつては独立の literal だったため、対応 tf を変えても追随しなかった。
+const _ZP_BLOCKED_SESSION_TFS = new Set(TF_CODES.filter((tf) => !_ZP_SUPPORTED_TFS.has(tf)));
 const _EMPTY_TFS = new Set();
 
 // 既定（未知 src / 未選択）＝非 zp の従来挙動。dwell もこの既定と同一に振る舞う。
@@ -1617,6 +1694,99 @@ const _UNKNOWN_MODE = Object.freeze({ isNormal: false, splitByDay: false, transi
 // mode → 表示モード台帳エントリ（未知 mode は安全側フォールバックを返す）。
 function mpDisplayMode(mode) {
   return MP_DISPLAY_MODES[mode] ?? _UNKNOWN_MODE;
+}
+
+
+// ===== js/domain/tickvol_bands.js =====
+// tickvol_bands.js（domain）— 取引密度ハイライトの純ロジック（DOM/lwc/fetch 非依存）。
+//
+// バックエンド /tickvol_profile が返す帯（セッション日始端からの [startOff, endOff) 秒）を、
+// 画面上のどのバーを塗るかへ変換する。帯の定義（集計・閾値）はバックエンドが唯一の権威で、
+// 本モジュールは「帯 → 塗るバー」の写像だけを担う（規則の二重定義を作らない）。
+//
+// 塗る規則: **バーの時間スロットの 50% 以上が帯に入るとき、そのバーを塗る**。
+//   表示足より短い帯（例 1h 足に対する 15 分帯）はスロットの 25% しか占めないため塗られない
+//   ＝チャートの解像度を超えた帯を 4 倍に誇張しない。逆に帯の大半を覆うバーは必ず塗られる。
+//   バー単位で判定するため、休場・祝日・短縮セッション・DST の 23h/25h 日でも「存在するバー」
+//   しか塗られない（時刻レンジ直塗りだと空白域まで塗ってしまう）。
+//
+// セッション日境界は session_day.js が唯一の規則源（NY 17:00 起点・DST は IANA tz 委譲）。
+// `start + 86400` は使わない（DST 日は 23h/25h）。
+
+
+// 対応時間足の上限（依頼者確定 2026-08-01: 1 時間足以下）。値の列挙でなく tf 台帳から導出する
+//   （tf の追加・改名で集合がずれない）。
+const TICKVOL_BANDS_MAX_BAR_SEC = 3600;
+
+function tickvolBandsSupportsTf(tf) {
+  const s = TF_BAR_SEC[tf];
+  return s != null && s <= TICKVOL_BANDS_MAX_BAR_SEC;
+}
+
+// バーのスロット [off, off+barSec) と帯群の重なり秒数（帯は互いに素・昇順を仮定しない）。
+function bandOverlapSec(off, barSec, bands) {
+  if (!Array.isArray(bands) || !(barSec > 0)) {
+    return 0;
+  }
+  const end = off + barSec;
+  let sum = 0;
+  for (const b of bands) {
+    const l = Math.max(off, b.startOff);
+    const r = Math.min(end, b.endOff);
+    if (r > l) {
+      sum += r - l;
+    }
+  }
+  return sum;
+}
+
+// 各バーを塗るか（boolean 配列・candles と同順同長）。
+//   セッション日始端は昇順走査で日ごとに 1 回だけ解決する（Intl 変換をバー数ぶん呼ばない）。
+function paintedBarFlags(candles, bands, barSec) {
+  const n = Array.isArray(candles) ? candles.length : 0;
+  const out = new Array(n).fill(false);
+  if (!n || !Array.isArray(bands) || !bands.length || !(barSec > 0)) {
+    return out;
+  }
+  let dayStart = null;
+  let dayEnd = null;
+  for (let i = 0; i < n; i++) {
+    const t = candles[i] && candles[i].time;
+    if (!Number.isFinite(t)) {
+      continue;
+    }
+    if (dayStart == null || t < dayStart || t >= dayEnd) {
+      dayStart = sessionDayStart(t);
+      dayEnd = nextSessionDayStart(t);
+    }
+    out[i] = bandOverlapSec(t - dayStart, barSec, bands) * 2 >= barSec;
+  }
+  return out;
+}
+
+// 連続する true を 1 本の帯（バー添字の閉区間）へまとめる。
+function mergeRuns(flags) {
+  const runs = [];
+  for (let i = 0; i < flags.length; i++) {
+    if (!flags[i]) {
+      continue;
+    }
+    if (runs.length && runs[runs.length - 1].to === i - 1) {
+      runs[runs.length - 1].to = i;
+    } else {
+      runs.push({ from: i, to: i });
+    }
+  }
+  return runs;
+}
+
+// 帯 → 描画レンジ（各帯の左端バー time / 右端バー time）。プリミティブはこれを x へ写像する。
+//   バーが 1 本も該当しなければ空配列（＝塗らない）。
+function bandRangesForCandles(candles, bands, barSec) {
+  return mergeRuns(paintedBarFlags(candles, bands, barSec)).map((r) => ({
+    from: candles[r.from].time,
+    to: candles[r.to].time,
+  }));
 }
 
 
@@ -1788,6 +1958,71 @@ function makeMarketProfileDef({
 }
 
 
+// ===== js/usecase/tickvol_bands_catalog_entry.js =====
+// tickvol_bands_catalog_entry.js — 「取引密度帯」の IndicatorDef factory（アクター駆動型）。
+//
+// 一日の取引時間のうちティックが集中する時刻帯のチャートパネル背景色を変える（依頼者確定 2026-08-01）。
+// 系列（線）を描かないアクター駆動型のため /compute を持たず、専用アクターが
+// /tickvol_profile から帯を取得してプリミティブへ渡す（market_profile と同じ扱い）。
+//
+// 依存注入で受けるのは catalog.js のローカル helper（param / OHLC）とドメイン型。catalog.js から
+// factory を呼んで REGISTRY へ登録する（catalog.js が MP 定義に対して行っているのと同じ規律）。
+
+
+function makeTickvolBandsDef({
+  IndicatorDef, SeriesDef, SeriesKind, ParamType, ConstraintKind, param, OHLC,
+}) {
+  // 時間足ゲート（1 時間足以下）。ctx 不明（単体テスト・A 方式）では制限しない＝安全側
+  //   （mp_source_capability の optionEnable と同じ安全則）。
+  const tfOk = (_values, ctx) => !ctx || ctx.timeframe == null || tickvolBandsSupportsTf(ctx.timeframe);
+
+  return new IndicatorDef({
+    id: 'tickvol_bands',
+    displayNameKey: 'ind.tickvol_bands',
+    category: { group: 'builtin', nameKey: 'cat.volume' },
+    // プロファイル系（価格でなく「時間帯の性質」を描く）＝profile タブ。
+    tab: 'profile',
+    placement: 'overlay',
+    params: [
+      // sessions: 集計に使う過去セッション日数（当日は含まない＝因果窓）。
+      //   実測（2026-08-01）: 直近 3 か月内の互いに素な 20 セッション窓どうしで HIGH ビン集合の
+      //   Jaccard 0.84 に対し、9 か月離れると 0.33。長い窓（60 セッション）は 0.44 へ劣化する。
+      //   ＝「癖」は数か月スケールで入れ替わるのでローリング直近窓が必須。上限 25 は 1 分足原子の
+      //   供給 tail（50,000 行 ≒ 39 セッション）に対する安全域。
+      param('sessions', ParamType.INT, 20,
+        // 整数のため閉区間 [5,25] は開区間 (4,26) と同値（既存の制約語彙だけで表す）。
+        [{ kind: ConstraintKind.RANGE_OPEN, operands: [4, 'sessions', 26], messageKey: 'err.sessions.range' }],
+        null, {
+          group: 'group.calc', order: 1, label: '参照セッション数', unit: 'unit.days',
+          step: 1, min: 5, max: 25,
+          tooltip: '当日を除く直近このセッション日数から時刻帯の密度を推定する（実測: 20 前後で安定・数か月以上遡ると別の癖になる）',
+          conditionalVisible: tfOk,
+        }),
+      // pct: HIGH 判定のパーセンタイル（分布内の相対閾値）。実測で絶対 tickvol 閾値は窓により
+      //   2 倍ドリフトする（市場全体の活況度が動く）ため、閾値は必ず相対値で持つ。
+      param('pct', ParamType.INT, 75,
+        // 整数のため閉区間 [50,95] は開区間 (49,96) と同値。
+        [{ kind: ConstraintKind.RANGE_OPEN, operands: [49, 'pct', 96], messageKey: 'err.pct.range' }],
+        null, {
+          group: 'group.calc', order: 2, label: '強調する上位割合(%)', unit: 'unit.percent',
+          step: 5, min: 50, max: 95,
+          tooltip: '時刻帯を密度順に並べ、上位 (100 - この値)% を「濃い」として背景色を変える（既定 75＝上位 25%）',
+          conditionalVisible: tfOk,
+        }),
+    ],
+    // 系列は描かない（背景プリミティブが描く）。IndicatorDef が series 非空を要求するためのダミー
+    //   1 本（market_profile と同じ扱い・レンダラへは渡らない）。
+    series: [
+      new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'tickvol_bands', dynamic: false }),
+    ],
+    compute: {
+      computeId: 'tickvol_bands', requiredColumns: OHLC, timeRequired: false,
+      backendParam: null, variants: ['default'],
+    },
+  });
+}
+
+
 // ===== js/usecase/catalog.js =====
 // 指標レジストリ（usecase/catalog.js）。
 //
@@ -1915,11 +2150,24 @@ const TGP_BTLM = new IndicatorDef({
 // 2 方式（band_method）。分位ペアは q_low/q_high（0<q_low<q_high<1）。
 // 実バインディング add_btlm_trail（indigators/btlm_trail/src/lwc_chart.py）。
 // 系列名: btlm_trail_mean（静的）＋ btlm_trail_q{pct}（動的・q_low/q_high に依存）。
-const BTLM_TRAIL_SOURCE_LABELS = {
+// 適用価格（ソース）の表示名。**単一情報源**（同一概念に複数の呼び名を作らない）。
+//   共有 common/applied_price.py の AppliedPrice と 1:1 で対応する。
+const APPLIED_PRICE_LABELS = {
   close: '終値', open: '始値', high: '高値', low: '安値',
   hl2: '(高値 + 安値)/2', hlc3: '(高値 + 安値 + 終値)/3',
   ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
 };
+// profit_rsi の `apply` は MQL 由来の**数値**（1..6）で選ぶ。数値のままでは何に適用されるか
+//   読めないため（ユーザー報告 2026-07-31）、上の単一情報源から表示名を導く。
+//   写像は参照実装 `indigators/profit_rsi/src/core.py` の `_APPLY_MAP` と一致させる:
+//     1=OPEN / 2=HIGH / 3=LOW / 4=MEDIAN / 5=TYPICAL（既定）/ 6=WEIGHTED
+//   ※ 終値は選択肢に無い（元 MQL の Apply が 1..6 のため）。範囲外を渡すと計算側は
+//     CLOSE へ縮退するが、UI からその値は選べない。
+const RSI_APPLY_TO_SOURCE = { 1: 'open', 2: 'high', 3: 'low', 4: 'hl2', 5: 'hlc3', 6: 'hlcc4' };
+const RSI_APPLY_LABELS = Object.fromEntries(
+  Object.entries(RSI_APPLY_TO_SOURCE).map(([value, src]) => [value, APPLIED_PRICE_LABELS[src]]),
+);
+const BTLM_TRAIL_SOURCE_LABELS = APPLIED_PRICE_LABELS;
 const BTLM_TRAIL_METHOD_LABELS = { ols: '名目 ols バンド', empirical: '経験分位バンド' };
 const BTLM_TRAIL = new IndicatorDef({
   id: 'btlm_trail',
@@ -2173,11 +2421,7 @@ const PRICE_RANGE_POWER = new IndicatorDef({
 //   "MA"/"Smoothing"/"Upper"/"Lower"（4 静的 SeriesDef）。backend は平滑化タイプに応じて部分集合を
 //   出力し F3 を通過する。ダイアログは 3 セクション（基本 / 平滑化 / 計算）で画像レイアウトに準拠。
 const MA_TYPE_LABELS = { sma: 'SMA', ema: 'EMA', smma: 'SMMA', lwma: 'LWMA' };
-const MA_SOURCE_LABELS = {
-  close: '終値', open: '始値', high: '高値', low: '安値',
-  hl2: '(高値 + 安値)/2', hlc3: '(高値 + 安値 + 終値)/3',
-  ohlc4: '(始値 + 高値 + 安値 + 終値)/4', hlcc4: '(高値 + 安値 + 終値 + 終値)/4',
-};
+const MA_SOURCE_LABELS = APPLIED_PRICE_LABELS;   // 同一概念＝同一情報源
 const MA_SMOOTHING_LABELS = {
   none: 'なし', sma: 'SMA', ema: 'EMA', smma: 'SMMA', wma: 'WMA', sma_bb: 'SMA + ボリンジャーバンド',
 };
@@ -2340,10 +2584,55 @@ const PROFIT_RSI = pfDef({
   id: 'profit_rsi', name: 'RSI', cat: 'oscillator', placement: 'pane',
   params: [
     PF_INT('rsi_period', 6),
-    param('apply', ParamType.ENUM, 5, [], [1, 2, 3, 4, 5, 6], { group: 'group.calc' }),
-    PF_INT('ma_period', 5),
+    // 適用価格（何に対して RSI を計算するか）。数値のままでは意味が読めないため表示名を与える。
+    param('apply', ParamType.ENUM, 5, [], [1, 2, 3, 4, 5, 6],
+      { group: 'group.calc', label: 'ソース', enumLabels: RSI_APPLY_LABELS,
+        tooltip: 'RSI を計算する価格。既定は (高値 + 安値 + 終値)/3' }),
+    // 水準パラメータ（tickvol と同名・同既定＝同じ意味の設定は指標間で同じ名前にする）。
+    //   元 MQL の σ 7 水準は全系列＝未来を含む非因果な水準だったため、因果ローリング分位＋
+    //   POT/GPD へ全面置換した（承認 2026-08-02）。
+    param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
+      group: 'group.calc', order: 3, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（閾値）', isPeriod: true,
+      tooltip: '「普段どのあたりの RSI か」を測る因果ローリング窓の本数（既定 500）。当該バーは除外する（非リペイント）。元の σ 水準は全期間（未来を含む）で 1 本に固定されていたが、この窓で局所的に測り直す。',
+    }),
+    param('q_low', ParamType.FLOAT, 0.10, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
+      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
+    ], null, {
+      group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1, label: '下側分位',
+      tooltip: '正常帯の下端（既定 0.10＝下位 10%）。これを下回る RSI を「売られ過ぎイベント」として数える。下側 POT の閾値でもある。',
+    }),
+    param('q_high', ParamType.FLOAT, 0.90, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
+    ], null, {
+      group: 'group.calc', order: 5, step: 0.01, min: 0, max: 1, label: '上側分位（外れ値の境目）',
+      tooltip: '正常帯の上端（既定 0.90＝上位 10%）。これを超えた RSI を「買われ過ぎイベント」として数える。上側 POT の閾値でもある。閾値の自動選択（GPD 適合度＋ForwardStop）は実測で時間足ごとに 0.80〜0.95 へ散り、直近 50 件の当てはめでは 0.80〜0.95 のどこでも適合するため、観測数を確保できる 0.90 を既定にしている。',
+    }),
+    param('q_out', ParamType.FLOAT, 0.99, [], null, {
+      group: 'group.calc', order: 6, label: '外れ値の極端分位', step: 0.01, min: 0, max: 1,
+      tooltip: '過熱イベントの「極端にはどこまで行くか」の分位（既定 0.99）。経験的分位線（赤破線）と GPD 線（橙破線）は同じこの分位を推定しており、差は外挿量そのもの。空欄・上側分位以下・範囲外は極端線と GPD 線のみオフ。',
+    }),
+    param('k_events', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['k_events', 1], messageKey: 'err.k_events' }], null, {
+      group: 'group.calc', order: 7, step: 1, min: 1, label: '外れ値イベント数 K',
+      tooltip: '水準を直近何件の過熱イベントから計算するか（既定 50・経験的分位と GPD で共通）。全履歴で当てはめると分布が非定常なため適合度検定に落ちるが、直近 50 件なら落ちない＝ローリングでこそ成立する。GPD 線は観測が 30 件に満たない区間では描かない（推定値が自身と同じ大きさで揺れるため）。',
+    }),
   ],
-  series: [PF_LINE('rsi'), PF_LINE('rsi_ma'), PF_HLINE('profit_rsi')],
+  // 系列: RSI 本線＋正常帯 2 本（動的名 rsi_q{pct}）＋外れ値水準 4 本（経験的 evq_ext・GPD の
+  //   上下）。水準は当該バー除外の因果ローリング分位に基づき時間で動くため、水平線ではなく
+  //   時系列（line）で出す。命名は共有規約（common.event_quantiles / btlm_trail_q{pct}）に従う。
+  series: [
+    PF_LINE('rsi'),
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      seriesNamePattern: {
+        template: 'rsi_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
+    ...['rsi_evq_ext_hi', 'rsi_evq_ext_lo', 'rsi_gpd_hi', 'rsi_gpd_lo'].map(
+      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
+    ),
+  ],
 });
 const PROFIT_STC = pfDef({
   id: 'profit_stc', name: 'STC', cat: 'oscillator', placement: 'pane',
@@ -2421,6 +2710,13 @@ const PROFIT_RSI_MACD = pfDef({
 //   present はローカル helper（param / OHLC）とドメイン型を注入して factory を呼び登録する
 //   （メニュー導線＝プロファイルタブからの MP 追加はユーザー明示指示で維持）。挙動は移設前と byte 等価。
 const MARKET_PROFILE = makeMarketProfileDef({
+  IndicatorDef, SeriesDef, SeriesKind, ParamType, ConstraintKind, param, OHLC,
+});
+
+// --- tickvol_bands（プロファイルタブ・アクター委譲型）----------------------
+// 一日の取引時間のうちティックが集中する時刻帯のチャートパネル背景色を変える（1 時間足以下）。
+//   定義は tickvol_bands_catalog_entry.js（MP と同じ factory 注入方式）。
+const TICKVOL_BANDS = makeTickvolBandsDef({
   IndicatorDef, SeriesDef, SeriesKind, ParamType, ConstraintKind, param, OHLC,
 });
 
@@ -2506,8 +2802,90 @@ const CVFE = new IndicatorDef({
   compute: { computeId: 'cvfe', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
 
+// --- tickvol（ティックボリューム・専用ペインのヒストグラム＋外れ値水準）------
+// その足の間に到来した tick 数を、専用ペインのヒストグラム 1 本で描く（依頼者確定 2026-08-01）。
+//   実バインディング add_tickvol（indigators/tickvol/src/lwc_chart.py）は供給側 volume 列
+//   （＝tick 数。確定足はロールアップ、形成中足は forming_bar の len(mids)）を加工せず渡す。
+// placement='pane': ローソクと価格スケールを共有しない（tick 数は価格と単位が異なる）。
+//
+// 外れ値水準（依頼者指示 2026-08-01「経験的分位＋GPD を並列表示」）:
+//   正常帯上端（当該バー除外の因果ローリング分位＝POT の閾値）を超えた**エピソード極値**を
+//   1 観測とし（宣言クラスタリング）、その超過分の同じ分位を経験的分位と GPD の 2 通りで
+//   推定して並べる。2 本の差が「標本内で数えた値」と「裾の分布形から外挿した値」の差になる。
+//   計算は既存の共有プリミティブ（common.marod_bands / common.event_quantiles / common.gpd）を
+//   無改変参照する（indigators/tickvol/src/levels.py に実測根拠を記載）。
+//
+// 集計単位（event_agg）を公開しない理由: GPD は超過の独立を前提にする。実測（2026-08-01）で
+//   生の閾値超過は θ=0.16〜0.27 と強くクラスタ化し、エピソード極値へ畳んで初めて θ=0.49〜0.89
+//   （ゲート θ>=0.2）を満たす。「バー値」集計を選べるようにすると前提が壊れるため固定する。
+const TICKVOL = new IndicatorDef({
+  id: 'tickvol',
+  displayNameKey: 'ind.ティックボリューム',
+  category: { group: 'builtin', nameKey: 'cat.volume' },
+  tab: 'indicator',
+  placement: 'pane',
+  params: [
+    // window_n: 正常帯（＝POT 閾値）の因果ローリング窓。tickvol は水準そのものが非定常
+    //   （実測: 履歴 4 分割の中央値が 5m 170→489・1h 666→2049）ため固定閾値は使えない。
+    param('window_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['window_n', 2], messageKey: 'err.window_n' }], null, {
+      group: 'group.calc', order: 1, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（閾値）', isPeriod: true,
+      tooltip: '「普段どれくらいの tick 数か」を測る因果ローリング窓の本数（既定 500）。当該バーは除外する（非リペイント）。tick 数の水準は数か月スケールで数倍動くため、固定値ではなくこの窓で局所的に測り直す。',
+    }),
+    // 分位ペア（0<q_low<q_high<1・MAROD 系と対称の q-chain 制約）。正常帯の下側/上側分位で、
+    //   上側は POT の閾値そのもの。下側は「普段より極端に静かな足」を示す表示専用
+    //   （tick 数は最小 1 の計数量で下側は裾でないため GPD の対象にしない）。
+    param('q_low', ParamType.FLOAT, 0.10, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
+      { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
+    ], null, {
+      group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: '下側分位',
+      tooltip: '正常帯の下端（既定 0.10＝下位 10%）。これを下回る足は「普段より極端に静か」。表示専用で、外れ値イベント・GPD の算出には使わない。',
+    }),
+    // q_high: 正常帯の上側分位＝POT の閾値分位。ForwardStop（common.gpd.select_threshold）の
+    //   自動選択は実測で 5m 0.95 / 15m 0.90 / 1h 0.85 と時間足で動くため、採択域の内側で
+    //   観測件数が最も確保できる 0.90 を既定にする。
+    param('q_high', ParamType.FLOAT, 0.90, [
+      { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
+    ], null, {
+      group: 'group.calc', order: 3, step: 0.01, min: 0, max: 1, label: '上側分位（外れ値の境目）',
+      tooltip: '正常帯の上端。この分位を超えた足を「外れ値イベント」として数える（既定 0.90＝上位 10%）。この閾値が GPD の当てはめ開始点（POT の閾値）でもある。閾値の自動選択（GPD 適合度＋ForwardStop）は実測で 5 分足 0.95・1 時間足 0.85 と時間足で動くため、その内側の 0.90 を既定にしている。',
+    }),
+    // q_out: イベント超過分の極端分位。経験的線と GPD 線は**同じ q_out** を推定する
+    //   （だから 2 本を並べて読める）。無効値は共有規約 q_out_valid で黙ってオフ。
+    param('q_out', ParamType.FLOAT, 0.99, [], null, {
+      group: 'group.calc', order: 4, label: '外れ値の極端分位', step: 0.01, min: 0, max: 1,
+      tooltip: '外れ値イベントの「極端にはどこまで行くか」の分位（既定 0.99）。経験的分位線（赤破線）と GPD 線（橙破線）は同じこの分位を推定しており、差は外挿量そのもの。空欄・上側分位以下・範囲外は極端線と GPD 線のみオフ。',
+    }),
+    // k_events: 水準に使う直近観測件数（経験的・GPD で共通）。実測で全履歴の当てはめは
+    //   AD 適合度検定で棄却され（p=0.005〜0.255）、直近 50 件では棄却されない（p=0.455〜0.720）。
+    param('k_events', ParamType.INT, 50, [{ kind: ConstraintKind.MIN_VALUE, operands: ['k_events', 1], messageKey: 'err.k_events' }], null, {
+      group: 'group.calc', order: 5, step: 1, min: 1, label: '外れ値イベント数 K',
+      tooltip: '水準を直近何件の外れ値イベントから計算するか（既定 50・経験的分位と GPD で共通）。全履歴で当てはめると分布が非定常なため適合度検定に落ちるが、直近 50 件なら落ちない＝ローリングでこそ成立する。GPD 線は観測が 30 件に満たない区間では描かない（推定値が自身と同じ大きさで揺れるため）。',
+    }),
+  ],
+  // 系列: 本体ヒストグラム＋正常帯 2 本（動的名）＋水準線 3 本（典型深度＝実線／経験的極端
+  //   分位・GPD＝破線）。命名 `_evq_{med|ext}_{hi}` と `_q{pct}` はいずれも共有規約に従う
+  //   （前者 common.event_quantiles・後者 btlm_trail_q{pct} と対称）。イベント水準の下側
+  //   （_evq_*_lo）は持たない（tick 数は 1 以上の計数量で下側は裾でない・実測 min=1）。
+  series: [
+    PF_HIST('tickvol'),
+    // 正常帯（動的・q_low/q_high に依存＝tickvol_q{pct}）。
+    new SeriesDef({
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      seriesNamePattern: {
+        template: 'tickvol_q{pct}', buckets: [''],
+        pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
+      },
+    }),
+    ...['tickvol_evq_med_hi', 'tickvol_evq_ext_hi', 'tickvol_gpd_hi'].map(
+      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
+    ),
+  ],
+  compute: { computeId: 'tickvol', requiredColumns: OHLC, timeRequired: false, backendParam: null, variants: ['default'] },
+});
+
 const REGISTRY = Object.freeze([
-  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, CVFE, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE,
+  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, CVFE, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE, TICKVOL_BANDS, TICKVOL,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,
@@ -2920,6 +3298,12 @@ const INTRABAR_FORMING_IDS = new Set([
   //   「指標はティック粒度で更新」に従い登録（旧設計の帯系除外を本指標のみ解除）。OLS 端点
   //   （mean）は形成中バーでも意味を持ち、末尾差分で毎 tick 追従する。
   'btlm_trail',
+  // tickvol（ティックボリューム・専用 pane のヒストグラム）。形成中バーの tick 数は tick の
+  //   到来ごとに増えるため、登録しないと「ローソクは立っているのに直下のバーだけ無い」状態に
+  //   なる（full 再計算は確定足までしか含まない）。ライブは server の forming_bar が実 tick 数
+  //   （len(mids)）を持つので値は実測そのもの。リプレイの形成中バーは tick 数を持たない
+  //   （forming_plan.js の formingStatesAt が OHLC のみ）ため NaN＝点が立たず、確定時に入る。
+  'tickvol',
 ]);
 
 
@@ -2934,6 +3318,8 @@ const INTRABAR_FORMING_IDS = new Set([
 // ライブ・リプレイ共有（replay 側は symlink 参照＝単一実体）。
 const ACTOR_DRIVEN_COMPUTE_IDS = new Set([
   'market_profile',
+  // 取引密度帯（時刻帯の背景色）。系列を持たず、背景プリミティブをアクターが駆動する。
+  'tickvol_bands',
 ]);
 
 // def（カタログ定義）がアクター駆動型かの述語。def 形状は catalog.js の compute.computeId。
@@ -3950,9 +4336,14 @@ class SeriesDrawer {
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }
-      // overlay（pane 0 重ね描き）の line 系列のみ読み取り欄の overlay 行に載せる。
+      // overlay（pane 0 重ね描き）の line 系列を読み取り欄の overlay 行に載せる。
       //   color/name と末尾点 value（hover 解除時の fallback）を保持する。
-      if (!pane && seriesKind(kind).overlayReadout) {
+      //
+      // readout_only の系列は pane 指標でも載せる: このヒントは「描画せず読取欄だけに出す」
+      //   という意味であり（back の描画ヒント契約・fake_chart の _DISPLAY_HINTS）、pane だから
+      //   除外すると線も出ず読取欄にも出ない＝どこにも現れない死荷重になる。対象は明示的に
+      //   readout_only を付けた系列だけなので、既存指標の読取欄行は 1 行も増えない。
+      if ((!pane && seriesKind(kind).overlayReadout) || p.readout_only === true) {
         this._h._overlayReadouts.set(key, {
           series, color: p.color, name: p.name, lastValue: lastPointValue(p.data),
           visible: true,
@@ -4187,8 +4578,17 @@ class SeriesDrawer {
 // 設計入力: 内部設計書 §3.3.4 / §7.1.2。
 // ★ lightweight-charts v5.2.0 の JS API 名（addSeries / addPane / removePane / panes /
 //   createPriceLine / setData / applyOptions / removeSeries / removePriceLine /
-//   subscribeCrosshairMove / createTextWatermark）を呼ぶのは本ファイルだけ。
-//   他ファイルでこれらの API 名を参照しない（§2.2 grep 0 件強制）。
+//   subscribeCrosshairMove / createTextWatermark / timeScale / attachPrimitive / priceScale）を
+//   呼んでよいのは **宣言された隔離単位** に限る:
+//     (a) ChartRenderer 本体とその内部協働子（series_drawer / candle_feed / scale_controller）
+//     (b) チャート生成の bootstrap（chart_bootstrap）
+//     (c) lwc プラグイン契約（ISeriesPrimitive）の実装＝chart を受け取るのが upstream 仕様
+//     (d) 合成根（可視範囲の購読のみ。ChartRenderer へ寄せるのが望ましい残件）
+//   これは ``tests/upstream_isolation_declaration.test.js`` が **実際に走査して強制**する。
+//
+//   かつてここは「呼ぶのは本ファイルだけ（§2.2 grep 0 件強制）」と書いていたが、その grep を
+//   実行する仕組みは存在せず、実際は 11 ファイルが呼んでいた（ISSUE-262）。宣言を実態へ正し、
+//   施行をテストへ移した。隔離単位を変えるときは当該テストの許可リストと本コメントを同時に更新する。
 //
 // 隠蔽する責務:
 //   - line       → chart/pane.addSeries(LineSeries, ...) + series.setData(points)
@@ -4242,6 +4642,8 @@ class ChartRenderer {
     // v6: 基準 candles の単一所有者（setCandles 全置換・updateLastCandle 差分で更新）。
     //   per-bar 減光（dimCandlesOutsidePair）・基準復元（restoreCandles）はこの基準から導出する。
     this._baseCandles = null;
+    // 背景プリミティブ（用途 key -> primitive）。attachBackgroundPrimitive が所有し、メイン系列へ 1 度だけ装着する。
+    this._backgroundPrimitives = new Map();
     // v6: candle 変更 observer（後方互換 no-op）。setCandleObserver で後から差し替え可能（生成順序吸収）。
     this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
     // 読み取り欄の最新足の単一源（lightweight-charts から逆引きしない＝upstream API 名を増やさない）。
@@ -4326,6 +4728,28 @@ class ChartRenderer {
   //   index→time 変換に使う（新規追加・読取のみ＝既存描画へ非干渉）。未設定時は空配列。
   getCandles() {
     return this._baseCandles ?? [];
+  }
+
+  // メインペイン（pane 0＝価格パネル）へ背景プリミティブを 1 度だけ装着し、その実体を返す。
+  //   attachPrimitive という lwc API 名を扱うのは本クラス（隔離点）に閉じる。
+  //   key: 用途ごとの名前空間（用途が増えても互いの実体が混ざらない）。2 回目以降は同一実体を返す。
+  //
+  //   指標 pane へは装着しない: pane 内の系列は指標の再計算で作り直され、その都度プリミティブが
+  //   外れる。「作り直しを検知して張り直す」同期を持ち込むと、検知の取りこぼしが**一部の pane だけ
+  //   塗られない**という分かりにくい欠落として出る（実測で再現）。メイン系列は生成が 1 度きりで
+  //   作り直されないため、装着も 1 度で完結し同期そのものが不要になる。
+  attachBackgroundPrimitive(key, factory) {
+    const existing = this._backgroundPrimitives.get(key);
+    if (existing) {
+      return existing;
+    }
+    if (!this._mainSeries || typeof this._mainSeries.attachPrimitive !== 'function') {
+      return null;
+    }
+    const primitive = factory();
+    this._mainSeries.attachPrimitive(primitive);
+    this._backgroundPrimitives.set(key, primitive);
+    return primitive;
   }
 
   // 増分2: チャートの通常操作（スクロール/ズーム）を停止/復元する（リプレイスワイプ捕捉用）。
@@ -5060,7 +5484,7 @@ class ComputeHttpClient {
   // ComputeRequest -> series（§7.1.1）。非200/ネットワーク例外は ComputeError へ翻訳。
   // generation はサーバがエコーし、recompute の競合採否（advanced.accepts(result.generation)）が
   // 参照する。転送しないと常に 0 がエコーされ recompute が破棄され params が反映されない。
-  async compute({ indicatorId, variant, params, datasetRef, generation, timeframe, limit, mode, untilTime, forming } = {}) {
+  async compute({ indicatorId, variant, params, datasetRef, generation, timeframe, limit, mode, untilTime, forming, winStart, winEnd } = {}) {
     // timeframe（時間足）/ limit（直近 N 本）はサーバで resample・表示範囲制限に使う。
     // 省略時はサーバが原子（再集計なし）・全件として扱う（後方互換）。
     // mode（full/latest）は指定時のみ載せる（未指定はサーバ既定 full・後方互換でボディに含めない）。
@@ -5076,6 +5500,15 @@ class ComputeHttpClient {
     // [PROTO 再生 seam] forming（足内更新中の形成中バー暫定 OHLC）。未指定は載せない＝確定足のまま計算。
     if (forming !== undefined) {
       reqBody.forming = forming;
+    }
+    // [ISSUE-238] 足内窓。forming の `to`（リプレイ現在時刻）と対で、サーバが「その時点までに
+    //   到来した実 tick 数」を数えて形成中バーの volume にする（volume 未指定だと確定足の完成値が
+    //   残り、足の先頭から未来の値を表示してしまう）。未指定は載せない＝ライブ扱い・従来ボディ不変。
+    if (winStart !== undefined) {
+      reqBody.winStart = winStart;
+    }
+    if (winEnd !== undefined) {
+      reqBody.winEnd = winEnd;
     }
     const body = JSON.stringify(reqBody);
 
@@ -5716,6 +6149,7 @@ function buildSeriesStyleRows(def, seriesStyles) {
 //   （右端 t は実バー時刻のみを走査。窓の左端が実測期間の外に出る t は除外）
 // プリセット値（§6.1）と期間表記入力の換算値（§6.3）は、いずれもこの 1 つの表から導く。
 
+
 // ---------------------------------------------------------------------------
 // 換算表 v1（設計 §4.3・実測値）
 // ---------------------------------------------------------------------------
@@ -5792,13 +6226,9 @@ const UNIT_LABELS = Object.freeze({
   '1y': '1年', '2y': '2年', '3y': '3年', '5y': '5年',
 });
 
-// 時間足 → バー秒長（名目）。分単位の換算（§6.3-3）にのみ使う。周期集合は
-//   marketdata.resample.TIMEFRAME_RULES と一致させる（front 側の名目値）。
-const TF_SEC = Object.freeze({
-  '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-  '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000,
-});
-
+// 時間足 → バー秒長（名目）は台帳（Python 生成物 tf_ledger_generated.js → tf_meta.js）から採る。
+//   かつてここに同値の手書き dict（TF_SEC）を置いていたが、それは台帳の第 2 定義であり、
+//   台帳へ時間足を足しても追随せず検定も落ちなかった（ISSUE-261。ISSUE-253 と同型の事故源）。
 // 提示の下限（§6.1-2）。本数 1 は「期間の指定」として意味を持たない。
 const MIN_PRESET_BARS = 2;
 
@@ -5975,7 +6405,7 @@ function parsePeriodInput(text, {
 
   // 分単位は名目換算（§6.3-3。セッション内で分足・時間足に欠落がないことを実測で確認済み）。
   if (hit.kind === 'min') {
-    const sec = TF_SEC[timeframe];
+    const sec = TF_BAR_SEC[timeframe];
     if (!sec) {
       return { ok: false, code: 'no_table', message: 'この時間足では期間表記を使えません。' };
     }
@@ -6116,12 +6546,41 @@ function removeDocumentCloseHandler(doc, key, handler) {
 //   DOM 不在（SSR/テスト）は no-op。
 
 
-// 既定の時間足メニュー（present＝バックエンド対応 9 足）。サーバ TIMEFRAME_RULES と一致させる。
-const DEFAULT_GROUPS = [
-  { cat: '分', items: [['1m', '1分'], ['5m', '5分'], ['15m', '15分'], ['30m', '30分']] },
-  { cat: '時間', items: [['1h', '1時間'], ['4h', '4時間']] },
-  { cat: '日', items: [['1D', '日'], ['1W', '週'], ['1M', '月']] },
-];
+// 時間足コード → 日本語ラベル。**表示名だけ**を持つ（どの足が存在するかは持たない）。
+//   ISSUE-254: かつては既定メニューが時間足の集合そのものを直書きしており、台帳へ足を足しても
+//   メニューに出ない（＝どこを直せばよいか分からない）状態だった。集合と順序は台帳
+//   （domain/tf_meta.js の TF_CODES＝Python 台帳の生成物）を唯一源にし、ここはラベルだけにする。
+//   台帳に足が増えてラベル未定義になった場合は、コード自体をラベルとして必ず表示する
+//   （黙って落とさない）。網羅は timeframe_menu.test.js が固定する。
+const TF_LABELS = {
+  '1m': '1分', '5m': '5分', '15m': '15分', '30m': '30分',
+  '1h': '1時間', '4h': '4時間',
+  '1D': '日', '1W': '週', '1M': '月',
+};
+
+// 時間足コード → カテゴリ見出し（表示のグルーピングのみ）。
+const TF_CATEGORY = {
+  '1m': '分', '5m': '分', '15m': '分', '30m': '分',
+  '1h': '時間', '4h': '時間',
+  '1D': '日', '1W': '日', '1M': '日',
+};
+
+// 既定の時間足メニュー＝**台帳の全時間足**をカテゴリ順に並べたもの（値の直書きなし）。
+function groupsFromLedger(codes = TF_CODES) {
+  const groups = [];
+  for (const code of codes) {
+    const cat = TF_CATEGORY[code] ?? 'その他';
+    let g = groups.find((x) => x.cat === cat);
+    if (!g) {
+      g = { cat, items: [] };
+      groups.push(g);
+    }
+    g.items.push([code, TF_LABELS[code] ?? code]);
+  }
+  return groups;
+}
+
+const DEFAULT_GROUPS = groupsFromLedger();
 
 // 時間足キー → 表示ラベル（'1m'→'1分'・'1D'→'日'）の写像を groups から導出する。
 //   ラベルの単一情報源は本モジュールの groups 定義（既定＝present 9 足）であり、利用側は
@@ -8075,6 +8534,134 @@ const mpFacadeToggleVisible = toggleVisible;
 const mpFacadeRemove = remove;
 
 
+// ===== js/adapter/front/tickvol_bands_controller.js =====
+// tickvol_bands_controller.js — 取引密度帯（時刻帯の背景色）のアクター駆動オーケストレーション協働子。
+//
+// IndicatorController が computeId → アクターコントローラのレジストリで本協働子へ委譲する
+// （registerActorController）。面は MarketProfileController と同一（applyMarketProfile / toggleVisible /
+// removeInstance / onGear / restoreInstance / onLiveRecompute）＝host 側に種別分岐を増やさない。
+//
+// MP と同じく /compute はバイパスし、no-op gateway で state へ instance を登録する（凡例・永続化・
+// 復元の対象に含める）。描画はアクター（/tickvol_profile → 背景プリミティブ）へ委譲する。
+
+
+class TickvolBandsController {
+  /**
+   * @param {object} host IndicatorController（MarketProfileHost と同じ面を使う）。
+   * @param {object} actor TickvolBandsActor（setParams / setEnabled / refresh / isEnabled）。
+   */
+  constructor(host, actor) {
+    this._host = host;
+    this._actor = actor;
+  }
+
+  // 適用: /compute をバイパスし instance を登録してアクターを有効化する。
+  //   単一インスタンス制約（同一指標の凡例行を 2 つ作らない）は MP と同じ規律。
+  async applyMarketProfile(def, variant, params) {
+    const host = this._host;
+    const existing = host._state.applied.find((i) => i.indicatorId === def.id);
+    if (existing) {
+      return existing;
+    }
+    const { state, instance } = await apply(
+      host._state,
+      { indicatorId: def.id, variant: variant ?? host._defaultVariant(def), params, datasetRef: host._datasetRef },
+      { compute: async () => ({ generation: 0 }) },
+    );
+    host._commitState(state);
+    host._meta.set(instance.instanceId, { def });
+    this._actor.setParams(params);
+    await this._actor.setEnabled(true);
+    host._persistAll();
+    host._renderLegend();
+    return instance;
+  }
+
+  // 凡例 eye: 表示/非表示（state.visible を反転しアクターへ同期）。
+  async toggleVisible(inst) {
+    const host = this._host;
+    host._commitState(facadeToggleVisible(host._state, inst.instanceId));
+    const updated = host._state.applied.find((i) => i.instanceId === inst.instanceId);
+    if (updated) {
+      await this._actor.setEnabled(updated.visible);
+    }
+    host._persistAll();
+    host._renderLegend();
+  }
+
+  // 凡例 close: 消灯してから applied/meta から除去する（renderer に系列は持たない）。
+  async removeInstance(inst) {
+    const host = this._host;
+    await this._actor.setEnabled(false);
+    host._commitState(facadeRemove(host._state, inst.instanceId));
+    host._meta.delete(inst.instanceId);
+    host._persistAll();
+    host._renderLegend();
+  }
+
+  // 凡例 gear: 参照セッション数・強調する上位割合を編集し、OK でアクターへ反映する（/compute は呼ばない）。
+  //   DOM 不在（node 単体テスト等）は現 params で即時反映へフォールバックする（MP と同規律）。
+  onGear(inst, def) {
+    const host = this._host;
+    const doc = host._document;
+    const stored = host._paramsObject(inst.params);
+    const current = (stored && Object.keys(stored).length > 0) ? stored : host._defaultParams(def);
+    const applyParams = async (values) => {
+      host._commitState(host._withParams(host._state, inst.instanceId, values));
+      this._actor.setParams(values);
+      await this._actor.refresh();
+      host._persistAll();
+      host._renderLegend();
+    };
+    // applyParams は async。fire-and-forget の拒否を握って unhandledRejection 化を防ぐ（MP と同規律）。
+    const runApply = (values) => {
+      applyParams(values).catch((err) => {
+        if (typeof console !== 'undefined' && console.error) {
+          console.error('[tickvol_bands] gear apply failed', err);
+        }
+      });
+    };
+    if (!doc || !def || typeof PropertiesDialog !== 'function') {
+      runApply(current);
+      return;
+    }
+    const dialog = new PropertiesDialog({
+      document: doc,
+      def,
+      instance: { ...inst, params: current },
+      mode: host._mode,
+      // 系列を持たない（背景プリミティブが描く）ためスタイル/可視性タブは出さない（MP と同じ）。
+      seriesTabs: false,
+      // 時間足ゲート（1h 以下）の述語が ctx.timeframe を読む。
+      context: { timeframe: host._timeframe, servedMode: host._mode },
+      onApply: (values) => { runApply(values); },
+      onCancel: () => {},
+    });
+    dialog.open();
+  }
+
+  // 復元: 保存済み params をアクターへ渡し、可視なら有効化する。
+  async restoreInstance(inst) {
+    const host = this._host;
+    this._actor.setParams(host._paramsObject(inst.params));
+    if (inst.visible) {
+      await this._actor.setEnabled(true);
+    }
+  }
+
+  // ライブ再計算（足切替・tick）: /compute へ流さずアクターの再描画へ委譲する。
+  //   帯は時間足に依存しない（バックエンドは常に 1 分足原子で集計）ため、ここでは再取得しない。
+  async onLiveRecompute(inst) {
+    if (inst.visible) {
+      this._actor.onCandlesChanged();
+    }
+  }
+}
+
+const facadeToggleVisible = toggleVisible;
+const facadeRemove = remove;
+
+
 // ===== js/adapter/front/timeframe_controller.js =====
 // timeframe_controller.js — 時間足取得・切替（A3）の関心事を担う協働子。
 //
@@ -8114,6 +8701,10 @@ class TimeframeController {
     this._loadCandles = loadCandles;
     // 時間足変更の購読者（任意・1 個）。setTimeframe 適用後に新時間足を通知する。
     this._observer = null;
+    // 時間足切替の反映役（任意・1 個。null=既定＝ライブ経路）。ISSUE-231。
+    //   (timeframe) => Promise<void>。「candles 取得 → メイン系列差替え → 全指標再計算」の実行主体だけを
+    //   差し替える seam。リプレイ層が登録すると、切替はリプレイの単一経路（同期一括描画）で行われる。
+    this._applier = null;
   }
 
   // ---- 所有状態のアクセサ（host は本協働子へ委譲するだけでフィールドを持たない）----
@@ -8131,6 +8722,11 @@ class TimeframeController {
   observer() { return this._observer; }
 
   setObserver(observer) { this._observer = observer; }
+
+  // 反映役の登録／解除（null=既定のライブ経路へ戻す）。ISSUE-231。
+  setApplier(applier) { this._applier = typeof applier === 'function' ? applier : null; }
+
+  applier() { return this._applier; }
 
   // 時間足切替（§チャート表示時間選択・1 分足原子から resample）。
   //   1) candles を新時間足で再取得しメイン系列を差し替え（B方式のみ・直近 recentBars 本）。
@@ -8165,38 +8761,14 @@ class TimeframeController {
     const gate = host.recomputeGate();
     gate.enter();
     try {
-      // candles を新時間足で再取得（取得のみ・描画は下のバッチへ遅延）。
-      let candles = null;
-      if (typeof this._loadCandles === 'function') {
-        candles = await this._loadCandles(host._datasetRef, timeframe);
-      }
-      // ISSUE-196（抜本対策・2026-07-29 実測に基づく設計変更）:
-      //   旧: メイン系列差し替え（setCandles）を「全指標 compute 完了後」の同期バッチへ入れて
-      //       全要素を同時更新していた（ISSUE-023）。この順序は 2 つの実測不具合の原因だった。
-      //     1) 切替の所要が「最も遅い指標 compute」に律速される。/candles は 1.0 秒で届いているのに
-      //        チャートが変わるのは 5.63 秒後（指標 5 件・market_profile 単発 5.4 秒）。
-      //     2) その setData 時点で指標系列が旧足の time を保持しているため lwc が `Value is null` を
-      //        throw し、例外がバッチを中断して指標が旧足のまま固着する（以後の再計算も同じ throw で
-      //        失敗し続ける）。
-      //   新: 「旧足の指標系列を空にする」→「新足ローソクへ差し替える」を **await を挟まない
-      //       同一同期ブロック** で実行する。これで
-      //     - 時間軸に載る time は常にローソク系列に存在する（不変条件を構造的に保証＝1) の原因が消える）
-      //     - ローソク・時間軸は candles 取得直後（実測 約 1 秒）に切り替わる（指標構成に非依存）
-      //   指標は後続の recomputeAllApplied フェーズ2 が同期一括で描く（指標同士の同時更新は不変）。
-      //   切替直後の短時間は指標が空になる（compute 完了まで）。これは「5 秒以上チャート全体が
-      //   旧足のまま」だった従来挙動に対する意図的な変更（UI 挙動の変更点）。
-      if (candles && candles.length > 0) {
-        if (typeof host._renderer?.clearInstanceData === 'function') {
-          for (const inst of host._state?.applied ?? []) {
-            host._renderer.clearInstanceData(inst.instanceId);
-          }
-        }
-        host._renderer.setCandles(candles);
-      }
-      // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
-      //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
-      //   preRender は渡さない（メイン系列は上で差し替え済み）。
-      await host.recomputeAllApplied({ preRender: null });
+      // ISSUE-231（リプレイの非同時描画・二重実行の恒久解消）: 反映役が登録されているときは、
+      //   以下のライブ反映（candles 取得 → メイン系列差替え → 全指標再計算）を**行わず**反映役へ委譲する。
+      //   ライブの反映は ISSUE-196 の裁定でローソク先行（指標は compute 完了後）だが、リプレイは
+      //   「その時点のリビール」が不変条件であり、ローソクだけ先に新足へ替わる中間状態は仕様違反
+      //   （リビール範囲外の足が指標なしで露出する）。リプレイ層は自身の render（preRender で
+      //   ローソク＋指標を await を挟まず同期一括描画）へ一本化する。
+      //   未登録（ライブ）は下の従来経路がそのまま走る＝byte 挙動不変。
+      await (this._applier ? this._applier(timeframe) : this._applyLive(timeframe));
     } finally {
       gate.exit();
     }
@@ -8204,6 +8776,44 @@ class TimeframeController {
     host._persistAll();
     // 時間足購読者へ新時間足を通知する（売買マーカーの該当時間足フィルタ等）。
     this._observer?.(this._timeframe);
+  }
+
+  // ライブ既定の反映（candles 取得 → メイン系列差替え → 全指標再計算）。setTimeframe から呼ばれる
+  //   （競合ガードは呼び出し側が保持している）。反映役が登録されているときは呼ばれない。
+  async _applyLive(timeframe) {
+    const host = this._host;
+    // candles を新時間足で再取得（取得のみ・描画は下のバッチへ遅延）。
+    let candles = null;
+    if (typeof this._loadCandles === 'function') {
+      candles = await this._loadCandles(host._datasetRef, timeframe);
+    }
+    // ISSUE-196（抜本対策・2026-07-29 実測に基づく設計変更）:
+    //   旧: メイン系列差し替え（setCandles）を「全指標 compute 完了後」の同期バッチへ入れて
+    //       全要素を同時更新していた（ISSUE-023）。この順序は 2 つの実測不具合の原因だった。
+    //     1) 切替の所要が「最も遅い指標 compute」に律速される。/candles は 1.0 秒で届いているのに
+    //        チャートが変わるのは 5.63 秒後（指標 5 件・market_profile 単発 5.4 秒）。
+    //     2) その setData 時点で指標系列が旧足の time を保持しているため lwc が `Value is null` を
+    //        throw し、例外がバッチを中断して指標が旧足のまま固着する（以後の再計算も同じ throw で
+    //        失敗し続ける）。
+    //   新: 「旧足の指標系列を空にする」→「新足ローソクへ差し替える」を **await を挟まない
+    //       同一同期ブロック** で実行する。これで
+    //     - 時間軸に載る time は常にローソク系列に存在する（不変条件を構造的に保証＝1) の原因が消える）
+    //     - ローソク・時間軸は candles 取得直後（実測 約 1 秒）に切り替わる（指標構成に非依存）
+    //   指標は後続の recomputeAllApplied フェーズ2 が同期一括で描く（指標同士の同時更新は不変）。
+    //   切替直後の短時間は指標が空になる（compute 完了まで）。これは「5 秒以上チャート全体が
+    //   旧足のまま」だった従来挙動に対する意図的な変更（UI 挙動の変更点）。
+    if (candles && candles.length > 0) {
+      if (typeof host._renderer?.clearInstanceData === 'function') {
+        for (const inst of host._state?.applied ?? []) {
+          host._renderer.clearInstanceData(inst.instanceId);
+        }
+      }
+      host._renderer.setCandles(candles);
+    }
+    // 適用済み全指標を新時間足で再計算（params 据え置き・generation+1・gateway が timeframe 注入）。
+    //   再計算ループは recomputeAllApplied に集約（ライブ更新と共通の単一入口・挙動/順序/generation 採否不変）。
+    //   preRender は渡さない（メイン系列は上で差し替え済み）。
+    await host.recomputeAllApplied({ preRender: null });
   }
 
   // 時間足セレクタの active 表示を現在値へ同期する（DOM 在席時のみ）。
@@ -8242,7 +8852,7 @@ class TimeframeController {
 // UpdateScheduler（adapter/front/update_scheduler.js）— クロック駆動更新スケジューラ。
 //
 // ISSUE-157（クロック駆動設計・indicator_controller.js から抽出＝SOLID 是正 🔴-1）:
-//   指標更新は「要求フラグ＋クロック」で駆動する。イベント（tick・バー確定）はフラグを
+//   指標更新は「要求フラグ＋クロック」で駆動する。イベント（バー確定）はフラグを
 //   立てて _drive() を呼ぶだけで、実行中要求の完了を一切待たない（await をゲートにしない）。
 //   呼び出し元のポーラー（LiveTickPlayer 2.5s/100ms・FormingBarUpdater 5s・LiveUpdater 60s）が
 //   自走クロックとなり、ハングした試行は STALL_DEADLINE_MS 経過後のクロックで単に無視される
@@ -8250,8 +8860,13 @@ class TimeframeController {
 //   全時間足/ライブ/リプレイ共通）。遅延して届いた古い応答は per-instance generation
 //   （recompute の latest-wins）が破棄する。
 //
+// ISSUE-250 Phase 1（足内要求の廃止）: 本スケジューラが扱うのは**バー確定 full 再計算のみ**。
+//   tick 粒度の末尾値は /live_ticks へ同梱され、LiveTickPlayer が updateLastCandle と同一同期
+//   ブロックで描く（HTTP 往復なし）。旧 forming 要求は 1 往復 = 1 回の coalesce を伴うため、
+//   「指標更新回数 == ローソク更新回数」を構成上成立させられなかった（要求を残すと、往復由来の
+//   更新が tick と無関係な回数で混ざる）。よって要求経路ごと外す。
+//
 // 依存注入（DIP・テスト容易性）:
-//   - runForming: () => Promise  末尾差分再計算の実体（controller.recomputeFormingTails）
 //   - runFull:    () => Promise  バー確定 full 再計算の実体（controller.recomputeAllApplied({mode:'full'})）
 //   - isBlocked:  () => boolean  外部バッチ（params 変更・setTimeframe 等）実行中の述語
 //                                （controller.isRecomputing・時限式のため恒久閉鎖はない）
@@ -8264,24 +8879,14 @@ class TimeframeController {
 const STALL_DEADLINE_MS = 10000;
 
 class UpdateScheduler {
-  constructor({ runForming, runFull, isBlocked = () => false, now = Date.now }) {
-    this._runForming = runForming;
+  constructor({ runFull, isBlocked = () => false, now = Date.now }) {
     this._runFull = runFull;
     this._isBlocked = isBlocked;
     this._now = now;
-    this.wantForming = false;   // 末尾差分の要求（latest-wins・試行開始時に消費）
     this.wantFull = false;      // バー確定 full の要求（必達・失敗時は再度立てて次クロックで再試行）
     this.attemptSeq = 0;        // 試行 id 発番（古い試行の finally が新しい試行の状態を壊さない）
     this.attemptActiveSeq = null; // 進行中試行の id（null=なし）
     this.attemptStartedMs = 0;  // 進行中試行の開始時刻（STALL_DEADLINE_MS 判定）
-  }
-
-  // tick 粒度の末尾差分要求。フラグを立ててクロックを 1 回駆動するだけ（実行中要求の完了を
-  //   待たない・ISSUE-157 クロック駆動設計）。ライブ（LiveTickPlayer の tick 適用・
-  //   FormingBarUpdater）から毎 tick 呼んでよい（連発は _drive が 1 試行に畳む＝latest-wins）。
-  requestForming() {
-    this.wantForming = true;
-    this._drive();
   }
 
   // バー確定時の full 再計算要求（ISSUE-151: 必達）。ライブのバー確定イベント
@@ -8301,7 +8906,7 @@ class UpdateScheduler {
   //   - 全体の生存はこの関数の再入呼び出し（各ポーラー＝自走クロック）にのみ依存し、
   //     どの await の完了にも依存しない＝凍結という吸収状態が構造的に存在しない。
   _drive() {
-    if (!this.wantFull && !this.wantForming) {
+    if (!this.wantFull) {
       return;
     }
     const now = this._now();
@@ -8311,37 +8916,31 @@ class UpdateScheduler {
     if (this._isBlocked()) {
       return;   // 外部バッチ（params 変更・setTimeframe 等）優先。時限式のため恒久閉鎖はない
     }
-    // full 優先（末尾差分を包含する）。フラグはここで消費する（latest-wins）。
-    const isFull = this.wantFull;
+    // 要求フラグはここで消費する（latest-wins）。
     this.wantFull = false;
-    this.wantForming = false;
     const seq = ++this.attemptSeq;
     this.attemptActiveSeq = seq;
     this.attemptStartedMs = now;
     (async () => {
       let ok = true;
       try {
-        if (isFull) {
-          await this._runFull();
-        } else {
-          await this._runForming();
-        }
+        await this._runFull();
       } catch (err) {
         ok = false;
         if (typeof console !== 'undefined' && console.warn) {
-          console.warn(`${isFull ? 'full' : 'forming'} 再計算失敗（次クロックで再試行）:`, err && err.message);
+          console.warn('full 再計算失敗（次クロックで再試行）:', err && err.message);
         }
       } finally {
         // 古い（ハング判定後に完了した）試行が新しい試行の進行中状態を壊さない（seq 照合）。
         if (this.attemptActiveSeq === seq) {
           this.attemptActiveSeq = null;
         }
-        if (isFull && !ok) {
+        if (!ok) {
           // バー確定 full は必達（ISSUE-151 追補2）: 要求を立て直し、次のクロック（次 tick・
           //   約 2〜5 秒後）で再試行する。即時 _drive はしない（恒久障害時のタイトループ防止）。
           this.wantFull = true;
         } else {
-          // 成功時: 実行中に積まれた要求（新バー確定・新 tick）を即時消化する。
+          // 成功時: 実行中に積まれた要求（新バー確定）を即時消化する。
           this._drive();
         }
       }
@@ -8455,7 +9054,12 @@ class SeriesRenderRouter {
   draw(instanceId, def, series, params = null) {
     const host = this._host;
     const validated = host._validateSeriesNames(series, def, params);
-    // kind → 描画経路は series_kind 台帳（renderRoute）で一元化（新種別は台帳追記で完結・OCP）。
+    // kind → 描画経路は series_kind 台帳（renderRoute）で一元化する。**台帳追記だけでは完結せず**、
+    //   下記 routed の初期化と dispatch にも経路を足す必要がある（台帳へ 1 行足しただけだと
+    //   routed[route] が undefined になり、その種別は例外も出さず黙って捨てられる）。
+    //   この対応関係は tests/series_kind_ledger_declaration.test.js が強制する（ISSUE-262）。
+    //   かつてここは「新種別は台帳追記で完結・OCP」と書いていたが施行する仕組みが無く、
+    //   実際は 4 ファイルの改変を要した。宣言を実態へ正し、抜けはテストで落とす。
     //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
     const routed = { line: [], histogram: [], horizontal: [], level_dash: [] };
     for (const p of validated) {
@@ -8555,10 +9159,11 @@ class SeriesRenderRouter {
 //   本クラスが所有する。host は inFlight() を参照するだけになる（applyIndicator の競合ガード）。
 //
 // host 契約（IndicatorStateHost）が要求する最小メンバー（すべて read/呼び出し。フィールドへは代入しない）:
-//   field : _persistence / _state / _catalog / _meta / _datasetRef / _renderer / _mp
+//   field : _persistence / _state / _catalog / _meta / _datasetRef / _renderer
 //           _timeframe（read のみ。確定は _commitTimeframe 経由＝所有者は TimeframeController）
 //           _loadCandles / _timeframeObserver
 //   method: _commitState / _commitLastSeries / _commitTimeframe / _paramsObject / _isMarketProfile /
+//           _actorControllerFor（アクター駆動指標の復元先を computeId で解決する）/
 //           _gatewayAdapter / _draw / _renderLegend / _renderDialogList / _syncTimeframeButtons
 //
 // ★ upstream JS の系列追加系 API は一切参照しない（renderer 経由のみ・§2.2 隔離）。
@@ -8613,10 +9218,29 @@ class IndicatorStateStore {
     }
   }
 
+  /**
+   * 保存済み applied から、**カタログに存在しない indicatorId** の instance を落とす。
+   *
+   * 在席の権威はカタログ（`_catalog.get`）1 つである。指標を UI から外した後も保存状態には
+   * その instance が残るため、除去しないと `_renderLegend` が `_state.applied` をそのまま
+   * 描いて「系列もデータも無い凡例行」が残る（`rebuildApplied` は def 無しを compute/描画から
+   * 除外するが、状態からは落とさない＝状態とカタログの不整合が残るのが真因）。
+   * 落とした結果は永続化にも書き戻し、次回起動でゴミが再登場しないようにする。
+   */
+  _pruneUnknown(instances) {
+    const host = this._host;
+    const list = Array.isArray(instances) ? instances : [];
+    const kept = list.filter((inst) => !!host._catalog.get(inst?.indicatorId));
+    if (kept.length !== list.length) {
+      host._persistence.saveApplied(kept);
+    }
+    return kept;
+  }
+
   async _restoreRun() {
     const host = this._host;
     const json = {
-      applied: host._persistence.loadApplied(),
+      applied: this._pruneUnknown(host._persistence.loadApplied()),
       favorites: host._persistence.loadFavorites(),
       uiState: host._persistence.loadUiState(),
     };
@@ -8684,7 +9308,7 @@ class IndicatorStateStore {
     // (b) MP は起動の待ち合わせから外す（失敗は当該 1 件に閉じる＝F-T4）。
     for (const { inst, def } of list) {
       if (host._isMarketProfile(def)) {
-        Promise.resolve(host._mp.restoreInstance(inst)).catch(() => {
+        Promise.resolve(host._actorControllerFor(def).restoreInstance(inst)).catch(() => {
           // MP 復元の失敗は当該 1 件のみスキップ（他指標の復元・描画は継続する）。
         });
       }
@@ -9061,9 +9685,10 @@ class IndicatorController {
     this._gate = new RecomputeGate();
     // ISSUE-157（クロック駆動設計）: 指標更新の「要求フラグ＋クロック」駆動は UpdateScheduler へ
     //   委譲する（SOLID 是正 🔴-1・設計意図の詳細は update_scheduler.js 冒頭コメント参照）。
-    //   実体（末尾差分/full 再計算）と外部バッチ述語（isRecomputing・時限式）を依存注入する。
+    //   ISSUE-250 Phase 1: 足内（forming）要求は scheduler から外れた。tick 粒度の末尾値は
+    //   /live_ticks 同梱（applyFormingTails）で同期に描くため、要求→往復→coalesce の経路自体が
+    //   不要になった。scheduler が担うのはバー確定 full 再計算（必達）のみ。
     this._scheduler = new UpdateScheduler({
-      runForming: () => this.recomputeFormingTails(),
       runFull: () => this.recomputeAllApplied({ mode: 'full' }),
       isBlocked: () => this.isRecomputing(),
     });
@@ -9072,6 +9697,12 @@ class IndicatorController {
     //   subclass の inherited メソッド呼出（this._toggleMarketProfileVisible 等）・_mpParams override を
     //   温存するため base の各 MP メソッドは本協働子への薄いラッパへ縮退する（byte 挙動不変）。
     this._mp = new MarketProfileController(this);
+    // アクター駆動指標（/compute を持たない）の computeId → アクターコントローラ。
+    //   台帳（actor_driven_ids.js）が「どの指標がアクター駆動か」を、本レジストリが「誰が処理するか」を
+    //   持つ。以前は台帳で分岐した後に必ず this._mp（MP 専用）へ委譲しており、2 つ目のアクター駆動
+    //   指標を足すと MP のコントローラへ誤配送された（「台帳への 1 行追記で完結」という本 controller の
+    //   主張が成立していなかった）。追加は composition root からの registerActorController で完結する。
+    this._actorControllers = new Map([['market_profile', this._mp]]);
     // 指標追加ダイアログ（一覧・絞り込み・開閉）を委譲する協働子（ISSUE-181・A8）。
     //   絞り込み UI 状態（旧 this._filter）は協働子が所有する（状態も一緒に移す）。
     this._dialog = new IndicatorDialogController(this);
@@ -9116,6 +9747,12 @@ class IndicatorController {
 
   get _timeframeObserver() { return this._tf.observer(); }
 
+  // /compute へ送る表示範囲（直近 N 本）。実体は TimeframeController が持つ単一定義で、
+  //   /live_ticks の末尾値同梱（ISSUE-250 Phase 1）も同じ窓長を使う（窓が違えば値も違う）。
+  computeLimit() {
+    return this._tf.limit();
+  }
+
   // =========================================================================
   // 足内（形成中バー）末尾差分再計算 — ライブ・リプレイ同一設計（2026-07-22 ユーザー裁定）
   //   指標の末尾点は「価格（形成中バー）の更新と同じ粒度」で追従する。全再計算（remove+redraw）
@@ -9123,9 +9760,11 @@ class IndicatorController {
   // =========================================================================
 
   // 登録指標（INTRABAR_FORMING_IDS）の末尾点のみを latest 差分で再計算する。
-  //   forceTail=true で混在 kind（line+horizontal_line＝marod 系）でも末尾差分経路へ倒す
-  //   （replay の recomputeFormingLatest と同一機構＝両モードの実体を単一化）。
+  //   forceTail=true で混在 kind（line+horizontal_line＝marod 系）でも末尾差分経路へ倒す。
   //   非登録指標（帯系等）は触らない（因果窓ゆえ足内で動くべき値がない）。
+  //   ISSUE-250 Phase 1: 呼び出し元はリプレイ（recomputeFormingLatest）のみになった。ライブの
+  //   tick 粒度追従は /live_ticks 同梱の末尾値（applyFormingTails）へ移り、HTTP 往復を伴う
+  //   本経路は tick 路から外れた（往復＋coalesce が回数一致を構成上不可能にしていた）。
   async recomputeFormingTails() {
     // ISSUE-156（C）: 登録指標を並列リクエストする（サーバは計算プール化済み＝指標間の
     //   レイテンシが重ならない）。各 recomputeInstance は自身の job.series で独立に描画するため
@@ -9139,10 +9778,54 @@ class IndicatorController {
     )));
   }
 
-  // tick 粒度の末尾差分要求（UpdateScheduler へ委譲・ISSUE-157 クロック駆動設計）。
-  //   呼び出し元 API 温存のための薄い委譲（coalesce/latest-wins は scheduler 側）。
-  requestFormingRecompute() {
-    this._scheduler.requestForming();
+  // /live_ticks へ添える「適用中インスタンスの申告」（ISSUE-250 Phase 1）。
+  //   サーバはこの申告から各ティック時点の指標末尾値を一括算出して応答へ同梱する
+  //   （フロントは tick 適用と同一同期ブロックで描く＝tick 路から HTTP 往復が消える）。
+  //   申告対象は足内追従の登録指標（INTRABAR_FORMING_IDS）かつ描画済み（_meta 在席）のみ。
+  //   計算.時間足 override（params.timeframe）を持つインスタンスは除く: 申告経路は
+  //   チャート足の窓で計算するため、別足の指標に別足の値を返せない（黙って別足の値を
+  //   描かない＝バー確定時の full 再計算に委ねる）。
+  //   増分器を持たない指標はサーバ側が明示的に落とす（毎ティック納期に載らないものを
+  //   黙って混ぜない＝ISSUE-233 の教訓）。
+  appliedComputeSpecs() {
+    const specs = [];
+    for (const inst of this._state.applied) {
+      if (!INTRABAR_FORMING_IDS.has(inst.indicatorId) || !this._meta.has(inst.instanceId)) {
+        continue;
+      }
+      const params = this._paramsObject(inst.params);
+      if (params.timeframe && params.timeframe !== 'chart') {
+        continue;
+      }
+      specs.push({
+        instanceId: inst.instanceId,
+        indicatorId: inst.indicatorId,
+        variant: inst.variant || 'default',
+        params,
+      });
+    }
+    return specs;
+  }
+
+  // 同梱された末尾値（{instanceId: {系列名: 値}}）を形成中バーの time へ描く（ISSUE-250 Phase 1）。
+  //   updateSeriesTail は既存系列の末尾 1 点のみを series.update する（過去確定足・
+  //   horizontal_line は不変）。未知系列キー・未描画インスタンスは no-op。
+  //   同期（await なし）＝呼び出し元 LiveTickPlayer の updateLastCandle と同一ブロックで完了する。
+  applyFormingTails(tails, barTime) {
+    if (!tails || !Number.isFinite(barTime) || typeof this._renderer.updateSeriesTail !== 'function') {
+      return;
+    }
+    for (const [instanceId, values] of Object.entries(tails)) {
+      if (!this._meta.has(instanceId) || !values) {
+        continue;
+      }
+      for (const [name, value] of Object.entries(values)) {
+        if (!Number.isFinite(value)) {
+          continue;   // NaN/null（材料不足）は描かない＝直前の点を据え置く。
+        }
+        this._renderer.updateSeriesTail(`${instanceId}::${name}`, [{ time: barTime, value }]);
+      }
+    }
   }
 
   // バー確定時の full 再計算要求（ISSUE-151: 必達・UpdateScheduler へ委譲）。
@@ -9211,6 +9894,24 @@ class IndicatorController {
   //   （MARKET_PROFILE_HOST_CONTRACT）・subclass override 互換のため温存する。
   _isMarketProfile(def) {
     return isActorDriven(def);
+  }
+
+  // アクター駆動指標のコントローラを登録する（composition root が結線時に 1 回呼ぶ）。
+  //   台帳（ACTOR_DRIVEN_COMPUTE_IDS）への追記と本登録の 2 点で新指標が完結し、本 controller は不変。
+  registerActorController(computeId, controller) {
+    this._actorControllers.set(computeId, controller);
+  }
+
+  // def に対応するアクターコントローラ。未登録は this._mp（レジストリ化前の挙動）へ退避する
+  //   ＝台帳にあるが未結線の指標は従来どおり MP 経路を辿る（本リファクタで挙動が変わらない）。
+  _actorControllerFor(def) {
+    const id = def && def.compute && def.compute.computeId;
+    return this._actorControllers.get(id) || this._mp;
+  }
+
+  // instance からアクターコントローラを解決する（凡例の eye/close は def を持たないため）。
+  _actorControllerForInstance(inst) {
+    return this._actorControllerFor(this._catalog.get(inst && inst.indicatorId));
   }
 
   // MP アクターへ渡す取得 params（resmode/bins/va/src/range）を組み立てる（apply/gear/restore 共通）。
@@ -9304,19 +10005,19 @@ class IndicatorController {
   //   （this._toggleMarketProfileVisible / this._removeMarketProfile）と既存テスト（ctrl._onGearMarketProfile）を
   //   温存するための薄い委譲（挙動は抽出前と byte 等価）。
   _applyMarketProfile(def, variant, params) {
-    return this._mp.applyMarketProfile(def, variant, params);
+    return this._actorControllerFor(def).applyMarketProfile(def, variant, params);
   }
 
   _toggleMarketProfileVisible(inst) {
-    return this._mp.toggleVisible(inst);
+    return this._actorControllerForInstance(inst).toggleVisible(inst);
   }
 
   _removeMarketProfile(inst) {
-    return this._mp.removeInstance(inst);
+    return this._actorControllerForInstance(inst).removeInstance(inst);
   }
 
   _onGearMarketProfile(inst, def) {
-    return this._mp.onGear(inst, def);
+    return this._actorControllerFor(def).onGear(inst, def);
   }
 
   // 協働子が算出した次 state を確定する（ISSUE-181: 協働子が host の private フィールドへ
@@ -9509,6 +10210,16 @@ class IndicatorController {
     this._tf.setObserver(observer);
   }
 
+  // 時間足切替の「反映役」を差し替える（任意・1 個。null=既定＝ライブ経路）。ISSUE-231。
+  //   反映役＝「新時間足の candles 取得 → メイン系列差替え → 全指標再計算・再描画」の実行主体。
+  //   時間足の確定（_timeframe 更新・ボタン同期・スケールリセット・永続化・購読者通知）は
+  //   差し替えても共通のまま TimeframeController が担う（＝反映方法だけの差し替え）。
+  //   リプレイ層（setupReplay）が自身の loadTimeframe を登録し、ローソクと指標を同一同期ブロックで
+  //   描く経路へ一本化する。ライブは未登録＝従来経路（byte 挙動不変）。
+  setTimeframeApplier(applier) {
+    this._tf.setApplier(applier);
+  }
+
   // 適用済み全指標を現在の params / 時間足で再計算・再描画する（ライブ更新の再計算入口）。
   //   competition ガード（generation+1・accepts 破棄）は recomputeInstance に集約済み。
   //   適用が無ければ何もしない（no-op）。
@@ -9537,7 +10248,7 @@ class IndicatorController {
       //   足切替）で /compute へ流出させると例外→setTimeframe では preRender 前で全スキップ。
       //   /compute を通さず MP 側協働子（actor.onLiveTick／refresh 委譲）へ外出しする（ISSUE-094 🔴-4）。
       if (this._isMarketProfile(meta.def)) {
-        await this._mp.onLiveRecompute(inst);
+        await this._actorControllerFor(meta.def).onLiveRecompute(inst);
         continue;
       }
       targets.push(inst);
@@ -9910,8 +10621,6 @@ class IndicatorController {
   }
 }
 
-const facadeToggleVisible = toggleVisible;
-const facadeRemove = remove;
 const facadeToggleFavorite = toggleFavorite;
 const catalogCategories = categories;
 
@@ -10027,15 +10736,16 @@ class LiveUpdater {
 // FormingBarUpdater（adapter/front/forming_bar_updater.js）— 最新足（形成中バー）の
 //   ティック由来ライブ更新（served=B方式のみ・既定 5 秒）。
 //
-// 設計: LiveUpdater（60 秒・/candles 全件再取得＋最新点 latest 再計算）とは**別系統**で、最新足を
-//   高頻度に差分反映する。両者の分離の実体は「/candles 再取得(Live) vs /forming_bar(Forming)」「60秒
-//   vs 5秒」であり、指標再計算はどちらも mode:'latest'（重い全件 full 計算ではない）。
-//   /forming_bar?datasetRef=&timeframe= から選択 tf の「現在期間の形成中バー
-//   （mid OHLCV・1 本）」を取得し、(1) renderer.updateLastCandle で価格の最新足を反映し、(2) 指標も
-//   recomputeAllApplied({mode:'latest'}) で最新点をティック由来に再計算する（backend が mode=latest 時に
-//   形成中バーを最新足として末尾追加して計算する）。bar=null（対象外 tf / 期間内ティック無し）は
-//   価格も指標も更新しない（完全 no-op）。指標の重い再計算は確定足の LiveUpdater に委ね、ここは
-//   「最新点（latest）」のみ更新する（頻度分離）。
+// 設計: LiveUpdater（60 秒・/candles 全件再取得）とは**別系統**で、最新足を高頻度に差分反映する。
+//   /forming_bar?datasetRef=&timeframe= から選択 tf の「現在期間の形成中バー（mid OHLCV・1 本）」を
+//   取得し、(1) renderer.updateLastCandle で価格の最新足を反映する（LiveTickPlayer が価格の書き手に
+//   なる固定周期 tf では suppressPriceUpdate で抑止＝実質 1W/1M 専用）、(2) bar.time の前進＝
+//   直前バー確定を検知して full 再計算を要求する（第 2 経路）。bar=null（対象外 tf / 期間内ティック
+//   無し）は完全 no-op。
+//
+// ISSUE-250 Phase 1: 足内の指標末尾更新（旧 recomputeAllApplied({mode:'latest'})→
+//   requestFormingRecompute）は本 updater から廃止した。tick 粒度の末尾値は /live_ticks 同梱へ移り、
+//   LiveTickPlayer が価格更新と同一同期ブロックで描く。
 //
 // 隔離・注入方針（DOM/ネット/タイマー非依存）:
 //   - setInterval / clearInterval / loadFormingBar / getTimeframe は注入（テストでフェイク化）。
@@ -10090,9 +10800,10 @@ class FormingBarUpdater {
     this._timerId = null;
   }
 
-  // 1 tick: 再計算中ならスキップ。形成中バーを取得し、(1) 価格の最新足を反映、(2) 指標の最新点を
-  //   ティック由来に再計算する。bar=null（更新材料なし）は完全 no-op。1 tick の失敗（取得/再計算/
-  //   描画）は握りつぶしてログ化する（5 秒周期＝unhandledRejection を毎回出さず、次 tick で回復）。
+  // 1 tick: 再計算中ならスキップ。形成中バーを取得し、(1) 価格の最新足を反映（player 非対応 tf のみ）、
+  //   (2) バー確定（bar.time 前進）を検知して full 再計算を要求する。bar=null（更新材料なし）は
+  //   完全 no-op。1 tick の失敗（取得/描画）は握りつぶしてログ化する（5 秒周期＝
+  //   unhandledRejection を毎回出さず、次 tick で回復）。
   async _tick() {
     try {
       if (this._controller.isRecomputing()) {
@@ -10119,12 +10830,11 @@ class FormingBarUpdater {
         this._controller.requestFullRecompute();
       }
       this._lastFormingTime = bar.time;
-      // 指標は登録オシレーターの末尾差分のみ（統一設計 2026-07-22）。従来の
-      //   recomputeAllApplied({mode:'latest'}) は marod 系（horizontal_line 持ち）が末尾差分に
-      //   乗れず 5 秒ごと全再計算＋全再描画へフォールバックしていた。requestFormingRecompute は
-      //   リプレイと同一の forceTail 末尾差分（coalesce 付き）で、全再計算はバー確定時のみになる。
-      //   player 対応 tf では tick 粒度の同フックと重複するが coalesce（latest-wins）で無害。
-      this._controller.requestFormingRecompute();
+      // ISSUE-250 Phase 1: 足内の指標末尾更新要求はここから廃止した。tick 粒度の末尾値は
+      //   /live_ticks へ同梱され LiveTickPlayer が updateLastCandle と同一同期ブロックで描く。
+      //   5 秒周期の独立要求を残すと、tick と無関係な回数の指標更新が混ざり
+      //   「指標更新回数 == ローソク更新回数」が成立しない。本 updater に残る責務は
+      //   (1) 価格の最新足反映（player 非対応 tf のみ）(2) バー確定検知（full 要求・第 2 経路）。
     } catch (err) {
       if (typeof console !== 'undefined' && console.warn) {
         console.warn('FormingBarUpdater: tick 失敗（次 tick で回復）:', err && err.message);
@@ -10144,30 +10854,31 @@ class FormingBarUpdater {
 //
 // 設計: FormingBarUpdater（5 秒・/forming_bar を都度取得して置換）とは別系統。こちらは backend の
 //   LiveTickBuffer（5 秒周期で増分ポーリングし直近 30 分を保持）から /live_ticks で tick 列を増分取得し、
-//   「serverNow-12000 以前の tick」を 100ms 粒度で現在 tf の形成中バーへ累積して価格を滑らかに描く。
+//   「serverNow-12000 以前の tick」を 100ms 粒度で形成中バーへ累積して価格を滑らかに描く。
 //   価格の唯一の書き手にするため、composition root は稼働時に LiveUpdater/FormingBarUpdater へ
 //   suppressPriceUpdate=true を渡す（12 秒より古いデータでの巻き戻しを排除）。
+//
+// **全時間足で同一設計**（ISSUE-253）: 本プレイヤーは「この tick はどのバーに属するか」を
+//   **一切計算しない**。バー time は /live_ticks の応答（barTimes / nowBarTime）としてサーバの
+//   唯一源（marketdata.tf_meta.bar_time_unix）から届き、プレイヤーはそれを比較するだけ。
+//   かつては floor(秒 / tf秒) で周期を再計算しており、暦周期（1W/1M）を表せないため 1W/1M だけが
+//   tick 再生から脱落し、更新粒度が時間足で変わっていた（諸悪の根源＝規則の第 2 定義）。
+//   リプレイが `cd.time`（ローソク自身の time）でバーを識別しているのと同じ設計に揃える。
 //
 // 隔離・注入方針（DOM/ネット/タイマー非依存・FormingBarUpdater と同型の全注入）:
 //   - fetchLiveTicks / loadFormingBar / renderer / getTimeframe / setInterval / clearInterval / now を注入。
 //   - series.update を呼ぶのは ChartRenderer のみ（renderer.updateLastCandle 経由・隔離維持）。
-
-// セッション日境界（ISSUE-078）: 1D の期間・バー time はセッション日（NY17:00 ET 基準）で解決する。
-
-// 固定周期 tf（floor 可能・1m..1D）と秒長は domain/tf_meta.js（単一情報源・ISSUE-087 🔴-2）を参照。
-
-// プレイヤー（floor ベースの tick 累積）が扱える固定周期 tf か。1W/1M・未知は false
-//   （＝カレンダー周期でありプレイヤーでは扱えず、/forming_bar ポーリング＝FormingBarUpdater へ委譲する側）。
-//   composition root が「1W/1M のとき FormingBarUpdater を価格の書き手にする」配線判定に用いる。
-function isPlayerTimeframe(tf) {
-  return isFloorTimeframe(tf);
-}
 
 // 固定遅延（ms）: 実測から poll 間隔 5s + feed 側 lag 最大 5.5s + fetch 最大 1.2s + 余裕 ≒ 12s。
 //   これ未満だと feed のまとめ配信（3.8〜5.5s）で枯渇する（prototype 実測 25 polls）。
 const DELAY_MS = 12000;
 const POLL_MS = 2500;      // フロント → served /live_ticks のポーリング間隔。
 const PLAYBACK_MS = 100;   // 「元の時間間隔どおり」に適用する再生粒度。
+// poll 1 本の打ち切り時間（ISSUE-263）。in-flight ガード（同時要求数 1）と組み合わさると、
+//   返らない要求が 1 本あるだけで poll が恒久停止するため上限を設ける。健全時の実測は
+//   5〜141ms・劣化時でも数百 ms なので、poll 間隔の 4 倍を上限とし、再生遅延（12 秒）より
+//   短く保って「打ち切って次で回復」が表示の穴にならないようにする。
+const FETCH_TIMEOUT_MS = 10000;
 
 class LiveTickPlayer {
   constructor({
@@ -10182,10 +10893,21 @@ class LiveTickPlayer {
     delayMs = DELAY_MS,
     pollMs = POLL_MS,
     playbackMs = PLAYBACK_MS,
-    // tick 粒度の指標末尾追従フック（2026-07-22 統一設計）。tick を形成中バーへ適用するたびに
-    //   呼ぶ（composition root が controller.requestFormingRecompute を注入・coalesce は controller 側）。
-    //   null は従来挙動（価格のみ・後方互換）。
-    onFormingUpdate = null,
+    fetchTimeoutMs = FETCH_TIMEOUT_MS,
+    // ---- 指標末尾値の同梱経路（ISSUE-250 Phase 1）--------------------------------------
+    // 旧設計は tick 適用のたびに /compute へ HTTP 往復を要求していた（onFormingUpdate →
+    //   UpdateScheduler → recomputeFormingTails）。scheduler は in-flight 1 本へ coalesce するため
+    //   「指標更新回数 == ローソク更新回数」が構成上成立しない（ISSUE-157 で確定した「1 往復 1 回」）。
+    //   本経路は poll 時に「適用中インスタンスの申告（specs）」を /live_ticks へ添え、サーバが
+    //   各ティック時点の末尾値を一括算出して同梱する。フロントは tick 適用と**同一同期ブロック**で
+    //   描くため、tick 路から往復が消えて回数一致が構成上の保証になる。
+    //   - getComputeSpecs: () => [{instanceId, indicatorId, variant, params}]（controller が申告）
+    //   - getLimit:        () => number|undefined（/compute と同一の表示範囲＝窓長）
+    //   - applyFormingTails: (tailsMap, barTimeSec) => void（controller が末尾点を描く）
+    //   いずれも null は従来挙動（価格のみ・申告なし＝サーバ応答も従来 byte）。
+    getComputeSpecs = null,
+    getLimit = null,
+    applyFormingTails = null,
     // バー確定フック（ISSUE-151）。tick が新しい期間へロールオーバーした瞬間＝直前バーの確定を
     //   通知する（composition root が controller.requestFullRecompute を注入）。60 秒タイマー
     //   （LiveUpdater）だけに頼ると衝突スキップで確定イベントを取り落とし、非登録指標（帯系）が
@@ -10203,22 +10925,35 @@ class LiveTickPlayer {
     this._delayMs = delayMs;
     this._pollMs = pollMs;
     this._playbackMs = playbackMs;
-    this._onFormingUpdate = (typeof onFormingUpdate === 'function') ? onFormingUpdate : null;
+    this._fetchTimeoutMs = fetchTimeoutMs;
+    this._getComputeSpecs = (typeof getComputeSpecs === 'function') ? getComputeSpecs : null;
+    this._getLimit = (typeof getLimit === 'function') ? getLimit : null;
+    this._applyFormingTails = (typeof applyFormingTails === 'function') ? applyFormingTails : null;
     this._onBarClose = (typeof onBarClose === 'function') ? onBarClose : null;
 
     // 再生状態。
-    this._queue = [];         // 未適用 tick [(ms, mid)] 昇順。
+    // 未適用 tick [(ms, mid, barTime, tails, tf)] 昇順。barTime は**サーバが返した**当該 tick の
+    //   所属バー time（唯一源）。tails は当該 tick 時点の指標末尾値 {instanceId: {系列名: 値}}
+    //   （未同梱は null）。tf は要求時の時間足（poll から適用までの 12 秒間に足が変われば捨てる）。
+    this._queue = [];
     this._cursor = 0;         // /live_ticks の since カーソル（ms）。
     this._clockOffset = 0;    // serverNowMs - now()（遅延判定をサーバ時計基準に）。
     this._tf = null;          // シード済み tf（getTimeframe 変化で再シード）。
-    this._tfSec = null;       // 現 tf の期間秒（非対応 tf は null＝no-op）。
+    this._nowBarTime = null;  // サーバが返した「現在のバー time」（履歴後退ガードの材料）。
     this._bar = null;         // 形成中バー {time(sec), open, high, low, close, volume}。
     this._seeding = false;    // /forming_bar シード await 中フラグ（true の間は自己シードを抑止＝🟡4 保持）。
     this._applied = 0;
+    this._tailsApplied = 0;   // 指標末尾値を適用した tick 数（HUD・回数一致の監視用）。
     this._lastTickMs = 0;
 
     this._pollId = null;
     this._playbackId = null;
+    // poll の in-flight ガード（ISSUE-257）。poll は setInterval で等間隔に起きるが、応答が
+    //   間隔より遅いと**前回の完了を待たずに**次が飛び、同一内容の要求が無制限に積み上がる
+    //   （実測: サーバのスレッドが 1,392 本・22,885 本生成／19 時間・全応答が数百 ms へ悪化）。
+    //   未完了が 1 本でもある間は新しい要求を出さない＝同時要求数を構成上 1 に固定する。
+    //   取りこぼしは起きない: since カーソルは応答時にだけ進むため、次の poll が同じ範囲を続けて取る。
+    this._polling = false;
   }
 
   // 再生を開始する（冪等・稼働中の再 start は無視）。poll と playback の 2 タイマーを登録する。
@@ -10243,20 +10978,53 @@ class LiveTickPlayer {
   }
 
   // poll: /live_ticks を since カーソル付き取得しキューへ。serverNowMs で clockOffset を維持。
+  //   応答には (1) 各 tick の所属バー time（barTimes・全時間足で唯一源）と (2) 適用中インスタンスを
+  //   申告した場合の指標末尾値（tails）が同梱される。どちらもフロントでは再計算しない。
   //   1 回の失敗は握りつぶしてログ化する（次 poll で回復・unhandledRejection を出さない）。
   async _poll() {
+    if (this._polling) {
+      return;   // 未完了の要求がある間は出さない（同時要求数を 1 に固定・ISSUE-257）。
+    }
+    this._polling = true;
     try {
-      const res = await this._fetchLiveTicks(this._cursor);
+      // 時間足は常に申告する（barTimes の解決に必要＝指標を 1 つも適用していなくても要る）。
+      //   適用までの 12 秒間に足が変わったデータは捨てるため、要求時の tf を控えてキューへ持たせる。
+      const tf = this._getTimeframe();
+      const specs = this._getComputeSpecs ? this._getComputeSpecs() : null;
+      const res = await this._fetchLiveTicks(this._cursor, {
+        specs: (specs && specs.length) ? specs : null,
+        datasetRef: this._datasetRef,
+        timeframe: tf,
+        limit: this._getLimit ? this._getLimit() : undefined,
+        // 末尾値が要る区間（ISSUE-257）。_playback は `serverNow - delayMs` 以前の tick を
+        //   1 同期ループで一気に適用するため、その区間の末尾値は最後の 1 点しか画面に出ない。
+        //   個別に描かれるのは「地平より新しい tick」＝ delayMs ＋ 次 poll までの猶予（pollMs）。
+        //   この区間長を知っているのは再生を持つ本 player だけなので、ここから申告する。
+        tailsWithinMs: this._delayMs + this._pollMs,
+        // 返らない要求で poll を止めない（ISSUE-263）。中断は失敗扱いで次 poll が回復する。
+        timeoutMs: this._fetchTimeoutMs,
+      });
       if (!res || res.ok !== true) {
         return;
       }
       if (typeof res.serverNowMs === 'number') {
         this._clockOffset = res.serverNowMs - this._now();
       }
+      if (typeof res.nowBarTime === 'number' && tf === this._tf) {
+        this._nowBarTime = res.nowBarTime;
+      }
       const ticks = res.ticks || [];
       if (ticks.length) {
-        for (const tk of ticks) {
-          this._queue.push(tk);
+        // barTimes / tails は ticks と同数・同順（サーバ側 controller の契約）。
+        //   保険として tails は tickMs 一致も確認し、ずれていれば当該 tick の tails を落とす。
+        const barTimes = Array.isArray(res.barTimes) ? res.barTimes : null;
+        const tails = Array.isArray(res.tails) ? res.tails : null;
+        for (let i = 0; i < ticks.length; i += 1) {
+          const tk = ticks[i];
+          const entry = tails && tails[i];
+          const values = (entry && entry.tickMs === tk[0]) ? (entry.tails || null) : null;
+          const barTime = barTimes && typeof barTimes[i] === 'number' ? barTimes[i] : null;
+          this._queue.push([tk[0], tk[1], barTime, values, tf]);
         }
         this._cursor = ticks[ticks.length - 1][0];
       }
@@ -10264,10 +11032,12 @@ class LiveTickPlayer {
       if (typeof console !== 'undefined' && console.warn) {
         console.warn('LiveTickPlayer: poll 失敗（次 poll で回復）:', err && err.message);
       }
+    } finally {
+      this._polling = false;   // 成功・失敗・早期 return のいずれでも必ず解放する。
     }
   }
 
-  // playback: tf 変化ならシード → serverNow-DELAY 以前の tick を順に現在 tf の形成中バーへ適用。
+  // playback: tf 変化ならシード → serverNow-DELAY 以前の tick を順に形成中バーへ適用。
   async _playback() {
     const tf = this._getTimeframe();
     if (tf !== this._tf) {
@@ -10276,26 +11046,22 @@ class LiveTickPlayer {
     const serverNow = this._now() + this._clockOffset;
     const playUntil = serverNow - this._delayMs; // この時刻以前の tick を適用してよい。
     while (this._queue.length && this._queue[0][0] <= playUntil) {
-      const [ms, mid] = this._queue.shift();
-      this._applyTick(ms, mid);
+      const [ms, mid, barTime, tails, tickTf] = this._queue.shift();
+      this._applyTick(ms, mid, barTime, tails, tickTf);
     }
   }
 
   // tf 切替・起動時のシード: /forming_bar で形成中バーの初期値を取得し、それをベースに以降の tick を累積。
-  //   bar=null（1W/1M・非対応 tf / 期間内ティック無し）または非固定周期 tf は _bar=null＝当該 tf で
-  //   何も描かない（既存挙動維持）。
+  //   **全時間足で同一手順**（/forming_bar はロールアップ方式で 1W/1M も供給する）。bar=null
+  //   （期間内ティック無し等）は _bar=null のまま、以降の tick から自己シードする。
   //   注記: 初回部分バーの高安は、シード（/forming_bar・最大 60 秒粒度の集約）＋ 12 秒遅延の tick で
   //   構成されるため、シード〜適用開始の隙間分だけ粗い近似になりうる（volume も適用 tick 数の近似）。
   async _seed(tf) {
     this._tf = tf;
-    this._tfSec = isFloorTimeframe(tf) ? TF_BAR_SEC[tf] : null;
+    this._nowBarTime = null;   // 新しい足の「現在のバー」は次の poll 応答で確定する。
     // シード確定まで _bar=null かつ _seeding=true に倒す。await（loadFormingBar）中に再入した
-    //   _playback は _seeding=true を見て自己シードせず（🟡4＝「新 tfSec × 旧 bar」誤描画の防止）。
+    //   _playback は _seeding=true を見て自己シードせず（🟡4＝「新足 × 旧 bar」誤描画の防止）。
     this._bar = null;
-    if (this._tfSec === null) {
-      this._seeding = false;
-      return; // 非対応 tf（1W/1M/未知）→ no-op。
-    }
     this._seeding = true;
     let bar = null;
     try {
@@ -10319,73 +11085,70 @@ class LiveTickPlayer {
     this._seeding = false;
   }
 
-  // tick 時刻 → 現在 tf の期間キー（バー time）。ISSUE-078: '1D' はセッション日の 1D バー規約
-  //   （セッション日ラベルの UTC 深夜＝backend rollup/forming と同一）。日中足は UTC floor（不変）。
-  //   旧 UTC floor のままだと日曜夜 UTC（月曜セッション）の tick が「過去期間」と誤判定され、
-  //   1D ライブバーが毎日 21:00-24:00 UTC の間フリーズしていた。
-  _periodOf(sec) {
-    if (this._tf === '1D') {
-      return sessionBarTime(sec);
+  // 1 tick を形成中バーへ適用する（**全時間足で同一経路**）。過去バー（履歴＝/candles 済）へは
+  //   後退させない。バー識別は引数 barTime（サーバの唯一源）だけで行い、ここで時刻から周期を
+  //   計算しない＝日中足・1D・1W/1M の区別がコード上に存在しない。
+  //   tails（当該 tick 時点の指標末尾値）は updateLastCandle と**同一同期ブロック**で適用する
+  //   （ISSUE-250 Phase 1: 価格と指標が同じ tick で同時に動く＝回数一致の構成的保証）。
+  _applyTick(ms, mid, barTime = null, tails = null, tickTf = null) {
+    if (typeof barTime !== 'number' || tickTf !== this._tf) {
+      return; // バー帰属が未解決 / 足が変わった後に届いた tick → 描かない。
     }
-    return Math.floor(sec / this._tfSec) * this._tfSec;
-  }
-
-  // 1 tick を現在 tf の形成中バーへ適用する。過去期間（履歴＝/candles 済）へは後退させない。
-  _applyTick(ms, mid) {
-    if (this._tfSec === null) {
-      return; // 非対応 tf（1W/1M/未知）→ 何もしない。
-    }
-    const periodSec = this._periodOf(ms / 1000);
     if (this._bar === null) {
-      // 自己シード（参照実装復帰）: /forming_bar seed が null でも、現周期の tick からバーを起こす。
-      //   _seeding 中（seed await 未確定）は抑止（🟡4）。現 live 周期より前の tick は自己シードしない
+      // 自己シード（参照実装復帰）: /forming_bar seed が null でも、現在のバーの tick から起こす。
+      //   _seeding 中（seed await 未確定）は抑止（🟡4）。現在より前のバーの tick は自己シードしない
       //   （/candles 済履歴を後退させない＝既存の後退ガードと同一意図）。確定後は非 null 経路へ移る。
       if (this._seeding) {
         return;
       }
-      const nowPeriod = this._periodOf((this._now() + this._clockOffset) / 1000);
-      if (periodSec < nowPeriod) {
-        return; // 現周期より前 → 履歴側。自己シードしない。
+      if (this._nowBarTime !== null && barTime < this._nowBarTime) {
+        return; // 現在のバーより前 → 履歴側。自己シードしない。
       }
-      this._bar = { time: periodSec, open: mid, high: mid, low: mid, close: mid, volume: 1 };
+      this._bar = { time: barTime, open: mid, high: mid, low: mid, close: mid, volume: 1 };
       this._renderer.updateLastCandle(this._bar);
-      // 指標の末尾点も tick 粒度で追従（統一設計。coalesce は controller 側＝毎 tick 呼んでよい）。
-      if (this._onFormingUpdate) {
-        this._onFormingUpdate();
-      }
+      this._applyTails(tails);
       this._applied += 1;
       this._lastTickMs = ms;
       return;
     }
-    if (periodSec < this._bar.time) {
-      return; // シード期間より前の tick は無視（履歴を後退させない）。
+    if (barTime < this._bar.time) {
+      return; // シード済みバーより前の tick は無視（履歴を後退させない）。
     }
-    if (periodSec === this._bar.time) {
+    if (barTime === this._bar.time) {
       this._bar.high = Math.max(this._bar.high, mid);
       this._bar.low = Math.min(this._bar.low, mid);
       this._bar.close = mid;
       this._bar.volume += 1; // volume は適用 tick 数の近似（シード値＋適用数）。
     } else {
-      // 新しい期間 → 新バー（open=mid）。直前バーはこの瞬間に確定＝バー確定イベントを通知する
+      // 新しいバー（open=mid）。直前バーはこの瞬間に確定＝バー確定イベントを通知する
       //   （ISSUE-151: 全指標の full 再計算をバー確定駆動にする。coalesce/pending は controller 側）。
-      this._bar = { time: periodSec, open: mid, high: mid, low: mid, close: mid, volume: 1 };
+      this._bar = { time: barTime, open: mid, high: mid, low: mid, close: mid, volume: 1 };
       if (this._onBarClose) {
         this._onBarClose();
       }
     }
     this._renderer.updateLastCandle(this._bar);
-    // 指標の末尾点も tick 粒度で追従（統一設計。coalesce は controller 側＝毎 tick 呼んでよい）。
-    if (this._onFormingUpdate) {
-      this._onFormingUpdate();
-    }
+    this._applyTails(tails);
     this._applied += 1;
     this._lastTickMs = ms;
+  }
+
+  // 当該 tick 時点の指標末尾値を、直前の updateLastCandle と同一同期ブロックで描く。
+  //   バー time は形成中バー（描いたばかりのローソク）の time＝価格と指標が必ず同じ点に載る。
+  //   足の切替で無効になった tick は _applyTick 側で既に弾かれている。
+  _applyTails(tails) {
+    if (!this._applyFormingTails || !tails || this._bar === null) {
+      return;
+    }
+    this._applyFormingTails(tails, this._bar.time);
+    this._tailsApplied += 1;
   }
 
   // メトリクス（HUD・監視用）。
   stats() {
     return {
       applied: this._applied,
+      tailsApplied: this._tailsApplied,
       queued: this._queue.length,
       cursor: this._cursor,
       clockOffset: this._clockOffset,
@@ -13109,10 +13872,15 @@ class MarketProfileActor {
   //   （窓を成さず＝全期間へ縮退＝既存 fetch と同じ非破壊）。
   //   from = min(session_start, forming_start)＝domain GrowthWindow.forCurrent('normal',tf,now).from と同一規則
   //   （日中足は session_start=当日始端／1W/1M は当該バー期間の始端で from<=forming_start 不変条件を保つ）。
-  //   NOTE: domain GrowthWindow を import せず本 actor 既存 TF_BAR_SEC で同規則を算出する。build.mjs（present
-  //   バンドル）は ES Modules を単一 IIFE スコープへ連結するため、growth_window.js を取り込むと本 actor と
-  //   growth_window.js の双方が持つ top-level `const TF_BAR_SEC` が二重宣言衝突を起こす（bundle 破損）。よって
-  //   規則を growth_window.js と一致させたまま本 actor 内で直接算出する（直接 session_start・規則同一）。
+  //   NOTE: domain GrowthWindow を import せず本 actor 内で同規則を算出する（**複製**）。
+  //   かつてここは理由を「actor と growth_window.js の双方が top-level `const TF_BAR_SEC` を持つため
+  //   二重宣言衝突（bundle 破損）」と書いていたが、**この理由は成立しない**。`const TF_BAR_SEC` の
+  //   宣言は domain/tf_meta.js の 1 箇所のみで、双方ともそれを import している（ISSUE-262）。
+  //   実際の阻害要因は、growth_window.js が indicator_ui の A方式バンドル（build.mjs の
+  //   MODULE_ORDER）に未登録で symlink も無いこと。よって現時点は複製を残す。
+  //   複製が唯一源とずれたら tests/growth_window_rule_parity.test.js が落とす。
+  //   複製を消す手順: domain へ symlink を張り MODULE_ORDER へ登録し、本メソッドを
+  //   GrowthWindow.forCurrent('normal', tf, now).from への委譲へ置換する。
   _sessionFrom() {
     const candles = this._getCandles();
     const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;
@@ -13346,6 +14114,288 @@ class MarketProfileActor {
 
   detach() {
     return this._layout.detach();
+  }
+}
+
+
+// ===== js/adapter/front/tickvol_bands_primitive.js =====
+// tickvol_bands_primitive.js — 取引密度が濃い時刻帯のチャートパネル背景を塗る lwc プリミティブ。
+//
+// 装着規約は既存プリミティブと同一（attached/detached/paneViews/_draw）。`zOrder='bottom'` で
+//   系列の下＝背景側に塗るため、ローソク・指標線は原色のまま上に残る（replay_boundary_dim と同じ）。
+//
+// 入力は「塗る帯の左端バー time / 右端バー time」の配列だけ（どのバーを塗るかの判定は
+//   domain/tickvol_bands.js の純ロジックが決める＝本モジュールは座標変換と塗りに徹する）。
+//
+// x 変換: timeToIndex→logicalToCoordinate を優先する（market_profile_primitive の日スパンと同方式）。
+//   timeToCoordinate は可視域外で null を返すため、帯の片端が画面外へ出ると帯ごと消えてしまう。
+//   index 経由なら部分可視でも座標が出る。非提供環境（fake/旧 lwc）は timeToCoordinate へ退避。
+//
+// 色: 本番背景 #131722 に対するアクセント（#2962ff）の低アルファ。半透明にしているのは、
+//   リプレイの減光境界プリミティブ（不透明 #090d18・同じ zOrder='bottom'）と重なったとき、
+//   どちらの順で描かれても両方の意味が読めるようにするため。
+// ★命名規約: build.mjs（A 方式バンドル）は全モジュールの top-level を 1 スコープへ連結するため、
+//   トップレベル定数は機能名で前置しないと他モジュールと衝突する（PAIR_DIM_ALPHA の前例）。
+
+const TVB_BAND_FILL = 'rgba(41, 98, 255, 0.07)';
+
+class TickvolBandsPrimitive {
+  constructor() {
+    this._chart = null;
+    this._series = null;
+    this._requestUpdate = null;
+    this._ranges = []; // [{from, to}]（バー time・空＝塗らない）
+    this._paneView = {
+      renderer: () => ({ draw: (target) => this._draw(target) }),
+      zOrder: () => 'bottom',
+    };
+  }
+
+  attached({ chart, series, requestUpdate }) {
+    this._chart = chart;
+    this._series = series;
+    this._requestUpdate = requestUpdate;
+  }
+
+  detached() {
+    this._chart = null;
+    this._series = null;
+    this._requestUpdate = null;
+  }
+
+  // 塗る帯（バー time の閉区間）を設定し再描画要求。空配列で消灯。
+  setRanges(ranges) {
+    this._ranges = Array.isArray(ranges) ? ranges : [];
+    if (typeof this._requestUpdate === 'function') {
+      this._requestUpdate();
+    }
+  }
+
+  paneViews() {
+    return [this._paneView];
+  }
+
+  // バー time → media x（バー中心）。解決できなければ null（＝当該帯は描かない）。
+  _x(timeScale, time) {
+    if (typeof timeScale.timeToIndex === 'function'
+        && typeof timeScale.logicalToCoordinate === 'function') {
+      const i = timeScale.timeToIndex(time, false);
+      if (i != null) {
+        const x = timeScale.logicalToCoordinate(i);
+        if (x != null) {
+          return x;
+        }
+      }
+    }
+    return (typeof timeScale.timeToCoordinate === 'function')
+      ? timeScale.timeToCoordinate(time)
+      : null;
+  }
+
+  _draw(target) {
+    if (!this._ranges.length || !this._chart) {
+      return;
+    }
+    const timeScale = this._chart.timeScale && this._chart.timeScale();
+    if (!timeScale) {
+      return;
+    }
+    // 端バーのスロット全体を含める（timeToIndex/timeToCoordinate は足の「中心」x を返すため、
+    //   半バー分だけ外へ広げないと帯の端の足が半分だけ塗られる）。
+    const half = ((typeof timeScale.options === 'function' && timeScale.options().barSpacing) || 0) / 2;
+    const spans = [];
+    for (const r of this._ranges) {
+      const xL = this._x(timeScale, r.from);
+      const xR = this._x(timeScale, r.to);
+      if (xL == null || xR == null) {
+        continue; // 表示データに無い帯は塗らない（0 扱いにしない）。
+      }
+      spans.push([xL - half, xR + half]);
+    }
+    if (!spans.length) {
+      return;
+    }
+    target.useBitmapCoordinateSpace((scope) => {
+      const ctx = scope.context;
+      ctx.fillStyle = TVB_BAND_FILL;
+      for (const [l, r] of spans) {
+        const left = Math.max(0, Math.min(scope.bitmapSize.width, l * scope.horizontalPixelRatio));
+        const right = Math.max(0, Math.min(scope.bitmapSize.width, r * scope.horizontalPixelRatio));
+        if (right <= left) {
+          continue; // 可視域外
+        }
+        ctx.fillRect(left, 0, right - left, scope.bitmapSize.height);
+      }
+    });
+  }
+}
+
+
+// ===== js/adapter/front/tickvol_bands_actor.js =====
+// tickvol_bands_actor.js — 取引密度帯（時刻帯の背景色）のアクター。
+//
+// 責務: /tickvol_profile から帯を取得（キャッシュ）→ 表示中の足へ写像（domain/tickvol_bands）→
+//   価格パネル（メインペイン）の背景プリミティブへ渡す。系列（線）は一切持たない（market_profile と
+//   同じアクター駆動型）。
+//
+// 因果性（リプレイ）: `getUntil()` がリビール T（単一時計 to）を返す。帯は「until が属するセッション日
+//   より前の N セッション」から作られる（当日非参照）ため、**同一セッション日内では応答が不変**。
+//   よって再取得は sessionDayStart(until) が変わったときだけで足りる（バー送りごとには叩かない）。
+//   ライブは getUntil() が null＝サーバの現在時刻。
+//
+// 時間足: 帯そのものは時間足に依存しない（バックエンドは常に 1 分足原子・15 分ビンで集計する）。
+//   時間足の変更で必要なのは「どのバーを塗るか」の再計算だけで、再取得は起きない。
+
+
+const TVB_PRIMITIVE_KEY = 'tickvol_bands';
+
+class TickvolBandsActor {
+  /**
+   * @param {object} o
+   * @param {Function} o.fetch fetch 実装（注入・テストで差し替え）。
+   * @param {string} o.datasetRef データセット。
+   * @param {object} o.renderer ChartRenderer（getCandles / attachBackgroundPrimitive）。
+   * @param {() => string} o.getTimeframe 現在の時間足。
+   * @param {() => (number|null)} [o.getUntil] リビール T（ライブは null を返す）。
+   * @param {() => object} [o.makePrimitive] プリミティブ生成（既定 TickvolBandsPrimitive）。
+   */
+  constructor({ fetch: fetchImpl, datasetRef, renderer, getTimeframe, getUntil = () => null, makePrimitive }) {
+    this._fetch = fetchImpl;
+    this._datasetRef = datasetRef;
+    this._renderer = renderer;
+    this._getTimeframe = getTimeframe;
+    this._getUntil = getUntil;
+    this._makePrimitive = makePrimitive || (() => new TickvolBandsPrimitive());
+    this._enabled = false;
+    this._params = { sessions: null, pct: null };
+    this._bands = [];
+    this._key = null;      // 取得済みプロファイルのキー（同一なら再取得しない）
+    this._inFlight = null; // 取得の二重発行を防ぐ
+  }
+
+  isEnabled() {
+    return this._enabled;
+  }
+
+  // gear / apply / restore 共通の params 反映（値が変われば次回 refresh で再取得される）。
+  setParams(params = {}) {
+    this._params = {
+      sessions: params.sessions ?? null,
+      pct: params.pct ?? null,
+    };
+  }
+
+  async setEnabled(on) {
+    this._enabled = !!on;
+    if (!this._enabled) {
+      this._pushRanges([]); // 消灯（プリミティブは残すが塗らない）
+      return;
+    }
+    await this.refresh();
+  }
+
+  // 帯の取得（必要時）と再描画。キーが同じなら取得せず写像だけをやり直す。
+  async refresh() {
+    if (!this._enabled) {
+      return;
+    }
+    const key = this._cacheKey();
+    if (key !== this._key) {
+      await this._fetchBands(key);
+    }
+    this._apply();
+  }
+
+  // リプレイ時計の前進。セッション日が変わったときだけ再取得する（当日非参照＝日内は応答不変）。
+  onClock() {
+    if (!this._enabled) {
+      return Promise.resolve();
+    }
+    return (this._cacheKey() === this._key) ? Promise.resolve() : this.refresh();
+  }
+
+  // 時間足変更: 帯は時間足に依存しないため再取得せず、塗るバーだけを引き直す。
+  onTimeframeChange() {
+    this._apply();
+  }
+
+  // 足の差し替え・足内更新（ChartRenderer の candle observer から）。
+  onCandlesChanged() {
+    this._apply();
+  }
+
+  // 指標の追加・削除後の再描画フック（メイン系列は作り直されないため装着は不要・塗り直しのみ）。
+  onPanesChanged() {
+    this._apply();
+  }
+
+  _cacheKey() {
+    const until = this._getUntil();
+    // ライブ（until=null）はサーバの現在時刻＝日付が変われば別キーにしたいので、日境界を
+    //   クライアント時計から導く（分解能はセッション日単位で十分）。
+    const day = (until == null)
+      ? sessionDayStart(Math.floor(Date.now() / 1000))
+      : sessionDayStart(until);
+    return `${this._datasetRef}|${this._params.sessions}|${this._params.pct}|${day}`;
+  }
+
+  async _fetchBands(key) {
+    if (this._inFlight) {
+      await this._inFlight;
+      if (key === this._key) {
+        return;
+      }
+    }
+    const until = this._getUntil();
+    let url = `/tickvol_profile?datasetRef=${encodeURIComponent(this._datasetRef)}`;
+    if (this._params.sessions != null) {
+      url += `&sessions=${encodeURIComponent(this._params.sessions)}`;
+    }
+    if (this._params.pct != null) {
+      url += `&pct=${encodeURIComponent(this._params.pct)}`;
+    }
+    if (until != null) {
+      url += `&until=${encodeURIComponent(until)}`;
+    }
+    this._inFlight = (async () => {
+      try {
+        const res = await this._fetch(url);
+        const body = await res.json();
+        this._bands = (body && body.ok && Array.isArray(body.bands)) ? body.bands : [];
+        this._key = key;
+      } catch (_e) {
+        this._bands = []; // 取得失敗は「塗らない」（前回の帯を別の日に流用しない）
+        this._key = null;
+      } finally {
+        this._inFlight = null;
+      }
+    })();
+    await this._inFlight;
+  }
+
+  // 帯 → 塗るバー → 背景プリミティブへ渡す。非対応時間足・無効時は空（＝塗らない）。
+  _apply() {
+    if (!this._enabled) {
+      this._pushRanges([]);
+      return;
+    }
+    const tf = this._getTimeframe();
+    if (!tickvolBandsSupportsTf(tf)) {
+      this._pushRanges([]); // 1 時間足より上は帯なし（依頼者確定）
+      return;
+    }
+    const candles = (typeof this._renderer.getCandles === 'function') ? this._renderer.getCandles() : [];
+    this._pushRanges(bandRangesForCandles(candles, this._bands, TF_BAR_SEC[tf]));
+  }
+
+  _pushRanges(ranges) {
+    if (typeof this._renderer.attachBackgroundPrimitive !== 'function') {
+      return; // 背景プリミティブを提供しない renderer（テストの fake 等）は非干渉
+    }
+    const primitive = this._renderer.attachBackgroundPrimitive(TVB_PRIMITIVE_KEY, this._makePrimitive);
+    if (primitive) {
+      primitive.setRanges(ranges);
+    }
   }
 }
 
@@ -15667,19 +16717,60 @@ async function fetchFormingBar(fetchImpl, datasetRef, timeframe) {
 // GET /live_ticks?since= で増分 tick を取得する（B方式・ISSUE-049）。応答
 //   {ok, ticks:[[ms,mid],...], serverNowMs}。LiveTickPlayer が clockOffset 維持と再生に使う。
 //   失敗時は null（player は次 poll で回復・巻き戻さない）。
-async function fetchLiveTicks(fetchImpl, since = 0) {
+//
+//   req（{specs, datasetRef, timeframe, limit}）を添えると、サーバは
+//     - barTimes / nowBarTime: 各 tick の所属バー time（timeframe があれば常に・全時間足で唯一源）
+//     - tails: 各ティック時点の指標末尾値（specs 申告時のみ）
+//   を同梱する。limit は /compute と同一規約（表示範囲＝窓長）で、これを付けないとサーバ 1 ステップの
+//   費用が全件に比例する。req なし＝従来クエリ＝従来応答（byte 不変）。
+async function fetchLiveTicks(fetchImpl, since = 0, req = null) {
   if (typeof fetchImpl !== 'function') {
     return null;
   }
+  // 応答が返らない接続を打ち切る（ISSUE-263）。LiveTickPlayer は未完了の poll がある間は次を
+  //   出さない（同時要求数 1・ISSUE-257）。その状態でこの fetch が永久に返らないと **poll が
+  //   恒久停止**する（ガード導入前は要求が重なることで結果的に流れ続けていた＝退行）。
+  //   中断は「失敗」として扱われ、player は次の poll で回復する（カーソルは巻き戻さない）。
+  const timeoutMs = (req && Number.isFinite(req.timeoutMs)) ? req.timeoutMs : null;
+  const controller = (timeoutMs !== null && typeof AbortController === 'function')
+    ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
-    const resp = await fetchImpl(`/live_ticks?since=${encodeURIComponent(since)}`);
+    let url = `/live_ticks?since=${encodeURIComponent(since)}`;
+    if (req) {
+      // timeframe は常に付ける（各 tick の所属バー time＝barTimes の解決に必要。指標を 1 つも
+      //   適用していなくても要る）。specs があるときだけ指標末尾値（tails）も同梱される。
+      if (req.timeframe) {
+        url += `&timeframe=${encodeURIComponent(req.timeframe)}`;
+      }
+      if (req.datasetRef) {
+        url += `&datasetRef=${encodeURIComponent(req.datasetRef)}`;
+      }
+      if (req.specs && req.specs.length) {
+        url += `&specs=${encodeURIComponent(JSON.stringify(req.specs))}`;
+        if (req.limit !== undefined && req.limit !== null) {
+          url += `&limit=${encodeURIComponent(req.limit)}`;
+        }
+        // 末尾値を計算する区間（ISSUE-257）。未指定＝サーバは全 tick で計算（旧挙動）。
+        if (req.tailsWithinMs !== undefined && req.tailsWithinMs !== null) {
+          url += `&tailsWithinMs=${encodeURIComponent(req.tailsWithinMs)}`;
+        }
+      }
+    }
+    const resp = controller ? await fetchImpl(url, { signal: controller.signal })
+      : await fetchImpl(url);
     if (!resp.ok) {
       return null;
     }
     const payload = await resp.json();
     return payload && payload.ok ? payload : null;
   } catch {
-    return null;
+    return null;   // 中断・ネットワーク失敗とも null（player は次 poll で回復する）
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);   // 成功・失敗・中断のいずれでもタイマーを残さない
+    }
   }
 }
 
@@ -15807,9 +16898,8 @@ async function bootstrap({
   const zpTfOk = () => mpSupportsTf(mpSrc(), controller._timeframe);
   // ISSUE-066: MP パラメータ変更（gear の src/mode 等）を tf-period 列アクターへ即時伝播するフック。
   //   tf-period 配線（mode==='b'）で実体を代入する。未配線（A方式・非served）は no-op（byte 不変）。
-  // tf-period 列を描ける tf（ISSUE-086: 全時間足統一）。player tf（1m..1D）＋バケット tf（1W/1M）。
-  //   isPlayerTimeframe は LiveTickPlayer（tick 再生）の対応判定で別物＝ここでは列描画の判定に使わない。
-  const isTfPeriodTimeframe = (tf) => isPlayerTimeframe(tf) || tf === '1W' || tf === '1M';
+  // tf-period 列を描ける tf（ISSUE-086: 全時間足統一）＝既知 tf のすべて（台帳の 1 判定）。
+  const isTfPeriodTimeframe = (tf) => isKnownTimeframe(tf);
   let refreshTfPeriodNow = () => {};
   let liveGrowTfPeriod = () => {};
   // [統合レイヤ・MP 単一化] 未注入（standalone live）は base MarketProfileActor（無改変）。統合レイヤ注入時のみ
@@ -15943,7 +17033,36 @@ async function bootstrap({
   //   使用済み（E-7）のため使わず、own property での差し替え 1 行で行う。順序（除去 → 切替 →
   //   適用）と再入防止は協働子が所有する（root はここに手続きを持たない）。
   const proceedSetTimeframe = controller.setTimeframe.bind(controller);
-  controller.setTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
+  const proceedTemplateTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
+
+  // 取引密度帯（時刻帯の背景色・1 時間足以下）。アクター駆動型のためレジストリへ登録する
+  //   （台帳 actor_driven_ids.js の 1 行追記と本登録で完結＝IndicatorController は不変）。
+  //   統合 UI では live root だけが実行されるため、この配線でライブ・リプレイ双方に効く。
+  //   getUntil: リプレイは単一時計 to（controller._untilTime）＝当日を集計に含めない因果窓の基準。
+  //   ライブは _untilTime 非在席（undefined）＝null を返す＝サーバの現在時刻。
+  const tickvolBands = new TickvolBandsActor({
+    fetch, datasetRef, renderer,
+    getTimeframe: () => controller._timeframe,
+    getUntil: () => (controller._untilTime != null ? controller._untilTime : null),
+  });
+  controller.registerActorController('tickvol_bands', new TickvolBandsController(controller, tickvolBands));
+  // 時間足切替: 帯は時間足に依存しない（サーバは常に 1 分足原子で集計）ので再取得せず、塗る足だけ引き直す。
+  //   購読スロット（setTimeframeObserver）は売買マーカーが占有済みのため、テンプレート協働子と同じ
+  //   own property 差し替えを**その内側へ**チェーンする（既存の介入順序を壊さない）。
+  controller.setTimeframe = (tf) => {
+    const done = proceedTemplateTimeframe(tf);
+    tickvolBands.onTimeframeChange();
+    return done;
+  };
+  // リプレイ時計の前進: セッション日が変わったときだけ再取得する（日内は応答不変＝当日非参照）。
+  if (typeof controller.setUntilTime === 'function') {
+    const proceedUntil = controller.setUntilTime.bind(controller);
+    controller.setUntilTime = (t) => {
+      const done = proceedUntil(t);
+      tickvolBands.onClock();
+      return done;
+    };
+  }
 
   // 時間足毎profile列（tf-period・最小価格単位・ローリング窓＋ジッターバッファ）の配線（served のみ）。
   //   sessions モード（marketProfile.isSessions()）かつ対応 tf（1m..1D）のとき、可視レンジぶんの列を
@@ -16104,7 +17223,10 @@ async function bootstrap({
   //   （index.html）が served 時のみ呼ぶ。A方式（file://）は null（更新を配線しない）。
   // LiveTickPlayer（12 秒固定遅延の tick 再生）を配線するのは served（B方式）のみ＝価格の唯一の
   //   書き手。このとき旧 2 系統（LiveUpdater / FormingBarUpdater）の価格上書きは 12 秒より古い
-  //   データで巻き戻すため suppressPriceUpdate=true で止める（指標再計算は従来どおり）。
+  //   データで巻き戻すため suppressPriceUpdate=true で止める。
+  //   ISSUE-253: player は**全時間足**を同一経路で扱う（バー帰属はサーバ供給）。かつては
+  //   floor で周期を作っていたため 1W/1M だけ player 非対応で、価格の書き手が tf によって
+  //   入れ替わっていた（更新粒度が時間足で変わる原因）。その tf 依存の配線を廃止する。
   //   file://（A方式）は player 不在＝false で既存挙動 byte 不変。
   const playerActive = (mode === 'b');
 
@@ -16138,10 +17260,8 @@ async function bootstrap({
         setInterval: setIntervalImpl,
         clearInterval: clearIntervalImpl,
         intervalMs: formingIntervalMs,
-        // 価格抑止は tf 依存: player が扱う固定周期（1m..1D）は player が唯一の書き手＝抑止する。
-        //   player 非対応の 1W/1M（カレンダー周期）は player が no-op のため、FormingBarUpdater が
-        //   /forming_bar（backend のロールアップ方式で 1W/1M も供給）を描く価格の書き手になる＝抑止しない。
-        suppressPriceUpdate: playerActive ? () => isPlayerTimeframe(controller._timeframe) : false,
+        // 価格の書き手は player ただ 1 つ（全時間足で同一）。tf による切り替えは持たない。
+        suppressPriceUpdate: playerActive,
       })
     : null;
 
@@ -16152,15 +17272,18 @@ async function bootstrap({
   const liveTickPlayer = playerActive
     ? new LiveTickPlayer({
         renderer,
-        fetchLiveTicks: (since) => fetchLiveTicks(fetch, since),
+        fetchLiveTicks: (since, req) => fetchLiveTicks(fetch, since, req),
         loadFormingBar: (ref, tf) => fetchFormingBar(fetch, ref, tf),
         datasetRef,
         getTimeframe: () => controller._timeframe,
         setInterval: setIntervalImpl,
         clearInterval: clearIntervalImpl,
-        // tick 粒度の指標末尾追従（統一設計 2026-07-22）: tick 適用のたびに登録オシレーターの
-        //   末尾差分再計算を要求する（coalesce は controller 側＝過負荷にならない）。
-        onFormingUpdate: () => controller.requestFormingRecompute(),
+        // tick 粒度の指標末尾追従（ISSUE-250 Phase 1）: poll で適用中インスタンスを申告し、
+        //   応答に同梱された各ティック時点の末尾値を tick 適用と同一同期ブロックで描く。
+        //   HTTP 往復が tick 路から消えるため「指標更新回数 == ローソク更新回数」が構成上成立する。
+        getComputeSpecs: () => controller.appliedComputeSpecs(),
+        getLimit: () => controller.computeLimit(),
+        applyFormingTails: (tails, barTime) => controller.applyFormingTails(tails, barTime),
         // バー確定駆動の full 再計算（ISSUE-151）: 期間ロールオーバー＝直前バー確定で全指標を
         //   再計算する（リプレイの毎バーその場計算と同一意味論。coalesce/pending は controller 側）。
         onBarClose: () => controller.requestFullRecompute(),
@@ -16183,6 +17306,21 @@ async function bootstrap({
   renderer.setCandleObserver(() => {
     tradeMarkers.onCandlesChanged();
     currentPriceView.render(renderer.lastClose());
+    // 足の差し替え（時間足・期間プリセット・カレンダー・リビール）で塗る足を引き直す。
+    //   帯そのものは時間足・足集合に依存しないため再取得は起きない（写像のやり直しのみ）。
+    tickvolBands.onCandlesChanged();
+  });
+
+  // 指標の追加・削除で pane（と pane 内の系列）が作り直されるため、背景プリミティブを張り直す。
+  //   購読スロットは単数で、統合レイヤでは後から replay.js が自分の購読を入れる。上書きで本フックが
+  //   消えないよう setAppliedObserver 自体を合成する（後続購読者の挙動は不変・解除も従来どおり）。
+  const proceedSetAppliedObserver = controller.setAppliedObserver.bind(controller);
+  proceedSetAppliedObserver(() => tickvolBands.onPanesChanged());
+  controller.setAppliedObserver = (observer) => proceedSetAppliedObserver(() => {
+    if (typeof observer === 'function') {
+      observer();
+    }
+    tickvolBands.onPanesChanged();
   });
 
   // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
@@ -16239,7 +17377,7 @@ async function bootstrap({
 
   // marketProfile は controller 生成前に組み立て済み（controller へ注入＋既存トグル用に戻り値へ）。
   //   トグル配線は入口（index.html）が marketProfile.setEnabled(on) を呼ぶ（bootstrap に副作用を足さない）。
-  return { chart, mainSeries, renderer, controller, mode, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
+  return { chart, mainSeries, renderer, controller, mode, ready, tickvolBands, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile, liveFollowController, mpLiveModeCoordinator, tfPeriodActor, replayHandle, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
 }
 
 

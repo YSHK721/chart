@@ -4389,3 +4389,22 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - 値は `FETCH_TIMEOUT_MS = 10000`（poll 間隔 2.5 秒の 4 倍 ＞ 実測応答 5〜141ms、再生遅延 12 秒未満）。「poll 間隔より長く再生遅延より短い」ことをテストで固定した。
 - **検証**: 打ち切りを外すと gateway 検定が 3 秒で明確に Red（ハングせず落ちるよう watchdog と競争させた）。回帰: Python 2,533 / indicator_ui web 1,077 / market_profile web 325 / replay_ui web 301 / unified_ui web 43 全通過。
 - **教訓**: 「同時実行を 1 に絞る」是正は、絞った先が詰まったときの脱出路を同時に用意しなければ、可用性を下げる。ガードとタイムアウトは対で入れる。
+
+## ISSUE-264: [設計是正] zp 対応 tf を Python 単一定義とし JS へは生成物として配る（2026-08-05）
+- **ステータス**: RESOLVED（2026-08-05・refactor/zp-capability-generated）
+- **重大度**: Medium（ずれるとサーバ 400・フロントは選択可能のまま＝無言の機能不全）
+- **背景**: ISSUE-261 では zp 対応 tf を「台帳から導出できない能力宣言」として写しを残し、parity 検定で拘束するに留めていた。**第 2 定義そのものは残っていた**ため抜本的解決ではなかった。
+- **抜本的対策**: 時間足台帳（ISSUE-254）と同方式で生成物化する。Python の `_ZP_TF_ALLOWED` を唯一源とし、`tools/gen_js_parity_golden.py` が `domain/mp_capability_generated.js` を書き出す。`mp_source_capability.js` は生成物を読むだけにし、`_ZP_BLOCKED_SESSION_TFS`（日別で選択不可の tf）は「対応 tf の補集合」として **導出**へ変更（従来は独立 literal で、対応 tf を変えても追随しなかった）。
+- **配線**: 生成物の symlink を indicator_ui / replay_ui の `js/domain` へ追加。`build.mjs` の MODULE_ORDER へ `mp_source_capability.js` より前に登録。
+- **検証**: Python 側から 30m を外して生成器を実行すると JS 生成物が追随することを実測（`['15m','1h',...]`）。回帰: Python 2,533 / indicator_ui web 1,080 / market_profile web 325 / replay_ui web 301 / unified_ui web 43 全通過。
+
+## ISSUE-265: [不具合・実測] A方式バンドル（file://）が構文エラーで起動不能になっていた（2026-08-05）
+- **ステータス**: RESOLVED（2026-08-05・refactor/zp-capability-generated）
+- **重大度**: High（README に記載された起動方式が動作しない。追跡下の生成物が古く気付けなかった）
+- **事象**: 現行 develop のソースから `node build.mjs` で再ビルドすると、生成物の JS が
+  `SyntaxError: Identifier 'facadeToggleVisible' has already been declared` で構文エラーになる。
+- **真因**: `build.mjs` は ES Modules を 1 つの IIFE スコープへ連結し、`import { X as Y }` を `const Y = X;` へ書き換える。**同じ別名を複数モジュールが使うと重複宣言になる**。実例は `indicator_controller.js` と `tickvol_bands_controller.js` がともに `toggleVisible as facadeToggleVisible` を使っていたこと。
+- **なぜ気付かれなかったか**: 追跡下の `out/prototype.html` は最後に生成された時点（2026-08-02）のもので、以後のソース変更が反映されていない。既存の `build_module_order.test.js` は「相対 import 先が MODULE_ORDER に在るか」しか見ないため、この破れ方を検出できない。**ビルドを実際に走らせる検定が無かった**。
+- **私の変更とは無関係**: 私の変更を stash した状態で再ビルドしても同じ重複が出ることを実測で確認済み。
+- **抜本的対策**: 別名束縛をバンドル全体で 1 回だけ出す（同名別名は同一シンボルを指すため重複除去は安全）。あわせて `tests/bundle_builds_and_parses.test.js` を新設し、**実際に build.mjs を走らせて `node --check` で構文検証**する（const 重複の検出・生成物の取り込み確認を含む）。追跡下生成物の陳腐化もこれで落ちる。
+- **検証**: 重複除去を外すと新規検定 2 件が Red。修正後は A方式バンドルが構文的に正しく生成される（1,486,108 bytes・`node --check` 通過）。

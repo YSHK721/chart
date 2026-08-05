@@ -30,6 +30,9 @@ from market_profile_api.compute.market_profile import value_area  # noqa: E402
 OUT = ROOT / "indigators" / "market_profile" / "web" / "tests" / "fixtures" / "py_parity_golden.json"
 #: 時間足台帳の JS 生成物（実体は market_profile 側・indicator_ui からは symlink で共有）。
 JS_OUT = ROOT / "indigators" / "market_profile" / "web" / "js" / "domain" / "tf_ledger_generated.js"
+#: MP ソース能力の JS 生成物（zp 対応 tf。Python の配信 controller が唯一源）。
+MP_CAP_OUT = (ROOT / "indigators" / "market_profile" / "web" / "js" / "domain"
+              / "mp_capability_generated.js")
 
 
 def _utc(y, m, d, hh=0, mm=0, ss=0):
@@ -137,6 +140,23 @@ def render_tf_ledger_js(rows: "list[dict]") -> str:
     )
 
 
+def render_mp_capability_js(zp_tfs: "tuple[str, ...]") -> str:
+    """MP ソース能力の JS モジュール（データのみ・自動生成）を組み立てる。"""
+    items = ", ".join(f"'{tf}'" for tf in zp_tfs)
+    return (
+        "// mp_capability_generated.js — MP ソース能力（**自動生成・手で編集しない**）。\n"
+        "//\n"
+        "// 生成元: market_profile_api/controller/tf_period_profile_controller.py の _ZP_TF_ALLOWED。\n"
+        "// 生成器: tools/gen_js_parity_golden.py（規則変更時に再実行する）。\n"
+        "//\n"
+        "// なぜ生成物なのか（ISSUE-264）: zp 対応 tf は台帳から導出できない『能力宣言』であり、\n"
+        "//   Python と JS の両方に手書きで存在していた。同期手段が無いため、ずれるとサーバは 400 を\n"
+        "//   返すのにフロントは選択可能なまま＝**無言の機能不全**になる（ISSUE-253 と同型）。\n"
+        "//   定義は Python ただ 1 つとし、JS は生成された値を読むだけにする。\n"
+        "export const ZP_SUPPORTED_TFS = Object.freeze([" + items + "]);\n"
+    )
+
+
 def main() -> None:
     sessions = [
         {
@@ -165,6 +185,8 @@ def main() -> None:
     print(f"wrote {OUT} (sessions={len(sessions)}, va={len(golden['value_area'])})")
     JS_OUT.write_text(render_tf_ledger_js(tf_ledger()), encoding="utf-8")
     print(f"wrote {JS_OUT}")
+    MP_CAP_OUT.write_text(render_mp_capability_js(_zp_supported_tfs()), encoding="utf-8")
+    print(f"wrote {MP_CAP_OUT}")
 
 
 if __name__ == "__main__":
