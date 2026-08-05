@@ -4358,3 +4358,24 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   | `marketdata/tf_meta.py:41-44` | `TF_BAR_SEC` が `TF_DESCRIPTORS` から導出されず手書き（検定はキー集合のみで値は非検定） |
 - **既に起きている乖離**: replay 合成根の有効時間足は 8 足（30m 欠落）だが、`marketdata/resample.py:55` に `"30m"` は存在し `jp225_tick_30m.csv` も実在。付随コメント「サーバ TIMEFRAME_RULES と一致・30m 非対応」は現状と一致しない。統合 UI 経由（ライブ合成根＝台帳導出 9 足）と standalone replay（8 足）で同じ「リプレイ」の対応足が異なる。
 - **抜本的対策**: 各写しを台帳からの導出へ置換する。`TF_BAR_SEC` は `TfDescriptor` に `bar_sec` を追加して導出値化する。replay 固有の除外足が本当に必要なら「除外理由つきの差集合」を 1 箇所で宣言し、そこから導出する。
+
+## ISSUE-262: [設計是正] 宣言（コメント/docstring）が施行されておらず、次の編集で静かに破れる（2026-08-05）
+- **ステータス**: RESOLVED（2026-08-05・fix/enforce-declarations）
+- **重大度**: High（過去の SOLID 是正が繰り返し無効化される構造的原因）
+- **背景**: SOLID 全体監査（`.doc/SOLID_AUDIT_2026-08-05.md`）で「宣言と実装の乖離」8 件を検出した。いずれも**規則をコメントに書いただけで、施行する仕組みが無い**。宣言は施行されているように読めるため、次の編集で静かに破れ、壊れるのは数ヶ月後になる。ISSUE-252 がその典型で、`_merge_agg` を是正し再発防止コメントまで書いたのに、**3 行後の `_write_rollup_df` に同じ直書きが残っていた**（ISSUE-258）。テストが「変更した関数」だけを覆い、「不変条件」を覆っていなかった。
+- **是正（8 件すべてを検定へ置換）**:
+  | # | 宣言 | 実態 | 施行手段 |
+  |---|---|---|---|
+  | 1 | `chart_renderer.js`「lwc を呼ぶのは本ファイルだけ・grep 0 件強制」 | 11 ファイルが呼び、強制テストは不在 | `upstream_isolation_declaration.test.js`（隔離単位を明示し走査で強制。宣言を実態へ是正） |
+  | 2 | `series_render_router.js`「新種別は台帳追記で完結」 | 4 ファイル改変が必要。台帳に足すと黙って捨てられる | `series_kind_ledger_declaration.test.js`（台帳の全 route が router で処理されることを固定） |
+  | 3 | `tools/__init__.py`「ロジックの重複を持たない合成点」 | tf 規則・tick tree・生 tick 列を再実装 | `test_tools_composition_declaration.py` ＋ 重複 5 箇所を権威へ委譲 |
+  | 4 | `market_profile_actor.js`「TF_BAR_SEC 二重宣言で bundle 破損するから複製」 | 宣言は 1 箇所のみで**前提が不成立**。真の阻害は MODULE_ORDER 未登録 | `growth_window_rule_parity.test.js`（複製と唯一源の一致を全 tf × 9 時刻で固定） |
+  | 5 | `resample.py`「pandas のみに依存」 | csv_schema にも依存 | `test_module_dependency_declarations.py`（AST 走査・遅延 import も対象） |
+  | 6 | `tick_m1.py`「pandas + paths のみ」 | outlier_policy / csv_schema / tail_reader にも依存 | 同上 |
+  | 7 | `tick_m1.py`「tick tree レイアウトの単一権威」 | tools 3 本と replay adapter が自前実装 | `test_tick_tree_layout_authority.py` ＋ 5 箇所を権威へ委譲。`day_empty_marker_path` / `day_parquet_name` を新設 |
+  | 8 | `incremental/__init__.py`「_FACTORIES へ 1 行足すだけ」 | `call_binding.latest_meta` の宣言も必要。忘れると**無言で従来経路へ縮退** | `test_incremental_registry_declaration.py`（2 宣言の集合一致を固定） |
+- **副次的に発見・是正**:
+  - `tools/tests` が**実行されていなかった**。`test_build_tick_rollup` が ISSUE-242（up/dn 追加）に追随せず Red のまま放置されていた。期待値を csv_schema からの導出へ是正。
+  - `marketdata.rollup.rollup_timeframes` / `marketdata.tick_m1.ts_and_mid` を公開面として新設（重複の受け皿）。
+- **検証**: 識別力を実測で実証（台帳へ種別を 1 行足すと 2 件 Red・JS の zp 対応 tf から 1 足落とすと 2 件 Red・tick tree 検定は既知 5 違反を実際に検出）。回帰: marketdata 236 / indicator_ui api 781 / market_profile api 365 / replay_ui 236 / tools+simulator 915 / indicator_ui web 1071 / market_profile web 325 / replay_ui web 301 / unified_ui web 43 全通過。
+- **残件**: `growth_window.js` を MODULE_ORDER へ登録して MP actor の複製を消す（本 Issue では複製を残し検定で拘束）。

@@ -40,7 +40,12 @@ export class SeriesRenderRouter {
   draw(instanceId, def, series, params = null) {
     const host = this._host;
     const validated = host._validateSeriesNames(series, def, params);
-    // kind → 描画経路は series_kind 台帳（renderRoute）で一元化（新種別は台帳追記で完結・OCP）。
+    // kind → 描画経路は series_kind 台帳（renderRoute）で一元化する。**台帳追記だけでは完結せず**、
+    //   下記 routed の初期化と dispatch にも経路を足す必要がある（台帳へ 1 行足しただけだと
+    //   routed[route] が undefined になり、その種別は例外も出さず黙って捨てられる）。
+    //   この対応関係は tests/series_kind_ledger_declaration.test.js が強制する（ISSUE-262）。
+    //   かつてここは「新種別は台帳追記で完結・OCP」と書いていたが施行する仕組みが無く、
+    //   実際は 4 ファイルの改変を要した。宣言を実態へ正し、抜けはテストで落とす。
     //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
     const routed = { line: [], histogram: [], horizontal: [], level_dash: [] };
     for (const p of validated) {

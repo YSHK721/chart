@@ -30,6 +30,8 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from marketdata.paths import DATA_DIR  # noqa: E402
+from marketdata.tick_m1 import ts_and_mid  # noqa: E402  (mid/tz 規則の唯一源)
+from simulator.tools.ingest_ticks import RAW_COLUMNS  # noqa: E402  (生列の唯一源)
 from marketdata.tick_m1 import day_parquet_path  # noqa: E402
 
 TFS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1D": 86400}
@@ -37,14 +39,16 @@ TFS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1D": 86400}
 
 def analyze(day: dt.date) -> None:
     df = pd.read_parquet(
-        day_parquet_path(day, data_dir=DATA_DIR), columns=["timestamp", "bidPrice", "askPrice"]
+        day_parquet_path(day, data_dir=DATA_DIR), columns=list(RAW_COLUMNS[:3])
     )
     # ms 精度の datetime を ns 正規化して UNIX 秒へ。
     ts = (
         pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
         .astype("datetime64[ns]").astype("int64") // 1_000_000_000
     ).to_numpy()
-    mid = ((df["bidPrice"].astype(float) + df["askPrice"].astype(float)) / 2.0).to_numpy()
+    # mid/tz 規則の唯一源（ISSUE-262）。ここで式を写さない。
+    _, mid_s = ts_and_mid(df)
+    mid = mid_s.to_numpy()
     print(f"day={day}  ticks={len(mid):,}")
 
     # 最小価格単位＝実データの最小正の mid 増分（distinct mid の最小ギャップ）。

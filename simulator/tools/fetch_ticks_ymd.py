@@ -34,8 +34,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _day_paths(root: Path, day: dt.datetime) -> "tuple[Path, Path, Path]":
+    """``day`` の (ディレクトリ, parquet, .empty マーカー) を返す。
+
+    レイアウトの単一権威は :func:`marketdata.tick_m1.day_parquet_path`（ISSUE-262）。
+    かつてここは ``root/YYYY/MM/DD/JP225_ticks.parquet`` を自前で組んでおり、権威側の宣言
+    「レイアウト変更を本所 1 箇所に閉じる」が事実と食い違っていた。
+    """
+    from marketdata.tick_m1 import day_parquet_name  # 遅延: import 副作用を実行時に限定
+
+    name = day_parquet_name()
     d = root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
-    return d, d / "JP225_ticks.parquet", d / "JP225_ticks.empty"
+    return d, d / name, d / (name[: -len(".parquet")] + ".empty")
 
 
 def run(start: dt.datetime, end: dt.datetime, root: Path) -> int:

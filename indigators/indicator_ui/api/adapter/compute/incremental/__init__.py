@@ -1,8 +1,16 @@
 """指標ごとの増分器レジストリ（ISSUE-233・内部設計_latest増分計算.md §5.4）。
 
 ``LatestMeta.incremental`` が持つ名前 → 増分器実体の解決だけを行う。増分器の追加は
-``_FACTORIES`` へ 1 行足すだけで、``latest_dispatch`` / ``incremental_state`` は改変しない
-（OCP）。実体の import は遅延（指標 src のロードを起動時に走らせない）。
+**2 箇所**の宣言で完結する（``latest_dispatch`` / ``incremental_state`` は改変しない＝OCP）:
+
+  1. 本モジュールの ``_FACTORIES`` へ 1 行（名前 → factory）
+  2. ``call_binding._TABLE`` の当該指標の ``latest_meta`` へ増分器名
+
+かつて本 docstring は「``_FACTORIES`` へ 1 行足すだけ」と述べていたが、2 を忘れると
+``resolve()`` が ``None`` を返し、**例外を出さずに従来の重い経路へ黙って縮退**する
+（無言の性能退行・テストは緑のまま）。この 2 宣言の集合一致は
+``tests/test_incremental_registry_declaration.py`` が強制する（ISSUE-262）。
+実体の import は遅延（指標 src のロードを起動時に走らせない）。
 
 各増分器は指標 src の **公開関数のみ**を呼ぶ。計算式を写した時点で参照実装との二重定義に
 なり、ISSUE-233 の再発源になる。

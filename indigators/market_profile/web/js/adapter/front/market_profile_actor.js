@@ -261,10 +261,15 @@ export class MarketProfileActor {
   //   （窓を成さず＝全期間へ縮退＝既存 fetch と同じ非破壊）。
   //   from = min(session_start, forming_start)＝domain GrowthWindow.forCurrent('normal',tf,now).from と同一規則
   //   （日中足は session_start=当日始端／1W/1M は当該バー期間の始端で from<=forming_start 不変条件を保つ）。
-  //   NOTE: domain GrowthWindow を import せず本 actor 既存 TF_BAR_SEC で同規則を算出する。build.mjs（present
-  //   バンドル）は ES Modules を単一 IIFE スコープへ連結するため、growth_window.js を取り込むと本 actor と
-  //   growth_window.js の双方が持つ top-level `const TF_BAR_SEC` が二重宣言衝突を起こす（bundle 破損）。よって
-  //   規則を growth_window.js と一致させたまま本 actor 内で直接算出する（直接 session_start・規則同一）。
+  //   NOTE: domain GrowthWindow を import せず本 actor 内で同規則を算出する（**複製**）。
+  //   かつてここは理由を「actor と growth_window.js の双方が top-level `const TF_BAR_SEC` を持つため
+  //   二重宣言衝突（bundle 破損）」と書いていたが、**この理由は成立しない**。`const TF_BAR_SEC` の
+  //   宣言は domain/tf_meta.js の 1 箇所のみで、双方ともそれを import している（ISSUE-262）。
+  //   実際の阻害要因は、growth_window.js が indicator_ui の A方式バンドル（build.mjs の
+  //   MODULE_ORDER）に未登録で symlink も無いこと。よって現時点は複製を残す。
+  //   複製が唯一源とずれたら tests/growth_window_rule_parity.test.js が落とす。
+  //   複製を消す手順: domain へ symlink を張り MODULE_ORDER へ登録し、本メソッドを
+  //   GrowthWindow.forCurrent('normal', tf, now).from への委譲へ置換する。
   _sessionFrom() {
     const candles = this._getCandles();
     const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;

@@ -65,10 +65,10 @@ def _data_dir() -> Path:
 
 
 def _rollup_timeframes() -> Tuple[str, ...]:
-    """ロールアップ対象の上位足（原子 "1m" を除く全 TF・marketdata.resample が規則源）。"""
-    from marketdata import resample
+    """ロールアップ対象の上位足。規則は marketdata.rollup へ一本化（ISSUE-262）。"""
+    from marketdata.rollup import rollup_timeframes
 
-    return tuple(tf for tf in resample.TIMEFRAME_RULES if tf != "1m")
+    return rollup_timeframes()
 
 
 # --------------------------------------------------------------------------- #
@@ -178,8 +178,13 @@ class PipelineContext:
 
     @property
     def ticks_root(self) -> Path:
-        """ティック tree（acquire の書込先＝m1 の読込先・常に一致）。"""
-        return self.data_dir / "ticks"
+        """ティック tree（acquire の書込先＝m1 の読込先・常に一致）。
+
+        レイアウトの単一権威（marketdata.tick_m1.tick_root）へ委譲する（ISSUE-262）。
+        """
+        from marketdata.tick_m1 import tick_root  # 遅延: import 副作用を実行時に限定
+
+        return tick_root(self.data_dir)
 
     @property
     def rollups_dir(self) -> Path:

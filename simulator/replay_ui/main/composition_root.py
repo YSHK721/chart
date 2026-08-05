@@ -54,7 +54,9 @@ def build_replay_app(
     )
     # ISSUE-131/132: candle・m1 の供給は dataset（単一権威）へ完全委譲済み＝CSV パスの結線は
     #   リプレイ固有フィードの tick parquet 根のみ。
-    tick_root = data / "ticks"
+    from marketdata.tick_m1 import tick_root as _tick_root  # ISSUE-262: レイアウト単一権威
+
+    tick_root = _tick_root(data)
 
     candle_port = CausalCandleRepository(api_path=api_path, repo_root=root)
     compute_port = CausalComputeGateway(api_path=api_path, repo_root=root)

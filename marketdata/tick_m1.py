@@ -22,8 +22,15 @@ Dukascopy 生ティック（日別 parquet）を mid=(bid+ask)/2 基準・UTC �
     既存 candle CSV（``jp225_m1.csv`` 等）には触れず、新規 ref を新規出力するのみ
     （読み取り＋新規追加・既存データへ波及させない）。
 
-依存方向: 本モジュールは pandas + :mod:`marketdata.paths` にのみ依存する（indicator_ui を
-逆 import しない・marketdata の循環依存禁止）。
+依存方向: 本モジュールは pandas と marketdata 内の下位部品
+（:mod:`marketdata.paths` / :mod:`marketdata.outlier_policy` / :mod:`marketdata.csv_schema` /
+:mod:`marketdata.tail_reader`）にのみ依存する（indicator_ui を逆 import しない・
+marketdata の循環依存禁止）。
+
+この宣言は ``marketdata/tests/test_module_dependency_declarations.py`` が **AST 走査で強制**する
+（関数内の遅延 import も対象）。かつて本 docstring は「pandas + paths にのみ依存」と述べていたが
+実際は 3 モジュールを追加で import しており、宣言だけが事実と食い違ったまま残っていた（ISSUE-262）。
+依存を増やすときは本 docstring と当該テストの許可表を**同時に**更新する。
 """
 
 from __future__ import annotations
@@ -65,6 +72,15 @@ def _validate_ref(ref: str) -> None:
         raise ValueError(
             f"ref は [A-Za-z0-9_-] のみ可: {ref!r}（パス区切り・'..' を含めない・データ保全）。"
         )
+
+
+def ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
+    """生ティック frame から ``(timestamp(naive UTC), mid)`` を返す **mid/tz 規則の公開面**。
+
+    実体は :func:`_ts_and_mid`。同一規則を外部（tools・market_profile gateway）が再実装して
+    いたため公開名を与えた（ISSUE-262）。mid の定義を変えるときはここ 1 箇所を変える。
+    """
+    return _ts_and_mid(ticks)
 
 
 def _ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
@@ -186,6 +202,10 @@ def day_parquet_path(day: Any, *, symbol: str = _DEFAULT_SYMBOL, data_dir: Any =
     tick tree レイアウト ``<DATA_DIR>/ticks/YYYY/MM/DD/<symbol>_ticks.parquet`` の単一権威
     （reader: :func:`day_parquet_files` / writer: tools.live_tick_watch が共用し、レイアウト
     変更を本所 1 箇所に閉じる）。
+
+    この「単一権威」は ``marketdata/tests/test_tick_tree_layout_authority.py`` が
+    **リポジトリ走査で強制**する（ISSUE-262）。かつて宣言だけがあり、実際は tools 3 本と
+    replay adapter がレイアウトを自前で組んでいた。
     """
     d = pd.Timestamp(day)
     return (
@@ -193,6 +213,21 @@ def day_parquet_path(day: Any, *, symbol: str = _DEFAULT_SYMBOL, data_dir: Any =
         / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}"
         / f"{symbol}_ticks.parquet"
     )
+
+
+def day_empty_marker_path(day: Any, *, symbol: str = _DEFAULT_SYMBOL,
+                          data_dir: Any = DATA_DIR) -> Path:
+    """``day`` の「取得したがティック 0 件」マーカー（``<symbol>_ticks.empty``）の正準パス。
+
+    parquet と同じ tick tree に属するため、レイアウト権威は本モジュールに閉じる（ISSUE-262）。
+    かつて ``.empty`` の名前は 4 箇所（tools 2・simulator 1・with_suffix 導出 1）に散っていた。
+    """
+    return day_parquet_path(day, symbol=symbol, data_dir=data_dir).with_suffix(".empty")
+
+
+def day_parquet_name(symbol: str = _DEFAULT_SYMBOL) -> str:
+    """日別ティック parquet のファイル名（tick tree レイアウトの一部・単一権威）。"""
+    return f"{symbol}_ticks.parquet"
 
 
 def day_parquet_files(

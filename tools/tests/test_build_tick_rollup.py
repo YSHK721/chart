@@ -146,7 +146,14 @@ def test_m1_and_rollup_stages_generate_tick_ref_outputs(tmp_path) -> None:
     assert btr.stage_m1(ctx) == 0
     m1 = tmp_path / "jp225_tick_m1.csv"
     assert m1.is_file()
-    assert m1.read_text(encoding="utf-8").splitlines()[0] == "date,open,high,low,close,volume"
+    # 期待ヘッダは csv_schema から導出する（列名を写さない）。tick 由来 M1 は方向内訳 up/dn を
+    #   持つ（ISSUE-242）。かつてここは 6 列を直書きしており、up/dn 追加後もこのテストが
+    #   実行されていなかったため、期待値が実装に追随しないまま Red で放置されていた（ISSUE-262）。
+    from marketdata import csv_schema
+
+    expected = ",".join(csv_schema.header_for(
+        [*csv_schema.OHLCV_COLUMNS, *csv_schema.UPDOWN_COLUMNS]))
+    assert m1.read_text(encoding="utf-8").splitlines()[0] == expected
 
     assert btr.stage_rollup(ctx) == 0
     rollup_5m = tmp_path / "rollups" / "jp225_tick" / "jp225_tick_5m.csv"  # ref 専用サブ dir。

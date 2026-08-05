@@ -105,6 +105,18 @@ class RollupState:
         return cls(last_processed_ts=ts)
 
 
+def rollup_timeframes() -> "tuple[str, ...]":
+    """ロールアップ対象の上位足（原子 ``"1m"`` を除く全 TF）の唯一源（ISSUE-262）。
+
+    かつて ``tools/build_tick_rollup`` と ``tools/live_tick_watch`` が同一実装を各自に持ち、
+    後者の docstring は「前者と同規則」と**人手同期**を宣言していた。``tools`` パッケージが
+    「ロジックの重複を持たない合成点」と宣言している以上、規則は本モジュールに置く。
+    """
+    from marketdata import resample
+
+    return tuple(tf for tf in resample.TIMEFRAME_RULES if tf != "1m")
+
+
 def _rollup_path(out_dir: Path, tf: str, ref_prefix: str = _REF_PREFIX) -> Path:
     """ロールアップ CSV の解決パス（``<out_dir>/<ref_prefix>_<tf>.csv``）。
 
