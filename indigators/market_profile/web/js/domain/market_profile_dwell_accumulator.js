@@ -52,6 +52,11 @@ export function activeSeconds(a, b, table) {
 //   mp_core の非決定論を再現するのではなく、決定論性を優先した意図的分岐である（実害は低い＝同値 bin は
 //   価格が隣接し VA 端の 1bin 差に留まる）。下段の「境界 tie golden」テストがこの方針を回帰的に固定する。
 export function valueArea(centers, tpo, vaPct) {
+  // 標準 Market Profile の VA（ISSUE-271）: POC を起点に、隣接する側のうち重みが大きい方へ
+  //   1 ビンずつ連続的に広げ、累積が総重み×vaPct へ達したところで止める。
+  //   かつては「重み降順に非連続で積み、採用集合の min/max」を返しており、Python の
+  //   tf_period 側（標準 MP）と定義が食い違っていた（実測 79.2% 不一致）。
+  //   Python market_profile._value_area と**同一規約**（同値は上側優先・POC 同値は index 昇順）。
   const n = tpo.length;
   if (n === 0) {
     return [0, 0];
@@ -63,20 +68,31 @@ export function valueArea(centers, tpo, vaPct) {
   if (total <= 0) {
     return [Number(centers[0]), Number(centers[n - 1])];
   }
-  const threshold = total * vaPct;
-  const order = Array.from({ length: n }, (_, i) => i)
-    .sort((i, j) => (tpo[j] - tpo[i]) || (i - j)); // 降順・同値は index 昇順。
-  const chosen = [];
-  let cum = 0;
-  for (const i of order) {
-    chosen.push(Number(centers[i]));
-    cum += tpo[i];
-    if (cum >= threshold) {
-      break;
+  // POC: 重み最大（同値は index 昇順＝価格の低い側）。
+  let poc = 0;
+  for (let i = 1; i < n; i += 1) {
+    if (tpo[i] > tpo[poc]) {
+      poc = i;
     }
   }
-  return [Math.min(...chosen), Math.max(...chosen)];
+  const threshold = total * vaPct;
+  let lo = poc;
+  let hi = poc;
+  let acc = tpo[poc];
+  while (acc < threshold && (lo > 0 || hi < n - 1)) {
+    const down = lo > 0 ? tpo[lo - 1] : -Infinity;
+    const up = hi < n - 1 ? tpo[hi + 1] : -Infinity;
+    if (up >= down) {
+      hi += 1;
+      acc += up;
+    } else {
+      lo -= 1;
+      acc += down;
+    }
+  }
+  return [Number(centers[lo]), Number(centers[hi])];
 }
+
 
 export class DwellAccumulator {
   constructor() {

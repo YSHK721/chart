@@ -159,24 +159,43 @@ def _session_entry(date, tpo, centers, va_pct):
 
 
 def _value_area(tpo, centers, va_pct):
-    """バリューエリアの下限/上限中心価格を返す。
+    """バリューエリアの下限/上限中心価格を返す（**標準 Market Profile** の連続拡張・ISSUE-271）。
 
-    tpo 降順（同値時は index 昇順で決定論化）にビンを積み、累積が総 tpo×va_pct に
-    達するまでのビン集合の中心価格の最小/最大を (va_low, va_high) として返す。
-    ISSUE-085: 重みは float で累積する。旧 ``int(tpo[i])`` 切り捨ては zp の z 値（大半が 1 未満）を
-    全て 0 に潰し、累積が閾値へ届かず全ビン採用＝VA が全域へ広がっていた。整数 TPO（カウント系）は
-    int/float どちらの累積でも同値＝既存挙動不変（byte-parity 維持）。
+    POC（重み最大のビン。同値は index 昇順で決定論化）を起点に、**隣接する側のうち重みが大きい方**へ
+    1 ビンずつ広げ、累積が総重み×``va_pct`` に達したところで止める。返すのはその連続区間の
+    下端/上端の中心価格。
+
+    なぜ連続拡張か（ISSUE-271）: かつて本関数は「重み降順に**非連続**でビンを積み、採用集合の
+    中心価格の min/max」を返していた。これは飛び地を含む集合の外接範囲であり、標準 MP の VA
+    （POC を核とする連続した価格帯）ではない。同じ ``va_low``/``va_high`` フィールドを
+    ``tf_period_profile._value_area_sparse``（標準 MP）でも算出していたため、**src によって
+    同じフィールドの意味が変わる**状態だった（実測: jp225_tick 1h の占有 5 レベル以上 3,000 列で
+    79.2% が不一致・VA 幅の中央値 200.0 → 160.0）。定義を標準 MP 側へ統一する。
+
+    重みは float で累積する（ISSUE-085）。``int()`` へ切り捨てると zp の z 値（大半が 1 未満）が
+    全て 0 に潰れ、閾値へ届かず VA が全域へ広がる。
     """
-    threshold = float(tpo.sum()) * va_pct
-    order = sorted(range(len(tpo)), key=lambda i: (-tpo[i], i))
-    va_centers = []
-    cum = 0.0
-    for i in order:
-        va_centers.append(float(centers[i]))
-        cum += float(tpo[i])
-        if cum >= threshold:
-            break
-    return min(va_centers), max(va_centers)
+    n = len(tpo)
+    if n == 0:
+        return 0, 0
+    total = float(sum(float(t) for t in tpo))
+    if total <= 0:
+        return float(centers[0]), float(centers[n - 1])
+    # POC: 重み最大（同値は index 昇順＝価格の低い側を採り決定論化）。
+    poc = min(range(n), key=lambda i: (-float(tpo[i]), i))
+    threshold = total * va_pct
+    lo = hi = poc
+    acc = float(tpo[poc])
+    while acc < threshold and (lo > 0 or hi < n - 1):
+        down = float(tpo[lo - 1]) if lo > 0 else float("-inf")
+        up = float(tpo[hi + 1]) if hi < n - 1 else float("-inf")
+        if up >= down:                      # 同値は上側優先（_value_area_sparse と同規約）
+            hi += 1
+            acc += up
+        else:
+            lo -= 1
+            acc += down
+    return float(centers[lo]), float(centers[hi])
 
 
 # POC/VA 単一定義の公開名（ISSUE-091 A7: tools/gen_js_parity_golden 等の外部利用者は公開 API を

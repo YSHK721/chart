@@ -4455,7 +4455,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検証**: 台帳へ種別を 1 行足して `RENDER_ROUTES` を忘れると 2 件 Red（識別力を実証）。実 UI（8000・1 分足）でローソク・線・水平線・破線水準の全経路が描画されることを確認。回帰: indicator_ui web 1,069 / market_profile web 318 / replay_ui web 297 / unified_ui web 43 全通過。
 
 ## ISSUE-271: [不具合・実測] 同じ `va_low`/`va_high` が src によって別アルゴリズムで算出され、実データの 79.2% で食い違う（2026-08-05）
-- **ステータス**: OPEN（**仕様判断が必要**）
+- **ステータス**: RESOLVED（2026-08-05・依頼者裁定「標準 MP へ統一」・fix/va-standard-mp）
 - **重大度**: High（利用者が見る VA の数値が、どの src を選んだかで変わる。フロントは src を区別せず同じフィールドを読む）
 - **事実（コード）**: `/tf_period_profile` の `va_low`/`va_high` は 2 つの別実装で算出される。
   | 経路 | 実装 | 定義 |
@@ -4472,4 +4472,13 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   1. **標準 MP（連続拡張）へ統一** — `_value_area` を `_value_area_sparse` 相当へ置換。VA が「連続した価格帯」になり一般的な MP の定義と一致する。dwell/zp の表示値が変わる（中央値で幅 -40）。
   2. **現行 `_value_area` へ統一** — count 列側を差し替える。既存の主経路の値は不変だが、VA が非連続集合の外接範囲という非標準の定義のままになる。
   3. **フィールドを分ける** — 意味が違うものに同じ名前を付けない（`va_*` と `va_span_*` 等）。フロントの描き分けが要る。
-- **推奨**: 選択肢 1（標準 MP へ統一）。ただし表示値が変わるため、着手前に承認が必要。
+- **裁定（依頼者・2026-08-05）**: 選択肢 1（標準 MP へ統一）。前提として「zp の計算は変わらないこと」を確認済み — VA は `_fine_z` / `_poc_star_from_fine` の**出力を受け取る側**であり、z 値も POC* も入力側で不変。変わるのは `va_low`/`va_high` の 2 フィールドのみ。
+- **是正**:
+  - `market_profile._value_area` を **POC からの連続拡張**（標準 MP）へ置換。POC は重み最大（同値は index 昇順）、拡張は隣接の大きい側へ、同値は上側優先（`_value_area_sparse` と同規約）。float 累積（ISSUE-085）は保持する。
+  - JS ミラー `market_profile_dwell_accumulator.valueArea` を同一規約へ揃える（py_parity_golden で拘束）。
+  - byte-parity golden を再生成（26 ケース中 14 が更新）。
+- **検証**:
+  - byte-parity golden の変化を機械比較し、**変化キーが `va_high` / `va_low` の 2 つだけ**であることを確認（`poc` / `tpo` / `bins` / `price_min|max` は全て不変）。
+  - Python↔JS の parity（`py_parity_golden.json` の value_area 7 ケース）通過。
+  - 回帰: marketdata 236 / indicator_ui api 781 / market_profile api 365 / replay_ui 236 / tools+simulator 915 / indicator_ui web 1,069 / market_profile web 318 / replay_ui web 297 / unified_ui web 43 全通過。
+- **注記（計測手順の誤り）**: 当初の差分計測スクリプトは `mp_parity_world` を二重初期化しており、VA 以外にも差分が出るという誤った結果を出していた。pytest 自身の差分出力で確認し直して VA 限定であることを確定させた。
