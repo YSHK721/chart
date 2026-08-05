@@ -453,7 +453,13 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         #   ISSUE-251: 形成中バーは「周期の累積」で組む必要があり、その材料（確定畳み込み＋
         #   周期内の既適用 tick）は buffer から復元する。buffer を渡さないと増分だけで畳まれ、
         #   poll のたびに open/high/low/volume がリセットされる。
-        tails = handle_live_tick_tails(query, ticks, buffer=buffer)
+        #   ISSUE-257: 末尾値の費用は tick 数 × 申告インスタンス数に比例する。カーソルが古い
+        #   （起動・時間足切替・要求の重なり）と 1 応答が 30 分バッファ全件になり、実測密度
+        #   （30 分あたり p90 2,056 / max 10,886 tick）では 1 要求だけで poll 間隔 2.5 秒を超える。
+        #   超えた瞬間に要求が重なり、重なるほど遅くなる正のフィードバックへ入る。フロントが
+        #   申告する「個別に描く区間（tailsWithinMs）」で計算対象を絞り、費用を tick 密度に
+        #   依らない上限へ固定する。
+        tails = handle_live_tick_tails(query, ticks, buffer=buffer, now_ms=now_ms)
         if tails is not None:
             payload["tails"] = tails
         self._send_json(200, payload)

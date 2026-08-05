@@ -138,9 +138,9 @@ def _states(_port, ticks, *, buffer=None, forming=None, tf="15m"):
 
     orig = usecase.tails_for_ticks
 
-    def _spy(states, specs, tail_at):
+    def _spy(states, specs, tail_at, **kw):
         seen.extend(states)
-        return orig(states, specs, lambda *_a: {"v": 1.0})
+        return orig(states, specs, lambda *_a: {"v": 1.0}, **kw)
 
     ctl.tails_for_ticks = _spy
     try:
@@ -232,3 +232,68 @@ def test_falls_back_to_the_buffer_when_the_rollup_seed_is_a_stale_period(_port):
     assert last.high == 110.0 and last.low == 90.0            # 周期内の max/min
     assert last.volume == len(in_period) + len(batch)         # 周期の tick 数（増分だけなら 2）
     assert len(states) == len(batch)
+
+
+# =========================================================================== #
+# ISSUE-257: 末尾値は「個別に描かれる tick」だけ計算する（費用を tick 密度から切り離す）
+# =========================================================================== #
+
+def test_tails_within_ms_limits_computation_to_the_playback_horizon(_port):
+    """地平（now - tailsWithinMs）より古い tick は末尾値を持たない（計算もしない）。
+
+    費用は tick 数 × spec 数に比例するため、カーソルが古いと 1 応答が 30 分バッファ全件になる。
+    実測密度（30 分あたり p90 2,056・max 10,886 tick）では 1 要求だけで poll 間隔 2.5 秒を
+    超え、要求が重なり始める。地平で絞れば費用は tick 密度に依らない上限に固定される。
+    """
+    _port(_Port(_df(400)))
+    now = _TICKS[-1][0]
+    # 先頭 tick は地平より古く、末尾 tick は新しくなる幅を選ぶ。
+    within = (_TICKS[-1][0] - _TICKS[0][0]) // 2
+    out = ctl.handle_live_tick_tails(
+        _q(tailsWithinMs=str(within)), _TICKS, now_ms=now)
+    assert out is not None and len(out) == len(_TICKS)     # 契約（ticks と同数・同順）は不変
+    assert out[0]["tails"] == {}                            # 地平より古い＝計算しない
+    assert out[-1]["tails"] != {}                           # 地平より新しい＝従来どおり計算する
+
+
+def test_tails_computed_for_every_tick_without_declaration(_port):
+    """未申告（旧フロント）は全 tick で計算＝従来挙動（後方互換）。"""
+    _port(_Port(_df(400)))
+    out = ctl.handle_live_tick_tails(_q(), _TICKS, now_ms=_TICKS[-1][0])
+    assert out is not None
+    assert all(e["tails"] != {} for e in out)
+
+
+def test_tails_within_ms_is_ignored_without_server_clock(_port):
+    """``now_ms`` 未注入では地平を決められない＝絞らない（勝手に間引かない）。"""
+    _port(_Port(_df(400)))
+    out = ctl.handle_live_tick_tails(_q(tailsWithinMs="1"), _TICKS)
+    assert out is not None
+    assert all(e["tails"] != {} for e in out)
+
+
+@pytest.mark.parametrize("bad", ["0", "-5", "abc", ""])
+def test_malformed_tails_within_ms_falls_back_to_computing_all(bad, _port):
+    """不正な申告は無視して従来挙動へ（黙って間引かない）。"""
+    _port(_Port(_df(400)))
+    out = ctl.handle_live_tick_tails(
+        _q(tailsWithinMs=bad), _TICKS, now_ms=_TICKS[-1][0])
+    assert out is not None
+    assert all(e["tails"] != {} for e in out)
+
+
+def test_forming_bar_accumulation_still_covers_every_tick(_port):
+    """地平で絞るのは末尾値だけ。形成中バーの累積（volume）は 1 本も飛ばさない。"""
+    seen = []
+
+    def _tail_at(spec, state):
+        seen.append(state)
+        return {"v": 1.0}
+
+    from usecase.serve_live_tick_tails import TailSpec, states_for_batch, tails_for_ticks
+    states = states_for_batch([], _TICKS, lambda ms: 0)
+    spec = TailSpec("i1", "profit_rsi", "default", {})
+    out = tails_for_ticks(states, [spec], _tail_at, wanted=lambda st: st.tick_ms == _TICKS[-1][0])
+    assert [e["tickMs"] for e in out] == [t[0] for t in _TICKS]   # 全 tick が応答に残る
+    assert len(seen) == 1                                          # 計算は 1 本だけ
+    assert states[-1].volume == len(_TICKS)                        # 累積は全 tick ぶん

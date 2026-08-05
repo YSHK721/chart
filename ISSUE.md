@@ -4285,3 +4285,76 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **重大度**: 中
 - **実測**: `simulator/replay_ui/web/js/replay.js` は 847 行で、トップレベルの関数定義は `setupReplay` ただ 1 つ。合成・再生駆動・足内アニメーション・MP 連動・時間足反映が同一スコープに同居する。
 - **抜本的対策**: 関心事ごとに協働子へ切り出す（合成根は配線のみ残す）。リプレイ側は既に `replay/` 配下へ純ロジック（`forming_plan` / `stream` / `timing` / `calendar` / `state`）を分離済みで、残っているのは駆動と配線の塊。
+
+## ISSUE-257: [不具合・実測再現] `/live_ticks` の同時要求が無制限に積み上がり、稼働時間とともに全応答（静的 JS 含む）が遅くなる（2026-08-04）
+- **ステータス**: RESOLVED（2026-08-04・fix/live-ticks-unbounded-tails）
+- **重大度**: Critical（稼働を続けるほど劣化し、最終的にチャートが起動しない）
+- **事象（ユーザー報告）**: 「チャートが起動しない」→ 再確認で「表示はされるが遅すぎる」。ISSUE-202 で確保した起動 1 秒以内が失われている。
+- **実測（実 UI 8000・PID 94845 ＝ ライブ core 8001）**:
+  - 初回ロードの JS 取得スパン **73ms → 12,802ms**（146 本）。静的 JS 1 本の TTFB **297〜772ms**（8001 直叩き・ルータ経由も同等＝ルータは無罪）。悪化時は DOMContentLoaded が 60 秒でも未到達。
+  - プロセス状態: **スレッド 1,392 本**（`Thread-22885` ＝起動以来 22,885 本生成）、ソケット 310・うち **CLOSE_WAIT 275**（クライアントは既に切断済みなのにサーバは計算を続けている）。CPU 160%・RSS 3.1GB。
+  - py-spy dump: リクエストスレッド 1,357 本中 **1,165 本が `incremental_state._LOCK` 待ち**（`_cache_get` 787 / `_cache_put` 378）。スタックは全て
+    `_handle_live_ticks` → `handle_live_tick_tails` → `tails_for_ticks` → `tail_at` → `latest_compute` → `incremental_state.compute`。
+- **真因（2 つの欠陥の積・どちらも「上限が無い」こと）**:
+  1. **サーバ**: ISSUE-250 Phase 1 で `/live_ticks` に「tick × 適用インスタンスぶんの指標末尾値」を同梱した際、その計算を **接続スレッド上で直接実行**した。ISSUE-155 が `/compute` について確立した不変条件「重い計算は接続スレッドで走らせない（専用ワーカー／プールへ送致する）」を、この経路だけが迂回している。よって同時要求数がそのまま同時計算数になり、`ThreadingHTTPServer` は 1 接続 1 スレッドを無制限に作る。
+  2. **クライアント**: `live_tick_player.js:104` の poll が `setInterval(2500)` であり、**前回の応答完了を待たない**（in-flight ガード無し）。
+- **暴走の機構（正のフィードバック）**: 応答が 2.5 秒を超えた瞬間、次の poll が重なる → 同時計算が増える → GIL と `_LOCK` の競合で全応答がさらに遅くなる → 重なりがさらに増える。**収束点が無く、自力復旧しない**。切断されたクライアントぶんの計算も打ち切られないため、負荷はクライアントより長生きする。
+- **影響が静的配信にまで及ぶ理由**: 静的 JS も同一プロセス（8001）が返すため、GIL 競合の待ち行列に並ぶ。UI は起動ごとに **146 本の ES モジュールを `Cache-Control: no-store` で再取得**する（server.py:233）ため、1 本あたりの遅延が 146 倍に増幅されて起動時間になる。
+- **却下した対策（応急処置・依頼者指摘で撤回）**: 「末尾値の計算を有界ワーカーへ送致する」。計算量を一切減らさず**症状の出る条件（同時実行数）を避ける**だけで、待ち行列がスレッドからキューへ移るのみ。要求が処理能力を超える状態は残る。
+- **抜本的対策（採用・費用の上限を構造で決める）**:
+  1. **サーバ: 末尾値は「個別に描かれる tick」だけ計算する**。フロントの `_playback` は `serverNow - delayMs` 以前の tick を**1 同期ループで一気に適用**するため、その区間の末尾値は最後の 1 点しか画面に出ない。すなわち backlog ぶんの計算は**結果が捨てられる仕事**だった。フロントが申告する区間（`tailsWithinMs`）より新しい tick だけ計算する（`usecase/serve_live_tick_tails.tails_for_ticks` に述語 `wanted` を追加し、方針は殻 `live_tick_tails_controller` が束縛）。これで費用が**バッファ滞留量・稼働時間・カーソルの古さから切り離される**。形成中バーの累積（open/high/low/volume）は従来どおり全 tick で畳む（1 本も飛ばさない）。
+  2. **クライアント: 同時要求数を構成上 1 に固定**。`_poll` に in-flight ガードを入れ、未完了がある間は要求を出さない（`live_tick_player.js`）。カーソルは応答時にのみ前進するため取りこぼしは生じない。
+  3. 区間長の定義は**フロント 1 箇所**（`delayMs + pollMs = 14,500ms`）。サーバは値を写さず、申告された長さを自分の時計から差し引くだけ（ISSUE-254 と同じ「値の二重定義を作らない」方針）。未申告（旧フロント）は全 tick 計算＝後方互換。
+- **検証（実測）**:
+  - サーバ費用（8001 直・`since=0`・210 tick）: 5 インスタンスで **450.8ms → 16.7ms**、3 で 283.0 → 14.5、1 で 105.8 → 15.4。応答契約（tails 項数 == ticks 数）は不変。
+  - 実 UI（8000・ライブ・ma_marod 適用）: 起動時の JS 146 本が **12,802ms → 1,232ms**、DOMContentLoaded 78ms。実応答（request #199）で地平内の 8 tick **全てに末尾値**が付き、値も tick ごとに変化（56.28991→56.28311→56.28980→56.29446…）＝ISSUE-250 の「1 tick = 1 指標更新」は維持。
+  - プロセス滞留: 実 UI を 20 分以上稼働させて **14 スレッド / ソケット 1（LISTEN のみ）/ CPU 0%**（修正前 1,392 スレッド・CLOSE_WAIT 275・CPU 160%）。
+  - 回帰: indicator_ui api 773 / indicator_ui web 1064 / market_profile web 313 / unified_ui web 43 / marketdata 223 / replay_ui 236 全通過。新規テストの識別力を実証（旧コードでクライアント 3 件・サーバ 7 件が Red）。
+- **未対応（別 Issue 候補）**: 静的配信の `no-store`（146 本 × 毎起動再取得）は本件の増幅器であり、真因ではない。1 本あたりの応答が健全なら 1.2 秒で収まるため今回は変更しない。開発時の反映確実性と起動時間のトレードオフとして別途判断する。
+
+## ISSUE-258: [不具合・実行で証明] ロールアップ CSV の全件 rewrite 経路が `up`/`dn` 列を恒久的に落とす（ISSUE-252 の取りこぼし）（2026-08-05）
+- **ステータス**: OPEN
+- **重大度**: Critical（データの不可逆欠損。自己修復しない）
+- **事実（実行して証明）**: `marketdata/rollup.py:228` の `_write_rollup_df` は `df[["open","high","low","close","volume"]]` と列を直書きする。8 列（up/dn 付き）の DataFrame を渡して実行した結果、出力ヘッダは `date,open,high,low,close,volume` となり **up/dn が消えた**（`csv_schema.header_for` の期待は 8 列）。
+- **真因**: ISSUE-252（bd4cf66）は集約側 `_merge_agg` を「実在する列から導出」へ是正し、その直前に再発防止コメント（「列名をここに直書きしない。直書きは csv_schema へ列（up/dn）が増えたときに本経路だけ列を落とし…CSV を恒久破壊する（実際に jp225_tick_1M.csv がこれで壊れた）」）まで書いた。しかし**その 3 行後の書き出し `_write_rollup_df` に同じ直書きが残っている**。同一ファイル内の他 2 経路（`_bar_to_csv_row` / `_merge_agg`）は `csv_schema` から導出しており、この 1 経路だけが取り残された。
+- **到達経路**: 全件 rewrite（probe 不足＝1M 等・ファイル不在・空）。`tools/live_tick_watch.py:143` が毎分 `incremental_update` を呼び、対象 TF に 1M を含む。
+- **自己修復しない**: 6 列で書かれると次回は `_header_of(path) != _header_for_bars(suffix)` でヘッダ不一致となり、再び全件 rewrite ＝再び 6 列。
+- **検定の穴**: `test_rollup_schema_guard.py` は `_merge_agg`/`_header_of` のみを通し `_write_rollup_df` を通らない。`test_resample_rollup_s1.py:64` の fixture は 6 列で up/dn を持たないため原理的に検出できない。
+- **現状**: `jp225_tick_1M.csv` は 8 列（未発現）。**発現時期は未検証**（probe 20,000 行 ≒ 15 セッション ≒ 3 週間のため月後半に落ちる可能性という推論）。
+- **消費側の挙動**: `indigators/tickvol_updown` は up/dn 必須で、欠落時は値を捏造せず KeyError で落ちる（意図的設計）。
+- **抜本的対策**: `_write_rollup_df` の列射影を `csv_schema` からの導出へ置換し、ロールアップ CSV の列決定を `csv_schema` 1 点に閉じる。回帰 fixture に up/dn を持たせ、**全件 rewrite 経路を通して**入出力ヘッダ一致を固定する（現 fixture では識別力がない）。
+
+## ISSUE-259: [設計違反] Market Profile の 3 経路が単一ワーカースレッド内で HTTP 応答を書く（2026-08-05）
+- **ステータス**: OPEN
+- **重大度**: High（遅いクライアント 1 本で MP 全経路が直列停止する）
+- **事実**: `indigators/indicator_ui/api/framework/server.py:285-291` が `_MP_WORKER.run(lambda: self._handle_market_profile(...))` の形で 3 経路（`/market_profile` / `/market_profile_forming` / `/tf_period_profile`）を呼び、各 `_handle_*` の終端は `self._send_json(...)`＝**ソケット書き込みがワーカースレッド内で起きる**。`_MP_WORKER` は単一スレッド（`_ComputeWorker`）。
+- **破れている不変条件**: 同ファイル 259-264 行が `/compute` について「応答書き出しはリクエストスレッド側」と明記し、実際 `/compute` は計算のみをワーカーへ渡す。MP 3 経路だけがこの設計から外れている。
+- **なぜ問題か**: 計算の直列化（MP 内部状態の保護）という目的に、I/O という無関係な責務が混入している。ISSUE-257 と同型（単一の実行資源に、クライアント都合で長引く仕事を持ち込む）。
+- **抜本的対策**: ワーカーへ渡す `fn` を「`(status, payload)` を返す純計算」に固定し、`_send_json` を呼び出し元スレッドで行う（`/compute` と同型）。ワーカーに渡す関数が `self` を捕獲できない構造（handler メソッドではなく module 関数）にすれば再発が構文的に不可能になる。
+
+## ISSUE-260: [不具合] `va`（バリューエリア）設定が tf-period 列・増分成長の各経路に届かず 0.70 固定（2026-08-05）
+- **ステータス**: OPEN
+- **重大度**: Medium（利用者が操作できるのに効かないツマミ＝表示と設定の不一致）
+- **事実**: UI は `va` を常時操作可能なパラメータとして出す（`market_profile/web/js/usecase/catalog_entry.js:125`「バリューエリア」）が、
+  - tf-period 列経路: `controller/tf_period_profile_controller.py` に `va` 引数が無く、`compute/tf_period_columns.py:165/225/281` が `0.70` を直書き。クライアント `tf_period_profile_client.js` も URL に `va` を載せない。
+  - 増分成長経路: 応答が `va_low/va_high` を返さず、JS 側 `domain/market_profile_dwell_accumulator.js:22` の `VA_PCT = 0.70` で再計算。
+  - `/market_profile` の非増分 refresh 経路のみ設定を反映する。
+- **なぜ問題か**: 「VA 比率」という 1 つの業務パラメータの決定権が UI・controller・compute literal・JS domain literal の 4 箇所に分散している。かつ本モジュール自身の方針（効かないツマミを見せない＝`dispbp` は `conditionalVisible` で隠す）に反する。
+- **抜本的対策**: `va_pct` を全プロファイル生成経路の必須引数へ昇格させ（`handle_tf_period_profile(..., va)` → `tf_period_columns` へ透過、`DwellAccumulator` へ注入）、literal `0.70` を全削除して既定値を catalog 1 箇所に置く。
+
+## ISSUE-261: [設計是正] 時間足台帳の第 2 定義が ISSUE-254 の射程外に残存している（2026-08-05）
+- **ステータス**: OPEN
+- **重大度**: High（ISSUE-253 の事故と同型。1 箇所は既に値が乖離している）
+- **背景**: ISSUE-254 で台帳を Python 単一定義とし JS へ生成物（`tf_ledger_generated.js`）として配る方式へ是正した。台帳**そのもの**の仕組みは正しく機能している（双方向 parity 検定あり）。問題は**その外側**に手書きの写しが残っていること。
+- **実測（同期手段が無いもの）**:
+  | 箇所 | 内容 |
+  |---|---|
+  | `indicator_ui/web/js/usecase/period_presets.js:93-96` | `TF_SEC` 9 件（`TF_BAR_SEC` と完全同値の写し）※私が実測確認 |
+  | `replay_ui/web/js/replay/stream.js:15` | `TF_SECS` 9 件 |
+  | `simulator/usecase/contact_scan/bar_window.py:13-16` | コメントで「replay.js TF_SECS と同値」と自認 |
+  | `replay_ui/web/js/adapter/front/composition_root_front.js:179, 233-240` | 有効時間足 8 足の直書き（**30m 欠落＝既に乖離**） |
+  | `market_profile/api/.../tf_period_profile_controller.py:56, 60` | `_TF_SECONDS` / `_BUCKET_TFS` の手書き複製 |
+  | `market_profile/web/js/domain/mp_source_capability.js:26` ＋ `controller/tf_period_profile_controller.py:76` | ZP 対応 tf 集合が Python/JS 両側に手書き |
+  | `marketdata/tf_meta.py:41-44` | `TF_BAR_SEC` が `TF_DESCRIPTORS` から導出されず手書き（検定はキー集合のみで値は非検定） |
+- **既に起きている乖離**: replay 合成根の有効時間足は 8 足（30m 欠落）だが、`marketdata/resample.py:55` に `"30m"` は存在し `jp225_tick_30m.csv` も実在。付随コメント「サーバ TIMEFRAME_RULES と一致・30m 非対応」は現状と一致しない。統合 UI 経由（ライブ合成根＝台帳導出 9 足）と standalone replay（8 足）で同じ「リプレイ」の対応足が異なる。
+- **抜本的対策**: 各写しを台帳からの導出へ置換する。`TF_BAR_SEC` は `TfDescriptor` に `bar_sec` を追加して導出値化する。replay 固有の除外足が本当に必要なら「除外理由つきの差集合」を 1 箇所で宣言し、そこから導出する。

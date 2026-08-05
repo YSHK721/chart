@@ -73,6 +73,26 @@ def _bar_seed(ref: str, tf: str, first_ms: int, bar_time: int, *, buffer: Any, f
     return seed, prior
 
 
+def _tails_horizon_ms(query: "dict[str, list[str]]", now_ms: "int | None") -> "int | None":
+    """末尾値を計算する下限時刻（これ **より新しい** tick だけ計算）を返す。無指定は ``None``。
+
+    フロントは ``tailsWithinMs`` として「個別に描く区間の長さ」を申告する（ISSUE-257）。
+    区間の実体は再生遅延（``LiveTickPlayer.DELAY_MS``）＋ poll 間隔であり、**その定義を持つのは
+    フロントただ 1 つ**。サーバは値を写さず、申告された長さを自分の時計（``now_ms``＝応答の
+    ``serverNowMs`` と同一値）から差し引くだけにする。こうすると定義は 1 箇所に留まり、
+    時計の権威はサーバのまま（ISSUE-254 と同じ「値の二重定義を作らない」方針）。
+
+    未申告（旧フロント）は ``None``＝全 tick で計算＝従来挙動（後方互換）。
+    """
+    raw = (query.get("tailsWithinMs") or [None])[0]
+    if now_ms is None or raw is None or not str(raw).isdigit():
+        return None
+    within = int(raw)
+    if within <= 0:
+        return None
+    return int(now_ms) - within
+
+
 def _set_last_bar(window: Any, values: "dict[str, float]") -> None:
     """窓の末尾行だけを形成中バーで上書きする（pandas 依存はここに閉じる）。"""
     last = len(window) - 1
@@ -88,8 +108,13 @@ def handle_live_tick_tails(
     adapter: Any = None,
     buffer: Any = None,
     forming: Any = None,
+    now_ms: "int | None" = None,
 ) -> "list[dict] | None":
-    """``/live_ticks`` へ同梱する ``tails`` を組む。組めないときは ``None``。"""
+    """``/live_ticks`` へ同梱する ``tails`` を組む。組めないときは ``None``。
+
+    ``now_ms`` は応答の ``serverNowMs``。``tailsWithinMs`` の申告と併せて「個別に描かれる
+    tick だけ計算する」下限を決める（ISSUE-257）。未注入・未申告は全 tick 計算＝従来挙動。
+    """
     raw = (query.get("specs") or [None])[0]
     ref = (query.get("datasetRef") or [None])[0]
     tf = (query.get("timeframe") or [None])[0]
@@ -133,4 +158,8 @@ def handle_live_tick_tails(
         df=df, adapter=adapter or IndicatorComputeAdapter(),
         latest_compute=latest_compute, set_last_bar=_set_last_bar,
     )
-    return tails_for_ticks(states, specs, tail_at)
+    # 形成中バーの累積（states）は全 tick で畳む（open/high/low/volume は 1 本も飛ばせない）。
+    #   費用が tick 数に比例するのは末尾値の計算だけなので、そちらだけを地平で絞る。
+    horizon = _tails_horizon_ms(query, now_ms)
+    wanted = None if horizon is None else (lambda st: int(st.tick_ms) > horizon)
+    return tails_for_ticks(states, specs, tail_at, wanted=wanted)
