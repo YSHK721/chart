@@ -59,28 +59,23 @@ curl -s "$BASE/compute" -H 'Content-Type: application/json' \
 curl -s "$BASE/candles?datasetRef=sample" | head -c 200
 ```
 
-## A方式（単一 HTML・file:// 単体）— params は variant のみ反映
+## A方式（単一 HTML・file://）— **廃止**（2026-08-05・ISSUE-266）
 
-新規依存・サーバなしで動かす自己完結 HTML。埋め込み事前計算データ（SAMPLE_DATA）を使う
-プロトタイプで、`variant` 以外のパラメータ変更は描画へ反映されない（ダイアログ内に注記を表示）。
+`node build.mjs` で全 ES Modules を 1 つの IIFE スコープへ連結し、サーバ無しで開ける
+自己完結 HTML（`out/prototype.html`）を生成する方式があったが、**廃止した**。
 
-```bash
-cd /workspaces/app/indigators/indicator_ui/web
-node build.mjs   # → ../out/prototype.html を生成
-# ブラウザで out/prototype.html を開く（file://）
-```
+廃止の理由:
 
-## A方式と B方式の違い
+- **実際に使われていなかった**。現行ソースからの再ビルドが構文エラー
+  （`Identifier 'facadeToggleVisible' has already been declared`）で起動不能な状態のまま
+  誰も気付いていなかった（ISSUE-265）。追跡下の生成物は 2026-08-02 のもので陳腐化していた。
+- **実運用コードの設計を歪めていた**。import を剥がして 1 スコープへ連結するため
+  (a) 全モジュールのトップレベル名が衝突しうる (b) 新規モジュールは `MODULE_ORDER` への
+  手動登録が要る、という制約が付き、その制約を理由に実運用側へ**規則の複製**が生まれていた
+  （例: `market_profile_actor._sessionFrom` が `GrowthWindow` の規則を複製）。
 
-| | A方式（file://・単一HTML） | B方式（served・http://） |
-|---|---|---|
-| 計算 | 埋め込み事前計算（EmbeddedComputeGateway） | ライブ API（ComputeHttpClient → `/compute`） |
-| params 反映 | variant のみ | 全パラメータを実再計算・実反映 |
-| ローソク | SAMPLE_DATA | `GET /candles`（full CSV と時間軸一致） |
-| A方式注記 | 表示 | 非表示 |
-| 起動 | `node build.mjs` → file:// | venv python で `framework/server.py` → http:// |
-
-判定はフロントの `location.protocol`（http/https → B方式、file: → A方式）で自動切替する。
+以後の起動は B方式（served・http://）に一本化する。復元が必要になった場合は
+`git log -- indigators/indicator_ui/web/build.mjs` から取得できる。
 
 ## 市場データ取得（JP225 1 分足の自動更新）
 
