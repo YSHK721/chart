@@ -4417,3 +4417,12 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **抜本的対策**: A方式の廃止（ISSUE-266）で制約が消えたため、複製をやめて `GrowthWindow` へ委譲する。未使用になった `TF_BAR_SEC` / `sessionDayStart` の import も撤去。
 - **検定の置換**: 「複製と唯一源の一致」を見る parity 検定を、「委譲していること」＋「式が actor へ書き戻されていないこと」を見る構造検定へ差し替えた（複製が無い以上、一致を見る検定は成立しない）。
 - **検証**: 式を actor へ書き戻すと新規検定が Red（識別力を実証）。回帰: Python 2,533 / indicator_ui web 1,075 / market_profile web 318 / replay_ui web 301 / unified_ui web 43 全通過。
+
+## ISSUE-268: [不具合・自己申告] symlink 未作成で実 UI が起動不能になった（node テストは全通過）（2026-08-05）
+- **ステータス**: RESOLVED（2026-08-05・refactor/drop-a-mode-runtime）
+- **重大度**: Critical（チャートが一切表示されない）
+- **事象**: ISSUE-267（MP actor の GrowthWindow 委譲）で `market_profile_actor.js` へ `import '../../domain/growth_window.js'` を追加したが、`indicator_ui/web/js/domain/` に symlink を作らなかった。実 UI は `/live/js/domain/growth_window.js` が 404 となり、合成根の動的 import が失敗してチャートが一切描画されない状態になった（canvas 0・実測）。
+- **なぜテストが通ったか（本質）**: 共有モジュールは symlink で複数スライスへ配られる。**node は import を実ファイルの位置から解決する**ため、symlink 実体側（market_profile/web/js/domain/）に依存先があればテストは通る。一方**ブラウザは URL で解決する**ため、配信ルート（indicator_ui/web/js/）に同名 symlink が無いと 404 になる。この差により node テスト 1,071 件が全通過したまま実 UI だけが壊れた。既存の `symlink_health.test.js` は「存在する symlink が解決するか」しか見ず、「必要な symlink が在るか」を見ていなかった。
+- **抜本的対策**: `tests/served_import_resolution.test.js` を新設し、**配信ルートを起点に**全 JS の相対 import を辿って同ルート配下にファイルが実在するかを検定する（配信ルート外を指す import も落とす）。symlink 未作成はこれで Red になる。
+- **検証**: symlink を外すと当該検定が Red（識別力を実証）。実 UI 復旧を確認（JS 149 本・1,287ms・canvas 11/11・時間足 9 足・エラー 0）。
+- **教訓**: 共有 symlink 構成では「node で通る」は「ブラウザで動く」を意味しない。import を追加したら配信ルートごとの解決を検定で確かめる。
