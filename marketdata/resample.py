@@ -30,6 +30,8 @@ class TfDescriptor(NamedTuple):
     - ``rule``: pandas resample ルール（``"5min"/"W-FRI"/"ME"`` …・``"1m"`` は None＝無変換）。
     - ``floorable``: 単純 floor で期間始端を表せるか（日中足・1D=True / 1W・1M=False）。
     - ``calendar``: セッション日（ブローカー暦日）で集計する上位 tf か（1D/1W/1M=True）。
+    - ``bar_sec``: バー秒長の**名目値**（1W=7日・1M=30日）。窓幅・表示計算用であり、厳密な期間
+      境界は resample/session_day のラベル規約が担う（本値を境界計算に使わない）。
 
     従来 :data:`TIMEFRAME_RULES`（rule のみ）・:data:`SESSION_TFS`・``tf_meta.NON_FLOORABLE_TF``・
     ``period_label_naive`` の tf 判定が各所で個別に列挙していた派生属性を本台帳へ集約し、membership
@@ -39,6 +41,7 @@ class TfDescriptor(NamedTuple):
     rule: str | None
     floorable: bool
     calendar: bool
+    bar_sec: int
 
 
 # 時間足コード → 派生属性台帳（§チャート表示時間選択・1 分足原子）。**唯一の規則源**。
@@ -49,15 +52,15 @@ class TfDescriptor(NamedTuple):
 # （フロントが dataset 別に提示足を制限する）。挿入順は順序依存の消費者（build_tick_rollup 等）が
 # あるため保存する。
 TF_DESCRIPTORS: "dict[str, TfDescriptor]" = {
-    "1m": TfDescriptor(None, True, False),
-    "5m": TfDescriptor("5min", True, False),
-    "15m": TfDescriptor("15min", True, False),
-    "30m": TfDescriptor("30min", True, False),
-    "1h": TfDescriptor("1h", True, False),
-    "4h": TfDescriptor("4h", True, False),
-    "1D": TfDescriptor("1D", True, True),
-    "1W": TfDescriptor("W-FRI", False, True),
-    "1M": TfDescriptor("ME", False, True),
+    "1m": TfDescriptor(None, True, False, 60),
+    "5m": TfDescriptor("5min", True, False, 300),
+    "15m": TfDescriptor("15min", True, False, 900),
+    "30m": TfDescriptor("30min", True, False, 1800),
+    "1h": TfDescriptor("1h", True, False, 3600),
+    "4h": TfDescriptor("4h", True, False, 14400),
+    "1D": TfDescriptor("1D", True, True, 86400),
+    "1W": TfDescriptor("W-FRI", False, True, 604800),
+    "1M": TfDescriptor("ME", False, True, 2592000),
 }
 
 # 時間足コード → pandas resample ルール（台帳からの互換ビュー・dict[str, str|None]）。

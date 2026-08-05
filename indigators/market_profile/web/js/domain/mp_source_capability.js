@@ -23,7 +23,12 @@
 //   showLabels        : POC*/VAH/VAL の価格ラベルを描くか
 //   tfPeriodSrc       : tf-period 列取得時に付与する src。null = 既定（min-unit カウント）
 
+// zp 対応 tf は Python 側（tf_period_profile_controller._ZP_TF_ALLOWED）が唯一源で、ここは写し。
+//   台帳のように生成物化できない「能力宣言」だが、写しが乖離するとサーバは 400 を返すのに
+//   フロントは選択可能なまま＝**無言の機能不全**になる。py_parity_golden の zp_supported_tfs と
+//   一致することを検定で拘束する（ISSUE-261）。値を変えるときは Python 側を先に変える。
 const _ZP_SUPPORTED_TFS = new Set(['15m', '30m', '1h', '4h', '1D', '1W', '1M']);
+// 日別（sessions）で選択不可の tf＝player tf のうち zp 非対応のもの（supportedTfs の補集合）。
 const _ZP_BLOCKED_SESSION_TFS = new Set(['1m', '5m']);
 const _EMPTY_TFS = new Set();
 

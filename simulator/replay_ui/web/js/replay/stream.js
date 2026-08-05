@@ -6,15 +6,17 @@
 
 import { ANIM_FINE, ANIM_COARSE } from './timing.js';
 import { sessionDayStart, nextSessionDayStart } from '../domain/session_day.js';
+import { TF_BAR_SEC } from '../domain/tf_meta.js';
 
 export { ANIM_FINE, ANIM_COARSE };
 
 const DAY = 86400;
 
-// 足内窓近似用の時間足→秒（replay.js: TF_SECS / durationSecs）。
-const TF_SECS = { '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1D': 86400, '1W': 604800, '1M': 2592000 };
+// 足内窓近似用の時間足→秒は台帳（Python 生成物 tf_ledger_generated.js → tf_meta.js）から採る。
+//   かつてここに同値の手書き dict（TF_SECS）を置いていたが、それは台帳の第 2 定義であり、
+//   台帳へ時間足を足しても追随せず検定も落ちなかった（ISSUE-261。ISSUE-253 と同型の事故源）。
 export function durationSecs(tf) {
-  return TF_SECS[tf] || 86400;
+  return TF_BAR_SEC[tf] || 86400;
 }
 
 // 最大 n 点へ間引く。高値/安値(極値)と先頭/末尾は必ず保持する（極値ティックを捨てると

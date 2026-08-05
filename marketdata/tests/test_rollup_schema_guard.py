@@ -39,3 +39,48 @@ def test_header_of_reads_the_first_line(tmp_path):
     _write(path, ["date", "open", "high", "low", "close", "volume", "up", "dn"], [])
     assert rollup._header_of(path) == ["date", "open", "high", "low", "close", "volume", "up", "dn"]
     assert rollup._header_of(tmp_path / "missing.csv") is None
+
+# =========================================================================== #
+# ISSUE-258: 全件 rewrite 経路（_write_rollup_df）も列を落とさない
+# =========================================================================== #
+
+def _updown_frame() -> pd.DataFrame:
+    idx = pd.to_datetime(["2026-07-01 00:00:00", "2026-08-01 00:00:00"])
+    return pd.DataFrame(
+        {"open": [1.0, 2.0], "high": [3.0, 4.0], "low": [0.0, 1.0],
+         "close": [2.0, 3.0], "volume": [10.0, 20.0], "up": [6.0, 11.0], "dn": [4.0, 9.0]},
+        index=idx,
+    )
+
+
+def test_full_rewrite_keeps_the_updown_columns(tmp_path):
+    """全件 rewrite（probe 不足＝1M 等・ファイル不在・空）でも up/dn を落とさない。
+
+    ISSUE-252 は集約側（``_merge_agg``）だけを導出化し、その直後の書き出し
+    （``_write_rollup_df``）に列の直書きが残っていた。全件 rewrite は毎分の watch から
+    1M で到達するため、一度落ちるとヘッダ不一致で次回も全件 rewrite へ落ちて自己修復しない。
+    """
+    df = _updown_frame()
+    rollup._write_rollup_df(tmp_path, "1M", df, ref_prefix="jp225_tick")
+    path = tmp_path / "jp225_tick_1M.csv"
+    assert rollup._header_of(path) == ["date", "open", "high", "low", "close", "volume", "up", "dn"]
+
+
+def test_full_rewrite_output_header_matches_the_append_path(tmp_path):
+    """全件 rewrite のヘッダが速い経路（追記）の期待ヘッダと一致する。
+
+    一致しないと、次回の増分更新が「列構成が変わった」と判定して再び全件 rewrite へ落ちる
+    （＝速い経路へ戻れない）。両経路のヘッダ決定が同じ規約から導出されることを固定する。
+    """
+    df = _updown_frame()
+    rollup._write_rollup_df(tmp_path, "1M", df, ref_prefix="jp225_tick")
+    bars = {ts: {c: float(row[c]) for c in df.columns} for ts, row in df.iterrows()}
+    assert rollup._header_of(tmp_path / "jp225_tick_1M.csv") == rollup._header_for_bars(bars)
+
+
+def test_full_rewrite_keeps_the_legacy_shape_without_updown(tmp_path):
+    """up/dn を持たない素材（jp225_m1 等）では従来どおり 6 列（既存 CSV の書式不変）。"""
+    df = _updown_frame().drop(columns=["up", "dn"])
+    rollup._write_rollup_df(tmp_path, "1D", df, ref_prefix="jp225")
+    assert rollup._header_of(tmp_path / "jp225_1D.csv") == \
+        ["date", "open", "high", "low", "close", "volume"]

@@ -79,21 +79,34 @@ def value_area_cases() -> list[dict]:
 
 
 def tf_ledger() -> "list[dict]":
-    """時間足台帳（唯一の定義＝marketdata.resample.TF_DESCRIPTORS + tf_meta.TF_BAR_SEC）。
+    """時間足台帳（唯一の定義＝marketdata.resample.TF_DESCRIPTORS）。
 
     JS へ配るのは**派生属性まで含めた全体**にする。値（barSec）だけを同期して派生属性
     （floorable / calendar）を JS 側で書き直していたため、``floorable`` の写しがずれて
     ライブの更新粒度が時間足で割れた（ISSUE-253）。判断に使う属性を残らず配る。
+
+    barSec も台帳 ``TfDescriptor.bar_sec`` から採る（ISSUE-261）。かつては別 dict
+    （``tf_meta.TF_BAR_SEC`` の手書き）を引いており、生成器が 2 つの表を突き合わせていた。
     """
     return [
         {
             "code": code,
-            "barSec": int(tf_meta.TF_BAR_SEC[code]),
+            "barSec": int(d.bar_sec),
             "floorable": bool(d.floorable),
             "calendar": bool(d.calendar),
         }
         for code, d in resample.TF_DESCRIPTORS.items()
     ]
+
+
+def _zp_supported_tfs() -> "tuple[str, ...]":
+    """src=zp が対応する時間足（Python 側の唯一源から採る）。
+
+    定義は配信 controller（``_ZP_TF_ALLOWED``）が持つ。ここで値を書き写さない。
+    """
+    from market_profile_api.controller.tf_period_profile_controller import _ZP_TF_ALLOWED
+
+    return tuple(_ZP_TF_ALLOWED)
 
 
 def render_tf_ledger_js(rows: "list[dict]") -> str:
@@ -140,6 +153,11 @@ def main() -> None:
         "session_day": sessions,
         "tf_bar_sec": dict(tf_meta.TF_BAR_SEC),
         "tf_ledger": tf_ledger(),
+        # src=zp の対応 tf（ISSUE-261）。台帳から導出できない「能力宣言」（周期内分数が少なすぎる
+        #   1m/5m は z が退化するため除外）であり、Python と JS の両方に手書きで存在していた。
+        #   同期手段が無く、ずれるとサーバは 400 を返すのにフロントは選択可能なまま＝無言の機能不全に
+        #   なる。値は Python 側を唯一源とし、JS 側の写しが乖離したら parity 検定で落とす。
+        "zp_supported_tfs": list(_zp_supported_tfs()),
         "value_area": value_area_cases(),
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)

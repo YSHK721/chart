@@ -70,3 +70,50 @@ def test_ledger_truth_table():
         c: (d.rule, d.floorable, d.calendar) for c, d in TF_DESCRIPTORS.items()
     }
     assert got == expected
+
+
+# =========================================================================== #
+# ISSUE-261: バー秒長も台帳からの導出値である（手書き dict の第 2 定義を作らない）
+# =========================================================================== #
+
+def test_tf_bar_sec_is_derived_from_the_ledger():
+    """``tf_meta.TF_BAR_SEC`` は台帳 ``TfDescriptor.bar_sec`` の写しではなく導出値である。
+
+    かつては手書き dict で、検定も `set(TF_BAR_SEC) == set(TIMEFRAME_RULES)`（キー集合のみ）
+    だったため**値のずれを検出できなかった**。台帳へ 1 行足せば自動で追随することを固定する。
+    """
+    from marketdata import tf_meta
+    from marketdata.resample import TF_DESCRIPTORS
+
+    assert tf_meta.TF_BAR_SEC == {c: d.bar_sec for c, d in TF_DESCRIPTORS.items()}
+    # 順序も台帳と同一（挿入順に依存する消費者を非破壊にする）。
+    assert list(tf_meta.TF_BAR_SEC.keys()) == list(TF_DESCRIPTORS.keys())
+
+
+def test_adding_a_timeframe_to_the_ledger_updates_tf_bar_sec(monkeypatch):
+    """台帳への追加が TF_BAR_SEC へ自動追随する（＝導出であり複製でない）。"""
+    import importlib
+
+    from marketdata import resample
+    from marketdata.resample import TfDescriptor
+
+    patched = dict(resample.TF_DESCRIPTORS)
+    patched["2h"] = TfDescriptor("2h", True, False, 7200)
+    monkeypatch.setattr(resample, "TF_DESCRIPTORS", patched)
+
+    tf_meta = importlib.reload(importlib.import_module("marketdata.tf_meta"))
+    try:
+        assert tf_meta.TF_BAR_SEC["2h"] == 7200
+    finally:
+        monkeypatch.undo()
+        importlib.reload(tf_meta)
+
+
+def test_ledger_bar_sec_truth_table():
+    """名目バー秒長の既知値（1W=7日・1M=30日名目）を固定する。"""
+    from marketdata.resample import TF_DESCRIPTORS
+
+    assert {c: d.bar_sec for c, d in TF_DESCRIPTORS.items()} == {
+        "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
+        "4h": 14400, "1D": 86400, "1W": 604800, "1M": 2592000,
+    }

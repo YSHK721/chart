@@ -20,6 +20,8 @@ from typing import Any
 import numpy as np
 
 from marketdata import tf_meta as _forming_bar  # ISSUE-087 🔴-1: 裸 adapter 依存を排し単一情報源を参照
+from marketdata import tf_meta as _tf_meta  # ISSUE-261: tf→秒／カレンダー tf を台帳から導出する
+from marketdata.resample import TF_DESCRIPTORS as _TF_DESCRIPTORS  # noqa: E402
 from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute import market_profile_zp as _zp
 from market_profile_api.compute import tf_period_columns as _tfc  # ISSUE-094 🔴-2: 集計エンジンの compute 移送先
@@ -53,11 +55,19 @@ from marketdata.session_day import (  # noqa: E402
 _DAY = 86400  # 1 カレンダー日（秒）。per-day キャッシュ／窓分割の単位。
 
 # 対応 tf（固定周期＝floor 可能）→ 周期秒。1W/1M はカレンダーバケット（下記 _BUCKET_TFS）。
-_TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1D": _DAY}
+#   台帳（marketdata.resample.TF_DESCRIPTORS → tf_meta.TF_BAR_SEC / NON_FLOORABLE_TF）からの
+#   導出値（ISSUE-261）。かつては手書き dict で、台帳へ時間足を足しても追随せず検定も落ちなかった。
+#   導出の手法は indicator_ui の forming_bar._FIXED_TF_SECONDS と同一。
+_TF_SECONDS = {
+    tf: sec for tf, sec in _tf_meta.TF_BAR_SEC.items() if tf not in _tf_meta.NON_FLOORABLE_TF
+}
 
 # ISSUE-086（全時間足パラメータ統一）: 1W/1M はセッション日次のロールアップ（W-FRI/ME バケット・
 #   規則源 marketdata.session_day.session_period_label＝resample と同一規約）で列を構成する。
-_BUCKET_TFS = ("1W", "1M")
+#   台帳の floorable フラグからの導出値（台帳順を保つ＝反復順に依存する消費者を非破壊にする）。
+_BUCKET_TFS = tuple(
+    code for code, d in _TF_DESCRIPTORS.items() if not d.floorable
+)
 
 # アクター: 表示解像度（描画行高＝count 列のビニング粒度）。集計パラメータ（GRID_W/W_LOG 等の
 #   統計格子）とは別アクターであり、compute の集計仕様から独立してここ（配信・表示 controller）に置く。

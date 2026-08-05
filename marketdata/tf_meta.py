@@ -38,9 +38,14 @@ NON_FLOORABLE_TF = frozenset(
 
 # tf → バー秒長（名目値）。1W=7日・1M=30日名目（カレンダー tf の窓幅・表示計算用。
 #   厳密な期間境界は resample/session_day のラベル規約が担う＝本表を境界計算に使わない）。
+#
+# 台帳 :data:`marketdata.resample.TF_DESCRIPTORS` の ``bar_sec`` からの導出値（唯一源・ISSUE-261）。
+#   かつては手書き dict で、検定も `set(TF_BAR_SEC) == set(TIMEFRAME_RULES)`（キー集合のみ）
+#   だったため**値のずれは検出できなかった**。時間足の追加は台帳 1 行で完結する。
+#   名称・型（dict）・挿入順は外部消費者（monkeypatch.setitem する回帰テストを含む）を
+#   非破壊にするため温存する。
 TF_BAR_SEC: "dict[str, int]" = {
-    "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
-    "1h": 3600, "4h": 14400, "1D": 86400, "1W": 604800, "1M": 2592000,
+    code: d.bar_sec for code, d in TF_DESCRIPTORS.items()
 }
 
 # プロセス起動時刻（resolve_now_unix のデモ時計の経過基準）。
