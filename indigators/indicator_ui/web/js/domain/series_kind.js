@@ -62,6 +62,33 @@ export const SERIES_KINDS = Object.freeze({
 
 // 未知 kind のフォールバック能力（従来の直接比較の結果と一致させる: === 'line'/'histogram' は false、
 //   !== 'histogram' は true、どの描画経路にも乗らない）。到達しない設計だが全入力で従来挙動を保つ。
+// 描画経路の台帳（ISSUE-270）。**dispatch の順序・呼び出すメソッド・呼び方**をここで宣言する。
+//
+// なぜ台帳へ出すか: かつて router 側が `routed` の初期化と 4 分岐の dispatch を直書きしており、
+//   `SERIES_KINDS` へ種別を 1 行足しただけでは `routed[route]` が undefined になって
+//   **例外も出さず黙って捨てられた**（描画されない）。経路の知識を 2 箇所に分けていたのが原因。
+//   経路をここへ集約し、router は本表を上から順に回すだけにする。
+//
+//   route   : SERIES_KINDS[*].renderRoute が指す経路名
+//   method  : ChartRenderer 側のメソッド名
+//   perItem : true=要素ごとに 1 回呼ぶ / false=まとめて 1 回呼ぶ
+//   payload : perItem のとき、要素から実引数を作る関数（未指定は要素そのもの）
+//   opts    : true=第 3 引数に描画オプション（pane/name）を渡す
+//
+// **順序は z 順**。配列の順に描くため、並べ替えは表示の重なりを変える（従来順を保存すること）。
+export const RENDER_ROUTES = Object.freeze([
+  Object.freeze({ route: 'histogram', method: 'renderHistogram', perItem: false, opts: true }),
+  Object.freeze({ route: 'line', method: 'renderLine', perItem: false, opts: true }),
+  Object.freeze({ route: 'level_dash', method: 'renderLevelDash', perItem: false, opts: true }),
+  Object.freeze({
+    route: 'horizontal',
+    method: 'renderHorizontal',
+    perItem: true,
+    opts: false,
+    payload: (h) => (h.lines ?? []),
+  }),
+]);
+
 const _UNKNOWN_KIND = Object.freeze({
   tailUpdatable: false,
   seriesType: 'line',

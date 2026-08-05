@@ -17,7 +17,7 @@
 //
 // ★ upstream JS の系列追加系 API は一切参照しない（renderer 経由のみ・§2.2 隔離）。
 
-import { seriesKind } from '../../domain/series_kind.js';
+import { seriesKind, RENDER_ROUTES } from '../../domain/series_kind.js';
 import { barStyleEditableFor } from '../../usecase/form_model.js';
 
 // 末尾K差分反映（updateSeriesTail）の対象となる時系列系列か。horizontal_line は末尾K切り
@@ -40,14 +40,12 @@ export class SeriesRenderRouter {
   draw(instanceId, def, series, params = null) {
     const host = this._host;
     const validated = host._validateSeriesNames(series, def, params);
-    // kind → 描画経路は series_kind 台帳（renderRoute）で一元化する。**台帳追記だけでは完結せず**、
-    //   下記 routed の初期化と dispatch にも経路を足す必要がある（台帳へ 1 行足しただけだと
-    //   routed[route] が undefined になり、その種別は例外も出さず黙って捨てられる）。
-    //   この対応関係は tests/series_kind_ledger_declaration.test.js が強制する（ISSUE-262）。
-    //   かつてここは「新種別は台帳追記で完結・OCP」と書いていたが施行する仕組みが無く、
-    //   実際は 4 ファイルの改変を要した。宣言を実態へ正し、抜けはテストで落とす。
-    //   単一前進走査で振り分けるため各経路内の順序は従来 filter と同一。未知 kind は非描画。
-    const routed = { line: [], histogram: [], horizontal: [], level_dash: [] };
+    // kind → 描画経路は series_kind 台帳が唯一源（ISSUE-270）。振り分け先・dispatch の順序・
+    //   呼び方（まとめて/要素ごと・オプション有無）はすべて RENDER_ROUTES の宣言から導く。
+    //   本メソッドは経路名を 1 つも知らない＝**新しい種別は台帳への追記で完結する**
+    //   （新しい描き方が要るときだけ ChartRenderer にメソッドを足す）。
+    //   宣言と実装の対応は tests/series_kind_ledger_declaration.test.js が強制する。
+    const routed = new Map(RENDER_ROUTES.map((r) => [r.route, []]));
     for (const p of validated) {
       // 案A（btlm_trail_marod）: barStyleEditable 一致系列（front カタログ由来・backend 非関与）へ
       //   bar_editable=true を注入する。renderer はこのヒントで line ⇄ histogram スワップ対象を識別
@@ -57,26 +55,36 @@ export class SeriesRenderRouter {
         p.bar_editable = true;
       }
       const route = seriesKind(p.kind).renderRoute;
-      if (routed[route]) {
-        routed[route].push(p);
+      if (route == null) {
+        continue;                       // 未知 kind は従来どおり非描画（台帳が null を返す）。
       }
+      const bucket = routed.get(route);
+      if (!bucket) {
+        // 台帳に経路が在るのに RENDER_ROUTES へ宣言が無い＝設定漏れ。黙って捨てず落とす
+        //   （かつてはここで静かに捨てられ「台帳に足したのに描かれない」になっていた）。
+        throw new Error(`series_kind: 未宣言の描画経路です: ${route}（RENDER_ROUTES へ追加してください）`);
+      }
+      bucket.push(p);
     }
-    const lines = routed.line;
-    const histograms = routed.histogram;
-    const hlines = routed.horizontal;
-    const levelDashes = routed.level_dash;
     const opts = { pane: def.placement !== 'overlay', name: host._label(def) };
-    if (histograms.length > 0) {
-      this._renderer.renderHistogram(instanceId, histograms, opts);
-    }
-    if (lines.length > 0) {
-      this._renderer.renderLine(instanceId, lines, opts);
-    }
-    if (levelDashes.length > 0) {
-      this._renderer.renderLevelDash(instanceId, levelDashes, opts);
-    }
-    for (const h of hlines) {
-      this._renderer.renderHorizontal(instanceId, h.lines ?? []);
+    for (const spec of RENDER_ROUTES) {
+      const items = routed.get(spec.route);
+      if (!items || items.length === 0) {
+        continue;
+      }
+      const fn = this._renderer[spec.method];
+      if (typeof fn !== 'function') {
+        throw new Error(`ChartRenderer に ${spec.method} がありません（経路 ${spec.route}）`);
+      }
+      if (spec.perItem) {
+        for (const item of items) {
+          fn.call(this._renderer, instanceId, spec.payload ? spec.payload(item) : item);
+        }
+      } else if (spec.opts) {
+        fn.call(this._renderer, instanceId, items, opts);
+      } else {
+        fn.call(this._renderer, instanceId, items);
+      }
     }
     // ISSUE-109: 保存済みスタイル上書きを再適用する（redraw/restore/時間足切替で系列は
     //   ペイロード既定色で再生成されるため、描画の最後に毎回上書きし直す＝永続反映）。

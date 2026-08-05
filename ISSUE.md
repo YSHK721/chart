@@ -4442,3 +4442,14 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **効果**: `ComputeGateway` の実装が 1 つになり、2 実装が非等価だった LSP 違反が消滅。`mode` を UI 層まで引き回す配線も消えた。
 - **検証**: 実 UI（8000）でライブ・リプレイ双方を確認（ライブ: JS 148 本・1,259ms・canvas 11/11・時間足 9 足・エラー 0／リプレイ: canvas 11・replay モジュール 59 本・`/intraday` 取得）。回帰: Python 2,533 / indicator_ui web 1,064 / market_profile web 318 / replay_ui web 297 / unified_ui web 43 全通過。
 - **残**: コメント中の「A方式」への言及 27 箇所（動作に影響しない歴史的記述）。
+
+## ISSUE-270: [設計是正] 描画経路を series_kind 台帳へ集約し、router から経路知識を消す（2026-08-05）
+- **ステータス**: RESOLVED（2026-08-05・refactor/series-render-route-ledger）
+- **重大度**: Medium（OCP 違反。台帳へ足しても描かれず、しかも無言）
+- **背景**: `series_render_router.js` は「新種別は台帳追記で完結・OCP」と宣言していたが、実際には `routed` の初期化と 4 分岐の dispatch を直書きしており、**台帳へ 1 行足しただけでは `routed[route]` が undefined になって例外も出さず黙って捨てられた**（描画されない）。ISSUE-262 では宣言を実態へ正して検定で拘束するに留めており、OCP 違反そのものは残っていた。
+- **抜本的対策**: 描画経路の知識（**順序・メソッド名・呼び方**）を台帳 `series_kind.RENDER_ROUTES` へ集約する。router は本表を上から順に回すだけにし、経路名も renderer のメソッド名も 1 つも持たない。
+  - `RENDER_ROUTES = [{ route, method, perItem, opts, payload }]`。配列順が **z 順**（従来の dispatch 順 histogram → line → level_dash → horizontal を保存）。
+  - 台帳に在るのに `RENDER_ROUTES` へ未宣言の経路は **例外**にする（黙って捨てない）。renderer にメソッドが無い場合も例外。
+- **効果**: 新種別の追加は、既存の描き方を使うなら**台帳 1 ファイルの追記で完結**する。新しい描き方が要るときだけ `ChartRenderer` にメソッドを足す（4 ファイル → 2 ファイル）。
+- **検定**: `series_kind_ledger_declaration.test.js` を書き換え、(1) 台帳の全経路が `RENDER_ROUTES` に在る (2) 宣言メソッドが `ChartRenderer` に実在する (3) router が経路名を直書きしていない (4) router が renderer のメソッド名を直書きしていない (5) 未知 kind は非描画・宣言漏れは例外、を固定した。
+- **検証**: 台帳へ種別を 1 行足して `RENDER_ROUTES` を忘れると 2 件 Red（識別力を実証）。実 UI（8000・1 分足）でローソク・線・水平線・破線水準の全経路が描画されることを確認。回帰: indicator_ui web 1,069 / market_profile web 318 / replay_ui web 297 / unified_ui web 43 全通過。
