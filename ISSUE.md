@@ -4426,3 +4426,19 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **抜本的対策**: `tests/served_import_resolution.test.js` を新設し、**配信ルートを起点に**全 JS の相対 import を辿って同ルート配下にファイルが実在するかを検定する（配信ルート外を指す import も落とす）。symlink 未作成はこれで Red になる。
 - **検証**: symlink を外すと当該検定が Red（識別力を実証）。実 UI 復旧を確認（JS 149 本・1,287ms・canvas 11/11・時間足 9 足・エラー 0）。
 - **教訓**: 共有 symlink 構成では「node で通る」は「ブラウザで動く」を意味しない。import を追加したら配信ルートごとの解決を検定で確かめる。
+
+## ISSUE-269: [設計是正] 実行時の A方式経路を全撤去する（ISSUE-266 の完了）（2026-08-05）
+- **ステータス**: RESOLVED（2026-08-05・refactor/drop-a-mode-runtime-2）
+- **重大度**: Medium（到達不能な死にコードと、それが生む LSP 違反の除去）
+- **背景**: ISSUE-266 でビルド（`build.mjs`）と生成物を削除したが、実行時の 'a' 経路は残置していた。バンドルが無いため到達不能な死にコードであり、監査が指摘した LSP 違反（`ComputeGateway` の 2 実装が非等価）の原因でもあった。
+- **撤去したもの**:
+  - `modeForProtocol` / `mode` 変数と、それを条件とする分岐（ライブ合成根 10 箇所・リプレイ合成根 5 箇所）
+  - `EmbeddedComputeGateway`（実体・symlink）／`data/sample_data.js`（635KB）
+  - `IndicatorController` の `mode` 引数・`this._mode`・時間足ボタン無効化分岐
+  - `PropertiesDialog` の `mode` 引数と A方式注記（`A_METHOD_NOTE` / `_buildAMethodNote`）
+  - `MARKET_PROFILE_HOST_CONTRACT` の `_mode` フィールド、`host._mode` 参照 2 箇所
+  - `catalog_entry._mpTfPeriodDrawsColumns` の `servedMode !== 'b'` 条件（配信は served 一択）
+  - A方式挙動を検証していたテスト計 10 件（ライブ 7・リプレイ 3）
+- **効果**: `ComputeGateway` の実装が 1 つになり、2 実装が非等価だった LSP 違反が消滅。`mode` を UI 層まで引き回す配線も消えた。
+- **検証**: 実 UI（8000）でライブ・リプレイ双方を確認（ライブ: JS 148 本・1,259ms・canvas 11/11・時間足 9 足・エラー 0／リプレイ: canvas 11・replay モジュール 59 本・`/intraday` 取得）。回帰: Python 2,533 / indicator_ui web 1,064 / market_profile web 318 / replay_ui web 297 / unified_ui web 43 全通過。
+- **残**: コメント中の「A方式」への言及 27 箇所（動作に影響しない歴史的記述）。

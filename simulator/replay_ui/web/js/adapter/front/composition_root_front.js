@@ -9,11 +9,8 @@
 // 方式切替（B方式を既定に）:
 //   - served（http://・https://）: ComputeHttpClient（fetch /compute）を注入し、candles は
 //     GET /candles から取得する（same-origin・CORS/バンドル不要）。params が実再計算される。
-//   - file:// 単体時: 従来 EmbeddedComputeGateway + SAMPLE_DATA にフォールバック（A方式）。
 //   判定は location.protocol（http/https → 'b' / それ以外 → 'a'）。
 
-// SAMPLE_DATA（埋め込み 635KB）は A方式（file://）でのみ動的 import する。B方式（served）は
-// candles を /candles から取得するため読み込まない（不要な 635KB の単一障害点を排除）。
 import { ChartRenderer } from './chart_renderer.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
 import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
@@ -30,7 +27,6 @@ import { CrosshairReadoutView } from './crosshair_readout_view.js';
 import { CurrentPriceView } from './current_price_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
-import { EmbeddedComputeGateway } from './embedded_compute_gateway.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
 import { IndicatorCatalogClient } from './catalog_client.js';
 import { ReplayIndicatorController } from './replay_indicator_controller.js';
@@ -48,11 +44,6 @@ import { DwellAccumulator } from '../../domain/market_profile_dwell_accumulator.
 //   1 分足原子の全期間（数百万点）を直接配信しないため、/candles・/compute を直近 N 本へ制限する。
 export const DEFAULT_TIMEFRAME = '1D';
 export const RECENT_BARS = 1500;
-
-// protocol → モード判定。http/https は served（B方式）、それ以外（file: 等）は A方式。
-export function modeForProtocol(protocol) {
-  return protocol === 'http:' || protocol === 'https:' ? 'b' : 'a';
-}
 
 // GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
 //   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
@@ -81,7 +72,6 @@ async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe = null, 
 
 // グローバル LightweightCharts（bundled JS が window へ公開）を引数で受け取り、
 // チャート + ローソク系列を生成して ChartRenderer に渡す。
-// served（http://）時は ComputeHttpClient + /candles、file:// 時は EmbeddedComputeGateway + SAMPLE_DATA。
 export async function bootstrap({
   lwc,
   container,
@@ -106,25 +96,12 @@ export async function bootstrap({
   // ライブ更新間隔（ms・既定 60 秒）。テストで差し替え可能。
   liveIntervalMs = 60000,
 } = {}) {
-  const mode = modeForProtocol(protocol);
 
   // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123・
   //   present と単一ソース＝クロスヘア Normal・現在値ライン橙 ISSUE-084 も replay へ自動伝播）。
   const { chart, mainSeries } = createChartWithMainSeries({ lwc, container });
-
-  // ポート実装の組み立て（モード別）。
-  //   B方式: ComputeHttpClient（fetch /compute）— params 実反映。candles は /candles から取得し、
-  //          SAMPLE_DATA（635KB）は読み込まない。
-  //   A方式: SAMPLE_DATA を動的 import し、初期ローソク描画 + EmbeddedComputeGateway（params 未反映）。
-  let compute;
-  let initialCandles = null; // A方式の初期ローソク（renderer 生成後に setCandles で描画する）。
-  if (mode === 'b') {
-    compute = new ComputeHttpClient({ fetch });
-  } else {
-    const { SAMPLE_DATA } = await import('../../../data/sample_data.js');
-    initialCandles = SAMPLE_DATA.candles;
-    compute = new EmbeddedComputeGateway(SAMPLE_DATA);
-  }
+  // ポート実装: ComputeHttpClient（fetch /compute）。candles は /candles から取得する。
+  const compute = new ComputeHttpClient({ fetch });
 
   // クロスヘア価格読み取り欄（左上固定オーバーレイ）のビュー。ChartRenderer の onCrosshairReadout
   //   に (dto) => view.render(dto) を注入する（#legend の指標管理行とは別物として分離・相乗りしない）。
@@ -144,12 +121,6 @@ export async function bootstrap({
   //   実体は共有ヘルパ chart_bootstrap.makeUpdatePaneHeight（ISSUE-123 単一ソース・旧忠実移植コピーを廃止）。
   const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
   updatePaneHeight();
-
-  // A方式の初期ローソクは renderer.setCandles で描画する（直接 mainSeries.setData ではなく
-  //   経由させることで読み取り欄の最新足の単一源 _lastBar が立ち、hover 解除でも OHLC が出る）。
-  if (initialCandles) {
-    renderer.setCandles(initialCandles);
-  }
   const persistence = new LocalStorageGateway(storage);
   // テンプレート永続化（§4.2 の 3 キー）。既存 LocalStorageGateway は無改変（ISP）。
   const templateStore = new LocalStorageTemplateGateway(storage);
@@ -157,12 +128,10 @@ export async function bootstrap({
 
   // 時間足切替で candles を再取得するためのローダ（B方式のみ）。A方式（SAMPLE_DATA・再集計不可）は null。
   //   controller.setTimeframe が (datasetRef, timeframe) で呼び、直近 recentBars 本へ制限して取得する。
-  const loadCandles = (mode === 'b')
-    ? (ref, tf) => fetchCandles(fetch, ref, tf, recentBars)
-    : null;
+  const loadCandles = (ref, tf) => fetchCandles(fetch, ref, tf, recentBars);
 
   const controller = new ReplayIndicatorController({
-    catalog, compute, persistence, renderer, document: doc, mode, datasetRef,
+    catalog, compute, persistence, renderer, document: doc, datasetRef,
     timeframe, recentBars, loadCandles,
     // Phase5（統一成長）: reveal は常に成長状態＝growing=true。旧 'ticklive' 表示モードが担っていた成長
     //   活性化を成長軸へ移行し、mpGrowthResolver で常時 growing を注入する（setParams 後に _applyMpGrowth が
@@ -256,20 +225,17 @@ export async function bootstrap({
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
   //   初期は既定時間足・直近 recentBars 本。取得失敗時は SAMPLE_DATA のまま（フォールバック）。
-  const ready = (mode === 'b')
-    ? fetchCandles(fetch, datasetRef, timeframe, recentBars).then((candles) => {
+  const ready = fetchCandles(fetch, datasetRef, timeframe, recentBars).then((candles) => {
         if (candles && candles.length > 0) {
           // renderer.setCandles 経由で _lastBar も立てる（読み取り欄の hover 解除フォールバック）。
           renderer.setCandles(candles);
         }
-      })
-    : Promise.resolve();
+      });
 
   // ライブ更新（1 分間隔）の組み立て。served（B方式）のみ。tick は controller 経由の再計算
   //   ＋ /candles 再取得 → 最新足を renderer.updateLastCandle で差分反映する。start は入口
   //   （index.html）が served 時のみ呼ぶ。A方式（file://）は null（更新を配線しない）。
-  const liveUpdater = (mode === 'b')
-    ? new LiveUpdater({
+  const liveUpdater = new LiveUpdater({
         controller,
         renderer,
         loadCandles: (ref, tf) => fetchCandles(fetch, ref, tf, recentBars),
@@ -278,8 +244,7 @@ export async function bootstrap({
         setInterval: setIntervalImpl,
         clearInterval: clearIntervalImpl,
         intervalMs: liveIntervalMs,
-      })
-    : null;
+      });
 
   // Trade Markers renderer（売買マーカー重畳）の組み立て。副作用 fetch は増やさず renderer を
   //   返すのみ（load トリガは入口 index.html が ready 後に呼ぶ＝既存 candles 経路に非干渉）。
@@ -356,5 +321,5 @@ export async function bootstrap({
   tradeMarkers.setCurrentTimeframe(timeframe);
   controller.setTimeframeObserver((tf) => tradeMarkers.setCurrentTimeframe(tf));
 
-  return { chart, mainSeries, renderer, controller, mode, ready, tickvolBands, liveUpdater, tradeMarkers, marketProfile, replayBar, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
+  return { chart, mainSeries, renderer, controller, ready, tickvolBands, liveUpdater, tradeMarkers, marketProfile, replayBar, chartTemplates, chartTemplateMenu, chartTemplateDialogs };
 }

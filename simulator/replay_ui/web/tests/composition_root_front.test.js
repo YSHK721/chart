@@ -3,17 +3,15 @@
 // 設計入力: 内部設計書 §2.1 / §3.3.5（ComputeHttpClient）/ §6.3（/candles）、
 //   パラメータ設定ダイアログ §9（B方式 params 実反映）。
 // 観点:
-//   - modeForProtocol: http/https → 'b'、file:/その他 → 'a'。
 //   - bootstrap: served（http）時は ComputeHttpClient（/compute）を注入し /candles を取得して
-//     メイン系列を差し替える。file:// 時は EmbeddedComputeGateway + SAMPLE_DATA。
+//     メイン系列を差し替える。
 // 構造: Arrange-Act-Assert。upstream JS（lwc）と fetch は Fake を注入（DOM/実ネットワーク非依存）。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { bootstrap, modeForProtocol } from '../js/adapter/front/composition_root_front.js';
+import { bootstrap } from '../js/adapter/front/composition_root_front.js';
 import { ComputeHttpClient } from '../js/adapter/front/compute_http_client.js';
-import { EmbeddedComputeGateway } from '../js/adapter/front/embedded_compute_gateway.js';
 import { LiveUpdater } from '../js/adapter/front/live_updater.js';
 import { ReplayMarketProfileActor } from '../js/adapter/front/replay_market_profile_actor.js';
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
@@ -47,40 +45,21 @@ function fakeLwc() {
 
 const noStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 
-test('modeForProtocol maps http/https to b and others to a', () => {
-  assert.equal(modeForProtocol('http:'), 'b');
-  assert.equal(modeForProtocol('https:'), 'b');
-  assert.equal(modeForProtocol('file:'), 'a');
-  assert.equal(modeForProtocol('about:'), 'a');
-});
 
-test('bootstrap injects ComputeHttpClient and mode=b when served over http', async () => {
+test('bootstrap injects ComputeHttpClient when served over http', async () => {
   // Arrange
   const { lwc } = fakeLwc();
   const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
   // Act
-  const { controller, mode, ready } = await bootstrap({
+  const { controller, ready } = await bootstrap({
     lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
   });
   await ready;
   // Assert
-  assert.equal(mode, 'b');
   assert.ok(controller._compute instanceof ComputeHttpClient);
   // reveal 対応の subclass を生成する（共有 present base を extends＝単一ソース＋reveal 拡張）。
   assert.ok(controller instanceof ReplayIndicatorController, 'controller は ReplayIndicatorController');
   assert.ok(controller instanceof IndicatorController, 'subclass は共有 IndicatorController を extends する（LSP）');
-});
-
-test('bootstrap falls back to EmbeddedComputeGateway and mode=a on file://', async () => {
-  // Arrange
-  const { lwc } = fakeLwc();
-  // Act（A方式は SAMPLE_DATA を動的 import するため await）
-  const { controller, mode } = await bootstrap({
-    lwc, container: {}, doc: null, storage: noStorage, protocol: 'file:',
-  });
-  // Assert
-  assert.equal(mode, 'a');
-  assert.ok(controller._compute instanceof EmbeddedComputeGateway);
 });
 
 test('bootstrap (served) fetches /candles and replaces main series data', async () => {
@@ -136,15 +115,6 @@ test('bootstrap (served) builds a LiveUpdater and exposes it on the return value
   assert.ok(liveUpdater instanceof LiveUpdater);
 });
 
-test('bootstrap (file://) exposes liveUpdater=null so no live updates are wired', async () => {
-  // Arrange / Act（A方式）。
-  const { lwc } = fakeLwc();
-  const { liveUpdater } = await bootstrap({
-    lwc, container: {}, doc: null, storage: noStorage, protocol: 'file:',
-  });
-  // Assert: A方式（file://）はライブ更新を配線しない。
-  assert.equal(liveUpdater, null);
-});
 
 // ===========================================================================
 // Market Profile 全モード配線（MP DI は composition root に集約）
@@ -282,24 +252,6 @@ test('bootstrap wires onCrosshairReadout so crosshair moves render into #crossha
   assert.ok(doc._readout.children.length > 0, 'crosshair readout element should be populated');
 });
 
-test('bootstrap (file://) establishes _lastBar so hover-off shows OHLC without a prior hover', async () => {
-  // 仕様: A方式（file://）でも成立（初期ロードの末尾足が _lastBar に立つ）。bootstrap が
-  //   初期 candles を renderer.setCandles 経由で流すことを固定する（直接 mainSeries.setData だと
-  //   _lastBar が立たず、hover 解除時に OHLC が空になる回帰を防ぐ）。
-  // Arrange
-  const { lwc, chart } = fakeLwcFireable();
-  const doc = fakeReadoutDoc();
-  // Act
-  const { ready } = await bootstrap({
-    lwc, container: {}, doc, storage: noStorage, protocol: 'file:',
-  });
-  await ready;
-  // hover 解除（seriesData 空・事前 hover なし）。
-  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
-  // Assert: SAMPLE_DATA 末尾足（close=185）が読み取り欄に描画される（_lastBar フォールバック）。
-  const text = JSON.stringify(doc._readout.children);
-  assert.match(text, /185/);
-});
 
 // ===========================================================================
 // ChartInteractionController 配線（価格軸 wheel ズーム・dblclick・本体縦パン）

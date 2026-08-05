@@ -35,10 +35,11 @@ const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W',
 export { MP_ZP_SESSIONS_BLOCKED_TFS };
 
 // tf-period が日別プロファイル列を描く状態か（＝解像度パラメータが無効な状態）。
-//   条件: served(B方式) かつ mode=sessions かつ対応 tf（src=zp は 15m..1D 限定）。ctx は
-//   { timeframe, servedMode } を受ける（gear ダイアログが現 timeframe/mode を注入）。
+//   条件: mode=sessions かつ対応 tf（src=zp は 15m 以上）。ctx は { timeframe } を受ける。
+//   かつては served(B方式) 判定も含んでいたが、A方式の廃止（ISSUE-266）で配信は served 一択に
+//   なったため撤去した。
 function _mpTfPeriodDrawsColumns(values, ctx) {
-  if (!ctx || ctx.servedMode !== 'b') { return false; }
+  if (!ctx) { return false; }
   if (!mpDisplayMode(values.mode).splitByDay) { return false; }
   const tf = ctx.timeframe;
   if (!_MP_PLAYER_TF.has(tf)) { return false; }
