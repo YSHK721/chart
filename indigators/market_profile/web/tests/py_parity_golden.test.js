@@ -16,6 +16,7 @@ import {
 } from '../js/domain/session_day.js';
 import { TF_BAR_SEC, TF_CODES, FLOOR_TFS, CALENDAR_TFS } from '../js/domain/tf_meta.js';
 import { valueArea } from '../js/domain/market_profile_dwell_accumulator.js';
+import { mpSupportsTf, MP_ZP_SESSIONS_BLOCKED_TFS } from '../js/domain/mp_source_capability.js';
 
 const golden = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'py_parity_golden.json'), 'utf8'),
@@ -70,4 +71,28 @@ test('valueArea は Python _value_area と一致する（整数 TPO・float z �
     const [lo, hi] = valueArea(c.centers, c.tpo, c.pct);
     assert.deepEqual([lo, hi], c.expected, `VA(${JSON.stringify(c.tpo)})`);
   }
+});
+
+// ISSUE-261: zp 対応 tf は台帳から導出できない「能力宣言」で、Python（唯一源）と JS の両方に
+//   手書きで存在する。同期手段が無いと、ずれた瞬間にサーバは 400・フロントは選択可能のまま
+//   ＝無言の機能不全になる（ISSUE-253 と同型の失敗）。写しは残すが、ずれたら落ちる状態にする。
+test('mp_source_capability.js の zp 対応 tf は Python _ZP_TF_ALLOWED と一致する', () => {
+  assert.ok(Array.isArray(golden.zp_supported_tfs) && golden.zp_supported_tfs.length > 0,
+    'fixture に zp 対応 tf がある');
+  for (const tf of golden.zp_supported_tfs) {
+    assert.equal(mpSupportsTf('zp', tf), true, `zp は ${tf} に対応する`);
+  }
+  // 台帳の全 tf のうち、Python が非対応と宣言したものは JS でも非対応であること。
+  const supported = new Set(golden.zp_supported_tfs);
+  for (const { code } of golden.tf_ledger) {
+    if (!supported.has(code)) {
+      assert.equal(mpSupportsTf('zp', code), false, `zp は ${code} に非対応`);
+    }
+  }
+});
+
+test('日別モードの zp 非選択 tf は「対応 tf の補集合」と一致する', () => {
+  const supported = new Set(golden.zp_supported_tfs);
+  const expected = golden.tf_ledger.map((d) => d.code).filter((c) => !supported.has(c));
+  assert.deepEqual([...MP_ZP_SESSIONS_BLOCKED_TFS].sort(), expected.sort());
 });

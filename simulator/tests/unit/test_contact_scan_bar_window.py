@@ -47,3 +47,24 @@ def test_right_label_month():
 def test_returns_ints():
     s, e = bar_window([0, 60], 0, "1m")
     assert isinstance(s, int) and isinstance(e, int)
+
+
+# =========================================================================== #
+# ISSUE-261: 台帳との一致を検定で拘束する（写しの黙ったずれを防ぐ）
+# =========================================================================== #
+
+def test_tf_secs_matches_the_marketdata_ledger():
+    """``bar_window.TF_SECS`` が時間足台帳（唯一源）と一致する。
+
+    なぜ import ではなく検定で縛るか: 本モジュールは「純・stdlib のみ」を宣言しており
+    （usecase 層の純度＝偶有的技術を持ち込まない）、``marketdata.tf_meta`` を import すると
+    pandas が推移的に入って宣言が壊れる。よって写しは残したまま、**ずれたら落ちる**状態に
+    する（台帳側の JS 生成物を parity 検定で拘束しているのと同じ考え方）。
+
+    台帳へ時間足を足したら本表にも足す。足し忘れは本検定が落として知らせる。
+    """
+    from marketdata.tf_meta import TF_BAR_SEC
+
+    from simulator.usecase.contact_scan.bar_window import TF_SECS
+
+    assert TF_SECS == dict(TF_BAR_SEC)
