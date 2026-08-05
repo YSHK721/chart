@@ -4453,3 +4453,23 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **効果**: 新種別の追加は、既存の描き方を使うなら**台帳 1 ファイルの追記で完結**する。新しい描き方が要るときだけ `ChartRenderer` にメソッドを足す（4 ファイル → 2 ファイル）。
 - **検定**: `series_kind_ledger_declaration.test.js` を書き換え、(1) 台帳の全経路が `RENDER_ROUTES` に在る (2) 宣言メソッドが `ChartRenderer` に実在する (3) router が経路名を直書きしていない (4) router が renderer のメソッド名を直書きしていない (5) 未知 kind は非描画・宣言漏れは例外、を固定した。
 - **検証**: 台帳へ種別を 1 行足して `RENDER_ROUTES` を忘れると 2 件 Red（識別力を実証）。実 UI（8000・1 分足）でローソク・線・水平線・破線水準の全経路が描画されることを確認。回帰: indicator_ui web 1,069 / market_profile web 318 / replay_ui web 297 / unified_ui web 43 全通過。
+
+## ISSUE-271: [不具合・実測] 同じ `va_low`/`va_high` が src によって別アルゴリズムで算出され、実データの 79.2% で食い違う（2026-08-05）
+- **ステータス**: OPEN（**仕様判断が必要**）
+- **重大度**: High（利用者が見る VA の数値が、どの src を選んだかで変わる。フロントは src を区別せず同じフィールドを読む）
+- **事実（コード）**: `/tf_period_profile` の `va_low`/`va_high` は 2 つの別実装で算出される。
+  | 経路 | 実装 | 定義 |
+  |---|---|---|
+  | src 省略（count 列） | `tf_period_profile._value_area_sparse`（`tf_period_columns.py:225`） | **標準 Market Profile**。POC を起点に、隣接の大きい側へ**連続的に**拡張する |
+  | `src=zp` | `market_profile._value_area`（`tf_period_columns.py:165, 281`） | TPO 降順に**非連続**でビンを積み、採用集合の中心価格の min/max を返す |
+  フロント `market_profile_primitive._drawTfPeriods` は src 非依存で同じフィールドを読み VA 帯を描く。
+- **実測（jp225_tick・1h・占有 5 レベル以上の直近 3,000 列）**:
+  - **不一致 2,375 / 3,000 列＝79.2%**
+  - 下限のずれ 中央値 **20.0**・最大 1,600.0／上限のずれ 中央値 **20.0**・最大 760.0
+  - VA 幅の中央値: 標準 MP（連続拡張）**160.0** に対し `_value_area` は **200.0**（非連続採用のぶん外へ広がる）
+- **なぜ「どちらかが正しい」と私が決められないか**: `_value_area` は `/market_profile`（dwell/zp の主経路）でも使われており、byte-parity golden で固定されている（ISSUE-085 で float 累積へ是正済み）。統一はどちらへ寄せても**表示される数値が変わる**（UI 変更＝承認事項）。VA の定義がどちらであるべきかは仕様判断であり、コードからは決まらない。
+- **選択肢**:
+  1. **標準 MP（連続拡張）へ統一** — `_value_area` を `_value_area_sparse` 相当へ置換。VA が「連続した価格帯」になり一般的な MP の定義と一致する。dwell/zp の表示値が変わる（中央値で幅 -40）。
+  2. **現行 `_value_area` へ統一** — count 列側を差し替える。既存の主経路の値は不変だが、VA が非連続集合の外接範囲という非標準の定義のままになる。
+  3. **フィールドを分ける** — 意味が違うものに同じ名前を付けない（`va_*` と `va_span_*` 等）。フロントの描き分けが要る。
+- **推奨**: 選択肢 1（標準 MP へ統一）。ただし表示値が変わるため、着手前に承認が必要。
