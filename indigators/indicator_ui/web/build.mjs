@@ -33,6 +33,9 @@ const MODULE_ORDER = [
   'js/domain/market_profile_dwell_accumulator.js',
   'js/domain/session_day.js',
   'js/domain/session_ohlc.js',
+  // MP ソース能力（zp 対応 tf）も Python から生成した値（mp_capability_generated.js）を
+  //   mp_source_capability.js が読む。生成物が先に定義されている必要がある（ISSUE-264）。
+  'js/domain/mp_capability_generated.js',
   'js/domain/mp_source_capability.js',
   'js/domain/mp_display_mode.js',
   'js/domain/tickvol_bands.js',
@@ -174,9 +177,25 @@ async function main() {
 
   // 2) ES Modules を連結
   let bundle = '';
+  // 別名束縛（`import { X as Y }` → `const Y = X;`）は**バンドル全体で 1 回だけ**出す。
+  //   複数モジュールが同じ別名を使うと（実例: indicator_controller.js と
+  //   tickvol_bands_controller.js がともに `toggleVisible as facadeToggleVisible`）、
+  //   フラット IIFE で `const facadeToggleVisible` が二重宣言になり **A方式が構文エラーで
+  //   起動不能**になる（ISSUE-265）。同名別名は同一シンボルを指すため、重複除去は安全。
+  const seenAliases = new Set();
   for (const rel of MODULE_ORDER) {
     const src = await readFile(resolve(WEB, rel), 'utf8');
-    bundle += `\n// ===== ${rel} =====\n` + stripModuleSyntax(src) + '\n';
+    const stripped = stripModuleSyntax(src)
+      .split('\n')
+      .filter((line) => {
+        const m = line.match(/^const\s+([A-Za-z0-9_$]+)\s*=\s*[A-Za-z0-9_$]+;$/);
+        if (!m) return true;
+        if (seenAliases.has(m[1])) return false;   // 既出の別名は落とす
+        seenAliases.add(m[1]);
+        return true;
+      })
+      .join('\n');
+    bundle += `\n// ===== ${rel} =====\n` + stripped + '\n';
   }
 
   // 3) CSS
