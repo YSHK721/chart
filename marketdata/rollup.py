@@ -216,8 +216,14 @@ def _write_rollup_df(
 
     増分更新（ISSUE-012）の memory-bounded 経路。``_write_rollup``（辞書版）と同じ tmp→``os.replace``
     の原子化で確定パスを「完全な新 CSV」か「旧 CSV」のいずれかに限定する。出力列・date 書式
-    （``_DATE_FMT``）・ヘッダは loader 互換（``_HEADER``）で揃える。90 万件規模でも辞書化せず
-    pandas の to_csv をストリーム書きするため RSS は DataFrame 1〜2 個分に有界化する。
+    （``_DATE_FMT``）・ヘッダは loader 互換（:mod:`marketdata.csv_schema`）で揃える。90 万件規模でも
+    辞書化せず pandas の to_csv をストリーム書きするため RSS は DataFrame 1〜2 個分に有界化する。
+
+    出力列は **実在する列から導出**する（``_bar_to_csv_row`` / ``_merge_agg`` と同じ規約・ISSUE-258）。
+    かつてここは ``["open","high","low","close","volume"]`` を直書きしており、csv_schema へ up/dn が
+    増えたとき**本経路だけが列を落とした**。しかも一度 6 列で書かれるとヘッダ不一致で次回も全件
+    rewrite へ落ちるため自己修復せず、方向内訳が恒久的に失われる（消費側の tickvol_updown は値を
+    捏造せず KeyError で落ちる）。列の決定は csv_schema 1 点に閉じること。
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -225,7 +231,9 @@ def _write_rollup_df(
     fd, tmp_name = tempfile.mkstemp(dir=str(out_dir), prefix=final.name + ".", suffix=".tmp")
     tmp = Path(tmp_name)
     try:
-        out = df[["open", "high", "low", "close", "volume"]].sort_index()
+        cols = [c for c in (*_csv_schema.OHLCV_COLUMNS, *_csv_schema.UPDOWN_COLUMNS)
+                if c in df.columns]
+        out = df[cols].sort_index()
         out = out.copy()
         out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
         out.index.name = "date"
