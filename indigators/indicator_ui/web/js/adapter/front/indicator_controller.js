@@ -278,9 +278,10 @@ export class IndicatorController {
   //   サーバはこの申告から各ティック時点の指標末尾値を一括算出して応答へ同梱する
   //   （フロントは tick 適用と同一同期ブロックで描く＝tick 路から HTTP 往復が消える）。
   //   申告対象は足内追従の登録指標（INTRABAR_FORMING_IDS）かつ描画済み（_meta 在席）のみ。
-  //   計算.時間足 override（params.timeframe）を持つインスタンスは除く: 申告経路は
-  //   チャート足の窓で計算するため、別足の指標に別足の値を返せない（黙って別足の値を
-  //   描かない＝バー確定時の full 再計算に委ねる）。
+  //   ISSUE-274: 計算.時間足 override（params.timeframe）を持つインスタンスも申告する。
+  //   サーバは申告された params.timeframe ごとに窓と形成中バーの畳み方を分けて計算するため、
+  //   上位足指標にも「その tick 時点の上位足の値」が返る（以前はチャート足の窓しか無く、
+  //   別足の値を返せないため除外していた）。
   //   増分器を持たない指標はサーバ側が明示的に落とす（毎ティック納期に載らないものを
   //   黙って混ぜない＝ISSUE-233 の教訓）。
   appliedComputeSpecs() {
@@ -290,9 +291,6 @@ export class IndicatorController {
         continue;
       }
       const params = this._paramsObject(inst.params);
-      if (params.timeframe && params.timeframe !== 'chart') {
-        continue;
-      }
       specs.push({
         instanceId: inst.instanceId,
         indicatorId: inst.indicatorId,

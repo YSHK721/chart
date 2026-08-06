@@ -282,6 +282,97 @@ def test_malformed_tails_within_ms_falls_back_to_computing_all(bad, _port):
     assert all(e["tails"] != {} for e in out)
 
 
+# --------------------------------------------------------------------------- #
+# 計算.時間足（上位足）ごとの分離（ISSUE-274）
+# --------------------------------------------------------------------------- #
+class _RecordingPort(_Port):
+    """``load_dataframe`` に渡された時間足を記録する Port。"""
+
+    def __init__(self, df=None):
+        super().__init__(df)
+        self.loaded: "list[str]" = []
+
+    def load_dataframe(self, ref, tf):
+        self.loaded.append(tf)
+        return self._df
+
+
+def _specs_query(*specs):
+    return _q(specs=json.dumps(list(specs)))
+
+
+def test_each_compute_timeframe_loads_its_own_window(_port):
+    """計算足ごとに窓を分けて読む（上位足指標へチャート足の窓を使わない）。"""
+    port = _RecordingPort(_df(400))
+    _port(port)
+    out = ctl.handle_live_tick_tails(_specs_query(
+        {"instanceId": "chart#1", "indicatorId": "profit_rsi", "params": {"timeframe": "chart"}},
+        {"instanceId": "mtf#1", "indicatorId": "profit_rsi", "params": {"timeframe": "1h"}},
+    ), _TICKS)
+    assert out is not None
+    # チャート足（15m）と計算足（1h）の 2 本。同じ足の spec は 1 回にまとまる。
+    assert sorted(port.loaded) == ["15m", "1h"]
+
+
+def test_specs_of_the_same_timeframe_share_one_window(_port):
+    """同一計算足の spec は 1 グループ＝窓の読み込みは 1 回（仕事量を増やさない）。"""
+    port = _RecordingPort(_df(400))
+    _port(port)
+    ctl.handle_live_tick_tails(_specs_query(
+        {"instanceId": "a", "indicatorId": "profit_rsi", "params": {"timeframe": "1h"}},
+        {"instanceId": "b", "indicatorId": "profit_rsi", "params": {"timeframe": "1h"}},
+    ), _TICKS)
+    assert port.loaded == ["1h"]
+
+
+def test_forming_bar_is_folded_per_compute_timeframe(_port):
+    """形成中バーは計算足の周期で畳む（チャート足の周期で畳んだ値を渡さない）。"""
+    seen: "dict[str, list]" = {}
+
+    def _fake_make_tail_at(*, df, adapter, latest_compute, set_last_bar):
+        def _tail_at(spec, state):
+            seen.setdefault(spec.instance_id, []).append(state.time)
+            return {"v": 1.0}
+        return _tail_at
+
+    _port(_Port(_df(400)))
+    import adapter.controller.live_tick_tails_controller as mod
+    original = mod.make_tail_at
+    mod.make_tail_at = _fake_make_tail_at
+    try:
+        ctl.handle_live_tick_tails(_specs_query(
+            {"instanceId": "chart#1", "indicatorId": "profit_rsi", "params": {"timeframe": "15m"}},
+            {"instanceId": "mtf#1", "indicatorId": "profit_rsi", "params": {"timeframe": "1D"}},
+        ), _TICKS)
+    finally:
+        mod.make_tail_at = original
+    # 同じ tick でも、属するバーの time は計算足ごとに違う（15m の枠 ≠ 1D の枠）。
+    assert seen["chart#1"] and seen["mtf#1"]
+    assert seen["chart#1"][-1] != seen["mtf#1"][-1]
+
+
+def test_unknown_timeframe_override_falls_back_to_the_chart_timeframe(_port):
+    """未知の override はチャート足に追従する（勝手な足で計算しない）。"""
+    port = _RecordingPort(_df(400))
+    _port(port)
+    ctl.handle_live_tick_tails(_specs_query(
+        {"instanceId": "x", "indicatorId": "profit_rsi", "params": {"timeframe": "3y"}},
+    ), _TICKS)
+    assert port.loaded == ["15m"]
+
+
+def test_both_timeframes_appear_in_the_merged_response(_port):
+    """異なる計算足の末尾値が 1 つの tick エントリへまとまる。"""
+    _port(_Port(_df(400)))
+    out = ctl.handle_live_tick_tails(_specs_query(
+        {"instanceId": "chart#1", "indicatorId": "profit_rsi", "params": {"timeframe": "chart"}},
+        {"instanceId": "mtf#1", "indicatorId": "profit_rsi", "params": {"timeframe": "1h"}},
+    ), _TICKS)
+    assert out is not None
+    assert [e["tickMs"] for e in out] == [t[0] for t in _TICKS]
+    assert set(out[-1]["tails"]) == {"chart#1", "mtf#1"}
+
+
 def test_forming_bar_accumulation_still_covers_every_tick(_port):
     """地平で絞るのは末尾値だけ。形成中バーの累積（volume）は 1 本も飛ばさない。"""
     seen = []
