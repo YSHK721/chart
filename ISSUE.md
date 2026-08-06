@@ -4597,3 +4597,40 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検定**: `overlay_host.test.js`（生成・再利用・版面注入・版面欠落で例外・DOM 非対応で縮退・className 必須）、`pane_legend_view_host.test.js`（HTML に器が無くても描画・再描画で器が増えない・版面欠落で例外）、`served_pages_no_overlay_markup.test.js`（配信 3 ページが View 所有の器を直書きしていない／版面を持つ）。
 - **回帰**: indicator_ui web 1,082 / replay_ui web 297 / market_profile web 319 / unified_ui web 43 全通過。
 - **残（未着手）**: `#chart-overlay-tl` / `#current-price` / `#crosshair-readout` は依然 3 ページへ直書き複製されている（同じ取り残しの余地）。同一方式（View 所有）への移行は UI 構造の変更を伴うため承認後に実施する。
+
+## ISSUE-278: [設計是正・実測] リポジトリ全体 SOLID 精査で検出した違反（アーキテクチャエージェント 6 体＋本体再検証）（2026-08-06）
+- **ステータス**: OPEN（是正は未承認・下記 2 件のみ RESOLVED）
+- **重大度**: Critical〜High（データ破損の恒久化・時間軸汚染・無言の機能停止を含む）
+- **方法**: 担当分割 6 体（indicator_ui フロント JS／指標 API 中核／指標実装群／simulator・replay／unified_ui・market_profile／marketdata・共有基盤）。全指摘を本体が file:line・grep 件数・実 HTTP で再検証し、裏付けの取れたものだけを以下に採る。
+- **共通する失敗形**: 「無言の縮退」。値は正しいまま、性能・時間軸・操作性・データ保全だけが静かに壊れ、検定は緑のまま通る。
+
+### 検出（検証済み）
+| # | 重大度 | 場所 | 事象（実測） |
+|---|---|---|---|
+| 1 | Critical | `marketdata/dukascopy_source.py:212` ＋ `simulator/tools/fetch_ticks_ymd.py:71` | ティック取得失敗を例外ごと飲み、空 DataFrame を返す。呼出側が `.empty` マーカーを書き、その日は二度と取得されない＝一過性の通信断がデータ欠損として恒久化。過去日不変性の検証結果まで偽になる |
+| 2 | Critical | `latest_dispatch.py:23` ／ `mtf_projection.py:36` | 対象 kind が `("line","histogram")` 固定で `level_dash` が漏れる。cvfe は既定 `display_mode="dashes"`（`call_binding.py:426`）＝上位足 H の時刻がチャート足の時間軸へ混入（ISSUE-274 と同型） |
+| 3 | Critical | `live_tick_tails.py:34,72` | 2 つの `except Exception` が増分器の実装バグまで「対象外」に潰す。応答にもログにも痕跡が残らない |
+| 4 | Critical | `simulator/replay_ui/web/js/adapter/front/composition_root_front.js` | ライブ合成根の全文フォーク。standalone replay は `catalog.load` を呼ばず（ライブは `:242`）、`serve_replay.py` に `/catalog` が 0 件＝サーバ既定 params の overlay が構造的に届かない。`validTimeframes` もライブは台帳導出・リプレイは 8 足手書き |
+| 5 | High | `marketdata/serving_cache.py:87-91` | `stat()` 失敗（CSV 削除）を「キャッシュ有効」と解釈。配信プロセスが古い断面を無期限に配信し続ける |
+| 6 | High | `market_profile_api/gateway/marketdata_tick_store.py:74-81` | mid/tz 正規化の再実装。公開面 `marketdata.tick_m1.ts_and_mid` が存在するのに使っていない＝価格軸が静かにずれる余地 |
+| 7 | High | `call_binding.py:313` vs `:353` ほか | `latest_meta` の宣言型は 3-tuple、実登録は 4-tuple。要素を落としても型検査を通り、増分計算が無言で full へ縮退 |
+| 8 | High | `call_binding.py` `params_defaults` | 宣言粒度が compute_id、実契約は variant。差分は `_accepted_kwargs` が無言破棄＝UI が効かないコントロールを表示 |
+| 9 | High | `unified_ui/router.py:200-208` | 実 HTTP 実測: `GET /tests/sw_rewrite.test.js` → 200、`GET /package-lock.json` → 200。web_root 全体を無差別配信（replay 側は `static_file_server.py:46-50` で 3 サブツリーに限定済み） |
+| 10 | High | `unified_ui/router.py:212-216` | 実 HTTP 実測: 統合層自身の JS と `/sw.js` に `Cache-Control` が付かない（core 側は `no-cache, no-store, must-revalidate`）。両 core が潰した「古い ES モジュールキャッシュ」を実配信ページだけ再現 |
+| 11 | High | `unified_ui/web/js/mode_ui_view.js:21-36` | 承認済み（2026-07-23）の vendor 読込リトライ（`ensureLwc(retries=3)`＋cache-bust）が実配信ページにだけ無い。`onerror → resolve(false)` で起動中止・F5 まで回復しない |
+| 12 | High | `market_profile/web/js/usecase/catalog_entry.js:31` | `_MP_PLAYER_TF` が時間足 9 コードの手書き複製。同パッケージに `TF_CODES`（`tf_meta.js:22`）があり `mp_source_capability.js` は正しく参照している（ISSUE-253 と同型） |
+| 13 | High | `simulator/replay_ui/web/js/adapter/front/replay_market_profile_actor.js:37`／`replay/stream.js:59` | 暦足判定 `{1W,1M}` の手書き複製。台帳側に `FLOOR_TFS`／`CALENDAR_TFS` が存在 |
+| 14 | High | 指標実装群（grep 実測） | 同一ロジックの複製: MT4 EMA 3 実装（`profit_system`／`profit_adx_needle`／`profit_rmm_macd`。後者 2 つは前者を import 済み）／母σ+σ水準 inline 13 箇所（キー名 5 方言）／`_resolve_times` ローカル定義 8 箇所（`c.lower()` 版は非 str 列名で落ちる）／`src/loader.py` の `sys.path` 自己挿入 18 パッケージ（「撤去済み」と記録されているのに生存） |
+| 15 | High | `chart_renderer.js:672` ＋ `series_drawer.js`（6 経路） | `_buildReadoutDto` の `overlays` が空固定で読み手を失った `_overlayReadouts` を 6 経路が同期し続ける。`tickvol_catalog_entry.test.js:153` がソース正規表現で削除をロック |
+| 16 | High | `unified_ui/web/index.html`（3 ページ複製の残り） | `#replay-bar`／`#indicator-dialog`／ツールバーは依然手書き複製。実ドリフト発生済み（`rp-speed` の title が :8000 だけ「リアルタイム」の説明を欠く） |
+
+### 是正済み（本ブランチ・commit c118b8a）
+- 凡例行の在席権威を renderer のスロット集合から controller の適用一覧へ移した。系列を持たないアクター駆動型指標（market_profile／tickvol_bands）が凡例に出ず、旧 `#legend` 撤去後は目/歯車/× を完全に失って操作不能だった（ダイアログは追加専用）。
+- `setVisible`／`applySeriesStyle`／`renderHorizontal` が凡例モデルを再発火せず、非表示にしても値が残る・水準線のみの指標の行が遅れて出る問題を是正。
+
+### 是正順（提案・未承認）
+1. データ保全: #1（取得失敗の恒久化）→ #5（削除検知の欠落）
+2. 表示の正しさ: #2（時間軸汚染）
+3. 無言縮退の除去: #3・#7・#8・#15
+4. 複製の解消: #4（リプレイ合成根フォーク＋`/catalog`）→ #16・#12・#13・#14・#6
+5. 配信の衛生: #9・#10・#11
