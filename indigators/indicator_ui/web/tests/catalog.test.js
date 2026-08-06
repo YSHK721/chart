@@ -36,9 +36,10 @@ test('catalog: btlm_trail_marod is a pane oscillator (source 8択 / maxbars min3
   assert.equal(d.category.nameKey, 'cat.oscillator');
   // params は source / maxbars / q_low / q_high / q_out / k_events / event_agg / window_n /
   //   color（back golden 契約と対称・外れ値 3 パラメータは共有ビルダー EVQ_PARAMS）。
+  //   timeframe（計算.時間足）は全指標共通のため REGISTRY 構築時に注入される（ISSUE-274）。
   assert.deepEqual(
     d.params.map((p) => p.name).sort(),
-    ['color', 'event_agg', 'k_events', 'maxbars', 'q_high', 'q_low', 'q_out', 'source', 'window_n'],
+    ['color', 'event_agg', 'k_events', 'maxbars', 'q_high', 'q_low', 'q_out', 'source', 'timeframe', 'window_n'],
   );
   assert.equal(paramOf(d, 'source').type, ParamType.ENUM);
   assert.equal(paramOf(d, 'source').default, 'close');
@@ -76,10 +77,10 @@ test('catalog: ma_marod is a pane oscillator (source 8択 / ma_type 4択 / lengt
   assert.equal(d.placement, 'pane');
   assert.equal(d.category.nameKey, 'cat.oscillator');
   // params は source / ma_type / length / q_low / q_high / q_out / k_events / event_agg /
-  //   window_n / color（back golden 契約と対称）。
+  //   window_n / color（back golden 契約と対称）＋ 注入される timeframe（ISSUE-274）。
   assert.deepEqual(
     d.params.map((p) => p.name).sort(),
-    ['color', 'event_agg', 'k_events', 'length', 'ma_type', 'q_high', 'q_low', 'q_out', 'source', 'window_n'],
+    ['color', 'event_agg', 'k_events', 'length', 'ma_type', 'q_high', 'q_low', 'q_out', 'source', 'timeframe', 'window_n'],
   );
   assert.equal(paramOf(d, 'source').type, ParamType.ENUM);
   assert.equal(paramOf(d, 'source').default, 'close');

@@ -278,9 +278,10 @@ export class IndicatorController {
   //   サーバはこの申告から各ティック時点の指標末尾値を一括算出して応答へ同梱する
   //   （フロントは tick 適用と同一同期ブロックで描く＝tick 路から HTTP 往復が消える）。
   //   申告対象は足内追従の登録指標（INTRABAR_FORMING_IDS）かつ描画済み（_meta 在席）のみ。
-  //   計算.時間足 override（params.timeframe）を持つインスタンスは除く: 申告経路は
-  //   チャート足の窓で計算するため、別足の指標に別足の値を返せない（黙って別足の値を
-  //   描かない＝バー確定時の full 再計算に委ねる）。
+  //   ISSUE-274: 計算.時間足 override（params.timeframe）を持つインスタンスも申告する。
+  //   サーバは申告された params.timeframe ごとに窓と形成中バーの畳み方を分けて計算するため、
+  //   上位足指標にも「その tick 時点の上位足の値」が返る（以前はチャート足の窓しか無く、
+  //   別足の値を返せないため除外していた）。
   //   増分器を持たない指標はサーバ側が明示的に落とす（毎ティック納期に載らないものを
   //   黙って混ぜない＝ISSUE-233 の教訓）。
   appliedComputeSpecs() {
@@ -290,9 +291,6 @@ export class IndicatorController {
         continue;
       }
       const params = this._paramsObject(inst.params);
-      if (params.timeframe && params.timeframe !== 'chart') {
-        continue;
-      }
       specs.push({
         instanceId: inst.instanceId,
         indicatorId: inst.indicatorId,
@@ -884,13 +882,19 @@ export class IndicatorController {
       //   compute 応答の series を自身へ保持すれば並列実行でも取り違えない。
       lastSeries: null,
       async compute(req) {
-        // 計算.時間足（params.timeframe）の per-indicator override は TimeframeController が解決する。
+        // 計算.時間足（params.timeframe）の per-indicator override（ISSUE-274）。
+        //   timeframe        = チャート足（時間軸そのもの。/candles と同じ値）
+        //   computeTimeframe = この指標を計算する足（'chart'/未指定はチャート足に追従）
+        //   両者が異なるとき、サーバは H で計算した系列をチャート足の時間軸へ投影して返す。
+        //   以前は timeframe に実効足（override 済み）を入れており、チャート足がサーバへ伝わらず、
+        //   上位足の時間軸の系列がそのままチャートへ流れていた（時間軸の汚染・未来情報の混入）。
         //   backend は params.timeframe を受理引数に含めない（_accepted_kwargs で除外）ため副作用なし。
         const tfParam = req && req.params ? req.params.timeframe : undefined;
         const result = await compute.compute({
           ...req,
           variant: variantOverride ?? req.variant,
-          timeframe: self._tf.effectiveTimeframe(tfParam),
+          timeframe: self._tf.current(),
+          computeTimeframe: tfParam,
           limit: self._tf.limit(),
           // mode（full/latest）を素通し。未指定は compute_http_client がボディに含めない（後方互換）。
           mode: mode === 'latest' ? 'latest' : undefined,

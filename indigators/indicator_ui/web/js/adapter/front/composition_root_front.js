@@ -686,9 +686,9 @@ export async function bootstrap({
     refreshTfPeriodNow();
   });
 
-  // ライブ追従トグル（present 固有）。B方式（mode==='b'）のみ配線する。install() でボタン click＋
-  //   可視範囲購読を配線し、初期 FOLLOW を適用（LiveUpdater 起動所有権を controller へ・start は冪等）。
-  //   A方式（file://）は null（ボタンは index.html 側で disabled のまま非活性）。
+  // ライブ追従トグル（present 固有）。install() でボタン click を配線し、初期 FOLLOW を適用する
+  //   （LiveUpdater 起動所有権を controller へ・start は冪等）。index.html は初期 disabled で置き、
+  //   install() が活性化する＝配線されたときだけ押せる（ISSUE-275: 配信方式による分岐は持たない）。
   const liveFollowController = new LiveFollowController({
         liveUpdater,
         // ライブ価格の書き手も FOLLOW/ANALYSIS で start/stop（ANALYSIS で価格を凍結＝トグルを効かせる）。

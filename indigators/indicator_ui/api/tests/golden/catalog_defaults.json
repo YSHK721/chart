@@ -9,7 +9,8 @@
     "q_low": 0.05,
     "q_out": null,
     "show_metrics": true,
-    "source": "close"
+    "source": "close",
+    "timeframe": "chart"
   },
   "btlm_trail_marod": {
     "color": "rgba(123, 104, 238, 1)",
@@ -20,6 +21,7 @@
     "q_low": 0.05,
     "q_out": 0.99,
     "source": "close",
+    "timeframe": "chart",
     "window_n": 500
   },
   "cvfe": {
@@ -28,7 +30,8 @@
     "n_har": 500,
     "show_outliers": true,
     "sigma_inner": 1.0,
-    "sigma_outer": 2.0
+    "sigma_outer": 2.0,
+    "timeframe": "chart"
   },
   "ma_marod": {
     "color": "rgba(255, 152, 0, 1)",
@@ -40,6 +43,7 @@
     "q_low": 0.05,
     "q_out": 0.99,
     "source": "close",
+    "timeframe": "chart",
     "window_n": 500
   },
   "moving_averages": {
@@ -59,17 +63,20 @@
     "interval": 0.1,
     "range_from": null,
     "range_to": null,
+    "timeframe": "chart",
     "top_n": 5,
     "width": 2
   },
   "profit_adx_needle": {
     "period": 6,
+    "timeframe": "chart",
     "window": 120
   },
   "profit_arctan": {
     "bar_width": 0.1,
     "ma_method": 1,
     "period": 6,
+    "timeframe": "chart",
     "window": 120
   },
   "profit_band": {
@@ -93,27 +100,33 @@
       0.99
     ],
     "require_full": true,
+    "timeframe": "chart",
     "window": "expanding"
   },
   "profit_hl_band": {
+    "timeframe": "chart",
     "window": 120
   },
   "profit_hlband": {
-    "draw_levels": true
+    "draw_levels": true,
+    "timeframe": "chart"
   },
   "profit_mfi": {
     "ma_period": 5,
-    "mfi_period": 14
+    "mfi_period": 14,
+    "timeframe": "chart"
   },
   "profit_mfi_macd": {
     "fast": 4,
     "mfi_period": 13,
     "signal": 4,
-    "slow": 8
+    "slow": 8,
+    "timeframe": "chart"
   },
   "profit_oscillator": {
     "period_a": 6,
     "period_b": 60,
+    "timeframe": "chart",
     "window": 120
   },
   "profit_oscillator2": {
@@ -121,15 +134,18 @@
     "ma_period": 60,
     "osc_period": 6,
     "rci_period": 12,
-    "stc_slow": 6
+    "stc_slow": 6,
+    "timeframe": "chart"
   },
   "profit_osi_ma": {
     "ma_mode": 1,
-    "ma_period": 21
+    "ma_period": 21,
+    "timeframe": "chart"
   },
   "profit_rmm": {
     "ma_period": 6,
     "osc_period": 6,
+    "timeframe": "chart",
     "window": 120
   },
   "profit_rmm_macd": {
@@ -138,6 +154,7 @@
     "osc_period": 6,
     "signal": 4,
     "slow": 8,
+    "timeframe": "chart",
     "window": 120
   },
   "profit_rsi": {
@@ -147,19 +164,23 @@
     "q_low": 0.1,
     "q_out": 0.99,
     "rsi_period": 6,
+    "timeframe": "chart",
     "window_n": 500
   },
   "profit_rsi_macd": {
     "fast": 4,
     "rsi_period": 13,
     "signal": 4,
-    "slow": 8
+    "slow": 8,
+    "timeframe": "chart"
   },
   "profit_stc": {
-    "period": 70
+    "period": 70,
+    "timeframe": "chart"
   },
   "profit_volatility": {
     "period": 6,
+    "timeframe": "chart",
     "window": 120
   },
   "tgp_btlm": {
@@ -169,13 +190,15 @@
     "mcmc_samples": "standard",
     "price": "open",
     "q_high": 0.95,
-    "q_low": 0.05
+    "q_low": 0.05,
+    "timeframe": "chart"
   },
   "tickvol": {
     "k_events": 50,
     "q_high": 0.9,
     "q_low": 0.1,
     "q_out": 0.99,
+    "timeframe": "chart",
     "window_n": 500
   }
 }

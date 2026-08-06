@@ -511,3 +511,55 @@ test('正常応答でも打ち切りタイマーを残さない（ハンドル�
   assert.equal(got.ok, true);
   // タイマーが残っていればこのテストの終了後もプロセスが生き続ける（node:test が検出する）。
 });
+
+
+// ===========================================================================
+// ライブ追従トグルの活性化（ISSUE-275）
+//   実 UI で「ライブ」ボタンがグレーアウトしたまま押せなくなった回帰。index.html はボタンを
+//   disabled で置き、**合成根の配線（LiveFollowController.install）だけが活性化する**。
+//   かつて LiveFollowController は A方式ゲート（mode!=='b' で disabled・未配線）を持っていたが、
+//   A方式撤去（ISSUE-266/269）で合成根から mode 引数が消えたため常に非活性側へ倒れていた。
+//   LiveFollowController 単体の検定は mode:'b' を明示注入していたため素通りした＝
+//   **合成根の構築そのもの**を通して活性化を固定する。
+// ===========================================================================
+
+// live-follow-toggle だけを返す Fake document（初期 disabled＝index.html の状態）。
+function fakeLiveToggleDoc() {
+  const classes = new Set();
+  const button = {
+    disabled: true,
+    _attrs: {},
+    _click: null,
+    classList: { toggle(n, on) { if (on) { classes.add(n); } else { classes.delete(n); } },
+      contains(n) { return classes.has(n); } },
+    setAttribute(k, v) { this._attrs[k] = v; },
+    getAttribute(k) { return this._attrs[k]; },
+    addEventListener(type, fn) { if (type === 'click') { this._click = fn; } },
+    click() { if (this._click) { this._click(); } },
+  };
+  return {
+    _button: button,
+    getElementById: (id) => (id === 'live-follow-toggle' ? button : null),
+    createElement: () => ({ className: '', textContent: '', style: {}, children: [],
+      set innerHTML(v) { if (v === '') { this.children = []; } }, get innerHTML() { return ''; },
+      append(...n) { this.children.push(...n); } }),
+  };
+}
+
+test('bootstrap: ライブ追従ボタンを活性化して click を配線する（グレーアウト回帰の禁止・ISSUE-275）', async () => {
+  // Arrange
+  const { lwc } = fakeLwc();
+  const doc = fakeLiveToggleDoc();
+  const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
+  // Act
+  const { ready, liveFollowController } = await bootstrap({
+    lwc, container: {}, doc, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+  });
+  await ready;
+  // Assert
+  assert.equal(doc._button.disabled, false, '「ライブ」ボタンが disabled のまま＝グレーアウト');
+  assert.equal(doc._button.getAttribute('aria-pressed'), 'true', '初期 FOLLOW で点灯する');
+  assert.ok(doc._button.classList.contains('is-active'), '点灯クラスが付く');
+  doc._button.click();
+  assert.equal(liveFollowController.mode, 'ANALYSIS', 'click が配線されている（押せる）');
+});

@@ -25,7 +25,12 @@ from adapter.compute.indicator_compute_adapter import IndicatorComputeAdapter
 from adapter.compute.latest_dispatch import latest_compute
 from adapter.compute.live_tick_tails import make_tail_at
 from usecase.dataset_port import dataset_port as _dataset_port
-from usecase.serve_live_tick_tails import parse_specs, states_for_batch, tails_for_ticks
+from usecase.serve_live_tick_tails import (
+    merge_tail_batches,
+    parse_specs,
+    states_for_batch,
+    tails_for_ticks,
+)
 
 
 def _bar_time_fn(tf: str):
@@ -93,6 +98,37 @@ def _tails_horizon_ms(query: "dict[str, list[str]]", now_ms: "int | None") -> "i
     return int(now_ms) - within
 
 
+def _spec_timeframe(spec: Any, chart_tf: str) -> str:
+    """その spec を計算する足（ISSUE-274）。``params.timeframe`` の override を解決する。
+
+    規則は front の ``TimeframeController.effectiveTimeframe`` / ``/compute`` の
+    ``computeTimeframe`` と同一（``'chart'``・未指定・未知値はチャート足に追従）。
+    """
+    raw = (spec.params or {}).get("timeframe")
+    if not isinstance(raw, str) or raw == "chart" or not is_known_timeframe(raw):
+        return chart_tf
+    return raw
+
+
+def _load_window(port: Any, ref: str, tf: str, limit_raw: Any) -> Any:
+    """計算足 ``tf`` の窓（直近 N 本）を返す。材料が無ければ ``None``。
+
+    窓を絞らないと 1 ステップが全件に比例する（実測 50,000 本で 29.4ms/tick →
+    1,386 本で 3.8ms/tick）。本数の数え方は ``/compute`` の投影経路と同一（計算足の本数）。
+    """
+    try:
+        df = port.load_dataframe(ref, tf)
+    except Exception:  # noqa: BLE001 — 1 つの計算足の失敗で他の指標の末尾値を落とさない。
+        return None
+    if df is None or len(df) == 0:
+        return None
+    if limit_raw is not None and str(limit_raw).lstrip("-").isdigit():
+        limit = int(limit_raw)
+        if limit > 0:
+            df = df.tail(limit)
+    return df
+
+
 def _set_last_bar(window: Any, values: "dict[str, float]") -> None:
     """窓の末尾行だけを形成中バーで上書きする（pandas 依存はここに閉じる）。"""
     last = len(window) - 1
@@ -131,35 +167,44 @@ def handle_live_tick_tails(
     port = _dataset_port()
     if not port.is_known(ref) or not port.is_known_timeframe(tf):
         return None
-    try:
-        df = port.load_dataframe(ref, tf)
-    except Exception:
-        return None
-    if df is None or len(df) == 0:
-        return None
-    # 表示範囲（直近 N 本）は /compute と同一規約。窓を絞らないと 1 ステップが全件に比例する
-    #   （実測 50,000 本で 29.4ms/tick → 1,386 本で 3.8ms/tick）。
-    if limit_raw is not None and str(limit_raw).lstrip("-").isdigit():
-        limit = int(limit_raw)
-        if limit > 0:
-            df = df.tail(limit)
 
-    # 「この tick はどのバーに属するか」は tf_meta.bar_time_unix ただ 1 つ（全 tf 同一経路）。
-    #   形成中バーは「バーの累積」でなければならない（ISSUE-251）。増分だけを畳むと poll ごとに
-    #   open/high/low/volume がリセットされ、フロントが描いたローソクと値が食い違う。
-    bar_time_fn = _bar_time_fn(tf)
-    first_ms = int(ticks[0][0])
-    seed, prior = _bar_seed(
-        ref, tf, first_ms, bar_time_fn(first_ms),
-        buffer=buffer, forming=forming or forming_bar_mod,
-    )
-    states = states_for_batch(prior, ticks, bar_time_fn, seed=seed)
-    tail_at = make_tail_at(
-        df=df, adapter=adapter or IndicatorComputeAdapter(),
-        latest_compute=latest_compute, set_last_bar=_set_last_bar,
-    )
+    # ISSUE-274: 計算足（params.timeframe）ごとに束ねる。上位足指標は「その tick 時点の
+    #   **上位足の**形成中バー」で計算しなければならず、畳み方（どのバーに属するか）も窓も
+    #   計算足ごとに別になる。チャート足で畳んだ形成中バーを上位足の窓へ差し込むと、
+    #   上位足指標へチャート足の値が入る（黙って別足の値を描く）。
+    #   グループ分けだけが増え、1 グループぶんの手順は従来と同一。
+    groups: "dict[str, list]" = {}
+    for spec in specs:
+        groups.setdefault(_spec_timeframe(spec, tf), []).append(spec)
+
     # 形成中バーの累積（states）は全 tick で畳む（open/high/low/volume は 1 本も飛ばせない）。
     #   費用が tick 数に比例するのは末尾値の計算だけなので、そちらだけを地平で絞る。
     horizon = _tails_horizon_ms(query, now_ms)
     wanted = None if horizon is None else (lambda st: int(st.tick_ms) > horizon)
-    return tails_for_ticks(states, specs, tail_at, wanted=wanted)
+    first_ms = int(ticks[0][0])
+    compute_adapter = adapter or IndicatorComputeAdapter()
+    forming_mod = forming or forming_bar_mod
+
+    batches: "list[list[dict]]" = []
+    for group_tf, group_specs in groups.items():
+        df = _load_window(port, ref, group_tf, limit_raw)
+        if df is None:
+            continue        # 当該計算足の材料が無い＝そのグループだけ落とす（他は出す）。
+        # 「この tick はどのバーに属するか」は tf_meta.bar_time_unix ただ 1 つ（全 tf 同一経路）。
+        #   形成中バーは「バーの累積」でなければならない（ISSUE-251）。増分だけを畳むと poll ごとに
+        #   open/high/low/volume がリセットされ、フロントが描いたローソクと値が食い違う。
+        bar_time_fn = _bar_time_fn(group_tf)
+        seed, prior = _bar_seed(
+            ref, group_tf, first_ms, bar_time_fn(first_ms),
+            buffer=buffer, forming=forming_mod,
+        )
+        states = states_for_batch(prior, ticks, bar_time_fn, seed=seed)
+        tail_at = make_tail_at(
+            df=df, adapter=compute_adapter,
+            latest_compute=latest_compute, set_last_bar=_set_last_bar,
+        )
+        batches.append(tails_for_ticks(states, group_specs, tail_at, wanted=wanted))
+
+    if not batches:
+        return None
+    return merge_tail_batches(batches)

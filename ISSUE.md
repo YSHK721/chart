@@ -4511,3 +4511,55 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **出力不変の確認**: ライブコアを新旧で入れ替え、同一条件（jp225_tick 1h・limit 1500・mode=latest）で 5 指標を再取得。**系列数・点数・time がすべて一致**（値は市場が進んだぶんのみ変動）。
 - **検定**: `test_incremental_emit_single_source.py` を新設。(1) 旧 2 規約との同値 (2) 末尾 K 点の規約 (3) 増分器が `_tail_points` を再実装していない・時刻を直接 `int()` 化していない、を固定。
 - **検証**: 複製を 1 モジュールへ戻すと検定が Red（識別力を実証）。回帰: marketdata 236 / indicator_ui api 791 / market_profile api 365 / replay_ui 236 / tools+simulator 915 全通過。実 UI（8000・1 分足）でローソク・指標・水準線の描画を確認。
+
+## ISSUE-274: [不具合] 上位足計算（計算.時間足）の系列を H の時間軸のままチャートへ渡している（2026-08-06）
+- **ステータス**: RESOLVED（2026-08-06・D-1〜D-5 すべて解消・実 UI / 実 HTTP 検証済み）。設計は `.doc/MTF_INDICATOR_PROJECTION_BASIC_DESIGN.md`。
+- **重大度**: High（D-5 は未来情報の混入＝値そのものが誤り。他は表示破綻）
+- **事実**: `moving_averages` の `params.timeframe`（計算.時間足）で上位足計算を指定できるが、計算結果を**上位足 H の時間軸のまま**フロントへ返しており、チャート足 C の時間軸へ写像していない。実 UI（8000・5m チャート・EMA9）で 5 件を実測。
+
+  | ID | 事象（実測） | 直接原因 |
+  |---|---|---|
+  | D-1 | 1D 計算にすると時間軸が 2020 年まで伸び、左スクロールでローソク不在の空白域が続く。価格軸が 23,520 まで引かれる | `limit=1500` を **H の本数**で数える（H=1D → 1500 日ぶん）。C に存在しない時刻が時間軸へ union される |
+  | D-2 | 1h 計算は点間が直線補間され、1D 計算はほぼ一本の直線になり指標として読めない | H の点をそのまま line 系列へ渡す。上位足の値は次の足まで一定＝階段であるべき |
+  | D-3 | 系列が `1785974400` で止まりローソクは `1786010400`（10 時間先）まで伸びる | 最新 H バーのラベル時刻に点が置かれ、それ以降に点が無い |
+  | D-4 | 上位足指標がライブの tick 粒度更新を受けない | `indicator_controller.js:293` が `params.timeframe` 保持インスタンスを `appliedComputeSpecs()` から除外 |
+  | D-5 | **未来情報の混入（21 時間）**。暦足はラベルが確定時刻の 21h 前にあるため、その日の終値まで織り込んだ値が当日 00:00 の位置に現れる | ラベル ≠ 確定時刻。`period_utc_start()` L136-155 / `period_label_naive()` L158-170 |
+
+- **D-5 の実測**（`jp225_tick`・`resample_ohlc_tf` の実ラベルと `period_utc_start()`）:
+  ```
+  1D  label=2026-08-04 00:00  実区間 [2026-08-03 21:00, 2026-08-04 21:00)   ラベルは確定の 21h 前
+  1W  label=2026-07-24 00:00  実区間 [2026-07-17 21:00, 2026-07-24 21:00)   ラベルは確定の 21h 前
+  1M  label=2026-07-31 00:00  実区間 [2026-06-30 21:00, 2026-07-31 21:00)   ラベルは確定の 21h 前
+  ```
+- **`/compute` 実 HTTP ログ**（5m チャート）:
+  ```
+  timeframe='chart' : req{tf:5m, limit:1500} → MA n=1500 step=300   t1=1786010400
+  timeframe='1h'    : req{tf:1h, limit:1500} → MA n=1500 step=3600  t0=1778083200(約92日前)
+  timeframe='1D'    : req{tf:1D, limit:1500} → MA n=1500 step=86400 t0=1602720000(2020年)
+  ```
+- **根本原因**: 上記 5 件は独立の不具合ではなく、「H の時間軸の系列を C の時間軸のチャートへ渡している」という単一原因の 5 つの現れ。
+- **抜本的対策**: 計算と描画の間に**投影段を 1 つだけ**置き、H の系列を C の時間軸へ前方保持で写す（`adapter/compute/mtf_projection.py`）。所属期間の判定は**ラベルではなく期間始端**（`marketdata.tf_meta.period_start_unix` が唯一源）で行う。投影後は C の時間軸を持つ通常の系列になるため、描画・スタイル・スケール・凡例・永続化の既存経路は**無改変**で再利用でき、D-1/D-2/D-3/D-5 は分岐追加ではなく原因消滅により解消する。
+- **実装**:
+  - `/compute` 契約: `timeframe`＝チャート足（時間軸）、`computeTimeframe`＝計算足。未指定・`'chart'`・同値なら投影せず従来と完全同一（後方互換）。
+  - front: `indicator_controller._gatewayAdapter` が両者を送る。`compute_http_client` は `computeTimeframe` を指定時のみボディへ載せる。
+  - 全指標へ「計算.時間足」を配布。front は `catalog.js` の `withCalcTimeframe`、back は `call_binding.indicator_param_defaults()` で **各 1 箇所から注入**（22〜24 定義へリテラルを配らない）。アクター駆動型（market_profile / tickvol_bands）は `/compute` を持たないため対象外。
+  - `moving_averages` の計算グループキーを `'計算'` → `'group.calc'` へ統一（同一ダイアログに計算グループが 2 つ並ぶのを回避）。見出しが「計算」→「calc」に変わる。
+- **検証（実 UI・worktree を一時ポートで起動）**: 5m チャートに「1D 計算の移動平均（価格ペイン重ね）」と「1h 計算の RSI（専用ペイン）」を適用し、①階段状に描かれる ②右端がローソク末尾まで届く ③左スクロールでチャート足のみの場合と同一挙動（旧実装の空白域・価格軸 23,520 は消失）を確認。HTTP 層でも `set(系列時刻) ⊆ set(ローソク時刻)`・右端一致・`wait_for_close` の値差（1h: 65588.880/65571.499、1D: 64488.521/64691.212）を実測。
+- **画像**（リポジトリ直下・他のスクリーンショットと同じく git 管理外）: 是正前 `issue274-before-1d-interpolated.png`（1D 計算がほぼ直線・右端 10 時間欠け）/ `issue274-before-axis-pollution.png`（左スクロールで空白域・価格軸 23,520）。是正後 `issue274-after-ma1d-rsi1h.png`（1D 計算の MA が階段・1h 計算の RSI が専用ペイン）/ `issue274-after-zoom.png`（拡大時の段）。
+- **検定**: `tests/test_mtf_projection.py` を新設（12 件）。暦足を模した境界（ラベル ≠ 期間始端）で因果性を固定。識別力は変異注入で実証（ラベル比較・バー生時刻比較のいずれも Red）。
+- **回帰**: front（node）1069 / indicator_ui api 803 / marketdata+common+common_view+tools 411 / replay_ui 236 全通過。
+- **D-4（tick 粒度追従）の対策**: `/live_ticks` を **計算足ごとのグループ処理**にした。除外条件を消すだけでは成立しない（窓も形成中バーもチャート足単位のため、上位足指標へチャート足の値が流れ込む）。形成中バーの畳み方 `forming_states` は `bar_time_fn` 注入で元から時間足非依存だったため、計算足ごとに「窓のロード → その足の `bar_time_fn` で畳む → 末尾行を差し替えて計算」を行い、`merge_tail_batches` で tick ごとに 1 本へ束ねる。同一計算足の spec は 1 グループ＝窓のロードは計算足の種類数ぶんだけ（インスタンス数に比例しない）。front は `appliedComputeSpecs()` の除外条件を撤廃。
+- **D-4 の実測**: `/live_ticks` 実応答で、計算足 1h のインスタンスが 112 tick すべてに末尾値を持ち、うち 75 通りの異なる値（チャート足インスタンスと同数）。実 UI でも `specs` に載る（旧: 空）。
+- **残る制約（描画ライブラリ由来・仕様として明示）**: lightweight-charts の `series.update()` は末尾より古い時刻を拒否する（`Cannot update oldest data`）。tick で安く動かせるのは末尾 1 点だけで、現在の H 期間の他の C バーはバー確定時の full 再計算で追いつく。現在の段の右端が段本体より「1 チャート足ぶんの上位足指標の変動」だけ先行する（実測 1h 計算で 5.4pt・65,478 に対し 0.008%＝段の高さより小さく視認不能）。段全体を毎 tick 動かすには系列全体の `setData`（1500 点）を tick ごとに行う必要があり費用に見合わない。
+
+## ISSUE-275: [不具合・実測] ライブモードで「ライブ」ボタンがグレーアウトしたまま押せない（A方式撤去の取りこぼし）（2026-08-06）
+- **ステータス**: RESOLVED（2026-08-06・fix/live-follow-toggle-a-mode-gate）
+- **重大度**: High（ライブ追従 ON/OFF（FOLLOW↔ANALYSIS）がユーザー操作から完全に失われていた。無言の機能不全）
+- **事象（実 UI・8000・実測）**: ライブモード（`body.um-mode-live`）で `#live-follow-toggle`（「ライブ」）が `disabled=true` / `opacity=0.4` / `aria-pressed=false` のまま。押しても何も起きない。チャート・価格・時間足・インジケーターは正常（canvas 7・現在値更新あり・console エラー 0）＝グレーアウトはこのボタン 1 個。
+- **真因（コードで確認）**: `live_follow_controller.js` が A方式（file://）用のゲート `this._served = mode === 'b'` を持ち、`install()` は `!_served` ならボタンを `disabled=true` にして**click も配線せず return** していた。一方 **ISSUE-269（5432146・A方式経路の全撤去）で合成根から `mode,` 引数が削除**された。以後 `mode === undefined` → `_served === false` が恒久的に成立し、ゲートは常に「非活性」側へ倒れていた。
+- **なぜ検定が素通りしたか（本質）**: `live_follow_controller.test.js` は `setup({ mode = 'b' })` と全構築で `mode: 'b'` を**明示注入**しており、合成根が実際に渡す形（mode なし）を一度も通していなかった。A方式非活性を確認する検定まで在ったため、緑のまま実 UI だけが壊れた（ISSUE-268 と同型: 「node で通る」は「実 UI で動く」を意味しない）。
+- **抜本的対策（分岐の除去）**: A方式は ISSUE-266/269 で撤去済みで「非 served」という状態は存在しない。`mode` 引数・`_served`・`install()` の早期 return を **削除**し、配信方式による分岐を持たない実装にした（`mode: 'b'` を渡し直す＝撤去済み概念の延命は採らない）。合成根の陳腐化コメント（「B方式（mode==='b'）のみ配線する」）も実態へ是正。
+- **検定（壊れた層で固定する）**: `composition_root_front.test.js` に **bootstrap を実際に通す**検定を新設し、index.html と同じ初期 `disabled=true` のボタンが (1) `disabled=false` になる (2) `aria-pressed=true` / `is-active` で点灯する (3) click で ANALYSIS へ遷移する（＝配線されている）ことを固定。`live_follow_controller.test.js` からは `mode` 注入を撤去し、「合成根と同じ構築（mode 引数なし）で活性化する」検定へ置換（A方式非活性の検定は対象概念ごと削除）。
+- **識別力の実証**: ゲートを書き戻すと 6 件 Red（新設の bootstrap 検定を含む）。復元で 35 件 Green。
+- **検証**: indicator_ui web 1,070 / replay_ui web 297 / market_profile web 319 / unified_ui web 43 全通過。実 UI（8000・実 HTTP・実クリック）: ロード直後 `disabled=false` / `aria-pressed=true` / `is-active` / opacity 1・背景ワイン `rgb(123,34,51)`、1 クリックで消灯 `aria-pressed=false`・背景グレー `rgb(68,71,79)`（ANALYSIS）、再クリックで復帰。console エラー 0。
+- **残（同じ撤去の取りこぼし・未着手）**: (1) `bootstrap` の `protocol` 引数が ISSUE-269 以後どこからも読まれない死に引数（検定は今も `protocol:'http:'`/`'file:'` を渡している）。(2) `indicator_controller.js` の JSDoc に削除済みフィールド `@property {string} _mode（'a'=file:// / 'b'=served）` が残存。いずれも挙動には影響しないが、撤去済み概念の痕跡＝次の誤読の種。API 面の変更を伴うため承認後に処理する。
