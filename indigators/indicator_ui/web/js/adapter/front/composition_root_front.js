@@ -213,7 +213,9 @@ export async function bootstrap({
   // ペイン別凡例（ISSUE-276）。指標の行を「描画先ペインの左上」へ出す表示系統で、旧
   //   #legend（左上に全件を縦積み）とペイン内ウォーターマークを置き換える。幾何と値は
   //   ChartRenderer が DTO で供給し、ラベルと操作は IndicatorController が供給する。
-  const paneLegendView = new PaneLegendView({ document: doc, elementId: 'pane-legends' });
+  //   描画先の器は View 自身が版面（.chart-wrap）配下へ生成する（HTML への直書き＝配信 3 ページの
+  //   手書き複製をやめた・2026-08-06 是正）。合成根は id 文字列を知らない。
+  const paneLegendView = new PaneLegendView({ document: doc });
 
   const renderer = new ChartRenderer({
     chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),

@@ -4579,3 +4579,21 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検定**: renderer 側にペイン別凡例 DTO の検定を新設（ペイン帰属・クロスヘア値・最新値フォールバック・非表示除外・色追従）。撤去したウォーターマーク検定は「ウォーターマークを作らない」検定へ置換。
 - **回帰**: indicator_ui web 1,070 / replay_ui web 297 / market_profile web 319 / unified_ui web 43 全通過。
 - **残（未着手）**: 現在値の大型表示（32px）は価格軸の最終値ラベルと情報が重複している。削除候補だが表示の好みに関わるため未実施。
+
+## ISSUE-277: [設計是正・実測] 表示要素を index.html へ直書きしていたため、実配信ページ（unified_ui）の取り残しでペイン別凡例が全滅した（2026-08-06）
+- **ステータス**: RESOLVED（2026-08-06・worktree-feat+pane-legend）
+- **重大度**: High（ISSUE-276 の成果物が実配信 UI で 1 つも表示されない＝機能が届いていない）
+- **事象（実測・実 HTTP）**: 公開 :8000 で凡例が 1 つも出ない。`curl :8000` の返す HTML は `#chart-overlay-tl` と旧 `#legend` のみで `#pane-legends` が無い。一方 `/live/css/app.css` には `.pane-legend*` 規則 14 件、`/live/js/adapter/front/pane_legend_view.js` は HTTP 200＝CSS と JS は届いている。`PaneLegendView._root()` の `getElementById` が null を返し `render()` が即 return するため、**例外もログも出さずに全滅**していた。
+- **真因**: (1) チャート内の表示要素を index.html へ直書きしており、配信ページ 3 枚（indicator_ui / replay_ui / unified_ui）へ同じマークアップを手書き複製する義務が生まれていた。ISSUE-276 は 2 枚しか更新しておらず、実際に配信される unified_ui が取り残された。(2) 「要素不在なら no-op」という縮退が契約違反を無症状にし、取り残しを検出不能にしていた。
+  - 同型の取り残しは既に 2 回発生済み: リプレイ `#rp-mode` の option 5 件欠落（commit 4079461）、カテゴリボタンの二重表示（ISSUE-221）。今回で 3 回目。
+  - 複製の遠因は統合 UI の「既存 core は byte 不変・新規ファイルのみ」制約（`.doc/LIVE_REPLAY_UNIFICATION_BASIC_DESIGN.md`）だが、**チャートホスト DOM を複製するという設計判断はどこにも記録が無い**。CSS・JS は symlink で単一ソース化されており、HTML だけが複製として残っていた。制約自体も 2026-07-31 に失効している（ISSUE-169）。
+- **抜本的対策（SOLID）**: 表示系統のホスト要素を **描画する View が所有し自分で生成する**（`overlay_host.js` 新設）。ページに要求するのは版面 `.chart-wrap` ただ 1 つ。
+  - SRP: 表示系統の構成は描画側の関心。配信ページは版面だけを持つ。
+  - OCP: 表示系統の追加は View を 1 本足すだけ。HTML も `overlay_host.js` も改変不要（要素名を列挙する中央 factory は置かない＝追加のたび改変が要り OCP 違反を移すだけになる）。
+  - DIP: View はページが宣言した id ではなく、注入されたアンカー要素に依存する。
+  - LSP: `.chart-wrap` を持つページはどれも等価な宿主。要素の取り残しという部分実装が起こり得ない。
+  - フェイルクローズ: DOM がある環境で版面が無ければ例外（無言 no-op を廃止）。DOM 非対応（SSR・スタブ document）だけを縮退として区別する。
+  - リプレイ core へは symlink で同一実装を参照させ配線した（コード複製なし・既存 JS/CSS と同じ単一ソース機構）。ISSUE-276 では replay に `#pane-legends` の器だけがあり View が無い＝死んだマークアップになっていた。
+- **検定**: `overlay_host.test.js`（生成・再利用・版面注入・版面欠落で例外・DOM 非対応で縮退・className 必須）、`pane_legend_view_host.test.js`（HTML に器が無くても描画・再描画で器が増えない・版面欠落で例外）、`served_pages_no_overlay_markup.test.js`（配信 3 ページが View 所有の器を直書きしていない／版面を持つ）。
+- **回帰**: indicator_ui web 1,082 / replay_ui web 297 / market_profile web 319 / unified_ui web 43 全通過。
+- **残（未着手）**: `#chart-overlay-tl` / `#current-price` / `#crosshair-readout` は依然 3 ページへ直書き複製されている（同じ取り残しの余地）。同一方式（View 所有）への移行は UI 構造の変更を伴うため承認後に実施する。

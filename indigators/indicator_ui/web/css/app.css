@@ -88,9 +88,11 @@ html, body {
    チャートを覆い（実測: 11 件で 439x571px＝チャート高の 67%）、かつ DOM の凡例が canvas の
    ウォーターマークに重なって判読不能だった。ペインへ分散させることで積み上がりが構造的に消える。
 
-   #pane-legends 自体はクリックを透過し（pointer-events:none）、各グループだけが受け取る。
-   これがないとチャートのドラッグ・ホイールが全面で効かなくなる。 */
-#pane-legends {
+   器（.pane-legends）は PaneLegendView が .chart-wrap 直下へ自分で生成する（HTML に書かない・
+   overlay_host.js）。ゆえに id ではなくクラスで当てる。自体はクリックを透過し
+   （pointer-events:none）、各グループだけが受け取る。これがないとチャートのドラッグ・
+   ホイールが全面で効かなくなる。 */
+.pane-legends {
   position: absolute; inset: 0; z-index: 7;
   pointer-events: none;
 }

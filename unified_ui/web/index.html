@@ -52,13 +52,15 @@
       <button id="enter-replay" class="tb-interval" type="button" aria-pressed="false" title="リプレイ表示のオン・オフ">リプレイ</button>
     </div>
 
-    <!-- チャート + クロスヘア価格読み取り欄 + 凡例（両モード共有ホスト）。 -->
+    <!-- チャート + クロスヘア価格読み取り欄（両モード共有ホスト）。
+         指標の凡例はここに書かない: ペイン別凡例の器は PaneLegendView が .chart-wrap 直下へ
+         自分で生成し所有する（overlay_host.js）。旧 #legend（左上に全件を縦積み）は ISSUE-276 で
+         撤去済みで、core 2 ページからは消えていたが本ページだけ取り残されていた（ISSUE-277）。 -->
     <div class="chart-wrap">
       <div id="chart"></div>
       <div id="chart-overlay-tl">
         <div id="current-price"></div>
         <div id="crosshair-readout"></div>
-        <div id="legend"></div>
       </div>
     </div>
     <!-- Market Profile リプレイバーのホスト（replay の MP replay=ON で動的生成）。 -->

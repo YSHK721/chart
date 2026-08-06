@@ -22,23 +22,35 @@
 //   - 行のラベルと操作（目/歯車/×）は IndicatorController が供給する。
 //   - 本 View は 2 つの入力を合成して DOM を組むだけ。lightweight-charts には一切触れない。
 //
-// DOM 非依存: document は注入。要素不在・DTO 未着でも安全（no-op）。
+// ホスト要素の所有（2026-08-06 是正）: 描画先の器は **本 View が所有し自分で生成する**
+//   （overlay_host.ensureOverlayHost）。index.html には一切書かない。旧構成は配信 3 ページの
+//   HTML へ `<div id="pane-legends">` を手書き複製する前提で、実際に unified_ui（:8000＝実配信）
+//   の取り残しにより凡例が全滅していた。ページに要求するのは版面 .chart-wrap ただ 1 つ。
+//
+// DOM 非依存: document は注入。DTO 未着でも安全（no-op）。ただし DOM がある環境で版面が
+//   無い場合は例外（フェイルクローズ）＝契約違反を無症状にしない。
 
 import { fmtValue } from './format.js';
+import { ensureOverlayHost } from './overlay_host.js';
 
 // 折りたたみチップの見出し記号（ツールバーの「インジケーター」と同じ字形＝同一概念に別記号を作らない）。
 const CHIP_ICON = '∿';
+
+// 本 View が所有するホスト要素のクラス名（＝所有者名）。CSS もこのクラスで当てる。
+const HOST_CLASS = 'pane-legends';
 
 export class PaneLegendView {
   /**
    * @param {object} deps
    * @param {object} deps.document       DOM 実装（注入）。
-   * @param {string} [deps.elementId]    描画先コンテナの id（既定 'pane-legends'）。
+   * @param {object} [deps.anchor]       版面要素の直接注入（既定は document から .chart-wrap を引く）。
    * @param {boolean} [deps.collapsed]   既定の折りたたみ状態（既定 true＝畳む）。
    */
-  constructor({ document, elementId = 'pane-legends', collapsed = true, overlayId = 'chart-overlay-tl' } = {}) {
+  constructor({ document, anchor = null, collapsed = true, overlayId = 'chart-overlay-tl' } = {}) {
     this._document = document ?? null;
-    this._elementId = elementId;
+    this._anchor = anchor ?? null;
+    // 自分で生成したホスト要素の保持（再描画のたびに引き直さない）。
+    this._host = null;
     // 価格ペイン（0 番）の凡例は、同じ左上に居る現在値・読み取り欄の**下**へずらす。
     //   両者は別の器（#chart-overlay-tl）で、高さは表示中の行数で変わるため定数では避けられない。
     this._overlayId = overlayId;
@@ -51,12 +63,14 @@ export class PaneLegendView {
     this._model = null;
   }
 
+  // 描画先（本 View 所有のホスト要素）。無ければ版面 .chart-wrap の直下に生成する。
+  //   版面から切り離された（モード切替でサブツリーごと差し替わった）場合は作り直す。
   _root() {
-    const doc = this._document;
-    if (!doc || typeof doc.getElementById !== 'function') {
-      return null;
+    if (this._host && this._host.isConnected !== false) {
+      return this._host;
     }
-    return doc.getElementById(this._elementId);
+    this._host = ensureOverlayHost(this._document, { className: HOST_CLASS, anchor: this._anchor });
+    return this._host;
   }
 
   // controller から: 適用中インスタンスのラベルと操作を差し替える（適用/削除/可視切替のたび）。

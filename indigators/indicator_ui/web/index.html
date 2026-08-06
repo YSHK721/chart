@@ -38,7 +38,7 @@
     <div class="chart-wrap">
       <div id="chart"></div>
       <!-- 左上オーバーレイ（現在値 → 読み取り欄）。ISSUE-276 で指標の行はここから外し、
-           ペイン別凡例（#pane-legends）へ移した。ここに残るのは価格そのものの表示だけ。 -->
+           ペイン別凡例へ移した。ここに残るのは価格そのものの表示だけ。 -->
       <div id="chart-overlay-tl">
         <!-- 現在値の大型表示（サイズは CSS 規定・上げ下げ色分け）。CurrentPriceView.render が描画する。 -->
         <div id="current-price"></div>
@@ -46,9 +46,9 @@
              ChartRenderer.onCrosshairReadout → CrosshairReadoutView.render が描画する。 -->
         <div id="crosshair-readout"></div>
       </div>
-      <!-- ペイン別凡例（ISSUE-276）。各ペインの左上へ絶対配置され、既定は折りたたみチップ。
-           ChartRenderer.onPaneLegend（幾何・値）＋ IndicatorController（ラベル・操作）で描画する。 -->
-      <div id="pane-legends"></div>
+      <!-- チャートに重ねる表示系統（ペイン別凡例など）の器はここへ書かない。描画する View が
+           自分で .chart-wrap 直下に生成し所有する（overlay_host.js）。HTML へ直書きすると
+           配信 3 ページへ手書き複製する義務が生まれ、取り残しで表示が全滅する（実害: ISSUE-276）。 -->
     </div>
     <!-- Market Profile リプレイバーのホスト（既定空＝バーは replay=ON で動的生成・表示）。
          チャート下部に配置し、MP のリプレイ ON 時に ◀リプレイ ラベル + スライダ + 日時ラベルを差し込む。 -->

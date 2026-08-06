@@ -24,6 +24,7 @@ import { ChartTemplateMenu } from './chart_template_menu.js';
 import { ChartTemplateDialogs } from './chart_template_dialogs.js';
 import { ChartTemplateController } from './chart_template_controller.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
+import { PaneLegendView } from './pane_legend_view.js';
 import { CurrentPriceView } from './current_price_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
@@ -110,8 +111,13 @@ export async function bootstrap({
 
   // ChartRenderer は upstream API の唯一の隔離点。v5 シリーズ定義（LineSeries/HistogramSeries）と
   // createTextWatermark を lwc 名前空間ごと渡す（系列追加系 API 名の参照を本所外へ漏らさない）。
+  // ペイン別凡例（ISSUE-276）。ライブと同一実装（symlink 参照・コード複製なし）。描画先の器は
+  //   View 自身が版面（.chart-wrap）配下へ生成する＝HTML への直書きと 3 ページ同期を持ち込まない。
+  const paneLegendView = new PaneLegendView({ document: doc });
+
   const renderer = new ChartRenderer({
     chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),
+    onPaneLegend: (model) => paneLegendView.update(model),
   });
 
   // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
@@ -139,6 +145,8 @@ export async function bootstrap({
     //   refresh(to) 成長（機構A）。mode 解決役は注入しない＝gear 選択モードをそのまま維持（present と同型）。
     mpGrowthResolver: () => true,
   });
+  // ペイン別凡例へ行（ラベル・可視・操作）を供給する（ライブと同一配線・ISSUE-276）。
+  controller.setPaneLegendView(paneLegendView);
 
   // テンプレート協働子（§7.1）。有効時間足集合は composition root から注入する（U1・replay は
   //   下の TimeframeMenu へ注入する 8 足＝サーバ TIMEFRAME_RULES と一致・30m 非対応）。

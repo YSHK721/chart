@@ -1,0 +1,98 @@
+// PaneLegendView のホスト所有（ISSUE-276 の再発防止）。
+//
+// 設計入力: 凡例の器は **PaneLegendView が所有し自分で生成する**。index.html には書かない。
+//   旧構成は配信 3 ページ（indicator_ui / replay_ui / unified_ui）の HTML へ
+//   `<div id="pane-legends">` を手書き複製する前提で、実配信の unified_ui だけ取り残された結果
+//   `getElementById` が null → render が無言 no-op となり、凡例が全滅していた（2026-08-06 実測）。
+// 構造: Arrange-Act-Assert（AAA）。実 DOM 非依存（fake document を注入）。
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { PaneLegendView } from '../js/adapter/front/pane_legend_view.js';
+
+function fakeElement(tagName = 'div', className = '') {
+  const el = {
+    tagName,
+    className,
+    textContent: '',
+    title: '',
+    type: '',
+    style: {},
+    dataset: {},
+    children: [],
+    get innerHTML() { return this._innerHTML ?? ''; },
+    set innerHTML(v) { this._innerHTML = v; if (v === '') { this.children = []; } },
+    append(...nodes) { for (const n of nodes) { this.children.push(n); } },
+    appendChild(n) { this.children.push(n); return n; },
+    addEventListener() {},
+    querySelector(sel) {
+      const want = sel.startsWith('.') ? sel.slice(1) : sel;
+      for (const c of this.children) {
+        if (c.className === want) {
+          return c;
+        }
+      }
+      return null;
+    },
+  };
+  return el;
+}
+
+function fakeDoc(anchor) {
+  return {
+    createElement(tag) { return fakeElement(tag); },
+    getElementById() { return null; },   // 左上オーバーレイ不在＝オフセット 0（本検証の関心外）
+    querySelector(sel) { return (anchor && sel === '.chart-wrap') ? anchor : null; },
+  };
+}
+
+const MODEL = {
+  groups: [
+    { paneIndex: 0, top: 0, height: 400, rows: [{ instanceId: 'ma#1', values: [{ name: 'MA', value: 100 }] }] },
+    { paneIndex: 1, top: 402, height: 160, rows: [{ instanceId: 'osc#1', values: [{ name: 'OSC', value: 0.5 }] }] },
+  ],
+};
+const ROWS = [
+  { instanceId: 'ma#1', label: 'MA', visible: true },
+  { instanceId: 'osc#1', label: 'OSC', visible: true },
+];
+
+test('HTML に器が無くても、View が版面配下へ自分でホストを生成して描画する', () => {
+  const anchor = fakeElement('div', 'chart-wrap');
+  const view = new PaneLegendView({ document: fakeDoc(anchor) });
+
+  view.setInstances(ROWS);
+  view.update(MODEL);
+
+  const host = anchor.querySelector('.pane-legends');
+  assert.ok(host, '版面配下に .pane-legends が生成されていない');
+  assert.equal(host.children.length, 2, 'ペイン数ぶんの凡例グループが描かれていない');
+  assert.equal(host.children[0].className, 'pane-legend');
+});
+
+test('再描画してもホストは 1 つのまま（クロスヘア移動のたびに器が増えない）', () => {
+  const anchor = fakeElement('div', 'chart-wrap');
+  const view = new PaneLegendView({ document: fakeDoc(anchor) });
+
+  view.setInstances(ROWS);
+  view.update(MODEL);
+  view.update(MODEL);
+  view.update(MODEL);
+
+  const hosts = anchor.children.filter((c) => c.className === 'pane-legends');
+  assert.equal(hosts.length, 1);
+});
+
+test('版面（.chart-wrap）が無いページでは例外＝無症状の全滅にしない', () => {
+  const view = new PaneLegendView({ document: fakeDoc(null) });
+
+  // 最初の描画（行の供給）で即座に落ちる＝取り残しに気付けない状態を作らない。
+  assert.throws(() => view.setInstances(ROWS), /chart-wrap/);
+});
+
+test('DOM 非対応環境（SSR・純ロジックテスト）は従来どおり no-op', () => {
+  const view = new PaneLegendView({ document: null });
+  view.setInstances(ROWS);
+  view.update(MODEL);   // 例外を投げない
+});

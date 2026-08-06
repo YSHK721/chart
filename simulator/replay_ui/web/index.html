@@ -37,8 +37,8 @@
              ChartRenderer.onCrosshairReadout → CrosshairReadoutView.render が描画する。 -->
         <div id="crosshair-readout"></div>
       </div>
-      <!-- ペイン別凡例（ISSUE-276）。ライブと同一実装（PaneLegendView）で描画する。 -->
-      <div id="pane-legends"></div>
+      <!-- チャートに重ねる表示系統（ペイン別凡例など）の器はここへ書かない。描画する View が
+           自分で .chart-wrap 直下に生成し所有する（overlay_host.js・ライブと同一実装）。 -->
     </div>
     <!-- Market Profile リプレイモードの scrub バーのホスト（チャート下部・sibling）。
          MarketProfileReplayBar が replay モード ON 時のみ内部で表示する（既定は空・非表示）。
