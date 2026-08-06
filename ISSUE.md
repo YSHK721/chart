@@ -4497,3 +4497,17 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **共通核の同定**: 4 つは範囲が異なる（単一バー / バー跨ぎ・volume の有無）。**真に共通なのは「既存バーへ 1 tick を畳む OHLC 規則」**であり、volume の数え方とバー跨ぎ判定は呼び出し側の関心事。
 - **抜本的対策**: `indicator_ui/web/js/domain/forming_fold.js`（依存ゼロ）に `foldTick` / `openBar` を置き、JS 3 箇所（#1〜#3）をそこへ委譲する。replay_ui / market_profile の各配信ルートへ symlink を追加。Python（#4）は言語が違い共有できないため、**py_parity_golden の `forming_fold` ケース 6 件**（1 tick・上下動・同値のみ・単調上昇/下降・負値と 0）で一致を拘束する（session_day / value_area と同方式）。
 - **検証**: JS の畳み込みを 1 箇所崩す（low の更新を止める）と parity 検定が Red（識別力を実証）。実 UI でライブ・リプレイ双方を確認（ライブ: JS 150 本・1,263ms・canvas 11/11・時間足 9 足／リプレイ: canvas 11・replay モジュール 60 本・中立核の読込を確認・双方ともコンソールエラー 0）。回帰: Python 2,533 / indicator_ui web 1,069 / market_profile web 319 / replay_ui web 297 / unified_ui web 43 全通過。
+
+## ISSUE-273: [設計是正] 末尾 K 点の emit が 5 実装に分かれ、時刻正規化の規約が 2 通りに分岐していた（2026-08-06）
+- **ステータス**: RESOLVED（2026-08-06・refactor/incremental-emit-single-source）
+- **重大度**: Medium（値は同じだが「どちらが規約か」が読めず、規約変更時に 5 箇所の同時修正を要した）
+- **事実**: 系列 JSON の末尾 K 点を組む規約（NaN 除外・昇順・k 上限・形成中バーは `last` 優先）が 5 箇所に独立実装されていた（`btlm_trail` / `marod` / `tickvol` / `profit_rsi` の `_tail_points` と `moving_averages` のインライン）。さらに**時刻正規化の位置が 2 通りに分岐**していた。
+  | 経路 | モジュール | 正規化 |
+  |---|---|---|
+  | A | btlm_trail / marod / tickvol / moving_averages | prepare 時に `stamps.astype("datetime64[s]").astype("int64")`、emit では `int(times[i])` |
+  | B | profit_rsi | 生の `resolve_times` を保持し、emit で `fake_chart._to_unix_seconds`（**private の越境 import**） |
+- **抜本的対策**: `adapter/compute/incremental/_emit.py` に `tail_points` / `tail_points_offset` を置き、**時刻正規化も本モジュール 1 箇所**に閉じる（整数系はそのまま・それ以外は UNIX 秒化）。5 箇所すべてを委譲へ置換。`fake_chart._to_unix_seconds` を公開名 `to_unix_seconds` へ昇格し、private の越境 import を解消（旧名は後方互換で温存）。
+- **等価性の証明（実データ）**: jp225_tick 1h の 300 本で、新実装が **旧 2 規約の双方と同値**であることを確認（`_unix_seconds(int64) == int(times[i])`／`_unix_seconds(生 datetime) == to_unix_seconds(times[i])`／両経路の値が一致）。
+- **出力不変の確認**: ライブコアを新旧で入れ替え、同一条件（jp225_tick 1h・limit 1500・mode=latest）で 5 指標を再取得。**系列数・点数・time がすべて一致**（値は市場が進んだぶんのみ変動）。
+- **検定**: `test_incremental_emit_single_source.py` を新設。(1) 旧 2 規約との同値 (2) 末尾 K 点の規約 (3) 増分器が `_tail_points` を再実装していない・時刻を直接 `int()` 化していない、を固定。
+- **検証**: 複製を 1 モジュールへ戻すと検定が Red（識別力を実証）。回帰: marketdata 236 / indicator_ui api 791 / market_profile api 365 / replay_ui 236 / tools+simulator 915 全通過。実 UI（8000・1 分足）でローソク・指標・水準線の描画を確認。

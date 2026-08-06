@@ -36,6 +36,7 @@ import pandas as pd
 
 from common.applied_price import SOURCE_TO_APPLIED, applied_price
 from common_view.lwc_adapter import resolve_times
+from adapter.compute.incremental._emit import tail_points_offset
 
 from adapter.compute.call_binding import indicator_src
 
@@ -230,12 +231,7 @@ class MovingAveragesIncrementer:
         # NaN（warm-up マスク・未計算）は点を出さない。
         i_high = req.n - 1 - max(req.offset, 0)
         i_low = max(0, -req.offset, req.valid_from)
-        points: list[dict[str, Any]] = []
-        i = i_high
-        while i >= i_low and len(points) < k:
-            v = buffer[i]
-            if v == v:  # NaN 除外（NaN != NaN・add_moving_averages._emit と同一判定）
-                points.append({"time": int(req.times[i + req.offset]), "value": float(v)})
-            i -= 1
-        points.reverse()
+        # 末尾 K 点の組み立て（NaN 除外・時刻の UNIX 秒化）は _emit が唯一実装（ISSUE-273）。
+        points = tail_points_offset(
+            buffer, req.times, i_high=i_high, i_low=i_low, offset=req.offset, k=k)
         return [{**skeleton[0], "data": points}]
