@@ -4545,6 +4545,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - 全指標へ「計算.時間足」を配布。front は `catalog.js` の `withCalcTimeframe`、back は `call_binding.indicator_param_defaults()` で **各 1 箇所から注入**（22〜24 定義へリテラルを配らない）。アクター駆動型（market_profile / tickvol_bands）は `/compute` を持たないため対象外。
   - `moving_averages` の計算グループキーを `'計算'` → `'group.calc'` へ統一（同一ダイアログに計算グループが 2 つ並ぶのを回避）。見出しが「計算」→「calc」に変わる。
 - **検証（実 UI・worktree を一時ポートで起動）**: 5m チャートに「1D 計算の移動平均（価格ペイン重ね）」と「1h 計算の RSI（専用ペイン）」を適用し、①階段状に描かれる ②右端がローソク末尾まで届く ③左スクロールでチャート足のみの場合と同一挙動（旧実装の空白域・価格軸 23,520 は消失）を確認。HTTP 層でも `set(系列時刻) ⊆ set(ローソク時刻)`・右端一致・`wait_for_close` の値差（1h: 65588.880/65571.499、1D: 64488.521/64691.212）を実測。
+- **画像**（リポジトリ直下・他のスクリーンショットと同じく git 管理外）: 是正前 `issue274-before-1d-interpolated.png`（1D 計算がほぼ直線・右端 10 時間欠け）/ `issue274-before-axis-pollution.png`（左スクロールで空白域・価格軸 23,520）。是正後 `issue274-after-ma1d-rsi1h.png`（1D 計算の MA が階段・1h 計算の RSI が専用ペイン）/ `issue274-after-zoom.png`（拡大時の段）。
 - **検定**: `tests/test_mtf_projection.py` を新設（12 件）。暦足を模した境界（ラベル ≠ 期間始端）で因果性を固定。識別力は変異注入で実証（ラベル比較・バー生時刻比較のいずれも Red）。
 - **回帰**: front（node）1069 / indicator_ui api 803 / marketdata+common+common_view+tools 411 / replay_ui 236 全通過。
 - **残件（D-4・未実施）**: tick 粒度の足内追従。`appliedComputeSpecs()` の除外条件を消すだけでは成立しない——`/live_ticks` 同梱の末尾値は `live_tick_tails.py` が**チャート足の窓を 1 回ロードして末尾行を tick で差し替える**構造であり、上位足では「H 期間ぶん積み上げた形成中 OHLC」を別窓へ入れる改修が要る。除外条件のみ外すと上位足指標へチャート足の値が流れ込む（黙って別足の値を描く）ため行わない。現状は投影導入前と同じ更新粒度（バー確定時の full 再計算）で、退行はない。
