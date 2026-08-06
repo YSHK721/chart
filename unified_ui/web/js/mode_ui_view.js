@@ -18,21 +18,22 @@ export const MODE = Object.freeze({ LIVE: 'live', REPLAY: 'replay' });
 let lwcLoaded = false;
 
 // ---- lightweight-charts（vendor）を live prefix から動的ロード（両 core とも同一 vendor を配信）----
-export function loadVendor(mode) {
+//   読込手順そのものは core の共有モジュール（vendor_loader）が所有する（ISSUE-278 #11）。
+//   以前はここだけ `onerror → resolve(false)` の 1 回勝負で、ISSUE-166 の承認済み再試行
+//   （cache-bust つき最大 3 回）が**実際に配信されるページからだけ抜けていた**。配信の途中切断で
+//   起動を諦め、F5 まで回復しない状態になる。手順を 1 か所に置き、3 ページとも同じ防御にする。
+export async function loadVendor(mode) {
   if (lwcLoaded || (typeof window !== 'undefined' && window.LightweightCharts)) {
     lwcLoaded = true;
-    return Promise.resolve(true);
+    return true;
   }
-  return new Promise((resolve) => {
-    const s = document.createElement('script');
-    s.src = `/${mode}/vendor/lightweight-charts.js`;
-    s.onload = () => {
-      lwcLoaded = !!window.LightweightCharts;
-      resolve(lwcLoaded);
-    };
-    s.onerror = () => resolve(false);
-    document.head.appendChild(s);
-  });
+  // URL は変数へ束縛してから import する（テンプレートを import() 直下へ書くとバンドラの
+  //   静的解析が警告を出す。実行は素の ESM なのでどちらでも動くが、警告を残さない）。
+  const loaderUrl = `/${mode}/js/adapter/front/vendor_loader.js`;
+  const { ensureLightweightCharts } = await import(loaderUrl);
+  const lwc = await ensureLightweightCharts({ src: `/${mode}/vendor/lightweight-charts.js` });
+  lwcLoaded = !!lwc;
+  return lwcLoaded;
 }
 
 // ---- エラー表示（フェイルクローズ / モード読込失敗）--------------------------

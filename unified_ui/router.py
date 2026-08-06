@@ -25,6 +25,11 @@ import posixpath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+# 統合層が配信してよい静的資産（最小権限・ISSUE-278 #9）。web_root 全体を許可すると
+#   tests/・node_modules/・package-lock.json・vitest.config.js まで露出する。
+_ASSET_FILES = frozenset({"index.html", "sw.js"})
+_ASSET_SUBTREE_PREFIXES = ("js/",)
+
 # モード prefix と、サーバインスタンス上の対応する上流 URL 属性名。
 _PREFIX_TO_UPSTREAM_ATTR = (
     ("/live", "live_upstream"),
@@ -186,7 +191,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _serve_static(self, path: str) -> None:
-        """web_root 配下の静的資産を配信する。prefix 無し API 等・不在は 404。"""
+        """web_root 配下の静的資産を配信する。prefix 無し API 等・不在・配信面外は 404。"""
         url_path = urlsplit(path).path
         if url_path == "/":
             url_path = "/index.html"
@@ -194,6 +199,13 @@ class RouterHandler(BaseHTTPRequestHandler):
         # パストラバーサル防止: 正規化後に web_root 外を指す経路を拒否する。
         rel = posixpath.normpath(url_path).lstrip("/")
         if rel.startswith("..") or os.path.isabs(rel):
+            self._send_simple(404, b"not found")
+            return
+
+        # ISSUE-278 #9: web_root 全体を許可すると tests/・node_modules/・package-lock.json まで
+        #   配信面に露出する（実測: GET /tests/sw_rewrite.test.js が 200 を返していた）。
+        #   replay 側 static_file_server が既に採る最小権限（資産サブツリーのみ許可）へ揃える。
+        if not self._is_asset(rel):
             self._send_simple(404, b"not found")
             return
 
@@ -211,9 +223,23 @@ class RouterHandler(BaseHTTPRequestHandler):
             data = handle.read()
         self.send_response(200)
         self.send_header("Content-Type", self._content_type(real_full))
+        # ISSUE-278 #10: 両 core（indicator_ui/api/framework/server.py・replay の
+        #   static_file_server）は「ブラウザが古い ES モジュールを掴んで修正が反映されない」
+        #   問題を理由にキャッシュを無効化している。統合層の JS と /sw.js だけ素のキャッシュ
+        #   対象になっていた（実配信ページだけが同じ問題を再現する）ため同一方針へ揃える。
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    @staticmethod
+    def _is_asset(rel: str) -> bool:
+        """配信してよい静的資産か（最小権限・ISSUE-278 #9）。
+
+        統合層が配信するのはエントリ（index.html）・Service Worker（sw.js）・統合層 JS だけ。
+        core 由来の資産は ``/live`` ``/replay`` のプロキシが返すため、ここに含める必要はない。
+        """
+        return rel in _ASSET_FILES or rel.startswith(_ASSET_SUBTREE_PREFIXES)
 
     @staticmethod
     def _content_type(full: str) -> str:

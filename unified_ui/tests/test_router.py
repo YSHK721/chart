@@ -494,3 +494,43 @@ def test_router_handler_reaps_idle_keep_alive_connections(router):
     """
     assert isinstance(router_mod.RouterHandler.timeout, (int, float))
     assert 0 < router_mod.RouterHandler.timeout <= 300
+
+
+# --- ISSUE-278 #9/#10: 配信面の最小権限とキャッシュ方針 --------------------------- #
+@pytest.mark.parametrize("path", [
+    "/tests/sw_rewrite.test.js",   # 内部設計（SW リライト規則）がそのまま読める
+    "/package-lock.json",
+    "/vitest.config.js",
+    "/node_modules/vitest/package.json",
+])
+def test_router_does_not_serve_non_asset_files(router, path):
+    """web_root 全体ではなく資産だけを配信する（実測で 200 を返していた経路の回帰）。"""
+    server, _live, _replay = router
+    resp = _request(server, "GET", path)
+    assert resp.status == 404, f"{path} が配信面に露出している"
+
+
+@pytest.mark.parametrize("path", ["/", "/index.html", "/sw.js", "/js/unified_root.js"])
+def test_router_serves_entry_and_layer_js(router, path):
+    """エントリ・SW・統合層 JS は従来どおり配信する（縮小しすぎていないこと）。"""
+    server, _live, _replay = router
+    resp = _request(server, "GET", path)
+    assert resp.status == 200, f"{path} が配信できていない"
+
+
+def test_router_disables_browser_cache_for_own_assets(router):
+    """統合層の資産にも core と同じキャッシュ無効化を付ける。
+
+    付けないと、修正した統合層 JS と Service Worker をブラウザが古いまま掴む（両 core が
+    この理由で明示的に潰した問題を、実配信ページだけが再現していた）。
+    """
+    server, _live, _replay = router
+    host, port = server.server_address
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        conn.request("GET", "/js/unified_root.js")
+        resp = conn.getresponse()
+        resp.read()
+        assert "no-store" in (resp.getheader("Cache-Control") or "")
+    finally:
+        conn.close()
