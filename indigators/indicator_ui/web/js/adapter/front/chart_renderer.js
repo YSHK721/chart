@@ -505,6 +505,9 @@ export class ChartRenderer {
     const slot = this._slot(instanceId);
     slot.hlinePayloads = hlines ?? [];
     this._createPriceLines(slot, slot.hlinePayloads);
+    // _slot() はスロットを新設し得る＝凡例の入力（在席集合）が変わる。水準線だけの指標
+    //   （_renderSeries を一度も通らない）でも、適用直後に行が出るようにする。
+    this._emitPaneLegend(null);
   }
 
   // 水準線の生成（実体は SeriesDrawer._createPriceLines・SOLID 是正 🔴-2）。
@@ -779,6 +782,9 @@ export class ChartRenderer {
   // UC-04 表示/非表示（実体は SeriesDrawer.setVisible・SOLID 是正 🔴-2）。
   setVisible(instanceId, visible) {
     this._drawer.setVisible(instanceId, visible);
+    // 凡例の値は可視状態でふるい落とす契約（_slotValues）。可視を変えたらモデルを作り直す。
+    //   これが無いと、目 OFF にしても次のクロスヘア移動まで値チップが出たままになる。
+    this._emitPaneLegend(null);
   }
 
   // ISSUE-109: 現在の系列スタイル（実描画値）を返す。スタイルタブの初期表示用。
@@ -793,7 +799,10 @@ export class ChartRenderer {
 
   // ISSUE-109: 系列単位のスタイル上書き（実体は SeriesDrawer.applySeriesStyle・SOLID 是正 🔴-2）。
   applySeriesStyle(instanceId, seriesName, patch = {}) {
-    return this._drawer.applySeriesStyle(instanceId, seriesName, patch);
+    const applied = this._drawer.applySeriesStyle(instanceId, seriesName, patch);
+    // 系列単位の可視・色は凡例の表示内容そのもの（_slotValues が meta を読む）＝同期して作り直す。
+    this._emitPaneLegend(null);
+    return applied;
   }
 
   // 案A（btlm_trail_marod）: 系列の描画種別の line ⇄ histogram 差し替え（実体は SeriesDrawer._swapSeriesType・SOLID 是正 🔴-2）。

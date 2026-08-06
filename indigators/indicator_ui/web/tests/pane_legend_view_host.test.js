@@ -84,6 +84,22 @@ test('再描画してもホストは 1 つのまま（クロスヘア移動の�
   assert.equal(hosts.length, 1);
 });
 
+test('系列を持たない指標（アクター駆動型）も行が出る＝適用後に操作不能にならない', () => {
+  // market_profile / tickvol_bands は自前プリミティブで描くため renderer にスロットが無く、
+  //   renderer のモデルにも現れない（実測: ライブ診断で「スロットなし（未描画）」）。
+  //   在席権威が renderer 側だと目/歯車/× を失い、旧 #legend 撤去後は除去手段が消える。
+  const anchor = fakeElement('div', 'chart-wrap');
+  const view = new PaneLegendView({ document: fakeDoc(anchor) });
+
+  view.setInstances([...ROWS, { instanceId: 'market_profile#1', label: 'マーケットプロファイル', visible: true }]);
+  view.update(MODEL);   // モデルは ma#1 / osc#1 しか知らない
+
+  const host = anchor.querySelector('.pane-legends');
+  const pane0 = host.children.find((c) => c.dataset.paneIndex === '0');
+  assert.ok(pane0, '価格ペインの凡例グループが無い');
+  assert.equal(pane0.children[0].textContent, '∿ 2', 'MP の行が価格ペインに数えられていない');
+});
+
 test('版面（.chart-wrap）が無いページでは例外＝無症状の全滅にしない', () => {
   const view = new PaneLegendView({ document: fakeDoc(null) });
 

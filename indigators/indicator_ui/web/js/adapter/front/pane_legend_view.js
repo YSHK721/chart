@@ -115,6 +115,12 @@ export class PaneLegendView {
     return Number.isFinite(h) && h > 0 ? h + 14 : 0;   // 14px はオーバーレイ上端の余白ぶん。
   }
 
+  // 行の在席権威は **controller の適用一覧（_rowMeta）**。renderer のモデルは「その行をどこへ
+  //   置くか（paneIndex・ペイン幾何）と何を表示するか（系列値）」だけを供給する。
+  //   renderer のスロット集合を在席権威にすると、系列を持たない**アクター駆動型指標**
+  //   （market_profile / tickvol_bands＝自前プリミティブで描く）が凡例に現れず、目/歯車/× を
+  //   失って適用後に操作不能になる（旧 #legend 撤去後は代替手段が無い）。実測 2026-08-06:
+  //   ライブ診断で market_profile は「スロットなし（未描画）」＝モデルに出ない。
   render() {
     const doc = this._document;
     const root = this._root();
@@ -122,15 +128,35 @@ export class PaneLegendView {
       return;
     }
     root.innerHTML = '';
-    const groups = (this._model && this._model.groups) || [];
-    for (const g of groups) {
-      // controller が知っているインスタンスだけを出す（描画済みだが state から消えた残骸を出さない）。
-      const rows = (g.rows ?? []).filter((r) => this._rowMeta.has(r.instanceId));
-      if (rows.length === 0) {
-        continue;
+    const { placement, geometry } = this._indexModel();
+    // paneIndex -> 行（適用順を保つ）。幾何が無い指標は価格ペイン（0）＝自前プリミティブは
+    //   価格ペインに描かれるため、そこに行を置くのが描画と一致する。
+    const byPane = new Map();
+    for (const instanceId of this._rowMeta.keys()) {
+      const place = placement.get(instanceId);
+      const paneIndex = place ? place.paneIndex : 0;
+      if (!byPane.has(paneIndex)) {
+        byPane.set(paneIndex, []);
       }
-      root.appendChild(this._buildGroup(doc, g, rows));
+      byPane.get(paneIndex).push({ instanceId, values: place ? place.values : [] });
     }
+    for (const paneIndex of [...byPane.keys()].sort((a, b) => a - b)) {
+      const geom = geometry.get(paneIndex) ?? { paneIndex, top: 0, height: 0 };
+      root.appendChild(this._buildGroup(doc, geom, byPane.get(paneIndex)));
+    }
+  }
+
+  // renderer モデルを instanceId / paneIndex で引ける形へ落とす（描画の都合は View が持つ）。
+  _indexModel() {
+    const placement = new Map();
+    const geometry = new Map();
+    for (const g of (this._model && this._model.groups) || []) {
+      geometry.set(g.paneIndex, { paneIndex: g.paneIndex, top: g.top ?? 0, height: g.height ?? 0 });
+      for (const r of g.rows ?? []) {
+        placement.set(r.instanceId, { paneIndex: g.paneIndex, values: r.values ?? [] });
+      }
+    }
+    return { placement, geometry };
   }
 
   _buildGroup(doc, group, rows) {
