@@ -29,6 +29,8 @@ from usecase.compute_ports import (
     FormingBarPort,
     IndicatorComputePort,
     LatestComputeDispatchPort,
+    MtfProjectionPort,
+    PeriodBoundaryPort,
 )
 from usecase.dataset_port import DatasetPort, dataset_port as _default_dataset_port
 
@@ -46,6 +48,9 @@ class ComputeRequest:
     forming_now: Any = None
     limit: Any = None
     generation: Any = 0
+    #: 計算足 H（ISSUE-274）。``None`` / ``"chart"`` / ``timeframe`` と同値なら投影しない
+    #: ＝リクエストの意味も応答も従来と完全に同一（後方互換）。
+    compute_timeframe: Any = None
 
     @classmethod
     def from_body(cls, body: dict) -> "ComputeRequest":
@@ -60,6 +65,7 @@ class ComputeRequest:
             forming_now=body.get("formingNow"),
             limit=body.get("limit"),
             generation=body.get("generation", 0),
+            compute_timeframe=body.get("computeTimeframe"),
         )
 
 
@@ -94,6 +100,8 @@ def compute_indicators(
     full_compute: "ComputeDispatchPort",
     latest_compute: "LatestComputeDispatchPort",
     compute_error: "type[ComputeErrorPort]",
+    project_mtf: "Optional[MtfProjectionPort]" = None,
+    period_boundary: "Optional[PeriodBoundaryPort]" = None,
 ) -> ComputeResult:
     """POST /compute の業務手順（純関数）。
 
@@ -105,6 +113,9 @@ def compute_indicators(
         full_compute: ComputeDispatchPort（全件計算・adapter, id, variant, df, params）。
         latest_compute: LatestComputeDispatchPort（Latest 計算・上記 ＋ キーワード専用 min_tail）。
         compute_error: 指標計算が送出する例外の型（ComputeErrorPort＝error_type/message を持つ）。
+        project_mtf: MtfProjectionPort（上位足系列 → チャート足時間軸への投影）。
+            ``computeTimeframe`` を伴う要求でのみ使う（ISSUE-274）。
+        period_boundary: PeriodBoundaryPort（期間始端の唯一源）。同上。
 
     契約（ISSUE-182 item4）は型注釈と ``tests/test_usecase_compute_ports.py`` で固定する。
     実行時の ``isinstance`` 強制は行わない（挙動不変・DatasetPort と同じ扱い）。
@@ -133,8 +144,29 @@ def compute_indicators(
             generation, "validation", f"未知の timeframe です: {request.timeframe!r}"
         )
 
-    # 4. データロード。
-    df = port.load_dataframe(request.dataset_ref, request.timeframe)
+    # 3b. 計算足 H の解決（ISSUE-274）。``timeframe`` はチャート足 C＝時間軸であり、
+    #     ``computeTimeframe`` は「この指標を計算する足」。両者が異なるときだけ、計算は H で行い
+    #     応答は C の時間軸へ投影する。未指定 / "chart" / C と同値なら投影経路に入らず、
+    #     ロード・計算・応答のすべてが従来と完全に同一（後方互換）。
+    compute_tf = request.compute_timeframe
+    if compute_tf == "chart":
+        compute_tf = None
+    if compute_tf is not None and not port.is_known_timeframe(compute_tf):
+        return ComputeResult.error(
+            generation, "validation", f"未知の computeTimeframe です: {compute_tf!r}"
+        )
+    project = compute_tf is not None and compute_tf != request.timeframe
+    if project and (project_mtf is None or period_boundary is None):
+        # 結線漏れ（DatasetPort 未注入時と対称の扱い）。投影せずに H の系列を返すと、時間軸の
+        #   汚染と未来情報の混入をそのまま配ることになる＝黙って誤った描画を出すより即時に落とす。
+        raise RuntimeError(
+            "computeTimeframe が指定されましたが投影協調子が未結線です"
+            "（project_mtf / period_boundary を注入してください）。"
+        )
+    load_timeframe = compute_tf if project else request.timeframe
+
+    # 4. データロード（計算に使う足＝投影時は H・非投影時は従来どおり C）。
+    df = port.load_dataframe(request.dataset_ref, load_timeframe)
 
     mode = request.mode
 
@@ -148,7 +180,8 @@ def compute_indicators(
             n_before = len(df)
         except TypeError:  # len 非対応の注入 fake（テスト）＝従来挙動（min_tail なし）
             n_before = None
-        df = forming_bar.apply_forming_bar(df, request.dataset_ref, request.timeframe, now_unix)
+        # 形成中バーは「計算に使う足」のものを注入する（投影時は H の形成中バー）。
+        df = forming_bar.apply_forming_bar(df, request.dataset_ref, load_timeframe, now_unix)
         if n_before is not None:
             try:
                 injected_tail = max(1, len(df) - n_before + 1)
@@ -174,6 +207,25 @@ def compute_indicators(
     except KeyError as exc:  # 未登録 id/variant は CallBinding.resolve が raw KeyError を投げる。
         return ComputeResult.error(
             generation, "validation", f"未登録の指標または variant です: {exc}"
+        )
+
+    # 8. 上位足投影（ISSUE-274）: H の時間軸で得た系列を、チャート足 C の各バーへ写す。
+    #    投影先の時刻集合は /candles と同じ経路（load_dataframe + tail(limit)）から採るため、
+    #    応答の time は必ず C のバー時刻の部分集合になる（時間軸へ C 外の時刻が混ざらない）。
+    if project:
+        df_chart = port.load_dataframe(request.dataset_ref, request.timeframe)
+        if mode == "latest":
+            df_chart = forming_bar.apply_forming_bar(
+                df_chart, request.dataset_ref, request.timeframe, now_unix
+            )
+        if isinstance(limit, int) and limit > 0:
+            df_chart = df_chart.tail(limit)
+        series = project_mtf(
+            series,
+            df_chart,
+            compute_tf,
+            wait_for_close=bool(request.params.get("wait_for_close")),
+            period_start_unix=period_boundary.period_start_unix,
         )
 
     return ComputeResult.success(generation, series)

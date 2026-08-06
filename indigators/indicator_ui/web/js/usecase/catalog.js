@@ -7,8 +7,10 @@
 
 import { ConstraintKind, ParamType } from '../domain/constraint_eval.js';
 import { IndicatorDef, SeriesDef, SeriesKind } from '../domain/domain_models.js';
+import { TF_CODES } from '../domain/tf_meta.js';
 import { makeMarketProfileDef } from './catalog_entry.js';
 import { makeTickvolBandsDef } from './tickvol_bands_catalog_entry.js';
+import { isActorDriven } from './actor_driven_ids.js';
 
 const OHLC = ['open', 'high', 'low', 'close'];
 
@@ -403,10 +405,6 @@ const MA_SOURCE_LABELS = APPLIED_PRICE_LABELS;   // 同一概念＝同一情報�
 const MA_SMOOTHING_LABELS = {
   none: 'なし', sma: 'SMA', ema: 'EMA', smma: 'SMMA', wma: 'WMA', sma_bb: 'SMA + ボリンジャーバンド',
 };
-const MA_TIMEFRAME_LABELS = {
-  chart: 'チャート', '1m': '1分', '5m': '5分', '15m': '15分', '30m': '30分', '1h': '1時間',
-  '4h': '4時間', '1D': '日', '1W': '週', '1M': '月',
-};
 const MA_LINE = (seriesName) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false });
 const MOVING_AVERAGES = new IndicatorDef({
   id: 'moving_averages',
@@ -430,10 +428,14 @@ const MOVING_AVERAGES = new IndicatorDef({
       conditionalEnable: { when: { param: 'smoothing_type', equals: 'sma_bb' } },
     }),
     // --- 計算 ---
-    param('timeframe', ParamType.ENUM, 'chart', [], ['chart', '1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M'], { group: '計算', order: 1, label: '時間足', enumLabels: MA_TIMEFRAME_LABELS, tooltip: 'この指標を計算する時間足（「チャート」はチャートの時間足に追従）' }),
+    // 「時間足」（計算.時間足）は全指標共通のため CALC_TIMEFRAME_PARAM として REGISTRY 構築時に
+    //   注入する（ISSUE-274。ここに直書きすると第 2 定義になる）。
     // 既定 false: 未確定の最新足も計算し MA を最新足まで描画する（true だと最終足を除外し
     //   常に1本手前で止まる）。確定足のみで計算したい場合はダイアログで ON にする。
-    param('wait_for_close', ParamType.BOOL, false, [], null, { group: '計算', order: 2, label: '時間足の確定を待つ' }),
+    //   上位足計算時は「形成中の上位足を使うか」の意味も兼ねる（投影の前方保持規約）。
+    //   group は他指標の計算グループ（'group.calc'）へ揃える。注入される「時間足」と同じ見出しに
+    //   入らないと、同一ダイアログ内に計算グループが 2 つ並ぶ（ISSUE-274）。
+    param('wait_for_close', ParamType.BOOL, false, [], null, { group: 'group.calc', order: 2, label: '時間足の確定を待つ' }),
   ],
   // 固定系列（dynamic=false）: backend が平滑化タイプに応じて部分集合を出力する。
   series: [MA_LINE('MA'), MA_LINE('Smoothing'), MA_LINE('Upper'), MA_LINE('Lower')],
@@ -862,12 +864,43 @@ const TICKVOL = new IndicatorDef({
   compute: { computeId: 'tickvol', requiredColumns: OHLC, timeRequired: false, backendParam: null, variants: ['default'] },
 });
 
+// ---------------------------------------------------------------------------
+// 計算.時間足（上位足計算・ISSUE-274）
+// ---------------------------------------------------------------------------
+// 「この指標を何の足で計算するか」は指標固有の性質ではなく全指標に共通の設定であるため、
+//   各定義へ直書きせず REGISTRY 構築時に 1 箇所から注入する（第 2 定義を作らない）。
+//   選択肢は時間足台帳（TF_LEDGER 由来の TF_CODES）から導出する。手書きの配列にすると
+//   台帳へ足しても追随せず静かにずれる（ISSUE-254 / ISSUE-261 と同型の事故源）。
+const CALC_TIMEFRAME_LABELS = Object.freeze({
+  chart: 'チャート', '1m': '1分', '5m': '5分', '15m': '15分', '30m': '30分', '1h': '1時間',
+  '4h': '4時間', '1D': '日', '1W': '週', '1M': '月',
+});
+
+const calcTimeframeParam = () => param(
+  'timeframe', ParamType.ENUM, 'chart', [], ['chart', ...TF_CODES],
+  {
+    group: 'group.calc', order: 1, label: '時間足', enumLabels: CALC_TIMEFRAME_LABELS,
+    tooltip: 'この指標を計算する時間足（「チャート」はチャートの時間足に追従）',
+  },
+);
+
+// def へ計算.時間足を付与する。対象外:
+//   - アクター駆動型（market_profile / tickvol_bands）: /compute を持たず投影経路に乗らない。
+//     効かない設定を出さない（表示できるものと効くものを一致させる）。
+//   - すでに timeframe を持つ定義: 二重付与しない（将来 def 側で特別扱いする余地を残す）。
+function withCalcTimeframe(def) {
+  if (isActorDriven(def) || def.params.some((p) => p.name === 'timeframe')) {
+    return def;
+  }
+  return new IndicatorDef({ ...def, params: [...def.params, calcTimeframeParam()] });
+}
+
 const REGISTRY = Object.freeze([
   TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, CVFE, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE, TICKVOL_BANDS, TICKVOL,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,
-]);
+].map(withCalcTimeframe));
 const BY_ID = new Map(REGISTRY.map((d) => [d.id, d]));
 
 // カテゴリ key → 表示名。従来は index.html に 3 件だけ直書きされており、oscillator(10) と

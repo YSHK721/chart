@@ -653,6 +653,10 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
 }
 
 
+#: 計算.時間足の既定（ISSUE-274）。"chart"＝チャートの時間足に追従する（＝投影しない）。
+CALC_TIMEFRAME_DEFAULT = "chart"
+
+
 def indicator_param_defaults() -> dict[str, dict[str, Any]]:
     """_TABLE の ``params_defaults`` 宣言から compute_id → param 既定値を導出する（ISSUE-180）。
 
@@ -675,6 +679,11 @@ def indicator_param_defaults() -> dict[str, dict[str, Any]]:
                 "compute_id ごとに先頭 variant の 1 エントリにのみ宣言してください。"
             )
         out[compute_id] = copy.deepcopy(defaults)
+        # 計算.時間足（ISSUE-274）: 「この指標を何の足で計算するか」は指標固有の性質ではなく
+        #   全指標共通の設定であるため、22 エントリへ同じリテラルを配らず本導出で 1 度だけ注入する
+        #   （front の catalog.js も同じく REGISTRY 構築時に 1 箇所から注入する＝両側とも単一定義）。
+        #   受理引数には含まれない（_accepted_kwargs が除外）ため、指標 src の呼出は不変。
+        out[compute_id].setdefault("timeframe", CALC_TIMEFRAME_DEFAULT)
     missing = {compute_id for (compute_id, _variant) in _TABLE} - set(out)
     if missing:
         raise ValueError(

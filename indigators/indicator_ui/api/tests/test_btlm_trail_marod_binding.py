@@ -28,9 +28,10 @@ def test_marod_registered_in_table_and_schema():
     binding = CallBinding.resolve("btlm_trail_marod", "default")
     assert binding.output_kind == "line"
     assert "btlm_trail_marod" in PARAM_DEFAULTS
+    # timeframe（計算.時間足）は全指標共通のため indicator_param_defaults が注入する（ISSUE-274）。
     assert set(PARAM_DEFAULTS["btlm_trail_marod"]) == {
         "source", "maxbars", "q_low", "q_high", "q_out", "k_events", "event_agg",
-        "window_n", "color",
+        "window_n", "color", "timeframe",
     }
     # 外れ値イベント分位の既定は ma_marod と対称（共有プリミティブ common.event_quantiles が正）。
     assert PARAM_DEFAULTS["btlm_trail_marod"]["q_out"] == 0.99

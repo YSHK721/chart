@@ -30,6 +30,7 @@ from adapter.compute import ComputeError, IndicatorComputeAdapter
 from marketdata import dataset  # noqa: F401  # monkeypatch 対象（_cc.dataset）＋既定 gateway の委譲先。
 from adapter.compute import forming_bar as forming_bar_mod
 from adapter.compute.latest_dispatch import full_compute, latest_compute
+from adapter.compute.mtf_projection import project_series
 from usecase.compute_indicators import ComputeRequest, ComputeResult, compute_indicators
 
 
@@ -74,5 +75,9 @@ def handle_compute(
         full_compute=full_compute,
         latest_compute=latest_compute,
         compute_error=ComputeError,
+        # ISSUE-274: 上位足投影。期間始端の唯一源は forming_bar が再輸出する
+        #   marketdata.tf_meta.period_start_unix（serve_candles と同じ参照経路）。
+        project_mtf=project_series,
+        period_boundary=forming_bar_mod,
     )
     return _present(result)

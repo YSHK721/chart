@@ -4512,6 +4512,44 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検定**: `test_incremental_emit_single_source.py` を新設。(1) 旧 2 規約との同値 (2) 末尾 K 点の規約 (3) 増分器が `_tail_points` を再実装していない・時刻を直接 `int()` 化していない、を固定。
 - **検証**: 複製を 1 モジュールへ戻すと検定が Red（識別力を実証）。回帰: marketdata 236 / indicator_ui api 791 / market_profile api 365 / replay_ui 236 / tools+simulator 915 全通過。実 UI（8000・1 分足）でローソク・指標・水準線の描画を確認。
 
+## ISSUE-274: [不具合] 上位足計算（計算.時間足）の系列を H の時間軸のままチャートへ渡している（2026-08-06）
+- **ステータス**: RESOLVED（2026-08-06・D-1/D-2/D-3/D-5 は投影で解消・実 UI 検証済み）。D-4（tick 粒度追従）は別 Issue 相当の残件として下記に明示。設計は `.doc/MTF_INDICATOR_PROJECTION_BASIC_DESIGN.md`。
+- **重大度**: High（D-5 は未来情報の混入＝値そのものが誤り。他は表示破綻）
+- **事実**: `moving_averages` の `params.timeframe`（計算.時間足）で上位足計算を指定できるが、計算結果を**上位足 H の時間軸のまま**フロントへ返しており、チャート足 C の時間軸へ写像していない。実 UI（8000・5m チャート・EMA9）で 5 件を実測。
+
+  | ID | 事象（実測） | 直接原因 |
+  |---|---|---|
+  | D-1 | 1D 計算にすると時間軸が 2020 年まで伸び、左スクロールでローソク不在の空白域が続く。価格軸が 23,520 まで引かれる | `limit=1500` を **H の本数**で数える（H=1D → 1500 日ぶん）。C に存在しない時刻が時間軸へ union される |
+  | D-2 | 1h 計算は点間が直線補間され、1D 計算はほぼ一本の直線になり指標として読めない | H の点をそのまま line 系列へ渡す。上位足の値は次の足まで一定＝階段であるべき |
+  | D-3 | 系列が `1785974400` で止まりローソクは `1786010400`（10 時間先）まで伸びる | 最新 H バーのラベル時刻に点が置かれ、それ以降に点が無い |
+  | D-4 | 上位足指標がライブの tick 粒度更新を受けない | `indicator_controller.js:293` が `params.timeframe` 保持インスタンスを `appliedComputeSpecs()` から除外 |
+  | D-5 | **未来情報の混入（21 時間）**。暦足はラベルが確定時刻の 21h 前にあるため、その日の終値まで織り込んだ値が当日 00:00 の位置に現れる | ラベル ≠ 確定時刻。`period_utc_start()` L136-155 / `period_label_naive()` L158-170 |
+
+- **D-5 の実測**（`jp225_tick`・`resample_ohlc_tf` の実ラベルと `period_utc_start()`）:
+  ```
+  1D  label=2026-08-04 00:00  実区間 [2026-08-03 21:00, 2026-08-04 21:00)   ラベルは確定の 21h 前
+  1W  label=2026-07-24 00:00  実区間 [2026-07-17 21:00, 2026-07-24 21:00)   ラベルは確定の 21h 前
+  1M  label=2026-07-31 00:00  実区間 [2026-06-30 21:00, 2026-07-31 21:00)   ラベルは確定の 21h 前
+  ```
+- **`/compute` 実 HTTP ログ**（5m チャート）:
+  ```
+  timeframe='chart' : req{tf:5m, limit:1500} → MA n=1500 step=300   t1=1786010400
+  timeframe='1h'    : req{tf:1h, limit:1500} → MA n=1500 step=3600  t0=1778083200(約92日前)
+  timeframe='1D'    : req{tf:1D, limit:1500} → MA n=1500 step=86400 t0=1602720000(2020年)
+  ```
+- **根本原因**: 上記 5 件は独立の不具合ではなく、「H の時間軸の系列を C の時間軸のチャートへ渡している」という単一原因の 5 つの現れ。
+- **抜本的対策**: 計算と描画の間に**投影段を 1 つだけ**置き、H の系列を C の時間軸へ前方保持で写す（`adapter/compute/mtf_projection.py`）。所属期間の判定は**ラベルではなく期間始端**（`marketdata.tf_meta.period_start_unix` が唯一源）で行う。投影後は C の時間軸を持つ通常の系列になるため、描画・スタイル・スケール・凡例・永続化の既存経路は**無改変**で再利用でき、D-1/D-2/D-3/D-5 は分岐追加ではなく原因消滅により解消する。
+- **実装**:
+  - `/compute` 契約: `timeframe`＝チャート足（時間軸）、`computeTimeframe`＝計算足。未指定・`'chart'`・同値なら投影せず従来と完全同一（後方互換）。
+  - front: `indicator_controller._gatewayAdapter` が両者を送る。`compute_http_client` は `computeTimeframe` を指定時のみボディへ載せる。
+  - 全指標へ「計算.時間足」を配布。front は `catalog.js` の `withCalcTimeframe`、back は `call_binding.indicator_param_defaults()` で **各 1 箇所から注入**（22〜24 定義へリテラルを配らない）。アクター駆動型（market_profile / tickvol_bands）は `/compute` を持たないため対象外。
+  - `moving_averages` の計算グループキーを `'計算'` → `'group.calc'` へ統一（同一ダイアログに計算グループが 2 つ並ぶのを回避）。見出しが「計算」→「calc」に変わる。
+- **検証（実 UI・worktree を一時ポートで起動）**: 5m チャートに「1D 計算の移動平均（価格ペイン重ね）」と「1h 計算の RSI（専用ペイン）」を適用し、①階段状に描かれる ②右端がローソク末尾まで届く ③左スクロールでチャート足のみの場合と同一挙動（旧実装の空白域・価格軸 23,520 は消失）を確認。HTTP 層でも `set(系列時刻) ⊆ set(ローソク時刻)`・右端一致・`wait_for_close` の値差（1h: 65588.880/65571.499、1D: 64488.521/64691.212）を実測。
+- **画像**（リポジトリ直下・他のスクリーンショットと同じく git 管理外）: 是正前 `issue274-before-1d-interpolated.png`（1D 計算がほぼ直線・右端 10 時間欠け）/ `issue274-before-axis-pollution.png`（左スクロールで空白域・価格軸 23,520）。是正後 `issue274-after-ma1d-rsi1h.png`（1D 計算の MA が階段・1h 計算の RSI が専用ペイン）/ `issue274-after-zoom.png`（拡大時の段）。
+- **検定**: `tests/test_mtf_projection.py` を新設（12 件）。暦足を模した境界（ラベル ≠ 期間始端）で因果性を固定。識別力は変異注入で実証（ラベル比較・バー生時刻比較のいずれも Red）。
+- **回帰**: front（node）1069 / indicator_ui api 803 / marketdata+common+common_view+tools 411 / replay_ui 236 全通過。
+- **残件（D-4・未実施）**: tick 粒度の足内追従。`appliedComputeSpecs()` の除外条件を消すだけでは成立しない——`/live_ticks` 同梱の末尾値は `live_tick_tails.py` が**チャート足の窓を 1 回ロードして末尾行を tick で差し替える**構造であり、上位足では「H 期間ぶん積み上げた形成中 OHLC」を別窓へ入れる改修が要る。除外条件のみ外すと上位足指標へチャート足の値が流れ込む（黙って別足の値を描く）ため行わない。現状は投影導入前と同じ更新粒度（バー確定時の full 再計算）で、退行はない。
+
 ## ISSUE-275: [不具合・実測] ライブモードで「ライブ」ボタンがグレーアウトしたまま押せない（A方式撤去の取りこぼし）（2026-08-06）
 - **ステータス**: RESOLVED（2026-08-06・fix/live-follow-toggle-a-mode-gate）
 - **重大度**: High（ライブ追従 ON/OFF（FOLLOW↔ANALYSIS）がユーザー操作から完全に失われていた。無言の機能不全）
