@@ -1,0 +1,1 @@
+../../../../indicator_ui/web/js/domain/forming_fold.js

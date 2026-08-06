@@ -11,6 +11,7 @@ import { ReplayView } from './adapter/front/replay_view.js';
 import { ReplayRangeMenu } from './adapter/front/replay_range_menu.js';
 import { ReplaySpeedMenu } from './adapter/front/replay_speed_menu.js';
 import { dayKey } from './replay/calendar.js';
+import { foldTick } from './domain/forming_fold.js';
 import {
   clampSpeed, frameMs as frameMsOf, stepMs,
   estimatePeriodMs, emaUpdate, periodMs, fmtEta, ANIM_MIN_MS, FORMING_MIN_INTERVAL_MS,
@@ -676,8 +677,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         }
         if (superseded()) return;
         const p = prices[i];
-        hi = Math.max(hi, p); lo = Math.min(lo, p); // 高安は流入ティックの極値のみ
-        view.updateForming({ time: cd.time, open: o, high: hi, low: lo, close: p });
+        // 畳み方は domain/forming_fold が唯一源（ISSUE-272）。ここで式を写さない。
+        const folded = foldTick({ open: o, high: hi, low: lo }, p);
+        hi = folded.high; lo = folded.low;
+        view.updateForming({ time: cd.time, ...folded });
         // [ISSUE-232] 計画があれば計算済み値を**同一同期ブロック**で反映する（＝ローソクと同時）。
         //   計画が無い／この時点が計画対象でないバーは従来どおりその場計算（非同期・遅延あり）。
         if (steps) {
@@ -687,7 +690,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
           }
         } else {
           // ISSUE-238: `to`（リプレイ現在時刻）と足内窓を添える＝サーバが実 tick 数を数える。
-          const state = { time: cd.time, open: o, high: hi, low: lo, close: p };
+          const state = { time: cd.time, ...foldTick({ open: o, high: hi, low: lo }, p) };
           if (secs && secs[i] != null) state.to = Math.floor(secs[i]);
           pushFormingMA(state, formingWindow());
         }

@@ -33,6 +33,8 @@ const PLAYBACK_MS = 100;   // 「元の時間間隔どおり」に適用する�
 //   短く保って「打ち切って次で回復」が表示の穴にならないようにする。
 const FETCH_TIMEOUT_MS = 10000;
 
+import { foldTick, openBar } from '../../domain/forming_fold.js';
+
 export class LiveTickPlayer {
   constructor({
     renderer,
@@ -257,7 +259,7 @@ export class LiveTickPlayer {
       if (this._nowBarTime !== null && barTime < this._nowBarTime) {
         return; // 現在のバーより前 → 履歴側。自己シードしない。
       }
-      this._bar = { time: barTime, open: mid, high: mid, low: mid, close: mid, volume: 1 };
+      this._bar = { time: barTime, ...openBar(mid), volume: 1 };
       this._renderer.updateLastCandle(this._bar);
       this._applyTails(tails);
       this._applied += 1;
@@ -268,14 +270,14 @@ export class LiveTickPlayer {
       return; // シード済みバーより前の tick は無視（履歴を後退させない）。
     }
     if (barTime === this._bar.time) {
-      this._bar.high = Math.max(this._bar.high, mid);
-      this._bar.low = Math.min(this._bar.low, mid);
-      this._bar.close = mid;
-      this._bar.volume += 1; // volume は適用 tick 数の近似（シード値＋適用数）。
+      // 畳み方は domain/forming_fold が唯一源（ISSUE-272）。ここで式を写さない。
+      //   volume の数え方はライブ固有（適用 tick 数の近似＝シード値＋適用数）なので呼び出し側に残す。
+      Object.assign(this._bar, foldTick(this._bar, mid));
+      this._bar.volume += 1;
     } else {
       // 新しいバー（open=mid）。直前バーはこの瞬間に確定＝バー確定イベントを通知する
       //   （ISSUE-151: 全指標の full 再計算をバー確定駆動にする。coalesce/pending は controller 側）。
-      this._bar = { time: barTime, open: mid, high: mid, low: mid, close: mid, volume: 1 };
+      this._bar = { time: barTime, ...openBar(mid), volume: 1 };
       if (this._onBarClose) {
         this._onBarClose();
       }

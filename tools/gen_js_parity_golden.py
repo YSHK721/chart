@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "indigators" / "market_profile" / "api"))
+sys.path.insert(0, str(ROOT / "indigators" / "indicator_ui" / "api"))
 
 import numpy as np  # noqa: E402
 
@@ -140,6 +141,37 @@ def render_tf_ledger_js(rows: "list[dict]") -> str:
     )
 
 
+def forming_fold_cases() -> "list[dict]":
+    """形成中バー畳み込みの境界ケース（Python↔JS パリティ・ISSUE-272）。
+
+    規則は「open 固定・high/low 走行極値・close は当該 tick」。JS 側は domain/forming_fold が
+    唯一実装で、Python 側は usecase.serve_live_tick_tails.forming_states が同規則を持つ
+    （言語が違うため共有できない）。値の一致を本 fixture が拘束する。
+    """
+    from usecase.serve_live_tick_tails import forming_states
+
+    seqs = [
+        [100.0],                                   # 1 tick
+        [100.0, 101.0, 99.0, 100.5],               # 上げ→下げ→戻し
+        [100.0, 100.0, 100.0],                     # 同値のみ（極値が動かない）
+        [100.0, 99.0, 98.0],                       # 単調下降（open が high のまま）
+        [100.0, 101.0, 102.0],                     # 単調上昇（open が low のまま）
+        [0.0, -1.5, 2.5],                          # 負値・0 を含む
+    ]
+    out = []
+    for prices in seqs:
+        ticks = [[1_700_000_000_000 + i * 1000, p] for i, p in enumerate(prices)]
+        states = forming_states(ticks, lambda ms: 1_700_000_000)   # 全 tick が同一バー
+        out.append({
+            "prices": prices,
+            "expected": [
+                {"open": s.open, "high": s.high, "low": s.low, "close": s.close}
+                for s in states
+            ],
+        })
+    return out
+
+
 def render_mp_capability_js(zp_tfs: "tuple[str, ...]") -> str:
     """MP ソース能力の JS モジュール（データのみ・自動生成）を組み立てる。"""
     items = ", ".join(f"'{tf}'" for tf in zp_tfs)
@@ -178,6 +210,8 @@ def main() -> None:
         #   同期手段が無く、ずれるとサーバは 400 を返すのにフロントは選択可能なまま＝無言の機能不全に
         #   なる。値は Python 側を唯一源とし、JS 側の写しが乖離したら parity 検定で落とす。
         "zp_supported_tfs": list(_zp_supported_tfs()),
+        # 形成中バー畳み込みの Python↔JS 一致（ISSUE-272）。
+        "forming_fold": forming_fold_cases(),
         "value_area": value_area_cases(),
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
