@@ -142,18 +142,24 @@ def test_resample_cache_holds_single_entry_per_ref_tf_after_repeated_updates(
 
 
 # --------------------------------------------------------------------------- #
-# T-4: CSV 削除時ヒット（mtime 取得不能でも直前 resample が返る）
+# T-4: mtime 不変ならヒット（再読込・再 resample を走らせない）
+#   ISSUE-278 #5: 以前は「CSV 削除でも返る」ことを期待しており、素材消失時に古い断面を無期限
+#   配信する挙動を仕様として固定していた。プローブを mtime 据え置きの内容書換へ替える。
+#   削除時のフェイルクローズは marketdata/tests/test_stale_serving_fail_close.py が固定する。
 # --------------------------------------------------------------------------- #
-def test_resample_cache_serves_cached_when_mtime_unchanged_and_csv_deleted(
-    tmp_path, monkeypatch
-):
+def test_resample_cache_serves_cached_when_mtime_unchanged(tmp_path, monkeypatch):
+    import os as _os
+
     csv_path = tmp_path / "cached_w.csv"
     _write_csv(csv_path, _WEEK1)
     _register_tmp_ref(monkeypatch, "_tmp_cached_w", csv_path)
     first = dataset.load_dataframe("_tmp_cached_w", "1W")
 
-    # Act: CSV を物理削除（mtime 取得不能＝再読込が走れば例外/空になる）。
-    csv_path.unlink()
+    # Act: 内容を書き換え、mtime だけ元へ戻す（再読込が走れば別の週足になる）。
+    st = _os.stat(csv_path)
+    _write_csv(csv_path, [(d, o + 100.0, h + 100.0, low + 100.0, c + 100.0)
+                          for (d, o, h, low, c) in _WEEK1])
+    _os.utime(csv_path, ns=(st.st_atime_ns, st.st_mtime_ns))
     second = dataset.load_dataframe("_tmp_cached_w", "1W")
 
     # Assert: 直前の resample 結果が返る（再 resample せずヒット）。

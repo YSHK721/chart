@@ -19,8 +19,10 @@ from adapter.compute import incremental as _inc
 def _declared_incrementer_names() -> "set[str]":
     """``_TABLE`` の ``latest_meta`` が参照している増分器名の集合。
 
-    ``latest_meta`` は ``(kind, ..., ..., incrementer_name)`` を返す callable。params 依存で
-    分岐する指標があるため、既定パラメータで 1 回評価して名前を採る。
+    ``latest_meta`` は ``LatestMeta`` を返す callable（ISSUE-278 #7 で位置タプルを廃止）。
+    params 依存で分岐する指標があるため、既定パラメータで 1 回評価して名前を採る。
+    以前は ``len(resolved) >= 4`` という要素数ヒューリスティックで判定しており、増分器名を
+    書き忘れた 3 要素宣言を「宣言なし」と解釈して見逃していた。属性で読めば取り違えない。
     """
     names: "set[str]" = set()
     for (compute_id, _variant), spec in _cb._TABLE.items():
@@ -31,11 +33,29 @@ def _declared_incrementer_names() -> "set[str]":
             resolved = meta(spec.get("params_defaults") or {})
         except Exception:  # noqa: BLE001 — 評価不能な宣言は本テストの対象外
             continue
-        if not resolved or resolved[0] != "incremental":
+        if resolved is None or resolved.archetype != "incremental":
             continue
-        if len(resolved) >= 4 and isinstance(resolved[3], str):
-            names.add(resolved[3])
+        if isinstance(resolved.incremental, str):
+            names.add(resolved.incremental)
     return names
+
+
+def test_declarations_return_typed_meta():
+    """宣言は位置タプルでなく ``LatestMeta`` を返す（ISSUE-278 #7）。
+
+    タプル宣言だと 4 要素目（増分器名）の書き忘れが型検査を通り、実行時は例外なく full
+    再計算へ縮退する（値は正しいまま性能だけ落ちるので検定も緑）。型で塞ぐ。
+    """
+    from adapter.compute.latest_meta_spec import LatestMeta
+
+    for (compute_id, variant), spec in _cb._TABLE.items():
+        meta = spec.get("latest_meta")
+        if meta is None:
+            continue
+        resolved = meta(spec.get("params_defaults") or {})
+        assert isinstance(resolved, LatestMeta), (
+            f"{compute_id}/{variant} の latest_meta が LatestMeta を返していません: {type(resolved)}"
+        )
 
 
 def test_every_declared_incrementer_name_resolves_to_a_factory():

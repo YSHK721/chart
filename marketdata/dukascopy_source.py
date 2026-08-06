@@ -198,21 +198,23 @@ class DukascopyTickSource:
     def fetch_ticks(self, start: datetime, end: datetime) -> pd.DataFrame:
         """``[start, end)`` の raw tick を日次チャンクで取得し timestamp 列の DataFrame で返す。
 
-        取得失敗日はスキップして継続する（resilient・進捗ログ）。データなしは空 DataFrame。
+        空 DataFrame が意味するのは **「取得は成功し、その期間にティックが無い（休場・未提供）」
+        ただ 1 つ**。取得失敗（通信断・ベンダ側エラー）は例外のまま伝播させる（ISSUE-278 #1）。
+
+        以前は日次ループで全例外を握り潰し「失敗＝空」に潰していた。呼出側
+        （``simulator/tools/fetch_ticks_ymd.py``）は空を「休場」と解釈して ``.empty`` マーカーを
+        書き、そのマーカーがある日は二度と取得しない。結果、一過性の通信断がデータ欠損として
+        恒久的に焼き付き、過去日不変性の検証（``tools/verify_tick_immutability.py``）まで
+        「訂正/欠落あり」と誤判定していた。失敗を成功の一種に見せないことが唯一の是正。
         """
         frames: list[pd.DataFrame] = []
         day = start
         while day < end:
             nxt = min(day + timedelta(days=1), end)
-            try:
-                df = dukascopy_python.fetch(
-                    self._instrument, dukascopy_python.INTERVAL_TICK,
-                    dukascopy_python.OFFER_SIDE_BID, day, nxt,
-                )
-            except Exception as exc:  # noqa: BLE001 (取得失敗日はスキップ・継続)
-                print(f"  WARN {day:%Y-%m-%d}: fetch失敗 skip ({exc})", flush=True)
-                day = nxt
-                continue
+            df = dukascopy_python.fetch(
+                self._instrument, dukascopy_python.INTERVAL_TICK,
+                dukascopy_python.OFFER_SIDE_BID, day, nxt,
+            )
             n = 0 if df is None else len(df)
             if n:
                 frames.append(df)

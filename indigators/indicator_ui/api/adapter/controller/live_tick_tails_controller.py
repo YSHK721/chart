@@ -16,6 +16,7 @@ ISSUE-251: ``/live_ticks`` が持つのは ``since`` 以降の**増分**だけ�
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from adapter.compute import forming_bar as forming_bar_mod
@@ -31,6 +32,8 @@ from usecase.serve_live_tick_tails import (
     states_for_batch,
     tails_for_ticks,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _bar_time_fn(tf: str):
@@ -203,7 +206,16 @@ def handle_live_tick_tails(
             df=df, adapter=compute_adapter,
             latest_compute=latest_compute, set_last_bar=_set_last_bar,
         )
-        batches.append(tails_for_ticks(states, group_specs, tail_at, wanted=wanted))
+        # ISSUE-278 #3: 増分器の実装バグは adapter が握らず、この境界まで伝播させる。ここで
+        #   **1 度だけ記録**して当該グループを落とす（他の計算足の末尾値は出す）。以前は adapter が
+        #   無言で None を返しており、指標が痕跡なくティック更新から消えて原因が追えなかった。
+        try:
+            batches.append(tails_for_ticks(states, group_specs, tail_at, wanted=wanted))
+        except Exception:  # noqa: BLE001 — 記録したうえで当該計算足だけ落とす（無言にしない）。
+            logger.exception(
+                "live_ticks: 末尾値の計算に失敗（計算足=%s・指標=%s）＝当該グループを落とす",
+                group_tf, [s.indicator_id for s in group_specs],
+            )
 
     if not batches:
         return None

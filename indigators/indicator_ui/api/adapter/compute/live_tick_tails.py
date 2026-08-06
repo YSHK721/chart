@@ -29,11 +29,14 @@ _DATA = "data"
 
 
 def is_incremental(indicator_id: str, variant: str, params: "dict[str, Any]") -> bool:
-    """その指標が真の増分計算を宣言しているか（＝毎ティック納期に載るか）。"""
-    try:
-        meta = latest_meta(indicator_id, variant, params)
-    except Exception:
-        return False
+    """その指標が真の増分計算を宣言しているか（＝毎ティック納期に載るか）。
+
+    ISSUE-278 #3: ここに ``except Exception: return False`` を置かない。未登録・未宣言の指標は
+    ``latest_meta`` 自身が安全既定（recurrence・K=1）へ落とすため、例外を握る必要が無い。
+    握ると宣言テーブルの実装バグ（壊れた lambda 等）まで「対象外」に潰れ、その指標だけが
+    痕跡なくティック更新から消える。
+    """
+    meta = latest_meta(indicator_id, variant, params)
     return meta.archetype == "incremental" and meta.incremental is not None
 
 
@@ -66,12 +69,13 @@ def make_tail_at(
             "open": state.open, "high": state.high, "low": state.low,
             "close": state.close, "volume": float(state.volume),
         })
-        try:
-            series = latest_compute(
-                adapter, spec.indicator_id, spec.variant, window, dict(spec.params)
-            )
-        except Exception:
-            return None
+        # ISSUE-278 #3: ここで例外を握らない。「増分器が扱えない」は prepare→None の明示契約が
+        #   既に表現しており、追加の except は増分器の実装バグ（形状不一致・dtype 不整合）まで
+        #   同じ「対象外」へ潰す。潰すと応答にもログにも痕跡が残らず、その指標だけティック更新が
+        #   止まる。境界（controller）が 1 度だけ記録して tails 全体を落とす方が復旧できる。
+        series = latest_compute(
+            adapter, spec.indicator_id, spec.variant, window, dict(spec.params)
+        )
         out: "dict[str, float]" = {}
         for s in series or []:
             data = s.get(_DATA) or []

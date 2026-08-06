@@ -86,12 +86,19 @@ def _load_base_dataframe_unlocked(
     """
     mtime = csv_mtime(path)
     cached = _BASE_CACHE.get(ref)
-    if cached is not None and (mtime is None or mtime == cached[0]):
-        # mtime 不変、または取得不能（CSV 削除）ならキャッシュヒット（再読込しない）。
+    if cached is not None and mtime is not None and mtime == cached[0]:
+        # mtime 不変ならキャッシュヒット（再読込しない）。
+        # ISSUE-278 #5: 取得不能（CSV 削除・マウント断）を「不変」に含めてはならない。含めると
+        #   配信プロセスが削除に気付かず、削除時点の断面を無期限に配信し続ける（再起動でしか
+        #   復旧しない・ログも出ない）。取得不能は下の再読込へ落とし、FileNotFoundError で落とす。
         return cached[1]
     loader = loader_factory()
     try:
         df = loader.load_ohlc_csv(str(path), time_column=time_column)
+    except FileNotFoundError:
+        # 素材そのものが消えている＝torn-read（追記中の一過性）ではない。古い断面を配信せず落とす
+        #   （marketdata/paths.py と同じ fail-fast 方針＝誤った既定への暗黙退行を防ぐ）。
+        raise
     except (OSError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError):
         # ライブ更新の writer が CSV を非アトミックに追記中だと末尾行が torn-read になり
         # pandas が解析失敗しうる（🟡-1）。失敗をキャッシュへ焼かず、直前の良好 df を返す。

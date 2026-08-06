@@ -182,3 +182,32 @@ def test_projection_does_not_mutate_the_input(wait):
     series = _line(points)
     project_series(series, chart, "1h", wait_for_close=wait, period_start_unix=_hourly)
     assert series[0]["data"] == H_POINTS
+
+
+# --- ISSUE-278 #2: 時系列 kind の集合は kind 定義側が唯一源 ------------------------- #
+def test_level_dash_is_projected_like_line():
+    """``level_dash``（cvfe の既定表示）も投影対象。
+
+    payload 形状は line と同一（``{time, value}``・fake_chart.create_level_dash）なのに、投影の
+    対象表がこのモジュールへ写されていたため漏れ、上位足 H の時刻がそのまま C の時間軸へ
+    混入していた（ISSUE-274 が消した現象の再現）。
+    """
+    chart = _chart(10 * HOUR, 24)
+    series = [{"name": "cvfe", "kind": "level_dash", "data": [dict(p) for p in H_POINTS]}]
+
+    out = project_series(series, chart, "1h", wait_for_close=False, period_start_unix=_hourly)
+
+    times = [p["time"] for p in out[0]["data"]]
+    chart_times = [int(t.timestamp()) for t in chart.index]
+    assert times, "level_dash が投影されていない（H の時刻が素通しされる）"
+    assert set(times) <= set(chart_times), "C に存在しない時刻が時間軸へ混入している"
+
+
+def test_timeseries_kinds_has_single_source():
+    """末尾切り・投影の対象表が kind の定義側と同一実体であること（写しを作らない）。"""
+    from adapter.compute.fake_chart import TIMESERIES_KINDS
+    from adapter.compute.latest_dispatch import _TRIMMABLE_KINDS
+    from adapter.compute.mtf_projection import _PROJECTABLE_KINDS
+
+    assert _TRIMMABLE_KINDS is TIMESERIES_KINDS
+    assert _PROJECTABLE_KINDS is TIMESERIES_KINDS

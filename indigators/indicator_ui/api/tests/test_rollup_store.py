@@ -126,10 +126,16 @@ def test_read_serves_cached_when_mtime_unchanged(tmp_path, monkeypatch):
     _write_csv(csv_path, [_point(1, 11.0)])
     monkeypatch.setattr(rollup_store, "path", lambda ref, tf: csv_path)
     first = rollup_store.read("jp225_m1", "1h")
-    # Act: CSV を物理削除（再読込が走れば例外/空になる）。
-    csv_path.unlink()
+    # Act: 内容を書き換え、mtime だけ元へ戻す（再読込が走れば 99.0 が現れる）。
+    #   ISSUE-278 #5: 以前は「物理削除しても返る」ことを期待しており、素材消失時に古い断面を
+    #   無期限配信する挙動を仕様として固定していた。削除時のフェイルクローズは
+    #   marketdata/tests/test_stale_serving_fail_close.py が固定する。
+    import os as _os
+    st = _os.stat(csv_path)
+    _write_csv(csv_path, [_point(1, 99.0)])
+    _os.utime(csv_path, ns=(st.st_atime_ns, st.st_mtime_ns))
     second = rollup_store.read("jp225_m1", "1h")
-    # Assert: mtime 取得不能でも直前キャッシュを返す（ヒット）。
+    # Assert: mtime 不変なら直前キャッシュを返す（ヒット＝再読込していない）。
     assert second.equals(first)
 
 

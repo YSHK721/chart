@@ -30,10 +30,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from adapter.compute.fake_chart import to_unix_seconds
+from adapter.compute.fake_chart import TIMESERIES_KINDS, to_unix_seconds
 
-# 投影対象 kind（時系列 data を持つ系列）。latest_dispatch._TRIMMABLE_KINDS と同一の区別。
-_PROJECTABLE_KINDS = ("line", "histogram")
+# 投影対象 kind は kind の定義側（fake_chart.TIMESERIES_KINDS）が唯一源（ISSUE-278 #2）。
+#   写しを置いていた結果 `level_dash`（cvfe の既定表示）が投影から漏れ、上位足 H の時刻が
+#   そのままチャート足 C の時間軸へ混入していた（ISSUE-274 が消した現象の再現）。
+_PROJECTABLE_KINDS = TIMESERIES_KINDS
 
 
 def _chart_bar_times(df_chart: Any) -> list[int]:

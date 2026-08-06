@@ -36,6 +36,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, NotRequired, TypedDict
 
+from adapter.compute.latest_meta_spec import LatestMeta
 from adapter.compute.module_loader import load_package
 
 # 共有プリミティブ層（``common.applied_price`` 等）を指標 src から絶対 import 可能にする。
@@ -142,16 +143,16 @@ def _prp_preprocess(df: Any, kw: dict[str, Any]) -> dict[str, Any]:
 
 def _moving_averages_latest_meta(
     params: dict[str, Any],
-) -> tuple[str, int | None, int | None, str | None]:
+) -> LatestMeta:
     del params  # 4 種・全パラメータで同一宣言（適用可否の判定は増分器 prepare が持つ）。
-    return ("incremental", None, 1, "moving_averages")
+    return LatestMeta("incremental", None, 1, "moving_averages")
 
 
 def _price_range_power_latest_meta(
     params: dict[str, Any],
-) -> tuple[str, int | None, int | None]:
+) -> LatestMeta:
     # 価格軸分布（非時系列）。末尾K切りしない（全件・trailing_k=None）。
-    return ("axis_distribution", None, None)
+    return LatestMeta("axis_distribution", None, None)
 
 
 # tickvol は本体（点ごとの写像）と外れ値水準（因果ローリング＋イベント蓄積）の複合である。
@@ -164,9 +165,9 @@ def _price_range_power_latest_meta(
 
 def _tickvol_latest_meta(
     params: dict[str, Any],
-) -> tuple[str, int | None, int | None, str | None]:
+) -> LatestMeta:
     del params  # 全パラメータで同一宣言（適用可否の判定は増分器 prepare が持つ）。
-    return ("incremental", None, 1, "tickvol")
+    return LatestMeta("incremental", None, 1, "tickvol")
 
 
 # indigators/ ルート（このファイル: api/adapter/compute/ → parents[4] = indigators/）。
@@ -310,7 +311,10 @@ class _BindingSpec(TypedDict):
     loader: Callable[[], Callable]
     output_kind: str
     kind: str
-    latest_meta: NotRequired[Callable[[dict[str, Any]], tuple[str, int | None, int | None]]]
+    # ISSUE-278 #7: 位置タプル（3 or 4 要素）をやめ LatestMeta を返す。タプルだと宣言型が
+    #   3 要素のままで 4 要素目（増分器名）の書き忘れを型検査が通し、実行時は例外なく
+    #   full 再計算へ縮退していた（値は正しいまま性能だけ落ちるので検定も緑）。
+    latest_meta: NotRequired[Callable[[dict[str, Any]], LatestMeta]]
     preprocess: NotRequired[Callable[[Any, dict[str, Any]], dict[str, Any]]]
     thread_affinity: NotRequired[str]
     time_required: NotRequired[bool]
@@ -350,7 +354,7 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         # ISSUE-233 S2/S3/S4: 窓末尾 OLS・経験分位・被覆率をいずれも「末尾 1 点だけ」計算する
         #   増分計算へ移す（従来は 1 ステップで窓全体を再計算し実測 334ms）。増分器が扱えない
         #   パラメータは従来経路（min_window=None＝full）で計算される＝挙動不変。
-        "latest_meta": lambda params: ("incremental", None, 1, "btlm_trail"),
+        "latest_meta": lambda params: LatestMeta("incremental", None, 1, "btlm_trail"),
         "params_defaults": {
             "source": "close",
             "maxbars": 100,
@@ -368,7 +372,7 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "loader": lambda: _load_callable("btlm_trail_marod", "add_btlm_trail_marod"),
         "output_kind": "line", "kind": "kw",
         # ISSUE-233 S5: 因果ローリング分位バンド・イベント分位を末尾 1 点だけの計算へ移す。
-        "latest_meta": lambda params: ("incremental", None, 1, "btlm_trail_marod"),
+        "latest_meta": lambda params: LatestMeta("incremental", None, 1, "btlm_trail_marod"),
         "params_defaults": {
             "source": "close",
             "maxbars": 100,
@@ -385,7 +389,7 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "loader": lambda: _load_callable("ma_marod", "add_ma_marod"),
         "output_kind": "line", "kind": "kw",
         # ISSUE-233 S5: 因果ローリング分位バンド・イベント分位を末尾 1 点だけの計算へ移す。
-        "latest_meta": lambda params: ("incremental", None, 1, "ma_marod"),
+        "latest_meta": lambda params: LatestMeta("incremental", None, 1, "ma_marod"),
         "params_defaults": {
             "source": "close",
             "ma_type": "ema",
@@ -514,7 +518,7 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         # ISSUE-249: 真の増分計算（状態器 "profit_rsi"）。従来は未宣言＝安全既定
         #   ("recurrence", None, 1) に落ち、末尾 1 点のために窓全体を再計算していた
         #   （実測 1386 本で 152.8ms・うち水準 152.3ms）。
-        "latest_meta": lambda params: ("incremental", None, 1, "profit_rsi"),
+        "latest_meta": lambda params: LatestMeta("incremental", None, 1, "profit_rsi"),
         "params_defaults": {
             "rsi_period": 6,
             "apply": 5,

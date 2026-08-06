@@ -84,11 +84,15 @@ def read(ref: str, tf: str) -> pd.DataFrame:
     mtime = _csv_mtime(csv_path)
     key = (ref, tf)
     cached = _ROLLUP_CACHE.get(key)
-    if cached is not None and (mtime is None or mtime == cached[0]):
-        # mtime 不変、または取得不能（CSV 削除）ならキャッシュヒット（再読込しない）。
+    if cached is not None and mtime is not None and mtime == cached[0]:
+        # mtime 不変ならキャッシュヒット（再読込しない）。
+        # ISSUE-278 #5: 取得不能（CSV 削除）を「不変」に含めない（含めると削除に気付かず
+        #   古い断面を無期限配信する）。serving_cache と同一規律。
         return cached[1]
     try:
         df = _read_tail_df(csv_path)
+    except FileNotFoundError:
+        raise   # 素材消失は torn-read ではない＝古い断面を配信せず落とす（fail-fast）。
     except (OSError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError):
         # 読込失敗（torn-read 等）時は失敗をキャッシュへ焼かず、直前の良好 df があればそれを
         # 返す（不正データを配信しない）。無ければ送出する。

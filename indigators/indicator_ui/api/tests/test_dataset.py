@@ -164,15 +164,22 @@ def test_load_candles_reflects_new_content_after_csv_mtime_changes(tmp_path, mon
 
 
 def test_load_candles_serves_cached_when_mtime_unchanged(tmp_path, monkeypatch):
-    # mtime 不変なら再読込しない（CSV を消しても直前結果が返る＝キャッシュヒット）。
+    # mtime 不変なら再読込しない（＝キャッシュヒット）。
+    # ISSUE-278 #5: 以前はこの検証に「CSV の物理削除」をプローブとして使っていたが、それは
+    #   「素材が消えても古い断面を配信し続ける」挙動を仕様として固定してしまっていた（実配信で
+    #   削除・退避に気付けない原因）。プローブを **mtime 据え置きの内容書換**へ替える。
+    #   削除時にフェイルクローズすることは marketdata/tests/test_stale_serving_fail_close.py が固定する。
+    import os as _os
     # Arrange
     csv_path = tmp_path / "cached.csv"
     _write_csv(csv_path, [("2020-01-01", 10.0, 12.0, 9.0, 11.0)])
     _register_tmp_ref(monkeypatch, "_tmp_cached", csv_path)
     first = dataset.load_candles("_tmp_cached")
-    # Act: CSV を物理削除する（mtime 取得不能＝再読込が走れば例外/空になる）。
-    csv_path.unlink()
-    # Assert: 直前結果が返る（mtime を取りに行かずキャッシュヒットしている）。
+    st = _os.stat(csv_path)
+    # Act: 内容を書き換え、mtime だけ元へ戻す（再読込が走れば close=99.0 が現れる）。
+    _write_csv(csv_path, [("2020-01-01", 90.0, 99.0, 90.0, 99.0)])
+    _os.utime(csv_path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    # Assert: 直前結果が返る（mtime 不変＝再読込していない）。
     second = dataset.load_candles("_tmp_cached")
     assert second == first
 

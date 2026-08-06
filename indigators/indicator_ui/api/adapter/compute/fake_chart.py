@@ -187,6 +187,16 @@ class _FakeSeries:
         self.points = df
 
 
+# 時系列 data（``{time, value}`` の列）を持つ kind の集合（ISSUE-278 #2）。
+#   末尾 K 切り（:mod:`adapter.compute.latest_dispatch`）と上位足投影
+#   （:mod:`adapter.compute.mtf_projection`）の対象判定は**この 1 か所だけ**を参照する。
+#   kind を増やすのは下の ``create_*`` を足すときであり、そのとき同時にここへ載せる
+#   ＝下流に kind 名の第 2 定義を作らない（作った結果、`level_dash` が両方から漏れ、
+#   上位足 H の時刻がチャート足の時間軸へ混入していた・ISSUE-274 と同型）。
+#   ``horizontal_line`` は価格軸分布で data を持たないため対象外。
+TIMESERIES_KINDS: "tuple[str, ...]" = ("line", "histogram", "level_dash")
+
+
 class FakeChart:
     """line / histogram / level_dash / horizontal_line を一括収集する統合 duck type。
 

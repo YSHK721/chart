@@ -23,29 +23,13 @@ archetype:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from adapter.compute.call_binding import latest_meta_fields
+# 型は中立モジュールが所有する（ISSUE-278 #7）。宣言側 call_binding も同じ型を import するため、
+#   宣言が位置タプルでなく LatestMeta を直接返せる＝要素の書き忘れが構築時に落ちる。
+#   従来の `from adapter.compute.latest_meta import LatestMeta` を壊さないよう再 export する。
+from adapter.compute.latest_meta_spec import LatestMeta
 
-
-@dataclass(frozen=True)
-class LatestMeta:
-    """1 指標(+variant+params) の Latest 計算メタ。
-
-    Attributes:
-        archetype: incremental / recurrence / window / lookahead / axis_distribution のいずれか。
-        min_window: tail 本数。None は full（tail せず全件で adapter.compute）。
-        trailing_k: 末尾切り点数。None は切らない（axis_distribution＝全件）。
-        incremental: 増分状態器の名前（``adapter.compute.incremental`` のレジストリ名）。
-            None は増分計算を行わない（＝従来の full 切り出し経路）。増分器が当該
-            (df, params) を扱えない場合も従来経路へ落ちるため、宣言は挙動を変えない
-            （OCP: 既存経路は不変・宣言した指標だけが新経路へ乗る）。
-    """
-
-    archetype: str
-    min_window: int | None
-    trailing_k: int | None
-    incremental: str | None = None
+__all__ = ["LatestMeta", "latest_meta"]
 
 
 def latest_meta(compute_id: str, variant: str, params: dict) -> LatestMeta:
@@ -57,11 +41,11 @@ def latest_meta(compute_id: str, variant: str, params: dict) -> LatestMeta:
     アダプタに徹する。未登録 / 未宣言の指標は安全既定 LatestMeta("recurrence", None, 1)
     （full＋K=1＝必ず full と一致）へ落ちる（従来の未登録安全既定と同一挙動）。
 
-    宣言タプルは 3 要素（archetype, min_window, trailing_k）または 4 要素（＋ incremental）。
-    3 要素の宣言は incremental=None（従来経路）になる（ISSUE-233・additive）。
+    宣言は LatestMeta を直接返す（ISSUE-278 #7 で位置タプルを廃止）。増分器名の書き忘れが
+    「例外なく full へ縮退」する経路を型で塞ぐため。
     """
-    fields = latest_meta_fields(compute_id, variant, params)
-    if fields is None:
+    meta = latest_meta_fields(compute_id, variant, params)
+    if meta is None:
         # 安全既定（未登録 / 未宣言）= full＋K=1（必ず full と一致）。
         return LatestMeta("recurrence", None, 1)
-    return LatestMeta(*fields)
+    return meta

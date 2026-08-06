@@ -16,11 +16,12 @@ from __future__ import annotations
 from typing import Any
 
 from adapter.compute import incremental_state
+from adapter.compute.fake_chart import TIMESERIES_KINDS
 from adapter.compute.latest_meta import latest_meta
 
-# 末尾K切りの対象 kind（時系列 data を持つ系列）。horizontal_line は data を持たない
-#   （価格軸分布）ため対象外＝触らない。
-_TRIMMABLE_KINDS = ("line", "histogram")
+# 末尾K切りの対象 kind は kind の定義側（fake_chart.TIMESERIES_KINDS）が唯一源（ISSUE-278 #2）。
+#   ここに写しを置くと kind 追加時に取り残され、その kind だけ全件が返る（無言の性能退行）。
+_TRIMMABLE_KINDS = TIMESERIES_KINDS
 
 
 def full_compute(
