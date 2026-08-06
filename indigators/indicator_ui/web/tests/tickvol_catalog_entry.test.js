@@ -56,8 +56,9 @@ test('tickvol: back 結線（compute_id / 系列名 / variant）が add_tickvol 
 test('tickvol: パラメータ 5 件（既定は back の params_defaults と同値）', () => {
   const d = get('tickvol');
   const byName = Object.fromEntries(d.params.map((p) => [p.name, p]));
+  // timeframe（計算.時間足）は全指標共通のため REGISTRY 構築時に注入される（ISSUE-274）。
   assert.deepEqual(Object.keys(byName).sort(), [
-    'k_events', 'q_high', 'q_low', 'q_out', 'window_n',
+    'k_events', 'q_high', 'q_low', 'q_out', 'timeframe', 'window_n',
   ]);
   assert.equal(byName.window_n.default, 500);
   assert.equal(byName.q_low.default, 0.10);

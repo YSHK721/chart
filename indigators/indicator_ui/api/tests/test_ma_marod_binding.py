@@ -29,9 +29,10 @@ def test_ma_marod_registered_in_table_and_schema():
     binding = CallBinding.resolve("ma_marod", "default")
     assert binding.output_kind == "line"
     assert "ma_marod" in PARAM_DEFAULTS
+    # timeframe（計算.時間足）は全指標共通のため indicator_param_defaults が注入する（ISSUE-274）。
     assert set(PARAM_DEFAULTS["ma_marod"]) == {
         "source", "ma_type", "length", "q_low", "q_high", "q_out", "k_events",
-        "event_agg", "window_n", "color",
+        "event_agg", "window_n", "color", "timeframe",
     }
     assert PARAM_DEFAULTS["ma_marod"]["q_out"] == 0.99    # イベント極端分位（裁定 2026-07-21）
     assert PARAM_DEFAULTS["ma_marod"]["k_events"] == 50   # イベント分位の直近観測件数

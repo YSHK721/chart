@@ -53,6 +53,9 @@ _EXPECTED_ANNOTATIONS = {
     "full_compute": "ComputeDispatchPort",
     "latest_compute": "LatestComputeDispatchPort",
     "compute_error": "type[ComputeErrorPort]",
+    # ISSUE-274（上位足投影）で追加。computeTimeframe を伴う要求でのみ使うため Optional。
+    "project_mtf": "Optional[MtfProjectionPort]",
+    "period_boundary": "Optional[PeriodBoundaryPort]",
 }
 
 

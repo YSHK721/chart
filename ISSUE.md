@@ -4513,7 +4513,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検証**: 複製を 1 モジュールへ戻すと検定が Red（識別力を実証）。回帰: marketdata 236 / indicator_ui api 791 / market_profile api 365 / replay_ui 236 / tools+simulator 915 全通過。実 UI（8000・1 分足）でローソク・指標・水準線の描画を確認。
 
 ## ISSUE-274: [不具合] 上位足計算（計算.時間足）の系列を H の時間軸のままチャートへ渡している（2026-08-06）
-- **ステータス**: OPEN（設計案あり・未承認。`.doc/MTF_INDICATOR_PROJECTION_BASIC_DESIGN.md`）
+- **ステータス**: RESOLVED（2026-08-06・D-1/D-2/D-3/D-5 は投影で解消・実 UI 検証済み）。D-4（tick 粒度追従）は別 Issue 相当の残件として下記に明示。設計は `.doc/MTF_INDICATOR_PROJECTION_BASIC_DESIGN.md`。
 - **重大度**: High（D-5 は未来情報の混入＝値そのものが誤り。他は表示破綻）
 - **事実**: `moving_averages` の `params.timeframe`（計算.時間足）で上位足計算を指定できるが、計算結果を**上位足 H の時間軸のまま**フロントへ返しており、チャート足 C の時間軸へ写像していない。実 UI（8000・5m チャート・EMA9）で 5 件を実測。
 
@@ -4538,5 +4538,13 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   timeframe='1D'    : req{tf:1D, limit:1500} → MA n=1500 step=86400 t0=1602720000(2020年)
   ```
 - **根本原因**: 上記 5 件は独立の不具合ではなく、「H の時間軸の系列を C の時間軸のチャートへ渡している」という単一原因の 5 つの現れ。
-- **抜本的対策（案）**: 計算と描画の間に**投影段を 1 つだけ**置き、H の系列を C の時間軸へ前方保持で写す。前方保持の基準は**ラベルではなく確定時刻（＝次 H バーの開始時刻・`period_utc_start()` が唯一源）**とする。投影後は C の時間軸を持つ通常の系列になるため、描画・スタイル・足内追従・スケールの既存経路は無改変で再利用でき、D-1〜D-4 は分岐追加ではなく原因消滅により解消する。設計詳細は `.doc/MTF_INDICATOR_PROJECTION_BASIC_DESIGN.md`。
-- **未承認事項**: `/compute` リクエスト契約の変更（共有 IF）／全指標へのパラメータ配布に伴う UI 変更／形成中 H バーの可変範囲。
+- **抜本的対策**: 計算と描画の間に**投影段を 1 つだけ**置き、H の系列を C の時間軸へ前方保持で写す（`adapter/compute/mtf_projection.py`）。所属期間の判定は**ラベルではなく期間始端**（`marketdata.tf_meta.period_start_unix` が唯一源）で行う。投影後は C の時間軸を持つ通常の系列になるため、描画・スタイル・スケール・凡例・永続化の既存経路は**無改変**で再利用でき、D-1/D-2/D-3/D-5 は分岐追加ではなく原因消滅により解消する。
+- **実装**:
+  - `/compute` 契約: `timeframe`＝チャート足（時間軸）、`computeTimeframe`＝計算足。未指定・`'chart'`・同値なら投影せず従来と完全同一（後方互換）。
+  - front: `indicator_controller._gatewayAdapter` が両者を送る。`compute_http_client` は `computeTimeframe` を指定時のみボディへ載せる。
+  - 全指標へ「計算.時間足」を配布。front は `catalog.js` の `withCalcTimeframe`、back は `call_binding.indicator_param_defaults()` で **各 1 箇所から注入**（22〜24 定義へリテラルを配らない）。アクター駆動型（market_profile / tickvol_bands）は `/compute` を持たないため対象外。
+  - `moving_averages` の計算グループキーを `'計算'` → `'group.calc'` へ統一（同一ダイアログに計算グループが 2 つ並ぶのを回避）。見出しが「計算」→「calc」に変わる。
+- **検証（実 UI・worktree を一時ポートで起動）**: 5m チャートに「1D 計算の移動平均（価格ペイン重ね）」と「1h 計算の RSI（専用ペイン）」を適用し、①階段状に描かれる ②右端がローソク末尾まで届く ③左スクロールでチャート足のみの場合と同一挙動（旧実装の空白域・価格軸 23,520 は消失）を確認。HTTP 層でも `set(系列時刻) ⊆ set(ローソク時刻)`・右端一致・`wait_for_close` の値差（1h: 65588.880/65571.499、1D: 64488.521/64691.212）を実測。
+- **検定**: `tests/test_mtf_projection.py` を新設（12 件）。暦足を模した境界（ラベル ≠ 期間始端）で因果性を固定。識別力は変異注入で実証（ラベル比較・バー生時刻比較のいずれも Red）。
+- **回帰**: front（node）1069 / indicator_ui api 803 / marketdata+common+common_view+tools 411 / replay_ui 236 全通過。
+- **残件（D-4・未実施）**: tick 粒度の足内追従。`appliedComputeSpecs()` の除外条件を消すだけでは成立しない——`/live_ticks` 同梱の末尾値は `live_tick_tails.py` が**チャート足の窓を 1 回ロードして末尾行を tick で差し替える**構造であり、上位足では「H 期間ぶん積み上げた形成中 OHLC」を別窓へ入れる改修が要る。除外条件のみ外すと上位足指標へチャート足の値が流れ込む（黙って別足の値を描く）ため行わない。現状は投影導入前と同じ更新粒度（バー確定時の full 再計算）で、退行はない。

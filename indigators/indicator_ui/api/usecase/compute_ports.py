@@ -107,6 +107,37 @@ class LatestComputeDispatchPort(Protocol):
 
 
 @runtime_checkable
+class PeriodBoundaryPort(Protocol):
+    """時刻が属する期間の始端を解決する抽象（ISSUE-274）。実測: ``forming_bar.period_start_unix``。
+
+    ISP: 上位足投影は「その時刻がどの H 期間に属するか」だけを要し、形成中バーの合成
+    （:class:`FormingBarPort`）は要さない。暦足ではラベル ≠ 期間始端 ≠ 確定時刻であり、
+    ラベルによる大小比較は未来情報の混入を生むため、判定は必ず本ポートを通す。
+    """
+
+    def period_start_unix(self, now_unix: int, tf: str) -> int:
+        """``now_unix`` が属する ``tf`` 期間の UTC 始端（UNIX 秒）を返す。"""
+        ...
+
+
+@runtime_checkable
+class MtfProjectionPort(Protocol):
+    """上位足系列をチャート足の時間軸へ投影する抽象。実測: ``mtf_projection.project_series``。"""
+
+    def __call__(
+        self,
+        series: "list[dict[str, Any]]",
+        df_chart: Any,
+        compute_tf: str,
+        *,
+        wait_for_close: bool = False,
+        period_start_unix: Any,
+    ) -> "list[dict[str, Any]]":
+        """``series``（H の時間軸）を ``df_chart`` の各バー時刻へ前方保持で写して返す。"""
+        ...
+
+
+@runtime_checkable
 class ComputeErrorPort(Protocol):
     """指標計算が送出する例外の抽象（``error_type`` / ``message`` を持つ）。
 

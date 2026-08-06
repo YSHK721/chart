@@ -37,13 +37,19 @@ export class ComputeHttpClient {
   // ComputeRequest -> series（§7.1.1）。非200/ネットワーク例外は ComputeError へ翻訳。
   // generation はサーバがエコーし、recompute の競合採否（advanced.accepts(result.generation)）が
   // 参照する。転送しないと常に 0 がエコーされ recompute が破棄され params が反映されない。
-  async compute({ indicatorId, variant, params, datasetRef, generation, timeframe, limit, mode, untilTime, forming, winStart, winEnd } = {}) {
-    // timeframe（時間足）/ limit（直近 N 本）はサーバで resample・表示範囲制限に使う。
+  async compute({ indicatorId, variant, params, datasetRef, generation, timeframe, computeTimeframe, limit, mode, untilTime, forming, winStart, winEnd } = {}) {
+    // timeframe（時間足＝チャートの時間軸）/ limit（直近 N 本）はサーバで resample・表示範囲制限に使う。
     // 省略時はサーバが原子（再集計なし）・全件として扱う（後方互換）。
     // mode（full/latest）は指定時のみ載せる（未指定はサーバ既定 full・後方互換でボディに含めない）。
     const reqBody = { indicatorId, variant, params, datasetRef, generation, timeframe, limit };
     if (mode !== undefined) {
       reqBody.mode = mode;
+    }
+    // [ISSUE-274] computeTimeframe（この指標を計算する足）。timeframe と異なるとき、サーバは
+    //   その足で計算した系列を timeframe（チャート足）の時間軸へ投影して返す。未指定・'chart' は
+    //   載せない＝チャート足で計算する従来ボディと完全同一（byte 挙動不変）。
+    if (computeTimeframe !== undefined && computeTimeframe !== null && computeTimeframe !== 'chart') {
+      reqBody.computeTimeframe = computeTimeframe;
     }
     // [PROTO 再生 seam] untilTime（そのフレームの時点）。未指定は載せない＝ライブ（present）扱いで
     //   従来と完全同一ボディ（`!== undefined` gate＝present byte 挙動不変）。replay の reveal だけが送る。
