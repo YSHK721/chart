@@ -8,7 +8,6 @@
 //   - toggleManual(): FOLLOW↔ANALYSIS 手動切替。
 //   - FOLLOW 適用: 全ライブ更新系 start ＋ tint off ＋ 点灯（再FOLLOW時は無条件 scrollToRealTime で catch-up）。
 //   - ANALYSIS 適用: 全ライブ更新系 stop ＋ tint on ＋ 消灯。
-//   - mode!=='b'（A方式）: ボタン disabled・配線しない（非活性）。
 //   - DOM/renderer 不在: no-op 防御（例外を出さない）。
 // 構造: Arrange-Act-Assert（AAA）。実 DOM・実 renderer 非依存（全 fake 注入）。
 
@@ -59,13 +58,13 @@ function fakeDocument(button, buttonId = 'live-follow-toggle') {
   return { getElementById(id) { return id === buttonId ? button : null; } };
 }
 
-function setup({ mode = 'b', hasButton = true, hasDocument = true } = {}) {
+function setup({ hasButton = true, hasDocument = true } = {}) {
   const liveUpdater = fakeLiveUpdater();
   const renderer = fakeRenderer();
   const button = fakeButton();
   const document = hasDocument ? fakeDocument(hasButton ? button : null) : null;
   const controller = new LiveFollowController({
-    liveUpdater, renderer, document, buttonId: 'live-follow-toggle', mode,
+    liveUpdater, renderer, document, buttonId: 'live-follow-toggle',
   });
   return { controller, liveUpdater, renderer, button };
 }
@@ -115,7 +114,7 @@ test('FOLLOW/ANALYSIS で liveTickPlayer/formingBarUpdater も start/stop する
   const button = fakeButton();
   const controller = new LiveFollowController({
     liveUpdater, liveTickPlayer: player, formingBarUpdater: forming,
-    renderer: fakeRenderer(), document: fakeDocument(button), buttonId: 'live-follow-toggle', mode: 'b',
+    renderer: fakeRenderer(), document: fakeDocument(button), buttonId: 'live-follow-toggle',
   });
   controller.install();
   controller.toggleManual(); // FOLLOW→ANALYSIS
@@ -163,16 +162,26 @@ test('ボタン click は手動 toggle を駆動する（FOLLOW→ANALYSIS）', 
   assert.equal(liveUpdater.stops, 1);
 });
 
-test('A方式非活性: mode!=="b" は install でボタン disabled・配線しない（start しない）', () => {
-  const { controller, liveUpdater, renderer, button } = setup({ mode: 'a' });
+// ISSUE-275: 合成根と同じ形（mode 引数なし）で構築しても活性化することを固定する。
+//   かつて存在した A方式ゲート（mode!=='b' で disabled・未配線）は、A方式撤去（ISSUE-266/269）で
+//   呼び出し側から mode が消えた結果**常に非活性側へ倒れ**、実 UI の「ライブ」ボタンが
+//   グレーアウトしたまま押せない状態になっていた。検定は mode:'b' を渡していたため素通りした。
+test('合成根と同じ構築（mode 引数なし）: install でボタンを活性化し click を配線する', () => {
+  const liveUpdater = fakeLiveUpdater();
+  const button = fakeButton();
+  button.disabled = true; // index.html の初期状態（配線されるまで押せない）を再現。
+  const controller = new LiveFollowController({
+    liveUpdater, renderer: fakeRenderer(), document: fakeDocument(button),
+    buttonId: 'live-follow-toggle',
+  });
 
   controller.install();
 
-  assert.equal(button.disabled, true, 'A方式はボタン disabled');
-  assert.equal(liveUpdater.starts, 0, 'A方式は FOLLOW を適用せず start しない');
-  assert.equal(renderer._rangeCb, null, 'A方式は可視範囲購読を配線しない');
+  assert.equal(button.disabled, false, 'install がボタンを活性化する');
+  assert.ok(isLit(button), '初期 FOLLOW で点灯する');
   button.click();
-  assert.equal(liveUpdater.stops, 0, 'A方式は click 未配線（副作用なし）');
+  assert.equal(controller.mode, 'ANALYSIS', 'click が配線されている');
+  assert.equal(liveUpdater.stops, 1);
 });
 
 test('DOM 不在 no-op: ボタン不在でも install は例外を出さず FOLLOW を適用する', () => {
@@ -195,7 +204,7 @@ test('renderer 不在 no-op: renderer 未注入でも install は例外を出さ
   const button = fakeButton();
   const document = fakeDocument(button);
   const controller = new LiveFollowController({
-    liveUpdater, renderer: null, document, buttonId: 'live-follow-toggle', mode: 'b',
+    liveUpdater, renderer: null, document, buttonId: 'live-follow-toggle',
   });
 
   assert.doesNotThrow(() => controller.install());
@@ -211,7 +220,7 @@ test('連動フック: 手動 toggle 往復で遷移ごとに false→true を�
   const states = [];
   const controller = new LiveFollowController({
     liveUpdater: fakeLiveUpdater(), renderer: fakeRenderer(),
-    document: fakeDocument(fakeButton()), buttonId: 'live-follow-toggle', mode: 'b',
+    document: fakeDocument(fakeButton()), buttonId: 'live-follow-toggle',
     onLiveStateChange: (isFollow) => states.push(isFollow),
   });
   controller.install();

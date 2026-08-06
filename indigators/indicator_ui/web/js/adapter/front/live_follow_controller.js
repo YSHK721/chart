@@ -1,5 +1,5 @@
 // LiveFollowController（adapter/front/live_follow_controller.js）— チャート ライブ追従トグル。
-//   present（B方式）固有。replay へは symlink しない（present だけがライブ追従を持つ）。
+//   present 固有。replay へは symlink しない（present だけがライブ追従を持つ）。
 //
 // 設計入力（確定仕様・状態機械）:
 //   状態 _mode ∈ {FOLLOW, ANALYSIS}（初期 FOLLOW）。
@@ -10,11 +10,14 @@
 //   - 切替は**ライブボタンのクリックのみ**（ISSUE-118 ユーザー裁定 2026-07-18）。旧仕様の自動遷移
 //     （可視範囲購読の右端離脱→ANALYSIS／右端復帰→FOLLOW・EPS/抑制機構つき）は削除した。
 //     過去へスクロールしてもモード・背景は変わらず、再FOLLOW クリックで catch-up scroll する。
-//   - A方式（mode!=='b'）: ボタン disabled・配線しない（非活性）。
+//   - 配信方式による活性/非活性の分岐は持たない（ISSUE-275）。かつて A方式（file://）用に
+//     ``mode !== 'b'`` ならボタンを disabled にして配線しない分岐があったが、A方式は
+//     ISSUE-266/269 で撤去され、呼び出し側から ``mode`` も消えた。残った分岐は常に
+//     「非活性」側へ倒れ、**ライブモードで「ライブ」ボタンがグレーアウトしたまま**になっていた。
 //
 // 依存注入・隔離方針（DOM/lwc 非依存・全注入）:
 //   - liveUpdater（start()/stop()）・renderer（subscribeVisibleRange/scrollToRealTime/setAnalysisTint）・
-//     document（getElementById）・buttonId・mode を注入する。
+//     document（getElementById）・buttonId を注入する。
 //   - lwc の直叩きは一切しない（追従・tint・scroll はすべて renderer 経由＝upstream 隔離維持）。
 //   - DOM/renderer 不在は no-op 防御（例外を出さない・SSR/テストで安全）。
 
@@ -22,7 +25,7 @@ const MODE_FOLLOW = 'FOLLOW';
 const MODE_ANALYSIS = 'ANALYSIS';
 
 export class LiveFollowController {
-  constructor({ liveUpdater, liveTickPlayer, formingBarUpdater, renderer, document, buttonId, mode, onLiveStateChange } = {}) {
+  constructor({ liveUpdater, liveTickPlayer, formingBarUpdater, renderer, document, buttonId, onLiveStateChange } = {}) {
     this._liveUpdater = liveUpdater ?? null;
     // ライブ価格の書き手（ISSUE-049 の LiveTickPlayer・FormingBarUpdater）も FOLLOW/ANALYSIS で
     //   start/stop する。これらを止めないと ANALYSIS でも価格が更新され続け（＝「ライブ」トグルが効かない）、
@@ -36,7 +39,6 @@ export class LiveFollowController {
     //   未注入なら null＝一切呼ばない（既存ライブトグル挙動 byte 不変・MP 不在時も不変）。
     this._onLiveStateChange = typeof onLiveStateChange === 'function' ? onLiveStateChange : null;
     this._mode = MODE_FOLLOW; // 初期 FOLLOW。
-    this._served = mode === 'b'; // B方式のみ活性。
     this._button = null;
     // 旧・自動遷移用の状態（_suppressAutoOff / _lastAtRightEdge）は ISSUE-118 で自動遷移ごと削除。
   }
@@ -46,19 +48,11 @@ export class LiveFollowController {
     return this._mode;
   }
 
-  // 配線＋初期 FOLLOW 適用。A方式（mode!=='b'）はボタンを disabled にして配線しない。
+  // 配線＋初期 FOLLOW 適用（配信方式による分岐は持たない・ISSUE-275）。
   install() {
     this._button = (this._document && typeof this._document.getElementById === 'function')
       ? this._document.getElementById(this._buttonId)
       : null;
-
-    // A方式: ボタンを非活性化し、追従ロジックを一切配線しない（LiveUpdater も起動しない）。
-    if (!this._served) {
-      if (this._button) {
-        this._button.disabled = true;
-      }
-      return this;
-    }
 
     // ボタン click → 手動トグル（ボタン不在は配線をスキップ＝no-op 防御）。
     if (this._button && typeof this._button.addEventListener === 'function') {

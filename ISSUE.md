@@ -4511,3 +4511,15 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **出力不変の確認**: ライブコアを新旧で入れ替え、同一条件（jp225_tick 1h・limit 1500・mode=latest）で 5 指標を再取得。**系列数・点数・time がすべて一致**（値は市場が進んだぶんのみ変動）。
 - **検定**: `test_incremental_emit_single_source.py` を新設。(1) 旧 2 規約との同値 (2) 末尾 K 点の規約 (3) 増分器が `_tail_points` を再実装していない・時刻を直接 `int()` 化していない、を固定。
 - **検証**: 複製を 1 モジュールへ戻すと検定が Red（識別力を実証）。回帰: marketdata 236 / indicator_ui api 791 / market_profile api 365 / replay_ui 236 / tools+simulator 915 全通過。実 UI（8000・1 分足）でローソク・指標・水準線の描画を確認。
+
+## ISSUE-275: [不具合・実測] ライブモードで「ライブ」ボタンがグレーアウトしたまま押せない（A方式撤去の取りこぼし）（2026-08-06）
+- **ステータス**: RESOLVED（2026-08-06・fix/live-follow-toggle-a-mode-gate）
+- **重大度**: High（ライブ追従 ON/OFF（FOLLOW↔ANALYSIS）がユーザー操作から完全に失われていた。無言の機能不全）
+- **事象（実 UI・8000・実測）**: ライブモード（`body.um-mode-live`）で `#live-follow-toggle`（「ライブ」）が `disabled=true` / `opacity=0.4` / `aria-pressed=false` のまま。押しても何も起きない。チャート・価格・時間足・インジケーターは正常（canvas 7・現在値更新あり・console エラー 0）＝グレーアウトはこのボタン 1 個。
+- **真因（コードで確認）**: `live_follow_controller.js` が A方式（file://）用のゲート `this._served = mode === 'b'` を持ち、`install()` は `!_served` ならボタンを `disabled=true` にして**click も配線せず return** していた。一方 **ISSUE-269（5432146・A方式経路の全撤去）で合成根から `mode,` 引数が削除**された。以後 `mode === undefined` → `_served === false` が恒久的に成立し、ゲートは常に「非活性」側へ倒れていた。
+- **なぜ検定が素通りしたか（本質）**: `live_follow_controller.test.js` は `setup({ mode = 'b' })` と全構築で `mode: 'b'` を**明示注入**しており、合成根が実際に渡す形（mode なし）を一度も通していなかった。A方式非活性を確認する検定まで在ったため、緑のまま実 UI だけが壊れた（ISSUE-268 と同型: 「node で通る」は「実 UI で動く」を意味しない）。
+- **抜本的対策（分岐の除去）**: A方式は ISSUE-266/269 で撤去済みで「非 served」という状態は存在しない。`mode` 引数・`_served`・`install()` の早期 return を **削除**し、配信方式による分岐を持たない実装にした（`mode: 'b'` を渡し直す＝撤去済み概念の延命は採らない）。合成根の陳腐化コメント（「B方式（mode==='b'）のみ配線する」）も実態へ是正。
+- **検定（壊れた層で固定する）**: `composition_root_front.test.js` に **bootstrap を実際に通す**検定を新設し、index.html と同じ初期 `disabled=true` のボタンが (1) `disabled=false` になる (2) `aria-pressed=true` / `is-active` で点灯する (3) click で ANALYSIS へ遷移する（＝配線されている）ことを固定。`live_follow_controller.test.js` からは `mode` 注入を撤去し、「合成根と同じ構築（mode 引数なし）で活性化する」検定へ置換（A方式非活性の検定は対象概念ごと削除）。
+- **識別力の実証**: ゲートを書き戻すと 6 件 Red（新設の bootstrap 検定を含む）。復元で 35 件 Green。
+- **検証**: indicator_ui web 1,070 / replay_ui web 297 / market_profile web 319 / unified_ui web 43 全通過。実 UI（8000・実 HTTP・実クリック）: ロード直後 `disabled=false` / `aria-pressed=true` / `is-active` / opacity 1・背景ワイン `rgb(123,34,51)`、1 クリックで消灯 `aria-pressed=false`・背景グレー `rgb(68,71,79)`（ANALYSIS）、再クリックで復帰。console エラー 0。
+- **残（同じ撤去の取りこぼし・未着手）**: (1) `bootstrap` の `protocol` 引数が ISSUE-269 以後どこからも読まれない死に引数（検定は今も `protocol:'http:'`/`'file:'` を渡している）。(2) `indicator_controller.js` の JSDoc に削除済みフィールド `@property {string} _mode（'a'=file:// / 'b'=served）` が残存。いずれも挙動には影響しないが、撤去済み概念の痕跡＝次の誤読の種。API 面の変更を伴うため承認後に処理する。
