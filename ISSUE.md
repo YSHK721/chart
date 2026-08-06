@@ -4513,7 +4513,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検証**: 複製を 1 モジュールへ戻すと検定が Red（識別力を実証）。回帰: marketdata 236 / indicator_ui api 791 / market_profile api 365 / replay_ui 236 / tools+simulator 915 全通過。実 UI（8000・1 分足）でローソク・指標・水準線の描画を確認。
 
 ## ISSUE-274: [不具合] 上位足計算（計算.時間足）の系列を H の時間軸のままチャートへ渡している（2026-08-06）
-- **ステータス**: RESOLVED（2026-08-06・D-1/D-2/D-3/D-5 は投影で解消・実 UI 検証済み）。D-4（tick 粒度追従）は別 Issue 相当の残件として下記に明示。設計は `.doc/MTF_INDICATOR_PROJECTION_BASIC_DESIGN.md`。
+- **ステータス**: RESOLVED（2026-08-06・D-1〜D-5 すべて解消・実 UI / 実 HTTP 検証済み）。設計は `.doc/MTF_INDICATOR_PROJECTION_BASIC_DESIGN.md`。
 - **重大度**: High（D-5 は未来情報の混入＝値そのものが誤り。他は表示破綻）
 - **事実**: `moving_averages` の `params.timeframe`（計算.時間足）で上位足計算を指定できるが、計算結果を**上位足 H の時間軸のまま**フロントへ返しており、チャート足 C の時間軸へ写像していない。実 UI（8000・5m チャート・EMA9）で 5 件を実測。
 
@@ -4548,7 +4548,9 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **画像**（リポジトリ直下・他のスクリーンショットと同じく git 管理外）: 是正前 `issue274-before-1d-interpolated.png`（1D 計算がほぼ直線・右端 10 時間欠け）/ `issue274-before-axis-pollution.png`（左スクロールで空白域・価格軸 23,520）。是正後 `issue274-after-ma1d-rsi1h.png`（1D 計算の MA が階段・1h 計算の RSI が専用ペイン）/ `issue274-after-zoom.png`（拡大時の段）。
 - **検定**: `tests/test_mtf_projection.py` を新設（12 件）。暦足を模した境界（ラベル ≠ 期間始端）で因果性を固定。識別力は変異注入で実証（ラベル比較・バー生時刻比較のいずれも Red）。
 - **回帰**: front（node）1069 / indicator_ui api 803 / marketdata+common+common_view+tools 411 / replay_ui 236 全通過。
-- **残件（D-4・未実施）**: tick 粒度の足内追従。`appliedComputeSpecs()` の除外条件を消すだけでは成立しない——`/live_ticks` 同梱の末尾値は `live_tick_tails.py` が**チャート足の窓を 1 回ロードして末尾行を tick で差し替える**構造であり、上位足では「H 期間ぶん積み上げた形成中 OHLC」を別窓へ入れる改修が要る。除外条件のみ外すと上位足指標へチャート足の値が流れ込む（黙って別足の値を描く）ため行わない。現状は投影導入前と同じ更新粒度（バー確定時の full 再計算）で、退行はない。
+- **D-4（tick 粒度追従）の対策**: `/live_ticks` を **計算足ごとのグループ処理**にした。除外条件を消すだけでは成立しない（窓も形成中バーもチャート足単位のため、上位足指標へチャート足の値が流れ込む）。形成中バーの畳み方 `forming_states` は `bar_time_fn` 注入で元から時間足非依存だったため、計算足ごとに「窓のロード → その足の `bar_time_fn` で畳む → 末尾行を差し替えて計算」を行い、`merge_tail_batches` で tick ごとに 1 本へ束ねる。同一計算足の spec は 1 グループ＝窓のロードは計算足の種類数ぶんだけ（インスタンス数に比例しない）。front は `appliedComputeSpecs()` の除外条件を撤廃。
+- **D-4 の実測**: `/live_ticks` 実応答で、計算足 1h のインスタンスが 112 tick すべてに末尾値を持ち、うち 75 通りの異なる値（チャート足インスタンスと同数）。実 UI でも `specs` に載る（旧: 空）。
+- **残る制約（描画ライブラリ由来・仕様として明示）**: lightweight-charts の `series.update()` は末尾より古い時刻を拒否する（`Cannot update oldest data`）。tick で安く動かせるのは末尾 1 点だけで、現在の H 期間の他の C バーはバー確定時の full 再計算で追いつく。現在の段の右端が段本体より「1 チャート足ぶんの上位足指標の変動」だけ先行する（実測 1h 計算で 5.4pt・65,478 に対し 0.008%＝段の高さより小さく視認不能）。段全体を毎 tick 動かすには系列全体の `setData`（1500 点）を tick ごとに行う必要があり費用に見合わない。
 
 ## ISSUE-275: [不具合・実測] ライブモードで「ライブ」ボタンがグレーアウトしたまま押せない（A方式撤去の取りこぼし）（2026-08-06）
 - **ステータス**: RESOLVED（2026-08-06・fix/live-follow-toggle-a-mode-gate）

@@ -73,12 +73,17 @@ test('appliedComputeSpecs excludes instances that are not drawn yet (no _meta)',
   assert.deepEqual(ctrl.appliedComputeSpecs(), []);
 });
 
-// 計算.時間足 override はチャート足の窓では計算できない（別足の値を黙って描かない）。
-test('appliedComputeSpecs excludes instances with a per-indicator timeframe override', () => {
+// ISSUE-274: 計算.時間足 override も申告する。サーバが計算足ごとに窓と形成中バーの畳み方を
+//   分けるため、上位足指標にも「その tick 時点の上位足の値」が返る（旧: 除外していた）。
+//   申告には params.timeframe をそのまま載せる（サーバのグループ分けの唯一の材料）。
+test('appliedComputeSpecs declares instances with a per-indicator timeframe override', () => {
   const { ctrl } = newController();
   addInstance(ctrl, { instanceId: 'profit_rsi#1', indicatorId: 'profit_rsi', params: [['timeframe', '1h']] });
-  assert.deepEqual(ctrl.appliedComputeSpecs(), []);
-  // 'chart'（＝チャート足に従う）は除外しない。
+  const specs = ctrl.appliedComputeSpecs();
+  assert.equal(specs.length, 1);
+  assert.equal(specs[0].instanceId, 'profit_rsi#1');
+  assert.equal(specs[0].params.timeframe, '1h');
+  // 'chart'（＝チャート足に従う）も従来どおり申告する。
   ctrl._state = { ...ctrl._state, applied: [] };
   ctrl._meta.clear();
   addInstance(ctrl, { instanceId: 'profit_rsi#2', indicatorId: 'profit_rsi', params: [['timeframe', 'chart']] });

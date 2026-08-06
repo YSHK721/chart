@@ -175,6 +175,36 @@ def tails_for_ticks(
     return out
 
 
+def merge_tail_batches(batches: "Sequence[Sequence[dict[str, Any]]]") -> "list[dict[str, Any]]":
+    """計算足ごとに分けて求めた末尾値バッチを、tick ごとに 1 本へまとめる（ISSUE-274）。
+
+    上位足指標は「その tick 時点の**上位足の**形成中バー」で計算する必要があり、畳み方
+    （:func:`forming_states`）も窓も計算足ごとに別になる。そこで計算足ごとに
+    :func:`tails_for_ticks` を通し、その結果を本関数で 1 本のリストへ束ねる。
+
+    全バッチは同じ ``ticks`` から作られるため要素数・順序・``tickMs`` は一致する。念のため
+    最短のバッチ長へ揃え、``tickMs`` は先頭バッチのものを採用する（欠けたバッチがあっても
+    他の指標の末尾値を道連れにしない）。
+
+    Args:
+        batches: :func:`tails_for_ticks` の戻り値のリスト（計算足ごとに 1 本）。
+
+    Returns:
+        ``[{"tickMs": ms, "tails": {instanceId: {系列名: 値}}}, ...]``。
+    """
+    kept = [b for b in batches if b]
+    if not kept:
+        return []
+    length = min(len(b) for b in kept)
+    out: "list[dict[str, Any]]" = [
+        {"tickMs": kept[0][i]["tickMs"], "tails": {}} for i in range(length)
+    ]
+    for batch in kept:
+        for i in range(length):
+            out[i]["tails"].update(batch[i].get("tails") or {})
+    return out
+
+
 def parse_specs(raw: Any) -> "list[TailSpec]":
     """クライアント申告（JSON 配列）→ :class:`TailSpec` 列（不正要素は捨てる）。"""
     if not isinstance(raw, list):
