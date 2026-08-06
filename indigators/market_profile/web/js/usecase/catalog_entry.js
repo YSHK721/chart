@@ -24,11 +24,15 @@ import {
 // 表示モードの宣言的属性（splitByDay/isNormal）の単一台帳（ISSUE-134 OCP）。
 import { mpDisplayMode } from '../domain/mp_display_mode.js';
 
-// tf-period が日別列を描く対応 tf（列描画時は解像度が GRID_W 固定＝resmode/bins/range 無効）。
-//   ISSUE-070。ISSUE-086（全時間足パラメータ統一）: 1W/1M もセッション日次ロールアップの
-//   バケット列として対応（count 1m..1M / zp 15m..1M＝backend _BUCKET_TFS・_ZP_TF_ALLOWED と一致）。
-//   src 別の対応 tf（旧 _MP_ZP_TF）は記述子（supportedTfs）へ集約した。
-const _MP_PLAYER_TF = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M']);
+// tf-period が日別列を描く対応 tf は「台帳が知っている全時間足」＝ TF_CODES（ISSUE-278 #12）。
+//   ISSUE-070／ISSUE-086: 1W/1M もセッション日次ロールアップのバケット列として対応する
+//   （count 1m..1M / zp 15m..1M＝backend _BUCKET_TFS・_ZP_TF_ALLOWED と一致）。src 別の
+//   対応 tf は記述子（supportedTfs）が持つ。
+//   かつてはここに 9 コードを手書きした Set を置いていたが、台帳へ時間足を足しても追随せず、
+//   その tf だけ「列が描かれないのに解像度パラメータは有効表示」という無言の不整合になる
+//   （ISSUE-253 と同型の事故源）。同パッケージの mp_source_capability.js は既に TF_CODES を
+//   参照しており、ここだけが取り残されていた。
+import { isKnownTimeframe } from '../domain/tf_meta.js';
 
 // ISSUE-080（依頼者裁定 2026-07-15）: 日別×1m/5m の zp 非対応集合は記述子（zp.blockedSessionTfs）
 //   が単一情報源。後方互換のため本名で再エクスポートする（actor と同一実体を共有）。
@@ -42,7 +46,7 @@ function _mpTfPeriodDrawsColumns(values, ctx) {
   if (!ctx) { return false; }
   if (!mpDisplayMode(values.mode).splitByDay) { return false; }
   const tf = ctx.timeframe;
-  if (!_MP_PLAYER_TF.has(tf)) { return false; }
+  if (!isKnownTimeframe(tf)) { return false; }
   if (!mpSupportsTf(values.src, tf)) { return false; }
   return true;
 }

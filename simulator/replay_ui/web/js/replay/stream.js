@@ -6,7 +6,7 @@
 
 import { ANIM_FINE, ANIM_COARSE } from './timing.js';
 import { sessionDayStart, nextSessionDayStart } from '../domain/session_day.js';
-import { TF_BAR_SEC } from '../domain/tf_meta.js';
+import { TF_BAR_SEC, isCalendarLabelTimeframe } from '../domain/tf_meta.js';
 
 export { ANIM_FINE, ANIM_COARSE };
 
@@ -56,7 +56,9 @@ export function synthM1(m1) {
 //     月曜バーの窓先頭に属する）。
 //   右ラベル(1W=W-FRI/1M=ME・time=期間終端) → [前足+1日, 今足+1日)。（replay.js: buildStream 窓算出）
 export function intrabarWindow({ timeframe, cd, prevCandle, nextCandle }) {
-  const rightLabeled = (timeframe === '1W' || timeframe === '1M');
+  // 右ラベル足の判定は台帳導出（ISSUE-278 #13）。手書き比較だと台帳へ暦足を足しても追随せず、
+  //   その tf の足内 tick 窓だけ丸ごとずれる（本ファイル冒頭 ISSUE-261 と同型の事故源）。
+  const rightLabeled = isCalendarLabelTimeframe(timeframe);
   if (rightLabeled) {
     const winStart = (prevCandle ? prevCandle.time : cd.time - durationSecs(timeframe)) + DAY;
     const winEnd = cd.time + DAY;

@@ -50,3 +50,17 @@ export const CALENDAR_TFS = Object.freeze(TF_LEDGER.filter((d) => d.calendar).ma
 export function isCalendarTimeframe(tf) {
   return CALENDAR_TFS.includes(tf);
 }
+
+// 暦ラベル足（期間の**右端**がラベルになる tf＝1W/1M 相当）。台帳の calendal かつ非 floorable
+//   からの導出で、Python 側 marketdata/resample.py の
+//   `code for code, d in TF_DESCRIPTORS.items() if d.calendar and not d.floorable` と同じ式。
+//   ISSUE-278 #13: リプレイ側が `new Set(['1W','1M'])` や `tf === '1W' || tf === '1M'` を手書きで
+//   持っており、台帳へ暦足を足しても追随しなかった（追随しない側は足内窓の切り方と MP 成長の
+//   分岐を誤り、エラーを出さずに前回描画を保持する）。判断材料を JS 側に書かない。
+export const CALENDAR_LABEL_TFS = Object.freeze(
+  TF_LEDGER.filter((d) => d.calendar && !d.floorable).map((d) => d.code),
+);
+
+export function isCalendarLabelTimeframe(tf) {
+  return CALENDAR_LABEL_TFS.includes(tf);
+}

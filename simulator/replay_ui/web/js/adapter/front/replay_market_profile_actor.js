@@ -25,16 +25,17 @@ import { MP_TO_LATEST } from './market_profile_client.js';
 import { GrowthWindow } from '../../domain/growth_window.js';
 import { mpSourceCapability } from '../../domain/mp_source_capability.js';
 import { sessionDayStart } from '../../domain/session_day.js';
+import { isCalendarLabelTimeframe } from '../../domain/tf_meta.js';
 import { FORMING_MIN_INTERVAL_MS } from '../../replay/timing.js';
 
 // forming（足内成長）非対応 tf（backend forming_bar.is_supported_timeframe と一致＝1W/1M は固定 floor 不可で
 //   非対応）。この tf は enterBar/growTo の forming 取得が 400→null（非破壊）になり push 成長で描けないため、
 //   refresh override は基底 refresh（全期間 as-of）へ委譲して従来描画を保つ（1W/1M の描画欠落を防ぐ）。
-// ISSUE-134（OCP・言語跨ぎミラー）: 権威は Python 単一台帳 marketdata.resample.TF_DESCRIPTORS の
-//   floorable=false から導出される marketdata.tf_meta.NON_FLOORABLE_TF（＝{'1W','1M'}）。JS 側は HTTP
-//   バンドルに Python を持ち込めないため、この定数を py↔js 対で維持する既存慣行（session_day 等と同様）に
-//   従い明示ミラーとして複製する。カレンダー足を追加する際は Python 台帳と本 Set を対で更新すること。
-const _FORMING_UNSUPPORTED_TF = new Set(['1W', '1M']);
+// ISSUE-278 #13: 権威は Python 単一台帳 marketdata.resample.TF_DESCRIPTORS（calendar かつ
+//   非 floorable）。その導出は生成物 tf_ledger_generated.js 経由で JS からも読める
+//   （tf_meta.CALENDAR_LABEL_TFS）。かつてはここへ {'1W','1M'} を手書きミラーしており、
+//   「py↔js 対で更新すること」という運用に依存していた＝台帳へ暦足を足すと追随せず、
+//   その tf だけ forming を取りに行って 400→null となり前回描画のまま固まる。手書きを撤去する。
 
 // MP-05 presence ガード（present actor と同基準）: base=1 応答の必須フィールド（レンジ/グリッド/base 配列）が
 //   すべて有限/配列のときだけ true。欠損（無ローソク等の空 profile）は null 扱いで増分に入れず前回描画保持。
@@ -307,7 +308,7 @@ export class ReplayMarketProfileActor extends MarketProfileActor {
     if (cursor === MP_TO_LATEST) {
       return super.refresh();
     }
-    if (this.isGrowingPush() && !_FORMING_UNSUPPORTED_TF.has(ctx.timeframe)
+    if (this.isGrowingPush() && !isCalendarLabelTimeframe(ctx.timeframe)
         && mpSourceCapability(this._params.src).incremental) {
       if (cursor == null) {
         return undefined; // cursor 未確定＝未来リーク禁止で描かない（再生 1 フレーム目の enterBar が初描画）。
