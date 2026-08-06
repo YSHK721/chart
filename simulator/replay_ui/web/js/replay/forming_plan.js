@@ -35,22 +35,22 @@ export function sampleIndices(n) {
 //   `to` から「その時点までに到来した実 tick 数」を数えて形成中バーの volume にする。
 //   volume をフロントで数えない理由: 合成モードの点数は実 tick 数と一致しない（1分OHLC は
 //   4 点/分）。`secs` を持たないモード（始値のみ・数学計算）は `to` を載せない＝従来挙動。
+import { foldTick, openBar } from '../domain/forming_fold.js';
+
 export function formingStatesAt(cd, prices, indices, secs = []) {
   if (!cd || !Array.isArray(prices) || prices.length === 0) {
     return [];
   }
-  const open = prices[0];
-  let hi = open;
-  let lo = open;
+  // 畳み方は domain/forming_fold が唯一源（ISSUE-272）。ここで式を写さない。
+  let bar = openBar(prices[0]);
   const wanted = new Set(indices);
   const clock = Array.isArray(secs) ? secs : [];
   const out = [];
   for (let i = 0; i < prices.length; i++) {
     const p = prices[i];
-    if (p > hi) hi = p;
-    if (p < lo) lo = p;
+    bar = foldTick(bar, p);
     if (wanted.has(i)) {
-      const state = { time: cd.time, open, high: hi, low: lo, close: p };
+      const state = { time: cd.time, ...bar };
       if (clock[i] != null) state.to = Math.floor(clock[i]);
       out.push(state);
     }

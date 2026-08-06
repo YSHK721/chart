@@ -4482,3 +4482,18 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - Python↔JS の parity（`py_parity_golden.json` の value_area 7 ケース）通過。
   - 回帰: marketdata 236 / indicator_ui api 781 / market_profile api 365 / replay_ui 236 / tools+simulator 915 / indicator_ui web 1,069 / market_profile web 318 / replay_ui web 297 / unified_ui web 43 全通過。
 - **注記（計測手順の誤り）**: 当初の差分計測スクリプトは `mp_parity_world` を二重初期化しており、VA 以外にも差分が出るという誤った結果を出していた。pytest 自身の差分出力で確認し直して VA 限定であることを確定させた。
+
+## ISSUE-272: [設計是正] 形成中バーの畳み込みが 4 実装に分かれていた（2026-08-06）
+- **ステータス**: RESOLVED（2026-08-06・refactor/forming-fold-single-source）
+- **重大度**: High（ずれると「ローソクと指標が別の値を指す」。ISSUE-232 で実際に発生済み）
+- **事実**: 同一の規則（open は期間の最初の tick で固定・high/low は流入 tick の走行極値・close は当該 tick）が 4 箇所に独立して実装されていた。
+  | # | 箇所 | 範囲 |
+  |---|---|---|
+  | 1 | `replay_ui/web/js/replay.js` `animateForming` | 単一バー内（volume はサーバが数える） |
+  | 2 | `replay_ui/web/js/replay/forming_plan.js` `formingStatesAt` | 同上 |
+  | 3 | `indicator_ui/web/js/adapter/front/live_tick_player.js` `_applyTick` | バー跨ぎ・volume 加算あり |
+  | 4 | `indicator_ui/api/usecase/serve_live_tick_tails.py` `forming_states` | バー跨ぎ・seed・volume あり |
+  うち #2 と #4 は自身のコメントで「ここがずれると一括計算の値が実際の描画状態と食い違う」「ここがフロントとずれると描画状態と値が食い違う（ISSUE-232 で実際に起きた失敗モード）」と**注意書きで守ろうとしていた**。
+- **共通核の同定**: 4 つは範囲が異なる（単一バー / バー跨ぎ・volume の有無）。**真に共通なのは「既存バーへ 1 tick を畳む OHLC 規則」**であり、volume の数え方とバー跨ぎ判定は呼び出し側の関心事。
+- **抜本的対策**: `indicator_ui/web/js/domain/forming_fold.js`（依存ゼロ）に `foldTick` / `openBar` を置き、JS 3 箇所（#1〜#3）をそこへ委譲する。replay_ui / market_profile の各配信ルートへ symlink を追加。Python（#4）は言語が違い共有できないため、**py_parity_golden の `forming_fold` ケース 6 件**（1 tick・上下動・同値のみ・単調上昇/下降・負値と 0）で一致を拘束する（session_day / value_area と同方式）。
+- **検証**: JS の畳み込みを 1 箇所崩す（low の更新を止める）と parity 検定が Red（識別力を実証）。実 UI でライブ・リプレイ双方を確認（ライブ: JS 150 本・1,263ms・canvas 11/11・時間足 9 足／リプレイ: canvas 11・replay モジュール 60 本・中立核の読込を確認・双方ともコンソールエラー 0）。回帰: Python 2,533 / indicator_ui web 1,069 / market_profile web 319 / replay_ui web 297 / unified_ui web 43 全通過。

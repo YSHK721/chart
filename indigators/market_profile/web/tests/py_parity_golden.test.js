@@ -17,6 +17,7 @@ import {
 import { TF_BAR_SEC, TF_CODES, FLOOR_TFS, CALENDAR_TFS } from '../js/domain/tf_meta.js';
 import { valueArea } from '../js/domain/market_profile_dwell_accumulator.js';
 import { mpSupportsTf, MP_ZP_SESSIONS_BLOCKED_TFS } from '../js/domain/mp_source_capability.js';
+import { foldTick, openBar } from '../js/domain/forming_fold.js';
 
 const golden = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'py_parity_golden.json'), 'utf8'),
@@ -95,4 +96,26 @@ test('日別モードの zp 非選択 tf は「対応 tf の補集合」と一�
   const supported = new Set(golden.zp_supported_tfs);
   const expected = golden.tf_ledger.map((d) => d.code).filter((c) => !supported.has(c));
   assert.deepEqual([...MP_ZP_SESSIONS_BLOCKED_TFS].sort(), expected.sort());
+});
+
+// ISSUE-272: 形成中バーの畳み込みは JS（domain/forming_fold）と Python
+//   （usecase.serve_live_tick_tails.forming_states）に 1 つずつ存在する（言語が違うため共有不可）。
+//   ずれると「ローソクと指標が別の値を指す」＝ISSUE-232 で実際に起きた失敗モードになる。
+test('forming_fold は Python forming_states と一致する（open 固定・走行極値・close=当該tick）', () => {
+  assert.ok(Array.isArray(golden.forming_fold) && golden.forming_fold.length > 0,
+    'fixture に forming_fold ケースがある');
+  for (const c of golden.forming_fold) {
+    let bar = openBar(c.prices[0]);
+    const got = [bar];
+    for (let i = 1; i < c.prices.length; i += 1) {
+      bar = foldTick(bar, c.prices[i]);
+      got.push(bar);
+    }
+    assert.equal(got.length, c.expected.length, `点数一致 (${JSON.stringify(c.prices)})`);
+    for (let i = 0; i < got.length; i += 1) {
+      assert.deepEqual(
+        { open: got[i].open, high: got[i].high, low: got[i].low, close: got[i].close },
+        c.expected[i], `畳み込み[${i}] (${JSON.stringify(c.prices)})`);
+    }
+  }
 });
