@@ -134,11 +134,11 @@ function fakeMainSeries() {
   return fakeSeries(undefined);
 }
 
-function newRenderer() {
+function newRenderer(extra = {}) {
   const chart = fakeChart();
   const main = fakeMainSeries();
   const lwc = fakeLwc();
-  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc });
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc, ...extra });
   return { renderer, chart, main, lwc };
 }
 
@@ -427,10 +427,12 @@ test('renderHistogram: creates a histogram series per payload with per-point col
 });
 
 // ===========================================================================
-// pane 指標（機能①②）: 専用 pane 生成 + 指標名ウォーターマーク
+// pane 指標（機能①）: 専用 pane 生成
+//   ISSUE-276: 指標名ウォーターマーク（旧 機能②③）は撤去した。同じ情報をペイン別凡例が持ち、
+//   凡例 DOM が canvas 上に載って重なるため、表示系統を凡例 1 つへ統合した。
 // ===========================================================================
 
-test('pane indicator: creates a dedicated pane and a name watermark (機能①②)', () => {
+test('pane indicator: creates a dedicated pane and no watermark (機能①・ISSUE-276)', () => {
   const { renderer, chart, lwc } = newRenderer();
   renderer.renderHistogram('rsi#1', [{ name: 'rsi', kind: 'histogram', data: [] }], { pane: true, name: 'RSI' });
   // 専用 pane が増える（pane0=ローソク + pane1=指標）。
@@ -439,9 +441,8 @@ test('pane indicator: creates a dedicated pane and a name watermark (機能①�
   assert.equal(chart.panes()[1]._series.length, 1);
   // メイン pane は大きめの stretch factor へ。
   assert.equal(chart.panes()[0]._stretch, 3);
-  // 指標名ウォーターマーク（機能②）。
-  assert.equal(lwc._watermarks.length, 1);
-  assert.equal(lwc._watermarks[0]._options.lines[0].text, 'RSI');
+  // ウォーターマークは作らない（作ると凡例と二重表示になる）。
+  assert.equal(lwc._watermarks.length, 0);
 });
 
 test('pane indicator: a second pane indicator gets its own pane (機能①)', () => {
@@ -451,21 +452,38 @@ test('pane indicator: a second pane indicator gets its own pane (機能①)', ()
   assert.equal(chart.panes().length, 3); // ローソク + 2 指標
 });
 
-test('crosshair move appends pane series values to the watermark (機能③)', () => {
-  const { renderer, chart, lwc } = newRenderer();
+test('pane legend: crosshair value is reported for the pane the indicator lives in (ISSUE-276)', () => {
+  const models = [];
+  const { renderer, chart } = newRenderer({ onPaneLegend: (m) => models.push(m) });
   renderer.renderHistogram('rsi#1', [{ name: 'rsi', kind: 'histogram', data: [] }], { pane: true, name: 'RSI' });
   const series = chart.created[0];
   chart.fireCrosshair({ seriesData: new Map([[series, { value: 56.3 }]]) });
-  const text = lwc._watermarks[0]._options.lines[0].text;
-  assert.match(text, /RSI/);
-  assert.match(text, /56\.3/);
+  const model = models[models.length - 1];
+  const group = model.groups.find((g) => g.rows.some((r) => r.instanceId === 'rsi#1'));
+  assert.ok(group, '当該インスタンスの行がどこかのペインに載る');
+  assert.equal(group.paneIndex, 1, '専用 pane（1 番）に属する');
+  assert.deepEqual(group.rows[0].values.map((v) => v.value), [56.3]);
 });
 
-test('crosshair move with no series data shows the name only (機能③)', () => {
-  const { renderer, chart, lwc } = newRenderer();
-  renderer.renderHistogram('rsi#1', [{ name: 'rsi', kind: 'histogram', data: [] }], { pane: true, name: 'RSI' });
+test('pane legend: without crosshair the last drawn value is reported (ISSUE-276)', () => {
+  const models = [];
+  const { renderer, chart } = newRenderer({ onPaneLegend: (m) => models.push(m) });
+  renderer.renderHistogram('rsi#1', [{ name: 'rsi', kind: 'histogram', data: [{ time: 1, value: 42 }] }],
+    { pane: true, name: 'RSI' });
   chart.fireCrosshair({ seriesData: new Map() });
-  assert.equal(lwc._watermarks[0]._options.lines[0].text, 'RSI');
+  const model = models[models.length - 1];
+  const group = model.groups.find((g) => g.rows.some((r) => r.instanceId === 'rsi#1'));
+  assert.deepEqual(group.rows[0].values.map((v) => v.value), [42],
+    'クロスヘアが無くても最新値が出る（旧ウォーターマークは名前だけになっていた）');
+});
+
+test('pane legend: overlay indicators are reported on the price pane (ISSUE-276)', () => {
+  const models = [];
+  const { renderer } = newRenderer({ onPaneLegend: (m) => models.push(m) });
+  renderer.renderLine('ma#1', [{ name: 'MA', kind: 'line', color: '#fff', data: [{ time: 1, value: 7 }] }]);
+  const model = models[models.length - 1];
+  assert.deepEqual(model.groups.map((g) => g.paneIndex), [0]);
+  assert.equal(model.groups[0].rows[0].instanceId, 'ma#1');
 });
 
 // ===========================================================================
@@ -573,13 +591,12 @@ test('remove: removes price lines of a horizontal instance', () => {
   assert.equal(main._priceLines.length, 0);
 });
 
-test('remove: detaches the watermark and removes the dedicated pane (機能①②④ cleanup)', () => {
-  const { renderer, chart, lwc } = newRenderer();
+test('remove: removes the dedicated pane (機能①④ cleanup)', () => {
+  const { renderer, chart } = newRenderer();
   renderer.renderHistogram('rsi#1', [{ name: 'rsi', kind: 'histogram', data: [] }], { pane: true, name: 'RSI' });
   assert.equal(chart.panes().length, 2);
   renderer.remove('rsi#1');
   assert.equal(chart.panes().length, 1);            // 専用 pane が消える
-  assert.equal(lwc._watermarks[0]._detached, true); // ウォーターマーク detach
 });
 
 // ISSUE-149: 再計算の redraw（keepPane=true）は pane を温存し、pane の並び順を変えない。
@@ -729,13 +746,13 @@ test('updateLastCandle: skips a stale live tick older than the current series ta
 // ===========================================================================
 
 // onCrosshairReadout スパイ付き renderer を組む。dtos に発火 DTO を蓄積する。
-function newReadoutRenderer() {
+function newReadoutRenderer(extra = {}) {
   const chart = fakeChart();
   const main = fakeMainSeries();
   const lwc = fakeLwc();
   const dtos = [];
   const renderer = new ChartRenderer({
-    chart, mainSeries: main, lwc, onCrosshairReadout: (dto) => dtos.push(dto),
+    chart, mainSeries: main, lwc, onCrosshairReadout: (dto) => dtos.push(dto), ...extra,
   });
   return { renderer, chart, main, lwc, dtos };
 }
@@ -783,61 +800,58 @@ test('crosshair readout: falls back to _lastBar when seriesData lacks the main s
   assert.deepEqual(dto.ohlc, { open: 2.0, high: 2.5, low: 1.8, close: 2.2 });
 });
 
-test('crosshair readout: includes overlay value and color from seriesData', () => {
-  // Arrange: overlay（pane 0）の line 系列を生成。
-  const { renderer, chart, dtos } = newReadoutRenderer();
+// ISSUE-276: overlay 系列の値は読み取り欄ではなく**ペイン別凡例の行**が持つ。読み取り欄に
+//   同じ値を出すと、指標が増えるほど左上が伸びて凡例と重なった（実測 11 件で 229px+295px）。
+test('crosshair readout: overlay values moved to the pane legend (ISSUE-276)', () => {
+  const models = [];
+  const { renderer, chart, dtos } = newReadoutRenderer({ onPaneLegend: (m) => models.push(m) });
   renderer.renderLine('prp#1', [
     { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 100 }] },
   ]);
   const overlaySeries = chart.created[0];
-  // Act: hover 中、overlay に値がある。
   chart.fireCrosshair({ time: 1277769600, seriesData: new Map([[overlaySeries, { value: 101 }]]) });
-  // Assert: overlay 行（name/value/color）が DTO に載る。
-  const dto = dtos[dtos.length - 1];
-  assert.deepEqual(dto.overlays, [{ name: 'BULL', value: 101, color: '#2e9e5b' }]);
-});
-
-test('crosshair readout: hidden overlay (setVisible false) is excluded; re-shown when visible — 🟡-1 regression', () => {
-  // Arrange: overlay を生成。
-  const { renderer, chart, dtos } = newReadoutRenderer();
-  renderer.renderLine('prp#1', [
-    { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 100 }] },
-  ]);
-  // Act/Assert: 非表示にすると読み取り欄から除外（hover 解除＝lastValue 経路でも出ない）。
-  renderer.setVisible('prp#1', false);
-  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
+  // 読み取り欄は OHLC と時刻だけ（overlay 行は持たない）。
   assert.deepEqual(dtos[dtos.length - 1].overlays, []);
-  // 再表示で戻る。
-  renderer.setVisible('prp#1', true);
-  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
-  assert.deepEqual(dtos[dtos.length - 1].overlays, [{ name: 'BULL', value: 100, color: '#2e9e5b' }]);
+  // 値・色・名前はペイン別凡例（価格ペイン）の行に載る。
+  const group = models[models.length - 1].groups.find((g) => g.paneIndex === 0);
+  assert.deepEqual(group.rows[0].values, [{ name: 'BULL', value: 101, color: '#2e9e5b' }]);
 });
 
-test('crosshair readout: overlay value falls back to last point value when seriesData lacks it', () => {
-  // Arrange: 末尾点 value=100 を保持しているはず。
-  const { renderer, chart, dtos } = newReadoutRenderer();
-  renderer.renderLine('prp#1', [
-    { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 99 }, { time: 2, value: 100 }] },
-  ]);
-  // Act: hover 解除（seriesData 空）。
-  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
-  // Assert: 保持した末尾 value=100 へフォールバック。
-  const dto = dtos[dtos.length - 1];
-  assert.deepEqual(dto.overlays, [{ name: 'BULL', value: 100, color: '#2e9e5b' }]);
-});
-
-test('crosshair readout: setData updates the overlay last value used for fallback', () => {
-  // Arrange
-  const { renderer, chart, dtos } = newReadoutRenderer();
+test('pane legend: hidden series are excluded and re-appear when shown (ISSUE-276)', () => {
+  const models = [];
+  const { renderer, chart } = newReadoutRenderer({ onPaneLegend: (m) => models.push(m) });
   renderer.renderLine('prp#1', [
     { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 100 }] },
   ]);
-  // Act: 再計算で末尾点が変わる → fallback 値も更新される。
-  renderer.setData('prp#1::BULL', [{ time: 2, value: 200 }]);
-  chart.fireCrosshair({ time: undefined, seriesData: new Map() });
-  // Assert
-  const dto = dtos[dtos.length - 1];
-  assert.deepEqual(dto.overlays, [{ name: 'BULL', value: 200, color: '#2e9e5b' }]);
+  renderer.setVisible('prp#1', false);
+  chart.fireCrosshair({ seriesData: new Map() });
+  assert.deepEqual(models[models.length - 1].groups[0].rows[0].values, []);
+  renderer.setVisible('prp#1', true);
+  chart.fireCrosshair({ seriesData: new Map() });
+  assert.deepEqual(models[models.length - 1].groups[0].rows[0].values,
+    [{ name: 'BULL', value: 100, color: '#2e9e5b' }]);
+});
+
+test('pane legend: value falls back to the last drawn point when the crosshair has none (ISSUE-276)', () => {
+  const models = [];
+  const { renderer, chart } = newReadoutRenderer({ onPaneLegend: (m) => models.push(m) });
+  renderer.renderLine('prp#1', [
+    { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 100 }] },
+  ]);
+  chart.fireCrosshair({ seriesData: new Map() });
+  assert.deepEqual(models[models.length - 1].groups[0].rows[0].values,
+    [{ name: 'BULL', value: 100, color: '#2e9e5b' }]);
+});
+
+test('pane legend: setData refreshes the fallback value (ISSUE-276)', () => {
+  const models = [];
+  const { renderer, chart } = newReadoutRenderer({ onPaneLegend: (m) => models.push(m) });
+  renderer.renderLine('prp#1', [
+    { name: 'BULL', kind: 'line', style: 'solid', width: 2, color: '#2e9e5b', data: [{ time: 1, value: 100 }] },
+  ]);
+  renderer.setData('prp#1::BULL', [{ time: 2, value: 250 }]);
+  chart.fireCrosshair({ seriesData: new Map() });
+  assert.deepEqual(models[models.length - 1].groups[0].rows[0].values.map((v) => v.value), [250]);
 });
 
 test('crosshair readout: pane (non-overlay) series are not included in overlays', () => {
@@ -875,18 +889,6 @@ test('crosshair readout: updateLastCandle re-fires readout DTO with the new last
   assert.deepEqual(dto.ohlc, { open: 2.0, high: 2.5, low: 1.8, close: 2.2 });
 });
 
-test('crosshair readout: existing watermark logic still updates (機能③ backward compat)', () => {
-  // Arrange: pane 指標を作り、読み取りコールバックも注入する。
-  const { renderer, chart, lwc } = newReadoutRenderer();
-  renderer.renderHistogram('rsi#1', [{ name: 'rsi', kind: 'histogram', data: [] }], { pane: true, name: 'RSI' });
-  const series = chart.created[0];
-  // Act
-  chart.fireCrosshair({ seriesData: new Map([[series, { value: 56.3 }]]) });
-  // Assert: 既存 watermark 更新（機能③）が不変に動く。
-  const text = lwc._watermarks[0]._options.lines[0].text;
-  assert.match(text, /RSI/);
-  assert.match(text, /56\.3/);
-});
 
 // ===========================================================================
 // updateSeriesTail（Latest 末尾K差分反映）— series.update を points ぶん呼ぶ。

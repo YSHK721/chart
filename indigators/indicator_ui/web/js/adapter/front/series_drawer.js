@@ -75,6 +75,8 @@ export class SeriesDrawer {
         //   生成時スタイルの記録＋applySeriesStyle の上書き結果を保持し、スタイルタブの
         //   初期表示（実描画値）と instance 単位 setVisible との可視性合成に使う。
         styleMeta: new Map(),
+        // 系列キー -> 末尾点の値（ISSUE-276・ペイン別凡例のクロスヘア無し表示値）。
+        lastValues: new Map(),
         // seriesData（案A・btlm_trail_marod）: 系列キー -> 直近 setData 済みポイント配列。
         //   bar_editable ゲート済み系列のみ保持し（MAROD 限定・メモリ極小）、line ⇄ histogram の
         //   系列スワップ時に新系列へ再設定する（旧系列除去後にデータを失わないため）。
@@ -127,13 +129,9 @@ export class SeriesDrawer {
     }
     slot.pane = pane;
     slot.paneName = opts.name ?? '';
-    if (typeof this._h._lwc.createTextWatermark === 'function') {
-      slot.watermark = this._h._lwc.createTextWatermark(pane, {
-        horzAlign: 'left',
-        vertAlign: 'top',
-        lines: [{ text: slot.paneName, color: WATERMARK_COLOR, fontSize: 12 }],
-      });
-    }
+    // ISSUE-276: ペイン左上のテキストウォーターマーク（指標名＋系列値）は撤去した。
+    //   同じ情報をペイン別凡例の行が持ち、凡例 DOM が canvas 上に載るため互いに重なって
+    //   判読不能になっていた（実測 2026-08-06）。表示系統は凡例 1 つに統合する。
     return pane;
   }
 
@@ -226,6 +224,11 @@ export class SeriesDrawer {
         slot.seriesData.set(key, p.data ?? []);
       }
       slot.styleMeta.set(key, metaEntry);
+      // ISSUE-276: 末尾点の値。ペイン別凡例が「クロスヘアが無いときの表示値」に使う。従来は
+      //   overlay 系列だけが _overlayReadouts に持っており、pane 指標はクロスヘアを乗せないと
+      //   値が出せなかった。styleMeta とは別の Map に持つ（styleMeta はプロパティダイアログへ
+      //   渡るスタイル契約であり、実行時の値を混ぜない）。
+      slot.lastValues.set(key, lastPointValue(p.data));
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }

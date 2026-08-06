@@ -21,8 +21,9 @@
 //   - horizontal_line → host series.createPriceLine(...)
 //   - pane 指標（オシレータ）は専用 pane を生成（機能①: pane ごとに独立した価格軸／
 //     機能④: pane 境界 separator のドラッグで高さ調整＝v5 既定 ON）。
-//   - 機能②: pane 左上に指標名のテキストウォーターマーク。
-//   - 機能③: クロスヘア移動で当該 pane の系列値をウォーターマークへ追記。
+//   - 機能②③（ISSUE-276 で置換）: pane 左上のテキストウォーターマーク（指標名＋系列値）は撤去し、
+//     ペイン別凡例（pane_legend_view）へ統合した。本 class は幾何と値の DTO を供給するだけで、
+//     文字の配置は DOM 側が持つ（canvas と DOM の二重表示・重なりを構造的に無くす）。
 //   - lineStyle 文字列 → v5 LineStyle 整数（solid=0 / dotted=1 / dashed=2）
 //   - 系列キー {instanceId}::{series_name}（§5.7 衝突回避）
 //
@@ -35,7 +36,7 @@ import { fmtValue } from './format.js';
 import { seriesKind } from '../../domain/series_kind.js';
 import { ScaleController, zoomedPriceRange, clampPriceRange } from './scale_controller.js';
 import { CandleFeed } from './candle_feed.js';
-import { SeriesDrawer, WATERMARK_COLOR, lastPointValue } from './series_drawer.js';
+import { SeriesDrawer, lastPointValue } from './series_drawer.js';
 
 // zoomedPriceRange/clampPriceRange の単一ソースは scale_controller.js（SOLID 是正 🔴-2 で抽出）。
 //   既存 import（テスト・他ファイル）を壊さないため本モジュールからも再 export する。
@@ -64,11 +65,15 @@ export class ChartRenderer {
   // onCandlesChanged: 基準 candles 変更（setCandles 全置換 / updateLastCandle 差分）時に呼ぶ
   //   observer（省略時 no-op＝後方互換）。trade markers renderer が hover 中なら highlight 解除へ使う
   //   （ChartRenderer 起点の単一同期点＝v6・§12 / フェーズ2 確定機構）。
-  constructor({ chart, mainSeries, lwc, onCrosshairReadout, onCandlesChanged }) {
+  // onPaneLegend: ペイン別凡例（ISSUE-276）へ「ペイン幾何＋各インスタンスの系列値」の DTO を渡す
+  //   コールバック（省略時 no-op＝後方互換）。upstream（pane 幾何・seriesData）に触れるのは本 class
+  //   だけで、View へは数値と文字列だけを渡す（隔離維持）。
+  constructor({ chart, mainSeries, lwc, onCrosshairReadout, onCandlesChanged, onPaneLegend }) {
     this._chart = chart;
     this._mainSeries = mainSeries;
     this._lwc = lwc ?? {};
     this._onCrosshairReadout = typeof onCrosshairReadout === 'function' ? onCrosshairReadout : () => {};
+    this._onPaneLegend = typeof onPaneLegend === 'function' ? onPaneLegend : () => {};
     // v6: 基準 candles の単一所有者（setCandles 全置換・updateLastCandle 差分で更新）。
     //   per-bar 減光（dimCandlesOutsidePair）・基準復元（restoreCandles）はこの基準から導出する。
     this._baseCandles = null;
@@ -125,7 +130,7 @@ export class ChartRenderer {
     //   余白の適用点は明示イベントのみ: 初期表示（直上）・時間足切替（setCandles）・
     //   MP 余白率変更（setRightMarginFraction）・最新足へ戻る操作（scrollToRealTime）。
     //   ズーム中の余白 px 一定性は保証しない（ユーザー操作の意思を優先する）。
-    // 機能③: クロスヘア移動で pane ウォーターマークへ系列値を追記。
+    // クロスヘア移動でペイン別凡例の値と読み取り欄を更新する（ISSUE-276）。
     if (typeof this._chart.subscribeCrosshairMove === 'function') {
       this._chart.subscribeCrosshairMove((param) => this._onCrosshairMove(param));
     }
@@ -486,8 +491,12 @@ export class ChartRenderer {
   }
 
   // line / histogram / level_dash を共通生成する（実体は SeriesDrawer._renderSeries・SOLID 是正 🔴-2）。
+  //   ISSUE-276: 生成後にペイン別凡例を更新する。クロスヘアを乗せる前でも「最新値つきの行」が
+  //   出るようにするため（ウォーターマークは値なしの指標名だけを出しており、値を見るには必ず
+  //   クロスヘアが要った）。ペインの増減もここで反映される。
   _renderSeries(instanceId, payloads, kind, opts = {}) {
     this._drawer._renderSeries(instanceId, payloads, kind, opts);
+    this._emitPaneLegend(null);
   }
 
   // horizontal_line 群を priceLine として生成。当該 instance に line/histogram 系列が
@@ -503,31 +512,11 @@ export class ChartRenderer {
     this._drawer._createPriceLines(slot, hlines);
   }
 
-  // 機能③: クロスヘア移動で各 pane のウォーターマークを「指標名  値1  値2 …」へ更新。
-  //   併せてクロスヘア価格読み取り欄（左上オーバーレイ）の読み取り DTO を構築・発火する。
+  // クロスヘア移動でペイン別凡例（値）とクロスヘア価格読み取り欄（OHLC）を更新する。
+  //   ISSUE-276: 旧「ペイン左上ウォーターマークへ指標名＋値を焼く」経路は撤去した。同じ情報を
+  //   凡例行が持つため 2 系統になっており、凡例 DOM がウォーターマークの上に載って判読不能だった。
   _onCrosshairMove(param) {
-    const seriesData = param && param.seriesData;
-    // 機能③（sub-pane ウォーターマーク・後方互換）— 既存ロジックは削らず維持。
-    for (const slot of this._instances.values()) {
-      if (!slot.watermark) {
-        continue;
-      }
-      const parts = [];
-      if (seriesData) {
-        for (const series of slot.lines.values()) {
-          const d = seriesData.get(series);
-          if (d !== undefined && d !== null) {
-            const v = (typeof d === 'object') ? (d.value ?? d.close) : d;
-            const text = fmtValue(v);
-            if (text) {
-              parts.push(text);
-            }
-          }
-        }
-      }
-      const label = parts.length ? `${slot.paneName}  ${parts.join('  ')}` : slot.paneName;
-      slot.watermark.applyOptions({ lines: [{ text: label, color: WATERMARK_COLOR, fontSize: 12 }] });
-    }
+    this._emitPaneLegend(param);
     // クロスヘア価格読み取り欄（左上オーバーレイ）への DTO 発火。
     this._emitReadout(param);
     // tf-period ホバー読取（依頼者指示 2026-07-13・a案ツールチップ）: カーソル位置の座標 DTO
@@ -556,6 +545,116 @@ export class ChartRenderer {
     this._onCrosshairReadout(this._buildReadoutDto(param));
   }
 
+  // ペイン別凡例 DTO を構築してコールバックへ渡す（ISSUE-276）。
+  _emitPaneLegend(param = null) {
+    this._onPaneLegend(this.paneLegendModel(param));
+  }
+
+  // ペイン別凡例の DTO（幾何＋値）を返す。**upstream に触れるのはここだけ**で、View へは
+  //   数値・文字列だけを渡す（§2.2 隔離）。
+  //
+  //   { groups: [{ paneIndex, top, height, rows: [{ instanceId, values: [{name,value,color}] }] }] }
+  //
+  //   top はチャート要素上端からの px。lightweight-charts は各ペインを 1px の区切りで縦に積むため
+  //   （実測 2026-08-06: paneSize=[497,166,165] / チャート高 858 / 時間軸 28 → 残り 2px が区切り 2 本）、
+  //   区切り高は「チャート高 − 時間軸 − ペイン高合計」をペイン間の数で割って求める。値を定数で
+  //   持たない（upstream のスタイル変更で静かにずれるのを避ける）。
+  paneLegendModel(param = null) {
+    const seriesData = (param && param.seriesData) || null;
+    const heights = this._paneHeights();
+    const separator = this._paneSeparatorPx(heights);
+    const tops = [];
+    let acc = 0;
+    for (let i = 0; i < heights.length; i += 1) {
+      tops.push(acc);
+      acc += heights[i] + separator;
+    }
+    const byPane = new Map();
+    for (const [instanceId, slot] of this._instances) {
+      const paneIndex = this._slotPaneIndex(slot);
+      if (!byPane.has(paneIndex)) {
+        byPane.set(paneIndex, []);
+      }
+      byPane.get(paneIndex).push({ instanceId, values: this._slotValues(slot, seriesData) });
+    }
+    const groups = [];
+    for (const [paneIndex, rows] of byPane) {
+      groups.push({
+        paneIndex,
+        top: tops[paneIndex] ?? 0,
+        height: heights[paneIndex] ?? 0,
+        rows,
+      });
+    }
+    groups.sort((a, b) => a.paneIndex - b.paneIndex);
+    return { groups };
+  }
+
+  // 各ペインの高さ（px・ペイン順）。非提供環境（Fake/SSR）は空配列＝幾何なしで縮退する。
+  //
+  //   高さは **pane オブジェクトの getHeight()** から採る。`chart.paneSize(index)` は
+  //   ペインの追加・削除の直後に内部状態が過渡的になると `Value is undefined` を投げ、その例外が
+  //   凡例の更新経路ごと中断させた（実測 2026-08-06: 指標 7 件の連続適用で 6 回発生し、
+  //   凡例が 1 ペインぶんしか描かれなかった）。index を介した逆引きをやめれば過渡状態に依存しない。
+  _paneHeights() {
+    if (typeof this._chart.panes !== 'function') {
+      return [];
+    }
+    const panes = this._chart.panes() ?? [];
+    return panes.map((pane) => {
+      const h = (pane && typeof pane.getHeight === 'function') ? pane.getHeight() : 0;
+      return Number.isFinite(h) ? h : 0;
+    });
+  }
+
+  // ペイン間の区切り高（px）。lightweight-charts はペインを 1px 前後の区切りで積むが、その値は
+  //   upstream のスタイル由来なので定数で持たない。「ペイン領域の総高 − 各ペイン高の合計」を
+  //   ペイン間の数で割って実測から求める。総高は composition root が供給する _paneHeight
+  //   （container 高 − 時間軸高）を使う（upstream への問い合わせを増やさない）。
+  //   求まらない環境では 0（数 px のズレはチップ位置として無害・例外を出す側へは倒さない）。
+  _paneSeparatorPx(heights) {
+    if (heights.length < 2 || !(this._paneHeight > 0)) {
+      return 0;
+    }
+    const sum = heights.reduce((a, b) => a + b, 0);
+    const rest = this._paneHeight - sum;
+    return rest > 0 ? rest / (heights.length - 1) : 0;
+  }
+
+  // slot が属するペイン番号（overlay＝専用 pane を持たない指標は 0＝価格ペイン）。
+  _slotPaneIndex(slot) {
+    if (slot.pane && typeof slot.pane.paneIndex === 'function') {
+      const idx = slot.pane.paneIndex();
+      return Number.isFinite(idx) ? idx : 0;
+    }
+    return 0;
+  }
+
+  // slot の各系列の表示値。クロスヘア位置に値があればそれ、無ければ保持した最新値。
+  //   系列単位で非表示（styleMeta.visible=false）のものは出さない（凡例と描画を一致させる）。
+  _slotValues(slot, seriesData) {
+    const out = [];
+    if (slot.visible === false) {
+      return out;   // インスタンスごと非表示（eye OFF）＝値は出さない（行は残す＝再表示できる）。
+    }
+    for (const [key, series] of slot.lines) {
+      const meta = slot.styleMeta ? slot.styleMeta.get(key) : null;
+      if (meta && meta.visible === false) {
+        continue;
+      }
+      const d = seriesData ? seriesData.get(series) : undefined;
+      let value;
+      if (d !== undefined && d !== null) {
+        value = (typeof d === 'object') ? (d.value ?? d.close) : d;
+      }
+      if (value === undefined || value === null) {
+        value = slot.lastValues ? slot.lastValues.get(key) : undefined;
+      }
+      out.push({ name: meta ? meta.name : key, value, color: meta ? meta.color : undefined });
+    }
+    return out;
+  }
+
   // 読み取り DTO を構築する（プレーンなデータ構造・series 実体や lwc 型は含めない＝隔離維持）。
   //   { time, ohlc:{open,high,low,close}|null, overlays:[{name,value,color}] }。
   _buildReadoutDto(param) {
@@ -566,16 +665,11 @@ export class ChartRenderer {
     const ohlc = (src && src.open !== undefined)
       ? { open: src.open, high: src.high, low: src.low, close: src.close }
       : null;
-    // overlays: pane0 overlay 系列の seriesData 値、無ければ保持した lastValue。色は保持した color。
+    // ISSUE-276: overlay 各系列の値は**ペイン別凡例の行**が持つ（読み取り欄からは外す）。
+    //   同じ値を 2 系統に出していたため、指標が増えるほど読み取り欄が伸びて凡例と重なっていた
+    //   （実測: 指標 11 件で読み取り欄 229px＋凡例 295px）。読み取り欄は OHLC と時刻だけを担う。
+    //   overlays は空配列で残す（View・既存呼出の形を壊さない）。
     const overlays = [];
-    for (const meta of this._overlayReadouts.values()) {
-      if (meta.visible === false) {
-        continue;  // 非表示（eye トグル OFF）の overlay は読み取り欄に出さない。
-      }
-      const d = seriesData ? seriesData.get(meta.series) : undefined;
-      const value = (d !== undefined && d !== null && d.value !== undefined) ? d.value : meta.lastValue;
-      overlays.push({ name: meta.name, value, color: meta.color });
-    }
     const time = (param && param.time !== undefined) ? param.time
       : (this._lastBar ? this._lastBar.time : undefined);
     // sessions: 当日 MP（POC/VAH/VAL）を time で引いて DTO に載せる（供給時のみ・sessions 表示中）。
@@ -602,6 +696,11 @@ export class ChartRenderer {
         const meta = this._overlayReadouts.get(seriesKey);
         if (meta) {
           meta.lastValue = lastPointValue(points);
+        }
+        // ISSUE-276: ペイン別凡例の「クロスヘア無しの表示値」も同じ点で更新する
+        //   （overlay/pane を問わず 1 経路で保つ＝系列ごとに鮮度が割れない）。
+        if (slot.lastValues) {
+          slot.lastValues.set(seriesKey, lastPointValue(points));
         }
         return;
       }
@@ -755,6 +854,8 @@ export class ChartRenderer {
       slot.visible = true;         // 全除去→新規 slot と同じ初期状態（非表示は呼び出し側が再適用）
       return;
     }
+    // ISSUE-276: ウォーターマークは生成しなくなったが、旧 slot（再描画途中の残骸）が
+    //   持っている可能性に備えて detach は残す（存在しなければ no-op）。
     if (slot.watermark && typeof slot.watermark.detach === 'function') {
       slot.watermark.detach();
     }
@@ -767,6 +868,8 @@ export class ChartRenderer {
       }
     }
     this._instances.delete(instanceId);
+    // ISSUE-276: 除去でペイン構成が変わる（後続ペインの index と top がずれる）ため再発火する。
+    this._emitPaneLegend(null);
   }
 
   // ─── ライブ追従（LiveFollowController 用）向け additive メソッド群 ───

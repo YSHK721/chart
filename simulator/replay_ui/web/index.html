@@ -29,16 +29,16 @@
     <!-- チャート + クロスヘア価格読み取り欄 + 凡例 -->
     <div class="chart-wrap">
       <div id="chart"></div>
-      <!-- 左上オーバーレイ（読み取り欄→凡例を縦フローで積む。読み取り欄の高さが
-           overlay 行数で伸びても #legend が重ならないよう、固定 top でなくフロー配置にする）。 -->
+      <!-- 左上オーバーレイ（現在値 → 読み取り欄）。指標の行は ISSUE-276 でペイン別凡例へ移した。 -->
       <div id="chart-overlay-tl">
         <!-- 現在値の大型表示（サイズは CSS 規定・上げ下げ色分け・ライブと同一設計）。CurrentPriceView.render が描画する。 -->
         <div id="current-price"></div>
         <!-- クロスヘア価格読み取り欄（日時 + OHLC + overlay 各行）。
              ChartRenderer.onCrosshairReadout → CrosshairReadoutView.render が描画する。 -->
         <div id="crosshair-readout"></div>
-        <div id="legend"></div>
       </div>
+      <!-- ペイン別凡例（ISSUE-276）。ライブと同一実装（PaneLegendView）で描画する。 -->
+      <div id="pane-legends"></div>
     </div>
     <!-- Market Profile リプレイモードの scrub バーのホスト（チャート下部・sibling）。
          MarketProfileReplayBar が replay モード ON 時のみ内部で表示する（既定は空・非表示）。

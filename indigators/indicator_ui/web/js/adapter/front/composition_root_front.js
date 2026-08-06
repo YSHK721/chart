@@ -8,6 +8,7 @@
 
 import { ChartRenderer } from './chart_renderer.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
+import { PaneLegendView } from './pane_legend_view.js';
 import { CurrentPriceView } from './current_price_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LiveUpdater } from './live_updater.js';
@@ -209,8 +210,14 @@ export async function bootstrap({
 
   // ChartRenderer は upstream API の唯一の隔離点。v5 シリーズ定義（LineSeries/HistogramSeries）と
   // createTextWatermark を lwc 名前空間ごと渡す（系列追加系 API 名の参照を本所外へ漏らさない）。
+  // ペイン別凡例（ISSUE-276）。指標の行を「描画先ペインの左上」へ出す表示系統で、旧
+  //   #legend（左上に全件を縦積み）とペイン内ウォーターマークを置き換える。幾何と値は
+  //   ChartRenderer が DTO で供給し、ラベルと操作は IndicatorController が供給する。
+  const paneLegendView = new PaneLegendView({ document: doc, elementId: 'pane-legends' });
+
   const renderer = new ChartRenderer({
     chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),
+    onPaneLegend: (model) => paneLegendView.update(model),
   });
 
   // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
@@ -376,6 +383,9 @@ export async function bootstrap({
     mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
     mpGrowthResolver: mpLiveModeCoordinator ? () => mpLiveModeCoordinator.isGrowing() : null,
   });
+  // ISSUE-276: ペイン別凡例へ行（ラベル・可視・操作）を供給する。生成直後に結線するため、
+  //   restore()/bind() の初回描画から新しい凡例に載る。
+  controller.setPaneLegendView(paneLegendView);
 
   // テンプレート協働子（§7.1）。有効時間足集合は composition root から注入する（U1・present は
   //   既定 9 足＝時間足メニューと同一集合。単一情報源は domain/tf_meta.js の TF_BAR_SEC＝

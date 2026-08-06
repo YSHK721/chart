@@ -1013,6 +1013,7 @@ export class IndicatorController {
       const def = this._catalog.get(inst.indicatorId);
       const isMp = this._isMarketProfile(def);
       return {
+        instanceId: inst.instanceId,
         label: `${def ? this._label(def) : inst.indicatorId}${inst.variant && inst.variant !== 'default' ? ' (' + inst.variant + ')' : ''}`,
         visible: inst.visible,
         onEye: () => (isMp
@@ -1025,6 +1026,17 @@ export class IndicatorController {
       };
     });
     this._legendView.renderLegend(rows);
+    // ISSUE-276: ペイン別凡例（描画先ペインの左上に出す新しい表示系統）へも同じ行を渡す。
+    //   未注入（replay の一部テスト・SSR）は no-op。値と幾何は ChartRenderer 側が供給する。
+    if (this._paneLegend && typeof this._paneLegend.setInstances === 'function') {
+      this._paneLegend.setInstances(rows);
+    }
+  }
+
+  // ペイン別凡例 View を注入する（合成根が結線・ISSUE-276）。未注入なら従来の #legend のみ。
+  setPaneLegendView(view) {
+    this._paneLegend = view ?? null;
+    this._renderLegend();
   }
 
   // 設定: 歯車クリックでプロパティダイアログを開く（§7.1）。

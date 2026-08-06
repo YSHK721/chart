@@ -138,12 +138,14 @@ test('ISSUE-109 系列別可視性: visible=false は series 非表示・instanc
   assert.equal(chart.created[1]._options.visible, true);
 });
 
-test('ISSUE-109 overlay 読み取り欄: applySeriesStyle の色変更が readout メタへ追従する', () => {
+// ISSUE-276: 値と色の表示先は読み取り欄からペイン別凡例へ移った。色の追従はそこで固定する。
+test('ISSUE-109/276 ペイン別凡例: applySeriesStyle の色変更が凡例の値の色へ追従する', () => {
   const { renderer } = newRenderer();
-  renderer.renderLine('ma#1', MA_PAYLOADS); // overlay（pane 0）の line は readout に載る
+  renderer.renderLine('ma#1', MA_PAYLOADS);
   renderer.applySeriesStyle('ma#1', 'MA', { color: '#ff0000' });
-  const dto = renderer._buildReadoutDto(null);
-  const ma = dto.overlays.find((o) => o.name === 'MA');
+  const model = renderer.paneLegendModel(null);
+  const row = model.groups.flatMap((g) => g.rows).find((r) => r.instanceId === 'ma#1');
+  const ma = row.values.find((v) => v.name === 'MA');
   assert.ok(ma);
   assert.equal(ma.color, '#ff0000');
 });

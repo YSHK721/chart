@@ -82,6 +82,50 @@ html, body {
 .chart-wrap { position: relative; flex: 1 1 auto; min-height: 0; }
 #chart { position: absolute; inset: 0; }
 
+/* ===== ペイン別凡例（ISSUE-276）=====
+   指標の行を「その指標が描かれているペインの左上」へ出す。旧構成（左上に全件を縦積みする
+   #legend ＋ ペイン内のテキストウォーターマーク）は、指標が増えると左上が伸び続けて
+   チャートを覆い（実測: 11 件で 439x571px＝チャート高の 67%）、かつ DOM の凡例が canvas の
+   ウォーターマークに重なって判読不能だった。ペインへ分散させることで積み上がりが構造的に消える。
+
+   #pane-legends 自体はクリックを透過し（pointer-events:none）、各グループだけが受け取る。
+   これがないとチャートのドラッグ・ホイールが全面で効かなくなる。 */
+#pane-legends {
+  position: absolute; inset: 0; z-index: 7;
+  pointer-events: none;
+}
+.pane-legend {
+  position: absolute; left: 12px;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  pointer-events: auto;
+  max-width: 60%;
+}
+/* 折りたたみチップ（既定表示）。「∿ 3」＝このペインに 3 指標。クリックで開閉、ホバーで一時展開。 */
+.pane-legend-chip {
+  background: rgba(19, 23, 34, 0.72); color: #b8bec9;
+  border: 1px solid #2a2e39; border-radius: 4px;
+  font: 11px/1.4 inherit; padding: 1px 7px; cursor: pointer;
+}
+.pane-legend-chip:hover, .pane-legend-chip.is-open { color: #e6e9ef; border-color: #3a4050; }
+.pane-legend-rows { display: flex; flex-direction: column; gap: 2px; }
+.pane-legend-row {
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(19, 23, 34, 0.82); border: 1px solid #2a2e39; border-radius: 4px;
+  padding: 1px 6px; font-size: 11px; line-height: 1.5; white-space: nowrap;
+}
+.pane-legend-row.is-hidden { opacity: 0.45; }
+.pane-legend-name {
+  color: #e6e9ef; max-width: 180px; overflow: hidden; text-overflow: ellipsis;
+}
+.pane-legend-values { display: inline-flex; gap: 6px; color: #9aa0ad; }
+.pane-legend-value { font-variant-numeric: tabular-nums; }
+.pane-legend-row button {
+  background: transparent; border: 0; color: #9aa0ad; cursor: pointer;
+  font-size: 11px; line-height: 1; padding: 1px 2px; border-radius: 3px;
+}
+.pane-legend-row button:hover { color: #fff; background: #2a2e39; }
+.pane-legend-remove:hover { color: #ef5350 !important; }
+
 /* 左上オーバーレイ・スタック（読み取り欄→凡例を縦フローで積む）。固定 top を使わず
    フロー配置にすることで、読み取り欄が overlay 行数で伸びても #legend と重ならない。 */
 #chart-overlay-tl {
