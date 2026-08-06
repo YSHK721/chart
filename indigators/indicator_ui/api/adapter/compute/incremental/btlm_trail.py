@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 from common_view.lwc_adapter import resolve_times
+from adapter.compute.incremental._emit import tail_points
 
 from adapter.compute.call_binding import indicator_src
 
@@ -310,24 +311,7 @@ class BtlmTrailIncrementer:
             if found is None or found[0] is None:
                 return None  # 骨格と状態の形が食い違う＝従来経路へ委ねる。
             confirmed, last = found
-            out.append({**entry, "data": _tail_points(confirmed, last, req.times, req.n, k)})
+            out.append({**entry, "data": tail_points(confirmed, last, req.times, req.n, k)})
         return out
 
 
-def _tail_points(
-    confirmed: np.ndarray, last: float, times: np.ndarray, n: int, k: int
-) -> list[dict[str, Any]]:
-    """末尾から k 点（NaN は出さない）を系列 JSON の data 形式で返す。
-
-    ``add_btlm_trail._emit`` の規約（値が NaN の行を dropna で落とし、残りを time/value 点に
-    する）と同一。バー i の値は i<n-1 なら確定配列、i==n-1 なら形成中バーの値。
-    """
-    points: list[dict[str, Any]] = []
-    i = n - 1
-    while i >= 0 and len(points) < k:
-        v = last if i == n - 1 else confirmed[i]
-        if v == v:  # NaN 除外（NaN != NaN）
-            points.append({"time": int(times[i]), "value": float(v)})
-        i -= 1
-    points.reverse()
-    return points

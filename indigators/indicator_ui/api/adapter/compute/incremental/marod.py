@@ -36,6 +36,7 @@ import pandas as pd
 from common import event_quantiles as _evq
 from common import marod_bands as _bands
 from common_view.lwc_adapter import resolve_times
+from adapter.compute.incremental._emit import tail_points
 
 from adapter.compute.call_binding import indicator_src
 
@@ -385,7 +386,7 @@ class MarodIncrementer:
             if found is None:
                 return None
             confirmed, last = found
-            out.append({**entry, "data": _tail_points(confirmed, last, req.times, req.n, k)})
+            out.append({**entry, "data": tail_points(confirmed, last, req.times, req.n, k)})
         return out
 
 
@@ -404,16 +405,3 @@ def _replay_events(
     return up, dn, run_up, run_dn
 
 
-def _tail_points(
-    confirmed: np.ndarray, last: float, times: np.ndarray, n: int, k: int
-) -> list[dict[str, Any]]:
-    """末尾から k 点（NaN は出さない）を系列 JSON の data 形式で返す（emit 規約と同一）。"""
-    points: list[dict[str, Any]] = []
-    i = n - 1
-    while i >= 0 and len(points) < k:
-        v = last if i == n - 1 else confirmed[i]
-        if v == v:  # NaN 除外
-            points.append({"time": int(times[i]), "value": float(v)})
-        i -= 1
-    points.reverse()
-    return points

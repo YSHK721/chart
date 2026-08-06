@@ -15,9 +15,16 @@ from typing import Any
 import pandas as pd
 
 
-def _to_unix_seconds(value: Any) -> int:
-    """時刻値を UNIX 秒（整数）へ変換する（§6.3.2 time=UNIX 秒）。"""
+def to_unix_seconds(value: Any) -> int:
+    """時刻値を UNIX 秒（整数）へ変換する（§6.3.2 time=UNIX 秒）— **公開面**。
+
+    増分計算の emit（adapter.compute.incremental._emit）が時刻正規化の唯一源として参照する。
+    かつては private 名 _to_unix_seconds を境界外から import していた（ISSUE-273）。
+    """
     return int(pd.Timestamp(value).timestamp())
+
+
+_to_unix_seconds = to_unix_seconds  # 後方互換（既存の内部参照を壊さない）
 
 
 def _line_points(df: pd.DataFrame, value_column: str) -> list[dict[str, Any]]:

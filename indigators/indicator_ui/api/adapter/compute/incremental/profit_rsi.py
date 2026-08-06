@@ -33,6 +33,7 @@ import numpy as np
 
 from common.marod_bands import causal_stat_latest, stat_reducer
 from common_view.lwc_adapter import resolve_times
+from adapter.compute.incremental._emit import tail_points
 
 from adapter.compute.fake_chart import _to_unix_seconds
 
@@ -313,22 +314,7 @@ class ProfitRsiIncrementer:
             if found is None or found[0] is None:
                 return None
             confirmed, last = found
-            out.append({**entry, "data": _tail_points(confirmed, last, req.times, req.n, k)})
+            out.append({**entry, "data": tail_points(confirmed, last, req.times, req.n, k)})
         return out
 
 
-def _tail_points(
-    confirmed: np.ndarray, last: float, times: np.ndarray, n: int, k: int
-) -> list[dict[str, Any]]:
-    """末尾から k 点（NaN は出さない）を系列 JSON の data 形式で返す。"""
-    points: list[dict[str, Any]] = []
-    i = n - 1
-    while i >= 0 and len(points) < k:
-        v = last if i == n - 1 else confirmed[i]
-        if v == v:
-            # 時刻の UNIX 秒化は参照実装 fake_chart._to_unix_seconds へ委譲（規約を写さない）。
-            #   末尾 k 点だけ遅延変換する（全件変換は 1 ステップを窓長に比例させる）。
-            points.append({"time": _to_unix_seconds(times[i]), "value": float(v)})
-        i -= 1
-    points.reverse()
-    return points
