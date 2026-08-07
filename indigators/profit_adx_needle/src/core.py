@@ -43,6 +43,7 @@ import numpy as np
 # ではなくパッケージの公開面（``__all__``）だけを参照する。
 from profit_system import (
     SIGMA_LEVELS,
+    ps_ema,
     compute_sigma_levels,
     ps_average,
     ps_level_count,
@@ -74,30 +75,10 @@ APPLIED_PRICES: tuple[str, ...] = ("W", "T", "M", "H", "L", "O", "C")
 _CLAMP_SIGMA: float = 3.29
 
 
-def _ema(values: np.ndarray, period: int) -> np.ndarray:
-    """MQL ``iMAOnArray(..., MODE_EMA)`` 相当の指数移動平均（α=2/(period+1)）。
-
-    昇順（古い→新しい）系列に対し ``ema[0]=values[0]``、
-    ``ema[k]=ema[k-1]+α(values[k]-ema[k-1])`` で更新する。MT4 の EMA は Wilder の
-    1/period ではなく 2/(period+1) を用いる（ガイド調査結果）。
-
-    Args:
-        values: 入力系列（昇順, 1 次元）。
-        period: 平滑期間（>0）。
-
-    Returns:
-        同長の EMA 系列。
-    """
-    v = np.asarray(values, dtype=np.float64)
-    n = v.size
-    out = np.empty(n, dtype=np.float64)
-    if n == 0:
-        return out
-    alpha = 2.0 / (period + 1.0)
-    out[0] = v[0]
-    for k in range(1, n):
-        out[k] = out[k - 1] + alpha * (v[k] - out[k - 1])
-    return out
+# ISSUE-278 #14: MT4 EMA（α=2/(period+1)）の実装は profit_system.ps_ema が唯一源。
+#   ここに写しを置くと、seed 規約を直しても ADX の pdi/mdi/adx だけ旧実装のまま残り、
+#   同じ σ 水準辞書で比較する他の profit_* 指標と尺度が合わなくなる（private の写経は
+#   越境検定も無いため誰も気付けない）。
 
 
 def compute_adx(
@@ -161,14 +142,14 @@ def compute_adx(
         sdi_plus = np.where(tr > 0.0, 100.0 * pdm / tr, 0.0)
         sdi_minus = np.where(tr > 0.0, 100.0 * mdm / tr, 0.0)
 
-    pdi = _ema(sdi_plus, period)
-    mdi = _ema(sdi_minus, period)
+    pdi = ps_ema(sdi_plus, period)
+    mdi = ps_ema(sdi_minus, period)
 
     denom = pdi + mdi
     with np.errstate(divide="ignore", invalid="ignore"):
         dx = np.where(denom != 0.0, 100.0 * np.abs(pdi - mdi) / denom, 0.0)
 
-    return _ema(dx, period)
+    return ps_ema(dx, period)
 
 
 def compute_level_count(

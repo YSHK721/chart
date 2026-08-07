@@ -235,16 +235,10 @@ export class SeriesDrawer {
       // overlay（pane 0 重ね描き）の line 系列を読み取り欄の overlay 行に載せる。
       //   color/name と末尾点 value（hover 解除時の fallback）を保持する。
       //
-      // readout_only の系列は pane 指標でも載せる: このヒントは「描画せず読取欄だけに出す」
-      //   という意味であり（back の描画ヒント契約・fake_chart の _DISPLAY_HINTS）、pane だから
-      //   除外すると線も出ず読取欄にも出ない＝どこにも現れない死荷重になる。対象は明示的に
-      //   readout_only を付けた系列だけなので、既存指標の読取欄行は 1 行も増えない。
-      if ((!pane && seriesKind(kind).overlayReadout) || p.readout_only === true) {
-        this._h._overlayReadouts.set(key, {
-          series, color: p.color, name: p.name, lastValue: lastPointValue(p.data),
-          visible: true,
-        });
-      }
+      // ISSUE-278 #15: 読取欄用メタ（_overlayReadouts）の登録は撤去した。値の表示先は
+      //   ペイン別凡例 1 系統（slot.lastValues ＋ styleMeta）へ統合済みで、この Map は
+      //   書かれるだけで誰も読まない状態だった。読み手のない状態を 6 経路で同期し続けると、
+      //   系列ライフサイクルを触る全変更が「出力に寄与しないコード」の追従を強制される。
     }
     // ISSUE-150: keepPane redraw で退避した pane 価格軸の手動レンジを、系列再追加後に復元する。
     //   退避が無い（自動スケール中・初回描画）は no-op。
@@ -296,11 +290,6 @@ export class SeriesDrawer {
     for (const [key, series] of slot.lines) {
       const seriesVisible = visible && (slot.styleMeta.get(key)?.visible ?? true);
       series.applyOptions({ visible: seriesVisible });
-      // 読み取り欄の overlay 行も表示状態へ追従させる（非表示は欄から除外）。
-      const meta = this._h._overlayReadouts.get(key);
-      if (meta) {
-        meta.visible = seriesVisible;
-      }
     }
     if (slot.hlinePayloads !== null) {
       if (visible && slot.priceLines.length === 0) {
@@ -387,11 +376,6 @@ export class SeriesDrawer {
       }
     }
     series.applyOptions(options);
-    const ro = this._h._overlayReadouts.get(key);
-    if (ro) {
-      ro.color = meta.color;
-      ro.visible = slot.visible && meta.visible;
-    }
     return true;
   }
 
@@ -446,11 +430,6 @@ export class SeriesDrawer {
     // 8. meta 更新: kind と display（histogram は 'bar'・往復整合）。
     meta.kind = toKind;
     meta.display = toHistogram ? 'bar' : meta.display;
-    // overlay 読取欄に載っている場合は series 参照を張り替える（MAROD は pane のため通常無い）。
-    const ro = this._h._overlayReadouts.get(key);
-    if (ro) {
-      ro.series = newSeries;
-    }
     // 9. 0% 基準線を新 host（新系列）へ再生成する（元々あった場合のみ実体を持つ＝可視性不変）。
     if (hadPriceLines) {
       this._createPriceLines(slot, slot.hlinePayloads);

@@ -86,7 +86,7 @@ export class ChartRenderer {
     this._lastBar = null;
     // overlay（pane 0 重ね描き）line 系列の読み取り用メタ。key {instanceId}::{name} ->
     //   { series, color, name, lastValue }。読み取り欄の overlay 行と fallback 値に使う。
-    this._overlayReadouts = new Map();
+    // ISSUE-278 #15: overlay 読取欄用の Map は撤去した（値はペイン別凡例が slot.lastValues で持つ）。
     // instanceId -> { lines, priceLines, hlinePayloads, visible, scaleHost, priceLineHost,
     //                 pane, watermark, paneName }
     this._instances = new Map();
@@ -696,11 +696,7 @@ export class ChartRenderer {
       const series = slot.lines.get(seriesKey);
       if (series) {
         apply(series);
-        const meta = this._overlayReadouts.get(seriesKey);
-        if (meta) {
-          meta.lastValue = lastPointValue(points);
-        }
-        // ISSUE-276: ペイン別凡例の「クロスヘア無しの表示値」も同じ点で更新する
+        // ISSUE-276: ペイン別凡例の「クロスヘア無しの表示値」をここで更新する
         //   （overlay/pane を問わず 1 経路で保つ＝系列ごとに鮮度が割れない）。
         if (slot.lastValues) {
           slot.lastValues.set(seriesKey, lastPointValue(points));
@@ -772,10 +768,6 @@ export class ChartRenderer {
     }
     for (const [key, series] of slot.lines.entries()) {
       series.setData([]);
-      const meta = this._overlayReadouts.get(key);
-      if (meta) {
-        meta.lastValue = null;
-      }
     }
   }
 
@@ -840,10 +832,6 @@ export class ChartRenderer {
     }
     // 価格線は系列除去より先に外す（pane 配置では水準線の host が当の系列のため）。
     this._removePriceLines(slot);
-    for (const key of slot.lines.keys()) {
-      // 読み取り欄の overlay メタも掃除する（残ると削除済み指標が読み取り欄に残る）。
-      this._overlayReadouts.delete(key);
-    }
     // 案A（btlm_trail_marod）: スワップ用に退避した保持データ（seriesData）も掃除する（slot 破棄で
     //   GC 対象になるが、保持配列を明示解放して即時開放する）。
     slot.seriesData.clear();

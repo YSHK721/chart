@@ -36,6 +36,7 @@ from .core import (
     level_count_score,
     ps_average,
     ps_level_count,
+    ps_ema,
     ps_normalize,
     ps_std_ema,
     ps_unit_conversion,
@@ -49,6 +50,7 @@ __all__ = [
     "compute_marod",
     "ps_normalize",
     "ps_average",
+    "ps_ema",
     "ps_std_ema",
     "ps_unit_conversion",
 ]

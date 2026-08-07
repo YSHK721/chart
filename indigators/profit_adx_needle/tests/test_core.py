@@ -20,7 +20,9 @@ from src import (  # noqa: E402
     compute_sigma_levels,
     ps_level_count,
 )
-from src.core import _ema, _ps_average, _ps_std_ema, _unit_conversion  # noqa: E402
+# ISSUE-278 #14: EMA の実装は profit_system.ps_ema が唯一源（本パッケージの写経は撤去）。
+from profit_system import ps_ema as _ema  # noqa: E402
+from src.core import _ps_average, _ps_std_ema, _unit_conversion  # noqa: E402
 from src.needle import build_adx_needle, needle_levels  # noqa: E402
 
 import pandas as pd  # noqa: E402

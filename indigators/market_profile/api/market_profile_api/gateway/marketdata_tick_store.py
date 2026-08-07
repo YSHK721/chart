@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from marketdata import paths as _paths
-from marketdata.tick_m1 import day_parquet_files
+from marketdata.tick_m1 import day_parquet_files, ts_and_mid
 
 # ISSUE-178: 層間 DTO（不変）。gateway→compute を跨ぐ窓ティックは frozen dataclass で返す。
 from market_profile_api.compute.rollup_dto import TickWindow
@@ -71,14 +71,15 @@ class MarketdataTickStore:
         frames = [self._read_ticks(p, columns) for p in files]
         tdf = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
 
-        ts = pd.to_datetime(tdf["timestamp"])
-        if getattr(ts.dt, "tz", None) is not None:
-            ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+        # ISSUE-278 #6: mid/tz の規則は marketdata.tick_m1.ts_and_mid が唯一源（同関数の docstring も
+        #   「同一規則を外部（tools・market_profile gateway）が再実装していたため公開名を与えた」と
+        #   記録している）。ここに写しを置くと、mid の定義や tz 規約を変えたとき M1/ロールアップ側
+        #   だけが変わり、同一画面に重ねて描く MP の dwell/zp が旧規則のまま残って価格軸が静かにずれる。
+        ts, mid = ts_and_mid(tdf)
         secs = ts.to_numpy().astype("datetime64[s]").astype("int64")
         win = (secs >= s) & (secs < e)
         secs = secs[win]
-        mids = ((tdf["bidPrice"].to_numpy(dtype="float64") + tdf["askPrice"].to_numpy(dtype="float64"))
-                / 2.0)[win]
+        mids = mid.to_numpy(dtype="float64")[win]
         if len(mids):
             m = float(np.median(mids))
             if m > 0:

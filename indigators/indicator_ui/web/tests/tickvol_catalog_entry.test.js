@@ -121,20 +121,16 @@ test('tickvol: id は一意で、取引密度帯（tickvol_bands）とは別の�
   assert.equal(get('tickvol').placement, 'pane');
 });
 
-// --- 読取欄（β/σ/バンド内実績率）の結線 ------------------------------------- //
-// readout_only は「描画せず読取欄だけに出す」ヒント。pane 指標で除外されるとどこにも
-// 現れない死荷重になるため、pane でも読取欄へ載ることを固定する（btlm_trail F-09 と同じ役割）。
+// --- 数値読取系列（β/σ/バンド内実績率）の表示 --------------------------------- //
+// readout_only は「線として描かず数値だけ出す」ヒント（価格軸オートスケール除外・最終値
+// ラベル/プライスライン/クロスヘアマーカーを消す）。ISSUE-276 で値の表示先はペイン別凡例へ
+// 統合されたので、pane 指標でも **凡例の値として現れる** ことを固定する。
+// ISSUE-278 #15: 旧検定はソース文字列（`p.readout_only === true`）を正規表現で固定しており、
+//   読み手を失った _overlayReadouts の登録分岐を削除できない構造にしていた。表示結果で固定する。
 
-test('series_drawer: readout_only の系列は pane 指標でも読取欄に載る', async () => {
-  const { SeriesDrawer } = await import('../js/adapter/front/series_drawer.js');
-  const host = {
-    _overlayReadouts: new Map(),
-    _chart: { addSeries: () => fakeSeries(), panes: () => [], addPane: () => fakePane() },
-    _lwc: { LineSeries: {}, HistogramSeries: {} },
-    _instances: new Map(),
-    _paneHeight: 120,
-    _restorePaneScaleRange: () => {},
-  };
+test('readout_only の系列は pane 指標でも凡例の値として現れる', async () => {
+  const { ChartRenderer } = await import('../js/adapter/front/chart_renderer.js');
+
   function fakeSeries() {
     return {
       setData: () => {}, applyOptions: () => {}, data: () => [],
@@ -143,13 +139,30 @@ test('series_drawer: readout_only の系列は pane 指標でも読取欄に載�
     };
   }
   function fakePane() {
-    return { paneIndex: () => 1, setHeight: () => {}, priceScale: () => ({ applyOptions: () => {} }) };
+    return {
+      paneIndex: () => 1, setHeight: () => {}, getHeight: () => 120,
+      addSeries: () => fakeSeries(),
+      priceScale: () => ({ applyOptions: () => {} }),
+    };
   }
-  const drawer = new SeriesDrawer(host);
-  assert.equal(typeof drawer, 'object');
-  // 契約の所在を固定する（実描画は実 UI 検証で確認済み）: readout_only を見て分岐している。
-  const src = await import('node:fs').then((fs) => fs.promises.readFile(
-    new URL('../js/adapter/front/series_drawer.js', import.meta.url), 'utf8'));
-  assert.match(src, /p\.readout_only === true/,
-    'readout_only の系列を読取欄へ載せる分岐が無い');
+  const chart = {
+    addSeries: () => fakeSeries(),
+    panes: () => [fakePane()],
+    addPane: () => fakePane(),
+    timeScale: () => ({ applyOptions: () => {}, height: () => 28 }),
+  };
+  const renderer = new ChartRenderer({
+    chart, mainSeries: fakeSeries(), lwc: { LineSeries: {}, HistogramSeries: {} },
+  });
+
+  // pane 指標（オシレーター）として描く＝専用ペインに histogram + 数値読取系列を載せる。
+  renderer.renderHistogram('tickvol#1', [
+    { name: 'tickvol', kind: 'histogram', data: [{ time: 1, value: 5 }] },
+    { name: 'tickvol_beta', kind: 'line', readout_only: true, data: [{ time: 1, value: 3.5 }] },
+  ], { pane: true, name: 'tickvol' });
+
+  const model = renderer.paneLegendModel(null);
+  const row = model.groups.flatMap((g) => g.rows).find((r) => r.instanceId === 'tickvol#1');
+  const names = row.values.map((v) => v.name);
+  assert.ok(names.includes('tickvol_beta'), `数値読取系列が凡例に出ていない: ${names.join(',')}`);
 });

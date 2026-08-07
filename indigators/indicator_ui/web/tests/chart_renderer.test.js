@@ -916,15 +916,18 @@ test('updateSeriesTail: unknown seriesKey is a no-op (does not throw)', () => {
   assert.deepEqual(series._updates, []); // 触らない
 });
 
-test('updateSeriesTail: updates overlay readout lastValue to the tail last point', () => {
-  // Arrange: overlay(line・pane 0)系列を生成し読み取り fallback の lastValue を持たせる。
+test('updateSeriesTail: 末尾点をペイン別凡例の表示値（クロスヘア無し）へ反映する', () => {
+  // ISSUE-278 #15: 旧 _overlayReadouts（読取欄用の Map）は読み手を失っていたため撤去した。
+  //   末尾値の表示先はペイン別凡例 1 系統（slot.lastValues → paneLegendModel）である。
+  // Arrange
   const { renderer, chart } = newRenderer();
   renderer.renderLine('ma#1', [{ name: 'MA', kind: 'line', data: [{ time: 1, value: 10 }] }]);
   // Act
   renderer.updateSeriesTail('ma#1::MA', [{ time: 2, value: 99 }]);
-  // Assert: overlay 読み取りメタの lastValue が末尾点に更新される（_overlayReadouts 経由）。
-  const meta = renderer._overlayReadouts.get('ma#1::MA');
-  assert.equal(meta.lastValue, 99);
+  // Assert: クロスヘア無しの凡例値が末尾点になる。
+  const model = renderer.paneLegendModel(null);
+  const row = model.groups.flatMap((g) => g.rows).find((r) => r.instanceId === 'ma#1');
+  assert.equal(row.values[0].value, 99);
   void chart;
 });
 

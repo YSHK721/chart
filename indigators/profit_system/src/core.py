@@ -60,7 +60,7 @@ def ps_normalize(x: float) -> float:
     return float(round(x, _NORMALIZE_DECIMALS))
 
 
-def _ema(values: np.ndarray, period: int) -> np.ndarray:
+def ps_ema(values: np.ndarray, period: int) -> np.ndarray:
     """MQL ``iMAOnArray(..., MODE_EMA)`` 相当の指数移動平均（α=2/(period+1)）。
 
     昇順（古い→新しい）系列に対し ``ema[0]=values[0]``、
@@ -91,6 +91,12 @@ def ps_average(array: np.ndarray) -> float:
     return ps_normalize(float(np.mean(array)))
 
 
+# 旧 private 名（同一モジュール内の既存参照・後方互換）。新規参照は公開名 ps_ema を使う。
+#   ISSUE-278 #14: profit_adx_needle が同一実装を写経しており、EMA の seed 規約を変えても
+#   ADX 側だけ旧実装のまま残る状態だった。公開名を与えて実装を 1 つにする。
+_ema = ps_ema
+
+
 def ps_std_ema(array: np.ndarray) -> float:
     """元 ``iStdDevOnArray(array,0,length,0,MODE_EMA,0)`` 相当の標準偏差。
 
@@ -108,7 +114,7 @@ def ps_std_ema(array: np.ndarray) -> float:
     length = a.size
     if length == 0:
         return 0.0
-    ma = _ema(a, length)[-1]
+    ma = ps_ema(a, length)[-1]
     return float(np.sqrt(np.mean((a - ma) ** 2)))
 
 
