@@ -139,6 +139,7 @@ class ReplayApp:
         market_profile_port: Any = None,
         days_port: Any = None,
         tickvol_profile_port: Any = None,
+        catalog_port: Any = None,
     ) -> None:
         self._candle_port = candle_port
         # カレンダー（再生開始日）の選択可能日を返す Port。None のとき /available_days ルートを
@@ -174,6 +175,12 @@ class ReplayApp:
         #   ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉＝回帰ゼロ）。
         self._tickvol_profile_port = tickvol_profile_port
         self.tickvol_profile_enabled = tickvol_profile_port is not None
+        # 指標 param スキーマ（既定値＋variant ごとの受理 param）の Port（任意注入）。None のときは
+        #   /catalog ルートを持たず静的配信へフォールバックする（既存 replay へ非干渉）。
+        #   ISSUE-278 #8/#4: この経路が無いと front は variant が受理しない param を送り、
+        #   ライブ側 back のフェイルクローズで validation エラーになる。
+        self._catalog_port = catalog_port
+        self.catalog_enabled = catalog_port is not None
 
     def candles(
         self,
@@ -312,6 +319,14 @@ class ReplayApp:
         with self._lock:  # 1 分足全期間の集計を直列化（OOM 防止・他の重い処理と同規律）
             return tickvol_profile(request=req, profile_port=self._tickvol_profile_port)
 
+    def catalog(self) -> "tuple[int, dict]":
+        """指標 param の既定値と variant ごとの受理 param（paramScopes）を返す。
+
+        入力を持たず（dict の deep copy のみ）計算も伴わないため、重い処理の直列化錠は取らない。
+        実体はライブ側 controller（``handle_catalog``）＝ライブと応答が byte 一致する。
+        """
+        return self._catalog_port.catalog()
+
 
 def make_handler(app: ReplayApp):
     """``app`` を束ねた BaseHTTPRequestHandler サブクラスを返す（proto H 忠実）。"""
@@ -366,6 +381,13 @@ def make_handler(app: ReplayApp):
                 try:
                     payload = app.intraday(ref, start, end, mode, want_secs=want_secs)
                     return self._json(200, payload)
+                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
+                    return self._json(*_error_response(e))
+            if u.path == "/catalog" and app.catalog_enabled:
+                # 指標 param の既定値＋variant ごとの受理 param（ISSUE-278 #8/#4）。front は
+                #   これで表示コントロールと送信 params を決める。実体はライブ側 controller。
+                try:
+                    return self._json(*app.catalog())
                 except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
                     return self._json(*_error_response(e))
             if u.path == "/tickvol_profile" and app.tickvol_profile_enabled:

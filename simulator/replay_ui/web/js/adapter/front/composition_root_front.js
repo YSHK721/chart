@@ -131,6 +131,11 @@ export async function bootstrap({
   // テンプレート永続化（§4.2 の 3 キー）。既存 LocalStorageGateway は無改変（ISP）。
   const templateStore = new LocalStorageTemplateGateway(storage);
   const catalog = new IndicatorCatalogClient();
+  // param 既定値と variant ごとの受理 param を GET /catalog で解決する（ライブ root と同一・
+  //   ISSUE-092 ③ / ISSUE-278 #8）。呼ばないと front は variant が受理しない param を送り、
+  //   back のフェイルクローズで validation エラーになる（standalone replay だけの取り残しだった）。
+  //   overlay は controller 生成前に完了させる。load は例外を投げない（内部で吸収）。
+  await catalog.load(fetch);
 
   // 時間足切替で candles を再取得するためのローダ（B方式のみ）。A方式（SAMPLE_DATA・再集計不可）は null。
   //   controller.setTimeframe が (datasetRef, timeframe) で呼び、直近 recentBars 本へ制限して取得する。

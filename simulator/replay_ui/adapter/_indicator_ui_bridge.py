@@ -164,6 +164,27 @@ def load_tickvol_handler(api_path: Any = None, repo_root: Any = None) -> SimpleN
     return ns
 
 
+def load_catalog_handler(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
+    """指標 param スキーマ controller の純ロジック（handle_catalog）を束ねて返す。
+
+    ISSUE-278 #8: param 既定値と **variant ごとの受理 param（paramScopes）** の単一情報源は
+    ライブ側 back（``call_binding._TABLE``）にあり、front はそれを ``GET /catalog`` で受け取って
+    「表示するコントロール」「送信する params」を決める。standalone replay はこの経路を持たず
+    （ISSUE-278 #4）、受理しない param を送って ``validation`` エラーになる。ライブ controller を
+    read-only 再利用して同一応答を返す（DRY・ライブと byte 一致）。
+    """
+    api, root = _ensure_paths(api_path, repo_root)
+    key = ("catalog", str(api), str(root))
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
+    from adapter.controller.catalog_controller import handle_catalog  # noqa: E402
+
+    ns = SimpleNamespace(handle_catalog=handle_catalog)
+    _CACHE[key] = ns
+    return ns
+
+
 def load(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace:
     """dataset ＋ compute ＋ MP handlers を束ねた後方互換 namespace を返す（結果はキャッシュ）。
 

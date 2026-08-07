@@ -20,6 +20,7 @@ from simulator.replay_ui.adapter.market_profile_forming_gateway import (
 )
 from simulator.replay_ui.adapter.market_profile_gateway import MarketProfileGateway
 from simulator.replay_ui.adapter.tickvol_profile_gateway import TickvolProfileGateway
+from simulator.replay_ui.adapter.catalog_gateway import CatalogGateway
 from simulator.replay_ui.framework.serve_replay import ReplayApp
 
 # repo 根 = simulator/replay_ui/main/composition_root.py の parents[3]。
@@ -79,6 +80,11 @@ def build_replay_app(
     #   帯の定義はライブ側 controller が単一実装＝ライブとリプレイで byte 一致する。
     tickvol_profile_port = TickvolProfileGateway(api_path=api_path, repo_root=root)
 
+    # 指標 param スキーマ（既定値＋variant ごとの受理 param）: catalog gateway（bridge 委譲）を
+    #   Port として注入する。単一情報源はライブ側 back＝ライブとリプレイで応答が byte 一致する
+    #   （ISSUE-278 #8/#4: この経路が無いと front が受理しない param を送り validation エラーになる）。
+    catalog_port = CatalogGateway(api_path=api_path, repo_root=root)
+
     return ReplayApp(
         candle_port=candle_port,
         compute_port=compute_port,
@@ -89,6 +95,7 @@ def build_replay_app(
         forming_port=forming_port,
         market_profile_port=market_profile_port,
         tickvol_profile_port=tickvol_profile_port,
+        catalog_port=catalog_port,
         # カレンダー（再生開始日）の選択可能日。足の供給と同一実体＝同一配信路で日を数える。
         days_port=candle_port,
     )

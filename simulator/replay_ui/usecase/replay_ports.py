@@ -202,3 +202,19 @@ class TickvolProfilePort(Protocol):
     ) -> "tuple[int, dict]":
         """``(status, body)`` を返す（未知 ref は 400 nested error）。"""
         ...
+
+
+@runtime_checkable
+class CatalogPort(Protocol):
+    """``GET /catalog`` 用の指標 param スキーマ源（indicator_ui bridge 委譲）。
+
+    param 既定値と **variant ごとの受理 param（paramScopes）** を ``(status, body)`` で返す。
+    単一情報源はライブ側 back（``call_binding._TABLE``）であり、リプレイはそれを read-only
+    再利用する（ISSUE-278 #8/#4）。front はこの応答で「表示するコントロール」「送信する params」を
+    決めるため、経路が無いと受理しない param を送って ``validation`` エラーになる。
+    実装は adapter 層（bridge 委譲）に閉じる（DIP）。
+    """
+
+    def catalog(self) -> "tuple[int, dict]":
+        """``(status, body)`` を返す。"""
+        ...
