@@ -26,7 +26,13 @@ const SERVED_PAGES = [
 //   indicator-dialog / replay-bar: ISSUE-278 #16 で View 所有へ移した領域（app_chrome_view.js /
 //                 replay_bar_view.js）。指標ダイアログは 3 ページで 1440 文字が byte 一致の複製、
 //                 リプレイバーは rp-speed の title が実際にドリフトしていた（:8000 だけ説明欠落）。
-const VIEW_OWNED_HOSTS = ['pane-legends', 'legend', 'indicator-dialog', 'replay-bar'];
+//   chart-overlay-tl / current-price / crosshair-readout: ISSUE-277 の「残」として複製されたまま
+//                 だった左上オーバーレイの器。CurrentPriceView / CrosshairReadoutView が版面配下へ
+//                 自分で生成し所有する（ensureOverlayStackSlot）。これで配信ページの手書き複製は 0。
+const VIEW_OWNED_HOSTS = [
+  'pane-legends', 'legend', 'indicator-dialog', 'replay-bar',
+  'chart-overlay-tl', 'current-price', 'crosshair-readout',
+];
 
 // class 属性で書かれる View 所有の領域（id を持たないもの）。
 const VIEW_OWNED_CLASSES = ['toolbar'];

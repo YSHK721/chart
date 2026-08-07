@@ -132,8 +132,6 @@ export async function bootstrap({
   container,
   doc = (typeof document !== 'undefined' ? document : null),
   storage,
-  // served 判定・/candles 取得・/compute 用の注入（テスト・SSR で差し替え可能）。
-  protocol = (typeof location !== 'undefined' ? location.protocol : 'file:'),
   // ネイティブ fetch は this===window/globalThis を要求する。detached のまま
   // this._fetch(...) で呼ぶと "Illegal invocation" になるため globalThis へ束縛する。
   fetch = (typeof globalThis !== 'undefined' && globalThis.fetch
@@ -162,7 +160,7 @@ export async function bootstrap({
   // controller 以前の組み立て（チャート・描画・永続化・catalog）は両 root 共有の単一ソースへ委譲する。
   //   ISSUE-278 #4: ここを各 root が手書きしていたため、ライブの修正がリプレイへ届かなかった。
   const {
-    chart, mainSeries, compute, paneLegendView, renderer,
+    chart, mainSeries, compute, paneLegendView, currentPriceView, renderer,
     updatePaneHeight, persistence, templateStore, catalog, loadCandles,
   } = await composeChartShell({ lwc, container, doc, storage, fetch, datasetRef, recentBars });
 
@@ -301,7 +299,7 @@ export async function bootstrap({
   const { chartTemplates: templates, tickvolBands, tradeMarkers } = wireControllerCollaborators({
     controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
     templateStore, chartTemplateMenu, chartTemplateDialogs,
-    lwc, mainSeries, chart, container,
+    lwc, mainSeries, chart, container, currentPriceView,
     onTimeframeChanged: () => refreshTfPeriodNow(),
   });
   chartTemplates = templates;

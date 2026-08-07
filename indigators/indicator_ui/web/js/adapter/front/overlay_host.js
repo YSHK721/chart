@@ -35,7 +35,7 @@ export const CHART_ANCHOR_SELECTOR = '.chart-wrap';
  * @returns {object|null}                 ホスト要素。DOM 非対応環境では null（描画自体を行わない）。
  * @throws {Error}                        DOM はあるがアンカーが無い場合（契約違反・フェイルクローズ）。
  */
-export function ensureOverlayHost(doc, { className, anchorSelector = CHART_ANCHOR_SELECTOR, anchor = null } = {}) {
+export function ensureOverlayHost(doc, { className, id = null, anchorSelector = CHART_ANCHOR_SELECTOR, anchor = null } = {}) {
   if (!className) {
     throw new Error('ensureOverlayHost: className は必須（ホスト要素の所有者名）');
   }
@@ -58,6 +58,47 @@ export function ensureOverlayHost(doc, { className, anchorSelector = CHART_ANCHO
   }
   const el = doc.createElement('div');
   el.className = className;
+  // id は CSS 契約（既存の #chart-overlay-tl 等）を保つためだけに置く任意の属性で、View の
+  //   解決手段ではない（View はアンカー経由で自分のホストを得る＝DIP は不変）。
+  if (id) {
+    el.id = id;
+  }
   root.appendChild(el);
+  return el;
+}
+
+/**
+ * 左上オーバーレイ・スタック（#chart-overlay-tl）配下の**自分の欄**を所有する。
+ *
+ * 現在値（#current-price）とクロスヘア読み取り欄（#crosshair-readout）は、配信 3 ページへ
+ * 手書き複製されていた最後の表示要素だった（ISSUE-277 の「残」）。器の所有規約は
+ * :func:`ensureOverlayHost` と同じで、スタック本体は先に要求した View が作り、両者が再利用する。
+ * DOM 内の順序は**構築順**で決まるため、合成根が「現在値 → 読み取り欄」の順に構築する
+ * （＝従来 HTML の並びを保つ。CSS は縦積み）。
+ *
+ * @param {object|null} doc  DOM 実装（注入）。生成できない環境（スタブ document）は null を返す。
+ * @param {object} opts      id: 自分の欄の id（CSS 契約）。stackClass/stackId: スタック本体の名前。
+ * @returns {object|null}    自分の欄の要素。生成不能環境では null（呼び出し側は no-op へ落ちる）。
+ */
+export function ensureOverlayStackSlot(doc, {
+  id, stackClass = 'chart-overlay-tl', stackId = 'chart-overlay-tl', anchor = null,
+} = {}) {
+  if (!id) {
+    throw new Error('ensureOverlayStackSlot: id は必須（欄の CSS 契約名）');
+  }
+  if (!doc || typeof doc.createElement !== 'function') {
+    return null;   // DOM 非対応（SSR・スタブ document）＝生成しない。
+  }
+  const stack = ensureOverlayHost(doc, { className: stackClass, id: stackId, anchor });
+  if (!stack) {
+    return null;
+  }
+  const existing = typeof stack.querySelector === 'function' ? stack.querySelector(`#${id}`) : null;
+  if (existing) {
+    return existing;   // 再入で欄を増やさない。
+  }
+  const el = doc.createElement('div');
+  el.id = id;
+  stack.appendChild(el);
   return el;
 }

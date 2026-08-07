@@ -73,7 +73,11 @@ export async function composeChartShell({
   // ポート実装: ComputeHttpClient（fetch /compute）。candles は /candles から取得する。
   const compute = new ComputeHttpClient({ fetch });
 
-  // クロスヘア価格読み取り欄（左上固定オーバーレイ）。doc 不在（SSR/テスト）でも render は no-op。
+  // 左上オーバーレイ・スタックの 2 欄。器は各 View が版面配下へ自分で生成し所有する
+  //   （ISSUE-277 の残 / ISSUE-278 #16: 配信 3 ページへの手書き複製を撤去）。
+  //   **構築順が DOM の並び**になるため「現在値 → 読み取り欄」の順に作る（従来 HTML と同じ並び）。
+  //   現在値の大型表示そのものは維持する（依頼者判断 2026-08-07）。
+  const currentPriceView = new CurrentPriceView({ document: doc, elementId: 'current-price' });
   const readoutView = new CrosshairReadoutView({ document: doc, elementId: 'crosshair-readout' });
   // ペイン別凡例（ISSUE-276）。描画先の器は View 自身が版面（.chart-wrap）配下へ生成する
   //   （HTML への直書き＝配信ページの手書き複製をやめた・ISSUE-277）。root は id 文字列を知らない。
@@ -99,7 +103,7 @@ export async function composeChartShell({
   const loadCandles = (ref, tf) => fetchCandles(fetch, ref, tf, recentBars);
 
   return {
-    chart, mainSeries, compute, readoutView, paneLegendView, renderer,
+    chart, mainSeries, compute, readoutView, currentPriceView, paneLegendView, renderer,
     updatePaneHeight, persistence, templateStore, catalog, loadCandles,
   };
 }
@@ -156,7 +160,7 @@ export function installSharedUi({
 export function wireControllerCollaborators({
   controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
   templateStore, chartTemplateMenu, chartTemplateDialogs,
-  lwc, mainSeries, chart, container,
+  lwc, mainSeries, chart, container, currentPriceView,
   onTimeframeChanged = () => {},
 } = {}) {
   // テンプレート協働子（§7.1）。有効時間足集合は台帳が単一情報源（domain/tf_meta.js の TF_BAR_SEC＝
@@ -205,9 +209,9 @@ export function wireControllerCollaborators({
   const tradeMarkers = new TradeMarkersRenderer({
     lwc, mainSeries, chart, chartRenderer: renderer, document: doc, container,
   });
-  // 現在値の大型表示（#current-price）。candle 変更 observer は単一スロットのため、
-  //   tradeMarkers への通知と同一コールバック内で現在値ビューと帯の塗り直しも行う。
-  const currentPriceView = new CurrentPriceView({ document: doc, elementId: 'current-price' });
+  // 現在値の大型表示（#current-price）は composeChartShell が構築済み（欄の並びを構築順で決める）。
+  //   candle 変更 observer は単一スロットのため、tradeMarkers への通知と同一コールバック内で
+  //   現在値ビューと帯の塗り直しも行う。
   renderer.setCandleObserver(() => {
     tradeMarkers.onCandlesChanged();
     currentPriceView.render(renderer.lastClose());

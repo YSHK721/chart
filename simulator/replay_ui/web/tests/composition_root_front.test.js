@@ -52,7 +52,7 @@ test('bootstrap injects ComputeHttpClient when served over http', async () => {
   const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
   // Act
   const { controller, ready } = await bootstrap({
-    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    lwc, container: {}, doc: null, storage: noStorage, fetch: fakeFetch,
   });
   await ready;
   // Assert
@@ -73,7 +73,7 @@ test('bootstrap (served) fetches /candles and replaces main series data', async 
   };
   // Act
   const { ready } = await bootstrap({
-    lwc, container: {}, doc: null, storage: noStorage, protocol: 'https:', fetch: fakeFetch,
+    lwc, container: {}, doc: null, storage: noStorage, fetch: fakeFetch,
   });
   await ready;
   // Assert: 既定時間足（1D）・直近 RECENT_BARS（1500）本を /candles へ伝搬する（§配信設計）。
@@ -89,7 +89,7 @@ test('bootstrap (served) draws nothing when /candles fetch fails (no SAMPLE_DATA
   const before = setDataCalls.length;
   // Act
   const { ready } = await bootstrap({
-    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    lwc, container: {}, doc: null, storage: noStorage, fetch: fakeFetch,
   });
   await ready;
   // Assert: B方式は SAMPLE_DATA を読み込まないため、/candles 失敗時は setData 0 回（空チャート）。
@@ -108,7 +108,7 @@ test('bootstrap (served) builds a LiveUpdater and exposes it on the return value
   const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
   // Act
   const { liveUpdater, ready } = await bootstrap({
-    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    lwc, container: {}, doc: null, storage: noStorage, fetch: fakeFetch,
   });
   await ready;
   // Assert: served は LiveUpdater を組み立てて戻り値に載せる（start は index.html 側）。
@@ -129,7 +129,7 @@ test('bootstrap builds a ReplayMarketProfileActor (subclass of shared MarketProf
   const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
   // Act
   const { marketProfile, ready } = await bootstrap({
-    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    lwc, container: {}, doc: null, storage: noStorage, fetch: fakeFetch,
   });
   await ready;
   // Assert: subclass が組み立てられ（共有 MarketProfileActor を extends＝fork ではない）、既定は無効
@@ -146,7 +146,7 @@ test('bootstrap injects the same marketProfile instance into the controller (men
   const { lwc } = fakeLwc();
   const fakeFetch = async () => ({ ok: true, async json() { return { ok: true, candles: [] }; } });
   const { controller, marketProfile, ready } = await bootstrap({
-    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    lwc, container: {}, doc: null, storage: noStorage, fetch: fakeFetch,
   });
   await ready;
   assert.strictEqual(controller._marketProfile, marketProfile,
@@ -169,7 +169,7 @@ test('bootstrap marketProfile enterBar posts base=1/now to /market_profile_formi
   };
   // Act
   const { marketProfile, ready } = await bootstrap({
-    lwc, container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    lwc, container: {}, doc: null, storage: noStorage, fetch: fakeFetch,
     datasetRef: 'jp225_tick',
   });
   await ready;
@@ -243,7 +243,7 @@ test('bootstrap wires onCrosshairReadout so crosshair moves render into #crossha
   const doc = fakeReadoutDoc();
   // Act
   const { ready } = await bootstrap({
-    lwc, container: {}, doc, storage: noStorage, protocol: 'file:',
+    lwc, container: {}, doc, storage: noStorage,
   });
   await ready;
   // crosshair 移動を発火（main OHLC を seriesData に載せる）。
@@ -270,7 +270,7 @@ test('bootstrap wires ChartInteractionController: registers wheel/dblclick/point
   };
   // Act（A方式・file://＝fetch 不要で同期配線を確認）。
   const { ready } = await bootstrap({
-    lwc, container, doc: null, storage: noStorage, protocol: 'file:',
+    lwc, container, doc: null, storage: noStorage,
   });
   await ready;
   // Assert: wheel は passive:false + capture:true で配線され、dblclick / pointerdown も配線される。

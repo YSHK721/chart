@@ -63,7 +63,7 @@ export async function bootstrap({
   // controller 以前の組み立て（チャート・描画・永続化・catalog）は両 root 共有の単一ソースへ委譲する。
   //   catalog.load が param 既定値と variant ごとの受理 param を overlay する（ISSUE-278 #8）。
   const {
-    chart, mainSeries, compute, paneLegendView, renderer,
+    chart, mainSeries, compute, paneLegendView, currentPriceView, renderer,
     updatePaneHeight, persistence, templateStore, catalog, loadCandles,
   } = await composeChartShell({ lwc, container, doc, storage, fetch, datasetRef, recentBars });
 
@@ -106,7 +106,7 @@ export async function bootstrap({
   const { chartTemplates: templates, tickvolBands, tradeMarkers } = wireControllerCollaborators({
     controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
     templateStore, chartTemplateMenu, chartTemplateDialogs,
-    lwc, mainSeries, chart, container,
+    lwc, mainSeries, chart, container, currentPriceView,
   });
   chartTemplates = templates;
 

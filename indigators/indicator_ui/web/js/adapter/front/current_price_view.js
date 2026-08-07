@@ -12,12 +12,20 @@
 //   - 値が null / 非有限 / 対象要素不在でも安全（クラッシュしない・空表示）。
 
 import { fmtValue } from './format.js';
+import { ensureOverlayStackSlot } from './overlay_host.js';
 
 export class CurrentPriceView {
-  // document: DOM 実装（注入）。elementId: 描画先要素の id。
-  constructor({ document, elementId }) {
+  // document: DOM 実装（注入）。elementId: 描画先要素の id（CSS 契約名）。
+  //   ISSUE-277 の残 / ISSUE-278 #16: 欄そのものを本 View が所有し、版面（.chart-wrap）配下の
+  //   左上スタックへ生成する。配信 3 ページへ `<div id="current-price">` を手書き複製する義務を
+  //   無くす（取り残しが表示の全滅を招く経路を断つ）。スタック内の順序は構築順で決まるため、
+  //   合成根は本 View を読み取り欄より先に構築する。
+  constructor({ document, elementId, anchor = null }) {
     this._document = document ?? null;
     this._elementId = elementId;
+    this._anchor = anchor;
+    // 構築時に欄を確保する（描画順に依存せず DOM の並びを決めるため）。生成不能環境は null。
+    this._el = ensureOverlayStackSlot(this._document, { id: elementId, anchor });
     // 直前に表示した値（方向判定の基準）。null=未表示。
     this._prevValue = null;
     // 現在の方向クラス（'is-up' | 'is-down' | ''）。同値のとき据え置くために保持する。
@@ -26,7 +34,9 @@ export class CurrentPriceView {
 
   // 現在値を描画する。value が null/非有限なら空表示（方向状態もリセット）。
   render(value) {
-    const el = this._document?.getElementById?.(this._elementId) ?? null;
+    // 自分で確保した欄を優先し、無ければ id 解決へ落ちる（ページが宣言している旧構成・
+    //   fake document のテストと後方互換）。どちらも無ければ安全に no-op。
+    const el = this._el ?? this._document?.getElementById?.(this._elementId) ?? null;
     if (!el) {
       return;
     }

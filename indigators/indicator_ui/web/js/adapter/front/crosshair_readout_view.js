@@ -11,6 +11,7 @@
 //   - dto が null / ohlc null / overlays 空 / 対象要素不在でも安全（クラッシュしない・空表示）。
 
 import { fmtValue } from './format.js';
+import { ensureOverlayStackSlot } from './overlay_host.js';
 
 // epoch 秒（lightweight-charts の UTCTimestamp）を ISO 風の日時文字列へ。
 //   business-day オブジェクト等は防御的に String 化する。
@@ -33,13 +34,22 @@ const OHLC_CELLS = Object.freeze([
 ]);
 
 export class CrosshairReadoutView {
-  // document: DOM 実装（注入）。elementId: 描画先要素の id。
-  constructor({ document, elementId }) {
+  // document: DOM 実装（注入）。elementId: 描画先要素の id（CSS 契約名）。
+  //   ISSUE-277 の残 / ISSUE-278 #16: 欄そのものを本 View が所有し、版面（.chart-wrap）配下の
+  //   左上スタックへ生成する（配信 3 ページへの手書き複製をやめる）。スタック内の順序は構築順で
+  //   決まるため、合成根は現在値 View を本 View より先に構築する（従来の並びを保つ）。
+  constructor({ document, elementId, anchor = null }) {
     this._document = document ?? null;
     this._elementId = elementId;
+    this._anchor = anchor;
+    // 構築時に欄を確保する（描画順に依存せず DOM の並びを決めるため）。生成不能環境は null。
+    this._el = ensureOverlayStackSlot(this._document, { id: elementId, anchor });
   }
 
   _root() {
+    if (this._el) {
+      return this._el;
+    }
     const doc = this._document;
     if (!doc || typeof doc.getElementById !== 'function') {
       return null;

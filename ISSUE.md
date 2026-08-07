@@ -4562,7 +4562,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検定（壊れた層で固定する）**: `composition_root_front.test.js` に **bootstrap を実際に通す**検定を新設し、index.html と同じ初期 `disabled=true` のボタンが (1) `disabled=false` になる (2) `aria-pressed=true` / `is-active` で点灯する (3) click で ANALYSIS へ遷移する（＝配線されている）ことを固定。`live_follow_controller.test.js` からは `mode` 注入を撤去し、「合成根と同じ構築（mode 引数なし）で活性化する」検定へ置換（A方式非活性の検定は対象概念ごと削除）。
 - **識別力の実証**: ゲートを書き戻すと 6 件 Red（新設の bootstrap 検定を含む）。復元で 35 件 Green。
 - **検証**: indicator_ui web 1,070 / replay_ui web 297 / market_profile web 319 / unified_ui web 43 全通過。実 UI（8000・実 HTTP・実クリック）: ロード直後 `disabled=false` / `aria-pressed=true` / `is-active` / opacity 1・背景ワイン `rgb(123,34,51)`、1 クリックで消灯 `aria-pressed=false`・背景グレー `rgb(68,71,79)`（ANALYSIS）、再クリックで復帰。console エラー 0。
-- **残（同じ撤去の取りこぼし・未着手）**: (1) `bootstrap` の `protocol` 引数が ISSUE-269 以後どこからも読まれない死に引数（検定は今も `protocol:'http:'`/`'file:'` を渡している）。(2) `indicator_controller.js` の JSDoc に削除済みフィールド `@property {string} _mode（'a'=file:// / 'b'=served）` が残存。いずれも挙動には影響しないが、撤去済み概念の痕跡＝次の誤読の種。API 面の変更を伴うため承認後に処理する。
+- **残 → 是正済み（2026-08-07・承認「抜本的解決方法で進めろ」）**: (1) `bootstrap` の `protocol` 引数（ISSUE-269 以後どこからも読まれない死に引数）を宣言ごと撤去し、渡していた検定 10 箇所（indicator_ui 1 / replay_ui 9）からも削除した。(2) `indicator_controller.js` の削除済みフィールド `_mode` の JSDoc と、コンストラクタ冒頭の「'a'=file:// / 'b'=served」の陳腐化コメントを撤去した。挙動不変（`_mode` は既に実体が無く、`protocol` は参照 0）。撤去済み概念（A方式）の痕跡はこれで front から消えた。
 
 ## ISSUE-276: [UI 改善・実測] 指標を増やすと左上の表示がチャートの 67% を覆い判読不能になる（2026-08-06）
 - **ステータス**: RESOLVED（2026-08-06・worktree-feat+pane-legend / ユーザー承認「A で進めろ」）
@@ -4596,7 +4596,10 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - リプレイ core へは symlink で同一実装を参照させ配線した（コード複製なし・既存 JS/CSS と同じ単一ソース機構）。ISSUE-276 では replay に `#pane-legends` の器だけがあり View が無い＝死んだマークアップになっていた。
 - **検定**: `overlay_host.test.js`（生成・再利用・版面注入・版面欠落で例外・DOM 非対応で縮退・className 必須）、`pane_legend_view_host.test.js`（HTML に器が無くても描画・再描画で器が増えない・版面欠落で例外）、`served_pages_no_overlay_markup.test.js`（配信 3 ページが View 所有の器を直書きしていない／版面を持つ）。
 - **回帰**: indicator_ui web 1,082 / replay_ui web 297 / market_profile web 319 / unified_ui web 43 全通過。
-- **残（未着手）**: `#chart-overlay-tl` / `#current-price` / `#crosshair-readout` は依然 3 ページへ直書き複製されている（同じ取り残しの余地）。同一方式（View 所有）への移行は UI 構造の変更を伴うため承認後に実施する。
+- **残 → 是正済み（2026-08-07・承認「抜本的解決方法で進めろ」）**: `#chart-overlay-tl` / `#current-price` / `#crosshair-readout` の 3 ページ複製を撤去した。`overlay_host.js` に `ensureOverlayStackSlot` を追加し、`CurrentPriceView` / `CrosshairReadoutView` が版面（`.chart-wrap`）配下の左上スタックへ**自分の欄を構築時に生成して所有**する。DOM の並びは合成根の構築順（現在値 → 読み取り欄）で決まるため、`composeChartShell` が現在値 View を先に構築する（従来 HTML と同じ並び）。既存要素があれば再利用し、生成不能環境（スタブ document）は従来どおり id 解決へ落ちる。
+  - **現在値の大型表示そのものは維持**する（依頼者判断 2026-08-07。ISSUE-276 の「削除候補」は取り下げ）。今回変更したのは器の所有者だけで、表示・情報は不変（実測: フォント 32px・スタック 439×63px・位置 x=12,y=52 のまま）。
+  - **実 UI 検証（3 ページ）**: いずれもスタックが `.chart-wrap` 直下に生成され、子の並びは `current-price` → `crosshair-readout`。統合 UI でクロスヘア移動時に読み取り欄が描画されることを確認（`2026-08-07 15:28 / O H L C`）。console エラー 0。
+  - これで**配信ページの手書き複製はゼロ**になった（`served_pages_no_overlay_markup.test.js` が 7 要素＋`class="toolbar"` の直書きを禁じ、要求はアンカー `#app` と版面 `.chart-wrap` の 2 つだけ）。
 
 ## ISSUE-278: [設計是正・実測] リポジトリ全体 SOLID 精査で検出した違反（アーキテクチャエージェント 6 体＋本体再検証）（2026-08-06）
 - **ステータス**: RESOLVED（16 件すべて是正済み・2026-08-07）

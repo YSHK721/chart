@@ -41,10 +41,9 @@
          撤去済みで、core 2 ページからは消えていたが本ページだけ取り残されていた（ISSUE-277）。 -->
     <div class="chart-wrap">
       <div id="chart"></div>
-      <div id="chart-overlay-tl">
-        <div id="current-price"></div>
-        <div id="crosshair-readout"></div>
-      </div>
+      <!-- 左上オーバーレイ（現在値 → クロスヘア読み取り欄）の器は各 View が版面配下へ自分で
+           生成し所有する（ISSUE-277 の残: 3 ページ手書き複製の撤去）。DOM の並びは合成根の
+           構築順（現在値 → 読み取り欄）で決まる。 -->
     </div>
     <!-- Market Profile リプレイバーのホスト（replay の MP replay=ON で動的生成）。 -->
     <div id="mp-replay-bar-host"></div>

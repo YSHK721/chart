@@ -165,7 +165,7 @@ test('composition injects a forming client + accumulator so ticklive onLiveTick 
     };
   };
   const { marketProfile } = await bootstrap({
-    lwc: fakeLwc(), container: {}, doc: null, storage: noStorage, protocol: 'http:', fetch: fakeFetch,
+    lwc: fakeLwc(), container: {}, doc: null, storage: noStorage, fetch: fakeFetch,
   });
   // Act: ticklive モードで onLiveTick → forming client 経由の取得が発火するはず。
   await marketProfile.setEnabled(true);

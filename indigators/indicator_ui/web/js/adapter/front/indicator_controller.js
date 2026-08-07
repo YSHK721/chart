@@ -84,7 +84,6 @@ export { STALL_DEADLINE_MS };
  * @property {Map} _meta                     instanceId -> { def } 描画済みメタ。
  * @property {string} _datasetRef            計算対象データセット参照（read）。
  * @property {?object} _document             プロパティダイアログ構築用 document（null 可）。
- * @property {string} _mode                  計算モード（'a'=file:// / 'b'=served）。
  * @property {string} _timeframe             現在の表示時間足（gear ダイアログ context 用・read）。
  * @property {function} _mpParams            MP params 組み立て（subclass override を host 経由で尊重）。
  * @property {function} _isMarketProfile     def が MP 指標か判定する。
@@ -129,8 +128,6 @@ export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
 });
 
 export class IndicatorController {
-  // mode: 計算モード。'b'=served（ライブ API・params 実反映）/ 'a'=file://（埋め込み事前計算）。
-  //   既定 'a'（従来挙動・単体テスト互換）。composition root が served 判定で 'b' を注入する。
   constructor({
     catalog, compute, persistence, renderer, document: doc = null,
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,

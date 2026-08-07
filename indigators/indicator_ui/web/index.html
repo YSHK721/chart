@@ -15,15 +15,9 @@
     <!-- チャート + クロスヘア価格読み取り欄 + 凡例 -->
     <div class="chart-wrap">
       <div id="chart"></div>
-      <!-- 左上オーバーレイ（現在値 → 読み取り欄）。ISSUE-276 で指標の行はここから外し、
-           ペイン別凡例へ移した。ここに残るのは価格そのものの表示だけ。 -->
-      <div id="chart-overlay-tl">
-        <!-- 現在値の大型表示（サイズは CSS 規定・上げ下げ色分け）。CurrentPriceView.render が描画する。 -->
-        <div id="current-price"></div>
-        <!-- クロスヘア価格読み取り欄（日時 + OHLC）。指標の値は持たない（ISSUE-276）。
-             ChartRenderer.onCrosshairReadout → CrosshairReadoutView.render が描画する。 -->
-        <div id="crosshair-readout"></div>
-      </div>
+      <!-- 左上オーバーレイ（現在値 → クロスヘア読み取り欄）の器は各 View が版面配下へ自分で
+           生成し所有する（ISSUE-277 の残: 3 ページ手書き複製の撤去）。DOM の並びは合成根の
+           構築順（現在値 → 読み取り欄）で決まる。 -->
       <!-- チャートに重ねる表示系統（ペイン別凡例など）の器はここへ書かない。描画する View が
            自分で .chart-wrap 直下に生成し所有する（overlay_host.js）。HTML へ直書きすると
            配信 3 ページへ手書き複製する義務が生まれ、取り残しで表示が全滅する（実害: ISSUE-276）。 -->
