@@ -1,0 +1,238 @@
+// chart_app_wiring.js — ライブ／リプレイ両 Composition Root が共有する配線の単一ソース（ISSUE-278 #4）。
+//
+// 旧状態: `simulator/replay_ui/.../composition_root_front.js` はライブ合成根の**全文フォーク**だった。
+//   同じ配線が 2 か所に手書きで存在するため、ライブ側の修正がリプレイへ届かない。実際に取り残しが
+//   3 回発生している（`#rp-mode` の option 欠落 4079461 ／ カテゴリボタン ISSUE-221 ／ 凡例の器
+//   ISSUE-277）。さらにフォーク側の手書き定数が陳腐化していた（「30m 非対応」の 8 足リスト。実測では
+//   リプレイ core の `/candles?timeframe=30m` も `/compute` も 200 を返す＝制約はとうに消えていた）。
+//
+// 本モジュールの役割: 「両者で同一の配線」をここに 1 つだけ持ち、各 root は **自分固有の差** だけを書く。
+//   複製を消すのであって、分岐を足すのではない（root 固有の部品は引数で受けるか、root 側に残す）。
+//
+// 責務境界（SRP）:
+//   - composeChartShell            : chart / renderer / 永続化 / catalog など「controller 以前」の組み立て。
+//   - installSharedUi              : controller に依存しない UI 部品の install（操作・メニュー）。
+//   - wireControllerCollaborators  : controller 生成後に結ぶ協働子（テンプレート・帯・マーカー・現在値）。
+// いずれも DOM/ネットワークを直接触らず、注入された doc / fetch を各部品へ渡すだけにする（DIP）。
+
+import { ChartRenderer } from './chart_renderer.js';
+import { CrosshairReadoutView } from './crosshair_readout_view.js';
+import { PaneLegendView } from './pane_legend_view.js';
+import { CurrentPriceView } from './current_price_view.js';
+import { ComputeHttpClient } from './compute_http_client.js';
+import { LocalStorageGateway } from './local_storage_gateway.js';
+import { LocalStorageTemplateGateway } from './local_storage_template_gateway.js';
+import { IndicatorCatalogClient } from './catalog_client.js';
+import { TradeMarkersRenderer } from './trade_markers_renderer.js';
+import { TickvolBandsActor } from './tickvol_bands_actor.js';
+import { TickvolBandsController } from './tickvol_bands_controller.js';
+import { ChartInteractionController } from './chart_interaction_controller.js';
+import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
+import { ScrollToLatestButton } from './scroll_to_latest_button.js';
+import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
+import { ChartTemplateMenu } from './chart_template_menu.js';
+import { ChartTemplateDialogs } from './chart_template_dialogs.js';
+import { ChartTemplateController } from './chart_template_controller.js';
+import { TF_BAR_SEC } from '../../domain/tf_meta.js';
+import { installChartToolbar, installIndicatorDialog } from './app_chrome_view.js';
+
+// GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
+//   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
+export async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe = null, limit = null) {
+  if (typeof fetchImpl !== 'function') {
+    return null;
+  }
+  try {
+    let url = `/candles?datasetRef=${encodeURIComponent(datasetRef)}`;
+    if (timeframe) {
+      url += `&timeframe=${encodeURIComponent(timeframe)}`;
+    }
+    if (limit) {
+      url += `&limit=${encodeURIComponent(limit)}`;
+    }
+    const resp = await fetchImpl(url);
+    if (!resp.ok) {
+      return null;
+    }
+    const payload = await resp.json();
+    return payload && payload.ok ? payload.candles : null;
+  } catch {
+    return null;
+  }
+}
+
+// controller 以前の組み立て（チャート・描画・永続化・catalog）。両 root で完全に同一。
+//   catalog.load は param 既定値と variant ごとの受理 param（ISSUE-092 ③ / ISSUE-278 #8）を
+//   サーバから overlay する。controller 生成前に完了させ、以後のインスタンス生成が単一情報源の
+//   既定値を用いるようにする（load は例外を投げない＝失敗時は静的既定へフォールバック）。
+export async function composeChartShell({
+  lwc, container, doc, storage, fetch, datasetRef, recentBars,
+} = {}) {
+  // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123）。
+  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container });
+  // ポート実装: ComputeHttpClient（fetch /compute）。candles は /candles から取得する。
+  const compute = new ComputeHttpClient({ fetch });
+
+  // クロスヘア価格読み取り欄（左上固定オーバーレイ）。doc 不在（SSR/テスト）でも render は no-op。
+  const readoutView = new CrosshairReadoutView({ document: doc, elementId: 'crosshair-readout' });
+  // ペイン別凡例（ISSUE-276）。描画先の器は View 自身が版面（.chart-wrap）配下へ生成する
+  //   （HTML への直書き＝配信ページの手書き複製をやめた・ISSUE-277）。root は id 文字列を知らない。
+  const paneLegendView = new PaneLegendView({ document: doc });
+
+  // ChartRenderer は upstream API の唯一の隔離点（系列追加系 API 名を root へ漏らさない）。
+  const renderer = new ChartRenderer({
+    chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),
+    onPaneLegend: (model) => paneLegendView.update(model),
+  });
+
+  // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
+  const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
+  updatePaneHeight();
+
+  const persistence = new LocalStorageGateway(storage);
+  // テンプレート永続化（§4.2 の 3 キー）。接頭辞は注入された storage が付ける（gateway は付けない）。
+  const templateStore = new LocalStorageTemplateGateway(storage);
+  const catalog = new IndicatorCatalogClient();
+  await catalog.load(fetch);
+
+  // 時間足切替で candles を再取得するためのローダ。controller.setTimeframe が (ref, tf) で呼ぶ。
+  const loadCandles = (ref, tf) => fetchCandles(fetch, ref, tf, recentBars);
+
+  return {
+    chart, mainSeries, compute, readoutView, paneLegendView, renderer,
+    updatePaneHeight, persistence, templateStore, catalog, loadCandles,
+  };
+}
+
+// controller に依存しない UI 部品の install（controller は遅延参照で受ける）。
+//   時間足メニューの項目集合は台帳（domain/tf_meta.TF_CODES）から導出する＝手書きリストを持たない。
+//   isVerticalPanBlocked: 縦パンを開始しない条件（MP リプレイ表示モード等）。未指定は従来どおり無条件。
+//   getTemplates: テンプレート協働子の遅延参照（controller 生成後に代入されるため）。
+export function installSharedUi({
+  container, renderer, doc, getController, updatePaneHeight,
+  isVerticalPanBlocked = undefined, getTemplates = () => null,
+  toolbar = {},
+} = {}) {
+  // アプリ外枠（ツールバー・指標ダイアログ）の DOM は View が所有し生成する（ISSUE-278 #16）。
+  //   配信 3 ページへ同じマークアップを手書き複製する義務を無くす（指標ダイアログは 3 ページで
+  //   1440 文字が byte 一致していた＝純粋な三重複製）。ページに要求するのはアンカー #app だけ。
+  //   controller.bind() より前（bootstrap 内）に生成する＝bind が要素を必ず見つける。
+  installChartToolbar(doc, toolbar);
+  installIndicatorDialog(doc, {});
+
+  // チャート操作（縦価格パン・wheel 価格ズーム・dblclick reset）。振る舞い本体は当該 controller が所有。
+  new ChartInteractionController({
+    container, renderer, getController, updatePaneHeight, isVerticalPanBlocked,
+  }).install();
+
+  // ISSUE-116: 「最新のバーまでスクロール」ボタン（» ）。DOM 不在は install 内の防御で no-op。
+  new ScrollToLatestButton({ container, renderer, document: doc }).install();
+
+  // ISSUE-117: 時間足ドロップダウンの開閉制御（選択・active 同期は bind() の data-timeframe 配線）。
+  //   項目集合は既定＝台帳導出（ISSUE-278 #4: リプレイ側の手書き 8 足を撤去。実測でリプレイ core も
+  //   30m の /candles・/compute を 200 で返すため、そもそも制約が存在しない）。
+  new TimeframeMenu({ document: doc }).install();
+
+  // チャートテンプレートのメニュー・ダイアログ（§6.1・§6.2）。項目 DOM は共有 JS が生成し、
+  //   index.html には空マウント（#tpl-menu）のみを置く。メニューは協働子を import せず
+  //   コールバック注入で結ぶ（DIP）。協働子は controller 生成後に代入されるため遅延参照する。
+  const chartTemplateDialogs = new ChartTemplateDialogs({ document: doc });
+  const chartTemplateMenu = new ChartTemplateMenu({
+    document: doc,
+    // U6: 開くたびに最新のビューモデルで再描画する（restore() との順序依存を作らない）。
+    provide: () => { const t = getTemplates(); return t ? t.viewModel() : {}; },
+    onSelect: (templateId) => { const t = getTemplates(); return t ? t.applyTemplate(templateId) : undefined; },
+    onSave: () => { const t = getTemplates(); return t ? t.openSaveDialog() : undefined; },
+    onBind: (templateId) => { const t = getTemplates(); return t ? t.bindCurrentTimeframe(templateId) : undefined; },
+    onManage: () => { const t = getTemplates(); return t ? t.openManageDialog() : undefined; },
+  });
+  chartTemplateMenu.install();
+
+  return { chartTemplateMenu, chartTemplateDialogs };
+}
+
+// controller 生成後に結ぶ協働子（テンプレート協働子・取引密度帯・売買マーカー・現在値）。
+//   onTimeframeChanged: 時間足購読へ追加で流すフック（live の tf-period 即時再適用など）。未指定は no-op。
+export function wireControllerCollaborators({
+  controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
+  templateStore, chartTemplateMenu, chartTemplateDialogs,
+  lwc, mainSeries, chart, container,
+  onTimeframeChanged = () => {},
+} = {}) {
+  // テンプレート協働子（§7.1）。有効時間足集合は台帳が単一情報源（domain/tf_meta.js の TF_BAR_SEC＝
+  //   LAYERING_CONVENTIONS「UI の時間足ボタン集合もこの集合から乖離させない」）。
+  const chartTemplates = new ChartTemplateController(controller, {
+    gateway: templateStore,
+    menu: chartTemplateMenu,
+    dialogs: chartTemplateDialogs,
+    validTimeframes: Object.keys(TF_BAR_SEC),
+    // 保存ダイアログの文言用ラベル写像（§6.2）。単一情報源は timeframe_menu.js の groups。
+    timeframeLabels: timeframeLabels(),
+  });
+  // 時間足切替への介入（§7.2）: 購読スロット（setTimeframeObserver）は単数かつ売買マーカーで
+  //   使用済み（E-7）のため使わず、own property での差し替えで行う。順序（除去 → 切替 → 適用）と
+  //   再入防止は協働子が所有する。
+  const proceedSetTimeframe = controller.setTimeframe.bind(controller);
+  const proceedTemplateTimeframe = (tf) => chartTemplates.onTimeframeChange(tf, proceedSetTimeframe);
+
+  // 取引密度帯（時刻帯の背景色）。アクター駆動型のためレジストリへ登録する（台帳 1 行追記で完結）。
+  //   getUntil: リプレイは単一時計 to（controller._untilTime）＝当日を集計に含めない因果窓の基準。
+  //   ライブは _untilTime 非在席（undefined）＝null を返す＝サーバの現在時刻。
+  const tickvolBands = new TickvolBandsActor({
+    fetch, datasetRef, renderer,
+    getTimeframe: () => controller._timeframe,
+    getUntil: () => (controller._untilTime != null ? controller._untilTime : null),
+  });
+  controller.registerActorController('tickvol_bands', new TickvolBandsController(controller, tickvolBands));
+  // 時間足切替: 帯は時間足に依存しない（サーバは常に 1 分足原子で集計）ので再取得せず、塗る足だけ
+  //   引き直す。テンプレート介入の**内側へ**チェーンする（既存の介入順序を壊さない）。
+  controller.setTimeframe = (tf) => {
+    const done = proceedTemplateTimeframe(tf);
+    tickvolBands.onTimeframeChange();
+    return done;
+  };
+  // リプレイ時計の前進: セッション日が変わったときだけ再取得する（日内は応答不変＝当日非参照）。
+  if (typeof controller.setUntilTime === 'function') {
+    const proceedUntil = controller.setUntilTime.bind(controller);
+    controller.setUntilTime = (t) => {
+      const done = proceedUntil(t);
+      tickvolBands.onClock();
+      return done;
+    };
+  }
+
+  // 売買マーカー重畳。副作用 fetch は増やさず renderer を返すのみ（load トリガは入口が呼ぶ）。
+  const tradeMarkers = new TradeMarkersRenderer({
+    lwc, mainSeries, chart, chartRenderer: renderer, document: doc, container,
+  });
+  // 現在値の大型表示（#current-price）。candle 変更 observer は単一スロットのため、
+  //   tradeMarkers への通知と同一コールバック内で現在値ビューと帯の塗り直しも行う。
+  const currentPriceView = new CurrentPriceView({ document: doc, elementId: 'current-price' });
+  renderer.setCandleObserver(() => {
+    tradeMarkers.onCandlesChanged();
+    currentPriceView.render(renderer.lastClose());
+    // 足の差し替え（時間足・期間プリセット・カレンダー・リビール）で塗る足を引き直す。
+    tickvolBands.onCandlesChanged();
+  });
+
+  // 指標の追加・削除で pane（と pane 内の系列）が作り直されるため、背景プリミティブを張り直す。
+  //   購読スロットは単数で、後から別の購読者が入る。上書きで本フックが消えないよう
+  //   setAppliedObserver 自体を合成する（後続購読者の挙動は不変・解除も従来どおり）。
+  const proceedSetAppliedObserver = controller.setAppliedObserver.bind(controller);
+  proceedSetAppliedObserver(() => tickvolBands.onPanesChanged());
+  controller.setAppliedObserver = (observer) => proceedSetAppliedObserver(() => {
+    if (typeof observer === 'function') {
+      observer();
+    }
+    tickvolBands.onPanesChanged();
+  });
+
+  // 時間足変更を売買マーカーへ通知し、該当時間足（建玉の時間足）以外は非表示にする。
+  tradeMarkers.setCurrentTimeframe(timeframe);
+  controller.setTimeframeObserver((tf) => {
+    tradeMarkers.setCurrentTimeframe(tf);
+    onTimeframeChanged(tf);
+  });
+
+  return { chartTemplates, tickvolBands, tradeMarkers, currentPriceView };
+}

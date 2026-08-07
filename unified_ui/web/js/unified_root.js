@@ -34,6 +34,8 @@ const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';
 const REPLAY_CONTROLLER = '/replay/js/adapter/front/replay_indicator_controller.js';
 const REPLAY_DRIVER = '/replay/js/replay.js';
 const REPLAY_MP_ACTOR = '/replay/js/adapter/front/replay_market_profile_actor.js';
+// リプレイ操作バーの DOM は replay 層の View が所有する（ISSUE-278 #16: 2 ページ複製をやめた）。
+const REPLAY_BAR_VIEW = '/replay/js/adapter/front/replay_bar_view.js';
 
 let modeController = null; // createModeController の実体（トグルボタンが参照）。
 
@@ -157,11 +159,13 @@ async function main() {
   let ReplayIndicatorController;
   let setupReplay;
   let ReplayMarketProfileActor;
+  let installReplayBar;
   try {
     ({ bootstrap } = await import(LIVE_ROOT));
     ({ ReplayIndicatorController } = await import(REPLAY_CONTROLLER));
     ({ setupReplay } = await import(REPLAY_DRIVER));
     ({ ReplayMarketProfileActor } = await import(REPLAY_MP_ACTOR));
+    ({ installReplayBar } = await import(REPLAY_BAR_VIEW));
   } catch (err) {
     showModeError(`モジュール読込に失敗しました: ${err && err.message ? err.message : err}`);
     return;
@@ -194,6 +198,8 @@ async function main() {
         ReplayIndicatorController,
         setupReplay,
         ReplayMarketProfileActor,
+        // バー DOM の生成器を注入する（live root はリプレイのコードを import しない＝注入のみ）。
+        installReplayBar,
         isLiveMode: () => (modeController ? modeController.getMode() === MODE.LIVE : true),
       },
     });

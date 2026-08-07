@@ -8,31 +8,9 @@
 </head>
 <body>
   <div id="app">
-    <!-- ツールバー：シンボル / 時間足 / インジケーターボタン -->
-    <div class="toolbar">
-      <span class="tb-symbol">NI225</span>
-      <span class="tb-sep"></span>
-      <!-- 時間足ドロップダウンのマウント（ISSUE-117/123）。DOM は timeframe_menu.js（共有・単一ソース）が
-           生成する（項目集合の index.html 直書き＝値渡し複製を廃止）。 -->
-      <div class="tf-menu" id="tf-menu"></div>
-      <!-- 旧・時間足ボタン row は ISSUE-117 追記で撤去（選択はドロップダウンの
-           data-timeframe 項目が担う。TIMEFRAME_RULES との一致・A方式無効化は従来どおり bind() 側）。 -->
-      <span class="tb-sep"></span>
-      <!-- ライブ追従トグル（present/B方式）。FOLLOW（点灯）=ライブ更新＋新足で右端追従、
-           ANALYSIS（消灯）=ライブ更新停止＋背景 tint で状態明示。切替はこのボタンのクリックのみ
-           （ISSUE-118: 右端離脱/復帰の自動遷移は削除）。配線・点灯は composition root の
-           LiveFollowController.install()（B方式のみ）。A方式（file://）は controller 未生成のため
-           disabled のまま非活性。 -->
-      <button id="live-follow-toggle" class="tb-interval" type="button" aria-pressed="false" title="ライブ追従（点灯=ライブ／消灯=分析）" disabled>ライブ</button>
-      <span class="tb-sep"></span>
-      <!-- チャートテンプレートのドロップダウンのマウント（基本設計_チャートテンプレート §6.1）。
-           DOM は共有 chart_template_menu.js が生成する（HTML 直書きの複製を作らない）。 -->
-      <div class="tpl-menu" id="tpl-menu"></div>
-      <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
-        <span class="ic">∿</span>
-        <span class="lbl">インジケーター</span>
-      </button>
-    </div>
+    <!-- ツールバー（シンボル / 時間足 / ライブ追従 / テンプレート / インジケーター）の DOM は
+         app_chrome_view.js が生成し所有する（ISSUE-278 #16: 配信 3 ページの手書き複製を撤去）。
+         ページに要求されるのはアンカー #app だけ。 -->
 
     <!-- チャート + クロスヘア価格読み取り欄 + 凡例 -->
     <div class="chart-wrap">
@@ -54,36 +32,8 @@
          チャート下部に配置し、MP のリプレイ ON 時に ◀リプレイ ラベル + スライダ + 日時ラベルを差し込む。 -->
   </div>
 
-  <!-- ダイアログ：サイドバー(カテゴリ) + 上部タブ + 検索 + 指標一覧 -->
-  <div id="indicator-dialog" class="dialog-backdrop">
-    <div class="dialog" role="dialog" aria-label="インジケーター">
-      <div class="dialog-head">
-        <span class="dialog-title">インジケーター、メトリクス、ストラテジー</span>
-        <button id="indicator-dialog-close" class="dialog-close" type="button" aria-label="閉じる">×</button>
-      </div>
-      <div class="dialog-tabs">
-        <button class="dialog-tab is-active" data-tab="indicator" type="button">インジケーター</button>
-        <button class="dialog-tab" data-tab="strategy" type="button">ストラテジー</button>
-        <button class="dialog-tab" data-tab="profile" type="button">プロファイル</button>
-        <button class="dialog-tab" data-tab="pattern" type="button">パターン</button>
-      </div>
-      <div class="dialog-body">
-        <div class="dialog-side">
-          <button class="side-item is-active" data-category="" type="button">すべて</button>
-          <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
-          <!-- カテゴリのボタンはカタログから動的生成する（ISSUE-221）。ここへ直書きすると
-               新カテゴリの指標を足したときに HTML の同時改変が必要になり、実際に
-               oscillator(10) と band(2) が欠落して 24 指標中 12 件が到達不能になっていた。 -->
-        </div>
-        <div class="dialog-main">
-          <div class="search-wrap">
-            <input id="indicator-search" type="text" placeholder="検索" autocomplete="off" />
-          </div>
-          <div id="indicator-list"></div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <!-- 指標追加ダイアログ（#indicator-dialog）の DOM は app_chrome_view.js が生成し所有する
+       （ISSUE-278 #16: 3 ページで 1440 文字が byte 一致の複製だった）。 -->
 
   <!-- bundled lightweight-charts v5.2.0（global LightweightCharts を公開・ネイティブ panes 対応） -->
   <script src="./vendor/lightweight-charts.js"></script>

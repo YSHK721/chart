@@ -31,26 +31,9 @@
        teardown で innerHTML を初期スナップショットへ戻し、次 mount は無リスナの新 DOM へ配線する。 -->
   <div id="mode-ui">
   <div id="app">
-    <!-- ツールバー（時間足メニュー・ライブ追従・インジケーター）。DOM 実体は共有 UI 部品が生成。 -->
-    <div class="toolbar">
-      <span class="tb-symbol">NI225</span>
-      <span class="tb-sep"></span>
-      <div class="tf-menu" id="tf-menu"></div>
-      <span class="tb-sep"></span>
-      <button id="live-follow-toggle" class="tb-interval" type="button" aria-pressed="false" title="ライブ追従（点灯=ライブ／消灯=分析）" disabled>ライブ</button>
-      <span class="tb-sep"></span>
-      <!-- チャートテンプレートのドロップダウンのマウント（基本設計_チャートテンプレート §6.1）。
-           DOM は共有 chart_template_menu.js が生成する（HTML 直書きの複製を作らない）。 -->
-      <div class="tpl-menu" id="tpl-menu"></div>
-      <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">
-        <span class="ic">∿</span>
-        <span class="lbl">インジケーター</span>
-      </button>
-      <span class="tb-sep"></span>
-      <!-- リプレイのオン・オフトグル（両モードで表示。off=ライブ / on=リプレイ）。unified_root.js が
-           activeMode に応じて toggle し、aria-pressed で点灯状態を反映する。 -->
-      <button id="enter-replay" class="tb-interval" type="button" aria-pressed="false" title="リプレイ表示のオン・オフ">リプレイ</button>
-    </div>
+    <!-- ツールバー（シンボル / 時間足 / ライブ追従 / テンプレート / インジケーター / リプレイトグル）の
+         DOM は app_chrome_view.js が生成し所有する（ISSUE-278 #16: 3 ページ手書き複製の撤去）。
+         ページが要求されるのはアンカー #app だけ。リプレイトグルはリプレイ層注入時のみ置かれる。 -->
 
     <!-- チャート + クロスヘア価格読み取り欄（両モード共有ホスト）。
          指標の凡例はここに書かない: ペイン別凡例の器は PaneLegendView が .chart-wrap 直下へ
@@ -66,64 +49,13 @@
     <!-- Market Profile リプレイバーのホスト（replay の MP replay=ON で動的生成）。 -->
     <div id="mp-replay-bar-host"></div>
 
-    <!-- リプレイ操作バー（replay モードのみ表示・live では CSS で非表示）。チャート下端・中央寄せ。
-         DOM は replay core（simulator/replay_ui/web/index.html）と同一構成＋「リプレイ終了（✕）」。 -->
-    <div class="replay-bar" id="replay-bar">
-      <div class="rp-group">
-        <button id="rp-range" type="button" title="表示期間 / 再生開始日">全期間</button>
-        <button id="rp-range-caret" type="button" aria-haspopup="true" title="カレンダー / 期間プリセット">⌄</button>
-        <span class="rp-sep"></span>
-        <button id="rp-view-left" class="rp-icon" type="button" title="チャート表示を左端へスクロール（再生位置は変えない）">‖◁</button>
-        <button id="rp-prev" class="rp-icon" type="button" title="1足戻る">|◁</button>
-        <button id="rp-play" class="rp-icon" type="button" title="再生 / 一時停止（再生中は再生位置に追随）">▷</button>
-        <button id="rp-next" class="rp-icon" type="button" title="1足進む">▷|</button>
-        <button id="rp-view-right" class="rp-icon" type="button" title="チャート表示を右端へスクロール（再生位置は変えない）">▷‖</button>
-        <span class="rp-sep"></span>
-        <button id="rp-speed" type="button" data-speed="1" aria-haspopup="true" title="再生速度（1.00=最速・0.00=一時停止）">x1.00</button>
-        <select id="rp-mode" class="rp-select" title="最新足を足内で更新する方法（MT5 モデリング相当）">
-          <option value="real_ticks">実ティック</option>
-          <option value="every_tick">全ティック合成</option>
-          <option value="ohlc_1min" selected>1分OHLC</option>
-          <option value="open_only">始値のみ</option>
-          <option value="math">数学計算(終値)</option>
-        </select>
-        <span id="rp-eta" class="rp-eta" title="完了予想時間（残り足 × 実測の1足あたり所要）">完了予想 —</span>
-      </div>
-      <!-- リプレイ終了（= ツールバーの「リプレイ」トグル OFF と同一動作＝ライブへ戻る）。 -->
-      <button id="rp-close" type="button" title="リプレイ終了">✕</button>
-    </div>
+    <!-- リプレイ操作バー（#replay-bar）の DOM は replay_bar_view.js が生成し所有する
+         （ISSUE-278 #16: 2 ページ複製で rp-speed の title だけが実際にドリフトしていた）。
+         「リプレイ終了（✕）」は統合 UI のみ＝withClose 注入で表す。 -->
   </div>
 
-  <!-- インジケーターダイアログ（両モード共有）。 -->
-  <div id="indicator-dialog" class="dialog-backdrop">
-    <div class="dialog" role="dialog" aria-label="インジケーター">
-      <div class="dialog-head">
-        <span class="dialog-title">インジケーター、メトリクス、ストラテジー</span>
-        <button id="indicator-dialog-close" class="dialog-close" type="button" aria-label="閉じる">×</button>
-      </div>
-      <div class="dialog-tabs">
-        <button class="dialog-tab is-active" data-tab="indicator" type="button">インジケーター</button>
-        <button class="dialog-tab" data-tab="strategy" type="button">ストラテジー</button>
-        <button class="dialog-tab" data-tab="profile" type="button">プロファイル</button>
-        <button class="dialog-tab" data-tab="pattern" type="button">パターン</button>
-      </div>
-      <div class="dialog-body">
-        <div class="dialog-side">
-          <button class="side-item is-active" data-category="" type="button">すべて</button>
-          <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
-          <!-- カテゴリのボタンはカタログから動的生成する（ISSUE-221）。ここへ直書きすると
-               新カテゴリの指標を足したときに HTML の同時改変が必要になり、実際に
-               oscillator(10) と band(2) が欠落して 24 指標中 12 件が到達不能になっていた。 -->
-        </div>
-        <div class="dialog-main">
-          <div class="search-wrap">
-            <input id="indicator-search" type="text" placeholder="検索" autocomplete="off" />
-          </div>
-          <div id="indicator-list"></div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <!-- 指標追加ダイアログ（#indicator-dialog）の DOM は app_chrome_view.js が生成し所有する
+       （ISSUE-278 #16: 3 ページで 1440 文字が byte 一致の複製だった）。 -->
   </div><!-- /#mode-ui -->
 
   <!-- lightweight-charts（global LightweightCharts）は unified_root.js が **アクティブモードの

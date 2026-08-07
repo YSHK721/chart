@@ -172,12 +172,18 @@ export class ReplayIndicatorController extends IndicatorController {
       if (!INTRABAR_FORMING_IDS.has(inst.indicatorId)) return false;
       const meta = this._meta.get(inst.instanceId);
       return !!meta && !this._isMarketProfile(meta.def);
-    }).map((inst) => ({
-      instanceId: inst.instanceId,
-      indicatorId: inst.indicatorId,
-      variant: inst.variant ?? this._defaultVariant(this._meta.get(inst.instanceId).def),
-      params: this._paramsObject(inst.params),
-    }));
+    }).map((inst) => {
+      const variant = inst.variant ?? this._defaultVariant(this._meta.get(inst.instanceId).def);
+      return {
+        instanceId: inst.instanceId,
+        indicatorId: inst.indicatorId,
+        variant,
+        // variant スコープ（ISSUE-278 #8）: 本経路も /compute の呼出規約で計算されるため、
+        //   その variant の add_* が受理しない param を載せない（載せると validation エラー）。
+        //   実 UI で検出: profit_hlband variant=overlay の draw_levels を積んで 500 になっていた。
+        params: this._scopedParams(inst.indicatorId, variant, this._paramsObject(inst.params)),
+      };
+    });
   }
 
   // 一括計算済みの 1 ステップを同期描画する。step は { instanceId: series } の写像。

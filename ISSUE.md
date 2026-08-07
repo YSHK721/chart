@@ -4599,7 +4599,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **残（未着手）**: `#chart-overlay-tl` / `#current-price` / `#crosshair-readout` は依然 3 ページへ直書き複製されている（同じ取り残しの余地）。同一方式（View 所有）への移行は UI 構造の変更を伴うため承認後に実施する。
 
 ## ISSUE-278: [設計是正・実測] リポジトリ全体 SOLID 精査で検出した違反（アーキテクチャエージェント 6 体＋本体再検証）（2026-08-06）
-- **ステータス**: IN_PROGRESS（16 件中 13 件是正済み。残 #4・#16 は未着手・2026-08-07 時点）
+- **ステータス**: RESOLVED（16 件すべて是正済み・2026-08-07）
 - **重大度**: Critical〜High（データ破損の恒久化・時間軸汚染・無言の機能停止を含む）
 - **方法**: 担当分割 6 体（indicator_ui フロント JS／指標 API 中核／指標実装群／simulator・replay／unified_ui・market_profile／marketdata・共有基盤）。全指摘を本体が file:line・grep 件数・実 HTTP で再検証し、裏付けの取れたものだけを以下に採る。
 - **共通する失敗形**: 「無言の縮退」。値は正しいまま、性能・時間軸・操作性・データ保全だけが静かに壊れ、検定は緑のまま通る。
@@ -4632,8 +4632,29 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 1. データ保全: #1（取得失敗の恒久化）→ #5（削除検知の欠落） … **RESOLVED**（ee9e2b6）
 2. 表示の正しさ: #2（時間軸汚染） … **RESOLVED**（ee9e2b6）
 3. 無言縮退の除去: #3・#7・#15 … **RESOLVED**（ee9e2b6 / 415b83b）／#8 … **RESOLVED**（下記）
-4. 複製の解消: #12・#13（d416797）・#14・#6（415b83b） … **RESOLVED**／#4・#16 … **未着手**
+4. 複製の解消: #12・#13（d416797）・#14・#6（415b83b）・#4・#16（下記） … **RESOLVED**
 5. 配信の衛生: #9・#10・#11 … **RESOLVED**（d8abde6）
+
+### #4 の是正（2026-08-07・RESOLVED）— リプレイ合成根の全文フォーク解消
+- **事象**: `simulator/replay_ui/.../composition_root_front.js`（338 行）がライブ合成根（742 行）の**全文フォーク**。同じ配線が 2 か所に手書きで存在するため、ライブ側の修正がリプレイへ届かない。取り残しは実際に 4 回（`#rp-mode` の option 欠落 4079461 ／ カテゴリボタン ISSUE-221 ／ ペイン別凡例の器 ISSUE-277 ／ `catalog.load` 未呼出＝#8）。
+- **陳腐化していた手書き定数（実測で否定）**: フォーク側は `validTimeframes` と時間足メニューに **8 足を手書き**し「30m 非対応（サーバ TIMEFRAME_RULES と一致）」と注記していた。実測ではリプレイ core の `/candles?timeframe=30m` も `/compute`（profit_rsi・30m）も **200**。制約はとうに消えており、リプレイだけ 30m が UI から到達不能になっていた（実 UI で 30m 切替が通ることを確認）。
+- **抜本的対策**: 共有配線を単一ソース `chart_app_wiring.js` へ移し、各 root は**自分固有の差だけ**を書く。
+  - `composeChartShell`（chart/renderer/永続化/catalog）／`installSharedUi`（操作・スクロール・時間足メニュー・テンプレートメニュー・外枠 DOM）／`wireControllerCollaborators`（テンプレート協働子・取引密度帯・売買マーカー・現在値・各 observer）。
+  - 時間足集合は台帳（`domain/tf_meta.TF_BAR_SEC`）からの導出が唯一の定義（手書きリストを撤去）。
+  - ライブ固有＝ライブ 3 ポーラ・ライブ追従・tf-period 列・成長協調役・リプレイ層のオプション注入。リプレイ固有＝`ReplayIndicatorController`・常時成長・MP リプレイ表示中の縦パン抑止・MP scrub バー。リプレイ core には `/live_ticks`・`/forming_bar`・`/tf_period_profile` が無いため、ライブ専用機構は持ち込まない（検定で固定）。
+  - 行数: ライブ 742→559 / リプレイ 338→163 / 共有 229（複製 ~200 行が単一化）。
+- **検定**: `composition_roots_share_wiring.test.js` を新設。(1) 両 root が共有配線を import し 3 関数を呼ぶ (2) 共有部品を root が自前で `new` していない（再フォークの検出） (3) 共有配線が実際にそれらを所有（空振り防止） (4) root が時間足を手書きしていない (5) リプレイ root がライブ専用機構を構築していない。
+- **実 UI 検証**: 統合 UI ライブ／統合 UI リプレイ（再生実行）／standalone replay（指標適用・30m 切替・再生）／ライブ core 単体（:8001）の 4 面で描画・操作・console エラー 0 を確認。
+
+### #16 の是正（2026-08-07・RESOLVED）— 配信 3 ページの手書き複製の撤去
+- **事象（実測）**: ツールバー・指標ダイアログ・リプレイ操作バーを各ページの `index.html` へ直書きしていた。**指標ダイアログは 3 ページで 1440 文字が byte 一致**（純粋な三重複製）。リプレイバーは実際にドリフト: `rp-speed` の title が replay core は「1.00=最速・0.00=一時停止・**リアルタイム＝実時間**」、実際に配信される :8000 は「…0.00=一時停止」で実時間テンポの説明を欠いていた（機能自体は `data-speed="realtime"` で実装済み）。
+- **抜本的対策（ISSUE-277 と同一規約）**: 外枠 DOM も **それを配線する View が所有し生成**する。ページに要求するのはアンカー `#app` だけ。
+  - `app_chrome_view.js`（ツールバー／指標ダイアログ）を新設し `installSharedUi` から生成。ページ差（ライブ追従トグル＝ライブ core・統合 UI／リプレイトグル＝リプレイ層注入時のみ）は**フラグ 1 つ**で表し markup は複製しない。
+  - `replay_bar_view.js`（リプレイ操作バー）を replay 側に新設。「リプレイ終了（✕）」の有無は `withClose` で表す。live root はリプレイのコードを import せず、生成器を注入で受ける（従来の隔離規約を維持）。
+  - フェイルクローズ: アンカー不在は例外（無言 no-op にしない）。冪等: 既存要素があれば再利用し二重生成しない。
+- **検定**: `served_pages_no_overlay_markup.test.js` を拡張（`indicator-dialog`／`replay-bar`／`class="toolbar"` の直書き禁止＋全ページが `#app` を持つ）。
+- **実 UI 検証**: 3 ページとも生成された外枠で動作（統合 UI＝ライブ追従＋リプレイトグルあり・✕ あり／ライブ core＝ライブ追従あり・バー無し／standalone replay＝どちらのトグルも無し・✕ 無し）。`rp-speed` の title は 3 ページとも実時間の説明を含む（ドリフト解消）。
+- **副次的に検出・是正（#8 の取り残し）**: リプレイの足内一括計算（`/compute` `mode=latest_seq`）だけが variant 横断の全 params を載せており、無言破棄の撤去後に **500（validation）** になっていた（実 UI で検出: profit_hlband overlay ＋ `draw_levels`）。`formingSeqTargets` を送信側の絞り込み（`_scopedParams`）へ通し、送信 3 経路（`/compute` / `/live_ticks` / `latest_seq`）が同じ絞り込み点を通ることを `forming_seq_variant_scope.test.js` で固定した。
 
 ### #8 の是正（2026-08-07・RESOLVED）
 - **事象（実測・実 HTTP :8000）**: `params_defaults` の宣言粒度が compute_id、実契約（add_* のシグネチャ）は variant。差分を `_accepted_kwargs` が無言で捨てるため、**その variant では効かないコントロールが UI に出続けていた**。同一リクエストで当該 param だけを変えた応答が byte 同一であることで確認した（識別力: 受理する variant では応答が変わる）。

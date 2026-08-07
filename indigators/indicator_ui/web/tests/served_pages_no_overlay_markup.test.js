@@ -23,7 +23,13 @@ const SERVED_PAGES = [
 //   pane-legends: View が所有し自分で生成する（ISSUE-277）。
 //   legend      : ISSUE-276 で撤去した旧凡例（左上に全件を縦積み）。1 ページでも残ると、
 //                 そのページだけ旧凡例とペイン別凡例の二重表示に戻る（実配信 unified_ui で発生）。
-const VIEW_OWNED_HOSTS = ['pane-legends', 'legend'];
+//   indicator-dialog / replay-bar: ISSUE-278 #16 で View 所有へ移した領域（app_chrome_view.js /
+//                 replay_bar_view.js）。指標ダイアログは 3 ページで 1440 文字が byte 一致の複製、
+//                 リプレイバーは rp-speed の title が実際にドリフトしていた（:8000 だけ説明欠落）。
+const VIEW_OWNED_HOSTS = ['pane-legends', 'legend', 'indicator-dialog', 'replay-bar'];
+
+// class 属性で書かれる View 所有の領域（id を持たないもの）。
+const VIEW_OWNED_CLASSES = ['toolbar'];
 
 function readPage(rel) {
   return readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -41,8 +47,26 @@ test('ISSUE-276 配信される全ページが View 所有の器を直書きし�
   }
 });
 
+test('ISSUE-278 #16 配信される全ページが View 所有の領域を class でも直書きしていない', () => {
+  for (const page of SERVED_PAGES) {
+    const html = readPage(page);
+    for (const cls of VIEW_OWNED_CLASSES) {
+      assert.ok(
+        !new RegExp(`class="${cls}"`).test(html),
+        `${page} に class="${cls}" が直書きされている（View 所有の領域を HTML へ複製している）`,
+      );
+    }
+  }
+});
+
 test('ISSUE-276 配信される全ページが版面 .chart-wrap を持つ（View の唯一の要求）', () => {
   for (const page of SERVED_PAGES) {
     assert.match(readPage(page), /class="chart-wrap"/, `${page} に版面 .chart-wrap が無い`);
+  }
+});
+
+test('ISSUE-278 #16 配信される全ページがアンカー #app を持つ（外枠 View の唯一の要求）', () => {
+  for (const page of SERVED_PAGES) {
+    assert.match(readPage(page), /id="app"/, `${page} にアンカー #app が無い`);
   }
 });
