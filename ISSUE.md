@@ -4313,7 +4313,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **未対応（別 Issue 候補）**: 静的配信の `no-store`（146 本 × 毎起動再取得）は本件の増幅器であり、真因ではない。1 本あたりの応答が健全なら 1.2 秒で収まるため今回は変更しない。開発時の反映確実性と起動時間のトレードオフとして別途判断する。
 
 ## ISSUE-258: [不具合・実行で証明] ロールアップ CSV の全件 rewrite 経路が `up`/`dn` 列を恒久的に落とす（ISSUE-252 の取りこぼし）（2026-08-05）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-05・commit 96e02dc「全件 rewrite でも up/dn 列を落とさない」／develop 取り込み済み 898fde1）。**記録の追従漏れ**で本行が OPEN のまま残っていた（2026-08-07 に是正）。現行コードを実行して確認: 8 列（up/dn 付き）の DataFrame を `_write_rollup_df` へ渡すと出力ヘッダは `date,open,high,low,close,volume,up,dn` で `csv_schema.header_for` の期待と一致する。
 - **重大度**: Critical（データの不可逆欠損。自己修復しない）
 - **事実（実行して証明）**: `marketdata/rollup.py:228` の `_write_rollup_df` は `df[["open","high","low","close","volume"]]` と列を直書きする。8 列（up/dn 付き）の DataFrame を渡して実行した結果、出力ヘッダは `date,open,high,low,close,volume` となり **up/dn が消えた**（`csv_schema.header_for` の期待は 8 列）。
 - **真因**: ISSUE-252（bd4cf66）は集約側 `_merge_agg` を「実在する列から導出」へ是正し、その直前に再発防止コメント（「列名をここに直書きしない。直書きは csv_schema へ列（up/dn）が増えたときに本経路だけ列を落とし…CSV を恒久破壊する（実際に jp225_tick_1M.csv がこれで壊れた）」）まで書いた。しかし**その 3 行後の書き出し `_write_rollup_df` に同じ直書きが残っている**。同一ファイル内の他 2 経路（`_bar_to_csv_row` / `_merge_agg`）は `csv_schema` から導出しており、この 1 経路だけが取り残された。
