@@ -13,7 +13,10 @@ df 以降キーワード専用（§5.5.4.1）。fitter enum 文字列 → Fitter
     1. ``_TABLE`` へ ``(compute_id, variant)`` のエントリを 1 件足す。呼出規約（loader /
        output_kind / kind）に加え、必要なら thread_affinity / time_required / latest_meta /
        preprocess を、そして param 既定値 ``params_defaults`` を **同一エントリ内に** 宣言する。
-       variant を複数持つ指標は先頭 variant にのみ ``params_defaults`` を書く。
+       ``params_defaults`` は **その variant の add_* が実際に受理する引数** を宣言する
+       （ISSUE-278 #8）。variant を複数持つ指標は各 variant がそれぞれ宣言する（受理引数は
+       variant ごとに異なるため。宣言と実シグネチャの一致は
+       ``api/tests/test_call_binding_param_scopes.py`` が固定する）。
     2. back 側の改変はこれで完了する。``catalog_schema.PARAM_DEFAULTS``（``GET /catalog`` の
        配信値）・``requires_time`` ・``requires_dedicated_worker`` ・``latest_meta`` はいずれも
        本エントリからの導出であり、追加登録は不要（宣言漏れは
@@ -48,22 +51,45 @@ from adapter.compute.module_loader import load_package
 #   本ロード境界（_ensure_indigators_on_path）に一本化した。各 src の ``sys.path.insert`` は撤去済み。
 
 
-def _accepted_kwargs(callable_: Callable, params: dict[str, Any]) -> dict[str, Any]:
-    """``callable_`` が実際に受け取るキーワード引数のみへ ``params`` を絞り込む。
+def accepted_param_names(callable_: Callable) -> "set[str] | None":
+    """``callable_`` が受理するキーワード引数名の集合（``**kwargs`` を持つなら ``None``＝無制限）。
 
-    フロントは catalog の全 params（variant 横断）を送るため、当該 variant の add_* が
-    取らない引数（例: global へ robust 専用 ``normalize``、robust へ ``require_full``）が
-    混入し ``TypeError`` になる。シグネチャに ``**kwargs`` があれば素通し、無ければ
-    宣言済みパラメータ名に一致するキーだけを残す（未知キーは黙って捨てる）。
+    「この variant が受理する param」の実体はここ（add_* のシグネチャ）にしかない。
+    ``_TABLE`` の ``params_defaults`` 宣言が実シグネチャと一致することは
+    ``test_call_binding_param_scopes`` が本関数を使って固定する。
     """
     sig = inspect.signature(callable_)
     if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
-        return dict(params)
-    allowed = {
+        return None
+    return {
         name for name, p in sig.parameters.items()
         if p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD)
     }
-    return {k: v for k, v in params.items() if k in allowed}
+
+
+def _bind_kwargs(callable_: Callable, params: dict[str, Any]) -> dict[str, Any]:
+    """``params`` を ``callable_`` の受理引数へ束縛する。未受理キーは **例外**（ISSUE-278 #8）。
+
+    従来は「当該 variant の add_* が取らない引数は黙って捨てる」縮退だった。これは
+    ``params_defaults`` の宣言粒度が compute_id、実契約が variant であることの差を吸収する
+    ためのもので、結果として **UI が効かないコントロールを表示し続けた**（実測: profit_band
+    variant=global で normalize/window/atr_period/min_obs を動かしても応答は byte 同一）。
+    宣言粒度を variant へ揃えた（各 variant が受理引数だけを宣言する）ため、差を埋める
+    無言破棄は不要になった。以後、未受理キーの到来は front/back の契約違反であり
+    ValueError＝``validation`` エラーとして可視化する（``_translate_value_error``）。
+
+    ``**kwargs`` を持つ callable は素通しする（受理集合が定義できないため）。
+    """
+    allowed = accepted_param_names(callable_)
+    if allowed is None:
+        return dict(params)
+    unknown = sorted(set(params) - allowed)
+    if unknown:
+        raise ValueError(
+            f"{getattr(callable_, '__name__', callable_)} が受理しない param が渡されました: "
+            f"{unknown}。variant ごとの受理引数は GET /catalog の paramScopes を参照してください。"
+        )
+    return dict(params)
 
 
 # price_range_power の interval（絶対価格刻み）バンド爆発を防ぐ上限/目標。
@@ -285,6 +311,16 @@ def _resolve_btlm_price(df: Any, price: str) -> tuple[Any, str]:
     return df2, col_name
 
 
+# profit_band の 2 variant（global/robust）が **どちらも受理する** param の既定値。
+#   宣言粒度は variant（ISSUE-278 #8）だが、共有 param の既定値は 1 箇所に置き両エントリが
+#   参照する（同じリテラルを 2 度書かない＝値の食い違いを構造的に作らない）。
+_PROFIT_BAND_SHARED: dict[str, Any] = {
+    "probabilities": [0.51, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99],
+    "buckets": ["nOH", "pOL", "pOH", "nOL"],
+    "legend": False,
+}
+
+
 class _BindingSpec(TypedDict):
     """_TABLE のエントリ形状（compute_id+variant ごとの指標記述子）。
 
@@ -302,10 +338,12 @@ class _BindingSpec(TypedDict):
     params_defaults : param 既定値 {param_name: default}（ISSUE-180・OCP）。``GET /catalog`` が
                   配信する既定値の単一情報源。従来 ``catalog_schema.PARAM_DEFAULTS`` に別置き
                   されていた定義を本記述子へ集約し、catalog_schema は本宣言からの導出だけを行う
-                  （指標追加時に既定値を別ファイルへ二重登録しない）。複数 variant を持つ
-                  compute_id では **先頭 variant の 1 エントリにのみ** 宣言する（variant 間で
-                  既定値は共有＝front の 1 指標 = 1 param セットと同一契約）。二重宣言・宣言漏れは
-                  ``indicator_param_defaults`` が ValueError で検出する。
+                  （指標追加時に既定値を別ファイルへ二重登録しない）。
+                  宣言粒度は **variant**（ISSUE-278 #8）。宣言するキー集合＝その variant の
+                  add_* が受理する引数であり、``GET /catalog`` の ``paramScopes`` としてそのまま
+                  配信される（front はこれで variant ごとの表示・送信を決める）。共有 param は
+                  各 variant のエントリが同じ既定値で宣言する（食い違いと宣言漏れは
+                  ``indicator_param_defaults`` が ValueError で検出する）。
     """
 
     loader: Callable[[], Callable]
@@ -436,22 +474,26 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "output_kind": "line", "kind": "kw",
         # line 系（始値基準バンド）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
         "time_required": True,
-        # params_defaults は compute_id 単位（variant 間で共有）。先頭 variant にのみ宣言する。
+        # ISSUE-278 #8: global が受理するのは共有 3 件＋ require_full。robust 専用
+        #   （normalize/window/atr_period/min_obs）は add_profit_band のシグネチャに無い。
         "params_defaults": {
-            "probabilities": [0.51, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99],
-            "buckets": ["nOH", "pOL", "pOH", "nOL"],
+            **_PROFIT_BAND_SHARED,
             "require_full": True,
-            "legend": False,
-            "normalize": "return",
-            "window": "expanding",
-            "atr_period": 14,
-            "min_obs": 30,
         },
     },
     ("profit_band", "robust"): {
         "loader": lambda: _load_callable("profit_band", "add_robust_profit_band"),
         "output_kind": "line", "kind": "kw",
         "time_required": True,
+        # ISSUE-278 #8: robust が受理するのは共有 3 件＋因果窓/正規化の 4 件。
+        #   ``require_full`` は add_robust_profit_band のシグネチャに無い（global 専用）。
+        "params_defaults": {
+            **_PROFIT_BAND_SHARED,
+            "normalize": "return",
+            "window": "expanding",
+            "atr_period": 14,
+            "min_obs": 30,
+        },
     },
     ("price_range_power", "default"): {
         "loader": lambda: _load_callable("price_range_power", "add_price_range_power"),
@@ -480,7 +522,6 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "smoothing_type": "none",
             "smoothing_length": 9,
             "bb_stddev": 2.0,
-            "timeframe": "chart",
             "wait_for_close": False,
         },
     },
@@ -593,7 +634,6 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("profit_hlband", "separate"): {
         "loader": lambda: _load_callable("profit_hlband", "add_hlband_separate"),
         "output_kind": "histogram", "kind": "kw",
-        # params_defaults は compute_id 単位（variant 間で共有）。先頭 variant にのみ宣言する。
         "params_defaults": {
             "draw_levels": True,
         },
@@ -601,6 +641,9 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("profit_hlband", "overlay"): {
         "loader": lambda: _load_callable("profit_hlband", "add_hlband_overlay"),
         "output_kind": "horizontal_line", "kind": "kw",
+        # ISSUE-278 #8: overlay は指標固有 param を受理しない（add_hlband_overlay の
+        #   シグネチャに draw_levels は無い＝separate 専用）。空宣言は「受理引数なし」の明示。
+        "params_defaults": {},
     },
     ("profit_mfi_macd", "default"): {
         "loader": lambda: _load_callable("profit_mfi_macd", "add_mfimacd"),
@@ -665,35 +708,68 @@ def indicator_param_defaults() -> dict[str, dict[str, Any]]:
     """_TABLE の ``params_defaults`` 宣言から compute_id → param 既定値を導出する（ISSUE-180）。
 
     ``catalog_schema.PARAM_DEFAULTS``（``GET /catalog`` の配信値）の唯一の生成元。返り値は deep copy
-    のため、呼び出し側の変更は _TABLE へ波及しない。
+    のため、呼び出し側の変更は _TABLE へ波及しない。既定値は指標（compute_id）の単位で 1 セット
+    ＝全 variant の宣言の和であり、共有 param は全 variant で同値でなければならない。
 
-    整合検査（宣言漏れ・二重宣言の構造的検出）:
-      - _TABLE の compute_id は必ず 1 つの ``params_defaults`` 宣言を持つ（漏れは ValueError）。
-      - 同一 compute_id の複数 variant が宣言することを禁ずる（二重定義の再発を ValueError で防ぐ）。
+    整合検査（宣言漏れ・食い違いの構造的検出）:
+      - _TABLE の **全エントリ**（compute_id, variant）が ``params_defaults`` を持つ（漏れは ValueError）。
+      - 同一 compute_id の複数 variant が同じ param を **異なる既定値** で宣言することを禁ずる。
     dict の挿入順は _TABLE のエントリ順（＝従来の配信順）を保つ。
     """
     out: dict[str, dict[str, Any]] = {}
     for (compute_id, variant), spec in _TABLE.items():
         defaults = spec.get("params_defaults")
         if defaults is None:
-            continue
-        if compute_id in out:
             raise ValueError(
-                f"params_defaults が重複宣言されています: {compute_id} (variant={variant})。"
-                "compute_id ごとに先頭 variant の 1 エントリにのみ宣言してください。"
+                f"params_defaults が未宣言のエントリがあります: {(compute_id, variant)}。"
+                "各 variant が受理する param の既定値を宣言してください（ISSUE-278 #8）。"
             )
-        out[compute_id] = copy.deepcopy(defaults)
+        merged = out.setdefault(compute_id, {})
+        for name, value in defaults.items():
+            if name in merged and merged[name] != value:
+                raise ValueError(
+                    f"variant 間で param 既定値が食い違っています: {compute_id}.{name} "
+                    f"({merged[name]!r} != {value!r} / variant={variant})。"
+                )
+            merged[name] = copy.deepcopy(value)
+    for defaults in out.values():
         # 計算.時間足（ISSUE-274）: 「この指標を何の足で計算するか」は指標固有の性質ではなく
-        #   全指標共通の設定であるため、22 エントリへ同じリテラルを配らず本導出で 1 度だけ注入する
+        #   全指標共通の設定であるため、26 エントリへ同じリテラルを配らず本導出で 1 度だけ注入する
         #   （front の catalog.js も同じく REGISTRY 構築時に 1 箇所から注入する＝両側とも単一定義）。
-        #   受理引数には含まれない（_accepted_kwargs が除外）ため、指標 src の呼出は不変。
-        out[compute_id].setdefault("timeframe", CALC_TIMEFRAME_DEFAULT)
-    missing = {compute_id for (compute_id, _variant) in _TABLE} - set(out)
-    if missing:
-        raise ValueError(
-            f"params_defaults が未宣言の指標があります: {sorted(missing)}。"
-            "_TABLE のエントリへ params_defaults を宣言してください。"
-        )
+        #   指標 src へは渡らない（invoke が計算層の param として pop する）。
+        defaults.setdefault("timeframe", CALC_TIMEFRAME_DEFAULT)
+    return out
+
+
+#: 指標 src ではなく **計算層が消費する** param（ISSUE-274 の計算.時間足）。
+#: 全 variant の受理集合に含まれ、``invoke`` が add_* 呼出前に取り除く。
+LAYER_CONSUMED_PARAMS: frozenset[str] = frozenset({"timeframe"})
+
+#: ``kind`` ごとに ``invoke`` 自身が消費する param（add_* の kwarg ではない）。
+#: btlm は fitter を第 3 位置引数へ、mcmc_samples を fitter 構築のプリセットへ変換する。
+_KIND_CONSUMED_PARAMS: dict[str, frozenset[str]] = {
+    "btlm": frozenset({"fitter", "mcmc_samples"}),
+    "kw": frozenset(),
+}
+
+
+def indicator_param_scopes() -> dict[str, dict[str, list[str]]]:
+    """compute_id → variant → その variant が受理する param 名（ISSUE-278 #8）。
+
+    ``GET /catalog`` が ``paramScopes`` として配信し、front はこれで (a) ダイアログに出す
+    コントロール (b) ``/compute`` へ送る params を variant ごとに決める。従来は front が
+    variant 横断の全 params を送り、受理しない引数を back が無言で捨てていたため、
+    **効かないコントロールが UI に出続けていた**（実測: profit_band global の
+    normalize/window/atr_period/min_obs は応答 byte 同一）。
+
+    宣言（``params_defaults`` のキー集合）が実シグネチャと一致することは
+    ``test_call_binding_param_scopes`` が ``accepted_param_names`` と突き合わせて固定する。
+    """
+    out: dict[str, dict[str, list[str]]] = {}
+    for (compute_id, variant), spec in _TABLE.items():
+        names = list(spec.get("params_defaults") or {})
+        names += [n for n in sorted(LAYER_CONSUMED_PARAMS) if n not in names]
+        out.setdefault(compute_id, {})[variant] = names
     return out
 
 
@@ -809,15 +885,22 @@ class CallBinding:
         """
         spec = _TABLE[(self.compute_id, self.variant)]
         callable_ = spec["loader"]()
+        # 計算層が消費する param（計算.時間足）は指標 src へ渡さない。従来は
+        #   _accepted_kwargs の無言破棄に頼っていたが、無言破棄を廃した（ISSUE-278 #8）ため
+        #   ここで明示的に取り除く（mcmc_samples の pop と同じ規律）。
+        kw = {k: v for k, v in params.items() if k not in LAYER_CONSUMED_PARAMS}
         if self._kind == "btlm":
-            kw = dict(params)
-            # mcmc_samples は fitter 構築用（add_btlm の kwarg ではない）→ pop して factory へ。
-            fitter = _fitter_factory(kw.pop("fitter"), kw.pop("mcmc_samples", _DEFAULT_SAMPLES))
+            # fitter/mcmc_samples は invoke 自身が消費する（add_btlm の kwarg ではない）。
+            #   消費集合は _KIND_CONSUMED_PARAMS が唯一の宣言（scope 検定も同じ宣言を読む）。
+            consumed = {k: kw.pop(k) for k in _KIND_CONSUMED_PARAMS[self._kind] if k in kw}
+            fitter = _fitter_factory(
+                consumed["fitter"], consumed.get("mcmc_samples", _DEFAULT_SAMPLES)
+            )
             # ソース 8 択化: 合成ソースは applied_price で列合成し price を差し替える（src 無改変）。
             df, kw["price"] = _resolve_btlm_price(df, kw.get("price", "open"))
-            callable_(chart, df, fitter, **_accepted_kwargs(callable_, kw))
+            callable_(chart, df, fitter, **_bind_kwargs(callable_, kw))
         else:
-            kw = _accepted_kwargs(callable_, params)
+            kw = _bind_kwargs(callable_, kw)
             # 指標固有の前処理は _BindingSpec の preprocess フックへ委譲（compute_id 直判定を
             # invoke から排除・ISSUE-097 🟡-7）。未宣言指標はフック無し＝変換なし。
             preprocess = spec.get("preprocess")

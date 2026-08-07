@@ -18,7 +18,12 @@
 from __future__ import annotations
 
 from adapter.compute.call_binding import CallBinding
-from adapter.compute.catalog_schema import PARAM_DEFAULTS, catalog_defaults
+from adapter.compute.catalog_schema import (
+    PARAM_DEFAULTS,
+    PARAM_SCOPES,
+    catalog_defaults,
+    catalog_param_scopes,
+)
 from adapter.compute.fake_chart import FakeChart, FakeHorizontalChart, FakeLineChart
 from adapter.compute.indicator_compute_adapter import (
     ERROR_STATUS,
@@ -33,7 +38,9 @@ __all__ = [
     "FakeHorizontalChart",
     "CallBinding",
     "PARAM_DEFAULTS",
+    "PARAM_SCOPES",
     "catalog_defaults",
+    "catalog_param_scopes",
     "IndicatorComputeAdapter",
     "ComputeError",
     "ERROR_STATUS",

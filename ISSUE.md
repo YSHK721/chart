@@ -4599,7 +4599,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **残（未着手）**: `#chart-overlay-tl` / `#current-price` / `#crosshair-readout` は依然 3 ページへ直書き複製されている（同じ取り残しの余地）。同一方式（View 所有）への移行は UI 構造の変更を伴うため承認後に実施する。
 
 ## ISSUE-278: [設計是正・実測] リポジトリ全体 SOLID 精査で検出した違反（アーキテクチャエージェント 6 体＋本体再検証）（2026-08-06）
-- **ステータス**: OPEN（是正は未承認・下記 2 件のみ RESOLVED）
+- **ステータス**: IN_PROGRESS（16 件中 13 件是正済み。残 #4・#16 は未着手・2026-08-07 時点）
 - **重大度**: Critical〜High（データ破損の恒久化・時間軸汚染・無言の機能停止を含む）
 - **方法**: 担当分割 6 体（indicator_ui フロント JS／指標 API 中核／指標実装群／simulator・replay／unified_ui・market_profile／marketdata・共有基盤）。全指摘を本体が file:line・grep 件数・実 HTTP で再検証し、裏付けの取れたものだけを以下に採る。
 - **共通する失敗形**: 「無言の縮退」。値は正しいまま、性能・時間軸・操作性・データ保全だけが静かに壊れ、検定は緑のまま通る。
@@ -4628,9 +4628,29 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - 凡例行の在席権威を renderer のスロット集合から controller の適用一覧へ移した。系列を持たないアクター駆動型指標（market_profile／tickvol_bands）が凡例に出ず、旧 `#legend` 撤去後は目/歯車/× を完全に失って操作不能だった（ダイアログは追加専用）。
 - `setVisible`／`applySeriesStyle`／`renderHorizontal` が凡例モデルを再発火せず、非表示にしても値が残る・水準線のみの指標の行が遅れて出る問題を是正。
 
-### 是正順（提案・未承認）
-1. データ保全: #1（取得失敗の恒久化）→ #5（削除検知の欠落）
-2. 表示の正しさ: #2（時間軸汚染）
-3. 無言縮退の除去: #3・#7・#8・#15
-4. 複製の解消: #4（リプレイ合成根フォーク＋`/catalog`）→ #16・#12・#13・#14・#6
-5. 配信の衛生: #9・#10・#11
+### 是正順（提案）と進捗
+1. データ保全: #1（取得失敗の恒久化）→ #5（削除検知の欠落） … **RESOLVED**（ee9e2b6）
+2. 表示の正しさ: #2（時間軸汚染） … **RESOLVED**（ee9e2b6）
+3. 無言縮退の除去: #3・#7・#15 … **RESOLVED**（ee9e2b6 / 415b83b）／#8 … **RESOLVED**（下記）
+4. 複製の解消: #12・#13（d416797）・#14・#6（415b83b） … **RESOLVED**／#4・#16 … **未着手**
+5. 配信の衛生: #9・#10・#11 … **RESOLVED**（d8abde6）
+
+### #8 の是正（2026-08-07・RESOLVED）
+- **事象（実測・実 HTTP :8000）**: `params_defaults` の宣言粒度が compute_id、実契約（add_* のシグネチャ）は variant。差分を `_accepted_kwargs` が無言で捨てるため、**その variant では効かないコントロールが UI に出続けていた**。同一リクエストで当該 param だけを変えた応答が byte 同一であることで確認した（識別力: 受理する variant では応答が変わる）。
+
+  | 指標 | variant | 動かしても応答 byte 同一（＝効かない） | 受理する variant では変わる |
+  |---|---|---|---|
+  | profit_band | global | `normalize` / `window` / `atr_period` / `min_obs` | robust: `normalize` return↔atr で変化 |
+  | profit_band | robust | `require_full` | global: true↔false で変化 |
+  | profit_hlband | overlay | `draw_levels` | separate: true↔false で変化 |
+
+- **根本原因**: 「その variant が受理する param」という契約が **add_* のシグネチャにしか存在せず**、宣言にも配信にも UI にも無かった。無言破棄はその欠落を埋める縮退であり、欠落自体を隠していた。
+- **抜本的対策**: 宣言粒度を実契約（variant）へ揃え、無言破棄を廃した。
+  - `_TABLE` の各エントリ（compute_id, variant）が**自分が受理する param の既定値**を宣言する（`params_defaults`。共有 param は `_PROFIT_BAND_SHARED` に 1 箇所置いて両 variant が参照）。
+  - `indicator_param_scopes()` → `GET /catalog` の `paramScopes`（compute_id → variant → 受理 param 名）を配信。front は `applyServerParamScopes` で ParamDef へ overlay し、(a) ダイアログの行を出さない（`form_model.computeVisible`・variant 変更で即時再評価）(b) `/compute`・`/live_ticks` へ送らない（`indicator_controller._scopedParams`）。front はリテラルを持たない（二重定義を作らない）。
+  - `_accepted_kwargs`（無言破棄）→ `_bind_kwargs`（未受理キーは ValueError＝`validation` エラー）。計算層が消費する param（計算.時間足）は `LAYER_CONSUMED_PARAMS`、invoke 自身が消費する param（btlm の fitter/mcmc_samples）は `_KIND_CONSUMED_PARAMS` として宣言し、pop する側と検定が同じ宣言を読む。
+- **値の不変性（実証）**: 全 26 エントリで「旧経路（全 params → シグネチャで無言破棄）」と「新経路（variant スコープで絞る → フェイルクローズ）」が add_* へ渡す kwargs は**完全一致**（differing=0）。計算結果は変わらない。
+- **検定**: `api/tests/test_call_binding_param_scopes.py` を新設（宣言キー集合 == 実シグネチャ・scope の導出・フェイルクローズ）。既存の「1 compute_id = 1 宣言」検定は「1 エントリ = 1 宣言」「variant 間の既定値食い違いは ValueError」へ置換。front は `param_variant_scope.test.js` を新設（overlay・可視・送信ボディ）＋ `catalog_server_defaults.test.js` に load→overlay の結線を追加。**識別力**: 可視判定と送信絞り込みを外すと 2 件 Red。
+- **旧検定が素通ししていた理由**: `test_profit_band_latest.py` の helper が「call_binding が variant 非対象キーを捨てるため両用で渡せる」と明記して和集合を渡しており、欠陥を検定側も温存していた。単一情報源（`PARAM_SCOPES`/`PARAM_DEFAULTS`）から variant ごとに導く形へ是正（フェイルクローズ導入時に 10 件 Red → 是正で Green）。
+- **実 UI 検証（worktree を `unified_ui/serve.sh` で 8000 起動・実 HTTP・実クリック）**: profit_band の歯車で variant=robust のとき `require_full` 非表示・robust 4 件表示、global へ切替えると即座に反転（`normalize`/`window`/`atr_period`/`min_obs` が消え `require_full` が出る）。OK 適用後の実リクエストは `params` に受理 4 件＋`timeframe` のみを載せ 200 OK・28 系列を描画。profit_hlband も separate↔overlay で `draw_levels` が出没。console エラー 0。検証後は main チェックアウトのスタックへ復帰済み。
+- **UI 上の見た目の変化**: 選択中の variant が受理しないコントロールは表示されなくなる（できていたことは何も減らない＝もともと効いていなかった行のみが消える）。

@@ -36,7 +36,19 @@ from adapter.compute.latest_dispatch import full_compute, latest_compute
 
 _COMPUTE_ID = "profit_hlband"
 _VARIANTS = ("separate", "overlay")
-_PARAMS = {"draw_levels": True}
+
+
+def _params(variant: str) -> dict:
+    """その variant が受理する params（既定値）を単一情報源から導く（ISSUE-278 #8）。
+
+    overlay は指標固有 param を受理しない（draw_levels は separate 専用）。旧実装は
+    call_binding が無言で捨てていたため、両 variant へ同じ dict を渡せていた。
+    """
+    from adapter.compute.catalog_schema import PARAM_DEFAULTS, PARAM_SCOPES
+
+    scope = PARAM_SCOPES[_COMPUTE_ID][variant]
+    return {k: v for k, v in PARAM_DEFAULTS[_COMPUTE_ID].items() if k in scope}
+
 
 # 末尾K切り対象（時系列 data を持つ系列）。
 _TRIMMABLE_KINDS = ("line", "histogram")
@@ -83,7 +95,7 @@ def df():
 @pytest.mark.parametrize("variant", _VARIANTS)
 def test_latest_runs_without_error(adapter, df, variant):
     """latest 経路がエラーなく走り、非空 payload を返す。"""
-    out = latest_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
+    out = latest_compute(adapter, _COMPUTE_ID, variant, df, _params(variant))
     assert isinstance(out, list)
     assert len(out) > 0
 
@@ -91,11 +103,11 @@ def test_latest_runs_without_error(adapter, df, variant):
 @pytest.mark.parametrize("variant", _VARIANTS)
 def test_latest_matches_full_trimmable(adapter, df, variant):
     """line/histogram 各系列で latest の data[-K:] == full の data[-K:]（float 完全一致）。"""
-    meta = latest_meta(_COMPUTE_ID, variant, _PARAMS)
+    meta = latest_meta(_COMPUTE_ID, variant, _params(variant))
     k = meta.trailing_k if meta.trailing_k is not None else 1
 
-    full = full_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
-    latest = latest_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
+    full = full_compute(adapter, _COMPUTE_ID, variant, df, _params(variant))
+    latest = latest_compute(adapter, _COMPUTE_ID, variant, df, _params(variant))
 
     full_tr = {p["name"]: p for p in _by_kind(full, "line") + _by_kind(full, "histogram")}
     latest_tr = {p["name"]: p for p in _by_kind(latest, "line") + _by_kind(latest, "histogram")}
@@ -114,8 +126,8 @@ def test_latest_matches_full_trimmable(adapter, df, variant):
 @pytest.mark.parametrize("variant", _VARIANTS)
 def test_horizontal_line_returned_in_full(adapter, df, variant):
     """horizontal_line は latest でも full と同一に全件（全水平線）返る。"""
-    full = full_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
-    latest = latest_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
+    full = full_compute(adapter, _COMPUTE_ID, variant, df, _params(variant))
+    latest = latest_compute(adapter, _COMPUTE_ID, variant, df, _params(variant))
 
     full_hl = _by_kind(full, "horizontal_line")
     latest_hl = _by_kind(latest, "horizontal_line")
@@ -131,8 +143,8 @@ def test_horizontal_line_returned_in_full(adapter, df, variant):
 
 def test_series_kinds_present(adapter, df):
     """separate は histogram＋horizontal_line、overlay は horizontal_line を出すこと。"""
-    sep = full_compute(adapter, _COMPUTE_ID, "separate", df, _PARAMS)
-    ov = full_compute(adapter, _COMPUTE_ID, "overlay", df, _PARAMS)
+    sep = full_compute(adapter, _COMPUTE_ID, "separate", df, _params("separate"))
+    ov = full_compute(adapter, _COMPUTE_ID, "overlay", df, _params("overlay"))
 
     assert _by_kind(sep, "histogram")
     assert _by_kind(sep, "horizontal_line")

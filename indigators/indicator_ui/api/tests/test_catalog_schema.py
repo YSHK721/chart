@@ -45,28 +45,26 @@ def test_param_defaults_are_derived_from_the_binding_table():
     assert PARAM_DEFAULTS == indicator_param_defaults()
 
 
-def test_param_defaults_declared_once_per_compute_id_in_the_binding_table():
-    # 記述子は「1 指標 = 1 宣言」。宣言漏れ（指標追加時の登録漏れ）と、複数 variant への
-    #   二重宣言（値の食い違いを生む）を構造的に禁じる。
+def test_param_defaults_declared_once_per_binding_entry():
+    # ISSUE-278 #8: 記述子は「1 エントリ（compute_id, variant）= 1 宣言」。宣言粒度を実契約
+    #   （add_* のシグネチャ＝variant 単位）へ揃えたため、全エントリが自分の受理引数を宣言する。
     from adapter.compute import call_binding
 
-    declared: dict[str, int] = {}
-    for (compute_id, _variant), spec in call_binding._TABLE.items():
-        if "params_defaults" in spec:
-            declared[compute_id] = declared.get(compute_id, 0) + 1
-    table_ids = {compute_id for (compute_id, _variant) in call_binding._TABLE}
-    assert set(declared) == table_ids  # 宣言漏れ検出
-    assert {compute_id for compute_id, n in declared.items() if n != 1} == set()  # 二重宣言検出
+    undeclared = [key for key, spec in call_binding._TABLE.items() if "params_defaults" not in spec]
+    assert undeclared == []
 
 
-def test_derivation_rejects_duplicate_params_defaults_declaration():
-    # 同一 compute_id の 2 variant が既定値を宣言したら導出は失敗する（黙って片方を採らない）。
+def test_derivation_rejects_conflicting_params_defaults_between_variants():
+    # 共有 param を variant 間で違う既定値にしたら導出は失敗する（黙って片方を採らない）。
     from adapter.compute import call_binding
 
     original = call_binding._TABLE
     patched = dict(original)
     key = ("profit_band", "robust")
-    patched[key] = {**original[key], "params_defaults": {"min_obs": 999}}
+    patched[key] = {
+        **original[key],
+        "params_defaults": {**original[key]["params_defaults"], "legend": True},
+    }
     call_binding._TABLE = patched
     try:
         with pytest.raises(ValueError):

@@ -167,7 +167,16 @@ export function computeEnabled(def, values = {}, context = {}) {
 // 用途: market_profile の bins は resmode==bins のとき表示 / range は resmode==range のとき表示（解像度トグル）。
 export function computeVisible(def, values = {}, context = null) {
   const visible = {};
+  const variant = context && context.variant;
   for (const pdef of def.params ?? []) {
+    // variant スコープ（ISSUE-278 #8）: その variant の add_* が受理しない param は表示しない。
+    //   受理集合の正は back（GET /catalog の paramScopes）で、catalog.applyServerParamScopes が
+    //   ParamDef.variants へ overlay する。null＝全 variant 共通（従来どおり常時表示）。
+    //   条件付き表示（下）より先に評価する＝受理されない param はそもそも UI に存在しない。
+    if (Array.isArray(pdef.variants) && variant && !pdef.variants.includes(variant)) {
+      visible[pdef.name] = false;
+      continue;
+    }
     const cond = pdef.conditionalVisible;
     if (cond === null || cond === undefined) {
       visible[pdef.name] = true;

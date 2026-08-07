@@ -7,7 +7,7 @@
 //   サーバ由来スキーマを取得し、レジストリへ overlay して既定値を解決する。フェッチ失敗時は静的値
 //   （catalog.js リテラル）へフォールバックし UI が従来どおり動く（後方互換・オフライン耐性）。
 
-import { list, get, applyServerDefaults } from '../../usecase/catalog.js';
+import { list, get, applyServerDefaults, applyServerParamScopes } from '../../usecase/catalog.js';
 
 export class IndicatorCatalogClient {
   // IndicatorDef[] を返す（usecase は読み取り専用複製を返す）。
@@ -40,6 +40,9 @@ export class IndicatorCatalogClient {
         return false;
       }
       applyServerDefaults(payload.catalog);
+      // variant 別の受理 param（ISSUE-278 #8）。未配信（旧サーバ）なら overlay しない＝
+      //   従来どおり全 params を表示・送信する（前方互換）。
+      applyServerParamScopes(payload.paramScopes);
       return true;
     } catch {
       // ネットワーク断・JSON 破損等 → 静的値フォールバック（UI 従来どおり）。

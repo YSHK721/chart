@@ -75,6 +75,35 @@ test('client.load fetches /catalog and overlays server defaults', async () => {
   }
 });
 
+test('client.load also overlays paramScopes (variant ごとの受理 param・ISSUE-278 #8)', async () => {
+  // ISSUE-278 #8: 受理集合が front へ届かないと、効かないコントロールを出し続ける経路へ戻る。
+  //   結線（load → applyServerParamScopes）そのものを固定する。
+  const p = paramOf('profit_band', 'require_full');
+  const fakeFetch = async () => ({
+    ok: true,
+    json: async () => ({
+      ok: true,
+      catalog: {},
+      paramScopes: {
+        profit_band: {
+          global: ['require_full', 'timeframe'],
+          robust: ['normalize', 'timeframe'],
+        },
+      },
+    }),
+  });
+  try {
+    const ok = await new IndicatorCatalogClient().load(fakeFetch);
+    assert.equal(ok, true);
+    assert.deepEqual(p.variants, ['global']);
+    assert.deepEqual(paramOf('profit_band', 'normalize').variants, ['robust']);
+  } finally {
+    for (const q of get('profit_band').params) {
+      q.variants = null;
+    }
+  }
+});
+
 test('client.load falls back to static defaults when fetch throws', async () => {
   const p = paramOf('tgp_btlm', 'maxbars');
   const original = p.default;

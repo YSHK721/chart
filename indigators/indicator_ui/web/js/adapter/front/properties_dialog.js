@@ -273,6 +273,13 @@ export class PropertiesDialog {
     return pane;
   }
 
+  // 述語（conditionalEnable / conditionalVisible / optionEnable）へ渡す評価コンテキスト。
+  //   外部状態（timeframe / datasetRef 等）へ **選択中の variant** を重ねる。variant ごとに
+  //   受理 param が異なる（ISSUE-278 #8）ため、可視判定は variant を知る必要がある。
+  _evalContext() {
+    return { ...this._context, variant: this._variant };
+  }
+
   // バリアント選択行（variant 変更は実描画反映・§9.2・H-1 対象外）。
   _buildVariantRow() {
     const doc = this._doc;
@@ -296,7 +303,14 @@ export class PropertiesDialog {
       if (v === this._variant) opt.selected = true;
       sel.append(opt);
     }
-    sel.addEventListener('change', () => { this._variant = sel.value; });
+    // variant を変えると受理 param が変わる（ISSUE-278 #8）ため、可視・有効・検証を再評価する。
+    //   受理しない param の行はその場で消える（＝効かないコントロールを出さない）。
+    sel.addEventListener('change', () => {
+      this._variant = sel.value;
+      this._refreshVisible();
+      this._refreshEnabled();
+      this._revalidate();
+    });
     controlWrap.append(sel);
     row.append(label, controlWrap);
     return row;
@@ -642,7 +656,7 @@ export class PropertiesDialog {
   //   （隠れた bins が既定 60 のままなら妥当だが、空値等でも OK を阻害させないため・トグル安全化）。
   _revalidate() {
     const { violations } = validateForm(this._def, this._values);
-    const visible = computeVisible(this._def, this._values, this._context);
+    const visible = computeVisible(this._def, this._values, this._evalContext());
     // 非表示フィールドの違反は表示せず OK も阻害しない。
     const effective = violations.filter((v) => visible[v.param] !== false);
     // 全フィールドのエラー表示をクリア。
@@ -668,7 +682,7 @@ export class PropertiesDialog {
 
   // 条件付き有効化（§3.5）。disabled のフィールド行をグレーアウト。
   _refreshEnabled() {
-    const enabled = computeEnabled(this._def, this._values, this._context);
+    const enabled = computeEnabled(this._def, this._values, this._evalContext());
     for (const [name, els] of this._fieldEls) {
       const on = enabled[name] !== false;
       els.row.classList.toggle('is-disabled', !on);
@@ -702,7 +716,7 @@ export class PropertiesDialog {
       let currentDisabled = false;
       for (const opt of sel.options ?? []) {
         const raw = (pdef.enumValues ?? []).find((v) => String(v) === opt.value) ?? opt.value;
-        const ok = !!pdef.optionEnable(raw, this._values, this._context);
+        const ok = !!pdef.optionEnable(raw, this._values, this._evalContext());
         opt.disabled = !ok;
         if (ok && firstEnabled === null) {
           firstEnabled = raw;
@@ -723,7 +737,7 @@ export class PropertiesDialog {
   //   _refreshEnabled（グレーアウト）と対称の動的経路。range を変えた瞬間に「ビン」行が出没する。
   //   静的除外（uiVisible===false）は buildFormModel が担い、本メソッドは動的トグルのみ担う。
   _refreshVisible() {
-    const visible = computeVisible(this._def, this._values, this._context);
+    const visible = computeVisible(this._def, this._values, this._evalContext());
     for (const [name, els] of this._fieldEls) {
       const on = visible[name] !== false;
       els.row.style.display = on ? '' : 'none';

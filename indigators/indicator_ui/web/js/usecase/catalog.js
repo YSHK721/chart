@@ -39,6 +39,13 @@ const UI_DEFAULTS = Object.freeze({
   // conditionalVisible: 条件付き“表示”（トグル）。conditionalEnable（グレーアウト）と対称で、
   //   { when: { param, equals } } が偽のとき当該フィールド行を非表示にする（form_model.computeVisible）。
   conditionalVisible: null,
+  // variants: この param を受理する variant 名の配列（ISSUE-278 #8）。null＝全 variant 共通。
+  //   宣言の正は back（call_binding._TABLE の params_defaults）で、GET /catalog の paramScopes を
+  //   applyServerParamScopes が overlay する。front はリテラルを持たない（二重定義を作らない）。
+  //   受理しない variant では行を非表示にし（form_model.computeVisible）、/compute へも送らない
+  //   （indicator_controller）。従来は全 variant の和集合を送り back が無言で捨てていたため、
+  //   効かないコントロールが UI に出続けていた。
+  variants: null,
   order: null,
   uiVisible: true,
   // label: フィールド表示名の直接指定（日本語ラベル。省略時は labelKey 末尾を表示）。
@@ -947,6 +954,61 @@ export function get(id) {
 //
 // IndicatorDef は Object.freeze 済みだが params 配列要素（ParamDef plain object）は凍結されていない
 // ため .default の上書きは可能（domain_models.js は shallow freeze）。反映した param 数を返す。
+// サーバ由来の variant 別受理 param（GET /catalog の paramScopes）をレジストリへ overlay する
+//   （ISSUE-278 #8・applyServerDefaults と対称）。
+//
+// scopes = { compute_id: { variant: [param_name, ...] } }（back catalog_schema.PARAM_SCOPES の配信形）。
+// 各 ParamDef へ「その param を受理する variant の配列」を書き込む。全 variant が受理する param は
+// null（＝variant 非依存）にして、単一 variant 指標のフィールドが余計な条件を持たないようにする。
+//
+// これが無いと front は variant 横断の全 params を送り、back が受理しない引数を捨てる（旧挙動）。
+// 結果として「動かしても計算結果が変わらないコントロール」が UI に出続けていた（実測: profit_band
+// variant=global の normalize/window/atr_period/min_obs は応答 byte 同一）。反映した param 数を返す。
+export function applyServerParamScopes(scopes) {
+  if (!scopes || typeof scopes !== 'object') {
+    return 0;
+  }
+  let applied = 0;
+  for (const [id, byVariant] of Object.entries(scopes)) {
+    const def = BY_ID.get(id);
+    if (!def || !byVariant || typeof byVariant !== 'object') {
+      continue;
+    }
+    const variants = Object.keys(byVariant);
+    if (variants.length === 0) {
+      continue;
+    }
+    for (const p of def.params) {
+      const accepting = variants.filter((v) => (byVariant[v] || []).includes(p.name));
+      // 全 variant が受理 → null（条件なし）。1 つも受理しない param は back 契約に無い＝
+      //   catalog_schema_sync.test.js が検出する対象なので、ここでは条件を付けない。
+      p.variants = (accepting.length === variants.length || accepting.length === 0)
+        ? null
+        : accepting;
+      applied += 1;
+    }
+  }
+  return applied;
+}
+
+// params から「その variant が受理しないキー」を落とす（ISSUE-278 #8）。
+//   def が無い / scope 未 overlay（旧サーバ・オフライン）の param は素通し＝従来挙動。
+//   back は未受理キーを無言で捨てず validation エラーにするため、送信前にここで絞る。
+export function scopedParams(def, variant, params) {
+  if (!def || !params || typeof params !== 'object') {
+    return params;
+  }
+  const scoped = {};
+  for (const [name, value] of Object.entries(params)) {
+    const p = def.params.find((q) => q.name === name);
+    if (p && Array.isArray(p.variants) && variant && !p.variants.includes(variant)) {
+      continue;
+    }
+    scoped[name] = value;
+  }
+  return scoped;
+}
+
 export function applyServerDefaults(schema) {
   if (!schema || typeof schema !== 'object') {
     return 0;

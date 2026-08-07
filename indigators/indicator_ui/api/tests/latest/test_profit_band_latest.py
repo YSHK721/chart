@@ -60,17 +60,16 @@ def _ohlcv(n: int = 100) -> pd.DataFrame:
 
 
 def _params(variant: str) -> dict:
-    """catalog 既定相当の params（call_binding が variant 非対象キーを捨てるため両用で渡せる）。"""
-    return {
-        "probabilities": [0.51, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99],
-        "buckets": ["nOH", "pOL", "pOH", "nOL"],
-        "require_full": True,
-        "legend": False,
-        "normalize": "return",
-        "window": "expanding",
-        "atr_period": 14,
-        "min_obs": 30,
-    }
+    """その variant が受理する params（既定値）を単一情報源から導く。
+
+    ISSUE-278 #8 以前はここに全 variant の和集合をリテラルで書き、call_binding が非対象キーを
+    無言で捨てていた（＝UI が効かないコントロールを出す欠陥を検定側も温存していた）。
+    以後は宣言（PARAM_SCOPES / PARAM_DEFAULTS）から variant ごとに絞る。
+    """
+    from adapter.compute.catalog_schema import PARAM_DEFAULTS, PARAM_SCOPES
+
+    scope = PARAM_SCOPES["profit_band"][variant]
+    return {k: v for k, v in PARAM_DEFAULTS["profit_band"].items() if k in scope}
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)

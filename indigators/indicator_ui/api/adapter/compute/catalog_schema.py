@@ -27,7 +27,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from adapter.compute.call_binding import indicator_param_defaults
+from adapter.compute.call_binding import indicator_param_defaults, indicator_param_scopes
 
 # compute_id → {param_name: default}。param **既定値**の正（single source）＝指標記述子
 # ``call_binding._TABLE`` の ``params_defaults`` 宣言からの導出値（deep copy 済み）。
@@ -36,6 +36,18 @@ from adapter.compute.call_binding import indicator_param_defaults
 # （catalog_schema_sync.test.js）双方のテストが固定し、乖離を検出する。
 # dict の挿入順は _TABLE のエントリ順＝``GET /catalog`` 応答の key 順（従来配信順を維持）。
 PARAM_DEFAULTS: dict[str, dict[str, Any]] = indicator_param_defaults()
+
+
+# compute_id → variant → その variant が受理する param 名（ISSUE-278 #8）。``PARAM_DEFAULTS`` と
+# 同じ宣言（``call_binding._TABLE`` の ``params_defaults``）からの導出値であり独立定義を持たない。
+# front はこれで variant ごとに「表示するコントロール」「送信する params」を決める（効かない
+# コントロールを出さない・受理されない param を送らない）。
+PARAM_SCOPES: dict[str, dict[str, list[str]]] = indicator_param_scopes()
+
+
+def catalog_param_scopes() -> dict[str, dict[str, list[str]]]:
+    """serving 用に ``PARAM_SCOPES`` の deep copy を返す（source を呼び出し側の変更から守る）。"""
+    return copy.deepcopy(PARAM_SCOPES)
 
 
 def catalog_defaults() -> dict[str, dict[str, Any]]:

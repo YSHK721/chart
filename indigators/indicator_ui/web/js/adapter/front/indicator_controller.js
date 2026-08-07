@@ -20,7 +20,7 @@ import {
   setSeriesStyles,
   reconcileSeriesStyles,
 } from '../../usecase/facade.js';
-import { categories as catalogCategories } from '../../usecase/catalog.js';
+import { categories as catalogCategories, scopedParams } from '../../usecase/catalog.js';
 import { PropertiesDialog } from './properties_dialog.js';
 import { IndicatorLegendView } from './indicator_legend_view.js';
 import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_params.js';
@@ -290,12 +290,14 @@ export class IndicatorController {
       if (!INTRABAR_FORMING_IDS.has(inst.indicatorId) || !this._meta.has(inst.instanceId)) {
         continue;
       }
-      const params = this._paramsObject(inst.params);
+      const variant = inst.variant || 'default';
       specs.push({
         instanceId: inst.instanceId,
         indicatorId: inst.indicatorId,
-        variant: inst.variant || 'default',
-        params,
+        variant,
+        // variant スコープ（ISSUE-278 #8）: /live_ticks も /compute と同じ呼出規約で計算するため、
+        //   受理しない param を載せない（載せると back が validation エラーで落とす）。
+        params: this._scopedParams(inst.indicatorId, variant, this._paramsObject(inst.params)),
       });
     }
     return specs;
@@ -847,6 +849,13 @@ export class IndicatorController {
     return params;
   }
 
+  // その variant が受理する param だけへ絞る（ISSUE-278 #8）。受理集合の正は back
+  //   （GET /catalog の paramScopes）で、catalog が ParamDef.variants へ overlay 済み。
+  //   未知 id・未 overlay（旧サーバ/オフライン）は素通し＝従来挙動。
+  _scopedParams(indicatorId, variant, params) {
+    return scopedParams(this._catalog.get(indicatorId), variant, params);
+  }
+
   // AppliedInstance.params（[k,v] ペア配列・facade 形）または object を object へ正規化する。
   _paramsObject(params) {
     if (Array.isArray(params)) {
@@ -890,9 +899,14 @@ export class IndicatorController {
         //   上位足の時間軸の系列がそのままチャートへ流れていた（時間軸の汚染・未来情報の混入）。
         //   backend は params.timeframe を受理引数に含めない（_accepted_kwargs で除外）ため副作用なし。
         const tfParam = req && req.params ? req.params.timeframe : undefined;
+        // variant スコープ（ISSUE-278 #8）: その variant の add_* が受理しない param は送らない。
+        //   従来は variant 横断の全 params を送り back が無言で捨てていた（＝UI が効かない
+        //   コントロールを出す原因）。back は無言破棄を廃したため、絞り込みは送信側の責務。
+        const variant = variantOverride ?? req.variant;
         const result = await compute.compute({
           ...req,
-          variant: variantOverride ?? req.variant,
+          variant,
+          params: self._scopedParams(req.indicatorId, variant, req.params),
           timeframe: self._tf.current(),
           computeTimeframe: tfParam,
           limit: self._tf.limit(),
