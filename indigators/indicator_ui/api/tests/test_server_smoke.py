@@ -302,10 +302,10 @@ def test_get_live_ticks_serves_injected_buffer_since_cursor(server):
 # /market_profile_forming 殻の from 透過（回帰: 当日窓へレンジを絞る根幹）
 # --------------------------------------------------------------------------- #
 def test_get_market_profile_forming_passes_from_to_controller(server, monkeypatch):
-    """殻 `_handle_market_profile_forming` が query の `from` を controller へ `frm` として渡す。
+    """殻 `_compute_market_profile_forming` が query の `from` を controller へ `frm` として渡す。
 
     これが欠けると controller の from_ts=None に落ち、base レンジが全期間 low/high へ広がり
-    当日成長が不可視になる（兄弟 `_handle_market_profile` と同型の透過を固定する回帰）。
+    当日成長が不可視になる（兄弟 `_compute_market_profile` と同型の透過を固定する回帰）。
     """
     import framework.server as _srv
 
@@ -325,7 +325,7 @@ def test_get_market_profile_forming_passes_from_to_controller(server, monkeypatc
 
 
 def test_get_tf_period_profile_passes_window_to_controller(server, monkeypatch):
-    # 殻 `_handle_tf_period_profile` が query の from/to（ローリング窓）を controller へ透過し JSON 応答する。
+    # 殻 `_compute_tf_period_profile` が query の from/to（ローリング窓）を controller へ透過し JSON 応答する。
     import framework.server as _srv
 
     captured = {}

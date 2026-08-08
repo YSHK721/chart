@@ -306,6 +306,63 @@ def test_compute_runs_on_worker_thread_and_response_is_written_on_request_thread
     )
 
 
+def test_a_stalled_response_write_does_not_block_another_mp_route(server, monkeypatch):
+    """遅いクライアント 1 本が MP の別経路を直列停止させない（ISSUE-259 の重大度そのもの）。
+
+    構造ガード（``self`` を捕獲しない等）は再発防止の代理指標に過ぎない。本テストは症状を直接
+    測る: ``_send_json`` を「受信の遅いクライアント」に見立ててバリアで止め、**別経路**の要求が
+    その間に計算〜応答へ到達できるかを見る。
+
+    タイミング依存を避けるため閾値ではなくバリアで判定する:
+      - 是正後: 2 本の書き出しは各リクエストスレッドで並行 → 双方がバリアに到達して解放される。
+      - 是正前: 書き出しが単一ワーカースレッド内で起きるため、1 本目が止まると 2 本目は計算にすら
+        入れず、バリアがタイムアウトして ``BrokenBarrierError``＝Red。
+    """
+    barrier = threading.Barrier(2, timeout=10)
+    broken: list[str] = []
+
+    def _stub_mp(*_a, **_k):
+        return 200, {"ok": True, "profile": {"bins": []}}
+
+    def _stub_tfp(*_a, **_k):
+        return 200, {"ok": True, "tf": "5m", "columns": []}
+
+    monkeypatch.setattr(server_mod, "handle_market_profile", _stub_mp)
+    monkeypatch.setattr(server_mod, "handle_tf_period_profile", _stub_tfp)
+
+    original = IndicatorUIRequestHandler._send_json
+
+    def _slow_client(self, status, body):
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            broken.append(self.path)
+        return original(self, status, body)
+
+    monkeypatch.setattr(IndicatorUIRequestHandler, "_send_json", _slow_client)
+
+    paths = [
+        "/market_profile?datasetRef=jp225_tick&timeframe=1D&bins=60",
+        "/tf_period_profile?datasetRef=jp225_tick&timeframe=5m&from=1000&to=2000",
+    ]
+    results: dict[str, int] = {}
+
+    def _fire(p):
+        results[p] = _get(server, p)[0]
+
+    threads = [threading.Thread(target=_fire, args=(p,)) for p in paths]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not broken, (
+        "応答書き出しの停滞が MP の別経路をブロックしている（遅いクライアント 1 本で MP 全経路が"
+        f"直列停止する・ISSUE-259）: バリア到達できなかった経路 ={broken}"
+    )
+    assert results == {p: 200 for p in paths}
+
+
 @pytest.mark.parametrize(
     "controller,path,_payload,message", _ROUTES, ids=[r[0] for r in _ROUTES]
 )
