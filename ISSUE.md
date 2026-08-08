@@ -4868,11 +4868,15 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-282（失敗の局所化）／ISSUE-257（捨てられる計算を消す）／ISSUE-284（分類の誤り）。
 
 ## ISSUE-284: [不具合・実測再現] 指標の前提未達（validation）が HTTP 500 internal として返る（2026-08-08）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-08・fix/replay-error-classification）
 - **重大度**: High（監視・切り分けを誤らせる。「サーバ内部異常」と「入力条件未達」が区別できない）
 - **実測再現（実 HTTP・1 コマンド）**: `POST /replay/compute`（cvfe・`n_har=1329`・`limit=1234`）→ **HTTP 500**、ボディは `{"error":{"type":"internal","message":"ComputeError: validation: E01_INSUFFICIENT_BARS: …"}}`。
 - **何が間違っているか**: `api_shared.http_contract.ERROR_STATUS` は `validation → 400` と正しく定義されている。ところが本経路では `ComputeError`（type=validation）が usecase の `except compute_error` を**すり抜け**、外側の `except Exception` で **internal 500 に握り潰されて**いる（メッセージに `ComputeError: validation:` が丸ごと文字列化されて入っているのが証拠）。同じ条件が別経路では 400 になる（利用者ログの後半）＝**経路で分類が割れている**。
 - **抜本的対策**: 例外の翻訳点を 1 つに閉じる。指標が投げる宣言的失敗（`ComputeError` とその派生）は、どの経路を通っても `nested_error(exc.error_type, …)` で分類する。外側の `except Exception` は**本当の内部異常だけ**を受け持つ（そこで ComputeError を握らない）。すり抜けている実際の raise 位置を実測で特定し、try 境界をそこまで広げる。
+- **真因（特定）**: `simulator/replay_ui/framework/serve_replay._error_response` が **Python の例外型**だけで分類していた（`ValueError → validation` / それ以外 → `internal`）。指標計算は `ComputeError`（`error_type` / `message` を持つ＝`ComputeErrorPort`）で分類を**申告している**のに、その申告が無視され、汎用 `except Exception` の文言（`"ComputeError: validation: …"`）ごと internal 500 に化けていた。ライブ core は usecase 側で `except compute_error` して申告に従うため 400。**同じ条件・別分類**の正体はこの非対称。
+- **抜本的対策（実施）**: 分類の判断材料を「例外の型」から「**例外が宣言した種別**」へ変えた。`error_type` を持つ例外はその宣言に従い（メッセージも宣言側を使う＝二重ラップしない）、宣言の無いものだけ従来の型判定へ落とす。翻訳点は `_error_response` 1 箇所のまま（分類の追加は引き続きここだけ）。
+- **検定**: `tests/unit/test_error_classification.py`（4 件）。宣言 validation→400／宣言 empty_series→422（status 表に従う）／無宣言 ValueError→400／無宣言その他→500。
+- **実 HTTP 検証**: 是正前 `POST /replay/compute`（cvfe・n_har=1329・limit=1234）＝ **500 / type=internal**、是正後（`replay_ui/serve.sh 8280` で実起動）＝ **400 / type=validation**・メッセージは `E01_INSUFFICIENT_BARS: …` のまま。
 - **関連**: ISSUE-283（無駄な再要求）／ISSUE-278 #3（無言の except で握り潰す型）。
 
 ## ISSUE-285: [不具合・実測] モード遷移時にリプレイ層の要求がライブ core へ回り 404 になる（2026-08-08）
