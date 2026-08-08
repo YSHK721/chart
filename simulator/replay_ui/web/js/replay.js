@@ -25,6 +25,7 @@ import { createMpGrowthDriver } from './replay/mp_growth_driver.js';
 import { PlaybackTempo } from './replay/playback_tempo.js';
 import { FormingPlanCache } from './replay/forming_plan_cache.js';
 import { FormingAnimator } from './replay/forming_animator.js';
+import { ReplayCursor } from './replay/replay_cursor.js';
 
 const DAY = 86400;
 // 表示レンジ・テンプレート（時間足別）。期間は「秒」で持ち t 起点で [t-期間, t] を毎回算出。null=全期間。
@@ -55,16 +56,15 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   const mpOn = () => !!(marketProfile && marketProfile.isEnabled());
 
   // ---- 状態（既定はリビール: 追従 OFF） ----
-  let candles = [];
-  let bar = 0;
+  // 再生カーソル（対象データ・現在位置・世代）は ReplayCursor が所有する（ISSUE-256）。
+  //   旧: candles / bar / replayStart / timeframe / generation / activeSecs / activePeriodBars を
+  //   素の局所変数として関数全体へ露出し、どこからでも書き換えられる状態だった。
+  const cursor = new ReplayCursor({
+    fetchImpl, datasetRef, recentBars, preBars: CALENDAR_PRE_BARS, timeframe: controller._timeframe,
+  });
   let playing = false;
-  let timeframe = controller._timeframe;
-  let generation = 0;
   let followOn = false;
   let autoFrame = true;
-  let replayStart = 0;
-  let activeSecs = null;
-  let activePeriodBars = null;
 
   // [統合レイヤ外殻] live 既定の計算窓（disable で復帰させる基準）。DOM リスナ／monkey-patch の
   //   解除記録（destroy で原状復帰）。いずれも「駆動の停止／解除／リスナ解除」の外殻であり、
@@ -73,14 +73,14 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   const disposers = [];
   let wasEnabled = false; // enable() 済み（＝reveal トリムが起きうる）か。disable の全長復帰の発火条件。
 
-  const syncBoundary = () => view.syncBoundary({ replayStart, candles });
+  const syncBoundary = () => view.syncBoundary({ replayStart: cursor.replayStart(), candles: cursor.candles() });
 
-  // MP normal 成長の base 累積下限（UNIX 秒）= 再生開始点 replayStart のバー時刻。
+  // MP normal 成長の base 累積下限（UNIX 秒）= 再生開始点 cursor.replayStart() のバー時刻。
   //   再生を始めた位置から現在まで累積する（過去 revealed 足を保持・全期間より見やすい・日跨ぎでも非リセット）。
   //   replayStart=0（全期間プリセット）は最古足 time＝実質全期間。actor 側が formingStart へクランプし
   //   不変条件 from<=formingStart・未来リーク禁止を保つ。候補足が無ければ undefined（actor は GrowthWindow
   //   フォールバックへ委譲）。
-  const mpBaseFrom = () => (candles[replayStart] ? candles[replayStart].time : undefined);
+  const mpBaseFrom = () => (cursor.candles()[cursor.replayStart()] ? cursor.candles()[cursor.replayStart()].time : undefined);
 
   // MP tick-live 成長駆動は独立ドライバへ分離（ISSUE-133 SRP）。再生制御（render/animateForming）は
   //   mpOn() gate の下で本ドライバへ委譲する（growInFlight・grow/settle/feed の駆動シーケンスを所有）。
@@ -105,26 +105,15 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   startUnix=null: 従来どおり末尾 recentBars 本（present 窓）。
   //   startUnix 指定（カレンダーで選んだ再生開始日）: その日の手前 CALENDAR_PRE_BARS 本から
   //     recentBars 本を取る窓（＝取得済み範囲に縛られず全期間の任意日から再生できる）。
-  async function fetchCandles(tf, startUnix = null) {
-    let url = `/candles?datasetRef=${encodeURIComponent(datasetRef)}`
-      + `&timeframe=${encodeURIComponent(tf)}&limit=${recentBars}`;
-    if (startUnix != null) url += `&from=${startUnix}&pre=${CALENDAR_PRE_BARS}`;
-    const payload = await (await fetchImpl(url)).json();
-    return (payload && payload.ok) ? payload.candles : [];
-  }
 
-  // カレンダーの選択可能日（足が 1 本以上ある UTC 日・"YYYY-MM-DD" 昇順）。
-  async function fetchDays(tf) {
-    const url = `/available_days?datasetRef=${encodeURIComponent(datasetRef)}`
-      + `&timeframe=${encodeURIComponent(tf)}`;
-    const payload = await (await fetchImpl(url)).json();
-    return (payload && payload.ok && Array.isArray(payload.days)) ? payload.days : [];
-  }
+
+  const fetchCandles = (tf, startUnix = null) => cursor.fetchCandles(tf, startUnix);
+  const fetchDays = (tf) => cursor.fetchDays(tf);
 
   // ---- 表示 ----
   function applyView() {
     if (!autoFrame) return; // 手動閲覧中は上書きしない
-    view.setVisibleLogicalRange(visibleRange({ bar, followOn, activePeriodBars }));
+    view.setVisibleLogicalRange(visibleRange({ bar: cursor.bar(), followOn, activePeriodBars: cursor.activePeriodBars() }));
   }
 
   // 期間メニュー（[ 3か月 ] [∨]）。時間足別のプリセット候補を供給し、選択結果を再生位置へ反映する。
@@ -132,53 +121,53 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   - カレンダー:     選んだ日を起点に窓を取り直し（fetchCandles(from)）、その日から再生する。
   const rangeMenu = new ReplayRangeMenu({
     document: doc,
-    loadDays: () => fetchDays(timeframe),
+    loadDays: () => fetchDays(cursor.timeframe()),
     onSelectPreset: (secs) => {
-      activeSecs = secs;
+      cursor.setActivePeriod({ secs, bars: cursor.activePeriodBars() });
       autoFrame = true;
-      const sel = presetSelection({ candles, secs });
-      replayStart = sel.replayStart;
-      activePeriodBars = sel.activePeriodBars;
-      window.__rpReplayStart = replayStart;
+      const sel = presetSelection({ candles: cursor.candles(), secs });
+      cursor.setReplayStart(sel.replayStart);
+      cursor.setActivePeriod({ secs: cursor.activeSecs(), bars: sel.activePeriodBars });
+      window.__rpReplayStart = cursor.replayStart();
       syncBoundary();
       view.setRangeLabel(presetLabel(secs));
-      drive(replayStart);
+      drive(cursor.replayStart());
     },
     onSelectDate: (startUnix, key) => { loadFromDate(startUnix, key); },
   });
 
   // 現在の期間プリセット secs に対応する表示ラベル（見つからなければ「全期間」）。
   function presetLabel(secs) {
-    const presets = RANGE_PRESETS[timeframe] || [['全期間', null]];
+    const presets = RANGE_PRESETS[cursor.timeframe()] || [['全期間', null]];
     const hit = presets.find(([, s]) => s === secs);
     return hit ? hit[0] : '全期間';
   }
 
   function syncRangeMenu() {
-    rangeMenu.setPresets(RANGE_PRESETS[timeframe] || [['全期間', null]]);
+    rangeMenu.setPresets(RANGE_PRESETS[cursor.timeframe()] || [['全期間', null]]);
   }
 
   // ---- 1 フレーム描画（その時点を計算 → 足・帯・ビューを同時反映） ----
   async function render(target) {
-    if (!candles.length) return;
-    const g = ++generation;
-    bar = clampBar(target, candles.length);
+    if (!cursor.candles().length) return;
+    const g = cursor.bumpGeneration();
+    cursor.setBar(target);
     updatePlayEnabled();
-    const t = candles[bar].time;
+    const t = cursor.candles()[cursor.bar()].time;
 
     controller.setUntilTime(t);
-    controller._recentBars = bar + 1; // 計算窓＝リビール範囲
+    controller._recentBars = cursor.bar() + 1; // 計算窓＝リビール範囲
     // [ISSUE-158 ②] 一括リビール基底: 登録指標（causal_reveal_ids）は全レンジを 1 回だけ計算して
     //   キャッシュし、以降のバー送りは同期スライス描画のみ（per-step HTTP を発行しない）。
     //   必要時（時間足切替・指標追加・params 変更後の初回フレーム）のみ構築する。
     if (typeof controller.revealNeedsBuild === 'function' && controller.revealNeedsBuild()) {
       setStatus(`${fmt(t)} 一括計算中…`);
       try {
-        await controller.buildRevealBase(candles[candles.length - 1].time, candles.length);
+        await controller.buildRevealBase(cursor.candles()[cursor.candles().length - 1].time, cursor.candles().length);
       } catch (e) {
         // 構築失敗は per-step 計算へフォールバック（描画は止めない）。
       }
-      if (isStale(g, generation)) return;
+      if (isStale(g, cursor.generation())) return;
     }
     setStatus(`${fmt(t)} 計算中…`);
     const started = performance.now();
@@ -192,7 +181,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
           && controller.hasRevealFor(inst.instanceId),
         preRender: () => {
           const saved = (!autoFrame) ? view.getVisibleLogicalRange() : null;
-          view.setCandles(candles.slice(0, bar + 1));
+          view.setCandles(cursor.candles().slice(0, cursor.bar() + 1));
           if (saved) { view.setVisibleLogicalRange(saved); }
           else applyView();
           if (typeof controller.revealTo === 'function') controller.revealTo(t);
@@ -204,7 +193,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       console.error('[replay] 計算エラー', fmt(t), e);
       return;
     }
-    if (isStale(g, generation)) return; // 後発レンダが来ていれば破棄
+    if (isStale(g, cursor.generation())) return; // 後発レンダが来ていれば破棄
     applyView();
     syncBoundary(); // full 再計算で再生成された pane 系列へ減光を再装着
     // ISSUE-048（完成足フラッシュ防止）: 参照実装 prototype_260626-01 は「リビール→animateForming 冒頭の
@@ -216,7 +205,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     //   操作した場合は畳まれるが、直後の animateForming が同値で上書きするため良性。math（足内更新なし＝
     //   完成足のまま）は除外。animateForming 冒頭の畳み込みは防御として温存。
     if (playing && view.readMode() !== 'math') {
-      const cd = candles[bar];
+      const cd = cursor.candles()[cursor.bar()];
       view.updateForming({ time: cd.time, open: cd.open, high: cd.open, low: cd.open, close: cd.open });
     }
     // MP tick-live: バー単位ジャンプで base を now=T（因果）で取り直す（rollover 兼・await ready で
@@ -228,12 +217,12 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     //   統合レイヤは live モードのまま setupReplay を 1 回 mount するため、この gate が無いと
     //   ライブ表示中に /intraday を要求してしまう（SW が /live へ回して 404・実測 2026-08-01）。
     if (playing || wasEnabled) {
-      prefetchPlan(bar, view.readMode());
+      prefetchPlan(cursor.bar(), view.readMode());
     }
     tempo.noteComputeMs(performance.now() - started);
     setEta();
-    setStatus(`bar ${bar}/${candles.length - 1}  ${fmt(t)}  計算 ${Math.round(performance.now() - started)}ms（その場計算）`);
-    window.__rpbar = bar;
+    setStatus(`bar ${cursor.bar()}/${cursor.candles().length - 1}  ${fmt(t)}  計算 ${Math.round(performance.now() - started)}ms（その場計算）`);
+    window.__rpbar = cursor.bar();
   }
 
   // ---- 直列化（多重再計算の防止・最新フレームへ coalesce） ----
@@ -256,8 +245,8 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     view.applyModeDegeneration(degenerateModes(tf));
   }
   async function loadTimeframe(tf) {
-    timeframe = tf;
-    replayStart = 0; activeSecs = null; activePeriodBars = null;
+    cursor.setTimeframe(tf);
+    cursor.setReplayStart(0); cursor.clearActivePeriod();
     syncModeOptions(tf);
     // 時間足が変われば足の存在日も変わる＝カレンダーの選択可能日を取り直させる。
     rangeMenu.invalidateDays();
@@ -265,10 +254,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     // [ISSUE-158 ②] 時間足切替で一括リビール基底を全破棄（次フレームで新 tf のレンジを再構築）。
     if (typeof controller.clearRevealCache === 'function') controller.clearRevealCache();
     invalidatePlans();  // [ISSUE-232] 時間足が変われば足内の窓も計画も別物＝破棄
-    candles = await fetchCandles(tf);
+    cursor.setCandles(await fetchCandles(tf));
     syncBoundary();
     view.setRangeLabel('全期間');
-    await drive(candles.length - 1); // 開始は present（最新足）
+    await drive(cursor.candles().length - 1); // 開始は present（最新足）
   }
 
   // カレンダーで選んだ日を再生開始日にする。窓ごと取り直し（present 窓の外の過去日も選べる）、
@@ -276,17 +265,16 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   async function loadFromDate(startUnix, key) {
     if (typeof controller.clearRevealCache === 'function') controller.clearRevealCache();
     invalidatePlans();  // [ISSUE-232] 窓を取り直す＝既存計画は無効
-    const loaded = await fetchCandles(timeframe, startUnix);
+    const loaded = await fetchCandles(cursor.timeframe(), startUnix);
     if (!loaded.length) return; // 取得できないときは現状維持（ビューを勝手に動かさない）
-    candles = loaded;
-    activeSecs = null;
-    activePeriodBars = null;
+    cursor.setCandles(loaded);
+    cursor.clearActivePeriod();
     autoFrame = true;
-    replayStart = idxForTime(candles, startUnix);
-    window.__rpReplayStart = replayStart;
+    cursor.setReplayStartAtTime(startUnix);
+    window.__rpReplayStart = cursor.replayStart();
     syncBoundary();
     view.setRangeLabel(key || dayKey(startUnix));
-    await drive(replayStart);
+    await drive(cursor.replayStart());
   }
 
   // ---- 速度 / フレーム待機（ISSUE-256: PlaybackTempo が状態ごと所有する） ----
@@ -294,9 +282,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   速度・ETA・フレーム待機の手続きが再生駆動と同一スコープで混ざっていた。
   const tempo = new PlaybackTempo({
     view,
-    getCandles: () => candles,
-    getBar: () => bar,
-    getTimeframe: () => timeframe,
+    getCandles: () => cursor.candles(),
+    getBar: () => cursor.bar(),
+    getTimeframe: () => cursor.timeframe(),
     // 実時間再生の切替は /intraday の tick_secs 取得可否が変わる＝先読み済み計画も別物。
     onSpeedAxisChanged: () => invalidatePlans(),
   });
@@ -311,16 +299,16 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   const applySpeed = (v) => tempo.applySpeed(v);
 
   async function playLoop() {
-    while (playing && bar < candles.length - 1) {
+    while (playing && cursor.bar() < cursor.candles().length - 1) {
       while (playing && paused()) await sleepMs(80); // 速度0.00=一時停止（凍結）
       if (!playing) break;
       const barStart = performance.now();
       tempo.anchorBarStart(barStart); // 実時間再生の足始端＝この足の計算（drive）も足の予算内に含める
       let resume = null;
-      if (resumeDecision(animator.pausedForm(), candles[bar])) {
+      if (resumeDecision(animator.pausedForm(), cursor.candles()[cursor.bar()])) {
         resume = animator.pausedForm(); // 停止した足の続きから再開
       } else {
-        await drive(bar + 1);
+        await drive(cursor.bar() + 1);
       }
       await animateForming(() => !playing, resume);
       if (!playing) break;
@@ -336,14 +324,14 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
 
   // ---- UI 配線 ----
   function updatePlayEnabled() {
-    const atEnd = !candles.length || bar >= candles.length - 1;
+    const atEnd = !cursor.candles().length || cursor.bar() >= cursor.candles().length - 1;
     view.setPlayEnabled(!atEnd, NO_FUTURE_MSG);
   }
   // ▷ は「再生」と「再生追随」を兼ねる（依頼者確定 2026-07-26）。再生開始でビューを再生位置へ
   //   追随させる（＝ユーザーの明示イベント起点。ISSUE-164 の自動介入禁止に抵触しない）。
   //   停止時は追随を切らない（停止中はバーが進まないためビューを動かさない＝介入なし）。
   view.el('rp-play').onclick = () => {
-    if (bar >= candles.length - 1) return; // 未来足が無い＝再生不可
+    if (cursor.bar() >= cursor.candles().length - 1) return; // 未来足が無い＝再生不可
     playing = !playing;
     view.setPlayLabel(playing ? PAUSE_GLYPH : PLAY_GLYPH);
     view.setPlaying(playing);
@@ -388,8 +376,8 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     datasetRef,
     seqClient: new FormingSeqClient({ fetch: fetchImpl }),
     controller,
-    getCandles: () => candles,
-    getTimeframe: () => timeframe,
+    getCandles: () => cursor.candles(),
+    getTimeframe: () => cursor.timeframe(),
   });
   const invalidatePlans = () => plans.invalidate();
   const buildStream = (idx, mode) => plans.buildStream(idx, mode);
@@ -402,9 +390,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   const animator = new FormingAnimator({
     view,
     controller,
-    getCandles: () => candles,
-    getBar: () => bar,
-    getTimeframe: () => timeframe,
+    getCandles: () => cursor.candles(),
+    getBar: () => cursor.bar(),
+    getTimeframe: () => cursor.timeframe(),
     tempo,
     plans,
     mpOn,
@@ -417,14 +405,14 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   disposers.push(() => { const e = view.el('rp-mode'); if (e) e.removeEventListener('change', onModeChange); });
 
   // 1 足スキップ（再生せず次の確定足へ）。
-  view.el('rp-next').onclick = () => drive(bar + 1);
-  view.el('rp-prev').onclick = () => drive(bar - 1);
+  view.el('rp-next').onclick = () => drive(cursor.bar() + 1);
+  view.el('rp-prev').onclick = () => drive(cursor.bar() - 1);
   window.__rpAnimateOnce = () => animateForming(); // promise を返す（決定論テストが await 可能・実行時挙動は不変）
   function scrollViewTo(edge) {
     autoFrame = false;
     const r = view.getVisibleLogicalRange();
     if (!r) return;
-    view.setVisibleLogicalRange(scrollRange({ edge, currentRange: r, bar }));
+    view.setVisibleLogicalRange(scrollRange({ edge, currentRange: r, bar: cursor.bar() }));
   }
   view.el('rp-view-left').onclick = () => scrollViewTo('left');
   view.el('rp-view-right').onclick = () => scrollViewTo('right');
@@ -473,7 +461,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   async function disable() {
     playing = false;
     followOn = false; // 既定（リビール＝追従 OFF）へ戻す。次の enable は非追従で始まる。
-    generation += 1; // in-flight render を supersede（isStale で破棄させる）
+    cursor.bumpGeneration(); // in-flight render を supersede（isStale で破棄させる）
     animator.supersede(); // in-flight animateForming を supersede（isSuperseded で破棄させる）
     view.setPlayLabel(PLAY_GLYPH);
     view.setPlaying(false);
@@ -492,18 +480,18 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     wasEnabled = false;
     // reveal 表示解除: render() が view.setCandles(candles.slice(0,bar+1)) で切り詰めたメイン系列と、
     //   revealTo(t) で切り詰めた指標を、**ライブ全長**へ戻す。再構築ではなく既存 API での再描画:
-    //   (1) ライブ全長 candles を再取得（fetchCandles＝既存経路）→ driver 状態も現在へ同期（次 enable の
+    //   (1) ライブ全長 cursor.candles() を再取得（fetchCandles＝既存経路）→ driver 状態も現在へ同期（次 enable の
     //       陳腐化防止）、(2) view.setCandles(full)＝renderer.setCandles で全置換＋内部 fitContent＋_lastBar
     //       復帰（現在値 observer がライブ末尾値へ更新）、(3) controller.recomputeAllApplied({mode:'full'})
     //       ＝base（live と同一）入口で untilTime=undefined のまま全指標を全長再描画。値算出は無改変。
     try {
       const live = await fetchCandles(controller._timeframe);
       if (live && live.length) {
-        candles = live;
-        bar = candles.length - 1;
-        replayStart = 0; activeSecs = null; activePeriodBars = null; autoFrame = true;
+        cursor.setCandles(live);
+        cursor.setBar(live.length - 1);
+        cursor.setReplayStart(0); cursor.clearActivePeriod(); autoFrame = true;
         view.setRangeLabel('全期間');
-        view.setCandles(candles); // 全長表示（内部 fitContent・_lastBar＝ライブ末尾へ復帰）
+        view.setCandles(cursor.candles()); // 全長表示（内部 fitContent・_lastBar＝ライブ末尾へ復帰）
         syncBoundary();           // 減光境界を全長（末尾）へ＝リプレイ減光の消去
       }
       await controller.recomputeAllApplied({ mode: 'full' }); // 指標を live 全長で再描画
@@ -519,7 +507,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     }
     // 現在の live データから再取得して present（最新足）へ駆動する（＝リプレイ現在バー＝ライブ最新）。
     //   loadTimeframe は既存の入口（fetch＋slider/preset 同期＋drive(present)）で、drive→render が
-    //   :128-129（setUntilTime(現在バー)＋_recentBars=bar+1）を確立する。値算出・分岐は無改変。
+    //   :128-129（setUntilTime(現在バー)＋_recentBars=cursor.bar()+1）を確立する。値算出・分岐は無改変。
     await loadTimeframe(controller._timeframe);
   }
   function destroy() {
