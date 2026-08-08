@@ -13,6 +13,7 @@ import { get } from '../js/usecase/catalog.js';
 import { CAUSAL_REVEAL_IDS } from '../js/usecase/causal_reveal_ids.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
 import { TimeframeController } from '../js/adapter/front/timeframe_controller.js';
+import { CausalSeriesLedger } from '../js/replay/causal_series_ledger.js';
 
 const SERIES = [
   { name: 'btlm_trail_mean', kind: 'line', data: [
@@ -49,6 +50,8 @@ function newRevealCtrl({ applied, computeImpl } = {}) {
   ctrl._tf = new TimeframeController(ctrl, { timeframe: '1m' });
   ctrl._revealCache = new Map();
   ctrl._revealEpoch = 0;
+  // [ISSUE-293] 本番の合成形と同じ協働子を持たせる（prototype 直生成でも欠けさせない）。
+  ctrl._ledger = new CausalSeriesLedger();
   ctrl._computeCalls = [];
   ctrl._compute = {
     compute: computeImpl ?? (async (req) => {
