@@ -101,9 +101,9 @@ test('renderLegend: eye title/text reflect visibility (byte-identical to control
     { label: 'b', visible: false, onEye() {}, onGear() {}, onClose() {} },
   ]);
   const eyes = findByClass(legend, 'legend-eye');
-  assert.equal(eyes[0].textContent, '👁');
+  assert.equal(eyes[0].textContent, '●');   // 表示中＝塗り
   assert.equal(eyes[0].title, '非表示にする');
-  assert.equal(eyes[1].textContent, '🙈');
+  assert.equal(eyes[1].textContent, '○');   // 非表示＝抜き
   assert.equal(eyes[1].title, '表示する');
 });
 

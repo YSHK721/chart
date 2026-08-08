@@ -216,11 +216,14 @@ export class PaneLegendView {
       chip.textContent = text;
       vals.appendChild(chip);
     }
+    // 表示/非表示トグル（依頼者指示 2026-08-08: 絵文字の「目」は写実的すぎるため図形へ）。
+    //   ●＝表示中／○＝非表示。他の操作（⚙ / ✕）と同じ単色の記号系で揃え、状態は
+    //   「塗り／抜き」だけで表す（色は CSS が持つ＝ここで色を決めない）。
     const eye = doc.createElement('button');
     eye.type = 'button';
-    eye.className = 'pane-legend-eye';
+    eye.className = 'pane-legend-visibility';
     eye.title = meta.visible ? '非表示にする' : '表示する';
-    eye.textContent = meta.visible ? '👁' : '🙈';
+    eye.textContent = meta.visible ? '●' : '○';
     eye.addEventListener('click', () => meta.onEye && meta.onEye());
 
     const gear = doc.createElement('button');

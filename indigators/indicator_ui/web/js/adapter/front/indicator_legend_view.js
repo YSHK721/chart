@@ -47,7 +47,8 @@ export class IndicatorLegendView {
       const eye = doc.createElement('button');
       eye.className = 'legend-eye';
       eye.title = r.visible ? '非表示にする' : '表示する';
-      eye.textContent = r.visible ? '👁' : '🙈';
+      // 表示/非表示は図形で表す（依頼者指示 2026-08-08）。ペイン別凡例と同一の記号。
+      eye.textContent = r.visible ? '●' : '○';
       eye.addEventListener('click', () => r.onEye());
 
       const gear = doc.createElement('button');
