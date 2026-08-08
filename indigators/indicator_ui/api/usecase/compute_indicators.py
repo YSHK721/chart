@@ -229,7 +229,6 @@ def compute_indicators(
             series,
             df_chart,
             compute_tf,
-            wait_for_close=bool(request.params.get("wait_for_close")),
             period_start_unix=period_boundary.period_start_unix,
         )
 

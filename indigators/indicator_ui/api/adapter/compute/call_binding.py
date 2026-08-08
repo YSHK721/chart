@@ -522,7 +522,6 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "smoothing_type": "none",
             "smoothing_length": 9,
             "bb_stddev": 2.0,
-            "wait_for_close": False,
         },
     },
     # --- profit_* 系（MQL 移植・lwc 仕様）。統合 FakeChart が line/histogram/水平線を

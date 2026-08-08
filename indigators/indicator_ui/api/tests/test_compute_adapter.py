@@ -470,7 +470,7 @@ def test_adapter_moving_averages_main_only_when_smoothing_none():
     series = adapter.compute(
         "moving_averages", "default", df,
         {"ma_type": "ema", "length": 9, "source": "close",
-         "smoothing_type": "none", "wait_for_close": False},
+         "smoothing_type": "none"},
     )
     assert [s["name"] for s in series] == ["MA"]
     assert series[0]["kind"] == "line"
@@ -484,8 +484,7 @@ def test_adapter_moving_averages_emits_smoothing_and_bb_series():
     series = adapter.compute(
         "moving_averages", "default", df,
         {"ma_type": "sma", "length": 20, "source": "close", "offset": 0,
-         "smoothing_type": "sma_bb", "smoothing_length": 9, "bb_stddev": 2.0,
-         "wait_for_close": False},
+         "smoothing_type": "sma_bb", "smoothing_length": 9, "bb_stddev": 2.0},
     )
     assert sorted(s["name"] for s in series) == ["Lower", "MA", "Smoothing", "Upper"]
     assert all(s["kind"] == "line" for s in series)
@@ -498,7 +497,7 @@ def test_adapter_moving_averages_source_compound_hl2_is_accepted():
     series = adapter.compute(
         "moving_averages", "default", df,
         {"ma_type": "sma", "length": 5, "source": "hl2",
-         "smoothing_type": "none", "wait_for_close": False},
+         "smoothing_type": "none"},
     )
     assert [s["name"] for s in series] == ["MA"]
 
@@ -530,7 +529,7 @@ def test_adapter_moving_averages_composite_source_values_are_exact(source, formu
     series = adapter.compute(
         "moving_averages", "default", df,
         {"ma_type": "sma", "length": length, "source": source,
-         "smoothing_type": "none", "offset": 0, "wait_for_close": False},
+         "smoothing_type": "none", "offset": 0},
     )
     got = {p["time"]: p["value"] for p in series[0]["data"]}
     assert set(got) == set(expected)

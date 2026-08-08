@@ -442,7 +442,6 @@ const MOVING_AVERAGES = new IndicatorDef({
     //   上位足計算時は「形成中の上位足を使うか」の意味も兼ねる（投影の前方保持規約）。
     //   group は他指標の計算グループ（'group.calc'）へ揃える。注入される「時間足」と同じ見出しに
     //   入らないと、同一ダイアログ内に計算グループが 2 つ並ぶ（ISSUE-274）。
-    param('wait_for_close', ParamType.BOOL, false, [], null, { group: 'group.calc', order: 2, label: '時間足の確定を待つ' }),
   ],
   // 固定系列（dynamic=false）: backend が平滑化タイプに応じて部分集合を出力する。
   series: [MA_LINE('MA'), MA_LINE('Smoothing'), MA_LINE('Upper'), MA_LINE('Lower')],

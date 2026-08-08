@@ -130,7 +130,6 @@ class MtfProjectionPort(Protocol):
         df_chart: Any,
         compute_tf: str,
         *,
-        wait_for_close: bool = False,
         period_start_unix: Any,
     ) -> "list[dict[str, Any]]":
         """``series``（H の時間軸）を ``df_chart`` の各バー時刻へ前方保持で写して返す。"""

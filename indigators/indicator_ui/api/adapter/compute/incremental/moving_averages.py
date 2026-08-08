@@ -47,7 +47,7 @@ _MIN_MARGIN = 3
 
 @dataclass(frozen=True)
 class _Request:
-    """1 リクエストぶんの入力（実効系列＝wait_for_close 適用後）。"""
+    """1 リクエストぶんの入力（実効系列）。"""
 
     prices: np.ndarray   # 実効価格（昇順・長さ n。末尾は形成中バー由来のことがある）
     times: np.ndarray    # 実効時刻（UNIX 秒 int64・長さ n）
@@ -135,10 +135,7 @@ class MovingAveragesIncrementer:
             stamps = pd.to_datetime(resolved).to_numpy()
         times = stamps.astype("datetime64[s]").astype("int64")
 
-        # 確定待ち（add_moving_averages と同一規約）: 最終足を計算対象から除外する。
-        if params.get("wait_for_close", True) and len(prices) > 1:
-            prices = prices[:-1]
-            times = times[:-1]
+        # 最終足（形成中バー）も含める（add_moving_averages と同一規約・ISSUE-286）。
         n = int(prices.size)
         if n < length + _MIN_MARGIN:
             return None

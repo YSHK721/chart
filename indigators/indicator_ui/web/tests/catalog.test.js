@@ -164,7 +164,6 @@ test('catalog: moving_averages is a single-MA indicator (種別/期間/ソース
   assert.equal(paramOf(d, 'source').type, ParamType.ENUM);
   assert.equal(paramOf(d, 'offset').default, 0);
   assert.equal(paramOf(d, 'smoothing_type').default, 'none');
-  assert.equal(paramOf(d, 'wait_for_close').default, false);
 });
 
 // market_profile に src（集計原子）ENUM を追加。candle=足レンジ TPO（既定・後方互換）/
@@ -275,12 +274,11 @@ test('catalog: market_profile dispbp は tf-period描画時に非表示（ISSUE-
   assert.equal(fn({ mode: 'sessions', src: 'dwell' }, {}), true);
 });
 
-// 回帰防止: wait_for_close の既定は false。true だと lwc_chart が最終足（未確定足）を
-//   price[:-1] で除外し、MA が常に最新足の1本手前で止まる（最新足に指標が出ないバグ）。
-//   確定足のみで計算したいユーザーはダイアログで ON にできる。
-test('catalog: moving_averages wait_for_close defaults to false so the MA reaches the latest bar', () => {
+// 回帰防止（ISSUE-286）: 「時間足の確定を待つ」は撤去した。最終足の除外は offset=1 と同義で
+//   概念が重複し、上位足計算は投影側が期間で使い分けるようになったため選択自体が不要になった。
+test('catalog: moving_averages は撤去済みの wait_for_close を持たない', () => {
   const d = get('moving_averages');
-  assert.equal(paramOf(d, 'wait_for_close').default, false);
+  assert.equal(d.params.some((p) => p.name === 'wait_for_close'), false);
 });
 
 test('catalog: moving_averages localizes labels and enum options (日本語表示)', () => {
