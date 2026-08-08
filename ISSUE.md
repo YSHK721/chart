@@ -4732,7 +4732,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **付随して塞いだ穴（#4 の `/catalog` 部分）**: standalone replay は `GET /catalog` を持たず front も `catalog.load()` を呼んでいなかった（#4）。無言破棄がそれを無症状にしていたため、撤去すると standalone replay だけが `validation` エラーで指標を描けなくなる。ライブ controller `handle_catalog` を bridge 経由で read-only 再利用する `CatalogGateway`（`CatalogPort`）を注入し `/catalog` ルートを追加、replay 合成根で `await catalog.load(fetch)` を呼ぶようにした（tickvol_profile と同型の Port 注入＝未注入ならルート無しで従来挙動）。実測: `/replay/catalog` が 200 でライブと同一 payload、リプレイ実 UI で profit_band を適用すると `params` が robust スコープ（`require_full` 無し）で 200 OK・console エラー 0。**#4 の本体（合成根の全文フォーク・`validTimeframes` の手書き）は未着手のまま。**
 
 ## ISSUE-279: [検証環境の欠陥・実測] worktree からの実 UI 検証では backend 変更が実行されない（venv `.pth` が main チェックアウト固定）（2026-08-08）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-08・refactor/dev-paths-from-launcher）
 - **重大度**: 高（「実 UI で確認した」が偽になる。ISSUE-259/260 で実際に偽の 500 を観測した）
 - **事実（実測）**: venv の `lightweight-charts-python-main/.venv/lib/python3.x/site-packages/jp225_chart_paths.pth` が `/workspaces/app` と `/workspaces/app/indigators/market_profile/api` を **絶対パスで** sys.path へ載せる。さらに `indicator_ui/serve.sh:50,56,62` と `replay_ui/serve.sh:50` は `PYTHONPATH="$REPO_ROOT"` を**上書き設定**する（既存値を継がない）。
   - 結果、worktree から `unified_ui/serve.sh` を起動しても `market_profile_api` / `marketdata` は **main チェックアウト**から解決される。実測: 起動中プロセスで `market_profile_api.__file__ = /workspaces/app/indigators/market_profile/api/...`、`'va' in signature(handle_tf_period_profile) → False`。
@@ -4740,8 +4740,19 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - `server.py:99-104` の自己結線フォールバックは `import market_profile_api` が .pth で成功するため発火しない（＝フォールバックは「未登録環境」しか救わない）。
 - **なぜ問題か**: worktree は並列作業の隔離手段なのに、backend の実 UI 検証だけが隔離されない。検証者は「実 UI で確認した」と記録できてしまい、実際には別コードを測っている。ISSUE-259/260 の起票者が「環境制約で実 UI 未実施」と記録したのも同じ原因。
 - **暫定回避（今回実施）**: `PYTHONPATH=<worktree>:<worktree>/indigators/market_profile/api` を付けて `unified_ui/serve.sh` を起動するとライブ core だけは worktree を読む。ただし replay core は `serve.sh` が PYTHONPATH を上書きするため効かない（実測: replay core の `/market_profile_forming` にだけ `vaPct` が無い）。**回避策であって解決ではない**。
-- **抜本的対策（案・要判断）**: パス解決の唯一源を「起動スクリプトの位置」に置く。`.pth` の絶対パス列挙を廃し、各 `serve.sh` が自分の `REPO_ROOT`（`$(cd "$(dirname "$0")/../.." && pwd)`）から全スライスのパスを組み立てて `PYTHONPATH` へ積む（既存値も継ぐ）。これでチェックアウトの場所に依存しなくなり、worktree・fresh clone・main が同じ規則で動く。
-- **関連**: ISSUE-259／ISSUE-260（本件により実 UI 検証が保留されていた）／ISSUE-087 🟡-3（`.pth` 導入の経緯）。
+- **抜本的対策（実施）**: パス解決の唯一源を「**起動しているツリー**」に置く。パスの一覧そのものは `tools/dev_paths.txt`（チェックアウト相対・1 行 1 件）を唯一源とし、3 つの消費者がすべてそこから導出する。
+  | 経路 | 解決元 | 実装 |
+  |---|---|---|
+  | 実行時（サーバ起動） | 起動スクリプトの位置 | `tools/dev_paths.sh` を各 `serve.sh` が source（`REPO_ROOT` 起点で `PYTHONPATH` を組み立て・既存値は後ろへ継ぐ） |
+  | テスト時（pytest） | rootdir | `pyproject.toml` の `pythonpath = [".", "indigators/market_profile/api"]`（**相対**） |
+  | 対話シェル（フォールバック） | install 実行時のチェックアウト | `tools/install_dev_paths.py` が台帳から `.pth` を生成（権威ではないと docstring に明記） |
+  - `PYTHONPATH` は site-packages（`.pth`）より**先に**解決されるため、起動元ツリーが必ず勝つ。`.pth` を撤去しないのは、メインチェックアウトでの対話シェル（`python -c`）を壊さないため。権威を移しただけで二重定義は作っていない（`.pth` の値も台帳から導出）。
+  - 各 `serve.sh` に残っていた `PYTHONPATH="$REPO_ROOT"` の**上書き**（3 経路＋replay の exec）を撤去した。これが「repo 根だけを載せ、`market_profile_api` は `.pth`（main）から拾う」という本件の直接原因だった。
+- **検定**（`tools/tests/test_dev_paths_single_source.py`・8 件）: 台帳が相対であること／`.pth` 生成器・pytest 設定・`serve.sh` 群の 3 消費者が台帳と一致すること／`serve.sh` が `PYTHONPATH` を上書きしないこと。加えて**実行検定** 2 件＝ (1) `PYTHONPATH` に前置した一時ツリーのスタブ `market_profile_api` が `.pth` 実体より優先されること（本件の前提そのものを実測） (2) ヘルパが台帳を前置しつつ既存 `PYTHONPATH` を捨てないこと。
+- **識別力の実証**: `serve.sh` を旧仕様（`PYTHONPATH="$REPO_ROOT"` 上書き）へ戻す→ 1 件 Red、`pythonpath` を `["."]` へ戻す→ 1 件 Red。復元で 8/8 Green。
+- **実測（是正後）**: `simulator/replay_ui/serve.sh 8280` を実起動し、サーバプロセスの環境が `PYTHONPATH=/workspaces/app:/workspaces/app/indigators/market_profile/api`（＝起動スクリプトの位置由来・是正前は repo 根のみ）になること、`http://127.0.0.1:8280/` が 200 を返すこと、同一環境で `market_profile_api` / `marketdata` が起動元ツリー配下へ解決されることを確認。
+- **回帰**: tools+marketdata+simulator 1,230 / indicator_ui api 854 / market_profile api 397 / replay_ui 240 全通過。
+- **関連**: ISSUE-259／ISSUE-260（本件により実 UI 検証が保留されていた）／ISSUE-087 🟡-3（`.pth` 導入の経緯）／ISSUE-261（台帳の唯一源化と同じ規約）。
 
 ## ISSUE-280: [検証環境の欠陥・実測] `unified_ui/web` のテスト（43 件）が実行不能（`node_modules` が自己参照 symlink）（2026-08-08）
 - **ステータス**: OPEN

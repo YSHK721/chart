@@ -8,6 +8,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# 実行時の import パスは **本スクリプトの位置** から解決する（ISSUE-279）。venv の .pth は
+# インストール時のチェックアウトを絶対パスで指すため、worktree 起動でも main の実装が読まれる。
+. "${REPO_ROOT}/tools/dev_paths.sh"
 WEB_DIR="${SCRIPT_DIR}/web"
 
 # venv・data（いずれも非追跡）は git worktree だとメインチェックアウト側にしか無い。REPO_ROOT に
@@ -47,7 +50,7 @@ echo "リプレイ再生 UI を起動します: $URL"
 echo "  停止: Ctrl-C"
 cd "$REPO_ROOT"
 exec env MARKETDATA_DATA_DIR="${MARKETDATA_DATA_DIR:-${DATA_DIR_DEFAULT}}" \
-  PYTHONPATH="$REPO_ROOT" "$VENV_PY" -c "
+  "$VENV_PY" -c "
 from simulator.replay_ui.main.composition_root import build_replay_app
 from simulator.replay_ui.framework.serve_replay import serve
 serve(build_replay_app(web_dir='${WEB_DIR}'), port=${PORT})
