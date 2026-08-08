@@ -48,7 +48,8 @@ def _present(result: ComputeResult) -> tuple[int, dict[str, Any]]:
         }
     from api_shared.http_contract import nested_error
 
-    return nested_error(result.error_type, result.error_message, generation=result.generation)
+    return nested_error(result.error_type, result.error_message, generation=result.generation,
+                        violations=getattr(result, "error_violations", None))
 
 
 def handle_compute(

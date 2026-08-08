@@ -128,6 +128,20 @@ export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
   optionalFields: Object.freeze(['_untilTime']),
 });
 
+// ISSUE-283: サーバが申告した「計算に要する最小バー数」を取り出す（未申告は null）。
+//   文言は解析しない（error.violations の構造化面だけを見る）。指標名で分岐しない＝
+//   申告する指標が増えても本関数は無改変（OCP）。
+export function requiredBarsOf(error) {
+  const list = error && Array.isArray(error.violations) ? error.violations : [];
+  for (const v of list) {
+    const n = v && Number(v.requiredBars);
+    if (Number.isFinite(n) && n > 0) {
+      return n;
+    }
+  }
+  return null;
+}
+
 export class IndicatorController {
   constructor({
     catalog, compute, persistence, renderer, document: doc = null,
@@ -172,6 +186,11 @@ export class IndicatorController {
     this._state = emptyState();
     // instanceId -> { def } 描画済みメタ（凡例再描画・recompute 用）。
     this._meta = new Map();
+    // ISSUE-283: instanceId -> その指標が計算に要する最小バー数（サーバが violations で申告）。
+    //   リプレイは計算窓を limit=bar+1 に絞るため、要件に届かない間は**必ず失敗する**。
+    //   結果が捨てられると分かっている要求は発行しない（回数を間引くのではなく、要求そのものを消す）。
+    //   窓が要件に達すれば自動的に再開する。params/variant 変更時は忘れる（別の要件になりうる）。
+    this._minBars = new Map();
     // 再計算バッチの競合ガード（深さカウンタ＋時限）は RecomputeGate が所有する
     //   （ISSUE-181: 状態も一緒に移す。TimeframeController の host フィールド直接代入も解消）。
     //   ライブ更新（LiveUpdater）は独自フラグを持たず isRecomputing() を参照し、再計算中の
@@ -588,11 +607,13 @@ export class IndicatorController {
     // variant を差し替える場合は def はそのまま、gateway が variant でキー解決。
     if (newVariant) {
       this._state = this._withVariant(this._state, instanceId, newVariant);
+      this._forgetMinBars(instanceId);   // ISSUE-283: variant が変われば要件も変わりうる
     }
     const params = newParams ?? this._defaultParams(meta.def);
     // (a) ユーザーの明示操作は計算を待たずに params を確定する（in-flight 計算の完了順に依存しない）。
     if (commitParams) {
       this._state = this._withParams(this._state, instanceId, params);
+      this._forgetMinBars(instanceId);   // ISSUE-283: params が変われば要件も変わりうる
     }
     // Latest 差分可否を「要求前」に def から確定する（混在/horizontal 指標は full を要求し
     //   trim されない full データで全描画する＝混在バグ回避）。
@@ -725,9 +746,29 @@ export class IndicatorController {
   //   フェーズ2（同期一括描画）: await を挟まず全 job を描画する。中間ペイントが起きないため、
   //     メイン系列（opts.preRender＝setCandles）と全指標が同時に更新される（ISSUE-023）。
   //   persist/legend は描画後に1回だけ。適用 0 でも preRender（候補：メイン系列差し替え）は実行する。
+  // ISSUE-283: 学習済みの最小バー数（未学習・未初期化は null＝知識なし）。
+  _knownMinBars(instanceId) {
+    return this._minBars ? (this._minBars.get(instanceId) ?? null) : null;
+  }
+
+  // ISSUE-283: 学習を忘れる（計算成功・params/variant 変更）。未初期化でも安全に no-op。
+  _forgetMinBars(instanceId) {
+    if (this._minBars) {
+      this._minBars.delete(instanceId);
+    }
+  }
+
+  // ISSUE-283: 次に送る計算窓の本数（不明なら null＝スキップ判定に使わない）。
+  _computeWindowBars() {
+    const tf = this._tf;
+    const n = tf && typeof tf.limit === 'function' ? tf.limit() : null;
+    return Number.isFinite(n) ? n : null;
+  }
+
   async recomputeAllApplied({ mode = 'full', preRender = null, skip = null } = {}) {
     // フェーズ1: 並列計算（描画なし）。
     const targets = [];
+    const deferred = [];   // ISSUE-283: 窓が要件に満たず、発行を見送ったインスタンス。
     for (const inst of [...this._state.applied]) {
       // skip 述語（ISSUE-158 ②・replay 専用 additive）: 一括リビール済み指標の per-step 計算を
       //   省略する。present（ライブ）は skip を渡さない＝挙動不変。
@@ -745,6 +786,14 @@ export class IndicatorController {
         await this._actorControllerFor(meta.def).onLiveRecompute(inst);
         continue;
       }
+      // ISSUE-283: 要件（最小バー数）が分かっており、現在の窓がそれに満たないなら発行しない。
+      //   知識が無い（未学習・窓が不明）なら**必ず送る**＝安全側（誤ってスキップしない）。
+      const need = this._knownMinBars(inst.instanceId);
+      const windowBars = this._computeWindowBars();
+      if (need != null && windowBars != null && windowBars < need) {
+        deferred.push({ instanceId: inst.instanceId, indicatorId: inst.indicatorId, requiredBars: need, windowBars });
+        continue;
+      }
       targets.push(inst);
     }
     const settled = await Promise.allSettled(targets.map((inst) =>
@@ -758,9 +807,21 @@ export class IndicatorController {
     //   無言にはしない: 失敗はインスタンス ID 付きでログへ出し、呼び出し元へも failures で返す。
     const failures = [];
     settled.forEach((s, i) => {
+      const inst = targets[i];
+      if (s.status === 'fulfilled') {
+        this._forgetMinBars(inst.instanceId);   // 計算できた＝要件は満たされた（記録は不要）
+        return;
+      }
       if (s.status === 'rejected') {
-        const inst = targets[i];
-        failures.push({ instanceId: inst.instanceId, indicatorId: inst.indicatorId, error: s.reason });
+        // ISSUE-283: サーバが申告した必要バー数を学習し、以後は満たすまで発行しない。
+        const required = requiredBarsOf(s.reason);
+        if (required != null && this._minBars) {
+          this._minBars.set(inst.instanceId, required);
+        }
+        failures.push({
+          instanceId: inst.instanceId, indicatorId: inst.indicatorId, error: s.reason,
+          requiredBars: required ?? null,
+        });
         console.error(
           `[indicator] 計算失敗（当該インスタンスのみスキップ）: ${inst.instanceId}`,
           (s.reason && s.reason.message) || s.reason,
@@ -794,7 +855,7 @@ export class IndicatorController {
     if (jobs.length === 0) {
       // ISSUE-282: 描く物が無くても失敗の在処は返す（全件失敗＝ここに来るため、呼び出し元が
       //   「なぜ何も描かれないのか」を表示できる。無言で終わらせない）。
-      return { failures };
+      return { failures, deferred };
     }
     for (const job of jobs) {
       // 競合ガード（ISSUE-105 🟡-2）: フェーズ1 の await 中に凡例 close（removeInstance）で
@@ -812,7 +873,7 @@ export class IndicatorController {
     this._renderLegend();
     // ISSUE-282: 失敗したインスタンスを呼び出し元へ返す（例外にしない＝バッチは完走する）。
     //   呼び出し元は必要なら表示へ回せる。返り値を見ない従来の呼び出しは無影響。
-    return { failures };
+    return { failures, deferred };
   }
 
   // 時間足セレクタの active 表示同期は TimeframeController へ外出しした（ISSUE-094 🔴-4）。

@@ -23,7 +23,7 @@ ERROR_STATUS: "dict[str, int]" = {
 
 
 def nested_error(
-    error_type: str, message: str, *, generation: int = 0
+    error_type: str, message: str, *, generation: int = 0, violations: "list | None" = None
 ) -> "tuple[int, dict[str, Any]]":
     """§6.3.4 nested エラーの (HTTP ステータス, ボディ) を返す（単一定義・純関数）。
 
@@ -34,5 +34,7 @@ def nested_error(
     return status, {
         "ok": False,
         "generation": generation,
-        "error": {"type": error_type, "message": message, "violations": []},
+        # violations（ISSUE-283）: 指標が申告した機械可読な診断（例: 履歴不足の requiredBars）。
+        #   既定は空＝従来の応答形と同一。文言の解析をクライアントに強いないための構造化面。
+        "error": {"type": error_type, "message": message, "violations": list(violations or [])},
     }

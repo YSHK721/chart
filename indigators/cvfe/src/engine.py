@@ -336,9 +336,17 @@ def compute_cvfe(ticks: np.ndarray, bar_edges: np.ndarray, bar_interval_sec: int
     #   N=522 → 0 本 / 523 → 1 本 / 524 → 2 本）。すなわち v1.0 の下限では出力が必ず 0 本だった。
     min_bars = params.n_har + WARMUP_LAGS + 1
     if n_bars < min_bars:
-        raise CvfeError(E01_INSUFFICIENT_BARS,
-                        f"バー数 {n_bars} < n_har + {WARMUP_LAGS + 1} = {min_bars}"
-                        f"（N = n_har + {WARMUP_LAGS} では σ̂ を 1 本も出力できない）")
+        raise CvfeError(
+            E01_INSUFFICIENT_BARS,
+            f"バー数 {n_bars} < n_har + {WARMUP_LAGS + 1} = {min_bars}"
+            f"（N = n_har + {WARMUP_LAGS} では σ̂ を 1 本も出力できない）",
+            # ISSUE-283: 上位が「あと何本で計算できるか」を機械可読に知るための診断。
+            violations=[{
+                "code": E01_INSUFFICIENT_BARS,
+                "requiredBars": int(min_bars),
+                "actualBars": int(n_bars),
+            }],
+        )
 
     quality = diagnose_quality(times, logp, edges, params.n_har, params.freeze_thresh,
                                logger=logger)

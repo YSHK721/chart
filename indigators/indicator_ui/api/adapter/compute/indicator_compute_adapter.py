@@ -8,7 +8,7 @@ FakeChart を生成 → CallBinding で実 add_* を呼出 → FakeChart 収集�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from adapter.compute.call_binding import (
@@ -34,10 +34,16 @@ from api_shared.http_contract import ERROR_STATUS  # noqa: F401
 
 @dataclass
 class ComputeError(Exception):
-    """§6.3.4 計算 API エラー。``error_type`` は翻訳済みの type。"""
+    """§6.3.4 計算 API エラー。``error_type`` は翻訳済みの type。
+
+    ``violations``（ISSUE-283）: 指標が申告した**機械可読**な診断（例: 履歴不足の
+    ``requiredBars`` / ``actualBars``）。文言の解析を上位に強いないための構造化フィールドで、
+    既定は空。応答 body の ``error.violations`` へそのまま載る。
+    """
 
     error_type: str
     message: str
+    violations: "list[dict]" = field(default_factory=list)
 
     def __str__(self) -> str:  # pragma: no cover - 表示補助
         return f"{self.error_type}: {self.message}"
@@ -91,8 +97,15 @@ def _translate_value_error(compute_id: str, exc: ValueError) -> ComputeError:
     """
     translator = _VALUE_ERROR_TRANSLATORS.get(compute_id)
     if translator is not None:
-        return translator(exc)
-    return ComputeError("validation", str(exc))
+        translated = translator(exc)
+    else:
+        translated = ComputeError("validation", str(exc))
+    # ISSUE-283: 指標が構造化診断（violations）を申告していれば、そのまま運ぶ。
+    #   指標名で分岐しない（申告の有無だけを見る＝新しい指標が申告し始めても本関数は無改変）。
+    declared = getattr(exc, "violations", None)
+    if declared and not translated.violations:
+        translated.violations = list(declared)
+    return translated
 
 
 def _translate_key_error(compute_id: str, exc: KeyError) -> ComputeError:
