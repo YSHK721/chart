@@ -44,9 +44,9 @@ export class PaneLegendView {
    * @param {object} deps
    * @param {object} deps.document       DOM 実装（注入）。
    * @param {object} [deps.anchor]       版面要素の直接注入（既定は document から .chart-wrap を引く）。
-   * @param {boolean} [deps.collapsed]   既定の折りたたみ状態（既定 true＝畳む）。
+   * @param {boolean} [deps.collapsed]   既定の折りたたみ状態（既定 false＝開いた状態で表示する）。
    */
-  constructor({ document, anchor = null, collapsed = true, overlayId = 'chart-overlay-tl' } = {}) {
+  constructor({ document, anchor = null, collapsed = false, overlayId = 'chart-overlay-tl' } = {}) {
     this._document = document ?? null;
     this._anchor = anchor ?? null;
     // 自分で生成したホスト要素の保持（再描画のたびに引き直さない）。
@@ -56,7 +56,8 @@ export class PaneLegendView {
     this._overlayId = overlayId;
     // ペイン単位の展開状態。ユーザーが開いたペインは、値の更新（毎クロスヘア）で畳まない。
     this._expanded = new Set();
-    this._defaultCollapsed = collapsed !== false;
+    // 依頼者指示（2026-08-08）: 基本はオープン。畳むのは利用者がチップを押したときだけ。
+    this._defaultCollapsed = collapsed === true;
     // controller 由来の行メタ（instanceId -> { label, visible, onEye, onGear, onClose }）。
     this._rowMeta = new Map();
     // renderer 由来の幾何＋値（{ groups: [{ paneIndex, top, height, rows }] }）。
@@ -197,6 +198,8 @@ export class PaneLegendView {
     name.textContent = meta.label;
     el.appendChild(name);
 
+    // 依頼者指示（2026-08-08）: 並びは「指標名 → 設定（操作）→ 値」。値は可変長で伸び縮みするため
+    //   最後に置き、操作（目/歯車/×）の位置が値の桁数で動かないようにする。
     const vals = doc.createElement('span');
     vals.className = 'pane-legend-values';
     for (const v of row.values ?? []) {
@@ -213,8 +216,6 @@ export class PaneLegendView {
       chip.textContent = text;
       vals.appendChild(chip);
     }
-    el.appendChild(vals);
-
     const eye = doc.createElement('button');
     eye.type = 'button';
     eye.className = 'pane-legend-eye';
@@ -236,7 +237,7 @@ export class PaneLegendView {
     close.textContent = '✕';
     close.addEventListener('click', () => meta.onClose && meta.onClose());
 
-    el.append(eye, gear, close);
+    el.append(eye, gear, close, vals);
     return el;
   }
 }
