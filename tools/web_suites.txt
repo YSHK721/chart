@@ -1,0 +1,20 @@
+# web_suites — フロント（JS）テストスイートの唯一源（ISSUE-280）。
+#
+# 記法: リポジトリ根からの相対ディレクトリ（1 行 1 件・`#` 始まりと空行は無視）。
+#   各ディレクトリは `package.json` の `scripts.test` を持ち、`npm test` で起動できること。
+#
+# 消費者:
+#   - tools/run_web_tests.sh                 : 全スイートを順に実行し、1 つでも落ちれば非ゼロで終わる
+#   - tools/tests/test_web_suites_ledger.py  : 台帳と実在スイートの一致・起動方法の統一を強制する
+#
+# なぜ必要か（ISSUE-280 の実測）:
+#   `unified_ui/web` の node_modules が自己参照 symlink になり、`npm test` が exit 216（出力なし）で
+#   落ちる状態が丸一日気付かれなかった。スイートがディレクトリごとに散在し、起動方法も
+#   `npm test` と生の `node --test` が混在していたため、「1 つ消えた」ことが誰にも見えなかった。
+#   全スイートを 1 コマンドで回し、欠落を検定で塞ぐ。
+#
+# 対象外: prototype_*（試作＝参照実装であり回帰対象ではない）。
+indigators/indicator_ui/web
+indigators/market_profile/web
+simulator/replay_ui/web
+unified_ui/web
