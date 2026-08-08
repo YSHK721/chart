@@ -67,6 +67,15 @@ class CausalComputePort(Protocol):
         """
         ...
 
+    def bar_time(self, timeframe: str, unix_sec: int) -> int:
+        """その時刻が属するバーの time を返す（ISSUE-290）。
+
+        規則源は ``marketdata.tf_meta.bar_time_unix``（ローソク＝ロールアップと同一のラベル
+        規約）。usecase は時間足を一切知らない（周期秒・floor・セッション日・暦周期の分岐を
+        持たない）＝ライブ側 `forming_states` の `bar_time_fn` 注入と同一の設計。
+        """
+        ...
+
     def project(
         self, series: "list[dict]", chart_times: "list[int]", compute_tf: str,
     ) -> "list[dict]":

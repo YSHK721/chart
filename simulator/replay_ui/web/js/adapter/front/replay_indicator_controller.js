@@ -173,18 +173,15 @@ export class ReplayIndicatorController extends IndicatorController {
 
   // 足内追従の対象（適用済み ∩ 共有 INTRABAR_FORMING_IDS）。一括計算の要求単位でもある。
   //   MP は /compute を持たないため対象外（_isMarketProfile で除外）。
-  //   **上位足計算（計算.時間足 ≠ チャート）も対象外**（ISSUE-288）: 足内一括計算は
-  //   チャート足の窓で計算する経路であり、上位足へ投影できない。対象に含めると、確定時の
-  //   full 計算で描いた**投影済みの階段をチャート足の値で上書きしてしまい、上位足指標が
-  //   消えたように見える**（実測: 1D 計算の EMA が 5m 値で描かれ、段が消失）。
-  //   除外した指標は足内では動かず、バー確定の full 再計算で追いつく（ライブ側 ISSUE-274 の
-  //   「段全体を毎 tick 動かすのは費用に見合わない」と同じ判断）。
+  //   **上位足計算（計算.時間足）も対象に含める**（ISSUE-290）。サーバはライブ（ISSUE-274 D-4）と
+  //   同一設計で、計算足ごとに「H の確定足＋リビール T までの C 足と足内スナップショットから
+  //   作り直した H 形成足」で latest 計算する。以前は投影経路しか無く、チャート足の値で
+  //   投影済みの階段を上書きしていたため一時的に除外していた（ISSUE-288）。
   formingSeqTargets() {
     return [...this._state.applied].filter((inst) => {
       if (!INTRABAR_FORMING_IDS.has(inst.indicatorId)) return false;
       const meta = this._meta.get(inst.instanceId);
-      if (!meta || this._isMarketProfile(meta.def)) return false;
-      return !this._usesHigherTimeframe(inst);
+      return !!meta && !this._isMarketProfile(meta.def);
     }).map((inst) => {
       const variant = inst.variant ?? this._defaultVariant(this._meta.get(inst.instanceId).def);
       return {

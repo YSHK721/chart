@@ -44,6 +44,12 @@ class CausalComputeGateway:
         df = ohlc.load_dataframe(ref, timeframe)
         return self._df_to_bars(df)
 
+    def bar_time(self, timeframe: str, unix_sec: int) -> int:
+        """ISSUE-290: ライブと同一のラベル規約（marketdata.tf_meta.bar_time_unix）を使う。"""
+        from marketdata.tf_meta import bar_time_unix  # 遅延: 技術隔離を本ファイルに閉じる
+
+        return int(bar_time_unix(timeframe, int(unix_sec)))
+
     def project(
         self, series: "list[dict]", chart_times: "list[int]", compute_tf: str
     ) -> "list[dict]":

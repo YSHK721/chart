@@ -46,6 +46,8 @@ class CausalComputeSeqRequest:
     #:   規則源はフロントの ``intrabarWindow`` 1 箇所（サーバへ写さない）。未指定は従来挙動。
     win_start: "int | None" = None
     win_end: "int | None" = None
+    #: 計算足 H（ISSUE-290）。指定時はライブと同一設計＝H の形成中バーへ畳んでから計算する。
+    compute_timeframe: "str | None" = None
 
 
 @dataclass
@@ -147,6 +149,69 @@ def _compute_projected(
     return compute_port.project(series, _bar_times(chart_bars), compute_tf)
 
 
+def _seq_projection_timeframe(request: "CausalComputeSeqRequest") -> "str | None":
+    tf = getattr(request, "compute_timeframe", None)
+    if not tf or tf == "chart" or tf == request.timeframe:
+        return None
+    return str(tf)
+
+
+def _fold_bars(bars, *, time: int) -> dict:
+    """バー列を 1 本へ畳む（open=先頭 open・high=最大・low=最小・close=末尾 close）。"""
+    return {
+        "time": int(time),
+        "open": float(bars[0]["open"]),
+        "high": max(float(b["high"]) for b in bars),
+        "low": min(float(b["low"]) for b in bars),
+        "close": float(bars[-1]["close"]),
+        "volume": float(sum(float(b.get("volume") or 0.0) for b in bars)),
+    }
+
+
+def _compute_seq_higher_timeframe(
+    *, request: "CausalComputeSeqRequest", compute_port: "CausalComputePort", compute_tf: str,
+) -> "list[list[dict]]":
+    """足内の各時点について、**計算足 H の形成中バー**を作って latest 計算する（ISSUE-290）。
+
+    ライブ（ISSUE-274 D-4）と同一設計:
+      1. H の確定足だけを窓に採る（進行中の H 足はデータ由来の全期間 OHLC＝未来を含むため捨てる）。
+      2. 進行中 H 足を、C 足（リビール T までの確定足）＋その時点の足内スナップショットから畳んで作る。
+      3. その窓で latest 計算し、値を C の形成足時刻へ載せる。
+    畳み方（open/high/low/close の合成）は 1 箇所（``_fold_bars``）に閉じる。
+    """
+    seq = request.forming_seq or []
+    h_all = truncate(compute_port.load_source(request.ref, compute_tf), request.until_time)
+    c_all = truncate(compute_port.load_source(request.ref, request.timeframe), request.until_time)
+    if not h_all or not c_all:
+        return [[] for _ in seq]
+    limit = request.limit
+    if isinstance(limit, int) and limit > 0:
+        h_all = h_all[-limit:]
+        c_all = c_all[-limit:]
+    # 進行中 H 期間の始端（＝その足の time）。C 足の最終時刻がどの H 足に属するかで決める。
+    h_bar_time = compute_port.bar_time(compute_tf, int(c_all[-1]["time"]))
+    confirmed = [b for b in h_all if int(b["time"]) < h_bar_time]
+    in_period = [b for b in c_all if int(b["time"]) >= h_bar_time]
+    out: "list[list[dict]]" = []
+    for f in seq:
+        snapshot = dict(f)
+        parts = in_period[:-1] + [snapshot] if in_period else [snapshot]
+        forming_h = _fold_bars(parts, time=h_bar_time)
+        series = compute_port.compute(
+            request.indicator, request.variant, "latest", [*confirmed, forming_h], request.params
+        )
+        # 値は C の形成足時刻へ載せる（front は末尾差分として描く）。
+        step: "list[dict]" = []
+        for p in series or []:
+            data = p.get("data") or []
+            if not data:
+                step.append(p)
+                continue
+            step.append({**p, "data": [{**data[-1], "time": int(snapshot["time"])}]})
+        out.append(step)
+    return out
+
+
 def causal_compute_seq(
     *, request: CausalComputeSeqRequest, compute_port: "CausalComputePort",
     window_port: "IntrabarWindowPort | None" = None,
@@ -163,6 +228,14 @@ def causal_compute_seq(
     seq = request.forming_seq or []
     if not seq:
         return []
+    # ISSUE-290: 上位足計算（計算.時間足）はライブと同一設計＝「計算足ごとに、その足の
+    #   形成中バーへ畳んでから latest 計算する」。チャート足の窓で計算して投影する形にはしない
+    #   （足内では H の形成足そのものが動くため、投影では表現できない）。
+    compute_tf = _seq_projection_timeframe(request)
+    if compute_tf is not None:
+        return _compute_seq_higher_timeframe(
+            request=request, compute_port=compute_port, compute_tf=compute_tf,
+        )
     bars = compute_port.load_source(request.ref, request.timeframe)
     bars = truncate(bars, request.until_time)
     limit = request.limit

@@ -263,6 +263,8 @@ class ReplayApp:
             params=dict(body.get("params") or {}),
             win_start=body.get("winStart"),
             win_end=body.get("winEnd"),
+            # ISSUE-290: 足内一括計算も計算足（計算.時間足）を受け取る。
+            compute_timeframe=body.get("computeTimeframe"),
         )
         def _run():
             with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
