@@ -86,6 +86,19 @@ class CausalComputePort(Protocol):
         """
         ...
 
+    def causal_series(
+        self, indicator: str, variant: str, chart_bars: "list[dict]",
+        source_bars: "list[dict]", compute_tf: str, window_bars: "list[dict]", params: dict,
+    ) -> "list[dict]":
+        """上位足の因果系列を返す（ISSUE-295）。
+
+        規約（``value(τ) = 指標([τ の期間より前の確定 H 足] + [τ の期間の C 足を τ まで畳んだ
+        H 足])``）の唯一源は indicator_ui の ``adapter.compute.mtf_causal`` であり、ライブ core も
+        同じ関数を通る。本 Port は「同じ実装を使う」ことを契約として宣言するだけで、規則を
+        再実装しない（リプレイ独自の上位足規約を作らない）。
+        """
+        ...
+
     def compute(
         self,
         indicator: str,

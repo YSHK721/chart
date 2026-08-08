@@ -96,16 +96,17 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
         IndicatorComputeAdapter,
         full_compute,
         latest_compute,
-        project_series_at_times,
     )
+    from adapter.compute.mtf_causal import causal_mtf_series  # noqa: E402
 
     ns = SimpleNamespace(
         dataset=dataset,
         adapter=IndicatorComputeAdapter(),
         full_compute=full_compute,
         latest_compute=latest_compute,
-        # ISSUE-287: 上位足投影はライブ core と同一実装を再利用する（規則を写さない）。
-        project_series_at_times=project_series_at_times,
+        # ISSUE-295: 上位足の因果系列はライブ core と**同一実装**を再利用する（規則を写さない）。
+        #   ライブ側 compute_controller もこの関数を通る＝両モードで規約も値も同一になる。
+        causal_mtf_series=causal_mtf_series,
     )
     _CACHE[key] = ns
     return ns

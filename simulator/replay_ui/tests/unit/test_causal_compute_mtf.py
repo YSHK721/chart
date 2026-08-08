@@ -64,6 +64,20 @@ class _FakePort:
         return [[{"name": "MA", "kind": "line",
                   "data": [{"time": t[-1]["time"], "value": t[-1]["close"]}]}] for t in tails]
 
+    def causal_series(self, indicator, variant, chart_bars, source_bars, compute_tf,
+                      window_bars, params):
+        """規約の実体はライブ core と同一の唯一源（写しを持たない）。"""
+        from simulator.replay_ui.adapter import _indicator_ui_bridge
+
+        causal_mtf_series = _indicator_ui_bridge.load_compute().causal_mtf_series
+        return causal_mtf_series(
+            chart_bars=chart_bars, source_bars=source_bars, compute_tf=compute_tf,
+            bar_time_unix=self.bar_time,
+            latest_seq=lambda prefix, tails: self.compute_latest_seq(
+                indicator, variant, prefix, tails, params),
+            window_bars=window_bars,
+        )
+
     def compute(self, indicator, variant, mode, bars, params):   # 本経路では使わない
         raise AssertionError("リビール経路は latest_seq（末尾差分）で計算する")
 
