@@ -1382,3 +1382,25 @@ test('ISSUE-138 回帰ガード: 非 sessions（normal ticklive/dwell 増分 pus
   // 増分 push の feedTick は accumulator を進めるのみで as-of refresh（fetchProfile）を発火しない。
   assert.equal(client.calls.length, fetchBefore, '非 sessions 増分 push の feedTick は as-of refresh を発火しない（従来経路）');
 });
+
+// ---- 本番の合成形（ISSUE-255 追補・ISSUE-275 の再発防止） ----
+//
+// 上のテスト群は throttle を決定論にするため `now` を注入して構築している。本番の合成根
+// （composition_root_front.js）は `now` を渡さず、既定の実時計（performance.now / Date.now）で
+// 動く。注入形だけを検証していると「本番が作る形」を一度も通さないまま緑になり、ISSUE-275 と
+// 同じ穴が空く。施行は tools/tests/test_composition_root_arg_parity.py。
+
+test('本番の合成形（now 非注入）でも既定の実時計が使われる', () => {
+  const actor = new ReplayMarketProfileActor({
+    client: fakeClient(),
+    primitive: fakePrimitive(),
+    mainSeries: fakeMainSeries(),
+    getContext: () => ({ datasetRef: 'jp225_tick', timeframe: '5m', to: null }),
+  });
+
+  const t1 = actor._now();
+  const t2 = actor._now();
+
+  assert.equal(Number.isFinite(t1), true, '既定 now が数値を返す（未注入で undefined にならない）');
+  assert.ok(t2 >= t1, '単調非減少（実時計）');
+});

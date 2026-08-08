@@ -594,3 +594,34 @@ test('中断された poll のあとも次の poll が要求を出す（ガー�
   await t.tickPoll();
   assert.equal(n, 2, '中断後も次 poll が要求を出す');
 });
+
+// ---- 本番の合成形（ISSUE-255 追補・ISSUE-275 の再発防止） ----
+//
+// 上のテスト群は決定論のため `now` を注入して構築している。しかし本番の合成根は `now` を渡さず、
+// 既定の実時計（Date.now）で動く。注入形だけを検証していると「本番が作る形」を一度も通さないまま
+// 緑になり、ISSUE-275 と同じ穴（本番が渡さない前提をテストが自分で満たす）が空く。
+// 施行は tools/tests/test_composition_root_arg_parity.py。
+
+test('本番の合成形（now 非注入）でも実時計で遅延判定が成立する', async () => {
+  const timers = fakeTimers();
+  const sp = spies();
+  const player = new LiveTickPlayer({
+    renderer: sp.renderer,
+    fetchLiveTicks: sp.fetchLiveTicks,
+    loadFormingBar: sp.loadFormingBar,
+    datasetRef: 'jp225_tick',
+    getTimeframe: () => '1m',
+    setInterval: timers.setIntervalFake,
+    clearInterval: timers.clearIntervalFake,
+  });
+
+  // 既定時計は実時計。前後で単調非減少かつ現在時刻に一致する（固定値へ潰れていない）。
+  const before = Date.now();
+  const t1 = player._now();
+  const t2 = player._now();
+  const after = Date.now();
+
+  assert.equal(Number.isFinite(t1), true, '既定 now が数値を返す（未注入で undefined にならない）');
+  assert.ok(t1 >= before && t2 <= after, `実時計の範囲内: ${before} <= ${t1} <= ${t2} <= ${after}`);
+  assert.ok(t2 >= t1, '単調非減少');
+});
