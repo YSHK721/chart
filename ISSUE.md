@@ -4755,8 +4755,21 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-259／ISSUE-260（本件により実 UI 検証が保留されていた）／ISSUE-087 🟡-3（`.pth` 導入の経緯）／ISSUE-261（台帳の唯一源化と同じ規約）。
 
 ## ISSUE-280: [検証環境の欠陥・実測] `unified_ui/web` のテスト（43 件）が実行不能（`node_modules` が自己参照 symlink）（2026-08-08）
-- **ステータス**: OPEN
-- **重大度**: 中（配信ページの検定が回らない。緑を確認したつもりで実際は 0 件実行）
-- **事実（実測）**: `unified_ui/web/node_modules` が `-> /workspaces/app/unified_ui/web/node_modules`（自分自身）を指す symlink（作成 2026-08-07 15:39）。`npm test`（`vitest run`）は出力を出さずに終了し、`./node_modules/.bin/vitest` は `Too many levels of symbolic links` で exit 126。
-- **影響範囲**: 本件は本日のマージ（ISSUE-259/260）とは無関係（node_modules は追跡外・マージは触れていない）。他スライス（indicator_ui web 1,100 / market_profile web 331 / replay_ui web 301）は正常に実行できる。
-- **抜本的対策**: 壊れた symlink を除去して依存を再取得する（`npm ci`）。併せて、テストランナーが「0 件実行」で成功終了しないよう最小テスト数を検定する（無言の 0 件成功が今回の見落としの実体）。
+- **ステータス**: RESOLVED（2026-08-08・fix/web-suites-single-entry）
+- **重大度**: 中（配信ページの検定が丸一日回っていなかった）
+- **事実（実測）**: `unified_ui/web/node_modules` が `-> /workspaces/app/unified_ui/web/node_modules`（自分自身）を指す symlink（作成 2026-08-07 15:39）。`./node_modules/.bin/vitest` は `Too many levels of symbolic links` で exit 126、`npm test` は**出力なしで exit 216**。
+- **起票時の記述を訂正（実測）**: 起票時に「0 件実行で成功終了する」と書いたが誤り。`npm test` の終了コードは **216（非ゼロ）** で、ランナーは黙って成功してはいない。**見落としの実体は終了コードを見ずに標準出力の tail だけ読んだこと**であり、「出力が無い＝異常なし」と読めてしまう形だった。したがって対策は「最小テスト数の検定」ではなく、**終了コードで判定する単一の入口を作ること**。
+- **影響範囲**: 本件はマージ（ISSUE-259/260）とは無関係（node_modules は追跡外）。他スライス（indicator_ui web 1,100 / market_profile web 331 / replay_ui web 301）は正常に実行できていた。
+- **真因（2 つ・いずれも実測）**:
+  1. **壊れた symlink が版管理に入っていた**。`unified_ui/.gitignore:3` の `web/node_modules/` は**末尾スラッシュ付き＝ディレクトリのみ**を無視する規則で、同名の *symlink* は無視から漏れる。そのため自分自身を指す symlink が **d8abde6（2026-08-06）で commit** され、以後 clone / worktree のどこでも web テストが動かない状態が配布されていた（`git ls-tree` で `120000 blob … unified_ui/web/node_modules` を確認）。ローカル事故ではなくリポジトリの内容そのものだった。
+  2. **`unified_ui/web/package.json` が未追跡**（ルート `.gitignore` の blanket `*.json` に巻き込まれ、lockfile だけ commit されていた）。symlink を直しても clean clone では `npm ci` が成立しない。
+- **見落としを許した構造**: フロントのスイートが 4 スライスに散在し、起動方法も `npm test`（3 件）と生の `node --test`（replay_ui は `package.json` 自体が無い）に割れていた。「全部緑」を確認するには 4 ディレクトリと 2 種の起動方法を人が覚えて回す必要があり、**1 つ実行されなくなったことが構造的に見えない**。
+- **抜本的対策（実施）**:
+  1. **版管理から symlink を除去**（`git rm --cached unified_ui/web/node_modules`）し、無視規則を `web/node_modules`（末尾スラッシュ無し＝symlink も対象）へ是正。依存は `npm ci` で復元（実測: 43 件 passed・exit 0）。
+  2. **manifest を追跡対象へ**。ルート `.gitignore` に `!**/web/package.json` / `!**/web/package-lock.json` を追加し、スライスごとの個別除外（第 2 定義）は置かない。未追跡だった `unified_ui/web/package.json` を追跡へ。
+  3. 起動方法を `npm test` に統一（`simulator/replay_ui/web/package.json` を新設。他 3 件と同型）。
+  4. **単一の入口** `tools/run_web_tests.sh` を新設。全スイートを順に実行し、**終了コードで判定**して失敗したスイート名を最後に列挙、1 つでも落ちれば非ゼロで終わる。
+  5. 対象スイートの一覧は `tools/web_suites.txt`（唯一源）。ランナーは写しを持たない。
+- **検定**（`tools/tests/test_web_suites_ledger.py`・15 件）: 走査で見つかる web スイートと台帳の一致（登録漏れ・陳腐化の双方）／各スイートが `npm test` で起動できる／各スイートの `package.json` が**追跡されている**（clean clone で `npm ci` が成立する条件）／`node_modules` が**版管理に入っていない**かつ実ディレクトリである（本件の真因そのものの再発検出）／ランナーが台帳から読む。
+- **識別力の実証**: (a) 自己参照 symlink を再現 → pytest 1 件 Red かつランナーが **exit 1・`unified_ui/web (exit 216)` と名指し**。(b) 台帳から 1 スイート削除 → 1 件 Red。いずれも復元で Green。
+- **実測（是正後）**: `tools/run_web_tests.sh` が 4 スイート **1,775 件**（1,100 / 331 / 301 / 43）を実行し exit 0。
