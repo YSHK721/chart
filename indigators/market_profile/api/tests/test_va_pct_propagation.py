@@ -234,6 +234,17 @@ def test_default_va_keeps_existing_disk_layout_and_others_diverge():
     )
 
 
+def test_disk_layout_is_injective_for_near_equal_va():
+    """近接する 2 つの比率が同一ディスク配置へ潰れない（鍵は値を損なわない表記）。
+
+    ``f"{v:g}"``（有効数字 6 桁）だと 0.1234567 と 0.12345671 が同一 dir を共有し、要求と
+    異なる VA の列を返す。UI は FLOAT 自由入力のため到達しうる。
+    """
+    a, b = 0.1234567, 0.12345671
+    assert a != b
+    assert ctl._disk_tf_variants("1m", 10.0, a) != ctl._disk_tf_variants("1m", 10.0, b)
+
+
 def test_bucket_count_columns_follow_va():
     """1W/1M バケット（count 合成）の VA も ``va`` を反映する。"""
     levels = [[100.0, 5], [110.0, 4], [120.0, 3], [130.0, 2], [140.0, 1]]

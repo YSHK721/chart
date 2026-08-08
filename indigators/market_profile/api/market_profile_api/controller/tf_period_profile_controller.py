@@ -150,8 +150,12 @@ def _va_tag(va_pct: float) -> str:
     なぜ既定だけ無タグか: 既定比率の列内容は是正前と byte 同一であり、写像は単射のままである。
     タグを常に付けると既存の完了日キャッシュ（実測 2.4GB）が全て孤児化し、zp 日次の
     サロゲート再計算を強制する。既定＝従来パスに固定することでこの再計算を発生させない。
+
+    表記は ``repr``（round-trip 保証）を使う。``f"{v:g}"`` は有効数字 6 桁へ丸めるため
+    0.1234567 と 0.12345671 が同一タグに潰れ、**異なる比率の列が同じ dir を共有する**
+    （＝要求と異なる VA を返す）。鍵は値を損なわない表記でなければならない。
     """
-    return "" if va_pct == VA_PCT_DEFAULT else f"-va{va_pct:g}"
+    return "" if va_pct == VA_PCT_DEFAULT else f"-va{va_pct!r}"
 
 
 def _disk_tf_count(tf: Any, unit: float, va_pct: float) -> str:
