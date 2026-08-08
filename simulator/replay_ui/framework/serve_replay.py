@@ -79,6 +79,18 @@ def _error_response(
     新エラー種別の追加は本関数 1 箇所の編集で全ハンドラへ反映される（OCP: 最大 5 ブロックの
     同期編集を解消）。
     """
+    # ISSUE-284: 例外が**自分で分類を宣言している**なら、それを尊重する。
+    #   指標計算は ``ComputeError``（``error_type`` / ``message`` を持つ＝ComputeErrorPort）で
+    #   「入力条件を満たしていない」ことを validation として申告する。Python の例外型（ValueError か
+    #   否か）で分類していたため、これが **internal 500** に化けていた（実測: cvfe の
+    #   E01_INSUFFICIENT_BARS が /replay/compute では 500・/live/compute では 400）。
+    #   500 は「サーバ内部の異常」を意味し、監視と切り分けを誤らせる。宣言があるものは宣言に従う。
+    declared = getattr(exc, "error_type", None)
+    declared_message = getattr(exc, "message", None)
+    if isinstance(declared, str) and declared:
+        # 宣言済みの分類・メッセージは呼び出し側の汎用文言（"Name: msg"）で上書きしない。
+        text = declared_message if isinstance(declared_message, str) and declared_message else str(exc)
+        return nested_error(declared, text[:200], generation=generation)
     error_type = "validation" if isinstance(exc, ValueError) else "internal"
     if message is None:
         message = str(exc)[:200]
