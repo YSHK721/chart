@@ -63,6 +63,14 @@ export class ReplayIndicatorController extends IndicatorController {
   _revealTargets() {
     return [...this._state.applied].filter((inst) => {
       if (!CAUSAL_REVEAL_IDS.has(inst.indicatorId)) return false;
+      // ISSUE-292: 上位足計算のインスタンスは基底キャッシュを使えない。基底は「再生範囲の
+      //   終端 tEnd で 1 回計算し、以降は時刻でスライスするだけ」であり、これは「各バーの値が
+      //   リビール時刻に依存しない」ことを前提にしている。上位足の投影ではこの前提が成り立たず、
+      //   進行中期間の点には **その期間が終わった後の確定値** が焼き込まれる（スライスは点を
+      //   捨てるだけで、点の中身の未来性は消えない）。実測: 当日 3 本目（t=2026-08-06 22:20 UTC）
+      //   で描画 66098.5467 に対し、その時点までで計算した値は 65797.7001。
+      //   よって対象から外し、各バーでその時点の窓で計算する経路（per-step）へ回す。
+      if (this._usesHigherTimeframe(inst)) return false;
       const meta = this._meta.get(inst.instanceId);
       return !!meta && !this._isMarketProfile(meta.def);
     });

@@ -50,6 +50,16 @@ class CausalComputeGateway:
 
         return int(bar_time_unix(timeframe, int(unix_sec)))
 
+    def period_start(self, timeframe: str, unix_sec: int) -> int:
+        """ISSUE-292: 期間の始端は ``marketdata.tf_meta.period_start_unix`` が唯一源。
+
+        ラベル（``bar_time``）とは別物である。実測（1D）: t=2026-08-06 22:20 UTC の
+        ラベルは 08-07 00:00 UTC・始端は 08-06 21:00 UTC。属する足の判定は始端で行う。
+        """
+        from marketdata.tf_meta import period_start_unix  # 遅延: 技術隔離を本ファイルに閉じる
+
+        return int(period_start_unix(int(unix_sec), timeframe))
+
     def project(
         self, series: "list[dict]", chart_times: "list[int]", compute_tf: str
     ) -> "list[dict]":

@@ -76,6 +76,16 @@ class CausalComputePort(Protocol):
         """
         ...
 
+    def period_start(self, timeframe: str, unix_sec: int) -> int:
+        """その時刻が属する期間の **UTC 始端** 秒を返す（ISSUE-292）。
+
+        規則源は ``marketdata.tf_meta.period_start_unix``。``bar_time``（ラベル）とは**別物**で、
+        セッション足では一致しない（実測: 1D はラベルが暦日の UTC 深夜・始端が前日 21:00 UTC）。
+        「どの足がこの期間に属するか」の判定は必ず始端で行う（ラベルで判定すると、期間の
+        前半に属する足が 1 本も選ばれず、進行中期間の形成足が作られない）。
+        """
+        ...
+
     def project(
         self, series: "list[dict]", chart_times: "list[int]", compute_tf: str,
     ) -> "list[dict]":
