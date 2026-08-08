@@ -4337,10 +4337,10 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **識別力の実証**: 症状検定は旧 server.py で **Red**（バリアが 10 秒でタイムアウト＝`/market_profile` の書き出しが止まっている間、`/tf_period_profile` は計算にすら入れない＝直列停止を実測）。構造・実行時検定は是正を**全巻き戻し**（`git checkout` で旧 server.py）→ **10/10 Red**。**部分退行**（1 経路だけ共通殻を迂回し `_MP_WORKER.run(lambda: self._send_json(*_compute_tf_period_profile(...)))`）→ **6 Red / 4 pass**、しかも Red になる実行時検定は当該 `tf_period_profile` の 2 件のみ＝経路粒度で識別する。
 - **応答不変性（実測）**: 是正前後で同一 13 URL（3 経路 × 200 系 7 本 + 400 系 6 本・実データ jp225_tick・確定日 2026-08-05 に窓固定・forming は `now` 固定・MP キャッシュは /tmp 隔離）を実 HTTP で叩き、**status / Content-Length / body sha256 が 13/13 完全一致**（是正前は 2 回連続実行でも 13/13 一致＝ベースライン自体の決定性も確認済み）。
 - **回帰**: indicator_ui api + market_profile api **1219 passed / 0 failed**（是正前ベースライン 1208 passed に新規 11 件を加えた数と一致）。indicator_ui web 1100 pass / market_profile web 319 pass（いずれも fail 0）。
-- **未実施（環境制約・要 y/n 判断）**: 実 UI（8000）での目視確認。本 worktree には venv（`lightweight-charts-python-main/.venv`）とデータが無く、かつ 8000/8001/8281 は**共有チェックアウト `/workspaces/app` から起動済みの別プロセス**が占有している。worktree コードで実 UI を確認するには当該共有スタックの停止・再起動が必要なため、独断で実施していない。なお 3 経路の**実 HTTP・実データ応答が byte 一致**であり、フロント（JS）差分は 0 のため、ブラウザ側の挙動が変わる経路は残っていない。
+- **実 UI 検証（2026-08-08・develop マージ後・標準 `unified_ui/serve.sh` 8000）**: MP 3 経路を実 UI から実行し、描画・操作とも正常・console エラー **0 件**（残るのは既存の `data/trade_markers.json` 404 のみ＝本件と無関係）。ライブ core・リプレイ core の双方で `/market_profile_forming` が 200 を返し、リプレイ再生中は base=1／base=0（尾部成長）が継続して流れる＝ワーカー分離後も MP 経路が停止しないことを実操作で確認した。
 
 ## ISSUE-260: [不具合] `va`（バリューエリア）設定が tf-period 列・増分成長の各経路に届かず 0.70 固定（2026-08-05）
-- **ステータス**: RESOLVED（2026-08-08・実装＋検定＋実データ実測で確認。ブラウザ実UI検証は未実施）
+- **ステータス**: RESOLVED（2026-08-08・実装＋検定＋実データ実測＋**ブラウザ実 UI 検証**で確認）
 - **重大度**: Medium（利用者が操作できるのに効かないツマミ＝表示と設定の不一致）
 - **事実**: UI は `va` を常時操作可能なパラメータとして出す（`market_profile/web/js/usecase/catalog_entry.js:125`「バリューエリア」）が、
   - tf-period 列経路: `controller/tf_period_profile_controller.py` に `va` 引数が無く、`compute/tf_period_columns.py:165/225/281` が `0.70` を直書き。クライアント `tf_period_profile_client.js` も URL に `va` を載せない。
@@ -4361,7 +4361,12 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - ディスク配置: 既定 va は `JP225/1D/s1/g10`（＝既存共有キャッシュと同一）、非既定は `g10-va0.55` 等の別 dir に分離されることを実測。
 - **自己レビューでの追加是正**: ディスク配置タグは `f"{va:g}"`（有効数字 6 桁）だと 0.1234567 と 0.12345671 が同一 dir へ潰れ、**異なる比率の列を返す**。`repr`（round-trip 保証）へ変更し、近接 2 値が別配置になることを検定で固定した。
 - **残存リスク（後続の判断が要る）**: 非既定 va の完了日キャッシュは `<sub>` 段（`g10-va…`）に増える一方で、`tools/cache_gc.py` は世代段（`<tf>/<gen>`）しか刈らないため自動回収されない（既存の解像度別 `g10` / `g0.0255` と同じ扱い）。UI の va は step 0.01 の自由入力のため、比率を多数試すと dir が増え続けうる。
-- **未実施**: ブラウザ実 UI 検証（本 worktree に venv 不在／固定ポート 8000・8280 は別セッションが占有中のため。front 差分＝catalog 既定の生成物参照・列 URL の `&va=`・accumulator の注入は、実 UI での目視確認が後段に必要）。
+- **ブラウザ実 UI 検証（2026-08-08・develop マージ後・標準 `unified_ui/serve.sh` 8000・実クリック／実 HTTP）**:
+  - **refresh 経路**（`/market_profile`）: 歯車の「バリューエリア」を 0.7→0.55 に変更すると実要求が `&va=0.55` を載せ、応答 `va_low` が 64957.23（0.7）／66329.50（0.55）／62033.68（0.95）と変化。UI の VAL ラベル表示 `66329.50` と応答値が一致。
+  - **tf-period 列経路**（`/tf_period_profile`）: 表示モード「日別プロファイル」で 8 列すべてが 200。`va_low` は 65358.6675（省略＝既定）／65358.6675（0.7・既定と同値）／65364.0225（0.55）／65341.9905（0.95）。**省略と 0.7 が同値**＝既定パスの後方互換も実測。
+  - **増分成長経路**（`/market_profile_forming`）: 当日は市場休場で `/live_ticks` が 0 件のため、リプレイ再生で growth を駆動。base=1／base=0 の要求がいずれも `&va=` を載せ、応答に **`vaPct`** が入る（live/replay 両 core で 0.55／0.7 を確認）。実 UI 上の `DwellAccumulator` を直接観測し、`_vaPct` が **0.55 → 0.9**（歯車操作に追従）、VA が `[65342.84, 66016.59]` → `[64946.52, 66294.01]`（POC 65739.16 は不変）と変化した＝**旧実装の 0.70 固定は消滅**。front に VA_PCT リテラルは無い。
+  - console エラー 0 件（既存の `data/trade_markers.json` 404 のみ）。検証後は MP インスタンスを撤去し、ライブ追従 ON の初期状態へ戻した。
+- **検証環境の制約（実測で判明・ISSUE-279 として起票）**: worktree からの実 UI 検証では本件の backend 変更は**一切実行されない**。venv の `jp225_chart_paths.pth` が `market_profile_api` を main チェックアウト固定で解決するため、worktree の殻（新）＋ main の controller（旧）という組合せになり、`/tf_period_profile` が `handle_tf_period_profile() got an unexpected keyword argument 'va'` で 500 になる。上記の実 UI 検証は develop マージ後の標準構成で実施した。
 
 ## ISSUE-261: [設計是正] 時間足台帳の第 2 定義が ISSUE-254 の射程外に残存している（2026-08-05）
 - **ステータス**: OPEN
@@ -4700,3 +4705,22 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **実 UI 検証（worktree を `unified_ui/serve.sh` で 8000 起動・実 HTTP・実クリック）**: profit_band の歯車で variant=robust のとき `require_full` 非表示・robust 4 件表示、global へ切替えると即座に反転（`normalize`/`window`/`atr_period`/`min_obs` が消え `require_full` が出る）。OK 適用後の実リクエストは `params` に受理 4 件＋`timeframe` のみを載せ 200 OK・28 系列を描画。profit_hlband も separate↔overlay で `draw_levels` が出没。console エラー 0。検証後は main チェックアウトのスタックへ復帰済み。
 - **UI 上の見た目の変化**: 選択中の variant が受理しないコントロールは表示されなくなる（できていたことは何も減らない＝もともと効いていなかった行のみが消える）。
 - **付随して塞いだ穴（#4 の `/catalog` 部分）**: standalone replay は `GET /catalog` を持たず front も `catalog.load()` を呼んでいなかった（#4）。無言破棄がそれを無症状にしていたため、撤去すると standalone replay だけが `validation` エラーで指標を描けなくなる。ライブ controller `handle_catalog` を bridge 経由で read-only 再利用する `CatalogGateway`（`CatalogPort`）を注入し `/catalog` ルートを追加、replay 合成根で `await catalog.load(fetch)` を呼ぶようにした（tickvol_profile と同型の Port 注入＝未注入ならルート無しで従来挙動）。実測: `/replay/catalog` が 200 でライブと同一 payload、リプレイ実 UI で profit_band を適用すると `params` が robust スコープ（`require_full` 無し）で 200 OK・console エラー 0。**#4 の本体（合成根の全文フォーク・`validTimeframes` の手書き）は未着手のまま。**
+
+## ISSUE-279: [検証環境の欠陥・実測] worktree からの実 UI 検証では backend 変更が実行されない（venv `.pth` が main チェックアウト固定）（2026-08-08）
+- **ステータス**: OPEN
+- **重大度**: 高（「実 UI で確認した」が偽になる。ISSUE-259/260 で実際に偽の 500 を観測した）
+- **事実（実測）**: venv の `lightweight-charts-python-main/.venv/lib/python3.x/site-packages/jp225_chart_paths.pth` が `/workspaces/app` と `/workspaces/app/indigators/market_profile/api` を **絶対パスで** sys.path へ載せる。さらに `indicator_ui/serve.sh:50,56,62` と `replay_ui/serve.sh:50` は `PYTHONPATH="$REPO_ROOT"` を**上書き設定**する（既存値を継がない）。
+  - 結果、worktree から `unified_ui/serve.sh` を起動しても `market_profile_api` / `marketdata` は **main チェックアウト**から解決される。実測: 起動中プロセスで `market_profile_api.__file__ = /workspaces/app/indigators/market_profile/api/...`、`'va' in signature(handle_tf_period_profile) → False`。
+  - 症状: 殻（worktree・新）が `va=` を渡し controller（main・旧）が受け取れず、`/tf_period_profile` が **500**（`handle_tf_period_profile() got an unexpected keyword argument 'va'`）。実 UI では 14 件の 500 として現れた。**ブランチのコードは正しく、環境が旧コードを実行していた**。
+  - `server.py:99-104` の自己結線フォールバックは `import market_profile_api` が .pth で成功するため発火しない（＝フォールバックは「未登録環境」しか救わない）。
+- **なぜ問題か**: worktree は並列作業の隔離手段なのに、backend の実 UI 検証だけが隔離されない。検証者は「実 UI で確認した」と記録できてしまい、実際には別コードを測っている。ISSUE-259/260 の起票者が「環境制約で実 UI 未実施」と記録したのも同じ原因。
+- **暫定回避（今回実施）**: `PYTHONPATH=<worktree>:<worktree>/indigators/market_profile/api` を付けて `unified_ui/serve.sh` を起動するとライブ core だけは worktree を読む。ただし replay core は `serve.sh` が PYTHONPATH を上書きするため効かない（実測: replay core の `/market_profile_forming` にだけ `vaPct` が無い）。**回避策であって解決ではない**。
+- **抜本的対策（案・要判断）**: パス解決の唯一源を「起動スクリプトの位置」に置く。`.pth` の絶対パス列挙を廃し、各 `serve.sh` が自分の `REPO_ROOT`（`$(cd "$(dirname "$0")/../.." && pwd)`）から全スライスのパスを組み立てて `PYTHONPATH` へ積む（既存値も継ぐ）。これでチェックアウトの場所に依存しなくなり、worktree・fresh clone・main が同じ規則で動く。
+- **関連**: ISSUE-259／ISSUE-260（本件により実 UI 検証が保留されていた）／ISSUE-087 🟡-3（`.pth` 導入の経緯）。
+
+## ISSUE-280: [検証環境の欠陥・実測] `unified_ui/web` のテスト（43 件）が実行不能（`node_modules` が自己参照 symlink）（2026-08-08）
+- **ステータス**: OPEN
+- **重大度**: 中（配信ページの検定が回らない。緑を確認したつもりで実際は 0 件実行）
+- **事実（実測）**: `unified_ui/web/node_modules` が `-> /workspaces/app/unified_ui/web/node_modules`（自分自身）を指す symlink（作成 2026-08-07 15:39）。`npm test`（`vitest run`）は出力を出さずに終了し、`./node_modules/.bin/vitest` は `Too many levels of symbolic links` で exit 126。
+- **影響範囲**: 本件は本日のマージ（ISSUE-259/260）とは無関係（node_modules は追跡外・マージは触れていない）。他スライス（indicator_ui web 1,100 / market_profile web 331 / replay_ui web 301）は正常に実行できる。
+- **抜本的対策**: 壊れた symlink を除去して依存を再取得する（`npm ci`）。併せて、テストランナーが「0 件実行」で成功終了しないよう最小テスト数を検定する（無言の 0 件成功が今回の見落としの実体）。
