@@ -112,3 +112,52 @@ test('DOM 非対応環境（SSR・純ロジックテスト）は従来どおり 
   view.setInstances(ROWS);
   view.update(MODEL);   // 例外を投げない
 });
+
+// ---- 表示仕様（依頼者指示 2026-08-08） ----
+//
+//   1. 行の並びは「指標名 → 設定（操作）→ 値」。値は桁数で伸び縮みするため最後に置き、
+//      操作ボタンの位置が値によって動かないようにする。
+//   2. 基本は**オープン**（既定で開いた状態）。畳むのは利用者がチップを押したときだけ。
+//   ISSUE-276 で既定を折りたたみ・並びを「名前 → 値 → 操作」としていたのを、本指示で変更した。
+
+test('行の並びは 指標名 → 設定（目/歯車/×）→ 値', () => {
+  const anchor = fakeElement('div', 'chart-wrap');
+  const view = new PaneLegendView({ document: fakeDoc(anchor) });
+
+  view.setInstances(ROWS);
+  view.update(MODEL);
+
+  const group = anchor.querySelector('.pane-legends').children[0];
+  const rows = group.children.find((c) => c.className === 'pane-legend-rows');
+  const row = rows.children[0];
+  assert.deepEqual(
+    row.children.map((c) => c.className),
+    ['pane-legend-name', 'pane-legend-eye', 'pane-legend-gear', 'pane-legend-remove', 'pane-legend-values'],
+  );
+});
+
+test('既定はオープン（チップは is-open・行が最初から描かれる）', () => {
+  const anchor = fakeElement('div', 'chart-wrap');
+  const view = new PaneLegendView({ document: fakeDoc(anchor) });
+
+  view.setInstances(ROWS);
+  view.update(MODEL);
+
+  const group = anchor.querySelector('.pane-legends').children[0];
+  const chip = group.children.find((c) => c.className.includes('pane-legend-chip'));
+  assert.ok(chip.className.includes('is-open'), '既定で開いていない');
+  assert.ok(group.children.some((c) => c.className === 'pane-legend-rows'), '行が描かれていない');
+});
+
+test('チップを押せば畳める（開閉そのものは従来どおり利用者の操作）', () => {
+  const anchor = fakeElement('div', 'chart-wrap');
+  const view = new PaneLegendView({ document: fakeDoc(anchor) });
+  view.setInstances(ROWS);
+  view.update(MODEL);
+
+  view.toggle(0);
+  view.update(MODEL);
+
+  const group = anchor.querySelector('.pane-legends').children[0];
+  assert.equal(group.children.some((c) => c.className === 'pane-legend-rows'), false, '畳めていない');
+});
