@@ -26,7 +26,7 @@ import { IndicatorLegendView } from './indicator_legend_view.js';
 import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_params.js';
 import { MarketProfileController } from './market_profile_controller.js';
 import { TimeframeController } from './timeframe_controller.js';
-import { IndicatorDialogController } from './indicator_dialog_controller.js';
+import { DIALOG_HOST_CONTRACT, IndicatorDialogController } from './indicator_dialog_controller.js';
 // F3 系列名照合（§3.3.6）の純ロジック（ISSUE-181・SRP で外出し）。
 import {
   expandSeriesNamePattern,
@@ -37,8 +37,9 @@ import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
 import { isActorDriven } from '../../usecase/actor_driven_ids.js';
 import { STALL_DEADLINE_MS, UpdateScheduler } from './update_scheduler.js';
 import { RecomputeGate } from './recompute_gate.js';
-import { SeriesRenderRouter } from './series_render_router.js';
-import { IndicatorStateStore } from './indicator_state_store.js';
+import { createHostView } from './host_view.js';
+import { SERIES_RENDER_HOST_CONTRACT, SeriesRenderRouter } from './series_render_router.js';
+import { STATE_STORE_HOST_CONTRACT, IndicatorStateStore } from './indicator_state_store.js';
 
 // STALL_DEADLINE_MS の単一ソースは update_scheduler.js（ISSUE-157・SOLID 是正 🔴-1 で抽出）。
 //   既存 import（テスト・他ファイル）を壊さないため本モジュールからも再 export する。
@@ -143,9 +144,9 @@ export class IndicatorController {
     //   その場合 View 各メソッドは要素不在で no-op（node 単体テスト互換）。
     this._legendView = new IndicatorLegendView({ document: doc });
     // 描画振分（A9・ISSUE-181）を委譲する協働子。描画先 renderer を自身の出力ポートとして所有する。
-    this._router = new SeriesRenderRouter(this, renderer);
+    this._router = new SeriesRenderRouter(createHostView(this, SERIES_RENDER_HOST_CONTRACT), renderer);
     // 永続化・復元（UC-07・A10・ISSUE-181）を委譲する協働子。復元中 Promise は協働子が所有する。
-    this._store = new IndicatorStateStore(this);
+    this._store = new IndicatorStateStore(createHostView(this, STATE_STORE_HOST_CONTRACT));
     // Market Profile アクター（任意注入）。computeId==='market_profile' の指標を
     //   /compute 経由でなく本アクター（GET /market_profile → primitive）へ委譲する。
     //   既存トグル（#market-profile-toggle）とは別導線（二重導線）。未注入時は MP 分岐が no-op。
@@ -165,7 +166,7 @@ export class IndicatorController {
     //   （現在足・直近表示本数・candles ローダ・変更購読者）は本協働子が所有する（host は
     //   下の互換アクセサで委譲するだけでフィールドを持たない）。ライブ再計算入口
     //   （recomputeAllApplied）は controller 温存。
-    this._tf = new TimeframeController(this, { timeframe, recentBars, loadCandles });
+    this._tf = new TimeframeController(createHostView(this, TIMEFRAME_HOST_CONTRACT), { timeframe, recentBars, loadCandles });
 
     // メモリ状態（facade の純状態オブジェクト）。
     this._state = emptyState();
@@ -189,7 +190,7 @@ export class IndicatorController {
     //   host=this を渡し、apply/enable/toggle/remove/gear/reapply/restore/live-recompute を委譲する。
     //   subclass の inherited メソッド呼出（this._toggleMarketProfileVisible 等）・_mpParams override を
     //   温存するため base の各 MP メソッドは本協働子への薄いラッパへ縮退する（byte 挙動不変）。
-    this._mp = new MarketProfileController(this);
+    this._mp = new MarketProfileController(createHostView(this, MARKET_PROFILE_HOST_CONTRACT));
     // アクター駆動指標（/compute を持たない）の computeId → アクターコントローラ。
     //   台帳（actor_driven_ids.js）が「どの指標がアクター駆動か」を、本レジストリが「誰が処理するか」を
     //   持つ。以前は台帳で分岐した後に必ず this._mp（MP 専用）へ委譲しており、2 つ目のアクター駆動
@@ -198,7 +199,7 @@ export class IndicatorController {
     this._actorControllers = new Map([['market_profile', this._mp]]);
     // 指標追加ダイアログ（一覧・絞り込み・開閉）を委譲する協働子（ISSUE-181・A8）。
     //   絞り込み UI 状態（旧 this._filter）は協働子が所有する（状態も一緒に移す）。
-    this._dialog = new IndicatorDialogController(this);
+    this._dialog = new IndicatorDialogController(createHostView(this, DIALOG_HOST_CONTRACT));
   }
 
   // 競合ガード: 再計算バッチ実行中なら true。LiveUpdater が tick 先頭で参照しスキップ判定する。

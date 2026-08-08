@@ -26,6 +26,18 @@ export function isTailUpdatable(payload) {
   return seriesKind(payload.kind).tailUpdatable;
 }
 
+// SeriesRenderHost 契約の実体列挙（ISSUE-255）。**クライアント（本協働子）が所有する**インターフェース
+//   であり、host はこれを満たす側。合成時に createHostView(host, 本契約) を渡すため、ここに無い
+//   メンバーへ触れると実行時に例外になる（宣言＝実体）。面を増やすときに触るのは本表 1 箇所。
+export const SERIES_RENDER_HOST_CONTRACT = Object.freeze({
+  role: 'SeriesRenderHost',
+  methods: Object.freeze([
+    '_validateSeriesNames', '_label', '_applyStoredStyles', '_draw', '_drawLatest',
+  ]),
+  fields: Object.freeze([]),
+  optionalFields: Object.freeze([]),
+});
+
 export class SeriesRenderRouter {
   constructor(host, renderer) {
     this._host = host;
