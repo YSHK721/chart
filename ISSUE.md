@@ -4340,7 +4340,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **未実施（環境制約・要 y/n 判断）**: 実 UI（8000）での目視確認。本 worktree には venv（`lightweight-charts-python-main/.venv`）とデータが無く、かつ 8000/8001/8281 は**共有チェックアウト `/workspaces/app` から起動済みの別プロセス**が占有している。worktree コードで実 UI を確認するには当該共有スタックの停止・再起動が必要なため、独断で実施していない。なお 3 経路の**実 HTTP・実データ応答が byte 一致**であり、フロント（JS）差分は 0 のため、ブラウザ側の挙動が変わる経路は残っていない。
 
 ## ISSUE-260: [不具合] `va`（バリューエリア）設定が tf-period 列・増分成長の各経路に届かず 0.70 固定（2026-08-05）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-08・実装＋検定＋実データ実測で確認。ブラウザ実UI検証は未実施）
 - **重大度**: Medium（利用者が操作できるのに効かないツマミ＝表示と設定の不一致）
 - **事実**: UI は `va` を常時操作可能なパラメータとして出す（`market_profile/web/js/usecase/catalog_entry.js:125`「バリューエリア」）が、
   - tf-period 列経路: `controller/tf_period_profile_controller.py` に `va` 引数が無く、`compute/tf_period_columns.py:165/225/281` が `0.70` を直書き。クライアント `tf_period_profile_client.js` も URL に `va` を載せない。
@@ -4348,6 +4348,18 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - `/market_profile` の非増分 refresh 経路のみ設定を反映する。
 - **なぜ問題か**: 「VA 比率」という 1 つの業務パラメータの決定権が UI・controller・compute literal・JS domain literal の 4 箇所に分散している。かつ本モジュール自身の方針（効かないツマミを見せない＝`dispbp` は `conditionalVisible` で隠す）に反する。
 - **抜本的対策**: `va_pct` を全プロファイル生成経路の必須引数へ昇格させ（`handle_tf_period_profile(..., va)` → `tf_period_columns` へ透過、`DwellAccumulator` へ注入）、literal `0.70` を全削除して既定値を catalog 1 箇所に置く。
+- **是正内容（2026-08-08）**:
+  - 単一情報源を `compute/market_profile.py` に新設（`VA_PCT_DEFAULT` / `VA_PCT_MIN` / `resolve_va_pct()`）。解決規約（不正→既定・範囲外→クランプ）は参照実装 `/market_profile` のものをそのまま単一化し、3 経路が同じ関数を通る。
+  - 生成関数 7 本（`compute_candle_profile` / `compute_dwell_profile` / `compute_zp_profile` / `tf_period_profiles` / `day_columns_zp_compute` / `bucket_columns_compute` / `bucket_columns_zp_compute`）で `va_pct` を**必須キーワード引数**へ昇格（既定値を持たせない＝呼出側が決定を明示する）。
+  - tf-period 列経路: `client(&va=)` → `jitter buffer（取得パラメータ {src, va} を 1 オブジェクト化）` → `server.py` → `handle_tf_period_profile(..., va)` → 4 列生成関数へ透過。比率は**キャッシュ同一性の一部**（メモリ鍵＋ディスク `<sub>` タグ）。既定比率は無タグ＝従来パス（`1D/s1/g10` 等）のまま＝既存キャッシュ（実測 2.4GB）を孤児化しない。
+  - 増分成長経路: `/market_profile_forming` base=1 応答に**解決済み** `vaPct` を追加。front は `DwellAccumulator.init({vaPct})` で注入され、`VA_PCT` リテラルは撤去（欠損応答では増分に入らず前回描画を保持）。
+  - front の既定値は Python 唯一源からの**生成物** `web/js/domain/mp_param_defaults_generated.js`（生成器 `tools/gen_js_parity_golden.py`）を catalog が読む。`0.70` リテラルは backend/front とも 0 件（`market_profile.py` の宣言 1 行のみ）。
+- **検定**: `api/tests/test_va_pct_propagation.py`（31 件）＋ `web/tests/mp_va_pct_propagation.test.js`（10 件）＋ `py_parity_golden`（非既定比率ケース追加・生成物鮮度）。識別力は巻き戻しで実測: (a) controller の va 透過を戻す→6 件 Red、(b) `tf_period_columns` の `0.70` 直書きへ戻す→4 件 Red（zp 日次/バケットは値レベルで検出）、(c) JS の `VA_PCT` リテラルへ戻す→3 件 Red、(d) client の `&va=` を外す→1 件 Red。
+- **実測（実データ jp225_tick・実 HTTP エフェメラルポート・now=1786019400）**:
+  - tf-period 1D×3 日: `va` 省略と `va=0.70` は byte 一致／`va=0.30` と `0.95` は相違。全列で応答 `va_low/va_high` が「同一比率で参照規則 `_value_area_sparse` を levels へ独立適用した値」と一致（例 2026-08-04 列: 0.70→[65810,66250] / 0.95→[65570,66540]）。
+  - 増分成長: 実 forming 応答（`vaPct=0.55`）を**実体の** JS `DwellAccumulator` へ食わせた snapshot の VA `[19376.91, 28959.59]` が、参照実装 `/market_profile`（src=dwell・同一窓 `to=formingStart-1`・同一 va）の VA と**完全一致**。`va=0.70` でも一致（`[19376.91, 34709.20]`）。旧リテラル 0.70 固定で畳むと `va=0.55` 要求時に `va_high` が 34709.20 となり参照実装と 5749.61 乖離＝欠陥を実データで再現。
+  - ディスク配置: 既定 va は `JP225/1D/s1/g10`（＝既存共有キャッシュと同一）、非既定は `g10-va0.55` 等の別 dir に分離されることを実測。
+- **未実施**: ブラウザ実 UI 検証（本 worktree に venv 不在／固定ポート 8000・8280 は別セッションが占有中のため。front 差分＝catalog 既定の生成物参照・列 URL の `&va=`・accumulator の注入は、実 UI での目視確認が後段に必要）。
 
 ## ISSUE-261: [設計是正] 時間足台帳の第 2 定義が ISSUE-254 の射程外に残存している（2026-08-05）
 - **ステータス**: OPEN
