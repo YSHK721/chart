@@ -4831,20 +4831,30 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **実測（是正後）**: `tools/run_web_tests.sh` が 4 スイート **1,775 件**（1,100 / 331 / 301 / 43）を実行し exit 0。
 
 ## ISSUE-281: [不具合・実測再現] 永続化された未知 param を front が送り続け、当該指標が恒久的に計算不能になる（2026-08-08）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-08・fix/param-allowlist-and-failure-isolation）
 - **重大度**: High（一度混入すると自己修復しない。ライブ・リプレイ双方で当該指標が描けない）
 - **事象（利用者報告）**: リプレイ有効化時に `/compute` が 400。`validation: add_rsi が受理しない param が渡されました: ['ma_period']`。
 - **実測再現（実 HTTP）**: `POST /live/compute`（profit_rsi・`params={rsi_period,apply,ma_period}`）→ **400 validation**。`ma_period` を外すと **200**。
 - **真因**: front の `usecase/catalog.scopedParams` が**拒否リスト方式**である。param 定義が見つからない（`def.params` に無い）名前は `scoped[name] = value` で**素通し**する。実測: `scopedParams(profit_rsi, 'default', {rsi_period, apply, ma_period, unknown_x})` → 送信キーは `rsi_period, apply, ma_period, unknown_x`。
   - サーバは ISSUE-278 #8 で無言破棄をやめ**フェイルクローズ**にした。したがって「front が知らない param を送る」ことが即エラーになる。カタログから param が消えた指標に、古い永続状態（`applied.v1` / テンプレート）が残っていると、その指標は以後ずっと 400 になる。
 - **抜本的対策**: 絞り込みを**許可リスト**へ反転する。送るのは「その variant が受理すると宣言された param」だけ（サーバの `paramScopes` は `/catalog` で overlay 済み＝front は受理集合を知っている）。併せて復元時（`IndicatorStateStore`）にも未知 param を落とし、壊れた永続状態が居座らないようにする。
+- **是正（実施）**:
+  1. **送信を許可リストへ反転**（`usecase/catalog.scopedParams`）。カタログ定義に無い param は送らない。variant 絞り込み（サーバ `paramScopes` の overlay）は従来どおり。
+  2. **保存状態も治す**（`IndicatorStateStore._pruneUnknown`）。復元時にカタログ定義に無い param 名を落とし、**永続化へ書き戻す**（既に「未知 indicatorId を落として書き戻す」規約があり、同じ規約を param 粒度へ広げた）。送信側だけ直しても保存の汚れは残り続けるため両方要る。
+  - **アクター駆動指標は対象外**（market_profile / tickvol_bands）。`/compute` を通らず受理集合の権威はアクター側で、front カタログが宣言しない param（例 `bins`）が正当に存在する。既存検定「MP restore: … saved params」が Red になって判明した。
+- **安全確認（実測）**: サーバの `paramScopes` 24 指標の受理 param は**すべて front 定義に存在する**（許可リスト化で落ちるものは無い）ことを実行して確認。
+- **検定**: `tests/param_allowlist_and_failure_isolation.test.js`（5 件）。許可リスト・variant 絞り込み・復元時の掃除と書き戻し・アクター駆動の除外・失敗の局所化。識別力は変異注入（拒否リストへ戻す／rethrow を戻す）で **2 件 Red** を実測。
+- **実 UI 検証（8000）**: 報告と同じ壊れた状態（`profit_rsi` に `ma_period`）を localStorage へ仕込んでリロード → 保存が `["rsi_period","apply"]` へ**自動修復**され、profit_rsi が計算・描画された。
 - **関連**: ISSUE-278 #8（フェイルクローズ化）／ISSUE-282（1 指標の失敗が再生全体を止める）。
 
 ## ISSUE-282: [不具合・実測] 1 指標の計算失敗が再生（render）全体を中断する（2026-08-08）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-08・fix/param-allowlist-and-failure-isolation）
 - **重大度**: High（リプレイでは短い窓が正常に起こるため、特定指標を適用しただけで再生が止まる）
 - **事象（利用者報告）**: `[replay] 計算エラー … E01_INSUFFICIENT_BARS: バー数 1234 では σ̂ を 1 本も出力できない（n_har + 23 = 1352 本以上が必要）` の後、そのバーの描画が行われない。
 - **真因（コードで確認）**: `indicator_controller.recomputeAllApplied` は `Promise.allSettled` の結果から**最初の rejection を rethrow** する（`const rejected = settled.find(...); if (rejected) throw rejected.reason;`）。`replay.js:render` はこれを catch してログのみ出し **return** するため、`applyView` / `syncBoundary` / MP enterBar / 先読み以降が一切走らない。
 - **なぜリプレイで顕在化するか**: リプレイは計算窓を `limit = bar + 1`（リビール範囲）に絞る。長い履歴を要求する指標（cvfe 系の σ̂ 等）は、カーソルが手前にある間は**正常に**「まだ出せない」を返す。これは異常ではなく想定内の状態であり、他指標とローソクの描画まで止める理由がない。
 - **抜本的対策**: 失敗の単位をインスタンスに閉じる。`recomputeAllApplied` は rejection を伝播せず、失敗インスタンスだけを描画対象から外し、成功分とローソクは描く（ISSUE-232 の「一括計算が失敗しても再生は継続」と同じ規律）。失敗は凡例・ステータスで可視化し、無言にはしない。
+- **是正（実施）**: `recomputeAllApplied` は rejection を伝播せず、失敗を `{ failures: [{instanceId, indicatorId, error}] }` として返す。失敗インスタンスだけが描画対象から外れ、成功分とローソクは描かれる。**無言にしない**: 失敗はインスタンス ID 付きで `console.error` へ出し、`replay.js` は状態欄へ「一部の指標を計算できません: <id>」を出す。バッチ自体が続行不能な場合（描画不変条件の破れ等）は従来どおり例外が伝播する。
+- **実 UI 検証（8000・リプレイ）**: cvfe を適用して月足（171 本）へ切替 → `E01_INSUFFICIENT_BARS`（523 本必要）が発生。コンソールに `[indicator] 計算失敗（当該インスタンスのみスキップ）: cvfe#1` が出る一方、**ローソクと他 2 指標（ma_marod / profit_rsi）は正常に描画された**（是正前は render 全体が中断）。画像 `issue282-replay-failure-isolated.png`。
+- **回帰**: フロント 4 スイート 1,824 件 passed。
 - **関連**: ISSUE-281（400 を出す側）／ISSUE-232（fail-open の前例）。
