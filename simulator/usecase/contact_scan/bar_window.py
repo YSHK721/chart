@@ -1,4 +1,10 @@
-"""bar_window — 足 1 本の足内データ窓 ``[start, end)`` を足境界から決める（純・stdlib のみ）。
+"""bar_window — 足 1 本の足内データ窓 ``[start, end)`` を足境界から決める（純）。
+
+依存は stdlib と **依存ゼロの時間足台帳** :mod:`marketdata.tf_ledger` のみ（pandas/numpy は
+読み込まれない＝``simulator/tests/unit/test_contact_scan_usecase_purity.py`` が実行して固定する）。
+期間秒（``TF_SECS``）はかつてここに手書き dict を持っていたが、それは台帳の第 2 定義であり、
+台帳へ時間足を足しても追随せず検定も落ちなかった（ISSUE-261。同型の事故が ISSUE-253）。
+台帳側の ``bar_sec`` からの導出値へ置換し、時間足の追加は台帳 1 行で完結する。
 
 参照実装 prototype_260626-01/contact_scan/bar_window.py と bit 一致。replay.js buildStream の
 ラベル規約ミラー（resample 既定）:
@@ -8,13 +14,9 @@
 """
 from __future__ import annotations
 
-DAY = 86400
+from marketdata.tf_ledger import TF_BAR_SEC as TF_SECS
 
-# 時間足→期間秒。replay.js TF_SECS と同値（末足の窓近似用）。
-TF_SECS = {
-    "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
-    "1h": 3600, "4h": 14400, "1D": 86400, "1W": 604800, "1M": 2592000,
-}
+DAY = 86400
 
 
 def _dur(timeframe: str) -> int:

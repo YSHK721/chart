@@ -4369,7 +4369,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検証環境の制約（実測で判明・ISSUE-279 として起票）**: worktree からの実 UI 検証では本件の backend 変更は**一切実行されない**。venv の `jp225_chart_paths.pth` が `market_profile_api` を main チェックアウト固定で解決するため、worktree の殻（新）＋ main の controller（旧）という組合せになり、`/tf_period_profile` が `handle_tf_period_profile() got an unexpected keyword argument 'va'` で 500 になる。上記の実 UI 検証は develop マージ後の標準構成で実施した。
 
 ## ISSUE-261: [設計是正] 時間足台帳の第 2 定義が ISSUE-254 の射程外に残存している（2026-08-05）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-08・写し 7 箇所すべて導出へ置換）
 - **重大度**: High（ISSUE-253 の事故と同型。1 箇所は既に値が乖離している）
 - **背景**: ISSUE-254 で台帳を Python 単一定義とし JS へ生成物（`tf_ledger_generated.js`）として配る方式へ是正した。台帳**そのもの**の仕組みは正しく機能している（双方向 parity 検定あり）。問題は**その外側**に手書きの写しが残っていること。
 - **実測（同期手段が無いもの）**:
@@ -4384,6 +4384,31 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   | `marketdata/tf_meta.py:41-44` | `TF_BAR_SEC` が `TF_DESCRIPTORS` から導出されず手書き（検定はキー集合のみで値は非検定） |
 - **既に起きている乖離**: replay 合成根の有効時間足は 8 足（30m 欠落）だが、`marketdata/resample.py:55` に `"30m"` は存在し `jp225_tick_30m.csv` も実在。付随コメント「サーバ TIMEFRAME_RULES と一致・30m 非対応」は現状と一致しない。統合 UI 経由（ライブ合成根＝台帳導出 9 足）と standalone replay（8 足）で同じ「リプレイ」の対応足が異なる。
 - **抜本的対策**: 各写しを台帳からの導出へ置換する。`TF_BAR_SEC` は `TfDescriptor` に `bar_sec` を追加して導出値化する。replay 固有の除外足が本当に必要なら「除外理由つきの差集合」を 1 箇所で宣言し、そこから導出する。
+
+### 是正の内訳（7 箇所すべて導出へ）
+| # | 箇所 | 是正 |
+|---|---|---|
+| 1 | `period_presets.js` `TF_SEC` | `domain/tf_meta.TF_BAR_SEC` 導出（87fb518） |
+| 2 | `replay/stream.js` `TF_SECS` | 同上（87fb518） |
+| 3 | `marketdata/tf_meta.py` `TF_BAR_SEC` | `TfDescriptor.bar_sec` からの導出（87fb518） |
+| 4 | `mp .../tf_period_profile_controller.py` `_TF_SECONDS` / `_BUCKET_TFS` | 台帳の `bar_sec` / `floorable` からの導出（87fb518） |
+| 5 | ZP 対応 tf（Python/JS 両側） | Python 単一定義＋生成物 `mp_capability_generated.js`（ISSUE-264・8266079） |
+| 6 | `replay_ui .../composition_root_front.js` の有効時間足 8 足 | 合成根のフォーク解消で台帳導出へ（ISSUE-278 #4・97e98fe。30m 到達不能も解消） |
+| 7 | `simulator/usecase/contact_scan/bar_window.py` `TF_SECS` | **本是正**（下記） |
+
+### #7 の是正（2026-08-08）— 台帳を依存ゼロモジュールへ抽出
+- **なぜ最後まで残ったか（実測）**: `bar_window.py` は「純・stdlib のみ」を宣言し、`test_contact_scan_usecase_purity.py` が pandas/numpy の import を禁じている。一方で台帳 `TF_DESCRIPTORS` は pandas を import する `marketdata/resample.py` にあった。**参照すると宣言が破れ、参照しなければ写しが残る**という構造で、どちらを選んでも欠陥が残っていた。さらに実測すると `marketdata` は**サブモジュールを 1 つ import しただけで** pandas/numpy がロードされる状態だった（`__init__` → `cleaning` → `outlier_policy`）。
+- **抜本的対策**: 台帳を**依存ゼロの単独モジュール** `marketdata/tf_ledger.py` へ抽出し、pandas を使う層（`resample`）と使えない層（`contact_scan`）が**同じ 1 つの定義**から導出する形にした。台帳は「どんな時間足があるか」という純粋なドメインデータであり、再集計の実装（pandas）とは別の関心事＝SRP に沿った分離。
+  - `resample.py` は台帳を**再輸出**するのみ（`TfDescriptor` / `TF_DESCRIPTORS` の名前・型・内容・挿入順は不変＝既存消費者は無改変）。
+  - `marketdata/__init__.py` の `repair_ohlc_outliers` を PEP 562 の遅延解決へ移した（公開面は不変）。これで `import marketdata.tf_ledger` が pandas/numpy を引かない。
+  - `bar_window.py` は手書き dict を削除し `from marketdata.tf_ledger import TF_BAR_SEC as TF_SECS`。
+- **検定（宣言を施行する・ISSUE-262 流儀）**:
+  - `test_contact_scan_usecase_purity.py` に**実行検定**を追加（新しいインタプリタで各 usecase モジュールを import し `sys.modules` に pandas/numpy が現れないことを実測）。AST 走査は直接 import しか見ず、**推移的な流入**を検出できないため宣言が静かに偽になる。
+  - 台帳導出の検定 2 件（`TF_SECS is TF_BAR_SEC`・全 9 tf の値一致・手書き dict 復活の検出／末足の窓長が `bar_sec` と一致）。
+  - `test_module_dependency_declarations.py` に `tf_ledger.py: 依存ゼロ` を宣言登録し、`resample.py` の許可表へ `marketdata.tf_ledger` を追加。
+- **識別力の実証（変異注入）**: (a) 手書き dict へ戻す → 1 件 Red。(b) `__init__` を eager import へ戻す → 実行検定が **3 件 Red**（`bar_window` / `engine` / `scan_contacts`＝推移的流入を実際に検出）。復元で全 Green。
+- **値の不変性**: 旧手書き 9 件と台帳導出値が**完全一致**（実行して確認）。`tools/gen_js_parity_golden.py` を再実行しても生成物に**差分 0**＝JS 側台帳も不変。両 core（ライブ/リプレイ）の起動 import も成功。
+- **回帰**: marketdata+simulator+tools 1,222 / indicator_ui api 854 / market_profile api 397 / replay_ui 240 / indicator_ui web 1,100 / market_profile web 331 全通過。
 
 ## ISSUE-262: [設計是正] 宣言（コメント/docstring）が施行されておらず、次の編集で静かに破れる（2026-08-05）
 - **ステータス**: RESOLVED（2026-08-05・fix/enforce-declarations）
