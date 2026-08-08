@@ -100,11 +100,17 @@ export class ReplayIndicatorController extends IndicatorController {
     await Promise.all(targets.map(async (inst) => {
       const meta = this._meta.get(inst.instanceId);
       const params = this._paramsObject(inst.params);
+      const variant = inst.variant ?? this._defaultVariant(meta.def);
       try {
+        // ISSUE-288: 本経路も他の送信経路と同一の規約に従う。以前はここだけが
+        //   `computeTimeframe`（計算.時間足）を載せず、variant スコープも掛けずに送っていた。
+        //   その結果、上位足計算の指標がチャート足で計算され、確定時に描いた投影済みの階段を
+        //   上書きして「上位足指標が消える」ように見えた（実 UI 実測）。
         const result = await this._compute.compute({
           indicatorId: inst.indicatorId,
-          variant: inst.variant ?? this._defaultVariant(meta.def),
-          params,
+          variant,
+          params: this._scopedParams(inst.indicatorId, variant, params),
+          computeTimeframe: this._calcTimeframeOf(params),
           datasetRef: this._datasetRef,
           generation: 0,
           timeframe: this._timeframe,
@@ -167,11 +173,18 @@ export class ReplayIndicatorController extends IndicatorController {
 
   // 足内追従の対象（適用済み ∩ 共有 INTRABAR_FORMING_IDS）。一括計算の要求単位でもある。
   //   MP は /compute を持たないため対象外（_isMarketProfile で除外）。
+  //   **上位足計算（計算.時間足 ≠ チャート）も対象外**（ISSUE-288）: 足内一括計算は
+  //   チャート足の窓で計算する経路であり、上位足へ投影できない。対象に含めると、確定時の
+  //   full 計算で描いた**投影済みの階段をチャート足の値で上書きしてしまい、上位足指標が
+  //   消えたように見える**（実測: 1D 計算の EMA が 5m 値で描かれ、段が消失）。
+  //   除外した指標は足内では動かず、バー確定の full 再計算で追いつく（ライブ側 ISSUE-274 の
+  //   「段全体を毎 tick 動かすのは費用に見合わない」と同じ判断）。
   formingSeqTargets() {
     return [...this._state.applied].filter((inst) => {
       if (!INTRABAR_FORMING_IDS.has(inst.indicatorId)) return false;
       const meta = this._meta.get(inst.instanceId);
-      return !!meta && !this._isMarketProfile(meta.def);
+      if (!meta || this._isMarketProfile(meta.def)) return false;
+      return !this._usesHigherTimeframe(inst);
     }).map((inst) => {
       const variant = inst.variant ?? this._defaultVariant(this._meta.get(inst.instanceId).def);
       return {
@@ -184,6 +197,13 @@ export class ReplayIndicatorController extends IndicatorController {
         params: this._scopedParams(inst.indicatorId, variant, this._paramsObject(inst.params)),
       };
     });
+  }
+
+  // 上位足計算（計算.時間足）を使うインスタンスか。'chart'・未指定・チャート足と同値は false。
+  //   判定はサーバへ送る値（params.timeframe）と同じものを見る＝送信と足内対象が食い違わない。
+  _usesHigherTimeframe(inst) {
+    const tf = this._paramsObject(inst.params).timeframe;
+    return !!tf && tf !== 'chart' && tf !== this._timeframe;
   }
 
   // 一括計算済みの 1 ステップを同期描画する。step は { instanceId: series } の写像。

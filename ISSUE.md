@@ -4962,3 +4962,21 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **実 HTTP 検証（是正後）**: リプレイ core も階段になり、段の値がライブと一致（64183.41 / 64488.52 / 65033.22）。段の切れ目の差は `untilTime`（リプレイの因果切り）由来で、規約どおり。
 - **残る制約（明示）**: 足内一括計算（`mode=latest_seq`）は上位足計算に未対応。足内では上位足指標が動かず、バー確定時の full 計算で追いつく（ライブ側 ISSUE-274 の「段全体を毎 tick 動かすのは費用に見合わない」と同じ判断）。
 - **回帰**: replay_ui + indicator_ui api 1,094 passed／フロント 4 スイート 全通過。
+
+## ISSUE-288: [不具合・実測] リプレイで上位足指標が消える（一括リビール経路が送信規約から外れていた）（2026-08-08）
+- **ステータス**: RESOLVED（2026-08-08・fix/reveal-send-contract）
+- **重大度**: High（リプレイに切り替えた瞬間に上位足指標の階段が消え、チャート足の値に置き換わる）
+- **事象（利用者報告＋診断ダンプ）**: 計算.時間足=1D の移動平均 3 本が、リプレイでは **66,2xx（5m の値）** で描かれ、日境界の階段が消えていた。ライブでは正しく階段（65,033）だった。
+- **切り分け（実測）**:
+  1. `/replay/compute`（`mode=full`・`computeTimeframe=1D`）を手で叩くと **正しい投影**（1500 点・64,117→65,033）。→ サーバは正しい。
+  2. 実際にアプリが出していた要求（network 実体）に **`computeTimeframe` が無い**ことを確認。→ 送信側の欠落。
+  3. 送信元は一括リビール（ISSUE-158 ②）の `buildRevealBase`。`this._compute.compute({...})` を**直接**組み立てており、`_gatewayAdapter` を通らないため `computeTimeframe`（ISSUE-274）も variant スコープ（ISSUE-278 #8）も適用されていなかった。
+- **真因**: `/compute` の送信経路が 4 つある（`_gatewayAdapter` / `/live_ticks` の申告 / `latest_seq` / **一括リビール**）のに、規約が経路ごとに手書きされていた。ISSUE-278 #8 は前 3 経路を揃えたが、**一括リビールだけが取り残されていた**。
+- **抜本的対策（実施）**:
+  1. 計算.時間足の導出を基底の `_calcTimeframeOf(params)` **1 箇所**へ集約し、`_gatewayAdapter` と一括リビールの双方がそれを使う（各所で `params.timeframe` を読まない）。
+  2. 一括リビールの送信に `_scopedParams` と `computeTimeframe` を適用（他経路と同一規約）。
+  3. 足内一括計算（`latest_seq`）は上位足へ投影できないため、**上位足計算のインスタンスを対象から外す**（`formingSeqTargets`）。対象に含めると確定時に描いた投影済みの階段をチャート足の値で上書きしてしまう。除外分は足内で動かず、バー確定の full 計算で追いつく。
+- **検定**: `forming_seq_mtf_exclusion.test.js`（4 件）＝足内一括の対象から上位足計算を外す／チャート足と同値なら対象／params 未指定は従来どおり／**一括リビールが `computeTimeframe` と variant スコープを載せる**。既存 `replay_reveal.test.js` の fixture は本番と同じ実カタログを渡す形へ是正（テスト専用の緩い形にしない）。
+- **実 UI 検証（8000・リプレイ）**: 凡例が **65,033.215**（1D 値）となり、日境界の階段が描画される。画像 `issue288-replay-mtf-fixed.png`（是正前 `replay-mtf-missing.png`）。
+- **回帰**: フロント 4 スイート（indicator_ui 1,140 / market_profile 333 / replay_ui 318 / unified_ui 43）全通過。
+- **関連**: ISSUE-274（投影の導入）／ISSUE-278 #8（送信側で絞る規律）／ISSUE-287（リプレイ側の投影欠落）。

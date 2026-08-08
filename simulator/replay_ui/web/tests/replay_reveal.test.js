@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ReplayIndicatorController } from '../js/adapter/front/replay_indicator_controller.js';
+import { get } from '../js/usecase/catalog.js';
 import { CAUSAL_REVEAL_IDS } from '../js/usecase/causal_reveal_ids.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
 import { TimeframeController } from '../js/adapter/front/timeframe_controller.js';
@@ -36,6 +37,9 @@ function newRevealCtrl({ applied, computeImpl } = {}) {
     ['pb#1', { def: { id: 'profit_band' } }],
   ]);
   ctrl._isMarketProfile = () => false;
+  // ISSUE-288: 送信規約（variant スコープ・計算.時間足）は本番と同じ経路を通す。カタログは
+  //   本番に必ず在るため、実カタログを渡す（テスト専用の緩い形にしない）。
+  ctrl._catalog = { get };
   ctrl._paramsObject = (p) => p ?? {};
   ctrl._defaultVariant = () => 'default';
   ctrl._validateSeriesNames = (series) => series;
@@ -139,6 +143,9 @@ test('recomputeAllApplied honors the skip predicate (revealed instances are not 
   };
   ctrl._meta = new Map([['a#1', { def: {} }], ['b#1', { def: {} }]]);
   ctrl._isMarketProfile = () => false;
+  // ISSUE-288: 送信規約（variant スコープ・計算.時間足）は本番と同じ経路を通す。カタログは
+  //   本番に必ず在るため、実カタログを渡す（テスト専用の緩い形にしない）。
+  ctrl._catalog = { get };
   ctrl._paramsObject = (p) => p;
   const computed = [];
   ctrl._computeInstance = async (id) => { computed.push(id); return { accepted: false }; };
