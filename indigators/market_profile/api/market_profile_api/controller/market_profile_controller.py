@@ -9,8 +9,8 @@ HTTP サーバ本体（BaseHTTPRequestHandler・ソケット）に依存しな�
   2. timeframe を検証する（None は原子＝再集計なし・後方互換。未知コードは 400）。
   3. ``dataset.load_candles(ref, tf, limit)`` で OHLC candles（``[{time,open,high,low,close}]``）を取得する
      ── この形はそのまま ``compute_candle_profile`` の入力形（time/open/high/low/close の辞書リスト）。
-  4. ``bins``（int・既定 60・[1, _MAX_BINS] にクランプ）/ ``va``（float・既定 0.70・有限かつ
-     [_MIN_VA, 1.0] にクランプ）を反映して足ベース TPO プロファイルを計算する。
+  4. ``bins``（int・既定 60・[1, _MAX_BINS] にクランプ）/ ``va``（float・既定と有効域は
+     :func:`market_profile.resolve_va_pct` の単一規約）を反映して足ベース TPO プロファイルを計算する。
   5. 成功は (200, {ok, profile})。ref/timeframe の検証失敗は §6.3.4 nested error（error.type→
      HTTPステータスは api_shared.http_contract.ERROR_STATUS・単一定義）で 400 に翻訳する。
      bins/va は例外化せずクランプで吸収する（500 化しない）。data load / 計算の想定外失敗のみ
@@ -31,17 +31,21 @@ from api_shared.http_contract import nested_error  # §6.3.4 単一定義（ISSU
 from marketdata import dataset  # dataset 実体は marketdata へ移設済み（最下層 peer 依存）
 from market_profile_api.compute import market_profile_dwell
 from market_profile_api.compute import market_profile_zp
-from market_profile_api.compute.market_profile import compute_candle_profile, price_range
+from market_profile_api.compute.market_profile import (
+    compute_candle_profile,
+    price_range,
+    resolve_va_pct,
+)
 
 # パラメータ既定値（GET /market_profile のクエリ省略時）。
+#   ISSUE-260: va（バリューエリア比率）の既定と有効域・クランプ規約は compute の単一情報源
+#   （:data:`market_profile.VA_PCT_DEFAULT` / :func:`market_profile.resolve_va_pct`）が持つ。
+#   ここに写しを置くと、tf-period 列や増分成長が別の既定へ黙って落ちる（本 ISSUE の原因）。
 _DEFAULT_BINS = 60
-_DEFAULT_VA = 0.70
 _DEFAULT_SRC = "candle"
-# 入力境界（単一スレッド常駐サーバの占有防止・退化した VA の防止）。
+# 入力境界（単一スレッド常駐サーバの占有防止）。
 #   bins は [1, _MAX_BINS] にクランプ（0 での ValueError→500 と巨大値での占有を封じる）。
-#   va は有限かつ [0.01, 1.0] にクランプ（負/NaN/Inf/>1 での無言退化を防ぐ）。
 _MAX_BINS = 1000
-_MIN_VA = 0.01
 
 # ISSUE-097 🔴-1（OCP）: src（プロファイル計算ソース）の定義を SourceDescriptor 登録表へ集約する。
 #   従来 4 箇所へ分散していた許可集合・metric 表・atom 表・実処理 if 連鎖を、1 ソース＝1 記述子の
@@ -260,7 +264,8 @@ def handle_market_profile(
         timeframe: 時間足コード（None=原子・再集計なし）。未知は 400。
         limit: 直近 N 本に制限（クエリ str|int|None。不正・None は全件）。
         bins: 価格ビン分割数（クエリ str|int|None。不正・None は 60）。
-        va: バリューエリア比率 0..1（クエリ str|float|None。不正・None は 0.70）。
+        va: バリューエリア比率 0..1（クエリ str|float|None）。解決は単一情報源
+            :func:`market_profile.resolve_va_pct`（不正・None は既定・範囲外はクランプ）。
         src: 集計原子（'candle'=足レンジ TPO・既定 / 'dwell'=実ティック滞在秒・セッション認識 /
             'm1'=生ティック数）。許可値以外は 400。'dwell'/'m1' はティック対応 ref（'jp225_tick'）以外は 400。
         barw: レンジ(pt・クエリ str|float|None)。>0 指定時は price レンジ確定後に
@@ -299,10 +304,7 @@ def handle_market_profile(
 
     # bins/va は範囲クランプ（不正値でも 500/退化させず、安全な範囲へ丸める）。
     n_bins = max(1, min(int(_parse_int(bins, _DEFAULT_BINS)), _MAX_BINS))
-    va_pct = _parse_float(va, _DEFAULT_VA)
-    if not math.isfinite(va_pct):
-        va_pct = _DEFAULT_VA
-    va_pct = min(1.0, max(_MIN_VA, va_pct))
+    va_pct = resolve_va_pct(va)  # ISSUE-260: 解決規則は単一情報源（全経路で同一）。
     limit_n = _parse_int(limit, None)
     # barw（レンジpt）— 有限かつ非負のみ採用（不正・None・負・NaN/Inf は 0=auto へ丸める）。
     barw_val = _parse_float(barw, 0.0)

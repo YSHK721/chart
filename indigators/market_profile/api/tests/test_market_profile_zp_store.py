@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from market_profile_api.compute import market_profile_zp as zp
+from market_profile_api.compute.market_profile import VA_PCT_DEFAULT
 # ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
 from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
@@ -113,7 +114,7 @@ def test_compute_zp_profile_schema_and_sessions(zp_env):
     t0, t1 = _day(28), _day(30)
     # 表示レンジは合成 mid の実域をカバーする広めの値
     prof = zp.compute_zp_profile(
-        "SYN", t0, t1, 19800.0, 20200.0, 50, now=now,
+        "SYN", t0, t1, 19800.0, 20200.0, 50, va_pct=VA_PCT_DEFAULT, now=now,
         want_today=True, want_sessions=True,
     )
     for key in ("bins", "poc", "va_low", "va_high", "price_min", "price_max",
@@ -130,9 +131,13 @@ def test_compute_zp_profile_schema_and_sessions(zp_env):
 
 def test_compute_zp_profile_deterministic(zp_env):
     now = _day(40)
-    p1 = zp.compute_zp_profile("SYN", _day(29), _day(30), 19800.0, 20200.0, 40, now=now)
+    p1 = zp.compute_zp_profile(
+        "SYN", _day(29), _day(30), 19800.0, 20200.0, 40, va_pct=VA_PCT_DEFAULT, now=now
+    )
     zp._reset_caches()
-    p2 = zp.compute_zp_profile("SYN", _day(29), _day(30), 19800.0, 20200.0, 40, now=now)
+    p2 = zp.compute_zp_profile(
+        "SYN", _day(29), _day(30), 19800.0, 20200.0, 40, va_pct=VA_PCT_DEFAULT, now=now
+    )
     assert p1 == p2  # seed 決定論＋キャッシュ経路差なし
 
 
@@ -168,7 +173,9 @@ def test_window_aggregation_identity(zp_env):
     with np.errstate(invalid="ignore", divide="ignore"):
         z_manual = (obs - mean) / np.sqrt(var)
     z_manual[~np.isfinite(z_manual)] = 0.0
-    prof = zp.compute_zp_profile("SYN", days[0], days[1], pmin, pmax, size, now=now)
+    prof = zp.compute_zp_profile(
+        "SYN", days[0], days[1], pmin, pmax, size, va_pct=VA_PCT_DEFAULT, now=now
+    )
     # log 格子では fine セルと線形表示 bin は 1:1 に整列しないため、格子非依存の不変量で照合する:
     #   z_max（fine 合算 z の最大）は表示再集約に依存しない＝手動合算と一致。
     assert prof["z_max"] == pytest.approx(round(float(z_manual.max()), 2), abs=0.011)

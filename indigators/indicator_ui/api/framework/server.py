@@ -304,6 +304,8 @@ def _compute_tf_period_profile(query: dict[str, list[str]]) -> tuple[int, dict[s
     frm = (query.get("from") or [None])[0]
     to = (query.get("to") or [None])[0]
     src = (query.get("src") or [None])[0]  # 省略時 None＝従来経路（byte 不変）。
+    # ISSUE-260: バリューエリア比率。省略時は controller が既定へ解決＝従来応答（byte 不変）。
+    va = (query.get("va") or [None])[0]
     # ISSUE-083 追補: in-memory LiveTickBuffer の末尾を controller へ渡し、当日（未完了セッション）
     #   列を parquet フロンティア遅延（~1分）を待たず最新ティックまで育てる（完了日は controller が
     #   無視＝キャッシュ規約不変）。buffer 未注入・非 tick ref は None＝従来経路（byte 不変）。
@@ -312,7 +314,7 @@ def _compute_tf_period_profile(query: dict[str, list[str]]) -> tuple[int, dict[s
             if (buf is not None and forming_bar_mod.is_tick_ref(ref)) else None)
     try:
         status, payload = handle_tf_period_profile(
-            ref, timeframe, frm, to, src=src, live_ticks=live)
+            ref, timeframe, frm, to, src=src, live_ticks=live, va=va)
     except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
         return 500, _nested_error("internal", f"tf_period_profile 取得に失敗しました: {exc}")
     return status, payload

@@ -20,6 +20,7 @@ import pandas as pd
 import pytest
 
 from market_profile_api.compute import market_profile_dwell as mpd
+from market_profile_api.compute.market_profile import VA_PCT_DEFAULT
 from market_profile_api.compute.rollup_dto import DayRollup
 from market_profile_api.controller.market_profile_controller import handle_market_profile
 # ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
@@ -213,7 +214,9 @@ class TestComputeDwellProfile:
         # t0 を旧キャップ(250日)を超える過去に置く（300日窓）。
         t1 = _DAY0 + 2 * _DAY
         far_t0 = t1 - 300 * _DAY
-        mpd.compute_dwell_profile("JP225", far_t0, t1, 990.0, 1110.0, 12, bar_sec=_DAY)
+        mpd.compute_dwell_profile(
+            "JP225", far_t0, t1, 990.0, 1110.0, 12, va_pct=VA_PCT_DEFAULT, bar_sec=_DAY
+        )
         # 走査開始は far_t0 の日境界まで遡る（旧 cap_from に丸められない）。
         old_cap_from = (t1 + _DAY) - mpd._MAX_DWELL_DAYS * _DAY
         day_calls = [s for s, _ in calls if s % _DAY == 0]  # 完全日ロールアップの呼び出し。
@@ -1110,7 +1113,8 @@ class TestSessionDaySplit:
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
         profile = mpd.compute_dwell_profile(
             "JP225", self.MON_START, self.MON_START, 95.0, 115.0, 4,
-            bar_sec=86400, now=self.MON_START + 3 * 86400, metric="count", want_sessions=True,
+            va_pct=VA_PCT_DEFAULT, bar_sec=86400, now=self.MON_START + 3 * 86400,
+            metric="count", want_sessions=True,
         )
         labels = [s["date"] for s in profile["sessions"]]
         assert labels == ["2026-07-13"], labels
@@ -1127,7 +1131,8 @@ class TestSessionDaySplit:
         monkeypatch.setattr(mpd, "_load_window_ticks", spy_loader)
         mpd.compute_dwell_profile(
             "JP225", self.MON_START, self.MON_START, 95.0, 115.0, 4,
-            bar_sec=86400, now=self.MON_START + 3 * 86400, metric="count",
+            va_pct=VA_PCT_DEFAULT, bar_sec=86400, now=self.MON_START + 3 * 86400,
+            metric="count",
         )
         day_windows = [w for w in windows if w[0] == self.MON_START]
         assert day_windows and day_windows[0] == (self.MON_START, self.MON_START + 86400)

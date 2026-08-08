@@ -35,6 +35,8 @@ from market_profile_api.compute.tf_period_profile import (
     _TFP_CACHE_VERSION,
     tf_period_profiles,
 )
+# ISSUE-260: VA 比率の既定と解決規則は compute の単一情報源が持つ（本 controller は解決値を透過する）。
+from market_profile_api.compute.market_profile import VA_PCT_DEFAULT, resolve_va_pct
 from market_profile_api.controller.market_profile_controller import _error_body
 # ISSUE-172: 配置記述子（GC 契約 DTO）。tf-period の世代 subdir を所有する当事者は本 controller。
 from market_profile_api.cache_layout import CacheLayout as _CacheLayout
@@ -138,28 +140,46 @@ _TFP_BUCKET_GEN = "s1"  # ISSUE-086: 1W/1M バケット count 列の世代（日
 _TFP_ZP_GEN = "s3"  # ISSUE-085: VA 修正世代（zp 列・count 世代とは独立）。
 
 
-def _disk_tf_count(tf: Any, unit: float) -> str:
+def _va_tag(va_pct: float) -> str:
+    """VA 比率のディスク配置タグ（ISSUE-260）。既定比率は無タグ＝**従来パスと同一**。
+
+    なぜ内容鍵に VA 比率を含めるか: 列 payload の ``va_low``/``va_high`` は比率に依存する。
+    zp 列の VA は密な z 格子（levels は z>0 のみ・値は 2 桁丸め）から算出されるため、保存済み
+    列から別比率の VA を厳密に再導出することはできない＝比率は**内容同一性の一部**である。
+
+    なぜ既定だけ無タグか: 既定比率の列内容は是正前と byte 同一であり、写像は単射のままである。
+    タグを常に付けると既存の完了日キャッシュ（実測 2.4GB）が全て孤児化し、zp 日次の
+    サロゲート再計算を強制する。既定＝従来パスに固定することでこの再計算を発生させない。
+    """
+    return "" if va_pct == VA_PCT_DEFAULT else f"-va{va_pct:g}"
+
+
+def _disk_tf_count(tf: Any, unit: float, va_pct: float) -> str:
     """日次 count 列の disk_tf。世代は生成本体の ``_TFP_CACHE_VERSION`` に連動（ISSUE-091 A3）。"""
-    return f"{tf}/s{_TFP_CACHE_VERSION}/g{unit:g}"
+    return f"{tf}/s{_TFP_CACHE_VERSION}/g{unit:g}{_va_tag(va_pct)}"
 
 
-def _disk_tf_bucket(tf: Any, unit: float) -> str:
+def _disk_tf_bucket(tf: Any, unit: float, va_pct: float) -> str:
     """1W/1M バケット count 列の disk_tf（ISSUE-086）。"""
-    return f"{tf}/{_TFP_BUCKET_GEN}/g{unit:g}"
+    return f"{tf}/{_TFP_BUCKET_GEN}/g{unit:g}{_va_tag(va_pct)}"
 
 
-def _disk_tf_zp(tf: Any) -> str:
+def _disk_tf_zp(tf: Any, va_pct: float) -> str:
     """zp 列（日次・バケット共通）の disk_tf。ISSUE-088 🔵-3: zp 内部世代へ連動。
 
     ISSUE-183 item5: zp の形式版数は gateway 側 ``cache_settings.ZP_CACHE_VERSION``（単一情報源）
     から call-time に読む（旧: compute の module private ``_zp._ZP_CACHE_VERSION``）。
     """
-    return f"{tf}/{_TFP_ZP_GEN}/zp-v{_cache_settings.ZP_CACHE_VERSION}"
+    return f"{tf}/{_TFP_ZP_GEN}/zp-v{_cache_settings.ZP_CACHE_VERSION}{_va_tag(va_pct)}"
 
 
-def _disk_tf_variants(tf: Any, unit: float) -> "tuple[str, ...]":
+def _disk_tf_variants(tf: Any, unit: float, va_pct: float) -> "tuple[str, ...]":
     """本 controller がディスクへ書く全 disk_tf を列挙する（GC 記述子の導出元・ISSUE-172）。"""
-    return (_disk_tf_count(tf, unit), _disk_tf_bucket(tf, unit), _disk_tf_zp(tf))
+    return (
+        _disk_tf_count(tf, unit, va_pct),
+        _disk_tf_bucket(tf, unit, va_pct),
+        _disk_tf_zp(tf, va_pct),
+    )
 
 
 def layout() -> _CacheLayout:
@@ -171,7 +191,8 @@ def layout() -> _CacheLayout:
     """
     root = _tfp_disk_root()
     gens = frozenset(
-        tf.split("/")[_DISK_TF_GEN_INDEX] for tf in _disk_tf_variants("_", float(_mpd.GRID_W))
+        tf.split("/")[_DISK_TF_GEN_INDEX]
+        for tf in _disk_tf_variants("_", float(_mpd.GRID_W), VA_PCT_DEFAULT)
     )
     return _CacheLayout(
         name="tf-period",
@@ -232,12 +253,15 @@ def _merge_live_tail(
 
 def _day_columns(
     symbol: Any, tf: Any, tf_sec: int, day_start: int, now_val: float,
-    live_ticks: "list | None" = None,
+    *, va_pct: float, live_ticks: "list | None" = None,
 ) -> "tuple[float, list]":
     """1 カレンダー日 ``[day_start, day_start+_DAY)`` の tf-period 列 ``(unit, columns)`` を返す。
 
     完了日（``day_start + _DAY <= now``）は **メモリ → ディスク → 計算（＋両層へ保存）** の順で解決し、
     再利用する（不変ゆえ無効化不要）。当日（未確定）はキャッシュせず毎回計算する（ティック成長のため）。
+
+    ``va_pct``（必須・ISSUE-260）: VA 比率。列内容の一部を決めるためキャッシュ鍵（メモリ／ディスク）
+    にも含める（既定比率は :func:`_va_tag` により従来と同一の配置＝既存キャッシュを孤児化しない）。
     """
     day_start = int(day_start)
     day_end = next_session_day_start(day_start)  # ISSUE-078: セッション日窓（DST 切替日は 23h/25h）。
@@ -264,7 +288,10 @@ def _day_columns(
                 secs, mids = _merge_live_tail(secs, mids, live_ticks, day_start, day_end)
             # 単一周期化: 秒を始端相対へシフトし全ティックを period 0 に畳む → time をセッション始端へ戻す。
             shifted = np.asarray(secs, dtype=np.int64) - day_start if len(secs) else secs
-            cols = tf_period_profiles(shifted, mids, int(day_end - day_start), unit, 0, int(day_end - day_start))
+            cols = tf_period_profiles(
+                shifted, mids, int(day_end - day_start), unit, 0, int(day_end - day_start),
+                va_pct=va_pct,
+            )
             for c in cols:
                 # 1D 列の time は 1D バー時刻規約（セッション日ラベルの UTC 深夜＝rollup/forming と同一）。
                 c["time"] = int(session_bar_time(day_start))
@@ -275,18 +302,19 @@ def _day_columns(
             if not completed:
                 # ISSUE-083 追補: 当日のみ live buffer 末尾を合成（最新ティックの即時反映・完了日は不変）。
                 secs, mids = _merge_live_tail(secs, mids, live_ticks, p_first, p_last + tf_sec)
-            cols = tf_period_profiles(secs, mids, tf_sec, unit, p_first, day_end)
+            cols = tf_period_profiles(secs, mids, tf_sec, unit, p_first, day_end, va_pct=va_pct)
         return unit, cols
 
     return _DAY_CACHE.resolve(  # ISSUE-179 項目 B: 協調は単一実装（ISSUE-068: GRID_W subdir）。
-        key=(symbol, tf, day_start), symbol=symbol, disk_tf=_disk_tf_count(tf, unit),
+        key=(symbol, tf, day_start, va_pct), symbol=symbol,
+        disk_tf=_disk_tf_count(tf, unit, va_pct),
         disk_key=day_start, completed=completed, compute=_compute,
     )
 
 
 def _day_columns_zp(
     symbol: Any, tf: Any, tf_sec: int, day_start: int, now_val: float,
-    live_ticks: "list | None" = None,
+    *, va_pct: float, live_ticks: "list | None" = None,
 ) -> "tuple[float, list]":
     """src=zp の 1 カレンダー日 tf-period 列 ``(unit=GRID_W, columns)``。
 
@@ -303,12 +331,12 @@ def _day_columns_zp(
     def _compute() -> "tuple[float, list]":
         # ISSUE-094 🔴-2: 集計エンジン（z 統計直計算・周期分割・ライブ合成）は compute 層へ移送。
         return _tfc.day_columns_zp_compute(
-            symbol, tf_sec, day_start, day_end, completed, now_val, live_ticks
+            symbol, tf_sec, day_start, day_end, completed, now_val, live_ticks, va_pct=va_pct
         )
 
     return _DAY_CACHE.resolve(  # ISSUE-179 項目 B: 協調は単一実装。
-        key=(symbol, tf, day_start, "zp"), symbol=symbol,
-        disk_tf=_disk_tf_zp(tf),  # ISSUE-085/088 🔵-3 の世代規約はビルダが所有（ISSUE-172）。
+        key=(symbol, tf, day_start, "zp", va_pct), symbol=symbol,
+        disk_tf=_disk_tf_zp(tf, va_pct),  # ISSUE-085/088 🔵-3 の世代規約はビルダが所有（ISSUE-172）。
         disk_key=day_start, completed=completed, compute=_compute,
     )
 
@@ -328,7 +356,8 @@ def _bucket_completed(tf: str, label: str, now_val: float) -> bool:
 
 
 def _bucket_columns(
-    symbol: Any, tf: Any, label: str, now_val: float, live_ticks: "list | None" = None
+    symbol: Any, tf: Any, label: str, now_val: float,
+    *, va_pct: float, live_ticks: "list | None" = None,
 ) -> "tuple[float, list]":
     """1W/1M バケットの count 列（ISSUE-086）。
 
@@ -345,18 +374,21 @@ def _bucket_columns(
     def _compute() -> "tuple[float, list]":
         # ISSUE-094 🔴-2: バケット合成エンジンは compute 層へ移送（1D 列取得は完了日キャッシュ経路を DIP 注入）。
         return _tfc.bucket_columns_compute(
-            symbol, tf, label, bar_time, now_val, live_ticks, day_columns_fn=_day_columns
+            symbol, tf, label, bar_time, now_val, live_ticks,
+            va_pct=va_pct, day_columns_fn=_day_columns,
         )
 
     return _DAY_CACHE.resolve(  # ISSUE-179 項目 B: 協調は単一実装。
-        key=(symbol, tf, bar_time), symbol=symbol,
-        disk_tf=_disk_tf_bucket(tf, unit),  # ISSUE-172: 世代 s1 はビルダが所有（GC 記述子と同一式）。
+        key=(symbol, tf, bar_time, va_pct), symbol=symbol,
+        # ISSUE-172: 世代 s1 はビルダが所有（GC 記述子と同一式）。
+        disk_tf=_disk_tf_bucket(tf, unit, va_pct),
         disk_key=bar_time, completed=completed, compute=_compute,
     )
 
 
 def _bucket_columns_zp(
-    symbol: Any, tf: Any, label: str, now_val: float, live_ticks: "list | None" = None
+    symbol: Any, tf: Any, label: str, now_val: float,
+    *, va_pct: float, live_ticks: "list | None" = None,
 ) -> "tuple[float, list]":
     """1W/1M バケットの zp 列（ISSUE-086）。
 
@@ -373,11 +405,13 @@ def _bucket_columns_zp(
 
     def _compute() -> "tuple[float, list]":
         # ISSUE-094 🔴-2: バケット zp 合成エンジン（モーメント k 空間合成・z 再計算）は compute 層へ移送。
-        return _tfc.bucket_columns_zp_compute(symbol, tf, label, bar_time, now_val, live_ticks)
+        return _tfc.bucket_columns_zp_compute(
+            symbol, tf, label, bar_time, now_val, live_ticks, va_pct=va_pct
+        )
 
     return _DAY_CACHE.resolve(  # ISSUE-179 項目 B: 協調は単一実装。
-        key=(symbol, tf, bar_time, "zp"), symbol=symbol,
-        disk_tf=_disk_tf_zp(tf),  # ISSUE-088 🔵-3 の世代規約はビルダが所有（ISSUE-172）。
+        key=(symbol, tf, bar_time, "zp", va_pct), symbol=symbol,
+        disk_tf=_disk_tf_zp(tf, va_pct),  # ISSUE-088 🔵-3 の世代規約はビルダが所有（ISSUE-172）。
         disk_key=bar_time, completed=completed, compute=_compute,
     )
 
@@ -419,7 +453,7 @@ _SRC_MISSING = object()  # 未登録 src 判定用の番兵（None は正当な�
 
 def handle_tf_period_profile(
     ref: Any, timeframe: Any, frm: Any, to: Any, now: "float | None" = None,
-    src: Any = None, live_ticks: "list | None" = None,
+    src: Any = None, live_ticks: "list | None" = None, va: Any = None,
 ) -> "tuple[int, dict]":
     """ローリング窓 ``[frm, to)`` の tf-period プロファイル列を返す（読取のみ）。
 
@@ -431,6 +465,9 @@ def handle_tf_period_profile(
     当日（未完了セッション）の計算にのみ parquet 優先 dedup で合成し、parquet フロンティア遅延
     （~1分）を待たず最新ティックを列へ反映する。完了日は無視（不変列のキャッシュを汚さない）。
     None/空は従来どおり（byte 不変）。
+    ``va``（ISSUE-260）: バリューエリア比率の要求値（クエリ str|float|None）。解決は単一情報源
+    :func:`market_profile.resolve_va_pct`（``/market_profile`` と同一規約＝不正は既定・範囲外は
+    クランプ）。省略時は既定比率＝是正前と同一応答（後方互換）。
     """
     desc = _SRC_DESCRIPTORS.get(src, _SRC_MISSING)
     if desc is _SRC_MISSING:
@@ -456,6 +493,7 @@ def handle_tf_period_profile(
 
     symbol = _mpd.resolve_symbol(ref)
     now_val = _time.time() if now is None else float(now)
+    va_pct = resolve_va_pct(va)  # ISSUE-260: 解決規則は単一情報源（参照実装と同一）。
 
     # ISSUE-086: 1W/1M バケット走査（ラベル単位）。列 time はラベルの UTC 深夜＝rollup バーと同一。
     if timeframe in _BUCKET_TFS:
@@ -467,7 +505,9 @@ def handle_tf_period_profile(
             first_start = session_label_to_start(period_session_labels(timeframe, label)[0])
             if first_start >= now_val:
                 break  # 未来バケット（未開始）。
-            unit_d, cols_d = bucket_fn(symbol, timeframe, label, now_val, live_ticks=live_ticks)
+            unit_d, cols_d = bucket_fn(
+                symbol, timeframe, label, now_val, va_pct=va_pct, live_ticks=live_ticks
+            )
             picked = [c for c in cols_d if from_i <= c["time"] < to_i]
             if picked:
                 columns_b.extend(picked)
@@ -491,7 +531,9 @@ def handle_tf_period_profile(
     units: list = []
     day = session_day_start(from_i)  # ISSUE-078: セッション日ウォーク。
     while day < to_i:
-        unit_d, cols_d = day_fn(symbol, timeframe, tf_sec, day, now_val, live_ticks=live_ticks)
+        unit_d, cols_d = day_fn(
+            symbol, timeframe, tf_sec, day, now_val, va_pct=va_pct, live_ticks=live_ticks
+        )
         if cols_d:
             picked = [c for c in cols_d if from_i <= c["time"] < to_i]
             if picked:

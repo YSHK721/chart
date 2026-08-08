@@ -7,8 +7,50 @@
 from __future__ import annotations
 
 import datetime as _dt
+import math as _math
+from typing import Any as _Any
 
 import numpy as np
+
+# --------------------------------------------------------------------------- #
+# バリューエリア比率（VA 比率）の単一情報源（ISSUE-260）
+#
+#   「総重みの何割を VA とみなすか」は 1 つの業務パラメータであり、決定権者は 1 つでなければ
+#   ならない。かつてこの値は UI（catalog の param 既定）・``market_profile_controller``・
+#   ``tf_period_columns`` の直書き・front ``DwellAccumulator`` の 4 面に独立して存在し、
+#   ``/market_profile`` の非増分 refresh 以外は UI をどう操作しても 0.70 のままだった
+#   （＝効かないツマミ）。以後、値の宣言は本ファイルのこの 1 行のみとする:
+#     - backend の各経路は :func:`resolve_va_pct` で解決した値を**必須引数**として受け渡す。
+#     - front は「生成物」（tools/gen_js_parity_golden.py → web/js/domain/mp_va_generated.js）
+#       として本値を読む（catalog の既定表示）／実効値は応答（forming の ``vaPct``）に従う。
+# --------------------------------------------------------------------------- #
+VA_PCT_DEFAULT = 0.70
+#: 有効域。退化（負・0・NaN/Inf・>1）を無言で通さず、この範囲へクランプする。
+VA_PCT_MIN = 0.01
+VA_PCT_MAX = 1.0
+
+
+def resolve_va_pct(raw: _Any) -> float:
+    """VA 比率の要求値（クエリ str / 数値 / None）を有効な比率へ解決する（唯一の解決規則）。
+
+    規約（ISSUE-260 以前から ``handle_market_profile`` が持っていた規則をそのまま単一化）:
+      - None・非数値文字列・bool・NaN/Inf は :data:`VA_PCT_DEFAULT`。
+      - 数値は ``[VA_PCT_MIN, VA_PCT_MAX]`` へクランプする（例外化せず 500 にしない）。
+    """
+    if isinstance(raw, bool) or raw is None:
+        return VA_PCT_DEFAULT
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    elif isinstance(raw, str):
+        try:
+            value = float(raw)
+        except ValueError:
+            return VA_PCT_DEFAULT
+    else:
+        return VA_PCT_DEFAULT
+    if not _math.isfinite(value):
+        return VA_PCT_DEFAULT
+    return min(VA_PCT_MAX, max(VA_PCT_MIN, value))
 
 
 def price_range(candles) -> tuple[float, float]:
@@ -34,14 +76,16 @@ def price_range(candles) -> tuple[float, float]:
 
 
 def compute_candle_profile(
-    candles, n_bins=60, va_pct=0.70, want_today=False, want_sessions=False
+    candles, n_bins=60, *, va_pct, want_today=False, want_sessions=False
 ) -> dict:
     """足ベース TPO マーケットプロファイルを計算する（純関数・副作用なし）。
 
     Args:
         candles: OHLC 辞書リスト [{"time","open","high","low","close"}, ...]（time 昇順）。
         n_bins: 価格ビン分割数。
-        va_pct: バリューエリア比率（0..1）。
+        va_pct: バリューエリア比率（必須・キーワード専用）。ISSUE-260: 既定値を持たせない
+            （既定は :data:`VA_PCT_DEFAULT` 唯一源が持ち、呼出側が :func:`resolve_va_pct` で
+            解決した値を明示的に渡す＝経路ごとに別の既定へ黙って落ちる事故を構造的に断つ）。
         want_today: True のとき、応答に ``today[]``/``today_max`` を付加する（増分2 C スナップショット）。
             ``today[]`` は「窓の最終足ぶんの表示 bin 値」（最終足の [low,high] が跨ぐ bin に +1）。
             移植元 prototype_260630-01/mp_core.py want_today（candle=最終足の寄与）。既定 False は不変。

@@ -107,7 +107,7 @@ def live_zp_day_roll(
 
 def day_columns_zp_compute(
     symbol: Any, tf_sec: int, day_start: int, day_end: int, completed: bool,
-    now_val: float, live_ticks: "list | None",
+    now_val: float, live_ticks: "list | None", *, va_pct: float,
 ) -> "tuple[float, list]":
     """src=zp の 1 カレンダー日 tf-period 列 ``(unit, columns)`` を計算する（キャッシュ非依存の純集計）。
 
@@ -115,6 +115,9 @@ def day_columns_zp_compute(
     z（超過占有スコア）、levels は z>0 のセル＋POC セルのみ（sparse 維持）。帰無は
     :func:`market_profile_zp.null_b_period_moments`（1 回のサロゲート生成を周期カラム範囲で分割集計）。
     controller の :func:`_day_columns_zp` が完了判定・メモ/ディスク照合・保存でこれを包む。
+
+    ``va_pct``（必須・ISSUE-260）: VA 比率。かつてここは 0.70 の直書きで、UI の「バリューエリア」を
+    どう変えても列の VA は動かなかった。既定は :data:`market_profile.VA_PCT_DEFAULT` 唯一源が持つ。
     """
     if completed or not live_ticks:
         grid = _zp._mgrid_of_day(symbol, day_start, now_val)
@@ -162,7 +165,7 @@ def day_columns_zp_compute(
                     z = _zp._fine_z(obs, mean, var)
                     poc_price = _zp._poc_star_from_fine(z, klo, mid_day)
                     z_pos = np.maximum(z, 0.0)
-                    va_low, va_high = _value_area(z_pos, centers, 0.70)
+                    va_low, va_high = _value_area(z_pos, centers, va_pct)
                     poc_k = int(np.floor(np.log(poc_price) / _zp.W_LOG)) - klo
                     keep = (z > 0)
                     keep[max(0, min(poc_k, keep.size - 1))] = True
@@ -192,7 +195,7 @@ def day_columns_zp_compute(
 
 def bucket_columns_compute(
     symbol: Any, tf: Any, label: str, bar_time: int, now_val: float,
-    live_ticks: "list | None", *, day_columns_fn,
+    live_ticks: "list | None", *, va_pct: float, day_columns_fn,
 ) -> "tuple[float, list]":
     """1W/1M バケットの count 列 ``(unit=GRID_W, columns)`` を計算する（ISSUE-086・キャッシュ非依存）。
 
@@ -200,6 +203,9 @@ def bucket_columns_compute(
     を DIP 注入）をバケットの全セッション日で加算合成する。levels は同一 GRID_W 格子ゆえ価格キーで
     加算でき、poc/va は合成カウントから再計算（:func:`_value_area_sparse`＝count 列と同一 VA 規約）。
     controller の :func:`_bucket_columns` が完了判定・メモ/ディスク照合・保存でこれを包む。
+
+    ``va_pct``（必須・ISSUE-260）: VA 比率。日次 1D 列の取得（``day_columns_fn``）にも同じ値を渡す
+    （同一要求の中で日次とバケットが別比率で集計される状態を作らない）。
     """
     unit = float(_mpd.GRID_W)
     merged: "dict[float, float]" = {}
@@ -210,7 +216,9 @@ def bucket_columns_compute(
         day = session_label_to_start(lab)
         if day >= now_val:
             break  # 未来セッション（未開始）。
-        _u, cols_d = day_columns_fn(symbol, "1D", _DAY, day, now_val, live_ticks=live_ticks)
+        _u, cols_d = day_columns_fn(
+            symbol, "1D", _DAY, day, now_val, va_pct=va_pct, live_ticks=live_ticks
+        )
         for c in cols_d:
             for price, cnt in c["levels"]:
                 merged[price] = merged.get(price, 0) + cnt
@@ -222,7 +230,7 @@ def bucket_columns_compute(
     prices = sorted(merged)
     counts = np.asarray([merged[p] for p in prices])
     poc_i = int(np.argmax(counts))  # 最大カウント（同値は低価格側＝count 列と同規約）。
-    lo, hi = _value_area_sparse(counts, poc_i, 0.70)
+    lo, hi = _value_area_sparse(counts, poc_i, va_pct)
     col = {
         "time": bar_time,
         "levels": [[float(p), int(merged[p])] for p in prices],
@@ -238,7 +246,7 @@ def bucket_columns_compute(
 
 def bucket_columns_zp_compute(
     symbol: Any, tf: Any, label: str, bar_time: int, now_val: float,
-    live_ticks: "list | None",
+    live_ticks: "list | None", *, va_pct: float,
 ) -> "tuple[float, list]":
     """1W/1M バケットの zp 列 ``(unit, columns)`` を計算する（ISSUE-086・キャッシュ非依存）。
 
@@ -278,7 +286,7 @@ def bucket_columns_zp_compute(
         mid = (centers[0] + centers[-1]) / 2.0
         poc_price = _zp._poc_star_from_fine(z, klo, mid)
         z_pos = np.maximum(z, 0.0)
-        va_low, va_high = _value_area(z_pos, centers, 0.70)
+        va_low, va_high = _value_area(z_pos, centers, va_pct)
         occ = np.flatnonzero(obs_sum > 0)
         p_lo = float(np.exp((klo + int(occ[0])) * _zp.W_LOG)) if occ.size else float(centers[0])
         p_hi = float(np.exp((klo + int(occ[-1]) + 1) * _zp.W_LOG)) if occ.size else float(centers[-1])

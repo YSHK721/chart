@@ -8,7 +8,8 @@ tick 列 ＋ active table」を束ねて返す（以降クライアントはロ�
   - base=1（既定）: forming_ticks + dwell base（``to = formingStart - 1`` ＝ forming 期間排除・二重計上なし）
       + get_active_table を束ねる。base は忠実 binning（Task A 是正）のため **GRID_W 固定グリッド**
       （``baseFine`` / ``baseKmin``）で返す（表示 bin 直接ではない）。応答 shape
-      ``{ok, formingStart, ticks, baseFine, baseKmin, activeTable, priceMin, priceMax, nBins, gridW, now}``。
+      ``{ok, formingStart, ticks, baseFine, baseKmin, activeTable, priceMin, priceMax, nBins,
+      gridW, vaPct, now}``（``vaPct``＝解決済み VA 比率・ISSUE-260）。
   - base=0: forming tick 尾部（``since`` フィルタ）＋ formingStart のみ（軽量・クライアント増分の差分取得）。
   - 非 tick ref / 非対応 tf（1W/1M/未知）→ 400 nested error（:func:`market_profile_controller._error_body` 再利用）。
 
@@ -29,6 +30,9 @@ from market_profile_api.controller.market_profile_controller import (
     _error_body,
     handle_market_profile,
 )
+# ISSUE-260: VA 比率の解決は単一情報源。base=1 応答へ**解決済み比率**を載せ、クライアント側
+#   （DwellAccumulator）が自前の既定を持たずにサーバ決定値へ従えるようにする。
+from market_profile_api.compute.market_profile import resolve_va_pct
 
 
 def augment_forming_payload(
@@ -232,9 +236,13 @@ def handle_market_profile_forming(
         base_kwargs: dict[str, Any] = {}
         if frm is not None:
             base_kwargs["from"] = frm
+        # ISSUE-260: 比率は 1 回だけ解決し、base 計算と応答（vaPct）で同一値を用いる。
+        #   クライアントは combined（base + forming tick）の VA を自分で算出する必要があるが
+        #   （per-tick HTTP を避ける増分成長の設計）、**比率**はサーバの解決値に従う。
+        va_pct = resolve_va_pct(va)
         _, base_body = handle_market_profile(
             ref, timeframe=timeframe, src="dwell", to=int(forming_start) - 1,
-            bins=bins, va=va, barw=barw, want_fine=True, **base_kwargs,
+            bins=bins, va=va_pct, barw=barw, want_fine=True, **base_kwargs,
         )
         profile = base_body.get("profile") or {}
         base_fine = profile.get("fine", [])
@@ -257,6 +265,7 @@ def handle_market_profile_forming(
         body["priceMax"] = price_max
         body["nBins"] = n_bins
         body["gridW"] = grid_w
+        body["vaPct"] = va_pct  # ISSUE-260: 解決済み VA 比率（front の第 2 定義を不要にする）。
         body["activeTable"] = _mpf.get_active_table(symbol)
 
     return 200, body
