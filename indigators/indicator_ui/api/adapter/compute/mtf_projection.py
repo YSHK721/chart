@@ -124,5 +124,10 @@ def project_series_at_times(
                 continue    # 材料不足（この C バーより前に採用できる H バーが無い）＝点を出さない。
             # per-point の付随情報（histogram のバー別 color 等）は温存し time だけ差し替える。
             data.append({**points[cursor], "time": bar_time})
-        projected.append({**s, "data": data})
+        # ISSUE-289: 投影後の系列は**階段関数**（同一 H 期間内は同値・境界で不連続）。
+        #   直線補間で描くと、段の境界が「斜めに落ちる線」になり、期間の途中で値が
+        #   変化しているように見える（実測: 1h チャート × 1D 計算で 2 時間かけて 703 下降
+        #   する斜線。休場を挟むと更に長い斜線になる）。描画側が形を推測しなくて済むよう、
+        #   データの性質をヒントとして明示する（未付与の系列は従来どおり直線）。
+        projected.append({**s, "data": data, "stepped": True})
     return projected

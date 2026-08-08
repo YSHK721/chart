@@ -238,3 +238,25 @@ def test_timeseries_kinds_has_single_source():
 
     assert _TRIMMABLE_KINDS is TIMESERIES_KINDS
     assert _PROJECTABLE_KINDS is TIMESERIES_KINDS
+
+
+def test_projected_series_declare_that_they_are_stepped():
+    """投影後の系列は階段関数であることを宣言する（描画側が形を推測しない・ISSUE-289）。
+
+    直線補間で描くと段の境界が斜線になり、「上位足の期間の途中で値が動いている」ように
+    見える（実測: 1h チャート × 1D 計算で 2 時間かけて 703 下降する斜線）。
+    """
+    chart = _chart(10 * HOUR, 36)
+    out = project_series(_line(H_POINTS), chart, "1h", period_start_unix=_hourly)
+
+    assert out[0]["stepped"] is True
+
+
+def test_untouched_series_do_not_get_the_stepped_hint():
+    """投影しない系列（data を持たない等）へはヒントを足さない（従来ボディと同一）。"""
+    chart = _chart(10 * HOUR, 24)
+    level = {"name": "level", "kind": "horizontal_line", "price": 123.0}
+
+    out = project_series([level], chart, "1h", period_start_unix=_hourly)
+
+    assert out == [level]

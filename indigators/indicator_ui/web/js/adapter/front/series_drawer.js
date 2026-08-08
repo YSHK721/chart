@@ -161,6 +161,13 @@ export class SeriesDrawer {
       // btlm_trail 表示層: ドット/ライン切替ヒント（point_markers/line_visible）を
       //   lightweight-charts v5 の LineSeries オプションへ写像する。ヒント未付与の payload
       //   （既存指標）はキーを設定しない＝従来挙動を保つ（後方互換）。
+      // ISSUE-289: 上位足投影の系列は階段関数。直線補間だと段の境界が斜線になり
+      //   「期間の途中で値が動いている」ように見える。lwc の階段補間（LineType.WithSteps）
+      //   へ写像し、データの性質どおりに描く。ヒント未付与は従来どおり直線（後方互換）。
+      if (p.stepped) {
+        const lineTypes = this._h._lwc.LineType;
+        options.lineType = lineTypes && lineTypes.WithSteps !== undefined ? lineTypes.WithSteps : 1;
+      }
       if (p.point_markers !== undefined) {
         options.pointMarkersVisible = !!p.point_markers;
       }
