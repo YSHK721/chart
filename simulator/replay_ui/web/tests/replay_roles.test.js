@@ -163,3 +163,61 @@ test('animator: 停止足の続きと世代は animator が所有する', async 
   animator.supersede();
   await animator.animate(() => true, null);
 });
+
+// ---- ReplayCursor（再生対象と現在位置の所有者・ISSUE-256） ----
+
+test('cursor: 位置は必ず範囲内へ丸める（旧 clampBar と同一）', async () => {
+  const { ReplayCursor } = await import('../js/replay/replay_cursor.js');
+  const cursor = new ReplayCursor({ fetchImpl: async () => ({ json: async () => ({}) }), datasetRef: 'x', recentBars: 10, preBars: 3 });
+  cursor.setCandles(CANDLES);
+
+  assert.equal(cursor.setBar(99), 2, '末尾を超えたら末尾へ');
+  assert.equal(cursor.setBar(-5), 0, '負値は先頭へ');
+  assert.equal(cursor.atEnd(), false);
+  cursor.setBar(2);
+  assert.equal(cursor.atEnd(), true, '末尾＝未来足なし（再生不可）');
+  assert.equal(cursor.current().time, 220);
+});
+
+test('cursor: 世代は単調増加し、in-flight の破棄判定に使える', async () => {
+  const { ReplayCursor } = await import('../js/replay/replay_cursor.js');
+  const { isStale } = await import('../js/replay/state.js');
+  const cursor = new ReplayCursor({ fetchImpl: async () => ({ json: async () => ({}) }), datasetRef: 'x', recentBars: 10, preBars: 3 });
+
+  const g = cursor.bumpGeneration();
+  assert.equal(isStale(g, cursor.generation()), false, '最新の世代は破棄しない');
+  cursor.bumpGeneration();
+  assert.equal(isStale(g, cursor.generation()), true, '後発が来たら旧世代は破棄する');
+});
+
+test('cursor: 期間選択は解除できる／開始位置は時刻から決まる', async () => {
+  const { ReplayCursor } = await import('../js/replay/replay_cursor.js');
+  const cursor = new ReplayCursor({ fetchImpl: async () => ({ json: async () => ({}) }), datasetRef: 'x', recentBars: 10, preBars: 3 });
+  cursor.setCandles(CANDLES);
+
+  cursor.setActivePeriod({ secs: 3600, bars: 60 });
+  assert.equal(cursor.activeSecs(), 3600);
+  assert.equal(cursor.activePeriodBars(), 60);
+  cursor.clearActivePeriod();
+  assert.equal(cursor.activeSecs(), null);
+  assert.equal(cursor.activePeriodBars(), null);
+
+  assert.equal(cursor.setReplayStartAtTime(160), 1, '時刻 160 の足は index 1');
+});
+
+test('cursor: /candles と /available_days の取得（from 指定で pre が付く）', async () => {
+  const { ReplayCursor } = await import('../js/replay/replay_cursor.js');
+  const urls = [];
+  const cursor = new ReplayCursor({
+    fetchImpl: async (url) => { urls.push(url); return { json: async () => ({ ok: true, candles: CANDLES, days: ['2026-08-07'] }) }; },
+    datasetRef: 'jp225_tick', recentBars: 1500, preBars: 300,
+  });
+
+  assert.equal((await cursor.fetchCandles('5m')).length, 3);
+  assert.match(urls[0], /timeframe=5m&limit=1500$/, '既定は from/pre を付けない');
+
+  await cursor.fetchCandles('5m', 12345);
+  assert.match(urls[1], /&from=12345&pre=300$/, 'カレンダー起点では前方バー数を添える');
+
+  assert.deepEqual(await cursor.fetchDays('5m'), ['2026-08-07']);
+});

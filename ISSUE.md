@@ -4314,7 +4314,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-099 🟡-3/🟡-4（契約の明文化）／ISSUE-181（協働子抽出）／ISSUE-262（宣言を検定で施行する）。
 
 ## ISSUE-256: [設計是正] `replay.js` の `setupReplay` が 847 行の単一関数（SRP）（2026-08-04)
-- **ステータス**: IN_PROGRESS（2026-08-08・3 ロール抽出済み 850→535 行／カーソルロールの抽出が残）
+- **ステータス**: RESOLVED（2026-08-08・refactor/replay-roles ＋ refactor/replay-cursor。850→523 行・4 ロール抽出）
 - **重大度**: 中
 - **実測**: `simulator/replay_ui/web/js/replay.js` は 847 行で、トップレベルの関数定義は `setupReplay` ただ 1 つ。合成・再生駆動・足内アニメーション・MP 連動・時間足反映が同一スコープに同居する。
 - **抜本的対策**: 関心事ごとに協働子へ切り出す（合成根は配線のみ残す）。リプレイ側は既に `replay/` 配下へ純ロジック（`forming_plan` / `stream` / `timing` / `calendar` / `state`）を分離済みで、残っているのは駆動と配線の塊。
@@ -4332,7 +4332,15 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検定**: `tests/replay_roles.test.js` を新設（8 件）。ETA の残り足数・実時間再生のアンカ算出・速度軸変化時のみ計画破棄・**本番の合成形（タイマー/時計を注入しない）でフレーム待機が解決すること**・計画の二重発行防止/モード不一致破棄/invalidate・animator の状態所有。
 - **実 UI 検証（8000・実クリック）**: リプレイ起動 → `rp-prev` で 10 足戻す → 再生。bar が 1489→1492→1495→1499 と進み、ETA が「1秒（残り7足）→（残り4足）→ —」と追従。console エラー 0。
 - **回帰**: フロント 4 スイート 1,815 件 passed（indicator_ui 1,129 / market_profile 333 / replay_ui 310 / unified_ui 43）／tools 96 件。
-- **残**: `setupReplay` にはまだカーソル・データ取得（`fetchCandles` / `fetchDays` / `render` / `drive` / `loadTimeframe` / `loadFromDate`）と DOM 配線が同居している（535 行）。次段でカーソルロールを切り出せば合成根は配線のみになる。
+### 追加抽出（2026-08-08）— ReplayCursor
+- **切り出し**: `replay/replay_cursor.js`（ReplayCursor・115 行）。所有する状態は `candles` / `bar` / `replayStart` / `timeframe` / `generation` / `activeSecs` / `activePeriodBars`、併せて対象データの取得（`/candles`・`/available_days`）。「どの窓を見ているか」と「その窓をどう取るか」は同じ変更要求に属するため同居させた。
+- **効果**: 素の局所変数として関数全体へ露出していた 7 個の可変状態が消え、遷移は名前のある操作（`setBar`（必ず clamp）/ `setReplayStartAtTime` / `clearActivePeriod` / `bumpGeneration` 等）だけになった。`setupReplay` に残る `let` は `playing` / `followOn` / `autoFrame` / `wasEnabled` / `busy` / `queued` の 6 個（いずれも合成・直列化のフラグ）。
+- **render / drive を移さない理由**: この 2 つは各ロール（cursor / tempo / plans / animator / mpDriver / controller / view）を束ねる**協調**そのもので、どれか 1 つのロールへ入れると、そのロールが新しい神オブジェクトになる。協調は合成点の責務として `setupReplay` に残した。
+- **最終形**: `replay.js` **850 → 523 行**。抽出したロールは 4 つ（cursor 115 / tempo 162 / plans 168 / animator 232）。
+- **検定**: `tests/replay_roles.test.js` を 12 件へ拡張（clamp・世代の単調性と破棄判定・期間選択の解除・時刻からの開始位置・`from` 指定時に `pre` が付く URL 契約）。
+- **実 UI 検証（8000・実クリック）**: リプレイ起動 → `rp-prev` ×10 → 再生（bar 1489→1498・ETA 追従）→ 再生中に時間足 5m へ切替（再取得され bar が新しい末尾へ）→ リプレイ終了 → 1m へ復帰。console エラー 0。
+  - **未実施**: 期間プリセット（`rp-range` メニュー）の実 UI 操作は、当該環境でメニューが開かず未確認。状態遷移自体は単体検定で固定済み。
+- **回帰**: フロント 4 スイート 1,819 件 passed／tools 96 件。
 
 ## ISSUE-257: [不具合・実測再現] `/live_ticks` の同時要求が無制限に積み上がり、稼働時間とともに全応答（静的 JS 含む）が遅くなる（2026-08-04）
 - **ステータス**: RESOLVED（2026-08-04・fix/live-ticks-unbounded-tails）
