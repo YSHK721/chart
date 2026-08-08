@@ -4858,3 +4858,28 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **実 UI 検証（8000・リプレイ）**: cvfe を適用して月足（171 本）へ切替 → `E01_INSUFFICIENT_BARS`（523 本必要）が発生。コンソールに `[indicator] 計算失敗（当該インスタンスのみスキップ）: cvfe#1` が出る一方、**ローソクと他 2 指標（ma_marod / profit_rsi）は正常に描画された**（是正前は render 全体が中断）。画像 `issue282-replay-failure-isolated.png`。
 - **回帰**: フロント 4 スイート 1,824 件 passed。
 - **関連**: ISSUE-281（400 を出す側）／ISSUE-232（fail-open の前例）。
+
+## ISSUE-283: [不具合・実測] 満たせない前提の /compute を毎バー発行し続ける（捨てられる仕事）（2026-08-08）
+- **ステータス**: OPEN
+- **重大度**: High（再生中ずっと無駄な往復とサーバエラーを生み、ログが溢れて他の異常が埋もれる）
+- **事象（利用者報告・再生中の連続出力）**: `cvfe#1` が `E01_INSUFFICIENT_BARS: バー数 1234 では σ̂ を 1 本も出力できない（n_har + 23 = 1352 本以上が必要）` を **1234, 1235, 1236 … と 1 バーずつ**繰り返す。
+- **構造**: リプレイは計算窓を `limit = bar + 1` に絞る。cvfe は `n_har + 23 = 1352` 本を要求するため、カーソルが 1352 本に届くまで**必ず失敗する**。それが分かっているのに毎バー要求している。ISSUE-282 の是正で再生は止まらなくなったが、**要求そのものが無駄**である点は手つかず。
+- **抜本的対策**: 「結果が捨てられる計算を発行しない」（ISSUE-257 と同じ規律）。サーバは必要本数を知っているのだから、機械可読で返す（`error.details.requiredBars`）。front は当該インスタンスの必要本数を記憶し、`limit >= requiredBars` になるまで /compute を発行しない（窓が伸びれば自動的に再開する）。回数を間引く・ログを抑えるのは症状隠しであり採らない。
+- **関連**: ISSUE-282（失敗の局所化）／ISSUE-257（捨てられる計算を消す）／ISSUE-284（分類の誤り）。
+
+## ISSUE-284: [不具合・実測再現] 指標の前提未達（validation）が HTTP 500 internal として返る（2026-08-08）
+- **ステータス**: OPEN
+- **重大度**: High（監視・切り分けを誤らせる。「サーバ内部異常」と「入力条件未達」が区別できない）
+- **実測再現（実 HTTP・1 コマンド）**: `POST /replay/compute`（cvfe・`n_har=1329`・`limit=1234`）→ **HTTP 500**、ボディは `{"error":{"type":"internal","message":"ComputeError: validation: E01_INSUFFICIENT_BARS: …"}}`。
+- **何が間違っているか**: `api_shared.http_contract.ERROR_STATUS` は `validation → 400` と正しく定義されている。ところが本経路では `ComputeError`（type=validation）が usecase の `except compute_error` を**すり抜け**、外側の `except Exception` で **internal 500 に握り潰されて**いる（メッセージに `ComputeError: validation:` が丸ごと文字列化されて入っているのが証拠）。同じ条件が別経路では 400 になる（利用者ログの後半）＝**経路で分類が割れている**。
+- **抜本的対策**: 例外の翻訳点を 1 つに閉じる。指標が投げる宣言的失敗（`ComputeError` とその派生）は、どの経路を通っても `nested_error(exc.error_type, …)` で分類する。外側の `except Exception` は**本当の内部異常だけ**を受け持つ（そこで ComputeError を握らない）。すり抜けている実際の raise 位置を実測で特定し、try 境界をそこまで広げる。
+- **関連**: ISSUE-283（無駄な再要求）／ISSUE-278 #3（無言の except で握り潰す型）。
+
+## ISSUE-285: [不具合・実測] モード遷移時にリプレイ層の要求がライブ core へ回り 404 になる（2026-08-08）
+- **ステータス**: OPEN
+- **重大度**: Medium（足内アニメーションの素材取得が失敗する。再生の見た目が劣化する）
+- **事象（利用者報告）**: `GET /intraday?...` が **404**（3 連続）。発生位置は compute エラー群の直後＝再生終了・モード切替の前後。
+- **実測**: リプレイモード（`body.um-mode-replay`）では SW が `/replay/intraday` へ書換え **200**。一方 `/intraday`（書換なし）と `/live/intraday` は **404**（リプレイ core にしか実装が無い）。つまり 404 は「リプレイ層の要求が **live モードとして**書き換えられた」ことを意味する。
+- **構造**: `replay.js` の先読みゲート（`playing || wasEnabled`）は「リプレイ層が起きているか」を見るが、**モード遷移の瞬間**（切替直後に in-flight/遅延要求が残る）は守れない。ISSUE-232 で同型の 404 を一度塞いだが、塞いだのは定常状態だけだった。
+- **抜本的対策**: 遷移で無効になる要求を**打ち切る**（世代 or AbortController）。リプレイ層が停止・モード切替したら、その時点の世代より前の in-flight/遅延要求を破棄し、新規発行もしない。ゲートを増やすのではなく「無効になった要求は必ず死ぬ」構造にする。
+- **関連**: ISSUE-232（同型 404 の初出）／ISSUE-263（in-flight の打ち切り）。
