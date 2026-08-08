@@ -4860,11 +4860,25 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-281（400 を出す側）／ISSUE-232（fail-open の前例）。
 
 ## ISSUE-283: [不具合・実測] 満たせない前提の /compute を毎バー発行し続ける（捨てられる仕事）（2026-08-08）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-08・fix/required-bars-contract）
 - **重大度**: High（再生中ずっと無駄な往復とサーバエラーを生み、ログが溢れて他の異常が埋もれる）
 - **事象（利用者報告・再生中の連続出力）**: `cvfe#1` が `E01_INSUFFICIENT_BARS: バー数 1234 では σ̂ を 1 本も出力できない（n_har + 23 = 1352 本以上が必要）` を **1234, 1235, 1236 … と 1 バーずつ**繰り返す。
 - **構造**: リプレイは計算窓を `limit = bar + 1` に絞る。cvfe は `n_har + 23 = 1352` 本を要求するため、カーソルが 1352 本に届くまで**必ず失敗する**。それが分かっているのに毎バー要求している。ISSUE-282 の是正で再生は止まらなくなったが、**要求そのものが無駄**である点は手つかず。
 - **抜本的対策**: 「結果が捨てられる計算を発行しない」（ISSUE-257 と同じ規律）。サーバは必要本数を知っているのだから、機械可読で返す（`error.details.requiredBars`）。front は当該インスタンスの必要本数を記憶し、`limit >= requiredBars` になるまで /compute を発行しない（窓が伸びれば自動的に再開する）。回数を間引く・ログを抑えるのは症状隠しであり採らない。
+- **抜本的対策（実施）— 要件を機械可読で申告し、満たすまで発行しない**:
+  | 層 | 変更 |
+  |---|---|
+  | 指標（`cvfe/src/ohlc.py`・`errors.py`） | `CvfeError` が `violations` を持てるようにし、履歴不足の raise で `{code, requiredBars, actualBars}` を申告する（文言の解析を上位に強いない） |
+  | 翻訳（`indicator_compute_adapter`） | 例外が `violations` を申告していれば `ComputeError` へそのまま運ぶ。**指標名で分岐しない**＝申告する指標が増えても無改変（OCP） |
+  | 契約（`api_shared.http_contract.nested_error`） | `violations` を受け取り `error.violations` へ載せる（既定は空＝従来の応答形と同一） |
+  | 配信（live `compute_controller` / replay `_error_response`） | 双方が violations を素通しする |
+  | front（`ComputeError` / `IndicatorController`） | 失敗から `requiredBars` を学習し、`limit < requiredBars` の間は当該インスタンスの `/compute` を**発行しない**。窓が要件に達すれば自動再開。params/variant 変更で忘れる。見送りは `deferred` として返し可視化する |
+- **採らなかった案（応急処置のため）**: 要求の間引き・窓バックオフ（処理量を減らすだけで原因は残る）。カタログへ最小本数の式を持たせる（Python/JS の二重定義になる）。
+- **安全側の既定**: 要件が未学習、または窓の本数が不明なときは**必ず発行する**（誤ってスキップしない）。
+- **検定**: `param_allowlist_and_failure_isolation.test.js` に 1 件追加。1234 本で **1 回だけ**要求→以後は発行なし→1235 本でも発行なし→1352 本で自動再開、を固定。識別力はスキップ無効化の変異注入で Red を実測。
+- **実 HTTP 検証**: `replay_ui/serve.sh 8280` を実起動し、`POST /compute`（cvfe・n_har=1329・limit=1234）の応答が **400 validation ＋ `violations=[{code:E01_INSUFFICIENT_BARS, requiredBars:1352, actualBars:1234}]`** であることを確認。
+- **回帰**: フロント 4 スイート 1,825 件／Python（cvfe・indicator_ui api・replay_ui）1,233 件 全通過。
+- **未実施**: 稼働中スタックは変更前のプロセスのため、ブラウザでの端から端の確認は**再起動後**に行う（現行プロセスは violations を返さない＝front は従来どおり毎バー要求する）。
 - **関連**: ISSUE-282（失敗の局所化）／ISSUE-257（捨てられる計算を消す）／ISSUE-284（分類の誤り）。
 
 ## ISSUE-284: [不具合・実測再現] 指標の前提未達（validation）が HTTP 500 internal として返る（2026-08-08）

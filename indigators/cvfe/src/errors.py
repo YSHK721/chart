@@ -47,11 +47,19 @@ W03_GAP_INIT_LOOKAHEAD = "W03_GAP_INIT_LOOKAHEAD"
 
 
 class CvfeError(ValueError):
-    """CVFE の入力・状態エラー。``code`` に §3.3 のエラーコードを持つ。"""
+    """CVFE の入力・状態エラー。``code`` に §3.3 のエラーコードを持つ。
 
-    __slots__ = ("code", "detail")
+    ``violations``（ISSUE-283）: 呼び出し側が**機械可読**に扱える診断。文言の解析を強いない
+    ための構造化フィールドで、既定は空。E01（履歴不足）では
+    ``[{"code": "E01_INSUFFICIENT_BARS", "requiredBars": int, "actualBars": int}]`` を載せる。
+    これにより上位（配信 API・フロント）は「あと何本必要か」を知り、**満たすまで要求を出さない**
+    という判断ができる（毎バー失敗する要求を投げ続けない）。
+    """
 
-    def __init__(self, code: str, detail: str = "") -> None:
+    __slots__ = ("code", "detail", "violations")
+
+    def __init__(self, code: str, detail: str = "", violations=None) -> None:
         self.code = code
         self.detail = detail
+        self.violations = list(violations) if violations else []
         super().__init__(f"{code}: {detail}" if detail else code)

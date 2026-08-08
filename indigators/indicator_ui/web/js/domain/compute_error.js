@@ -12,12 +12,15 @@
 export class ComputeError extends Error {
   // kind: 種別文字列。error_type / type のどちらで渡しても受け、両プロパティへ同値を載せる。
   //   既定は 'internal'（§6.3.4 の汎用フォールバック）。
-  constructor(message, { error_type, type } = {}) {
+  constructor(message, { error_type, type, violations } = {}) {
     super(message);
     this.name = 'ComputeError';
     const kind = error_type ?? type ?? 'internal';
     // 両系統の呼び出し側・テストが参照する 2 プロパティを同値で公開する。
     this.error_type = kind;
     this.type = kind;
+    // ISSUE-283: サーバが申告した機械可読な診断（例: 履歴不足の requiredBars / actualBars）。
+    //   文言を解析せずに「あと何本必要か」を判断するための面。未申告は空配列。
+    this.violations = Array.isArray(violations) ? violations : [];
   }
 }

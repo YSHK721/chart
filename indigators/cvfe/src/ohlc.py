@@ -136,11 +136,19 @@ def compute_cvfe_from_ohlc(open_: np.ndarray, high: np.ndarray, low: np.ndarray,
                         lam_gap=float(lam_gap), refit_every=int(refit_every))
 
     n_bars = times.size
-    if n_bars < params.n_har + WARMUP_LAGS + 1:
+    min_bars = params.n_har + WARMUP_LAGS + 1
+    if n_bars < min_bars:
         raise CvfeError(
             E01_INSUFFICIENT_BARS,
             f"バー数 {n_bars} では σ̂ を 1 本も出力できない"
-            f"（n_har + {WARMUP_LAGS + 1} = {params.n_har + WARMUP_LAGS + 1} 本以上が必要）")
+            f"（n_har + {WARMUP_LAGS + 1} = {min_bars} 本以上が必要）",
+            # ISSUE-283: 「あと何本で計算できるか」を機械可読で申告する。上位（配信 API・フロント）が
+            #   文言を解析せずに判断でき、満たすまで要求を出さない（毎バー失敗する往復を作らない）。
+            violations=[{
+                "code": E01_INSUFFICIENT_BARS,
+                "requiredBars": int(min_bars),
+                "actualBars": int(n_bars),
+            }])
 
     edges = bar_edges_from_times(times, interval)
     quality = ohlc_quality_report()

@@ -52,12 +52,14 @@ function addInstance(ctrl, { instanceId, indicatorId, params = [], drawn = true 
 
 test('appliedComputeSpecs declares drawn intrabar-registered instances with normalized params', () => {
   const { ctrl } = newController();
-  addInstance(ctrl, { instanceId: 'profit_rsi#1', indicatorId: 'profit_rsi', params: [['length', 14]] });
+  // ISSUE-281: 申告に載るのは**カタログが宣言する param だけ**（許可リスト）。旧テストは
+  //   profit_rsi に存在しない `length` を使っており、サーバへ送れば 400 になる形だった。
+  addInstance(ctrl, { instanceId: 'profit_rsi#1', indicatorId: 'profit_rsi', params: [['rsi_period', 14]] });
   assert.deepEqual(ctrl.appliedComputeSpecs(), [{
     instanceId: 'profit_rsi#1',
     indicatorId: 'profit_rsi',
     variant: 'default',
-    params: { length: 14 },       // pairs → object（/compute と同一の正規化）
+    params: { rsi_period: 14 },       // pairs → object（/compute と同一の正規化）
   }]);
 });
 

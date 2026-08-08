@@ -114,6 +114,8 @@ export class ComputeHttpClient {
       const error = (payload && payload.error) || {};
       throw new ComputeError(error.message || `計算 API エラー (HTTP ${response.status})`, {
         error_type: error.type || 'internal',
+        // ISSUE-283: 機械可読な診断をそのまま持ち上げる（呼び出し側が要求可否の判断に使う）。
+        violations: error.violations,
       });
     }
 

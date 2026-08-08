@@ -77,6 +77,8 @@ class ComputeResult:
     series: Optional[list] = None
     error_type: Optional[str] = None
     error_message: Optional[str] = None
+    #: 指標が申告した機械可読な診断（ISSUE-283）。既定は空＝従来の応答形と同一。
+    error_violations: Optional[list] = None
 
     @property
     def ok(self) -> bool:
@@ -87,8 +89,10 @@ class ComputeResult:
         return cls(generation=generation, series=series)
 
     @classmethod
-    def error(cls, generation: Any, error_type: str, message: str) -> "ComputeResult":
-        return cls(generation=generation, error_type=error_type, error_message=message)
+    def error(cls, generation: Any, error_type: str, message: str,
+              violations: Optional[list] = None) -> "ComputeResult":
+        return cls(generation=generation, error_type=error_type, error_message=message,
+                   error_violations=list(violations) if violations else None)
 
 
 def compute_indicators(
@@ -203,7 +207,8 @@ def compute_indicators(
             else full_compute(compute_adapter, request.indicator_id, request.variant, df, compute_params)
         )
     except compute_error as exc:  # ComputeError（error_type/message）を error 表現へ。
-        return ComputeResult.error(generation, exc.error_type, exc.message)
+        return ComputeResult.error(generation, exc.error_type, exc.message,
+                                   getattr(exc, "violations", None))
     except KeyError as exc:  # 未登録 id/variant は CallBinding.resolve が raw KeyError を投げる。
         return ComputeResult.error(
             generation, "validation", f"未登録の指標または variant です: {exc}"

@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 
 import { get, scopedParams, applyServerParamScopes } from '../js/usecase/catalog.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { ComputeError } from '../js/domain/compute_error.js';
 
 const noop = () => {};
 
@@ -148,4 +149,61 @@ test('1 指標の計算失敗でバッチは例外を投げず、他指標は描
     '失敗した指標の後も他指標の計算が実行される（バッチが中断しない）',
   );
   assert.ok(drawn.length >= 1 || computed.length >= 2, '成功分の処理が続行している');
+});
+
+// ---- ISSUE-283: 満たせないと分かっている要求は発行しない ----
+
+test('必要バー数を学習し、窓が満たすまで /compute を発行しない（満たせば自動再開）', async () => {
+  const requests = [];
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: {
+      compute: async (req) => {
+        requests.push(req.limit);
+        if (req.indicatorId === 'cvfe' && (req.limit ?? 0) < 1352) {
+          // サーバは「あと何本必要か」を機械可読で申告する（文言解析を強いない）。
+          throw new ComputeError('E01_INSUFFICIENT_BARS: バー数が足りない', {
+            error_type: 'validation',
+            violations: [{ code: 'E01_INSUFFICIENT_BARS', requiredBars: 1352, actualBars: req.limit }],
+          });
+        }
+        return { ok: true, generation: 0, series: [] };
+      },
+    },
+    persistence: {
+      loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop,
+      loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1,
+    },
+    renderer: {
+      renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop,
+      setVisible: noop, remove: noop, setCandles: noop,
+    },
+    document: null,
+    recentBars: 1500,        // ライブ窓では計算できる（＝適用は成功し、描画済みになる）
+  });
+  await ctrl.applyIndicator('cvfe');
+
+  // リプレイでカーソルが手前へ来た状態＝計算窓が要件を下回る（limit = bar + 1）。
+  ctrl._recentBars = 1234;
+  requests.length = 0;
+
+  const first = await ctrl.recomputeAllApplied({ mode: 'full' });   // 1 回だけ失敗して要件を学ぶ
+  const afterFirst = requests.length;
+  const second = await ctrl.recomputeAllApplied({ mode: 'full' });  // 学習済み＝発行しない
+  ctrl._recentBars = 1235;                                          // 1 バー進んでもまだ足りない
+  const third = await ctrl.recomputeAllApplied({ mode: 'full' });
+
+  assert.equal(afterFirst, 1, '最初の 1 回だけ要求する');
+  assert.equal(requests.length, 1, '要件未達の間は追加の要求を出さない（毎バー投げない）');
+  assert.equal(first.failures.length, 1);
+  assert.equal(first.failures[0].requiredBars, 1352, '必要バー数を学習する');
+  assert.equal(second.deferred.length, 1, '見送りとして可視化する（無言で消えない）');
+  assert.equal(third.deferred[0].requiredBars, 1352);
+
+  // 窓が要件に達したら自動的に再開する（人手の解除を要しない）。
+  ctrl._recentBars = 1352;
+  const resumed = await ctrl.recomputeAllApplied({ mode: 'full' });
+  assert.equal(requests.length, 2, '要件を満たしたら再び要求する');
+  assert.equal(resumed.failures.length, 0);
+  assert.equal(resumed.deferred.length, 0);
 });

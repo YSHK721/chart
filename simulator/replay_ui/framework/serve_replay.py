@@ -90,7 +90,9 @@ def _error_response(
     if isinstance(declared, str) and declared:
         # 宣言済みの分類・メッセージは呼び出し側の汎用文言（"Name: msg"）で上書きしない。
         text = declared_message if isinstance(declared_message, str) and declared_message else str(exc)
-        return nested_error(declared, text[:200], generation=generation)
+        # ISSUE-283: 指標が申告した機械可読診断（requiredBars 等）をそのまま運ぶ。
+        return nested_error(declared, text[:200], generation=generation,
+                            violations=getattr(exc, "violations", None))
     error_type = "validation" if isinstance(exc, ValueError) else "internal"
     if message is None:
         message = str(exc)[:200]
