@@ -42,7 +42,7 @@ function addInstance(ctrl, instanceId, params) {
   ctrl._meta.set(instanceId, { def: get('moving_averages') });
 }
 
-test('計算.時間足がチャート足と異なるインスタンスは足内一括計算の対象外', () => {
+test('上位足計算のインスタンスも足内一括計算の対象（ライブと同一設計・ISSUE-290）', () => {
   const ctrl = newController('5m');
   addInstance(ctrl, 'chart#1', { timeframe: 'chart', ma_type: 'ema', length: 9 });
   addInstance(ctrl, 'same#1', { timeframe: '5m', ma_type: 'ema', length: 9 });
@@ -50,10 +50,11 @@ test('計算.時間足がチャート足と異なるインスタンスは足内�
 
   const ids = ctrl.formingSeqTargets().map((t) => t.instanceId);
 
-  assert.deepEqual(ids.sort(), ['chart#1', 'same#1'], '上位足計算のインスタンスが混ざっている');
+  assert.deepEqual(ids.sort(), ['chart#1', 'mtf#1', 'same#1'],
+    'サーバが計算足ごとに H 形成足で計算するため、除外しない');
 });
 
-test('時間足を切り替えると対象が変わる（1D チャートなら 1D 計算は同値＝対象になる）', () => {
+test('チャート足と同値でも対象（従来どおり）', () => {
   const ctrl = newController('1D');
   addInstance(ctrl, 'mtf#1', { timeframe: '1D', ma_type: 'ema', length: 9 });
 
