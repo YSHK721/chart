@@ -16,6 +16,7 @@ import {
 } from '../js/domain/session_day.js';
 import { TF_BAR_SEC, TF_CODES, FLOOR_TFS, CALENDAR_TFS } from '../js/domain/tf_meta.js';
 import { valueArea } from '../js/domain/market_profile_dwell_accumulator.js';
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 import { mpSupportsTf, MP_ZP_SESSIONS_BLOCKED_TFS } from '../js/domain/mp_source_capability.js';
 import { foldTick, openBar } from '../js/domain/forming_fold.js';
 
@@ -72,6 +73,29 @@ test('valueArea は Python _value_area と一致する（整数 TPO・float z �
     const [lo, hi] = valueArea(c.centers, c.tpo, c.pct);
     assert.deepEqual([lo, hi], c.expected, `VA(${JSON.stringify(c.tpo)})`);
   }
+});
+
+// ISSUE-260: 既定比率だけで検定していると「比率が届いていない／写しがずれている」を見逃す。
+//   同一分布で pct を変えたケースを fixture に含め、比率が結果を変えることまで固定する。
+test('valueArea は非既定比率でも Python と一致し、比率で結果が変わる', () => {
+  const nonDefault = golden.value_area.filter((c) => c.pct !== golden.va_pct_default);
+  assert.ok(nonDefault.length >= 3, 'fixture に非既定比率のケースがある');
+  const key = (c) => JSON.stringify([c.centers, c.tpo]);
+  const byDist = new Map();
+  for (const c of golden.value_area) {
+    if (!byDist.has(key(c))) byDist.set(key(c), []);
+    byDist.get(key(c)).push(c);
+  }
+  const varied = [...byDist.values()].filter((cs) => cs.length > 1
+    && new Set(cs.map((c) => JSON.stringify(c.expected))).size > 1);
+  assert.ok(varied.length > 0, '同一分布・異なる pct で VA が変わるケースが fixture にある');
+});
+
+// ISSUE-260: VA 比率の既定は Python 唯一源。生成物（mp_param_defaults_generated.js）と catalog の
+//   param 既定が Python からずれたら落ちる（front に第 2 定義が生えたことの検出）。
+test('VA_PCT_DEFAULT（生成物）は Python VA_PCT_DEFAULT と一致する', () => {
+  assert.equal(typeof golden.va_pct_default, 'number');
+  assert.equal(VA_PCT_DEFAULT, golden.va_pct_default);
 });
 
 // ISSUE-261: zp 対応 tf は台帳から導出できない「能力宣言」で、Python（唯一源）と JS の両方に

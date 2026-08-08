@@ -43,3 +43,12 @@ def test_committed_fixture_matches_current_rules():
         " fixture を更新してください")
     assert committed["tf_bar_sec"] == dict(tf_meta.TF_BAR_SEC)
     assert committed["value_area"] == gen.value_area_cases()
+    # ISSUE-260: VA 比率の既定（front 生成物の源）。Python を変えて再生成し忘れたら Red。
+    from market_profile_api.compute.market_profile import VA_PCT_DEFAULT
+
+    assert committed["va_pct_default"] == VA_PCT_DEFAULT
+    generated_js = gen.MP_PARAM_OUT.read_text(encoding="utf-8")
+    assert generated_js == gen.render_mp_param_defaults_js(VA_PCT_DEFAULT), (
+        "mp_param_defaults_generated.js が現行の既定と一致しない。"
+        " tools/gen_js_parity_golden.py を再実行してください"
+    )
