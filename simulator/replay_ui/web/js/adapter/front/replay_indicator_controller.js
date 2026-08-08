@@ -19,6 +19,7 @@
 import { IndicatorController } from './indicator_controller.js';
 import { CAUSAL_REVEAL_IDS } from '../../usecase/causal_reveal_ids.js';
 import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
+import { CausalSeriesLedger } from '../../replay/causal_series_ledger.js';
 
 // [reveal 一括] ソート済み time 配列で t 以下の点数を返す（二分探索・revealTo のスライス位置）。
 function upperBound(ts, t) {
@@ -52,6 +53,20 @@ export class ReplayIndicatorController extends IndicatorController {
     this._revealCache = new Map();
     // 無効化世代（clearRevealCache/invalidate 後に届いた遅延応答を破棄する）。
     this._revealEpoch = 0;
+    // [ISSUE-293] 確定済みの点を固定する台帳（過去のラインを最新値で塗り替えない）。
+    this._ledger = new CausalSeriesLedger();
+  }
+
+  // [ISSUE-293] 描画の記録性: リビール時点 T より前のバーは、最初に描いた値のまま固定する。
+  //   上位足計算の指標は進行中期間の値が動くため、毎フレームの全点再計算をそのまま描くと
+  //   過去のバーまで最新値へ塗り替わり、「その時点で何が見えていたか」を画面で検証できない。
+  //   足内更新（_drawLatest＝現在のバーの末尾差分）は対象外＝現在のバーは動いてよい。
+  _renderInstance(job) {
+    if (!job || this._untilTime == null || !Array.isArray(job.series)) {
+      return super._renderInstance(job);
+    }
+    const series = this._ledger.apply(job.instanceId, job.series, this._untilTime);
+    return super._renderInstance(series === job.series ? job : { ...job, series });
   }
 
   // ================= [reveal 一括・ISSUE-158 ②] =================
@@ -90,10 +105,12 @@ export class ReplayIndicatorController extends IndicatorController {
   clearRevealCache() {
     this._revealCache.clear();
     this._revealEpoch += 1;
+    this._ledger.clear();   // [ISSUE-293] 時間足切替＝全系列が別物（確定の記録も捨てる）
   }
 
   // 当該インスタンスの基底を破棄（params/variant 変更で陳腐化したとき）。
   _invalidateReveal(instanceId) {
+    this._ledger.forget(instanceId);   // [ISSUE-293] params/variant 変更＝別の系列
     if (this._revealCache.delete(instanceId)) {
       this._revealEpoch += 1;
     }
@@ -238,6 +255,9 @@ export class ReplayIndicatorController extends IndicatorController {
   // [reveal] untilTime を設定（以降の再計算がこの時点で計算される＝ライブ同一・df[:t+1]）。
   setUntilTime(t) {
     this._untilTime = t;
+    // [ISSUE-293] 巻き戻し（t が後退）したら、その先の確定記録を捨てる（再生し直せば
+    //   もう一度その時点の値で確定される）。前進では走査しない。
+    this._ledger.setTime(t);
   }
 
   // [reveal] 形成中バー（暫定 OHLC）を設定。undefined で解除（確定足計算へ戻す）。
