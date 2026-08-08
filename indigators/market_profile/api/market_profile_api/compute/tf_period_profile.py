@@ -52,7 +52,8 @@ def tf_period_profiles(
     unit: float,
     from_unix: int,
     to_unix: int,
-    va_pct: float = 0.70,
+    *,
+    va_pct: float,
 ) -> list[dict]:
     """tick を tf 周期で分割し、各周期を最小価格単位でビニングした sparse プロファイル列を返す。
 
@@ -60,7 +61,8 @@ def tf_period_profiles(
         secs: tick の UNIX 秒（配列）。 mids: tick の mid 価格（配列・同順）。
         tf_sec: 周期秒（例 1m=60）。 unit: 最小価格単位（>0）。
         from_unix, to_unix: ローリング窓（周期始端が ``[from, to)`` の周期のみ返す）。
-        va_pct: バリューエリア割合（既定 0.70）。
+        va_pct: バリューエリア割合（必須・キーワード専用）。ISSUE-260: 既定値を持たせない
+            （既定は :data:`market_profile.VA_PCT_DEFAULT` 唯一源＝配信 controller が解決して渡す）。
 
     Returns:
         価格始端時刻昇順の列 ``[{time, levels:[[price,count]...], poc, va_low, va_high,

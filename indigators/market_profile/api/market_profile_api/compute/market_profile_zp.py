@@ -359,7 +359,8 @@ def compute_zp_profile(
     price_min: Any,
     price_max: Any,
     n_bins: int,
-    va_pct: float = 0.70,
+    *,
+    va_pct: float,  # ISSUE-260: 必須（既定は market_profile.VA_PCT_DEFAULT 唯一源が持つ）。
     bar_sec: int = 86400,
     now: float | None = None,
     want_today: bool = False,

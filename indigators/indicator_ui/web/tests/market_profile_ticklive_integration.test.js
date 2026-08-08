@@ -15,6 +15,8 @@ import { get } from '../js/usecase/catalog.js';
 import { bootstrap } from '../js/adapter/front/composition_root_front.js';
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
 import { DwellAccumulator } from '../js/domain/market_profile_dwell_accumulator.js';
+// ISSUE-260: VA 比率の既定は Python 唯一源の生成物（テストも第 2 定義を持たない）。
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 
 // --- indicator_controller: MP 分岐は onLiveTick へ委譲する ---
 function controller() {
@@ -88,7 +90,7 @@ test('production path: forming growth starts via the grow axis (growing) in norm
       async json() {
         return {
           ok: true, formingStart: 1000, ticks: [], baseFine: [0], baseKmin: 100,
-          activeTable: [[1]], priceMin: 1000, priceMax: 1100, nBins: 1, gridW: 10, now: 1010,
+          activeTable: [[1]], priceMin: 1000, priceMax: 1100, nBins: 1, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 1010,
         };
       },
     };
@@ -148,7 +150,7 @@ test('composition injects a forming client + accumulator so ticklive onLiveTick 
         if (String(u).includes('market_profile_forming')) {
           return {
             ok: true, formingStart: 1000, ticks: [], baseFine: [0], baseKmin: 100,
-            activeTable: [[1]], priceMin: 1000, priceMax: 1100, nBins: 1, gridW: 10, now: 1010,
+            activeTable: [[1]], priceMin: 1000, priceMax: 1100, nBins: 1, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 1010,
           };
         }
         if (String(u).includes('market_profile')) {

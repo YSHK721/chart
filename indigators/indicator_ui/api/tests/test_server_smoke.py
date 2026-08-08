@@ -302,10 +302,10 @@ def test_get_live_ticks_serves_injected_buffer_since_cursor(server):
 # /market_profile_forming 殻の from 透過（回帰: 当日窓へレンジを絞る根幹）
 # --------------------------------------------------------------------------- #
 def test_get_market_profile_forming_passes_from_to_controller(server, monkeypatch):
-    """殻 `_handle_market_profile_forming` が query の `from` を controller へ `frm` として渡す。
+    """殻 `_compute_market_profile_forming` が query の `from` を controller へ `frm` として渡す。
 
     これが欠けると controller の from_ts=None に落ち、base レンジが全期間 low/high へ広がり
-    当日成長が不可視になる（兄弟 `_handle_market_profile` と同型の透過を固定する回帰）。
+    当日成長が不可視になる（兄弟 `_compute_market_profile` と同型の透過を固定する回帰）。
     """
     import framework.server as _srv
 
@@ -325,13 +325,14 @@ def test_get_market_profile_forming_passes_from_to_controller(server, monkeypatc
 
 
 def test_get_tf_period_profile_passes_window_to_controller(server, monkeypatch):
-    # 殻 `_handle_tf_period_profile` が query の from/to（ローリング窓）を controller へ透過し JSON 応答する。
+    # 殻 `_compute_tf_period_profile` が query の from/to（ローリング窓）を controller へ透過し JSON 応答する。
     import framework.server as _srv
 
     captured = {}
 
-    def _spy(ref, timeframe, frm, to, src=None, live_ticks=None):
-        captured.update(ref=ref, tf=timeframe, frm=frm, to=to, src=src, live_ticks=live_ticks)
+    def _spy(ref, timeframe, frm, to, src=None, live_ticks=None, va=None):
+        captured.update(ref=ref, tf=timeframe, frm=frm, to=to, src=src,
+                        live_ticks=live_ticks, va=va)
         return 200, {"ok": True, "tf": timeframe, "columns": []}
 
     monkeypatch.setattr(_srv, "handle_tf_period_profile", _spy)
@@ -344,11 +345,21 @@ def test_get_tf_period_profile_passes_window_to_controller(server, monkeypatch):
     assert captured["src"] is None  # src 省略時は None（従来経路・byte 不変）
     assert captured["live_ticks"] is None  # buffer 未注入時は None（従来経路・byte 不変）
 
+    assert captured["va"] is None  # va 省略時は None（controller が既定へ解決＝byte 不変）
+
     # src=zp はそのまま controller へ透過される。
     status, _ctype, _raw = _get(
         server, "/tf_period_profile?datasetRef=jp225_tick&timeframe=1h&from=1000&to=2000&src=zp")
     assert status == 200
     assert captured["src"] == "zp"
+
+    # ISSUE-260: va（バリューエリア比率）も殻がそのまま controller へ透過する。
+    #   ここが欠けると UI の設定が日別プロファイル列に届かない（効かないツマミ）。
+    status, _ctype, _raw = _get(
+        server,
+        "/tf_period_profile?datasetRef=jp225_tick&timeframe=5m&from=1000&to=2000&va=0.55")
+    assert status == 200
+    assert captured["va"] == "0.55"
 
 
 def test_get_tf_period_profile_passes_live_buffer_ticks(server, monkeypatch):
@@ -358,7 +369,7 @@ def test_get_tf_period_profile_passes_live_buffer_ticks(server, monkeypatch):
 
     captured = {}
 
-    def _spy(ref, timeframe, frm, to, src=None, live_ticks=None):
+    def _spy(ref, timeframe, frm, to, src=None, live_ticks=None, va=None):
         captured.update(live_ticks=live_ticks)
         return 200, {"ok": True, "tf": timeframe, "columns": []}
 

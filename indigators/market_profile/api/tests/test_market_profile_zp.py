@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from market_profile_api.compute import market_profile_zp as zp
+from market_profile_api.compute.market_profile import VA_PCT_DEFAULT
 # ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
 from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
@@ -182,7 +183,7 @@ class TestSessionDayWindow:
         monkeypatch.setattr(mpd, "_load_window_ticks", spy)
         zp.compute_zp_profile(
             "JP225", self.MON_START, self.MON_START, 95.0, 115.0, 4,
-            bar_sec=86400, now=self.MON_START + 3 * 86400,
+            va_pct=VA_PCT_DEFAULT, bar_sec=86400, now=self.MON_START + 3 * 86400,
         )
         assert (self.MON_START, self.MON_START + 86400) in windows
 
@@ -229,6 +230,8 @@ class TestBpRelativeGrid:
 
 def test_compute_zp_profile_empty_candles_range_does_not_crash():
     """ISSUE-079 回帰: 空 candles 経路（price_min=price_max=0）でも log(0) で落ちない。"""
-    out = zp.compute_zp_profile("NOSYM", 0, 0, 0.0, 0.0, 60, now=1e9)
+    out = zp.compute_zp_profile(
+        "NOSYM", 0, 0, 0.0, 0.0, 60, va_pct=VA_PCT_DEFAULT, now=1e9
+    )
     assert out["n_bins"] == 60
     assert all(np.isfinite(b["price"]) for b in out["bins"])

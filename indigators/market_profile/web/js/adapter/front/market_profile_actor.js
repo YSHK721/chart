@@ -223,6 +223,12 @@ export class MarketProfileActor {
     return this._fetchParams.src();
   }
 
+  // 現在の va（バリューエリア比率・未設定は null）。ISSUE-260: composition root が tf-period 列へ
+  //   透過し、全プロファイル生成経路が同一比率で VA を算出する。
+  vaParam() {
+    return this._fetchParams.va();
+  }
+
   // 現在有効な barw（レンジ pt・未設定は null）。composition root が tf-period 列の束ね幅に使う
   //   （ISSUE-054: 「レンジ」を日別プロファイルの全描画経路で効かせる）。
   barwParam() {

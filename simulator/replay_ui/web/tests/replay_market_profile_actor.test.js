@@ -20,11 +20,13 @@ import { ReplayMarketProfileActor } from '../js/adapter/front/replay_market_prof
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
 import { DwellAccumulator } from '../js/domain/market_profile_dwell_accumulator.js';
 import { sessionDayStart } from '../js/domain/session_day.js';
+// ISSUE-260: VA 比率の既定は Python 唯一源の生成物（テストも第 2 定義を持たない）。
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 
 const BASE_FULL = {
   ok: true, formingStart: 1000, ticks: [],
   baseFine: [0, 0, 0], baseKmin: 100, activeTable: [[1]], priceMin: 1000, priceMax: 1100,
-  nBins: 3, gridW: 10, now: 1030,
+  nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 1030,
 };
 
 function fakePrimitive() {
@@ -436,7 +438,7 @@ test('enterBar skips draw when grid is degenerate (empty ticks + [0,1] range) �
   const dayStart = 1782950400;
   const DEG = {
     ok: true, formingStart: dayStart, ticks: [], baseFine: [0], baseKmin: 0,
-    activeTable: [[1]], priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, now: dayStart,
+    activeTable: [[1]], priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, vaPct: VA_PCT_DEFAULT, now: dayStart,
   };
   const forming = fakeFormingClient([DEG]);
   const facc = fakeAccumulatorFactory();
@@ -457,12 +459,12 @@ test('growTo re-fetches forming up to now, re-inits expanded grid, folds forming
   const nowMid = dayStart + 34600;
   const DEG = {
     ok: true, formingStart: dayStart, ticks: [], baseFine: [0], baseKmin: 0,
-    activeTable: [[1]], priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, now: dayStart,
+    activeTable: [[1]], priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, vaPct: VA_PCT_DEFAULT, now: dayStart,
   };
   const GROWN = {
     ok: true, formingStart: dayStart, ticks: [[dayStart + 100, 71000], [dayStart + 200, 71050]],
     baseFine: [0, 0, 0, 0, 0, 0], baseKmin: 7100, activeTable: [[1]],
-    priceMin: 71000, priceMax: 71050, nBins: 3, gridW: 10, now: nowMid,
+    priceMin: 71000, priceMax: 71050, nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now: nowMid,
   };
   const forming = fakeFormingClient([DEG, GROWN]);
   const facc = fakeAccumulatorFactory();
@@ -528,7 +530,7 @@ test('e2e (real DwellAccumulator): degenerate enterBar then growTo expands grid 
   const table = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 1));
   const DEG = {
     ok: true, formingStart: dayStart, ticks: [], baseFine: [0], baseKmin: 0,
-    activeTable: table, priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, now: dayStart,
+    activeTable: table, priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, vaPct: VA_PCT_DEFAULT, now: dayStart,
   };
   const lo = 71000; const hi = 71050; const gw = 10;
   const kmin = Math.floor(lo / gw);
@@ -536,7 +538,7 @@ test('e2e (real DwellAccumulator): degenerate enterBar then growTo expands grid 
   const GROWN = {
     ok: true, formingStart: dayStart, ticks: [[dayStart + 100, lo], [dayStart + 200, hi]],
     baseFine: new Array(size).fill(0), baseKmin: kmin, activeTable: table,
-    priceMin: lo, priceMax: hi, nBins: 3, gridW: gw, now: nowMid,
+    priceMin: lo, priceMax: hi, nBins: 3, gridW: gw, vaPct: VA_PCT_DEFAULT, now: nowMid,
   };
   const forming = fakeFormingClient([DEG, GROWN]);
   const { actor, primitive } = makeActor({
@@ -562,7 +564,7 @@ test('e2e (real DwellAccumulator): degenerate enterBar then growTo expands grid 
 test('present byte golden: shared DwellAccumulator.snapshot is byte-stable (present regression zero)', () => {
   const table = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 1));
   const acc = new DwellAccumulator();
-  acc.init({ baseFine: [0, 0, 0], baseKmin: 100, activeTable: table, priceMin: 1000, priceMax: 1100, nBins: 3, gridW: 10, formingStart: 1704074400 });
+  acc.init({ baseFine: [0, 0, 0], baseKmin: 100, activeTable: table, priceMin: 1000, priceMax: 1100, nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, formingStart: 1704074400 });
   acc.addTick(1704074460, 1005);
   acc.addTick(1704074520, 1015);
   acc.addTick(1704074580, 1055);
@@ -680,7 +682,7 @@ test('end-to-end (ticklive) with real DwellAccumulator: enterBar draws base, fee
   const payload = {
     ok: true, formingStart: now, ticks: [],
     baseFine: [0, 0, 0], baseKmin: 100, activeTable: table,
-    priceMin: 1000, priceMax: 1100, nBins: 3, gridW: 10, now,
+    priceMin: 1000, priceMax: 1100, nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now,
   };
   const forming = fakeFormingClient([payload]);
   const { actor, primitive } = makeActor({
@@ -1023,7 +1025,7 @@ test('lock retries when causal history was unavailable at first call (no permane
 
 const DEG_RESP = {
   ok: true, formingStart: 1782950400, ticks: [], baseFine: [0], baseKmin: 0,
-  activeTable: [[1]], priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, now: 1782950400,
+  activeTable: [[1]], priceMin: 0, priceMax: 1, nBins: 1, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 1782950400,
 };
 
 test('feedTick does NOT draw while grid is degenerate (blank [0,1] snapshot never rendered — ISSUE-049)', async () => {
@@ -1067,7 +1069,7 @@ test('growTo that stays degenerate does NOT draw; real grid re-enables drawing (
   const GROWN = {
     ok: true, formingStart: dayStart, ticks: [[dayStart + 100, 71000]],
     baseFine: [0, 0, 0], baseKmin: 7100, activeTable: [[1]],
-    priceMin: 71000, priceMax: 71050, nBins: 3, gridW: 10, now: dayStart + 100,
+    priceMin: 71000, priceMax: 71050, nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now: dayStart + 100,
   };
   const forming = fakeFormingClient([DEG_RESP, DEG_RESP, GROWN]);
   const clock = fakeClock([0, 1000, 2000, 3000, 4000]);

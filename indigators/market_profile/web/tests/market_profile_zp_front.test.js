@@ -178,6 +178,8 @@ test('actor: refresh は in-flight coalesce（連続再入は末尾 1 回に丸�
 // --- 4) tf-period src 透過 --------------------------------------------------- //
 import { buildTfPeriodUrl } from '../js/adapter/front/tf_period_profile_client.js';
 import { TfPeriodJitterBuffer } from '../js/adapter/front/tf_period_jitter_buffer.js';
+// ISSUE-260: VA 比率の既定は Python 唯一源の生成物（テストも第 2 定義を持たない）。
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 
 test('tf-period client: src=zp は &src=zp を付与・省略時は付与しない（URL byte 不変）', () => {
   const base = buildTfPeriodUrl({ datasetRef: 'jp225_tick', timeframe: '1h', from: 1, to: 2 });
@@ -204,11 +206,11 @@ test('tf-period jitter buffer: src 変更でキャッシュ破棄・fetch へ sr
   buf.ensure('1h', 0, 50);                 // 同キー → キャッシュヒット（fetch 増えない）
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(calls.length, 1);
-  buf.ensure('1h', 0, 50, 'zp');           // src 変更 → 破棄＋再取得（src 透過）
+  buf.ensure('1h', 0, 50, { src: 'zp' });  // src 変更 → 破棄＋再取得（src 透過）
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(calls.length, 2);
   assert.equal(calls[1].src, 'zp');
-  buf.ensure('1h', 0, 50, 'zp');           // 同 src → ヒット
+  buf.ensure('1h', 0, 50, { src: 'zp' });  // 同 src → ヒット
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(calls.length, 2);
   buf.ensure('1h', 0, 50);                 // zp → 従来へ戻す → 破棄＋再取得
@@ -264,7 +266,7 @@ test('actor: 増分(growing×dwell×forming) の setEnabled は forming で初�
       return {
         ok: true, formingStart: 1000, ticks: [[1010, 50000]],
         baseFine: [0, 0, 0], baseKmin: 4600, activeTable: [[1]],
-        priceMin: 46000, priceMax: 46030, nBins: 3, gridW: 10, now: 1030,
+        priceMin: 46000, priceMax: 46030, nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 1030,
       };
     },
   };

@@ -13,6 +13,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
+// ISSUE-260: VA 比率の既定は Python 唯一源の生成物（テストも第 2 定義を持たない）。
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 
 const PROFILE = {
   bins: [{ price: 1, tpo: 1, norm: 1 }], poc: 1, va_low: 1, va_high: 1,
@@ -43,7 +45,7 @@ function fakeForming() {
       return {
         ok: true, formingStart: 1000, ticks: [],
         baseFine: [0], baseKmin: 1, activeTable: [[1]],
-        priceMin: 1, priceMax: 2, nBins: 1, gridW: 1, now: 1,
+        priceMin: 1, priceMax: 2, nBins: 1, gridW: 1, vaPct: VA_PCT_DEFAULT, now: 1,
       };
     },
   };

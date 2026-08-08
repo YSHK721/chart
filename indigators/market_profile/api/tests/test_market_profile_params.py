@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from market_profile_api.compute import market_profile_dwell as mpd
+from market_profile_api.compute.market_profile import VA_PCT_DEFAULT
 from market_profile_api.controller.market_profile_controller import handle_market_profile
 # ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
 from market_profile_api.gateway import cache_settings as _mp_cache_settings
@@ -125,7 +126,8 @@ class TestComputeCountProfile:
         table = mpd._build_active_table(np.asarray(secs, dtype=np.int64))
         monkeypatch.setattr(mpd, "_table_for_day", lambda _s, _d: table)
         profile = mpd.compute_dwell_profile(
-            "JP225", _DAY0, _DAY0 + 2 * _DAY, 990.0, 1110.0, 12, bar_sec=_DAY
+            "JP225", _DAY0, _DAY0 + 2 * _DAY, 990.0, 1110.0, 12,
+            va_pct=VA_PCT_DEFAULT, bar_sec=_DAY,
         )
         cold_bin = next(b for b in profile["bins"] if b["price"] == 1105.0)
         assert cold_bin["tpo"] == 0

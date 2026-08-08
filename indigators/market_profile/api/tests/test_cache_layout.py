@@ -17,6 +17,7 @@ from pathlib import Path
 
 from market_profile_api import cache_layout
 from market_profile_api.compute import market_profile_dwell as mpd
+from market_profile_api.compute.market_profile import VA_PCT_DEFAULT
 from market_profile_api.compute import market_profile_zp as zp
 from market_profile_api.controller import tf_period_profile_controller as tfp
 from market_profile_api.gateway import tf_period_disk_cache as tf_disk
@@ -87,7 +88,7 @@ def test_tf_period_layout_matches_every_real_write_path(monkeypatch, tmp_path):
     """tf-period: 記述子が controller の**全書込経路**（count/bucket/zp）の実配置と一致する。"""
     monkeypatch.setattr(tfp, "_TFP_CACHE_ROOT", str(tmp_path))
     lay = _by_name()["tf-period"]
-    variants = tfp._disk_tf_variants("1h", float(mpd.GRID_W))
+    variants = tfp._disk_tf_variants("1h", float(mpd.GRID_W), VA_PCT_DEFAULT)
     assert len(variants) == 3
     for disk_tf in variants:
         _assert_generation_segment_is_current(

@@ -49,6 +49,9 @@ function _hasBaseFields(f) {
     && _finiteNum(f.priceMax)
     && _finiteNum(f.nBins) && Number(f.nBins) > 0
     && _finiteNum(f.gridW) && Number(f.gridW) > 0
+    // ISSUE-260: VA 比率はサーバ解決値（応答 vaPct）に従う。front は既定リテラルを持たないため、
+    //   欠損時は増分に入らず前回描画を保持する（自前の既定へ黙って落ちない＝不一致を作らない）。
+    && _finiteNum(f.vaPct) && Number(f.vaPct) > 0
     && Array.isArray(f.baseFine);
 }
 
@@ -183,6 +186,7 @@ export class MpTickGrowth {
       nBins: forming.nBins,
       gridW: forming.gridW,
       formingStart: forming.formingStart,
+      vaPct: forming.vaPct, // ISSUE-260: サーバ解決済み VA 比率（参照実装と同一値）。
     });
     this._accumulator = acc;
     this._formingStart = forming.formingStart;

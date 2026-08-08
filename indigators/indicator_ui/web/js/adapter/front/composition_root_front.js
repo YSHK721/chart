@@ -187,6 +187,10 @@ export async function bootstrap({
   //   生じる（実UI検証で検出）。marketProfile は直後に代入（closure 遅延評価で吸収）。
   const mpSrc = () => (marketProfile && typeof marketProfile.srcParam === 'function'
     ? marketProfile.srcParam() : null);
+  // ISSUE-260: バリューエリア比率（MP の va パラメータ）。tf-period 列にも同じ比率を効かせる
+  //   （未設定は null＝サーバ既定へ委ねる＝従来 URL byte 不変）。
+  const mpVa = () => (marketProfile && typeof marketProfile.vaParam === 'function'
+    ? marketProfile.vaParam() : null);
   const zpTfOk = () => mpSupportsTf(mpSrc(), controller._timeframe);
   // ISSUE-066: MP パラメータ変更（gear の src/mode 等）を tf-period 列アクターへ即時伝播するフック。
   //   tf-period 配線（mode==='b'）で実体を代入する。未配線（A方式・非served）は no-op（byte 不変）。
@@ -348,7 +352,10 @@ export async function bootstrap({
     getTimeframe: () => controller._timeframe,
     getVisibleRange,
     renderer, // ISSUE-055: 列が描けた時点で candle 透明化（MarketProfileActor から委譲）。
-    getSrc: () => mpTfPeriodSrc(mpSrc()),
+    // 取得パラメータ（ISSUE-260）: src（zp 透過）と va（バリューエリア比率）を 1 つの組で渡す。
+    //   va は MP のパラメータ（catalog 既定＝Python 唯一源の生成物）をそのまま透過し、backend が
+    //   同一規則で解決する＝`/market_profile` の POC/VA と列の VA が同じ比率で決まる。
+    getQuery: () => ({ src: mpTfPeriodSrc(mpSrc()), va: mpVa() }),
     // 方向背景（依頼者指示 2026-07-13）: 列 time と同一周期グリッドの candle から陽/陰を注釈する。
     getCandles: () => renderer.getCandles(),
   });

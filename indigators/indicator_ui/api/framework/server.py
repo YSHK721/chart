@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
@@ -43,6 +44,11 @@ class _ComputeWorker:
     本ワーカーは「重い計算だけを常に同一スレッドで直列実行」する。rpy2/R はスレッド親和
     （同一スレッドからの呼び出しなら安全）のため旧実装と同じ安全性を保ちながら、静的配信・
     /candles・/live_ticks 等の軽量応答は ThreadingHTTPServer で並行化できる。
+
+    不変条件（ISSUE-259）: ``run`` へ渡す ``fn`` は ``(status, payload)`` を返す **純計算**に限る。
+    ソケット書き込み（``_send_json``）を ``fn`` の中で行ってはならない。ワーカーの目的は
+    「計算の直列化」であり、クライアント都合で長引く I/O を単一の実行資源へ持ち込むと、
+    遅いクライアント 1 本が同ワーカーの全経路を直列停止させる（ISSUE-257 と同型）。
     """
 
     def __init__(self) -> None:
@@ -160,7 +166,7 @@ def set_live_tick_buffer(buffer: Optional[Any]) -> None:
 
 # ISSUE-087 🟡-1: _forming_bar_from_buffer は adapter/controller/candles_controller へ移設（薄殻化）。
 # ISSUE-094 🟡-8: MP forming payload への buffer tick 合成（旧 _augment_mp_forming_ticks・業務判断）は
-#   MP 側 controller の augment_forming_payload へ移設。殻は buffer を引数で渡すだけ（_handle_market_profile_forming）。
+#   MP 側 controller の augment_forming_payload へ移設。殻は buffer を引数で渡すだけ（_compute_market_profile_forming）。
 
 # 静的配信の拡張子 → Content-Type（最小・stdlib mimetypes 相当を明示限定）。
 _CONTENT_TYPES = {
@@ -208,6 +214,110 @@ def _resolve_static(url_path: str) -> Path | None:
     if not candidate.is_file():
         return None
     return candidate
+
+
+# --------------------------------------------------------------------------- #
+# MP 3 経路の純計算（ISSUE-259）
+#
+#   ``query -> (status, payload)``。**module 関数**であることが本質で、スコープに ``self``
+#   束縛が存在しない＝ソケット書き込みをここへ書けない（書けば NameError）。したがって
+#   「計算の直列化」を担う _MP_WORKER に I/O 責務が再混入することが構文的に不可能になる。
+#   ``_MP_WORKER`` 上（＝単一スレッド）で実行され、応答書き出しは呼び出し元（リクエスト
+#   スレッド）の ``IndicatorUIRequestHandler._respond_mp_via_worker`` が行う（/compute と同型）。
+#
+#   例外規律は移設前と同一: controller 呼び出しのみを try で包み、500 nested error を
+#   **戻り値として**返す（呼び出し元が書き出す）。try の外（クエリ取り出し）で起きた例外は
+#   従来どおり ``_ComputeWorker.run`` がリクエストスレッドへ再送出する。
+# --------------------------------------------------------------------------- #
+def _compute_market_profile(query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
+    """GET /market_profile — 足ベース TPO マーケットプロファイル（読取のみ）。
+
+    検証（未知 ref/tf は 400）・計算は純ロジック ``handle_market_profile`` に委譲し、本関数は
+    クエリ取り出しと (status, payload) の組み立てのみを担う。
+    応答は ``{ok:true, profile:{...}}``（bins/poc/va_low/va_high/price_min/price_max/tpo_units/n_bins）。
+    """
+    ref = (query.get("datasetRef") or [None])[0]
+    timeframe = (query.get("timeframe") or [None])[0]
+    limit = (query.get("limit") or [None])[0]
+    bins = (query.get("bins") or [None])[0]
+    va = (query.get("va") or [None])[0]
+    src = (query.get("src") or [None])[0]
+    barw = (query.get("barw") or [None])[0]
+    to = (query.get("to") or [None])[0]  # リプレイ時間カーソル（UNIX 秒・省略時=全期間＝現行挙動）。
+    frm = (query.get("from") or [None])[0]  # ローリング窓の下限 time（UNIX 秒・省略時=全期間）。増分2 A。
+    today = (query.get("today") or [None])[0]  # スナップショット当日強調（'1' で today[]/today_max 付加）。増分2 C。
+    sessions = (query.get("sessions") or [None])[0]  # 日別プロファイル分割（'1' で sessions[] 付加）。移植元 prototype_260630-01。
+    try:
+        status, payload = handle_market_profile(
+            ref, timeframe, limit, bins, va, src, barw, to,
+            **{"from": frm, "today": today, "sessions": sessions},
+        )
+    except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
+        return 500, _nested_error("internal", f"market_profile 取得に失敗しました: {exc}")
+    return status, payload
+
+
+def _compute_market_profile_forming(query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
+    """GET /market_profile_forming — MP サブバー tick 逐次成長の base+forming tick 列+active table（読取のみ）。
+
+    検証（非 tick ref / 非対応 tf は 400）・組み立ては純ロジック
+    ``handle_market_profile_forming`` に委譲し、本関数はクエリ取り出しと (status, payload) の
+    組み立てのみを担う（``_compute_market_profile`` と同型）。
+    """
+    ref = (query.get("datasetRef") or [None])[0]
+    timeframe = (query.get("timeframe") or [None])[0]
+    since = (query.get("since") or [None])[0]
+    base = (query.get("base") or [None])[0]
+    now_raw = (query.get("now") or [None])[0]
+    now_override = int(now_raw) if (now_raw and now_raw.lstrip("-").isdigit()) else None
+    bins = (query.get("bins") or [None])[0]
+    va = (query.get("va") or [None])[0]
+    barw = (query.get("barw") or [None])[0]
+    # セッション窓 MP の base 累積下限 time（UNIX 秒・省略時=全期間＝後方互換）。兄弟の
+    #   _compute_market_profile と同型で controller へ透過する。これが欠けると from_ts=None に
+    #   落ち、base レンジが全期間 low/high（例 2012 年安値）へ広がり当日成長が不可視になる。
+    frm = (query.get("from") or [None])[0]
+    try:
+        status, payload = handle_market_profile_forming(
+            ref, timeframe, since, base, now_override, bins, va, barw, frm=frm,
+        )
+    except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
+        return 500, _nested_error(
+            "internal", f"market_profile_forming 取得に失敗しました: {exc}")
+    # 秒成長の遅延解消: forming 期間の ticks を in-memory buffer（near-real-time）で補完する
+    #   （parquet フロンティア遅延で欠ける現在分の末尾 tick を埋める）。ok 応答のみ・非破壊。
+    if status == 200 and isinstance(payload, dict) and payload.get("ok"):
+        # 殻はバッファを渡すだけ。対応判定・合成は MP 側 controller が担う（ISSUE-094 🟡-8）。
+        augment_forming_payload(payload, ref, timeframe, since, buffer=_live_tick_buffer)
+    return status, payload
+
+
+def _compute_tf_period_profile(query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
+    """GET /tf_period_profile — 時間足毎の最小価格単位プロファイル列（ローリング窓・読取のみ）。
+
+    検証（非 tick ref / 非対応 tf は 400）・生成は純ロジック ``handle_tf_period_profile`` に委譲し、
+    本関数はクエリ取り出し（``datasetRef``/``timeframe``/``from``/``to``＝ローリング窓）と
+    (status, payload) の組み立てのみを担う（``_compute_market_profile_forming`` と同型）。
+    """
+    ref = (query.get("datasetRef") or [None])[0]
+    timeframe = (query.get("timeframe") or [None])[0]
+    frm = (query.get("from") or [None])[0]
+    to = (query.get("to") or [None])[0]
+    src = (query.get("src") or [None])[0]  # 省略時 None＝従来経路（byte 不変）。
+    # ISSUE-260: バリューエリア比率。省略時は controller が既定へ解決＝従来応答（byte 不変）。
+    va = (query.get("va") or [None])[0]
+    # ISSUE-083 追補: in-memory LiveTickBuffer の末尾を controller へ渡し、当日（未完了セッション）
+    #   列を parquet フロンティア遅延（~1分）を待たず最新ティックまで育てる（完了日は controller が
+    #   無視＝キャッシュ規約不変）。buffer 未注入・非 tick ref は None＝従来経路（byte 不変）。
+    buf = _live_tick_buffer
+    live = (buf.ticks_since(0)
+            if (buf is not None and forming_bar_mod.is_tick_ref(ref)) else None)
+    try:
+        status, payload = handle_tf_period_profile(
+            ref, timeframe, frm, to, src=src, live_ticks=live, va=va)
+    except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
+        return 500, _nested_error("internal", f"tf_period_profile 取得に失敗しました: {exc}")
+    return status, payload
 
 
 class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
@@ -282,13 +392,13 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             self._handle_forming_bar(parse_qs(parsed.query))
             return
         if parsed.path == "/market_profile":
-            _MP_WORKER.run(lambda: self._handle_market_profile(parse_qs(parsed.query)))
+            self._respond_mp_via_worker(_compute_market_profile, parse_qs(parsed.query))
             return
         if parsed.path == "/market_profile_forming":
-            _MP_WORKER.run(lambda: self._handle_market_profile_forming(parse_qs(parsed.query)))
+            self._respond_mp_via_worker(_compute_market_profile_forming, parse_qs(parsed.query))
             return
         if parsed.path == "/tf_period_profile":
-            _MP_WORKER.run(lambda: self._handle_tf_period_profile(parse_qs(parsed.query)))
+            self._respond_mp_via_worker(_compute_tf_period_profile, parse_qs(parsed.query))
             return
         if parsed.path == "/live_ticks":
             self._handle_live_ticks(parse_qs(parsed.query))
@@ -338,94 +448,27 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         status, payload = handle_forming_bar(ref, timeframe, now_raw, buffer=_live_tick_buffer)
         self._send_json(status, payload)
 
-    def _handle_market_profile(self, query: dict[str, list[str]]) -> None:
-        """GET /market_profile — 足ベース TPO マーケットプロファイルを返す（読取のみ）。
+    def _respond_mp_via_worker(self, compute, query: dict[str, list[str]]) -> None:
+        """MP 系 GET の唯一の実行規律（ISSUE-259）— 計算はワーカー・応答はリクエストスレッド。
 
-        検証（未知 ref/tf は 400）・計算は純ロジック ``handle_market_profile`` に委譲し、本メソッドは
-        クエリ取り出しと (status, payload) の JSON 応答のみを担う（``_handle_forming_bar`` と同型の薄殻）。
-        応答は ``{ok:true, profile:{...}}``（bins/poc/va_low/va_high/price_min/price_max/tpo_units/n_bins）。
+        ``compute`` は ``query -> (status, payload)`` の **module 関数**（``_compute_market_profile``
+        / ``_compute_market_profile_forming`` / ``_compute_tf_period_profile``）に限る。module 関数の
+        スコープには ``self`` 束縛が存在しないため、ソケット書き込みをワーカースレッドへ持ち込むこと
+        が構文的に不可能になる。
+
+        経緯（ISSUE-259）: 旧実装は ``_MP_WORKER.run(lambda: self._handle_*(...))`` で 3 経路を呼び、
+        各 ``_handle_*`` の終端が ``self._send_json(...)`` だった＝**ソケット書き込みが単一ワーカー
+        スレッド内**で起きていた。ワーカーの目的は「MP 内部状態を守る計算の直列化」であり、
+        クライアント都合で長引く I/O は無関係な責務（SRP 違反）。遅いクライアント 1 本の受信待ちが
+        MP 全経路を直列停止させるため、``do_POST`` の ``/compute`` と同型へ揃えた:
+        ワーカーへ渡すのは純計算のみ、応答書き出しは呼び出し元スレッド。
+
+        ワーカー内で起きた例外は ``_ComputeWorker.run`` が呼び出し側スレッドへ再送出する
+        （従来と同じく ``do_GET`` は捕まえない＝各 ``_compute_*`` が担う 500 nested error が唯一の
+        エラー応答経路）。3 経路で同じ分担を手書き複製しないため、``_MP_WORKER`` の参照点は本
+        メソッド 1 箇所に限る。
         """
-        ref = (query.get("datasetRef") or [None])[0]
-        timeframe = (query.get("timeframe") or [None])[0]
-        limit = (query.get("limit") or [None])[0]
-        bins = (query.get("bins") or [None])[0]
-        va = (query.get("va") or [None])[0]
-        src = (query.get("src") or [None])[0]
-        barw = (query.get("barw") or [None])[0]
-        to = (query.get("to") or [None])[0]  # リプレイ時間カーソル（UNIX 秒・省略時=全期間＝現行挙動）。
-        frm = (query.get("from") or [None])[0]  # ローリング窓の下限 time（UNIX 秒・省略時=全期間）。増分2 A。
-        today = (query.get("today") or [None])[0]  # スナップショット当日強調（'1' で today[]/today_max 付加）。増分2 C。
-        sessions = (query.get("sessions") or [None])[0]  # 日別プロファイル分割（'1' で sessions[] 付加）。移植元 prototype_260630-01。
-        try:
-            status, payload = handle_market_profile(
-                ref, timeframe, limit, bins, va, src, barw, to,
-                **{"from": frm, "today": today, "sessions": sessions},
-            )
-        except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
-            self._send_json(500, _nested_error("internal", f"market_profile 取得に失敗しました: {exc}"))
-            return
-        self._send_json(status, payload)
-
-    def _handle_market_profile_forming(self, query: dict[str, list[str]]) -> None:
-        """GET /market_profile_forming — MP サブバー tick 逐次成長の base+forming tick 列+active table（読取のみ）。
-
-        検証（非 tick ref / 非対応 tf は 400）・組み立ては純ロジック
-        ``handle_market_profile_forming`` に委譲し、本メソッドはクエリ取り出しと (status, payload) の
-        JSON 応答のみを担う（``_handle_market_profile`` と同型の薄殻）。
-        """
-        ref = (query.get("datasetRef") or [None])[0]
-        timeframe = (query.get("timeframe") or [None])[0]
-        since = (query.get("since") or [None])[0]
-        base = (query.get("base") or [None])[0]
-        now_raw = (query.get("now") or [None])[0]
-        now_override = int(now_raw) if (now_raw and now_raw.lstrip("-").isdigit()) else None
-        bins = (query.get("bins") or [None])[0]
-        va = (query.get("va") or [None])[0]
-        barw = (query.get("barw") or [None])[0]
-        # セッション窓 MP の base 累積下限 time（UNIX 秒・省略時=全期間＝後方互換）。兄弟の
-        #   _handle_market_profile と同型で controller へ透過する。これが欠けると from_ts=None に
-        #   落ち、base レンジが全期間 low/high（例 2012 年安値）へ広がり当日成長が不可視になる。
-        frm = (query.get("from") or [None])[0]
-        try:
-            status, payload = handle_market_profile_forming(
-                ref, timeframe, since, base, now_override, bins, va, barw, frm=frm,
-            )
-        except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
-            self._send_json(
-                500, _nested_error("internal", f"market_profile_forming 取得に失敗しました: {exc}"))
-            return
-        # 秒成長の遅延解消: forming 期間の ticks を in-memory buffer（near-real-time）で補完する
-        #   （parquet フロンティア遅延で欠ける現在分の末尾 tick を埋める）。ok 応答のみ・非破壊。
-        if status == 200 and isinstance(payload, dict) and payload.get("ok"):
-            # 殻はバッファを渡すだけ。対応判定・合成は MP 側 controller が担う（ISSUE-094 🟡-8）。
-            augment_forming_payload(payload, ref, timeframe, since, buffer=_live_tick_buffer)
-        self._send_json(status, payload)
-
-    def _handle_tf_period_profile(self, query: dict[str, list[str]]) -> None:
-        """GET /tf_period_profile — 時間足毎の最小価格単位プロファイル列（ローリング窓・読取のみ）。
-
-        検証（非 tick ref / 非対応 tf は 400）・生成は純ロジック ``handle_tf_period_profile`` に委譲し、
-        本メソッドはクエリ取り出し（``datasetRef``/``timeframe``/``from``/``to``＝ローリング窓）と JSON 応答
-        のみを担う（``_handle_market_profile_forming`` と同型の薄殻）。
-        """
-        ref = (query.get("datasetRef") or [None])[0]
-        timeframe = (query.get("timeframe") or [None])[0]
-        frm = (query.get("from") or [None])[0]
-        to = (query.get("to") or [None])[0]
-        src = (query.get("src") or [None])[0]  # 省略時 None＝従来経路（byte 不変）。
-        # ISSUE-083 追補: in-memory LiveTickBuffer の末尾を controller へ渡し、当日（未完了セッション）
-        #   列を parquet フロンティア遅延（~1分）を待たず最新ティックまで育てる（完了日は controller が
-        #   無視＝キャッシュ規約不変）。buffer 未注入・非 tick ref は None＝従来経路（byte 不変）。
-        buf = _live_tick_buffer
-        live = (buf.ticks_since(0)
-                if (buf is not None and forming_bar_mod.is_tick_ref(ref)) else None)
-        try:
-            status, payload = handle_tf_period_profile(
-                ref, timeframe, frm, to, src=src, live_ticks=live)
-        except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
-            self._send_json(
-                500, _nested_error("internal", f"tf_period_profile 取得に失敗しました: {exc}"))
-            return
+        status, payload = _MP_WORKER.run(partial(compute, query))
         self._send_json(status, payload)
 
     def _handle_live_ticks(self, query: dict[str, list[str]]) -> None:

@@ -49,6 +49,8 @@ function _hasBaseFields(f) {
     && _finiteNum(f.priceMax)
     && _finiteNum(f.nBins) && Number(f.nBins) > 0
     && _finiteNum(f.gridW) && Number(f.gridW) > 0
+    // ISSUE-260: VA 比率はサーバ解決値（応答 vaPct）に従う（present の同名ガードと同基準）。
+    && _finiteNum(f.vaPct) && Number(f.vaPct) > 0
     && Array.isArray(f.baseFine);
 }
 
@@ -146,6 +148,7 @@ const INCREMENTAL_PUSH_STRATEGY = {
       nBins: grid.nBins,
       gridW: forming.gridW,
       formingStart: forming.formingStart,
+      vaPct: forming.vaPct, // ISSUE-260: サーバ解決済み VA 比率（present 基底の init と同一）。
     });
     a._accumulator = acc;
     a._formingStart = forming.formingStart;
