@@ -61,7 +61,6 @@ def _params(ma_type: str, **overrides) -> dict:
         "smoothing_type": "none",
         "smoothing_length": 9,
         "bb_stddev": 2.0,
-        "wait_for_close": False,
     }
     p.update(overrides)
     return p
@@ -127,10 +126,6 @@ def test_latest_equals_full_with_source(ma_type, source):
     _assert_tail_matches_full(adapter, _ohlcv(400), _params(ma_type, source=source))
 
 
-@pytest.mark.parametrize("ma_type", _MA_TYPES)
-def test_latest_equals_full_with_wait_for_close(ma_type):
-    adapter = IndicatorComputeAdapter()
-    _assert_tail_matches_full(adapter, _ohlcv(400), _params(ma_type, wait_for_close=True))
 
 
 @pytest.mark.parametrize("ma_type", _MA_TYPES)
@@ -147,11 +142,10 @@ def test_latest_equals_full_with_min_tail(ma_type, min_tail):
 # 2. 足内更新の非破壊性（同一確定状態 × 形成中バー 10 通り）
 # =========================================================================== #
 @pytest.mark.parametrize("ma_type", _MA_TYPES)
-@pytest.mark.parametrize("wait_for_close", [False, True])
-def test_intrabar_steps_are_non_destructive(ma_type, wait_for_close):
+def test_intrabar_steps_are_non_destructive(ma_type):
     adapter = IndicatorComputeAdapter()
     base = _ohlcv(400)
-    params = _params(ma_type, wait_for_close=wait_for_close)
+    params = _params(ma_type)
 
     # 確定状態を作る（1 回目の呼出でキャッシュへ載る）。
     _assert_tail_matches_full(adapter, base, params)

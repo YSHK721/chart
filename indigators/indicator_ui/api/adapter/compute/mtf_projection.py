@@ -15,10 +15,14 @@
 規約（決定論的定義）:
     - 各バーの所属期間は :func:`marketdata.tf_meta.period_start_unix` が唯一源。
       **ラベル時刻で比較してはならない**（暦足ではラベル ≠ 期間始端 ≠ 確定時刻）。
-    - ``wait_for_close=True``  : C バー ``t`` の値 ＝ ``t`` の属する H 期間より前に
-      **確定した**最後の H バーの値。過去・現在とも不変（完全非リペイント）。
-    - ``wait_for_close=False`` : 形成中の H バーの現在値も使う（``t`` の属する H 期間の値）。
-      可変範囲は形成中の 1 期間ぶんに限られ、確定後は不変。
+    - **確定済みの H 期間に属する C バー**: その C バーの時点で**すでに確定していた**最後の
+      H バーの値を使う（＝1 つ前の H 期間の値）。その期間の最終値は当該 C バーの時点では
+      知り得ないため使わない（look-ahead の遮断・ISSUE-274 D-5 と同型）。
+    - **進行中の H 期間に属する C バー**: 形成中の H バーの現在値を使う（ティック粒度で動く・
+      ISSUE-274 D-4）。可変範囲は進行中の 1 期間ぶんに限られ、確定後は不変。
+    - この 2 つは排他ではなく**期間で使い分ける**。かつては `wait_for_close` で全期間を
+      どちらか一方に倒していたため、ON は右端が動かず（D-4 が消える）、OFF は過去へ
+      look-ahead が乗るという、どちらも片側だけ正しい状態だった（ISSUE-286 で是正）。
     - 材料不足（``t`` がどの H バーよりも前）の C バーには点を出さない（NaN を描かない）。
 
 対象 kind は時系列 ``data`` を持つ ``line`` / ``histogram`` のみ。``horizontal_line``
@@ -53,7 +57,6 @@ def project_series(
     df_chart: Any,
     compute_tf: str,
     *,
-    wait_for_close: bool = False,
     period_start_unix: Any,
 ) -> "list[dict[str, Any]]":
     """H の時間軸の ``series`` を、チャート足の時間軸（``df_chart`` の各バー）へ投影する。
@@ -62,7 +65,6 @@ def project_series(
         series: 指標計算の応答系列（``[{name, kind, data: [{time, value, ...}], ...}]``）。
         df_chart: チャート足 C の OHLC DataFrame（インデックス＝C のバー時刻）。
         compute_tf: 計算足 H の時間足コード。期間の所属判定に使う。
-        wait_for_close: 形成中の H バーを使わない（＝確定足のみ）なら True。
         period_start_unix: ``(unix, tf) -> unix``。その時刻が属する期間の始端を返す唯一源
             （:func:`marketdata.tf_meta.period_start_unix`）。依存方向を内向きに保つため注入する。
 
@@ -84,15 +86,21 @@ def project_series(
             continue
         # H の各点が属する期間の始端。ラベル時刻そのものではない（暦足で両者は一致しない）。
         source_starts = [period_start_unix(int(p["time"]), compute_tf) for p in points]
+        # 進行中の H 期間（＝形成中で、その値だけが今まさに動く）。判定は入力だけで決まる:
+        #   最後の H 点の期間より後ろの C バーが存在するなら、その期間はすでに閉じている。
+        #   （リプレイのように C が途中で止まる場合も、C の範囲内で決まる＝決定論的）。
+        last_start = source_starts[-1]
+        forming_start = None if any(b > last_start for b in chart_period_starts) else last_start
         data: "list[dict[str, Any]]" = []
         cursor = -1
         for bar_time, bar_start in zip(chart_times, chart_period_starts):
             # 当該 C バーの時点で採用してよい最後の H バーまでカーソルを進める。
-            #   確定待ち   : その H 期間が C バーの属する期間より前＝すでに確定している。
-            #   確定待たず : 同一期間（形成中）まで採用する。
+            #   確定済み期間: 「その C バーより前に確定した」H バーまで（同一期間は使わない）。
+            #   進行中の期間: 同一期間（形成中）まで使う＝右端がティック粒度で動く。
             while cursor + 1 < len(points) and (
                 source_starts[cursor + 1] < bar_start
-                or (not wait_for_close and source_starts[cursor + 1] <= bar_start)
+                or (forming_start is not None
+                    and source_starts[cursor + 1] == bar_start == forming_start)
             ):
                 cursor += 1
             if cursor < 0:

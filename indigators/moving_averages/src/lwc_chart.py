@@ -54,7 +54,6 @@ _DEFAULTS = {
     "smoothing_type": "none",
     "smoothing_length": 9,
     "bb_stddev": 2.0,
-    "wait_for_close": True,
 }
 
 
@@ -159,7 +158,6 @@ def add_moving_averages(
     smoothing_type: str = "none",
     smoothing_length: int = 9,
     bb_stddev: float = 2.0,
-    wait_for_close: bool = True,
     time_column: Optional[str] = None,
 ) -> dict[str, object]:
     """``chart`` へ単一の移動平均（＋平滑化＋BB）を追加する（TradingView「移動平均」準拠）。
@@ -174,7 +172,6 @@ def add_moving_averages(
         smoothing_type: 平滑化タイプ（none / sma / ema / smma / wma / sma_bb）。
         smoothing_length: 平滑化の期間。
         bb_stddev: BB の標準偏差倍率（smoothing_type==sma_bb のときのみ使用）。
-        wait_for_close: True で最終足（未確定足）を計算対象から除外する。
         time_column: 時刻列の明示指定。
 
     Returns:
@@ -193,10 +190,9 @@ def add_moving_averages(
 
     times = _resolve_times(df, time_column)
     price = _source_prices(df, source)
-    # 確定待ち: 最終足（未確定足）を除外する。
-    if wait_for_close and len(price) > 1:
-        price = price[:-1]
-        times = times[:-1]
+    # 最終足（形成中バー）も計算対象に含める。かつて `wait_for_close` で除外を選べたが、
+    #   同一時間足では `offset=1`（1 本シフト）と同義で概念が重複し、上位足計算は投影側が
+    #   期間で使い分けるようになったため選択自体が不要になった（ISSUE-286）。
     n = int(len(price))
     if length < 2 or length > n:
         return {}  # 計算不能（期間 < 2 / 本数超）。系列を出さない。

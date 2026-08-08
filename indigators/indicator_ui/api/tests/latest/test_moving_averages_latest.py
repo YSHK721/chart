@@ -66,7 +66,6 @@ def _base_params(ma_type: str, **overrides) -> dict:
         "smoothing_length": 9,
         "bb_stddev": 2.0,
         # catalog 既定（false）に合わせる: 最終足も計算し full/latest 同条件にする。
-        "wait_for_close": False,
     }
     p.update(overrides)
     return p

@@ -54,8 +54,7 @@
     "smoothing_length": 9,
     "smoothing_type": "none",
     "source": "close",
-    "timeframe": "chart",
-    "wait_for_close": false
+    "timeframe": "chart"
   },
   "price_range_power": {
     "bear_color": "rgba(210, 67, 58, 0.9)",

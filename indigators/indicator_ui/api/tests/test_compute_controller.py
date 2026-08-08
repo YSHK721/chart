@@ -278,7 +278,7 @@ def test_handle_compute_mode_omitted_is_full_backward_compatible():
     body = {
         "indicatorId": "moving_averages", "variant": "default",
         "params": {"ma_type": "sma", "length": 9, "source": "close",
-                   "smoothing_type": "none", "wait_for_close": False},
+                   "smoothing_type": "none"},
         "datasetRef": "sample", "timeframe": "1D", "limit": 60,
     }
     status, resp = handle_compute(body)
@@ -292,7 +292,7 @@ def test_handle_compute_mode_full_explicit_matches_omitted():
     base = {
         "indicatorId": "moving_averages", "variant": "default",
         "params": {"ma_type": "sma", "length": 9, "source": "close",
-                   "smoothing_type": "none", "wait_for_close": False},
+                   "smoothing_type": "none"},
         "datasetRef": "sample", "timeframe": "1D", "limit": 60,
     }
     _, resp_omitted = handle_compute(dict(base))
@@ -305,7 +305,7 @@ def test_handle_compute_mode_latest_trims_line_to_trailing_k():
     body = {
         "indicatorId": "moving_averages", "variant": "default",
         "params": {"ma_type": "sma", "length": 9, "source": "close",
-                   "smoothing_type": "none", "wait_for_close": False},
+                   "smoothing_type": "none"},
         "datasetRef": "sample", "timeframe": "1D", "limit": 60, "mode": "latest",
     }
     status, resp = handle_compute(body)
@@ -319,7 +319,7 @@ def test_handle_compute_mode_latest_line_tail_equals_full_tail():
     base = {
         "indicatorId": "moving_averages", "variant": "default",
         "params": {"ma_type": "sma", "length": 9, "source": "close",
-                   "smoothing_type": "none", "wait_for_close": False},
+                   "smoothing_type": "none"},
         "datasetRef": "sample", "timeframe": "1D", "limit": 60,
     }
     _, resp_full = handle_compute({**base, "mode": "full"})
