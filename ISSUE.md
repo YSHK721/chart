@@ -4314,10 +4314,25 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-099 🟡-3/🟡-4（契約の明文化）／ISSUE-181（協働子抽出）／ISSUE-262（宣言を検定で施行する）。
 
 ## ISSUE-256: [設計是正] `replay.js` の `setupReplay` が 847 行の単一関数（SRP）（2026-08-04)
-- **ステータス**: OPEN
+- **ステータス**: IN_PROGRESS（2026-08-08・3 ロール抽出済み 850→535 行／カーソルロールの抽出が残）
 - **重大度**: 中
 - **実測**: `simulator/replay_ui/web/js/replay.js` は 847 行で、トップレベルの関数定義は `setupReplay` ただ 1 つ。合成・再生駆動・足内アニメーション・MP 連動・時間足反映が同一スコープに同居する。
 - **抜本的対策**: 関心事ごとに協働子へ切り出す（合成根は配線のみ残す）。リプレイ側は既に `replay/` 配下へ純ロジック（`forming_plan` / `stream` / `timing` / `calendar` / `state`）を分離済みで、残っているのは駆動と配線の塊。
+
+### 是正（2026-08-08・refactor/replay-roles）— 状態を持つ 3 ロールを切り出す
+- **方針**: 既に純ロジック（式）は `replay/*` へ出ていたので、残る「**状態を持つ駆動**」を関心事ごとにロール化した（ISSUE-181 と同じ「状態も一緒に移す」）。分岐・境界・await 順序・世代判定は 1 つも足さず/削らず移設した。
+  | ロール | 所有する状態（旧: setupReplay の局所変数） | 行数 |
+  |---|---|---|
+  | `replay/playback_tempo.js`（PlaybackTempo） | `rtAnchorMs` / `emaPeriodMs` / `lastComputeMs` / `frameTimer` / `frameResolve` / `frameStart` | 162 |
+  | `replay/forming_plan_cache.js`（FormingPlanCache） | `seqClient` / `planCache` / `planInFlight` | 168 |
+  | `replay/forming_animator.js`（FormingAnimator） | `animGen` / `formingInFlight` / `lastFormingMs` / `pausedForm` | 232 |
+- **効果**: `replay.js` **850 → 535 行**（`setupReplay` は合成・カーソル・DOM 配線に縮小）。速度の不変条件（計画は決して await しない）と MP 連動の駆動フックは移設後も同一。
+- **実 UI 検証で退行を検出・修正（重要）**: 抽出直後、単体 302 件は**全緑のまま**実 UI のリプレイ再生が 1 足で停止した。原因は `PlaybackTempo` の既定タイマーを**素の参照**（`setTimeout`）で保持していたこと。ブラウザでは receiver が window でなくなり `TypeError: Illegal invocation`（実測）。node の偽タイマー注入では露見しない型で、ISSUE-268「node で通る は 実 UI で動く を意味しない」の再演。呼び出し形（`(fn, ms) => setTimeout(fn, ms)`）へ是正し、理由をコードに残した。
+  - **この型は node テストでは原理的に検出できない**（node の `setTimeout` は receiver を要求しない）。したがって施行は検定ではなく実 UI 検証に依存する、と明示しておく。
+- **検定**: `tests/replay_roles.test.js` を新設（8 件）。ETA の残り足数・実時間再生のアンカ算出・速度軸変化時のみ計画破棄・**本番の合成形（タイマー/時計を注入しない）でフレーム待機が解決すること**・計画の二重発行防止/モード不一致破棄/invalidate・animator の状態所有。
+- **実 UI 検証（8000・実クリック）**: リプレイ起動 → `rp-prev` で 10 足戻す → 再生。bar が 1489→1492→1495→1499 と進み、ETA が「1秒（残り7足）→（残り4足）→ —」と追従。console エラー 0。
+- **回帰**: フロント 4 スイート 1,815 件 passed（indicator_ui 1,129 / market_profile 333 / replay_ui 310 / unified_ui 43）／tools 96 件。
+- **残**: `setupReplay` にはまだカーソル・データ取得（`fetchCandles` / `fetchDays` / `render` / `drive` / `loadTimeframe` / `loadFromDate`）と DOM 配線が同居している（535 行）。次段でカーソルロールを切り出せば合成根は配線のみになる。
 
 ## ISSUE-257: [不具合・実測再現] `/live_ticks` の同時要求が無制限に積み上がり、稼働時間とともに全応答（静的 JS 含む）が遅くなる（2026-08-04）
 - **ステータス**: RESOLVED（2026-08-04・fix/live-ticks-unbounded-tails）
