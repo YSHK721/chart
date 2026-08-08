@@ -96,6 +96,7 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
         IndicatorComputeAdapter,
         full_compute,
         latest_compute,
+        project_series_at_times,
     )
 
     ns = SimpleNamespace(
@@ -103,6 +104,8 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
         adapter=IndicatorComputeAdapter(),
         full_compute=full_compute,
         latest_compute=latest_compute,
+        # ISSUE-287: 上位足投影はライブ core と同一実装を再利用する（規則を写さない）。
+        project_series_at_times=project_series_at_times,
     )
     _CACHE[key] = ns
     return ns

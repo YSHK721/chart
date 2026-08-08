@@ -44,6 +44,22 @@ class CausalComputeGateway:
         df = ohlc.load_dataframe(ref, timeframe)
         return self._df_to_bars(df)
 
+    def project(
+        self, series: "list[dict]", chart_times: "list[int]", compute_tf: str
+    ) -> "list[dict]":
+        """H の系列を C のバー時刻へ投影する（ISSUE-287）。
+
+        規約の実装はライブ core の ``mtf_projection`` を read-only 再利用する。期間始端の
+        唯一源（``marketdata.tf_meta.period_start_unix``）も同じものを渡す＝リプレイ独自の
+        判定を作らない（ライブとリプレイで段の位置がずれない）。
+        """
+        from marketdata.tf_meta import period_start_unix  # 遅延: 技術隔離を本ファイルに閉じる
+
+        bridge = self._bridge()
+        return bridge.project_series_at_times(
+            series, list(chart_times), compute_tf, period_start_unix=period_start_unix,
+        )
+
     def compute(
         self, indicator: str, variant: str, mode: str, bars: "list[dict]", params: dict
     ) -> "list[dict]":

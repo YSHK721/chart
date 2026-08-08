@@ -63,6 +63,9 @@ class CausalComputeRequest:
     #: 足内窓（ISSUE-238）。``forming["to"]`` と併せて実 tick 数を数えるために使う。
     win_start: "int | None" = None
     win_end: "int | None" = None
+    #: 計算足 H（ISSUE-287）。``timeframe``（チャート足 C）と異なるとき、計算は H で行い
+    #:   結果を C の時間軸へ投影する。None / 'chart' / C と同値なら従来どおり投影しない。
+    compute_timeframe: "str | None" = None
 
 
 def causal_compute(
@@ -75,6 +78,14 @@ def causal_compute(
     載せてから適用する（ISSUE-238）。未指定・``forming["to"]`` 無し・ティック不明のときは
     載せない＝従来挙動と 1 ビットも変わらない。
     """
+    # ISSUE-287: 上位足計算（計算.時間足）。ライブ core と同一の規約で「H で計算 → C の
+    #   時間軸へ投影」する。従来はリプレイだけがこの分岐を持たず、`computeTimeframe` を
+    #   **無言で捨てて** C 足で計算していた（front は投影済みのつもりで描く＝無言の縮退）。
+    compute_tf = _projection_timeframe(request)
+    if compute_tf is not None:
+        return _compute_projected(
+            request=request, compute_port=compute_port, compute_tf=compute_tf,
+        )
     bars = compute_port.load_source(request.ref, request.timeframe)
     bars = truncate(bars, request.until_time)
     limit = request.limit
@@ -93,6 +104,47 @@ def causal_compute(
     return compute_port.compute(
         request.indicator, request.variant, "full", bars, request.params
     )
+
+
+def _projection_timeframe(request: "CausalComputeRequest") -> "str | None":
+    """投影が要る計算足 H を返す（不要なら None）。判定はライブ core と同一規約。"""
+    tf = request.compute_timeframe
+    if not tf or tf == "chart" or tf == request.timeframe:
+        return None
+    return str(tf)
+
+
+def _bar_times(bars) -> "list[int]":
+    """bar 列（plain dict）から UNIX 秒の時刻列を取り出す。"""
+    return [int(b["time"]) for b in bars]
+
+
+def _compute_projected(
+    *, request: "CausalComputeRequest", compute_port: "CausalComputePort", compute_tf: str,
+) -> "list[dict]":
+    """H で計算し、C（チャート足）の時間軸へ投影して返す（ISSUE-287）。
+
+    因果性: H・C とも ``truncate(until_time)`` を通す（リビール T 以前だけを使う）。
+    投影規約（確定済み期間＝その時点の確定値／進行中期間＝形成値）は
+    ``adapter.compute.mtf_projection`` が唯一源で、本関数は入力を合わせて呼ぶだけ。
+    """
+    chart_bars = truncate(compute_port.load_source(request.ref, request.timeframe),
+                          request.until_time)
+    limit = request.limit
+    if isinstance(limit, int) and limit > 0:
+        chart_bars = chart_bars[-limit:]
+    if len(chart_bars) == 0:
+        return []
+    source_bars = truncate(compute_port.load_source(request.ref, compute_tf),
+                           request.until_time)
+    if isinstance(limit, int) and limit > 0:
+        source_bars = source_bars[-limit:]
+    if len(source_bars) == 0:
+        return []
+    series = compute_port.compute(
+        request.indicator, request.variant, "full", source_bars, request.params
+    )
+    return compute_port.project(series, _bar_times(chart_bars), compute_tf)
 
 
 def causal_compute_seq(

@@ -4944,3 +4944,21 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検定**: `test_mtf_projection.py` を新規約へ書き換え（14 件）。確定済み期間は「その時点で確定していた値」・進行中期間は形成値で右端が動く・**最後の期間が閉じていれば形成扱いしない**・暦足の境界（ラベル ≠ 期間始端）でも同じ、を固定。撤去の回帰は `catalog.test.js` が「param を持たない」ことで固定。
 - **実測（実データ・新コード）**: 5m チャート × 1D 計算の EMA9 で 600 点＝**3 段（67 / 267 / 266 本）**の階段になり、段の境界は日境界に一致。右端はチャート末尾まで到達（D-2 / D-3 を維持）。
 - **回帰**: Python 1,257 passed（indicator_ui api / replay_ui / moving_averages）／フロント 4 スイート 1,833 件 全通過。
+
+## ISSUE-287: [不具合・実測] リプレイ経路が `computeTimeframe` を無言で捨て、上位足計算が投影されない（2026-08-08）
+- **ステータス**: RESOLVED（2026-08-08・fix/replay-mtf-projection）
+- **重大度**: High（表示にしか出ない誤り。front は投影済みのつもりで描くため気付けない）
+- **実測（同一リクエスト・実 HTTP・5m チャート × 計算.時間足 1D の EMA9）**:
+  | 経路 | 応答 |
+  |---|---|
+  | ライブ core | 600 点 / **2 段**（日境界の階段＝投影あり） |
+  | リプレイ core | 600 点 / **600 段**（5m のまま＝投影なし） |
+- **真因**: ISSUE-274 の投影はライブ core の usecase（`compute_indicators`）にだけ実装され、リプレイ core は独自 usecase（`causal_compute`）を通る。`CausalComputeRequest` に計算足の口が無く、`computeTimeframe` は**受け取られずに捨てられていた**（バリデーションも警告も無し）。front（共有 controller）は両経路へ同じボディを送るため、リプレイだけが静かに別物を返していた。
+- **抜本的対策（実施・規則は写さない）**:
+  1. 投影規則の唯一源 `mtf_projection` へ「投影先を **UNIX 秒の列**で受ける」入口 `project_series_at_times` を追加。ライブ経路（DataFrame）はこれを呼ぶ薄い包みへ縮退（規則は 1 実装のまま）。
+  2. 公開 Facade `adapter.compute` から輸出し、リプレイは既存の bridge（read-only 再利用）で受け取る＝リプレイ独自の投影を作らない。
+  3. `CausalComputeRequest.compute_timeframe` を追加し、`serve_replay` が `computeTimeframe` を渡す。`causal_compute` は「H を読む → **H・C とも untilTime で切る**（因果）→ H で計算 → C のバー時刻へ投影」を行う。期間始端の唯一源（`marketdata.tf_meta.period_start_unix`）もライブと同一のものを渡す＝段の位置がずれない。
+- **検定**: `tests/unit/test_causal_compute_mtf.py`（4 件）。H で計算し C の時刻へ投影する結線／`None`・`'chart'`・C と同値なら投影しない／H・C とも T で切る／C が空なら計算も投影もしない。
+- **実 HTTP 検証（是正後）**: リプレイ core も階段になり、段の値がライブと一致（64183.41 / 64488.52 / 65033.22）。段の切れ目の差は `untilTime`（リプレイの因果切り）由来で、規約どおり。
+- **残る制約（明示）**: 足内一括計算（`mode=latest_seq`）は上位足計算に未対応。足内では上位足指標が動かず、バー確定時の full 計算で追いつく（ライブ側 ISSUE-274 の「段全体を毎 tick 動かすのは費用に見合わない」と同じ判断）。
+- **回帰**: replay_ui + indicator_ui api 1,094 passed／フロント 4 スイート 全通過。

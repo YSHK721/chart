@@ -237,6 +237,8 @@ class ReplayApp:
             params=dict(body.get("params") or {}),
             win_start=body.get("winStart"),
             win_end=body.get("winEnd"),
+            # ISSUE-287: 上位足計算（計算.時間足）。従来は受け取らず無言で C 足計算していた。
+            compute_timeframe=body.get("computeTimeframe"),
         )
         def _run():
             with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
