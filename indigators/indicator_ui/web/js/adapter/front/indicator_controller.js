@@ -932,6 +932,16 @@ export class IndicatorController {
     return scopedParams(this._catalog.get(indicatorId), variant, params);
   }
 
+  // 計算.時間足（params.timeframe）から `computeTimeframe` を導く（ISSUE-274）。
+  //   送信経路が複数あるため**導出はここ 1 箇所**に置く。個別に `req.params.timeframe` を
+  //   読む実装を増やすと、片方だけ載せ忘れて「その経路だけ投影されない」が起きる
+  //   （実測 ISSUE-288: リプレイの一括リビール経路が載せ忘れ、上位足指標がチャート足の値で
+  //   上書きされて消えた）。未指定・'chart' は undefined＝従来ボディと同一。
+  _calcTimeframeOf(params) {
+    const tf = this._paramsObject(params).timeframe;
+    return tf === undefined || tf === null || tf === 'chart' ? undefined : tf;
+  }
+
   // AppliedInstance.params（[k,v] ペア配列・facade 形）または object を object へ正規化する。
   _paramsObject(params) {
     if (Array.isArray(params)) {
@@ -974,7 +984,7 @@ export class IndicatorController {
         //   以前は timeframe に実効足（override 済み）を入れており、チャート足がサーバへ伝わらず、
         //   上位足の時間軸の系列がそのままチャートへ流れていた（時間軸の汚染・未来情報の混入）。
         //   backend は params.timeframe を受理引数に含めない（_accepted_kwargs で除外）ため副作用なし。
-        const tfParam = req && req.params ? req.params.timeframe : undefined;
+        const tfParam = self._calcTimeframeOf(req && req.params);
         // variant スコープ（ISSUE-278 #8）: その variant の add_* が受理しない param は送らない。
         //   従来は variant 横断の全 params を送り back が無言で捨てていた（＝UI が効かない
         //   コントロールを出す原因）。back は無言破棄を廃したため、絞り込みは送信側の責務。
