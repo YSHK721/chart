@@ -72,7 +72,24 @@ def project_series(
         各系列の ``data`` を C のバー時刻へ写した新しい系列リスト（入力は変更しない）。
         ``data`` を持たない系列（``horizontal_line`` 等）はそのまま通す。
     """
-    chart_times = _chart_bar_times(df_chart)
+    return project_series_at_times(
+        series, _chart_bar_times(df_chart), compute_tf, period_start_unix=period_start_unix,
+    )
+
+
+def project_series_at_times(
+    series: "list[dict[str, Any]]",
+    chart_times: "list[int]",
+    compute_tf: str,
+    *,
+    period_start_unix: Any,
+) -> "list[dict[str, Any]]":
+    """``project_series`` の中核（投影先を **UNIX 秒の列**で受ける形）。
+
+    pandas を持たない層（リプレイ core の usecase は plain dict の bar 列を扱う）からも
+    **同じ規約**で投影できるようにするための入口。規則の唯一源は本モジュールであり、
+    呼び出し側は入力の形を合わせるだけ（ISSUE-287: リプレイが投影を通っていなかった是正）。
+    """
     if not chart_times:
         return series
     # C の各バーが属する H 期間の始端（1 バー 1 回だけ解決し、系列間で使い回す）。

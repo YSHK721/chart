@@ -31,8 +31,10 @@ from adapter.compute.indicator_compute_adapter import (
     IndicatorComputeAdapter,
 )
 from adapter.compute.latest_dispatch import full_compute, latest_compute
+from adapter.compute.mtf_projection import project_series_at_times
 
 __all__ = [
+    "project_series_at_times",
     "FakeChart",
     "FakeLineChart",
     "FakeHorizontalChart",

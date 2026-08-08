@@ -67,6 +67,17 @@ class CausalComputePort(Protocol):
         """
         ...
 
+    def project(
+        self, series: "list[dict]", chart_times: "list[int]", compute_tf: str,
+    ) -> "list[dict]":
+        """計算足 H の系列を、チャート足 C のバー時刻列へ投影して返す（ISSUE-287）。
+
+        投影規約（確定済み期間＝その時点で確定していた値／進行中期間＝形成値）の唯一源は
+        indicator_ui の ``adapter.compute.mtf_projection``。本 Port は「同じ規約を使う」ことを
+        契約として宣言するだけで、規則を再実装しない（リプレイ独自の投影を作らない）。
+        """
+        ...
+
     def compute(
         self,
         indicator: str,
