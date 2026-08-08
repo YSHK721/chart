@@ -221,3 +221,28 @@ test('cursor: /candles と /available_days の取得（from 指定で pre が付
 
   assert.deepEqual(await cursor.fetchDays('5m'), ['2026-08-07']);
 });
+
+// ISSUE-291: 計画は controller の申告した計算.時間足をそのままクライアントへ運ぶ。
+//   ここで落とすと、サーバは（H 形成足の計算経路を持っていても）チャート足で計算する
+//   ＝足内だけリビール値と食い違う（実 UI 実測: 5m×1D EMA5 で 1128 の段差）。
+test('plans: 計算.時間足を足内一括計算の要求まで運ぶ', async () => {
+  const sent = [];
+  const plans = planCache({
+    fetchImpl: async () => ({
+      json: async () => ({ m1: [{ time: 100, open: 1, high: 2, low: 0, close: 1 }], ticks: [], tick_secs: [] }),
+    }),
+    seqClient: { computeSeq: async (req) => { sent.push(req); return []; } },
+    controller: {
+      formingSeqTargets: () => [
+        { instanceId: 'mtf#1', indicatorId: 'moving_averages', variant: 'default',
+          params: { length: 9 }, computeTimeframe: '1D' },
+        { instanceId: 'chart#1', indicatorId: 'moving_averages', variant: 'default',
+          params: { length: 9 }, computeTimeframe: undefined },
+      ],
+    },
+  });
+
+  await plans.build(0, 'ohlc_1min');
+
+  assert.deepEqual(sent.map((r) => r.computeTimeframe), ['1D', undefined]);
+});

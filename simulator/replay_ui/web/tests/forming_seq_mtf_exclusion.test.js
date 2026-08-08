@@ -91,3 +91,21 @@ test('一括リビールの compute も計算.時間足と variant スコープ�
   assert.equal('timeframe' in sent[0].params, true, 'params の時間足は従来どおり送る');
   assert.equal(sent[0].timeframe, '5m', 'timeframe はチャート足');
 });
+
+// ---- 足内一括計算の対象も計算.時間足を申告する（ISSUE-291） ----
+//
+// 対象に含めるだけでは足りない。要求へ `computeTimeframe` を載せなければサーバは
+//   チャート足で計算する（実 UI 実測: 足内の値が 5m の値のままリビール値と段差になった）。
+
+test('対象は計算.時間足を申告する（未指定・chart は undefined）', () => {
+  const ctrl = newController('5m');
+  addInstance(ctrl, 'mtf#1', { timeframe: '1D', ma_type: 'ema', length: 9 });
+  addInstance(ctrl, 'chart#1', { timeframe: 'chart', ma_type: 'ema', length: 9 });
+  addInstance(ctrl, 'plain#1', { ma_type: 'ema', length: 9 });
+
+  const byId = new Map(ctrl.formingSeqTargets().map((t) => [t.instanceId, t.computeTimeframe]));
+
+  assert.equal(byId.get('mtf#1'), '1D', 'これが無いとサーバはチャート足で計算する');
+  assert.equal(byId.get('chart#1'), undefined);
+  assert.equal(byId.get('plain#1'), undefined);
+});

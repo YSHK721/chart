@@ -61,3 +61,28 @@ test('steps が無い応答は空配列', async () => {
   const { strictFetch } = makeStrictFetch({ ok: true });
   assert.deepEqual(await new FormingSeqClient({ fetch: strictFetch }).computeSeq(REQ), []);
 });
+
+// ---- 計算.時間足（ISSUE-291） ----
+//
+// 実 UI で検出（:8000 リプレイ・5m チャート × 計算.時間足 1D の EMA5）: 足内の末尾点だけが
+//   **5m の値**（実測 64970.3855＝5m 窓の latest と 4 桁一致）で描かれ、リビール値
+//   （投影済み・66098.5467）と 1128 の段差になっていた。サーバは ISSUE-290 で H 形成足の
+//   計算経路を持っていたが、本クライアントが `computeTimeframe` を送っていないため
+//   その分岐に入らず、チャート足で計算していた（＝機能が無言で死んでいた）。
+
+test('body は計算.時間足（computeTimeframe）を載せる', async () => {
+  const { strictFetch, calls } = makeStrictFetch();
+
+  await new FormingSeqClient({ fetch: strictFetch }).computeSeq({ ...REQ, computeTimeframe: '1D' });
+
+  assert.equal(JSON.parse(calls[0].init.body).computeTimeframe, '1D',
+    'これが無いとサーバはチャート足で計算する（足内だけ別物の値になる）');
+});
+
+test('チャート足（未指定）なら computeTimeframe を載せない＝従来ボディと同一', async () => {
+  const { strictFetch, calls } = makeStrictFetch();
+
+  await new FormingSeqClient({ fetch: strictFetch }).computeSeq(REQ);
+
+  assert.ok(!('computeTimeframe' in JSON.parse(calls[0].init.body)));
+});
