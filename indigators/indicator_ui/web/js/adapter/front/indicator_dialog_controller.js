@@ -24,6 +24,19 @@ import { listForView } from '../../usecase/facade.js';
 //   「お気に入りのみ」を意味するセンチネル（index.html と対応・ISSUE-220）。
 export const FAVORITES_SENTINEL = '__favorites__';
 
+// IndicatorDialogHost 契約の実体列挙（ISSUE-255）。上のコメントで宣言していた面を**実体**にした。
+//   合成時に createHostView(host, 本契約) を渡すため、ここに無いメンバーへ触れると実行時に例外。
+export const DIALOG_HOST_CONTRACT = Object.freeze({
+  role: 'IndicatorDialogHost',
+  methods: Object.freeze([
+    '_label', '_defaultVariant', '_setActive', 'toggleFavorite', 'applyIndicator',
+    '_closeDialog', '_openDialog', '_renderDialogList',
+  ]),
+  fields: Object.freeze(['_state']),
+  // bind() 後のみ在席（_el）／注入時のみ在席（_legendView）。
+  optionalFields: Object.freeze(['_el', '_legendView']),
+});
+
 export class IndicatorDialogController {
   constructor(host) {
     this._host = host;

@@ -4273,12 +4273,32 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-078／ISSUE-087 🔴-2/🔴-3（台帳と parity 検定の初出）／ISSUE-253。
 
 ## ISSUE-255: [設計是正] 協働子が host（IndicatorController）全体に依存している（ISP・双方向結合）（2026-08-04）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-08・refactor/host-role-view）
 - **重大度**: 中
 - **実測**: `IndicatorController` は協働子へ `this` を丸ごと渡す（`SeriesRenderRouter` / `IndicatorStateStore` / `TimeframeController` / `MarketProfileController` / `IndicatorDialogController` の 5 箇所）。協働子が実際に触る host メンバー数は `IndicatorStateStore` **21**、`MarketProfileController` **20**、`IndicatorDialogController` 11、`TimeframeController` 7、`SeriesRenderRouter` 5。
 - **問題**: 契約（`TIMEFRAME_HOST_CONTRACT` / `MARKET_PROFILE_HOST_CONTRACT`）は 5 協働子中 2 つしか宣言されておらず、内容も「ほぼ host 全体」。host→協働子・協働子→host の双方向結合で、host の private を協働子が読み書きする。責務は 9 個へ分割済みなのに結合は分割されていない。
 - **抜本的対策**: 協働子へ host を渡すのをやめ、必要な関数・値だけを束ねて注入する（ロールごとの最小 interface）。既存の分割はそのまま活かせる。
-- **関連**: ISSUE-099 🟡-3/🟡-4（契約の明文化）／ISSUE-181（協働子抽出）。
+
+### 是正（2026-08-08・refactor/host-role-view）— 契約を「宣言」から「実体」へ
+- **鍵となる観察**: 契約は宣言だけでは効かない。渡しているのが host 全体である限り、協働子は契約外へいつでも触れる（ソース走査テストは書き方を変えれば迂回できる）。ISSUE-262 が潰した「宣言が施行されず静かに破れる」型そのものだった。
+- **実装**: `adapter/front/host_view.js` に `createHostView(host, contract)` を新設し、契約面**だけ**を通す射影（Proxy）を返す。合成点 5 箇所は `this` ではなく射影を渡す。
+  - メソッドは host に **bind** して返す＝subclass（`ReplayIndicatorController`）の override がそのまま効く（LSP）。
+  - フィールドは**参照のたびに** host から読む＝`_state` のような可変状態に追随する。
+  - 契約外の読み取りは **例外**（フェイルクローズ。`undefined` を返して静かに壊れない）。書き込みも例外（状態確定は host のコミット用メソッド経由という既存規約を実体化）。
+  - Symbol と `then` は言語・ランタイム側の探索なので素通し（`await` で誤爆しない）。
+- **契約はクライアントが所有する（ISP/DIP）**: 未宣言だった 3 協働子へ契約を新設し、各協働子ファイルに置いた。既存 2 件は定義位置を変えず温存（外部 import 互換）。
+  | 協働子 | 契約 | 面（method / field / optional） |
+  |---|---|---|
+  | `SeriesRenderRouter` | `SERIES_RENDER_HOST_CONTRACT` | 5 / 0 / 0 |
+  | `IndicatorStateStore` | `STATE_STORE_HOST_CONTRACT` | 11 / 8 / 2 |
+  | `TimeframeController` | `TIMEFRAME_HOST_CONTRACT`（既存） | 3 / 3 / 1 |
+  | `MarketProfileController` | `MARKET_PROFILE_HOST_CONTRACT`（既存） | 9 / 9 / 1 |
+  | `IndicatorDialogController` | `DIALOG_HOST_CONTRACT` | 8 / 1 / 2 |
+- **検定**: `host_view.test.js`（9 件・射影の振る舞い＝bind / 可変追随 / override / 契約外例外 / 書込禁止 / `in` / `await` 誤爆なし / 不正構築）＋ `host_role_contract.test.js` を 5 ロールの表駆動へ書き換え（27 件）。依存面 ⊆ 契約・契約 ⊆ 依存面（最小性）・host ⊇ 契約に加え、**(4) 合成点が `this` を渡していない**・**合成点の網羅（表と構築点の一致）**・**(5) 実行時に契約外が例外になる**を新設。
+- **識別力の実証**: (a) 協働子に契約外参照（`host._scheduler`）を 1 行足す → 1 件 Red。(b) 合成点 1 つを `new IndicatorDialogController(this)` へ戻す → **3 件 Red**（生 host 渡し・網羅・実行時遮断）。復元で 36/36 Green。
+- **回帰**: 全 web スイート（`tools/run_web_tests.sh`）1,803 件 passed（indicator_ui 1,128 ／ market_profile 331 ／ replay_ui 301 ／ unified_ui 43）。
+- **実 UI 検証（8000・実クリック）**: ダイアログ開閉と一覧 24 件表示（Dialog ロール）→ RSI 適用（Store/Router）→ 時間足 1m→15m 切替（Timeframe。1,500 本再取得・指標は保持）→ Market Profile 適用（MP ロール。右側プロファイル描画）まで通し、console エラー 0（既存の favicon 404 のみ）。画像 `issue255-host-view-live.png`。検証後は適用指標と時間足を元へ戻した。
+- **関連**: ISSUE-099 🟡-3/🟡-4（契約の明文化）／ISSUE-181（協働子抽出）／ISSUE-262（宣言を検定で施行する）。
 
 ## ISSUE-256: [設計是正] `replay.js` の `setupReplay` が 847 行の単一関数（SRP）（2026-08-04)
 - **ステータス**: OPEN

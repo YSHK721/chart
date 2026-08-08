@@ -20,6 +20,24 @@
 
 import { deserialize } from '../../usecase/facade.js';
 
+// IndicatorStateHost 契約の実体列挙（ISSUE-255）。上のコメントで宣言していた面を**実体**にした。
+//   合成時に createHostView(host, 本契約) を渡すため、ここに無いメンバーへ触れると実行時に例外。
+//   本協働子（クライアント）が所有するインターフェースであり、host は満たす側（ISP/DIP）。
+export const STATE_STORE_HOST_CONTRACT = Object.freeze({
+  role: 'IndicatorStateHost',
+  methods: Object.freeze([
+    '_commitState', '_commitLastSeries', '_commitTimeframe', '_paramsObject',
+    '_isMarketProfile', '_actorControllerFor', '_gatewayAdapter', '_draw',
+    '_renderLegend', '_renderDialogList', '_syncTimeframeButtons',
+  ]),
+  fields: Object.freeze([
+    '_persistence', '_state', '_catalog', '_meta', '_datasetRef', '_renderer',
+    '_timeframe', '_restoreInFlight',
+  ]),
+  // 合成時の注入次第で不在/ null になりうる面（fresh インスタンスでは未在席）。
+  optionalFields: Object.freeze(['_loadCandles', '_timeframeObserver']),
+});
+
 export class IndicatorStateStore {
   constructor(host) {
     this._host = host;
