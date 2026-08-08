@@ -19,6 +19,7 @@
 // ★ upstream JS の系列追加系 API は一切参照しない（renderer 経由のみ・§2.2 隔離）。
 
 import { deserialize } from '../../usecase/facade.js';
+import { isActorDriven } from '../../usecase/actor_driven_ids.js';
 
 // IndicatorStateHost 契約の実体列挙（ISSUE-255）。上のコメントで宣言していた面を**実体**にした。
 //   合成時に createHostView(host, 本契約) を渡すため、ここに無いメンバーへ触れると実行時に例外。
@@ -100,10 +101,45 @@ export class IndicatorStateStore {
     const host = this._host;
     const list = Array.isArray(instances) ? instances : [];
     const kept = list.filter((inst) => !!host._catalog.get(inst?.indicatorId));
-    if (kept.length !== list.length) {
-      host._persistence.saveApplied(kept);
+    // ISSUE-281: **カタログに存在しない param 名**も落とす（在席の権威はカタログ 1 つ、という
+    //   同じ規約を param 粒度へ広げる）。サーバは ISSUE-278 #8 でフェイルクローズ化されており、
+    //   廃止 param が保存状態に残っていると `/compute` が常に 400 になり、その指標は
+    //   **永久に計算できなくなる**（実測: profit_rsi の `ma_period`）。送信側の絞り込み
+    //   （catalog.scopedParams の許可リスト）だけでは保存状態が汚れたままなので、ここで治す。
+    //   variant が今受理しない param は落とさない（variant を戻せば有効＝定義には在る）。
+    const healed = kept.map((inst) => this._pruneUnknownParams(inst));
+    const changed = kept.length !== list.length
+      || healed.some((inst, i) => inst !== kept[i]);
+    if (changed) {
+      host._persistence.saveApplied(healed);
     }
-    return kept;
+    return healed;
+  }
+
+  /** instance の params から、カタログ定義に無い名前を落とす（object 形・[k,v] 配列形の両対応）。
+   *
+   * **アクター駆動指標（market_profile / tickvol_bands）は対象外**。これらは `/compute` を
+   * 通らず、受理集合の権威はアクター側にある。front カタログが宣言していない param（例:
+   * market_profile の `bins`）が正当に存在するため、ここで落とすと保存済み設定が失われる
+   * （実測: 既存検定「MP restore: … saved params」が Red になった）。
+   */
+  _pruneUnknownParams(inst) {
+    const def = this._host._catalog.get(inst?.indicatorId);
+    const params = inst?.params;
+    if (!def || !params || isActorDriven(def)) {
+      return inst;
+    }
+    const known = new Set(def.params.map((p) => p.name));
+    if (Array.isArray(params)) {
+      const kept = params.filter(([name]) => known.has(name));
+      return kept.length === params.length ? inst : { ...inst, params: kept };
+    }
+    if (typeof params !== 'object') {
+      return inst;
+    }
+    const entries = Object.entries(params);
+    const kept = entries.filter(([name]) => known.has(name));
+    return kept.length === entries.length ? inst : { ...inst, params: Object.fromEntries(kept) };
   }
 
   async _restoreRun() {

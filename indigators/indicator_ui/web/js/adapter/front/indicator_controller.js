@@ -749,12 +749,24 @@ export class IndicatorController {
     }
     const settled = await Promise.allSettled(targets.map((inst) =>
       this._computeInstance(inst.instanceId, null, this._paramsObject(inst.params), { mode })));
-    // 例外は従来（直列 await）と同じく呼び出し元へ伝播する（描画・persist はしない）。
-    //   全 settled 後に投げるため、他指標の in-flight compute が宙に残らない。
-    const rejected = settled.find((s) => s.status === 'rejected');
-    if (rejected) {
-      throw rejected.reason;
-    }
+    // ISSUE-282: 計算失敗は**インスタンスに閉じる**（バッチ全体を落とさない）。
+    //   旧実装は最初の rejection を rethrow していたため、1 指標が計算できないだけで
+    //   `replay.js:render` が catch→return し、ローソク・他指標・MP・先読みまで一切描かれなかった。
+    //   リプレイは計算窓を limit=bar+1 に絞るため、長い履歴を要する指標が手前のカーソルで
+    //   「まだ出せない」（E01_INSUFFICIENT_BARS）を返すのは**想定内の状態**であり、
+    //   再生を止める理由がない（ISSUE-232「一括計算が失敗しても再生は継続」と同じ規律）。
+    //   無言にはしない: 失敗はインスタンス ID 付きでログへ出し、呼び出し元へも failures で返す。
+    const failures = [];
+    settled.forEach((s, i) => {
+      if (s.status === 'rejected') {
+        const inst = targets[i];
+        failures.push({ instanceId: inst.instanceId, indicatorId: inst.indicatorId, error: s.reason });
+        console.error(
+          `[indicator] 計算失敗（当該インスタンスのみスキップ）: ${inst.instanceId}`,
+          (s.reason && s.reason.message) || s.reason,
+        );
+      }
+    });
     // jobs は applied 順（targets 順）＝フェーズ2 の描画順は従来と不変。
     const jobs = settled
       .map((s) => s.value)
@@ -780,7 +792,9 @@ export class IndicatorController {
       preRender();
     }
     if (jobs.length === 0) {
-      return;
+      // ISSUE-282: 描く物が無くても失敗の在処は返す（全件失敗＝ここに来るため、呼び出し元が
+      //   「なぜ何も描かれないのか」を表示できる。無言で終わらせない）。
+      return { failures };
     }
     for (const job of jobs) {
       // 競合ガード（ISSUE-105 🟡-2）: フェーズ1 の await 中に凡例 close（removeInstance）で
@@ -796,6 +810,9 @@ export class IndicatorController {
     }
     this._persistAll();
     this._renderLegend();
+    // ISSUE-282: 失敗したインスタンスを呼び出し元へ返す（例外にしない＝バッチは完走する）。
+    //   呼び出し元は必要なら表示へ回せる。返り値を見ない従来の呼び出しは無影響。
+    return { failures };
   }
 
   // 時間足セレクタの active 表示同期は TimeframeController へ外出しした（ISSUE-094 🔴-4）。

@@ -1001,7 +1001,16 @@ export function scopedParams(def, variant, params) {
   const scoped = {};
   for (const [name, value] of Object.entries(params)) {
     const p = def.params.find((q) => q.name === name);
-    if (p && Array.isArray(p.variants) && variant && !p.variants.includes(variant)) {
+    // ISSUE-281: **許可リスト**。カタログが知らない param は送らない。
+    //   旧実装は拒否リスト（「除外指定がある param だけ落とす」）で、定義に無い名前を素通ししていた。
+    //   サーバは ISSUE-278 #8 で無言破棄をやめフェイルクローズ化したため、古い永続状態
+    //   （applied.v1 / テンプレート）に残った廃止 param が 400 を引き起こし、その指標は**永久に
+    //   計算できなくなる**（実測: profit_rsi に `ma_period` が残ると常に validation エラー）。
+    //   受理集合は /catalog の paramScopes が ParamDef へ overlay 済み＝front は正解を知っている。
+    if (!p) {
+      continue;
+    }
+    if (Array.isArray(p.variants) && variant && !p.variants.includes(variant)) {
       continue;
     }
     scoped[name] = value;

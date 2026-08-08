@@ -174,7 +174,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     try {
       // 計算後、preRender（足リビール＋ビュー＋一括リビール）→ 帯描画が await を挟まず
       //   1 ブロック＝アトミック（完成足チラ見せ防止の不変条件は revealTo が同期のため保たれる）。
-      await controller.recomputeAllApplied({
+      const batch = await controller.recomputeAllApplied({
         mode: 'full',
         // 一括リビール済み指標は per-step 計算から除外（revealTo が同フレームで描画する）。
         skip: (inst) => typeof controller.hasRevealFor === 'function'
@@ -187,8 +187,15 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
           if (typeof controller.revealTo === 'function') controller.revealTo(t);
         },
       });
+      // ISSUE-282: 個別インスタンスの計算失敗は再生を止めない（バッチは完走し、成功分と
+      //   ローソクは描かれる）。ただし無言にはせず、どの指標が出せていないかを状態欄へ出す。
+      //   例: リプレイ手前のカーソルでは履歴が足りず σ̂ を出せない指標がある（想定内の状態）。
+      if (batch && batch.failures && batch.failures.length) {
+        const names = batch.failures.map((f) => f.instanceId).join(', ');
+        setStatus(`${fmt(t)} 一部の指標を計算できません: ${names}`);
+      }
     } catch (e) {
-      // ステータス欄は新リプレイバーで撤去したため、失敗はコンソールへ残す（診断性の維持）。
+      // バッチ自体が続行不能（描画不変条件の破れ等）。個別指標の失敗はここへ来ない（上で処理）。
       setStatus(`${fmt(t)} 計算エラー: ${(e && e.message) || e}`);
       console.error('[replay] 計算エラー', fmt(t), e);
       return;
