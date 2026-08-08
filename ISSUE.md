@@ -4706,6 +4706,14 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **実 UI 検証（8000・実クリック）**: 既定 `●`／title「非表示にする」→ クリックで `○`／「表示する」・行が減光 → 再クリックで `●` へ復帰。行の並びは `name / visibility / gear / remove / values` のまま。画像 `legend-visibility-glyph.png`。
 - **回帰**: フロント 4 スイート 1,831 件 passed。
 
+### 計算.時間足（MTF）の表示位置（2026-08-08・依頼者指示）
+- **指示**: 「各指標のパラメーターの設定で、MTF に対応した『時間足』の項目の位置を一番上に移動させろ」。
+- **変更**: `catalog.withCalcTimeframe` が計算.時間足を params の**先頭**へ置く（従来は末尾）。設定ダイアログのグループ順は `form_model` が「param の初出順」で決めるため、先頭に置くことで `group.calc`（時間足）が最初の見出しになる。
+- **決定点は 1 箇所**: 各指標定義は無改変。新しい指標を足しても自動で最上段に出る（OCP）。アクター駆動型（market_profile / tickvol_bands）は従来どおり対象外＝効かない設定を出さない。
+- **検定**: `catalog_categories.test.js` に 2 件追加（対象指標で `params[0].name === 'timeframe'` かつ `group.calc`／アクター駆動には付与しない）。
+- **実 UI 検証（8000）**: ma_marod の歯車 → 見出し `CALC` の直下・最上段に「時間足（チャート）」、続いて ソース / 種別 / 移動期間 …。画像 `dialog-timeframe-first.png`。
+- **回帰**: フロント 4 スイート 1,833 件／indicator_ui api 854 件 全通過。
+
 ## ISSUE-277: [設計是正・実測] 表示要素を index.html へ直書きしていたため、実配信ページ（unified_ui）の取り残しでペイン別凡例が全滅した（2026-08-06）
 - **ステータス**: RESOLVED（2026-08-06・worktree-feat+pane-legend）
 - **重大度**: High（ISSUE-276 の成果物が実配信 UI で 1 つも表示されない＝機能が届いていない）

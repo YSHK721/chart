@@ -52,3 +52,37 @@ test('ISSUE-221 配信される全ページでカテゴリボタンを直書き�
     assert.deepEqual(hardcoded, [], `${rel} に直書きが残っている: ${hardcoded.join(', ')}`);
   }
 });
+
+// ---- 計算.時間足の位置（依頼者指示 2026-08-08） ----
+//
+// 設定ダイアログのグループ順は form_model が「param の初出順」で決める。よって
+// 「時間足」を一番上に出すことは **withCalcTimeframe が先頭へ置く**ことと同値であり、
+// 決定点は 1 箇所（各指標定義は無改変＝新指標にも自動で適用される）。
+
+test('計算.時間足は全対象指標で params の先頭にある（ダイアログの最上段）', async () => {
+  const { get } = await import('../js/usecase/catalog.js');
+  const { isActorDriven } = await import('../js/usecase/actor_driven_ids.js');
+  const { listIndicators } = await import('../js/usecase/catalog.js').then((m) => ({
+    listIndicators: m.listIndicators ?? (() => []),
+  }));
+
+  const ids = ['profit_rsi', 'cvfe', 'moving_averages', 'tickvol', 'profit_band', 'tgp_btlm'];
+  for (const id of ids) {
+    const def = get(id);
+    assert.ok(def, `未登録: ${id}`);
+    if (isActorDriven(def)) {
+      continue;   // アクター駆動は /compute を持たない＝時間足を出さない（効かない設定を見せない）
+    }
+    assert.equal(def.params[0].name, 'timeframe', `${id}: 時間足が先頭にない`);
+    assert.equal(def.params[0].group, 'group.calc');
+  }
+  void listIndicators;
+});
+
+test('アクター駆動指標には計算.時間足を付けない（従来どおり）', async () => {
+  const { get } = await import('../js/usecase/catalog.js');
+  for (const id of ['market_profile', 'tickvol_bands']) {
+    const def = get(id);
+    assert.equal(def.params.some((p) => p.name === 'timeframe'), false, `${id}: 効かない設定が出ている`);
+  }
+});
