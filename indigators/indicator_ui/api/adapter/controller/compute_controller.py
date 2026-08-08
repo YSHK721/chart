@@ -30,7 +30,7 @@ from adapter.compute import ComputeError, IndicatorComputeAdapter
 from marketdata import dataset  # noqa: F401  # monkeypatch 対象（_cc.dataset）＋既定 gateway の委譲先。
 from adapter.compute import forming_bar as forming_bar_mod
 from adapter.compute.latest_dispatch import full_compute, latest_compute
-from adapter.compute.mtf_projection import project_series
+from adapter.compute.mtf_causal_frames import causal_mtf_frames
 from usecase.compute_indicators import ComputeRequest, ComputeResult, compute_indicators
 
 
@@ -50,6 +50,32 @@ def _present(result: ComputeResult) -> tuple[int, dict[str, Any]]:
 
     return nested_error(result.error_type, result.error_message, generation=result.generation,
                         violations=getattr(result, "error_violations", None))
+
+
+def _causal_mtf(adapter: Any, body: dict[str, Any]):
+    """usecase へ渡す上位足協調子（DataFrame 境界＋各バーの latest 計算）を作る。
+
+    指標 id / variant / params は要求から決まるため、ここで束ねてから渡す（usecase は
+    「C と H を渡せば因果系列が返る」ことだけを知る＝pandas も指標も知らない）。
+    """
+    from marketdata.tf_meta import bar_time_unix
+
+    indicator_id = body.get("indicatorId") or body.get("compute_id")
+    variant = body.get("variant")
+    params = dict(body.get("params") or {})
+
+    def _run(*, df_chart, df_source, compute_tf, fold_from=None):
+        return causal_mtf_frames(
+            df_chart=df_chart,
+            df_source=df_source,
+            compute_tf=compute_tf,
+            bar_time_unix=bar_time_unix,
+            compute_latest=lambda df: latest_compute(
+                adapter, indicator_id, variant, df, dict(params)),
+            fold_from=fold_from,
+        )
+
+    return _run
 
 
 def handle_compute(
@@ -76,9 +102,10 @@ def handle_compute(
         full_compute=full_compute,
         latest_compute=latest_compute,
         compute_error=ComputeError,
-        # ISSUE-274: 上位足投影。期間始端の唯一源は forming_bar が再輸出する
-        #   marketdata.tf_meta.period_start_unix（serve_candles と同じ参照経路）。
-        project_mtf=project_series,
+        # ISSUE-274 → 295: 上位足は「各バー τ の時点で計算できた値」を返す因果系列にする
+        #   （ライブ・リプレイ共通の唯一源 adapter.compute.mtf_causal）。期間ラベルの唯一源は
+        #   marketdata.tf_meta.bar_time_unix（ロールアップ／形成中バーと同じ参照経路）。
+        project_mtf=_causal_mtf(compute_adapter, body),
         period_boundary=forming_bar_mod,
     )
     return _present(result)

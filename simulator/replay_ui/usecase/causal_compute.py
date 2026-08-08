@@ -124,22 +124,20 @@ def _bar_times(bars) -> "list[int]":
 def _compute_projected(
     *, request: "CausalComputeRequest", compute_port: "CausalComputePort", compute_tf: str,
 ) -> "list[dict]":
-    """C の各バーへ「**そのバーの時点で計算できた** H の値」を載せた因果系列を返す（ISSUE-294）。
+    """C の各バーへ「**そのバーの時点で計算できた** H の値」を載せた因果系列を返す。
 
-    従来（ISSUE-287〜292）は「T の時点の H 系列を計算し、期間単位で C へ投影」していた。
-    これは *T における表示*（ライブと同じ見え方）としては正しいが、**過去のバーの点が
-    その期間の確定値**になる（バー τ の点に τ より後の情報が載る）。再生の検証では
-    「そのバーの時点で何が見えていたか」を線として残す必要があるため、点の意味を
-    「τ 時点の値」へ揃える（依頼: ISSUE-293／本 ISSUE で過去データにも適用）。
+    規約（ISSUE-294 / 295）:
 
-    値の定義（全 C バー τ 共通・過去も再生中も同一）:
         value(τ) = 指標( [τ の期間より前の確定 H 足] + [τ の期間の C 足を τ まで畳んだ H 足] )
 
-    この系列は **時刻不変**（各点は自分より後のデータに依存しない）＝一度計算すれば
-    塗り替える必要がない。よって front は基底を 1 回だけ作って時刻でスライスできる。
+    従来（ISSUE-287〜292）は「T の時点の H 系列を計算し、期間単位で C へ投影」していた。
+    T における見え方としては正しいが、点の意味が「その期間の値」であるため**過去のバーの点に
+    τ より後の情報が載る**（各期間がその期間の最終値で塗り潰される）。新しい規約では各点が
+    自分より後のデータに依存しない＝**時刻不変**になり、後から塗り替える必要がなくなる。
 
-    費用: 期間ごとに確定プレフィクスを 1 回だけ DataFrame 化し、以降は末尾差分の latest 計算
-    （``compute_latest_seq``＝ISSUE-233 の最適化経路）を C バー数ぶん回す。
+    規約の実体は Port（``causal_series``）の先＝ライブ core と**同一の唯一源**
+    （``adapter.compute.mtf_causal``）にある。本関数は「T で切る・窓を採る・期間の先頭まで
+    遡って畳み材料を渡す」という入力合わせだけを担い、規則を写さない。
     """
     limit = request.limit
     c_all = truncate(compute_port.load_source(request.ref, request.timeframe),
@@ -156,51 +154,10 @@ def _compute_projected(
     while head > 0 and compute_port.bar_time(
             compute_tf, int(c_all[head - 1]["time"])) == first_label:
         head -= 1
-    bars = c_all[head:]
-
-    out: "dict[str, dict]" = {}
-    order: "list[str]" = []
-    keep = {int(b["time"]) for b in window}
-    for label, part in _group_by_period(bars, compute_tf=compute_tf, compute_port=compute_port):
-        confirmed = [b for b in h_all if int(b["time"]) < label]
-        if isinstance(limit, int) and limit > 0:
-            confirmed = confirmed[-limit:]
-        tails: "list[list[dict]]" = []
-        times: "list[int]" = []
-        acc: "dict | None" = None
-        for b in part:
-            acc = _fold_bars([acc, b] if acc else [b], time=label)
-            tails.append([dict(acc)])
-            times.append(int(b["time"]))
-        steps = compute_port.compute_latest_seq(
-            request.indicator, request.variant, confirmed, tails, request.params
-        )
-        for t, series in zip(times, steps or []):
-            if t not in keep:
-                continue
-            for p in series or []:
-                data = p.get("data") or []
-                if not data:
-                    continue
-                name = p.get("name")
-                if name not in out:
-                    # 段（期間境界の跳ね）を斜線で結ばない（ISSUE-289）。
-                    out[name] = {**p, "data": [], "stepped": True}
-                    order.append(name)
-                out[name]["data"].append({**data[-1], "time": t})
-    return [out[name] for name in order]
-
-
-def _group_by_period(bars, *, compute_tf: str, compute_port: "CausalComputePort"):
-    """C 足を H の期間（ラベル）ごとの連続群へ分ける。``[(label, bars), ...]`` を返す。"""
-    groups: "list[tuple[int, list[dict]]]" = []
-    for b in bars:
-        label = compute_port.bar_time(compute_tf, int(b["time"]))
-        if groups and groups[-1][0] == label:
-            groups[-1][1].append(b)
-        else:
-            groups.append((label, [b]))
-    return groups
+    return compute_port.causal_series(
+        request.indicator, request.variant, c_all[head:], h_all, compute_tf, window,
+        request.params,
+    )
 
 
 def _seq_projection_timeframe(request: "CausalComputeSeqRequest") -> "str | None":

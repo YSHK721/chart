@@ -58,6 +58,20 @@ class _Port:
             return int(unix_sec)
         return self.bar_time(timeframe, unix_sec) - 3 * HOUR
 
+    def causal_series(self, indicator, variant, chart_bars, source_bars, compute_tf,
+                      window_bars, params):
+        """規約の実体はライブ core と同一の唯一源（写しを持たない）。"""
+        from simulator.replay_ui.adapter import _indicator_ui_bridge
+
+        causal_mtf_series = _indicator_ui_bridge.load_compute().causal_mtf_series
+        return causal_mtf_series(
+            chart_bars=chart_bars, source_bars=source_bars, compute_tf=compute_tf,
+            bar_time_unix=self.bar_time,
+            latest_seq=lambda prefix, tails: self.compute_latest_seq(
+                indicator, variant, prefix, tails, params),
+            window_bars=window_bars,
+        )
+
     def compute(self, indicator, variant, mode, bars, params):
         self.windows.append([dict(b) for b in bars])
         return [{"name": "MA", "kind": "line",

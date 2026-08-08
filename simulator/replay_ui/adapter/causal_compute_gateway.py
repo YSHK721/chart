@@ -60,6 +60,29 @@ class CausalComputeGateway:
 
         return int(period_start_unix(int(unix_sec), timeframe))
 
+    def causal_series(
+        self, indicator: str, variant: str, chart_bars: "list[dict]",
+        source_bars: "list[dict]", compute_tf: str, window_bars: "list[dict]", params: dict,
+    ) -> "list[dict]":
+        """上位足の因果系列（ISSUE-295）。規約の実体は**ライブと同一**の唯一源を呼ぶ。
+
+        ``adapter.compute.mtf_causal.causal_mtf_series``（indicator_ui）を read-only 再利用し、
+        期間ラベルは ``marketdata.tf_meta.bar_time_unix``、各時点の計算は本ゲートウェイの
+        ``compute_latest_seq``（確定プレフィクスの DataFrame 化を 1 回に畳む経路）を渡す。
+        """
+        from marketdata.tf_meta import bar_time_unix  # 遅延: 技術隔離を本ファイルに閉じる
+
+        bridge = self._bridge()
+        return bridge.causal_mtf_series(
+            chart_bars=chart_bars,
+            source_bars=source_bars,
+            compute_tf=compute_tf,
+            bar_time_unix=bar_time_unix,
+            latest_seq=lambda prefix, tails: self.compute_latest_seq(
+                indicator, variant, prefix, tails, params),
+            window_bars=window_bars,
+        )
+
     def compute(
         self, indicator: str, variant: str, mode: str, bars: "list[dict]", params: dict
     ) -> "list[dict]":

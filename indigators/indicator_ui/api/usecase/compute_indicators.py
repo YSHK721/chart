@@ -173,6 +173,13 @@ def compute_indicators(
     df = port.load_dataframe(request.dataset_ref, load_timeframe)
 
     mode = request.mode
+    now_unix = None
+    # 上位足の因果系列（ISSUE-295）は「確定 H 足 ＋ C から畳んだ形成 H 足」で各バーを計算する。
+    #   保存済み H の進行中期間の足は**期間全体の OHLC**（＝そのバーの時点では知り得ない値）を
+    #   含むため使わない。形成中バーの注入も行わない（畳みで作る）。よって H 側の一括計算は
+    #   丸ごと不要になり、この分岐では 5〜7 を通さない。
+    df_source = df if project else None
+    series: "list | None" = None
 
     # 5. ライブ足内更新（mode="latest"）: 形成中バーを注入してから計算する。full は不変。
     #    ISSUE-162: 注入で増えたバー数（欠落閉周期の合成＋形成中）を数え、末尾切りの下限
@@ -180,6 +187,9 @@ def compute_indicators(
     injected_tail = None
     if mode == "latest":
         now_unix = forming_bar.resolve_now_unix(request.forming_now)
+    if project:
+        pass   # H 側の注入・末尾切り・一括計算は行わない（下の 8 が各バーを計算する）
+    elif mode == "latest":
         try:
             n_before = len(df)
         except TypeError:  # len 非対応の注入 fake（テスト）＝従来挙動（min_tail なし）
@@ -194,42 +204,61 @@ def compute_indicators(
 
     # 6. 表示範囲制限（直近 N 本）。
     limit = request.limit
-    if isinstance(limit, int) and limit > 0:
+    if isinstance(limit, int) and limit > 0 and not project:
         df = df.tail(limit)
 
-    # 7. 指標計算＋エラー翻訳。
+    # 7. 指標計算＋エラー翻訳（上位足の因果系列は 8 で各バーを計算するためここは通らない）。
     compute_params = dict(request.params)
-    try:
-        series = (
-            latest_compute(compute_adapter, request.indicator_id, request.variant, df,
-                           compute_params, min_tail=injected_tail)
-            if mode == "latest"
-            else full_compute(compute_adapter, request.indicator_id, request.variant, df, compute_params)
-        )
-    except compute_error as exc:  # ComputeError（error_type/message）を error 表現へ。
-        return ComputeResult.error(generation, exc.error_type, exc.message,
-                                   getattr(exc, "violations", None))
-    except KeyError as exc:  # 未登録 id/variant は CallBinding.resolve が raw KeyError を投げる。
-        return ComputeResult.error(
-            generation, "validation", f"未登録の指標または variant です: {exc}"
-        )
+    if not project:
+        try:
+            series = (
+                latest_compute(compute_adapter, request.indicator_id, request.variant, df,
+                               compute_params, min_tail=injected_tail)
+                if mode == "latest"
+                else full_compute(compute_adapter, request.indicator_id, request.variant, df,
+                                  compute_params)
+            )
+        except compute_error as exc:  # ComputeError（error_type/message）を error 表現へ。
+            return ComputeResult.error(generation, exc.error_type, exc.message,
+                                       getattr(exc, "violations", None))
+        except KeyError as exc:  # 未登録 id/variant は CallBinding.resolve が raw KeyError。
+            return ComputeResult.error(
+                generation, "validation", f"未登録の指標または variant です: {exc}"
+            )
 
-    # 8. 上位足投影（ISSUE-274）: H の時間軸で得た系列を、チャート足 C の各バーへ写す。
+    # 8. 上位足の因果系列（ISSUE-274 → 295）: チャート足 C の各バー τ へ「τ 時点で計算できた
+    #    H の値」を載せる。従来は「いまの H 系列を期間単位で C へ写す」規約だったため、点の
+    #    意味が「その期間の値」であり、過去のバーの点に τ より後の情報が載っていた（各期間が
+    #    その期間の最終値で塗り潰される）。規約の実体は project_mtf 協調子（= mtf_causal）が持つ。
     #    投影先の時刻集合は /candles と同じ経路（load_dataframe + tail(limit)）から採るため、
     #    応答の time は必ず C のバー時刻の部分集合になる（時間軸へ C 外の時刻が混ざらない）。
     if project:
-        df_chart = port.load_dataframe(request.dataset_ref, request.timeframe)
+        df_chart_all = port.load_dataframe(request.dataset_ref, request.timeframe)
         if mode == "latest":
-            df_chart = forming_bar.apply_forming_bar(
-                df_chart, request.dataset_ref, request.timeframe, now_unix
+            df_chart_all = forming_bar.apply_forming_bar(
+                df_chart_all, request.dataset_ref, request.timeframe, now_unix
             )
+        df_chart = df_chart_all
         if isinstance(limit, int) and limit > 0:
             df_chart = df_chart.tail(limit)
-        series = project_mtf(
-            series,
-            df_chart,
-            compute_tf,
-            period_start_unix=period_boundary.period_start_unix,
-        )
+        if mode == "latest":
+            # 足内更新（ティック粒度）で動くのは**最後のバーだけ**である（過去の点は定義上
+            #   不変＝時刻不変）。全窓を作り直すのは捨てられる計算になるため末尾 1 本に絞る。
+            #   畳みは期間の先頭から行う（fold_from）ので値は全窓計算と一致する。
+            df_chart = df_chart.tail(1)
+        try:
+            series = project_mtf(
+                df_chart=df_chart,
+                df_source=df_source,
+                compute_tf=compute_tf,
+                fold_from=df_chart_all,
+            )
+        except compute_error as exc:
+            return ComputeResult.error(generation, exc.error_type, exc.message,
+                                       getattr(exc, "violations", None))
+        except KeyError as exc:
+            return ComputeResult.error(
+                generation, "validation", f"未登録の指標または variant です: {exc}"
+            )
 
-    return ComputeResult.success(generation, series)
+    return ComputeResult.success(generation, series or [])
