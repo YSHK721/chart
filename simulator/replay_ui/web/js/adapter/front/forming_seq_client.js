@@ -21,7 +21,7 @@ export class FormingSeqClient {
   // steps（series の配列・formingSeq と同順）を返す。失敗は例外（呼び出し側がフォールバック）。
   async computeSeq({
     indicatorId, variant, params, datasetRef, timeframe, limit, untilTime, formingSeq,
-    winStart = null, winEnd = null,
+    winStart = null, winEnd = null, computeTimeframe = undefined,
   } = {}) {
     // ISSUE-238: 足内窓（winStart/winEnd）を添える。サーバは各 formingSeq 要素の `to` と
     //   この窓から「その時点までに到来した実 tick 数」を数え、形成中バーの volume にする。
@@ -30,6 +30,8 @@ export class FormingSeqClient {
       indicatorId, variant, params, datasetRef, timeframe, limit, untilTime,
       mode: 'latest_seq', formingSeq, generation: 0,
       ...(winStart != null && winEnd != null ? { winStart, winEnd } : {}),
+      // ISSUE-291: 計算.時間足。未指定（チャート足）のときは載せない＝従来ボディと byte 同一。
+      ...(computeTimeframe ? { computeTimeframe } : {}),
     });
     const hasAbort = typeof AbortController === 'function';
     const aborter = hasAbort ? new AbortController() : null;

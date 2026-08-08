@@ -108,6 +108,9 @@ export class FormingPlanCache {
     });
     const results = await Promise.all(sigInfo.targets.map((t) => this._seqClient.computeSeq({
       indicatorId: t.indicatorId, variant: t.variant, params: t.params,
+      // ISSUE-291: 計算.時間足（対象の申告をそのまま運ぶ）。ここで params から導き直さない
+      //   ＝導出は controller の 1 箇所（_calcTimeframeOf）に閉じたまま。
+      computeTimeframe: t.computeTimeframe,
       datasetRef: this._datasetRef, timeframe, limit: idx + 1, untilTime: cd.time, formingSeq,
       winStart, winEnd,
     }).catch(() => null)));

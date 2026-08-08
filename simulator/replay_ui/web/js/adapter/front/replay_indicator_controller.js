@@ -184,6 +184,7 @@ export class ReplayIndicatorController extends IndicatorController {
       return !!meta && !this._isMarketProfile(meta.def);
     }).map((inst) => {
       const variant = inst.variant ?? this._defaultVariant(this._meta.get(inst.instanceId).def);
+      const params = this._paramsObject(inst.params);
       return {
         instanceId: inst.instanceId,
         indicatorId: inst.indicatorId,
@@ -191,7 +192,11 @@ export class ReplayIndicatorController extends IndicatorController {
         // variant スコープ（ISSUE-278 #8）: 本経路も /compute の呼出規約で計算されるため、
         //   その variant の add_* が受理しない param を載せない（載せると validation エラー）。
         //   実 UI で検出: profit_hlband variant=overlay の draw_levels を積んで 500 になっていた。
-        params: this._scopedParams(inst.indicatorId, variant, this._paramsObject(inst.params)),
+        params: this._scopedParams(inst.indicatorId, variant, params),
+        // ISSUE-291: 計算.時間足を載せる。本経路だけが `computeTimeframe` を送っておらず、
+        //   サーバは（ISSUE-290 の H 形成足経路を持ちながら）チャート足で計算していた。
+        //   実測: 5m×1D EMA5 の足内値がリビール値と別物（実 UI 末尾点 64970.3855＝5m の値）。
+        computeTimeframe: this._calcTimeframeOf(params),
       };
     });
   }

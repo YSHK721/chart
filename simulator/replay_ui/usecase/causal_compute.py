@@ -130,19 +130,17 @@ def _compute_projected(
     投影規約（確定済み期間＝その時点の確定値／進行中期間＝形成値）は
     ``adapter.compute.mtf_projection`` が唯一源で、本関数は入力を合わせて呼ぶだけ。
     """
-    chart_bars = truncate(compute_port.load_source(request.ref, request.timeframe),
-                          request.until_time)
     limit = request.limit
+    window = _causal_h_window(
+        request_ref=request.ref, timeframe=request.timeframe, compute_tf=compute_tf,
+        until_time=request.until_time, limit=limit, compute_port=compute_port,
+    )
+    if window is None:
+        return []
+    confirmed, in_period, h_bar_time, chart_bars = window
     if isinstance(limit, int) and limit > 0:
         chart_bars = chart_bars[-limit:]
-    if len(chart_bars) == 0:
-        return []
-    source_bars = truncate(compute_port.load_source(request.ref, compute_tf),
-                           request.until_time)
-    if isinstance(limit, int) and limit > 0:
-        source_bars = source_bars[-limit:]
-    if len(source_bars) == 0:
-        return []
+    source_bars = _h_bars_with_forming(confirmed, in_period, h_bar_time)
     series = compute_port.compute(
         request.indicator, request.variant, "full", source_bars, request.params
     )
@@ -154,6 +152,45 @@ def _seq_projection_timeframe(request: "CausalComputeSeqRequest") -> "str | None
     if not tf or tf == "chart" or tf == request.timeframe:
         return None
     return str(tf)
+
+
+def _causal_h_window(
+    *, request_ref: str, timeframe: "str | None", compute_tf: str, until_time: "int | None",
+    limit: "int | None", compute_port: "CausalComputePort",
+) -> "tuple[list[dict], list[dict], int, list[dict]] | None":
+    """計算足 H の窓素材（確定 H 足・進行中期間の C 足・進行中 H 足の時刻）を返す（ISSUE-291）。
+
+    **リプレイの H 源は進行中期間の足も「その期間の全 OHLC」を持つ**（保存済みロールアップ）。
+    リビール T が期間の途中なら、その足には T より先の高値・安値・終値が入っている＝未来。
+    したがって進行中期間の H 足は源から採ってはならず、必ず C 足（T まで）から畳んで作る。
+
+    この窓の作り方は本関数 1 箇所を唯一源とし、リビール経路（``_compute_projected``）と
+    足内経路（``_compute_seq_higher_timeframe``）の双方が使う。片方だけが畳むと、同じ瞬間に
+    対して 2 つの値が生まれる（実測: 5m×1D EMA5(high) でリビール 66098.55 / 足内 64970.39 ＝
+    1128 の段差。前者は当日全体の高値 66700.24 を含む未来参照だった）。
+
+    返り値は ``(確定 H 足, 進行中期間の C 足, 進行中 H 足の時刻, T までの C 足全体)``。
+    窓が空なら None。進行中期間の C 足は ``limit`` で切らない（期間の途中から畳むと形成中
+    H 足が欠ける）。C 足全体を併せて返すのは、投影先の時間軸を得るための再読込を避けるため。
+    """
+    h_all = truncate(compute_port.load_source(request_ref, compute_tf), until_time)
+    c_all = truncate(compute_port.load_source(request_ref, timeframe), until_time)
+    if not h_all or not c_all:
+        return None
+    # 進行中 H 期間の始端（＝その足の time）。C 足の最終時刻がどの H 足に属するかで決める。
+    h_bar_time = compute_port.bar_time(compute_tf, int(c_all[-1]["time"]))
+    confirmed = [b for b in h_all if int(b["time"]) < h_bar_time]
+    if isinstance(limit, int) and limit > 0:
+        confirmed = confirmed[-limit:]
+    in_period = [b for b in c_all if int(b["time"]) >= h_bar_time]
+    return confirmed, in_period, h_bar_time, c_all
+
+
+def _h_bars_with_forming(confirmed, in_period, h_bar_time: int) -> "list[dict]":
+    """確定 H 足に、C 足から畳んだ進行中 H 足を継ぎ足した計算窓を返す。"""
+    if not in_period:
+        return list(confirmed)
+    return [*confirmed, _fold_bars(in_period, time=h_bar_time)]
 
 
 def _fold_bars(bars, *, time: int) -> dict:
@@ -180,25 +217,21 @@ def _compute_seq_higher_timeframe(
     畳み方（open/high/low/close の合成）は 1 箇所（``_fold_bars``）に閉じる。
     """
     seq = request.forming_seq or []
-    h_all = truncate(compute_port.load_source(request.ref, compute_tf), request.until_time)
-    c_all = truncate(compute_port.load_source(request.ref, request.timeframe), request.until_time)
-    if not h_all or not c_all:
+    window = _causal_h_window(
+        request_ref=request.ref, timeframe=request.timeframe, compute_tf=compute_tf,
+        until_time=request.until_time, limit=request.limit, compute_port=compute_port,
+    )
+    if window is None:
         return [[] for _ in seq]
-    limit = request.limit
-    if isinstance(limit, int) and limit > 0:
-        h_all = h_all[-limit:]
-        c_all = c_all[-limit:]
-    # 進行中 H 期間の始端（＝その足の time）。C 足の最終時刻がどの H 足に属するかで決める。
-    h_bar_time = compute_port.bar_time(compute_tf, int(c_all[-1]["time"]))
-    confirmed = [b for b in h_all if int(b["time"]) < h_bar_time]
-    in_period = [b for b in c_all if int(b["time"]) >= h_bar_time]
+    confirmed, in_period, h_bar_time, _c_all = window
     out: "list[list[dict]]" = []
     for f in seq:
         snapshot = dict(f)
+        # 足内では最終 C 足だけがその時点のスナップショットへ差し替わる（他は確定済み）。
         parts = in_period[:-1] + [snapshot] if in_period else [snapshot]
-        forming_h = _fold_bars(parts, time=h_bar_time)
         series = compute_port.compute(
-            request.indicator, request.variant, "latest", [*confirmed, forming_h], request.params
+            request.indicator, request.variant, "latest",
+            _h_bars_with_forming(confirmed, parts, h_bar_time), request.params
         )
         # 値は C の形成足時刻へ載せる（front は末尾差分として描く）。
         step: "list[dict]" = []

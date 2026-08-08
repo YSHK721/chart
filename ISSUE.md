@@ -5021,3 +5021,30 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検定**: `tests/unit/test_causal_compute_seq_mtf.py`（4 件）＝データ由来の進行中 H 足を使わない／足内スナップショットが H 形成足へ累積する／値を C の形成足時刻へ載せる／チャート足は従来経路。
 - **回帰**: Python 1,100 passed（replay_ui 252 / indicator_ui api 848）／フロント 4 スイート 全通過。
 - **関連**: ISSUE-274 D-4（ライブ側の設計）／ISSUE-287（投影の欠落）／ISSUE-288（送信規約・暫定除外）／ISSUE-289（階段描画）。
+
+## ISSUE-291: [不具合・実測] 上位足 MA が足内とリビールで別値になる（未来混入と `computeTimeframe` 欠落の 2 系統）（2026-08-08）
+- **ステータス**: RESOLVED（2026-08-08・fix/replay-mtf-forming-window）
+- **重大度**: Critical（表示が未来を含む＝検証結果そのものが無効になる。かつ同一瞬間に 2 つの値が出る）
+- **事象（利用者指摘・実 UI 診断）**: 5m チャート × 計算.時間足 1D の EMA5（high/low/hlc3）で、最終足だけが跳ねる。
+  ```
+  moving_averages#213 (high): 66098.5467  66098.5467  64970.3855   最大跳躍 1128.16
+  moving_averages#214 (low) : 64163.5843  64163.5843  64800.2296   最大跳躍  636.65
+  → high が下・low が上へ跳ねて交差する（上下が入れ替わる）
+  ```
+- **真因（2 系統・いずれも実測で出所を特定）**:
+  1. **リビール経路の未来混入**: `_compute_projected` が H 源（保存済みロールアップ）の**進行中期間の足をそのまま**計算へ入れていた。リプレイの H 源は進行中期間でも「その期間の全 OHLC」を持つ。実測（T=2026-08-07 02:00 UTC）で窓に入っていた日足は `high=66700.24 / low=64679 / close=66304.97`＝**当日全体**。この窓で計算すると実 UI の 66098.5467 / 64163.5843 / 65222.2544 を 4 桁一致で再現した。
+  2. **足内経路の計算足欠落**: front の足内一括計算（`FormingSeqClient.computeSeq`）が `computeTimeframe` を送っていなかった。サーバは ISSUE-290 で H 形成足の計算経路を持ちながら**その分岐に入らず**チャート足で計算していた。実測: 5m 窓の latest が 64970.3855 / 64800.2296 / 64900.6453＝実 UI の末尾点と 4 桁一致（＝機能が無言で死んでいた）。
+- **抜本的対策**:
+  1. 進行中 H 足の作り方を **1 箇所**（`causal_compute._causal_h_window`）へ集約し、リビール経路と足内経路の**双方**が使う。H 源の進行中期間の足は常に捨て、C 足（リビール T まで）から畳んで作る。片方だけ畳む状態を構造的に作れなくした。
+  2. 計算.時間足の導出は既存の唯一源（`indicator_controller._calcTimeframeOf`）のまま、`formingSeqTargets()` → `FormingPlanCache` → `FormingSeqClient` の運搬経路を通した（未指定なら body へ載せない＝従来ボディと byte 同一）。
+- **実測（是正後・実データ jp225_tick・T=1786068000・limit=1282）**:
+  ```
+  [high] リビール末尾3点 65836.4412 / 65836.4412 / 65836.4412   足内（同一瞬間） 65836.4412   段差 0.0
+  [low ] リビール末尾3点 64163.5843 / 64163.5843 / 64163.5843   足内（同一瞬間） 64163.5843   段差 0.0
+  [hlc3] リビール末尾3点 64992.4415 / 64992.4415 / 64992.4415   足内（同一瞬間） 64992.4415   段差 0.0
+  ```
+  未来混入の除去も同時に確認（high の EMA が 66098.55 → 65836.44 へ低下＝当日全体の高値 66700.24 を見なくなった）。
+- **検定**: `tests/unit/test_causal_compute_mtf_seam.py`（両経路が同一窓を作る／リビールが T より先を見ない）・`test_causal_compute_mtf.py`（進行中 H 足は C から畳む）・front `forming_seq_client.test.js`／`forming_seq_mtf_exclusion.test.js`／`replay_roles.test.js`（`computeTimeframe` の運搬）。
+- **回帰**: Python 1,440 passed（replay_ui 255 / indicator_ui api ほか 1,185）／フロント 4 スイート 全通過。
+- **設計上の教訓**: ISSUE-290 でサーバ側の分岐を作った時点で「front が送っているか」を実測していなかった。**受け口を作ったら、それが実際に使われることを経路の端から端まで 1 本の検定で固定する**（宣言だけでは効かない・ISSUE-262 と同型）。
+- **関連**: ISSUE-286（期間別の投影規約）／ISSUE-287（`computeTimeframe` の受け口）／ISSUE-288（一括リビールの送信規約）／ISSUE-290（H 形成足の計算経路）。
