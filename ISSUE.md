@@ -4829,3 +4829,22 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検定**（`tools/tests/test_web_suites_ledger.py`・15 件）: 走査で見つかる web スイートと台帳の一致（登録漏れ・陳腐化の双方）／各スイートが `npm test` で起動できる／各スイートの `package.json` が**追跡されている**（clean clone で `npm ci` が成立する条件）／`node_modules` が**版管理に入っていない**かつ実ディレクトリである（本件の真因そのものの再発検出）／ランナーが台帳から読む。
 - **識別力の実証**: (a) 自己参照 symlink を再現 → pytest 1 件 Red かつランナーが **exit 1・`unified_ui/web (exit 216)` と名指し**。(b) 台帳から 1 スイート削除 → 1 件 Red。いずれも復元で Green。
 - **実測（是正後）**: `tools/run_web_tests.sh` が 4 スイート **1,775 件**（1,100 / 331 / 301 / 43）を実行し exit 0。
+
+## ISSUE-281: [不具合・実測再現] 永続化された未知 param を front が送り続け、当該指標が恒久的に計算不能になる（2026-08-08）
+- **ステータス**: OPEN
+- **重大度**: High（一度混入すると自己修復しない。ライブ・リプレイ双方で当該指標が描けない）
+- **事象（利用者報告）**: リプレイ有効化時に `/compute` が 400。`validation: add_rsi が受理しない param が渡されました: ['ma_period']`。
+- **実測再現（実 HTTP）**: `POST /live/compute`（profit_rsi・`params={rsi_period,apply,ma_period}`）→ **400 validation**。`ma_period` を外すと **200**。
+- **真因**: front の `usecase/catalog.scopedParams` が**拒否リスト方式**である。param 定義が見つからない（`def.params` に無い）名前は `scoped[name] = value` で**素通し**する。実測: `scopedParams(profit_rsi, 'default', {rsi_period, apply, ma_period, unknown_x})` → 送信キーは `rsi_period, apply, ma_period, unknown_x`。
+  - サーバは ISSUE-278 #8 で無言破棄をやめ**フェイルクローズ**にした。したがって「front が知らない param を送る」ことが即エラーになる。カタログから param が消えた指標に、古い永続状態（`applied.v1` / テンプレート）が残っていると、その指標は以後ずっと 400 になる。
+- **抜本的対策**: 絞り込みを**許可リスト**へ反転する。送るのは「その variant が受理すると宣言された param」だけ（サーバの `paramScopes` は `/catalog` で overlay 済み＝front は受理集合を知っている）。併せて復元時（`IndicatorStateStore`）にも未知 param を落とし、壊れた永続状態が居座らないようにする。
+- **関連**: ISSUE-278 #8（フェイルクローズ化）／ISSUE-282（1 指標の失敗が再生全体を止める）。
+
+## ISSUE-282: [不具合・実測] 1 指標の計算失敗が再生（render）全体を中断する（2026-08-08）
+- **ステータス**: OPEN
+- **重大度**: High（リプレイでは短い窓が正常に起こるため、特定指標を適用しただけで再生が止まる）
+- **事象（利用者報告）**: `[replay] 計算エラー … E01_INSUFFICIENT_BARS: バー数 1234 では σ̂ を 1 本も出力できない（n_har + 23 = 1352 本以上が必要）` の後、そのバーの描画が行われない。
+- **真因（コードで確認）**: `indicator_controller.recomputeAllApplied` は `Promise.allSettled` の結果から**最初の rejection を rethrow** する（`const rejected = settled.find(...); if (rejected) throw rejected.reason;`）。`replay.js:render` はこれを catch してログのみ出し **return** するため、`applyView` / `syncBoundary` / MP enterBar / 先読み以降が一切走らない。
+- **なぜリプレイで顕在化するか**: リプレイは計算窓を `limit = bar + 1`（リビール範囲）に絞る。長い履歴を要求する指標（cvfe 系の σ̂ 等）は、カーソルが手前にある間は**正常に**「まだ出せない」を返す。これは異常ではなく想定内の状態であり、他指標とローソクの描画まで止める理由がない。
+- **抜本的対策**: 失敗の単位をインスタンスに閉じる。`recomputeAllApplied` は rejection を伝播せず、失敗インスタンスだけを描画対象から外し、成功分とローソクは描く（ISSUE-232 の「一括計算が失敗しても再生は継続」と同じ規律）。失敗は凡例・ステータスで可視化し、無言にはしない。
+- **関連**: ISSUE-281（400 を出す側）／ISSUE-232（fail-open の前例）。
