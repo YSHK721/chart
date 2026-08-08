@@ -891,7 +891,10 @@ const calcTimeframeParam = () => param(
   },
 );
 
-// def へ計算.時間足を付与する。対象外:
+// def へ計算.時間足を付与する。**先頭へ**置く（依頼者指示 2026-08-08: 設定ダイアログの一番上）。
+//   ダイアログのグループ順は form_model が「param の初出順」で決めるため、先頭に置くことで
+//   group.calc（時間足）が最初の見出しになる。順序の決定点は本関数 1 箇所（指標定義は無改変）。
+// 対象外:
 //   - アクター駆動型（market_profile / tickvol_bands）: /compute を持たず投影経路に乗らない。
 //     効かない設定を出さない（表示できるものと効くものを一致させる）。
 //   - すでに timeframe を持つ定義: 二重付与しない（将来 def 側で特別扱いする余地を残す）。
@@ -899,7 +902,7 @@ function withCalcTimeframe(def) {
   if (isActorDriven(def) || def.params.some((p) => p.name === 'timeframe')) {
     return def;
   }
-  return new IndicatorDef({ ...def, params: [...def.params, calcTimeframeParam()] });
+  return new IndicatorDef({ ...def, params: [calcTimeframeParam(), ...def.params] });
 }
 
 const REGISTRY = Object.freeze([
