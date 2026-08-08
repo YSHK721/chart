@@ -52,9 +52,6 @@ class _Port:
         self.windows.extend([[*prefix_bars, *t] for t in tails])
         return [[{"name": "MA", "kind": "line", "data": [{"time": 0, "value": 1.0}]}] for _ in tails]
 
-    def project(self, series, chart_times, compute_tf):        # 本経路では使わない
-        raise AssertionError("足内は投影ではなく H 形成足で計算する")
-
 
 def _req(**over):
     base = dict(indicator="moving_averages", variant="default", ref="jp225_tick",

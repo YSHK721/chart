@@ -124,27 +124,83 @@ def _bar_times(bars) -> "list[int]":
 def _compute_projected(
     *, request: "CausalComputeRequest", compute_port: "CausalComputePort", compute_tf: str,
 ) -> "list[dict]":
-    """H で計算し、C（チャート足）の時間軸へ投影して返す（ISSUE-287）。
+    """C の各バーへ「**そのバーの時点で計算できた** H の値」を載せた因果系列を返す（ISSUE-294）。
 
-    因果性: H・C とも ``truncate(until_time)`` を通す（リビール T 以前だけを使う）。
-    投影規約（確定済み期間＝その時点の確定値／進行中期間＝形成値）は
-    ``adapter.compute.mtf_projection`` が唯一源で、本関数は入力を合わせて呼ぶだけ。
+    従来（ISSUE-287〜292）は「T の時点の H 系列を計算し、期間単位で C へ投影」していた。
+    これは *T における表示*（ライブと同じ見え方）としては正しいが、**過去のバーの点が
+    その期間の確定値**になる（バー τ の点に τ より後の情報が載る）。再生の検証では
+    「そのバーの時点で何が見えていたか」を線として残す必要があるため、点の意味を
+    「τ 時点の値」へ揃える（依頼: ISSUE-293／本 ISSUE で過去データにも適用）。
+
+    値の定義（全 C バー τ 共通・過去も再生中も同一）:
+        value(τ) = 指標( [τ の期間より前の確定 H 足] + [τ の期間の C 足を τ まで畳んだ H 足] )
+
+    この系列は **時刻不変**（各点は自分より後のデータに依存しない）＝一度計算すれば
+    塗り替える必要がない。よって front は基底を 1 回だけ作って時刻でスライスできる。
+
+    費用: 期間ごとに確定プレフィクスを 1 回だけ DataFrame 化し、以降は末尾差分の latest 計算
+    （``compute_latest_seq``＝ISSUE-233 の最適化経路）を C バー数ぶん回す。
     """
     limit = request.limit
-    window = _causal_h_window(
-        request_ref=request.ref, timeframe=request.timeframe, compute_tf=compute_tf,
-        until_time=request.until_time, limit=limit, compute_port=compute_port,
-    )
-    if window is None:
+    c_all = truncate(compute_port.load_source(request.ref, request.timeframe),
+                     request.until_time)
+    h_all = truncate(compute_port.load_source(request.ref, compute_tf), request.until_time)
+    if not c_all or not h_all:
         return []
-    confirmed, in_period, h_bar_time, chart_bars = window
-    if isinstance(limit, int) and limit > 0:
-        chart_bars = chart_bars[-limit:]
-    source_bars = _h_bars_with_forming(confirmed, in_period, h_bar_time)
-    series = compute_port.compute(
-        request.indicator, request.variant, "full", source_bars, request.params
-    )
-    return compute_port.project(series, _bar_times(chart_bars), compute_tf)
+    window = c_all[-limit:] if isinstance(limit, int) and limit > 0 else list(c_all)
+    if not window:
+        return []
+    # 窓の先頭が属する期間は、窓より前の C 足も畳みに要る（期間の途中から畳むと値がずれる）。
+    head = len(c_all) - len(window)
+    first_label = compute_port.bar_time(compute_tf, int(window[0]["time"]))
+    while head > 0 and compute_port.bar_time(
+            compute_tf, int(c_all[head - 1]["time"])) == first_label:
+        head -= 1
+    bars = c_all[head:]
+
+    out: "dict[str, dict]" = {}
+    order: "list[str]" = []
+    keep = {int(b["time"]) for b in window}
+    for label, part in _group_by_period(bars, compute_tf=compute_tf, compute_port=compute_port):
+        confirmed = [b for b in h_all if int(b["time"]) < label]
+        if isinstance(limit, int) and limit > 0:
+            confirmed = confirmed[-limit:]
+        tails: "list[list[dict]]" = []
+        times: "list[int]" = []
+        acc: "dict | None" = None
+        for b in part:
+            acc = _fold_bars([acc, b] if acc else [b], time=label)
+            tails.append([dict(acc)])
+            times.append(int(b["time"]))
+        steps = compute_port.compute_latest_seq(
+            request.indicator, request.variant, confirmed, tails, request.params
+        )
+        for t, series in zip(times, steps or []):
+            if t not in keep:
+                continue
+            for p in series or []:
+                data = p.get("data") or []
+                if not data:
+                    continue
+                name = p.get("name")
+                if name not in out:
+                    # 段（期間境界の跳ね）を斜線で結ばない（ISSUE-289）。
+                    out[name] = {**p, "data": [], "stepped": True}
+                    order.append(name)
+                out[name]["data"].append({**data[-1], "time": t})
+    return [out[name] for name in order]
+
+
+def _group_by_period(bars, *, compute_tf: str, compute_port: "CausalComputePort"):
+    """C 足を H の期間（ラベル）ごとの連続群へ分ける。``[(label, bars), ...]`` を返す。"""
+    groups: "list[tuple[int, list[dict]]]" = []
+    for b in bars:
+        label = compute_port.bar_time(compute_tf, int(b["time"]))
+        if groups and groups[-1][0] == label:
+            groups[-1][1].append(b)
+        else:
+            groups.append((label, [b]))
+    return groups
 
 
 def _seq_projection_timeframe(request: "CausalComputeSeqRequest") -> "str | None":
