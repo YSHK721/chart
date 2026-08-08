@@ -1,0 +1,21 @@
+# dev_paths — 「1 つのチェックアウトを構成する import パス」の唯一源（ISSUE-279）。
+#
+# 記法: リポジトリ根からの相対パス（1 行 1 件・`#` 始まりと空行は無視）。順序は
+#   sys.path への前置順（先頭ほど優先）。
+#
+# 消費者（すべて本ファイルから導出し、値を書き写さない）:
+#   - tools/dev_paths.sh        : serve.sh 群が source して PYTHONPATH を組み立てる（実行時）
+#   - tools/install_dev_paths.py: venv の .pth を書く（対話シェル用のフォールバック）
+#   - pyproject.toml の [tool.pytest.ini_options] pythonpath（rootdir 相対・テスト時）
+#   一致は tools/tests/test_dev_paths_single_source.py が強制する。
+#
+# なぜ相対パスか: 絶対パスで固定すると、git worktree から起動しても「インストールした時の
+#   チェックアウト」が読まれる。実際に worktree の殻（新）＋ main の実装（旧）という組合せで
+#   /tf_period_profile が 500 になった（ISSUE-279・2026-08-08 実測）。パスは常に
+#   「今起動しているツリー」から解決する。
+#
+# ここに載せるのは**衝突しない固有名**のトップパッケージだけ（ISSUE-087 🟡-3）。
+#   汎用名（indicator_ui api の adapter/framework/domain・replay_ui の同名群）はスライス間で
+#   衝突するため載せず、各エントリポイントが自スライス root だけを結線する。
+.
+indigators/market_profile/api

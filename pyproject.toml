@@ -4,9 +4,14 @@
 # requirements.txt / requirements-dev.txt を単一情報源とし、本ファイルへ移さない
 # （ビルドバックエンドも導入しない＝[build-system] / [project] は置かない）。
 #
-# pythonpath: rootdir（= 本ファイルのあるリポジトリ根）を sys.path へ載せる。
-#   repo 根直下の固有名パッケージ（common / common_view / marketdata / api_shared /
-#   tools）を、どのパッケージディレクトリから pytest を起動しても解決可能にする。
-#   実行時（サーバ起動）の同解決は venv の .pth（tools/install_dev_paths.py）が担う。
+# pythonpath: rootdir（= 本ファイルのあるリポジトリ根）**からの相対**で sys.path へ載せる。
+#   repo 根直下の固有名パッケージ（common / common_view / marketdata / api_shared / tools）と
+#   market_profile_api を、どのパッケージディレクトリから pytest を起動しても解決可能にする。
+#
+#   値の唯一源は tools/dev_paths.txt（ISSUE-279）。一致は
+#   tools/tests/test_dev_paths_single_source.py が強制するので、台帳と本表は同時に更新する。
+#   絶対パスを書かないこと: git worktree で pytest を回したとき、main チェックアウトの実装を
+#   テストしてしまい「worktree で緑」が偽になる（venv の .pth が絶対パス固定である問題と同型）。
+#   実行時（サーバ起動）の同解決は tools/dev_paths.sh（serve.sh が source）が担う。
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "indigators/market_profile/api"]

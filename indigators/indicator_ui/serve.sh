@@ -10,6 +10,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# 実行時の import パスは **本スクリプトの位置** から解決する（ISSUE-279）。venv の .pth は
+# インストール時のチェックアウトを絶対パスで指すため、worktree 起動でも main の実装が読まれる。
+. "${REPO_ROOT}/tools/dev_paths.sh"
 VENV_PY="${SCRIPT_DIR}/../../lightweight-charts-python-main/.venv/bin/python"
 API_DIR="${SCRIPT_DIR}/api"
 
@@ -47,19 +50,19 @@ WATCH_PID=""
 TICK_WATCH_PID=""
 if [ "$NO_UPDATE" -eq 0 ]; then
   echo "▶ 最新データを増分取得中（足/ロールアップ/日足）..."
-  if ! PYTHONPATH="$REPO_ROOT" "$VENV_PY" "$REPO_ROOT/tools/acquire_marketdata.py" --skip ticks --skip ingest; then
+  if ! "$VENV_PY" "$REPO_ROOT/tools/acquire_marketdata.py" --skip ticks --skip ingest; then
     echo "warn: データ更新に失敗しました。既存データで起動を続行します（--no-update で更新省略可）。" >&2
   fi
   # ライブ更新の実体: 1 分足を毎分取得し jp225_m1.csv + rollups へ追記し続けるバックエンド
   # watch（これが無いとデータが伸びず、フロント LiveUpdater がポーリングしても足が増えない）。
   echo "▶ ライブ更新を開始（毎分 1 分足を追記・ログ: $WATCH_LOG）"
-  PYTHONPATH="$REPO_ROOT" "$VENV_PY" "$M1_TOOL" --watch --interval 60 >"$WATCH_LOG" 2>&1 &
+  "$VENV_PY" "$M1_TOOL" --watch --interval 60 >"$WATCH_LOG" 2>&1 &
   WATCH_PID=$!
   # チャート表示データセット jp225_tick（tick 由来）のライブ供給: 毎分 当日 tick を全量再取得し
   # jp225_tick_m1.csv + rollups/jp225_tick へ増分更新し続ける（これが無いと tick 系が凍結し
   # /forming_bar が当日 parquet 不在で null・/candles も新規足なしとなり価格が更新されない）。
   echo "▶ tick ライブ更新を開始（毎分 当日tick全量再取得・ログ: $TICK_WATCH_LOG）"
-  PYTHONPATH="$REPO_ROOT" "$VENV_PY" "$TICK_WATCH_TOOL" --stream >"$TICK_WATCH_LOG" 2>&1 &
+  "$VENV_PY" "$TICK_WATCH_TOOL" --stream >"$TICK_WATCH_LOG" 2>&1 &
   TICK_WATCH_PID=$!
 fi
 

@@ -18,6 +18,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# 実行時の import パスは **本スクリプトの位置** から解決する（ISSUE-279）。core 側の serve.sh も
+# 各々 source するが、router.py 自身と子プロセスの既定を本スクリプトの位置で確定させる。
+. "${REPO_ROOT}/tools/dev_paths.sh"
 
 LIVE_SERVE="${REPO_ROOT}/indigators/indicator_ui/serve.sh"
 REPLAY_SERVE="${REPO_ROOT}/simulator/replay_ui/serve.sh"
