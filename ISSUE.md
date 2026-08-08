@@ -4298,6 +4298,19 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **識別力の実証**: (a) 協働子に契約外参照（`host._scheduler`）を 1 行足す → 1 件 Red。(b) 合成点 1 つを `new IndicatorDialogController(this)` へ戻す → **3 件 Red**（生 host 渡し・網羅・実行時遮断）。復元で 36/36 Green。
 - **回帰**: 全 web スイート（`tools/run_web_tests.sh`）1,803 件 passed（indicator_ui 1,128 ／ market_profile 331 ／ replay_ui 301 ／ unified_ui 43）。
 - **実 UI 検証（8000・実クリック）**: ダイアログ開閉と一覧 24 件表示（Dialog ロール）→ RSI 適用（Store/Router）→ 時間足 1m→15m 切替（Timeframe。1,500 本再取得・指標は保持）→ Market Profile 適用（MP ロール。右側プロファイル描画）まで通し、console エラー 0（既存の favicon 404 のみ）。画像 `issue255-host-view-live.png`。検証後は適用指標と時間足を元へ戻した。
+
+### 追補（2026-08-08）— 「テストが本番と別物を見ている」型の施行
+- **経緯**: ISSUE-255 の是正後、依頼者から「緑のまま壊れていたのなら、テストと本番設計に差異があったのではないか」という指摘。ISSUE-275（本番は `mode` を渡さないのにテストは全構築で `mode:'b'` を注入）と ISSUE-277（本番の配信ページに無い DOM をテストが自前で用意）は、いずれも**テストが前提を自分で満たしていた**型だった。
+- **計測（機械判定）**: 合成根が構築するクラスについて「本番は渡さないが全テストが渡すキー」＝**本番が作る形を一度も通していない**もの を全フロントスイート横断で走査（`tools/js_ctor_scan.py`）。**3 クラス 5 件**を検出（当初のスライス単位走査では 0 件と誤って報告した。テスト側コーパスをスイート横断の合併にして初めて出た）。
+  | 箇所 | 本番の形 | テストが与えていた前提 |
+  |---|---|---|
+  | `TfPeriodJitterBuffer.windowSec` / `.prefetch` | `windowSecForTf`（tf→幅の関数）＋既定 prefetch | 固定 `windowSec:100` / `prefetch` を全構築で明示注入 |
+  | `LiveTickPlayer.now` | 既定＝実時計 `Date.now` | 決定論クロックを全構築で注入 |
+  | `ReplayMarketProfileActor.now` | 既定＝`performance.now`/`Date.now` | 同上 |
+- **是正**: テストを緩めるのではなく、**本番と同じ引数の形で構築するテストを追加**した（tf 連動チャンク幅 8h/45日クランプの実測・既定 prefetch=1・既定時計が実時計であること）。
+- **施行**: `tools/tests/test_composition_root_arg_parity.py` を新設（7 件）。合成根が実在すること・走査が空振りしていないこと・**本番形を通さないテストが 0 であること**・各合成根が少なくとも 1 つのテストから実行されることを固定する。走査対象のテスト集合は `tools/web_suites.txt`（ISSUE-280 の台帳）から導出＝写しを作らない。
+- **識別力の実証**: 追加した本番形テストを 1 つ削除 → 当該検定が Red。復元で 7/7 Green。
+- **限界（明示）**: 走査は構文解析器ではなく括弧対応（位置引数・spread は対象外）。網羅は主張しない＝実 UI 検証の代替にはならない。
 - **関連**: ISSUE-099 🟡-3/🟡-4（契約の明文化）／ISSUE-181（協働子抽出）／ISSUE-262（宣言を検定で施行する）。
 
 ## ISSUE-256: [設計是正] `replay.js` の `setupReplay` が 847 行の単一関数（SRP）（2026-08-04)

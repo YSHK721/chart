@@ -166,3 +166,42 @@ test('refreshAt: 取得中に tf が変わったら破棄する（stale 防御�
   release();
   assert.equal(await p, false, 'tf 変更後の応答は破棄');
 });
+
+// ---- 本番の合成形（ISSUE-255 追補・ISSUE-275 の再発防止） ----
+//
+// 上のテスト群は windowSec / prefetch を**テスト側が明示注入**して構築している。しかし本番の
+// 合成根（composition_root_front.js）はどちらも渡さず、`windowSecForTf`（tf→チャンク幅の関数）と
+// 既定 prefetch で組む。注入形だけを検証していると「本番が作る形」を一度も通さないまま緑になり、
+// ISSUE-275（本番が渡さない前提をテストが自分で満たし、機能喪失に気付かなかった）と同じ穴が空く。
+// 以下は**合成根と同じ引数の形**で構築し、tf 連動のチャンク幅と既定 prefetch を実測で固定する。
+// 施行は tools/tests/test_composition_root_arg_parity.py。
+
+test('本番の合成形（windowSecForTf 注入・windowSec/prefetch 非注入）で tf 連動のチャンク幅になる', async () => {
+  const client = fakeClient();
+  // 合成根と同一の導出規則（6h 下限・45 日上限・96 周期/チャンク）。
+  const windowSecForTf = (tf) => {
+    const bar = { '5m': 300, '1h': 3600, '1D': 86400 }[tf] || 86400;
+    return Math.max(6 * 3600, Math.min(45 * 86400, bar * 96));
+  };
+  const buf = new TfPeriodJitterBuffer({
+    client, datasetRef: 'jp225_tick', windowSecForTf, cacheMax: 32, onReady: () => {},
+  });
+
+  // 5m: 300*96=28,800s（8h）。可視 [30000,31000) は 28,800 床のチャンク 28,800 に属する。
+  const t5 = buf.ensure('5m', 30000, 31000);
+  assert.deepEqual(t5, [0, 28800, 57600], 'tf 連動幅（8h）で可視±prefetch=1 の 3 チャンクを取る');
+
+  // 1D: 86400*96=8,294,400s を 45 日（3,888,000s）へクランプする。
+  const t1d = buf.ensure('1D', 4000000, 4100000);
+  assert.deepEqual(t1d, [0, 3888000, 7776000], '1D は 45 日上限へクランプされた幅になる');
+});
+
+test('本番の合成形では prefetch が既定 1（前後 1 チャンクを先読みする）', () => {
+  const client = fakeClient();
+  const buf = new TfPeriodJitterBuffer({
+    client, datasetRef: 'jp225_tick', windowSecForTf: () => 100, cacheMax: 32, onReady: () => {},
+  });
+
+  const targets = buf.ensure('5m', 250, 260);
+  assert.deepEqual(targets, [100, 200, 300], '既定 prefetch=1（明示注入なしでも前後を取る）');
+});
