@@ -157,16 +157,14 @@ test('recomputeAllApplied honors the skip predicate (revealed instances are not 
   assert.deepEqual(computed, ['b#1'], 'skip 該当は計算しない・非該当は従来どおり');
 });
 
-// ---- 上位足計算は基底キャッシュを使えない（ISSUE-292） ----
+// ---- 上位足計算も基底キャッシュの対象（ISSUE-294） ----
 //
-// 基底は「再生範囲の終端 tEnd で 1 回計算し、以降は時刻でスライスするだけ」＝各バーの値が
-//   リビール時刻に依存しないことを前提にする。上位足の投影ではこの前提が成り立たず、進行中
-//   期間の点には**その期間が終わった後の確定値**が焼き込まれる（スライスは点を捨てるだけ）。
-//   実測（実 UI・5m×1D EMA5(high)・当日 3 本目 t=2026-08-06 22:20 UTC）:
-//     描画 66098.5467 ／ その時点までで計算した値 65797.7001（差 300.85）
-//   よって対象から外し、各バーでその時点の窓で計算する per-step 経路へ回す。
+// ISSUE-292 では対象外にしていた（基底は tEnd で 1 回計算して時刻でスライスするだけであり、
+//   当時の投影は進行中期間の点にその期間終了後の確定値を焼き込んでいたため）。ISSUE-294 で
+//   サーバの返す系列を「各バー τ の点＝τ 時点で計算できた値」＝**時刻不変**へ変えたので、
+//   基底＋スライスの前提が回復した（実測: T を進めても重なり 1238 点すべて不変）。
 
-test('上位足計算のインスタンスは基底キャッシュの対象外（per-step で計算する）', async () => {
+test('上位足計算のインスタンスも基底キャッシュの対象（計算.時間足を載せて 1 回で作る）', async () => {
   const ctrl = newRevealCtrl({
     applied: [
       { instanceId: 'chart#1', indicatorId: 'btlm_trail', variant: 'default',
@@ -182,9 +180,9 @@ test('上位足計算のインスタンスは基底キャッシュの対象外�
 
   await ctrl.buildRevealBase(30, 3);
 
-  assert.equal(ctrl.hasRevealFor('chart#1'), true, 'チャート足は従来どおりキャッシュする');
-  assert.equal(ctrl.hasRevealFor('mtf#1'), false, '上位足を tEnd の値で塗ると未来を表示する');
-  assert.equal(ctrl.revealNeedsBuild(), false, '対象外は「未構築」として再構築を促さない');
-  assert.deepEqual(ctrl._computeCalls.map((r) => r.params.timeframe), ['chart'],
-    '上位足インスタンスへは基底計算を発行しない');
+  assert.equal(ctrl.hasRevealFor('chart#1'), true);
+  assert.equal(ctrl.hasRevealFor('mtf#1'), true, '時刻不変になったのでキャッシュしてよい');
+  const sent = new Map(ctrl._computeCalls.map((r) => [r.params.timeframe, r.computeTimeframe]));
+  assert.equal(sent.get('1D'), '1D', '上位足には計算.時間足を載せて送る');
+  assert.equal(sent.get('chart'), undefined, 'チャート足には載せない（従来ボディ）');
 });
