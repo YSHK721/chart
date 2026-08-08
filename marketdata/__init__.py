@@ -22,8 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# ベンダ非依存なものは eager に公開（dukascopy_python を要求しない）。
-from marketdata.cleaning import repair_ohlc_outliers
+# ベンダ非依存かつ **軽量**（pandas/numpy を要求しない）ものだけを eager に公開する。
 from marketdata.paths import DATA_DIR
 from marketdata.port import Candle, CandleSource
 
@@ -51,9 +50,19 @@ _LAZY = {
     "JP225",
 }
 
+# pandas/numpy を要する名前も同じく遅延 import（ISSUE-261）。
+# 理由: パッケージ ``__init__`` は**サブモジュールを import しただけでも実行される**ため、
+# ここで cleaning を eager に読むと ``import marketdata.tf_ledger``（依存ゼロの台帳）だけでも
+# pandas/numpy がロードされてしまい、「純・stdlib のみ」を宣言する層が台帳を参照できなかった。
+# 公開面（``from marketdata import repair_ohlc_outliers``）は __getattr__ 経由で従来どおり。
+_LAZY_HEAVY = {"repair_ohlc_outliers"}
+
 
 def __getattr__(name: str) -> Any:  # noqa: D401
     if name in _LAZY:
         from marketdata import dukascopy_source  # 遅延: ここで初めて dukascopy_python を要求
         return getattr(dukascopy_source, name)
+    if name in _LAZY_HEAVY:
+        from marketdata import cleaning  # 遅延: ここで初めて pandas/numpy を要求
+        return getattr(cleaning, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

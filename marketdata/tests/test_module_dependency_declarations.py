@@ -25,8 +25,12 @@ _PKG = Path(__file__).resolve().parents[1]
 #: 値は **docstring の宣言と一致していなければならない**。宣言を広げるなら、その理由を
 #: 当該モジュールの docstring へ書いたうえで本表も広げる（片方だけの更新を許さない）。
 _ALLOWED: "dict[str, set[str]]" = {
-    # 純規則層。csv_schema は依存ゼロの定数モジュール（集約対象列の唯一源）。
-    "resample.py": {"pandas", "marketdata.csv_schema"},
+    # 時間足台帳（唯一源）。**依存ゼロ**＝stdlib すら型注釈用の typing のみ。pandas を持ち込むと
+    # 「pandas を使えない純層も同じ台帳から導出する」という分離目的（ISSUE-261）が崩れる。
+    "tf_ledger.py": set(),
+    # 純規則層。csv_schema / tf_ledger はいずれも依存ゼロの定数モジュール
+    # （前者は集約対象列の唯一源・後者は時間足台帳の唯一源）。
+    "resample.py": {"pandas", "marketdata.csv_schema", "marketdata.tf_ledger"},
     # M1 素材化。外れ値方針・CSV スキーマ・末尾読取は marketdata 内の下位部品。
     "tick_m1.py": {
         "pandas",

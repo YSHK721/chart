@@ -5,9 +5,13 @@ DataFrame を当該ルールで OHLC 再集計する :func:`resample_ohlc` を�
 ``dataset.resample_ohlc`` から物理移設した「唯一の規則源」であり、rollup（:mod:`marketdata.rollup`）と
 indicator_ui ``dataset``（薄い再エクスポート）が共通して再利用する（再実装を禁ずる）。
 
-依存方向（厳守）: 本モジュールは **pandas と marketdata.csv_schema のみ** に依存し、indicator_ui を
-逆 import しない（marketdata の循環依存禁止・設計 §4）。``csv_schema`` は依存ゼロの定数モジュールで、
-合算集約する列（volume/up/dn）の唯一源＝ここで列名を書き写さないために参照する。
+依存方向（厳守）: 本モジュールは **pandas / marketdata.csv_schema / marketdata.tf_ledger のみ** に
+依存し、indicator_ui を逆 import しない（marketdata の循環依存禁止・設計 §4）。``csv_schema`` は
+依存ゼロの定数モジュールで、合算集約する列（volume/up/dn）の唯一源＝ここで列名を書き写さない
+ために参照する。``tf_ledger`` も依存ゼロの定数モジュールで、時間足台帳（``TfDescriptor`` /
+``TF_DESCRIPTORS``）の唯一源である。台帳を本モジュールから外へ出したのは、pandas を import できない
+純層（``simulator.usecase.contact_scan``）が台帳を参照できず時間足→秒長の手書き複製を持たざるを
+得なかったため（ISSUE-261）。本モジュールは台帳を**再輸出**するだけで値を持たない。
 
 この宣言は ``marketdata/tests/test_module_dependency_declarations.py`` が **AST 走査で強制**する
 （関数内の遅延 import も対象）。かつて本 docstring は「pandas のみ」と述べていたが実際は
@@ -20,54 +24,23 @@ indicator_ui ``dataset``（薄い再エクスポート）が共通して再利�
 
 from __future__ import annotations
 
-from typing import Any, NamedTuple
+from typing import Any
 
 import pandas as pd
 
 from marketdata import csv_schema as _csv_schema
+from marketdata import tf_ledger as _tf_ledger
 
 # candles の必須 OHLC 列（小文字正規化後）。
 _OHLC_COLUMNS = ("open", "high", "low", "close")
 
 
-class TfDescriptor(NamedTuple):
-    """時間足コードの派生属性を集約した単一台帳エントリ（ISSUE-134 OCP）。
-
-    - ``rule``: pandas resample ルール（``"5min"/"W-FRI"/"ME"`` …・``"1m"`` は None＝無変換）。
-    - ``floorable``: 単純 floor で期間始端を表せるか（日中足・1D=True / 1W・1M=False）。
-    - ``calendar``: セッション日（ブローカー暦日）で集計する上位 tf か（1D/1W/1M=True）。
-    - ``bar_sec``: バー秒長の**名目値**（1W=7日・1M=30日）。窓幅・表示計算用であり、厳密な期間
-      境界は resample/session_day のラベル規約が担う（本値を境界計算に使わない）。
-
-    従来 :data:`TIMEFRAME_RULES`（rule のみ）・:data:`SESSION_TFS`・``tf_meta.NON_FLOORABLE_TF``・
-    ``period_label_naive`` の tf 判定が各所で個別に列挙していた派生属性を本台帳へ集約し、membership
-    set を導出値化する（新カレンダー足追加時は本台帳 1 箇所の追記で全派生値が更新される）。
-    """
-
-    rule: str | None
-    floorable: bool
-    calendar: bool
-    bar_sec: int
-
-
-# 時間足コード → 派生属性台帳（§チャート表示時間選択・1 分足原子）。**唯一の規則源**。
-# 全時間足は 1 分足（原子）を resample して生成する。"1m" は無変換（rule=None＝原子そのもの）。
-# pandas 3 系では分/時は "5min"/"1h"、週は取引週末（金曜ラベル）、月末は "ME"（旧 "M" は廃止）。
-# ここに無いキーはすべて拒否する（is_known_timeframe）。日足ベース dataset（sample/jp225）でも
-# "1D"/"1W"/"1M" は冪等に機能する（同日 1 本の再集計は値不変）。日足未満は日足 dataset には無効
-# （フロントが dataset 別に提示足を制限する）。挿入順は順序依存の消費者（build_tick_rollup 等）が
-# あるため保存する。
-TF_DESCRIPTORS: "dict[str, TfDescriptor]" = {
-    "1m": TfDescriptor(None, True, False, 60),
-    "5m": TfDescriptor("5min", True, False, 300),
-    "15m": TfDescriptor("15min", True, False, 900),
-    "30m": TfDescriptor("30min", True, False, 1800),
-    "1h": TfDescriptor("1h", True, False, 3600),
-    "4h": TfDescriptor("4h", True, False, 14400),
-    "1D": TfDescriptor("1D", True, True, 86400),
-    "1W": TfDescriptor("W-FRI", False, True, 604800),
-    "1M": TfDescriptor("ME", False, True, 2592000),
-}
+# 台帳（TfDescriptor / TF_DESCRIPTORS）は :mod:`marketdata.tf_ledger`（依存ゼロ）が唯一源。
+# 本モジュールは **再輸出**するだけで値を持たない（ISSUE-261: pandas を使えない純層も同じ台帳から
+# 導出できるようにするための分離）。従来 `from marketdata.resample import TF_DESCRIPTORS` を書いて
+# いた消費者は無改変で動く（名前・型・内容・挿入順とも不変）。
+TfDescriptor = _tf_ledger.TfDescriptor
+TF_DESCRIPTORS: "dict[str, TfDescriptor]" = _tf_ledger.TF_DESCRIPTORS
 
 # 時間足コード → pandas resample ルール（台帳からの互換ビュー・dict[str, str|None]）。
 # 既存の外部消費者（``TIMEFRAME_RULES[tf]`` / ``set(TIMEFRAME_RULES)`` / dict 等価比較 / 挿入順反復）を
