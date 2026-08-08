@@ -177,12 +177,17 @@ def _causal_h_window(
     c_all = truncate(compute_port.load_source(request_ref, timeframe), until_time)
     if not h_all or not c_all:
         return None
-    # 進行中 H 期間の始端（＝その足の time）。C 足の最終時刻がどの H 足に属するかで決める。
-    h_bar_time = compute_port.bar_time(compute_tf, int(c_all[-1]["time"]))
+    now = int(c_all[-1]["time"])
+    # 進行中 H 足の **ラベル**（畳んだ足に載せる time）と、**期間の始端**（どの C 足がこの期間に
+    #   属するかの判定）。両者は別物で、セッション足では一致しない（ISSUE-292 実測: 1D の
+    #   t=2026-08-06 22:20 UTC はラベル 08-07 00:00・始端 08-06 21:00）。ラベルで属否を判定すると
+    #   期間前半の C 足が 1 本も選ばれず、形成足が作られないまま確定足だけで計算してしまう。
+    h_bar_time = compute_port.bar_time(compute_tf, now)
+    period_start = compute_port.period_start(compute_tf, now)
     confirmed = [b for b in h_all if int(b["time"]) < h_bar_time]
     if isinstance(limit, int) and limit > 0:
         confirmed = confirmed[-limit:]
-    in_period = [b for b in c_all if int(b["time"]) >= h_bar_time]
+    in_period = [b for b in c_all if int(b["time"]) >= period_start]
     return confirmed, in_period, h_bar_time, c_all
 
 

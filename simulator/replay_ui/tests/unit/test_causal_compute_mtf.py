@@ -1,20 +1,14 @@
-"""上位足計算（計算.時間足）がリプレイでも投影される（ISSUE-287 / ISSUE-291）。
+"""上位足計算（計算.時間足）がリプレイでも投影される（ISSUE-287 / 291 / 292）。
 
-ISSUE-287 で起きていたこと（2026-08-08 実 HTTP で検出）:
-    front は `/compute` へ `computeTimeframe` を送るが、リプレイ core の usecase は
-    それを受け取る口を持たず**無言で捨てて**チャート足で計算していた。同一リクエストで
-    ライブ core は 2 段の階段（日境界）、リプレイ core は 600 段（5m のまま）＝別物。
+ISSUE-287: front が送る `computeTimeframe` をリプレイ core が無言で捨て、チャート足で計算していた。
+ISSUE-291: H 源の**進行中期間の足**をそのまま計算へ入れていた（保存済みロールアップは進行中でも
+    期間全体の OHLC を持つ＝未来混入）。実測 T=2026-08-07 02:00 UTC で日足 high=66700.24 を使用。
+ISSUE-292: 進行中期間に属する C 足の判定を**ラベル**で行っていた。1D はラベル（暦日の UTC 深夜）と
+    期間始端（前日 21:00 UTC）が別物のため、期間の前半（ラベルより前の時刻）に属する C 足が
+    1 本も選ばれず、形成中 H 足が作られないまま確定足だけで計算していた。
 
-ISSUE-291 で起きていたこと（同日・実 UI で検出）:
-    リビール経路は H 源の**進行中期間の足**をそのまま計算へ入れていた。リプレイの H 源
-    （保存済みロールアップ）は進行中期間でも「その期間の全 OHLC」を持つため、リビール T
-    より先の高値・安値・終値＝未来が窓に入っていた。実測（5m×1D EMA5）: 当日 02:00 UTC 時点で
-    日足の high=66700.24 / close=66304.97（当日全体）を使用。足内経路は C 足から畳んだ
-    形成中 H 足を使うため、同じ瞬間に 1128 の段差が出た。
-
-規約はライブ core と同一（`adapter.compute.mtf_projection` が唯一源）で、本 usecase は
-入力を合わせて Port へ渡すだけ。ここでは「確定 H 足＋C から畳んだ進行中 H 足で計算し、
-C の時刻へ投影する」結線を固定する。構造: Arrange-Act-Assert（AAA）。
+本ファイルの Fake はこの**ラベル ≠ 期間始端**を再現する（label = 期間右端の深夜 / start = label-3h）。
+構造: Arrange-Act-Assert（AAA）。
 """
 from __future__ import annotations
 
@@ -23,9 +17,17 @@ from simulator.replay_ui.usecase.causal_compute import CausalComputeRequest, cau
 HOUR = 3600
 DAY = 86400
 
+# C（1h）足。10 日目の期間（始端 10*DAY-3h・ラベル 10*DAY）に属する 2 本は **ラベルより前の時刻**。
+_CHART = [
+    {"time": 9 * DAY - 2 * HOUR, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 1},
+    {"time": 9 * DAY + 1 * HOUR, "open": 1.5, "high": 1.9, "low": 1.2, "close": 1.5, "volume": 1},
+    {"time": 10 * DAY - 2 * HOUR, "open": 2, "high": 3, "low": 1.8, "close": 2.5, "volume": 1},
+    {"time": 10 * DAY - 1 * HOUR, "open": 2.5, "high": 4, "low": 2.4, "close": 3.0, "volume": 2},
+]
+
 
 class _FakePort:
-    """load_source / bar_time / compute / project を記録する Port（実計算に依存しない）。"""
+    """load_source / bar_time / period_start / compute / project を記録する Port。"""
 
     def __init__(self) -> None:
         self.loaded: "list[str | None]" = []
@@ -40,15 +42,19 @@ class _FakePort:
                 {"time": 9 * DAY, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10},
                 {"time": 10 * DAY, "open": 2, "high": 99, "low": 0.1, "close": 50, "volume": 99},
             ]
-        return [
-            {"time": 9 * DAY, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 1},
-            {"time": 9 * DAY + HOUR, "open": 1.5, "high": 1.9, "low": 1.2, "close": 1.5, "volume": 1},
-            {"time": 10 * DAY, "open": 2, "high": 3, "low": 1.8, "close": 2.5, "volume": 1},
-            {"time": 10 * DAY + HOUR, "open": 2.5, "high": 4, "low": 2.4, "close": 3.0, "volume": 2},
-        ]
+        return [dict(b) for b in _CHART]
 
+    # ラベル＝期間の右端の深夜（1D セッション足の実測規約と同型）。
     def bar_time(self, timeframe, unix_sec):
-        return (int(unix_sec) // DAY) * DAY if timeframe == "1D" else int(unix_sec)
+        if timeframe != "1D":
+            return int(unix_sec)
+        return ((int(unix_sec) + 3 * HOUR) // DAY) * DAY
+
+    # 期間始端＝ラベルの 3 時間前（ラベルとは別物であることを固定する）。
+    def period_start(self, timeframe, unix_sec):
+        if timeframe != "1D":
+            return int(unix_sec)
+        return self.bar_time(timeframe, unix_sec) - 3 * HOUR
 
     def compute(self, indicator, variant, mode, bars, params):
         self.computed_bars.append([dict(b) for b in bars])
@@ -77,8 +83,21 @@ def test_compute_timeframe_computes_on_h_and_projects_onto_chart_times():
     assert [b["time"] for b in port.computed_bars[0]] == [9 * DAY, 10 * DAY], "計算は H の時間軸"
     chart_times, tf = port.projected[0]
     assert tf == "1D"
-    assert chart_times == [9 * DAY, 9 * DAY + HOUR, 10 * DAY, 10 * DAY + HOUR], "投影先は C のバー時刻"
+    assert chart_times == [b["time"] for b in _CHART], "投影先は C のバー時刻"
     assert [p["time"] for p in out[0]["data"]] == chart_times, "応答の時刻は C の時間軸"
+
+
+def test_in_progress_period_is_decided_by_period_start_not_by_the_label():
+    """ラベルより前の時刻に属する C 足も進行中期間として畳む（ISSUE-292）。"""
+    port = _FakePort()
+
+    causal_compute(request=_req(compute_timeframe="1D"), compute_port=port)
+
+    forming_h = port.computed_bars[0][-1]
+    assert forming_h["time"] == 10 * DAY, "畳んだ足に載せる time は期間のラベル"
+    assert forming_h["open"] == 2, "始端(10*DAY-3h)以降の最初の C 足の open"
+    assert forming_h["high"] == 4 and forming_h["low"] == 1.8 and forming_h["close"] == 3.0, (
+        "ラベルで属否を判定すると C 足が 1 本も選ばれず、この足自体が作られない")
 
 
 def test_in_progress_h_bar_is_folded_from_chart_bars_not_taken_from_the_source():
@@ -88,10 +107,7 @@ def test_in_progress_h_bar_is_folded_from_chart_bars_not_taken_from_the_source()
     causal_compute(request=_req(compute_timeframe="1D"), compute_port=port)
 
     forming_h = port.computed_bars[0][-1]
-    assert forming_h["time"] == 10 * DAY, "進行中 H 足の time は当該期間"
     assert forming_h["high"] != 99 and forming_h["close"] != 50, "データ由来の未来入り足を使っている"
-    assert forming_h["open"] == 2, "open は当該 H 期間の最初の C 足の open"
-    assert forming_h["high"] == 4 and forming_h["low"] == 1.8 and forming_h["close"] == 3.0
     assert port.computed_bars[0][0]["high"] == 2, "確定 H 足は源のまま残る"
 
 
@@ -99,15 +115,14 @@ def test_causality_is_kept_for_both_timeframes():
     """H・C とも untilTime で切る（リビール T より先の足を計算へ入れない）。"""
     port = _FakePort()
 
-    causal_compute(request=_req(compute_timeframe="1D", until_time=10 * DAY),
+    causal_compute(request=_req(compute_timeframe="1D", until_time=10 * DAY - 2 * HOUR),
                    compute_port=port)
 
-    times = [b["time"] for b in port.computed_bars[0]]
-    assert times == [9 * DAY, 10 * DAY], "H が T で切られていない"
+    assert [b["time"] for b in port.computed_bars[0]] == [9 * DAY, 10 * DAY], "H が T で切られていない"
     forming_h = port.computed_bars[0][-1]
     assert forming_h["high"] == 3 and forming_h["close"] == 2.5, "T までの C 足だけで畳む"
     chart_times, _ = port.projected[0]
-    assert chart_times == [9 * DAY, 9 * DAY + HOUR, 10 * DAY], "C も T で切られる"
+    assert chart_times == [b["time"] for b in _CHART[:3]], "C も T で切られる"
 
 
 def test_no_projection_when_compute_timeframe_is_absent_or_chart():
@@ -124,7 +139,7 @@ def test_empty_chart_window_returns_no_series():
     """C が空（T より前のバーが無い）なら計算も投影もせず空を返す。"""
     port = _FakePort()
 
-    out = causal_compute(request=_req(compute_timeframe="1D", until_time=9 * DAY - 1),
+    out = causal_compute(request=_req(compute_timeframe="1D", until_time=9 * DAY - 3 * HOUR),
                          compute_port=port)
 
     assert out == []

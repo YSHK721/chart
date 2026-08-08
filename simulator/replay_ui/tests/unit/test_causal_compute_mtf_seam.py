@@ -29,8 +29,8 @@ DAY = 86400
 #: 進行中 H 期間（10 日目）の C 足。最後の 1 本がリビール時点の足。
 _CHART_BARS = [
     {"time": 9 * DAY, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 1},
-    {"time": 10 * DAY, "open": 2, "high": 3, "low": 1.8, "close": 2.5, "volume": 1},
-    {"time": 10 * DAY + HOUR, "open": 2.5, "high": 4, "low": 2.4, "close": 3.0, "volume": 2},
+    {"time": 10 * DAY - 2 * HOUR, "open": 2, "high": 3, "low": 1.8, "close": 2.5, "volume": 1},
+    {"time": 10 * DAY - HOUR, "open": 2.5, "high": 4, "low": 2.4, "close": 3.0, "volume": 2},
 ]
 
 
@@ -47,8 +47,16 @@ class _Port:
             ]
         return [dict(b) for b in _CHART_BARS]
 
+    # ラベル＝期間の右端の深夜／始端＝その 3 時間前（1D セッション足と同型・ISSUE-292）。
     def bar_time(self, timeframe, unix_sec):
-        return (int(unix_sec) // DAY) * DAY if timeframe == "1D" else int(unix_sec)
+        if timeframe != "1D":
+            return int(unix_sec)
+        return ((int(unix_sec) + 3 * HOUR) // DAY) * DAY
+
+    def period_start(self, timeframe, unix_sec):
+        if timeframe != "1D":
+            return int(unix_sec)
+        return self.bar_time(timeframe, unix_sec) - 3 * HOUR
 
     def compute(self, indicator, variant, mode, bars, params):
         self.windows.append([dict(b) for b in bars])
@@ -61,7 +69,7 @@ class _Port:
 
 def test_reveal_and_intrabar_paths_build_the_same_h_window():
     """足内の最終スナップショット＝確定した C 足のとき、両経路の窓は完全一致する。"""
-    until = 10 * DAY + HOUR
+    until = 10 * DAY - HOUR
     reveal_port, seq_port = _Port(), _Port()
 
     causal_compute(
@@ -87,7 +95,7 @@ def test_reveal_path_does_not_see_beyond_the_reveal_time():
     causal_compute(
         request=CausalComputeRequest(
             indicator="moving_averages", variant="default", ref="jp225_tick", timeframe="1h",
-            limit=None, until_time=10 * DAY, mode=None, forming=None, params={},
+            limit=None, until_time=10 * DAY - 2 * HOUR, mode=None, forming=None, params={},
             compute_timeframe="1D"),
         compute_port=reveal_port)
 
