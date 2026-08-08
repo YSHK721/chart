@@ -4699,6 +4699,13 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **実 UI 検証（8000）**: 凡例チップが最初から `is-open`、行の子要素が `name / eye / gear / remove / values` の順であることを実測。画像 `legend-open-name-settings-value.png`。
 - **回帰**: フロント 4 スイート 1,828 件 passed。
 
+### 表示/非表示アイコンの変更（2026-08-08・依頼者指示「目がリアルすぎる」）
+- **変更**: 絵文字 `👁`／`🙈` を単色の図形 **`●`（表示中）／`○`（非表示）** へ置換。状態は「塗り／抜き」だけで表し、色は CSS が持つ（コードで色を決めない）。他の操作（`⚙` / `✕` / `∿` / `▷` / `❚❚`）と同じ記号系に揃う。
+- **併せて是正**: クラス名 `pane-legend-eye` → `pane-legend-visibility`（実体が目でなくなったため。名前と実体の乖離を残さない）。CSS 側に当該クラスの規則は無く（`.pane-legend-row button` の共通規則のみ）、影響は JS と検定のみ。
+- **適用範囲**: ペイン別凡例（`pane_legend_view.js`）と旧凡例（`indicator_legend_view.js`）の両方。同一概念に 2 つの見た目を作らない。
+- **実 UI 検証（8000・実クリック）**: 既定 `●`／title「非表示にする」→ クリックで `○`／「表示する」・行が減光 → 再クリックで `●` へ復帰。行の並びは `name / visibility / gear / remove / values` のまま。画像 `legend-visibility-glyph.png`。
+- **回帰**: フロント 4 スイート 1,831 件 passed。
+
 ## ISSUE-277: [設計是正・実測] 表示要素を index.html へ直書きしていたため、実配信ページ（unified_ui）の取り残しでペイン別凡例が全滅した（2026-08-06）
 - **ステータス**: RESOLVED（2026-08-06・worktree-feat+pane-legend）
 - **重大度**: High（ISSUE-276 の成果物が実配信 UI で 1 つも表示されない＝機能が届いていない）

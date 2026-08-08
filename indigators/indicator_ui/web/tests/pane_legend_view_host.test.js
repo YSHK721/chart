@@ -132,7 +132,7 @@ test('行の並びは 指標名 → 設定（目/歯車/×）→ 値', () => {
   const row = rows.children[0];
   assert.deepEqual(
     row.children.map((c) => c.className),
-    ['pane-legend-name', 'pane-legend-eye', 'pane-legend-gear', 'pane-legend-remove', 'pane-legend-values'],
+    ['pane-legend-name', 'pane-legend-visibility', 'pane-legend-gear', 'pane-legend-remove', 'pane-legend-values'],
   );
 });
 
