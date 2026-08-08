@@ -14,6 +14,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// ISSUE-260: VA 比率の既定は Python 唯一源の生成物（テストも第 2 定義を持たない）。
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 
 import {
   DwellAccumulator,
@@ -45,7 +47,7 @@ function makeAcc(baseFine) {
     priceMin: 1000,
     priceMax: 1100,
     nBins: 10,
-    gridW: 10,
+    gridW: 10, vaPct: VA_PCT_DEFAULT,
     formingStart: DAY0 + 7200,
   });
   return acc;
@@ -106,7 +108,7 @@ test('init resets the forming accumulation (rollover)', () => {
     baseFine: new Array(10).fill(0),
     baseKmin: 100,
     activeTable: ALL_ACTIVE,
-    priceMin: 1000, priceMax: 1100, nBins: 10, gridW: 10, formingStart: DAY0 + 10800,
+    priceMin: 1000, priceMax: 1100, nBins: 10, gridW: 10, vaPct: VA_PCT_DEFAULT, formingStart: DAY0 + 10800,
   });
   const snap = acc.snapshot();
   // Assert: forming が全リセット（base のみ＝ゼロ）
@@ -232,7 +234,7 @@ test('snapshot matches mp_core fine-grid golden for a wide, misaligned range (no
     baseFine: new Array(11).fill(0), // fine grid size = floor(1105/10)-floor(1005/10)+1 = 11
     baseKmin: 100,
     activeTable: ALL_ACTIVE,
-    priceMin: 1005, priceMax: 1105, nBins: 6, gridW: 10, formingStart: DAY0 + 7200,
+    priceMin: 1005, priceMax: 1105, nBins: 6, gridW: 10, vaPct: VA_PCT_DEFAULT, formingStart: DAY0 + 7200,
   });
   // 同一活発時内(hr2)の 8 tick。dwell=gap（末尾=0）。価格は fine/display で帰属 bin が食い違う配置。
   const wideTicks = [
@@ -276,7 +278,7 @@ test('empty base + forming-derived session range grows a non-empty profile (no c
   const derived = new DwellAccumulator();
   derived.init({
     baseFine: new Array(size).fill(0), baseKmin, activeTable: ALL_ACTIVE,
-    priceMin, priceMax, nBins: 60, gridW, formingStart: DAY_1D,
+    priceMin, priceMax, nBins: 60, gridW, vaPct: VA_PCT_DEFAULT, formingStart: DAY_1D,
   });
   // 当日 forming tick（活発秒 gap を持つよう時刻を進める）。mid は当日レンジ全域。
   const n = 20;
@@ -288,7 +290,7 @@ test('empty base + forming-derived session range grows a non-empty profile (no c
   const degenerate = new DwellAccumulator();
   degenerate.init({
     baseFine: [0], baseKmin: 0, activeTable: ALL_ACTIVE,
-    priceMin: 0, priceMax: 1, nBins: 60, gridW, formingStart: DAY_1D,
+    priceMin: 0, priceMax: 1, nBins: 60, gridW, vaPct: VA_PCT_DEFAULT, formingStart: DAY_1D,
   });
   // Act
   for (const [sec, mid] of ticks) {

@@ -12,11 +12,13 @@ import { ReplayMarketProfileActor } from '../js/adapter/front/replay_market_prof
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
 import { buildMarketProfileUrl, MP_TO_LATEST } from '../js/adapter/front/market_profile_client.js';
 import { buildFormingUrl } from '../js/adapter/front/market_profile_forming_client.js';
+// ISSUE-260: VA 比率の既定は Python 唯一源の生成物（テストも第 2 定義を持たない）。
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 
 const BASE_FULL = {
   ok: true, formingStart: 1000, ticks: [],
   baseFine: [0, 0, 0], baseKmin: 100, activeTable: [[1]], priceMin: 1000, priceMax: 1100,
-  nBins: 3, gridW: 10, now: 1030,
+  nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 1030,
 };
 
 function fakePrimitive() {

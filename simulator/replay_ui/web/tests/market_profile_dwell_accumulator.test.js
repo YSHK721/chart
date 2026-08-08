@@ -10,12 +10,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// ISSUE-260: VA 比率の既定は Python 唯一源の生成物（テストも第 2 定義を持たない）。
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 
 import {
   DwellAccumulator,
   activeSeconds,
   valueArea,
-  VA_PCT,
 } from '../js/domain/market_profile_dwell_accumulator.js';
 
 // 参照実装（present-mode・indicator_ui）を直接 import して数値一致を実証する。
@@ -43,7 +44,7 @@ function makeCfg(baseFine, extra = {}) {
     priceMin: 1000,
     priceMax: 1100,
     nBins: 10,
-    gridW: 10,
+    gridW: 10, vaPct: VA_PCT_DEFAULT,
     formingStart: DAY0 + 7200,
     ...extra,
   };
@@ -73,7 +74,7 @@ test('ported accumulator matches the present reference across wide/misaligned ra
   // Arrange: wide/misaligned レンジ・非ゼロ base の別シナリオでも一致すること。
   const cfg = {
     baseFine: [3, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0], baseKmin: 100, activeTable: ALL_ACTIVE,
-    priceMin: 1005, priceMax: 1105, nBins: 6, gridW: 10, formingStart: DAY0 + 7200,
+    priceMin: 1005, priceMax: 1105, nBins: 6, gridW: 10, vaPct: VA_PCT_DEFAULT, formingStart: DAY0 + 7200,
   };
   const wideTicks = [
     [DAY0 + 7200, 1006], [DAY0 + 7260, 1034], [DAY0 + 7300, 1039], [DAY0 + 7380, 1061],
@@ -88,7 +89,7 @@ test('ported accumulator matches the present reference across wide/misaligned ra
   assert.deepEqual(ported.snapshot(), ref.snapshot());
 });
 
-test('ported activeSeconds / valueArea / VA_PCT equal the present reference exports', () => {
+test('ported activeSeconds / valueArea equal the present reference exports', () => {
   // Arrange
   const table = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => true));
   table[0][3] = false;
@@ -98,8 +99,14 @@ test('ported activeSeconds / valueArea / VA_PCT equal the present reference expo
   const tpo = [100, 50, 50, 50, 10];
   // Act / Assert
   assert.equal(activeSeconds(a, b, table), refActiveSeconds(a, b, table));
-  assert.deepEqual(valueArea(centers, tpo, VA_PCT), refValueArea(centers, tpo, VA_PCT));
-  assert.equal(VA_PCT, 0.70);
+  assert.deepEqual(
+    valueArea(centers, tpo, VA_PCT_DEFAULT), refValueArea(centers, tpo, VA_PCT_DEFAULT),
+  );
+  // ISSUE-260: 既定比率は Python 唯一源（生成物）。比率そのものは domain が所有しない
+  //   （init({vaPct}) で注入されるサーバ解決値に従う）ため、ここでは注入値で一致を見る。
+  assert.deepEqual(
+    valueArea(centers, tpo, 0.45), refValueArea(centers, tpo, 0.45),
+  );
 });
 
 // --- ② mp_core 数値一致（POC/VA/units/形の golden） ---
@@ -205,7 +212,7 @@ test('snapshot matches mp_core fine-grid golden for a wide, misaligned range (no
   const acc = new DwellAccumulator();
   acc.init({
     baseFine: new Array(11).fill(0), baseKmin: 100, activeTable: ALL_ACTIVE,
-    priceMin: 1005, priceMax: 1105, nBins: 6, gridW: 10, formingStart: DAY0 + 7200,
+    priceMin: 1005, priceMax: 1105, nBins: 6, gridW: 10, vaPct: VA_PCT_DEFAULT, formingStart: DAY0 + 7200,
   });
   const wideTicks = [
     [DAY0 + 7200, 1006], [DAY0 + 7260, 1034], [DAY0 + 7300, 1039], [DAY0 + 7380, 1061],

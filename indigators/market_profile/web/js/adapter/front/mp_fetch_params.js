@@ -44,6 +44,13 @@ export class MpFetchParams {
     return this._params.src ?? null;
   }
 
+  // 現在の va（バリューエリア比率・未設定は null）。ISSUE-260: composition root が tf-period 列へ
+  //   透過する（`/market_profile` だけが設定を反映し、列は既定比率のまま固定という不一致を解消）。
+  //   null は「載せない」＝サーバ既定（Python 唯一源）へ委ねる意味（front に第 2 定義を作らない）。
+  va() {
+    return this._params.va ?? null;
+  }
+
   // 現在有効な barw（レンジ pt）。resmode='range' のときのみ値を持ち、それ以外は null。
   //
   // ISSUE-054: 「レンジ」は日別プロファイルの解像度としてユーザーが設定する値だが、日別描画を

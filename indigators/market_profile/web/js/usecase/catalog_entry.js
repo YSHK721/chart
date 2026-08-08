@@ -23,6 +23,9 @@ import {
 } from '../domain/mp_source_capability.js';
 // 表示モードの宣言的属性（splitByDay/isNormal）の単一台帳（ISSUE-134 OCP）。
 import { mpDisplayMode } from '../domain/mp_display_mode.js';
+// パラメータ既定値の生成物（Python 唯一源 market_profile.VA_PCT_DEFAULT からの写像・ISSUE-260）。
+//   ここに数値を書くと backend と独立に動く第 2 定義になる（本 ISSUE の原因の 1 つ）。
+import { VA_PCT_DEFAULT } from '../domain/mp_param_defaults_generated.js';
 
 // tf-period が日別列を描く対応 tf は「台帳が知っている全時間足」＝ TF_CODES（ISSUE-278 #12）。
 //   ISSUE-070／ISSUE-086: 1W/1M もセッション日次ロールアップのバケット列として対応する
@@ -126,8 +129,10 @@ export function makeMarketProfileDef({
           conditionalVisible: _mpResolutionEnabled,
           tooltip: '価格帯 1 行の幅を価格比（bp=0.01%）で指定。1bp が下限（zp の計算格子）。値を小さくするほど精細・大きくするほど滑らか。旧「ビン/レンジ(pt)」を置換（絶対値指定は価格水準で意味が変わるため比率へ統一）',
         }),
-      // va: バリューエリア比率（FLOAT・既定0.70・0<va<1 RANGE_OPEN）。
-      param('va', ParamType.FLOAT, 0.70, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
+      // va: バリューエリア比率（FLOAT・既定は Python 唯一源の生成物・0<va<1 RANGE_OPEN）。
+      //   ISSUE-260: 全プロファイル生成経路（/market_profile・/tf_period_profile・増分成長）へ
+      //   届く。かつては tf-period 列と増分成長に届かず既定比率へ固定されていた（効かないツマミ）。
+      param('va', ParamType.FLOAT, VA_PCT_DEFAULT, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
       // limit（対象本数）param は削除済＝MP は常に全期間集計（backend は limit 省略時＝全件集計）。
       // src: 集計原子（ENUM・既定 zp=超過占有 z(p)〔依頼者指示 2026-07-12 で candle から昇格〕/
       //   dwell=実ティック滞在 / m1=tick数 /

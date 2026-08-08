@@ -10,8 +10,11 @@ export class TfPeriodProfileActor {
   // renderer（任意）: candle 透明化の書き手（setCandleTransparency）。tf-period 列を描く日別モードでは、
   //   MarketProfileActor が透明化を本 actor へ委ねる（初回の日別タイルちらつき防止・ISSUE-055）。本 actor は
   //   「列が実際に描けたら透明化 true・無効化で false」を担い、列が来るまで candle を可視のままにして空白を防ぐ。
-  // getSrc（任意）: 集計方式（null=従来 min-unit カウント / 'zp'=超過占有）を返す関数。未注入は
-  //   常に null＝既存挙動不変。src は jitter buffer の ensure へ透過され、変更時はキャッシュ破棄される。
+  // getQuery（任意・ISSUE-260）: 取得パラメータ ``{src, va}`` を返す関数。
+  //   src=集計方式（null=従来 min-unit カウント / 'zp'=超過占有）／va=バリューエリア比率。
+  //   未注入は常に空＝サーバ既定（既存挙動不変）。jitter buffer の ensure へ透過され、変更時は
+  //   キャッシュ破棄→再取得になる。かつて src だけを渡していたため、UI の「バリューエリア」を
+  //   変えても日別プロファイル列の VA が動かなかった（ISSUE-260）。
   // readyTimeoutMs（任意・既定 800ms）: ISSUE-069「揃ってから一括表示」の上限タイムアウト。可視範囲の
   //   全チャンクが ready になるまで描画を保留し、揃った時点で 1 回だけ一括描画する。時間内に揃わない
   //   場合は上限到達で現時点 ready 分を描く（永久保留の防止）。setTimeout/clearTimeout は注入可（テスト用）。
@@ -21,7 +24,7 @@ export class TfPeriodProfileActor {
   // liveMinIntervalMs（任意・既定 5000ms）: ISSUE-083 ライブ育成の再取得 throttle（live tick は数秒周期で
   //   届くため、当日チャンク再取得の連打を抑える）。nowMsFn は注入可（テスト用・既定 Date.now）。
   constructor({
-    jitterBuffer, primitive, getTimeframe, getVisibleRange, renderer, getSrc, getCandles,
+    jitterBuffer, primitive, getTimeframe, getVisibleRange, renderer, getQuery, getCandles,
     readyTimeoutMs = 800, setTimeoutFn, clearTimeoutFn,
     liveMinIntervalMs = 5000, nowMsFn,
   }) {
@@ -30,7 +33,7 @@ export class TfPeriodProfileActor {
     this._getTimeframe = getTimeframe;
     this._getVisibleRange = getVisibleRange;
     this._renderer = renderer ?? null;
-    this._getSrc = typeof getSrc === 'function' ? getSrc : () => null;
+    this._getQuery = typeof getQuery === 'function' ? getQuery : () => null;
     this._getCandles = typeof getCandles === 'function' ? getCandles : () => [];
     this._enabled = false;
     this._readyTimeoutMs = readyTimeoutMs;
@@ -83,7 +86,7 @@ export class TfPeriodProfileActor {
     const tf = this._getTimeframe();
     const r = this._getVisibleRange ? this._getVisibleRange() : null;
     if (!r || r.from == null || r.to == null || !(r.from < r.to)) return;
-    this._buf.ensure(tf, r.from, r.to, this._getSrc());
+    this._buf.ensure(tf, r.from, r.to, this._getQuery());
     this._schedule(r.from, r.to);
   }
 

@@ -6,6 +6,30 @@
 //   （＝スクロールで到達する頃には既に手元にある＝待ち時間ゼロ）。純粋寄り: client/now は注入（DOM/実時間非依存）。
 //
 // tf 変更でキャッシュ全消去（列の意味が変わる）。列は時刻キーで重複排除して返す。
+//
+// 取得パラメータ（ISSUE-260）: src（集計方式）と va（バリューエリア比率）は**列の内容を変える**ため
+//   キャッシュ同一性の一部である。両者は 1 つの「取得パラメータ」オブジェクトとして受け、正規化・
+//   キー比較・URL 引数化を各 1 箇所に閉じる。かつては src だけがスカラ引数で 5 箇所（保持・比較・
+//   ensure の spread・refreshAt の spread・stale 照合）に散っており、2 つ目（va）を同じ形で足すと
+//   同型コードの複製になる＝取り残しが必ず出る（ISSUE-054 と同型の「一部にしか効かない」事故）。
+
+//: 取得パラメータの正規化（未指定は null）。ここが受理キーの単一情報源。
+function _normalizeQuery(q) {
+  return { src: q?.src ?? null, va: q?.va ?? null };
+}
+
+//: キャッシュ同一性の比較キー（値の組を 1 つの文字列へ）。
+function _queryKey(q) {
+  return `${q.src ?? ''}|${q.va ?? ''}`;
+}
+
+//: client.fetchWindow へ渡す引数（null は載せない＝従来 URL byte 不変）。
+function _queryArgs(q) {
+  return {
+    ...(q.src != null ? { src: q.src } : {}),
+    ...(q.va != null ? { va: q.va } : {}),
+  };
+}
 
 export class TfPeriodJitterBuffer {
   constructor({
@@ -29,7 +53,8 @@ export class TfPeriodJitterBuffer {
     this._cacheMax = cacheMax;
     this._onReady = typeof onReady === 'function' ? onReady : null;
     this._tf = null;
-    this._src = null;           // 集計方式（null=従来 min-unit カウント / 'zp'=超過占有）。変更で破棄。
+    // 取得パラメータ（src=集計方式 / va=バリューエリア比率）。変更でキャッシュ破棄。
+    this._query = _normalizeQuery(null);
     this._unit = null;
     this._chunks = new Map();   // chunkStart(sec) -> { state:'loading'|'ready', columns:[] }
     this._lru = [];             // chunkStart の使用順（末尾=最新）。
@@ -63,32 +88,33 @@ export class TfPeriodJitterBuffer {
     }
   }
 
-  // tf または src 変更でキャッシュを破棄する（列の意味が変わるため再利用不可）。
+  // tf または取得パラメータ（src/va）変更でキャッシュを破棄する（列の意味が変わるため再利用不可）。
   //   併せて実効チャンク幅 this._windowSec を tf から再導出する（tf 連動窓）。初回（null→tf）でも走る。
-  //   src 未指定（undefined）は null に正規化＝従来呼び出し（ensure(tf, from, to)）の挙動不変。
-  _resetIfKeyChanged(tf, src = null) {
-    const s = src ?? null;
-    if (tf !== this._tf || s !== this._src) {
+  //   未指定（undefined）は null に正規化＝従来呼び出し（ensure(tf, from, to)）の挙動不変。
+  _resetIfKeyChanged(tf, query = null) {
+    const q = _normalizeQuery(query);
+    if (tf !== this._tf || _queryKey(q) !== _queryKey(this._query)) {
       this._tf = tf;
-      this._src = s;
+      this._query = q;
       this._windowSec = this._resolveWindowSec(tf);
       this._unit = null;
       this._chunks.clear();
       this._lru = [];
-      this._refreshing.clear(); // 進行中 refreshAt の応答は取得後の tf/src 照合で破棄される。
+      this._refreshing.clear(); // 進行中 refreshAt の応答は取得後の tf/取得パラメータ照合で破棄される。
     }
   }
 
-  async _fetchChunk(tf, cs, src = null) {
+  async _fetchChunk(tf, cs, query = null) {
     if (this._chunks.has(cs)) return; // 取得済み/取得中は再取得しない。
+    const q = _normalizeQuery(query);
     this._chunks.set(cs, { state: 'loading', columns: [] });
     this._touch(cs);
     const res = await this._client.fetchWindow({
       datasetRef: this._datasetRef, timeframe: tf, from: cs, to: cs + this._windowSec,
-      ...(src != null ? { src } : {}),
+      ..._queryArgs(q),
     });
-    // tf/src が取得中に変わっていたら破棄（stale）。
-    if (tf !== this._tf || (src ?? null) !== this._src) return;
+    // tf/取得パラメータが取得中に変わっていたら破棄（stale）。
+    if (tf !== this._tf || _queryKey(q) !== _queryKey(this._query)) return;
     if (res) {
       if (this._unit == null && Number.isFinite(res.unit)) this._unit = res.unit;
       this._chunks.set(cs, { state: 'ready', columns: res.columns || [] });
@@ -102,8 +128,9 @@ export class TfPeriodJitterBuffer {
 
   // 可視レンジ [from, to] を満たすチャンクを確保し（先読み含む）、ready チャンクの取得を発火する。
   //   返り値は「発火した/確保対象の chunkStart 昇順配列」（テスト・監視用）。実データは getColumns で取る。
-  ensure(tf, from, to, src = null) {
-    this._resetIfKeyChanged(tf, src);
+  //   query（ISSUE-260）: 取得パラメータ ``{src, va}``（省略・null は「サーバ既定に委ねる」）。
+  ensure(tf, from, to, query = null) {
+    this._resetIfKeyChanged(tf, query);
     const first = this._chunkStart(from);
     const last = this._chunkStart(to);
     const targets = [];
@@ -117,7 +144,7 @@ export class TfPeriodJitterBuffer {
         this._touch(cs);
       } else {
         // 背後で取得（await しない＝先読み・スクロール前に埋める）。失敗は握りつぶす。
-        this._fetchChunk(tf, cs, src ?? null).catch(() => {});
+        this._fetchChunk(tf, cs, query).catch(() => {});
       }
     }
     this._evict();
@@ -140,14 +167,14 @@ export class TfPeriodJitterBuffer {
     }
     this._refreshing.add(cs);
     const tf = this._tf;
-    const src = this._src;
+    const q = this._query;
     try {
       const res = await this._client.fetchWindow({
         datasetRef: this._datasetRef, timeframe: tf, from: cs, to: cs + this._windowSec,
-        ...(src != null ? { src } : {}),
+        ..._queryArgs(q),
       });
-      // tf/src が取得中に変わっていたら破棄（stale・キャッシュは既に消えている）。
-      if (tf !== this._tf || src !== this._src) {
+      // tf/取得パラメータが取得中に変わっていたら破棄（stale・キャッシュは既に消えている）。
+      if (tf !== this._tf || _queryKey(q) !== _queryKey(this._query)) {
         return false;
       }
       if (!res) {
@@ -163,9 +190,9 @@ export class TfPeriodJitterBuffer {
       }
       return true;
     } finally {
-      // ISSUE-088 🔵-2: 取得中に tf/src が変わった場合、_refreshing は _resetIfKeyChanged が
+      // ISSUE-088 🔵-2: 取得中に tf/取得パラメータが変わった場合、_refreshing は _resetIfKeyChanged が
       //   clear 済み＝新世代の同一 chunkStart エントリを誤削除しない（世代照合）。
-      if (tf === this._tf && src === this._src) {
+      if (tf === this._tf && _queryKey(q) === _queryKey(this._query)) {
         this._refreshing.delete(cs);
       }
     }

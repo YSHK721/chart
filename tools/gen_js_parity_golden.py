@@ -26,7 +26,8 @@ from marketdata import session_day as sd  # noqa: E402
 from marketdata import resample  # noqa: E402
 from marketdata import tf_meta  # noqa: E402
 # ISSUE-091 A7: private 名でなく公開 API（value_area）を参照する。
-from market_profile_api.compute.market_profile import value_area  # noqa: E402
+# ISSUE-260: VA 比率の既定は Python 唯一源。JS は生成物として読む（第 2 定義を作らない）。
+from market_profile_api.compute.market_profile import VA_PCT_DEFAULT, value_area  # noqa: E402
 
 OUT = ROOT / "indigators" / "market_profile" / "web" / "tests" / "fixtures" / "py_parity_golden.json"
 #: 時間足台帳の JS 生成物（実体は market_profile 側・indicator_ui からは symlink で共有）。
@@ -34,6 +35,9 @@ JS_OUT = ROOT / "indigators" / "market_profile" / "web" / "js" / "domain" / "tf_
 #: MP ソース能力の JS 生成物（zp 対応 tf。Python の配信 controller が唯一源）。
 MP_CAP_OUT = (ROOT / "indigators" / "market_profile" / "web" / "js" / "domain"
               / "mp_capability_generated.js")
+#: MP パラメータ既定値の JS 生成物（VA 比率。Python の compute が唯一源・ISSUE-260）。
+MP_PARAM_OUT = (ROOT / "indigators" / "market_profile" / "web" / "js" / "domain"
+                / "mp_param_defaults_generated.js")
 
 
 def _utc(y, m, d, hh=0, mm=0, ss=0):
@@ -64,6 +68,8 @@ def session_cases() -> list[int]:
 
 
 def value_area_cases() -> list[dict]:
+    # ISSUE-260: 既定比率（0.70）以外でも Python↔JS の VA が一致することを固定する。
+    #   既定でしか検定していないと「比率が届いていない／写しがずれている」を検出できない。
     cases = [
         # 整数 TPO（count 系）。
         {"centers": [1.0, 2.0, 3.0, 4.0, 5.0], "tpo": [1, 3, 8, 2, 1], "pct": 0.70},
@@ -74,6 +80,12 @@ def value_area_cases() -> list[dict]:
         {"centers": [1.0, 2.0, 3.0, 4.0, 5.0], "tpo": [0.1, 0.2, 5.0, 0.3, 0.1], "pct": 0.70},
         {"centers": [1.0, 2.0, 3.0, 4.0], "tpo": [0.0, 0.0, 2.5, 0.5], "pct": 0.70},
         {"centers": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "tpo": [2.2, 0.4, 3.1, 3.1, 0.2, 1.9], "pct": 0.70},
+        # 非既定比率（ISSUE-260）: 同一分布・異なる pct で拡張幅が変わることまで含めて固定する。
+        {"centers": [1.0, 2.0, 3.0, 4.0, 5.0], "tpo": [1, 3, 8, 2, 1], "pct": 0.30},
+        {"centers": [1.0, 2.0, 3.0, 4.0, 5.0], "tpo": [1, 3, 8, 2, 1], "pct": 0.55},
+        {"centers": [1.0, 2.0, 3.0, 4.0, 5.0], "tpo": [1, 3, 8, 2, 1], "pct": 0.95},
+        {"centers": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "tpo": [2.2, 0.4, 3.1, 3.1, 0.2, 1.9], "pct": 0.45},
+        {"centers": [10.0, 11.0, 12.0, 13.0], "tpo": [0.9, 0.9, 0.9, 0.9], "pct": 0.99},
     ]
     out = []
     for c in cases:
@@ -189,6 +201,23 @@ def render_mp_capability_js(zp_tfs: "tuple[str, ...]") -> str:
     )
 
 
+def render_mp_param_defaults_js(va_pct_default: float) -> str:
+    """MP パラメータ既定値の JS モジュール（データのみ・自動生成）を組み立てる。"""
+    return (
+        "// mp_param_defaults_generated.js — MP パラメータ既定値（**自動生成・手で編集しない**）。\n"
+        "//\n"
+        "// 生成元: market_profile_api/compute/market_profile.py の VA_PCT_DEFAULT。\n"
+        "// 生成器: tools/gen_js_parity_golden.py（既定変更時に再実行する）。\n"
+        "//\n"
+        "// なぜ生成物なのか（ISSUE-260）: バリューエリア比率という 1 つの業務パラメータの\n"
+        "//   決定権が UI・controller・compute・front domain の 4 面に分散し、`/market_profile` の\n"
+        "//   非増分 refresh 以外は UI をどう操作しても 0.70 のままだった（＝効かないツマミ）。\n"
+        "//   定義は Python ただ 1 つとし、JS は生成された値を読むだけにする。実効値（要求ごとの\n"
+        "//   解決結果）はサーバ応答（/market_profile_forming の vaPct）に従う。\n"
+        f"export const VA_PCT_DEFAULT = {va_pct_default!r};\n"
+    )
+
+
 def main() -> None:
     sessions = [
         {
@@ -212,6 +241,9 @@ def main() -> None:
         "zp_supported_tfs": list(_zp_supported_tfs()),
         # 形成中バー畳み込みの Python↔JS 一致（ISSUE-272）。
         "forming_fold": forming_fold_cases(),
+        # VA 比率の既定（ISSUE-260）。JS 側の生成物（mp_param_defaults_generated.js）と catalog の
+        #   param 既定がこの値から乖離したら parity 検定で落とす。
+        "va_pct_default": VA_PCT_DEFAULT,
         "value_area": value_area_cases(),
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -221,6 +253,8 @@ def main() -> None:
     print(f"wrote {JS_OUT}")
     MP_CAP_OUT.write_text(render_mp_capability_js(_zp_supported_tfs()), encoding="utf-8")
     print(f"wrote {MP_CAP_OUT}")
+    MP_PARAM_OUT.write_text(render_mp_param_defaults_js(VA_PCT_DEFAULT), encoding="utf-8")
+    print(f"wrote {MP_PARAM_OUT}")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,8 @@ import assert from 'node:assert/strict';
 
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
 import { DwellAccumulator } from '../js/domain/market_profile_dwell_accumulator.js';
+// ISSUE-260: VA 比率の既定は Python 唯一源の生成物（テストも第 2 定義を持たない）。
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 
 const REFRESH_PROFILE = { bins: [{ price: 1, tpo: 1, norm: 1 }], poc: 1, va_low: 1, va_high: 1 };
 
@@ -60,7 +62,7 @@ function fakeAccumulatorFactory() {
 const BASE_FULL = {
   ok: true, formingStart: 1000, ticks: [[1010, 1005], [1020, 1015]],
   baseFine: [0, 0, 0], baseKmin: 100, activeTable: [[1]], priceMin: 1000, priceMax: 1100,
-  nBins: 3, gridW: 10, now: 1030,
+  nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 1030,
 };
 
 function makeActor({ formingClient, makeAccumulator, client, primitive } = {}) {
@@ -167,7 +169,7 @@ test('onLiveTick re-enters ticklive on rollover when formingStart changes', asyn
   const BASE_NEW = {
     ok: true, formingStart: 2000, ticks: [[2005, 1030]],
     baseFine: [0, 0, 0], baseKmin: 100, activeTable: [[1]], priceMin: 1000, priceMax: 1100,
-    nBins: 3, gridW: 10, now: 2010,
+    nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 2010,
   };
   const forming = fakeFormingClient([BASE_FULL, ROLL, BASE_NEW]);
   const facc = fakeAccumulatorFactory();
@@ -220,7 +222,7 @@ test('onLiveTick treats explicit null range fields as missing (Number(null)=0 mu
   // Arrange: backend が空 profile で price_min 等を JSON null で返す形（Number(null)===0 で誤通過し得る）。
   const NULL_BASE = {
     ok: true, formingStart: 1000, ticks: [], baseFine: [], baseKmin: null,
-    activeTable: [[1]], priceMin: null, priceMax: null, nBins: null, gridW: null, now: 1010,
+    activeTable: [[1]], priceMin: null, priceMax: null, nBins: null, gridW: null, vaPct: VA_PCT_DEFAULT, now: 1010,
   };
   const forming = fakeFormingClient([NULL_BASE]);
   const facc = fakeAccumulatorFactory();
@@ -295,7 +297,7 @@ test('end-to-end with a real DwellAccumulator: onLiveTick draws a real snapshot'
     ok: true, formingStart: 1704074400,
     ticks: [[1704074460, 1005], [1704074520, 1015]],
     baseFine: [0, 0, 0], baseKmin: 100, activeTable: table,
-    priceMin: 1000, priceMax: 1100, nBins: 3, gridW: 10, now: 1704074600,
+    priceMin: 1000, priceMax: 1100, nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 1704074600,
   };
   const forming = fakeFormingClient([payload]);
   const { actor, primitive } = makeActor({

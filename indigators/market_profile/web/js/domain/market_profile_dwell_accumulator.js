@@ -18,8 +18,11 @@
 //   dwell[i] = 隣接 tick 間ギャップ [sec[i], sec[i+1]) のうち「活発(曜日×時)に属する秒数」を
 //   tick i の価格 mid[i] の fine bin k=floor(mid[i]/gridW) へ帰属させる。最新 tick は次 tick 未着まで dwell=0。
 
-// バリューエリア比率（mp_core `_value_area` va_pct と同値・単一定義）。
-export const VA_PCT = 0.70;
+// バリューエリア比率は本モジュールの所有物では**ない**（ISSUE-260）。init({vaPct}) で注入される
+//   サーバ解決値（/market_profile_forming の応答 vaPct）に従う。かつてここに VA_PCT の
+//   リテラルがあり、UI の「バリューエリア」を変えても増分成長中のプロファイルだけが既定比率の
+//   ままだった（同じ画面で参照実装＝非増分 refresh とは別の VA が描かれる）。既定値の宣言は Python
+//   唯一源（market_profile.VA_PCT_DEFAULT）に閉じ、front はここでも catalog でもリテラルを持たない。
 
 // [a, b) のうち活発な (曜日×時) に属する秒数を時間境界で積分する（mp_core._active_seconds_cross 相当）。
 //   wd = ((floor(t/86400))+3)%7（1970-01-01=木を Mon0 基準へ）、hod = (t%86400)//3600。
@@ -104,7 +107,12 @@ export class DwellAccumulator {
   //   （呼び出し側配列を破壊しない）。forming fine grid と pending tick はゼロにリセットする。
   //   fine grid は base と完全同一（kw0=floor(priceMin/gridW)・size=floor(priceMax/gridW)-kw0+1）で揃え、
   //   base と forming の binning を一致させる（Task A 忠実 binning）。
-  init({ baseFine, baseKmin, activeTable, priceMin, priceMax, nBins, gridW, formingStart } = {}) {
+  //   vaPct（ISSUE-260・必須）: バリューエリア比率。サーバが解決した値（forming 応答の vaPct）を
+  //     そのまま渡す。呼び出し側は presence ガードで欠損を弾く（欠損時は増分に入らない）。
+  init({
+    baseFine, baseKmin, activeTable, priceMin, priceMax, nBins, gridW, formingStart, vaPct,
+  } = {}) {
+    this._vaPct = Number(vaPct);
     this._nBins = Math.max(1, Number(nBins) || 1);
     this._priceMin = Number(priceMin);
     this._priceMax = Number(priceMax);
@@ -159,6 +167,7 @@ export class DwellAccumulator {
   //   fine bin 中心 (kw0+i+0.5)*gridW → 表示 bin disp=clip(floor((center-priceMin)/binw),0,nBins-1) へ
   //   加算する（mp_core.compute_profile の centers_fine→disp 再集計と厳密同型）。応答スキーマは backend
   //   market_profile と同一（bins/poc/va_low/va_high/price_min/price_max/tpo_units/n_bins）。
+  //   VA は init で注入された比率（サーバ解決値）で算出する＝参照実装（非増分 refresh）と同一比率。
   snapshot() {
     const n = this._nBins;
     const binw = this._binw;
@@ -194,7 +203,7 @@ export class DwellAccumulator {
       }
     }
     const tmax = max > 0 ? max : 1;
-    const [vaLow, vaHigh] = valueArea(centers, tpo, VA_PCT);
+    const [vaLow, vaHigh] = valueArea(centers, tpo, this._vaPct);
     const bins = new Array(n);
     for (let i = 0; i < n; i += 1) {
       bins[i] = {

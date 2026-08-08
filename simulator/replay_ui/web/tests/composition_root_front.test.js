@@ -17,6 +17,8 @@ import { ReplayMarketProfileActor } from '../js/adapter/front/replay_market_prof
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
 import { ReplayIndicatorController } from '../js/adapter/front/replay_indicator_controller.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+// ISSUE-260: VA 比率の既定は Python 唯一源の生成物（テストも第 2 定義を持たない）。
+import { VA_PCT_DEFAULT } from '../js/domain/mp_param_defaults_generated.js';
 
 // Fake lwc（v5）: createChart → chart（addSeries/panes/addPane/timeScale/subscribeCrosshairMove）。
 //   ColorType / CandlestickSeries / createTextWatermark も公開（composition・ChartRenderer が参照）。
@@ -162,7 +164,7 @@ test('bootstrap marketProfile enterBar posts base=1/now to /market_profile_formi
     if (String(url).startsWith('/market_profile_forming')) {
       return { ok: true, async json() {
         return { ok: true, formingStart: 1000, ticks: [], baseFine: [0, 0, 0], baseKmin: 100,
-          activeTable: [[1]], priceMin: 1000, priceMax: 1100, nBins: 3, gridW: 10, now: 1000 };
+          activeTable: [[1]], priceMin: 1000, priceMax: 1100, nBins: 3, gridW: 10, vaPct: VA_PCT_DEFAULT, now: 1000 };
       } };
     }
     return { ok: true, async json() { return { ok: true, candles: [] }; } };
