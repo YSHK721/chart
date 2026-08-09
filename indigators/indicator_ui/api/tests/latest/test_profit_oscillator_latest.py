@@ -31,6 +31,7 @@ import pandas as pd
 from adapter.compute import IndicatorComputeAdapter
 from adapter.compute.latest_meta import latest_meta
 from adapter.compute.latest_dispatch import full_compute, latest_compute
+import _contract  # noqa: E402  (latest/ 直下・pytest が本 dir を sys.path へ載せる)
 
 _COMPUTE_ID = "profit_oscillator"
 _VARIANTS = ("default",)
@@ -72,51 +73,24 @@ def test_latest_meta_profit_oscillator_safe_default_recurrence_full_k1():
 
 
 def test_latest_runs_without_error_and_returns_series():
-    # latest 経路がエラーなく走り、系列を返す。
-    adapter = IndicatorComputeAdapter()
-    df = _ohlcv(200)
-    for variant in _VARIANTS:
-        latest = latest_compute(adapter, _COMPUTE_ID, variant, df, _params())
-        assert latest, "latest series should not be empty"
-        kinds = {s["kind"] for s in latest}
-        # catalog 由来: histogram（oscillator_lc）＋ horizontal_line（σ12 水準）。
-        assert "histogram" in kinds
-        assert "horizontal_line" in kinds
+    # latest 経路がエラーなく走り、catalog 由来の kind を含む系列を返す。
+    _contract.assert_latest_returns_kinds(
+        _COMPUTE_ID, _VARIANTS, _ohlcv(200), _params,
+        required={"histogram", "horizontal_line"},
+    )
 
 
 def test_latest_histogram_tail_equals_full_tail_exact():
-    # 最重要: histogram 系列について latest の data[-K:] が full の data[-K:] と float 完全一致。
-    adapter = IndicatorComputeAdapter()
-    df = _ohlcv(200)
-    for variant in _VARIANTS:
-        params = _params()
-        k = latest_meta(_COMPUTE_ID, variant, params).trailing_k
-        assert k == 1
-        full = full_compute(adapter, _COMPUTE_ID, variant, df, dict(params))
-        latest = latest_compute(adapter, _COMPUTE_ID, variant, df, dict(params))
-        full_by_name = {s["name"]: s for s in full}
-
-        trimmable = [s for s in latest if s["kind"] in _TRIMMABLE]
-        assert trimmable, "expected at least one histogram series"
-        for s in trimmable:
-            f = full_by_name[s["name"]]
-            assert len(s["data"]) <= k
-            # 末尾 K 点が full の末尾 K 点と float 完全一致（time/value とも）。
-            assert s["data"] == f["data"][-k:]
+    # 最重要: latest の data[-K:] が full の data[-K:] と float 完全一致（trimmable 全 kind）。
+    _contract.assert_tail_matches_full(
+        _COMPUTE_ID, _VARIANTS, _ohlcv(200), _params, kinds=_TRIMMABLE, expect_k=1
+    )
 
 
 def test_latest_horizontal_line_returned_untrimmed():
     # horizontal_line は末尾K切りせず全件（full と同一）返る。
-    adapter = IndicatorComputeAdapter()
-    df = _ohlcv(200)
-    for variant in _VARIANTS:
-        params = _params()
-        full = full_compute(adapter, _COMPUTE_ID, variant, df, dict(params))
-        latest = latest_compute(adapter, _COMPUTE_ID, variant, df, dict(params))
-        full_by_name = {s["name"]: s for s in full}
+    _contract.assert_horizontal_lines_untrimmed(
+        _COMPUTE_ID, _VARIANTS, _ohlcv(200), _params
+    )
 
-        hlines = [s for s in latest if s["kind"] == "horizontal_line"]
-        assert hlines, "expected horizontal_line σ levels"
-        for s in hlines:
-            # horizontal_line は data を持たず lines を持つ → full と完全一致（切らない）。
-            assert s == full_by_name[s["name"]]
+

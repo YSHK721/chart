@@ -28,6 +28,7 @@ import pandas as pd
 from adapter.compute import IndicatorComputeAdapter
 from adapter.compute.latest_meta import latest_meta
 from adapter.compute.latest_dispatch import full_compute, latest_compute
+import _contract  # noqa: E402  (latest/ 直下・pytest が本 dir を sys.path へ載せる)
 
 _COMPUTE_ID = "profit_osi_ma"
 _VARIANTS = ["default"]
@@ -60,51 +61,28 @@ def _ohlcv(n: int = 200) -> pd.DataFrame:
 
 def test_latest_meta_is_recurrence_full_k1():
     # 未登録 → 安全既定 ("recurrence", None, 1)。full+K=1 で必ず full と一致する。
-    for variant in _VARIANTS:
-        meta = latest_meta(_COMPUTE_ID, variant, dict(_PARAMS))
-        assert meta.archetype == "recurrence"
-        assert meta.min_window is None  # full（tail せず全件）
-        assert meta.trailing_k == 1
+    _contract.assert_safe_default_meta(_COMPUTE_ID, _VARIANTS, lambda: dict(_PARAMS))
 
 
 def test_latest_runs_without_error_and_returns_expected_kinds():
-    adapter = IndicatorComputeAdapter()
-    df = _ohlcv(200)
-    for variant in _VARIANTS:
-        latest = latest_compute(adapter, _COMPUTE_ID, variant, df, dict(_PARAMS))
-        kinds = {s["kind"] for s in latest}
-        # histogram（osi_ma_kairi）と horizontal_line（水準線群）の双方が出る。
-        assert kinds == {"histogram", "horizontal_line"}
+    # histogram と horizontal_line の双方が出る（catalog def.series と整合）。
+    _contract.assert_latest_returns_kinds(
+        _COMPUTE_ID, _VARIANTS, _ohlcv(200), lambda: dict(_PARAMS),
+        exact={"histogram", "horizontal_line"},
+    )
 
 
 def test_histogram_latest_tail_equals_full_tail_exact():
     # 最重要: histogram 系列の latest data[-K:] が full data[-K:] と float 完全一致する。
-    adapter = IndicatorComputeAdapter()
-    df = _ohlcv(200)
-    for variant in _VARIANTS:
-        k = latest_meta(_COMPUTE_ID, variant, dict(_PARAMS)).trailing_k
-        assert k == 1
-        full = full_compute(adapter, _COMPUTE_ID, variant, df, dict(_PARAMS))
-        latest = latest_compute(adapter, _COMPUTE_ID, variant, df, dict(_PARAMS))
-
-        full_by_name = {s["name"]: s for s in full}
-        hist_latest = [s for s in latest if s["kind"] == "histogram"]
-        assert hist_latest, "histogram series should be present"
-        for s in hist_latest:
-            f = full_by_name[s["name"]]
-            assert len(s["data"]) <= k  # 末尾 K 点に切られている
-            assert s["data"] == f["data"][-k:]  # float 完全一致（time/value/color とも）
+    _contract.assert_tail_matches_full(
+        _COMPUTE_ID, _VARIANTS, _ohlcv(200), lambda: dict(_PARAMS), expect_k=1
+    )
 
 
 def test_horizontal_line_returned_in_full_in_latest():
-    # horizontal_line（水準線群）は末尾K切りの対象外。latest でも full と同一（全件）。
-    adapter = IndicatorComputeAdapter()
-    df = _ohlcv(200)
-    for variant in _VARIANTS:
-        full = full_compute(adapter, _COMPUTE_ID, variant, df, dict(_PARAMS))
-        latest = latest_compute(adapter, _COMPUTE_ID, variant, df, dict(_PARAMS))
-        full_hl = [s for s in full if s["kind"] == "horizontal_line"]
-        latest_hl = [s for s in latest if s["kind"] == "horizontal_line"]
-        assert latest_hl, "horizontal_line series should be present"
-        # 水平線群は data を持たず lines を持つ（切らない＝full と完全一致）。
-        assert latest_hl == full_hl
+    # horizontal_line（σ 水準線群）は末尾K切りの対象外。latest でも full と同一（全件）。
+    _contract.assert_horizontal_lines_identical_to_full(
+        _COMPUTE_ID, _VARIANTS, _ohlcv(200), lambda: dict(_PARAMS)
+    )
+
+

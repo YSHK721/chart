@@ -30,6 +30,7 @@ import pandas as pd
 from adapter.compute import IndicatorComputeAdapter
 from adapter.compute.latest_meta import latest_meta
 from adapter.compute.latest_dispatch import full_compute, latest_compute
+import _contract  # noqa: E402  (latest/ 直下・pytest が本 dir を sys.path へ載せる)
 
 _COMPUTE_ID = "profit_stc"
 _VARIANTS = ("default",)
@@ -106,16 +107,8 @@ def test_latest_line_tail_equals_full_tail_exact():
 
 def test_latest_horizontal_line_returned_untrimmed():
     # horizontal_line は末尾K切りせず全件（full と同一）返る。
-    adapter = IndicatorComputeAdapter()
-    df = _ohlcv(200)
-    for variant in _VARIANTS:
-        params = _params()
-        full = full_compute(adapter, _COMPUTE_ID, variant, df, dict(params))
-        latest = latest_compute(adapter, _COMPUTE_ID, variant, df, dict(params))
-        full_by_name = {s["name"]: s for s in full}
+    _contract.assert_horizontal_lines_untrimmed(
+        _COMPUTE_ID, _VARIANTS, _ohlcv(200), _params
+    )
 
-        hlines = [s for s in latest if s["kind"] == "horizontal_line"]
-        assert hlines, "expected horizontal_line σ levels"
-        for s in hlines:
-            # horizontal_line は data を持たず lines を持つ → full と完全一致（切らない）。
-            assert s == full_by_name[s["name"]]
+

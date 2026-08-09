@@ -26,6 +26,7 @@ import pandas as pd
 from adapter.compute import IndicatorComputeAdapter
 from adapter.compute.latest_meta import latest_meta
 from adapter.compute.latest_dispatch import full_compute, latest_compute
+import _contract  # noqa: E402  (latest/ 直下・pytest が本 dir を sys.path へ載せる)
 
 # 本指標の compute_id / variant（catalog def＝単一 variant）。
 _COMPUTE_ID = "profit_hl_band"
@@ -81,11 +82,8 @@ def test_series_are_horizontal_line_only_axis_distribution():
 
 
 def test_meta_resolves_to_safe_default_recurrence_full_k1():
-    # 未登録 → 安全既定 recurrence/full/K=1（horizontal_line は trail 不変で素通し）。
-    meta = latest_meta(_COMPUTE_ID, "default", _params())
-    assert meta.archetype == "recurrence"  # 安全既定（明示 axis_distribution 登録なし）
-    assert meta.min_window is None
-    assert meta.trailing_k == 1
+    # 未登録 → 安全既定 recurrence/full/K=1（EMA 平滑＋大域σで full 必須・正しい）。
+    _contract.assert_safe_default_meta(_COMPUTE_ID, ("default",), _params)
 
 
 # =========================================================================== #

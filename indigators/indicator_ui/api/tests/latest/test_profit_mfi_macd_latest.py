@@ -35,6 +35,7 @@ import pytest
 from adapter.compute import IndicatorComputeAdapter
 from adapter.compute.latest_meta import latest_meta
 from adapter.compute.latest_dispatch import full_compute, latest_compute
+import _contract  # noqa: E402  (latest/ 直下・pytest が本 dir を sys.path へ載せる)
 
 _COMPUTE_ID = "profit_mfi_macd"
 _VARIANTS = ("default",)
@@ -87,11 +88,7 @@ def df():
 
 def test_binding_and_meta_defaults():
     """バインディング確認＋安全既定 meta（recurrence/full/K=1）の確認。"""
-    meta = latest_meta(_COMPUTE_ID, "default", _PARAMS)
-    # 未登録のため安全既定: full（min_window=None）＋ trailing_k=1。
-    assert meta.archetype == "recurrence"
-    assert meta.min_window is None
-    assert meta.trailing_k == 1
+    _contract.assert_safe_default_meta(_COMPUTE_ID, ("default",), lambda: dict(_PARAMS))
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
