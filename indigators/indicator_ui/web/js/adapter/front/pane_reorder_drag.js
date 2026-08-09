@@ -52,12 +52,10 @@ export class PaneReorderDrag {
    * @param {object} deps
    * @param {object} deps.document      DOM 実装（注入）。落下位置の線の生成にだけ使う。
    * @param {Function} deps.movePane    (fromIndex, toIndex) => boolean の並べ替えポート。
-   * @param {number} [deps.threshold]   クリックと見なす移動量の上限（px）。
    */
-  constructor({ document, movePane, threshold = DRAG_THRESHOLD_PX } = {}) {
+  constructor({ document, movePane } = {}) {
     this._document = document ?? null;
     this._movePane = typeof movePane === 'function' ? movePane : () => false;
-    this._threshold = threshold;
     // 直近の描画で受け取った器と各ペインの幾何（落下先の判定に使う）。
     this._root = null;
     this._groups = [];
@@ -129,7 +127,7 @@ export class PaneReorderDrag {
     }
     const dy = this._clientY(ev) - drag.startY;
     if (!drag.moved) {
-      if (Math.abs(dy) < this._threshold) {
+      if (Math.abs(dy) < DRAG_THRESHOLD_PX) {
         return;   // まだクリックと区別できない＝何も動かさない。
       }
       drag.moved = true;
