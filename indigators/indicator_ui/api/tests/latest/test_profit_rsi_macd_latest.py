@@ -73,10 +73,6 @@ def _ohlcv(n: int = 100) -> pd.DataFrame:
     )
 
 
-def _by_kind(payloads, kind):
-    return [p for p in payloads if p.get("kind") == kind]
-
-
 @pytest.fixture(scope="module")
 def adapter():
     return IndicatorComputeAdapter()
@@ -95,58 +91,28 @@ def test_binding_and_meta_defaults():
 @pytest.mark.parametrize("variant", _VARIANTS)
 def test_latest_runs_without_error(adapter, df, variant):
     """latest 経路がエラーなく走り、非空 payload を返す。"""
-    out = latest_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
-    assert isinstance(out, list)
-    assert len(out) > 0
+    _contract.assert_latest_non_empty(adapter, _COMPUTE_ID, variant, df, _PARAMS)
 
 
 def test_series_kinds_present(adapter, df):
-    """histogram 1・line 2・horizontal_line 群を出すこと（catalog def.series と整合）。"""
-    full = full_compute(adapter, _COMPUTE_ID, "default", df, _PARAMS)
-    assert len(_by_kind(full, "histogram")) == 1
-    assert len(_by_kind(full, "line")) == 2
-    assert len(_by_kind(full, "horizontal_line")) == 1
+    """histogram 1・line 2・horizontal_line 1 を出すこと（catalog def.series と整合）。"""
+    _contract.assert_series_kind_counts(
+        adapter, _COMPUTE_ID, "default", df, _PARAMS,
+        {"histogram": 1, "line": 2, "horizontal_line": 1},
+    )
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
 def test_latest_matches_full_trimmable(adapter, df, variant):
     """line/histogram 各系列で latest の data[-K:] == full の data[-K:]（float 完全一致）。"""
-    meta = latest_meta(_COMPUTE_ID, variant, _PARAMS)
-    k = meta.trailing_k if meta.trailing_k is not None else 1
-
-    full = full_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
-    latest = latest_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
-
-    full_tr = {p["name"]: p for p in _by_kind(full, "line") + _by_kind(full, "histogram")}
-    latest_tr = {p["name"]: p for p in _by_kind(latest, "line") + _by_kind(latest, "histogram")}
-
-    assert set(full_tr) == set(latest_tr)
-    assert latest_tr, "trimmable series should not be empty"
-    for name, fp in full_tr.items():
-        lp = latest_tr[name]
-        # latest 各系列は末尾 K 点に切られている。
-        assert len(lp["data"]) <= k
-        f_tail = fp["data"][-k:]
-        l_tail = lp["data"][-k:]
-        assert len(l_tail) == len(f_tail)
-        for fpt, lpt in zip(f_tail, l_tail):
-            assert fpt["time"] == lpt["time"]
-            assert fpt["value"] == lpt["value"]  # float 完全一致
+    _contract.assert_trimmable_tail_matches(adapter, _COMPUTE_ID, variant, df, _PARAMS)
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
 def test_horizontal_line_returned_in_full(adapter, df, variant):
     """horizontal_line（σ7水準）は latest でも full と同一に全件返る（末尾切りされない）。"""
-    full = full_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
-    latest = latest_compute(adapter, _COMPUTE_ID, variant, df, _PARAMS)
+    _contract.assert_horizontal_line_levels_match(
+        adapter, _COMPUTE_ID, variant, df, _PARAMS, level_count=7
+    )
 
-    full_hl = _by_kind(full, "horizontal_line")
-    latest_hl = _by_kind(latest, "horizontal_line")
 
-    assert len(full_hl) == len(latest_hl) == 1
-    f_lines = full_hl[0]["lines"]
-    l_lines = latest_hl[0]["lines"]
-    assert len(l_lines) == len(f_lines) == 7  # ±1/2/3σ ＋ 中央線 50
-    for fl, ll in zip(f_lines, l_lines):
-        assert fl["price"] == ll["price"]  # float 完全一致
-        assert fl["text"] == ll["text"]

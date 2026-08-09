@@ -120,6 +120,63 @@ def assert_latest_returns_kinds(
             assert required <= kinds
 
 
+def assert_latest_non_empty(adapter: Any, compute_id: str, variant: str, df: Any, params: dict) -> None:
+    """latest 経路がエラーなく走り、非空の payload list を返す。"""
+    out = latest_compute(adapter, compute_id, variant, df, params)
+    assert isinstance(out, list)
+    assert len(out) > 0
+
+
+def assert_series_kind_counts(
+    adapter: Any, compute_id: str, variant: str, df: Any, params: dict, counts: "dict[str, int]"
+) -> None:
+    """full が返す系列の kind 別本数が catalog 定義と一致する。"""
+    full = full_compute(adapter, compute_id, variant, df, params)
+    for kind, expected in counts.items():
+        assert len(by_kind(full, kind)) == expected
+
+
+def assert_trimmable_tail_matches(
+    adapter: Any, compute_id: str, variant: str, df: Any, params: dict
+) -> None:
+    """line/histogram 各系列で latest の ``data[-K:]`` が full の ``data[-K:]`` と完全一致する。"""
+    meta = latest_meta(compute_id, variant, params)
+    k = meta.trailing_k if meta.trailing_k is not None else 1
+
+    full = full_compute(adapter, compute_id, variant, df, params)
+    latest = latest_compute(adapter, compute_id, variant, df, params)
+    full_tr = {p["name"]: p for p in by_kind(full, "line") + by_kind(full, "histogram")}
+    latest_tr = {p["name"]: p for p in by_kind(latest, "line") + by_kind(latest, "histogram")}
+
+    assert set(full_tr) == set(latest_tr)
+    assert latest_tr, "trimmable series should not be empty"
+    for name, fp in full_tr.items():
+        lp = latest_tr[name]
+        assert len(lp["data"]) <= k          # latest 各系列は末尾 K 点に切られている
+        f_tail, l_tail = fp["data"][-k:], lp["data"][-k:]
+        assert len(l_tail) == len(f_tail)
+        for fpt, lpt in zip(f_tail, l_tail):
+            assert fpt["time"] == lpt["time"]
+            assert fpt["value"] == lpt["value"]
+
+
+def assert_horizontal_line_levels_match(
+    adapter: Any, compute_id: str, variant: str, df: Any, params: dict, *, level_count: int
+) -> None:
+    """horizontal_line が latest でも full と同一（末尾切りされない）で、水準が完全一致する。"""
+    full = full_compute(adapter, compute_id, variant, df, params)
+    latest = latest_compute(adapter, compute_id, variant, df, params)
+    full_hl = by_kind(full, "horizontal_line")
+    latest_hl = by_kind(latest, "horizontal_line")
+
+    assert len(full_hl) == len(latest_hl) == 1
+    f_lines, l_lines = full_hl[0]["lines"], latest_hl[0]["lines"]
+    assert len(l_lines) == len(f_lines) == level_count
+    for fl, ll in zip(f_lines, l_lines):
+        assert fl["price"] == ll["price"]    # float 完全一致
+        assert fl["text"] == ll["text"]
+
+
 def assert_safe_default_meta(
     compute_id: str, variants: Iterable[str], params_of: Callable[[], dict]
 ) -> None:
