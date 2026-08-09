@@ -219,37 +219,52 @@ export class IndicatorStateStore {
       }
     }
     // (a) 非 MP は compute を並列発行し、描画だけを宣言順へ直列化する。
-    let drawChain = Promise.resolve();
-    const tasks = list
+    //
+    // ISSUE-345（2026-08-09 実測）: 以前はここで `drawChain = drawChain.then(...)` を
+    //   **自分の compute が解決してから**継ぎ足していた。継ぎ足す順＝解決順なので、宣言順の
+    //   ゲートを名乗りながら実際は **完了順**に描いていた（実測: 保存 [profit_rsi#1,
+    //   profit_adx_needle#1] に対し画面は ADX が上）。pane は初回描画時に生成されるため、
+    //   ペインの並びが起動ごとに変わり、並び順の永続化も成立しない。
+    //   是正: compute は先に全件発行して並列性を保ちつつ、**描画チェーンは宣言順に先に組む**。
+    //   各リンクは自分の compute を待ってから描くので、並列性（ISSUE-202）と並び順の決定性
+    //   （ISSUE-149）が両立する。
+    const pending = list
       .filter(({ def }) => !host._isMarketProfile(def))
-      .map(({ inst, def }) => (async () => {
-        let computed = null;
-        try {
-          const gateway = host._gatewayAdapter(inst.variant);
-          // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
-          const restoreParams = host._paramsObject(inst.params);
-          const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: restoreParams, datasetRef: host._datasetRef, generation: inst.generation });
-          computed = { result, restoreParams };
-        } catch {
-          // 事前計算未収録 variant はスキップ（A方式制限）。描画も行わない。
+      .map(({ inst, def }) => {
+        // 発行はここ（宣言順に全件即時発行＝並列）。失敗は当該 1 件に閉じ null で表す。
+        const promise = (async () => {
+          try {
+            const gateway = host._gatewayAdapter(inst.variant);
+            // B方式は保存 params で再計算（実反映）。A方式は params 無視で id:variant キー解決。
+            const restoreParams = host._paramsObject(inst.params);
+            const result = await gateway.compute({ indicatorId: inst.indicatorId, variant: inst.variant, params: restoreParams, datasetRef: host._datasetRef, generation: inst.generation });
+            return { result, restoreParams };
+          } catch {
+            // 事前計算未収録 variant はスキップ（A方式制限）。描画も行わない。
+            return null;
+          }
+        })();
+        return { inst, def, promise };
+      });
+    // 描画は宣言順。リンクの生成順が宣言順そのものなので、完了順に左右されない。
+    let drawChain = Promise.resolve();
+    for (const { inst, def, promise } of pending) {
+      drawChain = drawChain.then(async () => {
+        const computed = await promise;
+        if (!computed) {
           return;
         }
-        // 宣言順の描画ゲート: 自分より前の指標の描画が終わってから描く（pane の並び順を固定）。
-        drawChain = drawChain.then(() => {
-          try {
-            host._commitLastSeries(computed.result.series);
-            host._draw(inst.instanceId, def, computed.result.series, computed.restoreParams);
-            if (!inst.visible) {
-              host._renderer.setVisible(inst.instanceId, false);
-            }
-          } catch {
-            // 描画失敗も当該 1 件に閉じる（後続の描画を止めない）。
+        try {
+          host._commitLastSeries(computed.result.series);
+          host._draw(inst.instanceId, def, computed.result.series, computed.restoreParams);
+          if (!inst.visible) {
+            host._renderer.setVisible(inst.instanceId, false);
           }
-        });
-        await drawChain;
-      })());
-    await Promise.allSettled(tasks);
-    // 直列化した描画の残り（最後の then）まで待ってから完了する。
+        } catch {
+          // 描画失敗も当該 1 件に閉じる（後続の描画を止めない）。
+        }
+      });
+    }
     await drawChain;
   }
 }
