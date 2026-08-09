@@ -36,7 +36,13 @@ function fakeElement(tagName = 'div', className = '') {
     captured: [],
     released: [],
     setPointerCapture(id) { this.captured.push(id); },
-    releasePointerCapture(id) { this.released.push(id); },
+    // 実 DOM の契約: 捕捉を解くと lostpointercapture が **必ず** 配送される。これを写さないと
+    //   「解除が誘発する再入」がテストで一度も起きず、再入対策（状態を畳んでから解く／購読を
+    //   先に外す）を壊しても赤くならない（🟡-4-3）。
+    releasePointerCapture(id) {
+      this.released.push(id);
+      this.fire('lostpointercapture', { pointerId: id });
+    },
     get innerHTML() { return this._innerHTML ?? ''; },
     set innerHTML(v) { this._innerHTML = v; if (v === '') { this.children = []; } },
     append(...nodes) { for (const n of nodes) { this.children.push(n); } },
@@ -99,7 +105,7 @@ test('しきい値未満の動きは並べ替えにしない（チップのク�
   doc.fire('pointerup', { clientY: 502 });
 
   assert.deepEqual(moves, []);
-  assert.equal(drag.consumeClickSuppression(), false, 'クリックを握りつぶしてはいけない');
+  assert.equal(drag.consumeClickSuppression(groups[1].handle), false, 'クリックを握りつぶしてはいけない');
 });
 
 test('掴んで別ペインの上で離すと、そのペインの番号へ移動を指示する', () => {
@@ -171,8 +177,22 @@ test('ドラッグ直後の click は 1 回だけ握りつぶす（掴み手＝�
   doc.fire('pointermove', { clientY: 600 });
   doc.fire('pointerup', { clientY: 600 });
 
-  assert.equal(drag.consumeClickSuppression(), true);
-  assert.equal(drag.consumeClickSuppression(), false, '2 回目以降まで握りつぶすと開閉できなくなる');
+  assert.equal(drag.consumeClickSuppression(groups[1].handle), true);
+  assert.equal(drag.consumeClickSuppression(groups[1].handle), false, '2 回目以降まで握りつぶすと開閉できなくなる');
+});
+
+// 握りつぶしの対象は「掴んだ当の要素」であって、真偽値のグローバル状態ではない（🔴-1）。
+//   真偽値だと、click が飛ばずに残った印が **次に押した無関係な要素**の click を食う。
+//   掴み手の同一性で持てば、そもそも別要素と一致しない＝食えない（構造的に起こり得ない）。
+test('握りつぶしは掴んだ当の要素にだけ効く（別の掴み手の click は素通しする）', () => {
+  const { doc, drag, groups } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450 });
+  doc.fire('pointermove', { clientY: 600 });
+  doc.fire('pointerup', { clientY: 600 });
+
+  assert.equal(drag.consumeClickSuppression(groups[2].handle), false,
+    '掴んでいない要素の click まで握りつぶした（真偽値のグローバル状態が漏れている）');
 });
 
 test('離したら見た目を必ず戻す（追従の transform・掴み中クラス・予告線を残さない）', () => {
@@ -206,6 +226,18 @@ test('掴んだら掴み手へポインタを捕捉し、離したら必ず解�
   doc.fire('pointerup', { clientY: 450, pointerId: 7 });
 
   assert.deepEqual(groups[1].handle.released, [7], '捕捉を解いていない＝次の操作へ持ち越す');
+});
+
+test('掴みを終えたら掴み手側の lostpointercapture 購読も残さない（次の掴みへ持ち越さない）', () => {
+  const { doc, groups } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  assert.equal((groups[1].handle.listeners.lostpointercapture ?? []).length, 1, '前提: 捕捉喪失を購読しているはず');
+
+  doc.fire('pointerup', { clientY: 450, pointerId: 7 });
+
+  assert.equal((groups[1].handle.listeners.lostpointercapture ?? []).length, 0,
+    '購読が残ると、解除が誘発する捕捉喪失や次の掴みの事象を二重に拾う');
 });
 
 test('pointerup が届かなくても掴みは必ず終わる（捕捉喪失＝lostpointercapture）', () => {
@@ -246,6 +278,54 @@ test('ポインタ捕捉を提供しない環境でも掴める（no-op へ縮�
   doc.fire('pointerup', { clientY: 600, pointerId: 7 });
 
   assert.deepEqual(moves, [[1, 2]], '捕捉が無い環境で並べ替えが動かなくなった');
+});
+
+// ---- ポインタの同一性（🟡-2）: 掴んだ指の事象だけを見る ---- //
+//
+// document 購読は「どのポインタの事象か」を選ばずに全部届く。掴んでいる最中に別の指が触れて
+//   離すと、その pointerup が掴みの終了として扱われ、**意図しない位置で並べ替えが確定する**。
+//   掴んだ pointerId を覚え、一致しない事象は無視する。
+
+test('別のポインタの移動では掴んだ箱を動かさない（pointerId 照合）', () => {
+  const { doc, groups } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  doc.fire('pointermove', { clientY: 600, pointerId: 9 });   // 別の指
+
+  assert.equal(groups[1].box.className.includes('is-dragging'), false,
+    '別ポインタの移動で掴みが動いた');
+  assert.equal(groups[1].box.style.transform ?? '', '', '別ポインタの移動で追従してしまった');
+});
+
+test('別のポインタを離しても掴みは終わらない（意図しない位置で確定しない）', () => {
+  const { doc, drag, groups, moves } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  doc.fire('pointermove', { clientY: 600, pointerId: 7 });
+  doc.fire('pointerup', { clientY: 600, pointerId: 9 });     // 別の指を離した
+
+  assert.equal(drag.isDragging(), true, '別ポインタの離しで掴みが終わった');
+  assert.deepEqual(moves, [], '別ポインタの離しで並べ替えが確定した');
+});
+
+test('別のポインタの捕捉喪失では掴みを終えない（lostpointercapture も照合する）', () => {
+  const { doc, drag, groups } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  doc.fire('pointermove', { clientY: 600, pointerId: 7 });
+  groups[1].handle.fire('lostpointercapture', { pointerId: 9 });
+
+  assert.equal(drag.isDragging(), true, '別ポインタの捕捉喪失で掴みが終わった');
+});
+
+test('掴んだポインタを離せば従来どおり確定する（照合は正規の経路を塞がない）', () => {
+  const { doc, groups, moves } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  doc.fire('pointermove', { clientY: 600, pointerId: 7 });
+  doc.fire('pointerup', { clientY: 600, pointerId: 7 });
+
+  assert.deepEqual(moves, [[1, 2]]);
 });
 
 test('掴んでいる間は document の pointermove/up だけを購読する（離したら解除）', () => {
@@ -438,6 +518,59 @@ test('指標ペインが 1 つだけなら並べ替えできない（movable=fal
   assert.equal(renderer.movePane(1, 1), false);
 });
 
+// 上の検証だけでは「ペイン 2 枚のときのガード」を確かめられない。movePane(1,1) は from===to の
+//   短絡が先に効くため `total < 3` のガードへ到達せず、ガードを削っても通ってしまう（トートロジー）。
+//   ペイン 2 枚に指標を 1 件置き、凡例 DTO が運ぶ movable を直接固定する。
+test('ペインが 2 枚（価格＋指標 1）のとき、凡例 DTO の movable は false', () => {
+  const { renderer } = rendererWith(2);
+  const panes = renderer._chart.panes();
+  renderer._instances.set('osc#1', { lines: new Map(), visible: true, pane: panes[1] });
+
+  const model = renderer.paneLegendModel(null);
+
+  assert.deepEqual(model.groups.map((g) => [g.paneIndex, g.movable]), [[1, false]],
+    '入れ替える相手が居ないのに掴める合図を出している');
+});
+
+// ---- 価格ペインの特定（🟡-3 / 🟡-4-4）: 番号を決め打たず、不正な番号も受理しない ---- //
+//
+// バンドル実測（vendor/lightweight-charts.js v5.2.0）:
+//   `paneIndex(){return this.sv.Qt().hf(this.yt)}` / `hf(t){return this.od.indexOf(t)}`
+//   ＝ペインが内部配列に無いとき **-1** を返す。-1 を価格ペイン番号として受理すると
+//   `_isPaneMovable` が全ペインで真になり、禁じているはずの価格ペイン移動が通る。
+
+// 価格ペインが指定 index に居るメイン系列の Fake（getPane は upstream と同じく pane を返す）。
+function mainSeriesOnPane(pane) {
+  return { getPane() { return pane; } };
+}
+
+function rendererWithMainSeries(count, makeMainSeries) {
+  const chart = fakeChartWithPanes(count);
+  const renderer = new ChartRenderer({ chart, mainSeries: makeMainSeries(chart), lwc: {} });
+  return { chart, renderer };
+}
+
+test('価格ペインが未登録（paneIndex()=-1）でも価格ペインは動かせない（-1 を番号にしない）', () => {
+  const { chart, renderer } = rendererWithMainSeries(
+    3, () => mainSeriesOnPane({ paneIndex: () => -1 }),
+  );
+
+  assert.equal(renderer.movePane(0, 2), false, '-1 が価格ペイン番号になり価格ペインが動いた');
+  assert.equal(renderer.movePane(2, 0), false, '-1 が価格ペイン番号になり価格ペインが移動先になった');
+  assert.deepEqual(chart.moves, [], '禁じている価格ペインの移動が upstream へ届いた');
+});
+
+test('価格ペインが 0 番以外に居ても、動かせるのは指標ペインだけ（番号を決め打たない）', () => {
+  const { chart, renderer } = rendererWithMainSeries(
+    3, (c) => mainSeriesOnPane(c.panes()[1]),   // 価格ペインは index 1
+  );
+
+  assert.equal(renderer.movePane(1, 2), false, '価格ペイン（1 番）を移動元にしてはいけない');
+  assert.equal(renderer.movePane(0, 1), false, '価格ペイン（1 番）を移動先にしてはいけない');
+  assert.equal(renderer.movePane(0, 2), true, '価格ペインでない指標ペイン（0 番）が動かせない');
+  assert.deepEqual(chart.moves, [[0, 2]]);
+});
+
 test('凡例 DTO は movable を運ぶ（掴める見た目と実際の可否を割らない）', () => {
   const { renderer } = rendererWith(3);
   // 系列を持たない slot を直接置き、pane 割り当てだけを与える（描画経路は本検証の関心外）。
@@ -565,6 +698,54 @@ test('畳んだ状態は動かしたペインについて回る（位置に残�
   assert.equal(isOpenAt(anchor, 1), true, '動かしていないペイン（p3）が畳まれた＝状態が位置に残っている');
 });
 
+// ---- 握りつぶしの残留（🔴-1）: View と協働子を実物どうしで結んだ経路 ---- //
+//
+// 並べ替えが成立すると movePane → renderer が凡例 DTO を再発行 → View が root.innerHTML='' で
+//   **掴み手ごと DOM から外す**。外れた要素へ click が配送されるかはブラウザ挙動に依存するため、
+//   「click が必ず飛んでくる」ことに握りつぶしの解除を賭けてはいけない。掴み手の同一性で持てば、
+//   再描画で掴み手は必ず新しい要素になる＝残留値がライブな要素と一致することが起こり得ない。
+
+// PaneLegendView と PaneReorderDrag を実物どうしで結び、3 ペインぶんの凡例を描いた状態を作る。
+function wiredLegend() {
+  const anchor = fakeElement('div', 'chart-wrap');
+  const doc = fakeDoc(anchor);
+  const moves = [];
+  const drag = new PaneReorderDrag({ document: doc, movePane: (from, to) => { moves.push([from, to]); return true; } });
+  const view = new PaneLegendView({ document: doc, reorder: drag });
+  view.setInstances(ROWS);
+  view.update(MODEL_KEYED);
+  return { anchor, doc, view, moves };
+}
+
+// pane1 のチップを掴んで pane2 の領域へ落とす（並べ替えが成立する操作）。
+function dragPane1ToPane2(anchor, doc) {
+  chipAt(anchor, 1).fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  doc.fire('pointermove', { clientY: 600, pointerId: 7 });
+  doc.fire('pointerup', { clientY: 600, pointerId: 7 });
+}
+
+test('並べ替え成立で掴み手ごと作り直された後、非 movable チップの click が握りつぶされない', () => {
+  const { anchor, doc, view, moves } = wiredLegend();
+
+  dragPane1ToPane2(anchor, doc);
+  assert.deepEqual(moves, [[1, 2]], '前提: 並べ替えが成立しているはず');
+  view.update(MODEL_KEYED_SWAPPED);   // renderer の DTO 再発行＝全チップが作り直される
+
+  chipAt(anchor, 0).fire('click', {});   // 次に押したのは掴めない価格ペインのチップ
+
+  assert.equal(isOpenAt(anchor, 0), false,
+    '掴んでもいないチップの開閉が握りつぶされた（残留した握りつぶし印が漏れている）');
+});
+
+test('掴んだ当のチップへ click が届いたときは開閉しない（掴み手＝開閉チップのため）', () => {
+  const { anchor, doc } = wiredLegend();
+
+  dragPane1ToPane2(anchor, doc);
+  chipAt(anchor, 1).fire('click', {});   // 掴み手そのもの（再描画前＝同じ要素）へ届いた click
+
+  assert.equal(isOpenAt(anchor, 1), true, 'ドラッグ直後の click で畳まれてしまった');
+});
+
 test('移動先で畳めば、その場でちゃんと畳める（鍵が変わっても操作は素通しのまま）', () => {
   const anchor = fakeElement('div', 'chart-wrap');
   const view = new PaneLegendView({ document: fakeDoc(anchor) });
@@ -576,4 +757,50 @@ test('移動先で畳めば、その場でちゃんと畳める（鍵が変わ�
 
   assert.equal(isOpenAt(anchor, 2), false, '移動後のチップで畳めない');
   assert.equal(isOpenAt(anchor, 1), true, '関係ないペインまで畳んだ');
+});
+
+// ---- 識別子の非対称（🟡-A・再レビュー 2026-08-09） ---- //
+//
+// 掴んだ指以外の事象を捨てる照合（🟡-2）には、**掴み側が識別子を持たない**場合の抜けがあった。
+//   `pointerdown` に pointerId が無いと drag.pointerId=null になり、識別子を**持つ**後続事象が
+//   すべて「別の指」と判定されて捨てられる。pointerup も pointercancel も lostpointercapture も
+//   通らないため掴みが永久に終わらず、凡例の再描画停止（isDragging 中は止める）が解けない＝
+//   ISSUE-342 で塞いだフェイルオープンの再来になる。照合できない条件では照合しない。
+
+test('掴み側が識別子を持たなくても、識別子つきの pointerup で掴みは必ず終わる', () => {
+  const { doc, drag, groups, moves } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450 });   // 識別子なしで掴む
+  doc.fire('pointermove', { clientY: 600, pointerId: 1 });             // 以後は識別子つき
+  doc.fire('pointerup', { clientY: 600, pointerId: 1 });
+
+  assert.equal(drag.isDragging(), false, '掴みが終わらない＝凡例が恒久停止する');
+  assert.deepEqual(moves, [[1, 2]], '並べ替えも確定していない');
+});
+
+// 捕捉は識別子が無いと取れない（_capturePointer が Number.isFinite を要求する）ので、
+//   識別子なしで掴んだ場合の終了経路は document 購読しかない。その唯一の経路が識別子照合で
+//   塞がれないことを、pointerup 以外の終了事象でも固定する。
+test('掴み側が識別子を持たなくても、識別子つきの pointercancel で掴みは終わる', () => {
+  const { doc, drag, groups } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450 });
+  doc.fire('pointercancel', { clientY: 450, pointerId: 7 });
+
+  assert.equal(drag.isDragging(), false);
+});
+
+test('掴み中に別チップを掴もうとしても、先の掴みを乗っ取らない（再入ガード）', () => {
+  const { doc, drag, groups, moves } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450 });
+  doc.fire('pointermove', { clientY: 600 });
+  groups[2].handle.fire('pointerdown', { button: 0, clientY: 600 });   // 割り込み
+  doc.fire('pointerup', { clientY: 600 });
+
+  assert.equal(drag.isDragging(), false);
+  assert.deepEqual(moves, [[1, 2]], '割り込みで掴みの主体がすり替わった');
+  // 乗っ取られると先の箱の終了処理が走らず、追従の transform と掴み中クラスが残る。
+  assert.equal(groups[1].box.style.transform, '');
+  assert.equal(groups[1].box.className.includes('is-dragging'), false);
 });
