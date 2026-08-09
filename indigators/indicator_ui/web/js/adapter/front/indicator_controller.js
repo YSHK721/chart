@@ -466,6 +466,17 @@ export class IndicatorController {
     this._applyLevelLineColor(instanceId, theme, timeframe);
   }
 
+  // 選択中テーマの供給ポートを後から結ぶ（基本設計_指標カラーテーマ.md §7.3 ISP・DIP）。
+  //   constructor 引数 `colorThemeProvider` と同じ席へ書くだけで、挙動は完全に同一（加法）。
+  //   setter を持つ理由: `new IndicatorController(...)` は両 composition_root_front.js が各々
+  //   書いており、constructor 引数のままだと同一 1 行を 2 か所へ手書き複製することになる
+  //   （ISSUE-278 #4 で潰した複製の再生産）。setter なら共有配線（chart_app_wiring.js）の
+  //   1 箇所だけで両モードを結線できる。
+  //   非関数（null 含む）を渡すと「テーマなし」＝恒等へ戻る（_activeColorTheme と同じ規約）。
+  setColorThemeProvider(provider) {
+    this._colorThemeProvider = typeof provider === 'function' ? provider : null;
+  }
+
   // 選択中のテーマ（未注入・供給不能は null＝恒等）。例外を外へ出さない（F-C4 の縮退と同旨）。
   _activeColorTheme() {
     if (!this._colorThemeProvider) {
@@ -483,14 +494,21 @@ export class IndicatorController {
     if (typeof this._renderer.applyLevelLineColor !== 'function') {
       return;
     }
-    const declared = theme && theme.roleColors ? theme.roleColors[ColorRole.LEVEL] : null;
-    // 宣言が無ければ null を渡して現行経路へ戻す（resolveSeriesColor を通すと payload 色や
-    //   既定色へ降格してしまい、schemeColor を潰す＝N-5 の破壊的変更になる）。
-    const color = declared == null
-      ? null
-      : resolveSeriesColor({
-        styles: null, seriesName: null, role: ColorRole.LEVEL, theme, timeframe, payloadColor: null,
-      });
+    // 宣言の有無を**ここで判定しない**（判定源を 2 つ作らない）。resolver の解決順に委ね、
+    //   材料（ロック色・意味色・個別色・payload 色）がどれも無ければ null を返させる（R-7）。
+    //   ここに `roleColors.level == null` のような別の判定を置くと、resolver 側の判定
+    //   （isHex6）とずれた瞬間に既定色 #2962ff が書き込まれ、全水準線が青一色になる
+    //   （schemeColor を潰す＝N-5 の破壊的変更）。水準線は styles も payload も持たないため、
+    //   本呼び出しでは「意味色が決まったか否か」だけが結果を分ける。
+    const color = resolveSeriesColor({
+      styles: null,
+      seriesName: null,
+      role: ColorRole.LEVEL,
+      theme,
+      timeframe,
+      payloadColor: null,
+      defaultColor: null,
+    });
     this._renderer.applyLevelLineColor(instanceId, color);
   }
 

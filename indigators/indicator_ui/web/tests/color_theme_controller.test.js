@@ -1,0 +1,471 @@
+// color_theme_controller.test.js — テーマ協働子（ColorThemeController）の振る舞い固定。
+//
+// 設計入力（唯一の仕様源）: .doc/indicator-management-ui/基本設計_指標カラーテーマ.md v0.3.1
+//   §5.1（UC-C01 保存＝適用ではない）／§5.2（UC-C02 適用の手順順序）／§5.3（UC-C03 改名・削除の
+//   非対称性）／§5.7（F-C6 dangling）／§3.4（ビュー自動介入の禁止）／§7.3 ISP（契約 4 メンバー）。
+//
+// 固定する不変条件:
+//   (1) UC-C02 の手順順序 1→2→3→4（永続化 → クロム → 系列 → 凡例）。凡例は反復の外で 1 回。
+//   (2) 色の書き手は host._applyStoredStyles ただ 1 つ（協働子は系列を走査しない・R-1）。
+//   (3) 未描画（_meta 不在）インスタンスはスキップする。
+//   (4) 保存・改名・削除はチャート上の色を変えない（§5.1 後条件・§5.3 の非対称性）。
+//   (5) 契約は 4 メンバーちょうどで、射影（createHostView）が契約外アクセスを実行時に落とす。
+//   (6) §3.4: /compute・setData・ビュー操作 API へ到達しない。
+// 構造: Arrange-Act-Assert（AAA）。
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+import {
+  COLOR_THEME_HOST_CONTRACT,
+  ColorThemeController,
+} from '../js/adapter/front/color_theme_controller.js';
+import { createHostView } from '../js/adapter/front/host_view.js';
+import { LocalStorageThemeGateway } from '../js/adapter/front/local_storage_theme_gateway.js';
+import { resolveAllChrome } from '../js/usecase/color_resolver.js';
+import { CODE } from '../js/usecase/color_themes.js';
+
+const THEMES_KEY = 'indicatorUi.themes.v1';
+const ACTIVE_KEY = 'indicatorUi.activeTheme.v1';
+
+const THEME_A = Object.freeze({
+  themeId: 'thm#1',
+  name: 'Ocean',
+  roleColors: Object.freeze({ surface: '#0a0b0c', bullish: '#00ff00' }),
+  tfModifier: null,
+  createdAt: 100,
+  updatedAt: 100,
+});
+
+// 実 gateway（LocalStorageThemeGateway）＋メモリ storage。書き込みは呼び出し順を calls へ記録し、
+//   手順 1（永続化）が手順 2（クロム）より先であることを順序で固定できるようにする。
+function makeStorage(calls, seed = {}) {
+  const map = new Map(Object.entries(seed));
+  return {
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => { map.set(k, v); calls.push(`put:${k}`); },
+    removeItem: (k) => { map.delete(k); },
+    _map: map,
+  };
+}
+
+// host の実体。契約外の面（_renderer / _compute）を意図的に持たせ、射影が遮断することと
+//   「協働子から一度も到達しない」ことの双方を検査できるようにする（§3.4 のスパイ固定）。
+function makeHost(calls, { applied = [], drawn = null } = {}) {
+  const raw = {
+    _state: { applied },
+    _meta: new Map((drawn ?? applied.map((i) => i.instanceId)).map((id) => [id, { def: {} }])),
+    _applyStoredStyles: (instanceId) => calls.push(`style:${instanceId}`),
+    _renderLegend: () => calls.push('legend'),
+    // 契約外（到達したら 0 でなくなる／射影が例外にする）。
+    _renderer: { setData: () => calls.push('VIOLATION:setData'), applySeriesStyle: () => calls.push('VIOLATION:applySeriesStyle') },
+    _compute: { compute: async () => calls.push('VIOLATION:compute') },
+    _persistAll: () => calls.push('VIOLATION:_persistAll'),
+  };
+  return { raw, view: createHostView(raw, COLOR_THEME_HOST_CONTRACT) };
+}
+
+function makeChrome(calls) {
+  const payloads = [];
+  return {
+    applier: { apply: (resolved) => { payloads.push(resolved); calls.push('chrome'); } },
+    payloads,
+  };
+}
+
+// 既定は「state 未注入」＝協働子が gateway から自力で復元する経路（単体の既定）。
+//   構築時の復旧書き込み（§4.10 lastSeq の引き上げ）は Act の観測を汚すため calls を切り直す。
+//   now は既定で固定時刻 `() => 777`（決定論）。`now: undefined` を明示すると既定つき注入の
+//   既定側（実時刻）を通せる＝本番経路の検証に使う。
+const FIXED_NOW = () => 777;
+function makeController(calls, {
+  applied = [], drawn = null, seed = {}, themes = [], now = FIXED_NOW,
+} = {}) {
+  const storage = makeStorage(calls, { [THEMES_KEY]: JSON.stringify({ themes }), ...seed });
+  const gateway = new LocalStorageThemeGateway(storage);
+  const { raw, view } = makeHost(calls, { applied, drawn });
+  const { applier, payloads } = makeChrome(calls);
+  const controller = new ColorThemeController(view, {
+    gateway, chromeApplier: applier, now,
+  });
+  calls.length = 0;
+  return {
+    controller, storage, gateway, raw, view, applier, payloads,
+  };
+}
+
+const inst = (instanceId) => ({ instanceId, indicatorId: 'x', params: {}, styles: null });
+
+// ---- 契約（§7.3 ISP・4 メンバーちょうど）------------------------------------
+
+test('契約: COLOR_THEME_HOST_CONTRACT は ThemeHost の 4 メンバーちょうどを凍結公開する', () => {
+  // Arrange / Act
+  const c = COLOR_THEME_HOST_CONTRACT;
+  // Assert
+  assert.equal(c.role, 'ThemeHost');
+  assert.deepEqual([...c.methods], ['_applyStoredStyles', '_renderLegend']);
+  assert.deepEqual([...c.fields], ['_state', '_meta']);
+  assert.equal(c.methods.length + c.fields.length, 4, '契約が 4 メンバーちょうどでない');
+  assert.ok(Object.isFrozen(c) && Object.isFrozen(c.methods) && Object.isFrozen(c.fields));
+});
+
+test('契約: 射影は契約外の host メンバーへのアクセスを実行時に落とす', () => {
+  // Arrange
+  const calls = [];
+  const { raw, view } = makeHost(calls, { applied: [] });
+  // Act / Assert
+  assert.doesNotThrow(() => view._state);
+  assert.doesNotThrow(() => view._meta);
+  assert.equal(typeof raw._renderer, 'object', '前提: host には契約外の面が実在する');
+  assert.throws(() => view._renderer, /契約外の host メンバー/);
+  assert.throws(() => view._compute, /契約外の host メンバー/);
+  assert.throws(() => view._persistAll, /契約外の host メンバー/);
+});
+
+// ---- UC-C02 適用（§5.2）-----------------------------------------------------
+
+test('UC-C02: 手順 1→2→3→4 の順（永続化 → クロム → 系列 → 凡例）で実行する', () => {
+  // Arrange
+  const calls = [];
+  const { controller } = makeController(calls, {
+    applied: [inst('a'), inst('b')], themes: [THEME_A],
+  });
+  // Act
+  controller.applyTheme('thm#1');
+  // Assert
+  assert.deepEqual(calls, [`put:${ACTIVE_KEY}`, 'chrome', 'style:a', 'style:b', 'legend']);
+});
+
+test('UC-C02: クロムは選択したテーマで解決された値を配る', () => {
+  // Arrange
+  const calls = [];
+  const { controller, payloads } = makeController(calls, {
+    applied: [inst('a')], themes: [THEME_A],
+  });
+  // Act
+  controller.applyTheme('thm#1');
+  // Assert
+  assert.equal(payloads.length, 1, 'クロム配信が 1 回でない');
+  assert.deepEqual(payloads[0], resolveAllChrome(THEME_A));
+  assert.equal(payloads[0].slots.layoutBackground, '#0a0b0c');
+});
+
+test('UC-C02: 未描画（_meta 不在）のインスタンスはスキップする', () => {
+  // Arrange
+  const calls = [];
+  const { controller } = makeController(calls, {
+    applied: [inst('a'), inst('b'), inst('c')], drawn: ['a', 'c'], themes: [THEME_A],
+  });
+  // Act
+  controller.applyTheme('thm#1');
+  // Assert
+  assert.deepEqual(calls.filter((c) => c.startsWith('style:')), ['style:a', 'style:c']);
+});
+
+test('UC-C02: 凡例の再描画は反復の外で 1 回だけ（インスタンス数に依存しない）', () => {
+  // Arrange
+  const calls = [];
+  const { controller } = makeController(calls, {
+    applied: [inst('a'), inst('b'), inst('c')], themes: [THEME_A],
+  });
+  // Act
+  controller.applyTheme('thm#1');
+  // Assert
+  assert.equal(calls.filter((c) => c === 'legend').length, 1);
+  assert.equal(calls.at(-1), 'legend', '凡例が反復の外（最後）で呼ばれていない');
+});
+
+test('UC-C02: activeTheme.v1 へ themeId が永続化される（lastSeq は温存）', () => {
+  // Arrange
+  const calls = [];
+  const { controller, storage } = makeController(calls, {
+    applied: [], themes: [THEME_A],
+    seed: { [ACTIVE_KEY]: JSON.stringify({ themeId: null, lastSeq: 7 }) },
+  });
+  // Act
+  controller.applyTheme('thm#1');
+  // Assert
+  assert.deepEqual(JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: 'thm#1', lastSeq: 7 });
+  assert.equal(controller.activeThemeId(), 'thm#1');
+});
+
+test('UC-C02: 「テーマなし」(null) の適用は themeId=null を永続化し既定クロムを配る', () => {
+  // Arrange
+  const calls = [];
+  const { controller, storage, payloads } = makeController(calls, {
+    applied: [inst('a')], themes: [THEME_A],
+  });
+  controller.applyTheme('thm#1');
+  // Act
+  controller.applyTheme(null);
+  // Assert
+  assert.deepEqual(JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: null, lastSeq: 1 });
+  assert.deepEqual(payloads.at(-1), resolveAllChrome(null));
+  assert.equal(controller.activeTheme(), null);
+});
+
+test('UC-C02 / §3.4: 適用は /compute・setData・契約外の面へ一切到達しない', () => {
+  // Arrange
+  const calls = [];
+  const { controller } = makeController(calls, {
+    applied: [inst('a'), inst('b')], themes: [THEME_A],
+  });
+  // Act
+  controller.applyTheme('thm#1');
+  // Assert
+  assert.deepEqual(calls.filter((c) => c.startsWith('VIOLATION')), []);
+});
+
+test('F-C6: テーマ集合に不在の themeId は「テーマ未選択」へ縮退し null を永続化する', () => {
+  // Arrange
+  const calls = [];
+  const warned = [];
+  const original = console.warn;
+  console.warn = (m) => warned.push(String(m));
+  try {
+    const { controller, storage, payloads } = makeController(calls, {
+      applied: [inst('a')], themes: [THEME_A],
+    });
+    // Act
+    assert.doesNotThrow(() => controller.applyTheme('thm#404'));
+    // Assert
+    assert.equal(controller.activeThemeId(), null);
+    assert.deepEqual(JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: null, lastSeq: 1 });
+    assert.deepEqual(payloads.at(-1), resolveAllChrome(null));
+    assert.equal(warned.length, 1, '警告が 1 回でない');
+  } finally {
+    console.warn = original;
+  }
+});
+
+// ---- UC-C01 保存（§5.1）-----------------------------------------------------
+
+test('UC-C01: 保存は themes.v1 と activeTheme.v1（lastSeq）を永続化する', () => {
+  // Arrange
+  const calls = [];
+  const { controller, storage } = makeController(calls, { applied: [], themes: [] });
+  // Act
+  const res = controller.saveTheme({ name: ' Ocean ', roleColors: { surface: '#0A0B0C', bogus: '#fff' } });
+  // Assert
+  assert.equal(res.ok, true);
+  assert.equal(res.themeId, 'thm#1');
+  const saved = JSON.parse(storage._map.get(THEMES_KEY)).themes;
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].name, 'Ocean');
+  assert.deepEqual(saved[0].roleColors, { surface: '#0a0b0c' });
+  assert.equal(saved[0].createdAt, 777, '注入した時刻源が使われていない');
+  assert.deepEqual(JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: null, lastSeq: 1 });
+  assert.deepEqual(controller.themes(), saved);
+});
+
+test('UC-C01: 保存は適用ではない（クロムも系列も凡例も動かない）', () => {
+  // Arrange
+  const calls = [];
+  const { controller } = makeController(calls, { applied: [inst('a')], themes: [] });
+  // Act
+  controller.saveTheme({ name: 'Ocean', roleColors: { surface: '#0a0b0c' } });
+  // Assert
+  assert.deepEqual(calls.filter((c) => c === 'chrome' || c.startsWith('style:') || c === 'legend'), []);
+});
+
+// F-C3 の警告主体は adapter（R-4）。usecase（純関数）は「無視した」事実を戻り値で返すだけで
+//   console を持たない（tests/usecase_console_free.test.js が層全体で固定する）。
+//   ここでは「警告が消えていない・回数が増えていない」ことを協働子側で固定する。
+test('F-C3: 未知トークンは無視され、警告は協働子が 1 回だけ出す（R-4）', () => {
+  // Arrange
+  const calls = [];
+  const warned = [];
+  const original = console.warn;
+  console.warn = (m) => warned.push(String(m));
+  try {
+    const { controller, storage } = makeController(calls, { applied: [], themes: [] });
+    // Act
+    const res = controller.saveTheme({
+      name: 'Ocean',
+      roleColors: { surface: '#0A0B0C', bogus_a: '#fff', bogus_b: '#000' },
+    });
+    // Assert
+    assert.equal(res.ok, true);
+    assert.deepEqual(JSON.parse(storage._map.get(THEMES_KEY)).themes[0].roleColors, { surface: '#0a0b0c' });
+    assert.equal(warned.length, 1, '未知トークンが複数でも警告は 1 回（F-C3）');
+    assert.match(warned[0], /bogus_a, bogus_b/, '無視したトークンが警告に載っていない');
+  } finally {
+    console.warn = original;
+  }
+});
+
+test('F-C3: 未知トークンが無いときは警告を出さない（R-4・沈黙の保存）', () => {
+  // Arrange
+  const calls = [];
+  const warned = [];
+  const original = console.warn;
+  console.warn = (m) => warned.push(String(m));
+  try {
+    const { controller } = makeController(calls, { applied: [], themes: [] });
+    // Act
+    controller.saveTheme({ name: 'Ocean', roleColors: { surface: '#0a0b0c', bullish: 'not-a-color' } });
+    // Assert
+    assert.deepEqual(warned, [], 'F-C9（解釈不能な色）は F-C3 の警告対象ではない');
+  } finally {
+    console.warn = original;
+  }
+});
+
+test('F-C1: 名前が不正な保存は CODE を返し、例外を投げず、何も永続化しない', () => {
+  // Arrange
+  const calls = [];
+  const { controller, storage } = makeController(calls, { applied: [], themes: [] });
+  // Act
+  const res = controller.saveTheme({ name: '   ', roleColors: {} });
+  // Assert
+  assert.equal(res.ok, false);
+  assert.equal(res.code, CODE.empty);
+  assert.deepEqual(calls.filter((c) => c.startsWith('put:')), [], '拒否された保存で永続化が起きている');
+  assert.deepEqual(JSON.parse(storage._map.get(THEMES_KEY)).themes, []);
+  assert.deepEqual(controller.themes(), []);
+});
+
+// ---- UC-C03 改名・削除（§5.3）-----------------------------------------------
+
+test('UC-C03: 改名は themes.v1 を更新するがチャート上の色は変えない', () => {
+  // Arrange
+  const calls = [];
+  const { controller, storage } = makeController(calls, { applied: [inst('a')], themes: [THEME_A] });
+  // Act
+  const res = controller.renameTheme('thm#1', 'Sunset');
+  // Assert
+  assert.equal(res.ok, true);
+  assert.equal(JSON.parse(storage._map.get(THEMES_KEY)).themes[0].name, 'Sunset');
+  assert.deepEqual(calls.filter((c) => c === 'chrome' || c.startsWith('style:') || c === 'legend'), []);
+});
+
+test('UC-C03: 削除は activeThemeId を null にするがチャート上の色は変えない', () => {
+  // Arrange
+  const calls = [];
+  const { controller, storage } = makeController(calls, { applied: [inst('a')], themes: [THEME_A] });
+  controller.applyTheme('thm#1');
+  const marker = calls.length;
+  // Act
+  controller.deleteTheme('thm#1');
+  // Assert
+  assert.deepEqual(JSON.parse(storage._map.get(THEMES_KEY)).themes, []);
+  assert.equal(controller.activeThemeId(), null);
+  assert.deepEqual(JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: null, lastSeq: 1 });
+  assert.deepEqual(calls.slice(marker).filter((c) => c === 'chrome' || c.startsWith('style:') || c === 'legend'), []);
+});
+
+// ---- 選択中テーマの供給（provider の値源）------------------------------------
+
+test('provider: activeTheme() は選択中テーマの実体を返す（未選択は null）', () => {
+  // Arrange
+  const calls = [];
+  const { controller } = makeController(calls, { applied: [], themes: [THEME_A] });
+  // Act / Assert
+  assert.equal(controller.activeTheme(), null);
+  controller.applyTheme('thm#1');
+  assert.equal(controller.activeTheme().themeId, 'thm#1');
+});
+
+test('起動: state 未注入なら gateway から自力で復元する（dangling は null へ縮退）', () => {
+  // Arrange
+  const calls = [];
+  const warned = [];
+  const original = console.warn;
+  console.warn = (m) => warned.push(String(m));
+  try {
+    const storage = makeStorage(calls, {
+      [THEMES_KEY]: JSON.stringify({ themes: [THEME_A] }),
+      [ACTIVE_KEY]: JSON.stringify({ themeId: 'thm#404', lastSeq: 5 }),
+    });
+    const { view } = makeHost(calls, { applied: [] });
+    // Act
+    const controller = new ColorThemeController(view, {
+      gateway: new LocalStorageThemeGateway(storage), chromeApplier: null,
+    });
+    // Assert
+    assert.deepEqual(controller.themes(), [THEME_A]);
+    assert.equal(controller.activeThemeId(), null);
+    assert.deepEqual(JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: null, lastSeq: 5 });
+  } finally {
+    console.warn = original;
+  }
+});
+
+test('起動: state を注入されたら gateway を読み直さない（起動時の二重読みを作らない）', () => {
+  // Arrange: storage は空。state だけがテーマ集合の出所になる（配線が渡す経路）。
+  const calls = [];
+  const storage = makeStorage(calls, {});
+  const { view } = makeHost(calls, { applied: [] });
+  // Act
+  const controller = new ColorThemeController(view, {
+    gateway: new LocalStorageThemeGateway(storage),
+    chromeApplier: null,
+    state: {
+      themes: [THEME_A], activeThemeId: 'thm#1', lastSeq: 4, theme: THEME_A,
+    },
+  });
+  // Assert
+  assert.deepEqual(controller.themes(), [THEME_A]);
+  assert.equal(controller.activeThemeId(), 'thm#1');
+  // activeTheme() は「消費のための射影」を返す（§4.9: 永続値は原形・消費値は §4.4 の形）。
+  //   THEME_A は既に保存形なので、射影は値として恒等になる（同一参照ではない）。
+  assert.deepEqual(controller.activeTheme(), THEME_A);
+  assert.deepEqual(controller.themes(), [THEME_A], '保持している値は原形のまま');
+  assert.deepEqual(calls, [], '構築だけで永続化が走っている（起動時の二重書き込み）');
+});
+
+// ---- §3.4 ビュー自動介入の禁止（静的固定）-----------------------------------
+
+test('時刻源: now を注入したら協働子はそれだけを使う（決定論の担保）', () => {
+  // Arrange: 固定時刻を注入する。
+  const calls = [];
+  const { controller } = makeController(calls, { now: () => 777 });
+  // Act
+  controller.saveTheme({ name: 'A', roleColors: {} });
+  const saved = controller.themes().find((t) => t.name === 'A');
+  // Assert: 実時刻ではなく注入値が使われる。
+  assert.equal(saved.createdAt, 777);
+  assert.equal(saved.updatedAt, 777);
+});
+
+test('時刻源: now 未注入なら実時刻（UNIX 秒）を使う（本番で createdAt が 0 にならない）', () => {
+  // Arrange: 既定つき注入の**既定側**を通すため、now を渡さずに協働子を直接組む
+  //   （makeController は既定で固定時刻を注入するため、そこからは既定側へ到達できない）。
+  const calls = [];
+  const storage = makeStorage(calls, { [THEMES_KEY]: JSON.stringify({ themes: [] }) });
+  const gateway = new LocalStorageThemeGateway(storage);
+  const { view } = makeHost(calls, { applied: [], drawn: null });
+  const { applier } = makeChrome(calls);
+  const controller = new ColorThemeController(view, { gateway, chromeApplier: applier });
+  // Act
+  controller.saveTheme({ name: 'B', roleColors: {} });
+  const saved = controller.themes().find((t) => t.name === 'B');
+  // Assert: 0 ではなく妥当な UNIX 秒（2020-01-01 以降）であること。
+  assert.ok(saved.createdAt > 1577836800, `createdAt=${saved.createdAt} が実時刻でない`);
+  assert.equal(saved.updatedAt, saved.createdAt);
+});
+
+test('§3.4: 協働子のソースにビュー操作・再計算 API が 1 つも現れない', () => {
+  // Arrange
+  const src = readFileSync(
+    fileURLToPath(new URL('../js/adapter/front/color_theme_controller.js', import.meta.url)),
+    'utf8',
+  );
+  // §3.4 が禁じるのは「ビューへの自動介入」と「再計算」。時刻源はこれに含まれない。
+  //   `Date.now()` は**既定つき注入**（`now` 未注入時のみ実時刻を読む）であり、参照実装
+  //   `chart_template_controller.js:86` と同一の idiom。既定を 0 にすると本番の createdAt /
+  //   updatedAt が全テーマで 0 になり §4.4 が意味を失うため、禁止対象に含めてはならない。
+  //   テストの決定論は「`now` を注入したとき協働子がそれを使うこと」を振る舞いで固定して担保する
+  //   （下のテスト参照）。乱数は使わないので引き続き禁止する。
+  const forbidden = [
+    'setData(', 'fitContent(', 'setVisibleLogicalRange(', 'scrollToPosition(',
+    'autoScale', 'applyOptions(', 'recomputeAllApplied(', 'compute(',
+    'Math.random(',
+  ];
+  // Act
+  const hits = forbidden.filter((needle) => src.includes(needle));
+  // Assert
+  assert.deepEqual(hits, [], `協働子が呼んではならない API を含む: ${hits.join(', ')}`);
+});

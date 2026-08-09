@@ -22,6 +22,33 @@ export class ReplayView {
     if (mainSeries && typeof mainSeries.attachPrimitive === 'function') {
       mainSeries.attachPrimitive(this._boundaryDim);
     }
+    // 減光色（#20）はテーマの面（surface）に従属する（FR-C13）。配信済みの色を保持するのは
+    //   ChartRenderer（クロムの色の書き手 1 箇所・§7.8）で、本 View はその購読者として
+    //   受け取った色を自分が所有するプリミティブ群へ配るだけ（色を決めない）。
+    //   購読口を持たない renderer（後方互換 Fake・単体テスト）では既定色のまま＝挙動不変。
+    this._dimColor = null;
+    if (renderer && typeof renderer.addChromeObserver === 'function') {
+      // 登録直後に現在の保持値が 1 回届くため、起動時のテーマ復元にも追随する。
+      renderer.addChromeObserver((slots) => this._applyBoundaryDimColor(slots && slots.replayBoundaryDim));
+    }
+  }
+
+  // 配信された減光色を、メイン・全 pane のプリミティブへ配る（後から作る分は生成時に渡す）。
+  _applyBoundaryDimColor(color) {
+    if (typeof color !== 'string') {
+      return;
+    }
+    this._dimColor = color;
+    this._boundaryDim.setColor(color);
+    for (const dim of this._paneDims.values()) {
+      dim.setColor(color);
+    }
+  }
+
+  // pane へ装着する減光プリミティブを作る（現在の配信色で生成する＝生成順序で色がずれない）。
+  //   未配信（_dimColor=null）はプリミティブ側の既定＝現行リテラルになる（本 View は色を持たない）。
+  _newBoundaryDim() {
+    return new ReplayBoundaryDimPrimitive({ color: this._dimColor });
   }
 
   // ---- DOM ヘルパ ---- //
@@ -115,7 +142,7 @@ export class ReplayView {
       live.add(host);
       let dim = this._paneDims.get(host);
       if (!dim) {
-        dim = new ReplayBoundaryDimPrimitive();
+        dim = this._newBoundaryDim();
         host.attachPrimitive(dim);
         this._paneDims.set(host, dim);
       }

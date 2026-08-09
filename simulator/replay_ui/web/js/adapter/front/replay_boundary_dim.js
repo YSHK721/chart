@@ -7,16 +7,20 @@
 //   zOrder='bottom'（系列の下＝背景側）に boundaryTime より左の矩形を塗る＝ローソクは上に残る。
 //
 // 色: 本番背景の各 RGB を -10 した減光色（明度 -10）。boundaryTime=null は塗らない。
-//   値は chrome_tokens.js（クロム配線点の単一情報源・基本設計_指標カラーテーマ.md A-9）から引く。
-//   ここに直書きすると、背景色を変えたときに減光帯だけ旧色に残る（依頼者が指摘した破綻）。
+//   色は**注入**で受ける（基本設計_指標カラーテーマ.md FR-C13・§4.2 #20）。本プリミティブが
+//   単一情報源の現行リテラルを直接読むと、テーマで背景を変えたときに減光帯だけ旧色に残る
+//   （依頼者が指摘した破綻）。配信済みの色は ChartRenderer が保持し、ReplayView が届ける。
+//   未注入時の既定だけを chrome_tokens.js（A-9）から引く＝テーマなしの見た目は現行と同一。
 //   派生関係（surface からのチャネル別整数オフセット）は同表が保持する（E-29 の実測差分）。
 
 import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 
-const BG_DIM_COLOR = CHROME_CURRENT.replayBoundaryDim;
+const DEFAULT_BG_DIM_COLOR = CHROME_CURRENT.replayBoundaryDim;
 
 export class ReplayBoundaryDimPrimitive {
-  constructor() {
+  // color: 減光色（省略時は現行リテラル＝テーマ未適用時の色）。
+  constructor({ color = DEFAULT_BG_DIM_COLOR } = {}) {
+    this._color = typeof color === 'string' ? color : DEFAULT_BG_DIM_COLOR;
     this._chart = null;
     this._series = null;
     this._requestUpdate = null;
@@ -39,6 +43,19 @@ export class ReplayBoundaryDimPrimitive {
     this._chart = null;
     this._series = null;
     this._requestUpdate = null;
+  }
+
+  // 減光色を差し替えて塗り直しを要求する（テーマ適用の配信で呼ばれる）。文字列以外は無視する
+  //   （全域的・例外を投げない）。要求するのは自分の塗り直しだけで、時間軸・レンジには触れない
+  //   （§3.4 のビュー自動介入には当たらない）。
+  setColor(color) {
+    if (typeof color !== 'string' || color === this._color) {
+      return;
+    }
+    this._color = color;
+    if (typeof this._requestUpdate === 'function') {
+      this._requestUpdate();
+    }
   }
 
   // 減光境界（再生区間の開始足 time）を設定し再描画要求。null で減光解除。
@@ -76,7 +93,7 @@ export class ReplayBoundaryDimPrimitive {
         return; // 境界が左端より左＝可視域すべて「再生区間以降」なら減光なし。
       }
       const ctx = scope.context;
-      ctx.fillStyle = BG_DIM_COLOR;
+      ctx.fillStyle = this._color;
       ctx.fillRect(0, 0, right, scope.bitmapSize.height);
     });
   }
