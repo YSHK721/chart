@@ -18,9 +18,17 @@ import { fileURLToPath } from 'node:url';
 import { composeChartShell, installSharedUi, wireControllerCollaborators } from '../js/adapter/front/chart_app_wiring.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
 import { get } from '../js/usecase/catalog.js';
+import { PRESET_THEMES, isPresetThemeId } from '../js/usecase/color_themes.js';
 
 const THEMES_KEY = 'indicatorUi.themes.v1';
 const ACTIVE_KEY = 'indicatorUi.activeTheme.v1';
+
+// 同梱プリセット（§9 T-1）。**永続層に何件書かれたか**（`themes.v1`）と**一覧に何件見えるか**
+//   （`colorThemes.themes()` ＝ プリセット合成後）は別物であり、以下では必ず別々に表明する。
+//   混ぜて数えると「プリセットを永続層へ書き込んでしまった」実装でもテストが通ってしまう。
+const PRESET = PRESET_THEMES[0];
+const storedThemes = (env) => JSON.parse(env.storage._map.get(THEMES_KEY) ?? '{"themes":[]}').themes;
+const listedIds = (colorThemes) => colorThemes.themes().map((t) => t.themeId);
 
 const THEME_A = Object.freeze({
   themeId: 'thm#1',
@@ -348,10 +356,17 @@ test('TC-CW05 「新しいテーマを作成…」→ 編集ダイアログの�
   swatch.fire('input');
   byData(dialog, 'themeAction', 'submit').fire('click');
   // Assert
-  const saved = wired.colorThemes.themes();
-  assert.equal(saved.length, 1, 'テーマが 1 件保存される');
+  // 永続層（themes.v1）: 保存した 1 件だけ。プリセットは書き込まれない。
+  const saved = storedThemes(env);
+  assert.equal(saved.length, 1, 'テーマが 1 件保存される（永続層）');
   assert.equal(saved[0].name, '新テーマ');
   assert.deepEqual(saved[0].roleColors, { bullish: '#00ff00' }, '宣言したトークンだけが保存される');
+  assert.deepEqual(
+    saved.map((t) => t.themeId).filter(isPresetThemeId), [],
+    'プリセットが themes.v1 へ実体化している（合成ではなく書き込みになっている）',
+  );
+  // 一覧: 同梱プリセット（先頭）＋ 保存した 1 件。
+  assert.deepEqual(listedIds(wired.colorThemes), [PRESET.themeId, 'thm#1']);
   assert.equal(env.doc.body.children.length, 0, '成功時はダイアログを閉じる');
 });
 
@@ -380,9 +395,11 @@ test('TC-CW07 保存後にメニューへ新しいテーマ行が現れる（一
   const dialog = doc.body.children[0];
   byData(dialog, 'themeField', 'name').value = '新テーマ';
   byData(dialog, 'themeAction', 'submit').fire('click');
-  // Assert
-  const names = rowsOf(pop).map((r) => r.dataset.themeId);
-  assert.equal(names.length, 2, `固定行 ＋ 新テーマの 2 行（実際: ${names.join(', ')}）`);
+  // Assert: 一覧（メニュー行）＝ 固定行「テーマなし」＋ 同梱プリセット ＋ 新テーマ。
+  //   一方で永続層へ書かれるのは新テーマ 1 件だけ（固定行もプリセットも themes.v1 に無い）。
+  const ids = rowsOf(pop).map((r) => r.dataset.themeId);
+  assert.deepEqual(ids, ['', PRESET.themeId, 'thm#1'], `行構成が §6.2 と違う（実際: ${ids.join(', ')}）`);
+  assert.deepEqual(storedThemes(env).map((t) => t.themeId), ['thm#1'], '永続層へ書かれるのは新テーマ 1 件');
 });
 
 test('TC-CW08 保存: 検証失敗（空名）は CODE がダイアログへ返りテーマは増えない（F-C1）', async () => {
@@ -395,7 +412,8 @@ test('TC-CW08 保存: 検証失敗（空名）は CODE がダイアログへ返�
   const dialog = env.doc.body.children[0];
   byData(dialog, 'themeAction', 'submit').fire('click');
   // Assert
-  assert.deepEqual(wired.colorThemes.themes(), [], '既存データは不変');
+  assert.deepEqual(storedThemes(env), [], '既存データは不変（永続層に 1 件も書かない）');
+  assert.deepEqual(listedIds(wired.colorThemes), [PRESET.themeId], '一覧に見えるのは同梱プリセットだけ');
   assert.equal(env.doc.body.children.length, 1, '閉じない');
   assert.ok(byData(dialog, 'themeError', 'edit').textContent.length > 0, 'インライン表示する');
 });
@@ -412,7 +430,11 @@ test('TC-CW09 「管理…」→ 改名が colorThemes.renameTheme まで届く�
   byData(dialog, 'themeRenameInput', 'thm#1').value = 'Lagoon';
   byData(dialog, 'themeRenameCommit', 'thm#1').fire('click');
   // Assert
-  assert.equal(wired.colorThemes.themes()[0].name, 'Lagoon');
+  assert.equal(wired.colorThemes.themes().find((t) => t.themeId === 'thm#1').name, 'Lagoon', '一覧に反映される');
+  assert.deepEqual(
+    storedThemes(env).map((t) => [t.themeId, t.name]), [['thm#1', 'Lagoon']],
+    '永続層は改名した 1 件だけ（改名でプリセットが themes.v1 へ実体化しない）',
+  );
 });
 
 test('TC-CW10 「管理…」→ 削除が colorThemes.deleteTheme まで届く（確認 1 段の後・§5.3）', async () => {
@@ -424,10 +446,12 @@ test('TC-CW10 「管理…」→ 削除が colorThemes.deleteTheme まで届く�
   pop.fire('click', { target: actionOf(pop, 'manage') });
   const dialog = env.doc.body.children[0];
   byData(dialog, 'themeDelete', 'thm#1').fire('click');
-  assert.deepEqual(wired.colorThemes.themes(), [THEME_A], '確認前は削除しない');
+  assert.deepEqual(storedThemes(env), [THEME_A], '確認前は永続層から消えない');
+  assert.deepEqual(listedIds(wired.colorThemes), [PRESET.themeId, 'thm#1'], '確認前は一覧も不変');
   byData(dialog, 'themeDeleteConfirm', 'thm#1').fire('click');
   // Assert
-  assert.deepEqual(wired.colorThemes.themes(), [], '確認後に削除される');
+  assert.deepEqual(storedThemes(env), [], '確認後に永続層から消える（プリセットも書き戻されない）');
+  assert.deepEqual(listedIds(wired.colorThemes), [PRESET.themeId], '一覧に残るのは同梱プリセットだけ');
 });
 
 test('TC-CW11 管理ダイアログの一覧は保存済みテーマのみ（固定行は管理対象外・§6.2）', async () => {
@@ -438,9 +462,11 @@ test('TC-CW11 管理ダイアログの一覧は保存済みテーマのみ（固
   // Act
   pop.fire('click', { target: actionOf(pop, 'manage') });
   const dialog = env.doc.body.children[0];
-  // Assert
+  // Assert: 固定行「テーマなし」はテーマ集合の要素ではないので現れない。同梱プリセット
+  //   （§9 T-1）は実体を持つテーマなので一覧に並ぶ（改名・削除の対象になる）。
   const rows = flatten(dialog).filter((e) => e.dataset && e.dataset.themeRow !== undefined);
-  assert.deepEqual(rows.map((r) => r.dataset.themeRow), ['thm#1']);
+  assert.deepEqual(rows.map((r) => r.dataset.themeRow), [PRESET.themeId, 'thm#1']);
+  assert.deepEqual(storedThemes(env).map((t) => t.themeId), ['thm#1'], '永続層は保存済みの 1 件だけ');
 });
 
 test('TC-CW12 同名保存の確認 1 段は usecase の判定器で行う（ダイアログが文字列比較を持たない）', async () => {
@@ -454,14 +480,16 @@ test('TC-CW12 同名保存の確認 1 段は usecase の判定器で行う（ダ
   byData(dialog, 'themeField', 'name').value = ' ocean ';   // 正規化名が既存と一致（trim＋小文字化）。
   const submit = byData(dialog, 'themeAction', 'submit');
   submit.fire('click');
-  // Assert
-  assert.equal(wired.colorThemes.themes().length, 1, '1 回目では保存しない（確認 1 段）');
-  assert.equal(wired.colorThemes.themes()[0].name, 'Ocean', '名前も未変更');
+  // Assert: 永続層・一覧のどちらの件数も増えず、名前も変わっていない。
+  assert.equal(storedThemes(env).length, 1, '1 回目では保存しない（確認 1 段）');
+  assert.equal(storedThemes(env)[0].name, 'Ocean', '名前も未変更');
+  assert.deepEqual(listedIds(wired.colorThemes), [PRESET.themeId, 'thm#1'], '一覧も増えない');
   // Act: 確認
   submit.fire('click');
   // Assert
-  assert.equal(wired.colorThemes.themes().length, 1, '上書きなので件数は増えない');
-  assert.equal(wired.colorThemes.themes()[0].name, 'ocean', '上書き後の表記は入力のまま（§5.1 処理 2）');
+  assert.equal(storedThemes(env).length, 1, '上書きなので永続層の件数は増えない');
+  assert.equal(storedThemes(env)[0].name, 'ocean', '上書き後の表記は入力のまま（§5.1 処理 2）');
+  assert.deepEqual(listedIds(wired.colorThemes), [PRESET.themeId, 'thm#1'], '一覧の件数も増えない');
 });
 
 // ---------------------------------------------------------------------------

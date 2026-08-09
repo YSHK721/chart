@@ -25,10 +25,19 @@ import {
 import { createHostView } from '../js/adapter/front/host_view.js';
 import { LocalStorageThemeGateway } from '../js/adapter/front/local_storage_theme_gateway.js';
 import { resolveAllChrome } from '../js/usecase/color_resolver.js';
-import { CODE } from '../js/usecase/color_themes.js';
+import { CODE, PRESET_THEMES, isPresetThemeId } from '../js/usecase/color_themes.js';
 
 const THEMES_KEY = 'indicatorUi.themes.v1';
 const ACTIVE_KEY = 'indicatorUi.activeTheme.v1';
+
+// 同梱プリセット（§9 T-1）。**一覧に見える集合**と**永続層に書かれた集合**は別物である。
+//   - 一覧 = `controller.themes()` … プリセットを合成した集合（先頭がプリセット）。
+//   - 永続層 = `themes.v1` … 保存された原形のみ。プリセットは 1 件も書き込まれない。
+//   この 2 つを混ぜて数えると「プリセットを永続層へ書いてしまった」実装でもテストが通る。
+//   よって以下では必ず別々に表明する。
+const PRESET = PRESET_THEMES[0];
+const storedThemes = (storage) => JSON.parse(storage._map.get(THEMES_KEY) ?? '{"themes":[]}').themes;
+const listedIds = (controller) => controller.themes().map((t) => t.themeId);
 
 const THEME_A = Object.freeze({
   themeId: 'thm#1',
@@ -218,6 +227,36 @@ test('UC-C02 / §3.4: 適用は /compute・setData・契約外の面へ一切到
   assert.deepEqual(calls.filter((c) => c.startsWith('VIOLATION')), []);
 });
 
+// 一覧に見えるもの（＝ユーザーが選べるもの）は、すべて適用できなければならない。同梱プリセット
+//   （§9 T-1）は永続層に無い＝合成でのみ見える要素なので、適用時の解決を永続層だけで行うと
+//   「メニューに出ているのに押しても既定色のまま」という無言の死になる（F-C6 の誤発火）。
+//   loadThemeState が合成集合で解決する（起動時にプリセット選択を保持できる）こととも対称。
+test('UC-C02: 同梱プリセットも適用できる（一覧に見えるものは適用対象・§9 T-1）', () => {
+  // Arrange
+  const calls = [];
+  const warned = [];
+  const original = console.warn;
+  console.warn = (m) => warned.push(String(m));
+  try {
+    const { controller, storage, payloads } = makeController(calls, { applied: [], themes: [] });
+    // Act
+    const applied = controller.applyTheme(PRESET.themeId);
+    // Assert
+    assert.equal(applied, PRESET.themeId, 'プリセットの適用が F-C6 で縮退している');
+    assert.equal(controller.activeThemeId(), PRESET.themeId);
+    assert.equal(controller.activeTheme().themeId, PRESET.themeId);
+    assert.deepEqual(payloads.at(-1), resolveAllChrome(PRESET), '地はプリセットの色で配られる');
+    assert.deepEqual(warned, [], 'プリセットの適用は不在警告を出さない');
+    // 選択の記録は activeTheme.v1（id のみ）。テーマ実体は永続層へ書き込まれない。
+    assert.deepEqual(
+      JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: PRESET.themeId, lastSeq: 0 },
+    );
+    assert.deepEqual(storedThemes(storage), [], '適用でプリセットが themes.v1 へ実体化しない');
+  } finally {
+    console.warn = original;
+  }
+});
+
 test('F-C6: テーマ集合に不在の themeId は「テーマ未選択」へ縮退し null を永続化する', () => {
   // Arrange
   const calls = [];
@@ -251,13 +290,23 @@ test('UC-C01: 保存は themes.v1 と activeTheme.v1（lastSeq）を永続化す
   // Assert
   assert.equal(res.ok, true);
   assert.equal(res.themeId, 'thm#1');
-  const saved = JSON.parse(storage._map.get(THEMES_KEY)).themes;
-  assert.equal(saved.length, 1);
+  // 永続層（themes.v1）に書かれる件数 = 保存した 1 件だけ。
+  const saved = storedThemes(storage);
+  assert.equal(saved.length, 1, '永続層に書かれるのは保存した 1 件だけ');
   assert.equal(saved[0].name, 'Ocean');
   assert.deepEqual(saved[0].roleColors, { surface: '#0a0b0c' });
   assert.equal(saved[0].createdAt, 777, '注入した時刻源が使われていない');
+  assert.deepEqual(
+    saved.map((t) => t.themeId).filter(isPresetThemeId), [],
+    'プリセットが themes.v1 へ実体化している（合成ではなく書き込みになっている）',
+  );
   assert.deepEqual(JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: null, lastSeq: 1 });
-  assert.deepEqual(controller.themes(), saved);
+  // 一覧（controller.themes()）に見える件数 = プリセット（先頭）＋ 保存した 1 件。
+  assert.deepEqual(listedIds(controller), [PRESET.themeId, 'thm#1']);
+  assert.deepEqual(
+    controller.themes().filter((t) => !isPresetThemeId(t.themeId)), saved,
+    '一覧のうちプリセット以外は永続層の原形と一致する',
+  );
 });
 
 test('UC-C01: 保存は適用ではない（クロムも系列も凡例も動かない）', () => {
@@ -323,8 +372,8 @@ test('F-C1: 名前が不正な保存は CODE を返し、例外を投げず、�
   assert.equal(res.ok, false);
   assert.equal(res.code, CODE.empty);
   assert.deepEqual(calls.filter((c) => c.startsWith('put:')), [], '拒否された保存で永続化が起きている');
-  assert.deepEqual(JSON.parse(storage._map.get(THEMES_KEY)).themes, []);
-  assert.deepEqual(controller.themes(), []);
+  assert.deepEqual(storedThemes(storage), [], '永続層は空のまま（プリセットも書き込まれない）');
+  assert.deepEqual(listedIds(controller), [PRESET.themeId], '一覧に見えるのは同梱プリセットだけ');
 });
 
 // ---- UC-C03 改名・削除（§5.3）-----------------------------------------------
@@ -337,7 +386,12 @@ test('UC-C03: 改名は themes.v1 を更新するがチャート上の色は変�
   const res = controller.renameTheme('thm#1', 'Sunset');
   // Assert
   assert.equal(res.ok, true);
-  assert.equal(JSON.parse(storage._map.get(THEMES_KEY)).themes[0].name, 'Sunset');
+  assert.equal(storedThemes(storage)[0].name, 'Sunset');
+  assert.deepEqual(
+    storedThemes(storage).map((t) => t.themeId), ['thm#1'],
+    '改名で永続層に書かれるのは対象テーマだけ（プリセットが themes.v1 へ実体化しない）',
+  );
+  assert.deepEqual(listedIds(controller), [PRESET.themeId, 'thm#1'], '一覧は合成後（件数は変わらない）');
   assert.deepEqual(calls.filter((c) => c === 'chrome' || c.startsWith('style:') || c === 'legend'), []);
 });
 
@@ -350,7 +404,8 @@ test('UC-C03: 削除は activeThemeId を null にするがチャート上の色
   // Act
   controller.deleteTheme('thm#1');
   // Assert
-  assert.deepEqual(JSON.parse(storage._map.get(THEMES_KEY)).themes, []);
+  assert.deepEqual(storedThemes(storage), [], '永続層は空（削除でプリセットが書き戻されることもない）');
+  assert.deepEqual(listedIds(controller), [PRESET.themeId], '一覧に残るのは同梱プリセットだけ');
   assert.equal(controller.activeThemeId(), null);
   assert.deepEqual(JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: null, lastSeq: 1 });
   assert.deepEqual(calls.slice(marker).filter((c) => c === 'chrome' || c.startsWith('style:') || c === 'legend'), []);
@@ -385,7 +440,8 @@ test('起動: state 未注入なら gateway から自力で復元する（dangli
       gateway: new LocalStorageThemeGateway(storage), chromeApplier: null,
     });
     // Assert
-    assert.deepEqual(controller.themes(), [THEME_A]);
+    assert.deepEqual(storedThemes(storage), [THEME_A], '永続層は復元しても原形 1 件のまま');
+    assert.deepEqual(listedIds(controller), [PRESET.themeId, 'thm#1'], '一覧はプリセット合成後');
     assert.equal(controller.activeThemeId(), null);
     assert.deepEqual(JSON.parse(storage._map.get(ACTIVE_KEY)), { themeId: null, lastSeq: 5 });
   } finally {
@@ -407,12 +463,16 @@ test('起動: state を注入されたら gateway を読み直さない（起動
     },
   });
   // Assert
-  assert.deepEqual(controller.themes(), [THEME_A]);
+  assert.deepEqual(listedIds(controller), [PRESET.themeId, 'thm#1'], '一覧はプリセット合成後');
   assert.equal(controller.activeThemeId(), 'thm#1');
   // activeTheme() は「消費のための射影」を返す（§4.9: 永続値は原形・消費値は §4.4 の形）。
   //   THEME_A は既に保存形なので、射影は値として恒等になる（同一参照ではない）。
   assert.deepEqual(controller.activeTheme(), THEME_A);
-  assert.deepEqual(controller.themes(), [THEME_A], '保持している値は原形のまま');
+  assert.deepEqual(
+    controller.themes().find((t) => t.themeId === 'thm#1'), THEME_A,
+    '注入された値は原形のまま（合成は永続値を書き換えない）',
+  );
+  assert.deepEqual(storedThemes(storage), [], '永続層へは 1 件も書かない（プリセットも書かない）');
   assert.deepEqual(calls, [], '構築だけで永続化が走っている（起動時の二重書き込み）');
 });
 

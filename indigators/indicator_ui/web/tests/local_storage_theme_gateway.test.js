@@ -10,9 +10,16 @@
 //   tests/local_storage_template_gateway.test.js（fakeStorage の作法）。
 // 構造: Arrange-Act-Assert（AAA）。
 //
-// ThemeStorePort は 4 メソッドちょうど（lastSeq 専用メソッドに割らない＝§4.9 の原子性単位に一致）:
+// ThemeStorePort は 6 メソッドちょうど（lastSeq 専用メソッドに割らない＝§4.9 の原子性単位に一致）:
 //   loadThemes() -> COLOR_THEME[]              saveThemes(themes) -> void
 //   loadActiveTheme() -> { themeId, lastSeq }  saveActiveTheme({ themeId, lastSeq }) -> void
+//   loadRemovedPresetIds() -> string[]         saveRemovedPresetIds(ids) -> void
+//
+// 3 本目の論理キー `indicatorUi.removedPresets.v1`（値スキーマ `{ ids: string[] }`）が要る理由:
+//   同梱プリセット（§9 T-1）は**定義（コード）側**に在り、`themes.v1` の行として存在しない。
+//   したがって「行を消す」だけでは削除にならず、次回起動で定義から合成し直されて復活する。
+//   削除を持続させる手段は「削除したという記録」ただ 1 つで、それを置く場所がこのキーである。
+//   既存 2 キーの値スキーマ・扱いは一切変えない（本キーは加法的な追加）。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,6 +30,7 @@ async function load() {
 
 const KEY_THEMES = 'indicatorUi.themes.v1';
 const KEY_ACTIVE = 'indicatorUi.activeTheme.v1';
+const KEY_REMOVED = 'indicatorUi.removedPresets.v1';
 
 // Fake localStorage（tests/local_storage_template_gateway.test.js と同作法）。
 function fakeStorage(initial = {}) {
@@ -268,6 +276,108 @@ test('TC-T14 QuotaExceeded で失敗した書き込みは既存の他キーを�
   assert.deepEqual(gw.loadActiveTheme(), { themeId: 'thm#1', lastSeq: 1 });
 });
 
+// ---------------------------------------------------------------------------
+// removedPresets.v1（同梱プリセットの削除記録・§9 T-1 / §5.3）
+// ---------------------------------------------------------------------------
+
+test('TC-T16 removedPresets: 往復し、物理キーは indicatorUi.removedPresets.v1・値は { ids: [...] }', async () => {
+  // Arrange
+  const { LocalStorageThemeGateway } = await load();
+  const storage = fakeStorage();
+  const gw = new LocalStorageThemeGateway(storage);
+  // Act
+  gw.saveRemovedPresetIds(['thm#0']);
+  // Assert
+  assert.deepEqual(gw.loadRemovedPresetIds(), ['thm#0'], '往復して同値が読み出せる');
+  assert.deepEqual(JSON.parse(storage.map.get(KEY_REMOVED)), { ids: ['thm#0'] }, '値スキーマは { ids: [...] }');
+});
+
+test('TC-T17 removedPresets: キー未設定は空既定 [] で、警告も出さない（初回起動は破損ではない）', async () => {
+  // Arrange
+  const { LocalStorageThemeGateway } = await load();
+  const gw = new LocalStorageThemeGateway(fakeStorage());
+  // Act
+  let ids;
+  const warns = captureWarn(() => { ids = gw.loadRemovedPresetIds(); });
+  // Assert
+  assert.deepEqual(ids, []);
+  assert.equal(warns.length, 0);
+});
+
+test('TC-T18 removedPresets: 文字列以外は読み・書きの双方で落とす（消費側が要素の型を検査せずに済む）', async () => {
+  // Arrange
+  const { LocalStorageThemeGateway } = await load();
+  const storage = fakeStorage();
+  const gw = new LocalStorageThemeGateway(storage);
+  // Act: 書き（不正入力）
+  gw.saveRemovedPresetIds(['thm#0', 7, null, { id: 'x' }]);
+  // Assert
+  assert.deepEqual(JSON.parse(storage.map.get(KEY_REMOVED)), { ids: ['thm#0'] });
+  // Act: 書き（配列でない）
+  gw.saveRemovedPresetIds('thm#0');
+  // Assert
+  assert.deepEqual(JSON.parse(storage.map.get(KEY_REMOVED)), { ids: [] }, '配列でない入力は空集合として書く');
+  // Act: 読み（手編集・他端末が混ぜた非文字列）
+  storage.map.set(KEY_REMOVED, JSON.stringify({ ids: ['thm#0', 3] }));
+  // Assert
+  assert.deepEqual(gw.loadRemovedPresetIds(), ['thm#0'], '読みと書きで同一の規則を使う');
+});
+
+test('TC-T19 removedPresets: 破損・スキーマ不一致は当該キーのみ空既定へ倒し、他 2 キーを温存する（F-C4）', async () => {
+  // Arrange
+  const { LocalStorageThemeGateway } = await load();
+  const storage = fakeStorage({
+    [KEY_THEMES]: JSON.stringify({ themes: [THEME] }),
+    [KEY_ACTIVE]: JSON.stringify({ themeId: 'thm#1', lastSeq: 1 }),
+    [KEY_REMOVED]: '{ broken json',
+  });
+  const gw = new LocalStorageThemeGateway(storage);
+  // Act
+  let ids;
+  const brokenWarns = captureWarn(() => { ids = gw.loadRemovedPresetIds(); });
+  // Assert
+  assert.deepEqual(ids, [], '破損キーは空既定へ初期化する');
+  assert.ok(brokenWarns.length > 0, 'console に警告する（F-C4）');
+  assert.deepEqual(gw.loadThemes(), [THEME], '他キーは温存する（全消去しない）');
+  assert.deepEqual(gw.loadActiveTheme(), { themeId: 'thm#1', lastSeq: 1 });
+  // Act: スキーマ不一致（JSON としては妥当だが ids が配列でない）
+  storage.map.set(KEY_REMOVED, JSON.stringify({ ids: 'thm#0' }));
+  let schemaIds;
+  const schemaWarns = captureWarn(() => { schemaIds = gw.loadRemovedPresetIds(); });
+  // Assert
+  assert.deepEqual(schemaIds, []);
+  assert.equal(schemaWarns.length, 1, 'スキーマ不一致を黙って捨てない（警告は 1 回）');
+});
+
+test('TC-T20 removedPresets: QuotaExceeded は当該書き込みを中止し、既存の他キーを壊さない（F-C5）', async () => {
+  // Arrange
+  const { LocalStorageThemeGateway } = await load();
+  const storage = fakeStorage({ [KEY_THEMES]: JSON.stringify({ themes: [THEME] }) });
+  const gw = new LocalStorageThemeGateway(storage);
+  storage.quotaExceeded = true;
+  // Act / Assert
+  const warns = captureWarn(() => {
+    assert.doesNotThrow(() => gw.saveRemovedPresetIds(['thm#0']));
+  });
+  assert.equal(storage.map.has(KEY_REMOVED), false, '当該書き込みは中止される');
+  assert.ok(warns.length > 0);
+  storage.quotaExceeded = false;
+  assert.deepEqual(gw.loadThemes(), [THEME], '他キーは無傷');
+});
+
+test('TC-T21 removedPresets: 既存 2 キーの書き込みで削除記録キーは作られない（加法的な追加）', async () => {
+  // Arrange
+  const { LocalStorageThemeGateway } = await load();
+  const storage = fakeStorage();
+  const gw = new LocalStorageThemeGateway(storage);
+  // Act
+  gw.saveThemes([THEME]);
+  gw.saveActiveTheme({ themeId: 'thm#1', lastSeq: 1 });
+  gw.loadRemovedPresetIds();
+  // Assert
+  assert.deepEqual([...storage.map.keys()].sort(), [KEY_ACTIVE, KEY_THEMES].sort(), '読み出しだけでキーを増やさない');
+});
+
 test('TC-T15 storage の読み取り自体が失敗しても空既定を返し例外を投げない（全域性）', async () => {
   // Arrange: プライバシー設定等で getItem が throw する storage
   const { LocalStorageThemeGateway } = await load();
@@ -279,8 +389,10 @@ test('TC-T15 storage の読み取り自体が失敗しても空既定を返し�
   // Act / Assert
   assert.deepEqual(gw.loadThemes(), []);
   assert.deepEqual(gw.loadActiveTheme(), { themeId: null, lastSeq: 0 });
+  assert.deepEqual(gw.loadRemovedPresetIds(), []);
   captureWarn(() => {
     assert.doesNotThrow(() => gw.saveThemes([THEME]));
     assert.doesNotThrow(() => gw.saveActiveTheme({ themeId: null, lastSeq: 0 }));
+    assert.doesNotThrow(() => gw.saveRemovedPresetIds(['thm#0']));
   });
 });

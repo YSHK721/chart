@@ -251,7 +251,13 @@ test('TC-RB13 §4.9: 消費側（activeTheme）は未知トークンを無視し
   const consumed = controller.activeTheme();
   // Assert
   assert.deepEqual(consumed.roleColors, { bullish: '#00ff00' }, '解釈できない領域は無視・値は保存形');
-  assert.equal(controller.themes()[0].roleColors.profit, '#123456', '保持している値は原形のまま');
+  // 一覧（themes()）には同梱プリセット（§9 T-1）が先頭に合成されるため、永続層のテーマは id で引く。
+  const persisted = controller.themes().find((t) => t.themeId === 'thm#1');
+  assert.equal(persisted.roleColors.profit, '#123456', '保持している値は原形のまま');
+  assert.equal(
+    JSON.parse(storage.getItem(THEMES_KEY)).themes.length, 1,
+    '永続層は 1 件のまま（プリセットは合成であって書き込みではない）',
+  );
 });
 
 // =========================================================================

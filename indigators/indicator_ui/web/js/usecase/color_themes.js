@@ -6,7 +6,14 @@
 //   §5.7（F-C1 名前不正 / F-C3 未知トークン / F-C6 dangling / F-C9 色として解釈不能）。
 //
 // 責務（SRP）: テーマ集合の追加／更新／改名／削除、名前検証、roleColors・tfModifier の正規化、
-//   themeId 採番、選択中テーマ id の解決。
+//   themeId 採番、選択中テーマ id の解決、同梱プリセットの合成と実体化。
+//
+// 読み出しと書き込みで解決集合を割らない（§9 T-1）: 一覧・適用（読み出し）が合成後の集合を見る
+//   のに、保存・改名・削除（書き込み）が永続層だけを見ると、「一覧に見えるのに触れない席」が
+//   できる（実測: プリセットの改名が not_found・同名保存が新規採番で一覧に同名 2 件）。
+//   よって書き込み 3 経路も withPresets を通した集合で対象を解決し、プリセットが対象になったら
+//   **同じ themeId のまま**永続層へ実体化する（新規採番しない）。以降は「同じ themeId の永続値が
+//   勝つ」規則でユーザー版が一覧に出る。定義は変わらないので、削除の記録を消せば元に戻せる。
 // 非責務: DOM・Storage・chart・console への一切のアクセス（console も外界への副作用・R-4）。
 //   色の**適用**（それは color_resolver / adapter）。
 //
@@ -329,28 +336,84 @@ function replaceTheme(themes, themeId, updated) {
   return themes.map((t) => (t && t.themeId === themeId ? updated : t));
 }
 
+// 永続層に当該 themeId の席が在るか（＝プリセットが既に実体化しているか）。
+function isMaterialized(themes, themeId) {
+  return themes.some((t) => t && t.themeId === themeId);
+}
+
+// 当該 themeId への書き込みが §4.11 の上限（50 件）で拒否されるか。
+//   未実体化のプリセットへの保存・改名は永続層に行が 1 本増える＝「新規追加」なので上限に含める。
+//   既に席が在る更新は件数が増えないので上限に達していても可（§5.1 の例外と同じ扱い）。
+//   保存と改名が同じ判定を使う（上限規則を 2 箇所に書かない）。
+function blockedByLimit(themes, themeId) {
+  return !isMaterialized(themes, themeId) && themes.length >= MAX_THEMES;
+}
+
+// 未実体化のプリセットを永続層へ挿入する位置。
+//   プリセットは一覧の先頭側に定義順で並ぶ（withPresets）。実体化するときも同じ位置へ入れる。
+//   末尾へ足すと、名前や色を直しただけでメニューの並びが変わる（席が移動して見える）。
+//   プリセット以外（ユーザーのテーマ）は末尾＝従来どおり。
+function materializeIndex(themes, themeId) {
+  const rank = PRESET_THEME_IDS.indexOf(themeId);
+  if (rank < 0) {
+    return themes.length;
+  }
+  let at = 0;
+  while (at < themes.length) {
+    const id = themes[at] && themes[at].themeId;
+    const otherRank = isPresetThemeId(id) ? PRESET_THEME_IDS.indexOf(id) : -1;
+    if (otherRank < 0 || otherRank > rank) {
+      break;
+    }
+    at += 1;
+  }
+  return at;
+}
+
+// 更新後の 1 件を永続層の集合へ反映する。席が在れば差し替え、無ければ**同じ themeId のまま**
+//   実体化する（新規採番しない）。プリセットの改名・編集・同名保存はすべてこの 1 本を通る
+//   ＝「編集されたプリセットは同じ themeId で永続層へ実体化する」が 1 箇所で決まる。
+function upsertTheme(themes, updated) {
+  if (isMaterialized(themes, updated.themeId)) {
+    return replaceTheme(themes, updated.themeId, updated);
+  }
+  const at = materializeIndex(themes, updated.themeId);
+  return [...themes.slice(0, at), updated, ...themes.slice(at)];
+}
+
 // テーマを保存する。§5.1 の処理順（1 名前検証 → 2 同名判定と新規採番／上書き → 3 色の正規化）に従う。
 //   - 正規化名が既存と一致 → その既存テーマを上書き更新（themeId 保持・name は入力の表記・
-//     roleColors / tfModifier を置換・createdAt 不変・updatedAt 更新）。件数上限に達していても可。
+//     roleColors / tfModifier を置換・createdAt 不変・updatedAt 更新）。永続層に席が在る更新は
+//     件数が増えないため、件数上限に達していても可。
+//   - 一致した相手が**未実体化の同梱プリセット**（§9 T-1） → 同じ themeId のまま永続層へ実体化
+//     する（新規採番しない）。行が 1 本増えるので上限 50 件の判定に含める。
 //   - 一致しない → 新規採番して追加（上限 50 件で拒否＝F-C1）。
 //   保存は**適用ではない**（§5.1 後条件: チャート上の色は変化しない）。永続化は呼び出し側。
 //   戻り値の `ignoredTokens` は F-C3 で無視した未知トークン（§5.1 の処理順どおり、名前検証で
 //   中止した呼び出しは色を見ていないので必ず空）。警告を出すのは呼び出し側＝adapter（R-4）。
 export function saveTheme({
   themes = [], lastSeq = 0, name, roleColors = {}, tfModifier = null, now = 0, themeId = null,
+  removedPresetIds = [],
 } = {}) {
   const list = themes ?? [];
+  // 解決集合は**一覧に見える集合**（合成後）で、書き込み先は永続層（list）である。この 2 つを
+  //   揃えないと「見えているのに触れない席」ができる: 永続層だけで解決すると、同梱プリセット
+  //   （§9 T-1）は不在扱いになり、同名保存が新規採番になって一覧に同名が 2 件並ぶ（実測）。
+  //   読み出し（一覧・適用）と同じ withPresets を通すので、解決規則が 2 つに割れない。
+  const visible = withPresets(list, { removedPresetIds });
   // 更新対象の決め方は 2 通りで、**id が優先**する。
   //   (a) themeId 指定（編集ダイアログから開いた既存テーマ）… 名前を変えても同じ席を直す。
   //       これが無いと、名前を変えた瞬間に「別テーマの新規作成」になり、元のテーマが残って
   //       増殖する（＝一度確定したテーマを直せない状態が別の形で再現する）。
   //   (b) 正規化名の一致（§5.1 処理 2 の上書き）… 新規作成の導線から同名を保存した場合。
   const byId = typeof themeId === 'string'
-    ? list.find((t) => t && t.themeId === themeId) ?? null : null;
-  const existing = byId ?? findThemeByName({ themes: list, name });
+    ? visible.find((t) => t && t.themeId === themeId) ?? null : null;
+  const existing = byId ?? findThemeByName({ themes: visible, name });
   // 同名は「上書き」であって検証エラーではないため、自分自身を除外して検証する（§5.1 処理 2）。
+  //   重複判定も一覧に見える集合で行う（プリセットと同名のテーマを新規に作れてしまうと、
+  //   一覧に同名が 2 件並び、どちらを触っているのか区別できなくなる）。
   const verdict = validateThemeName(name, {
-    themes: list,
+    themes: visible,
     excludeThemeId: existing ? existing.themeId : null,
   });
   if (!verdict.ok) {
@@ -362,6 +425,11 @@ export function saveTheme({
   const { roleColors: colors, ignoredTokens } = normalizeRoleColors(roleColors);
   const modifier = normalizeTfModifier(tfModifier);
   if (existing) {
+    if (blockedByLimit(list, existing.themeId)) {
+      return {
+        ok: false, code: CODE.limit, themes: list, lastSeq, themeId: null, ignoredTokens,
+      };
+    }
     const updated = {
       ...existing,
       name: displayThemeName(name),
@@ -372,7 +440,8 @@ export function saveTheme({
     return {
       ok: true,
       code: CODE.ok,
-      themes: replaceTheme(list, existing.themeId, updated),
+      // 実体化は同じ themeId のまま行う＝採番（lastSeq）を消費しない（§4.10）。
+      themes: upsertTheme(list, updated),
       lastSeq,
       themeId: existing.themeId,
       ignoredTokens,
@@ -409,32 +478,56 @@ export function saveTheme({
 // 改名: name を検証（1〜40 文字・他テーマとの正規化名重複不可。自身の現在名と同一正規化名への
 //   変更は許容）して更新し updatedAt を進める。themeId・roleColors・tfModifier・createdAt は不変。
 //   チャート上の色は変化しない（§5.3）。
-export function renameTheme({ themes = [], themeId, name, now = 0 } = {}) {
+export function renameTheme({
+  themes = [], themeId, name, now = 0, removedPresetIds = [],
+} = {}) {
   const list = themes ?? [];
-  const target = list.find((t) => t && t.themeId === themeId);
+  // 解決集合は saveTheme と同じ「一覧に見える集合」（合成後）。永続層だけで探すと、一覧に
+  //   出ている同梱プリセットが not_found になって改名できない（実測）。
+  const visible = withPresets(list, { removedPresetIds });
+  const target = visible.find((t) => t && t.themeId === themeId);
   if (!target) {
     return { ok: false, code: CODE.notFound, themes: list };
   }
-  const verdict = validateThemeName(name, { themes: list, excludeThemeId: themeId });
+  const verdict = validateThemeName(name, { themes: visible, excludeThemeId: themeId });
   if (!verdict.ok) {
     return { ok: false, code: verdict.code, themes: list };
+  }
+  if (blockedByLimit(list, themeId)) {
+    return { ok: false, code: CODE.limit, themes: list };
   }
   const updated = { ...target, name: displayThemeName(name), updatedAt: now };
   return {
     ok: true,
     code: CODE.ok,
-    themes: replaceTheme(list, themeId, updated),
+    // プリセットなら同じ themeId のまま実体化する（roleColors・tfModifier・createdAt は不変）。
+    themes: upsertTheme(list, updated),
   };
 }
 
 // 削除: 当該テーマを除去し、activeThemeId が当該 id なら null にする（§5.3）。
 //   lastSeq は減算・削除しない（§4.10 id の再利用禁止）ため本関数は lastSeq を扱わない。
 //   チャート上の色は変更しない（次の描画から既定で解決される・§5.3 の非対称性）。
-export function deleteTheme({ themes = [], themeId, activeThemeId = null } = {}) {
+//
+//   同梱プリセット（§9 T-1）は**定義（コード）側**に在るため、永続層の行を消すだけでは削除に
+//   ならない（次回起動で withPresets が定義から合成し直す＝復活する）。削除を持続させる手段は
+//   「削除したという記録」ただ 1 つなので、それを戻り値で返す。実体化済みなら行の除去と記録の
+//   追記を同時に行う（片方だけだと、行を消しても復活する／記録だけでは行が残る）。
+//
+// @returns {{themes: Array, activeThemeId: ?string, removedPresetIds: string[]}}
+//   `removedPresetIds` は記録が変わらないときに**入力と同一参照**を返す。呼び出し側はこれを
+//   参照比較して「永続化が要るか」を判定できる（同じ判定を adapter 側で書き直さずに済む）。
+export function deleteTheme({
+  themes = [], themeId, activeThemeId = null, removedPresetIds = [],
+} = {}) {
   const list = themes ?? [];
+  const removed = Array.isArray(removedPresetIds) ? removedPresetIds : [];
   return {
     themes: list.filter((t) => !t || t.themeId !== themeId),
     activeThemeId: activeThemeId === themeId ? null : activeThemeId,
+    removedPresetIds: isPresetThemeId(themeId) && !removed.includes(themeId)
+      ? [...removed, themeId]
+      : removed,
   };
 }
 

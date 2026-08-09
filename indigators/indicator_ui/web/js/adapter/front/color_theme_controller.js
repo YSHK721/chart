@@ -40,6 +40,7 @@ import {
   resolveActiveThemeId,
   saveTheme as saveThemeUc,
   unknownRoleTokens,
+  withPresets,
 } from '../../usecase/color_themes.js';
 import { resolveAllChrome } from '../../usecase/color_resolver.js';
 
@@ -84,7 +85,8 @@ function warn(msg) {
  * 保持するテーマ集合そのものは **原形のまま** 採用する（§4.9 前方互換・§5.3）。ここで書き換えると、
  * 解釈できないだけの領域（未知トークン）が読み込んだ時点で消え、改名しただけで永続層から失われる。
  *
- * @param {object} gateway ThemeStorePort（loadThemes / loadActiveTheme / saveActiveTheme）。
+ * @param {object} gateway ThemeStorePort（loadThemes / saveThemes / loadActiveTheme /
+ *   saveActiveTheme / loadRemovedPresetIds / saveRemovedPresetIds）。
  * @returns {{themes: Array, activeThemeId: ?string, lastSeq: number, theme: ?object}}
  *   `themes` は原形（永続化の対象）、`theme` は選択中テーマの射影（消費の対象）。
  */
@@ -99,7 +101,11 @@ export function loadThemeState(gateway) {
   const active = gateway.loadActiveTheme();
   // §4.10: activeTheme.v1 破損（lastSeq が 0 へ倒れた等）でも id を再利用しないよう引き上げる。
   const lastSeq = recoverLastSeq(active.lastSeq, themes);
-  const resolved = resolveActiveThemeId({ themes, activeThemeId: active.themeId });
+  // 選択中テーマの解決は**プリセットを含む集合**に対して行う（§9 T-1）。永続層だけで判定すると、
+  //   プリセットを選択中のときに「参照先が不在」と誤判定して F-C6 で縮退し、起動のたびに
+  //   テーマ未選択へ戻る（選択が保持されない）。
+  const visible = withPresets(themes, { removedPresetIds: gateway.loadRemovedPresetIds() });
+  const resolved = resolveActiveThemeId({ themes: visible, activeThemeId: active.themeId });
   if (resolved.changed) {
     warn(`[color-theme] 参照先テーマが不在のためテーマ未選択へ縮退: ${active.themeId}`);
   }
@@ -111,7 +117,7 @@ export function loadThemeState(gateway) {
     themes,
     activeThemeId: resolved.activeThemeId,
     lastSeq,
-    theme: projectThemeForUse(themeById(themes, resolved.activeThemeId)).theme,
+    theme: projectThemeForUse(themeById(visible, resolved.activeThemeId)).theme,
   };
 }
 
@@ -157,24 +163,40 @@ export class ColorThemeController {
   }
 
   // ---- 参照面 ---------------------------------------------------------------
-  themes() { return this._themes; }
+  // 同梱プリセット（§9 T-1）は**参照面で合成**する。永続層（this._themes）には混ぜない。
+  //   混ぜるとこの集合がそのまま saveThemes の入力になり、プリセットが themes.v1 へ実体化して
+  //   「書き込まない」という設計が崩れる（削除しても次回起動で復活する状態へ逆戻りする）。
+  //   同じ themeId の永続値が在ればそちらが勝ち（編集・改名を尊重）、削除の記録が在れば出さない。
+  themes() {
+    return withPresets(this._themes, { removedPresetIds: this._removedPresetIds() });
+  }
+
+  // 削除済みプリセットの記録（永続層が持つ）。一覧の合成と、書き込み 3 経路の解決に同じ値を渡す
+  //   （出所を 1 つにする＝「一覧には出ないのに保存では解決される」という食い違いを作らない）。
+  //   ThemeStorePort の一員として**必ず在る**ものとして呼ぶ。`typeof … === 'function'` の在席
+  //   ガードを置くと、実装し忘れた port を渡しても無言で「削除記録なし」に倒れ、削除したはずの
+  //   プリセットが復活する（無言の死）。契約違反は例外として表に出す。
+  _removedPresetIds() {
+    return this._gateway.loadRemovedPresetIds();
+  }
 
   activeThemeId() { return this._activeThemeId; }
 
   // 選択中テーマ（未選択は null）。IndicatorController の colorThemeProvider とクロム配信の値源。
   //   返すのは**消費のための射影**（§4.4 の形）で、保持している永続値は原形のまま（§4.9）。
   //   色を消費する経路をここ 1 本にすることで、解釈不能値の判定を消費者ごとに書かずに済む。
-  activeTheme() { return projectThemeForUse(themeById(this._themes, this._activeThemeId)).theme; }
+  //   探索は合成後の集合に対して行う（プリセットを選択中でもその実体が引ける）。
+  activeTheme() { return projectThemeForUse(themeById(this.themes(), this._activeThemeId)).theme; }
 
   // 正規化名が一致する既存テーマを返す（無ければ null）。保存時の上書き確認の判定源。
   //   判定は usecase の純関数のみが行い、ダイアログは結果を受け取るだけ（DIP・判定源の一本化）。
   findThemeByName(name) {
-    return findThemeByNameUc({ themes: this._themes, name });
+    return findThemeByNameUc({ themes: this.themes(), name });
   }
 
   // メニュー再描画用のビューモデル（適用・保存・改名・削除の後の push と、開くたびの pull で共用）。
   viewModel() {
-    return { themes: this._themes, activeThemeId: this._activeThemeId };
+    return { themes: this.themes(), activeThemeId: this._activeThemeId };
   }
 
   render() {
@@ -192,7 +214,10 @@ export class ColorThemeController {
    * @returns {?string} 適用後の選択中テーマ id。
    */
   applyTheme(themeId) {
-    const resolved = resolveActiveThemeId({ themes: this._themes, activeThemeId: themeId ?? null });
+    // 解決は**合成後の集合**（＝一覧に見える集合）に対して行う。永続層だけで判定すると、同梱
+    //   プリセット（§9 T-1）は「不在」と誤判定されて F-C6 で縮退し、メニューに出ているのに
+    //   押しても既定色のままになる（無言の死）。loadThemeState の解決規則と同一（対称）。
+    const resolved = resolveActiveThemeId({ themes: this.themes(), activeThemeId: themeId ?? null });
     if (resolved.changed) {
       warn(`[color-theme] 適用対象のテーマが不在: ${themeId}（テーマ未選択として解決）`);
     }
@@ -235,6 +260,9 @@ export class ColorThemeController {
       tfModifier,
       themeId,
       now: this._now(),
+      // 解決集合を一覧（themes()）と揃えるために渡す。渡さないと同梱プリセットが不在扱いになり、
+      //   同名保存が新規採番になって一覧に同名が 2 件並ぶ（§9 T-1・実測）。
+      removedPresetIds: this._removedPresetIds(),
     });
     // F-C3: 未知トークンを無視したという**事実**は usecase が戻り値で返す（純関数は console を
     //   持たない・R-4）。それを開発者へ報告するのはこの層の決定で、一覧は 1 呼び出しにつき
@@ -259,10 +287,15 @@ export class ColorThemeController {
   }
 
   // ---- UC-C03 改名・削除（§5.3）----------------------------------------------
-  //   改名: チャート上の色は変化しない。
+  //   改名: チャート上の色は変化しない。プリセットが対象なら、同じ themeId のまま永続層へ
+  //   実体化して名前を更新する（新規採番しない＝一覧が二重にならない）。
   renameTheme(themeId, name) {
     const res = renameThemeUc({
-      themes: this._themes, themeId, name, now: this._now(),
+      themes: this._themes,
+      themeId,
+      name,
+      now: this._now(),
+      removedPresetIds: this._removedPresetIds(),
     });
     if (!res.ok) {
       return res;
@@ -276,11 +309,21 @@ export class ColorThemeController {
   // 削除: activeThemeId が当該 id なら null にするが、**チャート上の色は変更しない**。
   //   次に描画が起こった時点から既定で解決される。この非対称は意図的（誤操作の被害を広げない）。
   deleteTheme(themeId) {
+    const removedBefore = this._removedPresetIds();
     const res = deleteThemeUc({
-      themes: this._themes, themeId, activeThemeId: this._activeThemeId,
+      themes: this._themes,
+      themeId,
+      activeThemeId: this._activeThemeId,
+      removedPresetIds: removedBefore,
     });
     this._themes = res.themes;
     this._gateway.saveThemes(res.themes);
+    // 同梱プリセットは定義（コード）側に在るため、行を消しても次回起動で合成し直されて復活する。
+    //   削除を持続させるのは削除の記録だけ。「記録が要るか」は usecase が決め（判定を 2 箇所に
+    //   置かない）、変化が無ければ入力と同一参照が返るので、無用な書き込みも起きない。
+    if (res.removedPresetIds !== removedBefore) {
+      this._gateway.saveRemovedPresetIds(res.removedPresetIds);
+    }
     if (res.activeThemeId !== this._activeThemeId) {
       this._setActiveThemeId(res.activeThemeId);
     }
@@ -332,7 +375,7 @@ export class ColorThemeController {
       return;
     }
     this._dialogs.openManage({
-      themes: this._themes,
+      themes: this.themes(),
       onRename: (themeId, name) => this.renameTheme(themeId, name),
       onDelete: (themeId) => this.deleteTheme(themeId),
       // 保存済みテーマの色を直す唯一の導線（依頼者指示 2026-08-09）。管理ダイアログを閉じて

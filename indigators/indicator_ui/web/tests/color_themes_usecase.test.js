@@ -636,6 +636,187 @@ test('TC-C46 deleteTheme: 入力の themes 配列を破壊しない（純関数�
   assert.equal(themes.length, 2);
 });
 
+// ---------------------------------------------------------------------------
+// 同梱プリセットへの書き込み（§9 T-1・§5.1・§5.3）
+//
+// 書き込み 3 経路（保存・改名・削除）の**解決集合は読み出しと同じ合成後の集合**である。
+//   永続層だけで解決すると、一覧に見えているプリセットが「不在」と扱われ、改名は not_found、
+//   同名保存は新規採番（一覧に同名 2 件）になる（実測 2026-08-09）。
+// プリセットが対象になったら**同じ themeId のまま**永続層へ実体化する（新規採番しない）。
+//   以降は withPresets の「同じ themeId の永続値が勝つ」規則でユーザー版が一覧に出る。
+// ---------------------------------------------------------------------------
+
+test('TC-C48 saveTheme: 同名保存はプリセットを同じ themeId のまま実体化する（新規採番しない）', async () => {
+  // Arrange
+  const { saveTheme, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  // Act
+  const r = saveTheme({
+    themes: [], lastSeq: 0, name: preset.name, roleColors: { bullish: '#010203' }, now: 500,
+  });
+  // Assert
+  assert.equal(r.ok, true);
+  assert.equal(r.themeId, preset.themeId, '新規採番されている（席が 2 つに割れる）');
+  assert.equal(r.lastSeq, 0, '実体化は採番を消費しない（§4.10）');
+  assert.equal(r.themes.length, 1, '永続層へ実体化するのは 1 件だけ');
+  assert.deepEqual(r.themes[0], {
+    themeId: preset.themeId,
+    name: preset.name,
+    roleColors: { bullish: '#010203' },
+    tfModifier: null,
+    createdAt: preset.createdAt,
+    updatedAt: 500,
+  }, 'createdAt はプリセットの値を引き継ぎ、updatedAt を更新する');
+});
+
+test('TC-C49 saveTheme: themeId 指定でもプリセットの席を更新する（名前を変えても増えない）', async () => {
+  // Arrange
+  const { saveTheme, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  // Act
+  const r = saveTheme({
+    themes: [], lastSeq: 0, themeId: preset.themeId, name: '別名', roleColors: {}, now: 500,
+  });
+  // Assert
+  assert.equal(r.ok, true);
+  assert.equal(r.themeId, preset.themeId);
+  assert.deepEqual(r.themes.map((t) => [t.themeId, t.name]), [[preset.themeId, '別名']]);
+});
+
+test('TC-C50 saveTheme: 実体化済みプリセットは差し替えになる（2 件目を作らない）', async () => {
+  // Arrange: 既に実体化済み（ユーザー版が永続層に在る）。
+  const { saveTheme, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  const themes = [theme({ themeId: preset.themeId, name: '基本（改）', createdAt: 0, updatedAt: 1 })];
+  // Act
+  const r = saveTheme({ themes, lastSeq: 0, name: '基本（改）', roleColors: { alert: '#ffffff' }, now: 9 });
+  // Assert
+  assert.equal(r.themes.length, 1, '実体化済みの席に 2 件目が生えている');
+  assert.equal(r.themes[0].themeId, preset.themeId);
+  assert.equal(r.themes[0].updatedAt, 9);
+});
+
+test('TC-C51 saveTheme: プリセットの実体化は「新規追加」として上限 50 件の判定に含める（§4.11 を変えない）', async () => {
+  // Arrange: 永続層が上限ちょうど。
+  const { saveTheme, CODE, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  const at50 = Array.from({ length: 50 }, (_, i) => theme({ themeId: `thm#${i + 1}`, name: `t${i + 1}` }));
+  // Act
+  const r = saveTheme({ themes: at50, lastSeq: 50, name: preset.name, roleColors: {}, now: 1 });
+  // Assert
+  assert.equal(r.ok, false, '行が 1 本増えるのに上限判定を素通りしている');
+  assert.equal(r.code, CODE.limit);
+  assert.equal(r.themes, at50, '既存データは不変（同一参照を返す）');
+});
+
+test('TC-C52 saveTheme: 削除済みプリセットは解決対象にならない（同名は新規採番する）', async () => {
+  // Arrange
+  const { saveTheme, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  // Act
+  const r = saveTheme({
+    themes: [], lastSeq: 0, name: preset.name, roleColors: {}, now: 1,
+    removedPresetIds: [preset.themeId],
+  });
+  // Assert
+  assert.equal(r.themeId, 'thm#1', '削除した席を再利用している（削除の記録が効いていない）');
+  assert.equal(r.lastSeq, 1);
+});
+
+test('TC-C53 renameTheme: プリセットを同じ themeId のまま実体化して名前だけ更新する（§5.3）', async () => {
+  // Arrange
+  const { renameTheme, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  // Act
+  const r = renameTheme({ themes: [], themeId: preset.themeId, name: '  基本（改）  ', now: 42 });
+  // Assert
+  assert.equal(r.ok, true, `プリセットを改名できない（code=${r.code}）`);
+  assert.equal(r.themes.length, 1);
+  assert.deepEqual(r.themes[0], {
+    ...preset,
+    name: '基本（改）',
+    updatedAt: 42,
+  }, '改名で roleColors・tfModifier・createdAt・themeId は不変（§5.3）');
+});
+
+test('TC-C54 renameTheme: 削除済みプリセットは not_found（削除した席が改名で復活しない）', async () => {
+  // Arrange
+  const { renameTheme, CODE, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  // Act
+  const r = renameTheme({
+    themes: [], themeId: preset.themeId, name: 'X', now: 1, removedPresetIds: [preset.themeId],
+  });
+  // Assert
+  assert.equal(r.ok, false);
+  assert.equal(r.code, CODE.notFound);
+  assert.deepEqual(r.themes, []);
+});
+
+test('TC-C55 renameTheme: 一覧に見えるプリセットと同名への改名は重複として拒否する（F-C1）', async () => {
+  // Arrange
+  const { renameTheme, CODE, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  const themes = [theme({ themeId: 'thm#1', name: 'A' })];
+  // Act
+  const r = renameTheme({ themes, themeId: 'thm#1', name: preset.name, now: 1 });
+  // Assert
+  assert.equal(r.ok, false, '一覧に同名が 2 件並ぶ改名が通っている');
+  assert.equal(r.code, CODE.duplicate);
+  assert.equal(r.themes, themes, '既存データは不変（同一参照を返す）');
+});
+
+test('TC-C56 renameTheme: プリセットの実体化も上限 50 件の判定に含める（§4.11）', async () => {
+  // Arrange
+  const { renameTheme, CODE, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  const at50 = Array.from({ length: 50 }, (_, i) => theme({ themeId: `thm#${i + 1}`, name: `t${i + 1}` }));
+  // Act
+  const r = renameTheme({ themes: at50, themeId: preset.themeId, name: '基本（改）', now: 1 });
+  // Assert
+  assert.equal(r.ok, false);
+  assert.equal(r.code, CODE.limit);
+  assert.equal(r.themes, at50);
+});
+
+test('TC-C57 deleteTheme: プリセット id は削除の記録へ追記する（行を消すだけでは復活する）', async () => {
+  // Arrange
+  const { deleteTheme, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  // Act
+  const r = deleteTheme({ themes: [], themeId: preset.themeId, activeThemeId: preset.themeId });
+  // Assert
+  assert.deepEqual(r.removedPresetIds, [preset.themeId]);
+  assert.deepEqual(r.themes, []);
+  assert.equal(r.activeThemeId, null, '選択中テーマの削除は「テーマ未選択」へ落とす（§5.3）');
+});
+
+test('TC-C58 deleteTheme: 実体化済みプリセットは行の除去と削除の記録を同時に行う', async () => {
+  // Arrange
+  const { deleteTheme, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  const themes = [theme({ themeId: preset.themeId, name: '基本（改）' }), theme({ themeId: 'thm#1', name: 'A' })];
+  // Act
+  const r = deleteTheme({ themes, themeId: preset.themeId, activeThemeId: null });
+  // Assert
+  assert.deepEqual(r.themes.map((t) => t.themeId), ['thm#1'], '行が残ると削除にならない');
+  assert.deepEqual(r.removedPresetIds, [preset.themeId], '記録が無いと定義から復活する');
+});
+
+test('TC-C59 deleteTheme: 記録が変わらないときは入力配列を同一参照で返す（呼び出し側の書き込み判定源）', async () => {
+  // Arrange
+  const { deleteTheme, PRESET_THEMES } = await load();
+  const preset = PRESET_THEMES[0];
+  const removedPresetIds = [preset.themeId];
+  // Act: ユーザーテーマの削除／既に記録済みプリセットの再削除
+  const user = deleteTheme({ themes: [theme({ themeId: 'thm#1', name: 'A' })], themeId: 'thm#1', removedPresetIds });
+  const again = deleteTheme({ themes: [], themeId: preset.themeId, removedPresetIds });
+  // Assert
+  assert.equal(user.removedPresetIds, removedPresetIds, 'ユーザーテーマの削除で記録を書き換えている');
+  assert.equal(again.removedPresetIds, removedPresetIds, '二重追記している（記録が単調に膨らむ）');
+  assert.deepEqual(removedPresetIds, [preset.themeId], '入力を破壊しない（純関数）');
+});
+
 test('TC-C47 resolveActiveThemeId: 参照先が不在（dangling）なら null へ解決し変更ありを返す（F-C6）', async () => {
   // Arrange
   const { resolveActiveThemeId } = await load();

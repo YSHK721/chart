@@ -18,9 +18,15 @@ import { IndicatorController } from '../js/adapter/front/indicator_controller.js
 import { ColorThemeController, COLOR_THEME_HOST_CONTRACT } from '../js/adapter/front/color_theme_controller.js';
 import { get } from '../js/usecase/catalog.js';
 import { CHROME_CURRENT } from '../js/usecase/chrome_tokens.js';
+import { PRESET_THEMES } from '../js/usecase/color_themes.js';
 
 const THEMES_KEY = 'indicatorUi.themes.v1';
 const ACTIVE_KEY = 'indicatorUi.activeTheme.v1';
+
+// 同梱プリセット（§9 T-1）は**参照面で合成**される。永続層（themes.v1）＝保存された原形のみと、
+//   一覧（colorThemes.themes()）＝合成後の集合は別物なので、以下では別々に表明する。
+const PRESET = PRESET_THEMES[0];
+const storedThemes = (env) => JSON.parse(env.storage._map.get(THEMES_KEY) ?? '{"themes":[]}').themes;
 
 const THEME_A = Object.freeze({
   themeId: 'thm#1',
@@ -179,7 +185,17 @@ test('起動: composeChartShell が themeStore と解決済みテーマ状態を
   const shell = await shellOf(env);
   // Assert
   assert.ok(shell.themeStore, 'themeStore が返っていない');
-  assert.equal(typeof shell.themeStore.loadThemes, 'function');
+  // ThemeStorePort は 6 メンバーちょうど。協働子は在席ガード（typeof … === 'function'）を持たず
+  //   全メンバーを呼ぶため、1 つでも欠けた store を配線すると削除記録が無言で消える（＝削除した
+  //   同梱プリセットが復活する）。配線点で欠落を落とす。
+  assert.deepEqual(
+    [
+      'loadThemes', 'saveThemes', 'loadActiveTheme', 'saveActiveTheme',
+      'loadRemovedPresetIds', 'saveRemovedPresetIds',
+    ].filter((m) => typeof shell.themeStore[m] !== 'function'),
+    [],
+    'ThemeStorePort の一部が欠けた store が配線されている',
+  );
   assert.deepEqual(shell.themeState.themes, [THEME_A]);
   assert.equal(shell.themeState.activeThemeId, null);
   assert.equal(shell.themeState.theme, null);
@@ -272,7 +288,14 @@ test('結線: wireControllerCollaborators が colorThemes を組み立てて返�
   const { wired } = await wireAll(env);
   // Assert
   assert.ok(wired.colorThemes instanceof ColorThemeController, 'colorThemes が返っていない');
-  assert.deepEqual(wired.colorThemes.themes(), [THEME_A]);
+  // 一覧: 同梱プリセット（先頭）＋ 永続層のテーマ。
+  assert.deepEqual(wired.colorThemes.themes().map((t) => t.themeId), [PRESET.themeId, 'thm#1']);
+  assert.deepEqual(
+    wired.colorThemes.themes().find((t) => t.themeId === 'thm#1'), THEME_A,
+    '永続層のテーマは原形のまま一覧へ載る',
+  );
+  // 永続層: 起動・結線だけではプリセットが書き込まれない（合成であって初期値の書き込みではない）。
+  assert.deepEqual(storedThemes(env), [THEME_A]);
 });
 
 test('結線: controller._activeColorTheme() が協働子の選択中テーマを返す（端から端まで）', async () => {

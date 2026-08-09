@@ -6,6 +6,9 @@
 //        空既定へ初期化し他キーを温存＋console 警告・QuotaExceeded は当該書き込み中止で
 //        例外を投げない・**接頭辞を自前で付けず注入された storage ポートをそのまま使う**）、
 //   §4.10（lastSeq 単調・id の再利用禁止）、§5.7（F-C4 破損 / F-C5 Quota）。
+//   §9 T-1（同梱プリセット）の削除記録として 3 本目の論理キー `indicatorUi.removedPresets.v1`
+//   （値スキーマ `{ ids: string[] }`）を**加法的に**足す。既存 2 キーの値スキーマ・破損時の扱い・
+//   Quota 時の扱いは一切変えない。破損・スキーマ不一致・Quota の作法は 3 キーで同一。
 //
 // 参照実装（同型元）: local_storage_template_gateway.js（storage 注入・破損時初期化・Quota 中止）。
 //   本ゲートウェイは既存ゲートウェイを継承も改変もせず、同一の作法で独立に実装する（ISP）。
@@ -16,6 +19,11 @@
 const THEME_KEY = Object.freeze({
   themes: 'indicatorUi.themes.v1',
   activeTheme: 'indicatorUi.activeTheme.v1',
+  // 同梱プリセット（§9 T-1）の削除記録。プリセットは**定義（コード）側**に在り `themes.v1` の
+  //   行として存在しないため、行を消すだけでは削除にならない（次回起動で定義から合成し直されて
+  //   復活する）。削除を持続させる手段は「削除したという記録」ただ 1 つで、その置き場所がこのキー。
+  //   既存 2 キーの値スキーマ・扱いは一切変えない（本キーは加法的な追加）。
+  removedPresets: 'indicatorUi.removedPresets.v1',
 });
 
 // activeTheme.v1 の値スキーマ（§4.9）へ倒す。読み（破損・スキーマ不一致）と書き（不正入力）で
@@ -25,6 +33,14 @@ function normalizeActiveTheme(obj) {
     themeId: typeof obj?.themeId === 'string' ? obj.themeId : null,
     lastSeq: Number.isInteger(obj?.lastSeq) && obj.lastSeq >= 0 ? obj.lastSeq : 0,
   };
+}
+
+// removedPresets.v1 の値スキーマ（`{ ids: string[] }`）へ倒す。normalizeActiveTheme と同じ規律で
+//   読みと書きの双方が同一関数を通る。文字列以外の要素は落とす＝この配列を消費する側
+//   （usecase/color_themes.js の合成・解決）が要素の型を検査せずに済む。
+//   スキーマ不一致（ids が配列でない）は null を返し、呼び出し側が警告と空既定を決める。
+function normalizeRemovedPresetIds(ids) {
+  return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : null;
 }
 
 export class LocalStorageThemeGateway {
@@ -117,5 +133,22 @@ export class LocalStorageThemeGateway {
 
   saveActiveTheme(active) {
     this._writeJson(THEME_KEY.activeTheme, normalizeActiveTheme(active));
+  }
+
+  // -- removedPresets（{ ids: string[] }・同梱プリセットの削除記録・§9 T-1 / §5.3）-----
+  //   themes.v1 と別キーにする理由: `themes.v1` の値スキーマ（COLOR_THEME の配列）を変えずに
+  //   済むため（§4.9 の既存 2 キーは不変）。削除記録は「テーマ」ではないので同じ配列へ混ぜない。
+  loadRemovedPresetIds() {
+    const obj = this._readJson(THEME_KEY.removedPresets, { ids: [] });
+    const ids = normalizeRemovedPresetIds(obj?.ids);
+    if (ids === null) {
+      this._warnSchema(THEME_KEY.removedPresets);
+      return [];
+    }
+    return ids;
+  }
+
+  saveRemovedPresetIds(ids) {
+    this._writeJson(THEME_KEY.removedPresets, { ids: normalizeRemovedPresetIds(ids) ?? [] });
   }
 }
