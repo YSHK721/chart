@@ -29,6 +29,7 @@ from .core import (
     DEFAULT_WINDOW,
     compute_rmmmacd,
 )
+from marketdata.time_column import extract_columns as _extract_columns  # noqa: E402
 
 # 出力列名（描画対象は histogram/macd/signal の 3 列のみ）。
 HIST_COLUMN = "rmmmacd_hist"
@@ -40,24 +41,8 @@ _REQUIRED_COLUMNS = ("high", "low", "close", "volume")
 
 
 def _extract_ohlcv(df: pd.DataFrame) -> tuple[np.ndarray, ...]:
-    """DataFrame から high/low/close/volume を小文字正規化して抽出する。
-
-    Args:
-        df: 入力 DataFrame（列名の大小不問）。
-
-    Returns:
-        ``(high, low, close, volume)`` の float64 ndarray タプル。
-
-    Raises:
-        KeyError: high/low/close/volume のいずれかが欠落している場合。
-    """
-    lower_map = {str(c).lower(): c for c in df.columns}
-    missing = [c for c in _REQUIRED_COLUMNS if c not in lower_map]
-    if missing:
-        raise KeyError(f"必須列が欠落しています: {missing}")
-    return tuple(
-        df[lower_map[c]].to_numpy(dtype=np.float64) for c in _REQUIRED_COLUMNS
-    )
+    """必須列を抽出する（規則の単一源は marketdata.time_column.extract_columns）。"""
+    return _extract_columns(df, _REQUIRED_COLUMNS)
 
 
 def build_rmmmacd(

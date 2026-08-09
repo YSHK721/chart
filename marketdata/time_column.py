@@ -1,4 +1,12 @@
-"""時刻系列の解決規則（ISSUE-311）。
+"""DataFrame から値を取り出す規則（ISSUE-311 / ISSUE-314）。
+
+本モジュールは「列名の大小を問わず必要な列を取り出す」という**規則**だけを持つ。
+時刻系列の解決（:func:`resolve_times`）と、必須列の一括抽出（:func:`extract_columns`）は
+同じ規則（小文字化した写像で照合し、元の列名で引く）に基づく。
+
+---
+
+時刻系列の解決規則（ISSUE-311）。
 
 ``DataFrame`` から「その行の時刻」を取り出す規則は 1 つしかない:
 
@@ -13,7 +21,33 @@
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+
+
+def extract_columns(
+    df: pd.DataFrame, required: "tuple[str, ...]"
+) -> "tuple[np.ndarray, ...]":
+    """必須列を小文字正規化して抽出する（ISSUE-314）。
+
+    3 指標（``profit_mfi`` / ``profit_mfi_macd`` / ``profit_rmm_macd``）が 1 文字も違わない
+    実装を各 src に持っていたため、規則をここへ集約した。
+
+    Args:
+        df: 入力 DataFrame（列名の大小不問）。
+        required: 必須列名（小文字）。返り値の並びは本引数の順に一致する。
+
+    Returns:
+        ``required`` と同じ並びの float64 ndarray タプル。
+
+    Raises:
+        KeyError: 必須列のいずれかが欠落している場合。
+    """
+    lower_map = {str(c).lower(): c for c in df.columns}
+    missing = [c for c in required if c not in lower_map]
+    if missing:
+        raise KeyError(f"必須列が欠落しています: {missing}")
+    return tuple(df[lower_map[c]].to_numpy(dtype=np.float64) for c in required)
 
 
 def resolve_times(df: pd.DataFrame, time_column: "str | None") -> pd.Series:

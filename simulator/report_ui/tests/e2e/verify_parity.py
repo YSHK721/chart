@@ -8,14 +8,12 @@ determinism: bars + agg（balance_curve/heat/entries/pl/scatter/hold/weekorder�
 """
 from __future__ import annotations
 
-import http.server
 import json
 import shutil
-import socket
-import threading
 from pathlib import Path
 
 import pytest
+from e2e import _harness  # noqa: E402  (同一ディレクトリの共有ハーネス)
 
 WEB = Path(__file__).resolve().parents[1].parent / "web"
 
@@ -25,28 +23,11 @@ _TS = 1776643200  # 2026-04-20 00:00:00 UTC（Mon・hour0）
 
 
 def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
-class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
-    def end_headers(self):
-        self.send_header("Cache-Control", "no-store")
-        super().end_headers()
-
-    def log_message(self, *a):
-        pass
+    return _harness.free_port()
 
 
 def _serve(directory: str, port: int):
-    handler = lambda *a, **k: _NoCacheHandler(*a, directory=directory, **k)
-    httpd = http.server.HTTPServer(("127.0.0.1", port), handler)
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    return httpd
+    return _harness.serve(directory, port)
 
 
 def _trade(i, profit, balance, t0):

@@ -5725,3 +5725,19 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
     `chart_interaction_controller` / `indicator_controller_latest`: 差分 47〜653 行＝挙動が実際に異なる。
 - **実測**: **311 行削除**。web スイートは indicator_ui 1141 / market_profile 333 / replay_ui 338、
   fail 0 で基準線と完全一致（unified_ui の失敗は vitest 未導入の既存の環境要因）。
+
+## ISSUE-314: [重複] 抽出規則と E2E 起動手順の複製（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・全スイート基準線一致）
+- **重大度**: Low〜Middle（挙動は正しいが、規則・手順を変えるとき複数箇所を直す必要がある）
+- **是正 1（実装側）**: `_extract_ohlcv`（必須列の小文字正規化抽出）が
+  `profit_mfi` / `profit_mfi_macd` / `profit_rmm_macd` の 3 src で 1 文字も違わず複製されていた。
+  規則を `marketdata.time_column.extract_columns()` へ集約（ISSUE-311 の `resolve_times` と
+  同じ「小文字化した写像で照合し元の列名で引く」規則のため同居させる）。**45 行削除**。
+- **是正 2（E2E）**: `simulator/report_ui/tests/e2e/verify_*.py` 6 本が
+  「空きポート取得／キャッシュ無効の静的サーバ起動／chromium で開いて `window.__READY` を待つ」
+  という同一手順を複製していた（`_free_port` 6・`_serve` 6・`_NoCacheHandler` 6・`_launch` 4）。
+  `e2e/_harness.py` へ集約し、各 verify は委譲にした。**182 行削除**。
+  - `_build_web_root` は各ファイルが持ち続ける（配信する report.json の中身＝検証シナリオそのもの）。
+  - `verify_parity.py` の `_launch` は 21 行の別実装のため据え置き。
+- **実測**: 合計 **227 行削除**。27 スライス件数一致 / report_ui 171 passed /
+  marketdata・tools・simulator 1,315 passed・10 skipped（いずれも基準線一致）。
