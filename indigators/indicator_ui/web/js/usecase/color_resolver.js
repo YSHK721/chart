@@ -10,36 +10,18 @@
 // ライブ・リプレイ共有（replay 側は symlink 参照＝単一実体）。
 
 import { COLOR_ROLES, isColorRole } from '../domain/color_roles.js';
+import {
+  channelsToHex, isColorValue as isColor, isNormalizedHex as isHex6, toChannels,
+} from '../domain/color_value.js';
 import { CHROME_DEFAULT, CHROME_SLOTS, chromeSlot } from './chrome_tokens.js';
 import { TF_CODES } from '../domain/tf_meta.js';
 
 // 解決順の最終段（§4.5 ステップ 5）。既存 properties_dialog の静的フォールバックと同値。
 export const DEFAULT_SERIES_COLOR = '#2962ff';
 
-// 既存 toHex（property_control_builders.js）が受理する集合と一致させる（§4.5）。
-const RE_HEX3 = /^#[0-9a-fA-F]{3}$/;
-const RE_HEX6 = /^#[0-9a-fA-F]{6}$/;
-const RE_RGB = /^rgba?\(/i;
-// テーマの保存値は正規化済みの小文字 6 桁のみ（§4.4 roleColors）。
-const RE_HEX6_LOWER = /^#[0-9a-f]{6}$/;
-
-function isColor(v) {
-  return typeof v === 'string' && (RE_HEX3.test(v) || RE_HEX6.test(v) || RE_RGB.test(v));
-}
-
-function isHex6(v) {
-  return typeof v === 'string' && RE_HEX6_LOWER.test(v);
-}
-
-function hex2(n) {
-  return n.toString(16).padStart(2, '0');
-}
-
-function toChannels(hex) {
-  return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-}
-
-const clamp255 = (n) => Math.min(255, Math.max(0, n));
+// 色の値そのものの判定・チャネル演算は domain/color_value.js が単一情報源（受理集合は既存 toHex
+//   と一致・§4.5 ／ テーマの保存値は正規化済みの小文字 6 桁のみ・§4.4 roleColors）。
+//   本モジュールが持つのは解決**順**と、どの段でどの値を採るかという方針だけ。
 
 // =========================================================================
 // §4.7 tfModifier 変調（指標系列のみ・クロムには適用しない）
@@ -57,11 +39,10 @@ export function applyTfModifier(hex, tfModifier, timeframe) {
   if (l === 0) {
     return hex;
   }
-  const out = toChannels(hex).map((c) => {
+  return channelsToHex(toChannels(hex).map((c) => {
     const v = l >= 0 ? c + (255 - c) * l : c * (1 + l);
-    return clamp255(Math.floor(v + 0.5));
-  });
-  return `#${out.map(hex2).join('')}`;
+    return Math.floor(v + 0.5);
+  }));
 }
 
 // =========================================================================
@@ -140,8 +121,10 @@ export function offsetChannels(hex, delta) {
   if (!isHex6(hex) || !Array.isArray(delta) || delta.length !== 3) {
     return hex;
   }
-  const out = toChannels(hex).map((c, i) => clamp255(c + (Number.isFinite(delta[i]) ? delta[i] : 0)));
-  return `#${out.map(hex2).join('')}`;
+  // クランプと 2 桁 hex 化は domain/color_value.js（channelsToHex）が単一情報源。
+  return channelsToHex(toChannels(hex).map(
+    (c, i) => c + (Number.isFinite(delta[i]) ? delta[i] : 0),
+  ));
 }
 
 // surface 派生（減光ローソク・分析 tint・リプレイ減光境界）。
