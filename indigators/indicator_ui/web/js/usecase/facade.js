@@ -143,6 +143,51 @@ export function remove(state, instanceId) {
   return next;
 }
 
+/**
+ * ペインの並び順（ドラッグ&ドロップの結果）を applied 配列の順序へ反映した新 state を返す。
+ *
+ * なぜ applied の順序なのか（ユーザー指示「永続化しろ」2026-08-09）:
+ *   復元は `IndicatorStateStore._restoreRun` → `rebuildApplied(state.applied)` が **配列順に**
+ *   指標を再適用し、`SeriesDrawer._ensurePane` が pane 指標 1 件につき pane を 1 枚ずつ末尾へ
+ *   追加する。つまり並び順の表現は「applied 配列の順序」として**既に 1 つだけ存在する**。
+ *   別キーへ順序を保存すると同じ事実の第 2 の表現が生まれ、両者がずれた瞬間にどちらが正か
+ *   決められなくなる。ここを直せば保存キーも復元手順も増えず、applied を保存する
+ *   チャートテンプレートも並び順を自動で持つ。
+ *
+ * 並べ替えの規則: **instanceIds に挙がった要素が占めている添字の集合だけ**を、その順序で
+ *   詰め直す。挙がっていない要素（pane を持たない overlay 指標）は元の添字に留まるため、
+ *   価格ペインの凡例行の並び（＝適用順）を壊さない。未知 id は無視し、挙がらなかった要素も
+ *   落とさない（冪等・防御的）。
+ *
+ * @param {object} state          現在の state（破壊しない）。
+ * @param {string[]} instanceIds  ペイン順に並んだ pane 指標の instanceId。
+ * @returns {object}              並べ替え後の新 state。
+ */
+export function reorderApplied(state, instanceIds) {
+  const next = cloneState(state);
+  const byId = new Map(next.applied.map((i) => [i.instanceId, i]));
+  // 実在する id だけを、渡された順に（重複は初出のみ採る）。
+  const seen = new Set();
+  const ordered = (instanceIds ?? []).filter((id) => {
+    if (!byId.has(id) || seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+  // 並べ替えの対象となる添字（＝いま対象 instance が占めている枠）。
+  const positions = [];
+  next.applied.forEach((inst, idx) => {
+    if (seen.has(inst.instanceId)) {
+      positions.push(idx);
+    }
+  });
+  for (let k = 0; k < positions.length && k < ordered.length; k += 1) {
+    next.applied[positions[k]] = byId.get(ordered[k]);
+  }
+  return next;
+}
+
 export function toggleFavorite(state, indicatorId) {
   const next = cloneState(state);
   if (next.favorites.includes(indicatorId)) {

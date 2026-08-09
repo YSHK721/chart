@@ -102,6 +102,8 @@ export class ChartRenderer {
     //   moveTo（並べ替え）は内部配列の順序だけを変えるのでラッパの同一性は保たれる。
     this._paneKeys = new WeakMap();
     this._paneKeySeq = 0;
+    // ペイン並び順の変化を受け取る購読者（既定 no-op＝後方互換）。setPaneOrderObserver で結ぶ。
+    this._onPaneOrder = () => {};
     this._mainStretchSet = false;
     // 増分2: setCandleTrim の直近トリム末尾 index（位置不変時の再 setData 回避＝プロト lastTrimIdx）。
     //   null=未トリム。setCandles で候補が変わるためリセットする。
@@ -600,7 +602,15 @@ export class ChartRenderer {
     pane.moveTo(to);
     // ペイン構成が変わる（index と top がずれる）ため凡例を引き直す（remove() と同じ規律）。
     this._emitPaneLegend(null);
+    // 並び順の変化を購読者（＝状態を持つ controller）へ通知する。並び順の保存は state 側の
+    //   関心であり、本 class は「いまこの順である」という事実を渡すだけ（永続化は知らない）。
+    this._onPaneOrder(this.paneOrderInstanceIds());
     return true;
+  }
+
+  // ペイン並び順の変化を購読する（composition が controller の永続化へ結ぶ・省略時 no-op）。
+  setPaneOrderObserver(fn) {
+    this._onPaneOrder = typeof fn === 'function' ? fn : () => {};
   }
 
   // ペイン別凡例の DTO（幾何＋値）を返す。**upstream に触れるのはここだけ**で、View へは
@@ -702,6 +712,31 @@ export class ChartRenderer {
     const sum = heights.reduce((a, b) => a + b, 0);
     const rest = this._paneHeight - sum;
     return rest > 0 ? rest / (heights.length - 1) : 0;
+  }
+
+  /**
+   * 現在のペイン順に並んだ **pane 指標の instanceId** を返す（ユーザー指示「永続化しろ」2026-08-09）。
+   *
+   * 並び順を保存する側（usecase）は、それを applied 配列の順序として持つ。その入力となる
+   * 「いまの実際の並び」を答えるのが本メソッドで、upstream（pane.paneIndex）に触れるのは
+   * 従来どおり本 class に閉じる。
+   *
+   * overlay 指標（専用 pane を持たない＝価格ペイン）は含めない（並べ替えの対象外）。
+   * 既に外されたペイン（paneIndex() が -1）も含めない。除去途中の slot を混ぜると、
+   * 存在しない並びを保存して次回復元を壊す（`_pricePaneIndex` の -1 除外と同じ理由）。
+   */
+  paneOrderInstanceIds() {
+    const withPane = [];
+    for (const [instanceId, slot] of this._instances) {
+      if (!slot || !slot.pane || typeof slot.pane.paneIndex !== 'function') {
+        continue;
+      }
+      const idx = slot.pane.paneIndex();
+      if (Number.isInteger(idx) && idx >= 0) {
+        withPane.push({ instanceId, idx });
+      }
+    }
+    return withPane.sort((a, b) => a.idx - b.idx).map((e) => e.instanceId);
   }
 
   // slot が属するペイン番号（overlay＝専用 pane を持たない指標は 0＝価格ペイン）。

@@ -17,6 +17,7 @@ import {
   toggleVisible as facadeToggleVisible,
   remove as facadeRemove,
   toggleFavorite as facadeToggleFavorite,
+  reorderApplied,
   setSeriesStyles,
   reconcileSeriesStyles,
 } from '../../usecase/facade.js';
@@ -696,6 +697,24 @@ export class IndicatorController {
     }
     this._persistAll();
     this._renderLegend();
+  }
+
+  /**
+   * ペインの並び順（ドラッグ&ドロップの結果）を state へ確定し永続化する
+   * （ユーザー指示「永続化しろ」2026-08-09）。
+   *
+   * 並び順は applied 配列の順序として持つ（第 2 の保存キーを作らない。理由は
+   * `facade.reorderApplied` の説明）。描画は既に renderer 側で並べ替わっているので、
+   * ここでは state の同期と保存だけを行う（再計算・再描画はしない）。
+   *
+   * @param {string[]} instanceIds ペイン順に並んだ pane 指標の instanceId。
+   */
+  applyPaneOrder(instanceIds) {
+    if (!Array.isArray(instanceIds) || instanceIds.length === 0) {
+      return;
+    }
+    this._state = reorderApplied(this._state, instanceIds);
+    this._persistAll();
   }
 
   // UC-05 削除。

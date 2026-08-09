@@ -226,6 +226,11 @@ export function wireControllerCollaborators({
     tickvolBands.onCandlesChanged();
   });
 
+  // ペイン並び順の永続化（ユーザー指示「永続化しろ」2026-08-09）。ドラッグで並べ替えたら、
+  //   その順序を applied 配列の順序として state へ確定し保存する（保存キーは増やさない。
+  //   復元は従来どおり applied 配列順に pane を作り直すため、これだけで並びが再現する）。
+  renderer.setPaneOrderObserver((instanceIds) => controller.applyPaneOrder(instanceIds));
+
   // 指標の追加・削除で pane（と pane 内の系列）が作り直されるため、背景プリミティブを張り直す。
   //   購読スロットは単数で、後から別の購読者が入る。上書きで本フックが消えないよう
   //   setAppliedObserver 自体を合成する（後続購読者の挙動は不変・解除も従来どおり）。
