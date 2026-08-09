@@ -27,7 +27,8 @@ from typing import Any, Callable
 import numpy as np
 # ISSUE-183: pandas 依存は撤去（日始端算出は gateway/day_bounds の整数演算へ移行）。
 
-from market_profile_api.cache_layout import CacheLayout
+# ISSUE-305: 記述子の型は境界モジュールから取る（合成側 cache_layout から取ると循環になる）。
+from market_profile_api.cache_layout_descriptor import CacheLayout
 # ISSUE-178: 層間 DTO（不変）。gateway（外側）が compute（内側）の DTO を import する＝依存方向は内向き。
 from market_profile_api.compute.rollup_dto import ZpRollup
 # ISSUE-183: 日始端の算出は gateway 内の単一定義（``pd.Timestamp(...).normalize()`` と同値）。

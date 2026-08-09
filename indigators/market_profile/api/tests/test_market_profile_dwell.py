@@ -20,6 +20,10 @@ import pandas as pd
 import pytest
 
 from market_profile_api.compute import market_profile_dwell as mpd
+# ISSUE-305: ウォーマー（運用バッチ）の入口は warmer module のみ。統計コア側の遅延委譲は
+#   依存循環（統計コア ⇄ 運用バッチ）を作るため撤去した。注入点は従来どおり mpd 側の
+#   module 属性（warmer は call-time に ``_mpd.X`` を読む）。
+from market_profile_api.compute import market_profile_dwell_warmer as mpw
 from market_profile_api.compute.market_profile import VA_PCT_DEFAULT
 from market_profile_api.compute.rollup_dto import DayRollup
 from market_profile_api.controller.market_profile_controller import handle_market_profile
@@ -525,7 +529,7 @@ class TestWarmer:
         now = _DAY0 + 10 * _DAY  # 全日完了。
 
         # Act: 1 回目。
-        r1 = mpd.warm_dwell_cache("JP225", now=now)
+        r1 = mpw.warm_dwell_cache("JP225", now=now)
 
         # Assert: 対象 UTC 日を被覆する全セッション日のキャッシュが作られる（ISSUE-078: 3 UTC 日
         #   → 前後跨ぎで 4 セッション日。キーはセッション始端＝冬 22:00 UTC）。
@@ -536,7 +540,7 @@ class TestWarmer:
             assert mpd._cache_path("JP225", day).is_file()
 
         # Act: 2 回目（冪等）。
-        r2 = mpd.warm_dwell_cache("JP225", now=now)
+        r2 = mpw.warm_dwell_cache("JP225", now=now)
 
         # Assert: すべてスキップ（再構築しない）。
         assert r2["built"] == 0 and r2["skipped"] == len(expected_sessions)
@@ -550,7 +554,7 @@ class TestWarmer:
         monkeypatch.setattr(mpd, "_load_window_ticks", _make_loader(secs, mids))
         now = _DAY0 + _DAY + 100  # 2 日目は未完了。
 
-        r = mpd.warm_dwell_cache("JP225", now=now)
+        r = mpw.warm_dwell_cache("JP225", now=now)
 
         # ISSUE-078: セッション日キー。now 時点で完了しているのは初回セッション
         #   （2023-12-31 22:00 始まり・終端 2024-01-01 22:00 <= now）のみ。

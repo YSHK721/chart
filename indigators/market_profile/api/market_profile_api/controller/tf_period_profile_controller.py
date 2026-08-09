@@ -39,7 +39,9 @@ from market_profile_api.compute.tf_period_profile import (
 from market_profile_api.compute.market_profile import VA_PCT_DEFAULT, resolve_va_pct
 from market_profile_api.controller.market_profile_controller import _error_body
 # ISSUE-172: 配置記述子（GC 契約 DTO）。tf-period の世代 subdir を所有する当事者は本 controller。
-from market_profile_api.cache_layout import CacheLayout as _CacheLayout
+# ISSUE-305: 記述子の型は境界モジュールから取る。合成側 cache_layout から取ると
+#   cache_layout → 本 controller → cache_layout の循環になる（実測: codescan の循環検出）。
+from market_profile_api.cache_layout_descriptor import CacheLayout as _CacheLayout
 # ISSUE-179 項目 B: per-entry キャッシュ協調（メモリ LRU ＋ ディスクの 2 層）の単一実装。
 from market_profile_api.controller.tf_period_cache import TfPeriodDayCache as _TfPeriodDayCache
 
