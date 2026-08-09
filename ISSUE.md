@@ -5416,3 +5416,38 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   発行そのものを消したことで解消したと判断する。
 - **関連**: ISSUE-232（足内一括計算の先読み）、ISSUE-257（仕事量 vs 並列度）、ISSUE-296、ISSUE-297。
 
+## ISSUE-301: [性能] `dataset.load_candles` が毎回 5 万行を 1 行ずつ変換していた（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・実 UI で確認）
+- **重大度**: High（`/candles` と MP の窓解決が通る共有ホットパス。リプレイ再生では毎バー・毎要求）
+- **発見の経緯**: ISSUE-300 の是正後、残る支配項が `/market_profile`（2.1 回/足）になったため
+  「MP を集約できないか」を検討した。集約の前に 1 回の中身を測ったところ、MP 固有の計算では
+  なく共有の変換処理が支配していた。
+- **実測（in-process cProfile・`/market_profile` 1 回 4.49 秒の内訳）**:
+  | 区間 | 累積 |
+  |---|---|
+  | `marketdata.dataset.load_candles` | **4.365 秒（97%）** |
+  | └ `DataFrame.iterrows`（5 万行・1 行ごとに Series 構築） | 2.585 秒 |
+  | `dataset.load_dataframe`（CSV 読み・リサンプル本体） | 0.214 秒 |
+  さらに `to` を日中で振っても所要は 2.2〜2.8 秒でほぼ一定＝**累積窓の再集計ではなく固定費**。
+- **原因**: `load_candles` が `df.iterrows()` で 1 行ずつ dict を組み立てていた。pandas の
+  iterrows は 1 行ごとに Series を構築するため行数に対して極端に遅い。同じ 5 万行の変換を
+  毎リクエスト・毎バー実行していた（＝捨てられる計算）。
+- **是正（原因除去）**: 列ごとに numpy へ一括で取り出してから組み立てる（`iterrows` を使わない）。
+  時刻変換の規則は `_to_unix_seconds` 1 か所のままにし、DatetimeIndex のときだけ一括化する
+  `_index_unix_seconds` を追加（規則を写さない）。キャッシュ方針は変更していない
+  （＝「CSV 更新が即反映される」性質は維持）。
+- **効果（実測）**:
+  | | 是正前 | 是正後 |
+  |---|---|---|
+  | 5 万行の変換（同一 DataFrame・出力完全一致） | 1.195 秒 | **0.029 秒**（41 倍） |
+  | `/market_profile` 単発（アイドル） | 2.6 秒 | **0.30 秒**（8.7 倍） |
+  | リプレイ再生（1m・指標 15 本・real_ticks） | 3.34 秒/足 | **1.92〜1.96 秒/足** |
+  ISSUE-300 と合わせ、当初の **30.0 秒/足 → 1.92 秒/足（15 倍）**。90 秒で進む足は 3 → 47。
+- **検定**: `marketdata/tests/test_dataset_candles_conversion.py`（1 行ずつ変換との完全一致・
+  tz 有無の両方・DatetimeIndex 以外へのフォールバック・limit の末尾 N 本）6 件。
+  既存 Python 検定は marketdata 247 / indicator_ui 863 / market_profile 499 / replay_ui 261 すべて Green
+  （是正前のベースラインと同数）。
+- **MP の集約について**: 本件の是正で MP 1 回が 1/8 になったため、複数 `to` を 1 要求へまとめる
+  集約は**不要と判断**した（2.4 回/足 × 0.30 秒 ≒ 0.7 秒/足）。必要になれば ISSUE-300 と同じ型で
+  追加できる。
+- **関連**: ISSUE-300（足内更新の集約）、ISSUE-297（MTF のバー単位メモ化）。
