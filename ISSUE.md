@@ -5603,3 +5603,21 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   こと・3 方針の伝播・`require=` 上書き面の保持）。
 - **残る課題**: 各 loader 冒頭の `sys.path` bootstrap（16 重複・約 90 行）は、正規パッケージ化＝
   技術スタック変更のため未着手（承認事項・ISSUE-088 🟡-3 に既出）。
+
+## ISSUE-307: [重複] 描画テストダブル（FakeChart / FakeLine / FakeHistogram）が 16 スライスで手書き複製（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・全 27 スライスのテスト件数不変で確認）
+- **重大度**: Middle（描画側の契約が型として宣言されていないことの表面化。契約が変わると 16 箇所を直す）
+- **原因**: `indigators/*/src/lwc_chart.py` の `add_*` が要求する描画口（`create_line` /
+  `create_histogram` / `horizontal_line`）は**どこにも宣言されていない**。各スライスのテストは
+  「自分が使う口だけ」を実装した Fake を個別に書いたため、同一契約が 10 種へ分岐していた
+  （codescan 実測: `FakeChart` 20 箇所 / 10 種、`FakeHistogram` 9 箇所、`FakeLine` 8 箇所）。
+- **是正**: 全口を備えた上位集合を `indigators/testing/lwc_fakes.py` に 1 つ置き、複製を差し替えた。
+  `FakeLine` / `FakeHistogram` は `FakeSeries` の別名（複製されていた定義は name/kwargs/data/set の
+  4 点で同一だった）。自分が使わない口が生えてもスライスの検証（本数・名前・値）は影響を受けない。
+- **実測**: 16 ファイルで **396 行削除**。全 27 スライス **1,206 passed のまま件数完全一致・失敗ゼロ**。
+- **意図的に据え置いた 4 件（複製ではない）**: 変換後にテストが赤くなったものは自動で差し戻した。
+  - `price_range_power`: `horizontal_line` を**明示シグネチャ**で定義し、アダプタが未対応引数を
+    渡した場合に `TypeError` で検出する厳格な二重（記録先も `lines`）。
+  - `tickvol` / `tickvol_updown` / `profit_rsi`: 記録先・生成物が異なる別契約。
+- **残る課題**: 根本原因である「描画ポートが型として宣言されていない」ことは未解決。ポートを
+  宣言すれば据え置いた 4 件の差異も契約違反として検出できる（別 Issue）。

@@ -31,16 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.lwc_chart import _BAND_KEYS, add_hl_band  # noqa: E402
 
 
-class FakeChart:
-    """horizontal_line を記録する最小 Fake（duck typing 対象）。"""
-
-    def __init__(self):
-        self.hlines = []
-
-    def horizontal_line(self, price, **kwargs):
-        hl = {"price": price, **kwargs}
-        self.hlines.append(hl)
-        return hl
+from indigators.testing.lwc_fakes import FakeChart  # noqa: E402
 
 
 def _df(n=12):

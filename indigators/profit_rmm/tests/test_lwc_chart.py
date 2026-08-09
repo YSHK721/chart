@@ -24,30 +24,7 @@ from src import core, rmm  # noqa: E402
 from src.lwc_chart import _LEVEL_KEYS, add_rmm  # noqa: E402
 
 
-class FakeHistogram:
-    def __init__(self, name, **kwargs):
-        self.name = name
-        self.kwargs = kwargs
-        self.data = None
-
-    def set(self, data):
-        self.data = data
-
-
-class FakeChart:
-    def __init__(self):
-        self.histograms = []
-        self.hlines = []
-
-    def create_histogram(self, name, **kwargs):
-        h = FakeHistogram(name, **kwargs)
-        self.histograms.append(h)
-        return h
-
-    def horizontal_line(self, price, **kwargs):
-        line = {"price": price, **kwargs}
-        self.hlines.append(line)
-        return line
+from indigators.testing.lwc_fakes import FakeChart, FakeHistogram  # noqa: E402
 
 
 def _df(n=60):

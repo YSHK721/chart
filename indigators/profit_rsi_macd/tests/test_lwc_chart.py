@@ -27,37 +27,7 @@ from src.lwc_chart import (  # noqa: E402
 _KW = dict(rsi_period=3, fast=4, slow=8, signal=4)
 
 
-class FakeSeries:
-    def __init__(self, kind, name, **kwargs):
-        self.kind = kind
-        self.name = name
-        self.kwargs = kwargs
-        self.data = None
-
-    def set(self, data):
-        self.data = data
-
-
-class FakeChart:
-    def __init__(self):
-        self.histograms = []
-        self.lines = []
-        self.hlines = []
-
-    def create_histogram(self, name, **kwargs):
-        s = FakeSeries("histogram", name, **kwargs)
-        self.histograms.append(s)
-        return s
-
-    def create_line(self, name, **kwargs):
-        s = FakeSeries("line", name, **kwargs)
-        self.lines.append(s)
-        return s
-
-    def horizontal_line(self, price, **kwargs):
-        line = {"price": price, **kwargs}
-        self.hlines.append(line)
-        return line
+from indigators.testing.lwc_fakes import FakeChart, FakeSeries  # noqa: E402
 
 
 def _df(n=40):

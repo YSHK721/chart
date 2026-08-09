@@ -19,30 +19,7 @@ from src import MA_COLUMN, MFI_COLUMN  # noqa: E402
 from src.lwc_chart import _LEVEL_KEYS, add_mfi  # noqa: E402
 
 
-class FakeLine:
-    def __init__(self, name, **kwargs):
-        self.name = name
-        self.kwargs = kwargs
-        self.data = None
-
-    def set(self, data):
-        self.data = data
-
-
-class FakeChart:
-    def __init__(self):
-        self.lines = []
-        self.hlines = []
-
-    def create_line(self, name, **kwargs):
-        line = FakeLine(name, **kwargs)
-        self.lines.append(line)
-        return line
-
-    def horizontal_line(self, price, **kwargs):
-        line = {"price": price, **kwargs}
-        self.hlines.append(line)
-        return line
+from indigators.testing.lwc_fakes import FakeChart, FakeLine  # noqa: E402
 
 
 def _df(n=40):

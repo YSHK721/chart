@@ -16,24 +16,7 @@ sys.path.insert(0, str(_PKG_DIR))
 from src.lwc_chart import add_btlm_trail  # noqa: E402
 
 
-class FakeLine:
-    def __init__(self, name, **kwargs):
-        self.name = name
-        self.kwargs = kwargs
-        self.data = None
-
-    def set(self, data):
-        self.data = data
-
-
-class FakeChart:
-    def __init__(self):
-        self.lines = []
-
-    def create_line(self, name, **kwargs):
-        line = FakeLine(name, **kwargs)
-        self.lines.append(line)
-        return line
+from indigators.testing.lwc_fakes import FakeChart, FakeLine  # noqa: E402
 
 
 def _df(n=200, seed=0):
