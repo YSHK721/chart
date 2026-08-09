@@ -45,8 +45,10 @@ export class PaneLegendView {
    * @param {object} deps.document       DOM 実装（注入）。
    * @param {object} [deps.anchor]       版面要素の直接注入（既定は document から .chart-wrap を引く）。
    * @param {boolean} [deps.collapsed]   既定の折りたたみ状態（既定 false＝開いた状態で表示する）。
+   * @param {object} [deps.reorder]      ペイン並べ替えのドラッグ協働子（PaneReorderDrag）。未注入なら
+   *                                     従来どおり並べ替え無し（本 View は操作を一切知らない）。
    */
-  constructor({ document, anchor = null, collapsed = false, overlayId = 'chart-overlay-tl' } = {}) {
+  constructor({ document, anchor = null, collapsed = false, overlayId = 'chart-overlay-tl', reorder = null } = {}) {
     this._document = document ?? null;
     this._anchor = anchor ?? null;
     // 自分で生成したホスト要素の保持（再描画のたびに引き直さない）。
@@ -55,13 +57,20 @@ export class PaneLegendView {
     //   両者は別の器（#chart-overlay-tl）で、高さは表示中の行数で変わるため定数では避けられない。
     this._overlayId = overlayId;
     // ペイン単位の展開状態。ユーザーが開いたペインは、値の更新（毎クロスヘア）で畳まない。
+    //   鍵は **paneKey（位置に依らないペインの同一性）**（ISSUE-341）。並べ替えを入れた結果
+    //   paneIndex は「今どこに居るか」しか表さなくなり、位置を鍵にすると畳んだ状態が動かした
+    //   ペインではなく「その位置」に residue として残る（実測 2026-08-09: RSI を畳んで下へ
+    //   動かすと、畳んだ表示は元の位置の別指標に残り RSI 側が開いた）。
     this._expanded = new Set();
     // 依頼者指示（2026-08-08）: 基本はオープン。畳むのは利用者がチップを押したときだけ。
     this._defaultCollapsed = collapsed === true;
     // controller 由来の行メタ（instanceId -> { label, visible, onEye, onGear, onClose }）。
     this._rowMeta = new Map();
-    // renderer 由来の幾何＋値（{ groups: [{ paneIndex, top, height, rows }] }）。
+    // renderer 由来の幾何＋値（{ groups: [{ paneIndex, top, height, movable, rows }] }）。
     this._model = null;
+    // ペイン並べ替え（ドラッグ&ドロップ）。操作の意味づけは協働子が持ち、本 View は
+    //   「掴み手はこの要素」「幾何はこれ」を渡すだけ（描画と操作の責務を混ぜない）。
+    this._reorder = reorder ?? null;
   }
 
   // 描画先（本 View 所有のホスト要素）。無ければ版面 .chart-wrap の直下に生成する。
@@ -91,18 +100,26 @@ export class PaneLegendView {
     this.render();
   }
 
-  // 展開状態の切替（チップのクリック／行の閉じるボタン）。
-  toggle(paneIndex) {
-    if (this._expanded.has(paneIndex)) {
-      this._expanded.delete(paneIndex);
+  // 展開状態の切替（チップのクリック／行の閉じるボタン）。鍵は paneKey＝ペインの同一性。
+  toggle(paneKey) {
+    if (this._expanded.has(paneKey)) {
+      this._expanded.delete(paneKey);
     } else {
-      this._expanded.add(paneIndex);
+      this._expanded.add(paneKey);
     }
     this.render();
   }
 
-  _isExpanded(paneIndex) {
-    return this._defaultCollapsed ? this._expanded.has(paneIndex) : !this._expanded.has(paneIndex);
+  _isExpanded(paneKey) {
+    return this._defaultCollapsed ? this._expanded.has(paneKey) : !this._expanded.has(paneKey);
+  }
+
+  // 状態の鍵。DTO が paneKey を運んでいればそれを使う。運んでいない（DTO 未着・幾何なしの
+  //   縮退＝renderer が panes() を持たない Fake/SSR）場合は従来どおり paneIndex を文字列化した
+  //   ものへ退避する。並べ替えが起きない環境では位置と同一性が一致するため、これで従来挙動のまま。
+  _keyOf(group) {
+    const key = group && group.paneKey;
+    return (typeof key === 'string' && key.length > 0) ? key : String(group ? group.paneIndex : 0);
   }
 
   // 価格ペインだけ、左上オーバーレイ（現在値＋読み取り欄）の高さぶん下げる。他ペインは 0。
@@ -124,6 +141,12 @@ export class PaneLegendView {
   //   ライブ診断で market_profile は「スロットなし（未描画）」＝モデルに出ない。
   render() {
     const doc = this._document;
+    // ドラッグ中は作り直さない。凡例はクロスヘアが動くたびに DOM を捨てて作り直すため、
+    //   ペインを掴んで動かしている最中に再構築すると掴んでいる要素そのものが消える。
+    //   並べ替え確定後は movePane が凡例 DTO を再発行する＝通常経路で描き直される。
+    if (this._reorder && typeof this._reorder.isDragging === 'function' && this._reorder.isDragging()) {
+      return;
+    }
     const root = this._root();
     if (!doc || !root) {
       return;
@@ -141,9 +164,16 @@ export class PaneLegendView {
       }
       byPane.get(paneIndex).push({ instanceId, values: place ? place.values : [] });
     }
+    const placed = [];
     for (const paneIndex of [...byPane.keys()].sort((a, b) => a - b)) {
-      const geom = geometry.get(paneIndex) ?? { paneIndex, top: 0, height: 0 };
-      root.appendChild(this._buildGroup(doc, geom, byPane.get(paneIndex)));
+      const geom = geometry.get(paneIndex) ?? { paneIndex, top: 0, height: 0, movable: false };
+      const { box, handle } = this._buildGroup(doc, geom, byPane.get(paneIndex));
+      root.appendChild(box);
+      placed.push({ ...geom, box, handle });
+    }
+    // 並べ替え協働子へ、この描画で作った掴み手と幾何を渡す（要素は毎回作り直されるため毎回渡す）。
+    if (this._reorder && typeof this._reorder.sync === 'function') {
+      this._reorder.sync(root, placed);
     }
   }
 
@@ -152,7 +182,13 @@ export class PaneLegendView {
     const placement = new Map();
     const geometry = new Map();
     for (const g of (this._model && this._model.groups) || []) {
-      geometry.set(g.paneIndex, { paneIndex: g.paneIndex, top: g.top ?? 0, height: g.height ?? 0 });
+      geometry.set(g.paneIndex, {
+        paneIndex: g.paneIndex, top: g.top ?? 0, height: g.height ?? 0,
+        // 位置に依らないペインの同一性。折りたたみ状態の鍵に使う（位置の情報とは別に運ぶ）。
+        paneKey: g.paneKey ?? null,
+        // 掴めるかは renderer の判定（価格ペインは対象外・指標ペインが 1 つなら不可）をそのまま運ぶ。
+        movable: g.movable === true,
+      });
       for (const r of g.rows ?? []) {
         placement.set(r.instanceId, { paneIndex: g.paneIndex, values: r.values ?? [] });
       }
@@ -167,17 +203,27 @@ export class PaneLegendView {
     // ペインの上端へ絶対配置する。高さは内容なり（ペイン高で切らない＝はみ出しても読める）。
     box.style.top = `${Math.max(0, Math.round(group.top + this._topOffsetFor(group.paneIndex)))}px`;
 
-    const expanded = this._isExpanded(group.paneIndex);
+    const paneKey = this._keyOf(group);
+    const expanded = this._isExpanded(paneKey);
     const chip = doc.createElement('button');
     chip.type = 'button';
-    chip.className = 'pane-legend-chip' + (expanded ? ' is-open' : '');
-    chip.title = expanded ? '指標を畳む' : '指標を表示する';
+    // チップはこのペインの掴み手も兼ねる（畳んでいても必ず在る唯一の要素＝並べ替えが常にできる）。
+    chip.className = 'pane-legend-chip' + (expanded ? ' is-open' : '') + (group.movable ? ' is-movable' : '');
+    chip.title = (expanded ? '指標を畳む' : '指標を表示する')
+      + (group.movable ? '（上下にドラッグでペイン移動）' : '');
     chip.textContent = `${CHIP_ICON} ${rows.length}`;
-    chip.addEventListener('click', () => this.toggle(group.paneIndex));
+    chip.addEventListener('click', () => {
+      // 掴んで動かした直後の click は開閉ではない（同じ要素が掴み手のため必ず飛んでくる）。
+      if (this._reorder && typeof this._reorder.consumeClickSuppression === 'function'
+          && this._reorder.consumeClickSuppression()) {
+        return;
+      }
+      this.toggle(paneKey);
+    });
     box.appendChild(chip);
 
     if (!expanded) {
-      return box;
+      return { box, handle: chip };
     }
     const list = doc.createElement('div');
     list.className = 'pane-legend-rows';
@@ -185,7 +231,7 @@ export class PaneLegendView {
       list.appendChild(this._buildRow(doc, r));
     }
     box.appendChild(list);
-    return box;
+    return { box, handle: chip };
   }
 
   _buildRow(doc, row) {

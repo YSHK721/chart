@@ -109,6 +109,16 @@ html, body {
   font: 11px/1.4 inherit; padding: 1px 7px; cursor: pointer;
 }
 .pane-legend-chip:hover, .pane-legend-chip.is-open { color: #e6e9ef; border-color: #3a4050; }
+/* 並べ替え（ユーザー指示 2026-08-09）: チップはそのペインの掴み手を兼ねる。動かせるペイン
+   （＝指標ペインが 2 つ以上あるとき）だけ掴める見た目にし、価格ペインには出さない。 */
+.pane-legend-chip.is-movable { cursor: grab; }
+.pane-legend.is-dragging { z-index: 8; opacity: 0.92; }
+.pane-legend.is-dragging .pane-legend-chip { cursor: grabbing; }
+/* 落下位置の予告線。器（.pane-legends）は pointer-events:none なので操作を邪魔しない。 */
+.pane-drop-indicator {
+  position: absolute; left: 0; right: 0; height: 2px;
+  background: #2962ff; box-shadow: 0 0 6px rgba(41, 98, 255, 0.6);
+}
 .pane-legend-rows { display: flex; flex-direction: column; gap: 2px; }
 .pane-legend-row {
   display: flex; align-items: center; gap: 6px;

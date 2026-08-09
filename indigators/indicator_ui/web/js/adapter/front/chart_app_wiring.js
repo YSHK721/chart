@@ -18,6 +18,7 @@
 import { ChartRenderer } from './chart_renderer.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
 import { PaneLegendView } from './pane_legend_view.js';
+import { PaneReorderDrag } from './pane_reorder_drag.js';
 import { CurrentPriceView } from './current_price_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
@@ -81,7 +82,13 @@ export async function composeChartShell({
   const readoutView = new CrosshairReadoutView({ document: doc, elementId: 'crosshair-readout' });
   // ペイン別凡例（ISSUE-276）。描画先の器は View 自身が版面（.chart-wrap）配下へ生成する
   //   （HTML への直書き＝配信ページの手書き複製をやめた・ISSUE-277）。root は id 文字列を知らない。
-  const paneLegendView = new PaneLegendView({ document: doc });
+  // 指標ペインの並べ替え（ドラッグ&ドロップ・ユーザー指示 2026-08-09）。凡例のチップを掴み手にし、
+  //   実行は renderer の並べ替えポートへ委ねる（協働子は upstream を知らない）。renderer は直後に
+  //   生成されるため、呼び出し時解決の関数で渡す（生成順序に依存させない）。
+  const paneReorder = new PaneReorderDrag({
+    document: doc, movePane: (from, to) => renderer.movePane(from, to),
+  });
+  const paneLegendView = new PaneLegendView({ document: doc, reorder: paneReorder });
 
   // ChartRenderer は upstream API の唯一の隔離点（系列追加系 API 名を root へ漏らさない）。
   const renderer = new ChartRenderer({

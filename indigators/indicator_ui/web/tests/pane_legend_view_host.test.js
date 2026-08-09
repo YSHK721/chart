@@ -25,7 +25,11 @@ function fakeElement(tagName = 'div', className = '') {
     set innerHTML(v) { this._innerHTML = v; if (v === '') { this.children = []; } },
     append(...nodes) { for (const n of nodes) { this.children.push(n); } },
     appendChild(n) { this.children.push(n); return n; },
-    addEventListener() {},
+    listeners: {},
+    // 開閉は「チップを押す」という利用者の操作で決まる仕様なので、検定もその経路で行う
+    //   （View の内部鍵の表現に検定を縛らない）。
+    addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); },
+    fire(type, ev) { for (const fn of this.listeners[type] ?? []) { fn(ev); } },
     querySelector(sel) {
       const want = sel.startsWith('.') ? sel.slice(1) : sel;
       for (const c of this.children) {
@@ -155,9 +159,33 @@ test('チップを押せば畳める（開閉そのものは従来どおり利�
   view.setInstances(ROWS);
   view.update(MODEL);
 
-  view.toggle(0);
+  const chip = anchor.querySelector('.pane-legends').children[0].children
+    .find((c) => c.className.includes('pane-legend-chip'));
+  chip.fire('click', {});
   view.update(MODEL);
 
   const group = anchor.querySelector('.pane-legends').children[0];
   assert.equal(group.children.some((c) => c.className === 'pane-legend-rows'), false, '畳めていない');
+});
+
+// ---- paneKey 不在時の縮退（ISSUE-341） ----
+//
+//   折りたたみ状態の鍵は paneKey（位置に依らないペインの同一性）だが、DTO が paneKey を運ばない
+//   場合（幾何なしの縮退・renderer が panes() を持たない Fake/SSR）は paneIndex の文字列へ退避する。
+//   退避せず鍵を undefined のまま共有すると、1 つ畳んだだけで全ペインが畳まれる。
+
+test('paneKey が無い DTO でも、ペインごとに独立して畳める（鍵を共有しない）', () => {
+  const anchor = fakeElement('div', 'chart-wrap');   // MODEL は paneKey を持たない
+  const view = new PaneLegendView({ document: fakeDoc(anchor) });
+  view.setInstances(ROWS);
+  view.update(MODEL);
+
+  const groupAt = (i) => anchor.querySelector('.pane-legends').children
+    .find((c) => c.dataset.paneIndex === String(i));
+  groupAt(0).children.find((c) => c.className.includes('pane-legend-chip')).fire('click', {});
+
+  assert.equal(groupAt(0).children.some((c) => c.className === 'pane-legend-rows'), false,
+    '押したペインが畳めていない');
+  assert.equal(groupAt(1).children.some((c) => c.className === 'pane-legend-rows'), true,
+    '押していないペインまで畳まれた＝鍵が undefined で共有されている');
 });
