@@ -5133,3 +5133,61 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **回帰**: Python 1,449 passed／フロント 4 スイート全通過。
 - **残**: `mtf_projection`（従来の期間単位投影）は当面残置（`adapter.compute` から輸出・専用検定あり）。ライブ／リプレイのどちらの経路からも呼ばれていないため、次の整理で撤去可否を判断する。
 - **関連**: ISSUE-274（投影の導入）／286／290〜294。
+
+## ISSUE-296: [性能・依頼] 指標数に比例してリプレイモードの切替が遅い（切替 1 秒以内）（2026-08-08）
+- **ステータス**: RESOLVED（2026-08-08）
+- **重大度**: High（指標を増やすほど操作が成立しなくなる。実測 5〜9 秒）
+- **依頼**: 「指標数が多いとリプレイモードの切り替えに時間がかかる。1 秒以内に切り替えろ」。
+- **実測（実 UI・8000・jp225_tick・チャート足 1h・適用指標 5 個／うち 4 個は計算.時間足=1D）**:
+  ```
+  ライブ → リプレイ   : 5,382ms（/candles 54ms + /compute ×5：710/6209/6333/7934/8757ms は直列）
+  リプレイ → ライブ   : 8,868ms（同上・/compute ×5）
+  ```
+- **直列化の実測（/replay/compute・5m・limit=1500・カタログ 23 指標）**:
+  ```
+  直列合計 2,768ms ／ クライアント並列 8 でも実時間 2,975ms（＝短縮しない）
+  ```
+  バックエンドは重い処理を `_HeavyWorker` 1 スレッドで直列実行する（rpy2 スレッド親和のため設計どおり）。
+  よって切替時間 ≒ Σ(各指標の全長計算時間) であり、**指標数に比例**する。
+- **捨てられている計算（実測）**: 切替が発行する全長計算の結果は、**ライブが既に保持している系列と完全一致**する。
+  ```
+  カタログ 23 指標（5m・limit=1500）: live(/live/compute, untilTime 無) と replay(/replay/compute, untilTime=末尾足)
+    → 全系列・全点比較で差異 0（例 btlm_trail 0/8988 点・profit_rsi 0/8074 点）
+  本件の実 params（1h チャート・計算足 1D の moving_averages ×4）: identical=True（1500 点／本）
+  ```
+- **根本原因**: モード切替が「入力（チャート足・計算足・variant・params・窓）が何も変わっていないのに、
+  算出済みの全長系列を破棄して全指標を計算し直す」設計になっている。
+  `createModeController.enterReplay/enterLive` が毎回 `clearRevealCache()` を呼び、`enable()`→`loadTimeframe`
+  →`render` が `buildRevealBase`（登録指標の全長計算）＋`recomputeAllApplied({mode:'full'})`（残りの全長計算）を、
+  `disable()` が `recomputeAllApplied({mode:'full'})` を、それぞれ全指標ぶん発行する。
+- **抜本的対策（ユーザー承認 2026-08-08）— 全長系列の単一保管庫**:
+  1. `simulator/replay_ui/web/js/replay/full_window_series_store.js`（新規）: 指標インスタンスごとに
+     「窓いっぱいで計算した系列」を 1 本だけ持つ。鍵はチャート足・計算足・variant・params・**窓**
+     （チャート足｜本数｜末尾足時刻）。1 つでも違えば取り出せない（fail-closed）。
+  2. `ReplayIndicatorController`（追加のみ）: ライブ（`untilTime` 未設定）の全長計算が成立するたびに
+     記録する（書き手は `_computeInstance` と `_draw` の 2 経路＝復元・指標追加も拾う）。読み手は
+     `storedInstanceIds` / `renderStored`（同期描画）/ `seedRevealFromStore`（一括リビール基底を計算せず埋める）。
+  3. `replay.js`:
+     - `enable()`: リプレイ開始時の窓は「いまライブで表示している窓」そのもの。保管庫が全指標を
+       賄えるなら足も取り直さない（`loadTimeframe(tf, { candles })`）。
+     - `render()`: present（窓の末尾）のフレームは保管庫から同期描画し、per-step 計算から除外する。
+     - `disable()`: 表示の復帰を**同期・HTTP なし**で先に済ませ、ライブ末尾への追いつきは切替の
+       完了条件にしない（ライブを最新に保つのは live poller の役目）。復帰しきれない場合
+       （カレンダーで窓を変えた・保管庫が空）は従来どおり待つ。
+- **実測（是正後・実 UI・同一条件）**:
+  ```
+  指標 5 個（1h・うち 4 個 計算足 1D）: ライブ⇄リプレイ 10 回 = 56〜185ms（中央値 88ms）・/compute 0 本
+  指標 20 個（5m）                    : ライブ⇄リプレイ  8 回 = 165〜294ms・**HTTP 0 本**
+  値の一致（実 UI 凡例）: ライブ表示とリプレイ present が完全一致・往復後も完全一致
+  窓を変えた場合のフォールバック（カレンダーで 2026-08-04 へ跳んでからライブへ戻す）: 1,055ms で
+    足 1500 本・末尾 1786132800（ライブ末尾）・凡例もライブ基準値へ復帰＝従来経路が正しく働く
+  ```
+  是正前は同条件で 5,382ms（→リプレイ）／8,868ms（→ライブ）、指標 20 個では →ライブ 18.5〜19.2 秒。
+- **検定**: front `tests/replay_full_window_store.test.js`（鍵の一致条件・窓トークン・書き手のモード
+  ゲート・fail-closed・同期描画集合・リビール基底の seed・二重描画の禁止・params 変更での破棄）。
+- **回帰**: Python 863＋380 passed／フロント 337（replay）＋1,140（live）＋43（unified）passed。
+- **残（本件のスコープ外・別途判断）**: リプレイの**バー送り**は依然として指標数に比例する
+  （実測: 指標 20 個で 1 バー 9.7〜25 秒）。一括リビール登録（`CAUSAL_REVEAL_IDS`）が 4 指標のみで、
+  残りは per-step 計算＋足内先読みを発行するため。
+- **関連**: ISSUE-158 ②（一括リビール基底）、ISSUE-297（MTF 全長計算の記憶化・同時実施）。
+

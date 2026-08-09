@@ -20,6 +20,7 @@ import { IndicatorController } from './indicator_controller.js';
 import { CAUSAL_REVEAL_IDS } from '../../usecase/causal_reveal_ids.js';
 import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
 import { CausalSeriesLedger } from '../../replay/causal_series_ledger.js';
+import { FullWindowSeriesStore } from '../../replay/full_window_series_store.js';
 
 // [reveal 一括] ソート済み time 配列で t 以下の点数を返す（二分探索・revealTo のスライス位置）。
 function upperBound(ts, t) {
@@ -55,6 +56,165 @@ export class ReplayIndicatorController extends IndicatorController {
     this._revealEpoch = 0;
     // [ISSUE-293] 確定済みの点を固定する台帳（過去のラインを最新値で塗り替えない）。
     this._ledger = new CausalSeriesLedger();
+    // [ISSUE-296] 全長系列の単一保管庫。ライブの全長計算が成立するたびに記録し、モード切替は
+    //   ここから同期描画するだけにする（同じ入力・同じ窓の再計算を発行しない）。
+    this._fullSeries = new FullWindowSeriesStore();
+  }
+
+  // ================= [全長系列の単一保管庫・ISSUE-296] =================
+  //   モード切替（ライブ⇄リプレイ）は入力（チャート足・計算足・variant・params・窓）を 1 つも
+  //   変えない。よってライブが既に算出した全長系列は、リプレイの present（窓の末尾＝ライブ現在）
+  //   でもそのまま正しい（実測: 23 指標・全点比較で差異 0／MTF 4 本も一致）。ここではその系列を
+  //   記録し、切替では計算せず描き直すだけにする。窓が動いていた場合はキーが一致せず取り出せない
+  //   ＝従来どおり計算する（fail-closed）。
+
+  // 窓の同一性トークン（チャート足｜本数｜末尾足時刻）。書き手・読み手が同じ形で作る唯一源。
+  windowTokenOf(timeframe, candles) {
+    if (!Array.isArray(candles) || candles.length === 0) {
+      return null;
+    }
+    return `${timeframe}|${candles.length}|${candles[candles.length - 1].time}`;
+  }
+
+  // ライブ側（描画中のローソク）から見た窓トークン。リプレイ中はメイン系列がリビールで
+  //   切り詰められているため、読み手は cursor が持つ全長ローソクから作ったトークンを渡すこと。
+  _liveWindowToken() {
+    const candles = this._renderer && typeof this._renderer.getCandles === 'function'
+      ? this._renderer.getCandles() : null;
+    return this.windowTokenOf(this._timeframe, candles);
+  }
+
+  // 系列を決める入力すべてを 1 本のキーへ畳む（1 つでも違えば別物＝取り出せない）。
+  //   params はキー順に並べてから畳む（オブジェクトの列挙順の違いでキーが揺れないようにする）。
+  _fullSeriesKey(inst, params, windowToken) {
+    const sorted = Object.keys(params ?? {}).sort().map((k) => [k, params[k]]);
+    return JSON.stringify([
+      this._timeframe,
+      this._calcTimeframeOf(params) ?? null,
+      inst.variant ?? null,
+      sorted,
+      windowToken,
+    ]);
+  }
+
+  // 当該窓の全長系列を保管庫が持っている instanceId の集合（MP は保管庫の対象外）。
+  //   呼び出し側はこれを per-step 計算の skip 述語に使う。
+  storedInstanceIds(windowToken) {
+    const ids = new Set();
+    if (!windowToken) {
+      return ids;
+    }
+    for (const inst of this._state.applied) {
+      const meta = this._meta.get(inst.instanceId);
+      if (!meta || this._isMarketProfile(meta.def)) {
+        continue;
+      }
+      const params = this._paramsObject(inst.params);
+      if (this._fullSeries.get(inst.instanceId, this._fullSeriesKey(inst, params, windowToken))) {
+        ids.add(inst.instanceId);
+      }
+    }
+    return ids;
+  }
+
+  // 保管庫の全長系列を同期描画する（計算を発行しない）。描けた instanceId の集合を返す。
+  //   await を挟まないため、ローソク差替えと同一同期ブロック（preRender 内）から呼べる。
+  renderStored(windowToken) {
+    const drawn = new Set();
+    if (!windowToken) {
+      return drawn;
+    }
+    for (const inst of this._state.applied) {
+      const meta = this._meta.get(inst.instanceId);
+      // 一括リビール基底を持つ指標は revealTo が同じフレームで描く（二重描画しない）。
+      if (!meta || this._isMarketProfile(meta.def) || this._revealCache.has(inst.instanceId)) {
+        continue;
+      }
+      const params = this._paramsObject(inst.params);
+      const hit = this._fullSeries.get(inst.instanceId, this._fullSeriesKey(inst, params, windowToken));
+      if (!hit) {
+        continue;
+      }
+      this._renderInstance({
+        instanceId: inst.instanceId,
+        accepted: true,
+        def: hit.def,
+        params: hit.params,
+        wantLatest: false,
+        series: hit.series,
+        hidden: !inst.visible,
+      });
+      drawn.add(inst.instanceId);
+    }
+    return drawn;
+  }
+
+  // 一括リビール基底を保管庫から埋める（HTTP を発行しない）。埋まらなかったものは
+  //   revealNeedsBuild() が true のまま＝buildRevealBase が従来どおり計算する。
+  seedRevealFromStore(windowToken) {
+    if (!windowToken) {
+      return;
+    }
+    for (const inst of this._revealTargets()) {
+      if (this._revealCache.has(inst.instanceId)) {
+        continue;
+      }
+      const meta = this._meta.get(inst.instanceId);
+      const params = this._paramsObject(inst.params);
+      const hit = this._fullSeries.get(inst.instanceId, this._fullSeriesKey(inst, params, windowToken));
+      if (!hit) {
+        continue;
+      }
+      // buildRevealBase と同じ形（F3 通過済み系列＋系列名→time 配列）でキャッシュへ入れる。
+      const series = this._validateSeriesNames(hit.series, meta.def, params);
+      const times = new Map();
+      for (const p of series) {
+        if (Array.isArray(p.data)) {
+          times.set(p.name, p.data.map((pt) => pt.time));
+        }
+      }
+      this._revealCache.set(inst.instanceId, { def: meta.def, params, series, times });
+    }
+  }
+
+  // 保管庫への記録（書き手 2 経路の共通実体）。ライブ（untilTime 未設定）以外は記録しない。
+  _recordFullSeries(instanceId, def, params, series, windowToken) {
+    if (!windowToken || !Array.isArray(series)) {
+      return;
+    }
+    const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+    if (!inst) {
+      return;
+    }
+    const flat = this._paramsObject(params);
+    this._fullSeries.put(instanceId, {
+      key: this._fullSeriesKey(inst, flat, windowToken), def, params, series,
+    });
+  }
+
+  // 書き手その 2: 復元（restore）・指標追加（applyIndicator）の描画入口。これらは
+  //   `_computeInstance` を通らず gateway を直に叩くため、ここで拾わないと**初回のモード切替だけ**
+  //   保管庫が空になる（＝再計算が走る）。窓トークンは描画時点で採る（起動時の復元は poller 停止中
+  //   ＝窓が動かない。指標追加中に足が確定した場合は次のバー確定の全再計算が正しい値で上書きする）。
+  _draw(instanceId, def, series, params = null) {
+    if (this._untilTime === undefined) {
+      this._recordFullSeries(instanceId, def, params, series, this._liveWindowToken());
+    }
+    return super._draw(instanceId, def, series, params);
+  }
+
+  // 書き手その 1: **ライブ（untilTime 未設定）の全長計算が成立したとき**。窓トークンは
+  //   計算の発行時点で採る（応答待ちの間に足が確定しても、古い窓の結果を新しい窓の物として
+  //   記録しない）。リプレイの per-step 計算（untilTime 設定・窓 limit=bar+1）と足内の末尾差分
+  //   （mode='latest'）は記録しない＝全長系列ではないため。
+  async _computeInstance(instanceId, newVariant, newParams, opts = {}) {
+    const isFullLive = this._untilTime === undefined && opts.mode !== 'latest';
+    const windowToken = isFullLive ? this._liveWindowToken() : null;
+    const job = await super._computeInstance(instanceId, newVariant, newParams, opts);
+    if (windowToken && job && job.accepted && !job.wantLatest && Array.isArray(job.series)) {
+      this._recordFullSeries(instanceId, job.def, job.params, job.series, windowToken);
+    }
+    return job;
   }
 
   // [ISSUE-293] 描画の記録性: リビール時点 T より前のバーは、最初に描いた値のまま固定する。
@@ -108,6 +268,7 @@ export class ReplayIndicatorController extends IndicatorController {
   // 当該インスタンスの基底を破棄（params/variant 変更で陳腐化したとき）。
   _invalidateReveal(instanceId) {
     this._ledger.forget(instanceId);   // [ISSUE-293] params/variant 変更＝別の系列
+    this._fullSeries.forget(instanceId);   // [ISSUE-296] 保管庫も同時に手放す（残しても鍵が合わない）
     if (this._revealCache.delete(instanceId)) {
       this._revealEpoch += 1;
     }

@@ -157,6 +157,18 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
 
     controller.setUntilTime(t);
     controller._recentBars = cursor.bar() + 1; // 計算窓＝リビール範囲
+    // [ISSUE-296] present（窓の末尾＝ライブ現在）のフレームは、ライブが既に算出した全長系列と
+    //   同じもの（実測: 全点一致）。保管庫にあるぶんは計算を発行せず、preRender 内で同期描画する。
+    //   窓が動いていればキーが合わず取り出せない＝従来どおり計算する（fail-closed）。
+    const presentToken = (cursor.bar() === cursor.candles().length - 1
+      && typeof controller.windowTokenOf === 'function')
+      ? controller.windowTokenOf(cursor.timeframe(), cursor.candles())
+      : null;
+    if (presentToken && typeof controller.seedRevealFromStore === 'function') {
+      controller.seedRevealFromStore(presentToken);   // 一括リビール基底も保管庫から埋める
+    }
+    const storedIds = (presentToken && typeof controller.storedInstanceIds === 'function')
+      ? controller.storedInstanceIds(presentToken) : null;
     // [ISSUE-158 ②] 一括リビール基底: 登録指標（causal_reveal_ids）は全レンジを 1 回だけ計算して
     //   キャッシュし、以降のバー送りは同期スライス描画のみ（per-step HTTP を発行しない）。
     //   必要時（時間足切替・指標追加・params 変更後の初回フレーム）のみ構築する。
@@ -177,14 +189,20 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
       const batch = await controller.recomputeAllApplied({
         mode: 'full',
         // 一括リビール済み指標は per-step 計算から除外（revealTo が同フレームで描画する）。
-        skip: (inst) => typeof controller.hasRevealFor === 'function'
-          && controller.hasRevealFor(inst.instanceId),
+        //   [ISSUE-296] 保管庫の全長系列で描けるぶん（present のみ）も同様に除外する。
+        skip: (inst) => (typeof controller.hasRevealFor === 'function'
+          && controller.hasRevealFor(inst.instanceId))
+          || (storedIds !== null && storedIds.has(inst.instanceId)),
         preRender: () => {
           const saved = (!autoFrame) ? view.getVisibleLogicalRange() : null;
           view.setCandles(cursor.candles().slice(0, cursor.bar() + 1));
           if (saved) { view.setVisibleLogicalRange(saved); }
           else applyView();
           if (typeof controller.revealTo === 'function') controller.revealTo(t);
+          // [ISSUE-296] 保管庫からの同期描画（revealTo と同じく await を挟まない）。
+          if (storedIds && storedIds.size && typeof controller.renderStored === 'function') {
+            controller.renderStored(presentToken);
+          }
         },
       });
       // ISSUE-282: 個別インスタンスの計算失敗は再生を止めない（バッチは完走し、成功分と
@@ -251,7 +269,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   function syncModeOptions(tf) {
     view.applyModeDegeneration(degenerateModes(tf));
   }
-  async function loadTimeframe(tf) {
+  async function loadTimeframe(tf, { candles = null } = {}) {
     cursor.setTimeframe(tf);
     cursor.setReplayStart(0); cursor.clearActivePeriod();
     syncModeOptions(tf);
@@ -261,7 +279,9 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     // [ISSUE-158 ②] 時間足切替で一括リビール基底を全破棄（次フレームで新 tf のレンジを再構築）。
     if (typeof controller.clearRevealCache === 'function') controller.clearRevealCache();
     invalidatePlans();  // [ISSUE-232] 時間足が変われば足内の窓も計画も別物＝破棄
-    cursor.setCandles(await fetchCandles(tf));
+    // [ISSUE-296] candles を渡された場合は取り直さない（リプレイ開始＝ライブで表示中の窓を
+    //   そのまま引き継ぐ場合のみ。時間足切替・カレンダーは従来どおり取得する）。
+    cursor.setCandles(candles ?? await fetchCandles(tf));
     syncBoundary();
     view.setRangeLabel('全期間');
     await drive(cursor.candles().length - 1); // 開始は present（最新足）
@@ -491,6 +511,55 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     //       陳腐化防止）、(2) view.setCandles(full)＝renderer.setCandles で全置換＋内部 fitContent＋_lastBar
     //       復帰（現在値 observer がライブ末尾値へ更新）、(3) controller.recomputeAllApplied({mode:'full'})
     //       ＝base（live と同一）入口で untilTime=undefined のまま全指標を全長再描画。値算出は無改変。
+    // [ISSUE-296] 表示の復帰（同期・HTTP なし）を先に済ませる。リプレイに入った窓がそのまま
+    //   （＝カレンダーで別の窓へ跳んでいない）なら、指標の全長系列は保管庫にあるものが**そのまま
+    //   正しい**（実測: ライブの系列と全点一致）。ここで復帰が完結するなら、切替は 1 本の HTTP も
+    //   発行しない＝バックエンドが他の仕事（足内先読み等）で混んでいても待たされない。
+    const restored = restoreLiveViewFromStore();
+    // ライブ末尾への追いつき（新しい足が確定していれば取り込む）。**切替の完了条件にしない**:
+    //   表示は上で復帰済みであり、ライブを最新に保つのは live poller と同じ役目だからである。
+    //   復帰しきれなかった場合（カレンダーで窓を変えた・保管庫が空）は従来どおり待つ。
+    const catchUp = catchUpToLiveTail();
+    if (!restored) {
+      await catchUp;
+    }
+  }
+
+  // [ISSUE-296] 離脱前のライブ窓＋保管庫の全長系列で表示を復帰する（同期・HTTP なし）。
+  //   全ての適用指標（MP を除く）を描けたときだけ true。
+  function restoreLiveViewFromStore() {
+    if (typeof controller.windowTokenOf !== 'function' || typeof controller.renderStored !== 'function') {
+      return false;
+    }
+    const candles = cursor.candles();
+    const token = controller.windowTokenOf(controller._timeframe, candles);
+    if (!token) {
+      return false;
+    }
+    const drawn = controller.renderStored(token);
+    if (drawn.size === 0) {
+      return false;
+    }
+    cursor.setBar(candles.length - 1);
+    cursor.setReplayStart(0); cursor.clearActivePeriod(); autoFrame = true;
+    view.setRangeLabel('全期間');
+    view.setCandles(candles);   // リビールのトリム解除（窓は離脱前と同一＝系列と時間軸が完全一致）
+    syncBoundary();             // 減光境界を全長（末尾）へ＝リプレイ減光の消去
+    return controller.storedInstanceIds(token).size === drawn.size
+      && drawn.size === appliedComputedCount();
+  }
+
+  // 保管庫の対象になりうる適用指標数（MP は /compute を持たないため対象外）。
+  function appliedComputedCount() {
+    const applied = (controller._state && controller._state.applied) || [];
+    return applied.filter((inst) => {
+      const meta = controller._meta && controller._meta.get(inst.instanceId);
+      return !!meta && !controller._isMarketProfile(meta.def);
+    }).length;
+  }
+
+  // ライブ末尾の取り直し（従来の復帰手順）。窓が動いていたぶんだけ再計算する。
+  async function catchUpToLiveTail() {
     try {
       const live = await fetchCandles(controller._timeframe);
       if (live && live.length) {
@@ -501,7 +570,15 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         view.setCandles(cursor.candles()); // 全長表示（内部 fitContent・_lastBar＝ライブ末尾へ復帰）
         syncBoundary();           // 減光境界を全長（末尾）へ＝リプレイ減光の消去
       }
-      await controller.recomputeAllApplied({ mode: 'full' }); // 指標を live 全長で再描画
+      // 新しい窓で保管庫が使えるものは計算しない（窓が変わっていなければ全件＝再計算 0 件）。
+      const token = typeof controller.windowTokenOf === 'function'
+        ? controller.windowTokenOf(controller._timeframe, cursor.candles()) : null;
+      const drawn = (token && typeof controller.renderStored === 'function')
+        ? controller.renderStored(token) : null;
+      await controller.recomputeAllApplied({
+        mode: 'full',
+        skip: (inst) => !!(drawn && drawn.has(inst.instanceId)),
+      });
     } catch (_e) {
       // 復帰の取得/再計算失敗は次の live poller（LiveUpdater 等）が回復する（描画は止めない）。
     }
@@ -515,7 +592,26 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     // 現在の live データから再取得して present（最新足）へ駆動する（＝リプレイ現在バー＝ライブ最新）。
     //   loadTimeframe は既存の入口（fetch＋slider/preset 同期＋drive(present)）で、drive→render が
     //   :128-129（setUntilTime(現在バー)＋_recentBars=cursor.bar()+1）を確立する。値算出・分岐は無改変。
-    await loadTimeframe(controller._timeframe);
+    // [ISSUE-296] リプレイ開始時の窓は「いまライブで表示している窓」そのものである。保管庫が
+    //   その窓で全指標を賄えるなら、足も指標も取り直さない（切替が 1 本も HTTP を発行しない＝
+    //   バックエンドが他の仕事で混んでいても待たされない）。賄えないときは従来どおり取得する。
+    await loadTimeframe(controller._timeframe, { candles: liveWindowIfStored() });
+  }
+
+  // [ISSUE-296] ライブで表示中の窓（保管庫が全指標を賄えるときだけ返す。それ以外は null＝取得）。
+  function liveWindowIfStored() {
+    if (typeof view.getCandles !== 'function' || typeof controller.windowTokenOf !== 'function') {
+      return null;
+    }
+    const candles = view.getCandles();
+    const token = controller.windowTokenOf(controller._timeframe, candles);
+    if (!token || typeof controller.storedInstanceIds !== 'function') {
+      return null;
+    }
+    // 複製して渡す（renderer の基準配列を共有すると、ライブ側の末尾差分がリプレイの窓を
+    //   その場で書き換えうる）。
+    return controller.storedInstanceIds(token).size === appliedComputedCount()
+      ? candles.slice() : null;
   }
   function destroy() {
     disable();

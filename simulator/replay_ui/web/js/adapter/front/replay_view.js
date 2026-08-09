@@ -82,6 +82,11 @@ export class ReplayView {
   }
   // メイン系列の足を全置換（内部 fitContent を含む）。（renderer.setCandles）
   setCandles(candles) { this._renderer.setCandles(candles); }
+  // [ISSUE-296] いま表示している基準ローソク（読み取り専用・renderer.getCandles）。リプレイ開始時に
+  //   「ライブで表示中の窓」をそのまま引き継ぐために使う（同じ窓を取り直さない）。未提供時は空配列。
+  getCandles() {
+    return typeof this._renderer.getCandles === 'function' ? this._renderer.getCandles() : [];
+  }
   // 最新足の足内更新（1 ティック）。ライブ同一設計: mainSeries.update 直呼びは renderer（＝
   //   ChartRenderer の candle observer）を迂回し、価格legend（currentPriceView）が確定足リビール
   //   （setCandles）でしか更新されず粒度が bar 単位に落ちる。ライブは足内 tick を renderer.updateLastCandle
