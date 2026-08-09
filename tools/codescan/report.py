@@ -37,13 +37,17 @@ def _clone_dict(clone: Clone) -> dict:
 
 
 def build_report(*, scope_rules, modules, function_clones, block_clones, diverged,
-                 graph, kind_counts, types, block_stats, limitations, rows) -> dict:
+                 graph, kind_counts, types, block_stats, limitations, rows,
+                 aliases=()) -> dict:
     """機械可読の全体報告を組む。"""
     errors = [{"path": m.path, "errors": list(m.errors)} for m in modules if m.errors]
     return {
         "scope": {"rules": scope_rules, "files": len(modules),
                   "loc": sum(m.loc for m in modules),
-                  "languages": sorted({m.language for m in modules})},
+                  "languages": sorted({m.language for m in modules}),
+                  # 同一実体への別経路（symlink・ハードリンク）。複製ではないので 1 件に
+                  # 畳んだが、何を畳んだかは根拠として残す（ISSUE-304）。
+                  "folded_aliases": [{"alias": alias, "kept": kept} for alias, kept in aliases]},
         "symbols": {"by_kind": kind_counts, "types": types},
         "dependencies": {
             "internal_edges": [{"from": a, "to": b} for a, b in graph["edges"]],
@@ -85,6 +89,10 @@ def write_summary(report: dict, rows: "list[dict]", destination=sys.stdout, top:
     scope = report["scope"]
     dup = report["duplication"]
     out(f"[走査] {scope['files']} ファイル / {scope['loc']} 行 / {', '.join(scope['languages'])}\n")
+    folded = scope.get("folded_aliases", [])
+    if folded:
+        out(f"       うち同一実体への別経路 {len(folded)} 件は 1 件に畳んだ"
+            "（symlink・ハードリンクは共有であって複製ではない）\n")
     out(f"[行]   出力 {len(rows)} 行（原子ステップ = 1 行）\n")
     out(f"[重複] 完全一致で 2 回以上出る行: {dup['duplicated_lines']}"
         f" / 名前を無視した一致: {dup['shape_duplicated_lines']}\n")

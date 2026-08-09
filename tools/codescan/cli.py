@@ -90,7 +90,7 @@ def main(argv: "list[str] | None" = None) -> int:
     scope = Scope.from_ledger(repo_root, args.include, args.exclude)
 
     roots = [str(Path(p).resolve().relative_to(repo_root)) for p in args.paths] if args.paths else []
-    paths = iter_files(repo_root, scope, registry, roots)
+    paths, aliases = iter_files(repo_root, scope, registry, roots)
     if not paths:
         print("走査対象が 0 件。--include / tools/codescan_scope.txt を確認せよ。", file=sys.stderr)
         return 2
@@ -110,7 +110,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     rows = build_rows(modules, sources, function_clones, block_clones, repo_root)
     report = build_report(
-        scope_rules=scope.rules, modules=modules, function_clones=function_clones,
+        scope_rules=scope.rules, aliases=aliases, modules=modules, function_clones=function_clones,
         block_clones=block_clones, diverged=diverged_names(modules, args.min_tokens),
         graph=graph, kind_counts=summarize_kinds(modules), types=type_symbols(modules),
         block_stats=block_stats, limitations=JS_LIMITATIONS, rows=rows,

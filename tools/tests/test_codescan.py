@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -524,7 +525,7 @@ def test_traversal_does_not_follow_a_self_referencing_symlink(tmp_path: Path):
     (modules / "dep.py").write_text("y = 2\n", encoding="utf-8")
     (modules / "self").symlink_to(modules, target_is_directory=True)
 
-    found = iter_files(tmp_path, Scope.from_ledger(tmp_path), default_registry())
+    found, _ = iter_files(tmp_path, Scope.from_ledger(tmp_path), default_registry())
 
     assert found == ["src/a.py"]
 
@@ -536,9 +537,87 @@ def test_traversal_does_not_follow_symlinked_directories_even_when_allowed(tmp_p
     (tmp_path / "real" / "a.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
 
-    found = iter_files(tmp_path, Scope.from_ledger(tmp_path), default_registry())
+    found, _ = iter_files(tmp_path, Scope.from_ledger(tmp_path), default_registry())
 
     assert found == ["real/a.py"]
+
+
+def _scope_with(tmp_path: Path, rules: str) -> Scope:
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "codescan_scope.txt").write_text(rules, encoding="utf-8")
+    return Scope.from_ledger(tmp_path)
+
+
+def test_a_symlinked_file_is_counted_once_as_its_real_implementation(tmp_path: Path):
+    """symlink は同一実体への別経路であって、コードの複製ではない（ISSUE-304）。
+
+    replay_ui の front は indicator_ui の実体を symlink で共有している（実測: git の
+    mode 120000 が 105 件）。経路を単位に数えると 1 つの実装が 2 回計上され、重複検出は
+    それを「複製」と報告する。ファイルの同一性は経路ではなく実体で決める。
+    """
+    scope = _scope_with(tmp_path, "+ **/*.js\n")
+    (tmp_path / "live").mkdir()
+    real = tmp_path / "live" / "controller.js"
+    real.write_text("export class C { run() { return 1; } }\n", encoding="utf-8")
+    (tmp_path / "replay").mkdir()
+    (tmp_path / "replay" / "controller.js").symlink_to(real)
+
+    found, aliases = iter_files(tmp_path, scope, default_registry())
+
+    assert found == ["live/controller.js"]
+    assert aliases == [("replay/controller.js", "live/controller.js")]
+
+
+def test_a_hard_link_is_also_counted_once(tmp_path: Path):
+    scope = _scope_with(tmp_path, "+ **/*.js\n")
+    (tmp_path / "live").mkdir()
+    real = tmp_path / "live" / "controller.js"
+    real.write_text("export class C { run() { return 1; } }\n", encoding="utf-8")
+    (tmp_path / "replay").mkdir()
+    os.link(real, tmp_path / "replay" / "controller.js")
+
+    found, aliases = iter_files(tmp_path, scope, default_registry())
+
+    assert len(found) == 1
+    assert aliases == [("replay/controller.js", "live/controller.js")]
+
+
+def test_a_hand_written_copy_is_still_counted_twice(tmp_path: Path):
+    """実体が別なら畳まない。symlink 共有と手書き複製を取り違えれば検出器の意味が消える。"""
+    scope = _scope_with(tmp_path, "+ **/*.js\n")
+    body = "export class C { run() { return 1; } }\n"
+    for slice_name in ("live", "replay"):
+        (tmp_path / slice_name).mkdir()
+        (tmp_path / slice_name / "controller.js").write_text(body, encoding="utf-8")
+
+    found, aliases = iter_files(tmp_path, scope, default_registry())
+
+    assert found == ["live/controller.js", "replay/controller.js"]
+    assert aliases == []
+
+
+def test_a_dangling_symlink_is_not_scanned(tmp_path: Path):
+    scope = _scope_with(tmp_path, "+ **/*.js\n")
+    (tmp_path / "live").mkdir()
+    (tmp_path / "live" / "a.js").write_text("export const a = 1;\n", encoding="utf-8")
+    (tmp_path / "live" / "gone.js").symlink_to(tmp_path / "live" / "missing.js")
+
+    found, aliases = iter_files(tmp_path, scope, default_registry())
+
+    assert found == ["live/a.js"]
+    assert aliases == []
+
+
+def test_scope_excludes_the_saved_vendor_page_under_design():
+    """``design/`` は保存済み外部ページ（hash 名の minified バンドル）で版管理外。
+
+    自分たちが直せないコードであり、``design/src`` と ``…_files`` は同一バンドルの
+    2 部の写しなので、数えれば「同名別実装」として無意味に計上される（ISSUE-304）。
+    """
+    scope = Scope.from_ledger(_ROOT)
+    assert scope.allows("design/src/91011.f711a89f26f5d9d759d1.js") is False
+    assert scope.allows("design/NI225 66,587.90 ▼ −1.31% 無題_files/runtime.abc.js") is False
+    assert scope.blocks_directory("design") is True
 
 
 def test_scope_blocks_directory_before_descending():

@@ -74,8 +74,21 @@ python -m tools.codescan --only-dup line --min-tok 4 --sort dup --offset 0 --lim
 ## 走査範囲
 
 `tools/codescan_scope.txt` が唯一源（`+ パターン` / `- パターン`、後勝ち）。
-既定でベンダ（`lightweight-charts-python-main/`）・`node_modules`・生成物・`prototype_*` を除く。
+既定でベンダ（`lightweight-charts-python-main/`・保存済み外部ページ `design/`）・
+`node_modules`・生成物・`prototype_*` を除く。
 CLI の `--include` / `--exclude` は台帳の**後ろに追記**される（台帳を置き換えない）。
+
+### ファイルの同一性は経路ではなく実体
+
+symlink とハードリンクは、同一の実体に至る**別の経路**であって、コードの複製ではない。
+経路を単位に数えると 1 つの実装が複数回計上され、重複検出はそれを「複製」と報告する。
+同一性は `stat` のデバイス + inode で決め、同一実体を指す経路は 1 本に畳む。畳んだ経路は
+`report.json` の `scope.folded_aliases` に `(alias, kept)` で残る（黙って捨てない）。
+残す 1 本は symlink でない経路（実体そのもの）を優先する。
+
+この前提が壊れていた間、`simulator/replay_ui/web/js` の 19,570 行のうち 15,528 行は
+`indigators/indicator_ui` の実体への symlink の再計上であり、要約の「単一ソース化で消える
+見込み行数」を無意味に押し上げていた（ISSUE-304）。
 
 ## 依存関係
 
