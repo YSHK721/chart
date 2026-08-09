@@ -14,19 +14,10 @@ import urllib.request
 import pytest
 
 from simulator.replay_ui.framework.serve_replay import ReplayApp, make_server
-
-
-class _FakeCandlePort:
-    def load_candles(self, ref, timeframe, limit):
-        return []
-
-
-class _FakeComputePort:
-    def load_source(self, ref, timeframe):
-        return []
-
-    def compute(self, indicator, variant, mode, bars, params):
-        return []
+from simulator.replay_ui.tests.integration._fake_ports import (  # noqa: E402
+    FakeCandlePort as _FakeCandlePort,
+    FakeComputePort as _FakeComputePort,
+)
 
 
 class _FakeWindowPort:

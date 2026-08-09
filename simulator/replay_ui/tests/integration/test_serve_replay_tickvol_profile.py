@@ -13,27 +13,11 @@ from urllib.error import HTTPError
 import pytest
 
 from simulator.replay_ui.framework.serve_replay import ReplayApp, make_server
-
-
-class _FakeCandlePort:
-    def load_candles(self, ref, timeframe, limit):
-        return []
-
-
-class _FakeComputePort:
-    def load_source(self, ref, timeframe):
-        return []
-
-    def compute(self, indicator, variant, mode, bars, params):
-        return []
-
-
-class _FakeWindowPort:
-    def load_m1_rows(self, ref, start, end):
-        return []
-
-    def load_raw_ticks(self, start, end):
-        return []
+from simulator.replay_ui.tests.integration._fake_ports import (  # noqa: E402
+    FakeCandlePort as _FakeCandlePort,
+    FakeComputePort as _FakeComputePort,
+    FakeWindowPort as _FakeWindowPort,
+)
 
 
 class _FakeTickvolPort:
