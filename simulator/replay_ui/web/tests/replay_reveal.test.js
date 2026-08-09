@@ -132,9 +132,11 @@ test('_invalidateReveal drops a cached base; latest-mode recompute must not (for
 });
 
 test('registry contains exactly the measured-exact indicator set', () => {
+  // 登録は実測ゲート（全レンジ 1 回計算 == 毎足その場計算・乖離 0）を通ったものだけ。
+  //   tickvol は ISSUE-302 で通過（61,107 比較点・max_dev = 0）。
   assert.deepEqual(
     [...CAUSAL_REVEAL_IDS].sort(),
-    ['btlm_trail', 'btlm_trail_marod', 'ma_marod', 'moving_averages'],
+    ['btlm_trail', 'btlm_trail_marod', 'ma_marod', 'moving_averages', 'tickvol'],
   );
 });
 

@@ -5451,3 +5451,71 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   集約は**不要と判断**した（2.4 回/足 × 0.30 秒 ≒ 0.7 秒/足）。必要になれば ISSUE-300 と同じ型で
   追加できる。
 - **関連**: ISSUE-300（足内更新の集約）、ISSUE-297（MTF のバー単位メモ化）。
+
+## ISSUE-302: [性能] 足送りの境界で毎足 1 本だけ全窓 compute が臨界経路に残っていた（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・実 UI で 858ms → 96ms を確認）
+- **重大度**: High（再生が「次の足へ移る瞬間だけ止まる」体感の実体。所要の 75% が停止時間だった）
+- **用語**: 「境界の停止」＝**前の足の最後の描画更新から、次の足の最初の描画更新までの実時間**
+  （画面が動かない時間）。「足内の停止」＝同一足内での更新間隔。以下の実測はこの定義で測る。
+- **実測（実 UI・`http://127.0.0.1:8000/`・1m・適用 6 指標・real_ticks・x1.00・90 秒・価格表示の
+  変化間隔を 20ms 標本で採取）**:
+  | | 是正前 | 是正後 |
+  |---|---|---|
+  | 足送りをまたぐ停止 中央値 | **858ms** | **96ms** |
+  | 同 p90 / 最大 | 1113ms / 1968ms | 124ms / 508ms |
+  | 停止時間の合計（またぎ） | 68.3s / 91.4s（**75%**） | 10.9s / 91.3s（12%） |
+  | 足内の停止 中央値 | 35ms | 34ms（不変＝なめらかさは維持） |
+  | 秒/足 | 1.13 | 1.00 |
+- **原因（実測で確定）**: 適用 6 指標のうち **tickvol だけが一括リビール（ISSUE-158 ②）の
+  登録リストに無く**、`render` の full 再計算で **1 足あたり 1 本の全窓 `/compute`**（実測
+  平均 706ms）が発行され、それを **次の足の描画開始前に await** していた。
+  - 要求内訳（90 秒・82 足）: `/compute mode=latest_seq_multi`（計画）82 回＋
+    **`/compute`（tickvol・mode 無し＝full）82 回**＋`/intraday` 85 回。
+  - A/B（コード変更なし・tickvol を適用から外すだけ）: 境界の非アニメ区間 中央値
+    **818ms → 74ms**、tickvol の per-instance compute **82 回 → 0 回**。
+    ＝境界の停止は tickvol の全窓再計算そのものである。
+- **是正（原因除去）**: tickvol を `causal_reveal_ids.js` の登録リストへ入れる
+  （全レンジ 1 回計算 → 各足は同期スライス描画＝バーごとの往復が構造的に消える）。
+  登録は既存の実測ゲートを通してから行った（下記）。応急処置（指標を外す・表示本数を削る等）は採らない。
+- **登録ゲートの実測（causal_reveal_ids.js の条件そのもの）**: 全レンジ 1 回計算（limit=1500）の
+  各バー値と、バーごとその場計算（limit=bar+1・untilTime=t_bar）の値を全系列で比較。
+  jp225_tick・1m・バー 200〜1499 を 87 本刻みで 15 標本 → **61,107 比較点・max_dev = 0・欠落 0**
+  （`tickvol` / `tickvol_q10` / `tickvol_q90` / `tickvol_evq_med_hi` / `tickvol_evq_ext_hi` /
+  `tickvol_gpd_hi`）。horizontal_line ペイロードの不一致 0。
+  理由: 水準は当該バー除外の因果ローリング窓（`common.marod_bands` / `event_quantiles`）で、
+  窓の左端は両経路とも candles[0] 固定＝各バー値が窓長に依存しない。
+- **足内更新への影響なし（実 UI 実測）**: tickvol は `INTRABAR_FORMING_IDS` に登録済みで、足内の値は
+  計画（`latest_seq_multi`）が供給する。是正前後で計画の各ステップ値は同一
+  （例 bar 189: `[1,2,3,4,5,6,7,8]`）、凡例の足内推移も同形（確定値 → 足頭で 1〜2 へ落ちて成長）。
+- **検定**: `web/tests/replay_reveal.test.js`（登録集合の固定）を更新。
+  replay_ui JS 338 / indicator_ui JS 1141 / replay_ui Python 258 すべて Green。
+- **計測手順の落とし穴（記録）**:
+  1. **worktree では tick が空になる**。`serve.sh` は `MARKETDATA_DATA_DIR` を main へ退避させるが、
+     `composition_root.build_replay_app` の `data_dir` 既定は **モジュール位置**（=worktree）から
+     解決するため tick parquet 根が存在せず `/intraday` の `ticks` が `[]` になる。
+     この状態では足内ステップが激減し「速くなった／足内成長が消えた」という**偽の観測**が出る。
+     暫定回避は worktree 側 `data/marketdata` を main へ symlink すること。恒久対策は ISSUE-303。
+  2. **停止時間を `__rpAnimating` で測ってはならない**。`animate` は計画を await する **前に**
+     `__rpAnimating = true` にするため、計画待ちがアニメ区間へ計上され、境界の停止が過小評価される。
+     画面の更新間隔（価格表示の変化）で測ること。
+- **残る支配項（次の一手）**: 停止は消えたが 1 足の所要（1.00 秒/足）は計画生成が律速
+  （`latest_seq_multi` 1 回・実測 平均 1.35 秒／サーバは 1 スレッド直列）。
+  また本件の構造的欠陥は残る＝**未登録の指標を 1 本適用しただけで境界の全窓再計算が復活する**
+  （例: `profit_rsi`）。恒久策は「バー確定値も先読み計画に含め、臨界経路から往復を無くす」
+  （ISSUE-300 と同じ型の一般化）。設計判断が要るため別途起票して判断する。
+- **関連**: ISSUE-158（一括リビール）、ISSUE-232 / ISSUE-300（足内計画）、ISSUE-279（worktree のパス解決）。
+
+## ISSUE-303: [不具合・開発環境] worktree 起動のリプレイ core が tick を読めない（2026-08-09）
+- **ステータス**: OPEN（2026-08-09・対策方針の承認待ち）
+- **重大度**: Medium（機能は正常。**計測・検証が静かに誤る**のが害）
+- **事象**: worktree の `simulator/replay_ui/serve.sh` で起動した core は `/intraday` の
+  `ticks` が常に `[]`（`m1` は正常）。real_ticks の足内推移が m1 由来へ縮退する。
+- **原因**: `serve.sh` は `MARKETDATA_DATA_DIR` を main チェックアウトへ退避させる（ISSUE-279）が、
+  `main/composition_root.build_replay_app` の `data_dir` 既定は
+  `Path(__file__).parents[N]/data/marketdata`（＝worktree 根）で解決される。tick parquet 根
+  （`<data>/ticks`）だけがこの第 2 の基点に取り残されている。
+- **対策案（原因除去・未着手）**: tick 根も `marketdata.paths.DATA_DIR`（`MARKETDATA_DATA_DIR` を
+  唯一の基点とする既存の単一権威）から導く。`build_replay_app` の `data_dir` 既定を
+  `marketdata.paths.DATA_DIR` にすれば基点は 1 つになる（現在は「モジュール位置」と「環境変数」の
+  2 基点）。fail-fast の性質（存在しない path で即時失敗）は `paths.py` 側の既存規約をそのまま使う。
+- **関連**: ISSUE-279、ISSUE-302。

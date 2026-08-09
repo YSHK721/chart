@@ -13,6 +13,10 @@
 //   btlm_trail / btlm_trail_marod / ma_marod / moving_averages → 444 比較点 max_dev = 0
 //   （evq 4 系列・q5/q95・hlines 含む）。
 //
+// 検証実測（1m 実データ jp225_tick・窓 1500 本・バー 200〜1499 を 87 本刻みで 15 標本・全系列）:
+//   tickvol → 61,107 比較点 max_dev = 0・欠落 0（tickvol / q10 / q90 / evq_med_hi /
+//   evq_ext_hi / gpd_hi）。ISSUE-302（2026-08-09）。
+//
 // 未検証の指標は登録しない（fail-closed＝従来どおりバーごとその場計算）。追加時は上記と
 // 同一の実測（tests 側スクリプト）で乖離 0 を確認してから登録すること。
 export const CAUSAL_REVEAL_IDS = new Set([
@@ -20,4 +24,8 @@ export const CAUSAL_REVEAL_IDS = new Set([
   'btlm_trail_marod',
   'ma_marod',
   'moving_averages',
+  // tickvol（ISSUE-302）: 未登録だったため、足送りのたびに全窓 compute を 1 本だけ発行し、
+  //   それが再生の臨界経路（render の full 再計算）で待たれていた（実測 706ms/足＝境界停止の実体）。
+  //   値は上記ゲートを乖離 0 で通過する（因果ローリング窓＋当該バー除外の水準＝窓長不変）。
+  'tickvol',
 ]);
