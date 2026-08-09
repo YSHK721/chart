@@ -5707,3 +5707,40 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   完全一致する群は 11 群 127 行しかなかった。
 - **提案**: 要約に type-1 / type-2 の内訳を出し、`--fail-over` の既定判定を type-1 側に置く。
   「削減見込み」という単一の数値は、到達可能量と構造的類似度という別物を混ぜている。
+
+## ISSUE-313: [運用] worktree が破棄されず 37 件 6.4GB 滞留し、うち 1 件が生成データ 4.9GB を抱える（2026-08-09）
+- **ステータス**: OPEN（整理手順の提案・削除は未実施＝破壊的操作のため承認前）
+- **重大度**: Middle（ディスク圧迫。作業成果の喪失リスクは無いが、放置すると増え続ける）
+- **実測（2026-08-09・`git worktree list` / `du -sh`）**:
+  | 項目 | 実測値 |
+  |---|---|
+  | `.claude/worktrees/` 配下の worktree 数 | **37**（＋共有 checkout `/workspaces/app`） |
+  | 合計サイズ | **6.4GB** |
+  | 通常 1 件のサイズ | 37〜55MB |
+  | 最大 1 件（`agent-a5f4291888cb84c58` / `feature/issue-092-7-remove-dead-domain`） | **5.0GB**（うち `data/marketdata` が **4.9GB**） |
+  | ブランチが develop へマージ済み＝破棄しても成果を失わない | **30 件** |
+  | 未マージ＝破棄すると作業が失われる | **7 件**（`feature/cvfe-v1` / `fix/live-ema-stale-tail-overwrite` / `fix/replay-empty-series-crash` / `perf/replay-bar-boundary` / `refactor/slice-test-contract` / `worktree-docs-issue-tdd-audit` / `worktree-spec-indicator-color-theme`） |
+  | `agent-*` 命名の滞留（最終更新 2026-07-16） | **24 件**（24 日間放置） |
+  | `locked` 状態 | 2 件（`fix-codescan-identity` / `spec-indicator-color-theme`） |
+- **4.9GB の正体**: `data/` は `.gitignore` の対象では**ない**（`git check-ignore -v data` が不一致）。
+  追跡されているのは `data/README.md` の **1 ファイルのみ**であり、`data/marketdata` 配下 4.9GB は
+  **worktree 内で生成された未追跡データ**である。他 worktree の `data/marketdata` は 16 件存在するが
+  いずれも 0〜36KB のスタブで、実体を抱えているのは当該 1 件のみ（共有 checkout の `data/` は 5.8GB）。
+- **原因（2 つあり、片方だけ潰しても再発する）**:
+  1. **破棄の契機が無い**: worktree の寿命がブランチのマージ状態と結ばれていない。マージ完了後も
+     worktree が残り続けるため、30 件が「消してよい状態」のまま滞留している。
+  2. **生成データの実体が worktree ごとに増える**: データ生成先が worktree 相対で解決されると、
+     worktree の数だけ実体が複製されうる。実際に 1 件で 4.9GB が発生している。
+- **抜本策（症状の回避ではなく原因の除去）**:
+  - 原因 2 に対して: **生成データの実体解決先を共有 checkout の `data/` に固定**し、worktree 相対で
+    解決させない。これにより worktree が何件増えても実体は増えない。あわせて `data/`（`README.md` を除く）
+    を `.gitignore` へ明示し、追跡外であることを構造で示す。
+  - 原因 1 に対して: **マージ済みブランチの worktree を破棄対象と判定できる手順を持つ**
+    （`git branch --merged develop` と `git worktree list` の突合が判定式そのもの。本 Issue の実測が
+    その適用例で、30/37 が該当した）。
+- **削除の事前条件（未検証・実施前に必ず確認する）**: 各 worktree の未コミット変更の有無を
+  `git -C <path> status --porcelain` で確認すること。本調査ではセッションの worktree 隔離制約により
+  他 worktree への横断 git 実行が拒否され、**未実施**である。マージ済みでも未コミットの作業が
+  残っていれば削除で失われるため、この確認を省略してはならない。
+- **未検証**: 24 件の `agent-*` worktree が現在も稼働中のエージェントに使用されていないこと
+  （最終更新 2026-07-16 は強い傍証だが、稼働プロセスとの突合は未実施）。
