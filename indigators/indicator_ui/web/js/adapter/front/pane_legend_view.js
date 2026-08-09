@@ -48,7 +48,7 @@ const HOST_CLASS = 'pane-legends';
 const NO_REORDER = Object.freeze({
   isDragging: () => false,
   sync: () => {},
-  consumeClickSuppression: () => false,
+  consumeClickSuppression: (_handle) => false,
 });
 
 export class PaneLegendView {
@@ -58,7 +58,7 @@ export class PaneLegendView {
    * @param {object} [deps.anchor]       版面要素の直接注入（既定は document から .chart-wrap を引く）。
    * @param {boolean} [deps.collapsed]   既定の折りたたみ状態（既定 false＝開いた状態で表示する）。
    * @param {object} [deps.reorder]      ペイン並べ替えのドラッグ協働子（PaneReorderDrag）。
-   *                                     契約は { isDragging(), sync(root, groups), consumeClickSuppression() }。
+   *                                     契約は { isDragging(), sync(root, groups), consumeClickSuppression(handle) }。
    *                                     未注入なら NO_REORDER（並べ替え無し・本 View は操作を一切知らない）。
    */
   constructor({ document, anchor = null, collapsed = false, overlayId = 'chart-overlay-tl', reorder = null } = {}) {
@@ -224,8 +224,9 @@ export class PaneLegendView {
       + (group.movable ? '（上下にドラッグでペイン移動）' : '');
     chip.textContent = `${CHIP_ICON} ${rows.length}`;
     chip.addEventListener('click', () => {
-      // 掴んで動かした直後の click は開閉ではない（同じ要素が掴み手のため必ず飛んでくる）。
-      if (this._reorder.consumeClickSuppression()) {
+      // 掴んで動かした直後の click は開閉ではない（同じ要素が掴み手のため）。判定は**この要素**が
+      //   掴み手だったかどうかで行う（真偽値だと、click が飛ばずに残った印を無関係なチップが食う）。
+      if (this._reorder.consumeClickSuppression(chip)) {
         return;
       }
       this.toggle(paneKey);
