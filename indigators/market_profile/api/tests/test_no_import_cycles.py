@@ -80,7 +80,9 @@ def _cycles(graph: "dict[str, set[str]]") -> "list[tuple[str, ...]]":
     """循環をすべて列挙する（1 件見つけるたびにその辺を 1 本落として再探索する）。"""
     remaining = {node: set(deps) for node, deps in graph.items()}
     found: "list[tuple[str, ...]]" = []
-    for _ in range(len(graph) + 1):  # 辺を落とすたび 1 件ずつ減るため、モジュール数で有界。
+    # 1 件検出するごとに辺を 1 本落とすため、反復は**辺数**で有界（モジュール数ではない。
+    # モジュール数で打ち切ると循環が多い場合に列挙が途中で切れる）。
+    for _ in range(sum(len(deps) for deps in remaining.values()) + 1):
         try:
             TopologicalSorter(remaining).prepare()
         except CycleError as exc:
