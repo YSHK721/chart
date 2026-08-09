@@ -20,6 +20,8 @@ import numpy as np
 import pytest
 
 from market_profile_api.compute import market_profile_dwell as mpd
+# ISSUE-305: ウォーマーの入口は warmer module のみ（統計コア側の遅延委譲は依存循環のため撤去）。
+from market_profile_api.compute import market_profile_dwell_warmer as mpw
 # ISSUE-183 item5: 永続化設定（cache root / 形式版数）の単一情報源は gateway 側 cache_settings。
 from market_profile_api.gateway import cache_settings as _mp_cache_settings
 
@@ -109,7 +111,7 @@ class TestDwellProfileByteParity:
             files.append(p)
         monkeypatch.setattr(mpd, "day_parquet_files", lambda lo, hi, symbol=None: files)
         mpd._reset_caches()
-        mpd.warm_dwell_cache("JP225", now=_DAY0 + 10 * _DAY)
+        mpw.warm_dwell_cache("JP225", now=_DAY0 + 10 * _DAY)
 
         # ディスク読取経路（メモリキャッシュは消してディスクから復元させる）。
         mpd._reset_caches()

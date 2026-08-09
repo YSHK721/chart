@@ -5542,3 +5542,45 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   にある。また依存方向違反 3 件（`cache_layout.current_layouts` / `market_profile_dwell.warm_dwell_cache`
   / `market_profile_zp.warm_zp_cache`）は未着手。
 - **関連**: ISSUE-303（走査の OOM 停止）、ISSUE-280（node_modules 自己参照 symlink）。
+## ISSUE-305: [設計] market_profile_api の依存方向違反 3 件（内側に置いた合成・互換シム）（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・循環 3→0 を codescan と新規ガードの両方で実測）
+- **重大度**: Middle（実行時は遅延 import で回避されており障害は出ていないが、循環は依存方向の破綻であり
+  「内側が外側を知っている」ことの表明。放置すると分離済みのアクターが再結合する）
+- **発見の経緯**: ISSUE-304 で codescan の誤計上を是正した後、残った実在の指摘として循環 3 件を精査した。
+- **原因（3 件に共通・抽象の不足ではない）**: いずれも「内側のモジュールに外側の都合を置いた」こと。
+  関数内 import（遅延 import）は module ロード時の失敗を避けるだけで、循環そのものは消えていない。
+  | # | 循環 | 内側に置かれていたもの | 呼出元の実測 |
+  |---|---|---|---|
+  | 1 | `cache_layout` ⇄ `controller.tf_period_profile_controller` | 具象 3 つの**列挙**（Composition Root の仕事） | `tools/cache_gc.py` のみ |
+  | 2 | `compute.market_profile_dwell` ⇄ `..._dwell_warmer` | 運用バッチへの**後方互換シム** | テスト 4 箇所のみ（本番 0） |
+  | 3 | `compute.market_profile_zp` ⇄ `..._zp_warmer` | 同上 | **0 件**（死んだシム） |
+- **是正（原因除去・抽象の追加は 0）**:
+  1. zp / dwell の互換シムを撤去。運用バッチ（外側）→ 統計コア（内側）が正しい向きであり、逆向きの
+     委譲を置かない。dwell のテスト 4 箇所は warmer の直 import へ移行（注入点は従来どおり `mpd` の
+     module 属性で、warmer は call-time に `_mpd.X` を読むため monkeypatch 経路は不変）。
+  2. `cache_layout` は「記述子の型」と「所有者の列挙」の 2 責務を持っていた（SRP 違反）。型
+     （`CacheLayout` / `CacheLayoutSource`）を新設の `cache_layout_descriptor`（プロジェクト内 import 0）
+     へ分離し、所有者 3 者（`zp_store` / `dwell_rollup_store` / `tf_period_profile_controller`）は
+     そちらを import する。**GC 向けの公開契約
+     `market_profile_api.cache_layout.current_layouts` は移動していない**（ISSUE-094/172 で確立した
+     契約であり、他アクター（`tools/cache_gc.py`）が依存する IF を壊さないため。合成側に残すのが
+     依存方向としても正しい）。
+- **検定（新規 `tests/test_no_import_cycles.py` 3 件）**: パッケージ内の import を **module-level と
+  関数内の両方**から AST で採取し、循環を `graphlib` で検出する（探索アルゴリズムは手書きしない）。
+  遅延 import を等しく数えるのが要点＝従来のテストが緑のまま循環を見逃していた原因を塞ぐ。
+  併せて「記述子の型の所有者は境界モジュールであり合成側ではない」ことを構造として固定。
+  空振り検定でないことの実証: **develop の実体に対して本ガードを走らせると 3 循環を検出**する
+  （codescan の報告と一致）。修正後は 0。
+- **実測**:
+  | 指標 | 基準線（develop） | 修正後 |
+  |---|---|---|
+  | codescan の循環（`indigators/market_profile`） | 3 件 | **0 件** |
+  | MP api スイート | 359 passed / 37 failed | **362 passed / 37 failed** |
+  | 失敗テストの集合 | — | **基準線と完全一致（新規失敗ゼロ）** |
+  | リポジトリ全体の collect エラー | 88 件 | **88 件（同一集合）** |
+  - 37 failed は worktree に実データ CSV が無いことによる既存の環境要因（develop でも同数・同集合）。
+  - `current_layouts()` は実行して健在を確認（`['dwell', 'zp-znull', 'tf-period']` / gen_depth `[2, 2, 3]`）。
+- **関連**: ISSUE-304（codescan の同一性判定）、ISSUE-133（warmer の SRP 分離）、ISSUE-094 / ISSUE-172
+  （`cache_layout` の公開契約と記述子の単一情報源）。
+- **残る課題（本 Issue の範囲外）**: 共有カーネル層が物理パッケージとして存在せず symlink で代替
+  されている件（Phase 2）、`lwc_chart` 描画ポートの未宣言と `sys.path` bootstrap の 16 重複（Phase 3）。

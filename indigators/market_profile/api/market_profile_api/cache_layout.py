@@ -21,6 +21,11 @@ ISSUE-172（配置記述子の単一情報源化）: 記述子の**生成**は�
     旧形（``gen_depth=2`` + ``current={"g10"}``）に取り残された。結果、深さ 2 の実体である現行世代
     ``v4`` が ``{"g10"}`` と照合されて**孤児判定**され、旧 ``g10`` は温存される逆転が生じていた。
 
+ISSUE-305（依存方向）: 記述子の**型**（:class:`CacheLayout` / :class:`CacheLayoutSource`）は
+:mod:`market_profile_api.cache_layout_descriptor` が所有する。本モジュールは所有者を列挙する合成側
+であり、型を同居させると 本モジュール → tf-period controller → 本モジュール の循環になるためである。
+GC 向けの公開契約（:func:`current_layouts` の import 面）は従来どおり本モジュールが持つ。
+
 記述子の形（:class:`CacheLayout`）:
     - ``name``     : 表示名（"dwell" / "zp-znull" / "tf-period"）。
     - ``root``     : 走査基点（``Path`` または未解決/無効時 ``None``）。
@@ -35,33 +40,15 @@ ISSUE-172（配置記述子の単一情報源化）: 記述子の**生成**は�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
+# ISSUE-305（依存方向）: 記述子の**型**は所有者（Store / controller）が依存する内側の境界のため
+#   :mod:`market_profile_api.cache_layout_descriptor` へ分離した。本モジュールは所有者を列挙する
+#   **合成**であり、型と同居させると 本モジュール → controller → 本モジュール の循環になる。
+#   所有者は記述子モジュールを import する（本モジュールからは再エクスポートしない＝循環の再発を防ぐ）。
+from market_profile_api.cache_layout_descriptor import CacheLayout, CacheLayoutSource
 
-@dataclass(frozen=True)
-class CacheLayout:
-    """1 キャッシュ系統の世代レイアウト記述子（GC はこれのみを参照する）。"""
-
-    name: str
-    root: "Path | None"
-    gen_depth: int
-    current: "frozenset[str]"
-    reason: str
-
-
-@runtime_checkable
-class CacheLayoutSource(Protocol):
-    """自身のディスク配置から世代記述子を導出できる当事者（GC 向けの最小境界）。
-
-    永続化 Store の本務ポート（:mod:`market_profile_api.compute.store_port`）とは分離する
-    （ISP: Store 実装者に GC 都合のメソッドを強制しない）。
-    """
-
-    def layout(self) -> CacheLayout:
-        """自身の書込パス構成から導いた現行世代記述子を返す。"""
-        ...
+__all__ = ["current_layouts"]
 
 
 def current_layouts() -> "list[dict[str, Any]]":

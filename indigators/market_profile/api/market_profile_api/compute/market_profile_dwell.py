@@ -9,7 +9,7 @@ price_max/tpo_units/n_bins）は candle 版と同一に保つ（tpo は dwell �
     属する秒」だけを滞在に計上する。これにより週末・日次メンテの休場帯を除外しつつ、取引中の
     静かな滞在は満額残す（試作 prototype_260630-01/mp_core.py が実証したアルゴリズムを本体作法へ移植）。
 
-ディスク永続キャッシュ（全期間高速化・:func:`warm_dwell_cache`）:
+ディスク永続キャッシュ（全期間高速化・:func:`market_profile_dwell_warmer.warm_dwell_cache`）:
     完了日（UTC 確定日）の固定グリッド日別ロールアップを ``DATA_DIR/cache/market_profile_dwell``
     （新規ディレクトリ・読み書きキャッシュ）へ ``.npz`` で永続化し、探索順「メモリ→ディスク→計算」で
     全期間でも初回ウォーム後は高速ロードする。既存の生データ/ticks/CSV は読むだけで触らない。
@@ -22,7 +22,8 @@ perf（単一スレッド常駐サーバ保護）:
     - 集計窓は**全期間**（旧 ``_MAX_DWELL_DAYS`` によるサブ窓限定は撤廃）。全期間でも上記ディスク
       永続キャッシュにより初回ウォーム後は各完了日 O(1) ロードで数秒オーダー。**コールド（ウォーム未実行）
       時のみ** per-day parquet 逐次読込で日数比例に重く単一スレッドを占有するため、本番有効化前に
-      :func:`warm_dwell_cache` を 1 回実行してキャッシュを構築しておくこと（運用手順）。
+      :func:`market_profile_dwell_warmer.warm_dwell_cache` を 1 回実行してキャッシュを構築して
+      おくこと（運用手順）。
     - 固定グリッド日別ロールアップをメモリキャッシュし、同一プロセスの 2 回目以降を高速化する（走査した
       過去日ぶんが ``_DAY_CACHE`` / ``_PARTIAL_CACHE`` に累積。各エントリは小配列でメモリは緩く有界。
       現在進行中の当日は Y2a によりキャッシュせず都度計算する）。active table はプロセス内で 1 回だけ
@@ -385,7 +386,8 @@ def compute_dwell_profile(
     全期間化: 250 日キャップは撤廃し ``[t0, t1+bar_sec)`` の全日を集計する。各完了日はディスク/メモリ
     キャッシュ経由で O(1) ロードされるため、一度ウォームすれば全期間でも高速（数秒）。
     perf 注意（初回コールド時のみ重い）: ディスク未ウォームの完了日は per-day parquet 逐次読込で
-    日数比例のブロックとなる。事前に :func:`warm_dwell_cache` で全期間の完了日を構築しておくこと。
+    日数比例のブロックとなる。事前に :func:`market_profile_dwell_warmer.warm_dwell_cache` で
+    全期間の完了日を構築しておくこと。
     """
     roll_key = "cnt" if metric == "count" else "dwell"  # src=m1 は生ティック数（セッション非依存）。
     now_val = _time.time() if now is None else float(now)  # Y2a: 当日判定の基準時刻（既定は現在時刻）。
@@ -511,17 +513,11 @@ def compute_dwell_profile(
 
 
 # --------------------------------------------------------------------------- #
-# ウォーマー（運用バッチ）: 実体は market_profile_dwell_warmer へ分離（ISSUE-133 SRP）
+# ウォーマー（運用バッチ）: 実体は market_profile_dwell_warmer（ISSUE-133 SRP）
 # --------------------------------------------------------------------------- #
-# 完了日ロールアップの一括ビルド（運用バッチ アクター）は :mod:`market_profile_dwell_warmer` へ移設した。
-# 本 module 属性 ``warm_dwell_cache`` は既存 import 面（テスト ``mpd.warm_dwell_cache``）を温存する薄い
-# 遅延委譲（module ロード時の循環 import を避けるため関数内 import）。CLI は tools/warm_market_profile_cache へ。
-def warm_dwell_cache(
-    symbol: str, start: Any = None, end: Any = None, now: float | None = None
-) -> dict:
-    """完了日ロールアップの一括ビルドへの遅延委譲（実体は :mod:`market_profile_dwell_warmer`）。"""
-    from market_profile_api.compute.market_profile_dwell_warmer import (
-        warm_dwell_cache as _impl,
-    )
-
-    return _impl(symbol, start=start, end=end, now=now)
+# 完了日ロールアップの一括ビルド（運用バッチ アクター）は :mod:`market_profile_dwell_warmer` にある。
+# 消費者は当該 module を直接 import する（CLI は :mod:`tools.warm_market_profile_cache`）。
+#
+# ISSUE-305: 本 module に ``warm_dwell_cache`` の遅延委譲を置かない。運用バッチ（外側）→ 統計コア
+# （内側）が正しい向きであり、逆向きの委譲は依存の循環を作る。関数内 import はその循環を
+# module ロード時に露呈させないだけで、循環そのものは消えていない。

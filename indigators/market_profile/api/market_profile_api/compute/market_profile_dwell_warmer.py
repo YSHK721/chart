@@ -7,7 +7,9 @@ ISSUE-133（SRP）: dwell の統計コア（:mod:`market_profile_dwell`）から
 （``mpd.day_parquet_files`` / ``mpd._load_window_ticks`` / ``mpd._day_source_signature`` 等）を尊重する。
 
 CLI エントリは :mod:`tools.warm_market_profile_cache`（tools/ 配下）へ分離した。
-``market_profile_dwell.warm_dwell_cache`` は本実装への薄い遅延委譲として温存される（import 面不変）。
+
+ISSUE-305: ``warm_dwell_cache`` の入口は本モジュールのみ（統計コア側に遅延委譲の別名は置かない）。
+逆向きの委譲は 運用バッチ ⇄ 統計コア の依存循環になり、関数内 import はそれを隠すだけである。
 """
 from __future__ import annotations
 

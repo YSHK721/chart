@@ -7,7 +7,9 @@ mgrid＋znull をディスクへ一括構築するウォーマー）を分離し
 call-time 参照で駆動する。
 
 CLI エントリは :mod:`tools.warm_market_profile_cache`（tools/ 配下）へ分離した。
-``market_profile_zp.warm_zp_cache`` は本実装への薄い遅延委譲として温存される（import 面不変）。
+
+ISSUE-305: ``warm_zp_cache`` の入口は本モジュールのみ（統計コア側に遅延委譲の別名は置かない）。
+逆向きの委譲は 運用バッチ ⇄ 統計コア の依存循環になり、関数内 import はそれを隠すだけである。
 """
 from __future__ import annotations
 

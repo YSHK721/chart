@@ -496,15 +496,11 @@ def compute_zp_profile(
 
 
 # --------------------------------------------------------------------------- #
-# ウォーマー（運用バッチ）: 実体は market_profile_zp_warmer へ分離（ISSUE-133 SRP）
+# ウォーマー（運用バッチ）: 実体は market_profile_zp_warmer（ISSUE-133 SRP）
 # --------------------------------------------------------------------------- #
-# 完了日 mgrid＋znull の一括ビルド（運用バッチ アクター）は :mod:`market_profile_zp_warmer` へ移設した。
-# 本 module 属性 ``warm_zp_cache`` は既存 import 面を温存する薄い遅延委譲（module ロード時の循環 import を
-# 避けるため関数内 import）。CLI は tools/warm_market_profile_cache へ分離した。
-def warm_zp_cache(
-    symbol: str, start: Any = None, end: Any = None, now: float | None = None
-) -> dict:
-    """完了日 mgrid＋znull の一括ビルドへの遅延委譲（実体は :mod:`market_profile_zp_warmer`）。"""
-    from market_profile_api.compute.market_profile_zp_warmer import warm_zp_cache as _impl
-
-    return _impl(symbol, start=start, end=end, now=now)
+# 完了日 mgrid＋znull の一括ビルド（運用バッチ アクター）は :mod:`market_profile_zp_warmer` にある。
+# 消費者は当該 module を直接 import する（CLI は :mod:`tools.warm_market_profile_cache`）。
+#
+# ISSUE-305: 本 module に ``warm_zp_cache`` の遅延委譲を置かない。運用バッチ（外側）→ 統計コア
+# （内側）が正しい向きであり、逆向きの委譲は依存の循環を作る。関数内 import はその循環を
+# module ロード時に露呈させないだけで、循環そのものは消えていない。
