@@ -5744,3 +5744,49 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   残っていれば削除で失われるため、この確認を省略してはならない。
 - **未検証**: 24 件の `agent-*` worktree が現在も稼働中のエージェントに使用されていないこと
   （最終更新 2026-07-16 は強い傍証だが、稼働プロセスとの突合は未実施）。
+
+## ISSUE-314: [仕様不整合] 指標カラーテーマ基本設計 v0.2.0 に、同時に成立しない規定が 4 件あった（2026-08-09）
+- **ステータス**: RESOLVED（段階 1・2 の実装で是正済み。基本設計書を v0.3.0 へ改訂して反映）
+- **重大度**: High（いずれも「テーマ未設定時に現行の見た目を 1 色も変えない」という D-11 恒等テーマ／
+  §7.4 段階 1 通過条件 6 を破るか、色の解決を非決定にする）
+- **発見の経緯**: §7.4 段階 1・2 の実装中、通過条件を逐語でテスト化した時点で 4 件が落ちた。
+  いずれも実測（コード読解・fake での値捕捉・既存テストの実行）で確認した。
+- **不整合 1（§4.2 #7 と §4.6 の衝突）**: `separatorHoverColor` の現行値は `rgba(178,181,189,0.2)` で、
+  束ねるトークン `border` の現行値 `#2a2e39`（＝(42,46,57)）とは**別の色**。§4.6 の「トークン単位の
+  既定（`CHROME_DEFAULT[token]`）＋現行 alpha」で解決すると `rgba(42,46,57,0.2)` になり、テーマ未設定
+  時点で現行の見た目が変わる。
+  - **是正**: 既定値の単一情報源を**配線点（slot）単位**に置いた（`chrome_tokens.js` の `slot.current`）。
+    テーマが当該トークンを宣言していないときは現行リテラルを逐語で返し、宣言したときだけ §4.6 の
+    合成（hex＋現行 alpha／派生オフセット）へ切り替える。`resolveChromeSlotColor` がその実体。
+- **不整合 2（§4.1.3 規則 1 と規則 3 の衝突）**: 規則 1「`horizontal_line` は必ず `level`」と規則 3
+  「同一 `seriesName` の全宣言は同一トークン」は、`btlm_trail_marod` / `ma_marod` で同時に成立しない
+  （line と 0% 水平基準線が同名で、前者は `primary`）。
+  - **実測**: `series_drawer._createPriceLines` は `styleMeta` を書かないため、`horizontal_line` の
+    `seriesName` は `getSeriesStyles`（＝§5.8 の解決入力）に一度も現れない（E-10 の構造そのもの）。
+    水準線名は payload グループ id であって実描画系列名ではなく、**別の名前空間**である。
+  - **是正**: §5.8 の解決から `horizontal_line` の `SeriesDef` を構造的に除外した
+    （`color_resolver.buildColorRoleIndex` の `RENDERED_KINDS`）。規則 3 は実描画系列の名前空間内で
+    成立させる。これで規則 1 と規則 3 が両立し、解決も決定論になる。
+- **不整合 3（§4.5 ステップ 5 を適用側がそのまま書くと色を捏造する）**: ステップ 5 は「既定色
+  `#2962ff` を返す」と規定するが、これを適用側がそのまま `applySeriesStyle` へ書くと、payload が色を
+  持たない系列（lwc 既定色で描かれている）の色を `#2962ff` へ**変えてしまう**。
+  - **実測**: `getSeriesStyles` が `baseColor` を供給しない後方互換 renderer で発生し、既存テスト
+    `ISSUE-110 🔴-1 _applyStoredStyles` が落ちた。
+  - **是正**: `resolveSeriesColor` に `defaultColor` を設け（既定は従来どおり `#2962ff`＝全域関数の
+    契約を維持）、適用側は `null` を渡して未解決なら色を書かない。純関数の契約と適用側の規律を
+    分離したのであって、分岐で症状を避けたのではない。
+- **不整合 4（§7.1 の 2 点が実態と異なる）**:
+  - `indigators/indicator_ui/web/build.mjs` は**存在しない**（実測: リポジトリ内の `build.mjs` は
+    `prototype_260626-01/web/build.mjs` のみ）。配信は ES モジュール直読みで、`MODULE_ORDER` への
+    追記は不要。共有は `web/js` 配下の symlink（既存 74 件）で行う。
+  - §7.1 は「`horizontal_line` は付与関数側で一律 `level` を与える」とするが、`SeriesDef` は
+    `Object.freeze` 済みで、付与関数が後から書き込むには全 `SeriesDef` の再構築が要る。かつ
+    market_profile / tickvol_bands の `SeriesDef` は別 factory が生成する。
+  - **是正**: `level` 強制を `SeriesDef` コンストラクタの不変条件にした（`FORCED_ROLE_BY_KIND`）。
+    どこで生成された `horizontal_line` でも必ず `level` になり、規則 1 に例外を作る余地が無い。
+- **副次の是正（アーキテクチャ規約）**: `ChromeThemeApplier` が `chart.applyOptions` を直接呼ぶと
+  upstream lwc API 隔離規約（ISSUE-262・`tests/upstream_isolation_declaration.test.js`）に違反する。
+  隔離リストを広げず、配線点→lwc オプションの写像を `ChartRenderer.applyChromeColors` へ寄せた
+  （§7.3 ISP の `ChromeSinkPort` は raw lwc である必要が無い）。
+- **検証**: `indicator_ui` 1290 件 / `replay_ui` 338 件すべて pass（fail 0）。段階 1 通過条件 1〜8 と
+  段階 2 通過条件 1〜8 を台帳・回帰・単体テスト 12 ファイルで固定した。
