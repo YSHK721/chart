@@ -81,6 +81,11 @@ class CausalComputeGateway:
             latest_seq=lambda prefix, tails: self.compute_latest_seq(
                 indicator, variant, prefix, tails, params),
             window_bars=window_bars,
+            # ISSUE-297: バー単位の記憶もライブ core と同一実装を共有する（記憶はプロセス内）。
+            #   正しさを担保するのは鍵ではなく指紋（value(τ) を決める入力そのもの）＝本 Port の面が
+            #   持たない datasetRef / チャート足を鍵に含めなくても取り違えは起こらない。
+            memo=bridge.causal_mtf_memo_for(
+                compute_tf=compute_tf, indicator=indicator, variant=variant, params=params),
         )
 
     def compute(

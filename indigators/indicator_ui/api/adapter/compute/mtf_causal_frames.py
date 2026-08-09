@@ -70,6 +70,7 @@ def causal_mtf_frames(
     bar_time_unix: Callable[[str, int], int],
     compute_latest: Callable[["pd.DataFrame"], "list[dict]"],
     fold_from: Any = None,
+    memo: Any = None,
 ) -> "list[dict]":
     """DataFrame で受けて因果 MTF 系列を返す（規約の実体は ``mtf_causal``）。
 
@@ -78,6 +79,7 @@ def causal_mtf_frames(
         df_source: 計算足 H の保存済みバー。
         fold_from: 畳みに使う C 足の全体（``df_chart`` が期間の途中から始まる場合に、その
             期間の先頭から畳むために渡す）。None なら ``df_chart`` だけで畳む。
+        memo: バー単位の記憶（ISSUE-297）。``mtf_causal.causal_mtf_series`` へ素通しする。
     """
     window = bars_from_frame(df_chart)
     if not window:
@@ -98,4 +100,5 @@ def causal_mtf_frames(
         bar_time_unix=bar_time_unix,
         latest_seq=latest_seq_over(compute_latest),
         window_bars=window,
+        memo=memo,
     )

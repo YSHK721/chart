@@ -41,6 +41,36 @@ def fold_bars(bars: "list[dict]", *, time: int) -> dict:
     }
 
 
+def _bar_signature(bar: dict) -> tuple:
+    """バーの値そのもの（時刻＋OHLCV）。指紋の材料（ISSUE-297）。"""
+    return (
+        int(bar["time"]),
+        float(bar["open"]), float(bar["high"]), float(bar["low"]), float(bar["close"]),
+        float(bar.get("volume") or 0.0),
+    )
+
+
+def _prefix_fingerprints(bars: "list[dict]") -> "list[int]":
+    """``bars`` の各前置き（0..n 本）の指紋。``out[i]`` は先頭 i 本ぶんの指紋。"""
+    out = [hash(("mtf_causal", 0))]
+    acc = out[0]
+    for b in bars:
+        acc = hash((acc, _bar_signature(b)))
+        out.append(acc)
+    return out
+
+
+def _compact(series: "list[dict]") -> "list[dict]":
+    """1 時点ぶんの計算結果を、系列ごとに**末尾の 1 点だけ**へ畳む（記録・出力の共通形）。"""
+    out = []
+    for p in series or []:
+        data = p.get("data") or []
+        if p.get("kind") not in _SERIES_KINDS or not data:
+            continue
+        out.append({**p, "data": [data[-1]]})
+    return out
+
+
 def group_by_period(
     bars: "list[dict]", *, compute_tf: str, bar_time_unix: Callable[[str, int], int]
 ) -> "list[tuple[int, list[dict]]]":
@@ -63,6 +93,7 @@ def causal_mtf_series(
     bar_time_unix: Callable[[str, int], int],
     latest_seq: Callable[["list[dict]", "list[list[dict]]"], "list[list[dict]]"],
     window_bars: "list[dict] | None" = None,
+    memo: Any = None,
 ) -> "list[dict]":
     """C の各バーへ「そのバーの時点で計算できた H の値」を載せた系列を返す。
 
@@ -75,6 +106,11 @@ def causal_mtf_series(
             計算資源へ載せ、末尾差分ごとに latest 計算する実体（ISSUE-233 の最適化経路）。
         window_bars: 出力対象の C 足（既定は ``chart_bars`` 全部）。畳みには使うが出力には
             含めない先頭側を落とすために使う。
+        memo: バー単位の記憶（``get(τ, 指紋)`` / ``put(τ, 指紋, 点)``。省略時は記憶しない＝
+            従来どおり全バーを計算する）。``value(τ)`` は τ より後のデータに依存しない
+            （ISSUE-294 / 295）ため、同じ入力の同じ τ を計算し直す必要がない（ISSUE-297）。
+            指紋は ``value(τ)`` を決める入力そのもの（確定 H 足の前置き＋τ まで畳んだ H 足）から
+            作るため、形成中バー・``untilTime`` 途中・データ訂正はすべて別物として扱われる。
 
     Returns:
         ``[{name, kind, data:[{time, value...}], stepped: True, ...}]``。期間境界の跳ねを
@@ -83,29 +119,45 @@ def causal_mtf_series(
     if not chart_bars or not source_bars:
         return []
     keep = {int(b["time"]) for b in (window_bars if window_bars is not None else chart_bars)}
+    prefix_fp = _prefix_fingerprints(source_bars) if memo is not None else None
     out: "dict[Any, dict]" = {}
     order: "list[Any]" = []
     for label, part in group_by_period(
             chart_bars, compute_tf=compute_tf, bar_time_unix=bar_time_unix):
         confirmed = [b for b in source_bars if int(b["time"]) < label]
+        confirmed_fp = prefix_fp[len(confirmed)] if prefix_fp is not None else None
         tails: "list[list[dict]]" = []
         times: "list[int]" = []
+        plan: "list[tuple[int, Any, Any]]" = []   # (τ, 記憶にあった点 or None, 指紋 or None)
         acc: "dict | None" = None
         for b in part:
             acc = fold_bars([acc, b] if acc else [b], time=label)
+            t = int(b["time"])
+            fingerprint = None
+            cached = None
+            if memo is not None and t in keep:
+                fingerprint = hash((confirmed_fp, _bar_signature(acc)))
+                cached = memo.get(t, fingerprint)
+            if cached is not None:
+                plan.append((t, cached, None))
+                continue        # 記憶にある＝この時点は計算を発行しない
             tails.append([dict(acc)])
-            times.append(int(b["time"]))
-        steps = latest_seq(confirmed, tails)
-        for t, series in zip(times, steps or []):
+            times.append(t)
+            plan.append((t, None, fingerprint))
+        steps = latest_seq(confirmed, tails) if tails else []
+        fresh = dict(zip(times, steps or []))
+        for t, cached, fingerprint in plan:
             if t not in keep:
                 continue
-            for p in series or []:
-                data = p.get("data") or []
-                if p.get("kind") not in _SERIES_KINDS or not data:
-                    continue
+            series = cached if cached is not None else _compact(fresh.get(t) or [])
+            if not series:
+                continue
+            if cached is None and memo is not None and fingerprint is not None:
+                memo.put(t, fingerprint, series)
+            for p in series:
                 name = p.get("name")
                 if name not in out:
                     out[name] = {**p, "data": [], "stepped": True}
                     order.append(name)
-                out[name]["data"].append({**data[-1], "time": t})
+                out[name]["data"].append({**p["data"][-1], "time": t})
     return [out[name] for name in order]

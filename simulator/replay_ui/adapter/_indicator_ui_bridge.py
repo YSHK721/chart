@@ -98,6 +98,7 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
         latest_compute,
     )
     from adapter.compute.mtf_causal import causal_mtf_series  # noqa: E402
+    from adapter.compute.mtf_causal_memo import memo_for as causal_mtf_memo_for  # noqa: E402
 
     ns = SimpleNamespace(
         dataset=dataset,
@@ -107,6 +108,8 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
         # ISSUE-295: 上位足の因果系列はライブ core と**同一実装**を再利用する（規則を写さない）。
         #   ライブ側 compute_controller もこの関数を通る＝両モードで規約も値も同一になる。
         causal_mtf_series=causal_mtf_series,
+        # ISSUE-297: バー単位の記憶もライブ core と同一実装（記憶の実体はプロセス内）。
+        causal_mtf_memo_for=causal_mtf_memo_for,
     )
     _CACHE[key] = ns
     return ns

@@ -31,6 +31,7 @@ from marketdata import dataset  # noqa: F401  # monkeypatch 対象（_cc.dataset
 from adapter.compute import forming_bar as forming_bar_mod
 from adapter.compute.latest_dispatch import full_compute, latest_compute
 from adapter.compute.mtf_causal_frames import causal_mtf_frames
+from adapter.compute.mtf_causal_memo import memo_for
 from usecase.compute_indicators import ComputeRequest, ComputeResult, compute_indicators
 
 
@@ -73,6 +74,11 @@ def _causal_mtf(adapter: Any, body: dict[str, Any]):
             compute_latest=lambda df: latest_compute(
                 adapter, indicator_id, variant, df, dict(params)),
             fold_from=fold_from,
+            # ISSUE-297: 各バーの値は τ より後のデータに依存しない（ISSUE-294/295）ため、
+            #   同じ入力の同じ τ を計算し直さない。指紋不一致（形成中・データ訂正）は記録を使わない。
+            memo=memo_for(
+                dataset_ref=body.get("datasetRef"), timeframe=body.get("timeframe"),
+                compute_tf=compute_tf, indicator=indicator_id, variant=variant, params=params),
         )
 
     return _run
