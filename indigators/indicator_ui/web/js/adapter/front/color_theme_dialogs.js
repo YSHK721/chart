@@ -191,7 +191,20 @@ export class ColorThemeDialogs {
    *   返す判定器（usecase の純関数を注入する。本ダイアログは文字列比較を持たない）。未注入時は
    *   確認を挟まない。
    */
-  openEdit({ title = 'テーマを作成', onSubmit = () => ({ ok: true }), findExisting = null } = {}) {
+  /**
+   * テーマの編集ダイアログを開く。
+   *
+   * `theme` を渡すと**その内容を初期値**として開く（保存済みテーマの編集）。渡さなければ
+   * 従来どおり「名前は空・14 行すべて未指定」で開く（新規作成）。
+   *
+   * なぜ初期値が要るか: §5.1 処理 2 は同名保存で `roleColors` を**丸ごと置換**する。初期値が
+   * 無いと、1 色だけ直したいときにも 14 行を再入力するしかなく、入力し忘れたトークンは
+   * 消える。「一度確定したテーマは変更できない」状態がここから生まれていた。置換の規則自体は
+   * 変えない（変えるべきは置換前の値を編集の出発点にできること）。
+   */
+  openEdit({
+    title = 'テーマを作成', onSubmit = () => ({ ok: true }), findExisting = null, theme = null,
+  } = {}) {
     if (!this._usable()) {
       return null;
     }
@@ -210,7 +223,8 @@ export class ColorThemeDialogs {
     nameInput.type = 'text';
     nameInput.className = 'theme-dialog-input';
     nameInput.dataset.themeField = 'name';
-    nameInput.value = '';
+    // 編集なら既存名を初期表示する（毎回打ち直させない）。新規は空。
+    nameInput.value = theme && typeof theme.name === 'string' ? theme.name : '';
     nameRow.append(nameLabel, nameInput);
     body.append(nameRow);
 
@@ -218,8 +232,10 @@ export class ColorThemeDialogs {
     body.append(this._section('意味の色'));
     //: token -> { swatch, value, specified }。保存時にここだけを読む（DOM を再走査しない）。
     const slots = new Map();
+    const initialColors = (theme && theme.roleColors && typeof theme.roleColors === 'object')
+      ? theme.roleColors : {};
     for (const token of COLOR_ROLES) {
-      body.append(this._buildRoleRow(token, slots));
+      body.append(this._buildRoleRow(token, slots, initialColors[token]));
     }
 
     // 時間足による明度差（指標系列のみ・§6.3・§4.7 で地には効かない）。
@@ -277,6 +293,10 @@ export class ColorThemeDialogs {
         }
       }
       const result = onSubmit({
+        // 編集で開いたときは対象の themeId を載せる。協働子はこれを見て「新規採番」ではなく
+        //   「その席の更新」を行える（名前を変えても同じテーマを直したことになる）。
+        //   新規作成では undefined＝従来どおり採番される。
+        themeId: theme && typeof theme.themeId === 'string' ? theme.themeId : undefined,
         name: nameInput.value,
         roleColors: collectRoleColors(slots),
         tfModifier: tfToggle.checked ? collectTfModifier(tfInputs) : null,
@@ -298,8 +318,10 @@ export class ColorThemeDialogs {
 
   // 1 トークン行: [ラベル] [使うトグル] [スウォッチ] [現在値] [未指定に戻す] [用途の併記]。
   //   宣言の有無はトグルの checked が唯一の持ち主で、スウォッチの値とは独立に決まる。
-  _buildRoleRow(token, slots) {
+  //   initialColor（編集時のみ）: この行が「宣言済み」で開き、スウォッチの初期値になる。
+  _buildRoleRow(token, slots, initialColor = null) {
     const doc = this._doc;
+    const declared = typeof initialColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(initialColor);
     const row = doc.createElement('div');
     row.className = 'theme-dialog-role-row';
     row.dataset.themeRole = token;
@@ -315,7 +337,8 @@ export class ColorThemeDialogs {
     useBox.type = 'checkbox';
     useBox.className = 'theme-dialog-use-box';
     useBox.dataset.themeUse = token;
-    useBox.checked = false; // 初期はすべて未指定（恒等テーマ・§6.3）。
+    // 新規は未指定（恒等テーマ・§6.3）。編集は既存の宣言をそのまま初期状態にする。
+    useBox.checked = declared;
     if (typeof useBox.setAttribute === 'function') {
       useBox.setAttribute('title', USE_LABEL);
       useBox.setAttribute('aria-label', `${labelForRole(token)}: ${USE_LABEL}`);
@@ -326,12 +349,15 @@ export class ColorThemeDialogs {
     swatch.type = 'color';
     swatch.className = 'theme-dialog-swatch';
     swatch.dataset.themeSwatch = token;
-    swatch.value = SWATCH_INITIAL;
+    // 走査用の別名（テスト・E2E がトークンで引ける）。値の持ち主は本要素のまま。
+    swatch.dataset.themeToken = token;
+    // 編集時は既存の色を初期値にする（1 色だけ直せる）。新規は未指定時の表示値。
+    swatch.value = declared ? initialColor.toLowerCase() : SWATCH_INITIAL;
 
     const value = doc.createElement('span');
     value.className = 'theme-dialog-role-value';
     value.dataset.themeValue = token;
-    value.textContent = UNSET_TEXT;
+    value.textContent = declared ? String(swatch.value) : UNSET_TEXT;
 
     const clear = doc.createElement('button');
     clear.type = 'button';
@@ -392,7 +418,9 @@ export class ColorThemeDialogs {
    * @param {function} [opts.onRename] (themeId, name) => { ok, code }。
    * @param {function} [opts.onDelete] (themeId) => void（確認 1 段の後に呼ばれる）。
    */
-  openManage({ themes = [], onRename = () => ({ ok: true }), onDelete = () => {} } = {}) {
+  openManage({
+    themes = [], onRename = () => ({ ok: true }), onDelete = () => {}, onEdit = null,
+  } = {}) {
     if (!this._usable()) {
       return null;
     }
@@ -406,7 +434,9 @@ export class ColorThemeDialogs {
     // 「テーマなし（既定色）」は選択中テーマ無しの表現であってテーマ集合の要素ではないため
     //   一覧に出さない（出すと削除・改名の対象になり得る席ができる・§6.2）。
     for (const t of themes) {
-      list.append(this._buildManageRow(t, { error, onRename, onDelete }));
+      list.append(this._buildManageRow(t, {
+        error, onRename, onDelete, onEdit,
+      }));
     }
     body.append(list);
 
@@ -416,8 +446,12 @@ export class ColorThemeDialogs {
     return root;
   }
 
-  // 管理ダイアログの 1 行: [名前] [名前を変更] [削除]。操作面は行内で切り替える。
-  _buildManageRow(t, { error, onRename, onDelete }) {
+  // 管理ダイアログの 1 行: [名前] [色を編集] [名前を変更] [削除]。操作面は行内で切り替える。
+  //   「色を編集」は保存済みテーマの色を直す唯一の導線（依頼者指示 2026-08-09）。これが無いと、
+  //   一度確定したテーマは 14 行を再入力しない限り変更できない。
+  _buildManageRow(t, {
+    error, onRename, onDelete, onEdit = null,
+  }) {
     const doc = this._doc;
     const row = doc.createElement('div');
     row.className = 'theme-dialog-list-row';
@@ -483,7 +517,14 @@ export class ColorThemeDialogs {
       }
     });
 
-    row.append(name, renameInput, renameCommit, rename, confirm, remove);
+    const edit = this._button('色を編集', 'edit', 'theme-dialog-btn');
+    edit.dataset.themeEdit = t.themeId;
+    edit.addEventListener('click', () => {
+      if (typeof onEdit === 'function') {
+        onEdit(t.themeId);
+      }
+    });
+    row.append(name, edit, renameInput, renameCommit, rename, confirm, remove);
     return row;
   }
 }

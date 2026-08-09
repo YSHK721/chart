@@ -222,13 +222,18 @@ export class ColorThemeController {
   // ---- UC-C01 保存（§5.1）----------------------------------------------------
   //   保存は**適用ではない**（後条件: チャート上の色は変化しない）。失敗は CODE をそのまま返し、
   //   例外は投げない（呼び出し側のダイアログがインライン表示へ写像する）。
-  saveTheme({ name, roleColors = {}, tfModifier = null } = {}) {
+  //   themeId を伴う保存は「その席の更新」（編集ダイアログから開いた既存テーマ）。名前を変えても
+  //   同じテーマを直したことになる（無いと改名のたびに新規テーマが増える）。
+  saveTheme({
+    name, roleColors = {}, tfModifier = null, themeId = null,
+  } = {}) {
     const res = saveThemeUc({
       themes: this._themes,
       lastSeq: this._lastSeq,
       name,
       roleColors,
       tfModifier,
+      themeId,
       now: this._now(),
     });
     // F-C3: 未知トークンを無視したという**事実**は usecase が戻り値で返す（純関数は console を
@@ -298,6 +303,29 @@ export class ColorThemeController {
     });
   }
 
+  // 保存済みテーマの**編集**（依頼者指示 2026-08-09）。既存の名前・宣言済みトークンを初期値として
+  //   開き、1 色だけ直して保存できるようにする。themeId を保存要求へ載せるため、名前を変えても
+  //   同じ席が更新される（新規テーマが増えない）。未知 id は no-op（F-C6 と同型の縮退）。
+  openEditDialog(themeId) {
+    if (!this._dialogs || typeof this._dialogs.openEdit !== 'function') {
+      return;
+    }
+    const theme = themeById(this.themes(), themeId);
+    if (!theme) {
+      return;
+    }
+    this._dialogs.openEdit({
+      title: 'テーマを編集',
+      theme,
+      // 同名判定からは自分自身を除く（自分と同じ名前のままの保存を「上書き確認」にしない）。
+      findExisting: (name) => {
+        const hit = this.findThemeByName(name);
+        return hit && hit.themeId === theme.themeId ? null : hit;
+      },
+      onSubmit: (payload) => this.saveTheme(payload),
+    });
+  }
+
   // UC-C03 改名・削除。いずれもチャート上の色は変えない（§5.3）＝描き直すのは一覧だけ。
   openManageDialog() {
     if (!this._dialogs || typeof this._dialogs.openManage !== 'function') {
@@ -307,6 +335,9 @@ export class ColorThemeController {
       themes: this._themes,
       onRename: (themeId, name) => this.renameTheme(themeId, name),
       onDelete: (themeId) => this.deleteTheme(themeId),
+      // 保存済みテーマの色を直す唯一の導線（依頼者指示 2026-08-09）。管理ダイアログを閉じて
+      //   編集ダイアログを既存値つきで開く（同時に 2 枚開かない＝_openShell の後勝ちに従う）。
+      onEdit: (themeId) => this.openEditDialog(themeId),
     });
   }
 

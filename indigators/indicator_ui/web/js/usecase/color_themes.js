@@ -166,6 +166,87 @@ export function normalizeTfModifier(tfModifier) {
 }
 
 // ---------------------------------------------------------------------------
+// 同梱プリセット（§9 T-1 の確定）
+// ---------------------------------------------------------------------------
+
+// 「基本」テーマ。目的 2（カラーに意味をもたせる）の解き方を 1 つ具体化したもの。
+//
+// 眼目は **警戒（alert）を赤から外すこと**。実測（E-26・E-27）では緑／赤が「方向・強度・勝敗」の
+//   3 意味を同時に担い、`#d2433a` が「抵抗帯（弱気）」と「外れ値」の 2 意味を持っていた。ここを
+//   分離しない限り、テーマを作れるようにしただけでは色から意味を復元できるようにならない。
+//
+// 配色の方針（有彩色を 6 系統に抑える＝目的 1 の認知負荷軽減）:
+//   - 方向        … ローソクを含めて明るい teal / red へ引き上げる（依頼者指示 2026-08-09）。
+//                    色相は現行を保つ（teal 対 red）。teal は赤との弁別が緑よりも保たれるため、
+//                    §3.2 N-8 で自動適合を持たない本機能では、既定として不利にならない選択を採る。
+//                    彩度・明度だけを上げるので「方向」という意味は変えずに、地との分離が上がる。
+//   - 警戒        … 琥珀。方向（赤）と独立した意味であることを色相で示す（上方向の外れ値もある）。
+//   - 指標の中身  … 寒色系（青・紫・シアン）でまとめ、方向・警戒と体温を変える。
+//   - 補助の線    … 無彩色の明度差だけで「読ませる（level）／読ませない（muted）」を分ける。
+//   - 地          … 現行のまま。見慣れた地の上で、図だけが意味を持つようにする。
+//   - 現在地      … 画面で最も明るい無彩色。「今」を有彩色の意味群と衝突させない。
+//
+// 時刻は 0 固定（プリセットは実行時に生成されるのではなく定義そのもの＝決定論。`Date.now()` を
+//   モジュール評価時に呼ぶと、同じビルドが起動ごとに違う値を持つ）。
+const BASIC_PRESET = Object.freeze({
+  themeId: 'thm#0',
+  name: '基本',
+  roleColors: Object.freeze({
+    bullish: '#00bfa5',
+    bearish: '#ff5252',
+    alert: '#ffa726',
+    neutral: '#90a4ae',
+    primary: '#42a5f5',
+    secondary: '#7e57c2',
+    range: '#26c6da',
+    level: '#78909c',
+    muted: '#546e7a',
+    surface: '#131722',
+    grid: '#1f2530',
+    border: '#2a2e39',
+    text: '#d1d4dc',
+    highlight: '#f5f5f5',
+  }),
+  tfModifier: null,
+  createdAt: 0,
+  updatedAt: 0,
+});
+
+export const PRESET_THEMES = Object.freeze([BASIC_PRESET]);
+
+// プリセットの id 集合。採番（§4.10）は `lastSeq + 1` から始まるため、プリセットは採番域の外
+//   （`thm#0`）に置く＝ユーザーのテーマと id が衝突しない。
+export const PRESET_THEME_IDS = Object.freeze(PRESET_THEMES.map((t) => t.themeId));
+
+const PRESET_ID_SET = new Set(PRESET_THEME_IDS);
+
+// 当該 id が同梱プリセットのものか（全域的・未知値でも例外を投げない）。
+export function isPresetThemeId(themeId) {
+  return typeof themeId === 'string' && PRESET_ID_SET.has(themeId);
+}
+
+// 永続層のテーマ集合へプリセットを**合成**する（集合の初期値として書き込まない）。
+//
+//   書き込み方式を採らない理由（§5.3 の削除・改名が意味を失うため）:
+//     - 集合へ初期値として書くと、ユーザーが削除しても次回起動で復活する。
+//     - 同名で保存し直すと上書き確認が走り、プリセットの席が奪われる／二重に増える。
+//   合成方式なら、同じ `themeId` を持つ永続値が在ればそちらが勝ち（改名・色の変更を尊重）、
+//   削除の記録（`removedPresetIds`）が在れば復活させない。ユーザーの操作を無効化しない。
+//
+// @param {Array} themes 永続層のテーマ集合（原形）。
+// @param {{removedPresetIds?: string[]}} [opts] 削除済みプリセット id（永続層が持つ）。
+// @returns {Array} プリセット（先頭）＋ ユーザーのテーマ。入力は破壊しない。
+export function withPresets(themes = [], { removedPresetIds = [] } = {}) {
+  const mine = adoptThemes(Array.isArray(themes) ? themes : []);
+  const mineIds = new Set(mine.map((t) => t.themeId));
+  const removed = new Set(Array.isArray(removedPresetIds) ? removedPresetIds : []);
+  const presets = PRESET_THEMES.filter(
+    (p) => !mineIds.has(p.themeId) && !removed.has(p.themeId),
+  );
+  return [...presets, ...mine];
+}
+
+// ---------------------------------------------------------------------------
 // 読み出し境界: 消費のための射影（§4.4・§4.9 前方互換・§5.3）
 // ---------------------------------------------------------------------------
 
@@ -256,10 +337,17 @@ function replaceTheme(themes, themeId, updated) {
 //   戻り値の `ignoredTokens` は F-C3 で無視した未知トークン（§5.1 の処理順どおり、名前検証で
 //   中止した呼び出しは色を見ていないので必ず空）。警告を出すのは呼び出し側＝adapter（R-4）。
 export function saveTheme({
-  themes = [], lastSeq = 0, name, roleColors = {}, tfModifier = null, now = 0,
+  themes = [], lastSeq = 0, name, roleColors = {}, tfModifier = null, now = 0, themeId = null,
 } = {}) {
   const list = themes ?? [];
-  const existing = findThemeByName({ themes: list, name });
+  // 更新対象の決め方は 2 通りで、**id が優先**する。
+  //   (a) themeId 指定（編集ダイアログから開いた既存テーマ）… 名前を変えても同じ席を直す。
+  //       これが無いと、名前を変えた瞬間に「別テーマの新規作成」になり、元のテーマが残って
+  //       増殖する（＝一度確定したテーマを直せない状態が別の形で再現する）。
+  //   (b) 正規化名の一致（§5.1 処理 2 の上書き）… 新規作成の導線から同名を保存した場合。
+  const byId = typeof themeId === 'string'
+    ? list.find((t) => t && t.themeId === themeId) ?? null : null;
+  const existing = byId ?? findThemeByName({ themes: list, name });
   // 同名は「上書き」であって検証エラーではないため、自分自身を除外して検証する（§5.1 処理 2）。
   const verdict = validateThemeName(name, {
     themes: list,
