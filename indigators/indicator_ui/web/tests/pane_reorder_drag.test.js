@@ -324,6 +324,26 @@ test('ドラッグ中は凡例を作り直さない（掴んでいる要素を�
   assert.equal(host.children[0], before, 'ドラッグ中に凡例が作り直された');
 });
 
+test('並べ替え協働子が未注入でも従来どおり描画・開閉できる（既定は no-op の Null Object）', () => {
+  // 契約（isDragging / sync / consumeClickSuppression）を分岐で確かめるのをやめた代わりに、
+  //   「未注入＝並べ替え無し」が完全な実装として成立していることをここで固定する。
+  const anchor = fakeElement('div', 'chart-wrap');
+  const view = new PaneLegendView({ document: fakeDoc(anchor) });
+
+  view.setInstances(ROWS);
+  view.update(MODEL);
+  const host = anchor.querySelector('.pane-legends');
+  const chip = host.children[1].children.find((c) => c.className.includes('pane-legend-chip'));
+  chip.fire('click', {});
+
+  assert.equal(host.children.length, 3, '未注入で凡例が描かれない');
+  assert.equal(
+    anchor.querySelector('.pane-legends').children[1].children
+      .some((c) => c.className === 'pane-legend-rows'),
+    false, '未注入なのに click の開閉が握りつぶされた',
+  );
+});
+
 test('ドラッグ直後の click ではチップを畳まない', () => {
   const anchor = fakeElement('div', 'chart-wrap');
   let suppress = true;

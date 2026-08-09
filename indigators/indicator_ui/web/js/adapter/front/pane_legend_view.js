@@ -39,14 +39,27 @@ const CHIP_ICON = '∿';
 // 本 View が所有するホスト要素のクラス名（＝所有者名）。CSS もこのクラスで当てる。
 const HOST_CLASS = 'pane-legends';
 
+// 並べ替え協働子が未注入のときの既定（Null Object）。「並べ替えが無い」ことを **契約を満たす
+//   完全な実装**で表す。呼び出し側で `typeof x.isDragging === 'function'` と分岐して表すと、
+//   3 か所に散った分岐が協働子の契約を暗黙に再定義してしまい、1 メソッドだけ欠けた部分実装が
+//   「並べ替えが効かない」という無症状の不具合として通る（LSP: 置換可能でない実装を受け入れる /
+//   ISP: 必要なメソッド集合がどこにも明示されない）。既定を Null Object に固定することで、
+//   本 View は常に 3 メソッドを持つ相手だけを相手にし、部分実装は即座に落ちる（フェイルクローズ）。
+const NO_REORDER = Object.freeze({
+  isDragging: () => false,
+  sync: () => {},
+  consumeClickSuppression: () => false,
+});
+
 export class PaneLegendView {
   /**
    * @param {object} deps
    * @param {object} deps.document       DOM 実装（注入）。
    * @param {object} [deps.anchor]       版面要素の直接注入（既定は document から .chart-wrap を引く）。
    * @param {boolean} [deps.collapsed]   既定の折りたたみ状態（既定 false＝開いた状態で表示する）。
-   * @param {object} [deps.reorder]      ペイン並べ替えのドラッグ協働子（PaneReorderDrag）。未注入なら
-   *                                     従来どおり並べ替え無し（本 View は操作を一切知らない）。
+   * @param {object} [deps.reorder]      ペイン並べ替えのドラッグ協働子（PaneReorderDrag）。
+   *                                     契約は { isDragging(), sync(root, groups), consumeClickSuppression() }。
+   *                                     未注入なら NO_REORDER（並べ替え無し・本 View は操作を一切知らない）。
    */
   constructor({ document, anchor = null, collapsed = false, overlayId = 'chart-overlay-tl', reorder = null } = {}) {
     this._document = document ?? null;
@@ -70,7 +83,7 @@ export class PaneLegendView {
     this._model = null;
     // ペイン並べ替え（ドラッグ&ドロップ）。操作の意味づけは協働子が持ち、本 View は
     //   「掴み手はこの要素」「幾何はこれ」を渡すだけ（描画と操作の責務を混ぜない）。
-    this._reorder = reorder ?? null;
+    this._reorder = reorder ?? NO_REORDER;
   }
 
   // 描画先（本 View 所有のホスト要素）。無ければ版面 .chart-wrap の直下に生成する。
@@ -144,7 +157,7 @@ export class PaneLegendView {
     // ドラッグ中は作り直さない。凡例はクロスヘアが動くたびに DOM を捨てて作り直すため、
     //   ペインを掴んで動かしている最中に再構築すると掴んでいる要素そのものが消える。
     //   並べ替え確定後は movePane が凡例 DTO を再発行する＝通常経路で描き直される。
-    if (this._reorder && typeof this._reorder.isDragging === 'function' && this._reorder.isDragging()) {
+    if (this._reorder.isDragging()) {
       return;
     }
     const root = this._root();
@@ -172,9 +185,7 @@ export class PaneLegendView {
       placed.push({ ...geom, box, handle });
     }
     // 並べ替え協働子へ、この描画で作った掴み手と幾何を渡す（要素は毎回作り直されるため毎回渡す）。
-    if (this._reorder && typeof this._reorder.sync === 'function') {
-      this._reorder.sync(root, placed);
-    }
+    this._reorder.sync(root, placed);
   }
 
   // renderer モデルを instanceId / paneIndex で引ける形へ落とす（描画の都合は View が持つ）。
@@ -214,8 +225,7 @@ export class PaneLegendView {
     chip.textContent = `${CHIP_ICON} ${rows.length}`;
     chip.addEventListener('click', () => {
       // 掴んで動かした直後の click は開閉ではない（同じ要素が掴み手のため必ず飛んでくる）。
-      if (this._reorder && typeof this._reorder.consumeClickSuppression === 'function'
-          && this._reorder.consumeClickSuppression()) {
+      if (this._reorder.consumeClickSuppression()) {
         return;
       }
       this.toggle(paneKey);
