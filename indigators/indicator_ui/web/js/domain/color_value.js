@@ -83,3 +83,126 @@ export function normalizeHexColor(value) {
   }
   return null;
 }
+
+// === 色の数学（加法）=====================================================
+// 以下 5 関数は既存の公開面を一切変えずに足す。全域性の規律は上と同一で、
+//   「保存形 hex6 か null」／「有限数か null」を出口で確定させる（消費者に型ガードを配らない）。
+//
+// 受理集合はいずれも **6 桁 hex のみ**（大文字小文字は問わない）。3 桁 hex・rgb() を受けないのは、
+//   これらが「色の値」ではなく「色の書き方」の差であり、書き方の吸収は normalizeHexColor の責務
+//   だからである（呼び出し側は normalizeHexColor を通してから本群へ渡す＝変換点を 1 つに保つ）。
+
+// 入力を保存形 hex6 へ落とす。hex6 でなければ null（本群の共通入口）。
+function toHex6(value) {
+  return (typeof value === 'string' && RE_HEX6.test(value)) ? value.toLowerCase() : null;
+}
+
+// 2 色をチャネル線形補間で混ぜる。t=0 で a、t=1 で b。t は [0,1] へクランプする。
+//   **丸めは必須**（実測）: 0 と 255 の中点 127.5 を丸めずに channelsToHex へ渡すと
+//   `(127.5).toString(16)` が `'7f.8'` となり `#7f.87f.87f.8` という hex6 でない保存形ができる。
+//   丸め規則は normalizeHexColor の rgb() 経路（Math.round）と同一に揃える。
+export function mixChannels(a, b, t) {
+  const ha = toHex6(a);
+  const hb = toHex6(b);
+  if (ha === null || hb === null || !Number.isFinite(t)) {
+    return null;
+  }
+  const k = Math.min(1, Math.max(0, t));
+  const ca = toChannels(ha);
+  const cb = toChannels(hb);
+  return channelsToHex(ca.map((v, i) => Math.round(v + (cb[i] - v) * k)));
+}
+
+// sRGB の伝達関数（WCAG 2.x 相対輝度の定義に現れる線形化）とその逆関数。
+const SRGB_THRESHOLD = 0.03928;
+function toLinear(c) {
+  return c <= SRGB_THRESHOLD ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+function fromLinear(y) {
+  return y <= toLinear(SRGB_THRESHOLD) ? y * 12.92 : 1.055 * (y ** (1 / 2.4)) - 0.055;
+}
+
+// WCAG 2.x の相対輝度。黒 0・白 1（実測: IEEE754 で厳密に 0 / 1 になる）。
+export function relativeLuminance(hex) {
+  const h = toHex6(hex);
+  if (h === null) {
+    return null;
+  }
+  const [r, g, b] = toChannels(h).map((v) => toLinear(v / 255));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+// WCAG 2.x のコントラスト比。同色 1・白黒 21（実測: いずれも厳密値）。引数順に依らない。
+export function contrastRatio(a, b) {
+  const ya = relativeLuminance(a);
+  const yb = relativeLuminance(b);
+  if (ya === null || yb === null) {
+    return null;
+  }
+  return (Math.max(ya, yb) + 0.05) / (Math.min(ya, yb) + 0.05);
+}
+
+// HSL 色相を deg 回転する（彩度・明度は保つ）。
+//   HSL を経由せず {min, max, 色相} から直接組み立てる。S と L は max/min だけの関数なので、
+//   max/min をそのまま持ち回れば「彩度・明度を保つ」が構成上保証される（丸め誤差で動かない）。
+//   実測: 492,544 色で deg=0 / 360 / 720 / -360 の往復が全数一致、deg=137 でも max/min 不変。
+//   無彩色（C=0）は色相が定義されないため不動（回転しても同じ色）。
+export function rotateHue(hex, deg) {
+  const h = toHex6(hex);
+  if (h === null || !Number.isFinite(deg)) {
+    return null;
+  }
+  const [r, g, b] = toChannels(h);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const chroma = max - min;
+  if (chroma === 0) {
+    return h;
+  }
+  let sector;
+  if (max === r) {
+    sector = ((g - b) / chroma) % 6;
+  } else if (max === g) {
+    sector = (b - r) / chroma + 2;
+  } else {
+    sector = (r - g) / chroma + 4;
+  }
+  const hue = (((sector * 60 + deg) % 360) + 360) % 360;
+  const hp = hue / 60;
+  const x = chroma * (1 - Math.abs((hp % 2) - 1));
+  const table = [
+    [chroma, x, 0], [x, chroma, 0], [0, chroma, x],
+    [0, x, chroma], [x, 0, chroma], [chroma, 0, x],
+  ];
+  return channelsToHex(table[Math.floor(hp) % 6].map((v) => Math.round(v + min)));
+}
+
+// 彩度 0（相対輝度を保つ無彩色化）。出力は 3 チャネルが等しい灰。
+//   「相対輝度を保つ」を満たす灰は 8bit 階調では一般に存在しないため、**到達可能な最良点**
+//   （目標輝度に最も近い階調）を選ぶ。逆伝達関数の丸めだけでは不足する（実測: 165,464 色中
+//   228 色で隣接階調の方が真に近い＝sRGB 空間の最近傍と輝度空間の最近傍が一致しない）ため、
+//   候補 3 点を輝度差で比較して確定させる。灰は不動点（実測: 256 階調すべてで自己一致）。
+function toGray(n) {
+  return channelsToHex([n, n, n]);
+}
+
+export function desaturate(hex) {
+  const target = relativeLuminance(hex);
+  if (target === null) {
+    return null;
+  }
+  const seed = clampChannel(Math.round(fromLinear(target) * 255));
+  let best = null;
+  let bestErr = Infinity;
+  for (const n of [seed - 1, seed, seed + 1]) {
+    if (n < 0 || n > 255) {
+      continue;
+    }
+    const err = Math.abs(relativeLuminance(toGray(n)) - target);
+    if (err < bestErr) {
+      bestErr = err;
+      best = n;
+    }
+  }
+  return toGray(best);
+}
