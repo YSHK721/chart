@@ -45,7 +45,11 @@ def _discovered_suites() -> "list[str]":
     """``<...>/web/tests/*.test.js`` を持つディレクトリを走査で見つける。"""
     found: "set[str]" = set()
     for path in _ROOT.glob("*/**/web/tests/*.test.js"):
-        if any(part == "node_modules" or part.startswith(".") for part in path.parts):
+        # 判定は **_ROOT からの相対**成分で行う。絶対パス成分を見ると、
+        # `.claude/worktrees/<name>/` 配下の worktree で全件が「隠しディレクトリ」と
+        # 判定され、走査結果が常に空になる（＝台帳検定が worktree で機能しない）。
+        relative_parts = path.relative_to(_ROOT).parts
+        if any(part == "node_modules" or part.startswith(".") for part in relative_parts):
             continue
         web_dir = path.parent.parent
         rel = web_dir.relative_to(_ROOT).as_posix()

@@ -212,3 +212,6 @@ simulator/tests/260620-01/
 .playwright-mcp/
 indigators/market_profile/analysis/out/
 .pytest_cache/
+
+# codescan（コード重複走査）の出力先。走査結果は再生成できるためコミットしない。
+.codescan/

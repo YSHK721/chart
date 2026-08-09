@@ -5451,3 +5451,21 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   集約は**不要と判断**した（2.4 回/足 × 0.30 秒 ≒ 0.7 秒/足）。必要になれば ISSUE-300 と同じ型で
   追加できる。
 - **関連**: ISSUE-300（足内更新の集約）、ISSUE-297（MTF のバー単位メモ化）。
+
+## ISSUE-302: [検定] web スイート台帳の検定が worktree で常に空走査になっていた（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・`tools/tests` 146 件 Green で確認）
+- **重大度**: Medium（worktree での「テスト緑」が偽になる。ISSUE-279 と同型の再発）
+- **発見の経緯**: `tools/codescan`（コード重複走査ツール）を `.claude/worktrees/codescan-dev`
+  で実装し `python -m pytest tools/tests/` を回したところ、無関係の
+  `test_web_suites_ledger.py::test_every_discovered_suite_is_registered` だけが赤になった。
+- **実測**: `_discovered_suites()` の戻り値が `[]`（台帳側は 4 件）。原因箇所は
+  `any(part == "node_modules" or part.startswith(".") for part in path.parts)`。
+  `path` は絶対パスであり、worktree の実体が `/workspaces/app/.claude/worktrees/<name>/`
+  にあるため、**全候補が `.claude` を成分に持ち**「隠しディレクトリ」として除外されていた。
+- **原因**: 除外判定を絶対パス成分に対して行っていた。判定したいのは「リポジトリ内の
+  どこにあるか」であって「チェックアウトがどこに置かれているか」ではない。
+- **是正（原因除去）**: 判定を `path.relative_to(_ROOT).parts` に変更し、チェックアウト位置に
+  依存しないようにした。台帳・ランナー・除外規則は変更していない。
+- **影響**: 是正前、worktree で本検定は「台帳が空でも実在が空でも一致」しうる状態にあった
+  （＝登録漏れを検出できない）。main チェックアウトでは正しく動いていたため気付かれなかった。
+- **関連**: ISSUE-279（worktree で main の実装がテストされていた）、ISSUE-280（web スイート台帳）。
