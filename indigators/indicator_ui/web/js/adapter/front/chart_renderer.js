@@ -3,13 +3,17 @@
 // 設計入力: 内部設計書 §3.3.4 / §7.1.2。
 // ★ lightweight-charts v5.2.0 の JS API 名（addSeries / addPane / removePane / panes /
 //   createPriceLine / setData / applyOptions / removeSeries / removePriceLine /
-//   subscribeCrosshairMove / createTextWatermark / timeScale / attachPrimitive / priceScale）を
+//   subscribeCrosshairMove / createTextWatermark / timeScale / attachPrimitive / priceScale /
+//   getPane / getHeight / paneIndex / moveTo）を
 //   呼んでよいのは **宣言された隔離単位** に限る:
 //     (a) ChartRenderer 本体とその内部協働子（series_drawer / candle_feed / scale_controller）
 //     (b) チャート生成の bootstrap（chart_bootstrap）
 //     (c) lwc プラグイン契約（ISeriesPrimitive）の実装＝chart を受け取るのが upstream 仕様
 //     (d) 合成根（可視範囲の購読のみ。ChartRenderer へ寄せるのが望ましい残件）
 //   これは ``tests/upstream_isolation_declaration.test.js`` が **実際に走査して強制**する。
+//   同検定は上の API 名リストと自身の施行リストの一致も検査する（宣言だけ増える／施行だけ増える、
+//   という食い違いを構造的に不可能にする）。moveTo だけは canvas 2D の同名 API と衝突するため、
+//   受け手が canvas コンテキストでない場合に upstream と判定する（理由は同検定に記載）。
 //
 //   かつてここは「呼ぶのは本ファイルだけ（§2.2 grep 0 件強制）」と書いていたが、その grep を
 //   実行する仕組みは存在せず、実際は 11 ファイルが呼んでいた（ISSUE-262）。宣言を実態へ正し、
@@ -90,6 +94,14 @@ export class ChartRenderer {
     // instanceId -> { lines, priceLines, hlinePayloads, visible, scaleHost, priceLineHost,
     //                 pane, watermark, paneName }
     this._instances = new Map();
+    // ペインの**位置に依らない安定 ID**（ISSUE-341）。並べ替えを入れた結果 paneIndex は
+    //   「今どこに居るか（位置）」しか表さなくなったため、「どのペインか（同一性）」を別に持つ。
+    //   pane オブジェクトを鍵にした WeakMap＝ペインが消えれば採番も一緒に消える（後始末が要らない）。
+    //   実測（vendor/lightweight-charts.js v5.2.0）: chart.panes() は内部ペインごとに生成した
+    //   ラッパを `fb()` がキャッシュして返すため、同じペインには毎回同じオブジェクトが返る。
+    //   moveTo（並べ替え）は内部配列の順序だけを変えるのでラッパの同一性は保たれる。
+    this._paneKeys = new WeakMap();
+    this._paneKeySeq = 0;
     this._mainStretchSet = false;
     // 増分2: setCandleTrim の直近トリム末尾 index（位置不変時の再 setData 回避＝プロト lastTrimIdx）。
     //   null=未トリム。setCandles で候補が変わるためリセットする。
@@ -553,10 +565,48 @@ export class ChartRenderer {
     this._onPaneLegend(this.paneLegendModel(param));
   }
 
+  // 指標ペインの並べ替え（ドラッグ&ドロップの着地点・ユーザー指示 2026-08-09）。
+  //
+  //   upstream の並べ替え API（IPaneApi.moveTo）を呼ぶ唯一の点。バンドル実測（v5.2.0）で
+  //   `moveTo(to)` は `splice(from,1)` → `splice(to,0,pane)` の **抜いて差し込む** 意味であり、
+  //   上下どちらへ動かしても「to 番の位置へ入る」で一意に決まる（swapPanes＝単純交換とは別物）。
+  //
+  //   価格ペイン（メイン系列が居るペイン）は移動元にも移動先にもしない。overlay 指標の系列は
+  //   `chart.addSeries(...)`（既定 paneIndex=0）で追加されるため、価格ペインを 0 番から動かすと
+  //   以後の overlay 指標が別ペインへ落ちる（実装上の前提が崩れる）。指示の対象は指標ペインで
+  //   あり、価格ペインを固定しておけば前提と指示の双方を満たす。
+  //
+  //   @returns {boolean} 実際に並べ替えたら true（不正な指定・移動不能は false＝呼び出し側は無視してよい）。
+  movePane(fromIndex, toIndex) {
+    if (typeof this._chart.panes !== 'function') {
+      return false;
+    }
+    const panes = this._chart.panes() ?? [];
+    const from = Number(fromIndex);
+    const to = Number(toIndex);
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) {
+      return false;
+    }
+    if (from < 0 || from >= panes.length || to < 0 || to >= panes.length) {
+      return false;
+    }
+    if (!this._isPaneMovable(from, panes.length) || !this._isPaneMovable(to, panes.length)) {
+      return false;
+    }
+    const pane = panes[from];
+    if (!pane || typeof pane.moveTo !== 'function') {
+      return false;
+    }
+    pane.moveTo(to);
+    // ペイン構成が変わる（index と top がずれる）ため凡例を引き直す（remove() と同じ規律）。
+    this._emitPaneLegend(null);
+    return true;
+  }
+
   // ペイン別凡例の DTO（幾何＋値）を返す。**upstream に触れるのはここだけ**で、View へは
   //   数値・文字列だけを渡す（§2.2 隔離）。
   //
-  //   { groups: [{ paneIndex, top, height, rows: [{ instanceId, values: [{name,value,color}] }] }] }
+  //   { groups: [{ paneIndex, top, height, movable, rows: [{ instanceId, values: [{name,value,color}] }] }] }
   //
   //   top はチャート要素上端からの px。lightweight-charts は各ペインを 1px の区切りで縦に積むため
   //   （実測 2026-08-06: paneSize=[497,166,165] / チャート高 858 / 時間軸 28 → 残り 2px が区切り 2 本）、
@@ -580,17 +630,47 @@ export class ChartRenderer {
       }
       byPane.get(paneIndex).push({ instanceId, values: this._slotValues(slot, seriesData) });
     }
+    const paneKeys = this._paneKeysOrdered();
     const groups = [];
     for (const [paneIndex, rows] of byPane) {
       groups.push({
         paneIndex,
+        // 位置に依らないペインの同一性（ISSUE-341）。折りたたみ状態など「ペインについて回る」
+        //   ものはこちらを鍵にする。位置の情報（top/height/movable）は paneIndex 側のまま。
+        paneKey: paneKeys[paneIndex] ?? null,
         top: tops[paneIndex] ?? 0,
         height: heights[paneIndex] ?? 0,
+        // 掴んで動かせるか（凡例の見た目＝掴める合図はこの 1 値だけで決まる）。判定の単一情報源は
+        //   _isPaneMovable で、movePane の受理判定と同じものを使う（affordance と実際の可否を割らない）。
+        movable: this._isPaneMovable(paneIndex, heights.length),
         rows,
       });
     }
     groups.sort((a, b) => a.paneIndex - b.paneIndex);
     return { groups };
+  }
+
+  // ペインの安定 ID を paneIndex 順の配列で返す（ISSUE-341）。価格ペインも含めて全ペインへ採番する。
+  //   初めて見たペインに 'p1','p2',… を振り、以後そのペインには同じ ID を返す。番号は**採番順**
+  //   であって位置ではない（並べ替えても振り直さない＝それが「位置に依らない」の意味）。
+  //   panes() 非提供の環境（Fake/SSR）は空配列＝ID なしで縮退し、View 側が paneIndex へ退避する。
+  _paneKeysOrdered() {
+    if (typeof this._chart.panes !== 'function') {
+      return [];
+    }
+    const panes = this._chart.panes() ?? [];
+    return panes.map((pane) => {
+      if (!pane || typeof pane !== 'object') {
+        return null;
+      }
+      let key = this._paneKeys.get(pane);
+      if (!key) {
+        this._paneKeySeq += 1;
+        key = `p${this._paneKeySeq}`;
+        this._paneKeys.set(pane, key);
+      }
+      return key;
+    });
   }
 
   // 各ペインの高さ（px・ペイン順）。非提供環境（Fake/SSR）は空配列＝幾何なしで縮退する。
@@ -631,6 +711,39 @@ export class ChartRenderer {
       return Number.isFinite(idx) ? idx : 0;
     }
     return 0;
+  }
+
+  // メイン系列（ローソク）が居るペインの番号。価格ペインは並べ替えの対象外（movePane 参照）。
+  //   番号を 0 と決め打たず upstream へ問う（将来 addPane 順が変わっても判定がずれない）。
+  //   getPane 非提供の環境（Fake・旧版）は 0（生成時の既定ペイン）へ縮退する。
+  //
+  //   受理するのは **0 以上の整数だけ**（🟡-3 是正 2026-08-09）。バンドル実測（v5.2.0）で
+  //   `paneIndex()` は `hf(t){return this.od.indexOf(t)}` 由来であり、内部配列に無いペインでは
+  //   **-1** を返す。-1 は Number.isFinite を通ってしまい、価格ペイン番号として受理すると
+  //   `_isPaneMovable` の `paneIndex !== this._pricePaneIndex()` が全ペインで真になる
+  //   ＝禁じているはずの価格ペイン移動が通る（ガードがフェイルオープンする）。
+  _pricePaneIndex() {
+    const ms = this._mainSeries;
+    if (ms && typeof ms.getPane === 'function') {
+      const pane = ms.getPane();
+      if (pane && typeof pane.paneIndex === 'function') {
+        const idx = pane.paneIndex();
+        if (Number.isInteger(idx) && idx >= 0) {
+          return idx;
+        }
+      }
+    }
+    return 0;   // 範囲外（-1＝未登録）・非整数は既定ペインへ縮退する。
+  }
+
+  // 当該ペインを並べ替えられるか。価格ペインは対象外、指標ペインが 1 つだけなら動かす先が無い。
+  //   paneCount 未指定時は upstream へ問い直す（凡例 DTO は算出済みの本数を渡して二度引きを避ける）。
+  _isPaneMovable(paneIndex, paneCount = null) {
+    const total = paneCount == null ? this._paneHeights().length : paneCount;
+    if (total < 3) {
+      return false;   // 価格ペイン＋指標ペイン 1 つ以下＝入れ替える相手が居ない。
+    }
+    return paneIndex !== this._pricePaneIndex();
   }
 
   // slot の各系列の表示値。クロスヘア位置に値があればそれ、無ければ保持した最新値。
