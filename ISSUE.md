@@ -5796,3 +5796,266 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - `BtlmTrailIncrementer.prepare`（5 箇所 21 行）: 集約には基底クラス化＝設計変更が必要
     （Template Method）。増分計算経路の階層を変えるため、行数目的では着手しない。
   - 残余は 1 群 10〜18 行の断片で、共有先モジュールの追加分に対し正味の利得がほぼ無い（ISSUE-317）。
+
+---
+
+<!--
+ISSUE-319 〜 ISSUE-340 は 2026-08-09 の「テストコードと実装コードの設計差異」全数監査で
+起票した。監査は 388 Python テストファイル / 153 JS テストファイルを 10 領域に分割して走査し、
+差異 137 件（重大度 高 42 件）を検出した。ここには **根本原因の単位で 22 件** に束ねて記載する
+（137 件の全数一覧は監査レポートを参照）。
+
+前提となるベースライン実測（2026-08-09・branch develop）:
+  - Python: パッケージ単位で 4,400 passed / 8 skipped / 0 failed
+  - JS: 4/4 スイート 1,812 passed / 0 failed
+  - リポジトリ根 `pytest`: 88 collection error（→ ISSUE-333）
+  - `pytest indigators`: 83 collection error（→ ISSUE-333）
+  - 空アサーションのテストは 2,930 関数中 1 件のみ（意図的なスモーク）
+
+つまり全件緑であり、以下はすべて **「緑のまま潜んでいる差異」** である。
+-->
+
+## ISSUE-319: [挙動] ライブ足内更新の対象集合が front 19 件・back 6 件で非対称（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（登録済み 13 指標がライブでティック追従しない。エラーもログも出ない）
+- **発見の経緯**: テスト↔実装の設計差異監査で、front の登録リストと back の増分器レジストリを突き合わせるテストが 1 本も無いことに気付いた。
+- **実測**: `is_incremental(indicator_id, variant, params)` を実 variant（`call_binding._TABLE` のキー）で 19 件すべて評価した。
+  - 追従する 6 件: `moving_averages` / `profit_rsi` / `btlm_trail` / `btlm_trail_marod` / `ma_marod` / `tickvol`
+  - **追従しない 13 件**: `profit_mfi` / `profit_stc` / `profit_oscillator` / `profit_oscillator2` / `profit_osi_ma` / `profit_hlband` / `profit_mfi_macd` / `profit_rsi_macd` / `profit_rmm` / `profit_rmm_macd` / `profit_adx_needle` / `profit_arctan` / `profit_volatility`
+- **原因**: 対象集合が 2 箇所に独立して存在する。front は `indigators/indicator_ui/web/js/usecase/intrabar_forming_ids.js:13` の手書き 19 件、back は `indigators/indicator_ui/api/adapter/compute/incremental/__init__.py:61` の factory 6 件。`live_tick_tails.py:64` は非増分を `None` で落とすが、front はそれを「対象」と申告し続ける。突き合わせる検定が存在しない。
+- **抜本的対策案（未承認）**: 対象集合を back の増分器宣言から導出する単一情報源にし、front の手書きリストを廃止する（catalog 経由で受け取る）。導出できない設計上の理由があるなら、back が「非対応」を応答に明示し front が黙って諦めない形にする。いずれの場合も front⇄back の集合一致を検定で固定する。
+- **関連**: ISSUE-145（足内更新の指標登録）、ISSUE-291（受け口だけ作って front が送らない）、ISSUE-233。
+
+## ISSUE-320: [設計] 形成中バー差し込み規則が 3 実装に分裂し、ライブ毎ティック経路だけ時刻分岐を持たない（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（周期境界でライブ毎ティック値だけが `/compute` とずれる）
+- **実測**: 現行ツリー（worktree 除く）で `common.forming_window` を import しているのは `simulator/replay_ui/usecase/causal_compute.py:17` と `simulator/replay_ui/domain/forming_bar.py:23` の 2 ファイルのみ。ライブ側 `indigators/indicator_ui/api/adapter/compute/live_tick_tails.py:10` は docstring で「共有核 `apply_forming` の唯一の定義を通す」と宣言するが **import していない**。
+- **原因**: 同じ規則が 3 実装に分裂している。
+  1. 中立核 `common/forming_window.py:44-56` — 「過去→無視 / 一致→置換 / 未来→追加」の 3 分岐
+  2. ライブ `/compute` `indigators/indicator_ui/api/adapter/compute/forming_bar.py:238-282` — 同じ 3 分岐を pandas で別実装
+  3. ライブ毎ティック `indigators/indicator_ui/api/adapter/controller/live_tick_tails_controller.py:135-140` の `_set_last_bar` — **時刻を一切見ずに末尾行を無条件上書き**（追加分岐が無い）
+- **影響**: 保存データのフロンティア遅れで末尾確定足が 1 期間古いとき、3 は確定足を破壊し新バーを追加しないまま指標を計算する。`live_tick_tails.py:66` の「両者は同値」という宣言を検証するテストは 0 件で、`test_live_tick_tails_controller.py:71-76` は 9 種の tf を parametrize しながら assert が `out is not None` と `tickMs` 一致だけ（tf=1h では 15m 整列の窓を渡していて前提自体が崩れている）。
+- **付随**: 移設の根拠とされた「参照実装 `prototype_260626-01/proto_server.py:140-144` に bit 一致」も成立していない。参照実装は df 列のみ大小無視で `key in forming` は大小区別、2 は 5 列を無条件上書きで「未指定キー保存」規則を持たない。突合テストも無い。
+- **抜本的対策案（未承認）**: 2・3 を中立核 `apply_forming` への委譲へ置き換え（pandas 変換のみ各層に残す）、`_set_last_bar` を廃止する。参照実装との bit 一致を検定で固定し、`live_tick_tails` の値を `/compute` mode=latest と突き合わせる検定を 1 本置く。
+- **関連**: ISSUE-250 Phase 1（中立核への移設）、ISSUE-232。
+
+## ISSUE-321: [設計] `MtfProjectionPort` の宣言が実注入具象と全引数不一致（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（宣言どおりに書いた代替実装は呼んだ瞬間 TypeError。現行の唯一具象は動作する）
+- **実測**:
+  - Port 宣言 `indigators/indicator_ui/api/usecase/compute_ports.py:127` — `__call__(series, df_chart, compute_tf, *, period_start_unix)`
+  - 実呼び出し `indigators/indicator_ui/api/usecase/compute_indicators.py:250` — `project_mtf(df_chart=, df_source=, compute_tf=, fold_from=)`
+  - 注入具象 `indigators/indicator_ui/api/adapter/controller/compute_controller.py:68` — `_run(*, df_chart, df_source, compute_tf, fold_from=None)`
+  - **一致する引数名は 1 つも無い**（`compute_tf` を除き `series` / `period_start_unix` は存在せず、`df_source` / `fold_from` は宣言に無い）
+- **原因**: Port 適合検査 `indigators/indicator_ui/api/tests/test_usecase_compute_ports.py:118` の対象が full / latest / adapter / forming_bar の 4 ポートのみで、`MtfProjectionPort` と `PeriodBoundaryPort` が対象外。さらに同 `:141-148` の「未検証の協調子が増えていない」検査は 5 個の文字列が**含まれる**ことしか見ず、増えた 2 つ（`project_mtf` / `period_boundary`）を検出しない。この穴から入った。
+- **併発**: `PeriodBoundaryPort` は注入されるが呼び出し箇所が存在しない（`compute_indicators.py:163` の `is None` 判定のみ）＝未注入で RuntimeError を投げる死んだ契約。
+- **抜本的対策案（未承認）**: Port 宣言を実シグネチャへ是正し、適合検査の対象を全ポートへ広げる。協調子の検査を「含まれる」から「集合一致（余剰も検出）」へ変える。呼ばれない `PeriodBoundaryPort` は結線するか撤去する。
+- **関連**: ISSUE-097。
+
+## ISSUE-322: [挙動] `/tf_period_profile` の as-of 時計が本番経路で壁時計（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（同一画面の MP プロファイルと tf-period 列が同じ日について別の値を描く）
+- **実測**: 本番呼出 `indigators/indicator_ui/api/framework/server.py:316-317` は `now` を渡さない。`indigators/market_profile/api/market_profile_api/controller/tf_period_profile_controller.py:499` が `now_val = _time.time()` に落ちる（同 `:464` の docstring が自ら「既定は現在時刻・**テスト注入用**」と書いている）。
+- **原因**: `now` が任意引数（既定 `None` → 壁時計）で、tf-period のテストは `test_tf_period_zp.py:57,64,70,87,95,98,104,137,139,160` ほか全件が `now=` を明示注入する。結果、**本番が通る分岐（壁時計）をテストが一度も実行していない**。過去日は `completed=True` となり `col_cap=G_MINUTES`＝全日列を返す。
+- **影響**: `/market_profile?src=zp&to=T` は `now=to` で経過分クランプ（部分 z）されるのに、tf-period 列は全日 z になる。リプレイ中の同一画面で 2 つの表示が食い違う。
+- **抜本的対策案（未承認）**: `now` を必須引数にし、呼出側（server）が要求の `to` を明示的に渡す。既定値 `time.time()` を廃止すれば「テスト専用引数」という概念自体が消え、テストと本番が同じ分岐を通る。
+- **関連**: ISSUE-129（リプレイ単一時計 = `to`）、ISSUE-083。
+
+## ISSUE-323: [挙動] σクランプ帯を全期間集計で作るため描画列とσ水準線が repaint する（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（docstring が「repaint しない」と明記している列が実際には動く）
+- **対象**: `profit_volatility` / `profit_arctan` / `profit_oscillator` / `profit_adx_needle`
+- **実測（profit_volatility・本番既定 `window=120`・400 本に 1 本追加）**:
+  | 量 | 追加前 | 追加後 | 差 |
+  |---|---|---|---|
+  | σ水準線 `up_329` | 3.633520 | 3.627080 | −0.006440 |
+  | σ水準線 `dn_329` | −3.636440 | −3.635180 | +0.001260 |
+  | 確定バーの `level_count_clamped` | — | — | 275 本中 1 本が 0.00126 変化 |
+  W を小さくすると拡大する（W=20 で `up_329` 3.93799→4.22109・確定バー 0.2831 変化、freeze_last 有効時は W=30 で 3.7540→16.5684・1.5892 変化）。`profit_arctan` は 300→400 本で `up_329` 24.15193→23.17010。
+- **原因**: `indigators/profit_volatility/src/core.py:484,487` が `levels = compute_sigma_levels(z[valid])` を **最新足を含む全バー**から算出し、`np.clip(z, lower, upper)` を本番描画列 `level_count_clamped` にしている。z 自体は因果窓だが、クランプ帯とσ水準線は因果でない。`indigators/profit_volatility/src/volatility.py:68-70` の docstring は「確定したバーは新データ追加でも値が変わらない（repaint しない）」と明記。
+- **検定側の差異**: no-repaint テストは `raw_level_count`（**描画されない配列**）だけを見ている（`test_core_essential.py:158-170` / `test_standardize_causal_freeze_last.py:179-191` / `profit_arctan/tests/test_core.py:250-263` ほか）。因果性テストが見張っているのは z 生成ループと freeze_last 分岐だけで、`compute_sigma_levels` はどのモジュールの因果性テストからも見られていない。
+- **抜本的対策案（未承認）**: クランプ帯とσ水準線を z と同じ因果規約（当該バー除外のローリング）で算出する。no-repaint 検定の対象を **描画列 `level_count_clamped` とσ水準線**へ移す（`raw_*` だけを見る検定は残さない）。
+- **関連**: ISSUE-028（freeze_last）、ISSUE-175。
+
+## ISSUE-324: [挙動] `src=dwell/m1` の集計窓が `to` を最大 1 バー分超過する（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（リプレイで「まだ来ていない時間帯」の価格帯が描かれる＝ライブと不一致）
+- **実測**: `indigators/market_profile/api/market_profile_api/compute/market_profile_dwell.py:402` が `win_to = int(t1) + int(bar_sec)`、`:313` / `:339` の `_load_window_ticks` は `now` でクランプしない。`controller/market_profile_controller.py:416-420` は `compute_dwell_profile` へ `now` を渡さず、`market_profile_dwell.py:391` で `now_val = _time.time()` に落ちる。
+- **原因**: as-of クランプが `src=zp` にしか実装されていない（zp は `market_profile_controller.py:470` で `now_kw = {"now": float(to_ts)}`）。`t1` は `time<=to` の最終足 time なので、tf=1D なら **最大 24 時間ぶんの `to` 超過ティック**が読まれる。
+- **検定側の差異**: 唯一の該当テスト `test_market_profile_dwell.py:639-666` はクラス docstring（`:624-629`）で「T 以降の滞在が入らない（未来リーク無し）」と称しながら、assert は `max(day_roll_ends) <= _DAY0 + _DAY`（**日境界**）までで、プロファイル内容を一切見ない。合成データの COLD 帯は `to` より後（hr20）に置かれているのに完全に不可視。
+- **抜本的対策案（未承認）**: controller が `now=to` を `compute_dwell_profile` へ渡し、集計窓の上限を `min(t1 + bar_sec, now)` にする（zp と同一規約）。検定は日境界ではなくプロファイル内容（`to` 以降の価格帯が 0 であること）を見る。
+- **関連**: ISSUE-129、ISSUE-081。「リプレイはライブに厳密一致」は現状 zp 限定でしか成立していない。
+
+## ISSUE-325: [挙動] `stop_out_at_open` が every-tick 経路に未実装で本番設定では常に無効（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（MT5 突合済みと称する設定で週末ギャップの open ストップアウトが一度も発火していない）
+- **実測**: `grep -rn stop_out_at_open --include=*.py simulator/` の実装側ヒットは `simulator/usecase/run_backtest.py:204` と `:232` のみ（ともに `execute()` = 157-429 行の内側）。`_execute_every_tick()`（431-930 行）には一切現れない。`run_backtest.py:161-164` が `pending_lifecycle=True` を every-tick へ early-return でルーティングする。
+- **原因**: 証拠金の先行評価が bar-mode 側にだけ実装され、every-tick 側で複製も委譲もされていない。テスト `simulator/tests/unit/test_run_backtest.py:741` は config に `pending_lifecycle` / `real_ticks` を渡さない bar-mode でのみ検証する。一方、本番同一 config を使う `test_optimize_sp1_degenerate.py:67-71` / `test_walk_forward_integration.py:45-46` / `test_is_oos_stop_probe.py:71-75` はいずれも `pending_lifecycle=True`。
+- **抜本的対策案（未承認）**: 証拠金評価（stop-out 判定）を 2 経路の共通関数へ抽出し、`execute()` と `_execute_every_tick()` が同一実装を通るようにする。両経路それぞれで発火を固定する検定を置く。
+- **関連**: ISSUE-328（同型の経路非対称：`hedged_margin` は every-tick 側のみ）。
+
+## ISSUE-326: [構造] UC-003 `compare_stats` が Composition Root から結線されておらず死んだ API（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（許容誤差判定のリグレッションが「緑」のまま本番に一切効かない）
+- **実測**: `grep -rn "compare_stats\|CompareStats" --include=*.py simulator/ | grep -v /tests/` のヒットは定義 2 箇所のみ（`simulator/usecase/compare_stats.py:35` / `simulator/usecase/ports.py:36`）。`simulator/main/__init__.py` に import も結線も無く、`CompareStatsInputBoundary` の実装クラスも存在しない。
+- **原因**: MT5 突合は `simulator/tests/confirmation/*/reconcile.py` の手書きスクリプトで行われており、UC-003 は孤児化した。それを 10 テスト（`test_compare_stats.py:17-124`）＋ Port 署名テスト（`test_usecase_ports.py:103`）が守り続けている。
+- **併発**: `compare_stats(tolerances={})` はループ 0 回で無条件 `passed=True`（`compare_stats.py:39-51`）。突合表の読み込み失敗が「全項目一致」として報告される。テストに空 dict のケースが無い。
+- **抜本的対策案（未承認・二択の判断が要る）**: (a) UC-003 を Composition Root へ再結線し、`reconcile.py` を UC-003 の呼出へ置き換える（突合ロジックを 1 本にする）、または (b) UC-003 と 10 テストを撤去する。**二重実装のまま残さないことが要件**。空 tolerances は `passed=False` か例外へ是正する。
+
+## ISSUE-327: [挙動] Tick の bid/ask 規約が 2 系統あり、`tick_model` 側は中心化・`point_size` 未乗算（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（誤った bid/ask が資金曲線・equity DD へ混入する）
+- **実測**:
+  - `simulator/adapter/execution/tick_model.py:22-23` — `half = bar.spread / 2.0` → `(price, price-half, price+half, ...)`（**中心化かつ point 未乗算**）
+  - `simulator/usecase/pending_lifecycle.py:41` → `simulator/usecase/_execution.py:23` — `ask = bid + spread * point`（MT5 規約）
+  - JP225（spread=100 / point=0.1）では前者が bid=price−50 / ask=price+50 を返す（正しくは ±10 相当・非中心）
+- **原因**: bid/ask 生成が 2 箇所に独立して存在する。`simulator/tests/unit/test_tick_model.py:56-59` の `_bar()` は `spread=0` で、全 synthetic テストが spread=0（docstring 自身が「実 spread は範囲外」と宣言）。したがって分岐が一度も実行されていない。
+- **影響経路**: `run_backtest.py:725` が毎ティック `last_bid,last_ask` を保存し、`:886-890` のティック 0 件足で equity 評価に使う。この carry-forward 自体も未テスト（`test_run_backtest_every_tick.py` の全ケースが両バーにティックを供給し、「保有玉あり＋空足」を作らない）。
+- **抜本的対策案（未承認）**: bid/ask 生成を単一関数へ統合し、`point_size` を含む MT5 規約に揃える。`tick_model` のテストへ `spread>0` のケースを入れ、ティック 0 件足の equity carry-forward を固定する検定を追加する。
+
+## ISSUE-328: [挙動] リプレイの MP 取得が `period` / `clock` を送らず、`period=day` がライブと別窓になる（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（同じ UI 設定がライブでは当日窓、リプレイでは全期間窓になる）
+- **実測**: `indigators/market_profile/web/js/adapter/front/market_profile_actor.js:461-464` の `refresh()` は `_sessionsExtra() / _periodExtra() / _dispExtra() / _clockExtra()` を積む。同 `:342-346` の `_fetchAt()` は `_replayExtra(time) / _sessionsExtra() / _dispExtra()` のみで、**`_periodExtra` と `_clockExtra` を含まない**。さらに `mp_fetch_params.js:94-96` がリプレイ中の `periodExtra()` を明示的に `{}` へ落とす。
+- **検定側の差異**: `period=day` の検定は `market_profile_actor.test.js:846-888` の `refresh` 経路 4 ケースのみ。リプレイ（`setReplayCursor` → `_fetchAt`）側は 0 件。
+- **原因**: クエリ合成がライブ用とリプレイ用に別々に書かれ、差分が「積む extra の列挙」という形で表現されている。積み忘れが型でも検定でも捕まらない。
+- **抜本的対策案（未承認）**: クエリ合成を単一関数へ統合し、live/replay で本当に差分が必要な部分だけを引数化する。`_fetchAt` と `refresh` が別々に extra を積む構造を廃止する。
+- **関連**: 適用範囲の暗黙変更（承認なしのスコープ縮小と同型）。
+
+## ISSUE-329: [挙動] `mode='latest'` + `computeTimeframe` で forming と mode が無言で捨てられる（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（上位足指標の足内フォールバック計算で末尾点が確定足由来の値へ跳ぶ）
+- **実測**: `simulator/replay_ui/usecase/causal_compute.py:86-90` は `compute_tf is not None` なら `_compute_projected` へ即 return。`_compute_projected`（同 `:124-160`）は `request.mode` / `request.forming` / `window_port` を **一切参照しない**。
+- **本番でこの組合せが飛ぶ根拠**: `indigators/indicator_ui/web/js/adapter/front/indicator_controller.js:290`（`{mode:'latest', forceTail:true}`）、同 `:1013`（`computeTimeframe`）、同 `:1016`（`mode`）が同一ボディへ載る。
+- **検定側の差異**: `simulator/replay_ui/tests/unit/test_causal_compute_mtf.py:96` の `_req()` 基底が `mode=None, forming=None` 固定で、7 テスト全部がこれを使う。`mode="latest"` を渡すケースが 0 件。
+- **併発**: `truncate` が進行中 C 足を確定 OHLC のまま残すため、forming で上書きされない＝足内の未来参照になる。
+- **抜本的対策案（未承認）**: `_compute_projected` を `mode` / `forming` / `window_port` を受ける形に是正し、H 経路でも forming を適用する。テストの `_req()` 基底へ `mode='latest'` 系のケースを追加する。
+- **関連**: ISSUE-288 / ISSUE-290（MTF 包含規約）、ISSUE-233。
+
+## ISSUE-330: [設計] H 経路の形成足 snapshot が volume を持たず、リビール経路と volume 系指標が食い違う（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（計算足を持つ volume 系指標で足内値とリビール値が同じ瞬間に別物になる）
+- **実測**: `simulator/replay_ui/usecase/causal_compute.py:222` の `_fold_bars` は `float(b.get("volume") or 0.0)` を合算し、足内経路は snapshot をそのまま畳む（同 `:265`）。本番の snapshot は `simulator/replay_ui/web/js/replay/forming_plan.js:53` が作る `{time, open, high, low, close, to}` で **volume を持たない**（`indigators/indicator_ui/web/js/domain/forming_fold.js:26-33` の `foldTick` が OHLC しか返さない）。同 `causal_compute.py:418` は「H 経路は実 tick 数を載せない」と明記。
+- **検定側の差異**: シーム比較 `test_causal_compute_mtf_seam.py:103` の `forming_seq` は `_CHART_BARS[-1]` をそのまま使うため **volume を持つ**。本番に存在しない入力で両経路の一致を緑にしている。
+- **併発（同根）**: 畳み規則が 2 実装並存する — `causal_compute.py:214-223` の `_fold_bars` と `indigators/indicator_ui/api/adapter/compute/mtf_causal.py:32-41` の `fold_bars`（現在は逐語同一）。`causal_compute.py:180-183` の docstring が主張する「`_causal_h_window` をリビール経路と足内経路の双方が使う」も成立していない（呼び出しは足内 2 箇所のみ）。
+- **抜本的対策案（未承認）**: 畳み規則を 1 実装へ統合し、volume の扱い（snapshot に tick 数を載せるか、H 経路で確定足ぶんだけ合算するか）を単一定義で決める。シームテストの入力を本番形（volume なし snapshot）へ是正する。
+- **関連**: ISSUE-238。
+
+## ISSUE-331: [構造] `moving_averages` パッケージの再エクスポート層が壊れている（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（本番 import 経路でありながら `from moving_averages import *` が失敗する）
+- **実測**: `indigators/moving_averages/__init__.py:12-24` が 11 名を束縛したあと `:25` で `from .src import __all__`（14 名）を上書きする。結果 `from moving_averages import *` が `AttributeError: module 'moving_averages' has no attribute 'linear_weighted_ma_on_buffer_stateful'`。`LwmaState` / `MA_FROM_ZERO` も未束縛。
+- **原因**: 束縛リストと `__all__` の出所が別（前者は手書き 11 名、後者は `src.__all__` の 14 名）。テストは全 3 ファイルが `from src import ...` で直接読むため、この層を一度も通らない。
+- **消費者**: `indigators/profit_osi_ma/src/core.py:24` と `indigators/profit_arctan/src/core.py` がこの層を本番 import 経路として使う。
+- **抜本的対策案（未承認）**: 束縛と `__all__` の出所を `src.__all__` 単一にする（手書きリストを廃止）。パッケージ層を通す検定を 1 本置く。
+
+## ISSUE-332: [挙動] 初期ロードで自動ビュー介入（`focusTimeRange`）が発生し、回帰防止が二重に到達不能（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（「ビュー自動介入禁止」の裁定に対する唯一の実在例外）
+- **実測**: `indigators/indicator_ui/web/js/adapter/front/composition_root_front.js:449-461` が `/candles` 完了後、ユーザーイベントなしで `renderer.focusTimeRange(lastT - 365日, lastT)` を自動実行する。
+- **検定が到達しない理由（二重）**: (1) `composition_root_front.test.js:27` の fake は `timeScale: () => ({ fitContent: () => {} })` で `setVisibleRange` を持たず、`chart_renderer.js:303` の `typeof ts.setVisibleRange !== 'function'` ガードで黙って no-op になる。(2) 当該テストの candles が 1 本しかなく `lastT - firstT > 1年` 条件にも入らない。
+- **原因**: 自動遷移の撤去は `live_follow_controller.test.js:92-108` で固定済みだが、初期表示範囲の決定だけが撤去対象から外れ、かつ fake の欠落で検定不能になっている。
+- **抜本的対策案（未承認・仕様確認が先）**: まず「初期表示範囲の自動決定は許容される介入か」をユーザー裁定で確定する。許容なら明示イベント（初期化完了）起点として仕様化し、fake に `setVisibleRange` を実装して介入条件・スパンを検定で固定する。許容しないなら撤去する。
+- **関連**: ISSUE-164（ビュー自動介入の禁止）。
+
+## ISSUE-333: [構造] テストの `src` グローバル名衝突と basename 衝突で横断 pytest が成立しない（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（「全テスト緑」がディレクトリ個別起動でのみ成立し、横断 CI を張った瞬間に落ちる）
+- **実測**:
+  | 実行 | 結果 |
+  |---|---|
+  | リポジトリ根 `python -m pytest --collect-only` | 3,338 collected / **88 errors** |
+  | `python -m pytest indigators --collect-only` | 1,510 collected / **83 errors** |
+  | パッケージ個別実行（37 グループ） | 4,400 passed / 8 skipped / 0 failed |
+  `__pycache__` 削除後も再現。例: `btlm_trail_marod/tests/test_marod.py:21` → `ImportError: cannot import name 'SIGMA_MULT' from 'src' (/workspaces/app/indigators/btlm_trail/src/__init__.py)`。
+- **原因（2 つ）**:
+  1. 27 の指標モジュールがテスト冒頭で `sys.path.insert(0, parents[1])` → `from src.core import ...` とし、**グローバル名 `src` を奪い合う**。本番は `indigators/indicator_ui/api/adapter/compute/call_binding.py:225-235` の `_load_src_package` が `_<indicator>_src` の一意名でロードするため、テストと本番でモジュール同一性が違う。
+  2. `tests/` に `__init__.py` が無く、`test_core.py` / `test_lwc_chart.py` 等の basename が複数モジュールで衝突する（`import file mismatch`）。
+- **影響**: スイート横断の差異（本監査が検出した front⇄back 非対称や第 2 実装の乖離）は、そもそも 1 回も同一プロセスで検査されたことがない。ISSUE-340 のミューテーション導入もこれが解けるまで着手できない。
+- **抜本的対策案（未承認）**: 各 `tests/` を `__init__.py` でパッケージ化して basename 衝突を除去し、テストの実装ロードを本番と同じ一意名（`_<indicator>_src`）経路へ揃える（テストが本番と同じ import 経路を使う）。横断 1 コマンド実行を CI の通過条件にする。
+- **関連**: ISSUE-174（pytest 依存解決点の単一化）、ISSUE-279。`indigators/profit_hl_band/tests/__init__.py` は 27 モジュールで唯一のパッケージ化例（局所回避）。
+
+## ISSUE-334: [検定] 構造テストがソース文字列一致で成立しており、改名・別表記で無効化される（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（31 件。いずれも「実装がある」という偽の保証）
+- **代表例**:
+  - `indigators/indicator_ui/web/tests/series_kind.test.js:70` — 消費者を 3 ファイルに固定し `import` の存在を検査。リスト内の `chart_renderer.js:33-36` は `seriesKind` を**一度も呼ばない**（36 行の import のみ）で、コメントが「契約の固定点として import を維持する」と自認。実際に能力分岐を持つ `series_drawer.js`（`seriesKind()` 呼出 13 箇所）はリストに無い＝ガードの照準がずれている。
+  - `simulator/replay_ui/tests/unit/test_bridge_import_surface.py:22` — 禁止語彙が固定 2 語の文字列検索。実装 `_indicator_ui_bridge.py:100-101` は Facade に無い `mtf_causal_memo` を内部パスから直 import しているのに緑。
+  - `tools/tests/test_tools_composition_declaration.py:53` — `"TIMEFRAME_RULES" in src and ...` の 3 条件。走査は repo 根 `tools/*.py` のトップレベル関数本体のみ。
+  - `indigators/indicator_ui/api/tests/test_incremental_emit_single_source.py:72-81` — `"def _tail_points" not in src`。`_points_tail` へ改名するだけで二重定義が復活しても緑。
+  - `indigators/market_profile/api/tests/test_store_gateway_layering.py:70-78` — `"np.savez" in src`（同ファイル `:16-21` が「コメント誤検知を避けるため行頭アンカを使う」と明記しているのにこの assertion だけ素の `in`）。
+  - `simulator/replay_ui/web/tests/forming_seq_variant_scope.test.js:90-93`、`indigators/indicator_ui/web/tests/series_kind_ledger_declaration.test.js:46-52`、`indigators/market_profile/web/tests/growth_window_rule_parity.test.js:24-29` ほか。
+- **抜本的対策案（未承認）**: 構造検定を「実オブジェクトの振る舞い」へ置き換える（`typeof` / `isinstance` / DI で分岐を実際に実行する）。置き換えられない検定は**撤去する**（偽の安心を残さない）。ISSUE-340 のミューテーションで再発を機械検出する。
+
+## ISSUE-335: [検定] 期待値を被検査コードの式から生成するトートロジーテスト（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（24 件。実装を書き換えれば期待値も同時に動くため識別力ゼロ）
+- **代表例**:
+  - `marketdata/tests/test_session_resample.py:70-79` — `resample_ohlc_tf(df,tf) == resample_ohlc(df, TIMEFRAME_RULES[tf])`（`resample.py:103-106` の else 分岐そのもの）
+  - `simulator/tests/integration/test_hedged_margin_multi.py:27-45` — `_inline_hedged_margin_level` が docstring で「非トートロジーな参照」と自称しながら `domain/account.py:68-92` の逐語コピー
+  - `indigators/market_profile/api/tests/test_asof_clamp_single_source.py:61-64` — `_inline_before()` が `market_profile_zp_kernel.py:61-62` の 2 行そのもの
+  - `simulator/replay_ui/web/tests/market_profile_dwell_accumulator.test.js:16-27` — 「移植版と参照実装」を別 import して `deepEqual` するが `readlink -f` で**同一実体**に解決＝恒真
+  - `simulator/usecase/walk_forward.py:198` の符号バグ（`profit_factor` に `abs()` 無し）を、テスト `test_walk_forward.py:188-189` が実装式のまま期待値にして追認している
+  - `indigators/indicator_ui/api/tests/test_catalog_schema.py:38-46`、`marketdata/tests/test_dataset_registry.py:58-62` ほか
+- **抜本的対策案（未承認）**: 期待値を被検査コードから独立させる（固定値・独立実装・凍結オラクルのいずれか）。独立させられないものは撤去する。`walk_forward` の PF 符号は単 run 指標（`metrics_spec.py:100-104`）と揃えて是正する。
+
+## ISSUE-336: [検定] 死んだ API・存在しない分岐をテストが検証している（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（28 件。本番が通る経路の代わりに、通らない経路を守り続けている）
+- **代表例**:
+  - `indigators/indicator_ui/web/tests/composition_root_front.test.js` — `protocol` を 19 箇所で渡し「served over http なら ComputeHttpClient」と主張。`protocol` は `indigators/indicator_ui/web/js/` に **0 件**、`chart_app_wiring.js:74` は無条件生成＝反証不能
+  - `simulator/replay_ui/web/tests/forming_seq_client.test.js:39-85` — 全 6 ケースが `computeSeq()`。本番は `computeSeqMulti()` のみ（`forming_plan_cache.js:119`）で `computeSeq` の呼び出し元は JS に 0 件
+  - `indigators/indicator_ui/web/tests/series_kind.test.js:31,52,62` — `overlayReadout` を仕様として固定。消費者はリポジトリ全体で 0 件（撤去記録は `series_drawer.js:245`）
+  - `indigators/indicator_ui/api/tests/test_server_smoke.py:70,98` — POST /compute 3 本すべて `tgp_btlm`。本番 25/26 指標が通る `_COMPUTE_POOL` 側（`server.py:375-378`）は呼出 0 回
+  - `indigators/indicator_ui/web/tests/indicator_controller_tick_tails.test.js:30` ほか — IndicatorController に存在しない `mode:'b'` / `facade:{}` を渡し続けている（A方式撤去の残骸）
+  - `simulator/replay_ui/tests/unit/test_causal_compute.py:14-33` の `_FakeComputePort`（6 メソッド Protocol のうち 2 本のみ）、`simulator/tests/unit/test_run_backtest.py:61-70` の `StubTickModelPort`（bid=足の安値 / ask=足の高値＝どの実装もそうしない Port 契約の反例）ほか
+- **抜本的対策案（未承認）**: 死んだ API とそれを守るテストを**同時に**撤去する。将来使う予定があるものは Composition Root へ結線して生かす。fake は Protocol/実クラスから導出し、手書きの部分実装を廃止する（`isinstance` 適合検定を全 Port へ）。
+- **関連**: ISSUE-326（`compare_stats` は本問題の最大例）。
+
+## ISSUE-337: [検定] 生成物の鮮度ガードが片方向で、Python 唯一源の変更が JS/fixture へ伝播しなくても緑（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（19 件。**現時点では全生成物が fresh ＝潜在**）
+- **実測**: 両方向ガードが揃っているのは `tf_ledger` のみ（`marketdata/tests/test_tf_ledger_parity.py:50,58`）。以下は JS→fixture の片方向のみで、Python 側の再計算比較が無い。
+  - `zp_supported_tfs` / `mp_capability_generated.js` — 唯一源は `tf_period_profile_controller.py:88` の `_ZP_TF_ALLOWED`。`test_js_parity_golden_fresh.py:24-54` の検査対象 5 点に含まれない
+  - `forming_fold` — 生成は `tools/gen_js_parity_golden.py:156-183`（`usecase.serve_live_tick_tails.forming_states`）。同じく検査対象外
+- **原因**: 鮮度検定が「検査したい項目を列挙する」形になっており、生成器が生成する項目を網羅していない。列挙漏れが検出されない。
+- **影響（発生時）**: 生成器の再実行忘れで fixture と JS が揃って陳腐化したまま全緑になる。`_ZP_TF_ALLOWED` の場合、サーバは 400 を返すのにフロントは選択可能＝生成器 docstring が自ら書いている「無言の機能不全」がそのまま再発する。
+- **抜本的対策案（未承認）**: 鮮度検定を「生成器を再実行して生成物との差分ゼロを確認する」1 本の共通検定にし、項目列挙を廃止する（生成器が増やした項目が自動的に検査対象になる）。
+- **関連**: ISSUE-261、ISSUE-232、ISSUE-280。
+
+## ISSUE-338: [構造] 同じ規則の第 2 実装が検定の外に置かれている（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（14 件。**現時点では全て値が一致＝潜在**）
+- **実測（いずれも現在値の一致を確認済み）**:
+  | 規則 | 唯一源 | 検定外の第 2 実装 |
+  |---|---|---|
+  | ロールアップ対象 tf | `marketdata/rollup.py:108-117` `rollup_timeframes()` | `indigators/indicator_ui/tools/export_jp225_m1.py:62` `_ROLLUP_TIMEFRAMES`（`serve.sh --watch` 経路） |
+  | ブローカー日写像 | `marketdata/session_day.py:37,42,71-79` | `marketdata/resample.py:74,77-79,82-94`（pandas tz で独立再実装） |
+  | バー畳み | `mtf_causal.py:32-41` `fold_bars` | `simulator/replay_ui/usecase/causal_compute.py:214-223` `_fold_bars` |
+  | `effectiveTimeframe` | `period_presets.js:120-123` | `timeframe_controller.js:175-177` |
+  | source→applied 写像 | `common/applied_price.py` `SOURCE_TO_APPLIED` | `call_binding.py:277-283` `_BTLM_SYNTHETIC_SOURCES` |
+  | CSV 列順 | `marketdata/csv_schema.py:38-47` `header_for` | `marketdata/tick_m1.py:259-261`（インライン再実装・未知列の扱いが逆） |
+  | tickvol_bands の既定値/範囲 | `marketdata/tickvol_profile.py:39-45` | `indigators/indicator_ui/web/js/usecase/tickvol_bands_catalog_entry.js:32-45` |
+- **原因**: いずれも「唯一源へ委譲する」とコメント・docstring で宣言しながら、実際には値を写している。等価性を検定するものが無い（`marketdata/tf_meta.py:85-86` は docstring で同一性を断言するのみ）。
+- **抜本的対策案（未承認）**: 第 2 実装を削除して唯一源へ委譲する。性能上どうしても委譲できないものだけ残し、**両実装の等価性を検定で固定する**（宣言では固定しない）。
+- **関連**: ISSUE-253。
+
+## ISSUE-339: [検定] WF 決定論・meta キー・SP1/SP2 一致の 5 モジュールが git 未追跡 fixture に gate（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（クリーン環境・CI では全件が無言 skip する）
+- **実測**: `simulator/tests/integration/` の `test_walk_forward_determinism.py:43` / `test_walk_forward_meta_keys.py:77,91` / `test_walk_forward_integration.py:26` / `test_optimize_sp1_degenerate.py:31` / `test_is_oos_stop_probe.py:35` がいずれも `skipif(not _FIXTURE.exists())`。
+  - fixture 実体 `simulator/tests/confirmation/2026-04_stop-probe_oos/bars_m1.csv` はローカルに存在（2,305,399 B）＝**現環境では実行されている**
+  - `git ls-files simulator/tests/confirmation | wc -l` = **0**、`.gitignore:208` で `simulator/tests/confirmation/` を除外
+- **原因**: 検定の前提素材がバージョン管理外にあり、素材が無いことを「skip」（成功扱い）で表現している。
+- **抜本的対策案（未承認）**: 素材を追跡対象にするか、生成器をコミットして pytest 内で生成する。いずれの場合も `skipif` を廃止し、素材が無ければ**失敗させる**（fail-close）。素材の欠落が「緑」に見えない形にする。
+- **関連**: ISSUE-278 #5（fail-close の規律）。
+
+## ISSUE-340: [検定] ミューテーション検証が無く「壊しても赤くならないテスト」を機械検出できない（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（ISSUE-334 / 335 / 336 の再発を止める唯一の構造的手段）
+- **背景**: 本監査で検出した 137 件のうち、ソース文字列 grep（31 件）・トートロジー（24 件）・死んだ経路（28 件）の計 83 件は、共通して **「実装を変異させてもテストが赤くならない」** という 1 つの性質で識別できる。個別に目視で発見するのは今回のような全数監査を毎回回すことを意味し、持続しない。
+- **実例**: `series_render_router.js:81` の `pane: def.placement !== 'overlay'` を `===` に反転しても JS 1,812 件が全緑（`opts.pane` を assert するテストが 0 件・唯一の end-to-end 経路 `indicator_controller_styles.test.js:181,207` の fake が第 3 引数を捨てている）。`docs/testing-notes.md` §5 が「一度も失敗を見たことがないテストは何もテストしていない可能性がある」と自ら書いている状態そのもの。
+- **原因**: テストの**存在**は検定されているが、テストの**識別力**を検定する仕組みが無い。
+- **抜本的対策案（未承認）**: ISSUE-333（横断 1 コマンド実行）の解決後にミューテーション実行（Python: mutmut / cosmic-ray、JS: Stryker 等）を導入し、生存変異（＝赤くならない箇所）を CI の指標にする。まず対象を高リスク領域（`series_render_router` / `forming_window` / `_execution` / `rollup` / 増分器）に限定して導入し、生存変異ゼロを通過条件にしてから範囲を広げる。
+- **備考**: 本 Issue は ISSUE-334 / 335 / 336 の親。個別是正だけを行っても再発を止められないため、並行して着手する必要がある。
+- **関連**: `docs/testing-notes.md`（パターン 2「テスト自体が実態とズレている」の検出手段として、ミューテーションを最初に挙げている）。
