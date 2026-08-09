@@ -15,6 +15,7 @@
 //   - MP は当面モード別アクター差替が対象外。live MP stack は無改変で維持し、リプレイ層へは marketProfile を
 //     渡さない（live root 側で null 注入）。既定ビュー（MP 無効）で単一化・チラつき解消を成立させる。
 
+import { installOpLog } from './op_log.js';
 import { wrap as wrapTimers } from './timer_registry.js';
 import { scopedStorage } from './mode_storage.js';
 import { registerServiceWorker, notifySwMode } from './sw_client.js';
@@ -134,6 +135,11 @@ export function createModeController({
 
 // ---- 単一 mount 起動 ----------------------------------------------------------
 async function main() {
+  // [ISSUE-298] 操作ログを**最初に**仕掛ける（以降の動的 import・fetch・クリックをすべて記録する）。
+  //   受動監視のみ（クリック購読・body クラス観測・fetch/console.error の透過ラップ）で挙動は変えない。
+  //   取り出しは `__opsDump()`（現セッション）／`__opsPrev()`（リロード前のセッション）。
+  installOpLog();
+
   // SW が制御下に入れないと root 相対 API fetch がリライトされず router が 404 する→フェイルクローズ。
   const swControlled = await registerServiceWorker();
   if (!swControlled) {
