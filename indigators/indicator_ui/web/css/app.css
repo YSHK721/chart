@@ -579,6 +579,125 @@ html, body {
 }
 .tpl-dialog-list-name { flex: 1 1 auto; }
 .tpl-dialog-rename.is-hidden { display: none; }
+
+/* 指標カラーテーマ ドロップダウン（基本設計_指標カラーテーマ §6.1/§6.2）
+   寸法・余白・角丸・影・字送りは .tpl-menu 系と同一（新しい見た目を発明しない）。
+   色は .tpl-menu / .tpl-dialog 系と**同じリテラル**で書く。アプリ UI クロムは v1 対象外（§3.2 N-9）で、
+   var(--ct-*) への接続は v2 で app.css 全体を一括置換して行う（§4.3: v1 で置換する CSS は現在値表示の
+   3 宣言のみ）。ここだけ部分接続すると、地はリテラル・文字だけテーマ色という判読不能な組み合わせを
+   作れてしまう（同一概念に 2 通りの効き方を作らない）。 */
+.color-theme-menu { position: relative; display: inline-flex; }
+.color-theme-menu-trigger { display: inline-flex; align-items: center; gap: 4px; }
+.color-theme-menu-caret { font-size: 9px; color: #787b86; }
+.color-theme-menu-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+  min-width: 240px; max-height: 70vh; overflow-y: auto;
+  background: #1e222d; border: 1px solid #363a45; border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5); padding: 4px 0;
+  display: flex; flex-direction: column;
+}
+.color-theme-menu-pop.is-hidden { display: none; }
+.color-theme-menu-cat {
+  padding: 6px 12px 2px; color: #787b86; font-size: 11px; user-select: none;
+  border-top: 1px solid #23272f; margin-top: 4px;
+}
+.color-theme-menu-item {
+  display: flex; align-items: center; justify-content: flex-start; gap: 8px;
+  width: 100%; text-align: left; padding: 6px 16px;
+  background: transparent; border: 0; color: #d1d4dc; font-size: 13px; cursor: pointer;
+}
+.color-theme-menu-item:hover { background: #2a2e39; }
+.color-theme-menu-item.is-active { background: #2962ff; color: #fff; }
+.color-theme-menu-name { pointer-events: none; }
+.color-theme-menu-mark { width: 10px; color: #2962ff; font-size: 9px; pointer-events: none; }
+.color-theme-menu-item.is-active .color-theme-menu-mark { color: #fff; }
+
+/* テーマの編集／管理ダイアログ（§6.3・.tpl-dialog 系と同型） */
+.theme-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .45);
+  display: none; align-items: center; justify-content: center;
+}
+.theme-dialog-backdrop.is-open { display: flex; }
+.theme-dialog {
+  width: 520px; max-width: 92vw; max-height: 86vh;
+  background: #1e222d; border: 1px solid #2a2e39; border-radius: 8px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+}
+.theme-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border-bottom: 1px solid #2a2e39; user-select: none;
+}
+.theme-dialog-title { font-size: 14px; font-weight: 600; color: #fff; }
+.theme-dialog-close {
+  background: transparent; border: none; color: #9aa0ad; font-size: 18px; cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.theme-dialog-close:hover { color: #fff; background: #2a2e39; }
+.theme-dialog-body { padding: 12px 14px; overflow-y: auto; color: #d1d4dc; font-size: 13px; }
+.theme-dialog-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.theme-dialog-label { color: #b2b5be; font-size: 12px; white-space: nowrap; }
+.theme-dialog-input {
+  flex: 1 1 auto; background: #131722; border: 1px solid #2a2e39;
+  border-radius: 5px; color: #d1d4dc; font-size: 13px; padding: 6px 8px;
+}
+.theme-dialog-section {
+  color: #787b86; font-size: 11px; user-select: none;
+  border-top: 1px solid #23272f; margin-top: 10px; padding: 8px 0 4px;
+}
+/* トークン 1 行: [ラベル] [この色を使う] [スウォッチ] [現在値] [未指定に戻す] [用途] */
+.theme-dialog-role-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 0; border-bottom: 1px solid #23272f;
+}
+.theme-dialog-role-label { flex: 0 0 96px; color: #d1d4dc; font-size: 12px; }
+/* 宣言の有無（明示状態）。値との一致から推論しないための席（§6.3）。 */
+.theme-dialog-use { flex: 0 0 auto; display: inline-flex; align-items: center; cursor: pointer; }
+.theme-dialog-swatch {
+  flex: 0 0 auto; width: 28px; height: 20px; padding: 0;
+  background: #131722; border: 1px solid #2a2e39;
+  border-radius: 4px; cursor: pointer;
+}
+.theme-dialog-role-value { flex: 0 0 68px; color: #b2b5be; font-size: 11px; font-variant-numeric: tabular-nums; }
+.theme-dialog-role-hint { flex: 1 1 auto; color: #787b86; font-size: 11px; }
+.theme-dialog-clear { flex: 0 0 auto; padding: 3px 8px; font-size: 11px; }
+/* 時間足の明度差（TF_CODES から生成した各足の入力を折り返して並べる） */
+.theme-dialog-tf-grid { display: flex; flex-wrap: wrap; gap: 8px 12px; padding: 4px 0 2px; }
+.theme-dialog-tf-cell { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.theme-dialog-tf-label { color: #b2b5be; font-size: 11px; min-width: 22px; }
+.theme-dialog-tf-input {
+  width: 62px; background: #131722; border: 1px solid #2a2e39;
+  border-radius: 5px; color: #d1d4dc; font-size: 12px; padding: 3px 6px;
+}
+.theme-dialog-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.theme-dialog-error { color: #e0564a; font-size: 12px; padding: 0 14px; min-height: 0; }
+.theme-dialog-error:empty { display: none; }
+/* 上書き確認のインライン表示（同じ場所・同じ機構だがエラーではないため配色を分ける） */
+.theme-dialog-error.is-confirm { color: #d1d4dc; }
+.theme-dialog-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 10px 14px; border-top: 1px solid #2a2e39;
+}
+.theme-dialog-btn {
+  padding: 5px 12px; border-radius: 5px; font-size: 12px; cursor: pointer;
+  background: transparent; border: 1px solid #2a2e39; color: #d1d4dc;
+}
+.theme-dialog-btn:hover { background: #2a2e39; color: #fff; }
+.theme-dialog-btn.is-primary { background: #2962ff; border-color: #2962ff; color: #fff; }
+.theme-dialog-btn.is-primary:hover { background: #1e53e5; }
+.theme-dialog-btn.is-danger { background: #b03a30; border-color: #b03a30; color: #fff; }
+.theme-dialog-btn.is-hidden { display: none; }
+.theme-dialog-list-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-bottom: 1px solid #23272f;
+}
+.theme-dialog-list-name { flex: 1 1 auto; }
+.theme-dialog-rename.is-hidden { display: none; }
+.theme-dialog-list:empty::after {
+  content: '（保存済みテーマはありません）';
+  display: block; padding: 6px 0; color: #787b86; font-size: 12px;
+}
 .prop-visibility-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: #d1d4dc; font-size: 13px; cursor: pointer; }
 
 /* A 方式 未反映 注記（サイレント不一致回避・§9.3） */

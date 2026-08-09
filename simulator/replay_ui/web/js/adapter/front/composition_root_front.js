@@ -65,14 +65,20 @@ export async function bootstrap({
   const {
     chart, mainSeries, compute, paneLegendView, currentPriceView, renderer,
     updatePaneHeight, persistence, templateStore, catalog, loadCandles,
+    // 指標カラーテーマ（段階 3）。ライブと同一配線＝テーマ集合・選択中テーマはモード間で共有される
+    //   （storage 名前空間が同一実体・E-17）。
+    themeStore, themeState, chromeThemeApplier,
   } = await composeChartShell({ lwc, container, doc, storage, fetch, datasetRef, recentBars });
 
   let controller;
   let chartTemplates = null;
+  let colorThemes = null;
   // controller に依存しない UI 部品（操作・スクロール・時間足メニュー・テンプレートメニュー）。
   //   リプレイ固有の差は「MP リプレイ表示モード中は縦パンを開始しない」ゲートのみ（旧フォークの
   //   _isReplayOn を注入で維持）。controller / 協働子は遅延参照で渡す（生成はこの後）。
-  const { chartTemplateMenu, chartTemplateDialogs } = installSharedUi({
+  const {
+    chartTemplateMenu, chartTemplateDialogs, colorThemeMenu, colorThemeDialogs,
+  } = installSharedUi({
     container,
     renderer,
     doc,
@@ -82,6 +88,7 @@ export async function bootstrap({
       && typeof controller._marketProfile.isReplay === 'function'
       && controller._marketProfile.isReplay()),
     getTemplates: () => chartTemplates,
+    getColorThemes: () => colorThemes,
     // standalone replay のツールバーはライブ追従トグルもリプレイトグルも持たない
     //   （ライブ更新が無く、切替先のライブも無い）。
     toolbar: { liveFollow: false, enterReplay: false },
@@ -103,12 +110,16 @@ export async function bootstrap({
   controller.setPaneLegendView(paneLegendView);
 
   // controller 生成後の協働子（テンプレート・取引密度帯・売買マーカー・現在値）は共有配線が結ぶ。
-  const { chartTemplates: templates, tickvolBands, tradeMarkers } = wireControllerCollaborators({
+  const {
+    chartTemplates: templates, tickvolBands, tradeMarkers, colorThemes: themes,
+  } = wireControllerCollaborators({
     controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
     templateStore, chartTemplateMenu, chartTemplateDialogs,
+    themeStore, themeState, chromeThemeApplier, colorThemeMenu, colorThemeDialogs,
     lwc, mainSeries, chart, container, currentPriceView,
   });
   chartTemplates = templates;
+  colorThemes = themes;
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
   //   初期は既定時間足・直近 recentBars 本。取得失敗時は SAMPLE_DATA のまま（フォールバック）。

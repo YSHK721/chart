@@ -33,9 +33,14 @@ import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
 import { ChartTemplateMenu } from './chart_template_menu.js';
 import { ChartTemplateDialogs } from './chart_template_dialogs.js';
 import { ChartTemplateController } from './chart_template_controller.js';
+import { ColorThemeMenu } from './color_theme_menu.js';
+import { ColorThemeDialogs } from './color_theme_dialogs.js';
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
 import { installChartToolbar, installIndicatorDialog } from './app_chrome_view.js';
 import { ChromeThemeApplier } from './chrome_theme_applier.js';
+import { LocalStorageThemeGateway } from './local_storage_theme_gateway.js';
+import { ColorThemeController, COLOR_THEME_HOST_CONTRACT, loadThemeState } from './color_theme_controller.js';
+import { createHostView } from './host_view.js';
 import { resolveAllChrome } from '../../usecase/color_resolver.js';
 
 // GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
@@ -98,10 +103,17 @@ export async function composeChartShell({
     chromeSink: renderer,
     rootStyle: doc && doc.documentElement ? doc.documentElement.style : null,
   });
-  // 起動時に 1 度配信する。選択中テーマはまだ無いため恒等（生成時オプションと同一の色を書き、
-  //   app.css が読む --ct-* を供給する）。受け口だけ作って呼び手が居ないと無言で死ぬため、
-  //   段階 2 の時点で端から端まで結線しておく（段階 3 は null をテーマに差し替えるだけ）。
-  chromeThemeApplier.apply(resolveAllChrome(null));
+  // テーマ永続化（§4.9 の 2 キー）。接頭辞は注入された storage が付ける（gateway は付けない）。
+  const themeStore = new LocalStorageThemeGateway(storage);
+  // §5.5 起動時の復元: activeTheme.v1 を読み、dangling は「テーマ未選択」へ縮退して書き戻す
+  //   （F-C6）。解決はここ 1 回だけで、協働子（wireControllerCollaborators）へはこの結果を
+  //   そのまま渡す。2 度読むと縮退・lastSeq 復旧が片側にしか効かず、地の色と協働子が思って
+  //   いる選択中テーマがずれる。
+  const themeState = loadThemeState(themeStore);
+  // 起動時に **1 度だけ** 配信する（chart 生成直後・§5.5）。テーマ未選択なら恒等（生成時
+  //   オプションと同一の色）で、app.css が読む --ct-* も同時に供給される。ここで無条件に
+  //   既定を配ってからテーマを配ると、2 度目の書き込みでちらつく（二重配信）。
+  chromeThemeApplier.apply(resolveAllChrome(themeState.theme));
 
   // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
   const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
@@ -119,6 +131,7 @@ export async function composeChartShell({
   return {
     chart, mainSeries, compute, readoutView, currentPriceView, paneLegendView, renderer,
     updatePaneHeight, persistence, templateStore, catalog, loadCandles, chromeThemeApplier,
+    themeStore, themeState,
   };
 }
 
@@ -126,9 +139,10 @@ export async function composeChartShell({
 //   時間足メニューの項目集合は台帳（domain/tf_meta.TF_CODES）から導出する＝手書きリストを持たない。
 //   isVerticalPanBlocked: 縦パンを開始しない条件（MP リプレイ表示モード等）。未指定は従来どおり無条件。
 //   getTemplates: テンプレート協働子の遅延参照（controller 生成後に代入されるため）。
+//   getColorThemes: テーマ協働子の遅延参照（getTemplates と同一規約・同じ理由）。
 export function installSharedUi({
   container, renderer, doc, getController, updatePaneHeight,
-  isVerticalPanBlocked = undefined, getTemplates = () => null,
+  isVerticalPanBlocked = undefined, getTemplates = () => null, getColorThemes = () => null,
   toolbar = {},
 } = {}) {
   // アプリ外枠（ツールバー・指標ダイアログ）の DOM は View が所有し生成する（ISSUE-278 #16）。
@@ -166,7 +180,35 @@ export function installSharedUi({
   });
   chartTemplateMenu.install();
 
-  return { chartTemplateMenu, chartTemplateDialogs };
+  // 指標カラーテーマのメニュー・ダイアログ（基本設計_指標カラーテーマ §6.1〜§6.3・§7.1）。
+  const { menu: colorThemeMenu, dialogs: colorThemeDialogs } = createColorThemeUi(doc, getColorThemes);
+
+  return {
+    chartTemplateMenu, chartTemplateDialogs, colorThemeMenu, colorThemeDialogs,
+  };
+}
+
+// テーマのメニュー・ダイアログを組み立てて install する（installSharedUi から 1 回だけ呼ぶ）。
+//   器（#color-theme-menu）は installChartToolbar が生成済みで、項目 DOM は共有 JS が生成する。
+//   menu / dialogs は協働子を import せず、コールバック注入だけで結ぶ（DIP）。協働子は controller
+//   生成後（wireControllerCollaborators）に確定するため `getColorThemes()` で遅延参照する
+//   （未結線のうちは全コールバックが no-op＝押しても何も起きない・例外を投げない）。
+//   この形はテンプレート側の `getTemplates()` と同一で、両者に別々の受け渡し機構を作らない。
+function createColorThemeUi(doc, getColorThemes) {
+  const dialogs = new ColorThemeDialogs({ document: doc });
+  const menu = new ColorThemeMenu({
+    document: doc,
+    // 開くたびに最新のビューモデルで再描画する（起動時の復元との順序依存を作らない）。
+    provide: () => { const c = getColorThemes(); return c ? c.viewModel() : {}; },
+    // UC-C02 適用（themeId=null は「テーマなし（既定色）」）。適用後の一覧の描き直しは協働子が行う。
+    onSelect: (themeId) => { const c = getColorThemes(); return c ? c.applyTheme(themeId) : undefined; },
+    // UC-C01 作成・保存 ／ UC-C03 改名・削除。ダイアログの開閉手順は協働子が所有する
+    //   （§5.1・§5.3 の手順が menu 側と協働子側の 2 箇所に散らない）。
+    onCreate: () => { const c = getColorThemes(); return c ? c.openCreateDialog() : undefined; },
+    onManage: () => { const c = getColorThemes(); return c ? c.openManageDialog() : undefined; },
+  });
+  menu.install();
+  return { menu, dialogs };
 }
 
 // controller 生成後に結ぶ協働子（テンプレート協働子・取引密度帯・売買マーカー・現在値）。
@@ -174,9 +216,47 @@ export function installSharedUi({
 export function wireControllerCollaborators({
   controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
   templateStore, chartTemplateMenu, chartTemplateDialogs,
+  themeStore, themeState = null, chromeThemeApplier = null,
+  colorThemeMenu = null, colorThemeDialogs = null, now = null,
   lwc, mainSeries, chart, container, currentPriceView,
   onTimeframeChanged = () => {},
 } = {}) {
+  // 指標カラーテーマの協働子（§7.1）。host は全体ではなく ThemeHost 契約の射影を渡す
+  //   （§7.3 ISP・宣言だけで施行しない状態を作らない）。起動時に解決済みのテーマ状態は
+  //   composeChartShell が持っており、ここで読み直さない（二重読み・二重縮退の防止）。
+  //
+  // themeStore 未注入時の縮退: 協働子を生成せず選択中テーマの供給も結ばない
+  //   （＝テーマなし＝既定色。既存挙動と完全に同一）。単体テスト・後方互換の呼び出し面のため。
+  //
+  //   本番の結線: 両 composition_root_front.js は composeChartShell の戻り値も本関数の引数も
+  //   **明示列挙**で受け渡ししている。これは templateStore / chartTemplateMenu が既に取っている
+  //   受け渡し規約と同一で、root が足すのは識別子だけ（`themeStore, themeState,
+  //   chromeThemeApplier` と `colorThemeMenu, colorThemeDialogs`）。配線のロジックそのものは
+  //   本関数 1 箇所に留まり、root へ複製されない。
+  const colorThemes = themeStore
+    ? new ColorThemeController(
+      createHostView(controller, COLOR_THEME_HOST_CONTRACT),
+      {
+        gateway: themeStore,
+        chromeApplier: chromeThemeApplier,
+        state: themeState,
+        // メニュー・ダイアログ（installSharedUi が生成・install 済み）を協働子へ結ぶ。ここで初めて
+        //   行クリック → applyTheme ／ 作成 → saveTheme ／ 管理 → renameTheme / deleteTheme が生きる。
+        menu: colorThemeMenu,
+        dialogs: colorThemeDialogs,
+        now,
+      },
+    )
+    : null;
+  if (colorThemes) {
+    // 選択中テーマの供給ポートを結ぶ（共有配線 1 箇所・root へ同一 1 行を複製しない）。
+    //   controller は毎回協働子へ問い合わせる＝適用のたびに provider の戻り値が追随する
+    //   （値を焼き付けない）。
+    controller.setColorThemeProvider(() => colorThemes.activeTheme());
+    // 結んだ直後に一覧を描き直し、起動時の選択中テーマが選択状態（is-active）で出るようにする。
+    colorThemes.render();
+  }
+
   // テンプレート協働子（§7.1）。有効時間足集合は台帳が単一情報源（domain/tf_meta.js の TF_BAR_SEC＝
   //   LAYERING_CONVENTIONS「UI の時間足ボタン集合もこの集合から乖離させない」）。
   const chartTemplates = new ChartTemplateController(controller, {
@@ -252,5 +332,7 @@ export function wireControllerCollaborators({
     onTimeframeChanged(tf);
   });
 
-  return { chartTemplates, tickvolBands, tradeMarkers, currentPriceView };
+  return {
+    chartTemplates, tickvolBands, tradeMarkers, currentPriceView, colorThemes,
+  };
 }

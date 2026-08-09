@@ -69,6 +69,19 @@ test('A-10: 現在値表示のブロックに素の色リテラルが残って�
   }
 });
 
+test('N-9: v1 で var(--ct-*) を読む CSS 宣言は現在値表示の 3 つだけ（部分接続を作らない）', () => {
+  // §3.2 N-9 はアプリ UI クロム（ツールバー・ダイアログ・メニュー等）を v1 対象外と定め、
+  //   §4.3 は「v1 で var(--ct-*) へ置換する CSS は現在値表示の 3 宣言のみ」と定める。
+  //   一部だけ接続すると、例えば surface:#ffffff / text:#111111 のテーマでパネルの地はリテラルの
+  //   ままで文字色だけが変わり、判読不能な状態が作れてしまう（同一概念に 2 通りの効き方）。
+  //   接続は v2 で app.css 全体を一括置換して行う（N-9 の手順）。
+  const uses = [...CSS.matchAll(/var\(--ct-[a-z]+[^)]*\)/g)].map((m) => m[0]);
+  assert.equal(uses.length, 3, `v1 の var(--ct-*) は 3 宣言のみ（実際: ${uses.join(' / ')}）`);
+  const expected = CHROME_SLOTS.filter((s) => s.mechanism === 'css')
+    .map((s) => `var(--ct-${s.token}, ${s.current})`);
+  assert.deepEqual([...uses].sort(), [...expected].sort());
+});
+
 test('§1.3: CSS カスタムプロパティの接頭辞は --ct- で、既存の --live-follow-* と分離している', () => {
   // 既存の名前空間（live-follow ボタン専用 5 件）が本機能の接頭辞と衝突しない。
   assert.ok(CSS.includes('--live-follow-'), '既存の --live-follow-* が失われている');

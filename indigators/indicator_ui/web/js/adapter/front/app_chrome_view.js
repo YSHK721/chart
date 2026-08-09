@@ -65,6 +65,11 @@ export function installChartToolbar(doc, { anchor = null, liveFollow = false, en
       : '',
     // チャートテンプレートのドロップダウンのマウント（§6.1）。項目は chart_template_menu.js が生成。
     '<div class="tpl-menu" id="tpl-menu"></div>',
+    // 指標カラーテーマのドロップダウンのマウント（基本設計_指標カラーテーマ §6.1）。テンプレート
+    //   （どの指標）とテーマ（どの色）は直交する独立概念のため、同一メニューへ入れず右隣に並べる。
+    //   項目 DOM は color_theme_menu.js が生成する。**index.html には 1 枚も書かない**
+    //   （器は本 View が所有する＝ISSUE-278 #16 の規約）。
+    '<div class="color-theme-menu" id="color-theme-menu"></div>',
     '<button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">'
       + '<span class="ic">∿</span><span class="lbl">インジケーター</span></button>',
     // リプレイのオン・オフトグル（統合 UI のみ）。点灯状態は applyModeUi が aria-pressed で反映する。

@@ -162,6 +162,9 @@ export async function bootstrap({
   const {
     chart, mainSeries, compute, paneLegendView, currentPriceView, renderer,
     updatePaneHeight, persistence, templateStore, catalog, loadCandles,
+    // 指標カラーテーマ（基本設計_指標カラーテーマ.md 段階 3）。templateStore と同じ受け渡し規約で
+    //   共有配線へ渡す（生成と解決は composeChartShell が所有し、root は識別子を通すだけ）。
+    themeStore, themeState, chromeThemeApplier,
   } = await composeChartShell({ lwc, container, doc, storage, fetch, datasetRef, recentBars });
 
   // Market Profile（独立アクター・candle 版 MVP）の組み立て。取得（client）と描画（primitive）を
@@ -253,13 +256,17 @@ export async function bootstrap({
   // controller に依存しない UI 部品（操作・スクロール・時間足メニュー・テンプレートメニュー）は
   //   共有配線が install する。controller / テンプレート協働子は遅延参照で渡す（生成はこの後）。
   let chartTemplates = null;
-  const { chartTemplateMenu, chartTemplateDialogs } = installSharedUi({
+  let colorThemes = null;
+  const {
+    chartTemplateMenu, chartTemplateDialogs, colorThemeMenu, colorThemeDialogs,
+  } = installSharedUi({
     container,
     renderer,
     doc,
     getController: () => controller,
     updatePaneHeight,
     getTemplates: () => chartTemplates,
+    getColorThemes: () => colorThemes,
     // ツールバーの構成（ISSUE-278 #16）: ライブ追従トグルは本 root（ライブ）が常に持つ。
     //   リプレイのオン・オフトグルは**リプレイ層が注入されたページ**＝統合 UI のときだけ置く
     //   （standalone live には切替先が無い）。差はフラグ 1 つで表し markup は複製しない。
@@ -300,13 +307,17 @@ export async function bootstrap({
   //   ライブ固有の追加は onTimeframeChanged（tf 切替時の tf-period 列の即時再適用）だけ。
   //   ISSUE-090: 従来は可視レンジ変化イベント頼みで、レンジが変わらない切替（週→日→週 等）では
   //   旧 tf の列が残留し「週間隔÷7 の細い列」に見える実機バグが起きた。
-  const { chartTemplates: templates, tickvolBands, tradeMarkers } = wireControllerCollaborators({
+  const {
+    chartTemplates: templates, tickvolBands, tradeMarkers, colorThemes: themes,
+  } = wireControllerCollaborators({
     controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
     templateStore, chartTemplateMenu, chartTemplateDialogs,
+    themeStore, themeState, chromeThemeApplier, colorThemeMenu, colorThemeDialogs,
     lwc, mainSeries, chart, container, currentPriceView,
     onTimeframeChanged: () => refreshTfPeriodNow(),
   });
   chartTemplates = templates;
+  colorThemes = themes;
 
   // 時間足毎profile列（tf-period・最小価格単位・ローリング窓＋ジッターバッファ）の配線（served のみ）。
   //   sessions モード（marketProfile.isSessions()）かつ対応 tf（1m..1D）のとき、可視レンジぶんの列を
