@@ -5222,3 +5222,96 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   計算条件ごとの分離）。
 - **関連**: ISSUE-294／295（因果 MTF 規約＝時刻不変）、ISSUE-233（末尾差分の最適化経路）、ISSUE-296。
 
+## ISSUE-298: [不具合] リプレイの期間プリセット選択で `Value is null`（2026-08-08）
+- **ステータス**: RESOLVED（2026-08-08・実 UI で再現・原因除去・実 UI で解消を確認）
+- **重大度**: High（当該フレームが中断し、指標が前の窓の点を保持したまま固着する。リロードで復帰）
+- **事象（ユーザー環境・2026-08-08T14:43Z）**:
+  ```
+  replay.js:218 [replay] 計算エラー 2026-08-06 20:14 Error: Value is null
+      at lightweight-charts.js ... (setData/ペイント経路)
+  render → drive → onSelectPreset → replay_range_menu
+  ```
+  診断時の状態: チャート足 1m・指標 6・`_recentBars=189`・`_untilTime=1786047240`（bar 188）だが
+  `__rpbar=1499` のまま＝**bar 188 のフレームが完了前に中断**。描画中の系列は present 窓のまま
+  （主系列 1500 点・末尾 1786133640）で、reveal 対象インスタンスの line 系列だけ 0 点。
+- **確定していること**: スタックの `replay.js:218` は ISSUE-296 適用**後**のファイル位置
+  （適用前は 200 行目）＝新コードで発生している。例外は `render` の try 内＝`recomputeAllApplied`
+  の中（`preRender` で足の time 集合を入れ替える ISSUE-196 の継ぎ目）。
+- **実測で否定した仮説（推測で直さないための記録）**:
+  1. ライブ／リプレイの `/compute` 応答の形が違い、保管庫由来の系列が壊れる
+     → **否定**。系列名・kind・点数・順序まで完全一致（ma_marod / btlm_trail_marod / tickvol）。
+  2. 同名 `horizontal_line` により reveal 基底の「名前→time」表が衝突し主系列が 0 点になる
+     → **否定**。当該 payload の `data` は配列でないため上書きされない（実測: 主系列 189 点で正常）。
+  3. `drawnIds` 除外で旧 time を持つ系列が残り `setCandles(trim)` が違反する
+     → **否定**。tickvol が 1500 点を保持したまま `setCandles(189)` を通過し例外なし。
+     この仮説に基づく共有コード（`recomputeAllApplied` の空化範囲）の変更は**撤回済み**。
+- **再現できなかった条件**: 同一構成（1m・同一 6 指標・同一 params）で
+  「リプレイ開始 → 期間プリセット 1日」を実 UI で実行（プリセット即クリック版も）→ 例外なし。
+  bar 188 で `ma_marod=189 / q5=187 / MA=189 / tickvol=189` と全系列が正常に描かれた。
+- **対策（第 1 段・ユーザー承認 2026-08-08）— 操作ログの常時記録**:
+  `unified_ui/web/js/op_log.js`（新規・葉モジュール）を `unified_root.js` の `main()` 冒頭で
+  `installOpLog()`。受動監視のみ（capture クリック購読・body クラスの MutationObserver・
+  `fetch` と `console.error` の透過ラップ）で挙動は変えない。記録は操作・モード切替・API 通信
+  （所要 ms）・例外（スタック）で、例外時と離脱時に `sessionStorage` へ保存する。
+  取り出し: `__opsDump()`（現セッション）／`__opsPrev()`（リロード前のセッション）。
+- **検定**: `unified_ui/web/tests/op_log.test.js`（容量と発生順・要素の識別・出力の形・二重 install の
+  抑止・fetch と console.error の透過性・uninstall での復元）17 件。
+- **次の一手**: 発生時に `__opsDump()` の出力を取得 → 直前の操作順序を確定 → 同順序で再現 → 原因除去。
+- **再現に欠けていた条件（2026-08-08 実 UI で確定）**: **マウスがチャート上にある**こと。
+  例外は lightweight-charts の**クロスヘア当たり判定**の中でしか起きない。ポインタがチャート外なら
+  クロスハーは未設定＝当たり判定が走らず、同じ操作でも例外は出ない。これが「未再現」の理由。
+  自動再現の手順（実 UI・`http://127.0.0.1:8000/`・Playwright）:
+  1. 1m へ切替 → 指標 6 本を適用（ma_marod / btlm_trail_marod / tickvol / moving_averages×3 は
+     計算.時間足 1D）
+  2. リプレイ⇄ライブを数回往復（保管庫が全指標を賄う状態にする）
+  3. リプレイ中に期間メニュー → 期間プリセット → 「1日」（**この操作でポインタがチャート上に載る**）
+- **原因（実測で確定・スタック逆引き＋setData トレース）**:
+  `recomputeAllApplied` は ISSUE-196 の是正として「本バッチで描画しない指標」の系列を
+  `clearInstanceData`（点数 0）にしてから `preRender` を呼ぶ。**`skip` 述語で除外した指標まで
+  空化していた**のが誤り。空化の直後、`preRender` 内の `mainSeries.setData(189)` で
+  lightweight-charts がクロスヘアの当たり判定を張り直し（`Kt.ht` → `ChartModel.Ra` →
+  hit test → `Series.PM`）、そこで `ensureNotNull(series.firstValue())` を評価する。
+  `firstValue()` は**点数 0 の系列で null** を返すため `Value is null` を throw する。
+  例外は `render` の catch へ飛び、**`revealTo` が実行されない**＝当該系列は 0 点のまま固着し、
+  以後のフレームも同じ地点で落ち続ける（＝「壊れたまま」）。
+  実測トレース（1m・6 指標・プリセット「1日」）:
+  ```
+  setData ma_marod#1::ma_marod n=0 … （reveal 対象 17 系列すべて n=0）
+  setData MAIN n=189
+    THROW MAIN: Value is null
+  ```
+  ISSUE-296（全長系列の保管庫）が引き金になったのは、`seedRevealFromStore` により
+  `_revealCache` が**常に**埋まり、`hasRevealFor` が真＝skip が毎フレーム成立して、
+  この空化が確実に起きるようになったため（ISSUE-296 を実行時に無効化すると同一操作で例外なし・
+  全 6 指標が 189 点で正常描画。ON/OFF の対照実験で確認）。
+- **是正（原因除去）**: 空化してよいのは「このフレームに描画源が無い」instance だけ＝
+  `applied − jobs − skipped`。`skip` で除外した instance は「`preRender` が同一同期ブロックで
+  描き直す」と呼び出し側が宣言したものなので、旧点のまま `setData` を通す（＝**空の瞬間を作らない**）。
+  `indicator_controller.js: recomputeAllApplied` の空化ループに `skipped` 集合を導入。
+  ISSUE-196 の保護（時間足切替など skip を渡さない経路）は不変。
+- **検定**: `indigators/indicator_ui/web/tests/indicator_controller.test.js`
+  「skip 述語で除外した指標の系列は空にしない（ISSUE-298）」を追加（是正前は Red・是正後 Green）。
+  既存 JS 検定は indicator_ui 1141 件 / replay_ui 337 件すべて Green。
+- **実 UI での解消確認**: 上記再現手順で例外 0・`bar 188` へ前進・6 指標すべて 189 点で描画。
+- **残る地雷（別件・ISSUE-299 として起票）**: 計算に失敗した指標（履歴不足 E01 等）は
+  いまも空化される。ポインタがチャート上にあると同じ経路で `Value is null` になりうる。
+  原因は「**可視のまま点数 0 の系列を残す**」こと自体（lwc の `Qs` は `options.visible` でしか
+  当たり判定を抑止しない）。
+- **関連**: ISSUE-196（時間軸の不変条件）、ISSUE-296（全長系列の単一保管庫）、ISSUE-299。
+
+## ISSUE-299: [不具合・潜在] 可視のまま点数 0 の系列を残すとクロスヘアで `Value is null`（2026-08-08）
+- **ステータス**: OPEN（2026-08-08・ISSUE-298 の原因の一般形。対策方針の承認待ち）
+- **重大度**: Medium（発生時は当該フレームが中断し、指標が固着する。リロードで復帰）
+- **事象**: lightweight-charts はクロスヘアの当たり判定で `series.firstValue()` を
+  `ensureNotNull` に通す。`options.visible === true` のまま点数 0 の系列があると、
+  ポインタがチャート上にある間の `setData` が `Value is null` を throw する。
+- **現在の到達経路**: `clearInstanceData`（ISSUE-196）は空化するだけで可視状態に触れない。
+  リプレイ開始直後など**履歴不足で計算できない指標**（ISSUE-282/283 の想定内の状態）は
+  毎フレーム空化されるため、ポインタ位置次第で同じ throw に至る。
+- **対策案（根本除去・未着手）**: 「点数 0 の系列は可視にしない」を renderer の不変条件にする。
+  `clearInstanceData` で `applyOptions({ visible: false })` を同時に行い、データを書き戻す
+  描画経路（`series_drawer` の options 合成）で `slot.visible && meta.visible` へ戻す。
+  可視状態の権威は `slot.visible / meta.visible` の 1 か所のままにする（二重管理を作らない）。
+- **関連**: ISSUE-196、ISSUE-282、ISSUE-283、ISSUE-298。
+
+

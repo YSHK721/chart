@@ -416,6 +416,34 @@ test('recomputeAllApplied: 本バッチで描画する指標の系列は空に�
   assert.deepEqual(cleared, [], '採択され描画される指標は空化しない（同期ブロック内で描き直される）');
 });
 
+// ISSUE-298 回帰: skip 述語で除外した指標（＝preRender が同一同期ブロックで描き直すと呼び出し側が
+//   宣言したもの）を空化してはならない。空化すると、その直後に preRender が呼ぶ
+//   `mainSeries.setData` の中で lightweight-charts がクロスヘアの当たり判定を張り直し、
+//   点数 0 の系列の `firstValue()`（ensureNotNull）で `Value is null` を throw する
+//   （実 UI 実測 2026-08-08: リプレイ 1m・期間プリセット「1日」で再現し、以後のフレームも固着）。
+test('recomputeAllApplied: skip 述語で除外した指標の系列は空にしない（ISSUE-298）', async () => {
+  const noop = () => {};
+  const cleared = [];
+  const ctrl = new IndicatorController({
+    catalog: { listIndicators: () => [], get },
+    compute: { compute: async (req) => ({ ok: true, generation: req.generation ?? 0, series: [] }) },
+    persistence: { loadApplied: () => [], saveApplied: noop, loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 1 },
+    renderer: {
+      renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop,
+      setVisible: noop, remove: noop, clearInstanceData: (id) => cleared.push(id),
+    },
+    document: null,
+  });
+  await ctrl.applyIndicator('tgp_btlm', 'default');
+  const instId = ctrl._state.applied[0].instanceId;
+  cleared.length = 0;
+
+  await ctrl.recomputeAllApplied({ preRender: () => {}, skip: () => true });
+
+  assert.deepEqual(cleared, [],
+    `skip で除外した ${instId} は preRender が描き直す＝空の瞬間を作らない`);
+});
+
 // ISSUE-105 🟡-2 回帰: フェーズ1（直列計算の await）中に凡例 close で当該インスタンスが
 //   state から除去された場合、accepted 済み job をフェーズ2 で描画すると renderer に
 //   系列/ペインが再生成され、凡例行の無い「ゾンビペイン」が残留してライブ更新を受け続ける。

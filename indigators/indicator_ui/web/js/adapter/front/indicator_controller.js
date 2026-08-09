@@ -769,10 +769,14 @@ export class IndicatorController {
     // フェーズ1: 並列計算（描画なし）。
     const targets = [];
     const deferred = [];   // ISSUE-283: 窓が要件に満たず、発行を見送ったインスタンス。
+    // ISSUE-298: skip 述語で除外した instance は「preRender が同一同期ブロックで描き直す」ことを
+    //   呼び出し側が宣言したもの＝**このフレームの描画源はある**。空化の対象から外す（下記参照）。
+    const skipped = new Set();
     for (const inst of [...this._state.applied]) {
       // skip 述語（ISSUE-158 ②・replay 専用 additive）: 一括リビール済み指標の per-step 計算を
       //   省略する。present（ライブ）は skip を渡さない＝挙動不変。
       if (skip && skip(inst)) {
+        skipped.add(inst.instanceId);
         continue;
       }
       const meta = this._meta.get(inst.instanceId);
@@ -842,11 +846,23 @@ export class IndicatorController {
       //   失敗し続ける（実測 102〜160 件/30〜45 秒・full 再計算失敗が反復）。
       //   ここで「再描画されない指標」の系列データを同一同期ブロック内で空にし、違反状態を
       //   発生させない（try/catch で例外を握る応急処置は行わない＝原因側を消す）。
-      //   skip 述語で除外した一括リビール指標（replay）は preRender 内の revealTo が同期で
-      //   描き直すため、空化 → preRender の順序で結果は不変。
+      //   ISSUE-298（上記の但し書きは誤り・2026-08-08 実 UI 実測で反証）: 「skip 除外した一括
+      //   リビール指標は revealTo が描き直すから空化しても不変」は成立しない。空化 → preRender の
+      //   間に **preRender 自身の `mainSeries.setData`** が入り、lightweight-charts はその中で
+      //   クロスヘアの当たり判定を張り直す（Kt.ht → ChartModel.Ra → hit test → Series.PM →
+      //   `ensureNotNull(series.firstValue())`）。firstValue() は**点数 0 の系列で null** を返すため、
+      //   マウスがチャート上にあるだけで `Value is null` を throw する。throw は render() の catch へ
+      //   飛び、revealTo が実行されない＝系列は空のまま固着し、以後のフレームも同じ地点で落ち続ける
+      //   （実測: 1m・6 指標・期間プリセット「1日」で再現。17 系列 n=0 → setData MAIN n=189 → throw）。
+      //   したがって空化してよいのは「このフレームに描画源が無い」instance だけ＝
+      //   applied − jobs − skipped。skip 除外分は preRender が同一同期ブロックで上書きするため、
+      //   旧点のまま setData を通す（＝空の瞬間を作らない）。
       const drawnIds = new Set(jobs.map((job) => job.instanceId));
       for (const inst of this._state.applied) {
-        if (!drawnIds.has(inst.instanceId) && typeof this._renderer.clearInstanceData === 'function') {
+        if (drawnIds.has(inst.instanceId) || skipped.has(inst.instanceId)) {
+          continue;
+        }
+        if (typeof this._renderer.clearInstanceData === 'function') {
           this._renderer.clearInstanceData(inst.instanceId);
         }
       }
