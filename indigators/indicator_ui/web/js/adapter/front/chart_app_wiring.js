@@ -35,6 +35,8 @@ import { ChartTemplateDialogs } from './chart_template_dialogs.js';
 import { ChartTemplateController } from './chart_template_controller.js';
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
 import { installChartToolbar, installIndicatorDialog } from './app_chrome_view.js';
+import { ChromeThemeApplier } from './chrome_theme_applier.js';
+import { resolveAllChrome } from '../../usecase/color_resolver.js';
 
 // GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
 //   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
@@ -89,6 +91,18 @@ export async function composeChartShell({
     onPaneLegend: (model) => paneLegendView.update(model),
   });
 
+  // 指標カラーテーマ: クロム色を 2 機構（lwc オプション / :root の CSS カスタムプロパティ）へ
+  //   配る協働子（基本設計_指標カラーテーマ.md §4.3・A-11）。JS 側の sink は ChartRenderer
+  //   （upstream 隔離点）で、applier は lwc を知らない（§7.3 ISP/DIP）。
+  const chromeThemeApplier = new ChromeThemeApplier({
+    chromeSink: renderer,
+    rootStyle: doc && doc.documentElement ? doc.documentElement.style : null,
+  });
+  // 起動時に 1 度配信する。選択中テーマはまだ無いため恒等（生成時オプションと同一の色を書き、
+  //   app.css が読む --ct-* を供給する）。受け口だけ作って呼び手が居ないと無言で死ぬため、
+  //   段階 2 の時点で端から端まで結線しておく（段階 3 は null をテーマに差し替えるだけ）。
+  chromeThemeApplier.apply(resolveAllChrome(null));
+
   // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
   const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
   updatePaneHeight();
@@ -104,7 +118,7 @@ export async function composeChartShell({
 
   return {
     chart, mainSeries, compute, readoutView, currentPriceView, paneLegendView, renderer,
-    updatePaneHeight, persistence, templateStore, catalog, loadCandles,
+    updatePaneHeight, persistence, templateStore, catalog, loadCandles, chromeThemeApplier,
   };
 }
 

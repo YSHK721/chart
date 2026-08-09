@@ -809,6 +809,56 @@ export class ChartRenderer {
     return applied;
   }
 
+  // チャートクロム（面・目盛線・軸・文字・ローソク・現在値ライン）へ解決済みの色を書き込む
+  //   （基本設計_指標カラーテーマ.md §4.2・§5.2 UC-C02 手順 2・A-11）。
+  //
+  //   配線点 id → lightweight-charts のオプション経路という写像は upstream API の知識であり、
+  //   本クラス（宣言された唯一の upstream 隔離点）が持つ。ChromeThemeApplier は解決済みの値を
+  //   本メソッドへ渡すだけで lwc を知らない（§7.3 ISP の ChromeSinkPort をここで満たす）。
+  //
+  //   §3.4: 書くのは色だけ。時間足・表示レンジ・価格スケール・スクロール位置には触れない。
+  //   F-C10: applyOptions 非提供（SSR・後方互換 Fake）は no-op（setAnalysisTint と同一方針）。
+  applyChromeColors(slots = {}) {
+    if (this._chart && typeof this._chart.applyOptions === 'function') {
+      this._chart.applyOptions({
+        layout: {
+          // background は生成時に { type, color } で渡している。lwc は部分マージするため
+          //   色だけを渡して type を保つ（setAnalysisTint と同じ扱い）。
+          background: { color: slots.layoutBackground },
+          textColor: slots.layoutTextColor,
+          panes: {
+            separatorColor: slots.paneSeparator,
+            separatorHoverColor: slots.paneSeparatorHover,
+          },
+        },
+        grid: {
+          vertLines: { color: slots.gridVertLines },
+          horzLines: { color: slots.gridHorzLines },
+        },
+        rightPriceScale: { borderColor: slots.rightPriceScaleBorder },
+        timeScale: { borderColor: slots.timeScaleBorder },
+      });
+    }
+    if (this._mainSeries && typeof this._mainSeries.applyOptions === 'function') {
+      // #10/#11 は 1 配線点＝3 オプションずつ。同一トークンから配るため 3 経路が食い違わない。
+      const up = slots.candleUp;
+      const down = slots.candleDown;
+      this._mainSeries.applyOptions({
+        upColor: up, borderUpColor: up, wickUpColor: up,
+        downColor: down, borderDownColor: down, wickDownColor: down,
+        priceLineColor: slots.priceLine,
+      });
+    }
+  }
+
+  // 水準線（horizontal_line）へ色を届ける入口（実体は SeriesDrawer.applyLevelLineColor・
+  //   基本設計_指標カラーテーマ.md §7.2 S2(b)・A-5）。applySeriesStyle は priceLine 経路に
+  //   到達しない（E-10）ため、テーマの level トークン専用の入口を 1 個だけ公開する。
+  //   凡例は水準線を持たないため再描画しない（applySeriesStyle との非対称は意図的）。
+  applyLevelLineColor(instanceId, color) {
+    return this._drawer.applyLevelLineColor(instanceId, color);
+  }
+
   // 案A（btlm_trail_marod）: 系列の描画種別の line ⇄ histogram 差し替え（実体は SeriesDrawer._swapSeriesType・SOLID 是正 🔴-2）。
   _swapSeriesType(slot, key, meta, toKind) {
     return this._drawer._swapSeriesType(slot, key, meta, toKind);

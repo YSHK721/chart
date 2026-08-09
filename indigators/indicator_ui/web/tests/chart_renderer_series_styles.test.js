@@ -69,8 +69,11 @@ test('ISSUE-109 getSeriesStyles: 生成時ペイロードのスタイルを実�
   renderer.renderLine('ma#1', MA_PAYLOADS);
   const styles = renderer.getSeriesStyles('ma#1');
   assert.equal(styles.length, 2);
-  assert.deepEqual(styles[0], { name: 'MA', kind: 'line', color: '#2962ff', width: 1, style: 'solid', visible: true, heat: false, display: null });
-  assert.deepEqual(styles[1], { name: 'Smoothing', kind: 'line', color: '#00aa00', width: 2, style: 'dotted', visible: true, heat: false, display: null });
+  // baseColor（基本設計_指標カラーテーマ.md §7.2 S2(c)・A-5）: 生成時の payload 色を不変で保持する
+  //   席。color は applySeriesStyle が破壊的に上書きするため、色の解決順が「backend 既定へ降格」
+  //   する段で読む値をここに分けて持つ（R-6）。生成直後は color と同値。
+  assert.deepEqual(styles[0], { name: 'MA', kind: 'line', color: '#2962ff', baseColor: '#2962ff', width: 1, style: 'solid', visible: true, heat: false, display: null });
+  assert.deepEqual(styles[1], { name: 'Smoothing', kind: 'line', color: '#00aa00', baseColor: '#00aa00', width: 2, style: 'dotted', visible: true, heat: false, display: null });
 });
 
 test('ISSUE-109 getSeriesStyles: 未知 instance は空配列（防御）', () => {

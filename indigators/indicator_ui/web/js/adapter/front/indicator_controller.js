@@ -33,6 +33,12 @@ import {
   expectedSeriesNames,
   validateSeriesNames,
 } from './series_name_matcher.js';
+// 色の決定（基本設計_指標カラーテーマ.md §4.5・§4.8・§5.8）。純関数群であり、controller は
+//   「どの入力を集めて誰へ渡すか」だけを担う（決定そのものは持たない＝SRP）。
+import {
+  resolveSeriesColor, resolveInstanceTimeframe, buildColorRoleIndex,
+} from '../../usecase/color_resolver.js';
+import { ColorRole } from '../../domain/color_roles.js';
 import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
 import { isActorDriven } from '../../usecase/actor_driven_ids.js';
 import { STALL_DEADLINE_MS, UpdateScheduler } from './update_scheduler.js';
@@ -147,6 +153,7 @@ export class IndicatorController {
     catalog, compute, persistence, renderer, document: doc = null,
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
     marketProfile = null, mpModeResolver = null, mpGrowthResolver = null,
+    colorThemeProvider = null,
   }) {
     this._catalog = catalog;
     this._compute = compute;
@@ -173,6 +180,11 @@ export class IndicatorController {
     //   注入時のみ MP へ growing 信号（applyGrowthState）を適用し、growing 時のみ onLiveTick で成長させる。
     //   未注入（連動なし＝A方式・MP 不在・連動未配線）は growing を適用しない＝byte 不変。
     this._mpGrowthResolver = typeof mpGrowthResolver === 'function' ? mpGrowthResolver : null;
+    // 選択中の指標カラーテーマを供給するポート（基本設計_指標カラーテーマ.md §7.3 ISP）。
+    //   ()->COLOR_THEME|null。controller はテーマの保存・採番・UI を一切知らず、色を解決する
+    //   その瞬間の値だけを受け取る。未注入は「テーマなし」＝恒等（既定状態の見た目は不変）。
+    //   段階 3 の色テーマ協働子はこのポートへ差し込むだけで済む（controller 無改変＝OCP）。
+    this._colorThemeProvider = typeof colorThemeProvider === 'function' ? colorThemeProvider : null;
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
     // 時間足取得・切替（A3）を委譲する協働子（ISSUE-094 🔴-4 / ISSUE-181）。setTimeframe /
@@ -377,23 +389,109 @@ export class IndicatorController {
   //   （tgp の q_low/q_high や profit_band の probabilities 変更で系列が改名された等）を
   //   state から剪定する（無反映キーの永続蓄積と params 復帰時の意図せぬ復活を遮断）。
   //   実系列集合が取得不能・空のときは判定不能のため剪定しない（reconcile 側で防御）。
+  //   基本設計_指標カラーテーマ.md §7.2 S2(a)（A-6）: **色の決定だけ**を resolver 経由へ差し替える。
+  //   適用点を新設せず本メソッドに相乗りする理由は、描画完了の後段が既にここ 1 点へ集約済みで
+  //   （E-9・series_render_router.js:103）、再計算・復元・時間足切替のどの経路からも必ず通るため。
+  //   協働子が独自に完了時点を検知する方式（S1）は検知漏れの経路で色が戻る。
+  //
+  //   色の書き手はここ 1 箇所（R-1）。width / style / visible / display は従来どおり styles から
+  //   そのまま流し、色だけを resolver の結果で上書きする。
+  //   テーマ未設定・個別上書き無しのとき resolver は payload 色（baseColor）を返すため、
+  //   既定状態の描画色は本差し替えの前後で完全に一致する（段階 2 通過条件 1）。
   _applyStoredStyles(instanceId) {
     const inst = this._state.applied.find((i) => i.instanceId === instanceId);
-    if (!inst || !inst.styles || typeof this._renderer.applySeriesStyle !== 'function') {
+    if (!inst || typeof this._renderer.applySeriesStyle !== 'function') {
       return;
     }
-    if (typeof this._renderer.getSeriesStyles === 'function') {
-      const currentNames = this._renderer.getSeriesStyles(instanceId).map((m) => m.name);
-      this._state = reconcileSeriesStyles(this._state, instanceId, currentNames);
+    // 実描画系列のメタ（name と不変の baseColor）。後方互換 Fake/SSR は空配列で、その場合は
+    //   色を解決する材料が無いため保存済み patch を従来どおり逐語で適用する。
+    const metas = typeof this._renderer.getSeriesStyles === 'function'
+      ? (this._renderer.getSeriesStyles(instanceId) ?? [])
+      : [];
+    if (metas.length > 0) {
+      // ISSUE-110 🔴-1: 実系列に存在しない stale キーを剪定する（実系列集合が空のときは判定
+      //   不能のため剪定しない＝従来の防御を維持）。
+      this._state = reconcileSeriesStyles(this._state, instanceId, metas.map((m) => m.name));
     }
     const reconciled = this._state.applied.find((i) => i.instanceId === instanceId);
-    const styles = reconciled && reconciled.styles;
-    if (!styles) {
+    const styles = (reconciled && reconciled.styles) || null;
+    const theme = this._activeColorTheme();
+    if (!styles && !theme && metas.length === 0) {
+      return; // 適用すべき上書きもテーマも無く、解決の材料も無い＝従来どおり no-op。
+    }
+
+    const def = this._meta.get(instanceId)?.def ?? this._catalog.get(inst.indicatorId);
+    const params = this._paramsObject(reconciled ? reconciled.params : inst.params);
+    const timeframe = resolveInstanceTimeframe(params, this._timeframe);
+    const roleIndex = buildColorRoleIndex({ def, params, expandPattern: expandSeriesNamePattern });
+
+    // 1. 実描画系列: 解決色（色のみ）＋ 保存済み patch の色以外。
+    const applied = new Set();
+    for (const meta of metas) {
+      const name = meta.name;
+      applied.add(name);
+      const patch = (styles && styles[name]) || null;
+      // defaultColor: null＝解決順ステップ 5 へ落ちたら色を書かない。ロック色・意味色・個別色・
+      //   payload 色のどれも無い系列は「色を決める材料が無い」のであって既定色ではない。
+      //   ここで既定色を書くと、payload が色を持たない系列（lwc 既定色で描かれている）の色を
+      //   捏造して変えてしまう。色以外の patch は従来どおり適用する。
+      const color = resolveSeriesColor({
+        styles,
+        seriesName: name,
+        role: roleIndex.get(name) ?? null,
+        theme,
+        timeframe,
+        payloadColor: meta.baseColor,
+        defaultColor: null,
+      });
+      const next = { ...(patch ?? {}) };
+      if (color != null) {
+        next.color = color;
+      }
+      if (patch == null && color == null) {
+        continue; // 書くべきものが何も無い。
+      }
+      this._renderer.applySeriesStyle(instanceId, name, next);
+    }
+    // 2. renderer が知らない系列に保存された patch は従来どおり逐語で適用する。
+    //    baseColor が取れない＝解決順ステップ 4 の入力が存在しないため、色を捏造しない。
+    for (const [name, patch] of Object.entries(styles ?? {})) {
+      if (!applied.has(name)) {
+        this._renderer.applySeriesStyle(instanceId, name, patch);
+      }
+    }
+    // 3. 水準線（horizontal_line）は applySeriesStyle に到達しない（E-10）ため専用入口へ渡す。
+    //    R-3: テーマが level を宣言していないときは null＝現行経路（pane は schemeColor /
+    //    overlay は backend 色）のまま。
+    this._applyLevelLineColor(instanceId, theme, timeframe);
+  }
+
+  // 選択中のテーマ（未注入・供給不能は null＝恒等）。例外を外へ出さない（F-C4 の縮退と同旨）。
+  _activeColorTheme() {
+    if (!this._colorThemeProvider) {
+      return null;
+    }
+    try {
+      return this._colorThemeProvider() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  // 水準線ポートへ level トークンの解決色を渡す（未宣言・ポート非対応は no-op）。
+  _applyLevelLineColor(instanceId, theme, timeframe) {
+    if (typeof this._renderer.applyLevelLineColor !== 'function') {
       return;
     }
-    for (const [name, patch] of Object.entries(styles)) {
-      this._renderer.applySeriesStyle(instanceId, name, patch);
-    }
+    const declared = theme && theme.roleColors ? theme.roleColors[ColorRole.LEVEL] : null;
+    // 宣言が無ければ null を渡して現行経路へ戻す（resolveSeriesColor を通すと payload 色や
+    //   既定色へ降格してしまい、schemeColor を潰す＝N-5 の破壊的変更になる）。
+    const color = declared == null
+      ? null
+      : resolveSeriesColor({
+        styles: null, seriesName: null, role: ColorRole.LEVEL, theme, timeframe, payloadColor: null,
+      });
+    this._renderer.applyLevelLineColor(instanceId, color);
   }
 
   // =========================================================================

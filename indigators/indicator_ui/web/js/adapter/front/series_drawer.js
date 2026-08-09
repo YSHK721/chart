@@ -20,6 +20,13 @@ function toLineStyleInt(style) {
   return LINE_STYLE_INT[style] ?? LINE_STYLE_INT.solid;
 }
 
+// 色として解釈できる値か（既存 toHex が受理する集合と同一・基本設計_指標カラーテーマ.md §4.5）。
+//   applyLevelLineColor の入口ゲート。不正値を受け取っても現行経路へ落として描画を壊さない。
+function isColorLike(v) {
+  return typeof v === 'string'
+    && (/^#[0-9a-fA-F]{3}$/.test(v) || /^#[0-9a-fA-F]{6}$/.test(v) || /^rgba?\(/i.test(v));
+}
+
 // メイン（ローソク）pane と オシレータ pane の高さ相対比。ローソクを大きく見せる初期値。
 //   ユーザーは pane separator のドラッグ（機能④）で後から自由に調整できる。
 const MAIN_PANE_STRETCH = 3;
@@ -71,6 +78,12 @@ export class SeriesDrawer {
         // priceLineHost: 水準線（createPriceLine）を載せた系列（pane=scaleHost / overlay=mainSeries）。
         // pane/watermark/paneName: pane 指標のみ（機能①②）。overlay 指標は pane 0 のため null。
         scaleHost: null, priceLineHost: null, pane: null, watermark: null, paneName: null,
+        // levelColor（基本設計_指標カラーテーマ.md R-3・A-5）: 水準線（priceLine）へ適用する
+        //   解決済みの色。null＝テーマが level トークンを宣言していない＝現行経路のまま
+        //   （pane は schemeColor / overlay は backend 色）。価格線は setVisible・系列種別スワップ
+        //   でも再生成されるため、色を「都度の引数」ではなく slot の状態として持つ（再生成経路
+        //   ごとに色決定を書き足すと、書き手が増えて取り残しが生じる＝R-1 に反する）。
+        levelColor: null,
         // styleMeta（ISSUE-109）: 系列キー -> { name, kind, color, width, style, visible }。
         //   生成時スタイルの記録＋applySeriesStyle の上書き結果を保持し、スタイルタブの
         //   初期表示（実描画値）と instance 単位 setVisible との可視性合成に使う。
@@ -214,6 +227,11 @@ export class SeriesDrawer {
       slot.lines.set(key, series);
       const metaEntry = {
         name: p.name, kind, color: p.color ?? null,
+        // baseColor（基本設計_指標カラーテーマ.md R-6・E-20）: 生成時の payload 色（backend 既定色）を
+        //   **不変**で保持する。color は applySeriesStyle が破壊的に上書きするため、色の解決順が
+        //   「backend 既定へ降格」する段でここを読まないと、テーマ A→B（B は当該トークン未宣言）の
+        //   結果が適用履歴に依存して非決定になる。本フィールドはどの経路からも書き換えない。
+        baseColor: p.color ?? null,
         width: p.width ?? null, style: p.style ?? null, visible: true,
         // heat（ISSUE-112）: histogram でバー別着色（data[].color＝値に応じたヒート配色）を持つか。
         //   heat=true の系列はユーザー色上書きの対象外（ヒート絶対優先・ユーザー裁定）。
@@ -270,9 +288,12 @@ export class SeriesDrawer {
       maxDist = Math.max(...prices.map((p) => Math.abs(p - center)));
     }
     for (const h of lines) {
-      const color = useScheme
+      // R-3: テーマが level トークンを宣言している（slot.levelColor が在る）ときに限り、
+      //   schemeColor / backend 色に優先して解決色を用いる。未宣言時は現行経路のまま。
+      //   水準線の色決定点はここ 1 箇所（再生成経路が何本あっても書き手は増えない）。
+      const color = slot.levelColor ?? (useScheme
         ? schemeColor(maxDist > 0 ? Math.abs(h.price - center) / maxDist : 0, LEVEL_LINE_DIM)
-        : h.color;
+        : h.color);
       const pl = host.createPriceLine({
         price: h.price,
         color,
@@ -283,6 +304,29 @@ export class SeriesDrawer {
       });
       slot.priceLines.push(pl);
     }
+  }
+
+  // 水準線（horizontal_line）へ色を届ける公開入口（基本設計_指標カラーテーマ.md §7.2 S2(b)・A-5）。
+  //
+  //   なぜ専用入口が要るか（E-10）: applySeriesStyle が届くのは slot.lines（line / histogram /
+  //   level_dash）だけで、horizontal_line は createPriceLine で別経路に生成され styleMeta に
+  //   載らない。既存の系列スタイル入口からは構造的に到達できないため、テーマの level トークンを
+  //   届ける入口を 1 個だけ新設する（入口を 2 個以上作ると色の書き手が増える＝R-1 に反する）。
+  //
+  //   color=null または色として解釈できない値は「テーマが level を宣言していない」＝現行経路
+  //   （pane は schemeColor / overlay は backend 色）へ戻す。未知 instance は no-op（false）。
+  applyLevelLineColor(instanceId, color) {
+    const slot = this._h._instances.get(instanceId);
+    if (!slot) {
+      return false;
+    }
+    slot.levelColor = isColorLike(color) ? color : null;
+    // 既に描かれている価格線にのみ即時反映する（非表示中は再表示時に setVisible が再生成する）。
+    if (slot.priceLines.length > 0) {
+      this._removePriceLines(slot);
+      this._createPriceLines(slot, slot.hlinePayloads);
+    }
+    return true;
   }
 
   // UC-04 表示/非表示。line/histogram は applyOptions({visible})、priceLine は除去/再生成。
