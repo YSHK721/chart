@@ -140,16 +140,21 @@ html, body {
 }
 
 /* 現在値の大型表示（凡例スタック先頭・視認性の要件で 32px 固定・ユーザー指示 2026-07-23 改）。
-   上げ下げのカラースキームはローソクと同一（up #26a69a / down #ef5350・chart_bootstrap と同値）。
-   方向クラスは CurrentPriceView が前回表示値との比較で付け替える（同値は据え置き）。 */
+   上げ下げのカラースキームはローソクと同一の「意味」を持つ（方向＝強気/弱気）。
+   方向クラスは CurrentPriceView が前回表示値との比較で付け替える（同値は据え置き）。
+
+   色（基本設計_指標カラーテーマ.md A-10・§4.3）: 素の色リテラルを持たず、JS が :root へ書く
+   カスタムプロパティ --ct-<token> を読む。これで現在値ライン（JS 機構）と現在値表示（CSS 機構）が
+   1 つのトークン表から同時に駆動され、片側だけ旧色に残る状態が構造的に起こらない（FR-C12）。
+   fallback は現行値。JS が書き込めない状況（F-C11・SSR）でも現行と同一に解決する。 */
 #current-price {
   font-size: 32px; font-weight: 700; line-height: 1.1;
-  color: #d1d4dc; /* 初回・方向未確定の中立色 */
+  color: var(--ct-text, #d1d4dc); /* 初回・方向未確定の中立色 */
   text-shadow: 0 1px 4px rgba(0, 0, 0, .55); /* 背後のローソクと分離して視認性を確保 */
   pointer-events: none; white-space: nowrap;
 }
-#current-price.is-up { color: #26a69a; }
-#current-price.is-down { color: #ef5350; }
+#current-price.is-up { color: var(--ct-bullish, #26a69a); }
+#current-price.is-down { color: var(--ct-bearish, #ef5350); }
 #current-price:empty { display: none; } /* 値未着（起動直後）はスペースを占有しない */
 
 /* クロスヘア価格読み取り欄（日時 + OHLC + overlay 各行）。 */

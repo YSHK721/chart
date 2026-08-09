@@ -9,6 +9,12 @@
 // 責務: lwc の createChart / addSeries(CandlestickSeries) / timeScale().height() の呼び出しを
 //   本所へ閉じる（composition root から upstream 生成 API の重複参照を除去）。renderer 以降の
 //   系列操作 API 隔離は従来どおり ChartRenderer が担う。
+//
+// 色（基本設計_指標カラーテーマ.md A-9）: 生成時オプションの色リテラルは chrome_tokens.js
+//   （クロム配線点の単一情報源）から引く。ここに直書きすると「テーマなし」へ戻すときの復元値が
+//   二重定義になる（§7.2 S1 の欠点）。値は現行と文字列同値のため挙動は不変。
+
+import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 
 // チャート＋メインローソク系列を生成して返す（present を正とした共通オプション）。
 //   - crosshair Normal(0): Magnet スナップ無効（ユーザー要望・enum 無い環境向け 0 フォールバック）。
@@ -17,30 +23,39 @@ export function createChartWithMainSeries({ lwc, container }) {
   // v5: background は { type: ColorType.Solid, color }、panes のリサイズ separator は既定 ON。
   const chart = lwc.createChart(container, {
     layout: {
-      background: { type: lwc.ColorType.Solid, color: '#131722' },
-      textColor: '#d1d4dc',
+      background: { type: lwc.ColorType.Solid, color: CHROME_CURRENT.layoutBackground },
+      textColor: CHROME_CURRENT.layoutTextColor,
       // ペイン境界のドラッグ・リサイズ（separator）を有効化（高さ調整・機能④）。
-      panes: { enableResize: true, separatorColor: '#2a2e39', separatorHoverColor: 'rgba(178,181,189,0.2)' },
+      panes: {
+        enableResize: true,
+        separatorColor: CHROME_CURRENT.paneSeparator,
+        separatorHoverColor: CHROME_CURRENT.paneSeparatorHover,
+      },
     },
-    grid: { vertLines: { color: '#1f2530' }, horzLines: { color: '#1f2530' } },
+    grid: {
+      vertLines: { color: CHROME_CURRENT.gridVertLines },
+      horzLines: { color: CHROME_CURRENT.gridHorzLines },
+    },
     // クロスヘアを Normal（自由追従）に。既定 Magnet(1) は水平線を最寄り足の価格へスナップさせるため、
     //   カーソル位置どおりに動かしたいという要望で Normal(0) に変更（enum 無い環境向けに 0 フォールバック）。
     crosshair: { mode: (lwc.CrosshairMode && lwc.CrosshairMode.Normal) || 0 },
-    rightPriceScale: { borderColor: '#2a2e39' },
+    rightPriceScale: { borderColor: CHROME_CURRENT.rightPriceScaleBorder },
     // 日中足（1m/1h 等）でも時刻が読めるよう timeVisible を有効化（秒は非表示）。
-    timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false },
+    timeScale: { borderColor: CHROME_CURRENT.timeScaleBorder, timeVisible: true, secondsVisible: false },
     autoSize: true,
   });
   // v5: addCandlestickSeries は廃止。addSeries(CandlestickSeries, ...) でメイン pane(0) に追加。
   // ISSUE-084: 現在値ラインは固定色（橙）で常時表示する。lwc 既定の priceLineColor=''（バー色追従）は
   //   日別プロファイルのローソク透明化（setCandleTransparency）で線ごと消えるため、candle 色に依存しない
   //   固定色を明示する（POC 赤・POC* 黄・カーソル青と重ならない配色）。lastValueVisible で軸ラベルも表示。
+  const up = CHROME_CURRENT.candleUp;
+  const down = CHROME_CURRENT.candleDown;
   const mainSeries = chart.addSeries(lwc.CandlestickSeries, {
-    upColor: '#26a69a', downColor: '#ef5350',
-    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
-    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    upColor: up, downColor: down,
+    borderUpColor: up, borderDownColor: down,
+    wickUpColor: up, wickDownColor: down,
     priceLineVisible: true,
-    priceLineColor: '#ff9800',
+    priceLineColor: CHROME_CURRENT.priceLine,
     priceLineWidth: 1,
     lastValueVisible: true,
   });

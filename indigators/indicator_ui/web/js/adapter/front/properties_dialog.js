@@ -414,7 +414,10 @@ export class PropertiesDialog {
         names: s.seriesName ? [s.seriesName] : [],
         kind: s.kind ?? 'line',
         heat: false,
-        color: toHex(s.colorRule ?? '#2962ff'),
+        // 静的フォールバック（seriesStyles 未供給＝SSR/単体テスト）の表示既定色。
+        //   旧実装は s.colorRule を読んでいたが、当該席は代入 0 件で常に null＝実運用でも常に
+        //   このフォールバックへ落ちていた（E-6）。席の撤去（§7.2・A-2）に伴い直に書く。
+        color: toHex('#2962ff'),
         width: s.width ?? 1,
         style: s.style ?? 'solid',
         visible: true,

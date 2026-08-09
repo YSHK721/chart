@@ -4,6 +4,8 @@
 // DOM/chart/fetch 非依存の純ロジック。検索（§4.6）・generation 不変ルール（§6.6）を
 // domain に集約する。
 
+import { ColorRole, isColorRole } from './color_roles.js';
+
 export const SeriesKind = Object.freeze({
   LINE: 'line',
   HISTOGRAM: 'histogram',
@@ -20,6 +22,15 @@ export const LineStyle = Object.freeze({
   DASHED: 'dashed',
 });
 
+// horizontal_line が必ず持つ色の意味（基本設計_指標カラーテーマ.md §4.1.3 規則 1）。
+//   水準線は priceLine 経路で生成され、系列スタイル入口（applySeriesStyle）から構造的に到達
+//   できない（E-10）ため、部位ではなく**供給経路そのもの**が意味を一意に決める。よって
+//   「宣言し忘れ」も「別トークンの宣言」も起こり得ない不変条件として型側で固定する
+//   （18 箇所への手書き反復は、1 箇所の取り残しで規則 1 を破る＝§7.4 段階 1 通過条件 2 を落とす）。
+const FORCED_ROLE_BY_KIND = Object.freeze({
+  horizontal_line: ColorRole.LEVEL,
+});
+
 // 出力 1 系列（または系列群）の描画宣言（§3.1.2）。
 // source_column（値列名 例 pOL_99）と series_name（描画系列名 例 "pOL 99%"）を別保持する。
 export class SeriesDef {
@@ -32,7 +43,7 @@ export class SeriesDef {
     seriesNamePattern = null,
     style = null,
     width = null,
-    colorRule = null,
+    colorRole = null,
     priceScaleId = null,
     axisLabelVisible = false,
     pointStyleEditable = false,
@@ -46,7 +57,12 @@ export class SeriesDef {
     this.seriesNamePattern = seriesNamePattern;
     this.style = style;
     this.width = width;
-    this.colorRule = colorRule;
+    // colorRole（§4.1）: この系列が伝える「色の意味」。旧 colorRule（色の**値**の席）は撤去した
+    //   （§7.2・A-2）。値の席へ意味トークンを入れると、同名の席が状況により色または識別子を保持
+    //   することになり置換可能性（LSP）が壊れるため、別名で新設して二重の呼び名を残さない。
+    //   語彙外の値は null（未宣言）へ縮退させる＝§5.7 F-C3 を型の入口で確定させ、下流の
+    //   resolver に「未知トークン」という状態を持ち込まない。
+    this.colorRole = FORCED_ROLE_BY_KIND[kind] ?? (isColorRole(colorRole) ? colorRole : null);
     this.priceScaleId = priceScaleId;
     this.axisLabelVisible = axisLabelVisible;
     // pointStyleEditable（案A・btlm_trail）: この系列がスタイルタブで「系列表示（ドット/ライン）」を

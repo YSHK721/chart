@@ -7,6 +7,11 @@
 
 import { ConstraintKind, ParamType } from '../domain/constraint_eval.js';
 import { IndicatorDef, SeriesDef, SeriesKind } from '../domain/domain_models.js';
+// 色の意味（ColorRole・基本設計_指標カラーテーマ.md §4.1）。トークンの綴りはこの台帳が単一情報源で、
+//   本ファイルは文字列リテラルを持たない（語彙の改訂が台帳 1 箇所で完結する＝OCP）。
+//   kind==='horizontal_line' は SeriesDef 側の不変条件で必ず level になるため、水準線 SeriesDef に
+//   colorRole を書かない（§4.1.3 規則 1・手書きの反復を作らない）。
+import { ColorRole } from '../domain/color_roles.js';
 import { TF_CODES } from '../domain/tf_meta.js';
 import { makeMarketProfileDef } from './catalog_entry.js';
 import { makeTickvolBandsDef } from './tickvol_bands_catalog_entry.js';
@@ -118,9 +123,11 @@ const TGP_BTLM = new IndicatorDef({
   // よって F3（_validateSeriesNames）が任意の分位を受理するよう、分位線は動的パターン
   // `btlm_q{pct}`（pct=1..99）で表現する（§3.3.6 dynamic 展開）。
   series: [
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_mean', seriesName: 'btlm_mean', dynamic: false }),
+    // 回帰の平均線＝「ここが基準」を表す（方向でも警戒でもない）。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_mean', seriesName: 'btlm_mean', dynamic: false, colorRole: ColorRole.NEUTRAL }),
+    // 分位線＝正常域の縁（中心 neutral と域外 alert の間）。
     new SeriesDef({
-      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, colorRole: ColorRole.RANGE,
       seriesNamePattern: {
         template: 'btlm_q{pct}', buckets: [''],
         pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
@@ -208,19 +215,21 @@ const BTLM_TRAIL = new IndicatorDef({
   //   数値系列（beta/sigma/band_hit_rate）は不可視 line（表示層が readout オーバーレイへ載せる）。
   series: [
     // pointStyleEditable（案A）: mean と分位線のみスタイルタブで「系列表示（ドット/ライン）」編集可。
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false, pointStyleEditable: true }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_mean', seriesName: 'btlm_trail_mean', dynamic: false, pointStyleEditable: true, colorRole: ColorRole.NEUTRAL }),
     new SeriesDef({
-      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, pointStyleEditable: true,
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, pointStyleEditable: true, colorRole: ColorRole.RANGE,
       seriesNamePattern: {
         template: 'btlm_trail_q{pct}', buckets: [''],
         pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
       },
     }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_hi', seriesName: 'btlm_trail_off_hi', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_lo', seriesName: 'btlm_trail_off_lo', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_beta', seriesName: 'btlm_trail_beta', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_sigma', seriesName: 'btlm_trail_sigma', dynamic: false }),
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_band_hit_rate', seriesName: 'btlm_trail_band_hit_rate', dynamic: false }),
+    // 外れ値分位（q_out）の補助線＝バンドより外側の極端水準＝警戒（§4.1.1 alert）。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_hi', seriesName: 'btlm_trail_off_hi', dynamic: false, colorRole: ColorRole.ALERT }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_off_lo', seriesName: 'btlm_trail_off_lo', dynamic: false, colorRole: ColorRole.ALERT }),
+    // β・σ・バンド内実績率は readout_only で emit される読取欄専用系列（§4.1.3 規則 2）。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_beta', seriesName: 'btlm_trail_beta', dynamic: false, colorRole: ColorRole.MUTED }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_sigma', seriesName: 'btlm_trail_sigma', dynamic: false, colorRole: ColorRole.MUTED }),
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_band_hit_rate', seriesName: 'btlm_trail_band_hit_rate', dynamic: false, colorRole: ColorRole.MUTED }),
   ],
   compute: { computeId: 'btlm_trail', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
@@ -251,8 +260,11 @@ const EVQ_PARAMS = (orderStart) => [
   }),
 ];
 // 水準線 SeriesDef 4 本（中央値 hi/lo ＋ 極端 hi/lo・静的名）。表示順は emit 順と同一。
+//   色の意味は全 4 本とも alert（通常域を外れた水準そのもの）。back 側でも 5 指標が共有定数
+//   EVQ_COLOR を単一情報源にしており（E-4）、意味の共有は既に実現している。本ビルダーはそれを
+//   トークンとして表現する（意味の宣言点も 1 箇所に保つ）。
 const EVQ_SERIES_DEFS = (prefix) => ['med_hi', 'med_lo', 'ext_hi', 'ext_lo'].map(
-  (k) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: `${prefix}_evq_${k}`, seriesName: `${prefix}_evq_${k}`, dynamic: false }),
+  (k) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: `${prefix}_evq_${k}`, seriesName: `${prefix}_evq_${k}`, dynamic: false, colorRole: ColorRole.ALERT }),
 );
 
 // --- btlm_trail_marod（MAROD＝移動平均乖離率・別 pane オシレータ）----------
@@ -297,11 +309,13 @@ const BTLM_TRAIL_MAROD = new IndicatorDef({
   series: [
     // barStyleEditable（案A）: MAROD line のみスタイルタブで「棒グラフ（histogram）」表示を選択可
     //   （選択時 renderer が LineSeries→HistogramSeries に再生成し 0% 中心の棒表示にする）。
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_marod', seriesName: 'btlm_trail_marod', dynamic: false, barStyleEditable: true }),
+    // MAROD 線＝この指標の主たる出力値（§4.1.1 primary）。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_trail_marod', seriesName: 'btlm_trail_marod', dynamic: false, barStyleEditable: true, colorRole: ColorRole.PRIMARY }),
+    // 0% 水平基準線（horizontal_line＝必ず level・§4.1.3 規則 1）。
     new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'btlm_trail_marod', dynamic: false }),
     // 分位バンド（動的・q_low/q_high に依存＝btlm_trail_marod_q{pct}）。btlm_trail_q{pct} と対称の命名。
     new SeriesDef({
-      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, colorRole: ColorRole.RANGE,
       seriesNamePattern: {
         template: 'btlm_trail_marod_q{pct}', buckets: [''],
         pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
@@ -354,15 +368,26 @@ const PROFIT_BAND = new IndicatorDef({
   // `{bucket} {pct}%`（lwc_chart.py:137 `name = f"{bucket} {tag}%"`）に従い、
   // bucket ∈ {nOH,pOL,pOH,nOL} × pct ∈ {51,80,85,90,95,98,99} = 28 系列。
   // F3 照合は seriesNamePattern の展開集合を基準に行う（§3.3.6 dynamic 展開）。
-  series: [
-    new SeriesDef({
-      kind: SeriesKind.LINE,
-      sourceColumn: null,
-      seriesName: null,
-      dynamic: true,
-      seriesNamePattern: { template: '{bucket} {pct}%', buckets: ['nOH', 'pOL', 'pOH', 'nOL'], pcts: ['51', '80', '85', '90', '95', '98', '99'] },
-    }),
-  ],
+  // §4.1.4（A-8）: 従来は 4 bucket をまとめた動的 SeriesDef 1 件だったが、色の意味は SeriesDef 単位に
+  //   付くため、そのままでは pOH（陽線の Open→High 幅＝上伸）と nOL（陰線の Open→Low 幅＝下落）に
+  //   別トークンを与えられず、E-24 の「上方向 3 色・下方向 3 色」の分裂を統合できない。bucket ごとの
+  //   SeriesDef 4 件へ分割する（front のみ・Python 無改変）。
+  //   挙動不変の根拠: (a) expandSeriesNamePattern は buckets × pcts の直積を返すため、4×7 の 1 件と
+  //   1×7 の 4 件は和集合が同一（28 名）。(b) buildSeriesStyleRows は def.series を走査して非空
+  //   bucket ごとに行を積むため bucketDefs は同一（4 件）。(c) SeriesDef は描画に使われない（描画は
+  //   payload 駆動＝E-7）ため件数の変化は描画に影響しない。
+  series: ['nOH', 'pOL', 'pOH', 'nOL'].map((bucket) => new SeriesDef({
+    kind: SeriesKind.LINE,
+    sourceColumn: null,
+    seriesName: null,
+    dynamic: true,
+    // 方向を表すのは外側の 2 本（pOH＝上伸 teal / nOL＝下落 darkred）。内側の pOL / nOH は
+    //   塗りバンドの端（navy）であって方向を表さない（U-12 の是正）＝通常域の縁 range。
+    colorRole: (bucket === 'pOH' && ColorRole.BULLISH)
+      || (bucket === 'nOL' && ColorRole.BEARISH)
+      || ColorRole.RANGE,
+    seriesNamePattern: { template: '{bucket} {pct}%', buckets: [bucket], pcts: ['51', '80', '85', '90', '95', '98', '99'] },
+  })),
   // variants[0] が既定 variant になる（参照は複数サイト: indicator_controller._defaultVariant、
   // および properties_dialog の新規インスタンス既定 _variants[0]）。順序入替はこれら全てに波及する。
   // 先頭の robust を既定にする理由: global は全長分位点＋生値幅のため repaint＋価格水準依存の欠陥を持つ。
@@ -412,7 +437,7 @@ const MA_SOURCE_LABELS = APPLIED_PRICE_LABELS;   // 同一概念＝同一情報�
 const MA_SMOOTHING_LABELS = {
   none: 'なし', sma: 'SMA', ema: 'EMA', smma: 'SMMA', wma: 'WMA', sma_bb: 'SMA + ボリンジャーバンド',
 };
-const MA_LINE = (seriesName) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false });
+const MA_LINE = (seriesName, colorRole) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false, colorRole });
 const MOVING_AVERAGES = new IndicatorDef({
   id: 'moving_averages',
   displayNameKey: 'ind.moving_averages',
@@ -444,7 +469,14 @@ const MOVING_AVERAGES = new IndicatorDef({
     //   入らないと、同一ダイアログ内に計算グループが 2 つ並ぶ（ISSUE-274）。
   ],
   // 固定系列（dynamic=false）: backend が平滑化タイプに応じて部分集合を出力する。
-  series: [MA_LINE('MA'), MA_LINE('Smoothing'), MA_LINE('Upper'), MA_LINE('Lower')],
+  // MA＝主出力／Smoothing＝それに随伴する平滑線（同色にすると両者が判別不能になる）／
+  //   Upper・Lower＝ボリンジャーバンドの上下端＝通常域の縁（§4.1.1 range）。
+  series: [
+    MA_LINE('MA', ColorRole.PRIMARY),
+    MA_LINE('Smoothing', ColorRole.SECONDARY),
+    MA_LINE('Upper', ColorRole.RANGE),
+    MA_LINE('Lower', ColorRole.RANGE),
+  ],
   compute: { computeId: 'moving_averages', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
 
@@ -492,11 +524,13 @@ const MA_MAROD = new IndicatorDef({
   series: [
     // barStyleEditable: MA_MAROD line のみスタイルタブで「棒グラフ（histogram）」表示を選択可
     //   （btlm_trail_marod 案A と同一の非波及ゲート）。
-    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'ma_marod', seriesName: 'ma_marod', dynamic: false, barStyleEditable: true }),
+    // MA_MAROD 線＝この指標の主たる出力値（§4.1.1 primary・btlm_trail_marod と対称）。
+    new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'ma_marod', seriesName: 'ma_marod', dynamic: false, barStyleEditable: true, colorRole: ColorRole.PRIMARY }),
+    // 0% 水平基準線（horizontal_line＝必ず level・§4.1.3 規則 1）。
     new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: 'ma_marod', dynamic: false }),
     // 分位バンド（動的・q_low/q_high に依存＝ma_marod_q{pct}）。btlm_trail_marod_q{pct} と対称の命名。
     new SeriesDef({
-      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, colorRole: ColorRole.RANGE,
       seriesNamePattern: {
         template: 'ma_marod_q{pct}', buckets: [''],
         pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
@@ -517,9 +551,12 @@ const MA_MAROD = new IndicatorDef({
 // placement: オシレータは 'pane'（instance 専用 overlay スケールへ autoscale 分離）、
 //   価格バンドは 'overlay'（価格スケール上）。
 // ---------------------------------------------------------------------------
+// 色の意味（§4.1）: PF_HLINE は horizontal_line のため SeriesDef 側の不変条件で必ず level になる
+//   （引数を取らない＝規則 1 に例外を作る余地が無い）。PF_LINE / PF_HIST は指標ごとに意味が異なる
+//   ため呼び出し側が宣言する（既定 primary＝本体出力。副出力は SECONDARY を明示する）。
 const PF_HLINE = (id) => new SeriesDef({ kind: SeriesKind.HORIZONTAL_LINE, sourceColumn: null, seriesName: id, dynamic: false });
-const PF_LINE = (seriesName) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false });
-const PF_HIST = (seriesName) => new SeriesDef({ kind: SeriesKind.HISTOGRAM, sourceColumn: null, seriesName, dynamic: false });
+const PF_LINE = (seriesName, colorRole = ColorRole.PRIMARY) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false, colorRole });
+const PF_HIST = (seriesName, colorRole = ColorRole.PRIMARY) => new SeriesDef({ kind: SeriesKind.HISTOGRAM, sourceColumn: null, seriesName, dynamic: false, colorRole });
 // 正整数パラメータ（period 系）。MIN_VALUE>=1 の制約付き・group.calc・step1。
 const PF_INT = (name, def, extraUi = {}) => param(
   name, ParamType.INT, def,
@@ -564,7 +601,8 @@ const PROFIT_ARCTAN = pfDef({
 const PROFIT_MFI = pfDef({
   id: 'profit_mfi', name: 'MFI', cat: 'volume', placement: 'pane',
   params: [PF_INT('mfi_period', 14), PF_INT('ma_period', 5)],
-  series: [PF_LINE('mfi'), PF_LINE('mfi_ma'), PF_HLINE('profit_mfi')],
+  // mfi＝本体、mfi_ma＝それを平滑した副出力（同色にすると 2 本が判別不能になる）。
+  series: [PF_LINE('mfi'), PF_LINE('mfi_ma', ColorRole.SECONDARY), PF_HLINE('profit_mfi')],
 });
 const PROFIT_RSI = pfDef({
   id: 'profit_rsi', name: 'RSI', cat: 'oscillator', placement: 'pane',
@@ -608,15 +646,17 @@ const PROFIT_RSI = pfDef({
   //   時系列（line）で出す。命名は共有規約（common.event_quantiles / btlm_trail_q{pct}）に従う。
   series: [
     PF_LINE('rsi'),
+    // 正常帯（下側/上側分位）＝通常域の縁。
     new SeriesDef({
-      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, colorRole: ColorRole.RANGE,
       seriesNamePattern: {
         template: 'rsi_q{pct}', buckets: [''],
         pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
       },
     }),
+    // 外れ値水準（経験的極端分位・GPD の上下）＝通常域を外れた水準＝警戒。
     ...['rsi_evq_ext_hi', 'rsi_evq_ext_lo', 'rsi_gpd_hi', 'rsi_gpd_lo'].map(
-      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
+      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false, colorRole: ColorRole.ALERT }),
     ),
   ],
 });
@@ -636,7 +676,8 @@ const PROFIT_OSCILLATOR2 = pfDef({
     PF_INT('osc_period', 6), PF_INT('stc_slow', 6), PF_INT('ma_period', 60), PF_INT('rci_period', 12),
     param('direction', ParamType.BOOL, false, [], null, { group: 'group.calc' }),
   ],
-  series: [PF_HIST('oscillator2_lc'), PF_LINE('oscillator2_rci'), PF_HLINE('profit_oscillator2')],
+  // oscillator2_lc＝本体、rci＝随伴する副オシレータ。
+  series: [PF_HIST('oscillator2_lc'), PF_LINE('oscillator2_rci', ColorRole.SECONDARY), PF_HLINE('profit_oscillator2')],
 });
 const PROFIT_OSI_MA = pfDef({
   id: 'profit_osi_ma', name: 'OsiMA', cat: 'oscillator', placement: 'pane',
@@ -678,17 +719,20 @@ const PROFIT_HLBAND = pfDef({
 const PROFIT_MFI_MACD = pfDef({
   id: 'profit_mfi_macd', name: 'MFIMACD', cat: 'volume', placement: 'pane',
   params: [PF_INT('mfi_period', 13), PF_INT('fast', 4), PF_INT('slow', 8), PF_INT('signal', 4)],
-  series: [PF_HIST('mfimacd_hist'), PF_LINE('MFIMACD'), PF_LINE('Signal'), PF_HLINE('profit_mfi_macd')],
+  // MACD 系: ヒストグラムと MACD 線は本体（primary）、Signal はそれに随伴する副出力。
+  //   §4.1.5 の既知の縮退: テーマ適用時は hist と MACD 線が同色になる（現行は別色）。区別が要る
+  //   場合はユーザーが colorLocked で個別に確保する（トレードオフ 2）。
+  series: [PF_HIST('mfimacd_hist'), PF_LINE('MFIMACD'), PF_LINE('Signal', ColorRole.SECONDARY), PF_HLINE('profit_mfi_macd')],
 });
 const PROFIT_RMM_MACD = pfDef({
   id: 'profit_rmm_macd', name: 'RMMMACD', cat: 'volume', placement: 'pane',
   params: [PF_INT('osc_period', 6), PF_INT('ma_period', 6), PF_INT('fast', 4), PF_INT('slow', 8), PF_INT('signal', 4), PF_WINDOW()],
-  series: [PF_HIST('rmmmacd_hist'), PF_LINE('RMMWMACD'), PF_LINE('Signal')],
+  series: [PF_HIST('rmmmacd_hist'), PF_LINE('RMMWMACD'), PF_LINE('Signal', ColorRole.SECONDARY)],
 });
 const PROFIT_RSI_MACD = pfDef({
   id: 'profit_rsi_macd', name: 'RSIMACD', cat: 'oscillator', placement: 'pane',
   params: [PF_INT('rsi_period', 13), PF_INT('fast', 4), PF_INT('slow', 8), PF_INT('signal', 4)],
-  series: [PF_HIST('rsimacd_hist'), PF_LINE('RSIMACD'), PF_LINE('Signal'), PF_HLINE('profit_rsi_macd')],
+  series: [PF_HIST('rsimacd_hist'), PF_LINE('RSIMACD'), PF_LINE('Signal', ColorRole.SECONDARY), PF_HLINE('profit_rsi_macd')],
 });
 
 // --- market_profile（プロファイルタブ・アクター委譲型）--------------------
@@ -776,13 +820,21 @@ const CVFE = new IndicatorDef({
   // 系列: σ線①②（各上下）＋ 外れ値線・極端線（各上下）＋ 中心線。すべて価格スケール上。
   //   display_mode='dashes'（既定）は level_dash、'bands' は line で届くため同名で両 kind を宣言する。
   series: [
-    ...['cvfe_mid', 'cvfe_u1', 'cvfe_l1', 'cvfe_u2', 'cvfe_l2'].flatMap((n) => [
-      new SeriesDef({ kind: SeriesKind.LEVEL_DASH, sourceColumn: n, seriesName: n, dynamic: false }),
-      new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
-    ]),
+    // cvfe_mid＝予測の中心（基準・中立）、σ線①②の上下端＝予測変動幅の縁（通常域）。
+    //   display_mode で level_dash / line の 2 kind を同名で宣言するため、§4.1.3 規則 3 により
+    //   両宣言に同一トークンを与える（トークンは系列名で解決するため、食い違うと非決定になる）。
+    ...['cvfe_mid', 'cvfe_u1', 'cvfe_l1', 'cvfe_u2', 'cvfe_l2'].flatMap((n) => {
+      const colorRole = n === 'cvfe_mid' ? ColorRole.NEUTRAL : ColorRole.RANGE;
+      return [
+        new SeriesDef({ kind: SeriesKind.LEVEL_DASH, sourceColumn: n, seriesName: n, dynamic: false, colorRole }),
+        new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false, colorRole }),
+      ];
+    }),
+    // 外れ値線・極端線（line）＝共有ビルダー（alert）。
     ...EVQ_SERIES_DEFS('cvfe'),
+    // 同名の level_dash 宣言。上と同一トークン（規則 3）。
     ...['med_hi', 'med_lo', 'ext_hi', 'ext_lo'].map((k) => new SeriesDef({
-      kind: SeriesKind.LEVEL_DASH, sourceColumn: `cvfe_evq_${k}`, seriesName: `cvfe_evq_${k}`, dynamic: false,
+      kind: SeriesKind.LEVEL_DASH, sourceColumn: `cvfe_evq_${k}`, seriesName: `cvfe_evq_${k}`, dynamic: false, colorRole: ColorRole.ALERT,
     })),
   ],
   compute: { computeId: 'cvfe', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
@@ -857,14 +909,15 @@ const TICKVOL = new IndicatorDef({
     PF_HIST('tickvol'),
     // 正常帯（動的・q_low/q_high に依存＝tickvol_q{pct}）。
     new SeriesDef({
-      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true,
+      kind: SeriesKind.LINE, sourceColumn: null, seriesName: null, dynamic: true, colorRole: ColorRole.RANGE,
       seriesNamePattern: {
         template: 'tickvol_q{pct}', buckets: [''],
         pcts: Array.from({ length: 99 }, (_, i) => String(i + 1)),
       },
     }),
+    // 典型深度・経験的極端分位・GPD ＝いずれも正常帯を超えた水準＝警戒。
     ...['tickvol_evq_med_hi', 'tickvol_evq_ext_hi', 'tickvol_gpd_hi'].map(
-      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false }),
+      (n) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: n, seriesName: n, dynamic: false, colorRole: ColorRole.ALERT }),
     ),
   ],
   compute: { computeId: 'tickvol', requiredColumns: OHLC, timeRequired: false, backendParam: null, variants: ['default'] },

@@ -6,9 +6,14 @@
 //   chart_renderer 同様、lwc v5 API に触れる「隔離点」（primitive 契約由来の既知例外）。
 //   zOrder='bottom'（系列の下＝背景側）に boundaryTime より左の矩形を塗る＝ローソクは上に残る。
 //
-// 色: 本番背景 #131722 の各 RGB を -10 した #090d18（明度 -10）。boundaryTime=null は塗らない。
+// 色: 本番背景の各 RGB を -10 した減光色（明度 -10）。boundaryTime=null は塗らない。
+//   値は chrome_tokens.js（クロム配線点の単一情報源・基本設計_指標カラーテーマ.md A-9）から引く。
+//   ここに直書きすると、背景色を変えたときに減光帯だけ旧色に残る（依頼者が指摘した破綻）。
+//   派生関係（surface からのチャネル別整数オフセット）は同表が保持する（E-29 の実測差分）。
 
-const BG_DIM_COLOR = '#090d18'; // 本番背景 #131722 の各チャネルを -10（明度 -10）。
+import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
+
+const BG_DIM_COLOR = CHROME_CURRENT.replayBoundaryDim;
 
 export class ReplayBoundaryDimPrimitive {
   constructor() {

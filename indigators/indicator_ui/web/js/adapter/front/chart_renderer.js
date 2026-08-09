@@ -37,6 +37,10 @@ import { seriesKind } from '../../domain/series_kind.js';
 import { ScaleController, zoomedPriceRange, clampPriceRange } from './scale_controller.js';
 import { CandleFeed } from './candle_feed.js';
 import { SeriesDrawer, lastPointValue } from './series_drawer.js';
+// クロム配線点の単一情報源（基本設計_指標カラーテーマ.md §4.2・A-9）。本ファイルが持っていた
+//   5 つの色定数（減光ローソク・ローソク復元色 up/down・分析 tint・背景フォールバック）は、
+//   chart_bootstrap.js / replay_boundary_dim.js の同値リテラルと事実上の二重定義だった。
+import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 
 // zoomedPriceRange/clampPriceRange の単一ソースは scale_controller.js（SOLID 是正 🔴-2 で抽出）。
 //   既存 import（テスト・他ファイル）を壊さないため本モジュールからも再 export する。
@@ -45,16 +49,19 @@ import { SeriesDrawer, lastPointValue } from './series_drawer.js';
 //     （剥がし後は無害なブロック文）にする。
 export { zoomedPriceRange, clampPriceRange };
 
-// v6（§12）: ホバー中ペア外のローソク足に被せる極暗色（背景 #131722 に近い不透明暗色）。
+// v6（§12）: ホバー中ペア外のローソク足に被せる極暗色（背景に近い不透明暗色）。
 //   per-bar color/borderColor/wickColor を本色で上書きし、ローソクのみを限りなく減光する
 //   （背景ピクセルは一切変更しない）。ペア内バーは色を付けず原色（既定 up/down 着色）に委ねる。
-const DIM_CANDLE_COLOR = '#16191f';
+//   値は chrome_tokens.js（クロム配線点の単一情報源・A-9）から引く。背景からのチャネル別整数
+//   オフセットで表せることが実測済み（E-29）で、テーマ導入後は surface に従属する。
+const DIM_CANDLE_COLOR = CHROME_CURRENT.dimCandle;
 
 // sessions（日別プロファイル分割）: ローソク透明化用の色。透明＝価格軸は残しローソクだけ消す。
-//   復元色は composition_root_front.js の mainSeries 既定（up=#26a69a / down=#ef5350）と一致させる。
+//   復元色は chart_bootstrap の mainSeries 既定と同一の配線点（candleUp/candleDown）から引く。
+//   両者が同値でなければ透明化→復元でローソクの色が変わるため、同じ表を単一情報源にする。
 const TRANSPARENT_COLOR = 'rgba(0,0,0,0)';
-const CANDLE_UP_COLOR = '#26a69a';
-const CANDLE_DOWN_COLOR = '#ef5350';
+const CANDLE_UP_COLOR = CHROME_CURRENT.candleUpRestore;
+const CANDLE_DOWN_COLOR = CHROME_CURRENT.candleDownRestore;
 
 export class ChartRenderer {
   // chart: LightweightCharts.createChart(...) の戻り（addSeries/addPane/panes/removePane を持つ）。
@@ -947,11 +954,13 @@ export class ChartRenderer {
     if (typeof this._chart.applyOptions !== 'function') {
       return;
     }
-    // 分析モード（ANALYSIS）背景 tint 色。既定背景 #131722 より僅かに紫寄りに振り状態を明示する
+    // 分析モード（ANALYSIS）背景 tint 色。既定背景より僅かに紫寄りに振り状態を明示する
     //   （薄い tint＝ユーザー要求「背景色で状態明示」。目視微調整はユーザーが後で実施）。
-    const ANALYSIS_TINT_COLOR = '#1b1a24';
-    // options 取得不能時の既定背景フォールバック色（composition root の layout.background と同値）。
-    const DEFAULT_BACKGROUND_COLOR = '#131722';
+    //   値は chrome_tokens.js（A-9）。背景からのチャネル別整数オフセットで表せる（E-29）ため、
+    //   テーマ導入後は surface に従属し、背景を変えても相対関係が保たれる。
+    const ANALYSIS_TINT_COLOR = CHROME_CURRENT.analysisTint;
+    // options 取得不能時の既定背景フォールバック色（chart_bootstrap の layout.background と同一配線点）。
+    const DEFAULT_BACKGROUND_COLOR = CHROME_CURRENT.backgroundFallback;
     // 既定背景を一度だけ捕捉（構築子外・遅延初期化）。以降の tint on/off はこの基準へ復元する。
     //   ISSUE-119: options() が返す background は lwc 内部 options への参照でありうる。applyOptions は
     //   内部オブジェクトへの in-place マージのため、参照のまま保持すると tint ON で基準色まで tint 色に
