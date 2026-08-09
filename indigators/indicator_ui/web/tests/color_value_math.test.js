@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 
 import {
   isColorValue, isNormalizedHex, clampChannel, toChannels, channelsToHex, normalizeHexColor,
-  mixChannels, relativeLuminance, contrastRatio, rotateHue, desaturate,
+  mixChannels, relativeLuminance, contrastRatio, rotateHue, desaturate, mixAtContrast,
 } from '../js/domain/color_value.js';
 
 // --- 共通の題材 ---------------------------------------------------------
@@ -268,6 +268,114 @@ test('TC-CV21 desaturate: 無彩色は不動点（黒・白・中間灰）', () 
 test('TC-CV22 desaturate: 不正入力は null', () => {
   for (const bad of BAD_COLORS) {
     assert.equal(desaturate(bad), null, String(bad));
+  }
+});
+
+// ========================================================================
+// ========================================================================
+// mixAtContrast — 「地に対する目標コントラスト比」でランプ上の 1 点を選ぶ（ISSUE-323 の是正）
+//
+// 病因（ISSUE-323）: 導出係数を**混合比**で持つと、地が変わったときに対地コントラスト比が
+//   保たれない。混合比は地に依らず一定だが、コントラスト比は地に対する相対量だからである。
+//   そこで「a→b のランプ上で、地 against に対する CR が targetRatio に最も近い点」を返す
+//   逆問題の解法を domain に置く（desaturate と同じ「到達可能な最良点」の規律）。
+// ========================================================================
+
+test('TC-CV25 mixAtContrast: 到達可能な目標では、ランプ上で CR が目標に最も近い点を返す', () => {
+  // Arrange: 現行の地 #131722 と、そこから導いた text。目標は現行 level の実測 CR 5.249。
+  const surface = '#131722';
+  const text = '#d5d5d7';
+  // Act
+  const got = mixAtContrast(surface, text, surface, 5.249);
+  // Assert
+  assert.equal(got, '#8a8b91');
+  // ランプ上のどの点よりも目標に近いこと（＝最良点である）を全数で確かめる。
+  const err = Math.abs(contrastRatio(got, surface) - 5.249);
+  for (let i = 0; i < 256; i += 1) {
+    const other = mixChannels(surface, text, i / 255);
+    assert.ok(Math.abs(contrastRatio(other, surface) - 5.249) >= err - 1e-12,
+      `${other} の方が目標に近い＝最良点ではない`);
+  }
+});
+
+test('TC-CV26 mixAtContrast: 到達不能な目標は「ランプ上で最も近い点」へ縮退する（導出を止めない）', () => {
+  // Arrange: 中間灰 #808080 では、この軸上で到達できる CR の上限が 4.5393 しかない。
+  //   目標 5.249 は原理的に到達不能。縮退規則は**到達可能な最良点**（＝この場合は端点 b）で、
+  //   「導出しない」ではない（導出を止めると当該トークンだけ既定色に取り残され、地を変えたのに
+  //   追随しないという別の破綻になる）。
+  const surface = '#808080';
+  const text = '#171717';
+  // Act
+  const got = mixAtContrast(surface, text, surface, 5.249);
+  // Assert
+  assert.equal(got, text, '到達可能な最良点＝この軸では端点 b');
+  assert.ok(contrastRatio(got, surface) < 5.249, '前提: 目標には届いていない');
+  assert.equal(contrastRatio(got, surface).toFixed(4), '4.5393', 'この軸で到達できる CR の上限');
+});
+
+test('TC-CV27 mixAtContrast: CR はランプ上で単調でない（単調性を仮定した探索は誤答する）', () => {
+  // Arrange: 白→黒のランプを中間灰で測ると、ランプが地を横切るため CR は 1 で底を打って再上昇する。
+  //   実測: 端点 CR は 3.9494 と 5.3172、途中の最小は 1.0000（#7f7f7f 付近で方向転換 1 回）。
+  const a = '#ffffff';
+  const b = '#000000';
+  const against = '#808080';
+  assert.equal(contrastRatio(a, against).toFixed(4), '3.9494', '前提: a 側の端点 CR');
+  assert.equal(contrastRatio(b, against).toFixed(4), '5.3172', '前提: b 側の端点 CR');
+  let min = Infinity;
+  for (let i = 0; i < 256; i += 1) {
+    min = Math.min(min, contrastRatio(mixChannels(a, b, i / 255), against));
+  }
+  assert.equal(min.toFixed(4), '1.0000', '前提: 途中で CR が 1 まで落ちる＝地を横切る');
+  // Act: 目標を 0.1 動かすだけで、解はランプの反対の端へ飛ぶ。
+  const near = mixAtContrast(a, b, against, 3.9);
+  const far = mixAtContrast(a, b, against, 4.0);
+  // Assert
+  assert.equal(near, '#fefefe', '目標 3.9 の最良点は a 側');
+  assert.equal(far, '#232323', '目標 4.0 の最良点は谷を越えた b 側');
+  // 単調と仮定して a 側から「初めて目標以上になる点」を採る探索は、目標 4.0 で誤答する。
+  assert.notEqual(far, '#ffffff', '単調仮定の探索が返す点（a 端）は最良点ではない');
+});
+
+test('TC-CV28 mixAtContrast: 端点は必ず候補に含まれる（t=0 で a・t=1 で b が選べる）', () => {
+  // Arrange / Act / Assert
+  //   a 自身の CR を目標にすれば a が、b 自身の CR を目標にすれば b が返る。
+  const a = '#131722';
+  const b = '#d5d5d7';
+  assert.equal(mixAtContrast(a, b, a, contrastRatio(a, a)), a, 'CR=1 の目標では a（自分自身）');
+  assert.equal(mixAtContrast(a, b, a, contrastRatio(b, a)), b, 'b の CR を目標にすれば b');
+});
+
+test('TC-CV29 mixAtContrast: 同点は a に近い側を採る（決定論的な同点処理）', () => {
+  // Arrange: 隣接する 2 点の CR のちょうど中点を目標にすると、両者の誤差が厳密に等しくなる。
+  const a = '#000000';
+  const b = '#ffffff';
+  const lo = contrastRatio('#010101', a);
+  const hi = contrastRatio('#020202', a);
+  const target = (lo + hi) / 2;
+  assert.equal(Math.abs(lo - target), Math.abs(hi - target), '前提: 誤差が厳密に同点');
+  // Act / Assert
+  assert.equal(mixAtContrast(a, b, a, target), '#010101', '同点は a 側（先に走査した方）が勝つ');
+});
+
+test('TC-CV30 mixAtContrast: 不正入力・非有限の目標は null（全域関数・出口の型）', () => {
+  // Arrange / Act / Assert
+  for (const bad of BAD_COLORS) {
+    assert.equal(mixAtContrast(bad, '#ffffff', '#000000', 3), null, `a=${String(bad)}`);
+    assert.equal(mixAtContrast('#000000', bad, '#000000', 3), null, `b=${String(bad)}`);
+    assert.equal(mixAtContrast('#000000', '#ffffff', bad, 3), null, `against=${String(bad)}`);
+  }
+  for (const bad of [NaN, Infinity, -Infinity, null, undefined, '3', {}, []]) {
+    assert.equal(mixAtContrast('#000000', '#ffffff', '#000000', bad), null, `target=${String(bad)}`);
+  }
+});
+
+test('TC-CV31 mixAtContrast: 戻り値は保存形 hex6 に限られる（走査・大文字入力も小文字で返る）', () => {
+  // Arrange / Act / Assert
+  for (const c of SAMPLE_COLORS) {
+    for (const target of [1, 3, 4.5, 7, 21, 1000]) {
+      const out = mixAtContrast(c, '#8090A0', c, target);
+      assert.ok(isNormalizedHex(out), `${c} / ${target} → ${String(out)}`);
+    }
   }
 });
 

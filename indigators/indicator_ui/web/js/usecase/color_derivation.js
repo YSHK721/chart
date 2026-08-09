@@ -27,8 +27,12 @@
 //   基点 5 語に現行値を入れたときの、導出 9 語と現行値の距離（最大チャネル差）は次のとおり:
 //
 //     highlight  0   （厳密一致）        border     1     grid       2     text       5
-//     neutral   15                       level     17     muted     18
+//     neutral   15                       level     18     muted     20
 //     range     28   （色相のみ一致）    secondary 51     （色相のみ一致）
+//
+//   level / muted の 2 語は係数を**混合比から対地コントラスト比の目標へ**改めた（ISSUE-323）。
+//   現行値との距離が 17 → 18 / 18 → 20 へわずかに広がるのは、地が #131722 のときの目標 CR
+//   （5.249 / 3.3）に最も近い階調を選び直した結果であり、規則の意図どおりである。
 //
 //   7 語が差 28 以下に収まる。色相回転の 2 語（range / secondary）が外れるのは、rotateHue が
 //   彩度・明度（max/min）を保つためである。現行 #26c6da / #7e57c2 は primary と彩度・明度が
@@ -46,7 +50,7 @@
 
 import { COLOR_ROLES } from '../domain/color_roles.js';
 import {
-  contrastRatio, desaturate, isNormalizedHex, mixChannels, rotateHue,
+  contrastRatio, desaturate, isNormalizedHex, mixAtContrast, mixChannels, rotateHue,
 } from '../domain/color_value.js';
 
 const WHITE = '#ffffff';
@@ -65,11 +69,43 @@ function contrastAnchor(surface) {
 const T_GRID = 0.058; //      LS 0.0579（[0.0508, 0.0603, 0.0633]）
 const T_BORDER = 0.100; //    LS 0.1001（[0.0975, 0.0991, 0.1041]）
 const T_TEXT = 0.820; //      LS 0.8196（[0.8051, 0.8147, 0.8416]）
-const T_LEVEL = 0.609; //     LS 0.6085（[0.5316, 0.6402, 0.6559]）
-const T_MUTED = 0.300; //     LS 0.2995（[0.3564, 0.2810, 0.2787]）
 const T_HIGHLIGHT = 0.761; // LS 0.7611（[0.7826, 0.7674, 0.7143]）
 const DEG_SECONDARY = 55; //  色相差 55.05 度（primary 206.82 度 → secondary 261.87 度）
 const DEG_RANGE = -20; //     色相差 -20.15 度（primary 206.82 度 → range 186.67 度）
+
+// === level / muted は混合比ではなく「対地コントラスト比の目標」で持つ（ISSUE-323 の是正）===
+//
+// 病因（実測 2026-08-09）: 混合比は地が変わっても一定だが、コントラスト比は一定にならない。現行の
+//   暗い地 #131722 の 1 標本から逆算した比（旧 T_LEVEL = 0.609 / T_MUTED = 0.300）を他の地へ持ち
+//   込むと、導出された muted が**自分の診断 W-C2（閾値 3.0）を割った**:
+//     純黒 #000000 → 2.998 ／ 純白 #ffffff → 2.434 ／ 明るい紙 #f5f5f5 → 2.399 ／ 中間灰 → 1.948
+//   CR は地に対する相対量なので、目標として持てば地を変えても保たれ、構成上 W-C2 を割らない。
+//   ランプの方向（level は surface→text、muted は level→surface）は変えない。
+//
+// muted の目標を実測値 3.217 ではなく 3.3 にする理由: 3.217 は閾値 3.0 に対する余裕が 7% しかなく、
+//   8bit の量子化だけで割り得る（ISSUE-323 が指摘した「余裕の薄さ」そのもの）。max(実測 3.217,
+//   SURFACE_CONTRAST_MIN 3.0 × 1.1) = 3.3 として 10% の余裕を明示的に置く。
+const CR_MUTED = 3.3;
+
+// level の目標には**上限**を置く。絶対値だけにできない理由（実測）: 伸びしろは地に依存する。
+//   中間灰 #808080 では surface→text の軸で到達できる CR の上限が 4.5393 しかなく、絶対目標
+//   5.249 を押し通すと端点（＝text そのもの）へ丸まる。W-C2 を消す代わりに W-C1（level == text）を
+//   作るのは症状の移動であって是正ではない。伸びしろに依存する量は伸びしろで抑える。
+//   CR は比のスケールなので、muted と text の「中間」は相加平均ではなく**幾何平均**を採る。
+//   分岐ではなく単一の式で書く（縮退を分岐で書くと境界が新しいバグの住処になる）。
+const CR_LEVEL_MAX = 5.249; // 現行の暗い地 #131722 での level の実測 CR。
+function levelTarget(crText) {
+  return Math.min(CR_LEVEL_MAX, Math.sqrt(CR_MUTED * crText));
+}
+// 実測（#131722）: CR(text) = 12.211 → geomean(3.3, 12.211) = 6.348 → min = 5.249（参照値を再現）。
+// 実測（#808080）: CR(text) =  4.539 → geomean(3.3,  4.539) = 3.870 → min = 3.870（3.3 < 3.870 < 4.539）。
+//
+// 射程（2^24 = 16,777,216 の地を全数走査した実測）: CR(text, surface) > 3.3355 を満たす地では
+//   text / level / muted が 3 段に分離し、対地 CR が muted < level < text の順序を保つ。W-C2 の
+//   発火は**全域で 0 件**。境界以下（147 地・0.00088%・いずれも高彩度の深紅〜赤紫）では梯子が
+//   潰れるが、そこでは診断 W-C1 が組を報告して知らせる（黙って嘘の色を作らない）。
+//   根因は text が混合比のままで対地 CR の下限を持たないこと（全域最小 3.3172 @ #ec0202 で、
+//   muted の目標 3.3 との差は 0.52%）。text の是正は本モジュールの範囲外＝別 ISSUE。
 
 // 導出表（設計表の 9 行と同順・同内容）。token は導出先、from は導出元。
 //   from が**すべて保存形 hex6 として揃ったときだけ**導出する（規律 1）。from は宣言値でも
@@ -94,12 +130,12 @@ const DERIVATIONS = Object.freeze([
   {
     token: 'level',
     from: Object.freeze(['text', 'surface']),
-    of: (c) => mixChannels(c.surface, c.text, T_LEVEL),
+    of: (c) => mixAtContrast(c.surface, c.text, c.surface, levelTarget(contrastRatio(c.text, c.surface))),
   },
   {
     token: 'muted',
     from: Object.freeze(['level', 'surface']),
-    of: (c) => mixChannels(c.level, c.surface, T_MUTED),
+    of: (c) => mixAtContrast(c.level, c.surface, c.surface, CR_MUTED),
   },
   {
     token: 'highlight',

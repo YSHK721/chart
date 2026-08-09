@@ -671,6 +671,16 @@ html, body {
   border-radius: 5px; color: #d1d4dc; font-size: 12px; padding: 3px 6px;
 }
 .theme-dialog-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+/* 診断（W-C1 / W-C2 / W-C3）。**保存を妨げない助言**であってエラーではないため、
+   エラーの赤（#e0564a）とは配色を分ける（赤にすると「直さないと保存できない」と読める）。
+   0 件のときは席ごと消す＝「問題ありません」のような無内容な行を作らない（§5.7 と同じ規律）。 */
+.theme-dialog-diagnostics { display: flex; flex-direction: column; gap: 3px; padding: 8px 0 2px; }
+.theme-dialog-diagnostics:empty { display: none; }
+.theme-dialog-diagnostic {
+  color: #e0a24a; font-size: 11px; line-height: 1.5;
+  padding: 4px 8px; border-left: 2px solid #e0a24a;
+  background: rgba(224, 162, 74, 0.08); border-radius: 0 4px 4px 0;
+}
 .theme-dialog-error { color: #e0564a; font-size: 12px; padding: 0 14px; min-height: 0; }
 .theme-dialog-error:empty { display: none; }
 /* 上書き確認のインライン表示（同じ場所・同じ機構だがエラーではないため配色を分ける） */

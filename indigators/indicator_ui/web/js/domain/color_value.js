@@ -122,6 +122,12 @@ function fromLinear(y) {
   return y <= toLinear(SRGB_THRESHOLD) ? y * 12.92 : 1.055 * (y ** (1 / 2.4)) - 0.055;
 }
 
+// 8bit チャネル → 線形値の索引。`toLinear(v / 255)` と**同じ純関数を同じ入力に**適用した値なので、
+//   IEEE754 で厳密に一致する（近似表ではない）。走査の内側で毎回 pow を踏まないために持つ。
+const SRGB_LINEAR = Object.freeze(
+  Array.from({ length: 256 }, (_, v) => toLinear(v / 255)),
+);
+
 // WCAG 2.x の相対輝度。黒 0・白 1（実測: IEEE754 で厳密に 0 / 1 になる）。
 export function relativeLuminance(hex) {
   const h = toHex6(hex);
@@ -140,6 +146,65 @@ export function contrastRatio(a, b) {
     return null;
   }
   return (Math.max(ya, yb) + 0.05) / (Math.min(ya, yb) + 0.05);
+}
+
+// a→b のランプ上で、地 against に対するコントラスト比が targetRatio に最も近い点を返す。
+//
+//   存在理由（ISSUE-323）: 導出係数を**混合比**で持つと、地を変えたときに対地コントラスト比が
+//   保たれない。混合比は地に依らず一定だが、CR は地に対する相対量だからである。実測では、混合比
+//   で定義した `muted` が地を変えるだけで自分の診断 W-C2（閾値 3.0）を割った（純白地 2.434 /
+//   中間灰 1.948）。CR を目標として持てば、地が変わっても目標が保たれ構成上 W-C2 を割らない。
+//
+//   **全数走査で解く（単調性を仮定しない）**: ランプが地を横切る場合、CR は 1 で底を打って再上昇
+//   するため、ランプ上で単調にならない。実測: 白→黒のランプを中間灰 #808080 で測ると端点は
+//   3.9494 と 5.3172、途中の最小は 1.0000（方向転換 1 回）。ここで単調性を仮定して「a 側から
+//   初めて目標以上になる点」を採ると、目標 4.0 の最良点 #232323（谷の向こう側）を取り逃す。
+//   8bit なので候補は高々 256 点であり、全数走査が現実的かつ唯一正しい。
+//
+//   **到達不能な目標の縮退規則**: 「ランプ上で最も近い点」＝到達可能な最良点へ縮退する
+//   （desaturate が輝度の逆問題で採るのと同じ規律）。argmin |CR - target| という定義から自動的に
+//   従うため、専用の分岐を持たない（縮退を分岐で書くと境界が新しいバグの住処になる）。
+//   導出を**止めない**理由: 止めると当該トークンだけキーが生えず既定色に取り残され、「地を
+//   変えたのに追随しない」という別の破綻になる。実測例: 中間灰 #808080 では surface→text の軸で
+//   到達できる CR の上限が 4.5393 しかなく、目標 5.249 は原理的に到達不能。
+//
+//   同点処理: 誤差が厳密に等しい 2 点があれば **a に近い側**（先に走査した方）を採る。走査順が
+//   そのまま規則なので、同じ入力に対して常に同じ色を返す（決定論）。
+//   走査はチャネル（整数）のまま行い、hex 文字列を作るのは**勝った 1 点だけ**にする。
+//   素直に `mixChannels` → `contrastRatio` を 256 回呼ぶと、1 回の走査あたり hex の組み立てと
+//   再解析が 256 往復、さらに**地の相対輝度が 256 回**計算し直される（地は走査中ずっと同じ値）。
+//   実測: この無駄を落とす前は 1 回の走査が 0.457ms、落とした後は下の実測どおり。捨てているのは
+//   計算量ではなく**重複した計算そのもの**なので、結果は 1 点も変わらない（全検定が固定する）。
+export function mixAtContrast(a, b, against, targetRatio) {
+  const ha = toHex6(a);
+  const hb = toHex6(b);
+  const hg = toHex6(against);
+  if (ha === null || hb === null || hg === null || !Number.isFinite(targetRatio)) {
+    return null;
+  }
+  const [ar, ag, ab] = toChannels(ha);
+  const [br, bg, bb] = toChannels(hb);
+  const yAgainst = relativeLuminance(hg); // 地の輝度は走査を通じて不変＝1 度だけ計算する。
+  let best = null;
+  let bestErr = Infinity;
+  // t を 0..1 の 256 等分で走査する。各チャネルの隣接間差は最大 255/255 = 1 なので、
+  //   この刻みでランプ上の到達可能な階調をすべて踏む（取りこぼしが構成上生じない）。
+  for (let i = 0; i < 256; i += 1) {
+    const k = i / 255;
+    // 丸めは mixChannels と同一（Math.round）。ここを変えると選ばれる階調が動く。
+    const r = Math.round(ar + (br - ar) * k);
+    const g = Math.round(ag + (bg - ag) * k);
+    const bl = Math.round(ab + (bb - ab) * k);
+    const y = 0.2126 * SRGB_LINEAR[r] + 0.7152 * SRGB_LINEAR[g] + 0.0722 * SRGB_LINEAR[bl];
+    const err = Math.abs(
+      (Math.max(y, yAgainst) + 0.05) / (Math.min(y, yAgainst) + 0.05) - targetRatio,
+    );
+    if (err < bestErr) {
+      bestErr = err;
+      best = [r, g, bl];
+    }
+  }
+  return channelsToHex(best);
 }
 
 // HSL 色相を deg 回転する（彩度・明度は保つ）。

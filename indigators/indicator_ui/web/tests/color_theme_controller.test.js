@@ -24,7 +24,8 @@ import {
 } from '../js/adapter/front/color_theme_controller.js';
 import { createHostView } from '../js/adapter/front/host_view.js';
 import { LocalStorageThemeGateway } from '../js/adapter/front/local_storage_theme_gateway.js';
-import { resolveAllChrome } from '../js/usecase/color_resolver.js';
+import { resolveAllChrome, resolveSeriesColor } from '../js/usecase/color_resolver.js';
+import { list } from '../js/usecase/catalog.js';
 import {
   CODE, PRESET_THEMES, isPresetThemeId, projectThemeForUse,
 } from '../js/usecase/color_themes.js';
@@ -481,6 +482,195 @@ test('起動: state を注入されたら gateway を読み直さない（起動
   );
   assert.deepEqual(storedThemes(storage), [], '永続層へは 1 件も書かない（プリセットも書かない）');
   assert.deepEqual(calls, [], '構築だけで永続化が走っている（起動時の二重書き込み）');
+});
+
+// ---- ライブプレビュー（段階 5-C-3）------------------------------------------
+//
+// 目的: 編集ダイアログの操作結果を、保存する前にチャート上で見られるようにする。
+//
+// 規律（ISSUE-319 で既に踏んだ失敗を繰り返さない）:
+//   (1) **色の書き手を 2 本に増やさない**。適用（applyTheme）とプレビューは同じ `_repaint` を通る。
+//       書き手を増やすと、経路ごとに結果が食い違う（ISSUE-319 の 3 症状はすべてこれが原因）。
+//   (2) **復元用のスナップショットを持たない**。解除は「元のテーマで塗り直す」だけでよい。
+//       根拠は 3 つとも既存コードで確認できる: 系列色は不変の baseColor から毎回作り直される／
+//       resolveAllChrome は 20 slot を全数返す（＝全上書き＝可逆）／クロム出力は保持色 × 表示
+//       モードからの導出 1 本。スナップショットを持つと真の状態が 2 つに割れる。
+//   (3) プレビューは**保存ではない**（永続化 0 回）し、**ビューへの介入でもない**（§3.4）。
+
+const DRAFT = Object.freeze({ roleColors: Object.freeze({ surface: '#131722' }), tfModifier: null });
+
+test('TC-CP01 previewTheme: 適用と同じ手順（クロム → 系列 → 凡例）を 1 回ずつ通る', () => {
+  // Arrange
+  const calls = [];
+  const { controller } = makeController(calls, { applied: [inst('i1'), inst('i2')] });
+  // Act
+  controller.previewTheme(DRAFT);
+  // Assert
+  assert.deepEqual(calls, ['chrome', 'style:i1', 'style:i2', 'legend'],
+    '手順・回数が適用と同一（凡例は反復の外で 1 回）');
+});
+
+test('TC-CP02 previewTheme: 永続化を 1 回も行わない（保存ではない）', () => {
+  // Arrange
+  const calls = [];
+  const { controller, storage } = makeController(calls, { applied: [inst('i1')] });
+  const before = new Map(storage._map);
+  // Act
+  controller.previewTheme(DRAFT);
+  controller.previewTheme({ roleColors: { surface: '#ffffff' }, tfModifier: null });
+  controller.previewTheme(null);
+  // Assert
+  assert.deepEqual(calls.filter((c) => c.startsWith('put:')), [], '永続層への書き込みが起きた');
+  assert.deepEqual([...storage._map.entries()], [...before.entries()], '永続層の中身が動いた');
+});
+
+test('TC-CP03 previewTheme: 選択中テーマ id は動かず、activeTheme() だけが下書きを返す', () => {
+  // Arrange
+  const calls = [];
+  const { controller } = makeController(calls, { themes: [THEME_A] });
+  controller.applyTheme('thm#1');
+  // Act
+  controller.previewTheme(DRAFT);
+  // Assert
+  assert.equal(controller.activeThemeId(), 'thm#1', '選択は動かない（保存も適用もしていない）');
+  assert.equal(controller.activeTheme().roleColors.surface, '#131722', '下書きが見えている');
+  assert.equal(controller.activeTheme().roleColors.text, '#d5d5d7',
+    '下書きも射影を通る（導出込みで見える＝ユーザーが実際に見る色）');
+});
+
+test('TC-CP04 previewTheme(null): 元のテーマへ戻る（クロム 20 slot が文字列一致）', () => {
+  // Arrange
+  const calls = [];
+  const { controller, payloads } = makeController(calls, { themes: [THEME_A] });
+  controller.applyTheme('thm#1');
+  const before = payloads[payloads.length - 1];
+  // Act
+  controller.previewTheme(DRAFT);
+  controller.previewTheme(null);
+  // Assert
+  const after = payloads[payloads.length - 1];
+  assert.deepEqual(after.slots, before.slots, 'クロム 20 slot がプレビュー前と一致しない');
+  assert.deepEqual(after.tokens, before.tokens, 'CSS トークンがプレビュー前と一致しない');
+  assert.equal(Object.keys(after.slots).length, 20, '前提: 20 slot を全数返す（＝全上書き＝可逆）');
+  assert.equal(controller.activeTheme().roleColors.surface, '#0a0b0c', '元のテーマへ戻っている');
+});
+
+test('TC-CP05 previewTheme(null): テーマ未選択の状態へも正しく戻る（既定色へ復帰）', () => {
+  // Arrange: 「テーマなし」でプレビューして解除する経路（スナップショットが無くても戻れること）。
+  const calls = [];
+  const { controller, payloads } = makeController(calls);
+  controller.applyTheme(null);
+  const before = payloads[payloads.length - 1];
+  // Act
+  controller.previewTheme(DRAFT);
+  controller.previewTheme(null);
+  // Assert
+  assert.deepEqual(payloads[payloads.length - 1].slots, before.slots);
+  assert.equal(controller.activeTheme(), null, 'テーマ未選択へ戻る');
+});
+
+test('TC-CP06 previewTheme: 全系列色がプレビュー前と文字列一致まで戻る', () => {
+  // Arrange: 実描画色の解決入力（§4.5）で、解除後の色が前と 1 文字も違わないことを全数で見る。
+  const calls = [];
+  const { controller } = makeController(calls, { themes: [THEME_A] });
+  controller.applyTheme('thm#1');
+  const sample = (theme) => list().flatMap((def) => def.series.map((s) => resolveSeriesColor({
+    styles: null, seriesName: s.seriesName, role: s.colorRole, theme, payloadColor: '#123456',
+  })));
+  const before = sample(controller.activeTheme());
+  // Act
+  controller.previewTheme(DRAFT);
+  const during = sample(controller.activeTheme());
+  controller.previewTheme(null);
+  const after = sample(controller.activeTheme());
+  // Assert
+  assert.equal(before.length, 97, '前提: SeriesDef 総数');
+  assert.notDeepEqual(during, before, '前提: プレビュー中は実際に色が変わっている');
+  assert.deepEqual(after, before, '解除後の系列色がプレビュー前と一致しない');
+});
+
+test('TC-CP07 previewTheme: §3.4 ビュー API・再計算へ 1 度も到達しない', () => {
+  // Arrange
+  const calls = [];
+  const { controller } = makeController(calls, { applied: [inst('i1')] });
+  // Act
+  controller.previewTheme(DRAFT);
+  controller.previewTheme(null);
+  // Assert
+  assert.deepEqual(calls.filter((c) => c.startsWith('VIOLATION')), []);
+});
+
+test('TC-CP08 previewTheme: 未描画インスタンスは適用と同じくスキップする（経路が 1 本の帰結）', () => {
+  // Arrange: i2 だけ描画済み。適用とプレビューで挙動が分かれないこと。
+  const calls = [];
+  const { controller } = makeController(calls, {
+    applied: [inst('i1'), inst('i2')], drawn: ['i2'],
+  });
+  // Act
+  controller.previewTheme(DRAFT);
+  // Assert
+  assert.deepEqual(calls, ['chrome', 'style:i2', 'legend']);
+});
+
+test('TC-CP11 結線: 編集ダイアログの onPreview が previewTheme まで届く（作成・編集の両方）', () => {
+  // Arrange: ダイアログは注入で受ける（DIP）。ここでは opts を捕まえるだけの偽ダイアログを使う。
+  const calls = [];
+  const opened = [];
+  const dialogs = { openEdit: (opts) => opened.push(opts), openManage: () => {} };
+  const storage = makeStorage(calls, { [THEMES_KEY]: JSON.stringify({ themes: [THEME_A] }) });
+  const gateway = new LocalStorageThemeGateway(storage);
+  const { view } = makeHost(calls, { applied: [inst('i1')] });
+  const { applier, payloads } = makeChrome(calls);
+  const controller = new ColorThemeController(view, {
+    gateway, chromeApplier: applier, dialogs, now: FIXED_NOW,
+  });
+  controller.applyTheme('thm#1'); // 「元のテーマ」を確定させてから下書きを重ねる。
+  calls.length = 0; // 適用時の永続化は Act の観測に含めない。
+  // Act
+  controller.openCreateDialog();
+  controller.openEditDialog('thm#1');
+  // Assert
+  assert.equal(opened.length, 2, '前提: 2 枚とも開いた');
+  for (const opts of opened) {
+    assert.equal(typeof opts.onPreview, 'function', 'onPreview が渡っていない');
+  }
+  const before = payloads.length;
+  opened[0].onPreview({ roleColors: { surface: '#131722' }, tfModifier: null });
+  assert.equal(controller.activeTheme().roleColors.surface, '#131722', '下書きが効いていない');
+  assert.equal(payloads.length, before + 1, 'プレビューで塗り直されていない');
+  opened[0].onPreview(null);
+  assert.equal(controller.activeTheme().roleColors.surface, '#0a0b0c', '解除で元へ戻らない');
+  assert.deepEqual(calls.filter((c) => c.startsWith('put:')), [], 'プレビューで永続化が起きた');
+});
+
+test('TC-CP09 構造: 色を書く手順は 1 本だけ（applyTheme と previewTheme が同じ _repaint を通る）', () => {
+  // Arrange: ISSUE-319 の再発防止を規約ではなく構造で示す。凡例の再描画（手順 4）は塗り直し 1 回に
+  //   つき 1 回なので、その呼び出し**点**の数がそのまま「色を書く手順」の本数になる。
+  const src = readFileSync(
+    fileURLToPath(new URL('../js/adapter/front/color_theme_controller.js', import.meta.url)),
+    'utf8',
+  );
+  // Act
+  const legendSites = (src.match(/_renderLegend\(\)/g) ?? []).length;
+  const styleSites = (src.match(/_applyStoredStyles\(/g) ?? []).length;
+  const chromeSites = (src.match(/this\._applyChrome\(/g) ?? []).length;
+  // Assert
+  assert.equal(legendSites, 1, '凡例の再描画点が 1 つでない＝塗り直しの手順が複数ある');
+  assert.equal(styleSites, 1, '系列再スタイルの呼び出し点が 1 つでない');
+  assert.equal(chromeSites, 1, 'クロム配信の呼び出し点が 1 つでない');
+});
+
+test('TC-CP10 構造: 復元用スナップショットを持たない（真の状態を 2 つに割らない）', () => {
+  // Arrange: 「プレビュー前の色を控えておいて戻す」実装は、保持色という真の状態のコピーを作る。
+  //   コピーは必ずずれる（ISSUE-319 で踏んだのと同型の失敗）。解除は元のテーマで塗り直すだけでよい。
+  const src = readFileSync(
+    fileURLToPath(new URL('../js/adapter/front/color_theme_controller.js', import.meta.url)),
+    'utf8',
+  );
+  // Act / Assert
+  for (const needle of ['_snapshot', '_restore', '_savedSlots', '_beforePreview', '_previousChrome']) {
+    assert.equal(src.includes(needle), false, `復元用の控えを持っている: ${needle}`);
+  }
 });
 
 // ---- §3.4 ビュー自動介入の禁止（静的固定）-----------------------------------

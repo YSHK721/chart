@@ -160,6 +160,10 @@ export class ColorThemeController {
     this._themes = initial.themes;
     this._activeThemeId = initial.activeThemeId;
     this._lastSeq = initial.lastSeq;
+    // ライブプレビュー中の下書き（null＝プレビューしていない）。**保存されない状態**であり、
+    //   永続層にも選択中テーマ id にも影響しない。復元用の控えではないことに注意
+    //   （控えではなく「今どう見せているか」そのもの。解除は元のテーマで塗り直すだけ）。
+    this._previewTheme = null;
   }
 
   // ---- 参照面 ---------------------------------------------------------------
@@ -186,7 +190,12 @@ export class ColorThemeController {
   //   返すのは**消費のための射影**（§4.4 の形）で、保持している永続値は原形のまま（§4.9）。
   //   色を消費する経路をここ 1 本にすることで、解釈不能値の判定を消費者ごとに書かずに済む。
   //   探索は合成後の集合に対して行う（プリセットを選択中でもその実体が引ける）。
-  activeTheme() { return projectThemeForUse(themeById(this.themes(), this._activeThemeId)).theme; }
+  //   プレビュー中は下書きが勝つ。値源をここ 1 本に保つことで、指標側（colorThemeProvider の
+  //   pull）もクロム側も、追加の配線なしに下書きへ追随する。
+  activeTheme() {
+    return this._previewTheme
+      ?? projectThemeForUse(themeById(this.themes(), this._activeThemeId)).theme;
+  }
 
   // 正規化名が一致する既存テーマを返す（無ければ null）。保存時の上書き確認の判定源。
   //   判定は usecase の純関数のみが行い、ダイアログは結果を受け取るだけ（DIP・判定源の一本化）。
@@ -224,7 +233,44 @@ export class ColorThemeController {
     const id = resolved.activeThemeId;
     // 手順 1: 選択中テーマを確定して永続化する。
     this._setActiveThemeId(id);
-    const theme = this.activeTheme();
+    // 手順 2〜4: 塗り直し。プレビューと**同じ 1 本**を通る（色の書き手を増やさない）。
+    this._repaint(this.activeTheme());
+    // 手順 5: メニューの選択状態（is-active）を現在値へ追随させる（未注入時は no-op）。
+    this.render();
+    return id;
+  }
+
+  /**
+   * 保存前の下書きをチャート上へ反映する（ライブプレビュー・段階 5-C-3）。
+   *
+   * `draft = null` でプレビューを解除し、元のテーマ（選択中テーマ／テーマなし）へ戻す。
+   *
+   * **保存ではない**: 永続層へ 1 バイトも書かず、選択中テーマ id も動かさない。
+   * **ビューへの介入でもない**（§3.4）: 再計算・時間足・可視範囲・価格スケール・スクロールの
+   *   いずれにも到達しない。色は既存系列とチャート全体のオプションだけで完結する。
+   *
+   * 復元用のスナップショットを**持たない**理由（3 点とも既存コードで確認できる）:
+   *   1. 系列色は毎回 `baseColor`（生成時に 1 度だけ書かれる不変フィールド）から作り直される。
+   *   2. `resolveAllChrome` は 20 slot を**全数**返す（＝全上書き＝可逆）。
+   *   3. クロム出力は「保持色 × 表示モード」からの導出 1 本（ISSUE-319 の是正で確立）。
+   * よって解除は「元のテーマで塗り直す」だけで元に戻る。控えを持つと真の状態が 2 つに割れ、
+   * ISSUE-319 と同型の食い違いが再発する。
+   *
+   * @param {?{roleColors?: Object, tfModifier?: ?Object}} draft 下書き（null で解除）。
+   */
+  previewTheme(draft) {
+    // 下書きも**消費のための射影**を通す（§4.4 の形へ正規化し、導出を埋める）。保存済みテーマと
+    //   同じ経路にすることで、プレビューで見えた色と保存後の色が構成上一致する。
+    this._previewTheme = draft ? projectThemeForUse({
+      roleColors: draft.roleColors, tfModifier: draft.tfModifier ?? null,
+    }).theme : null;
+    this._repaint(this.activeTheme());
+  }
+
+  // 色を書く手順（§5.2 手順 2〜4）。**適用とプレビューが共有する唯一の経路**。
+  //   ここを 2 本に増やすと経路ごとに結果が食い違う（ISSUE-319 の 3 症状はすべてこれが原因で、
+  //   単体の状態を見るテストはすべて緑だった）。
+  _repaint(theme) {
     // 手順 2: 地（クロム）を先に決める。JS 機構と :root の --ct-* が同時に更新される。
     this._applyChrome(theme);
     // 手順 3: 図（指標系列）を宣言順に載せる。色を決めて書くのは host 側 1 箇所（R-1）。
@@ -239,9 +285,6 @@ export class ColorThemeController {
     }
     // 手順 4: 凡例は反復の外で 1 回だけ再描画する。
     host._renderLegend();
-    // 手順 5: メニューの選択状態（is-active）を現在値へ追随させる（未注入時は no-op）。
-    this.render();
-    return id;
   }
 
   // ---- UC-C01 保存（§5.1）----------------------------------------------------
@@ -343,6 +386,8 @@ export class ColorThemeController {
       findExisting: (name) => this.findThemeByName(name),
       // F-C1: 失敗は CODE のままダイアログへ返す（文言写像はダイアログ側）。
       onSubmit: ({ name, roleColors, tfModifier }) => this.saveTheme({ name, roleColors, tfModifier }),
+      // 保存前の下書きをチャートへ映す（段階 5-C-3）。閉じるときに null で解除される。
+      onPreview: (draft) => this.previewTheme(draft),
     });
   }
 
@@ -366,6 +411,7 @@ export class ColorThemeController {
         return hit && hit.themeId === theme.themeId ? null : hit;
       },
       onSubmit: (payload) => this.saveTheme(payload),
+      onPreview: (draft) => this.previewTheme(draft),
     });
   }
 

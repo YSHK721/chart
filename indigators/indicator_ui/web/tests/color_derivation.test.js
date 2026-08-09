@@ -20,6 +20,10 @@ import {
   BASE_ROLE_TOKENS, DERIVED_ROLE_TOKENS, expandRoleColors,
 } from '../js/usecase/color_derivation.js';
 import { COLOR_ROLES } from '../js/domain/color_roles.js';
+import { contrastRatio } from '../js/domain/color_value.js';
+import {
+  DIAGNOSTIC, diagnoseTheme, SURFACE_CONTRAST_MIN,
+} from '../js/usecase/color_diagnostics.js';
 
 // 語彙 14 語へ「互いに異なる」値を割り当てた宣言（上書きの検出用）。値は語彙の並び順から機械的に
 //   作る（手書きの表を置くと、語彙が増えたときに取り残しが出る）。
@@ -118,35 +122,43 @@ test('TC-CD05b text ← surface: 明るい地では暗い側へ寄る（「明�
   assert.equal(out.grid, '#f0f0f0', 'grid も同じ軸（白地では暗くなる）');
 });
 
-test('TC-CD06 level ← text と surface: 中間 0.609（現行 #131722/#d1d4dc→#78909c の逆算）', () => {
-  // Arrange: 逆算の実測 — チャネル別 t = [0.5316, 0.6402, 0.6559] / 最小二乗 t = 0.6085。
+test('TC-CD06 level ← text と surface: 対地 CR が目標 5.249 になる点（混合比ではない・ISSUE-323）', () => {
+  // Arrange: 目標は**混合比ではなく対地コントラスト比**で持つ（ISSUE-323 の抜本是正）。混合比は
+  //   地が変わっても一定だが CR は一定にならないため、1 標本から逆算した比を他の地へ持ち込むと
+  //   容易に W-C2（閾値 3.0）を割る。目標値 5.249 は現行の暗い地 #131722 での level の実測 CR。
+  //   目標には上限があり（TC-CD26 参照）、伸びしろの狭い地では geomean で抑えられる。
   //   導出元 text 自体が surface からの導出（連鎖）である点も同時に固定する。
   const declared = { surface: CURRENT.surface };
   // Act
   const out = expandRoleColors(declared);
   // Assert
-  assert.equal(out.level, '#898b90', 'mix(surface, text, 0.609)');
-  assert.equal(maxChannelDelta(out.level, CURRENT.level), 17, '現行 #78909c との最大チャネル差');
+  assert.equal(out.level, '#8a8b91', 'surface→text 上で対地 CR が 5.249 に最も近い点');
+  assert.equal(contrastRatio(out.level, CURRENT.surface).toFixed(4), '5.2692', '対地 CR の実測');
+  assert.equal(maxChannelDelta(out.level, CURRENT.level), 18, '現行 #78909c との最大チャネル差');
 });
 
 test('TC-CD06b level ← text と surface: 宣言済み text があればそれを導出元に使う（明示 > 導出）', () => {
-  // Arrange: text を宣言すると、導出された text ではなく宣言値が導出元になる。
+  // Arrange: text を宣言すると、導出された text ではなく宣言値が導出元になる（ランプの終点が
+  //   替わるので、同じ目標 CR でも選ばれる点が替わる）。
   const declared = { surface: CURRENT.surface, text: CURRENT.text };
   // Act
   const out = expandRoleColors(declared);
   // Assert
   assert.equal(out.text, CURRENT.text, '宣言値は不変');
-  assert.equal(out.level, '#878a93', '導出元が宣言値へ替わるので level も替わる');
+  assert.equal(out.level, '#878b94', '導出元が宣言値へ替わるので level も替わる');
 });
 
-test('TC-CD07 muted ← level と surface: さらに地寄り 0.300（現行 #78909c/#131722→#546e7a の逆算）', () => {
-  // Arrange: 逆算の実測 — チャネル別 t = [0.3564, 0.2810, 0.2787] / 最小二乗 t = 0.2995。
+test('TC-CD07 muted ← level と surface: 対地 CR が目標 3.3 になる点（W-C2 に余裕を持たせる）', () => {
+  // Arrange: 目標は現行の暗い地での実測 3.217 ではなく **max(3.217, 3.0 × 1.1) = 3.3** を採る。
+  //   3.217 は自分の診断の閾値 3.0 に対して余裕が 7% しかなく、8bit の量子化だけで割り得る
+  //   （ISSUE-323 が muted について指摘した「余裕の薄さ」そのもの）。10% の余裕を明示的に置く。
   const declared = { surface: CURRENT.surface };
   // Act
   const out = expandRoleColors(declared);
   // Assert
-  assert.equal(out.muted, '#66686f', 'mix(level, surface, 0.300)');
-  assert.equal(maxChannelDelta(out.muted, CURRENT.muted), 18, '現行 #546e7a との最大チャネル差');
+  assert.equal(out.muted, '#686a71', 'level→surface 上で対地 CR が 3.3 に最も近い点');
+  assert.equal(contrastRatio(out.muted, CURRENT.surface).toFixed(4), '3.3142', '対地 CR の実測');
+  assert.equal(maxChannelDelta(out.muted, CURRENT.muted), 20, '現行 #546e7a との最大チャネル差');
 });
 
 test('TC-CD08 highlight ← text: 対比側へさらに 0.761（現行 #d1d4dc→#f5f5f5 の逆算・厳密一致）', () => {
@@ -250,8 +262,8 @@ test('TC-CD13 通過条件 2: 基点 5 語の宣言だけで 14 キーが生成�
     grid: '#21242f',
     border: '#2b2e38',
     text: '#d5d5d7',
-    level: '#898b90',
-    muted: '#66686f',
+    level: '#8a8b91',
+    muted: '#686a71',
     highlight: '#f5f5f5',
     secondary: '#8342f5',
     range: '#42e1f5',
@@ -267,6 +279,143 @@ test('TC-CD14 台帳: 導出 9 語はいずれも基点 5 語の宣言のみか�
   // Assert
   for (const token of DERIVED_ROLE_TOKENS) {
     assert.ok(/^#[0-9a-f]{6}$/.test(out[token]), `${token}: 到達不能または hex6 でない`);
+  }
+});
+
+// =========================================================================
+// ISSUE-323 の是正: 地に従属する導出（level / muted）は混合比ではなく対地 CR の目標で持つ
+//
+// 病因（実測 2026-08-09）: 混合比は地が変わっても一定だが、コントラスト比は一定にならない。
+//   現行の暗い地 #131722 の 1 標本から逆算した比を他の地へ持ち込むと、導出された muted が
+//   自分の診断 W-C2（閾値 3.0）を割った（純黒 2.998 / 純白 2.434 / 明るい紙 2.399 / 中間灰 1.948）。
+//   CR は地に対する相対量なので、目標として持てば地を変えても保たれる。
+//
+// 目標:  level = min(5.249, geomean(3.3, CR(text, surface)))  /  muted = 3.3
+//   level の目標を**絶対値だけ**にできない理由（実測）: 伸びしろは地に依存し、中間灰 #808080 では
+//   surface→text の軸で到達できる CR の上限が 4.5393 しかない。絶対目標 5.249 を押し通すと端点
+//   （＝text）へ丸まり、W-C2 を消す代わりに W-C1（level == text）を作る＝症状の移動になる。
+//   伸びしろに依存する量は伸びしろで抑える。CR は比のスケールなので中点は幾何平均を採る。
+// =========================================================================
+
+// 検定に使う代表的な地。表（ISSUE-323）の 6 種に、伸びしろの狭い高彩度色を足す。
+const SURFACE_SAMPLES = Object.freeze([
+  '#131722', // 現行（暗い地）
+  '#0d1b3e', // 濃紺
+  '#000000', // 純黒
+  '#ffffff', // 純白
+  '#f5f5f5', // 明るい紙
+  '#808080', // 中間灰（伸びしろが最小に近い）
+  '#5d60ff', // 到達可能な最大 CR が全域最小（4.5826・実測）
+]);
+
+// 基点 5 語のうち surface 以外（表と同じ標本）。
+const BASE_NON_SURFACE = Object.freeze({
+  bullish: '#00bfa5', bearish: '#ff5252', alert: '#ffa726', primary: '#42a5f5',
+});
+
+const expandFor = (surface) => expandRoleColors({ ...BASE_NON_SURFACE, surface });
+
+test('TC-CD26 通過条件: 導出された level / muted はどの地でも W-C2 を発火させない（全数）', () => {
+  // Arrange: 地を替えて全数で回す。基点色（bullish / alert / primary / range）が明るい地で W-C2 を
+  //   発火させるのは「白地に teal・orange は実際に読みにくい」という**正しい指摘**であって欠陥では
+  //   ないため、ここで固定するのは導出 2 語に限る。
+  for (const surface of SURFACE_SAMPLES) {
+    const roleColors = expandFor(surface);
+    // Act
+    const fired = diagnoseTheme({ roleColors })
+      .filter((d) => d.code === DIAGNOSTIC.surfaceContrast)
+      .filter((d) => d.tokens.includes('level') || d.tokens.includes('muted'));
+    // Assert
+    assert.deepEqual(fired, [], `${surface}: 導出 2 語が W-C2 を発火させた`);
+    for (const token of ['level', 'muted']) {
+      assert.ok(contrastRatio(roleColors[token], surface) >= SURFACE_CONTRAST_MIN,
+        `${surface} / ${token}: CR ${contrastRatio(roleColors[token], surface)} < ${SURFACE_CONTRAST_MIN}`);
+    }
+  }
+});
+
+test('TC-CD27 通過条件: 目標 CR は地に依らず保たれる（混合比では成立しない性質）', () => {
+  // Arrange: 混合比で持っていたときの実測は muted CR が 3.217 → 1.948 まで動いた（地に追随しない）。
+  //   目標 CR 方式なら、伸びしろが足りる限り地を替えても目標付近に留まる。
+  const measured = [];
+  for (const surface of SURFACE_SAMPLES) {
+    const roleColors = expandFor(surface);
+    measured.push([surface, contrastRatio(roleColors.muted, surface)]);
+  }
+  // Act / Assert: muted の目標 3.3 は全標本で到達可能（level の目標下限が 3.3 を上回るため）。
+  for (const [surface, cr] of measured) {
+    assert.ok(Math.abs(cr - 3.3) < 0.05, `${surface}: muted CR ${cr} が目標 3.3 から離れた`);
+  }
+  // level は伸びしろで抑えられるため、上限 5.249 か geomean のどちらかに乗る。
+  for (const surface of SURFACE_SAMPLES) {
+    const roleColors = expandFor(surface);
+    const crText = contrastRatio(roleColors.text, surface);
+    const target = Math.min(5.249, Math.sqrt(3.3 * crText));
+    assert.ok(Math.abs(contrastRatio(roleColors.level, surface) - target) < 0.05,
+      `${surface}: level CR が目標 ${target} から離れた`);
+  }
+});
+
+test('TC-CD28 射程: CR(text, surface) > 3.3355 の地では text / level / muted が 3 段に分離する', () => {
+  // Arrange: 境界 3.3355 は 2^24 = 16,777,216 の地を全数走査して特定した実測値（走査は
+  //   「地ごとに text を mix 0.820 で作り、その対地 CR を測る」という閉じた式なので全数が可能）。
+  //   境界より上では 3 語が互いに異なり、対地 CR が muted < level < text の順序を保つ。順序が
+  //   崩れると「非強調」が「参照水準」より目立つ＝語の意味が壊れる。
+  for (const surface of SURFACE_SAMPLES) {
+    const roleColors = expandFor(surface);
+    const { text, level, muted } = roleColors;
+    const crText = contrastRatio(text, surface);
+    assert.ok(crText > 3.3355, `${surface}: 前提（射程内）を満たさない CR(text)=${crText}`);
+    // Act / Assert
+    assert.equal(new Set([text, level, muted]).size, 3, `${surface}: 3 語が分離しない`);
+    assert.ok(contrastRatio(muted, surface) < contrastRatio(level, surface),
+      `${surface}: muted が level より目立つ`);
+    assert.ok(contrastRatio(level, surface) < crText, `${surface}: level が text より目立つ`);
+  }
+});
+
+test('TC-CD29 保証: 射程外の地では梯子の潰れを W-C1 が知らせる（黙って嘘の色を作らない）', () => {
+  // Arrange: CR(text, surface) の全域最小は 3.3172（@ #ec0202・2^24 全数走査の実測）で、muted の
+  //   目標 3.3 との差はわずか 0.52%。3 段の梯子を載せる余地が物理的に無い地が存在する
+  //   （実測 147 地 / 16,777,216＝0.00088%・いずれも高彩度の深紅〜赤紫）。
+  //   件数は検定に書かない（text の規則を是正すれば変わる数であり、固定すると是正のたびに落ちる）。
+  //   固定するのは「そこで導出が黙らず、診断が知らせる」という**保証**である。
+  //   根因は text が混合比のままであること（別 ISSUE。本段階の範囲外）。
+  const cases = [
+    ['#ec0202', ['level', 'text']], // 上段が潰れる（level が text へ届いてしまう）
+    ['#ea0042', ['level', 'muted']], // 下段が潰れる
+  ];
+  for (const [surface, expectedPair] of cases) {
+    const roleColors = expandFor(surface);
+    // Act
+    const collisions = diagnoseTheme({ roleColors }).filter((d) => d.code === DIAGNOSTIC.collision);
+    // Assert: 潰れた組が逐語で報告される。
+    assert.deepEqual(
+      collisions.map((d) => [...d.tokens].sort()),
+      [[...expectedPair].sort()],
+      `${surface}: 潰れた組が W-C1 として報告されない`,
+    );
+    // 梯子の語が必ず 1 つは含まれる＝「参照水準が隣の段と見分けられない」と伝わる。
+    assert.ok(collisions.some((d) => d.tokens.includes('level')),
+      `${surface}: level の潰れが知らされない`);
+    // 潰れても W-C2 は割らない（色は読める。読めないのではなく**意味が分かれない**）。
+    for (const token of ['text', 'level', 'muted']) {
+      assert.ok(contrastRatio(roleColors[token], surface) >= SURFACE_CONTRAST_MIN,
+        `${surface} / ${token}: 射程外でも W-C2 は割らないはず`);
+    }
+  }
+});
+
+test('TC-CD30 恒等: 現行の暗い地と濃紺では診断が 0 件のまま（見た目の回帰が無い）', () => {
+  // Arrange: ISSUE-323 の是正が、現行値と実際に使われる暗いテーマの領域を動かしていないこと。
+  //   2^24 全数走査では W-C2 の発火は 0 件だった（走査方法: 地ごとに text → level → muted を
+  //   導出し、対地 CR が 3.0 を下回るかを数える）。全数走査は実行時間が見合わないため検定には
+  //   入れず、代表 2 地で固定する。
+  for (const surface of ['#131722', '#0d1b3e']) {
+    // Act
+    const diags = diagnoseTheme({ roleColors: expandFor(surface) });
+    // Assert
+    assert.deepEqual(diags, [], `${surface}: 診断 0 件のはず`);
   }
 });
 

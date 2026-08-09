@@ -107,6 +107,57 @@ test('§3.4: 渡すのは色だけ（ビュー・レイアウト設定に触れ�
   }
 });
 
+// ---------------------------------------------------------------------------
+// ISSUE-319 再発検定: ライブプレビュー（段階 5-C-3）は表示モードを壊さない
+// ---------------------------------------------------------------------------
+//
+// ISSUE-319 の 3 症状（透明ローソクが不透明へ戻る／分析 tint が消える／ペア外の減光色だけ旧色で
+//   残る）は、いずれも「クロム色」と「表示モード」の書き手が分裂していたことが原因だった。
+//   是正で出力は導出 1 本になっている。プレビューは配信を**同じ 1 本**（applyChromeColors）へ
+//   通すので、色を何度差し替えても表示モードは入力の片側として保たれる。
+//   検定は単一状態ではなく**状態の組み合わせ**で行う（各状態単独のテストは当時すべて緑だった）。
+
+test('ISSUE-319 再発検定: プレビューの色差し替えは透明ローソク・分析 tint を壊さない', () => {
+  // Arrange: 表示モードを 2 つとも ON にしてから、プレビューの色を続けて配信する。
+  const { renderer, chartCalls, seriesCalls } = newRenderer();
+  renderer.applyChromeColors(resolveAllChrome(theme({ surface: '#131722' })).slots);
+  renderer.setCandleTransparency(true);
+  renderer.setAnalysisTint(true);
+  const tintedBefore = chartCalls[chartCalls.length - 1].layout.background.color;
+  // Act: ドラッグ中のように色だけを何度も差し替える。
+  const last = resolveAllChrome(theme({ surface: '#222222' })).slots;
+  for (const surface of ['#0d1b3e', '#ffffff']) {
+    renderer.applyChromeColors(resolveAllChrome(theme({ surface })).slots);
+  }
+  renderer.applyChromeColors(last);
+  // Assert: モードは片方の入力として保たれたまま。
+  const candles = seriesCalls[seriesCalls.length - 1];
+  for (const key of ['upColor', 'borderUpColor', 'wickUpColor', 'downColor', 'borderDownColor', 'wickDownColor']) {
+    assert.equal(candles[key], 'rgba(0,0,0,0)', `${key}: 透明ローソクが不透明へ戻った`);
+  }
+  const background = chartCalls[chartCalls.length - 1].layout.background.color;
+  assert.notEqual(last.analysisTint, last.layoutBackground, '前提: この地では tint 色と面の色が違う');
+  assert.equal(background, last.analysisTint, '分析 tint が消えて面の色が出た');
+  assert.notEqual(background, tintedBefore, '前提: 地を変えたので tint 色自体は追随している');
+});
+
+test('ISSUE-319 再発検定: プレビュー解除で元の色へ戻ってもモードは保たれる', () => {
+  // Arrange: プレビュー → 解除（＝元のテーマの slots を再配信）という往復。
+  const { renderer, chartCalls, seriesCalls } = newRenderer();
+  const original = resolveAllChrome(theme({ surface: '#131722' })).slots;
+  renderer.applyChromeColors(original);
+  renderer.setCandleTransparency(true);
+  const beforeChart = chartCalls[chartCalls.length - 1];
+  // Act
+  renderer.applyChromeColors(resolveAllChrome(theme({ surface: '#ffffff' })).slots);
+  renderer.applyChromeColors(original);
+  // Assert
+  assert.deepEqual(chartCalls[chartCalls.length - 1], beforeChart,
+    'クロムの出力がプレビュー前と一致しない（全上書きでないか、控えとずれている）');
+  assert.equal(seriesCalls[seriesCalls.length - 1].upColor, 'rgba(0,0,0,0)',
+    '解除でモードが落ちた');
+});
+
 test('F-C10: chart が applyOptions を持たなくても no-op（例外を投げず系列側は継続）', () => {
   const { renderer, seriesCalls } = newRenderer({ chartHasApplyOptions: false });
   assert.doesNotThrow(() => renderer.applyChromeColors(resolveAllChrome(null).slots));

@@ -20,10 +20,17 @@
 //   持たないため、台帳へ 1 語（1 足）足せばダイアログが自動で追随する。手書きにするとダイアログ
 //   だけが取り残される（時間足メニューが ISSUE-123 で台帳導出へ移った理由と同じ）。
 //
-// 依存（§7.8 内向きのみ）: domain の台帳 2 本だけ。usecase・adapter・協働子は参照しない。
+// 依存（§7.8 内向きのみ）: domain の台帳 2 本と値の正規化、usecase の導出 1 本。adapter・協働子は
+//   参照しない。導出（usecase）を adapter が参照するのは層として正しい（内向き）。ダイアログが
+//   導出規則を持つのではなく、**唯一の導出実装に問い合わせて表示する**だけである。
 
 import { COLOR_ROLES } from '../../domain/color_roles.js';
+import { normalizeHexColor } from '../../domain/color_value.js';
 import { TF_CODES } from '../../domain/tf_meta.js';
+import { expandRoleColors } from '../../usecase/color_derivation.js';
+import {
+  DIAGNOSTIC, DIRECTION_CONTRAST_MIN, SURFACE_CONTRAST_MIN, diagnoseTheme,
+} from '../../usecase/color_diagnostics.js';
 
 // トークン → 日本語ラベル（§6.3 の表記）。domain に置かない（domain は表示を知らない・§7.1）。
 const ROLE_LABEL = Object.freeze({
@@ -93,12 +100,20 @@ const SWATCH_INITIAL = '#000000';
 //   推論（input / change の発火の有無）にすると、値が変わらない選択＝スウォッチ初期値と同じ色
 //   （黒 #000000）はイベントが出ないため永久に宣言できない。状態は行が明示的に持つ。
 const USE_LABEL = 'この色を使う';
+// 未指定だが**導出できる**トークンの現在値表示（段階 5-C）。
+//   これが無いと「この色を未指定にしたら何色になるか」が見えず、導出は「決める項目を減らす」
+//   機能として成立しない（未指定にするのが怖いので結局 14 行を埋めることになる）。
+//   接頭辞で宣言値（`#rrggbb`）と区別する — 宣言の有無を持つのはトグルであって表示ではないが、
+//   表示が両者を**見分けられる**必要はある。
+const DERIVED_PREFIX = '自動 ';
 
 export class ColorThemeDialogs {
   // document: DOM 実装（注入）。null 可（DOM 不在時は各メソッドが no-op＝防御）。
   constructor({ document: doc = null } = {}) {
     this._doc = doc;
     this._root = null;
+    // 閉じるときに 1 度だけ走る後始末（プレビューの解除・段階 5-C-3）。null＝後始末なし。
+    this._onDismiss = null;
   }
 
   _usable() {
@@ -106,11 +121,19 @@ export class ColorThemeDialogs {
     return !!(doc && typeof doc.createElement === 'function' && doc.body && typeof doc.body.append === 'function');
   }
 
+  // 閉じる経路はすべてここを通る（キャンセル・×・保存成功・別ダイアログによる置き換え）。
+  //   よって後始末（プレビュー解除）をここ 1 箇所に置けば、取り残しが構成上できない。
+  //   先に null 化してから呼ぶ＝閉じた後に close を重ねても 2 度発火しない（冪等）。
   close() {
     if (this._root && this._root.parentNode) {
       this._root.parentNode.removeChild(this._root);
     }
     this._root = null;
+    const dismiss = this._onDismiss;
+    this._onDismiss = null;
+    if (typeof dismiss === 'function') {
+      dismiss();
+    }
   }
 
   // ---- 共通の殻（背景＋パネル＋ヘッダ＋本文＋エラー＋フッタ）------------------
@@ -204,6 +227,7 @@ export class ColorThemeDialogs {
    */
   openEdit({
     title = 'テーマを作成', onSubmit = () => ({ ok: true }), findExisting = null, theme = null,
+    onPreview = null,
   } = {}) {
     if (!this._usable()) {
       return null;
@@ -234,9 +258,26 @@ export class ColorThemeDialogs {
     const slots = new Map();
     const initialColors = (theme && theme.roleColors && typeof theme.roleColors === 'object')
       ? theme.roleColors : {};
+    // 状態が変わるたびに走る 1 本（呼び出し点を増やさない）。表示の作り直し・プレビュー・診断が
+    //   ここに集約される。行はこれを呼ぶだけで、何が起きるかを知らない。
+    //   `emitDraft` は時間足の要素を参照するため、実体は下（時間足セクション構築後）で束ねる。
+    const onChanged = () => {
+      renderDiagnostics(doc, diagnostics, renderRoleRows(slots));
+      emitDraft();
+    };
     for (const token of COLOR_ROLES) {
-      body.append(this._buildRoleRow(token, slots, initialColors[token]));
+      body.append(this._buildRoleRow(token, slots, initialColors[token], onChanged));
     }
+    // 診断の置き場（段階 5-C-4）。トークン行の直後＝指摘の対象が見えている位置に置く。
+    //   **保存を妨げない**ため、フッタ（保存ボタン）とは独立した領域にする。
+    const diagnostics = doc.createElement('div');
+    diagnostics.className = 'theme-dialog-diagnostics';
+    diagnostics.dataset.themeDiagnostics = 'edit';
+    body.append(diagnostics);
+
+    // 初期表示（新規は全行未指定・編集は theme の宣言）からも導出と診断を見せる。
+    //   **開いただけではプレビューしない**（開くのは状態の変更ではない）。
+    renderDiagnostics(doc, diagnostics, renderRoleRows(slots));
 
     // 時間足による明度差（指標系列のみ・§6.3・§4.7 で地には効かない）。
     body.append(this._section('時間足による明度差（指標系列のみ・チャートの地には効きません）'));
@@ -251,14 +292,31 @@ export class ColorThemeDialogs {
     tfCheck.append(tfToggle, tfText);
     body.append(tfCheck);
 
+    tfToggle.addEventListener('change', () => onChanged());
+
     const tfGrid = doc.createElement('div');
     tfGrid.className = 'theme-dialog-tf-grid';
     //: tf -> input。時間足の行は台帳（TF_CODES）から生成する（§6.3）。
     const tfInputs = new Map();
     for (const code of TF_CODES) {
-      tfGrid.append(this._buildTfCell(code, tfInputs));
+      tfGrid.append(this._buildTfCell(code, tfInputs, onChanged));
     }
     body.append(tfGrid);
+
+    // 下書きの組み立て（保存時と**同じ 2 本の collector** を使う＝プレビューと保存の食い違いを
+    //   構成上作らない）。未注入なら no-op で、ダイアログの振る舞いは変わらない。
+    function emitDraft() {
+      if (typeof onPreview !== 'function') {
+        return;
+      }
+      onPreview({
+        roleColors: collectRoleColors(slots),
+        tfModifier: tfToggle.checked ? collectTfModifier(tfInputs) : null,
+      });
+    }
+
+    // 閉じたらプレビューを解除する（キャンセル・×・保存成功・置き換えのすべてが close を通る）。
+    this._onDismiss = typeof onPreview === 'function' ? () => onPreview(null) : null;
 
     const cancel = this._button('キャンセル', 'cancel', 'theme-dialog-btn');
     cancel.addEventListener('click', () => this.close());
@@ -319,7 +377,9 @@ export class ColorThemeDialogs {
   // 1 トークン行: [ラベル] [使うトグル] [スウォッチ] [現在値] [未指定に戻す] [用途の併記]。
   //   宣言の有無はトグルの checked が唯一の持ち主で、スウォッチの値とは独立に決まる。
   //   initialColor（編集時のみ）: この行が「宣言済み」で開き、スウォッチの初期値になる。
-  _buildRoleRow(token, slots, initialColor = null) {
+  //   onChanged: 状態が変わったことを開いている側へ知らせる（表示の作り直し・プレビュー・診断）。
+  //   行の内部では「何が起きるか」を知らない（行は状態を変えるだけ）。
+  _buildRoleRow(token, slots, initialColor = null, onChanged = () => {}) {
     const doc = this._doc;
     const declared = typeof initialColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(initialColor);
     const row = doc.createElement('div');
@@ -370,12 +430,15 @@ export class ColorThemeDialogs {
     hint.textContent = hintForRole(token);
 
     // 保存時に読むのはこの slot だけ（DOM を再走査しない）。specified の実体はトグルの checked。
-    const slot = { swatch, useBox };
+    //   `value` も持つ: 表示は 1 行だけでは決まらない（導出の従属先が同時に動く）ため、
+    //   14 行ぶんの表示を作る renderRoleRows がこの参照から書き直す。
+    const slot = { swatch, useBox, value };
     slots.set(token, slot);
     // 表示（現在値欄）は状態の従属物。状態を変える入口はここ 1 箇所に集約する。
+    //   状態を変えたら 14 行**すべて**の表示を作り直す（この行の従属先が取り残されないように）。
     const setSpecified = (on) => {
       useBox.checked = on;
-      value.textContent = on ? String(swatch.value) : UNSET_TEXT;
+      onChanged();
     };
     useBox.addEventListener('change', () => setSpecified(!!useBox.checked));
     // 色を選ぶ操作は「この色を使う」の意思表示でもあるためトグルを ON へ揃える（表示と状態を
@@ -391,7 +454,7 @@ export class ColorThemeDialogs {
   }
 
   // 1 時間足セル: [足コード] [数値入力]。値域・刻みは §6.3（-1.00〜1.00・0.01）。
-  _buildTfCell(code, tfInputs) {
+  _buildTfCell(code, tfInputs, onChanged = () => {}) {
     const doc = this._doc;
     const cell = doc.createElement('label');
     cell.className = 'theme-dialog-tf-cell';
@@ -406,6 +469,9 @@ export class ColorThemeDialogs {
     input.max = '1';
     input.step = '0.01';
     input.value = '';
+    // 時間足の数値入力は、トークン行と並ぶ**もう 1 つの状態の入口**。同じ onChanged を通す。
+    input.addEventListener('input', () => onChanged());
+    input.addEventListener('change', () => onChanged());
     tfInputs.set(code, input);
     cell.append(label, input);
     return cell;
@@ -527,6 +593,91 @@ export class ColorThemeDialogs {
     row.append(name, edit, renameInput, renameCommit, rename, confirm, remove);
     return row;
   }
+}
+
+// 14 行の表示を、現在の宣言集合から**まとめて**作り直す（段階 5-C-2）。
+//
+//   1 行の表示が自分の状態だけでは決まらないためまとめて行う: `surface` を変えると未指定の
+//   grid / border / text / level / muted / highlight が同時に動き、`primary` を変えると
+//   secondary / range / neutral が動く。行ごとに更新すると、変えた行の従属先が取り残される。
+//
+//   宣言の有無は**トグルが唯一の持ち主**という規律を壊さない（上の USE_LABEL のコメント参照）。
+//   本関数は状態を 1 つも書き換えず、状態（useBox.checked と swatch.value）から表示を作るだけで
+//   ある。導出値をスウォッチへ映すのは見た目のためで、宣言はしない（collectRoleColors は
+//   useBox.checked しか見ない）。
+//
+//   導出元が揃わないトークン（例: surface 未宣言のときの grid）は expandRoleColors がキーを
+//   生成しないため、従来どおり「未指定」＋スウォッチ既定色になる。ここで既定色を導出値のように
+//   見せると「未指定にしたらこの色になる」という表示が嘘になる（実際は現行の既定色のまま）。
+// 診断（usecase）の**事実**を日本語の一文へ写像する（段階 5-C-4）。
+//
+//   文言は adapter の責務であり、usecase は `{ code, tokens, measured }` という事実だけを返す
+//   （純関数に表示を持たせない・§7.1 と同じ規律）。「何が・どれだけ」が分かる形にするため、
+//   トークン名（日本語ラベル）と **measured（実測値）** と目安（閾値）を必ず含める。
+//   閾値は usecase の公開定数をそのまま使う（ダイアログが数値を再宣言すると判定源が 2 つになる）。
+function diagnosticText(diagnostic) {
+  const names = diagnostic.tokens.map((t) => labelForRole(t)).join(' / ');
+  if (diagnostic.code === DIAGNOSTIC.collision) {
+    return `${names}: 同じ色です（${diagnostic.measured} 語）。画面上で意味を見分けられません。`;
+  }
+  if (diagnostic.code === DIAGNOSTIC.surfaceContrast) {
+    return `${labelForRole(diagnostic.tokens[0])}: 面から浮き上がりません`
+      + `（コントラスト比 ${diagnostic.measured.toFixed(2)}・目安 ${SURFACE_CONTRAST_MIN.toFixed(1)} 以上）。`;
+  }
+  if (diagnostic.code === DIAGNOSTIC.directionContrast) {
+    return `${names}: 上下の向きを明るさで見分けられません`
+      + `（コントラスト比 ${diagnostic.measured.toFixed(2)}・目安 ${DIRECTION_CONTRAST_MIN.toFixed(2)} 以上）。`;
+  }
+  return `${names}: ${diagnostic.measured}`;
+}
+
+// 診断の行を作り直す。**保存を妨げない**（保存ボタンに触れない・確認を挟まない）。
+//   0 件のときは行を 1 本も作らない（「問題ありません」のような無内容な行はノイズにしかならない）。
+//   診断対象は**射影後**の roleColors（導出込み）である。ユーザーが実際に見る色を診断しなければ
+//   意味がない — 実測では白地 + 基点 5 語のとき、宣言していない導出色（neutral 2.647 /
+//   range 1.577）が W-C2 を出す。宣言だけを見ていたらこの 2 語は見落とされる。
+function renderDiagnostics(doc, box, roleColors) {
+  box.innerHTML = '';
+  for (const diagnostic of diagnoseTheme({ roleColors })) {
+    const line = doc.createElement('div');
+    line.className = 'theme-dialog-diagnostic';
+    line.dataset.themeDiagnosticCode = diagnostic.code;
+    line.textContent = diagnosticText(diagnostic);
+    box.append(line);
+  }
+}
+
+function renderRoleRows(slots) {
+  const declared = {};
+  for (const [token, slot] of slots) {
+    if (!slot.useBox.checked) {
+      continue;
+    }
+    // 導出の入力は保存形 hex6 でなければならない。書き方の吸収は domain の単一情報源に任せる
+    //   （ダイアログが正規表現を持つと、受理集合の持ち主が 2 つになる）。
+    const hex = normalizeHexColor(slot.swatch.value);
+    if (hex !== null) {
+      declared[token] = hex;
+    }
+  }
+  const expanded = expandRoleColors(declared);
+  // 射影後の色は診断（renderDiagnostics）も使うため返す。呼び出し側で導出をもう 1 度回すと、
+  //   1 操作あたりの導出が 2 回になる（同じ入力・同じ結果の重複計算）。
+  for (const [token, slot] of slots) {
+    if (slot.useBox.checked) {
+      slot.value.textContent = String(slot.swatch.value);
+      continue;
+    }
+    const derived = expanded[token];
+    if (typeof derived === 'string') {
+      slot.value.textContent = `${DERIVED_PREFIX}${derived}`;
+      slot.swatch.value = derived;
+    } else {
+      slot.value.textContent = UNSET_TEXT;
+      slot.swatch.value = SWATCH_INITIAL;
+    }
+  }
+  return expanded;
 }
 
 // 宣言されたトークンだけを集める。未指定は 1 件も載せない（＝恒等テーマ・§4.4）。

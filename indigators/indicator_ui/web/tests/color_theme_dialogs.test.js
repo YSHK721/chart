@@ -308,6 +308,411 @@ test('TC-CD25 スウォッチで色を選ぶとトグルも ON になる（表�
 });
 
 // ---------------------------------------------------------------------------
+// 未指定行に導出値を見せる（段階 5-C-2・導出を「決める項目を減らす」機能として成立させる）
+// ---------------------------------------------------------------------------
+//
+// 病因: 未指定の行はスウォッチが #000000・値欄が「未指定」としか出ず、ユーザーは「この色を
+//   未指定にしたら何色になるか」を見られなかった。見えなければ、導出は決める項目を減らす機能に
+//   ならない（未指定にするのが怖いので結局 14 行を埋めることになる）。
+//
+// 規律（壊してはならない）: 宣言の有無を持つのは**トグル**だけである。値から未指定を推論する
+//   実装へ戻してはならない（color_theme_dialogs.js:87-95）。以下の検定は「表示は導出値になるが、
+//   保存される roleColors は 1 件も増えない」を必ず対にして固定する。
+
+test('TC-CD26 未指定行には導出値が「自動 #xxxxxx」として出る（導出元が揃ったとき）', () => {
+  // Arrange: 地だけを宣言する。grid / border / text / level / muted / highlight が導出できる。
+  const { root } = openEdit();
+  const swatch = byData(root, 'themeSwatch', 'surface');
+  // Act
+  swatch.value = '#131722';
+  swatch.fire('input');
+  // Assert
+  assert.equal(byData(root, 'themeValue', 'surface').textContent, '#131722', '宣言行は値そのまま');
+  assert.equal(byData(root, 'themeValue', 'grid').textContent, '自動 #21242f');
+  assert.equal(byData(root, 'themeValue', 'text').textContent, '自動 #d5d5d7');
+  assert.equal(byData(root, 'themeValue', 'level').textContent, '自動 #8a8b91');
+  assert.equal(byData(root, 'themeValue', 'muted').textContent, '自動 #686a71');
+});
+
+test('TC-CD27 導出値の表示はスウォッチにも反映される（見た目で色が分かる）', () => {
+  // Arrange
+  const { root } = openEdit();
+  const swatch = byData(root, 'themeSwatch', 'surface');
+  // Act
+  swatch.value = '#131722';
+  swatch.fire('input');
+  // Assert
+  assert.equal(byData(root, 'themeSwatch', 'text').value, '#d5d5d7');
+  assert.equal(byData(root, 'themeSwatch', 'grid').value, '#21242f');
+});
+
+test('TC-CD28 導出値を見せても宣言は 1 件も増えない（宣言の持ち主はトグルのまま）', () => {
+  // Arrange: 表示が導出値になっても、保存されるのは宣言した 1 語だけ（＝恒等の保証は不変）。
+  const seen = [];
+  const { root } = openEdit({ onSubmit: (arg) => { seen.push(arg); return { ok: true }; } });
+  byData(root, 'themeField', 'name').value = 'T';
+  const swatch = byData(root, 'themeSwatch', 'surface');
+  swatch.value = '#131722';
+  swatch.fire('input');
+  // Act
+  byData(root, 'themeAction', 'submit').fire('click');
+  // Assert
+  assert.deepEqual(seen[0].roleColors, { surface: '#131722' }, '導出値が宣言に混ざった');
+  for (const token of ['grid', 'border', 'text', 'level', 'muted', 'highlight']) {
+    assert.equal(byData(root, 'themeUse', token).checked, false, `${token}: トグルは OFF のまま`);
+  }
+});
+
+test('TC-CD29 地を変えると未指定行の導出表示が同時に追随する', () => {
+  // Arrange: 「surface を変えると従属色が追随する」＝導出が生きていることの体験そのもの。
+  const { root } = openEdit();
+  const swatch = byData(root, 'themeSwatch', 'surface');
+  swatch.value = '#131722';
+  swatch.fire('input');
+  assert.equal(byData(root, 'themeValue', 'text').textContent, '自動 #d5d5d7', '前提');
+  // Act: 地を白へ。対比側が黒に替わるので text は暗くなる。
+  swatch.value = '#ffffff';
+  swatch.fire('input');
+  // Assert
+  assert.equal(byData(root, 'themeValue', 'text').textContent, '自動 #2e2e2e');
+  assert.equal(byData(root, 'themeValue', 'grid').textContent, '自動 #f0f0f0');
+});
+
+test('TC-CD30 primary を変えると secondary / range / neutral が追随する', () => {
+  // Arrange
+  const { root } = openEdit();
+  const swatch = byData(root, 'themeSwatch', 'primary');
+  // Act
+  swatch.value = '#42a5f5';
+  swatch.fire('input');
+  // Assert
+  assert.equal(byData(root, 'themeValue', 'secondary').textContent, '自動 #8342f5');
+  assert.equal(byData(root, 'themeValue', 'range').textContent, '自動 #42e1f5');
+  assert.equal(byData(root, 'themeValue', 'neutral').textContent, '自動 #9f9f9f');
+});
+
+test('TC-CD31 導出元が揃わないトークンは「未指定」のまま（部分写像・既定色のまま）', () => {
+  // Arrange: surface が無ければ grid は導けない。ここで既定色を捏造して見せると、
+  //   「未指定にしたらこの色になる」という表示が嘘になる（実際は現行の既定色のまま）。
+  const { root } = openEdit();
+  const swatch = byData(root, 'themeSwatch', 'primary');
+  // Act: primary だけを宣言する（surface 由来の 6 語は導けない）。
+  swatch.value = '#42a5f5';
+  swatch.fire('input');
+  // Assert
+  for (const token of ['grid', 'border', 'text', 'level', 'muted', 'highlight']) {
+    assert.equal(byData(root, 'themeValue', token).textContent, '未指定',
+      `${token}: 導出元が無いのに値を見せた`);
+  }
+  assert.equal(byData(root, 'themeSwatch', 'grid').value, '#000000', 'スウォッチも既定のまま');
+});
+
+test('TC-CD32 「未指定に戻す」で、その行が導出値の表示へ切り替わる（宣言 → 自動）', () => {
+  // Arrange: text を明示宣言してから未指定へ戻すと、導出値が見えるようになる。
+  const { root } = openEdit();
+  const surface = byData(root, 'themeSwatch', 'surface');
+  surface.value = '#131722';
+  surface.fire('input');
+  const text = byData(root, 'themeSwatch', 'text');
+  text.value = '#d1d4dc';
+  text.fire('input');
+  assert.equal(byData(root, 'themeValue', 'text').textContent, '#d1d4dc', '前提: 宣言済み');
+  assert.equal(byData(root, 'themeValue', 'level').textContent, '自動 #878b94',
+    '前提: 宣言された text が導出元になる');
+  // Act
+  byData(root, 'themeClear', 'text').fire('click');
+  // Assert
+  assert.equal(byData(root, 'themeValue', 'text').textContent, '自動 #d5d5d7', '導出値へ切り替わる');
+  assert.equal(byData(root, 'themeValue', 'level').textContent, '自動 #8a8b91',
+    'level の導出元も導出値へ戻る（連鎖が追随する）');
+});
+
+test('TC-CD33b 宣言済み行のスウォッチは他行の変更で書き換えられない（ドラッグ中の値を奪わない）', () => {
+  // 病因になり得る形: 表示を作り直すたびに全行のスウォッチへ値を書くと、ユーザーが**今つまんで
+  //   いる**ピッカーの値まで書き換わる（実機では色が飛ぶ・選べなくなる）。書き換えてよいのは
+  //   未指定の行だけである。宣言済み行は宣言値が唯一の持ち主。
+  const { root } = openEdit();
+  const bullish = byData(root, 'themeSwatch', 'bullish');
+  bullish.value = '#00ff00';
+  bullish.fire('input');
+  // Act: 別の行（地）を何度も動かす＝導出の再計算が繰り返し走る。
+  const surface = byData(root, 'themeSwatch', 'surface');
+  for (const v of ['#131722', '#ffffff', '#0d1b3e']) {
+    surface.value = v;
+    surface.fire('input');
+  }
+  // Assert
+  assert.equal(bullish.value, '#00ff00', '宣言済み行のスウォッチが書き換わった');
+  assert.equal(byData(root, 'themeValue', 'bullish').textContent, '#00ff00');
+});
+
+test('TC-CD33 編集で開いたテーマでも、未宣言の行は導出値を見せる', () => {
+  // Arrange: 保存済みテーマ（地だけ宣言）の編集。
+  const theme = { themeId: 'thm#9', name: '地だけ', roleColors: { surface: '#131722' } };
+  // Act
+  const { root } = openEdit({ theme });
+  // Assert
+  assert.equal(byData(root, 'themeValue', 'surface').textContent, '#131722');
+  assert.equal(byData(root, 'themeValue', 'text').textContent, '自動 #d5d5d7');
+  assert.equal(byData(root, 'themeUse', 'text').checked, false, '導出を見せても宣言はしない');
+});
+
+// ---------------------------------------------------------------------------
+// ライブプレビューの発火（段階 5-C-3・ダイアログ側）
+// ---------------------------------------------------------------------------
+//
+// 規律: 発火点を増やさない。状態を変える入口は `setSpecified`（トークン行）と時間足入力だけで、
+//   そこから 1 本の `onChanged` を通す。入口を増やすと「ある操作だけプレビューされない」が生まれる。
+//   解除（`onPreview(null)`）はダイアログが閉じる 1 点（`close`）に集約する — キャンセル・×・
+//   保存成功・別ダイアログによる置き換えのすべてが `close` を通るため、取り残しが構成上できない。
+
+// onPreview の呼び出しを記録して開く共通 Arrange。
+function openEditWithPreview(opts = {}) {
+  const seen = [];
+  const env = openEdit({ onPreview: (d) => seen.push(d), ...opts });
+  return { ...env, seen };
+}
+
+test('TC-CD34 スウォッチ操作で onPreview が下書き（roleColors / tfModifier）付きで呼ばれる', () => {
+  // Arrange
+  const { root, seen } = openEditWithPreview();
+  const initial = seen.length;
+  const swatch = byData(root, 'themeSwatch', 'surface');
+  // Act
+  swatch.value = '#131722';
+  swatch.fire('input');
+  // Assert
+  assert.equal(seen.length, initial + 1, '1 操作 = 1 発火');
+  assert.deepEqual(seen[seen.length - 1], { roleColors: { surface: '#131722' }, tfModifier: null });
+});
+
+test('TC-CD35 トグル・「未指定に戻す」でも onPreview が呼ばれる（発火点は setSpecified 1 箇所）', () => {
+  // Arrange
+  const { root, seen } = openEditWithPreview();
+  const use = byData(root, 'themeUse', 'bullish');
+  // Act
+  use.checked = true;
+  use.fire('change');
+  const afterToggle = seen[seen.length - 1];
+  byData(root, 'themeClear', 'bullish').fire('click');
+  // Assert
+  assert.deepEqual(afterToggle.roleColors, { bullish: '#000000' }, 'トグルだけで宣言できる');
+  assert.deepEqual(seen[seen.length - 1].roleColors, {}, '未指定に戻すと宣言が消える');
+});
+
+test('TC-CD36 時間足の入力でも onPreview が呼ばれる（もう 1 つの状態の入口）', () => {
+  // Arrange
+  const { root, seen } = openEditWithPreview();
+  const toggle = byData(root, 'themeField', 'tf-enabled');
+  // Act
+  toggle.checked = true;
+  toggle.fire('change');
+  const afterEnable = seen[seen.length - 1];
+  const cell = byData(root, 'themeTf', TF_CODES[0]);
+  cell.value = '0.25';
+  cell.fire('input');
+  // Assert
+  assert.ok(afterEnable.tfModifier && typeof afterEnable.tfModifier === 'object',
+    '「使う」ON で tfModifier が載る');
+  assert.equal(seen[seen.length - 1].tfModifier[TF_CODES[0]], 0.25, '数値入力が下書きへ届く');
+});
+
+test('TC-CD37 キャンセルでプレビューを解除する（onPreview(null)）', () => {
+  // Arrange
+  const { root, seen } = openEditWithPreview();
+  const swatch = byData(root, 'themeSwatch', 'surface');
+  swatch.value = '#131722';
+  swatch.fire('input');
+  // Act
+  byData(root, 'themeAction', 'cancel').fire('click');
+  // Assert
+  assert.equal(seen[seen.length - 1], null, 'キャンセルで解除されない');
+});
+
+test('TC-CD38 保存成功でもプレビューを解除する（保存されたテーマで塗り直される）', () => {
+  // Arrange
+  const { root, seen } = openEditWithPreview({ onSubmit: () => ({ ok: true }) });
+  byData(root, 'themeField', 'name').value = 'T';
+  const swatch = byData(root, 'themeSwatch', 'surface');
+  swatch.value = '#131722';
+  swatch.fire('input');
+  // Act
+  byData(root, 'themeAction', 'submit').fire('click');
+  // Assert
+  assert.equal(seen[seen.length - 1], null);
+});
+
+test('TC-CD39 保存失敗ではダイアログが開いたままなので解除しない（見ている色を勝手に戻さない）', () => {
+  // Arrange: F-C1 の失敗はインライン表示で閉じない。閉じないのに色だけ戻ると、
+  //   直している最中の色が消えて操作が続けられなくなる。
+  const { root, seen } = openEditWithPreview({ onSubmit: () => ({ ok: false, code: 'empty' }) });
+  const swatch = byData(root, 'themeSwatch', 'surface');
+  swatch.value = '#131722';
+  swatch.fire('input');
+  // Act
+  byData(root, 'themeAction', 'submit').fire('click');
+  // Assert
+  assert.notEqual(seen[seen.length - 1], null, '閉じていないのに解除された');
+  assert.deepEqual(seen[seen.length - 1].roleColors, { surface: '#131722' });
+});
+
+test('TC-CD40 × ボタンでも解除する（閉じる経路はすべて close を通る）', () => {
+  // Arrange
+  const { doc, seen } = openEditWithPreview();
+  const closeBtn = byData(doc.body.children[0], 'themeAction', 'cancel');
+  // Act
+  closeBtn.fire('click');
+  // Assert
+  assert.equal(seen[seen.length - 1], null);
+});
+
+test('TC-CD41 解除は 1 度だけ（閉じた後に close を重ねても再発火しない）', () => {
+  // Arrange
+  const { dialogs, seen } = openEditWithPreview();
+  dialogs.close();
+  const afterFirst = seen.length;
+  // Act
+  dialogs.close();
+  dialogs.close();
+  // Assert
+  assert.equal(seen.length, afterFirst, '閉じた後に解除が繰り返された');
+});
+
+// ---------------------------------------------------------------------------
+// 診断の表示（段階 5-C-4・非阻害）
+// ---------------------------------------------------------------------------
+//
+// 規律:
+//   - 診断対象は**射影後**（導出込み）の下書き。ユーザーが実際に見る色を診断しなければ意味がない
+//     （宣言していない導出色の問題を見落とす）。
+//   - **保存を妨げない**。保存ボタンを無効化しない・確認を挟まない。診断は助言であって合否ではない。
+//   - 文言（何が・どれだけ）の生成は adapter の責務。usecase は事実（measured）だけを返す。
+//   - 0 件のときは何も出さない（「問題ありません」のような無内容な行を足さない）。
+
+const diagTextOf = (root) => {
+  const box = byData(root, 'themeDiagnostics', 'edit');
+  return box ? textOf(box) : null;
+};
+const diagRowsOf = (root) => {
+  const box = byData(root, 'themeDiagnostics', 'edit');
+  return box ? box.children : [];
+};
+
+test('TC-CD42 診断 0 件のときは行を 1 本も出さない（無内容な行を足さない）', () => {
+  // Arrange: 地だけを宣言（導出込みで診断 0 件になることは TC-CD30 で実測済み）。
+  const { root } = openEdit();
+  const swatch = byData(root, 'themeSwatch', 'surface');
+  // Act
+  swatch.value = '#131722';
+  swatch.fire('input');
+  // Assert
+  assert.deepEqual(diagRowsOf(root), [], '診断 0 件なのに行が出た');
+  assert.equal(diagTextOf(root), '', '文字も出さない');
+});
+
+test('TC-CD43 W-C2: 「何が・どれだけ」が分かる（トークン名と実測コントラスト比が出る）', () => {
+  // Arrange: 白地に teal。実測 CR 2.334（閾値 3.0）。
+  const { root } = openEdit();
+  const surface = byData(root, 'themeSwatch', 'surface');
+  surface.value = '#ffffff';
+  surface.fire('input');
+  const bullish = byData(root, 'themeSwatch', 'bullish');
+  // Act
+  bullish.value = '#00bfa5';
+  bullish.fire('input');
+  // Assert
+  const text = diagTextOf(root);
+  assert.ok(text.includes('強気・上方向'), `トークン名が出ていない: ${text}`);
+  assert.ok(text.includes('2.33'), `実測値が出ていない: ${text}`);
+  assert.ok(text.includes('3.0'), `目安（閾値）が出ていない: ${text}`);
+});
+
+test('TC-CD44 W-C1: 同じ色になった 2 語の名前が出る', () => {
+  // Arrange
+  const { root } = openEdit();
+  for (const token of ['bullish', 'primary']) {
+    const s = byData(root, 'themeSwatch', token);
+    s.value = '#00bfa5';
+    s.fire('input');
+  }
+  // Act / Assert
+  const text = diagTextOf(root);
+  assert.ok(text.includes('強気・上方向'), text);
+  assert.ok(text.includes('主出力'), text);
+});
+
+test('TC-CD45 W-C3: 上下の輝度差が足りないときに実測値つきで出る', () => {
+  // Arrange: 実測 CR 1.0008（閾値 1.15）。
+  const { root } = openEdit();
+  for (const [token, value] of [['bullish', '#00bfa5'], ['bearish', '#00bfa6']]) {
+    const s = byData(root, 'themeSwatch', token);
+    s.value = value;
+    s.fire('input');
+  }
+  // Act / Assert
+  const text = diagTextOf(root);
+  assert.ok(text.includes('1.00'), `実測値が出ていない: ${text}`);
+  assert.ok(text.includes('1.15'), `目安が出ていない: ${text}`);
+});
+
+test('TC-CD46 診断は射影後（導出込み）に対して行う — 宣言していない導出色の問題も出る', () => {
+  // Arrange: 白地 + 基点 5 語。実測では **neutral（2.647）と range（1.577）** も W-C2 を出すが、
+  //   この 2 語はユーザーが宣言していない**導出色**である。宣言だけを診断すると見落とす。
+  const { root } = openEdit();
+  for (const [token, value] of [
+    ['surface', '#ffffff'], ['bullish', '#00bfa5'], ['bearish', '#ff5252'],
+    ['alert', '#ffa726'], ['primary', '#42a5f5'],
+  ]) {
+    const s = byData(root, 'themeSwatch', token);
+    s.value = value;
+    s.fire('input');
+  }
+  // Act / Assert
+  const text = diagTextOf(root);
+  assert.ok(text.includes('通常域'), `導出色 range の指摘が出ていない: ${text}`);
+  assert.ok(text.includes('基準・中立'), `導出色 neutral の指摘が出ていない: ${text}`);
+  assert.equal(byData(root, 'themeUse', 'range').checked, false, '前提: range は宣言していない');
+});
+
+test('TC-CD47 診断が出ていても保存は成功する（保存を妨げない・保存ボタンは無効化されない）', () => {
+  // Arrange: W-C2 が出ている状態をつくる。
+  const seen = [];
+  const { root } = openEdit({ onSubmit: (arg) => { seen.push(arg); return { ok: true }; } });
+  byData(root, 'themeField', 'name').value = 'T';
+  const surface = byData(root, 'themeSwatch', 'surface');
+  surface.value = '#ffffff';
+  surface.fire('input');
+  const bullish = byData(root, 'themeSwatch', 'bullish');
+  bullish.value = '#00bfa5';
+  bullish.fire('input');
+  assert.notEqual(diagTextOf(root), '', '前提: 診断が出ている');
+  const submit = byData(root, 'themeAction', 'submit');
+  assert.equal(submit.disabled, false, '保存ボタンが無効化されている');
+  // Act: 1 回押しただけで保存される（確認を挟まない）。
+  submit.fire('click');
+  // Assert
+  assert.equal(seen.length, 1, '保存が呼ばれていない（確認を挟んでいる）');
+  assert.deepEqual(seen[0].roleColors, { surface: '#ffffff', bullish: '#00bfa5' });
+});
+
+test('TC-CD48 診断は状態変更のたびに作り直される（直したら消える）', () => {
+  // Arrange
+  const { root } = openEdit();
+  const surface = byData(root, 'themeSwatch', 'surface');
+  surface.value = '#ffffff';
+  surface.fire('input');
+  const bullish = byData(root, 'themeSwatch', 'bullish');
+  bullish.value = '#00bfa5';
+  bullish.fire('input');
+  assert.notEqual(diagTextOf(root), '', '前提: 診断が出ている');
+  // Act: 地を暗くすると teal は浮き上がる。
+  surface.value = '#131722';
+  surface.fire('input');
+  // Assert
+  assert.equal(diagTextOf(root), '', '直したのに診断が残った（作り直していない）');
+});
+
+// ---------------------------------------------------------------------------
 // 時間足の明度差（§6.3・§4.7）
 // ---------------------------------------------------------------------------
 
@@ -530,8 +935,15 @@ test('TC-CD20 DIP: 本モジュールは controller / 協働子を import しな
   const imports = [...src.matchAll(/^\s*import\s.*?from\s+'([^']+)'/gm)].map((m) => m[1]);
   // Assert
   assert.ok(!imports.some((p) => p.includes('controller')), `controller を import している: ${imports.join(', ')}`);
+  // 依存は**内向き**のみ（§7.8）。段階 5-C で usecase（導出・診断）への参照が加わったため、
+  //   固定するのは「domain だけ」ではなく「内向きだけ」＝ adapter を 1 本も参照しないこと。
+  //   adapter を参照した瞬間に協働子・ホストへの経路ができ、DIP（§7.1）が壊れる。
   assert.ok(
-    imports.every((p) => p.startsWith('../../domain/')),
-    `参照してよいのは domain 台帳だけ（依存は内向き・§7.8）: ${imports.join(', ')}`,
+    imports.every((p) => p.startsWith('../../domain/') || p.startsWith('../../usecase/')),
+    `参照してよいのは domain と usecase だけ（依存は内向き・§7.8）: ${imports.join(', ')}`,
+  );
+  assert.ok(
+    !imports.some((p) => p.includes('/adapter/') || p.startsWith('./')),
+    `同層（adapter）を参照している: ${imports.join(', ')}`,
   );
 });
