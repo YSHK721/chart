@@ -190,6 +190,22 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             floating_pnl_basis=floating_pnl_basis,
             point_size=spec.point_size,
         )
+        # ISSUE-308: 決済呼び出しの**不変の文脈**（口座・記録先・銘柄仕様）をここで 1 度だけ束ねる。
+        #   これらは 1 回の実行中に変わらないため、各決済地点で書き写す必要がない。
+        def close_trade(ot, *, exit_time, exit_price, exit_reason) -> None:
+            self._close_open_trade(
+                ot,
+                exit_time=exit_time,
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                contract_size=contract_size,
+                leverage=spec.leverage,
+                account=account,
+                trades=trades,
+                deals=deals,
+                balance_curve=balance_curve,
+            )
+
         # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
         halted = False
 
@@ -248,17 +264,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         close_price = close_price_for(
                             ot.position.side, bid=o_bid, ask=o_ask
                         )
-                        self._close_open_trade(
+                        close_trade(
                             ot,
                             exit_time=bar.time,
                             exit_price=close_price,
                             exit_reason="stop_out",
-                            contract_size=contract_size,
-                            leverage=spec.leverage,
-                            account=account,
-                            trades=trades,
-                            deals=deals,
-                            balance_curve=balance_curve,
                         )
                     open_trades = []
                     halted = True
@@ -298,17 +308,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 for ot in open_trades:
                     if ot.position.side != order.side:
                         close_price = close_price_for(ot.position.side, bid=bid, ask=ask)
-                        self._close_open_trade(
+                        close_trade(
                             ot,
                             exit_time=bar.time,
                             exit_price=close_price,
                             exit_reason="reverse",
-                            contract_size=contract_size,
-                            leverage=spec.leverage,
-                            account=account,
-                            trades=trades,
-                            deals=deals,
-                            balance_curve=balance_curve,
                         )
                     else:
                         reverse_kept.append(ot)
@@ -352,17 +356,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     still_open.append(ot)
                     continue
                 exit_price = ot.sl if reason == "sl" else ot.tp
-                self._close_open_trade(
+                close_trade(
                     ot,
                     exit_time=bar.time,
                     exit_price=exit_price,
                     exit_reason=reason,
-                    contract_size=contract_size,
-                    leverage=spec.leverage,
-                    account=account,
-                    trades=trades,
-                    deals=deals,
-                    balance_curve=balance_curve,
                 )
             open_trades = still_open
 
@@ -398,17 +396,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     close_price = close_price_for(
                         ot.position.side, bid=so_bid, ask=so_ask
                     )
-                    self._close_open_trade(
+                    close_trade(
                         ot,
                         exit_time=bar.time,
                         exit_price=close_price,
                         exit_reason="stop_out",
-                        contract_size=contract_size,
-                        leverage=spec.leverage,
-                        account=account,
-                        trades=trades,
-                        deals=deals,
-                        balance_curve=balance_curve,
                     )
                 open_trades = []
                 halted = True
@@ -489,6 +481,22 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             floating_pnl_basis=floating_pnl_basis,
             point_size=spec.point_size,
         )
+
+        # ISSUE-308: execute() と同じ不変文脈の束ね（決済地点ごとの書き写しを無くす）。
+        def close_trade(ot, *, exit_time, exit_price, exit_reason) -> None:
+            self._close_open_trade(
+                ot,
+                exit_time=exit_time,
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                contract_size=contract_size,
+                leverage=spec.leverage,
+                account=account,
+                trades=trades,
+                deals=deals,
+                balance_curve=balance_curve,
+            )
+
         halted = False
 
         trading_start = request.trading_start
@@ -552,10 +560,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         kept_open.append(ot)
                         continue
                     exit_price = ot.sl if reason == "sl" else ot.tp
-                    self._close_open_trade(
+                    close_trade(
                         ot, exit_time=bar.time, exit_price=exit_price, exit_reason=reason,
-                        contract_size=contract_size, leverage=spec.leverage, account=account,
-                        trades=trades, deals=deals, balance_curve=balance_curve,
                     )
                 open_trades = kept_open
 
@@ -636,17 +642,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                             close_price = close_price_for(
                                 ot.position.side, bid=bid0, ask=ask0
                             )
-                            self._close_open_trade(
+                            close_trade(
                                 ot,
                                 exit_time=bar.time,
                                 exit_price=close_price,
                                 exit_reason="reverse",
-                                contract_size=contract_size,
-                                leverage=spec.leverage,
-                                account=account,
-                                trades=trades,
-                                deals=deals,
-                                balance_curve=balance_curve,
                             )
                         else:
                             reverse_kept.append(ot)
@@ -694,17 +694,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                             close_price = close_price_for(
                                 ot.position.side, bid=pbid0, ask=pask0
                             )
-                            self._close_open_trade(
+                            close_trade(
                                 ot,
                                 exit_time=bar.time,
                                 exit_price=close_price,
                                 exit_reason="reverse",
-                                contract_size=contract_size,
-                                leverage=spec.leverage,
-                                account=account,
-                                trades=trades,
-                                deals=deals,
-                                balance_curve=balance_curve,
                             )
                         else:
                             reverse_kept2.append(ot)
@@ -766,17 +760,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         still_open.append(ot)
                         continue
                     exit_price = ot.sl if reason == "sl" else ot.tp
-                    self._close_open_trade(
+                    close_trade(
                         ot,
                         exit_time=bar.time,
                         exit_price=exit_price,
                         exit_reason=reason,
-                        contract_size=contract_size,
-                        leverage=spec.leverage,
-                        account=account,
-                        trades=trades,
-                        deals=deals,
-                        balance_curve=balance_curve,
                     )
                 open_trades = still_open
 
@@ -867,17 +855,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         close_price = close_price_for(
                             ot.position.side, bid=eval_bid, ask=eval_ask
                         )
-                        self._close_open_trade(
+                        close_trade(
                             ot,
                             exit_time=bar.time,
                             exit_price=close_price,
                             exit_reason="stop_out",
-                            contract_size=contract_size,
-                            leverage=spec.leverage,
-                            account=account,
-                            trades=trades,
-                            deals=deals,
-                            balance_curve=balance_curve,
                         )
                     open_trades = []
                     halted = True
@@ -901,17 +883,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             f_ask = fbar.close + fbar.spread * spec.point_size
             for ot in open_trades:
                 close_price = close_price_for(ot.position.side, bid=f_bid, ask=f_ask)
-                self._close_open_trade(
+                close_trade(
                     ot,
                     exit_time=fbar.time,
                     exit_price=close_price,
                     exit_reason="end_of_test",
-                    contract_size=contract_size,
-                    leverage=spec.leverage,
-                    account=account,
-                    trades=trades,
-                    deals=deals,
-                    balance_curve=balance_curve,
                 )
             open_trades = []
 

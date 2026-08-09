@@ -5621,3 +5621,15 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - `tickvol` / `tickvol_updown` / `profit_rsi`: 記録先・生成物が異なる別契約。
 - **残る課題**: 根本原因である「描画ポートが型として宣言されていない」ことは未解決。ポートを
   宣言すれば据え置いた 4 件の差異も契約違反として検出できる（別 Issue）。
+
+## ISSUE-308: [重複] `run_backtest.py` が決済呼び出しの不変文脈を 10 箇所で書き写していた（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・simulator 906 passed / 9 skipped で基準線一致）
+- **重大度**: Low（挙動は正しいが、決済の記録先を増減すると 10 箇所を直す必要がある）
+- **原因**: `_close_open_trade` の引数のうち `contract_size` / `leverage` / `account` / `trades` /
+  `deals` / `balance_curve` は 1 回の実行中に変わらない**不変の文脈**なのに、決済地点ごとに
+  7 行を書き写していた（codescan 実測: 同一ファイル内 6 箇所のブロッククローン 83 行）。
+- **是正**: `execute` と `_execute_every_tick` の冒頭で、その文脈を束ねた局所関数 `close_trade`
+  を 1 度だけ定義した。各決済地点は `exit_time` / `exit_price` / `exit_reason`（＝地点ごとに
+  実際に異なる値）だけを渡す。決済の意味づけがどこで何かを読み取りやすくなる副次効果もある。
+- **実測**: 962 → 906 行（**56 行削除**・10 箇所を変換）。simulator スイートは
+  **906 passed / 9 skipped で基準線と完全一致**。
