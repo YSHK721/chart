@@ -5790,3 +5790,248 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   （§7.3 ISP の `ChromeSinkPort` は raw lwc である必要が無い）。
 - **検証**: `indicator_ui` 1290 件 / `replay_ui` 338 件すべて pass（fail 0）。段階 1 通過条件 1〜8 と
   段階 2 通過条件 1〜8 を台帳・回帰・単体テスト 12 ファイルで固定した。
+
+## ISSUE-315: [仕様不整合] 段階 3 のファイル配置・ホスト契約が実コードと突合しなかった（2026-08-09）
+- **ステータス**: RESOLVED（段階 3 着手前に基本設計書を v0.3.1 へ改訂して是正）
+- **重大度**: High（そのまま実装すると、撤去済みの手書き複製が復活し、ホスト契約は構造充足テストで落ちる）
+- **発見の経緯**: 段階 3 着手前のアーキテクチャ評価（architecture-executor）で、設計書 §7.1／§7.3／§6.1 と
+  実コードを突合した結果 5 件のずれを検出。うち影響の大きい 4 件は本会話で再実測して確認した
+  （1 件の指摘＝`chart_renderer.js:862` のコメント記法異常は誤報で、実測では通常の `//` コメント）。
+- **不整合 1（index.html への空マウント）**: §6.1・§7.1・A-3 は `<div id="color-theme-menu">` を
+  3 枚の index.html へ追加せよと指示していた。**実測**: `tpl-menu` / `color-theme-menu` は
+  4 枚の index.html すべてに 0 件で、器は `app_chrome_view.js:59,67` が innerHTML で生成している。
+  ページが持つのはアンカー `#app` だけという規約（ISSUE-278 #16）が確立済み。
+  - **是正**: 生成点を `app_chrome_view.installChartToolbar` への 1 行追加とし、index.html は無改変。
+- **不整合 2（`build.mjs`）**: §7.1 に「`MODULE_ORDER` へ新規 8 本を追加」の行が残っていた。
+  同一文書の §7.8 は「`build.mjs` は存在せず ES モジュール直読み」と書いており自己矛盾。当該行を削除。
+- **不整合 3（`ThemeHost` 契約）**: §7.3 は 6 メンバーを列挙していたが、うち `applySeriesStyle` と
+  `applyLevelLineColor` は **`IndicatorController` に定義が 0 件**（実測。実体は `chart_renderer.js`）。
+  逆に UC-C02 手順 3・4 が要求する `_applyStoredStyles` / `_renderLegend` が欠落していた。
+  - **是正**: 最小 4 メンバー（methods `_applyStoredStyles` / `_renderLegend`、fields `_state` / `_meta`）へ
+    差し替え、`createHostView` で射影して契約外アクセスを実行時に落とす。`_persistAll` / `_commitState` は
+    `colorLocked` を書く段階 4 で追加する。
+- **不整合 4（配置漏れ）**: 参照実装（`chart_templates.js`）が持つ CODE 語彙・`recoverLastSeq` 相当、
+  および 14 トークンの日本語ラベルの所在が §7.1 に無かった。前 2 者を `color_themes.js`、ラベルを
+  `color_theme_dialogs.js` へ配置すると明記。
+- **不整合 5（OCP）**: §6.3 はテーマ編集ダイアログの 14 行を「行順を固定する」としか書かず生成源が
+  未指定だった。時間足の行は `TF_CODES` 導出を明記しているのに非対称で、手書きにすると語彙追加時に
+  ダイアログだけ取り残される。`COLOR_ROLES` から生成すると明記。
+- **副次の是正**: `colorThemeProvider` と `chromeThemeApplier` は段階 2 で受け口を作ったが、両
+  `composition_root_front.js` のどちらも渡していない（実測 0 件）。段階 3 で端から端まで結線する。
+  ただし `new IndicatorController(...)` は共有配線ではなく各 root が書いているため、constructor 引数の
+  ままだと同一 1 行を 2 か所へ手書き複製することになる。`setColorThemeProvider(fn)` を加法し、
+  controller を引数で受ける唯一の共有点 `wireControllerCollaborators` で 1 箇所結線する。
+- **段階帰属の確定**: UC-C06（`toTemplateInstance` で非ロック色を落とす・A-7）は **段階 4 のまま**とする。
+  ロック UI（段階 4）が無い状態で導入すると、テンプレートから**すべての**系列色が落ち、ユーザーが
+  色を守る手段が存在しない＝厳密に悪化するため。両者は同時に出荷する。
+
+## ISSUE-316: [誤報・取消] リプレイ配信ツリーの共有 symlink 欠落を「404 になる破損」と誤判定した（2026-08-09）
+
+- **ステータス**: INVALID（前提が実測で覆った。対策は不要）
+- **重大度**: なし（起票時は「高」としていたが、症状そのものが存在しない）
+
+### 取消の根拠（実測 2026-08-09・実 HTTP 経路）
+
+本 Issue は「配信パスで module グラフを走査し、リプレイ側に symlink が無い import は 404 になる」と
+断定していた。**この前提は誤り**である。リプレイ core の静的配信は **dual-root** であり、
+`web_dir`（リプレイ）で見つからないファイルは `shared_js_root`（＝`indicator_ui/web`）へ
+フォールバックして配信される。
+
+- 実装: `simulator/replay_ui/framework/static_file_server.py` の `resolve()`
+  「replay web_dir を優先し、miss なら shared_js_root へ同一 rel でフォールバックする
+  （symlink 化した資産は web_dir 経由で一次解決されるため、**本フォールバックは indicator_ui のみに
+  実体があるファイル用**）」— 設計意図としてそう書かれている。
+- 実測: 欠落と判定した 7 ファイルすべてを実 HTTP で取得した結果、**全件 200**。
+  `host_view.js` / `app_chrome_view.js` / `market_profile_params.js` / `market_profile_controller.js` /
+  `pair_render_constants.js` / `session_ohlc.js` / `catalog_entry.js`。
+
+### なぜ誤ったか（走査スクリプトの前提が単一ルート）
+
+欠落を検出した走査は「リプレイツリー内で URL 相対に解決できるか」だけを見ており、
+(a) サーバの dual-root フォールバック、(b) Node が symlink 先の実パスから相対 import を解決すること、
+の 2 つを無視していた。**ライブ側は単一ルートなのでこの前提が成り立つが、リプレイ側は成り立たない。**
+
+### 設計は変わっていない
+
+dual-root フォールバックと symlink 単一ソース化は**同じ 2026-07-04 の一連の変更で同時に導入**された
+（`5cb3f3b refactor(replay_ui): フロント分析UIをindicator_uiのsymlink単一ソース化(機構+6ファイル)`
+以降、`1b1e6da` で web 根へ一般化、`852a3df` で境界一致ガード、`59e0426` で最小権限化）。
+すなわち「symlink を張る」と「無ければ共有元から配る」は最初から 1 つの機構の両輪であり、
+symlink が全ファイルに要るという規約は**存在しない**。
+
+symlink が実際に要るのは、リプレイツリーの**実ファイル**やリプレイ側テストが
+`../js/...` という論理パスで直接参照するモジュールに限られる（Node はブラウザと違って
+dual-root を持たないため）。推移的な依存は、symlink 先の実パスから解決されるので不要。
+
+### 残る有効な論点（別 Issue にするほどの実害は無い）
+
+`color_theme_replay_share.test.js` の TC-CS02 は「推移的にすべて解決する」という**実際には要求されて
+いない不変条件**を固定している。満たすこと自体は無害（symlink を張れば通る）だが、規約より厳しいため
+将来 dual-root で足りるケースで無用に落ちうる。段階 3 のレビュー時に検定の意図を実態へ揃える。
+
+---
+
+<details>
+<summary>起票時の記述（誤った前提に基づく。記録として残す）</summary>
+
+- **旧ステータス**: OPEN
+- **旧重大度**: 高（standalone リプレイ UI＝`simulator/replay_ui/serve.sh`・:8280 がブラウザで起動しない）
+- **発見経緯**: 指標カラーテーマ段階 3（テーマ UI）の実装中、新規モジュールのリプレイ共有 symlink を
+  張った際に、配信パス（symlink を辿らない論理パス）で import を解決する検査を行って検出した。
+
+### 事実（実測 2026-08-09）
+
+`simulator/replay_ui/serve.sh` は `web_dir=simulator/replay_ui/web` を配信し、`index.html` は
+`./js/adapter/front/composition_root_front.js` を読む。よってブラウザの module 解決は**リプレイ
+ツリーの URL 相対**で行われ、`web/js` の共有（symlink・ISSUE-304）が欠けている import は 404 になる。
+Node のテストは symlink を realpath で辿るため、**この欠落はテストでは一切落ちない**。
+
+配信パスで module グラフを全走査した結果（到達 106 ファイル）:
+
+| ツリー | 欠落 edge |
+|---|---|
+| ライブ（`indigators/indicator_ui/web`） | **0** |
+| リプレイ（`simulator/replay_ui/web`） | **12**（うち 3 は本段階で解消済み・下記） |
+
+欠落していた実体ファイル（リプレイ側に symlink が無い）:
+
+| # | ファイル | import 元 | 本件で解消 |
+|---|---|---|---|
+| 1 | `js/adapter/front/menu_document_close.js` | `timeframe_menu.js` / `chart_template_menu.js` / `color_theme_menu.js` | **済**（段階 3 で symlink を追加） |
+| 2 | `js/adapter/front/app_chrome_view.js` | `chart_app_wiring.js` | 未 |
+| 3 | `js/adapter/front/host_view.js` | `chart_app_wiring.js` / `indicator_controller.js` | 未 |
+| 4 | `js/usecase/catalog_entry.js` | `catalog.js` | 未 |
+| 5 | `js/adapter/front/pair_render_constants.js` | `pair_lines_primitive.js` / `trade_markers_renderer.js` | 未 |
+| 6 | `js/adapter/front/market_profile_params.js` | `indicator_controller.js` | 未 |
+| 7 | `js/adapter/front/market_profile_controller.js` | `indicator_controller.js` | 未 |
+| 8 | `js/domain/session_ohlc.js` | `mp_session_tiles.js` | 未 |
+
+### 根本原因
+
+共有の実体は「ファイル単位の symlink を人手で張る」運用（ISSUE-304: 105 件）であり、**共有モジュールが
+新しい import を 1 本増やすたびに、リプレイ側へ symlink を 1 本足す義務が発生する**。この義務は
+どのテストにも施行されていないため、ライブ側の加法（ISSUE-278 #16 の `app_chrome_view.js` 切り出し・
+`host_view.js` の射影導入など）が届かず、静かに落ちた。症状（404）はブラウザでしか出ない。
+
+### 抜本的対策（承認待ち・本件では実施しない）
+
+症状（欠けている 7 本を今回だけ張る）を消すのではなく、**義務が施行されない構造**を除去する:
+
+1. 配信パスで module グラフを走査し、リプレイ／ライブ双方で欠落 0 を固定するテストを共有テストへ置く
+   （本段階では自分の追加ぶんだけを `color_theme_replay_share.test.js` TC-CS02 で固定済み。
+   全体版はリプレイ側 suite に置くのが正しい）。
+2. その上で欠落 7 本の symlink を張る（1 で落ちる状態を作ってから張る＝Red → Green）。
+3. 恒久的には、ファイル単位 symlink を**ディレクトリ単位の共有**へ畳めるかを別途検討する
+   （個別 symlink が 105 件ある限り、同種の取り残しは再発しうる）。
+
+### 影響範囲
+
+- standalone リプレイ UI（:8280）: ブラウザで module が 404 → 起動しない（本 Issue 解消まで）。
+- 統合 UI（:8000・`unified_ui/serve.sh`）: ライブツリーを配信するため**影響なし**（走査で欠落 0）。
+- 指標カラーテーマ段階 3 の受入基準のうち **§7.4 段階 3 の通過条件 6（リプレイでのテーマ適用）**は、
+  本 Issue が解消されるまで実 UI で検証できない。
+
+</details>
+
+## ISSUE-317: [運用] 統合 UI を worktree から起動しても、既存プロセスが占有する core だけ別ツリーを配信し続ける（2026-08-09）
+- **ステータス**: OPEN（原因は特定済み・恒久策は未実施）
+- **重大度**: 高（症状が「実装したはずのメソッドが is not a function」という**コードの欠陥に見える**形で出る）
+- **発見の経緯**: 指標カラーテーマ段階 3 の実 UI 検証中、統合 UI が
+  `controller.setColorThemeProvider is not a function` で初期化に失敗しチャートが表示されなくなった。
+- **実測（2026-08-09）**:
+  | 経路 | ポート | 配信ツリー | 起動時刻 |
+  |---|---|---|---|
+  | `/live/*` | 8001 | worktree（段階 3 実装あり） | 11:45 |
+  | `/replay/*` | 8281 | **共有 checkout `/workspaces/app`**（段階 3 なし） | **04:08（既存プロセス）** |
+
+  - 8281 のプロセス引数: `web_dir='/workspaces/app/simulator/replay_ui/web'`
+  - `/live/js/adapter/front/indicator_controller.js` に `setColorThemeProvider` が **1 件**
+  - `/replay/js/adapter/front/indicator_controller.js` に **0 件**
+- **なぜ壊れるか**: `unified_ui/web/js/unified_root.js:34-35` は **2 つの core からモジュールを混ぜて
+  読み込む**。`bootstrap` は `/live/*`、`ReplayIndicatorController` は `/replay/*` から動的 import し、
+  controller は後者で生成される。よって 2 つの core が別ツリーを配信していると、
+  「呼ぶ側は新しく、呼ばれる側は古い」クラスが 1 つのページ上で合成される。
+- **なぜ起きたか**: `unified_ui/serve.sh` は core を起動する前に**ヘルスチェックで既に応答するか**を
+  見る。8281 が既存プロセスに占有されていると、そのプロセスがどのツリーを配信しているかを問わず
+  「起動済み」とみなして再利用する。結果、ライブだけが worktree へ切り替わる。
+- **抜本策（症状の回避ではなく原因の除去）**:
+  1. `unified_ui/serve.sh` が core の応答だけでなく **配信ツリー（web_dir）が自分と同一か**を確認し、
+     食い違う場合は起動を中止して明示的に報告する（占有プロセスを黙って再利用しない）。
+     判定材料は core 側が持てばよい（例: 既知パスで web_dir を返す軽量エンドポイント）。
+  2. 併せて `unified_root.js` が合成する 2 系統のモジュールについて、**同一ビルドから来ていること**を
+     起動時に 1 度検証する経路を持てるかを検討する（現状は無言で混ざる）。
+- **暫定的にやってはならないこと**: 呼び出し側へ `typeof fn === 'function'` のガードを足すこと。
+  バージョン不一致を隠すだけで、テーマが無言で効かない状態を作る（症状の条件を避ける応急処置）。
+- **回避手順（恒久策までの運用）**: 統合 UI を別ツリーから起動する前に 8000 / 8001 / 8281 の
+  既存プロセスをすべて停止する。`ps aux | grep web_dir` で各 core の配信ツリーを確認できる。
+
+## ISSUE-318: [欠陥] クロムの派生 3 点とローソク復元 2 点がテーマに追従しない（配信はされるが使われない）（2026-08-09）
+- **ステータス**: RESOLVED（段階 3 で是正。`ChartRenderer` が配信済み 20 点を `_chromeSlots` として保持し、
+  減光ローソク・透明化からの復元・分析 tint・背景フォールバックがすべてそこから読む。検定境界を実利用点へ移した）
+- **重大度**: 高（FR-C13／§7.4 段階 3 通過条件 6／§7.6 受入基準 6 に違反。依頼者が名指しした「背景だけ変わって減光帯が旧色に残る」破綻そのもの）
+- **発見の経緯**: 段階 3 のコードレビュー（code-review-executor）で指摘され、本会話で独立に実証した。
+- **実測（2026-08-09）**:
+  - `chart_renderer.js:57,63,64` の `DIM_CANDLE_COLOR` / `CANDLE_UP_COLOR` / `CANDLE_DOWN_COLOR` は
+    **モジュール読み込み時に 1 回だけ** `CHROME_CURRENT` から取る静的定数。`setAnalysisTint` も同様に
+    `CHROME_CURRENT.analysisTint` / `.backgroundFallback` をその場で読む。
+    `replay_boundary_dim.js` の `BG_DIM_COLOR` も同型。
+  - `applyChromeColors(slots)` が実際に読む slots は **11 点のみ**
+    （`layoutBackground` / `layoutTextColor` / `paneSeparator` / `paneSeparatorHover` / `gridVertLines` /
+    `gridHorzLines` / `rightPriceScaleBorder` / `timeScaleBorder` / `candleUp` / `candleDown` / `priceLine`）。
+  - よって `dimCandle` / `analysisTint` / `replayBoundaryDim` / `backgroundFallback` /
+    `candleUpRestore` / `candleDownRestore` の **6 点はどこからも読まれない**。
+- **症状**: `surface` を宣言したテーマを適用しても、減光ローソク・分析モード背景 tint・リプレイ減光境界が
+  旧色のまま残る。また Market Profile の sessions を ON→OFF すると復元でローソクが `#26a69a` / `#ef5350`
+  へ戻り、適用中テーマの `bullish` / `bearish` が消える。
+- **根本原因**: クロムに「適用済みの色」という状態が存在せず、各利用点がモジュール定数を直接読んでいる。
+  §7.8 が謳う「クロムの色の書き手は `ChartRenderer.applyChromeColors` の 1 箇所」が、派生・復元経路で
+  成立していなかった（`resolveAllChrome` は 20 点すべてを正しく計算しており、計算側に誤りは無い）。
+- **なぜテストで落ちなかったか（本件の教訓）**: 検定境界が **「applier が sink へ 20 点を渡すこと」**で
+  止まっており、**「受け取った側がそれを使うこと」**を固定していなかった。渡された 20 点のうち 6 点が
+  捨てられていることを、どのテストも見ていない。要求は「配られること」ではなく「描画に使われること」。
+- **抜本策（実施中）**:
+  1. `ChartRenderer` が `applyChromeColors(slots)` で受けた slots を保持し、減光ローソク・透明化からの
+     復元・分析 tint・背景 fallback はその保持値から読む。`CHROME_CURRENT` は保持値の初期値としてのみ使う。
+  2. `ReplayBoundaryDimPrimitive` は色を注入で受ける（未注入時の既定は現行リテラル＝挙動不変）。
+  3. **検定境界を実利用点へ移す**。テーマ適用後に各利用点が書く色が `resolveAllChrome(theme).slots` と
+     一致すること、テーマ未設定時は現行リテラルと文字列一致すること（D-11）を fake lwc で固定する。
+- **横展開の観点**: 「単一情報源の表から値を配る」設計では、配信の検定だけでは不十分で、**消費点ごとに
+  「その値を使っているか」を固定**しないと同種の取り残しが再発する。段階 4 以降の配線でも同じ規律を適用する。
+
+## ISSUE-319: [欠陥] ChartRenderer のクロム出力に書き手が 4 つあり、テーマ適用が表示モードを壊す（2026-08-09）
+- **ステータス**: RESOLVED（段階 3 で是正。`_deriveCandleOptions` / 背景導出へ一本化し、表示モードを
+  `_analysisTintOn` / `_dimRange` として保持。透明化・分析 tint・ペア減光の 3 症状が同時に消えたことを実測で確認）
+- **重大度**: 高（§7.6 受入基準 16 に違反。分析モードの状態表示が無言で誤る）
+- **発見の経緯**: 段階 3 の再レビューで指摘され、本会話で独立に実証した。ISSUE-318 の是正（読み手を保持値へ寄せる）
+  が「読み側」だけを直し「書き側」に届いていなかったことが露呈した形。
+- **根本原因**: `ChartRenderer` は「今の見え方」を決める入力を 2 系統もつ。
+  (a) 配信済みのクロム色 `_chromeSlots`（20 点）、(b) 表示モード（ローソク透明化／ペア外減光／分析 tint）。
+  ところが出力を書く場所が **4 つに分裂し互いの状態を知らない**：
+  `applyChromeColors` / `setCandleTransparency` / `dimCandlesOutsidePair` / `setAnalysisTint`。
+  §7.8 が謳う「クロムの色の書き手は `applyChromeColors` の 1 箇所」は実体として成立していなかった。
+- **実測された症状（3 件・すべて同一原因）**:
+  1. MP sessions か tf-period 列で**ローソクが透明**の状態でテーマを適用すると不透明色へ戻る
+     （`rgba(0,0,0,0)` → `#00ff00`）。モードを切り替えるまで戻らない。
+  2. **分析モード ON**（背景 tint 表示中）にテーマを適用すると tint が消える（`#1b1a24` → `#202020`）。
+     モードは ON のままなので、背景で状態を示す仕組みが無言で誤る。
+  3. **ペア hover 中**にテーマを適用すると、ペア内は新色・ペア外の減光色だけ旧色のまま混在する
+     （`#16191f` のまま。正しくは `#23221d`）。
+- **抜本策（実施中）**: `_chromeSlots` と表示モードを**入力**とし、ローソク options と背景 options を
+  **導出する関数を 1 本**置く。4 メソッドは「自分の入力を更新して導出関数を呼ぶ」だけにする。どの入力が
+  変わっても同じ規則で出力が再計算されるため 3 件が同時に消え、§7.8 の不変条件が実体になる。
+  ガード（`if (transparent) return;` 等）は症状の条件を避けるだけなので採らない。
+- **§3.4 の解釈（本件で確定）**: 禁じられているのはビュー（時間足・表示レンジ・価格スケール・スクロール
+  位置・オートスケール）への介入であり、**自分が所有する系列データの再着色は該当しない**。
+  リプレイ減光境界が `requestUpdate` で自分の canvas を塗り直すのと同じ扱いができる。
+- **横展開の観点**: 「状態 × 状態」で出力が決まる箇所は、状態ごとに書き手を作らず**導出を 1 本にする**。
+  検定も単一状態ではなく**状態の組み合わせ**で固定する（本件は各状態単独のテストはすべて緑だった）。
+
+## ISSUE-320: [重複] テーマ用 CSS 50 規則のうち 35 規則が `tpl-*` の接頭辞違いの逐語複製（2026-08-09）
+- **ステータス**: OPEN（段階 3 の再レビューで検出・本件では未着手）
+- **重大度**: 中（片方だけ直すと 2 つのメニューの見た目が割れる。ISSUE-304 / ISSUE-278 #16 と同じ病因）
+- **実測**: `css/app.css` の新規 50 規則のうち、`tpl-menu` / `tpl-dialog` と**同名（接頭辞のみ違い）かつ宣言本文が
+  完全一致**が 35 件、本文差異 2 件、テーマ固有 13 件。
+- **抜本策**: 共通部分を接頭辞に依存しないクラス（例 `.ui-menu-pop` / `.ui-dialog-*`）へ括り出し、`tpl-*` と
+  テーマ側の要素に**同じクラスを付ける**。差分 2 件だけを固有規則として残す。
+- **本件で着手しない理由**: 既存 `.tpl-*` の markup へクラスを足す変更を伴い、テンプレート機能への退行リスクが
+  段階 3 のスコープを超える。段階 4 か独立の是正として、テンプレート側の回帰を固定してから実施する。
