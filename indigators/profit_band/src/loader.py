@@ -11,13 +11,6 @@ from __future__ import annotations
 # dataset/rollup_store/tail_reader の shim と対称に、repo 根を sys.path へ挿入して marketdata を
 #   解決可能にする（profit_band を standalone 実行/import する文脈＝lwc_demo.py・単体テストで
 #   cwd が repo 根でない場合の ModuleNotFoundError: marketdata を防ぐ＝develop の自己完結性を回復）。
-import sys as _sys
-from pathlib import Path as _Path
-
-_WORKSPACE_ROOT = _Path(__file__).resolve().parents[3]  # src→profit_band→indigators→repo 根
-if str(_WORKSPACE_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_WORKSPACE_ROOT))
-
 from marketdata.ohlc_csv_loader import load_ohlc_csv  # noqa: E402
 
 __all__ = ["load_ohlc_csv"]

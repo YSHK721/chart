@@ -16,7 +16,7 @@
     は CSV の列定義に従いそのまま採用する（bit-exact は CSV 列定義依存・SPEC §9）。
 
 依存:
-    標準: __future__, pathlib, sys / 外部: なし / プロジェクト内: marketdata.ohlc_csv_loader
+    標準: __future__ / 外部: なし / プロジェクト内: marketdata.ohlc_csv_loader
 """
 
 from __future__ import annotations
@@ -24,16 +24,9 @@ from __future__ import annotations
 # ISSUE-179 項目 1: CSV 読み込みの実体は最下層共有パッケージ marketdata.ohlc_csv_loader に
 #   一本化した。本モジュールは「自パッケージの読み込み方針（必須列・列名 cast・空 CSV
 #   ガード）」だけを宣言して共有機構へ委譲する薄い shim であり、挙動は一本化前と一致する。
-#   profit_band/src/loader.py と対称に repo 根を sys.path へ挿入し、パッケージを standalone
-#   実行/import する文脈（demo.py・lwc_demo.py・単体テスト）で cwd が repo 根でない場合の
-#   ModuleNotFoundError: marketdata を防ぐ。
-import sys as _sys
-from pathlib import Path
-
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]  # src→profit_oscillator2→indigators→repo 根
-if str(_WORKSPACE_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_WORKSPACE_ROOT))
-
+#   ISSUE-087 🟡-3: 実行時の sys.path insert は撤去した。探索パスの解決は台帳
+#   tools/dev_paths.txt を単一源とする既存機構が担う（pytest=indigators/conftest.py と
+#   pyproject の pythonpath / 実行時=tools/dev_paths.sh / 対話=tools/install_dev_paths.py の .pth）。
 from marketdata.ohlc_csv_loader import make_csv_loader  # noqa: E402
 
 

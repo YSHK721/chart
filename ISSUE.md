@@ -5633,3 +5633,32 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   実際に異なる値）だけを渡す。決済の意味づけがどこで何かを読み取りやすくなる副次効果もある。
 - **実測**: 962 → 906 行（**56 行削除**・10 箇所を変換）。simulator スイートは
   **906 passed / 9 skipped で基準線と完全一致**。
+
+## ISSUE-309: [重複] `src/loader.py` 18 個の実行時 `sys.path` insert を撤去（ISSUE-087 🟡-3 の完了）（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・全スイート基準線一致／standalone も同数成立）
+- **重大度**: Middle（探索パス設定が台帳外に 18 箇所あり、単一源の原則が破れていた）
+- **承認**: 依頼者承認（2026-08-09・「正規パッケージ化」）。**ビルドバックエンドは導入していない**
+  （`pyproject.toml` の記録どおり `[build-system]` / `[project]` を置かない方針を維持。
+  editable install は「venv に setuptools 無し・オフライン」のため既に不採用と記録済み）。
+- **撤去してよい根拠（すべて既存の記録・実測）**:
+  - `indigators/conftest.py` の docstring が **「各 src の `sys.path.insert` を不要にする」** と明記。
+  - 探索パスの単一源は `tools/dev_paths.txt`。消費者は pytest（`pyproject` の pythonpath）・
+    実行時（`tools/dev_paths.sh`）・対話（`tools/install_dev_paths.py` の `.pth`）の 3 経路。
+  - 実測: bootstrap を持つ状態でも **standalone import が成立するのは 18 スライス中 5 件**だけで、
+    残り 13 件は兄弟スライス（`moving_averages` / `mql_builtins` / `profit_system`）の解決に失敗する。
+    つまり bootstrap は宣言された目的（standalone での ModuleNotFoundError 防止）を達成していない。
+- **是正**: 18 ファイルから `sys.path.insert` ブロックを撤去し、存在理由を説明していた注記を
+  「探索パスは台帳由来の既存機構が担う」へ書き換えた（残すと嘘になるため）。
+- **実測（撤去前 → 撤去後）**:
+  | 対象 | 結果 |
+  |---|---|
+  | 削除行数 | **126 行**（18 ファイル × 7 行） |
+  | 指標 27 スライス | 件数完全一致 |
+  | tools / marketdata | 409 passed / 1 skipped（一致） |
+  | indicator_ui api | 30 failed / 832 passed（一致・失敗は既存の環境要因） |
+  | 台帳単一源の検定 | 8 passed |
+  | standalone（`PYTHONPATH=<自ツリー>`） | **5 / 18 成立＝撤去前と同数**（13 件の失敗は撤去前から同じ） |
+- **副次的に判明した既知の罠（ISSUE-279 の再現）**: `PYTHONPATH` 無しの standalone は venv の
+  `.pth`（絶対パス固定）経由で **main チェックアウトの実装**を読む。worktree で bare 実行すると
+  「殻は worktree・実装は main」になる。`dev_paths.sh` / pytest はいずれも自ツリーから解決するため
+  影響を受けない。standalone 実行時は `PYTHONPATH` を自ツリーへ向けること。
