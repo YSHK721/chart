@@ -21,7 +21,7 @@ import pytest
 from tools.codescan import default_registry
 from tools.codescan import kinds
 from tools.codescan.cli import main
-from tools.codescan.collector import Scope
+from tools.codescan.collector import Scope, iter_files
 from tools.codescan.dependencies import Resolver, build_graph, find_cycles, python_roots
 from tools.codescan.duplication import cluster_fragments, diverged_names, find_block_clones
 from tools.codescan.javascript_analyzer import JavaScriptAnalyzer, tokenize_js
@@ -497,6 +497,56 @@ def test_scope_ledger_excludes_vendor_and_includes_sources():
     assert scope.allows("unified_ui/web/js/op_log.js") is True
     assert scope.allows("lightweight-charts-python-main/lightweight_charts/abstract.py") is False
     assert scope.allows("prototype_260626-01/web/js/main.js") is False
+
+
+def test_scope_ledger_excludes_worktree_copies_of_the_repository():
+    """``.claude/worktrees/<name>/`` はリポジトリ自身の複製。走査すると全ファイルが
+    二重計上され、トークン量も worktree の数だけ増えて OOM で落ちる（実測）。"""
+    scope = Scope.from_ledger(_ROOT)
+    assert scope.allows(".claude/worktrees/wt/marketdata/dataset.py") is False
+    assert scope.allows(".claude/agents/foo.py") is False
+    assert scope.allows("simulator/.venv/lib/x.py") is False
+
+
+def test_traversal_does_not_follow_a_self_referencing_symlink(tmp_path: Path):
+    """``unified_ui/web/node_modules`` の自己参照 symlink は実在する（ISSUE-280）。
+
+    辿ると深さが際限なく増え、走査が OOM で落ちる（実測: exit 137）。除外ディレクトリへ
+    降りないこと・ディレクトリ symlink を辿らないことの両方で断つ。
+    """
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "codescan_scope.txt").write_text(
+        "+ **/*.py\n- **/node_modules/**\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    modules = tmp_path / "src" / "node_modules"
+    modules.mkdir()
+    (modules / "dep.py").write_text("y = 2\n", encoding="utf-8")
+    (modules / "self").symlink_to(modules, target_is_directory=True)
+
+    found = iter_files(tmp_path, Scope.from_ledger(tmp_path), default_registry())
+
+    assert found == ["src/a.py"]
+
+
+def test_traversal_does_not_follow_symlinked_directories_even_when_allowed(tmp_path: Path):
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "codescan_scope.txt").write_text("+ **/*.py\n", encoding="utf-8")
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
+
+    found = iter_files(tmp_path, Scope.from_ledger(tmp_path), default_registry())
+
+    assert found == ["real/a.py"]
+
+
+def test_scope_blocks_directory_before_descending():
+    scope = Scope.from_ledger(_ROOT)
+    assert scope.blocks_directory(".claude") is True
+    assert scope.blocks_directory("unified_ui/web/node_modules") is True
+    assert scope.blocks_directory("lightweight-charts-python-main") is True
+    assert scope.blocks_directory("marketdata") is False
 
 
 def test_cli_exclude_option_appends_to_the_ledger_without_replacing_it():

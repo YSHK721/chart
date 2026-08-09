@@ -5469,3 +5469,31 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **影響**: 是正前、worktree で本検定は「台帳が空でも実在が空でも一致」しうる状態にあった
   （＝登録漏れを検出できない）。main チェックアウトでは正しく動いていたため気付かれなかった。
 - **関連**: ISSUE-279（worktree で main の実装がテストされていた）、ISSUE-280（web スイート台帳）。
+
+## ISSUE-303: [ツール] codescan の走査が symlink ループと worktree 複製で OOM 停止（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・共有チェックアウトで実測確認）
+- **重大度**: High（ツールが共有チェックアウトでは一度も完走できない）
+- **発見の経緯**: `feature/codescan-duplication` を develop へマージ後、`/workspaces/app` で
+  `python -m tools.codescan` を実行したところ **exit 137（Killed = OOM）**。worktree 内では
+  完走していた（1342 ファイル / 17 秒 / 674MB）ため、チェックアウト差が原因と判断した。
+- **実測（原因の切り分け）**:
+  | 段 | 結果 |
+  |---|---|
+  | `iter_files` の戻り値を出す前に Killed | 走査そのものが原因（解析・重複検出ではない） |
+  | symlink を辿らない走査へ変更後 | 40,265 ファイル / 3.0 秒 / 20MB（完走） |
+  | うち `node_modules` 配下 | **0 件**（変更前は無限に増えていた） |
+  | 台帳へ隠しディレクトリ除外を追加後 | **1,452 ファイル / 0.0 秒 / 13MB** |
+- **原因（2 つ）**:
+  1. `Path.rglob("*")` がディレクトリ symlink を辿る。`unified_ui/web/node_modules` には
+     自己参照 symlink が実在し（ISSUE-280 で判明済み）、深さが際限なく増えていた。
+     worktree には `node_modules` が無いため再現しなかった。
+  2. 除外を「走査してから捨てる」順序にしていた。`.claude/worktrees/<name>/` には
+     **リポジトリ自身の完全な複製**が入るため、降りた時点で全ファイルが二重になる
+     （実測 38,812 ファイル）。重複検出の結果としても無意味になる。
+- **是正（原因除去）**: `os.walk(..., followlinks=False)` へ変更し、`dirnames` を
+  その場で刈って**除外ディレクトリへ降りない**ようにした（`Scope.blocks_directory`）。
+  台帳 `tools/codescan_scope.txt` に隠しディレクトリ（`.*/**` / `**/.*/**`）の除外を追加。
+- **検定**: `tools/tests/test_codescan.py` に 3 件追加（自己参照 symlink で終了すること・
+  許可されていてもディレクトリ symlink を辿らないこと・降りる前に除外判定できること）。
+  tools 全体 152 件 Green。
+- **関連**: ISSUE-280（node_modules 自己参照 symlink）、ISSUE-302（worktree 前提の検定）。

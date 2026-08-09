@@ -6,6 +6,7 @@ CLI の ``--include/--exclude`` は台帳の**後ろに追記**される（台�
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -45,6 +46,12 @@ class Scope:
 
     def __init__(self, rules: "list[tuple[bool, str]]") -> None:
         self._rules = [(include, _glob_to_regex(pattern), pattern) for include, pattern in rules]
+        # `X/**` 形式の規則は「ディレクトリ X 以下すべて」を意味する。走査時に X へ
+        # 降りる前に判定できるよう、ディレクトリ用の規則として別に持つ。
+        self._dir_rules = [
+            (include, _glob_to_regex(pattern[:-3]), pattern)
+            for include, pattern in rules if pattern.endswith("/**")
+        ]
 
     @classmethod
     def from_ledger(cls, repo_root: Path, extra_include=(), extra_exclude=()) -> "Scope":
@@ -68,6 +75,18 @@ class Scope:
                 verdict = include
         return verdict
 
+    def blocks_directory(self, relative_dir: str) -> bool:
+        """このディレクトリ以下へ**降りない**と決められるか。
+
+        走査後に除外するのでは遅い。``node_modules`` には自己参照 symlink が実在し
+        （ISSUE-280）、辿ると際限なく深くなってメモリを食い潰す。降りる前に切る。
+        """
+        verdict = False
+        for include, regex, _ in self._dir_rules:
+            if regex.match(relative_dir):
+                verdict = not include
+        return verdict
+
     @property
     def rules(self) -> "list[str]":
         return [("+ " if include else "- ") + pattern for include, _, pattern in self._rules]
@@ -75,19 +94,29 @@ class Scope:
 
 def iter_files(repo_root: Path, scope: Scope, registry: AnalyzerRegistry,
                roots: "list[str]" = ()) -> "list[str]":
-    """走査対象のリポジトリ相対パスを返す（安定順）。"""
+    """走査対象のリポジトリ相対パスを返す（安定順）。
+
+    除外ディレクトリへは**降りない**（走査後に捨てない）。また、ディレクトリの
+    シンボリックリンクは辿らない。``unified_ui/web/node_modules`` には自己参照
+    symlink が実在し（ISSUE-280）、辿ると深さが際限なく増えて OOM で落ちる（実測）。
+    """
     bases = [repo_root / r for r in roots] if roots else [repo_root]
     found: "set[str]" = set()
     for base in bases:
         if base.is_file():
             found.add(base.relative_to(repo_root).as_posix())
             continue
-        for path in base.rglob("*"):
-            if not path.is_file() or registry.for_path(path) is None:
-                continue
-            relative = path.relative_to(repo_root).as_posix()
-            if scope.allows(relative):
-                found.add(relative)
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+            relative_dir = Path(dirpath).relative_to(repo_root).as_posix()
+            prefix = "" if relative_dir == "." else f"{relative_dir}/"
+            dirnames[:] = [name for name in dirnames
+                           if not scope.blocks_directory(f"{prefix}{name}")]
+            for name in filenames:
+                if registry.for_path(name) is None:
+                    continue
+                relative = f"{prefix}{name}"
+                if scope.allows(relative) and (repo_root / relative).is_file():
+                    found.add(relative)
     return sorted(found)
 
 
