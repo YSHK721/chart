@@ -5741,3 +5741,16 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   - `verify_parity.py` の `_launch` は 21 行の別実装のため据え置き。
 - **実測**: 合計 **227 行削除**。27 スライス件数一致 / report_ui 171 passed /
   marketdata・tools・simulator 1,315 passed・10 skipped（いずれも基準線一致）。
+
+## ISSUE-315: [重複] replay_ui の wiring 検定が同型のテストダブルを 5 本で複製（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・web スイート件数一致）
+- **原因**: `replay_*_wiring` 系 5 スイートが fake DOM 要素・document・chart・controller を個別に
+  手書きしていた。ファイル内コメントにも「`replay_mp_wiring.test.js` と同型」と明記されており、
+  複製であることは認識されたまま残っていた。
+- **是正**: `simulator/replay_ui/web/tests/_fakes.js` に `fakeEl` / `fakeDoc` / `fakeChart` /
+  `fakeController` を 1 つずつ置き、**正規化して一致する定義だけ**を差し替えた
+  （`fakeDoc` は初期モードがスイートごとに違うため引数化）。各スイート固有の spy は残す。
+- **実測**: **103 行削除**（5 ファイル）。web スイートは indicator_ui 1141 / market_profile 333 /
+  replay_ui 338・fail 0 で基準線と完全一致。
+- **据え置き**: `chart_template_*` 3 本の共通関数は合計 21 行と小さく、残りの type-1 は
+  関数境界に一致しないブロック（import・setup の並び）であるため機械的な集約に向かない。
