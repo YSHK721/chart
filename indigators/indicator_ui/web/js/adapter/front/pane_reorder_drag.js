@@ -59,13 +59,19 @@ export class PaneReorderDrag {
     // 直近の描画で受け取った器と各ペインの幾何（落下先の判定に使う）。
     this._root = null;
     this._groups = [];
-    // ドラッグ状態。null＝非ドラッグ。{ group, startY, moved, target }
+    // ドラッグ状態。null＝非ドラッグ。{ group, pointerId, startY, moved, target }
     this._drag = null;
     this._indicator = null;
     // 捕捉中の掴み手。null＝捕捉なし。{ handle, pointerId }
     this._captured = null;
-    // ドラッグ直後に発火するチップの click を 1 回だけ握りつぶすための印。
-    this._suppressClick = false;
+    // ドラッグ直後に発火する click を握りつぶす対象。null＝握りつぶさない。
+    //   真偽値ではなく **掴み手の要素そのもの**を持つ（🔴-1 是正 2026-08-09）。
+    //   並べ替えが成立すると movePane → 凡例 DTO 再発行 → PaneLegendView が root.innerHTML='' で
+    //   掴み手を DOM から外すため、click が飛んでくる保証が無い。真偽値だと飛ばなかった印が残り、
+    //   次に押した**別の要素**（掴めない価格ペインのチップ）の click を食う。要素の同一性で持てば
+    //   再描画で掴み手は必ず新しい要素になる＝残留値がライブな要素と一致することが起こり得ない
+    //   （「外れた要素へ click が配送されるか」というブラウザ挙動への依存自体が消える）。
+    this._suppressClickFor = null;
     this._onPointerMove = (ev) => this._handleMove(ev);
     this._onPointerUp = (ev) => this._handleUp(ev);
     this._onLostCapture = (ev) => this._handleUp(ev);
@@ -95,12 +101,15 @@ export class PaneReorderDrag {
     return this._drag !== null;
   }
 
-  // 直前のドラッグ由来の click を握りつぶすべきか（1 回だけ true を返す）。
+  // その要素の click が「直前のドラッグ由来」か（掴んだ当の要素にだけ 1 回 true を返す）。
   //   掴み手はチップ（開閉ボタン）と同じ要素なので、動かした後の click で畳まれないようにする。
-  consumeClickSuppression() {
-    const suppress = this._suppressClick;
-    this._suppressClick = false;
-    return suppress;
+  //   照合に使わなかった場合も印は必ず消費する（次の掴みまで持ち越さない）。
+  //
+  //   @param {object} handle click を受けた要素（PaneLegendView が渡すチップ）。
+  consumeClickSuppression(handle) {
+    const target = this._suppressClickFor;
+    this._suppressClickFor = null;
+    return target != null && target === handle;
   }
 
   _handleDown(ev, group) {
@@ -110,9 +119,12 @@ export class PaneReorderDrag {
     if (ev && ev.button != null && ev.button !== 0) {
       return;   // 左ボタン以外（右クリック・中クリック）は掴まない。
     }
-    // 新しい操作の始まりでは前回の握りつぶし印を捨てる（click が飛ばずに残った場合の持ち越し防止）。
-    this._suppressClick = false;
-    this._drag = { group, startY: this._clientY(ev), moved: false, target: group.paneIndex };
+    this._drag = {
+      group,
+      // 掴んだポインタの識別子。以後この指の事象だけを見る（🟡-2 是正 2026-08-09）。
+      pointerId: (ev && ev.pointerId != null) ? ev.pointerId : null,
+      startY: this._clientY(ev), moved: false, target: group.paneIndex,
+    };
     this._capturePointer(group.handle, ev);
     this._bindWindow(true);
     if (ev && typeof ev.preventDefault === 'function') {
@@ -122,7 +134,7 @@ export class PaneReorderDrag {
 
   _handleMove(ev) {
     const drag = this._drag;
-    if (!drag) {
+    if (!drag || this._isOtherPointer(ev, drag)) {
       return;
     }
     const dy = this._clientY(ev) - drag.startY;
@@ -139,9 +151,22 @@ export class PaneReorderDrag {
     this._showIndicator(drag);
   }
 
-  _handleUp() {
+  // 掴んだ指以外の事象か。document 購読も lostpointercapture も「どのポインタか」を選ばずに
+  //   届くため、掴み中に別の指が触れて離すと意図しない位置で並べ替えが確定する。
+  //
+  //   照合は **両側が識別子を持つときだけ** 行う。片側でも欠けたら照合しない（＝掴んだ指の
+  //   事象として通す）。事象側の欠落だけを手当てして掴み側の欠落を放置すると、識別子なしで
+  //   掴んだ瞬間に「識別子を持つ後続事象がすべて他人の指」になり、pointerup も pointercancel も
+  //   lostpointercapture も通らず掴みが永久に終わらない。それは凡例の再描画停止が解けない状態＝
+  //   ISSUE-342 で塞いだフェイルオープンの再来になる（🟡-A・再レビュー 2026-08-09）。
+  //   照合できない条件で掴みを孤立させるくらいなら、照合をあきらめる方が安全側に倒れる。
+  _isOtherPointer(ev, drag) {
+    return !!ev && ev.pointerId != null && drag.pointerId != null && ev.pointerId !== drag.pointerId;
+  }
+
+  _handleUp(ev) {
     const drag = this._drag;
-    if (!drag) {
+    if (!drag || this._isOtherPointer(ev, drag)) {
       return;
     }
     // 先に掴みを解く: movePane が凡例 DTO を再発行する（＝再描画が走る）ため、その前に
@@ -154,10 +179,11 @@ export class PaneReorderDrag {
     drag.group.box.style.transform = '';
     removeClass(drag.group.box, DRAGGING_CLASS);
     this._hideIndicator();
+    // 握りつぶすのは「動かした当の掴み手」だけ。動かしていなければ印を消す（＝開閉として通す）。
+    this._suppressClickFor = drag.moved ? drag.group.handle : null;
     if (!drag.moved) {
       return;   // 動かしていない＝チップのクリック（開閉）としてそのまま通す。
     }
-    this._suppressClick = true;
     if (drag.target !== drag.group.paneIndex) {
       this._movePane(drag.group.paneIndex, drag.target);
     }
