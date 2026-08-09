@@ -31,6 +31,12 @@ function fakeElement(tagName = 'div', className = '') {
     children: [],
     listeners: {},
     _rectTop: 0,
+    // ポインタ捕捉（掴んだ要素へ以後のポインタ事象を配送する DOM の仕組み）。
+    //   捕捉した／解いた pointerId を記録するだけの Fake。
+    captured: [],
+    released: [],
+    setPointerCapture(id) { this.captured.push(id); },
+    releasePointerCapture(id) { this.released.push(id); },
     get innerHTML() { return this._innerHTML ?? ''; },
     set innerHTML(v) { this._innerHTML = v; if (v === '') { this.children = []; } },
     append(...nodes) { for (const n of nodes) { this.children.push(n); } },
@@ -38,7 +44,10 @@ function fakeElement(tagName = 'div', className = '') {
     removeChild(n) { this.children = this.children.filter((c) => c !== n); return n; },
     getBoundingClientRect() { return { top: this._rectTop, height: 0 }; },
     addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); },
-    fire(type, ev) { for (const fn of this.listeners[type] ?? []) { fn(ev); } },
+    removeEventListener(type, fn) {
+      this.listeners[type] = (this.listeners[type] ?? []).filter((f) => f !== fn);
+    },
+    fire(type, ev) { for (const fn of [...(this.listeners[type] ?? [])]) { fn(ev); } },
     querySelector(sel) {
       const want = sel.startsWith('.') ? sel.slice(1) : sel;
       return this.children.find((c) => c.className === want) ?? null;
@@ -179,6 +188,64 @@ test('離したら見た目を必ず戻す（追従の transform・掴み中ク�
   assert.equal(groups[1].box.style.transform, '');
   assert.equal(groups[1].box.className.includes('is-dragging'), false);
   assert.equal(root.children.some((c) => c.className === 'pane-drop-indicator'), false, '予告線が残っている');
+});
+
+// ---- 掴みの終了保証（フェイルオープンの遮断） ---- //
+//
+// ドラッグ中は PaneLegendView が凡例の再描画を丸ごと止める（isDragging）。止めた再描画を
+//   再開する条件が「pointerup が届くこと」だけだと、届かない経路が 1 つでもあれば凡例が
+//   恒久的に固まる（値更新も指標の追加削除の反映も全停止）。停止は **終了が保証された寿命**
+//   ＝掴み手へのポインタ捕捉に紐づける。捕捉が失われれば lostpointercapture が必ず届く。
+
+test('掴んだら掴み手へポインタを捕捉し、離したら必ず解く', () => {
+  const { doc, groups } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  assert.deepEqual(groups[1].handle.captured, [7], '捕捉していない＝終了イベントが要素へ届く保証が無い');
+
+  doc.fire('pointerup', { clientY: 450, pointerId: 7 });
+
+  assert.deepEqual(groups[1].handle.released, [7], '捕捉を解いていない＝次の操作へ持ち越す');
+});
+
+test('pointerup が届かなくても掴みは必ず終わる（捕捉喪失＝lostpointercapture）', () => {
+  const { doc, drag, groups } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  doc.fire('pointermove', { clientY: 600 });
+  assert.equal(drag.isDragging(), true, '前提: 掴んでいるはず');
+
+  // ブラウザ側の事情で捕捉が失われる（要素の消失・別の捕捉の開始・端末の割り込み）。
+  //   この経路では pointerup / pointercancel は配送されない。
+  groups[1].handle.fire('lostpointercapture', { pointerId: 7 });
+
+  assert.equal(drag.isDragging(), false, '掴みが残る＝凡例の再描画が恒久的に止まる（フェイルオープン）');
+  assert.equal(doc.listeners.pointermove.length, 0, 'document の購読が残っている');
+  assert.equal(groups[1].box.style.transform, '', '掴み中の見た目が残っている');
+});
+
+test('捕捉の喪失を 1 回の掴みで二重に処理しない（再入で並べ替えを 2 度指示しない）', () => {
+  const { doc, groups, moves } = setup();
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  doc.fire('pointermove', { clientY: 600 });
+  doc.fire('pointerup', { clientY: 600, pointerId: 7 });
+  // 捕捉解除に伴って遅れて届く lostpointercapture（実 DOM では releasePointerCapture が誘発する）。
+  groups[1].handle.fire('lostpointercapture', { pointerId: 7 });
+
+  assert.deepEqual(moves, [[1, 2]], '同じ掴みで並べ替えが 2 度指示された');
+});
+
+test('ポインタ捕捉を提供しない環境でも掴める（no-op へ縮退する）', () => {
+  const { doc, groups, moves } = setup();
+  delete groups[1].handle.setPointerCapture;
+  delete groups[1].handle.releasePointerCapture;
+
+  groups[1].handle.fire('pointerdown', { button: 0, clientY: 450, pointerId: 7 });
+  doc.fire('pointermove', { clientY: 600 });
+  doc.fire('pointerup', { clientY: 600, pointerId: 7 });
+
+  assert.deepEqual(moves, [[1, 2]], '捕捉が無い環境で並べ替えが動かなくなった');
 });
 
 test('掴んでいる間は document の pointermove/up だけを購読する（離したら解除）', () => {
