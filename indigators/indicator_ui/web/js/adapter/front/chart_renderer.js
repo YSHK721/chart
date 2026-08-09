@@ -716,18 +716,24 @@ export class ChartRenderer {
   // メイン系列（ローソク）が居るペインの番号。価格ペインは並べ替えの対象外（movePane 参照）。
   //   番号を 0 と決め打たず upstream へ問う（将来 addPane 順が変わっても判定がずれない）。
   //   getPane 非提供の環境（Fake・旧版）は 0（生成時の既定ペイン）へ縮退する。
+  //
+  //   受理するのは **0 以上の整数だけ**（🟡-3 是正 2026-08-09）。バンドル実測（v5.2.0）で
+  //   `paneIndex()` は `hf(t){return this.od.indexOf(t)}` 由来であり、内部配列に無いペインでは
+  //   **-1** を返す。-1 は Number.isFinite を通ってしまい、価格ペイン番号として受理すると
+  //   `_isPaneMovable` の `paneIndex !== this._pricePaneIndex()` が全ペインで真になる
+  //   ＝禁じているはずの価格ペイン移動が通る（ガードがフェイルオープンする）。
   _pricePaneIndex() {
     const ms = this._mainSeries;
     if (ms && typeof ms.getPane === 'function') {
       const pane = ms.getPane();
       if (pane && typeof pane.paneIndex === 'function') {
         const idx = pane.paneIndex();
-        if (Number.isFinite(idx)) {
+        if (Number.isInteger(idx) && idx >= 0) {
           return idx;
         }
       }
     }
-    return 0;
+    return 0;   // 範囲外（-1＝未登録）・非整数は既定ペインへ縮退する。
   }
 
   // 当該ペインを並べ替えられるか。価格ペインは対象外、指標ペインが 1 つだけなら動かす先が無い。
