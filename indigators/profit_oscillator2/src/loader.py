@@ -29,49 +29,20 @@ from __future__ import annotations
 #   ModuleNotFoundError: marketdata を防ぐ。
 import sys as _sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[3]  # src→profit_oscillator2→indigators→repo 根
 if str(_WORKSPACE_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_WORKSPACE_ROOT))
 
-from marketdata.ohlc_csv_loader import read_ohlc_csv_with_policy  # noqa: E402
+from marketdata.ohlc_csv_loader import make_csv_loader  # noqa: E402
 
-if TYPE_CHECKING:  # 型注釈専用（PEP 563 により実行時評価されない）
-    import pandas as pd
 
 # Oscillator2 必須列（volume を含む）。open は計算未使用だが OHLCV 整合のため必須化。
 _REQUIRED = ("open", "high", "low", "close", "volume")
 
 __all__ = ["load_ohlcv_csv"]
 
-
-def load_ohlcv_csv(
-    path: str | Path,
-    *,
-    time_column: str | None = None,
-    require: tuple[str, ...] = _REQUIRED,
-    **read_csv_kwargs,
-) -> pd.DataFrame:
-    """CSV を読み込み OHLCV 列を備えた DataFrame を返す。
-
-    Args:
-        path: CSV ファイルパス。
-        time_column: 指定すると当該列を datetime 化して index に設定する（大小不問）。
-        require: 必須列（既定は open/high/low/close/**volume**）。
-        **read_csv_kwargs: pandas.read_csv へ渡す追加引数。
-
-    Returns:
-        必須列（および任意の追加列）を持つ DataFrame。行は時系列昇順を前提とする。
-
-    Raises:
-        FileNotFoundError: ファイルが存在しない場合。
-        KeyError: 必須列（volume 含む）が欠けている場合、または指定の時刻列が存在しない場合。
-    """
-    return read_ohlc_csv_with_policy(
-        path,
-        read_csv_kwargs,
-        time_column=time_column,
-        require=require,
-        cast_column_names=True,
-    )
+# ISSUE-306: 委譲の実体は marketdata.ohlc_csv_loader が 1 つ持つ（17 スライスでの手書き複製を撤去）。
+#   本モジュールは自パッケージの読み込み方針（必須列・列名 cast・空 CSV ガード）だけを宣言する。
+#   生成される関数の公開シグネチャは複製時と同一（require= の上書きも可）。
+load_ohlcv_csv = make_csv_loader(_REQUIRED, cast_column_names=True)

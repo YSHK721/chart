@@ -5584,3 +5584,22 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   （`cache_layout` の公開契約と記述子の単一情報源）。
 - **残る課題（本 Issue の範囲外）**: 共有カーネル層が物理パッケージとして存在せず symlink で代替
   されている件（Phase 2）、`lwc_chart` 描画ポートの未宣言と `sys.path` bootstrap の 16 重複（Phase 3）。
+
+## ISSUE-306: [重複] 各スライスの `src/loader.py` が同一の委譲関数を 17 箇所で手書き複製（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・全 18 スライスのテスト件数不変で確認）
+- **重大度**: Middle（挙動は正しいが、読み込み方針を変えるとき 17 箇所を直す必要がある）
+- **発見の経緯**: ISSUE-304 で計測を是正した結果、削減見込みの 1・2・3・4・6 位がすべて
+  `indigators/*/src/loader.py` になった（symlink の誤計上に隠れていた真正重複）。
+- **原因**: 共有ローダ `marketdata.ohlc_csv_loader.read_ohlc_csv_with_policy` は既に存在したが、
+  各スライスが「必須列 + 3 方針を渡すだけの委譲関数」を docstring ごと写していた。実測で差は
+  **3 つの方針だけ**（`require` / `cast_column_names`（10 スライス）/ `require_non_empty`（2 スライス））。
+- **是正（原因除去）**: 共有ローダに `make_csv_loader(require, *, cast_column_names, require_non_empty)`
+  を追加し、各スライスは**方針の宣言 1 行**にした。生成関数の公開シグネチャは複製時と同一
+  （`(path, *, time_column=None, require=<既定>, **read_csv_kwargs)`・`require=` の上書きも可）ため、
+  呼出側・テストは 1 箇所も変更していない。
+- **実測**: 17 ファイルで **493 行削除**（例 `profit_mfi` 77→48 行）。全 18 スライスのテストは
+  **707 passed のまま件数完全一致・失敗ゼロ**。`profit_band` は既に 23 行の純再エクスポートで対象外。
+- **検定**: `marketdata/tests/test_csv_loader_policy.py` 6 件（必須列の大小不問照合・列名を改名しない
+  こと・3 方針の伝播・`require=` 上書き面の保持）。
+- **残る課題**: 各 loader 冒頭の `sys.path` bootstrap（16 重複・約 90 行）は、正規パッケージ化＝
+  技術スタック変更のため未着手（承認事項・ISSUE-088 🟡-3 に既出）。

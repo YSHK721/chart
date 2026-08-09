@@ -193,6 +193,50 @@ def _read_and_shape(
     return df
 
 
+def make_csv_loader(
+    require: tuple[str, ...],
+    *,
+    cast_column_names: bool = False,
+    require_non_empty: bool = False,
+):
+    """必須列と読み込み方針を束ねた CSV ローダを作る（ISSUE-306）。
+
+    ``indigators/*/src/loader.py`` は 17 スライスが同一の委譲関数を手書き複製しており、
+    差は本関数の 3 引数だけだった（codescan 実測: 削減見込みの 1・2・3 位がこの群）。
+    各スライスは「自分の読み込み方針」だけを宣言し、委譲の実体は本モジュールが 1 つ持つ。
+
+    生成される関数の公開シグネチャは複製されていた 17 関数と同一
+    （``(path, *, time_column=None, require=<既定>, **read_csv_kwargs)``）であり、
+    ``require=`` を呼出時に上書きできる面も保つ。
+
+    Args:
+        require: 必須列（例 ``("open", "high", "low", "close", "volume")``）。
+        cast_column_names: 列名を ``str(c).lower()`` で正規化するか。
+        require_non_empty: 0 行の CSV を ``ValueError`` とするか。
+
+    Returns:
+        CSV を読み込み必須列を備えた ``DataFrame`` を返す関数。
+    """
+
+    def load_csv(
+        path: str | Path,
+        *,
+        time_column: str | None = None,
+        require: tuple[str, ...] = require,
+        **read_csv_kwargs,
+    ) -> pd.DataFrame:
+        return read_ohlc_csv_with_policy(
+            path,
+            read_csv_kwargs,
+            time_column=time_column,
+            require=require,
+            cast_column_names=cast_column_names,
+            require_non_empty=require_non_empty,
+        )
+
+    return load_csv
+
+
 def load_ohlc_csv(
     path: str | Path,
     *,
