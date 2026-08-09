@@ -35,6 +35,7 @@
 import { COLOR_ROLES, isColorRole } from '../domain/color_roles.js';
 import { normalizeHexColor } from '../domain/color_value.js';
 import { TF_CODES } from '../domain/tf_meta.js';
+import { expandRoleColors } from './color_derivation.js';
 
 // §4.11 で確定した上限値（テンプレートと同型・E-19）。
 export const MAX_THEMES = 50;
@@ -276,6 +277,12 @@ export function adoptThemes(themes = []) {
 //   温存と無視は両立する — 保存値は原形、消費値は語彙内の解釈可能な宣言だけ。
 //   規則は保存時（saveTheme）と同一関数を使う＝保存形と消費形が定義上ずれない。
 //
+//   射影は 2 段（正規化 → 導出）。導出（color_derivation.expandRoleColors）を**ここに置く**のは、
+//   ここが読み出し側だからである。永続値（`this._themes` / `saveThemes` の入力）は原形のままで、
+//   導出値は 1 つも保存されない（§4.9 前方互換・§5.3 改名不変を壊さない）。導出値を保存すると、
+//   係数を直したときに既存テーマだけ古い導出値で固まり「基点を変えたのに従属色が追随しない」
+//   という破綻が起きる。宣言 0 件のテーマは導出も 0 件（部分写像）＝恒等（D-11）は構成上保たれる。
+//
 // @returns {{theme: ?object, ignoredTokens: string[]}} `ignoredTokens` は F-C3 の報告（警告は adapter）。
 export function projectThemeForUse(theme) {
   if (!theme || typeof theme !== 'object' || Array.isArray(theme)) {
@@ -283,7 +290,11 @@ export function projectThemeForUse(theme) {
   }
   const { roleColors, ignoredTokens } = normalizeRoleColors(theme.roleColors);
   return {
-    theme: { ...theme, roleColors, tfModifier: normalizeTfModifier(theme.tfModifier) },
+    theme: {
+      ...theme,
+      roleColors: expandRoleColors(roleColors),
+      tfModifier: normalizeTfModifier(theme.tfModifier),
+    },
     ignoredTokens,
   };
 }

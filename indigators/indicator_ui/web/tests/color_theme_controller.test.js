@@ -25,7 +25,9 @@ import {
 import { createHostView } from '../js/adapter/front/host_view.js';
 import { LocalStorageThemeGateway } from '../js/adapter/front/local_storage_theme_gateway.js';
 import { resolveAllChrome } from '../js/usecase/color_resolver.js';
-import { CODE, PRESET_THEMES, isPresetThemeId } from '../js/usecase/color_themes.js';
+import {
+  CODE, PRESET_THEMES, isPresetThemeId, projectThemeForUse,
+} from '../js/usecase/color_themes.js';
 
 const THEMES_KEY = 'indicatorUi.themes.v1';
 const ACTIVE_KEY = 'indicatorUi.activeTheme.v1';
@@ -157,7 +159,10 @@ test('UC-C02: クロムは選択したテーマで解決された値を配る', 
   controller.applyTheme('thm#1');
   // Assert
   assert.equal(payloads.length, 1, 'クロム配信が 1 回でない');
-  assert.deepEqual(payloads[0], resolveAllChrome(THEME_A));
+  // 配るのは **消費のための射影**（activeTheme()）を解決した値である（_applyChrome の実体）。
+  //   ここを原形 THEME_A で書くと、射影が恒等でない限り一致しない。段階 5-B（導出）で
+  //   部分宣言テーマの射影が恒等でなくなったため、期待値を契約どおりの形へ直す。
+  assert.deepEqual(payloads[0], resolveAllChrome(projectThemeForUse(THEME_A).theme));
   assert.equal(payloads[0].slots.layoutBackground, '#0a0b0c');
 });
 
@@ -466,8 +471,10 @@ test('起動: state を注入されたら gateway を読み直さない（起動
   assert.deepEqual(listedIds(controller), [PRESET.themeId, 'thm#1'], '一覧はプリセット合成後');
   assert.equal(controller.activeThemeId(), 'thm#1');
   // activeTheme() は「消費のための射影」を返す（§4.9: 永続値は原形・消費値は §4.4 の形）。
-  //   THEME_A は既に保存形なので、射影は値として恒等になる（同一参照ではない）。
-  assert.deepEqual(controller.activeTheme(), THEME_A);
+  //   段階 5-B（導出）以降、射影は正規化に加えて未宣言トークンの導出も行うため恒等ではない。
+  //   固定すべきは「消費値は射影である」ことであって、射影が恒等であることではない。
+  assert.deepEqual(controller.activeTheme(), projectThemeForUse(THEME_A).theme);
+  assert.equal(controller.activeTheme().roleColors.surface, '#0a0b0c', '宣言値は不変');
   assert.deepEqual(
     controller.themes().find((t) => t.themeId === 'thm#1'), THEME_A,
     '注入された値は原形のまま（合成は永続値を書き換えない）',
