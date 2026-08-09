@@ -17,6 +17,14 @@
 //   掴んでいる要素が毎フレーム作り直されて掴みが外れる。ドラッグ中だけ再構築を止め、
 //   ドロップ時に movePane → 凡例 DTO 再発行という通常経路で描き直す（描画経路を二重化しない）。
 //
+// 停止は「終了が保証された寿命」に紐づける（ポインタ捕捉・2026-08-09 是正）:
+//   再描画の停止を解除する条件が「pointerup が届くこと」だけだと、届かない経路が 1 つでもあれば
+//   凡例が恒久的に固まる（値の更新も指標の追加削除の反映も全停止＝フェイルオープン）。
+//   そこで掴んだ時点で掴み手へ **ポインタを捕捉**する（setPointerCapture）。捕捉した要素には
+//   以後のポインタ事象が必ず配送され、捕捉が失われるときは lostpointercapture が必ず届く。
+//   停止の寿命＝捕捉の寿命にすることで、終了イベントの取りこぼしを構造的に無くす。
+//   捕捉を提供しない環境（Fake・古い実装）は no-op へ縮退し、従来どおり document 購読で追う。
+//
 // DOM 非依存: document は注入。要素・document が無い環境（SSR・純ロジックテスト）は no-op。
 
 // クリックとドラッグを分ける移動量（px）。これ未満はクリック（チップの開閉）として扱う。
@@ -44,22 +52,23 @@ export class PaneReorderDrag {
    * @param {object} deps
    * @param {object} deps.document      DOM 実装（注入）。落下位置の線の生成にだけ使う。
    * @param {Function} deps.movePane    (fromIndex, toIndex) => boolean の並べ替えポート。
-   * @param {number} [deps.threshold]   クリックと見なす移動量の上限（px）。
    */
-  constructor({ document, movePane, threshold = DRAG_THRESHOLD_PX } = {}) {
+  constructor({ document, movePane } = {}) {
     this._document = document ?? null;
     this._movePane = typeof movePane === 'function' ? movePane : () => false;
-    this._threshold = threshold;
     // 直近の描画で受け取った器と各ペインの幾何（落下先の判定に使う）。
     this._root = null;
     this._groups = [];
     // ドラッグ状態。null＝非ドラッグ。{ group, startY, moved, target }
     this._drag = null;
     this._indicator = null;
+    // 捕捉中の掴み手。null＝捕捉なし。{ handle, pointerId }
+    this._captured = null;
     // ドラッグ直後に発火するチップの click を 1 回だけ握りつぶすための印。
     this._suppressClick = false;
     this._onPointerMove = (ev) => this._handleMove(ev);
     this._onPointerUp = (ev) => this._handleUp(ev);
+    this._onLostCapture = (ev) => this._handleUp(ev);
   }
 
   /**
@@ -104,6 +113,7 @@ export class PaneReorderDrag {
     // 新しい操作の始まりでは前回の握りつぶし印を捨てる（click が飛ばずに残った場合の持ち越し防止）。
     this._suppressClick = false;
     this._drag = { group, startY: this._clientY(ev), moved: false, target: group.paneIndex };
+    this._capturePointer(group.handle, ev);
     this._bindWindow(true);
     if (ev && typeof ev.preventDefault === 'function') {
       ev.preventDefault();   // テキスト選択・チャート側のドラッグ開始を巻き込まない。
@@ -117,7 +127,7 @@ export class PaneReorderDrag {
     }
     const dy = this._clientY(ev) - drag.startY;
     if (!drag.moved) {
-      if (Math.abs(dy) < this._threshold) {
+      if (Math.abs(dy) < DRAG_THRESHOLD_PX) {
         return;   // まだクリックと区別できない＝何も動かさない。
       }
       drag.moved = true;
@@ -136,8 +146,11 @@ export class PaneReorderDrag {
     }
     // 先に掴みを解く: movePane が凡例 DTO を再発行する（＝再描画が走る）ため、その前に
     //   ドラッグ状態を畳んでおかないと再描画が止められたままになる。
+    //   また _releasePointer は lostpointercapture を誘発しうるので、その再入が上の
+    //   `if (!drag) return` で弾かれるよう、状態を畳んでから捕捉を解く。
     this._bindWindow(false);
     this._drag = null;
+    this._releasePointer();
     drag.group.box.style.transform = '';
     removeClass(drag.group.box, DRAGGING_CLASS);
     this._hideIndicator();
@@ -206,6 +219,43 @@ export class PaneReorderDrag {
   _clientY(ev) {
     const y = ev && ev.clientY;
     return Number.isFinite(y) ? y : 0;
+  }
+
+  // 掴み手へポインタを捕捉し、捕捉の喪失（lostpointercapture）を掴みの終了へ結ぶ。
+  //   ドラッグ中は凡例の再描画を止めるため、**終了が必ず届く経路**を 1 本用意しておく必要がある
+  //   （pointerup だけに頼ると、届かない経路で凡例が恒久的に固まる）。
+  //   捕捉を提供しない環境・捕捉できない pointerId では何もしない（従来どおり document 購読で追う）。
+  _capturePointer(handle, ev) {
+    const pointerId = ev && ev.pointerId;
+    if (!handle || typeof handle.setPointerCapture !== 'function' || !Number.isFinite(pointerId)) {
+      return;
+    }
+    try {
+      handle.setPointerCapture(pointerId);
+    } catch {
+      return;   // 既に無効な pointerId 等。捕捉できないだけで掴みは続けられる。
+    }
+    this._captured = { handle, pointerId };
+    if (typeof handle.addEventListener === 'function') {
+      handle.addEventListener('lostpointercapture', this._onLostCapture);
+    }
+  }
+
+  // 捕捉を解く（掴みの終了で必ず通る）。購読も同時に外し、次の掴みへ持ち越さない。
+  _releasePointer() {
+    const cap = this._captured;
+    this._captured = null;
+    if (!cap) {
+      return;
+    }
+    if (typeof cap.handle.removeEventListener === 'function') {
+      cap.handle.removeEventListener('lostpointercapture', this._onLostCapture);
+    }
+    if (typeof cap.handle.releasePointerCapture === 'function') {
+      try {
+        cap.handle.releasePointerCapture(cap.pointerId);
+      } catch { /* 既に捕捉が失われている（要素の消失など）。解除済みとして扱う。 */ }
+    }
   }
 
   // 掴んでいる間だけ document で move/up を拾う（ポインタが凡例の外＝チャート上へ出ても追える）。

@@ -3,13 +3,17 @@
 // 設計入力: 内部設計書 §3.3.4 / §7.1.2。
 // ★ lightweight-charts v5.2.0 の JS API 名（addSeries / addPane / removePane / panes /
 //   createPriceLine / setData / applyOptions / removeSeries / removePriceLine /
-//   subscribeCrosshairMove / createTextWatermark / timeScale / attachPrimitive / priceScale）を
+//   subscribeCrosshairMove / createTextWatermark / timeScale / attachPrimitive / priceScale /
+//   getPane / getHeight / paneIndex / moveTo）を
 //   呼んでよいのは **宣言された隔離単位** に限る:
 //     (a) ChartRenderer 本体とその内部協働子（series_drawer / candle_feed / scale_controller）
 //     (b) チャート生成の bootstrap（chart_bootstrap）
 //     (c) lwc プラグイン契約（ISeriesPrimitive）の実装＝chart を受け取るのが upstream 仕様
 //     (d) 合成根（可視範囲の購読のみ。ChartRenderer へ寄せるのが望ましい残件）
 //   これは ``tests/upstream_isolation_declaration.test.js`` が **実際に走査して強制**する。
+//   同検定は上の API 名リストと自身の施行リストの一致も検査する（宣言だけ増える／施行だけ増える、
+//   という食い違いを構造的に不可能にする）。moveTo だけは canvas 2D の同名 API と衝突するため、
+//   受け手が canvas コンテキストでない場合に upstream と判定する（理由は同検定に記載）。
 //
 //   かつてここは「呼ぶのは本ファイルだけ（§2.2 grep 0 件強制）」と書いていたが、その grep を
 //   実行する仕組みは存在せず、実際は 11 ファイルが呼んでいた（ISSUE-262）。宣言を実態へ正し、

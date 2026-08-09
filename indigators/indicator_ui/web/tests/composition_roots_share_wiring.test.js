@@ -26,6 +26,7 @@ const SHARED_OWNED = [
   'new ChartRenderer(',
   'new CrosshairReadoutView(',
   'new PaneLegendView(',
+  'new PaneReorderDrag(',
   'new LocalStorageGateway(',
   'new LocalStorageTemplateGateway(',
   'new IndicatorCatalogClient(',
