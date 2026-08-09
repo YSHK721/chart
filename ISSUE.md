@@ -5707,3 +5707,21 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   完全一致する群は 11 群 127 行しかなかった。
 - **提案**: 要約に type-1 / type-2 の内訳を出し、`--fail-over` の既定判定を type-1 側に置く。
   「削減見込み」という単一の数値は、到達可能量と構造的類似度という別物を混ぜている。
+
+## ISSUE-313: [重複] replay_ui の JS 検定が indicator_ui の実装を二重に検定（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・web スイート件数一致で確認）
+- **重大度**: Middle（実際に「片方だけ直された」差分が発生していた）
+- **原因**: `web/js` の実装は symlink で単一ソース共有されているのに、**検定は手書きで写されていた**。
+  `facade.test.js` は 298 行中 291 行が同一で、差分 7 行の実体は「indicator_ui 側にだけある
+  アサーション 1 件」とコメントの食い違い＝複製が片方だけ直された状態。
+- **是正**: 対象実装がすべて symlink 共有だった 2 スイートを、indicator_ui 側 1 本の再 import に置換。
+  node:test は import した module 内の `test()` 登録を引き継ぐため、**replay スイートの検定件数は不変**。
+  - `facade.test.js` 298 → 10 行（import 先 `usecase/facade.js` / `domain/domain_models.js` とも symlink）
+  - `catalog_client.test.js` 28 → 5 行（同 `adapter/front/catalog_client.js` が symlink）
+- **据え置いた対（複製ではない）**:
+  - `trade_markers_wiring.test.js`: **byte 一致だが** replay 側は自前の `composition_root_front.js`
+    （実体ファイル）を検定している。統合すると別物を検定することになる。
+  - `composition_root_front` / `indicator_controller` / `host_role_contract` /
+    `chart_interaction_controller` / `indicator_controller_latest`: 差分 47〜653 行＝挙動が実際に異なる。
+- **実測**: **311 行削除**。web スイートは indicator_ui 1141 / market_profile 333 / replay_ui 338、
+  fail 0 で基準線と完全一致（unified_ui の失敗は vitest 未導入の既存の環境要因）。
