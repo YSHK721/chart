@@ -18,6 +18,23 @@ export class FormingSeqClient {
     this._timeoutMs = timeoutMs;
   }
 
+  // [ISSUE-300] 複数指標を **1 要求** で一括計算する（instanceId → steps を返す）。
+  //   指標ごとに 1 本ずつ投げると、サーバは指標の数だけ窓ロードの固定費（実測 0.14〜0.28 秒/指標）を
+  //   払う。1 スレッド直列で捌く以上、この固定費 × 指標数がそのまま 1 足の所要になる。
+  //   specs: [{ instanceId, indicatorId, variant, params, computeTimeframe }]
+  async computeSeqMulti({
+    specs, datasetRef, timeframe, limit, untilTime, formingSeq,
+    winStart = null, winEnd = null,
+  } = {}) {
+    const body = JSON.stringify({
+      mode: 'latest_seq_multi', generation: 0,
+      specs, datasetRef, timeframe, limit, untilTime, formingSeq,
+      ...(winStart != null && winEnd != null ? { winStart, winEnd } : {}),
+    });
+    const payload = await this._post(body);
+    return (payload && payload.results && typeof payload.results === 'object') ? payload.results : {};
+  }
+
   // steps（series の配列・formingSeq と同順）を返す。失敗は例外（呼び出し側がフォールバック）。
   async computeSeq({
     indicatorId, variant, params, datasetRef, timeframe, limit, untilTime, formingSeq,
@@ -33,6 +50,12 @@ export class FormingSeqClient {
       // ISSUE-291: 計算.時間足。未指定（チャート足）のときは載せない＝従来ボディと byte 同一。
       ...(computeTimeframe ? { computeTimeframe } : {}),
     });
+    const payload = await this._post(body);
+    return Array.isArray(payload.steps) ? payload.steps : [];
+  }
+
+  // POST の実体（タイムアウト・呼出規約・エラー翻訳の唯一源）。単発と一括が共有する。
+  async _post(body) {
     const hasAbort = typeof AbortController === 'function';
     const aborter = hasAbort ? new AbortController() : null;
     const timerId = aborter ? setTimeout(() => aborter.abort(), this._timeoutMs) : null;
@@ -55,7 +78,7 @@ export class FormingSeqClient {
         const msg = payload && payload.error ? payload.error.message : `HTTP ${response.status}`;
         throw new Error(`足内一括計算に失敗: ${msg}`);
       }
-      return Array.isArray(payload.steps) ? payload.steps : [];
+      return payload;
     } finally {
       if (timerId != null) {
         clearTimeout(timerId);

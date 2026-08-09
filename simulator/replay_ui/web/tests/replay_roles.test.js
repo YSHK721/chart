@@ -231,7 +231,8 @@ test('plans: 計算.時間足を足内一括計算の要求まで運ぶ', async 
     fetchImpl: async () => ({
       json: async () => ({ m1: [{ time: 100, open: 1, high: 2, low: 0, close: 1 }], ticks: [], tick_secs: [] }),
     }),
-    seqClient: { computeSeq: async (req) => { sent.push(req); return []; } },
+    // [ISSUE-300] 足内一括計算は 1 要求（specs 配列）へ集約された。計算.時間足は spec ごとに運ぶ。
+    seqClient: { computeSeqMulti: async (req) => { sent.push(req); return {}; } },
     controller: {
       formingSeqTargets: () => [
         { instanceId: 'mtf#1', indicatorId: 'moving_averages', variant: 'default',
@@ -244,5 +245,6 @@ test('plans: 計算.時間足を足内一括計算の要求まで運ぶ', async 
 
   await plans.build(0, 'ohlc_1min');
 
-  assert.deepEqual(sent.map((r) => r.computeTimeframe), ['1D', undefined]);
+  assert.equal(sent.length, 1, `指標ごとに発行している（要求 ${sent.length} 本・1 本であるべき）`);
+  assert.deepEqual(sent[0].specs.map((s) => s.computeTimeframe), ['1D', undefined]);
 });

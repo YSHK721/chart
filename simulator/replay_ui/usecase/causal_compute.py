@@ -241,6 +241,22 @@ def _compute_seq_higher_timeframe(
     )
     if window is None:
         return [[] for _ in seq]
+    return _seq_steps_over_h_window(
+        window=window, seq=seq, indicator=request.indicator, variant=request.variant,
+        params=request.params, compute_port=compute_port,
+    )
+
+
+def _seq_steps_over_h_window(
+    *, window, seq: "list[dict]", indicator: str, variant: str, params: dict,
+    compute_port: "CausalComputePort",
+) -> "list[list[dict]]":
+    """H 窓素材を 1 つ受け取り、足内の各時点の latest を同順で返す（唯一の実体）。
+
+    ISSUE-300: 単発（1 指標＝``_compute_seq_higher_timeframe``）と一括（複数指標＝
+    ``causal_compute_seq_multi``）が **同じ H 窓を共有して** 本関数を呼ぶ。窓素材の構築
+    （``_causal_h_window``）は計算足ごとに 1 回でよく、指標ごとに作り直すのは捨てられる計算。
+    """
     confirmed, in_period, h_bar_time, _c_all = window
     out: "list[list[dict]]" = []
     for f in seq:
@@ -248,8 +264,8 @@ def _compute_seq_higher_timeframe(
         # 足内では最終 C 足だけがその時点のスナップショットへ差し替わる（他は確定済み）。
         parts = in_period[:-1] + [snapshot] if in_period else [snapshot]
         series = compute_port.compute(
-            request.indicator, request.variant, "latest",
-            _h_bars_with_forming(confirmed, parts, h_bar_time), request.params
+            indicator, variant, "latest",
+            _h_bars_with_forming(confirmed, parts, h_bar_time), params
         )
         # 値は C の形成足時刻へ載せる（front は末尾差分として描く）。
         step: "list[dict]" = []
@@ -287,11 +303,10 @@ def causal_compute_seq(
         return _compute_seq_higher_timeframe(
             request=request, compute_port=compute_port, compute_tf=compute_tf,
         )
-    bars = compute_port.load_source(request.ref, request.timeframe)
-    bars = truncate(bars, request.until_time)
-    limit = request.limit
-    if isinstance(limit, int) and limit > 0:
-        bars = bars[-limit:]
+    bars = _seq_chart_window(
+        ref=request.ref, timeframe=request.timeframe, until_time=request.until_time,
+        limit=request.limit, compute_port=compute_port,
+    )
     if len(bars) == 0:
         return []
     # ISSUE-233: 形成中バーの適用は **末尾しか変えない**（apply は先頭側を触らない）。
@@ -308,6 +323,104 @@ def causal_compute_seq(
     return compute_port.compute_latest_seq(
         request.indicator, request.variant, prefix, tails, request.params
     )
+
+
+def _seq_chart_window(
+    *, ref: str, timeframe: "str | None", until_time: "int | None", limit: "int | None",
+    compute_port: "CausalComputePort",
+) -> "list[dict]":
+    """チャート足 C の計算窓（load → truncate → tail）。単発と一括が共有する唯一の実体。"""
+    bars = compute_port.load_source(ref, timeframe)
+    bars = truncate(bars, until_time)
+    if isinstance(limit, int) and limit > 0:
+        bars = bars[-limit:]
+    return bars
+
+
+@dataclass
+class CausalComputeSeqSpec:
+    """一括足内計算の 1 指標ぶんの申告（ISSUE-300）。"""
+    instance_id: str
+    indicator: str
+    variant: str
+    params: dict
+    compute_timeframe: "str | None" = None
+
+
+@dataclass
+class CausalComputeSeqMultiRequest:
+    """/compute mode='latest_seq_multi' の入力（足内一括計算の複数指標版・ISSUE-300）。
+
+    ``causal_compute_seq`` を指標ごとに呼ぶのと **同値** の結果を返す。差は共有できる仕事を
+    1 回に畳む点だけである:
+      - チャート足 C の窓（load_source → truncate → tail）を 1 回
+      - 実 tick 数の読み取り（``_tick_counts_for``）を 1 回
+      - 計算足 H の窓素材（``_causal_h_window``）を **計算足ごとに 1 回**（指標ごとではない）
+    実測（2026-08-08・指標 14 本）: 指標ごとに発行すると 1 足 2.6 秒で、その大半は指標ごとに
+    払っていた窓ロードの固定費（0.14〜0.28 秒/指標）だった。
+    """
+    ref: str
+    timeframe: "str | None"
+    limit: "int | None"
+    until_time: "int | None"
+    forming_seq: "list[dict]"
+    specs: "list[CausalComputeSeqSpec]"
+    win_start: "int | None" = None
+    win_end: "int | None" = None
+
+
+def causal_compute_seq_multi(
+    *, request: CausalComputeSeqMultiRequest, compute_port: "CausalComputePort",
+    window_port: "IntrabarWindowPort | None" = None,
+) -> "dict[str, list[list[dict]]]":
+    """instanceId → 足内推移の各時点の series（``causal_compute_seq`` と同値）を返す。
+
+    空 ``forming_seq`` / 空 ``specs`` は ``{}``（呼び出し自体を無害化）。
+    """
+    seq = request.forming_seq or []
+    specs = request.specs or []
+    if not seq or not specs:
+        return {}
+    # 実 tick 数は窓が共通＝1 回だけ数える（指標ごとに読み直さない）。
+    counts = _tick_counts_for(seq, window_port, request.win_start, request.win_end)
+    seq_with_volume = [with_tick_volume(f, c) for f, c in zip(seq, counts)]
+
+    chart_bars: "list[dict] | None" = None
+    h_windows: dict = {}
+    out: "dict[str, list[list[dict]]]" = {}
+    for spec in specs:
+        tf = spec.compute_timeframe
+        compute_tf = None if (not tf or tf == "chart" or tf == request.timeframe) else str(tf)
+        if compute_tf is None:
+            if chart_bars is None:
+                chart_bars = _seq_chart_window(
+                    ref=request.ref, timeframe=request.timeframe,
+                    until_time=request.until_time, limit=request.limit,
+                    compute_port=compute_port,
+                )
+            if len(chart_bars) == 0:
+                out[spec.instance_id] = []
+                continue
+            prefix, tails = split_prefix_tails(chart_bars, seq_with_volume)
+            out[spec.instance_id] = compute_port.compute_latest_seq(
+                spec.indicator, spec.variant, prefix, tails, spec.params
+            )
+            continue
+        if compute_tf not in h_windows:
+            h_windows[compute_tf] = _causal_h_window(
+                request_ref=request.ref, timeframe=request.timeframe, compute_tf=compute_tf,
+                until_time=request.until_time, limit=request.limit, compute_port=compute_port,
+            )
+        window = h_windows[compute_tf]
+        if window is None:
+            out[spec.instance_id] = [[] for _ in seq]
+            continue
+        # 単発（_compute_seq_higher_timeframe）と同じく、H 経路は実 tick 数を載せない。
+        out[spec.instance_id] = _seq_steps_over_h_window(
+            window=window, seq=seq, indicator=spec.indicator, variant=spec.variant,
+            params=spec.params, compute_port=compute_port,
+        )
+    return out
 
 
 def _tick_counts_for(

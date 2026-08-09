@@ -5,9 +5,11 @@
 //
 // 本テストが固定する契約:
 //   1. 計画がある時点では、指標の反映がローソク更新と **同一同期ブロック** で起きる（間に await 無し）。
-//   2. 計画は **決して await しない**。間に合わなければ従来経路（その場計算）へ落ちる
-//      ＝再生が計画待ちで遅くなることが構造的に起こらない（速度の不変条件）。
-//   3. 次バーの計画を先読みする（現在バーの再生中に発行される）。
+//   2. [ISSUE-300 で改訂] 計画は足内の値の **唯一の源** である。間に合わなければ **待つ**
+//      （旧規約「待たずにその場計算へ落ちる」は実測で逆効果＝二重計算がサーバを飽和させ、
+//      次の計画をさらに遅らせていた）。ティック粒度は全足で維持し、降格させない。
+//   3. 先のバーの計画を **複数足ぶん** 先読みする（1 足先だけだと生成が 1 足を超えた瞬間から
+//      永久に間に合わない）。
 //   4. 計画が末尾ティックを含むなら、確定着地の往復（settle）を発行しない。
 
 import { test } from 'node:test';
@@ -83,6 +85,11 @@ function makeFetch(log, { computeDelayMs = 0, failCompute = false } = {}) {
         return { ok: false, status: 500, async json() { return { ok: false, error: { message: 'boom' } }; } };
       }
       const steps = (body.formingSeq || []).map(() => ([{ name: 'MA', data: [{ time: 1, value: 1 }] }]));
+      if (body.mode === 'latest_seq_multi') {
+        const results = {};
+        for (const spec of body.specs || []) { results[spec.instanceId] = steps; }
+        return { ok: true, async json() { return { ok: true, generation: 0, results }; } };
+      }
       return { ok: true, async json() { return { ok: true, generation: 0, steps }; } };
     }
     return {
@@ -139,18 +146,31 @@ test('計画がある時点では指標がローソクと同一同期ブロッ�
   assert.equal(log.includes('その場計算'), false, '計画があるのにその場計算（遅延経路）を使っている');
 });
 
-test('計画が間に合わなければ待たずに従来経路へ落ちる（速度の不変条件・ISSUE-232）', async () => {
+test('計画が間に合わなければ待つ（ティック粒度を落とさない・ISSUE-300）', async () => {
   const log = [];
-  // compute を長く遅延させる＝先読みが終わらないまま再生に入る状況。
-  await boot({ log, fetchImpl: makeFetch(log, { computeDelayMs: 5000 }) });
-  const t0 = Date.now();
+  // compute を遅延させる＝先読みが終わらないまま再生に入る状況。
+  await boot({ log, fetchImpl: makeFetch(log, { computeDelayMs: 300 }) });
+  log.length = 0;
   await globalThis.window.__rpAnimateOnce();
-  const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 3000, `計画完了を待ってしまっている（${elapsed}ms・待たない設計が壊れている）`);
-  assert.ok(log.includes('その場計算'), '従来経路へフォールバックしていない（指標が更新されない）');
+  // 待ってでも計画の値で描く（＝その足だけ足内更新なし、には降格しない）。
+  assert.ok(log.includes('指標:ma#1'), `計画を待たずに足内更新を落としている（log: ${log.join(' → ')}）`);
+  // 二重計算（ティックごとのその場計算）は発行しない。これが 30 秒/足の主因だった。
+  assert.equal(log.includes('その場計算'), false, 'その場計算へ落ちている（二重計算＝ISSUE-300 の原因）');
 });
 
-test('一括計算が失敗しても再生は継続し従来経路で描く（fail-open・ISSUE-232）', async () => {
+test('足内の値は 1 要求で全指標ぶん取る（ISSUE-300・固定費を指標数ぶん払わない）', async () => {
+  const log = [];
+  await boot({ log, fetchImpl: makeFetch(log) });
+  await settle();
+  log.length = 0;
+  await globalThis.window.__rpAnimateOnce();
+  await settle();
+  const seq = log.filter((l) => l.startsWith('compute:latest_seq'));
+  assert.ok(seq.every((l) => l.startsWith('compute:latest_seq_multi')),
+    `指標ごとの単発 latest_seq が残っている（${seq.join(' , ')}）`);
+});
+
+test('一括計算が失敗しても再生は継続し着地で描く（fail-open・ISSUE-232）', async () => {
   const log = [];
   await boot({ log, fetchImpl: makeFetch(log, { failCompute: true }) });
   await settle();

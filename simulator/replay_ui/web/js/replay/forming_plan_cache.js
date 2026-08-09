@@ -6,8 +6,14 @@
 //
 // 状態も一緒に移す（ISSUE-181 と同じ方針）: `seqClient` / `planCache` / `planInFlight` は本クラスが所有する。
 //
-// **速度の不変条件（最重要・抽出前と同一）**: 計画は決して await しない。使う時点で出来ていなければ
-//   呼び出し側がその場で従来経路へ落とす。よって再生が計画待ちで遅くなることはない。
+// **速度の不変条件（ISSUE-300 で改訂）**: 旧規約は「計画は決して await しない。出来ていなければ
+//   呼び出し側がその場計算へ落とす」だった。これは実測で逆効果と判明した（2026-08-08）:
+//   落ちた先のその場計算が同じ値を指標ごとに計算し直してサーバ（1 スレッド直列）を占有し、
+//   次の計画がさらに間に合わなくなる悪循環を作っていた（指標 15 本で 30 秒/足・サーバ 98% 飽和・
+//   計画の当たりは 1 足おき）。新しい規約は「**計画が唯一の値の源**。無ければ待つ」である。
+//   待ちが表に出ないことは、(1) 1 要求への集約（窓ロードの固定費を指標数ぶん払わない）と
+//   (2) 複数足先までのパイプライン先読み、の 2 つで担保する。フォールバックは廃止した
+//   （＝ティック粒度は全足で維持される。降格しない）。
 //
 // 依存は注入する（DOM/lwc 非依存）:
 //   fetchImpl / datasetRef        : /intraday 取得
@@ -27,12 +33,12 @@ export class FormingPlanCache {
     this._getTimeframe = getTimeframe;
 
     this._cache = new Map();     // idx -> { mode, tf, sig, prices, secs, steps: Map(i -> {instanceId: series}) }
-    this._inFlight = new Set();  // 二重発行の防止（idx）
+    this._pending = new Map();   // idx -> Promise（二重発行の防止 ＋ 使用時の待ち合わせ）
   }
 
   invalidate() {
     this._cache.clear();
-    this._inFlight.clear();
+    this._pending.clear();
   }
 
   // ---- 足内ティック列（MT5 モデリング 5 モード相当） ----
@@ -106,19 +112,23 @@ export class FormingPlanCache {
     const { winStart, winEnd } = intrabarWindow({
       timeframe, cd, prevCandle: candles[idx - 1] || null, nextCandle: candles[idx + 1] || null,
     });
-    const results = await Promise.all(sigInfo.targets.map((t) => this._seqClient.computeSeq({
-      indicatorId: t.indicatorId, variant: t.variant, params: t.params,
-      // ISSUE-291: 計算.時間足（対象の申告をそのまま運ぶ）。ここで params から導き直さない
-      //   ＝導出は controller の 1 箇所（_calcTimeframeOf）に閉じたまま。
-      computeTimeframe: t.computeTimeframe,
+    // [ISSUE-300] 全対象を **1 要求** で計算する。指標ごとに投げると、サーバは指標数ぶんの
+    //   窓ロード固定費を払い、1 スレッド直列なのでそれがそのまま 1 足の所要になる
+    //   （実測 2026-08-08: 指標 14 本で 1 足 2.6 秒・うち大半が指標ごとの固定費）。
+    //   ISSUE-291 の「計算.時間足は対象の申告をそのまま運ぶ」規律は不変（ここで導き直さない）。
+    const results = await this._seqClient.computeSeqMulti({
+      specs: sigInfo.targets.map((t) => ({
+        instanceId: t.instanceId, indicatorId: t.indicatorId, variant: t.variant,
+        params: t.params, computeTimeframe: t.computeTimeframe,
+      })),
       datasetRef: this._datasetRef, timeframe, limit: idx + 1, untilTime: cd.time, formingSeq,
       winStart, winEnd,
-    }).catch(() => null)));
+    }).catch(() => ({}));
     const steps = new Map();
     indices.forEach((i, k) => {
       const byInstance = {};
-      sigInfo.targets.forEach((t, ti) => {
-        const series = results[ti] && results[ti][k];
+      sigInfo.targets.forEach((t) => {
+        const series = results[t.instanceId] && results[t.instanceId][k];
         if (series) {
           byInstance[t.instanceId] = series;
         }
@@ -130,16 +140,43 @@ export class FormingPlanCache {
     return { ...base, steps: steps.size ? steps : null, sig: sigInfo.sig };
   }
 
-  // 先読み（fire-and-forget）。現在バーの再生中に次バーぶんを用意する＝待ち時間を露出させない。
-  prefetch(idx, mode) {
-    if (!this._getCandles()[idx] || mode === 'math' || this._inFlight.has(idx) || this._cache.has(idx)) {
-      return;
+  // 構築の起動（多重発行を防ぎ、待ち合わせ可能な promise を返す）。
+  _start(idx, mode) {
+    const running = this._pending.get(idx);
+    if (running) {
+      return running;
     }
-    this._inFlight.add(idx);
-    this.build(idx, mode)
-      .then((plan) => { if (plan) this._cache.set(idx, plan); })
-      .catch(() => { /* 計画なし＝従来経路（再生は止めない） */ })
-      .finally(() => { this._inFlight.delete(idx); });
+    const p = this.build(idx, mode)
+      .then((plan) => { if (plan) { this._cache.set(idx, plan); } })
+      .catch(() => { /* 構築失敗は計画なし（呼び出し側が判断する） */ })
+      .finally(() => { this._pending.delete(idx); });
+    this._pending.set(idx, p);
+    return p;
+  }
+
+  // 先読み（fire-and-forget）。現在バーの再生中に **先のバーぶん** を用意する＝待ちを露出させない。
+  //   [ISSUE-300] depth>1 でパイプライン化する（1 足先だけだと、生成が 1 足の持ち時間を超えた
+  //   瞬間から永久に間に合わない。実測では 1 足おきに取りこぼしていた）。
+  prefetch(idx, mode, depth = 1) {
+    for (let k = 0; k < Math.max(1, depth); k += 1) {
+      const target = idx + k;
+      if (!this._getCandles()[target] || mode === 'math'
+        || this._pending.has(target) || this._cache.has(target)) {
+        continue;
+      }
+      this._start(target, mode);
+    }
+  }
+
+  // [ISSUE-300] 使用時の取得。無ければ **待つ**（フォールバックのその場計算は廃止した）。
+  //   計画は値の唯一の源であり、待たずに別経路で計算し直すことが遅さの原因だった。
+  async takeOrBuild(idx, mode) {
+    const hit = this.take(idx, mode);
+    if (hit) {
+      return hit;
+    }
+    await this._start(idx, mode);
+    return this.take(idx, mode);
   }
 
   // 使い終えた計画の破棄（メモリ・陳腐化の抑制）。

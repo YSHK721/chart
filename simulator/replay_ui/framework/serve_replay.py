@@ -42,6 +42,9 @@ from simulator.replay_ui.usecase.causal_compute import (
     CausalComputeSeqRequest,
     causal_compute,
     causal_compute_seq,
+    causal_compute_seq_multi,
+    CausalComputeSeqMultiRequest,
+    CausalComputeSeqSpec,
 )
 from simulator.replay_ui.usecase.intrabar_window import (
     IntrabarWindowRequest,
@@ -272,6 +275,37 @@ class ReplayApp:
                                           window_port=self._window_port)
         return self._heavy_worker.run(_run)
 
+    def compute_seq_multi(self, body: dict) -> "dict[str, list[list[dict]]]":
+        """POST /compute mode='latest_seq_multi' — 複数指標の足内一括計算（ISSUE-300）。
+
+        ``compute_seq`` を指標ごとに呼ぶのと同値で、共有できる仕事（C 窓のロード・実 tick 数の
+        読み取り・計算足ごとの H 窓素材）を 1 回に畳む。直列化・heavy worker の扱いは既存と同一。
+        """
+        req = CausalComputeSeqMultiRequest(
+            ref=body.get("datasetRef"),
+            timeframe=body.get("timeframe"),
+            limit=body.get("limit"),
+            until_time=body.get("untilTime"),
+            forming_seq=body.get("formingSeq") or [],
+            win_start=body.get("winStart"),
+            win_end=body.get("winEnd"),
+            specs=[
+                CausalComputeSeqSpec(
+                    instance_id=s.get("instanceId"),
+                    indicator=s.get("indicatorId"),
+                    variant=s.get("variant", "default"),
+                    params=dict(s.get("params") or {}),
+                    compute_timeframe=s.get("computeTimeframe"),
+                )
+                for s in (body.get("specs") or [])
+            ],
+        )
+        def _run():
+            with self._lock:  # R(rpy2) 非スレッド安全＋メモリのため直列化
+                return causal_compute_seq_multi(request=req, compute_port=self._compute_port,
+                                                window_port=self._window_port)
+        return self._heavy_worker.run(_run)
+
     def intraday(self, ref: str, start: int, end: int, mode: str, want_secs: bool = False) -> dict:
         # proto do_GET /intraday: 非 tick の未知 ref は事前に validation 拒否する。
         if self._is_known_ref is not None and ref != "jp225_tick" and not self._is_known_ref(ref):
@@ -474,6 +508,18 @@ def make_handler(app: ReplayApp):
             gen = body.get("generation", 0)
             # ISSUE-232: 足内一括計算（mode='latest_seq'）。応答キーは steps（series とは別キー＝
             #   既存クライアントの読み取り面に影響しない）。エラー翻訳は既存と同一の中央経路。
+            # ISSUE-300: 複数指標の足内一括計算。応答キーは results（instanceId → steps）。
+            if body.get("mode") == "latest_seq_multi":
+                try:
+                    results = app.compute_seq_multi(body)
+                except MemoryError as e:
+                    return self._json(*_error_response(e, generation=gen, message="memory limit"))
+                except ValueError as e:
+                    return self._json(*_error_response(e, generation=gen))
+                except Exception as e:  # noqa: BLE001
+                    return self._json(*_error_response(
+                        e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
+                return self._json(200, {"ok": True, "generation": gen, "results": results})
             if body.get("mode") == "latest_seq":
                 try:
                     steps = app.compute_seq(body)

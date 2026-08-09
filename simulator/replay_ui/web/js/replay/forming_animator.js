@@ -19,9 +19,14 @@
 //   sleepMs                 : 待機（テストから差し替え可能）
 import { intrabarWindow } from './stream.js';
 import { sampleIndices } from './forming_plan.js';
-import { stepMs, ANIM_MIN_MS, FORMING_MIN_INTERVAL_MS, realtimeOffsetsMs } from './timing.js';
+import { stepMs, ANIM_MIN_MS, realtimeOffsetsMs } from './timing.js';
 import { isSuperseded } from './state.js';
 import { foldTick } from '../domain/forming_fold.js';
+
+// [ISSUE-300] 先読みの深さ（足）。1 足先だけだと、計画の生成が 1 足の持ち時間を超えた瞬間から
+//   永久に間に合わなくなる（実測: 1 足おきに取りこぼしていた）。数足先までパイプラインで
+//   用意し、生成時間のばらつきを吸収する。値は「1 足の持ち時間 × depth ≧ 生成時間」で決める。
+const PREFETCH_DEPTH = 3;
 
 export class FormingAnimator {
   constructor({
@@ -55,16 +60,10 @@ export class FormingAnimator {
   // 実行中のフォーミングを supersede する（旧 disable() の `animGen += 1`）。世代の所有者は本クラス。
   supersede() { this._animGen += 1; }
 
-  pushFormingMA(forming, win = null) {
-    const nowMs = performance.now();
-    if (this._formingInFlight || (nowMs - this._lastFormingMs) < FORMING_MIN_INTERVAL_MS) return;
-    if (this._controller.isRecomputing()) return; // 他の再計算中は譲る
-    this._lastFormingMs = nowMs;
-    this._formingInFlight = true;
-    this._controller.recomputeFormingLatest(forming, win)
-      .catch(() => { /* 足内 MA 失敗はアニメ継続 */ })
-      .finally(() => { this._formingInFlight = false; });
-  }
+  // [ISSUE-300] ティックごとのその場計算（旧 pushFormingMA）は撤去した。計画が値の唯一の源で
+  //   あり、二重に計算していたことが遅さの原因だった（実測 30 秒/足）。残るのは下の
+  //   settleFormingMA だけで、これは「計画そのものが無い」場合（計画非対応の controller・
+  //   一括計算の失敗）に **1 バーにつき 1 回** だけ着地させる保険である。
   async settleFormingMA(forming, win = null) {
     while (this._formingInFlight) { await this._sleepMs(ANIM_MIN_MS); }
     if (this._controller.isRecomputing()) return;
@@ -105,8 +104,11 @@ export class FormingAnimator {
     }
     window.__rpAnimating = true;
     try {
-      // [ISSUE-232] 先読み済みの計画があれば受け取る（無ければ null＝従来経路。**待たない**）。
-      const plan = this._plans.take(this._getBar(), mode);
+      // [ISSUE-300] 計画は足内の値の **唯一の源** である。無ければ待つ（従来はここで null を
+      //   受け取り、ティックごとにその場計算へ落ちていた。その計算が同じ値を指標ごとに
+      //   計算し直してサーバを占有し、次の計画をさらに遅らせる悪循環だった＝実測 30 秒/足）。
+      const plan = await this._plans.takeOrBuild(this._getBar(), mode);
+      if (superseded()) return;
       const steps = plan ? plan.steps : null;
       let prices, secs, o, hi, lo, startI;
       if (resume && resume.time === cd.time) {
@@ -125,9 +127,10 @@ export class FormingAnimator {
         if (superseded()) return;
         o = prices[0]; hi = prices[0]; lo = prices[0]; startI = 0;
       }
-      // [ISSUE-232] 次バーの計画を先読み（fire-and-forget）。本バーの再生中にサーバが計算するため
-      //   使用時点では出来上がっている＝待ち時間が表に出ない。間に合わなければ従来経路へ落ちる。
-      this._plans.prefetch(this._getBar() + 1, mode);
+      // [ISSUE-232 → 300] 先のバーの計画を先読み（fire-and-forget）。本バーの再生中にサーバが
+      //   計算するため使用時点では出来上がっている＝待ち時間が表に出ない。1 足先だけでは
+      //   生成が 1 足を超えた時点で永久に間に合わなくなるため、PREFETCH_DEPTH 足ぶん用意する。
+      this._plans.prefetch(this._getBar() + 1, mode, PREFETCH_DEPTH);
       window.__rpForm = { mode, n: prices.length, planned: steps ? steps.size : 0 };
       // 実時間再生: 足内各点を市場時刻どおりの壁時計位置へ置く（アンカ基準＝sleep 誤差が累積しない）。
       //   点ごとの時刻 secs を持たないモード／欠損時は足を等分する（realtimeOffsetsMs）。
@@ -183,12 +186,10 @@ export class FormingAnimator {
           if (step) {
             this._controller.applyFormingStep(step);
           }
-        } else {
-          // ISSUE-238: `to`（リプレイ現在時刻）と足内窓を添える＝サーバが実 tick 数を数える。
-          const state = { time: cd.time, ...foldTick({ open: o, high: hi, low: lo }, p) };
-          if (secs && secs[i] != null) state.to = Math.floor(secs[i]);
-          this.pushFormingMA(state, formingWindow());
         }
+        // [ISSUE-300] 計画が無い場合のその場計算（pushFormingMA）は廃止した。計画は上で待って
+        //   いるため通常ここには来ない。来るのは対象指標 0 件など「そもそも足内更新が無い」場合で、
+        //   その時に計算すべきものは無い。
         // MP tick-live: この tick を DwellAccumulator へ供給し足内成長させる（sec 並走が有るバーのみ＝
         //   real_ticks・MP 有効。secs 空バーは skip＝base 継続）。速度0凍結/supersede の既存制御に追従。
         //   グリッド外 tick の growTo 発火（in-flight coalesce）＋feedTick は this._mpDriver が担う（ISSUE-133 SRP）。
