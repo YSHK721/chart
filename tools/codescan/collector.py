@@ -92,19 +92,53 @@ class Scope:
         return [("+ " if include else "- ") + pattern for include, _, pattern in self._rules]
 
 
+def _identity(full: Path) -> str:
+    """ファイルの同一性キー。**経路ではなく実体**（デバイス + inode）で決める。
+
+    symlink とハードリンクは、同一の実体に至る別の経路である。経路を単位に数えると
+    1 つの実装が複数回計上され、重複検出はそれを「コードの複製」として報告する
+    （ISSUE-304 の実測: ``simulator/replay_ui/web/js`` の 19,570 行のうち 15,528 行が
+    ``indicator_ui`` の実体への symlink の再計上だった）。
+
+    ``stat`` は symlink を辿った先を返す。実体に届かない経路（壊れた symlink 等）は
+    走査対象から外れるため、ここへは来ない。
+    """
+    try:
+        status = full.stat()
+    except OSError:
+        return f"path:{full.as_posix()}"
+    return f"{status.st_dev}:{status.st_ino}"
+
+
+def _representative(repo_root: Path, paths: "list[str]") -> str:
+    """同一実体を指す複数経路のうち、台帳に載せる 1 本を選ぶ。
+
+    symlink でない経路（＝実体そのもの）を優先する。共有元を報告し、参照側を畳む。
+    どれも symlink（実体が走査範囲の外）なら経路順で決める（安定順のため）。
+    """
+    return min(paths, key=lambda p: ((repo_root / p).is_symlink(), p))
+
+
 def iter_files(repo_root: Path, scope: Scope, registry: AnalyzerRegistry,
-               roots: "list[str]" = ()) -> "list[str]":
-    """走査対象のリポジトリ相対パスを返す（安定順）。
+               roots: "list[str]" = ()) -> "tuple[list[str], list[tuple[str, str]]]":
+    """走査対象のリポジトリ相対パスと、同一実体へ畳んだ別名経路を返す（安定順）。
+
+    戻り値は ``(paths, aliases)``。``aliases`` は ``(畳んだ経路, 残した経路)`` の並びで、
+    「複製ではなく共有だった」ことの根拠として報告に出す（黙って捨てない）。
 
     除外ディレクトリへは**降りない**（走査後に捨てない）。また、ディレクトリの
     シンボリックリンクは辿らない。``unified_ui/web/node_modules`` には自己参照
     symlink が実在し（ISSUE-280）、辿ると深さが際限なく増えて OOM で落ちる（実測）。
     """
     bases = [repo_root / r for r in roots] if roots else [repo_root]
-    found: "set[str]" = set()
+    by_identity: "dict[str, set[str]]" = {}
+
+    def claim(relative: str) -> None:
+        by_identity.setdefault(_identity(repo_root / relative), set()).add(relative)
+
     for base in bases:
         if base.is_file():
-            found.add(base.relative_to(repo_root).as_posix())
+            claim(base.relative_to(repo_root).as_posix())
             continue
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
             relative_dir = Path(dirpath).relative_to(repo_root).as_posix()
@@ -116,8 +150,15 @@ def iter_files(repo_root: Path, scope: Scope, registry: AnalyzerRegistry,
                     continue
                 relative = f"{prefix}{name}"
                 if scope.allows(relative) and (repo_root / relative).is_file():
-                    found.add(relative)
-    return sorted(found)
+                    claim(relative)
+
+    found: "list[str]" = []
+    aliases: "list[tuple[str, str]]" = []
+    for paths in by_identity.values():
+        keep = _representative(repo_root, sorted(paths))
+        found.append(keep)
+        aliases.extend((path, keep) for path in sorted(paths) if path != keep)
+    return sorted(found), sorted(aliases)
 
 
 def collect(repo_root: Path, paths: "list[str]", registry: AnalyzerRegistry

@@ -5497,3 +5497,48 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   許可されていてもディレクトリ symlink を辿らないこと・降りる前に除外判定できること）。
   tools 全体 152 件 Green。
 - **関連**: ISSUE-280（node_modules 自己参照 symlink）、ISSUE-302（worktree 前提の検定）。
+
+## ISSUE-304: [ツール] codescan がファイルの同一性をパスで判定し、symlink 共有を「コード複製」と誤報（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・同一ツリーでの前後比較で実測確認）
+- **重大度**: High（重複検出の結論そのものが逆転する。上位 15 件中 14 件が誤報だった）
+- **発見の経緯**: `python -m tools.codescan` が「単一ソース化で消える見込み 93,507 行」と報告し、
+  上位に `indicator_ui` / `replay_ui` / `market_profile` の front が三重複製として並んだ。
+  アーキテクチャ評価で実ファイルを確認したところ、当該クラスの定義はリポジトリ内に
+  **1 つずつしか存在しない**（全域 grep）。`git ls-files -s` で当該経路は **mode 120000
+  （symlink）が 105 件**と確定した（`replay_ui` 76 / `indicator_ui` 27 / `market_profile` 2）。
+- **原因**: `collector.iter_files` がファイルの同一性を**パス**で持っていた（`found: set[str]`）。
+  `os.walk(followlinks=False)` はディレクトリ symlink を辿らないが、**ファイル symlink は
+  `filenames` に現れ、`is_file()` が True になるため通常ファイルとして計上される**。
+  結果、1 つの実体が経路の数だけ計上され、重複検出はそれを「コードの複製」と報告していた。
+  併せて、走査台帳 `tools/codescan_scope.txt` に保存済み外部ページ `design/` の除外が無く、
+  hash 名の webpack チャンク（`*.min.js` に一致しない）96 ファイルが計上され、minified の
+  1 文字識別子（`n` / `o` / `s` 等）が「同名別実装」の上位に並んでいた。
+- **実測（同一ツリー・スキャナのみ差し替え）**:
+  | 指標 | 基準線（develop） | 修正後 | 差 |
+  |---|---|---|---|
+  | 走査ファイル数 | 1,341 | 1,237 | -104 |
+  | 走査行数 | 216,079 | 196,580 | -19,499 |
+  | 単一ソース化削減見込み | 79,551 | 50,487 | **-29,064** |
+  | 宣言単位クローン | 478 | 291 | -187 |
+  | `simulator/replay_ui/web/js` の計上行数 | 19,570 | **4,042** | -15,528（79.3% が幻） |
+  | 削減行数 1 位 | `indicator_controller.js`（1,100 行・symlink 対） | `profit_mfi/src/loader.py`（394 行・真正） | — |
+  - 本体チェックアウトでの `design/` 除外効果: 96 ファイル / 2,626 行 / 削減見込み -12,668 行 /
+    同名別実装 -32 件（1 文字名 `n` `o` `s` 等の残存 0）。
+  - 本体チェックアウトの最終値: **1,252 ファイル / 197,989 行 / 削減見込み 51,770 行 /
+    同名別実装 370 件**（修正前の 1,452 / 220,114 / 93,507 / 402 から）。
+- **是正（原因除去）**: 同一性の定義を**パスから実体（`stat` のデバイス + inode）へ**変更し、
+  同一実体を指す経路を 1 本に畳む（`_identity` / `_representative`）。残す 1 本は symlink で
+  ない経路（実体そのもの）を優先する。畳んだ経路は捨てず `report.json` の
+  `scope.folded_aliases` に `(alias, kept)` で残し、要約にも件数を出す。
+  台帳に `- design/**`（保存済み外部ページ・版管理外）を追加。
+  ※ symlink を除外して数を減らす形（`--exclude` 追記等）は「症状の出る条件を避ける」応急処置
+  であり採らない。同一実体を 2 回数えることが誤りである、という原因そのものを消した。
+- **検定**: `tools/tests/test_codescan.py` に 6 件追加（symlink は 1 件に畳むこと・ハードリンクも
+  同様であること・**実体が別なら畳まないこと**（手書き複製と取り違えない）・壊れた symlink は
+  走査しないこと・`design/` が台帳で除外されること）。tools 全体 157 件 Green。
+- **残る課題（本 Issue の範囲外）**: 共有カーネル層が物理的に存在せず symlink で代替されている
+  こと自体は未解決（`ISSUE.md` の shared/ パッケージ昇格）。symlink の張り忘れで手書き複製が
+  発生した実例が `indigators/market_profile/web/tests/market_profile_present_session_window.test.js:110`
+  にある。また依存方向違反 3 件（`cache_layout.current_layouts` / `market_profile_dwell.warm_dwell_cache`
+  / `market_profile_zp.warm_zp_cache`）は未着手。
+- **関連**: ISSUE-303（走査の OOM 停止）、ISSUE-280（node_modules 自己参照 symlink）。
