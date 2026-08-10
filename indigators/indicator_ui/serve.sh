@@ -13,7 +13,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # 実行時の import パスは **本スクリプトの位置** から解決する（ISSUE-279）。venv の .pth は
 # インストール時のチェックアウトを絶対パスで指すため、worktree 起動でも main の実装が読まれる。
 . "${REPO_ROOT}/tools/dev_paths.sh"
-VENV_PY="${SCRIPT_DIR}/../../lightweight-charts-python-main/.venv/bin/python"
+# venv の場所（ISSUE-365）。既定はツリー相対だが、dev_paths.local.sh が VENV_PYTHON を
+#   export していればそれを使う。worktree は git 追跡ファイルしか展開されないため venv の実体を
+#   持たず、従来はツリー内へ symlink を張る必要があった。その symlink をコミットして本
+#   チェックアウトを壊したのが ISSUE-363 で、環境変数で絶対パスを指せば張る理由自体が消える。
+VENV_PY="${VENV_PYTHON:-${SCRIPT_DIR}/../../lightweight-charts-python-main/.venv/bin/python}"
 API_DIR="${SCRIPT_DIR}/api"
 
 PORT=8000

@@ -219,3 +219,8 @@ indigators/market_profile/analysis/out/
 
 # codescan（コード重複走査）の出力先。走査結果は再生成できるためコミットしない。
 .codescan/
+
+# worktree ごとのローカル環境設定（tools/setup_worktree.sh が生成・ISSUE-365）。
+#   git 管理外の実体（venv・データ）を絶対パスで指す。ツリーごとに内容が異なるため
+#   コミットしてはならない（コミットすると他ツリーの実体を指す設定が配られる）。
+dev_paths.local.sh

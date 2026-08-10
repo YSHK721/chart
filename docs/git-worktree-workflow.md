@@ -76,3 +76,102 @@ git branch --show-current   # 現在地のブランチを確認
   | `isolation:"worktree"` で隔離起動 | 並列可（自前の隔離ツリー） |
 
 - 「**新しいワークツリーで並列で実行して** ＋ 作業内容」で隔離並列起動できる。**作業内容（何をするか）は必須**。派生元/パス未指定なら既定（`develop` 起点・`/workspaces/app-<名前>`）で用意する。
+
+## 7. 環境依存物のセットアップ（**必読**・ISSUE-363 / ISSUE-365）
+
+### 7.1 なぜ必要か
+
+worktree が展開するのは **git が追跡しているファイルだけ**である。作業ディレクトリの複製ではない。
+したがって **gitignore 済みの実体は 1 つも来ない**。
+
+| | worktree に来るか |
+|---|---|
+| ソースコード（追跡済み） | 来る |
+| `data/marketdata`（gitignore） | **来ない** |
+| `lightweight-charts-python-main/.venv`（gitignore） | **来ない** |
+
+一方コードはこれらを**ツリー相対**で探す（`indigators/indicator_ui/serve.sh` の `VENV_PY`、
+`marketdata/paths.py` の既定値）。よって worktree を作った直後は core が起動しない。
+
+### 7.2 やること（1 コマンド）
+
+```bash
+cd <worktree>
+./tools/setup_worktree.sh
+```
+
+git の common-dir から本チェックアウトを特定し、`dev_paths.local.sh`（gitignore 済み）へ
+**絶対パスの環境変数**を書き出す。`tools/dev_paths.sh` がこれを読むため、以後
+`./unified_ui/serve.sh` がそのまま動く。
+
+```bash
+export VENV_PYTHON="/workspaces/app/lightweight-charts-python-main/.venv/bin/python"
+export MARKETDATA_DATA_DIR="/workspaces/app/data/marketdata"
+```
+
+### 7.3 やってはいけないこと — **symlink を張る**
+
+**worktree 内に `data/marketdata` や `.venv` の symlink を張ってはならない。**
+
+2026-08-10 に実際の事故が起きた（ISSUE-363）。経緯は以下のとおり。
+
+```
+1. worktree で core を起動するため、手で symlink を 2 本張った
+     data/marketdata -> /workspaces/app/data/marketdata
+     lightweight-charts-python-main/.venv -> /workspaces/app/lightweight-charts-python-main/.venv
+2. .gitignore が `.venv/` と末尾スラッシュ付きだったため、symlink（ファイル扱い）に掛からなかった
+3. `git add -A` が未追跡ファイルとして拾い、マージコミットへ入った
+4. 本番（/workspaces/app）へマージ
+5. checkout により symlink が展開され、「自分自身を指す symlink」になった
+     /workspaces/app/data/marketdata -> /workspaces/app/data/marketdata
+6. venv とデータの実体参照が失われ、サーバが起動しなくなった
+```
+
+**症状は分かりにくい。** `Too many levels of symbolic links` は出るが、
+サーバ側は「core の起動を待機中...」で無言のまま止まり、原因に辿り着くまで時間を要する。
+
+### 7.4 なぜ「気をつける」では防げないか
+
+- `.gitignore` は**既に追跡されたファイルには効かない**。一度入れば止まらない。
+- `git add -A` は作業ディレクトリに在るものを**無差別に**拾う。
+- パス名で守ろうとすると、次に別のパスで同じことが起きたとき素通しになる。
+
+守るべきは特定のパスではなく「**絶対パスの symlink**」という形そのものである。
+相対パス（`../../`）の symlink はツリー内で完結するため、どこへ展開しても自己参照にならない。
+
+### 7.5 仕組みによる防御（3 段）
+
+| 段 | 仕組み | 何を止めるか |
+|---|---|---|
+| 1 | `tools/setup_worktree.sh` | symlink を**張る理由**を消す |
+| 2 | `tools/tests/test_no_absolute_symlinks.py` | 張っても**commit させない** |
+| 3 | `.gitignore`（末尾スラッシュ無し） | 素の `git add` から守る |
+
+段 2 の検査は **index**（`git ls-files -s`）を走査する。`git ls-tree HEAD` では
+`git add` 済みの symlink を検出できず**コミット後にしか落ちない**（実測で判明・是正済み）。
+検出器自身の自己検査も同梱しており、ISSUE-363 の実際の 2 値を検出できることを固定している。
+
+### 7.6 コミット前の手順
+
+**`git add -A` を使わない。** 使う場合も、コミット前に必ず次を読む。
+
+```bash
+git diff --cached --stat     # 意図しないファイルが入っていないか
+```
+
+今回の事故は、この 1 行を読んでいれば防げた（`.venv | 1 +` の 2 行が見えていた）。
+
+### 7.7 事故後の復旧手順（同じ症状に遭遇したとき）
+
+```bash
+# 1. 自己参照になっていないか確認
+ls -la /workspaces/app/data/marketdata
+ls -la /workspaces/app/lightweight-charts-python-main/.venv
+
+# 2. 実体の場所を確認（本リポジトリでは /app 配下がコンテナ側の実体）
+ls /app/data/marketdata/ | head
+
+# 3. 実体へ向け直す（壊れたリンクだけが消える。実データは無傷）
+ln -sfn /app/data/marketdata /workspaces/app/data/marketdata
+ln -sfn /app/lightweight-charts-python-main/.venv /workspaces/app/lightweight-charts-python-main/.venv
+```
