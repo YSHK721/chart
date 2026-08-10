@@ -1,4 +1,4 @@
-// global_fetch_binding.test.js — グローバル `fetch` を捕まえる箇所は必ず束縛する（ISSUE-327）。
+// global_fetch_binding.test.js — グローバル `fetch` を捕まえる箇所は必ず束縛する（ISSUE-349）。
 //
 // 病因（実 UI 実測で 2 度確定）: ネイティブ `fetch` は `this === window/globalThis` を要求する。
 //   素の参照のまま注入すると、受け取った側が `this._fetch(...)` とメソッド呼び出しした瞬間に
@@ -60,7 +60,7 @@ function normalizeSource(text) {
 }
 
 test('検出器の自己検査: 既知の不良形を実際に検出する（検出しない検出器を置かない）', () => {
-  // Arrange: 左が ISSUE-327 の不良形、右が是正後の形。
+  // Arrange: 左が ISSUE-349 の不良形、右が是正後の形。
   const bad = [
     "fetchImpl = (typeof fetch !== 'undefined' ? fetch : undefined)",
     'const f = globalThis.fetch;',
@@ -78,7 +78,7 @@ test('検出器の自己検査: 既知の不良形を実際に検出する（検
   }
 });
 
-test('グローバル fetch を捕まえる箇所は必ず globalThis へ束縛する（ISSUE-327 の再発防止）', () => {
+test('グローバル fetch を捕まえる箇所は必ず globalThis へ束縛する（ISSUE-349 の再発防止）', () => {
   // Arrange
   const offenders = [];
   // Act
