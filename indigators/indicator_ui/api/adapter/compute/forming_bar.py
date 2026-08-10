@@ -217,13 +217,28 @@ def rollup_forming_bar(
     return merge_forming(base, tail)
 
 
-def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int) -> "pd.DataFrame":
-    """``df``（date-index OHLCV）の末尾へ現在形成中バーを **set/replace** して返す（指標の足内更新用）。
+def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
+                      synthesize_closed_gaps: bool = True) -> "pd.DataFrame":
+    """``df``（date-index OHLCV）の末尾へ現在形成中バーを **set/replace** して返す。
 
     対象外 ref/tf・ティック無し・空 df なら ``df`` をそのまま返す（後方互換）。形成中バーの ``time``
     （＝``floor(now, tf)``）が ``df`` 末尾と同一なら置換、新しければ追加する（``updateLastCandle`` と
-    同じ append/replace 規則）。これにより ``mode='latest'`` の最新点再計算が形成中バー込みで走る。
-    既存 df より過去の time（異常）は触らない。
+    同じ append/replace 規則）。既存 df より過去の time（異常）は触らない。
+
+    注入対象は 2 種あり、性質が異なるため呼び出し側が選べる（ISSUE-361）:
+
+    形成中バー（常に注入）
+        まだ確定していないバーであり M1 に存在しない。チャートは必ずこれを描くため、
+        計算窓に入らなければ「最新足だけ指標が無い」状態になる。
+
+    欠落閉周期の合成（``synthesize_closed_gaps=True`` のときだけ注入）
+        M1/rollup の焼き込み（+12s 猶予）を待つ間、df 末尾と形成中周期の間の**閉じた**周期
+        （例: 12:12 確定済・12:14 形成中のときの 12:13）を実 tick の完結窓
+        ``forming_bar_from_ticks(s, s+period)`` で合成する（ISSUE-162）。これは
+        **確定値の前倒し**であり、後から M1 が同じバーを上書きする＝確定バーのリペイントに
+        なる。よって足内更新（``mode='latest'``）専用とし、full では合成しない
+        （確定値は一度だけ書かれ以後不変・ユーザー承認設計 2026-07-23）。合成バーは
+        ``/candles`` にも無い＝チャートに対応するローソクが無い点も full では不適合。
 
     ライブ経路の堅牢化: 形成中バー算出（ticks parquet 読込）が torn-read / IO 失敗しても
     **指標計算を落とさず** ``df`` を素通しする（CSV 側 dataset の torn-read フォールバックと整合）。
@@ -241,11 +256,6 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int) -> "
             return df  # 形成中バーが既存末尾より過去 → 触らない（異常時の防御）。
 
     # ISSUE-162: 注入するバーを先に確定する（欠落閉周期の tick 合成＋形成中バー）。
-    #   欠落閉周期: M1/rollup の焼き込み（+12s 猶予）を待つ間、df 末尾と形成中周期の間の
-    #   閉じた周期（例: 12:12 確定済・12:14 形成中のときの 12:13）を実 tick の完結窓
-    #   ``forming_bar_from_ticks(s, s+period)`` で合成する。本注入は mode='latest'（足内更新＝
-    #   ライブ領域の表示）専用経路であり、full（確定値の焼き込み）は従来どおり M1 のみ＝
-    #   確定値は一度だけ書かれ以後不変（非リペイント維持・ユーザー承認設計 2026-07-23）。
     #   形成中バーが None（新周期の tick 未着＝境界直後の数秒）でも閉周期合成は独立に行う
     #   （巻き添え早期 return は境界直後の歯抜け再発になる）。固定長 tf のみ対象・tick 無し
     #   周期（週末等）は合成せず skip（実データが無いバーを捏造しない）。
@@ -253,7 +263,7 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int) -> "
     # ref ゲート: tick 系 ref のみ（forming_bar と同一条件）。非 tick ref（sample 等）へ実 tick の
     #   合成バーを混入させない（データ源の混線防止）。
     period = _FIXED_TF_SECONDS.get(tf or "1m") if is_tick_ref(ref) else None
-    if period is not None:
+    if period is not None and synthesize_closed_gaps:
         last_unix = int(df.index[-1].timestamp())
         now_i = int(now_unix)
         forming_start = int(bar["time"]) if bar is not None else now_i - (now_i % period)

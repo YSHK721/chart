@@ -362,14 +362,17 @@ def test_latest_applies_forming_bar_for_tick_ref_with_formingNow(monkeypatch):
     seen = {}
     monkeypatch.setattr(_cc.dataset, "load_dataframe", lambda ref, tf: _stub_df())
     monkeypatch.setattr(_cc, "latest_compute", lambda *a, **k: [])
-    monkeypatch.setattr(_cc.forming_bar_mod, "apply_forming_bar",
-                        lambda df, ref, tf, now: (seen.update(ref=ref, tf=tf, now=now), df)[1])
+    monkeypatch.setattr(
+        _cc.forming_bar_mod, "apply_forming_bar",
+        lambda df, ref, tf, now, *, synthesize_closed_gaps=True: (
+            seen.update(ref=ref, tf=tf, now=now, gaps=synthesize_closed_gaps), df)[1])
     status, body = handle_compute({
         "indicatorId": "x", "variant": "default", "datasetRef": "jp225_tick",
         "timeframe": "5m", "mode": "latest", "formingNow": 123,
     })
     assert status == 200 and body["ok"] is True
-    assert seen == {"ref": "jp225_tick", "tf": "5m", "now": 123}  # formingNow を now に採用。
+    # formingNow を now に採用。欠落閉周期の合成は足内更新（latest）のみ（ISSUE-162 / ISSUE-361）。
+    assert seen == {"ref": "jp225_tick", "tf": "5m", "now": 123, "gaps": True}
 
 
 def test_latest_resolves_now_via_provider_when_no_formingNow(monkeypatch):
@@ -378,19 +381,29 @@ def test_latest_resolves_now_via_provider_when_no_formingNow(monkeypatch):
     monkeypatch.setattr(_cc, "latest_compute", lambda *a, **k: [])
     # now は forming_bar.resolve_now_unix へ一元化（formingNow 無しは provider が解決）。
     monkeypatch.setattr(_cc.forming_bar_mod, "resolve_now_unix", lambda override: 999 if override is None else override)
-    monkeypatch.setattr(_cc.forming_bar_mod, "apply_forming_bar",
-                        lambda df, ref, tf, now: (seen.update(now=now), df)[1])
+    monkeypatch.setattr(
+        _cc.forming_bar_mod, "apply_forming_bar",
+        lambda df, ref, tf, now, *, synthesize_closed_gaps=True: (seen.update(now=now), df)[1])
     handle_compute({"indicatorId": "x", "variant": "default", "datasetRef": "jp225_tick",
                     "timeframe": "5m", "mode": "latest"})
     assert seen["now"] == 999  # provider 解決値（formingNow 不在）。
 
 
-def test_full_mode_does_not_apply_forming_bar(monkeypatch):
-    seen = {"called": False}
+def test_full_mode_applies_forming_bar_without_gap_synthesis(monkeypatch):
+    """ISSUE-361: full も形成中バーを注入する（計算窓＝チャートの窓）。
+
+    チャートは確定足＋形成中バーを描く。full の窓が確定足で止まると、最新足の指標値を
+    持てるのは足内追従に載れる指標だけになり、載れない指標（cvfe＝level_dash）は
+    最新足の値がどの経路でも生成されない。欠落閉周期の合成は確定バーのリペイントに
+    なるため full では行わない（2026-07-23 承認設計）。
+    """
+    seen = {}
     monkeypatch.setattr(_cc.dataset, "load_dataframe", lambda ref, tf: _stub_df())
     monkeypatch.setattr(_cc, "full_compute", lambda *a, **k: [])
-    monkeypatch.setattr(_cc.forming_bar_mod, "apply_forming_bar",
-                        lambda *a, **k: seen.update(called=True))
+    monkeypatch.setattr(
+        _cc.forming_bar_mod, "apply_forming_bar",
+        lambda df, ref, tf, now, *, synthesize_closed_gaps=True: (
+            seen.update(ref=ref, tf=tf, gaps=synthesize_closed_gaps), df)[1])
     handle_compute({"indicatorId": "x", "variant": "default", "datasetRef": "jp225_tick",
                     "timeframe": "5m"})  # mode 省略=full
-    assert seen["called"] is False  # 履歴計算は形成中バーを注入しない（後方互換）。
+    assert seen == {"ref": "jp225_tick", "tf": "5m", "gaps": False}

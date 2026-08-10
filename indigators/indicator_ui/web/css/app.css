@@ -541,8 +541,11 @@ html, body {
   padding: 6px 12px 2px; color: var(--ct-uiTextWeak, #787b86); font-size: 11px; user-select: none;
   border-top: 1px solid var(--ct-uiDivider, #23272f); margin-top: 4px;
 }
+/* 行は左詰め（ユーザー指示 2026-08-10「保存済み項目の各テキストを左寄せ」）。
+   旧 `justify-content: space-between` は [●印][名前][バッジ] の 3 要素を行幅いっぱいへ散らすため、
+   名前が行の中央へ押し出されて中央揃えに見えていた。flex-start で 3 要素を左端から順に並べる。 */
 .tpl-menu-item {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  display: flex; align-items: center; justify-content: flex-start; gap: 8px;
   width: 100%; text-align: left; padding: 6px 16px;
   background: transparent; border: 0; color: var(--ct-uiText, #d1d4dc); font-size: 13px; cursor: pointer;
 }

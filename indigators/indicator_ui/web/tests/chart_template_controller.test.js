@@ -204,11 +204,14 @@ test('TC-C05 適用: 現構成を全件除去してから宣言順に適用し�
   const removeIdx = host.log.indexOf('remove:tgp_btlm#1');
   const rebuildIdx = host.log.findIndex((l) => l.startsWith('rebuildApplied:'));
   assert.ok(removeIdx >= 0 && rebuildIdx > removeIdx, `除去 → 適用の順序（実際: ${JSON.stringify(host.log)}）`);
-  // 再構築は失敗を 1 件に局所化するため 1 件ずつ呼ぶ（F-T4）。宣言順と再採番はそのまま固定する。
+  // 再構築は **1 回で全件** 渡す（一括適用・ユーザー指示 2026-08-10）。共有ベースはこのとき初めて
+  //   compute を並列発行できる（1 件ずつ渡すと呼び出し側で並列性が消え Σ(compute) になる）。
+  //   F-T4 の失敗局所化は共有ベース側（compute/描画の 1 件ごと try/catch・MP は catch 済み）が担う。
+  //   宣言順と再採番はそのまま固定する。
   assert.deepEqual(
     host.log.filter((l) => l.startsWith('rebuildApplied:')),
-    ['rebuildApplied:tgp_btlm#2', 'rebuildApplied:profit_band#1'],
-    '宣言順に適用し instanceId は seqCounters で再採番する（§4.1）',
+    ['rebuildApplied:tgp_btlm#2,profit_band#1'],
+    '宣言順のまま 1 回で全件渡す（一括適用）・instanceId は seqCounters で再採番する（§4.1）',
   );
   assert.deepEqual(
     host._state.applied.map((i) => i.instanceId), ['tgp_btlm#2', 'profit_band#1'],
@@ -220,6 +223,51 @@ test('TC-C05 適用: 現構成を全件除去してから宣言順に適用し�
   const legendIdx = host.log.lastIndexOf('renderLegend');
   assert.ok(legendIdx > rebuildIdx, '凡例再描画は協働子が最後に行う（手順 6）');
   assert.ok(host.log.lastIndexOf('persistAll') > rebuildIdx, '適用後に永続化する（手順 5）');
+});
+
+test('TC-C23 適用: 再構築の呼び出しは 1 回だけ（一括適用＝呼び出し側で並列性を打ち消さない）', async () => {
+  // Arrange: 4 件のテンプレート（1 件ずつ呼ぶ旧実装なら 4 回・一括なら 1 回）
+  const tpl = {
+    templateId: 'tpl#7',
+    name: '4 件',
+    instances: [
+      tplInstance({ indicatorId: 'tgp_btlm' }),
+      tplInstance({ indicatorId: 'profit_band' }),
+      tplInstance({ indicatorId: 'tgp_btlm' }),
+      tplInstance({ indicatorId: 'profit_band' }),
+    ],
+    createdAt: 1, updatedAt: 1,
+  };
+  const host = fakeHost({ applied: [] });
+  const { ctl } = build({ host, gateway: fakeGateway({ templates: [tpl], lastSeq: 7 }) });
+  // Act
+  await ctl.applyTemplate('tpl#7');
+  // Assert: 呼び出しは 1 回・渡す配列は宣言順の全件（共有ベースはこれで compute を並列発行できる。
+  //   1 件ずつ渡すと適用所要が Σ(compute) になる＝実測 8 件で直列 29.8 秒 / 並列 8.3 秒）
+  const calls = host.log.filter((l) => l.startsWith('rebuildApplied:'));
+  assert.equal(calls.length, 1, '再構築は 1 回だけ呼ぶ（一括適用）');
+  assert.deepEqual(
+    calls, ['rebuildApplied:tgp_btlm#1,profit_band#1,tgp_btlm#2,profit_band#2'],
+    '宣言順の全件を 1 回で渡す',
+  );
+});
+
+test('TC-C24 適用: 再構築が失敗しても永続化と凡例再描画は実行する（D-1 の構成消失を作らない）', async () => {
+  // Arrange: 再構築が reject する host（共有ベースは reject しない設計だが、協働子側の
+  //   完遂保証がそれに依存していないことを固定する）
+  const host = fakeHost({ applied: [appliedJson({ indicatorId: 'tgp_btlm', seq: 1 })], seqCounters: { tgp_btlm: 1 } });
+  host._store.rebuildApplied = async () => { throw new Error('boom'); };
+  const { ctl } = build({ host, gateway: fakeGateway({ templates: [TPL_A], lastSeq: 1 }) });
+  const warns = [];
+  ctl._warn = (m) => warns.push(m);
+  // Act
+  const ok = await ctl.applyTemplate('tpl#1');
+  // Assert
+  assert.equal(ok, true, '適用は完遂する（再構築の失敗で中止しない）');
+  assert.equal(host._state.uiState.activeTemplateId, 'tpl#1', '手順 5: activeTemplateId を更新する');
+  assert.ok(host.log.includes('persistAll'), '手順 5: 永続化する（空構成 [] を最終値にしない）');
+  assert.ok(host.log.includes('renderLegend'), '手順 6: 凡例を再描画する');
+  assert.equal(warns.length, 1, '失敗は警告で残す');
 });
 
 test('TC-C06 適用: MP は宣言順の先頭 1 件のみ適用する（§5.2・E-8）', async () => {
@@ -322,8 +370,8 @@ test('TC-C11 切替: 紐付けありは 除去 → 切替 → 適用 の順で 1
   const order = host.log.filter((l) => l.startsWith('remove:') || l.startsWith('proceed:') || l.startsWith('rebuildApplied:'));
   assert.deepEqual(
     order,
-    ['remove:tgp_btlm#1', 'proceed:5m', 'rebuildApplied:tgp_btlm#2', 'rebuildApplied:profit_band#1'],
-    '除去（計算なし）→ 切替 → 新構成を新しい足で適用（再構築は F-T4 のため 1 件ずつ）',
+    ['remove:tgp_btlm#1', 'proceed:5m', 'rebuildApplied:tgp_btlm#2,profit_band#1'],
+    '除去（計算なし）→ 切替 → 新構成を新しい足で適用（再構築は 1 回で全件＝一括適用）',
   );
   const rebuilt = order.filter((l) => l.startsWith('rebuildApplied:'));
   assert.equal(new Set(rebuilt).size, rebuilt.length, '同一インスタンスを二重に適用しない（適用は 1 回だけ）');
