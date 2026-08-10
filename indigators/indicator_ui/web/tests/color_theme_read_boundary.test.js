@@ -233,12 +233,16 @@ test('TC-RB12 §4.9/§5.3: 未知トークンを含むテーマを読み込ん�
   );
 });
 
+// 未知トークンの例は `wick`（部位名）を使う。段階 5-E 以前は `profit` を例にしていたが、
+//   同語が語彙へ入った（意味の分離）ため、例として成立しなくなった。規則（語彙外は無視・
+//   保存値は原形のまま）は不変で、差し替えたのは**例**だけである。部位名は §4.1.0 により
+//   語彙へ入らないことが TC-LD04 で固定されているため、例として安定する。
 test('TC-RB13 §4.9: 消費側（activeTheme）は未知トークンを無視し、語彙内の宣言だけを届ける', () => {
   // Arrange
   const storage = makeStorage({
     [THEMES_KEY]: JSON.stringify({
       themes: [{
-        themeId: 'thm#1', name: 'n', roleColors: { bullish: '#00FF00', profit: '#123456' }, tfModifier: null,
+        themeId: 'thm#1', name: 'n', roleColors: { bullish: '#00FF00', wick: '#123456' }, tfModifier: null,
       }],
     }),
     [ACTIVE_KEY]: JSON.stringify({ themeId: 'thm#1', lastSeq: 1 }),
@@ -253,7 +257,7 @@ test('TC-RB13 §4.9: 消費側（activeTheme）は未知トークンを無視し
   assert.deepEqual(consumed.roleColors, { bullish: '#00ff00' }, '解釈できない領域は無視・値は保存形');
   // 一覧（themes()）には同梱プリセット（§9 T-1）が先頭に合成されるため、永続層のテーマは id で引く。
   const persisted = controller.themes().find((t) => t.themeId === 'thm#1');
-  assert.equal(persisted.roleColors.profit, '#123456', '保持している値は原形のまま');
+  assert.equal(persisted.roleColors.wick, '#123456', '保持している値は原形のまま');
   assert.equal(
     JSON.parse(storage.getItem(THEMES_KEY)).themes.length, 1,
     '永続層は 1 件のまま（プリセットは合成であって書き込みではない）',

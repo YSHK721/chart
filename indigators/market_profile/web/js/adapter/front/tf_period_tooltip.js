@@ -5,6 +5,11 @@
 // 責務（SRP）: hit（primitive.tfPeriodLevelAt の戻り値）を受けてカーソル近傍に小さな読取欄を
 //   描く/消すだけ。レベル探索は primitive、クロスヘア座標は ChartRenderer、配線は composition root。
 // 隔離: document / container は注入（テストは fake DOM）。チャート API には一切触れない。
+//
+// 色（段階 5-E）: インラインスタイルの色は配線点参照（var(--ct-*)）へ移した。ここに値を書くと
+//   テーマで地や文字色を変えてもツールチップだけ旧色に残る（app.css で解いたのと同じ二重定義）。
+
+import { chromeVar } from './chrome_css_var.js';
 
 // 値の表示整形: count 列（整数）は「滞在 N tick（シェア%）」、zp 列（実数 z）は「z=+x.xx」。
 export function formatTooltipLines(hit) {
@@ -63,9 +68,13 @@ export class TfPeriodTooltip {
     const el = this._doc.createElement('div');
     el.className = 'tfp-tooltip';
     // 最小限のインラインスタイル（CSS ファイル非依存・チャート上の小さな読取欄）。
+    // 段階 5-E: 色は配線点（chrome_tokens.js）が単一情報源。DOM 要素なので :root の
+    //   カスタムプロパティが継承され、CSS 機構がそのまま使える（canvas と違い注入不要）。
+    //   fallback は chromeVar() が CHROME_CURRENT から組むため、ここに値を書き写さない。
     el.style.cssText = 'position:absolute;z-index:30;pointer-events:none;display:none;'
-      + 'background:rgba(19,23,34,0.92);border:1px solid rgba(154,164,178,0.35);border-radius:4px;'
-      + 'padding:6px 8px;font:11px/1.5 system-ui;color:#d1d4dc;white-space:pre;';
+      + `background:${chromeVar('tfpTooltipSurface')};`
+      + `border:1px solid ${chromeVar('tfpTooltipBorder')};border-radius:4px;`
+      + `padding:6px 8px;font:11px/1.5 system-ui;color:${chromeVar('uiText')};white-space:pre;`;
     this._container.appendChild(el);
     this._el = el;
     return el;

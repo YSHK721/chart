@@ -144,7 +144,7 @@ test('TC-CD01 トークン行は COLOR_ROLES から生成する（件数・順�
     [...COLOR_ROLES],
     '行の集合と順序が台帳（domain/color_roles.js）と一致する＝台帳へ 1 語足せば行が増える',
   );
-  assert.equal(rows.length, 16, '語彙は 16 種（§4.1.1）');
+  assert.equal(rows.length, 18, '語彙は 18 種（§4.1.1・段階 5-E で profit / loss を追加）');
 });
 
 test('TC-CD02 各トークン行は 色スウォッチ・現在値表示・「未指定に戻す」を持つ（§6.3）', () => {

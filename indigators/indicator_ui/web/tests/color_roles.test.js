@@ -13,15 +13,20 @@ import { COLOR_ROLES, ColorRole, isColorRole } from '../js/domain/color_roles.js
 //   トークン経由へ移すにあたり、「操作の主役（選択中・アクティブ・フォーカス）」と「破壊的操作・
 //   エラー」は既存 14 語のどれとも異なる意味であり、既存語へ束ねると同一の色に 2 つの意味が
 //   同居する（例: エラーの赤を bearish に束ねると、下落色を変えただけでエラー表示も変わる）。
+//   v0.4.0 段階 5-E で `profit` / `loss` の 2 語を足した（16 → 18）。根拠は実測:
+//   trade_markers_renderer.js の**同一ファイル内**で `#26a69a` が 2 つの異なる意味を担っていた
+//   （:138 は利益/損失＝取引の成果・:146 は買い/売り＝方向）。方向は bullish / bearish が既に
+//   持つため、足りないのは「成果」の 1 対だけである。成果を bullish へ束ねると、ローソクの
+//   陽線色を変えただけで勝ちトレードの線が変わる（意味の異なるものが連動する）。
 const EXPECTED_ORDER = [
   'bullish', 'bearish', 'neutral', 'alert', 'primary', 'secondary', 'range',
   'level', 'muted', 'surface', 'grid', 'border', 'text', 'highlight',
-  'accent', 'danger',
+  'accent', 'danger', 'profit', 'loss',
 ];
 
-test('§4.1.1 語彙は 16 種で閉じている（件数・綴り・順序）', () => {
+test('§4.1.1 語彙は 18 種で閉じている（件数・綴り・順序）', () => {
   assert.deepEqual([...COLOR_ROLES], EXPECTED_ORDER);
-  assert.equal(COLOR_ROLES.length, 16);
+  assert.equal(COLOR_ROLES.length, 18);
 });
 
 test('§4.1.1 ColorRole は各トークンの名前付き定数を持つ（綴りの単一情報源）', () => {
@@ -29,7 +34,7 @@ test('§4.1.1 ColorRole は各トークンの名前付き定数を持つ（綴�
     const key = token.toUpperCase();
     assert.equal(ColorRole[key], token, `ColorRole.${key}`);
   }
-  assert.equal(Object.keys(ColorRole).length, 16);
+  assert.equal(Object.keys(ColorRole).length, 18);
 });
 
 test('§4.1.1 語彙台帳は凍結されている（実行時に増減しない）', () => {

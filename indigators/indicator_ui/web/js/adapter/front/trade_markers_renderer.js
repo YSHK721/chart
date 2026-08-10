@@ -6,6 +6,7 @@
 
 import { PairLinesPrimitive } from './pair_lines_primitive.js';
 import { PAIR_DIM_ALPHA } from './pair_render_constants.js';
+import { chromeVar } from './chrome_css_var.js';
 
 // v4 §10.2: 非ハイライト marker の減光色（rgba・低 alpha）。共有定数 PAIR_DIM_ALPHA を参照（単一情報源）。
 
@@ -57,6 +58,21 @@ export class TradeMarkersRenderer {
     if (sub && typeof sub.subscribeVisibleTimeRangeChange === 'function') {
       this._rangeAware = true;
       sub.subscribeVisibleTimeRangeChange((range) => this._applyRange(range));
+    }
+
+    // 段階 5-E: クロム色の購読（FR-C13）。ペア線は canvas 描画のため CSS 変数を解決できず、
+    //   色を**注入**で受け取る必要がある。配信の所有者は ChartRenderer（保持と配布の単一点）で、
+    //   本 class はその袋を primitive へ中継するだけ（色を 1 つも決めない）。
+    //   保持しておく理由: primitive は pairs が来て初めて生まれるため、配信が先・生成が後という
+    //   順序が普通に起きる。保持しないとその配信は捨てられ、ペア線だけ旧色で残る。
+    this._chromeSlots = null;
+    if (chartRenderer && typeof chartRenderer.addChromeObserver === 'function') {
+      chartRenderer.addChromeObserver((slots) => {
+        this._chromeSlots = slots;
+        if (this._primitive) {
+          this._primitive.setChromeColors(slots);
+        }
+      });
     }
 
     // v4・C1: crosshair 購読（マルチキャスト・既存 ChartRenderer 購読と共存）。
@@ -123,8 +139,12 @@ export class TradeMarkersRenderer {
     el.id = 'trade-detail-popup';
     el.style.cssText = [
       'position:fixed', 'z-index:9999', 'display:none', 'pointer-events:none',
-      'background:#1e222d', 'color:#d1d4dc', 'border:1px solid #2a2e39',
+      // 段階 5-E: 枠の地・文字・境界はアプリ UI クロムの既存配線点をそのまま読む（浮遊パネルは
+      //   意味としてパネルであり、専用の配線点を作ると同じ意味に 2 つの席ができる）。
+      `background:${chromeVar('uiPanel')}`, `color:${chromeVar('uiText')}`,
+      `border:1px solid ${chromeVar('uiBorder')}`,
       'border-radius:6px', 'padding:8px 10px', 'font:12px/1.5 system-ui,sans-serif',
+      // 影は色ではなく奥行き（台帳の THEME_EXEMPT_LITERALS に登録済の対象外）。
       'box-shadow:0 4px 16px rgba(0,0,0,0.5)', 'min-width:220px',
     ].join(';');
     this._document.body.appendChild(el);
@@ -135,23 +155,26 @@ export class TradeMarkersRenderer {
   // ペアの 9 項目（利益/取引日時/取引時間/取引価格/取引数量/決済日時/決済時間/決済価格/決済数量）を HTML 化する。
   _popupHtml(pair) {
     const profit = pair.profit;
-    const profitColor = (typeof profit === 'number' && profit > 0) ? '#26a69a'
-      : (typeof profit === 'number' && profit < 0) ? '#ef5350' : '#d1d4dc';
+    // 段階 5-E: 利益 / 損失は取引の**成果**（profit / loss）。下のヘッダが使う買い / 売りは
+    //   **方向**（bullish / bearish）であり、現行リテラルが同じ #26a69a / #ef5350 でも意味が
+    //   違うため別の配線点を読む。ここを 1 つに束ねると「利益は緑・買いは青」が指定できない。
+    const profitColor = (typeof profit === 'number' && profit > 0) ? chromeVar('tradeProfit')
+      : (typeof profit === 'number' && profit < 0) ? chromeVar('tradeLoss') : chromeVar('uiText');
     const sideLabel = pair.side === 'buy' ? 'BUY' : 'SELL';
     const row = (label, value, color) =>
       `<div style="display:flex;justify-content:space-between;gap:16px">`
-      + `<span style="color:#787b86">${label}</span>`
-      + `<span style="color:${color || '#d1d4dc'};font-variant-numeric:tabular-nums">${value}</span></div>`;
+      + `<span style="color:${chromeVar('uiTextWeak')}">${label}</span>`
+      + `<span style="color:${color || chromeVar('uiText')};font-variant-numeric:tabular-nums">${value}</span></div>`;
     return [
-      `<div style="font-weight:600;margin-bottom:4px;color:${pair.side === 'buy' ? '#26a69a' : '#ef5350'}">`
+      `<div style="font-weight:600;margin-bottom:4px;color:${pair.side === 'buy' ? chromeVar('tradeSideBuy') : chromeVar('tradeSideSell')}">`
         + `#${pair.i} ${sideLabel}</div>`,
       row('利益', this._fmtNum(profit), profitColor),
-      `<div style="border-top:1px solid #2a2e39;margin:4px 0"></div>`,
+      `<div style="border-top:1px solid ${chromeVar('uiBorder')};margin:4px 0"></div>`,
       row('取引日時', this._fmtDate(pair.entry.time)),
       row('取引時間', this._fmtClock(pair.entry.time)),
       row('取引価格', this._fmtNum(pair.entry.price)),
       row('取引数量', this._fmtNum(pair.volume)),
-      `<div style="border-top:1px solid #2a2e39;margin:4px 0"></div>`,
+      `<div style="border-top:1px solid ${chromeVar('uiBorder')};margin:4px 0"></div>`,
       row('決済日時', this._fmtDate(pair.exit.time)),
       row('決済時間', this._fmtClock(pair.exit.time)),
       row('決済価格', this._fmtNum(pair.exit.price)),
@@ -334,6 +357,11 @@ export class TradeMarkersRenderer {
       this._primitive.setPairs(this._pairs);
     } else if (canAttach) {
       this._primitive = new PairLinesPrimitive(this._pairs);
+      // 生成時点で既に配信済みの色があれば適用する（配信が先・生成が後でも古い色を残さない）。
+      //   未配信（null）なら primitive 自身の既定＝現行リテラルのまま。
+      if (this._chromeSlots) {
+        this._primitive.setChromeColors(this._chromeSlots);
+      }
       this._series.attachPrimitive(this._primitive);
     }
   }

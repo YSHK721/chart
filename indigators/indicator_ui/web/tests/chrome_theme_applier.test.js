@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 
 import { ChromeThemeApplier } from '../js/adapter/front/chrome_theme_applier.js';
 import { resolveAllChrome } from '../js/usecase/color_resolver.js';
-import { CHROME_CURRENT, CHROME_DEFAULT } from '../js/usecase/chrome_tokens.js';
+import { CHROME_SLOTS, CHROME_CURRENT, CHROME_DEFAULT } from '../js/usecase/chrome_tokens.js';
 import { COLOR_ROLES, ColorRole } from '../js/domain/color_roles.js';
 
 // chromeSink は applyChromeColors(slots) だけを持てばよい（§7.3 ISP）。lwc のオプション経路への
@@ -49,12 +49,23 @@ test('resolveAllChrome: テーマ未設定なら全 slot が現行リテラル�
   }
 });
 
-test('resolveAllChrome: 14 トークンすべてに席がある（指標側トークンは未宣言なら null）', () => {
+test('resolveAllChrome: 語彙の全トークンに席がある（クロムで束ねないトークンは未宣言なら null）', () => {
   const { tokens } = resolveAllChrome(null);
   assert.deepEqual(Object.keys(tokens).sort(), [...COLOR_ROLES].sort());
-  // 指標側トークンはクロムの既定を持たないため未宣言では null。
+  // 「クロムの既定を持つか」は**その意味をクロムのどこかが束ねているか**で決まる。
+  //   段階 5-E で MP の Value Area 帯線が range を、σ 水準線の穏やか端が neutral を束ねたため、
+  //   この 2 語はクロム既定を持つ側へ移った（席の有無ではなく既定の有無が変わっただけ）。
+  //   束ねる配線点が 1 つも無いトークンは依然 null（CSS 側は removeProperty で前回値を残さない）。
+  const boundByChrome = new Set(CHROME_SLOTS.map((s) => s.token));
+  for (const token of COLOR_ROLES) {
+    if (boundByChrome.has(token)) {
+      assert.notEqual(tokens[token], null, `${token}: クロムが束ねているのに既定が無い`);
+    } else {
+      assert.equal(tokens[token], null, `${token}: クロムが束ねていないのに既定がある`);
+    }
+  }
+  // 束ねられていない代表例（指標の本体線）。
   assert.equal(tokens[ColorRole.PRIMARY], null);
-  assert.equal(tokens[ColorRole.RANGE], null);
 });
 
 test('resolveAllChrome: 宣言されたトークンは slot・token の両方へ届く', () => {
@@ -101,15 +112,18 @@ test('§4.3: 解決した 14 トークンを --ct-<token> として :root へ書
   assert.equal(s.props.get('--ct-text'), CHROME_DEFAULT.text);
 });
 
-test('§4.3: 値が無いトークン（指標側・未宣言）は書かずに removeProperty する', () => {
+test('§4.3: 値が無いトークン（クロムが束ねない・未宣言）は書かずに removeProperty する', () => {
+  // 例は `primary`（指標の本体線）を使う。段階 5-E 以前は `range` を例にしていたが、MP の
+  //   Value Area 帯線が range を束ねたためクロム既定を持つ側へ移り、例として成立しなくなった。
+  //   規則（値が無いトークンは書かずに消す＝適用履歴に依存しない）は不変で、替えたのは例だけである。
   const s = makeSinks();
   const applier = new ChromeThemeApplier({ chromeSink: s.chromeSink, rootStyle: s.rootStyle });
-  applier.apply(resolveAllChrome(theme({ range: '#111111' })));
-  assert.equal(s.props.get('--ct-range'), '#111111');
+  applier.apply(resolveAllChrome(theme({ primary: '#111111' })));
+  assert.equal(s.props.get('--ct-primary'), '#111111');
   // テーマを外すと前回の書き込みが残らない（適用履歴に依存しない）。
   applier.apply(resolveAllChrome(null));
-  assert.equal(s.props.has('--ct-range'), false);
-  assert.ok(s.removed.includes('--ct-range'));
+  assert.equal(s.props.has('--ct-primary'), false);
+  assert.ok(s.removed.includes('--ct-primary'));
 });
 
 test('CSS 機構の fallback と一致: --ct-text/--ct-bullish/--ct-bearish が現在値表示へ届く', () => {

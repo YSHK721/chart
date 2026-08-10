@@ -13,6 +13,11 @@ import { PairPrimitiveBase } from './pair_primitive_base.js';
 // ソース能力記述子（domain 単一情報源）: POC 描画様式（star/line）・ラベル可否を導出する
 //   （ISSUE-097 🔵-20・散在した profile.src==='zp' 述語の集約）。
 import { mpSourceCapability } from '../../domain/mp_source_capability.js';
+// 段階 5-E: 描画色は台帳（chrome_tokens.js）が単一情報源。canvas は CSS カスタムプロパティを
+//   解決できないため色は**注入**で受け、未注入時の既定だけをここから引く（replay_boundary_dim /
+//   pair_lines_primitive と同じ規律）。heatColor の HSL 色相ランプだけは対象外（ISSUE-360:
+//   色相環を 240 度掃引するランプは両端 2 色から中間の経路が一意に定まらない）。
+import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 
 // 'YYYY-MM-DD'（sessions の date）→ UNIX 秒（UTC 深夜）。timeToCoordinate へ渡し日付を時間軸に対応づける。
 function dateToUnix(dateStr) {
@@ -44,24 +49,15 @@ export function heatColor(norm, alpha = HEAT_ALPHA) {
 const DIM_ALPHA = 0.30;
 const TODAY_ALPHA = 0.98;
 // POC 線（最濃赤）・VA 帯線（灰）の色（試作準拠）。
-const C_POC_LINE = '#ff3b3b';
-const C_VA_LINE = 'rgba(168, 41, 174, 0.5)';
 // POC* 線（src=zp・超過占有の最大行＝生カウント最頻値ではない）。zp であることを一目で
 //   区別できるよう黄で描く（通常 POC の赤と衝突しない・検定 Step5 の POC* 準拠）。
-const C_POC_STAR = '#ffd54a';
 // リプレイ時点 T の縦線色（試作 prototype_260630-01 の遡り縦線準拠・視認しやすい水色）。
-const C_CURSOR_LINE = 'rgba(120, 190, 255, 0.9)';
 // sessions 各列の OHLC 可視化（ユーザー選択「方向ティント＋終値線」）。
 //   列全体を当日方向で薄くティント（陽線=薄緑/陰線=薄赤）し、終値にのみ太い横線（緑/赤）を引く。
 //   ヒストグラムの形は保ちつつ、上げ下げが一目で分かりポイント（終値）が際立つ。
-const C_SESS_TINT_UP = 'rgba(38, 166, 154, 0.12)';   // 陽線日の列ティント（薄緑）
-const C_SESS_TINT_DOWN = 'rgba(239, 83, 80, 0.12)';  // 陰線日の列ティント（薄赤）
 // 終値線は控えめに（方向はティントで分かるので、終値は細い目印程度）。1px・やや軟らかい緑/赤。
-const C_OHLC_UP = 'rgba(38, 166, 154, 0.8)';         // 終値線（上げ・軟緑）
-const C_OHLC_DOWN = 'rgba(239, 83, 80, 0.8)';        // 終値線（下げ・軟赤）
 const OHLC_CLOSE_LW = 1;                             // 終値線の太さ（控えめ）
 // sessions 列内の日別 POC 行を白で強調（試作準拠）・列内バーの最小可視画素。
-const C_SESS_POC = 'rgba(255,255,255,0.95)';
 const SESS_BAR_ALPHA = 0.98;
 const SESS_MIN_BAR_PX = 1.5;
 // tf-period 列の方向背景（依頼者指示 2026-07-13「どの時間足にも背景色を追加して上下が分かる仕様に」・
@@ -69,11 +65,7 @@ const SESS_MIN_BAR_PX = 1.5;
 //   陽/陰で塗る。α=0.1 の薄塗りのため色相は sessions ティントと同じ明色系（緑/赤）を用いる
 //   （暗色系は α0.1 ではダーク背景に埋没する）。方向不明（candle 未ロード・dirUp 未注釈＝
 //   旧呼び出し）は背景を描かない（後方互換）。
-const C_TFP_BG_UP = 'rgba(38, 166, 154, 0.1)';   // 陽線周期（薄緑）
-const C_TFP_BG_DOWN = 'rgba(239, 83, 80, 0.1)';  // 陰線周期（薄赤）
 // ISSUE-085 改: VA 外の占有レンジ背景（減光）。VA 帯（通常 α0.1）との2トーンで VA 幅を表現する。
-const C_TFP_BG_UP_DIM = 'rgba(38, 166, 154, 0.04)';
-const C_TFP_BG_DOWN_DIM = 'rgba(239, 83, 80, 0.04)';
 // tf-period 列の最小価格単位 levels を、価格幅 `binWidth` のビンへ束ねる純関数（ISSUE-054）。
 //
 // 「レンジ」はユーザーが設定する**表示解像度**である。tf-period 列は測定としては最小価格単位で
@@ -106,9 +98,26 @@ export function aggregateLevelsToBins(levels, binWidth) {
 }
 
 
+// 本 primitive が使う配線点 id の一覧（台帳の MP 節と 1 対 1）。ここに無い id は取り込まない
+//   ＝配信の袋に何が入っていても、本 class は自分の色だけを見る（配線点の知識を閉じる）。
+const MP_SLOT_IDS = Object.freeze([
+  'mpPocLine', 'mpPocStar', 'mpVaLine', 'mpCursorLine',
+  'mpSessTintUp', 'mpSessTintDown', 'mpOhlcUp', 'mpOhlcDown', 'mpSessPoc',
+  'mpTfpBgUp', 'mpTfpBgDown', 'mpTfpBgUpDim', 'mpTfpBgDownDim',
+  'mpStripeOdd', 'mpStripeEven', 'mpDateLabel',
+]);
+
+// 未配信時の既定（＝現行リテラル）。値の出所は台帳 1 箇所で、ここでは写経しない。
+const MP_DEFAULT_COLORS = Object.freeze(
+  Object.fromEntries(MP_SLOT_IDS.map((id) => [id, CHROME_CURRENT[id]])),
+);
+
 export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
   constructor() {
     super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
+    // 段階 5-E: 描画色の保持（配信前＝現行リテラル）。台帳の MP 配線点だけを取り込む。
+    //   保持しないと、テーマ適用が MP へ届いても次の再描画で旧色に戻る。
+    this._colors = { ...MP_DEFAULT_COLORS };
     this._profile = null;
     this._visible = false;
     // リプレイ時点 T（UNIX 秒）の縦線。null=非描画（replay OFF）。移植元 prototype_260630-01。
@@ -235,6 +244,22 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
     this._update();
   }
 
+  // 配信されたクロム色から自分の 16 点を取り込む（段階 5-E・FR-C13）。
+  //   全域的（§7.3 LSP）: null・非オブジェクト・非文字列・部分指定のいずれでも例外を投げず、
+  //   解釈できない指定は現行値を保つ。ChartRenderer が配る袋をそのまま渡せる形にしてあり、
+  //   呼び出し側は「どの id が MP のものか」を知らなくてよい。
+  setChromeColors(slots) {
+    if (!slots || typeof slots !== 'object') {
+      return;
+    }
+    for (const id of MP_SLOT_IDS) {
+      if (typeof slots[id] === 'string') {
+        this._colors[id] = slots[id];
+      }
+    }
+    this._update();
+  }
+
   // profile を差し替えて再描画要求（取得成功時）。
   setProfile(profile) {
     this._profile = profile;
@@ -356,11 +381,11 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         if (yHigh != null && yLow != null) {
           const top = Math.min(yHigh, yLow);
           const bot = Math.max(yHigh, yLow);
-          ctx.fillStyle = s.close >= s.open ? C_SESS_TINT_UP : C_SESS_TINT_DOWN;
+          ctx.fillStyle = s.close >= s.open ? this._colors.mpSessTintUp : this._colors.mpSessTintDown;
           ctx.fillRect(left, top, tw, Math.max(1, bot - top));
         }
       } else {
-        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.015)';
+        ctx.fillStyle = i % 2 ? this._colors.mpStripeOdd : this._colors.mpStripeEven;
         ctx.fillRect(left, 0, tw, height);
       }
       // 日内 max（正規化基準）と日別 POC（最頻 bin index）。
@@ -387,7 +412,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
             continue; // 範囲外価格はスキップ。
           }
           const w = Math.max(SESS_MIN_BAR_PX, (v / dmax) * (tw - 4));
-          ctx.fillStyle = (j === pocj) ? C_SESS_POC : heatColor(v / dmax, SESS_BAR_ALPHA);
+          ctx.fillStyle = (j === pocj) ? this._colors.mpSessPoc : heatColor(v / dmax, SESS_BAR_ALPHA);
           ctx.fillRect(left + 2, y - barH / 2, w, barH);
         }
       }
@@ -396,7 +421,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       if (hasOhlc) {
         const y = toY(s.close);
         if (y != null) {
-          ctx.strokeStyle = s.close >= s.open ? C_OHLC_UP : C_OHLC_DOWN;
+          ctx.strokeStyle = s.close >= s.open ? this._colors.mpOhlcUp : this._colors.mpOhlcDown;
           ctx.lineWidth = OHLC_CLOSE_LW;
           ctx.beginPath();
           ctx.moveTo(left, y);
@@ -405,7 +430,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         }
       }
       // 列上部に日付（MM-DD）。
-      ctx.fillStyle = 'rgba(154,164,178,.6)';
+      ctx.fillStyle = this._colors.mpDateLabel;
       ctx.fillText((all[i].date || '').slice(5), left + 3, 4);
     }
     ctx.restore();
@@ -454,8 +479,8 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         if (yHi != null && yLo != null) {
           const top = Math.min(yHi, yLo) - lvlH / 2;
           const bot = Math.max(yHi, yLo) + lvlH / 2;
-          const cBase = c.dirUp ? C_TFP_BG_UP : C_TFP_BG_DOWN;
-          const cDim = c.dirUp ? C_TFP_BG_UP_DIM : C_TFP_BG_DOWN_DIM;
+          const cBase = c.dirUp ? this._colors.mpTfpBgUp : this._colors.mpTfpBgDown;
+          const cDim = c.dirUp ? this._colors.mpTfpBgUpDim : this._colors.mpTfpBgDownDim;
           const yVH = c.va_high != null ? toY(c.va_high) : null;
           const yVL = c.va_low != null ? toY(c.va_low) : null;
           if (yVH != null && yVL != null) {
@@ -485,7 +510,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
         const isPoc = pocPrice != null && (this._tfBinWidth
           ? Math.abs(price - pocPrice) <= this._tfBinWidth / 2
           : Math.abs(price - pocPrice) < 1e-9);
-        ctx.fillStyle = isPoc ? C_SESS_POC : heatColor(cnt / cmax, SESS_BAR_ALPHA);
+        ctx.fillStyle = isPoc ? this._colors.mpSessPoc : heatColor(cnt / cmax, SESS_BAR_ALPHA);
         ctx.fillRect(left + 1, y - lvlH / 2, w, lvlH);
       }
     }
@@ -567,9 +592,9 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
       };
       // poc=star のソース（zp）は POC*（超過占有 argmax z）＝黄で区別する（通常 POC は赤・試作準拠）。
       const cap = mpSourceCapability(this._profile.src);
-      hline(poc, cap.poc === 'star' ? C_POC_STAR : C_POC_LINE);
-      hline(vaHigh, C_VA_LINE);
-      hline(vaLow, C_VA_LINE);
+      hline(poc, cap.poc === 'star' ? this._colors.mpPocStar : this._colors.mpPocLine);
+      hline(vaHigh, this._colors.mpVaLine);
+      hline(vaLow, this._colors.mpVaLine);
 
       // showLabels のソース（zp）のみ: 各参照線の価格ラベルを線の左上に描く（POC*/VAH/VAL・
       //   依頼者指示 2026-07-12）。既存 src（candle/dwell/m1）は試作準拠のラベル無しを維持＝描画 byte 不変。
@@ -585,9 +610,9 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
           ctx.fillText(`${text} ${Number(price).toFixed(2)}`, 4, y - 2);
           ctx.restore();
         };
-        label(poc, 'POC*', C_POC_STAR);
-        label(vaHigh, 'VAH', C_VA_LINE);
-        label(vaLow, 'VAL', C_VA_LINE);
+        label(poc, 'POC*', this._colors.mpPocStar);
+        label(vaHigh, 'VAH', this._colors.mpVaLine);
+        label(vaLow, 'VAL', this._colors.mpVaLine);
       }
 
       // リプレイ時点 T の縦線（移植元 prototype_260630-01/js/app.js L152-158）。
@@ -603,7 +628,7 @@ export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
           const height = scope.bitmapSize.height;
           ctx.save();
           ctx.beginPath();
-          ctx.strokeStyle = C_CURSOR_LINE;
+          ctx.strokeStyle = this._colors.mpCursorLine;
           ctx.lineWidth = 1;
           ctx.moveTo(x, 0);
           ctx.lineTo(x, height);

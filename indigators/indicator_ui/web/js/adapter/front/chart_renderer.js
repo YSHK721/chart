@@ -273,7 +273,21 @@ export class ChartRenderer {
     const primitive = factory();
     this._mainSeries.attachPrimitive(primitive);
     this._backgroundPrimitives.set(key, primitive);
+    // 段階 5-E: 装着＝配信登録。背景プリミティブは canvas 描画で CSS 変数を解決できないため、
+    //   色は注入で受ける（FR-C13）。装着と配信登録を別の呼び出しに分けると「装着したのに
+    //   配られない」経路が必ず生まれるので、1 つの操作にまとめる。
+    //   ここで現在の保持値を 1 回配ることで、テーマ適用が先・装着が後でも古い色が残らない
+    //   （addChromeObserver が登録直後に 1 回配るのと同じ規約）。
+    this._pushChromeToBackgroundPrimitive(primitive);
     return primitive;
+  }
+
+  // 背景プリミティブ 1 つへ保持色を渡す。受け口を持たないプリミティブ（既存・後方互換）は
+  //   素通りする（全域的・例外を投げない）。
+  _pushChromeToBackgroundPrimitive(primitive) {
+    if (primitive && typeof primitive.setChromeColors === 'function') {
+      primitive.setChromeColors(this._chromeSlots);
+    }
   }
 
   // 増分2: チャートの通常操作（スクロール/ズーム）を停止/復元する（リプレイスワイプ捕捉用）。
@@ -1092,6 +1106,11 @@ export class ChartRenderer {
     this._pushChartOptions();
     this._pushCandleOptions();
     this._pushDimmedCandles();
+    // 装着済みの背景プリミティブ（取引密度帯など）へも同じ保持値を配る。ここを落とすと
+    //   帯だけ旧色で残る（減光ローソクで実際に起きた欠陥と同型）。
+    for (const primitive of this._backgroundPrimitives.values()) {
+      this._pushChromeToBackgroundPrimitive(primitive);
+    }
     this._notifyChromeObservers();
   }
 

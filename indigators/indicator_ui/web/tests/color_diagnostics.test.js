@@ -123,7 +123,7 @@ test('TC-DG07 W-C2: 地そのもの（surface）と構造線（grid / border）�
   assert.equal(FIGURE_TOKENS.includes('surface'), false);
   assert.equal(FIGURE_TOKENS.includes('grid'), false);
   assert.equal(FIGURE_TOKENS.includes('border'), false);
-  assert.equal(FIGURE_TOKENS.length, 13, '語彙 16 語 − 対象外 3 語');
+  assert.equal(FIGURE_TOKENS.length, 15, '語彙 18 語 − 対象外 3 語');
 });
 
 test('TC-DG08 W-C2: surface が宣言されていなければ判定しない（比較の相手が無い）', () => {

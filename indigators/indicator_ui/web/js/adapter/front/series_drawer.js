@@ -8,6 +8,8 @@
 //   （ChartRenderer の public メソッド・export）は不変で、実体だけが本ファイルへ移動した。
 
 import { seriesKind } from '../../domain/series_kind.js';
+import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
+import { toChannels } from '../../domain/color_value.js';
 
 // lineStyle 文字列 → lightweight-charts LineStyle 整数（v4/v5 共通: Solid=0 / Dotted=1 / Dashed=2）。
 const LINE_STYLE_INT = Object.freeze({ solid: 0, dotted: 1, dashed: 2 });
@@ -32,21 +34,26 @@ function isColorLike(v) {
 const MAIN_PANE_STRETCH = 3;
 const INDICATOR_PANE_STRETCH = 1;
 
-export const WATERMARK_COLOR = 'rgba(209, 212, 220, 0.9)';
+export const WATERMARK_COLOR = CHROME_CURRENT.watermark;
 
 // σ 水準線のカラースキーム（histogram の level_colors と同義: 中心からの距離で 緑→赤）。
 // 端点は common/level_colors.py の _CALM/_HOT（#2e7d32 / #d32f2f）に一致させる。
-const SCHEME_CALM = [46, 125, 50]; // 緑（中心＝穏やか）
-const SCHEME_HOT = [211, 47, 47]; // 赤（両極端＝過熱）
-// 明度係数（背景 #131722 に馴染ませる。小さいほど暗い。0..1）。灰一色より色で識別でき、かつ控えめ。
-const LEVEL_LINE_DIM = 0.55;
+//
+// 段階 5-E: 端点は台帳（chrome_tokens.js）が持つ。ここにチャネル配列で持つと、`#` と `rgba(` を
+//   見る走査テストに掛からないまま色が二重定義される（＝見逃したまま「リテラル 0 件」と主張
+//   できてしまう）。配列を消し、値の出所を 1 箇所にする。
+const SCHEME_CALM = toChannels(CHROME_CURRENT.levelSchemeCalm); // 緑（中心＝穏やか）＝neutral
+const SCHEME_HOT = toChannels(CHROME_CURRENT.levelSchemeHot); // 赤（両極端＝過熱）＝alert
+// 明度係数（背景に馴染ませる。小さいほど暗い。0..1）。灰一色より色で識別でき、かつ控えめ。
+//   これは**色ではなく強度**なのでトークン化しない（地を変えても比は比のまま意味を保つ）。
+export const LEVEL_LINE_DIM = 0.55;
 
 function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
 // 中心からの距離比 t∈[0,1] を 緑→赤 へ補間し dim で減光した rgb 文字列にする。
-function schemeColor(t, dim) {
+export function schemeColor(t, dim) {
   const r = Math.round(lerp(SCHEME_CALM[0], SCHEME_HOT[0], t) * dim);
   const g = Math.round(lerp(SCHEME_CALM[1], SCHEME_HOT[1], t) * dim);
   const b = Math.round(lerp(SCHEME_CALM[2], SCHEME_HOT[2], t) * dim);

@@ -76,6 +76,8 @@ const CURRENT = Object.freeze({
   text: '#d1d4dc', highlight: '#f5f5f5',
   // 段階 5-D。app.css の現行リテラル（PRESET「基本」も同値）。
   accent: '#2962ff', danger: '#ef5350',
+  // 段階 5-E。trade_markers / pair_lines の現行リテラル（PRESET「基本」も同値）。
+  profit: '#26a69a', loss: '#ef5350',
 });
 
 // 現行値からの各チャネル差の絶対値の最大（近さの実測指標）。
@@ -236,28 +238,32 @@ test('TC-CD11 neutral ← primary: desaturate（相対輝度を保つ無彩色�
 // 台帳（通過条件 6）: 導出表が語彙 14 語の全数を覆う
 // =========================================================================
 
-test('TC-CD12 台帳: 基点 7 語 ＋ 導出 9 語 = 語彙 16 語の全数を過不足なく覆う', () => {
+test('TC-CD12 台帳: 基点 9 語 ＋ 導出 9 語 = 語彙 18 語の全数を過不足なく覆う', () => {
   // Arrange / Act
   const covered = [...BASE_ROLE_TOKENS, ...DERIVED_ROLE_TOKENS];
   // Assert
   // 段階 5-D で足した accent / danger は**導出しない**（導出規則を置くとプリセット「基本」の
   //   見た目が現行からずれる。ずらす理由がない）。BASE_ROLE_TOKENS は「導出先でないもの」の
   //   計算結果にすぎず、ユーザーへ宣言を強制しない（未宣言なら slot.current ＝現行色に落ちる）。
-  assert.equal(BASE_ROLE_TOKENS.length, 7, '基点は 7 語');
+  assert.equal(BASE_ROLE_TOKENS.length, 9, '基点は 9 語');
   assert.equal(DERIVED_ROLE_TOKENS.length, 9, '導出は 9 語');
   assert.ok(BASE_ROLE_TOKENS.includes('accent'), 'accent は導出しない');
   assert.ok(BASE_ROLE_TOKENS.includes('danger'), 'danger は導出しない');
-  assert.deepEqual([...covered].sort(), [...COLOR_ROLES].sort(), '語彙 16 語と全数一致');
+  // 段階 5-E の profit / loss も**導出しない**（accent / danger と同じ理由）。導出規則を置くと
+  //   プリセット「基本」の売買ペア線の色が現行からずれる。ずらす理由がない。
+  assert.ok(BASE_ROLE_TOKENS.includes('profit'), 'profit は導出しない');
+  assert.ok(BASE_ROLE_TOKENS.includes('loss'), 'loss は導出しない');
+  assert.deepEqual([...covered].sort(), [...COLOR_ROLES].sort(), '語彙 18 語と全数一致');
   assert.equal(new Set(covered).size, covered.length, '基点と導出が重複しない');
 });
 
-test('TC-CD13 通過条件 2: 基点 7 語の宣言だけで 16 キーが生成される', () => {
-  // Arrange: 基点 7 語には現行値（PRESET「基本」）を入れる。
+test('TC-CD13 通過条件 2: 基点 9 語の宣言だけで 18 キーが生成される', () => {
+  // Arrange: 基点 9 語には現行値（PRESET「基本」）を入れる。
   const declared = Object.fromEntries(BASE_ROLE_TOKENS.map((t) => [t, CURRENT[t]]));
   // Act
   const out = expandRoleColors(declared);
   // Assert
-  assert.deepEqual(Object.keys(out).sort(), [...COLOR_ROLES].sort(), '16 キーが揃う');
+  assert.deepEqual(Object.keys(out).sort(), [...COLOR_ROLES].sort(), '18 キーが揃う');
   assert.deepEqual(out, {
     // 基点（宣言値そのまま）
     surface: '#131722',
@@ -267,6 +273,8 @@ test('TC-CD13 通過条件 2: 基点 7 語の宣言だけで 16 キーが生成�
     primary: '#42a5f5',
     accent: '#2962ff',
     danger: '#ef5350',
+    profit: '#26a69a',
+    loss: '#ef5350',
     // 導出（導出表どおり）
     grid: '#21242f',
     border: '#2b2e38',
@@ -280,7 +288,7 @@ test('TC-CD13 通過条件 2: 基点 7 語の宣言だけで 16 キーが生成�
   });
 });
 
-test('TC-CD14 台帳: 導出 9 語はいずれも基点 5 語の宣言のみから到達できる（連鎖の閉性）', () => {
+test('TC-CD14 台帳: 導出 9 語はいずれも基点の宣言のみから到達できる（連鎖の閉性）', () => {
   // Arrange
   const declared = Object.fromEntries(BASE_ROLE_TOKENS.map((t) => [t, CURRENT[t]]));
   // Act

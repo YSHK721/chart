@@ -14,12 +14,41 @@
 
 import { PairPrimitiveBase } from './pair_primitive_base.js';
 import { PAIR_DIM_ALPHA } from './pair_render_constants.js';
+import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 
-const C_WIN = '#26a69a';
-const C_LOSS = '#ef5350';
 // 非ハイライト線の減光 alpha（§10.2）。共有定数 PAIR_DIM_ALPHA を参照（単一情報源）。
+//
+// 色（段階 5-E・基本設計_指標カラーテーマ.md FR-C13）: 勝ち / 負けの色は**注入**で受ける。
+//   本 primitive が現行リテラルを直接持つと、テーマで成果色を変えてもペア線だけ旧色に残る
+//   （replay_boundary_dim.js が解いたのと同じ破綻）。未注入時の既定だけを台帳から引くため、
+//   テーマなしの見た目は現行と厳密に同一である。
 
 export class PairLinesPrimitive extends PairPrimitiveBase {
+  constructor(pairs = []) {
+    super(pairs);
+    // 配信済みのペア線色（配信前＝現行リテラル）。setChromeColors だけが書き換える。
+    this._win = CHROME_CURRENT.pairLineWin;
+    this._loss = CHROME_CURRENT.pairLineLoss;
+  }
+
+  // 配信されたクロム色から自分の 2 点を取り込む。全域的（§7.3 LSP）: null・非オブジェクト・
+  //   非文字列・部分指定のいずれでも例外を投げず、解釈できない指定は現行値を保つ。
+  //   ChartRenderer.addChromeObserver が配る袋をそのまま渡せる形にしてあり、呼び出し側は
+  //   「どの id が自分のものか」を知らなくてよい（配線点の知識は本 class に閉じる）。
+  setChromeColors(slots) {
+    if (!slots || typeof slots !== 'object') {
+      return;
+    }
+    if (typeof slots.pairLineWin === 'string') {
+      this._win = slots.pairLineWin;
+    }
+    if (typeof slots.pairLineLoss === 'string') {
+      this._loss = slots.pairLineLoss;
+    }
+    if (typeof this._requestUpdate === 'function') {
+      this._requestUpdate();
+    }
+  }
   // 各 pair の (entryTime→x, entryPrice→y)〜(exitTime→x, exitPrice→y) を座標化して線分描画。
   //   いずれかの座標が null（範囲外）の pair はスキップ（§10.1・C3）。
   _draw(target) {
@@ -47,7 +76,7 @@ export class PairLinesPrimitive extends PairPrimitiveBase {
         const dimmed = this._highlight != null && pair.i !== this._highlight;
         ctx.save();
         ctx.beginPath();
-        ctx.strokeStyle = pair.win ? C_WIN : C_LOSS;
+        ctx.strokeStyle = pair.win ? this._win : this._loss;
         ctx.globalAlpha = dimmed ? PAIR_DIM_ALPHA : 1;
         ctx.lineWidth = 1;
         ctx.moveTo(x1, y1);

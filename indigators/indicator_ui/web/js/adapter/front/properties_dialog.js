@@ -34,6 +34,9 @@ import { effectiveTimeframe } from '../../usecase/period_presets.js';
 // 時間足 → 表示ラベル（'1h'→'1時間'）の単一情報源（timeframe_menu.js・ISSUE-123）。
 //   期間プリセット一覧の見出し「◯◯足 基準」に使う（ラベルを二重定義しない）。
 import { timeframeLabels } from './timeframe_menu.js';
+// 段階 5-E: 系列の既定色は解決順ステップ 5 の単一情報源（color_resolver）を読む。
+//   ここに '#2962ff' を書くと、既定色を変えたときに片方だけ古い値で残る（複製＝二重定義）。
+import { DEFAULT_SERIES_COLOR } from '../../usecase/color_resolver.js';
 
 // toHex は本モジュールの公開面として維持する（既存の import 元を変えない・ISSUE-181）。
 export { toHex };
@@ -404,7 +407,7 @@ export class PropertiesDialog {
     if (this._seriesStyles) {
       rows = buildSeriesStyleRows(this._def, this._seriesStyles).map((r) => ({
         ...r,
-        color: toHex(r.color ?? '#2962ff'),
+        color: toHex(r.color ?? DEFAULT_SERIES_COLOR),
         width: r.width ?? 1,
         style: r.style ?? 'solid',
       }));
@@ -417,7 +420,7 @@ export class PropertiesDialog {
         // 静的フォールバック（seriesStyles 未供給＝SSR/単体テスト）の表示既定色。
         //   旧実装は s.colorRule を読んでいたが、当該席は代入 0 件で常に null＝実運用でも常に
         //   このフォールバックへ落ちていた（E-6）。席の撤去（§7.2・A-2）に伴い直に書く。
-        color: toHex('#2962ff'),
+        color: toHex(DEFAULT_SERIES_COLOR),
         width: s.width ?? 1,
         style: s.style ?? 'solid',
         visible: true,

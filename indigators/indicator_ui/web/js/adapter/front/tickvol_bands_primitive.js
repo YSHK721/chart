@@ -16,10 +16,13 @@
 // ★命名規約: build.mjs（A 方式バンドル）は全モジュールの top-level を 1 スコープへ連結するため、
 //   トップレベル定数は機能名で前置しないと他モジュールと衝突する（PAIR_DIM_ALPHA の前例）。
 
-const TVB_BAND_FILL = 'rgba(41, 98, 255, 0.07)';
+import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 
 export class TickvolBandsPrimitive {
   constructor() {
+    // 段階 5-E: 帯の色は注入で受ける（canvas は CSS 変数を解決できない）。未注入時の既定だけを
+    //   台帳から引くため、テーマなしの見た目は現行と厳密に同一。
+    this._fill = CHROME_CURRENT.tickvolBand;
     this._chart = null;
     this._series = null;
     this._requestUpdate = null;
@@ -45,6 +48,18 @@ export class TickvolBandsPrimitive {
   // 塗る帯（バー time の閉区間）を設定し再描画要求。空配列で消灯。
   setRanges(ranges) {
     this._ranges = Array.isArray(ranges) ? ranges : [];
+    if (typeof this._requestUpdate === 'function') {
+      this._requestUpdate();
+    }
+  }
+
+  // 配信されたクロム色から自分の 1 点を取り込む。全域的（§7.3 LSP）: null・非オブジェクト・
+  //   非文字列でも例外を投げず、解釈できない指定は現行値を保つ。
+  setChromeColors(slots) {
+    if (!slots || typeof slots !== 'object' || typeof slots.tickvolBand !== 'string') {
+      return;
+    }
+    this._fill = slots.tickvolBand;
     if (typeof this._requestUpdate === 'function') {
       this._requestUpdate();
     }
@@ -96,7 +111,7 @@ export class TickvolBandsPrimitive {
     }
     target.useBitmapCoordinateSpace((scope) => {
       const ctx = scope.context;
-      ctx.fillStyle = TVB_BAND_FILL;
+      ctx.fillStyle = this._fill;
       for (const [l, r] of spans) {
         const left = Math.max(0, Math.min(scope.bitmapSize.width, l * scope.horizontalPixelRatio));
         const right = Math.max(0, Math.min(scope.bitmapSize.width, r * scope.horizontalPixelRatio));

@@ -20,6 +20,8 @@
 // 期間プリセットの換算・提示は usecase の純関数が唯一の判定源（基本設計_期間プリセット.md §8.2）。
 //   本モジュールは DOM 生成とイベント配線のみを担い、換算規則・提示規則を再実装しない。
 import { parsePeriodInput, presetsFor } from '../../usecase/period_presets.js';
+// 段階 5-E: 解析不能な値のときに返す既定色は color_resolver が単一情報源。
+import { DEFAULT_SERIES_COLOR } from '../../usecase/color_resolver.js';
 
 // i18n 解決器を持たないプロトタイプ向けの簡易ラベル化（キー末尾を表示）。
 export function humanizeKey(key) {
@@ -33,7 +35,7 @@ export function humanizeKey(key) {
 // rgba(...)/#rgb/#rrggbb を <input type=color> 用の #rrggbb へ近似変換する。
 // 解析不能な値は安全な既定（#2962ff）を返す（プロトタイプ・スタイルタブ最小可）。
 export function toHex(value) {
-  if (typeof value !== 'string') return '#2962ff';
+  if (typeof value !== 'string') return DEFAULT_SERIES_COLOR;
   const v = value.trim();
   if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
   if (/^#[0-9a-fA-F]{3}$/.test(v)) {
@@ -45,7 +47,7 @@ export function toHex(value) {
     const hex = (n) => toByte(n).toString(16).padStart(2, '0');
     return ('#' + hex(m[1]) + hex(m[2]) + hex(m[3])).toLowerCase();
   }
-  return '#2962ff';
+  return DEFAULT_SERIES_COLOR;
 }
 
 // enum option の表示名: enumLabels（日本語表示マップ）優先。未指定はキー末尾（従来挙動）。

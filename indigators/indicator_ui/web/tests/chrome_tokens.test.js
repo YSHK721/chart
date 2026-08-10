@@ -95,6 +95,52 @@ const UI_LEDGER = [
   ['uiReplayText', '#e6e8ea', 'css', 'text'],
 ];
 
+// 段階 5-E（チャート上の描画物）の配線点を逐語で固定する。UI_LEDGER の**後ろ**へ足す。
+//   前 2 表の並びが動かないことが、本段階の追加がチャート本体・アプリ UI へ波及していない
+//   ことの実証になる（位置で固定する）。
+//
+// 取引マーカー 4 点は、実測された「同一リテラル・2 意味」の分離そのものである。
+//   tradeProfit / tradeLoss … `profit > 0 / < 0`（取引の**成果**）
+//   tradeSideBuy / tradeSideSell … `side === 'buy'`（取引の**方向**）
+//   4 点とも現行リテラルは #26a69a / #ef5350 で 2 種しかないが、意味は 2 対 4 種である。
+const TRADE_LEDGER = [
+  ['tradeProfit', '#26a69a', 'css', 'profit'],
+  ['tradeLoss', '#ef5350', 'css', 'loss'],
+  ['tradeSideBuy', '#26a69a', 'css', 'bullish'],
+  ['tradeSideSell', '#ef5350', 'css', 'bearish'],
+  // 売買ペア線（canvas）。CSS 変数を解決できないため機構は 'js'（色は注入で届く）。
+  //   トークンは成果（profit / loss）。`pair.win` は勝ち負けであって上げ下げではない。
+  ['pairLineWin', '#26a69a', 'js', 'profit'],
+  ['pairLineLoss', '#ef5350', 'js', 'loss'],
+  // 取引密度帯（accent の低不透明度）・ウォーターマーク（text の高不透明度）。
+  ['tickvolBand', 'rgba(41, 98, 255, 0.07)', 'js', 'accent'],
+  ['watermark', 'rgba(209, 212, 220, 0.9)', 'js', 'text'],
+  // pane σ 水準線の 2 端点。接続前はチャネル配列で書かれており文字列走査に掛からなかった。
+  ['levelSchemeCalm', '#2e7d32', 'js', 'neutral'],
+  ['levelSchemeHot', '#d32f2f', 'js', 'alert'], // alert 既定（琥珀）からの delta 派生
+  // Market Profile（canvas）。ISSUE-360 が対象外にしたのは heatColor の HSL 色相ランプのみで、
+  //   以下 16 点はその射程外。新語ゼロ（方向 8 点は bullish / bearish の低不透明度そのもの）。
+  ['mpPocLine', '#ff3b3b', 'js', 'alert'],
+  ['mpPocStar', '#ffd54a', 'js', 'alert'],
+  ['mpVaLine', 'rgba(168, 41, 174, 0.5)', 'js', 'range'],
+  ['mpCursorLine', 'rgba(120, 190, 255, 0.9)', 'js', 'highlight'],
+  ['mpSessTintUp', 'rgba(38, 166, 154, 0.12)', 'js', 'bullish'],
+  ['mpSessTintDown', 'rgba(239, 83, 80, 0.12)', 'js', 'bearish'],
+  ['mpOhlcUp', 'rgba(38, 166, 154, 0.8)', 'js', 'bullish'],
+  ['mpOhlcDown', 'rgba(239, 83, 80, 0.8)', 'js', 'bearish'],
+  ['mpSessPoc', 'rgba(255,255,255,0.95)', 'js', 'text'],
+  ['mpTfpBgUp', 'rgba(38, 166, 154, 0.1)', 'js', 'bullish'],
+  ['mpTfpBgDown', 'rgba(239, 83, 80, 0.1)', 'js', 'bearish'],
+  ['mpTfpBgUpDim', 'rgba(38, 166, 154, 0.04)', 'js', 'bullish'],
+  ['mpTfpBgDownDim', 'rgba(239, 83, 80, 0.04)', 'js', 'bearish'],
+  ['mpStripeOdd', 'rgba(255,255,255,.05)', 'js', 'text'],
+  ['mpStripeEven', 'rgba(255,255,255,.015)', 'js', 'text'],
+  ['mpDateLabel', 'rgba(154,164,178,.6)', 'js', 'text'],
+  // 時間足プロファイルのツールチップ（DOM なので CSS 機構）。文字色は uiText を再利用。
+  ['tfpTooltipSurface', 'rgba(19,23,34,0.92)', 'css', 'surface'],
+  ['tfpTooltipBorder', 'rgba(154,164,178,0.35)', 'css', 'text'],
+];
+
 // §4.2 / §4.6 の派生差分（E-29 の実測値。設計で決めた値ではない）。
 // 減光・tint の対地 CR 目標（現行の暗い地 #131722 での実測 CR。設計値ではない）。
 const DIM_CR = {
@@ -115,12 +161,20 @@ test('§4.2: チャート本体の配線点は 20 点のまま（id・現行値�
 });
 
 test('段階 5-D: アプリ UI クロムの配線点が逐語で一致する（台帳が単一情報源）', () => {
-  const tail = CHROME_SLOTS.slice(20);
+  const tail = CHROME_SLOTS.slice(20, 20 + UI_LEDGER.length);
   assert.deepEqual(
     tail.map((s) => [s.id, s.current, s.mechanism, s.token]),
     UI_LEDGER,
   );
-  assert.equal(CHROME_SLOTS.length, LEDGER.length + UI_LEDGER.length);
+});
+
+test('段階 5-E: チャート上の描画物の配線点が逐語で一致する（台帳が単一情報源）', () => {
+  const tail = CHROME_SLOTS.slice(20 + UI_LEDGER.length);
+  assert.deepEqual(
+    tail.map((s) => [s.id, s.current, s.mechanism, s.token]),
+    TRADE_LEDGER,
+  );
+  assert.equal(CHROME_SLOTS.length, LEDGER.length + UI_LEDGER.length + TRADE_LEDGER.length);
 });
 
 test('§4.2: 束ねるトークンは語彙内で、チャート本体の 7 種を含む', () => {
@@ -139,6 +193,7 @@ test('CHROME_CURRENT は slot id → 現行リテラルの逐語写像（単一�
   assert.deepEqual(CHROME_CURRENT, Object.fromEntries([
     ...LEDGER.map(([, id, cur]) => [id, cur]),
     ...UI_LEDGER.map(([id, cur]) => [id, cur]),
+    ...TRADE_LEDGER.map(([id, cur]) => [id, cur]),
   ]));
   assert.ok(Object.isFrozen(CHROME_CURRENT));
   assert.ok(Object.isFrozen(CHROME_SLOTS));
@@ -171,6 +226,13 @@ test('§4.6: CHROME_DEFAULT は束ねる全トークンに定義を持つ（未�
     accent: '#2962ff',
     danger: '#ef5350',
     alert: '#e0a24a',
+    // 段階 5-E。bullish / bearish と同値だが別トークン（同値であることと同義であることは違う）。
+    profit: '#26a69a',
+    loss: '#ef5350',
+    // 段階 5-E。neutral をクロムで束ねるのは σ 水準線の穏やか端のみ（値は現行の緑）。
+    neutral: '#2e7d32',
+    // 段階 5-E。range をクロムで束ねるのは MP の Value Area 帯線のみ（値は現行の紫）。
+    range: '#a829ae',
   }));
   for (const t of CHROME_TOKENS) {
     assert.equal(typeof CHROME_DEFAULT[t], 'string', t);
@@ -273,8 +335,9 @@ test('§4.3: CSS 機構の配線点は現在値表示 3 点 ＋ アプリ UI ク
   assert.deepEqual(css.slice(0, 3).map((s) => s.id),
     ['currentPriceUp', 'currentPriceDown', 'currentPriceNeutral']);
   assert.deepEqual(css.slice(0, 3).map((s) => s.token), ['bullish', 'bearish', 'text']);
-  assert.deepEqual(css.slice(3).map((s) => s.id), UI_LEDGER.map(([id]) => id));
-  assert.equal(css.length, 3 + UI_LEDGER.length);
+  assert.deepEqual(css.slice(3).map((s) => s.id),
+    [...UI_LEDGER, ...TRADE_LEDGER].filter(([, , m]) => m === 'css').map(([id]) => id));
+  assert.equal(css.length, 3 + UI_LEDGER.length + TRADE_LEDGER.filter(([, , m]) => m === 'css').length);
 });
 
 test('§4.2: 「現在値」は 2 機構にまたがり、ライン(JS)と表示(CSS)で別トークンを持つ', () => {

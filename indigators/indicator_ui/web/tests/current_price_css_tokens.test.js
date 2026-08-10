@@ -11,7 +11,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { CHROME_SLOTS, CHROME_CURRENT, THEME_EXEMPT_LITERALS } from '../js/usecase/chrome_tokens.js';
@@ -20,12 +20,26 @@ import { COLOR_ROLES } from '../js/domain/color_roles.js';
 const CSS = readFileSync(fileURLToPath(new URL('../css/app.css', import.meta.url)), 'utf8');
 const REPLAY_CSS = readFileSync(fileURLToPath(new URL('../../../../simulator/replay_ui/web/css/replay_bar.css', import.meta.url)), 'utf8');
 
+// front JS（adapter/front 配下）の全文。DOM を書く描画物が読む var(--ct-*) の在り処。
+//   一覧を手書きせずディレクトリを読む＝消費側を増やしても更新漏れが起きない。
+const FRONT_JS_DIR = fileURLToPath(new URL('../js/adapter/front/', import.meta.url));
+const FRONT_JS_RENDERED = readdirSync(FRONT_JS_DIR)
+  .filter((f) => f.endsWith('.js'))
+  .map((f) => readFileSync(`${FRONT_JS_DIR}${f}`, 'utf8'))
+  .join('\n');
+
 // CSS 機構の配線点（chrome_tokens.js が単一情報源）。セレクタは本テストが持つ。
 const SELECTORS = {
   currentPriceNeutral: '#current-price',
   currentPriceUp: '#current-price.is-up',
   currentPriceDown: '#current-price.is-down',
 };
+
+// 現在値表示の配線点を台帳から選ぶ述語。**肯定形**（SELECTORS に載っている id）で選ぶ。
+//   旧実装は `!s.id.startsWith('ui')` という否定形＝代理指標で選んでいたため、段階 5-E で
+//   `ui` 以外の接頭辞を持つ CSS 配線点（tradeProfit 等）を足した瞬間に、それらを「現在値表示」
+//   として扱って落ちた。選択条件は「何でないか」ではなく「何であるか」で書く。
+const isCurrentPriceSlot = (s) => Object.hasOwn(SELECTORS, s.id);
 
 function declarationFor(selector) {
   // `<selector> { ... }` のブロックを取り出す（宣言の並びは問わない）。
@@ -37,7 +51,7 @@ function declarationFor(selector) {
 test('§4.3: CSS 機構の配線点 3 点がすべて var(--ct-<token>, <現行値>) を読む', () => {
   // 対象は現在値表示の 3 点（A-10 の当初対象）。段階 5-D で足したアプリ UI クロムの配線点は
   //   セレクタが 1 対 1 でないため、別の検定（下の「全配線点が var(--ct-<id>) で読まれる」）が持つ。
-  for (const slot of CHROME_SLOTS.filter((s) => s.mechanism === 'css' && !s.id.startsWith('ui'))) {
+  for (const slot of CHROME_SLOTS.filter(isCurrentPriceSlot)) {
     const selector = SELECTORS[slot.id];
     assert.ok(selector, `セレクタ未定義: ${slot.id}`);
     const block = declarationFor(selector);
@@ -86,24 +100,52 @@ test('段階 5-D: app.css に素の色リテラルが残っていない（台帳
   assert.deepEqual(leaked, [], `リテラルが残っている: ${leaked.join(' / ')}`);
 });
 
-test('段階 5-D: 台帳の対象外リテラルは影 4 種のみ（例外が暗黙に増えていない）', () => {
+test('段階 5-E: 台帳の対象外リテラルは 6 件（例外が暗黙に増えていない）', () => {
   // 例外を増やすには台帳へ足すしかない構造であることの固定。ここが自動で追随してしまうと
   //   「見逃した色を例外にする」抜け道になるため、件数と理由を逐語で押さえる。
-  assert.deepEqual(THEME_EXEMPT_LITERALS.map((e) => e.literal), [
-    'rgba(0, 0, 0, .55)', 'rgba(0, 0, 0, .5)', 'rgba(0,0,0,0.5)', 'rgba(0, 0, 0, .45)',
+  //
+  // 5-D の時点では影 4 種だけだった。5-E で JS 側の描画物を対象に加えた結果、色として扱うと
+  //   壊れるものが 2 種現れた（α=0 の「塗らない」と、<input type=color> の未指定センチネル）。
+  //   台帳を CSS 用 / JS 用に割らず 1 つに保つため、方針の全数列挙もここで 1 回だけ行う。
+  //   CSS 走査（下の app.css 0 件テスト）に実際に効くのは今も影 4 種のみである。
+  assert.deepEqual(THEME_EXEMPT_LITERALS.map((e) => [e.literal, e.reason]), [
+    ['rgba(0, 0, 0, .55)', 'shadow'],
+    ['rgba(0, 0, 0, .5)', 'shadow'],
+    ['rgba(0,0,0,0.5)', 'shadow'],
+    ['rgba(0, 0, 0, .45)', 'shadow'],
+    ['rgba(0,0,0,0)', 'transparent'],
+    ['#000000', 'input-sentinel'],
   ]);
+  // 「テーマにしにくいから対象外」という理由が入り込まないこと（例外が逃げ道にならない）。
   for (const e of THEME_EXEMPT_LITERALS) {
-    assert.equal(e.reason, 'shadow', '影以外の例外は認めない');
+    assert.ok(['shadow', 'transparent', 'input-sentinel'].includes(e.reason),
+      `${e.literal}: 「色ではないもの」以外の理由で対象外にしている（${e.reason}）`);
   }
 });
 
-test('段階 5-D: CSS 機構の全配線点が app.css / replay_bar.css から var(--ct-<id>, <現行値>) で読まれる', () => {
-  // 通過条件 5（単一情報源）の一方向。台帳に在る配線点が CSS のどこからも読まれていなければ、
+test('段階 5-E: CSS 機構の全配線点が CSS または front JS から var(--ct-<id>, <現行値>) で読まれる', () => {
+  // 通過条件 5（単一情報源）の一方向。台帳に在る配線点がどこからも読まれていなければ、
   //   それは「配ったが誰も受け取らない変数」＝死んだ配線点である。
+  //
+  // 段階 5-E で受け取り手が広がった。チャート上の描画物のうち DOM を書くもの（取引明細
+  //   ポップアップ等）は CSS ファイルではなく JS のインライン style に色を持つため、CSS
+  //   ファイルだけを走査すると、正しく接続された配線点を「死んでいる」と誤判定する。
+  //   逆に走査対象を手書きの一覧にすると、消費側を増やすたびに一覧の更新漏れが起きる。
+  //   よって front JS を**ディレクトリごと**走査し、消費側が増えても自動で追随させる。
+  //   JS 側の fallback は chromeVar() が CHROME_CURRENT から生成するため、CSS と同じ
+  //   `var(--ct-<id>, <現行値>)` の綴りになる（照合式を 2 つに割らずに済む）。
+  //   JS 側は綴りをソースに持たない。`chromeVar('uiPanel')` としか書かれておらず、
+  //   `var(--ct-uiPanel, #1e222d)` という文字列は実行時に CHROME_CURRENT から組まれる。
+  //   よって JS 側は**呼び出しの引数**（＝配線点 id）で読まれているかを判定する。fallback の
+  //   正しさは chromeVar が単一情報源から作る以上ここで見る必要がなく、綴りの取り違えも
+  //   起こり得ない（取り違えれば chrome_css_var.test.js の全域性テストが検出する）。
   const all = `${CSS}\n${REPLAY_CSS}`;
-  for (const slot of CHROME_SLOTS.filter((s) => s.mechanism === 'css' && s.id.startsWith('ui'))) {
-    assert.ok(all.includes(`var(--ct-${slot.id}, ${slot.current})`),
-      `${slot.id}: var(--ct-${slot.id}, ${slot.current}) が CSS に無い`);
+  const viaJs = new Set(
+    [...FRONT_JS_RENDERED.matchAll(/chromeVar\(\s*'([A-Za-z]+)'\s*\)/g)].map((m) => m[1]),
+  );
+  for (const slot of CHROME_SLOTS.filter((s) => s.mechanism === 'css' && !isCurrentPriceSlot(s))) {
+    assert.ok(all.includes(`var(--ct-${slot.id}, ${slot.current})`) || viaJs.has(slot.id),
+      `${slot.id}: CSS からも front JS（chromeVar）からも読まれていない（死んだ配線点）`);
   }
 });
 
@@ -121,7 +163,7 @@ test('段階 5-D: CSS が読む --ct-* はすべて台帳に実在する（手�
 });
 
 test('段階 5-D: 接続後も現在値表示の 3 宣言はトークン変数を読み続ける（既存経路の不変）', () => {
-  for (const slot of CHROME_SLOTS.filter((s) => s.mechanism === 'css' && !s.id.startsWith('ui'))) {
+  for (const slot of CHROME_SLOTS.filter(isCurrentPriceSlot)) {
     assert.ok(CSS.includes(`var(--ct-${slot.token}, ${slot.current})`), slot.id);
   }
 });

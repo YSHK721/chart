@@ -72,6 +72,18 @@ export class MarketProfileActor {
     // チャートレイアウト（ISSUE-181・A5）を委譲する協働子。attach 済みフラグ・attach 先
     //   （mainSeries）・右マージン設定先（renderer）は本協働子が所有する（host は持たない）。
     this._layout = new MpChartLayout({ primitive, mainSeries, renderer: this._renderer });
+    // 段階 5-E: クロム色の購読（FR-C13）。MP の primitive は canvas 描画なので CSS 変数を解決
+    //   できず、色を注入で受ける必要がある。装着は MpChartLayout が mainSeries.attachPrimitive で
+    //   行うため、ChartRenderer.attachBackgroundPrimitive（装着＝配信登録）の経路には乗らない。
+    //   よってここで明示的に購読し、受け取った袋をそのまま primitive へ中継する（色は決めない）。
+    //   購読口が無い renderer・primitive 不在でも例外を投げない（後方互換・全域的）。
+    if (this._renderer && typeof this._renderer.addChromeObserver === 'function') {
+      this._renderer.addChromeObserver((slots) => {
+        if (this._primitive && typeof this._primitive.setChromeColors === 'function') {
+          this._primitive.setChromeColors(slots);
+        }
+      });
+    }
     // 日別（sessions）モードで、日別プロファイルを tf-period 列（別 actor）が描くか否かの述語（注入）。
     //   true のとき本 actor は日別タイル（_drawSessions 用の setSessions）を描かず、candle 透明化も tf-period
     //   側（列が描けた時点）へ委ねる（初回の「日別(candle)→(tf-period)」ちらつき防止・ISSUE-055）。未注入は

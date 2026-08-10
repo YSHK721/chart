@@ -127,6 +127,66 @@ export const CHROME_SLOTS = Object.freeze([
   { id: 'uiReplaySurface', token: ColorRole.SURFACE, current: '#161a25', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.012712, 0.012931, 0.013575]) }) },
   { id: 'uiReplayThumb', token: ColorRole.BORDER, current: '#4a4e5a', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.150235, 0.15311, 0.166667]) }) },
   { id: 'uiReplayText', token: ColorRole.TEXT, current: '#e6e8ea', mechanism: 'css', derivedFrom: ColorRole.TEXT, delta: Object.freeze([21, 20, 14]) },
+  // --- 取引マーカー（§7.4 段階 5-E・チャート上の描画物）---------------
+  // 実測（trade_markers_renderer.js）: 同一ファイル内で `#26a69a` が 2 つの意味を担っていた。
+  //   :138 profit > 0（成果）と :146 side === 'buy'（方向）である。リテラルが同じでも意味が
+  //   違うため**別の配線点**へ割る。同じ slot へ束ねると「利益は緑・買いは青」が表現できない。
+  { id: 'tradeProfit', token: ColorRole.PROFIT, current: '#26a69a', mechanism: 'css' },
+  { id: 'tradeLoss', token: ColorRole.LOSS, current: '#ef5350', mechanism: 'css' },
+  { id: 'tradeSideBuy', token: ColorRole.BULLISH, current: '#26a69a', mechanism: 'css' },
+  { id: 'tradeSideSell', token: ColorRole.BEARISH, current: '#ef5350', mechanism: 'css' },
+  // 売買ペア線（canvas）。`pair.win` は勝ち負け＝**成果**なので profit / loss を束ねる。
+  //   canvas は CSS 変数を解決できないため機構は 'js'（色は注入で届く）。
+  { id: 'pairLineWin', token: ColorRole.PROFIT, current: '#26a69a', mechanism: 'js' },
+  { id: 'pairLineLoss', token: ColorRole.LOSS, current: '#ef5350', mechanism: 'js' },
+  // 取引密度帯（canvas・背景）。(41,98,255) は #2962ff＝accent の低不透明度。
+  { id: 'tickvolBand', token: ColorRole.ACCENT, current: 'rgba(41, 98, 255, 0.07)', mechanism: 'js', alpha: 0.07 },
+  // ウォーターマーク（(209,212,220) は #d1d4dc＝text の高不透明度）。
+  //   実測でどこからも参照されていない export だが、削除は承認事項のため値を保ったまま畳む。
+  { id: 'watermark', token: ColorRole.TEXT, current: 'rgba(209, 212, 220, 0.9)', mechanism: 'js', alpha: 0.9 },
+  // pane σ 水準線の 2 端点（中心からの距離で 穏やか→過熱 を線形補間する）。
+  //   ISSUE-360 が MP の HSL 色相ランプと対比して「2 端点の RGB 線形補間」と名指した系であり、
+  //   端点 2 色から現行の見た目を厳密に再現できる（MP と違い潰れない）。
+  //   接続前はチャネル配列（[46,125,50] / [211,47,47]）で書かれており、`#`・`rgba(` を見る
+  //   走査では検出できなかった。配線点化して配列そのものを消す。
+  //   穏やか端は neutral をクロムで使う唯一の配線点なので、トークン既定＝この現行値にできる
+  //   （CHROME_DEFAULT.neutral）。過熱端は alert を束ねるが、alert のクロム既定（琥珀 #e0a24a）
+  //   とは**別の色**（赤 #d32f2f）である。#7 paneSeparatorHover と同じ関係なので、5-D が確立した
+  //   3 機構のうち delta（加法・有彩色の濃淡）で表す。実測差分であって設計値ではない。
+  { id: 'levelSchemeCalm', token: ColorRole.NEUTRAL, current: '#2e7d32', mechanism: 'js' },
+  { id: 'levelSchemeHot', token: ColorRole.ALERT, current: '#d32f2f', mechanism: 'js', derivedFrom: ColorRole.ALERT, delta: Object.freeze([-13, -115, -27]) },
+  // --- Market Profile（canvas・§7.4 段階 5-E）---------------------------
+  // ISSUE-360 が対象外にしたのは heatColor() の HSL 色相ランプ **1 つだけ**で、以下 16 点は
+  //   その射程外である。新語は 1 つも要らない（実測でチャネルが既存トークンと一致する）。
+  //
+  //   方向 8 点: rgba(38,166,154,·) = #26a69a = bullish / rgba(239,83,80,·) = #ef5350 = bearish
+  //   これらは「その意味の色の低不透明度」なので alpha 付き配線点として持つ（派生ではない）。
+  { id: 'mpPocLine', token: ColorRole.ALERT, current: '#ff3b3b', mechanism: 'js', derivedFrom: ColorRole.ALERT, delta: Object.freeze([31, -103, -15]) },
+  { id: 'mpPocStar', token: ColorRole.ALERT, current: '#ffd54a', mechanism: 'js', derivedFrom: ColorRole.ALERT, delta: Object.freeze([31, 51, 0]) },
+  // Value Area は出来高の 70% を含む帯＝語彙定義の range（通常域・分位バンド）と概念が一致する。
+  { id: 'mpVaLine', token: ColorRole.RANGE, current: 'rgba(168, 41, 174, 0.5)', mechanism: 'js', alpha: 0.5 },
+  // リプレイ時点 T の縦線＝「今この瞬間」を指す＝highlight。
+  { id: 'mpCursorLine', token: ColorRole.HIGHLIGHT, current: 'rgba(120, 190, 255, 0.9)', mechanism: 'js', alpha: 0.9 },
+  { id: 'mpSessTintUp', token: ColorRole.BULLISH, current: 'rgba(38, 166, 154, 0.12)', mechanism: 'js', alpha: 0.12 },
+  { id: 'mpSessTintDown', token: ColorRole.BEARISH, current: 'rgba(239, 83, 80, 0.12)', mechanism: 'js', alpha: 0.12 },
+  { id: 'mpOhlcUp', token: ColorRole.BULLISH, current: 'rgba(38, 166, 154, 0.8)', mechanism: 'js', alpha: 0.8 },
+  { id: 'mpOhlcDown', token: ColorRole.BEARISH, current: 'rgba(239, 83, 80, 0.8)', mechanism: 'js', alpha: 0.8 },
+  // 日別 POC の白・縞・日付ラベルは「読ませる文字／最も控えめな標」＝text の濃淡。
+  //   地に対する明度差で意味を作るため ramp（地に相対）で持つ: 暗い地では明るく、明るい地では
+  //   暗くなる。加法 delta だと白い地で白い縞が消える（5-D で実測した飽和と同じ病因）。
+  { id: 'mpSessPoc', token: ColorRole.TEXT, current: 'rgba(255,255,255,0.95)', mechanism: 'js', alpha: 0.95 },
+  { id: 'mpTfpBgUp', token: ColorRole.BULLISH, current: 'rgba(38, 166, 154, 0.1)', mechanism: 'js', alpha: 0.1 },
+  { id: 'mpTfpBgDown', token: ColorRole.BEARISH, current: 'rgba(239, 83, 80, 0.1)', mechanism: 'js', alpha: 0.1 },
+  { id: 'mpTfpBgUpDim', token: ColorRole.BULLISH, current: 'rgba(38, 166, 154, 0.04)', mechanism: 'js', alpha: 0.04 },
+  { id: 'mpTfpBgDownDim', token: ColorRole.BEARISH, current: 'rgba(239, 83, 80, 0.04)', mechanism: 'js', alpha: 0.04 },
+  // 縞の 2 段は「不透明度だけが違う同じ色」。値の綴り（.05 / .015）は現行を逐語で保つ。
+  { id: 'mpStripeOdd', token: ColorRole.TEXT, current: 'rgba(255,255,255,.05)', mechanism: 'js', alpha: 0.05 },
+  { id: 'mpStripeEven', token: ColorRole.TEXT, current: 'rgba(255,255,255,.015)', mechanism: 'js', alpha: 0.015 },
+  { id: 'mpDateLabel', token: ColorRole.TEXT, current: 'rgba(154,164,178,.6)', mechanism: 'js', derivedFrom: ColorRole.TEXT, delta: Object.freeze([-55, -48, -42]), alpha: 0.6 },
+  // 時間足プロファイルのツールチップ（DOM 要素なので CSS 機構が使える＝注入不要）。
+  //   文字色は既存の uiText を再利用する（同じ意味に席を増やさない）ため配線点は 2 点だけ。
+  { id: 'tfpTooltipSurface', token: ColorRole.SURFACE, current: 'rgba(19,23,34,0.92)', mechanism: 'css', alpha: 0.92 },
+  { id: 'tfpTooltipBorder', token: ColorRole.TEXT, current: 'rgba(154,164,178,0.35)', mechanism: 'css', derivedFrom: ColorRole.TEXT, delta: Object.freeze([-55, -48, -42]), alpha: 0.35 },
 ].map(Object.freeze));
 
 // slot id → 現行リテラル（実装側が「現行値」を 1 箇所から引くための写像）。
@@ -154,6 +214,15 @@ export const CHROME_DEFAULT = Object.freeze({
   // 診断（W-C1/2/3）の琥珀・お気に入り星・A 方式注記。いずれも「警戒」の意味であり alert が
   //   正しい割当先（highlight は「今この瞬間の値」を指す語で、警告色ではない）。
   [ColorRole.ALERT]: '#e0a24a',
+  // 段階 5-E。値は trade_markers_renderer.js / pair_lines_primitive.js の現行リテラル。
+  //   bullish / bearish と同値だが**別のトークン**である（同値であることと同義であることは違う）。
+  [ColorRole.PROFIT]: '#26a69a',
+  [ColorRole.LOSS]: '#ef5350',
+  // 段階 5-E。neutral をクロムで束ねるのは σ 水準線の穏やか端のみで、その現行値がそのまま
+  //   トークン既定になる（common/level_colors.py の _CALM と一致する緑）。
+  [ColorRole.NEUTRAL]: '#2e7d32',
+  // 段階 5-E。range をクロムで束ねるのは MP の Value Area 帯線のみ（値は現行の紫）。
+  [ColorRole.RANGE]: '#a829ae',
 });
 
 // テーマの対象外（段階 5-D）。**例外は暗黙にせず、ここへ明示登録する**。
@@ -170,6 +239,18 @@ export const THEME_EXEMPT_LITERALS = Object.freeze([
   Object.freeze({ literal: 'rgba(0, 0, 0, .5)', reason: 'shadow' }),
   Object.freeze({ literal: 'rgba(0,0,0,0.5)', reason: 'shadow' }),
   Object.freeze({ literal: 'rgba(0, 0, 0, .45)', reason: 'shadow' }),
+  // 段階 5-E で JS 側の対象外が 2 種現れた。**台帳は 1 つに保つ**（CSS 用と JS 用に割ると
+  //   同一概念に 2 つの名前ができ、次に例外を足す人がどちらへ書くか分からなくなって必ず
+  //   取り残しが出る）。理由の集合が「色として扱うと壊れるもの」に閉じていることは
+  //   js_literals_single_source.test.js が 3 種の逐語列挙で固定する。
+  //
+  //   transparent: α=0 は「塗らない」の表現であって色ではない。トークンへ束ねると、テーマが
+  //   その意味の色を宣言した瞬間に**不透明になり得る**（sessions のローソク透明化が壊れる）。
+  Object.freeze({ literal: 'rgba(0,0,0,0)', reason: 'transparent' }),
+  //   input-sentinel: `<input type="color">` は値を空にできないため、未指定状態にも見た目上の
+  //   値が要る。これは「未宣言」という**状態**を表す番人であって描画色ではない。どのトークンへ
+  //   束ねてもテーマがこの値を動かし、未指定表示の意味が壊れる。
+  Object.freeze({ literal: '#000000', reason: 'input-sentinel' }),
 ]);
 
 const SLOT_BY_ID = new Map(CHROME_SLOTS.map((s) => [s.id, s]));
