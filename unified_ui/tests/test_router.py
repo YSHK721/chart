@@ -28,7 +28,9 @@ import router as router_mod
 WEB_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 
 Recorded = namedtuple("Recorded", ["method", "path", "body", "content_type"])
-Response = namedtuple("Response", ["status", "content_type", "body", "error"])
+# `headers` は ISSUE-348 の検定（Cache-Control の確認）で追加した。既存フィールドは
+#   位置・意味とも不変で、末尾への加法のみ（既存の分解代入・添字参照を壊さない）。
+Response = namedtuple("Response", ["status", "content_type", "body", "error", "headers"])
 
 # スタブ上流が返す固定の応答（透過検証用の識別可能な値）。
 _STUB_CONTENT_TYPE = "application/json; charset=utf-8"
@@ -131,14 +133,14 @@ def _request(base_server, method, path, body=None, headers=None, timeout=5):
         conn.request(method, path, body=body, headers=headers or {})
         resp = conn.getresponse()
         data = resp.read()
-        return Response(resp.status, resp.getheader("Content-Type"), data, None)
+        return Response(resp.status, resp.getheader("Content-Type"), data, None, dict(resp.getheaders()))
     except (
         http.client.RemoteDisconnected,
         http.client.BadStatusLine,
         ConnectionError,
         OSError,
     ) as exc:
-        return Response(None, None, b"", repr(exc))
+        return Response(None, None, b"", repr(exc), {})
     finally:
         conn.close()
 
@@ -534,3 +536,53 @@ def test_router_disables_browser_cache_for_own_assets(router):
         assert "no-store" in (resp.getheader("Cache-Control") or "")
     finally:
         conn.close()
+
+
+# ---- ISSUE-348: 配信元ツリーの申告 -------------------------------------------
+# 病因: `serve.sh` の二重起動判定が「8000 が応答するか」しか見ておらず、「どのツリーが
+#   応答しているか」を見ていなかった。別チェックアウトの残存スタックがポートを握っていると
+#   no-op で正常終了し、開発者は自分のコードが 1 行も入っていない UI を検証してしまう。
+#   実際に 2 度事故が起きている（ISSUE-355 はこの機構の帰結）。
+#
+# 判定の材料をプロセス外から観測可能にすることが要点で、これが無いと照合は原理的に不可能。
+
+
+def test_serving_root_reports_the_tree_this_router_is_serving(router):
+    # Arrange
+    server, live_srv, replay_srv = router
+    expected = os.path.dirname(os.path.dirname(os.path.realpath(router_mod.__file__)))
+    # Act
+    resp = _request(server, "GET", "/__serving_root")
+    # Assert: 自分の実体位置から一意に決まる配信元を平文 1 行で返す
+    assert resp.status == 200, f"expected 200, got {resp.status}/{resp.error}"
+    assert resp.body.decode("utf-8").strip() == expected
+    assert resp.headers.get("Content-Type", "").startswith("text/plain")
+
+
+def test_serving_root_is_not_proxied_to_any_upstream(router):
+    # Arrange: core へ透過させると、core 側の 404 が返って「答えない」状態になる
+    server, live_srv, replay_srv = router
+    # Act
+    _request(server, "GET", "/__serving_root")
+    # Assert: どちらの上流にも到達していない（ルータ自身が答える）
+    assert len(live_srv.records) == 0
+    assert len(replay_srv.records) == 0
+
+
+def test_serving_root_answers_with_query_string(router):
+    # Arrange: 呼び出し側がキャッシュ回避のクエリを付けても答える必要がある
+    server, live_srv, replay_srv = router
+    # Act
+    resp = _request(server, "GET", "/__serving_root?t=1")
+    # Assert
+    assert resp.status == 200, f"expected 200, got {resp.status}/{resp.error}"
+    assert resp.body.decode("utf-8").strip().startswith(os.sep)
+
+
+def test_serving_root_is_not_cached(router):
+    # Arrange: 占有者が入れ替わっても即座に見える必要がある（古い答えを掴ませない）
+    server, live_srv, replay_srv = router
+    # Act
+    resp = _request(server, "GET", "/__serving_root")
+    # Assert
+    assert "no-store" in resp.headers.get("Cache-Control", "")
