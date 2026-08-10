@@ -22,6 +22,7 @@ import {
   COLOR_THEME_HOST_CONTRACT,
   ColorThemeController,
 } from '../js/adapter/front/color_theme_controller.js';
+import { CHROME_SLOTS } from '../js/usecase/chrome_tokens.js';
 import { createHostView } from '../js/adapter/front/host_view.js';
 import { LocalStorageThemeGateway } from '../js/adapter/front/local_storage_theme_gateway.js';
 import { resolveAllChrome, resolveSeriesColor } from '../js/usecase/color_resolver.js';
@@ -538,7 +539,7 @@ test('TC-CP03 previewTheme: 選択中テーマ id は動かず、activeTheme() �
     '下書きも射影を通る（導出込みで見える＝ユーザーが実際に見る色）');
 });
 
-test('TC-CP04 previewTheme(null): 元のテーマへ戻る（クロム 20 slot が文字列一致）', () => {
+test('TC-CP04 previewTheme(null): 元のテーマへ戻る（クロム全 slot が文字列一致）', () => {
   // Arrange
   const calls = [];
   const { controller, payloads } = makeController(calls, { themes: [THEME_A] });
@@ -549,9 +550,12 @@ test('TC-CP04 previewTheme(null): 元のテーマへ戻る（クロム 20 slot �
   controller.previewTheme(null);
   // Assert
   const after = payloads[payloads.length - 1];
-  assert.deepEqual(after.slots, before.slots, 'クロム 20 slot がプレビュー前と一致しない');
+  assert.deepEqual(after.slots, before.slots, 'クロム全 slot がプレビュー前と一致しない');
   assert.deepEqual(after.tokens, before.tokens, 'CSS トークンがプレビュー前と一致しない');
-  assert.equal(Object.keys(after.slots).length, 20, '前提: 20 slot を全数返す（＝全上書き＝可逆）');
+  // 可逆性の前提は「一部だけ返す」ことが無いこと＝台帳の全数を返すこと。件数の逐語固定は
+  //   台帳テスト（chrome_tokens.test.js）が持つので、ここは台帳との一致で見る。
+  assert.equal(Object.keys(after.slots).length, CHROME_SLOTS.length,
+    '前提: 台帳の全 slot を返す（＝全上書き＝可逆）');
   assert.equal(controller.activeTheme().roleColors.surface, '#0a0b0c', '元のテーマへ戻っている');
 });
 

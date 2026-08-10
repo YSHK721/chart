@@ -8,15 +8,20 @@ import assert from 'node:assert/strict';
 
 import { COLOR_ROLES, ColorRole, isColorRole } from '../js/domain/color_roles.js';
 
-// §4.1.1 の表順（1..14）を逐語で固定する。ダイアログの行順（§6.3）はこの配列から導く。
+// §4.1.1 の表順（1..16）を逐語で固定する。ダイアログの行順（§6.3）はこの配列から導く。
+//   v0.4.0 段階 5-D で `accent` / `danger` の 2 語を足した（14 → 16）。app.css の全リテラルを
+//   トークン経由へ移すにあたり、「操作の主役（選択中・アクティブ・フォーカス）」と「破壊的操作・
+//   エラー」は既存 14 語のどれとも異なる意味であり、既存語へ束ねると同一の色に 2 つの意味が
+//   同居する（例: エラーの赤を bearish に束ねると、下落色を変えただけでエラー表示も変わる）。
 const EXPECTED_ORDER = [
   'bullish', 'bearish', 'neutral', 'alert', 'primary', 'secondary', 'range',
   'level', 'muted', 'surface', 'grid', 'border', 'text', 'highlight',
+  'accent', 'danger',
 ];
 
-test('§4.1.1 語彙は 14 種で閉じている（件数・綴り・順序）', () => {
+test('§4.1.1 語彙は 16 種で閉じている（件数・綴り・順序）', () => {
   assert.deepEqual([...COLOR_ROLES], EXPECTED_ORDER);
-  assert.equal(COLOR_ROLES.length, 14);
+  assert.equal(COLOR_ROLES.length, 16);
 });
 
 test('§4.1.1 ColorRole は各トークンの名前付き定数を持つ（綴りの単一情報源）', () => {
@@ -24,7 +29,7 @@ test('§4.1.1 ColorRole は各トークンの名前付き定数を持つ（綴�
     const key = token.toUpperCase();
     assert.equal(ColorRole[key], token, `ColorRole.${key}`);
   }
-  assert.equal(Object.keys(ColorRole).length, 14);
+  assert.equal(Object.keys(ColorRole).length, 16);
 });
 
 test('§4.1.1 語彙台帳は凍結されている（実行時に増減しない）', () => {

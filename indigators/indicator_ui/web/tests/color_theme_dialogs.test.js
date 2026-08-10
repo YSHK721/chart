@@ -144,7 +144,7 @@ test('TC-CD01 トークン行は COLOR_ROLES から生成する（件数・順�
     [...COLOR_ROLES],
     '行の集合と順序が台帳（domain/color_roles.js）と一致する＝台帳へ 1 語足せば行が増える',
   );
-  assert.equal(rows.length, 14, '語彙は 14 種（§4.1.1）');
+  assert.equal(rows.length, 16, '語彙は 16 種（§4.1.1）');
 });
 
 test('TC-CD02 各トークン行は 色スウォッチ・現在値表示・「未指定に戻す」を持つ（§6.3）', () => {
@@ -162,7 +162,8 @@ test('TC-CD02 各トークン行は 色スウォッチ・現在値表示・「�
 
 test('TC-CD03 日本語ラベルの写像は本モジュールが持ち、台帳に無いキーはトークン名をそのまま表示する（§7.1）', () => {
   // Arrange / Act / Assert
-  assert.equal(labelForRole('bullish'), '強気・上方向');
+  // 具体物を先頭に置く（発見可能性の是正・tests/color_theme_label_discoverability.test.js）。
+  assert.equal(labelForRole('bullish'), 'ローソク陽線・強気');
   assert.equal(labelForRole('surface'), '面');
   assert.equal(labelForRole('__unknown__'), '__unknown__', '写像に無いキーはトークン名をそのまま表示する');
   for (const token of COLOR_ROLES) {
@@ -622,7 +623,7 @@ test('TC-CD43 W-C2: 「何が・どれだけ」が分かる（トークン名と
   bullish.fire('input');
   // Assert
   const text = diagTextOf(root);
-  assert.ok(text.includes('強気・上方向'), `トークン名が出ていない: ${text}`);
+  assert.ok(text.includes(labelForRole('bullish')), `トークン名が出ていない: ${text}`);
   assert.ok(text.includes('2.33'), `実測値が出ていない: ${text}`);
   assert.ok(text.includes('3.0'), `目安（閾値）が出ていない: ${text}`);
 });
@@ -637,7 +638,7 @@ test('TC-CD44 W-C1: 同じ色になった 2 語の名前が出る', () => {
   }
   // Act / Assert
   const text = diagTextOf(root);
-  assert.ok(text.includes('強気・上方向'), text);
+  assert.ok(text.includes(labelForRole('bullish')), text);
   assert.ok(text.includes('主出力'), text);
 });
 

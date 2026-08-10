@@ -11,7 +11,8 @@
 
 import { COLOR_ROLES, isColorRole } from '../domain/color_roles.js';
 import {
-  channelsToHex, isColorValue as isColor, isNormalizedHex as isHex6, toChannels,
+  channelsToHex, contrastAnchor, isColorValue as isColor, isNormalizedHex as isHex6,
+  mixAtContrast, rampChannels, toChannels,
 } from '../domain/color_value.js';
 import { CHROME_DEFAULT, CHROME_SLOTS, chromeSlot } from './chrome_tokens.js';
 import { TF_CODES } from '../domain/tf_meta.js';
@@ -134,6 +135,32 @@ export function resolveDerivedChromeColor({ delta = null, theme = null } = {}) {
   return offsetChannels(resolveChromeColor({ token: 'surface', theme }), delta);
 }
 
+// 派生の基点を求める（2 つの規則の**排他**選択。台帳テストが同時保持を禁じている）。
+//
+//   ramp（地の極性に相対）… 面・文字・構造線。軸の終点は地から決まるので、暗い地では明るく、
+//     明るい地では暗くなる。加法 delta が明るい地で飽和・反転した病因（実測: 52 slot 中 14 が飽和）
+//     を、クランプではなく**構成**で消す。ISSUE-346 の「方向は地に対して定義する」と同じ規律。
+//   delta（加法）… 有彩色（accent / danger / alert）の濃淡と微小オフセット。これらは「その
+//     トークン自身の暗い版・明るい版」であって地の関数ではないため、地に相対化すると意味が壊れる。
+function deriveSlotBase(slot, declared, theme) {
+  //   crTarget（対地コントラスト比の目標）… 減光・tint。加法 delta では地を変えると効果が消えた
+  //     （実測: analysisTint は地 #ffffff で対地 CR 1.0000＝地と同一）。CR は地に対する相対量なので、
+  //     目標として持てば地が変わっても離れ具合が保たれる。到達不能な目標は mixAtContrast が
+  //     argmin |CR − target| として最良の到達点へ倒す（縮退は単一の式の中にあり、分岐を持たない）。
+  if (slot.crTarget != null) {
+    const ground = resolveChromeColor({ token: 'surface', theme });
+    return mixAtContrast(ground, contrastAnchor(ground), ground, slot.crTarget) ?? declared;
+  }
+  if (slot.ramp != null) {
+    // 地は「その slot のトークン」ではなく常に surface（軸の極性を決めるのは地だから）。
+    //   surface が未宣言でも CHROME_DEFAULT へ落ちるため、終点は必ず定まる（全域的）。
+    const surface = resolveChromeColor({ token: 'surface', theme });
+    const end = slot.ramp.toward === 'surface' ? surface : contrastAnchor(surface);
+    return rampChannels(declared, end, slot.ramp.k) ?? declared;
+  }
+  return slot.derivedFrom != null ? offsetChannels(declared, slot.delta) : declared;
+}
+
 // 配線点単位の解決（JS 機構が実際に書き込む値）。
 //
 // 既定値の単位が「トークン」ではなく「配線点」であることが恒等性の要（§7.4 段階 1 通過条件 6 /
@@ -141,23 +168,27 @@ export function resolveDerivedChromeColor({ delta = null, theme = null } = {}) {
 //   現行値 #2a2e39 とは**別の色**である。テーマ未宣言時にトークン既定から合成すると現行の
 //   見た目が変わってしまうため、未宣言時は slot.current を逐語で返す。
 //   テーマが当該トークンを宣言したときだけ §4.6 の合成（派生 / alpha 付与）へ切り替える。
-export function resolveChromeSlotColor({ slotId = null, theme = null } = {}) {
-  const slot = chromeSlot(slotId);
-  if (!slot) {
+//
+//   派生と不透明度は**直交**する（どちらか一方ではない）。読取欄の地 rgba(30,34,45,.82) は
+//   grid からの派生かつ半透明であり、派生だけを当てて alpha を落とすと地が透けなくなる（背後の
+//   ローソクが見えなくなる＝見た目の破壊）。よって「delta を当ててから alpha を巻く」順で合成する。
+//   slot は既定で台帳から引くが、規則そのものを検定するために注入もできる（台帳に無い組み合わせを
+//   台帳へ足さずに固定できる＝規則の検証が台帳の内容に依存しない）。
+export function resolveChromeSlotColor({ slotId = null, theme = null, slot = null } = {}) {
+  const s = slot ?? chromeSlot(slotId);
+  if (!s) {
     return null;
   }
-  const declared = theme && theme.roleColors ? theme.roleColors[slot.token] : null;
+  const declared = theme && theme.roleColors ? theme.roleColors[s.token] : null;
   if (!isHex6(declared)) {
-    return slot.current;
+    return s.current;
   }
-  if (slot.derivedFrom != null) {
-    return offsetChannels(declared, slot.delta);
+  const base = deriveSlotBase(s, declared, theme);
+  if (s.alpha == null) {
+    return base;
   }
-  if (slot.alpha != null) {
-    const [r, g, b] = toChannels(declared);
-    return `rgba(${r}, ${g}, ${b}, ${slot.alpha})`;
-  }
-  return declared;
+  const [r, g, b] = toChannels(base);
+  return `rgba(${r}, ${g}, ${b}, ${s.alpha})`;
 }
 
 // クロム 1 回分の配信値をまとめて解決する（§5.2 UC-C02 手順 2）。
@@ -170,15 +201,22 @@ export function resolveChromeSlotColor({ slotId = null, theme = null } = {}) {
 //   トークン表・resolver・applier の変更を伴わずに接続できる。
 export function resolveAllChrome(theme = null) {
   const slots = {};
+  // CSS 機構の配線点は「配線点単位の変数」（--ct-<slotId>）としても配る。トークン変数だけでは
+  //   派生（token + delta）と不透明度に到達できず、app.css がそれらの色をリテラルで持ち続ける
+  //   ことになる（＝二重定義が CSS 側に残る）。値は slots と同じ解決を通すので規則は 1 本のまま。
+  const cssSlots = {};
   for (const s of CHROME_SLOTS) {
     slots[s.id] = resolveChromeSlotColor({ slotId: s.id, theme });
+    if (s.mechanism === 'css') {
+      cssSlots[s.id] = slots[s.id];
+    }
   }
   const tokens = {};
   for (const token of COLOR_ROLES) {
     const declared = theme && theme.roleColors ? theme.roleColors[token] : null;
     tokens[token] = isHex6(declared) ? declared : (CHROME_DEFAULT[token] ?? null);
   }
-  return { slots, tokens };
+  return { slots, tokens, cssSlots };
 }
 
 // =========================================================================

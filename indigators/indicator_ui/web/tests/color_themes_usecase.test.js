@@ -185,7 +185,7 @@ test('TC-C13 normalizeRoleColor: 色として解釈できない値は null（F-C
   assert.equal(normalizeRoleColor(0x2962ff), null, '非文字列は不正（例外は投げない）');
 });
 
-test('TC-C14 normalizeRoleColors: 14 トークンすべてを受理し、値は #rrggbb 小文字へ正規化する（§4.4・§4.11）', async () => {
+test('TC-C14 normalizeRoleColors: 16 トークンすべてを受理し、値は #rrggbb 小文字へ正規化する（§4.4・§4.11）', async () => {
   // Arrange
   const { normalizeRoleColors } = await load();
   const { COLOR_ROLES } = await import('../js/domain/color_roles.js');
@@ -193,7 +193,7 @@ test('TC-C14 normalizeRoleColors: 14 トークンすべてを受理し、値は 
   // Act
   const out = normalizeRoleColors(input);
   // Assert
-  assert.equal(Object.keys(out.roleColors).length, 14, '構造的上限 14 キーがすべて通る');
+  assert.equal(Object.keys(out.roleColors).length, 16, '構造的上限 16 キーがすべて通る');
   assert.deepEqual(out.roleColors, Object.fromEntries(COLOR_ROLES.map((t) => [t, '#abcdef'])));
   assert.deepEqual(out.ignoredTokens, [], '語彙内だけなら無視したキーは無い');
 });

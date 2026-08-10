@@ -36,7 +36,9 @@ export class ChromeThemeApplier {
       return;
     }
     this._applyJs(resolved.slots ?? {});
-    this._applyCss(resolved.tokens ?? {});
+    // CSS へ配るのは 2 種類の変数。どちらも同じ接頭辞・同じ書き込み規則で、名前空間だけが
+    //   異なる（トークン名 or 配線点 id）。書き手が 1 つなので、片方だけ更新される状態が無い。
+    this._applyCss({ ...(resolved.tokens ?? {}), ...(resolved.cssSlots ?? {}) });
   }
 
   _applyJs(slots) {

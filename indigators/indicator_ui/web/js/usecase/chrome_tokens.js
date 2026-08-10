@@ -61,9 +61,72 @@ export const CHROME_SLOTS = Object.freeze([
   // --- surface 派生（§4.2 #18〜#20・E-29）---
   // いずれも背景からのチャネル別整数オフセットで厳密に表せる。独立トークンにすると、背景を
   //   変えたときにこれらだけ旧色に残る（依頼者が指摘した破綻がそのまま起きる）。
-  { id: 'dimCandle', token: ColorRole.SURFACE, current: '#16191f', mechanism: 'js', derivedFrom: ColorRole.SURFACE, delta: Object.freeze([3, 2, -3]) },
-  { id: 'analysisTint', token: ColorRole.SURFACE, current: '#1b1a24', mechanism: 'js', derivedFrom: ColorRole.SURFACE, delta: Object.freeze([8, 3, 2]) },
-  { id: 'replayBoundaryDim', token: ColorRole.SURFACE, current: '#090d18', mechanism: 'js', derivedFrom: ColorRole.SURFACE, delta: Object.freeze([-10, -10, -10]) },
+  // 加法 delta では地を変えたときに効果が消えた（実測: analysisTint は地 #ffffff で対地 CR 1.0000
+  //   ＝地と同一、replayBoundaryDim は地 #000000 で 1.0000）。これらの意味は「地からわずかに離れた
+  //   色」であって特定の色相シフトではないため、**対地コントラスト比の目標**で持つ。CR は地に対する
+  //   相対量なので、地が変わっても離れ具合が保たれる（ISSUE-346 と同じ規律）。
+  //   目標値は現行の暗い地 #131722 での実測 CR（設計値ではない・台帳テストが逆算で照合する）。
+  { id: 'dimCandle', token: ColorRole.SURFACE, current: '#16191f', mechanism: 'js', derivedFrom: ColorRole.SURFACE, crTarget: 1.0167 },
+  { id: 'analysisTint', token: ColorRole.SURFACE, current: '#1b1a24', mechanism: 'js', derivedFrom: ColorRole.SURFACE, crTarget: 1.0396 },
+  { id: 'replayBoundaryDim', token: ColorRole.SURFACE, current: '#090d18', mechanism: 'js', derivedFrom: ColorRole.SURFACE, crTarget: 1.0840 },
+  // --- アプリ UI クロム（§7.4 段階 5-D・app.css 全面接続）---------------
+  // 上の 20 点（チャート本体）の**後ろ**へ足す。前 20 点の並びが動かないことが、本段階の追加が
+  //   チャート本体の配線へ波及していないことの実証になる（台帳テストが位置で固定する）。
+  //
+  // accent / danger を語彙へ足した以上、本表に配線点が無ければ「宣言できるが何にも効かない」
+  //   死語になる（通過条件 4）。CHROME_TOKENS は本表から導くため、ここに在ることが死語でない
+  //   ことの構成上の保証である。
+  { id: 'uiSurface', token: ColorRole.SURFACE, current: '#131722', mechanism: 'css' },
+  { id: 'uiPanel', token: ColorRole.SURFACE, current: '#1e222d', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.04661, 0.047414, 0.049774]) }) },
+  { id: 'uiMenuSurface', token: ColorRole.SURFACE, current: '#1c2030', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.038136, 0.038793, 0.063348]) }) },
+  { id: 'uiFieldDisabled', token: ColorRole.SURFACE, current: '#181b24', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.021186, 0.017241, 0.00905]) }) },
+  { id: 'uiDivider', token: ColorRole.SURFACE, current: '#23272f', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.067797, 0.068966, 0.058824]) }) },
+  { id: 'uiChipSurface', token: ColorRole.SURFACE, current: 'rgba(19, 23, 34, 0.72)', mechanism: 'css', alpha: 0.72 },
+  { id: 'uiOverlaySurface', token: ColorRole.SURFACE, current: 'rgba(19, 23, 34, 0.82)', mechanism: 'css', alpha: 0.82 },
+  { id: 'uiReadoutSurface', token: ColorRole.GRID, current: 'rgba(30, 34, 45, .82)', mechanism: 'css', derivedFrom: ColorRole.GRID, delta: Object.freeze([-1, -3, -3]), alpha: 0.82 },
+  { id: 'uiToastSurface', token: ColorRole.GRID, current: 'rgba(28, 32, 48, .95)', mechanism: 'css', derivedFrom: ColorRole.GRID, delta: Object.freeze([-3, -5, 0]), alpha: 0.95 },
+  { id: 'uiBorder', token: ColorRole.BORDER, current: '#2a2e39', mechanism: 'css' },
+  { id: 'uiBorderStrong', token: ColorRole.BORDER, current: '#363a45', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.056338, 0.057416, 0.060606]) }) },
+  { id: 'uiRowHover', token: ColorRole.BORDER, current: '#363b49', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.056338, 0.062201, 0.080808]) }) },
+  { id: 'uiChipBorderHover', token: ColorRole.BORDER, current: '#3a4050', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.075117, 0.086124, 0.116162]) }) },
+  { id: 'uiToggleOff', token: ColorRole.BORDER, current: '#3a3d47', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.075117, 0.07177, 0.070707]) }) },
+  { id: 'uiToggleOffHover', token: ColorRole.BORDER, current: '#44474f', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.122066, 0.119617, 0.111111]) }) },
+  { id: 'uiText', token: ColorRole.TEXT, current: '#d1d4dc', mechanism: 'css' },
+  { id: 'uiTextStrong', token: ColorRole.TEXT, current: '#ffffff', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([1, 1, 1]) }) },
+  { id: 'uiTextHeading', token: ColorRole.TEXT, current: '#e6e9ef', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.456522, 0.488372, 0.542857]) }) },
+  { id: 'uiTextChip', token: ColorRole.TEXT, current: '#b8bec9', mechanism: 'css', ramp: Object.freeze({ toward: 'surface', k: Object.freeze([0.131579, 0.116402, 0.102151]) }) },
+  { id: 'uiTextLabel', token: ColorRole.TEXT, current: '#b2b5be', mechanism: 'css', ramp: Object.freeze({ toward: 'surface', k: Object.freeze([0.163158, 0.164021, 0.16129]) }) },
+  { id: 'uiTextAux', token: ColorRole.TEXT, current: '#9aa0ad', mechanism: 'css', ramp: Object.freeze({ toward: 'surface', k: Object.freeze([0.289474, 0.275132, 0.252688]) }) },
+  { id: 'uiTextWeak', token: ColorRole.TEXT, current: '#787b86', mechanism: 'css', ramp: Object.freeze({ toward: 'surface', k: Object.freeze([0.468421, 0.470899, 0.462366]) }) },
+  { id: 'uiTextDisabled', token: ColorRole.TEXT, current: '#5d616b', mechanism: 'css', ramp: Object.freeze({ toward: 'surface', k: Object.freeze([0.610526, 0.608466, 0.607527]) }) },
+  { id: 'uiTextOnDisabled', token: ColorRole.TEXT, current: '#6b7088', mechanism: 'css', ramp: Object.freeze({ toward: 'surface', k: Object.freeze([0.536842, 0.529101, 0.451613]) }) },
+  { id: 'uiTextOnAccent', token: ColorRole.TEXT, current: '#cfd8ff', mechanism: 'css', derivedFrom: ColorRole.TEXT, delta: Object.freeze([-2, 4, 35]) },
+  { id: 'uiAccent', token: ColorRole.ACCENT, current: '#2962ff', mechanism: 'css' },
+  { id: 'uiAccentHover', token: ColorRole.ACCENT, current: '#1e53e5', mechanism: 'css', derivedFrom: ColorRole.ACCENT, delta: Object.freeze([-11, -15, -26]) },
+  { id: 'uiAccentSubtle', token: ColorRole.ACCENT, current: '#2962ff22', mechanism: 'css', alpha: 34 / 255 },
+  { id: 'uiAccentGlow', token: ColorRole.ACCENT, current: 'rgba(41, 98, 255, 0.6)', mechanism: 'css', alpha: 0.6 },
+  { id: 'uiAccentDisabled', token: ColorRole.ACCENT, current: '#2a3354', mechanism: 'css', derivedFrom: ColorRole.ACCENT, delta: Object.freeze([1, -47, -171]) },
+  { id: 'uiDanger', token: ColorRole.DANGER, current: '#ef5350', mechanism: 'css' },
+  { id: 'uiDangerText', token: ColorRole.DANGER, current: '#e0564a', mechanism: 'css', derivedFrom: ColorRole.DANGER, delta: Object.freeze([-15, 3, -6]) },
+  { id: 'uiDangerSolid', token: ColorRole.DANGER, current: '#b03a30', mechanism: 'css', derivedFrom: ColorRole.DANGER, delta: Object.freeze([-63, -25, -32]) },
+  // POC は市場構造の指標であって破壊的操作の警告ではないため alert（警戒・外れ値）へ束ねる。
+  //   danger（破壊・エラー）に束ねると、削除ボタンの色を変えただけで読取欄の POC が動く。
+  { id: 'uiPocMarker', token: ColorRole.ALERT, current: '#ff6b6b', mechanism: 'css', derivedFrom: ColorRole.ALERT, delta: Object.freeze([31, -55, 33]) },
+  { id: 'uiLiveOn', token: ColorRole.DANGER, current: '#7b2233', mechanism: 'css', derivedFrom: ColorRole.DANGER, delta: Object.freeze([-116, -49, -29]) },
+  { id: 'uiLiveOnHover', token: ColorRole.DANGER, current: '#93293e', mechanism: 'css', derivedFrom: ColorRole.DANGER, delta: Object.freeze([-92, -42, -18]) },
+  { id: 'uiAlert', token: ColorRole.ALERT, current: '#e0a24a', mechanism: 'css' },
+  { id: 'uiAlertStrong', token: ColorRole.ALERT, current: '#e0b84a', mechanism: 'css', derivedFrom: ColorRole.ALERT, delta: Object.freeze([0, 22, 0]) },
+  { id: 'uiAlertStar', token: ColorRole.ALERT, current: '#f0b400', mechanism: 'css', derivedFrom: ColorRole.ALERT, delta: Object.freeze([16, 18, -74]) },
+  { id: 'uiAlertBorder', token: ColorRole.ALERT, current: '#5a4a18', mechanism: 'css', derivedFrom: ColorRole.ALERT, delta: Object.freeze([-134, -88, -50]) },
+  { id: 'uiAlertSurface', token: ColorRole.ALERT, current: '#2a2410', mechanism: 'css', derivedFrom: ColorRole.ALERT, delta: Object.freeze([-182, -126, -58]) },
+  { id: 'uiAlertTint', token: ColorRole.ALERT, current: 'rgba(224, 162, 74, 0.08)', mechanism: 'css', alpha: 0.08 },
+  { id: 'uiBullish', token: ColorRole.BULLISH, current: '#26a69a', mechanism: 'css' },
+  { id: 'uiReplayPanel', token: ColorRole.SURFACE, current: '#222735', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.063559, 0.068966, 0.085973]) }) },
+  { id: 'uiReplayWell', token: ColorRole.SURFACE, current: '#0c0e15', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.029661, 0.038793, 0.058824]) }) },
+  { id: 'uiReplayTrack', token: ColorRole.SURFACE, current: '#1f2431', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.050847, 0.056034, 0.067873]) }) },
+  { id: 'uiReplaySurface', token: ColorRole.SURFACE, current: '#161a25', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.012712, 0.012931, 0.013575]) }) },
+  { id: 'uiReplayThumb', token: ColorRole.BORDER, current: '#4a4e5a', mechanism: 'css', ramp: Object.freeze({ toward: 'anchor', k: Object.freeze([0.150235, 0.15311, 0.166667]) }) },
+  { id: 'uiReplayText', token: ColorRole.TEXT, current: '#e6e8ea', mechanism: 'css', derivedFrom: ColorRole.TEXT, delta: Object.freeze([21, 20, 14]) },
 ].map(Object.freeze));
 
 // slot id → 現行リテラル（実装側が「現行値」を 1 箇所から引くための写像）。
@@ -85,7 +148,29 @@ export const CHROME_DEFAULT = Object.freeze({
   [ColorRole.BULLISH]: '#26a69a',
   [ColorRole.BEARISH]: '#ef5350',
   [ColorRole.HIGHLIGHT]: '#ff9800',
+  // 段階 5-D。値は app.css の現行リテラル（選択中・focus の青／エラー・破壊操作の赤）。
+  [ColorRole.ACCENT]: '#2962ff',
+  [ColorRole.DANGER]: '#ef5350',
+  // 診断（W-C1/2/3）の琥珀・お気に入り星・A 方式注記。いずれも「警戒」の意味であり alert が
+  //   正しい割当先（highlight は「今この瞬間の値」を指す語で、警告色ではない）。
+  [ColorRole.ALERT]: '#e0a24a',
 });
+
+// テーマの対象外（段階 5-D）。**例外は暗黙にせず、ここへ明示登録する**。
+//
+//   走査テストは「本表に列挙された値を除き、CSS に色リテラルは 0 件」という形で書く。よって
+//   例外を増やすには本表へ足すしかなく、見逃しが構造的に起こらない（黙って素通りする経路が無い）。
+//
+//   影（box-shadow）を対象外にする理由: 影は「色」ではなく**奥行き**である。地が白いテーマでも
+//   影は黒であることが正しく、surface から delta で導くと白地で影が明色化して影として機能しなく
+//   なる（実測: 黒 rgb(0,0,0) は surface #131722 から L1 距離 76 で、最近傍トークンですらこの距離）。
+//   17 語目 `shadow` を足す案は採らない（テーマ編集ダイアログの行が増え、目的 1 に反する）。
+export const THEME_EXEMPT_LITERALS = Object.freeze([
+  Object.freeze({ literal: 'rgba(0, 0, 0, .55)', reason: 'shadow' }),
+  Object.freeze({ literal: 'rgba(0, 0, 0, .5)', reason: 'shadow' }),
+  Object.freeze({ literal: 'rgba(0,0,0,0.5)', reason: 'shadow' }),
+  Object.freeze({ literal: 'rgba(0, 0, 0, .45)', reason: 'shadow' }),
+]);
 
 const SLOT_BY_ID = new Map(CHROME_SLOTS.map((s) => [s.id, s]));
 

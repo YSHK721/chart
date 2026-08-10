@@ -14,9 +14,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { CHROME_SLOTS, CHROME_CURRENT } from '../js/usecase/chrome_tokens.js';
+import { CHROME_SLOTS, CHROME_CURRENT, THEME_EXEMPT_LITERALS } from '../js/usecase/chrome_tokens.js';
+import { COLOR_ROLES } from '../js/domain/color_roles.js';
 
 const CSS = readFileSync(fileURLToPath(new URL('../css/app.css', import.meta.url)), 'utf8');
+const REPLAY_CSS = readFileSync(fileURLToPath(new URL('../../../../simulator/replay_ui/web/css/replay_bar.css', import.meta.url)), 'utf8');
 
 // CSS 機構の配線点（chrome_tokens.js が単一情報源）。セレクタは本テストが持つ。
 const SELECTORS = {
@@ -33,7 +35,9 @@ function declarationFor(selector) {
 }
 
 test('§4.3: CSS 機構の配線点 3 点がすべて var(--ct-<token>, <現行値>) を読む', () => {
-  for (const slot of CHROME_SLOTS.filter((s) => s.mechanism === 'css')) {
+  // 対象は現在値表示の 3 点（A-10 の当初対象）。段階 5-D で足したアプリ UI クロムの配線点は
+  //   セレクタが 1 対 1 でないため、別の検定（下の「全配線点が var(--ct-<id>) で読まれる」）が持つ。
+  for (const slot of CHROME_SLOTS.filter((s) => s.mechanism === 'css' && !s.id.startsWith('ui'))) {
     const selector = SELECTORS[slot.id];
     assert.ok(selector, `セレクタ未定義: ${slot.id}`);
     const block = declarationFor(selector);
@@ -69,17 +73,57 @@ test('A-10: 現在値表示のブロックに素の色リテラルが残って�
   }
 });
 
-test('N-9: v1 で var(--ct-*) を読む CSS 宣言は現在値表示の 3 つだけ（部分接続を作らない）', () => {
-  // §3.2 N-9 はアプリ UI クロム（ツールバー・ダイアログ・メニュー等）を v1 対象外と定め、
-  //   §4.3 は「v1 で var(--ct-*) へ置換する CSS は現在値表示の 3 宣言のみ」と定める。
-  //   一部だけ接続すると、例えば surface:#ffffff / text:#111111 のテーマでパネルの地はリテラルの
-  //   ままで文字色だけが変わり、判読不能な状態が作れてしまう（同一概念に 2 通りの効き方）。
-  //   接続は v2 で app.css 全体を一括置換して行う（N-9 の手順）。
-  const uses = [...CSS.matchAll(/var\(--ct-[a-z]+[^)]*\)/g)].map((m) => m[0]);
-  assert.equal(uses.length, 3, `v1 の var(--ct-*) は 3 宣言のみ（実際: ${uses.join(' / ')}）`);
-  const expected = CHROME_SLOTS.filter((s) => s.mechanism === 'css')
-    .map((s) => `var(--ct-${s.token}, ${s.current})`);
-  assert.deepEqual([...uses].sort(), [...expected].sort());
+// 段階 5-D（旧 N-9 の後継）: 本段階が、旧テストが自ら「v2 で行う」と書いていた全体接続である。
+//   旧テストは「部分接続を作らない」ために接続数を 3 に固定していた。全数接続した今、同じ意図
+//   （＝地だけリテラル・文字だけテーマ色という判読不能な組み合わせを作らない）を守る条件は
+//   「接続が 3 件であること」ではなく「**リテラルが 1 件も残っていないこと**」へ反転する。
+test('段階 5-D: app.css に素の色リテラルが残っていない（台帳の対象外を除き 0 件）', () => {
+  // var() の fallback は許す（JS 不動作時に現行と一致するための値）。fallback を潰してから探す。
+  const stripped = CSS.replace(/var\([^)]*\)/g, 'VAR');
+  const exempt = new Set(THEME_EXEMPT_LITERALS.map((e) => e.literal));
+  const found = [...stripped.matchAll(/#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)/g)].map((m) => m[0]);
+  const leaked = found.filter((v) => !exempt.has(v));
+  assert.deepEqual(leaked, [], `リテラルが残っている: ${leaked.join(' / ')}`);
+});
+
+test('段階 5-D: 台帳の対象外リテラルは影 4 種のみ（例外が暗黙に増えていない）', () => {
+  // 例外を増やすには台帳へ足すしかない構造であることの固定。ここが自動で追随してしまうと
+  //   「見逃した色を例外にする」抜け道になるため、件数と理由を逐語で押さえる。
+  assert.deepEqual(THEME_EXEMPT_LITERALS.map((e) => e.literal), [
+    'rgba(0, 0, 0, .55)', 'rgba(0, 0, 0, .5)', 'rgba(0,0,0,0.5)', 'rgba(0, 0, 0, .45)',
+  ]);
+  for (const e of THEME_EXEMPT_LITERALS) {
+    assert.equal(e.reason, 'shadow', '影以外の例外は認めない');
+  }
+});
+
+test('段階 5-D: CSS 機構の全配線点が app.css / replay_bar.css から var(--ct-<id>, <現行値>) で読まれる', () => {
+  // 通過条件 5（単一情報源）の一方向。台帳に在る配線点が CSS のどこからも読まれていなければ、
+  //   それは「配ったが誰も受け取らない変数」＝死んだ配線点である。
+  const all = `${CSS}\n${REPLAY_CSS}`;
+  for (const slot of CHROME_SLOTS.filter((s) => s.mechanism === 'css' && s.id.startsWith('ui'))) {
+    assert.ok(all.includes(`var(--ct-${slot.id}, ${slot.current})`),
+      `${slot.id}: var(--ct-${slot.id}, ${slot.current}) が CSS に無い`);
+  }
+});
+
+test('段階 5-D: CSS が読む --ct-* はすべて台帳に実在する（手書きの対応表を作らない）', () => {
+  // 通過条件 5 のもう一方向。CSS 側だけで変数名を増やせると、applier が書かない変数を CSS が
+  //   読む状態（＝常に fallback で、テーマが効かない）が黙って生まれる。
+  const known = new Set([
+    ...CHROME_SLOTS.filter((s) => s.mechanism === 'css').map((s) => `--ct-${s.id}`),
+    ...COLOR_ROLES.map((t) => `--ct-${t}`),
+  ]);
+  const used = new Set([...`${CSS}\n${REPLAY_CSS}`.matchAll(/--ct-[A-Za-z]+/g)].map((m) => m[0]));
+  for (const name of used) {
+    assert.ok(known.has(name), `${name} は台帳に無い変数名`);
+  }
+});
+
+test('段階 5-D: 接続後も現在値表示の 3 宣言はトークン変数を読み続ける（既存経路の不変）', () => {
+  for (const slot of CHROME_SLOTS.filter((s) => s.mechanism === 'css' && !s.id.startsWith('ui'))) {
+    assert.ok(CSS.includes(`var(--ct-${slot.token}, ${slot.current})`), slot.id);
+  }
 });
 
 test('§1.3: CSS カスタムプロパティの接頭辞は --ct- で、既存の --live-follow-* と分離している', () => {

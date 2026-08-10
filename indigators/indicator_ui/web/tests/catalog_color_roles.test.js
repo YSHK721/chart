@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { list, get } from '../js/usecase/catalog.js';
 import { SeriesKind } from '../js/domain/domain_models.js';
 import { COLOR_ROLES, ColorRole, isColorRole } from '../js/domain/color_roles.js';
+import { CHROME_TOKENS } from '../js/usecase/chrome_tokens.js';
 import { buildSeriesStyleRows } from '../js/usecase/form_model.js';
 import { expandSeriesNamePattern, expectedSeriesNames } from '../js/adapter/front/series_name_matcher.js';
 
@@ -281,7 +282,10 @@ test('語彙台帳のトークンはすべて実在の宣言先を持つか、�
       used.add(s.colorRole);
     }
   }
-  const chromeOnly = new Set(['surface', 'grid', 'border', 'text', 'highlight']);
+  // クロム専用語の一覧は**手書きしない**。配線点台帳（chrome_tokens.js）から導くことで、
+  //   「語彙に足したがどこにも配線しなかった」＝死語（通過条件 4）が構成上ここで落ちる。
+  //   手書きの集合にすると、語を足すときに集合へも足せてしまい、死語の検出が効かなくなる。
+  const chromeOnly = new Set(CHROME_TOKENS);
   for (const token of COLOR_ROLES) {
     assert.ok(used.has(token) || chromeOnly.has(token), `${token} はどこからも宣言されていない`);
   }

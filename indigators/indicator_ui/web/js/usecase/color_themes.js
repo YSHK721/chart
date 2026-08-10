@@ -214,6 +214,10 @@ const BASIC_PRESET = Object.freeze({
     border: '#2a2e39',
     text: '#d1d4dc',
     highlight: '#f5f5f5',
+    // 段階 5-D で足した 2 語。値は app.css の**現行リテラルそのまま**にする。プリセット「基本」を
+    //   選んだときにアプリ UI クロムの見た目が変わらないことを優先する（新しい色を発明しない）。
+    accent: '#2962ff',
+    danger: '#ef5350',
   }),
   tfModifier: null,
   createdAt: 0,
