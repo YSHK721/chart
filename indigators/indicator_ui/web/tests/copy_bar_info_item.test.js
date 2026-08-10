@@ -46,6 +46,7 @@ test('右クリック位置の足の情報を、銘柄・時間足・指標見�
     getContext: () => ({
       symbol: 'NI225', timeframe: '1D', labels: new Map([['rsi#1', 'RSI (length=14)']]),
     }),
+    now: () => 1786332341000,   // 2026-08-10 03:25:41 UTC（固定時計）
   });
 
   // Act
@@ -54,9 +55,34 @@ test('右クリック位置の足の情報を、銘柄・時間足・指標見�
   // Assert
   assert.deepEqual(seenX, [210]);
   assert.deepEqual(clipboard._written, [
-    'NI225\t1D\n2010-06-29 00:00\nO 1.2\tH 1.6\tL 1.1\tC 1.5\nRSI (length=14)\trsi 55',
+    'NI225\t1D\n2010-06-29 00:00\nO 1.2\tH 1.6\tL 1.1\tC 1.5\nRSI (length=14)\trsi 55'
+      + '\nコピー日時\t2026-08-10 03:25:41 UTC',
   ]);
   assert.deepEqual(toast._shown, ['コピーしました']);
+});
+
+test('コピー実行時刻を最終行に添える（時計は注入・既定は実時刻）', async () => {
+  // Arrange: 固定時計を注入する（実時間に依存させない）。
+  const clipboard = fakeClipboard(true);
+  const item = createCopyBarInfoItem({
+    renderer: { barInfoAt: () => INFO },
+    clipboard,
+    getContext: () => ({ symbol: 'NI225', timeframe: '1D' }),
+    now: () => 1786332341000,   // 2026-08-10 03:25:41 UTC
+  });
+
+  // Act
+  await item.onSelect({ x: 1 });
+
+  // Assert
+  assert.match(clipboard._written[0], /\nコピー日時\t2026-08-10 03:25:41 UTC$/);
+});
+
+test('時計未注入でも書き込みは成立する（既定の実時刻が入る）', async () => {
+  const clipboard = fakeClipboard(true);
+  const item = createCopyBarInfoItem({ renderer: { barInfoAt: () => INFO }, clipboard });
+  await item.onSelect({ x: 1 });
+  assert.match(clipboard._written[0], /\nコピー日時\t\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/);
 });
 
 test('文脈提供が無くても値はコピーする（縮退・例外にしない）', async () => {

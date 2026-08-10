@@ -15,6 +15,17 @@ export function fmtTime(time) {
   return String(time);
 }
 
+// 実時刻（epoch ミリ秒）を 'YYYY-MM-DD HH:MM:SS' へ。足の時刻（fmtTime）とは別物なので別名にする:
+//   足は「どの期間の値か」（分精度・チャートの時間軸そのもの）、こちらは「いつ操作したか」という
+//   瞬間（秒精度）。コピーの控えに操作時刻を残すために使う。基準は足の表記と同じ UTC で揃える
+//   （同じ文面に UTC と現地時刻が混在すると、どちらの基準か読めなくなる）。
+export function fmtInstant(epochMs) {
+  if (!Number.isFinite(epochMs)) {
+    return '';
+  }
+  return new Date(epochMs).toISOString().replace('T', ' ').slice(0, 19);
+}
+
 // 指標値の簡易整形。非有限（null/undefined/NaN/Infinity）は空文字。
 export function fmtValue(v) {
   if (v === null || v === undefined || !Number.isFinite(v)) {
