@@ -6719,3 +6719,35 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   GIL のため無効（同時実行数を上げる対策は本件では応急処置に当たる）。
 - **範囲外（別案件）**: 指標**表示**の並列化（現状は宣言順の直列描画＝ペイン並び順保証 ISSUE-149）、
   および `tgp_btlm`（rpy2/R・スレッド親和必須で専用ワーカー直列）のプロセス分離。
+
+## ISSUE-362: [不具合・再現済み] API のルーティングを Service Worker に依存させており、SW が迂回されると全 API が 404 で起動不能（2026-08-10）
+- **ステータス**: RESOLVED（本 Issue で是正）
+- **重大度**: 高（アプリが起動しない。原因表示も出ないため調査が長引く）
+- **事象（利用者報告・実コンソール）**: 要求が `/live/catalog` ではなく**素の** `/catalog` で飛び 404。
+  router は `/live/*` `/replay/*` しか転送しないため、本文 `not found` を JSON 解析して
+  `[unified_root] 初期化に失敗しました: Unexpected token 'o', "not found" is not valid JSON` で起動が死ぬ。
+- **根本原因（構造）**: 統合層は root 相対 API 要求の prefix 付与を **Service Worker に委ねて**いた
+  （基本設計書 §2 / §3・既存 core を無編集にするための仕掛け）。これは**アプリの正しさを
+  ブラウザ機能の可用性に依存させる**設計であり、SW が未登録・未制御・迂回
+  （DevTools "Bypass for network"）のいずれかになると全 API が素パスで 404 になる。
+  さらに `unified_root` の起動判定は `navigator.serviceWorker.controller !== null`（＝登録の有無）
+  しか見ておらず、**迂回状態は非 null のまま**なのでフェイルクローズをすり抜ける。
+- **サーバ側は正常だったことの実測**: `sw.js` 200 / `js/sw_rewrite.js` 200 / `js/unified_root.js` 200
+  （いずれも `text/javascript`）、`/live/catalog` 200、素の `/catalog` 404。
+- **抜本策**: ルーティングを **SW からアプリ自身の fetch 注入点へ移す**。
+  `bootstrap` は `fetch` を引数で受け（`composition_root_front.js:137`）、配下の API クライアントは
+  すべてその 1 つを使う（直接 fetch する 6 ファイルは全て `this._fetch`）。ここへ
+  `createRoutedFetch`（新規・`unified_ui/web/js/routed_fetch.js`）を注入し、モードに応じた prefix を
+  **アプリが必ず付ける**。SW の有無・迂回の有無に関わらず要求は正しい core へ届く。
+- **SW との共存（二重付与しない）**: 書き換え規則は SW と同一の純関数 `rewritePath` を共有する
+  （規則の単一源）。`rewritePath` は冪等（`/live/` `/replay/` 配下は不変）なので、SW が生きている
+  環境では「front が付与 → SW は素通し」で結果が一致する。
+- **副次の是正**: SW 登録失敗時のフェイルクローズを撤去した。ルーティングが SW に依存しなくなった以上、
+  SW が無いことは起動を止める理由にならない（SW は注入点を通らない要求のための保険に格下げ）。
+- **変更（3 ファイル）**:
+  | ファイル | 変更 |
+  |---|---|
+  | `unified_ui/web/js/routed_fetch.js` | 新規。`createRoutedFetch`（葉モジュール・`rewritePath` のみに依存） |
+  | `unified_ui/web/js/unified_root.js` | `routedFetch` を生成し `bootstrap({ fetch })` へ注入／SW フェイルクローズ撤去 |
+  | `unified_ui/web/tests/routed_fetch.test.js` | 新規。SW 抜きでの prefix 付与・冪等・静的資産不変・クロスオリジン不変・モード per-call 読み・init 素通し・異常系 |
+- **回帰**: unified_ui web 71 passed（うち新規 11）／unified_ui python 32 passed／indicator_ui web 1,826 passed。
