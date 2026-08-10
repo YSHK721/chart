@@ -21,13 +21,14 @@ const MSG_EMPTY = 'この位置に足がありません';
 
 /**
  * @param {object} deps
- * @param {object} deps.renderer     ChartRenderer（barInfoAt(x) を持つ）。
- * @param {Function} [deps.getLabels] instanceId→ラベルの Map を返す（既定 null＝instanceId 表記）。
- * @param {object} deps.clipboard    ClipboardGateway 互換（writeText(text): Promise<boolean>）。
- * @param {object} [deps.toast]      ChartToastView 互換（show(text)）。未注入なら告知しない。
+ * @param {object} deps.renderer      ChartRenderer（barInfoAt(x) を持つ）。
+ * @param {Function} [deps.getContext] コピー時点のチャート文脈 { symbol, timeframe, labels } を返す
+ *                                     （銘柄・時間足・指標の見出し）。既定 null＝文脈なしで値だけ。
+ * @param {object} deps.clipboard     ClipboardGateway 互換（writeText(text): Promise<boolean>）。
+ * @param {object} [deps.toast]       ChartToastView 互換（show(text)）。未注入なら告知しない。
  * @returns {{label: string, onSelect: Function}} ChartContextMenu へ渡す項目。
  */
-export function createCopyBarInfoItem({ renderer, getLabels = null, clipboard, toast = null } = {}) {
+export function createCopyBarInfoItem({ renderer, getContext = null, clipboard, toast = null } = {}) {
   const notify = (msg) => {
     if (toast && typeof toast.show === 'function') {
       toast.show(msg);
@@ -38,8 +39,9 @@ export function createCopyBarInfoItem({ renderer, getLabels = null, clipboard, t
     onSelect: async (context) => {
       const x = context ? context.x : undefined;
       const info = (renderer && typeof renderer.barInfoAt === 'function') ? renderer.barInfoAt(x) : null;
-      const labels = typeof getLabels === 'function' ? getLabels() : null;
-      const text = formatBarInfoText(info, labels);
+      // 右クリック位置（context）とチャート文脈（chartContext）は別物。名前を分けて取り違えない。
+      const chartContext = (typeof getContext === 'function' ? getContext() : null) || {};
+      const text = formatBarInfoText(info, chartContext);
       if (!text) {
         notify(MSG_EMPTY);   // 足の無い位置（データ範囲外）。成功したふりをしない。
         return;

@@ -32,6 +32,7 @@ import { ChartContextMenu } from './chart_context_menu.js';
 import { ChartToastView } from './chart_toast_view.js';
 import { ClipboardGateway } from './clipboard_gateway.js';
 import { createCopyBarInfoItem } from './copy_bar_info_item.js';
+import { indicatorHeading } from './bar_info_text.js';
 import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
 import { ScrollToLatestButton } from './scroll_to_latest_button.js';
 import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
@@ -39,7 +40,7 @@ import { ChartTemplateMenu } from './chart_template_menu.js';
 import { ChartTemplateDialogs } from './chart_template_dialogs.js';
 import { ChartTemplateController } from './chart_template_controller.js';
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
-import { installChartToolbar, installIndicatorDialog } from './app_chrome_view.js';
+import { installChartToolbar, installIndicatorDialog, CHART_SYMBOL } from './app_chrome_view.js';
 
 // GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
 //   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
@@ -144,20 +145,27 @@ export function installSharedUi({
   new ScrollToLatestButton({ container, renderer, document: doc }).install();
 
   // ユーザー指示 2026-08-09: ローソク足上の右クリックメニュー（「情報をコピーする」）。
-  //   足の解決と値の取り出しは renderer（upstream 隔離点）、ラベルは controller（表示名の単一情報源）、
-  //   書き込みは ClipboardGateway、結果の告知は ChartToastView。メニューは項目の中身を知らない。
-  //   controller は本関数の呼び出し時点では未生成のため getController で遅延参照する。
+  //   足の解決と値の取り出しは renderer（upstream 隔離点）、見出し（ラベル＋パラメータ）と時間足は
+  //   controller（表示名・適用状態の単一情報源）、銘柄は app_chrome_view の CHART_SYMBOL
+  //   （ツールバーと同一文字列）、書き込みは ClipboardGateway、告知は ChartToastView。
+  //   メニューは項目の中身を知らない。controller は本関数の呼び出し時点では未生成のため遅延参照する。
+  //   ユーザー指摘 2026-08-10: 値だけでは「どのチャート・どのパラメータの値か」が復元できないため、
+  //   コピー時点の文脈をここで集めて渡す（貼り付け先には画面が無い）。
   const chartToast = new ChartToastView({ document: doc });
   const copyBarInfo = createCopyBarInfoItem({
     renderer,
     clipboard: new ClipboardGateway({ document: doc }),
     toast: chartToast,
-    getLabels: () => {
+    getContext: () => {
       const c = getController ? getController() : null;
       if (!c || typeof c.legendRows !== 'function') {
-        return null;   // 凡例行が無い（未生成・最小 fake）＝ラベル無しで instanceId 表記へ縮退。
+        return { symbol: CHART_SYMBOL };   // controller 未生成（最小 fake）＝銘柄だけで縮退。
       }
-      return new Map(c.legendRows().map((r) => [r.instanceId, r.label]));
+      return {
+        symbol: CHART_SYMBOL,
+        timeframe: c._timeframe,
+        labels: new Map(c.legendRows().map((r) => [r.instanceId, indicatorHeading(r)])),
+      };
     },
   });
   const chartContextMenu = new ChartContextMenu({
