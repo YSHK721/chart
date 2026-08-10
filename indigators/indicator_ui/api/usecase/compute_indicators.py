@@ -10,7 +10,8 @@ compute_adapter）にのみ依存する（依存方向は外側 → 内側）。
   2. datasetRef をホワイトリスト解決（DatasetPort.is_known）。
   3. timeframe をホワイトリスト解決（None は原子＝検査対象外）。
   4. DatasetPort.load_dataframe で DataFrame 化。
-  5. mode="latest" のとき forming_bar を注入（resolve_now_unix → apply_forming_bar）。
+  5. 形成中バーを注入（resolve_now_unix → apply_forming_bar）。計算窓＝チャートの窓とする
+     ため mode に依らず注入する（ISSUE-361）。欠落閉周期の合成のみ mode="latest" 専用。
   6. limit>0 のとき直近 N 本へ tail。
   7. full / latest ディスパッチで指標計算。ComputeError / KeyError を error 表現へ翻訳。
 
@@ -173,7 +174,6 @@ def compute_indicators(
     df = port.load_dataframe(request.dataset_ref, load_timeframe)
 
     mode = request.mode
-    now_unix = None
     # 上位足の因果系列（ISSUE-295）は「確定 H 足 ＋ C から畳んだ形成 H 足」で各バーを計算する。
     #   保存済み H の進行中期間の足は**期間全体の OHLC**（＝そのバーの時点では知り得ない値）を
     #   含むため使わない。形成中バーの注入も行わない（畳みで作る）。よって H 側の一括計算は
@@ -181,21 +181,28 @@ def compute_indicators(
     df_source = df if project else None
     series: "list | None" = None
 
-    # 5. ライブ足内更新（mode="latest"）: 形成中バーを注入してから計算する。full は不変。
+    # 5. 形成中バーの注入（ライブの計算窓＝チャートの窓・ISSUE-361）。
+    #    チャートは「確定足（/candles）＋形成中バー」を描く。ここで確定足だけを計算窓にすると、
+    #    最新足に値を持てるのは足内追従（mode="latest"）に載れる指標だけになり、載れない指標
+    #    （level_dash の cvfe＝front の tailUpdatable=false）は最新足の値がどの経路でも生成
+    #    されない。注入を mode で分けていたことが原因なので、注入は mode に依らない 1 つの規約に
+    #    する（窓の末端＝チャートの末端）。リプレイは窓の末端＝リビール位置のため元から不整合が
+    #    無く、本規約はライブ経路（本 usecase）に閉じる。
+    #    欠落閉周期の合成だけは latest 専用のまま（確定バーのリペイントになる・2026-07-23 承認設計）。
     #    ISSUE-162: 注入で増えたバー数（欠落閉周期の合成＋形成中）を数え、末尾切りの下限
     #    （min_tail）として計算側へ渡す（合成バーが応答から切り落とされる歯抜けを防ぐ）。
     injected_tail = None
-    if mode == "latest":
-        now_unix = forming_bar.resolve_now_unix(request.forming_now)
-    if project:
-        pass   # H 側の注入・末尾切り・一括計算は行わない（下の 8 が各バーを計算する）
-    elif mode == "latest":
+    now_unix = forming_bar.resolve_now_unix(request.forming_now)
+    if not project:
         try:
             n_before = len(df)
         except TypeError:  # len 非対応の注入 fake（テスト）＝従来挙動（min_tail なし）
             n_before = None
         # 形成中バーは「計算に使う足」のものを注入する（投影時は H の形成中バー）。
-        df = forming_bar.apply_forming_bar(df, request.dataset_ref, load_timeframe, now_unix)
+        df = forming_bar.apply_forming_bar(
+            df, request.dataset_ref, load_timeframe, now_unix,
+            synthesize_closed_gaps=(mode == "latest"),
+        )
         if n_before is not None:
             try:
                 injected_tail = max(1, len(df) - n_before + 1)
@@ -234,10 +241,12 @@ def compute_indicators(
     #    応答の time は必ず C のバー時刻の部分集合になる（時間軸へ C 外の時刻が混ざらない）。
     if project:
         df_chart_all = port.load_dataframe(request.dataset_ref, request.timeframe)
-        if mode == "latest":
-            df_chart_all = forming_bar.apply_forming_bar(
-                df_chart_all, request.dataset_ref, request.timeframe, now_unix
-            )
+        # 投影先の時間軸も同じ規約（計算窓＝チャートの窓）で組む。ここで形成中バーを落とすと
+        #   上位足指標だけが最新足を持たない非対称が残る（ISSUE-361）。
+        df_chart_all = forming_bar.apply_forming_bar(
+            df_chart_all, request.dataset_ref, request.timeframe, now_unix,
+            synthesize_closed_gaps=(mode == "latest"),
+        )
         df_chart = df_chart_all
         if isinstance(limit, int) and limit > 0:
             df_chart = df_chart.tail(limit)

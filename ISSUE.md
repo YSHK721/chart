@@ -6625,3 +6625,52 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **将来の解き方**: 選択肢 2（専用トークン 2 語）か、ランプを「端点 2 色 ＋ 補間空間の指定（RGB/HSL）」
   として表せる形へ一般化する。後者なら語彙を増やさずに済む可能性がある（未検証）。
 
+
+## ISSUE-361: [不具合・再現済み] ライブの計算窓が最新足（形成中バー）を含まず、足内追従に載れない指標（cvfe）だけ最新足の値が出ない（2026-08-10）
+- **ステータス**: RESOLVED（本 Issue で是正）
+- **重大度**: 高（表示中の最新足に指標値が存在しない＝誤読の原因）
+- **事象（利用者報告）**: 1 分足のライブモードで、最新足の cvfe が表示されない。
+- **実 UI 診断（8000・ライブ・1m・適用 13 インスタンス）**: 最新足 `1786352340` に対し
+  cvfe の系列（`cvfe_u1/l1/u2/l2`）の最終点は `1786352220`。同時に描画中の他 6 指標
+  （`ma_marod` / `btlm_trail` / `btlm_trail_marod` / `profit_rsi` / `tickvol` / `moving_averages`）は
+  すべて最新足まで到達していた。**その 6 指標はいずれも `INTRABAR_FORMING_IDS` 登録済み**で、
+  未登録なのは cvfe だけ。
+- **根本原因（構造）**: ライブは形成中バーを `mode="latest"` の経路でしか計算窓へ入れない。
+  1. `usecase/compute_indicators.py`: 形成中バーの注入が `mode == "latest"` に限定されていた。
+  2. `web/js/adapter/front/indicator_controller.js:300`: フロントが `mode:'latest'` を送るのは
+     `INTRABAR_FORMING_IDS` 登録指標のみ。
+  3. `web/js/domain/series_kind.js:43`: cvfe の系列種別 `level_dash` は `tailUpdatable: false`
+     ＝末尾差分経路に構造的に乗れず、登録もできない。
+  よって cvfe の計算窓には**チャートに描かれている最新足が入る経路が 1 本も無かった**。
+  チャートは「確定足（`/candles`）＋形成中バー（`/forming_bar`＋tick）」を描くのに、
+  計算窓は確定足で止まる——**窓の末端がチャートの末端と一致していない**のが真因。
+- **実測による裏取り（実 HTTP・`POST /live/compute`・cvfe・n_har=1291・limit=1500）**:
+  | mode | 系列の最終点 | 判定 |
+  |---|---|---|
+  | `full` | データセット最終足（`1786352400`） | 最新足に届かない |
+  | `latest` | 形成中バー（`1786352640`＝`/forming_bar` の `time` と一致） | 値は出せる |
+  つまり計算そのものは正常で、**窓に入っていないだけ**だった。
+- **費用は原因ではない（実測）**: cvfe の計算は 1500 本で **0.071 秒**（`measures` 0.010 /
+  `fit_state` 0.022 / `push` 1500 回 0.031＝1 回 0.021ms）。サーバ無負荷時の HTTP 往復は
+  **0.22 秒**（`moving_averages` 0.17 秒と同程度）。利用者コンソールの 30 秒タイムアウトは
+  13 インスタンス同時再計算による輻輳で、本件とは別（別途 Issue 化の候補）。
+- **リプレイで起きない理由**: リプレイは別実装（`simulator/replay_ui/usecase/causal_compute.py`・
+  本 usecase を import しない）で、窓の末端＝リビール位置＝チャートの末端。ライブ固有の非対称。
+- **抜本策（採用・依頼者承認 2026-08-10）**: 形成中バーの注入を mode 分岐から外し、
+  **「ライブの計算窓＝チャートの窓」を単一規約**にする。full も latest も窓の末端が
+  チャートの末端になる。cvfe の帯は `mid = close_{t−1}`・`σ̂_t` とも当該バー始端で確定＝
+  足内不変のため、バー確定時の全再描画 1 回で最新足まで正しく描かれる。
+- **分離した関心事**: `apply_forming_bar` が併せて行う「欠落閉周期の tick 合成」（ISSUE-162）は
+  **確定値の前倒し**であり、後から M1 が同じバーを上書きする＝確定バーのリペイントになる。
+  よって `synthesize_closed_gaps` として切り出し、足内更新（`mode="latest"`）専用に据え置いた
+  （非リペイント維持・ユーザー承認設計 2026-07-23）。合成バーは `/candles` に無い＝対応する
+  ローソクが無い点でも「計算窓＝チャートの窓」に反する。
+- **変更（4 ファイル）**:
+  | ファイル | 変更 |
+  |---|---|
+  | `adapter/compute/forming_bar.py` | `apply_forming_bar(..., *, synthesize_closed_gaps=True)` を追加し合成を分離 |
+  | `usecase/compute_ports.py` | `FormingBarPort` の契約を追随 |
+  | `usecase/compute_indicators.py` | 注入を mode 非依存化（投影経路の `df_chart_all` も同規約） |
+  | `api/tests/*` | 旧契約（full 非注入）を固定していた 2 検定を新契約へ反転 |
+- **回帰**: indicator_ui API 863 passed（変更前 baseline と同数）／web 1,780 passed／
+  replay + cvfe 396 passed。
