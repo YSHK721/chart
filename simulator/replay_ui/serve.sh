@@ -22,8 +22,11 @@ if { [ ! -x "${REPO_ROOT}/lightweight-charts-python-main/.venv/bin/python" ] \
   COMMON_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
   [ -n "$COMMON_DIR" ] && MAIN_ROOT="$(dirname "$COMMON_DIR")"
 fi
-VENV_PY="${MAIN_ROOT}/lightweight-charts-python-main/.venv/bin/python"
-DATA_DIR_DEFAULT="${MAIN_ROOT}/data/marketdata"
+# venv とデータの場所（ISSUE-365）。既定は上の MAIN_ROOT 推定だが、dev_paths.local.sh が
+#   VENV_PYTHON / MARKETDATA_DATA_DIR を export していればそれを優先する。環境変数で絶対パスを
+#   指せれば、worktree へ symlink を張る理由が消える（ISSUE-363 の真因の除去）。
+VENV_PY="${VENV_PYTHON:-${MAIN_ROOT}/lightweight-charts-python-main/.venv/bin/python}"
+DATA_DIR_DEFAULT="${MARKETDATA_DATA_DIR:-${MAIN_ROOT}/data/marketdata}"
 
 PORT=8280
 for arg in "$@"; do
