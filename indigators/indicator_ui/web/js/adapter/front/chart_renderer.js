@@ -54,6 +54,47 @@ export { zoomedPriceRange, clampPriceRange };
 //   （背景ピクセルは一切変更しない）。ペア内バーは色を付けず原色（既定 up/down 着色）に委ねる。
 const DIM_CANDLE_COLOR = '#16191f';
 
+// time 昇順の点列から time が一致する点を返す（無ければ undefined）。ローソク・指標系列とも
+//   lightweight-charts のデータ規約で time 昇順のため二分探索で引く（右クリック 1 回あたり
+//   系列数ぶんの探索になるので線形走査にしない）。time は UTCTimestamp（数値）を前提とし、
+//   business day 形式など数値でない時刻表現は「引けない」（undefined）＝黙って別の足を返さない。
+function pointAtTime(points, time) {
+  if (!Array.isArray(points) || typeof time !== 'number') {
+    return undefined;
+  }
+  let lo = 0;
+  let hi = points.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const t = points[mid] ? points[mid].time : undefined;
+    if (typeof t !== 'number') {
+      return undefined;
+    }
+    if (t === time) {
+      return points[mid];
+    }
+    if (t < time) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return undefined;
+}
+
+// 系列の指定 time の値（線・ヒストグラム＝value / ローソク＝close）。無ければ undefined。
+//   series.data() は upstream API のため呼び出しは本モジュールに閉じる（隔離維持）。
+function pointValueAt(series, time) {
+  if (!series || typeof series.data !== 'function') {
+    return undefined;
+  }
+  const p = pointAtTime(series.data(), time);
+  if (p === undefined || p === null) {
+    return undefined;
+  }
+  return (typeof p === 'object') ? (p.value ?? p.close) : p;
+}
+
 // sessions（日別プロファイル分割）: ローソク透明化用の色。透明＝価格軸は残しローソクだけ消す。
 //   復元色は composition_root_front.js の mainSeries 既定（up=#26a69a / down=#ef5350）と一致させる。
 const TRANSPARENT_COLOR = 'rgba(0,0,0,0)';
@@ -622,7 +663,12 @@ export class ChartRenderer {
   //   （実測 2026-08-06: paneSize=[497,166,165] / チャート高 858 / 時間軸 28 → 残り 2px が区切り 2 本）、
   //   区切り高は「チャート高 − 時間軸 − ペイン高合計」をペイン間の数で割って求める。値を定数で
   //   持たない（upstream のスタイル変更で静かにずれるのを避ける）。
-  paneLegendModel(param = null) {
+  //
+  //   valuePickerFor（任意・ユーザー指示 2026-08-09）: slot ごとの値取り出し方（Strategy）。既定は
+  //   「クロスヘア位置の値・無ければ保持した最新値」＝従来の凡例規約。指定した足の情報を
+  //   取り出す `barInfoAt` は、ここへ「その足の値だけを返す（最新値へ落ちない）」picker を渡す。
+  //   在席集合・ペイン分類・並び・可視の扱いは本メソッド 1 か所に保つ（値の出所だけを差し替える）。
+  paneLegendModel(param = null, valuePickerFor = null) {
     const seriesData = (param && param.seriesData) || null;
     const heights = this._paneHeights();
     const separator = this._paneSeparatorPx(heights);
@@ -638,7 +684,10 @@ export class ChartRenderer {
       if (!byPane.has(paneIndex)) {
         byPane.set(paneIndex, []);
       }
-      byPane.get(paneIndex).push({ instanceId, values: this._slotValues(slot, seriesData) });
+      const pick = typeof valuePickerFor === 'function'
+        ? valuePickerFor(slot)
+        : (series, key) => this._crosshairValue(slot, series, key, seriesData);
+      byPane.get(paneIndex).push({ instanceId, values: this._slotValues(slot, pick) });
     }
     const paneKeys = this._paneKeysOrdered();
     const groups = [];
@@ -781,9 +830,11 @@ export class ChartRenderer {
     return paneIndex !== this._pricePaneIndex();
   }
 
-  // slot の各系列の表示値。クロスヘア位置に値があればそれ、無ければ保持した最新値。
+  // slot の各系列の表示値。**どの値を取るか**は picker（Strategy）が決め、本メソッドは
+  //   「どの系列を出すか（可視の扱い）」と「名前・色をどう付けるか」だけを担う。
   //   系列単位で非表示（styleMeta.visible=false）のものは出さない（凡例と描画を一致させる）。
-  _slotValues(slot, seriesData) {
+  //   picker: (series, key) => value|undefined。
+  _slotValues(slot, pick) {
     const out = [];
     if (slot.visible === false) {
       return out;   // インスタンスごと非表示（eye OFF）＝値は出さない（行は残す＝再表示できる）。
@@ -793,17 +844,22 @@ export class ChartRenderer {
       if (meta && meta.visible === false) {
         continue;
       }
-      const d = seriesData ? seriesData.get(series) : undefined;
-      let value;
-      if (d !== undefined && d !== null) {
-        value = (typeof d === 'object') ? (d.value ?? d.close) : d;
-      }
-      if (value === undefined || value === null) {
-        value = slot.lastValues ? slot.lastValues.get(key) : undefined;
-      }
-      out.push({ name: meta ? meta.name : key, value, color: meta ? meta.color : undefined });
+      out.push({ name: meta ? meta.name : key, value: pick(series, key), color: meta ? meta.color : undefined });
     }
     return out;
+  }
+
+  // 既定の値取り出し（凡例の規約）: クロスヘア位置に値があればそれ、無ければ保持した最新値。
+  _crosshairValue(slot, series, key, seriesData) {
+    const d = seriesData ? seriesData.get(series) : undefined;
+    let value;
+    if (d !== undefined && d !== null) {
+      value = (typeof d === 'object') ? (d.value ?? d.close) : d;
+    }
+    if (value === undefined || value === null) {
+      value = slot.lastValues ? slot.lastValues.get(key) : undefined;
+    }
+    return value;
   }
 
   // 読み取り DTO を構築する（プレーンなデータ構造・series 実体や lwc 型は含めない＝隔離維持）。
@@ -826,6 +882,56 @@ export class ChartRenderer {
     // sessions: 当日 MP（POC/VAH/VAL）を time で引いて DTO に載せる（供給時のみ・sessions 表示中）。
     const sessionMP = (this._sessionMP && time != null) ? (this._sessionMP.get(time) || null) : null;
     return { time, ohlc, overlays, sessionMP };
+  }
+
+  /**
+   * チャート要素の左上を原点とする x 座標が指す足の情報を返す（ユーザー指示 2026-08-09・右クリックコピー）。
+   *
+   * 返すのは情報ウィンド（クロスヘア読み取り欄＋ペイン別凡例）と**同じ材料**で、
+   *   { time, ohlc:{open,high,low,close}|null, sessionMP:{poc,vah,val}|null,
+   *     indicators: [{ instanceId, values: [{ name, value, color }] }] }
+   * 座標→足の解決は upstream（timeScale().coordinateToTime）に触れる本 class に閉じる。
+   *
+   * クロスヘア経路との違いは **値が無い足で最新値へ落ちない**ことだけ（凡例は「クロスヘアが
+   * 無ければ最新値」という表示規約を持つが、足を名指しでコピーする場面でその足に無い値を
+   * 最新値で埋めると、別の足の値を「その足の値」として配ってしまう）。
+   *
+   * @param {number} x  チャート要素の左上基準の x（px）。
+   * @returns {object|null} 足が無い座標（データ範囲外・時間軸未確定）は null。
+   */
+  barInfoAt(x) {
+    const time = this._timeAtCoordinate(x);
+    if (time == null) {
+      return null;
+    }
+    const candle = pointAtTime(this.getCandles(), time);
+    const ohlc = (candle && candle.open !== undefined)
+      ? { open: candle.open, high: candle.high, low: candle.low, close: candle.close }
+      : null;
+    const model = this.paneLegendModel(null, () => (series) => pointValueAt(series, time));
+    const indicators = [];
+    for (const g of model.groups) {
+      for (const r of g.rows ?? []) {
+        indicators.push({ instanceId: r.instanceId, values: r.values ?? [] });
+      }
+    }
+    const sessionMP = this._sessionMP ? (this._sessionMP.get(time) || null) : null;
+    return { time, ohlc, sessionMP, indicators };
+  }
+
+  // x 座標（チャート要素基準）が指す足の time。範囲外・非対応環境（Fake/SSR）は null。
+  //   バンドル実測（v5.2.0）: `coordinateToTime` は座標→バー index（Math.ceil）→ 元の time
+  //   （originalTime）へ写す。データ範囲外の index は null を返す＝足の無い所では開かない。
+  _timeAtCoordinate(x) {
+    if (!Number.isFinite(x) || typeof this._chart.timeScale !== 'function') {
+      return null;
+    }
+    const ts = this._chart.timeScale();
+    if (!ts || typeof ts.coordinateToTime !== 'function') {
+      return null;
+    }
+    const t = ts.coordinateToTime(x);
+    return t == null ? null : t;
   }
 
   // sessions の time→{poc,vah,val} Map を供給する（読み取り欄で当日 MP を出す）。null で非表示。

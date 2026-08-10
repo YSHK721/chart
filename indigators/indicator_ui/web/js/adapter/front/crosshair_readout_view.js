@@ -10,20 +10,9 @@
 //   - DOM は注入（document / elementId）。テストは fake document を渡す。
 //   - dto が null / ohlc null / overlays 空 / 対象要素不在でも安全（クラッシュしない・空表示）。
 
-import { fmtValue } from './format.js';
+// 日時表記は format.js の fmtTime が単一情報源（右クリックの「情報をコピーする」と同じ表記）。
+import { fmtValue, fmtTime } from './format.js';
 import { ensureOverlayStackSlot } from './overlay_host.js';
-
-// epoch 秒（lightweight-charts の UTCTimestamp）を ISO 風の日時文字列へ。
-//   business-day オブジェクト等は防御的に String 化する。
-function fmtTime(time) {
-  if (time === null || time === undefined) {
-    return '';
-  }
-  if (typeof time === 'number' && Number.isFinite(time)) {
-    return new Date(time * 1000).toISOString().replace('T', ' ').slice(0, 16);
-  }
-  return String(time);
-}
 
 // OHLC 行のセル定義（描画順 O/H/L/C）。dto.ohlc のキー・CSS クラス・先頭ラベルを保持する。
 const OHLC_CELLS = Object.freeze([

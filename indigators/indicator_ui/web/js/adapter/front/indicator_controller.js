@@ -1144,7 +1144,24 @@ export class IndicatorController {
   //     gear は _onGear 内部で MP 分岐する。これらのハンドラ本体（reveal/gear seam を含む）は
   //     controller に残し、subclass の override（toggleVisible/removeInstance 等）を温存する。
   _renderLegend() {
-    const rows = this._state.applied.map((inst) => {
+    const rows = this.legendRows();
+    this._legendView.renderLegend(rows);
+    // ISSUE-276: ペイン別凡例（描画先ペインの新しい表示系統）へも同じ行を渡す。
+    //   未注入（replay の一部テスト・SSR）は no-op。値と幾何は ChartRenderer 側が供給する。
+    if (this._paneLegend && typeof this._paneLegend.setInstances === 'function') {
+      this._paneLegend.setInstances(rows);
+    }
+  }
+
+  /**
+   * 凡例行の view-model（instanceId / label / visible / 操作）を適用順で返す。
+   *
+   * ラベル（表示名＋非 default variant の括弧）を組み立てる**唯一の場所**であり、凡例の外側
+   * （右クリックの「情報をコピーする」など）も同じラベルをここから受け取る。呼び出し側が
+   * def から組み立て直すと、同じ指標に 2 通りの表示名が生まれる。
+   */
+  legendRows() {
+    return this._state.applied.map((inst) => {
       const def = this._catalog.get(inst.indicatorId);
       const isMp = this._isMarketProfile(def);
       return {
@@ -1160,12 +1177,6 @@ export class IndicatorController {
           : this.removeInstance(inst.instanceId)),
       };
     });
-    this._legendView.renderLegend(rows);
-    // ISSUE-276: ペイン別凡例（描画先ペインの左上に出す新しい表示系統）へも同じ行を渡す。
-    //   未注入（replay の一部テスト・SSR）は no-op。値と幾何は ChartRenderer 側が供給する。
-    if (this._paneLegend && typeof this._paneLegend.setInstances === 'function') {
-      this._paneLegend.setInstances(rows);
-    }
   }
 
   // ペイン別凡例 View を注入する（合成根が結線・ISSUE-276）。未注入なら従来の #legend のみ。
