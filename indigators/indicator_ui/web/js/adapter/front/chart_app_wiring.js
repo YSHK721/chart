@@ -28,6 +28,10 @@ import { TradeMarkersRenderer } from './trade_markers_renderer.js';
 import { TickvolBandsActor } from './tickvol_bands_actor.js';
 import { TickvolBandsController } from './tickvol_bands_controller.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
+import { ChartContextMenu } from './chart_context_menu.js';
+import { ChartToastView } from './chart_toast_view.js';
+import { ClipboardGateway } from './clipboard_gateway.js';
+import { createCopyBarInfoItem } from './copy_bar_info_item.js';
 import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
 import { ScrollToLatestButton } from './scroll_to_latest_button.js';
 import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
@@ -139,6 +143,28 @@ export function installSharedUi({
   // ISSUE-116: 「最新のバーまでスクロール」ボタン（» ）。DOM 不在は install 内の防御で no-op。
   new ScrollToLatestButton({ container, renderer, document: doc }).install();
 
+  // ユーザー指示 2026-08-09: ローソク足上の右クリックメニュー（「情報をコピーする」）。
+  //   足の解決と値の取り出しは renderer（upstream 隔離点）、ラベルは controller（表示名の単一情報源）、
+  //   書き込みは ClipboardGateway、結果の告知は ChartToastView。メニューは項目の中身を知らない。
+  //   controller は本関数の呼び出し時点では未生成のため getController で遅延参照する。
+  const chartToast = new ChartToastView({ document: doc });
+  const copyBarInfo = createCopyBarInfoItem({
+    renderer,
+    clipboard: new ClipboardGateway({ document: doc }),
+    toast: chartToast,
+    getLabels: () => {
+      const c = getController ? getController() : null;
+      if (!c || typeof c.legendRows !== 'function') {
+        return null;   // 凡例行が無い（未生成・最小 fake）＝ラベル無しで instanceId 表記へ縮退。
+      }
+      return new Map(c.legendRows().map((r) => [r.instanceId, r.label]));
+    },
+  });
+  const chartContextMenu = new ChartContextMenu({
+    document: doc, container, items: [copyBarInfo],
+  });
+  chartContextMenu.install();
+
   // ISSUE-117: 時間足ドロップダウンの開閉制御（選択・active 同期は bind() の data-timeframe 配線）。
   //   項目集合は既定＝台帳導出（ISSUE-278 #4: リプレイ側の手書き 8 足を撤去。実測でリプレイ core も
   //   30m の /candles・/compute を 200 で返すため、そもそも制約が存在しない）。
@@ -159,7 +185,7 @@ export function installSharedUi({
   });
   chartTemplateMenu.install();
 
-  return { chartTemplateMenu, chartTemplateDialogs };
+  return { chartTemplateMenu, chartTemplateDialogs, chartContextMenu, chartToast };
 }
 
 // controller 生成後に結ぶ協働子（テンプレート協働子・取引密度帯・売買マーカー・現在値）。
