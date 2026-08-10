@@ -39,10 +39,42 @@ for f in "$LIVE_SERVE" "$REPLAY_SERVE" "$ROUTER_PY"; do
 done
 
 # 既に公開 8000 が起動済みなら二重起動しない。
+#
+# ISSUE-348: 旧実装は `curl -sf "$PUBLIC_URL"` で「**何かが**応答するか」しか見ておらず、
+#   「**どのツリーが**応答しているか」を見ていなかった。そのため別チェックアウト（main 側・
+#   他の worktree）の残存スタックがポートを握っていると、本スクリプトは何も起動せずに
+#   「既に起動済みです」と出して正常終了し、開発者は自分のコードが 1 行も入っていない UI を
+#   自分のコードとして検証してしまう。実際に 2 度事故が起きている（ISSUE-355 の
+#   「setColorThemeProvider is not a function」はこの機構の帰結）。
+#
+# よって占有者へ配信元を問い合わせ、**自分のツリーと一致するときだけ** no-op する。
+#   不一致なら黙って終了せず、占有しているツリーの実パスを示してエラー終了する
+#   （どこを見ているのかが即座に分かる）。占有者の停止は行わない — 他セッションが作業中の
+#   スタックを落とす破壊的操作になるため、停止は人の判断に委ねる。
 PUBLIC_URL="http://127.0.0.1:${PUBLIC_PORT}/"
+SERVING_ROOT_URL="http://127.0.0.1:${PUBLIC_PORT}/__serving_root"
 if command -v curl >/dev/null 2>&1 && curl -sf -o /dev/null "$PUBLIC_URL" 2>/dev/null; then
-  echo "既に起動済みです: $PUBLIC_URL"
-  exit 0
+  # 占有者が居る。配信元を問い合わせて自分と同一か確かめる。
+  serving_root="$(curl -sf --max-time 5 "$SERVING_ROOT_URL" 2>/dev/null | head -n 1 || true)"
+  if [ -z "$serving_root" ]; then
+    # 応答はするが配信元を答えない＝本エンドポイントを持たない旧ルータが動いている。
+    #   「たぶん自分だろう」と仮定して no-op すると、まさに ISSUE-348 の事故になる。
+    echo "エラー: ${PUBLIC_PORT} は応答しますが、配信元を確認できません（${SERVING_ROOT_URL} が無応答）。" >&2
+    echo "       本エンドポイントを持たない旧ルータが占有している可能性があります。" >&2
+    echo "       占有プロセスを確認してください: ps -eo pid,args | grep router.py" >&2
+    exit 1
+  fi
+  if [ "$serving_root" = "$REPO_ROOT" ]; then
+    echo "既に起動済みです: $PUBLIC_URL （配信元: ${serving_root}）"
+    exit 0
+  fi
+  echo "エラー: ${PUBLIC_PORT} は**別のツリー**が配信しています。起動を中止しました。" >&2
+  echo "       占有中の配信元: ${serving_root}" >&2
+  echo "       起動しようとしたツリー: ${REPO_ROOT}" >&2
+  echo "       そのまま開くと、このツリーの変更が入っていない UI を見ることになります。" >&2
+  echo "       停止して切り替える場合は、占有側のプロセスを止めてから再実行してください:" >&2
+  echo "         ps -eo pid,args | grep router.py" >&2
+  exit 1
 fi
 
 LIVE_PGID=""

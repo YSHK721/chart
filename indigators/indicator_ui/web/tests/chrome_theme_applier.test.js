@@ -62,8 +62,8 @@ test('resolveAllChrome: 宣言されたトークンは slot・token の両方へ
   assert.equal(tokens.surface, '#202020');
   assert.equal(tokens.primary, '#0f0f0f', '指標側トークンも CSS へ公開する（v2 の接続点）');
   assert.equal(slots.layoutBackground, '#202020');
-  assert.equal(slots.dimCandle, '#23221d', '派生も追随する（+3,+2,-3）');
-  assert.equal(slots.replayBoundaryDim, '#161616', '派生も追随する（-10）');
+  assert.equal(slots.dimCandle, '#212121', '減光も追随する（対地 CR 目標 1.0167）');
+  assert.equal(slots.replayBoundaryDim, '#272727', '減光も追随する（対地 CR 目標 1.0840）');
   assert.equal(slots.gridVertLines, CHROME_CURRENT.gridVertLines, '未宣言トークンは現行のまま');
 });
 

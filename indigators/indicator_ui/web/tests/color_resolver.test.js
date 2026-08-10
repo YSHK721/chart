@@ -254,12 +254,14 @@ test('#7: 不透明度を持つ配線点はテーマ宣言時に hex + 現行 al
     'rgba(10, 20, 30, 0.2)');
 });
 
-test('派生配線点はテーマ宣言時に surface からのオフセットで解決する', () => {
-  // #202020 = (32,32,32)。
+test('減光・tint の配線点はテーマ宣言時に「地からの対地 CR 目標」で解決する', () => {
+  // 加法オフセットから対地コントラスト比の目標へ改めた（段階 5-D 追補 2）。加法では地を変えると
+  //   効果が消えた（実測: analysisTint は地 #ffffff で対地 CR 1.0000＝地と同一）。
+  //   期待値は実測。強弱の順序が保たれていることまで見る。
   const t = theme({ surface: '#202020' });
-  assert.equal(resolveChromeSlotColor({ slotId: 'dimCandle', theme: t }), '#23221d'); // +3,+2,-3 → (35,34,29)
-  assert.equal(resolveChromeSlotColor({ slotId: 'analysisTint', theme: t }), '#282322'); // +8,+3,+2 → (40,35,34)
-  assert.equal(resolveChromeSlotColor({ slotId: 'replayBoundaryDim', theme: t }), '#161616'); // -10 → (22,22,22)
+  assert.equal(resolveChromeSlotColor({ slotId: 'dimCandle', theme: t }), '#212121'); // CR 1.0119
+  assert.equal(resolveChromeSlotColor({ slotId: 'analysisTint', theme: t }), '#232323'); // CR 1.0367
+  assert.equal(resolveChromeSlotColor({ slotId: 'replayBoundaryDim', theme: t }), '#272727'); // CR 1.0907
 });
 
 test('resolveChromeSlotColor は未知 slot でも例外を投げない', () => {

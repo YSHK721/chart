@@ -30,6 +30,24 @@ from urllib.parse import urlsplit
 _ASSET_FILES = frozenset({"index.html", "sw.js"})
 _ASSET_SUBTREE_PREFIXES = ("js/",)
 
+# 配信元ツリーを答える診断エンドポイント（ISSUE-348）。
+#
+# なぜ要るか（実測で 2 度事故が起きている）: `serve.sh` の二重起動判定は「8000 が応答するか」
+#   しか見ておらず、**どのツリーが応答しているか**を見ていなかった。別チェックアウト
+#   （main 側・他の worktree）の残存スタックがポートを握っていると serve.sh は no-op で
+#   正常終了し、「既に起動済みです」としか出ない。開発者は自分のコードが 1 行も入っていない
+#   UI を、自分のコードとして検証してしまう（ISSUE-355 の「setColorThemeProvider is not a
+#   function」はこの機構の帰結だった）。
+#
+# 「200 が返る」は配信元の証明にならない。占有者に**自分が何を配信しているか**を答えさせ、
+#   起動側が自分のツリーと照合できるようにする。判定の材料をプロセス外から観測可能にする
+#   ことが要点で、これが無いと照合は原理的に不可能になる。
+_SERVING_ROOT_PATH = "/__serving_root"
+
+# 本ファイルは `<repo_root>/unified_ui/router.py` に在る。したがって配信元ツリーの実体は
+#   本ファイルの位置から一意に決まる（引数や cwd に依存させない＝偽装の余地を作らない）。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
 # モード prefix と、サーバインスタンス上の対応する上流 URL 属性名。
 _PREFIX_TO_UPSTREAM_ATTR = (
     ("/live", "live_upstream"),
@@ -108,11 +126,32 @@ class RouterHandler(BaseHTTPRequestHandler):
     timeout = 65
 
     def _handle(self) -> None:
+        # 配信元の申告はプロキシより先に見る（core へ透過させない・ISSUE-348）。
+        #   クエリ付きでも答えるよう path 部分だけで判定する。
+        if urlsplit(self.path).path == _SERVING_ROOT_PATH:
+            self._serve_serving_root()
+            return
         prefix, upstream = self._match_prefix(self.path)
         if prefix is not None:
             self._proxy(upstream, self.path[len(prefix):])
             return
         self._serve_static(self.path)
+
+    def _serve_serving_root(self) -> None:
+        """このルータが配信しているツリーの実パスを返す（ISSUE-348）。
+
+        `serve.sh` が自分の REPO_ROOT と照合して、別ツリーの残存スタックが 8000 を
+        握っている状態を**黙って通さない**ための材料。人が読んでも分かるよう、
+        1 行の平文で返す（jq 等の依存を起動スクリプトへ持ち込まない）。
+        """
+        body = (_REPO_ROOT + "\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        # 占有者が入れ替わっても即座に見える必要があるため、キャッシュさせない。
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _match_prefix(self, path: str):
         """path が `/live` / `/replay` 配下なら (prefix, upstream_base_url) を返す。

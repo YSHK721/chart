@@ -207,6 +207,40 @@ export function mixAtContrast(a, b, against, targetRatio) {
   return channelsToHex(best);
 }
 
+// 地（surface）から見て「対比が立つ側」＝白か黒か。暗い地なら白、明るい地なら黒。
+//
+//   単一情報源である理由: 方向を**明度**で固定すると明るい地のテーマで構造線・文字が地に溶ける
+//   （実測: surface=#ffffff で text が白へ寄る）。方向は地に対して定義しなければならない、という
+//   規律は語彙の導出（color_derivation）と配線点の派生（color_resolver）の両方が要るため、
+//   ここに置く。片方に private で持つと、直すときに取り残しが出る。
+//
+//   anchor は定義上つねに余地を持つ（全域の最小でも CR ≒ 4.5 — 白黒の CR が釣り合う #767676 付近）。
+//   これが「anchor 側だけが、どの地でも潰れない方向である」ことの根拠である。
+export function contrastAnchor(surface) {
+  return contrastRatio(surface, '#ffffff') >= contrastRatio(surface, '#000000') ? '#ffffff' : '#000000';
+}
+
+// from から to へ向かう軸上の、**チャネル別**相対位置 k（0..1）の点を返す。
+//
+//   加法 delta（絶対チャネル空間のオフセット）との違いが要点: delta は地の極性に対して相対でない
+//   ため、明るい地で飽和し、文字ランプの強弱が反転する（実測: 52 slot 中 14 が飽和）。相対位置なら
+//   結果は必ず from と to の間に収まるので、**構成上飽和しない**（クランプに頼らない）。
+//
+//   k をチャネル別に持つ理由: 現行値は単一スカラーの混合では再現できない（実測: uiFieldDisabled の
+//   チャネル別 t は 0.0090〜0.0212 とばらつく）。k = delta / 余地 と置けば、基準の地で
+//   k * 余地 = delta となり現行値を厳密に再現する。係数は逆算であって設計値ではない。
+export function rampChannels(from, to, k) {
+  const a = toHex6(from);
+  const b = toHex6(to);
+  if (a === null || b === null || !Array.isArray(k) || k.length !== 3
+    || !k.every(Number.isFinite)) {
+    return null;
+  }
+  const ca = toChannels(a);
+  const cb = toChannels(b);
+  return channelsToHex(ca.map((v, i) => Math.round(v + (cb[i] - v) * k[i])));
+}
+
 // HSL 色相を deg 回転する（彩度・明度は保つ）。
 //   HSL を経由せず {min, max, 色相} から直接組み立てる。S と L は max/min だけの関数なので、
 //   max/min をそのまま持ち回れば「彩度・明度を保つ」が構成上保証される（丸め誤差で動かない）。

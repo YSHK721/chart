@@ -50,20 +50,9 @@
 
 import { COLOR_ROLES } from '../domain/color_roles.js';
 import {
-  contrastRatio, desaturate, isNormalizedHex, mixAtContrast, mixChannels, rotateHue,
+  contrastAnchor, contrastRatio, desaturate, isNormalizedHex, mixAtContrast, mixChannels,
+  rotateHue,
 } from '../domain/color_value.js';
-
-const WHITE = '#ffffff';
-const BLACK = '#000000';
-
-// 地（surface）から見て「対比が立つ側」。暗い地なら白、明るい地なら黒。
-//   設計表の文言は「明度を上げる」だが、方向を明度で固定すると明るい地のテーマで構造線・文字が
-//   地に溶ける（実測: surface=#ffffff で text が白へ寄る）。方向は**地に対して**定義する。
-//   現行の暗い地（#131722）では対比側が白になるため、この一般化は現行値の逆算を変えない
-//   （実測: CR(#131722, 白) = 17.898 / CR(#131722, 黒) = 1.173）。
-function contrastAnchor(surface) {
-  return contrastRatio(surface, WHITE) >= contrastRatio(surface, BLACK) ? WHITE : BLACK;
-}
 
 // 現行値からの逆算（最小二乗）で確定した係数。括弧内はチャネル別 t の実測。
 const T_GRID = 0.058; //      LS 0.0579（[0.0508, 0.0603, 0.0633]）

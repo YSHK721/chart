@@ -98,11 +98,14 @@ test('TC-DW05 saveTheme: 射影した値を保存し直しても永続値が膨�
 // 通過条件 4（恒等回帰）: テーマ未設定の見た目が 1 色も動かない
 // =========================================================================
 
-test('TC-DW06 恒等回帰: クロム 20 slot はテーマ未設定で現行リテラルと文字列一致する', () => {
+test('TC-DW06 恒等回帰: クロム全 slot はテーマ未設定で現行リテラルと文字列一致する', () => {
   // Arrange / Act
   const { slots } = resolveAllChrome(null);
   // Assert
-  assert.equal(CHROME_SLOTS.length, 20, '配線点は 20 点');
+  // 件数の逐語固定は台帳テスト（chrome_tokens.test.js）が持つ。ここでは台帳と現行値写像が
+  //   同じ濃度であること＝走査に穴が無いことだけを確かめ、恒等は全 slot について見る。
+  assert.equal(CHROME_SLOTS.length, Object.keys(CHROME_CURRENT).length, '台帳と現行値写像の濃度が一致');
+  assert.ok(CHROME_SLOTS.length >= 20, 'チャート本体の 20 点が失われていない');
   for (const slot of CHROME_SLOTS) {
     assert.equal(slots[slot.id], CHROME_CURRENT[slot.id], `${slot.id}: 現行リテラルから動いた`);
   }
