@@ -113,3 +113,25 @@ test('indicatorHeading: ラベル欠落は instanceId へ縮退・row 不在は�
   assert.equal(indicatorHeading({ instanceId: 'x#1', params: { n: 1 } }), 'x#1 (n=1)');
   assert.equal(indicatorHeading(null), '');
 });
+
+// ---------------------------------------------------------------------------
+// コピー日時（ユーザー指示 2026-08-10「コピーした時間も追加」）
+// ---------------------------------------------------------------------------
+
+test('copiedAtMs を渡すと最終行に「コピー日時」を秒精度・UTC 明示で書く', () => {
+  const text = formatBarInfoText(INFO, { ...CTX, copiedAtMs: 1786332341000 });
+  const lines = text.split('\n');
+  assert.equal(lines[lines.length - 1], 'コピー日時\t2026-08-10 03:25:41 UTC');
+  // 足の日時（主題）は先頭側のまま＝操作時刻に押し出されない。
+  assert.equal(lines[1], '2010-06-29 00:00');
+});
+
+test('copiedAtMs 未指定・非数値は行を作らない（時刻を捏造しない）', () => {
+  assert.ok(!formatBarInfoText(INFO, CTX).includes('コピー日時'));
+  assert.ok(!formatBarInfoText(INFO, { ...CTX, copiedAtMs: null }).includes('コピー日時'));
+  assert.ok(!formatBarInfoText(INFO, { ...CTX, copiedAtMs: NaN }).includes('コピー日時'));
+});
+
+test('足が無い位置（info=null）はコピー日時だけの文字列を作らない', () => {
+  assert.equal(formatBarInfoText(null, { ...CTX, copiedAtMs: 1786332341000 }), '');
+});

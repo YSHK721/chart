@@ -21,9 +21,13 @@
 // 値が無い（その足に材料が無い）系列は**出さない**。凡例が空欄を作らないのと同じ規約で、
 //   空欄や 0 を捏造しない。値が 1 つも無い指標は行ごと出さない。
 
-import { fmtValue, fmtTime } from './format.js';
+import { fmtValue, fmtTime, fmtInstant } from './format.js';
 
 const SEP = '\t';
+
+// 最終行の見出し。足の日時（無ラベル）と操作時刻を取り違えないよう、こちらだけ名前を付ける。
+//   基準は足の表記と同じ UTC で、それを明示する（現地時刻と読み違えると記録として使えない）。
+const COPIED_AT_LABEL = 'コピー日時';
 
 // 四本値セルの定義（読み取り欄 OHLC_CELLS と同じ順・同じラベル）。
 const OHLC_CELLS = Object.freeze([
@@ -92,9 +96,13 @@ function indicatorLine(entry, labels) {
  * @param {string} [context.symbol]      銘柄名（app_chrome_view の CHART_SYMBOL＝ツールバーと同一）。
  * @param {string} [context.timeframe]   時間足コード（'1D' 等・台帳 TF_CODES の表記）。
  * @param {Map} [context.labels]         instanceId → 見出し（indicatorHeading 済み）。未指定は instanceId 表記。
+ * @param {number} [context.copiedAtMs]  コピーを実行した実時刻（epoch ミリ秒）。渡されたときだけ
+ *                                       最終行に「コピー日時」を書く（時計は呼び出し側が持つ＝本関数は純粋）。
  * @returns {string}              コピーする文字列。材料が何も無ければ空文字（＝呼び出し側はコピーしない）。
  */
-export function formatBarInfoText(info, { symbol = null, timeframe = null, labels = null } = {}) {
+export function formatBarInfoText(info, {
+  symbol = null, timeframe = null, labels = null, copiedAtMs = null,
+} = {}) {
   if (!info) {
     return '';
   }
@@ -141,6 +149,11 @@ export function formatBarInfoText(info, { symbol = null, timeframe = null, label
     if (line) {
       lines.push(line);
     }
+  }
+  // 操作時刻は最後（主題は足の情報であり、控えの属性は末尾に置く）。
+  const copiedAt = fmtInstant(copiedAtMs);
+  if (copiedAt) {
+    lines.push(`${COPIED_AT_LABEL}${SEP}${copiedAt} UTC`);
   }
   return lines.join('\n');
 }

@@ -26,9 +26,14 @@ const MSG_EMPTY = 'この位置に足がありません';
  *                                     （銘柄・時間足・指標の見出し）。既定 null＝文脈なしで値だけ。
  * @param {object} deps.clipboard     ClipboardGateway 互換（writeText(text): Promise<boolean>）。
  * @param {object} [deps.toast]       ChartToastView 互換（show(text)）。未注入なら告知しない。
+ * @param {Function} [deps.now]       実時刻の供給（epoch ミリ秒）。既定は Date.now。
+ *                                    時計を注入で持つのは、整形側を純関数のまま保ち、検定で
+ *                                    「いつコピーしたか」を固定値で検証できるようにするため。
  * @returns {{label: string, onSelect: Function}} ChartContextMenu へ渡す項目。
  */
-export function createCopyBarInfoItem({ renderer, getContext = null, clipboard, toast = null } = {}) {
+export function createCopyBarInfoItem({
+  renderer, getContext = null, clipboard, toast = null, now = () => Date.now(),
+} = {}) {
   const notify = (msg) => {
     if (toast && typeof toast.show === 'function') {
       toast.show(msg);
@@ -41,7 +46,8 @@ export function createCopyBarInfoItem({ renderer, getContext = null, clipboard, 
       const info = (renderer && typeof renderer.barInfoAt === 'function') ? renderer.barInfoAt(x) : null;
       // 右クリック位置（context）とチャート文脈（chartContext）は別物。名前を分けて取り違えない。
       const chartContext = (typeof getContext === 'function' ? getContext() : null) || {};
-      const text = formatBarInfoText(info, chartContext);
+      const copiedAtMs = typeof now === 'function' ? now() : null;
+      const text = formatBarInfoText(info, { ...chartContext, copiedAtMs });
       if (!text) {
         notify(MSG_EMPTY);   // 足の無い位置（データ範囲外）。成功したふりをしない。
         return;
