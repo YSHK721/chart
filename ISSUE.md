@@ -6207,3 +6207,36 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   「参照水準」と「非強調」を意味のある差で置く余地が物理的に無い、というのは事実として正しく、
   嘘の色を作るよりそう告げる方が正しい。
 - **関連**: ISSUE-323（同一病因・`muted` / `level` 側は 5-C-1 で是正）
+
+## ISSUE-327: [不具合・実 UI 実測] リプレイ UI がローソク取得で必ず失敗する — 素の fetch を配る既定値の再発（2026-08-10・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-10）
+- **重大度**: 高（リプレイ UI がデータを 1 本も取得できない＝主機能が起動しない）
+- **検出**: 指標カラーテーマ v0.4.0 の実 UI 検証中、http://127.0.0.1:8000/replay/ を開いて検出
+- **現象（実測）**: ブラウザコンソールに `TypeError: Failed to execute 'fetch' on 'Window': Illegal
+  invocation`（`ReplayCursor.fetchCandles` → `replay_cursor.js:94`）が出て、ローソクが取得できない。
+- **根本原因**: `simulator/replay_ui/web/js/replay.js:51` の既定値が
+  `fetchImpl = (typeof fetch !== 'undefined' ? fetch : undefined)` ＝ **素の（束縛していない）
+  fetch 参照**だったこと。ネイティブ fetch は `this === window/globalThis` を要求するため、
+  受け取った側が `this._fetch(...)` とメソッド呼び出しした瞬間に必ず失敗する。
+- **再発である**: この病因は ISSUE-233 の作業中に実 UI 実測で確定済みで、
+  `forming_seq_client.js:63` のコメントが**本既定値を真因として名指ししている**
+  （「注入されたのが…replay.js の既定値 fetchImpl = fetch のとき…必ず失敗する」）。
+  当時の対処は消費者側の局所回避 2 件（forming_seq_client.js は関数参照へ退避、
+  composition_root_front.js:49 は自前で bind）で、**真因である既定値は直していなかった**。
+  そのため、後から入った消費者（replay/replay_cursor.js＝ISSUE-256 のリファクタで導入、
+  replay/forming_plan_cache.js）が回避を書いておらず、同じ不具合が再発した。
+- **是正（真因の除去）**: 束縛を**グローバルを捕まえる 1 箇所**で行う。replay.js に
+  `boundFetch = globalThis.fetch.bind(globalThis)` を置き、fetchImpl の既定値をこれにした。
+  消費者ごとに回避を置く形は採らない — 回避は書き忘れた消費者が現れるたびに再発するため
+  （実際 2 度目がこれで起きた）。レシーバが失われる場所は 1 点なので、そこを塞ぐ。
+- **なぜ 347 件の検定が緑のまま壊れていたか（検定の穴）**: 既存の node 検定はすべて fake fetch を
+  注入するため、**既定値の経路を 1 度も通らない**。振る舞いの検定では構造的に捕まえられない。
+  よって `tests/global_fetch_binding.test.js` を追加し、「グローバル fetch を値として捕まえる箇所は
+  必ず束縛する」という**書き方の不変条件**を走査で固定した。走査は行をまたぐ捕捉を拾うため
+  ファイル全体を正規化してから見る。あわせて**検出器の自己検査**（既知の不良形を実際に検出し、
+  既存の安全な形を誤検出しない）を置いた — 検出しない検出器を置かないため。
+- **検証**: リプレイ UI のコンソールエラー **0 件**（是正前 1 件）。テーマメニュー・プリセット
+  「基本」・チャート描画・--ct-surface(#131722) をブラウザで確認。replay_ui 検定 347 → **350 pass / fail 0**。
+- **本件はカラーテーマ機能とは無関係**（replay_cursor.js を最後に触ったのは 7bec1b4）。
+  実 UI 検証を行ったから見つかった。

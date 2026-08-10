@@ -48,7 +48,17 @@ const PLAY_GLYPH = '▷';
 const PAUSE_GLYPH = '❚❚';
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export async function setupReplay({ chart, mainSeries, controller, renderer, datasetRef, recentBars, document: doc, fetchImpl = (typeof fetch !== 'undefined' ? fetch : undefined), marketProfile = null }) {
+// ネイティブ fetch は this===window/globalThis を要求する。素の参照のまま配ると、受け取った側が
+//   `this._fetch(...)` とメソッド呼び出しした瞬間に "Failed to execute 'fetch' on 'Window':
+//   Illegal invocation" で必ず失敗する（ISSUE-233 で実 UI 実測により確定した不具合。
+//   forming_seq_client.js:63 のコメントが本既定値を真因として名指ししている）。
+//   **束縛はここで 1 度だけ行う**。消費者ごとに回避（関数参照へ退避する・呼ぶ前に bind する）を
+//   置くと、回避を書き忘れた消費者が現れるたびに同じ不具合が再発する（実際 ReplayCursor と
+//   forming_plan_cache が再発させた）。レシーバが失われる場所はここ 1 箇所なので、ここで塞ぐ。
+const boundFetch = (typeof globalThis !== 'undefined' && globalThis.fetch)
+  ? globalThis.fetch.bind(globalThis) : undefined;
+
+export async function setupReplay({ chart, mainSeries, controller, renderer, datasetRef, recentBars, document: doc, fetchImpl = boundFetch, marketProfile = null }) {
   const view = new ReplayView({ chart, mainSeries, renderer, document: doc });
   const fmt = (t) => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
   const setStatus = (text) => view.setText('rp-status', text);
