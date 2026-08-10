@@ -1275,6 +1275,10 @@ export class IndicatorController {
    * ラベル（表示名＋非 default variant の括弧）を組み立てる**唯一の場所**であり、凡例の外側
    * （右クリックの「情報をコピーする」など）も同じラベルをここから受け取る。呼び出し側が
    * def から組み立て直すと、同じ指標に 2 通りの表示名が生まれる。
+   *
+   * params（適用中のパラメータ・正規化済みオブジェクト）も併せて返す。凡例は使わない
+   * （画面の表示は不変）が、コピーは「どのパラメータで出た値か」を書けないと値の意味が定まらない。
+   * 出所を state の 1 か所に保ち、利用側が instance を覗いて組み直さないようにする。
    */
   legendRows() {
     return this._state.applied.map((inst) => {
@@ -1283,6 +1287,7 @@ export class IndicatorController {
       return {
         instanceId: inst.instanceId,
         label: `${def ? this._label(def) : inst.indicatorId}${inst.variant && inst.variant !== 'default' ? ' (' + inst.variant + ')' : ''}`,
+        params: this._paramsObject(inst.params),
         visible: inst.visible,
         onEye: () => (isMp
           ? this._toggleMarketProfileVisible(inst)

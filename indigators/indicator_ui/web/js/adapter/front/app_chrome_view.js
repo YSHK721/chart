@@ -20,6 +20,10 @@
 // アプリ外枠のアンカー。配信 3 ページすべてが持つ唯一の共通土台。
 export const APP_ANCHOR_SELECTOR = '#app';
 
+// 銘柄名の単一情報源。ツールバーの表示と、足情報のコピー（どのチャートの値か）で同じ文字列を使う。
+//   ここを複製すると「画面は NI225・コピーは別名」という食い違いが静かに生まれる。
+export const CHART_SYMBOL = 'NI225';
+
 function resolveAnchor(doc, { anchor = null, anchorSelector = APP_ANCHOR_SELECTOR } = {}) {
   // DOM 非対応（SSR・要素生成しか持たないスタブ document）は描画対象が存在しない＝縮退する。
   //   版面を「解決できない」環境と、版面が「無い」ページ（＝契約違反）とは厳密に区別する。
@@ -53,7 +57,7 @@ export function installChartToolbar(doc, { anchor = null, liveFollow = false, en
   const bar = doc.createElement('div');
   bar.className = 'toolbar';
   bar.innerHTML = [
-    '<span class="tb-symbol">NI225</span>',
+    `<span class="tb-symbol">${CHART_SYMBOL}</span>`,
     '<span class="tb-sep"></span>',
     // 時間足ドロップダウンのマウント（ISSUE-117/123）。項目集合は timeframe_menu.js が台帳から生成する。
     '<div class="tf-menu" id="tf-menu"></div>',

@@ -200,3 +200,35 @@ test('dialog list star toggles favorite via persistence, row pick applies indica
   const legendAfter = findByClass(doc.getElementById('legend'), 'legend-row').length;
   assert.ok(legendAfter > legendBefore, 'picking a row should apply the indicator and add a legend row');
 });
+
+// ===========================================================================
+// legendRows: 凡例ラベルとパラメータの単一情報源（右クリックの「情報をコピーする」が使う）
+// ===========================================================================
+
+test('legendRows は適用中インスタンスの label と params を返す（コピーの見出しの出所）', async () => {
+  // Arrange
+  const doc = fakeDoc();
+  const ctrl = makeController({ doc, renderer: spyRenderer() });
+  ctrl.bind();
+
+  // Act
+  await ctrl.applyIndicator('moving_averages', 'default');
+  const rows = ctrl.legendRows();
+
+  // Assert: 行は適用順・label は凡例と同じ文字列・params は既定値のオブジェクト。
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].label, 'moving_averages');
+  assert.equal(typeof rows[0].params, 'object');
+  assert.ok(rows[0].params !== null, 'params should be a normalized object (not null)');
+  assert.equal(rows[0].instanceId, ctrl._state.applied[0].instanceId);
+});
+
+test('legendRows は凡例描画の入力そのもの（描画と同じ行が得られる）', async () => {
+  const doc = fakeDoc();
+  const ctrl = makeController({ doc, renderer: spyRenderer() });
+  ctrl.bind();
+  await ctrl.applyIndicator('moving_averages', 'default');
+  const labels = ctrl.legendRows().map((r) => r.label);
+  const drawn = findByClass(doc.getElementById('legend'), 'legend-label').map((e) => e.textContent);
+  assert.deepEqual(labels, drawn);
+});

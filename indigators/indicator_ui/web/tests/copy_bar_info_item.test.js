@@ -33,14 +33,19 @@ test('項目名は「情報をコピーする」', () => {
   assert.equal(createCopyBarInfoItem({ renderer: {}, clipboard: fakeClipboard() }).label, '情報をコピーする');
 });
 
-test('右クリック位置の足の情報を凡例ラベル付きで書き込み、成功を告知する', async () => {
+test('右クリック位置の足の情報を、銘柄・時間足・指標見出し付きで書き込み成功を告知する', async () => {
   // Arrange
   const seenX = [];
   const renderer = { barInfoAt(x) { seenX.push(x); return INFO; } };
   const clipboard = fakeClipboard(true);
   const toast = fakeToast();
   const item = createCopyBarInfoItem({
-    renderer, clipboard, toast, getLabels: () => new Map([['rsi#1', 'RSI']]),
+    renderer,
+    clipboard,
+    toast,
+    getContext: () => ({
+      symbol: 'NI225', timeframe: '1D', labels: new Map([['rsi#1', 'RSI (length=14)']]),
+    }),
   });
 
   // Act
@@ -48,8 +53,17 @@ test('右クリック位置の足の情報を凡例ラベル付きで書き込�
 
   // Assert
   assert.deepEqual(seenX, [210]);
-  assert.deepEqual(clipboard._written, ['2010-06-29 00:00\nO 1.2\tH 1.6\tL 1.1\tC 1.5\nRSI\trsi 55']);
+  assert.deepEqual(clipboard._written, [
+    'NI225\t1D\n2010-06-29 00:00\nO 1.2\tH 1.6\tL 1.1\tC 1.5\nRSI (length=14)\trsi 55',
+  ]);
   assert.deepEqual(toast._shown, ['コピーしました']);
+});
+
+test('文脈提供が無くても値はコピーする（縮退・例外にしない）', async () => {
+  const clipboard = fakeClipboard(true);
+  const item = createCopyBarInfoItem({ renderer: { barInfoAt: () => INFO }, clipboard });
+  await item.onSelect({ x: 1 });
+  assert.match(clipboard._written[0], /^2010-06-29 00:00\n/);
 });
 
 test('足が無い位置はコピーせず、その旨を告知する', async () => {
