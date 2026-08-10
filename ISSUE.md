@@ -6719,3 +6719,89 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   GIL のため無効（同時実行数を上げる対策は本件では応急処置に当たる）。
 - **範囲外（別案件）**: 指標**表示**の並列化（現状は宣言順の直列描画＝ペイン並び順保証 ISSUE-149）、
   および `tgp_btlm`（rpy2/R・スレッド親和必須で専用ワーカー直列）のプロセス分離。
+
+## ISSUE-362: [不具合・再現済み] API のルーティングを Service Worker に依存させており、SW が迂回されると全 API が 404 で起動不能（2026-08-10）
+- **ステータス**: RESOLVED（本 Issue で是正）
+- **重大度**: 高（アプリが起動しない。原因表示も出ないため調査が長引く）
+- **事象（利用者報告・実コンソール）**: 要求が `/live/catalog` ではなく**素の** `/catalog` で飛び 404。
+  router は `/live/*` `/replay/*` しか転送しないため、本文 `not found` を JSON 解析して
+  `[unified_root] 初期化に失敗しました: Unexpected token 'o', "not found" is not valid JSON` で起動が死ぬ。
+- **根本原因（構造）**: 統合層は root 相対 API 要求の prefix 付与を **Service Worker に委ねて**いた
+  （基本設計書 §2 / §3・既存 core を無編集にするための仕掛け）。これは**アプリの正しさを
+  ブラウザ機能の可用性に依存させる**設計であり、SW が未登録・未制御・迂回
+  （DevTools "Bypass for network"）のいずれかになると全 API が素パスで 404 になる。
+  さらに `unified_root` の起動判定は `navigator.serviceWorker.controller !== null`（＝登録の有無）
+  しか見ておらず、**迂回状態は非 null のまま**なのでフェイルクローズをすり抜ける。
+- **サーバ側は正常だったことの実測**: `sw.js` 200 / `js/sw_rewrite.js` 200 / `js/unified_root.js` 200
+  （いずれも `text/javascript`）、`/live/catalog` 200、素の `/catalog` 404。
+- **抜本策**: ルーティングを **SW からアプリ自身の fetch 注入点へ移す**。
+  `bootstrap` は `fetch` を引数で受け（`composition_root_front.js:137`）、配下の API クライアントは
+  すべてその 1 つを使う（直接 fetch する 6 ファイルは全て `this._fetch`）。ここへ
+  `createRoutedFetch`（新規・`unified_ui/web/js/routed_fetch.js`）を注入し、モードに応じた prefix を
+  **アプリが必ず付ける**。SW の有無・迂回の有無に関わらず要求は正しい core へ届く。
+- **SW との共存（二重付与しない）**: 書き換え規則は SW と同一の純関数 `rewritePath` を共有する
+  （規則の単一源）。`rewritePath` は冪等（`/live/` `/replay/` 配下は不変）なので、SW が生きている
+  環境では「front が付与 → SW は素通し」で結果が一致する。
+- **副次の是正**: SW 登録失敗時のフェイルクローズを撤去した。ルーティングが SW に依存しなくなった以上、
+  SW が無いことは起動を止める理由にならない（SW は注入点を通らない要求のための保険に格下げ）。
+- **変更（3 ファイル）**:
+  | ファイル | 変更 |
+  |---|---|
+  | `unified_ui/web/js/routed_fetch.js` | 新規。`createRoutedFetch`（葉モジュール・`rewritePath` のみに依存） |
+  | `unified_ui/web/js/unified_root.js` | `routedFetch` を生成し `bootstrap({ fetch })` へ注入／SW フェイルクローズ撤去 |
+  | `unified_ui/web/tests/routed_fetch.test.js` | 新規。SW 抜きでの prefix 付与・冪等・静的資産不変・クロスオリジン不変・モード per-call 読み・init 素通し・異常系 |
+- **回帰**: unified_ui web 71 passed（うち新規 11）／unified_ui python 32 passed／indicator_ui web 1,826 passed。
+
+## ISSUE-363: [不具合・再現済み] ワークツリー用 symlink が追跡され、本チェックアウトへの checkout で venv・marketdata の実体参照が失われる（2026-08-10）
+- **ステータス**: RESOLVED（2026-08-10・追跡解除と無視規則の是正を develop へ反映）
+- **重大度**: 高（サーバが起動不能になり、UI が表示されなくなる）
+- **症状**: 2026-08-10 10:41 のマージ直後から「画面が出ない」「`.venv` が消えた」。
+- **根本原因（構造）**: `.gitignore` の `.venv/` `data/marketdata/` が**末尾スラッシュ付き**のため
+  **ディレクトリにしか一致せず**、ワークツリー用に張った symlink が無視対象から漏れて追跡された。
+  実証: 是正前に `git check-ignore -v data/marketdata lightweight-charts-python-main/.venv` が **exit=1**（無視されない）。
+- **被害の機構**: ワークツリー `spec-indicator-color-theme` では symlink の中身が
+  `/workspaces/app/...`（＝張り元である本チェックアウト）で**正しい**。しかしこれが commit（`3b8dd80`）され
+  本チェックアウトへ checkout されると、**自分自身を指す symlink**（自己参照ループ）に置換される。
+  git は無視対象のファイルを警告なく上書きするため、実体ディレクトリが失われた。
+- **データは無傷であることの実測**: 実体は `/app/data/marketdata`（5.1GB・毎分書込継続）と
+  `/app/lightweight-charts-python-main/.venv`（569MB・Python 3.13.5）に健在。喪失はしていない。
+- **10:41 前への巻き戻しが不適な理由**: `reset --hard d38e2cf` は追跡 symlink を**削除**するだけで
+  実体は `/app` のまま。逆にデータ経路を失い、かつ同マージに含まれる正当な成果
+  （color-theme 段階 5-E・ISSUE-362 の SW 依存排除）まで捨てることになる。
+- **抜本策（実施済み）**:
+  | 対策 | 内容 |
+  |---|---|
+  | 追跡解除 | `git rm --cached data/marketdata lightweight-charts-python-main/.venv`（`4f6ed07`・実体は不変） |
+  | 無視規則の是正 | `.venv/` → `.venv`／`data/marketdata/` → `data/marketdata`（`60b90e0`・symlink と実ディレクトリの双方に一致） |
+- **検証**: 是正後 `git check-ignore` が **exit=0**、`git status` に symlink が現れない、
+  実ディレクトリ `.venv` も従来どおり無視される。マージ後も symlink の実体は残存し
+  `8000/8001/8281` はいずれも HTTP 200、venv の Python 3.13.5 が起動する。
+- **発生源ブランチ（`feature/color-theme-v040`）からの再発**: `git merge-tree` で試算し、
+  develop 側の削除が勝ち **復活しない**ことを確認済み。
+
+## ISSUE-364: [性能・設計] Market Profile が単一ワーカーの無制限待機と全期間集計により、一度冷えると以後すべてタイムアウトする（2026-08-10）
+- **ステータス**: OPEN（原因特定済み・対策は未実施）
+- **重大度**: 高（MP が表示されないという形で顕在化する）
+- **症状**: 11:38〜11:45 の間、`/market_profile` が **60 秒でも 15 秒でも応答なし**。一方
+  `/candles` と `/catalog` は **10ms で 200**。11:48 以降は同一 URL が **0.1〜1.1 秒**で 200。
+- **根本原因 1（待ちが無制限）**: `/market_profile` は `_MP_WORKER`（**専用スレッド 1 本**・
+  `api/framework/server.py:89`）へ投函され、`_ComputeWorker.run` の `done.wait()`
+  （`server.py:74`）に**タイムアウトがない**。`_loop`（`server.py:59-67`）に中断機構がないため、
+  **クライアントが諦めても計算は止まらない**。フロントは MP を繰り返し発行するので
+  キューが単調増加し、2 回目以降は「前の要求の残り」を待って必ずタイムアウトする。
+  `/candles`・`/catalog` はこのキューを通らない（リクエストスレッド直実行）ため、観測された
+  非対称（10ms 対 60 秒超）と完全に一致する。
+- **根本原因 2（仕事の量が非有界）**: MP フロントは `limit` を送らず**常に全期間**を集計する
+  （`market_profile_client.js:35-37`）。dwell の日次キャッシュは
+  `cache/market_profile_dwell/JP225/v4/g10/` に **269 件**しかないのに、tick parquet は
+  **4,184 日**ぶん存在する。冷えた日はリクエスト内で再計算・保存される。
+- **時刻の一致（実測）**: v4 キャッシュ 269 件の mtime は **11:47:38〜11:48:00 の 22 秒**に集中
+  （≒12 日/秒）。MP が復帰したのは **11:48:13**。「冷えた計算が終わった瞬間にキューが掃けた」ことと一致する。
+- **抜本策（案・未実施）**:
+  1. **仕事の量を有界にする**: MP の集計窓を要求範囲に限定する（全期間集計の廃止）。
+     4,184 日を 12 日/秒で計算すれば約 6 分であり、並列度をいくら上げても解決しない。
+  2. **捨てられる計算を消す**: クライアントが切断済みの要求をワーカーが実行しない
+     （投函時の生存確認、または要求単位のキャンセル）。現状はタイムアウト後も計算を続け、
+     後続要求を確実に巻き込む。
+- **注記**: 同時実行数（ワーカー本数・プール幅）の引き上げは対策にならない。律速は並列度ではなく
+  1 要求あたりの仕事量と、破棄済み要求の実行である。

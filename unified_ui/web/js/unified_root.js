@@ -7,8 +7,9 @@
 //   - モード切替は chart/ローソク/指標を **dispose も再生成もしない**。live pollers（LiveUpdater/
 //     FormingBarUpdater/LiveTickPlayer）の start/stop と、リプレイ層ハンドルの enable/disable、
 //     controller.clearRevealCache、body クラス、SW アクティブモード通知だけで切り替える（チラつき・重複ゼロ）。
-//   - Service Worker（/sw.js）を登録し、root 相対 API fetch をアクティブモード prefix（/live・/replay）へ
-//     リライトさせる。SW が制御に入れない環境は **フェイルクローズ**（明示エラー・mount しない）。
+//   - root 相対 API fetch のアクティブモード prefix（/live・/replay）付与は **アプリ自身が行う**
+//     （createRoutedFetch を live root の fetch 注入点へ渡す・ISSUE-362）。Service Worker は
+//     注入点を通らない要求のための保険であり、**正しさの前提ではない**（SW 不在でも動く）。
 //
 // 無波及順守:
 //   - live root はリプレイのコードを import しない（統合レイヤが注入する）＝スタンドアロン live は byte 不変。
@@ -19,6 +20,7 @@ import { installOpLog } from './op_log.js';
 import { wrap as wrapTimers } from './timer_registry.js';
 import { scopedStorage } from './mode_storage.js';
 import { registerServiceWorker, notifySwMode } from './sw_client.js';
+import { createRoutedFetch } from './routed_fetch.js';
 import {
   MODE,
   loadVendor,
@@ -140,19 +142,22 @@ async function main() {
   //   取り出しは `__opsDump()`（現セッション）／`__opsPrev()`（リロード前のセッション）。
   installOpLog();
 
-  // SW が制御下に入れないと root 相対 API fetch がリライトされず router が 404 する→フェイルクローズ。
-  const swControlled = await registerServiceWorker();
-  if (!swControlled) {
-    showModeError(
-      'Service Worker を有効化できないため起動を中止しました。ページをリロードするか、'
-        + 'ES Modules Service Worker 対応ブラウザで開いてください'
-        + '（未対応だと API 要求がルーティングされず動作しません）。',
-    );
-    return;
-  }
+  // ISSUE-362: ルーティングはアプリの責務。prefix 付与は下の routedFetch（bootstrap へ注入）が
+  //   必ず行うため、SW が無くても・迂回されていても API は正しい core へ届く。SW は注入点を
+  //   通らない要求のための保険にすぎないので、登録に失敗しても起動を止めない
+  //   （旧実装はここでフェイルクローズしていた＝SW を正しさの前提に置いていた）。
+  //   なお SW と front の規則は同一の rewritePath で、冪等ゆえ二重付与は起こらない。
+  await registerServiceWorker();
 
-  // 初期 live: 以降の API fetch を /live へ回す（vendor/core/candles すべて live prefix）。
+  // 初期 live: SW 側のモードも合わせる（SW が居ない環境では no-op）。
   await notifySwMode(MODE.LIVE);
+
+  // API 要求へアクティブモードの prefix を付ける fetch。モードは呼び出しごとに読むため、
+  //   live↔replay の切替後も同じ実体のまま正しい core へ回る。
+  const routedFetch = createRoutedFetch({
+    baseFetch: globalThis.fetch.bind(globalThis),
+    getMode: () => (modeController ? modeController.getMode() : MODE.LIVE),
+  });
 
   const vendorOk = await loadVendor(MODE.LIVE);
   if (!vendorOk) {
@@ -192,6 +197,9 @@ async function main() {
       container: document.getElementById('chart'),
       doc: document,
       storage: scopedStorage(globalThis.localStorage, MODE.LIVE),
+      // ISSUE-362: 配下の全 API クライアントはこの 1 つの fetch を使う（this._fetch）。
+      //   ここで prefix 付与を担保するので、ルーティングが SW の可用性に依存しない。
+      fetch: routedFetch,
       datasetRef: DATASET_REF,
       setInterval: registry.setInterval,
       clearInterval: registry.clearInterval,
