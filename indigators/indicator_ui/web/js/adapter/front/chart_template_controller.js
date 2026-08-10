@@ -361,23 +361,29 @@ export class ChartTemplateController {
       uiState: host._state.uiState,
     })));
     // 手順 2〜4: 計算・描画・visible 復元・styles 再適用・個別失敗の局所化（共有ベースの単一ソース）。
-    //   ★ 失敗の局所化（§5.6 F-T4「当該 1 件のみスキップし残りの適用と描画は継続する。全体を中止しない」）:
-    //   共有ベースの再構築ループは非 MP の compute 例外のみを try/catch で握る。MP 復元経路
-    //   （`_mp.restoreInstance` → actor.setEnabled）は catch の外にあるため、MP の失敗は
-    //   rebuildApplied 全体を reject させる。ここで中断すると**手順 5（applied.v1 の永続化）が
-    //   実行されず**、手順 1 の除去が永続化した空構成 `[]` が最終値として残り、リロードで
-    //   ユーザーの構成が消える（実 UI 検証 D-1 の症状）。よって適用の完遂（永続化・凡例）は
-    //   再構築の成否に依存させない。
-    //   共有ベース側は「1 件ずつ」呼べば失敗が当該 1 件に閉じる（再構築ループの本体はインスタンス
-    //   間に共有状態を持たない: `_meta` は Map への追加、`_commitLastSeries` は毎回上書きで
-    //   反復間の読み出しが無い、gateway は呼び出しごとに生成される）。よって公開入口を増やさず
-    //   （§7.2 S2 の「公開入口 1 個」を維持）、協働子側で 1 件ずつ呼んで局所化する。
-    for (const inst of [...host._state.applied]) {
-      try {
-        await host._store.rebuildApplied([inst]);
-      } catch (e) {
-        this._warn(`[template] 適用スキップ: ${inst.instanceId} / ${e && e.message ? e.message : e}`);
-      }
+    //   ★ 一括適用（ユーザー指示 2026-08-10「適用方法は一括適用させろ／適用時間は最優先課題」）:
+    //   適用対象は **1 回の呼び出しで全件渡す**。共有ベースの再構築ループは全件を受け取って初めて
+    //   compute を並列発行し、描画だけを宣言順へ直列化する（`indicator_state_store.js:190-269`・
+    //   ISSUE-202/345）。1 件ずつ渡す旧実装はこの並列性を**呼び出し側で打ち消して**おり、適用所要が
+    //   Σ(compute) になっていた。実測（2026-08-10・POST /compute 直測・datasetRef=jp225_tick・1D）:
+    //   同一 8 件で直列 29.8 秒 / 並列 8.3 秒、軽量 5 件で直列 199ms / 並列 174ms。サーバ側は
+    //   スレッド親和必須（rpy2/R＝`tgp_btlm` のみ）を専用ワーカー、それ以外を計算プール
+    //   （max_workers=3・`framework/server.py:90,376-378`）で捌くため、並列発行が実際に効く。
+    //
+    //   ★ 失敗の局所化（§5.6 F-T4「当該 1 件のみスキップし残りの適用と描画は継続する。全体を中止
+    //   しない」）は**共有ベース側に在席しており、全件渡しでも保たれる**: 非 MP は compute
+    //   （`indicator_state_store.js:242-245`）と描画（同 263-265）を 1 件ずつ try/catch し、MP 復元
+    //   （同 214-220）は待ち合わせから外したうえで catch 済みで rebuildApplied を reject させない。
+    //   「1 件ずつ呼ばないと MP の失敗が全体を止める」という旧コメントの前提は、ISSUE-202 の是正で
+    //   MP を待ち合わせから外した時点で消滅している（現行コードで確認済み）。
+    //
+    //   ★ 手順 5・6 は再構築の成否に依存させない（実 UI 検証 D-1 の症状）: ここで中断すると手順 5
+    //   （applied.v1 の永続化）が実行されず、手順 1 の除去が永続化した空構成 `[]` が最終値として
+    //   残り、リロードでユーザーの構成が消える。よって catch は残す（公開入口は 1 個のまま＝§7.2 S2）。
+    try {
+      await host._store.rebuildApplied([...host._state.applied]);
+    } catch (e) {
+      this._warn(`[template] 適用の再構築に失敗: ${e && e.message ? e.message : e}`);
     }
     // 手順 5: activeTemplateId 更新＋永続化（applied.v1 / uiState.v1）。
     this._setActiveTemplateId(template.templateId);
