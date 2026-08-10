@@ -10,8 +10,8 @@ full_compute, latest_compute, compute_error)`` を、すべて fake 協調子で
     - datasetRef ホワイトリスト（DatasetPort.is_known）
     - timeframe ホワイトリスト（DatasetPort.is_known_timeframe）
     - データロード（DatasetPort.load_dataframe）
-    - mode="latest" 時の forming_bar 注入（resolve_now_unix → apply_forming_bar）
-    - mode="full"（省略）時は forming_bar 非注入
+    - 全 mode で forming_bar 注入（resolve_now_unix → apply_forming_bar・ISSUE-361）
+    - 欠落閉周期の合成は mode="latest" 専用（full は synthesize_closed_gaps=False）
     - limit による直近 N 本 tail
     - ComputeError → error_type 伝播 / KeyError → validation 翻訳
 """
@@ -66,8 +66,9 @@ class _FakeFormingBar:
         self.resolved_override = override
         return self._now_value if override is None else override
 
-    def apply_forming_bar(self, df, ref, tf, now):  # noqa: ANN001
+    def apply_forming_bar(self, df, ref, tf, now, *, synthesize_closed_gaps=True):  # noqa: ANN001
         self.applied = (ref, tf, now)
+        self.synthesize_closed_gaps = synthesize_closed_gaps
         return _FakeDF(tag="formed")
 
 
@@ -199,11 +200,19 @@ def test_full_mode_calls_full_compute_and_returns_series():
     assert params == {"p": 9} and params is not _req().params  # dict コピー
 
 
-def test_full_mode_does_not_apply_forming_bar():
+def test_full_mode_applies_forming_bar_without_synthesizing_closed_gaps():
+    """ISSUE-361: full も形成中バーを注入する（計算窓＝チャートの窓）。
+
+    チャートは確定足＋形成中バーを描くため、full の窓が確定足で止まると最新足に指標値を
+    持てるのは足内追従に載れる指標だけになる（cvfe は level_dash＝載れない）。
+    欠落閉周期の合成は確定バーのリペイントになるため full では行わない（2026-07-23 承認設計）。
+    """
     fb = _FakeFormingBar()
-    compute_indicators(_req(mode="full"), **_kw(forming_bar=fb))
-    assert fb.applied is None
-    assert fb.resolved_override == "UNSET"  # resolve_now_unix も呼ばない
+    compute_indicators(
+        _req(mode="full", dataset_ref="jp225_tick", timeframe="5m"), **_kw(forming_bar=fb)
+    )
+    assert fb.applied == ("jp225_tick", "5m", 777)
+    assert fb.synthesize_closed_gaps is False
 
 
 # --------------------------------------------------------------------------- #
@@ -221,6 +230,7 @@ def test_latest_mode_applies_forming_bar_and_calls_latest_compute():
     assert result.series == [{"name": "latest"}]
     assert fb.resolved_override == 123
     assert fb.applied == ("jp225_tick", "5m", 123)
+    assert fb.synthesize_closed_gaps is True  # 足内更新のみ欠落閉周期を合成する（ISSUE-162）
     assert len(latest.calls) == 1 and full.calls == []
 
 
@@ -237,17 +247,19 @@ def test_latest_mode_resolves_now_via_forming_bar_when_no_forming_now():
 # limit（直近 N 本 tail）
 # --------------------------------------------------------------------------- #
 def test_limit_tails_dataframe_before_compute():
+    # tail は形成中バー注入の**後**に効く（ISSUE-361 で full も注入するため tag は "formed" 起点）。
+    #   これにより窓の末端は常にチャートの末端＝形成中バーになる。
     full = _RecordingCompute([{"name": "MA"}])
     compute_indicators(_req(mode="full", limit=30), **_kw(full_compute=full))
     _, _, _, df, _ = full.calls[0]
-    assert df.tag == "base.tail(30)"
+    assert df.tag == "formed.tail(30)"
 
 
 def test_non_positive_limit_does_not_tail():
     full = _RecordingCompute([{"name": "MA"}])
     compute_indicators(_req(mode="full", limit=0), **_kw(full_compute=full))
     _, _, _, df, _ = full.calls[0]
-    assert df.tag == "base"
+    assert df.tag == "formed"
 
 
 # --------------------------------------------------------------------------- #

@@ -57,14 +57,20 @@ class IndicatorComputePort(Protocol):
 
 @runtime_checkable
 class FormingBarPort(Protocol):
-    """形成中バー（ライブ足内更新）協調子の抽象。``mode="latest"`` の経路だけが使う（ISP）。"""
+    """形成中バー協調子の抽象。ライブの計算窓をチャートの窓へ揃えるために全 mode が使う。"""
 
     def resolve_now_unix(self, override: Any = None) -> int:
         """基準時刻 now（UNIX 秒・UTC）を解決する（時刻取得の単一注入点）。"""
         ...
 
-    def apply_forming_bar(self, df: Any, ref: str, tf: str, now_unix: int) -> Any:
-        """``df``（date-index OHLCV）の末尾へ現在形成中バーを set/replace した DataFrame を返す。"""
+    def apply_forming_bar(self, df: Any, ref: str, tf: str, now_unix: int, *,
+                          synthesize_closed_gaps: bool = True) -> Any:
+        """``df``（date-index OHLCV）の末尾へ現在形成中バーを set/replace した DataFrame を返す。
+
+        ``synthesize_closed_gaps``: 欠落閉周期（M1 未焼き込みの**閉じた**バー）を実 tick から
+        合成して併せて注入するか。確定値の前倒し＝後で M1 に上書きされるため足内更新
+        （``mode="latest"``）専用で、full は ``False``（ISSUE-361）。
+        """
         ...
 
 
