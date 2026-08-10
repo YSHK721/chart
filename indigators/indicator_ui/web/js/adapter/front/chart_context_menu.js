@@ -16,7 +16,7 @@
 // DOM 非依存: document / container は注入。DOM 不在（SSR・最小 fake）は install が no-op。
 
 import { ensureOverlayHost } from './overlay_host.js';
-import { installDocumentCloseHandler, removeDocumentCloseHandler } from './menu_document_close.js';
+import { installMenuCloseHandler, removeMenuCloseHandler } from './menu_document_close.js';
 
 const HOST_CLASS = 'chart-context-menu';
 
@@ -34,7 +34,6 @@ export class ChartContextMenu {
     this._items = Array.isArray(items) ? items : [];
     this._anchor = anchor ?? null;
     this._host = null;
-    this._docCloseHandler = null;
     this._keydownHandler = null;
   }
 
@@ -55,9 +54,9 @@ export class ChartContextMenu {
       this._open(e);
     });
 
-    // 外側クリック・Esc で閉じる（他メニューと同じ規律。document リスナは共有ヘルパで有界化）。
-    this._docCloseHandler = () => this.close();
-    installDocumentCloseHandler(doc, 'chart-context', this._docCloseHandler);
+    // 外側クリック・Esc で閉じる（他メニューと同じ規律。document リスナは共有レジストリで 1 個）。
+    //   root は関数で渡す: ホスト要素は最初に開くときまで生成しない（install 時点では未生成）。
+    installMenuCloseHandler(doc, 'chart-context', { root: () => this._host, close: () => this.close() });
     if (typeof doc.addEventListener === 'function') {
       this._keydownHandler = (e) => {
         if (e && e.key === 'Escape') {
@@ -70,8 +69,7 @@ export class ChartContextMenu {
 
   // 明示 teardown（統合 UI のモード切替のように document リスナが残る経路向け）。
   dispose() {
-    removeDocumentCloseHandler(this._doc, 'chart-context', this._docCloseHandler);
-    this._docCloseHandler = null;
+    removeMenuCloseHandler(this._doc, 'chart-context');
     if (this._doc && typeof this._doc.removeEventListener === 'function' && this._keydownHandler) {
       this._doc.removeEventListener('keydown', this._keydownHandler);
     }
@@ -126,10 +124,9 @@ export class ChartContextMenu {
       btn.type = 'button';
       btn.className = 'chart-context-item';
       btn.textContent = item.label;
-      btn.addEventListener('click', (ev) => {
-        if (ev && typeof ev.stopPropagation === 'function') {
-          ev.stopPropagation();   // document の外側クリッククローズに拾わせない（下で明示的に閉じる）。
-        }
+      // ISSUE-366: 伝播は止めない（止めると他メニューの外側クリック判定まで殺す）。
+      //   自分は下で明示的に閉じ、共有レジストリは「ホストの内側」と判定して二重に閉じない。
+      btn.addEventListener('click', () => {
         this.close();
         if (typeof item.onSelect === 'function') {
           item.onSelect(context);
