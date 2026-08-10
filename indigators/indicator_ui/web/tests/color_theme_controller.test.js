@@ -488,9 +488,9 @@ test('起動: state を注入されたら gateway を読み直さない（起動
 //
 // 目的: 編集ダイアログの操作結果を、保存する前にチャート上で見られるようにする。
 //
-// 規律（ISSUE-356 で既に踏んだ失敗を繰り返さない）:
+// 規律（ISSUE-357 で既に踏んだ失敗を繰り返さない）:
 //   (1) **色の書き手を 2 本に増やさない**。適用（applyTheme）とプレビューは同じ `_repaint` を通る。
-//       書き手を増やすと、経路ごとに結果が食い違う（ISSUE-356 の 3 症状はすべてこれが原因）。
+//       書き手を増やすと、経路ごとに結果が食い違う（ISSUE-357 の 3 症状はすべてこれが原因）。
 //   (2) **復元用のスナップショットを持たない**。解除は「元のテーマで塗り直す」だけでよい。
 //       根拠は 3 つとも既存コードで確認できる: 系列色は不変の baseColor から毎回作り直される／
 //       resolveAllChrome は 20 slot を全数返す（＝全上書き＝可逆）／クロム出力は保持色 × 表示
@@ -644,7 +644,7 @@ test('TC-CP11 結線: 編集ダイアログの onPreview が previewTheme まで
 });
 
 test('TC-CP09 構造: 色を書く手順は 1 本だけ（applyTheme と previewTheme が同じ _repaint を通る）', () => {
-  // Arrange: ISSUE-356 の再発防止を規約ではなく構造で示す。凡例の再描画（手順 4）は塗り直し 1 回に
+  // Arrange: ISSUE-357 の再発防止を規約ではなく構造で示す。凡例の再描画（手順 4）は塗り直し 1 回に
   //   つき 1 回なので、その呼び出し**点**の数がそのまま「色を書く手順」の本数になる。
   const src = readFileSync(
     fileURLToPath(new URL('../js/adapter/front/color_theme_controller.js', import.meta.url)),
@@ -662,7 +662,7 @@ test('TC-CP09 構造: 色を書く手順は 1 本だけ（applyTheme と preview
 
 test('TC-CP10 構造: 復元用スナップショットを持たない（真の状態を 2 つに割らない）', () => {
   // Arrange: 「プレビュー前の色を控えておいて戻す」実装は、保持色という真の状態のコピーを作る。
-  //   コピーは必ずずれる（ISSUE-356 で踏んだのと同型の失敗）。解除は元のテーマで塗り直すだけでよい。
+  //   コピーは必ずずれる（ISSUE-357 で踏んだのと同型の失敗）。解除は元のテーマで塗り直すだけでよい。
   const src = readFileSync(
     fileURLToPath(new URL('../js/adapter/front/color_theme_controller.js', import.meta.url)),
     'utf8',

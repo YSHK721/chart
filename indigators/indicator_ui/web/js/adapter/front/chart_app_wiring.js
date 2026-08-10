@@ -18,6 +18,7 @@
 import { ChartRenderer } from './chart_renderer.js';
 import { CrosshairReadoutView } from './crosshair_readout_view.js';
 import { PaneLegendView } from './pane_legend_view.js';
+import { PaneReorderDrag } from './pane_reorder_drag.js';
 import { CurrentPriceView } from './current_price_view.js';
 import { ComputeHttpClient } from './compute_http_client.js';
 import { LocalStorageGateway } from './local_storage_gateway.js';
@@ -27,6 +28,10 @@ import { TradeMarkersRenderer } from './trade_markers_renderer.js';
 import { TickvolBandsActor } from './tickvol_bands_actor.js';
 import { TickvolBandsController } from './tickvol_bands_controller.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
+import { ChartContextMenu } from './chart_context_menu.js';
+import { ChartToastView } from './chart_toast_view.js';
+import { ClipboardGateway } from './clipboard_gateway.js';
+import { createCopyBarInfoItem } from './copy_bar_info_item.js';
 import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
 import { ScrollToLatestButton } from './scroll_to_latest_button.js';
 import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
@@ -88,7 +93,13 @@ export async function composeChartShell({
   const readoutView = new CrosshairReadoutView({ document: doc, elementId: 'crosshair-readout' });
   // ペイン別凡例（ISSUE-276）。描画先の器は View 自身が版面（.chart-wrap）配下へ生成する
   //   （HTML への直書き＝配信ページの手書き複製をやめた・ISSUE-277）。root は id 文字列を知らない。
-  const paneLegendView = new PaneLegendView({ document: doc });
+  // 指標ペインの並べ替え（ドラッグ&ドロップ・ユーザー指示 2026-08-09）。凡例のチップを掴み手にし、
+  //   実行は renderer の並べ替えポートへ委ねる（協働子は upstream を知らない）。renderer は直後に
+  //   生成されるため、呼び出し時解決の関数で渡す（生成順序に依存させない）。
+  const paneReorder = new PaneReorderDrag({
+    document: doc, movePane: (from, to) => renderer.movePane(from, to),
+  });
+  const paneLegendView = new PaneLegendView({ document: doc, reorder: paneReorder });
 
   // ChartRenderer は upstream API の唯一の隔離点（系列追加系 API 名を root へ漏らさない）。
   const renderer = new ChartRenderer({
@@ -160,6 +171,28 @@ export function installSharedUi({
   // ISSUE-116: 「最新のバーまでスクロール」ボタン（» ）。DOM 不在は install 内の防御で no-op。
   new ScrollToLatestButton({ container, renderer, document: doc }).install();
 
+  // ユーザー指示 2026-08-09: ローソク足上の右クリックメニュー（「情報をコピーする」）。
+  //   足の解決と値の取り出しは renderer（upstream 隔離点）、ラベルは controller（表示名の単一情報源）、
+  //   書き込みは ClipboardGateway、結果の告知は ChartToastView。メニューは項目の中身を知らない。
+  //   controller は本関数の呼び出し時点では未生成のため getController で遅延参照する。
+  const chartToast = new ChartToastView({ document: doc });
+  const copyBarInfo = createCopyBarInfoItem({
+    renderer,
+    clipboard: new ClipboardGateway({ document: doc }),
+    toast: chartToast,
+    getLabels: () => {
+      const c = getController ? getController() : null;
+      if (!c || typeof c.legendRows !== 'function') {
+        return null;   // 凡例行が無い（未生成・最小 fake）＝ラベル無しで instanceId 表記へ縮退。
+      }
+      return new Map(c.legendRows().map((r) => [r.instanceId, r.label]));
+    },
+  });
+  const chartContextMenu = new ChartContextMenu({
+    document: doc, container, items: [copyBarInfo],
+  });
+  chartContextMenu.install();
+
   // ISSUE-117: 時間足ドロップダウンの開閉制御（選択・active 同期は bind() の data-timeframe 配線）。
   //   項目集合は既定＝台帳導出（ISSUE-278 #4: リプレイ側の手書き 8 足を撤去。実測でリプレイ core も
   //   30m の /candles・/compute を 200 で返すため、そもそも制約が存在しない）。
@@ -185,6 +218,7 @@ export function installSharedUi({
 
   return {
     chartTemplateMenu, chartTemplateDialogs, colorThemeMenu, colorThemeDialogs,
+    chartContextMenu, chartToast,
   };
 }
 
@@ -312,6 +346,11 @@ export function wireControllerCollaborators({
     // 足の差し替え（時間足・期間プリセット・カレンダー・リビール）で塗る足を引き直す。
     tickvolBands.onCandlesChanged();
   });
+
+  // ペイン並び順の永続化（ユーザー指示「永続化しろ」2026-08-09）。ドラッグで並べ替えたら、
+  //   その順序を applied 配列の順序として state へ確定し保存する（保存キーは増やさない。
+  //   復元は従来どおり applied 配列順に pane を作り直すため、これだけで並びが再現する）。
+  renderer.setPaneOrderObserver((instanceIds) => controller.applyPaneOrder(instanceIds));
 
   // 指標の追加・削除で pane（と pane 内の系列）が作り直されるため、背景プリミティブを張り直す。
   //   購読スロットは単数で、後から別の購読者が入る。上書きで本フックが消えないよう

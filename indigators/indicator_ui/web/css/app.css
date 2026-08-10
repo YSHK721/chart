@@ -109,6 +109,16 @@ html, body {
   font: 11px/1.4 inherit; padding: 1px 7px; cursor: pointer;
 }
 .pane-legend-chip:hover, .pane-legend-chip.is-open { color: #e6e9ef; border-color: #3a4050; }
+/* 並べ替え（ユーザー指示 2026-08-09）: チップはそのペインの掴み手を兼ねる。動かせるペイン
+   （＝指標ペインが 2 つ以上あるとき）だけ掴める見た目にし、価格ペインには出さない。 */
+.pane-legend-chip.is-movable { cursor: grab; }
+.pane-legend.is-dragging { z-index: 8; opacity: 0.92; }
+.pane-legend.is-dragging .pane-legend-chip { cursor: grabbing; }
+/* 落下位置の予告線。器（.pane-legends）は pointer-events:none なので操作を邪魔しない。 */
+.pane-drop-indicator {
+  position: absolute; left: 0; right: 0; height: 2px;
+  background: #2962ff; box-shadow: 0 0 6px rgba(41, 98, 255, 0.6);
+}
 .pane-legend-rows { display: flex; flex-direction: column; gap: 2px; }
 .pane-legend-row {
   display: flex; align-items: center; gap: 6px;
@@ -127,6 +137,36 @@ html, body {
 }
 .pane-legend-row button:hover { color: #fff; background: #2a2e39; }
 .pane-legend-remove:hover { color: #ef5350 !important; }
+
+/* ===== 右クリックメニュー（ユーザー指示 2026-08-09「情報をコピーする」）=====
+   器（.chart-context-menu）は ChartContextMenu が .chart-wrap 直下へ自分で生成する
+   （HTML に書かない・overlay_host.js）。ゆえに id ではなくクラスで当てる。
+   凡例（z-index 7/8）より上に出す＝凡例の上で右クリックしても項目が隠れない。 */
+.chart-context-menu {
+  position: absolute; z-index: 20;
+  min-width: 168px; padding: 4px;
+  background: #1c2030; border: 1px solid #2a2e39; border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
+  display: flex; flex-direction: column;
+}
+.chart-context-menu.is-hidden { display: none; }
+.chart-context-item {
+  background: transparent; border: 0; border-radius: 4px;
+  color: #d1d4dc; font: 13px/1.6 inherit; text-align: left;
+  padding: 6px 10px; cursor: pointer; white-space: nowrap;
+}
+.chart-context-item:hover { background: #2a2e39; color: #fff; }
+
+/* 一時メッセージ（コピーの成否）。操作の結果が画面に出ない操作（クリップボード書き込み）に
+   限って出す。器は ChartToastView が .chart-wrap 直下へ生成し所有する。 */
+.chart-toast {
+  position: absolute; left: 50%; bottom: 56px; transform: translateX(-50%); z-index: 21;
+  background: rgba(28, 32, 48, .95); border: 1px solid #2a2e39; border-radius: 5px;
+  color: #e6e9ef; font-size: 12px; line-height: 1.6; padding: 5px 12px;
+  pointer-events: none; white-space: nowrap;
+}
+.chart-toast.is-hidden { display: none; }
+.chart-toast:empty { display: none; }
 
 /* 左上オーバーレイ・スタック（読み取り欄→凡例を縦フローで積む）。固定 top を使わず
    フロー配置にすることで、読み取り欄が overlay 行数で伸びても #legend と重ならない。 */

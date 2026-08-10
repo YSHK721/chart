@@ -11,14 +11,12 @@ report.json を一時 web ルートに配信する。chromium 不在環境では
 """
 from __future__ import annotations
 
-import http.server
 import json
 import shutil
-import socket
-import threading
 from pathlib import Path
 
 import pytest
+from e2e import _harness  # noqa: E402  (同一ディレクトリの共有ハーネス)
 
 WEB = Path(__file__).resolve().parents[1].parent / "web"
 
@@ -30,28 +28,11 @@ _TS_SUN_H23 = 1776639600   # 2026-04-19 23:00:00 UTC（Sun hour23）
 
 
 def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
-class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
-    def end_headers(self):
-        self.send_header("Cache-Control", "no-store")
-        super().end_headers()
-
-    def log_message(self, *a):
-        pass
+    return _harness.free_port()
 
 
 def _serve(directory: str, port: int):
-    handler = lambda *a, **k: _NoCacheHandler(*a, directory=directory, **k)
-    httpd = http.server.HTTPServer(("127.0.0.1", port), handler)
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    return httpd
+    return _harness.serve(directory, port)
 
 
 def _trade(i, entry_time, side, ep, profit):
@@ -134,24 +115,7 @@ def _build_web_root(tmp_path: Path) -> Path:
 
 
 def _launch(tmp_path):
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip("playwright 未導入")
-    root = _build_web_root(tmp_path)
-    port = _free_port()
-    httpd = _serve(str(root), port)
-    p = sync_playwright().start()
-    try:
-        browser = p.chromium.launch()
-    except Exception:
-        httpd.shutdown()
-        p.stop()
-        pytest.skip("chromium 未導入")
-    page = browser.new_page()
-    page.goto(f"http://127.0.0.1:{port}/index.html")
-    page.wait_for_function("window.__READY === true", timeout=8000)
-    return p, browser, page, httpd
+    return _harness.launch(_build_web_root, tmp_path)
 
 
 def _open_heat_tab(page):

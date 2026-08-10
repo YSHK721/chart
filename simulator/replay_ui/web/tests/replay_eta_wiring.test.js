@@ -9,21 +9,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { setupReplay } from '../js/replay.js';
+import { fakeChart, fakeEl } from './_fakes.js';
 
 // --- fake DOM（replay_mp_wiring.test.js と同型・最小） ---
-function fakeEl(extra = {}) {
-  return {
-    _l: {}, value: '', min: 0, max: 0, textContent: '', title: '', hidden: false, disabled: false,
-    style: {}, dataset: {}, options: [], innerHTML: '',
-    classList: { toggle() {}, add() {}, remove() {} },
-    appendChild() {}, removeChild() {},
-    addEventListener(ev, fn) { (this._l[ev] ||= []).push(fn); },
-    set onclick(fn) { this._onclick = fn; }, get onclick() { return this._onclick; },
-    set oninput(fn) { this._oninput = fn; }, get oninput() { return this._oninput; },
-    ...extra,
-  };
-}
-
 function fakeDoc(mode) {
   const els = {
     'rp-speed': fakeEl({ value: '1' }),
@@ -37,11 +25,6 @@ function fakeDoc(mode) {
     addEventListener() {},
     _els: els,
   };
-}
-
-function fakeChart() {
-  const ts = { fitContent() {}, setVisibleLogicalRange() {}, getVisibleLogicalRange() { return null; } };
-  return { timeScale: () => ts, panes: () => [], chartElement: () => null };
 }
 
 function fakeController() {

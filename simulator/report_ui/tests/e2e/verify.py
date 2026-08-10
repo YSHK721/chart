@@ -7,13 +7,11 @@ pytest から `test_web_skeleton_renders` を実行（マーカー e2e）。chro
 """
 from __future__ import annotations
 
-import http.server
 import json
-import socket
-import threading
 from pathlib import Path
 
 import pytest
+from e2e import _harness  # noqa: E402  (同一ディレクトリの共有ハーネス)
 
 WEB = Path(__file__).resolve().parents[1].parent / "web"
 DATA = WEB / "data" / "report.json"
@@ -22,28 +20,11 @@ pytestmark = pytest.mark.e2e
 
 
 def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
-class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
-    def end_headers(self):
-        self.send_header("Cache-Control", "no-store")
-        super().end_headers()
-
-    def log_message(self, *a):  # 抑制
-        pass
+    return _harness.free_port()
 
 
 def _serve(directory: str, port: int):
-    handler = lambda *a, **k: _NoCacheHandler(*a, directory=directory, **k)
-    httpd = http.server.HTTPServer(("127.0.0.1", port), handler)
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    return httpd
+    return _harness.serve(directory, port)
 
 
 def _ensure_minimal_report():

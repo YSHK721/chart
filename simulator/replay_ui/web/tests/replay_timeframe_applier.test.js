@@ -14,21 +14,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { setupReplay } from '../js/replay.js';
+import { fakeChart, fakeEl } from './_fakes.js';
 
 // --- fake DOM（replay_eta_wiring.test.js と同型・最小） ---
-function fakeEl(extra = {}) {
-  return {
-    _l: {}, value: '', min: 0, max: 0, textContent: '', title: '', hidden: false, disabled: false,
-    style: {}, dataset: {}, options: [], innerHTML: '',
-    classList: { toggle() {}, add() {}, remove() {} },
-    appendChild() {}, removeChild() {},
-    addEventListener(ev, fn) { (this._l[ev] ||= []).push(fn); },
-    set onclick(fn) { this._onclick = fn; }, get onclick() { return this._onclick; },
-    set oninput(fn) { this._oninput = fn; }, get oninput() { return this._oninput; },
-    ...extra,
-  };
-}
-
 // 時間足ボタン（共有 TimeframeMenu の項目相当）を持つ document。
 function fakeDoc(tfBtns) {
   const els = { 'rp-speed': fakeEl({ value: '1' }), 'rp-mode': fakeEl({ value: 'math' }) };
@@ -39,11 +27,6 @@ function fakeDoc(tfBtns) {
     addEventListener() {},
     _els: els,
   };
-}
-
-function fakeChart() {
-  const ts = { fitContent() {}, setVisibleLogicalRange() {}, getVisibleLogicalRange() { return null; } };
-  return { timeScale: () => ts, panes: () => [], chartElement: () => null };
 }
 
 // 反映役スロットを持つ controller（共有ベース IndicatorController の該当面のみ）。

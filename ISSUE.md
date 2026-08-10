@@ -5708,7 +5708,555 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **提案**: 要約に type-1 / type-2 の内訳を出し、`--fail-over` の既定判定を type-1 側に置く。
   「削減見込み」という単一の数値は、到達可能量と構造的類似度という別物を混ぜている。
 
-## ISSUE-350: [運用] worktree が破棄されず 37 件 6.4GB 滞留し、うち 1 件が生成データ 4.9GB を抱える（2026-08-09）
+## ISSUE-313: [重複] replay_ui の JS 検定が indicator_ui の実装を二重に検定（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・web スイート件数一致で確認）
+- **重大度**: Middle（実際に「片方だけ直された」差分が発生していた）
+- **原因**: `web/js` の実装は symlink で単一ソース共有されているのに、**検定は手書きで写されていた**。
+  `facade.test.js` は 298 行中 291 行が同一で、差分 7 行の実体は「indicator_ui 側にだけある
+  アサーション 1 件」とコメントの食い違い＝複製が片方だけ直された状態。
+- **是正**: 対象実装がすべて symlink 共有だった 2 スイートを、indicator_ui 側 1 本の再 import に置換。
+  node:test は import した module 内の `test()` 登録を引き継ぐため、**replay スイートの検定件数は不変**。
+  - `facade.test.js` 298 → 10 行（import 先 `usecase/facade.js` / `domain/domain_models.js` とも symlink）
+  - `catalog_client.test.js` 28 → 5 行（同 `adapter/front/catalog_client.js` が symlink）
+- **据え置いた対（複製ではない）**:
+  - `trade_markers_wiring.test.js`: **byte 一致だが** replay 側は自前の `composition_root_front.js`
+    （実体ファイル）を検定している。統合すると別物を検定することになる。
+  - `composition_root_front` / `indicator_controller` / `host_role_contract` /
+    `chart_interaction_controller` / `indicator_controller_latest`: 差分 47〜653 行＝挙動が実際に異なる。
+- **実測**: **311 行削除**。web スイートは indicator_ui 1141 / market_profile 333 / replay_ui 338、
+  fail 0 で基準線と完全一致（unified_ui の失敗は vitest 未導入の既存の環境要因）。
+
+## ISSUE-314: [重複] 抽出規則と E2E 起動手順の複製（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・全スイート基準線一致）
+- **重大度**: Low〜Middle（挙動は正しいが、規則・手順を変えるとき複数箇所を直す必要がある）
+- **是正 1（実装側）**: `_extract_ohlcv`（必須列の小文字正規化抽出）が
+  `profit_mfi` / `profit_mfi_macd` / `profit_rmm_macd` の 3 src で 1 文字も違わず複製されていた。
+  規則を `marketdata.time_column.extract_columns()` へ集約（ISSUE-311 の `resolve_times` と
+  同じ「小文字化した写像で照合し元の列名で引く」規則のため同居させる）。**45 行削除**。
+- **是正 2（E2E）**: `simulator/report_ui/tests/e2e/verify_*.py` 6 本が
+  「空きポート取得／キャッシュ無効の静的サーバ起動／chromium で開いて `window.__READY` を待つ」
+  という同一手順を複製していた（`_free_port` 6・`_serve` 6・`_NoCacheHandler` 6・`_launch` 4）。
+  `e2e/_harness.py` へ集約し、各 verify は委譲にした。**182 行削除**。
+  - `_build_web_root` は各ファイルが持ち続ける（配信する report.json の中身＝検証シナリオそのもの）。
+  - `verify_parity.py` の `_launch` は 21 行の別実装のため据え置き。
+- **実測**: 合計 **227 行削除**。27 スライス件数一致 / report_ui 171 passed /
+  marketdata・tools・simulator 1,315 passed・10 skipped（いずれも基準線一致）。
+
+## ISSUE-315: [重複] replay_ui の wiring 検定が同型のテストダブルを 5 本で複製（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・web スイート件数一致）
+- **原因**: `replay_*_wiring` 系 5 スイートが fake DOM 要素・document・chart・controller を個別に
+  手書きしていた。ファイル内コメントにも「`replay_mp_wiring.test.js` と同型」と明記されており、
+  複製であることは認識されたまま残っていた。
+- **是正**: `simulator/replay_ui/web/tests/_fakes.js` に `fakeEl` / `fakeDoc` / `fakeChart` /
+  `fakeController` を 1 つずつ置き、**正規化して一致する定義だけ**を差し替えた
+  （`fakeDoc` は初期モードがスイートごとに違うため引数化）。各スイート固有の spy は残す。
+- **実測**: **103 行削除**（5 ファイル）。web スイートは indicator_ui 1141 / market_profile 333 /
+  replay_ui 338・fail 0 で基準線と完全一致。
+- **据え置き**: `chart_template_*` 3 本の共通関数は合計 21 行と小さく、残りの type-1 は
+  関数境界に一致しないブロック（import・setup の並び）であるため機械的な集約に向かない。
+
+## ISSUE-316: [重複] MACD 2 スイートの検定本体 96 行が完全一致（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・スイート基準線一致）
+- **原因**: `test_profit_mfi_macd_latest.py` と `test_profit_rsi_macd_latest.py` の 96 行が
+  コメント 1 行を除いて完全一致。ISSUE-310 で契約を集約した際、fixture（`adapter` / `df` /
+  `variant`）を受ける形の検定 4 件を対象外にしていたため残っていた。
+- **是正**: `_contract.py` に fixture を受ける契約を 4 つ追加し（`assert_latest_non_empty` /
+  `assert_series_kind_counts` / `assert_trimmable_tail_matches` /
+  `assert_horizontal_line_levels_match`）、両ファイルを呼び出しへ置換。`_by_kind` も
+  `_contract.by_kind` へ寄せた。**68 行削除**（各ファイル -34 行）。
+- **`_ohlcv` を共有しなかった理由**: 2 ファイルで実装は同一だが、合成データはその指標を意味のある
+  値域で動かすための入力＝検証対象である。共有すると片方の都合で他方の検定条件が黙って変わる。
+- **実測**: indicator_ui api 30 failed / 832 passed で基準線一致（失敗は実データ CSV 欠落の既存要因）。
+
+## ISSUE-317: [計測] 残る type-1 の 85% は 2 箇所クローンで、共有化の overhead が利得を食う（2026-08-09）
+- **ステータス**: OPEN（判断材料の記録・作業方針の提案）
+- **実測（ISSUE-315 完了時点・type-1 4,192 行）**:
+  | 出現箇所数 | 行数 | 群数 | 1 群あたり |
+  |---|---|---|---|
+  | 2 箇所 | **3,578** | 331 | 10.8 行 |
+  | 3 箇所 | 358 | 22 | 16.3 行 |
+  | 4 箇所以上 | 256 | 13 | 19.7 行 |
+- **意味**: 2 箇所・L 行のクローンを共有先へ移すと、削除 2L に対し「共有先 L ＋ 呼出 2 箇所」が
+  増えるため、正味の利得は概ね ``L − 6`` 行。平均 L=10.8 では 1 群あたり 5 行前後にしかならない。
+  実績でも大きい L の対（facade 291 行）は正味 -296 行と大きく効いたが、小さい群では効かない。
+- **提案**: これ以降は行数を目標にせず、「同じ規則が 3 箇所以上にある」場合のみ集約する。
+  2 箇所クローンは、片方だけ直る事故が実際に起きた箇所（ISSUE-313 の facade など）に限って扱う。
+
+## ISSUE-318: [重複] replay_ui 統合検定の空実装ポートが 6 箇所で複製（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09・原因除去・258 passed / 3 skipped で基準線一致）
+- **原因**: `serve_replay` の結線を検定する 7 本が、検証対象でないポート（ローソク取得・指標計算・
+  窓データ）の「呼ばれても空を返す」実装を個別に手書きしていた（`_FakeCandlePort` 6 箇所・
+  `_FakeComputePort` 6 箇所・`_FakeWindowPort` 5 箇所）。
+- **是正**: `integration/_fake_ports.py` に 1 つずつ置いて差し替え。**89 行削除**。
+  各検定が観測したい Fake（呼出回数・引数を記録するもの）は各ファイルに残す。
+- **(a)（3 箇所以上の type-1・614 行）の到達点**: 35 群のうち機械的に集約できたのは本 Issue の
+  1 群のみ。残りは以下の理由で関数・クラス境界に一致しない。
+  - `chart_template_*` の `El`（64 行）: 3 ファイルとも**別実装**で、一致は部分ブロックのみ。
+  - `_make_loader`（7 箇所）: 一致は内側 closure だけで、外側の生成関数は各ファイルで異なる。
+  - `BtlmTrailIncrementer.prepare`（5 箇所 21 行）: 集約には基底クラス化＝設計変更が必要
+    （Template Method）。増分計算経路の階層を変えるため、行数目的では着手しない。
+  - 残余は 1 群 10〜18 行の断片で、共有先モジュールの追加分に対し正味の利得がほぼ無い（ISSUE-317）。
+
+---
+
+<!--
+ISSUE-319 〜 ISSUE-340 は 2026-08-09 の「テストコードと実装コードの設計差異」全数監査で
+起票した。監査は 388 Python テストファイル / 153 JS テストファイルを 10 領域に分割して走査し、
+差異 142 件（重大度 高 42 件）を検出した。ここには **根本原因の単位で 22 件** に束ねて記載する。
+142 件の全数一覧は `docs/tdd-divergence-audit-2026-08-09.md` を参照。
+
+前提となるベースライン実測（2026-08-09・branch develop）:
+  - Python: パッケージ単位で 4,400 passed / 8 skipped / 0 failed
+  - JS: 4/4 スイート 1,812 passed / 0 failed
+  - リポジトリ根 `pytest`: 88 collection error（→ ISSUE-333）
+  - `pytest indigators`: 83 collection error（→ ISSUE-333）
+  - 空アサーションのテストは 2,930 関数中 1 件のみ（意図的なスモーク）
+
+つまり全件緑であり、以下はすべて **「緑のまま潜んでいる差異」** である。
+-->
+
+## ISSUE-319: [挙動] ライブ足内更新の対象集合が front 19 件・back 6 件で非対称（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（登録済み 13 指標がライブでティック追従しない。エラーもログも出ない）
+- **発見の経緯**: テスト↔実装の設計差異監査で、front の登録リストと back の増分器レジストリを突き合わせるテストが 1 本も無いことに気付いた。
+- **実測**: `is_incremental(indicator_id, variant, params)` を実 variant（`call_binding._TABLE` のキー）で 19 件すべて評価した。
+  - 追従する 6 件: `moving_averages` / `profit_rsi` / `btlm_trail` / `btlm_trail_marod` / `ma_marod` / `tickvol`
+  - **追従しない 13 件**: `profit_mfi` / `profit_stc` / `profit_oscillator` / `profit_oscillator2` / `profit_osi_ma` / `profit_hlband` / `profit_mfi_macd` / `profit_rsi_macd` / `profit_rmm` / `profit_rmm_macd` / `profit_adx_needle` / `profit_arctan` / `profit_volatility`
+- **原因**: 対象集合が 2 箇所に独立して存在する。front は `indigators/indicator_ui/web/js/usecase/intrabar_forming_ids.js:13` の手書き 19 件、back は `indigators/indicator_ui/api/adapter/compute/incremental/__init__.py:61` の factory 6 件。`live_tick_tails.py:64` は非増分を `None` で落とすが、front はそれを「対象」と申告し続ける。突き合わせる検定が存在しない。
+- **抜本的対策案（未承認）**: 対象集合を back の増分器宣言から導出する単一情報源にし、front の手書きリストを廃止する（catalog 経由で受け取る）。導出できない設計上の理由があるなら、back が「非対応」を応答に明示し front が黙って諦めない形にする。いずれの場合も front⇄back の集合一致を検定で固定する。
+- **関連**: ISSUE-145（足内更新の指標登録）、ISSUE-291（受け口だけ作って front が送らない）、ISSUE-233。
+
+## ISSUE-320: [設計] 形成中バー差し込み規則が 3 実装に分裂し、ライブ毎ティック経路だけ時刻分岐を持たない（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（周期境界でライブ毎ティック値だけが `/compute` とずれる）
+- **実測**: 現行ツリー（worktree 除く）で `common.forming_window` を import しているのは `simulator/replay_ui/usecase/causal_compute.py:17` と `simulator/replay_ui/domain/forming_bar.py:23` の 2 ファイルのみ。ライブ側 `indigators/indicator_ui/api/adapter/compute/live_tick_tails.py:10` は docstring で「共有核 `apply_forming` の唯一の定義を通す」と宣言するが **import していない**。
+- **原因**: 同じ規則が 3 実装に分裂している。
+  1. 中立核 `common/forming_window.py:44-56` — 「過去→無視 / 一致→置換 / 未来→追加」の 3 分岐
+  2. ライブ `/compute` `indigators/indicator_ui/api/adapter/compute/forming_bar.py:238-282` — 同じ 3 分岐を pandas で別実装
+  3. ライブ毎ティック `indigators/indicator_ui/api/adapter/controller/live_tick_tails_controller.py:135-140` の `_set_last_bar` — **時刻を一切見ずに末尾行を無条件上書き**（追加分岐が無い）
+- **影響**: 保存データのフロンティア遅れで末尾確定足が 1 期間古いとき、3 は確定足を破壊し新バーを追加しないまま指標を計算する。`live_tick_tails.py:66` の「両者は同値」という宣言を検証するテストは 0 件で、`test_live_tick_tails_controller.py:71-76` は 9 種の tf を parametrize しながら assert が `out is not None` と `tickMs` 一致だけ（tf=1h では 15m 整列の窓を渡していて前提自体が崩れている）。
+- **付随**: 移設の根拠とされた「参照実装 `prototype_260626-01/proto_server.py:140-144` に bit 一致」も成立していない。参照実装は df 列のみ大小無視で `key in forming` は大小区別、2 は 5 列を無条件上書きで「未指定キー保存」規則を持たない。突合テストも無い。
+- **抜本的対策案（未承認）**: 2・3 を中立核 `apply_forming` への委譲へ置き換え（pandas 変換のみ各層に残す）、`_set_last_bar` を廃止する。参照実装との bit 一致を検定で固定し、`live_tick_tails` の値を `/compute` mode=latest と突き合わせる検定を 1 本置く。
+- **関連**: ISSUE-250 Phase 1（中立核への移設）、ISSUE-232。
+
+## ISSUE-321: [設計] `MtfProjectionPort` の宣言が実注入具象と全引数不一致（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（宣言どおりに書いた代替実装は呼んだ瞬間 TypeError。現行の唯一具象は動作する）
+- **実測**:
+  - Port 宣言 `indigators/indicator_ui/api/usecase/compute_ports.py:127` — `__call__(series, df_chart, compute_tf, *, period_start_unix)`
+  - 実呼び出し `indigators/indicator_ui/api/usecase/compute_indicators.py:250` — `project_mtf(df_chart=, df_source=, compute_tf=, fold_from=)`
+  - 注入具象 `indigators/indicator_ui/api/adapter/controller/compute_controller.py:68` — `_run(*, df_chart, df_source, compute_tf, fold_from=None)`
+  - **一致する引数名は 1 つも無い**（`compute_tf` を除き `series` / `period_start_unix` は存在せず、`df_source` / `fold_from` は宣言に無い）
+- **原因**: Port 適合検査 `indigators/indicator_ui/api/tests/test_usecase_compute_ports.py:118` の対象が full / latest / adapter / forming_bar の 4 ポートのみで、`MtfProjectionPort` と `PeriodBoundaryPort` が対象外。さらに同 `:141-148` の「未検証の協調子が増えていない」検査は 5 個の文字列が**含まれる**ことしか見ず、増えた 2 つ（`project_mtf` / `period_boundary`）を検出しない。この穴から入った。
+- **併発**: `PeriodBoundaryPort` は注入されるが呼び出し箇所が存在しない（`compute_indicators.py:163` の `is None` 判定のみ）＝未注入で RuntimeError を投げる死んだ契約。
+- **抜本的対策案（未承認）**: Port 宣言を実シグネチャへ是正し、適合検査の対象を全ポートへ広げる。協調子の検査を「含まれる」から「集合一致（余剰も検出）」へ変える。呼ばれない `PeriodBoundaryPort` は結線するか撤去する。
+- **関連**: ISSUE-097。
+
+## ISSUE-322: [挙動] `/tf_period_profile` の as-of 時計が本番経路で壁時計（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（同一画面の MP プロファイルと tf-period 列が同じ日について別の値を描く）
+- **実測**: 本番呼出 `indigators/indicator_ui/api/framework/server.py:316-317` は `now` を渡さない。`indigators/market_profile/api/market_profile_api/controller/tf_period_profile_controller.py:499` が `now_val = _time.time()` に落ちる（同 `:464` の docstring が自ら「既定は現在時刻・**テスト注入用**」と書いている）。
+- **原因**: `now` が任意引数（既定 `None` → 壁時計）で、tf-period のテストは `test_tf_period_zp.py:57,64,70,87,95,98,104,137,139,160` ほか全件が `now=` を明示注入する。結果、**本番が通る分岐（壁時計）をテストが一度も実行していない**。過去日は `completed=True` となり `col_cap=G_MINUTES`＝全日列を返す。
+- **影響**: `/market_profile?src=zp&to=T` は `now=to` で経過分クランプ（部分 z）されるのに、tf-period 列は全日 z になる。リプレイ中の同一画面で 2 つの表示が食い違う。
+- **抜本的対策案（未承認）**: `now` を必須引数にし、呼出側（server）が要求の `to` を明示的に渡す。既定値 `time.time()` を廃止すれば「テスト専用引数」という概念自体が消え、テストと本番が同じ分岐を通る。
+- **関連**: ISSUE-129（リプレイ単一時計 = `to`）、ISSUE-083。
+
+## ISSUE-323: [挙動] σクランプ帯を全期間集計で作るため描画列とσ水準線が repaint する（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（docstring が「repaint しない」と明記している列が実際には動く）
+- **対象**: `profit_volatility` / `profit_arctan` / `profit_oscillator` / `profit_adx_needle`
+- **実測（profit_volatility・本番既定 `window=120`・400 本に 1 本追加）**:
+  | 量 | 追加前 | 追加後 | 差 |
+  |---|---|---|---|
+  | σ水準線 `up_329` | 3.633520 | 3.627080 | −0.006440 |
+  | σ水準線 `dn_329` | −3.636440 | −3.635180 | +0.001260 |
+  | 確定バーの `level_count_clamped` | — | — | 275 本中 1 本が 0.00126 変化 |
+  W を小さくすると拡大する（W=20 で `up_329` 3.93799→4.22109・確定バー 0.2831 変化、freeze_last 有効時は W=30 で 3.7540→16.5684・1.5892 変化）。`profit_arctan` は 300→400 本で `up_329` 24.15193→23.17010。
+- **原因**: `indigators/profit_volatility/src/core.py:484,487` が `levels = compute_sigma_levels(z[valid])` を **最新足を含む全バー**から算出し、`np.clip(z, lower, upper)` を本番描画列 `level_count_clamped` にしている。z 自体は因果窓だが、クランプ帯とσ水準線は因果でない。`indigators/profit_volatility/src/volatility.py:68-70` の docstring は「確定したバーは新データ追加でも値が変わらない（repaint しない）」と明記。
+- **検定側の差異**: no-repaint テストは `raw_level_count`（**描画されない配列**）だけを見ている（`test_core_essential.py:158-170` / `test_standardize_causal_freeze_last.py:179-191` / `profit_arctan/tests/test_core.py:250-263` ほか）。因果性テストが見張っているのは z 生成ループと freeze_last 分岐だけで、`compute_sigma_levels` はどのモジュールの因果性テストからも見られていない。
+- **抜本的対策案（未承認）**: クランプ帯とσ水準線を z と同じ因果規約（当該バー除外のローリング）で算出する。no-repaint 検定の対象を **描画列 `level_count_clamped` とσ水準線**へ移す（`raw_*` だけを見る検定は残さない）。
+- **関連**: ISSUE-028（freeze_last）、ISSUE-175。
+
+## ISSUE-324: [挙動] `src=dwell/m1` の集計窓が `to` を最大 1 バー分超過する（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（リプレイで「まだ来ていない時間帯」の価格帯が描かれる＝ライブと不一致）
+- **実測**: `indigators/market_profile/api/market_profile_api/compute/market_profile_dwell.py:402` が `win_to = int(t1) + int(bar_sec)`、`:313` / `:339` の `_load_window_ticks` は `now` でクランプしない。`controller/market_profile_controller.py:416-420` は `compute_dwell_profile` へ `now` を渡さず、`market_profile_dwell.py:391` で `now_val = _time.time()` に落ちる。
+- **原因**: as-of クランプが `src=zp` にしか実装されていない（zp は `market_profile_controller.py:470` で `now_kw = {"now": float(to_ts)}`）。`t1` は `time<=to` の最終足 time なので、tf=1D なら **最大 24 時間ぶんの `to` 超過ティック**が読まれる。
+- **検定側の差異**: 唯一の該当テスト `test_market_profile_dwell.py:639-666` はクラス docstring（`:624-629`）で「T 以降の滞在が入らない（未来リーク無し）」と称しながら、assert は `max(day_roll_ends) <= _DAY0 + _DAY`（**日境界**）までで、プロファイル内容を一切見ない。合成データの COLD 帯は `to` より後（hr20）に置かれているのに完全に不可視。
+- **抜本的対策案（未承認）**: controller が `now=to` を `compute_dwell_profile` へ渡し、集計窓の上限を `min(t1 + bar_sec, now)` にする（zp と同一規約）。検定は日境界ではなくプロファイル内容（`to` 以降の価格帯が 0 であること）を見る。
+- **関連**: ISSUE-129、ISSUE-081。「リプレイはライブに厳密一致」は現状 zp 限定でしか成立していない。
+
+## ISSUE-325: [挙動] `stop_out_at_open` が every-tick 経路に未実装で本番設定では常に無効（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（MT5 突合済みと称する設定で週末ギャップの open ストップアウトが一度も発火していない）
+- **実測**: `grep -rn stop_out_at_open --include=*.py simulator/` の実装側ヒットは `simulator/usecase/run_backtest.py:204` と `:232` のみ（ともに `execute()` = 157-429 行の内側）。`_execute_every_tick()`（431-930 行）には一切現れない。`run_backtest.py:161-164` が `pending_lifecycle=True` を every-tick へ early-return でルーティングする。
+- **原因**: 証拠金の先行評価が bar-mode 側にだけ実装され、every-tick 側で複製も委譲もされていない。テスト `simulator/tests/unit/test_run_backtest.py:741` は config に `pending_lifecycle` / `real_ticks` を渡さない bar-mode でのみ検証する。一方、本番同一 config を使う `test_optimize_sp1_degenerate.py:67-71` / `test_walk_forward_integration.py:45-46` / `test_is_oos_stop_probe.py:71-75` はいずれも `pending_lifecycle=True`。
+- **抜本的対策案（未承認）**: 証拠金評価（stop-out 判定）を 2 経路の共通関数へ抽出し、`execute()` と `_execute_every_tick()` が同一実装を通るようにする。両経路それぞれで発火を固定する検定を置く。
+- **関連**: ISSUE-328（同型の経路非対称：`hedged_margin` は every-tick 側のみ）。
+
+## ISSUE-326: [構造] UC-003 `compare_stats` が Composition Root から結線されておらず死んだ API（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（許容誤差判定のリグレッションが「緑」のまま本番に一切効かない）
+- **実測**: `grep -rn "compare_stats\|CompareStats" --include=*.py simulator/ | grep -v /tests/` のヒットは定義 2 箇所のみ（`simulator/usecase/compare_stats.py:35` / `simulator/usecase/ports.py:36`）。`simulator/main/__init__.py` に import も結線も無く、`CompareStatsInputBoundary` の実装クラスも存在しない。
+- **原因**: MT5 突合は `simulator/tests/confirmation/*/reconcile.py` の手書きスクリプトで行われており、UC-003 は孤児化した。それを 10 テスト（`test_compare_stats.py:17-124`）＋ Port 署名テスト（`test_usecase_ports.py:103`）が守り続けている。
+- **併発**: `compare_stats(tolerances={})` はループ 0 回で無条件 `passed=True`（`compare_stats.py:39-51`）。突合表の読み込み失敗が「全項目一致」として報告される。テストに空 dict のケースが無い。
+- **抜本的対策案（未承認・二択の判断が要る）**: (a) UC-003 を Composition Root へ再結線し、`reconcile.py` を UC-003 の呼出へ置き換える（突合ロジックを 1 本にする）、または (b) UC-003 と 10 テストを撤去する。**二重実装のまま残さないことが要件**。空 tolerances は `passed=False` か例外へ是正する。
+
+## ISSUE-327: [挙動] Tick の bid/ask 規約が 2 系統あり、`tick_model` 側は中心化・`point_size` 未乗算（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（誤った bid/ask が資金曲線・equity DD へ混入する）
+- **実測**:
+  - `simulator/adapter/execution/tick_model.py:22-23` — `half = bar.spread / 2.0` → `(price, price-half, price+half, ...)`（**中心化かつ point 未乗算**）
+  - `simulator/usecase/pending_lifecycle.py:41` → `simulator/usecase/_execution.py:23` — `ask = bid + spread * point`（MT5 規約）
+  - JP225（spread=100 / point=0.1）では前者が bid=price−50 / ask=price+50 を返す（正しくは ±10 相当・非中心）
+- **原因**: bid/ask 生成が 2 箇所に独立して存在する。`simulator/tests/unit/test_tick_model.py:56-59` の `_bar()` は `spread=0` で、全 synthetic テストが spread=0（docstring 自身が「実 spread は範囲外」と宣言）。したがって分岐が一度も実行されていない。
+- **影響経路**: `run_backtest.py:725` が毎ティック `last_bid,last_ask` を保存し、`:886-890` のティック 0 件足で equity 評価に使う。この carry-forward 自体も未テスト（`test_run_backtest_every_tick.py` の全ケースが両バーにティックを供給し、「保有玉あり＋空足」を作らない）。
+- **抜本的対策案（未承認）**: bid/ask 生成を単一関数へ統合し、`point_size` を含む MT5 規約に揃える。`tick_model` のテストへ `spread>0` のケースを入れ、ティック 0 件足の equity carry-forward を固定する検定を追加する。
+
+## ISSUE-328: [挙動] リプレイの MP 取得が `period` / `clock` を送らず、`period=day` がライブと別窓になる（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（同じ UI 設定がライブでは当日窓、リプレイでは全期間窓になる）
+- **実測**: `indigators/market_profile/web/js/adapter/front/market_profile_actor.js:461-464` の `refresh()` は `_sessionsExtra() / _periodExtra() / _dispExtra() / _clockExtra()` を積む。同 `:342-346` の `_fetchAt()` は `_replayExtra(time) / _sessionsExtra() / _dispExtra()` のみで、**`_periodExtra` と `_clockExtra` を含まない**。さらに `mp_fetch_params.js:94-96` がリプレイ中の `periodExtra()` を明示的に `{}` へ落とす。
+- **検定側の差異**: `period=day` の検定は `market_profile_actor.test.js:846-888` の `refresh` 経路 4 ケースのみ。リプレイ（`setReplayCursor` → `_fetchAt`）側は 0 件。
+- **原因**: クエリ合成がライブ用とリプレイ用に別々に書かれ、差分が「積む extra の列挙」という形で表現されている。積み忘れが型でも検定でも捕まらない。
+- **抜本的対策案（未承認）**: クエリ合成を単一関数へ統合し、live/replay で本当に差分が必要な部分だけを引数化する。`_fetchAt` と `refresh` が別々に extra を積む構造を廃止する。
+- **関連**: 適用範囲の暗黙変更（承認なしのスコープ縮小と同型）。
+
+## ISSUE-329: [挙動] `mode='latest'` + `computeTimeframe` で forming と mode が無言で捨てられる（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（上位足指標の足内フォールバック計算で末尾点が確定足由来の値へ跳ぶ）
+- **実測**: `simulator/replay_ui/usecase/causal_compute.py:86-90` は `compute_tf is not None` なら `_compute_projected` へ即 return。`_compute_projected`（同 `:124-160`）は `request.mode` / `request.forming` / `window_port` を **一切参照しない**。
+- **本番でこの組合せが飛ぶ根拠**: `indigators/indicator_ui/web/js/adapter/front/indicator_controller.js:290`（`{mode:'latest', forceTail:true}`）、同 `:1013`（`computeTimeframe`）、同 `:1016`（`mode`）が同一ボディへ載る。
+- **検定側の差異**: `simulator/replay_ui/tests/unit/test_causal_compute_mtf.py:96` の `_req()` 基底が `mode=None, forming=None` 固定で、7 テスト全部がこれを使う。`mode="latest"` を渡すケースが 0 件。
+- **併発**: `truncate` が進行中 C 足を確定 OHLC のまま残すため、forming で上書きされない＝足内の未来参照になる。
+- **抜本的対策案（未承認）**: `_compute_projected` を `mode` / `forming` / `window_port` を受ける形に是正し、H 経路でも forming を適用する。テストの `_req()` 基底へ `mode='latest'` 系のケースを追加する。
+- **関連**: ISSUE-288 / ISSUE-290（MTF 包含規約）、ISSUE-233。
+
+## ISSUE-330: [設計] H 経路の形成足 snapshot が volume を持たず、リビール経路と volume 系指標が食い違う（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（計算足を持つ volume 系指標で足内値とリビール値が同じ瞬間に別物になる）
+- **実測**: `simulator/replay_ui/usecase/causal_compute.py:222` の `_fold_bars` は `float(b.get("volume") or 0.0)` を合算し、足内経路は snapshot をそのまま畳む（同 `:265`）。本番の snapshot は `simulator/replay_ui/web/js/replay/forming_plan.js:53` が作る `{time, open, high, low, close, to}` で **volume を持たない**（`indigators/indicator_ui/web/js/domain/forming_fold.js:26-33` の `foldTick` が OHLC しか返さない）。同 `causal_compute.py:418` は「H 経路は実 tick 数を載せない」と明記。
+- **検定側の差異**: シーム比較 `test_causal_compute_mtf_seam.py:103` の `forming_seq` は `_CHART_BARS[-1]` をそのまま使うため **volume を持つ**。本番に存在しない入力で両経路の一致を緑にしている。
+- **併発（同根）**: 畳み規則が 2 実装並存する — `causal_compute.py:214-223` の `_fold_bars` と `indigators/indicator_ui/api/adapter/compute/mtf_causal.py:32-41` の `fold_bars`（現在は逐語同一）。`causal_compute.py:180-183` の docstring が主張する「`_causal_h_window` をリビール経路と足内経路の双方が使う」も成立していない（呼び出しは足内 2 箇所のみ）。
+- **抜本的対策案（未承認）**: 畳み規則を 1 実装へ統合し、volume の扱い（snapshot に tick 数を載せるか、H 経路で確定足ぶんだけ合算するか）を単一定義で決める。シームテストの入力を本番形（volume なし snapshot）へ是正する。
+- **関連**: ISSUE-238。
+
+## ISSUE-331: [構造] `moving_averages` パッケージの再エクスポート層が壊れている（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（本番 import 経路でありながら `from moving_averages import *` が失敗する）
+- **実測**: `indigators/moving_averages/__init__.py:12-24` が 11 名を束縛したあと `:25` で `from .src import __all__`（14 名）を上書きする。結果 `from moving_averages import *` が `AttributeError: module 'moving_averages' has no attribute 'linear_weighted_ma_on_buffer_stateful'`。`LwmaState` / `MA_FROM_ZERO` も未束縛。
+- **原因**: 束縛リストと `__all__` の出所が別（前者は手書き 11 名、後者は `src.__all__` の 14 名）。テストは全 3 ファイルが `from src import ...` で直接読むため、この層を一度も通らない。
+- **消費者**: `indigators/profit_osi_ma/src/core.py:24` と `indigators/profit_arctan/src/core.py` がこの層を本番 import 経路として使う。
+- **抜本的対策案（未承認）**: 束縛と `__all__` の出所を `src.__all__` 単一にする（手書きリストを廃止）。パッケージ層を通す検定を 1 本置く。
+
+## ISSUE-332: [挙動] 初期ロードで自動ビュー介入（`focusTimeRange`）が発生し、回帰防止が二重に到達不能（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（「ビュー自動介入禁止」の裁定に対する唯一の実在例外）
+- **実測**: `indigators/indicator_ui/web/js/adapter/front/composition_root_front.js:449-461` が `/candles` 完了後、ユーザーイベントなしで `renderer.focusTimeRange(lastT - 365日, lastT)` を自動実行する。
+- **検定が到達しない理由（二重）**: (1) `composition_root_front.test.js:27` の fake は `timeScale: () => ({ fitContent: () => {} })` で `setVisibleRange` を持たず、`chart_renderer.js:303` の `typeof ts.setVisibleRange !== 'function'` ガードで黙って no-op になる。(2) 当該テストの candles が 1 本しかなく `lastT - firstT > 1年` 条件にも入らない。
+- **原因**: 自動遷移の撤去は `live_follow_controller.test.js:92-108` で固定済みだが、初期表示範囲の決定だけが撤去対象から外れ、かつ fake の欠落で検定不能になっている。
+- **抜本的対策案（未承認・仕様確認が先）**: まず「初期表示範囲の自動決定は許容される介入か」をユーザー裁定で確定する。許容なら明示イベント（初期化完了）起点として仕様化し、fake に `setVisibleRange` を実装して介入条件・スパンを検定で固定する。許容しないなら撤去する。
+- **関連**: ISSUE-164（ビュー自動介入の禁止）。
+
+## ISSUE-333: [構造] テストの `src` グローバル名衝突と basename 衝突で横断 pytest が成立しない（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: High（「全テスト緑」がディレクトリ個別起動でのみ成立し、横断 CI を張った瞬間に落ちる）
+- **実測**:
+  | 実行 | 結果 |
+  |---|---|
+  | リポジトリ根 `python -m pytest --collect-only` | 3,338 collected / **88 errors** |
+  | `python -m pytest indigators --collect-only` | 1,510 collected / **83 errors** |
+  | パッケージ個別実行（37 グループ） | 4,400 passed / 8 skipped / 0 failed |
+  `__pycache__` 削除後も再現。例: `btlm_trail_marod/tests/test_marod.py:21` → `ImportError: cannot import name 'SIGMA_MULT' from 'src' (/workspaces/app/indigators/btlm_trail/src/__init__.py)`。
+- **原因（2 つ）**:
+  1. 27 の指標モジュールがテスト冒頭で `sys.path.insert(0, parents[1])` → `from src.core import ...` とし、**グローバル名 `src` を奪い合う**。本番は `indigators/indicator_ui/api/adapter/compute/call_binding.py:225-235` の `_load_src_package` が `_<indicator>_src` の一意名でロードするため、テストと本番でモジュール同一性が違う。
+  2. `tests/` に `__init__.py` が無く、`test_core.py` / `test_lwc_chart.py` 等の basename が複数モジュールで衝突する（`import file mismatch`）。
+- **影響**: スイート横断の差異（本監査が検出した front⇄back 非対称や第 2 実装の乖離）は、そもそも 1 回も同一プロセスで検査されたことがない。ISSUE-340 のミューテーション導入もこれが解けるまで着手できない。
+- **抜本的対策案（未承認）**: 各 `tests/` を `__init__.py` でパッケージ化して basename 衝突を除去し、テストの実装ロードを本番と同じ一意名（`_<indicator>_src`）経路へ揃える（テストが本番と同じ import 経路を使う）。横断 1 コマンド実行を CI の通過条件にする。
+- **関連**: ISSUE-174（pytest 依存解決点の単一化）、ISSUE-279。`indigators/profit_hl_band/tests/__init__.py` は 27 モジュールで唯一のパッケージ化例（局所回避）。
+
+## ISSUE-334: [検定] 構造テストがソース文字列一致で成立しており、改名・別表記で無効化される（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（31 件。いずれも「実装がある」という偽の保証）
+- **代表例**:
+  - `indigators/indicator_ui/web/tests/series_kind.test.js:70` — 消費者を 3 ファイルに固定し `import` の存在を検査。リスト内の `chart_renderer.js:33-36` は `seriesKind` を**一度も呼ばない**（36 行の import のみ）で、コメントが「契約の固定点として import を維持する」と自認。実際に能力分岐を持つ `series_drawer.js`（`seriesKind()` 呼出 13 箇所）はリストに無い＝ガードの照準がずれている。
+  - `simulator/replay_ui/tests/unit/test_bridge_import_surface.py:22` — 禁止語彙が固定 2 語の文字列検索。実装 `_indicator_ui_bridge.py:100-101` は Facade に無い `mtf_causal_memo` を内部パスから直 import しているのに緑。
+  - `tools/tests/test_tools_composition_declaration.py:53` — `"TIMEFRAME_RULES" in src and ...` の 3 条件。走査は repo 根 `tools/*.py` のトップレベル関数本体のみ。
+  - `indigators/indicator_ui/api/tests/test_incremental_emit_single_source.py:72-81` — `"def _tail_points" not in src`。`_points_tail` へ改名するだけで二重定義が復活しても緑。
+  - `indigators/market_profile/api/tests/test_store_gateway_layering.py:70-78` — `"np.savez" in src`（同ファイル `:16-21` が「コメント誤検知を避けるため行頭アンカを使う」と明記しているのにこの assertion だけ素の `in`）。
+  - `simulator/replay_ui/web/tests/forming_seq_variant_scope.test.js:90-93`、`indigators/indicator_ui/web/tests/series_kind_ledger_declaration.test.js:46-52`、`indigators/market_profile/web/tests/growth_window_rule_parity.test.js:24-29` ほか。
+- **抜本的対策案（未承認）**: 構造検定を「実オブジェクトの振る舞い」へ置き換える（`typeof` / `isinstance` / DI で分岐を実際に実行する）。置き換えられない検定は**撤去する**（偽の安心を残さない）。ISSUE-340 のミューテーションで再発を機械検出する。
+
+## ISSUE-335: [検定] 期待値を被検査コードの式から生成するトートロジーテスト（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（24 件。実装を書き換えれば期待値も同時に動くため識別力ゼロ）
+- **代表例**:
+  - `marketdata/tests/test_session_resample.py:70-79` — `resample_ohlc_tf(df,tf) == resample_ohlc(df, TIMEFRAME_RULES[tf])`（`resample.py:103-106` の else 分岐そのもの）
+  - `simulator/tests/integration/test_hedged_margin_multi.py:27-45` — `_inline_hedged_margin_level` が docstring で「非トートロジーな参照」と自称しながら `domain/account.py:68-92` の逐語コピー
+  - `indigators/market_profile/api/tests/test_asof_clamp_single_source.py:61-64` — `_inline_before()` が `market_profile_zp_kernel.py:61-62` の 2 行そのもの
+  - `simulator/replay_ui/web/tests/market_profile_dwell_accumulator.test.js:16-27` — 「移植版と参照実装」を別 import して `deepEqual` するが `readlink -f` で**同一実体**に解決＝恒真
+  - `simulator/usecase/walk_forward.py:198` の符号バグ（`profit_factor` に `abs()` 無し）を、テスト `test_walk_forward.py:188-189` が実装式のまま期待値にして追認している
+  - `indigators/indicator_ui/api/tests/test_catalog_schema.py:38-46`、`marketdata/tests/test_dataset_registry.py:58-62` ほか
+- **抜本的対策案（未承認）**: 期待値を被検査コードから独立させる（固定値・独立実装・凍結オラクルのいずれか）。独立させられないものは撤去する。`walk_forward` の PF 符号は単 run 指標（`metrics_spec.py:100-104`）と揃えて是正する。
+
+## ISSUE-336: [検定] 死んだ API・存在しない分岐をテストが検証している（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（28 件。本番が通る経路の代わりに、通らない経路を守り続けている）
+- **代表例**:
+  - `indigators/indicator_ui/web/tests/composition_root_front.test.js` — `protocol` を 19 箇所で渡し「served over http なら ComputeHttpClient」と主張。`protocol` は `indigators/indicator_ui/web/js/` に **0 件**、`chart_app_wiring.js:74` は無条件生成＝反証不能
+  - `simulator/replay_ui/web/tests/forming_seq_client.test.js:39-85` — 全 6 ケースが `computeSeq()`。本番は `computeSeqMulti()` のみ（`forming_plan_cache.js:119`）で `computeSeq` の呼び出し元は JS に 0 件
+  - `indigators/indicator_ui/web/tests/series_kind.test.js:31,52,62` — `overlayReadout` を仕様として固定。消費者はリポジトリ全体で 0 件（撤去記録は `series_drawer.js:245`）
+  - `indigators/indicator_ui/api/tests/test_server_smoke.py:70,98` — POST /compute 3 本すべて `tgp_btlm`。本番 25/26 指標が通る `_COMPUTE_POOL` 側（`server.py:375-378`）は呼出 0 回
+  - `indigators/indicator_ui/web/tests/indicator_controller_tick_tails.test.js:30` ほか — IndicatorController に存在しない `mode:'b'` / `facade:{}` を渡し続けている（A方式撤去の残骸）
+  - `simulator/replay_ui/tests/unit/test_causal_compute.py:14-33` の `_FakeComputePort`（6 メソッド Protocol のうち 2 本のみ）、`simulator/tests/unit/test_run_backtest.py:61-70` の `StubTickModelPort`（bid=足の安値 / ask=足の高値＝どの実装もそうしない Port 契約の反例）ほか
+- **抜本的対策案（未承認）**: 死んだ API とそれを守るテストを**同時に**撤去する。将来使う予定があるものは Composition Root へ結線して生かす。fake は Protocol/実クラスから導出し、手書きの部分実装を廃止する（`isinstance` 適合検定を全 Port へ）。
+- **関連**: ISSUE-326（`compare_stats` は本問題の最大例）。
+
+## ISSUE-337: [検定] 生成物の鮮度ガードが片方向で、Python 唯一源の変更が JS/fixture へ伝播しなくても緑（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（19 件。**現時点では全生成物が fresh ＝潜在**）
+- **実測**: 両方向ガードが揃っているのは `tf_ledger` のみ（`marketdata/tests/test_tf_ledger_parity.py:50,58`）。以下は JS→fixture の片方向のみで、Python 側の再計算比較が無い。
+  - `zp_supported_tfs` / `mp_capability_generated.js` — 唯一源は `tf_period_profile_controller.py:88` の `_ZP_TF_ALLOWED`。`test_js_parity_golden_fresh.py:24-54` の検査対象 5 点に含まれない
+  - `forming_fold` — 生成は `tools/gen_js_parity_golden.py:156-183`（`usecase.serve_live_tick_tails.forming_states`）。同じく検査対象外
+- **原因**: 鮮度検定が「検査したい項目を列挙する」形になっており、生成器が生成する項目を網羅していない。列挙漏れが検出されない。
+- **影響（発生時）**: 生成器の再実行忘れで fixture と JS が揃って陳腐化したまま全緑になる。`_ZP_TF_ALLOWED` の場合、サーバは 400 を返すのにフロントは選択可能＝生成器 docstring が自ら書いている「無言の機能不全」がそのまま再発する。
+- **抜本的対策案（未承認）**: 鮮度検定を「生成器を再実行して生成物との差分ゼロを確認する」1 本の共通検定にし、項目列挙を廃止する（生成器が増やした項目が自動的に検査対象になる）。
+- **関連**: ISSUE-261、ISSUE-232、ISSUE-280。
+
+## ISSUE-338: [構造] 同じ規則の第 2 実装が検定の外に置かれている（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（14 件。**現時点では全て値が一致＝潜在**）
+- **実測（いずれも現在値の一致を確認済み）**:
+  | 規則 | 唯一源 | 検定外の第 2 実装 |
+  |---|---|---|
+  | ロールアップ対象 tf | `marketdata/rollup.py:108-117` `rollup_timeframes()` | `indigators/indicator_ui/tools/export_jp225_m1.py:62` `_ROLLUP_TIMEFRAMES`（`serve.sh --watch` 経路） |
+  | ブローカー日写像 | `marketdata/session_day.py:37,42,71-79` | `marketdata/resample.py:74,77-79,82-94`（pandas tz で独立再実装） |
+  | バー畳み | `mtf_causal.py:32-41` `fold_bars` | `simulator/replay_ui/usecase/causal_compute.py:214-223` `_fold_bars` |
+  | `effectiveTimeframe` | `period_presets.js:120-123` | `timeframe_controller.js:175-177` |
+  | source→applied 写像 | `common/applied_price.py` `SOURCE_TO_APPLIED` | `call_binding.py:277-283` `_BTLM_SYNTHETIC_SOURCES` |
+  | CSV 列順 | `marketdata/csv_schema.py:38-47` `header_for` | `marketdata/tick_m1.py:259-261`（インライン再実装・未知列の扱いが逆） |
+  | tickvol_bands の既定値/範囲 | `marketdata/tickvol_profile.py:39-45` | `indigators/indicator_ui/web/js/usecase/tickvol_bands_catalog_entry.js:32-45` |
+- **原因**: いずれも「唯一源へ委譲する」とコメント・docstring で宣言しながら、実際には値を写している。等価性を検定するものが無い（`marketdata/tf_meta.py:85-86` は docstring で同一性を断言するのみ）。
+- **抜本的対策案（未承認）**: 第 2 実装を削除して唯一源へ委譲する。性能上どうしても委譲できないものだけ残し、**両実装の等価性を検定で固定する**（宣言では固定しない）。
+- **関連**: ISSUE-253。
+
+## ISSUE-339: [検定] WF 決定論・meta キー・SP1/SP2 一致の 5 モジュールが git 未追跡 fixture に gate（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（クリーン環境・CI では全件が無言 skip する）
+- **実測**: `simulator/tests/integration/` の `test_walk_forward_determinism.py:43` / `test_walk_forward_meta_keys.py:77,91` / `test_walk_forward_integration.py:26` / `test_optimize_sp1_degenerate.py:31` / `test_is_oos_stop_probe.py:35` がいずれも `skipif(not _FIXTURE.exists())`。
+  - fixture 実体 `simulator/tests/confirmation/2026-04_stop-probe_oos/bars_m1.csv` はローカルに存在（2,305,399 B）＝**現環境では実行されている**
+  - `git ls-files simulator/tests/confirmation | wc -l` = **0**、`.gitignore:208` で `simulator/tests/confirmation/` を除外
+- **原因**: 検定の前提素材がバージョン管理外にあり、素材が無いことを「skip」（成功扱い）で表現している。
+- **抜本的対策案（未承認）**: 素材を追跡対象にするか、生成器をコミットして pytest 内で生成する。いずれの場合も `skipif` を廃止し、素材が無ければ**失敗させる**（fail-close）。素材の欠落が「緑」に見えない形にする。
+- **関連**: ISSUE-278 #5（fail-close の規律）。
+
+## ISSUE-340: [検定] ミューテーション検証が無く「壊しても赤くならないテスト」を機械検出できない（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Medium（ISSUE-334 / 335 / 336 の再発を止める唯一の構造的手段）
+- **背景**: 本監査で検出した 137 件のうち、ソース文字列 grep（31 件）・トートロジー（24 件）・死んだ経路（28 件）の計 83 件は、共通して **「実装を変異させてもテストが赤くならない」** という 1 つの性質で識別できる。個別に目視で発見するのは今回のような全数監査を毎回回すことを意味し、持続しない。
+- **実例**: `series_render_router.js:81` の `pane: def.placement !== 'overlay'` を `===` に反転しても JS 1,812 件が全緑（`opts.pane` を assert するテストが 0 件・唯一の end-to-end 経路 `indicator_controller_styles.test.js:181,207` の fake が第 3 引数を捨てている）。`docs/testing-notes.md` §5 が「一度も失敗を見たことがないテストは何もテストしていない可能性がある」と自ら書いている状態そのもの。
+- **原因**: テストの**存在**は検定されているが、テストの**識別力**を検定する仕組みが無い。
+- **抜本的対策案（未承認）**: ISSUE-333（横断 1 コマンド実行）の解決後にミューテーション実行（Python: mutmut / cosmic-ray、JS: Stryker 等）を導入し、生存変異（＝赤くならない箇所）を CI の指標にする。まず対象を高リスク領域（`series_render_router` / `forming_window` / `_execution` / `rollup` / 増分器）に限定して導入し、生存変異ゼロを通過条件にしてから範囲を広げる。
+- **備考**: 本 Issue は ISSUE-334 / 335 / 336 の親。個別是正だけを行っても再発を止められないため、並行して着手する必要がある。
+- **関連**: `docs/testing-notes.md`（パターン 2「テスト自体が実態とズレている」の検出手段として、ミューテーションを最初に挙げている）。
+
+## ISSUE-341: [UI] ペイン並べ替えで凡例の折りたたみ状態がペインに追従しない（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09）
+- **重大度**: Low（表示状態のみ。データ・描画は正しい）
+- **背景**: 指標ペインのドラッグ&ドロップ並べ替え（ユーザー指示 2026-08-09）を実装したところ、`PaneLegendView._expanded` が **paneIndex をキー**にしているため、ペインを動かすと折りたたみ状態が「動かしたペイン」ではなく「その位置（index）」に残る。
+- **実測（実 UI・8010・2026-08-09）**: RSI（pane 1）を畳んでから pane 2 へドラッグ → 畳まれた表示は pane 1（ADXNeedle）に残り、移動した RSI 側が開いた状態になった。
+- **原因**: 並べ替え以前は paneIndex が実質的にペインの同一性だった（index が変わるのは当該ペインの削除時のみ）。並べ替えの導入で「位置」と「ペインの同一性」が分離したのに、状態のキーが位置のままになっている。
+- **抜本的対策**: ChartRenderer がペインへ**位置に依らない安定 ID** を与え（pane オブジェクト → 連番の WeakMap）、凡例 DTO に `paneKey` として載せる。View の折りたたみ状態は `paneKey` で持つ。位置をキーにしない＝並べ替えでも削除でも状態が正しいペインに付く。
+- **是正結果（2026-08-09）**: `ChartRenderer` が `WeakMap<pane, 'pN'>` で位置に依らない ID を採番し、凡例 DTO へ `paneKey` を載せる。`PaneLegendView._expanded` の鍵を `paneKey` に変更（`paneKey` 不在時は `String(paneIndex)` へ縮退＝並べ替えが起きない環境では従来挙動のまま）。`chart.panes()` が同一 pane に対し同じラッパを返すこと（バンドルの WeakMap キャッシュに `delete`/`clear` が無い）を実測で確認済み。
+- **検証（実 UI・8010・2026-08-09）**: Volatility ペインを畳む → 最下段へドラッグ → 畳まれた状態が移動先へ追従、他ペインは開いたまま。チップの通常クリック開閉・クロスヘア値更新も従来どおり。
+
+## ISSUE-342: [UI] ドラッグ中の凡例再描画停止に終了保証が無かった（フェイルオープン）（2026-08-09）
+- **ステータス**: RESOLVED（2026-08-09）
+- **重大度**: Medium（発生すると凡例の全更新が恒久停止する）
+- **背景**: ペイン並べ替えの実装で、掴んでいる要素が再描画で作り直されるのを防ぐため `PaneLegendView.render()` を `isDragging()` 中は停止させた。しかし停止の解除条件が `pointerup` / `pointercancel` の到達のみで、ポインタ捕捉を取っていなかった。
+- **原因**: 停止の寿命が「イベントが届くこと」に依存していた。届かない経路が 1 つでもあれば `_drag` が残り、値更新も指標の追加削除の反映も全停止する（フェイルオープン＝失敗が無症状で全機能を殺す方向）。
+- **抜本的対策**: 停止の寿命を**ポインタ捕捉の寿命**に紐づける。`_handleDown` で掴み手へ `setPointerCapture` し、`lostpointercapture` も終了ハンドラへ結ぶ。捕捉した要素には以後のポインタ事象が必ず配送され、失われるときは必ず通知が届く＝捕捉が取れている限り終了イベントの取りこぼしは消える。
+- **残る縮退経路（誇張しないための明記）**: `setPointerCapture` 非提供・`pointerId` 非有限・呼び出しが例外の 3 経路では**捕捉なしのまま掴みを続ける**（従来どおり document 購読で追う）ため、そこでは旧来のフェイルオープンが残る。「あらゆる環境で構造的に消える」わけではない。完全に消すには「ドラッグ中は再描画を止める」設計自体をやめ、`sync()` が進行中のドラッグを新しい掴み手へ結び直す形にする必要がある（→ ISSUE-344）。
+- **検証**: 失敗経路（`pointerup` 不達→`lostpointercapture` で終了）を含む検定 4 件を追加。実 UI（8010）でドラッグ後にクロスヘア移動で凡例値が更新されること、チップのクリック開閉が従来どおり動くことを確認。
+
+## ISSUE-343: [設計] 並べ替え命令だけが「位置（index）」で送られる（ISSUE-341 の結論が命令経路に未適用）（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Low（到達性未実証。ドラッグ中に非同期でペイン集合が変わる場合に限る）
+- **背景**: ISSUE-341 で「並べ替えの導入により位置（paneIndex）とペインの同一性が分離した」と結論し、折りたたみ状態には `paneKey` を導入した。しかし**移動命令そのもの**は pointerdown 時点の `paneIndex` を pointerup まで保持したまま `movePane(from, to)` へ渡している。
+- **問題**: ドラッグ中は凡例の再描画が止まるため `PaneReorderDrag._groups` は凍結される一方、`chart.panes()` は生きている。ドラッグ中に指標適用の完了・テンプレート適用でペイン集合が変わると、`movePane` の範囲判定・価格ペイン判定は通るのに**別のペインが動く**。
+- **抜本的対策**: DTO が既に運んでいる `paneKey` をドラッグ側にも持たせ、`movePane(fromKey, toKey)` として **renderer 内で現在の index へ解決**する。解決できなければ（ペイン消失）`false` で不作為。位置は renderer 内部だけの一時値になり、「位置と同一性を混ぜない」という ISSUE-341 の結論が命令経路にも通る。
+- **備考**: 実装規模が本体の設計変更に及ぶため、並べ替え機能の初版とは分けて着手する（レビュー裁定 2026-08-09）。
+
+## ISSUE-344: [設計] 「ドラッグ中は再描画を止める」方式そのものが停止解除の失敗経路を残す（2026-08-09）
+- **ステータス**: OPEN
+- **重大度**: Low（ISSUE-342 の捕捉導入で主要経路は塞いだ。残るのは捕捉が取れない環境のみ）
+- **背景**: 凡例はクロスヘア移動のたびに DOM を作り直すため、ドラッグ中は掴んでいる要素が消えないよう `render()` を止めている。停止の解除はポインタ捕捉の寿命に紐づけたが（ISSUE-342）、捕捉が取れない環境（`setPointerCapture` 非提供・`pointerId` 非有限・例外）では停止が解けない可能性が残る。
+- **抜本的対策**: 停止という状態を無くす。`sync()` が「進行中のドラッグがあれば、その掴み手を新しく生成された要素へ結び直す」設計にすれば、再描画が何回起きても掴みが外れないため、そもそも止める必要が無い（停止状態が存在しなければ、停止が解けない失敗も存在しない）。
+- **備考**: 初版では捕捉方式で足りる（実 UI 実測で停止残りは再現せず）。恒久設計として次段で扱う。
+## ISSUE-346: [欠陥] 導出既定値 `muted` が混合比で定義されており、地を変えると自分の診断 W-C2 を割り込む（2026-08-09）
+
+- **ステータス**: OPEN
+- **重大度**: 中
+- **検出**: v0.4.0 段階 5-B（導出・診断）完了後の自己検証（実測 2026-08-09）
+- **現象**: 基点 5 語だけを宣言したテーマで、導出された `muted` が地とのコントラスト比 W-C2
+  （閾値 3.0）を割り込む。実測: 純黒地 `#000000` で **2.998**、純白地 `#ffffff` で **2.434**、
+  明るい紙 `#f5f5f5` で **2.399**、中間灰 `#808080` で **1.948**。
+- **根本原因**: 導出係数が**混合比**（`T_MUTED = 0.300` 等）で表されている。混合比は地が変わっても
+  一定だが、コントラスト比は一定にならない。現行の暗い地 `#131722` での `muted` は CR **3.217** で、
+  自分の閾値 3.0 に対する余裕がわずか **7%** しかない。この 1 標本から逆算した係数を他の地へ
+  持ち込むと、地の明るさに応じて容易に閾値を割る。
+- **範囲（実測で切り分け済み）**: 明るい地で発火する W-C2 の大半は**ユーザーが宣言した基点色**
+  （`bullish` 2.334 / `alert` 1.943 / `primary` 2.647 / `range` 1.577 @ 純白）に対するもので、
+  これは「白地に teal・orange・cyan は実際に読みにくい」という**正しい指摘**であり欠陥ではない。
+  純粋に導出の欠陥と言えるのは `muted` の 1 語だけである。現行の暗い地 `#131722` と濃紺 `#0d1b3e`
+  では診断 0 件で、恒等（D-11）と現行の見た目には影響しない。
+- **抜本的解決方法**: 地に従属する導出（`level` / `muted`、必要なら `grid` / `border` / `text`）の
+  係数を、混合比ではなく**対地コントラスト比の目標値**として表す。目標値は現行値から実測で取る
+  （`level` CR 5.249 / `muted` CR 3.217）。コントラスト比は地に対する相対量なので、地を変えても
+  目標値が保たれ、構成上 W-C2 を割らない。現行の暗い地では目標値が現行値そのものなので、
+  恒等（D-11）は定義上保たれる。
+  - 必要な追加: `domain/color_value.js` へ「指定した地に対して目標コントラスト比を満たす色を返す」
+    関数（コントラスト比の逆問題を 8bit 階調で解く。`desaturate` と同じ「到達可能な最良点」の規律）。
+  - 未検証: 中間灰 `#808080` では到達可能な最大 CR が約 5.32 のため、`level` の目標 5.249 は
+    ぎりぎり成立する。到達不能な地での縮退規則（最大到達点へ丸めるか、導出しないか）は要設計。
+- **暫定状態**: 段階 5-B の時点では `diagnoseTheme` の呼び出し元が 0 件のため、この矛盾はユーザーに
+  見えていない。段階 5-C（診断 UI 結線）で可視化されるため、5-C の完了までに解くこと。
+
+## ISSUE-347: [設計入力の誤り] 導出表の `range` 規則「primary と alert の中間」が逆算不能だった（2026-08-09・RESOLVED）
+
+- **ステータス**: RESOLVED
+- **重大度**: 中
+- **検出**: v0.4.0 段階 5-B の実装中に tdd-executor が報告、自己検証で確認（実測 2026-08-09）
+- **現象**: 私が書いた導出表の `range ← mix(primary, alert, 0.5)` が、現行値から逆算できなかった。
+  現行 `range` `#26c6da` は `primary` `#42a5f5` と `alert` `#ffa726` を結ぶ線分上に無く、チャネル別
+  t = `[-0.1481, 16.5000, 0.1304]` と発散する。最小二乗 t = **0.0046** は「`range` ≒ `primary`」＝
+  2 色が判別できない退化解。規則どおり 0.5 を採ると `#a1a68e`（くすんだ黄緑）で最大チャネル差 **123**。
+- **根本原因**: 導出表（設計入力）の誤り。現行プリセットは `range` を「主出力と警戒の中間」ではなく
+  **第 3 の寒色**（シアン）として置いており、表が現行の設計思想と食い違っていた。
+- **是正**: 規則を色相回転へ改めた。`range ← rotateHue(primary, -20)`（実測色相差 -20.15 度:
+  primary 206.82 度 → range 186.67 度）。最大チャネル差は **123 → 28** に縮み、`secondary`
+  （`rotateHue(primary, +55)`）と対称な同一の規則に揃った。導出元から `alert` が外れる
+  （`alert` は基点トークンとしては残る）。検定 TC-CD10 / TC-CD10b / TC-CD13 を是正後の設計へ追随。
+- **検証**: indicator_ui 1625 pass / fail 0、replay_ui 347 pass / fail 0。現行の暗い地での診断 0 件を維持。
+
+## ISSUE-348: [欠陥] serve.sh の二重起動判定が「応答の有無」だけを見るため、別ツリーの残存スタックが黙って勝つ（2026-08-09）
+
+- **ステータス**: OPEN
+- **重大度**: 高（開発者が「自分のコードが入っていない UI」を自分のコードとして検証してしまう）
+- **検出**: v0.4.0 段階 5-C の作業中、worktree から `unified_ui/serve.sh` を起動したところ
+  「既に起動済みです」で no-op となり、配信元を実測して判明（2026-08-09）
+- **現象（実測）**: ポート 8000 は HTTP 200 を返すが、配信しているのは worktree ではない。
+  - `/live/js/usecase/catalog.js`（従来から存在） → **200**
+  - `/live/js/domain/color_roles.js`（本機能の段階 1 で追加） → **404**
+  - `/live/js/usecase/color_derivation.js`（段階 5-B で追加） → **404**
+  - `/replay/js/usecase/color_derivation.js` → **404**
+  つまりカラーテーマ機能を 1 つも含まないツリーが 8000 を占有している。
+- **根本原因**: `unified_ui/serve.sh:41-44` の判定が
+  `curl -sf -o /dev/null "http://127.0.0.1:8000/"` であること。これは「何かが応答するか」しか
+  見ておらず、「**どのツリーの**スタックが応答しているか」を見ていない。したがって別チェックアウト
+  （main 側や他の worktree）の残存スタックがポートを握っていると、serve.sh は自分を起動せずに
+  正常終了し、開発者には「起動済み」としか見えない。
+- **同一機構の再発**: ISSUE-355（「初期化に失敗しました: controller.setColorThemeProvider is not a
+  function」）はこの機構の帰結だった。あのときは残存プロセスを止めて起動し直すことで**症状**を
+  消したが、判定そのものを直していないため再発した。プロセスを止めるのは応急処置であって、
+  原因の除去ではない。
+- **抜本的解決方法**: 稼働中スタックに**自分が何を配信しているか**を答えさせ、serve.sh がそれを
+  自分の `REPO_ROOT` と照合する。
+  1. `unified_ui/router.py` に配信元を返す診断エンドポイント（例 `/__serving_root`）を足し、
+     `tools/dev_paths.sh` が解決した実パスを返す。
+  2. `serve.sh` の判定を「200 が返るか」から「**返ってきた配信元が自分の `REPO_ROOT` と一致するか**」へ
+     変える。一致すれば従来どおり no-op。**不一致なら黙って終了せず、配信元の実パスを示して
+     エラー終了する**（どのツリーが握っているかが即座に分かる）。
+  3. 勝手に停止・奪取はしない（他セッションの作業中スタックを落とす破壊的操作になる）。
+     停止は人の判断に委ねる。
+- **なぜ「ポートを分ければよい」ではないのか**: ポート固定はライブ 8000 / リプレイ 8280 の運用規約
+  であり（memory: fixed-ports-and-serve-scripts）、臨時ポートでの回避は規約違反かつ症状の回避。
+  直すべきは「占有者の同一性を確認しない判定」である。
+- **当面の影響**: 段階 5-C はまだ node 検定の段階なので実装は止まらない。ただしブラウザ実 UI 検証を
+  行う前に本件を解くか、少なくとも配信元を実測して確認すること
+  （memory: verify-in-real-ui-only / worktree-cannot-verify-backend）。
+
+## ISSUE-349: [欠陥] 導出 `text` が混合比のままで対地コントラストの下限を持たず、最も読ませる語が図の下限すれすれになる（2026-08-09）
+
+- **ステータス**: OPEN
+- **重大度**: 中
+- **検出**: v0.4.0 段階 5-C-1（`level` / `muted` の目標 CR 化）の通過条件検証中、tdd-executor が
+  **全 2^24 = 16,777,216 の地を全数走査**して発見（実測 2026-08-09）
+- **現象（実測）**:
+  1. `CR(text, surface)` の**全域最小は 3.3172**（地 `#ec0202`）。`text` は語彙の中で最も読ませる
+     トークンでありながら、図の下限 W-C2（3.0）を辛うじて超える値まで落ちる。
+  2. その帰結として、147 地（全体の 0.00088%・すべて `#ea0042` / `#ec0202` 近傍の高彩度な深紅〜赤紫）で
+     3 段の梯子（`muted` < `level` < `text`）が潰れる。**潰れ方は地によって 2 通りある**（実測）:
+     - 地 `#ec0202`（CR(text) = 3.3172・全域最小）→ text `#fcd1d1` / level `#fcd1d1` / muted `#fcd0d0`
+       ＝ **`level` が `text` に潰れる**（伸びしろが最小なので上段が先に届く。`muted` は 3.3 に届き分離する）
+     - 地 `#ea0042`（CR(text) = 3.3353）→ text `#fbd1dd` / level `#fbd0dc` / muted `#fbd0dc`
+       ＝ **`level` が `muted` に潰れる**（CR 3.3116 = 3.3116）
+     いずれの場合も潰れる組に `level` が含まれる（梯子の中段が上下どちらかへ吸われる）。
+  3. 分離の成否は `CR(text, surface) = 3.3355` に鋭い境界を持つ（上で成立・以下で失敗）。
+  4. W-C2（CR < 3.0）は全 16,777,216 地で **0 件**。すなわち本件は「読めない色ができる」問題ではなく
+     「意味が分離しない色ができる」問題である。
+- **根本原因**: `text = mix(surface, 対比側, 0.820)` が**混合比**で定義されており、対地コントラストに
+  下限を持たないこと。混合比は地が変わっても一定だが、コントラスト比は一定にならない。これは
+  ISSUE-346 が `muted` について指摘したのと**同一の病因**であり、5-C-1 では `level` / `muted` の 2 語
+  だけを目標 CR 方式へ移したため、梯子の一番上（`text`）が混合比のまま残った。
+  伸びしろは捨てられている: 地 `#ec0202` の到達可能最大 CR は **4.589** だが、mix 0.820 は **3.317**
+  までしか使っておらず、**1.38 倍**の余地を未使用のまま残している。3 段の梯子
+  （`muted` 3.3 < `level` < `text`）を 0.52% の隙間に載せられないのは、隙間が狭いからではなく
+  **上の段が低すぎる**からである。
+- **本件が衝突対策とは独立に立つ理由**: `text` は軸ラベル等の「読ませる文字」であり、語彙の中で
+  最も高いコントラストを要求される。それが図の下限すれすれの 3.317 に留まるのは、`level` /
+  `muted` の衝突とは無関係に、それ自体が欠陥である。
+- **抜本的解決方法**: `text` にも対地コントラストの下限を持たせる（`level` / `muted` と同じ規律へ揃える）。
+- **未解決の設計課題（これが解けるまで着手しない）**: 素朴な形（`text` を常に `mixAtContrast` へ通し、
+  目標を `max(CR(mix 0.820), 下限)` とする）は**実測で棄却済み**。地 `#131722` の `text` が
+  `#d5d5d7` → `#d4d5d7` へ動いた。原因は CR → 色の逆問題が**厳密な往復にならない**こと
+  （目標 CR に等距離の隣接階調が 2 点あり、同点処理で下側を拾う）。恒等が壊れ、TC-CD05 / TC-CD13 の
+  期待値まで動く。これは**不可能性ではなく同点規則の問題**である。是正時の通過条件:
+  1. 下限が binding でない地では、mix 値を**厳密に**再現すること（恒等を壊さない）
+  2. 分岐で書かないこと（縮退を分岐で書くと境界が新しいバグの住処になる）
+  3. 是正後、`CR(text, surface)` の全域最小が下限以上になり、分離が破れる地が 0 になること
+- **段階 5-C での扱い（暫定ではなく設計判断）**: 147 地では W-C1 診断が発火して、潰れた組を
+  ユーザーに知らせる。これを検定で固定する（発火することを assert し、「出るはず」で済ませない）。
+  検定は地ごとの組を逐語で固定したうえで、**「W-C1 の組には必ず `level` が含まれる」という一般性質**も
+  固定する。後者は `text` を是正して潰れ方が変わっても成り立ち続けるため、是正に耐える。導出は既定値の供給であって制約ではないため、当該の地でも
+  `level` / `muted` を**明示宣言すれば**ユーザーは望む色を置ける。高彩度の深紅を地に選ぶと
+  「参照水準」と「非強調」を意味のある差で置く余地が物理的に無い、というのは事実として正しく、
+  嘘の色を作るよりそう告げる方が正しい。
+- **関連**: ISSUE-346（同一病因・`muted` / `level` 側は 5-C-1 で是正）
+
+## ISSUE-350: [不具合・実 UI 実測] リプレイ UI がローソク取得で必ず失敗する — 素の fetch を配る既定値の再発（2026-08-10・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-10）
+- **重大度**: 高（リプレイ UI がデータを 1 本も取得できない＝主機能が起動しない）
+- **検出**: 指標カラーテーマ v0.4.0 の実 UI 検証中、http://127.0.0.1:8000/replay/ を開いて検出
+- **現象（実測）**: ブラウザコンソールに `TypeError: Failed to execute 'fetch' on 'Window': Illegal
+  invocation`（`ReplayCursor.fetchCandles` → `replay_cursor.js:94`）が出て、ローソクが取得できない。
+- **根本原因**: `simulator/replay_ui/web/js/replay.js:51` の既定値が
+  `fetchImpl = (typeof fetch !== 'undefined' ? fetch : undefined)` ＝ **素の（束縛していない）
+  fetch 参照**だったこと。ネイティブ fetch は `this === window/globalThis` を要求するため、
+  受け取った側が `this._fetch(...)` とメソッド呼び出しした瞬間に必ず失敗する。
+- **再発である**: この病因は ISSUE-233 の作業中に実 UI 実測で確定済みで、
+  `forming_seq_client.js:63` のコメントが**本既定値を真因として名指ししている**
+  （「注入されたのが…replay.js の既定値 fetchImpl = fetch のとき…必ず失敗する」）。
+  当時の対処は消費者側の局所回避 2 件（forming_seq_client.js は関数参照へ退避、
+  composition_root_front.js:49 は自前で bind）で、**真因である既定値は直していなかった**。
+  そのため、後から入った消費者（replay/replay_cursor.js＝ISSUE-256 のリファクタで導入、
+  replay/forming_plan_cache.js）が回避を書いておらず、同じ不具合が再発した。
+- **是正（真因の除去）**: 束縛を**グローバルを捕まえる 1 箇所**で行う。replay.js に
+  `boundFetch = globalThis.fetch.bind(globalThis)` を置き、fetchImpl の既定値をこれにした。
+  消費者ごとに回避を置く形は採らない — 回避は書き忘れた消費者が現れるたびに再発するため
+  （実際 2 度目がこれで起きた）。レシーバが失われる場所は 1 点なので、そこを塞ぐ。
+- **なぜ 347 件の検定が緑のまま壊れていたか（検定の穴）**: 既存の node 検定はすべて fake fetch を
+  注入するため、**既定値の経路を 1 度も通らない**。振る舞いの検定では構造的に捕まえられない。
+  よって `tests/global_fetch_binding.test.js` を追加し、「グローバル fetch を値として捕まえる箇所は
+  必ず束縛する」という**書き方の不変条件**を走査で固定した。走査は行をまたぐ捕捉を拾うため
+  ファイル全体を正規化してから見る。あわせて**検出器の自己検査**（既知の不良形を実際に検出し、
+  既存の安全な形を誤検出しない）を置いた — 検出しない検出器を置かないため。
+- **検証**: リプレイ UI のコンソールエラー **0 件**（是正前 1 件）。テーマメニュー・プリセット
+  「基本」・チャート描画・--ct-surface(#131722) をブラウザで確認。replay_ui 検定 347 → **350 pass / fail 0**。
+- **本件はカラーテーマ機能とは無関係**（replay_cursor.js を最後に触ったのは 7bec1b4）。
+  実 UI 検証を行ったから見つかった。
+## ISSUE-351: [運用] worktree が破棄されず 37 件 6.4GB 滞留し、うち 1 件が生成データ 4.9GB を抱える（2026-08-09）
 - **ステータス**: OPEN（整理手順の提案・削除は未実施＝破壊的操作のため承認前）
 - **重大度**: Middle（ディスク圧迫。作業成果の喪失リスクは無いが、放置すると増え続ける）
 - **実測（2026-08-09・`git worktree list` / `du -sh`）**:
@@ -5745,7 +6293,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **未検証**: 24 件の `agent-*` worktree が現在も稼働中のエージェントに使用されていないこと
   （最終更新 2026-07-16 は強い傍証だが、稼働プロセスとの突合は未実施）。
 
-## ISSUE-351: [仕様不整合] 指標カラーテーマ基本設計 v0.2.0 に、同時に成立しない規定が 4 件あった（2026-08-09）
+## ISSUE-352: [仕様不整合] 指標カラーテーマ基本設計 v0.2.0 に、同時に成立しない規定が 4 件あった（2026-08-09）
 - **ステータス**: RESOLVED（段階 1・2 の実装で是正済み。基本設計書を v0.3.0 へ改訂して反映）
 - **重大度**: High（いずれも「テーマ未設定時に現行の見た目を 1 色も変えない」という D-11 恒等テーマ／
   §7.4 段階 1 通過条件 6 を破るか、色の解決を非決定にする）
@@ -5791,7 +6339,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **検証**: `indicator_ui` 1290 件 / `replay_ui` 338 件すべて pass（fail 0）。段階 1 通過条件 1〜8 と
   段階 2 通過条件 1〜8 を台帳・回帰・単体テスト 12 ファイルで固定した。
 
-## ISSUE-352: [仕様不整合] 段階 3 のファイル配置・ホスト契約が実コードと突合しなかった（2026-08-09）
+## ISSUE-353: [仕様不整合] 段階 3 のファイル配置・ホスト契約が実コードと突合しなかった（2026-08-09）
 - **ステータス**: RESOLVED（段階 3 着手前に基本設計書を v0.3.1 へ改訂して是正）
 - **重大度**: High（そのまま実装すると、撤去済みの手書き複製が復活し、ホスト契約は構造充足テストで落ちる）
 - **発見の経緯**: 段階 3 着手前のアーキテクチャ評価（architecture-executor）で、設計書 §7.1／§7.3／§6.1 と
@@ -5825,7 +6373,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   ロック UI（段階 4）が無い状態で導入すると、テンプレートから**すべての**系列色が落ち、ユーザーが
   色を守る手段が存在しない＝厳密に悪化するため。両者は同時に出荷する。
 
-## ISSUE-353: [誤報・取消] リプレイ配信ツリーの共有 symlink 欠落を「404 になる破損」と誤判定した（2026-08-09）
+## ISSUE-354: [誤報・取消] リプレイ配信ツリーの共有 symlink 欠落を「404 になる破損」と誤判定した（2026-08-09）
 
 - **ステータス**: INVALID（前提が実測で覆った。対策は不要）
 - **重大度**: なし（起票時は「高」としていたが、症状そのものが存在しない）
@@ -5933,7 +6481,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 </details>
 
-## ISSUE-354: [運用] 統合 UI を worktree から起動しても、既存プロセスが占有する core だけ別ツリーを配信し続ける（2026-08-09）
+## ISSUE-355: [運用] 統合 UI を worktree から起動しても、既存プロセスが占有する core だけ別ツリーを配信し続ける（2026-08-09）
 - **ステータス**: OPEN（原因は特定済み・恒久策は未実施）
 - **重大度**: 高（症状が「実装したはずのメソッドが is not a function」という**コードの欠陥に見える**形で出る）
 - **発見の経緯**: 指標カラーテーマ段階 3 の実 UI 検証中、統合 UI が
@@ -5965,7 +6513,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **回避手順（恒久策までの運用）**: 統合 UI を別ツリーから起動する前に 8000 / 8001 / 8281 の
   既存プロセスをすべて停止する。`ps aux | grep web_dir` で各 core の配信ツリーを確認できる。
 
-## ISSUE-355: [欠陥] クロムの派生 3 点とローソク復元 2 点がテーマに追従しない（配信はされるが使われない）（2026-08-09）
+## ISSUE-356: [欠陥] クロムの派生 3 点とローソク復元 2 点がテーマに追従しない（配信はされるが使われない）（2026-08-09）
 - **ステータス**: RESOLVED（段階 3 で是正。`ChartRenderer` が配信済み 20 点を `_chromeSlots` として保持し、
   減光ローソク・透明化からの復元・分析 tint・背景フォールバックがすべてそこから読む。検定境界を実利用点へ移した）
 - **重大度**: 高（FR-C13／§7.4 段階 3 通過条件 6／§7.6 受入基準 6 に違反。依頼者が名指しした「背景だけ変わって減光帯が旧色に残る」破綻そのもの）
@@ -5998,11 +6546,11 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **横展開の観点**: 「単一情報源の表から値を配る」設計では、配信の検定だけでは不十分で、**消費点ごとに
   「その値を使っているか」を固定**しないと同種の取り残しが再発する。段階 4 以降の配線でも同じ規律を適用する。
 
-## ISSUE-356: [欠陥] ChartRenderer のクロム出力に書き手が 4 つあり、テーマ適用が表示モードを壊す（2026-08-09）
+## ISSUE-357: [欠陥] ChartRenderer のクロム出力に書き手が 4 つあり、テーマ適用が表示モードを壊す（2026-08-09）
 - **ステータス**: RESOLVED（段階 3 で是正。`_deriveCandleOptions` / 背景導出へ一本化し、表示モードを
   `_analysisTintOn` / `_dimRange` として保持。透明化・分析 tint・ペア減光の 3 症状が同時に消えたことを実測で確認）
 - **重大度**: 高（§7.6 受入基準 16 に違反。分析モードの状態表示が無言で誤る）
-- **発見の経緯**: 段階 3 の再レビューで指摘され、本会話で独立に実証した。ISSUE-355 の是正（読み手を保持値へ寄せる）
+- **発見の経緯**: 段階 3 の再レビューで指摘され、本会話で独立に実証した。ISSUE-356 の是正（読み手を保持値へ寄せる）
   が「読み側」だけを直し「書き側」に届いていなかったことが露呈した形。
 - **根本原因**: `ChartRenderer` は「今の見え方」を決める入力を 2 系統もつ。
   (a) 配信済みのクロム色 `_chromeSlots`（20 点）、(b) 表示モード（ローソク透明化／ペア外減光／分析 tint）。
@@ -6026,7 +6574,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **横展開の観点**: 「状態 × 状態」で出力が決まる箇所は、状態ごとに書き手を作らず**導出を 1 本にする**。
   検定も単一状態ではなく**状態の組み合わせ**で固定する（本件は各状態単独のテストはすべて緑だった）。
 
-## ISSUE-357: [重複] テーマ用 CSS 50 規則のうち 35 規則が `tpl-*` の接頭辞違いの逐語複製（2026-08-09）
+## ISSUE-358: [重複] テーマ用 CSS 50 規則のうち 35 規則が `tpl-*` の接頭辞違いの逐語複製（2026-08-09）
 - **ステータス**: OPEN（段階 3 の再レビューで検出・本件では未着手）
 - **重大度**: 中（片方だけ直すと 2 つのメニューの見た目が割れる。ISSUE-304 / ISSUE-278 #16 と同じ病因）
 - **実測**: `css/app.css` の新規 50 規則のうち、`tpl-menu` / `tpl-dialog` と**同名（接頭辞のみ違い）かつ宣言本文が
@@ -6036,7 +6584,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **本件で着手しない理由**: 既存 `.tpl-*` の markup へクラスを足す変更を伴い、テンプレート機能への退行リスクが
   段階 3 のスコープを超える。段階 4 か独立の是正として、テンプレート側の回帰を固定してから実施する。
 
-## ISSUE-358: [計測誤り] §2.2 E-21 のアプリ UI 色リテラル計測が陳腐化し、8 桁 hex を構造的に取りこぼしていた（2026-08-09）
+## ISSUE-359: [計測誤り] §2.2 E-21 のアプリ UI 色リテラル計測が陳腐化し、8 桁 hex を構造的に取りこぼしていた（2026-08-09）
 - **ステータス**: OPEN（v0.4.0 の設計評価で検出・文書是正は v0.4.0 で行う）
 - **重大度**: 中（撤回対象の規模を 3 割ほど過小に見せていた）
 - **実測（2026-08-09・現ツリー）**: `indigators/indicator_ui/web/css/app.css`
@@ -6057,7 +6605,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   置換後のリテラル数を同じ 4 形式で再計測する（形式を 1 つでも落とすと「置換完了」を誤って主張しうる）。
 - **横展開**: `\b` を境界に使う色リテラル走査は他にもある。8 桁 hex を扱う可能性のある走査は同様に是正する。
 
-## ISSUE-359: [制約] Market Profile の TPO バーは HSL 色相ランプのためテーマ 2 色から再現できず、v0.4.0 で変更対象外に残す（2026-08-09）
+## ISSUE-360: [制約] Market Profile の TPO バーは HSL 色相ランプのためテーマ 2 色から再現できず、v0.4.0 で変更対象外に残す（2026-08-09）
 - **ステータス**: OPEN（依頼者裁定 2026-08-09「MP は今回見送る」）
 - **重大度**: 中（依頼者指示「全ての色を変更できる仕様にしろ」に対し、1 箇所だけ可否が残る）
 - **実測**: `indigators/market_profile/web/js/adapter/front/market_profile_primitive.js:37-42` は
@@ -6077,166 +6625,3 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **将来の解き方**: 選択肢 2（専用トークン 2 語）か、ランプを「端点 2 色 ＋ 補間空間の指定（RGB/HSL）」
   として表せる形へ一般化する。後者なら語彙を増やさずに済む可能性がある（未検証）。
 
-## ISSUE-345: [欠陥] 導出既定値 `muted` が混合比で定義されており、地を変えると自分の診断 W-C2 を割り込む（2026-08-09）
-
-- **ステータス**: OPEN
-- **重大度**: 中
-- **検出**: v0.4.0 段階 5-B（導出・診断）完了後の自己検証（実測 2026-08-09）
-- **現象**: 基点 5 語だけを宣言したテーマで、導出された `muted` が地とのコントラスト比 W-C2
-  （閾値 3.0）を割り込む。実測: 純黒地 `#000000` で **2.998**、純白地 `#ffffff` で **2.434**、
-  明るい紙 `#f5f5f5` で **2.399**、中間灰 `#808080` で **1.948**。
-- **根本原因**: 導出係数が**混合比**（`T_MUTED = 0.300` 等）で表されている。混合比は地が変わっても
-  一定だが、コントラスト比は一定にならない。現行の暗い地 `#131722` での `muted` は CR **3.217** で、
-  自分の閾値 3.0 に対する余裕がわずか **7%** しかない。この 1 標本から逆算した係数を他の地へ
-  持ち込むと、地の明るさに応じて容易に閾値を割る。
-- **範囲（実測で切り分け済み）**: 明るい地で発火する W-C2 の大半は**ユーザーが宣言した基点色**
-  （`bullish` 2.334 / `alert` 1.943 / `primary` 2.647 / `range` 1.577 @ 純白）に対するもので、
-  これは「白地に teal・orange・cyan は実際に読みにくい」という**正しい指摘**であり欠陥ではない。
-  純粋に導出の欠陥と言えるのは `muted` の 1 語だけである。現行の暗い地 `#131722` と濃紺 `#0d1b3e`
-  では診断 0 件で、恒等（D-11）と現行の見た目には影響しない。
-- **抜本的解決方法**: 地に従属する導出（`level` / `muted`、必要なら `grid` / `border` / `text`）の
-  係数を、混合比ではなく**対地コントラスト比の目標値**として表す。目標値は現行値から実測で取る
-  （`level` CR 5.249 / `muted` CR 3.217）。コントラスト比は地に対する相対量なので、地を変えても
-  目標値が保たれ、構成上 W-C2 を割らない。現行の暗い地では目標値が現行値そのものなので、
-  恒等（D-11）は定義上保たれる。
-  - 必要な追加: `domain/color_value.js` へ「指定した地に対して目標コントラスト比を満たす色を返す」
-    関数（コントラスト比の逆問題を 8bit 階調で解く。`desaturate` と同じ「到達可能な最良点」の規律）。
-  - 未検証: 中間灰 `#808080` では到達可能な最大 CR が約 5.32 のため、`level` の目標 5.249 は
-    ぎりぎり成立する。到達不能な地での縮退規則（最大到達点へ丸めるか、導出しないか）は要設計。
-- **暫定状態**: 段階 5-B の時点では `diagnoseTheme` の呼び出し元が 0 件のため、この矛盾はユーザーに
-  見えていない。段階 5-C（診断 UI 結線）で可視化されるため、5-C の完了までに解くこと。
-
-## ISSUE-346: [設計入力の誤り] 導出表の `range` 規則「primary と alert の中間」が逆算不能だった（2026-08-09・RESOLVED）
-
-- **ステータス**: RESOLVED
-- **重大度**: 中
-- **検出**: v0.4.0 段階 5-B の実装中に tdd-executor が報告、自己検証で確認（実測 2026-08-09）
-- **現象**: 私が書いた導出表の `range ← mix(primary, alert, 0.5)` が、現行値から逆算できなかった。
-  現行 `range` `#26c6da` は `primary` `#42a5f5` と `alert` `#ffa726` を結ぶ線分上に無く、チャネル別
-  t = `[-0.1481, 16.5000, 0.1304]` と発散する。最小二乗 t = **0.0046** は「`range` ≒ `primary`」＝
-  2 色が判別できない退化解。規則どおり 0.5 を採ると `#a1a68e`（くすんだ黄緑）で最大チャネル差 **123**。
-- **根本原因**: 導出表（設計入力）の誤り。現行プリセットは `range` を「主出力と警戒の中間」ではなく
-  **第 3 の寒色**（シアン）として置いており、表が現行の設計思想と食い違っていた。
-- **是正**: 規則を色相回転へ改めた。`range ← rotateHue(primary, -20)`（実測色相差 -20.15 度:
-  primary 206.82 度 → range 186.67 度）。最大チャネル差は **123 → 28** に縮み、`secondary`
-  （`rotateHue(primary, +55)`）と対称な同一の規則に揃った。導出元から `alert` が外れる
-  （`alert` は基点トークンとしては残る）。検定 TC-CD10 / TC-CD10b / TC-CD13 を是正後の設計へ追随。
-- **検証**: indicator_ui 1625 pass / fail 0、replay_ui 347 pass / fail 0。現行の暗い地での診断 0 件を維持。
-
-## ISSUE-347: [欠陥] serve.sh の二重起動判定が「応答の有無」だけを見るため、別ツリーの残存スタックが黙って勝つ（2026-08-09）
-
-- **ステータス**: OPEN
-- **重大度**: 高（開発者が「自分のコードが入っていない UI」を自分のコードとして検証してしまう）
-- **検出**: v0.4.0 段階 5-C の作業中、worktree から `unified_ui/serve.sh` を起動したところ
-  「既に起動済みです」で no-op となり、配信元を実測して判明（2026-08-09）
-- **現象（実測）**: ポート 8000 は HTTP 200 を返すが、配信しているのは worktree ではない。
-  - `/live/js/usecase/catalog.js`（従来から存在） → **200**
-  - `/live/js/domain/color_roles.js`（本機能の段階 1 で追加） → **404**
-  - `/live/js/usecase/color_derivation.js`（段階 5-B で追加） → **404**
-  - `/replay/js/usecase/color_derivation.js` → **404**
-  つまりカラーテーマ機能を 1 つも含まないツリーが 8000 を占有している。
-- **根本原因**: `unified_ui/serve.sh:41-44` の判定が
-  `curl -sf -o /dev/null "http://127.0.0.1:8000/"` であること。これは「何かが応答するか」しか
-  見ておらず、「**どのツリーの**スタックが応答しているか」を見ていない。したがって別チェックアウト
-  （main 側や他の worktree）の残存スタックがポートを握っていると、serve.sh は自分を起動せずに
-  正常終了し、開発者には「起動済み」としか見えない。
-- **同一機構の再発**: ISSUE-354（「初期化に失敗しました: controller.setColorThemeProvider is not a
-  function」）はこの機構の帰結だった。あのときは残存プロセスを止めて起動し直すことで**症状**を
-  消したが、判定そのものを直していないため再発した。プロセスを止めるのは応急処置であって、
-  原因の除去ではない。
-- **抜本的解決方法**: 稼働中スタックに**自分が何を配信しているか**を答えさせ、serve.sh がそれを
-  自分の `REPO_ROOT` と照合する。
-  1. `unified_ui/router.py` に配信元を返す診断エンドポイント（例 `/__serving_root`）を足し、
-     `tools/dev_paths.sh` が解決した実パスを返す。
-  2. `serve.sh` の判定を「200 が返るか」から「**返ってきた配信元が自分の `REPO_ROOT` と一致するか**」へ
-     変える。一致すれば従来どおり no-op。**不一致なら黙って終了せず、配信元の実パスを示して
-     エラー終了する**（どのツリーが握っているかが即座に分かる）。
-  3. 勝手に停止・奪取はしない（他セッションの作業中スタックを落とす破壊的操作になる）。
-     停止は人の判断に委ねる。
-- **なぜ「ポートを分ければよい」ではないのか**: ポート固定はライブ 8000 / リプレイ 8280 の運用規約
-  であり（memory: fixed-ports-and-serve-scripts）、臨時ポートでの回避は規約違反かつ症状の回避。
-  直すべきは「占有者の同一性を確認しない判定」である。
-- **当面の影響**: 段階 5-C はまだ node 検定の段階なので実装は止まらない。ただしブラウザ実 UI 検証を
-  行う前に本件を解くか、少なくとも配信元を実測して確認すること
-  （memory: verify-in-real-ui-only / worktree-cannot-verify-backend）。
-
-## ISSUE-348: [欠陥] 導出 `text` が混合比のままで対地コントラストの下限を持たず、最も読ませる語が図の下限すれすれになる（2026-08-09）
-
-- **ステータス**: OPEN
-- **重大度**: 中
-- **検出**: v0.4.0 段階 5-C-1（`level` / `muted` の目標 CR 化）の通過条件検証中、tdd-executor が
-  **全 2^24 = 16,777,216 の地を全数走査**して発見（実測 2026-08-09）
-- **現象（実測）**:
-  1. `CR(text, surface)` の**全域最小は 3.3172**（地 `#ec0202`）。`text` は語彙の中で最も読ませる
-     トークンでありながら、図の下限 W-C2（3.0）を辛うじて超える値まで落ちる。
-  2. その帰結として、147 地（全体の 0.00088%・すべて `#ea0042` / `#ec0202` 近傍の高彩度な深紅〜赤紫）で
-     3 段の梯子（`muted` < `level` < `text`）が潰れる。**潰れ方は地によって 2 通りある**（実測）:
-     - 地 `#ec0202`（CR(text) = 3.3172・全域最小）→ text `#fcd1d1` / level `#fcd1d1` / muted `#fcd0d0`
-       ＝ **`level` が `text` に潰れる**（伸びしろが最小なので上段が先に届く。`muted` は 3.3 に届き分離する）
-     - 地 `#ea0042`（CR(text) = 3.3353）→ text `#fbd1dd` / level `#fbd0dc` / muted `#fbd0dc`
-       ＝ **`level` が `muted` に潰れる**（CR 3.3116 = 3.3116）
-     いずれの場合も潰れる組に `level` が含まれる（梯子の中段が上下どちらかへ吸われる）。
-  3. 分離の成否は `CR(text, surface) = 3.3355` に鋭い境界を持つ（上で成立・以下で失敗）。
-  4. W-C2（CR < 3.0）は全 16,777,216 地で **0 件**。すなわち本件は「読めない色ができる」問題ではなく
-     「意味が分離しない色ができる」問題である。
-- **根本原因**: `text = mix(surface, 対比側, 0.820)` が**混合比**で定義されており、対地コントラストに
-  下限を持たないこと。混合比は地が変わっても一定だが、コントラスト比は一定にならない。これは
-  ISSUE-345 が `muted` について指摘したのと**同一の病因**であり、5-C-1 では `level` / `muted` の 2 語
-  だけを目標 CR 方式へ移したため、梯子の一番上（`text`）が混合比のまま残った。
-  伸びしろは捨てられている: 地 `#ec0202` の到達可能最大 CR は **4.589** だが、mix 0.820 は **3.317**
-  までしか使っておらず、**1.38 倍**の余地を未使用のまま残している。3 段の梯子
-  （`muted` 3.3 < `level` < `text`）を 0.52% の隙間に載せられないのは、隙間が狭いからではなく
-  **上の段が低すぎる**からである。
-- **本件が衝突対策とは独立に立つ理由**: `text` は軸ラベル等の「読ませる文字」であり、語彙の中で
-  最も高いコントラストを要求される。それが図の下限すれすれの 3.317 に留まるのは、`level` /
-  `muted` の衝突とは無関係に、それ自体が欠陥である。
-- **抜本的解決方法**: `text` にも対地コントラストの下限を持たせる（`level` / `muted` と同じ規律へ揃える）。
-- **未解決の設計課題（これが解けるまで着手しない）**: 素朴な形（`text` を常に `mixAtContrast` へ通し、
-  目標を `max(CR(mix 0.820), 下限)` とする）は**実測で棄却済み**。地 `#131722` の `text` が
-  `#d5d5d7` → `#d4d5d7` へ動いた。原因は CR → 色の逆問題が**厳密な往復にならない**こと
-  （目標 CR に等距離の隣接階調が 2 点あり、同点処理で下側を拾う）。恒等が壊れ、TC-CD05 / TC-CD13 の
-  期待値まで動く。これは**不可能性ではなく同点規則の問題**である。是正時の通過条件:
-  1. 下限が binding でない地では、mix 値を**厳密に**再現すること（恒等を壊さない）
-  2. 分岐で書かないこと（縮退を分岐で書くと境界が新しいバグの住処になる）
-  3. 是正後、`CR(text, surface)` の全域最小が下限以上になり、分離が破れる地が 0 になること
-- **段階 5-C での扱い（暫定ではなく設計判断）**: 147 地では W-C1 診断が発火して、潰れた組を
-  ユーザーに知らせる。これを検定で固定する（発火することを assert し、「出るはず」で済ませない）。
-  検定は地ごとの組を逐語で固定したうえで、**「W-C1 の組には必ず `level` が含まれる」という一般性質**も
-  固定する。後者は `text` を是正して潰れ方が変わっても成り立ち続けるため、是正に耐える。導出は既定値の供給であって制約ではないため、当該の地でも
-  `level` / `muted` を**明示宣言すれば**ユーザーは望む色を置ける。高彩度の深紅を地に選ぶと
-  「参照水準」と「非強調」を意味のある差で置く余地が物理的に無い、というのは事実として正しく、
-  嘘の色を作るよりそう告げる方が正しい。
-- **関連**: ISSUE-345（同一病因・`muted` / `level` 側は 5-C-1 で是正）
-
-## ISSUE-349: [不具合・実 UI 実測] リプレイ UI がローソク取得で必ず失敗する — 素の fetch を配る既定値の再発（2026-08-10・RESOLVED）
-
-- **ステータス**: RESOLVED（2026-08-10）
-- **重大度**: 高（リプレイ UI がデータを 1 本も取得できない＝主機能が起動しない）
-- **検出**: 指標カラーテーマ v0.4.0 の実 UI 検証中、http://127.0.0.1:8000/replay/ を開いて検出
-- **現象（実測）**: ブラウザコンソールに `TypeError: Failed to execute 'fetch' on 'Window': Illegal
-  invocation`（`ReplayCursor.fetchCandles` → `replay_cursor.js:94`）が出て、ローソクが取得できない。
-- **根本原因**: `simulator/replay_ui/web/js/replay.js:51` の既定値が
-  `fetchImpl = (typeof fetch !== 'undefined' ? fetch : undefined)` ＝ **素の（束縛していない）
-  fetch 参照**だったこと。ネイティブ fetch は `this === window/globalThis` を要求するため、
-  受け取った側が `this._fetch(...)` とメソッド呼び出しした瞬間に必ず失敗する。
-- **再発である**: この病因は ISSUE-233 の作業中に実 UI 実測で確定済みで、
-  `forming_seq_client.js:63` のコメントが**本既定値を真因として名指ししている**
-  （「注入されたのが…replay.js の既定値 fetchImpl = fetch のとき…必ず失敗する」）。
-  当時の対処は消費者側の局所回避 2 件（forming_seq_client.js は関数参照へ退避、
-  composition_root_front.js:49 は自前で bind）で、**真因である既定値は直していなかった**。
-  そのため、後から入った消費者（replay/replay_cursor.js＝ISSUE-256 のリファクタで導入、
-  replay/forming_plan_cache.js）が回避を書いておらず、同じ不具合が再発した。
-- **是正（真因の除去）**: 束縛を**グローバルを捕まえる 1 箇所**で行う。replay.js に
-  `boundFetch = globalThis.fetch.bind(globalThis)` を置き、fetchImpl の既定値をこれにした。
-  消費者ごとに回避を置く形は採らない — 回避は書き忘れた消費者が現れるたびに再発するため
-  （実際 2 度目がこれで起きた）。レシーバが失われる場所は 1 点なので、そこを塞ぐ。
-- **なぜ 347 件の検定が緑のまま壊れていたか（検定の穴）**: 既存の node 検定はすべて fake fetch を
-  注入するため、**既定値の経路を 1 度も通らない**。振る舞いの検定では構造的に捕まえられない。
-  よって `tests/global_fetch_binding.test.js` を追加し、「グローバル fetch を値として捕まえる箇所は
-  必ず束縛する」という**書き方の不変条件**を走査で固定した。走査は行をまたぐ捕捉を拾うため
-  ファイル全体を正規化してから見る。あわせて**検出器の自己検査**（既知の不良形を実際に検出し、
-  既存の安全な形を誤検出しない）を置いた — 検出しない検出器を置かないため。
-- **検証**: リプレイ UI のコンソールエラー **0 件**（是正前 1 件）。テーマメニュー・プリセット
-  「基本」・チャート描画・--ct-surface(#131722) をブラウザで確認。replay_ui 検定 347 → **350 pass / fail 0**。
-- **本件はカラーテーマ機能とは無関係**（replay_cursor.js を最後に触ったのは 7bec1b4）。
-  実 UI 検証を行ったから見つかった。

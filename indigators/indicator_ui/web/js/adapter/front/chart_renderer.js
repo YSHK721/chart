@@ -3,13 +3,17 @@
 // 設計入力: 内部設計書 §3.3.4 / §7.1.2。
 // ★ lightweight-charts v5.2.0 の JS API 名（addSeries / addPane / removePane / panes /
 //   createPriceLine / setData / applyOptions / removeSeries / removePriceLine /
-//   subscribeCrosshairMove / createTextWatermark / timeScale / attachPrimitive / priceScale）を
+//   subscribeCrosshairMove / createTextWatermark / timeScale / attachPrimitive / priceScale /
+//   getPane / getHeight / paneIndex / moveTo）を
 //   呼んでよいのは **宣言された隔離単位** に限る:
 //     (a) ChartRenderer 本体とその内部協働子（series_drawer / candle_feed / scale_controller）
 //     (b) チャート生成の bootstrap（chart_bootstrap）
 //     (c) lwc プラグイン契約（ISeriesPrimitive）の実装＝chart を受け取るのが upstream 仕様
 //     (d) 合成根（可視範囲の購読のみ。ChartRenderer へ寄せるのが望ましい残件）
 //   これは ``tests/upstream_isolation_declaration.test.js`` が **実際に走査して強制**する。
+//   同検定は上の API 名リストと自身の施行リストの一致も検査する（宣言だけ増える／施行だけ増える、
+//   という食い違いを構造的に不可能にする）。moveTo だけは canvas 2D の同名 API と衝突するため、
+//   受け手が canvas コンテキストでない場合に upstream と判定する（理由は同検定に記載）。
 //
 //   かつてここは「呼ぶのは本ファイルだけ（§2.2 grep 0 件強制）」と書いていたが、その grep を
 //   実行する仕組みは存在せず、実際は 11 ファイルが呼んでいた（ISSUE-262）。宣言を実態へ正し、
@@ -48,6 +52,52 @@ import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 //     （import 行剥がし）で壊れるため、import 済みシンボルの別行 export
 //     （剥がし後は無害なブロック文）にする。
 export { zoomedPriceRange, clampPriceRange };
+
+// 減光ローソクの色定数（旧 DIM_CANDLE_COLOR = '#16191f'）は本ファイルに置かない。
+//   クロム配線点の単一情報源（CHROME_CURRENT.dimCandle）へ移し、実際に使う値は配信された
+//   `this._chromeSlots.dimCandle` から読む（テーマで変えられる／書き手が 1 箇所に保たれる）。
+//   ここに定数を戻すと、テーマが配った色と描画に使う色が再び食い違う（ISSUE-357 の再発）。
+
+// time 昇順の点列から time が一致する点を返す（無ければ undefined）。ローソク・指標系列とも
+//   lightweight-charts のデータ規約で time 昇順のため二分探索で引く（右クリック 1 回あたり
+//   系列数ぶんの探索になるので線形走査にしない）。time は UTCTimestamp（数値）を前提とし、
+//   business day 形式など数値でない時刻表現は「引けない」（undefined）＝黙って別の足を返さない。
+function pointAtTime(points, time) {
+  if (!Array.isArray(points) || typeof time !== 'number') {
+    return undefined;
+  }
+  let lo = 0;
+  let hi = points.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const t = points[mid] ? points[mid].time : undefined;
+    if (typeof t !== 'number') {
+      return undefined;
+    }
+    if (t === time) {
+      return points[mid];
+    }
+    if (t < time) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return undefined;
+}
+
+// 系列の指定 time の値（線・ヒストグラム＝value / ローソク＝close）。無ければ undefined。
+//   series.data() は upstream API のため呼び出しは本モジュールに閉じる（隔離維持）。
+function pointValueAt(series, time) {
+  if (!series || typeof series.data !== 'function') {
+    return undefined;
+  }
+  const p = pointAtTime(series.data(), time);
+  if (p === undefined || p === null) {
+    return undefined;
+  }
+  return (typeof p === 'object') ? (p.value ?? p.close) : p;
+}
 
 // sessions（日別プロファイル分割）: ローソク透明化用の色。透明＝価格軸は残しローソクだけ消す。
 //   透明でないときの色は「配信済みのクロム色」から導出する（_deriveCandleOptions）。
@@ -119,6 +169,16 @@ export class ChartRenderer {
     // instanceId -> { lines, priceLines, hlinePayloads, visible, scaleHost, priceLineHost,
     //                 pane, watermark, paneName }
     this._instances = new Map();
+    // ペインの**位置に依らない安定 ID**（ISSUE-341）。並べ替えを入れた結果 paneIndex は
+    //   「今どこに居るか（位置）」しか表さなくなったため、「どのペインか（同一性）」を別に持つ。
+    //   pane オブジェクトを鍵にした WeakMap＝ペインが消えれば採番も一緒に消える（後始末が要らない）。
+    //   実測（vendor/lightweight-charts.js v5.2.0）: chart.panes() は内部ペインごとに生成した
+    //   ラッパを `fb()` がキャッシュして返すため、同じペインには毎回同じオブジェクトが返る。
+    //   moveTo（並べ替え）は内部配列の順序だけを変えるのでラッパの同一性は保たれる。
+    this._paneKeys = new WeakMap();
+    this._paneKeySeq = 0;
+    // ペイン並び順の変化を受け取る購読者（既定 no-op＝後方互換）。setPaneOrderObserver で結ぶ。
+    this._onPaneOrder = () => {};
     this._mainStretchSet = false;
     // 増分2: setCandleTrim の直近トリム末尾 index（位置不変時の再 setData 回避＝プロト lastTrimIdx）。
     //   null=未トリム。setCandles で候補が変わるためリセットする。
@@ -560,16 +620,67 @@ export class ChartRenderer {
     this._onPaneLegend(this.paneLegendModel(param));
   }
 
+  // 指標ペインの並べ替え（ドラッグ&ドロップの着地点・ユーザー指示 2026-08-09）。
+  //
+  //   upstream の並べ替え API（IPaneApi.moveTo）を呼ぶ唯一の点。バンドル実測（v5.2.0）で
+  //   `moveTo(to)` は `splice(from,1)` → `splice(to,0,pane)` の **抜いて差し込む** 意味であり、
+  //   上下どちらへ動かしても「to 番の位置へ入る」で一意に決まる（swapPanes＝単純交換とは別物）。
+  //
+  //   価格ペイン（メイン系列が居るペイン）は移動元にも移動先にもしない。overlay 指標の系列は
+  //   `chart.addSeries(...)`（既定 paneIndex=0）で追加されるため、価格ペインを 0 番から動かすと
+  //   以後の overlay 指標が別ペインへ落ちる（実装上の前提が崩れる）。指示の対象は指標ペインで
+  //   あり、価格ペインを固定しておけば前提と指示の双方を満たす。
+  //
+  //   @returns {boolean} 実際に並べ替えたら true（不正な指定・移動不能は false＝呼び出し側は無視してよい）。
+  movePane(fromIndex, toIndex) {
+    if (typeof this._chart.panes !== 'function') {
+      return false;
+    }
+    const panes = this._chart.panes() ?? [];
+    const from = Number(fromIndex);
+    const to = Number(toIndex);
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) {
+      return false;
+    }
+    if (from < 0 || from >= panes.length || to < 0 || to >= panes.length) {
+      return false;
+    }
+    if (!this._isPaneMovable(from, panes.length) || !this._isPaneMovable(to, panes.length)) {
+      return false;
+    }
+    const pane = panes[from];
+    if (!pane || typeof pane.moveTo !== 'function') {
+      return false;
+    }
+    pane.moveTo(to);
+    // ペイン構成が変わる（index と top がずれる）ため凡例を引き直す（remove() と同じ規律）。
+    this._emitPaneLegend(null);
+    // 並び順の変化を購読者（＝状態を持つ controller）へ通知する。並び順の保存は state 側の
+    //   関心であり、本 class は「いまこの順である」という事実を渡すだけ（永続化は知らない）。
+    this._onPaneOrder(this.paneOrderInstanceIds());
+    return true;
+  }
+
+  // ペイン並び順の変化を購読する（composition が controller の永続化へ結ぶ・省略時 no-op）。
+  setPaneOrderObserver(fn) {
+    this._onPaneOrder = typeof fn === 'function' ? fn : () => {};
+  }
+
   // ペイン別凡例の DTO（幾何＋値）を返す。**upstream に触れるのはここだけ**で、View へは
   //   数値・文字列だけを渡す（§2.2 隔離）。
   //
-  //   { groups: [{ paneIndex, top, height, rows: [{ instanceId, values: [{name,value,color}] }] }] }
+  //   { groups: [{ paneIndex, top, height, movable, rows: [{ instanceId, values: [{name,value,color}] }] }] }
   //
   //   top はチャート要素上端からの px。lightweight-charts は各ペインを 1px の区切りで縦に積むため
   //   （実測 2026-08-06: paneSize=[497,166,165] / チャート高 858 / 時間軸 28 → 残り 2px が区切り 2 本）、
   //   区切り高は「チャート高 − 時間軸 − ペイン高合計」をペイン間の数で割って求める。値を定数で
   //   持たない（upstream のスタイル変更で静かにずれるのを避ける）。
-  paneLegendModel(param = null) {
+  //
+  //   valuePickerFor（任意・ユーザー指示 2026-08-09）: slot ごとの値取り出し方（Strategy）。既定は
+  //   「クロスヘア位置の値・無ければ保持した最新値」＝従来の凡例規約。指定した足の情報を
+  //   取り出す `barInfoAt` は、ここへ「その足の値だけを返す（最新値へ落ちない）」picker を渡す。
+  //   在席集合・ペイン分類・並び・可視の扱いは本メソッド 1 か所に保つ（値の出所だけを差し替える）。
+  paneLegendModel(param = null, valuePickerFor = null) {
     const seriesData = (param && param.seriesData) || null;
     const heights = this._paneHeights();
     const separator = this._paneSeparatorPx(heights);
@@ -585,19 +696,52 @@ export class ChartRenderer {
       if (!byPane.has(paneIndex)) {
         byPane.set(paneIndex, []);
       }
-      byPane.get(paneIndex).push({ instanceId, values: this._slotValues(slot, seriesData) });
+      const pick = typeof valuePickerFor === 'function'
+        ? valuePickerFor(slot)
+        : (series, key) => this._crosshairValue(slot, series, key, seriesData);
+      byPane.get(paneIndex).push({ instanceId, values: this._slotValues(slot, pick) });
     }
+    const paneKeys = this._paneKeysOrdered();
     const groups = [];
     for (const [paneIndex, rows] of byPane) {
       groups.push({
         paneIndex,
+        // 位置に依らないペインの同一性（ISSUE-341）。折りたたみ状態など「ペインについて回る」
+        //   ものはこちらを鍵にする。位置の情報（top/height/movable）は paneIndex 側のまま。
+        paneKey: paneKeys[paneIndex] ?? null,
         top: tops[paneIndex] ?? 0,
         height: heights[paneIndex] ?? 0,
+        // 掴んで動かせるか（凡例の見た目＝掴める合図はこの 1 値だけで決まる）。判定の単一情報源は
+        //   _isPaneMovable で、movePane の受理判定と同じものを使う（affordance と実際の可否を割らない）。
+        movable: this._isPaneMovable(paneIndex, heights.length),
         rows,
       });
     }
     groups.sort((a, b) => a.paneIndex - b.paneIndex);
     return { groups };
+  }
+
+  // ペインの安定 ID を paneIndex 順の配列で返す（ISSUE-341）。価格ペインも含めて全ペインへ採番する。
+  //   初めて見たペインに 'p1','p2',… を振り、以後そのペインには同じ ID を返す。番号は**採番順**
+  //   であって位置ではない（並べ替えても振り直さない＝それが「位置に依らない」の意味）。
+  //   panes() 非提供の環境（Fake/SSR）は空配列＝ID なしで縮退し、View 側が paneIndex へ退避する。
+  _paneKeysOrdered() {
+    if (typeof this._chart.panes !== 'function') {
+      return [];
+    }
+    const panes = this._chart.panes() ?? [];
+    return panes.map((pane) => {
+      if (!pane || typeof pane !== 'object') {
+        return null;
+      }
+      let key = this._paneKeys.get(pane);
+      if (!key) {
+        this._paneKeySeq += 1;
+        key = `p${this._paneKeySeq}`;
+        this._paneKeys.set(pane, key);
+      }
+      return key;
+    });
   }
 
   // 各ペインの高さ（px・ペイン順）。非提供環境（Fake/SSR）は空配列＝幾何なしで縮退する。
@@ -631,6 +775,31 @@ export class ChartRenderer {
     return rest > 0 ? rest / (heights.length - 1) : 0;
   }
 
+  /**
+   * 現在のペイン順に並んだ **pane 指標の instanceId** を返す（ユーザー指示「永続化しろ」2026-08-09）。
+   *
+   * 並び順を保存する側（usecase）は、それを applied 配列の順序として持つ。その入力となる
+   * 「いまの実際の並び」を答えるのが本メソッドで、upstream（pane.paneIndex）に触れるのは
+   * 従来どおり本 class に閉じる。
+   *
+   * overlay 指標（専用 pane を持たない＝価格ペイン）は含めない（並べ替えの対象外）。
+   * 既に外されたペイン（paneIndex() が -1）も含めない。除去途中の slot を混ぜると、
+   * 存在しない並びを保存して次回復元を壊す（`_pricePaneIndex` の -1 除外と同じ理由）。
+   */
+  paneOrderInstanceIds() {
+    const withPane = [];
+    for (const [instanceId, slot] of this._instances) {
+      if (!slot || !slot.pane || typeof slot.pane.paneIndex !== 'function') {
+        continue;
+      }
+      const idx = slot.pane.paneIndex();
+      if (Number.isInteger(idx) && idx >= 0) {
+        withPane.push({ instanceId, idx });
+      }
+    }
+    return withPane.sort((a, b) => a.idx - b.idx).map((e) => e.instanceId);
+  }
+
   // slot が属するペイン番号（overlay＝専用 pane を持たない指標は 0＝価格ペイン）。
   _slotPaneIndex(slot) {
     if (slot.pane && typeof slot.pane.paneIndex === 'function') {
@@ -640,9 +809,44 @@ export class ChartRenderer {
     return 0;
   }
 
-  // slot の各系列の表示値。クロスヘア位置に値があればそれ、無ければ保持した最新値。
+  // メイン系列（ローソク）が居るペインの番号。価格ペインは並べ替えの対象外（movePane 参照）。
+  //   番号を 0 と決め打たず upstream へ問う（将来 addPane 順が変わっても判定がずれない）。
+  //   getPane 非提供の環境（Fake・旧版）は 0（生成時の既定ペイン）へ縮退する。
+  //
+  //   受理するのは **0 以上の整数だけ**（🟡-3 是正 2026-08-09）。バンドル実測（v5.2.0）で
+  //   `paneIndex()` は `hf(t){return this.od.indexOf(t)}` 由来であり、内部配列に無いペインでは
+  //   **-1** を返す。-1 は Number.isFinite を通ってしまい、価格ペイン番号として受理すると
+  //   `_isPaneMovable` の `paneIndex !== this._pricePaneIndex()` が全ペインで真になる
+  //   ＝禁じているはずの価格ペイン移動が通る（ガードがフェイルオープンする）。
+  _pricePaneIndex() {
+    const ms = this._mainSeries;
+    if (ms && typeof ms.getPane === 'function') {
+      const pane = ms.getPane();
+      if (pane && typeof pane.paneIndex === 'function') {
+        const idx = pane.paneIndex();
+        if (Number.isInteger(idx) && idx >= 0) {
+          return idx;
+        }
+      }
+    }
+    return 0;   // 範囲外（-1＝未登録）・非整数は既定ペインへ縮退する。
+  }
+
+  // 当該ペインを並べ替えられるか。価格ペインは対象外、指標ペインが 1 つだけなら動かす先が無い。
+  //   paneCount 未指定時は upstream へ問い直す（凡例 DTO は算出済みの本数を渡して二度引きを避ける）。
+  _isPaneMovable(paneIndex, paneCount = null) {
+    const total = paneCount == null ? this._paneHeights().length : paneCount;
+    if (total < 3) {
+      return false;   // 価格ペイン＋指標ペイン 1 つ以下＝入れ替える相手が居ない。
+    }
+    return paneIndex !== this._pricePaneIndex();
+  }
+
+  // slot の各系列の表示値。**どの値を取るか**は picker（Strategy）が決め、本メソッドは
+  //   「どの系列を出すか（可視の扱い）」と「名前・色をどう付けるか」だけを担う。
   //   系列単位で非表示（styleMeta.visible=false）のものは出さない（凡例と描画を一致させる）。
-  _slotValues(slot, seriesData) {
+  //   picker: (series, key) => value|undefined。
+  _slotValues(slot, pick) {
     const out = [];
     if (slot.visible === false) {
       return out;   // インスタンスごと非表示（eye OFF）＝値は出さない（行は残す＝再表示できる）。
@@ -652,17 +856,22 @@ export class ChartRenderer {
       if (meta && meta.visible === false) {
         continue;
       }
-      const d = seriesData ? seriesData.get(series) : undefined;
-      let value;
-      if (d !== undefined && d !== null) {
-        value = (typeof d === 'object') ? (d.value ?? d.close) : d;
-      }
-      if (value === undefined || value === null) {
-        value = slot.lastValues ? slot.lastValues.get(key) : undefined;
-      }
-      out.push({ name: meta ? meta.name : key, value, color: meta ? meta.color : undefined });
+      out.push({ name: meta ? meta.name : key, value: pick(series, key), color: meta ? meta.color : undefined });
     }
     return out;
+  }
+
+  // 既定の値取り出し（凡例の規約）: クロスヘア位置に値があればそれ、無ければ保持した最新値。
+  _crosshairValue(slot, series, key, seriesData) {
+    const d = seriesData ? seriesData.get(series) : undefined;
+    let value;
+    if (d !== undefined && d !== null) {
+      value = (typeof d === 'object') ? (d.value ?? d.close) : d;
+    }
+    if (value === undefined || value === null) {
+      value = slot.lastValues ? slot.lastValues.get(key) : undefined;
+    }
+    return value;
   }
 
   // 読み取り DTO を構築する（プレーンなデータ構造・series 実体や lwc 型は含めない＝隔離維持）。
@@ -685,6 +894,56 @@ export class ChartRenderer {
     // sessions: 当日 MP（POC/VAH/VAL）を time で引いて DTO に載せる（供給時のみ・sessions 表示中）。
     const sessionMP = (this._sessionMP && time != null) ? (this._sessionMP.get(time) || null) : null;
     return { time, ohlc, overlays, sessionMP };
+  }
+
+  /**
+   * チャート要素の左上を原点とする x 座標が指す足の情報を返す（ユーザー指示 2026-08-09・右クリックコピー）。
+   *
+   * 返すのは情報ウィンド（クロスヘア読み取り欄＋ペイン別凡例）と**同じ材料**で、
+   *   { time, ohlc:{open,high,low,close}|null, sessionMP:{poc,vah,val}|null,
+   *     indicators: [{ instanceId, values: [{ name, value, color }] }] }
+   * 座標→足の解決は upstream（timeScale().coordinateToTime）に触れる本 class に閉じる。
+   *
+   * クロスヘア経路との違いは **値が無い足で最新値へ落ちない**ことだけ（凡例は「クロスヘアが
+   * 無ければ最新値」という表示規約を持つが、足を名指しでコピーする場面でその足に無い値を
+   * 最新値で埋めると、別の足の値を「その足の値」として配ってしまう）。
+   *
+   * @param {number} x  チャート要素の左上基準の x（px）。
+   * @returns {object|null} 足が無い座標（データ範囲外・時間軸未確定）は null。
+   */
+  barInfoAt(x) {
+    const time = this._timeAtCoordinate(x);
+    if (time == null) {
+      return null;
+    }
+    const candle = pointAtTime(this.getCandles(), time);
+    const ohlc = (candle && candle.open !== undefined)
+      ? { open: candle.open, high: candle.high, low: candle.low, close: candle.close }
+      : null;
+    const model = this.paneLegendModel(null, () => (series) => pointValueAt(series, time));
+    const indicators = [];
+    for (const g of model.groups) {
+      for (const r of g.rows ?? []) {
+        indicators.push({ instanceId: r.instanceId, values: r.values ?? [] });
+      }
+    }
+    const sessionMP = this._sessionMP ? (this._sessionMP.get(time) || null) : null;
+    return { time, ohlc, sessionMP, indicators };
+  }
+
+  // x 座標（チャート要素基準）が指す足の time。範囲外・非対応環境（Fake/SSR）は null。
+  //   バンドル実測（v5.2.0）: `coordinateToTime` は座標→バー index（Math.ceil）→ 元の time
+  //   （originalTime）へ写す。データ範囲外の index は null を返す＝足の無い所では開かない。
+  _timeAtCoordinate(x) {
+    if (!Number.isFinite(x) || typeof this._chart.timeScale !== 'function') {
+      return null;
+    }
+    const ts = this._chart.timeScale();
+    if (!ts || typeof ts.coordinateToTime !== 'function') {
+      return null;
+    }
+    const t = ts.coordinateToTime(x);
+    return t == null ? null : t;
   }
 
   // sessions の time→{poc,vah,val} Map を供給する（読み取り欄で当日 MP を出す）。null で非表示。

@@ -16,21 +16,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { setupReplay } from '../js/replay.js';
+import { fakeChart, fakeController, fakeEl } from './_fakes.js';
 
 // --- fake DOM 要素（auto-vivify）: onclick/addEventListener/classList/value/options を最小提供 ---
-function fakeEl(extra = {}) {
-  return {
-    _l: {}, value: '', min: 0, max: 0, textContent: '', title: '', hidden: false, disabled: false,
-    style: {}, dataset: {}, options: [], innerHTML: '',
-    classList: { toggle() {}, add() {}, remove() {} },
-    appendChild() {}, removeChild() {},
-    addEventListener(ev, fn) { (this._l[ev] ||= []).push(fn); },
-    set onclick(fn) { this._onclick = fn; }, get onclick() { return this._onclick; },
-    set oninput(fn) { this._oninput = fn; }, get oninput() { return this._oninput; },
-    ...extra,
-  };
-}
-
 function fakeDoc() {
   const els = {
     'rp-speed': fakeEl({ value: '1' }),
@@ -43,20 +31,6 @@ function fakeDoc() {
     createElement: () => fakeEl(),
     addEventListener() {},
     _els: els,
-  };
-}
-
-function fakeChart() {
-  const ts = { fitContent() {}, setVisibleLogicalRange() {}, getVisibleLogicalRange() { return null; } };
-  return { timeScale: () => ts, panes: () => [], chartElement: () => null };
-}
-
-function fakeController() {
-  return {
-    _timeframe: '1D', _recentBars: 0,
-    setUntilTime() {}, isRecomputing() { return false; },
-    async recomputeAllApplied({ preRender } = {}) { if (preRender) preRender(); },
-    async recomputeFormingLatest() {},
   };
 }
 
