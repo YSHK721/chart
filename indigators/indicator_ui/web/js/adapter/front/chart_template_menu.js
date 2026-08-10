@@ -3,9 +3,14 @@
 // 設計入力（唯一の仕様源）: .doc/indicator-management-ui/基本設計_チャートテンプレート.md v0.1.1
 //   §6.1（`index.html` には空マウント `<div class="tpl-menu" id="tpl-menu"></div>` のみを置き、
 //        項目 DOM は共有 JS が生成する＝`timeframe_menu.js` の ISSUE-123 方針）、
-//   §6.2（メニュー構造＝保存／保存済み一覧／この時間足に紐付け／管理・各行右側に紐付け先時間足の
+//   §6.2（メニュー構造＝保存／保存済み一覧／この時間足に紐付け／管理・各行に紐付け先時間足の
 //        バッジ・`activeTemplateId` 一致行は `is-active`・開閉挙動は時間足メニューと同一）、
 //   §7.1（controller を知らない＝DIP）。
+//
+// 設計からの差分（ユーザー指示 2026-08-10「中点は必要なし」）: §6.2 が挙げる「● = 現在足に紐付け」
+//   の印は撤去した。現在足への紐付けはバッジの時間足表記で読めるため、印は同じ情報を 2 つ目の
+//   記号で重ねて示していた（同一概念に複数の表現を作らない）。印の判定にのみ使っていた現在足
+//   （`timeframe`）も、載せる理由が無くなったのでビューモデルから外している。
 //
 // 責務（SRP）: メニュー DOM 生成と開閉。テンプレートの保存・適用・紐付け・管理そのものは
 //   注入コールバック（onSelect / onSave / onBind / onManage）の呼び出しに委譲する
@@ -30,15 +35,13 @@ export class ChartTemplateMenu {
    * @param {?function}[opts.onManage]       「管理（改名・削除）…」クリック。
    */
   constructor({
-    document: doc, templates = [], bindings = {}, activeTemplateId = null, timeframe = null,
+    document: doc, templates = [], bindings = {}, activeTemplateId = null,
     provide = null, onSelect = null, onSave = null, onBind = null, onManage = null,
   } = {}) {
     this._doc = doc;
     this._templates = Array.isArray(templates) ? templates : [];
     this._bindings = bindings && typeof bindings === 'object' ? bindings : {};
     this._activeTemplateId = activeTemplateId ?? null;
-    // 現在の時間足（§6.2 の「● = 現在足に紐付け」印の判定に使う。未注入なら印を出さない）。
-    this._timeframe = timeframe ?? null;
     this._provide = typeof provide === 'function' ? provide : null;
     this._onSelect = typeof onSelect === 'function' ? onSelect : null;
     this._onSave = typeof onSave === 'function' ? onSave : null;
@@ -182,7 +185,7 @@ export class ChartTemplateMenu {
   }
 
   // ビューモデル注入（U3: controller が保存・改名・削除・適用・紐付けの後に呼ぶ）。
-  render({ templates, bindings, activeTemplateId, timeframe } = {}) {
+  render({ templates, bindings, activeTemplateId } = {}) {
     if (Array.isArray(templates)) {
       this._templates = templates;
     }
@@ -191,9 +194,6 @@ export class ChartTemplateMenu {
     }
     if (activeTemplateId !== undefined) {
       this._activeTemplateId = activeTemplateId;
-    }
-    if (timeframe !== undefined) {
-      this._timeframe = timeframe;
     }
     this._renderRows();
   }
@@ -230,10 +230,6 @@ export class ChartTemplateMenu {
     if (t.templateId === this._activeTemplateId) {
       row.classList.add('is-active');
     }
-    // 「● = 現在足に紐付け」（§6.2 のメニュー構造）。現在足が未注入・未紐付けなら空。
-    const mark = doc.createElement('span');
-    mark.className = 'tpl-menu-mark';
-    mark.textContent = this._timeframe && this._bindings[this._timeframe] === t.templateId ? '●' : '';
     const name = doc.createElement('span');
     name.className = 'tpl-menu-name';
     name.textContent = t.name;
@@ -243,7 +239,7 @@ export class ChartTemplateMenu {
       .filter(([, id]) => id === t.templateId)
       .map(([tf]) => tf);
     badge.textContent = tfs.length > 0 ? `(${tfs.join(', ')})` : '';
-    row.append(mark, name, badge);
+    row.append(name, badge);
     return row;
   }
 

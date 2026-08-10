@@ -131,8 +131,6 @@ export class ChartTemplateController {
       templates: this._templates,
       bindings: this._bindings,
       activeTemplateId: this.activeTemplateId(),
-      // §6.2 の「● = 現在足に紐付け」印の判定に使う現在の時間足。
-      timeframe: this._host._timeframe,
     };
   }
 

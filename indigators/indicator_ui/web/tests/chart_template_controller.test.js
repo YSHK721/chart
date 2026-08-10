@@ -551,10 +551,10 @@ test('TC-C18 結線: attachUi は後から注入されたメニューへ現在�
   // Act
   ctl.attachUi({ menu });
   // Assert
-  assert.deepEqual(menu.renders, [{ templates: [TPL_A], bindings: { '1D': 'tpl#1' }, activeTemplateId: null, timeframe: '1D' }]);
+  assert.deepEqual(menu.renders, [{ templates: [TPL_A], bindings: { '1D': 'tpl#1' }, activeTemplateId: null }]);
 });
 
-test('TC-C17 ビューモデル: templates / bindings / activeTemplateId を返す（メニューの再描画元）', () => {
+test('TC-C17 ビューモデル: templates / bindings / activeTemplateId を返す（メニューの再描画元・timeframe は載せない）', () => {
   // Arrange
   const host = fakeHost();
   host._state.uiState.activeTemplateId = 'tpl#1';
@@ -565,5 +565,8 @@ test('TC-C17 ビューモデル: templates / bindings / activeTemplateId を返�
   assert.deepEqual(vm.templates, [TPL_A]);
   assert.deepEqual(vm.bindings, { '1D': 'tpl#1' });
   assert.equal(vm.activeTemplateId, 'tpl#1');
-  assert.equal(vm.timeframe, '1D', '「● = 現在足に紐付け」印の判定に使う現在足（§6.2）');
+  // 「● = 現在足に紐付け」印は撤去した（ユーザー指示 2026-08-10「中点は必要なし」）。印の判定に
+  //   使うためだけに載せていた現在足も、載せる理由が無くなったのでビューモデルから外す
+  //   （使われないキーを残すと「何のためにあるのか」を読み手に考えさせる）。
+  assert.equal('timeframe' in vm, false, '印の撤去に伴い timeframe は載せない');
 });

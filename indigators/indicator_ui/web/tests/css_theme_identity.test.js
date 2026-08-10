@@ -60,8 +60,14 @@ function expandThemeVars(css) {
 
 // --- 接続前の実測目録（逐語）---------------------------------------------
 
+// 目録の更新履歴（数が動いたら**なぜ動いたか**をここに残す。動かないことを守る検定なので、
+//   理由の無い更新は退行の隠蔽になる）:
+//   2026-08-10 `.tpl-menu-mark`（保存済み一覧の「● = 現在足に紐付け」印）を撤去
+//     （ユーザー指示「中点は必要なし」）。印だけが使っていた宣言 2 行が消え、
+//     `#2962ff` 23→22（--ct-uiAccent の解決値）・`#ffffff` 38→37（--ct-uiTextStrong の解決値）。
+//     総数 303→301・色数 47 は不変（どちらの色も他の宣言に在席）。
 const EXPECTED_APP = [
-  ['#2a2e39', 60], ['#ffffff', 38], ['#d1d4dc', 36], ['#2962ff', 23], ['#787b86', 22],
+  ['#2a2e39', 60], ['#ffffff', 37], ['#d1d4dc', 36], ['#2962ff', 22], ['#787b86', 22],
   ['#9aa0ad', 14], ['#1e222d', 10], ['#131722', 9], ['#23272f', 8], ['#b2b5be', 8],
   ['#363a45', 7], ['#ef5350', 7], ['#e6e9ef', 5], ['rgba(0,0,0,.55)', 5], ['#b03a30', 4],
   ['rgba(0,0,0,.45)', 4], ['rgba(0,0,0,0.5)', 4], ['rgba(30,34,45,.82)', 4], ['#1e53e5', 3],
@@ -90,11 +96,11 @@ function assertInventory(css, expected, label) {
   assert.deepEqual(diffs, [], `${label}: 解決される色が接続前から動いた\n${diffs.join('\n')}`);
 }
 
-test('通過条件 1: app.css がテーマ未設定で解決する色は接続前と全数一致（303 件 / 47 色）', () => {
+test('通過条件 1: app.css がテーマ未設定で解決する色は接続前と全数一致（301 件 / 47 色）', () => {
   // Arrange / Act / Assert
   assertInventory(APP_CSS, EXPECTED_APP, 'app.css');
   const total = EXPECTED_APP.reduce((s, [, n]) => s + n, 0);
-  assert.equal(total, 303, '接続前の実測総数');
+  assert.equal(total, 301, '接続前の実測総数（2026-08-10 の ● 撤去ぶん 2 件を減算）');
   assert.equal(EXPECTED_APP.length, 47, '接続前の実測色数');
 });
 
