@@ -303,7 +303,7 @@ start_core() {
 #   argv に web 根の絶対パスが載るので、停止側が「どのツリーの sim core か」を特定できる。
 start_sim_core() {
   setsid env PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" "$VENV_PY" -c "
-from simulator.sim_ui.main.composition_root_jobs import build_sim_job_app as build_sim_app
+from simulator.sim_ui.main.composition_root_indicators import build_sim_indicator_app as build_sim_app
 from simulator.sim_ui.framework.serve_sim_jobs import serve
 serve(build_sim_app(web_dir='${SIM_WEB_DIR}'), port=${SIM_PORT})
 " >/dev/null 2>&1 &
