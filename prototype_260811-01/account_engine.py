@@ -197,12 +197,16 @@ class AccountEngine:
         return sign * (price - pos.entry_price) * pos.units * self._cfg.point_value
 
     def _required_margin(self, positions: List[Position], bid: float, ask: float) -> float:
-        """必要証拠金。既定 "entry"＝約定代金基準（公式 §3(2)）／"mark"＝時価基準（比較用）。"""
+        """必要証拠金。既定 "entry"＝約定代金基準（公式 §3(2)）／"mark"＝時価基準（比較用）。
+
+        entry 基準は正解式 :func:`official_required_margin` へ委譲する（式の単一ソース）。
+        """
         cfg = self._cfg
         if cfg.margin_basis == "entry":
-            notional = sum(p.units * p.entry_price for p in positions)
-        else:
-            notional = sum(p.units for p in positions) * self._mark_price(bid, ask)
+            return official_required_margin(
+                [(p.entry_price, p.units) for p in positions],
+                cfg.margin_rate, cfg.point_value)
+        notional = sum(p.units for p in positions) * self._mark_price(bid, ask)
         return notional * cfg.point_value * cfg.margin_rate
 
     # ---- 本体 ----
@@ -300,18 +304,25 @@ class AccountEngine:
                          closed=closed, losscut_hit=losscut_hit)
 
 
-# ---- 静的式（閉形式・verify.py の比較対象） ----
+# ---- 正解の静的式（出典: docs/oanda_indices_cfd_about.md・採点の基準はこちら） ----
+
+def official_required_margin(entries: List[Tuple[float, float]], margin_rate: float,
+                             point_value: float = 1.0) -> float:
+    """公式の必要証拠金式（§3(2)「約定代金に必要証拠金率を乗じて算出」＝建値固定）。
+
+    M = Σuᵢ·Pᵢ·V × mr。エンジンの margin_basis="entry" と同一定義（単一ソース）。
+    """
+    return sum(p * u for p, u in entries) * point_value * margin_rate
+
 
 def official_losscut_price(direction: str, entries: List[Tuple[float, float]],
                            balance: float, margin_rate: float,
                            point_value: float = 1.0) -> Optional[float]:
-    """公式仕様（必要証拠金＝約定代金×証拠金率で固定・§3(2)）のロスカット価格閉形式。
+    """公式仕様のロスカット価格閉形式（採点の基準）。
 
-    有効証拠金 = E + Σuᵢ·(X−Pᵢ)·V（ロング）が req0 = Σuᵢ·Pᵢ·V·mr に達する X:
-        long:  X = avgP·(1+mr) − E/(U·V)
-        short: X = avgP·(1−mr) + E/(U·V)
-    旧計算機 HTML の時価連動式（:func:`html_losscut_price`）とは異なる。差は verify.py V7 が
-    定量化する（ロングでは公式のほうが高い＝手前で発動＝時価連動式は危険側に誤る）。
+    発動条件（§1-2）: 有効証拠金 ≤ 必要証拠金 M（:func:`official_required_margin`・建値固定）。
+        long:  E + Σuᵢ·(X−Pᵢ)·V = M → X = avgP·(1+mr) − E/(U·V)
+        short: E + Σuᵢ·(Pᵢ−X)·V = M → X = avgP·(1−mr) + E/(U·V)
     """
     total_units = sum(u for _, u in entries)
     if total_units <= 0:
@@ -323,18 +334,16 @@ def official_losscut_price(direction: str, entries: List[Tuple[float, float]],
     return avg_p * (1.0 - margin_rate) + balance / cap_u
 
 
-# ---- 静的式（現行 HTML build() の写し・verify.py の比較対象） ----
+# ---- 修正前の式（歴史記録・ISSUE-370 の採点対象。正解ではない） ----
 
-def html_losscut_price(direction: str, entries: List[Tuple[float, float]],
-                       balance: float, margin_rate: float, point_value: float = 1.0) -> Optional[float]:
-    """integrated_position_sizing_calculator.html build() のロスカット価格式（逐語移植）。
+def superseded_mark_based_losscut_price(direction: str, entries: List[Tuple[float, float]],
+                                        balance: float, margin_rate: float,
+                                        point_value: float = 1.0) -> Optional[float]:
+    """修正前の計算機 HTML にあったロスカット価格式（時価連動仮定・公式記載になく撤去済み）。
 
-    long:  X = (avgP − E/U) / (1 − mr)
-    short: X = (avgP + E/U) / (1 + mr)
-    （HTML では lcDistCore=(E−reqMargin)/U と mFactor=1/(1∓mr) の積として書かれているが、
-      代数的に上式と同値。verify.py がこの同値性とエンジン実測の両方を数値で確認する。）
-
-    entries: [(price, units), ...]（全約定前提）。U=Σunits×V。
+    long:  X = (avgP − E/U) / (1 − mr)   ／  short: X = (avgP + E/U) / (1 + mr)
+    正解（:func:`official_losscut_price`）との差の記録（verify.py V7）のためだけに残す。
+    2026-08-11 に ISSUE-370 で本体から撤去済み。新規コードで使ってはならない。
     """
     total_units = sum(u for _, u in entries)
     if total_units <= 0:
@@ -344,13 +353,3 @@ def html_losscut_price(direction: str, entries: List[Tuple[float, float]],
     if direction == LONG:
         return (avg_p - balance / cap_u) / (1.0 - margin_rate)
     return (avg_p + balance / cap_u) / (1.0 + margin_rate)
-
-
-def html_required_margin(entries: List[Tuple[float, float]], margin_rate: float,
-                         point_value: float = 1.0) -> float:
-    """現行 HTML の必要証拠金式（約定代金＝**建値**ベース。逐語移植）。
-
-    注意: エンジンの必要証拠金は**時価**ベースで毎 tick 変動する。HTML のこの式は
-    「発注時点（時価＝建値）」のスナップショットに相当する。verify.py が差を数値化する。
-    """
-    return sum(p * u for p, u in entries) * point_value * margin_rate
