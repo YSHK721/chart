@@ -7005,3 +7005,53 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **対策案**: 計算機 HTML（および ISSUE-368 のチャート統合時の domain 実装）のロスカット式を
   公式閉形式へ差し替え、説明文の「時価ベースで変動」記載を「約定代金固定（公式 §3(2)）」へ
   是正する。参照実装は ISSUE-369 のエンジン（golden fixture）。
+
+## ISSUE-371: [不具合] test_composition_root_arg_parity が develop 先頭で赤（2026-08-11・OPEN）
+
+- **検出日**: 2026-08-11
+- **検出経路**: feature/sim-mode-phase1 の TDD 工程で全テスト実行時に検出。当該変更を退避しても
+  同一失敗が再現し、develop 先頭（623a482）由来であることを実測で確認済み。
+- **症状**: `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form`
+  が `ClipboardGateway.navigator: 本番の合成根は渡さないのに、全テストが注入している` で失敗
+  （当該ファイル単体で 1 failed / 6 passed・tools/tests 全体で 1 failed / 172 passed）。
+- **原因**: 未調査（本 Issue は記録のみ。sim モード統合の変更とは無関係）。
+- **対策案**: ClipboardGateway の本番結線とテスト注入の乖離を調査し、検定の意図
+  （テスト専用前提の禁止）に照らして本番側結線または検定対象の実態を突合する。
+
+## ISSUE-372: [申し送り] sim モード統合 Phase 1 のレビュー申し送り（2026-08-11・OPEN）
+
+- **検出日**: 2026-08-11
+- **検出経路**: feature/sim-mode-phase1 のコードレビュー（code-review-executor）。いずれも
+  Phase 1 のマージを阻害しない改善項目として承認済みの申し送り。
+- **項目**:
+  1. `MAIN_ROOT` / `VENV_PY` 解決ロジックが `unified_ui/serve.sh:77-83`・
+     `simulator/replay_ui/serve.sh:19-28`・`indigators/indicator_ui/serve.sh` の 3 本に手書き複製。
+     `tools/dev_paths.sh` へ単一ソース化する（現に venv 検査の取り残しが 1 件発生した）。
+  2. `unified_ui/router.py`: `--upstream` を 1 つでも指定すると既定マッピングが全消えする。
+     マージまたは欠落モードの警告を検討。
+  3. `unified_ui/web/js/mode_ui_view.js:22-24`: `MODE` を `id.toUpperCase()` で導出しており、
+     `-` を含む将来 id で記法が壊れる。表側で id を `^[a-z0-9]+$` に制約する。
+  4. `unified_ui/web/js/op_log.js:112`: body クラスの部分一致判定。完全一致へ。
+  5. モード名の単一ソースが front（`mode_table.js`）と起動側（`serve.sh` の `--upstream` 文字列）に
+     二重化しており、突合が `tools/tests/test_unified_serve_sim_core.py` の正規表現依存。
+     モード台帳の 1 ファイル化を検討。
+  6. 既存行の陳腐化コメント群（`unified_ui/web/index.html` の title「Live / Replay」・
+     `sw_rewrite.js:1-13` ヘッダの旧 Red フェーズ記述・`unified_root.js:245-246` の重複行 等）。
+  7. `enterSim`/`enterLive` の SW 経路防御について、SW 経路を実際に通る要求の実在性が未実証
+     （front 経路は routedFetch が全 prefix 付与を実測済み）。`setSwMode` 往復が 1 回増えており、
+     SW の ack が返らない環境では最大 1 秒の遅延になりうる。
+- **対策案**: Phase 2 以降の各対象着手時に、該当モジュールを触るタイミングで是正する
+  （1 は serve.sh を触る Phase 2 冒頭が適時）。
+
+## ISSUE-373: [不具合] リプレイ入場時に /live/intraday が 404（2026-08-11・OPEN）
+
+- **検出日**: 2026-08-11
+- **検出経路**: feature/sim-mode-phase1 のブラウザ実 UI 検証（Phase 1 通過条件 4）で検出。
+  develop 配信（/workspaces/app・8000）でも同一再現を実測済み＝本変更の回帰ではなく既存事象。
+- **症状**: リプレイ有効化の直後に `/live/intraday?datasetRef=jp225_tick&...&mode=ohlc_1min` が
+  発行され 404。intraday はリプレイ core の endpoint であり、ライブ core には存在しない。
+- **原因（推定・未確定）**: リプレイ入場処理が発行する intraday 取得が、activeMode 更新
+  （遷移末尾）より前に routedFetch を通るため遷移前モード（live）の prefix が付く。
+  要因の確定は未実施。
+- **対策案**: 発行タイミングと mode 解決の突合を実測し、発行元がモード確定後に要求する形へ
+  是正する（unified_root の遷移順序・replay 入場処理の発行点を確認）。
