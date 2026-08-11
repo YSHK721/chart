@@ -81,10 +81,10 @@ _PAGE = """<!DOCTYPE html>
     <canvas id="c_equity" height="240"></canvas>
   </div>
   <div class="panel">
-    <p class="panel-title">3. 必要証拠金（時価ベース・実測）</p>
-    <div class="legend"><span><i style="background:var(--margin)"></i>必要証拠金＝Σ数量×時価×V×証拠金率</span></div>
+    <p class="panel-title">3. 必要証拠金</p>
+    <div class="legend"><span><i style="background:var(--margin)"></i>必要証拠金（<span id="basisdesc"></span>）</span></div>
     <canvas id="c_margin" height="200"></canvas>
-    <p class="chart-cap">建値固定ではなく時価で毎 tick 変動する（現行計算機 HTML の reqMargin は発注時スナップショットに相当）。</p>
+    <p class="chart-cap" id="basiscap"></p>
   </div>
   <div class="panel">
     <p class="panel-title">4. 証拠金維持率（有効証拠金÷必要証拠金）</p>
@@ -97,14 +97,18 @@ _PAGE = """<!DOCTYPE html>
     <tbody id="evrows"></tbody></table>
   </div>
   <div class="panel">
-    <p class="panel-title">前提と未検証事項（推測で断定しない）</p>
+    <p class="panel-title">前提（出典: docs/oanda_indices_cfd_about.md ＝ OANDA 証券公式ページ）と未反映事項</p>
     <div class="notes">
-      <b>モデル（実装済みの前提）:</b> 必要証拠金＝時価×数量×V×証拠金率。有効証拠金＝残高＋評価損益。
-      維持率 100% 以下でロスカット（マージンコールなし）。評価価格はロング=bid／ショート=ask。<br>
-      <b>[U1]</b> 必要証拠金の「時価」が bid/ask/mid のどれかは公式資料で未確認（本レポートは <span id="markmode"></span>）。<br>
-      <b>[U2]</b> ロスカット執行は「損失最大の建玉から 1 本ずつ決済→再評価」と仮定（公式の執行粒度は未確認）。<br>
-      <b>[U3]</b> 損切り・ロスカットの約定価格はトリガー tick の評価価格（成行・すべり＝tick 間ギャップのみ）。実際の板・スリッページは未反映。<br>
-      <b>[U4]</b> 同一 tick で損切りとロスカットが同時成立した場合は損切りを先に適用と仮定。
+      <b>公式仕様どおりの実装:</b> 必要証拠金＝約定代金×証拠金率（§3(2)・<span id="markmode"></span>）。
+      有効証拠金＝残高＋評価損益（§3(3) 値洗い）。維持率＝有効証拠金÷必要証拠金×100（§1-2）。
+      100% 以下でロスカット・マージンコールなし（§1）。損失の大きい建玉から順に、維持率が
+      100% を上回るまで決済（§1-2）。ロスカットは逆指値より優先（§2(9)③）。
+      評価価格はロング=bid／ショート=ask（§2(5)）。<br>
+      <b>[U3]</b> 損切り・ロスカットの約定価格はトリガー tick の評価価格（成行・すべり＝tick 間
+      ギャップのみ）。公式もスリッページと価格非保証を明記するが、板・実スリッページ分布は未反映。<br>
+      <b>[U5]</b> ファイナンシングコスト（金利相当額・§2(8)）・配当相当額は未実装。複数日保有では
+      実際は日次ロールオーバーで受払が発生する。<br>
+      <b>[U6]</b> 公式は「一定の時間間隔で値洗い」（§3(3)）。本実装は毎 tick 判定＝発動が最速側。
     </div>
     <div class="flag" id="lcflag" style="display:none"><b>ロスカット発生:</b> このシナリオでは意図した損切りより先に強制決済が発動している。サイズ（実効 f）の見直しが根本対処。</div>
   </div>
@@ -127,7 +131,14 @@ const fmtY = v => '¥' + Math.round(v).toLocaleString();
     `<div class="card"><div class="dl">維持率 最小</div><div class="dv ${SUM.losscut_hit?'neg':''}">${(Math.min(...S.margin_ratio.filter(r=>r!=null))*100).toFixed(1)}%</div></div>` +
     `<div class="card"><div class="dl">結末</div><div class="dv ${SUM.losscut_hit?'neg':''}">${SUM.losscut_hit?'ロスカット':SUM.closed?'決済完了':'未決済'}</div></div>`;
   if (SUM.losscut_hit) document.getElementById('lcflag').style.display = '';
-  document.getElementById('markmode').textContent = 'mark_price_mode=' + META.mark_price_mode;
+  const basis = META.margin_basis || 'entry';
+  document.getElementById('markmode').textContent = 'margin_basis=' + basis;
+  document.getElementById('basisdesc').textContent =
+    basis === 'entry' ? '約定代金×証拠金率・建値固定（公式 §3(2)）' : '時価×数量×証拠金率（比較用 mark 基準）';
+  document.getElementById('basiscap').textContent =
+    basis === 'entry'
+      ? '公式仕様（§3(2)）どおり約定代金基準＝保有中は一定。約定・決済のタイミングでのみ段差が生じる。'
+      : '比較用の時価基準（旧計算機 HTML の前提）。公式記載は約定代金基準（§3(2)）。';
 })();
 
 // ---- generic line chart ----

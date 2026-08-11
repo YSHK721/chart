@@ -60,6 +60,7 @@ def load_plan(path: Path) -> tuple[OrderPlan, AccountConfig]:
         margin_rate=float(raw.get("margin_rate", 0.10)),
         losscut_ratio=float(raw.get("losscut_ratio", 1.00)),
         point_value=float(raw.get("point_value", 1.0)),
+        margin_basis=raw.get("margin_basis", "entry"),  # 公式 §3(2) 既定（約定代金基準）
         mark_price_mode=raw.get("mark_price_mode", "mid"),
     )
     return plan, cfg
@@ -121,6 +122,7 @@ def main() -> None:
             "ticks_applied": len(s.ts),
             "ticks_emitted": len(idx),
             "sample": args.sample,
+            "margin_basis": cfg.margin_basis,
             "mark_price_mode": cfg.mark_price_mode,
         },
         "series": {

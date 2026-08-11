@@ -13,23 +13,30 @@
     - 依存: 標準ライブラリのみ（pandas / matplotlib 非依存）。tick は (ts_ms, bid, ask)
       のイテレータで受ける（DIP: データ源の形式を知らない）。
 
-口座モデル（OANDA 証券 株価指数 CFD・JP225）:
-    - 必要証拠金 = 想定元本（時価 × 数量 × V）× 証拠金率（既定 10% ＝レバレッジ 10 倍）。
-      時価ベースで毎 tick 変動する（約定時建値に固定しない）。
-    - 有効証拠金 = 口座残高 + 評価損益。
-    - 証拠金維持率 = 有効証拠金 ÷ 必要証拠金。**100% 以下でロスカット**（株価指数 CFD に
-      マージンコールは無い）。損失の大きい建玉から成行で決済し、1 建玉ごとに再評価して
-      維持率が回復するまで続ける。
-    - 評価価格: ロングは bid・ショートは ask（決済に使う側の価格）。
+口座モデル（出典: docs/oanda_indices_cfd_about.md ＝ OANDA 証券公式ページの再構成）:
+    - 必要証拠金 = **約定代金** × 証拠金率（§3(2)「約定代金に必要証拠金率を乗じて算出」・
+      §1「約定代金の10%〜」）。既定 ``margin_basis="entry"`` はこれに従い建値固定。
+      時価ベース（``margin_basis="mark"``）は比較・感度分析用に残す（旧計算機 HTML の前提）。
+    - 有効証拠金 = 口座残高 + 評価損益（§3(3) 値洗い）。
+    - 証拠金維持率 = 有効証拠金 ÷ 必要証拠金 × 100（§1-2）。**100% 以下でロスカット**
+      （マージンコール／マージンカットは無し・§1）。
+    - ロスカット執行 = 「損失の大きい建玉から順に強制決済され、証拠金維持率が 100% を
+      上回るまで継続される」（§1-2/§3(3)・公式記載＝実装と一致）。
+    - 同一 tick 内の優先順位 = **ロスカット取引が優先**（§2(9)③「ロスカット取引が発生した
+      場合は、同取引が優先される」）。判定順: 約定 → ロスカット → 損切り → 利確。
+    - 評価価格: ロングは bid・ショートは ask（§2(5) 顧客はオファーで買いビッドで売る）。
 
-未検証事項（推測で断定しない・レポートにも明記する）:
-    - [U1] 必要証拠金の「時価」が bid / ask / mid のどれかは公式資料で未確認。既定は mid
-      とし、``mark_price_mode`` で切替可能にして差を数値で観測できるようにする。
-    - [U2] ロスカットの執行が「1 建玉ずつ決済→再評価」か「維持率回復まで一括」かは未確認。
-      本実装は 1 建玉ずつ（損失最大から）とし、README に仮定と明記する。
-    - [U3] 逆指値（損切り）・ロスカットの約定価格はトリガー tick の評価価格（成行）とする。
-      実際のスリッページ・板の厚みは反映しない（保証されない旨は HTML と同じ）。
-    - [U4] 同一 tick で損切りとロスカットが同時成立した場合は損切りを先に適用する（仮定）。
+未検証・未実装事項（推測で断定しない・レポートにも明記する）:
+    - [U1] margin_basis="mark"（時価ベース）を使う場合の「時価」が bid/ask/mid のどれかは
+      公式に記載なし（mark_price_mode で切替可）。既定の "entry"（約定代金）では無関係。
+    - [U3] 損切り（逆指値）・ロスカットの約定価格はトリガー tick の評価価格（成行）とする。
+      公式もスリッページを明記（§1-3/§3(3) 価格保証なし・証拠金超過損あり）が、板・実
+      スリッページ分布は未反映（tick 間ギャップのみ再現）。指値も指値価格で約定と仮定
+      （公式 §2(9)② は「成行同様に執行」＝有利にも不利にもなり得る）。
+    - [U5] ファイナンシングコスト（金利相当額・§2(8)）・配当相当額は未実装。複数日保有の
+      シナリオでは実際は日次ロールオーバーで受払が発生する（率は公式 financing ページ）。
+    - [U6] 公式は「一定の時間間隔で値洗い」（§3(3)）。本実装は毎 tick 判定＝発動が最速側
+      （保守側）に倒れる。
 """
 
 from __future__ import annotations
@@ -39,9 +46,6 @@ from typing import Iterable, Iterator, List, Optional, Tuple
 
 LONG = "long"
 SHORT = "short"
-
-#: 判定順序（U4）: 同一 tick 内の適用順。損切り → 利確 → ロスカット。
-#: 損切りと利確が同一 tick で両立するケース（巨大レンジの tick）は損切り優先（保守側）。
 
 
 @dataclass
@@ -84,13 +88,18 @@ class AccountConfig:
     margin_rate: float = 0.10         # 証拠金率（OANDA JP225 = 10%）
     losscut_ratio: float = 1.00       # 維持率がこの値以下でロスカット（OANDA = 100%）
     point_value: float = 1.0          # V（円/pt/単位・OANDA JP225 = 1）
-    mark_price_mode: str = "mid"      # 必要証拠金の時価（U1）: "mid" | "trade-side"
+    # 必要証拠金の基準。"entry"＝約定代金（公式 §3(2)・既定）／"mark"＝時価（旧計算機
+    #   HTML の前提。比較・感度分析用に残す）。
+    margin_basis: str = "entry"
+    mark_price_mode: str = "mid"      # margin_basis="mark" の時価（U1）: "mid" | "trade-side"
 
     def validate(self) -> None:
         if self.balance <= 0:
             raise ValueError("balance は正")
         if not (0 < self.margin_rate < 1):
             raise ValueError("margin_rate は (0,1)")
+        if self.margin_basis not in ("entry", "mark"):
+            raise ValueError(f"margin_basis: {self.margin_basis}")
         if self.mark_price_mode not in ("mid", "trade-side"):
             raise ValueError(f"mark_price_mode: {self.mark_price_mode}")
 
@@ -187,6 +196,15 @@ class AccountEngine:
         sign = 1.0 if self._plan.direction == LONG else -1.0
         return sign * (price - pos.entry_price) * pos.units * self._cfg.point_value
 
+    def _required_margin(self, positions: List[Position], bid: float, ask: float) -> float:
+        """必要証拠金。既定 "entry"＝約定代金基準（公式 §3(2)）／"mark"＝時価基準（比較用）。"""
+        cfg = self._cfg
+        if cfg.margin_basis == "entry":
+            notional = sum(p.units * p.entry_price for p in positions)
+        else:
+            notional = sum(p.units for p in positions) * self._mark_price(bid, ask)
+        return notional * cfg.point_value * cfg.margin_rate
+
     # ---- 本体 ----
 
     def run(self, ticks: Iterable[Tuple[int, float, float]]) -> RunResult:
@@ -226,31 +244,12 @@ class AccountEngine:
 
             ev_px = self._eval_price(bid, ask)
 
-            # 2) 損切り（U4: 最優先）。トリガー tick の評価価格で全建玉成行（U3）。
-            if positions and plan.stop_price is not None:
-                stop_hit = ev_px <= plan.stop_price if long else ev_px >= plan.stop_price
-                if stop_hit:
-                    for pos in positions:
-                        close_position(pos, ts, ev_px, "stop")
-                    positions = []
-                    pending = []          # 未約定の指値も取り消す（ブラケット前提）
-                    closed = True
-
-            # 3) 利確。
-            if positions and plan.tp_price is not None:
-                tp_hit = ev_px >= plan.tp_price if long else ev_px <= plan.tp_price
-                if tp_hit:
-                    for pos in positions:
-                        close_position(pos, ts, ev_px, "tp")
-                    positions = []
-                    pending = []
-                    closed = True
-
-            # 4) 評価とロスカット（U2: 損失最大の建玉から 1 本ずつ決済 → 再評価）。
+            # 2) ロスカット（公式 §2(9)③「ロスカット取引が発生した場合は、同取引が優先される」
+            #    ＝逆指値より先に判定）。損失最大の建玉から順に決済し、維持率が losscut_ratio を
+            #    上回るまで継続（§1-2/§3(3) の公式記載どおり）。
             while positions:
                 equity = balance + sum(self._pnl(p, ev_px) for p in positions)
-                mark = self._mark_price(bid, ask)
-                req = sum(p.units for p in positions) * mark * cfg.point_value * cfg.margin_rate
+                req = self._required_margin(positions, bid, ask)
                 ratio = equity / req if req > 0 else None
                 if ratio is None or ratio > cfg.losscut_ratio:
                     break
@@ -263,10 +262,29 @@ class AccountEngine:
                     pending = []
                     closed = True
 
+            # 3) 損切り（逆指値）。トリガー tick の評価価格で全建玉成行（U3）。
+            if positions and plan.stop_price is not None:
+                stop_hit = ev_px <= plan.stop_price if long else ev_px >= plan.stop_price
+                if stop_hit:
+                    for pos in positions:
+                        close_position(pos, ts, ev_px, "stop")
+                    positions = []
+                    pending = []          # 未約定の指値も取り消す（ブラケット前提）
+                    closed = True
+
+            # 4) 利確。
+            if positions and plan.tp_price is not None:
+                tp_hit = ev_px >= plan.tp_price if long else ev_px <= plan.tp_price
+                if tp_hit:
+                    for pos in positions:
+                        close_position(pos, ts, ev_px, "tp")
+                    positions = []
+                    pending = []
+                    closed = True
+
             # 5) 状態記録（決済で closed になった tick も、その時点の状態を残す）
             equity = balance + sum(self._pnl(p, ev_px) for p in positions)
-            mark = self._mark_price(bid, ask)
-            req = sum(p.units for p in positions) * mark * cfg.point_value * cfg.margin_rate
+            req = self._required_margin(positions, bid, ask)
             ratio = equity / req if req > 0 else None
             series.append(ts, bid, ask, balance, equity, req, ratio,
                           sum(p.units for p in positions))
@@ -280,6 +298,29 @@ class AccountEngine:
 
         return RunResult(series=series, events=events, final_balance=balance,
                          closed=closed, losscut_hit=losscut_hit)
+
+
+# ---- 静的式（閉形式・verify.py の比較対象） ----
+
+def official_losscut_price(direction: str, entries: List[Tuple[float, float]],
+                           balance: float, margin_rate: float,
+                           point_value: float = 1.0) -> Optional[float]:
+    """公式仕様（必要証拠金＝約定代金×証拠金率で固定・§3(2)）のロスカット価格閉形式。
+
+    有効証拠金 = E + Σuᵢ·(X−Pᵢ)·V（ロング）が req0 = Σuᵢ·Pᵢ·V·mr に達する X:
+        long:  X = avgP·(1+mr) − E/(U·V)
+        short: X = avgP·(1−mr) + E/(U·V)
+    旧計算機 HTML の時価連動式（:func:`html_losscut_price`）とは異なる。差は verify.py V7 が
+    定量化する（ロングでは公式のほうが高い＝手前で発動＝時価連動式は危険側に誤る）。
+    """
+    total_units = sum(u for _, u in entries)
+    if total_units <= 0:
+        return None
+    avg_p = sum(p * u for p, u in entries) / total_units
+    cap_u = total_units * point_value
+    if direction == LONG:
+        return avg_p * (1.0 + margin_rate) - balance / cap_u
+    return avg_p * (1.0 - margin_rate) + balance / cap_u
 
 
 # ---- 静的式（現行 HTML build() の写し・verify.py の比較対象） ----
