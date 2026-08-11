@@ -7055,3 +7055,47 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   要因の確定は未実施。
 - **対策案**: 発行タイミングと mode 解決の突合を実測し、発行元がモード確定後に要求する形へ
   是正する（unified_root の遷移順序・replay 入場処理の発行点を確認）。
+
+## ISSUE-374: [申し送り] sim バックテスト Phase 2 のレビュー申し送り（2026-08-11・OPEN）
+
+- **検出日**: 2026-08-11
+- **検出経路**: feature/sim-backtest-phase2 のリファクタ工程・コードレビュー（code-review-executor）。
+  いずれも既存ファイル改変を要するため Phase 2 の無改変制約下では実施せず申し送る。
+- **項目**:
+  1. `simulator/sim_ui/framework/serve_sim.py` の拡張点欠如: `make_server` が handler factory を
+     固定参照するため、`serve_sim_jobs.py` に serve/make_server の同型 15 行が重複。
+     handler factory 引数の追加が抜本策。
+  2. `simulator/sim_ui/main/composition_root.py` の既定値解決（repo_root/shared_js）が
+     `composition_root_jobs.py` と重複。分解して単一ソース化。
+  3. `simulator/framework/config_loader.py:157-171` の ValidationError→ConfigError 翻訳ブロックが
+     `sizing_config_loader.py` と type-2 クローン。翻訳関数の括り出し。
+  4. `simulator/domain/order.py` の `_STEP_RATIO_TOL` を公開名で re-export し、
+     `volume_step.py` の私有定数 import を解消。
+  5. `simulator/tools/walk_forward_cli.py` の引数ミラー `_BUILD_INTERACTOR_KEYWORDS`（手書き複製）を
+     `inspect.signature` からの導出へ恒久是正（E-6 の根本原因）。
+  6. 設計書 `SizingSpec` と実装 `SizingConfig`/`SizingRule` の語彙差の解消。
+  7. sim core 再起動時、実行中ジョブが台帳上 RUNNING に残る（launcher 状態がプロセス内保持）。
+     起動時の孤児状態回収を検討。
+  8. `/sim/data/{id}/spec.json`（投入仕様・data_path 等）が公開面から取得可能。公開対象の限定を検討。
+  9. ペンディング専用戦略（close 系列を持たない）が E-3 で過剰拒否される。ペンディングは
+     order.price 確定済みで推定建値不要のため、受付検証の精緻化を検討。
+  10. `solve_edge_ruin` 既定 sims=4000 で約 22 秒/ジョブ（子プロセス内・request path 非該当・記録のみ）。
+  11. `math.log` の ULP 差が RoR 比較を反転させる理論的余地（実測 5 ケースで未発生・記録のみ）。
+- **対策案**: 各対象モジュールへ次に手を入れる Phase で、該当項目を同時に是正する。
+
+## ISSUE-375: [申し送り] sim バックテスト Phase 2 再レビューの追加申し送り（2026-08-11・OPEN）
+
+- **検出日**: 2026-08-11
+- **検出経路**: feature/sim-backtest-phase2 の再コードレビュー。マージ非阻害の将来改善（ISSUE-374 の追補）。
+- **項目**:
+  1. `job_api_controller.submit` が `JobTransitionError` を捕捉しない（現状到達不能・ジョブ一覧 API 追加時に 500 化）。
+  2. `sizing_config_loader` の sims/horizon 上限は既定の約 900 倍で、外挿で 1 ジョブ約 5 時間の CPU 消費を許す。
+     同時ジョブ数の上限不在と併せ、運用実測の上で適正化を検討。
+  3. `subprocess_job_launcher._procs` から完了・失敗ジョブの Popen が除去されず常駐内に残る
+     （ゾンビ自体は poll で回収済み・メモリのみ）。
+  4. `terminate` の `proc.wait(timeout=10)` は request path 実行のため、D 状態の子がいれば取消 API が
+     最大 10 秒ブロック（実測 0.002 秒）。
+  5. `cancel_job`/`query_job`/`fetch_job_result` の「load→None なら JobNotFoundError」3 行が 3-way clone。
+  6. `serve_sim_jobs` の応答書き込み中のクライアント切断で socketserver 既定 handle_error が
+     stderr へトレースを出す（handle_error 未抑制）。
+- **対策案**: 各対象モジュールへ次に手を入れる Phase で同時是正（ISSUE-374 と同運用）。
