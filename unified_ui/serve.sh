@@ -303,8 +303,8 @@ start_core() {
 #   argv に web 根の絶対パスが載るので、停止側が「どのツリーの sim core か」を特定できる。
 start_sim_core() {
   setsid env PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" "$VENV_PY" -c "
-from simulator.sim_ui.main.composition_root import build_sim_app
-from simulator.sim_ui.framework.serve_sim import serve
+from simulator.sim_ui.main.composition_root_jobs import build_sim_job_app as build_sim_app
+from simulator.sim_ui.framework.serve_sim_jobs import serve
 serve(build_sim_app(web_dir='${SIM_WEB_DIR}'), port=${SIM_PORT})
 " >/dev/null 2>&1 &
   echo "$!"
@@ -358,6 +358,7 @@ echo "  停止: Ctrl-C"
 #   上流はモードごとに `--upstream <mode>=<url>` で渡す（§11.1 裁定 6）。モードを増やすときに
 #   router のシグネチャを直さなくてよいのがこの形の要点で、ここも 1 行の追加で済む。
 python3 "$ROUTER_PY" "$PUBLIC_PORT" \
+  --host 127.0.0.1 \
   --upstream "live=http://127.0.0.1:${LIVE_PORT}" \
   --upstream "replay=http://127.0.0.1:${REPLAY_PORT}" \
   --upstream "sim=http://127.0.0.1:${SIM_PORT}" \
