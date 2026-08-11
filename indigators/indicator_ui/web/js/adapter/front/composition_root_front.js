@@ -156,6 +156,12 @@ export async function bootstrap({
   //   （untilTime=undefined＝live byte 等価）リプレイ層を配線する。live root はリプレイのコードを
   //   import しない（注入のみ）＝スタンドアロン live で 404／結合を生まない。
   replay = undefined,
+  // [統合レイヤ・オプション注入] ツールバーの構成（基本設計書 §11.1 裁定 3 = L-1）。
+  //   `{ liveFollow, modeButtons: [{ id, label, title }, …] }`。未指定（スタンドアロン live）は
+  //   下の既定値へ落ち、生成 markup は 1 バイトも変わらない。
+  //   モードの集合を知っているのは統合層だけなので、ここは構成を**受け取る**だけにする
+  //   （ライブ core が統合層を import しない＝依存方向を保ったまま第 3・第 4 モードを足せる）。
+  toolbar = undefined,
 } = {}) {
   // controller 以前の組み立て（チャート・描画・永続化・catalog）は両 root 共有の単一ソースへ委譲する。
   //   ISSUE-278 #4: ここを各 root が手書きしていたため、ライブの修正がリプレイへ届かなかった。
@@ -270,7 +276,7 @@ export async function bootstrap({
     // ツールバーの構成（ISSUE-278 #16）: ライブ追従トグルは本 root（ライブ）が常に持つ。
     //   リプレイのオン・オフトグルは**リプレイ層が注入されたページ**＝統合 UI のときだけ置く
     //   （standalone live には切替先が無い）。差はフラグ 1 つで表し markup は複製しない。
-    toolbar: { liveFollow: true, enterReplay: !!replay },
+    toolbar: toolbar ?? { liveFollow: true, enterReplay: !!replay },
   });
   // リプレイ操作バーの DOM もリプレイ層が所有する（live root はリプレイのコードを import しない＝
   //   注入のみ。未注入の standalone live では生成されない＝従来どおりバーは存在しない）。

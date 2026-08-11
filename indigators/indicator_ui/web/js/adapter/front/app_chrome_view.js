@@ -40,12 +40,55 @@ function resolveAnchor(doc, { anchor = null, anchorSelector = APP_ANCHOR_SELECTO
   return root;
 }
 
+// HTML 実体参照へ落とす（属性値・要素本文の両方に使える最小集合）。
+//   注入された文字列をそのまま innerHTML へ埋めると、`"` で属性を割り込ませたり `<` で
+//   要素構造を壊したりできる。壊れた markup は「ボタンが出ない」という無症状の失敗になる。
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// DOM id として使える形か（先頭は英字、以降は英数・下線・ハイフン）。
+//   id は `getElementById` の鍵であり、applyModeUi / wireModeSwitchButtons が同じ値で引く。
+//   ここを緩めると、埋め込み時に属性を割り込ませる文字列も通ってしまう。
+const MODE_BUTTON_ID = /^[a-zA-Z][\w-]*$/;
+
+// モード切替ボタン 1 個ぶんの markup。定義（id / ラベル / title）を受けて組み立てる唯一の場所。
+//   ここを 1 本にしたので、モードが増えても本 View の分岐は増えない（OCP・基本設計書 §3.5.6 #10）。
+//   本 View は注入元を選べない（それが注入の意味）ため、埋め込む直前で形を固定する。
+function modeButtonMarkup({ id, label, title }) {
+  if (typeof id !== 'string' || !MODE_BUTTON_ID.test(id)) {
+    // フェイルクローズ（本ファイルの規約と同じ）: 無言で壊れた markup を作らない。
+    throw new Error(`app_chrome_view: モード切替ボタンの id が不正: ${JSON.stringify(id)}`);
+  }
+  return '<span class="tb-sep"></span>'
+    + `<button id="${id}" class="tb-interval" type="button" aria-pressed="false"`
+    + ` title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+}
+
+// 後方互換 API（`enterReplay`＝真偽 1 個）の既定値。`modeButtons` 未指定時にこの 1 個だけを
+//   並べることで、既存呼び出しの生成 markup を byte 等価に保つ。
+const LEGACY_REPLAY_BUTTON = Object.freeze({
+  id: 'enter-replay', label: 'リプレイ', title: 'リプレイ表示のオン・オフ',
+});
+
 // ツールバー（シンボル / 時間足メニューのマウント / ライブ追従 / テンプレートメニューのマウント /
-//   インジケーターボタン / リプレイトグル）を #app の先頭へ生成する。
+//   インジケーターボタン / モード切替トグル）を #app の先頭へ生成する。
 //   liveFollow  : ライブ追従トグルを置くか（ライブ core・統合 UI＝true / standalone replay＝false）。
-//   enterReplay : リプレイのオン・オフトグルを置くか（統合 UI のみ＝リプレイ層が注入されたとき）。
+//   modeButtons : モード切替トグルの**定義配列** `[{ id, label, title }, …]`（統合 UI が注入する）。
+//     モードの集合は統合層（unified_ui のモード定義表）が所有する。本 View は「渡された分だけ
+//     並べる」だけで、モード名も個数も知らない＝第 4 モードが増えても本ファイルは変わらない。
+//   enterReplay : 後方互換 API（真偽 1 個）。`modeButtons` 未指定時の既定を決めるためだけに残す
+//     （true＝リプレイボタン 1 個。生成 markup は従来と byte 一致）。
 //   メニュー本体（tf-menu / tpl-menu の項目）は各共有コンポーネントが自分で生成する（本 View は器のみ）。
-export function installChartToolbar(doc, { anchor = null, liveFollow = false, enterReplay = false } = {}) {
+export function installChartToolbar(
+  doc,
+  { anchor = null, liveFollow = false, enterReplay = false, modeButtons = null } = {},
+) {
   const root = resolveAnchor(doc, { anchor });
   if (!root) {
     return null;
@@ -54,6 +97,8 @@ export function installChartToolbar(doc, { anchor = null, liveFollow = false, en
   if (existing) {
     return existing;   // 再入で増やさない。
   }
+  // 注入が無ければ旧 API（enterReplay）の意味へ落とす＝既存呼び出しの markup は byte 不変。
+  const buttons = modeButtons ?? (enterReplay ? [LEGACY_REPLAY_BUTTON] : []);
   const bar = doc.createElement('div');
   bar.className = 'toolbar';
   bar.innerHTML = [
@@ -76,10 +121,9 @@ export function installChartToolbar(doc, { anchor = null, liveFollow = false, en
     '<div class="color-theme-menu" id="color-theme-menu"></div>',
     '<button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">'
       + '<span class="ic">∿</span><span class="lbl">インジケーター</span></button>',
-    // リプレイのオン・オフトグル（統合 UI のみ）。点灯状態は applyModeUi が aria-pressed で反映する。
-    enterReplay
-      ? '<span class="tb-sep"></span><button id="enter-replay" class="tb-interval" type="button" aria-pressed="false" title="リプレイ表示のオン・オフ">リプレイ</button>'
-      : '',
+    // モード切替のオン・オフトグル（統合 UI のみ・注入された定義の順に並ぶ）。
+    //   点灯状態は applyModeUi が aria-pressed で反映する。
+    buttons.map(modeButtonMarkup).join(''),
   ].join('');
   root.insertBefore(bar, root.firstChild);
   return bar;
