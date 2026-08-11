@@ -428,6 +428,7 @@ def build_interactor(
     adx_min: float = 22.0,
     adx_period: int = 8,
     marketdata_window: Any = None,
+    strategy_decorator: "Callable[[Any], Any] | None" = None,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
 
@@ -472,6 +473,10 @@ def build_interactor(
     )
     _ea_factory = _EA_FACTORIES.get(ea_name, _factory_tc24051901)
     strategy, registry, market_data = _ea_factory(_ea_ctx)
+    # E-2（基本設計書 §12.4・依頼者承認済み）: 戦略を外から包む拡張点。既定 None は
+    # 素通り＝既存と byte 等価（MT5 突合の回帰ゼロ）。sim モードのサイジング（F-4）は
+    # ここへ SizingDecorator を差し込み、戦略 6 本と run_backtest.py を無改変に保つ。
+    strategy = strategy_decorator(strategy) if strategy_decorator else strategy
 
     # S5 strangler（marketdata 委譲）: marketdata_window=(start,end) 指定時、comma 形式戦略
     # （既定 TC・WeeklyVolBand＝spread 非依存・H-4）の OHLC 取得を marketdata.CandleSource へ

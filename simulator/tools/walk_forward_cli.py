@@ -41,6 +41,10 @@ _BUILD_INTERACTOR_KEYWORDS = frozenset({
     "weekly_forecast", "weekly_p_tp", "weekly_capital", "weekly_f_risk",
     "adx_min", "adx_period",
     "marketdata_window",
+    # E-2（基本設計書 §12.4）で追加された戦略 Decorator の差し込み口。探索対象の
+    # スカラーではないが、本集合は build_interactor の実シグネチャと一致させる規約
+    # （test_walk_forward_cli.py::test_keyword_whitelist_matches_build_interactor）。
+    "strategy_decorator",
 })
 
 
