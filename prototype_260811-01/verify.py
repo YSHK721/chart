@@ -32,12 +32,12 @@ _REPO = _HERE.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from account_engine import (  # noqa: E402
+from simulator.usecase.account_engine import (  # noqa: E402
     LONG, SHORT, AccountConfig, AccountEngine, EntryOrder, OrderPlan,
     official_losscut_price, official_required_margin,
     superseded_mark_based_losscut_price,
 )
-from run_scenario import iter_ticks  # noqa: E402
+from simulator.tools.run_account_scenario import iter_ticks  # noqa: E402
 
 RESULTS: list[dict] = []
 

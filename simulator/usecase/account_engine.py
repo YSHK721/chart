@@ -8,8 +8,9 @@
     将来のチャート統合 ISSUE-368）の式はここの実測へ一致させる。
 
 責務の分離（SRP）:
-    - 本モジュール: 口座状態の計算のみ。データ読込（run_scenario.py）・レポート描画
-      （report_build.py）・式の突き合わせ（verify.py）は持たない。
+    - 本モジュール: 口座状態の計算のみ。データ読込（simulator/tools/run_account_scenario.py）・
+      レポート描画（simulator/adapter/presenter/account_report_build.py）・式の突き合わせ
+      （prototype_260811-01/verify.py）は持たない。usecase 層＝標準ライブラリのみ依存。
     - 依存: 標準ライブラリのみ（pandas / matplotlib 非依存）。tick は (ts_ms, bid, ask)
       のイテレータで受ける（DIP: データ源の形式を知らない）。
 
@@ -342,7 +343,7 @@ def superseded_mark_based_losscut_price(direction: str, entries: List[Tuple[floa
     """修正前の計算機 HTML にあったロスカット価格式（時価連動仮定・公式記載になく撤去済み）。
 
     long:  X = (avgP − E/U) / (1 − mr)   ／  short: X = (avgP + E/U) / (1 + mr)
-    正解（:func:`official_losscut_price`）との差の記録（verify.py V7）のためだけに残す。
+    正解（:func:`official_losscut_price`）との差の記録（prototype_260811-01/verify.py V7）のためだけに残す。
     2026-08-11 に ISSUE-370 で本体から撤去済み。新規コードで使ってはならない。
     """
     total_units = sum(u for _, u in entries)

@@ -11,14 +11,9 @@
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
-# 移設ゲートの取り決めは test_account_engine_regression.py と同じ（移設コミットで retarget）。
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "prototype_260811-01"))
-from account_engine import (  # noqa: E402
+from simulator.usecase.account_engine import (
     AccountConfig, AccountEngine, EntryOrder, OrderPlan,
     official_losscut_price, superseded_mark_based_losscut_price,
 )

@@ -1,8 +1,8 @@
-"""run_scenario — 発注計画を実 tick へ適用し口座状態時系列 JSON を出力する CLI（ISSUE-369）。
+"""run_account_scenario — 発注計画を実 tick へ適用し口座状態時系列 JSON を出力する CLI（ISSUE-369）。
 
-使い方:
-    <venv python> run_scenario.py --plan plans/long_stop.json --start 2026-08-06 --end 2026-08-08 \
-        --out out/long_stop.json [--sample 20]
+使い方（リポジトリ直下から）:
+    <venv python> simulator/tools/run_account_scenario.py --plan <plan.json> \
+        --start 2026-08-06 --end 2026-08-08 --out out/long_stop.json [--sample 20]
 
     - tick は marketdata.tick_m1（tick tree レイアウトの単一権威）経由で読む。
       データ基点は marketdata.paths.DATA_DIR（環境変数 MARKETDATA_DATA_DIR で切替・
@@ -31,16 +31,15 @@ import json
 import sys
 from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent
-_REPO = _HERE.parent
+_REPO = Path(__file__).resolve().parents[2]   # simulator/tools/ → リポジトリ直下
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-import pandas as pd  # noqa: E402  (venv python で実行する・README 参照)
+import pandas as pd  # noqa: E402  (venv python で実行する・prototype_260811-01/README.md 参照)
 
 from marketdata import tick_m1  # noqa: E402  tick tree レイアウトの単一権威（ISSUE-262）
 
-from account_engine import (  # noqa: E402
+from simulator.usecase.account_engine import (  # noqa: E402
     AccountConfig, AccountEngine, EntryOrder, OrderPlan,
 )
 

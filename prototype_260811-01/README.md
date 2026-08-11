@@ -7,33 +7,42 @@
 （`integrated_position_sizing_calculator.html`）と将来のチャート統合（ISSUE-368）の式は
 ここの実測へ一致させる。
 
-## アクター構成（SRP）
+## アクター構成（SRP・Phase 2 で simulator/ へ恒久化済み）
 
-| アクター | ファイル | 責務 |
+| アクター | ファイル（恒久化後） | 責務 |
 |---|---|---|
-| 口座状態エンジン | `account_engine.py` | 口座状態の計算のみ（標準ライブラリのみ・データ読込もレポートも持たない） |
-| レポート提示 | `report_build.py` | 状態時系列 JSON → グラフ入り単体 HTML（計算しない・サーバ不要） |
-| データ供給 | `run_scenario.py` | 発注計画 JSON ＋ 期間 → `marketdata.tick_m1`（tick tree レイアウト単一権威）で tick を読みエンジンへ流す CLI |
-| 式の検定 | `verify.py` | 現行 HTML の静的式とエンジン実測の数値突き合わせ |
+| 口座状態エンジン | `simulator/usecase/account_engine.py` | 口座状態の計算のみ（標準ライブラリのみ・データ読込もレポートも持たない） |
+| レポート提示 | `simulator/adapter/presenter/account_report_build.py` | 状態時系列 JSON → グラフ入り単体 HTML（計算しない・サーバ不要） |
+| データ供給 | `simulator/tools/run_account_scenario.py` | 発注計画 JSON ＋ 期間 → `marketdata.tick_m1`（tick tree レイアウト単一権威）で tick を読みエンジンへ流す CLI |
+| 式の検定 | `verify.py`（本ディレクトリ・検証記録） | 公式閉形式・修正前式とエンジン実測の数値突き合わせ |
+| アクター突合 | `parity_check.py`（本ディレクトリ・検証記録） | simulator 既存口座アクター（MT5 規約）との同一 tick 実測比較 |
+| 回帰ゲート | `simulator/tests/unit/test_account_engine{,_regression}.py` | 挙動単体＋移設 byte 一致ゲート（fixture: `simulator/tests/fixtures/account_engine/`） |
 
-## 使い方
+## 使い方（リポジトリ直下から）
 
 ```bash
 VENV=/workspaces/app/lightweight-charts-python-main/.venv/bin/python
 export MARKETDATA_DATA_DIR=/workspaces/app/data/marketdata   # worktree から実行する場合
 
 # 1) シナリオ実行（発注計画 → 口座状態時系列 JSON）
-$VENV run_scenario.py --plan plans/long_stop.json --start 2026-08-06 --end 2026-08-06 \
-    --out out/long_stop.json --sample 20
+$VENV simulator/tools/run_account_scenario.py --plan prototype_260811-01/plans/long_stop.json \
+    --start 2026-08-06 --end 2026-08-06 --out prototype_260811-01/out/long_stop.json --sample 20
 
 # 2) レポート生成（ブラウザで開くだけの単体 HTML）
-$VENV report_build.py --in out/long_stop.json --out out/long_stop.html --title "ロング・損切り到達"
+$VENV simulator/adapter/presenter/account_report_build.py \
+    --in prototype_260811-01/out/long_stop.json --out prototype_260811-01/out/long_stop.html
 
-# 3) 式の検定
-$VENV verify.py
+# 3) 式の検定・アクター突合（本ディレクトリから）
+$VENV prototype_260811-01/verify.py
+$VENV prototype_260811-01/parity_check.py
+
+# 4) 回帰テスト
+$VENV -m pytest simulator/tests/unit/test_account_engine.py \
+    simulator/tests/unit/test_account_engine_regression.py -q
 ```
 
-発注計画 JSON の形式は `run_scenario.py` の docstring 参照（`plans/` に代表 4 シナリオ）。
+発注計画 JSON の形式は `simulator/tools/run_account_scenario.py` の docstring 参照
+（`plans/` に代表 4 シナリオ）。
 
 ## 口座モデル（出典: `docs/oanda_indices_cfd_about.md` ＝ OANDA 証券公式ページの再構成）
 

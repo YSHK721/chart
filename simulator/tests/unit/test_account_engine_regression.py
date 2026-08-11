@@ -14,16 +14,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-# 移設ゲートの取り決め: 本コミット時点でエンジン実体は prototype_260811-01 にあり、次コミット
-#   （git mv）で simulator/usecase/account_engine.py へ移る。import は移設コミットで retarget
-#   する（fixture・期待値は本コミットで固定済み＝移設が挙動を 1 byte でも変えれば本テストが落ちる）。
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "prototype_260811-01"))
-from account_engine import (  # noqa: E402
+from simulator.usecase.account_engine import (
     AccountConfig, AccountEngine, EntryOrder, OrderPlan,
 )
 

@@ -28,8 +28,10 @@ _REPO = _HERE.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from account_engine import AccountConfig, AccountEngine, EntryOrder, OrderPlan  # noqa: E402
-from run_scenario import iter_ticks  # noqa: E402
+from simulator.usecase.account_engine import (  # noqa: E402
+    AccountConfig, AccountEngine, EntryOrder, OrderPlan,
+)
+from simulator.tools.run_account_scenario import iter_ticks  # noqa: E402
 
 FIXTURE_DIR = _REPO / "simulator" / "tests" / "fixtures" / "account_engine"
 CSV_NAME = "jp225_ticks_20260806_0000_0110.csv"

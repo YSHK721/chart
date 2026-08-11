@@ -3,7 +3,7 @@
 使い方:
     python report_build.py --in out/long_stop.json --out out/long_stop.html [--title 名前]
 
-責務: 表示のみ（計算しない・SRP）。run_scenario.py の出力 JSON を埋め込み、ブラウザで
+責務: 表示のみ（計算しない・SRP）。simulator/tools/run_account_scenario.py の出力 JSON を埋め込み、ブラウザで
 開くだけで確認できる自己完結 HTML を生成する（サーバ不要・外部ライブラリ不要）。
 グラフ 4 枚:
     1. 価格（bid）＋ 建玉・損切り・利確・実測ロスカット水準 ＋ 約定イベント
