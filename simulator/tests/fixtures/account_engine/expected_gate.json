@@ -1,0 +1,91 @@
+{
+ "G1_long_losscut": {
+  "events": [
+   {
+    "ts": 1785974400409,
+    "kind": "entry",
+    "price": 65516.532,
+    "units": 25.0,
+    "pnl": 0.0,
+    "note": "market"
+   },
+   {
+    "ts": 1785977634354,
+    "kind": "losscut",
+    "price": 65186.315,
+    "units": 25.0,
+    "pnl": -8255.424999999923,
+    "note": "維持率 100.0% <= 100%"
+   }
+  ],
+  "summary": {
+   "final_balance": 163744.57500000007,
+   "closed": true,
+   "losscut_hit": true
+  },
+  "ticks_applied": 11629,
+  "series_sha256": "2880b189fe8cebfedaa54c43e3532c0c7fd8ee24d4b08f96ac6adcc60456e5df"
+ },
+ "G2_long_stop": {
+  "events": [
+   {
+    "ts": 1785974400409,
+    "kind": "entry",
+    "price": 65516.532,
+    "units": 20.0,
+    "pnl": 0.0,
+    "note": "market"
+   },
+   {
+    "ts": 1785978116567,
+    "kind": "stop",
+    "price": 65096.999,
+    "units": 20.0,
+    "pnl": -8390.659999999916,
+    "note": ""
+   }
+  ],
+  "summary": {
+   "final_balance": 163609.34000000008,
+   "closed": true,
+   "losscut_hit": false
+  },
+  "ticks_applied": 13084,
+  "series_sha256": "5ca854f7545872ee30ef2e5d92bb875a64ffd61b960941d0f248cd2616884f1f"
+ },
+ "G3_split_partial": {
+  "events": [
+   {
+    "ts": 1785974400409,
+    "kind": "entry",
+    "price": 65516.532,
+    "units": 6.0,
+    "pnl": 0.0,
+    "note": "market"
+   },
+   {
+    "ts": 1785975653582,
+    "kind": "entry",
+    "price": 65300.0,
+    "units": 8.0,
+    "pnl": 0.0,
+    "note": "limit"
+   },
+   {
+    "ts": 1785978599861,
+    "kind": "end_of_data",
+    "price": 65161.417,
+    "units": 14.0,
+    "pnl": 0.0,
+    "note": "tick 終端・建玉が残存（未決済）"
+   }
+  ],
+  "summary": {
+   "final_balance": 172000.0,
+   "closed": false,
+   "losscut_hit": false
+  },
+  "ticks_applied": 14648,
+  "series_sha256": "15aefd73be556c3b3684a59b7987681e1d4dc2f084c54e5d76062796b7cdb222"
+ }
+}
