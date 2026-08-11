@@ -21,6 +21,8 @@
 // 依存: `./sw_rewrite.js`（純関数）のみ。DOM/SW/グローバル fetch に非依存（注入で受ける）。
 
 import { rewritePath } from './sw_rewrite.js';
+// 許可モード集合の単一ソース（基本設計書 §3.5.6 #9 の是正点）。
+import { isKnownMode, DEFAULT_MODE } from './mode_table.js';
 
 // 同一オリジンの絶対 URL を root 相対（pathname + search + hash）へ落とす。
 //   別オリジンは null（＝書き換え対象外）。
@@ -51,7 +53,8 @@ function toSameOriginPath(rawUrl, origin) {
  *
  * @param {object} deps
  * @param {Function} deps.baseFetch 実 fetch（`globalThis.fetch.bind(globalThis)` 等）。
- * @param {Function} deps.getMode 現在のモードを返す（'live' | 'replay'）。呼び出しごとに読む
+ * @param {Function} deps.getMode 現在のモードを返す（モード定義表の id＝'live' | 'replay' | 'sim'）。
+ *   表に無い値は既定モードへ倒す。呼び出しごとに読む
  *   （live↔replay の切替後も同じ関数実体のまま正しい core へ回るようにするため）。
  * @param {string} [deps.origin] 同一オリジン判定の基準。既定は `location.origin`。
  * @returns {Function} `fetch(input, init)` 互換。
@@ -66,7 +69,11 @@ export function createRoutedFetch({ baseFetch, getMode, origin } = {}) {
   );
   const resolveMode = () => {
     const m = typeof getMode === 'function' ? getMode() : getMode;
-    return m === 'replay' ? 'replay' : 'live';   // 未知値は live へ倒す（既定モード）。
+    // 許可集合（モード定義表）に**含まれるモードだけを通す**。倒してよいのは未知値だけである。
+    //   ここを `m === 'replay' ? 'replay' : 'live'` のような等値比較で書くと、表に載っている
+    //   モードまで既定へ倒れ、'sim' が**エラーにならずライブ core の答えを返す**
+    //   （無音の誤配・基本設計書 §3.5.6 #9）。
+    return isKnownMode(m) ? m : DEFAULT_MODE;
   };
 
   return function routedFetch(input, init) {

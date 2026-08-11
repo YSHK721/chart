@@ -13,7 +13,28 @@
 //   module 内状態 modeController を参照していたため、その値を引数注入に変更（modeController は
 //   main() 内で 1 度だけ生成され本関数呼び出しの直前に確定・以降不変＝挙動等価）。
 
-export const MODE = Object.freeze({ LIVE: 'live', REPLAY: 'replay' });
+import {
+  MODES,
+  MODE_TOGGLE_BUTTONS,
+  DEFAULT_MODE,
+  bodyClassOf,
+  hasChartApi,
+  CHART_API_BODY_CLASS,
+} from './mode_table.js';
+
+// モード列挙。定義表から導出する（第 2 の定義を持たない＝表へ 1 行足せば列挙も増える）。
+//   キーは従来どおり大文字（MODE.LIVE / MODE.REPLAY・公開 API 不変）で、SIM が加わる。
+export const MODE = Object.freeze(
+  Object.fromEntries(MODES.map((m) => [m.id.toUpperCase(), m.id])),
+);
+
+// ボタン id → 目標モードの対応表（§11.2 L-3）。トグルは表から、リプレイバー右端の ✕ は
+//   「リプレイ終了＝既定モードへ戻る」という固有の意味を持つのでここで 1 行だけ足す。
+//   3 値以上では「反転」が定義できないため、いずれも **明示ターゲット** で toggle を呼ぶ。
+const MODE_SWITCH_BUTTONS = Object.freeze([
+  ...MODE_TOGGLE_BUTTONS.map((b) => Object.freeze({ id: b.id, mode: b.mode })),
+  Object.freeze({ id: 'rp-close', mode: DEFAULT_MODE }),
+]);
 
 let lwcLoaded = false;
 
@@ -69,25 +90,50 @@ export function applyModeUi(mode) {
   if (typeof document === 'undefined') {
     return;
   }
-  document.body.classList.toggle('um-mode-live', mode === MODE.LIVE);
-  document.body.classList.toggle('um-mode-replay', mode === MODE.REPLAY);
-  const replayToggle = document.getElementById('enter-replay');
-  if (replayToggle) {
-    replayToggle.setAttribute('aria-pressed', mode === MODE.REPLAY ? 'true' : 'false');
+  // body クラスは表を走査して相互排他に切替える（クラスを 1 つずつ toggle する形で書くと、
+  //   モードを増やすたびに行を足す義務が生まれる＝OCP 違反・§3.5.6 #2）。
+  const active = bodyClassOf(mode);
+  for (const row of MODES) {
+    document.body.classList.toggle(row.bodyClass, row.bodyClass === active);
+  }
+  // 「この core はチャート API を持つ」状態も body へ出す（🟡-5）。CSS はモード名ではなく
+  //   本クラスの有無だけを見るので、モードを増やしても CSS 側は変わらない。
+  document.body.classList.toggle(CHART_API_BODY_CLASS, hasChartApi(mode));
+  // 各トグルの点灯（aria-pressed）も表から。自分のモードのときだけ true、他は false。
+  for (const btn of MODE_TOGGLE_BUTTONS) {
+    const el = document.getElementById(btn.id);
+    if (el) {
+      el.setAttribute('aria-pressed', btn.mode === mode ? 'true' : 'false');
+    }
   }
 }
 
 // ---- リプレイ トグルボタン配線（単一 mount: DOM は永続＝1 回だけ配線）--------------
 //   modeController は呼び出し側（Composition Root）が注入する（従前は module 内状態を参照）。
 export function wireModeSwitchButtons(modeController) {
-  // リプレイバー右端の ✕（リプレイ終了）もトグルと同一動作にする。バーは replay モードでのみ
-  //   表示されるため、✕ は常に「リプレイ ON → OFF（ライブへ戻る）」を意味する。
-  for (const id of ['enter-replay', 'rp-close']) {
+  // 各ボタンは **目標モードを明示して** toggle を呼ぶ（§11.2 L-3）。引数なしの `toggle()`
+  //   （＝2 値反転）では 3 値以上で行き先が定義できない。
+  //   リプレイバー右端の ✕ は「リプレイ終了＝既定モードへ戻る」を意味する（表の最終行）。
+  //
+  // 行き先の解決（🔴-1 の是正）: ボタンは**オン・オフのトグル**である。目標モードを固定で
+  //   渡すと、そのモードが既にアクティブなときに `toggle` の同一モードガード
+  //   （`target === activeMode` で return）へ当たり、押しても何も起きない。develop では
+  //   2 値反転がオフ動作を担っていたため、明示指定化でその動作が失われていた
+  //   （enter-replay がオフを失い、sim は enter-sim でモードを抜けられない）。
+  //   よって押下時に現在モードを読み、自分のモードがアクティブなら既定モードへ戻す。
+  //   これは develop の 2 値反転を 3 値以上へ一般化したもので、モード名は定義表から来る。
+  const resolveTarget = (mode) => {
+    const cur = modeController && typeof modeController.getMode === 'function'
+      ? modeController.getMode()
+      : undefined;                  // getMode 未実装の注入は従来どおりオン動作のみ（後方互換）。
+    return cur === mode ? DEFAULT_MODE : mode;
+  };
+  for (const { id, mode } of MODE_SWITCH_BUTTONS) {
     const btn = document.getElementById(id);
     if (btn) {
       btn.addEventListener('click', () => {
         if (modeController) {
-          modeController.toggle();
+          modeController.toggle(resolveTarget(mode));
         }
       });
     }

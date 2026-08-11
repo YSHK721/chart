@@ -21,6 +21,8 @@ import { wrap as wrapTimers } from './timer_registry.js';
 import { scopedStorage } from './mode_storage.js';
 import { registerServiceWorker, notifySwMode } from './sw_client.js';
 import { createRoutedFetch } from './routed_fetch.js';
+// モード集合・巡回・ツールバー構成の単一ソース（基本設計書 §3.5.6・§11.2）。
+import { DEFAULT_MODE, nextMode, MODE_TOGGLE_BUTTONS } from './mode_table.js';
 import {
   MODE,
   loadVendor,
@@ -96,8 +98,35 @@ export function createModeController({
     applyMode(MODE.REPLAY);
   }
 
+  // sim（シミュレーション）は「再生」ではないのでリプレイ層は畳む。手順は replay と同型だが、
+  //   **SW の向け先だけが異なる**。
+  //
+  //   不変条件: `replayHandle.disable()` の全長復帰 fetch（replay.js:532 catchUpToLiveTail の
+  //   `/candles` 再取得）は、必ず **/candles を持つ core** へ向ける。Phase 1 の sim core は静的配信
+  //   しか持たない（`simulator/sim_ui/framework/serve_sim.py`）ので、そこへ向くと 404 になり
+  //   チャートがライブ全長へ戻らない。front 側は activeMode を末尾まで sim にしないことで
+  //   （＝遷移前モードへ向かう）、SW 側は **disable が終わるまで sim にしない**ことで、これを守る。
+  async function enterSim() {
+    stopPollers();
+    clearReveal();
+    // disable の復帰要求が届く先を、必ず /candles を持つ core（既定モード）にしておく。
+    await setSwMode(DEFAULT_MODE);
+    if (replayHandle && typeof replayHandle.disable === 'function') {
+      await replayHandle.disable();
+    }
+    // 復帰が終わってから sim へ切り替える。
+    await setSwMode(MODE.SIM);
+    activeMode = MODE.SIM;
+    applyMode(MODE.SIM);
+  }
+
   async function enterLive() {
-    // SW を先に live へ（disable の全長復帰 fetch が /live/candles を叩く＝ライブ末尾へ確実に戻す）。
+    // SW を先に live へ。これで戻せるのは **注入点を通らない要求**（SW だけが prefix を付ける経路）。
+    //   disable の全長復帰 fetch に prefix を付けるのは front の routedFetch であり、参照するのは
+    //   activeMode（末尾で更新）なので、行き先は SW ではなく**遷移前モード**の core になる。
+    //   replay→live は /replay/candles へ向かい replay core が答える。sim→live はリプレイ層が
+    //   未 enable ゆえ disable が早期 return し（replay.js:514）、要求自体が出ない。
+    //   （実測: unified_root_restore_fetch_routing.test.js）
     await setSwMode(MODE.LIVE);
     clearReveal();
     if (replayHandle && typeof replayHandle.disable === 'function') {
@@ -108,18 +137,27 @@ export function createModeController({
     applyMode(MODE.LIVE);
   }
 
+  // 目標モード → 遷移手続き。3 値以上では if/else の二分岐で表せないため表で引く
+  //   （第 4 モードの追加は本表への 1 行追加で済み、toggle 本体は変わらない）。
+  const TRANSITIONS = {
+    [MODE.LIVE]: enterLive,
+    [MODE.REPLAY]: enterReplay,
+    [MODE.SIM]: enterSim,
+  };
+
   async function toggle(next) {
-    const target = next || (activeMode === MODE.REPLAY ? MODE.LIVE : MODE.REPLAY);
-    if (switching || target === activeMode) {
+    // 既定算出（引数省略時）は定義表由来。既定モードに居るなら表の次のモードへ、
+    //   そうでなければ既定モードへ戻す＝「オン・オフのトグル」の意味を 3 値以上でも保つ
+    //   （モード名を直書きした二値反転では、3 値以上で行き先が定義できない・§3.5.6 #3）。
+    const target = next || (activeMode === DEFAULT_MODE ? nextMode(DEFAULT_MODE) : DEFAULT_MODE);
+    const transition = TRANSITIONS[target];
+    // 表に無いモードは遷移させない（未知値で状態を壊さない＝全域性）。
+    if (switching || !transition || target === activeMode) {
       return;
     }
     switching = true;
     try {
-      if (target === MODE.REPLAY) {
-        await enterReplay();
-      } else {
-        await enterLive();
-      }
+      await transition();
     } finally {
       switching = false;
     }
@@ -129,6 +167,7 @@ export function createModeController({
     toggle,
     enterReplay,
     enterLive,
+    enterSim,
     startPollers,
     stopPollers,
     getMode: () => activeMode,
@@ -203,6 +242,10 @@ async function main() {
       datasetRef: DATASET_REF,
       setInterval: registry.setInterval,
       clearInterval: registry.clearInterval,
+      // ツールバー構成の注入（§11.1 裁定 3 = L-1）。モードの集合を知っているのは統合層だけなので、
+      //   ライブ core の合成根には**構成を渡す**。定義表から作るので、第 4 モードを表へ足せば
+      //   ここも本体不変のままボタンが増える（ライブ core は統合層を import しない＝依存方向を維持）。
+      toolbar: { liveFollow: true, modeButtons: MODE_TOGGLE_BUTTONS },
       // リプレイ層のオプション注入（live root はこの注入時のみリプレイを配線する）。
       // リプレイ層のオプション注入（live root はこの注入時のみリプレイを配線する）。MP 単一化:
       //   ReplayMarketProfileActor を単一 MP アクターとして注入し、isLiveMode で 3状態 to を切替える

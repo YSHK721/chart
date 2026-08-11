@@ -12,6 +12,10 @@
 //
 // Red フェーズ: シグネチャのみ。本体は未実装で throw する。
 
+// モード集合・URL prefix の単一ソース（基本設計書 §3.5.6 の表駆動化）。prefix の 2 値
+//   ハードコードをここへ集約したので、第 4 モードの追加で本ファイルは変わらない。
+import { MODE_PREFIXES, DEFAULT_MODE, prefixOf } from './mode_table.js';
+
 // API エンドポイントの第 1 パスセグメント（基本設計書 §2 の振り分け表）。
 // これらのみモード prefix を付与する。静的資産（js/vendor/index.html/sw.js 等）は不変。
 const API_SEGMENTS = new Set([
@@ -43,7 +47,7 @@ export const LIVE_ONLY_SEGMENTS = new Set([
 ]);
 
 /**
- * @param {'live'|'replay'} mode アクティブモード
+ * @param {string} mode アクティブモード（mode_table の全モード。未知値は既定モードの prefix へ）
  * @param {string} path ブラウザが出すリクエストパス（root 相対 or 絶対 URL）
  * @returns {string} リライト後のパス
  */
@@ -60,12 +64,12 @@ export function rewritePath(mode, path) {
   if (!path.startsWith('/')) {
     return path;
   }
-  // 既に prefix 付き（/live・/replay 配下）は二重付与しない。
-  if (
-    path === '/live' || path.startsWith('/live/')
-    || path === '/replay' || path.startsWith('/replay/')
-  ) {
-    return path;
+  // 既に prefix 付き（表に載っている全モードの配下）は二重付与しない。判定は prefix 表の走査で行う
+  //   （条件式に prefix を列挙すると、モードを増やすたびに本体を書き足すことになる＝OCP 違反）。
+  for (const prefix of MODE_PREFIXES) {
+    if (path === prefix || path.startsWith(prefix + '/')) {
+      return path;
+    }
   }
   // 第 1 セグメント（query/hash 手前）を取り出し、API のときだけ prefix を付与する。
   const segment = path.slice(1).split(/[/?#]/)[0];
@@ -74,8 +78,12 @@ export function rewritePath(mode, path) {
   }
   // ライブ core 専用セグメント（LIVE_ONLY_SEGMENTS）はアクティブモードに関わらず常に /live へ回す。
   //   これが無いと「日別プロファイル」等がリプレイ中に 404（replay core 未実装）で描画されない。
+  //   行き先の /live も表から引く（モード名の文字列を本体に書かない）。
   if (LIVE_ONLY_SEGMENTS.has(segment)) {
-    return `/live${path}`;
+    return `${prefixOf(DEFAULT_MODE)}${path}`;
   }
-  return `/${mode}${path}`;
+  // prefix は表から引く（表に無ければ既定モードへ倒す＝全域性）。`` `/${mode}${path}` `` と
+  //   **モード名をそのまま**前置すると、表に無い値（タイプミス・将来値・壊れた SW メッセージ）が
+  //   `/nope/compute` というどの core にも存在しないパスを無言で作る。
+  return `${prefixOf(mode)}${path}`;
 }

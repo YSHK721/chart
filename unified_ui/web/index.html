@@ -11,17 +11,57 @@
   <link rel="stylesheet" href="/replay/css/replay_bar.css" />
   <style>
     /* 統合層固有の最小スタイル（既存 css へ波及させないための局所定義）。 */
-    .um-mode-live #replay-bar { display: none; }
-    /* リプレイ中はライブ追従「ライブ」ボタンを消さず、グレーアウト＋操作不可にする
-       （UI 要素の増減による認知負荷を避ける＝両モードで同じ配置を保つ）。 */
-    .um-mode-replay #live-follow-toggle { opacity: .4; pointer-events: none; }
-    /* 「リプレイ」はオン・オフのトグル（両モードで常に表示）。リプレイモード選択中は
+    /* リプレイ操作バーは「replay モードのときだけ出す」。**ライブのときだけ隠す**という 2 値の
+       裏返しで書くと、live でも replay でもないモード（sim）は隠す条件に当てはまらず、バーが
+       出たままになる。既定を非表示にしておけば、モードを増やしてもこの規則は直さなくてよい
+       （表駆動と同じ性質）。
+       表示値 flex は replay_bar.css の .replay-bar と同値＝リプレイ時の見えは不変。 */
+    #replay-bar { display: none; }
+    .um-mode-replay #replay-bar { display: flex; }
+    /* ライブ追従「ライブ」ボタンは live モードでのみ意味を持つ（LiveUpdater 稼働＋新足で
+       右端追従＝live_follow_controller.js:5-9）。live 以外への遷移は必ず stopPollers() で
+       LiveUpdater を止めるため、押しても何も起きない。よってボタンは消さず、グレーアウト＋
+       操作不可にする（UI 要素の増減による認知負荷を避ける＝全モードで同じ配置を保つ）。
+       書き方は #replay-bar と同じ反転側で持つ: 「replay のとき無効」とモードを列挙すると、
+       モードが増えるたびにセレクタを足す義務が生まれる。「live のとき以外は無効」なら
+       第 4 モードでも本規則は変わらない。 */
+    body:not(.um-mode-live) #live-follow-toggle { opacity: .4; pointer-events: none; }
+    /* チャート API（/candles・/compute）を持たない core のモードでは、チャート操作系を
+       触らせない。持たない core へ操作を送っても 404 が返るだけで**画面には何も起きない**
+       （無音の失敗）ので、押せないことを見た目で示す。判定は body の状態クラスの有無で行い、
+       モード名は書かない（applyModeUi が um-chart-api を付け外しする＝第 4 モードでも本規則は不変）。
+       モード切替ボタン（#enter-replay / #enter-sim）は**対象に含めない**。含めるとそのモードから
+       出られなくなる。
+       対象は「チャート API を実際に叩く操作」だけに絞る（実測）:
+         #tf-menu           … indicator_controller.js:1224 → setTimeframe → candles + compute
+         #tpl-menu          … chart_template_controller.js:364-372 が compute を並列発行
+         #indicator-open-btn… indicator_dialog_controller.js:108 → applyIndicator → compute
+         .pane-legend-gear  … 同:1295 → _onGear:1313 → プロパティ OK → _applyDialogResult:1375
+                              → recomputeInstance:688 → _computeInstance（DOM 不在時は
+                              _gearRecompute:1385-1393 経由で同じく recomputeInstance）
+       対象外（compute を発行しないので core が何であっても動く。動くものを塞ぐと
+       「押せない理由が説明できない UI」になる）:
+         指標カラーテーマのメニュー … 適用は再計算を伴わない（color_theme_controller.js:25-28）
+         凡例の目 ●／○（表示切替）  … 同:1292 → toggleVisible:808-816（setVisible / persist / 再描画）
+         凡例の ✕（削除）           … 同:1296 → removeInstance:838-848（remove / facadeRemove / persist）
+       （テーマの器の id をここへ書かないこと: 器は app_chrome_view が所有し、HTML は 1 枚も
+         触らない規約＝ISSUE-278 #16。検定 TC-CT05 が文字列の出現を 0 件で固定している。） */
+    body:not(.um-chart-api) #tf-menu,
+    body:not(.um-chart-api) #tpl-menu,
+    body:not(.um-chart-api) #indicator-open-btn,
+    body:not(.um-chart-api) .pane-legend-gear { opacity: .4; pointer-events: none; }
+    /* モード切替ボタンはオン・オフのトグル（全モードで常に表示）。選択中のモードは
        aria-pressed=true でアクセント青に点灯させ、どのモードかが一目で分かるようにする
        （既存 css の tb-interval は id 指定でないと点灯しないため、ここで明示指定する）。 */
-    #enter-replay[aria-pressed="true"] { background: #2962ff; color: #fff; border-color: #2962ff; }
+    #enter-replay[aria-pressed="true"],
+    #enter-sim[aria-pressed="true"] { background: #2962ff; color: #fff; border-color: #2962ff; }
   </style>
 </head>
-<body class="um-mode-live">
+<!-- 初期クラスは既定モード（live）の状態と一致させる。applyModeUi が走るのは bootstrap 完了後
+     なので、ここが実態とずれていると「ツールバーは出ているのにチャート操作がグレーアウト」
+     という状態が初期化中だけ現れる（um-chart-api は live core が /candles・/compute を
+     持つことを表す）。 -->
+<body class="um-mode-live um-chart-api">
   <!-- 統合エントリ。モード切替は #mode-ui 内ツールバーの「リプレイ」オン・オフトグル
        （#enter-replay）で行う（unified_root.js が mount 毎に配線）。 -->
   <!-- フェイルクローズ用のエラー表示（🟡-3: SW 未制御／モード読込失敗を明示）。 -->

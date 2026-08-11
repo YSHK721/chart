@@ -8,6 +8,8 @@ import { describe, it, expect } from 'vitest';
 import {
   createOpLog, describeTarget, formatEntry, formatLog, formatState, installOpLog,
 } from '../js/op_log.js';
+// モード集合・body クラスの単一ソース（§3.5.6 の表駆動化）。
+import { MODE_IDS, bodyClassOf } from '../js/mode_table.js';
 
 describe('createOpLog', () => {
   it('発生順に積み、容量を超えたら古いものから捨てる', () => {
@@ -106,6 +108,31 @@ describe('installOpLog', () => {
     expect(typeof win.__opsDump).toBe('function');
     expect(api.log.entries().map((e) => e.kind)).toEqual(['init']);
     expect(api.dump()).toContain('操作ログ開始');
+  });
+
+  // --- L-4: mode 判定をモード定義表の走査へ（§11.2）--------------------------------
+  //
+  // 旧実装は `/um-mode-replay/.test(body) ? 'replay' : (/um-mode-live/.test(body) ? 'live' : '?')`
+  //   という 2 値の入れ子三項で、第 3 モードでは `?` になる。操作ログはトラブル時に「どのモードで
+  //   何が起きたか」を読むためのものなので、モードが `?` になると事故の切り分けができない。
+  it.each([...MODE_IDS])('body が %s のモードクラスなら state に mode=<そのモード> を出す', (id) => {
+    // Arrange
+    const { win, doc } = fakeEnv();
+    doc.body.className = bodyClassOf(id);
+    // Act
+    const api = installOpLog({ win, doc, capacity: 10 });
+    // Assert
+    expect(api.log.entries()[0].state).toContain(`mode=${id}`);
+  });
+
+  it('モードクラスが無ければ ? のまま（判定を緩めていない）', () => {
+    // Arrange
+    const { win, doc } = fakeEnv();
+    doc.body.className = 'something-else';
+    // Act
+    const api = installOpLog({ win, doc, capacity: 10 });
+    // Assert
+    expect(api.log.entries()[0].state).toContain('mode=?');
   });
 
   it('二重 install しても記録は 1 つのまま（購読の重複を作らない）', () => {

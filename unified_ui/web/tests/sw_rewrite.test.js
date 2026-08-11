@@ -8,6 +8,8 @@
 
 import { describe, test, expect } from 'vitest';
 import { rewritePath, LIVE_ONLY_SEGMENTS } from '../js/sw_rewrite.js';
+// モード集合・prefix の単一ソース（§3.5.6 の表駆動化）。テスト側も第 2 の定義を持たない。
+import { MODE_PREFIXES } from '../js/mode_table.js';
 
 describe('rewritePath', () => {
   // --- B1: live モードで API パスへ /live prefix 付与 ---
@@ -25,6 +27,51 @@ describe('rewritePath', () => {
   test('replay_mode_api_paths_get_replay_prefix', () => {
     expect(rewritePath('replay', '/compute')).toBe('/replay/compute');
     expect(rewritePath('replay', '/intraday')).toBe('/replay/intraday');
+  });
+
+  // --- B2s: 第 3 モード sim の契約（基本設計書 §3.5.6 #7・§11.2）------------------
+  //
+  // 注記（TDD の誠実性）: 以下 4 件は**表駆動化の前でも通る**。旧実装の付与は
+  //   `` `/${mode}${path}` `` というテンプレート補間で、モード名を検証せずそのまま prefix に
+  //   していたためである（= 'sim' でも偶然正しい文字列になる）。よってこれらは Red ではなく
+  //   **sim 契約の回帰固定**として置く。旧実装が実際に壊れているのは直後の全域性
+  //   （未知モード）であり、そちらが本 Cycle の Red である。
+  test('sim_mode_api_paths_get_sim_prefix', () => {
+    expect(rewritePath('sim', '/compute')).toBe('/sim/compute');
+    expect(rewritePath('sim', '/candles')).toBe('/sim/candles');
+  });
+
+  test('sim_mode_api_path_with_query_preserves_query', () => {
+    expect(rewritePath('sim', '/candles?tf=1D')).toBe('/sim/candles?tf=1D');
+  });
+
+  test('every_mode_prefix_in_the_table_is_treated_as_already_prefixed', () => {
+    // 二重付与しない（front 付与 → SW 素通しの冪等性）。判定は表由来なので、第 4 モードを
+    //   表へ足した時点で本ケースも自動的にその prefix を覆う（列挙の取り残しが起きない）。
+    for (const prefix of MODE_PREFIXES) {
+      expect(rewritePath('sim', `${prefix}/compute`)).toBe(`${prefix}/compute`);
+      expect(rewritePath('sim', prefix)).toBe(prefix);
+    }
+  });
+
+  test('live_only_segments_route_to_live_even_in_sim_mode', () => {
+    // LIVE_ONLY_SEGMENTS の既存挙動は sim でも不変（replay と同じ扱い）。
+    for (const seg of LIVE_ONLY_SEGMENTS) {
+      expect(rewritePath('sim', `/${seg}`)).toBe(`/live/${seg}`);
+      expect(rewritePath('sim', `/${seg}?x=1`)).toBe(`/live/${seg}?x=1`);
+    }
+  });
+
+  // --- B2t: ★Red★ 表に無いモードは既定モードの prefix へ倒す（全域性）--------------
+  //
+  // 旧実装は `` `/${mode}${path}` `` でモード名をそのまま prefix にしていた。表に無い値
+  //   （タイプミス・将来値・壊れた SW メッセージ）を渡すと `/nope/compute` という**どの core
+  //   にも存在しない**パスを生成し、ルータで 404 になる。routed_fetch.js:69 の誤配（§3.5.6 #9）と
+  //   同じ「無音で間違った先へ行く」欠陥である。prefix は表から引く＝表に無ければ既定へ倒す。
+  test('unknown_mode_falls_back_to_the_default_mode_prefix', () => {
+    expect(rewritePath('nope', '/compute')).toBe('/live/compute');
+    expect(rewritePath(undefined, '/candles?tf=1D')).toBe('/live/candles?tf=1D');
+    expect(rewritePath('SIM', '/candles')).toBe('/live/candles');   // 大文字は表に無い
   });
 
   // --- B2a: tickvol_profile（取引密度帯）は両 core 実装済み＝アクティブモードの core へ回す ---

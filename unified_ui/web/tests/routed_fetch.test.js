@@ -7,6 +7,8 @@
 
 import { describe, test, expect } from 'vitest';
 import { createRoutedFetch } from '../js/routed_fetch.js';
+// モード集合・prefix の単一ソース（§3.5.6 の表駆動化）。テスト側も第 2 の定義を持たない。
+import { MODE_IDS, prefixOf } from '../js/mode_table.js';
 
 const ORIGIN = 'http://127.0.0.1:8000';
 
@@ -43,6 +45,43 @@ describe('createRoutedFetch', () => {
     const { base, fetch } = make('replay');
     await fetch('/compute');
     expect(base.calls[0]).toBe('/replay/compute');
+  });
+
+  // --- ★最優先の不具合是正★ sim モードが live core へ無音で誤配される（§3.5.6 #9）---
+  //
+  // 旧 resolveMode は `m === 'replay' ? 'replay' : 'live'` で、**未知値をすべて live へ倒して**いた。
+  //   'sim' はエラーにならず /live/* へ届き、ライブ core が**それらしい答えを返してしまう**。
+  //   失敗が観測できない誤配（無音の間違い）であり、Phase 1 の通過条件に挙げられている。
+  //   是正は「表の許可集合に含まれるモードだけ通し、含まれない値のみ既定へ倒す」。
+  test('sim_mode_api_path_gets_sim_prefix_not_live', async () => {
+    const { base, fetch } = make('sim');
+    await fetch('/candles?datasetRef=jp225_tick&timeframe=1m&limit=1500');
+    expect(base.calls[0]).toBe('/sim/candles?datasetRef=jp225_tick&timeframe=1m&limit=1500');
+  });
+
+  test('sim_mode_compute_post_goes_to_sim_core', async () => {
+    const { base, fetch } = make('sim');
+    await fetch('/compute', { method: 'POST', body: '{}' });
+    expect(base.calls[0]).toBe('/sim/compute');
+  });
+
+  test('every_mode_in_the_table_routes_to_its_own_prefix', async () => {
+    // 表に載っている全モードが自分の core へ回る（第 4 モード追加時も本ケースが自動で覆う）。
+    for (const id of MODE_IDS) {
+      const { base, fetch } = make(id);
+      await fetch('/candles');
+      expect(base.calls[0]).toBe(`${prefixOf(id)}/candles`);
+    }
+  });
+
+  test('sim_mode_reads_mode_per_call_when_toggled_from_replay', async () => {
+    const base = spyFetch();
+    let mode = 'replay';
+    const fetch = createRoutedFetch({ baseFetch: base, getMode: () => mode, origin: ORIGIN });
+    await fetch('/candles');
+    mode = 'sim';
+    await fetch('/candles');
+    expect(base.calls).toEqual(['/replay/candles', '/sim/candles']);
   });
 
   // --- 冪等: SW が生きている環境で二重付与しない ---

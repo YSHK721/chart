@@ -15,6 +15,11 @@ import {
   applyModeUi,
   wireModeSwitchButtons,
 } from '../js/mode_ui_view.js';
+// モード集合・body クラス・トグル id の単一ソース（§3.5.6 の表駆動化）。
+import {
+  MODE_IDS, MODE_BODY_CLASSES, MODE_TOGGLE_BUTTONS, bodyClassOf, DEFAULT_MODE,
+  hasChartApi, CHART_API_BODY_CLASS,
+} from '../js/mode_table.js';
 
 // classList.toggle(cls, force) を Set で観測できる最小 body fake。
 function fakeBody() {
@@ -43,6 +48,16 @@ describe('MODE — モード列挙', () => {
     expect(MODE.LIVE).toBe('live');
     expect(MODE.REPLAY).toBe('replay');
     expect(Object.isFrozen(MODE)).toBe(true);
+  });
+
+  test('SIM_第3モードが列挙に載る（§3.5.6 #1）', () => {
+    // Assert
+    expect(MODE.SIM).toBe('sim');
+  });
+
+  test('列挙はモード定義表から導出される（第2の定義を持たない）', () => {
+    // Assert: 表に載っている全モードが列挙に現れ、列挙は表以外の値を持たない。
+    expect(Object.values(MODE).sort()).toEqual([...MODE_IDS].sort());
   });
 });
 
@@ -118,6 +133,75 @@ describe('applyModeUi — モード UI 反映', () => {
   });
 });
 
+describe('applyModeUi — 3 値化（表走査・§3.5.6 #2）', () => {
+  // 表に載っている全トグルを観測できる document fake。
+  function fakeDoc() {
+    const body = fakeBody();
+    const toggles = new Map();
+    for (const b of MODE_TOGGLE_BUTTONS) {
+      toggles.set(b.id, { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } });
+    }
+    return {
+      body,
+      toggles,
+      getElementById: (id) => toggles.get(id) || null,
+    };
+  }
+
+  test('sim_um-mode-simのみが付き他のモードクラスは外れる（相互排他）', () => {
+    // Arrange
+    const doc = fakeDoc();
+    vi.stubGlobal('document', doc);
+    // Act
+    applyModeUi('sim');
+    // Assert
+    expect(doc.body.classes.has('um-mode-sim')).toBe(true);
+    expect(doc.body.classes.has('um-mode-live')).toBe(false);
+    expect(doc.body.classes.has('um-mode-replay')).toBe(false);
+  });
+
+  test('各モードで表の全クラスが相互排他に切替わる（第4モードも自動で覆う）', () => {
+    for (const id of MODE_IDS) {
+      // Arrange
+      const doc = fakeDoc();
+      vi.stubGlobal('document', doc);
+      // Act
+      applyModeUi(id);
+      // Assert
+      const on = bodyClassOf(id);
+      for (const cls of MODE_BODY_CLASSES) {
+        expect(doc.body.classes.has(cls)).toBe(cls === on);
+      }
+    }
+  });
+
+  test('chartApiを持つモードでのみum-chart-apiが付く（🟡-5・状態クラスの反映）', () => {
+    for (const id of MODE_IDS) {
+      // Arrange
+      const doc = fakeDoc();
+      vi.stubGlobal('document', doc);
+      // Act
+      applyModeUi(id);
+      // Assert: CSS はこのクラスの有無だけを見る（モード名を知らない＝第 4 モードで CSS 不変）。
+      expect(doc.body.classes.has(CHART_API_BODY_CLASS)).toBe(hasChartApi(id));
+    }
+  });
+
+  test('各トグルのaria-pressedは自分のモードのときだけtrue', () => {
+    for (const id of MODE_IDS) {
+      // Arrange
+      const doc = fakeDoc();
+      vi.stubGlobal('document', doc);
+      // Act
+      applyModeUi(id);
+      // Assert
+      for (const b of MODE_TOGGLE_BUTTONS) {
+        expect(doc.toggles.get(b.id).attrs['aria-pressed']).toBe(b.mode === id ? 'true' : 'false');
+      }
+    }
+  });
+});
+
 describe('wireModeSwitchButtons — トグルボタン配線（modeController 注入）', () => {
   test('click_注入したmodeControllerのtoggleを呼ぶ', () => {
     // Arrange
@@ -131,6 +215,131 @@ describe('wireModeSwitchButtons — トグルボタン配線（modeController �
     handler();
     // Assert
     expect(toggled).toBe(1);
+  });
+
+  // --- L-3: ボタン id → 目標モードの表から toggle(target) を**明示指定**する -------------
+  //
+  // 旧実装は id 集合 ['enter-replay','rp-close'] をハードコードし、いずれも引数なしの
+  //   `toggle()`（＝2 値反転）を呼んでいた。3 値では「反転」が定義できず、sim ボタンを足しても
+  //   どのモードへ行くのか表現できない。id→目標モードの対応を表から取り、明示指定へ変える。
+  test('enter-sim_clickでtoggleにsimが明示指定される', () => {
+    // Arrange
+    const handlers = new Map();
+    const makeBtn = (id) => ({ addEventListener: (ev, fn) => { if (ev === 'click') handlers.set(id, fn); } });
+    vi.stubGlobal('document', { getElementById: (id) => makeBtn(id) });
+    const targets = [];
+    // Act
+    wireModeSwitchButtons({ toggle: (t) => targets.push(t) });
+    handlers.get('enter-sim')();
+    // Assert
+    expect(targets).toEqual(['sim']);
+  });
+
+  test('表の各トグルボタンは自分のモードをtoggleへ渡す（第4モードも自動で覆う）', () => {
+    // Arrange
+    const handlers = new Map();
+    vi.stubGlobal('document', {
+      getElementById: (id) => ({ addEventListener: (ev, fn) => { if (ev === 'click') handlers.set(id, fn); } }),
+    });
+    const targets = [];
+    // Act
+    wireModeSwitchButtons({ toggle: (t) => targets.push(t) });
+    for (const b of MODE_TOGGLE_BUTTONS) {
+      handlers.get(b.id)();
+    }
+    // Assert
+    expect(targets).toEqual(MODE_TOGGLE_BUTTONS.map((b) => b.mode));
+  });
+
+  test('rp-close_clickは既定モード（ライブ）を明示指定する', () => {
+    // Arrange: リプレイバー右端の ✕ は「リプレイ終了＝ライブへ戻る」。3 値では反転で表せない。
+    const handlers = new Map();
+    vi.stubGlobal('document', {
+      getElementById: (id) => ({ addEventListener: (ev, fn) => { if (ev === 'click') handlers.set(id, fn); } }),
+    });
+    const targets = [];
+    // Act
+    wireModeSwitchButtons({ toggle: (t) => targets.push(t) });
+    handlers.get('rp-close')();
+    // Assert
+    expect(targets).toEqual([DEFAULT_MODE]);
+  });
+
+  // --- 🔴-1: トグルの「オフ」動作（アクティブなモードの再押下）------------------------
+  //
+  // 回帰の実態: develop の `wireModeSwitchButtons` は引数なしの `toggle()` を呼び、当時の
+  //   `toggle` が 2 値反転していたため「replay 中に enter-replay を押す＝live へ戻る」が成立して
+  //   いた。L-3 で目標モードを明示指定（`toggle(mode)`）にした結果、`toggle` の同一モードガード
+  //   （`target === activeMode` で return）に当たって**押しても何も起きなく**なった。
+  //   enter-replay はオフ動作を失い（develop からの回帰）、sim は enter-sim でモードを抜けられない。
+  //
+  // 是正: ボタンは「自分のモードが今アクティブか」を見て行き先を決める。
+  //   アクティブなら既定モードへ戻す（オフ）、そうでなければ自分のモードへ入る（オン）。
+  //   これは develop の 2 値反転を 3 値以上へ一般化したもので、モード名は表から来る。
+  function wireWith(currentMode) {
+    const handlers = new Map();
+    vi.stubGlobal('document', {
+      getElementById: (id) => ({ addEventListener: (ev, fn) => { if (ev === 'click') handlers.set(id, fn); } }),
+    });
+    const targets = [];
+    wireModeSwitchButtons({ toggle: (t) => targets.push(t), getMode: () => currentMode });
+    return { handlers, targets };
+  }
+
+  test('replay中にenter-replay再押下_既定モード（ライブ）へ戻る', () => {
+    // Arrange
+    const { handlers, targets } = wireWith('replay');
+    // Act
+    handlers.get('enter-replay')();
+    // Assert
+    expect(targets).toEqual([DEFAULT_MODE]);
+  });
+
+  test('sim中にenter-sim再押下_既定モード（ライブ）へ戻る', () => {
+    // Arrange
+    const { handlers, targets } = wireWith('sim');
+    // Act
+    handlers.get('enter-sim')();
+    // Assert
+    expect(targets).toEqual([DEFAULT_MODE]);
+  });
+
+  test('非アクティブなモードのボタン押下_そのモードへ入る（オン動作は不変）', () => {
+    // Arrange: sim 中に enter-replay を押す＝replay へ入る（既定へ戻すのではない）。
+    const { handlers, targets } = wireWith('sim');
+    // Act
+    handlers.get('enter-replay')();
+    // Assert
+    expect(targets).toEqual(['replay']);
+  });
+
+  test('表の全トグルが_アクティブ時オフ_非アクティブ時オンに解決する（第4モードも自動で覆う）', () => {
+    for (const b of MODE_TOGGLE_BUTTONS) {
+      // Arrange / Act: 自分のモードがアクティブなとき
+      const active = wireWith(b.mode);
+      active.handlers.get(b.id)();
+      // Assert
+      expect(active.targets).toEqual([DEFAULT_MODE]);
+      // Arrange / Act: 既定モードに居るとき
+      const off = wireWith(DEFAULT_MODE);
+      off.handlers.get(b.id)();
+      // Assert
+      expect(off.targets).toEqual([b.mode]);
+    }
+  });
+
+  test('getModeを持たないmodeController_従来どおり自分のモードを渡す（後方互換）', () => {
+    // Arrange: getMode 未実装の注入（既存テストが使う形）でも例外にせず、オン動作だけ行う。
+    const handlers = new Map();
+    vi.stubGlobal('document', {
+      getElementById: (id) => ({ addEventListener: (ev, fn) => { if (ev === 'click') handlers.set(id, fn); } }),
+    });
+    const targets = [];
+    // Act
+    wireModeSwitchButtons({ toggle: (t) => targets.push(t) });
+    handlers.get('enter-sim')();
+    // Assert
+    expect(targets).toEqual(['sim']);
   });
 
   test('modeController_null_clickでも例外を投げない', () => {

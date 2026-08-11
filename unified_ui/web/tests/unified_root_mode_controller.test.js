@@ -8,6 +8,8 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { createModeController, MODE } from '../js/unified_root.js';
+// モード集合の単一ソース（§3.5.6 の表駆動化）。テスト側も第 2 の定義を持たない。
+import { MODE_IDS } from '../js/mode_table.js';
 
 // 呼び出し順序を 1 本の配列で記録する fake 一式を組む。
 function makeHarness() {
@@ -68,6 +70,129 @@ describe('createModeController — 単一 mount の切替（chart 再構築な�
     expect(calls).toEqual([
       'sw:live', 'clearRevealCache', 'replay.disable', 'poller.start', 'ui:live',
     ]);
+    expect(mc.getMode()).toBe('live');
+  });
+
+  // --- 第 3 モード sim（§3.5.6 #3・§11.2・裁定 2026-08-11）---------------------------
+  //
+  // 遷移は replay と同型に組むが、**SW の向け先だけが異なる**: live pollers を止め、reveal
+  //   キャッシュを捨て、まず SW を **live** へ向けてからリプレイ層を disable（sim は再生では
+  //   ないので畳む）し、そのあと SW を sim へ向けて、最後に UI を反映する。
+  //
+  // なぜ SW を一度 live へ向けるのか（不変条件）:
+  //   `disable()` は reveal トリムを解くため `/candles` を再取得する（replay.js:532 の
+  //   catchUpToLiveTail）。Phase 1 の sim core は静的配信しか持たない（/candles が無い）ので、
+  //   この復帰要求が sim core へ向くと 404 になり、チャートがライブ全長へ戻らない。
+  //   よって **disable の復帰 fetch は必ず答えられる core へ向ける** を不変条件とし、
+  //   disable が終わるまで SW を sim にしない。enterLive が「SW を先に live へ」置くのと同じ理由。
+  const SIM_TRANSITION = [
+    'poller.stop', 'clearRevealCache', 'sw:live', 'replay.disable', 'sw:sim', 'ui:sim',
+  ];
+
+  it('live→sim: pollers stop → clearRevealCache → SW=live → replay.disable → SW=sim → ui=sim の順で切替', async () => {
+    // Arrange
+    const { mc, calls } = makeHarness();
+    // Act
+    await mc.toggle('sim');
+    // Assert
+    expect(calls).toEqual(SIM_TRANSITION);
+    expect(calls).not.toContain('replay.destroy');
+    expect(mc.getMode()).toBe('sim');
+  });
+
+  it('replay→sim: リプレイ層を畳んで sim へ移る（chart は破棄しない）', async () => {
+    // Arrange
+    const { mc, calls } = makeHarness();
+    await mc.toggle('replay');
+    calls.length = 0;
+    // Act
+    await mc.toggle('sim');
+    // Assert
+    expect(calls).toEqual(SIM_TRANSITION);
+    expect(calls).not.toContain('replay.destroy');
+    expect(mc.getMode()).toBe('sim');
+  });
+
+  it('sim 遷移: disable が走る時点で SW モードは sim になっていない（不変条件そのものの表明）', async () => {
+    // Arrange: 順序の並びではなく「disable の瞬間に SW がどこを向いているか」を直接観測する。
+    //   並び比較だけだと、将来 disable の前に別の呼び出しが挟まったとき意図が読めなくなる。
+    const { mc, calls } = makeHarness();
+    await mc.toggle('replay');
+    calls.length = 0;
+    // Act
+    await mc.toggle('sim');
+    // Assert
+    const swBeforeDisable = calls.slice(0, calls.indexOf('replay.disable'))
+      .filter((c) => c.startsWith('sw:'))
+      .pop();
+    expect(swBeforeDisable).toBe('sw:live');
+    // 最終的には sim を向く（遷移が完了している）。
+    expect(calls.filter((c) => c.startsWith('sw:')).pop()).toBe('sw:sim');
+  });
+
+  it('sim→live: 既存のライブ復帰経路をそのまま通る（pollers 再開）', async () => {
+    // Arrange
+    const { mc, calls } = makeHarness();
+    await mc.toggle('sim');
+    calls.length = 0;
+    // Act
+    await mc.toggle('live');
+    // Assert
+    expect(calls).toEqual([
+      'sw:live', 'clearRevealCache', 'replay.disable', 'poller.start', 'ui:live',
+    ]);
+    expect(mc.getMode()).toBe('live');
+  });
+
+  it('sim→replay: リプレイ層を有効化して replay へ移る', async () => {
+    // Arrange
+    const { mc, calls } = makeHarness();
+    await mc.toggle('sim');
+    calls.length = 0;
+    // Act
+    await mc.toggle('replay');
+    // Assert
+    expect(calls).toEqual([
+      'poller.stop', 'clearRevealCache', 'sw:replay', 'replay.enable', 'ui:replay',
+    ]);
+    expect(mc.getMode()).toBe('replay');
+  });
+
+  it('同一モード sim への toggle は no-op', async () => {
+    // Arrange
+    const { mc, calls } = makeHarness();
+    await mc.toggle('sim');
+    calls.length = 0;
+    // Act
+    await mc.toggle('sim');
+    // Assert
+    expect(calls).toEqual([]);
+    expect(mc.getMode()).toBe('sim');
+  });
+
+  it('表に無いモードへの toggle は無視される（未知値で状態を壊さない）', async () => {
+    // Arrange
+    const { mc, calls } = makeHarness();
+    // Act
+    await mc.toggle('nope');
+    // Assert
+    expect(calls).toEqual([]);
+    expect(mc.getMode()).toBe('live');
+  });
+
+  it('MODE は第 3 モードを含み定義表と一致する（unified_root の再 export 経由）', () => {
+    // Assert
+    expect(MODE.SIM).toBe('sim');
+    expect(Object.values(MODE).sort()).toEqual([...MODE_IDS].sort());
+  });
+
+  it('引数なし toggle は sim からは既定モード（live）へ戻る', async () => {
+    // Arrange
+    const { mc } = makeHarness();
+    await mc.toggle('sim');
+    // Act
+    await mc.toggle();
+    // Assert: 既定モード以外に居るときの無引数トグルは「オフ＝既定へ戻る」。
     expect(mc.getMode()).toBe('live');
   });
 

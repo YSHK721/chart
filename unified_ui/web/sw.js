@@ -8,9 +8,11 @@
 // モジュール SW（type:'module'）として登録される（import 可）。
 
 import { rewritePath } from './js/sw_rewrite.js';
+// 受理してよいモードの単一ソース（基本設計書 §3.5.6 #8）。
+import { isKnownMode, DEFAULT_MODE } from './js/mode_table.js';
 
 // アクティブモード。unified_root.js が postMessage({type:'set-mode'}) で更新する。
-let activeMode = 'live';
+let activeMode = DEFAULT_MODE;
 
 self.addEventListener('install', () => {
   // 新 SW を即時有効化（初回訪問で待機させない）。
@@ -24,7 +26,10 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('message', (event) => {
   const data = event.data || {};
-  if (data.type === 'set-mode' && (data.mode === 'live' || data.mode === 'replay')) {
+  // 受理判定は許可集合（モード定義表）を引く。条件にモード名を列挙すると、表に載っているのに
+  //   受理されないモードが生じ、**黙って無視**される（activeMode が前のまま・ack も返らない）。
+  //   SW を通る要求だけが前モードの core へ流れ続け、front 付与と食い違う。
+  if (data.type === 'set-mode' && isKnownMode(data.mode)) {
     activeMode = data.mode;
     // MessageChannel 経由の要求には ack を返す（送信側が反映完了を待てる）。
     if (event.ports && event.ports[0]) {

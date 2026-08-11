@@ -17,6 +17,10 @@
 //     透過ラップ）。preventDefault も戻り値の改変も行わない＝挙動を変えない。
 //   - 再生ループ中の毎フレーム記録はしない（記録自体が負荷にならないよう、操作・通信・例外に限る）。
 
+// 例外: モード集合・body クラスの単一ソースだけは参照する（§11.2 L-4）。純データの表であり、
+//   app のモジュールではない（葉モジュール同士の依存＝循環しない）。
+import { MODES } from './mode_table.js';
+
 const DEFAULT_CAPACITY = 300;
 
 // ---- 純ロジック（DOM 非依存・単体検証対象）--------------------------------------
@@ -105,7 +109,10 @@ export function formatState(s) {
 function readState(win, doc) {
   const c = win.__rpController;
   const body = doc && doc.body ? doc.body.className : '';
-  const mode = /um-mode-replay/.test(body) ? 'replay' : (/um-mode-live/.test(body) ? 'live' : '?');
+  // モード判定はモード定義表の走査（§11.2 L-4）。body クラスをここで列挙すると、表に載っている
+  //   モードが `?` に落ちる。操作ログは「どのモードで何が起きたか」を読むためのものなので、
+  //   モードが `?` になると事故の切り分けができない。
+  const mode = (MODES.find((m) => body.includes(m.bodyClass)) || { id: '?' }).id;
   if (!c) {
     return { mode };
   }
