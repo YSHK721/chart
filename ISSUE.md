@@ -7157,3 +7157,10 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
      構造設計に記録済み。Phase 6 着手前に承認を得る。
 - **対策案**: 1 は依頼者の y/n 承認後に 1 行差替＋実 HTTP 実測（ブラウザ実 UI 含む）。
   2 は同一銘柄・同一足でバー時刻列の一致を実測。3 は Phase 6 の設計時に承認取得。
+- **経過（2026-08-11・項目 1 は RESOLVED）**: 依頼者承認（y）を受け serve.sh:306 を 1 行差替
+  （commit 5174124・merge e647aa6）。台帳を `<data_root>/indicator_causality.json` へ配置し、
+  serve.sh 起動スタックで実測: 公開 8000 経由 `GET /sim/indicators` = 200・selectable:true 3 系列
+  （moving_averages:MA / profit_hlband:hl_range / profit_osi_ma:osi_ma_kairi）・selectable:false 134
+  （verification_incomplete 67 / supply_cost_exceeded 57 / mismatch 10）。ブラウザ実 UI（Playwright）
+  で同 URL の描画を確認。既存面の回帰なし（`/` 200・`/live/candles` はパラメータ検証 400 の既存挙動・
+  `/sim/jobs` GET 404 は Phase 2 からの既存挙動＝ISSUE-375-1）。項目 2・3 は OPEN のまま。
