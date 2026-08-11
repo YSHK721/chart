@@ -6948,9 +6948,17 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   含む。参照実装なしに UI へ焼き込むのは推測実装（絶対遵守ルール違反）。ISSUE-369 のエンジンが
   式の権威となり、UI 側 JS は golden fixture 一致検定で従う（LAYERING_CONVENTIONS の規約どおり）。
 
-## ISSUE-369: [機能] 口座状態エンジン — 証拠金・ロスカットの参照実装（2026-08-11・IN_PROGRESS）
+## ISSUE-369: [機能] 口座状態エンジン — 証拠金・ロスカットの参照実装（2026-08-11・RESOLVED）
 
-- **ステータス**: IN_PROGRESS（Phase 1 完了・2026-08-11。Phase 2（simulator/ 恒久化）が残）
+- **ステータス**: RESOLVED（2026-08-11・Phase 2 恒久化まで完了）
+- **Phase 2 の結果（2026-08-11）**: 両アクター突合＝OANDA エンジン vs simulator 口座アクター
+  （domain/account.py＋_execution）を同一 tick で実測し、口座数式（equity・必要証拠金・維持率）は
+  3 シナリオ・約 9.6 万 tick で完全一致（差 0）・強制決済も同一 tick 同一価格。相違は規約差のみ
+  （OANDA=損失最大から順次・回復で停止／MT5=close_and_halt 全決済。難平ケースで最終残高差
+  ¥3,906 を実測＝並立させず OANDA 規約は account_engine が担う）。恒久化＝回帰ゲート
+  （byte 一致・e88a626）→ git mv（simulator/usecase/account_engine.py・adapter/presenter/
+  account_report_build.py・tools/run_account_scenario.py・1ca6b9a）→ JS 検定用 golden fixture
+  60 ケース＋同期検定（f57102d）。simulator unit 全 866 件合格。ISSUE-368 の着手条件は成立。
 - **Phase 1 の実測結果（prototype_260811-01・verify.py 全 6 検定合格）**:
   - 計算機 HTML のロスカット式（lcDistCore×mFactor）は閉形式 X=(avgP∓E/U)/(1∓mr) と代数同値
     （グリッド 216 組・最大差 2.9e-11）。
