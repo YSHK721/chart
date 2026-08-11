@@ -7099,3 +7099,61 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   6. `serve_sim_jobs` の応答書き込み中のクライアント切断で socketserver 既定 handle_error が
      stderr へトレースを出す（handle_error 未抑制）。
 - **対策案**: 各対象モジュールへ次に手を入れる Phase で同時是正（ISSUE-374 と同運用）。
+
+## ISSUE-376: [申し送り] sim バックテスト Phase 3 のレビュー申し送り（2026-08-11・OPEN）
+
+- **検出日**: 2026-08-11
+- **検出経路**: feature/sim-backtest-phase3 のリファクタ工程・コードレビュー（code-review-executor）。
+  いずれもマージ非阻害の記録事項（承認条件としてマージ直後の起票を指示されたもの）。
+- **項目**:
+  1. `simulator/sim_ui/framework/json_get_routes.py` の `write_json` が
+     `serve_sim_jobs.py` の `JobHandler._write` と同型 7 行の 2 箇所化。単一ソース化は既存ファイル
+     改変を要するため Phase 3 の無改変制約下では未実施（ISSUE-374-1 と同運用）。
+  2. `serve_sim_indicators.py` の `SimIndicatorApp` が GET 応答器（`GetRouteResponder`）を
+     `static_server` 属性名で保持する名称乖離。既存 Handler が属性名で引くため回避不能だった。
+  3. ISSUE-374-1（serve/make_server の同型 15 行重複）は Phase 3 で委譲デコレータ方式により
+     三重複製化を回避したが、既存 2 箇所の恒久是正（handler factory 引数化）は未了。
+  4. 検定 CLI の供給コスト判定が 1 標本の実測秒と硬い閾値（1.0 秒）の比較。境界付近 4 指標
+     （0.875 / 1.040 / 1.081 / 1.199 秒）の可否が再実行で反転しうる。`supply_seconds` が
+     源 CSV ロード（実測 242ms）を含まない限界コストである旨も未明記。対策案: 複数回測定の
+     中央値判定＋境界注記＋docstring 明記。
+  5. tolerance=0.0 の厳密一致は 1 ULP 差の指標で run 間再現しない（profit_arctan を実測:
+     8.88e-16 で判定反転。mismatch 10 系列中 6 系列が 1e-14 以下の丸め差領域）。緩和は
+     裁定で禁止のため、扱い（ULP 帯の別 reason 化等）は依頼者裁定が必要。
+  6. 検定の段 2 未確定 19 系列（--verify-timeout 300 秒で打ち切り。到達本数は台帳に記録済み・
+     例 profit_stc 8163/10000）。予算引き上げの再実行で確定可能。
+  7. 指標側例外 33 系列（profit_band:global の empty_series 28 等）は「データセット先頭から
+     N 本」の検定窓で指標が計算不能になる帰結。検定窓の取り方と併せて要検討。
+  8. `warmup_bars` 区間（先頭 warmup 欠測）を Phase 6 の供給でどう扱うか（NaN 化の要否）が未決。
+     `PandasIndicatorRegistry._raise_if_invalid_nan` が先頭 NaN を受理するかも未検証。
+  9. 台帳 `measured` の `max_abs_diff` / `first_mismatch_time` / `supply_seconds` に型強制なし。
+     503 応答本文に台帳の絶対パスが載る（CWE-209・既存慣行と一貫のため記録のみ）。
+  10. 突合規則で両側 NaN は `mismatch`（fail-closed の意図的判断・docstring 明記済み）。
+     設計書 §3.5.4 系の字面「NaN/NaN=一致」は probe の NaN→None 正規化後の `None/None=一致`
+     として実現しており、生 NaN 到達時の規則を「一致」へ戻す修正を入れないこと。
+  11. `tests/integration/_fake_indicator_ports.py` の `bar_times` が `count<0` で末尾を落とし
+     Port 契約（`count<=0` は全件）と食い違う（現状未行使）。突合で両側とも点が無いバーが
+     どこにも計上されず `bars_compared + warmup ≠ 総バー数` の差が台帳から説明できない
+     （`skipped_bars` の追加を検討）。
+- **対策案**: 各対象モジュールへ次に手を入れる Phase で同時是正（ISSUE-374 と同運用）。
+  5 は依頼者裁定、8 は Phase 6 着手前に実測で確定。
+
+## ISSUE-377: [承認待ち] Phase 3 指標供給の稼働結線（serve.sh 1 行）と Phase 6 前提の未検証事項（2026-08-11・OPEN）
+
+- **検出日**: 2026-08-11
+- **検出経路**: feature/sim-backtest-phase3 の構造設計（architecture-executor）。既存ファイル
+  無改変制約により Phase 3 では実施せず、承認待ちとして記録。
+- **項目**:
+  1. **TBD-P3-1（承認要求）**: `unified_ui/serve.sh:306` の合成根 1 行差替
+     （`composition_root_jobs.build_sim_job_app` → `composition_root_indicators.build_sim_indicator_app`）。
+     追加のみでは稼働プロセスへ到達できない（合成根の固定 import・実測）ため、これが無いと
+     公開 8000 経由の `GET /sim/indicators` が 404 のまま（Phase 3 通過条件 2 の実 HTTP 確認が
+     合成根〜実 HTTP のテスト内実証に留まる）。Phase 2 の E-1 と同一箇所・同一形の最小改変。
+  2. **TBD-P3-2（Phase 6 前提・未検証）**: 供給系列のデータ源（compute の `datasetRef`）と
+     バックテスト bars のデータ源（`build_interactor` の `data_path`）の時刻軸同一性が未検証。
+     一致しなければ整列（`align_series_to_bars`）が全滅する。Phase 6 着手前に実測で確定する。
+  3. **TBD-P3-7（Phase 6 の拡張点欠如・先出し）**: 供給した `IndicatorPort` を戦略へ届ける
+     注入口が `build_interactor` に無い（唯一の口は `strategy_decorator`）。最小の拡張点設計は
+     構造設計に記録済み。Phase 6 着手前に承認を得る。
+- **対策案**: 1 は依頼者の y/n 承認後に 1 行差替＋実 HTTP 実測（ブラウザ実 UI 含む）。
+  2 は同一銘柄・同一足でバー時刻列の一致を実測。3 は Phase 6 の設計時に承認取得。
