@@ -1,0 +1,9 @@
+{
+  "direction": "long",
+  "balance": 172000,
+  "entries": [ {"units": 6, "price": null},
+               {"units": 8, "price": 65300},
+               {"units": 10, "price": 65000} ],
+  "stop_price": 64600,
+  "tp_price": 65800
+}

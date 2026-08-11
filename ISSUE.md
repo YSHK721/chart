@@ -6915,3 +6915,93 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   （引き継ぎ後の `__serving_root` が起動元ツリーを返すことを確認）。
 - **射程外**: 本チェックアウト側の `serve.sh` は develop に取り込むまで `--takeover` を持たない
   （戻すときは占有が無い状態からの通常起動になる）。
+
+## ISSUE-368: [機能] ポジションサイズ計算機のチャート UI 統合（2026-08-11・OPEN・保留）
+
+- **ステータス**: OPEN（保留。着手条件＝ISSUE-369 の口座状態エンジンで証拠金・ロスカット式が実測確定すること）
+- **重大度**: 低（現行は単体 HTML `integrated_position_sizing_calculator.html` で運用可能）
+- **内容**: 単体 HTML の計算機（ケリー基準・破産確率 MC・分割エントリーのロット変換）を
+  indicator_ui のチャートへ統合する。壁打ち（2026-08-11）で確定した要件:
+  - 双方向連動（チャート上の水準線 drag ⇄ 計算機入力。価格水準の単一ソースはチャート側）
+  - ライブ＋リプレイ両方に載せる（chart_app_wiring の共有配線で 3 配信ページに同時掲載）
+  - 損切りの権威は価格に一本化（保持は stopPrice のみ・D は常に派生値。距離/価格の 2 モード撤廃。利確も同じ）
+  - ATR は統合対象外（ATR×k・MAE/ATR k 校正電卓は載せない）
+  - UI はツールバードロップダウン＋モーダル（テンプレート／カラーテーマと同型）
+  - 勝率 p・利益率 R は手入力のまま
+- **設計調査の確定事実（実測済み・再調査不要）**:
+  - チャートに無いもの: ドラッグ可能な価格線（grep 0 件）／y→価格の公開変換（coordinateToPrice は
+    chart_renderer.js:611 と scale_controller.js:142 の内部利用のみ）／任意ユーザーライン API
+    （renderHorizontal は指標スロット紐付けで流用不可）
+  - 使える拡張点: app_chrome_view.js の installChartToolbar に空マウント 1 行 ＋
+    chart_app_wiring.js の installSharedUi/wireControllerCollaborators。primitive は
+    attachBackgroundPrimitive(key, factory)（雛形 pair_lines_primitive.js）。
+    renderer.setUserInteraction（chart_renderer.js:297）は本番呼び出し元 0 件で drag 中の
+    lwc 抑止に使える。多購読の雛形は addChromeObserver（:1247）
+  - 単数スロットの競合: setCandleObserver（4 者同居）／setTfPeriodHoverHandler（tf-period 専有）。
+    後者は触らず y→価格の公開メソッド priceAtCoordinate(y) を renderer に足すのが根治
+  - MC（約 6000 万ループ）のサーバ送りは不可（ISSUE-362 GIL 律速・ISSUE-364 単一ワーカー詰まり）
+    → クライアント Web Worker（ESM・`new Worker(new URL(...), {type:'module'})`）一択。
+    Worker URL は served_import_resolution.test.js の検出対象外なので新規構造ガードが要る
+  - 現行 HTML の build() は DOM 直読み・Math.random 直用のため、そのまま移植は不可
+    （domain 分解・seed 注入が前提）
+- **保留の理由**: 現行 HTML の証拠金・ロスカット式（時価ベース補正 mFactor）は未検証の仮定を
+  含む。参照実装なしに UI へ焼き込むのは推測実装（絶対遵守ルール違反）。ISSUE-369 のエンジンが
+  式の権威となり、UI 側 JS は golden fixture 一致検定で従う（LAYERING_CONVENTIONS の規約どおり）。
+
+## ISSUE-369: [機能] 口座状態エンジン — 証拠金・ロスカットの参照実装（2026-08-11・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-11・Phase 2 恒久化まで完了）
+- **Phase 2 の結果（2026-08-11）**: 両アクター突合＝OANDA エンジン vs simulator 口座アクター
+  （domain/account.py＋_execution）を同一 tick で実測し、口座数式（equity・必要証拠金・維持率）は
+  3 シナリオ・約 9.6 万 tick で完全一致（差 0）・強制決済も同一 tick 同一価格。相違は規約差のみ
+  （OANDA=損失最大から順次・回復で停止／MT5=close_and_halt 全決済。難平ケースで最終残高差
+  ¥3,906 を実測＝並立させず OANDA 規約は account_engine が担う）。恒久化＝回帰ゲート
+  （byte 一致・e88a626）→ git mv（simulator/usecase/account_engine.py・adapter/presenter/
+  account_report_build.py・tools/run_account_scenario.py・1ca6b9a）→ JS 検定用 golden fixture
+  60 ケース＋同期検定（f57102d）。simulator unit 全 866 件合格。ISSUE-368 の着手条件は成立。
+- **Phase 1 の実測結果（prototype_260811-01・verify.py 全 6 検定合格）**:
+  - 計算機 HTML のロスカット式（lcDistCore×mFactor）は閉形式 X=(avgP∓E/U)/(1∓mr) と代数同値
+    （グリッド 216 組・最大差 2.9e-11）。
+  - 実 tick でのロスカット発動価格は X と一致: ロング差 −0.34pt／ショート差 +1.11pt
+    （tick 間ギャップのみ）。**mFactor（時価連動補正）は正しい＝未検証仮定が実証に変わった**。
+  - 必要証拠金の時価解釈（U1: mid/trade-side）のトリガー価格差は 0.0pt（実務影響なし）。
+  - 必要証拠金は保有中に時価で 0.9% 変動（HTML の建値ベース式は発注時スナップショットとして正確）。
+  - 代表 4 シナリオ（損切り・難平→利確・ロスカット・週末跨ぎ損切り）をグラフ入り単体 HTML
+    レポートで実 UI 確認済み（難平の維持率最小 105.9% ＝分割が証拠金危険域へ近づく実測を含む）。
+  - 残る未検証: U2（ロスカット執行粒度・複数建玉の部分決済順）・U3（実スリッページ）は
+    公式資料・実口座でしか確定できないため README に明記のうえ仮定として保持。
+- **重大度**: 高（発注設計の証拠金・ロスカット計算に参照実装が存在せず、全計算が未検証仮定の上にある）
+- **要件（依頼者 2026-08-11）**: 売買ポイントでの証拠金・証拠金率などの計算を、決済までの
+  口座状態としてティック粒度で確認したい。本番環境（OANDA 証券 JP225 CFD）と同じ計算処理で
+  確認したい。確認はグラフ入りレポートで行う。アクターは 2 人（口座状態エンジン／レポート提示）。
+- **方針**: prototype_260811-01 で式を実測確定 → simulator/ 配下へ恒久化（market_profile と
+  同じ 2 フェーズ）。レポートは単体 HTML 生成（サーバ不要）。ティック粒度シミュレーションは
+  ライブサーバの request path に載せない（ISSUE-362/364）＝オフラインバッチ CLI。
+  tick は marketdata.tick_m1.day_parquet_files（レイアウト単一権威）経由で読む。
+- **公式文書突き合わせ（2026-08-11 追記・docs/oanda_indices_cfd_about.md）**: 依頼者提供の
+  公式ページ再構成文書とエンジン仮定を突き合わせ、U2（執行粒度＝損失最大から順次・一致）と
+  U4（ロスカットが逆指値より優先・要修正→修正済み）を解決。必要証拠金は**約定代金固定**
+  （§3(2)）と確定し、margin_basis="entry" を既定化。公式閉形式 X=avgP(1+mr)−E/U（ロング）を
+  実測検証（差 −1.87pt）。時価連動前提だった計算機 HTML の式は不一致＝ISSUE-370 起票。
+  verify.py 全 10 検定合格。未反映は U3（実スリッページ）・U5（金利相当額・配当相当額）・
+  U6（値洗い間隔）。
+
+## ISSUE-370: [不具合] 計算機 HTML のロスカット価格式が OANDA 公式記載と不一致（2026-08-11・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-11・mFactor 撤去＋説明文是正＋実建可能ロット分母修正。
+  実 UI で lcPrice・capLot がロング/ショートとも公式閉形式と完全一致・console エラー 0 を実測）
+- **重大度**: 中（ロングでロスカット価格を実際より約 36pt 遠く表示＝危険側の誤り。損切り
+  設計の「ロスカットより手前」判定を誤りうる）
+- **症状**: `integrated_position_sizing_calculator.html` の build() はロスカット価格を
+  時価連動の必要証拠金前提（mFactor=1/(1∓mr)・X=(avgP∓E/U)/(1∓mr)）で計算し、UI 説明文も
+  「必要証拠金は時価ベースで変動する」と記載している。
+- **真因**: OANDA 証券公式（docs/oanda_indices_cfd_about.md §3(2)・§1）は必要証拠金を
+  「**約定代金**に必要証拠金率を乗じて算出」と定義しており建値固定。時価連動は公式記載にない
+  推測だった（参照実装なき実装）。正しい閉形式は X = avgP·(1+mr) − E/U（ロング）／
+  avgP·(1−mr) + E/U（ショート）。
+- **実測根拠（prototype_260811-01 verify.py V6/V7・2026-08-11）**: 公式式は実 tick 実測と
+  一致（差 −1.87〜+2.15pt＝tick 粒度）。同一条件での式差はロング +36.5pt（HTML が遠く
+  表示＝危険側）・ショート +24.0pt（HTML が近く表示＝保守側）。
+- **対策案**: 計算機 HTML（および ISSUE-368 のチャート統合時の domain 実装）のロスカット式を
+  公式閉形式へ差し替え、説明文の「時価ベースで変動」記載を「約定代金固定（公式 §3(2)）」へ
+  是正する。参照実装は ISSUE-369 のエンジン（golden fixture）。

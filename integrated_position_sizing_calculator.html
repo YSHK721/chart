@@ -1,0 +1,1178 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>統合ポジションサイズ計算機</title>
+<style>
+  :root{
+    --bg:#0F141C; --panel:#1A2230; --ink:#E6E9EF; --muted:#8C96A8;
+    --line:#2A3340; --grid:#222B39;
+    --kelly:#E0A94A; --ror:#EC6152; --safe:#34B98D; --ref:#7C8698;
+    --up:#34B98D; --down:#EC6152;
+    --mono: ui-monospace,"SFMono-Regular","JetBrains Mono","Cascadia Code",Menlo,monospace;
+    --sans: ui-sans-serif,system-ui,"Hiragino Sans","Noto Sans JP",sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;line-height:1.5;}
+  .wrap{max-width:960px;margin:0 auto;padding:26px 18px 80px;}
+  header{border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:8px;}
+  .kicker{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 6px;}
+  h1{font-size:21px;margin:0;font-weight:650;letter-spacing:-.01em;color:var(--ink);}
+  .flow{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin:10px 0 20px;line-height:1.7;}
+  .flow b{color:var(--ink);}
+  .step{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--bg);background:var(--ink);width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-right:9px;}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px;}
+  .panel-title{font-family:var(--mono);font-size:22px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 14px;display:flex;align-items:center;}
+  .grid-in{display:grid;grid-template-columns:repeat(3,1fr);gap:14px 18px;}
+  @media(max-width:640px){.grid-in{grid-template-columns:1fr 1fr;}}
+  @media(max-width:420px){.grid-in{grid-template-columns:1fr;}}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px;}
+  .field label b{color:var(--ink);font-weight:600;}
+  .hint{font-size:11px;color:var(--muted);line-height:1.55;margin-top:5px;}
+  .hint b{color:var(--ink);font-weight:600;}
+  input[type=number]{width:100%;font-family:var(--mono);font-size:14px;padding:8px;border:1px solid var(--line);border-radius:6px;background:#141B26;color:var(--ink);text-align:right;}
+  input[type=number]:focus{outline:2px solid var(--ink);outline-offset:-1px;}
+  textarea{color:var(--ink);}
+  .derived{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;font-family:var(--mono);font-size:13px;}
+  .derived span{color:var(--muted);} .derived b{font-weight:600;}
+  .dcards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px;}
+  @media(max-width:560px){.dcards{grid-template-columns:1fr 1fr;}}
+  .dcard{border:1px solid var(--line);border-radius:9px;padding:12px 13px;background:#141B26;border-top:3px solid var(--ref);}
+  .dcard .dl{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);}
+  .dcard .dv{font-family:var(--mono);font-size:23px;font-weight:700;margin-top:4px;letter-spacing:-.01em;color:var(--ink);}
+  .dcard .dh{font-size:10.5px;color:var(--muted);margin-top:3px;line-height:1.4;}
+  .dcard.pos{border-top-color:var(--safe);} .dcard.pos .dv{color:var(--safe);}
+  .dcard.neg{border-top-color:var(--ror);} .dcard.neg .dv{color:var(--ror);}
+  .dcard.kel{border-top-color:var(--kelly);} .dcard.kel .dv{color:var(--kelly);}
+  .pos{color:var(--safe);} .neg{color:var(--ror);}
+  button.run{margin-top:16px;width:100%;padding:12px;background:var(--ink);color:var(--bg);border:0;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:var(--sans);}
+  button.run:active{transform:translateY(1px);} button.run:disabled{opacity:.55;cursor:default;}
+  .progress{height:4px;background:var(--grid);border-radius:2px;overflow:hidden;margin-top:12px;display:none;}
+  .progress.on{display:block;} .progress>i{display:block;height:100%;width:0;background:var(--ink);transition:width .1s linear;}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+  @media(max-width:640px){.cards{grid-template-columns:1fr;}}
+  .card{border:1px solid var(--line);border-radius:10px;padding:15px;border-top:3px solid var(--ref);}
+  .card.kelly{border-top-color:var(--kelly);} .card.safe{border-top-color:var(--safe);}
+  .card .clabel{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+  .card .cval{font-family:var(--mono);font-size:27px;font-weight:650;margin:5px 0 2px;color:var(--ink);}
+  .card.kelly .cval{color:var(--kelly);} .card.safe .cval{color:var(--safe);}
+  .card .csub{font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.7;}
+  .card .csub b{color:var(--ink);font-weight:600;}
+  .verdict{font-size:13.5px;line-height:1.75;margin-top:14px;padding:13px 15px;background:#1C2433;border:1px solid var(--line);border-left:3px solid var(--kelly);border-radius:6px;}
+  .verdict b{font-weight:650;}
+  .hl-k{color:var(--kelly);font-family:var(--mono);} .hl-s{color:var(--safe);font-family:var(--mono);} .hl-r{color:var(--ror);font-family:var(--mono);}
+  canvas{width:100%;display:block;}
+  .chart-cap{font-size:11.5px;color:var(--muted);margin:8px 2px 0;line-height:1.6;}
+  .legend{display:flex;flex-wrap:wrap;gap:12px;font-family:var(--mono);font-size:11px;margin:2px 2px 10px;color:var(--muted);}
+  .legend i{display:inline-block;width:13px;height:3px;vertical-align:middle;margin-right:4px;}
+  .charts2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:720px){.charts2{grid-template-columns:1fr;}}
+  .bridge{background:#111826;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px;}
+  .bridge .panel-title{color:var(--muted);}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;flex-wrap:wrap;}
+  .seg button{border:0;background:#141B26;padding:9px 15px;font-size:13px;font-family:var(--sans);color:var(--muted);cursor:pointer;}
+  .seg button.on{background:var(--ink) !important;color:var(--bg) !important;font-weight:600;}
+  .chosen{font-family:var(--mono);margin-top:14px;display:flex;align-items:baseline;gap:12px;}
+  .chosen .big{font-size:34px;font-weight:700;color:var(--ink);}
+  .chosen .sm{font-size:12px;color:var(--muted);}
+  .dirbar{margin-bottom:8px;}
+  .icard{border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:12px;background:#141B26;}
+  .icard-h{font-family:var(--mono);font-size:21px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;display:flex;align-items:center;gap:8px;padding-bottom:8px;border-bottom:1px solid var(--line);}
+  .icard-h b{color:var(--ink);font-weight:600;}
+  .icard-h .n{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:10px;font-weight:700;background:var(--ref);color:var(--bg);}
+  .icard .dirbar{margin-bottom:0;}
+  .icard .dirbar + .dirbar{margin-top:10px;}
+  .sub-h{font-family:var(--mono);font-size:20px;letter-spacing:.08em;text-transform:uppercase;color:var(--ref);font-weight:700;margin:0 0 8px;padding-left:8px;border-left:3px solid var(--ref);}
+  .sub-h.tp{border-left-color:var(--safe);color:var(--safe);}
+  .icard-grid{column-count:2;column-gap:12px;}
+  @media(max-width:720px){.icard-grid{column-count:1;}}
+  .icard-grid .icard{break-inside:avoid;}
+  .icard-grid .grid-in{grid-template-columns:1fr 1fr;}
+  @media(max-width:420px){.icard-grid .grid-in{grid-template-columns:1fr;}}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+  @media(max-width:720px){.row2{grid-template-columns:1fr;}}
+  .row2 .grid-in{grid-template-columns:1fr;}
+  .row2 .col > .sub-h:first-child{margin-top:0;}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:720px){.cols{grid-template-columns:1fr;}}
+  .modecard{border:1px solid var(--line);border-radius:10px;padding:15px;border-top:3px solid var(--ref);}
+  .modecard.up{border-top-color:var(--up);} .modecard.down{border-top-color:var(--down);}
+  .modehd{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;margin-bottom:2px;}
+  .modecard.up .modehd{color:var(--up);} .modecard.down .modehd{color:var(--down);}
+  .modedesc{font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.6;}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px;margin-bottom:10px;color:var(--ink);}
+  th,td{text-align:right;padding:7px 5px;border-bottom:1px solid var(--line);}
+  th:first-child,td:first-child{text-align:left;}
+  thead th{color:var(--muted);font-weight:500;font-size:10.5px;}
+  .bar{height:18px;background:var(--grid);border-radius:4px;overflow:hidden;display:flex;margin:2px 0;}
+  .bar>i{height:100%;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;color:#fff;font-weight:600;}
+  .barlabel{font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:6px;}
+  .kv{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;padding:5px 0;border-bottom:1px dashed var(--line);}
+  .kv:last-child{border-bottom:0;} .kv span{color:var(--muted);} .kv b{font-weight:600;color:var(--ink);}
+  .check{color:var(--up);}
+  .notes{font-size:12.5px;color:var(--muted);line-height:1.85;}
+  .notes b{color:var(--ink);}
+  .flag{border-left:3px solid var(--down);padding:10px 14px;background:#2A1C1C;border-radius:0 6px 6px 0;margin-top:12px;font-size:12.5px;line-height:1.75;}
+  .flag b{color:var(--down);}
+  .foot{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:10px;line-height:1.8;}
+  details.gloss{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0 18px;margin-bottom:16px;}
+  details.gloss summary{font-family:var(--mono);font-size:24px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink);cursor:pointer;padding:16px 0;list-style:none;font-weight:600;}
+  details.gloss summary::-webkit-details-marker{display:none;}
+  details.gloss summary::before{content:"▸ ";color:var(--muted);}
+  details.gloss[open] summary::before{content:"▾ ";}
+  .gterm{padding:11px 0;border-top:1px solid var(--line);}
+  .gterm .gt{font-family:var(--mono);font-weight:700;font-size:13px;color:var(--ink);}
+  .gterm .gt .tag{font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;margin-left:8px;vertical-align:middle;}
+  .tag.measure{background:#16302A;color:var(--safe);}
+  .tag.decide{background:#33280F;color:var(--kelly);}
+  .tag.out{background:#262D38;color:var(--ref);}
+  .tag.concept{background:#251F38;color:#AE9FE0;}
+  .gterm .gd{font-size:12.5px;color:var(--muted);line-height:1.6;margin-top:3px;}
+  .gterm .gd b{color:var(--ink);}
+  .glegend{font-size:11px;color:var(--muted);padding:12px 0 16px;line-height:1.7;}
+  .glegend .tag{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="kicker">Position Sizing · Integrated</p>
+    <h1>統合ポジションサイズ計算機</h1>
+  </header>
+  <p class="flow"><b>① エッジと破産確率から f を決める</b> → <b>② 採用する f を選ぶ</b> → <b>③ f を分割ロットに変換する</b>。破産確率の管理は①で完了し、③はその f をロットに落とすだけ。</p>
+
+  <!-- ========== GLOSSARY ========== -->
+  <details class="gloss">
+    <summary>用語集（タップで開閉）</summary>
+    <div class="glegend">
+      <span class="tag measure">実測</span> バックテストから測る ／
+      <span class="tag decide">方針</span> 自分で決める ／
+      <span class="tag out">出力</span> 計算機が返す ／
+      <span class="tag concept">概念</span> 用語・考え方
+    </div>
+    <div class="gterm"><div class="gt">勝率 p<span class="tag measure">実測</span></div>
+      <div class="gd">勝ちトレード数 ÷ 総トレード数。過去データから測る。当てずっぽうで入れない。</div></div>
+    <div class="gterm"><div class="gt">利益率 R<span class="tag measure">実測</span></div>
+      <div class="gd">勝ちの平均利益が、負けの平均損失の何倍か。R=1.2 なら利益は損失の1.2倍。</div></div>
+    <div class="gterm"><div class="gt">賭け比率 f<span class="tag out">出力</span></div>
+      <div class="gd"><b>1トレードで負けたとき失う口座残高の割合</b>。ポジションの大きさを決める比率で、ロット数そのものではない。①が計算して返す。</div></div>
+    <div class="gterm"><div class="gt">破産水準<span class="tag decide">方針</span></div>
+      <div class="gd">破産の<b>定義（深さ）</b>。口座残高がどこまで落ちたら破産とみなすか。50%＝口座残高が半分になったら破産。目安：バックテスト最大DD ＜ 破産水準 ＜ 50%。</div></div>
+    <div class="gterm"><div class="gt">目標破産確率 α<span class="tag decide">方針</span></div>
+      <div class="gd">破産という<b>事象が起きる確率の許容上限</b>。5%＝破産確率を5%以内に抑えたい。σや損失率とは無関係。保守的なら1〜2%、標準5%。</div></div>
+    <div class="gterm"><div class="gt">破産確率 RoR<span class="tag out">出力</span></div>
+      <div class="gd">Risk of Ruin。ある f で取引を続けたとき、破産水準まで落ちる確率。①が α と比較し、RoR ≤ α を満たす最大 f を返す。</div></div>
+    <div class="gterm"><div class="gt">ホライズン T<span class="tag decide">方針</span></div>
+      <div class="gd"><b>破産確率を何回のトレードにわたって評価するか</b>の回数。週次なら T=52で約1年、250で約5年。大きくするほど RoR は上がる。</div></div>
+    <div class="gterm"><div class="gt">口座分割数 N<span class="tag decide">方針</span></div>
+      <div class="gd"><b>参考カード専用</b>。等額ベットの厳密解 (q/p)^N を計算するだけの値。メインの f 決定には影響しない（f は固定比率ベット、N は等額ベットの別モデル）。</div></div>
+    <div class="gterm"><div class="gt">口座残高 E<span class="tag measure">実測</span></div>
+      <div class="gd">現在の口座残高（円）。リスク額（f×E）の計算基準。</div></div>
+    <div class="gterm"><div class="gt">円換算 V<span class="tag measure">実測</span></div>
+      <div class="gd">価格が1pt動くと1単位あたり何円の損益か。<b>OANDA JP225（円建て）は V=1</b>。値幅(pt)を金額(円)に翻訳する換算レート。</div></div>
+    <div class="gterm"><div class="gt">第1建値 P₀<span class="tag decide">方針</span></div>
+      <div class="gd">最初に建てる価格（日経225の指数値）。例 38,000。</div></div>
+    <div class="gterm"><div class="gt">最小ストップ距離 D<span class="tag decide">方針</span></div>
+      <div class="gd">損切りに<b>最も近い建玉</b>から損切り価格までの値幅(pt)。損切り位置の基準値。ATR×kモードでは自動算出値で上書き。<b>ストップ指定方式＝価格指定</b>にすると、ストップ価格を直接入力して D を各モードで自動逆算できる（チャート水準に合わせる用。σ̂由来のDから外れる点に注意）。<br>
+      <b>D とロット数の関係：</b>許容損失（f×E）を固定すると、単位数 ＝ (f×E)÷(D×V)。D を<b>小さくするほど1単位あたりの損失が小さくなり、単位数は増える</b>（反比例 単位数∝1/D）。例：許容15万円・V=1で D=200→750単位、D=100→1500単位。<br>
+      <b>裏返しの帰結：</b>D を小さくして単位数が増えると想定元本（単位数×建値）が膨らみ<b>必要証拠金が急増</b>する。「D を狭くすればたくさん建てられる」は証拠金では「狭くするほど足りなくなる」と表裏一体。D は σ̂ 由来で固定し、サイズは f で調整するのが正しい。</div>
+      <div class="legend" style="margin-top:10px;"><span><i style="background:var(--safe)"></i>現在の D</span><span style="color:var(--muted)">許容損失＝f×E に固定</span></div>
+      <canvas id="dChart" height="200"></canvas></div>
+    <div class="gterm"><div class="gt">D算出方式 / ATR×k<span class="tag decide">方針</span></div>
+      <div class="gd">恣意的なpt指定をやめ D＝k×ATR でボラティリティから決める。<b>ATR</b>＝平均実効レンジ（True Rangeのn期間平均）。<b>k</b>＝ATRの何倍離すか。</div></div>
+    <div class="gterm"><div class="gt">経験分位点（k校正）<span class="tag concept">概念</span></div>
+      <div class="gd">各トレードのMAE/ATR（最大逆行幅÷エントリー時ATR）の実測分布から、目標分位点（例95%）を直接読んでkとする。<b>正規分位点を使わないのが要点</b>——日経のファットテールでは正規分位点はテールを過小評価するため。</div></div>
+    <div class="gterm"><div class="gt">MAE<span class="tag concept">概念</span></div>
+      <div class="gd">Maximum Adverse Excursion＝そのトレードで価格が最も逆行した幅。勝ちトレードのMAE/ATR分布の分位点が、ストップに必要な余裕を実証的に与える（Sweeney のMAE法）。</div></div>
+    <div class="gterm"><div class="gt">建玉間隔 g<span class="tag decide">方針</span></div>
+      <div class="gd">分割エントリー同士の価格間隔(pt)。g=100 なら100ptごとに建て増す。各建玉の距離は D, D+g, D+2g。</div></div>
+    <div class="gterm"><div class="gt">分割回数 K / 重みパターン<span class="tag decide">方針</span></div>
+      <div class="gd">Kは何本に分けて建てるか（1〜10、動的）。重みは各建玉のロット比。<b>均等</b>=全て同じ／<b>線形</b>=1,2,3…／<b>倍々</b>=1,2,4,8…（マルチンゲール、破綻リスク大）／<b>カスタム</b>=各建玉の比をK個の欄で直接入力。</div></div>
+    <div class="gterm"><div class="gt">利確距離 TP<span class="tag decide">方針</span></div>
+      <div class="gd">第1建値から利確までの値幅(pt)。0にすると報酬:リスク比の表示を消す。</div></div>
+    <div class="gterm"><div class="gt">ポイント pt<span class="tag out">単位</span></div>
+      <div class="gd">日経225指数の値幅の単位。38,000→38,100 は100pt。OANDAでは1単位で1pt動くと1円（V=1）。</div></div>
+
+    <div class="gterm"><div class="gt">負け確率 q<span class="tag out">出力</span></div>
+      <div class="gd">1−p。1トレードで負ける確率。</div></div>
+    <div class="gterm"><div class="gt">期待値 EV<span class="tag out">出力</span></div>
+      <div class="gd">Rp−q。1トレードの平均損益（Rの倍数）。<b>プラスでないと賭ける価値がない</b>。</div></div>
+    <div class="gterm"><div class="gt">フルケリー f*<span class="tag out">出力</span></div>
+      <div class="gd">f*=p−q/R。理論上、資産の増え方が最速になる賭け比率。攻めすぎで推定誤差に弱い。</div></div>
+    <div class="gterm"><div class="gt">ハーフケリー<span class="tag out">出力</span></div>
+      <div class="gd">フルケリーの半分（f*/2）。推定誤差への耐性から実務で標準的に使われる。</div></div>
+    <div class="gterm"><div class="gt">破産制約 f<span class="tag out">出力</span></div>
+      <div class="gd">RoR ≤ α を満たす最大の賭け比率。破産確率を優先するときに採る値（推奨）。</div></div>
+    <div class="gterm"><div class="gt">幾何成長率 g(f)<span class="tag out">出力</span></div>
+      <div class="gd">g(f)=p·ln(1+Rf)+q·ln(1−f)。長期の複利成長率。図1のピークがフルケリー。</div></div>
+
+    <div class="gterm"><div class="gt">ロット／単位<span class="tag out">出力</span></div>
+      <div class="gd">発注する数量。OANDA JP225は1単位刻みの整数（最小1単位）。計算値は整数に切り捨てる。</div></div>
+    <div class="gterm"><div class="gt">基準ロット L₁<span class="tag out">出力</span></div>
+      <div class="gd">1本目の単位数。L₁=f×E/(V×Σwᵢdᵢ)。2本目以降は L₁×重み。</div></div>
+    <div class="gterm"><div class="gt">距離 d<span class="tag out">出力</span></div>
+      <div class="gd">各建玉から損切り価格までの値幅(pt)。d₁=D, d₂=D+g, d₃=D+2g。</div></div>
+    <div class="gterm"><div class="gt">加重平均建値<span class="tag out">出力</span></div>
+      <div class="gd">3本を合わせた平均取得価格。ロット数で加重した建値の平均。</div></div>
+    <div class="gterm"><div class="gt">最大リスク<span class="tag out">出力</span></div>
+      <div class="gd">3本すべて約定して損切りしたときの損失額。設計上ちょうど f×E に一致する。</div></div>
+    <div class="gterm"><div class="gt">成功時の利益<span class="tag out">出力</span></div>
+      <div class="gd">利確(TP)に到達したときの総利益（円）。Σ 各建玉ロット×利確までの値幅×V。利確距離TPを基に算出。</div></div>
+    <div class="gterm"><div class="gt">利益率<span class="tag out">出力</span></div>
+      <div class="gd">成功時の利益 ÷ 口座残高。トレード成功時に口座残高が何%増えるか。</div></div>
+    <div class="gterm"><div class="gt">損失率<span class="tag out">出力</span></div>
+      <div class="gd">最大リスク ÷ 口座残高。損切り時に口座残高が何%減るか。設計上は採用 f に一致する。</div></div>
+    <div class="gterm"><div class="gt">報酬:リスク比<span class="tag out">出力</span></div>
+      <div class="gd">利確到達時の利益 ÷ 最大リスク。この建玉のリターン対リスク（統計的Rとは別物）。</div></div>
+    <div class="gterm"><div class="gt">損益分岐到達確率（無ドリフト）<span class="tag out">出力</span></div>
+      <div class="gd">1/(1+報酬:リスク比)。優位性ゼロ（ランダムウォーク）なら、この確率で利確に届いて期待値ちょうどゼロ。実測勝率がこれを上回れば期待値プラス。部分約定を含めても内部整合。</div></div>
+    <div class="gterm"><div class="gt">超過勝率<span class="tag out">出力</span></div>
+      <div class="gd">実測勝率 p − 損益分岐到達確率。<b>プラスの分だけが真のエッジ</b>。勝率単独では意味を持たず、報酬:リスク比との差で評価する。</div></div>
+    <div class="gterm"><div class="gt">期待値（実測pベース）<span class="tag out">出力</span></div>
+      <div class="gd">p×成功利益 −(1−p)×最大リスク。実測勝率で計算した1トレードの平均損益（円）。プラスでなければ賭ける価値なし。</div></div>
+    <div class="gterm"><div class="gt">リスク集中<span class="tag out">出力</span></div>
+      <div class="gd">各建玉が総リスクに占める割合（wᵢdᵢ/Σwᵢdᵢ）。バーで表示。逆張りはストップ至近に集中。</div></div>
+
+    <div class="gterm"><div class="gt">建玉<span class="tag concept">概念</span></div>
+      <div class="gd">建てたポジション1本のこと。分割エントリーでは#1〜#3の3本。</div></div>
+    <div class="gterm"><div class="gt">ストップ（損切り）<span class="tag concept">概念</span></div>
+      <div class="gd">損失を確定させる価格。この計算機の前提は「ストップを絶対に動かさない」こと。動かすと破産確率の保証が崩れる。</div></div>
+    <div class="gterm"><div class="gt">ロング／ショート<span class="tag concept">概念</span></div>
+      <div class="gd">ロング＝買い（値上がりで利益）。ショート＝売り（値下がりで利益）。</div></div>
+    <div class="gterm"><div class="gt">決済方式<span class="tag decide">方針</span></div>
+      <div class="gd"><b>ブラケット決済</b>＝必ず利確か損切りで終わる。2値のEV・到達確率が有効。<b>時間決済</b>＝金曜引け等で強制手仕舞い。多くが途中決済のため2値評価は不適用、期待値は①の実測p・Rで見る。</div></div>
+    <div class="gterm"><div class="gt">R と 報酬:リスク比 の違い<span class="tag concept">概念</span></div>
+      <div class="gd">①の<b>利益率R</b>＝バックテストの平均利益÷平均損失（実現統計値、途中決済含む）。③の<b>報酬:リスク比</b>＝TP÷損切りの幾何比。両者が一致するのは純ブラケット戦略でTP=R×Dのときだけ。時間決済ではズレるのが正常。</div></div>
+    <div class="gterm"><div class="gt">順張り上乗せ<span class="tag concept">概念</span></div>
+      <div class="gd">価格が有利に進むほど増し玉。最大の重みが最遠の建玉に乗り、リスクが最後の1本に集中。</div></div>
+    <div class="gterm"><div class="gt">逆張り難平<span class="tag concept">概念</span></div>
+      <div class="gd">価格が逆行するほど増し玉。最大の重みがストップ至近に乗る。ストップを動かすとマルチンゲール化し破綻する。</div></div>
+    <div class="gterm"><div class="gt">レバレッジ／必要証拠金<span class="tag concept">概念</span></div>
+      <div class="gd">OANDA JP225は最大10倍（必要証拠金＝想定元本の10%）。損切りを守れば破産確率とは独立だが、狭ストップでは証拠金が先に不足しうる。</div></div>
+    <div class="gterm"><div class="gt">証拠金率<span class="tag decide">方針</span></div>
+      <div class="gd">必要証拠金＝約定代金×この率。OANDA JP225は10%（レバレッジ10倍）。銘柄・改定で変わるため公式で確認。</div></div>
+    <div class="gterm"><div class="gt">必要証拠金<span class="tag out">出力</span></div>
+      <div class="gd">全建玉を維持するのに要る担保金。約定代金（Σロット×建値×V）×証拠金率。</div></div>
+    <div class="gterm"><div class="gt">証拠金使用率<span class="tag out">出力</span></div>
+      <div class="gd">必要証拠金÷口座残高。1−f 以上になると、損切りより手前でロスカットが発動する危険域。低いほどギャップ耐性が高い。</div></div>
+    <div class="gterm"><div class="gt">ロスカット<span class="tag concept">概念</span></div>
+      <div class="gd">OANDA証券の強制決済。証拠金維持率（有効証拠金÷必要証拠金）が100%以下で発動、損失の大きい建玉から成行決済。<b>株価指数CFDにマージンコールはなくロスカットのみ</b>。約定価格は保証されず急変時は証拠金超過損もありうる。</div></div>
+    <div class="gterm"><div class="gt">ロスカット価格<span class="tag out">出力</span></div>
+      <div class="gd">有効証拠金＝必要証拠金となる価格（全約定前提）。これが損切りより手前にあると、意図した損切りが機能せず強制決済される。</div></div>
+    <div class="gterm"><div class="gt">ロット単位（整数 / 小数）<span class="tag decide">方針</span></div>
+      <div class="gd"><b>整数（OANDA）</b>＝JP225は1単位・整数刻みのため各建玉を<b>切り捨て</b>、実リスク・実効f・証拠金・ロスカットを発注可能な整数で再計算（切り捨てなので許容損失 f×E を超えない＝保守的）。<b>小数</b>＝丸め前の理論最適サイズ（参考）。分割時は各建玉を個別に切り捨てるため合計・重み比が理論値からやや目減りし、小ロットでは0単位に丸められることがある（⚠表示）。</div></div>
+    <div class="gterm"><div class="gt">証拠金制約ロット / 実建可能ロット<span class="tag out">出力</span></div>
+      <div class="gd">証拠金上限ロット＝使用率100%に収まる最大単位数。<b>実建可能ロット＝リスク制約ロットと制約ロットの小さい方</b>。制約が足りないときは後者に制限され、実効fも縮小する。100%は維持率100%＝ロスカット境界なので実運用はさらに小さく。</div></div>
+    <div class="gterm"><div class="gt">建て制約（証拠金100% / ロスカット価格）<span class="tag decide">方針</span></div>
+      <div class="gd">実建可能ロットの基準を切替。<b>証拠金100%</b>＝使用率100%に収まる最大ロット。<b>ロスカット価格</b>＝<b>損切り価格連動</b>で、目標＝損切り価格（建値−D）。σ̂由来の損切りが必ずロスカットより先に発動する最大ロットに制限する（U_max=E/(avgP(1+mr)−損切り価格)、ロング・公式仕様準拠）。ロスカットが損切りより手前＝発注時に確定する設定ミスであり、それを防ぐのが唯一の正しい制約。各モードカードの<b>価格ライン</b>（建値／損切り／ロスカットの数直線）で前後関係を可視化。根本対処は f を下げること。</div></div>
+    <div class="gterm"><div class="gt">RoRモデルの前提<span class="tag concept">概念</span></div>
+      <div class="gd">各トレードを独立2値（勝ち+Rf／負け−f）と仮定。実際のファットテール・自己相関・週末ギャップは未反映で、実測RoRは悪化方向。</div></div>
+    <div style="height:8px;"></div>
+  </details>
+
+  <!-- ========== STEP 1 ========== -->
+  <div class="panel">
+    <p class="panel-title"><span class="step">1</span>エッジと破産確率 — f を決める</p>
+    <div class="grid-in">
+      <div class="field"><label><b>勝率 p</b>（%）</label><input type="number" id="p" value="38" step="0.5">
+        <div class="hint">勝ちトレード数÷総トレード数。10回中5.5回勝つなら55%。<b>バックテストから実測</b>。</div></div>
+      <div class="field"><label><b>利益率 R</b>（×）</label><input type="number" id="R" value="2.74" step="0.05">
+        <div class="hint">勝ちの平均利益が負けの平均損失の何倍か。R=1.2＝利益は損失の1.2倍。同じバックテストから。</div></div>
+      <div class="field"><label><b>破産水準</b>（初期資本比%）</label><input type="number" id="ruin" value="50" step="1">
+        <div class="hint">破産の<b>深さの定義</b>。口座残高がここまで落ちたら破産とみなす。50%＝半分になったら破産。目安：最大DD〜50%。</div></div>
+      <div class="field"><label><b>目標破産確率 α</b>（%）</label><input type="number" id="alpha" value="1" step="0.5">
+        <div class="hint">破産が起きる<b>確率の許容上限</b>（自分で決める）。5%＝破産確率を5%以内にしたい。σではない。</div></div>
+      <div class="field"><label><b>ホライズン T</b></label><input type="number" id="T" value="250" step="10">
+        <div class="hint"><b>何回のトレードで破産確率を見るか</b>。週次ならT=52で約1年、250で約5年。大きいほどRoRは上がる。</div></div>
+      <div class="field"><label><b>口座分割数 N</b></label><input type="number" id="N" value="20" step="1">
+        <div class="hint"><b>参考カード専用</b>。等額ベットの厳密解 (q/p)^N 用。メインのf決定には影響しない。</div></div>
+    </div>
+    <div class="dcards" id="derived"></div>
+    <p class="chart-cap" style="margin-top:8px;"><b>自動表示：</b>q＝負け確率(1−p)。EV＝1トレードの期待値(Rp−q)、プラスでないと賭ける価値なし。フルケリー／ハーフ＝理論上の賭け比率とその半分（実務目安）。</p>
+    <button class="run" id="runBtn">① 計算する（モンテカルロ実行）</button>
+    <div class="progress" id="prog"><i></i></div>
+
+    <div class="cards" style="margin-top:16px;">
+      <div class="card kelly"><div class="clabel">成長率最大化</div><div class="cval" id="c_kelly">—</div><div class="csub" id="c_kelly_sub">フルケリー f*</div></div>
+      <div class="card safe"><div class="clabel">破産確率制約</div><div class="cval" id="c_safe">—</div><div class="csub" id="c_safe_sub">RoR ≤ α の最大 f</div></div>
+      <div class="card"><div class="clabel">参考·等額厳密解</div><div class="cval" id="c_ref">—</div><div class="csub" id="c_ref_sub">(q/p)^N</div></div>
+    </div>
+    <p class="chart-cap"><b>カードの読み方：</b>「成長率最大化」＝資産の増え方が最速のf（フルケリー、攻めすぎ）。「破産確率制約」＝破産確率をα以内に抑える最大f（<b>これを採る</b>）。「参考」＝等額ベットの破産確率で、別モデルの確認用。</p>
+    <div class="verdict" id="verdict">パラメータを入れて「①計算する」を押してください。</div>
+
+    <div class="charts2" style="margin-top:18px;">
+      <div>
+        <div class="legend"><span><i style="background:var(--kelly)"></i>g(f)</span><span><i style="background:var(--kelly);opacity:.5"></i>f*</span><span><i style="background:var(--safe)"></i>制約f</span></div>
+        <canvas id="chart1" height="240"></canvas>
+        <p class="chart-cap">図1 幾何成長率 g(f)。横軸＝賭け比率f、縦軸＝資産の伸び。<b>ピークがフルケリー</b>。それを超えると賭けすぎで成長率がむしろ低下する。</p>
+      </div>
+      <div>
+        <div class="legend"><span><i style="background:var(--ror)"></i>RoR(f)</span><span><i style="background:var(--ror);opacity:.5"></i>α</span><span><i style="background:var(--kelly)"></i>f*のRoR</span></div>
+        <canvas id="chart2" height="240"></canvas>
+        <p class="chart-cap">図2 破産確率 RoR(f)。横軸＝賭け比率f、縦軸＝破産確率。赤破線がα。<b>フルケリー点(●)のRoRがαを超えていれば、成長最大点は破産確率基準を満たさない</b>。</p>
+      </div>
+    </div>
+
+    <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:16px;">
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+        <span style="font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);">図3 資産推移（対数スケール）</span>
+        <span style="font-size:12px;color:var(--muted);margin-left:8px;">T</span>
+        <input type="number" id="wT" value="200" step="10" min="10" max="2000" style="width:74px;font-family:var(--mono);font-size:13px;padding:6px 7px;border:1px solid var(--line);border-radius:6px;background:#141B26;text-align:right;">
+        <button id="wReseed" style="padding:6px 12px;background:var(--ink);color:var(--bg);border:0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--sans);">別の乱数系列</button>
+        <span style="font-family:var(--mono);font-size:11px;color:var(--muted);">seed=<b id="wSeedval">1</b></span>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--safe)"></i>破産制約 f</span>
+        <span><i style="background:var(--kelly)"></i>ハーフケリー</span>
+        <span><i style="background:var(--ror)"></i>フルケリー</span>
+        <span style="color:var(--muted)">細線=個別パス／太線=中央値</span>
+      </div>
+      <canvas id="wealth" height="300"></canvas>
+      <p class="chart-cap">縦軸は資産倍率の対数（初期=×1）。同一勝敗系列（共通乱数）を各 f に適用し運を揃えて比較。対数軸では中央値軌道の傾きが成長率。フルケリーは急峻だが谷が深く、破産制約 f・ハーフは傾き緩やかだが振れ幅が小さい。2値・i.i.d.前提でファットテール未反映のため実際の谷はより深い。</p>
+    </div>
+  </div>
+
+  <!-- ========== STEP 2 (bridge) ========== -->
+  <div class="bridge">
+    <p class="panel-title"><span class="step">2</span>採用する f を選ぶ</p>
+    <div class="seg" id="fSeg">
+      <button data-f="safe" class="on">破産制約 f（推奨）</button>
+      <button data-f="half">ハーフケリー</button>
+      <button data-f="full">フルケリー</button>
+    </div>
+    <div class="hint" style="color:#9AA3AF;margin-top:8px;">①が出した3つのfから採用値を選ぶ。<b style="color:#fff;">破産制約f</b>＝破産確率をα以内に抑える最大値（安全）。<b style="color:#fff;">ハーフケリー</b>＝フルの半分（実務標準）。<b style="color:#fff;">フルケリー</b>＝成長最速だが攻めすぎ。<b style="color:#fff;">小さい方が安全</b>。</div>
+    <div class="chosen"><span class="big" id="chosenF">—</span><span class="sm" id="chosenNote">①を計算すると確定します</span></div>
+  </div>
+
+  <!-- ========== STEP 3 ========== -->
+  <div class="panel">
+    <p class="panel-title"><span class="step">3</span>分割エントリー — f をロットに変換</p>
+
+    <div class="icard">
+      <div class="icard-h"><span class="n">1</span><b>基本</b>／口座・価格・ロット単位</div>
+      <div class="grid-in">
+        <div class="field"><label><b>口座残高 E</b>（円）</label><input type="number" id="E" value="172000" step="100000">
+          <div class="hint">現在口座残高。<b>要・自分の値</b>。</div></div>
+        <div class="field"><label><b>円換算 V</b>（円/pt/単位）</label><input type="number" id="V" value="1" step="1">
+          <div class="hint">1pt·1単位あたり円。<b>OANDA JP225は1</b>。</div></div>
+        <div class="field"><label><b>第1建値 P₀</b>（pt）</label><input type="number" id="P0" value="58700" step="10">
+          <div class="hint">最初に建てる価格。</div></div>
+        <div class="field"><label><b>証拠金率</b>（%）</label><input type="number" id="mr" value="10" step="1">
+          <div class="hint">必要証拠金＝約定代金×この率。<b>OANDA JP225は10%（レバレッジ10倍）</b>。</div></div>
+      </div>
+      <div class="dirbar" style="margin-top:12px;">
+        <span style="font-size:12px;color:var(--muted);margin-right:10px;">ロット単位</span>
+        <span class="seg" id="lotSeg" style="border-color:var(--line);">
+          <button data-lot="int" class="on" style="background:#fff;color:var(--ink);">整数（OANDA）</button>
+          <button data-lot="dec" style="background:#141B26;">小数（理論値）</button>
+        </span>
+        <div class="hint" style="margin-top:6px;"><b>整数</b>＝OANDA JP225は1単位・整数刻み。各建玉を<b>切り捨て</b>て実リスク・実効f・証拠金・ロスカットを整数ロットで再計算。<b>小数</b>＝丸め前の理論値。</div>
+      </div>
+    </div>
+
+    <div class="icard">
+      <div class="icard-h"><span class="n">2</span><b>方向・決済</b></div>
+      <div class="row2">
+      <div class="dirbar">
+        <span style="font-size:12px;color:var(--muted);margin-right:10px;">方向</span>
+        <span class="seg" id="dirSeg" style="border-color:var(--line);">
+          <button data-dir="long" class="on" style="background:#fff;color:var(--ink);">ロング</button>
+          <button data-dir="short" style="background:#141B26;">ショート</button>
+        </span>
+        <div class="hint" style="margin-top:6px;">ロング＝買い（値上がりで利益）／ショート＝売り（値下がりで利益）。</div>
+      </div>
+      <div class="dirbar">
+        <span style="font-size:12px;color:var(--muted);margin-right:10px;">決済方式</span>
+        <span class="seg" id="exitSeg" style="border-color:var(--line);">
+          <button data-exit="bracket" class="on" style="background:#fff;color:var(--ink);">ブラケット決済</button>
+          <button data-exit="time" style="background:#141B26;">時間決済</button>
+        </span>
+        <div class="hint" style="margin-top:6px;"><b>ブラケット決済</b>＝必ず利確か損切りで終わる。2値のEV・到達確率が有効。<b>時間決済</b>＝金曜引け等で強制手仕舞い。期待値は①の実測p・Rで見る。</div>
+      </div>
+      </div>
+    </div>
+
+    <div class="icard">
+      <div class="icard-h"><span class="n">3</span><b>決済ライン</b>／損切り・利確</div>
+      <div class="row2">
+      <div class="col">
+      <div class="sub-h">損切り</div>
+      <div class="dirbar">
+        <span style="font-size:12px;color:var(--muted);margin-right:10px;">損切り指定方式</span>
+        <span class="seg" id="smodeSeg" style="border-color:var(--line);">
+          <button data-sm="dist" class="on" style="background:#fff;color:var(--ink);">距離指定（D）</button>
+          <button data-sm="price" style="background:#141B26;">価格指定</button>
+        </span>
+        <div class="hint" style="margin-top:6px;"><b>距離指定</b>＝D からストップ価格を自動計算（σ̂由来・下のD/ATR設定を使用）。<b>価格指定</b>＝ストップ価格を直接入力し D を自動逆算。価格指定時は D・ATR 設定は無効。</div>
+      </div>
+      <div class="grid-in" style="margin-top:12px;">
+        <div class="field"><label><b>損切り距離 D</b>（pt）</label><input type="number" id="D" value="200" step="10">
+          <div class="hint">ストップ至近の建玉→損切りまでの値幅。<b>ATR×kモード時は自動算出値で上書き</b>。関係は用語集参照。</div></div>
+      </div>
+      <div id="stopPricePanel" style="display:none;margin-top:10px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;">
+        <div class="grid-in">
+          <div class="field"><label><b>損切り価格</b>（pt）</label><input type="number" id="stop_price" value="58340" step="10">
+            <div class="hint">損切りライン（実際の価格）。順張り・逆張りとも<b>このストップ価格に合わせ、D は各モードで自動逆算</b>。ロングは建値より下、ショートは上に置くこと。</div></div>
+        </div>
+      </div>
+      <div class="dirbar" style="margin-top:12px;" id="dmodeBar">
+        <span style="font-size:12px;color:var(--muted);margin-right:10px;">D 算出方式</span>
+        <span class="seg" id="dmodeSeg" style="border-color:var(--line);">
+          <button data-dm="manual" class="on" style="background:#fff;color:var(--ink);">手動入力</button>
+          <button data-dm="atr" style="background:#141B26;">ATR×k（ボラ由来）</button>
+        </span>
+        <div class="hint" style="margin-top:6px;">D＝k×ATR でボラティリティから決める。k は正規分位点ではなく<b>MAE/ATR分布の経験分位点</b>から校正（ファットテール対応）。</div>
+      </div>
+      <div id="atrPanel" style="display:none;margin-top:10px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;">
+        <div class="grid-in">
+          <div class="field"><label><b>ATR</b>（pt）</label><input type="number" id="atr_val" value="150" step="5">
+            <div class="hint">現在の平均実効レンジ（True Range のn期間平均）。チャート／データから実測。</div></div>
+          <div class="field"><label><b>係数 k</b></label><input type="number" id="atr_k" value="1.50" step="0.05">
+            <div class="hint">ATRの何倍を損切りにするか。下の電卓で経験分位点から算出可。</div></div>
+          <div class="field"><label><b>算出される D</b></label>
+            <div style="font-family:var(--mono);font-size:23px;font-weight:700;color:var(--safe);margin-top:2px;" id="atr_D">—</div>
+            <div class="hint">D = k × ATR。この値が③に渡る。</div></div>
+        </div>
+        <details style="margin-top:12px;">
+          <summary style="font-family:var(--mono);font-size:11.5px;color:var(--ink);cursor:pointer;font-weight:600;">▸ 経験分位点から k を算出（MAE/ATR法）</summary>
+          <div style="margin-top:10px;">
+            <div class="hint" style="margin-bottom:6px;">各トレードの<b>最大逆行幅(MAE)÷エントリー時ATR</b>を、カンマか改行区切りで貼り付け。目標分位点（例：勝ちトレードの95%が耐えられる水準）でkを算出。<b>正規分位点を使わないのが要点</b>。</div>
+            <textarea id="mae_data" placeholder="例: 0.8, 1.2, 0.5, 1.9, 1.1, 2.3, 0.7, 1.4, 1.6, 0.9" style="width:100%;height:64px;font-family:var(--mono);font-size:12px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);resize:vertical;"></textarea>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap;">
+              <span style="font-size:12px;color:var(--muted);">目標分位点</span>
+              <input type="number" id="mae_pct" value="95" step="1" min="1" max="99.9" style="width:70px;font-family:var(--mono);font-size:14px;padding:7px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);text-align:right;"><span style="font-size:12px;color:var(--muted);">%</span>
+              <button id="calcK" style="padding:8px 16px;background:var(--ink);color:var(--bg);border:0;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--sans);">k を算出</button>
+            </div>
+            <div id="mae_out" style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6;"></div>
+          </div>
+        </details>
+      </div>
+      </div>
+      <div class="col">
+      <div class="sub-h tp">利確（テイクプロフィット）</div>
+      <div class="dirbar">
+        <span style="font-size:12px;color:var(--muted);margin-right:10px;">利確指定方式</span>
+        <span class="seg" id="tpmodeSeg" style="border-color:var(--line);">
+          <button data-tm="dist" class="on" style="background:#fff;color:var(--ink);">距離指定（TP）</button>
+          <button data-tm="price" style="background:#141B26;">価格指定</button>
+        </span>
+        <div class="hint" style="margin-top:6px;"><b>距離指定</b>＝第1建値からの値幅で利確。<b>価格指定</b>＝利確価格を直接入力（チャート水準に合わせる用）。損切りとは独立に選べる。</div>
+      </div>
+      <div class="grid-in" style="margin-top:12px;">
+        <div class="field" id="tpDistField"><label><b>利確距離 TP</b>（pt, 0=無効）</label><input type="number" id="TP" value="0" step="10">
+          <div class="hint">第1建値から利確までの値幅。</div></div>
+        <div class="field" id="tpPriceField" style="display:none;"><label><b>利確価格</b>（pt, 0=無効）</label><input type="number" id="tp_price" value="0" step="10">
+          <div class="hint">利確価格を直接入力（ロングは建値より上、ショートは下）。0で無効。TP距離は自動算出。</div></div>
+      </div>
+      </div>
+      </div>
+    </div>
+
+    <div class="icard">
+      <div class="icard-h"><span class="n">4</span><b>分割設定</b>／ナンピン本数・間隔・重み</div>
+      <div class="dirbar" style="margin-bottom:12px;">
+        <span style="font-size:12px;color:var(--muted);margin-right:10px;">建値指定方式</span>
+        <span class="seg" id="pmodeSeg" style="border-color:var(--line);">
+          <button data-pm="gap" class="on" style="background:#fff;color:var(--ink);">間隔から算出</button>
+          <button data-pm="direct" style="background:#141B26;">建値を直接入力</button>
+        </span>
+        <div class="hint"><b>間隔から算出</b>＝第1建値＋間隔で各建値を自動計算（順張り／逆張りの2案）。<b>建値を直接入力</b>＝各建玉の売買価格を直接指定（間隔・順張り/逆張りは無効）。</div>
+        <div id="customP" style="margin-top:10px;display:none;"></div>
+      </div>
+      <div class="grid-in">
+        <div class="field"><label><b>分割回数 K</b>（ナンピン本数）</label><input type="number" id="K" value="1" min="1" max="10" step="1">
+          <div class="hint">何本に分けて建てるか（1〜10）。1で単一エントリー。</div></div>
+        <div class="field" id="gField"><label><b>建玉間隔 g</b>（pt）</label><input type="number" id="g" value="1000" step="10">
+          <div class="hint">分割エントリー間の価格間隔（均等モード時）。</div></div>
+      </div>
+      <div class="dirbar" style="margin-top:12px;" id="gapmodeBar">
+        <span style="font-size:12px;color:var(--muted);margin-right:10px;">間隔指定方式</span>
+        <span class="seg" id="gapmodeSeg" style="border-color:var(--line);">
+          <button data-gm="uniform" class="on" style="background:#fff;color:var(--ink);">均等（g固定）</button>
+          <button data-gm="custom" style="background:#141B26;">カスタム（各間隔）</button>
+        </span>
+        <div class="hint" id="gapNote" style="display:none;color:var(--muted);"><b>K=1（単一エントリー）のため間隔設定は無効</b>。</div>
+        <div class="hint"><b>均等</b>＝すべての建玉間隔を g で固定。<b>カスタム</b>＝各建玉間の間隔を個別入力（不等間隔の分割に対応）。</div>
+        <div id="customG" style="margin-top:10px;display:none;"></div>
+      </div>
+      <div class="field" id="wpField" style="margin-top:12px;"><label><b>重みパターン</b>（分割ロット比）</label>
+        <span class="seg" id="wpSeg" style="border-color:var(--line);flex-wrap:wrap;">
+          <button data-wp="equal" style="background:#141B26;">均等 1:1:1…</button>
+          <button data-wp="linear" class="on" style="background:#fff;color:var(--ink);">線形 1:2:3…</button>
+          <button data-wp="double" style="background:#141B26;">倍々 1:2:4…</button>
+          <button data-wp="custom" style="background:#141B26;">カスタム</button>
+        </span>
+        <div class="hint" id="wpNote" style="display:none;color:var(--muted);"><b>K=1（単一エントリー）のため重みパターンは無効</b>。分割回数を2以上にすると有効になります。</div>
+        <div class="hint">均等＝全建玉同ロット。線形＝1,2,3…。<b>倍々＝1,2,4,8…（マルチンゲール、逆張りでは破綻リスク大）</b>。カスタム＝各建玉の比を直接入力。</div>
+        <div id="customW" style="margin-top:10px;display:none;"></div></div>
+    </div>
+
+    <div class="icard">
+      <div class="icard-h"><span class="n">5</span><b>建て制約</b>／実建可能ロットの基準</div>
+      <div class="dirbar">
+        <span style="font-size:12px;color:var(--muted);margin-right:10px;">建て制約（実建可能ロットの基準）</span>
+        <span class="seg" id="ltSeg" style="border-color:var(--line);">
+          <button data-lt="margin" class="on" style="background:#fff;color:var(--ink);">証拠金100%（現状）</button>
+          <button data-lt="lc" style="background:#141B26;">ロスカット価格</button>
+        </span>
+        <div class="hint" style="margin-top:6px;"><b>証拠金100%</b>＝使用率100%に収まる最大ロット。<b>ロスカット価格</b>＝損切りが必ずロスカットより先に発動する最大ロット。実建可能ロット＝リスク制約とこの制約の小さい方。</div>
+      </div>
+      <div id="lcPanel" style="display:none;margin-top:10px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;">
+        <div class="hint" style="border-left:3px solid var(--safe);padding-left:8px;"><b>損切り価格連動</b>：目標＝損切り価格（建値−D）。<b>σ̂由来の損切りが必ずロスカットより先に発動する最大ロット</b>に制限。ロスカットが損切りより手前＝発注時に確定する設定ミスなので、それを防ぐのが唯一の正しい制約。D は動かさず、サイズ（実効f）だけが調整される。順張り・逆張りで別々に算出。</div>
+      </div>
+    </div>
+
+    <div class="cols" style="margin-top:16px;">
+      <div class="modecard up">
+        <div class="modehd">順張り上乗せ</div>
+        <div class="modedesc">有利に進むほど増し玉。最大の重みが<b>最遠</b>の建玉に乗る。</div>
+        <table id="tbl-up"><thead><tr><th>建玉</th><th>建値</th><th>距離d</th><th>重み</th><th>ロット</th></tr></thead><tbody></tbody></table>
+        <div class="barlabel">リスク集中</div><div class="bar" id="bar-up"></div>
+        <div id="kv-up" style="margin-top:10px;"></div>
+        <div class="barlabel" style="margin-top:10px;">価格ライン（建値／損切り／ロスカット）</div>
+        <canvas id="pl-up" height="76"></canvas>
+      </div>
+      <div class="modecard down">
+        <div class="modehd">逆張り難平</div>
+        <div class="modedesc">逆行するほど増し玉。最大の重みが<b>ストップ至近</b>の建玉に乗る。</div>
+        <table id="tbl-down"><thead><tr><th>建玉</th><th>建値</th><th>距離d</th><th>重み</th><th>ロット</th></tr></thead><tbody></tbody></table>
+        <div class="barlabel">リスク集中</div><div class="bar" id="bar-down"></div>
+        <div id="kv-down" style="margin-top:10px;"></div>
+        <div class="barlabel" style="margin-top:10px;">価格ライン（建値／損切り／ロスカット）</div>
+        <canvas id="pl-down" height="76"></canvas>
+      </div>
+    </div>
+    <p class="chart-cap"><b>表の読み方：</b>距離d＝各建玉から損切りまでの値幅。ロット＝発注する単位数（OANDAは整数に切り捨て）。基準ロットL₁＝1本目の単位数。加重平均建値＝全体の平均取得価格。最大リスク＝3本全約定で損切りしたときの損失額（＝f×E）。成功時の利益＝利確(TP)到達時の総利益。利益率＝利益÷口座残高。損失率＝最大リスク÷口座残高（＝f）。報酬:リスク比＝利益÷最大リスク。リスク集中バー＝各建玉が総リスクに占める割合。</p>
+    <p class="chart-cap" style="border-left:3px solid var(--kelly);padding-left:10px;"><b>到達確率の評価（ブラケット決済時）：</b>「損益分岐到達確率（無ドリフト）」＝価格に優位性がゼロ（ランダムウォーク）なら、この確率で利確に届く＝期待値ちょうどゼロになる分岐点。1/(1+報酬:リスク比) で、部分約定を含めても内部整合。<b>あなたの実測勝率 p がこれを上回る分（超過勝率）だけが真のエッジ</b>。期待値（円）は実測 p で計算した1トレードの平均損益。<b>時間決済を選ぶと</b>この2値評価は不適用となり、期待値は①の実測 p・R（EV=Rp−q）で表示される。実際の到達確率は自分のバックテストの p で評価すること。</p>
+    <p class="chart-cap" style="border-left:3px solid var(--down);padding-left:10px;"><b>証拠金・ロスカット（OANDA証券 JP225）：</b>必要証拠金＝約定代金×証拠金率（10%）。証拠金使用率＝必要証拠金÷口座残高。ロスカットは証拠金維持率100%以下（有効証拠金≦必要証拠金）で発動＝<b>ロスカット価格</b>。<b>必要証拠金は約定代金（建値）×証拠金率で固定</b>（OANDA公式 §3(2)）。ロスカット価格はロング avgP(1+mr)−E/U／ショート avgP(1−mr)+E/U、逆行距離はどちらも (E−必要証拠金)÷U。<b>ロスカット距離が損切り距離より短いと、σ̂ベースの損切りより手前で成行強制決済され戦略の損切りが機能しない</b>。ロスカットはマージンコールなしの成行執行で、急変・週末ギャップでは f×E を超える損失もありうる（式通りの約定は保証されない）。前提：全約定時。</p>
+    <div class="verdict" id="splitVerdict" style="border-left-color:var(--down);"></div>
+    <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <button id="copyBtn" style="padding:10px 18px;background:var(--ink);color:var(--bg);border:0;border-radius:8px;font-size:13.5px;font-weight:600;cursor:pointer;font-family:var(--sans);">📋 結果をコピー</button>
+      <span id="copyMsg" style="font-family:var(--mono);font-size:12px;color:var(--safe);display:none;">✓ コピーしました</span>
+    </div>
+    <textarea id="copyArea" readonly style="display:none;width:100%;height:340px;margin-top:10px;font-family:var(--mono);font-size:11.5px;line-height:1.5;padding:12px;border:1px solid var(--line);border-radius:8px;background:#141B26;color:var(--ink);resize:vertical;white-space:pre;"></textarea>
+  </div>
+
+  <!-- ========== NOTES ========== -->
+  <div class="panel">
+    <p class="panel-title">事実と留保</p>
+    <div class="notes">
+      <b>事実（定理）：</b>フルケリー f*=p−q/R は i.i.d.下で幾何成長率を最大化する（Kelly 1956, Breiman 1961）。破産確率は最小化しない。<br><br>
+      <b>事実（閉形式）：</b>等額ベットの破産確率は (q/p)^N（p&gt;q）。これは固定額ベットの式で、図2の固定比率ベット（MC）とは別モデル。<br><br>
+      <b>事実（③の変換）：</b>ハードストップを守れば順張り・逆張りとも最大損失は f×E で有界、RoR モデルは有効。両者の違いはリスク集中位置のみ。<br><br>
+      <b>経験則（定理ではない）：</b>f* は推定誤差に凸反応し過大化しやすいため、実務はハーフケリー以下が標準（MacLean, Thorp &amp; Ziemba 2011）。日経225のファットテール下では2値ケリーはテールリスクを過小評価するため、さらに保守側に。
+    </div>
+    <div class="flag">
+      <b>逆張り難平の破綻要因：</b>ハードストップを守れば損失は f×E で有界だが、含み損拡大局面でストップを動かした瞬間にマルチンゲール化し、①で保証した破産確率は無効になる。逆張りで f を賭け比率として扱えるのは、ストップを絶対に動かさない場合に限る。
+    </div>
+    <div class="flag" style="border-left-color:var(--ref);background:#141B26;">
+      <b style="color:var(--ink);">モデルの限界：</b>両ステップとも各トレードを独立2値と仮定。日経225の実リターン分布・自己相関・週末ギャップは未反映で、実測RoRはモデル値より悪化する方向。厳密化には2値サンプリングを経験リターン分布のブートストラップへ差し替える拡張が必要。
+    </div>
+    <p class="foot">Kelly (1956) · Breiman (1961) · Vince (1992) · MacLean, Thorp &amp; Ziemba (2011). 変換式 L₁=f·E/(V·Σwᵢdᵢ), Lᵢ=wᵢL₁, share=wᵢdᵢ/Σwᵢdᵢ.</p>
+  </div>
+</div>
+
+<script>
+// ---------- shared state ----------
+const S = {fFull:0, fHalf:0, fSafe:0, chosen:'safe', dir:'long', exit:'bracket', wpattern:'linear', customW:[], gapmode:'uniform', customG:[], pmode:'gap', customP:[], smode:'price', dmode:'manual', ltmode:'lc', ltinput:'stop', lotmode:'int', tpmode:'dist', ready:false};
+function num(id){return parseFloat(document.getElementById(id).value)||0;}
+function chosenF(){ return S.chosen==='full'?Math.max(S.fFull,0) : S.chosen==='half'?S.fHalf : S.fSafe; }
+
+function kelly(p,R){const q=1-p;return (R*p-q)/R;}
+function growth(f,p,R){if(f<=0)return 0;if(f>=1)return -Infinity;const q=1-p;return p*Math.log(1+R*f)+q*Math.log(1-f);}
+
+function updateDerived(){
+  const p=num('p')/100,R=num('R'),N=num('N');const q=1-p,ev=R*p-q,f=kelly(p,R);
+  const refR=p>q?Math.pow(q/p,N):1;
+  document.getElementById('derived').innerHTML=
+    `<div class="dcard"><div class="dl">q（負け確率）</div><div class="dv">${q.toFixed(3)}</div><div class="dh">1−p</div></div>`+
+    `<div class="dcard ${ev>=0?'pos':'neg'}"><div class="dl">EV（期待値）</div><div class="dv">${ev>=0?'+':''}${ev.toFixed(3)}</div><div class="dh">Rp−q・プラスで優位</div></div>`+
+    `<div class="dcard kel"><div class="dl">フルケリー f*</div><div class="dv">${(f*100).toFixed(2)}%</div><div class="dh">成長最速・攻めすぎ</div></div>`+
+    `<div class="dcard"><div class="dl">ハーフケリー</div><div class="dv">${(Math.max(f,0)/2*100).toFixed(2)}%</div><div class="dh">f*/2・実務目安</div></div>`;
+}
+['p','R','ruin','alpha','T','N'].forEach(id=>document.getElementById(id).addEventListener('input',updateDerived));
+updateDerived();
+
+// ---------- Monte Carlo ----------
+const SIMS=4000;
+function simRoR(f,p,R,ruinLevel,T,sims){
+  if(f<=0)return 0;
+  const logWin=Math.log(1+R*f),lose=1-f,logLose=lose>0?Math.log(lose):-Infinity,logRuin=Math.log(ruinLevel);
+  let ruined=0;
+  for(let s=0;s<sims;s++){let le=0;for(let t=0;t<T;t++){le+=(Math.random()<p)?logWin:logLose;if(le<=logRuin){ruined++;break;}}}
+  return ruined/sims;
+}
+
+// ---------- charts ----------
+function setupCanvas(cv){const dpr=window.devicePixelRatio||1;if(!cv.dataset.lh)cv.dataset.lh=cv.getAttribute('height')||cv.height;const h=+cv.dataset.lh;cv.style.width='100%';cv.style.height=h+'px';const w=cv.clientWidth;cv.width=w*dpr;cv.height=h*dpr;const ctx=cv.getContext('2d');ctx.scale(dpr,dpr);return {ctx,w,h};}
+function drawAxes(ctx,w,h,pad,xmax,ymin,ymax){
+  ctx.clearRect(0,0,w,h);ctx.strokeStyle='#222B39';ctx.lineWidth=1;ctx.fillStyle='#8A929C';ctx.font='10px ui-monospace,monospace';
+  for(let i=0;i<=4;i++){const y=pad.t+(h-pad.t-pad.b)*i/4,v=ymax-(ymax-ymin)*i/4;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();ctx.textAlign='right';ctx.fillText(v.toFixed(2),pad.l-5,y+3);}
+  ctx.textAlign='center';for(let i=0;i<=4;i++){const x=pad.l+(w-pad.l-pad.r)*i/4,v=xmax*i/4;ctx.fillText((v*100).toFixed(0)+'%',x,h-4);}
+}
+function X(f,xm,w,pad){return pad.l+(w-pad.l-pad.r)*(f/xm);}
+function Y(v,ymin,ymax,h,pad){return pad.t+(h-pad.t-pad.b)*(1-(v-ymin)/(ymax-ymin));}
+function plotLine(ctx,pts,c,lw){ctx.strokeStyle=c;ctx.lineWidth=lw||2;ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.stroke();}
+function vLine(ctx,x,pad,h,c,d){ctx.save();ctx.strokeStyle=c;ctx.lineWidth=1.5;if(d)ctx.setLineDash(d);ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,h-pad.b);ctx.stroke();ctx.restore();}
+function hLine(ctx,y,pad,w,c,d){ctx.save();ctx.strokeStyle=c;ctx.lineWidth=1.5;if(d)ctx.setLineDash(d);ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();ctx.restore();}
+function dot(ctx,x,y,c,r){ctx.fillStyle=c;ctx.beginPath();ctx.arc(x,y,r||4,0,7);ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();}
+const CSS=getComputedStyle(document.documentElement);
+const COL={kelly:CSS.getPropertyValue('--kelly').trim(),ror:CSS.getPropertyValue('--ror').trim(),safe:CSS.getPropertyValue('--safe').trim()};
+
+// ---------- STEP 1 run ----------
+async function runMC(){
+  const btn=document.getElementById('runBtn'),prog=document.getElementById('prog'),bar=prog.querySelector('i');
+  btn.disabled=true;prog.classList.add('on');
+  const p=num('p')/100,R=num('R'),ruin=num('ruin')/100,alpha=num('alpha')/100,T=num('T'),N=num('N'),q=1-p;
+  const fk=kelly(p,R),fmax=Math.min(0.9,Math.max(0.35,(fk>0?fk:0.1)*2.4)),steps=60;
+  const grid=[];for(let i=1;i<=steps;i++)grid.push(fmax*i/steps);
+  const gPts=grid.map(f=>({f,g:growth(f,p,R)}));
+  const rorPts=[];
+  for(let i=0;i<grid.length;i++){rorPts.push({f:grid[i],ror:simRoR(grid[i],p,R,ruin,T,SIMS)});
+    if(i%4===0){bar.style.width=((i/grid.length)*100).toFixed(0)+'%';await new Promise(r=>setTimeout(r,0));}}
+  bar.style.width='100%';
+  // constrained f
+  let fSafe=0,rorAtSafe=0;
+  for(let i=0;i<rorPts.length;i++){if(rorPts[i].ror<=alpha){fSafe=rorPts[i].f;rorAtSafe=rorPts[i].ror;}else break;}
+  for(let i=1;i<rorPts.length;i++){if(rorPts[i-1].ror<=alpha&&rorPts[i].ror>alpha){const a=rorPts[i-1],b=rorPts[i],t=(alpha-a.ror)/(b.ror-a.ror);fSafe=a.f+(b.f-a.f)*t;rorAtSafe=alpha;break;}}
+  const rorAtKelly=fk>0?simRoR(fk,p,R,ruin,T,SIMS*2):0;
+  const gK=growth(Math.max(fk,0),p,R),gS=growth(fSafe,p,R),refRuin=p>q?Math.pow(q/p,N):1;
+
+  // store
+  S.fFull=fk;S.fHalf=Math.max(fk,0)/2;S.fSafe=fSafe;S.ready=true;
+  S.p1={p:p,R:R,alpha:alpha,rorAtKelly:rorAtKelly};
+
+  // cards
+  document.getElementById('c_kelly').textContent=fk>0?(fk*100).toFixed(2)+'%':'0%';
+  document.getElementById('c_kelly_sub').innerHTML=fk>0?`フルケリー f*<br>この点のRoR <b>${(rorAtKelly*100).toFixed(1)}%</b>`:`EV≤0：賭けない`;
+  document.getElementById('c_safe').textContent=(fSafe*100).toFixed(2)+'%';
+  document.getElementById('c_safe_sub').innerHTML=`RoR ≤ α=${(alpha*100).toFixed(1)}%<br>を満たす最大 f`;
+  document.getElementById('c_ref').textContent=(refRuin*100).toFixed(refRuin<0.01?3:2)+'%';
+  document.getElementById('c_ref_sub').innerHTML=`(q/p)^N, N=${N}<br>等額·別モデル`;
+
+  // verdict
+  let v='';
+  if(fk<=0)v=`EV = <b class="hl-r">${(R*p-q).toFixed(3)} ≤ 0</b>。優位性なし、賭けないのが最適。`;
+  else if(rorAtKelly<=alpha)v=`ケリー f*=<b class="hl-k">${(fk*100).toFixed(2)}%</b> のRoR <b class="hl-k">${(rorAtKelly*100).toFixed(1)}%</b> は α を満たす。フルケリー（実務はハーフ <b class="hl-k">${(fk/2*100).toFixed(2)}%</b>）が使える。`;
+  else v=`ケリー f*=<b class="hl-k">${(fk*100).toFixed(2)}%</b> のRoR <b class="hl-r">${(rorAtKelly*100).toFixed(1)}%</b> は α=${(alpha*100).toFixed(1)}% を<b>超過</b>。破産確率優先なら f を <b class="hl-s">${(fSafe*100).toFixed(2)}%</b> まで下げる（g: ${gK.toFixed(4)}→${gS.toFixed(4)}）。`;
+  document.getElementById('verdict').innerHTML=v;
+
+  // chart1
+  (function(){const cv=document.getElementById('chart1'),{ctx,w,h}=setupCanvas(cv),pad={l:44,r:12,t:12,b:22};
+    const gs=gPts.map(p=>p.g).filter(isFinite);let ymax=Math.max(...gs,0.0001)*1.1,ymin=Math.min(...gs,0);if(ymin>0)ymin=0;
+    drawAxes(ctx,w,h,pad,fmax,ymin,ymax);hLine(ctx,Y(0,ymin,ymax,h,pad),pad,w,'#2A3340');
+    plotLine(ctx,gPts.filter(p=>isFinite(p.g)).map(p=>[X(p.f,fmax,w,pad),Y(p.g,ymin,ymax,h,pad)]),COL.kelly,2.5);
+    if(fk>0&&fk<fmax){vLine(ctx,X(fk,fmax,w,pad),pad,h,COL.kelly+'88',[4,3]);dot(ctx,X(fk,fmax,w,pad),Y(gK,ymin,ymax,h,pad),COL.kelly,4);}
+    if(fSafe>0&&fSafe<fmax)vLine(ctx,X(fSafe,fmax,w,pad),pad,h,COL.safe,[4,3]);
+  })();
+  // chart2
+  (function(){const cv=document.getElementById('chart2'),{ctx,w,h}=setupCanvas(cv),pad={l:44,r:12,t:12,b:22};
+    drawAxes(ctx,w,h,pad,fmax,0,1);
+    plotLine(ctx,rorPts.map(p=>[X(p.f,fmax,w,pad),Y(p.ror,0,1,h,pad)]),COL.ror,2.5);
+    hLine(ctx,Y(alpha,0,1,h,pad),pad,w,COL.ror+'80',[5,4]);
+    if(fSafe>0&&fSafe<fmax){vLine(ctx,X(fSafe,fmax,w,pad),pad,h,COL.safe,[4,3]);dot(ctx,X(fSafe,fmax,w,pad),Y(rorAtSafe,0,1,h,pad),COL.safe,4);}
+    if(fk>0&&fk<fmax){vLine(ctx,X(fk,fmax,w,pad),pad,h,COL.kelly+'88',[4,3]);dot(ctx,X(fk,fmax,w,pad),Y(rorAtKelly,0,1,h,pad),COL.kelly,4);}
+  })();
+
+  updateChosen();
+  drawWealth();
+  btn.disabled=false;setTimeout(()=>{prog.classList.remove('on');bar.style.width='0';},400);
+}
+document.getElementById('runBtn').addEventListener('click',runMC);
+
+// ---------- wealth over time (log scale) ----------
+let WSEED=1;
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function drawWealth(){
+  const cv=document.getElementById('wealth');if(!cv)return;
+  const {ctx,w,h}=setupCanvas(cv);ctx.clearRect(0,0,w,h);
+  const p=num('p')/100,R=num('R'),fk=S.fFull;
+  const pad={l:52,r:12,t:12,b:26};
+  if(!(fk>0)){ctx.fillStyle='#8A929C';ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText('EV≤0：エッジがないため資産は成長しない',w/2,h/2);return;}
+  const T=Math.max(10,Math.min(2000,Math.round(num('wT'))||200)),M=14,LN10=Math.LN10;
+  const fracs=[[Math.max(S.fSafe,0),COL.safe],[S.fHalf,COL.kelly],[fk,COL.ror]];
+  const traj=fracs.map(()=>Array.from({length:M},()=>[0]));
+  const rng=mulberry32(WSEED);
+  for(let m=0;m<M;m++)for(let t=0;t<T;t++){const win=rng()<p;
+    fracs.forEach((fr,fi)=>{const mult=win?(1+R*fr[0]):(1-fr[0]);traj[fi][m].push(traj[fi][m][t]+Math.log(Math.max(mult,1e-12))/LN10);});}
+  // median lines first
+  const meds=fracs.map((fr,fi)=>{const md=[];for(let t=0;t<=T;t++){const col=traj[fi].map(pa=>pa[t]).sort((a,b)=>a-b);md.push((col[Math.floor((M-1)/2)]+col[Math.ceil((M-1)/2)])/2);}return md;});
+  // robust y-range: trim extreme outlier paths (5–95 pct), keep all medians in view
+  const allv=[];traj.forEach(fr=>fr.forEach(pa=>pa.forEach(v=>{if(isFinite(v))allv.push(v);})));allv.sort((a,b)=>a-b);
+  const q=(a,pp)=>{const i=(a.length-1)*pp,lo=Math.floor(i),hi=Math.ceil(i);return lo===hi?a[lo]:a[lo]+(a[hi]-a[lo])*(i-lo);};
+  let ymin=q(allv,0.05),ymax=q(allv,0.95);
+  meds.forEach(md=>md.forEach(v=>{if(v<ymin)ymin=v;if(v>ymax)ymax=v;}));
+  const mgn=Math.max((ymax-ymin)*0.1,0.04);ymin-=mgn;ymax+=mgn;if(ymax-ymin<0.3){const c=(ymin+ymax)/2;ymin=c-0.15;ymax=c+0.15;}
+  const X=t=>pad.l+(w-pad.l-pad.r)*(t/T),Y=v=>pad.t+(h-pad.t-pad.b)*(1-(v-ymin)/(ymax-ymin));
+  // adaptive log-step gridlines
+  const span=ymax-ymin,step=span>4?1:span>2?0.5:span>0.8?0.25:0.1;
+  ctx.font='10px ui-monospace,monospace';ctx.textAlign='right';
+  for(let v=Math.ceil(ymin/step)*step;v<=ymax+1e-9;v+=step){const y=Y(v),base=Math.abs(v)<1e-9;
+    ctx.strokeStyle=base?'#3A4453':'#222B39';ctx.lineWidth=base?1.2:1;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();
+    const mult=Math.pow(10,v),lab=mult>=1?'×'+(mult>=10?Math.round(mult).toLocaleString():mult.toFixed(1)):'×'+mult.toFixed(2);
+    ctx.fillStyle='#8A929C';ctx.fillText(lab,pad.l-5,y+3);}
+  ctx.textAlign='center';ctx.fillStyle='#8A929C';for(let i=0;i<=5;i++)ctx.fillText(Math.round(T*i/5),pad.l+(w-pad.l-pad.r)*i/5,h-4);
+  // clip drawing area
+  ctx.save();ctx.beginPath();ctx.rect(pad.l,pad.t,w-pad.l-pad.r,h-pad.t-pad.b);ctx.clip();
+  fracs.forEach((fr,fi)=>{ctx.strokeStyle=fr[1]+'2E';ctx.lineWidth=1;
+    traj[fi].forEach(pa=>{ctx.beginPath();pa.forEach((v,t)=>{const x=X(t),y=Y(v);t?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();});});
+  fracs.forEach((fr,fi)=>{ctx.strokeStyle=fr[1];ctx.lineWidth=2.5;ctx.beginPath();meds[fi].forEach((v,t)=>{const x=X(t),y=Y(v);t?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();});
+  ctx.restore();
+}
+document.getElementById('wT').addEventListener('input',()=>{if(S.ready)drawWealth();});
+document.getElementById('wReseed').addEventListener('click',()=>{WSEED=(WSEED%9999)+1;document.getElementById('wSeedval').textContent=WSEED;if(S.ready)drawWealth();});
+
+// ---------- D vs units explanatory chart ----------
+function drawDunits(){
+  const cv=document.getElementById('dChart');if(!cv)return;
+  const {ctx,w,h}=setupCanvas(cv);ctx.clearRect(0,0,w,h);
+  const f=chosenF(),E=num('E'),V=num('V'),curD=effectiveD();
+  const pad={l:52,r:12,t:12,b:34};
+  if(!(f>0)||V<=0){ctx.fillStyle='#8A929C';ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText('f>0・V>0 が必要',w/2,h/2);return;}
+  const cats=[100,200,300,500,700,1000];
+  const units=cats.map(D=>f*E/(V*D));
+  const umax=Math.max(...units)*1.12;
+  const n=cats.length,gapR=0.35,bw=(w-pad.l-pad.r)/n*(1-gapR);
+  const X=i=>pad.l+(w-pad.l-pad.r)*(i+0.5)/n,Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/umax);
+  ctx.strokeStyle='#222B39';ctx.lineWidth=1;ctx.fillStyle='#8A929C';ctx.font='10px ui-monospace,monospace';ctx.textAlign='right';
+  for(let k=0;k<=4;k++){const y=pad.t+(h-pad.t-pad.b)*k/4,v=umax*(1-k/4);ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();ctx.fillText(Math.round(v).toLocaleString(),pad.l-5,y+3);}
+  cats.forEach((D,i)=>{const near=Math.abs(D-curD)<=Math.min(...cats.map(c=>Math.abs(c-curD)))+1e-9;
+    ctx.fillStyle=near?CSS.getPropertyValue('--safe').trim():'#B5D4F4';
+    const x=X(i)-bw/2,y=Y(units[i]);ctx.fillRect(x,y,bw,(h-pad.b)-y);
+    ctx.fillStyle='#8C96A8';ctx.textAlign='center';ctx.font='10px ui-monospace,monospace';
+    ctx.fillText(Math.round(units[i]).toLocaleString(),X(i),y-4);
+    ctx.fillStyle='#8A929C';ctx.fillText(D+'pt',X(i),h-16);});
+  ctx.fillStyle='#8C96A8';ctx.textAlign='center';ctx.font='10px ui-monospace,monospace';
+  ctx.fillText('最小ストップ距離 D（小 ← → 大）／ 縦＝建てられる単位数',(pad.l+w-pad.r)/2,h-3);
+}
+(function(){const gl=document.querySelector('details.gloss');if(gl)gl.addEventListener('toggle',()=>{if(gl.open)drawDunits();});})();
+
+// ---------- price-line viz (entry / stop / losscut) ----------
+function drawPriceLine(mode,r){
+  const cv=document.getElementById('pl-'+mode);if(!cv)return;
+  const {ctx,w,h}=setupCanvas(cv);ctx.clearRect(0,0,w,h);
+  const long=S.dir==='long',e=r.avgP,s=r.stop,l=r.immediateLC?e:r.lcPrice;
+  const span=Math.abs(e-s)||1;
+  const ad=p=>long?(e-p):(p-e);            // adverse distance from entry (0 at entry, + toward loss)
+  const adStop=ad(s);let adLc=ad(l);
+  const adCap=3.2*span;let lcOff=false;
+  if(adLc>adCap){adLc=adCap;lcOff=true;}
+  if(adLc<-0.2*span){adLc=-0.2*span;}
+  const adEnd=Math.max(adStop,adLc);
+  const adLo=-0.28*span,adHi=adEnd+0.18*span;
+  const pad={l:10,r:12,t:20,b:14};
+  const X=a=>pad.l+(w-pad.l-pad.r)*(a-adLo)/(adHi-adLo);
+  const y=pad.t+(h-pad.t-pad.b)*0.5;
+  // axis
+  ctx.strokeStyle='#3A4453';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(X(adLo),y);ctx.lineTo(X(adHi),y);ctx.stroke();
+  // arrowhead (adverse direction, to the right)
+  ctx.fillStyle='#3A4453';ctx.beginPath();ctx.moveTo(X(adHi),y);ctx.lineTo(X(adHi)-6,y-4);ctx.lineTo(X(adHi)-6,y+4);ctx.fill();
+  ctx.fillStyle='#8A929C';ctx.font='9px ui-monospace,monospace';ctx.textAlign='right';ctx.fillText(long?'価格下落 →':'価格上昇 →',X(adHi),y+14);
+  function marker(a,color,label,val,up,off){
+    const x=X(a);ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x,y-7);ctx.lineTo(x,y+7);ctx.stroke();
+    ctx.fillStyle=color;ctx.beginPath();ctx.arc(x,y,3.5,0,7);ctx.fill();
+    ctx.font='9px ui-monospace,monospace';ctx.textAlign='center';
+    ctx.fillStyle=color;ctx.fillText(label+(off?'↦':''),x,up?y-10:y+18);
+    ctx.fillStyle='#8C96A8';ctx.fillText(off?'(遠い)':Math.round(val).toLocaleString(),x,up?y-20:y+28);
+  }
+  marker(0,CSS.getPropertyValue('--ink').trim(),'建値',e,true,false);
+  const stopFirst=adStop<=adLc;
+  marker(adStop,CSS.getPropertyValue('--safe').trim(),'損切り',s,!stopFirst,false);
+  marker(adLc,CSS.getPropertyValue('--ror').trim(),'ロスカット',l,stopFirst,lcOff);
+}
+
+// ---------- STEP 2 bridge ----------
+document.getElementById('fSeg').addEventListener('click',e=>{if(e.target.dataset.f){S.chosen=e.target.dataset.f;
+  document.querySelectorAll('#fSeg button').forEach(b=>b.classList.toggle('on',b.dataset.f===S.chosen));updateChosen();}});
+function updateChosen(){
+  const f=chosenF();
+  document.getElementById('chosenF').textContent=(f*100).toFixed(2)+'%';
+  const labels={full:'フルケリー',half:'ハーフケリー',safe:'破産制約 f'};
+  document.getElementById('chosenNote').textContent=S.ready?`採用中：${labels[S.chosen]} → ③でロットに変換`:'①を計算すると確定します';
+  renderSplit();
+}
+
+// ---------- STEP 3 split ----------
+document.getElementById('dirSeg').addEventListener('click',e=>{if(e.target.dataset.dir){S.dir=e.target.dataset.dir;
+  document.querySelectorAll('#dirSeg button').forEach(b=>{const on=b.dataset.dir===S.dir;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});renderSplit();}});
+document.getElementById('exitSeg').addEventListener('click',e=>{if(e.target.dataset.exit){S.exit=e.target.dataset.exit;
+  document.querySelectorAll('#exitSeg button').forEach(b=>{const on=b.dataset.exit===S.exit;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});renderSplit();}});
+document.getElementById('wpSeg').addEventListener('click',e=>{if(e.target.dataset.wp){
+  const prev=S.wpattern;S.wpattern=e.target.dataset.wp;
+  if(S.wpattern==='custom'&&prev!=='custom'){
+    const K=Math.max(1,Math.min(10,Math.round(num('K'))||1));S.customW=genWeights(K,prev);}
+  document.querySelectorAll('#wpSeg button').forEach(b=>{const on=b.dataset.wp===S.wpattern;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});
+  renderCustomInputs();renderSplit();}});
+function updateWpState(){
+  const K=Math.max(1,Math.min(10,Math.round(num('K'))||1));
+  const dis=K<=1;
+  const seg=document.getElementById('wpSeg');
+  seg.style.opacity=dis?'0.4':'1';seg.style.pointerEvents=dis?'none':'';
+  document.getElementById('wpNote').style.display=dis?'':'none';
+  const cw=document.getElementById('customW');cw.style.opacity=dis?'0.4':'1';cw.style.pointerEvents=dis?'none':'';
+  const gseg=document.getElementById('gapmodeSeg');
+  gseg.style.opacity=dis?'0.4':'1';gseg.style.pointerEvents=dis?'none':'';
+  document.getElementById('gapNote').style.display=dis?'':'none';
+  document.getElementById('gField').style.opacity=(dis||S.gapmode==='custom')?'0.4':'1';
+  const cg=document.getElementById('customG');cg.style.opacity=dis?'0.4':'1';cg.style.pointerEvents=dis?'none':'';
+}
+document.getElementById('pmodeSeg').addEventListener('click',e=>{if(e.target.dataset.pm){S.pmode=e.target.dataset.pm;
+  document.querySelectorAll('#pmodeSeg button').forEach(b=>{const on=b.dataset.pm===S.pmode;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});
+  const dir=S.pmode==='direct';
+  document.getElementById('gapmodeBar').style.opacity=dir?'0.4':'1';document.getElementById('gapmodeBar').style.pointerEvents=dir?'none':'';
+  document.getElementById('gField').style.opacity=dir?'0.4':'1';
+  renderCustomP();renderSplit();}});
+document.getElementById('gapmodeSeg').addEventListener('click',e=>{if(e.target.dataset.gm){S.gapmode=e.target.dataset.gm;
+  document.querySelectorAll('#gapmodeSeg button').forEach(b=>{const on=b.dataset.gm===S.gapmode;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});
+  document.getElementById('gField').style.opacity=S.gapmode==='custom'?'0.4':'1';
+  renderCustomGaps();renderSplit();}});
+document.getElementById('K').addEventListener('input',()=>{renderCustomInputs();renderCustomGaps();renderCustomP();updateWpState();});
+['E','V','P0','D','g','TP','mr','K','stop_price','tp_price'].forEach(id=>document.getElementById(id).addEventListener('input',renderSplit));
+document.getElementById('lotSeg').addEventListener('click',e=>{if(e.target.dataset.lot){S.lotmode=e.target.dataset.lot;
+  document.querySelectorAll('#lotSeg button').forEach(b=>{const on=b.dataset.lot===S.lotmode;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});renderSplit();}});
+document.getElementById('smodeSeg').addEventListener('click',e=>{if(e.target.dataset.sm){S.smode=e.target.dataset.sm;
+  document.querySelectorAll('#smodeSeg button').forEach(b=>{const on=b.dataset.sm===S.smode;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});
+  const price=S.smode==='price';
+  document.getElementById('stopPricePanel').style.display=price?'':'none';
+  document.getElementById('dmodeBar').style.opacity=price?'0.4':'1';
+  document.getElementById('D').style.opacity=(price||S.dmode==='atr')?'0.45':'1';
+  renderSplit();}});
+document.getElementById('tpmodeSeg').addEventListener('click',e=>{if(e.target.dataset.tm){S.tpmode=e.target.dataset.tm;
+  document.querySelectorAll('#tpmodeSeg button').forEach(b=>{const on=b.dataset.tm===S.tpmode;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});
+  const tpp=S.tpmode==='price';
+  document.getElementById('tpDistField').style.display=tpp?'none':'';
+  document.getElementById('tpPriceField').style.display=tpp?'':'none';renderSplit();}});
+document.getElementById('ltSeg').addEventListener('click',e=>{if(e.target.dataset.lt){S.ltmode=e.target.dataset.lt;
+  document.querySelectorAll('#ltSeg button').forEach(b=>{const on=b.dataset.lt===S.ltmode;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});
+  document.getElementById('lcPanel').style.display=S.ltmode==='lc'?'':'none';renderSplit();}});
+
+
+// --- D 算出方式（ATR×k）---
+function updateAtrD(){ const d=num('atr_k')*num('atr_val'); const el=document.getElementById('atr_D'); if(el)el.textContent=d.toFixed(0)+' pt'; }
+document.getElementById('dmodeSeg').addEventListener('click',e=>{if(e.target.dataset.dm){S.dmode=e.target.dataset.dm;
+  document.querySelectorAll('#dmodeSeg button').forEach(b=>{const on=b.dataset.dm===S.dmode;b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});
+  document.getElementById('atrPanel').style.display=S.dmode==='atr'?'':'none';
+  document.getElementById('D').style.opacity=S.dmode==='atr'?'0.45':'1';
+  updateAtrD();renderSplit();}});
+['atr_val','atr_k'].forEach(id=>document.getElementById(id).addEventListener('input',()=>{updateAtrD();renderSplit();}));
+
+function quantile(sorted,p){ if(!sorted.length)return NaN; const pos=(sorted.length-1)*p,lo=Math.floor(pos),hi=Math.ceil(pos);
+  return lo===hi?sorted[lo]:sorted[lo]+(sorted[hi]-sorted[lo])*(pos-lo); }
+document.getElementById('calcK').addEventListener('click',()=>{
+  const raw=document.getElementById('mae_data').value;
+  const nums=raw.split(/[\s,]+/).map(parseFloat).filter(x=>!isNaN(x)&&x>0).sort((a,b)=>a-b);
+  const out=document.getElementById('mae_out');
+  if(nums.length<3){out.innerHTML='<span style="color:var(--down)">3個以上の正の値が必要です。</span>';return;}
+  const pct=Math.max(1,Math.min(99.9,num('mae_pct')))/100;
+  const k=quantile(nums,pct);
+  document.getElementById('atr_k').value=k.toFixed(2);
+  updateAtrD();renderSplit();
+  const median=quantile(nums,0.5);
+  out.innerHTML=`n=${nums.length} · 中央値 ${median.toFixed(2)} · <b style="color:var(--safe)">${(pct*100).toFixed(0)}%分位点 k=${k.toFixed(2)}</b> → D=${(k*num('atr_val')).toFixed(0)}pt。この k はデータの経験分布から直接読んだ値で、正規分位点ではない。`;
+});
+
+function ensureCustomLen(K){
+  if(!S.customW)S.customW=[];
+  while(S.customW.length<K)S.customW.push(S.customW.length+1);
+  if(S.customW.length>K)S.customW=S.customW.slice(0,K);
+}
+function genWeights(K,pattern){
+  if(pattern==='custom'){ensureCustomLen(K);return S.customW.slice(0,K);}
+  const w=[];for(let i=0;i<K;i++){
+    if(pattern==='equal')w.push(1);
+    else if(pattern==='double')w.push(Math.pow(2,i));
+    else w.push(i+1); // linear
+  }
+  return w;
+}
+function renderCustomInputs(){
+  const box=document.getElementById('customW');
+  if(S.wpattern!=='custom'){box.style.display='none';box.innerHTML='';return;}
+  const K=Math.max(1,Math.min(10,Math.round(num('K'))||1));
+  ensureCustomLen(K);
+  box.style.display='';
+  box.innerHTML=`<div class="hint" style="margin-bottom:6px;">各建玉のロット比を直接入力（#1がストップ最遠側→#${K}に向かう並び。逆張りでは#${K}がストップ至近）：</div>`+
+    `<div style="display:flex;flex-wrap:wrap;gap:8px;">`+
+    S.customW.map((v,i)=>`<div style="text-align:center;"><div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:2px;">#${i+1}</div><input type="number" data-ci="${i}" value="${v}" step="0.5" min="0" style="width:56px;"></div>`).join('')+
+    `</div>`;
+  box.querySelectorAll('input[data-ci]').forEach(inp=>inp.addEventListener('input',e=>{
+    S.customW[+e.target.dataset.ci]=parseFloat(e.target.value)||0;renderSplit();}));
+}
+function ensureCustomGLen(K){
+  if(!S.customG)S.customG=[];
+  const g=num('g')||1000;
+  while(S.customG.length<K-1)S.customG.push(g);
+  if(S.customG.length>K-1)S.customG=S.customG.slice(0,Math.max(0,K-1));
+}
+function offsetsFrom(K){
+  const off=[0];
+  if(S.gapmode==='custom'){ensureCustomGLen(K);for(let i=1;i<K;i++)off.push(off[i-1]+(S.customG[i-1]||0));}
+  else{const g=num('g');for(let i=1;i<K;i++)off.push(g*i);}
+  return off; // length K, off[0]=0
+}
+function renderCustomGaps(){
+  const box=document.getElementById('customG');
+  if(!box)return;
+  const K=Math.max(1,Math.min(10,Math.round(num('K'))||1));
+  if(S.gapmode!=='custom'||K<2){box.style.display='none';box.innerHTML='';return;}
+  ensureCustomGLen(K);
+  box.style.display='';
+  box.innerHTML=`<div class="hint" style="margin-bottom:6px;">各建玉間の価格間隔(pt)を個別指定（不等間隔）。#1→#2, #2→#3… の順：</div>`+
+    `<div style="display:flex;flex-wrap:wrap;gap:8px;">`+
+    S.customG.map((v,i)=>`<div style="text-align:center;"><div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:2px;">#${i+1}→#${i+2}</div><input type="number" data-cg="${i}" value="${v}" step="10" min="0" style="width:72px;"></div>`).join('')+
+    `</div>`;
+  box.querySelectorAll('input[data-cg]').forEach(inp=>inp.addEventListener('input',e=>{
+    S.customG[+e.target.dataset.cg]=parseFloat(e.target.value)||0;renderSplit();}));
+}
+function ensureCustomPLen(K){
+  if(!S.customP)S.customP=[];
+  const P0=num('P0'),g=num('g')||1000;
+  while(S.customP.length<K)S.customP.push(P0+S.customP.length*g);
+  if(S.customP.length>K)S.customP=S.customP.slice(0,K);
+}
+function renderCustomP(){
+  const box=document.getElementById('customP');
+  if(!box)return;
+  const K=Math.max(1,Math.min(10,Math.round(num('K'))||1));
+  if(S.pmode!=='direct'){box.style.display='none';box.innerHTML='';return;}
+  ensureCustomPLen(K);
+  box.style.display='';
+  box.innerHTML=`<div class="hint" style="margin-bottom:6px;">各建玉の建値(pt)を直接入力（#1〜#${K}）。順張り／逆張りの自動配置は使わず、指定した価格で計算：</div>`+
+    `<div style="display:flex;flex-wrap:wrap;gap:8px;">`+
+    S.customP.map((v,i)=>`<div style="text-align:center;"><div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:2px;">#${i+1}</div><input type="number" data-cp="${i}" value="${v}" step="10" style="width:84px;"></div>`).join('')+
+    `</div>`;
+  box.querySelectorAll('input[data-cp]').forEach(inp=>inp.addEventListener('input',e=>{
+    S.customP[+e.target.dataset.cp]=parseFloat(e.target.value)||0;renderSplit();}));
+}
+function effectiveD(){
+  if(S.smode==='price'){const sp=num('stop_price'),P0=num('P0');return S.dir==='long'?Math.max(P0-sp,0):Math.max(sp-P0,0);}
+  return S.dmode==='atr' ? num('atr_k')*num('atr_val') : num('D');
+}
+function effectiveTP(){
+  if(S.tpmode==='price'){const tpp=num('tp_price'),P0=num('P0');const t=S.dir==='long'?(tpp-P0):(P0-tpp);return t>0?t:0;}
+  return num('TP');
+}
+function build(mode){
+  const E=num('E'),V=num('V'),P0=num('P0'),TP=effectiveTP(),f=chosenF();
+  const K=Math.max(1,Math.min(10,Math.round(num('K'))||1)),sign=S.dir==='long'?1:-1;
+  const direct=S.pmode==='direct';
+  const off=offsetsFrom(K);
+  // entry prices
+  const price=[];
+  if(direct){ensureCustomPLen(K);for(let i=0;i<K;i++)price.push(S.customP[i]);}
+  else{for(let i=0;i<K;i++)price.push(mode==='up'?P0+sign*off[i]:P0-sign*off[i]);}
+  const nearest=S.dir==='long'?Math.min(...price):Math.max(...price); // entry closest to loss side
+  // stop
+  let D,stop,stopInvalid=false;
+  if(S.smode==='price'){
+    stop=num('stop_price');
+    D=S.dir==='long'?(nearest-stop):(stop-nearest);
+    if(!(D>0))stopInvalid=true;
+  } else { D=effectiveD(); stop=S.dir==='long'?nearest-D:nearest+D; }
+  // distances (entry to stop, directional)
+  const d=[];for(let i=0;i<K;i++){const di=S.dir==='long'?price[i]-stop:stop-price[i];d.push(di);if(!(di>0))stopInvalid=true;}
+  const w=genWeights(K,S.wpattern);
+  let Swd=0;for(let i=0;i<K;i++)Swd+=w[i]*d[i];
+  const L1=Swd>0?f*E/(V*Swd):0;
+  const Lraw=w.map(wi=>L1*wi);
+  const L=S.lotmode==='int'?Lraw.map(x=>Math.floor(x)):Lraw;   // OANDA: 整数・切り捨て
+  let totalLot=0,sumLd=0,sumLP=0;
+  for(let i=0;i<K;i++){totalLot+=L[i];sumLd+=L[i]*d[i];sumLP+=L[i]*price[i];}
+  const risk=[];for(let i=0;i<K;i++)risk.push(sumLd>0?L[i]*d[i]/sumLd:0);
+  const totalRisk=V*sumLd;                                     // actual risk from placed lots
+  const avgP=totalLot>0?sumLP/totalLot:0;
+  const roundZeroed=S.lotmode==='int'&&L.some((li,i)=>li===0&&Lraw[i]>0);
+  let rr=null,profitYen=null,winRate=null,breakeven=null,excess=null,evYen=null;
+  const pEmp=num('p')/100;
+  if(TP>0&&totalLot>0){
+    const target=S.dir==='long'?P0+TP:P0-TP;
+    let profit=0;for(let i=0;i<K;i++)profit+=L[i]*Math.abs(target-price[i]);
+    rr=profit/(totalRisk/V);profitYen=profit*V;winRate=E>0?profitYen/E:0;
+    breakeven=1/(1+rr);
+    excess=pEmp-breakeven;
+    evYen=pEmp*profitYen-(1-pEmp)*totalRisk;
+  }
+  const lossRate=E>0?totalRisk/E:0;
+  // margin & losscut (OANDA証券: ロスカット at 証拠金維持率≤100%, i.e. 有効証拠金≤必要証拠金)
+  const mr=num('mr')/100;
+  const notional=sumLP*V;
+  const reqMargin=notional*mr;
+  const marginUse=E>0?reqMargin/E:0;
+  const U=V*totalLot;
+  // losscut（公式仕様準拠・ISSUE-370）: 必要証拠金は約定代金×証拠金率で**建値固定**
+  //   （OANDA証券公式 §3(2)「約定代金に必要証拠金率を乗じて算出」・docs/oanda_indices_cfd_about.md）。
+  // long:  E+ΣLᵢ(X−Pᵢ)V = mr·ΣLᵢ·Pᵢ·V → X = avgP(1+mr) − E/U
+  // short: E+ΣLᵢ(Pᵢ−X)V = mr·ΣLᵢ·Pᵢ·V → X = avgP(1−mr) + E/U
+  //   逆行距離はどちらも (E − reqMargin)/U。旧実装の時価連動補正（mFactor=1/(1∓mr)）は公式記載に
+  //   無い仮定で、ロングでロスカットを約36pt遠く表示していた（危険側・prototype_260811-01 で実測確定）。
+  const lcDist=U>0?(E-reqMargin)/U:0;                  // adverse move (pt) to losscut, all filled
+  const immediateLC=marginUse>=1;                       // can't even open / instant losscut
+  const lcPrice=S.dir==='long'?avgP-lcDist:avgP+lcDist;
+  const stopDist=Math.abs(avgP-stop);
+  const lcBeforeStop=immediateLC||lcDist<stopDist;      // losscut fires before the intended stop
+  // buildable constraint: margin100% (existing) OR losscut-price target
+  const marginCapLot=marginUse>0?totalLot/marginUse:Infinity;   // lots at 使用率100% (always)
+  let lcCapLot=Infinity, lcTarget=null;
+  if(S.ltmode==='lc'){
+    lcTarget=stop; // ロスカット目標＝損切り価格（損切りが必ず先に発動する最大ロット）
+    // 公式式 X(U)=avgP(1±mr)∓E/U を X≦target（ロング）/ X≧target（ショート）で解く（ISSUE-370）。
+    const denom=S.dir==='long'?(avgP*(1+mr)-lcTarget):(lcTarget-avgP*(1-mr));
+    const U_lc=denom>0?E/denom:Infinity;           // max V·totalLot keeping losscut at/beyond target
+    lcCapLot=U_lc/V;
+  }
+  const capLot=S.ltmode==='lc'?lcCapLot:marginCapLot;
+  let scaleMargin=totalLot>0?Math.min(1,capLot/totalLot):1;
+  let totalLotBuild=totalLot*scaleMargin;
+  if(S.lotmode==='int')totalLotBuild=Math.floor(totalLotBuild);
+  const effRisk=totalLot>0?totalRisk*(totalLotBuild/totalLot):0;
+  const marginBinds=capLot<totalLot-1e-9;
+  return {d,price,w,L,Lraw,totalLot,risk,totalRisk,Swd,L1,avgP,rr,stop,profitYen,winRate,lossRate,breakeven,excess,evYen,pEmp,reqMargin,marginUse,lcPrice,lcDist,stopDist,lcBeforeStop,immediateLC,scaleMargin,totalLotBuild,effRisk,marginBinds,capLot,lcTarget,stopInvalid,roundZeroed};
+}
+function lerpHex(a,b,t){
+  const pa=[parseInt(a.slice(1,3),16),parseInt(a.slice(3,5),16),parseInt(a.slice(5,7),16)];
+  const pb=[parseInt(b.slice(1,3),16),parseInt(b.slice(3,5),16),parseInt(b.slice(5,7),16)];
+  const c=pa.map((v,i)=>Math.round(v+(pb[i]-v)*t));
+  return '#'+c.map(v=>v.toString(16).padStart(2,'0')).join('');
+}
+function renderSplit(){
+  const up=build('up'),down=build('down');
+  S.up=up;S.down=down;
+  const fmtLot=x=>S.lotmode==='int'?Math.floor(x+1e-9).toLocaleString():x.toFixed(2);
+  [['up',up],['down',down]].forEach(([m,r])=>{
+    const K=r.L.length;
+    document.querySelector('#tbl-'+m+' tbody').innerHTML=r.L.map((_,i)=>
+      `<tr><td>#${i+1}</td><td>${r.price[i].toFixed(0)}</td><td>${r.d[i].toFixed(0)}</td><td><b>×${r.w[i]}</b></td><td>${fmtLot(r.L[i])}${S.lotmode==='int'&&r.L[i]===0&&r.Lraw[i]>0?'<span style="color:var(--down)">⚠</span>':''}</td></tr>`).join('');
+    const c0=m==='up'?'#1E7D6B':'#C0392B',c1=m==='up'?'#8FCFC1':'#EBA69E';
+    document.getElementById('bar-'+m).innerHTML=r.risk.map((rk,i)=>{
+      const col=K>1?lerpHex(c0,c1,i/(K-1)):c0;const pct=rk*100;
+      return `<i style="width:${pct.toFixed(1)}%;background:${col}">${pct>=8?pct.toFixed(0)+'%':''}</i>`;}).join('');
+    document.getElementById('kv-'+m).innerHTML=
+      (r.stopInvalid?`<div style="font-size:11px;color:var(--down);line-height:1.6;margin-bottom:8px;border-left:3px solid var(--down);padding-left:8px;"><b>⚠ ストップ価格が不正</b>。${S.dir==='long'?'ロングでは建玉より<b>下</b>':'ショートでは建玉より<b>上</b>'}にストップ価格を置く必要がある（このモードの最寄り建玉より損失側）。数値は暫定表示。</div>`:'')+
+      (S.lotmode==='int'&&K>1?`<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px;border-left:3px solid var(--muted);padding-left:8px;">整数モード：各建玉を切り捨て。合計・重み比・実効fは理論値よりやや目減りする${r.roundZeroed?'。<b style="color:var(--down)">一部の建玉が0単位に丸められている（ロット過小）</b>':''}。</div>`:'')+
+      `<div class="kv"><span>基準ロット L₁${S.lotmode==='int'?'（理論値）':''}</span><b>${r.L1.toFixed(3)}</b></div>`+
+      `<div class="kv"><span>合計ロット（${K}本）</span><b>${fmtLot(r.totalLot)}単位</b></div>`+
+      `<div class="kv"><span>加重平均建値</span><b>${r.avgP.toFixed(0)}</b></div>`+
+      `<div class="kv"><span>損切り価格</span><b>${r.stop.toFixed(0)}</b></div>`+
+      `<div class="kv"><span>最大リスク（全約定）</span><b style="color:var(--down)">¥${Math.round(r.totalRisk).toLocaleString()}${S.lotmode==='int'?`（実効f ${(r.lossRate*100).toFixed(2)}%）`:''}</b></div>`+
+      `<div class="kv"><span>損失率（損失÷口座残高）</span><b style="color:var(--down)">−${(r.lossRate*100).toFixed(2)}%</b></div>`+
+      `<div class="kv"><span>損切り後の口座残高</span><b style="color:var(--down)">¥${Math.round(num('E')-r.totalRisk).toLocaleString()}</b></div>`+
+      (r.profitYen!=null?`<div class="kv"><span>成功時の利益（利確到達）</span><b style="color:var(--up)">¥${Math.round(r.profitYen).toLocaleString()}</b></div>`:'')+
+      (r.winRate!=null?`<div class="kv"><span>利益率（利益÷口座残高）</span><b style="color:var(--up)">+${(r.winRate*100).toFixed(2)}%</b></div>`:'')+
+      (r.profitYen!=null?`<div class="kv"><span>利確後の口座残高</span><b style="color:var(--up)">¥${Math.round(num('E')+r.profitYen).toLocaleString()}</b></div>`:'')+
+      (r.rr!=null?`<div class="kv"><span>報酬:リスク比（TP÷損切り, 幾何）</span><b>${r.rr.toFixed(2)} : 1</b></div>`:'')+
+      (S.exit==='bracket'
+        ? (r.breakeven!=null?`<div class="kv" style="border-top:1px solid var(--line);margin-top:4px;padding-top:8px;"><span>損益分岐到達確率（無ドリフト）</span><b>${(r.breakeven*100).toFixed(1)}%</b></div>`:'')+
+          (r.breakeven!=null?`<div class="kv"><span>実測勝率 p（入力）</span><b>${(r.pEmp*100).toFixed(1)}%</b></div>`:'')+
+          (r.excess!=null?`<div class="kv"><span>超過勝率（p−分岐点）</span><b style="color:${r.excess>=0?'var(--up)':'var(--down)'}">${r.excess>=0?'+':''}${(r.excess*100).toFixed(1)}%</b></div>`:'')+
+          (r.evYen!=null?`<div class="kv"><span>期待値（実測pベース）</span><b style="color:${r.evYen>=0?'var(--up)':'var(--down)'}">${r.evYen>=0?'+':'−'}¥${Math.abs(Math.round(r.evYen)).toLocaleString()}</b></div>`:'')
+        : `<div class="kv" style="border-top:1px solid var(--line);margin-top:4px;padding-top:8px;"><span>期待値 EV（①実測, Rマルチプル）</span><b style="color:${(num('R')*num('p')/100-(1-num('p')/100))>=0?'var(--up)':'var(--down)'}">${(num('R')*num('p')/100-(1-num('p')/100))>=0?'+':''}${(num('R')*num('p')/100-(1-num('p')/100)).toFixed(3)}</b></div>`+
+          `<div class="kv"><span>成功時の利益＝最良ケース</span><b style="color:var(--muted)">利確到達時のみ</b></div>`+
+          `<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:6px;">時間決済：多くが途中決済のため利確/損切りの2値評価は不適用。期待値は①の実測 p・R（EV=Rp−q）で見る。最大リスク f×E は損切りに達した最悪ケース。実際の平均損失はこれより小さい。</div>`)+
+      // --- margin & losscut block ---
+      `<div class="kv" style="border-top:2px solid var(--ink);margin-top:6px;padding-top:8px;"><span>必要証拠金（全約定）</span><b>¥${Math.round(r.reqMargin).toLocaleString()}</b></div>`+
+      `<div class="kv"><span>証拠金使用率（必要÷口座残高）</span><b style="color:${r.marginUse>=(1-chosenF())?'var(--down)':r.marginUse>=0.7?'var(--kelly)':'var(--up)'}">${(r.marginUse*100).toFixed(1)}%</b></div>`+
+      `<div class="kv"><span>ロスカット価格</span><b>${r.immediateLC?'即時（証拠金不足）':(r.lcPrice<0?r.lcPrice.toFixed(0)+'（0未満・到達不能）':r.lcPrice.toFixed(0))}</b></div>`+
+      `<div class="kv"><span>ロスカット距離 / 損切り距離</span><b style="color:${r.lcBeforeStop?'var(--down)':'var(--up)'}">${r.immediateLC?'—':r.lcDist.toFixed(0)} / ${r.stopDist.toFixed(0)}pt</b></div>`+
+      (!r.immediateLC&&r.lcPrice<0
+        ? `<div style="font-size:11px;color:var(--up);line-height:1.6;margin-top:6px;border-left:3px solid var(--up);padding-left:8px;"><b>ロスカット価格が負（0未満）＝価格によるロスカットは発生しない</b>。価格が0まで下げても有効証拠金が必要証拠金を上回る（＝証拠金に対しポジションが十分小さい）ため、理論上の到達価格が0を割り込む。実質的にロスカットは損切りより遥か遠く、安全側。ただし0未満は現実の価格ではないので<b>「実質ロスカットなし」</b>と読む。週末ギャップ等の急変リスクは別途注意。</div>`
+        : (r.lcBeforeStop
+          ? `<div style="font-size:11px;color:var(--down);line-height:1.6;margin-top:6px;border-left:3px solid var(--down);padding-left:8px;"><b>⚠ ロスカットが損切りより手前</b>。証拠金が先に尽き、σ̂ベースの損切りが機能する前に成行で強制決済される。ロット（f）を下げるか、ストップを狭めるか、証拠金を増やす必要がある。</div>`
+          : `<div style="font-size:11px;color:var(--up);line-height:1.6;margin-top:6px;border-left:3px solid var(--up);padding-left:8px;">✓ 損切りがロスカットより先に発動（意図通り）。ただしギャップ耐性のため使用率は低いほど安全。</div>`))+
+      // --- buildable (active constraint) block ---
+      `<div class="kv" style="border-top:2px solid var(--ink);margin-top:6px;padding-top:8px;"><span>リスク制約ロット（f基準）</span><b>${fmtLot(r.totalLot)}単位</b></div>`+
+      `<div class="kv"><span>${S.ltmode==='lc'?'ロスカット価格制約ロット':'証拠金上限ロット（使用率100%）'}</span><b>${isFinite(r.capLot)?fmtLot(r.capLot)+'単位':'制限なし'}${S.ltmode==='lc'&&r.lcTarget!=null?`（目標${r.lcTarget.toFixed(0)}）`:''}</b></div>`+
+      `<div class="kv"><span>実建可能ロット</span><b style="color:${r.marginBinds?'var(--down)':'var(--up)'}">${fmtLot(r.totalLotBuild)}単位</b></div>`+
+      (r.marginBinds
+        ? `<div class="kv"><span>縮小後の実効リスク / 実効f</span><b>¥${Math.round(r.effRisk).toLocaleString()} / ${(r.lossRate*r.scaleMargin*100).toFixed(2)}%</b></div>`+
+          `<div style="font-size:11px;color:var(--down);line-height:1.6;margin-top:6px;border-left:3px solid var(--down);padding-left:8px;"><b>⚠ ${S.ltmode==='lc'?'ロスカット価格制約':'証拠金制約'}でロット制限</b>。f が要求する ${r.totalLot.toFixed(1)}単位は建てられない。実建可能ロットは <b>${r.totalLotBuild.toFixed(1)}単位</b>（実効f ${(r.lossRate*r.scaleMargin*100).toFixed(1)}%）。f を下げるのが根本対処。</div>`
+        : `<div style="font-size:11px;color:var(--up);line-height:1.6;margin-top:6px;border-left:3px solid var(--up);padding-left:8px;">✓ ${S.ltmode==='lc'?'ロスカット価格制約内':'証拠金内'}。リスク制約ロットをそのまま建てられる。</div>`);
+  });
+  const f=chosenF();
+  if(f<=0){document.getElementById('splitVerdict').innerHTML=`採用 f = 0%（①でEV≤0またはRoR制約により賭けない）。ロットは全て0。`;return;}
+  const lotDiff=up.totalLot>0?(down.totalLot/up.totalLot-1)*100:0;
+  const kU=up.risk.length,kD=down.risk.length;
+  const dLast=down.risk[kD-1]*100,uLast=up.risk[kU-1]*100;
+  document.getElementById('splitVerdict').innerHTML=
+    (S.pmode==='direct'
+     ? `採用 f=<b>${(f*100).toFixed(2)}%</b>・分割<b>${kU}本</b>（建値直接入力・${S.wpattern==='equal'?'均等':S.wpattern==='double'?'倍々':S.wpattern==='custom'?'カスタム':'線形'}重み）。最大リスク <b>¥${Math.round(up.totalRisk).toLocaleString()}</b>。<br><b>建値を直接指定したため順張り／逆張りの区別はなく、両カードは同一結果</b>。各建玉の距離は「建値−損切り価格」で算出。`
+     : `採用 f=<b>${(f*100).toFixed(2)}%</b>・分割<b>${kU}本</b>（${S.wpattern==='equal'?'均等':S.wpattern==='double'?'倍々':S.wpattern==='custom'?'カスタム':'線形'}）。最大リスクは両モード <b>¥${Math.round(up.totalRisk).toLocaleString()}</b> で一致。`+
+    `逆張りは合計ロットが順張りより <b style="color:var(--down)">${lotDiff.toFixed(0)}%多く</b>、`+
+    `総リスクの<b style="color:var(--down)">${dLast.toFixed(0)}%</b>がストップ至近の最終建玉(#${kD})に集中。順張りは<b style="color:var(--up)">${uLast.toFixed(0)}%</b>が最遠の#${kU}。`+
+    (S.wpattern==='double'?`<br><b style="color:var(--down)">倍々（マルチンゲール）は逆張りでストップ至近に指数的な大玉が乗る。ストップを動かせば破綻する構造。</b>`:''));
+  drawDunits();
+  drawPriceLine('up',up);drawPriceLine('down',down);
+}
+
+// ---------- copy results ----------
+function fmtMode(name,r){
+  const fl=x=>S.lotmode==='int'?Math.floor(x+1e-9).toLocaleString():x.toFixed(2);
+  let s=` ─ ${name} ─\n`;
+  r.L.forEach((_,i)=>{s+=`  #${i+1} 建値${r.price[i].toFixed(0)} 距離${r.d[i].toFixed(0)}pt ×${r.w[i]} → ${fl(r.L[i])}単位\n`;});
+  s+=`  合計 ${fl(r.totalLot)}単位 / 加重平均建値 ${r.avgP.toFixed(0)} / 損切り価格 ${r.stop.toFixed(0)}\n`;
+  s+=`  最大リスク ¥${Math.round(r.totalRisk).toLocaleString()}（損失率 ${(r.lossRate*100).toFixed(2)}%） → 損切り後の口座残高 ¥${Math.round(num('E')-r.totalRisk).toLocaleString()}\n`;
+  if(r.profitYen!=null)s+=`  成功時の利益 ¥${Math.round(r.profitYen).toLocaleString()}（利益率 ${(r.winRate*100).toFixed(2)}%） / 報酬:リスク比 ${r.rr.toFixed(2)}:1 → 利確後の口座残高 ¥${Math.round(num('E')+r.profitYen).toLocaleString()}\n`;
+  if(S.exit==='bracket'&&r.breakeven!=null)s+=`  損益分岐 ${(r.breakeven*100).toFixed(1)}% / 実測p ${(r.pEmp*100).toFixed(0)}% / 超過勝率 ${r.excess>=0?'+':''}${(r.excess*100).toFixed(1)}% / 期待値 ${r.evYen>=0?'+':'−'}¥${Math.abs(Math.round(r.evYen)).toLocaleString()}\n`;
+  else s+=`  期待値（①実測Rマルチプル）${(num('R')*num('p')/100-(1-num('p')/100)).toFixed(3)}（時間決済：2値評価は不適用）\n`;
+  s+=`  必要証拠金 ¥${Math.round(r.reqMargin).toLocaleString()}（使用率 ${(r.marginUse*100).toFixed(1)}%） / ロスカット ${r.immediateLC?'即時':r.lcPrice.toFixed(0)}（距離 ${r.immediateLC?'—':r.lcDist.toFixed(0)} vs 損切り ${r.stopDist.toFixed(0)}）${r.lcBeforeStop?'⚠損切りより手前':'✓損切りが先'}\n`;
+  if(r.marginBinds)s+=`  ⚠${S.ltmode==='lc'?'ロスカット価格制約':'証拠金制約'}：リスク制約${fl(r.totalLot)}単位→実建可能 ${fl(r.totalLotBuild)}単位（実効f ${(r.lossRate*r.scaleMargin*100).toFixed(1)}%）\n`;
+  else s+=`  実建可能ロット ${fl(r.totalLotBuild)}単位（${S.ltmode==='lc'?'ロスカット価格制約内':'証拠金内'}、リスク制約どおり）\n`;
+  s+=`  ロット単位：${S.lotmode==='int'?'整数（OANDA・切り捨て）':'小数（理論値）'}\n`;
+  return s;
+}
+function buildResultText(){
+  if(!S.ready||!S.up)return '①「計算する」を先に実行してください。';
+  const p1=S.p1||{},fchoose=chosenF();
+  const patt={equal:'均等',linear:'線形',double:'倍々',custom:'カスタム'}[S.wpattern];
+  const chL={full:'フルケリー',half:'ハーフケリー',safe:'破産制約 f'}[S.chosen];
+  const dUsed=effectiveD();
+  let s='■ ポジションサイズ計算結果 ('+new Date().toISOString().slice(0,10)+')\n';
+  s+='━━━━━━━━━━━━━━━━━━━━\n';
+  s+='【① エッジ・破産確率】\n';
+  s+=` 勝率 p=${(p1.p*100).toFixed(1)}% / 利益率 R=${p1.R.toFixed(2)} / 目標破産確率 α=${(p1.alpha*100).toFixed(1)}%\n`;
+  s+=` フルケリー ${(S.fFull*100).toFixed(2)}%（RoR ${(p1.rorAtKelly*100).toFixed(1)}%） / ハーフ ${(S.fHalf*100).toFixed(2)}% / 破産制約 f ${(S.fSafe*100).toFixed(2)}%\n`;
+  s+='【② 採用 f】'+chL+' = '+(fchoose*100).toFixed(2)+'%\n';
+  s+='【③ 分割エントリー】\n';
+  s+=` 方向=${S.dir==='long'?'ロング':'ショート'} / 決済=${S.exit==='bracket'?'ブラケット':'時間決済'} / 分割${S.up.L.length}本（${patt}）\n`;
+  s+=` D=${dUsed.toFixed(0)}pt${S.smode==='price'?`（価格指定 損切り価格${num('stop_price')}）`:S.dmode==='atr'?'（ATR×k）':''} / ${S.pmode==='direct'?`建値直接入力[${(S.customP||[]).join(', ')}]`:(S.gapmode==='custom'?`間隔=カスタム[${(S.customG||[]).join(', ')}]pt`:`間隔 g=${num('g')}pt`)} / V=${num('V')} / 証拠金率=${num('mr')}% / E=¥${num('E').toLocaleString()}\n`;
+  s+=fmtMode('順張り上乗せ',S.up);
+  s+=fmtMode('逆張り難平',S.down);
+  s+='━━━━━━━━━━━━━━━━━━━━\n';
+  s+='※前提：損切りを動かさない。2値・i.i.d.仮定でファットテール・週末ギャップ未反映。\n';
+  return s;
+}
+function showCopyMsg(t){const m=document.getElementById('copyMsg');m.textContent=t;m.style.display='inline';setTimeout(()=>{m.style.display='none';},2500);}
+async function copyResults(){
+  const txt=buildResultText();
+  const ta=document.getElementById('copyArea');ta.value=txt;ta.style.display='block';
+  try{await navigator.clipboard.writeText(txt);showCopyMsg('✓ コピーしました');}
+  catch(e){ta.focus();ta.select();try{document.execCommand('copy');showCopyMsg('✓ コピーしました');}catch(_){showCopyMsg('下のテキストを手動でコピーしてください');}}
+}
+document.getElementById('copyBtn').addEventListener('click',copyResults);
+
+// sync segmented controls & panels to state defaults
+function initUI(){
+  const seg=(id,key,attr)=>document.querySelectorAll('#'+id+' button').forEach(b=>{const on=b.dataset[attr]===S[key];b.classList.toggle('on',on);b.style.background=on?'#fff':'#141B26';b.style.color=on?'var(--ink)':'';});
+  seg('smodeSeg','smode','sm');seg('ltSeg','ltmode','lt');seg('lotSeg','lotmode','lot');seg('tpmodeSeg','tpmode','tm');seg('gapmodeSeg','gapmode','gm');seg('pmodeSeg','pmode','pm');
+  const price=S.smode==='price';
+  document.getElementById('stopPricePanel').style.display=price?'':'none';
+  document.getElementById('dmodeBar').style.opacity=price?'0.4':'1';
+  document.getElementById('D').style.opacity=(price||S.dmode==='atr')?'0.45':'1';
+  const tpp=S.tpmode==='price';
+  document.getElementById('tpDistField').style.display=tpp?'none':'';
+  document.getElementById('tpPriceField').style.display=tpp?'':'none';
+  document.getElementById('lcPanel').style.display=S.ltmode==='lc'?'':'none';
+  document.getElementById('gField').style.opacity=(S.gapmode==='custom'||S.pmode==='direct')?'0.4':'1';
+  const dirP=S.pmode==='direct';
+  document.getElementById('gapmodeBar').style.opacity=dirP?'0.4':'1';document.getElementById('gapmodeBar').style.pointerEvents=dirP?'none':'';
+  renderCustomGaps();
+  renderCustomP();
+  updateWpState();
+}
+initUI();
+
+// init
+runMC();
+</script>
+</body>
+</html>

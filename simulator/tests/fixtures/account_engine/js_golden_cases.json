@@ -1,0 +1,1511 @@
+{
+ "authority": "simulator/usecase/account_engine.py（official_* 閉形式）",
+ "source_spec": "docs/oanda_indices_cfd_about.md §3(2)/§1-2（必要証拠金=約定代金×証拠金率・維持率100%でロスカット）",
+ "formula": {
+  "required_margin": "sum(units_i * price_i) * point_value * margin_rate",
+  "losscut_price_long": "avg_price * (1 + margin_rate) - balance / (total_units * point_value)",
+  "losscut_price_short": "avg_price * (1 - margin_rate) + balance / (total_units * point_value)"
+ },
+ "cases": [
+  {
+   "id": "single/long/E172000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 105660.0,
+    "margin_use": 0.6143023255813953,
+    "losscut_price": 55014.44444444445,
+    "losscut_distance": 3685.5555555555475
+   }
+  },
+  {
+   "id": "single/short/E172000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 105660.0,
+    "margin_use": 0.6143023255813953,
+    "losscut_price": 62385.555555555555,
+    "losscut_distance": 3685.5555555555547
+   }
+  },
+  {
+   "id": "single/long/E172000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 211320.0,
+    "margin_use": 1.2286046511627906,
+    "losscut_price": 60884.444444444445,
+    "losscut_distance": 2184.4444444444453
+   }
+  },
+  {
+   "id": "single/short/E172000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 211320.0,
+    "margin_use": 1.2286046511627906,
+    "losscut_price": 56515.555555555555,
+    "losscut_distance": 2184.4444444444453
+   }
+  },
+  {
+   "id": "single/long/E500000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 105660.0,
+    "margin_use": 0.21132,
+    "losscut_price": 36792.22222222223,
+    "losscut_distance": 21907.777777777766
+   }
+  },
+  {
+   "id": "single/short/E500000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 105660.0,
+    "margin_use": 0.21132,
+    "losscut_price": 80607.77777777778,
+    "losscut_distance": 21907.77777777778
+   }
+  },
+  {
+   "id": "single/long/E500000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 211320.0,
+    "margin_use": 0.42264,
+    "losscut_price": 42662.22222222222,
+    "losscut_distance": 16037.777777777781
+   }
+  },
+  {
+   "id": "single/short/E500000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 211320.0,
+    "margin_use": 0.42264,
+    "losscut_price": 74737.77777777778,
+    "losscut_distance": 16037.777777777781
+   }
+  },
+  {
+   "id": "single/long/E1000000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 105660.0,
+    "margin_use": 0.10566,
+    "losscut_price": 9014.444444444453,
+    "losscut_distance": 49685.55555555555
+   }
+  },
+  {
+   "id": "single/short/E1000000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 105660.0,
+    "margin_use": 0.10566,
+    "losscut_price": 108385.55555555556,
+    "losscut_distance": 49685.55555555556
+   }
+  },
+  {
+   "id": "single/long/E1000000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 211320.0,
+    "margin_use": 0.21132,
+    "losscut_price": 14884.444444444445,
+    "losscut_distance": 43815.555555555555
+   }
+  },
+  {
+   "id": "single/short/E1000000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 18.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58700.0,
+    "required_margin": 211320.0,
+    "margin_use": 0.21132,
+    "losscut_price": 102515.55555555556,
+    "losscut_distance": 43815.55555555556
+   }
+  },
+  {
+   "id": "single_small/long/E172000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 19654.95,
+    "margin_use": 0.11427296511627907,
+    "losscut_price": 14734.816666666673,
+    "losscut_distance": 50781.68333333333
+   }
+  },
+  {
+   "id": "single_small/short/E172000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 19654.95,
+    "margin_use": 0.11427296511627907,
+    "losscut_price": 116298.18333333333,
+    "losscut_distance": 50781.683333333334
+   }
+  },
+  {
+   "id": "single_small/long/E172000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 39309.9,
+    "margin_use": 0.22854593023255815,
+    "losscut_price": 21286.466666666667,
+    "losscut_distance": 44230.03333333333
+   }
+  },
+  {
+   "id": "single_small/short/E172000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 39309.9,
+    "margin_use": 0.22854593023255815,
+    "losscut_price": 109746.53333333334,
+    "losscut_distance": 44230.03333333334
+   }
+  },
+  {
+   "id": "single_small/long/E500000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 19654.95,
+    "margin_use": 0.0393099,
+    "losscut_price": -94598.51666666665,
+    "losscut_distance": 160115.01666666666
+   }
+  },
+  {
+   "id": "single_small/short/E500000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 19654.95,
+    "margin_use": 0.0393099,
+    "losscut_price": 225631.51666666666,
+    "losscut_distance": 160115.01666666666
+   }
+  },
+  {
+   "id": "single_small/long/E500000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 39309.9,
+    "margin_use": 0.0786198,
+    "losscut_price": -88046.86666666665,
+    "losscut_distance": 153563.36666666664
+   }
+  },
+  {
+   "id": "single_small/short/E500000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 39309.9,
+    "margin_use": 0.0786198,
+    "losscut_price": 219079.86666666667,
+    "losscut_distance": 153563.36666666667
+   }
+  },
+  {
+   "id": "single_small/long/E1000000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 19654.95,
+    "margin_use": 0.01965495,
+    "losscut_price": -261265.1833333333,
+    "losscut_distance": 326781.6833333333
+   }
+  },
+  {
+   "id": "single_small/short/E1000000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 19654.95,
+    "margin_use": 0.01965495,
+    "losscut_price": 392298.1833333333,
+    "losscut_distance": 326781.6833333333
+   }
+  },
+  {
+   "id": "single_small/long/E1000000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 39309.9,
+    "margin_use": 0.0393099,
+    "losscut_price": -254713.53333333333,
+    "losscut_distance": 320230.0333333333
+   }
+  },
+  {
+   "id": "single_small/short/E1000000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 3.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 3.0,
+    "avg_price": 65516.5,
+    "required_margin": 39309.9,
+    "margin_use": 0.0393099,
+    "losscut_price": 385746.5333333333,
+    "losscut_distance": 320230.0333333333
+   }
+  },
+  {
+   "id": "split_equal/long/E172000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 105300.0,
+    "margin_use": 0.6122093023255814,
+    "losscut_price": 54794.44444444445,
+    "losscut_distance": 3705.5555555555475
+   }
+  },
+  {
+   "id": "split_equal/short/E172000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 105300.0,
+    "margin_use": 0.6122093023255814,
+    "losscut_price": 62205.555555555555,
+    "losscut_distance": 3705.5555555555547
+   }
+  },
+  {
+   "id": "split_equal/long/E172000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 210600.0,
+    "margin_use": 1.2244186046511627,
+    "losscut_price": 60644.444444444445,
+    "losscut_distance": 2144.4444444444453
+   }
+  },
+  {
+   "id": "split_equal/short/E172000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 210600.0,
+    "margin_use": 1.2244186046511627,
+    "losscut_price": 56355.555555555555,
+    "losscut_distance": 2144.4444444444453
+   }
+  },
+  {
+   "id": "split_equal/long/E500000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 105300.0,
+    "margin_use": 0.2106,
+    "losscut_price": 36572.22222222223,
+    "losscut_distance": 21927.777777777766
+   }
+  },
+  {
+   "id": "split_equal/short/E500000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 105300.0,
+    "margin_use": 0.2106,
+    "losscut_price": 80427.77777777778,
+    "losscut_distance": 21927.77777777778
+   }
+  },
+  {
+   "id": "split_equal/long/E500000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 210600.0,
+    "margin_use": 0.4212,
+    "losscut_price": 42422.22222222222,
+    "losscut_distance": 16077.777777777781
+   }
+  },
+  {
+   "id": "split_equal/short/E500000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 210600.0,
+    "margin_use": 0.4212,
+    "losscut_price": 74577.77777777778,
+    "losscut_distance": 16077.777777777781
+   }
+  },
+  {
+   "id": "split_equal/long/E1000000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 105300.0,
+    "margin_use": 0.1053,
+    "losscut_price": 8794.444444444453,
+    "losscut_distance": 49705.55555555555
+   }
+  },
+  {
+   "id": "split_equal/short/E1000000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 105300.0,
+    "margin_use": 0.1053,
+    "losscut_price": 108205.55555555556,
+    "losscut_distance": 49705.55555555556
+   }
+  },
+  {
+   "id": "split_equal/long/E1000000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 210600.0,
+    "margin_use": 0.2106,
+    "losscut_price": 14644.444444444445,
+    "losscut_distance": 43855.555555555555
+   }
+  },
+  {
+   "id": "split_equal/short/E1000000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 58700.0,
+     "units": 6.0
+    },
+    {
+     "price": 58500.0,
+     "units": 6.0
+    },
+    {
+     "price": 58300.0,
+     "units": 6.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 58500.0,
+    "required_margin": 210600.0,
+    "margin_use": 0.2106,
+    "losscut_price": 102355.55555555556,
+    "losscut_distance": 43855.55555555556
+   }
+  },
+  {
+   "id": "split_linear_nanpin/long/E172000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 156549.9,
+    "margin_use": 0.9101738372093023,
+    "losscut_price": 64585.37083333334,
+    "losscut_distance": 643.7541666666584
+   }
+  },
+  {
+   "id": "split_linear_nanpin/short/E172000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 156549.9,
+    "margin_use": 0.9101738372093023,
+    "losscut_price": 65872.87916666667,
+    "losscut_distance": 643.7541666666657
+   }
+  },
+  {
+   "id": "split_linear_nanpin/long/E172000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 313099.8,
+    "margin_use": 1.8203476744186047,
+    "losscut_price": 71108.28333333333,
+    "losscut_distance": 5879.158333333326
+   }
+  },
+  {
+   "id": "split_linear_nanpin/short/E172000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 313099.8,
+    "margin_use": 1.8203476744186047,
+    "losscut_price": 59349.96666666667,
+    "losscut_distance": 5879.158333333333
+   }
+  },
+  {
+   "id": "split_linear_nanpin/long/E500000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 156549.9,
+    "margin_use": 0.3130998,
+    "losscut_price": 50918.70416666668,
+    "losscut_distance": 14310.420833333323
+   }
+  },
+  {
+   "id": "split_linear_nanpin/short/E500000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 156549.9,
+    "margin_use": 0.3130998,
+    "losscut_price": 79539.54583333334,
+    "losscut_distance": 14310.420833333337
+   }
+  },
+  {
+   "id": "split_linear_nanpin/long/E500000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 313099.8,
+    "margin_use": 0.6261996,
+    "losscut_price": 57441.61666666667,
+    "losscut_distance": 7787.508333333331
+   }
+  },
+  {
+   "id": "split_linear_nanpin/short/E500000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 313099.8,
+    "margin_use": 0.6261996,
+    "losscut_price": 73016.63333333333,
+    "losscut_distance": 7787.508333333331
+   }
+  },
+  {
+   "id": "split_linear_nanpin/long/E1000000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 156549.9,
+    "margin_use": 0.1565499,
+    "losscut_price": 30085.37083333334,
+    "losscut_distance": 35143.75416666666
+   }
+  },
+  {
+   "id": "split_linear_nanpin/short/E1000000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 156549.9,
+    "margin_use": 0.1565499,
+    "losscut_price": 100372.87916666667,
+    "losscut_distance": 35143.754166666666
+   }
+  },
+  {
+   "id": "split_linear_nanpin/long/E1000000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 313099.8,
+    "margin_use": 0.3130998,
+    "losscut_price": 36608.28333333333,
+    "losscut_distance": 28620.841666666667
+   }
+  },
+  {
+   "id": "split_linear_nanpin/short/E1000000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 65516.5,
+     "units": 6.0
+    },
+    {
+     "price": 65300.0,
+     "units": 8.0
+    },
+    {
+     "price": 65000.0,
+     "units": 10.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 24.0,
+    "avg_price": 65229.125,
+    "required_margin": 313099.8,
+    "margin_use": 0.3130998,
+    "losscut_price": 93849.96666666667,
+    "losscut_distance": 28620.841666666674
+   }
+  },
+  {
+   "id": "split_two/long/E172000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 107200.5,
+    "margin_use": 0.6232587209302326,
+    "losscut_price": 55955.86111111112,
+    "losscut_distance": 3599.972222222219
+   }
+  },
+  {
+   "id": "split_two/short/E172000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 107200.5,
+    "margin_use": 0.6232587209302326,
+    "losscut_price": 63155.805555555555,
+    "losscut_distance": 3599.972222222219
+   }
+  },
+  {
+   "id": "split_two/long/E172000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 214401.0,
+    "margin_use": 1.2465174418604652,
+    "losscut_price": 61911.444444444445,
+    "losscut_distance": 2355.6111111111095
+   }
+  },
+  {
+   "id": "split_two/short/E172000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 172000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 214401.0,
+    "margin_use": 1.2465174418604652,
+    "losscut_price": 57200.222222222226,
+    "losscut_distance": 2355.6111111111095
+   }
+  },
+  {
+   "id": "split_two/long/E500000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 107200.5,
+    "margin_use": 0.214401,
+    "losscut_price": 37733.63888888889,
+    "losscut_distance": 21822.194444444445
+   }
+  },
+  {
+   "id": "split_two/short/E500000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 107200.5,
+    "margin_use": 0.214401,
+    "losscut_price": 81378.02777777778,
+    "losscut_distance": 21822.194444444445
+   }
+  },
+  {
+   "id": "split_two/long/E500000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 214401.0,
+    "margin_use": 0.428802,
+    "losscut_price": 43689.22222222222,
+    "losscut_distance": 15866.611111111117
+   }
+  },
+  {
+   "id": "split_two/short/E500000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 500000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 214401.0,
+    "margin_use": 0.428802,
+    "losscut_price": 75422.44444444445,
+    "losscut_distance": 15866.611111111117
+   }
+  },
+  {
+   "id": "split_two/long/E1000000/mr10",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 107200.5,
+    "margin_use": 0.1072005,
+    "losscut_price": 9955.861111111117,
+    "losscut_distance": 49599.97222222222
+   }
+  },
+  {
+   "id": "split_two/short/E1000000/mr10",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.1,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 107200.5,
+    "margin_use": 0.1072005,
+    "losscut_price": 109155.80555555556,
+    "losscut_distance": 49599.972222222226
+   }
+  },
+  {
+   "id": "split_two/long/E1000000/mr20",
+   "direction": "long",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 214401.0,
+    "margin_use": 0.214401,
+    "losscut_price": 15911.444444444445,
+    "losscut_distance": 43644.38888888889
+   }
+  },
+  {
+   "id": "split_two/short/E1000000/mr20",
+   "direction": "short",
+   "entries": [
+    {
+     "price": 60000.5,
+     "units": 10.0
+    },
+    {
+     "price": 59000.0,
+     "units": 8.0
+    }
+   ],
+   "balance": 1000000.0,
+   "margin_rate": 0.2,
+   "point_value": 1.0,
+   "expected": {
+    "total_units": 18.0,
+    "avg_price": 59555.833333333336,
+    "required_margin": 214401.0,
+    "margin_use": 0.214401,
+    "losscut_price": 103200.22222222222,
+    "losscut_distance": 43644.38888888888
+   }
+  }
+ ]
+}
