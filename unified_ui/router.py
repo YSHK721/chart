@@ -4,10 +4,12 @@
 薄いリバースプロキシ。基本設計書 `.doc/LIVE_REPLAY_UNIFICATION_BASIC_DESIGN.md` §2。
 
 契約:
-  - `/live/*`   → prefix `/live` を除去して live upstream (既定 127.0.0.1:8001) へプロキシ
-  - `/replay/*` → prefix `/replay` を除去して replay upstream (既定 127.0.0.1:8281) へプロキシ
+  - `/<mode>/*` → prefix `/<mode>` を除去して当該モードの upstream へプロキシ
+    （モードの集合は `create_router_server(upstreams=…)` のマッピングが唯一源。
+      既定は live=8001 / replay=8281 / sim=8381。モードの追加は 1 エントリで済み本体は不変）
   - method / query / body / status / content-type / header を透過する
   - prefix 除去は二重 slash を生まない（`/live/x` → `/x`、`/live` → `/`）
+  - マッピングに無い prefix はどの上流へも倒さない（誤配より 404 を選ぶ）
   - `/` および `/js/*`・`/sw.js` は unified web 静的資産を配信する
   - 上流ダウン時は当該系統のみ 502（別プロセス隔離）
   - prefix 無しの API パス（例 `/compute` 直）は 404
@@ -22,6 +24,7 @@ import http.client
 import mimetypes
 import os
 import posixpath
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -48,11 +51,71 @@ _SERVING_ROOT_PATH = "/__serving_root"
 #   本ファイルの位置から一意に決まる（引数や cwd に依存させない＝偽装の余地を作らない）。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
-# モード prefix と、サーバインスタンス上の対応する上流 URL 属性名。
-_PREFIX_TO_UPSTREAM_ATTR = (
-    ("/live", "live_upstream"),
-    ("/replay", "replay_upstream"),
+# 各モードの既定上流（`--upstream` 無指定時）。値は `unified_ui/serve.sh` の内部ポートと一致する。
+#   loopback 限定（router のみが叩く・外部非公開）。
+_DEFAULT_UPSTREAMS = {
+    "live": "http://127.0.0.1:8001",
+    "replay": "http://127.0.0.1:8281",
+    "sim": "http://127.0.0.1:8381",
+}
+
+
+def default_upstreams():
+    """`--upstream` 無指定時のモード → 上流 URL マッピング（環境変数で個別に上書き可）。"""
+    env_keys = {
+        "live": "UNIFIED_LIVE_UPSTREAM",
+        "replay": "UNIFIED_REPLAY_UPSTREAM",
+        "sim": "UNIFIED_SIM_UPSTREAM",
+    }
+    return {
+        mode: os.environ.get(env_keys[mode], url)
+        for mode, url in _DEFAULT_UPSTREAMS.items()
+    }
+
+
+#: モード名として使える形。名前はそのまま URL prefix（`/` + mode）になるため、front の
+#: モード定義表（`unified_ui/web/js/mode_table.js`）が出す `/<mode>/*` と一字一句一致する
+#: 必要がある。大文字・記号・スラッシュ入りの名前は front と一致せず、**どこにも当たらない**
+#: （無音の 404）。
+_MODE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+#: モード名にできない語。prefix が静的配信面と衝突すると、その配信面が丸ごと proxy へ吸われる。
+#: とくに `js` は統合層 JS と Service Worker の import 元なので、奪われるとページが起動しない。
+#: 一覧は静的配信面の定義から導く（第 2 の一覧を持たない＝配信面が増えれば自動で追随する）。
+RESERVED_MODE_NAMES = frozenset(
+    set(_ASSET_FILES)
+    | {prefix.rstrip("/") for prefix in _ASSET_SUBTREE_PREFIXES}
+    | {_SERVING_ROOT_PATH.lstrip("/")}
 )
+
+
+def parse_upstream_args(values):
+    """`["live=http://…", "sim=http://…"]` を `{mode: url}` へ変換する。
+
+    区切りは**最初の `=` 1 個だけ**（URL 中の `=` を壊さない）。モード名・URL のどちらかが
+    空、または `=` を含まない指定は `ValueError` で落とす。黙って無視すると、上流が 1 つ
+    欠けたまま起動して当該モードだけが 404/502 になり、原因が分からなくなる。
+
+    モード名は `^[a-z][a-z0-9_]*$` かつ静的配信面と衝突しないこと。どちらの違反も
+    起動時には何のエラーも出ず、実行時に「押しても何も起きない」形で現れるため、
+    受け取る側で形を固定する。
+    """
+    upstreams = {}
+    for raw in values or ():
+        mode, sep, url = str(raw).partition("=")
+        if not sep or not mode or not url:
+            raise ValueError(f"--upstream は <mode>=<url> の形で指定する（受領: {raw!r}）")
+        if mode in RESERVED_MODE_NAMES:
+            raise ValueError(
+                f"モード名 {mode!r} は静的配信面と衝突する（配信面が proxy へ吸われる）"
+            )
+        if not _MODE_NAME.match(mode):
+            raise ValueError(
+                f"モード名 {mode!r} は ^[a-z][a-z0-9_]*$ の形で指定する"
+                "（そのまま URL prefix になり、front のモード定義表と一致する必要がある）"
+            )
+        upstreams[mode] = url
+    return upstreams
 
 # プロキシで転送してはならない hop-by-hop ヘッダ（RFC 7230 §6.1）＋ Host / Content-Length
 # （Host / Content-Length は転送先で再計算する）。
@@ -95,7 +158,7 @@ class RouterServer(ThreadingHTTPServer):
 class RouterHandler(BaseHTTPRequestHandler):
     """8000 で待ち受けるルータのリクエストハンドラ。
 
-    live_upstream / replay_upstream / web_root は `create_router_server` が
+    upstreams（モード名 → 上流 URL）/ web_root は `create_router_server` が
     サーバインスタンスへ格納した値を参照する。
     """
 
@@ -154,14 +217,20 @@ class RouterHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _match_prefix(self, path: str):
-        """path が `/live` / `/replay` 配下なら (prefix, upstream_base_url) を返す。
+        """path が登録済みモードの prefix 配下なら (prefix, upstream_base_url) を返す。
+
+        振り分け対象は `server.upstreams`（モード名 → 上流 URL）に**載っているモードだけ**。
+        モード名を本ファイルへ書かないので、モードの追加は呼び出し側の 1 エントリで済む
+        （§11.1 裁定 6 = V-8）。載っていない prefix は静的配信へ落ちて 404 になる
+        （どこかの上流へ黙って倒す＝誤配は起こさない）。
 
         `/live` 自体（末尾スラッシュ無し）と `/live/...` の両方を prefix 配下とみなす。
         `/livefoo` のような別語は配下としない（`/live/` 境界を厳格に判定する）。
         """
-        for prefix, attr in _PREFIX_TO_UPSTREAM_ATTR:
+        for mode, upstream in self.server.upstreams.items():
+            prefix = "/" + mode
             if path == prefix or path.startswith(prefix + "/"):
-                return prefix, getattr(self.server, attr)
+                return prefix, upstream
         return None, None
 
     def _proxy(self, upstream: str, rest: str) -> None:
@@ -316,8 +385,7 @@ class RouterHandler(BaseHTTPRequestHandler):
 def create_router_server(
     bind_addr,
     *,
-    live_upstream,
-    replay_upstream,
+    upstreams,
     web_root,
     connect_timeout=5.0,
     read_timeout=300.0,
@@ -328,10 +396,12 @@ def create_router_server(
     ----------
     bind_addr : tuple[str, int]
         バインドする (host, port)。テストは ephemeral port (host, 0) を渡す。
-    live_upstream : str
-        ライブ core のベース URL（例 "http://127.0.0.1:8001"）。
-    replay_upstream : str
-        リプレイ core のベース URL（例 "http://127.0.0.1:8281"）。
+    upstreams : Mapping[str, str]
+        モード名（prefix の `/` を除いた語）→ 上流のベース URL。
+        例 `{"live": "http://127.0.0.1:8001", "replay": …, "sim": …}`。
+        per-mode のキーワード引数を足していく方式だと、モードを増やすたびに本関数の
+        シグネチャ・CLI・serve.sh を同時に直すことになる（拡張点の欠如）。マッピングで
+        受ければモードの追加は呼び出し側の 1 エントリで済む（§11.1 裁定 6 = V-8）。
     web_root : str
         unified web 静的資産のルート（`unified_ui/web`）。
 
@@ -341,8 +411,8 @@ def create_router_server(
         `serve_forever()` 可能なサーバ。ハンドラは設定を参照してプロキシ／静的配信する。
     """
     server = RouterServer(bind_addr, RouterHandler)
-    server.live_upstream = live_upstream
-    server.replay_upstream = replay_upstream
+    # 呼び出し側の辞書を後から書き換えられないよう複製する（挿入順＝振り分けの走査順）。
+    server.upstreams = dict(upstreams)
     server.web_root = web_root
     server.connect_timeout = connect_timeout
     server.read_timeout = read_timeout
@@ -362,14 +432,15 @@ def main(argv=None):
     parser.add_argument("port", nargs="?", type=int, default=8000, help="公開ポート（既定 8000）")
     parser.add_argument("--host", default="", help="バインドホスト（既定 全 IF）")
     parser.add_argument(
-        "--live-upstream",
-        default=os.environ.get("UNIFIED_LIVE_UPSTREAM", "http://127.0.0.1:8001"),
-        help="ライブ core のベース URL（既定 127.0.0.1:8001・loopback 限定）",
-    )
-    parser.add_argument(
-        "--replay-upstream",
-        default=os.environ.get("UNIFIED_REPLAY_UPSTREAM", "http://127.0.0.1:8281"),
-        help="リプレイ core のベース URL（既定 127.0.0.1:8281・loopback 限定）",
+        "--upstream",
+        action="append",
+        default=None,
+        metavar="MODE=URL",
+        help=(
+            "モードの上流を <mode>=<url> で指定する（繰り返し可）。"
+            "例: --upstream live=http://127.0.0.1:8001 --upstream sim=http://127.0.0.1:8381。"
+            "1 つも指定しなければ既定（live/replay/sim）を使う"
+        ),
     )
     parser.add_argument(
         "--web-root",
@@ -396,10 +467,11 @@ def main(argv=None):
     # --read-timeout 0 は「無制限」(None) と解釈する（重処理を絶対に打ち切らない運用）。
     read_timeout = None if args.read_timeout == 0 else args.read_timeout
 
+    upstreams = parse_upstream_args(args.upstream) if args.upstream else default_upstreams()
+
     server = create_router_server(
         (args.host, args.port),
-        live_upstream=args.live_upstream,
-        replay_upstream=args.replay_upstream,
+        upstreams=upstreams,
         web_root=args.web_root,
         connect_timeout=args.connect_timeout,
         read_timeout=read_timeout,

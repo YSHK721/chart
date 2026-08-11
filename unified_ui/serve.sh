@@ -11,18 +11,24 @@
 #   本フラグは**判断だけを人に残し、手順をスクリプトへ移す**。フラグ無しの既定は従来どおり
 #   エラー終了であり、他セッションのスタックを黙って落とすことはない。
 #
-# 構成（基本設計書 §4）:
+# 構成（基本設計書 §4・§11）:
 #   [公開 8000] router.py（本スクリプトが foreground 起動）
 #     ├─ /live/*   → 127.0.0.1:8001（indicator_ui core・既存 serve.sh 8001 が起動）
-#     └─ /replay/* → 127.0.0.1:8281（replay_ui core・既存 serve.sh 8281 が起動）
+#     ├─ /replay/* → 127.0.0.1:8281（replay_ui core・既存 serve.sh 8281 が起動）
+#     └─ /sim/*    → 127.0.0.1:8381（sim_ui core・本スクリプトが直接起動）
 #
 # 重要:
-#   - 2 つの core は必ず既存 serve.sh 経由で起動する（生 python 起動禁止）。既存 serve.sh は
-#     データ watch（毎分 M1 追記・当日 tick 再取得）を併走させ、これが無いと確定足が伸びず
-#     指標が止まる（memory: fixed-ports-and-serve-scripts）。既存 serve.sh は無編集で PORT 引数のみ渡す。
-#   - 内部ポート 8001/8281 は loopback 限定（router のみが叩く・外部非公開）。
+#   - live / replay の 2 つの core は必ず既存 serve.sh 経由で起動する（生 python 起動禁止）。既存
+#     serve.sh はデータ watch（毎分 M1 追記・当日 tick 再取得）を併走させ、これが無いと確定足が
+#     伸びず指標が止まる（memory: fixed-ports-and-serve-scripts）。既存 serve.sh は無編集で
+#     PORT 引数のみ渡す。
+#   - sim core は**データ watch を持たない**（Phase 1 は静的配信のみ・計算は子プロセスが行う）。
+#     単独起動 serve.sh は作らない裁定（§11.1 裁定 2 = TBD-12 保留）のため、本スクリプトが
+#     venv python で直接起動する。起動コマンドの形は replay の serve.sh :56-60 と同流儀。
+#   - 内部ポート 8001/8281/8381 は loopback 限定（router のみが叩く・外部非公開）。
 #   - core は各々 setsid で別プロセスグループ起動し、停止時にグループごと確実に止める
-#     （既存 serve.sh の trap cleanup で watch も停止する）。
+#     （既存 serve.sh の trap cleanup で watch も停止する）。setsid は「グループ kill を可能にする」
+#     ためであり、detached 起動（nohup で Ctrl-C を無効化する）ではない。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,18 +62,43 @@ fi
 LIVE_SERVE="${REPO_ROOT}/indigators/indicator_ui/serve.sh"
 REPLAY_SERVE="${REPO_ROOT}/simulator/replay_ui/serve.sh"
 ROUTER_PY="${SCRIPT_DIR}/router.py"
+# sim core は単独起動 serve.sh を持たない（§11.1 裁定 2）。本スクリプトが web 根を渡して起動する。
+SIM_WEB_DIR="${REPO_ROOT}/simulator/sim_ui/web"
 
 PUBLIC_PORT=8000
 LIVE_PORT=8001
 REPLAY_PORT=8281
+SIM_PORT=8381
+
+# venv python（sim core を直接起動するために要る）。既存 core の serve.sh と同じ規約で解決する:
+#   worktree は git 管理外の実体（venv）を持たないため、dev_paths.local.sh が VENV_PYTHON を
+#   export していればそれを、無ければ git 共通ディレクトリ（メイン .git）の親＝メイン
+#   チェックアウト根の venv を使う。symlink は張らない（ISSUE-363 の真因の除去）。
+MAIN_ROOT="$REPO_ROOT"
+if [ ! -x "${REPO_ROOT}/lightweight-charts-python-main/.venv/bin/python" ] \
+   && command -v git >/dev/null 2>&1; then
+  COMMON_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  [ -n "$COMMON_DIR" ] && MAIN_ROOT="$(dirname "$COMMON_DIR")"
+fi
+VENV_PY="${VENV_PYTHON:-${MAIN_ROOT}/lightweight-charts-python-main/.venv/bin/python}"
 
 # 既存 serve.sh の存在確認（無ければ core を起動できない＝即中断）。
-for f in "$LIVE_SERVE" "$REPLAY_SERVE" "$ROUTER_PY"; do
+for f in "$LIVE_SERVE" "$REPLAY_SERVE" "$ROUTER_PY" "${SIM_WEB_DIR}/index.html"; do
   if [ ! -f "$f" ]; then
     echo "エラー: 必須ファイルが見つかりません: $f" >&2
     exit 1
   fi
 done
+
+# venv（sim core を直接起動するのに要る）の存在確認。両 core の serve.sh（例:
+#   simulator/replay_ui/serve.sh:41-44）と同流儀で**起動前に**言う。言わないと sim core だけが
+#   サイレントに死に、wait_up の 60 秒タイムアウトで「起動しませんでした」としか出ず、
+#   原因（venv 不在）がメッセージに現れない。
+if [ ! -x "$VENV_PY" ]; then
+  echo "エラー: venv python が見つかりません: $VENV_PY" >&2
+  echo "       worktree で起動する場合は ./tools/setup_worktree.sh で環境設定を用意してください。" >&2
+  exit 1
+fi
 
 # ---- 占有スタックの停止に使う道具（--takeover 経路でのみ使う）-----------------
 #
@@ -142,6 +173,22 @@ stop_core_if_up() {
   fi
 }
 
+# sim core（8381）は serve.sh を持たない＝argv に web 根の絶対パスが載る。これで**どのツリーの
+#   sim core か**が一意に決まる（他ツリーの同名プロセスに触れない）。
+stop_sim_core_if_up() {
+  local root="$1" p
+  curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:${SIM_PORT}/" 2>/dev/null || return 0
+  for p in $(pids_with "${root}/simulator/sim_ui/web"); do
+    echo "  - sim core ${SIM_PORT} (PID ${p}) をプロセスグループごと停止"
+    kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+  done
+  if ! wait_down "http://127.0.0.1:${SIM_PORT}/" 20; then
+    echo "エラー: sim core ${SIM_PORT} が停止しませんでした。手動で確認してください:" >&2
+    echo "        ps -eo pid,args | grep sim_ui" >&2
+    exit 1
+  fi
+}
+
 # 指定ツリーの 8000 スタックを停止する（Ctrl-C と同じ経路をたどる）。
 #   router は foreground プロセスなので、INT を送ると親 serve.sh が EXIT trap へ進み、
 #   cleanup が core をプロセスグループごと止める。過去のセッションが setsid nohup で
@@ -165,6 +212,7 @@ stop_stack() {
   fi
   stop_core_if_up "${root}/indigators/indicator_ui/serve.sh" "$LIVE_PORT"
   stop_core_if_up "${root}/simulator/replay_ui/serve.sh" "$REPLAY_PORT"
+  stop_sim_core_if_up "$root"
   echo "  - 停止しました（配信元だった: ${root}）"
 }
 
@@ -214,14 +262,51 @@ if command -v curl >/dev/null 2>&1 && curl -sf -o /dev/null "$PUBLIC_URL" 2>/dev
   fi
 fi
 
+# 8381 が誰かに握られたまま起動しないようにする（ISSUE-348 と同型の防御）。
+#
+# なぜ 8000 の判定だけでは足りないか: 8000 が空いていても 8381 に**別ツリーの** sim core が
+#   残っていると、こちらの sim core は bind に失敗して死ぬ。router は起動し、`/sim/*` は
+#   別ツリーの sim core へ proxy される。自分のコードが 1 行も入っていない sim を、自分の
+#   ものとして検証してしまう（ISSUE-355 と同じ帰結）。
+#
+# 自ツリー由来（argv にこのツリーの web 根を持つ）なら前回の残骸なので止めて進む。
+#   他ツリーなら「誰が握っているか」を示して中断する（停止するかは人の判断＝8000 と同じ規律）。
+ensure_sim_port_free() {
+  curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:${SIM_PORT}/" 2>/dev/null || return 0
+  if [ -n "$(pids_with "${REPO_ROOT}/simulator/sim_ui/web")" ]; then
+    echo "▶ ${SIM_PORT} を自ツリーの sim core が握っています。停止してから起動します..."
+    stop_sim_core_if_up "$REPO_ROOT"
+    return 0
+  fi
+  echo "エラー: ${SIM_PORT} は**別のツリー**の sim core が占有しています。起動を中止しました。" >&2
+  echo "       起動しようとしたツリー: ${REPO_ROOT}" >&2
+  echo "       そのまま進むと、このツリーの変更が入っていない sim を検証することになります。" >&2
+  echo "       占有プロセス:" >&2
+  ps -eo pid,args 2>/dev/null | grep -F "sim_ui" | grep -v grep >&2 || true
+  exit 1
+}
+
 LIVE_PGID=""
 REPLAY_PGID=""
+SIM_PGID=""
 
 # core をグループ起動する（setsid=新セッション＝負の PID でグループ kill 可能）。
 start_core() {
   local serve_sh="$1" port="$2"
   # setsid で新プロセスグループ。PID=PGID になる。
   setsid bash "$serve_sh" "$port" >/dev/null 2>&1 &
+  echo "$!"
+}
+
+# sim core をグループ起動する。単独起動 serve.sh を作らない裁定（§11.1 裁定 2）のため、
+#   venv python へ Composition Root を直接与える（形は replay の serve.sh :56-60 と同流儀）。
+#   argv に web 根の絶対パスが載るので、停止側が「どのツリーの sim core か」を特定できる。
+start_sim_core() {
+  setsid env PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" "$VENV_PY" -c "
+from simulator.sim_ui.main.composition_root import build_sim_app
+from simulator.sim_ui.framework.serve_sim import serve
+serve(build_sim_app(web_dir='${SIM_WEB_DIR}'), port=${SIM_PORT})
+" >/dev/null 2>&1 &
   echo "$!"
 }
 
@@ -243,6 +328,7 @@ cleanup() {
   # core をプロセスグループごと停止（既存 serve.sh の trap cleanup が watch も止める）。
   [ -n "$LIVE_PGID" ] && kill -TERM -"$LIVE_PGID" 2>/dev/null || true
   [ -n "$REPLAY_PGID" ] && kill -TERM -"$REPLAY_PGID" 2>/dev/null || true
+  [ -n "$SIM_PGID" ] && kill -TERM -"$SIM_PGID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -250,10 +336,14 @@ echo "▶ ライブ core を起動（既存 serve.sh ${LIVE_PORT}・データ wa
 LIVE_PGID="$(start_core "$LIVE_SERVE" "$LIVE_PORT")"
 echo "▶ リプレイ core を起動（既存 serve.sh ${REPLAY_PORT}）..."
 REPLAY_PGID="$(start_core "$REPLAY_SERVE" "$REPLAY_PORT")"
+ensure_sim_port_free
+echo "▶ シミュレーション core を起動（${SIM_PORT}）..."
+SIM_PGID="$(start_sim_core)"
 
 echo "▶ core の起動を待機中..."
 wait_up "http://127.0.0.1:${LIVE_PORT}/" "ライブ core (${LIVE_PORT})"
 wait_up "http://127.0.0.1:${REPLAY_PORT}/" "リプレイ core (${REPLAY_PORT})"
+wait_up "http://127.0.0.1:${SIM_PORT}/" "シミュレーション core (${SIM_PORT})"
 
 echo "統合ルータを起動します: ${PUBLIC_URL}"
 # 配信元は**必ず**出す。「どのツリーの UI を見ているか」は検証の前提であり、
@@ -261,10 +351,14 @@ echo "統合ルータを起動します: ${PUBLIC_URL}"
 echo "  配信元: ${REPO_ROOT}"
 echo "  /live/*   → 127.0.0.1:${LIVE_PORT}"
 echo "  /replay/* → 127.0.0.1:${REPLAY_PORT}"
+echo "  /sim/*    → 127.0.0.1:${SIM_PORT}"
 echo "  停止: Ctrl-C"
 # router を foreground 起動（生 python は router のみ＝データ watch 不要な新規プロキシ）。
 #   exec しない: trap cleanup を生かし、router 終了（Ctrl-C）時に core をグループごと停止する。
+#   上流はモードごとに `--upstream <mode>=<url>` で渡す（§11.1 裁定 6）。モードを増やすときに
+#   router のシグネチャを直さなくてよいのがこの形の要点で、ここも 1 行の追加で済む。
 python3 "$ROUTER_PY" "$PUBLIC_PORT" \
-  --live-upstream "http://127.0.0.1:${LIVE_PORT}" \
-  --replay-upstream "http://127.0.0.1:${REPLAY_PORT}" \
+  --upstream "live=http://127.0.0.1:${LIVE_PORT}" \
+  --upstream "replay=http://127.0.0.1:${REPLAY_PORT}" \
+  --upstream "sim=http://127.0.0.1:${SIM_PORT}" \
   --web-root "${SCRIPT_DIR}/web"

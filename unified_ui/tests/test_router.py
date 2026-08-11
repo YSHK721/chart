@@ -159,13 +159,40 @@ def router(upstreams):
     live_srv, replay_srv = upstreams
     server = router_mod.create_router_server(
         ("127.0.0.1", 0),
-        live_upstream=_base_url(live_srv),
-        replay_upstream=_base_url(replay_srv),
+        # V-8 裁定: 上流は「モード名 → URL」のマッピングで受ける（per-mode 引数を足さない）。
+        upstreams={"live": _base_url(live_srv), "replay": _base_url(replay_srv)},
         web_root=WEB_ROOT,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield server, live_srv, replay_srv
+    server.shutdown()
+
+
+@pytest.fixture()
+def sim_upstream():
+    """sim コアのスタブ上流（第 3 モード）。"""
+    srv, _ = _make_stub_upstream("sim")
+    yield srv
+    srv.shutdown()
+
+
+@pytest.fixture()
+def router_with_sim(upstreams, sim_upstream):
+    """live / replay / sim の 3 上流を持つルータ（Phase 1 の実構成）。"""
+    live_srv, replay_srv = upstreams
+    server = router_mod.create_router_server(
+        ("127.0.0.1", 0),
+        upstreams={
+            "live": _base_url(live_srv),
+            "replay": _base_url(replay_srv),
+            "sim": _base_url(sim_upstream),
+        },
+        web_root=WEB_ROOT,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server, live_srv, replay_srv, sim_upstream
     server.shutdown()
 
 
@@ -289,8 +316,7 @@ def test_default_read_timeout_does_not_502_slow_upstream():
     slow_srv, _ = _make_slow_upstream(4.3)
     server = router_mod.create_router_server(
         ("127.0.0.1", 0),
-        live_upstream=_base_url(slow_srv),
-        replay_upstream=_base_url(slow_srv),
+        upstreams={"live": _base_url(slow_srv), "replay": _base_url(slow_srv)},
         web_root=WEB_ROOT,
         # read_timeout は敢えて未指定＝既定値の寛容性を検証する（旧 4s なら 502 になっていた）。
     )
@@ -317,8 +343,7 @@ def test_explicit_short_read_timeout_502s_hung_upstream():
     hung_srv, _ = _make_slow_upstream(3)  # read_timeout(0.3s) 内には応答しない
     server = router_mod.create_router_server(
         ("127.0.0.1", 0),
-        live_upstream=_base_url(hung_srv),
-        replay_upstream=_base_url(hung_srv),
+        upstreams={"live": _base_url(hung_srv), "replay": _base_url(hung_srv)},
         web_root=WEB_ROOT,
         read_timeout=0.3,  # 明示的な短い read timeout
     )
@@ -335,6 +360,214 @@ def test_explicit_short_read_timeout_502s_hung_upstream():
         server.shutdown()
         hung_srv.shutdown()
         hung_srv.server_close()
+
+
+# ---- S1〜S5: 第 3 モード `/sim/*`（基本設計書 §4 F-2・§6.1・§8.1 Phase 1）------------
+#
+# 上流の集合を「モード名 → URL のマッピング」で受ける（§11.1 裁定 6 = V-8）。per-mode の
+#   キーワード引数を足していく方式だと、モードを増やすたびに `create_router_server` の
+#   シグネチャと CLI と serve.sh を同時に直すことになる（＝拡張点の欠如）。マッピングなら
+#   モードの追加は**呼び出し側の 1 エントリ**で済み、router 本体は変わらない。
+
+
+def test_sim_candles_get_is_proxied_to_sim_upstream_without_prefix(router_with_sim):
+    # Arrange
+    server, live_srv, replay_srv, sim_srv = router_with_sim
+    # Act
+    resp = _request(server, "GET", "/sim/candles?tf=1D")
+    # Assert: sim 上流だけが prefix 除去済みパスを受信する（live へ誤配されない）。
+    assert resp.status == 200, f"sim proxy failed: {resp.error}"
+    assert len(sim_srv.records) == 1, "sim 上流が1回受信するはず"
+    assert sim_srv.records[0].path == "/candles?tf=1D"
+    assert len(live_srv.records) == 0, "live 上流は受信しないはず（誤配の遮断）"
+    assert len(replay_srv.records) == 0, "replay 上流は受信しないはず"
+
+
+def test_sim_post_forwards_body_to_sim_upstream(router_with_sim):
+    # Arrange
+    server, live_srv, _replay, sim_srv = router_with_sim
+    payload = json.dumps({"strategy": "sma_cross"}).encode("utf-8")
+    # Act
+    resp = _request(
+        server, "POST", "/sim/jobs", body=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    # Assert
+    assert resp.status == 200, f"sim post proxy failed: {resp.error}"
+    assert sim_srv.records[0].path == "/jobs"
+    assert sim_srv.records[0].method == "POST"
+    assert sim_srv.records[0].body == payload
+    assert len(live_srv.records) == 0
+
+
+def test_sim_prefix_stripped_without_double_slash(router_with_sim):
+    # Arrange
+    server, _live, _replay, sim_srv = router_with_sim
+    # Act: prefix そのもの（末尾スラッシュ無し）
+    resp = _request(server, "GET", "/sim")
+    # Assert: `/sim` 除去後は `/`（`//` を生じない）
+    assert resp.status == 200, f"proxy failed: {resp.error}"
+    assert sim_srv.records[0].path == "/"
+
+
+def test_sim_upstream_refused_yields_502_while_live_and_replay_stay_ok(router_with_sim):
+    # Arrange: sim コアのクラッシュ＝プロセス消滅＝listen ソケット閉鎖で接続拒否になる状況。
+    #   NFR-02（プロセス隔離）: sim を止めてもライブ・リプレイは無影響でなければならない。
+    server, live_srv, replay_srv, sim_srv = router_with_sim
+    sim_srv.shutdown()
+    sim_srv.server_close()
+    # Act
+    sim_resp = _request(server, "GET", "/sim/candles?tf=1D")
+    live_resp = _request(server, "GET", "/live/candles?tf=1D")
+    replay_resp = _request(server, "GET", "/replay/candles?tf=1D")
+    # Assert
+    assert sim_resp.status == 502, f"expected 502 for refused sim, got {sim_resp.status}/{sim_resp.error}"
+    assert live_resp.status == 200, f"live must stay healthy: {live_resp.error}"
+    assert replay_resp.status == 200, f"replay must stay healthy: {replay_resp.error}"
+    assert len(live_srv.records) == 1
+    assert len(replay_srv.records) == 1
+
+
+def test_sim_prefix_is_not_routed_when_sim_upstream_is_not_registered(router):
+    """振り分け対象は**マッピングに載っているモードだけ**（表が唯一源であることの実証）。"""
+    # Arrange: `router` fixture は live / replay のみを登録している。
+    server, live_srv, replay_srv = router
+    # Act
+    resp = _request(server, "GET", "/sim/candles")
+    # Assert: どの上流へも回さず、静的配信面にも無いので 404。
+    assert resp.status == 404, f"expected 404, got {resp.status}/{resp.error}"
+    assert len(live_srv.records) == 0, "未登録 prefix が live へ倒れてはならない"
+    assert len(replay_srv.records) == 0
+
+
+def test_router_routes_any_mode_name_present_in_the_upstreams_mapping(upstreams):
+    """モード名は router にハードコードされていない（第 4 モードは 1 エントリで足りる）。"""
+    # Arrange: live / replay とは無関係な名前の上流を 1 つ登録する。
+    live_srv, _replay = upstreams
+    future_srv, _ = _make_stub_upstream("future")
+    server = router_mod.create_router_server(
+        ("127.0.0.1", 0),
+        upstreams={"live": _base_url(live_srv), "future": _base_url(future_srv)},
+        web_root=WEB_ROOT,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        # Act
+        resp = _request(server, "GET", "/future/candles?x=1")
+        # Assert
+        assert resp.status == 200, f"proxy failed: {resp.error}"
+        assert future_srv.records[0].path == "/candles?x=1"
+        assert len(live_srv.records) == 0
+    finally:
+        server.shutdown()
+        future_srv.shutdown()
+        future_srv.server_close()
+
+
+def test_mode_prefix_boundary_is_strict_for_every_registered_mode(router_with_sim):
+    """`/simfoo` のような別語は sim 配下としない（`/sim/` 境界の厳格判定）。"""
+    # Arrange
+    server, _live, _replay, sim_srv = router_with_sim
+    # Act
+    resp = _request(server, "GET", "/simfoo")
+    # Assert
+    assert resp.status == 404, f"expected 404 for /simfoo, got {resp.status}"
+    assert len(sim_srv.records) == 0
+
+
+# ---- S6: CLI の繰り返し指定 `--upstream <mode>=<url>`（§11.1 裁定 6）------------------
+
+
+def test_parse_upstream_args_builds_a_mode_to_url_mapping():
+    # Arrange
+    argv = ["live=http://127.0.0.1:8001", "replay=http://127.0.0.1:8281", "sim=http://127.0.0.1:8381"]
+    # Act
+    got = router_mod.parse_upstream_args(argv)
+    # Assert
+    assert got == {
+        "live": "http://127.0.0.1:8001",
+        "replay": "http://127.0.0.1:8281",
+        "sim": "http://127.0.0.1:8381",
+    }
+
+
+def test_parse_upstream_args_keeps_the_url_scheme_separator_intact():
+    """`=` は最初の 1 個だけを区切りにする（URL 中の `=` を壊さない）。"""
+    # Arrange / Act
+    got = router_mod.parse_upstream_args(["sim=http://127.0.0.1:8381/?a=b"])
+    # Assert
+    assert got == {"sim": "http://127.0.0.1:8381/?a=b"}
+
+
+@pytest.mark.parametrize("bad", ["live", "=http://x", "live="])
+def test_parse_upstream_args_rejects_malformed_entries(bad):
+    """形が違う指定は黙って無視せず落とす（無言で上流が欠けるのを防ぐ）。"""
+    with pytest.raises(ValueError):
+        router_mod.parse_upstream_args([bad])
+
+
+# ---- S7: モード名の形と予約語（🟡-4）------------------------------------------------
+#
+# モード名はそのまま URL prefix（`/` + mode）になる。任意の文字列を許すと 2 通りの壊れ方をする:
+#   1. prefix として成立しない名前（大文字・記号・スラッシュ入り）を渡すと、front が出す
+#      `/<mode>/*` と一致せず**どこにも当たらない**（無音の 404）。
+#   2. 静的配信面と同じ名前を渡すと、その配信面が丸ごと proxy へ吸われる。とくに `js` は
+#      `_ASSET_SUBTREE_PREFIXES` の唯一の要素で、統合層 JS と Service Worker の import が
+#      全滅する（ページが起動しなくなる）。
+# どちらも起動時には何のエラーも出ないため、受け取る側で形を固定する。
+
+
+@pytest.mark.parametrize("bad", [
+    "Live",          # 大文字（front のモード名は小文字）
+    "1live",         # 数字始まり
+    "li-ve",         # ハイフン（prefix として front の表と一致しない）
+    "li ve",         # 空白
+    "li/ve",         # スラッシュ（prefix 境界を壊す）
+    "_live",         # 下線始まり
+    "ライブ",         # 非 ASCII
+])
+def test_parse_upstream_args_rejects_mode_names_that_are_not_identifiers(bad):
+    with pytest.raises(ValueError):
+        router_mod.parse_upstream_args([f"{bad}=http://127.0.0.1:9999"])
+
+
+@pytest.mark.parametrize("reserved", ["js", "sw.js", "index.html", "__serving_root"])
+def test_parse_upstream_args_rejects_names_colliding_with_the_static_surface(reserved):
+    with pytest.raises(ValueError):
+        router_mod.parse_upstream_args([f"{reserved}=http://127.0.0.1:9999"])
+
+
+def test_reserved_mode_names_are_derived_from_the_static_surface_constants():
+    """予約語は静的配信面の定義から導く（第 2 の一覧を持たない）。"""
+    # Arrange / Act
+    reserved = router_mod.RESERVED_MODE_NAMES
+    # Assert: 資産ファイル・資産サブツリー・診断エンドポイントの全てが含まれる。
+    assert set(router_mod._ASSET_FILES) <= reserved
+    assert {p.rstrip("/") for p in router_mod._ASSET_SUBTREE_PREFIXES} <= reserved
+    assert router_mod._SERVING_ROOT_PATH.lstrip("/") in reserved
+
+
+@pytest.mark.parametrize("ok", ["live", "replay", "sim", "sim2", "my_mode"])
+def test_parse_upstream_args_accepts_valid_mode_names(ok):
+    """検証が過剰に効いていない（第 4 モードの名前が通る）。"""
+    assert router_mod.parse_upstream_args([f"{ok}=http://x"]) == {ok: "http://x"}
+
+
+def test_default_upstreams_pass_their_own_validation():
+    """既定値そのものが検証を通る（既定と検定が食い違わない）。"""
+    defaults = router_mod.default_upstreams()
+    argv = [f"{mode}={url}" for mode, url in defaults.items()]
+    assert router_mod.parse_upstream_args(argv) == defaults
+
+
+def test_main_cli_defaults_include_all_three_modes():
+    """`--upstream` 無指定時の既定は 3 モード（serve.sh が明示指定する値と同じ既定）。"""
+    # Arrange / Act
+    got = router_mod.default_upstreams()
+    # Assert
+    assert set(got) == {"live", "replay", "sim"}
+    assert got["sim"].endswith(":8381")
 
 
 # ---- A8: prefix 無し API パスは 404 ------------------------------------------
@@ -376,8 +609,7 @@ def router_with_secret_sibling(upstreams, tmp_path):
     live_srv, replay_srv = upstreams
     server = router_mod.create_router_server(
         ("127.0.0.1", 0),
-        live_upstream=_base_url(live_srv),
-        replay_upstream=_base_url(replay_srv),
+        upstreams={"live": _base_url(live_srv), "replay": _base_url(replay_srv)},
         web_root=str(web_root),
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
