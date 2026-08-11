@@ -22,7 +22,7 @@
 // 再描画: 一覧はビューモデル注入 `render(vm)` で更新し、かつ**開くたびに再描画**する（provide 注入時）。
 //   適用・保存の後に協働子が `render()` を呼ぶ経路と、開くたびの再描画の 2 経路で選択状態が追随する。
 
-import { installDocumentCloseHandler, removeDocumentCloseHandler } from './menu_document_close.js';
+import { installMenuCloseHandler, removeMenuCloseHandler } from './menu_document_close.js';
 
 // 固定行（テーマなし＝既定色）の識別子。空文字は「保存済みテーマではない」ことを表す。
 const NONE_ROW_ID = '';
@@ -51,7 +51,6 @@ export class ColorThemeMenu {
     this._onManage = typeof onManage === 'function' ? onManage : null;
     this._pop = null;
     this._list = null;
-    this._docCloseHandler = null;
   }
 
   install() {
@@ -108,10 +107,9 @@ export class ColorThemeMenu {
     this._list = list;
     this._renderRows();
 
-    trigger.addEventListener('click', (e) => {
-      if (e && typeof e.stopPropagation === 'function') {
-        e.stopPropagation(); // document の外側クリッククローズに拾わせない。
-      }
+    // ISSUE-366: トリガーで伝播を止めない（止めると他メニューの外側クリック判定まで殺す）。
+    //   自分が閉じないのは、クリック位置が自分の root（mount）の内側だと判定されるため。
+    trigger.addEventListener('click', () => {
       this._toggle();
     });
     // 項目クリック（委譲）: 行＝適用要求、アクション＝作成／管理。いずれも閉じる。
@@ -136,9 +134,9 @@ export class ColorThemeMenu {
         this._onManage?.();
       }
     });
-    // 外側クリックで閉じる（ISSUE-169: 前 mount ぶんの document リスナを外してから張る）。
-    this._docCloseHandler = () => this._setOpen(false);
-    installDocumentCloseHandler(doc, 'color-theme', this._docCloseHandler);
+    // 外側クリックで閉じる（自分の root の外を押されたときだけ閉じる＝共有レジストリが判定する）。
+    // ISSUE-169: 同一キーの再登録は前回を置換する（document リスナは document あたり 1 個）。
+    installMenuCloseHandler(doc, 'color-theme', { root: mount, close: () => this._setOpen(false) });
     pop.addEventListener('pointerdown', (e) => {
       if (e && typeof e.stopPropagation === 'function') {
         e.stopPropagation();
@@ -225,10 +223,9 @@ export class ColorThemeMenu {
     return row;
   }
 
-  // ISSUE-169: 明示的な後片付け。document スコープのリスナを外す（DOM は呼び出し側が破棄する）。
+  // ISSUE-169: 明示的な後片付け。共有レジストリから自分の登録を外す（DOM は呼び出し側が破棄する）。
   dispose() {
-    removeDocumentCloseHandler(this._doc, 'color-theme', this._docCloseHandler);
-    this._docCloseHandler = null;
+    removeMenuCloseHandler(this._doc, 'color-theme');
   }
 
   _toggle() {

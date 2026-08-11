@@ -177,10 +177,19 @@ test('ISSUE-117 syncButtons: ラベル要素不在（旧 DOM）は従来どお�
 
 function countingDoc() {
   const listeners = [];
+  const mounts = [];   // install ごとに配った mount（install 順）。
   return {
     listeners,
+    mounts,
     createElement: () => fakeEl(),
-    getElementById: (id) => (id === 'tf-menu' ? fakeEl() : null),
+    getElementById: (id) => {
+      if (id !== 'tf-menu') {
+        return null;
+      }
+      const mount = fakeEl();
+      mounts.push(mount);
+      return mount;
+    },
     addEventListener: (ev, fn) => { if (ev === 'click') listeners.push(fn); },
     removeEventListener: (ev, fn) => {
       if (ev !== 'click') return;
@@ -201,14 +210,22 @@ test('ISSUE-169 再 install で document click リスナが蓄積しない（1 �
     `document click リスナは 1 個に留まること（実際 ${doc.listeners.length} 個）`);
 });
 
-test('ISSUE-169 最後に install したインスタンスのハンドラが生き残る（機能を壊さない）', () => {
+test('ISSUE-169 最後に install したインスタンスの「閉じる」が生き残る（機能を壊さない）', () => {
+  // Arrange: 同一 document へ 2 回 install（統合 UI のモードトグル相当）し、最新の mount を開く。
   const doc = countingDoc();
   new TimeframeMenu({ document: doc }).install();
-  const menu = new TimeframeMenu({ document: doc });
-  menu.install();
+  new TimeframeMenu({ document: doc }).install();
+  const latestMount = doc.mounts[doc.mounts.length - 1];
+  const [trigger, pop] = latestMount.children;
+  trigger.fire('click', {});
+  assert.equal(pop.classList.contains('is-hidden'), false, '前提: 最新の mount が開いている');
 
+  // Act: 外側クリック（ISSUE-366 後は共有レジストリの唯一の document リスナ）。
   assert.equal(doc.listeners.length, 1);
-  assert.equal(doc.listeners[0], menu._docCloseHandler, '生き残るのは最新の mount のもの');
+  doc.listeners[0]({});
+
+  // Assert: 生き残った登録は最新の mount のもの（＝最新の pop が閉じる）。
+  assert.equal(pop.classList.contains('is-hidden'), true, '生き残るのは最新の mount のもの');
 });
 
 test('ISSUE-169 dispose() で document リスナを外す（明示 teardown 経路）', () => {

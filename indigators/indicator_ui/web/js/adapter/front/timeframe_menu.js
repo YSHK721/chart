@@ -16,7 +16,7 @@
 //   （bootstrap 内）に呼ばれる前提（bind が [data-timeframe] を収集するため）。
 //   DOM 不在（SSR/テスト）は no-op。
 
-import { installDocumentCloseHandler, removeDocumentCloseHandler } from './menu_document_close.js';
+import { installMenuCloseHandler, removeMenuCloseHandler } from './menu_document_close.js';
 import { TF_CODES } from '../../domain/tf_meta.js';
 
 // 時間足コード → 日本語ラベル。**表示名だけ**を持つ（どの足が存在するかは持たない）。
@@ -124,10 +124,9 @@ export class TimeframeMenu {
     mount.appendChild(pop);
     this._pop = pop;
 
-    trigger.addEventListener('click', (e) => {
-      if (e && typeof e.stopPropagation === 'function') {
-        e.stopPropagation(); // document の外側クリッククローズに拾わせない。
-      }
+    // ISSUE-366: トリガーで伝播を止めない（止めると他メニューの外側クリック判定まで殺す）。
+    //   自分が閉じないのは、クリック位置が自分の root（mount）の内側だと判定されるため。
+    trigger.addEventListener('click', () => {
       this._toggle();
     });
     // 項目クリック: 選択自体は bind() の data-timeframe 配線が行う。ここでは閉じるだけ。
@@ -137,11 +136,10 @@ export class TimeframeMenu {
         this._setOpen(false);
       }
     });
-    // 外側クリックで閉じる（メニュー内クリックは pop/trigger 側で stopPropagation/処理済み）。
-    // ISSUE-169: 前 mount ぶんの document リスナを外してから張る（線形蓄積の停止）。
-    this._docCloseHandler = () => this._setOpen(false);
+    // 外側クリックで閉じる（自分の root の外を押されたときだけ閉じる＝共有レジストリが判定する）。
+    // ISSUE-169: 同一キーの再登録は前回を置換する（document リスナは document あたり 1 個）。
     this._doc = doc;
-    installDocumentCloseHandler(doc, 'timeframe', this._docCloseHandler);
+    installMenuCloseHandler(doc, 'timeframe', { root: mount, close: () => this._setOpen(false) });
     pop.addEventListener('pointerdown', (e) => {
       if (e && typeof e.stopPropagation === 'function') {
         e.stopPropagation();
@@ -149,11 +147,10 @@ export class TimeframeMenu {
     });
   }
 
-  // ISSUE-169: 明示的な後片付け。document スコープのリスナを外す（DOM は呼び出し側が破棄する）。
-  //   呼ばれなくても install 時の自己修復で蓄積は有界（document あたり 1 個）になる。
+  // ISSUE-169: 明示的な後片付け。共有レジストリから自分の登録を外す（DOM は呼び出し側が破棄する）。
+  //   呼ばれなくても install 時の置換で蓄積は起きない。
   dispose() {
-    removeDocumentCloseHandler(this._doc, 'timeframe', this._docCloseHandler);
-    this._docCloseHandler = null;
+    removeMenuCloseHandler(this._doc, 'timeframe');
   }
 
   _toggle() {
