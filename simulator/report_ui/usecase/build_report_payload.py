@@ -74,24 +74,80 @@ class BuildReportPayload:
         degradation = self._policy.degradation(sum_is, sum_oos)
         verdict = self._policy.verdict(sum_is, sum_oos, degradation)
 
-        meta = {
-            "symbol": meta_is.get("symbol", report_meta.symbol),
-            "timeframe": meta_is.get("timeframe", report_meta.timeframe),
-            "strategy": meta_is.get("strategy", report_meta.expert),
-            "params": report_meta.params,
-            "initial_deposit": INITIAL,
-            "split": report_meta.split,
-            "note": report_meta.note,
-        }
-
         return ReportPayloadModel(
-            meta=meta,
+            meta=self._payload_meta(meta_is, report_meta),
             segments={"is": seg_is, "oos": seg_oos},
             summary=summary,
             degradation=degradation,
             verdict=verdict,
             contract_notes=self._contract_notes(ea_params),
         )
+
+    def execute_single(
+        self,
+        *,
+        result: Any,
+        bars: Any,
+        spec: Any,
+        ea_params: dict,
+        meta: dict,
+        contacts: "list | None" = None,
+        report_meta: "ReportMeta | None" = None,
+        segment_key: str = "single",
+        contract_notes_extra: "list | None" = None,
+    ) -> ReportPayloadModel:
+        """**1 区間だけ**の ReportPayloadModel を組む（IS/OOS 比較を伴わない run 用）。
+
+        `execute` との違いは「区間が 1 つであること」だけで、区間の写像（`_build_segment`）と
+        全体 meta の写像（`_payload_meta`）は**同一の実体**を使う。写像をもう 1 本書けば、
+        片方だけ直る／片方だけ腐るという形で必ず食い違う。
+
+        比較を行わないので:
+          - ``degradation`` は空 dict（None にしない。JSON の null は「算出したが空」と
+            区別がつかず、未実施を「実施して差が無かった」と誤読させる）
+          - ``verdict`` は `AssessmentPolicy.not_evaluated`（result="" ＝ pass/warn/fail を
+            名乗らない）。実施していない判定を出力しないための構造的な歯止めである。
+
+        ``segment_key``: segments / summary のキー。既定 "single"。**"is" を既定にしない**
+        （区分の捏造になる）。
+        ``contract_notes_extra``: 呼び出し側が足す注記（単一区間である旨など）。既存の
+        契約注記へ**連結**する（置換しない）。
+        """
+        report_meta = report_meta or ReportMeta()
+        segment, summary = self._build_segment(
+            result, bars, spec, ea_params, meta, report_meta, contacts)
+
+        notes = self._contract_notes(ea_params) + list(contract_notes_extra or [])
+
+        return ReportPayloadModel(
+            meta=self._payload_meta(meta, report_meta),
+            segments={segment_key: segment},
+            summary={segment_key: summary},
+            degradation={},
+            verdict=self._policy.not_evaluated(
+                "単一区間のため IS/OOS 比較は未実施"
+            ),
+            contract_notes=notes,
+        )
+
+    # --- meta ---------------------------------------------------------------
+
+    def _payload_meta(self, meta_seg: dict, report_meta: ReportMeta) -> dict:
+        """全体 meta を組む（区間数に依存しない写像・キー順は JSON のキー順を規定する）。
+
+        `execute`（IS/OOS）と `execute_single`（単一区間）の**共通**の写像。ここを 2 か所に
+        書けば、片方だけ直る／片方だけ腐るという形で必ず食い違う。
+        ``meta_seg`` は代表区間の meta dict（IS/OOS では IS を代表とする＝従来と不変）。
+        """
+        return {
+            "symbol": meta_seg.get("symbol", report_meta.symbol),
+            "timeframe": meta_seg.get("timeframe", report_meta.timeframe),
+            "strategy": meta_seg.get("strategy", report_meta.expert),
+            "params": report_meta.params,
+            "initial_deposit": INITIAL,
+            "split": report_meta.split,
+            "note": report_meta.note,
+        }
 
     # --- segment ------------------------------------------------------------
 

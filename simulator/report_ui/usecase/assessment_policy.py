@@ -80,3 +80,12 @@ class AssessmentPolicy:
             reasons.append("期待値が正→負へ反転")
 
         return VerdictModel(result=result, reasons=reasons)
+
+    def not_evaluated(self, reason: str) -> VerdictModel:
+        """判定を**行っていない**ことを表す verdict（単一区間など比較材料が無い場合）。
+
+        `result` は空文字にする。pass/warn/fail のいずれかを返すと、実施していない
+        IS/OOS 比較の結論を騙ることになる（不実データ）。VerdictModel の書き手を本
+        policy の 1 箇所に保つため、呼び出し側で直接組ませない。
+        """
+        return VerdictModel(result="", reasons=[reason])
