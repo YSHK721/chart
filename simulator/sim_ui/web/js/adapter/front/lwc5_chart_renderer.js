@@ -54,6 +54,13 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
   let rows = [];
   let lastMarkerOpts = { hoverId: null, filter: null };
   let markerHoverCb = null;
+  // 接点マーカー（FR-18）: 透明 LineSeries（value=close）＋**第 2 の** markers ハンドル。
+  //   売買マーカー（candle 系列の markerHandle）とは別系列・別ハンドルにして独立トグルを
+  //   成立させる（P5: 接点トグルは売買マーカーを変えない）。移植元 chart.js:254-259, 359-364。
+  let contactSeries = null, contactMarkerHandle = null, contacts = [];
+  // 接点の表示 state は**区間切替（destroy→build）を跨いで持続する**（トグルの意図を保つ）。
+  //   destroy では戻さない（移植元 chart.js は module-level `_contactsVisible` で持続）。
+  let contactsShown = true;
   // 自分が vendor へ書き込んでいる区間（R-A3 の再入ガード）。この区間に届いた crosshair は
   //   利用者の操作ではなく**自分の描画が動かした結果**なので、発行元で捨てる。
   let writing = false;
@@ -158,6 +165,10 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
     priceChart = balChart = ddChart = null;
     candle = balSeries = ddSeries = null;
     markerHandle = null;
+    // 接点系列・ハンドルも手放す（次の build で張り直す）。**contactsShown は戻さない**——
+    //   トグルの意図は区間切替を跨いで持続する（移植元の module-level state と同じ）。
+    contactSeries = contactMarkerHandle = null;
+    contacts = [];
     dimmed = false;
     // 破棄した chart に張った購読は道連れになる。次の chart で張り直せるよう戻す
     //   （参照実装 chart.js:224 `_destroyCharts` が `_crosshairWired = false` に戻すのと同じ）。
@@ -191,6 +202,25 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
     if (hosts.badge) hosts.badge.textContent = logic.chartBadgeText(visible.length);
     if (visible.length > logic.MARKER_CAP) { setMarkers([]); return; }
     setMarkers(logic.buildTradeMarkers(visible, hoverId));
+  }
+
+  // 可視レンジ内の接点だけを返す（売買 visibleTrades と同流儀・全件 cap 超過時の恒常非表示回避）。
+  function visibleContacts() {
+    const range = priceChart ? priceChart.timeScale().getVisibleRange() : null;
+    return logic.contactsInRange(contacts, range);
+  }
+
+  // 接点マーカーを**接点専用ハンドル**へ描く（可視レンジ絞り→cap→トグルの順・移植元
+  //   chart.js:353-364）。売買マーカー（markerHandle）は一切触らない（P5 独立）。ハンドルは
+  //   出すべきマーカーが 1 件でも出たときに 1 本だけ作り、以降は使い回す（空で作らない＝
+  //   売買のみの区間で第 2 ハンドルを増やさない）。全 vendor 書込は write() lock 内（R-A3）。
+  function renderContactMarkers() {
+    if (!contactSeries) return;
+    const markers = logic.contactsToMarkers(visibleContacts(), { visible: contactsShown });
+    write(() => {
+      if (contactMarkerHandle) contactMarkerHandle.setMarkers(markers);
+      else if (markers.length) contactMarkerHandle = lwc.createSeriesMarkers(contactSeries, markers);
+    });
   }
 
   function restoreCandles() {
@@ -228,6 +258,16 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
     candle.setData(barsNormal);
     publish("__simPriceChart", priceChart);
     publish("__simCandleSeries", candle);
+
+    // 接点マーカー専用の透明ライン系列（バー close 上に重ねる・線は不可視）。売買マーカー
+    //   （candle 系列の第 1 ハンドル）とは別系列にして独立トグルを成立させる（P5）。v5 では
+    //   系列に setMarkers が無いため、マーカーは第 2 の createSeriesMarkers ハンドルで描く
+    //   （renderContactMarkers）。移植元 chart.js:254-259 と同じオプション。
+    contactSeries = priceChart.addSeries(lwc.LineSeries, {
+      color: "rgba(0,0,0,0)", lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    contactSeries.setData(barsNormal.map((b) => ({ time: b.time, value: b.close })));
 
     const initialDeposit = (opts && opts.initialDeposit)
       || (segment.meta && segment.meta.initial_deposit)
@@ -270,10 +310,13 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
     const last = rows.length ? rows[rows.length - 1].exit_time : (barTimes[barTimes.length - 1] || 0);
     priceChart.timeScale().setVisibleRange({ from: first - 600, to: last + 600 });
     // pan/zoom で可視件数が変わるため、直近の描画意図（hover/filter）を保ったまま再描画する。
+    //   接点も同じ可視レンジに追従して再描画する（cap 内なら表示・移植元 chart.js:299-302）。
     priceChart.timeScale().subscribeVisibleTimeRangeChange(() => {
       renderMarkers(rows, lastMarkerOpts);
+      renderContactMarkers();
     });
     renderMarkers(rows, { hoverId: null, filter: null });
+    renderContactMarkers(); // 現在の接点（多くは空・setContacts 前）とトグル state を反映。
   }
 
   return {
@@ -287,6 +330,24 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
 
     renderMarkers,
     restoreCandles,
+
+    /** 接点データ（agg.contacts）を設定し、接点マーカーを（別ハンドルで）描く（FR-18）。 */
+    setContacts(list) {
+      contacts = list || [];
+      renderContactMarkers();
+    },
+
+    renderContactMarkers,
+
+    /** 接点マーカーの表示/非表示を切り替える（真実源はここ・戻り＝新 state）。 */
+    setContactsVisible(visible) {
+      contactsShown = !!visible;
+      renderContactMarkers();
+      return contactsShown;
+    },
+
+    /** 現在の接点トグル state（表示中=true）。 */
+    contactsVisible() { return contactsShown; },
 
     /** ペア区間 [entry_time, exit_time] 以外のローソク足を減光する（点 S4）。 */
     dimCandlesForTrade(trade) {

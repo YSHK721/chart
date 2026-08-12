@@ -36,6 +36,12 @@ const RENDERER = "lwc5_chart_renderer.js";
 const VIEW = "sim_display_view.js";
 const SOURCE = "report_source_client.js";
 const FRAME = "sim_frame_view.js";
+// Phase 5 で追加した周辺 View（いずれも純 DOM・lwc に触れない）。
+const TABS = "sim_tabs_view.js";
+const SEGMENT = "sim_segment_view.js";
+const COMPARE = "sim_compare_view.js";
+const CONTACTS_TOGGLE = "sim_contacts_toggle_view.js";
+const FILTER_PILL = "sim_filter_pill_view.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -47,8 +53,11 @@ function importSpecifiers(src) {
 
 // --- 1. 移植元は /sim/report-js/ からだけ引く ------------------------------------
 
-test("the front layer ships exactly the five Phase 4 modules", () => {
-  assert.deepEqual(FRONT_FILES.sort(), [ROOT, RENDERER, SOURCE, VIEW, FRAME].sort());
+test("the front layer ships exactly the Phase 4 + Phase 5 modules", () => {
+  assert.deepEqual(FRONT_FILES.sort(), [
+    ROOT, RENDERER, SOURCE, VIEW, FRAME,
+    TABS, SEGMENT, COMPARE, CONTACTS_TOGGLE, FILTER_PILL,
+  ].sort());
 });
 
 // --- 1b. style.css の波及遮断（裁定 B）------------------------------------------
@@ -94,8 +103,13 @@ test("the composition root imports the report_ui modules from /sim/report-js/", 
   const specs = importSpecifiers(read(ROOT));
   const shared = specs.filter((s) => s.startsWith("/sim/report-js/"));
   assert.deepEqual(shared.sort(), [
+    // Phase 5 で周辺表示（ヒートマップ・比較判定・用語集）の実体を足す。写さず import する。
     "/sim/report-js/chart.js",
+    "/sim/report-js/compare.js",
+    "/sim/report-js/data.js",
     "/sim/report-js/format.js",
+    "/sim/report-js/glossary.js",
+    "/sim/report-js/heatmap.js",
     "/sim/report-js/linkage.js",
     "/sim/report-js/table.js",
   ]);
@@ -129,6 +143,16 @@ const OWNED_BY_REPORT_UI = [
   "visibleTradesInRange", "chartBadgeText",
   "createLinkage", "buildTradeTable", "COLS", "compareTrades", "projectRow",
   "fmtMoney", "fmtT", "cfmtLocale", "signClass",
+  // --- Phase 5 で流用する周辺表示の定義（heatmap / compare / glossary / 接点）---
+  // sim 側にこれらの**定義**があれば写しである（import / 注入で受けること）。
+  "buildHeatmap", "wdayHourOf", "collectCellIds", "firstTradeInCell", "WEEKORDER", "aggOf",
+  "buildCompare", "renderVerdictBanner", "verdictLabel", "parseReportNum", "compareCell",
+  "buildCompareRows", "augmentReport", "underwaterCurve", "metricRetention",
+  "metricRetentionAll", "degradationBars", "radarClamp", "RADAR_METRICS",
+  "buildGlossary", "wireTips", "gkTip", "ggTip",
+  "GLOSSARY", "GRAPH_GLOSSARY", "REPORT_GROUPS", "LABELS_JA", "STRATEGY_INFO",
+  "contactToMarker", "contactsInRange", "contactsToMarkers",
+  "CONTACT_UP_COLOR", "CONTACT_DOWN_COLOR", "CONTACT_MARKER_CAP",
 ];
 
 test("no sim front module redefines a report_ui symbol (複製 0 の機械強制)", () => {
@@ -151,6 +175,11 @@ test("the dim alpha / marker cap literals are not written into the sim layer", (
     const src = read(name);
     assert.ok(!/\b0\.15\b/.test(src), `${name} に減光アルファの実値が書かれています`);
     assert.ok(!/\bMARKER_CAP\s*=\s*\d+/.test(src), `${name} にマーカー上限の実値が書かれています`);
+    // 接点配色（chart.js:28-29）の実値を写せば、名前を変えても検定を素通りする。hex を封じる。
+    assert.ok(!/#f5c542/i.test(src), `${name} に接点 up 配色の実値が書かれています`);
+    assert.ok(!/#c084fc/i.test(src), `${name} に接点 down 配色の実値が書かれています`);
+    // 接点マーカー id（"c"+idx・chart.js:149）の写しも封じる（contactToMarker を import すること）。
+    assert.ok(!/["'`]c["'`]\s*\+/.test(src), `${name} が接点マーカー id（"c"+idx）を写しています`);
   }
 });
 
@@ -175,7 +204,7 @@ test("nothing references the report_ui v4 bundle", () => {
 
 const LWC_API_NAMES = [
   "createChart", "addSeries", "createSeriesMarkers",
-  "CandlestickSeries", "AreaSeries", "BaselineSeries", "CrosshairMode",
+  "CandlestickSeries", "AreaSeries", "BaselineSeries", "LineSeries", "CrosshairMode",
 ];
 
 test("only the v5 adapter mentions lightweight-charts API names", () => {
@@ -194,7 +223,12 @@ test("the v5 adapter does not use any v4 series factory", () => {
   for (const v4 of ["addCandlestickSeries", "addAreaSeries", "addBaselineSeries", "addLineSeries"]) {
     assert.ok(!src.includes(v4), `${RENDERER} に v4 API（${v4}）が残っています`);
   }
-  assert.ok(!/\.setMarkers\s*\(/.test(src.replace(/markerHandle\.setMarkers\s*\(/g, "")),
+  // setMarkers はマーカーハンドル経由のみ許す。売買（markerHandle）と接点（contactMarkerHandle）の
+  //   2 本を除いた残りに `.setMarkers(` があれば、系列へ直接呼んでいる（v5 では系列に無い）。
+  const handleCalls = src
+    .replace(/markerHandle\.setMarkers\s*\(/g, "")
+    .replace(/contactMarkerHandle\.setMarkers\s*\(/g, "");
+  assert.ok(!/\.setMarkers\s*\(/.test(handleCalls),
     "系列へ直接 setMarkers しています（v5 は createSeriesMarkers ハンドル経由）");
 });
 
@@ -232,4 +266,57 @@ test("the composition root reads the job id from the injected location search", 
   const src = read(ROOT);
   assert.ok(src.includes("readJobId"), "job_id の読み取りが F-4 の純関数経由ではありません");
   assert.ok(!/["']\?job=/.test(src), "クエリ名を再定義しています（readJobId に閉じること）");
+});
+
+// --- 7. Phase 5 周辺表示の結線（合成根は node:test から実行不可＝構造で固定）----------
+// 合成根はブラウザ絶対パス（/sim/report-js/*）を静的 import するため node:test から実行
+// できない（本ファイル冒頭の方針・E2E フックと同じ固定手段）。各 View / 純関数の**挙動**は
+// それぞれの単体テストが被覆済み（sim_compare_view: canvas 0 件、sim_segment_view: segbtn
+// 縮退、sim_contacts_toggle_view: renderer 真実源、sim_filter_pill_view: ピル）。ここでは
+// 「合成根がそれらを移植元 main.js:135-190 の順で結線しているか」を構造で固定する。
+
+test("the composition root constructs the four Phase 5 peripheral views", () => {
+  const src = read(ROOT);
+  for (const factory of [
+    "createSimSegmentView", "createSimCompareView",
+    "createSimContactsToggleView", "createSimFilterPillView",
+  ]) {
+    assert.ok(src.includes(factory), `合成根が ${factory} を組み立てていません（結線の欠落）`);
+  }
+});
+
+test("the composition root imports the peripheral report_ui builders", () => {
+  const src = read(ROOT);
+  // ヒートマップ・比較判定・用語集の実体は移植元から import（写さない）。
+  for (const sym of ["buildHeatmap", "buildCompare", "renderVerdictBanner", "buildGlossary", "wireTips", "aggOf"]) {
+    assert.ok(src.includes(sym), `合成根が ${sym} を移植元から引いていません`);
+  }
+});
+
+test("the composition root wires the extraction filter to the pill (点18)", () => {
+  const src = read(ROOT);
+  assert.ok(src.includes("subscribeFilter"), "抽出フィルタ購読が結線されていません");
+  assert.ok(/filterPill\b/.test(src), "抽出ピル View が結線されていません");
+});
+
+test("the composition root renders compare/glossary once at init, segments per run", () => {
+  const src = read(ROOT);
+  assert.ok(/compareView\b/.test(src), "比較 View が結線されていません");
+  assert.ok(/segmentView\b/.test(src), "区間 View が結線されていません");
+  assert.ok(/contactsToggle\b/.test(src), "接点トグル View が結線されていません");
+  // wireTips は init で 1 回だけ（多重 #tip 禁止）。selectSegment 内に置くと区間切替で増える。
+  const wireTipsCount = (src.match(/wireTips\s*\(/g) || []).length;
+  assert.equal(wireTipsCount, 1, "wireTips の呼び出しが 1 回ではありません（多重 #tip の恐れ）");
+});
+
+test("selectSegment feeds contacts and heatmap (移植元 selectSegment と同順)", () => {
+  const src = read(ROOT);
+  assert.ok(/setContacts\s*\(/.test(src), "区間切替で接点を renderer へ渡していません");
+  assert.ok(/buildHeatmap\s*\(/.test(src), "区間切替でヒートマップを描いていません");
+});
+
+test("the single-run heatmap drops the IS/OOS diff view (D-3 の opts を渡す)", () => {
+  const src = read(ROOT);
+  assert.ok(src.includes("showIsOosDiff"),
+    "buildHeatmap へ showIsOosDiff の縮退フラグを渡していません（単一区間で IS/OOS 差を出さない）");
 });

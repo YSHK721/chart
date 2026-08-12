@@ -57,6 +57,21 @@ function fakeLogic(calls = {}) {
       calls.chartBadgeText = n;
       return `${n} trades in view`;
     },
+    // 接点純関数（移植元 chart.js の export を合成根が注入する・複製 0）。
+    CONTACT_MARKER_CAP: 700,
+    contactsInRange(contacts, range) {
+      calls.contactsInRange = { contacts, range };
+      if (!range) return contacts || [];
+      return (contacts || []).filter((c) => c.time >= range.from && c.time <= range.to);
+    },
+    contactsToMarkers(contacts, opts) {
+      const { visible = true, cap = 700 } = opts || {};
+      calls.contactsToMarkers = { contacts, opts };
+      if (!visible) return [];
+      const list = (contacts || []).slice().sort((a, b) => a.time - b.time);
+      if (list.length > cap) return [];
+      return list.map((c, i) => ({ time: c.time, id: "c" + i, dir: c.dir }));
+    },
   };
 }
 
@@ -474,5 +489,162 @@ test("renderer methods are safe to call before render (呼び出し順に依存�
     renderer.focusTime(1);
     renderer.resize();
     renderer.destroy();
+  });
+});
+
+// --- 接点マーカー（点 P4/P5・FR-18）--------------------------------------------
+// 接点は**透明 LineSeries（value=close）＋第 2 の createSeriesMarkers ハンドル**で描く
+// （移植元 chart.js:254-259, 359-364 と同じ分離）。売買マーカー（candle 系列の第 1 ハンドル）
+// とは別系列・別ハンドルにして独立トグルを成立させる（P5: 売買マーカー不変）。
+// candlestick への第 2 ハンドルはグリフ y 位置が移植元と変わるため採らない（D-2）。
+
+const CONTACTS = [
+  { time: 100, price: 11, dir: "up" },
+  { time: 200, price: 12, dir: "down" },
+];
+
+/** 価格チャート上の接点用透明 LineSeries を返す（candle は CandlestickSeries）。 */
+const lineSeriesOf = (lwc) => lwc.charts[0].series.find((s) => s.kind === "LineSeries");
+/** 接点ハンドル（第 2 の createSeriesMarkers 戻り・LineSeries に張られたもの）。 */
+const contactHandleOf = (lwc) => lwc.markerHandles.find((h) => h.series && h.series.kind === "LineSeries");
+
+test("render creates a transparent LineSeries overlay for contacts", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  const line = lineSeriesOf(lwc);
+  assert.ok(line, "接点用の透明 LineSeries が無い");
+  assert.equal(line.options.color, "rgba(0,0,0,0)");
+  assert.equal(line.options.priceLineVisible, false);
+  assert.equal(line.options.lastValueVisible, false);
+  assert.equal(line.options.crosshairMarkerVisible, false);
+});
+
+test("the contact overlay is fed bar close values (value=close)", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  assert.deepEqual(lineSeriesOf(lwc).data, [
+    { time: 100, value: 11 }, { time: 200, value: 12 },
+  ]);
+});
+
+test("the candle series stays series[0] (売買マーカーの第 1 ハンドルの相手)", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  assert.equal(lwc.charts[0].series[0].kind, "CandlestickSeries");
+});
+
+test("with no contacts set, no second marker handle is created (売買のみ)", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  assert.equal(lwc.markerHandles.length, 1);
+});
+
+test("setContacts draws contact markers through a SECOND handle on the LineSeries", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  renderer.setContacts(CONTACTS);
+  assert.equal(lwc.markerHandles.length, 2, "接点は第 2 ハンドル（売買と分離）");
+  const handle = contactHandleOf(lwc);
+  assert.ok(handle, "接点ハンドルが LineSeries に張られていない");
+  assert.deepEqual(handle.markers.map((m) => m.dir), ["up", "down"]);
+});
+
+test("the contact markers come from the injected contactsToMarkers (複製 0)", () => {
+  const calls = {};
+  const { renderer } = build(calls);
+  renderer.render(SEGMENT);
+  renderer.setContacts(CONTACTS);
+  assert.ok(calls.contactsToMarkers, "注入された contactsToMarkers を使っていない");
+});
+
+test("contacts are filtered to the visible range before capping (contactsInRange 経由)", () => {
+  const calls = {};
+  const { renderer } = build(calls);
+  renderer.render(SEGMENT);
+  renderer.setContacts(CONTACTS);
+  assert.ok(calls.contactsInRange, "可視レンジ絞りに contactsInRange を使っていない");
+});
+
+test("contactsVisible defaults to true", () => {
+  const { renderer } = build();
+  assert.equal(renderer.contactsVisible(), true);
+});
+
+test("setContactsVisible(false) hides the contact markers (empty markers)", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  renderer.setContacts(CONTACTS);
+  renderer.setContactsVisible(false);
+  assert.equal(renderer.contactsVisible(), false);
+  assert.deepEqual(contactHandleOf(lwc).markers, []);
+});
+
+test("toggling contacts OFF does not touch the trade marker handle (P5 独立)", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  renderer.renderMarkers(SEGMENT.trades, { hoverId: 1 });
+  renderer.setContacts(CONTACTS);
+  const tradeHandle = lwc.markerHandles.find((h) => h.series && h.series.kind === "CandlestickSeries");
+  const before = tradeHandle.markers;
+  renderer.setContactsVisible(false);
+  assert.equal(tradeHandle.markers, before, "接点トグルが売買マーカーを書き換えた（P5 違反）");
+});
+
+test("setContactsVisible(true) restores the contact markers", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  renderer.setContacts(CONTACTS);
+  renderer.setContactsVisible(false);
+  renderer.setContactsVisible(true);
+  assert.deepEqual(contactHandleOf(lwc).markers.map((m) => m.dir), ["up", "down"]);
+});
+
+test("the visible-range change re-renders the contacts (pan/zoom 追従)", () => {
+  const calls = {};
+  const { lwc, renderer } = build(calls);
+  renderer.render(SEGMENT);
+  renderer.setContacts(CONTACTS);
+  calls.contactsInRange = null;
+  lwc.charts[0].timeScale().setVisibleRange({ from: 90, to: 210 });
+  assert.ok(calls.contactsInRange, "可視レンジ変更で接点を再描画していない");
+});
+
+// 生きている接点系列は**最新の**価格チャート（fake は charts を push し続けるので末尾側）。
+//   fake の markerHandles / charts は破棄しても配列に残るため、系列の同一性で live を選ぶ。
+const liveLineSeries = (lwc) => lwc.charts[lwc.charts.length - 3].series.find((s) => s.kind === "LineSeries");
+const liveContactHandle = (lwc) => { const s = liveLineSeries(lwc); return lwc.markerHandles.find((h) => h.series === s); };
+
+test("the contact toggle state survives a re-render (区間切替で消えない)", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  renderer.setContactsVisible(false);
+  renderer.render(SEGMENT);      // 区間切替（destroy→build）
+  renderer.setContacts(CONTACTS);
+  assert.equal(renderer.contactsVisible(), false, "トグル state が区間切替で戻った");
+  // OFF が持続 → 最新系列に可視の接点マーカーは無い（ハンドル未生成 or 空）。
+  const handle = liveContactHandle(lwc);
+  assert.ok(!handle || handle.markers.length === 0, "OFF なのに接点が出ている");
+});
+
+test("destroy releases the contact series and handle (往復で積み上げない)", () => {
+  const { lwc, renderer } = build();
+  renderer.render(SEGMENT);
+  renderer.setContacts(CONTACTS);
+  const staleLine = liveLineSeries(lwc);
+  renderer.destroy();
+  renderer.render(SEGMENT);
+  renderer.setContacts(CONTACTS);
+  // 再描画は**新しい**接点系列を作る（破棄した系列を掴み続けない）。
+  assert.notEqual(liveLineSeries(lwc), staleLine, "破棄した接点系列を使い回している");
+  const handle = liveContactHandle(lwc);
+  assert.ok(handle, "再描画後の接点ハンドルが無い");
+  assert.deepEqual(handle.markers.map((m) => m.dir), ["up", "down"]);
+});
+
+test("setContacts before render is safe (呼び出し順に依存しない)", () => {
+  const { renderer } = build();
+  assert.doesNotThrow(() => {
+    renderer.setContacts(CONTACTS);
+    renderer.setContactsVisible(false);
   });
 });
