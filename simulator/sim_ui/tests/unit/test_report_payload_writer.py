@@ -213,3 +213,81 @@ def test_the_report_is_valid_json_without_nan_or_infinity(tmp_path: Path) -> Non
     raw = _write(tmp_path).read_text(encoding="utf-8")
     assert "NaN" not in raw and "Infinity" not in raw
     json.loads(raw)
+
+
+# --- 7. 接点（agg.contacts）の結線（Phase 5 F-7）---------------------------------
+# 接点そのものの算出は `contacts_supply`（＝report_ui の単一ソースを呼ぶ結線）が持つ。
+# writer が持つのは「読み込み済みの足と job 仕様を供給へ渡し、戻りを payload へ載せる」
+# ことだけである。足を**もう一度読まない**ことをここで固定する（同じ CSV を 2 回読むと、
+# 表示している足と接点を算出した足が別物になり得る）。
+
+def test_接点は供給の戻りがそのままaggへ載る(tmp_path: Path) -> None:
+    contacts = [{"time": 2000, "price": 39405.0, "dir": "up"}]
+    job_dir = _job_dir(tmp_path)
+    out = report_payload_writer.write(
+        job_dir, _result(), load_run_inputs=_loader(),
+        contacts_supply=lambda bars, backtest: contacts,
+    )
+    agg = json.loads(out.read_text(encoding="utf-8"))["segments"]["single"]["agg"]
+    assert agg["contacts"] == contacts
+
+
+def test_接点供給が無ければaggにcontactsキーは生えない(tmp_path: Path) -> None:
+    """Phase 4 までの payload と byte 等価（載せないものを空配列で捏造しない）。"""
+    agg = _payload(tmp_path)["segments"]["single"]["agg"]
+    assert "contacts" not in agg
+
+
+def test_接点供給は読み込み済みの足と仕様を受け取る(tmp_path: Path) -> None:
+    seen: "list[tuple]" = []
+    loads = []
+
+    def loader(backtest):
+        loads.append(backtest)
+        return _bars([1000, 2000, 3000, 4000]), _SymbolSpec()
+
+    job_dir = _job_dir(tmp_path)
+    report_payload_writer.write(
+        job_dir, _result(), load_run_inputs=loader,
+        contacts_supply=lambda bars, backtest: seen.append((bars, backtest)) or [],
+    )
+    assert len(loads) == 1, "足を 2 回読んでいます（表示足と接点の足が別物になり得る）"
+    bars, backtest = seen[0]
+    assert [b.time for b in bars] == [1000, 2000, 3000, 4000]
+    assert backtest["symbol"] == "JP225"
+
+
+def test_接点供給へ渡る足はint時刻ビューである(tmp_path: Path) -> None:
+    """生の足をそのまま渡すと `int(Timestamp)` がナノ秒になり、接点の time が壊れる。"""
+    import pandas as pd
+    seen: "list" = []
+    bars = _bars([pd.Timestamp("2026-04-01 00:00:00", tz="UTC"),
+                  pd.Timestamp("2026-04-01 00:05:00", tz="UTC")])
+    report_payload_writer.write(
+        _job_dir(tmp_path), _result(), load_run_inputs=_loader(bars=bars),
+        contacts_supply=lambda b, _spec: seen.append(b) or [],
+    )
+    assert [b.time for b in seen[0]] == [1775001600, 1775001900]
+
+
+# --- 8. R-4: 足の供給は Composition Root が束ねる（adapter→main import の解消）----
+
+def test_足の供給は必須引数である() -> None:
+    """既定束縛（`simulator.main.build_interactor`）を adapter が持たない＝依存の向きが
+    外向きにならない。束ねるのは main 層（run_job.py）である。
+
+    実引数を省いた呼び出しの例外型では判定しない——既定束縛が残っていても
+    `build_interactor` の必須引数不足で TypeError になり、同じ結果で通ってしまう
+    （通る理由が違う＝弱い assertion）。署名そのものを見る。
+    """
+    import inspect
+
+    parameter = inspect.signature(report_payload_writer.write).parameters["load_run_inputs"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_writerはmain層をimportしない() -> None:
+    """依存方向の機械強制（宣言では守れない）。"""
+    source = Path(report_payload_writer.__file__).read_text(encoding="utf-8")
+    assert "from simulator.main import" not in source
+    assert "import simulator.main" not in source

@@ -38,6 +38,15 @@ class StaticPrefixRoutes:
         """登録済み prefix（合成根の検定が結線を確かめるための面）。"""
         return tuple(self._routes)
 
+    def route(self, prefix: str) -> Any:
+        """prefix に結線された配信器を返す（未登録は KeyError）。
+
+        「何が配信されるか」の方針（例: vendor の許可ファイル集合）は配信器が持つ。
+        結線を実 HTTP だけで確かめると、方針の変更が経路の増減として現れないため、
+        表そのものを覗ける面を 1 つ用意する（合成根の検定が使う読み取り専用の口）。
+        """
+        return self._routes[prefix]
+
     def serve(self, handler: Any, path: str) -> Any:
         for prefix, server in self._routes.items():
             if path == prefix:

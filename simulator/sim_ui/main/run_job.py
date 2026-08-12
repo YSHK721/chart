@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from simulator.main import run_backtest
-from simulator.sim_ui.adapter import report_payload_writer
+from simulator.sim_ui.adapter import contacts_supply, report_payload_writer
 
 # 仕様の読めないジョブ・内部例外は失敗（非 0）で返す。`run_backtest` の終了コード
 # （0 成功 / 1 BacktestError / 2 ConfigError）と衝突しない値を使う。
@@ -116,6 +116,38 @@ def _build_decorator(spec: "dict[str, Any]") -> Any:
     )
 
 
+def _load_run_inputs(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
+    """ジョブ仕様から (bars, symbol_spec) を得る（committed 公開 IF 経由・R-4）。
+
+    `BacktestResult` は bars を保持しないため、表示用のローソク足と建値推定（MFE/MAE）に
+    要る bars は `build_interactor` から取り直す。読み込みの実体（EA 別 MarketDataPort の
+    選択・CSV 解析）は `simulator.main` の単一ソースのまま。**この束縛を main 層（本 CLI＝
+    Composition Root）が持つ**ことで、adapter（report_payload_writer）が `simulator.main` を
+    掴む層違反（adapter→main）を解消する（ISSUE-378 #7 と同一箇所）。
+    """
+    from simulator.main import build_interactor
+
+    _controller, request = build_interactor(**backtest)
+    return request.bars, request.symbol_spec
+
+
+def _supply_contacts(bars: "list", backtest: "dict[str, Any]") -> "list[dict]":
+    """接点（agg.contacts）を「その run が使った EA の指標系列」から組む（FR-18・R-3）。
+
+    EA→指標の対応は `simulator.main.build_ea_indicators`（`_EA_FACTORIES` を単一ソースに
+    する公開アクセサ）から得る。算出式は adapter（contacts_supply）が report_ui の単一
+    ソースを import して持つ。ここは供給の束縛（Composition Root）だけを担う。
+
+    ``bars`` は writer が読み込み済みの int 時刻ビュー（二重ロードしない）。
+    """
+    from simulator.main import build_ea_indicators
+
+    indicators = build_ea_indicators(**backtest)
+    return contacts_supply.build_contacts(
+        bars=bars, backtest=backtest, indicators=indicators,
+    )
+
+
 def main(argv: "list[str] | None" = None) -> int:
     """1 ジョブを実行して終了コードを返す。"""
     parser = argparse.ArgumentParser(
@@ -159,7 +191,11 @@ def main(argv: "list[str] | None" = None) -> int:
     # 表示面へ出すと、古い/壊れた結果が「今の結果」に見える。
     if exit_code == 0 and _result is not None:
         try:
-            report_payload_writer.write(job_dir, _result)
+            report_payload_writer.write(
+                job_dir, _result,
+                load_run_inputs=_load_run_inputs,
+                contacts_supply=_supply_contacts,
+            )
         except Exception as exc:  # 表示の失敗で成功した計算を捨てない
             message = f"report.json の書出しに失敗しました: {exc}"
             print(message, file=sys.stderr)

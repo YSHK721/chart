@@ -46,37 +46,33 @@ SINGLE_SEGMENT_NOTE = (
 )
 
 
-def _load_run_inputs(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
-    """ジョブ仕様から (bars, symbol_spec) を得る（committed 公開 IF 経由）。
-
-    `BacktestResult` は bars を保持しないため、表示用のローソク足と建値推定（MFE/MAE）に
-    要る bars は `build_interactor` から取り直す。読み込みの実体（EA 別 MarketDataPort の
-    選択・CSV 解析）は `simulator.main` の単一ソースのままで、ここには写さない。
-    """
-    from simulator.main import build_interactor
-
-    _controller, request = build_interactor(**backtest)
-    return request.bars, request.symbol_spec
-
-
 def write(
     job_dir: Any,
     result: Any,
     *,
-    load_run_inputs: "Callable[[dict], tuple[Any, Any]] | None" = None,
+    load_run_inputs: "Callable[[dict], tuple[Any, Any]]",
+    contacts_supply: "Callable[[list, dict], list] | None" = None,
 ) -> Path:
     """`job_dir` へ `report.json` を書き、そのパスを返す。
 
     ``result``: `run_backtest` が返した `BacktestResult`（成功 run のみ渡すこと）。
-    ``load_run_inputs``: (bars, symbol_spec) の供給。既定は `build_interactor` 経由。
+    ``load_run_inputs``: (bars, symbol_spec) の供給（**必須**）。`BacktestResult` は bars を
+      保持しないため、表示用のローソク足と建値推定（MFE/MAE）に要る bars を取り直す口。
+      実体（EA 別 MarketDataPort の選択・CSV 解析）は `simulator.main` の単一ソースにあり、
+      その束縛は **Composition Root（`main/run_job.py`）が持つ**（R-4）。adapter が
+      `simulator.main` を既定値として掴むと依存が外向き（adapter→main）になる。
+    ``contacts_supply``: (bars, backtest) → `agg.contacts`（`[{time, price, dir}]`）の供給。
+      未指定なら `agg` に `contacts` キーを生やさない（Phase 4 までの payload と等価）。
+      ここへ渡す ``bars`` は**読み込み済みの int 時刻ビュー**である。もう一度読ませると、
+      表示している足と接点を算出した足が別物になり得る。
     """
     job_dir = Path(job_dir)
     spec = json.loads((job_dir / "spec.json").read_text(encoding="utf-8"))
     backtest = dict(spec.get("backtest") or {})
 
-    loader = load_run_inputs or _load_run_inputs
-    raw_bars, symbol_spec = loader(backtest)
+    raw_bars, symbol_spec = load_run_inputs(backtest)
     bars = [IntTimeBar(b) for b in raw_bars]
+    contacts = contacts_supply(bars, backtest) if contacts_supply is not None else None
 
     # SL/TP は job 仕様の値のみ。未指定は 0 ＝ UC 側で空文字になる（価格を捏造しない）。
     ea_params = {
@@ -92,6 +88,8 @@ def write(
         bars=bars,
         spec=symbol_spec,
         ea_params=ea_params,
+        # 接点マーカー（FR-18）。供給が無ければ None＝agg に contacts キーを生やさない。
+        contacts=contacts,
         meta={
             "symbol": symbol,
             "timeframe": timeframe,
