@@ -50,6 +50,10 @@
     body:not(.um-chart-api) #tpl-menu,
     body:not(.um-chart-api) #indicator-open-btn,
     body:not(.um-chart-api) .pane-legend-gear { opacity: .4; pointer-events: none; }
+    /* チャート API を持たない core のモードでは価格チャートの版面を畳む。その領域は
+       そのモードの表示層（sim なら #sim-display）が #app の flex 子として受け取る。
+       モード名を書かない反転記法は上の 4 行と同流儀（第 4 モードでも直さずに済む）。 */
+    body:not(.um-chart-api) .chart-wrap { display: none; }
     /* モード切替ボタンはオン・オフのトグル（全モードで常に表示）。選択中のモードは
        aria-pressed=true でアクセント青に点灯させ、どのモードかが一目で分かるようにする
        （既存 css の tb-interval は id 指定でないと点灯しないため、ここで明示指定する）。 */

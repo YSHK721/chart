@@ -7164,3 +7164,37 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   （verification_incomplete 67 / supply_cost_exceeded 57 / mismatch 10）。ブラウザ実 UI（Playwright）
   で同 URL の描画を確認。既存面の回帰なし（`/` 200・`/live/candles` はパラメータ検証 400 の既存挙動・
   `/sim/jobs` GET 404 は Phase 2 からの既存挙動＝ISSUE-375-1）。項目 2・3 は OPEN のまま。
+
+## ISSUE-378: [申し送り] sim バックテスト Phase 4 のレビュー申し送り（2026-08-12・OPEN）
+
+- **検出日**: 2026-08-12
+- **検出経路**: feature/sim-backtest-phase4 のリファクタ工程・コードレビュー（code-review-executor）。
+  いずれもマージ非阻害の記録事項。
+- **項目**:
+  1. `report_payload_error.json`（report.json 書出し失敗の記録・run_job.py が job-dir へ書く）を
+     front へ表出する経路が無い。現状 front は 404 を「結果未生成」と表示するのみで、原因確認は
+     job-dir / `/sim/data/` の直接参照が必要。Phase 5 で UI 表出を検討。
+  2. `verify_sim_display_parity.py`（パリティ 12 点の二画面突合・Phase 4 の主要合否判定）は
+     `verify*.py` 命名のため既定の `pytest simulator` 収集に載らない（report_ui e2e と同じ既存規約）。
+     CI 定義での明示的な収容確認が必要。
+  3. iframe 経由（統合ページ起点）の hover 自動回帰検定が不在。e2e は子文書
+     `/sim/report_view.html` を単独で開く形。統合経路はスクリーンショット実測のみ。
+     Phase 5 で親ページ起点の Playwright ケースを追加。
+  4. `unified_root.js:307` が `lwc: window.LightweightCharts` を渡すが `setupSimDisplay` は
+     受け取らない（死引数）。子文書が自前で v5 を読むため。引数を削るか理由コメントを置く。
+  5. `lwc5_chart_renderer.js` の `lastHoverId` は linkage の冪等ガードと二重（真実源の二重化）。
+     linkage への一本化を検討。未使用 API（resize・childWindow・frameElement・handles）も削減候補。
+  6. 親文書と子文書で同一 id `sim-display` が別実体を指す（認知負荷）。子側の改名を検討。
+  7. `report_payload_writer.py` は表示用 bars を `build_interactor` で再ロードする
+     （run の約 5 割増・実測 1000 bars 0.108s / 22771 bars 2.74s）。`run_backtest` が bars を
+     返す形への拡張は承認範囲外のため Phase 5 の設計項目として検討。
+  8. F1 の mount 先解決 `host.querySelector('#app') || host` は sim が統合ページの id を知る結合。
+     統合層が host を渡す形が本筋（unified_root.js の追加改変が要るため見送り）。
+  9. 単一区間 report.json を移植元 report_ui へ流すと `main.js:179 selectSegment("is")` で落ちる。
+     移植元の入力集合外（移植元は常に 2 run CLI から生成）であり仕様。パリティ検定は 2 区間
+     fixture で実施するため NFR-05 非抵触（承認 G の裁定で確定・2026-08-12 記録）。
+  10. 長時間・高頻度 hover の連続稼働は未測定（40 回ジッタまでエラー 0 は実測済み）。
+     Phase 5 の負荷実測項目。
+  11. `export_report_payload.py` の実データ実行は confirmation データ不在のため未実施
+     （契約は単体 16 件＋構造検定 7 件で固定。writer の実データ経路は実ジョブで実証済み）。
+- **対策案**: 各対象モジュールへ次に手を入れる Phase で同時是正（ISSUE-374/376 と同運用）。

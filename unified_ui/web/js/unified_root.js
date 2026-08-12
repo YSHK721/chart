@@ -41,6 +41,8 @@ const REPLAY_DRIVER = '/replay/js/replay.js';
 const REPLAY_MP_ACTOR = '/replay/js/adapter/front/replay_market_profile_actor.js';
 // リプレイ操作バーの DOM は replay 層の View が所有する（ISSUE-278 #16: 2 ページ複製をやめた）。
 const REPLAY_BAR_VIEW = '/replay/js/adapter/front/replay_bar_view.js';
+// sim 表示層の合成根（器・3 窓・取引明細を所有する。live root へは注入しない＝独立した層）。
+const SIM_ROOT = '/sim/js/adapter/front/composition_root_front.js';
 
 let modeController = null; // createModeController の実体（トグルボタンが参照）。
 
@@ -58,6 +60,7 @@ let modeController = null; // createModeController の実体（トグルボタ�
 export function createModeController({
   controller,
   replayHandle,
+  simHandle,
   pollers = [],
   setSwMode = () => Promise.resolve(false),
   applyMode = () => {},
@@ -86,9 +89,18 @@ export function createModeController({
     }
   };
 
+  // sim 表示層の器は sim モードでだけ出す。live/replay へ出るときは必ず畳む（器・共有 CSS を
+  //   統合ページへ残さない）。未注入（standalone・既存検定）では何も起きない＝無波及。
+  const disableSim = async () => {
+    if (simHandle && typeof simHandle.disable === 'function') {
+      await simHandle.disable();
+    }
+  };
+
   async function enterReplay() {
     stopPollers();
     clearReveal();
+    await disableSim();
     // SW を先に replay へ（enable の loadTimeframe が /replay/candles・/replay/compute を叩く）。
     await setSwMode(MODE.REPLAY);
     if (replayHandle && typeof replayHandle.enable === 'function') {
@@ -116,6 +128,10 @@ export function createModeController({
     }
     // 復帰が終わってから sim へ切り替える。
     await setSwMode(MODE.SIM);
+    // 表示層はここで出す（SW を sim へ向けた後＝リプレイ層の復帰要求と混ざらない）。
+    if (simHandle && typeof simHandle.enable === 'function') {
+      await simHandle.enable();
+    }
     activeMode = MODE.SIM;
     applyMode(MODE.SIM);
   }
@@ -129,6 +145,7 @@ export function createModeController({
     //   （実測: unified_root_restore_fetch_routing.test.js）
     await setSwMode(MODE.LIVE);
     clearReveal();
+    await disableSim();
     if (replayHandle && typeof replayHandle.disable === 'function') {
       await replayHandle.disable(); // reveal トリム解除＋ライブ全長再描画（chart 再構築なし）。
     }
@@ -210,12 +227,14 @@ async function main() {
   let setupReplay;
   let ReplayMarketProfileActor;
   let installReplayBar;
+  let setupSimDisplay;
   try {
     ({ bootstrap } = await import(LIVE_ROOT));
     ({ ReplayIndicatorController } = await import(REPLAY_CONTROLLER));
     ({ setupReplay } = await import(REPLAY_DRIVER));
     ({ ReplayMarketProfileActor } = await import(REPLAY_MP_ACTOR));
     ({ installReplayBar } = await import(REPLAY_BAR_VIEW));
+    ({ setupSimDisplay } = await import(SIM_ROOT));
   } catch (err) {
     showModeError(`モジュール読込に失敗しました: ${err && err.message ? err.message : err}`);
     return;
@@ -281,9 +300,18 @@ async function main() {
     boot.controller.clearRevealCache(); // 初期 setup の一括リビール基底を破棄（live に不要）。
   }
 
+  // sim 表示層のハンドル（enable/disable のみ）。器・CSS・3 窓・明細は sim 側が所有する。
+  //   job_id は `?job=<id>` から sim 側が読む（統合層は選ばない＝ビュー自動介入の禁止）。
+  const simHandle = await setupSimDisplay({
+    doc: document,
+    lwc: window.LightweightCharts,
+    host: document.body,
+  });
+
   modeController = createModeController({
     controller: boot.controller,
     replayHandle: boot.replayHandle,
+    simHandle,
     pollers: [boot.liveUpdater, boot.formingBarUpdater, boot.liveTickPlayer],
     setSwMode: notifySwMode,
     applyMode: applyModeUi,

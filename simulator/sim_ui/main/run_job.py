@@ -7,9 +7,12 @@
 仕様を argv に並べると、シェル経由のクォート事故・引数の取り違えという壊れ方を
 新たに作ることになる（sim core と子プロセスの間で仕様の表現が二重化する）。
 
-結果ペイロードは `run_backtest` の**既存出力に限る**（`stats.json` / `report.md`）。
-report_ui 形の `report.json` は Phase 4 の範囲（§8.1）であり、ここで private ヘルパを
-写して作ることはしない（§12.3-3 複製禁止）。
+結果ペイロードは `run_backtest` の既存出力（`stats.json` / `report.md`）に加えて、
+表示用の `report.json`（report_ui 形）を成功 run のときだけ書く（Phase 4・§8.1）。
+写像そのものは report_ui の UC / Presenter が単一ソースで、ここには写さない
+（§12.3-3 複製禁止）。書出しは `simulator.sim_ui.adapter.report_payload_writer` へ委譲する。
+表示用ペイロードの書出しに失敗しても**終了コードは変えない**——バックテスト自体は成功して
+おり、表示の失敗で成功した計算を捨てないため。
 
 ジョブ状態はここでは書かない。子が状態を書く設計にすると、SIGKILL 等で何も書けずに
 死んだときに「実行中のまま固まる」経路が生まれる。状態は sim core 側が
@@ -29,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from simulator.main import run_backtest
+from simulator.sim_ui.adapter import report_payload_writer
 
 # 仕様の読めないジョブ・内部例外は失敗（非 0）で返す。`run_backtest` の終了コード
 # （0 成功 / 1 BacktestError / 2 ConfigError）と衝突しない値を使う。
@@ -39,18 +43,33 @@ _EXIT_SPEC_ERROR = 3
 # 起動器の stderr を PIPE にする案は採らない: 未読パイプが 64KB で埋まると子が
 # ブロックして終わらなくなる。ファイルなら子は書き切って終われる。
 _FAILURE_FILE = "failure.json"
+# 表示用ペイロード（report.json）の書出し失敗の置き場。**`failure.json` とは別にする**:
+# run 自体は成功しており、同じファイルへ書くと「失敗した run」と区別できなくなる。
+# これが無いと、書出しに失敗したジョブは「完了なのに結果が出ない」だけの状態になり、
+# 理由がどこにも残らない（stderr は起動器が DEVNULL に固定している
+# ＝`adapter/subprocess_job_launcher.py:75-76`）。
+_REPORT_PAYLOAD_ERROR_FILE = "report_payload_error.json"
 
 
-def _record_failure(job_dir: Path, reason: str) -> None:
-    """失敗理由を job-dir へ残す（書けなくても本処理の失敗を覆い隠さない）。"""
+def _write_note(job_dir: Path, filename: str, payload: "dict[str, str]") -> None:
+    """job-dir へ 1 件の記録を書く（書けなくても本処理の結果を覆い隠さない）。"""
     try:
         job_dir.mkdir(parents=True, exist_ok=True)
-        (job_dir / _FAILURE_FILE).write_text(
-            json.dumps({"reason": reason}, ensure_ascii=False, indent=1),
-            encoding="utf-8",
+        (job_dir / filename).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8",
         )
     except OSError:
         pass
+
+
+def _record_failure(job_dir: Path, reason: str) -> None:
+    """失敗理由を job-dir へ残す（`FileJobLedger.read_failure_report` が読む）。"""
+    _write_note(job_dir, _FAILURE_FILE, {"reason": reason})
+
+
+def _record_report_payload_error(job_dir: Path, message: str) -> None:
+    """表示用ペイロードの書出し失敗を job-dir へ残す（run の成否は変えない）。"""
+    _write_note(job_dir, _REPORT_PAYLOAD_ERROR_FILE, {"message": message})
 
 
 class _VolumeConstraints:
@@ -135,6 +154,18 @@ def main(argv: "list[str] | None" = None) -> int:
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
         return _EXIT_SPEC_ERROR
+
+    # 表示用ペイロード（report.json）は**成功 run のときだけ**書く。失敗 run の結果を
+    # 表示面へ出すと、古い/壊れた結果が「今の結果」に見える。
+    if exit_code == 0 and _result is not None:
+        try:
+            report_payload_writer.write(job_dir, _result)
+        except Exception as exc:  # 表示の失敗で成功した計算を捨てない
+            message = f"report.json の書出しに失敗しました: {exc}"
+            print(message, file=sys.stderr)
+            # 終了コードは変えない。ただし**理由は残す**——起動器が stderr を DEVNULL に
+            # するため、print だけでは「完了なのに結果が出ない」の原因が誰にも届かない。
+            _record_report_payload_error(job_dir, message)
     return exit_code
 
 
