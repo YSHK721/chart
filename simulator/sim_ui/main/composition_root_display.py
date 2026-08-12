@@ -27,9 +27,16 @@ from pathlib import Path
 from typing import Any
 
 from simulator.replay_ui.framework.static_file_server import StaticFileServer
+from simulator.sim_ui.adapter.ea_registry_series_catalog import EaRegistrySeriesCatalog
+from simulator.sim_ui.adapter.ea_series_api_controller import EaSeriesApiController
 from simulator.sim_ui.framework.allowlist_file_routes import AllowlistFileRoutes
+from simulator.sim_ui.adapter.run_options_api_controller import RunOptionsApiController
+from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
 from simulator.sim_ui.framework.serve_sim_display import SimDisplayApp
+from simulator.sim_ui.framework.serve_sim_ea_series import SimEaSeriesApp
+from simulator.sim_ui.framework.serve_sim_run_options import SimRunOptionsApp
 from simulator.sim_ui.main.composition_root_indicators import build_sim_indicator_app
+from simulator.sim_ui.usecase.list_run_options import ListRunOptionsInteractor
 
 # repo 根 = simulator/sim_ui/main/composition_root_display.py の parents[3]。
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -63,6 +70,22 @@ def build_sim_display_app(
         web_dir=web_dir,
         shared_js_root=shared_js_root,
         data_root=data_root,
+    )
+    # Phase 6 F-8（名前空間結線・依頼者承認 2026-08-12）: 実行指示パネルの指標候補源となる
+    # `GET /ea-series/{ea_name}`（その EA の registry 系列名・単一ソース EaRegistrySeriesCatalog）
+    # を委譲で 1 本足す。既存の配信面・API 面は素通し（OCP・byte 不変）。
+    inner = SimEaSeriesApp(
+        inner=inner,
+        controller=EaSeriesApiController(catalog=EaRegistrySeriesCatalog()),
+    )
+    # Phase 6 拡張（run config フォーム結線・依頼者承認 2026-08-12）: 実行指示フォームの選択肢
+    # `GET /run-options`（データセット別プロファイル＋ea_name 一覧・単一ソース SymbolSpecCatalog）
+    # を委譲でもう 1 本足す。既存の配信面・API 面は素通し（OCP・byte 不変）。
+    inner = SimRunOptionsApp(
+        inner=inner,
+        controller=RunOptionsApiController(
+            options=ListRunOptionsInteractor(port=SymbolSpecCatalog())
+        ),
     )
     report_web = root / "simulator" / "report_ui" / "web"
     return SimDisplayApp(
