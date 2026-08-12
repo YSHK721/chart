@@ -297,7 +297,7 @@ test("leaving a marker notifies null (選択解除)", async () => {
   assert.deepEqual(seen, [7, null]);
 });
 
-test("the same hover id is not notified twice (同じ通知を出し続けない)", async () => {
+test("crosshair は毎回通知する（重複排除は linkage の冪等ガードが担う・参照実装 chart.js:312-321 に抑止なし）", async () => {
   const { lwc, renderer } = build();
   const seen = [];
   renderer.onMarkerHover((id) => seen.push(id));
@@ -306,7 +306,19 @@ test("the same hover id is not notified twice (同じ通知を出し続けない
     lwc.charts[0].emitCrosshair({ hoveredObjectId: "e7", time: 100, point: { x: 1, y: 1 } });
   }
   await flush();
-  assert.deepEqual(seen, [7]);
+  assert.deepEqual(seen, [7, 7, 7, 7, 7]);
+});
+
+test("非マーカー位置の crosshair は先行する id 通知が無くても null を通知する（ISSUE-379: テーブル起点 hover の解除経路）", async () => {
+  const { lwc, renderer } = build();
+  const seen = [];
+  renderer.onMarkerHover((id) => seen.push(id));
+  renderer.render(SEGMENT);
+  // テーブル起点で linkage.hoverTradeId が変わっても renderer は通知履歴を持たない。
+  //   ここで null を握り潰すと、チャート空領域へ入っても解除が linkage へ届かない。
+  lwc.charts[0].emitCrosshair({ hoveredObjectId: undefined, time: 100, point: { x: 1, y: 1 } });
+  await flush();
+  assert.deepEqual(seen, [null]);
 });
 
 test("no hover is notified while the renderer is writing to the vendor (R-A3 lock)", async () => {
