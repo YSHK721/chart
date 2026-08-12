@@ -29,6 +29,11 @@
   <link rel="stylesheet" href="/sim/css/sim_display.css" />
 </head>
 <body>
+  <!-- 比較・判定タブ（FR-17/18）が使う Chart.js v4.4.1（report_ui の vendor 実体・無改変）。
+       compare.js は `typeof Chart === "undefined"` で**無音でスキップ**するため、これが
+       無いとグラフだけが黙って出ない。lightweight-charts は下の共有 v5.2.0 だけを載せる
+       （report_ui の v4.1.3 は allowlist 非収録＝経路そのものが無い）。 -->
+  <script src="/sim/report-vendor/chart.umd.js"></script>
   <script src="/sim/vendor/lightweight-charts.js"></script>
   <script type="module">
     import { mountSimReportView } from '/sim/js/adapter/front/composition_root_front.js';

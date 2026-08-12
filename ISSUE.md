@@ -7220,3 +7220,23 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   **解除成立**（hover=null・dimmed=false・.hl 0 件）。実グリフ hover（#225）→ 空領域でも
   解除成立。page errors 0。sim 再押下で live 復帰（sim 表示消滅・チャート版面 780x451 復帰）。
   node:test 114 passed（回帰テスト 2 件含む）。
+
+## ISSUE-380: [申し送り] sim バックテスト Phase 5 のレビュー申し送り（2026-08-12・OPEN）
+
+- **検出日**: 2026-08-12
+- **検出経路**: feature/sim-backtest-phase5 のリファクタ工程・コードレビュー（code-review-executor）。
+  マージ非阻害の記録事項。
+- **項目**:
+  1. `composition_root_front.js:31,57` が `CONTACT_MARKER_CAP` を CHART_LOGIC へ束ねているが
+     renderer は `logic.CONTACT_MARKER_CAP` を参照しない（接点 cap は `contactsToMarkers` の
+     既定引数 cap=700 が内部適用）。注入が未実効。束ねを外すか renderContactMarkers で
+     明示的に `{cap}` を渡す（いずれも挙動不変・既定 700 と一致）。
+  2. パリティ e2e（verify_sim_display_parity.py・verify_sim_display_parity_peripheral.py）は
+     `verify*.py` 命名のため既定 `pytest simulator` 収集に載らない（Phase 4 の ISSUE-378 #2 継続）。
+     CI 定義での明示収容が必要。
+  3. U-1（接点グリフ y 位置の両画面一致）は「構成的一致」（両画面とも透明 LineSeries・
+     value=close アンカーが同一・marker position/shape 同一）で実証。v4.1.3↔v5.2.0 の生画素 y は
+     anti-alias ノイズで不安定なため実画素突合は未実施。構成的一致がアンカー同一性の証明。
+  4. Phase 5 で流用しない移植元資産（graphs.js・report.js・layout.js）とパリティ点 5/6/8/10/11
+     は FR-16〜20 対象外。次 Phase（サマリー・グラフタブ・レイアウト）着手時に扱う。
+- **対策案**: 各対象モジュールへ次に手を入れる Phase で同時是正（ISSUE-374/376/378 と同運用）。

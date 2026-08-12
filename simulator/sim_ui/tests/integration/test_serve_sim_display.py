@@ -27,6 +27,7 @@ from simulator.sim_ui.framework.serve_sim_display import SimDisplayApp, make_ser
 from simulator.sim_ui.main.composition_root_display import (
     REPORT_CSS_PREFIX,
     REPORT_JS_PREFIX,
+    REPORT_VENDOR_PREFIX,
     build_sim_display_app,
 )
 from simulator.sim_ui.main.composition_root_indicators import build_sim_indicator_app
@@ -136,7 +137,8 @@ def test_v4バンドルへは到達できない(display, path: str) -> None:
 def test_合成根はvendor根をどのrouteにも載せない(display) -> None:
     """構造での担保（経路が増えても v4 が露出しない）。"""
     _base, app = display
-    assert set(app.static_server.prefixes) == {REPORT_JS_PREFIX, REPORT_CSS_PREFIX}
+    assert set(app.static_server.prefixes) == {
+        REPORT_JS_PREFIX, REPORT_CSS_PREFIX, REPORT_VENDOR_PREFIX}
 
 
 def test_子文書と器CSSが配信される(display) -> None:

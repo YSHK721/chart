@@ -315,7 +315,7 @@ function _disp(v) {
   return s;
 }
 
-function _renderVerdict(data) {
+export function renderVerdictBanner(data) {
   const vd = data.verdict || { result: "", reasons: [] };
   const lab = verdictLabel(vd.result);
   const host = document.getElementById("cmpVerdict");
@@ -579,7 +579,7 @@ function _renderCharts(data) {
 // IS/OOS の summary/degradation/report/segments を読み、selectSegment には依存しない。
 export function buildCompare(data) {
   if (!data) return;
-  _renderVerdict(data);
+  renderVerdictBanner(data);
   _renderCards(data);
   _renderTable(data);
   _renderCharts(data);

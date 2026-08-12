@@ -5,14 +5,17 @@ Phase 3 の `composition_root_indicators.build_sim_indicator_app`（配信面 �
 変えたのに Phase 4 だけ古い」という食い違いが生まれる。
 
 結線（表示層の配信根）:
-    /report-js   → `simulator/report_ui/web/js`   （linkage / table / format / chart の実体）
-    /report-css  → `simulator/report_ui/web/css`  （style.css の実体）
+    /report-js     → `simulator/report_ui/web/js`   （linkage / table / format / chart の実体）
+    /report-css    → `simulator/report_ui/web/css`  （style.css の実体）
+    /report-vendor → `simulator/report_ui/web/vendor` の **chart.umd.js 1 ファイルだけ**
 
-**`simulator/report_ui/web/vendor` はどの route にも載せない**（NFR-07 の構造担保）。
-report_ui の vendor は lightweight-charts **v4.1.3** である。統合 UI が読み込む vendor は
+vendor 根には Chart.js **v4.4.1**（比較・判定タブが要る・Phase 5 R-1 で承認）と
+lightweight-charts **v4.1.3** が同居している。統合 UI が読み込む lightweight-charts は
 共有根（`indigators/indicator_ui/web/vendor`）の **v5.2.0** ただ 1 つでなければならず、
-2 つのバージョンが同じページへ載る経路を作らない。載せていないことは実 HTTP 検定
-（`tests/integration/test_serve_sim_display.py`）と本モジュールの route 表で二重に固定する。
+2 つのバージョンが同じページへ載る経路を作らない（NFR-07）。よって根をそのまま配信せず、
+`AllowlistFileRoutes` で **許可した 1 ファイル以外は内側の配信器へ渡さない**。到達不能を
+「経路が無いこと」で担保する。許可集合は実 HTTP 検定
+（`tests/integration/test_serve_sim_display{,_vendor}.py`）と本モジュールで二重に固定する。
 
 symlink で report_ui の資産を sim の web 根へ引き込む案は採らない。`StaticFileServer` は
 resolve() 後の実パスで許可根を判定するため、許可根の外を指す symlink は 404 になる
@@ -24,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from simulator.replay_ui.framework.static_file_server import StaticFileServer
+from simulator.sim_ui.framework.allowlist_file_routes import AllowlistFileRoutes
 from simulator.sim_ui.framework.serve_sim_display import SimDisplayApp
 from simulator.sim_ui.main.composition_root_indicators import build_sim_indicator_app
 
@@ -34,6 +38,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 REPORT_JS_PREFIX = "/report-js"
 #: report_ui の CSS 実体を引く prefix。
 REPORT_CSS_PREFIX = "/report-css"
+#: report_ui の vendor 実体を引く prefix（許可した 1 ファイルだけが通る）。
+REPORT_VENDOR_PREFIX = "/report-vendor"
+#: vendor 根から配信を許すファイル（R-1・依頼者承認）。Chart.js v4.4.1 ただ 1 つ。
+#: 同じ根に同居する lightweight-charts v4.1.3 は**載せない**——統合ページが読む vendor は
+#: 共有根の v5.2.0 だけであり（NFR-07）、2 つの版が同じページへ載る経路を作らない。
+REPORT_VENDOR_ALLOWED = frozenset({"/chart.umd.js"})
 
 
 def build_sim_display_app(
@@ -62,5 +72,11 @@ def build_sim_display_app(
             # （最小権限）。vendor 根は**含めない**＝v4 バンドルへの経路が存在しない。
             REPORT_JS_PREFIX: StaticFileServer((report_web / "js").resolve(), None),
             REPORT_CSS_PREFIX: StaticFileServer((report_web / "css").resolve(), None),
+            # vendor 根は**許可した 1 ファイルだけ**を通す（R-1）。何を出すかの方針は
+            # 合成根が持ち、配信機構（`AllowlistFileRoutes`）はリテラルを持たない。
+            REPORT_VENDOR_PREFIX: AllowlistFileRoutes(
+                StaticFileServer((report_web / "vendor").resolve(), None),
+                allowed=REPORT_VENDOR_ALLOWED,
+            ),
         },
     )

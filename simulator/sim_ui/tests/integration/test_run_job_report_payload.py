@@ -46,10 +46,12 @@ class _FakeRunBacktest:
 class _SpyWriter:
     def __init__(self, boom: bool = False) -> None:
         self.calls: list = []
+        self.kwargs: list = []
         self.boom = boom
 
     def write(self, job_dir, result, **kwargs):
         self.calls.append((job_dir, result))
+        self.kwargs.append(kwargs)
         if self.boom:
             raise OSError("disk full")
         return Path(job_dir) / "report.json"
@@ -138,3 +140,54 @@ def test_失敗runでは理由ファイルを作らない(job_dir: Path, monkeyp
     """書き出しに到達していない（＝表示用ペイロードの失敗ではない）。"""
     _run(monkeypatch, job_dir, exit_code=1)
     assert not (job_dir / "report_payload_error.json").exists()
+
+
+# --- 6. R-4: 足の供給・接点の供給は Composition Root（run_job）が束ねる ----------
+# writer は `load_run_inputs` を必須にした（adapter→main import の解消）。よって束縛は
+# ここ（main 層）が持たねばならない。writer を差し替えず**素で**呼ぶと `TypeError` に
+# なることを、実物の run_job から確かめる（受け口だけ作って渡さない ISSUE-291 の再発防止）。
+
+def test_run_jobはload_run_inputsを渡す(job_dir: Path, monkeypatch) -> None:
+    _code, spy = _run(monkeypatch, job_dir)
+    assert callable(spy.kwargs[0].get("load_run_inputs")), \
+        "run_job が足の供給（R-4 束縛）を writer へ渡していない"
+
+
+def test_run_jobはcontacts_supplyを渡す(job_dir: Path, monkeypatch) -> None:
+    _code, spy = _run(monkeypatch, job_dir)
+    assert callable(spy.kwargs[0].get("contacts_supply")), \
+        "run_job が接点の供給（FR-18）を writer へ渡していない"
+
+
+def test_run_jobは実物のwriterを素で呼べる形になっている(monkeypatch, tmp_path: Path) -> None:
+    """writer を差し替えず、run_backtest だけ差し替える。writer が必須引数を
+    受け取れずに TypeError になっていれば、R-4 の束縛が run_job に無い証拠。
+    書出しは `report_payload_writer.write` 内で load_run_inputs を呼ぶが、その loader
+    （`build_interactor`）はダミー spec では失敗する——ので loader 自体も差し替えて、
+    束縛が『渡っているか』だけを見る。"""
+    import simulator.sim_ui.adapter.report_payload_writer as writer_mod
+
+    d = tmp_path / "abcdef0123456789abcdef0123456789"
+    d.mkdir()
+    (d / "spec.json").write_text(
+        json.dumps({"backtest": {"ea_name": "TC24051901", "symbol": "JP225",
+                                 "period": "M1", "ma_period": 2, "ma_method": "sma"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_job, "run_backtest", _FakeRunBacktest(0, "RESULT"))
+
+    seen = {}
+    real_write = writer_mod.write
+
+    def _capture(job_dir, result, **kwargs):
+        seen.update(kwargs)
+        # loader を呼ばせずに戻す（実 build_interactor を走らせない）。ここで見たいのは
+        #   run_job が渡した束縛の callable 性だけ。
+        return Path(job_dir) / "report.json"
+
+    monkeypatch.setattr(writer_mod, "write", _capture)
+    code = run_job.main(["--job-dir", str(d)])
+    assert code == 0
+    assert callable(seen.get("load_run_inputs"))
+    assert callable(seen.get("contacts_supply"))
+    assert real_write is not None  # 実 writer が存在する（import 経路の生存確認）

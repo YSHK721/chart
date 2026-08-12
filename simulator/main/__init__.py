@@ -391,6 +391,50 @@ _EA_FACTORIES: "dict[str, Callable[[_EaBuildContext], tuple[Any, PandasIndicator
 }
 
 
+def build_ea_indicators(
+    *,
+    data_path: Any,
+    ea_name: str,
+    ma_period: int,
+    ma_method: str,
+    adx_period: int = 8,
+    weekly_forecast: Any = None,
+    weekly_p_tp: float = 0.50,
+    weekly_capital: float = 0.0,
+    weekly_f_risk: float = 0.01,
+    **_unused: Any,
+) -> PandasIndicatorRegistry:
+    """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
+
+    `build_interactor` と同じジョブ仕様（余分なキーを含んでよい＝`**spec` で丸ごと渡せる）
+    を受け、`_EA_FACTORIES`（EA→指標の単一ソース）へそのまま委譲する。対応表をここへも
+    呼び出し側へも書き写さない——写した表は登録が増えたときに必ず取り残される。
+
+    なぜ公開するか: 表示スライス（sim / report_ui）は「価格×MA の接点」のように**EA が
+    見ていた系列そのもの**を要る。これが無いと外側が私有名（`_EA_FACTORIES` /
+    `_EaBuildContext`）を越境 import するか、EA ごとの指標を推測で書き写すことになる。
+
+    既定値は `build_interactor` の同名引数と同じ（指標周期を持たない仕様でも呼べる）。
+    系列の未登録は `PandasIndicatorRegistry.get` の公開エラー契約（`IndicatorBufferError`・
+    context の ``available``）で呼び出し側へ届く。
+
+    副作用は無い（`build_interactor` は 1 バイトも変えない）。データ読み込みは factory が
+    行うため、run の実行とは独立に呼べる。
+    """
+    context = _EaBuildContext(
+        data_path=data_path,
+        ma_period=ma_period,
+        ma_method=ma_method,
+        adx_period=adx_period,
+        weekly_forecast=weekly_forecast,
+        weekly_p_tp=weekly_p_tp,
+        weekly_capital=weekly_capital,
+        weekly_f_risk=weekly_f_risk,
+    )
+    _strategy, registry, _market_data = _EA_FACTORIES.get(ea_name, _factory_tc24051901)(context)
+    return registry
+
+
 def build_interactor(
     *,
     data_path: Any,

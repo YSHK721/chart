@@ -50,11 +50,13 @@ test("the header uses the report_ui id so #topbar rules apply", () => {
   assert.ok(findById(host.children[0], "topbar"), "#topbar が生成されていません");
 });
 
-test("the header carries the h1 and the hSel label (移植元 index.html:13-24 と同じ構成)", () => {
+test("the header carries the h1 and the hSel label (Phase 5: 区間トグル挿し先とメタ行を含む)", () => {
   const { host } = mounted();
   const header = findById(host.children[0], "topbar");
-  assert.deepEqual(header.children.map((c) => c.tagName), ["H1", "SPAN"]);
-  assert.equal(header.children[1].id, SIM_DISPLAY_IDS.hSel);
+  // 移植元 index.html:13-24 順: h1 → 区間トグル挿し先 → meta-line → hSel。
+  assert.deepEqual(header.children.map((c) => c.tagName), ["H1", "SPAN", "DIV", "SPAN"]);
+  assert.equal(header.children[2].id, SIM_DISPLAY_IDS.metaLine);
+  assert.equal(header.children[3].id, SIM_DISPLAY_IDS.hSel);
 });
 
 test("SIM_DISPLAY_IDS matches the report_ui index.html id names", () => {
@@ -75,15 +77,19 @@ test("the trade table ships with a thead and a tbody (table.js が querySelector
 // 実 UI 実測（2026-08-11・統合 UI :8000）で判明した壊れ方の回帰の壁:
 //   `.mv-pane` は移植元 style.css:86 で `position:absolute; inset:0` である。効かせるには
 //   移植元 index.html:56 の `.mv-body { position: relative }`（＝位置指定された祖先）が要る。
-//   sim の器にはタブが無く `.mv-body` も無いので、絶対配置はビューポート基準へ落ち、
-//   **統合ページ全面を覆って既存ツールバーのクリックを飲み込んだ**（elementFromPoint が
-//   `#enter-sim` ではなく明細の `th` を返す＝モードから出られない）。
-//   sim はタブ機構を使わない（YAGNI）。よってタブ用の class を借りない。
-test("the detail container does not borrow the tab-pane class (実 UI で全面を覆った)", () => {
+//   Phase 4 では sim の器がタブを持たず .mv-body も無かったので mv-pane を借りると全面を
+//   覆った。Phase 5 で sim_tabs_view が **.mv-body を必ず生成する**ので mv-pane は安全に
+//   使える。回帰の壁を「mv-pane を使わない」から「mv-pane は必ず .mv-body の子孫」へ移す。
+test("every .mv-pane sits under a .mv-body ancestor (絶対配置を器へ閉じ込める)", () => {
   const { host } = mounted();
-  for (const el of flatten(host.children[0])) {
-    assert.ok(!String(el.className || "").split(/\s+/).includes("mv-pane"),
-      "mv-pane は .mv-body（position:relative）が無いと全面を覆う");
+  const isPane = (el) => String(el.className || "").split(/\s+/).includes("mv-pane");
+  const isBody = (el) => String(el.className || "").split(/\s+/).includes("mv-body");
+  const panes = flatten(host.children[0]).filter(isPane);
+  assert.ok(panes.length > 0, "mv-pane が生成されていない");
+  for (const pane of panes) {
+    let a = pane.parent, found = false;
+    while (a) { if (isBody(a)) { found = true; break; } a = a.parent; }
+    assert.ok(found, ".mv-pane に .mv-body の祖先が無い（全面を覆う）");
   }
 });
 
@@ -170,4 +176,95 @@ test("showMessage before mount does not throw (呼び出し順に依存しない
   const doc = fakeDoc();
   const view = createSimDisplayView({ doc });
   assert.doesNotThrow(() => view.showMessage("ジョブ未指定"));
+});
+
+// --- Phase 5: 周辺表示の受け皿 --------------------------------------------------
+
+test("SIM_DISPLAY_IDS carries the Phase 5 ids (周辺表示の受け皿)", () => {
+  assert.equal(SIM_DISPLAY_IDS.metaLine, "meta-line");
+  assert.equal(SIM_DISPLAY_IDS.toggleContacts, "toggleContacts");
+  assert.equal(SIM_DISPLAY_IDS.heatHost, "heatHost");
+  assert.equal(SIM_DISPLAY_IDS.glossHost, "glossHost");
+  assert.equal(SIM_DISPLAY_IDS.clearFilter, "clearFilter");
+  assert.equal(SIM_DISPLAY_IDS.detailCount, "detailCount");
+});
+
+test("the header carries the meta-line and a seg mount host after the h1", () => {
+  const { host } = mounted();
+  const header = findById(host.children[0], "topbar");
+  // h1 の直後が区間トグルの挿し先（移植元順: h1 → segSel → meta → hSel）。
+  assert.equal(header.children[0].tagName, "H1");
+  assert.ok(header.children[1] === view_segHost(host), "h1 の直後が seg 挿し先でない");
+  assert.ok(findById(host.children[0], "meta-line"), "#meta-line が無い");
+});
+
+function view_segHost(host) {
+  const header = findById(host.children[0], "topbar");
+  return header.children[1];
+}
+
+test("the contact toggle button sits in chartWrap right after the badge (移植元要素順)", () => {
+  const { host } = mounted();
+  const chartWrap = findById(host.children[0], "chartWrap");
+  const idx = chartWrap.children.findIndex((c) => c.id === "chartBadge");
+  assert.ok(idx >= 0, "#chartBadge が無い");
+  assert.equal(chartWrap.children[idx + 1].id, "toggleContacts", "接点トグルが badge の直後でない");
+});
+
+test("the detail pane holds the trade table plus the filter pill and count (点18)", () => {
+  const { host } = mounted();
+  const root = host.children[0];
+  const table = findById(root, "tradeTable");
+  const clear = findById(root, "clearFilter");
+  const count = findById(root, "detailCount");
+  for (const [name, el] of [["tradeTable", table], ["clearFilter", clear], ["detailCount", count]]) {
+    assert.ok(el, `#${name} が無い`);
+  }
+  // 明細ペイン（data-pane=detail）の子孫であること。
+  const inDetailPane = (el) => {
+    let a = el.parent;
+    while (a) { if (a.dataset && a.dataset.pane === "detail") return true; a = a.parent; }
+    return false;
+  };
+  assert.ok(inDetailPane(table), "tradeTable が detail ペインの外にある");
+  assert.ok(inDetailPane(clear), "clearFilter が detail ペインの外にある");
+});
+
+test("the filter pill starts hidden (抽出が立つまで非表示・点18)", () => {
+  const { host } = mounted();
+  assert.equal(findById(host.children[0], "clearFilter").style.display, "none");
+});
+
+test("the heat / glossary hosts live in their panes", () => {
+  const { host } = mounted();
+  const root = host.children[0];
+  const inPane = (el, name) => {
+    let a = el && el.parent;
+    while (a) { if (a.dataset && a.dataset.pane === name) return true; a = a.parent; }
+    return false;
+  };
+  assert.ok(inPane(findById(root, "heatHost"), "heat"), "#heatHost が heat ペインに無い");
+  assert.ok(inPane(findById(root, "glossHost"), "glossary"), "#glossHost が glossary ペインに無い");
+});
+
+test("elements exposes the Phase 5 receptacles for the composition root", () => {
+  const { host, view } = mounted();
+  const root = host.children[0];
+  assert.equal(view.elements.metaLine, findById(root, "meta-line"));
+  assert.equal(view.elements.toggleContacts, findById(root, "toggleContacts"));
+  assert.equal(view.elements.heatHost, findById(root, "heatHost"));
+  assert.equal(view.elements.glossHost, findById(root, "glossHost"));
+  assert.equal(view.elements.clearFilter, findById(root, "clearFilter"));
+  assert.equal(view.elements.detailCount, findById(root, "detailCount"));
+  assert.equal(view.elements.paneCompare.dataset.pane, "compare");
+});
+
+test("activate delegates to the tabs view (初期タブ選択の単一経路)", () => {
+  const { host, view } = mounted();
+  view.activate("heat");
+  const root = host.children[0];
+  const heatPane = flatten(root).find((n) => n.dataset && n.dataset.pane === "heat");
+  assert.equal(heatPane.classList.contains("hidden"), false);
+  const detailPane = flatten(root).find((n) => n.dataset && n.dataset.pane === "detail");
+  assert.equal(detailPane.classList.contains("hidden"), true);
 });
