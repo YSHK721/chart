@@ -59,7 +59,10 @@ class FileJobLedger(JobLedgerPort):
         (job_dir / _SPEC_FILE).write_text(
             json.dumps(
                 {"backtest": dict(submission.backtest),
-                 "sizing": dict(submission.sizing) if submission.sizing else None},
+                 "sizing": dict(submission.sizing) if submission.sizing else None,
+                 # Phase 6 F-8（P6-E1）: 戦略項目ブロック（backtest/sizing の兄弟）。
+                 # 不在時は null（既定 OFF＝子プロセス側の解釈は byte 等価）。
+                 "strategy": dict(submission.strategy) if submission.strategy else None},
                 ensure_ascii=False,
                 indent=1,
             ),

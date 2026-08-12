@@ -20,14 +20,48 @@ class JobSubmission:
       解釈する）。ただし E-3 判定に必要な 2 つだけは読む（ea_name・entry_price_basis）。
     ``sizing``: サイジング設定。``None`` または ``enabled`` が偽なら **OFF**（既定・
       §12.1 で「既定 OFF・OFF は既存挙動と byte 等価」と裁定済み）。
+    ``strategy``: 戦略項目（Phase 6 F-8・TBD-11）。``entry_long`` / ``entry_short`` の
+      条件配列を持つ。``None`` または空なら **OFF**（既定・strategy 不在で既存挙動 byte 等価）。
+      子プロセス（run_job）が :class:`GenericConditionStrategy` を構築して
+      ``build_interactor(strategy_override=...)`` へ渡す。sim コアは中身を解釈せず、
+      受付検証（E-5）で参照指標名の集合だけを読む。
     """
 
     backtest: Mapping[str, Any]
     sizing: "Mapping[str, Any] | None" = None
+    strategy: "Mapping[str, Any] | None" = None
 
     @property
     def ea_name(self) -> str:
         return str(self.backtest.get("ea_name", ""))
+
+    @property
+    def strategy_enabled(self) -> bool:
+        return bool(self.strategy)
+
+    def strategy_indicator_names(self) -> "frozenset[str]":
+        """戦略条件が参照する指標系列名の集合（E-5 受付検証用）。
+
+        entry_long / entry_short の各条件の lhs ``indicator`` と、rhs が指標参照
+        （マッピング）の場合の ``indicator`` を集める。op/shift の妥当性はここでは
+        検査しない（それは run_job の loader が担い、未知 op 等は実行時 fail-stop）。
+        本メソッドは「どの系列が要るか」だけを保守的に読む。
+        """
+        names: "set[str]" = set()
+        strategy = self.strategy or {}
+        for side in ("entry_long", "entry_short"):
+            for cond in strategy.get(side, []) or []:
+                if not isinstance(cond, Mapping):
+                    continue
+                lhs = cond.get("indicator")
+                if isinstance(lhs, str):
+                    names.add(lhs)
+                rhs = cond.get("rhs")
+                if isinstance(rhs, Mapping):
+                    ref = rhs.get("indicator")
+                    if isinstance(ref, str):
+                        names.add(ref)
+        return frozenset(names)
 
     @property
     def entry_price_basis(self) -> str:

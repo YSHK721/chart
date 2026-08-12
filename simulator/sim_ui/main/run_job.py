@@ -116,6 +116,31 @@ def _build_decorator(spec: "dict[str, Any]") -> Any:
     )
 
 
+def _build_strategy_override(spec: "dict[str, Any]") -> Any:
+    """spec.strategy から汎用戦略 :class:`GenericConditionStrategy` を組む（E-2 の `strategy_override`）。
+
+    条件の解釈（未知 op / shift 負値の拒否）は framework の
+    `strategy_spec_loader.load_strategy_spec`（sizing_config_loader と対称の単一ソース）へ
+    委譲する。基準価格系列は約定価格基準（config_overrides.entry_price_basis）で決まる。
+
+    Group（framework loader・adapter 戦略）へは**この関数の中でだけ**依存する。strategy OFF の
+    経路が戦略実装の import に巻き込まれないようにするため（OFF は既存挙動と byte 等価）。
+    """
+    from simulator.adapter.strategy.generic_condition_strategy import (
+        GenericConditionStrategy,
+    )
+    from simulator.framework.strategy_spec_loader import load_strategy_spec
+
+    backtest = spec.get("backtest") or {}
+    overrides = backtest.get("config_overrides") or {}
+    entry_long, entry_short = load_strategy_spec(spec.get("strategy") or {})
+    return GenericConditionStrategy(
+        entry_long=entry_long,
+        entry_short=entry_short,
+        entry_price_basis=overrides.get("entry_price_basis", "close"),
+    )
+
+
 def _load_run_inputs(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
     """ジョブ仕様から (bars, symbol_spec) を得る（committed 公開 IF 経由・R-4）。
 
@@ -175,6 +200,18 @@ def main(argv: "list[str] | None" = None) -> int:
             meta["strategy_decorator"] = _build_decorator(spec)
         except Exception as exc:
             message = f"サイジングの構築に失敗しました: {exc}"
+            print(message, file=sys.stderr)
+            _record_failure(job_dir, message)
+            return _EXIT_SPEC_ERROR
+
+    # 戦略項目（Phase 6 F-8・P6-E4）: strategy present のときだけ override を組んで渡す。
+    # 不在/空は渡さない（引数の不在で既存挙動 byte 等価）。override と sizing decorator は
+    # 独立に meta へ載せ、build_interactor が override 置換→sizing wrap の順で合成する。
+    if spec.get("strategy"):
+        try:
+            meta["strategy_override"] = _build_strategy_override(spec)
+        except Exception as exc:
+            message = f"戦略項目の構築に失敗しました: {exc}"
             print(message, file=sys.stderr)
             _record_failure(job_dir, message)
             return _EXIT_SPEC_ERROR
