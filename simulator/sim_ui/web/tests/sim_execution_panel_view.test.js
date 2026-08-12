@@ -1,0 +1,224 @@
+// sim_execution_panel_view（実行指示パネル・Phase 6 F-8・TBD-11）の単体テスト（fake DOM）。
+//
+// 固定する不変条件:
+//   1. ea_name / SL(stop_loss_points) / TP(take_profit_points) / entry_long・entry_short の
+//      条件行 / 投入ボタンを生成する。
+//   2. op セレクタの選択肢は**厳密に [">","<"]**（TBD-11: OR/グループ化/>=,<=,== を出さない）。
+//   3. 指標セレクタの候補は**注入された候補**から作る（ハードコードしない）。
+//   4. 条件行は追加/削除できる（件数が増減する）。
+//   5. buildSubmission は {backtest:{ea_name,stop_loss_points,take_profit_points}, strategy:{entry_long,entry_short}}
+//      を返す。shift/rhs は数値。行の無い側は省く。両側とも空なら strategy を丸ごと省く（OFF＝byte 等価）。
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import { fakeDoc, findById, flatten } from "./_fakes.js";
+import { createSimExecutionPanelView } from "../js/adapter/front/sim_execution_panel_view.js";
+
+// 既存 view と同じ流儀: className は文字列で持つ（classList.add ではなく node.className）。
+const hasClass = (el, c) => String((el && el.className) || "").split(/\s+/).includes(c);
+const byClass = (root, c) => flatten(root).filter((n) => hasClass(n, c));
+
+function mounted() {
+  const doc = fakeDoc();
+  const view = createSimExecutionPanelView({ doc });
+  view.mount(doc.body);
+  return { doc, host: doc.body, view };
+}
+
+// --- 1. 生成 ------------------------------------------------------------------
+
+test("mount builds ea/sl/tp inputs and a submit button", () => {
+  const { host } = mounted();
+  assert.ok(findById(host, "execEaName"), "#execEaName が無い");
+  assert.ok(findById(host, "execSl"), "#execSl が無い");
+  assert.ok(findById(host, "execTp"), "#execTp が無い");
+  assert.ok(findById(host, "execSubmit"), "#execSubmit が無い");
+  assert.ok(findById(host, "execAddLong"), "#execAddLong が無い");
+  assert.ok(findById(host, "execAddShort"), "#execAddShort が無い");
+});
+
+// --- 2. op は厳密に [">","<"]（TBD-11）---------------------------------------
+
+test("op selector options are exactly > and < (TBD-11)", () => {
+  const { host, view } = mounted();
+  view.addCondition("long");
+  const opSel = byClass(host, "exec-op")[0];
+  const values = (opSel.children || []).map((o) => o.value);
+  assert.deepEqual(values, [">", "<"]);
+});
+
+// --- 3. 指標候補は注入から ---------------------------------------------------
+
+test("indicator options come from injected candidates", () => {
+  const { host, view } = mounted();
+  view.setIndicatorCandidates(["ema", "madiff", "close"]);
+  view.addCondition("long");
+  const indSel = byClass(host, "exec-ind")[0];
+  const values = (indSel.children || []).map((o) => o.value);
+  assert.deepEqual(values, ["ema", "madiff", "close"]);
+});
+
+test("setting candidates after rows exist updates existing selectors", () => {
+  const { host, view } = mounted();
+  view.addCondition("long");
+  view.setIndicatorCandidates(["adx", "plus_di"]);
+  const indSel = byClass(host, "exec-ind")[0];
+  const values = (indSel.children || []).map((o) => o.value);
+  assert.deepEqual(values, ["adx", "plus_di"]);
+});
+
+// --- 4. 行の追加/削除 --------------------------------------------------------
+
+test("adding conditions increases the row count per side", () => {
+  const { host, view } = mounted();
+  view.addCondition("long");
+  view.addCondition("long");
+  view.addCondition("short");
+  assert.equal(byClass(host, "exec-cond-row").length, 3);
+});
+
+test("delete removes a condition row", () => {
+  const { host, view } = mounted();
+  view.addCondition("long");
+  view.addCondition("long");
+  const del = byClass(host, "exec-del")[0];
+  del._listeners.click[0]();
+  assert.equal(byClass(host, "exec-cond-row").length, 1);
+});
+
+test("add-long button click adds a long row", () => {
+  const { host } = mounted();
+  findById(host, "execAddLong")._listeners.click[0]();
+  assert.equal(byClass(host, "exec-cond-row").length, 1);
+});
+
+// --- 5. buildSubmission -------------------------------------------------------
+
+function setVal(el, v) { el.value = v; }
+
+// Phase 6 拡張: フォームが供給する完全 18 キー body（profile 由来 11 ＋ フォーム 7）。
+const _PROFILE = Object.freeze({
+  dataset: "jp225_m1", data_path: "/d/jp225_m1.csv", symbol: "JP225", period: "M1",
+  contract_size: 10.0, digits: 1, point_size: 0.1, leverage: 10.0,
+  volume_min: 0.01, volume_max: 100.0, volume_step: 0.01, stops_level: 0,
+});
+
+const PROFILE_KEYS = [
+  "data_path", "symbol", "period", "contract_size", "digits", "point_size",
+  "leverage", "volume_min", "volume_max", "volume_step", "stops_level",
+];
+const FORM_KEYS = [
+  "ea_name", "stop_loss_points", "take_profit_points",
+  "ma_period", "ma_method", "initial_deposit", "lot_size",
+];
+
+test("buildSubmission returns the full 18-key backtest body and typed strategy", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  view.setIndicatorCandidates(["ema", "close"]);
+  setVal(findById(host, "execEaName"), "TC24051901");
+  setVal(findById(host, "execSl"), "100");
+  setVal(findById(host, "execTp"), "200");
+  view.addCondition("long");
+  const row = byClass(host, "exec-cond-row")[0];
+  setVal(byClass(row, "exec-ind")[0], "close");
+  setVal(byClass(row, "exec-shift")[0], "1");
+  setVal(byClass(row, "exec-op")[0], ">");
+  setVal(byClass(row, "exec-rhs")[0], "1.5");
+
+  const bt = view.buildSubmission().backtest;
+  // 18 キー完全（profile 11 ＋ フォーム 7）
+  assert.deepEqual(Object.keys(bt).sort(), [...PROFILE_KEYS, ...FORM_KEYS].sort());
+  // profile 由来の 11 キーは注入 profile と一致（front リテラル 0）
+  for (const k of PROFILE_KEYS) assert.strictEqual(bt[k], _PROFILE[k], k);
+  assert.equal(bt.ea_name, "TC24051901");
+  assert.equal(bt.stop_loss_points, 100);
+  assert.equal(bt.take_profit_points, 200);
+
+  const body = view.buildSubmission();
+  assert.deepEqual(body.strategy.entry_long, [
+    { indicator: "close", shift: 1, op: ">", rhs: 1.5 },
+  ]);
+  assert.equal("entry_short" in body.strategy, false);
+});
+
+test("setRunOptions populates the dataset selector and profile drives backtest keys", () => {
+  const { host, view } = mounted();
+  const p2 = { ..._PROFILE, dataset: "other", symbol: "OTHER", contract_size: 1.0, point_size: 0.001 };
+  view.setRunOptions([_PROFILE, p2]);
+  const ds = findById(host, "execDataset");
+  assert.ok(ds, "#execDataset が無い");
+  assert.deepEqual((ds.children || []).map((o) => o.value), ["jp225_m1", "other"]);
+  // 別データセットを選ぶと profile 由来キーが切り替わる（front リテラルでない証拠）
+  setVal(ds, "other");
+  const bt = view.buildSubmission().backtest;
+  assert.equal(bt.symbol, "OTHER");
+  assert.equal(bt.contract_size, 1.0);
+  assert.equal(bt.point_size, 0.001);
+});
+
+test("new form fields (ma_period/ma_method/initial_deposit/lot_size) are present and typed", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  setVal(findById(host, "execMaPeriod"), "20");
+  setVal(findById(host, "execMaMethod"), "ema");
+  setVal(findById(host, "execDeposit"), "10000");
+  setVal(findById(host, "execLot"), "0.1");
+  const bt = view.buildSubmission().backtest;
+  assert.strictEqual(bt.ma_period, 20);
+  assert.strictEqual(bt.ma_method, "ema");
+  assert.strictEqual(bt.initial_deposit, 10000);
+  assert.strictEqual(bt.lot_size, 0.1);
+});
+
+test("buildSubmission types shift as int and rhs as number", () => {
+  const { host, view } = mounted();
+  view.setIndicatorCandidates(["ema"]);
+  view.addCondition("short");
+  const row = byClass(host, "exec-cond-row")[0];
+  setVal(byClass(row, "exec-ind")[0], "ema");
+  setVal(byClass(row, "exec-shift")[0], "2");
+  setVal(byClass(row, "exec-op")[0], "<");
+  setVal(byClass(row, "exec-rhs")[0], "0");
+  const cond = view.buildSubmission().strategy.entry_short[0];
+  assert.strictEqual(cond.shift, 2);
+  assert.strictEqual(cond.rhs, 0);
+  assert.strictEqual(cond.op, "<");
+});
+
+test("empty strategy is omitted (OFF は byte 等価)", () => {
+  const { host, view } = mounted();
+  setVal(findById(host, "execEaName"), "TC24051901");
+  setVal(findById(host, "execSl"), "100");
+  setVal(findById(host, "execTp"), "200");
+  const body = view.buildSubmission();
+  assert.equal("strategy" in body, false);
+});
+
+// --- 5b. onEaChange（ea_name 変更で候補を選択 EA の系列へ入れ替える結線）--------
+
+test("changing ea_name fires onEaChange with the new ea (候補の再取得起点)", () => {
+  const { host, view } = mounted();
+  const seen = [];
+  view.onEaChange((ea) => seen.push(ea));
+  const eaSel = findById(host, "execEaName");
+  eaSel.value = "PRO_fit_Band_EA";
+  // fake DOM は change を自動発火しないので、登録された change リスナを直接叩く
+  eaSel._listeners.change[0]();
+  assert.deepEqual(seen, ["PRO_fit_Band_EA"]);
+});
+
+// --- 6. onSubmit --------------------------------------------------------------
+
+test("clicking submit invokes onSubmit with the built body", () => {
+  const { host, view } = mounted();
+  const seen = [];
+  view.onSubmit((b) => seen.push(b));
+  setVal(findById(host, "execEaName"), "TC24051901");
+  setVal(findById(host, "execSl"), "50");
+  setVal(findById(host, "execTp"), "150");
+  findById(host, "execSubmit")._listeners.click[0]();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].backtest.ea_name, "TC24051901");
+  assert.equal(seen[0].backtest.stop_loss_points, 50);
+});

@@ -17,6 +17,10 @@ export function fakeEl(tag = "div") {
     style: {},
     dataset: {},
     children: [],
+    // 実 DOM に合わせ親参照は parentNode を正とする（front は parentNode/parentElement を使う）。
+    // parent は既存のツリー走査テスト互換のため同値で残す（新規 front での .parent 使用は
+    // import_source.test.js の構造検定で禁止＝実ブラウザ専用バグを隠す穴を塞ぐ）。
+    parentNode: null,
     parent: null,
     _listeners: {},
     classList: {
@@ -26,10 +30,10 @@ export function fakeEl(tag = "div") {
       contains(c) { return this._set.has(c); },
       toggle(c, on) { if (on === undefined) { this._set.has(c) ? this._set.delete(c) : this._set.add(c); } else if (on) { this._set.add(c); } else { this._set.delete(c); } },
     },
-    appendChild(child) { child.parent = this; this.children.push(child); return child; },
+    appendChild(child) { child.parentNode = this; child.parent = this; this.children.push(child); return child; },
     removeChild(child) {
       const i = this.children.indexOf(child);
-      if (i >= 0) { this.children.splice(i, 1); child.parent = null; }
+      if (i >= 0) { this.children.splice(i, 1); child.parentNode = null; child.parent = null; }
       return child;
     },
     addEventListener(ev, fn) { (this._listeners[ev] ||= []).push(fn); },

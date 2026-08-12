@@ -42,6 +42,10 @@ const SEGMENT = "sim_segment_view.js";
 const COMPARE = "sim_compare_view.js";
 const CONTACTS_TOGGLE = "sim_contacts_toggle_view.js";
 const FILTER_PILL = "sim_filter_pill_view.js";
+// Phase 6 で追加した実行指示（戦略投入）系（いずれも純 DOM / HTTP・lwc に触れない）。
+const SUBMIT_CLIENT = "job_submit_client.js";
+const EXEC_PANEL = "sim_execution_panel_view.js";
+const EXEC_ROOT = "composition_root_execution.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -53,10 +57,11 @@ function importSpecifiers(src) {
 
 // --- 1. 移植元は /sim/report-js/ からだけ引く ------------------------------------
 
-test("the front layer ships exactly the Phase 4 + Phase 5 modules", () => {
+test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 modules", () => {
   assert.deepEqual(FRONT_FILES.sort(), [
     ROOT, RENDERER, SOURCE, VIEW, FRAME,
     TABS, SEGMENT, COMPARE, CONTACTS_TOGGLE, FILTER_PILL,
+    SUBMIT_CLIENT, EXEC_PANEL, EXEC_ROOT,
   ].sort());
 });
 
@@ -230,6 +235,33 @@ test("the v5 adapter does not use any v4 series factory", () => {
     .replace(/contactMarkerHandle\.setMarkers\s*\(/g, "");
   assert.ok(!/\.setMarkers\s*\(/.test(handleCalls),
     "系列へ直接 setMarkers しています（v5 は createSeriesMarkers ハンドル経由）");
+});
+
+// --- 4b. 実ブラウザ getter 専用プロパティへ代入しない（fake DOM 非検出の穴）-----------
+// `Element.children` は実ブラウザで読み取り専用の getter。`el.children = []` は実 UI で
+// TypeError（"Cannot set property children ... only a getter"）になり画面が描画されない。
+// fake DOM は素の配列プロパティなので代入が通ってしまい単体テストでは露見しない（実測済み）。
+// 空にするなら removeChild ループ等を使う。本検定でソーステキストから代入を機械的に禁じる。
+
+test("no front module assigns to the read-only .children getter (実ブラウザ描画事故の防止)", () => {
+  const assignChildren = /\.children\s*=(?!=)/; // `=` は許すが `===`/`==` は除外
+  for (const name of FRONT_FILES) {
+    assert.ok(!assignChildren.test(read(name)),
+      `${name} が .children へ代入しています（実ブラウザは getter 専用＝描画事故）。removeChild ループ等で空にすること`);
+  }
+});
+
+// 非標準 `Element.parent`（読み取り含む）を禁じる。実ブラウザに `.parent` は無く（親参照は
+// `parentNode`/`parentElement`）、`node.parent` は常に undefined。fake DOM が非標準 `.parent` を
+// 生やしているため単体テストでは通ってしまい、実 UI でのみ「行削除が DOM に反映されない」等の
+// 事故になる（🔴-1・fillOptions .children= と同種）。front は parentNode/parentElement を使う。
+
+test("no front module uses the non-standard .parent (parentNode/parentElement を使うこと)", () => {
+  const nonStdParent = /\.parent(?!Node|Element)\b/; // .parent は禁止・.parentNode/.parentElement は許可
+  for (const name of FRONT_FILES) {
+    assert.ok(!nonStdParent.test(read(name)),
+      `${name} が非標準の .parent を使っています（実ブラウザは undefined＝親操作が無反応）。parentNode/parentElement を使うこと`);
+  }
 });
 
 // --- 5. グローバル document / window を掴まない ----------------------------------
