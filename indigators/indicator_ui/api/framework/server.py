@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import queue
+import select
+import socket
 import sys
 import threading
 import time
@@ -88,6 +90,99 @@ _COMPUTE_WORKER = _ComputeWorker()
 #     ロックで保護）。GIL 下でも numpy の C 区間が並列化され、指標間のレイテンシが重ならない。
 _MP_WORKER = _ComputeWorker()
 _COMPUTE_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="compute-pool")
+
+
+# --------------------------------------------------------------------------- #
+# ISSUE-380: 捨てられる計算の除去（ISSUE-257 裁定「上限は並列度でなく仕事の量に」の実装）
+#
+#   クライアントは自都合（30 秒タイムアウト・リロード）で要求を破棄するが、破棄後もサーバは
+#   キューに残った計算を無期限に消化し続ける。流入 > 処理が恒常化すると新規 /compute が事実上
+#   永久に応答しない（実測: CLOSE_WAIT 88 本・軽量指標でも 60 秒無応答・ISSUE-380）。
+#   本節はワーカーの実行資源へ入る「仕事の量」そのものを減らす（並列度の上限は足さない）:
+#     段階 1（_compute_unless_abandoned）: ワーカーが計算に着手する直前に依頼元の生存を確認し、
+#       全依頼元が切断済みなら計算せず投棄する。
+#     段階 2（_run_coalesced）: 同一パラメータの実行中計算へ後続要求を合流させ、同じ計算の
+#       重複実行を消す。完了と同時に登録を外す＝キャッシュではない（ライブの forming 値は
+#       時間で変わるため、合流は「実行中」に限る）。
+# --------------------------------------------------------------------------- #
+_ABANDONED = object()  # 「計算せず投棄した」印。応答書き出しは行わない（書く相手がいない）。
+
+
+def _make_client_gone_probe(sock):
+    """クライアント切断（EOF/CLOSE_WAIT）を非ブロッキングで検知する probe を返す。
+
+    probe() は True=切断済み / False=生存。select(timeout=0) で読取可否を見てから MSG_PEEK で
+    EOF を判別するため一切ブロックしない（ワーカーを I/O 待ちに引き込まない）。読み取れるが
+    EOF でないデータは生存扱い＝誤投棄しない側へ倒す。ワーカーへ渡すのは本 probe（読取のみ）
+    だけで、ソケット書き込み API は渡さない（ISSUE-259 の「計算はワーカー・応答書き出しは
+    リクエストスレッド」の分担は不変）。
+    """
+
+    def probe() -> bool:
+        try:
+            readable, _, _ = select.select([sock], [], [], 0)
+            if not readable:
+                return False
+            return sock.recv(1, socket.MSG_PEEK) == b""
+        except (OSError, ValueError):  # ソケット破棄済み（fd close 後）も切断扱い。
+            return True
+
+    return probe
+
+
+#: 実行中計算の合流点（段階 2）。key（エンドポイント + 正準化パラメータ）→ entry。
+#: entry = {"done": Event, "probes": [probe, ...], "result": Any, "error": BaseException|None}
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT: dict[str, dict] = {}
+
+
+def _compute_unless_abandoned(probes, fn):
+    """段階 1: 実行直前の生存確認。全依頼元が切断済みなら計算せず _ABANDONED を返す。
+
+    ``probes`` は合流済み全依頼元の生存 probe（1 本でも生存していれば計算する）。スナップショット
+    （list コピー）後に合流した依頼元は評価されないが、その場合も呼び出し側（_run_coalesced）が
+    「生存中に投棄へ巻き込まれた」を検知して再実行するため、生存クライアントが応答を失うことはない。
+    """
+    if all(probe() for probe in list(probes)):
+        return _ABANDONED
+    return fn()
+
+
+def _run_coalesced(key, probe, dispatch, fn):
+    """段階 2: 同一 key の実行中計算へ合流する（owner が 1 回だけ実行し、全員へ配る）。
+
+    ``dispatch`` は「純計算 callable を該当ワーカー / プールで同期実行し結果を返す」関数。
+    戻り値は fn() の結果（(status, payload)）、または _ABANDONED（自依頼元も切断済み＝応答不要）。
+    owner はワーカー実行後に必ず登録を外してから done を立てる（完了済みエントリは登録に残らない
+    ＝次の同一要求は新規に計算する。合流であってキャッシュではない）。
+    """
+    while True:
+        with _INFLIGHT_LOCK:
+            entry = _INFLIGHT.get(key)
+            owner = entry is None
+            if owner:
+                entry = {"done": threading.Event(), "probes": [], "result": None, "error": None}
+                _INFLIGHT[key] = entry
+            entry["probes"].append(probe)
+        if owner:
+            try:
+                entry["result"] = dispatch(partial(_compute_unless_abandoned, entry["probes"], fn))
+            except BaseException as exc:  # noqa: BLE001（合流者へも同一例外を配る）
+                entry["error"] = exc
+            finally:
+                with _INFLIGHT_LOCK:
+                    _INFLIGHT.pop(key, None)
+                entry["done"].set()
+        else:
+            entry["done"].wait()
+        if entry["error"] is not None:
+            raise entry["error"]
+        result = entry["result"]
+        if result is _ABANDONED:
+            if probe():
+                return _ABANDONED  # 自依頼元も切断済み＝応答先が無い。
+            continue  # 生存中に投棄判定へ巻き込まれた＝新エントリで再実行（高々 1 回）。
+        return result
 
 # ISSUE-087 🟡-3（正規化）: 固有名パッケージ（marketdata / market_profile_api）の恒久解決は
 #   venv の .pth（tools/install_dev_paths.py）が担う。本殻はエントリポイントとして
@@ -366,6 +461,11 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, _nested_error("validation", f"JSON 解析に失敗しました: {exc}"))
             return
 
+        # ISSUE-380: 依頼元の生存 probe と正準化 key（合流の同一性）。応答書き出しは従来どおり
+        #   リクエストスレッド側で行い、ワーカーへは読取専用 probe しか渡さない（ISSUE-259 不変）。
+        probe = _make_client_gone_probe(self.connection)
+        key = "compute:" + json.dumps(body, sort_keys=True, ensure_ascii=False)
+        fn = partial(handle_compute, body)
         try:
             # ISSUE-155/156: スレッド親和必須（rpy2/R 等）の指標は専用ワーカーで単一スレッド固定、
             #   それ以外の指標は純 numpy/pandas のためプールで並列実行（指標間のレイテンシが
@@ -373,13 +473,18 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
             #   call_binding の宣言（thread_affinity）が唯一の真実源＝本殻は指標名を知らない
             #   （SOLID 是正 🔴-3・OCP: 親和指標の追加はテーブル宣言のみで完結する）。
             if requires_dedicated_worker(body.get("indicatorId")):
-                status, payload = _COMPUTE_WORKER.run(lambda: handle_compute(body))
+                result = _run_coalesced(key, probe, lambda f: _COMPUTE_WORKER.run(f), fn)
             else:
-                status, payload = _COMPUTE_POOL.submit(handle_compute, body).result()
+                result = _run_coalesced(key, probe, lambda f: _COMPUTE_POOL.submit(f).result(), fn)
         except Exception as exc:  # noqa: BLE001（殻の最後の砦・nested で返す）
             self._send_json(500, _nested_error("internal", f"サーバ内部エラー: {exc}"))
             return
 
+        if result is _ABANDONED:
+            # 依頼元は切断済み（ISSUE-380 段階 1）。応答は書けないため接続を畳むだけ。
+            self.close_connection = True
+            return
+        status, payload = result
         self._send_json(status, payload)
 
     # ---- GET /candles・静的配信 -------------------------------------------- #
@@ -467,8 +572,19 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         （従来と同じく ``do_GET`` は捕まえない＝各 ``_compute_*`` が担う 500 nested error が唯一の
         エラー応答経路）。3 経路で同じ分担を手書き複製しないため、``_MP_WORKER`` の参照点は本
         メソッド 1 箇所に限る。
+
+        ISSUE-380: /compute と同じく、切断済み依頼元の計算は実行直前に投棄し（段階 1）、同一
+        クエリの実行中計算へは合流する（段階 2）。ワーカーへ渡すのは読取専用の生存 probe のみで、
+        ソケット書き込み API は渡さない＝上記 ISSUE-259 の分担・module 関数規律は不変。
         """
-        status, payload = _MP_WORKER.run(partial(compute, query))
+        probe = _make_client_gone_probe(self.connection)
+        key = compute.__name__ + ":" + json.dumps(query, sort_keys=True, ensure_ascii=False)
+        result = _run_coalesced(key, probe, lambda f: _MP_WORKER.run(f), partial(compute, query))
+        if result is _ABANDONED:
+            # 依頼元は切断済み（ISSUE-380 段階 1）。応答は書けないため接続を畳むだけ。
+            self.close_connection = True
+            return
+        status, payload = result
         self._send_json(status, payload)
 
     def _handle_live_ticks(self, query: dict[str, list[str]]) -> None:
