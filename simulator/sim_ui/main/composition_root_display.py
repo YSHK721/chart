@@ -1,0 +1,66 @@
+"""Composition Root（表示層つき sim core・main 層・CLEAN_ARCH §8・Phase 4 F-7）。
+
+Phase 3 の `composition_root_indicators.build_sim_indicator_app`（配信面 ＋ ジョブ実行系
+＋ 指標一覧）を**包む**。結線をここへ書き写さない。写した瞬間に「Phase 3 の既定値を
+変えたのに Phase 4 だけ古い」という食い違いが生まれる。
+
+結線（表示層の配信根）:
+    /report-js   → `simulator/report_ui/web/js`   （linkage / table / format / chart の実体）
+    /report-css  → `simulator/report_ui/web/css`  （style.css の実体）
+
+**`simulator/report_ui/web/vendor` はどの route にも載せない**（NFR-07 の構造担保）。
+report_ui の vendor は lightweight-charts **v4.1.3** である。統合 UI が読み込む vendor は
+共有根（`indigators/indicator_ui/web/vendor`）の **v5.2.0** ただ 1 つでなければならず、
+2 つのバージョンが同じページへ載る経路を作らない。載せていないことは実 HTTP 検定
+（`tests/integration/test_serve_sim_display.py`）と本モジュールの route 表で二重に固定する。
+
+symlink で report_ui の資産を sim の web 根へ引き込む案は採らない。`StaticFileServer` は
+resolve() 後の実パスで許可根を判定するため、許可根の外を指す symlink は 404 になる
+（実測済み）。根が違うものは根ごと別の配信器を立てる。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from simulator.replay_ui.framework.static_file_server import StaticFileServer
+from simulator.sim_ui.framework.serve_sim_display import SimDisplayApp
+from simulator.sim_ui.main.composition_root_indicators import build_sim_indicator_app
+
+# repo 根 = simulator/sim_ui/main/composition_root_display.py の parents[3]。
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+#: report_ui の JS 実体を引く prefix（sim core は prefix 除去後のパスを受ける）。
+REPORT_JS_PREFIX = "/report-js"
+#: report_ui の CSS 実体を引く prefix。
+REPORT_CSS_PREFIX = "/report-css"
+
+
+def build_sim_display_app(
+    *,
+    repo_root: Any = None,
+    web_dir: Any = None,
+    shared_js_root: Any = None,
+    data_root: Any = None,
+) -> SimDisplayApp:
+    """配信面・ジョブ実行系・指標一覧・表示層の配信根を結線した :class:`SimDisplayApp` を返す。
+
+    引数の規約は Phase 3 の `build_sim_indicator_app` と同一（そのまま素通しする）。
+    """
+    root = Path(repo_root).resolve() if repo_root is not None else _REPO_ROOT
+    inner = build_sim_indicator_app(
+        repo_root=repo_root,
+        web_dir=web_dir,
+        shared_js_root=shared_js_root,
+        data_root=data_root,
+    )
+    report_web = root / "simulator" / "report_ui" / "web"
+    return SimDisplayApp(
+        inner=inner,
+        static_routes={
+            # 第 2 引数（shared_js_root）は None。各根は自分のサブツリーだけを許可する
+            # （最小権限）。vendor 根は**含めない**＝v4 バンドルへの経路が存在しない。
+            REPORT_JS_PREFIX: StaticFileServer((report_web / "js").resolve(), None),
+            REPORT_CSS_PREFIX: StaticFileServer((report_web / "css").resolve(), None),
+        },
+    )
