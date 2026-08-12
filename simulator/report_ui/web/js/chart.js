@@ -16,10 +16,12 @@ let _contactSeries = null, _contacts = [], _contactsVisible = true;
 let _markerHoverCb = null; // chart→linkage 通知のコールバック注入（直接 import を作らない）
 let _rows = []; // 直近の trades 行（マーカー再描画用）
 let _barTimes = [], _barsNormal = [], _barsDim = [], _candlesDimmed = false;
-const DIM_ALPHA = 0.15; // 非 hover ペアの減光アルファ（試作 DIM_ALPHA=0.15）
-const MARKER_CAP = 700;
-const EXIT_COLOR = "#6b7785";
-const DEFAULT_DEPOSIT = 10000;
+// 表示規則の実値。sim 表示層（lightweight-charts v5.2.0 アダプタ）が同じ規則を使うため
+// export する（規則を写すと片方だけ腐る＝パリティが静かにドリフトする）。値は不変。
+export const DIM_ALPHA = 0.15; // 非 hover ペアの減光アルファ（試作 DIM_ALPHA=0.15）
+export const MARKER_CAP = 700;
+export const EXIT_COLOR = "#6b7785";
+export const DEFAULT_DEPOSIT = 10000;
 
 // 接点マーカー（コンタクトスキャン）配色・上限。売買マーカー（買=#26a69a 緑 / 売=#ef5350 赤）
 // と区別できる別配色を用いる（up=琥珀 / down=藤）。cap は売買 MARKER_CAP と同流儀の可視間引き。
@@ -27,13 +29,13 @@ export const CONTACT_UP_COLOR = "#f5c542";   // 下→上クロス（arrowUp・b
 export const CONTACT_DOWN_COLOR = "#c084fc"; // 上→下クロス（arrowDown・aboveBar）
 export const CONTACT_MARKER_CAP = 700;
 
-function _withAlpha(hex, a) {
+export function _withAlpha(hex, a) {
   if (typeof hex !== "string" || hex[0] !== "#" || hex.length !== 7) return hex;
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
-function _bisectLeft(a, x) {
+export function _bisectLeft(a, x) {
   let lo = 0, hi = a.length;
   while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < x) lo = m + 1; else hi = m; }
   return lo;
@@ -67,6 +69,72 @@ export function balanceForwardFill(barTimes, balanceCurve, initDeposit = DEFAULT
 // time→value の索引 Map（クロスヘア同期で他窓の同時刻値を引く・試作 *ByTime）。
 export function byTimeResolve(series) {
   return new Map((series || []).map((p) => [p.time, p.value]));
+}
+
+// --- 表示規則の純関数（DOM/vendor 非依存・sim 表示層と共有する単一ソース）-----------
+// 以下 5 関数は renderChart / renderMarkers / dimCandlesForTrade / _visibleTrades の本体から
+// **そのまま切り出した**もので、呼び出し側は本関数を呼ぶ形へ置き換えてある（挙動等価）。
+// 切り出す理由: sim 表示層は vendor v5.2.0 の別アダプタを使うが、**表示規則は同一**でなければ
+// ならない（パリティ点 7 / S3 / S4 / S5 / S6）。規則を 2 か所に書けば必ず食い違う。
+
+// trades[] を売買マーカー配列へ変換する（試作 renderMarkers の構築部）。
+//   hoverId != null のとき、当該ペアを size=1.4・text="#id" で強調し、他ペアを DIM_ALPHA へ落とす。
+//   返り値は time 昇順（lwc の setMarkers は時刻昇順を要求する）。
+export function buildTradeMarkers(trades, hoverId = null) {
+  const hovering = hoverId != null;
+  const mk = [];
+  for (const t of trades || []) {
+    const win = t.profit > 0, hot = t.id === hoverId, dim = hovering && !hot;
+    const ecol = win ? "#26a69a" : "#ef5350";
+    mk.push({
+      time: t.entry_time, position: t.side === "buy" ? "belowBar" : "aboveBar",
+      color: dim ? _withAlpha(ecol, DIM_ALPHA) : ecol,
+      shape: t.side === "buy" ? "arrowUp" : "arrowDown",
+      size: hot ? 1.4 : 1, id: "e" + t.id, text: hot ? "#" + t.id : "",
+    });
+    mk.push({
+      time: t.exit_time, position: t.side === "buy" ? "aboveBar" : "belowBar",
+      color: dim ? _withAlpha(EXIT_COLOR, DIM_ALPHA) : EXIT_COLOR,
+      shape: "circle", size: hot ? 1.4 : 0.6, id: "x" + t.id,
+    });
+  }
+  mk.sort((a, b) => a.time - b.time);
+  return mk;
+}
+
+// バー列を「減光版」のローソク足データへ変換する（試作 dimCandlesForTrade の素材）。
+//   OHLC は不変で、色（body/wick/border）だけを DIM_ALPHA 付きへ落とす。
+export function buildDimBars(bars) {
+  return (bars || []).map((b) => {
+    const up = b.close >= b.open;
+    const c = up ? _withAlpha("#26a69a", DIM_ALPHA) : _withAlpha("#ef5350", DIM_ALPHA);
+    return { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c, borderColor: c };
+  });
+}
+
+// ペア区間 [entry_time, exit_time] だけを通常色へ戻した表示用バー列を返す（試作 dimCandlesForTrade）。
+//   hi は bisectLeft(barTimes, exit_time + 1) — 決済足そのものを含める（+1 の意味）。
+//   入力配列は書き換えない（barsDim.slice() のコピーへ差し込む）。
+export function mergeDimBarsForTrade(barTimes, barsNormal, barsDim, trade) {
+  const lo = _bisectLeft(barTimes, trade.entry_time);
+  const hi = _bisectLeft(barTimes, trade.exit_time + 1);
+  const merged = barsDim.slice();
+  for (let i = lo; i < hi; i++) merged[i] = barsNormal[i];
+  return merged;
+}
+
+// 可視レンジと重なる trades だけを返す（試作 visibleTrades・点7 chartBadge 件数の母集合）。
+//   range が null（レンジ未確定）のときは全件を返す（防御的・従来の早期 return と同義）。
+export function visibleTradesInRange(rows, range) {
+  if (!range) return rows || [];
+  return (rows || []).filter((t) => t.exit_time >= range.from && t.entry_time <= range.to);
+}
+
+// 点7 chartBadge の文言（可視取引件数の readout）。cap 超過時はズーム誘導へ切り替える。
+export function chartBadgeText(visibleCount, cap = MARKER_CAP) {
+  return visibleCount > cap
+    ? `${visibleCount} trades in view — ズームインでマーカー表示 (cap ${cap})`
+    : `${visibleCount} trades in view`;
 }
 
 // 接点 1 件 {time, price, dir} を lwc マーカー 1 件へ変換する（up/down で shape/position/color 分離）。
@@ -176,11 +244,7 @@ export function renderChart(containerId, segment, opts) {
     borderVisible: false, wickUpColor: "#26a69a", wickDownColor: "#ef5350",
   });
   _barsNormal = (segment.bars || []).map((b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }));
-  _barsDim = (segment.bars || []).map((b) => {
-    const up = b.close >= b.open;
-    const c = up ? _withAlpha("#26a69a", DIM_ALPHA) : _withAlpha("#ef5350", DIM_ALPHA);
-    return { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c, borderColor: c };
-  });
+  _barsDim = buildDimBars(segment.bars);
   _barTimes = (segment.bars || []).map((b) => b.time);
   _candle.setData(_barsNormal);
 
@@ -264,9 +328,7 @@ export function emitMarkerHover(id) { if (_markerHoverCb) _markerHoverCb(id); }
 // 可視レンジ内の trades のみを返す（試作 visibleTrades・chartBadge 件数の母集合）。
 function _visibleTrades(rows) {
   if (!_chart) return rows || [];
-  const r = _chart.timeScale().getVisibleRange();
-  if (!r) return rows || [];
-  return (rows || []).filter((t) => t.exit_time >= r.from && t.entry_time <= r.to);
+  return visibleTradesInRange(rows, _chart.timeScale().getVisibleRange());
 }
 
 // 直近の描画意図（hoverId/filter）。可視レンジ変更時の再描画で選択/抽出状態を保持する。
@@ -280,31 +342,12 @@ export function renderMarkers(rows, opts) {
   let vt = _visibleTrades(rows || _rows);
   if (filter) vt = vt.filter((t) => filter.has(t.id));
   const badge = typeof document !== "undefined" ? document.getElementById("chartBadge") : null;
+  if (badge) badge.textContent = chartBadgeText(vt.length);
   if (vt.length > MARKER_CAP) {
     _candle.setMarkers([]);
-    if (badge) badge.textContent = `${vt.length} trades in view — ズームインでマーカー表示 (cap ${MARKER_CAP})`;
     return;
   }
-  if (badge) badge.textContent = `${vt.length} trades in view`;
-  const hovering = hoverId != null;
-  const mk = [];
-  for (const t of vt) {
-    const win = t.profit > 0, hot = t.id === hoverId, dim = hovering && !hot;
-    const ecol = win ? "#26a69a" : "#ef5350";
-    mk.push({
-      time: t.entry_time, position: t.side === "buy" ? "belowBar" : "aboveBar",
-      color: dim ? _withAlpha(ecol, DIM_ALPHA) : ecol,
-      shape: t.side === "buy" ? "arrowUp" : "arrowDown",
-      size: hot ? 1.4 : 1, id: "e" + t.id, text: hot ? "#" + t.id : "",
-    });
-    mk.push({
-      time: t.exit_time, position: t.side === "buy" ? "aboveBar" : "belowBar",
-      color: dim ? _withAlpha(EXIT_COLOR, DIM_ALPHA) : EXIT_COLOR,
-      shape: "circle", size: hot ? 1.4 : 0.6, id: "x" + t.id,
-    });
-  }
-  mk.sort((a, b) => a.time - b.time);
-  _candle.setMarkers(mk);
+  _candle.setMarkers(buildTradeMarkers(vt, hoverId));
 }
 
 // 可視レンジ内の接点のみを返す（売買 _visibleTrades と同流儀・全件 cap 超過時の恒常非表示回避）。
@@ -334,10 +377,7 @@ export function contactsVisible() { return _contactsVisible; }
 export function dimCandlesForTrade(t) {
   if (!_candle) return;
   if (!t || t.entry_price == null) { restoreCandles(); return; }
-  const lo = _bisectLeft(_barTimes, t.entry_time), hi = _bisectLeft(_barTimes, t.exit_time + 1);
-  const merged = _barsDim.slice();
-  for (let i = lo; i < hi; i++) merged[i] = _barsNormal[i];
-  _candle.setData(merged);
+  _candle.setData(mergeDimBarsForTrade(_barTimes, _barsNormal, _barsDim, t));
   _candlesDimmed = true;
   if (typeof window !== "undefined") window.__candlesDimmed = true; // E2E フック
 }

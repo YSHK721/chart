@@ -19,6 +19,14 @@ import pandas as pd
 from simulator.main import build_interactor, ema_series
 from simulator.report_ui.adapter.report_presenter import ReportUiPresenter
 from simulator.report_ui.tools.contacts_export import compute_segment_contacts
+# int 時刻ビューは単一ソース（H-D1）。as 束縛で以降の参照名は変えない
+#   （同じ実装を 2 か所に持つと片方だけ腐る。codescan clone 第 1 位だった）。
+from simulator.report_ui.tools.int_time_views import (
+    IntTimeBar as _IntTimeBar,
+    IntTimeTrade as _IntTimeTrade,
+    ResultView as _ResultView,
+    unix_seconds as _unix,
+)
 from simulator.report_ui.usecase.build_report_payload import BuildReportPayload
 from simulator.report_ui.usecase.report_meta import ReportMeta
 
@@ -57,60 +65,6 @@ SEGMENTS = [
     ("is", "IS（学習 04.01-14）", CONF / "bars_m1_is.csv", "2026-04-01", None),
     ("oos", "OOS（検証 04.15-23）", CONF / "bars_m1.csv", "2026-04-15", "2026-04-14"),
 ]
-
-
-def _unix(t: Any) -> int:
-    """numpy.datetime64 / epoch int / Timestamp を UNIX 秒 int へ正規化する（§4.3）。
-
-    pandas は本 composition root に閉じ、UC へは int 時刻のみ渡す。
-    """
-    if isinstance(t, int) and not isinstance(t, bool):
-        return t
-    return int(pd.Timestamp(t).timestamp())
-
-
-class _IntTimeBar:
-    """UC の excursion 用に bar.time を int 化した read-only ビュー（high/low/open/close）。"""
-
-    __slots__ = ("time", "high", "low", "open", "close")
-
-    def __init__(self, bar: Any) -> None:
-        self.time = _unix(bar.time)
-        self.high = bar.high
-        self.low = bar.low
-        self.open = bar.open
-        self.close = bar.close
-
-
-class _IntTimeTrade:
-    """UC 用に entry_time/exit_time を int 化した read-only TradeRecord ビュー。"""
-
-    __slots__ = ("side", "entry_time", "exit_time", "entry_price", "exit_price",
-                 "volume", "exit_reason", "_pnl")
-
-    def __init__(self, tr: Any) -> None:
-        self.side = tr.side
-        self.entry_time = _unix(tr.entry_time)
-        self.exit_time = _unix(tr.exit_time)
-        self.entry_price = tr.entry_price
-        self.exit_price = tr.exit_price
-        self.volume = tr.volume
-        self.exit_reason = tr.exit_reason
-        self._pnl = tr.pnl()
-
-    def pnl(self) -> float:
-        return self._pnl
-
-
-class _ResultView:
-    """UC が読む BacktestResult の int 時刻ビュー（trades/balance_curve/stats を read-only 写像）。"""
-
-    def __init__(self, result: Any) -> None:
-        self.trades = [_IntTimeTrade(t) for t in result.trades]
-        self.balance_curve = list(result.balance_curve)
-        self.stats = result.stats
-        self.deals = result.deals
-        self.equity_curve = result.equity_curve
 
 
 def _filter_bars(bars: Any, bars_start: "str | None") -> list:
