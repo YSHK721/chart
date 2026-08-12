@@ -7198,3 +7198,20 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   11. `export_report_payload.py` の実データ実行は confirmation データ不在のため未実施
      （契約は単体 16 件＋構造検定 7 件で固定。writer の実データ経路は実ジョブで実証済み）。
 - **対策案**: 各対象モジュールへ次に手を入れる Phase で同時是正（ISSUE-374/376 と同運用）。
+
+## ISSUE-379: [不具合] sim 表示のテーブル起点 hover がチャート上で解除されない（2026-08-12・OPEN）
+
+- **検出日**: 2026-08-12
+- **検出経路**: Phase 4 マージ後の依頼者向けブラウザ実 UI 動作確認（統合 8000・実ジョブ 236 trades・実マウス操作）。
+- **症状**: 明細行 hover で hover=3・減光・.hl が付いた後、チャート空領域へマウスを移しても
+  解除されない（hover=3・dimmed=true が残存）。マーカー hover 起点の解除は正常。
+- **原因（実測・確定）**: `lwc5_chart_renderer.js` の crosshair ハンドラが参照実装
+  （`report_ui/web/js/chart.js:312-321`・抑止なしで毎回通知）に無い `lastHoverId` 重複抑止を
+  独自に追加していたため。テーブル起点で linkage.hoverTradeId が変わっても renderer の
+  `lastHoverId` は null のままで、チャート空領域の null 通知が「既知」と誤判定され
+  `linkage.setHover(null)` が呼ばれない。参照実装に無い条件の追加（禁止事項）に該当。
+  コードレビュー[将来]-2 が「真実源の二重化」として指摘済みだったが「単一ポインタでは到達困難」
+  と誤判定していた（テーブル→チャートの実経路で到達する）。
+- **対策**: `lastHoverId` を全廃し、重複排除を参照実装どおり linkage の冪等ガード
+  （`linkage.js:24-28` の同一 id return）へ一本化。回帰テスト 2 件を追加
+  （毎回通知・先行 id 通知なしでの null 通知）。

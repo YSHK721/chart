@@ -57,8 +57,6 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
   // 自分が vendor へ書き込んでいる区間（R-A3 の再入ガード）。この区間に届いた crosshair は
   //   利用者の操作ではなく**自分の描画が動かした結果**なので、発行元で捨てる。
   let writing = false;
-  // 直近に発行した hover id。同じ値を出し続けない（状態の真実源は linkage・R-A4）。
-  let lastHoverId = null;
   // crosshair 購読を張ったか（R-A1: 描画のたびに購読を足さない・参照実装 chart.js:311-314）。
   let crosshairWired = false;
 
@@ -145,8 +143,10 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
     chart.subscribeCrosshairMove((param) => {
       if (writing) return;                    // 自分の描画由来は発行しない（R-A3）
       const id = markerIdOf(param);
-      if (id === lastHoverId) return;         // 同じ通知を出し続けない
-      lastHoverId = id;
+      // 重複排除はここでは行わない（参照実装 chart.js:312-321 に抑止なし）。冪等ガードは
+      //   真実源の linkage.setHover が持つ（R-A4）。renderer 側で id を記憶すると、
+      //   テーブル起点で hover が変わったとき「null 通知＝既知」と誤判定して解除が届かない
+      //   （ISSUE-379 で実測した明示バグ）。
       defer(() => { if (markerHoverCb) markerHoverCb(id); });
     });
   }
@@ -162,7 +162,6 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
     // 破棄した chart に張った購読は道連れになる。次の chart で張り直せるよう戻す
     //   （参照実装 chart.js:224 `_destroyCharts` が `_crosshairWired = false` に戻すのと同じ）。
     crosshairWired = false;
-    lastHoverId = null;
     publish("__simPriceChart", null);
     publish("__simCandleSeries", null);
     publish("__candlesDimmed", false);
