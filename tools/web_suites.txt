@@ -17,4 +17,5 @@
 indigators/indicator_ui/web
 indigators/market_profile/web
 simulator/replay_ui/web
+simulator/sim_ui/web
 unified_ui/web
