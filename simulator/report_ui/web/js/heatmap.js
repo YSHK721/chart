@@ -77,6 +77,9 @@ function _toMap(cells) {
   return m;
 }
 
+// IS/OOS 損益差ビューの識別子（opts.showIsOosDiff=false で外す唯一のビュー）。
+export const IS_OOS_DIFF_VIEW = "is_oos_diff";
+
 // 5 ビュー定義（損益/IS-OOS差/取引回数/勝率/平均損益）。各 valFn は cell→{v,disp,title}|null。
 function _viewDefs(cur, isM, oosM, mx) {
   return [
@@ -86,6 +89,7 @@ function _viewDefs(cur, isM, oosM, mx) {
       colFn: (v) => divCol(v, mx.mxP),
     },
     {
+      key: IS_OOS_DIFF_VIEW,
       title: "IS vs OOS 損益差（OOS−IS）", hint: "赤=OOSで悪化 / 緑=改善", gg: "IS-OOS diff",
       valFn: (k) => { const iv = isM[k] ? isM[k].profit : 0, ov = oosM[k] ? oosM[k].profit : 0; if (!isM[k] && !oosM[k]) return null; const d = ov - iv; return { v: d, disp: (d > 0 ? "+" : "") + Math.round(d), title: `IS ${_round(iv)} → OOS ${_round(ov)}` }; },
       colFn: (v) => divCol(v, mx.mxD),
@@ -142,16 +146,21 @@ function _viewHtml(def) {
 
 // ヒートマップ（5 ビュー）を host へ描画し、セルクリック→linkage.applyFilter を結線する。
 // 引数: host=<div id=heatHost>, data=DATA（segments/trades/agg.heat）, seg=選択区間, linkage,
-//        onFocus(optional)=最初の該当 trade へズームするコールバック（main.js が注入）。
-export function buildHeatmap(host, data, seg, linkage, onFocus) {
+//        onFocus(optional)=最初の該当 trade へズームするコールバック（main.js が注入）、
+//        opts(optional)={showIsOosDiff}=区間が 1 つしか無い呼び出し元（sim・単一 run）が
+//        「IS vs OOS 損益差」ビューを外すための省略可能引数。既定 true＝従来と同一の 5 ビュー。
+export function buildHeatmap(host, data, seg, linkage, onFocus, opts) {
   if (!host) return;
+  const { showIsOosDiff = true } = opts || {};
   const curCells = aggOf(data, seg).heat || [];
   const cur = _toMap(curCells);
   const isM = _toMap(aggOf(data, "is").heat);
   const oosM = _toMap(aggOf(data, "oos").heat);
   const mx = _maxes(cur, isM, oosM);
 
-  host.innerHTML = _viewDefs(cur, isM, oosM, mx).map(_viewHtml).join("");
+  host.innerHTML = _viewDefs(cur, isM, oosM, mx)
+    .filter((d) => showIsOosDiff || d.key !== IS_OOS_DIFF_VIEW)
+    .map(_viewHtml).join("");
 
   // 選択区間の trades（フィルタ抽出対象）。R-2 規約で back セルと同一 trade を選ぶ。
   const trades = data.segments[seg].trades || [];
