@@ -227,3 +227,6 @@ dev_paths.local.sh
 # 口座状態エンジンのシナリオ入力（ISSUE-369）は *.json 除外の例外として追跡
 #   （out/ の生成 JSON・HTML は従来どおり追跡しない）
 !prototype_260811-01/plans/*.json
+
+# sim core のジョブ台帳（実行時生成物。成果物をリポジトリへ入れない・ISSUE-363 同型の再発防止）
+simulator/sim_ui/data/
