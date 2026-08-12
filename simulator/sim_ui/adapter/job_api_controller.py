@@ -58,7 +58,12 @@ class JobApiController:
             return ApiResponse(
                 400, {"error": "backtest（実行仕様）を含む JSON 本文が必要です"}
             )
-        submission = JobSubmission(backtest=backtest, sizing=body.get("sizing"))
+        submission = JobSubmission(
+            backtest=backtest,
+            sizing=body.get("sizing"),
+            # Phase 6 F-8（P6-E3）: 戦略項目ブロックを読取る。不在は None（既定 OFF・byte 等価）。
+            strategy=body.get("strategy"),
+        )
         try:
             view = self._submit.execute(submission)
         except (SizingUnsupportedError, JobSubmissionInvalidError) as exc:

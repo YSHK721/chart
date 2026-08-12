@@ -43,7 +43,9 @@ def _required_series(entry_price_basis: str) -> str:
 
 # 子へ素通しする `backtest` meta が注入専用に予約しているキー。JSON から渡させない。
 #   `strategy_decorator` は run_job がサイジング設定から組み立てて注入する（E-2）。
-_INJECTED_ONLY_KEYS = frozenset({"strategy_decorator"})
+#   `strategy_override` は run_job が spec.strategy から GenericConditionStrategy を組んで
+#   注入する（Phase 6 F-8）。どちらも StrategyPort 実体であり JSON スカラーでは渡せない。
+_INJECTED_ONLY_KEYS = frozenset({"strategy_decorator", "strategy_override"})
 
 
 def allowed_backtest_keys() -> "frozenset[str]":

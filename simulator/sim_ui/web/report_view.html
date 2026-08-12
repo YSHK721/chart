@@ -37,15 +37,26 @@
   <script src="/sim/vendor/lightweight-charts.js"></script>
   <script type="module">
     import { mountSimReportView } from '/sim/js/adapter/front/composition_root_front.js';
+    import { mountSimExecutionPanel } from '/sim/js/adapter/front/composition_root_execution.js';
+
+    // `?job=<id>` の有無で dispatch（Phase 6 拡張）:
+    //   有 → 既存の結果ビューア（byte 等価・従来経路）
+    //   不在 → 実行指示パネル（run config フォーム・投入して job を作る入口）
+    // 分岐は 1 箇所だけが持つ（親子で読み方を二重化しない・自動介入なし）。
+    const hasJob = new URLSearchParams(location.search).get('job');
 
     // 失敗しても `__simReportViewReady` は必ず立てる（親・E2E が待ち続けないため）。
     // 何が起きたかは View がページ上に掲示する（部分描画しない・fail-stop）。
     try {
-      await mountSimReportView({
-        doc: document,
-        lwc: window.LightweightCharts,
-        host: document.body,
-      });
+      if (hasJob) {
+        await mountSimReportView({
+          doc: document,
+          lwc: window.LightweightCharts,
+          host: document.body,
+        });
+      } else {
+        await mountSimExecutionPanel({ doc: document, host: document.body });
+      }
     } finally {
       window.__simReportViewReady = true;
     }

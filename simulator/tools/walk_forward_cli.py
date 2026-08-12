@@ -45,6 +45,9 @@ _BUILD_INTERACTOR_KEYWORDS = frozenset({
     # スカラーではないが、本集合は build_interactor の実シグネチャと一致させる規約
     # （test_walk_forward_cli.py::test_keyword_whitelist_matches_build_interactor）。
     "strategy_decorator",
+    # Phase 6 F-8（依頼者承認済み）で追加された戦略 override の差し込み口。同じく探索
+    # 対象スカラーではないが、上記の「実シグネチャと一致させる規約」に従い列挙する。
+    "strategy_override",
 })
 
 

@@ -65,6 +65,10 @@ class SubmitJobInteractor:
         # （未知キーは子プロセスで TypeError になり「投入は通ったが実行だけ落ちる」
         #  という遅い失敗になる。受付で弾いて即座に理由を返す）。
         self._reject_invalid_backtest_keys(submission)
+        # 戦略項目（Phase 6 E-5）: 参照する指標系列が当該 ea_name の登録系列に含まれるかを
+        # 受付時に検証する（sizing とは独立）。E-3 と同じ系列カタログ Port を再利用する。
+        if submission.strategy_enabled:
+            self._reject_if_strategy_indicators_unavailable(submission)
         if submission.sizing_enabled:
             # 順序: 先に E-3（建値推定の可否）→ 次に SL 保証。前者が満たせない戦略は
             # そもそもサイジングの対象外なので、より根本的な理由を先に返す。
@@ -93,6 +97,23 @@ class SubmitJobInteractor:
                 f"価格系列 {needed!r} を持たないため、サイジングを有効にできません"
                 f"（約定価格基準={submission.entry_price_basis}・"
                 f"登録系列={sorted(available)}）"
+            )
+
+    def _reject_if_strategy_indicators_unavailable(self, submission: JobSubmission) -> None:
+        """E-5: 戦略条件が参照する指標系列が ea_name の registry に無ければ明示拒否する。
+
+        判定は**ハードコードの戦略リストではなく** EA 別の系列カタログ Port から導出する
+        （§12.1「戦略リストのハードコード禁止」・E-3 と同じ Port を再利用）。無音で OFF に
+        倒したり別系列で代用したりせず、何が足りないかを文言で返す。
+        """
+        referenced = submission.strategy_indicator_names()
+        available = self._series_catalog.series_for(submission.ea_name)
+        missing = sorted(referenced - available)
+        if missing:
+            raise JobSubmissionInvalidError(
+                f"戦略条件が参照する指標系列 {missing} は EA {submission.ea_name} の指標"
+                f"レジストリに存在しません（登録系列={sorted(available)}）。ea_name"
+                "（指標セット）の選択と条件の指標名を一致させてください"
             )
 
     def _reject_invalid_backtest_keys(self, submission: JobSubmission) -> None:

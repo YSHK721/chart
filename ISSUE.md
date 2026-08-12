@@ -7240,3 +7240,40 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   4. Phase 5 で流用しない移植元資産（graphs.js・report.js・layout.js）とパリティ点 5/6/8/10/11
      は FR-16〜20 対象外。次 Phase（サマリー・グラフタブ・レイアウト）着手時に扱う。
 - **対策案**: 各対象モジュールへ次に手を入れる Phase で同時是正（ISSUE-374/376/378 と同運用）。
+
+## ISSUE-381: [申し送り] sim バックテスト Phase 6 のレビュー申し送り（2026-08-12・OPEN）
+
+- **検出日**: 2026-08-12
+- **検出経路**: feature/sim-backtest-phase6 の実装・実 UI 実測・コードレビュー（code-review-executor）。
+  いずれもマージ非阻害の記録事項。
+- **項目**:
+  1. **本番 JP225 バックテストデータの配置が未確定**。実 JP225 データは MT5 形式（TAB `<DATE>`・
+     time/spread 相当）のみ存在し、comma ローダ EA（TC24051901・ProFitBand）が読める comma
+     `time,…,spread` の実データは 0 件。SymbolSpecCatalog は現状 `simulator/tests/fixtures/mt5/
+     ma_slope_jp225_202501/input/JP225_M1_202501.csv`（実 OANDA-Japan MT5 JP225 M1・読取参照のみ）を
+     data_path に採用。恒久的な本番データ配置場所の確定＝別途対応（コード・検定にコメント明記済み）。
+  2. **EA×データ形式の適合を form で制限していない**。MT5 形式データセットで comma ローダ EA
+     （TC 等）を選ぶと data 読込で失敗する。E-5 は条件参照指標のみ検証し、建値基準系列
+     （`required_price_series(entry_price_basis)`）を受付検証しないため、不適合組合せは 202 で通り
+     実行時 fail-stop（遅い失敗）になる。form での適合制限か E-5 への基準系列追加を検討。
+  3. **フォーム既定 initial_deposit（10000）と JP225 notional の不整合**。既定のままだと JP225 は
+     証拠金不足で MarginCallError→job failed（実測）。デモは十分資金（1,000,000）指定で完走。
+     dataset 別推奨 deposit or 既定調整＝UX 改善。
+  4. `data_path` 生値の client 受理（パストラバーサル面）。server は body の data_path を無検証で
+     子プロセスへ渡す（カタログ authored 値は安全・localhost 固定ポート前提）。恒久是正＝
+     datasetRef→server 側 whitelist 解決（Phase 2 既存契約の性質）。
+  5. spec ブロックを増やすたび {file_job_ledger, job_models, job_api_controller, run_job} の 4 箇所
+     改変が再発（sizing/strategy と同型）。恒久是正＝spec.json 直列化のブロック集合の汎用化
+     （1 回の一般化）。
+  6. MT5 突合ゲート `test_run_options_mt5_gate.py` の (b)（実走 bit-exact 突合）は本 CSV で TC が
+     trades=0 のため実質 vacuous（定数を変えても結果不変）。実保証は (a) の直接等値 assert が担う。
+     意味ある negative control（TC が建玉を出す CSV での定数感度検定）は非 cheap のため未実装。
+  7. fake DOM が実ブラウザ専用バグを隠す穴。本 Phase で 2 件（`.children=` 代入・`.parent` 読取）を
+     実 UI で検出・修正し、import_source.test.js に構造ガードを追加した。`_fakes.js` の `.parent`
+     完全撤去（現状は front ガードで実害遮断・test 走査互換のため残置）と、実ブラウザ smoke test の
+     恒久導入を検討。
+  8. `tools/walk_forward_cli.py:_BUILD_INTERACTOR_KEYWORDS`（build_interactor シグネチャの手書き
+     ミラー・test 強制）が build_interactor の引数追加のたび同期を要する（strategy_override 追加で
+     再発）。ISSUE-374-5 の恒久是正（inspect.signature 由来へ）と同一。
+- **対策案**: 各対象へ次に手を入れる Phase で同時是正（ISSUE-374/376/378/380 と同運用）。
+  1・3 は本番運用データ確定時に対応。

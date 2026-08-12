@@ -473,6 +473,7 @@ def build_interactor(
     adx_period: int = 8,
     marketdata_window: Any = None,
     strategy_decorator: "Callable[[Any], Any] | None" = None,
+    strategy_override: "Any | None" = None,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
 
@@ -517,6 +518,14 @@ def build_interactor(
     )
     _ea_factory = _EA_FACTORIES.get(ea_name, _factory_tc24051901)
     strategy, registry, market_data = _ea_factory(_ea_ctx)
+    # Phase 6 F-8（依頼者承認済み・注入方式＝専用 param 新設）: spec 由来の汎用戦略
+    # （GenericConditionStrategy）で _EA_FACTORIES が選んだ戦略を置き換える拡張点。
+    # 既定 None は素通り＝既存挙動と byte 等価（MT5 突合の回帰ゼロ）。registry・
+    # market_data・tick_model の選択（ea_name＝指標セット）は override の有無で変えない。
+    # 置換は strategy_decorator（sizing）適用の**前**に行う＝sizing wrap は override へ
+    # 適用され合成順が両立する（指示書 §「注入方式」）。
+    if strategy_override is not None:
+        strategy = strategy_override
     # E-2（基本設計書 §12.4・依頼者承認済み）: 戦略を外から包む拡張点。既定 None は
     # 素通り＝既存と byte 等価（MT5 突合の回帰ゼロ）。sim モードのサイジング（F-4）は
     # ここへ SizingDecorator を差し込み、戦略 6 本と run_backtest.py を無改変に保つ。
