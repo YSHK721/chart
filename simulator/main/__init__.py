@@ -474,6 +474,7 @@ def build_interactor(
     marketdata_window: Any = None,
     strategy_decorator: "Callable[[Any], Any] | None" = None,
     strategy_override: "Any | None" = None,
+    position_manager: "Any | None" = None,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
 
@@ -583,6 +584,10 @@ def build_interactor(
         indicators=registry,
         tick_model=tick_model_impl,
         session_calendar=session_calendar_impl,
+        # Phase 7（依頼者承認済み・注入方式＝専用 param）: 建玉変更の適用器。既定 None は
+        # 素通り＝既存挙動と byte 等価（MT5 突合の回帰ゼロ）。sim モードは run_job が spec 由来の
+        # PositionManager を構築してここへ注入する（strategy_override と同型の拡張点）。
+        position_manager=position_manager,
     )
     controller = BacktestController(market_data=market_data, interactor=interactor)
 
