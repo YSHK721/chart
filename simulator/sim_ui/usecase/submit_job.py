@@ -69,6 +69,13 @@ class SubmitJobInteractor:
         # 受付時に検証する（sizing とは独立）。E-3 と同じ系列カタログ Port を再利用する。
         if submission.strategy_enabled:
             self._reject_if_strategy_indicators_unavailable(submission)
+            # 建玉変更（Phase 7 FR-07/08）: trailing/partial_close サブブロックの構造を受付で
+            # 検証する（マッピングでなければ即拒否）。意味検証（列挙・範囲）は run_job の
+            # framework loader が fail-stop で担う（受付は構造のみ・二重化しない）。
+            self._reject_invalid_position_change(submission)
+            # 粒度不一致の fail-stop（🟡・無言不作動の防止）: トレーリングの granularity が
+            # この run の実効粒度と一致しないと B2/B4 のどちらでも発火せず無音で不作動になる。
+            self._reject_trailing_granularity_mismatch(submission)
         if submission.sizing_enabled:
             # 順序: 先に E-3（建値推定の可否）→ 次に SL 保証。前者が満たせない戦略は
             # そもそもサイジングの対象外なので、より根本的な理由を先に返す。
@@ -114,6 +121,45 @@ class SubmitJobInteractor:
                 f"戦略条件が参照する指標系列 {missing} は EA {submission.ea_name} の指標"
                 f"レジストリに存在しません（登録系列={sorted(available)}）。ea_name"
                 "（指標セット）の選択と条件の指標名を一致させてください"
+            )
+
+    def _reject_invalid_position_change(self, submission: JobSubmission) -> None:
+        """Phase 7: trailing/partial_close が present なら **マッピング**であることを検証する。
+
+        中身（trigger_points・close_fraction・granularity 等）の意味検証は run_job の
+        `position_manager_spec_loader` が fail-stop で担う（usecase から framework へは依存
+        しない・二重化しない）。ここは「投入は通ったが実行だけ落ちる」を減らすための構造検査
+        に留める。
+        """
+        from typing import Mapping as _Mapping
+
+        trailing, partial_close = submission.position_change_blocks()
+        for name, block in (("trailing", trailing), ("partial_close", partial_close)):
+            if block is not None and not isinstance(block, _Mapping):
+                raise JobSubmissionInvalidError(
+                    f"strategy.{name} はマッピング（key: value）である必要があります"
+                    f"（指定型={type(block).__name__}）"
+                )
+
+    def _reject_trailing_granularity_mismatch(self, submission: JobSubmission) -> None:
+        """🟡 トレーリングの granularity と run の実効粒度の不一致を fail-stop で拒否する。
+
+        トレーリングは自身の設定粒度と一致する評価点（bar 経路=B2 / tick 経路=B4）でのみ
+        作動する。real_ticks 実行（tick 粒度）に granularity="bar"、または bar 実行（合成
+        tick_model）に granularity="tick" を与えると、どちらの評価点でも発火せず**無音で
+        不作動**になる（partial_close は粒度非依存で常時作動するため気づきにくい）。受付で
+        明示エラーにして「設定したのに効かない」を作らない。trailing 不在時は無検査。
+        """
+        wanted = submission.trailing_granularity()
+        if wanted is None:
+            return
+        effective = submission.effective_granularity
+        if wanted != effective:
+            raise JobSubmissionInvalidError(
+                f"トレーリングの granularity={wanted!r} は、この run の実効評価粒度"
+                f"={effective!r}（tick_model 由来）と一致しないため作動しません。"
+                f"bar 実行（合成 tick_model）は granularity='bar'、real_ticks 実行は"
+                f" granularity='tick' を指定してください（無音の不作動を防ぐため受付で拒否）"
             )
 
     def _reject_invalid_backtest_keys(self, submission: JobSubmission) -> None:
