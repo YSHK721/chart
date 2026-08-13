@@ -74,7 +74,10 @@ def _pair_record(tr: Any, i: int) -> dict:
     """売買ペア（建て→決済の線分結合用）DTO（§10.3）。win は pnl>0。時刻は既存 UNIX 秒式。
 
     ISSUE-026: hover 明細ポップアップ用に profit（pnl）と volume（取引/決済数量）を追加する。
-      MT5 往復は同量決済のため取引数量＝決済数量＝volume（部分決済は当エンジンに無い）。
+      volume は当該トレードの**決済数量**。全量決済は建玉量と一致し、部分決済（Phase 7 FR-08）
+      は建玉量未満の決済分（残玉は別トレードとして継続決済される）。各部分 exit は独立した
+      TradeRecord＝独立ペアとして描画される（MT5 Strategy Tester と同じく部分決済を独立 exit
+      に計上）。
     """
     return {
         "i": i,

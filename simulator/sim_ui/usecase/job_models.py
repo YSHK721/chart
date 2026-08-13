@@ -64,6 +64,38 @@ class JobSubmission:
         return frozenset(names)
 
     @property
+    def effective_granularity(self) -> str:
+        """この run の実効評価粒度（"bar"|"tick"）を返す（Phase 7・粒度ゲート用）。
+
+        RunBacktestInteractor.execute の分岐（run_backtest.py）に忠実:
+        ``tick_model == "real_ticks"`` または ``pending_lifecycle`` の run は every-tick 経路
+        （tick 粒度・B4）、それ以外（every_tick/ohlc_expand/open_only 等の合成 tick_model）は
+        bar 経路（bar 粒度・B2）。既定 tick_model は config_loader と同じ "every_tick"（＝bar）。
+        """
+        overrides = self.backtest.get("config_overrides") or {}
+        tick_model = str(overrides.get("tick_model", "every_tick"))
+        pending = bool(overrides.get("pending_lifecycle", False))
+        return "tick" if (tick_model == "real_ticks" or pending) else "bar"
+
+    def trailing_granularity(self) -> "str | None":
+        """strategy.trailing の granularity（省略時 "bar"）。trailing 不在は None。"""
+        strategy = self.strategy or {}
+        trailing = strategy.get("trailing")
+        if not isinstance(trailing, Mapping):
+            return None
+        return str(trailing.get("granularity", "bar"))
+
+    def position_change_blocks(self) -> "tuple[Any, Any]":
+        """strategy ブロックの (trailing, partial_close) 生値を返す（Phase 7 FR-07/08）。
+
+        受付検証（構造チェック）用。意味検証（列挙・範囲）は run_job の framework loader が
+        fail-stop で担うため、ここでは中身を解釈しない（存在と型だけを保守的に読む）。
+        strategy 不在は (None, None)＝OFF。
+        """
+        strategy = self.strategy or {}
+        return strategy.get("trailing"), strategy.get("partial_close")
+
+    @property
     def entry_price_basis(self) -> str:
         """約定価格基準。既定は config_loader と同じ "close"。"""
         overrides = self.backtest.get("config_overrides") or {}

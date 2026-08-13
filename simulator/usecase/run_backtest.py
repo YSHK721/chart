@@ -15,6 +15,7 @@ from typing import Any
 from simulator.domain.account import Account
 from simulator.domain.deal import Deal
 from simulator.domain.exceptions import MarginCallError
+from simulator.domain.position import Position
 from simulator.domain.trade_record import TradeRecord
 from simulator.usecase._execution import (
     check_sltp_hit,
@@ -29,6 +30,14 @@ from simulator.usecase.models import BacktestResult
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
 from simulator.usecase.session_gate import SessionGate
+
+
+# 部分決済（FR-08）の確定トレードに付す exit_reason。部分決済は実現 Deal であり、full-TP-hit
+# の "tp" と区別する必要がある（統計・マーカーで混同すると実トレードと乖離する）。依頼者裁定
+# （2026-08-13）により domain/trade_record.py の許可集合へ "partial" を追加し、正しく分類する
+# （抜本的解決）。既定 pm=None の golden 経路では本理由は一切生成されない（部分決済は opt-in）
+# ため byte 等価は不変。
+_PARTIAL_CLOSE_EXIT_REASON = "partial"
 
 
 def _close_deal(trade: TradeRecord) -> Deal:
@@ -94,12 +103,17 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         indicators: Any,
         tick_model: Any,
         session_calendar: Any = None,
+        position_manager: Any = None,
     ) -> None:
         self._strategy = strategy
         self._indicators = indicators
         self._tick_model = tick_model
         # 市場開閉カレンダー（DI・既定 None=常時開場＝既定経路 byte-identical）。
         self._session_calendar = session_calendar
+        # 建玉変更（トレーリング FR-07・部分決済 FR-08）の適用器（DI・既定 None＝無変更
+        # ＝既定経路 byte-identical・Phase 7）。None のときは呼出点を素通りする（`if pm is
+        # not None` ゲート）。注入時のみ B2（bar）/B4（tick）で保有玉を評価する。
+        self._position_manager = position_manager
         # 約定損益の口座通貨丸め桁（execute/_execute_every_tick が config から設定）。
         # __init__ で明示初期化し「execute 経由で必ず設定済み」の前提を明確化する。
         self._profit_round_digits: "int | None" = None
@@ -125,17 +139,30 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         trades: list,
         deals: list,
         balance_curve: list,
+        close_volume: "float | None" = None,
     ) -> None:
-        """保有玉 1 件を確定決済する（reverse / SL / TP で共通の決済処理）。
+        """保有玉 1 件を確定決済する（reverse / SL / TP / 部分決済で共通の決済処理）。
 
         手順は確定トレード列・margin・deal・balance_curve への反映を 1 箇所に集約する
         （reverse 決済と SL/TP 決済で重複していた処理の単一化）。TradeRecord は本メソッド
         が唯一の生成点であり、約定損益の通貨丸め桁（self._profit_round_digits・既定 None）
         を確定トレードへ付与する。振る舞いは丸め桁未設定時は不変（後方互換）。
+
+        close_volume（Phase 7 FR-08・部分決済の単一ソース化）:
+            None（既定）= 全量決済。``v = ot.position.volume`` で従来と byte-identical。
+            指定時 = 部分決済。``v = close_volume`` を決済し、margin/swap/commission を
+            v/total 比で按分解放する（swap=commission=0 のため 0×比=0＝全量経路 byte 不変）。
+            残玉（v < total）は frozen Position を ``Position(side, total−v, entry)`` で縮小
+            再構築し、account.open_positions を**同 index 置換**（走査順=反映順の byte 依存を
+            保持）、ot.position も残玉へ差し替える（ot.sl/ot.tp は不変で建玉時 SL/TP を維持）。
+            v == total は現状どおり remove（byte 等価）。約定数学は _execution・Deal.from_close
+            を共有し、写経しない。
         """
+        total = ot.position.volume
+        v = close_volume if close_volume is not None else total
         trade = TradeRecord(
             side=ot.position.side,
-            volume=ot.position.volume,
+            volume=v,
             entry_time=ot.entry_time,
             exit_time=exit_time,
             entry_price=ot.entry_price,
@@ -147,12 +174,62 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             profit_round_digits=self._profit_round_digits,
         )
         trades.append(trade)
-        account.open_positions.remove(ot.position)
-        account.margin -= ot.position.required_margin(leverage, contract_size)
+        # margin を v/total 比で按分解放（v==total で比=1.0＝全量経路と byte 一致）。
+        account.margin -= ot.position.required_margin(leverage, contract_size) * (v / total)
+        if close_volume is not None and v < total:
+            # 部分決済: 残玉を縮小再構築し open_positions を同 index 置換（走査順を保持）。
+            residual = Position(
+                side=ot.position.side, volume=total - v, entry_price=ot.position.entry_price
+            )
+            idx = account.open_positions.index(ot.position)
+            account.open_positions[idx] = residual
+            ot.position = residual  # ot も残玉へ（同一 ot が生存継続・sl/tp は不変）
+        else:
+            account.open_positions.remove(ot.position)
         deal = _close_deal(trade)
         deals.append(deal)
         account.apply_deal(deal)
         balance_curve.append(account.balance)
+
+    def _apply_directive(
+        self,
+        directive: Any,
+        ot: _OpenTrade,
+        *,
+        close_trade: Any,
+        exit_time: Any,
+        exit_price: float,
+    ) -> None:
+        """PositionDirective を保有玉へ適用する（Phase 7・忠実適用順序）。
+
+        hit 判定（H）の後に呼ばれ、部分決済（実現 Deal・証拠金を按分解放）→ SL/TP 更新
+        （ot.sl/ot.tp 書換・次評価点から効く）の順で反映する。SL/TP 更新のみのトレーリングは
+        TradeRecord を生成しない（含み玉の SL を締めるだけ）。directive が None/無変更なら
+        何もしない（既定経路 byte 不変）。部分決済は :meth:`_close_open_trade` を close_volume
+        付きで呼び、全量経路と同一の約定数学（_execution・Deal.from_close）を共有する。
+
+        部分決済のフィル価格は directive.close_price を用いる（bar 粒度＝トリガー水準／tick
+        粒度＝現在価格）。到達検出（極値 touch）とフィル価格を分離する（依頼者裁定 2026-08-13：
+        bar は部分 TP としてトリガー水準で約定・極値でフィルしない）。close_price 未指定
+        （None）の場合のみ呼出側の exit_price へフォールバックする（防御的）。
+        """
+        if directive is None or directive.is_noop():
+            return
+        if directive.close_volume is not None:
+            fill_price = (
+                directive.close_price if directive.close_price is not None else exit_price
+            )
+            close_trade(
+                ot,
+                exit_time=exit_time,
+                exit_price=fill_price,
+                exit_reason=_PARTIAL_CLOSE_EXIT_REASON,
+                close_volume=directive.close_volume,
+            )
+        if directive.new_sl is not None:
+            ot.sl = directive.new_sl
+        if directive.new_tp is not None:
+            ot.tp = directive.new_tp
 
     def execute(self, request: RunBacktestRequest) -> BacktestResult:
         # every-tick 経路への分岐（every-tick #5）。config.tick_model == "real_ticks"
@@ -192,7 +269,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         )
         # ISSUE-308: 決済呼び出しの**不変の文脈**（口座・記録先・銘柄仕様）をここで 1 度だけ束ねる。
         #   これらは 1 回の実行中に変わらないため、各決済地点で書き写す必要がない。
-        def close_trade(ot, *, exit_time, exit_price, exit_reason) -> None:
+        def close_trade(ot, *, exit_time, exit_price, exit_reason, close_volume=None) -> None:
             self._close_open_trade(
                 ot,
                 exit_time=exit_time,
@@ -204,6 +281,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 trades=trades,
                 deals=deals,
                 balance_curve=balance_curve,
+                close_volume=close_volume,
             )
 
         # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
@@ -364,6 +442,23 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
             open_trades = still_open
 
+            # B2 建玉変更（トレーリング FR-07・部分決済 FR-08）を hit 判定（H）の後・I の前に
+            #   適用する（Phase 7・忠実順序: サーバ hit → EA 動作 → 口座再評価）。既定 pm=None
+            #   は素通り＝byte-identical。参照/決済価格はトレーリング方向の到達価格（buy=high /
+            #   sell=low）で、check_sltp_hit が high/low で touch を見るのと対称にする（close だと
+            #   SL/TP 判定と非対称になる）。閉鎖バーは EA 動作外として適用しない（H と一貫）。
+            pm = self._position_manager
+            if pm is not None and open_trades and not session_gate.is_closed(bar_index):
+                for ot in list(open_trades):
+                    ref = bar.high if ot.position.side == "buy" else bar.low
+                    directive = pm.evaluate(
+                        ot=ot, ref_price=ref, granularity="bar", account=account
+                    )
+                    self._apply_directive(
+                        directive, ot, close_trade=close_trade,
+                        exit_time=bar.time, exit_price=ref,
+                    )
+
             # I エクイティ/残高の更新（含み損益反映）→ margin_level < stop_out で停止処理
             #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
             eq_bid, eq_ask = resolve_eval_quote(
@@ -483,7 +578,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         )
 
         # ISSUE-308: execute() と同じ不変文脈の束ね（決済地点ごとの書き写しを無くす）。
-        def close_trade(ot, *, exit_time, exit_price, exit_reason) -> None:
+        def close_trade(ot, *, exit_time, exit_price, exit_reason, close_volume=None) -> None:
             self._close_open_trade(
                 ot,
                 exit_time=exit_time,
@@ -495,9 +590,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 trades=trades,
                 deals=deals,
                 balance_curve=balance_curve,
+                close_volume=close_volume,
             )
 
         halted = False
+        # 建玉変更の適用器（Phase 7・既定 None＝素通り＝byte-identical）。B4 で参照する。
+        pm = self._position_manager
 
         trading_start = request.trading_start
         prime_first = getattr(config, "prime_first_trading_bar", False)
@@ -767,6 +865,24 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         exit_reason=reason,
                     )
                 open_trades = still_open
+
+                # B4 建玉変更（トレーリング FR-07・部分決済 FR-08）を hit 判定（H）の後・I の前に
+                #   適用する（Phase 7・忠実順序: on_tick 等の EA 動作帯・I の前）。既定 pm=None は
+                #   素通り＝byte-identical。参照/決済価格は保有玉の決済価格（buy=Bid / sell=Ask＝
+                #   close_price_for・floating 評価と同一基準）。pending_mode は q_bid/q_ask、
+                #   real_ticks は tick の bid/ask を用いる。閉鎖バーは EA 動作外で適用しない。
+                if pm is not None and open_trades and not bar_closed:
+                    mb = q_bid if pending_mode else bid
+                    ma = q_ask if pending_mode else ask
+                    for ot in list(open_trades):
+                        exit_px = close_price_for(ot.position.side, bid=mb, ask=ma)
+                        directive = pm.evaluate(
+                            ot=ot, ref_price=exit_px, granularity="tick", account=account
+                        )
+                        self._apply_directive(
+                            directive, ot, close_trade=close_trade,
+                            exit_time=bar.time, exit_price=exit_px,
+                        )
 
                 # ★armed ペンディングのトリガ評価（約定価格＝注文価格・スリッページ0）。
                 #   クォート規約は derive_quotes と対称に bid=ティック価格 / ask=bid+spread×point

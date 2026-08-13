@@ -195,6 +195,107 @@ test("empty strategy is omitted (OFF は byte 等価)", () => {
   assert.equal("strategy" in body, false);
 });
 
+// --- 5c. 建玉変更（トレーリング FR-07 / 部分決済 FR-08・Phase 7）------------------
+// 固定する不変条件:
+//   - mount は trailing/partial_close の入力欄（ON トグル＋各フィールド）を生成する。
+//   - 既定 OFF（トグル未チェック）では strategy に trailing/partial_close を載せない
+//     （＝Phase 6 本文と byte 等価・回帰ゼロ）。両側条件も無ければ strategy 自体を省く。
+//   - trailing ON で strategy.trailing = {granularity, trigger_points, distance_points,
+//     step_points}（数値・granularity は文字列）を載せる。granularity 選択肢は厳密に [bar, tick]。
+//   - partial ON で strategy.partial_close = {trigger:{profit_points}, close_fraction}（数値）を載せる。
+
+test("mount builds trailing/partial_close inputs (Phase 7)", () => {
+  const { host } = mounted();
+  assert.ok(findById(host, "execTrailingOn"), "#execTrailingOn が無い");
+  assert.ok(findById(host, "execTrailGran"), "#execTrailGran が無い");
+  assert.ok(findById(host, "execTrailTrigger"), "#execTrailTrigger が無い");
+  assert.ok(findById(host, "execTrailDistance"), "#execTrailDistance が無い");
+  assert.ok(findById(host, "execTrailStep"), "#execTrailStep が無い");
+  assert.ok(findById(host, "execPartialOn"), "#execPartialOn が無い");
+  assert.ok(findById(host, "execPartialTrigger"), "#execPartialTrigger が無い");
+  assert.ok(findById(host, "execPartialFraction"), "#execPartialFraction が無い");
+});
+
+test("trailing granularity options are exactly bar and tick", () => {
+  const { host } = mounted();
+  const gran = findById(host, "execTrailGran");
+  assert.deepEqual((gran.children || []).map((o) => o.value), ["bar", "tick"]);
+});
+
+test("position-change blocks are omitted when toggles are OFF (byte 等価)", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  setVal(findById(host, "execEaName"), "TC24051901");
+  // トグル未チェック（既定 OFF）。値だけ入っていても spec には載せない。
+  setVal(findById(host, "execTrailTrigger"), "300");
+  setVal(findById(host, "execTrailDistance"), "150");
+  setVal(findById(host, "execPartialFraction"), "0.5");
+  const body = view.buildSubmission();
+  // 両側条件が無いので strategy 自体を省く（Phase 6 と同じ OFF＝byte 等価）。
+  assert.equal("strategy" in body, false);
+});
+
+test("trailing ON loads strategy.trailing with typed fields (bar 粒度)", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  findById(host, "execTrailingOn").checked = true;
+  setVal(findById(host, "execTrailGran"), "bar");
+  setVal(findById(host, "execTrailTrigger"), "300");
+  setVal(findById(host, "execTrailDistance"), "150");
+  setVal(findById(host, "execTrailStep"), "10");
+  const strategy = view.buildSubmission().strategy;
+  assert.deepEqual(strategy.trailing, {
+    granularity: "bar",
+    trigger_points: 300,
+    distance_points: 150,
+    step_points: 10,
+  });
+  // partial は OFF なので載らない。
+  assert.equal("partial_close" in strategy, false);
+});
+
+test("partial_close ON loads strategy.partial_close with typed fields", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  findById(host, "execPartialOn").checked = true;
+  setVal(findById(host, "execPartialTrigger"), "200");
+  setVal(findById(host, "execPartialFraction"), "0.5");
+  const strategy = view.buildSubmission().strategy;
+  assert.deepEqual(strategy.partial_close, {
+    trigger: { profit_points: 200 },
+    close_fraction: 0.5,
+  });
+  assert.equal("trailing" in strategy, false);
+});
+
+test("tick granularity is carried through when selected", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  findById(host, "execTrailingOn").checked = true;
+  setVal(findById(host, "execTrailGran"), "tick");
+  setVal(findById(host, "execTrailTrigger"), "0");
+  setVal(findById(host, "execTrailDistance"), "120");
+  setVal(findById(host, "execTrailStep"), "0");
+  const t = view.buildSubmission().strategy.trailing;
+  assert.strictEqual(t.granularity, "tick");
+  assert.strictEqual(t.trigger_points, 0);
+  assert.strictEqual(t.step_points, 0);
+});
+
+test("position-change blocks coexist with entry conditions", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  view.setIndicatorCandidates(["ema", "close"]);
+  view.addCondition("long");
+  const row = byClass(host, "exec-cond-row")[0];
+  setVal(byClass(row, "exec-ind")[0], "close");
+  findById(host, "execTrailingOn").checked = true;
+  setVal(findById(host, "execTrailDistance"), "150");
+  const strategy = view.buildSubmission().strategy;
+  assert.ok(Array.isArray(strategy.entry_long), "entry_long が消えた");
+  assert.ok(strategy.trailing, "trailing が entry と併存していない");
+});
+
 // --- 5b. onEaChange（ea_name 変更で候補を選択 EA の系列へ入れ替える結線）--------
 
 test("changing ea_name fires onEaChange with the new ea (候補の再取得起点)", () => {

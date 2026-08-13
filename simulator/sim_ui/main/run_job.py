@@ -133,11 +133,50 @@ def _build_strategy_override(spec: "dict[str, Any]") -> Any:
 
     backtest = spec.get("backtest") or {}
     overrides = backtest.get("config_overrides") or {}
-    entry_long, entry_short = load_strategy_spec(spec.get("strategy") or {})
+    # trailing/partial_close（Phase 7 の建玉変更サブブロック）は別 loader
+    # （position_manager_spec_loader）が担うため、strategy_spec の extra="forbid" に触れない
+    # よう**この 2 キーだけ**除外して残りを渡す。entry_long/entry_short 以外の未知キー（タイポ）は
+    # load_strategy_spec の extra="forbid" が引き続き検出する（typo 検出を弱めない）。
+    strategy_block = spec.get("strategy") or {}
+    entry_block = {
+        k: v for k, v in strategy_block.items() if k not in ("trailing", "partial_close")
+    }
+    entry_long, entry_short = load_strategy_spec(entry_block)
     return GenericConditionStrategy(
         entry_long=entry_long,
         entry_short=entry_short,
         entry_price_basis=overrides.get("entry_price_basis", "close"),
+    )
+
+
+def _build_position_manager(spec: "dict[str, Any]") -> Any:
+    """spec.strategy.trailing / partial_close から建玉変更の適用器を組む（Phase 7・E-2 の
+    `position_manager`）。トレーリング/部分決済のいずれも無ければ ``None``（OFF＝既存挙動
+    byte 等価）。
+
+    検証・domain 規則構築は framework の `position_manager_spec_loader.load_position_change_spec`
+    （strategy_spec_loader と対称の単一ソース）へ委譲する。adapter :class:`PositionManager` の
+    構築（point_size/volume_step 注入）は本 Composition Root が担う（framework→domain・
+    adapter 構築は main の責務・層方向を守る）。Group（framework loader・adapter）へは
+    **この関数の中でだけ**依存する（OFF 経路が実装 import に巻き込まれない）。
+    """
+    from simulator.adapter.position_manager.position_manager import PositionManager
+    from simulator.framework.position_manager_spec_loader import (
+        load_position_change_spec,
+    )
+
+    backtest = spec.get("backtest") or {}
+    # 欠落は KeyError（既定値で黙って埋めない＝銘柄と違う点数/刻みで静かに誤らせない）。
+    point_size = backtest["point_size"]
+    volume_step = backtest["volume_step"]
+    change = load_position_change_spec(spec.get("strategy") or {}, point_size=point_size)
+    if change is None:
+        return None
+    return PositionManager(
+        trailing_rule=change.trailing_rule,
+        partial_close_rule=change.partial_close_rule,
+        trailing_granularity=change.trailing_granularity,
+        volume_step=volume_step,
     )
 
 
@@ -215,6 +254,21 @@ def main(argv: "list[str] | None" = None) -> int:
             print(message, file=sys.stderr)
             _record_failure(job_dir, message)
             return _EXIT_SPEC_ERROR
+
+    # 建玉変更（Phase 7 FR-07/08・P7）: strategy.trailing / partial_close が present のときだけ
+    # PositionManager を組んで渡す。不在は渡さない（引数の不在で既存挙動 byte 等価）。
+    # position_manager と strategy_override/sizing decorator は独立に meta へ載せ、
+    # build_interactor が各拡張点へ注入する。
+    if spec.get("strategy"):
+        try:
+            pm = _build_position_manager(spec)
+        except Exception as exc:
+            message = f"建玉変更（トレーリング/部分決済）の構築に失敗しました: {exc}"
+            print(message, file=sys.stderr)
+            _record_failure(job_dir, message)
+            return _EXIT_SPEC_ERROR
+        if pm is not None:
+            meta["position_manager"] = pm
 
     try:
         exit_code, _result = run_backtest(output_dir=job_dir, **meta)

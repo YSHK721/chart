@@ -48,6 +48,9 @@ _BUILD_INTERACTOR_KEYWORDS = frozenset({
     # Phase 6 F-8（依頼者承認済み）で追加された戦略 override の差し込み口。同じく探索
     # 対象スカラーではないが、上記の「実シグネチャと一致させる規約」に従い列挙する。
     "strategy_override",
+    # Phase 7（依頼者承認済み）で追加された建玉変更（トレーリング/部分決済）の適用器の
+    # 差し込み口。同じく探索対象スカラーではないが、実シグネチャ一致規約に従い列挙する。
+    "position_manager",
 })
 
 

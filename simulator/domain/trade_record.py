@@ -2,7 +2,7 @@
 
 不変条件:
     exit_time >= entry_time（違反時 TimeOrderError）
-    exit_reason in {sl, tp, reverse, expire, stop_out}（PROCESS §6・cycle4・違反時 DataError）
+    exit_reason in {sl, tp, reverse, expire, stop_out, end_of_test, partial}（PROCESS §6・cycle4・違反時 DataError）
 
 公開振る舞い:
     pnl() -> float
@@ -24,8 +24,10 @@ from simulator.domain.exceptions import DataError, TimeOrderError
 # exit_reason は TradeRecord 固有の語彙のため当モジュールに留める（YAGNI: 単一利用）。
 # stop_out は cycle4 で追加（close_and_halt 時の強制決済理由）。
 # end_of_test は 2603-01 で追加（ペンディング経路でテスト終了時に残存建玉を清算する理由）。
+# partial は Phase 7 で追加（FR-08 部分決済の実現 Deal。full-TP-hit の "tp" と区別して
+#   統計・マーカーへ忠実反映する。既定 pm=None 経路では生成されない＝byte 等価不変）。
 _EXIT_REASONS = frozenset(
-    {"sl", "tp", "reverse", "expire", "stop_out", "end_of_test"}
+    {"sl", "tp", "reverse", "expire", "stop_out", "end_of_test", "partial"}
 )
 
 
@@ -53,7 +55,7 @@ class TradeRecord:
             )
         if self.exit_reason not in _EXIT_REASONS:
             raise DataError(
-                "exit_reason は {sl, tp, reverse, expire, stop_out, end_of_test} のいずれか",
+                "exit_reason は {sl, tp, reverse, expire, stop_out, end_of_test, partial} のいずれか",
                 context={"exit_reason": self.exit_reason},
             )
 

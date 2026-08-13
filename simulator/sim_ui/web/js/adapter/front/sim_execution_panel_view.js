@@ -17,6 +17,9 @@
 //   （fake DOM の querySelector は null を返すため・_fakes.js 実測）。
 
 const OPS = Object.freeze([">", "<"]);
+// トレーリング評価粒度（バー確定毎 / tick 毎）。spec スキーマと 1:1（backend loader の
+// Literal["bar","tick"] と同集合）。UI からはこの 2 値のみを露出する（TBD-01 確定）。
+const TRAIL_GRANS = Object.freeze(["bar", "tick"]);
 
 export function createSimExecutionPanelView({ doc } = {}) {
   let root = null;
@@ -31,6 +34,16 @@ export function createSimExecutionPanelView({ doc } = {}) {
   let maMethodInput = null;
   let depositInput = null;
   let lotInput = null;
+  // 建玉変更（トレーリング FR-07 / 部分決済 FR-08・Phase 7）。既定 OFF＝トグル未チェックで
+  // spec に載せない（Phase 6 本文と byte 等価）。
+  let trailingOn = null;
+  let trailGranSel = null;
+  let trailTriggerInput = null;
+  let trailDistanceInput = null;
+  let trailStepInput = null;
+  let partialOn = null;
+  let partialTriggerInput = null;
+  let partialFractionInput = null;
   let candidates = [];
   let eaCandidates = [];
   let profiles = [];
@@ -145,6 +158,22 @@ export function createSimExecutionPanelView({ doc } = {}) {
     const strategy = {};
     if (rows.long.length) strategy.entry_long = sideConditions("long");
     if (rows.short.length) strategy.entry_short = sideConditions("short");
+    // 建玉変更（Phase 7）: トグル ON のときだけ載せる。未チェック（既定 OFF）は不在＝
+    // backend の body.get("strategy").get("trailing") が None＝既存挙動と byte 等価。
+    if (trailingOn && trailingOn.checked) {
+      strategy.trailing = {
+        granularity: String(trailGranSel.value),
+        trigger_points: Number(trailTriggerInput.value),
+        distance_points: Number(trailDistanceInput.value),
+        step_points: Number(trailStepInput.value),
+      };
+    }
+    if (partialOn && partialOn.checked) {
+      strategy.partial_close = {
+        trigger: { profit_points: Number(partialTriggerInput.value) },
+        close_fraction: Number(partialFractionInput.value),
+      };
+    }
     const body = { backtest };
     // 両側とも空なら strategy を丸ごと省く（OFF＝既存 2 キー本文と byte 等価）。
     if (Object.keys(strategy).length) body.strategy = strategy;
@@ -208,6 +237,47 @@ export function createSimExecutionPanelView({ doc } = {}) {
       shortBlock.appendChild(shortHost);
       shortBlock.appendChild(addShort);
 
+      // 建玉変更（トレーリング FR-07 / 部分決済 FR-08・Phase 7）。既定 OFF（トグル未チェック）
+      // ＝spec に載せない＝Phase 6 本文と byte 等価。ON のときだけ各フィールドを読む。
+      const pcBlock = el("div", { className: "exec-side", dataset: { side: "position-change" } });
+      pcBlock.appendChild(el("div", { className: "exec-side-title", textContent: "建玉変更（任意・既定 OFF）" }));
+
+      const trailToggleWrap = el("label", { className: "exec-field", textContent: "トレーリング ON" });
+      trailingOn = el("input", { id: "execTrailingOn", className: "exec-trailing-on", type: "checkbox", checked: false });
+      trailToggleWrap.appendChild(trailingOn);
+      trailGranSel = el("select", { id: "execTrailGran", className: "exec-trail-gran" });
+      fillOptions(trailGranSel, TRAIL_GRANS);
+      const trailGranWrap = el("label", { className: "exec-field", textContent: "粒度" });
+      trailGranWrap.appendChild(trailGranSel);
+      trailTriggerInput = el("input", { id: "execTrailTrigger", className: "exec-trail-trigger", type: "number", value: "0", min: "0" });
+      const trailTriggerWrap = el("label", { className: "exec-field", textContent: "作動益(点)" });
+      trailTriggerWrap.appendChild(trailTriggerInput);
+      trailDistanceInput = el("input", { id: "execTrailDistance", className: "exec-trail-distance", type: "number", value: "150", min: "1" });
+      const trailDistanceWrap = el("label", { className: "exec-field", textContent: "距離(点)" });
+      trailDistanceWrap.appendChild(trailDistanceInput);
+      trailStepInput = el("input", { id: "execTrailStep", className: "exec-trail-step", type: "number", value: "0", min: "0" });
+      const trailStepWrap = el("label", { className: "exec-field", textContent: "刻み(点)" });
+      trailStepWrap.appendChild(trailStepInput);
+
+      const partialToggleWrap = el("label", { className: "exec-field", textContent: "部分決済 ON" });
+      partialOn = el("input", { id: "execPartialOn", className: "exec-partial-on", type: "checkbox", checked: false });
+      partialToggleWrap.appendChild(partialOn);
+      partialTriggerInput = el("input", { id: "execPartialTrigger", className: "exec-partial-trigger", type: "number", value: "0", min: "0" });
+      const partialTriggerWrap = el("label", { className: "exec-field", textContent: "作動益(点)" });
+      partialTriggerWrap.appendChild(partialTriggerInput);
+      partialFractionInput = el("input", { id: "execPartialFraction", className: "exec-partial-fraction", type: "number", value: "0.5", min: "0", max: "1", step: "0.05" });
+      const partialFractionWrap = el("label", { className: "exec-field", textContent: "決済割合" });
+      partialFractionWrap.appendChild(partialFractionInput);
+
+      pcBlock.appendChild(trailToggleWrap);
+      pcBlock.appendChild(trailGranWrap);
+      pcBlock.appendChild(trailTriggerWrap);
+      pcBlock.appendChild(trailDistanceWrap);
+      pcBlock.appendChild(trailStepWrap);
+      pcBlock.appendChild(partialToggleWrap);
+      pcBlock.appendChild(partialTriggerWrap);
+      pcBlock.appendChild(partialFractionWrap);
+
       submitBtn = el("button", { id: "execSubmit", className: "exec-submit", type: "button", textContent: "投入" });
       submitBtn.addEventListener("click", () => { if (submitCb) submitCb(buildSubmission()); });
 
@@ -221,6 +291,7 @@ export function createSimExecutionPanelView({ doc } = {}) {
       root.appendChild(lotWrap);
       root.appendChild(longBlock);
       root.appendChild(shortBlock);
+      root.appendChild(pcBlock);
       root.appendChild(submitBtn);
 
       host.appendChild(root);

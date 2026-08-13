@@ -7277,3 +7277,38 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
      再発）。ISSUE-374-5 の恒久是正（inspect.signature 由来へ）と同一。
 - **対策案**: 各対象へ次に手を入れる Phase で同時是正（ISSUE-374/376/378/380 と同運用）。
   1・3 は本番運用データ確定時に対応。
+
+## ISSUE-382: [申し送り] sim バックテスト Phase 7 のレビュー申し送り（2026-08-13・OPEN）
+
+- **検出日**: 2026-08-13
+- **検出経路**: feature/sim-backtest-phase7 の設計・実装・実 UI 実測・コードレビュー。
+  依頼者厳命「実トレードの完全再現・安易な選択禁止」の統制下。いずれもマージ非阻害。
+- **項目**:
+  1. **swap/commission=0 モデルの限界**。現行エンジンは overnight swap・commission を 0 固定
+     （Phase 1-6 から・confirmation fixture も swap=0）。CFD の実口座資金には overnight swap が
+     効き、部分決済は残玉の保有期間を延ばすため日跨ぎ swap が本来必要。Phase 7 の按分機構は
+     実装済み（0×比=0 で全量 byte 不変）。swap/commission のモデル化は既存 MT5 fixture
+     （swap=0）の再生成＝bit-exact 破壊を要するため Phase 7 スコープ外。恒久対応は別途。
+  2. **明細の SL/TP 列が trailing 追随後の SL を反映しない**（pre-existing・ISSUE-094 系）。
+     build_report_payload が sl/tp を固定パラメータ（entry±点数）から導出表示するため。
+     exit_price は追随後 SL を正しく反映。TradeRecord への実 SL 格納は承認スコープ外＝別途。
+  3. **bar 粒度部分決済フィルの gap 端エッジ**（レビュー🔵）。fill=entry+trigger（buy）は、
+     前バーで既に深利益（gap up で当バー low>fill）の稀ケースでバー範囲外（fill<low）に
+     なりうる。方向は保守側（益過小・favorable でない）で依頼者裁定「トリガー水準（部分 TP）」に
+     忠実・上界 fill≤high は常時充足のため是正不要だが記録。
+  4. **粒度ゲートは submit_job（UI）経路のみ**。programmatic 直投入は非対象（従来同等）。
+  5. **run_job の `_build_position_manager` が OFF 短絡前に backtest["point_size"]/["volume_step"]
+     を先読み**（run_job.py）。両キーは build_interactor 必須 param＝submit で欠落拒否済みゆえ
+     実害は不正 spec 限定だが、欠落時に誤誘導メッセージになる。trailing/partial 不在なら
+     backtest キー参照前に None 返却する順序へ（🔵）。
+  6. **PositionManagerPort.evaluate の account 引数が全実装で未使用**（前方契約・YAGNI・🔵）。
+  7. **_partial_done キー (side, entry_time, entry_price) は単一玉前提**（held_sides で 1-per-side・
+     documented YAGNI）。将来複数玉拡張時の衝突注意点（🔵）。
+  8. **confirmation reconcile 7 本一括は tick データが main checkout のみ**のため worktree から
+     一括実行不可。programmer が PYTHONPATH 結線で 7 本 bit-exact を実測済み・pm=None 経路は
+     byte 不変を機械証明済みだが、main checkout での最終確認を推奨。
+  9. **8000 canonical 経路の最終確認**。実測は他セッションとの 8000 競合回避のため ephemeral-port
+     の製品 UI 経路（build_sim_display_app＋create_router_server）で実施。競合解消後に 8000
+     canonical でも確認推奨。
+- **対策案**: 各対象へ次に手を入れる Phase で同時是正（ISSUE-374/376/378/380/381 と同運用）。
+  1・2 は口座資金モデルの拡張時に対応。
