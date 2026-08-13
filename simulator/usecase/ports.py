@@ -132,6 +132,26 @@ class StrategyPort(abc.ABC):
         return []
 
 
+class PositionManagerPort(abc.ABC):
+    """建玉変更（トレーリング FR-07・部分決済 FR-08）の隔離（Phase 7）。
+
+    Interactor は 1 評価点で保有玉 1 件を渡し、``PositionDirective``（新 SL/TP・部分決済量）
+    または ``None``（無変更）を受け取る。既定（NullPositionManager）は常に ``None`` を返し、
+    既定経路の出力を 1 バイトも変えない（LSP）。既存 StrategyPort は無変更（ISP）。
+
+    ``granularity`` ∈ {"bar", "tick"}: 呼出元の評価粒度。トレーリング規則は自身の
+    設定粒度と一致するときのみ作動する（両粒度を spec で選択）。適用順序（部分決済→
+    SL/TP 更新→hit 判定の相対位置）は Interactor が符号化し、本 Port は値のみ返す。
+    """
+
+    @abc.abstractmethod
+    def evaluate(
+        self, *, ot: Any, ref_price: float, granularity: str, account: Any
+    ) -> Any:
+        """保有玉 1 件を評価し PositionDirective|None を返す。"""
+        raise NotImplementedError
+
+
 class IndicatorPort(abc.ABC):
     """指標の隔離（IndicatorRegistry）。"""
 
