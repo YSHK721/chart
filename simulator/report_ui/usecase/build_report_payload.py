@@ -36,6 +36,7 @@ _EXIT_REASON_COMMENT = {
     "expire": "expire",
     "stop_out": "stop out",
     "end_of_test": "end of test",
+    "partial": "partial",  # Phase 7 FR-08 部分決済（full-TP と区別・依頼者裁定 2026-08-13）
 }
 
 
