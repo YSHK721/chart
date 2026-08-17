@@ -10,6 +10,7 @@
 import { seriesKind } from '../../domain/series_kind.js';
 import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 import { toChannels } from '../../domain/color_value.js';
+import { enforceAscendingTimes } from './series_time_guard.js';
 
 // lineStyle 文字列 → lightweight-charts LineStyle 整数（v4/v5 共通: Solid=0 / Dotted=1 / Dashed=2）。
 const LINE_STYLE_INT = Object.freeze({ solid: 0, dotted: 1, dashed: 2 });
@@ -226,11 +227,13 @@ export class SeriesDrawer {
         : this._h._chart.addSeries(definition, options);
       // payload 契約は line と同一（{time, value}）。level_dash のみ表示層で 4 値へ展開する
       //   （back の payload 形状を増やさないための写像点＝ここが唯一）。
-      const data = p.data ?? [];
+      const key = `${instanceId}::${p.name}`;
+      // ISSUE-383: lwc へ渡す直前の時系列契約防壁（厳密増加 time の保証・ISSUE-167 のローソク防壁の
+      //   全系列一般化）。清浄なら同一参照＝挙動不変。違反はフィンガープリントを error ログして畳む。
+      const data = enforceAscendingTimes(p.data ?? [], key);
       series.setData(seriesType === 'level_dash'
         ? data.map((d) => ({ time: d.time, open: d.value, high: d.value, low: d.value, close: d.value }))
         : data);
-      const key = `${instanceId}::${p.name}`;
       slot.lines.set(key, series);
       const metaEntry = {
         name: p.name, kind, color: p.color ?? null,
@@ -253,14 +256,16 @@ export class SeriesDrawer {
       //   barEditable キーを持たず seriesData にも載せない（native histogram 他指標へ非波及＝挙動不変）。
       if (p.bar_editable === true) {
         metaEntry.barEditable = true;
-        slot.seriesData.set(key, p.data ?? []);
+        // ISSUE-383: 退避もガード済み配列（スワップ再 setData で契約違反を再持込しない）。
+        slot.seriesData.set(key, data);
       }
       slot.styleMeta.set(key, metaEntry);
       // ISSUE-276: 末尾点の値。ペイン別凡例が「クロスヘアが無いときの表示値」に使う。従来は
       //   overlay 系列だけが _overlayReadouts に持っており、pane 指標はクロスヘアを乗せないと
       //   値が出せなかった。styleMeta とは別の Map に持つ（styleMeta はプロパティダイアログへ
       //   渡るスタイル契約であり、実行時の値を混ぜない）。
-      slot.lastValues.set(key, lastPointValue(p.data));
+      // ISSUE-383: 凡例の末尾値は実際に描画した集合（ガード済み）から取る（描画と表示の一致）。
+      slot.lastValues.set(key, lastPointValue(data));
       if (!slot.scaleHost) {
         slot.scaleHost = series;
       }

@@ -30,6 +30,7 @@ import { TickvolBandsController } from './tickvol_bands_controller.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
 import { ChartContextMenu } from './chart_context_menu.js';
 import { ChartToastView } from './chart_toast_view.js';
+import { setSeriesTimeGuardNotifier } from './series_time_guard.js';
 import { ClipboardGateway } from './clipboard_gateway.js';
 import { createCopyBarInfoItem } from './copy_bar_info_item.js';
 import { indicatorHeading } from './bar_info_text.js';
@@ -48,6 +49,10 @@ import { LocalStorageThemeGateway } from './local_storage_theme_gateway.js';
 import { ColorThemeController, COLOR_THEME_HOST_CONTRACT, loadThemeState } from './color_theme_controller.js';
 import { createHostView } from './host_view.js';
 import { resolveAllChrome } from '../../usecase/color_resolver.js';
+
+// ISSUE-383: 時系列契約防壁トーストの表示時間（ms）。文言に「詳細ログの場所」まで含むため
+//   既定（1.6 秒）より長く取る（読み切れないと能動通知の意味がない）。
+const SERIES_GUARD_TOAST_MS = 10000;
 
 // GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
 //   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
@@ -180,6 +185,21 @@ export function installSharedUi({
   //   ユーザー指摘 2026-08-10: 値だけでは「どのチャート・どのパラメータの値か」が復元できないため、
   //   コピー時点の文脈をここで集めて渡す（貼り付け先には画面が無い）。
   const chartToast = new ChartToastView({ document: doc });
+  // ISSUE-383（能動通知・ユーザー裁定 2026-08-17）: 時系列契約防壁の発火は console.error のみだと
+  //   DevTools を開かない限り気づけず、発生源特定（残調査）の入口が失われる。版面トーストで
+  //   「発生した事実」と「詳細ログの場所」を告知する（証跡本体は console.error＋op_log 側が持つ）。
+  //   表示は長め（既定 1.6 秒ではログ場所まで読めない）。通知は guard 側 seam に登録＝依存方向は
+  //   composition → guard の一方向（guard は View を知らない）。
+  setSeriesTimeGuardNotifier((label) => {
+    // __opsPrev は op_log（ISSUE-298・統合 UI のみ install）が提供する。無いページで案内すると
+    //   嘘になるため、在るときだけ回収手段として文言に含める。
+    const opsHint = (typeof globalThis !== 'undefined' && typeof globalThis.__opsPrev === 'function')
+      ? '（リロード後は __opsPrev() で回収可）' : '';
+    chartToast.show(
+      `時系列データ異常を検出（ISSUE-383）: ${label} — 詳細: DevTools コンソール [series-time-guard]${opsHint}`,
+      SERIES_GUARD_TOAST_MS,
+    );
+  });
   const copyBarInfo = createCopyBarInfoItem({
     renderer,
     clipboard: new ClipboardGateway({ document: doc }),

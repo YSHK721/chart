@@ -41,6 +41,7 @@ import { seriesKind } from '../../domain/series_kind.js';
 import { ScaleController, zoomedPriceRange, clampPriceRange } from './scale_controller.js';
 import { CandleFeed } from './candle_feed.js';
 import { SeriesDrawer, lastPointValue } from './series_drawer.js';
+import { enforceAscendingTimes } from './series_time_guard.js';
 // クロム配線点の単一情報源（基本設計_指標カラーテーマ.md §4.2・A-9）。本ファイルが持っていた
 //   5 つの色定数（減光ローソク・ローソク復元色 up/down・分析 tint・背景フォールバック）は、
 //   chart_bootstrap.js / replay_boundary_dim.js の同値リテラルと事実上の二重定義だった。
@@ -988,7 +989,10 @@ export class ChartRenderer {
 
   // UC-03 再計算: 既存系列を再生成せず data のみ差し替え。
   setData(seriesKey, points) {
-    this._withSeries(seriesKey, points, (series) => series.setData(points ?? []));
+    this._withSeries(seriesKey, points, (series) => {
+      // ISSUE-383: lwc へ渡す直前の時系列契約防壁（清浄なら同一参照＝挙動不変）。
+      series.setData(enforceAscendingTimes(points ?? [], seriesKey));
+    });
   }
 
   // Latest 末尾K差分反映: 末尾K点を series.update で 1 点ずつ反映する（過去確定足は不変）。

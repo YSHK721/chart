@@ -37,7 +37,9 @@ export class ChartToastView {
   }
 
   // 文言を出して durationMs 後に消す。連続表示は前のタイマーを畳んで置き換える（積み上がらない）。
-  show(text) {
+  //   durationMs（省略可）: この 1 回だけ表示時間を上書きする（ISSUE-383: 防壁告知はログ場所まで
+  //   読ませる必要があり既定 1.6 秒では短い）。省略時は従来既定＝既存呼び出しの挙動不変。
+  show(text, durationMs) {
     const host = this._root();
     if (!host) {
       return;
@@ -54,7 +56,7 @@ export class ChartToastView {
       this._timer = this._setTimeout(() => {
         this._timer = null;
         this.hide();
-      }, this._durationMs);
+      }, (typeof durationMs === 'number' && durationMs > 0) ? durationMs : this._durationMs);
     }
   }
 
