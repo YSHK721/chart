@@ -26,11 +26,11 @@ MetaTrader 5 ストラテジーテスターの **Settings タブ（実行条件�
 | 項目 | 内容 |
 |---|---|
 | 文書名 | MT5 ストラテジーテスター Settings タブ Python 移植 基本設計書 |
-| 版 | v1.1.0 |
-| 作成日 | 2026-08-17（v1.1.0 改訂 2026-08-17） |
+| 版 | v1.1.1 |
+| 作成日 | 2026-08-17（v1.1.0 改訂 2026-08-17、v1.1.1 改訂 2026-08-17） |
 | 設計対象 | バックテスト実行条件（Settings タブ）の設定モデル・`.ini` 双方向変換・現行 `simulator/` エンジンへの設定適用 |
 | 設計レベル | 基本設計（内部設計＝クラス粒度・実装仕様は対象外） |
-| 変更履歴 | v1.0.0: 初版（`sample/MQL5/Profiles/Tester/` 44 件および画像 2 枚の実測に基づく）。v1.1.0: ISSUE-384〜388 の一括是正（承認 2026-08-17）＝接続先を旧 `backtest` 設計から現行 `simulator/` 実装へ差し替え（§2.1・§5・§6.2）／参照パス実在化／技術スタック記載を実測値へ更新（CON-04・CON-07・§3.3）／検証層を framework 層 pydantic の既存規約へ再裁定（U-1・K-02）／Delays 実行拒否（旧 N-04）を撤回（§4.5.3）／§4.5 実行時セマンティクスを現行エンジン実装の実測に整合 |
+| 変更履歴 | v1.0.0: 初版（`sample/MQL5/Profiles/Tester/` 44 件および画像 2 枚の実測に基づく）。v1.1.0: ISSUE-384〜388 の一括是正（承認 2026-08-17）＝接続先を旧 `backtest` 設計から現行 `simulator/` 実装へ差し替え（§2.1・§5・§6.2）／参照パス実在化／技術スタック記載を実測値へ更新（CON-04・CON-07・§3.3）／検証層を framework 層 pydantic の既存規約へ再裁定（U-1・K-02）／Delays 実行拒否（旧 N-04）を撤回（§4.5.3）／§4.5 実行時セマンティクスを現行エンジン実装の実測に整合。v1.1.1: 内部設計 v1.0.1 との整合（ISSUE-389〜391・実装確定）＝規則 R1 の encoding 尊重・[Tester] キー 18・時間足 21 値 |
 
 ### 1.1 指示された 14 項目と本書の章対応
 
@@ -149,7 +149,7 @@ MT5 Settings タブ（UI）            本設計対象                        �
 | `[TesterInputs]` は空セクションでも存在する | `TC24051903.JP225.Daily.all_history.200.ini` は `[TesterInputs]` 直後に本文なしで終端 |
 | 最終行も CRLF で終端する | 上記ファイルの末尾構造 |
 
-**`[Tester]` セクションの全キー（17 キー・実測）**
+**`[Tester]` セクションの全キー（18 キー・実測・v1.1.1 訂正）**
 
 | キー | 出現数 | 実測値の全種類 |
 |---|---|---|
@@ -172,7 +172,7 @@ MT5 Settings タブ（UI）            本設計対象                        �
 | `ExecutionMode` | 31 | `-1`, `21`, `50` |
 | `Visual` | 38 | `1` |
 
-⚠️ 上記 17 キー以外（MT5 が対応する `Report` / `ReplaceReport` / `ShutdownTerminal` / `UseLocal` 等）は本 corpus に出現しない。**本設計書の対象キーは上記 17 キーに限定する**（§4.6 非対象、§9.3 TBD-15）。
+⚠️ 上記 18 キー以外（MT5 が対応する `Report` / `ReplaceReport` / `ShutdownTerminal` / `UseLocal` 等）は本 corpus に出現しない。**本設計書の対象キーは上記 18 キーに限定する**（§4.6 非対象、§9.3 TBD-15）。
 
 **キー出現順（実測・往復に使用）**
 
@@ -246,7 +246,7 @@ inpTimeFrame=0||0||0||49153||N
 
 | 要件 ID | 機能要件 | 出典 |
 |---|---|---|
-| FR-01 | Settings タブの全 17 キーを型付き設定モデル（`TesterSettings`）として表現する | §2.2.3 実測 |
+| FR-01 | Settings タブの全 18 キーを型付き設定モデル（`TesterSettings`）として表現する | §2.2.3 実測 |
 | FR-02 | `.ini`（UTF-16LE+BOM / CRLF / 先頭コメント）を設定モデルへ変換する（デコード） | §2.2.3 実測 |
 | FR-03 | 設定モデルを `.ini` へ変換する（エンコード）。読込元がある場合はバイト列同一で復元する | 原典忠実（NFR-02） |
 | FR-04 | `[TesterInputs]` の 5 分割書式（`名前=現在値\|\|開始値\|\|刻み\|\|終了値\|\|{Y\|N}`）および値なし形式を解析・復元する | F-13・F-14 |
@@ -268,7 +268,7 @@ inpTimeFrame=0||0||0||49153||N
 | NFR-03 | Fail-Stop: 不正・未知・非対象を沈黙処理しない | §7.5 の 7 例外クラスすべてに送出テスト 1 件以上、合計 20 ケース以上 | 異常系テスト |
 | NFR-04 | 性能: 設定ロードがエンジン実行時間に対して無視できる | 1 ファイルのロード＋検証 ≤ 10 ms、44 件一括 ≤ 500 ms（`BACKTEST_DESIGN.md §4.3` の 1 run 30 秒に対し 2% 未満） | `time.perf_counter` による計測テスト |
 | NFR-05 | 保守性: 未確定値の確定を局所変更で吸収する | 列挙値 1 個の追加で変更ファイル数 ≤ 2 | 変更差分のレビュー |
-| NFR-06 | トレーサビリティ: 設定フィールドと出典の対応を保つ | 全 17 キーに実測根拠または TBD 番号を付与（欠落 0 件） | §4.2 / §4.3 の表レビュー |
+| NFR-06 | トレーサビリティ: 設定フィールドと出典の対応を保つ | 全 18 キーに実測根拠または TBD 番号を付与（欠落 0 件） | §4.2 / §4.3 の表レビュー |
 
 #### 2.3.3 制約条件
 
@@ -421,7 +421,7 @@ flowchart TD
 | 1 | `subject_kind` | `SubjectKind` | （`Expert` / `Indicator` キーのいずれが存在するかで決定） | なし | `{EXPERT, INDICATOR}` | E: 必須 / I: 必須 | F-1 |
 | 2 | `subject_path` | `str` | `Expert` または `Indicator` | なし | 1〜255 文字。`\` 区切りの相対パス形式を許容（実測 `Examples\Moving Average\Moving Average.ex5`）。末尾は `.ex5` | E: 必須 / I: 必須 | §2.2.3 |
 | 3 | `symbol` | `str` | `Symbol` | なし | 1〜31 文字。空文字は不可 | E: 必須 / I: 必須 | §2.2.3 |
-| 4 | `timeframe` | `Timeframe` | `Period` | なし | §4.3.1 の 22 値 | E: 必須 / I: 必須 | 実測ラベルは `Daily` / `H1` / `H8` の 3 件のみ（TBD-10） |
+| 4 | `timeframe` | `Timeframe` | `Period` | なし | §4.3.1 の 21 値（v1.1.1 訂正・「22 値」は誤記） | E: 必須 / I: 必須 | 実測ラベルは `Daily` / `H1` / `H8` の 3 件のみ（TBD-10） |
 | 5 | `tick_model` | `TickModel` | `Model` | `TickModel.ONE_MINUTE_OHLC`（=1） | §4.3.2 の 5 値 | E: 必須 / I: 必須 | 0・1・2・4 は実証（F-3〜F-6）。3 は暫定（TBD-01） |
 | 6 | `date_range` | `DateRange` | `Dates` または `FromDate`＋`ToDate` | なし | §4.2.1 | E: 必須 / I: 必須 | F-2・F-7 |
 | 7 | `forward_mode` | `ForwardMode` | `ForwardMode` | `ForwardMode.DISABLED`（=0） | §4.3.4 | E: 必須 / I: 指定不可 | F-9・F-12 |
@@ -596,7 +596,7 @@ flowchart TD
 
 | 規則 ID | 規則 | 違反時 |
 |---|---|---|
-| R1 | **エンコーディング**: 読込は UTF-16（先頭 BOM で LE / BE を判定）。BOM が存在しない場合は不正とする。書出しは **UTF-16LE + BOM（U+FEFF）** に固定する | `IniFormatError`（E-01） |
+| R1 | **エンコーディング**: 読込は UTF-16（先頭 BOM で LE / BE を判定）。BOM が存在しない場合は不正。書出しは**新規生成は UTF-16LE + BOM に固定。読込元がある場合はその `doc.encoding` を尊重**する（v1.1.1 変更・ISSUE-390：往復と encoding 尊重の両立） | `IniFormatError`（E-01） |
 | R2 | **改行**: 読込は CRLF / LF の双方を受容し、行末の `CR` を除去して行内容を得る。書出しは **CRLF に固定**し、最終行にも CRLF を付す（実測: 44 / 44 件が CRLF、最終行 CRLF 終端） | — |
 | R3 | **コメント行**: `;` で始まる行は**行位置とともに原文を保持**し、書出し時に同じ位置へ復元する。コメント行の生成・書き換えは行わない（MT5 が生成する情報であるため）。1 行目のコメントは `header_comment` にも格納する（F-18） | — |
 | R4 | **セクション**: 許容するセクション名は `[Tester]` と `[TesterInputs]` の 2 種のみ。出現順は `[Tester]` → `[TesterInputs]` に固定。各 1 回。`[TesterInputs]` は本文が空でも省略しない | `IniFormatError`（E-01） |
@@ -607,7 +607,7 @@ flowchart TD
 | R9 | **往復（round-trip）要件**: 読込元ファイルがある設定モデルは、`dump` の出力が元ファイルとバイト列一致でなければならない（BOM・CRLF・キー順・コメント・数値表記・末尾改行を含む）。対象は corpus 44 件全件 | 回帰テスト失敗（NFR-02） |
 | R10 | **日付書式**: `YYYY.MM.DD`（ゼロ埋め 2 桁）に固定する。他書式・存在しない日付は不正。`1970.01.01` は退化値（F-17）として受容し、意味付けは行わない | `SettingsValueError`（E-04） |
 | R11 | **真偽値**: `ProfitInPips` / `Visual` は `0` / `1` のみ許容し `bool` へ写像する。`[TesterInputs]` 内の `true` / `false` は文字列として保持する（R8・§4.2.2） | `SettingsValueError`（E-04） |
-| R12 | **未知キー**: `[Tester]` に §2.2.3 の 17 キー以外が出現した場合は不正とする（沈黙スキップ禁止。`BACKTEST_DESIGN.md §4.4`） | `UnknownSettingKeyError`（E-06） |
+| R12 | **未知キー**: `[Tester]` に §2.2.3 の 18 キー以外が出現した場合は不正とする（沈黙スキップ禁止。`BACKTEST_DESIGN.md §4.4`） | `UnknownSettingKeyError`（E-06） |
 | R13 | **未知値**: `Model` / `Dates` / `ForwardMode` / `Optimization` / `OptimizationCriterion` / `Period` が §4.3 の列挙に無い値の場合は不正とする | `UnknownSettingValueError`（E-05） |
 
 **標準キー順（新規生成時。実測順に一致。F-18 の構造）**
@@ -730,7 +730,7 @@ MT5 UI の項目間活性/非活性依存を、**検証規則**（不整合を�
 | M | `symbol` は 1〜31 文字の非空文字列 | 実測（最長 `JP225_ver24051601` = 17 文字） | `SettingsValueError`（E-04） |
 | N | `subject_path` は `.ex5` で終わる 1〜255 文字 | 実測（44 / 44 件） | `SettingsValueError`（E-04） |
 | O | `Model` / `Dates` / `ForwardMode` / `Optimization` / `OptimizationCriterion` / `Period` は §4.3 の列挙値でなければならない | R13 | `UnknownSettingValueError`（E-05） |
-| P | `[Tester]` のキーは §2.2.3 の 17 キーに限る | R12 | `UnknownSettingKeyError`（E-06） |
+| P | `[Tester]` のキーは §2.2.3 の 18 キーに限る | R12 | `UnknownSettingKeyError`（E-06） |
 | Q | `[TesterInputs]` の各行は `InputForm.SCALAR` または `RANGE_5` に合致する | R8 | `IniFormatError`（E-01） |
 | R | 実行要求時、`EffectiveSettings` の非 inert フィールドに `None` があってはならない（例: `tick_model != MATH_CALCULATIONS` かつ `deposit is None`） | 整合性 | `SettingsKeyMissingError`（E-08） |
 | S | 実行要求時、`data`（バー系列）の有無が `tick_model` と整合する（`MATH_CALCULATIONS` は `data is None`、他は `data is not None`） | §4.5.2 | `SettingsActivationError`（E-03） |
@@ -762,7 +762,7 @@ MT5 UI の項目間活性/非活性依存を、**検証規則**（不整合を�
 
 | # | 対象項目 |
 |---|---|
-| Y-01 | §2.2.3 の 17 キーの読取・検証・書出し（往復バイト一致。44 / 44 件） |
+| Y-01 | §2.2.3 の 18 キーの読取・検証・書出し（往復バイト一致。44 / 44 件） |
 | Y-02 | `[TesterInputs]` の 2 形式（`SCALAR` / `RANGE_5`）の読取・書出し |
 | Y-03 | `TickModel` 5 値の表現と、`ONE_MINUTE_OHLC` / `OPEN_PRICES_ONLY` の実行（`EVERY_TICK` は近似実行、`REAL_TICKS` は実ティック供給時のみ、`MATH_CALCULATIONS` は契約拡張後＝§4.5.2）。Delays は実測済み組（Zero latency・50 ms）で bit-exact（§4.5.3） |
 | Y-04 | `Deposit` / `Currency` / `Leverage` のエンジン口座モデル（`run_backtest` 内 `Account`/`Position` 経路＝§5.4）への引き渡し |
@@ -1037,8 +1037,8 @@ erDiagram
 | 入力検証 | §4.4 R1〜R13 および §4.5.5 規則 D〜Q により、`.ini` の全キー・全値を許容集合に対して検証する（許可リスト方式）。未知キー・未知値は拒否する（R12・R13） |
 | パス・トラバーサル | ⚠️ `Expert` / `Indicator` の値は相対パスを含む（実測 `Examples\Moving Average\Moving Average.ex5`）。本設計では**この値をファイルシステムアクセスに使用しない**（EA 名の識別子としてのみ保持し、`ea_name` へは語幹のみを渡す。§6.2）。`..` を含む値も文字列として保持するのみで解決しない |
 | リソース枯渇（DoS） | 入力サイズ上限 1 MiB（§7.1）、`[TesterInputs]` の行数上限 256（§4.2 #17）、行長上限 4096 文字。いずれも超過時は `IniFormatError` |
-| 監査ログ | ロード時に「入力パス・ファイルサイズ・SHA-256・検出したキー数」を INFO レベルで記録する。書出し時に「出力パス・バイト数・SHA-256」を記録する。⚠️ ログにファイル内容そのもの（EA 名・パラメータ値）を出力しない方針は取らない（機密情報を含まないローカル設定ファイルであるため。判断根拠: `.ini` は取引口座の認証情報を含まない＝実測 17 キーに認証系キーは存在しない） |
-| 秘密情報 | 取り扱わない（`.ini` にパスワード・API キーは含まれない。§2.2.3 の 17 キー） |
+| 監査ログ | ロード時に「入力パス・ファイルサイズ・SHA-256・検出したキー数」を INFO レベルで記録する。書出し時に「出力パス・バイト数・SHA-256」を記録する。⚠️ ログにファイル内容そのもの（EA 名・パラメータ値）を出力しない方針は取らない（機密情報を含まないローカル設定ファイルであるため。判断根拠: `.ini` は取引口座の認証情報を含まない＝実測 18 キーに認証系キーは存在しない） |
+| 秘密情報 | 取り扱わない（`.ini` にパスワード・API キーは含まれない。§2.2.3 の 18 キー） |
 | 詳細脅威分析 | 本書では扱わない（security スキルの成果物に委譲する） |
 
 ### 7.4 運用・保守性設計
@@ -1079,7 +1079,7 @@ BacktestError
 | E-03 | `SettingsActivationError` | 実行要求時 | ①`tick_model == MATH_CALCULATIONS` かつ `data is not None`（規則 S）、②`tick_model != MATH_CALCULATIONS` かつ `data is None`（規則 S）、③inert フィールドを参照する経路が呼ばれた（規則 A の不変条件違反） | `tick_model`、`data` の有無、対象フィールド名 |
 | E-04 | `SettingsValueError` | ロード時 | ①`deposit ≤ 0`（規則 I）、②`leverage < 1` または `> 1000`（規則 J）、③`from_date > to_date`（規則 K）、④`currency` が `^[A-Z]{3}$` に不一致（規則 L）、⑤`symbol` が空または 32 文字以上（規則 M）、⑥`subject_path` が `.ex5` 終端でない・256 文字以上（規則 N）、⑦日付が `YYYY.MM.DD` 形式でない・存在しない日付（R10）、⑧`ProfitInPips` / `Visual` が `0` / `1` 以外（R11）、⑨数値キーが整数／実数として解釈できない | キー名、値、期待する値域 |
 | E-05 | `UnknownSettingValueError` | ロード時 | `Model` / `Dates` / `ForwardMode` / `Optimization` / `OptimizationCriterion` / `Period` が §4.3 の列挙に存在しない（R13）。⚠️ 具体例: `Model=3` は暫定的に `MATH_CALCULATIONS` として受容する（§4.3.2）。`Model=5` 以上、`Dates=1`、`ForwardMode=1` / `2`、`Optimization=3`、`OptimizationCriterion=2` 以上、未知の `Period` ラベルは本例外 | キー名、値、許容値の一覧 |
-| E-06 | `UnknownSettingKeyError` | ロード時 | `[Tester]` に §2.2.3 の 17 キー以外が出現（R12・§4.6 N-12） | 未知キー名、許容キー一覧、行番号 |
+| E-06 | `UnknownSettingKeyError` | ロード時 | `[Tester]` に §2.2.3 の 18 キー以外が出現（R12・§4.6 N-12） | 未知キー名、許容キー一覧、行番号 |
 | E-07 | `UnsupportedSettingError` | 実行要求時 | ①`optimization != DISABLED`（N-02）、②`forward_mode != DISABLED`（N-03）、③（v1.1 で削除＝旧 N-04 の `execution_delay != 0` 拒否は撤回。§4.5.3）、④`tick_model == REAL_TICKS` かつ実ティック列未供給（N-05）、⑤`profit_in_pips is True`（N-07）、⑥`visual is True`（N-09）、⑦`currency` がシンボル決済通貨と不一致（N-11。判定データ源は D-10） | 非対象項目 ID（N-xx）、該当フィールド名と値、代替手段の説明 |
 | E-08 | `SettingsKeyMissingError` | ロード時／実行要求時 | ①`subject_kind == EXPERT` で Expert 専用 8 キーのいずれかが欠落（規則 H）、②`Symbol` / `Period` / `Model` / 期間キーのいずれかが欠落、③`forward_mode == CUSTOM_DATE` で `ForwardDate` が欠落（規則 F）、④実行要求時に非 inert フィールドが `None`（規則 R） | 欠落キー名の集合、`subject_kind` |
 
