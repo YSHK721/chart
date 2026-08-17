@@ -7549,3 +7549,199 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   （bar-mode / every-tick）と実装済み順序規則（`ohlc_order` 3 値）・実装済み統計規則
   （inf/0.0）に合わせて書き直し、引用は PROCESS §0.2（3 モード）と METRICS §6（5 モード用語集）
   を区別して張り直す。PROCESS §7 #5 の既定推奨行も実装済み規則へ追記是正する。
+
+## ISSUE-389: [不整合] TESTER_SETTINGS 基本設計書のキー数・時間足数の記載が corpus 実測と不一致（2026-08-17・OPEN）
+
+- **ステータス**: OPEN
+- **重大度**: Low（規則の内容は正しく、影響は員数記載のみ。ただし規則 P「17 キーに限る」を
+  そのまま実装すると 1 キーを未知キーとして拒否する誤りに直結する）
+- **事実（すべて実測 2026-08-17）**:
+  1. 基本設計書 §2.2.3 は「`[Tester]` セクションの全キー（17 キー・実測）」と記すが、
+     同節の表は 18 行あり、corpus 44 件の実測でも相異なるキーは 18 個である
+     （Symbol 44 / Period 44 / Model 44 / Visual 38 / Expert 31 / Optimization 31 /
+     ForwardMode 31 / Deposit 31 / Currency 31 / ProfitInPips 31 / Leverage 31 /
+     ExecutionMode 31 / OptimizationCriterion 31 / Dates 27 / FromDate 17 / ToDate 17 /
+     Indicator 13 / ForwardDate 3）。規則 P・R12・N-12 の「17 キー」も同じ員数を引く。
+  2. §4.2 のフィールド表は `timeframe` の値域を「§4.3.1 の 22 値」と記すが、§4.3.1 の表は
+     21 行（M1/M2/M3/M4/M5/M6/M10/M12/M15/M20/M30/H1/H2/H3/H4/H6/H8/H12/D1/W1/MN1）。
+  3. 「17」は別の員数の言い換えでもない（実測 2026-08-17）。1 ファイルあたりのキー数は
+     6・7・14・15 の 4 通りのみで**最大 15**（`…20230101_20231231.100.ini`）。
+     和集合 18・ファイル内最大 15 のいずれとも一致しないため、単純な数え漏れである。
+     ⚠️ 実装・テストのコメントで「17 = 1 ファイルあたり最大」と辻褄合わせをしないこと
+     （本項の実測に反する。検出時に 3 箇所を訂正済み）。
+- **影響**: 実装は員数ではなく実キー集合・実列挙で作るため挙動には影響しないが、
+  受入テスト（T-09 の構造的事実検証）で「17」を期待値に採ると必ず失敗する。
+- **対策案（抜本）**: 基本設計書の員数記載を実測値（18 キー・21 時間足）へ訂正し、
+  実装・テストは員数リテラルを持たず**キー集合の定義 1 箇所**から導出する
+  （員数の二重管理をやめる＝取り残しの構造的除去）。
+
+## ISSUE-390: [不整合] 基本設計 F-9（ForwardMode≠0 ⇔ コメント末尾「with forward period」）が corpus 実測で 43/44 しか成立しない（2026-08-17・OPEN）
+
+- **ステータス**: OPEN
+- **重大度**: Medium（受入テスト T-05「44/44 一致」を実装どおりに書くと必ず失敗する。
+  ヘッダコメントを検証の補助情報として使う設計判断の前提が崩れる）
+- **事実（実測 2026-08-17・字句層実装と本体の 2 系統で独立に再現）**:
+  1. 基本設計 §2.2.4 F-9 は「`ForwardMode≠0` ↔ コメント末尾 `, with forward period`」が
+     forward 有効 14 件すべてで成立すると記す。実測は **13/14**。
+  2. 不一致 1 件: `TC24051903_24052301.JP225_ver24051601.H8.20120101_20121231.121.ini`
+     （`ForwardMode=4` かつ 1 行目コメントに `, with forward period` が無い）。
+  3. 同ファイルは `ForwardDate=1970.01.01`（F-17 の退化値＝「カスタム日付が未設定」）を持つ
+     唯一のファイルでもある。
+- **未検証（推論。事実として扱わない）**: MT5 が「`ForwardMode=4` かつ `ForwardDate` が
+  退化値のとき forward を実質無効として扱い、コメント語を出力しない」可能性。
+  リポジトリ内に MT5 実機の再現手段がないため確認できない（CON-06）。
+- **影響**: 受入テスト T-05（ヘッダコメントと `[Tester]` 値の突合・44 件）は
+  「44/44 一致」を合否基準にできない。実装（`parse_header_comment`）は実測どおり
+  `with_forward=False` を返す＝正しい。
+- **対策案（抜本）**: 基本設計 F-9 を「forward 有効 14 件中 13 件で成立。例外 1 件は
+  `ForwardDate` 退化値と同居」へ訂正し、T-05 の合否基準を「コメントと `[Tester]` 値の
+  突合で不一致となるのは既知の 1 件のみ（ファイル名で固定）」に変更する。
+  MT5 実機で再現可能になった時点で退化値の扱いを確定する（TBD 追加）。
+
+## ISSUE-391: [不整合] TESTER_SETTINGS 内部設計 §4.3.2 の規則 B の例外型が基本設計 §4.5.5 と矛盾（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 裁定・内部設計 §4.3.2 を E-03 へ訂正済み。実装・テストへ通達済み）
+- **事実**:
+  1. 基本設計 §4.5.5 の規則表は 規則 B（`optimization != DISABLED` のとき `Visual` キーが
+     存在してはならない）の違反時例外を `SettingsActivationError`（E-03）と規定。
+  2. 内部設計 §4.3.2 の割付表は同じ規則 B を `SettingsKeyConflictError`（E-02）と記載。
+  3. 実装済み `simulator/domain/tester_settings_exceptions.py` の `SettingsActivationError`
+     docstring は「活性依存に反する実行要求（規則 B・S）」と規定しており、基本設計と一致。
+- **検出経路**: テスト設計フェーズが両文書を突合して報告（実装前に検出＝手戻り 0）。
+- **裁定（根拠）**: **E-03 を正とする**。(a) 内部設計自身が「基本設計書が上位」と宣言している。
+  (b) 規則 B は UI の活性依存（Optimization 有効時は visual コントロールが非活性）に由来する
+  制約であり、「同時に指定できないキーの衝突」ではない。(c) 実装済み例外階層の規定と一致する。
+- **影響**: 訂正前の内部設計どおりに実装すると、活性依存違反がキー衝突として報告され、
+  規則・例外・テストの 1:1:1 対応（内部設計 §4.5.2 規約 4）が崩れる。
+- **是正**: 内部設計 §4.3.2 の当該行を E-03 へ訂正（訂正理由を行内に明記）。検証層実装と
+  テスト期待値へ通達済み。`context` は `field="visual"` / `rule_id="B"` を必須とする。
+
+## ISSUE-392: [設計] pytest 既定の収集規則 `python_functions = test*` が `tester_settings_*` API を誤収集する（2026-08-17・IN_PROGRESS）
+
+- **ステータス**: IN_PROGRESS（新規コード側は pytest 公式の opt-out `__test__ = False` で回避済み。
+  リポジトリ全体の根治は既存ファイル改変を伴うため**要承認**）
+- **重大度**: Medium（放置すると、公開 API 名が `test` で始まるモジュールを import した
+  テストで収集エラーが出続ける。実測で 4 件発生した）
+- **事実（実測 2026-08-17）**:
+  1. `pyproject.toml` は `[tool.pytest.ini_options]` に `python_functions` を設定していないため、
+     pytest 既定の `test*`（アンダースコア無しも一致）が適用される。
+  2. 本移植の公開 API は `tester_settings_from_mapping` / `tester_settings_to_mapping`
+     （内部設計 §6 API-03/API-04・名前は設計確定事項）であり、この既定に一致してしまう。
+     テストが API を import すると pytest がテスト関数として収集し、引数不足で収集エラーになる。
+  3. 現状は当該 API に `__test__ = False`（pytest 公式の opt-out）を付与して回避している。
+- **抜本的解決（要承認・既存ファイル改変を伴うため未実施）**:
+  `pyproject.toml` の `[tool.pytest.ini_options]` に `python_functions = "test_*"` を追加し、
+  収集規則を「アンダースコア付きの test_ で始まる関数」に限定する。これにより
+  「テストでない関数がテストとして収集される」原因そのものが消える。
+  実施前提の安全確認は**実施済み（実測 2026-08-17）**: プロジェクト所有コード
+  （`simulator` / `indigators` / `common` / `marketdata` / `tools` / `api_shared` / `common_view`）の
+  `test*.py` を AST 走査した結果、`test` で始まりアンダースコアを持たない関数は **0 件**。
+  よって設定を厳格化しても既存検定が消失しない（該当は vendored venv 内の pandas 同梱テストのみで、
+  本リポジトリの検定対象外）。
+- **関連**: 依頼者制約「既存データの改変は絶対禁止」により本タスクでは未実施。
+
+## ISSUE-393: [不具合] TESTER_SETTINGS 実装レビューで検出した 3 件（写像不能値・BE 往復の無言破れ・Unicode 数字の無言受容）（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 是正・再現テスト先行（Red）で固定。unit 1714 件通過・corpus 44/44 維持を実測）
+- **重大度**: Medium（いずれも沈黙して誤った結果を生む型。例外も警告も出ない経路だった）
+- **事実（すべて実測。是正前に本体側で独立再現）**:
+  1. **受理集合と出力集合の不一致**: `Deposit=139500.50` は `load` に成功し `dump` も
+     バイト一致するのに `tester_settings_to_mapping` が `SettingsValueError` を送出した。
+     内部設計 §6 の API-04「送出例外: なし」に反する。原因は検証層 `_strict_decimal` が小数を
+     受理する一方、字句層 `_format_deposit` が整数表記しか出力できないこと（実測にない表記を
+     発明しない Fail-Stop）。「Deposit として妥当な表記」という同一知識が 2 箇所に別内容で存在した。
+  2. **UTF-16BE の往復が無言で破れる**: BE 入力を `load` → `dump` すると BOM が
+     `\xfe\xff` → `\xff\xfe` に変わりバイト不一致になるが、例外も警告も出ない。
+     規則 R1（書出しは LE 固定）と規則 R9（読込元があるならバイト一致）が BE 入力で両立しない。
+  3. **Unicode 数字の無言受容**: `\d` が Unicode 十進数字に一致するため `Model="１"`（全角）が
+     `ONE_MINUTE_OHLC` に、`Leverage="١٠"` が `10` になった。`to_mapping` 出力は `"1"` となり
+     入力トークンと一致しない（無言の書換え）。MT5 が生成し得ない字形の受容でもある。
+- **是正（原因除去）**:
+  1. 生トークンを捨てないことで受理集合と出力集合を一致させた。字句層に
+     `document_from_entries(tester_entries, input_lines)` を新設し `build_document` は
+     「型付き値 → 生トークン整形 → 委譲」に再定義。API-03 は受領した生トークンから
+     `IniDocument` を構築して `source` に保持し、API-04 は `source` の entries を返す全域関数にした。
+     特定フィールドの回避ではなく、全値型に効く不変条件として実装している。
+  2. `serialize(doc)` を `doc.encoding` 準拠に変更（新規生成は LE 固定）。R1 の趣旨と R9 が両立する。
+     BE を拒否して受理する入力クラスを狭める案は採らなかった。
+  3. 厳格書式バリデータの正規表現を `[0-9]` 明示（ASCII 限定）へ変更。docstring の断定も実挙動へ一致。
+- **検証**: 是正 3 件とも失敗するテストを先に書いて Red を実出力で確認（計 44 件の失敗）→ 是正 →
+  unit **1714 passed**（着手時 1648）。corpus 44 件の load / 往復バイト一致 / API-03↔04 恒等 /
+  決定論はいずれも **44/44** を維持。既存ファイルの改変 0 件。
+- **未検証（事実と分離）**: MT5 が UTF-16BE の `.ini` を生成する実測は無い（corpus 44 件は全件 LE）。
+  是正 2 は「`decode` が BE を正規受理する既存仕様との整合性確保」であり、BE の一次実測に基づくものではない。
+- **残存リスク（後続判断・すべて実測。2026-08-17 の再レビューで記述を訂正）**:
+  1. `Symbol` の文字集合に明示制約が無い。実測の内訳は次のとおりで、**当初記述「`\r` `\n` `=` は
+     拒否される」は誤り**だった: `A\nB` と `A\r\nB` は API-03 の文書構築段で E-01（`rule_id` は
+     それぞれ R2・R5）。一方 **`A=B`・`A\rB`・`AB\r` は受理**され、往復もバイト一致する
+     （`=` の受理は `parse` が最初の `=` で分割する仕様どおりで正しい。単独 `\r` はライブラリ内で
+     自己整合だが、生の CR が `.ini` に書かれる）。単独 `\r` を含む値の MT5 側の解釈は未実測（CON-06）。
+  2. pydantic `Field(pattern=...)` の `$` は Python `re` では末尾改行の直前にも一致するが、
+     pydantic-core の既定エンジン（Rust regex）では一致しないため実挙動は拒否側（実測）。
+     ただし既定エンジンへの暗黙依存であり、`\Z` 明示または `regex_engine` 固定が安全。
+     なお `Currency="JPY\n"` は API-03 の文書構築段でも E-01 になるため二重に防がれている（実測）。
+  3. `IniDocument.encoding` は任意文字列を受け取れる（型で塞がれていない）。本移植内の生成経路は
+     `decode`（BOM 由来 2 値）と `document_from_entries`（LE 固定）の 2 つのみを実測確認。
+
+## ISSUE-394: [不具合] TESTER_SETTINGS 再レビュー 🟡 指摘 5 件（断定と実挙動の乖離・表記規則の複製・診断の誤指示・書出し符号化の無検査・API-08 のテスト 0 件）（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 是正。5 件とも失敗するテストを先に書いて Red を実出力で確認 → 是正 → Green。unit **1794 passed**（着手時 1714）・corpus 44/44 維持・既存ファイル改変 0 件を実測）
+- **重大度**: Medium（B・E は保守性、A は契約の誤記、C・D は沈黙して誤る／例外体系の外へ漏れる経路）
+- **事実（すべて実測。是正前に本体側で独立再現）**:
+  1. **A: 「API-04 は全域関数」という断定が実挙動と一致しない**。`source=None` かつ
+     `deposit=139500.5` の `TesterSettings` を直接構築して `tester_settings_to_mapping` を呼ぶと
+     `SettingsValueError`（E-04・`rule_id="R7"`）を送出する。内部設計 §6 本文 L736 は射程を限定
+     していたが、呼出側が読む docstring（`loader.py` API-04 / `ini_codec.py` `document_from_entries`）
+     だけが限定を欠いていた（ISSUE-393 の是正 1 で導入した記述）。
+  2. **B: 日付表記 `f"{value.year:04d}.{value.month:02d}.{value.day:02d}"` が
+     `validation.py` と `ini_codec.py` の 2 箇所に完全一致で存在**。`validation.py` の
+     モジュール docstring「値の表記規則は字句層が唯一の宣言を持つ。本モジュールはそれを
+     import して使い、書き直さない」の反例だった（宣言だけでは複製を防げない）。
+  3. **C: API-03 の E-01 診断が呼出側の入力を指さない**。`tester_settings_from_mapping({..., "Symbol": "A\nB"})`
+     の例外は `IniFormatError`（`rule_id="R2"`・「改行が CRLF と LF で混在しています（CRLF 16 行 / 全 17 行）」）で、
+     呼出側が供給していない「行」「改行」に基づく診断だった。`key` も `value` も context に載らず
+     18 キーのどれが原因か特定できない。**さらに本ラウンドで新たに判明**: `[TesterInputs]` の行原文に
+     CRLF を含めると**例外すら出ず**、供給した 1 行が黙って 2 エントリへ分割された（実測:
+     `document_from_entries(expert_mapping(), ("a=1\r\nb=2",))` → `['a=1', 'b=2']`）。
+  4. **D: `serialize` が `IniDocument.encoding` を検証しない**。`dataclasses.replace(doc, encoding=X)` の実測で
+     `"utf-8"` → 書出し成功するが読み戻し不能（BOM が `EF BB BF`）、`"utf-16"` → BOM 二重（`fffefffe`）、
+     `"ascii"` / `"cp932"` / `"latin-1"` → `UnicodeEncodeError`、`"bogus-codec"` → `LookupError` が
+     いずれも `SettingsError` へ未翻訳のまま `write_document` / `dump_tester_settings` から漏れた。
+     `decode` の像は BOM 由来の 2 値のみである一方 `serialize` は任意 `str` を受けており、
+     ISSUE-393 の 🟡-2（沈黙で表現を変える経路）と同型の欠陥が書出し側に残存していた。
+  5. **E: API-08（`parse_header_comment`）のテストが 0 件**（`grep -rn "parse_header_comment\|HeaderCommentInfo" simulator/tests/` → 0）。
+     46 行の解析ロジック（`", "` 分解・forward 語の剥がし・`rsplit` による symbol/period 分離）が一度も実行されていなかった。
+- **是正（原因除去）**:
+  1. A: docstring を実挙動へ一致させた（「`source` を持つ設定では送出例外なし。`source` を持たない
+     直接構築物では新規生成経路の Fail-Stop が残る」）。**宣言の正しさを機械的に検査するテスト**を追加し、
+     Settings 全 10 ソースに無限定の断定（「全域関数」）が再出現したら落ちるようにした。回帰テストで
+     `to_mapping(TesterSettings(..., deposit=139500.5, source=None))` の E-04 / R7 を固定。
+  2. B: `ini_codec._format_date` の表記部を公開名 `format_date_token` へ昇格し、`validation.py` は
+     それを import して使う（複製を削除）。**表記規則が 1 箇所であることを機械的に検査するテスト**を追加
+     （順序表・キー集合の import 時検査と同じ扱い）。
+  3. C: `document_from_entries` に事前検査 `_require_single_line_tokens` を新設。供給された生トークン
+     （`[Tester]` のキー・値、`[TesterInputs]` の行原文）が改行を含む場合、違反対を `key` / `value`
+     （行原文は `line`）付きの E-01（`rule_id="R5"`）で拒否する。行数に基づく R2 診断は `split_lines` を
+     通るファイル読込経路の専用診断に留めた。ISSUE-393 の残存リスク 1（生の CR を含む値の受容）も同時に閉じる。
+  4. D: `serialize` の先頭で `doc.encoding` を検査する。許容集合 `WRITE_ENCODINGS` は `_BOM_ENCODINGS` から
+     **導出**し、手書きの第 2 の集合を作らない（読込側の像＝書出し側の定義域）。診断語彙は既存の
+     `value` / `allowed` を用い、語彙表（内部設計 §4.5.2）へ新語を足していない。
+     ISSUE-393 の残存リスク 3（`IniDocument.encoding` が任意文字列を取れる）を閉じる。
+  5. E: `test_tester_settings_header_comment.py` を新設（28 件）。corpus 44 件の 1 行目が全件解析でき
+     `Symbol` / `Period` / Model 語 / 期間語と整合することを corpus 直読で突合し、`with_forward` の
+     不一致は既知の 1 件（ISSUE-390）のみであることをファイル名で固定した。corpus 非依存分（forward 語の
+     有無・`", "` を含む対象名・`;` 非開始・項目数不足・`None` 等）は常時実行。条件付きスキップ機構は
+     共有補助 `tester_settings_corpus.py` に一本化し、書き写していない。
+- **検証**: unit **1794 passed**（着手時 1714・追加 80 件）。`TESTER_INI_CORPUS_REQUIRED=1` での
+  Settings 全モジュール実行は **723 passed / skip 0**。corpus 44 件の load / 往復バイト一致 /
+  API-03↔04 恒等 / 決定論は **44/44** を維持。`git diff --stat HEAD -- simulator/` は空（既存ファイル改変 0 件）。
+  実装が先在する A の回帰テストと E の全 28 件は初回実行で Pass するため、**変異注入**（forward 語を
+  剥がさない / `rsplit`→`split` / 項目数検査除去 / 空項目検査除去 / 「全域関数」再導入 / 日付表記の複製）で
+  全変異が検出されることを実測し、assertion 弱体でないことを確認した。
+- **残存リスク（後続判断）**:
+  1. 複製検査は**字面**（`year:04d`）の再出現を検出する。同じ規則を別の書き方（`strftime("%Y.%m.%d")` 等）で
+     再実装した場合は検出できない。
+  2. `parse(text, encoding=...)` 自体は符号化を検査しない（検査点はバイト列を作る `serialize` の 1 箇所）。
+     許容外の符号化を直接渡した文書は、構築時ではなく書出し時に Fail-Stop する。
+  3. ISSUE-390（F-9 の合否基準）が OPEN のため、受入テスト T-05（regression スイート）は未実装。
+     本ラウンドで追加したのは `parse_header_comment` の単体テストのみ。
