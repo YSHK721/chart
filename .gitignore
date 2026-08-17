@@ -230,3 +230,7 @@ dev_paths.local.sh
 
 # sim core のジョブ台帳（実行時生成物。成果物をリポジトリへ入れない・ISSUE-363 同型の再発防止）
 simulator/sim_ui/data/
+
+# MT5 一次情報 corpus（Tester Settings .ini 44 件・UTF-16LE バイナリ）。
+#   TESTER_SETTINGS_BASIC_DESIGN.md の一次情報。追跡外（D-06 前提・ISSUE-385 承認 2026-08-17）
+sample/

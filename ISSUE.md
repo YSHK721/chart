@@ -7312,3 +7312,240 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
      canonical でも確認推奨。
 - **対策案**: 各対象へ次に手を入れる Phase で同時是正（ISSUE-374/376/378/380/381 と同運用）。
   1・2 は口座資金モデルの拡張時に対応。
+
+## ISSUE-383: [不具合] 指標 Line 系列で `Value is null` が恒久再発しチャートが回復不能になる（2026-08-17）
+- **ステータス**: RESOLVED（2026-08-17・機構を最小再現で実証・防壁を実 UI で検証。発生源データの特定は残調査＝下記）
+- **重大度**: High（発生するとクロスヘア/ペイントのたびに throw・full 再計算も同じ throw で中断し固着。リロードまで回復不能）
+- **事象（ユーザー環境・統合 UI 8000・ライブ・売買マーカー 1326 件表示中）**:
+  ```
+  update_scheduler.js:80 full 再計算失敗（次クロックで再試行）: Value is null
+  lightweight-charts.js Uncaught Error: Value is null
+      at a ← xt.Line [as Mh] ← xt.Sh ← (map) ← Ce.TM ← Ce.yM ← Ce.Qs ← Pi ← Ri   （多数反復）
+  ```
+- **原因（最小再現で実証・vendor 同一ファイル）**:
+  lightweight-charts v5 の vendor（production ビルド）は系列データの「厳密増加 time」契約を
+  **検証しない**（検証はデバッグビルド限定）。契約違反（同 time / 後退 time）の配列が
+  `series.setData` を一度でも通ると、系列内部の index↔行 二分探索（`Ct`）が破綻し、
+  bar colorer（`xt.Sh`→`a`=ensureNotNull）が自系列の行を引けず throw する。
+  - アイテム構築（`Ce.DM`・data 変更時）とアイテム再着色（`Ce.TM`・applyOptions 時）の両経路で発火。
+  - **throw すると dirty フラグが下りないため毎フレーム/毎 mousemove 再発**＝回復不能（実測:
+    逆行 1 点の混入だけで恒久再発。ユーザーのスタックは TM 経路＝違反データ＋スタイル適用の組合せ）。
+  - 例外は後続 rAF/イベントで飛ぶため呼出側 try/catch では捕捉不能（ISSUE-167 と同じ性質）。
+  - ローソク系列は ISSUE-167 の防壁（candle_feed.dedupeCandlesByTime）で保護済みだったが、
+    **指標系列（line/histogram/level_dash）には防壁が無かった**。
+- **実測で否定した仮説**:
+  1. 可視 0 点系列（ISSUE-299 系）→ スタック不一致（TM/DM はアイテムが在る系列でのみ発火）。
+  2. main 差替と指標系列の time 集合不整合（ISSUE-196 系）→ 最小再現 5 系統（main 差替/縮小/拡張・
+     whitespace・remove 中 hover 等）すべて例外 0。逆行データ（J）のみ再現。
+  3. /compute ペイロードの契約違反 → ユーザーと同一の全 7 指標 × 2026-08-05〜08-15 を 2h 刻みで
+     untilTime スイープ（実 HTTP・720 要求）＝違反 0 件。現行サーバは清浄。
+- **是正（原因除去・lwc 隔離境界の不変条件化）**:
+  `adapter/front/series_time_guard.js`（新規・単一ソース）: `enforceAscendingTimes(points, label)`。
+  清浄なら**同一参照**を返す（挙動 byte 不変・追加コスト O(n) 走査のみ）。違反時は
+  `console.error` でフィンガープリント（系列キー・違反位置・前後 time・畳み前後の点数）を出し、
+  ISSUE-167 と同一規約（同 time は keep-last・後退は捨てる）で厳密増加へ畳む。
+  結線（データが lwc へ入る全流入点）:
+  - `series_drawer._createSeries` の setData（full 再描画・リビール・生成）＋退避 `slot.seriesData`
+    もガード済み配列を保持（スワップ再 setData での再持込を遮断）＋凡例末尾値も描画集合と一致。
+  - `chart_renderer.setData(seriesKey)`（既存系列への差替）。
+  - ローソク系は既存の ISSUE-167 防壁のまま（変更なし）。updateSeriesTail は既存の事前比較で保護済み。
+  - replay_ui へは既存規約どおりファイル symlink を追加（web/js 共有・105 件方式）。
+- **検定**: `tests/series_time_guard.test.js`（8 件）＋ `tests/series_time_guard_wiring.test.js`
+  （3 件・Fake series で「setData 前に畳まれる」「清浄は同一参照」の端到端）。既存 JS 検定
+  indicator_ui 1899 件 / replay_ui 350 件すべて Green。
+- **実 UI での検証（http://127.0.0.1:8000/・Playwright）**:
+  1. 通常系: 全 32 系列描画・ポインタをチャートに載せたまま `requestFullRecompute()`（バー確定と
+     同一入口）＝例外 0。
+  2. 防壁: 契約違反 payload（後退 1 点）を実描画経路（renderer.renderLine）へ投入 → フィンガー
+     プリントが出て 2 点へ畳まれ、以後のホバーで `Value is null` **0 件**（防壁なしの同 vendor
+     最小再現では同一操作で恒久再発を確認済み＝対照実証）。
+- **能動通知（追補・ユーザー裁定 2026-08-17「トースト機構で、ログの場所も提示する設計にしろ」）**:
+  console.error のみでは DevTools を開かない限り発火に気づけず、残調査の入口が失われる欠陥を是正。
+  - `series_time_guard.js` に通知 seam（`setSeriesTimeGuardNotifier`）を追加（guard は View を知らない・
+    依存方向は composition → guard の一方向。通知の例外は握り、防壁・描画・証跡ログを壊さない）。
+  - `chart_app_wiring.installSharedUi`（live/replay 両ルートの共通結線点）で既存 `ChartToastView` へ結線。
+    文言は「時系列データ異常を検出（ISSUE-383）: <系列キー> — 詳細: DevTools コンソール
+    [series-time-guard]（リロード後は __opsPrev() で回収可）」。`__opsPrev` の案内は op_log
+    （ISSUE-298・統合 UI のみ install）の在席検査付き＝無いページで嘘の案内をしない。
+  - `ChartToastView.show(text, durationMs?)` に呼び出し単位の表示時間上書きを追加（既定 1.6 秒では
+    ログ場所まで読めない・省略時は従来既定＝既存呼び出し挙動不変）。防壁告知は 10 秒。
+  - フィンガープリントは console.error の**文字列にも**埋め込む（op_log は追加引数オブジェクトを
+    `[object Object]` に潰すため。リロード後の `__opsPrev()` 回収でも違反位置・時刻が残ることを実測）。
+  - 検定: notifier seam 3 件・toast duration 3 件を追加（計 1905/350 全 Green）。実 UI（8000）で
+    違反 payload 投入 → トースト表示（文言・10 秒後自動消灯）・例外 0・op_log 残存を確認。
+- **残調査（発生源）**: ユーザー環境で違反データを生んだ発生源は未特定（現行 /compute は上記
+  スイープで清浄）。本防壁のフィンガープリント（トースト告知＋ログ）が次回発生時に
+  「どの系列・どの位置・どの time」を特定する（発生源修正と多重防御の二段構え＝ISSUE-167 と同じ裁定）。
+  sim_ui（iframe 側チャート・lwc5_chart_renderer）は本件チャートと別系で今回スコープ外
+  （データは bars 由来昇順）。
+- **関連**: ISSUE-167（ローソク側の同一防壁）、ISSUE-196/298/299（`Value is null` 同族・別機構）。
+
+## ISSUE-384: [不整合] TESTER_SETTINGS 基本設計書が実在しない `backtest` パッケージ・旧設計を前提とし、現行 simulator の実行条件契約と乖離（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 v1.1.0 反映済み。§2.1 接続先差し替え・§6.2 を build_interactor/RunBacktestRequest/SymbolSpec 8 項目/TICK_MODEL_IDS/SymbolSpecCatalog へ再定義・stop_out 既定 0.0・未登録 EA は変換層で事前検証・ea_params は EA 入力写像方式。項 10 の対応物不在は D-10（currency）等として設計書 §8.5 へ引き渡し）
+- **検出日/経路**: 2026-08-17。`.doc/TESTER_SETTINGS_BASIC_DESIGN.md` v1.0.0 と `simulator/` 実装・
+  `.doc/sim-backtest-ui-integration/基本設計書.md`（§13〜§17）の突合（実コード実測）。
+- **事実（すべて実測）**:
+  1. 設計書は設計対象を `backtest.settings` / `backtest.config`（§2.1.1・§3.1・§6.3・§8.4）と
+     するが、`backtest` パッケージは不存在（実在は `.doc/backtest/` の旧設計文書のみ）。実装は
+     `simulator/` であり、設計書は `simulator/` と sim-backtest 基本設計書を一切参照していない。
+  2. §6.2 の `BacktestConfig` 写像先フィールドが現行に存在しない。現行
+     `simulator/usecase/models.py:BacktestConfig` は決定論 9 項目＋拡張であり、
+     `symbol_spec`/`initial_deposit`/`leverage`/`timeframe`/`ea_name`/`ea_params` を持たない
+     （各々 `RunBacktestRequest`/`SymbolSpec`/`build_interactor` 引数に分散）。
+  3. ティックモデル語彙の不一致: 設計書の写像先 `ohlc_simulate`/`every_tick_synthetic`/
+     `math_calculations`/`every_tick_real` は現行 `TICK_MODEL_IDS`
+     （`every_tick`/`ohlc_expand`/`open_only`/`real_ticks`、
+     `adapter/execution/tick_model_registry.py`）に存在しない（一致は `open_only` のみ）。
+     U-3 の前提（旧 BACKTEST_DESIGN §6.3 の 3 値）は陳腐化している。
+  4. エンジン API の不一致: 設計書は `Engine().run(data)`。現行は `run_backtest(**meta)`
+     （`main/__init__.py:642`）＋ `build_interactor`（同 438・keyword 引数 39 個・既定なし必須 18）。
+  5. `SymbolSpec` の不一致: 設計書 §5.2 は旧 §3.2 の 11 項目（swap_long/swap_short/commission/
+     freeze_level を含み leverage を含まない）を流用と明記。現行（`usecase/models.py:87`）は
+     8 フィールドで swap/commission/freeze_level を持たず **leverage を持つ**。
+  6. `stop_out_level` 既定の不一致: 設計書 API-06 は既定 50.0。現行 `build_interactor`/
+     `RunBacktestRequest` は既定 0.0（MT5 bit-exact fixture の前提値）。
+  7. 未登録 EA の扱いが逆: 設計書 N-01 は `ConfigError` 送出。現行は
+     `_EA_FACTORIES.get(ea_name, _factory_tc24051901)` の沈黙フォールバック
+     （`main/__init__.py:434,520`）。結線時に沈黙誤実行の危険。
+  8. `ea_params` 契約の不一致: 設計書は `[TesterInputs]` の任意名を文字列辞書で渡す契約。
+     現行の戦略パラメータは `build_interactor` の型付き必須引数
+     （`ma_period`/`ma_method`/`lot_size`/`stop_loss_points`/`take_profit_points` 等）で名称・型とも別契約。
+  9. 期間・時間足: 設計書 `DateRange`/V-2（`to_date` 当日を含む閉区間）に対し、現行は
+     `marketdata_window`（半開区間）/`trading_start`/`tick_start・tick_end` で意味が異なる。
+     `period` 引数は `build_interactor` 本体で未使用＝V-3（時間足整合検証）の接続先が現行に無い。
+  10. 対応物不在: `currency`/`profit_in_pips`/`execution_delay`/`forward_*`/`optimization*`/
+      `visual`/`date_range` を表す型・フィールドは simulator に存在しない（JPY は
+      `profit_round_digits=0` が代理。`SymbolSpec` に決済通貨フィールドが無く、設計書 N-11
+      「currency ≠ 決済通貨で拒否」の判定データ源が無い）。
+  11. Phase 6 確定済みの実行条件機構（`SymbolSpecCatalog`/`RunProfile`/
+      `allowed_backtest_keys()`＝`build_interactor` シグネチャ由来・`POST /sim/jobs` 契約、
+      基本設計書 §16.3）に設計書は触れておらず、Settings 層の接続先が未定義。
+- **影響**: §3・§5.2・§6.2・§6.3・§8.5 の下流引き渡しが現行コードに接続不能。このまま内部設計へ
+  進むと実行条件モデルが二重化する。
+- **対策案（抜本）**: 設計書の「既存設計」参照を旧 `.doc/backtest/BACKTEST_DESIGN.md` から
+  現行 simulator 実装＋ sim-backtest 基本設計書へ差し替え、§6.2 写像を `build_interactor`/
+  `RunBacktestRequest`/`SymbolSpec`/`TICK_MODEL_IDS`/`SymbolSpecCatalog` に対して再定義する改訂
+  （v1.1）。実施は承認待ち。
+
+## ISSUE-385: [不整合] TESTER_SETTINGS 基本設計書の一次情報・引用先がリポジトリに不在／参照パス誤り（2026-08-17・OPEN）
+
+- **ステータス**: IN_PROGRESS（corpus 44 件・画像 1 は復元・照合済み。gitignore `sample/` 実施済（`.gitignore:236`）。参照パス修正は v1.1.0 で全件実在化済み。**残: 画像 1-b `ss20260627184706.jpg`（Modelling ドロップダウン）の受領のみ**）
+- **事実（すべて実測）**:
+  1. 一次情報 `sample/MQL5/Profiles/Tester/*.ini`（44 件）: `sample/` ディレクトリ自体が不存在。
+  2. F-20/CON-05「`.gitignore:180: sample/`」は誤り。`.gitignore` は 232 行で `sample` エントリなし。
+  3. 一次情報画像 `.doc/ss20260817190711.jpg`・`.doc/ss20260627184706.jpg`: 不存在。
+  4. 参照パス誤り: `.doc/BACKTEST_*.md` 4 本 → 実在は `.doc/backtest/` 配下。
+     `.doc/PORTING_GUIDE.md` → 実在は `indigators/PORTING_GUIDE.md`（対象はインディケーター移植）。
+     `.doc/INDICATOR_CALC_MODEL.md` → 実在は `.doc/indicator-management-ui/` 配下。
+     `indicators/profit_band/src/loader.py`・`common/applied_price.py` のうち前者は
+     `indigators/profit_band/src/loader.py`（ディレクトリ名綴り相違）。
+  5. 帰結: 設計書の根幹である F-1〜F-18（corpus 実測）・§2.2.1〜2.2.2（画像実測）が本チェック
+     アウトで再検証不能。受入テスト T-01・T-05・T-07〜T-09（44 件回帰）が実行不能。
+     D-06 の前提（gitignore による追跡外）も崩れている。
+- **対策案（抜本）**: 一次情報の所在を確定し（corpus・画像の取り込み、または取得手順の明記）、
+  設計書の全参照パスを実在パスへ修正。corpus 取り込みの可否（UTF-16 バイナリのコミット）は承認事項。
+
+## ISSUE-386: [不整合] TESTER_SETTINGS 基本設計書の技術スタック記載が実環境・既存実装と不一致（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 v1.1.0 反映済み。裁定＝framework 層 pydantic 検証 DTO＋内側 dataclass（U-1・K-02）。CON-04/CON-07/§3.3 を実測値（Python 3.13.5/pandas 3.0.3/pytest 9.0.3/pydantic 2.13.4）へ更新。検証規則 19 件の内容は不変＝実装手段のみ変更）
+- **事実（すべて実測 2026-08-17）**:
+  1. CON-04「現コンテナ導入済みは numpy 2.4.6 と tqdm のみ」は誤り。実測で
+     pandas 3.0.3 / pytest 9.0.3 / pydantic 2.13.4 が導入済み（Python 3.13.5）。
+  2. CON-07/§3.3「pandas 2.x 維持」に対し実環境は pandas 3.0.3。
+  3. U-1/K-02 の pydantic 非採用根拠のうち「現コンテナ未導入」は誤り（導入済み）。さらに現行
+     simulator は framework 層で pydantic による設定検証を既に採用している
+     （`simulator/framework/config_loader.py:_ConfigModel`・`extra="forbid"`・
+     `TICK_MODEL_IDS` から Literal 導出）。「検証は framework 層 pydantic・内側 DTO は
+     dataclass」という既存規約が実在し、設計書の「4 層手書き検証 19 規則」はこの既存規約との
+     整合裁定が必要。
+- **対策案（抜本）**: CON-04/CON-07/U-1 の事実記載を実測値へ更新し、検証層の実装手段
+  （手書き検証 vs 既存 `config_loader` 流儀の pydantic 検証 DTO）を既存規約との整合で再裁定。
+  ユーザー確定事項 3（pydantic 不採用）の扱いは承認事項。
+
+## ISSUE-387: [不整合] TESTER_SETTINGS 基本設計書の非対象判定（Delays・Math calculations）が simulator の実証済み参照実装と矛盾（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 v1.1.0 反映済み。N-04 撤回＝Delays はパススルー・保証境界は実測済み組（Zero latency・50 ms）に限定（§4.5.3・K-06）。追加実測＝golden `mt5_report/settings.jpg` の UI「Delays: 50 ms」↔ `expected/report.json` `delays_ms:50`・confirmation `2026-01_ma-market` も 50 ms（他 3 枚は Zero latency）。TBD-06〜08・TBD-17 の確認先にリポジトリ内 fixture を追記済み。Math calculations の契約拡張は D-09 として引き渡し）
+- **事実**:
+  1. 設計書 §4.5.3/N-04 は `execution_delay != 0` を実行拒否とし「corpus 31 件（-1/21/50）は
+     すべて実行不可」と帰結している。一方、現行 simulator の golden fixture
+     （`simulator/tests/fixtures/mt5/ma_slope_jp225_202501/case.yaml:44`）には MT5 実走条件
+     `delays_ms: 50` が記録されており、この fixture は bit-exact ゲート
+     （`test_compute_stats_golden_mt5.py`・`test_run_options_mt5_gate.py`）の対象＝
+     **Delays=50ms の MT5 実走結果を現行エンジンが既に bit-exact 再現している**。
+     設計書どおり実装すると、実証済みの再現能力を拒否する後退になる。
+     ※ `ExecutionMode=50` と `delays_ms=50` の同一性、および現行 `fill_delay="next_tick"` が
+     遅延の対応物である点は推論（未検証）。confirmation reconcile 7 本の Delays 設定値も未確認。
+  2. TBD-07（`ExecutionMode=21/50` が ms 値である根拠なし）: リポジトリ内に `delays_ms: 50` の
+     記録が既に存在し傍証となる（設計書は未参照）。TBD-17（Currency 許容値）も
+     `case.yaml:20` に `currency: JPY` の記録あり。
+  3. 設計書 §4.5.2/FR-09 の `Math calculations`＝`data=None` 許容に対し、現行契約は
+     `data_path` が必須キー（`required_backtest_keys()`・submit 検証で欠落拒否）であり、
+     `math_calculations` は `TICK_MODEL_IDS` に無い。data 無し実行はエンジン骨格・投入契約の
+     変更を要するが、設計書 §4.5（562 行相当の改変範囲）に当該変更が明示されていない。
+- **対策案（抜本）**: N-04 等の非対象判定を実測済み参照実装（golden fixture・confirmation
+  reconcile 7 本）と突合して再裁定し、TBD-06〜08・TBD-17 の確認先にリポジトリ内 fixture
+  （`case.yaml`・confirmation の screenshot）を追加する。
+
+## ISSUE-388: [不整合] TESTER_SETTINGS 基本設計書のエンジン仕様と simulator エンジン実装の詳細突合結果（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 v1.1.0 反映済み。§4.5.1 を現行 2 経路構造（bar-mode / every-tick）＋`ohlc_order` 3 値＋`entry_price_basis` 明示に書き直し・§4.5.2 の trades=0 統計を実装値（inf/0.0）へ・引用は PROCESS §0.2（3 モード）と METRICS §6（5 モード用語集）を区別して張り直し・§5.2 入力契約を `data_path`→`list[domain.Bar]`（naive）へ・§5.4 に口座二系統を明記）
+- **検出日/経路**: 2026-08-17。設計書のエンジン関連仕様（§4.5 実行時セマンティクス・§4.6・
+  §5.3〜5.4・§7.5）と simulator エンジン実装
+  （`usecase/run_backtest.py`・`usecase/_execution.py`・`usecase/metrics_spec.py`・
+  `adapter/execution/tick_model.py`・`domain/position.py`・`domain/account.py`・
+  `domain/exceptions.py`・`adapter/repository/ohlc_mt5_csv.py`）の全文実読による突合。
+  引用元 `.doc/backtest/BACKTEST_PROCESS.md`（§0.2・§6.1・§7）・`BACKTEST_METRICS.md`（§6）も実読。
+- **一致を確認した項目（実測）**:
+  1. 例外階層: `BacktestError` → `ConfigError` は実在（`domain/exceptions.py:24,52`）。
+     CLI 終了コードも `ConfigError`=2 / `BacktestError`=1（`main/__init__.py` run_backtest）で
+     設計書 §7.5 の接続前提と整合。
+  2. 証拠金式: `volume × contract_size × entry_price / leverage`（`domain/position.py:44-46`）・
+     `margin_level = equity/margin×100`（`domain/account.py:62-66`）は設計書 §5.4 の式と一致。
+     T-04 の数値例（leverage=10 で Margin 4000 対 400）は現行式で成立する。
+  3. スプレッド規約: `Ask = Bid + spread×point` は単一プリミティブ `mt5_bid_ask`
+     （`usecase/_execution.py`）で全経路に適用され、設計書 §4.5.1 の引用（PROCESS §7 #2）と
+     整合。ただし既定 `entry_price_basis="close"` は bid=ask=close の spread 無視分岐であり、
+     設計書にはこの分岐の記載がない。
+- **不一致（設計書どおりでは現行エンジンと矛盾する項目・すべて実測）**:
+  1. **引用の誤り（5 モード表）**: 設計書 §2.1.2・FR-08・§4.5.1 は「`BACKTEST_PROCESS.md §0.2`
+     の 5 モード表」を根拠とするが、実在する §0.2 は 3 モード表（Open prices only / 1 Min
+     OHLC / Every tick）で、Math calculations・real ticks の行は存在しない。§4.5.2 の引用文
+     「BACKTEST_PROCESS.md §0.2『数学計算（Math calculations）: ティック非生成…』」は
+     PROCESS に存在しない（5 モードの列挙は `BACKTEST_METRICS.md §6` の用語集 1 行ずつのみ）。
+  2. **モード別実行構造が別物**: 現行エンジンは bar-mode（`execute`）と every-tick 経路
+     （`_execute_every_tick`）の 2 経路のみで、`ticks_of` の消費点は every-tick 経路の 1 箇所
+     （`run_backtest.py:634`）だけ。`tick_model` が `every_tick`/`ohlc_expand`/`open_only` かつ
+     `pending_lifecycle=False` の場合、3 者は**同一の bar ループ**（1 bar=1 OnTick・SL/TP は
+     bar high/low＋`sltp_tie`・建値は `entry_price_basis`）で実行される。設計書 §4.5.1 の
+     「1 足あたり 4/4/1 ティック・足内 4 点で約定判定」という実行時セマンティクスは、現行では
+     every-tick 経路（real_ticks / pending_lifecycle）でのみ成立する。
+  3. **OHLC 展開順序の規則が別物**: 設計書 §4.5.1 は PROCESS §7 決定事項 #5「始値が高安
+     どちらに近いかで切替」を採用と引用。現行実装 `OhlcExpandTickModel`（`ohlc_order="auto"`・
+     `adapter/execution/tick_model.py:31-100`）は「足方向で切替（強気=安値先・弱気=高値先）・
+     ドジは前足モメンタム継続・tickvol<4 は隣接等値を集約」であり（2603-01 journal 実証と
+     コードに明記）、引用規則と一致しない。PROCESS §7 #5 の既定推奨自体が実装に対して陳腐化。
+     また `EveryTickModel` の OHLC フォールバックは固定 O→H→L→C（`ohlc_order` 無視・同 110-114）
+     で、設計書の「EVERY_TICK は ONE_MINUTE_OHLC と同一ティック列」は ohlc_order 既定時のみ成立。
+  4. **trades=0 の統計値が不一致**: 設計書 §4.5.2 は `profit_factor`/`expected_payoff` を
+     NaN と規定（PROCESS §6.1 の引用としては正確）。現行実装は `GL=0 → inf` 無条件
+     （GP=0 でも inf・`metrics_spec.py:100-104`）・`N=0 → 0.0`（同 107-111）で、設計書とも
+     PROCESS §6.1（GP=0→NaN / N=0→NaN）とも一致しない（実装は METRICS §1.1 / MT5 校正を正と
+     する裁定済み＝`compute_stats.py` docstring）。設計書 T-03 の合否基準は現行実装では不成立。
+  5. **入力データ前提が別物**: 設計書 §5.2 `BarSeries`＝pd.DataFrame（UTC tz-aware
+     DatetimeIndex・6 前提）を流用と明記。現行エンジン入力は CSV パス →
+     `list[domain.Bar]`（time=naive `numpy.datetime64`、`CsvOHLCRepository` 経由では ISO 文字列
+     になり得る＝ISSUE-016）で、tz 情報を持たない。§5.3 V-1 の検証仕様をそのまま適用できない。
+  6. **口座エンジンが二系統**: `usecase/account_engine.py` は OANDA CFD 用の別参照実装
+     （margin_rate ベース・維持率 100% ロスカット・ISSUE-369）であり、設計書 §5.4 の写像先で
+     ある MT5 型口座（leverage 除数・stop_out_level 比較）は `run_backtest.py` 内の
+     `Account`/`Position` 経路。内部設計時に接続先を誤ると式が変わるため要明記。
+  7. stop_out 既定（設計 50.0 vs 現行 0.0）は ISSUE-384 項 6、`Math calculations` の
+     `data=None` 経路不在は ISSUE-387 項 3 に既出（本 Issue では重複起票しない）。
+- **影響**: §4.5（実行時セマンティクス）・§5.3 V-1・T-03 は現行エンジンを記述しておらず、
+  この仕様のまま内部設計・受入テストを書くと「設計書には合格・実エンジンでは不成立」の
+  検定を量産する。
+- **対策案（抜本）**: 設計書 §4.5.1〜4.5.2 を現行エンジンの 2 経路構造
+  （bar-mode / every-tick）と実装済み順序規則（`ohlc_order` 3 値）・実装済み統計規則
+  （inf/0.0）に合わせて書き直し、引用は PROCESS §0.2（3 モード）と METRICS §6（5 モード用語集）
+  を区別して張り直す。PROCESS §7 #5 の既定推奨行も実装済み規則へ追記是正する。
