@@ -32,7 +32,73 @@ import pytest
 from simulator.domain.exceptions import ConfigError
 from simulator.domain.tester_settings_exceptions import SettingsActivationError
 
-_MAIN_SOURCE = Path(__file__).resolve().parents[2] / "main" / "__init__.py"
+_SIMULATOR_ROOT = Path(__file__).resolve().parents[2]
+_MAIN_SOURCE = _SIMULATOR_ROOT / "main" / "__init__.py"
+
+#: 表を**列挙**してよい関数（選択はしない）。選択規則は `_select_ea_factory` の 1 箇所のまま。
+_ENUMERATOR = "known_ea_names"
+
+
+def _private_ea_names() -> "frozenset[str]":
+    """EA 構築の内部構造を表す `simulator/main/__init__.py` の私有名（単一ソース導出）。
+
+    `_factory_*` を**手書きの一覧にしない**——登録 EA が増えるたびに取り残される。
+    main の AST から module 直下の `_factory_*` 定義を拾い、固定 3 名と合わせる。
+    """
+    tree = ast.parse(_MAIN_SOURCE.read_text(encoding="utf-8"))
+    factories = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("_factory_")
+    }
+    return frozenset(factories | {"_EA_FACTORIES", "_EaBuildContext", "_select_ea_factory"})
+
+
+def _production_sources() -> "list[Path]":
+    """`simulator/` 配下の本番コード（`**/tests/**` を除く）。
+
+    除外の根拠（実測）: 関数内で `_EA_FACTORIES` を読む検定が複数ある。いずれも
+    「表が単一ソースであること」を固定する正当な参照であり、違反ではない。
+    """
+    return sorted(
+        path
+        for path in _SIMULATOR_ROOT.rglob("*.py")
+        if "tests" not in path.relative_to(_SIMULATOR_ROOT).parts
+    )
+
+
+def _private_ea_references(path: Path) -> "frozenset[str]":
+    """私有名への**コード上の**参照（docstring・コメントは対象外）。
+
+    見る形式は 4 つ。現行ゲートは 1 だけを見ており、実測で 3 件中 1 件（形式 4）を
+    取り逃していた（`ea_stop_loss_param_catalog` の `getattr(sim_main, "_EA_FACTORIES", {})`）。
+
+        1. 素の名前参照   `_EA_FACTORIES.get(...)`
+        2. from-import    `from simulator.main import _EA_FACTORIES`
+        3. 属性参照       `sim_main._EA_FACTORIES`
+        4. getattr 文字列 `getattr(sim_main, "_EA_FACTORIES", {})`
+    """
+    private = _private_ea_names()
+    found: "set[str]" = set()
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in private:
+            found.add(node.id)
+        elif isinstance(node, ast.Attribute) and node.attr in private:
+            found.add(node.attr)
+        elif isinstance(node, ast.ImportFrom):
+            found.update(alias.name for alias in node.names if alias.name in private)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in private
+        ):
+            found.add(node.args[1].value)
+    return frozenset(found)
 
 _MT5_FIXTURE = (
     Path(__file__).resolve().parents[1]
@@ -100,8 +166,36 @@ class TestFactorySelectionHasASinglePoint:
                         break
         return readers
 
-    def test_the_table_is_read_by_exactly_one_function(self):
-        assert self._factory_table_readers() == ["_select_ea_factory"]
+    def test_the_table_is_read_by_the_selector_and_the_enumerator_only(self):
+        """表に触れてよい関数は 2 つだけ、かつ役割が違う。
+
+        `_select_ea_factory` は**選択**（`.get(ea_name, 既定)`）、`known_ea_names` は
+        **列挙**（キー集合）である。列挙は選択規則を含まない（下の `.get` 検定が
+        「引く式は 1 箇所」を別途固定する）ため、規則の複製にはならない。
+        `known_ea_names` を公開する動機は、外側スライス（`sim_ui`）が `set(_EA_FACTORIES)`
+        を越境 import して同じ列挙を書き写していたこと（ISSUE-405 実測）である。
+        3 つ目の読み手が入れば本検定が落ちる。
+        """
+        assert sorted(self._factory_table_readers()) == sorted(
+            ["_select_ea_factory", _ENUMERATOR]
+        )
+
+    def test_the_enumerator_does_not_select(self):
+        """列挙側が選択規則（既定フォールバック）を持たないこと。"""
+        tree = ast.parse(_MAIN_SOURCE.read_text(encoding="utf-8"))
+        enumerator = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == _ENUMERATOR
+        )
+        gets = [
+            inner
+            for inner in ast.walk(enumerator)
+            if isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == "get"
+        ]
+        assert gets == []
 
     def test_the_fallback_default_appears_once_in_the_module(self):
         # 既定フォールバック（未登録 ea_name → TC 経路）も 1 箇所に限る。
@@ -117,6 +211,92 @@ class TestFactorySelectionHasASinglePoint:
             and node.func.value.id == "_EA_FACTORIES"
         ]
         assert len(sites) == 1
+
+
+class TestPrivateEaNamesStayInsideTheEngineCompositionRoot:
+    """ISSUE-405: 私有名の越境参照を `simulator/` 全体（tests を除く）で 0 に固定する。
+
+    従来のゲートの射程は `simulator/main/__init__.py` **1 ファイルだけ**だった。その外側で
+    `sim_ui/adapter` の 3 モジュールが `_EA_FACTORIES` / `_factory_tc24051901` /
+    `_EaBuildContext` を越境 import し、EA ファクトリ選択のフォールバック規則
+    （`_EA_FACTORIES.get(ea_name, _factory_tc24051901)`）を**書き写して**いた。
+    規則が 1 箇所であることを main の内側だけで固定しても、外側の複製は素通りする。
+    """
+
+    def test_the_scan_reaches_the_sim_ui_adapters(self):
+        """走査対象の取りこぼしで検定が空振りしないこと（ゲートの自己検査）。"""
+        scanned = {
+            str(path.relative_to(_SIMULATOR_ROOT)) for path in _production_sources()
+        }
+        assert "sim_ui/adapter/ea_registry_series_catalog.py" in scanned
+        assert "sim_ui/adapter/ea_stop_loss_param_catalog.py" in scanned
+        assert "sim_ui/adapter/symbol_spec_catalog.py" in scanned
+
+    def test_the_detector_sees_the_getattr_string_form(self, tmp_path):
+        """文字列リテラル引数の `getattr` を検出できること（形式 4 の自己検査）。
+
+        現行実装（`ast.Name` だけを見る）はこの形を取り逃す。取り逃す検出器で
+        「違反 0」を主張しても意味がないため、検出器の能力自体を固定する。
+        """
+        sample = tmp_path / "sample.py"
+        sample.write_text(
+            'from simulator import main as m\n'
+            'v = getattr(m, "_EA_FACTORIES", {})\n',
+            encoding="utf-8",
+        )
+        assert _private_ea_references(sample) == frozenset({"_EA_FACTORIES"})
+
+    def test_the_detector_sees_the_attribute_form(self, tmp_path):
+        sample = tmp_path / "sample.py"
+        sample.write_text(
+            'from simulator import main as m\nv = m._factory_tc24051901\n',
+            encoding="utf-8",
+        )
+        assert _private_ea_references(sample) == frozenset({"_factory_tc24051901"})
+
+    def test_the_factory_names_are_derived_from_the_module(self):
+        """私有名の一覧を手書きしていないこと（登録 EA が増えたら自動で射程に入る）。"""
+        names = _private_ea_names()
+        assert "_factory_tc24051901" in names
+        assert "_factory_dataless" in names
+        assert "_EA_FACTORIES" in names
+
+    def test_no_production_module_outside_main_touches_a_private_ea_name(self):
+        offenders = {
+            str(path.relative_to(_SIMULATOR_ROOT)): sorted(_private_ea_references(path))
+            for path in _production_sources()
+            if path != _MAIN_SOURCE
+        }
+        assert {name: refs for name, refs in offenders.items() if refs} == {}
+
+    def test_only_engine_side_tests_may_reference_the_private_table(self):
+        """`**/tests/**` の残存参照が「エンジン自身の検定」だけであることを実測で示す。
+
+        除外の正当性は「テストだから見逃す」ではない。**表の所有スライス
+        （`simulator/tests/**`）の検定が、表を単一ソースとして固定する**ための参照だけが
+        残っている、という状態を固定する:
+
+            * `test_ea_factory_registry.py`          — 表そのものの単体検定
+            * `test_unsupported_n01_ea_name_source.py` — 注入集合 ⊇ 表のキー、という関係の固定
+
+        ISSUE-405 の是正で `sim_ui/tests/**` 側の参照は 0 になった（本番コードの越境を
+        テストへ移し替えただけ、にはなっていないことの実証）。
+        """
+        referencing = sorted(
+            str(path.relative_to(_SIMULATOR_ROOT))
+            for path in _SIMULATOR_ROOT.rglob("*.py")
+            if "tests" in path.relative_to(_SIMULATOR_ROOT).parts
+            and _private_ea_references(path)
+        )
+        assert referencing == [
+            "tests/unit/test_ea_factory_registry.py",
+            "tests/unit/test_unsupported_n01_ea_name_source.py",
+        ]
+        assert [
+            path
+            for path in referencing
+            if (_SIMULATOR_ROOT / path) in _production_sources()
+        ] == []
 
 
 class TestBuildEaIndicatorsGoesThroughTheRule:

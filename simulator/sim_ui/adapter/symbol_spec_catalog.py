@@ -59,18 +59,18 @@ front にこれらのリテラルを持たせない（front リテラル 0）。
     front の投入キー許可リスト（``sim_execution_panel_view.js`` の ``PROFILE_KEYS``）は 11 キーの
     ままであり、``to_dict()`` にキーが 1 つ増えても投入 body は不変である。
 
-    ea_name 一覧は ``simulator.main._EA_FACTORIES`` の keys＋既定 TC 経路から導出する（§12.1
-    ハードコード禁止）。他銘柄は dataset 実体が確定するまで追加しない（YAGNI）。
+    ea_name 一覧は**注入**で受ける（束縛は `simulator.main.known_ea_names`・§12.1 ハードコード
+    禁止）。以前は ``from simulator.main import _EA_FACTORIES`` で私有な登録表を越境 import し、
+    ``set(_EA_FACTORIES) | {"TC24051901"}`` という列挙と既定フォールバック名を**書き写して**
+    いた（ISSUE-405）。列挙の所有者は表の所有者（`simulator.main`）であり、束ねるのは
+    Composition Root である（R-4 と同型）。他銘柄は dataset 実体が確定するまで追加しない（YAGNI）。
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from simulator.sim_ui.usecase.run_options_ports import RunOptionsPort, RunProfile
-
-# build_interactor 既定 TC 経路の ea_name（_EA_FACTORIES 未登録キーは _factory_tc24051901 へ
-# フォールバックする・main/__init__.py）。reconcile / decorator 検定と同じ名前。
-_DEFAULT_EA = "TC24051901"
 
 # JP225 の dataset ref（セレクタのラベル・MT5 突合 fixture と同系譜）。
 _JP225_REF = "jp225_m1"
@@ -88,6 +88,16 @@ _JP225_MT5_CSV = (
 
 class SymbolSpecCatalog(RunOptionsPort):
     """JP225 の実行プロファイルと ea_name 一覧を供給する単一ソース。"""
+
+    def __init__(self, known_ea_names: "Callable[[], tuple[str, ...]]") -> None:
+        """``known_ea_names``: 実行可能な EA 名を返す関数（**必須**）。
+
+        束縛の実体は `simulator.main.known_ea_names`（登録表のキー＋既定 TC 経路の名前）。
+        既定値を置かないのは R-4 と同型（既定束縛があると adapter → main の外向き依存が
+        復活する）。銘柄仕様（`datasets`）は本カタログが権威だが、**実行可能な EA 名は
+        エンジンが権威**であり、ここは中継するだけである。
+        """
+        self._known_ea_names = known_ea_names
 
     def datasets(self) -> "list[RunProfile]":
         return [
@@ -116,8 +126,5 @@ class SymbolSpecCatalog(RunOptionsPort):
         ]
 
     def ea_names(self) -> "list[str]":
-        from simulator.main import _EA_FACTORIES
-
-        # _EA_FACTORIES の keys＋既定 TC 経路（ハードコード表を持たない＝登録追加に追随）。
-        names = set(_EA_FACTORIES) | {_DEFAULT_EA}
-        return sorted(names)  # 決定的順（重複なし）
+        """実行可能な EA 名（注入元が権威・ハードコード表を持たない＝登録追加に追随）。"""
+        return list(self._known_ea_names())  # 注入元が決定的順（昇順・重複なし）で返す

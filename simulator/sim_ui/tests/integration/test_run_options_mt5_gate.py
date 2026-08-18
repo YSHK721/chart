@@ -20,14 +20,14 @@ import pandas as pd
 import pytest
 
 from simulator.main import run_backtest
-from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
+from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 from simulator.tests.fixtures.mt5 import load_case
 
 _CASE = "ma_slope_jp225_202501"
 
 
 def _jp225_profile():
-    return [p for p in SymbolSpecCatalog().datasets() if p.symbol == "JP225"][0]
+    return [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
 
 
 def test_catalog_constants_match_mt5_fixture():

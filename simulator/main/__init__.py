@@ -445,6 +445,37 @@ _EA_FACTORIES: "dict[str, Callable[[_EaBuildContext], tuple[Any, PandasIndicator
 }
 
 
+#: 未登録 ea_name が落ちる既定 TC 経路（`_factory_tc24051901`）の EA 名。
+#:
+#: 「実行可能な EA 名」は登録表のキーだけでは表せない——未登録名は既定 TC 経路へ
+#: フォールバックするため、この 1 名だけが表の外側にある実行可能名である。名前を
+#: 表の所有者（本モジュール）に置く理由（ISSUE-405 実測）: 従来は
+#: `sim_ui/adapter/symbol_spec_catalog._DEFAULT_EA` と
+#: `simulator/tests/tester_settings_engine_fixtures.DEFAULT_EA_NAME` に同じ文字列が
+#: 写されており、フォールバック先を変えると 2 箇所が同時に腐る配置だった。
+DEFAULT_EA_NAME = "TC24051901"
+
+
+def known_ea_names() -> "tuple[str, ...]":
+    """実行可能な EA 名を昇順で返す（登録表のキー＋既定 TC 経路の名前）。
+
+    **列挙**であって選択ではない。表を引く式（`.get(ea_name, 既定)`）はここに無く、
+    選択規則は従来どおり `_select_ea_factory` の 1 箇所に閉じている（AST 検定が
+    両者の役割分担を固定する）。
+
+    なぜ公開するか（ISSUE-405）: 表示スライス（`sim_ui`）の実行指示フォームは「どの EA を
+    選べるか」の一覧を要る。これが無いと外側が私有名（`_EA_FACTORIES`）を越境 import して
+    `set(_EA_FACTORIES) | {"TC24051901"}` という**同じ列挙を書き写す**ことになり、実際に
+    そうなっていた（`symbol_spec_catalog.ea_names`）。
+
+    `tick_model` を要求しない: 「どの EA が実行可能か」は run の modelling に依存しない。
+    要求すると呼出側が値を捏造することになる。
+
+    戻り値は決定的順（昇順・重複なし）。
+    """
+    return tuple(sorted(set(_EA_FACTORIES) | {DEFAULT_EA_NAME}))
+
+
 def _select_ea_factory(
     ea_name: str, *, tick_model: str
 ) -> "Callable[[_EaBuildContext], tuple[Any, Any, Any]]":
@@ -481,7 +512,7 @@ def _tick_model_of(config_overrides: "dict | None") -> str:
     return load_config(config_overrides or {}).tick_model
 
 
-def build_ea_indicators(
+def _ea_components(
     *,
     data_path: Any,
     ea_name: str,
@@ -494,30 +525,27 @@ def build_ea_indicators(
     weekly_f_risk: float = 0.01,
     config_overrides: "dict | None" = None,
     **_unused: Any,
-) -> IndicatorPort:
-    """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
+) -> "tuple[Any, Any, Any]":
+    """ジョブ仕様から `(strategy, registry, market_data)` を組む**唯一の入口**。
 
     `build_interactor` と同じジョブ仕様（余分なキーを含んでよい＝`**spec` で丸ごと渡せる）
     を受け、`_select_ea_factory`（選択規則の唯一の判定点）へそのまま委譲する。対応表も
     選択規則もここへは書き写さない——写した規則は片方だけ改訂されて必ず食い違う。
 
+    公開アクセサ（`build_ea_indicators` / `build_ea_strategy`）が引数の既定値と組み立てを
+    **共有**するために private で切り出してある。公開側それぞれに同じ 10 個の引数と既定値を
+    並べると、既定値が片方だけ改訂されて 2 つの入口が違う構成を返す（本リポジトリで
+    繰り返し起きている壊れ方）。
+
     `config_overrides` を受ける理由（🔴-1）: 選択規則の判定入力は `tick_model` であり、
-    投入仕様ではそれが `config_overrides` に載る。A-1 時点で本関数はこの引数を受けず
-    `_EA_FACTORIES` を生で引いていたため、バー系列を消費しない modelling
+    投入仕様ではそれが `config_overrides` に載る。A-1 時点で `build_ea_indicators` は
+    この引数を受けず `_EA_FACTORIES` を生で引いていたため、バー系列を消費しない modelling
     （`Math calculations`）でも `_factory_tc24051901` へ落ち、``data_path=None`` の CSV 読みで
     `DataError` になっていた（`sim_ui/main/run_job.py` の `_supply_contacts` 経由で
     report.json が生成されない run を生んでいた）。既定 ``None`` は従来の呼出と同じく
     config_loader の既定（``every_tick``＝バー系列を消費する）に落ちる。
 
-    なぜ公開するか: 表示スライス（sim / report_ui）は「価格×MA の接点」のように**EA が
-    見ていた系列そのもの**を要る。これが無いと外側が私有名（`_EA_FACTORIES` /
-    `_EaBuildContext`）を越境 import するか、EA ごとの指標を推測で書き写すことになる。
-
     既定値は `build_interactor` の同名引数と同じ（指標周期を持たない仕様でも呼べる）。
-    戻り値は `IndicatorPort`（LSP）: バー系列を消費しない構成では系列を 1 本も持たない
-    `NullIndicatorRegistry` を返す。系列の未登録はどちらの実装でも同じ公開エラー契約
-    （`IndicatorBufferError`・context の ``available``）で呼び出し側へ届く。
-
     副作用は無い（`build_interactor` は 1 バイトも変えない）。データ読み込みは factory が
     行うため、run の実行とは独立に呼べる。
     """
@@ -532,8 +560,52 @@ def build_ea_indicators(
         weekly_f_risk=weekly_f_risk,
     )
     factory = _select_ea_factory(ea_name, tick_model=_tick_model_of(config_overrides))
-    _strategy, registry, _market_data = factory(context)
+    return factory(context)
+
+
+def build_ea_indicators(**spec: Any) -> IndicatorPort:
+    """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
+
+    なぜ公開するか: 表示スライス（sim / report_ui）は「価格×MA の接点」のように**EA が
+    見ていた系列そのもの**を要る。これが無いと外側が私有名（`_EA_FACTORIES` /
+    `_EaBuildContext`）を越境 import するか、EA ごとの指標を推測で書き写すことになる。
+
+    ``spec``: `build_interactor` と同じジョブ仕様（`**spec` で丸ごと渡せる）。引数と既定値は
+    `_ea_components` が単一ソースとして持つ。
+
+    戻り値は `IndicatorPort`（LSP）: バー系列を消費しない構成では系列を 1 本も持たない
+    `NullIndicatorRegistry` を返す。系列の未登録はどちらの実装でも同じ公開エラー契約
+    （`IndicatorBufferError`・context の ``available``）で呼び出し側へ届く。
+    """
+    _strategy, registry, _market_data = _ea_components(**spec)
     return registry
+
+
+def build_ea_strategy(**spec: Any) -> Any:
+    """その EA が**実行に使う戦略実体**（StrategyPort）を返す（ISSUE-405・追加のみ）。
+
+    `build_ea_indicators` と**同じ仕様・同じ選択規則**（`_select_ea_factory` への委譲）で、
+    3 点組のうち戦略だけを返す。
+
+    なぜ公開するか（ISSUE-405 実測）: 表示スライスの受付検証（§12.8「戦略設定が SL を
+    保証するか」）は「その ea_name はどの戦略クラスか」を要る。これが無いと外側が
+    `getattr(simulator.main, "_EA_FACTORIES", {})` で表を覗き、`_factory_tc24051901` への
+    フォールバック規則を書き写した上で、factory 関数の**ソース文字列**から戦略クラス名を
+    推測することになる（実際にそうなっていた。`_factory_weekly_vol_band` はビルダ関数
+    `make_weekly_vol_band(...)` を呼ぶため、その推測は WeeklyVolBand で失敗していた）。
+
+    `tick_model` を要求しない: 呼出側の問い（「その EA はどの戦略を持つか」）は run の
+    modelling に依存しない。既定 ``config_overrides=None`` で config_loader の既定
+    （``every_tick``＝バー系列を消費する）に落ち、従来の表引きと同じ factory が選ばれる。
+    バー系列を消費しない modelling を明示した場合だけ `NullStrategy` になる（規則は
+    `_select_ea_factory` の 1 箇所のまま）。
+
+    戻り値は `StrategyPort`（LSP）: engine が呼ぶ `on_init` / `on_new_bar` /
+    `on_position_check` を持つ実体。データ読み込みは factory が行うため、``data_path`` は
+    その factory が読める形式の実在ファイルである必要がある。
+    """
+    strategy, _registry, _market_data = _ea_components(**spec)
+    return strategy
 
 
 def build_interactor(

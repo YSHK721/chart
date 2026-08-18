@@ -27,7 +27,8 @@ from simulator.domain.exceptions import ConfigError
 from simulator.main import _EA_FACTORIES
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
 from simulator.main.tester_settings.unsupported import RULES
-from simulator.sim_ui.adapter.symbol_spec_catalog import _DEFAULT_EA, SymbolSpecCatalog
+from simulator.main import DEFAULT_EA_NAME as _DEFAULT_EA
+from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 from simulator.tests.tester_settings_engine_fixtures import (
     DEFAULT_EA_NAME,
     engine_binding,
@@ -35,7 +36,7 @@ from simulator.tests.tester_settings_engine_fixtures import (
 )
 
 #: 判定源のうち実装が実際に読む側（注入集合）の出所。テストが名前を再宣言しない。
-INJECTED_EA_NAMES = frozenset(SymbolSpecCatalog().ea_names())
+INJECTED_EA_NAMES = frozenset(build_run_options_port().ea_names())
 FACTORY_KEYS = frozenset(_EA_FACTORIES)
 
 
@@ -64,8 +65,9 @@ class TestInjectedSetVersusTheFactoryRegistry:
         assert _DEFAULT_EA not in FACTORY_KEYS
 
     def test_the_test_fixture_does_not_hold_a_stale_copy_of_the_fallback_name(self):
-        # `tester_settings_engine_fixtures.DEFAULT_EA_NAME` は同じ名前の写しである。
-        # 片方だけ腐ると N-01 の検定全体が意味を失うため、ここで一致を固定する。
+        # `tester_settings_engine_fixtures.DEFAULT_EA_NAME` は同じ名前を指す。
+        # ISSUE-405 以降はどちらも `simulator.main.DEFAULT_EA_NAME`（フォールバック先の
+        # 所有者）から引くため、写しは存在しない。その関係をここで固定する。
         assert DEFAULT_EA_NAME == _DEFAULT_EA
 
 

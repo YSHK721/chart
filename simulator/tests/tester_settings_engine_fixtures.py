@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from simulator.framework.tester_settings import tester_settings_from_mapping
+from simulator.main import DEFAULT_EA_NAME as _DEFAULT_EA_NAME
 from simulator.main.tester_settings.kwargs_mapper import EngineBinding
 from simulator.tests.unit.tester_settings_synthetic import OMIT, synthetic_tester_map
 from simulator.usecase.models import SymbolSpec
@@ -54,9 +55,10 @@ from simulator.usecase.tester_settings.models import TesterSettings
 #: `EngineBinding.settlement_currency` は既定値を持たない必須注入のため、テスト側が与える。
 SETTLEMENT_CURRENCY: str = "JPY"
 
-#: `_EA_FACTORIES` 未登録でも `SymbolSpecCatalog.ea_names()` に載る既定 TC 経路の名前。
-#: 実行可能な EA 名はカタログが権威であり、本モジュールは名前を再宣言しない。
-DEFAULT_EA_NAME: str = "TC24051901"
+#: 登録表に無くても実行可能な既定 TC 経路の EA 名。**名前を再宣言しない**——
+#: フォールバック先の所有者（`simulator.main`）から引く（ISSUE-405。以前はここと
+#: `symbol_spec_catalog._DEFAULT_EA` に同じ文字列が写されていた）。
+DEFAULT_EA_NAME: str = _DEFAULT_EA_NAME
 
 #: `build_interactor` の EA パラメータ 5 キー（`required_backtest_keys()` に含まれるが
 #: `EffectiveSettings` にも `EA_INPUT_BINDINGS`（初期空・§4.4.1）にも供給源が無い）。
@@ -85,17 +87,17 @@ def jp225_symbol_spec() -> SymbolSpec:
     `simulator/tests/unit/test_tester_settings_engine_fixtures.py` が固定する
     （包含が崩れたら落ちる）。本関数はその前提の上で動く。
     """
-    from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
+    from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 
-    profile = SymbolSpecCatalog().datasets()[0]
+    profile = build_run_options_port().datasets()[0]
     return SymbolSpec(**{field.name: getattr(profile, field.name) for field in fields(SymbolSpec)})
 
 
 def catalog_ea_names() -> frozenset[str]:
     """N-01 の判定源（実行可能な EA 名の集合）。カタログが権威。"""
-    from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
+    from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 
-    return frozenset(SymbolSpecCatalog().ea_names())
+    return frozenset(build_run_options_port().ea_names())
 
 
 def engine_binding(

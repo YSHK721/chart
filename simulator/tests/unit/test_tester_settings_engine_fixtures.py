@@ -92,7 +92,7 @@ class TestBehaviourIsUnchanged:
 
     @pytest.mark.parametrize("field_name", sorted(_field_names(SymbolSpec)))
     def test_each_field_equals_the_catalog_profile_value(self, field_name):
-        from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
+        from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 
-        profile = SymbolSpecCatalog().datasets()[0]
+        profile = build_run_options_port().datasets()[0]
         assert getattr(jp225_symbol_spec(), field_name) == getattr(profile, field_name)

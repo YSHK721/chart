@@ -6,8 +6,15 @@ Phase 1 の `composition_root.build_sim_app`（配信面だけ）を置き換え
 結線（DIP: usecase は抽象にのみ依存し、実装の選択はここだけが知る）:
     JobLedgerPort              → FileJobLedger（FS 台帳）
     JobLauncherPort            → SubprocessJobLauncher（子プロセス・setsid しない）
-    IndicatorSeriesCatalogPort → EaRegistrySeriesCatalog（`_EA_FACTORIES` を単一ソースに探索）
+    IndicatorSeriesCatalogPort → EaRegistrySeriesCatalog（`build_ea_indicators` で実構築）
+    StopLossParamCatalogPort   → EaStopLossParamCatalog（`build_ea_strategy` で実構築）
+    RunOptionsPort             → SymbolSpecCatalog（`known_ea_names` を EA 名の権威に）
     必要系列を決める関数        → `simulator.usecase.sizing_ports.required_price_series`
+
+エンジン（`simulator.main`）を知ってよいのは本モジュールと `run_job.py` だけである
+（ISSUE-405・R-4 の一般化）。adapter は公開アクセサへの束縛を**注入**で受け取り、
+`simulator.main` を直接 import しない。機械強制は
+`sim_ui/tests/unit/test_sim_ui_import_direction.py`。
 
 ``data_root`` に既定値（`<repo>/simulator/sim_ui/data`）を持たせているのは、
 `unified_ui/serve.sh` の改変を承認済みの最小範囲（E-1: import と呼び出しの約 3 行）に
@@ -18,9 +25,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from simulator.sim_ui.adapter.ea_build_probe import EaBuildProbe
 from simulator.sim_ui.adapter.ea_registry_series_catalog import EaRegistrySeriesCatalog
 from simulator.sim_ui.adapter.ea_stop_loss_param_catalog import EaStopLossParamCatalog
 from simulator.sim_ui.adapter.file_job_ledger import FileJobLedger
+from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
 from simulator.sim_ui.adapter.subprocess_job_launcher import SubprocessJobLauncher
 from simulator.sim_ui.framework.serve_sim_jobs import SimJobApp
 
@@ -39,6 +48,51 @@ def _required_series(entry_price_basis: str) -> str:
     from simulator.usecase.sizing_ports import required_price_series
 
     return required_price_series(entry_price_basis)
+
+
+def _build_ea_indicators(**spec: Any) -> Any:
+    """`simulator.main.build_ea_indicators` への束縛（EA 別の指標レジストリ）。
+
+    関数内 import にしているのは、本モジュールの import で pandas 一式を引き込まない
+    ため（探索が実際に必要になった時点で解決される）。
+    """
+    from simulator.main import build_ea_indicators
+
+    return build_ea_indicators(**spec)
+
+
+def _build_ea_strategy(**spec: Any) -> Any:
+    """`simulator.main.build_ea_strategy` への束縛（EA 別の戦略実体）。"""
+    from simulator.main import build_ea_strategy
+
+    return build_ea_strategy(**spec)
+
+
+def _known_ea_names() -> "tuple[str, ...]":
+    """`simulator.main.known_ea_names` への束縛（実行可能な EA 名の権威）。"""
+    from simulator.main import known_ea_names
+
+    return known_ea_names()
+
+
+def build_series_catalog() -> EaRegistrySeriesCatalog:
+    """E-3 判定の系列カタログ（束縛済み）。
+
+    束縛点を関数にしてあるのは、配信面の Composition Root
+    （`composition_root_display`）が同じ結線を**書き写さない**ようにするためである
+    （同じ 1 行を 2 つの root に置くと、束縛先を変えたとき片方だけが腐る）。
+    """
+    return EaRegistrySeriesCatalog(probe=EaBuildProbe(_build_ea_indicators))
+
+
+def build_stop_loss_catalog() -> EaStopLossParamCatalog:
+    """§12.8 受付時 SL 検証のカタログ（束縛済み）。"""
+    return EaStopLossParamCatalog(probe=EaBuildProbe(_build_ea_strategy))
+
+
+def build_run_options_port() -> SymbolSpecCatalog:
+    """実行指示フォームの選択肢を供給する RunOptionsPort（束縛済み）。"""
+    return SymbolSpecCatalog(known_ea_names=_known_ea_names)
 
 
 # 子へ素通しする `backtest` meta が注入専用に予約しているキー。JSON から渡させない。
@@ -118,10 +172,10 @@ def build_sim_job_app(
         shared_js_root=shared_js,
         ledger=ledger,
         launcher=launcher,
-        series_catalog=EaRegistrySeriesCatalog(),
+        series_catalog=build_series_catalog(),
         required_series=_required_series,
         # §12.8: SL 保証の受付時検証。判定は EA 別カタログから導出する（戦略リスト不使用）。
-        stop_loss_catalog=EaStopLossParamCatalog(),
+        stop_loss_catalog=build_stop_loss_catalog(),
         allowed_backtest_keys=allowed_backtest_keys,
         required_backtest_keys=required_backtest_keys,
     )
