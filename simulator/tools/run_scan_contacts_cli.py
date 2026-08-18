@@ -124,7 +124,10 @@ def _default_ticks_factory(args: Any) -> Callable[[int, int], "list[tuple[int, f
     """
     import pandas as pd
 
-    from simulator.adapter.repository.tick_parquet import ParquetTickRepository
+    from simulator.adapter.repository.tick_parquet import (
+        ParquetTickRepository,
+        timestamp_epoch_seconds,
+    )
 
     repo = ParquetTickRepository(args.tick_store_root)
     symbol = args.symbol
@@ -135,7 +138,10 @@ def _default_ticks_factory(args: Any) -> Callable[[int, int], "list[tuple[int, f
         df = repo.load_ticks(symbol, start_ts, end_ts, columns=["timestamp", "bid", "ask"])
         if len(df) == 0:
             return []
-        secs = pd.to_datetime(df["timestamp"]).astype("int64") // 1_000_000_000
+        # epoch 秒への換算は tick フレーム規約の共有実体に委ねる（ISSUE-406:
+        # 手書きの `astype("int64") // 1e9` は ns 前提で、parquet 読戻しの
+        # ms/us dtype に対し 10^6 倍ずれた。規則をここへ書き直さない）。
+        secs = timestamp_epoch_seconds(df["timestamp"])
         mid = (df["bid"].astype(float) + df["ask"].astype(float)) / 2.0
         return [(int(s), float(m)) for s, m in zip(secs.tolist(), mid.tolist())]
 

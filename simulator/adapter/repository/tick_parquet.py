@@ -29,6 +29,7 @@ import pandas as pd
 from datawindow.half_open import HalfOpenEpochWindow
 from simulator.adapter.repository._tick_frame import (
     TICK_COLUMNS,
+    timestamp_epoch_seconds,
     validate_tick_columns,
     with_partition_columns,
 )
@@ -190,12 +191,9 @@ class ParquetTickRepository(TickDataPort, TickStorePort):
             #   是正後（map(contains)）   0.281 / 0.288 s   差 +0.17 s
             # load_ticks は 1 run につき 1 回であり、後続の 952k tick 走査に対して
             # 支配的でない。返り値の frame は 952k 行で是正前と完全一致（実測）。
-            ts_epoch = (
-                pd.to_datetime(df["timestamp"], utc=True)  # naive は UTC とみなす（共有規則）
-                .dt.tz_localize(None)
-                .astype("datetime64[s]")  # 秒へ floor（dtype 解像度 us/ns に依存しない）
-                .astype("int64")
-            )
+            # timestamp → epoch 秒は共有実体 `timestamp_epoch_seconds` に委ねる
+            # （ISSUE-406: CLI 側の手書き複製が ns 前提で 10^6 倍ずれた。実体は 1 つ）。
+            ts_epoch = timestamp_epoch_seconds(df["timestamp"])
             df = df.loc[ts_epoch.map(window.contains)].reset_index(drop=True)
         except DataError:
             raise

@@ -38,6 +38,25 @@ def validate_tick_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def timestamp_epoch_seconds(timestamps: pd.Series) -> pd.Series:
+    """timestamp 列 → UTC epoch 秒（int64）。tick フレームの**唯一の変換実体**（ISSUE-406）。
+
+    事前条件: ``timestamps`` は ``pd.to_datetime`` が解釈できる列
+        （``datetime64`` の任意解像度 ms/us/ns・naive/tz-aware のいずれでもよい）。
+    事後条件: UTC 基準の epoch 秒（int64 Series）。naive は **UTC** とみなし
+        （窓境界・`bar.time` と同じ共有規則）、秒未満は floor。結果は dtype 解像度に
+        依存しない（``astype("int64")`` の直接除算は解像度前提を持ち込むため使わない。
+        是正前の CLI はこれで ms 列に対し 10^6 倍ずれた）。
+    例外: 解釈できない値は pandas の例外をそのまま伝播する（推測で解釈しない）。
+    """
+    return (
+        pd.to_datetime(timestamps, utc=True)  # naive は UTC とみなす（共有規則）
+        .dt.tz_localize(None)
+        .astype("datetime64[s]")  # 秒へ floor（dtype 解像度 ms/us/ns に依存しない）
+        .astype("int64")
+    )
+
+
 def with_partition_columns(df: pd.DataFrame) -> pd.DataFrame:
     """timestamp から year/month/day の hive partition 列を付与する。"""
     out = df.copy()
