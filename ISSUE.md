@@ -8080,3 +8080,33 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   (c) 項目 1 の写しは共有実体（`_tick_frame.timestamp_epoch_seconds` / `bar_time`）への統合を
   ISSUE-407（bench の複製）と同系列で検討。
 - **関連**: ISSUE-406（原因の一般形）・ISSUE-407（半開述語の第 3 複製）・ISSUE-408（丸め方向）。
+
+## ISSUE-411: `Bar.time` 契約検査（ISSUE-403 スライス 1）が本番 1 経路で成立しない
+- **ステータス**: OPEN（新規起票。承認待ち＝スコープ外の本番変更を要するため未着手）
+- **重大度**: Medium（現時点で数値誤りは未観測。ただし ISSUE-403 の抜本是正が完了しない）
+- **背景**: ISSUE-403 の是正で `_bar_period` / `tick_model` の手書き型分岐は撤去した（d2c4324）。
+  残る抜本策は「未対応の時刻表現の `Bar` をそもそも作らせない」ことであり、`Bar.__post_init__` へ
+  time 契約検査を置く（受理集合は `EPOCH_CONVERTERS` から導出）。合成 fixture 13 件の是正は完了済
+  （5a5a053）。
+- **事実（実測 2026-08-18）**: `Bar.__post_init__` に契約検査を差し込む調査用プラグインで全スイート
+  （`simulator/tests` + `simulator/sim_ui/tests`）を実行したところ、失敗は **2 件のみ**に収束した。
+  1. `test_windowed_market_data.py::TestUnsupportedTimeRepresentation` — 意図どおり
+     （スライス 1 で検証点を test_bar.py 側へ移動する予定・duck-typed stub で窓契約は維持）。
+  2. `test_export_trade_markers.py::test_default_run_uses_recent_tail_and_survives_margin_call`
+     — **本番コードが原因**。`simulator/tools/export_trade_markers.py:83`
+     （`bridge_marketdata_df`）は実 marketdata の `date` 列（naive 文字列
+     `"2012-06-14 10:35:00"`）を `time` 列へ rename する**だけ**で epoch 化しないため、
+     `CsvOHLCRepository` が `Bar(time=str)` を作る。
+- **なぜ単純に epoch 化できないか（実測）**: マーカー時刻と candles 時刻は集合として一致する必要が
+  ある（同ファイル step 6 の包含検証）。両者の変換式は
+  `simulator/adapter/presenter/trade_markers.py:28` `_unix = int(pd.Timestamp(value).timestamp())`
+  （= naive を**ローカル TZ** と解釈）である。一方 `datawindow.half_open` / `simulator.domain.bar_time`
+  は naive を **UTC** と解釈する。すなわち naive datetime の解釈規則が chart 系と engine 系で
+  いまだに割れている。さらに `int(pd.Timestamp(np.int64(1755183000)).timestamp())` は **1**
+  （1970 年）になる（実測）ため、bridge だけを epoch 化すると presenter が黙って 1970 を出す。
+- **抜本的解決（要承認・UI 影響あり）**: naive datetime の解釈規則を 1 つに統一し、
+  `bridge_marketdata_df` を契約どおり epoch 秒へ是正したうえで、`trade_markers.py::_unix` と
+  `dataset.py::_to_unix_seconds` を同じ共有実体（`datawindow.half_open`）へ委譲する。
+  marketdata `date` 列が UTC / ブローカー時刻のどちらであるかの確定が前提であり、
+  参照実装の確認とユーザー承認なしに推測で決めない。
+- **関連**: ISSUE-403（本体・スライス 2/3/4 は完了）・ISSUE-401 🟡-2（naive=UTC の既存合意）。
