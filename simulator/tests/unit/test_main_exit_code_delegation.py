@@ -84,6 +84,24 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
+def _called_names_of(node: ast.AST) -> "list[str]":
+    """`node` 配下の呼び出し名を列挙する（`f(...)` は ``f``・`m.f(...)` は ``f``）。
+
+    到達可能性の検査（ISSUE-411 B2）で使う。`m.f(...)` を末尾名で拾うのは、
+    ``import dataclasses`` 経由の `dataclasses.replace(...)` と ``from dataclasses
+    import replace`` 経由の `replace(...)` を同一に扱うためである。
+    """
+    names = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            func = child.func
+            if isinstance(func, ast.Name):
+                names.append(func.id)
+            elif isinstance(func, ast.Attribute):
+                names.append(func.attr)
+    return names
+
+
 def _returned_int_constants(node: ast.AST) -> "list[int]":
     """`node` 配下の `return` が返す整数リテラルを列挙する。
 
@@ -203,6 +221,7 @@ class TestProductionCodeUsesThePublicInteractorAccess:
 class TestTheOutputStageCannotRaiseConfigError:
     """出力段の委譲が挙動を変えないための前提を機械的に固定する（A-6 後半）。
 
+    **固定対象の不変条件（不変）**: `_present_outputs` から `ConfigError` が出ないこと。
     `run_backtest` の出力段は従来 `except BacktestError: return 1, result` と
     終了コードを直書きしていた。これを `exit_code_for(error)` へ委譲すると、
     もし `_present_outputs` から `ConfigError` が出れば 1 ではなく 2 になる。
@@ -216,6 +235,25 @@ class TestTheOutputStageCannotRaiseConfigError:
     `ExecutionError` 1 であり、`ConfigError` は 0 件。残る呼出（`Path.mkdir` /
     `write_text` / `setattr`）は標準ライブラリで、`simulator` 配下に `__setattr__` の
     再定義は 0 件（実測）。
+
+    **なぜ精密化したか（ISSUE-411・2026-08-18）**:
+    旧実装の検査は「閉包内に `ConfigError` の raise が 1 件も無い」であった。これは
+    上の不変条件の**過大近似**である（raise の存在 ≠ 出力段からの到達）。ISSUE-411 で
+    `Bar.__post_init__` へ time 型契約の表明（違反は `ConfigError`）を入れた結果、
+    `domain/bar.py` が `usecase/ports.py` 経由で閉包に入り（実測: 閉包 8 モジュール・
+    経路 `presenter/json.py` → `usecase/ports.py` → `domain/bar.py`）、近似が偽になった。
+    **不変条件そのものは成立したままである**（実測: 閉包内に `Bar` 構築 0 件・
+    `epoch_seconds` / `is_supported_time` 呼出 0 件・`dataclasses.replace` 0 件）。
+
+    そこで検査を到達可能性込みの 2 部構成へ置き換える。強度は同等以上である
+    （近似を捨て、不変条件の成立根拠を機械検査に変えた）。
+      B1: 閉包内で `ConfigError` を raise するモジュールは、`Bar.time` 型契約を担う
+          `domain/bar.py` / `domain/bar_time.py` に限られる。
+      B2: 閉包内から**その契約検査へ到達する呼出が 1 つも無い**。到達手段は
+          `Bar(...)` 構築・`epoch_seconds(...)` / `is_supported_time(...)` の直接呼出・
+          `dataclasses.replace(bar, ...)` による再構築（`replace` は frozen dataclass の
+          `__post_init__` を**再実行する**ため契約検査が再度走る）の 4 つである。
+    B1 と B2 が同時に成立する限り、出力段から `ConfigError` は到達し得ない。
     """
 
     #: `_present_outputs` が呼ぶプロジェクト内コードの入口。
@@ -223,6 +261,17 @@ class TestTheOutputStageCannotRaiseConfigError:
         _SIMULATOR_DIR / "adapter" / "presenter" / "json.py",
         _SIMULATOR_DIR / "adapter" / "presenter" / "markdown.py",
     )
+
+    #: B1: 閉包内で `ConfigError` の raise を許すモジュール（`Bar.time` 型契約の所有者）。
+    #: ここに載るモジュールは B2 で「到達しない」ことを併せて証明する義務を負う。
+    _CONTRACT_MODULES = (
+        _SIMULATOR_DIR / "domain" / "bar.py",
+        _SIMULATOR_DIR / "domain" / "bar_time.py",
+    )
+
+    #: B2: 契約検査（`Bar.__post_init__`）を発火させ得る呼び出し名。
+    #: `replace` は `dataclasses.replace` による frozen dataclass の再構築を指す。
+    _CONTRACT_TRIGGERS = ("Bar", "epoch_seconds", "is_supported_time", "replace")
 
     def _module_path(self, module_name: str) -> "Path | None":
         parts = module_name.split(".")
@@ -266,10 +315,32 @@ class TestTheOutputStageCannotRaiseConfigError:
                 )
         return names
 
-    def test_the_presenter_closure_never_raises_config_error(self):
+    def _called_names(self, path: Path) -> "list[str]":
+        """当該モジュール内の呼び出し名を列挙する（`f(...)` / `m.f(...)` の末尾名）。"""
+        return _called_names_of(_tree(path))
+
+    def _trigger_names(self, path: Path) -> "set[str]":
+        """当該モジュールで契約検査へ到達し得る呼び出し名（別名 import を含む）。
+
+        `from simulator.domain.bar import Bar as B` のような別名束縛があると素の名前
+        照合では `B(...)` を見逃す。import 文の `asname` を実測して照合集合へ加える。
+        """
+        names = set(self._CONTRACT_TRIGGERS)
+        for node in ast.walk(_tree(path)):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    original = alias.name.rsplit(".", 1)[-1]
+                    if alias.asname and original in self._CONTRACT_TRIGGERS:
+                        names.add(alias.asname)
+        return names
+
+    def test_config_error_is_raised_only_by_the_bar_time_contract_in_the_closure(self):
+        """B1: 閉包内の `ConfigError` raise は `Bar.time` 型契約の所有者に限られる。"""
+        allowed = set(self._CONTRACT_MODULES)
         violations = [
             f"{path.relative_to(_SIMULATOR_DIR.parent)}: {name}"
             for path in sorted(self._closure())
+            if path not in allowed
             for name in self._raised_type_names(path)
             if "ConfigError" in name
         ]
@@ -278,11 +349,62 @@ class TestTheOutputStageCannotRaiseConfigError:
             "exit 1 → exit 2 の挙動変化を起こす）: " + "; ".join(violations)
         )
 
+    def test_the_closure_never_reaches_the_bar_time_contract(self):
+        """B2: 閉包から契約検査（`Bar.__post_init__`）へ到達する呼出が 1 つも無い。
+
+        B1 の許可リストは「raise は在るが到達しない」ことに依存する。その依存を
+        ここで機械検査する（許可リストだけでは近似が緩むため不可分）。
+        `replace` を含めるのは `dataclasses.replace` が frozen dataclass の
+        `__post_init__` を再実行し、契約検査を再度発火させるためである。
+        """
+        contract = set(self._CONTRACT_MODULES)
+        violations = [
+            f"{path.relative_to(_SIMULATOR_DIR.parent)}: {name}(...)"
+            for path in sorted(self._closure())
+            if path not in contract  # 契約所有者自身は当然 is_supported_time を呼ぶ
+            for name in self._called_names(path)
+            if name in self._trigger_names(path)
+        ]
+        assert violations == [], (
+            "出力段が Bar.time 契約検査へ到達し得る（ConfigError が exit 1 → exit 2 の "
+            "挙動変化を起こす）: " + "; ".join(violations)
+        )
+
     def test_the_closure_is_not_empty(self):
         # 閉包が空なら上の検査は常に通る（＝ゲートとして無意味）。
         closure = self._closure()
         assert set(self._PRESENTER_SEEDS) <= closure
         assert _SIMULATOR_DIR / "domain" / "exceptions.py" in closure
+
+    def test_the_allowlisted_contract_modules_are_actually_in_the_closure(self):
+        """B1 の許可リストが空振りでないこと（＝B2 が実際に仕事をしていること）。
+
+        `domain/bar.py` が閉包から外れたなら、許可リストは不要になっている。その場合は
+        本検定が落ちるので、許可リストを惰性で残さず撤去できる（ISSUE-411）。
+        """
+        closure = self._closure()
+        missing = [
+            str(p.relative_to(_SIMULATOR_DIR.parent))
+            for p in self._CONTRACT_MODULES
+            if p not in closure
+        ]
+        assert missing == [], (
+            "許可リストのモジュールが閉包外にある＝許可リストは不要になっている: "
+            + "; ".join(missing)
+        )
+
+    def test_the_contract_modules_do_raise_config_error(self):
+        """許可リストが「実際に raise を持つモジュール」を指していること。
+
+        契約検査が撤去された（＝ISSUE-411 が巻き戻された）なら本検定が落ちる。
+        許可リストが実体のない免罪符になるのを防ぐ。
+        """
+        for path in self._CONTRACT_MODULES:
+            names = self._raised_type_names(path)
+            assert any("ConfigError" in n for n in names), (
+                f"{path.relative_to(_SIMULATOR_DIR.parent)} は ConfigError を raise しない"
+                "＝許可リストから外すべき"
+            )
 
     def test_no_module_redefines_setattr(self):
         # `setattr(result, ...)` が ConfigError を出す経路を塞ぐ。
@@ -333,6 +455,61 @@ class TestTheGateHasDetectionPower:
     def test_a_boolean_return_is_not_treated_as_an_exit_code(self):
         source = "def f():\n    try:\n        g()\n    except ValueError:\n        return False\n"
         assert _literal_returning_handlers(ast.parse(source)) == []
+
+    def test_the_b2_probe_detects_each_way_of_reaching_the_contract(self):
+        """B2 の検出力: 契約検査への 4 到達手段をいずれも捕捉する（ISSUE-411）。
+
+        識別力: `_CONTRACT_TRIGGERS` からどれか 1 つでも抜け落ちれば本検定が落ちる。
+        `replace` は `dataclasses.replace` が frozen dataclass の `__post_init__` を
+        再実行する（＝契約検査が再度走る）ことによる（実測: 下の等価性検定）。
+        """
+        gate = TestTheOutputStageCannotRaiseConfigError()
+        sources = {
+            "Bar 構築": "b = Bar(time=t, open=1.0, high=1.0, low=1.0, close=1.0,"
+                        " volume=0.0, spread=0)\n",
+            "epoch_seconds 直接呼出": "x = epoch_seconds(t)\n",
+            "is_supported_time 直接呼出": "x = is_supported_time(t)\n",
+            "dataclasses.replace 再構築": "b2 = dataclasses.replace(b, time=t)\n",
+        }
+        for label, source in sources.items():
+            names = [
+                n for n in _called_names_of(ast.parse(source))
+                if n in gate._CONTRACT_TRIGGERS
+            ]
+            assert names, f"B2 が {label} を検出できない"
+
+    def test_the_b2_probe_follows_aliased_imports(self, tmp_path):
+        """B2 の検出力: 別名 import 経由の到達も捕捉する（素の名前照合の穴を塞ぐ）。"""
+        gate = TestTheOutputStageCannotRaiseConfigError()
+        module = tmp_path / "aliased.py"
+        module.write_text(
+            "from simulator.domain.bar import Bar as B\n"
+            "def f(t):\n"
+            "    return B(time=t, open=1.0, high=1.0, low=1.0, close=1.0,"
+            " volume=0.0, spread=0)\n",
+            encoding="utf-8",
+        )
+        triggers = gate._trigger_names(module)
+        assert "B" in triggers
+        assert any(n in triggers for n in gate._called_names(module))
+
+    def test_dataclasses_replace_reruns_post_init_on_a_frozen_bar(self):
+        """`replace` を B2 の対象に含める根拠を実測で固定する（推測しない）。
+
+        `dataclasses.replace` が `__post_init__` を再実行しないのであれば `replace` は
+        契約検査の到達手段ではなく、B2 の対象から外すべきである。実際は再実行する。
+        """
+        import dataclasses as _dc
+
+        from simulator.domain.bar import Bar
+        from simulator.domain.exceptions import ConfigError
+
+        # Arrange: 契約を満たす Bar
+        bar = Bar(time=1_700_000_000, open=1.0, high=1.5, low=0.8, close=1.2,
+                  volume=1.0, spread=1)
+        # Act / Assert: 契約違反の time へ replace すると構築時と同じ ConfigError が出る
+        with pytest.raises(ConfigError):
+            _dc.replace(bar, time="2024-01-01")
 
     def test_the_private_attribute_probe_detects_the_violation(self):
         assert "_interactor" in _accessed_attributes(

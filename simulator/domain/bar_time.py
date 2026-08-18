@@ -79,6 +79,16 @@ EPOCH_CONVERTERS: "tuple[tuple[Callable[[Any], bool], Callable[[Any], int]], ...
 )
 
 
+def is_supported_time(value: Any) -> bool:
+    """``value`` が `Bar.time` の型契約（= ``EPOCH_CONVERTERS`` の受理集合）に属するか。
+
+    受理集合の定義は ``EPOCH_CONVERTERS`` が唯一持つ。本述語はそこから導出するだけで、
+    対応表現を列挙し直さない（写しを作れば表への追加に追随せず契約が二重定義になる）。
+    `Bar` の構築時契約検査（`simulator/domain/bar.py`）が読む（ISSUE-411）。
+    """
+    return any(matches(value) for matches, _ in EPOCH_CONVERTERS)
+
+
 def epoch_seconds(value: Any) -> int:
     """`bar.time` / 窓境界を epoch 秒（int）へ正規化する。
 

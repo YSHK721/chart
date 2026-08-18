@@ -93,3 +93,67 @@ class TestSingleSource:
         # 表現の追加は本表への 1 エントリ追加で済む（OCP）。
         assert all(callable(m) and callable(c) for m, c in EPOCH_CONVERTERS)
         assert len(EPOCH_CONVERTERS) >= 3
+
+
+class TestIsSupportedTime:
+    """受理集合の公開述語（ISSUE-411 スライス 3: `Bar` 契約表明の判定に使う）。
+
+    受理集合の定義は `EPOCH_CONVERTERS` が唯一持つ。述語はそこから導出され、
+    列挙を第 2 の場所へ書き写さない（写しが入ると本クラスの最後の検定が落ちる）。
+    """
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            1_704_067_200,
+            np.int64(1_704_067_200),
+            np.datetime64("2024-01-01T00:00:00"),
+            datetime(2024, 1, 1),
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ],
+        ids=["int", "np.int64", "np.datetime64", "naive datetime", "aware datetime"],
+    )
+    def test_supported_representations_are_accepted(self, value):
+        from simulator.domain.bar_time import is_supported_time
+
+        assert is_supported_time(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        ["2024-01-01T00:00:00", 1.5, True, None, object()],
+        ids=["str", "float", "bool", "None", "object"],
+    )
+    def test_unsupported_representations_are_rejected(self, value):
+        from simulator.domain.bar_time import is_supported_time
+
+        assert is_supported_time(value) is False
+
+    def test_predicate_agrees_with_epoch_seconds_on_every_input(self):
+        """述語と変換の受理集合が一致する（片方だけ広い／狭いを許さない）。"""
+        from simulator.domain.bar_time import is_supported_time
+
+        for value in [
+            1, np.int64(1), np.datetime64("2024-01-01"), datetime(2024, 1, 1),
+            "2024-01-01", 1.5, True, None, object(),
+        ]:
+            if is_supported_time(value):
+                epoch_seconds(value)  # 受理を宣言したなら変換できなければならない
+            else:
+                with pytest.raises(ConfigError):
+                    epoch_seconds(value)
+
+    def test_predicate_is_derived_from_the_converters_table(self):
+        """表へ 1 エントリ足せば述語が追随する（列挙の写しを持たない＝OCP）。"""
+        import simulator.domain.bar_time as bar_time_module
+
+        class _Marker:
+            pass
+
+        added = (lambda v: isinstance(v, _Marker), lambda v: 0)
+        original = bar_time_module.EPOCH_CONVERTERS
+        bar_time_module.EPOCH_CONVERTERS = original + (added,)
+        try:
+            assert bar_time_module.is_supported_time(_Marker()) is True
+        finally:
+            bar_time_module.EPOCH_CONVERTERS = original
+        assert bar_time_module.is_supported_time(_Marker()) is False
