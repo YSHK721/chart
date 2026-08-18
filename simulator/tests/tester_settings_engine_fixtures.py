@@ -39,6 +39,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -70,24 +71,24 @@ DEFAULT_EA_PARAMS: dict[str, Any] = {
 
 
 def jp225_symbol_spec() -> SymbolSpec:
-    """`SymbolSpec`（銘柄仕様 8 フィールド）を `SymbolSpecCatalog` の権威値から組む。
+    """`SymbolSpec`（銘柄仕様）を `SymbolSpecCatalog` の権威値から組む。
 
-    `contract_size` / `digits` / `point_size` / `leverage` 等をテスト側に書き写さない
-    （カタログが単一ソース。値を複製すると片方だけ腐る）。
+    値をテスト側に書き写さない（カタログが単一ソース。値を複製すると片方だけ腐る）。
+
+    **対応表を持たない**: `SymbolSpec` の各フィールドは `RunProfile` に同名で存在する
+    ため、`dataclasses.fields` による名前一致で機械的に導出する。同名のものを手書きで
+    並べ直すと、フィールドが増減したときに片方だけが腐る（プロジェクト規約「同じコードを
+    手書き複製するな」）。同じ流儀の前例が本番側にある
+    （`kwargs_mapper._derived_bindings` の `_field_names(SymbolSpec) & allowed`）。
+
+    名前一致という前提そのものは
+    `simulator/tests/unit/test_tester_settings_engine_fixtures.py` が固定する
+    （包含が崩れたら落ちる）。本関数はその前提の上で動く。
     """
     from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
 
     profile = SymbolSpecCatalog().datasets()[0]
-    return SymbolSpec(
-        contract_size=profile.contract_size,
-        volume_min=profile.volume_min,
-        volume_max=profile.volume_max,
-        volume_step=profile.volume_step,
-        stops_level=profile.stops_level,
-        digits=profile.digits,
-        point_size=profile.point_size,
-        leverage=profile.leverage,
-    )
+    return SymbolSpec(**{field.name: getattr(profile, field.name) for field in fields(SymbolSpec)})
 
 
 def catalog_ea_names() -> frozenset[str]:
