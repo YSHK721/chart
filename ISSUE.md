@@ -7845,9 +7845,9 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   3. 既存テストの id 集合・順序アサーションは「5 値に書き換える」のではなく、
      **増減に追随する形**へ改める（先頭 4 値の順序不変＋既知 4 値が部分集合＋各 id の分岐先不変）。
 
-## ISSUE-398: [設計] `BacktestController.run()` がデータロードと実行を 1 メソッドに束ねている（SRP 違反・A-5 の真因）（2026-08-18・訂正 2026-08-18）
+## ISSUE-398: [設計] `BacktestController.run()` がデータロードと実行を 1 メソッドに束ねている（SRP 違反・A-5 の真因）（2026-08-18・訂正 2026-08-18・RESOLVED 2026-08-18）
 
-- **ステータス**: OPEN（要承認。A-5 では `run()` 無改変を制約としたため未是正）
+- **ステータス**: RESOLVED（2026-08-18。是正済みを実測で確認）
 - **重大度**: Medium（本番呼出が 1 件のみで影響限定・ただし設計上の責務二重化は残存）
 - **事実（実測 2026-08-18）**:
   1. `adapter/controller.py` の `run()` は `market_data.load` を実行し `RunBacktestRequest` を
@@ -7864,6 +7864,14 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   「組み立て済み request の実行」を選べるようにする。既存の `run()` シグネチャは維持したまま
   内部を 2 段に割り、実行段を公開する形が最小。
 - **通過条件**: 既存の controller 検定が無改変で通ること。MT5 突合ゲート全通過。
+- **是正確認（実測 2026-08-18）**: コミット `add4bf1`（develop へマージ済み）で是正済み。
+  `run()` は「データ取得（`_build_request`）」「実行（公開 `execute`）」「終了コード翻訳」の
+  3 段に分離され、`execute(request)` が「組立済 request の実行」の公開到達点になった
+  （`interactor` プロパティも公開・差し替え不可）。私有属性 `_interactor` への本番到達は
+  **0 件**（`tools/` CLI 3 本・`report_ui`・MT5 突合検定とも解消。残るのは docstring 内の言及のみ）。
+  通過条件の実測: controller 検定 12 passed・MT5 突合 `test_ma_slope_reconcile.py` 16 passed・
+  `run()` 是正前後の byte 等価は `test_run_backtest_fingerprint.py` のケース A ダイジェスト一致で固定。
+  台帳の更新漏れを本記載で解消。
 
 ## ISSUE-399: [設計] `ema_adx_di` の除算が `np.errstate` による症状抑制で書かれている（2026-08-18・RESOLVED 2026-08-18）
 
@@ -7958,13 +7966,20 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **実測（2026-08-18）**: `real_ticks` ＋ comma 形式（epoch 整数 `time`）CSV で `simulator/adapter/execution/tick_model.py:145` の `_normalize_bar_time` が `np.datetime64(bar_time)` を呼び、`ValueError: Converting an integer to a NumPy datetime requires a specified unit` を送出する。`bar.time` の実体は経路により epoch int / `numpy.datetime64` に分かれる（内部設計 §8.4.1 W-4 の既知事実）。ISSUE-400 と同じ「未翻訳例外が終了コード表を素通りする」系統だが別サイト。
 - **抜本的解決**: `bar.time` の表現差を吸収する単一ソース（`simulator/domain/bar_time.py`）へ委譲する。是正には `tick_model.py` の変更が要る。
 
-## ISSUE-404: [設計] `run_backtest` 経路に MT5 等級のオラクルが存在しない（2026-08-18）
+## ISSUE-404: [設計] `run_backtest` 経路に MT5 等級のオラクルが存在しない（2026-08-18・RESOLVED 2026-08-18）
 
-- **ステータス**: OPEN（新規起票）
+- **ステータス**: RESOLVED（2026-08-18。是正済みを実測で確認）
 - **重大度**: High（本セッションで判明した最大のリスク）
 - **実測（2026-08-18）**: MT5 突合（`test_ma_slope_reconcile.py`）は `build_interactor` ＋ 私有 `execute` を使い `run_backtest` を通らない。sim ジョブ検定（`sim_ui/tests/integration/test_run_job*.py`）は `run_backtest` を差し替えて引数だけ観測する（`test_run_job.py:15` に明記）。`run_backtest` の数値を測る検定は `tests/integration/test_end_to_end_run.py`（`trades == 1` の合成 1 件）のみ。
 - **帰結**: `run_backtest`（＝sim UI の実行経路）に触れる変更は、壊れても既存ゲートが検出しない。
 - **抜本的解決**: JP225 プロファイル相当の入力で `stats.json` の全フィールドを sha256 で固定する回帰検定を新設する。
+- **是正確認（実測 2026-08-18）**: 求めていた回帰検定は
+  `simulator/tests/integration/test_run_backtest_fingerprint.py`（コミット `add4bf1`・
+  ISSUE-398 の是正と同時に新設・develop へマージ済み）として既に存在する。内容は抜本的解決の
+  要求と一致: 実 MT5 フィクスチャ `ma_slope_jp225_202501` を `run_backtest` で実走し、
+  `stats.json` 全フィールドと全確定トレードを sha256 で固定（trading_start なし/あり の 2 ケース
+  ＋決定性検定＋MT5 突合実測 1164 trades / net -6173.9 との突合）。本セッションで実走し
+  **5 passed（13.2s）** を確認。台帳の更新漏れを本記載で解消。
 
 ## ISSUE-405: [設計] `sim_ui` adapter が他スライスの Composition Root を import している（複製 3 件）（2026-08-18）
 
