@@ -26,6 +26,13 @@ from simulator.main import build_interactor
 from simulator.usecase.ports import StrategyPort
 
 
+#: 2024-01-01T00:00:00Z。comma 形式 CSV の `time` は UNIX 秒 int が契約である
+#: （`Bar.time` = ``numpy.datetime64`` | epoch int。`CsvOHLCRepository._extract` は CSV の値を
+#: **そのまま** `Bar.time` に載せるため、ISO 文字列を書くと契約違反の Bar が生まれる。
+#: 委譲経路 `CsvCandleSource` は同じ CSV を ValueError で fail-fast する＝経路で解釈が割れる）。
+_EPOCH_2024_01_01 = 1_704_067_200
+
+
 def _write_csv(path: Path) -> Path:
     """既定 TC 経路（comma 形式）の最小 CSV。"""
     rows = []
@@ -33,7 +40,8 @@ def _write_csv(path: Path) -> Path:
         base = 1.1000 + i * 0.0001
         rows.append(
             {
-                "time": f"2024-01-0{1 + i // 6} {i % 6:02d}:00:00",
+                # 是正前 "2024-01-0{1+i//6} {i%6:02d}:00:00" と同一時刻の epoch 秒（UTC）。
+                "time": _EPOCH_2024_01_01 + 86400 * (i // 6) + 3600 * (i % 6),
                 "open": base,
                 "high": base + 0.0005,
                 "low": base - 0.0005,

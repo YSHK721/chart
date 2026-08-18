@@ -45,6 +45,13 @@ def _write_mt5_csv(path: Path, n: int = 30) -> Path:
     return path
 
 
+#: 2024-01-01T00:00:00Z。comma 形式 CSV の `time` は UNIX 秒 int が契約である
+#: （`Bar.time` = ``numpy.datetime64`` | epoch int。`CsvOHLCRepository._extract` は CSV の値を
+#: **そのまま** `Bar.time` に載せるため、ISO 文字列を書くと契約違反の Bar が生まれる。
+#: 委譲経路 `CsvCandleSource` は同じ CSV を ValueError で fail-fast する＝経路で解釈が割れる）。
+_EPOCH_2024_01_01 = 1_704_067_200
+
+
 def _write_comma_csv(path: Path, n: int = 12) -> Path:
     lines = ["time,open,high,low,close,volume,spread"]
     base = 100.0
@@ -53,7 +60,9 @@ def _write_comma_csv(path: Path, n: int = 12) -> Path:
         h = o + 0.5
         lo = o - 0.4
         c = o + 0.2
-        lines.append(f"2024-01-01T00:{i:02d}:00,{o},{h},{lo},{c},1.0,0")
+        # epoch 秒（UTC・M1 昇順）。是正前の f"2024-01-01T00:{i:02d}:00" は n>60 で
+        # 00:60:00 という存在しない時刻を書き得た（i は分として使われていた）。
+        lines.append(f"{_EPOCH_2024_01_01 + 60 * i},{o},{h},{lo},{c},1.0,0")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 

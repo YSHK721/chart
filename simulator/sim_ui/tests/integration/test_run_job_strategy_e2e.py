@@ -21,6 +21,13 @@ from simulator.main import run_backtest
 from simulator.sim_ui.main import run_job
 
 
+#: 2024-01-01T00:00:00Z。comma 形式 CSV の `time` は UNIX 秒 int が契約である
+#: （`Bar.time` = ``numpy.datetime64`` | epoch int。`CsvOHLCRepository._extract` は CSV の値を
+#: **そのまま** `Bar.time` に載せるため、ISO 文字列を書くと契約違反の Bar が生まれる。
+#: 委譲経路 `CsvCandleSource` は同じ CSV を ValueError で fail-fast する＝経路で解釈が割れる）。
+_EPOCH_2024_01_01 = 1_704_067_200
+
+
 def _write_csv(path: Path) -> Path:
     # 上昇トレンド（long の TP が必ず引っかかる）。close は 1.0000 から +0.0010/bar。
     rows = []
@@ -28,7 +35,8 @@ def _write_csv(path: Path) -> Path:
         base = 1.0000 + i * 0.0010
         rows.append(
             {
-                "time": f"2024-01-01 {i // 60:02d}:{i % 60:02d}:00",
+                # 是正前 "2024-01-01 {i//60:02d}:{i%60:02d}:00" と同一時刻の epoch 秒（UTC）。
+                "time": _EPOCH_2024_01_01 + 3600 * (i // 60) + 60 * (i % 60),
                 "open": base,
                 "high": base + 0.0005,
                 "low": base - 0.0005,

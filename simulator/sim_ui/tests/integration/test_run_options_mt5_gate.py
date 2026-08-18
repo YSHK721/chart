@@ -74,13 +74,21 @@ def test_catalog_settlement_currency_agrees_with_report_oracle():
     assert _jp225_profile().settlement_currency == settings["currency"]
 
 
+#: 2024-01-01T00:00:00Z。comma 形式 CSV の `time` は UNIX 秒 int が契約である
+#: （`Bar.time` = ``numpy.datetime64`` | epoch int。`CsvOHLCRepository._extract` は CSV の値を
+#: **そのまま** `Bar.time` に載せるため、ISO 文字列を書くと契約違反の Bar が生まれる。
+#: 委譲経路 `CsvCandleSource` は同じ CSV を ValueError で fail-fast する＝経路で解釈が割れる）。
+_EPOCH_2024_01_01 = 1_704_067_200
+
+
 def _oscillating_csv(path: Path) -> Path:
     # 強い上下動で MADiff ゼロクロスを起こし TC が建玉を出す（contract_size が profit に効く）。
     rows = []
     for i in range(60):
         c = 100.0 + (5.0 if i % 2 == 0 else -5.0) + (i % 7)
         rows.append({
-            "time": f"2024-01-01 {i // 60:02d}:{i % 60:02d}:00",
+            # 是正前 "2024-01-01 {i//60:02d}:{i%60:02d}:00" と同一時刻の epoch 秒（UTC）。
+            "time": _EPOCH_2024_01_01 + 3600 * (i // 60) + 60 * (i % 60),
             "open": c, "high": c + 2, "low": c - 2, "close": c, "volume": 100, "spread": 0,
         })
     pd.DataFrame(rows).to_csv(path, index=False)
