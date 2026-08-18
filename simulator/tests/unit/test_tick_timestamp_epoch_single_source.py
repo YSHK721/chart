@@ -17,6 +17,7 @@
   3. **CLI の実挙動**: `_default_ticks_factory` が実 parquet store（書込→読戻しで
      dtype が ns でなくなる）から正しい epoch 秒を返す（是正前はここが 10^6 倍ずれた）。
   4. **単一ソース**: CLI と `load_ticks` が読む変換の実体は同一関数オブジェクトである。
+  5. **明示拒否**: 黙って誤った秒になる入力（非 datetime64 列・NaT 混入）は `DataError`。
 """
 from __future__ import annotations
 
@@ -56,10 +57,11 @@ class TestTimestampEpochSeconds:
         series = pd.Series(pd.to_datetime(_TIMES)).astype(f"datetime64[{unit}]")
         assert timestamp_epoch_seconds(series).tolist() == _EXPECTED
 
-    def test_naive_timestamps_are_interpreted_as_utc(self, monkeypatch):
+    def test_naive_timestamps_are_interpreted_as_utc(self, tokyo_local_timezone):
         # ローカル TZ に依存しないこと（naive=UTC の共有規則・datawindow と同一）。
+        # TZ の固定は共有 fixture（conftest.py）で行う。`monkeypatch.setenv` のみでは
+        # プロセス TZ は変わらず（tzset 漏れ）、検定が無力化する（レビュー 🟡-1 実測）。
         series = pd.Series(pd.to_datetime(_TIMES))
-        monkeypatch.setenv("TZ", "Asia/Tokyo")
         assert timestamp_epoch_seconds(series).tolist() == _EXPECTED
 
     def test_aware_timestamps_convert_by_their_own_offset(self):
@@ -71,6 +73,28 @@ class TestTimestampEpochSeconds:
     def test_subsecond_values_floor_to_the_second(self):
         series = pd.Series(pd.to_datetime(["2024-03-01T00:00:00.999999"]))
         assert timestamp_epoch_seconds(series).tolist() == [_epoch(2024, 3, 1)]
+
+
+class TestTimestampEpochSecondsRejections:
+    """契約 5: 黙って誤った秒になる入力の明示拒否（レビュー 🟡-2）。
+
+    どちらも例外なしで通すと ISSUE-406 と同型の「例外なしの桁ずれ」になる入力
+    （int64 列は `pd.to_datetime` が ns と解釈して 10^9 倍ずれ・NaT は int64 最小値）。
+    """
+
+    def test_a_non_datetime_column_is_rejected(self):
+        from simulator.domain.exceptions import DataError
+
+        with pytest.raises(DataError):
+            timestamp_epoch_seconds(pd.Series([1709251200, 1709251201], dtype="int64"))
+
+    def test_a_column_containing_nat_is_rejected(self):
+        from simulator.domain.exceptions import DataError
+
+        with pytest.raises(DataError):
+            timestamp_epoch_seconds(
+                pd.Series(pd.to_datetime(["2024-03-01T00:00:00", None]))
+            )
 
 
 class TestDefaultTicksFactoryEpochs:
