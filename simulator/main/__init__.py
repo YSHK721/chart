@@ -32,7 +32,7 @@ from simulator.adapter.execution.tick_model_registry import (
     consumes_market_data,
 )
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
-from simulator.adapter.exit_codes import exit_code_for
+from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
 from simulator.adapter.indicator.madiff import madiff
 from simulator.adapter.indicator.null_registry import NullIndicatorRegistry
@@ -111,8 +111,33 @@ def _bar_period(bars: Any) -> "tuple[Any, Any]":
     tick_start/tick_end が未指定（None）のとき、対象バーを覆う半開区間を bar.time
     から導出する（M1=60s 前提）。RealTickModel が各バー区間を [bar.time, bar.time+60s)
     でスライスするため、終端は最終バーの 1 足分先まで確保する。
+
+    事前条件: ``bars`` が 1 本以上あること（区間の両端は先頭・末尾のバーが決める）。
+    事後条件: 半開区間 ``[first, last+60s)`` を返す。
+    例外: ``DataError``（``BacktestError`` 系）。バーが 0 本のとき送出する。
+
+    0 本を例外にする理由（ISSUE-400・症状回避ではなく事実の表明）:
+        「空のバー列から期間は決まらない」は本関数が満たせない事前条件そのものであり、
+        既定値の捏造（例: epoch 0 起点）でも黙認（空の tick frame で続行）でもなく、
+        **翻訳される例外**として表明する。是正前はこの事実が `list[0]` の
+        ``IndexError`` として漏れ、`exit_codes.exit_code_for` の翻訳表に載らなかった
+        （`exit_code_for` は非 `BacktestError` を再送出する＝終了コードにならない）。
+        判定を本関数に置くのは、事前条件を持つ主体がここだからである。呼出側へ移すと
+        本関数は空列に対して部分関数のまま残り、別の呼出点が増えた瞬間に同じ欠陥が
+        再発する。
+
+    ``bars`` が空であること**自体**は失敗ではない（A-1・ISSUE-397）: バー系列を
+    消費しない modelling（`TickModelSpec.requires_market_data is False`）は bars=[] が
+    正常状態であり、`requires_real_ticks is False` のため本関数へ到達しない。本関数が
+    止めるのは「実ティック区間の導出を要求されたのに導けない」場合だけである。
     """
     bar_list = list(bars)
+    if not bar_list:
+        raise DataError(
+            "実ティック読込区間をバー列から導けません（バーが 0 本です）。"
+            "tick_start/tick_end を明示するか、バーが 1 本以上得られる取得窓を指定してください。",
+            context={"bar_count": 0},
+        )
     first = bar_list[0].time
     last = bar_list[-1].time
     # epoch int は +60s（秒）で次足境界。それ以外（numpy.datetime64 / ISO 文字列）は
@@ -154,10 +179,15 @@ def _build_real_tick_model(
 
 
 class _ResultCapturingInteractor(RunBacktestInteractor):
-    """Interactor を継承し最後の BacktestResult を保持する（controller は result を返さない）。
+    """Interactor を継承し最後の BacktestResult を保持する。
 
-    controller.run() は終了コードのみを返すため、Presenter/compare へ流す result を
-    main 側で拾うための最小ラッパ。振る舞いは親 execute と同一（result を控えるのみ）。
+    元の役割: `controller.run()` は終了コードのみを返すため、Presenter/compare へ流す
+    result を main 側で拾うための最小ラッパだった。振る舞いは親 execute と同一
+    （result を控えるのみ）。
+
+    ISSUE-398 以降: `run_backtest` は `controller.execute(request)` の**戻り値**を直接
+    使うため、`last_result` を参照する本番コードは 0 件である（実測）。本ラッパは
+    既存公開 API の削除が承認事項であるため**残している**（削除は別途承認）。
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -756,28 +786,30 @@ def run_backtest(
 
     終了コードの規約（成功値・例外 → コードの対応・評価順）は本モジュールでは宣言せず、
     `simulator.adapter.exit_codes` が唯一宣言する（A-6）。`build_interactor` 段階
-    （config_loader が `ConfigError` を送出し得る）も、出力段（`_present_outputs`）も、
-    `controller.run` と同一の `exit_code_for` に載せる。`BacktestError` 以外は
+    （config_loader が `ConfigError` を送出し得る）も、実行段（`controller.execute`）も、
+    出力段（`_present_outputs`）も、同一の `exit_code_for` に載せる。`BacktestError` 以外は
     捕捉せずそのまま送出する（未知の失敗を終了コードに化けさせない）。
     """
     ea_name = meta.get("ea_name", "Backtest")
     symbol = meta.get("symbol", "-")
+    # ISSUE-398: `build_interactor` が組んだ request を**そのまま**実行する。
+    # 従来は `controller.run(request.config, meta["data_path"], ...)` を呼んでいたため、
+    #   (a) `build_interactor` が読んだ bars を捨てて同じファイルを再読込していた（二重ロード）
+    #   (b) `run()` が request を組み直すため `request.trading_start` が黙って None に落ちた
+    # の 2 点が生じていた。`controller.execute(request)` は検証した request をそのまま
+    # 実行し結果を返すため、両方が同時に消える。終了コードの翻訳は従来どおり
+    # `exit_code_for`（唯一の宣言場所）へ委譲する。
+    # `build_interactor` 段と実行段は同じ翻訳・同じ戻り値（コード, None）を返すため、
+    # 1 つのハンドラに畳んでも観測挙動は変わらない（実行段の失敗時、従来拾っていた
+    # `last_result` は execute が値を返す前に例外へ抜けるので常に None だった）。
     try:
         controller, request = build_interactor(**meta)
+        result = controller.execute(request)
     except BacktestError as error:
         return exit_code_for(error), None
 
-    exit_code = controller.run(
-        request.config,
-        meta["data_path"],
-        symbol_spec=request.symbol_spec,
-        initial_deposit=request.initial_deposit,
-        stop_out_level=request.stop_out_level,
-    )
-    # A-5 で追加した公開プロパティ経由で取得する（非公開属性 `_interactor` へ到達しない）。
-    # 注入された Interactor が `_ResultCapturingInteractor` でない場合に備え既定 None。
-    result = getattr(controller.interactor, "last_result", None)
-    if exit_code == 0 and result is not None and output_dir is not None:
+    exit_code = SUCCESS_EXIT_CODE
+    if result is not None and output_dir is not None:
         # 出力 I/O 失敗は BacktestError へ翻訳済（_present_outputs）→ 同じ翻訳に載せる。
         try:
             _present_outputs(result, Path(output_dir), ea_name=ea_name, symbol=symbol)
