@@ -1,6 +1,6 @@
 # MT5 ストラテジーテスター Settings タブ Python 移植 内部設計書
 
-基本設計書 [`TESTER_SETTINGS_BASIC_DESIGN.md`](./TESTER_SETTINGS_BASIC_DESIGN.md)（v1.1.0）を入力とし、実装可能な水準（モジュール配置・クラス構成・メソッドシグネチャ・処理フロー・例外文言・テストケース）まで確定する。
+基本設計書 [`TESTER_SETTINGS_BASIC_DESIGN.md`](./TESTER_SETTINGS_BASIC_DESIGN.md)（v1.1.2）を入力とし、実装可能な水準（モジュール配置・クラス構成・メソッドシグネチャ・処理フロー・例外文言・テストケース）まで確定する。
 
 - **本書の位置付け**: 内部設計（詳細設計）。基本設計書で承認された範囲（§2.3.3 制約 CON-01〜CON-08・§4.6 保証境界）を逸脱しない。基本設計書と矛盾する場合は基本設計書が上位であり、本書は「§8.5.1 の引き渡し項目 D-01〜D-11 の確定」と「§8.5.3 受入条件 T-01〜T-09 の実行可能化」だけを担う。
 - **参照実装（挙動の正・本書作成時に実コードを読んで確定した事項のみを事実として記載）**:
@@ -29,7 +29,7 @@
 | 設計レベル | 内部設計（モジュール詳細設計・物理データモデル・API 仕様・テスト設計） |
 | 対象範囲 | 基本設計書 §8.5.1 の D-01〜D-11 の確定、§8.5.3 受入条件 T-01〜T-09 のテストケース化 |
 | 対象外 | 実装コードそのもの・EA 売買ロジック（CON-01）・エンジン内部アルゴリズム・MT5 実機検証（CON-06） |
-| 変更履歴 | v1.0.0: 初版。v1.0.1: ISSUE-389〜391 の是正＝API-03/04 の事後条件・source 保持・SettingsActivationError context・規則 Q の rule_id・[Tester] キー数 18・時間足 21 値・EffectiveSettings の source/header_comment 破棄・字句層 9 関数・バリデータ書式 ASCII 限定（以上は実装・テストで実証済み）。v1.0.2: ISSUE-394 の是正を反映＝API-04 の送出例外の射程・document_from_entries と serialize の事前条件・format_date_token の追加・条件付きスキップ機構の所在。／T-05 の合否基準を「既知の不一致 1 件」へ改訂（**記述のみ。T-05 自体は ISSUE-390 が OPEN のため未実装**）。v1.0.3: Phase 7 実装確定事項の反映＝EngineBinding 設計（RunProfile 削除・SymbolSpec 採用）、実行 facade 戻り値（TesterRunMetadata 追加）、近似判定訂正（ExecutionMode=0）、N-01 判定源修正、ea_stem 事後条件明記、§9 テスト戦略追記、§9.2 性能実測値（ISSUE-382）。v1.0.5: A-1〜A-7 の実装確定を反映＝MATH_CALCULATIONS レジストリ統合・settlement_currency 恒久化・WindowedMarketDataRepository 全適用・corpus 複製・BacktestController.interactor 公開・exit_codes 単一ソース・metrics_spec ゼロ除算対応。v1.1.0: 前述 A-1〜A-7 の実装完了に伴う設計文書の陳腐化記述の是正（§8.2・D-09・L-1・L-5・§11.3 等。最小限訂正・全面書き直し禁止。設計の枠組みは不変） |
+| 変更履歴 | v1.0.0: 初版。v1.0.1: ISSUE-389〜391 の是正＝API-03/04 の事後条件・source 保持・SettingsActivationError context・規則 Q の rule_id・[Tester] キー数 18・時間足 21 値・EffectiveSettings の source/header_comment 破棄・字句層 9 関数・バリデータ書式 ASCII 限定（以上は実装・テストで実証済み）。v1.0.2: ISSUE-394 の是正を反映＝API-04 の送出例外の射程・document_from_entries と serialize の事前条件・format_date_token の追加・条件付きスキップ機構の所在。／T-05 の合否基準を「既知の不一致 1 件」へ改訂（**記述のみ。T-05 自体は ISSUE-390 が OPEN のため未実装**）。v1.0.3: Phase 7 実装確定事項の反映＝EngineBinding 設計（RunProfile 削除・SymbolSpec 採用）、実行 facade 戻り値（TesterRunMetadata 追加）、近似判定訂正（ExecutionMode=0）、N-01 判定源修正、ea_stem 事後条件明記、§9 テスト戦略追記、§9.2 性能実測値（ISSUE-382）。v1.0.5: A-1〜A-7 の実装確定を反映＝MATH_CALCULATIONS レジストリ統合・settlement_currency 恒久化・WindowedMarketDataRepository 全適用・corpus 複製・BacktestController.interactor 公開・exit_codes 単一ソース・metrics_spec ゼロ除算対応。v1.1.0: 前述 A-1〜A-7 の実装完了に伴う設計文書の陳腐化記述の是正（§8.2・D-09・L-1・L-5・§11.3 等。最小限訂正・全面書き直し禁止。設計の枠組みは不変）。v1.1.1: ISSUE-389〜391 の実装確定を反映＝規則 R1 encoding 尊重・[Tester] キー数・時間足値（BASIC_DESIGN.md v1.1.1 との整合）。v1.1.2: A-3（取得窓）実装完了を反映＝`WindowedMarketDataRepository` 全 MarketDataPort 適用・MT5 ローダ EA での期間指定実行成立・L-2 解消・`_EA_FACTORIES` 行番号・ISSUE-399 反映（`ema_adx_di` の `errstate` 除去） |
 
 ### 1.1 引き渡し項目 D-01〜D-11 の確定結果（索引）
 
@@ -108,7 +108,7 @@
 | `adapter`（エンジン投入変換） | `main` | 変換先の `build_interactor`・`_EA_FACTORIES` は `main` にある。`adapter` から `main` を import すると依存方向が逆転するため、変換層は Composition Root＝`main` に置く（`main/__init__.py:15` の「main 層は全層を import 可」に整合） |
 | 例外（`SettingsError` 系） | `domain` | 例外階層の基底 `BacktestError`/`ConfigError` は `domain/exceptions.py`（実測）。全層から内向きに参照できる唯一の場所 |
 
-### 3.2 ファイル配置（すべて新規追加。既存ファイルの改変は 0 件）
+### 3.2 ファイル配置（追加のみが原則。A-1〜A-7 実施に伴い既存ファイルへの限定的改変あり）
 
 ```
 simulator/
@@ -566,7 +566,7 @@ def bind_ea_inputs(ea_name: str, inputs: tuple[TesterInput, ...]) -> dict[str, A
 
 **確定事項（重要・基本設計書 §6.2 の記述を限定する）**: `EA_INPUT_BINDINGS` の**初期内容は空**とする。理由（実測）:
 
-1. corpus の EA（`TC24051901` / `TC24051902` / `TC24051903` / `my_first_ea` / `range` / `Moving Average`）のうち `_EA_FACTORIES`（`main/__init__.py:385-391`）に登録があるのは 0 件で、`TC24051901` のみが既定 TC 経路の名前として `SymbolSpecCatalog._DEFAULT_EA`（`symbol_spec_catalog.py:49`）に存在する。
+1. corpus の EA（`TC24051901` / `TC24051902` / `TC24051903` / `my_first_ea` / `range` / `Moving Average`）のうち `_EA_FACTORIES`（`main/__init__.py:439-445`）に登録があるのは 0 件で、`TC24051901` のみが既定 TC 経路の名前として `DEFAULT_EA_NAME`（`main/__init__.py:456`）に固定されている。
 2. corpus の入力名（`LotSize` / `MAPeriod` / `MAMethod` / `MaxTradesPerDay` / `CheckMarketHours`＝実読）のうち、`MAMethod` は数値（`1`）で保存されるのに対し `build_interactor` の `ma_method` は文字列語彙（`"ema"` / `"sma"`＝テストコードで実測）であり、**数値と語彙の対応は本リポジトリ内で実証できない**（MQL `ENUM_MA_METHOD` は外部仕様。新 TBD-19）。
 3. `MaxTradesPerDay` / `CheckMarketHours` に対応する `build_interactor` 引数は存在しない（シグネチャ実測）。
 
@@ -1131,7 +1131,7 @@ G-1 は宣言でなく実行で確認する（「制約は機械的検査で担�
 |---|---|---|---|---|
 | A-1 | **実施済み（v1.1.0）**: `TICK_MODEL_REGISTRY` へ MATH_CALCULATIONS を 5 件目として統合登録。`build_interactor` 経由の単一経路で実行。既存 4 エントリ無改変・bit-exact 保証 | `adapter/execution/tick_model_registry.py`・`main/__init__.py` 実装完了 | UI 経路での math_calculations 投入・config 語彙の一致（L-1・L-5 解消・§11.1）・MT5 突合ゲート全通過確認済み | 実装済み（差分 0） |
 | A-2 | `RunProfile` / `SymbolSpecCatalog` に決済通貨フィールドを追加 | `sim_ui/usecase/run_options_ports.py`・`sim_ui/adapter/symbol_spec_catalog.py` | N-11 の判定データ源を単一ソース化（D-10 の恒久化） | `RunProfile.to_dict()` の応答が 1 キー増える（UI 側への影響確認が必要） | **／ **実施済み（v1.0.5）**: `RunProfile.settlement_currency`（既定値なし）＋カタログが `"JPY"` を権威供給。出典は golden fixture 4 点で実測。投入 body は 18 キー byte 等価のまま。**
-| A-3 | `build_interactor` に全 Repository 共通の取得窓引数（または `market_data` 注入点）を追加 | `main/__init__.py` | MT5 ローダ EA での期間指定実行（L-2 解消） | 同上（bit-exact ゲート再確認） |
+| A-3 | **実施済み（v1.1.2）**: `build_interactor` に全 Repository 共通の取得窓引数（または `market_data` 注入点）を追加 | `main/__init__.py`・`adapter/repository/windowed_market_data.py`（新規 `WindowedMarketDataRepository`） | MT5 ローダ EA での期間指定実行（L-2 解消） | 実装完了・MT5 突合ゲート全通過確認済み |
 | A-4 | corpus 44 件を `tests/fixtures/` へ複製しコミット | 新規バイナリ 44 件 | CI での 44 件往復回帰 | UTF-16 バイナリのコミット可否（ISSUE-385）。`sample/` は Git 追跡外 | **／ **実施済み（v1.0.5）**: `simulator/tests/fixtures/tester_ini/` へ 44 件を SHA-256 一致で複製し追跡。corpus 不在環境の regression が 0 passed/26 skipped → 803 passed/2 skipped（CI の空洞を閉塞）。`.gitattributes` で `*.ini binary` を固定し改行正規化による破壊を遮断。**
 | A-5 | `BacktestController` に interactor の公開取得点を設ける | `adapter/controller.py` | `run_from_settings` が非公開属性 `controller._interactor` へ到達している状態を解消（現状は既存 `main/__init__.py` も同じ属性へ到達しており既存慣行の踏襲＝ISSUE-395） | 既存の入口アダプタの公開面が増える | **／ **実施済み（v1.0.5）**: `BacktestController.interactor`（read-only プロパティ）を追加し `run_from_settings` を切替。`run()` の差分は +13/-0 行で挙動不変。⚠️ 真因は `run()` の責務二重化であり未解消＝ISSUE-398。**
 | A-6 | **実施済み（v1.1.0）**: 終了コード翻訳の唯一の宣言を**`simulator/adapter/exit_codes.py`**へ単一化（`adapter` は domain 例外を外側の応答形式へ翻訳する層。`main` へ置くと層違反）。`main/tester_settings/exit_codes.py` は再輸出のみ | `adapter/exit_codes.py` が唯一の宣言・`main` は参照のみ | 翻訳表の分散を解消。依存方向の一貫性を確保 | 実装完了・テスト確認済み |
@@ -1200,8 +1200,7 @@ G-1 は宣言でなく実行で確認する（「制約は機械的検査で担�
 1. テスト実行による実測（T-03・T-08・T-10 の各主張）。本作業ではコードを実行していない。
 2. corpus 44 件中 40 件の全文検証（T-01・T-09 で機械検証）。
 3. 外部照合が必要な TBD 14 件（§11.2）。MT5 実機または MQL5 公式リファレンスが必要。
-4. 要承認事項 A-3 のみ未実施。承認が無い限り L-2 の限界（MT5 ローダ EA での期間指定実行）が残る。（A-1・A-2・A-4〜A-7 は v1.1.0 で実施済み）
-5. `pytest-cov` の導入有無（未確認）。未導入ならカバレッジ数値目標は網羅表で代替する（ライブラリ追加は行わない）。
+4. `pytest-cov` の導入有無（未確認）。未導入ならカバレッジ数値目標は網羅表で代替する（ライブラリ追加は行わない）。
 
 ---
 

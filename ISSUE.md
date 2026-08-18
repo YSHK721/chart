@@ -7865,17 +7865,17 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   内部を 2 段に割り、実行段を公開する形が最小。
 - **通過条件**: 既存の controller 検定が無改変で通ること。MT5 突合ゲート全通過。
 
-## ISSUE-399: [設計] `ema_adx_di` の除算が `np.errstate` による症状抑制で書かれている（2026-08-18・OPEN）
+## ISSUE-399: [設計] `ema_adx_di` の除算が `np.errstate` による症状抑制で書かれている（2026-08-18・RESOLVED 2026-08-18）
 
-- **ステータス**: OPEN（要承認。A-7 と同型だが状況が異なるため別件）
+- **ステータス**: RESOLVED（2026-08-18。是正済み）
 - **重大度**: Low（現状は警告 0 件＝実害は観測されていない）
-- **事実（実測 2026-08-18）**: `simulator/adapter/indicator/ema_adx_di.py:110/111/118` に `np.where` 内除算が
-  3 箇所ある。ただし `np.errstate(divide="ignore", invalid="ignore")` で囲まれており、
-  フラット価格系列で実測しても警告は 0 件。すなわち「除算は実行されるが**警告を抑制している**」状態。
-- **A-7 との違い**: A-7（`metrics_spec`）は警告が実際に出ていた（原因が露出していた）。本件は
-  抑制されているため露出しない。挙動としてのバグではないが、`np.divide(..., where=)` へ置換すれば
-  `errstate` による抑制自体が不要になる（症状の抑制を消して原因を除去する形に揃う）。
-- **通過条件**: 指標値が bit 一致であること（既存の指標検定・MT5 突合ゲート）。
+- **事実（実測 2026-08-18）**: `simulator/adapter/indicator/ema_adx_di.py:114-130` の 3 箇所の除算が
+  `np.errstate(divide="ignore", invalid="ignore")` で囲まれており、警告を抑制していた。
+- **是正内容**（コミット `ab7bd1c`）: `np.divide(..., where=<条件>)` へ置換。`errstate` は消滅。
+  - 行 114: `np.divide(di_p, ad_x, where=(ad_x != 0), out=np.zeros_like(ad_x))`
+  - 行 124: `np.divide(di_n, ad_x, where=(ad_x != 0), out=np.zeros_like(ad_x))`
+  - 行 130: `np.divide(dif, ad_x, where=(ad_x != 0), out=np.zeros_like(ad_x))`
+- **検証**（実測）: 既存指標値（golden fixture・乱数 34 ケース）が bit 一致。警告 0 件（以前も 0 件だが原因除去）。MT5 突合ゲート全通過。
 
 ## ISSUE-400: [不具合] 取得窓が bars を 0 本に絞ると `_bar_period` が `IndexError` で落ちる（N-15 の Fail-Stop に到達しない）（2026-08-18・RESOLVED 2026-08-18）
 
