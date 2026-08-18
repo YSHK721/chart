@@ -11,29 +11,41 @@ codescan 実測（2026-08-11）でリポジトリ全体の clone 第 1 位（43 
 片方だけ直せば report.json が静かに食い違う（同じ payload を作る 2 経路なので、
 食い違っても例外は出ない＝気づけない）。よって定義はここ 1 か所だけに置く。
 
-bars / trades の時刻は供給源によって UNIX 秒 int・`pandas.Timestamp`・`numpy.datetime64`
-のいずれにもなる。その差を吸収するのが本モジュールの責務で、それ以外は何もしない
-（値の解釈・写像の式は UC が持つ）。
+bars / trades の時刻は供給源によって UNIX 秒 int・`numpy.int64`・`pandas.Timestamp`・
+`numpy.datetime64` のいずれにもなる。その差を吸収するのが本モジュールの責務で、それ以外は
+何もしない（値の解釈・写像の式は UC が持つ）。ただし**吸収規則そのものは本モジュールが
+持たない**——規則の実体は `simulator.domain.bar_time.epoch_seconds` が唯一所有する
+（ISSUE-412。手書きの型判定を置くと受理集合が二重定義になる）。
 """
 from __future__ import annotations
 
 from typing import Any
 
+# 表現差の吸収規則は domain の単一ソースが唯一持つ（本モジュールは写しを作らない）。
+from simulator.domain.bar_time import epoch_seconds
+
 
 def unix_seconds(t: Any) -> int:
-    """`numpy.datetime64` / epoch int / `Timestamp` を UNIX 秒 int へ正規化する（§4.3）。
+    """`numpy.datetime64` / epoch int（`numpy.int64` を含む）/ `Timestamp` を UNIX 秒へ（§4.3）。
 
-    pandas の import を関数内に置くのは、int 時刻だけを扱う経路を pandas の読み込みへ
-    巻き込まないため（sim core は int 時刻だけの経路を持つ）。
+    表現差の吸収規則は `simulator.domain.bar_time.epoch_seconds` が唯一持つ。本関数は
+    その委譲だけを行い、型判定を書かない。未対応の表現は推測で解釈せず `ConfigError`
+    （無音で 1970 年を出さない）。
 
-    `bool` を int として素通ししない。`isinstance(True, int)` は真なので、素通しすると
-    `time=1`（1970 年）のバーが黙って混ざる。
+    なぜ判定を書かないか（実測・ISSUE-412 (C)）:
+        以前は `isinstance(t, int) and not isinstance(t, bool)` を手書きしていた。
+        `isinstance(np.int64(1), int)` は **False**（numpy 2.4.6 実測）なので comma 形式
+        CSV 由来の実型が分岐から外れ、`pd.Timestamp(np.int64(1776643200))` ＝ ns 解釈で
+        **1970-01-01** に落ちていた（例外なしの桁ずれ）。判定を 1 か所に閉じることで
+        この取り落としの発生源そのものを除去する。
+
+    `bool` を int として素通ししない性質は `epoch_seconds` 側の受理集合が保つ
+    （`isinstance(True, int)` は真だが時刻ではないため `ConfigError`）。
+
+    `def` を残しているのは、本名が単一ソースの所有名だからである
+    （`test_int_time_views_single_source.py` が定義の所在を AST で固定している）。
     """
-    if isinstance(t, int) and not isinstance(t, bool):
-        return t
-    import pandas as pd
-
-    return int(pd.Timestamp(t).timestamp())
+    return epoch_seconds(t)
 
 
 class IntTimeBar:

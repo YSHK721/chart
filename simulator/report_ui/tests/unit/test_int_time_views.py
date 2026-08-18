@@ -17,9 +17,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 import pytest
 
+from simulator.domain.exceptions import ConfigError
 from simulator.report_ui.tools.int_time_views import (
     IntTimeBar,
     IntTimeTrade,
@@ -73,10 +75,13 @@ def test_int時刻はそのまま返す() -> None:
 def test_boolはintとして素通ししない() -> None:
     """`isinstance(True, int)` は真。素通しすると `time=1`（1970 年）が黙って混ざる。
 
-    移設元の実装は bool を int 経路から外し、pandas 経路で `TypeError` になる。
-    移設で挙動を変えない（緩めて 0/1 を通すと不正な時刻が通る）。
+    例外型が `TypeError` から `ConfigError` へ変わったのは ISSUE-412 の単一ソース委譲の
+    帰結である。判定規則を `simulator.domain.bar_time` の 1 か所へ寄せた以上、bool の
+    特例をここに残せば「時刻表現の判定」の写しが復活する（写しが復活すれば表への追加に
+    追随せず受理集合が二重定義になる＝本 issue の欠陥そのものが再発する）。
+    拒否の意図（不正な時刻を無音で通さない）は不変であり、緩めていない。
     """
-    with pytest.raises(TypeError):
+    with pytest.raises(ConfigError):
         unix_seconds(True)
 
 
@@ -96,12 +101,74 @@ def test_戻り値はint型() -> None:
     assert type(unix_seconds(pd.Timestamp("2026-04-20", tz="UTC"))) is int
 
 
+def test_numpy_int64のepoch秒を1970年へ落とさない() -> None:
+    """ISSUE-412 (C): comma 形式 CSV 由来の実型（`numpy.int64`）が int 分岐から外れていた。
+
+    手書きの `isinstance(t, int)` は `isinstance(np.int64(1), int)` が **False**
+    （numpy 2.4.6 実測）なので分岐を外れ、`pd.Timestamp(np.int64(1776643200))` ＝
+    ns 解釈で **1970-01-01 00:00:01.776643200** へ落ちていた（例外なしの桁ずれ）。
+    `report.json` へ書く値なので `numpy.int64` のまま素通しもしない（JSON 化不能）。
+    """
+    assert isinstance(np.int64(_EPOCH), int) is False  # 前提の実測（numpy 2.4.6）
+    assert unix_seconds(np.int64(_EPOCH)) == _EPOCH
+    assert type(unix_seconds(np.int64(_EPOCH))) is int
+
+
+def test_整数の種類で結果が変わらない() -> None:
+    """同一時刻は「どの整数型で書かれたか」に依存せず同一 UNIX 秒を返す（表現非依存）。"""
+    assert unix_seconds(np.int64(_EPOCH)) == unix_seconds(int(_EPOCH))
+
+
+def test_未対応表現は無音で1970年を出さずConfigErrorになる() -> None:
+    """表現差の吸収規則は `bar_time.epoch_seconds` が唯一持ち、未対応は推測解釈しない。"""
+    with pytest.raises(ConfigError):
+        unix_seconds("2026-04-20T00:00:00")
+
+
+def test_時刻正規化の実体はdomainの単一ソースそのもの() -> None:
+    """規則の写しを持たない（複製が入り込むと本検定が落ちる）。
+
+    先例の流儀: `simulator/tests/unit/test_tick_window_single_source.py`
+    `test_tick_stage_reads_the_shared_normalizer`。
+    """
+    from simulator.domain import bar_time
+    from simulator.report_ui.tools import int_time_views
+
+    assert int_time_views.epoch_seconds is bar_time.epoch_seconds
+
+
+# --- 1b. 委譲で変わらないこと（不変条件の固定・Red ではない） -----------------
+# 下 2 件は是正前から通る。単一ソース委譲で naive の解釈が動いていないことを
+# 固定する不変条件の壁であり、Red 証拠には数えない。
+
+def test_naive_timestampはUTCとして解釈する() -> None:
+    """pandas の naive `Timestamp.timestamp()` は UTC 基準（実測）。委譲後も同値である。
+
+    `bar_time` 側の datetime 変換（`datawindow.half_open.epoch_seconds_of_datetime`）も
+    naive を UTC とみなすため、旧実装 `int(pd.Timestamp(t).timestamp())` と一致する
+    （ISSUE-411 実測記録）。プロセスのローカル TZ に依存しない。
+    """
+    assert unix_seconds(pd.Timestamp("2026-04-20 00:00:00")) == _EPOCH
+
+
+def test_naive_datetimeもUTCとして解釈する() -> None:
+    assert unix_seconds(datetime(2026, 4, 20)) == _EPOCH
+
+
 # --- 2. IntTimeBar --------------------------------------------------------------
 
 def test_barはtimeだけint化しOHLCは素通し() -> None:
     view = IntTimeBar(_Bar(pd.Timestamp("2026-04-20", tz="UTC")))
     assert view.time == _EPOCH
     assert (view.open, view.high, view.low, view.close) == (100.0, 112.0, 95.0, 105.0)
+
+
+def test_barはnumpy_int64のtimeを1970年へ落とさない() -> None:
+    """ISSUE-412 (C) の実害面: `raw_bars` が comma CSV 由来なら bar.time は `numpy.int64`。
+
+    ビュー経由でも 1970 年へ落ちない（report.json の bars が全て 1970 年になる）。
+    """
+    assert IntTimeBar(_Bar(np.int64(_EPOCH))).time == _EPOCH
 
 
 def test_barビューは属性を増やさない() -> None:
