@@ -11,6 +11,8 @@
     resolve_data_window   : API-07。`date_range` → `DataWindow`。
     verify_window_applied : 事後検証（不一致・空は N-15）。
     epoch_seconds         : `bar.time`（`numpy.datetime64` / epoch 整数）の正規化。
+                            **実体は `simulator.domain.bar_time`**（A-3 で移設）。本モジュール
+                            は再 export するのみで、公開名・挙動は移設前と不変。
 
 3. 元 MQL 対応:
     Settings タブの `Date`（#4）・`From`（#5）・`To`（#6）。MT5 は日付単位で区間を
@@ -18,15 +20,19 @@
     へ写す。
 
 4. 依存:
-    標準: dataclasses / datetime / numbers / typing
+    標準: dataclasses / datetime / typing
     外部: なし（numpy / pandas を import しない。`bar.time` は duck typing で扱う）
-    プロジェクト内: simulator.domain.tester_settings_exceptions /
+    プロジェクト内: simulator.domain.bar_time（A-3・epoch 正規化の単一ソース） /
+                    simulator.domain.tester_settings_exceptions /
                     simulator.usecase.tester_settings
 
 実測に基づく確定事項（推測しない）:
-    W-1: `marketdata_window` は `CsvOHLCRepository` を使う EA でのみ委譲 repo へ
-         差し替わる（`main/__init__.py:541` 実測）。MT5 タブ形式ローダを使う EA では
-         指定しても無視される。→ 予測せず結果を測る（`verify_window_applied`）。
+    W-1: `marketdata_window` は **全 `MarketDataPort` 実装で効く**（A-3）。`CsvOHLCRepository`
+         のときは委譲 repo（`MarketDataSourceRepository`）へ差し替わり、それ以外は
+         `WindowedMarketDataRepository` が包んで窓を適用する（`main/__init__.py` 実測）。
+         A-3 以前は MT5 タブ形式ローダを使う EA で窓が無視されていた（実測: 窓あり/なしで
+         bars の sha256 が同一・28097 本）。本層は機構を予測せず結果を測る方針を維持する
+         （`verify_window_applied`）。
     W-2: 窓は半開 `[start, end)`（`marketdata/csv_source.py:59` 実測）。
     W-3: 境界は `datetime.timestamp()` で epoch 秒へ変換される。naive datetime は
          プロセスのローカル TZ で解釈されるため、本モジュールは **UTC aware** の
@@ -37,11 +43,15 @@
 """
 from __future__ import annotations
 
-import numbers
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
+# A-3: `bar.time` の epoch 正規化は domain（`Bar.time` 型契約の所有者）が単一ソースを持つ。
+# 本モジュールは実体を再定義せず読むだけにする（窓デコレータとの手書き複製を作らない）。
+# 再 export（`EPOCH_CONVERTERS` / `epoch_seconds`）は `tester_settings/__init__.py` の公開
+# 名を維持するために残す（移設前後で本モジュールの公開面と挙動は不変）。
+from simulator.domain.bar_time import EPOCH_CONVERTERS, epoch_seconds  # noqa: F401
 from simulator.domain.exceptions import ConfigError
 from simulator.domain.tester_settings_exceptions import SettingsKeyMissingError
 from simulator.main.tester_settings.unsupported import RULES, raise_unsupported
@@ -181,58 +191,6 @@ def resolve_data_window(effective: EffectiveSettings) -> DataWindow:
 # ---------------------------------------------------------------------------
 # 適用結果の事後検証（§8.4.3）
 # ---------------------------------------------------------------------------
-
-
-def _is_integer(value: Any) -> bool:
-    """整数（`numpy.int64` を含む）か。``bool`` は時刻ではないため除外する。"""
-    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
-
-
-def _from_integer(value: Any) -> int:
-    return int(value)
-
-
-def _is_datetime(value: Any) -> bool:
-    return isinstance(value, datetime)
-
-
-def _from_datetime(value: datetime) -> int:
-    """aware は自身の TZ、naive は UTC とみなして epoch 秒へ（W-3 の除去）。"""
-    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    return int(aware.timestamp())
-
-
-def _is_numpy_datetime64(value: Any) -> bool:
-    """``numpy.datetime64``（numpy を import せず duck typing で判定する）。"""
-    return hasattr(value, "astype") and type(value).__name__ == "datetime64"
-
-
-def _from_numpy_datetime64(value: Any) -> int:
-    return int(value.astype("datetime64[s]").astype("int64"))
-
-
-#: 時刻表現 → epoch 秒の変換器（判定順に評価する。表現の追加＝1 エントリ追加）。
-EPOCH_CONVERTERS: "tuple[tuple[Callable[[Any], bool], Callable[[Any], int]], ...]" = (
-    (_is_integer, _from_integer),
-    (_is_datetime, _from_datetime),
-    (_is_numpy_datetime64, _from_numpy_datetime64),
-)
-
-
-def epoch_seconds(value: Any) -> int:
-    """`bar.time` / 窓境界を epoch 秒（int）へ正規化する。
-
-    事前条件: ``value`` は ``EPOCH_CONVERTERS`` が扱える時刻表現。
-    事後条件: UTC 基準の epoch 秒を返す。
-    例外: 未対応の表現は ``ConfigError``（推測で解釈しない）。
-    """
-    for matches, convert in EPOCH_CONVERTERS:
-        if matches(value):
-            return convert(value)
-    raise ConfigError(
-        f"epoch 秒へ正規化できない時刻表現です: {type(value).__name__}",
-        context={"value_type": type(value).__name__, "value": str(value)},
-    )
 
 
 def _iso(epoch: int) -> str:
