@@ -7778,9 +7778,18 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   4 は理由文を実装へ合わせ、注入集合と `_EA_FACTORIES` の関係を検定で固定。5 は実証状態の単一ソースを
   `enums.ExecutionDelay` 側に置き、`0` は TBD-08 を理由に `approximate=True` とする。
 
-## ISSUE-396: [設計] `.ini` 起点の実行は通るが、MT5 突合データセットの正解（stop out して完走）を再現できない（2026-08-18・OPEN）
+## ISSUE-396: [設計] `.ini` 起点の実行は通るが、MT5 突合データセットの正解（stop out して完走）を再現できない（2026-08-18・RESOLVED 2026-08-18）
 
-- **ステータス**: OPEN（要判断。A-1〜A-7 の承認範囲外の新規論点）
+- **ステータス**: RESOLVED（2026-08-18。採用方針どおり実装済みを実測で確認・台帳の更新漏れを解消）
+- **是正確認（実測 2026-08-18）**: 採用方針（`stop_out_action` の権威を `kwargs_mapper` の
+  `_config_overrides` に持たせ既定 `close_and_halt`）はコミット `59d3526`（develop へマージ済み）で
+  実装済み。`kwargs_mapper.py:395` の `overrides.setdefault("stop_out_action", STOP_OUT_ACTION)` を
+  確認。binding 側の明示値が優先（上書き可）。専用検定
+  `test_tester_settings_stop_out_action.py`（MT5 実測オラクル: tester.log の
+  `position stop out triggered` / 最終 deal `comment="so 99.95%"` / 完走 1163 trades と突合）
+  **8 passed**、`test_run_from_settings.py` ＋ `test_tester_settings_to_interactor.py`
+  **52 passed** を本日実走で確認。事実 3（EA ごとの値許容域）は案(b) 棄却どおり実装なし
+  （宣言点は戦略クラス側・YAGNI）。
 - **重大度**: Medium（`.ini` 起点の本番エントリポイントを作る段で、MT5 と同じ結果を出せない）
 - **事実（すべて実測 2026-08-18）**:
   1. `.ini` → `run_from_settings` の経路自体は成立する。合成 `.ini`（`Model=1` / `Symbol=JP225` /
