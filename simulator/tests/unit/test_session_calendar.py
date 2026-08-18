@@ -134,6 +134,18 @@ class TestJp225SessionCalendarIsIndependentOfTimeRepresentation:
         by_int = calendar.closed_bar_indices([_epoch_bar(t, kind=int) for t in isos])
         assert by_dt64 == by_i64 == by_int == {0, 4}
 
+    def test_calendar_reads_the_shared_normalizer(self):
+        """時刻正規化の実体は domain の共有オブジェクトである（写しの再発を機械検出）。
+
+        値の検定（上）は「壊れた複製」しか捕まえない。正しく書き写した複製は値が
+        一致したまま単一ソースを破るため、`is` 同一性で固定する（他 3 サイト＝
+        CLI 2 本・int_time_views と同じ流儀。レビュー 🟡-1）。
+        """
+        from simulator.adapter.calendar import session_calendar as sc
+        from simulator.domain import bar_time
+
+        assert sc.epoch_seconds is bar_time.epoch_seconds
+
     def test_injected_session_bounds_still_apply_to_epoch_bars(self):
         """注入した境界（`__init__` の 2 引数）が epoch 表現でも効く。
 
