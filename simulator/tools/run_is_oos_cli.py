@@ -74,7 +74,10 @@ def normalize_time(value: str, sample_bar_time: Any) -> Any:
     ts = pd.Timestamp(value)
     if is_epoch_integer(sample_bar_time):
         return epoch_seconds(ts)
-    # numpy.datetime64（既定の Mt5CsvOHLCRepository / CsvOHLCRepository の bar.time 型）
+    # numpy.datetime64 経路＝MT5 タブ形式ローダ `Mt5CsvOHLCRepository` の bar.time 型
+    # （`adapter/repository/ohlc_mt5_csv.py:56` 実読）。comma 形式の `CsvOHLCRepository` は
+    # CSV の値をそのまま採用して epoch 整数になる（`adapter/repository/ohlc_csv.py:31-33`
+    # 実読・`bar_time` B-1）ため、そちらは上の epoch 整数分岐へ入る。
     return ts.to_datetime64()
 
 
