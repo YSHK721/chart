@@ -84,24 +84,6 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def _called_names_of(node: ast.AST) -> "list[str]":
-    """`node` 配下の呼び出し名を列挙する（`f(...)` は ``f``・`m.f(...)` は ``f``）。
-
-    到達可能性の検査（ISSUE-411 B2）で使う。`m.f(...)` を末尾名で拾うのは、
-    ``import dataclasses`` 経由の `dataclasses.replace(...)` と ``from dataclasses
-    import replace`` 経由の `replace(...)` を同一に扱うためである。
-    """
-    names = []
-    for child in ast.walk(node):
-        if isinstance(child, ast.Call):
-            func = child.func
-            if isinstance(func, ast.Name):
-                names.append(func.id)
-            elif isinstance(func, ast.Attribute):
-                names.append(func.attr)
-    return names
-
-
 def _returned_int_constants(node: ast.AST) -> "list[int]":
     """`node` 配下の `return` が返す整数リテラルを列挙する。
 
@@ -236,24 +218,28 @@ class TestTheOutputStageCannotRaiseConfigError:
     `write_text` / `setattr`）は標準ライブラリで、`simulator` 配下に `__setattr__` の
     再定義は 0 件（実測）。
 
-    **なぜ精密化したか（ISSUE-411・2026-08-18）**:
-    旧実装の検査は「閉包内に `ConfigError` の raise が 1 件も無い」であった。これは
-    上の不変条件の**過大近似**である（raise の存在 ≠ 出力段からの到達）。ISSUE-411 で
-    `Bar.__post_init__` へ time 型契約の表明（違反は `ConfigError`）を入れた結果、
-    `domain/bar.py` が `usecase/ports.py` 経由で閉包に入り（実測: 閉包 8 モジュール・
-    経路 `presenter/json.py` → `usecase/ports.py` → `domain/bar.py`）、近似が偽になった。
-    **不変条件そのものは成立したままである**（実測: 閉包内に `Bar` 構築 0 件・
-    `epoch_seconds` / `is_supported_time` 呼出 0 件・`dataclasses.replace` 0 件）。
+    **閉包の TYPE_CHECKING 誤認の是正（ISSUE-411・2026-08-18）**:
+    本検査は長らく閉包を過大に計算していた。`_project_imports` が
+    ``if TYPE_CHECKING:`` ガード配下の import を実行時 import と同一視していたためである。
+    `usecase/ports.py:14-16` は `Bar` / `Order` を型注釈専用に import しており
+    （``if TYPE_CHECKING:  # 型注釈専用（実行時 import 不要・domain のみ）``）、
+    これが閉包へ混入して `domain/bar.py` `domain/order.py` `domain/exceptions.py`
+    `domain/_shared.py` `domain/bar_time.py` を引き込み、閉包は **8 モジュール**に膨れていた。
 
-    そこで検査を到達可能性込みの 2 部構成へ置き換える。強度は同等以上である
-    （近似を捨て、不変条件の成立根拠を機械検査に変えた）。
-      B1: 閉包内で `ConfigError` を raise するモジュールは、`Bar.time` 型契約を担う
-          `domain/bar.py` / `domain/bar_time.py` に限られる。
-      B2: 閉包内から**その契約検査へ到達する呼出が 1 つも無い**。到達手段は
-          `Bar(...)` 構築・`epoch_seconds(...)` / `is_supported_time(...)` の直接呼出・
-          `dataclasses.replace(bar, ...)` による再構築（`replace` は frozen dataclass の
-          `__post_init__` を**再実行する**ため契約検査が再度走る）の 4 つである。
-    B1 と B2 が同時に成立する限り、出力段から `ConfigError` は到達し得ない。
+    除外の正当性は**言語仕様**である。`typing.TYPE_CHECKING` は実行時 ``False`` であり
+    （実測: ``python -c "import typing; print(typing.TYPE_CHECKING)"`` → ``False``）、
+    ガード配下の文は実行時に評価されない。したがってガード配下の import は
+    「出力段が実行時に到達するコード」ではなく、閉包に含めてはならない。
+
+    是正後の閉包は **3 モジュール**（`presenter/json.py` / `presenter/markdown.py` /
+    `usecase/ports.py`）であり、実行時の実測と一致する（`import` 後の ``sys.modules``
+    に `simulator.domain.bar` は現れない）。この閉包の `ConfigError` raise は **0 件**である。
+
+    なお ISSUE-411 で `Bar.__post_init__` へ time 型契約の表明（違反は `ConfigError`）を
+    入れた際、本検査が落ちた。当初これを「近似が過大だから許可リストで通す」方向で
+    扱いかけたが、**真因は閉包計算のバグ**であり、`domain/bar.py` はそもそも出力段の
+    実行時閉包に存在しない。無条件検査（閉包内に `ConfigError` の raise 0 件）のまま
+    正しい閉包を与えるのが抜本策である。
     """
 
     #: `_present_outputs` が呼ぶプロジェクト内コードの入口。
@@ -262,16 +248,12 @@ class TestTheOutputStageCannotRaiseConfigError:
         _SIMULATOR_DIR / "adapter" / "presenter" / "markdown.py",
     )
 
-    #: B1: 閉包内で `ConfigError` の raise を許すモジュール（`Bar.time` 型契約の所有者）。
-    #: ここに載るモジュールは B2 で「到達しない」ことを併せて証明する義務を負う。
-    _CONTRACT_MODULES = (
-        _SIMULATOR_DIR / "domain" / "bar.py",
-        _SIMULATOR_DIR / "domain" / "bar_time.py",
+    #: 是正後の実行時閉包（実測値）。膨張・縮小のいずれもここで気付ける。
+    _RUNTIME_CLOSURE = (
+        _SIMULATOR_DIR / "adapter" / "presenter" / "json.py",
+        _SIMULATOR_DIR / "adapter" / "presenter" / "markdown.py",
+        _SIMULATOR_DIR / "usecase" / "ports.py",
     )
-
-    #: B2: 契約検査（`Bar.__post_init__`）を発火させ得る呼び出し名。
-    #: `replace` は `dataclasses.replace` による frozen dataclass の再構築を指す。
-    _CONTRACT_TRIGGERS = ("Bar", "epoch_seconds", "is_supported_time", "replace")
 
     def _module_path(self, module_name: str) -> "Path | None":
         parts = module_name.split(".")
@@ -283,9 +265,37 @@ class TestTheOutputStageCannotRaiseConfigError:
                 return candidate
         return None
 
+    @staticmethod
+    def _is_type_checking_guard(node: ast.AST) -> bool:
+        """``if TYPE_CHECKING:`` / ``if typing.TYPE_CHECKING:`` か。"""
+        if not isinstance(node, ast.If):
+            return False
+        test = node.test
+        return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+            isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+        )
+
     def _project_imports(self, path: Path) -> "set[str]":
+        """実行時に評価される `simulator.*` の import を列挙する。
+
+        ``if TYPE_CHECKING:`` ガード配下の import は**除外する**。除外の正当性は
+        言語仕様である: `typing.TYPE_CHECKING` は実行時 ``False`` であり、ガード配下の
+        文は実行時に評価されない（型検査器だけが真とみなす）。除外しないと型注釈専用の
+        import が「出力段が実行時に到達するコード」として扱われ、閉包が過大になる
+        （ISSUE-411: `usecase/ports.py` の型注釈専用 import が `domain/*` 5 件を
+        引き込み、閉包が 3 → 8 モジュールへ膨れていた）。
+        """
+        tree = _tree(path)
+        guarded = {
+            id(sub)
+            for node in ast.walk(tree)
+            if self._is_type_checking_guard(node)
+            for sub in ast.walk(node)
+        }
         modules: set[str] = set()
-        for node in ast.walk(_tree(path)):
+        for node in ast.walk(tree):
+            if id(node) in guarded:
+                continue
             if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
                 modules.add(node.module)
             elif isinstance(node, ast.Import):
@@ -315,32 +325,10 @@ class TestTheOutputStageCannotRaiseConfigError:
                 )
         return names
 
-    def _called_names(self, path: Path) -> "list[str]":
-        """当該モジュール内の呼び出し名を列挙する（`f(...)` / `m.f(...)` の末尾名）。"""
-        return _called_names_of(_tree(path))
-
-    def _trigger_names(self, path: Path) -> "set[str]":
-        """当該モジュールで契約検査へ到達し得る呼び出し名（別名 import を含む）。
-
-        `from simulator.domain.bar import Bar as B` のような別名束縛があると素の名前
-        照合では `B(...)` を見逃す。import 文の `asname` を実測して照合集合へ加える。
-        """
-        names = set(self._CONTRACT_TRIGGERS)
-        for node in ast.walk(_tree(path)):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                for alias in node.names:
-                    original = alias.name.rsplit(".", 1)[-1]
-                    if alias.asname and original in self._CONTRACT_TRIGGERS:
-                        names.add(alias.asname)
-        return names
-
-    def test_config_error_is_raised_only_by_the_bar_time_contract_in_the_closure(self):
-        """B1: 閉包内の `ConfigError` raise は `Bar.time` 型契約の所有者に限られる。"""
-        allowed = set(self._CONTRACT_MODULES)
+    def test_the_presenter_closure_never_raises_config_error(self):
         violations = [
             f"{path.relative_to(_SIMULATOR_DIR.parent)}: {name}"
             for path in sorted(self._closure())
-            if path not in allowed
             for name in self._raised_type_names(path)
             if "ConfigError" in name
         ]
@@ -349,62 +337,20 @@ class TestTheOutputStageCannotRaiseConfigError:
             "exit 1 → exit 2 の挙動変化を起こす）: " + "; ".join(violations)
         )
 
-    def test_the_closure_never_reaches_the_bar_time_contract(self):
-        """B2: 閉包から契約検査（`Bar.__post_init__`）へ到達する呼出が 1 つも無い。
+    def test_the_closure_is_exactly_the_runtime_reachable_modules(self):
+        """閉包が実行時到達集合と一致する（TYPE_CHECKING 誤認の再発検出）。
 
-        B1 の許可リストは「raise は在るが到達しない」ことに依存する。その依存を
-        ここで機械検査する（許可リストだけでは近似が緩むため不可分）。
-        `replace` を含めるのは `dataclasses.replace` が frozen dataclass の
-        `__post_init__` を再実行し、契約検査を再度発火させるためである。
+        識別力: `_project_imports` の TYPE_CHECKING 除外を外すと閉包が 8 件へ膨れ、
+        本検定が落ちる。逆に seed が失われて閉包が縮んでも落ちる。
+        期待値は実行時の実測（`presenter` を import した後の `sys.modules`）と一致する。
         """
-        contract = set(self._CONTRACT_MODULES)
-        violations = [
-            f"{path.relative_to(_SIMULATOR_DIR.parent)}: {name}(...)"
-            for path in sorted(self._closure())
-            if path not in contract  # 契約所有者自身は当然 is_supported_time を呼ぶ
-            for name in self._called_names(path)
-            if name in self._trigger_names(path)
-        ]
-        assert violations == [], (
-            "出力段が Bar.time 契約検査へ到達し得る（ConfigError が exit 1 → exit 2 の "
-            "挙動変化を起こす）: " + "; ".join(violations)
-        )
+        assert self._closure() == set(self._RUNTIME_CLOSURE)
 
     def test_the_closure_is_not_empty(self):
         # 閉包が空なら上の検査は常に通る（＝ゲートとして無意味）。
         closure = self._closure()
         assert set(self._PRESENTER_SEEDS) <= closure
-        assert _SIMULATOR_DIR / "domain" / "exceptions.py" in closure
-
-    def test_the_allowlisted_contract_modules_are_actually_in_the_closure(self):
-        """B1 の許可リストが空振りでないこと（＝B2 が実際に仕事をしていること）。
-
-        `domain/bar.py` が閉包から外れたなら、許可リストは不要になっている。その場合は
-        本検定が落ちるので、許可リストを惰性で残さず撤去できる（ISSUE-411）。
-        """
-        closure = self._closure()
-        missing = [
-            str(p.relative_to(_SIMULATOR_DIR.parent))
-            for p in self._CONTRACT_MODULES
-            if p not in closure
-        ]
-        assert missing == [], (
-            "許可リストのモジュールが閉包外にある＝許可リストは不要になっている: "
-            + "; ".join(missing)
-        )
-
-    def test_the_contract_modules_do_raise_config_error(self):
-        """許可リストが「実際に raise を持つモジュール」を指していること。
-
-        契約検査が撤去された（＝ISSUE-411 が巻き戻された）なら本検定が落ちる。
-        許可リストが実体のない免罪符になるのを防ぐ。
-        """
-        for path in self._CONTRACT_MODULES:
-            names = self._raised_type_names(path)
-            assert any("ConfigError" in n for n in names), (
-                f"{path.relative_to(_SIMULATOR_DIR.parent)} は ConfigError を raise しない"
-                "＝許可リストから外すべき"
-            )
+        assert _SIMULATOR_DIR / "usecase" / "ports.py" in closure
 
     def test_no_module_redefines_setattr(self):
         # `setattr(result, ...)` が ConfigError を出す経路を塞ぐ。
@@ -456,60 +402,36 @@ class TestTheGateHasDetectionPower:
         source = "def f():\n    try:\n        g()\n    except ValueError:\n        return False\n"
         assert _literal_returning_handlers(ast.parse(source)) == []
 
-    def test_the_b2_probe_detects_each_way_of_reaching_the_contract(self):
-        """B2 の検出力: 契約検査への 4 到達手段をいずれも捕捉する（ISSUE-411）。
+    def test_a_type_checking_only_import_is_excluded_from_the_closure(self, tmp_path):
+        """閉包計算が `if TYPE_CHECKING:` 配下の import を実行時 import と混同しない。
 
-        識別力: `_CONTRACT_TRIGGERS` からどれか 1 つでも抜け落ちれば本検定が落ちる。
-        `replace` は `dataclasses.replace` が frozen dataclass の `__post_init__` を
-        再実行する（＝契約検査が再度走る）ことによる（実測: 下の等価性検定）。
+        識別力: 除外判定を外すと本検定が落ちる。`usecase/ports.py` の型注釈専用 import が
+        `domain/*` を閉包へ引き込んでいた欠陥（ISSUE-411）の再発検出点である。
         """
         gate = TestTheOutputStageCannotRaiseConfigError()
-        sources = {
-            "Bar 構築": "b = Bar(time=t, open=1.0, high=1.0, low=1.0, close=1.0,"
-                        " volume=0.0, spread=0)\n",
-            "epoch_seconds 直接呼出": "x = epoch_seconds(t)\n",
-            "is_supported_time 直接呼出": "x = is_supported_time(t)\n",
-            "dataclasses.replace 再構築": "b2 = dataclasses.replace(b, time=t)\n",
-        }
-        for label, source in sources.items():
-            names = [
-                n for n in _called_names_of(ast.parse(source))
-                if n in gate._CONTRACT_TRIGGERS
-            ]
-            assert names, f"B2 が {label} を検出できない"
-
-    def test_the_b2_probe_follows_aliased_imports(self, tmp_path):
-        """B2 の検出力: 別名 import 経由の到達も捕捉する（素の名前照合の穴を塞ぐ）。"""
-        gate = TestTheOutputStageCannotRaiseConfigError()
-        module = tmp_path / "aliased.py"
+        module = tmp_path / "guarded.py"
         module.write_text(
-            "from simulator.domain.bar import Bar as B\n"
-            "def f(t):\n"
-            "    return B(time=t, open=1.0, high=1.0, low=1.0, close=1.0,"
-            " volume=0.0, spread=0)\n",
+            "from typing import TYPE_CHECKING\n"
+            "import simulator.usecase.ports\n"
+            "if TYPE_CHECKING:\n"
+            "    from simulator.domain.bar import Bar\n",
             encoding="utf-8",
         )
-        triggers = gate._trigger_names(module)
-        assert "B" in triggers
-        assert any(n in triggers for n in gate._called_names(module))
+        imported = gate._project_imports(module)
+        assert "simulator.usecase.ports" in imported  # 実行時 import は残る
+        assert "simulator.domain.bar" not in imported  # 型注釈専用は除外される
 
-    def test_dataclasses_replace_reruns_post_init_on_a_frozen_bar(self):
-        """`replace` を B2 の対象に含める根拠を実測で固定する（推測しない）。
-
-        `dataclasses.replace` が `__post_init__` を再実行しないのであれば `replace` は
-        契約検査の到達手段ではなく、B2 の対象から外すべきである。実際は再実行する。
-        """
-        import dataclasses as _dc
-
-        from simulator.domain.bar import Bar
-        from simulator.domain.exceptions import ConfigError
-
-        # Arrange: 契約を満たす Bar
-        bar = Bar(time=1_700_000_000, open=1.0, high=1.5, low=0.8, close=1.2,
-                  volume=1.0, spread=1)
-        # Act / Assert: 契約違反の time へ replace すると構築時と同じ ConfigError が出る
-        with pytest.raises(ConfigError):
-            _dc.replace(bar, time="2024-01-01")
+    def test_a_typing_qualified_type_checking_guard_is_also_excluded(self, tmp_path):
+        """`if typing.TYPE_CHECKING:`（属性形式）も除外する。"""
+        gate = TestTheOutputStageCannotRaiseConfigError()
+        module = tmp_path / "guarded_attr.py"
+        module.write_text(
+            "import typing\n"
+            "if typing.TYPE_CHECKING:\n"
+            "    from simulator.domain.bar import Bar\n",
+            encoding="utf-8",
+        )
+        assert gate._project_imports(module) == set()
 
     def test_the_private_attribute_probe_detects_the_violation(self):
         assert "_interactor" in _accessed_attributes(

@@ -152,6 +152,24 @@ class TestBarTimeContract:
         with pytest.raises(OHLCInvalidError):
             Bar(time=_t(), open=1.0, high=0.5, low=0.8, close=0.9, volume=1.0, spread=1)
 
+    def test_dataclasses_replace_re_checks_the_time_contract(self):
+        """`dataclasses.replace` による再構築でも契約検査が効く。
+
+        `Bar` は frozen dataclass であり、フィールドの差し替えは `replace` で行う
+        （`simulator/adapter/strategy/sizing_decorator.py` が `Order` で採る手法）。
+        `replace` は `__post_init__` を**再実行する**ため、構築時と同じ契約が掛かる。
+        ここを固定しないと「構築は塞いだが差し替えで契約外の time を入れられる」穴が残る。
+        """
+        import dataclasses
+
+        # Arrange: 契約を満たす Bar
+        bar = _bar(1_700_000_000)
+        # Act / Assert: 契約違反の time へ replace すると構築時と同じ ConfigError
+        with pytest.raises(ConfigError):
+            dataclasses.replace(bar, time="2024-01-01")
+        # Assert: 契約内の time なら replace は成功する（過剰拒否でない）
+        assert dataclasses.replace(bar, time=1_700_000_001).time == 1_700_000_001
+
     def test_accepted_set_is_not_enumerated_a_second_time_in_bar(self):
         """受理集合の定義は `bar_time` が唯一持つ（`bar.py` は述語を呼ぶだけ）。
 
