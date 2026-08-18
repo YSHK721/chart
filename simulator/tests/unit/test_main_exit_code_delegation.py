@@ -284,13 +284,20 @@ class TestTheOutputStageCannotRaiseConfigError:
         import が「出力段が実行時に到達するコード」として扱われ、閉包が過大になる
         （ISSUE-411: `usecase/ports.py` の型注釈専用 import が `domain/*` 5 件を
         引き込み、閉包が 3 → 8 モジュールへ膨れていた）。
+
+        除外するのは **`body`（真側）のみ**。`else:` 節（`orelse`）は `TYPE_CHECKING`
+        が実行時 ``False`` であるため**必ず実行される**——`ast.walk(if_node)` で
+        If ノード全体を除外すると `else:` 側の実行時 import まで閉包から落ち、
+        ゲートが無音で通る（再レビュー 🟡-新-1 の実測: `else:` 節へ実行時 import を
+        注入した変異が素通りした）。
         """
         tree = _tree(path)
         guarded = {
             id(sub)
             for node in ast.walk(tree)
             if self._is_type_checking_guard(node)
-            for sub in ast.walk(node)
+            for stmt in node.body
+            for sub in ast.walk(stmt)
         }
         modules: set[str] = set()
         for node in ast.walk(tree):
@@ -351,6 +358,27 @@ class TestTheOutputStageCannotRaiseConfigError:
         closure = self._closure()
         assert set(self._PRESENTER_SEEDS) <= closure
         assert _SIMULATOR_DIR / "usecase" / "ports.py" in closure
+
+    def test_an_else_branch_of_a_type_checking_guard_stays_in_the_closure(self, tmp_path):
+        """`if TYPE_CHECKING: ... else: <実行時 import>` の else 側は閉包に**残る**。
+
+        `TYPE_CHECKING` は実行時 False なので `else:` 節は必ず実行される。除外集合が
+        If ノード全体（`ast.walk(if_node)`）だと else 側の実行時 import まで落ち、
+        ゲートが無音化する（再レビュー 🟡-新-1 で変異が素通りした実測あり）。
+        本検定はその再発を固定する。
+        """
+        probe = tmp_path / "probe.py"
+        probe.write_text(
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from simulator.domain.bar import Bar\n"
+            "else:\n"
+            "    from simulator.usecase.run_backtest import RunBacktestRequest\n",
+            encoding="utf-8",
+        )
+        imports = self._project_imports(probe)
+        assert "simulator.usecase.run_backtest" in imports  # else 側＝実行時に走る
+        assert "simulator.domain.bar" not in imports  # body 側＝型検査専用
 
     def test_no_module_redefines_setattr(self):
         # `setattr(result, ...)` が ConfigError を出す経路を塞ぐ。
