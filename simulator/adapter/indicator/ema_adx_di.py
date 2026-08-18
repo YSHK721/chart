@@ -106,16 +106,29 @@ def compute_adx_with_di(
     lc = np.abs(lo[1:] - c[:-1])
     tr[1:] = np.maximum(np.maximum(hl, hc), lc)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        sdi_plus = np.where(tr > 0.0, 100.0 * pdm / tr, 0.0)
-        sdi_minus = np.where(tr > 0.0, 100.0 * mdm / tr, 0.0)
+    # ISSUE-399: np.where は分岐の前に両辺を評価するため、TR=0 の要素で 0/0 を実行する。
+    # warmup（i=0）は前足が無く TR[0]=0 が入力によらず常に成立するので、これは例外系では
+    # なく全呼び出しで毎回踏む。np.divide(..., where=) は除算そのものを条件付きにする
+    # （TR=0 の要素は out の 0.0 がそのまま残り、旧 np.where の fallback と同値）。
+    # 被除数は旧式と同じく先に 100.0 を掛けた値であり、演算順序が同一のため値は bit 不変。
+    sdi_plus = np.divide(
+        100.0 * pdm, tr, out=np.zeros(n, dtype=np.float64), where=tr > 0.0
+    )
+    sdi_minus = np.divide(
+        100.0 * mdm, tr, out=np.zeros(n, dtype=np.float64), where=tr > 0.0
+    )
 
     pdi = _ema(sdi_plus, period)
     mdi = _ema(sdi_minus, period)
 
+    # ISSUE-399: 同上。SDI[0]=0 から +DI[0]=−DI[0]=0、すなわち denom[0]=0 も常に成立する。
     denom = pdi + mdi
-    with np.errstate(divide="ignore", invalid="ignore"):
-        dx = np.where(denom != 0.0, 100.0 * np.abs(pdi - mdi) / denom, 0.0)
+    dx = np.divide(
+        100.0 * np.abs(pdi - mdi),
+        denom,
+        out=np.zeros(n, dtype=np.float64),
+        where=denom != 0.0,
+    )
     adx = _ema(dx, period)
 
     return (
