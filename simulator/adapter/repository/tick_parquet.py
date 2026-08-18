@@ -29,12 +29,17 @@ import pandas as pd
 from datawindow.half_open import HalfOpenEpochWindow
 from simulator.adapter.repository._tick_frame import (
     TICK_COLUMNS,
+    timestamp_epoch_seconds,
     validate_tick_columns,
     with_partition_columns,
 )
 from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import DataError, TimeOrderError
 from simulator.usecase.ports import TickDataPort, TickStorePort
+
+# 公開面の宣言（ISSUE-406 レビュー 🔵-1: `timestamp_epoch_seconds` は本モジュールが
+# tick store の時刻規則の公開到達点として**意図して**再輸出する。import の副作用ではない）。
+__all__ = ["ParquetTickRepository", "TickWriteResult", "timestamp_epoch_seconds"]
 
 # 大容量 CSV をチャンク読みするときの 1 チャンクの行数（メモリ有界化）。
 _CSV_CHUNK_ROWS = 500_000
@@ -107,13 +112,9 @@ class ParquetTickRepository(TickDataPort, TickStorePort):
 
         保存 timestamp の解釈:
             保存列は naive UTC が契約（`tools/ingest_ticks.to_canonical_ticks` が tz を
-            剥がす）。比較前に ``to_datetime(..., utc=True)`` → ``tz_localize(None)`` →
-            ``astype("datetime64[s]")`` で epoch 秒へ落とす。naive を UTC とみなす点は
-            窓境界の規則と同一であり、保存列が tz-aware であっても同じ UTC epoch に
-            なる（実測: aware 列に ``astype("datetime64[s]")`` を直接当てると pandas が
-            ``TypeError`` を出す。tz の有無で結果が変わる式は使わない）。dtype の解像度
-            （us / ns）にも依存しない＝``astype("int64") // 1_000_000_000`` のような
-            ns 前提の式は使わない。
+            剥がす）。比較前の epoch 秒化は共有実体 `_tick_frame.timestamp_epoch_seconds`
+            に委ねる（naive=UTC・秒へ floor・dtype 解像度非依存。規則の逐語はそちらが
+            唯一の記述＝ここへ再掲するとドリフト源になる。ISSUE-406）。
 
         粒度についての実測と限界（推測しない）:
             窓境界が**整数秒**である限り、本実装の判定は是正前の pandas 直接比較と
@@ -190,12 +191,9 @@ class ParquetTickRepository(TickDataPort, TickStorePort):
             #   是正後（map(contains)）   0.281 / 0.288 s   差 +0.17 s
             # load_ticks は 1 run につき 1 回であり、後続の 952k tick 走査に対して
             # 支配的でない。返り値の frame は 952k 行で是正前と完全一致（実測）。
-            ts_epoch = (
-                pd.to_datetime(df["timestamp"], utc=True)  # naive は UTC とみなす（共有規則）
-                .dt.tz_localize(None)
-                .astype("datetime64[s]")  # 秒へ floor（dtype 解像度 us/ns に依存しない）
-                .astype("int64")
-            )
+            # timestamp → epoch 秒は共有実体 `timestamp_epoch_seconds` に委ねる
+            # （ISSUE-406: CLI 側の手書き複製が ns 前提で 10^6 倍ずれた。実体は 1 つ）。
+            ts_epoch = timestamp_epoch_seconds(df["timestamp"])
             df = df.loc[ts_epoch.map(window.contains)].reset_index(drop=True)
         except DataError:
             raise

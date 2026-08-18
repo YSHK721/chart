@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import time
+
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -108,15 +109,11 @@ def written_repo(tmp_path):
 
 def _loaded_epochs(repo: ParquetTickRepository, window) -> "list[int]":
     frame = repo.load_ticks("JP225", window[0], window[1])
-    # 解像度・tz 非依存の epoch 秒化（保存 dtype は datetime64[us] / [ns] / tz-aware の
-    # いずれもありうる。`astype("int64") // 1e9` は ns 前提の誤変換になるため使わない）。
-    ts = (
-        pd.to_datetime(frame["timestamp"], utc=True)
-        .dt.tz_localize(None)
-        .astype("datetime64[s]")
-        .astype("int64")
-    )
-    return [int(v) for v in ts.tolist()]
+    # epoch 秒化は共有実体に委ねる（規則を書き直せば ISSUE-406 と同じ複製になる）。
+    # 判定の独立性は期待値定数 `_EXPECTED_EPOCHS` が担保する。
+    from simulator.adapter.repository._tick_frame import timestamp_epoch_seconds
+
+    return [int(v) for v in timestamp_epoch_seconds(frame["timestamp"]).tolist()]
 
 
 class _FixedBarsPort(MarketDataPort):
@@ -142,20 +139,8 @@ def _epoch_of(naive_utc: datetime) -> int:
     return int(naive_utc.replace(tzinfo=timezone.utc).timestamp())
 
 
-@pytest.fixture()
-def tokyo_local_timezone():
-    """プロセスのローカル TZ を Asia/Tokyo に固定する（UTC との差 +9h）。"""
-    saved = os.environ.get("TZ")
-    os.environ["TZ"] = "Asia/Tokyo"
-    time.tzset()
-    try:
-        yield
-    finally:
-        if saved is None:
-            os.environ.pop("TZ", None)
-        else:
-            os.environ["TZ"] = saved
-        time.tzset()
+# `tokyo_local_timezone` fixture は unit/conftest.py の共有定義を使う
+# （setenv のみの手書き再現は tzset 漏れで無力化する。単一ソース化）。
 
 
 class TestTickStageAcceptsTheSameTimeRepresentations:
