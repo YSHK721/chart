@@ -234,6 +234,28 @@ class TestTheGateHasDetectionPower:
         ]
         assert outside_the_engine_slice != []
 
+    def test_no_python_directory_named_as_an_inner_layer_is_silently_skipped(self):
+        """走査規則（`__init__.py` を持つこと）が Python 実体のある層を落としていないこと。
+
+        `__init__.py` を持たない名前空間パッケージで層を作ると、走査から静かに外れて
+        ISSUE-405 と同じ「射程の穴」が再発する。外れてよいのは Python ファイルを 1 つも
+        持たないディレクトリ（`web/js/adapter` 等）だけである。
+        """
+        scanned = set(_inner_layer_dirs())
+        skipped_but_has_python = [
+            str(path.relative_to(_SIMULATOR_DIR.parent))
+            for path in _SIMULATOR_DIR.rglob("*")
+            if path.is_dir()
+            and path.name in _INNER_LAYER_NAMES
+            and "__pycache__" not in path.parts
+            and path not in scanned
+            and any("__pycache__" not in py.parts for py in path.rglob("*.py"))
+        ]
+        assert skipped_but_has_python == [], (
+            "内側層の名前を持ち Python 実体もあるのに走査されていない: "
+            + "; ".join(skipped_but_has_python)
+        )
+
     def test_the_slice_that_escaped_issue_405_is_scanned(self):
         # 回帰の錨: 実際に越境していた `sim_ui/adapter` が走査対象に入っていること。
         assert _SIMULATOR_DIR / "sim_ui" / "adapter" in _inner_layer_dirs()
