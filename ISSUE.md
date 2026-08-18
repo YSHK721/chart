@@ -7778,3 +7778,122 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   新表と突合する検定を追加（値を書き写さない）。3 は `exit_codes.py` へ定数を移して双方が import。
   4 は理由文を実装へ合わせ、注入集合と `_EA_FACTORIES` の関係を検定で固定。5 は実証状態の単一ソースを
   `enums.ExecutionDelay` 側に置き、`0` は TBD-08 を理由に `approximate=True` とする。
+
+## ISSUE-396: [設計] `.ini` 起点の実行は通るが、MT5 突合データセットの正解（stop out して完走）を再現できない（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（要判断。A-1〜A-7 の承認範囲外の新規論点）
+- **重大度**: Medium（`.ini` 起点の本番エントリポイントを作る段で、MT5 と同じ結果を出せない）
+- **事実（すべて実測 2026-08-18）**:
+  1. `.ini` → `run_from_settings` の経路自体は成立する。合成 `.ini`（`Model=1` / `Symbol=JP225` /
+     `Period=M1` / `[TesterInputs]` 空）＋ `SymbolSpecCatalog` の JP225 プロファイル ＋ EA 引数注入で
+     **exit_code=0・trades=3315・profit=-18908.2・profit_trades=813・loss_trades=2502**、
+     `metadata.tick_model='ohlc_expand'` / `approximate=False` / `inert_fields=()`。
+  2. **既定の stop-out はエンジン例外になり exit_code=1 を返す**（`margin_level が stop_out_level を
+     下回りました`）。MT5 突合 fixture（`ma_slope_jp225_202501`）は `stop_out: true` を正解としており、
+     これを「結果」として受け取るには `config_overrides` に `stop_out_action="close_and_halt"` が要る。
+     現行 `SymbolSpecCatalog` の JP225 プロファイルは `entry_price_basis` のみを供給し
+     `stop_out_action` を持たない。
+  3. `MA_Slope_EA` は `stop_loss_points` / `take_profit_points` > 0 を `ConfigError` で拒否する
+     （ISSUE-098 を参照する明示メッセージ）。必須キーの権威は `build_interactor` のシグネチャだが、
+     **値の許容域は EA ファクトリ側が別に持つ**。Settings 経路で必須 5 キーを供給する設計では、
+     EA ごとに「0 でなければならない引数」が存在することになる。
+- **影響**: `.ini` 起点の本番エントリポイント（CLI / UI）を作る段で、(a) データセットが
+  `stop_out_action` を供給しないと MT5 の正解と食い違う、(b) EA ごとの値許容域を Settings 層が
+  知らないため、投入時ではなく実行時に `ConfigError` になる。
+- **対策案（抜本・いずれも要判断）**:
+  1. `stop_out_action` の権威をデータセット（`SymbolSpecCatalog`）に持たせる。ただし既存の
+     sim ジョブ経路の結果が変わり得るため、MT5 突合ゲートでの再確認が前提。
+  2. EA ごとの値許容域を `_EA_FACTORIES` の登録情報として宣言し、Settings 層が投入時に検証できる
+     ようにする（現在は EA ファクトリ内の実行時検査のみ）。
+- **関連**: A-1（レジストリ拡張）・A-2（決済通貨の権威化）と同じ「データセット/EA の権威情報を
+  どこが持つか」という論点に属する。
+
+## ISSUE-397: [設計] A-1（math のレジストリ統合）は `data_path` 任意化だけでは目的に到達しない（inert 規則と必須キー契約の衝突）（2026-08-18・裁定済み）
+
+- **ステータス**: 裁定済み（実装は A-3 完了後。下記「裁定」に従う）
+- **重大度**: High（承認済み A-1 をそのまま実装すると「実装したのに UI から math を投入できない」で必ず手戻りする）
+- **事実（すべて実測 2026-08-18）**:
+  1. `tick_model` が `MATH_CALCULATIONS` のとき `EffectiveSettings` は inert 11 フィールド
+     （`symbol` / `timeframe` / `date_range` / `deposit` / `leverage` ほか）を `None` 化する（規則 A）。
+  2. `to_interactor_kwargs` は必ず `resolve_data_window(effective)` を呼ぶが、
+     `date_range is None` のとき `SettingsKeyMissingError` を送出する（`window.py:168-171` 実測）。
+  3. 窓を回避しても `symbol` / `period` / `initial_deposit` は `build_interactor` の必須キー
+     （既定なし）であり、settings 値が `None` のままでは事後条件検査が E-08 で落ちる。
+  4. したがって A-1 の「`data_path` 任意化」だけでは math を `build_interactor` 経由にできない。
+- **裁定（設計判断）**: **inert は「`.ini` の値を参照しない」であって「エンジンに値が無い」ではない**。
+  エンジン識別子（`symbol` / `period` / `data_path`）と `initial_deposit` は、math 経路では
+  **`EngineBinding` が権威**とする（binding は元々「Settings 層が持たない実行資源の注入束」であり、
+  現行の追加専用経路 `run_math_calculations` も既に `binding.symbol_spec` と `INERT_DEPOSIT=0.0` を
+  使っている＝同一の意味論）。実装は分岐（if math）ではなく規則として表現する:
+  「inert なフィールドに対応する引数は binding の値を採る」「窓は inert のとき空窓を返す
+  （例外にしない）」。これにより `to_interactor_kwargs` に math 専用分岐を作らない（OCP）。
+- **A-1 の DoD に追加すべき事項（アーキテクチャ評価の指摘）**:
+  1. `run_math_calculations` の追加専用経路と `build_interactor` 経由の経路が**二重化しないこと**
+     （A-1 成立時は一本化する。`math_calculations.py` の存在理由「レジストリへ 5 件目を追加しない」は
+     承認により反転した）。
+  2. 影響ファイルは承認時の 3 件では足りない。実測で追加が必要: `usecase/tester_settings/enums.py`
+     （`TICK_MODEL_ENGINE_IDS` に math の id が必要）・`main/tester_settings/window.py`・
+     `main/tester_settings/kwargs_mapper.py`・`tests/unit/test_tester_settings_contract_gate.py`・
+     `main/__init__.py:667`（`meta["data_path"]` の直参照は `data_path` 省略時に `KeyError` で落ちる）。
+  3. 既存テストの id 集合・順序アサーションは「5 値に書き換える」のではなく、
+     **増減に追随する形**へ改める（先頭 4 値の順序不変＋既知 4 値が部分集合＋各 id の分岐先不変）。
+
+## ISSUE-398: [設計] `BacktestController.run()` がデータロードと実行を 1 メソッドに束ねている（SRP 違反・A-5 の真因）（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（要承認。A-5 では `run()` 無改変を制約としたため未是正）
+- **重大度**: Medium（呼出側が「検証済みの request をそのまま実行する」ことを選べず、
+  黙って `trading_start` が落ちる経路を生む）
+- **事実（実測 2026-08-18）**:
+  1. `adapter/controller.py` の `run()` は `market_data.load` を実行し `RunBacktestRequest` を
+     自前で組み直してから interactor へ委譲する。`trading_start` は渡さない（既定 `None` になる）。
+  2. そのため「`build_interactor` が返した request を検証し、その同一 request を実行したい」
+     呼出側（TESTER_SETTINGS の `run_from_settings`）は `run()` を使えず、interactor へ直接到達する
+     必要があった。A-5 で公開プロパティ `BacktestController.interactor` を追加してカプセル化の
+     破れは解消したが、**責務の二重化そのものは残っている**。
+  3. `main/__init__.py:669` にも同型の非公開属性到達（`controller._interactor`）が残存
+     （A-5 の作業範囲外としたため未是正。公開取得点は既に存在するので 1 行の置換で済む）。
+- **抜本的解決（要承認）**: `run()` を「データロード」と「実行」に分離し、呼出側が
+  「組み立て済み request の実行」を選べるようにする。既存の `run()` シグネチャは維持したまま
+  内部を 2 段に割り、実行段を公開する形が最小。
+- **通過条件**: 既存の controller 検定が無改変で通ること。MT5 突合ゲート全通過。
+
+## ISSUE-399: [設計] `ema_adx_di` の除算が `np.errstate` による症状抑制で書かれている（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（要承認。A-7 と同型だが状況が異なるため別件）
+- **重大度**: Low（現状は警告 0 件＝実害は観測されていない）
+- **事実（実測 2026-08-18）**: `simulator/adapter/indicator/ema_adx_di.py:110/111/118` に `np.where` 内除算が
+  3 箇所ある。ただし `np.errstate(divide="ignore", invalid="ignore")` で囲まれており、
+  フラット価格系列で実測しても警告は 0 件。すなわち「除算は実行されるが**警告を抑制している**」状態。
+- **A-7 との違い**: A-7（`metrics_spec`）は警告が実際に出ていた（原因が露出していた）。本件は
+  抑制されているため露出しない。挙動としてのバグではないが、`np.divide(..., where=)` へ置換すれば
+  `errstate` による抑制自体が不要になる（症状の抑制を消して原因を除去する形に揃う）。
+- **通過条件**: 指標値が bit 一致であること（既存の指標検定・MT5 突合ゲート）。
+
+## ISSUE-400: [不具合] 取得窓が bars を 0 本に絞ると `_bar_period` が `IndexError` で落ちる（N-15 の Fail-Stop に到達しない）（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（A-3 の作業中に検出。**A-3 が新設した欠陥ではなく先在**であることを実測確認済み）
+- **重大度**: Medium（明示的な Fail-Stop（N-15）ではなく、翻訳されない `IndexError` で落ちるため
+  原因が呼出側に伝わらない）
+- **事実（実測 2026-08-18）**:
+  1. 取得窓が bars を 0 本に絞り、かつ `tick_model=real_ticks` で `tick_start`/`tick_end` が
+     未指定のとき、`main/__init__.py` の `_bar_period` が `IndexError: list index out of range` を
+     送出する。`UnsupportedSettingError`（N-15）による明示拒否に到達しない。
+  2. **先在の確認**: A-3 以前から存在する comma 委譲経路でも、同じ入力で同一の `IndexError` が
+     再現する。A-3（窓を全 Repository へ効かせる）は本欠陥の**到達範囲を広げるだけ**である。
+- **抜本的解決**: `_bar_period` が空列に対して「期間を決められない」ことを型・例外で表明し、
+  呼出側が `BacktestError` 系（翻訳される例外）へ載せる。あるいは窓適用後に bars が 0 本である
+  こと自体を先行して Fail-Stop する（N-15 の判定を `build_interactor` 内へ前倒しする案）。
+  いずれも `main/__init__.py` の改変を伴う。
+
+## ISSUE-401: [設計] 半開区間の述語が 2 箇所に存在する（Candle 段と Bar 段）（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（A-3 の範囲外として申し送り）
+- **重大度**: Low（現状は両者の解釈が一致していることを実測で確認済み）
+- **事実**: 窓 `[start, end)` の判定述語は `marketdata/csv_source.py`（Candle 段でフィルタ）と
+  `adapter/repository/windowed_market_data.py`（Bar 段でフィルタ・A-3 で新設）の 2 箇所にある。
+  epoch 正規化については A-3 で `simulator/domain/bar_time.py` へ単一ソース化済み（両者が同一
+  オブジェクトを読むことをテストで固定）だが、**述語そのもの**は統合されていない。
+- **統合を見送った理由**: `MarketDataSourceRepository` の committed 契約（窓は構築時パラメータ＝
+  ISSUE-135 の裁定）の変更と、comma 経路の byte 等価性への影響を伴うため。
+- **抜本的解決（要判断）**: 述語を domain（`bar_time` と同じ場所）へ移し、両段が同一関数を読む。
+  comma 経路の byte 等価を通過条件とする。

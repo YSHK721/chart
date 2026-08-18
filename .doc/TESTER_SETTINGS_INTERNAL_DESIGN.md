@@ -23,7 +23,7 @@
 | 項目 | 内容 |
 |---|---|
 | 文書名 | MT5 ストラテジーテスター Settings タブ Python 移植 内部設計書 |
-| 版 | v1.0.4 |
+| 版 | v1.0.5 |
 | 作成日 | 2026-08-17（v1.0.1 / v1.0.2 / v1.0.3 改訂 2026-08-17） |
 | 上位文書 | `TESTER_SETTINGS_BASIC_DESIGN.md` v1.1.1 |
 | 設計レベル | 内部設計（モジュール詳細設計・物理データモデル・API 仕様・テスト設計） |
@@ -40,11 +40,11 @@
 | D-03 | `Timeframe` の `.ini` ラベル完全表は**暫定表**として定義し、各行に実証状態を注記。照合手順を §11.2 に明記 | §4.2.2 | 暫定（TBD-10・TBD-11。外部照合が必要） |
 | D-04 | 例外メッセージ 8 種のテンプレートと `context` キー語彙 18 語を固定（全キー snake_case・JSON 直列化可能値のみ） | §4.5 | 確定 |
 | D-05 | 19 規則（A〜S）の割付を確定: pydantic field 制約 6 件 / `model_validator` 7 件 / `extra="forbid"` 1 件 / 字句層 3 件 / 実行要求時の手続き検証 2 件。翻訳は「エラー型→例外」表＋優先順位で決定論化 | §4.3 | 確定 |
-| D-06 | 主案は「`sample/` 存在時のみ実行する条件付きスキップ」＋「合成 `.ini` 12 件による常時実行の往復テスト」の併用。corpus バイナリのコミットは採用しない（未承認） | §9.3 | 確定 |
+| D-06 | **A-4 承認により方針変更（v1.0.5）**: corpus 44 件を `simulator/tests/fixtures/tester_ini/` へバイト列複製し**追跡対象**とする。フィクスチャが既定の入力源となり、T-01・T-05・T-07・T-09 は corpus 不在環境でも**全件実行**される（実測: 変更前 0 passed / 26 skipped → 変更後 803 passed / 2 skipped）。`sample/` は「原典との SHA-256 一致検証」専用（44/44 一致を実測）。合成 12 件の往復テストは併存 | §9.3 | 確定 |
 | D-07 | ロガー 1 本（`simulator.tester_settings`）・ハンドラ非設定・例外送出は境界関数で 1 回だけ `ERROR` 記録 | §7.4 | 確定 |
 | D-08 | 4 層を simulator 既存レイヤへ割付: 列挙・DTO＝`usecase/tester_settings/`、字句層＝`adapter/tester_settings/`、検証層＝`framework/tester_settings/`、変換層＋実行 facade＝`main/tester_settings/`、例外＝`domain/tester_settings_exceptions.py`。既存ファイル改変 0 | §3 | 確定 |
 | D-09 | 分岐位置は**変換層（`main/tester_settings`）の実行要求時点**。`build_interactor` へ入らず、既存 `RunBacktestInteractor` に `bars=[]`＋Null 三点セットを与える追加専用経路。`TICK_MODEL_REGISTRY` は改変しない（改変案は既存テスト 2 件の改変を伴うため要承認） | §8.2 | 確定（採用案は追加のみ。代替案は要承認事項 A-1） |
-| D-10 | 決済通貨は**変換層の必須注入引数** `settlement_currency` とする。内部に暫定既定値を持たない。供給元（`SymbolSpecCatalog` への通貨フィールド追加）は要承認事項 A-2 | §8.3 | 確定（供給元は要承認） |
+| D-10 | 決済通貨は**変換層の必須注入引数** `settlement_currency` とする。内部に暫定既定値を持たない。供給元は **A-2 承認により恒久化済み**（`RunProfile.settlement_currency`＝既定値なしの必須フィールド、`SymbolSpecCatalog` が `"JPY"` を権威供給）。値の出典は golden fixture 4 点で実測確認（`case.yaml` の `currency`・`report.json` の `settings.currency` と `derived.note`「1 JPY per price unit」＝損益の建て通貨・`tester.log`）。v1.0.5 で「未検証」記述を解消 | §8.3 | **確定（供給元も確定）** |
 | D-11 | 期間窓は「機構の予測」ではなく「**適用結果の事後検証**」で担保する。`marketdata_window` は UTC aware datetime の半開区間で渡し、`build_interactor` 生成後に `request.bars` の実時刻範囲を検証。窓が効かない経路は `UnsupportedSettingError`（新 N-15） | §8.4 | 確定 |
 
 ---
@@ -140,7 +140,7 @@ simulator/
         ├── kwargs_mapper.py                # EffectiveSettings → build_interactor kwargs
         ├── window.py                       # 期間写像と適用結果の事後検証（D-11）
         ├── unsupported.py                  # 非対象判定 N-01〜N-16 の宣言表（v1.0.3 追加）
-        ├── exit_codes.py                   # 終了コードの翻訳（v1.0.3 追加）
+        ├── exit_codes.py                   # 終了コードの**再輸出のみ**（宣言は adapter/exit_codes.py・v1.0.5 訂正）
         ├── math_calculations.py            # MATH_CALCULATIONS 実行経路（D-09）
         └── run_from_settings.py            # 実行 facade（結線のみ。判定・翻訳は上記へ委譲）
 ```
@@ -1132,12 +1132,12 @@ G-1 は宣言でなく実行で確認する（「制約は機械的検査で担�
 | # | 内容 | 影響ファイル | 得られる効果 | リスク |
 |---|---|---|---|---|
 | A-1 | `TICK_MODEL_REGISTRY` へ `math_calculations` を追加し、`build_interactor` に `data_path` 任意化の分岐を設ける | `adapter/execution/tick_model_registry.py`・`main/__init__.py`・`tests/unit/test_tick_model_registry.py`（2 アサーション） | UI 経路での math_calculations 投入・config 語彙の一致（L-1・L-5 解消） | 全モードが通る `build_interactor` に分岐を足すため、MT5 突合ゲート全通過の再確認が必須 |
-| A-2 | `RunProfile` / `SymbolSpecCatalog` に決済通貨フィールドを追加 | `sim_ui/usecase/run_options_ports.py`・`sim_ui/adapter/symbol_spec_catalog.py` | N-11 の判定データ源を単一ソース化（D-10 の恒久化） | `RunProfile.to_dict()` の応答が 1 キー増える（UI 側への影響確認が必要） |
+| A-2 | `RunProfile` / `SymbolSpecCatalog` に決済通貨フィールドを追加 | `sim_ui/usecase/run_options_ports.py`・`sim_ui/adapter/symbol_spec_catalog.py` | N-11 の判定データ源を単一ソース化（D-10 の恒久化） | `RunProfile.to_dict()` の応答が 1 キー増える（UI 側への影響確認が必要） | **／ **実施済み（v1.0.5）**: `RunProfile.settlement_currency`（既定値なし）＋カタログが `"JPY"` を権威供給。出典は golden fixture 4 点で実測。投入 body は 18 キー byte 等価のまま。**
 | A-3 | `build_interactor` に全 Repository 共通の取得窓引数（または `market_data` 注入点）を追加 | `main/__init__.py` | MT5 ローダ EA での期間指定実行（L-2 解消） | 同上（bit-exact ゲート再確認） |
-| A-4 | corpus 44 件を `tests/fixtures/` へ複製しコミット | 新規バイナリ 44 件 | CI での 44 件往復回帰 | UTF-16 バイナリのコミット可否（ISSUE-385）。`sample/` は Git 追跡外 |
-| A-5 | `BacktestController` に interactor の公開取得点を設ける | `adapter/controller.py` | `run_from_settings` が非公開属性 `controller._interactor` へ到達している状態を解消（現状は既存 `main/__init__.py` も同じ属性へ到達しており既存慣行の踏襲＝ISSUE-395） | 既存の入口アダプタの公開面が増える |
-| A-6 | 終了コード翻訳を `main/tester_settings/exit_codes` へ委譲させる | `adapter/controller.py`・`main/__init__.py` | 翻訳表が 3 箇所に分散した状態の物理的統合（現状は突合テストで一致を固定・ISSUE-395） | 既存 2 箇所の挙動不変の再確認が必要 |
-| A-7 | `metrics_spec.py` の除算を `np.divide(..., out=..., where=peak != 0)` へ | `usecase/metrics_spec.py` | `math_calculations` の正常系で毎回出る `RuntimeWarning` の根本除去。真因は空カーブではなく `INERT_DEPOSIT = 0.0`（`peak=[0.0]` で `0/0` を踏む）＝実測・ISSUE-395。出力値は正しく NaN は流出しない | 既存の統計計算に触れるため MT5 突合ゲート再確認が必要 |
+| A-4 | corpus 44 件を `tests/fixtures/` へ複製しコミット | 新規バイナリ 44 件 | CI での 44 件往復回帰 | UTF-16 バイナリのコミット可否（ISSUE-385）。`sample/` は Git 追跡外 | **／ **実施済み（v1.0.5）**: `simulator/tests/fixtures/tester_ini/` へ 44 件を SHA-256 一致で複製し追跡。corpus 不在環境の regression が 0 passed/26 skipped → 803 passed/2 skipped（CI の空洞を閉塞）。`.gitattributes` で `*.ini binary` を固定し改行正規化による破壊を遮断。**
+| A-5 | `BacktestController` に interactor の公開取得点を設ける | `adapter/controller.py` | `run_from_settings` が非公開属性 `controller._interactor` へ到達している状態を解消（現状は既存 `main/__init__.py` も同じ属性へ到達しており既存慣行の踏襲＝ISSUE-395） | 既存の入口アダプタの公開面が増える | **／ **実施済み（v1.0.5）**: `BacktestController.interactor`（read-only プロパティ）を追加し `run_from_settings` を切替。`run()` の差分は +13/-0 行で挙動不変。⚠️ 真因は `run()` の責務二重化であり未解消＝ISSUE-398。**
+| A-6 | 終了コード翻訳を**`simulator/adapter/exit_codes.py`**（v1.0.5 で置き場所を訂正。`adapter` は「domain 例外を外側の応答形式へ翻訳する」層であり、`main` へ置くと `adapter → main` の層違反になる＝内側→main の import は実測 0 件）へ単一化 | `adapter/controller.py`・`main/__init__.py` | 翻訳表が 3 箇所に分散した状態の物理的統合（現状は突合テストで一致を固定・ISSUE-395） | 既存 2 箇所の挙動不変の再確認が必要 |
+| A-7 | `metrics_spec.py` の除算を `np.divide(..., out=..., where=peak != 0)` へ | `usecase/metrics_spec.py` | `math_calculations` の正常系で毎回出る `RuntimeWarning` の根本除去。真因は空カーブではなく `INERT_DEPOSIT = 0.0`（`peak=[0.0]` で `0/0` を踏む）＝実測・ISSUE-395。出力値は正しく NaN は流出しない | 既存の統計計算に触れるため MT5 突合ゲート再確認が必要 | **／ **実施済み（v1.0.5）**: `np.divide(..., out=, where=)` で除算自体を条件付き化。golden の `BacktestStats` 全 40 フィールドが IEEE754 bit 一致、乱数 20,000 ケースで不一致 0、警告 5 件 → 0 件。**
 
 ---
 
