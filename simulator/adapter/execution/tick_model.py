@@ -4,11 +4,20 @@ ticks_of(bar, prev_close) -> Iterable[Tick]   # Tick = (price, bid, ask, time)
 
     OhlcExpandTickModel: 1 バーを O→H→L→C の 4 疑似ティックへ展開（決定論・§7-#5）。
     OpenOnlyTickModel  : 始値のみ（1 ティック）。
-    EveryTickModel     : 実ティック列。OHLC のみの入力では O→H→L→C 近似へフォール
-                         バック（実ティック供給は将来の Dukascopy gateway＝範囲外）。
+    EveryTickModel     : OHLC のみの入力での O→H→L→C 近似（実ティックは供給しない）。
+    RealTickModel      : tick-store の実ティック frame をバー区間へ切り出す。供給元は
+                         `tools/fetch_ticks_dukascopy.py`（段1 raw）→ `tools/ingest_ticks.py`
+                         （段2 canonical）→ `ParquetTickRepository`。
 
 最小骨格: spread=0 のとき bid=ask=price（実 spread は spread_model 接続時に拡張）。
 Tick は標準 tuple（フレームワーク型を漏らさない）。
+
+RealTickModel の区間算定は規則を自前で持たない（ISSUE-403 の是正）。`bar.time` の epoch
+換算は `simulator.domain.bar_time.epoch_seconds`、半開 [start, end) は
+`datawindow.half_open.HalfOpenEpochWindow`、足長秒は時間足台帳 `marketdata.tf_ledger` が
+唯一の実体である。frame 側の timestamp → epoch 秒は共有実体 `timestamp_epoch_seconds`
+（`adapter/repository/_tick_frame.py`）に委ね、構築時に 1 回だけ前計算する（`ticks_of` は
+1 run につきバー本数ぶん呼ばれるため、毎回の列変換は run 全体に効く）。
 """
 from __future__ import annotations
 
@@ -20,10 +29,10 @@ from simulator.domain.bar_time import epoch_seconds
 from simulator.usecase.ports import TickModelPort
 
 # M1（1 分足）の足長秒。値を持つのは時間足台帳 `marketdata.tf_ledger` **だけ**であり、ここは
-# 導出のみを行う（`simulator/main/__init__.py` も同じ台帳から導出する＝第 2 定義を作らない。
-# 手書きの写しが台帳へ追随せず事故になった前例が ISSUE-261 / ISSUE-253）。台帳が ``bar_sec`` を
-# 「境界計算に使わない」と断るのは名目値を持つ上位足（1W=7日 / 1M=30日）についてであり、
-# "1m" は再集計の原子＝定義上ちょうど 60 秒である。
+# 導出のみを行う（手書きの写しが台帳へ追随せず事故になった前例が ISSUE-261 / ISSUE-253。
+# 同じ理由で台帳から導出する先例が `simulator/usecase/contact_scan/bar_window.py`）。台帳が
+# ``bar_sec`` を「境界計算に使わない」と断るのは名目値を持つ上位足（1W=7日 / 1M=30日）に
+# ついてであり、"1m" は再集計の原子＝定義上ちょうど 60 秒である。
 _M1_SECONDS = TF_BAR_SEC["1m"]
 
 
@@ -118,7 +127,10 @@ class OpenOnlyTickModel(TickModelPort):
 
 
 class EveryTickModel(TickModelPort):
-    """実ティック列。OHLC のみの入力では O→H→L→C 近似へフォールバックする。"""
+    """every-tick を OHLC のみの入力で近似する（常に O→H→L→C へフォールバックする）。
+
+    本クラスは frame を持たないため実ティックは供給しない（それは `RealTickModel`）。
+    """
 
     def ticks_of(self, bar: Any, prev_close: float) -> Iterable[tuple]:
         return _ohlc_ticks(bar)

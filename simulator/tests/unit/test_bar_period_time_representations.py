@@ -28,6 +28,7 @@ _E = 1_704_067_200
 
 
 def _bar(time):
+    """`time` だけが判定に効くバー（OHLC/volume/spread は窓算定に無関係の定数）。"""
     return Bar(time=time, open=1.0, high=1.0, low=1.0, close=1.0, volume=1.0, spread=0)
 
 
@@ -53,8 +54,10 @@ class TestBarPeriodIsIndependentOfTimeRepresentation:
     def test_datetime64_bars_yield_the_same_window_as_epoch_int_bars(self):
         # Arrange: MT5 タブ形式ローダの実型（numpy.datetime64）と epoch int の同一 3 本。
         #   既存挙動（是正前は pd.Timestamp 窓）の保全を epoch 秒として固定する。
+        #   分は必ず 2 桁で書く（`0{i}` 形式は i>=10 で不正な ISO 文字列になる。同型の
+        #   取り違えを `test_ea_factory_registry.py` の合成 CSV で是正済み）。
         dt64_bars = [
-            _bar(np.datetime64(f"2024-01-01T00:0{i}:00")) for i in range(3)
+            _bar(np.datetime64(f"2024-01-01T00:{i:02d}:00")) for i in range(3)
         ]
         int_bars = [_bar(int(_E + 60 * i)) for i in range(3)]
         # Act

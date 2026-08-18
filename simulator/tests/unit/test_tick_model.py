@@ -5,8 +5,10 @@ TickModelPort.ticks_of(bar, prev_close) -> Iterable[Tick]   # Tick = (price, bid
 実装（CLEAN_ARCH §6.3）:
     - OhlcExpandTickModel: 1 バーを O→H→L→C の 4 疑似ティックへ展開（決定論）。
     - OpenOnlyTickModel  : 始値のみ（1 ティック）。
-    - EveryTickModel     : 実ティック列。OHLC のみの入力では O→H→L→C 近似へフォールバック
-      （実ティック未供給時の決定論的近似。Dukascopy 実ティック供給は範囲外＝将来）。
+    - EveryTickModel     : OHLC のみの入力での O→H→L→C 決定論的近似（実ティックは
+      供給しない。frame を持たないため常にフォールバックする）。
+    - RealTickModel      : tick-store の実ティック frame をバー区間 [bar.time, +足長) へ
+      切り出す（区間算定の時刻表現非依存は本ファイル末尾で固定・ISSUE-403）。
 
 最小骨格: spread=0 のとき bid=ask=price（実 spread は spread_model 接続時に拡張＝範囲外）。
 """

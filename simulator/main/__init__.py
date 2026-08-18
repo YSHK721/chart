@@ -106,14 +106,15 @@ def _make_session_calendar(session_calendar_key: str) -> Any:
 # tick_store_root を tmp_path に差し替えて小データで検証する（実データ非依存）。
 _DEFAULT_TICK_STORE_ROOT = "marketdata/ticks"
 
-# M1（1 分足）の足長秒。値を持つのは時間足台帳 `marketdata.tf_ledger` **だけ**であり、
-# ここは導出のみを行う（第 2 定義を作らない＝ISSUE-261 と同型の事故を避ける）。台帳が
+# M1（1 分足）の足長秒。値を持つのは時間足台帳 `marketdata.tf_ledger` **だけ**であり、ここは
+# 導出のみを行う（手書きの写しが台帳へ追随せず事故になった前例が ISSUE-261 / ISSUE-253。
+# 同じ理由で台帳から導出する先例が `simulator/usecase/contact_scan/bar_window.py`）。台帳が
 # ``bar_sec`` を「境界計算に使わない」と断るのは名目値を持つ上位足（1W=7日 / 1M=30日）に
 # ついてであり、"1m" は再集計の原子＝定義上ちょうど 60 秒である。
 _M1_SECONDS = TF_BAR_SEC["1m"]
 
 
-def _bar_period(bars: Any) -> "tuple[Any, Any]":
+def _bar_period(bars: Any) -> "tuple[int, int]":
     """Bar 列から実ティック読込区間 [first bar.time, last bar.time + 60s) を導く。
 
     tick_start/tick_end が未指定（None）のとき、対象バーを覆う半開区間を bar.time
@@ -121,7 +122,9 @@ def _bar_period(bars: Any) -> "tuple[Any, Any]":
     でスライスするため、終端は最終バーの 1 足分先まで確保する。
 
     事前条件: ``bars`` が 1 本以上あること（区間の両端は先頭・末尾のバーが決める）。
-    事後条件: 半開区間 ``[first, last+60s)`` を返す。
+    事後条件: 半開区間 ``[first, last+60s)`` を **epoch 秒（int）** の対で返す。返り値の
+        表現は `bar.time` の表現（epoch int / ``numpy.int64`` / ``numpy.datetime64``）に
+        依存しない（ISSUE-403・`epoch_seconds` が唯一の正規化規則）。
     例外: ``DataError``（``BacktestError`` 系）。バーが 0 本のとき送出する。
 
     0 本を例外にする理由（ISSUE-400・症状回避ではなく事実の表明）:
