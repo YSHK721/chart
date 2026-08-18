@@ -10,9 +10,10 @@
 
 3. 元 MQL 対応:
     MT5 の `Math calculations`（`Model=3`）は価格系列を供給せずティックを生成しない
-    （基本設計 §4.5.2）。`TICK_MODEL_REGISTRY` へは登録しない——レジストリ登録は
-    `config_loader` の許容値（`TICK_MODEL_IDS`）を変え、既存 4 モードの契約と既存
-    テストに触れるため（内部設計 §8.2.2 で棄却済みの代替案 A）。
+    （基本設計 §4.5.2）。A-1（ISSUE-397・承認により方針反転）で
+    `TICK_MODEL_REGISTRY` の ``math_calculations`` エントリの ``synthetic_builder``
+    として登録した。これにより `main` の合成生成の既存 else がそのまま本実装を構築し、
+    tick_model 側に新しい分岐が 1 つも増えない。
 
 4. 依存:
     標準: typing

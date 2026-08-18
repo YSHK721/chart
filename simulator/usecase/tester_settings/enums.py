@@ -107,13 +107,16 @@ class TickModel(IntEnum):
 
 
 #: `Model` → 現行エンジンの tick_model id（基本設計 §6.2）。
-#: ``MATH_CALCULATIONS`` は現行レジストリに対応 id を持たないため**含めない**
-#: （別経路＝内部設計 §8.2）。値が ``TICK_MODEL_IDS`` の部分集合であることは
-#: 契約ガード（tests: 契約不変ガード）が実レジストリと突合して固定する。
+#: A-1（ISSUE-397）で ``MATH_CALCULATIONS`` もレジストリ id を持つようになったため、
+#: 本表は `TickModel` の**全値**を写す（別経路＝旧 §8.2 は撤去された）。値が
+#: ``TICK_MODEL_IDS`` の部分集合であること・本表が全値を覆うことは、契約ガード
+#: （tests: 契約不変ガード）が実レジストリと突合して固定する。
+#: 文字列を adapter から import しないのは層規約（usecase は adapter を参照しない）。
 TICK_MODEL_ENGINE_IDS: dict[TickModel, str] = {
     TickModel.EVERY_TICK: "every_tick",
     TickModel.ONE_MINUTE_OHLC: "ohlc_expand",
     TickModel.OPEN_PRICES_ONLY: "open_only",
+    TickModel.MATH_CALCULATIONS: "math_calculations",
     TickModel.REAL_TICKS: "real_ticks",
 }
 

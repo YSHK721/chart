@@ -5,9 +5,11 @@
 **収集エラー（ImportError）** になる（アサート失敗ではない）。
 
 固定する契約:
-    1. `TICK_MODEL_IDS` が 4 値・順序不変（§8.2「既存 4 モード bit-exact 不変」の通過条件）。
-    2. `required_backtest_keys()` に `data_path` が含まれる（＝`build_interactor` 経由の
-       通常モードはデータ供給が必須。`MATH_CALCULATIONS` が別経路になる理由そのもの）。
+    1. `TICK_MODEL_IDS` の先頭 4 値が順序不変（「既存 4 モード bit-exact 不変」の通過条件。
+       A-1 で 5 件目が末尾に加わるため「4 値ちょうど」では測らない）。
+    2. `required_backtest_keys()` に `data_path` が含まれる（＝投入は `data_path` キーの
+       供給を必ず要求する。`MATH_CALCULATIONS` はそのキーに ``None`` を**明示**して渡す
+       ため、必須キー検査を弱めずに投入できる）。
     3. `to_interactor_kwargs` の出力キー集合が
        ⊆ `allowed_backtest_keys()` かつ ⊇ `required_backtest_keys()`（API-06 事後条件）。
     4. `ea_params` が必要キーを供給しないとき E-08（`SettingsKeyMissingError`）で
@@ -45,26 +47,27 @@ def _kwargs(**binding_overrides):
 
 
 class TestTickModelRegistryContract:
-    """D-09 通過条件: 既存レジストリを 1 文字も変えずに `MATH_CALCULATIONS` を足す。"""
+    """A-1 通過条件: 既存 4 モードの記載順を変えずに `MATH_CALCULATIONS` を足す。"""
 
-    def test_tick_model_ids_are_the_four_known_models_in_order(self):
-        assert TICK_MODEL_IDS == ("every_tick", "ohlc_expand", "open_only", "real_ticks")
+    def test_known_four_keep_their_order_at_the_head(self):
+        # 既存 4 値の記載順は byte 不変・追加は末尾（増減に追随する形で測る）。
+        assert TICK_MODEL_IDS[:4] == ("every_tick", "ohlc_expand", "open_only", "real_ticks")
 
     def test_settings_engine_ids_are_a_subset_of_the_registry(self):
-        # §4.2.2: `MATH_CALCULATIONS` はレジストリに id を持たない（別経路＝§8.2）
         assert set(TICK_MODEL_ENGINE_IDS.values()) <= set(TICK_MODEL_IDS)
 
-    def test_math_calculations_has_no_engine_id(self):
+    def test_every_settings_tick_model_has_an_engine_id(self):
+        # A-1（ISSUE-397）: 別経路が消えたため `Model` の全値がエンジン id を持つ。
         from simulator.usecase.tester_settings.enums import TickModel
 
-        assert TickModel.MATH_CALCULATIONS not in TICK_MODEL_ENGINE_IDS
+        assert set(TICK_MODEL_ENGINE_IDS) == set(TickModel)
 
 
 class TestBuildInteractorKeyContract:
     """§6 API-06 の事後条件。キー表は `composition_root_jobs` が単一ソース。"""
 
     def test_data_path_is_a_required_backtest_key(self):
-        # `MATH_CALCULATIONS` を `build_interactor` 経由にできない根拠（§8.2.2 代替案 A）
+        # 投入時の「必須キー欠落」検査（遅い失敗の防止）は A-1 後も弱めない。
         assert "data_path" in required_backtest_keys()
 
     def test_required_keys_are_a_subset_of_allowed_keys(self):

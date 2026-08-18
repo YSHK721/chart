@@ -27,21 +27,28 @@ from simulator.adapter.execution.tick_model import (
     OhlcExpandTickModel,
     RealTickModel,
 )
-from simulator.adapter.execution.tick_model_registry import TICK_MODEL_REGISTRY
+from simulator.adapter.execution.tick_model_registry import (
+    TICK_MODEL_REGISTRY,
+    consumes_market_data,
+)
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
 from simulator.adapter.exit_codes import exit_code_for
 from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
 from simulator.adapter.indicator.madiff import madiff
+from simulator.adapter.indicator.null_registry import NullIndicatorRegistry
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.presenter.json import JsonPresenter
 from simulator.adapter.presenter.markdown import MarkdownPresenter
 from simulator.adapter.repository.marketdata_source import MarketDataSourceRepository
+# A-1: バー系列を消費しない modelling 用の Null 実装（`requires_market_data is False`）。
+from simulator.adapter.repository.null_market_data import NullMarketDataRepository
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 # A-3: 取得窓を全 MarketDataPort 実装へ効かせる合成デコレータ（L-2 の解消）。
 from simulator.adapter.repository.windowed_market_data import WindowedMarketDataRepository
 from simulator.adapter.strategy.ma_slope import MaSlope
 from simulator.adapter.strategy.ma_slope_pending import MaSlopePending
+from simulator.adapter.strategy.null_strategy import NullStrategy
 from simulator.adapter.strategy.pro_fit_band import ProFitBand
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
@@ -50,6 +57,7 @@ from simulator.domain.exceptions import BacktestError, DataError
 from simulator.framework.config_loader import load_config
 from simulator.main.run_config import RunConfig
 from simulator.usecase.models import SymbolSpec
+from simulator.usecase.ports import IndicatorPort
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
 # TickModel の synthetic 生成・real_ticks 分岐は tick_model 単一レジストリ
@@ -372,6 +380,18 @@ def _factory_pro_fit_band(
     return ProFitBand(), registry, CsvOHLCRepository()
 
 
+def _factory_dataless(_ctx: "_EaBuildContext") -> "tuple[Any, Any, Any]":
+    """バー系列を消費しない modelling の構成（A-1・ISSUE-397）。
+
+    `ctx.data_path` を**参照しない**（読むものが無いのが本経路の実体である）。既存の
+    EA ファクトリは全て `_load_dataframe` / `_load_mt5_dataframe` で `data_path` を読むため
+    （実測: `data_path=None` は `market_data.load` より前に `_factory_*` の CSV 読みで
+    `DataError` になる）、データ供給の有無は **market_data 実体だけでなく本 3 点組の
+    選択**で表す必要がある。返す 3 点は既存の Null 実装（Port ABC の実装＝LSP 維持）。
+    """
+    return NullStrategy(), NullIndicatorRegistry(), NullMarketDataRepository()
+
+
 def _factory_tc24051901(
     ctx: "_EaBuildContext",
 ) -> "tuple[Any, PandasIndicatorRegistry, Any]":
@@ -395,6 +415,42 @@ _EA_FACTORIES: "dict[str, Callable[[_EaBuildContext], tuple[Any, PandasIndicator
 }
 
 
+def _select_ea_factory(
+    ea_name: str, *, tick_model: str
+) -> "Callable[[_EaBuildContext], tuple[Any, Any, Any]]":
+    """(strategy, registry, market_data) を作るファクトリを選ぶ**唯一の判定点**。
+
+    規則は 1 つだけである: **バー系列を消費しない modelling は、データを読まない構成を
+    採る**。判定入力は `TickModelSpec.requires_market_data`（レジストリの宣言）であり、
+    tick_model の id を列挙しない——新しい modelling が増えても本関数は改変不要
+    （既定 ``requires_market_data=True`` によって従来どおり EA 表を引く）。
+
+    `if math` を書かない理由（OCP）: 「math かどうか」は Settings 層の語彙であり
+    Composition Root の関心ではない。ここで見るのは「データを消費するか」だけである。
+
+    `_EA_FACTORIES` を**引く式は本関数にしか無い**（🔴-1）。A-1 時点では
+    `build_ea_indicators` が同じ式を生で持ち、data-less 規則を知らないまま
+    `_factory_tc24051901` へ落ちて `DataError`（``data_path=None`` の CSV 読み）になって
+    いた。呼出側は判定入力（`tick_model` id）を渡すだけにし、規則の複製を作らない。
+    式の個数は `simulator/tests/integration/test_ea_factory_selection_rule.py` が AST で
+    機械的に固定する（目視規約にしない）。
+    """
+    if not consumes_market_data(tick_model):
+        return _factory_dataless
+    return _EA_FACTORIES.get(ea_name, _factory_tc24051901)
+
+
+def _tick_model_of(config_overrides: "dict | None") -> str:
+    """決定論 config から `tick_model` id を得る（`build_interactor` と同じ導出）。
+
+    `build_interactor` は `load_config` で決定論 9 項目を組むため、そこから
+    `determinism.tick_model` を読む。`build_ea_indicators` は controller を組まないが、
+    既定値・列挙検証を同じ `load_config` に委ねることで、既定 `tick_model` の値を
+    こちらへ書き写さずに済む（写した既定は config_loader の変更で取り残される）。
+    """
+    return load_config(config_overrides or {}).tick_model
+
+
 def build_ea_indicators(
     *,
     data_path: Any,
@@ -406,21 +462,31 @@ def build_ea_indicators(
     weekly_p_tp: float = 0.50,
     weekly_capital: float = 0.0,
     weekly_f_risk: float = 0.01,
+    config_overrides: "dict | None" = None,
     **_unused: Any,
-) -> PandasIndicatorRegistry:
+) -> IndicatorPort:
     """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
 
     `build_interactor` と同じジョブ仕様（余分なキーを含んでよい＝`**spec` で丸ごと渡せる）
-    を受け、`_EA_FACTORIES`（EA→指標の単一ソース）へそのまま委譲する。対応表をここへも
-    呼び出し側へも書き写さない——写した表は登録が増えたときに必ず取り残される。
+    を受け、`_select_ea_factory`（選択規則の唯一の判定点）へそのまま委譲する。対応表も
+    選択規則もここへは書き写さない——写した規則は片方だけ改訂されて必ず食い違う。
+
+    `config_overrides` を受ける理由（🔴-1）: 選択規則の判定入力は `tick_model` であり、
+    投入仕様ではそれが `config_overrides` に載る。A-1 時点で本関数はこの引数を受けず
+    `_EA_FACTORIES` を生で引いていたため、バー系列を消費しない modelling
+    （`Math calculations`）でも `_factory_tc24051901` へ落ち、``data_path=None`` の CSV 読みで
+    `DataError` になっていた（`sim_ui/main/run_job.py` の `_supply_contacts` 経由で
+    report.json が生成されない run を生んでいた）。既定 ``None`` は従来の呼出と同じく
+    config_loader の既定（``every_tick``＝バー系列を消費する）に落ちる。
 
     なぜ公開するか: 表示スライス（sim / report_ui）は「価格×MA の接点」のように**EA が
     見ていた系列そのもの**を要る。これが無いと外側が私有名（`_EA_FACTORIES` /
     `_EaBuildContext`）を越境 import するか、EA ごとの指標を推測で書き写すことになる。
 
     既定値は `build_interactor` の同名引数と同じ（指標周期を持たない仕様でも呼べる）。
-    系列の未登録は `PandasIndicatorRegistry.get` の公開エラー契約（`IndicatorBufferError`・
-    context の ``available``）で呼び出し側へ届く。
+    戻り値は `IndicatorPort`（LSP）: バー系列を消費しない構成では系列を 1 本も持たない
+    `NullIndicatorRegistry` を返す。系列の未登録はどちらの実装でも同じ公開エラー契約
+    （`IndicatorBufferError`・context の ``available``）で呼び出し側へ届く。
 
     副作用は無い（`build_interactor` は 1 バイトも変えない）。データ読み込みは factory が
     行うため、run の実行とは独立に呼べる。
@@ -435,7 +501,8 @@ def build_ea_indicators(
         weekly_capital=weekly_capital,
         weekly_f_risk=weekly_f_risk,
     )
-    _strategy, registry, _market_data = _EA_FACTORIES.get(ea_name, _factory_tc24051901)(context)
+    factory = _select_ea_factory(ea_name, tick_model=_tick_model_of(config_overrides))
+    _strategy, registry, _market_data = factory(context)
     return registry
 
 
@@ -488,6 +555,27 @@ def build_interactor(
     """
     # 決定論 9 項目（config_loader の pydantic 検証経由・列挙外は ConfigError）
     determinism = load_config(config_overrides or {})
+    # 🟡-1: 規則 S を**この境界**で効かせる。`to_interactor_kwargs` を通らない投入経路
+    # （`POST /sim/jobs` → `run_backtest`）は `config_overrides` を素通しで渡すため、
+    # そこを通ると A-1 が開いた経路が A-1 の守る不変条件（バー系列の有無と modelling の
+    # 整合）の外側になっていた（実測: math + 実在 CSV で bars=0・exit=0・trades=0 と
+    # 警告も拒否も無く完走した）。判定の宣言は `kwargs_mapper` の 1 箇所に置いたままで、
+    # ここは呼ぶだけである（判定を二重化しない）。既存 4 モード（全て
+    # `requires_market_data=True`）は `data_path` を伴うため素通りする＝byte 等価。
+    #
+    # 関数内 import の理由: `main.tester_settings` パッケージの `__init__` は
+    # `run_from_settings` 経由で `simulator.main` を module 直下 import する
+    # （run_from_settings.py:44）。ここを module 直下 import にすると
+    # `simulator.main` が部分初期化のまま参照され ImportError になる（実測済み）。
+    # 逆向き（`kwargs_mapper.interactor_key_sets` → `build_interactor`）でも同じ理由で
+    # 関数内 import が使われており、本呼出はその既存の取り決めに合わせる。
+    from simulator.main.tester_settings.kwargs_mapper import (
+        verify_engine_data_consistency,
+    )
+
+    verify_engine_data_consistency(
+        tick_model=determinism.tick_model, has_data=data_path is not None
+    )
     strategy_params = {
         "lot_size": lot_size,
         "stop_loss_points": stop_loss_points,
@@ -521,7 +609,9 @@ def build_interactor(
         weekly_capital=weekly_capital,
         weekly_f_risk=weekly_f_risk,
     )
-    _ea_factory = _EA_FACTORIES.get(ea_name, _factory_tc24051901)
+    # A-1: データ供給の要否は tick_model レジストリの宣言（requires_market_data）だけで
+    # 決まる。既定 True のため既存 4 モードは従来と同じ EA ファクトリを引く（byte 等価）。
+    _ea_factory = _select_ea_factory(ea_name, tick_model=determinism.tick_model)
     strategy, registry, market_data = _ea_factory(_ea_ctx)
     # Phase 6 F-8（依頼者承認済み・注入方式＝専用 param 新設）: spec 由来の汎用戦略
     # （GenericConditionStrategy）で _EA_FACTORIES が選んだ戦略を置き換える拡張点。

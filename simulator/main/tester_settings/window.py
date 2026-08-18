@@ -169,11 +169,20 @@ KIND_RESOLVERS: "dict[DateRangeKind, Callable[[EffectiveSettings], DataWindow]]"
 def resolve_data_window(effective: EffectiveSettings) -> DataWindow:
     """API-07: `EffectiveSettings` → `DataWindow`。
 
-    事前条件: ``effective.date_range`` が非 ``None``（inert 化されていない）。
+    事前条件: なし（``date_range`` が inert な実行時ビューも受ける）。
     事後条件: ``marketdata_window`` は UTC aware・半開区間、または ``None``。
     例外: ``SettingsKeyMissingError``（E-08・規則 R）/ ``UnsupportedSettingError``
         （E-07・N-16）/ ``ConfigError``（未登録の期間形式）。
+
+    inert のとき例外にしない根拠（A-1・ISSUE-397 裁定）:
+        `date_range` が inert である実行（`Math calculations`）は「`.ini` の期間を
+        参照しない」のであって「期間の指定を忘れた」のではない。前者に規則 R
+        （必須値の欠落）を適用すると、正当な実行が E-08 で止まる。inert は
+        `EffectiveSettings.inert_fields` が唯一の宣言源であり、本関数はその宣言を
+        読むだけである（`if math` を持たない＝OCP）。
     """
+    if "date_range" in effective.inert_fields:
+        return _no_window()
     date_range = effective.date_range
     if date_range is None:
         raise SettingsKeyMissingError(

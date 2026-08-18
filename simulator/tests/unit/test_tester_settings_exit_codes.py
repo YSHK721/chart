@@ -6,8 +6,9 @@
        `simulator` 配下（テストを除く）の他モジュールは import して使う（複製しない）。
     2. `simulator.main.tester_settings.exit_codes` は宣言を持たず、再輸出だけを行う
        （既存呼出側 `run_from_settings` / `math_calculations` の import 経路を保つ）。
-    3. `MATH_CALCULATIONS` 経路（`math_calculations`）は生リテラル `0` を返さず、
-       共有の `SUCCESS_EXIT_CODE` を読む。
+    3. 成功終了コードを返す地点（A-1 以降は実行段 `run_effective_settings` の 1 箇所）は
+       生リテラル `0` を返さず、共有の `SUCCESS_EXIT_CODE` を読む。実行の入口
+       （`run_from_settings` / `run_math_calculations`）は終了コードのリテラルを持たない。
 
 A-6 で宣言を main → adapter へ移した理由:
     翻訳規約は `adapter/controller.py`（`BacktestController.run`）も使う。宣言が
@@ -139,12 +140,41 @@ class TestSingleDeclarationSite:
 
         assert getattr(re_exported, symbol) is getattr(declared, symbol)
 
-    def test_the_math_calculations_path_reads_the_shared_success_code(self):
-        # 生リテラル `0` を返していれば、この名前は読まれない
-        assert "SUCCESS_EXIT_CODE" in _loaded_names_in("math_calculations", "run_math_calculations")
+    def test_the_execution_stage_reads_the_shared_success_code(self):
+        # 生リテラル `0` を返していれば、この名前は読まれない。
+        # A-1（ISSUE-397）で成功終了コードを返す地点は実行段 1 箇所に集約された。
+        assert "SUCCESS_EXIT_CODE" in _loaded_names_in(
+            "run_from_settings", "run_effective_settings"
+        )
 
-    def test_the_run_facade_reads_the_shared_success_code(self):
-        assert "SUCCESS_EXIT_CODE" in _loaded_names_in("run_from_settings", "run_from_settings")
+    def test_the_run_facade_reads_the_shared_translation(self):
+        # facade は失敗を終了コードへ翻訳する。翻訳表を自前で持たない。
+        assert "exit_code_for" in _loaded_names_in("run_from_settings", "run_from_settings")
+
+    @pytest.mark.parametrize(
+        "module_name,function_name",
+        [
+            ("run_from_settings", "run_from_settings"),
+            ("math_calculations", "run_math_calculations"),
+        ],
+    )
+    def test_the_entry_points_do_not_mint_exit_codes(self, module_name, function_name):
+        """入口は実行段へ委譲するだけで、終了コードの整数リテラルを持たない。
+
+        A-1 の一本化の検査でもある: 入口が自前の終了コードを持てば、そこに 2 本目の
+        実行経路が生えている（値が同じでも経路は 2 本になる）。
+        """
+        tree = _settings_package_modules()[module_name]
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == function_name:
+                literals = {
+                    child.value
+                    for child in ast.walk(node)
+                    if isinstance(child, ast.Constant) and isinstance(child.value, int)
+                }
+                assert literals == set()
+                return
+        raise AssertionError(f"{module_name}.{function_name} が見つかりません")
 
     def test_the_declaring_module_does_not_depend_on_its_users(self):
         """宣言モジュールは利用側を import しない（循環 import を作らない）。"""

@@ -23,7 +23,10 @@
 4. 依存:
     標準: dataclasses / typing
     外部: なし
-    プロジェクト内: simulator.domain.exceptions / simulator.domain.tester_settings_exceptions /
+    プロジェクト内: simulator.adapter.execution.tick_model_registry（`consumes_market_data`
+                    ＝バー系列消費の要否の宣言を読む唯一の関数。規則 S はこの宣言だけを
+                    見る）/
+                    simulator.domain.exceptions / simulator.domain.tester_settings_exceptions /
                     simulator.usecase.models（SymbolSpec）/ simulator.usecase.tester_settings
                     （DTO・列挙に加え `approximation_reason_for`＝遅延の実証状態の単一
                     ソース。宣言は `ExecutionDelay` と同じ `enums` にあり、本モジュール
@@ -46,6 +49,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Any, Callable, Mapping
 
+from simulator.adapter.execution.tick_model_registry import consumes_market_data
 from simulator.domain.exceptions import ConfigError
 from simulator.domain.tester_settings_exceptions import (
     SettingsActivationError,
@@ -72,8 +76,14 @@ _RULE_DATA_CONSISTENCY: str = "S"
 #: spread 無視の分岐に入り MT5 再現にならないため、Settings 経路は明示指定する。
 ENTRY_PRICE_BASIS: str = "current_open"
 
-#: Settings 層の tick_model 語彙のうち、エンジン id を持たないもの（§8.2 の別経路）。
-MATH_CALCULATIONS_WORD: str = "math_calculations"
+#: Settings 層の `Math calculations` の語彙。A-1（ISSUE-397）以降はエンジン id でもある
+#: ため、文字列を書き写さず `TICK_MODEL_ENGINE_IDS` から読む（単一ソース）。
+MATH_CALCULATIONS_WORD: str = TICK_MODEL_ENGINE_IDS[TickModel.MATH_CALCULATIONS]
+
+#: `deposit` が inert（`Math calculations`）のときエンジンへ渡す初期証拠金。
+#: 推定値を入れず 0.0 とする（`stats.initial_deposit` に 0.0 が現れることを隠さない）。
+INERT_DEPOSIT: float = 0.0
+
 
 @dataclass(frozen=True)
 class EngineBinding:
@@ -92,6 +102,9 @@ class EngineBinding:
                          `stop_loss_points` / `take_profit_points` 等）。**既定値を持たない**
                          必須注入。`.ini` の `[TesterInputs]` から供給できないもの
                          （束縛表が空＝D-02）を呼出側が供給する。推測値を層内で発明しない。
+    initial_deposit:     `deposit` が inert のときエンジンへ渡す初期証拠金（ISSUE-397 裁定:
+                         inert なフィールドは binding が権威）。既定 `INERT_DEPOSIT`＝0.0。
+                         `.ini` の `Deposit` が有効な実行では**参照しない**（.ini が権威）。
     stop_out_level:      現行既定 0.0（`build_interactor` の既定値＝実測）。
     tick_store_root:     実ティック格納根（`REAL_TICKS` 用。未供給時は N-05 で拒否）。
     config_overrides:    データセット側が権威として持つ決定論設定（`entry_price_basis` 等）。
@@ -111,16 +124,17 @@ class EngineBinding:
     stop_out_level: float = 0.0
     tick_store_root: "str | None" = None
     config_overrides: "dict | None" = None
+    initial_deposit: float = INERT_DEPOSIT
 
 
 @dataclass(frozen=True)
 class TesterRunMetadata:
     """実行メタ情報（§8.5）。Settings 層の語彙を結果と併せて呼出側へ伝える。
 
-    `MATH_CALCULATIONS` 経路では `BacktestConfig.tick_model` が既定値
-    （``"every_tick"``）のままエンジンへ渡る（ティックを生成しないため結果に影響
-    しない）。この事実を隠さないため、Settings 層の語彙は必ず本 DTO に載せ、
-    実行 facade の戻り値として呼出側へ返す。
+    A-1（ISSUE-397）以降、`BacktestConfig.tick_model` は `MATH_CALCULATIONS` でも
+    Settings 層の語彙（``"math_calculations"``）と一致する（L-5 の解消）。それでも本 DTO が
+    `tick_model` を載せ続けるのは、近似実行（N-06）・inert フィールド一覧と併せて
+    「どの設定で走ったか」を呼出側が結果と同じ戻り値から読めるようにするためである。
     """
 
     tick_model: str
@@ -131,8 +145,18 @@ class TesterRunMetadata:
 
 
 def tick_model_word(tick_model: TickModel) -> str:
-    """Settings 層の tick_model 語彙を返す（メタ情報・診断用）。"""
-    return TICK_MODEL_ENGINE_IDS.get(tick_model, MATH_CALCULATIONS_WORD)
+    """Settings 層の tick_model 語彙を返す（メタ情報・診断用）。
+
+    A-1 以降 `TICK_MODEL_ENGINE_IDS` は `TickModel` の全値を覆う（契約ガードが固定）。
+    未登録値は**沈黙で既定へ落とさず** `ConfigError` にする（語彙の取り違えを隠さない）。
+    """
+    word = TICK_MODEL_ENGINE_IDS.get(tick_model)
+    if word is None:
+        raise ConfigError(
+            f"エンジン id を持たない tick_model です: {tick_model!r}",
+            context={"tick_model": str(tick_model), "known": sorted(TICK_MODEL_ENGINE_IDS.values())},
+        )
+    return word
 
 
 def build_run_metadata(effective: EffectiveSettings) -> TesterRunMetadata:
@@ -177,20 +201,43 @@ def interactor_key_sets() -> "tuple[frozenset[str], frozenset[str]]":
     return allowed, required
 
 
-def verify_data_consistency(effective: EffectiveSettings, *, has_data: bool) -> None:
-    """規則 S: バー系列の有無と `tick_model` の整合を検査する（基本設計 §4.5.5）。
+def verify_engine_data_consistency(*, tick_model: str, has_data: bool) -> None:
+    """規則 S の**唯一の判定点**（エンジン語彙＝`tick_model` id だけで判定する）。
 
-    `MATH_CALCULATIONS` はバー系列を伴わない別経路（§8.2）で実行する。両者を取り違えた
-    呼出（math をバー経路へ／バー経路の設定を math へ）を E-03 で Fail-Stop する。
+    要否の宣言は `TickModelSpec.requires_market_data` の 1 箇所にしかなく、本関数は
+    `consumes_market_data` 経由でそれを読むだけである（`if math` を持たない＝OCP。
+    新しい modelling が増えても本関数は改変不要）。取り違え——バー系列を消費しない
+    modelling にデータを与える／消費する modelling に与えない——を E-03 で Fail-Stop する。
+
+    Settings 語彙を持たない呼出側（`build_interactor`。`config_overrides` を素通しで
+    受ける投入経路＝`POST /sim/jobs` → `run_backtest` の実体）が同じ判定へ到達できる
+    ように、入力を `EffectiveSettings` ではなく `tick_model` id にしている。判定を
+    そちらへ写して二重化しないための形である（🟡-1）。
+
+    `SettingsActivationError` は `ConfigError` の派生であり、終了コード翻訳
+    （`adapter.exit_codes`）でそのまま 2 になる。
     """
-    # `MATH_CALCULATIONS` ⇔ バー系列なし。両者が一致しない組合せだけが違反である。
-    if effective.is_math_calculations == has_data:
+    if consumes_market_data(tick_model) != has_data:
         raise SettingsActivationError(
             field="tick_model",
             rule_id=_RULE_DATA_CONSISTENCY,
-            tick_model=tick_model_word(effective.tick_model),
+            tick_model=tick_model,
             has_data=has_data,
         )
+
+
+def verify_data_consistency(effective: EffectiveSettings, *, has_data: bool) -> None:
+    """規則 S: バー系列の有無と `tick_model` の整合を検査する（基本設計 §4.5.5）。
+
+    Settings 層の入口。実効設定を**エンジン語彙へ写してから**
+    `verify_engine_data_consistency` へ委譲するだけで、判定そのものは持たない
+    （`is_math_calculations` を見ていた従来形は、要否の宣言をレジストリと二重に
+    持つ形だった）。この検査があるため、写像の事後条件は注入束由来の ``None`` を
+    欠落として扱わなくてよい（`_verify_postconditions` の ``injected`` 参照）。
+    """
+    verify_engine_data_consistency(
+        tick_model=tick_model_word(effective.tick_model), has_data=has_data
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +266,14 @@ class KwargBinding:
     param: str
     source: str
     extract: "Callable[[_MappingContext], Any]"
+    injected: bool = False
+    """``EngineBinding`` のフィールドを直接読む束縛か。
+
+    ``True`` の束縛が返す ``None`` は「供給しない」という**呼出側の宣言**であり、規則 R
+    （必須値の充足）の欠落ではない（`EngineBinding` の当該フィールドは既定を持たないため、
+    ``None`` は省略ではなく明示指定である）。`.ini` 由来の値は逆に、``None``＝設定に
+    書かれていないことを意味するため規則 R の対象になる。
+    """
 
 
 def _require_match(*, param: str, settings_value: Any, injected: Any) -> Any:
@@ -233,9 +288,31 @@ def _require_match(*, param: str, settings_value: Any, injected: Any) -> Any:
     return settings_value
 
 
+def _settings_or_binding(
+    ctx: _MappingContext, *, field: str, param: str, settings_value: Any, injected: Any
+) -> Any:
+    """inert なフィールドは binding の値を採り、それ以外は `.ini` との一致を要求する。
+
+    規則（A-1・ISSUE-397 裁定）: **inert は「`.ini` の値を参照しない」であって
+    「エンジンに値が無い」ではない**。エンジン識別子（`symbol` / `period`）と
+    `initial_deposit` / `leverage` は、inert のとき `EngineBinding` が権威になる。
+
+    判定源は `EffectiveSettings.inert_fields`（宣言の単一ソース）だけであり、
+    `tick_model` を見ない。したがって inert 対象が増減しても本層は改変不要であり、
+    `if math` の分岐も生じない（OCP）。
+    """
+    if field in ctx.effective.inert_fields:
+        return injected
+    return _require_match(param=param, settings_value=settings_value, injected=injected)
+
+
 def _symbol(ctx: _MappingContext) -> Any:
-    return _require_match(
-        param="symbol", settings_value=ctx.effective.symbol, injected=ctx.binding.symbol
+    return _settings_or_binding(
+        ctx,
+        field="symbol",
+        param="symbol",
+        settings_value=ctx.effective.symbol,
+        injected=ctx.binding.symbol,
     )
 
 
@@ -243,18 +320,23 @@ def _period(ctx: _MappingContext) -> Any:
     """`Period`。`.ini` ラベル（写像は enums の単一ソース）を渡し、整合を検査する。"""
     timeframe = ctx.effective.timeframe
     label = None if timeframe is None else TIMEFRAME_INI_LABELS[timeframe]
-    return _require_match(param="period", settings_value=label, injected=ctx.binding.period)
+    return _settings_or_binding(
+        ctx,
+        field="timeframe",
+        param="period",
+        settings_value=label,
+        injected=ctx.binding.period,
+    )
 
 
 def _leverage(ctx: _MappingContext) -> Any:
+    injected = float(ctx.binding.symbol_spec.leverage)
+    if "leverage" in ctx.effective.inert_fields:
+        return injected
     leverage = ctx.effective.leverage
     if leverage is None:
         return None
-    return _require_match(
-        param="leverage",
-        settings_value=float(leverage),
-        injected=float(ctx.binding.symbol_spec.leverage),
-    )
+    return _require_match(param="leverage", settings_value=float(leverage), injected=injected)
 
 
 def _data_path(ctx: _MappingContext) -> Any:
@@ -266,6 +348,9 @@ def _ea_name(ctx: _MappingContext) -> Any:
 
 
 def _initial_deposit(ctx: _MappingContext) -> Any:
+    """`Deposit`。inert のときは binding の値を採る（ISSUE-397 裁定・推定値を作らない）。"""
+    if "deposit" in ctx.effective.inert_fields:
+        return float(ctx.binding.initial_deposit)
     deposit = ctx.effective.deposit
     return None if deposit is None else float(deposit)
 
@@ -279,13 +364,10 @@ def _config_overrides(ctx: _MappingContext) -> Any:
         3. ``entry_price_basis`` は未指定時のみ明示値を補う（§4.5.1）。
     """
     overrides = dict(ctx.binding.config_overrides or {})
-    engine_id = TICK_MODEL_ENGINE_IDS.get(ctx.effective.tick_model)
-    if engine_id is None:
-        raise ConfigError(
-            f"エンジンの tick_model へ写せない設定です: {ctx.effective.tick_model!r}",
-            context={"tick_model": tick_model_word(ctx.effective.tick_model)},
-        )
-    overrides["tick_model"] = engine_id
+    # A-1（L-5 の解消）: `Model` は全値がエンジン id を持つ（`tick_model_word` が単一の
+    # 取得点で、未登録値は ConfigError）。これにより `BacktestConfig.tick_model` が
+    # Settings 層の語彙と一致する（従来 math は既定 "every_tick" のままだった）。
+    overrides["tick_model"] = tick_model_word(ctx.effective.tick_model)
     overrides.setdefault("entry_price_basis", ENTRY_PRICE_BASIS)
     return overrides
 
@@ -302,15 +384,15 @@ def _tick_store_root(ctx: _MappingContext) -> Any:
 #: `SymbolSpec` / `DataWindow` の**フィールド名と引数名の一致**から導出する
 #: （下の `_derived_bindings`）。同じ名前の表を二重に書かない。
 EXPLICIT_BINDINGS: "tuple[KwargBinding, ...]" = (
-    KwargBinding("data_path", "binding.data_path", _data_path),
+    KwargBinding("data_path", "binding.data_path", _data_path, injected=True),
     KwargBinding("symbol", "symbol", _symbol),
     KwargBinding("period", "timeframe", _period),
     KwargBinding("ea_name", "subject_path", _ea_name),
     KwargBinding("initial_deposit", "deposit", _initial_deposit),
     KwargBinding("leverage", "leverage", _leverage),
     KwargBinding("config_overrides", "tick_model", _config_overrides),
-    KwargBinding("stop_out_level", "binding.stop_out_level", _stop_out_level),
-    KwargBinding("tick_store_root", "binding.tick_store_root", _tick_store_root),
+    KwargBinding("stop_out_level", "binding.stop_out_level", _stop_out_level, injected=True),
+    KwargBinding("tick_store_root", "binding.tick_store_root", _tick_store_root, injected=True),
 )
 
 _EXPLICIT_PARAMS: "frozenset[str]" = frozenset(b.param for b in EXPLICIT_BINDINGS)
@@ -362,15 +444,28 @@ def to_interactor_kwargs(
 
     事前条件: ``binding`` の各値が供給済み（決済通貨・EA 固有引数は必須注入）。
     事後条件: 返る dict のキー集合は `allowed_backtest_keys()` に含まれ、
-        `required_backtest_keys()` をすべて含み、必須キーの値が ``None`` でない。
+        `required_backtest_keys()` をすべて含み、必須キーの値が ``None`` でない
+        （注入束が明示的に ``None`` を宣言した引数を除く＝`KwargBinding.injected`）。
     例外: E-03（規則 S）/ E-07（N-02/03/05/07/09/10/11/16）/ E-08（規則 R）/
         `ConfigError`（N-01・データセット不整合・EA 入力の未束縛・不正な `ea_params`）。
 
     処理順は基本設計 §6.2 の不変条件に従う: 実効設定の導出 → 非対象判定 → 写像。
     """
+    return effective_to_interactor_kwargs(settings.effective(), binding)
+
+
+def effective_to_interactor_kwargs(
+    effective: EffectiveSettings, binding: EngineBinding
+) -> "dict[str, Any]":
+    """API-06 の実体（実効設定を入力に取る形）。
+
+    `TesterSettings` ではなく `EffectiveSettings` を受けるのは、実行 facade が
+    メタ情報の組立と警告出力のために既に `effective()` を持っており、そこから
+    もう一度 `settings.effective()` を計算し直さないためである（同じ導出を 2 度
+    書かない／2 度走らせない）。`to_interactor_kwargs` は本関数の薄い入口である。
+    """
     allowed, required = interactor_key_sets()
 
-    effective = settings.effective()
     verify_data_consistency(effective, has_data=binding.data_path is not None)
     apply_unsupported_rules(effective, binding)
 
@@ -397,7 +492,13 @@ def to_interactor_kwargs(
         kwargs[param] = value
         sources[param] = f"inputs.{param}"
 
-    _verify_postconditions(kwargs, sources, allowed=allowed, required=required)
+    _verify_postconditions(
+        kwargs,
+        sources,
+        allowed=allowed,
+        required=required,
+        injected={b.param for b in bindings if b.injected},
+    )
     return kwargs
 
 
@@ -431,6 +532,7 @@ def _verify_postconditions(
     *,
     allowed: "frozenset[str]",
     required: "frozenset[str]",
+    injected: "set[str]",
 ) -> None:
     """事後条件を自ら検査する（§6・キー表を手書きしないことの担保）。
 
@@ -438,6 +540,14 @@ def _verify_postconditions(
       よう `RuntimeError` で即時に落とす。
     - 必須キーの欠落・``None``: 規則 R 違反（実行要求時に値が供給されていない）。設定
       内容・注入内容に起因するため `SettingsKeyMissingError`（E-08 → 終了コード 2）。
+
+    ``injected`` の ``None`` を欠落として扱わない根拠（A-1・ISSUE-397）:
+        `EngineBinding` は当該フィールドに既定を持たない（呼出側が必ず明示する）ため、
+        ``None`` は「省略」ではなく「供給しない」という宣言である。バー系列を供給しない
+        実行（`Math calculations`）の ``data_path`` がこれに当たる。取り違え——バー系列を
+        伴う `tick_model` に ``data_path=None`` を与える／その逆——は本関数より前段の
+        規則 S（`verify_data_consistency`）が E-03 で Fail-Stop 済みであり、ここで
+        重ねて検査しない（判定の二重化を作らない）。キーの**存在**は引き続き必須である。
     """
     extra = sorted(set(kwargs) - allowed)
     if extra:
@@ -445,7 +555,9 @@ def _verify_postconditions(
             f"build_interactor が受け付けない引数を生成しました: {', '.join(extra)}"
         )
     missing = sorted(
-        name for name in required if name not in kwargs or kwargs[name] is None
+        name
+        for name in required
+        if name not in kwargs or (kwargs[name] is None and name not in injected)
     )
     if missing:
         raise SettingsKeyMissingError(
