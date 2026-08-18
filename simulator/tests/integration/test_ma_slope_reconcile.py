@@ -114,7 +114,7 @@ def _run_engine(case):
         stop_out_level=99.95,
         trading_start=_TRADING_START,
     )
-    return controller._interactor.execute(request)
+    return controller.execute(request)
 
 
 def _mt5_round_trips(case):

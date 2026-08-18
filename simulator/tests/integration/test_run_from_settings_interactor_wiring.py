@@ -2,8 +2,9 @@
 
 `run_from_settings` は `controller.run` を使えない（`run` は `market_data.load` を
 再実行して `RunBacktestRequest` を組み直すため、窓検証を通した request の
-`trading_start` が落ちる）。そのためインタラクタへ直接到達するが、その手段は
-`BacktestController` の**公開**プロパティ `interactor` でなければならない。
+`trading_start` が落ちる）。そのため request を直接実行するが、その手段は
+`BacktestController` の**公開**メソッド `execute` でなければならない
+（ISSUE-398 以前は公開プロパティ `interactor` 経由だった）。
 
 測り方: 実経路（実 CSV・実 `build_interactor`・実 `verify_window_applied`）を走らせ、
 `build_interactor` が返す controller だけを「`_interactor` を持たないダブル」に
@@ -33,10 +34,18 @@ BAR_DAYS = 5
 
 
 class _PublicOnlyController:
-    """公開取得点のみを持つ controller ダブル（`_interactor` を意図的に持たない）。"""
+    """公開点のみを持つ controller ダブル（`_interactor` を意図的に持たない）。
+
+    ISSUE-398 で公開の**実行点** `execute(request)` が加わり、`run_from_settings` は
+    `controller.interactor.execute(...)` ではなく `controller.execute(...)` を呼ぶ。
+    取得点 `interactor` も既存公開 API として残っているため、双方を備える。
+    """
 
     def __init__(self, interactor):
         self.interactor = interactor
+
+    def execute(self, request):
+        return self.interactor.execute(request)
 
     def __getattr__(self, name):  # pragma: no cover - 到達したら設計違反
         raise AssertionError(

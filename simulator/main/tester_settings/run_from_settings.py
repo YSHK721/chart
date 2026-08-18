@@ -30,10 +30,11 @@
     `BacktestController.run`（`adapter/controller.py:50-58` 実読）は `market_data.load` を
     **再実行**して `RunBacktestRequest` を自前で組み直すため、`build_interactor` が返した
     `request.trading_start` を渡さず、検証したバー列とも別インスタンスになる。本 facade は
-    `controller.run` を使わず、**検証した request をそのままインタラクタで実行**する
-    （「検証した対象と実行する対象を一致させる」）。インタラクタへの到達は
-    `BacktestController.interactor`（公開プロパティ）経由である（ISSUE-395 / A-5:
-    従来の非公開属性 `_interactor` 参照＝カプセル化の破れを公開取得点で解消した）。
+    `controller.run` を使わず、**検証した request をそのまま実行**する
+    （「検証した対象と実行する対象を一致させる」）。実行は
+    `BacktestController.execute`（公開メソッド）経由である（ISSUE-398: 従来の
+    非公開属性 `_interactor` 参照＝カプセル化の破れを、ISSUE-395 / A-5 の公開
+    プロパティを経て、実行そのものを担う公開点へ移した）。
 """
 from __future__ import annotations
 
@@ -73,9 +74,9 @@ def run_effective_settings(
     # 呼び直さないのは、算出式を 2 箇所に書けば「エンジンが受け取った EA」と「診断が
     # 示す EA」が将来ずれ得るためである。
     verify_window_applied(request, resolve_data_window(effective), ea_name=kwargs["ea_name"])
-    # ISSUE-395 / A-5: 公開取得点 `BacktestController.interactor` 経由で到達する
-    # （`controller.run` は検証した request を捨てて組み直すため使えない）。
-    result = controller.interactor.execute(request)
+    # ISSUE-398: 公開の実行点 `BacktestController.execute` で、検証した request を
+    # そのまま実行する（`controller.run` は検証した request を捨てて組み直すため使えない）。
+    result = controller.execute(request)
     return SUCCESS_EXIT_CODE, result, build_run_metadata(effective)
 
 

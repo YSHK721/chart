@@ -83,7 +83,7 @@ def _run_segment(bars_csv: Path, trading_start: str) -> "tuple[Any, Any]":
         trading_start=pd.Timestamp(trading_start),
         **COMMON,
     )
-    result = controller._interactor.execute(request)
+    result = controller.execute(request)
     return result, request.bars
 
 

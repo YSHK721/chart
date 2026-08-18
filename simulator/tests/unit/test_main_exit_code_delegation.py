@@ -7,8 +7,11 @@
        `return 2` と書いた時点でその表が 2 箇所に分かれる。
     2. 終了コードを返す 2 つの入口（`simulator.main.run_backtest` /
        `simulator.main.__main__.main`）は共有の翻訳（`exit_code_for`）を呼ぶ。
-    3. `simulator/main` 配下は `BacktestController` の非公開属性 `_interactor` へ
-       到達しない（A-5 で追加した公開プロパティ `interactor` を使う）。
+    3. `simulator/` 配下の**本番**モジュール（`tests` 配下と定義元 `adapter/controller.py`
+       を除く）は `BacktestController` の非公開属性 `_interactor` へ到達しない
+       （公開の実行点 `execute()` / 取得点 `interactor` を使う）。
+       ISSUE-398 で射程を `simulator/main` → `simulator/` へ広げた: `main` だけを見る
+       検査は `tools/` と `report_ui/` に残った本番 3 件を構造的に見逃していた。
 
 なぜ「except 節の中の整数リテラル return」で測るか（列挙にしない理由）:
     対象関数名を列挙する検査は、列挙に載っていない新規モジュールを永久に見逃す
@@ -45,6 +48,35 @@ def _main_layer_modules() -> "list[Path]":
     """`simulator/main` 配下の全 `.py`（`__pycache__` を除く）。"""
     return sorted(
         path for path in _MAIN_DIR.rglob("*.py") if "__pycache__" not in path.parts
+    )
+
+
+#: `_interactor` の**定義元**。自分の属性を持つのは当然であり検査対象から外す。
+_INTERACTOR_OWNER = _SIMULATOR_DIR / "adapter" / "controller.py"
+
+
+def _production_modules() -> "list[Path]":
+    """`simulator/` 配下の**本番**モジュール（`tests` 配下と定義元を除く）。
+
+    ISSUE-398 で射程を `simulator/main` → `simulator/` へ広げた理由（実測）:
+        A-5（ISSUE-395）は `main` 層の非公開到達だけを塞いだが、カプセル化の破れは
+        消えていなかった。`main` の外に本番 3 件——`tools/run_is_oos_cli.py` /
+        `tools/export_trade_markers.py` / `report_ui/tools/export_report_payload.py`
+        ——が `controller._interactor.execute(...)` で到達したままだったためである。
+        `main` だけを見る検査は、この 3 件を構造的に見逃す（射程の穴）。
+
+    除外の根拠:
+        - `tests` 配下: 検定は構成の内部（`_strategy` / `_indicators` 等）を測ることが
+          仕事であり、本ゲートの対象ではない。
+        - `adapter/controller.py`: `self._interactor` を保持する定義元。ここを含めると
+          ゲートは定義そのものを違反と呼ぶ（常時赤＝検出力ゼロ）。
+    """
+    return sorted(
+        path
+        for path in _SIMULATOR_DIR.rglob("*.py")
+        if "__pycache__" not in path.parts
+        and "tests" not in path.parts
+        and path != _INTERACTOR_OWNER
     )
 
 
@@ -135,24 +167,37 @@ class TestTheMainLayerKeepsNoExitCodeTable:
         assert "exit_code_for" in _called_names(_function(path, function))
 
 
-class TestTheMainLayerUsesThePublicInteractorAccessor:
-    """A-5 の公開プロパティを使い、非公開属性へ到達しないこと。"""
+class TestProductionCodeUsesThePublicInteractorAccess:
+    """本番コードが `BacktestController` の非公開属性へ到達しないこと（ISSUE-398）。
 
-    def test_no_module_reaches_the_private_interactor_attribute(self):
+    射程は `simulator/` 全体（`tests` 配下と定義元 `adapter/controller.py` を除く）。
+    公開の到達点は `execute()`（実行）と `interactor`（取得）である。
+    """
+
+    def test_no_production_module_reaches_the_private_interactor_attribute(self):
         violations = [
             str(path.relative_to(_SIMULATOR_DIR.parent))
-            for path in _main_layer_modules()
+            for path in _production_modules()
             if "_interactor" in _accessed_attributes(_tree(path))
         ]
         assert violations == [], (
-            "main 層から BacktestController の非公開属性 _interactor へ到達: "
+            "本番コードから BacktestController の非公開属性 _interactor へ到達: "
             + "; ".join(violations)
         )
 
-    def test_run_backtest_reads_the_public_property(self):
-        assert "interactor" in _accessed_attributes(
-            ast.Module(body=[_function(*_ENTRY_POINTS[0])], type_ignores=[])
-        )
+    def test_run_backtest_executes_through_the_public_method(self):
+        """`run_backtest` は公開の実行点 `controller.execute` を呼ぶ。
+
+        従来は `controller.run(...)` ＋ `controller.interactor.last_result` だった。
+        `execute` は結果を返すため `last_result` の読み出しが不要になる（ISSUE-398）。
+        """
+        tree = ast.Module(body=[_function(*_ENTRY_POINTS[0])], type_ignores=[])
+        accessed = _accessed_attributes(tree)
+        assert "execute" in accessed
+        # 二重ロード（`controller.run` は market_data を読み直す）へ戻っていないこと。
+        assert "run" not in accessed
+        # 結果は execute の戻り値で受ける（`last_result` を読み直さない）。
+        assert "last_result" not in accessed
 
 
 class TestTheOutputStageCannotRaiseConfigError:
@@ -293,3 +338,33 @@ class TestTheGateHasDetectionPower:
         assert "_interactor" in _accessed_attributes(
             ast.parse("x = controller._interactor.last_result\n")
         )
+
+    def test_the_extended_scope_covers_the_sites_the_main_only_scope_missed(self):
+        """射程拡張が実際に「見逃していた 3 件」を捕捉範囲に入れたこと（ISSUE-398）。
+
+        `simulator/main` だけを見る旧射程では、この 3 件は永久に検出されなかった。
+        パスが将来動いたらこの検定が落ち、射程の穴が再発する前に気付ける。
+        """
+        previously_missed = [
+            _SIMULATOR_DIR / "tools" / "run_is_oos_cli.py",
+            _SIMULATOR_DIR / "tools" / "export_trade_markers.py",
+            _SIMULATOR_DIR / "report_ui" / "tools" / "export_report_payload.py",
+        ]
+        scanned = set(_production_modules())
+        missing = [str(p) for p in previously_missed if p not in scanned]
+        assert missing == [], f"射程外に落ちている: {missing}"
+        # 旧射程（main 配下）では 1 件も捕捉できなかったことを同時に固定する。
+        assert not any(p in set(_main_layer_modules()) for p in previously_missed)
+
+    def test_the_definition_site_is_excluded_from_the_scope(self):
+        # 定義元を含めるとゲートは常時赤（検出力ゼロ）になる。
+        assert _INTERACTOR_OWNER.is_file()
+        assert "_interactor" in _accessed_attributes(_tree(_INTERACTOR_OWNER))
+        assert _INTERACTOR_OWNER not in set(_production_modules())
+
+    def test_tests_are_excluded_from_the_scope(self):
+        scanned = _production_modules()
+        assert scanned, "本番モジュールの走査結果が空（ゲートとして無意味）"
+        assert not [p for p in scanned if "tests" in p.parts]
+        # 本ファイル自身（tests 配下）が対象外であること。
+        assert Path(__file__).resolve() not in set(scanned)
