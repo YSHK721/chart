@@ -468,3 +468,56 @@ def test_v4_pair_win_false_at_breakeven_pnl_zero(tmp_path):
     payload = _present([rec], tmp_path=tmp_path)
     # Assert: pnl==0 は win=False（exit marker の負け色と一致）
     assert payload["pairs"][0]["win"] is False
+
+
+# ============================================================================
+# ISSUE-411 スライス 1: epoch int（np.int64）の時刻表現を 1970 年へ落とさない
+# ============================================================================
+#
+# `bar.time` の実体は経路で分かれる（ISSUE-403 B-1 実測）。comma 形式 CSV ローダ
+# （`adapter/repository/ohlc_csv.py`）は epoch 整数を採用し、pandas はその整数を
+# **ns** と解釈するため、`pd.Timestamp(np.int64(1755183000))` は 1970-01-01 になる
+# （実測: `int(pd.Timestamp(np.int64(1755183000)).timestamp())` == 1）。
+# epoch 秒への正規化は `simulator.domain.bar_time.epoch_seconds` が唯一の実体であり、
+# presenter はその関数を呼ぶ（規則を書き写さない）。
+
+
+def _record_with_epoch_int_times(entry: int, exit_: int) -> TradeRecord:
+    """時刻が epoch int（`numpy.int64`）の TradeRecord（comma 形式 CSV 経路の実型）。"""
+    import numpy as np
+
+    return TradeRecord(
+        side="buy",
+        volume=1.0,
+        entry_time=np.int64(entry),
+        exit_time=np.int64(exit_),
+        entry_price=8568.9,
+        exit_price=8600.0,
+        contract_size=10.0,
+        swap=0.0,
+        commission=0.0,
+        exit_reason="tp",
+    )
+
+
+def test_marker_time_of_numpy_int64_epoch_is_the_epoch_itself(tmp_path):
+    # Arrange: comma 形式 CSV 経路の実型（np.int64 の epoch 秒）
+    rec = _record_with_epoch_int_times(1755183000, 1755186600)
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    # Assert: epoch を ns と誤読せずその値のまま出力する（誤読時は 1 になる）
+    entry_marker = next(m for m in payload["markers"] if m["meta"]["kind"] == "entry")
+    exit_marker = next(m for m in payload["markers"] if m["meta"]["kind"] == "exit")
+    assert entry_marker["lwc"]["time"] == 1755183000
+    assert exit_marker["lwc"]["time"] == 1755186600
+
+
+def test_pair_record_time_of_numpy_int64_epoch_is_the_epoch_itself(tmp_path):
+    # Arrange: pairs（線分結合用）も同じ変換実体を通る
+    rec = _record_with_epoch_int_times(1755183000, 1755186600)
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    # Assert
+    p = payload["pairs"][0]
+    assert p["entry"]["time"] == 1755183000
+    assert p["exit"]["time"] == 1755186600

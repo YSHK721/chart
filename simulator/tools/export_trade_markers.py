@@ -28,6 +28,7 @@ import pandas as pd
 
 from marketdata.paths import DATA_DIR
 from simulator.adapter.presenter.trade_markers import TradeMarkersPresenter
+from simulator.adapter.repository.tick_parquet import timestamp_epoch_seconds
 from simulator.main import build_interactor
 
 # 既定パス（リポジトリルート相対）。時系列データは marketdata.paths.DATA_DIR（単一基点・
@@ -78,16 +79,23 @@ def _load_marketdata(csv_path: Any, rows: "int | None", from_head: bool) -> pd.D
 def bridge_marketdata_df(src: pd.DataFrame) -> pd.DataFrame:
     """marketdata 形式（date,open,...,volume）を engine 形式へブリッジする（src 非改変）。
 
-    date→time rename・spread=0 付与。既存 DataFrame は変更しない（コピーで構築）。
+    date→time rename・epoch 秒化・spread=0 付与。既存 DataFrame は変更しない（コピーで構築）。
+
+    ISSUE-411: engine の `Bar.time` 契約は epoch int / ``numpy.datetime64`` であり、rename
+    しただけの naive 文字列は契約違反だった（`CsvOHLCRepository` が ``Bar(time=str)`` を作る）。
+    marketdata の `date` は naive 文字列で UTC（ユーザー裁定 2026-08-18）。文字列 →
+    epoch 秒の規則は tick store の公開実体 `timestamp_epoch_seconds` が唯一持ち（naive=UTC・
+    秒へ floor）、ここでは書き写さず呼ぶだけにする。
     """
     bridged = src.rename(columns={"date": "time"}).copy()
+    bridged["time"] = timestamp_epoch_seconds(pd.to_datetime(bridged["time"]))
     bridged["spread"] = 0
     return bridged[_ENGINE_COLUMNS]
 
 
 def candle_unix_times(bridged: pd.DataFrame) -> set[int]:
-    """ブリッジ後の time 列を presenter と同一式で UNIX 秒集合へ変換する。"""
-    return {int(pd.Timestamp(v).timestamp()) for v in bridged["time"]}
+    """ブリッジ後の time 列（既に epoch 秒）を集合にする。変換実体を持たない。"""
+    return {int(v) for v in bridged["time"]}
 
 
 def markers_outside_candle_times(payload: dict, candle_times: set[int]) -> list[int]:
@@ -134,10 +142,15 @@ def run_and_export(
     rows: "int | None",
     from_head: bool = False,
 ) -> dict:
-    """marketdata を読み取り専用ロード→ブリッジ→run→presenter→集合包含検証して payload を返す。
+    """marketdata を読み取り専用ロード→ブリッジ→run→presenter→集合包含検証して summary を返す。
 
     Fix-A: rows 指定時は既定で直近 tail（`read_recent_marketdata`）を読む。先頭 N 本が必要な
     場合は `from_head=True`（後方互換オプション）。rows=None は全行。
+
+    戻り値は書き出した markers JSON の内容に step 6（集合包含検証）の結果
+    ``markers_outside_candles``（包含外マーカー件数）を加えた summary である。ISSUE-411:
+    包含外件数は stdout への print だけで、呼出側から検証できずサイレントだった。
+    **出力 JSON ファイルには加えない**（out_path のバイト列は不変）。
     """
     # 1. marketdata 読み取り専用ロード（経路選択は _load_marketdata に集約）。
     src = _load_marketdata(csv_path, rows, from_head)
@@ -177,7 +190,8 @@ def run_and_export(
     print(f"[trade-markers] candle_times={len(candle_times)} markers_outside_candles={len(outside)}")
     if outside:
         print(f"[trade-markers] WARNING: {len(outside)} markers outside candle time set: {outside[:10]}")
-    return payload
+    # step 6 の結果を戻り値でも観測可能にする（print のみ＝サイレントの解消・ISSUE-411）。
+    return {**payload, "markers_outside_candles": len(outside)}
 
 
 def main(argv: "list[str] | None" = None) -> int:
