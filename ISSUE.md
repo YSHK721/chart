@@ -7991,9 +7991,9 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **構造的原因の除去（別コミット）**: 本件が長期間検出されなかった原因は、依存方向ゲートの走査対象が `simulator/{adapter,usecase,domain,framework}` に限定され `sim_ui/adapter` が対象外だったこと。走査を「手書き列挙」から「構造による発見」へ置換し 14 層 192 モジュールへ拡張。さらに検出形態の穴を発見・是正（旧実装は `from simulator import main as sim_main` と相対 import・`importlib` 文字列を取り逃していた。これは本件で実際に使われていた形式でありながら射程外だった）。名前空間パッケージ（`__init__.py` 不在）による射程の穴も検定化。
 - **残存事項**: `ea_stop_loss_param_catalog` のソース文字列走査という手法自体は残存（SL 設定名の語彙が増えた場合は別途検討要）。
 
-## ISSUE-406: [不具合] 接点スキャン CLI の epoch 換算が 10^6 倍ずれる（実バグ・再現済み）（2026-08-18・OPEN）
+## ISSUE-406: [不具合] 接点スキャン CLI の epoch 換算が 10^6 倍ずれる（実バグ・再現済み）（2026-08-18・RESOLVED 2026-08-18）
 
-- **ステータス**: OPEN（新規起票）
+- **ステータス**: RESOLVED（2026-08-18。ブランチ `fix/issue-406-tick-epoch` で是正）
 - **重大度**: High（実行可能 CLI の出力時刻が壊れる）
 - **事実（実測 2026-08-18）**: `/workspaces/app/simulator/tools/run_scan_contacts_cli.py:139` が
   `secs = pd.to_datetime(df["timestamp"]).astype("int64") // 1_000_000_000` と書いており、
@@ -8004,6 +8004,22 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **抜本的解決**: 解像度に依存しない換算へ変える（`datawindow`／`simulator/domain/bar_time.py` の
   既存の単一ソースへ委譲するのが筋。`astype("int64")` の直接除算をやめる）。
 - **検出経緯**: ISSUE-402（Tick 段の時刻規則統合）の作業中に発見。書込許可外のため未修正。
+- **是正内容（実測 2026-08-18・コミット f7ad4b5 / afd40be）**: 原因は除数の値ではなく
+  「timestamp 列 → epoch 秒」規則の**手書き複製**（単一ソース違反）。規則の唯一の実体を
+  `simulator/adapter/repository/_tick_frame.timestamp_epoch_seconds`（naive=UTC・秒へ floor・
+  dtype 解像度非依存）として新設し、`tick_parquet.load_ticks` の窓フィルタと CLI の
+  `_default_ticks_factory` が**同一関数オブジェクト**を読む形にした（`tick_parquet` が
+  `__all__` で公開再輸出）。domain の `bar_time.epoch_seconds`（スカラ版）へ委譲しなかったのは
+  domain 層の numpy/pandas 非依存規律（行単位委譲は性能上も不可）による。あわせて黙って誤る
+  入力（非 datetime64 列＝10^9 倍ずれ・NaT＝int64 最小値）を `DataError` で明示拒否
+  （空列は dtype 不問で受理＝ISSUE-402 の空窓契約を保持）。
+- **検証（実測）**: 是正前の再現（実 store 読戻し dtype=us で旧式は `[1709251,...]`、
+  正は `[1709251200,...]`）を新規検定 11 件で固定（変異検定で旧 CLI 忠実変異体を殺すことを
+  レビューで確認済み）。unit 2117 passed / integration 271 passed（MT5 突合・fingerprint 含む）/
+  `TZ=Asia/Tokyo` で tick 3 モジュール 49 passed。コードレビュー（code-review-executor）は
+  🔴 0 件・条件付き承認 → 🟡-1〜4・🔵-1・🔵-3 を是正済み。🔵-2・🔵-5・残存疑いは ISSUE-410 へ。
+- **付記**: コミット f7ad4b5 のメッセージ「新規 10 検定」は実測 9 件の誤記
+  （レビュー 🔵-4。afd40be で 2 件追加され最終 11 件）。
 
 ## ISSUE-407: [設計] 半開述語と日列挙の第 3 の複製が bench に残る（2026-08-18・OPEN）
 
@@ -8032,3 +8048,26 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   存在する。参照の曖昧さを生むため記録する。
 - **対策案（抜本）**: 以後の採番を機械的に検査する（起票時に重複・欠番を検出する仕組み）。
   既存の番号は書き換えないこと（外部からの参照が壊れるため）。
+
+## ISSUE-410: [設計] epoch 換算規則の写しの残存と機械的検査ゲートの不在（ISSUE-406 レビュー申し送り）（2026-08-18）
+
+- **ステータス**: OPEN（新規起票。ISSUE-406 是正時のコードレビュー 🔵-2・🔵-5・残存リスクの記録）
+- **重大度**: Low（現時点で数値誤りは未観測。1 件のみ未検証の疑いあり）
+- **事実（レビュー実測 2026-08-18）**:
+  1. **現時点で無害な写し 4 件**: `simulator/replay_ui/adapter/intrabar_window_repository.py:102` /
+     `simulator/replay_ui/adapter/causal_compute_gateway.py:146` /
+     `simulator/replay_ui/adapter/causal_candle_repository.py:63` /
+     `simulator/domain/bar_time.py:70`（スカラ版）。いずれも `astype("datetime64[s]")` 経由で
+     解像度非依存＝誤差は生じない。ただし ISSUE-406 の原因（規則の複製）と同種の分散。
+  2. **未検証の疑い 1 件**: `indigators/cvfe/src/lwc_chart.py:308` の
+     `pd.to_datetime(times).astype("int64") // 1_000_000_000` は ns 前提。pandas 3.0.3 で
+     文字列由来の `to_datetime` は `datetime64[us]` を返す（実測）ため、入力が文字列系なら
+     ISSUE-406 と同型の桁ずれになる。**確定には `_resolve_times` の実入力測定が必要（未実施）**。
+  3. **機械的検査の不在**: 本番コードに ns 前提式（`astype("int64") // 1_000_000_000` 系）が
+     新たに現れても落とすゲートが無い。単一ソース宣言だけでは新規の写しを検出できない
+     （AST ゲートの先例: `test_layer_dependency_direction.py`・ISSUE-405）。
+- **抜本的解決**: (a) 項目 2 を実測で確定し、該当なら共有実体へ委譲。(b) `simulator/` 本番コードを
+  対象に ns 前提式を検出する AST/grep ゲートを既存流儀で新設（規約「制約は機械的検査で担保」）。
+  (c) 項目 1 の写しは共有実体（`_tick_frame.timestamp_epoch_seconds` / `bar_time`）への統合を
+  ISSUE-407（bench の複製）と同系列で検討。
+- **関連**: ISSUE-406（原因の一般形）・ISSUE-407（半開述語の第 3 複製）・ISSUE-408（丸め方向）。
