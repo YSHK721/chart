@@ -10,7 +10,7 @@ hive partition <root>/<symbol>/year=/month=/day= を前提とする）。pandas 
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -48,15 +48,30 @@ def with_partition_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _date_predicate(start: datetime, end: datetime) -> list[tuple[int, int, int]]:
-    """[start, end) 半開区間を覆う (year, month, day) を列挙する（端含む）。
+def _date_predicate(start_epoch: int, end_epoch: int) -> list[tuple[int, int, int]]:
+    """半開区間 ``[start_epoch, end_epoch)``（epoch 秒）を覆う (year, month, day) を UTC で列挙する。
 
-    end がちょうど日境界 00:00:00 のときは end 当日を含めない（半開）。
+    事前条件: 引数は **epoch 秒（int）**。境界の時刻表現からの正規化は呼出側
+        （`tick_parquet.load_ticks`）が `simulator.domain.bar_time.epoch_seconds` で
+        行う（正規化点を入口 1 箇所に置き、本関数は日列挙だけを担う）。
+    事後条件: hive partition (year, month, day) を UTC 基準・昇順・重複なしで返す。
+        ``end_epoch`` がちょうど日境界 00:00:00 のとき end 当日を含めない（半開）。
+        ``start_epoch >= end_epoch``（空窓）のときは空リストを返す
+        （`datawindow.half_open.HalfOpenEpochWindow` が start > end を空窓として扱うのと
+        同じ帰結。空窓に対して日を列挙すると読む必要のない part を読む）。
+    例外: なし。
+
+    UTC 固定の根拠（ISSUE-402）: partition 列 year/month/day は
+    ``with_partition_columns`` が naive UTC の保存 timestamp から生成する。列挙側も
+    同じ UTC で日を数えなければ、プロセスのローカル TZ によって読む part が変わる。
+    `datetime.fromtimestamp(epoch, tz=timezone.utc)` は ``time.tzname`` を参照しない。
     """
-    start_day = datetime(start.year, start.month, start.day)
-    # end の直前の瞬間が属する日まで列挙する（半開）。
-    last_instant = end - timedelta(microseconds=1)
-    end_day = datetime(last_instant.year, last_instant.month, last_instant.day)
+    if start_epoch >= end_epoch:
+        return []
+
+    start_day = _utc_day_start(start_epoch)
+    # end の直前の秒が属する日まで列挙する（半開・粒度は epoch 秒）。
+    end_day = _utc_day_start(end_epoch - 1)
 
     days: list[tuple[int, int, int]] = []
     cur = start_day
@@ -64,3 +79,9 @@ def _date_predicate(start: datetime, end: datetime) -> list[tuple[int, int, int]
         days.append((cur.year, cur.month, cur.day))
         cur += timedelta(days=1)
     return days
+
+
+def _utc_day_start(epoch: int) -> datetime:
+    """epoch 秒が属する UTC 日の 00:00:00（aware）。"""
+    moment = datetime.fromtimestamp(epoch, tz=timezone.utc)
+    return datetime(moment.year, moment.month, moment.day, tzinfo=timezone.utc)
