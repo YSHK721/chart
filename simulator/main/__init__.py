@@ -8,9 +8,9 @@ DI、RunBacktestInteractor を組み立てて実行、結果を Presenter/Result
     build_interactor(...) -> (controller, request)
         DI 構築のみを行い CLI から分離（__main__ を薄く保つ・単体テスト可能）。
     run_backtest(...) -> (exit_code, result | None)
-        1 run を実行。終了コード（ConfigError→2 / BacktestError→1 / 成功→0）は
-        BacktestController の翻訳を利用する（DESIGN §9.4）。result は Presenter/
-        ResultSink へ流す（出力先指定時）。
+        1 run を実行。終了コードの規約は `simulator.adapter.exit_codes` が唯一宣言し
+        （A-6・DESIGN §9.4）、本モジュールは `exit_code_for` を読むだけで表を複製しない。
+        result は Presenter/ResultSink へ流す（出力先指定時）。
 
 main 層は全層を import 可。コミット済 domain/usecase/adapter/framework は変更しない。
 """
@@ -28,6 +28,8 @@ from simulator.adapter.execution.tick_model import (
     RealTickModel,
 )
 from simulator.adapter.execution.tick_model_registry import TICK_MODEL_REGISTRY
+# A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
+from simulator.adapter.exit_codes import exit_code_for
 from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
 from simulator.adapter.indicator.madiff import madiff
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
@@ -36,13 +38,15 @@ from simulator.adapter.presenter.markdown import MarkdownPresenter
 from simulator.adapter.repository.marketdata_source import MarketDataSourceRepository
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
+# A-3: 取得窓を全 MarketDataPort 実装へ効かせる合成デコレータ（L-2 の解消）。
+from simulator.adapter.repository.windowed_market_data import WindowedMarketDataRepository
 from simulator.adapter.strategy.ma_slope import MaSlope
 from simulator.adapter.strategy.ma_slope_pending import MaSlopePending
 from simulator.adapter.strategy.pro_fit_band import ProFitBand
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
 from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
-from simulator.domain.exceptions import BacktestError, ConfigError, DataError
+from simulator.domain.exceptions import BacktestError, DataError
 from simulator.framework.config_loader import load_config
 from simulator.main.run_config import RunConfig
 from simulator.usecase.models import SymbolSpec
@@ -536,17 +540,31 @@ def build_interactor(
     # （既定 TC・WeeklyVolBand＝spread 非依存・H-4）の OHLC 取得を marketdata.CandleSource へ
     # 委譲し Candle→Bar 写像する経路へ切り替える（§10.1 C-2）。registry 用 DataFrame は従来
     # どおり data_path から構築（U6 解決＝併存）。spread 依存戦略（MA_Slope/MA_Slope_Pending/
-    # StopEntryProbe＝Mt5CsvOHLCRepository）は委譲対象外で本分岐に入らず、report.json 再現性
+    # StopEntryProbe＝Mt5CsvOHLCRepository）は委譲対象外で委譲分岐に入らず、report.json 再現性
     # （StopEntryProbe 経路無改変）を保つ。usecase IF（RunBacktestRequest.bars）は不変。
-    if marketdata_window is not None and isinstance(market_data, CsvOHLCRepository):
-        from marketdata.csv_source import CsvCandleSource
+    #
+    # A-3（L-2 の解消）: 取得窓は**全 MarketDataPort 実装**で効かせる。従来は委譲分岐が真の
+    # ときだけ窓が効き、Mt5CsvOHLCRepository では黙って無視されていた（実測: MA_Slope_EA +
+    # JP225 M1 2025-01 で窓あり／なしの bars が同一 sha256・28097 本）。委譲経路へ寄せる案は
+    # 棄却する——MarketDataSourceRepository は spread=0 固定（marketdata_source.py:51）であり
+    # spread 依存戦略の約定価格式が壊れる（H-4）。代わりに WindowedMarketDataRepository で
+    # 包み、窓を load の外側＝合成で適用する（各 repository と _ohlc_frame は無改変）。
+    # 新しい語彙は増やさない（窓は marketdata_window 一語のまま）。既定 None は両分岐とも
+    # 素通り＝既存 4 モードと byte 等価。
+    if marketdata_window is not None:
+        if isinstance(market_data, CsvOHLCRepository):
+            from marketdata.csv_source import CsvCandleSource
 
-        # C-2: 取得窓 (start,end) 半開は委譲 repo の構築時パラメータ（window）へ隔離する
-        # （ISSUE-135 LSP: MarketDataPort.load の source_ref を path 系 3 実装と対称化し、
-        # load_source の型別作り分けを除去）。source_ref は全実装で data_path に統一する。
-        market_data = MarketDataSourceRepository(
-            CsvCandleSource(data_path), window=marketdata_window
-        )
+            # C-2: 取得窓 (start,end) 半開は委譲 repo の構築時パラメータ（window）へ隔離する
+            # （ISSUE-135 LSP: MarketDataPort.load の source_ref を path 系 3 実装と対称化し、
+            # load_source の型別作り分けを除去）。source_ref は全実装で data_path に統一する。
+            market_data = MarketDataSourceRepository(
+                CsvCandleSource(data_path), window=marketdata_window
+            )
+        else:
+            # A-3: comma 形式以外（MT5 タブ形式ほか）の MarketDataPort 実装は型で分岐せず
+            # 一律に窓デコレータで包む（OCP: 実装が増えても本分岐は改変不要）。
+            market_data = WindowedMarketDataRepository(market_data, window=marketdata_window)
 
     # bars は committed 公開 IF（market_data.load）で構築する。source_ref は全 MarketDataPort
     # 実装で data_path に統一する（委譲 repo は取得窓を構築時に保持し source_ref を参照しない・
@@ -646,18 +664,18 @@ def run_backtest(
 ) -> tuple[int, Any]:
     """1 run を実行し (exit_code, result|None) を返す。
 
-    終了コードは BacktestController の翻訳を利用する（成功 0 / ConfigError 2 /
-    BacktestError 1）。ConfigError は build_interactor（config_loader）でも送出され得る
-    ため、build_interactor 段階の ConfigError/BacktestError も同じ翻訳で扱う。
+    終了コードの規約（成功値・例外 → コードの対応・評価順）は本モジュールでは宣言せず、
+    `simulator.adapter.exit_codes` が唯一宣言する（A-6）。`build_interactor` 段階
+    （config_loader が `ConfigError` を送出し得る）も、出力段（`_present_outputs`）も、
+    `controller.run` と同一の `exit_code_for` に載せる。`BacktestError` 以外は
+    捕捉せずそのまま送出する（未知の失敗を終了コードに化けさせない）。
     """
     ea_name = meta.get("ea_name", "Backtest")
     symbol = meta.get("symbol", "-")
     try:
         controller, request = build_interactor(**meta)
-    except ConfigError:
-        return 2, None
-    except BacktestError:
-        return 1, None
+    except BacktestError as error:
+        return exit_code_for(error), None
 
     exit_code = controller.run(
         request.config,
@@ -666,11 +684,13 @@ def run_backtest(
         initial_deposit=request.initial_deposit,
         stop_out_level=request.stop_out_level,
     )
-    result = getattr(controller._interactor, "last_result", None)
+    # A-5 で追加した公開プロパティ経由で取得する（非公開属性 `_interactor` へ到達しない）。
+    # 注入された Interactor が `_ResultCapturingInteractor` でない場合に備え既定 None。
+    result = getattr(controller.interactor, "last_result", None)
     if exit_code == 0 and result is not None and output_dir is not None:
-        # 出力 I/O 失敗は BacktestError へ翻訳済（_present_outputs）→ exit 1 に載せる。
+        # 出力 I/O 失敗は BacktestError へ翻訳済（_present_outputs）→ 同じ翻訳に載せる。
         try:
             _present_outputs(result, Path(output_dir), ea_name=ea_name, symbol=symbol)
-        except BacktestError:
-            return 1, result
+        except BacktestError as error:
+            return exit_code_for(error), result
     return exit_code, result

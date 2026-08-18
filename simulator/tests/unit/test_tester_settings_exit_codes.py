@@ -1,22 +1,25 @@
-"""終了コードの宣言箇所を 1 箇所に固定する（🟡-3 の是正・内部設計 §8.2 / §9.4）。
+"""終了コードの宣言箇所を 1 箇所に固定する（🟡-3 の是正・A-6・内部設計 §8.2 / §9.4）。
 
 固定する仕様:
     1. 成功終了コード（`SUCCESS_EXIT_CODE`）・例外翻訳表（`EXIT_CODES`）・翻訳関数
-       （`exit_code_for`）は `simulator.main.tester_settings.exit_codes` **だけ**が
-       宣言する。他モジュールは import して使う（複製しない）。
-    2. `MATH_CALCULATIONS` 経路（`math_calculations`）は生リテラル `0` を返さず、
+       （`exit_code_for`）は `simulator.adapter.exit_codes` **だけ**が宣言する。
+       `simulator` 配下（テストを除く）の他モジュールは import して使う（複製しない）。
+    2. `simulator.main.tester_settings.exit_codes` は宣言を持たず、再輸出だけを行う
+       （既存呼出側 `run_from_settings` / `math_calculations` の import 経路を保つ）。
+    3. `MATH_CALCULATIONS` 経路（`math_calculations`）は生リテラル `0` を返さず、
        共有の `SUCCESS_EXIT_CODE` を読む。
+
+A-6 で宣言を main → adapter へ移した理由:
+    翻訳規約は `adapter/controller.py`（`BacktestController.run`）も使う。宣言が
+    main 層にあるまま controller から委譲すると adapter → main の import が生じ、
+    `controller.py` 自身の宣言「adapter 層は usecase + domain のみに依存する
+    （framework / main は import しない）」に反する。内側 4 層から `simulator.main`
+    への import が 0 件であることは `test_layer_dependency_direction.py` が固定する。
 
 なぜ AST で測るか:
     「値が等しいこと」（`0 == SUCCESS_EXIT_CODE`）は複製が 2 箇所あっても成立する
     ため、**宣言が 1 箇所である**という不変条件を検出できない。宣言（代入）の所在は
     構文木にしか現れないので、構文木を数える。値の一致は別テスト（振る舞い）で測る。
-
-置き場所の制約（循環 import）:
-    `run_from_settings` は `math_calculations` を import する。したがって定数を
-    `run_from_settings` に置いたまま `math_calculations` から参照すると循環になる。
-    共有定数は両者が依存できる下位モジュールに置く必要がある——その構造も本テストが
-    `test_the_shared_module_does_not_depend_on_its_users` で固定する。
 """
 from __future__ import annotations
 
@@ -25,26 +28,37 @@ from pathlib import Path
 
 import pytest
 
-from simulator.domain.exceptions import BacktestError, ConfigError
-from simulator.main.tester_settings.exit_codes import (
+from simulator.adapter.exit_codes import (
     EXIT_CODES,
     SUCCESS_EXIT_CODE,
     exit_code_for,
 )
+from simulator.domain.exceptions import BacktestError, ConfigError
 
-#: 変換・実行層のパッケージ（本テストの走査対象）。
-_PACKAGE_DIR = Path(__import__("simulator.main.tester_settings", fromlist=["__file__"]).__file__).parent
+#: `simulator` パッケージ本体。
+_SIMULATOR_DIR = Path(__file__).resolve().parents[2]
 
-#: 宣言を 1 箇所に集約する先のモジュール名。
-_SHARED_MODULE = "exit_codes"
+#: 宣言を集約する先（唯一の宣言場所）。
+_DECLARING_FILE = _SIMULATOR_DIR / "adapter" / "exit_codes.py"
+
+#: 変換・実行層のパッケージ（宣言 0 件であることを固定する対象）。
+_SETTINGS_PACKAGE_DIR = _SIMULATOR_DIR / "main" / "tester_settings"
+
+#: 単一宣言を固定する記号。
+_SYMBOLS = ("SUCCESS_EXIT_CODE", "EXIT_CODES", "exit_code_for")
 
 
-def _modules() -> "dict[str, ast.Module]":
-    """パッケージ内の全モジュールを構文木にする（モジュール名 → 構文木）。"""
-    return {
-        path.stem: ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for path in sorted(_PACKAGE_DIR.glob("*.py"))
-    }
+def _production_modules() -> "list[Path]":
+    """`simulator` 配下の本番モジュール（テスト・`__pycache__` を除く）。"""
+    return sorted(
+        path
+        for path in _SIMULATOR_DIR.rglob("*.py")
+        if "__pycache__" not in path.parts and "tests" not in path.parts
+    )
+
+
+def _tree(path: Path) -> ast.Module:
+    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
 def _assigned_names(tree: ast.Module) -> "set[str]":
@@ -60,13 +74,23 @@ def _assigned_names(tree: ast.Module) -> "set[str]":
     return names
 
 
-def _declaring_modules(symbol: str) -> "set[str]":
-    return {name for name, tree in _modules().items() if symbol in _assigned_names(tree)}
+def _declaring_files(symbol: str) -> "set[Path]":
+    """本番コードのうち、その記号を**宣言している**ファイル。"""
+    return {
+        path
+        for path in _production_modules()
+        if symbol in _assigned_names(_tree(path))
+    }
+
+
+def _settings_package_modules() -> "dict[str, ast.Module]":
+    """`main/tester_settings` 直下の全モジュール（モジュール名 → 構文木）。"""
+    return {path.stem: _tree(path) for path in sorted(_SETTINGS_PACKAGE_DIR.glob("*.py"))}
 
 
 def _loaded_names_in(module_name: str, function_name: str) -> "set[str]":
     """指定関数の本体で**読まれる**名前（`ast.Load`）。"""
-    tree = _modules()[module_name]
+    tree = _settings_package_modules()[module_name]
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
             return {
@@ -77,12 +101,43 @@ def _loaded_names_in(module_name: str, function_name: str) -> "set[str]":
     raise AssertionError(f"{module_name}.{function_name} が見つかりません")
 
 
-class TestSingleDeclarationSite:
-    """終了コードの語彙は 1 モジュールだけが宣言する。"""
+def _imported_modules(tree: ast.Module) -> "set[str]":
+    return {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
 
-    @pytest.mark.parametrize("symbol", ["SUCCESS_EXIT_CODE", "EXIT_CODES", "exit_code_for"])
-    def test_the_symbol_is_declared_only_in_the_shared_module(self, symbol):
-        assert _declaring_modules(symbol) == {_SHARED_MODULE}
+
+class TestSingleDeclarationSite:
+    """終了コードの語彙は本番コード全体で 1 ファイルだけが宣言する。"""
+
+    @pytest.mark.parametrize("symbol", _SYMBOLS)
+    def test_the_symbol_is_declared_only_in_the_adapter_module(self, symbol):
+        assert _declaring_files(symbol) == {_DECLARING_FILE}
+
+    @pytest.mark.parametrize("symbol", _SYMBOLS)
+    def test_the_settings_package_declares_nothing(self, symbol):
+        # 移設後の不変条件: main/tester_settings 側の宣言は 0 件（再輸出のみ）。
+        declaring = {
+            name
+            for name, tree in _settings_package_modules().items()
+            if symbol in _assigned_names(tree)
+        }
+        assert declaring == set()
+
+    def test_the_settings_module_re_exports_the_adapter_declaration(self):
+        # 既存呼出側の import 経路（main.tester_settings.exit_codes）を保つ。
+        tree = _settings_package_modules()["exit_codes"]
+        assert "simulator.adapter.exit_codes" in _imported_modules(tree)
+
+    @pytest.mark.parametrize("symbol", _SYMBOLS)
+    def test_the_re_export_is_the_same_object_as_the_declaration(self, symbol):
+        # 再輸出が「値の写し」ではなく同一実体であること（複製の混入を排す）。
+        import simulator.adapter.exit_codes as declared
+        import simulator.main.tester_settings.exit_codes as re_exported
+
+        assert getattr(re_exported, symbol) is getattr(declared, symbol)
 
     def test_the_math_calculations_path_reads_the_shared_success_code(self):
         # 生リテラル `0` を返していれば、この名前は読まれない
@@ -91,19 +146,55 @@ class TestSingleDeclarationSite:
     def test_the_run_facade_reads_the_shared_success_code(self):
         assert "SUCCESS_EXIT_CODE" in _loaded_names_in("run_from_settings", "run_from_settings")
 
-    def test_the_shared_module_does_not_depend_on_its_users(self):
-        """共有モジュールは利用側を import しない（循環 import を作らない）。"""
-        tree = _modules()[_SHARED_MODULE]
-        imported = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module is not None
-        }
+    def test_the_declaring_module_does_not_depend_on_its_users(self):
+        """宣言モジュールは利用側を import しない（循環 import を作らない）。"""
+        imported = _imported_modules(_tree(_DECLARING_FILE))
         users = {
+            "simulator.adapter.controller",
+            "simulator.main.tester_settings.exit_codes",
             "simulator.main.tester_settings.run_from_settings",
             "simulator.main.tester_settings.math_calculations",
         }
         assert imported & users == set()
+
+    def test_the_declaring_module_depends_only_on_domain_exceptions(self):
+        """adapter 層の依存規律: usecase + domain のみ（framework / main は不可）。"""
+        project_imports = {
+            module
+            for module in _imported_modules(_tree(_DECLARING_FILE))
+            if module.split(".")[0] == "simulator"
+        }
+        assert project_imports == {"simulator.domain.exceptions"}
+
+
+class TestTheControllerDoesNotKeepItsOwnTable:
+    """`BacktestController.run` が翻訳表を再実装していないこと（A-6）。"""
+
+    def _run_function(self) -> ast.FunctionDef:
+        tree = _tree(_SIMULATOR_DIR / "adapter" / "controller.py")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "run":
+                return node
+        raise AssertionError("BacktestController.run が見つかりません")
+
+    def test_run_returns_no_bare_exit_code_literals(self):
+        # `return 0` / `return 1` / `return 2` が残っていれば表が 2 箇所ある。
+        literals = [
+            node.value.value
+            for node in ast.walk(self._run_function())
+            if isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, int)
+        ]
+        assert literals == []
+
+    def test_run_delegates_to_the_shared_translation(self):
+        called = {
+            node.func.id
+            for node in ast.walk(self._run_function())
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert "exit_code_for" in called
 
 
 class TestTranslationBehaviour:
