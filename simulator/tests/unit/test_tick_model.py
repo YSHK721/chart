@@ -5,8 +5,10 @@ TickModelPort.ticks_of(bar, prev_close) -> Iterable[Tick]   # Tick = (price, bid
 実装（CLEAN_ARCH §6.3）:
     - OhlcExpandTickModel: 1 バーを O→H→L→C の 4 疑似ティックへ展開（決定論）。
     - OpenOnlyTickModel  : 始値のみ（1 ティック）。
-    - EveryTickModel     : 実ティック列。OHLC のみの入力では O→H→L→C 近似へフォールバック
-      （実ティック未供給時の決定論的近似。Dukascopy 実ティック供給は範囲外＝将来）。
+    - EveryTickModel     : OHLC のみの入力での O→H→L→C 決定論的近似（実ティックは
+      供給しない。frame を持たないため常にフォールバックする）。
+    - RealTickModel      : tick-store の実ティック frame をバー区間 [bar.time, +足長) へ
+      切り出す（区間算定の時刻表現非依存は本ファイル末尾で固定・ISSUE-403）。
 
 最小骨格: spread=0 のとき bid=ask=price（実 spread は spread_model 接続時に拡張＝範囲外）。
 """
@@ -322,3 +324,62 @@ def test_real_tick_returns_ticks_in_timestamp_ascending_order_for_unsorted_frame
     # price も time に追従して昇順整形される（行順の last=[1.33,1.22,1.11] でない）。
     prices = [t[0] for t in ticks]
     assert prices == [1.11, 1.22, 1.33]
+
+
+# --- RealTickModel の時刻表現非依存性（ISSUE-403）-------------------------------
+# `Bar.time` の契約は ``numpy.datetime64`` | epoch int であり、comma 形式 CSV 経路では
+# pandas が返す実型＝``numpy.int64`` になる。区間スライスは「どの表現で書かれたバーか」に
+# 依存してはならない。是正前は手書きディスパッチ（`_normalize_bar_time`）が
+# ``isinstance(np.int64, int)`` = **False**（実測・numpy 2.4.6）で epoch 枝を外し、
+# ``np.datetime64(np.int64(...))`` の ``ValueError`` で落ちていた（ISSUE-403）。
+
+
+def _epoch_bar_at(minute: int):
+    """`_bar_at` と同一時刻を epoch int（Python int）で表したバー。"""
+    return Bar(
+        time=1_704_067_200 + 60 * minute,
+        open=1.1, high=1.3, low=1.0, close=1.2, volume=10.0, spread=0,
+    )
+
+
+def _np_int64_bar_at(minute: int):
+    """`_bar_at` と同一時刻を ``numpy.int64`` で表したバー（comma 形式 CSV の実型）。"""
+    return Bar(
+        time=np.int64(1_704_067_200 + 60 * minute),
+        open=1.1, high=1.3, low=1.0, close=1.2, volume=10.0, spread=0,
+    )
+
+
+def test_real_tick_numpy_int64_bar_time_slices_the_same_interval_as_datetime64():
+    # Arrange: 同一時刻を numpy.datetime64 と numpy.int64 で表した 2 本のバー。
+    from simulator.adapter.execution.tick_model import RealTickModel
+
+    model = RealTickModel(_tick_frame())
+    # Act
+    via_dt64 = list(model.ticks_of(_bar_at(0), prev_close=1.0))
+    via_int64 = list(model.ticks_of(_np_int64_bar_at(0), prev_close=1.0))
+    # Assert: 表現が違っても同一ティック集合。
+    assert via_int64 == via_dt64
+
+
+def test_real_tick_python_int_bar_time_slices_the_same_interval_as_datetime64():
+    # Arrange: 同一時刻を numpy.datetime64 と Python int（epoch 秒）で表した 2 本のバー。
+    from simulator.adapter.execution.tick_model import RealTickModel
+
+    model = RealTickModel(_tick_frame())
+    # Act
+    via_dt64 = list(model.ticks_of(_bar_at(0), prev_close=1.0))
+    via_int = list(model.ticks_of(_epoch_bar_at(0), prev_close=1.0))
+    # Assert
+    assert via_int == via_dt64
+
+
+def test_real_tick_epoch_bar_time_honours_the_half_open_interval():
+    # Arrange: epoch int 表現でも区間は半開 [bar.time, bar.time+60s)。
+    from simulator.adapter.execution.tick_model import RealTickModel
+
+    model = RealTickModel(_tick_frame())
+    # Act: 01:00 の足は 01:05 の 1 件のみ（02:00 は次足＝含まない）。
+    prices = [t[0] for t in model.ticks_of(_np_int64_bar_at(1), prev_close=1.0)]
+    # Assert
+    assert prices == [1.21]

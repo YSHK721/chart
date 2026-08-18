@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from marketdata.tf_ledger import TF_BAR_SEC
 from simulator.adapter.controller import BacktestController
 from simulator.adapter.execution.tick_model import (
     OhlcExpandTickModel,
@@ -53,6 +54,7 @@ from simulator.adapter.strategy.pro_fit_band import ProFitBand
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
 from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
+from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import BacktestError, DataError
 from simulator.framework.config_loader import load_config
 from simulator.main.run_config import RunConfig
@@ -104,8 +106,15 @@ def _make_session_calendar(session_calendar_key: str) -> Any:
 # tick_store_root を tmp_path に差し替えて小データで検証する（実データ非依存）。
 _DEFAULT_TICK_STORE_ROOT = "marketdata/ticks"
 
+# M1（1 分足）の足長秒。値を持つのは時間足台帳 `marketdata.tf_ledger` **だけ**であり、ここは
+# 導出のみを行う（手書きの写しが台帳へ追随せず事故になった前例が ISSUE-261 / ISSUE-253。
+# 同じ理由で台帳から導出する先例が `simulator/usecase/contact_scan/bar_window.py`）。台帳が
+# ``bar_sec`` を「境界計算に使わない」と断るのは名目値を持つ上位足（1W=7日 / 1M=30日）に
+# ついてであり、"1m" は再集計の原子＝定義上ちょうど 60 秒である。
+_M1_SECONDS = TF_BAR_SEC["1m"]
 
-def _bar_period(bars: Any) -> "tuple[Any, Any]":
+
+def _bar_period(bars: Any) -> "tuple[int, int]":
     """Bar 列から実ティック読込区間 [first bar.time, last bar.time + 60s) を導く。
 
     tick_start/tick_end が未指定（None）のとき、対象バーを覆う半開区間を bar.time
@@ -113,7 +122,9 @@ def _bar_period(bars: Any) -> "tuple[Any, Any]":
     でスライスするため、終端は最終バーの 1 足分先まで確保する。
 
     事前条件: ``bars`` が 1 本以上あること（区間の両端は先頭・末尾のバーが決める）。
-    事後条件: 半開区間 ``[first, last+60s)`` を返す。
+    事後条件: 半開区間 ``[first, last+60s)`` を **epoch 秒（int）** の対で返す。返り値の
+        表現は `bar.time` の表現（epoch int / ``numpy.int64`` / ``numpy.datetime64``）に
+        依存しない（ISSUE-403・`epoch_seconds` が唯一の正規化規則）。
     例外: ``DataError``（``BacktestError`` 系）。バーが 0 本のとき送出する。
 
     0 本を例外にする理由（ISSUE-400・症状回避ではなく事実の表明）:
@@ -140,15 +151,15 @@ def _bar_period(bars: Any) -> "tuple[Any, Any]":
         )
     first = bar_list[0].time
     last = bar_list[-1].time
-    # epoch int は +60s（秒）で次足境界。それ以外（numpy.datetime64 / ISO 文字列）は
-    # pandas.Timestamp へ正規化して +60s する。load_ticks（adapter）の _date_predicate は
-    # start/end に year/month/day 属性（datetime/Timestamp）を要するため Timestamp で渡す
-    # （pandas は composition root=main 内に閉じる。usecase へは漏らさない）。
-    if isinstance(last, int) and not isinstance(last, bool):
-        return first, last + 60
-    start = pd.Timestamp(first)
-    end = pd.Timestamp(last) + pd.Timedelta(seconds=60)
-    return start, end
+    # 時刻表現ごとの手書き分岐を持たない（ISSUE-403）。正規化の規則は
+    # `simulator.domain.bar_time.epoch_seconds` が唯一所有し、`load_ticks` も窓デコレータも
+    # Candle 段も**同一オブジェクト**を読む。是正前はここに第 2 の規則があり、
+    # ``isinstance(np.int64(1), int)`` が **False**（実測・numpy 2.4.6）であるため
+    # comma 形式 CSV の実型（``numpy.int64``）が epoch 分岐を外れ、
+    # ``pd.Timestamp(np.int64(1704067200))`` = ``1970-01-01 00:00:01.704067200`` へ落ちていた
+    # （例外の出ない桁ずれ）。`load_ticks` は境界を同じ `epoch_seconds` で正規化するため、
+    # epoch 秒（int）をそのまま渡してよい。
+    return epoch_seconds(first), epoch_seconds(last) + _M1_SECONDS
 
 
 def _build_real_tick_model(

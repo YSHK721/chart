@@ -29,9 +29,10 @@ def _write_csv(path, rows, header="time,open,high,low,close,volume,spread"):
 def _valid_rows():
     # time, open, high, low, close, volume, spread（昇順・OHLC 整合）
     return [
-        ("2024-01-01T00:00:00", 1.10, 1.20, 1.05, 1.15, 100, 2),
-        ("2024-01-01T00:01:00", 1.15, 1.25, 1.10, 1.20, 110, 2),
-        ("2024-01-01T00:02:00", 1.20, 1.30, 1.18, 1.28, 120, 2),
+        # time は UNIX 秒 int（UTC・2024-01-01T00:00:00Z=1704067200）。comma 形式 CSV の `time` は epoch 秒が契約であり（Candle 契約 §2.1）、ISO 文字列は `Bar.time` 契約違反になる。
+        (1704067200, 1.10, 1.20, 1.05, 1.15, 100, 2),
+        (1704067260, 1.15, 1.25, 1.10, 1.20, 110, 2),
+        (1704067320, 1.20, 1.30, 1.18, 1.28, 120, 2),
     ]
 
 
@@ -65,7 +66,8 @@ def test_load_returns_list_of_domain_bars_with_matching_values(tmp_path):
 def test_load_raises_ohlc_invalid_error_when_high_below_low(tmp_path):
     from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 
-    bad = [("2024-01-01T00:00:00", 1.10, 1.00, 1.20, 1.15, 100, 2)]  # high < low
+    # time は UNIX 秒 int（UTC・2024-01-01T00:00:00Z=1704067200）。comma 形式 CSV の `time` は epoch 秒が契約であり（Candle 契約 §2.1）、ISO 文字列は `Bar.time` 契約違反になる。
+    bad = [(1704067200, 1.10, 1.00, 1.20, 1.15, 100, 2)]  # high < low
     csv = _write_csv(tmp_path / "bad.csv", bad)
 
     with pytest.raises(OHLCInvalidError):
@@ -76,8 +78,9 @@ def test_load_raises_time_order_error_when_time_not_ascending(tmp_path):
     from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 
     rows = [
-        ("2024-01-01T00:02:00", 1.20, 1.30, 1.18, 1.28, 120, 2),
-        ("2024-01-01T00:00:00", 1.10, 1.20, 1.05, 1.15, 100, 2),  # 逆転
+        # time は UNIX 秒 int（UTC・2024-01-01T00:00:00Z=1704067200）。comma 形式 CSV の `time` は epoch 秒が契約であり（Candle 契約 §2.1）、ISO 文字列は `Bar.time` 契約違反になる。
+        (1704067320, 1.20, 1.30, 1.18, 1.28, 120, 2),
+        (1704067200, 1.10, 1.20, 1.05, 1.15, 100, 2),  # 逆転
     ]
     csv = _write_csv(tmp_path / "rev.csv", rows)
 
@@ -91,7 +94,8 @@ def test_load_raises_missing_bar_error_when_required_column_absent(tmp_path):
     # close 列欠損
     csv = _write_csv(
         tmp_path / "missing.csv",
-        [("2024-01-01T00:00:00", 1.10, 1.20, 1.05, 100, 2)],
+        # time は UNIX 秒 int（UTC・2024-01-01T00:00:00Z=1704067200）。comma 形式 CSV の `time` は epoch 秒が契約であり（Candle 契約 §2.1）、ISO 文字列は `Bar.time` 契約違反になる。
+        [(1704067200, 1.10, 1.20, 1.05, 100, 2)],
         header="time,open,high,low,volume,spread",
     )
 

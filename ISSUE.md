@@ -7968,12 +7968,26 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **是正で変わった唯一の点（文書化）**: 空窓（`start >= end`）は part を 1 つも読まなくなり、
   返り値 0 行の dtype が parquet 由来から object へ変わる。行数・列名は不変で、現存呼出は空窓を作らない。
 
-## ISSUE-403: [不具合・実測] `RealTickModel` が epoch int の `bar.time` を受けられず翻訳されない `ValueError` が漏れる（2026-08-18）
+## ISSUE-403: [不具合・実測] `RealTickModel` が epoch int の `bar.time` を受けられず翻訳されない `ValueError` が漏れる（2026-08-18・IN_PROGRESS）
 
-- **ステータス**: OPEN（新規起票）
+- **ステータス**: IN_PROGRESS（スライス 2/3/4 完了・是正検証済み。残スライス 1＝`Bar` 契約表明は ISSUE-411 で承認待ち）
 - **重大度**: Medium
-- **実測（2026-08-18）**: `real_ticks` ＋ comma 形式（epoch 整数 `time`）CSV で `simulator/adapter/execution/tick_model.py:145` の `_normalize_bar_time` が `np.datetime64(bar_time)` を呼び、`ValueError: Converting an integer to a NumPy datetime requires a specified unit` を送出する。`bar.time` の実体は経路により epoch int / `numpy.datetime64` に分かれる（内部設計 §8.4.1 W-4 の既知事実）。ISSUE-400 と同じ「未翻訳例外が終了コード表を素通りする」系統だが別サイト。
+- **実測（2026-08-18）**: `real_ticks` ＋ comma 形式（epoch 整数 `time`）CSV で `simulator/adapter/execution/tick_model.py:145` の `_normalize_bar_time`（是正前の該当箇所・d2c4324 で撤去済み）が `np.datetime64(bar_time)` を呼び、`ValueError: Converting an integer to a NumPy datetime requires a specified unit` を送出する。`bar.time` の実体は経路により epoch int / `numpy.datetime64` に分かれる（内部設計 §8.4.1 W-4 の既知事実）。ISSUE-400 と同じ「未翻訳例外が終了コード表を素通りする」系統だが別サイト。
 - **抜本的解決**: `bar.time` の表現差を吸収する単一ソース（`simulator/domain/bar_time.py`）へ委譲する。是正には `tick_model.py` の変更が要る。
+- **是正記録（実測 2026-08-18・ブランチ `fix/issue-403-bar-time-epoch`）**:
+  - d2c4324: `main._bar_period` の手書き型分岐（np.int64 で 1970 年になる同型地雷）と
+    `tick_model._normalize_bar_time` / `_bar_end` を撤去し、`bar_time.epoch_seconds`（スカラ）＋
+    `timestamp_epoch_seconds`（列・構築時 1 回前計算・関数内 import で遅延設計維持）へ委譲。
+    M1 足長は台帳 `marketdata.tf_ledger.TF_BAR_SEC["1m"]` から導出。
+  - 5a5a053: 契約違反の合成 fixture 14 ファイルを ISO 文字列 → epoch int（UTC）へ是正。
+    3a4c596: 挙動不変のリファクタ（docstring 整合）。
+  - 検証: unit+integration+sim_ui **3083 passed**（TZ=UTC / Asia/Tokyo の 2 系）・fingerprint 固定
+    sha256 無改変で 5 passed＝MT5 経路 **byte 等価**・MT5 fixture / marketdata 差分 0。
+    旧実装復元の変異 2 点を新規テストが検出（退行検出力の実証）。
+  - **互換性影響（文書化）**: ISO 文字列 `time` の comma CSV は real_ticks 経路で受理されなくなった
+    （`ConfigError`・exit 2＝翻訳済み。ISO 文字列は元より Candle 契約 §2.1 / `Bar.time` 契約違反であり、
+    リポジトリ内の該当 fixture は全件是正済み）。固定テストの追加は ISSUE-413-1。
+- **関連**: ISSUE-411（残スライス 1）・ISSUE-412（同型欠陥の残存 2 件）・ISSUE-413（レビュー申し送り）。
 
 ## ISSUE-404: [設計] `run_backtest` 経路に MT5 等級のオラクルが存在しない（2026-08-18・RESOLVED 2026-08-18）
 
@@ -8080,3 +8094,73 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   (c) 項目 1 の写しは共有実体（`_tick_frame.timestamp_epoch_seconds` / `bar_time`）への統合を
   ISSUE-407（bench の複製）と同系列で検討。
 - **関連**: ISSUE-406（原因の一般形）・ISSUE-407（半開述語の第 3 複製）・ISSUE-408（丸め方向）。
+
+## ISSUE-411: `Bar.time` 契約検査（ISSUE-403 スライス 1）が本番 1 経路で成立しない
+- **ステータス**: OPEN（新規起票。承認待ち＝スコープ外の本番変更を要するため未着手）
+- **重大度**: Medium（現時点で数値誤りは未観測。ただし ISSUE-403 の抜本是正が完了しない）
+- **背景**: ISSUE-403 の是正で `_bar_period` / `tick_model` の手書き型分岐は撤去した（d2c4324）。
+  残る抜本策は「未対応の時刻表現の `Bar` をそもそも作らせない」ことであり、`Bar.__post_init__` へ
+  time 契約検査を置く（受理集合は `EPOCH_CONVERTERS` から導出）。合成 fixture 13 件の是正は完了済
+  （5a5a053）。
+- **事実（実測 2026-08-18）**: `Bar.__post_init__` に契約検査を差し込む調査用プラグインで全スイート
+  （`simulator/tests` + `simulator/sim_ui/tests`）を実行したところ、失敗は **2 件のみ**に収束した。
+  1. `test_windowed_market_data.py::TestUnsupportedTimeRepresentation` — 意図どおり
+     （スライス 1 で検証点を test_bar.py 側へ移動する予定・duck-typed stub で窓契約は維持）。
+  2. `test_export_trade_markers.py::test_default_run_uses_recent_tail_and_survives_margin_call`
+     — **本番コードが原因**。`simulator/tools/export_trade_markers.py:83`
+     （`bridge_marketdata_df`）は実 marketdata の `date` 列（naive 文字列
+     `"2012-06-14 10:35:00"`）を `time` 列へ rename する**だけ**で epoch 化しないため、
+     `CsvOHLCRepository` が `Bar(time=str)` を作る。
+- **なぜ単純に epoch 化できないか（実測）**: マーカー時刻と candles 時刻は集合として一致する必要が
+  ある（同ファイル step 6 の包含検証）。両者の変換式は
+  `simulator/adapter/presenter/trade_markers.py:28` `_unix = int(pd.Timestamp(value).timestamp())`
+  （= naive を**ローカル TZ** と解釈）である。一方 `datawindow.half_open` / `simulator.domain.bar_time`
+  は naive を **UTC** と解釈する。すなわち naive datetime の解釈規則が chart 系と engine 系で
+  いまだに割れている。さらに `int(pd.Timestamp(np.int64(1755183000)).timestamp())` は **1**
+  （1970 年）になる（実測）ため、bridge だけを epoch 化すると presenter が黙って 1970 を出す。
+- **抜本的解決（要承認・UI 影響あり）**: naive datetime の解釈規則を 1 つに統一し、
+  `bridge_marketdata_df` を契約どおり epoch 秒へ是正したうえで、`trade_markers.py::_unix` と
+  `dataset.py::_to_unix_seconds` を同じ共有実体（`datawindow.half_open`）へ委譲する。
+  marketdata `date` 列が UTC / ブローカー時刻のどちらであるかの確定が前提であり、
+  参照実装の確認とユーザー承認なしに推測で決めない。
+- **関連**: ISSUE-403（本体・スライス 2/3/4 は完了）・ISSUE-401 🟡-2（naive=UTC の既存合意）。
+
+## ISSUE-412: [不具合・実測] `Bar.time` 手書き型判定の同型欠陥が本番 2 サイトに残存（session_calendar / walk_forward_cli）（2026-08-18）
+
+- **ステータス**: OPEN（新規起票。ISSUE-403 レビュー時に共有実体の利用者全 grep で検出・実測確定）
+- **重大度**: Medium（(A) は例外の出ない誤分類＝サイレント。ただし発火する保存済み spec は現存 0）
+- **事実（すべてレビューでの実測 2026-08-18）**:
+  - **(A)** `simulator/adapter/calendar/session_calendar.py:62` `Jp225SessionCalendar.closed_bar_indices`
+    が `pd.Timestamp(bar.time)` を呼ぶ。comma CSV 由来の `bar.time` は `np.int64` であり
+    ns 解釈で 1970-01-01 に落ち、`hour*60+minute = 0 < 61` により**場中バーが全件「閉鎖」に分類**
+    される（例外なし）。同一時刻を `np.datetime64` で与えると正しく開場判定。到達条件は
+    `session_calendar=jp225` ＋ comma-CSV 系 EA（TC24051901 / ProFitBand / weekly_vol_band）。
+    保存済み `sim_ui/data/*/spec.json` の jp225 指定 5 件は全て MT5 loader 系 EA のため現時点で発火せず。
+  - **(B)** `simulator/tools/walk_forward_cli.py:63` `_normalize_span` が
+    `isinstance(sample_bar_time, int)` で分岐する。`isinstance(np.int64(1), int)` は False（numpy 2.4.6
+    実測）のため、comma-CSV 由来の実型では int 秒でなく `np.timedelta64` が返り、同一時刻で span の
+    型が割れる。
+- **抜本的解決**: 両サイトとも `simulator.domain.bar_time.epoch_seconds` への委譲で除去する
+  （ISSUE-403 の d2c4324 が `_bar_period` / `tick_model` で行った是正と同一手法）。
+  恒久策は ISSUE-411（`Bar` 構築時の契約表明）の成立＝手書き判定の必要そのものの消滅。
+- **関連**: ISSUE-403（同型の原型）・ISSUE-411（恒久策）。
+
+## ISSUE-413: [申し送り] ISSUE-403 ブランチレビューの推奨事項（マージ後追随・7 件）（2026-08-18）
+
+- **ステータス**: OPEN（新規起票。レビュー判定は「条件付き承認」・条件は台帳更新のみ＝本コミットで充足）
+- **重大度**: Low〜Medium（いずれもマージブロッカーではない。番号はレビュー指摘に対応）
+- **項目（各 file:line と実測根拠はレビュー記録参照）**:
+  1. 受理入力の狭まり（ISO 文字列 comma CSV → `ConfigError`/exit 2）の**固定テスト**追加（文書化は
+     ISSUE-403 是正記録で実施済み）
+  2. `tick_model.py:187` のベクトル化 mask と `HalfOpenEpochWindow.contains` の一致を固定する
+    **機械的ゲート**（現状は実測 2006 点一致のみでゲート不在。ISSUE-407/408 の規則変更で乖離し得る）
+  3. `tick_model` の関数内 import（遅延化）を守らせるゲート（`test_tick_parquet.py` の既存流儀で
+     `simulator.adapter.execution.tick_model` を射程に追加）
+  4. `ticks_of` の searchsorted 化（実測 235 倍・28097 バー換算 132s→0.6s。項目 2 のゲート導入後に実施）
+  5. 「データが M1」前提の分散（`_M1_SECONDS` 2 箇所）と real_ticks 経路の時間足検査の不在
+     （bar_seconds 注入化 or `timeframe != "1m"` の fail-fast）
+  6. fixture コメント流儀の統一（143〜151 字 1 行コメント 8 ファイル vs 定数＋折返し 6 ファイル）
+  7. 軽微: `test_bar_period_time_representations.py` の int 事後条件の直接比較化・
+     `test_tick_model.py` の開始境界ちょうどのティック標本追加・`timestamp_epoch_seconds` の
+     `_tick_frame` 直接参照検討・epoch 列の 2 重計算解消・`main/__init__.py:274` ほか未使用 import 3 件
+- **関連**: ISSUE-403・ISSUE-407・ISSUE-408・ISSUE-410。
