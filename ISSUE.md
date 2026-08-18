@@ -7575,9 +7575,9 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   実装・テストは員数リテラルを持たず**キー集合の定義 1 箇所**から導出する
   （員数の二重管理をやめる＝取り残しの構造的除去）。
 
-## ISSUE-390: [不整合] 基本設計 F-9（ForwardMode≠0 ⇔ コメント末尾「with forward period」）が corpus 実測で 43/44 しか成立しない（2026-08-17・OPEN）
+## ISSUE-390: [不整合] 基本設計 F-9（ForwardMode≠0 ⇔ コメント末尾「with forward period」）が corpus 実測で 43/44 しか成立しない（2026-08-17・RESOLVED）
 
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-17。基本設計 v1.1.2 で F-9 本文と T-05 の合否基準を実測へ訂正。回帰テスト `simulator/tests/regression/test_header_comment_consistency.py` が「不一致集合＝既知の 1 ファイル」を**集合等価**で固定し、既知不一致が解消した場合にも落ちる形にした）
 - **重大度**: Medium（受入テスト T-05「44/44 一致」を実装どおりに書くと必ず失敗する。
   ヘッダコメントを検証の補助情報として使う設計判断の前提が崩れる）
 - **事実（実測 2026-08-17・字句層実装と本体の 2 系統で独立に再現）**:
@@ -7745,3 +7745,36 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
      許容外の符号化を直接渡した文書は、構築時ではなく書出し時に Fail-Stop する。
   3. ISSUE-390（F-9 の合否基準）が OPEN のため、受入テスト T-05（regression スイート）は未実装。
      本ラウンドで追加したのは `parse_header_comment` の単体テストのみ。
+
+## ISSUE-395: [不具合] TESTER_SETTINGS 変換層レビューで検出した 5 件（TZ 復元漏れ・終了コード表の 3 重化・成功コードの複製・N-01 理由文の乖離・未実証値を「近似でない」と断定）（2026-08-18・IN_PROGRESS）
+
+- **ステータス**: IN_PROGRESS（是正中。Red 先行で検出テストを追加してから修正する方針で着手）
+- **重大度**: Medium（いずれも沈黙して誤りを伝える型。既存テストは 1 件も検出していなかった）
+- **事実（すべてレビューの実測。本体側の申告値も独立に再現され一致）**:
+  1. **TZ 復元漏れ**: `test_tester_window_equivalence.py` の `restore_tz` は `yield; time.tzset()` のみで、
+     フィクスチャ終了順が LIFO のため monkeypatch の undo より先に `tzset()` が走る。結果
+     `TZ=Asia/Tokyo` のまま復元され以降の全テストへ JST が漏れる（実測 `tzname=('JST','JST')`）。
+     現時点の顕在故障は 0（`TZ=Asia/Tokyo` で全件 2835 passed）だが、順序依存の間欠故障の芽。
+  2. **終了コード翻訳の 3 重化**: 値 2 / 1 の所在は `adapter/controller.py:62`・`main/__init__.py:658,660`・
+     `main/tester_settings/run_from_settings.py:57-58` の 3 箇所。しかも直上コメントが主張する
+     「既存 2 箇所との一致はテストで固定する」に対応する検定が **0 件**（実証なき断定）。
+  3. **成功コードの複製**: `SUCCESS_EXIT_CODE` を宣言しながら `math_calculations.py:84` が生リテラル `0`
+     を返す。現配置では参照すると循環 import になる＝定数の置き場所の誤り。
+  4. **N-01 の理由文の乖離**: 理由文は「実行可能な EA は現行 `_EA_FACTORIES` の登録集合に限られます」と
+     書くが、実装は注入された `known_ea_names` を見る。実測で `_EA_FACTORIES` は 5 件・
+     `SymbolSpecCatalog.ea_names()` は 6 件（`TC24051901` を含む）で、両者の関係を固定する検定は 0 件。
+  5. **未実証値の断定**: `MEASURED_EXECUTION_DELAYS`（実測済みの意）に `0` を含めており、
+     `ExecutionMode=0 → approximate=False` になる。導出元 `enums.py` は同値を「暫定（TBD-08）」と
+     明記しており、未実証の値が「近似ではない」として呼出側へ伝わっていた。
+- **併せて訂正（ISSUE-393 の残存リスク記述の誤り）**: `metrics_spec.py:172` の `RuntimeWarning` は
+  「空カーブが原因」ではない（実測: 空カーブでも `initial_deposit>0` なら警告は出ない）。真因は
+  **新規ファイル `math_calculations.py` の `INERT_DEPOSIT = 0.0`** で、`peak=[0.0]` により
+  `np.where` の除算部が両分岐とも評価され `0/0` を踏む。出力値は正しく（`0.0`）NaN は流出しない。
+  `INERT_DEPOSIT = 0.0` は「推定値を発明しない」という設計上正しい選択のため、根本除去は
+  `metrics_spec` 側を `np.divide(..., out=..., where=peak != 0)` へ変える対応になり**既存ファイル改変＝要承認**。
+- **併せて記録（追加検出）**: math 経路の非有限値は `profit_factor` だけでなく **`recovery_factor` も `inf`**。
+  JSON 直列化する呼出側があれば失敗するため、両方を明示して扱う。
+- **是正方針（原因除去）**: 1 は復元を monkeypatch に依存させず自己完結化。2 は既存翻訳を**実行して採取**し
+  新表と突合する検定を追加（値を書き写さない）。3 は `exit_codes.py` へ定数を移して双方が import。
+  4 は理由文を実装へ合わせ、注入集合と `_EA_FACTORIES` の関係を検定で固定。5 は実証状態の単一ソースを
+  `enums.ExecutionDelay` 側に置き、`0` は TBD-08 を理由に `approximate=True` とする。
