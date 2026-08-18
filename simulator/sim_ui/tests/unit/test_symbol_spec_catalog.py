@@ -72,6 +72,34 @@ def test_ea_names_derived_from_ea_factories_plus_default():
     assert names == sorted(set(names))
 
 
+def test_settlement_currency_is_required_without_default():
+    """`RunProfile.settlement_currency` は既定値を持たない（D-10 と同型の Fail-Stop）。
+
+    「たぶん JPY」を DTO の既定値に置くと、通貨を持たないデータセットが沈黙で通貨一致
+    （N-11 非該当）扱いになる。省略時は構築時点で `TypeError` にする。
+    """
+    import dataclasses
+
+    import pytest
+
+    field = {f.name: f for f in dataclasses.fields(RunProfile)}["settlement_currency"]
+    assert field.default is dataclasses.MISSING
+    assert field.default_factory is dataclasses.MISSING
+
+    with pytest.raises(TypeError):
+        RunProfile(
+            dataset="x", data_path="/x.csv", symbol="JP225", period="M1",
+            contract_size=10.0, digits=1, point_size=0.1, leverage=10.0,
+            volume_min=0.01, volume_max=100.0, volume_step=0.01, stops_level=0,
+        )
+
+
+def test_settlement_currency_reaches_the_run_options_payload():
+    """権威値が to_dict（＝run-options 応答）に載る。値の出典突合は MT5 ゲート側が持つ。"""
+    jp = [p for p in SymbolSpecCatalog().datasets() if p.symbol == "JP225"][0]
+    assert jp.to_dict()["settlement_currency"] == jp.settlement_currency
+
+
 def test_run_profile_exposes_eleven_backtest_keys():
     jp = [p for p in SymbolSpecCatalog().datasets() if p.symbol == "JP225"][0]
     d = jp.to_dict()

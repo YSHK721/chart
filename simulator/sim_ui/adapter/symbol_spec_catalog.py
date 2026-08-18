@@ -35,6 +35,30 @@ front にこれらのリテラルを持たせない（front リテラル 0）。
     系列未登録になる。よって本 MT5 データセットの profile は ``current_open``（→``open`` 系列）を
     権威値として供給する（front リテラル 0・UI フィールドを増やさない）。
 
+    settlement_currency（決済通貨・A-2 で恒久化）: TESTER_SETTINGS の非対象判定 N-11
+    （口座通貨 ≠ 銘柄の決済通貨を拒否）が突き合わせる**判定データ源の権威**。実測の出典は
+    4 点で一致する（憶測禁止・値をここ以外に書かない）:
+        1. ``simulator/tests/fixtures/mt5/ma_slope_jp225_202501/case.yaml`` L20
+           ``symbol.currency: JPY``（L13 コメント「銘柄仕様 (実 MT5 由来の確定値)」の直下）。
+        2. ``.../expected/report.json`` L19 ``"settings"."currency": "JPY"``
+           （実 MT5 ストラテジーテスター出力＝数値の最終オラクル。テスター口座の通貨）。
+        3. ``.../mt5_report/tester.log`` L13 ``initial deposit 10000 JPY, leverage 1:10``。
+        4. ``.../expected/report.json`` L29 ``settings.derived.note``
+           ``profit=(exit-entry)*lot*contract; 0.1lot*10=1 JPY per price unit``。
+    2 と 3 は**口座通貨**、1 は銘柄仕様ブロックの記載、4 は**損益の建て通貨**（＝銘柄の
+    決済/profit 通貨）である。決済通貨の直接証拠は 4 であり、1 がそれと同じ JPY を銘柄仕様
+    として記録している。2・3 との一致は「本 fixture は口座通貨＝決済通貨のケース」（N-11 非
+    該当）であることを示すにとどまり、MT5 側が通貨不一致を拒否するという主張はここでは
+    していない（未検証・拡大解釈をしない）。
+    一致は ``sim_ui/tests/integration/test_run_options_mt5_gate.py`` が fixture から
+    直接引いて機械的に固定する（期待値をテスト側にリテラルで持たない）。
+
+    決済通貨は**フォーム投入 body には載せない**: ``SymbolSpec``（``usecase/models.py`` の
+    8 フィールド・実測）にも ``build_interactor`` の引数にも通貨は無い（実測: main/__init__.py
+    に ``currency`` の出現 0 件）。載せると既存 backtest verbatim 契約の byte 等価が壊れる。
+    front の投入キー許可リスト（``sim_execution_panel_view.js`` の ``PROFILE_KEYS``）は 11 キーの
+    ままであり、``to_dict()`` にキーが 1 つ増えても投入 body は不変である。
+
     ea_name 一覧は ``simulator.main._EA_FACTORIES`` の keys＋既定 TC 経路から導出する（§12.1
     ハードコード禁止）。他銘柄は dataset 実体が確定するまで追加しない（YAGNI）。
 """
@@ -78,6 +102,9 @@ class SymbolSpecCatalog(RunOptionsPort):
                 point_size=0.1,
                 leverage=10.0,
                 stops_level=0,
+                # N-11（口座通貨 ≠ 決済通貨）の判定データ源。出典はモジュール docstring の
+                # 4 点（case.yaml L20 / report.json L19・L29 / tester.log L13）＝すべて JPY。
+                settlement_currency="JPY",
                 # --- gate-neutral（結果に効かない・承認済み設計値）---
                 volume_min=0.01,
                 volume_max=100.0,

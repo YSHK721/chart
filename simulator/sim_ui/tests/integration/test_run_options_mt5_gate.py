@@ -42,6 +42,38 @@ def test_catalog_constants_match_mt5_fixture():
     assert jp.symbol == sym["name"] and jp.period == "M1"
 
 
+def test_catalog_settlement_currency_matches_mt5_fixture():
+    """決済通貨も case.yaml を唯一のオラクルとする（A-2・D-10 の供給源恒久化）。
+
+    出典（実測・憶測禁止）:
+        case.yaml の ``symbol.currency``（＝銘柄仕様ブロック・「実 MT5 由来の確定値」）。
+        期待値をここにリテラルで書かない（fixture から引く＝単一ソース）。
+    """
+    sym = load_case(_CASE).config["symbol"]
+    assert "currency" in sym, "case.yaml に symbol.currency が無い（オラクル不在）"
+    jp = _jp225_profile()
+    assert jp.settlement_currency == sym["currency"]
+
+
+def test_catalog_settlement_currency_agrees_with_report_oracle():
+    """最終オラクル（expected/report.json）とも一致することを固定する。
+
+    case.yaml は「人が読むためのメタ要約」（case.yaml 冒頭コメント）であり、数値の最終
+    オラクルは report.json 側。report.json の 2 箇所が独立に JPY を示す（実測）:
+        - ``settings.currency``（L19）= 実 MT5 テスターの**口座通貨**。
+        - ``settings.derived.note``（L29）``0.1lot*10=1 JPY per price unit``
+          = **損益が JPY 建てで発生する**＝銘柄の決済（profit）通貨が JPY。
+    後者が決済通貨の直接証拠であり、前者との一致は「本 fixture では口座通貨＝決済通貨」
+    （N-11 非該当のケース）であることを示す。両方を固定して取り違えを検出する。
+    """
+    case = load_case(_CASE)
+    settings = case.expected["settings"]
+    assert settings["currency"] == case.config["symbol"]["currency"]
+    # 決済（profit）通貨の直接証拠。ここも fixture から引き、期待値をリテラルで持たない。
+    assert f"1 {case.config['symbol']['currency']} per price unit" in settings["derived"]["note"]
+    assert _jp225_profile().settlement_currency == settings["currency"]
+
+
 def _oscillating_csv(path: Path) -> Path:
     # 強い上下動で MADiff ゼロクロスを起こし TC が建玉を出す（contract_size が profit に効く）。
     rows = []
