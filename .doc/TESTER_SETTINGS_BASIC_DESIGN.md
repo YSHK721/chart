@@ -26,11 +26,11 @@ MetaTrader 5 ストラテジーテスターの **Settings タブ（実行条件�
 | 項目 | 内容 |
 |---|---|
 | 文書名 | MT5 ストラテジーテスター Settings タブ Python 移植 基本設計書 |
-| 版 | v1.1.1 |
+| 版 | v1.1.2 |
 | 作成日 | 2026-08-17（v1.1.0 改訂 2026-08-17、v1.1.1 改訂 2026-08-17） |
 | 設計対象 | バックテスト実行条件（Settings タブ）の設定モデル・`.ini` 双方向変換・現行 `simulator/` エンジンへの設定適用 |
 | 設計レベル | 基本設計（内部設計＝クラス粒度・実装仕様は対象外） |
-| 変更履歴 | v1.0.0: 初版（`sample/MQL5/Profiles/Tester/` 44 件および画像 2 枚の実測に基づく）。v1.1.0: ISSUE-384〜388 の一括是正（承認 2026-08-17）＝接続先を旧 `backtest` 設計から現行 `simulator/` 実装へ差し替え（§2.1・§5・§6.2）／参照パス実在化／技術スタック記載を実測値へ更新（CON-04・CON-07・§3.3）／検証層を framework 層 pydantic の既存規約へ再裁定（U-1・K-02）／Delays 実行拒否（旧 N-04）を撤回（§4.5.3）／§4.5 実行時セマンティクスを現行エンジン実装の実測に整合。v1.1.1: 内部設計 v1.0.1 との整合（ISSUE-389〜391・実装確定）＝規則 R1 の encoding 尊重・[Tester] キー 18・時間足 21 値 |
+| 変更履歴 | v1.0.0: 初版（`sample/MQL5/Profiles/Tester/` 44 件および画像 2 枚の実測に基づく）。v1.1.0: ISSUE-384〜388 の一括是正（承認 2026-08-17）＝接続先を旧 `backtest` 設計から現行 `simulator/` 実装へ差し替え（§2.1・§5・§6.2）／参照パス実在化／技術スタック記載を実測値へ更新（CON-04・CON-07・§3.3）／検証層を framework 層 pydantic の既存規約へ再裁定（U-1・K-02）／Delays 実行拒否（旧 N-04）を撤回（§4.5.3）／§4.5 実行時セマンティクスを現行エンジン実装の実測に整合。v1.1.1: 内部設計 v1.0.1 との整合（ISSUE-389〜391・実装確定）＝規則 R1 の encoding 尊重・[Tester] キー 18・時間足 21 値。v1.1.2: F-9 を実測（forward 有効 14 件中 13 件成立）へ訂正し T-05 の合否基準を既知不一致 1 件へ改訂（ISSUE-390） |
 
 ### 1.1 指示された 14 項目と本書の章対応
 
@@ -215,7 +215,7 @@ inpTimeFrame=0||0||0||49153||N
 | F-6 | `Model=4` ↔ コメント `real ticks` | `PRO!fit_Band.JP225.Daily.all_history.4.ini`（`Model=4` / `;… real ticks, entire history`） |
 | F-7 | `Dates=0` ↔ `entire history`、`Dates=2` ↔ `last year` | `TC24051903.JP225.Daily.all_history.100.ini`（`Dates=0`）、`PRO!fit_Band.JP225.Daily.last_year.0.ini`（`Dates=2` / `;… last year`） |
 | F-8 | `Optimization=0` ↔ コメントに最適化表記なし（`… visual test`）、`=1` ↔ `Full optimization`、`=2` ↔ `Genetic optimization` | `TC24051903.JP225.Daily.20200330_20240518.111.ini`（`Optimization=1` / `;Full optimization: …`）、`TC24051903.JP225_ver24051601.H8.all_history.121.ini`（`Optimization=2` / `;Genetic optimization: …`）、`…120.ini`（`Optimization=2` / `Genetic optimization`・forward なし） |
-| F-9 | `ForwardMode≠0` ↔ コメント末尾 `, with forward period` | `ForwardMode=3` の 11 件および `=4` の 3 件すべてでコメント末尾に一致。`ForwardMode=0` の 17 件では出現しない |
+| F-9 | `ForwardMode≠0` ↔ コメント末尾 `, with forward period`（**forward 有効 14 件中 13 件で成立**。v1.1.2 訂正・ISSUE-390） | `ForwardMode=3` の 11 件はすべて一致。`=4` の 3 件のうち 2 件が一致し、`TC24051903_24052301.JP225_ver24051601.H8.20120101_20121231.121.ini` の 1 件のみ末尾語を持たない（同ファイルは `ForwardDate=1970.01.01` の退化値を持つ唯一のファイルでもある＝F-17。因果は未実測）。`ForwardMode=0` の 17 件では出現しない |
 | F-10 | `ForwardMode=4` ⇔ `ForwardDate` 併記 | `ForwardMode=4` は 3 件、`ForwardDate` も 3 件、集合が一致（`TC24051903.JP225_ver24051601.Daily.all_history.101.ini` / `…H8.all_history.121.ini` / `TC24051903_24052301…20120101_20121231.121.ini`）。`ForwardMode∈{0,3}` の 28 件に `ForwardDate` は存在しない |
 | F-11 | `Visual` キーの有無は `Optimization` で決まる（`Visual` 欠落 ⇔ `Optimization∈{1,2}`） | `Visual` 38 件 = Indicator 13 件 + Expert かつ `Optimization=0` 25 件。欠落 6 件は `Optimization=1` の 2 件と `=2` の 4 件に一致 |
 | F-12 | Indicator テストは Expert 専用 8 キー（`Optimization` / `ForwardMode` / `Deposit` / `Currency` / `ProfitInPips` / `Leverage` / `ExecutionMode` / `OptimizationCriterion`）を持たない | 当該 8 キーの出現数がすべて 31（= Expert ファイル数）。Indicator 13 件は `Indicator` / `Symbol` / `Period` / `Model` / 期間 / `Visual` の 6 キーのみ |
@@ -743,7 +743,7 @@ MT5 UI の項目間活性/非活性依存を、**検証規則**（不整合を�
 
 | # | 非対象項目 | 非対象の理由 | 検出時点 | 送出例外 |
 |---|---|---|---|---|
-| N-01 | EA の売買ロジック | CON-01。画像の `260620-01_limit_stop.ex5` に対応する `.mq5` が不存在（F-19）。実行可能な EA は現行 `_EA_FACTORIES`（`simulator/main/__init__.py`）の登録集合 | 実行要求時（`ea_name` 未登録） | `ConfigError`。⚠️ 現行実装は未登録 EA を `_EA_FACTORIES.get(ea_name, _factory_tc24051901)` で**沈黙フォールバック**する（`main/__init__.py:434,520` 実測＝ISSUE-384 項 7）。これは Fail-Stop 方針違反であり、Settings 層の結線時に**変換層で登録集合を事前検証**して沈黙誤実行を遮断する（現行コード無改変で上流ガード） |
+| N-01 | EA の売買ロジック | CON-01。画像の `260620-01_limit_stop.ex5` に対応する `.mq5` が不存在（F-19）。実行可能な EA は**注入された `known_ea_names`**（SymbolSpecCatalog 由来・単一ソース） | 実行要求時（`ea_name` 未登録） | `ConfigError`。⚠️ 現行実装は未登録 EA を `_EA_FACTORIES.get(ea_name, _factory_tc24051901)` で**沈黙フォールバック**する（`main/__init__.py:434,520` 実測＝ISSUE-384 項 7）。これは Fail-Stop 方針違反であり、Settings 層の結線時に**変換層で注入集合を事前検証**して沈黙誤実行を遮断する。契約: 注入集合 ⊇ `_EA_FACTORIES` のキー、差分は既定フォールバック EA 名（`_factory_tc24051901`）のみ（検定で固定） |
 | N-02 | `Optimization` = 1 / 2 / 3 の最適化実行 | Settings 層からの最適化実行は対象外（単一パスのみ）。値 3 は意味未確定（TBD-04）。⚠️ simulator 本体の walk-forward/最適化機構は別経路であり本判定の対象外 | 実行要求時 | `UnsupportedSettingError` |
 | N-03 | `ForwardMode` の期間分割実行 | 分割位置が未確定（TBD-03） | 実行要求時 | `UnsupportedSettingError` |
 | N-04 | **（v1.1 で撤回・欠番）** ~~`ExecutionMode` の実行拒否~~ | 2026-08-17 裁定（ISSUE-387）: 現行エンジンが Delays=50 ms の MT5 実走を bit-exact 再現済みのため拒否を撤回。扱いは §4.5.3（パススルー・保証境界は実測済み組に限定・未実測値は近似メタ記録） | — | （送出しない） |
@@ -1121,7 +1121,7 @@ BacktestError
 | T-02 | 単体 | 画像プリセット（§4.7）の値検証 | §4.7 の 16 行写像表の全項目が期待値と一致（`Model=3` / `Period=M1` / `ExecutionMode=0` / `Visual=0` は暫定値として固定） | FR-01・FR-02 |
 | T-03 | 結合 | `Math calculations` の正常終了（**契約拡張 D-09 の完了後に実施**） | `data=None` で例外を送出せず、`trades == 0` / `deals == 0` / 終了コード 0 / `equity_curve` 長さ 0 / `profit_factor == inf` / `expected_payoff == 0.0`（§4.5.2 の全項目。⚠️ v1.0 の NaN 基準は現行実装と不一致のため置換） | FR-09 |
 | T-04 | 単体 | `Leverage` の証拠金への効き方 | `lot=1, contract_size=1, entry=40000` で `leverage=10` の `Margin` が `leverage=100` の 10 倍（`4000` 対 `400`。§5.4） | FR-07 |
-| T-05 | 回帰 | コメント行と設定値の整合突合（API-08） | 44 / 44 件で、コメントの Model 語（`every tick` / `m1 ohlc` / `open prices` / `real ticks`）・期間語（`entire history` / `last year` / 日付範囲）・forward 有無・テスト種別が `[Tester]` の値と一致 | FR-12・F-3〜F-9 |
+| T-05 | 回帰 | コメント行と設定値の整合突合（API-08） | Model 語・期間語・テスト種別・symbol・period は 44 / 44 件で `[Tester]` の値と一致。forward 有無のみ**不一致が既知の 1 件**（F-9・ISSUE-390）であり、それ以外の不一致が 1 件でも出れば不合格（v1.1.2 訂正） | FR-12・F-3〜F-9 |
 | T-06 | 単体 | 異常系（例外送出） | E-01〜E-08 の各例外について送出テスト 1 件以上、合計 20 ケース以上が期待例外を送出し、`context` に指定情報を含む | NFR-03 |
 | T-07 | 単体 | 決定論性 | 44 件を各 2 回ロードし、全フィールドが等価（`==`）である | NFR-01 |
 | T-08 | 単体 | 性能 | 1 ファイル ≤ 10 ms、44 件一括 ≤ 500 ms（中央値） | NFR-04 |

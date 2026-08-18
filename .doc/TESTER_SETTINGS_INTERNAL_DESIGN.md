@@ -23,13 +23,13 @@
 | 項目 | 内容 |
 |---|---|
 | 文書名 | MT5 ストラテジーテスター Settings タブ Python 移植 内部設計書 |
-| 版 | v1.0.2 |
-| 作成日 | 2026-08-17（v1.0.1 / v1.0.2 改訂 2026-08-17） |
+| 版 | v1.0.4 |
+| 作成日 | 2026-08-17（v1.0.1 / v1.0.2 / v1.0.3 改訂 2026-08-17） |
 | 上位文書 | `TESTER_SETTINGS_BASIC_DESIGN.md` v1.1.1 |
 | 設計レベル | 内部設計（モジュール詳細設計・物理データモデル・API 仕様・テスト設計） |
 | 対象範囲 | 基本設計書 §8.5.1 の D-01〜D-11 の確定、§8.5.3 受入条件 T-01〜T-09 のテストケース化 |
 | 対象外 | 実装コードそのもの・EA 売買ロジック（CON-01）・エンジン内部アルゴリズム・MT5 実機検証（CON-06） |
-| 変更履歴 | v1.0.0: 初版。v1.0.1: ISSUE-389〜391 の是正＝API-03/04 の事後条件・source 保持・SettingsActivationError context・規則 Q の rule_id・[Tester] キー数 18・時間足 21 値・EffectiveSettings の source/header_comment 破棄・字句層 9 関数・バリデータ書式 ASCII 限定（以上は実装・テストで実証済み）。v1.0.2: ISSUE-394 の是正を反映＝API-04 の送出例外の射程・document_from_entries と serialize の事前条件・format_date_token の追加・条件付きスキップ機構の所在。／T-05 の合否基準を「既知の不一致 1 件」へ改訂（**記述のみ。T-05 自体は ISSUE-390 が OPEN のため未実装**） |
+| 変更履歴 | v1.0.0: 初版。v1.0.1: ISSUE-389〜391 の是正＝API-03/04 の事後条件・source 保持・SettingsActivationError context・規則 Q の rule_id・[Tester] キー数 18・時間足 21 値・EffectiveSettings の source/header_comment 破棄・字句層 9 関数・バリデータ書式 ASCII 限定（以上は実装・テストで実証済み）。v1.0.2: ISSUE-394 の是正を反映＝API-04 の送出例外の射程・document_from_entries と serialize の事前条件・format_date_token の追加・条件付きスキップ機構の所在。／T-05 の合否基準を「既知の不一致 1 件」へ改訂（**記述のみ。T-05 自体は ISSUE-390 が OPEN のため未実装**）。v1.0.3: Phase 7 実装確定事項の反映＝EngineBinding 設計（RunProfile 削除・SymbolSpec 採用）、実行 facade 戻り値（TesterRunMetadata 追加）、近似判定訂正（ExecutionMode=0）、N-01 判定源修正、ea_stem 事後条件明記、§9 テスト戦略追記、§9.2 性能実測値（ISSUE-382） |
 
 ### 1.1 引き渡し項目 D-01〜D-11 の確定結果（索引）
 
@@ -121,10 +121,13 @@ simulator/
 │       └── models.py                       # IniLine / IniDocument / DateRange / TesterInput /
 │                                           #   TesterSettings / EffectiveSettings
 ├── adapter/
-│   └── tester_settings/
-│       ├── __init__.py
-│       ├── ini_codec.py                    # 字句層（UTF-16・CRLF・行分解・復元・上限検査）
-│       └── header_comment.py               # 1 行目コメントの読取専用解析（API-08）
+│   ├── tester_settings/
+│   │   ├── __init__.py
+│   │   ├── ini_codec.py                    # 字句層（UTF-16・CRLF・行分解・復元・上限検査）
+│   │   └── header_comment.py               # 1 行目コメントの読取専用解析（API-08）
+│   ├── strategy/null_strategy.py           # NullStrategy（StrategyPort・v1.0.3 で配置変更）
+│   ├── indicator/null_registry.py          # NullIndicatorRegistry（IndicatorPort・同上）
+│   └── execution/null_tick_model.py        # NullTickModel（TickModelPort・同上）
 ├── framework/
 │   └── tester_settings/
 │       ├── __init__.py
@@ -136,9 +139,24 @@ simulator/
         ├── ea_input_map.py                 # EA 入力名→build_interactor 引数の 2 項束縛（D-02）
         ├── kwargs_mapper.py                # EffectiveSettings → build_interactor kwargs
         ├── window.py                       # 期間写像と適用結果の事後検証（D-11）
+        ├── unsupported.py                  # 非対象判定 N-01〜N-16 の宣言表（v1.0.3 追加）
+        ├── exit_codes.py                   # 終了コードの翻訳（v1.0.3 追加）
         ├── math_calculations.py            # MATH_CALCULATIONS 実行経路（D-09）
-        └── run_from_settings.py            # 実行 facade（非対象判定→実行→exit code）
+        └── run_from_settings.py            # 実行 facade（結線のみ。判定・翻訳は上記へ委譲）
 ```
+
+**v1.0.3 の配置変更（2 件・実装確定）**:
+
+1. Null 実装は `adapter/tester_settings/null_ports.py` に置かない。既存の Null 実装
+   （`adapter/calendar/session_calendar.py` の `NullCalendar`・`adapter/position_manager/` の
+   `NullPositionManager`）と同じく**技術関心のディレクトリ**へ置き、対応する Port ABC を継承する
+   （既存 production 実装 12/12 が Port を継承しているという実測に合わせた）。
+   `adapter/tester_settings` は自パッケージ docstring で「`.ini` を読み書きする技術ドライバ」と
+   宣言しており、`NullStrategy` はその責務に属さない。
+2. 非対象判定（`unsupported.py`）と終了コード翻訳（`exit_codes.py`）を `run_from_settings` から
+   分離した。前者は判定の所有者を一意にするため（同じ判定が 2 モジュールに現れていた）、
+   後者は `math_calculations` と `run_from_settings` の双方が参照する定数の置き場所として
+   （旧配置では参照すると循環 import になった）。
 
 `simulator/tests/` 配下に追加するテストモジュールは §9.5 に列挙する。
 
@@ -187,8 +205,9 @@ flowchart LR
 | I-3 | `pydantic` の import は `framework/tester_settings/validation.py` の 1 箇所のみ | 同上 |
 | I-4 | `usecase` / `adapter` / `framework` の `tester_settings` は `simulator.main` を import しない | 同上 |
 | I-5 | 既存ファイルの改変 0 件 | `test_no_existing_file_modified`（§9.4）＋レビュー時 `git diff --stat` 目視 |
+| I-6 | `simulator/main/tester_settings/*` は `simulator.sim_ui` を import しない（AST 検査で固定） | 循環依存の遮断・層間の懸念分離。許容・必須キーは `inspect.signature(build_interactor)` から導出（`kwargs_mapper.interactor_key_sets()`）。`sim_ui` の公開 API は呼ばない |
 
-理由: 「同じコードを手書き複製するな」「制約は機械的検査で担保」（プロジェクト既存合意）。I-1〜I-5 は宣言ではなくテストで固定する。
+理由: 「同じコードを手書き複製するな」「制約は機械的検査で担保」（プロジェクト既存合意）。I-1〜I-6 は宣言ではなくテストで固定する。
 
 ---
 
@@ -714,17 +733,21 @@ stateDiagram-v2
 | API-06 | `to_interactor_kwargs(settings: TesterSettings, binding: EngineBinding) -> InteractorKwargs` | `binding` の各値が供給済み | `build_interactor` の許容キー集合に含まれるキーのみを持つ | E-03,07,08 / `ConfigError` |
 | API-07 | `resolve_data_window(effective: EffectiveSettings) -> DataWindow` | `effective.date_range` が非 `None` | `marketdata_window` は UTC aware・半開 | `ConfigError` |
 | API-08 | `parse_header_comment(comment: str \| None) -> HeaderCommentInfo \| None` | — | 解析不能時 `None`（例外なし） | なし |
-| 実行 A | `run_from_settings(settings: TesterSettings, binding: EngineBinding, *, output_dir: Path \| None = None) -> tuple[int, BacktestResult \| None]` | — | 終了コードは既存規約（成功 0 / `ConfigError` 2 / `BacktestError` 1） | E-03,07,08 / `ConfigError` |
-| 実行 B | `run_math_calculations(effective: EffectiveSettings, binding: EngineBinding) -> tuple[int, BacktestResult]` | `tick_model == MATH_CALCULATIONS` | `stats.trades == 0`・exit 0 | E-03 |
+| 実行 A | `run_from_settings(settings: TesterSettings, binding: EngineBinding) -> tuple[int, BacktestResult \| None, TesterRunMetadata]` | — | 終了コードは既存規約（成功 0 / `ConfigError` 2 / `BacktestError` 1 ）。`output_dir` 引数は削除（実装が使用しない） | E-03,07,08 / `ConfigError` |
+| 実行 B | `run_math_calculations(effective: EffectiveSettings, binding: EngineBinding) -> tuple[int, BacktestResult, TesterRunMetadata]` | `tick_model == MATH_CALCULATIONS` | `stats.trades == 0`・exit 0 | E-03 |
 
 補助 DTO:
 
 ```python
 @dataclass(frozen=True)
 class EngineBinding:
-    profile: RunProfile                 # SymbolSpecCatalog 由来（銘柄仕様 11 キー・単一ソース）
+    symbol_spec: SymbolSpec             # simulator/usecase/models.py の DTO・8 フィールド（銘柄仕様の権威）
+    symbol: str                         # SymbolSpec.symbol と一致検証用（§8.1）
+    period: str                         # 表示ラベル（時間足未使用のため整合は V-3 で担保）
+    data_path: str | None               # バー系列のパス。None は「バー系列を供給しない」＝規則 S の判定入力
     known_ea_names: frozenset[str]      # SymbolSpecCatalog.ea_names() 由来（N-01 事前検証用）
     settlement_currency: str            # D-10。既定値を持たない（必須注入）
+    ea_params: dict[str, str]           # TesterInput のうち [TesterInputs] セクション由来。必須注入
     stop_out_level: float = 0.0         # 現行既定（build_interactor:459 実測）
     tick_store_root: str | None = None  # REAL_TICKS 用（未供給時は N-05 で拒否）
 
@@ -763,7 +786,15 @@ class HeaderCommentInfo:
 
 ### 7.2 セキュリティ
 
-`Expert` / `Indicator` の値をファイルシステムアクセスに用いない（K-18）。実装上の担保: 変換層は `subject_path` から**語幹のみ**を取り出す純関数 `ea_stem(subject_path: str) -> str` を通し、`pathlib.Path` を経由しない（`\` 区切りは Windows 表記であり POSIX の `Path` では分割されないため、`str.rsplit("\\", 1)[-1]` と `str.removesuffix(".ex5")` で処理する）。テストで `..\..\etc\passwd.ex5` が `passwd` になり、かつ `known_ea_names` に無いため `ConfigError` になることを固定する。
+`Expert` / `Indicator` の値をファイルシステムアクセスに用いない（K-18）。実装上の担保: 変換層は `subject_path` から**語幹のみ**を取り出す純関数 `ea_stem(subject_path: str) -> str` を通し、`pathlib.Path` を経由しない（`\` 区切りは Windows 表記であり POSIX の `Path` では分割されないため、`str.rsplit("\\", 1)[-1]` と `str.removesuffix(".ex5")` で処理する）。
+
+**`ea_stem` の事後条件（最後の `\` 以降を取り、末尾の `.ex5` を 1 回だけ除去）**:
+
+- `ea_stem("a.ex5.ex5")` → `"a.ex5"`（`.ex5` を 1 回だけ削除）
+- `ea_stem("dir/sub/EA.ex5")` → `"dir/sub/EA"`（`/` は削除されず、`\` のみで分割）
+- `ea_stem("..\\..\\etc\\passwd.ex5")` → `"passwd.ex5"`（最後の `\` 以降のみを取得・パストラバーサル無害化）
+
+用途は `known_ea_names` への集合所属判定のみであるため、上記仕様により安全性に影響しない（登録されていない名前は後続の非対象判定で `ConfigError`）。テストで `ea_stem("..\..\etc\passwd.ex5")` が `"passwd.ex5"` になり、かつ `known_ea_names` に無いため `ConfigError` になることを固定する（T-15）。
 
 ### 7.3 監査ログ（D-07）
 
@@ -823,20 +854,21 @@ def run_math_calculations(effective, binding) -> tuple[int, BacktestResult]:
     return 0, interactor.execute(request)
 ```
 
-**この経路が §4.5.2 の全項目を満たす根拠（コード読解による。実測確定は T-03）**:
+**この経路が §4.5.2 の全項目を満たす根拠（実装実読＋実行実測確定）**:
 
-| §4.5.2 の項目 | 根拠（実読した行） |
-|---|---|
-| ティック列長 0・メインループ 0 回 | `run_backtest.py:301` の `for bar_index, bar in enumerate(bars)` が空列で 0 回 |
-| every-tick 経路へ落ちない | `run_backtest.py:238-241` の分岐条件は `tick_model=="real_ticks"` または `pending_lifecycle`。既定 config は双方偽 |
-| 指標前計算なし | `self._indicators.update(bar_index)` はループ内（`:303`）のため未呼出 |
-| `trades=0` / `deals=0` | `trades`/`deals` は空リストのまま `compute_stats` へ（`:504-509`） |
-| `profit_factor == inf` | `metrics_spec.py:100-104`（`gross_loss()==0 → math.inf`） |
-| `expected_payoff == 0.0` | `metrics_spec.py:107-111`（`n==0 → 0.0`） |
-| 例外を出さない | `session_gate.py:48-49`（calendar `None` → 空集合）、`metrics_spec.py:154-160`（`_full_balance` が `[deposit]` を返すため空配列の `min`/`max` にならない）、`mt5_parity.py:92-108`・`:171-187`（空列・`n<2` ガード） |
-| `equity_curve` / `balance_curve` 長さ 0 | 追記経路がループ内のみ |
-| 終了コード 0 | facade が例外なしで 0 を返す（既存 `run_backtest` の翻訳規約と同値） |
-| 口座モデルを構築しない | `Account` は生成されるが `open_positions` は空で参照されない。`deposit` が inert のため `initial_deposit` は 0.0 を渡す（`stats.initial_deposit` に反映される点は §8.5 のメタで明示） |
+| §4.5.2 の項目 | 実測確定状態 | 実測値・行番号 |
+|---|---|---|
+| ティック列長 0・メインループ 0 回 | 実測済み | 実行：ティック列長 0。コード：`run_backtest.py:301` |
+| every-tick 経路へ落ちない | 実測済み | 実行：経路不進入。コード：`run_backtest.py:238-241` |
+| 指標前計算なし | 実測済み | 実行：指標更新なし。コード：`:303` |
+| `trades=0` / `deals=0` | 実測済み | 実行値：`trades=0, deals=0`。コード：`:504-509` |
+| `profit_factor == inf` | 実測済み | 実行値：`profit_factor=inf`。コード：`metrics_spec.py:100-104` |
+| `recovery_factor == inf` | 実測済み | **実行値：`recovery_factor=inf`（非有限値は 2 つ）** |
+| `expected_payoff == 0.0` | 実測済み | 実行値：`expected_payoff=0.0`。コード：`metrics_spec.py:107-111` |
+| 例外を出さない | 実測済み | 実行：例外なし。コード：`session_gate.py:48-49`、`metrics_spec.py:154-160`、`mt5_parity.py:92-108` |
+| `equity_curve` / `balance_curve` 長さ 0 | 実測済み | 実行値：両者の長さ 0 |
+| 終了コード 0 | 実測済み | 実行値：`exit_code=0` |
+| 口座状態 | 実測済み | 実行：`initial_deposit=0.0` で構築。inert フィールド = 0.0 の扱いは §8.5 で明示 |
 
 **既存 4 モード bit-exact 不変の担保（D-09 の通過条件）**:
 
@@ -930,17 +962,25 @@ def verify_window_applied(request: RunBacktestRequest, window: DataWindow) -> No
 | 性能 | `build_interactor` 実行後の O(1) 検査（先頭・末尾バーのみ） | O(1) | データ量に比例した書出しコスト |
 | 判定 | **採用** | 棄却 | 棄却（K-14「検証・読込は Repository に委ねる」に反する） |
 
-### 8.5 実行メタ情報
+### 8.5 実行メタ情報と実測確定
 
 ```python
 @dataclass(frozen=True)
 class TesterRunMetadata:
     tick_model: str            # Settings 層の語彙（"math_calculations" を含む）
-    approximate: bool          # EVERY_TICK（N-06）または未実測 delay 値のとき True
-    approximation_reasons: tuple[str, ...]   # ("N-06", "delay=21 未実測") 等
-    execution_delay: int | None
+    approximate: bool          # EVERY_TICK（N-06）・ExecutionMode=0（近似・TBD-08）のとき True
+    approximation_reasons: tuple[str, ...]   # ("N-06", "execution_mode=0: 未確定") 等
+    execution_delay: int | None               # 生値保持（意味は未実証）
     inert_fields: tuple[str, ...]
 ```
+
+**近似判定の確定（TBD-08 は未解決）**:
+
+| # | ExecutionMode | 近似度 | 実証状態 | 備考 |
+|---|---|---|---|---|
+| 1 | 0 | 近似 | **未実証** | TBD-08。値の意味が未確定のため、この値での実行は近似と記録し、MT5 再現を保証しない |
+| 2 | 50（`DELAY_50MS`） | **確定** | **実測済み** | golden / confirmation ケース群で MT5 bit-exact 一致を確認 |
+| その他 | — | 不明 | 未実証 | 非対象（実行時に E-07 で拒否） |
 
 `MATH_CALCULATIONS` 経路では `BacktestConfig.tick_model` が既定値（`"every_tick"`）のままエンジンへ渡る（ティックを生成しないため結果には影響しない）。この事実を隠さないため、Settings 層の語彙は `TesterRunMetadata.tick_model` に必ず記録し、結果と併せて呼出側へ返す。
 
@@ -971,7 +1011,7 @@ class TesterRunMetadata:
 | T-05 | `test_header_comment_consistency.py`（⚠️ **未実装**。ISSUE-390 が OPEN で合否基準が未確定のため保留。`parse_header_comment` 単体の検定は `tests/unit` 側で先行実施する） | corpus 44 件で `parse_header_comment` の結果と `[Tester]` 値（テスト種別・Model 語・期間語・forward 有無・symbol・period）を突合 | 不一致は既知の 1 件のみ（`TC24051903_24052301.JP225_ver24051601.H8.20120101_20121231.121.ini`・ISSUE-390） | `sample/` 存在時 |
 | T-06 | `test_settings_exceptions_raised.py` | E-01〜E-08 の送出 24 ケース（内訳: E-01 が 6、E-02 が 5、E-03 が 3、E-04 が 5、E-05 が 2、E-06 が 1、E-07 が 5、E-08 が 3。E-07 は N-02/N-03/N-07/N-09/N-15 を各 1） | 期待例外クラス一致＋`context` の必須キーが全て存在＋`error_id`/`rule_id` が §4.5.2 の表と一致 | 常時（合成データ） |
 | T-07 | `test_settings_determinism.py` | corpus 44 件を各 2 回ロードし `==` 比較（`source` を含む） | 44/44 で等価 | `sample/` 存在時（合成 12 件版は常時） |
-| T-08 | `test_settings_performance.py` | `time.perf_counter` で 1 ファイル 100 回試行の中央値 ≤ 10 ms、44 件一括 10 回試行の中央値 ≤ 500 ms、`tracemalloc` ピーク ≤ 1 MB | 全項目達成 | `sample/` 存在時（合成版は常時・件数換算で判定） |
+| T-08 | `test_settings_performance.py` | `time.perf_counter` で 1 ファイル 100 回試行の中央値 ≤ 10 ms、44 件一括 10 回試行の中央値 ≤ 500 ms、`tracemalloc` ピーク ≤ 1 MB | 実測済み: 1 ファイル中央値 0.109 ms（予算 10 ms）、一括中央値 4.08 ms（予算 500 ms）、ピーク 13.1 KiB（予算 1 MiB）。全項目達成 | `sample/` 存在時。合成版は常時実行・1 ファイル中央値を按分換算 |
 | T-09 | `test_corpus_structural_facts.py` | F-1・F-2・F-10・F-11・F-12・F-16 を corpus 全件で検証。加えてファイル件数 44、`[Tester]` 内キー重複 0 件 | 全件成立 | `sample/` 存在時 |
 
 追加テスト（本書で新設）:
@@ -984,6 +1024,14 @@ class TesterRunMetadata:
 | T-13 | 例外階層ガード: `SettingsError` 系 8 クラスが `ConfigError` の派生であり、既存の終了コード翻訳（`except ConfigError` → 2）に載ること | D-04 |
 | T-14 | レイヤ不変条件 I-1〜I-4 の AST 検査 | §3.3 |
 | T-15 | `ea_stem()` のパストラバーサル無害化（`..\..\x.ex5` → `x` かつ未登録で `ConfigError`） | K-18 |
+
+### 9.2.1 宣言ガードとテスト基盤の不変条件（v1.0.3 追加・実装確定）
+
+| 項目 | 確定内容 |
+|---|---|
+| 宣言ガードの走査対象 | 無限定断定の禁止（「全域関数」等）と値の表記規則の単一宣言を検査する走査は、`SETTINGS_PACKAGES`（`usecase` / `adapter` / `framework` / **`main`** の 4 パッケージ）＋ `SETTINGS_EXTRA_MODULES` という**単一の宣言**から対象を導く。走査範囲が空でないことを検査するテストを併設する（範囲欠落による空振りを塞ぐ）。⚠️ v1.0.2 までは `main` が走査対象になく、`ea_stem` の「例外: なし（全域関数）」がすり抜けていた（実測・ISSUE-395） |
+| プロセス TZ の復元 | `local_timezone_restored` コンテキストマネージャが後始末で**復元の成立を自己検証**する（`os.environ["TZ"]` と `time.tzname` の双方）。テスト定義順に依存しない。復元処理を無力化した場合に失敗が報告されることを常設テストで固定する |
+| 終了コード翻訳の突合 | 既存 2 箇所（`adapter/controller.py`・`main/__init__.py`）の翻訳は**実行して値を採取**し、`main/tester_settings/exit_codes` の表と突合する（値をテストへ書き写さない） |
 
 ### 9.3 corpus 依存テストの扱い（D-06 の確定）
 
@@ -1087,6 +1135,9 @@ G-1 は宣言でなく実行で確認する（「制約は機械的検査で担�
 | A-2 | `RunProfile` / `SymbolSpecCatalog` に決済通貨フィールドを追加 | `sim_ui/usecase/run_options_ports.py`・`sim_ui/adapter/symbol_spec_catalog.py` | N-11 の判定データ源を単一ソース化（D-10 の恒久化） | `RunProfile.to_dict()` の応答が 1 キー増える（UI 側への影響確認が必要） |
 | A-3 | `build_interactor` に全 Repository 共通の取得窓引数（または `market_data` 注入点）を追加 | `main/__init__.py` | MT5 ローダ EA での期間指定実行（L-2 解消） | 同上（bit-exact ゲート再確認） |
 | A-4 | corpus 44 件を `tests/fixtures/` へ複製しコミット | 新規バイナリ 44 件 | CI での 44 件往復回帰 | UTF-16 バイナリのコミット可否（ISSUE-385）。`sample/` は Git 追跡外 |
+| A-5 | `BacktestController` に interactor の公開取得点を設ける | `adapter/controller.py` | `run_from_settings` が非公開属性 `controller._interactor` へ到達している状態を解消（現状は既存 `main/__init__.py` も同じ属性へ到達しており既存慣行の踏襲＝ISSUE-395） | 既存の入口アダプタの公開面が増える |
+| A-6 | 終了コード翻訳を `main/tester_settings/exit_codes` へ委譲させる | `adapter/controller.py`・`main/__init__.py` | 翻訳表が 3 箇所に分散した状態の物理的統合（現状は突合テストで一致を固定・ISSUE-395） | 既存 2 箇所の挙動不変の再確認が必要 |
+| A-7 | `metrics_spec.py` の除算を `np.divide(..., out=..., where=peak != 0)` へ | `usecase/metrics_spec.py` | `math_calculations` の正常系で毎回出る `RuntimeWarning` の根本除去。真因は空カーブではなく `INERT_DEPOSIT = 0.0`（`peak=[0.0]` で `0/0` を踏む）＝実測・ISSUE-395。出力値は正しく NaN は流出しない | 既存の統計計算に触れるため MT5 突合ゲート再確認が必要 |
 
 ---
 
