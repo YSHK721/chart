@@ -39,7 +39,9 @@ class Bar:
         # time の型契約を最初に表明する（OHLC 検査より先。未対応表現の Bar を作らせない）。
         if not is_supported_time(self.time):
             raise ConfigError(
-                f"Bar.time が未対応の時刻表現です: {type(self.time).__name__}",
+                f"Bar.time が未対応の時刻表現です: {type(self.time).__name__}。"
+                "time は epoch 秒 int（numpy.int64 可）または numpy.datetime64 を渡してください"
+                "（datetime / pandas.Timestamp / ISO 文字列は Bar.time の契約外です）",
                 context={
                     "value_type": type(self.time).__name__,
                     "value": str(self.time),

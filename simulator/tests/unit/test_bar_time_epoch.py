@@ -91,29 +91,30 @@ class TestSingleSource:
 
     def test_converters_table_is_the_extension_point(self):
         # 表現の追加は本表への 1 エントリ追加で済む（OCP）。
-        assert all(callable(m) and callable(c) for m, c in EPOCH_CONVERTERS)
+        assert all(callable(m) and callable(c) and isinstance(t, str)
+                   for m, c, t in EPOCH_CONVERTERS)
         assert len(EPOCH_CONVERTERS) >= 3
 
 
 class TestIsSupportedTime:
-    """受理集合の公開述語（ISSUE-411 スライス 3: `Bar` 契約表明の判定に使う）。
+    """`Bar.time` 契約の公開述語（ISSUE-411 スライス 3 / レビュー 🔴-3）。
 
-    受理集合の定義は `EPOCH_CONVERTERS` が唯一持つ。述語はそこから導出され、
-    列挙を第 2 の場所へ書き写さない（写しが入ると本クラスの最後の検定が落ちる）。
+    `EPOCH_CONVERTERS` は **2 つの契約**のエントリを 1 表に載せている。
+      - ``"BAR"``: `Bar.time` の受理集合（epoch int / ``numpy.datetime64``）。
+        既存契約「`pd.Timestamp` 禁止」（`domain/trade_record.py` / `domain/exceptions.py`
+        ほかに明文）と一致する。
+      - ``"WINDOW"``: 窓境界の受理集合（``datetime``。aware / naive とも）。
+        窓境界は `main/tester_settings/window.py` が aware datetime で作る。
+    `is_supported_time` は **BAR タグのみ**を見る。`epoch_seconds` は両方を扱う
+    （窓境界の正規化に使うため。挙動は是正前と不変）。
     """
 
     @pytest.mark.parametrize(
         "value",
-        [
-            1_704_067_200,
-            np.int64(1_704_067_200),
-            np.datetime64("2024-01-01T00:00:00"),
-            datetime(2024, 1, 1),
-            datetime(2024, 1, 1, tzinfo=timezone.utc),
-        ],
-        ids=["int", "np.int64", "np.datetime64", "naive datetime", "aware datetime"],
+        [1_704_067_200, np.int64(1_704_067_200), np.datetime64("2024-01-01T00:00:00")],
+        ids=["int", "np.int64", "np.datetime64"],
     )
-    def test_supported_representations_are_accepted(self, value):
+    def test_bar_time_representations_are_accepted(self, value):
         from simulator.domain.bar_time import is_supported_time
 
         assert is_supported_time(value) is True
@@ -128,8 +129,36 @@ class TestIsSupportedTime:
 
         assert is_supported_time(value) is False
 
-    def test_predicate_agrees_with_epoch_seconds_on_every_input(self):
-        """述語と変換の受理集合が一致する（片方だけ広い／狭いを許さない）。"""
+    @pytest.mark.parametrize(
+        "value",
+        [datetime(2024, 1, 1), datetime(2024, 1, 1, tzinfo=timezone.utc)],
+        ids=["naive datetime", "aware datetime"],
+    )
+    def test_window_only_representations_are_not_bar_time(self, value):
+        """datetime は窓境界の表現であって `Bar.time` ではない（既存契約と整合）。
+
+        `pd.Timestamp` は `datetime` のサブクラスであり、ここが True を返すと
+        「`Bar.time` に `pd.Timestamp` 禁止」の明文より契約が広くなる（レビュー 🔴-3）。
+        """
+        from simulator.domain.bar_time import is_supported_time
+
+        assert is_supported_time(value) is False
+
+    def test_pandas_timestamp_is_not_a_bar_time(self):
+        """`pd.Timestamp` は datetime サブクラスだが `Bar.time` の受理集合ではない。"""
+        import pandas as pd
+
+        from simulator.domain.bar_time import is_supported_time
+
+        assert isinstance(pd.Timestamp("2024-01-01"), datetime)  # 前提の実測
+        assert is_supported_time(pd.Timestamp("2024-01-01")) is False
+
+    def test_bar_contract_is_a_subset_of_the_window_conversion_domain(self):
+        """述語が受理するものは必ず変換できる（BAR ⊆ epoch_seconds の定義域）。
+
+        逆は成り立たない（datetime は変換できるが `Bar.time` ではない）。その非対称は
+        2 契約を 1 表に載せている構造そのものであり、下の検定で明示する。
+        """
         from simulator.domain.bar_time import is_supported_time
 
         for value in [
@@ -138,18 +167,29 @@ class TestIsSupportedTime:
         ]:
             if is_supported_time(value):
                 epoch_seconds(value)  # 受理を宣言したなら変換できなければならない
-            else:
-                with pytest.raises(ConfigError):
-                    epoch_seconds(value)
+
+    def test_window_representations_convert_but_are_not_bar_times(self):
+        """WINDOW タグは `epoch_seconds` では扱えるが述語では拒否される。"""
+        from simulator.domain.bar_time import is_supported_time
+
+        value = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        assert epoch_seconds(value) == 1_704_067_200  # 窓境界としては変換できる
+        assert is_supported_time(value) is False  # Bar.time としては受理しない
+
+    def test_truly_unsupported_representations_raise_in_epoch_seconds(self):
+        """どちらの契約にも属さない表現は変換自体が `ConfigError`。"""
+        for value in ["2024-01-01", 1.5, True, None, object()]:
+            with pytest.raises(ConfigError):
+                epoch_seconds(value)
 
     def test_predicate_is_derived_from_the_converters_table(self):
-        """表へ 1 エントリ足せば述語が追随する（列挙の写しを持たない＝OCP）。"""
+        """表へ BAR エントリを足せば述語が追随する（列挙の写しを持たない＝OCP）。"""
         import simulator.domain.bar_time as bar_time_module
 
         class _Marker:
             pass
 
-        added = (lambda v: isinstance(v, _Marker), lambda v: 0)
+        added = (lambda v: isinstance(v, _Marker), lambda v: 0, bar_time_module.BAR)
         original = bar_time_module.EPOCH_CONVERTERS
         bar_time_module.EPOCH_CONVERTERS = original + (added,)
         try:
@@ -157,3 +197,22 @@ class TestIsSupportedTime:
         finally:
             bar_time_module.EPOCH_CONVERTERS = original
         assert bar_time_module.is_supported_time(_Marker()) is False
+
+    def test_a_window_tagged_entry_does_not_widen_the_bar_contract(self):
+        """WINDOW タグで足したエントリは述語を広げない（タグが効いていることの固定）。
+
+        識別力: `is_supported_time` がタグを無視して全エントリを見ると本検定が落ちる。
+        """
+        import simulator.domain.bar_time as bar_time_module
+
+        class _Marker:
+            pass
+
+        added = (lambda v: isinstance(v, _Marker), lambda v: 0, bar_time_module.WINDOW)
+        original = bar_time_module.EPOCH_CONVERTERS
+        bar_time_module.EPOCH_CONVERTERS = original + (added,)
+        try:
+            assert bar_time_module.is_supported_time(_Marker()) is False
+            assert bar_time_module.epoch_seconds(_Marker()) == 0  # 変換はできる
+        finally:
+            bar_time_module.EPOCH_CONVERTERS = original

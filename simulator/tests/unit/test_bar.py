@@ -100,15 +100,11 @@ class TestBarTimeContract:
             1_700_000_000,
             np.int64(1_700_000_000),
             np.datetime64("2024-01-01T00:00:00"),
-            datetime(2024, 1, 1),
-            datetime(2024, 1, 1, tzinfo=timezone.utc),
-            pd.Timestamp("2024-01-01"),
         ],
-        ids=["int", "np.int64", "np.datetime64", "naive datetime", "aware datetime",
-             "pd.Timestamp"],
+        ids=["int", "np.int64", "np.datetime64"],
     )
     def test_supported_time_representations_construct(self, time):
-        # Arrange / Act: 受理集合（EPOCH_CONVERTERS）の表現は構築できる
+        # Arrange / Act: BAR タグの表現（epoch int / numpy.datetime64）は構築できる
         bar = _bar(time)
         # Assert
         assert bar.time is time
@@ -125,6 +121,29 @@ class TestBarTimeContract:
         with pytest.raises(ConfigError):
             _bar(time)
 
+    @pytest.mark.parametrize(
+        "time",
+        [
+            datetime(2024, 1, 1),
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            pd.Timestamp("2024-01-01"),
+            pd.Timestamp("2024-01-01", tz="UTC"),
+        ],
+        ids=["naive datetime", "aware datetime", "pd.Timestamp", "aware pd.Timestamp"],
+    )
+    def test_datetime_representations_are_rejected_as_bar_time(self, time):
+        """`datetime` / `pd.Timestamp` は窓境界の表現であって `Bar.time` ではない。
+
+        既存契約は複数箇所に明文がある（`domain/trade_record.py:14`・
+        `domain/exceptions.py:31`・`adapter/execution/tick_model.py:142` ほか）:
+        「時刻型は numpy.datetime64 または epoch int（pd.Timestamp 禁止）」。
+        `pd.Timestamp` は `datetime` のサブクラスなので、`datetime` を受理すると
+        この明文より契約が広がる（レビュー 🔴-3）。受理集合はタグで分離する。
+        """
+        # Arrange / Act / Assert
+        with pytest.raises(ConfigError):
+            _bar(time)
+
     def test_config_error_carries_the_offending_type_in_context(self):
         # Arrange / Act
         with pytest.raises(ConfigError) as exc:
@@ -132,6 +151,16 @@ class TestBarTimeContract:
         # Assert: 原因を無音にしない（type と value を context に載せる）
         assert exc.value.context["value_type"] == "str"
         assert exc.value.context["value"] == "2024-01-01T00:00:00"
+
+    def test_config_error_message_states_how_to_fix_it(self):
+        """メッセージが是正手順を含む（🟡-4: 何を渡せばよいかを示す）。"""
+        # Arrange / Act
+        with pytest.raises(ConfigError) as exc:
+            _bar("2024-01-01T00:00:00")
+        # Assert: 受理表現を名指しする（利用者が次の一手を取れる）
+        message = str(exc.value)
+        assert "epoch" in message
+        assert "numpy.datetime64" in message
 
     def test_time_contract_is_checked_before_the_ohlc_invariant(self):
         # Arrange: time 違反と OHLC 違反が同時に成立する引数
@@ -183,7 +212,7 @@ class TestBarTimeContract:
 
         original = bar_time_module.EPOCH_CONVERTERS
         bar_time_module.EPOCH_CONVERTERS = original + (
-            (lambda v: isinstance(v, _Marker), lambda v: 0),
+            (lambda v: isinstance(v, _Marker), lambda v: 0, bar_time_module.BAR),
         )
         try:
             assert bar_module.Bar(

@@ -314,7 +314,7 @@ class TestSingleSourceOfTheRule:
         from datawindow.half_open import epoch_seconds_of_datetime
         from simulator.domain.bar_time import EPOCH_CONVERTERS
 
-        assert epoch_seconds_of_datetime in [convert for _matches, convert in EPOCH_CONVERTERS]
+        assert epoch_seconds_of_datetime in [convert for _m, convert, _tag in EPOCH_CONVERTERS]
         assert tick_parquet_module.epoch_seconds is epoch_seconds
 
     def test_bar_stage_and_tick_stage_read_the_same_objects(self):
