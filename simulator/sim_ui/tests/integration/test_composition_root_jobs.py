@@ -68,11 +68,20 @@ def test_起動器は台帳の採番規則でジョブディレクトリを解�
 
 
 def test_系列カタログは実物(tmp_path: Path) -> None:
-    """E-3 判定が `_EA_FACTORIES` を単一ソースとして見ていること。"""
+    """E-3 判定がエンジンの公開アクセサを単一ソースとして見ていること。
+
+    合成根が結線を持つこと（`app.controller`）に加え、**その結線が実際に解決できる**
+    ことを測る。従来は `isinstance(EaRegistrySeriesCatalog(), EaRegistrySeriesCatalog)`
+    という恒真式で、束縛が壊れても落ちなかった（ISSUE-405 で束縛点が移ったため是正）。
+    """
     # Arrange / Act
+    from simulator.sim_ui.main.composition_root_jobs import build_series_catalog
+
     app = build_sim_job_app(repo_root=tmp_path, web_dir=tmp_path / "web")
-    # Assert（合成根が保持していること・実際の判定は catalog の検定が固定）
-    assert isinstance(EaRegistrySeriesCatalog(), EaRegistrySeriesCatalog)
+    catalog = build_series_catalog()
+    # Assert（実際の系列集合は catalog 自身の検定が固定する）
+    assert isinstance(catalog, EaRegistrySeriesCatalog)
+    assert catalog.series_for("TC24051901") == frozenset({"madiff", "close"})
     assert app.controller is not None
 
 

@@ -11,6 +11,11 @@
 
 技術隔離: pyarrow / pandas は本ファイル内に閉じる（CLEAN_ARCH §6）。
 例外翻訳: pyarrow/pandas/OSError → DataError・列欠損 → MissingBarError・非昇順 → TimeOrderError。
+
+窓境界の規則（ISSUE-402）: `load_ticks` の `[start, end)` は Bar / Candle 段と**同一の
+実体**（`simulator.domain.bar_time.epoch_seconds` /
+`datawindow.half_open.HalfOpenEpochWindow.contains`）で解釈する。Tick 段に固有の窓規則は
+持たない。行動固定は `simulator/tests/unit/test_tick_window_single_source.py`。
 """
 from __future__ import annotations
 
@@ -19,11 +24,15 @@ from typing import Any
 
 import pandas as pd
 
+# 窓境界の正規化・半開判定は中立共有パッケージ／domain の**同一オブジェクト**を読む
+# （Bar 段 `windowed_market_data.py` と同じ 2 行。Tick 段で書き直せば複製になる）。
+from datawindow.half_open import HalfOpenEpochWindow
 from simulator.adapter.repository._tick_frame import (
     TICK_COLUMNS,
     validate_tick_columns,
     with_partition_columns,
 )
+from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import DataError, TimeOrderError
 from simulator.usecase.ports import TickDataPort, TickStorePort
 
@@ -82,9 +91,66 @@ class ParquetTickRepository(TickDataPort, TickStorePort):
         該当なしは空 frame（例外でない）。columns 指定時は当該列のみ返す
         （IO 段で read_parquet に columns を渡し列 pushdown する）。
 
-        tz 方針: 保存 timestamp は naive UTC 固定（synth_ticks 由来）。tz-aware の
-        start/end を与えると naive 値との比較で pandas が TypeError を投げるため、
-        当該比較も含め DataError へ翻訳する（境界での生例外漏出を防止）。
+        窓境界の解釈（ISSUE-402 の是正・Bar / Candle 段と**同一規則**）:
+            境界 ``start`` / ``end`` は `simulator.domain.bar_time.epoch_seconds` で
+            epoch 秒へ正規化し、半開判定は
+            `datawindow.half_open.HalfOpenEpochWindow.contains` に委ねる。したがって
+            受理する時刻表現は `bar.time` / 取得窓と同じ（epoch int / aware datetime /
+            naive datetime（= UTC）/ ``numpy.datetime64``）であり、Tick 段だけが別の
+            規則を持つことはない。是正前は naive ``pandas.Timestamp`` だけが成立し、
+            aware は ``TypeError('Invalid comparison between dtype=datetime64[us] and
+            Timestamp')``、epoch int は ``AttributeError("'int' object has no attribute
+            'year'")`` で、いずれも ``DataError`` へ翻訳されて失敗していた（是正前の
+            実測。再現は `simulator/tests/unit/test_tick_window_single_source.py`）。
+            未対応の表現は `epoch_seconds` の契約どおり ``ConfigError``（`DataError` へ
+            包み直さない。データの不良ではなく指定の不良である）。
+
+        保存 timestamp の解釈:
+            保存列は naive UTC が契約（`tools/ingest_ticks.to_canonical_ticks` が tz を
+            剥がす）。比較前に ``to_datetime(..., utc=True)`` → ``tz_localize(None)`` →
+            ``astype("datetime64[s]")`` で epoch 秒へ落とす。naive を UTC とみなす点は
+            窓境界の規則と同一であり、保存列が tz-aware であっても同じ UTC epoch に
+            なる（実測: aware 列に ``astype("datetime64[s]")`` を直接当てると pandas が
+            ``TypeError`` を出す。tz の有無で結果が変わる式は使わない）。dtype の解像度
+            （us / ns）にも依存しない＝``astype("int64") // 1_000_000_000`` のような
+            ns 前提の式は使わない。
+
+        粒度についての実測と限界（推測しない）:
+            窓境界が**整数秒**である限り、本実装の判定は是正前の pandas 直接比較と
+            集合として一致する（整数 B と実時刻 t に対し floor(t) >= B ⟺ t >= B、
+            floor(t) < B ⟺ t < B）。現存する全呼出（`main._bar_period` の
+            ``bar.time (+60s)``、`tools/run_scan_contacts_cli` の
+            ``pd.Timestamp(int, unit="s")``）は整数秒である。境界に秒未満成分を与えた
+            場合は秒へ floor される＝Bar / Candle 段と同じ秒粒度になる。
+
+        空窓 ``start >= end`` の扱い（是正で変わった唯一の点・実測）:
+            `_date_predicate` が空リストを返すため part を 1 つも読まない。是正前は
+            ``start == end`` が日境界**以外**のとき当該日の part を読んでから全行を
+            落としていた（返り値は 0 行だが parquet 由来の dtype を持っていた）。是正後は
+            「データなし」枝と同じ 0 行 frame（列は TICK_COLUMNS・dtype は object）を返す。
+            行数・列名は不変、dtype のみ変わる。現存する呼出は空窓を作らない
+            （`main._bar_period` は最小でも end = start + 60s、
+            `tools/run_scan_contacts_cli` はバー区間を渡す）。
+
+        到達可能性（実測・2026-08-18。断定と未検証を分ける）:
+            実測 1: 本メソッドの非テスト呼出は 2 箇所である
+                （``grep -rn "load_ticks" --include=*.py`` / worktree 除外）。
+                  - `simulator/tools/run_scan_contacts_cli.py`
+                    （``if __name__ == "__main__"`` を持つ実行可能 CLI。
+                    ``pd.Timestamp(int, unit="s")`` = naive Timestamp を渡す）
+                  - `simulator/main/_build_real_tick_model`
+                    （`build_interactor` が `tick_model` に real ticks を要求するときのみ）
+            実測 2: ``grep -rn "EngineBinding("`` の非 worktree 検索は
+                `simulator/tests/tester_settings_engine_fixtures.py:118` の 1 件のみ。
+                すなわち `EngineBinding` を構築する非テストコードは存在しない。
+            未検証: 実測 2 は「`EngineBinding` 経由の到達がない」ことしか示さない。
+                `_build_real_tick_model` は `build_interactor(tick_store_root=...,
+                config_overrides=...)` からも到達でき、その 2 キーは
+                `tools/walk_forward_cli.py` の受理キーワード集合に含まれる。よって
+                「本メソッドは本番未到達」と**断定はできない**（実際に走らせた
+                運用実績の有無は本タスクで測っていない）。
+            したがって本是正の目的は「規則の非対称を消すこと」であり、既知の稼働経路
+            （naive Timestamp）は測定上不変（是正前後で 952k 行が完全一致）である。
         """
         from simulator.adapter.repository._tick_frame import _date_predicate
 
@@ -97,9 +163,14 @@ class ParquetTickRepository(TickDataPort, TickStorePort):
             req = list(columns)
             read_columns = req if "timestamp" in req else ["timestamp", *req]
 
+        # 境界の正規化は try の外に置く。未対応の時刻表現は `epoch_seconds` が投げる
+        # ``ConfigError`` のまま伝播させる（Bar 段 `WindowedMarketDataRepository.load`
+        # と対称。IO 失敗を表す `DataError` へ包むと原因の種類が消える）。
+        window = HalfOpenEpochWindow(epoch_seconds(start), epoch_seconds(end))
+
         try:
             # 第 1 段: partition プルーニング — [start,end) を覆う日の part.parquet のみ読む。
-            wanted_days = _date_predicate(start, end)
+            wanted_days = _date_predicate(window.start, window.end)
             frames: list[pd.DataFrame] = []
             for year, month, day in wanted_days:
                 part_path = self._part_path(symbol, year, month, day)
@@ -112,18 +183,25 @@ class ParquetTickRepository(TickDataPort, TickStorePort):
 
             df = pd.concat(frames, ignore_index=True)
 
-            # 第 2 段: timestamp 厳密フィルタ — [start, end) 半開（end 当日 00:00:00 を開かない）。
-            # 保存 timestamp は naive UTC 固定（synth_ticks 由来）。tz-aware の
-            # start/end が与えられると pandas が生 TypeError を投げるため、この
-            # 比較も try 内に置き DataError へ翻訳する（境界の例外漏出防止）。
-            ts = pd.to_datetime(df["timestamp"])
-            start_ts = pd.Timestamp(start)
-            end_ts = pd.Timestamp(end)
-            mask = (ts >= start_ts) & (ts < end_ts)
-            df = df.loc[mask].reset_index(drop=True)
+            # 第 2 段: timestamp 厳密フィルタ — 半開判定は共有実体 `contains` に委ねる
+            # （述語をここへ書き直すと Bar / Candle 段との複製になる）。
+            # コスト実測（20 日 × 47.6k = 952k 行を 1 回 load・同一機・2 回計測）:
+            #   是正前（pandas 直接比較） 0.109 / 0.119 s
+            #   是正後（map(contains)）   0.281 / 0.288 s   差 +0.17 s
+            # load_ticks は 1 run につき 1 回であり、後続の 952k tick 走査に対して
+            # 支配的でない。返り値の frame は 952k 行で是正前と完全一致（実測）。
+            ts_epoch = (
+                pd.to_datetime(df["timestamp"], utc=True)  # naive は UTC とみなす（共有規則）
+                .dt.tz_localize(None)
+                .astype("datetime64[s]")  # 秒へ floor（dtype 解像度 us/ns に依存しない）
+                .astype("int64")
+            )
+            df = df.loc[ts_epoch.map(window.contains)].reset_index(drop=True)
         except DataError:
             raise
-        except Exception as exc:  # pyarrow / pandas / OSError / tz 比較 TypeError 等を翻訳
+        except Exception as exc:  # pyarrow / pandas / OSError 等の IO 失敗を翻訳
+            # 「tz-aware 境界の比較 TypeError」はここへ来ない（ISSUE-402 で原因を除去。
+            # 境界は epoch 秒へ正規化済みであり、保存列との tz 整合は問題にならない）。
             raise DataError(
                 f"parquet の読み込みに失敗しました: {symbol}",
                 context={"symbol": symbol, "cause": repr(exc)},

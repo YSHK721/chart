@@ -31,6 +31,12 @@ _ALLOWED: "dict[str, set[str]]" = {
     # 純規則層。csv_schema / tf_ledger はいずれも依存ゼロの定数モジュール
     # （前者は集約対象列の唯一源・後者は時間足台帳の唯一源）。
     "resample.py": {"pandas", "marketdata.csv_schema", "marketdata.tf_ledger"},
+    # comma 形式 CSV → Candle の adapter。``datawindow.half_open`` は取得窓 `[start, end)` の
+    # 境界正規化と半開判定の唯一の実体（ISSUE-401 🟡-2）。本 adapter が自前で
+    # ``int(start.timestamp())`` を持つと naive datetime をローカル TZ で解釈し、同じ窓を受ける
+    # Bar 段（UTC 解釈）と食い違う（実測 32400 秒差）。**この 1 エントリを消すと複製が復活する**
+    # ため、依存として明示し検定で固定する。
+    "csv_source.py": {"pandas", "datawindow.half_open", "marketdata.port"},
     # M1 素材化。外れ値方針・CSV スキーマ・末尾読取は marketdata 内の下位部品。
     "tick_m1.py": {
         "pandas",

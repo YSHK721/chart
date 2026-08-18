@@ -12,6 +12,10 @@
 
 を固定し、「単一レジストリへ集約しても既存 4 モデルの挙動・分岐先は完全不変」を
 実証する（byte 不変の構造ガード）。
+
+A-1（ISSUE-397）で 5 件目 `math_calculations` が末尾に加わった。id 集合・順序の
+アサーションは「4 値ちょうど」から「既知 4 値が部分集合 ＋ 先頭 4 値の順序不変」へ
+改めてある（増減に追随する形）。各 id の分岐先の不変性は従来どおり id 個別に測る。
 """
 from __future__ import annotations
 
@@ -31,24 +35,26 @@ from simulator.usecase.ports import TickModelPort
 
 # --- レジストリ id 集合の不変性 ---------------------------------------------
 
-def test_registry_ids_match_the_four_known_models():
-    # 従来 config_loader の Literal 4 値・main の _TICK_MODELS(+real_ticks) と同一集合。
-    assert set(TICK_MODEL_IDS) == {
-        "every_tick",
-        "ohlc_expand",
-        "open_only",
-        "real_ticks",
-    }
+#: 従来 config_loader の Literal 4 値・main の _TICK_MODELS(+real_ticks)。
+#: A-1 以降 id は増え得るため、本テストは「4 値が**部分集合**であること」と
+#: 「記載順が先頭で不変であること」を測る（5 値へ書き換えると、次の追加でまた
+#: 書き換えが要る＝追加のたびに既存契約の表現を作り直すことになる）。
+KNOWN_FOUR = ("every_tick", "ohlc_expand", "open_only", "real_ticks")
+
+
+def test_registry_contains_the_four_known_models():
+    assert set(KNOWN_FOUR) <= set(TICK_MODEL_IDS)
 
 
 def test_registry_ids_preserve_config_loader_literal_order():
-    # config_loader の Literal 記載順（every_tick→ohlc_expand→open_only→real_ticks）を保つ。
-    assert TICK_MODEL_IDS == (
-        "every_tick",
-        "ohlc_expand",
-        "open_only",
-        "real_ticks",
-    )
+    # config_loader の Literal 記載順（every_tick→ohlc_expand→open_only→real_ticks）を
+    # 先頭で保つ。追加は末尾（既存 4 値の順序は byte 不変）。
+    assert TICK_MODEL_IDS[: len(KNOWN_FOUR)] == KNOWN_FOUR
+
+
+def test_registry_ids_are_unique():
+    # 登録表は dict なので重複は起き得ないが、id フィールドとキーの一致は保証が要る。
+    assert tuple(spec.id for spec in TICK_MODEL_REGISTRY.values()) == TICK_MODEL_IDS
 
 
 # --- config_loader Literal 許容値がレジストリ由来であること -------------------

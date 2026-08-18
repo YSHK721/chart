@@ -7,6 +7,16 @@ simulator の comma 形式 OHLC CSV（``time,open,high,low,close,volume[,spread]
 Candle 契約（§2.1）に従い ``time`` は UNIX 秒 int、``volume`` は列があれば float／無ければ
 ``0.0``。``fetch_candles(start, end)`` は ``[start, end)``（半開・C-2）で期間フィルタする。
 
+窓境界の正規化と半開判定は**自前で書かない**（ISSUE-401 🟡-2 の是正）:
+    以前は ``int(start.timestamp())`` を本モジュールが直接持っていたため、naive datetime を
+    **プロセスのローカル TZ**で解釈していた。同じ窓を受け取る Bar 段
+    （``simulator/adapter/repository/windowed_market_data.py``）は naive を **UTC** とみなす
+    ため、解釈が経路で食い違っていた（実測: ``TZ=Asia/Tokyo``・naive ``datetime(2025, 1, 10)``
+    で 32400 秒＝9 時間差。同じ窓指定で選択される足が変わり、バックテストが実行環境に依存した）。
+    規則の実体は中立共有パッケージ ``datawindow.half_open`` が唯一所有し、本モジュールと Bar 段
+    が**同じオブジェクト**を読む。`marketdata` は独立パッケージであり `simulator` を import
+    できない（依存方向）ため、共有点は両パッケージの外側にある。
+
 pandas はインフラ境界の技術ドライバとして adapter 内に隔離する（ポート面には出さない）。
 """
 
@@ -17,6 +27,7 @@ from typing import Any, List
 
 import pandas as pd
 
+from datawindow.half_open import HalfOpenEpochWindow
 from marketdata.port import Candle
 
 
@@ -39,8 +50,8 @@ class CsvCandleSource:
         """
         df = pd.read_csv(self._csv_path)
         has_volume = "volume" in df.columns
-        start_ts = int(start.timestamp())
-        end_ts = int(end.timestamp())
+        # 境界正規化（naive は UTC とみなす）も半開判定も共有実体が持つ（複製を作らない）。
+        window = HalfOpenEpochWindow.from_datetimes(start, end)
 
         # 後勝ち一意化: ``time`` をキーに dict 格納（Dukascopy ``_to_candles`` と同一構造）。
         by_time: dict[int, Candle] = {}
@@ -56,7 +67,7 @@ class CsvCandleSource:
                     "CsvCandleSource: 'time' 列は UNIX 秒 int である必要があります"
                     f"（非 epoch 値を検出: {raw_t!r}・row={i}）。Candle 契約 §2.1。"
                 ) from exc
-            if t < start_ts or t >= end_ts:  # [start, end) 半開（C-2）
+            if not window.contains(t):  # [start, end) 半開（C-2・述語も単一ソース）
                 continue
             # Candle 契約（port.py Candle.volume・ISSUE-102 🟡-1）: volume は常に有限 float。
             #   欠損（列不在／セル NaN）は 0.0 で補う（Dukascopy _to_candles:88 `pd.isna→0.0`

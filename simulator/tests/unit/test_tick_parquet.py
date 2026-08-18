@@ -138,12 +138,18 @@ def test_with_partition_columns_adds_year_month_day_matching_timestamp():
 
 
 def test_date_predicate_enumerates_year_month_day_covering_half_open_range():
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from simulator.adapter.repository._tick_frame import _date_predicate
 
+    # ISSUE-402: `_date_predicate` の入力は epoch 秒（境界の正規化は load_ticks が
+    # `simulator.domain.bar_time.epoch_seconds` で行う唯一の入口へ集約された）。
+    # 検証する契約（覆う日の集合・端日の扱い）は従来と同一であり、緩めていない。
+    def _epoch(*args: int) -> int:
+        return int(datetime(*args, tzinfo=timezone.utc).timestamp())
+
     # [2024-03-01, 2024-03-04) を覆う (y,m,d) は端含めて 01/02/03 の 3 日
-    days = _date_predicate(datetime(2024, 3, 1), datetime(2024, 3, 4))
+    days = _date_predicate(_epoch(2024, 3, 1), _epoch(2024, 3, 4))
 
     assert (2024, 3, 1) in days
     assert (2024, 3, 3) in days  # 端日 end の前日まで含む
@@ -364,22 +370,27 @@ def test_load_ticks_end_at_day_boundary_midnight_does_not_open_end_day(tmp_path)
 # Section 4b: レビュー指摘 🟡 修正の Red→Green 固定
 # =========================================================================
 
-def test_load_ticks_tz_aware_bounds_on_naive_store_raises_data_error(tmp_path):
-    # 🟡-1 回帰: tz-aware の start/end を naive 保存値と比較すると pandas が生
-    #   TypeError を投げる。これが try 外で漏出していた。DataError へ翻訳すること。
+def test_load_ticks_tz_aware_bounds_select_the_same_window_as_naive(tmp_path):
+    # 🟡-1 の旧契約は「tz-aware 境界は pandas の生 TypeError になるので DataError へ
+    #   翻訳する」だった。ISSUE-402 でこれを**規定ごと撤去**した（症状の翻訳ではなく
+    #   原因の除去）。窓境界は Bar / Candle 段と同じ `epoch_seconds` で正規化されるため、
+    #   aware は「失敗しない」だけでなく naive と**同一結果**でなければならない。
+    #   生例外を漏らさないという元の関心は「aware で例外が出ないこと」で満たされる。
     from datetime import datetime, timezone
 
-    import pytest
-
-    from simulator.domain.exceptions import DataError
+    import pandas as pd
 
     repo = _written_repo_7days(tmp_path)
 
-    start = datetime(2024, 3, 2, tzinfo=timezone.utc)
-    end = datetime(2024, 3, 4, tzinfo=timezone.utc)
+    aware = repo.load_ticks(
+        "JP225",
+        datetime(2024, 3, 2, tzinfo=timezone.utc),
+        datetime(2024, 3, 4, tzinfo=timezone.utc),
+    )
+    naive = repo.load_ticks("JP225", datetime(2024, 3, 2), datetime(2024, 3, 4))
 
-    with pytest.raises(DataError):
-        repo.load_ticks("JP225", start, end)
+    assert len(aware) > 0  # 空一致（両方 0 行）で通る当たりを塞ぐ
+    pd.testing.assert_frame_equal(aware, naive)
 
 
 def test_write_ticks_global_non_monotonic_across_chunks_raises_time_order_error(tmp_path):

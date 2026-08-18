@@ -7,7 +7,7 @@
   1. DATA_DIR/jp225_m1.csv を読み取り専用で pandas ロード（date,open,high,low,close,volume）。
   2. 列ブリッジ（既存データ非改変・新規 tmp へ書く）: date→time / +spread=0。
   3. build_interactor(...) で controller/request を構築（committed IF のみ使用）。
-  4. result = controller._interactor.execute(request)。
+  4. result = controller.execute(request)。
   5. TradeMarkersPresenter().present_markers(result, OUT, symbol=spec, ea_name=ea)。
   6. 集合包含検証（全マーカー time ⊆ candles time）。包含外件数を stdout に明示。
 
@@ -151,8 +151,8 @@ def run_and_export(
         tmp.close()
         # 3. controller/request 構築（committed IF のみ）。
         controller, request = build_interactor(**_meta(tmp.name, ea_name))
-        # 4. result = execute（committed IF）。
-        result = controller._interactor.execute(request)
+        # 4. result = execute（committed 公開 IF）。
+        result = controller.execute(request)
     finally:
         os.unlink(tmp.name)
 

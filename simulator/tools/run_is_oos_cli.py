@@ -3,7 +3,7 @@
 責務＝結線（Composition Root 利用側・committed 無改変＝C2/C3）:
   1. CLI 引数解釈（argparse）。
   2. build_interactor(...) で (controller, request) を構築（committed 公開 IF のみ）。
-  3. make_run_segment で run_segment コールバックを構成（controller._interactor.execute 経由・B-1）。
+  3. make_run_segment で run_segment コールバックを構成（controller.execute 経由・B-1）。
   4. normalize_time で split/is_trading_start を bar.time 型へ正規化（pandas は tools 層に閉じる）。
   5. run_is_oos(...) を呼ぶ。
   6. assert_safe_output_dir → to_json_dict / to_markdown → 新規 OUT 書込。
@@ -38,14 +38,14 @@ _FORBIDDEN_PREFIXES = (
 def make_run_segment(controller: Any, request: Any) -> Callable[[Any, Any], Any]:
     """build_interactor が返した (controller, request) を閉包し run_segment を構成（B-1）。
 
-    区間ごとに bars/trading_start のみ差し替えて controller._interactor.execute を呼ぶ。
+    区間ごとに bars/trading_start のみ差し替えて controller.execute を呼ぶ。
     controller.run / run_backtest は使わない（再ロードで truncation 無効化されるため）。
     """
 
     def run_segment(bars: Any, trading_start: Any) -> Any:
         request.bars = bars
         request.trading_start = trading_start
-        result = controller._interactor.execute(request)
+        result = controller.execute(request)
         return result.stats
 
     return run_segment

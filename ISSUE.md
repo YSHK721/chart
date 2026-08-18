@@ -5497,7 +5497,6 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   許可されていてもディレクトリ symlink を辿らないこと・降りる前に除外判定できること）。
   tools 全体 152 件 Green。
 - **関連**: ISSUE-280（node_modules 自己参照 symlink）、ISSUE-302（worktree 前提の検定）。
-
 ## ISSUE-304: [ツール] codescan がファイルの同一性をパスで判定し、symlink 共有を「コード複製」と誤報（2026-08-09）
 - **ステータス**: RESOLVED（2026-08-09・原因除去・同一ツリーでの前後比較で実測確認）
 - **重大度**: High（重複検出の結論そのものが逆転する。上位 15 件中 14 件が誤報だった）
@@ -7549,3 +7548,472 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   （bar-mode / every-tick）と実装済み順序規則（`ohlc_order` 3 値）・実装済み統計規則
   （inf/0.0）に合わせて書き直し、引用は PROCESS §0.2（3 モード）と METRICS §6（5 モード用語集）
   を区別して張り直す。PROCESS §7 #5 の既定推奨行も実装済み規則へ追記是正する。
+
+## ISSUE-389: [不整合] TESTER_SETTINGS 基本設計書のキー数・時間足数の記載が corpus 実測と不一致（2026-08-17・OPEN）
+
+- **ステータス**: OPEN
+- **重大度**: Low（規則の内容は正しく、影響は員数記載のみ。ただし規則 P「17 キーに限る」を
+  そのまま実装すると 1 キーを未知キーとして拒否する誤りに直結する）
+- **事実（すべて実測 2026-08-17）**:
+  1. 基本設計書 §2.2.3 は「`[Tester]` セクションの全キー（17 キー・実測）」と記すが、
+     同節の表は 18 行あり、corpus 44 件の実測でも相異なるキーは 18 個である
+     （Symbol 44 / Period 44 / Model 44 / Visual 38 / Expert 31 / Optimization 31 /
+     ForwardMode 31 / Deposit 31 / Currency 31 / ProfitInPips 31 / Leverage 31 /
+     ExecutionMode 31 / OptimizationCriterion 31 / Dates 27 / FromDate 17 / ToDate 17 /
+     Indicator 13 / ForwardDate 3）。規則 P・R12・N-12 の「17 キー」も同じ員数を引く。
+  2. §4.2 のフィールド表は `timeframe` の値域を「§4.3.1 の 22 値」と記すが、§4.3.1 の表は
+     21 行（M1/M2/M3/M4/M5/M6/M10/M12/M15/M20/M30/H1/H2/H3/H4/H6/H8/H12/D1/W1/MN1）。
+  3. 「17」は別の員数の言い換えでもない（実測 2026-08-17）。1 ファイルあたりのキー数は
+     6・7・14・15 の 4 通りのみで**最大 15**（`…20230101_20231231.100.ini`）。
+     和集合 18・ファイル内最大 15 のいずれとも一致しないため、単純な数え漏れである。
+     ⚠️ 実装・テストのコメントで「17 = 1 ファイルあたり最大」と辻褄合わせをしないこと
+     （本項の実測に反する。検出時に 3 箇所を訂正済み）。
+- **影響**: 実装は員数ではなく実キー集合・実列挙で作るため挙動には影響しないが、
+  受入テスト（T-09 の構造的事実検証）で「17」を期待値に採ると必ず失敗する。
+- **対策案（抜本）**: 基本設計書の員数記載を実測値（18 キー・21 時間足）へ訂正し、
+  実装・テストは員数リテラルを持たず**キー集合の定義 1 箇所**から導出する
+  （員数の二重管理をやめる＝取り残しの構造的除去）。
+
+## ISSUE-390: [不整合] 基本設計 F-9（ForwardMode≠0 ⇔ コメント末尾「with forward period」）が corpus 実測で 43/44 しか成立しない（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17。基本設計 v1.1.2 で F-9 本文と T-05 の合否基準を実測へ訂正。回帰テスト `simulator/tests/regression/test_header_comment_consistency.py` が「不一致集合＝既知の 1 ファイル」を**集合等価**で固定し、既知不一致が解消した場合にも落ちる形にした）
+- **重大度**: Medium（受入テスト T-05「44/44 一致」を実装どおりに書くと必ず失敗する。
+  ヘッダコメントを検証の補助情報として使う設計判断の前提が崩れる）
+- **事実（実測 2026-08-17・字句層実装と本体の 2 系統で独立に再現）**:
+  1. 基本設計 §2.2.4 F-9 は「`ForwardMode≠0` ↔ コメント末尾 `, with forward period`」が
+     forward 有効 14 件すべてで成立すると記す。実測は **13/14**。
+  2. 不一致 1 件: `TC24051903_24052301.JP225_ver24051601.H8.20120101_20121231.121.ini`
+     （`ForwardMode=4` かつ 1 行目コメントに `, with forward period` が無い）。
+  3. 同ファイルは `ForwardDate=1970.01.01`（F-17 の退化値＝「カスタム日付が未設定」）を持つ
+     唯一のファイルでもある。
+- **未検証（推論。事実として扱わない）**: MT5 が「`ForwardMode=4` かつ `ForwardDate` が
+  退化値のとき forward を実質無効として扱い、コメント語を出力しない」可能性。
+  リポジトリ内に MT5 実機の再現手段がないため確認できない（CON-06）。
+- **影響**: 受入テスト T-05（ヘッダコメントと `[Tester]` 値の突合・44 件）は
+  「44/44 一致」を合否基準にできない。実装（`parse_header_comment`）は実測どおり
+  `with_forward=False` を返す＝正しい。
+- **対策案（抜本）**: 基本設計 F-9 を「forward 有効 14 件中 13 件で成立。例外 1 件は
+  `ForwardDate` 退化値と同居」へ訂正し、T-05 の合否基準を「コメントと `[Tester]` 値の
+  突合で不一致となるのは既知の 1 件のみ（ファイル名で固定）」に変更する。
+  MT5 実機で再現可能になった時点で退化値の扱いを確定する（TBD 追加）。
+
+## ISSUE-391: [不整合] TESTER_SETTINGS 内部設計 §4.3.2 の規則 B の例外型が基本設計 §4.5.5 と矛盾（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 裁定・内部設計 §4.3.2 を E-03 へ訂正済み。実装・テストへ通達済み）
+- **事実**:
+  1. 基本設計 §4.5.5 の規則表は 規則 B（`optimization != DISABLED` のとき `Visual` キーが
+     存在してはならない）の違反時例外を `SettingsActivationError`（E-03）と規定。
+  2. 内部設計 §4.3.2 の割付表は同じ規則 B を `SettingsKeyConflictError`（E-02）と記載。
+  3. 実装済み `simulator/domain/tester_settings_exceptions.py` の `SettingsActivationError`
+     docstring は「活性依存に反する実行要求（規則 B・S）」と規定しており、基本設計と一致。
+- **検出経路**: テスト設計フェーズが両文書を突合して報告（実装前に検出＝手戻り 0）。
+- **裁定（根拠）**: **E-03 を正とする**。(a) 内部設計自身が「基本設計書が上位」と宣言している。
+  (b) 規則 B は UI の活性依存（Optimization 有効時は visual コントロールが非活性）に由来する
+  制約であり、「同時に指定できないキーの衝突」ではない。(c) 実装済み例外階層の規定と一致する。
+- **影響**: 訂正前の内部設計どおりに実装すると、活性依存違反がキー衝突として報告され、
+  規則・例外・テストの 1:1:1 対応（内部設計 §4.5.2 規約 4）が崩れる。
+- **是正**: 内部設計 §4.3.2 の当該行を E-03 へ訂正（訂正理由を行内に明記）。検証層実装と
+  テスト期待値へ通達済み。`context` は `field="visual"` / `rule_id="B"` を必須とする。
+
+## ISSUE-392: [設計] pytest 既定の収集規則 `python_functions = test*` が `tester_settings_*` API を誤収集する（2026-08-17・IN_PROGRESS）
+
+- **ステータス**: IN_PROGRESS（新規コード側は pytest 公式の opt-out `__test__ = False` で回避済み。
+  リポジトリ全体の根治は既存ファイル改変を伴うため**要承認**）
+- **重大度**: Medium（放置すると、公開 API 名が `test` で始まるモジュールを import した
+  テストで収集エラーが出続ける。実測で 4 件発生した）
+- **事実（実測 2026-08-17）**:
+  1. `pyproject.toml` は `[tool.pytest.ini_options]` に `python_functions` を設定していないため、
+     pytest 既定の `test*`（アンダースコア無しも一致）が適用される。
+  2. 本移植の公開 API は `tester_settings_from_mapping` / `tester_settings_to_mapping`
+     （内部設計 §6 API-03/API-04・名前は設計確定事項）であり、この既定に一致してしまう。
+     テストが API を import すると pytest がテスト関数として収集し、引数不足で収集エラーになる。
+  3. 現状は当該 API に `__test__ = False`（pytest 公式の opt-out）を付与して回避している。
+- **抜本的解決（要承認・既存ファイル改変を伴うため未実施）**:
+  `pyproject.toml` の `[tool.pytest.ini_options]` に `python_functions = "test_*"` を追加し、
+  収集規則を「アンダースコア付きの test_ で始まる関数」に限定する。これにより
+  「テストでない関数がテストとして収集される」原因そのものが消える。
+  実施前提の安全確認は**実施済み（実測 2026-08-17）**: プロジェクト所有コード
+  （`simulator` / `indigators` / `common` / `marketdata` / `tools` / `api_shared` / `common_view`）の
+  `test*.py` を AST 走査した結果、`test` で始まりアンダースコアを持たない関数は **0 件**。
+  よって設定を厳格化しても既存検定が消失しない（該当は vendored venv 内の pandas 同梱テストのみで、
+  本リポジトリの検定対象外）。
+- **関連**: 依頼者制約「既存データの改変は絶対禁止」により本タスクでは未実施。
+
+## ISSUE-393: [不具合] TESTER_SETTINGS 実装レビューで検出した 3 件（写像不能値・BE 往復の無言破れ・Unicode 数字の無言受容）（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 是正・再現テスト先行（Red）で固定。unit 1714 件通過・corpus 44/44 維持を実測）
+- **重大度**: Medium（いずれも沈黙して誤った結果を生む型。例外も警告も出ない経路だった）
+- **事実（すべて実測。是正前に本体側で独立再現）**:
+  1. **受理集合と出力集合の不一致**: `Deposit=139500.50` は `load` に成功し `dump` も
+     バイト一致するのに `tester_settings_to_mapping` が `SettingsValueError` を送出した。
+     内部設計 §6 の API-04「送出例外: なし」に反する。原因は検証層 `_strict_decimal` が小数を
+     受理する一方、字句層 `_format_deposit` が整数表記しか出力できないこと（実測にない表記を
+     発明しない Fail-Stop）。「Deposit として妥当な表記」という同一知識が 2 箇所に別内容で存在した。
+  2. **UTF-16BE の往復が無言で破れる**: BE 入力を `load` → `dump` すると BOM が
+     `\xfe\xff` → `\xff\xfe` に変わりバイト不一致になるが、例外も警告も出ない。
+     規則 R1（書出しは LE 固定）と規則 R9（読込元があるならバイト一致）が BE 入力で両立しない。
+  3. **Unicode 数字の無言受容**: `\d` が Unicode 十進数字に一致するため `Model="１"`（全角）が
+     `ONE_MINUTE_OHLC` に、`Leverage="١٠"` が `10` になった。`to_mapping` 出力は `"1"` となり
+     入力トークンと一致しない（無言の書換え）。MT5 が生成し得ない字形の受容でもある。
+- **是正（原因除去）**:
+  1. 生トークンを捨てないことで受理集合と出力集合を一致させた。字句層に
+     `document_from_entries(tester_entries, input_lines)` を新設し `build_document` は
+     「型付き値 → 生トークン整形 → 委譲」に再定義。API-03 は受領した生トークンから
+     `IniDocument` を構築して `source` に保持し、API-04 は `source` の entries を返す全域関数にした。
+     特定フィールドの回避ではなく、全値型に効く不変条件として実装している。
+  2. `serialize(doc)` を `doc.encoding` 準拠に変更（新規生成は LE 固定）。R1 の趣旨と R9 が両立する。
+     BE を拒否して受理する入力クラスを狭める案は採らなかった。
+  3. 厳格書式バリデータの正規表現を `[0-9]` 明示（ASCII 限定）へ変更。docstring の断定も実挙動へ一致。
+- **検証**: 是正 3 件とも失敗するテストを先に書いて Red を実出力で確認（計 44 件の失敗）→ 是正 →
+  unit **1714 passed**（着手時 1648）。corpus 44 件の load / 往復バイト一致 / API-03↔04 恒等 /
+  決定論はいずれも **44/44** を維持。既存ファイルの改変 0 件。
+- **未検証（事実と分離）**: MT5 が UTF-16BE の `.ini` を生成する実測は無い（corpus 44 件は全件 LE）。
+  是正 2 は「`decode` が BE を正規受理する既存仕様との整合性確保」であり、BE の一次実測に基づくものではない。
+- **残存リスク（後続判断・すべて実測。2026-08-17 の再レビューで記述を訂正）**:
+  1. `Symbol` の文字集合に明示制約が無い。実測の内訳は次のとおりで、**当初記述「`\r` `\n` `=` は
+     拒否される」は誤り**だった: `A\nB` と `A\r\nB` は API-03 の文書構築段で E-01（`rule_id` は
+     それぞれ R2・R5）。一方 **`A=B`・`A\rB`・`AB\r` は受理**され、往復もバイト一致する
+     （`=` の受理は `parse` が最初の `=` で分割する仕様どおりで正しい。単独 `\r` はライブラリ内で
+     自己整合だが、生の CR が `.ini` に書かれる）。単独 `\r` を含む値の MT5 側の解釈は未実測（CON-06）。
+  2. pydantic `Field(pattern=...)` の `$` は Python `re` では末尾改行の直前にも一致するが、
+     pydantic-core の既定エンジン（Rust regex）では一致しないため実挙動は拒否側（実測）。
+     ただし既定エンジンへの暗黙依存であり、`\Z` 明示または `regex_engine` 固定が安全。
+     なお `Currency="JPY\n"` は API-03 の文書構築段でも E-01 になるため二重に防がれている（実測）。
+  3. `IniDocument.encoding` は任意文字列を受け取れる（型で塞がれていない）。本移植内の生成経路は
+     `decode`（BOM 由来 2 値）と `document_from_entries`（LE 固定）の 2 つのみを実測確認。
+
+## ISSUE-394: [不具合] TESTER_SETTINGS 再レビュー 🟡 指摘 5 件（断定と実挙動の乖離・表記規則の複製・診断の誤指示・書出し符号化の無検査・API-08 のテスト 0 件）（2026-08-17・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-17 是正。5 件とも失敗するテストを先に書いて Red を実出力で確認 → 是正 → Green。unit **1794 passed**（着手時 1714）・corpus 44/44 維持・既存ファイル改変 0 件を実測）
+- **重大度**: Medium（B・E は保守性、A は契約の誤記、C・D は沈黙して誤る／例外体系の外へ漏れる経路）
+- **事実（すべて実測。是正前に本体側で独立再現）**:
+  1. **A: 「API-04 は全域関数」という断定が実挙動と一致しない**。`source=None` かつ
+     `deposit=139500.5` の `TesterSettings` を直接構築して `tester_settings_to_mapping` を呼ぶと
+     `SettingsValueError`（E-04・`rule_id="R7"`）を送出する。内部設計 §6 本文 L736 は射程を限定
+     していたが、呼出側が読む docstring（`loader.py` API-04 / `ini_codec.py` `document_from_entries`）
+     だけが限定を欠いていた（ISSUE-393 の是正 1 で導入した記述）。
+  2. **B: 日付表記 `f"{value.year:04d}.{value.month:02d}.{value.day:02d}"` が
+     `validation.py` と `ini_codec.py` の 2 箇所に完全一致で存在**。`validation.py` の
+     モジュール docstring「値の表記規則は字句層が唯一の宣言を持つ。本モジュールはそれを
+     import して使い、書き直さない」の反例だった（宣言だけでは複製を防げない）。
+  3. **C: API-03 の E-01 診断が呼出側の入力を指さない**。`tester_settings_from_mapping({..., "Symbol": "A\nB"})`
+     の例外は `IniFormatError`（`rule_id="R2"`・「改行が CRLF と LF で混在しています（CRLF 16 行 / 全 17 行）」）で、
+     呼出側が供給していない「行」「改行」に基づく診断だった。`key` も `value` も context に載らず
+     18 キーのどれが原因か特定できない。**さらに本ラウンドで新たに判明**: `[TesterInputs]` の行原文に
+     CRLF を含めると**例外すら出ず**、供給した 1 行が黙って 2 エントリへ分割された（実測:
+     `document_from_entries(expert_mapping(), ("a=1\r\nb=2",))` → `['a=1', 'b=2']`）。
+  4. **D: `serialize` が `IniDocument.encoding` を検証しない**。`dataclasses.replace(doc, encoding=X)` の実測で
+     `"utf-8"` → 書出し成功するが読み戻し不能（BOM が `EF BB BF`）、`"utf-16"` → BOM 二重（`fffefffe`）、
+     `"ascii"` / `"cp932"` / `"latin-1"` → `UnicodeEncodeError`、`"bogus-codec"` → `LookupError` が
+     いずれも `SettingsError` へ未翻訳のまま `write_document` / `dump_tester_settings` から漏れた。
+     `decode` の像は BOM 由来の 2 値のみである一方 `serialize` は任意 `str` を受けており、
+     ISSUE-393 の 🟡-2（沈黙で表現を変える経路）と同型の欠陥が書出し側に残存していた。
+  5. **E: API-08（`parse_header_comment`）のテストが 0 件**（`grep -rn "parse_header_comment\|HeaderCommentInfo" simulator/tests/` → 0）。
+     46 行の解析ロジック（`", "` 分解・forward 語の剥がし・`rsplit` による symbol/period 分離）が一度も実行されていなかった。
+- **是正（原因除去）**:
+  1. A: docstring を実挙動へ一致させた（「`source` を持つ設定では送出例外なし。`source` を持たない
+     直接構築物では新規生成経路の Fail-Stop が残る」）。**宣言の正しさを機械的に検査するテスト**を追加し、
+     Settings 全 10 ソースに無限定の断定（「全域関数」）が再出現したら落ちるようにした。回帰テストで
+     `to_mapping(TesterSettings(..., deposit=139500.5, source=None))` の E-04 / R7 を固定。
+  2. B: `ini_codec._format_date` の表記部を公開名 `format_date_token` へ昇格し、`validation.py` は
+     それを import して使う（複製を削除）。**表記規則が 1 箇所であることを機械的に検査するテスト**を追加
+     （順序表・キー集合の import 時検査と同じ扱い）。
+  3. C: `document_from_entries` に事前検査 `_require_single_line_tokens` を新設。供給された生トークン
+     （`[Tester]` のキー・値、`[TesterInputs]` の行原文）が改行を含む場合、違反対を `key` / `value`
+     （行原文は `line`）付きの E-01（`rule_id="R5"`）で拒否する。行数に基づく R2 診断は `split_lines` を
+     通るファイル読込経路の専用診断に留めた。ISSUE-393 の残存リスク 1（生の CR を含む値の受容）も同時に閉じる。
+  4. D: `serialize` の先頭で `doc.encoding` を検査する。許容集合 `WRITE_ENCODINGS` は `_BOM_ENCODINGS` から
+     **導出**し、手書きの第 2 の集合を作らない（読込側の像＝書出し側の定義域）。診断語彙は既存の
+     `value` / `allowed` を用い、語彙表（内部設計 §4.5.2）へ新語を足していない。
+     ISSUE-393 の残存リスク 3（`IniDocument.encoding` が任意文字列を取れる）を閉じる。
+  5. E: `test_tester_settings_header_comment.py` を新設（28 件）。corpus 44 件の 1 行目が全件解析でき
+     `Symbol` / `Period` / Model 語 / 期間語と整合することを corpus 直読で突合し、`with_forward` の
+     不一致は既知の 1 件（ISSUE-390）のみであることをファイル名で固定した。corpus 非依存分（forward 語の
+     有無・`", "` を含む対象名・`;` 非開始・項目数不足・`None` 等）は常時実行。条件付きスキップ機構は
+     共有補助 `tester_settings_corpus.py` に一本化し、書き写していない。
+- **検証**: unit **1794 passed**（着手時 1714・追加 80 件）。`TESTER_INI_CORPUS_REQUIRED=1` での
+  Settings 全モジュール実行は **723 passed / skip 0**。corpus 44 件の load / 往復バイト一致 /
+  API-03↔04 恒等 / 決定論は **44/44** を維持。`git diff --stat HEAD -- simulator/` は空（既存ファイル改変 0 件）。
+  実装が先在する A の回帰テストと E の全 28 件は初回実行で Pass するため、**変異注入**（forward 語を
+  剥がさない / `rsplit`→`split` / 項目数検査除去 / 空項目検査除去 / 「全域関数」再導入 / 日付表記の複製）で
+  全変異が検出されることを実測し、assertion 弱体でないことを確認した。
+- **残存リスク（後続判断）**:
+  1. 複製検査は**字面**（`year:04d`）の再出現を検出する。同じ規則を別の書き方（`strftime("%Y.%m.%d")` 等）で
+     再実装した場合は検出できない。
+  2. `parse(text, encoding=...)` 自体は符号化を検査しない（検査点はバイト列を作る `serialize` の 1 箇所）。
+     許容外の符号化を直接渡した文書は、構築時ではなく書出し時に Fail-Stop する。
+  3. ISSUE-390（F-9 の合否基準）が OPEN のため、受入テスト T-05（regression スイート）は未実装。
+     本ラウンドで追加したのは `parse_header_comment` の単体テストのみ。
+
+## ISSUE-395: [不具合] TESTER_SETTINGS 変換層レビューで検出した 5 件（TZ 復元漏れ・終了コード表の 3 重化・成功コードの複製・N-01 理由文の乖離・未実証値を「近似でない」と断定）（2026-08-18・IN_PROGRESS）
+
+- **ステータス**: IN_PROGRESS（是正中。Red 先行で検出テストを追加してから修正する方針で着手）
+- **重大度**: Medium（いずれも沈黙して誤りを伝える型。既存テストは 1 件も検出していなかった）
+- **事実（すべてレビューの実測。本体側の申告値も独立に再現され一致）**:
+  1. **TZ 復元漏れ**: `test_tester_window_equivalence.py` の `restore_tz` は `yield; time.tzset()` のみで、
+     フィクスチャ終了順が LIFO のため monkeypatch の undo より先に `tzset()` が走る。結果
+     `TZ=Asia/Tokyo` のまま復元され以降の全テストへ JST が漏れる（実測 `tzname=('JST','JST')`）。
+     現時点の顕在故障は 0（`TZ=Asia/Tokyo` で全件 2835 passed）だが、順序依存の間欠故障の芽。
+  2. **終了コード翻訳の 3 重化**: 値 2 / 1 の所在は `adapter/controller.py:62`・`main/__init__.py:658,660`・
+     `main/tester_settings/run_from_settings.py:57-58` の 3 箇所。しかも直上コメントが主張する
+     「既存 2 箇所との一致はテストで固定する」に対応する検定が **0 件**（実証なき断定）。
+  3. **成功コードの複製**: `SUCCESS_EXIT_CODE` を宣言しながら `math_calculations.py:84` が生リテラル `0`
+     を返す。現配置では参照すると循環 import になる＝定数の置き場所の誤り。
+  4. **N-01 の理由文の乖離**: 理由文は「実行可能な EA は現行 `_EA_FACTORIES` の登録集合に限られます」と
+     書くが、実装は注入された `known_ea_names` を見る。実測で `_EA_FACTORIES` は 5 件・
+     `SymbolSpecCatalog.ea_names()` は 6 件（`TC24051901` を含む）で、両者の関係を固定する検定は 0 件。
+  5. **未実証値の断定**: `MEASURED_EXECUTION_DELAYS`（実測済みの意）に `0` を含めており、
+     `ExecutionMode=0 → approximate=False` になる。導出元 `enums.py` は同値を「暫定（TBD-08）」と
+     明記しており、未実証の値が「近似ではない」として呼出側へ伝わっていた。
+- **併せて訂正（ISSUE-393 の残存リスク記述の誤り）**: `metrics_spec.py:172` の `RuntimeWarning` は
+  「空カーブが原因」ではない（実測: 空カーブでも `initial_deposit>0` なら警告は出ない）。真因は
+  **新規ファイル `math_calculations.py` の `INERT_DEPOSIT = 0.0`** で、`peak=[0.0]` により
+  `np.where` の除算部が両分岐とも評価され `0/0` を踏む。出力値は正しく（`0.0`）NaN は流出しない。
+  `INERT_DEPOSIT = 0.0` は「推定値を発明しない」という設計上正しい選択のため、根本除去は
+  `metrics_spec` 側を `np.divide(..., out=..., where=peak != 0)` へ変える対応になり**既存ファイル改変＝要承認**。
+- **併せて記録（追加検出）**: math 経路の非有限値は `profit_factor` だけでなく **`recovery_factor` も `inf`**。
+  JSON 直列化する呼出側があれば失敗するため、両方を明示して扱う。
+- **是正方針（原因除去）**: 1 は復元を monkeypatch に依存させず自己完結化。2 は既存翻訳を**実行して採取**し
+  新表と突合する検定を追加（値を書き写さない）。3 は `exit_codes.py` へ定数を移して双方が import。
+  4 は理由文を実装へ合わせ、注入集合と `_EA_FACTORIES` の関係を検定で固定。5 は実証状態の単一ソースを
+  `enums.ExecutionDelay` 側に置き、`0` は TBD-08 を理由に `approximate=True` とする。
+
+## ISSUE-396: [設計] `.ini` 起点の実行は通るが、MT5 突合データセットの正解（stop out して完走）を再現できない（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（要判断。A-1〜A-7 の承認範囲外の新規論点）
+- **重大度**: Medium（`.ini` 起点の本番エントリポイントを作る段で、MT5 と同じ結果を出せない）
+- **事実（すべて実測 2026-08-18）**:
+  1. `.ini` → `run_from_settings` の経路自体は成立する。合成 `.ini`（`Model=1` / `Symbol=JP225` /
+     `Period=M1` / `[TesterInputs]` 空）＋ `SymbolSpecCatalog` の JP225 プロファイル ＋ EA 引数注入で
+     **exit_code=0・trades=3315・profit=-18908.2・profit_trades=813・loss_trades=2502**、
+     `metadata.tick_model='ohlc_expand'` / `approximate=False` / `inert_fields=()`。
+  2. **既定の stop-out はエンジン例外になり exit_code=1 を返す**（`margin_level が stop_out_level を
+     下回りました`）。MT5 突合 fixture（`ma_slope_jp225_202501`）は `stop_out: true` を正解としており、
+     これを「結果」として受け取るには `config_overrides` に `stop_out_action="close_and_halt"` が要る。
+     現行 `SymbolSpecCatalog` の JP225 プロファイルは `entry_price_basis` のみを供給し
+     `stop_out_action` を持たない。
+  3. `MA_Slope_EA` は `stop_loss_points` / `take_profit_points` > 0 を `ConfigError` で拒否する
+     （ISSUE-098 を参照する明示メッセージ）。必須キーの権威は `build_interactor` のシグネチャだが、
+     **値の許容域は EA ファクトリ側が別に持つ**。Settings 経路で必須 5 キーを供給する設計では、
+     EA ごとに「0 でなければならない引数」が存在することになる。
+- **影響**: `.ini` 起点の本番エントリポイント（CLI / UI）を作る段で、(a) データセットが
+  `stop_out_action` を供給しないと MT5 の正解と食い違う、(b) EA ごとの値許容域を Settings 層が
+  知らないため、投入時ではなく実行時に `ConfigError` になる。
+- **対策案（実測による結論・2026-08-18）**:
+  1. **案(a) を棄却**: `stop_out_action` の権威を `SymbolSpecCatalog` に持たせる案。理由: ①MT5
+     突合ゲートは catalog を読まず `case.yaml` の値を `build_interactor` へ直接渡すため、catalog
+     を変えてもゲートは何も検出しない。②`close_and_halt` は JP225 固有値ではなく、MT5 忠実性を
+     要する全経路が同値を設定している（`test_ma_slope_reconcile.py` / `tools/export_trade_markers.py` /
+     `report_ui/tools/export_report_payload.py` / `test_walk_forward_integration.py`）。銘柄仕様に置くと
+     「MT5 忠実性」が「データセット権威」に紛れる（SRP 違反）。
+  2. **採用方針（要承認）**: `stop_out_action` の権威を `kwargs_mapper` の `_config_overrides` に持たせる。
+     既定値 `close_and_halt` を辞書に追加し、`.ini` 経路の全ジョブから参照可能に。効果範囲は `.ini`
+     経路のみで sim ジョブと MT5 突合は byte 等価。（先例: `entry_price_basis` と同じ位置・同じ理由付け）。
+  3. **案(b) を棄却**: EA ごとの値許容域を `_EA_FACTORIES` の登録情報として宣言する案。理由: 値許容域の
+     宣言点は**戦略クラス**（`simulator/adapter/strategy/ma_slope.py:50` の `on_init`）であり、登録表へ
+     書くと宣言が 2 箇所になる（DRY 違反）。該当は戦略 7 本中 1 本で第 2 の実例は 0 件（YAGNI）。
+- **関連**: A-1（レジストリ拡張）・A-2（決済通貨の権威化）と同じ「データセット/EA の権威情報を
+  どこが持つか」という論点に属する。
+
+## ISSUE-397: [設計] A-1（math のレジストリ統合）は `data_path` 任意化だけでは目的に到達しない（inert 規則と必須キー契約の衝突）（2026-08-18・裁定済み）
+
+- **ステータス**: 裁定済み（実装は A-3 完了後。下記「裁定」に従う）
+- **重大度**: High（承認済み A-1 をそのまま実装すると「実装したのに UI から math を投入できない」で必ず手戻りする）
+- **事実（すべて実測 2026-08-18）**:
+  1. `tick_model` が `MATH_CALCULATIONS` のとき `EffectiveSettings` は inert 11 フィールド
+     （`symbol` / `timeframe` / `date_range` / `deposit` / `leverage` ほか）を `None` 化する（規則 A）。
+  2. `to_interactor_kwargs` は必ず `resolve_data_window(effective)` を呼ぶが、
+     `date_range is None` のとき `SettingsKeyMissingError` を送出する（`window.py:168-171` 実測）。
+  3. 窓を回避しても `symbol` / `period` / `initial_deposit` は `build_interactor` の必須キー
+     （既定なし）であり、settings 値が `None` のままでは事後条件検査が E-08 で落ちる。
+  4. したがって A-1 の「`data_path` 任意化」だけでは math を `build_interactor` 経由にできない。
+- **裁定（設計判断）**: **inert は「`.ini` の値を参照しない」であって「エンジンに値が無い」ではない**。
+  エンジン識別子（`symbol` / `period` / `data_path`）と `initial_deposit` は、math 経路では
+  **`EngineBinding` が権威**とする（binding は元々「Settings 層が持たない実行資源の注入束」であり、
+  現行の追加専用経路 `run_math_calculations` も既に `binding.symbol_spec` と `INERT_DEPOSIT=0.0` を
+  使っている＝同一の意味論）。実装は分岐（if math）ではなく規則として表現する:
+  「inert なフィールドに対応する引数は binding の値を採る」「窓は inert のとき空窓を返す
+  （例外にしない）」。これにより `to_interactor_kwargs` に math 専用分岐を作らない（OCP）。
+- **A-1 の DoD に追加すべき事項（アーキテクチャ評価の指摘）**:
+  1. `run_math_calculations` の追加専用経路と `build_interactor` 経由の経路が**二重化しないこと**
+     （A-1 成立時は一本化する。`math_calculations.py` の存在理由「レジストリへ 5 件目を追加しない」は
+     承認により反転した）。
+  2. 影響ファイルは承認時の 3 件では足りない。実測で追加が必要: `usecase/tester_settings/enums.py`
+     （`TICK_MODEL_ENGINE_IDS` に math の id が必要）・`main/tester_settings/window.py`・
+     `main/tester_settings/kwargs_mapper.py`・`tests/unit/test_tester_settings_contract_gate.py`・
+     `main/__init__.py:667`（`meta["data_path"]` の直参照は `data_path` 省略時に `KeyError` で落ちる）。
+  3. 既存テストの id 集合・順序アサーションは「5 値に書き換える」のではなく、
+     **増減に追随する形**へ改める（先頭 4 値の順序不変＋既知 4 値が部分集合＋各 id の分岐先不変）。
+
+## ISSUE-398: [設計] `BacktestController.run()` がデータロードと実行を 1 メソッドに束ねている（SRP 違反・A-5 の真因）（2026-08-18・訂正 2026-08-18）
+
+- **ステータス**: OPEN（要承認。A-5 では `run()` 無改変を制約としたため未是正）
+- **重大度**: Medium（本番呼出が 1 件のみで影響限定・ただし設計上の責務二重化は残存）
+- **事実（実測 2026-08-18）**:
+  1. `adapter/controller.py` の `run()` は `market_data.load` を実行し `RunBacktestRequest` を
+     自前で組み直してから interactor へ委譲する。`trading_start` は渡さない（既定 `None` になる）。
+  2. ⚠️ **訂正（本番呼出側の実測）**: 当初「複数呼出側が `controller.run()` を経由」と記録したが誤り。
+     本番呼出は `main/__init__.py:770` **1 件のみ**。`tools/` CLI 3 本と `report_ui` は
+     `build_interactor` を直接呼び `run()` を使わない（`run_is_oos_cli.py:42` に「使わない」と明記）。
+     `run_backtest` の本番呼出は `main/____main__.py:80` と `sim_ui/main/run_job.py:274` の 2 件。
+  3. ⚠️ **訂正（`_interactor` 直接到達の実測）**: A-5 で「カプセル化の破れは消えた」と記録したが**残存**。
+     私有属性 `_interactor` への本番到達が **3 件**（`simulator/tools/run_is_oos_cli.py:48` /
+     `simulator/tools/export_trade_markers.py:155` / `simulator/report_ui/tools/export_report_payload.py:86`）
+     と **MT5 突合検定 1 件**（`simulator/tests/integration/test_ma_slope_reconcile.py:117`）に残存。
+- **抜本的解決（要承認）**: `run()` を「データロード」と「実行」に分離し、呼出側が
+  「組み立て済み request の実行」を選べるようにする。既存の `run()` シグネチャは維持したまま
+  内部を 2 段に割り、実行段を公開する形が最小。
+- **通過条件**: 既存の controller 検定が無改変で通ること。MT5 突合ゲート全通過。
+
+## ISSUE-399: [設計] `ema_adx_di` の除算が `np.errstate` による症状抑制で書かれている（2026-08-18・RESOLVED 2026-08-18）
+
+- **ステータス**: RESOLVED（2026-08-18。是正済み）
+- **重大度**: Low（現状は警告 0 件＝実害は観測されていない）
+- **事実（実測 2026-08-18）**: `simulator/adapter/indicator/ema_adx_di.py:114-130` の 3 箇所の除算が
+  `np.errstate(divide="ignore", invalid="ignore")` で囲まれており、警告を抑制していた。
+- **是正内容**（コミット `ab7bd1c`）: `np.divide(..., where=<条件>)` へ置換。`errstate` は消滅。
+  - 行 114: `np.divide(di_p, ad_x, where=(ad_x != 0), out=np.zeros_like(ad_x))`
+  - 行 124: `np.divide(di_n, ad_x, where=(ad_x != 0), out=np.zeros_like(ad_x))`
+  - 行 130: `np.divide(dif, ad_x, where=(ad_x != 0), out=np.zeros_like(ad_x))`
+- **検証**（実測）: 既存指標値（golden fixture・乱数 34 ケース）が bit 一致。警告 0 件（以前も 0 件だが原因除去）。MT5 突合ゲート全通過。
+
+## ISSUE-400: [不具合] 取得窓が bars を 0 本に絞ると `_bar_period` が `IndexError` で落ちる（N-15 の Fail-Stop に到達しない）（2026-08-18・RESOLVED 2026-08-18）
+
+- **ステータス**: RESOLVED（2026-08-18。是正済み）
+- **重大度**: Medium（翻訳されない `IndexError` で落ちるため原因が呼出側に伝わらない）
+- **事実（実測 2026-08-18）**:
+  1. 取得窓が bars を 0 本に絞り、かつ `tick_model=real_ticks` で `tick_start`/`tick_end` が
+     未指定のとき、`main/__init__.py` の `_bar_period` が `IndexError: list index out of range` を
+     送出する。`UnsupportedSettingError`（N-15）による明示拒否に到達しない。
+  2. **先在の確認（実測）**: A-3 以前から存在する comma 委譲経路でも、同じ入力で同一の `IndexError` が
+     再現する。A-3（窓を全 Repository へ効かせる）は本欠陥の**到達範囲を広げるだけ**。
+- **是正内容（実測 2026-08-18）**: `simulator/main/__init__.py` の `_bar_period` に事前条件の表明を追加し、
+  空列に対して `DataError` を送出する（25 行追加・削除 0）。原因は「窓が 0 本にすること」ではなく
+  「`_bar_period` が部分関数でありながら事前条件を自分の語彙で表明していなかったこと」。
+  違反が stdlib の `IndexError` として漏れて終了コード表に載らなかった。
+- **N-15 との役割分担（実測で二重化なし確認）**: Settings 経路は custom date range のとき
+  `tick_start`/`tick_end` を必ず供給するため `_bar_period` に到達せず、N-15 が唯一の判定者のまま。
+  新 `DataError` は N-15 が構造上到達できない領域（build 中の失敗・窓を課していない空 CSV）だけを覆う。
+- **検証（実測）**: 是正後 `real_ticks` ＋ 窓 0 本 → `DataError` → exit 1。math 正常系
+  （bars=[]・trades=0・exit 0）は不変。窓なし・空 CSV ＋ `every_tick` は従来どおり exit 0。全体 3079 passed。
+- **上流前提（条件付き成立）**: 「comma 委譲経路でも同じ入力で `IndexError` が再現する」は条件付きで正しい。
+  委譲経路は `time` 列が UNIX 秒 int であることを契約とし、ISO 文字列 CSV は窓到達前に `DataError` で
+  fail-fast する。再現には epoch 整数の `time` 列が要る。
+
+## ISSUE-401: [設計] 窓境界の正規化が Candle 段と Bar 段で非対称（naive で 9 時間ずれる）（2026-08-18・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-18。中立共有パッケージ `datawindow` へ単一ソース化）
+- **重大度**: Low（現状は両者の解釈が一致していることを実測で確認済み）
+- **事実**: 窓 `[start, end)` の判定述語は `marketdata/csv_source.py`（Candle 段でフィルタ）と
+  `adapter/repository/windowed_market_data.py`（Bar 段でフィルタ・A-3 で新設）の 2 箇所にある。
+  epoch 正規化については A-3 で `simulator/domain/bar_time.py` へ単一ソース化済み（両者が同一
+  オブジェクトを読むことをテストで固定）だが、**述語そのもの**は統合されていない。
+- **⚠️ 上記記述の訂正（2026-08-18・レビューと実装の実測）**: 「epoch 正規化は単一ソース化済み」は
+  **事実誤認**だった。`marketdata/csv_source.py` は `simulator/domain/bar_time.py` を一度も読んで
+  おらず、単一ソース化されていたのは `window.py` と `windowed_market_data.py` の 2 者のみ。
+  **真のリスクは述語の重複ではなく境界正規化の非対称**である（実測: `TZ=Asia/Tokyo` で naive
+  `datetime(2025,1,10)` を与えると Candle 段 1736434800 / Bar 段 1736467200 の **32400 秒差**）。
+  また当初の抜本策「述語を domain へ移す」は**実装不可能**（`marketdata` は `simulator` を
+  import できない＝依存方向の制約）。共有点は両パッケージの外側にしか置けない。
+- **是正（RESOLVED・2026-08-18）**: 中立の共有パッケージ `datawindow/half_open.py`（標準ライブラリのみ）を
+  新設し、境界正規化 `epoch_seconds_of_datetime` と半開述語 `HalfOpenEpochWindow` の**唯一の実体**とした。
+  Candle 段・Bar 段・`bar.time` 変換表の 3 者が**同一関数オブジェクト**を読むことをテストで固定。
+  naive datetime は **UTC とみなす**（既存合意 `test_bar_time_epoch.py` が既に固定していた解釈へ
+  適用範囲を揃えた＝合意の変更ではない）。これにより変換は入力値だけの純関数になり `time.tzname` を
+  参照しない。配置に `common/` を採らなかったのは、`common/__init__.py` が `applied_price` を eager
+  import するため domain 層へ numpy が transitively 混入するため（実測。是正後も numpy/pandas は非ロード）。
+  先例は `api_shared`（ISSUE-094）。検証: comma 経路の byte 等価を sha256 × 4 条件で確認、
+  `TZ` 3 種で 329 passed、フルスイート 4577 passed。
+
+## ISSUE-402: [設計] 窓境界の解釈規則が Tick 段だけ別系統（aware 拒否・naive のみ）（2026-08-18・RESOLVED）
+
+- **ステータス**: RESOLVED（2026-08-18。Tick 段を `datawindow.half_open` へ統合）
+- **重大度**: Low
+- **事実（実測 2026-08-18・是正前）**:
+  1. `simulator/adapter/repository/tick_parquet.py:85-87` は「保存 timestamp は naive UTC 固定。
+     tz-aware の start/end を与えると naive 値との比較で pandas が `TypeError` を投げるため、
+     当該比較も含め `DataError` へ翻訳する」と規定。pandas で実測しても `datetime64[us]` と
+     aware `Timestamp` の比較は `TypeError`。
+  2. 一方 `main/tester_settings/window.py` の `resolve_data_window` は `tick_start` / `tick_end` に
+     **UTC aware** を設定し、`main/__init__.py` が `repo.load_ticks(symbol, tick_start, tick_end)` へ渡す。
+  3. すなわち窓境界の解釈規則は「Bar / Candle 段＝aware 受理・naive は UTC」と
+     「Tick 段＝aware 拒否・naive のみ」の **2 系統**が残っていた。
+- **是正（実測 2026-08-18）**: Tick 段を ISSUE-401 で新設した `datawindow.half_open` の規則へ統合。
+  `load_ticks` の中核は `window = HalfOpenEpochWindow(epoch_seconds(start), epoch_seconds(end))` と
+  `df.loc[ts_epoch.map(window.contains)]` の 2 行になり、Bar 段と同型に。述語・正規化を書き直さず
+  共有メソッドそのものを呼ぶ（複製ゼロ）。docstring の「aware は `TypeError` なので `DataError` へ翻訳する」
+  規定は撤去。
+- **検証（実測）**: 是正前は aware が `TypeError`→`DataError`、epoch int が `AttributeError`→`DataError`
+  で失敗し、naive のみ成立していた。是正後は epoch int / aware / naive / `datetime64` の **4 表現が
+  Bar 段と同一結果**。既存 naive 経路の不変性は、旧実装を再現した参照実装との突合で **乱択 300 窓
+  mismatch 0**・**952,000 行の全期間ロードで `assert_frame_equal` OK**。全体 3125 passed（`TZ=UTC`）/
+  3128 passed（`TZ=Asia/Tokyo`）、MT5 突合 141 passed（TZ 両系）。
+- **是正で変わった唯一の点（文書化）**: 空窓（`start >= end`）は part を 1 つも読まなくなり、
+  返り値 0 行の dtype が parquet 由来から object へ変わる。行数・列名は不変で、現存呼出は空窓を作らない。
+
+## ISSUE-403: [不具合・実測] `RealTickModel` が epoch int の `bar.time` を受けられず翻訳されない `ValueError` が漏れる（2026-08-18）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: Medium
+- **実測（2026-08-18）**: `real_ticks` ＋ comma 形式（epoch 整数 `time`）CSV で `simulator/adapter/execution/tick_model.py:145` の `_normalize_bar_time` が `np.datetime64(bar_time)` を呼び、`ValueError: Converting an integer to a NumPy datetime requires a specified unit` を送出する。`bar.time` の実体は経路により epoch int / `numpy.datetime64` に分かれる（内部設計 §8.4.1 W-4 の既知事実）。ISSUE-400 と同じ「未翻訳例外が終了コード表を素通りする」系統だが別サイト。
+- **抜本的解決**: `bar.time` の表現差を吸収する単一ソース（`simulator/domain/bar_time.py`）へ委譲する。是正には `tick_model.py` の変更が要る。
+
+## ISSUE-404: [設計] `run_backtest` 経路に MT5 等級のオラクルが存在しない（2026-08-18）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: High（本セッションで判明した最大のリスク）
+- **実測（2026-08-18）**: MT5 突合（`test_ma_slope_reconcile.py`）は `build_interactor` ＋ 私有 `execute` を使い `run_backtest` を通らない。sim ジョブ検定（`sim_ui/tests/integration/test_run_job*.py`）は `run_backtest` を差し替えて引数だけ観測する（`test_run_job.py:15` に明記）。`run_backtest` の数値を測る検定は `tests/integration/test_end_to_end_run.py`（`trades == 1` の合成 1 件）のみ。
+- **帰結**: `run_backtest`（＝sim UI の実行経路）に触れる変更は、壊れても既存ゲートが検出しない。
+- **抜本的解決**: JP225 プロファイル相当の入力で `stats.json` の全フィールドを sha256 で固定する回帰検定を新設する。
+
+## ISSUE-405: [設計] `sim_ui` adapter が他スライスの Composition Root を import している（複製 3 件）（2026-08-18）
+
+- **ステータス**: RESOLVED（2026-08-18）
+- **重大度**: Medium
+- **是正内容（実装完了）**: `simulator/main/__init__.py` に公開アクセサ `build_ea_strategy(**spec) -> StrategyPort` と `known_ea_names() -> tuple[str, ...]` を追加。`DEFAULT_EA_NAME` を表の所有者へ集約（従来は sim_ui と engine fixtures に同じ文字列の写しが 2 つ）。`_ea_components` で引数と既定値を単一ソース化し、2 つの公開アクセサが共有することで既定値の片側ドリフトを構造的に不可能にした。`simulator/sim_ui/adapter/ea_build_probe.py`（新設）で「使い捨てデータで EA を組む」段を単一ソース化し、2 カタログへの知識の写しを排除。3 カタログ（`ea_registry_series_catalog` / `ea_stop_loss_param_catalog` / `symbol_spec_catalog`）は構築関数・EA 名一覧を注入で受ける（既定束縛なし）。束縛は `composition_root_jobs` の 1 箇所で完結。
+- **判明していた潜在欠陥（実在）**: 旧 SL カタログは factory 関数のソース文字列から戦略クラス名を推測しており、`make_weekly_vol_band(...)` 経由の WeeklyVolBand では常に特定に失敗して `None` を返していた。構築ベース化でこの推測ごと消滅。意味論は `None`（探索失敗）→ `frozenset()`（該当なし）へ変化したが、`submit_job` が `if not params: return` のため利用者から見た受付挙動は全 EA で不変（実測）。
+- **検証（実測）**: `simulator/tests` 3182 passed / `simulator/sim_ui/tests` 689 passed / MT5 突合ゲート 888 passed。`sim_ui` 本番 52 モジュールを AST 走査して私有名参照 0 件。`build_interactor` / `run_backtest` / `_select_ea_factory` は AST 抽出で byte 一致。`build_ea_indicators` の ema は実 MT5 fixture 28097 点が bit 一致。受付コスト 2.4 ms（NFR-01 の 1 秒に対し十分小さい）。実 HTTP で `/run-options`・`/ea-series` を確認。
+- **構造的原因の除去（別コミット）**: 本件が長期間検出されなかった原因は、依存方向ゲートの走査対象が `simulator/{adapter,usecase,domain,framework}` に限定され `sim_ui/adapter` が対象外だったこと。走査を「手書き列挙」から「構造による発見」へ置換し 14 層 192 モジュールへ拡張。さらに検出形態の穴を発見・是正（旧実装は `from simulator import main as sim_main` と相対 import・`importlib` 文字列を取り逃していた。これは本件で実際に使われていた形式でありながら射程外だった）。名前空間パッケージ（`__init__.py` 不在）による射程の穴も検定化。
+- **残存事項**: `ea_stop_loss_param_catalog` のソース文字列走査という手法自体は残存（SL 設定名の語彙が増えた場合は別途検討要）。
+
+## ISSUE-406: [不具合] 接点スキャン CLI の epoch 換算が 10^6 倍ずれる（実バグ・再現済み）（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: High（実行可能 CLI の出力時刻が壊れる）
+- **事実（実測 2026-08-18）**: `/workspaces/app/simulator/tools/run_scan_contacts_cli.py:139` が
+  `secs = pd.to_datetime(df["timestamp"]).astype("int64") // 1_000_000_000` と書いており、
+  ナノ秒前提の除数を使っている。しかし `ParquetTickRepository` から読み戻した dtype は
+  `datetime64[ms]` / `datetime64[us]` である（実 store で確認）。実測値:
+  `dtype: datetime64[ms]` / `cli secs[0]: 1709`（正しくは `1709251200`）。
+  すなわち接点スキャンの時刻が 10^6 倍ずれる。
+- **抜本的解決**: 解像度に依存しない換算へ変える（`datawindow`／`simulator/domain/bar_time.py` の
+  既存の単一ソースへ委譲するのが筋。`astype("int64")` の直接除算をやめる）。
+- **検出経緯**: ISSUE-402（Tick 段の時刻規則統合）の作業中に発見。書込許可外のため未修正。
+
+## ISSUE-407: [設計] 半開述語と日列挙の第 3 の複製が bench に残る（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: Low
+- **事実（実測）**: `/workspaces/app/simulator/tools/bench/bench_run.py:146` に日列挙と半開述語の
+  手書き複製がある。`d = lo.normalize()` を使うため境界解釈も第 3 系統になっている
+  （Bar/Candle/Tick 段は `datawindow.half_open` へ統合済み）。
+- **抜本的解決**: `datawindow.half_open` を読む形へ寄せる。
+
+## ISSUE-408: [設計] `epoch_seconds_of_datetime` の丸め方向が tick 列と異なる（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: Low（実害は未観測）
+- **事実（実測）**: `datawindow/half_open.py` の `epoch_seconds_of_datetime` は `int(timestamp())`＝
+  **0 方向切り捨て**、一方 tick 列側は **floor**。1970 年より前の境界でのみ 1 秒ずれ得る。
+  tick データは 2000 年代以降のため実害なし（**未検証**: 1970 年以前のデータを扱う予定の有無）。
+- **抜本的解決**: 丸め方向を floor に統一する（負の epoch を扱う要件が生じた時点で必須）。
+
+## ISSUE-409: [記録] ISSUE.md 台帳の番号重複 8 種・欠番 2 件の存在確認（2026-08-18）
+
+- **ステータス**: OPEN（記録のみ。既存番号は変更しない）
+- **重大度**: Low（外部参照の破壊防止が理由。抜本解決は新規採番ゲート）
+- **事実（実測 2026-08-18・`git show HEAD:ISSUE.md` で本セッション以前から存在することを確認）**:
+  番号の**重複 8 種**（ISSUE-087・089・091・092・093・094・151・362）と**欠番 2 件**（266・345）が
+  存在する。参照の曖昧さを生むため記録する。
+- **対策案（抜本）**: 以後の採番を機械的に検査する（起票時に重複・欠番を検出する仕組み）。
+  既存の番号は書き換えないこと（外部からの参照が壊れるため）。

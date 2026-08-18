@@ -8,6 +8,10 @@
     ConfigError     → 2（設定不正・BacktestError サブクラスのため先に捕捉する）
     BacktestError   → 1（DataError 等を含む実行時例外）
 
+翻訳の**規約そのもの**（成功値・対応表・評価順）は本モジュールでは宣言せず、
+`simulator.adapter.exit_codes` が唯一の宣言場所である（A-6）。本 controller は
+その語彙を読むだけで、表を複製しない。
+
 config.yaml → BacktestConfig の pydantic 検証は framework 層（Section 4）の責務であり、
 本 controller は構築済 BacktestConfig を受け取る設計とする（yaml パースは申し送り）。
 
@@ -17,7 +21,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from simulator.domain.exceptions import BacktestError, ConfigError
+from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
+from simulator.domain.exceptions import BacktestError
 from simulator.usecase.ports import MarketDataPort, RunBacktestInputBoundary
 from simulator.usecase.run_backtest import RunBacktestRequest
 
@@ -34,6 +39,77 @@ class BacktestController:
         self._market_data = market_data
         self._interactor = interactor
 
+    @property
+    def interactor(self) -> RunBacktestInputBoundary:
+        """注入されたインタラクタ（読み取り専用の公開取得点）。
+
+        ISSUE-395 / A-5: 「検証した request をそのまま実行する」呼び出し側
+        （`main.tester_settings.run_from_settings`）は `run()` を使えない——`run()` は
+        `market_data.load` を再実行して別のバー列で `RunBacktestRequest` を組み直すため、
+        検証済 request の `trading_start` が落ちる。従来その到達手段が非公開属性
+        `_interactor` だったため、本プロパティを公開の取得点として設ける。
+        注入した実体をそのまま返し、差し替えは許さない（構築時注入の DI 契約を保つ）。
+        """
+        return self._interactor
+
+    @property
+    def market_data(self) -> MarketDataPort:
+        """注入された MarketDataPort 実装（読み取り専用の公開取得点）。
+
+        🟡-5: 「どの実装が注入されたか」「その実装で読み直すと何が返るか」を確かめる
+        呼び出し側（取得窓の合成デコレータ検定＝`tests/integration/
+        test_marketdata_window_mt5_path.py`）が、非公開属性 `_market_data` へ到達して
+        いた。`interactor` と同型の公開プロパティを設け、到達手段を契約の内側に置く。
+        注入した実体をそのまま返し、差し替えは許さない（構築時注入の DI 契約を保つ）。
+        """
+        return self._market_data
+
+    def execute(self, request: RunBacktestRequest) -> Any:
+        """組立済 request をそのまま 1 run 実行し、**結果を返す**。
+
+        ISSUE-398 / SRP: `run()` は「データ取得」「1 run 実行」「終了コード翻訳」の
+        3 責務を 1 メソッドに畳んでいた。本メソッドは中央の 1 責務（実行）だけを担う。
+
+        終了コード翻訳を**行わない**のは意図的である。`run_from_settings` が既に明記する
+        規律——「検証だけを行いたい呼出しが終了コードを解釈し直さずに済む」——に従い、
+        例外は翻訳せずそのまま送出する。翻訳が要る呼出側は `exit_codes.exit_code_for`
+        （唯一の宣言場所）を自分で呼ぶ。
+
+        事前条件: `request` は実行可能な `RunBacktestRequest`（bars を含む）。
+        事後条件: インタラクタの戻り値をそのまま返す（値を加工しない）。
+        例外: インタラクタが送出した例外をそのまま伝播する。
+
+        「組立済 request を実行する」呼出側（MT5 突合・IS/OOS・レポート出力・
+        `run_from_settings`）は従来これを非公開属性 `_interactor` 経由で行っていた
+        （カプセル化の破れ）。本メソッドがその公開の到達点である。
+        """
+        return self._interactor.execute(request)
+
+    def _build_request(
+        self,
+        config: Any,
+        source_ref: Any,
+        *,
+        timeframe: Any,
+        period: Any,
+        symbol_spec: Any,
+        initial_deposit: float,
+        stop_out_level: float,
+    ) -> RunBacktestRequest:
+        """データ取得段: `source_ref` を読み `RunBacktestRequest` を組む。
+
+        非公開に留める理由（ISSUE-398 §3）: 取得点は `market_data` プロパティが既に
+        公開しており、ここを公開すると**同一操作に 2 つの入口**ができる。`run()` が
+        自分の引数から request を組むための内部手続きに閉じる。
+        """
+        return RunBacktestRequest(
+            config=config,
+            bars=self._market_data.load(source_ref, timeframe, period),
+            symbol_spec=symbol_spec,
+            initial_deposit=initial_deposit,
+            stop_out_level=stop_out_level,
+        )
+
     def run(
         self,
         config: Any,
@@ -45,20 +121,27 @@ class BacktestController:
         initial_deposit: float = 0.0,
         stop_out_level: float = 0.0,
     ) -> int:
-        """1 run を実行し終了コード（0/1/2）を返す。"""
+        """1 run を実行し終了コード（0/1/2）を返す。
+
+        「ロード → request 組立 → 実行 → 翻訳」の順に 2 段（`_build_request` /
+        `execute`）へ割り、本メソッドは**翻訳**だけを自分の責務として残す。
+        シグネチャ・戻り値・例外伝播は従来と同一である。
+        """
         try:
-            bars = self._market_data.load(source_ref, timeframe, period)
-            request = RunBacktestRequest(
-                config=config,
-                bars=bars,
-                symbol_spec=symbol_spec,
-                initial_deposit=initial_deposit,
-                stop_out_level=stop_out_level,
+            self.execute(
+                self._build_request(
+                    config,
+                    source_ref,
+                    timeframe=timeframe,
+                    period=period,
+                    symbol_spec=symbol_spec,
+                    initial_deposit=initial_deposit,
+                    stop_out_level=stop_out_level,
+                )
             )
-            self._interactor.execute(request)
-            return 0
-        except ConfigError:
-            # ConfigError は BacktestError サブクラスのため必ず先に捕捉する（DESIGN §9.4）
-            return 2
-        except BacktestError:
-            return 1
+            return SUCCESS_EXIT_CODE
+        except BacktestError as error:
+            # 翻訳規約（ConfigError→2 / BacktestError→1・評価順を含む）は
+            # `simulator.adapter.exit_codes` が唯一宣言する（DESIGN §9.4）。
+            # `BacktestError` 以外はここで捕捉せず、そのまま呼出側へ送出する。
+            return exit_code_for(error)

@@ -3,7 +3,7 @@
 固定する不変条件（ea_series_api_controller と同型）:
     1. ListRunOptionsInteractor.list() は port の datasets()/ea_names() を束ねた DTO を返す。
     2. RunOptionsApiController.list() は 200・{ok, datasets:[...dict...], ea_names:[...]}。
-    3. datasets は RunProfile.to_dict()（11 プロファイルキー＋dataset）を並べる。
+    3. datasets は RunProfile.to_dict()（11 プロファイルキー＋dataset＋settlement_currency）を並べる。
     4. JSON 直列化は job_api_controller.ApiResponse を再利用する。
 """
 from __future__ import annotations
@@ -14,10 +14,14 @@ from simulator.sim_ui.usecase.run_options_ports import RunOptionsPort, RunProfil
 
 
 def _profile(dataset="jp225_m1"):
+    # settlement_currency は既定値を持たない必須フィールド（N-11 の判定データ源・D-10 同型の
+    # Fail-Stop）。本検定は「翻訳が値を素通しするか」だけを見るため、権威値の出典突合は
+    # integration/test_run_options_mt5_gate.py が fixture 直参照で担う（値の二重記述をしない）。
     return RunProfile(
         dataset=dataset, data_path="/x/jp225_m1.csv", symbol="JP225", period="M1",
         contract_size=10.0, digits=1, point_size=0.1, leverage=10.0,
         volume_min=0.01, volume_max=100.0, volume_step=0.01, stops_level=0,
+        settlement_currency="JPY",
     )
 
 

@@ -8,9 +8,9 @@ DI、RunBacktestInteractor を組み立てて実行、結果を Presenter/Result
     build_interactor(...) -> (controller, request)
         DI 構築のみを行い CLI から分離（__main__ を薄く保つ・単体テスト可能）。
     run_backtest(...) -> (exit_code, result | None)
-        1 run を実行。終了コード（ConfigError→2 / BacktestError→1 / 成功→0）は
-        BacktestController の翻訳を利用する（DESIGN §9.4）。result は Presenter/
-        ResultSink へ流す（出力先指定時）。
+        1 run を実行。終了コードの規約は `simulator.adapter.exit_codes` が唯一宣言し
+        （A-6・DESIGN §9.4）、本モジュールは `exit_code_for` を読むだけで表を複製しない。
+        result は Presenter/ResultSink へ流す（出力先指定時）。
 
 main 層は全層を import 可。コミット済 domain/usecase/adapter/framework は変更しない。
 """
@@ -27,25 +27,37 @@ from simulator.adapter.execution.tick_model import (
     OhlcExpandTickModel,
     RealTickModel,
 )
-from simulator.adapter.execution.tick_model_registry import TICK_MODEL_REGISTRY
+from simulator.adapter.execution.tick_model_registry import (
+    TICK_MODEL_REGISTRY,
+    consumes_market_data,
+)
+# A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
+from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
 from simulator.adapter.indicator.madiff import madiff
+from simulator.adapter.indicator.null_registry import NullIndicatorRegistry
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.presenter.json import JsonPresenter
 from simulator.adapter.presenter.markdown import MarkdownPresenter
 from simulator.adapter.repository.marketdata_source import MarketDataSourceRepository
+# A-1: バー系列を消費しない modelling 用の Null 実装（`requires_market_data is False`）。
+from simulator.adapter.repository.null_market_data import NullMarketDataRepository
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
+# A-3: 取得窓を全 MarketDataPort 実装へ効かせる合成デコレータ（L-2 の解消）。
+from simulator.adapter.repository.windowed_market_data import WindowedMarketDataRepository
 from simulator.adapter.strategy.ma_slope import MaSlope
 from simulator.adapter.strategy.ma_slope_pending import MaSlopePending
+from simulator.adapter.strategy.null_strategy import NullStrategy
 from simulator.adapter.strategy.pro_fit_band import ProFitBand
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
 from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
-from simulator.domain.exceptions import BacktestError, ConfigError, DataError
+from simulator.domain.exceptions import BacktestError, DataError
 from simulator.framework.config_loader import load_config
 from simulator.main.run_config import RunConfig
 from simulator.usecase.models import SymbolSpec
+from simulator.usecase.ports import IndicatorPort
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
 # TickModel の synthetic 生成・real_ticks 分岐は tick_model 単一レジストリ
@@ -99,8 +111,33 @@ def _bar_period(bars: Any) -> "tuple[Any, Any]":
     tick_start/tick_end が未指定（None）のとき、対象バーを覆う半開区間を bar.time
     から導出する（M1=60s 前提）。RealTickModel が各バー区間を [bar.time, bar.time+60s)
     でスライスするため、終端は最終バーの 1 足分先まで確保する。
+
+    事前条件: ``bars`` が 1 本以上あること（区間の両端は先頭・末尾のバーが決める）。
+    事後条件: 半開区間 ``[first, last+60s)`` を返す。
+    例外: ``DataError``（``BacktestError`` 系）。バーが 0 本のとき送出する。
+
+    0 本を例外にする理由（ISSUE-400・症状回避ではなく事実の表明）:
+        「空のバー列から期間は決まらない」は本関数が満たせない事前条件そのものであり、
+        既定値の捏造（例: epoch 0 起点）でも黙認（空の tick frame で続行）でもなく、
+        **翻訳される例外**として表明する。是正前はこの事実が `list[0]` の
+        ``IndexError`` として漏れ、`exit_codes.exit_code_for` の翻訳表に載らなかった
+        （`exit_code_for` は非 `BacktestError` を再送出する＝終了コードにならない）。
+        判定を本関数に置くのは、事前条件を持つ主体がここだからである。呼出側へ移すと
+        本関数は空列に対して部分関数のまま残り、別の呼出点が増えた瞬間に同じ欠陥が
+        再発する。
+
+    ``bars`` が空であること**自体**は失敗ではない（A-1・ISSUE-397）: バー系列を
+    消費しない modelling（`TickModelSpec.requires_market_data is False`）は bars=[] が
+    正常状態であり、`requires_real_ticks is False` のため本関数へ到達しない。本関数が
+    止めるのは「実ティック区間の導出を要求されたのに導けない」場合だけである。
     """
     bar_list = list(bars)
+    if not bar_list:
+        raise DataError(
+            "実ティック読込区間をバー列から導けません（バーが 0 本です）。"
+            "tick_start/tick_end を明示するか、バーが 1 本以上得られる取得窓を指定してください。",
+            context={"bar_count": 0},
+        )
     first = bar_list[0].time
     last = bar_list[-1].time
     # epoch int は +60s（秒）で次足境界。それ以外（numpy.datetime64 / ISO 文字列）は
@@ -142,10 +179,15 @@ def _build_real_tick_model(
 
 
 class _ResultCapturingInteractor(RunBacktestInteractor):
-    """Interactor を継承し最後の BacktestResult を保持する（controller は result を返さない）。
+    """Interactor を継承し最後の BacktestResult を保持する。
 
-    controller.run() は終了コードのみを返すため、Presenter/compare へ流す result を
-    main 側で拾うための最小ラッパ。振る舞いは親 execute と同一（result を控えるのみ）。
+    元の役割: `controller.run()` は終了コードのみを返すため、Presenter/compare へ流す
+    result を main 側で拾うための最小ラッパだった。振る舞いは親 execute と同一
+    （result を控えるのみ）。
+
+    ISSUE-398 以降: `run_backtest` は `controller.execute(request)` の**戻り値**を直接
+    使うため、`last_result` を参照する本番コードは 0 件である（実測）。本ラッパは
+    既存公開 API の削除が承認事項であるため**残している**（削除は別途承認）。
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -368,6 +410,18 @@ def _factory_pro_fit_band(
     return ProFitBand(), registry, CsvOHLCRepository()
 
 
+def _factory_dataless(_ctx: "_EaBuildContext") -> "tuple[Any, Any, Any]":
+    """バー系列を消費しない modelling の構成（A-1・ISSUE-397）。
+
+    `ctx.data_path` を**参照しない**（読むものが無いのが本経路の実体である）。既存の
+    EA ファクトリは全て `_load_dataframe` / `_load_mt5_dataframe` で `data_path` を読むため
+    （実測: `data_path=None` は `market_data.load` より前に `_factory_*` の CSV 読みで
+    `DataError` になる）、データ供給の有無は **market_data 実体だけでなく本 3 点組の
+    選択**で表す必要がある。返す 3 点は既存の Null 実装（Port ABC の実装＝LSP 維持）。
+    """
+    return NullStrategy(), NullIndicatorRegistry(), NullMarketDataRepository()
+
+
 def _factory_tc24051901(
     ctx: "_EaBuildContext",
 ) -> "tuple[Any, PandasIndicatorRegistry, Any]":
@@ -391,7 +445,74 @@ _EA_FACTORIES: "dict[str, Callable[[_EaBuildContext], tuple[Any, PandasIndicator
 }
 
 
-def build_ea_indicators(
+#: 未登録 ea_name が落ちる既定 TC 経路（`_factory_tc24051901`）の EA 名。
+#:
+#: 「実行可能な EA 名」は登録表のキーだけでは表せない——未登録名は既定 TC 経路へ
+#: フォールバックするため、この 1 名だけが表の外側にある実行可能名である。名前を
+#: 表の所有者（本モジュール）に置く理由（ISSUE-405 実測）: 従来は
+#: `sim_ui/adapter/symbol_spec_catalog._DEFAULT_EA` と
+#: `simulator/tests/tester_settings_engine_fixtures.DEFAULT_EA_NAME` に同じ文字列が
+#: 写されており、フォールバック先を変えると 2 箇所が同時に腐る配置だった。
+DEFAULT_EA_NAME = "TC24051901"
+
+
+def known_ea_names() -> "tuple[str, ...]":
+    """実行可能な EA 名を昇順で返す（登録表のキー＋既定 TC 経路の名前）。
+
+    **列挙**であって選択ではない。表を引く式（`.get(ea_name, 既定)`）はここに無く、
+    選択規則は従来どおり `_select_ea_factory` の 1 箇所に閉じている（AST 検定が
+    両者の役割分担を固定する）。
+
+    なぜ公開するか（ISSUE-405）: 表示スライス（`sim_ui`）の実行指示フォームは「どの EA を
+    選べるか」の一覧を要る。これが無いと外側が私有名（`_EA_FACTORIES`）を越境 import して
+    `set(_EA_FACTORIES) | {"TC24051901"}` という**同じ列挙を書き写す**ことになり、実際に
+    そうなっていた（`symbol_spec_catalog.ea_names`）。
+
+    `tick_model` を要求しない: 「どの EA が実行可能か」は run の modelling に依存しない。
+    要求すると呼出側が値を捏造することになる。
+
+    戻り値は決定的順（昇順・重複なし）。
+    """
+    return tuple(sorted(set(_EA_FACTORIES) | {DEFAULT_EA_NAME}))
+
+
+def _select_ea_factory(
+    ea_name: str, *, tick_model: str
+) -> "Callable[[_EaBuildContext], tuple[Any, Any, Any]]":
+    """(strategy, registry, market_data) を作るファクトリを選ぶ**唯一の判定点**。
+
+    規則は 1 つだけである: **バー系列を消費しない modelling は、データを読まない構成を
+    採る**。判定入力は `TickModelSpec.requires_market_data`（レジストリの宣言）であり、
+    tick_model の id を列挙しない——新しい modelling が増えても本関数は改変不要
+    （既定 ``requires_market_data=True`` によって従来どおり EA 表を引く）。
+
+    `if math` を書かない理由（OCP）: 「math かどうか」は Settings 層の語彙であり
+    Composition Root の関心ではない。ここで見るのは「データを消費するか」だけである。
+
+    `_EA_FACTORIES` を**引く式は本関数にしか無い**（🔴-1）。A-1 時点では
+    `build_ea_indicators` が同じ式を生で持ち、data-less 規則を知らないまま
+    `_factory_tc24051901` へ落ちて `DataError`（``data_path=None`` の CSV 読み）になって
+    いた。呼出側は判定入力（`tick_model` id）を渡すだけにし、規則の複製を作らない。
+    式の個数は `simulator/tests/integration/test_ea_factory_selection_rule.py` が AST で
+    機械的に固定する（目視規約にしない）。
+    """
+    if not consumes_market_data(tick_model):
+        return _factory_dataless
+    return _EA_FACTORIES.get(ea_name, _factory_tc24051901)
+
+
+def _tick_model_of(config_overrides: "dict | None") -> str:
+    """決定論 config から `tick_model` id を得る（`build_interactor` と同じ導出）。
+
+    `build_interactor` は `load_config` で決定論 9 項目を組むため、そこから
+    `determinism.tick_model` を読む。`build_ea_indicators` は controller を組まないが、
+    既定値・列挙検証を同じ `load_config` に委ねることで、既定 `tick_model` の値を
+    こちらへ書き写さずに済む（写した既定は config_loader の変更で取り残される）。
+    """
+    return load_config(config_overrides or {}).tick_model
+
+
+def _ea_components(
     *,
     data_path: Any,
     ea_name: str,
@@ -402,22 +523,29 @@ def build_ea_indicators(
     weekly_p_tp: float = 0.50,
     weekly_capital: float = 0.0,
     weekly_f_risk: float = 0.01,
+    config_overrides: "dict | None" = None,
     **_unused: Any,
-) -> PandasIndicatorRegistry:
-    """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
+) -> "tuple[Any, Any, Any]":
+    """ジョブ仕様から `(strategy, registry, market_data)` を組む**唯一の入口**。
 
     `build_interactor` と同じジョブ仕様（余分なキーを含んでよい＝`**spec` で丸ごと渡せる）
-    を受け、`_EA_FACTORIES`（EA→指標の単一ソース）へそのまま委譲する。対応表をここへも
-    呼び出し側へも書き写さない——写した表は登録が増えたときに必ず取り残される。
+    を受け、`_select_ea_factory`（選択規則の唯一の判定点）へそのまま委譲する。対応表も
+    選択規則もここへは書き写さない——写した規則は片方だけ改訂されて必ず食い違う。
 
-    なぜ公開するか: 表示スライス（sim / report_ui）は「価格×MA の接点」のように**EA が
-    見ていた系列そのもの**を要る。これが無いと外側が私有名（`_EA_FACTORIES` /
-    `_EaBuildContext`）を越境 import するか、EA ごとの指標を推測で書き写すことになる。
+    公開アクセサ（`build_ea_indicators` / `build_ea_strategy`）が引数の既定値と組み立てを
+    **共有**するために private で切り出してある。公開側それぞれに同じ 10 個の引数と既定値を
+    並べると、既定値が片方だけ改訂されて 2 つの入口が違う構成を返す（本リポジトリで
+    繰り返し起きている壊れ方）。
+
+    `config_overrides` を受ける理由（🔴-1）: 選択規則の判定入力は `tick_model` であり、
+    投入仕様ではそれが `config_overrides` に載る。A-1 時点で `build_ea_indicators` は
+    この引数を受けず `_EA_FACTORIES` を生で引いていたため、バー系列を消費しない modelling
+    （`Math calculations`）でも `_factory_tc24051901` へ落ち、``data_path=None`` の CSV 読みで
+    `DataError` になっていた（`sim_ui/main/run_job.py` の `_supply_contacts` 経由で
+    report.json が生成されない run を生んでいた）。既定 ``None`` は従来の呼出と同じく
+    config_loader の既定（``every_tick``＝バー系列を消費する）に落ちる。
 
     既定値は `build_interactor` の同名引数と同じ（指標周期を持たない仕様でも呼べる）。
-    系列の未登録は `PandasIndicatorRegistry.get` の公開エラー契約（`IndicatorBufferError`・
-    context の ``available``）で呼び出し側へ届く。
-
     副作用は無い（`build_interactor` は 1 バイトも変えない）。データ読み込みは factory が
     行うため、run の実行とは独立に呼べる。
     """
@@ -431,8 +559,53 @@ def build_ea_indicators(
         weekly_capital=weekly_capital,
         weekly_f_risk=weekly_f_risk,
     )
-    _strategy, registry, _market_data = _EA_FACTORIES.get(ea_name, _factory_tc24051901)(context)
+    factory = _select_ea_factory(ea_name, tick_model=_tick_model_of(config_overrides))
+    return factory(context)
+
+
+def build_ea_indicators(**spec: Any) -> IndicatorPort:
+    """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
+
+    なぜ公開するか: 表示スライス（sim / report_ui）は「価格×MA の接点」のように**EA が
+    見ていた系列そのもの**を要る。これが無いと外側が私有名（`_EA_FACTORIES` /
+    `_EaBuildContext`）を越境 import するか、EA ごとの指標を推測で書き写すことになる。
+
+    ``spec``: `build_interactor` と同じジョブ仕様（`**spec` で丸ごと渡せる）。引数と既定値は
+    `_ea_components` が単一ソースとして持つ。
+
+    戻り値は `IndicatorPort`（LSP）: バー系列を消費しない構成では系列を 1 本も持たない
+    `NullIndicatorRegistry` を返す。系列の未登録はどちらの実装でも同じ公開エラー契約
+    （`IndicatorBufferError`・context の ``available``）で呼び出し側へ届く。
+    """
+    _strategy, registry, _market_data = _ea_components(**spec)
     return registry
+
+
+def build_ea_strategy(**spec: Any) -> Any:
+    """その EA が**実行に使う戦略実体**（StrategyPort）を返す（ISSUE-405・追加のみ）。
+
+    `build_ea_indicators` と**同じ仕様・同じ選択規則**（`_select_ea_factory` への委譲）で、
+    3 点組のうち戦略だけを返す。
+
+    なぜ公開するか（ISSUE-405 実測）: 表示スライスの受付検証（§12.8「戦略設定が SL を
+    保証するか」）は「その ea_name はどの戦略クラスか」を要る。これが無いと外側が
+    `getattr(simulator.main, "_EA_FACTORIES", {})` で表を覗き、`_factory_tc24051901` への
+    フォールバック規則を書き写した上で、factory 関数の**ソース文字列**から戦略クラス名を
+    推測することになる（実際にそうなっていた。`_factory_weekly_vol_band` はビルダ関数
+    `make_weekly_vol_band(...)` を呼ぶため、その推測は WeeklyVolBand で失敗していた）。
+
+    `tick_model` を要求しない: 呼出側の問い（「その EA はどの戦略を持つか」）は run の
+    modelling に依存しない。既定 ``config_overrides=None`` で config_loader の既定
+    （``every_tick``＝バー系列を消費する）に落ち、従来の表引きと同じ factory が選ばれる。
+    バー系列を消費しない modelling を明示した場合だけ `NullStrategy` になる（規則は
+    `_select_ea_factory` の 1 箇所のまま）。
+
+    戻り値は `StrategyPort`（LSP）: engine が呼ぶ `on_init` / `on_new_bar` /
+    `on_position_check` を持つ実体。データ読み込みは factory が行うため、``data_path`` は
+    その factory が読める形式の実在ファイルである必要がある。
+    """
+    strategy, _registry, _market_data = _ea_components(**spec)
+    return strategy
 
 
 def build_interactor(
@@ -484,6 +657,27 @@ def build_interactor(
     """
     # 決定論 9 項目（config_loader の pydantic 検証経由・列挙外は ConfigError）
     determinism = load_config(config_overrides or {})
+    # 🟡-1: 規則 S を**この境界**で効かせる。`to_interactor_kwargs` を通らない投入経路
+    # （`POST /sim/jobs` → `run_backtest`）は `config_overrides` を素通しで渡すため、
+    # そこを通ると A-1 が開いた経路が A-1 の守る不変条件（バー系列の有無と modelling の
+    # 整合）の外側になっていた（実測: math + 実在 CSV で bars=0・exit=0・trades=0 と
+    # 警告も拒否も無く完走した）。判定の宣言は `kwargs_mapper` の 1 箇所に置いたままで、
+    # ここは呼ぶだけである（判定を二重化しない）。既存 4 モード（全て
+    # `requires_market_data=True`）は `data_path` を伴うため素通りする＝byte 等価。
+    #
+    # 関数内 import の理由: `main.tester_settings` パッケージの `__init__` は
+    # `run_from_settings` 経由で `simulator.main` を module 直下 import する
+    # （run_from_settings.py:44）。ここを module 直下 import にすると
+    # `simulator.main` が部分初期化のまま参照され ImportError になる（実測済み）。
+    # 逆向き（`kwargs_mapper.interactor_key_sets` → `build_interactor`）でも同じ理由で
+    # 関数内 import が使われており、本呼出はその既存の取り決めに合わせる。
+    from simulator.main.tester_settings.kwargs_mapper import (
+        verify_engine_data_consistency,
+    )
+
+    verify_engine_data_consistency(
+        tick_model=determinism.tick_model, has_data=data_path is not None
+    )
     strategy_params = {
         "lot_size": lot_size,
         "stop_loss_points": stop_loss_points,
@@ -517,7 +711,9 @@ def build_interactor(
         weekly_capital=weekly_capital,
         weekly_f_risk=weekly_f_risk,
     )
-    _ea_factory = _EA_FACTORIES.get(ea_name, _factory_tc24051901)
+    # A-1: データ供給の要否は tick_model レジストリの宣言（requires_market_data）だけで
+    # 決まる。既定 True のため既存 4 モードは従来と同じ EA ファクトリを引く（byte 等価）。
+    _ea_factory = _select_ea_factory(ea_name, tick_model=determinism.tick_model)
     strategy, registry, market_data = _ea_factory(_ea_ctx)
     # Phase 6 F-8（依頼者承認済み・注入方式＝専用 param 新設）: spec 由来の汎用戦略
     # （GenericConditionStrategy）で _EA_FACTORIES が選んだ戦略を置き換える拡張点。
@@ -536,17 +732,31 @@ def build_interactor(
     # （既定 TC・WeeklyVolBand＝spread 非依存・H-4）の OHLC 取得を marketdata.CandleSource へ
     # 委譲し Candle→Bar 写像する経路へ切り替える（§10.1 C-2）。registry 用 DataFrame は従来
     # どおり data_path から構築（U6 解決＝併存）。spread 依存戦略（MA_Slope/MA_Slope_Pending/
-    # StopEntryProbe＝Mt5CsvOHLCRepository）は委譲対象外で本分岐に入らず、report.json 再現性
+    # StopEntryProbe＝Mt5CsvOHLCRepository）は委譲対象外で委譲分岐に入らず、report.json 再現性
     # （StopEntryProbe 経路無改変）を保つ。usecase IF（RunBacktestRequest.bars）は不変。
-    if marketdata_window is not None and isinstance(market_data, CsvOHLCRepository):
-        from marketdata.csv_source import CsvCandleSource
+    #
+    # A-3（L-2 の解消）: 取得窓は**全 MarketDataPort 実装**で効かせる。従来は委譲分岐が真の
+    # ときだけ窓が効き、Mt5CsvOHLCRepository では黙って無視されていた（実測: MA_Slope_EA +
+    # JP225 M1 2025-01 で窓あり／なしの bars が同一 sha256・28097 本）。委譲経路へ寄せる案は
+    # 棄却する——MarketDataSourceRepository は spread=0 固定（marketdata_source.py:51）であり
+    # spread 依存戦略の約定価格式が壊れる（H-4）。代わりに WindowedMarketDataRepository で
+    # 包み、窓を load の外側＝合成で適用する（各 repository と _ohlc_frame は無改変）。
+    # 新しい語彙は増やさない（窓は marketdata_window 一語のまま）。既定 None は両分岐とも
+    # 素通り＝既存 4 モードと byte 等価。
+    if marketdata_window is not None:
+        if isinstance(market_data, CsvOHLCRepository):
+            from marketdata.csv_source import CsvCandleSource
 
-        # C-2: 取得窓 (start,end) 半開は委譲 repo の構築時パラメータ（window）へ隔離する
-        # （ISSUE-135 LSP: MarketDataPort.load の source_ref を path 系 3 実装と対称化し、
-        # load_source の型別作り分けを除去）。source_ref は全実装で data_path に統一する。
-        market_data = MarketDataSourceRepository(
-            CsvCandleSource(data_path), window=marketdata_window
-        )
+            # C-2: 取得窓 (start,end) 半開は委譲 repo の構築時パラメータ（window）へ隔離する
+            # （ISSUE-135 LSP: MarketDataPort.load の source_ref を path 系 3 実装と対称化し、
+            # load_source の型別作り分けを除去）。source_ref は全実装で data_path に統一する。
+            market_data = MarketDataSourceRepository(
+                CsvCandleSource(data_path), window=marketdata_window
+            )
+        else:
+            # A-3: comma 形式以外（MT5 タブ形式ほか）の MarketDataPort 実装は型で分岐せず
+            # 一律に窓デコレータで包む（OCP: 実装が増えても本分岐は改変不要）。
+            market_data = WindowedMarketDataRepository(market_data, window=marketdata_window)
 
     # bars は committed 公開 IF（market_data.load）で構築する。source_ref は全 MarketDataPort
     # 実装で data_path に統一する（委譲 repo は取得窓を構築時に保持し source_ref を参照しない・
@@ -646,31 +856,35 @@ def run_backtest(
 ) -> tuple[int, Any]:
     """1 run を実行し (exit_code, result|None) を返す。
 
-    終了コードは BacktestController の翻訳を利用する（成功 0 / ConfigError 2 /
-    BacktestError 1）。ConfigError は build_interactor（config_loader）でも送出され得る
-    ため、build_interactor 段階の ConfigError/BacktestError も同じ翻訳で扱う。
+    終了コードの規約（成功値・例外 → コードの対応・評価順）は本モジュールでは宣言せず、
+    `simulator.adapter.exit_codes` が唯一宣言する（A-6）。`build_interactor` 段階
+    （config_loader が `ConfigError` を送出し得る）も、実行段（`controller.execute`）も、
+    出力段（`_present_outputs`）も、同一の `exit_code_for` に載せる。`BacktestError` 以外は
+    捕捉せずそのまま送出する（未知の失敗を終了コードに化けさせない）。
     """
     ea_name = meta.get("ea_name", "Backtest")
     symbol = meta.get("symbol", "-")
+    # ISSUE-398: `build_interactor` が組んだ request を**そのまま**実行する。
+    # 従来は `controller.run(request.config, meta["data_path"], ...)` を呼んでいたため、
+    #   (a) `build_interactor` が読んだ bars を捨てて同じファイルを再読込していた（二重ロード）
+    #   (b) `run()` が request を組み直すため `request.trading_start` が黙って None に落ちた
+    # の 2 点が生じていた。`controller.execute(request)` は検証した request をそのまま
+    # 実行し結果を返すため、両方が同時に消える。終了コードの翻訳は従来どおり
+    # `exit_code_for`（唯一の宣言場所）へ委譲する。
+    # `build_interactor` 段と実行段は同じ翻訳・同じ戻り値（コード, None）を返すため、
+    # 1 つのハンドラに畳んでも観測挙動は変わらない（実行段の失敗時、従来拾っていた
+    # `last_result` は execute が値を返す前に例外へ抜けるので常に None だった）。
     try:
         controller, request = build_interactor(**meta)
-    except ConfigError:
-        return 2, None
-    except BacktestError:
-        return 1, None
+        result = controller.execute(request)
+    except BacktestError as error:
+        return exit_code_for(error), None
 
-    exit_code = controller.run(
-        request.config,
-        meta["data_path"],
-        symbol_spec=request.symbol_spec,
-        initial_deposit=request.initial_deposit,
-        stop_out_level=request.stop_out_level,
-    )
-    result = getattr(controller._interactor, "last_result", None)
-    if exit_code == 0 and result is not None and output_dir is not None:
-        # 出力 I/O 失敗は BacktestError へ翻訳済（_present_outputs）→ exit 1 に載せる。
+    exit_code = SUCCESS_EXIT_CODE
+    if result is not None and output_dir is not None:
+        # 出力 I/O 失敗は BacktestError へ翻訳済（_present_outputs）→ 同じ翻訳に載せる。
         try:
             _present_outputs(result, Path(output_dir), ea_name=ea_name, symbol=symbol)
-        except BacktestError:
-            return 1, result
+        except BacktestError as error:
+            return exit_code_for(error), result
     return exit_code, result

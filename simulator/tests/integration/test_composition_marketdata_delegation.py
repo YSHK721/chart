@@ -15,6 +15,20 @@ data_path から）/ §10.2 H-4（委譲は comma 形式戦略=既定 TC・Weekl
   - spread 依存戦略（StopEntryProbe_EA）は marketdata_window を渡しても委譲経路に紛れ込まず
     Mt5CsvOHLCRepository を維持する（report.json 再現性＝StopEntryProbe 経路無改変）。
   - marketdata_window 未指定（None）なら既定経路は従来どおり CsvOHLCRepository（後方互換）。
+
+A-3 による改訂（強化・緩和ではない）:
+  従来この回帰の壁は `isinstance(controller._market_data, Mt5CsvOHLCRepository)` という
+  **クラス同一性**で書かれていた。A-3 は窓を `WindowedMarketDataRepository` の合成で適用
+  するため、クラス同一性は成立しなくなる（実測: 改訂前の当該 assert は
+  `WindowedMarketDataRepository` を受けて落ちた）。クラス同一性は禁止事項（H-4）の
+  **代理指標**にすぎず、守るべき不変条件は次の 2 点である。改訂ではこの 2 点を直接測る:
+    inv-1: OHLC の読み手（最内 port）が `Mt5CsvOHLCRepository` であり
+           `MarketDataSourceRepository` ではないこと。
+    inv-2: bars の spread が CSV の値のまま**非 0 で保存**されること
+           （`marketdata_source.py:51` の `spread=0` 固定へ寄っていないこと）。
+  inv-2 は改訂前には**存在しなかった検定**であり、クラス同一性では捕まえられない退行
+  （例: 委譲経路が Mt5CsvOHLCRepository を継承する形で導入される）を捕まえる。
+  併せて A-3 の本題（MT5 経路で窓が実際に効くこと）も本ファイルで固定する。
 """
 from __future__ import annotations
 
@@ -26,6 +40,7 @@ import pytest
 from simulator.adapter.repository.marketdata_source import MarketDataSourceRepository
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
+from simulator.adapter.repository.windowed_market_data import WindowedMarketDataRepository
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
 from simulator.main import build_interactor
@@ -151,12 +166,55 @@ def test_delegation_request_bars_are_bar_list(tmp_path):
     assert all(isinstance(b, Bar) for b in request.bars)
 
 
+def _innermost_port(port):
+    """合成をほどいて OHLC を実際に読む port を返す（A-3）。
+
+    デコレータを何枚重ねても「読み手が誰か」を測れるようにする。`inner` を辿るのは
+    `WindowedMarketDataRepository` に限定する（任意の属性名を推測で辿らない）。
+    """
+    while isinstance(port, WindowedMarketDataRepository):
+        port = port.inner
+    return port
+
+
 def test_stop_entry_probe_never_uses_delegation_even_with_window(tmp_path):
     # Arrange: spread 依存戦略 + marketdata_window（紛れ込み禁止の回帰の壁・H-4）
     csv = _write_mt5_csv(tmp_path / "probe.csv")
     # Act: window を渡しても委譲経路に入ってはならない
-    controller, _ = build_interactor(**_stop_probe_kwargs(csv, marketdata_window=_WINDOW))
-    # Assert: report.json 由来の StopEntryProbe 経路は Mt5CsvOHLCRepository を維持
-    assert isinstance(controller._market_data, Mt5CsvOHLCRepository)
-    assert not isinstance(controller._market_data, MarketDataSourceRepository)
+    controller, request = build_interactor(**_stop_probe_kwargs(csv, marketdata_window=_WINDOW))
+    # Assert inv-1: OHLC の読み手は Mt5CsvOHLCRepository（委譲経路ではない）
+    reader = _innermost_port(controller._market_data)
+    assert isinstance(reader, Mt5CsvOHLCRepository)
+    assert not isinstance(reader, MarketDataSourceRepository)
+    # Assert inv-2: spread が CSV の値（2 点）のまま保存される。委譲経路
+    # （marketdata_source.py:51 の spread=0 固定）へ寄れば 0 になり本 assert が落ちる。
+    bars = list(request.bars)
+    assert bars, "窓内にバーが 1 本も無い（前提が崩れており spread を測れない）"
+    assert [b.spread for b in bars] == [2, 2, 2]
+    assert all(b.spread != 0 for b in bars)
     assert isinstance(controller._interactor._strategy, StopEntryProbe)
+
+
+def test_mt5_path_applies_the_window_instead_of_ignoring_it(tmp_path):
+    """A-3（L-2 の解消）: MT5 経路でも窓が効く。改訂前は窓が黙って無視されていた。"""
+    # Arrange: 3 本のうち中央 1 本だけを含む窓（半開 [00:01, 00:02)）
+    csv = _write_mt5_csv(tmp_path / "probe.csv")
+    narrow = (
+        datetime(2024, 1, 1, 0, 1, tzinfo=timezone.utc),
+        datetime(2024, 1, 1, 0, 2, tzinfo=timezone.utc),
+    )
+    # Act
+    controller, request = build_interactor(**_stop_probe_kwargs(csv, marketdata_window=narrow))
+    # Assert: 窓が適用され、読み手は依然 Mt5CsvOHLCRepository（spread 保存）
+    assert isinstance(controller._market_data, WindowedMarketDataRepository)
+    assert [str(b.time) for b in request.bars] == ["2024-01-01T00:01:00"]
+    assert [b.spread for b in request.bars] == [2]
+
+
+def test_mt5_path_without_window_is_not_wrapped(tmp_path):
+    """既定 marketdata_window=None は合成そのものが起きない（byte 等価の担保）。"""
+    csv = _write_mt5_csv(tmp_path / "probe.csv")
+    controller, request = build_interactor(**_stop_probe_kwargs(csv))
+    assert isinstance(controller._market_data, Mt5CsvOHLCRepository)
+    assert not isinstance(controller._market_data, WindowedMarketDataRepository)
+    assert len(request.bars) == 3
