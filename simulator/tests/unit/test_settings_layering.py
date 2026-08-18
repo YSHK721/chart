@@ -26,6 +26,17 @@ ADAPTER_PKG = "simulator/adapter/tester_settings"
 FRAMEWORK_PKG = "simulator/framework/tester_settings"
 MAIN_PKG = "simulator/main/tester_settings"
 
+#: Settings 機能の実装ソース一式（**走査対象の唯一の宣言**）。
+#: 宣言を機械的に検査するテスト（無限定の断定の禁止・値の表記規則の単一宣言など）は
+#: すべてこの宣言から対象を導く。テストごとにパッケージを書き写すと、層が増えたときに
+#: 片方だけが古くなり、新しい層が**沈黙ですり抜ける**（実測: 変換層 `main/tester_settings`
+#: が走査対象から漏れ、`ea_input_map.ea_stem` の「例外: なし（全域関数）」が
+#: 無限定の断定ガードに掛からなかった）。
+SETTINGS_PACKAGES: "tuple[str, ...]" = (USECASE_PKG, ADAPTER_PKG, FRAMEWORK_PKG, MAIN_PKG)
+
+#: パッケージに属さない Settings 機能のソース（例外階層は `domain` 直下の単独ファイル）。
+SETTINGS_EXTRA_MODULES: "tuple[str, ...]" = ("simulator/domain/tester_settings_exceptions.py",)
+
 #: I-3 で pydantic の import を唯一許す実装ファイル。
 PYDANTIC_ALLOWED_FILE = f"{FRAMEWORK_PKG}/validation.py"
 

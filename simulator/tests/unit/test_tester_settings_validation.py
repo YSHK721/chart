@@ -1,8 +1,8 @@
 """検証層（規則 B〜Q）の単体テスト（内部設計 §4.3・基本設計 §4.5.5）。
 
-⚠️ 本モジュールは**実装より先に書いたテスト**である（フェーズ 3 = Red）。
-`simulator.framework.tester_settings.loader` は未実装のため、現時点では
-**収集エラー（ImportError）** になる。
+本モジュールは**実装より先に書いたテスト**である（フェーズ 3 = Red で収集エラーから
+開始した）。検証層 `simulator.framework.tester_settings.loader` は実装済みであり、
+現在は全件通過する。
 
 固定する仕様:
     1. 規則 B〜Q の各違反が内部設計 §4.3.2 の割付表どおりの例外になること
@@ -21,8 +21,6 @@ from pathlib import Path
 
 import pytest
 
-import simulator.domain.tester_settings_exceptions as exceptions_mod
-import simulator.usecase.tester_settings as usecase_pkg
 from simulator.adapter.tester_settings import ini_codec
 from simulator.adapter.tester_settings.ini_codec import MAX_INPUT_LINES
 from simulator.domain.tester_settings_exceptions import (
@@ -34,10 +32,16 @@ from simulator.domain.tester_settings_exceptions import (
     UnknownSettingKeyError,
     UnknownSettingValueError,
 )
-from simulator.framework.tester_settings import loader, validation
+from simulator.framework.tester_settings import validation
 from simulator.framework.tester_settings.loader import (
     tester_settings_from_mapping,
     tester_settings_to_mapping,
+)
+from simulator.tests.unit.test_settings_layering import (
+    REPO_ROOT,
+    SETTINGS_EXTRA_MODULES,
+    SETTINGS_PACKAGES,
+    _module_files,
 )
 from simulator.tests.unit.tester_settings_synthetic import (
     EXPERT_ONLY_KEYS,
@@ -68,15 +72,15 @@ def settings_source_files() -> tuple[Path, ...]:
     """Settings 機能のソースファイル一覧（テストは含まない）。
 
     宣言（docstring の断定・値の表記規則）を機械的に検査するテストが共通で使う。
-    列挙を各テストクラスに書き写すと、モジュールが増えたとき片方だけが古くなる。
+
+    対象は `test_settings_layering` の ``SETTINGS_PACKAGES`` /
+    ``SETTINGS_EXTRA_MODULES`` から導く（**走査対象の宣言は 1 箇所**）。以前はここで
+    パッケージを個別に書き写していたため、変換層 `main/tester_settings` が追加された
+    ときに本関数だけが古いままとなり、`ea_input_map.ea_stem` の
+    「例外: なし（全域関数）」が無限定の断定ガードをすり抜けた（実測）。
     """
-    packages = (
-        Path(ini_codec.__file__).parent,
-        Path(loader.__file__).parent,
-        Path(usecase_pkg.__file__).parent,
-    )
-    files = [path for package in packages for path in sorted(package.glob("*.py"))]
-    files.append(Path(exceptions_mod.__file__))
+    files = [path for package in SETTINGS_PACKAGES for path in _module_files(package)]
+    files.extend(REPO_ROOT / relpath for relpath in SETTINGS_EXTRA_MODULES)
     return tuple(files)
 
 
@@ -270,6 +274,41 @@ class TestAcceptedValuesAreAlsoWritable:
             "Period": "H8",
             "Model": "4",
         }
+
+
+class TestDeclarationGuardsScanEverySettingsPackage:
+    """宣言ガードの走査範囲が Settings 機能の**全層**を覆うこと。
+
+    走査漏れは「違反あり」ではなく「合格」として現れる（沈黙ですり抜ける）。実測では
+    変換層 `simulator/main/tester_settings` が `settings_source_files()` に含まれず、
+    `ea_input_map.ea_stem` の「例外: なし（全域関数）」が無限定の断定ガードに掛から
+    なかった。よって範囲そのものを結果で測る。
+
+    部分文字列で判定しない理由（実測）: `simulator/domain/tester_settings_exceptions.py`
+    は ``"main/tester_settings"`` を部分文字列として含む（``do|main/tester_settings|_``）。
+    含有判定では走査していない層を「走査済み」と誤判定するため、ディレクトリの同一性で
+    測る。
+    """
+
+    def test_every_declared_settings_package_is_scanned(self):
+        # Arrange
+        scanned_dirs = {path.parent for path in settings_source_files()}
+        # Act
+        missing = [pkg for pkg in SETTINGS_PACKAGES if (REPO_ROOT / pkg) not in scanned_dirs]
+        # Assert
+        assert missing == []
+
+    def test_every_declared_settings_package_contributes_at_least_one_file(self):
+        # 走査対象に加えても 0 件なら検出力は増えていない（沈黙合格の防止）
+        counts = {
+            pkg: sum(1 for path in settings_source_files() if path.parent == REPO_ROOT / pkg)
+            for pkg in SETTINGS_PACKAGES
+        }
+        assert {pkg: count for pkg, count in counts.items() if count == 0} == {}
+
+    def test_the_standalone_exception_module_is_scanned(self):
+        scanned = {path for path in settings_source_files()}
+        assert {REPO_ROOT / relpath for relpath in SETTINGS_EXTRA_MODULES} <= scanned
 
 
 class TestApi04ExceptionScopeIsStatedAsMeasured:
