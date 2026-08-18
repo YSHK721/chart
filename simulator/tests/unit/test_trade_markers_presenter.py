@@ -217,14 +217,16 @@ def test_exit_breakeven_pnl_zero_is_treated_as_loss_color(tmp_path):
     assert ex["lwc"]["color"] == "#ef5350"  # pnl==0 は非勝ち
 
 
-def test_marker_time_uses_pandas_timestamp_unix_seconds(tmp_path):
+def test_marker_time_agrees_with_the_candles_unix_seconds_rule(tmp_path):
     # Arrange
     rec = _record(entry_time="2025-01-02 09:00:00", exit_time="2025-01-02 10:00:00")
     # Act
     payload = _present([rec], tmp_path=tmp_path)
     entry = [m for m in payload["markers"] if m["meta"]["kind"] == "entry"][0]
     ex = [m for m in payload["markers"] if m["meta"]["kind"] == "exit"][0]
-    # Assert: candles と同一式 int(pd.Timestamp(t).timestamp())
+    # Assert: candles 生成規則（marketdata/dataset.py）と**値が一致**する。ISSUE-411 以降
+    #   presenter は式を共有せず bar_time.epoch_seconds へ委譲するため、期待値は別経路
+    #   （pandas）で独立に算出したオラクルとして与える。
     assert entry["lwc"]["time"] == _unix("2025-01-02 09:00:00")
     assert ex["lwc"]["time"] == _unix("2025-01-02 10:00:00")
 

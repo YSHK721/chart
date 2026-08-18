@@ -27,7 +27,7 @@ from simulator.domain.exceptions import ConfigError, OHLCInvalidError
 class Bar:
     """1 本の価格バー。生成時に OHLC 整合と spread 非負を検証する。"""
 
-    time: Any  # bar_time.EPOCH_CONVERTERS の受理表現（epoch int / datetime64 / datetime）
+    time: Any  # 受理表現は bar_time.EPOCH_CONVERTERS が唯一定義する（module docstring 参照）
     open: float
     high: float
     low: float

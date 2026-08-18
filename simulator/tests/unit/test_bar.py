@@ -2,6 +2,7 @@
 
 不変条件: low <= min(open,close) <= max(open,close) <= high かつ spread >= 0。
 違反時 OHLCInvalidError。振る舞いなし（不変データ）。
+time は `bar_time.EPOCH_CONVERTERS` の受理集合に限る（違反時 ConfigError・ISSUE-411）。
 """
 from __future__ import annotations
 
@@ -43,7 +44,7 @@ class TestBarValid:
         assert bar.spread == 0
 
     def test_epoch_int_time_is_accepted(self):
-        # Arrange / Act: 時刻型は epoch int も許容（pd.Timestamp 禁止方針）
+        # Arrange / Act: 時刻型は epoch int も許容（受理集合は bar_time.EPOCH_CONVERTERS）
         bar = Bar(time=1_700_000_000, open=1.0, high=1.5, low=0.8, close=1.2, volume=1.0, spread=1)
         # Assert
         assert bar.time == 1_700_000_000

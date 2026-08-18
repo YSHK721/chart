@@ -5,11 +5,12 @@
 
 責務＝結線（Composition Root 利用側・main 無改変＝C3）。
   1. DATA_DIR/jp225_m1.csv を読み取り専用で pandas ロード（date,open,high,low,close,volume）。
-  2. 列ブリッジ（既存データ非改変・新規 tmp へ書く）: date→time / +spread=0。
+  2. 列ブリッジ（既存データ非改変・新規 tmp へ書く）: date→time（epoch 秒化）/ +spread=0。
   3. build_interactor(...) で controller/request を構築（committed IF のみ使用）。
   4. result = controller.execute(request)。
   5. TradeMarkersPresenter().present_markers(result, OUT, symbol=spec, ea_name=ea)。
-  6. 集合包含検証（全マーカー time ⊆ candles time）。包含外件数を stdout に明示。
+  6. 集合包含検証（全マーカー time ⊆ candles time）。包含外件数を stdout と
+     `run_and_export` の戻り値（`markers_outside_candles`）に明示。
 
 既存データ（marketdata/）は読み取り専用。tempfile（実行後削除）と新規 OUT のみ書く（C1）。
 """

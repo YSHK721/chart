@@ -3,10 +3,13 @@
 A-3（取得窓を全 `MarketDataPort` 実装へ効かせる）で新設。従来この正規化は
 `simulator/main/tester_settings/window.py` にのみ存在したが、窓デコレータ
 （`simulator/adapter/repository/windowed_market_data.py`）も同じ比較を要するため、
-書き直せば手書き複製になる。正規化の対象は `Bar.time` の型契約
-（`simulator/domain/bar.py`: ``numpy.datetime64`` または epoch int）そのものであり、
+書き直せば手書き複製になる。正規化の対象は `Bar.time` の型契約そのものであり、
 その所有者は domain 層である。よって実体を本モジュールへ置き、`window.py` と
 窓デコレータの双方が**同一オブジェクト**を読む（複製 0）。
+
+受理集合（= `Bar.time` の型契約）の定義は本モジュールの ``EPOCH_CONVERTERS`` が唯一持つ。
+`simulator/domain/bar.py` は表現を列挙し直さず `is_supported_time` を呼んで構築時に表明する
+（ISSUE-411 スライス 3）。
 
 依存規律（`bar.py` と同じ）: 標準ライブラリ・domain 例外・`datawindow`（標準ライブラリ
 のみで構成される中立共有パッケージ）に依存する。numpy / pandas は直接にも transitively
@@ -34,7 +37,7 @@ simulator.domain.bar_time`` 後に ``numpy`` が ``sys.modules`` へ載らない
 
 拡張点（OCP）: 時刻表現の追加は ``EPOCH_CONVERTERS`` への 1 エントリ追加で済む。
 判定関数（`Callable[[Any], bool]`）と変換関数（`Callable[[Any], int]`）の対を並べた
-表であり、既存エントリ・利用側（`epoch_seconds`）は改変しない。
+表であり、既存エントリ・利用側（`epoch_seconds` / `is_supported_time`）は改変しない。
 """
 from __future__ import annotations
 
