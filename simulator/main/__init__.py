@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from marketdata.tf_ledger import TF_BAR_SEC
 from simulator.adapter.controller import BacktestController
 from simulator.adapter.execution.tick_model import (
     OhlcExpandTickModel,
@@ -53,6 +54,7 @@ from simulator.adapter.strategy.pro_fit_band import ProFitBand
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
 from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
+from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import BacktestError, DataError
 from simulator.framework.config_loader import load_config
 from simulator.main.run_config import RunConfig
@@ -104,6 +106,12 @@ def _make_session_calendar(session_calendar_key: str) -> Any:
 # tick_store_root を tmp_path に差し替えて小データで検証する（実データ非依存）。
 _DEFAULT_TICK_STORE_ROOT = "marketdata/ticks"
 
+# M1（1 分足）の足長秒。値を持つのは時間足台帳 `marketdata.tf_ledger` **だけ**であり、
+# ここは導出のみを行う（第 2 定義を作らない＝ISSUE-261 と同型の事故を避ける）。台帳が
+# ``bar_sec`` を「境界計算に使わない」と断るのは名目値を持つ上位足（1W=7日 / 1M=30日）に
+# ついてであり、"1m" は再集計の原子＝定義上ちょうど 60 秒である。
+_M1_SECONDS = TF_BAR_SEC["1m"]
+
 
 def _bar_period(bars: Any) -> "tuple[Any, Any]":
     """Bar 列から実ティック読込区間 [first bar.time, last bar.time + 60s) を導く。
@@ -140,15 +148,15 @@ def _bar_period(bars: Any) -> "tuple[Any, Any]":
         )
     first = bar_list[0].time
     last = bar_list[-1].time
-    # epoch int は +60s（秒）で次足境界。それ以外（numpy.datetime64 / ISO 文字列）は
-    # pandas.Timestamp へ正規化して +60s する。load_ticks（adapter）の _date_predicate は
-    # start/end に year/month/day 属性（datetime/Timestamp）を要するため Timestamp で渡す
-    # （pandas は composition root=main 内に閉じる。usecase へは漏らさない）。
-    if isinstance(last, int) and not isinstance(last, bool):
-        return first, last + 60
-    start = pd.Timestamp(first)
-    end = pd.Timestamp(last) + pd.Timedelta(seconds=60)
-    return start, end
+    # 時刻表現ごとの手書き分岐を持たない（ISSUE-403）。正規化の規則は
+    # `simulator.domain.bar_time.epoch_seconds` が唯一所有し、`load_ticks` も窓デコレータも
+    # Candle 段も**同一オブジェクト**を読む。是正前はここに第 2 の規則があり、
+    # ``isinstance(np.int64(1), int)`` が **False**（実測・numpy 2.4.6）であるため
+    # comma 形式 CSV の実型（``numpy.int64``）が epoch 分岐を外れ、
+    # ``pd.Timestamp(np.int64(1704067200))`` = ``1970-01-01 00:00:01.704067200`` へ落ちていた
+    # （例外の出ない桁ずれ）。`load_ticks` は境界を同じ `epoch_seconds` で正規化するため、
+    # epoch 秒（int）をそのまま渡してよい。
+    return epoch_seconds(first), epoch_seconds(last) + _M1_SECONDS
 
 
 def _build_real_tick_model(

@@ -14,7 +14,17 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from datawindow.half_open import HalfOpenEpochWindow
+from marketdata.tf_ledger import TF_BAR_SEC
+from simulator.domain.bar_time import epoch_seconds
 from simulator.usecase.ports import TickModelPort
+
+# M1（1 分足）の足長秒。値を持つのは時間足台帳 `marketdata.tf_ledger` **だけ**であり、ここは
+# 導出のみを行う（`simulator/main/__init__.py` も同じ台帳から導出する＝第 2 定義を作らない。
+# 手書きの写しが台帳へ追随せず事故になった前例が ISSUE-261 / ISSUE-253）。台帳が ``bar_sec`` を
+# 「境界計算に使わない」と断るのは名目値を持つ上位足（1W=7日 / 1M=30日）についてであり、
+# "1m" は再集計の原子＝定義上ちょうど 60 秒である。
+_M1_SECONDS = TF_BAR_SEC["1m"]
 
 
 def _tick(price: float, bar: Any) -> tuple:
@@ -124,40 +134,6 @@ def _to_domain_time(ts: Any) -> Any:
     return to_dt64() if to_dt64 is not None else ts
 
 
-def _normalize_bar_time(bar_time: Any) -> Any:
-    """バー区間算定用に bar.time を numpy.datetime64 へ正規化する（epoch int は不変）。
-
-    Bar.time 契約は numpy.datetime64 | int だが、CSV ローダ（CsvOHLCRepository）は
-    ISO 文字列 time を「そのまま」採用するため、real_ticks 経路では bar.time が
-    str / pandas.Timestamp になり得る（ISSUE-016）。区間算定は時刻演算を要するため、
-    時刻系（str / numpy.datetime64 / pandas.Timestamp）は datetime64 へ寄せ、epoch int
-    は算術可能なため不変で返す。pandas/numpy は本 adapter 内に閉じる。
-    """
-    import numpy as np
-
-    if isinstance(bar_time, bool):  # bool は int サブクラス。時刻でないので除外
-        return bar_time
-    if isinstance(bar_time, int):  # epoch int はそのまま算術可能
-        return bar_time
-    if isinstance(bar_time, np.datetime64):
-        return bar_time
-    # str / pandas.Timestamp / その他時刻表現は datetime64 へ正規化する。
-    return np.datetime64(bar_time)
-
-
-def _bar_end(bar_time: Any) -> Any:
-    """バー区間 [bar.time, bar.time+足長) の終端を返す（M1=60s 前提）。
-
-    bar_time は _normalize_bar_time 済（numpy.datetime64 または epoch int）を前提とする。
-    numpy.datetime64 なら timedelta64(60,"s")、epoch int なら +60 を加算する。足長は M1 固定。
-    """
-    import numpy as np
-
-    if isinstance(bar_time, np.datetime64):
-        return bar_time + np.timedelta64(60, "s")
-    return bar_time + 60
-
-
 class RealTickModel(TickModelPort):
     """実ティック frame からバー区間の実ティックを整形する（every-tick #4）。
 
@@ -175,13 +151,28 @@ class RealTickModel(TickModelPort):
         # して保証する。mergesort（安定）で同一 timestamp の相対順序を保つ。period frame
         # 一括保持中ゆえ追加メモリは実質なし。
         self._frame = frame.sort_values("timestamp", kind="mergesort")
+        # 関数内 import: `tick_parquet` は pyarrow / parquet 依存を持ち込むため module-level で
+        # 引くと `main/__init__.py` の遅延 import 設計（既定経路に tick-store 依存を載せない）を
+        # 壊す。RealTickModel の構築は real_ticks 経路でのみ起きるので、ここが最も遅い到達点。
+        from simulator.adapter.repository.tick_parquet import timestamp_epoch_seconds
+
+        # timestamp → epoch 秒は **1 回だけ**前計算する。ticks_of は 1 run につきバー本数回
+        # （実データで 28097 回）呼ばれるため、毎回の列変換は run 全体に効く。
+        self._ts_epoch = timestamp_epoch_seconds(self._frame["timestamp"])
 
     def ticks_of(self, bar: Any, prev_close: float) -> Iterable[tuple]:
-        ts = self._frame["timestamp"]
-        # 半開区間 [bar.time, bar.time+60s) で決定論的にスライスする。bar.time は CSV 由来で
-        # ISO 文字列になり得る（ISSUE-016）ため区間算定用に datetime64 へ正規化する。
-        bar_start = _normalize_bar_time(bar.time)
-        mask = (ts >= bar_start) & (ts < _bar_end(bar_start))
+        # 半開区間 [bar.time, bar.time+足長) を epoch 秒で決定論的にスライスする。窓の定義
+        # （境界の正規化・半開の向き）は共有実体だけが持つ: `epoch_seconds` が `bar.time` の
+        # 表現差を吸収し、`HalfOpenEpochWindow` が [start, end) を表す。是正前はここに手書き
+        # ディスパッチ（`_normalize_bar_time` / `_bar_end`）があり、``isinstance(np.int64(1), int)``
+        # が **False**（実測・numpy 2.4.6）であるため comma 形式 CSV の実型（``numpy.int64``）が
+        # ``np.datetime64(np.int64)`` の ``ValueError`` で落ちていた（ISSUE-403）。
+        start = epoch_seconds(bar.time)
+        window = HalfOpenEpochWindow(start, start + _M1_SECONDS)
+        # 判定は `window.contains` と同一規則をベクトル化したものである。`.map(contains)` は
+        # per-bar 呼出（1 run = 28097 回）× 行数ぶんの Python 関数呼出になるため使わない
+        # （`load_ticks` は 1 run に 1 回なので `.map` で可＝呼出頻度が 4 桁違う）。
+        mask = (self._ts_epoch >= window.start) & (self._ts_epoch < window.end)
         sliced = self._frame.loc[mask]
         return [
             (row.last, row.bid, row.ask, _to_domain_time(row.timestamp))
