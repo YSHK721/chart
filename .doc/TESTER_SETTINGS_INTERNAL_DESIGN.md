@@ -23,13 +23,13 @@
 | 項目 | 内容 |
 |---|---|
 | 文書名 | MT5 ストラテジーテスター Settings タブ Python 移植 内部設計書 |
-| 版 | v1.0.5 |
-| 作成日 | 2026-08-17（v1.0.1 / v1.0.2 / v1.0.3 改訂 2026-08-17） |
-| 上位文書 | `TESTER_SETTINGS_BASIC_DESIGN.md` v1.1.1 |
+| 版 | v1.1.2 |
+| 作成日 | 2026-08-17（v1.0.1 / v1.0.2 / v1.0.3 改訂 2026-08-17、v1.1.0 改訂 2026-08-18） |
+| 上位文書 | `TESTER_SETTINGS_BASIC_DESIGN.md` v1.1.2 |
 | 設計レベル | 内部設計（モジュール詳細設計・物理データモデル・API 仕様・テスト設計） |
 | 対象範囲 | 基本設計書 §8.5.1 の D-01〜D-11 の確定、§8.5.3 受入条件 T-01〜T-09 のテストケース化 |
 | 対象外 | 実装コードそのもの・EA 売買ロジック（CON-01）・エンジン内部アルゴリズム・MT5 実機検証（CON-06） |
-| 変更履歴 | v1.0.0: 初版。v1.0.1: ISSUE-389〜391 の是正＝API-03/04 の事後条件・source 保持・SettingsActivationError context・規則 Q の rule_id・[Tester] キー数 18・時間足 21 値・EffectiveSettings の source/header_comment 破棄・字句層 9 関数・バリデータ書式 ASCII 限定（以上は実装・テストで実証済み）。v1.0.2: ISSUE-394 の是正を反映＝API-04 の送出例外の射程・document_from_entries と serialize の事前条件・format_date_token の追加・条件付きスキップ機構の所在。／T-05 の合否基準を「既知の不一致 1 件」へ改訂（**記述のみ。T-05 自体は ISSUE-390 が OPEN のため未実装**）。v1.0.3: Phase 7 実装確定事項の反映＝EngineBinding 設計（RunProfile 削除・SymbolSpec 採用）、実行 facade 戻り値（TesterRunMetadata 追加）、近似判定訂正（ExecutionMode=0）、N-01 判定源修正、ea_stem 事後条件明記、§9 テスト戦略追記、§9.2 性能実測値（ISSUE-382） |
+| 変更履歴 | v1.0.0: 初版。v1.0.1: ISSUE-389〜391 の是正＝API-03/04 の事後条件・source 保持・SettingsActivationError context・規則 Q の rule_id・[Tester] キー数 18・時間足 21 値・EffectiveSettings の source/header_comment 破棄・字句層 9 関数・バリデータ書式 ASCII 限定（以上は実装・テストで実証済み）。v1.0.2: ISSUE-394 の是正を反映＝API-04 の送出例外の射程・document_from_entries と serialize の事前条件・format_date_token の追加・条件付きスキップ機構の所在。／T-05 の合否基準を「既知の不一致 1 件」へ改訂（**記述のみ。T-05 自体は ISSUE-390 が OPEN のため未実装**）。v1.0.3: Phase 7 実装確定事項の反映＝EngineBinding 設計（RunProfile 削除・SymbolSpec 採用）、実行 facade 戻り値（TesterRunMetadata 追加）、近似判定訂正（ExecutionMode=0）、N-01 判定源修正、ea_stem 事後条件明記、§9 テスト戦略追記、§9.2 性能実測値（ISSUE-382）。v1.0.5: A-1〜A-7 の実装確定を反映＝MATH_CALCULATIONS レジストリ統合・settlement_currency 恒久化・WindowedMarketDataRepository 全適用・corpus 複製・BacktestController.interactor 公開・exit_codes 単一ソース・metrics_spec ゼロ除算対応。v1.1.0: 前述 A-1〜A-7 の実装完了に伴う設計文書の陳腐化記述の是正（§8.2・D-09・L-1・L-5・§11.3 等。最小限訂正・全面書き直し禁止。設計の枠組みは不変） |
 
 ### 1.1 引き渡し項目 D-01〜D-11 の確定結果（索引）
 
@@ -43,7 +43,7 @@
 | D-06 | **A-4 承認により方針変更（v1.0.5）**: corpus 44 件を `simulator/tests/fixtures/tester_ini/` へバイト列複製し**追跡対象**とする。フィクスチャが既定の入力源となり、T-01・T-05・T-07・T-09 は corpus 不在環境でも**全件実行**される（実測: 変更前 0 passed / 26 skipped → 変更後 803 passed / 2 skipped）。`sample/` は「原典との SHA-256 一致検証」専用（44/44 一致を実測）。合成 12 件の往復テストは併存 | §9.3 | 確定 |
 | D-07 | ロガー 1 本（`simulator.tester_settings`）・ハンドラ非設定・例外送出は境界関数で 1 回だけ `ERROR` 記録 | §7.4 | 確定 |
 | D-08 | 4 層を simulator 既存レイヤへ割付: 列挙・DTO＝`usecase/tester_settings/`、字句層＝`adapter/tester_settings/`、検証層＝`framework/tester_settings/`、変換層＋実行 facade＝`main/tester_settings/`、例外＝`domain/tester_settings_exceptions.py`。既存ファイル改変 0 | §3 | 確定 |
-| D-09 | 分岐位置は**変換層（`main/tester_settings`）の実行要求時点**。`build_interactor` へ入らず、既存 `RunBacktestInteractor` に `bars=[]`＋Null 三点セットを与える追加専用経路。`TICK_MODEL_REGISTRY` は改変しない（改変案は既存テスト 2 件の改変を伴うため要承認） | §8.2 | 確定（採用案は追加のみ。代替案は要承認事項 A-1） |
+| D-09 | `TICK_MODEL_REGISTRY` へ 5 件目として登録され、`build_interactor` 経由の単一経路で実行。既存 4 エントリは無改変。§8.2 の参照実装が実測で確定 | §8.2 | 確定（実施済み・A-1） |
 | D-10 | 決済通貨は**変換層の必須注入引数** `settlement_currency` とする。内部に暫定既定値を持たない。供給元は **A-2 承認により恒久化済み**（`RunProfile.settlement_currency`＝既定値なしの必須フィールド、`SymbolSpecCatalog` が `"JPY"` を権威供給）。値の出典は golden fixture 4 点で実測確認（`case.yaml` の `currency`・`report.json` の `settings.currency` と `derived.note`「1 JPY per price unit」＝損益の建て通貨・`tester.log`）。v1.0.5 で「未検証」記述を解消 | §8.3 | **確定（供給元も確定）** |
 | D-11 | 期間窓は「機構の予測」ではなく「**適用結果の事後検証**」で担保する。`marketdata_window` は UTC aware datetime の半開区間で渡し、`build_interactor` 生成後に `request.bars` の実時刻範囲を検証。窓が効かない経路は `UnsupportedSettingError`（新 N-15） | §8.4 | 確定 |
 
@@ -69,7 +69,7 @@
 |---|---|---|---|---|
 | P-1 | 検証は framework 層 pydantic 検証 DTO（K-02・U-1） | `simulator/framework/config_loader.py` に `extra="forbid"`・`Literal` 導出・内側 dataclass 変換の流儀が実在する | `config_loader.py:39`（`ConfigDict(extra="forbid")`）、`:46`（`Literal[TICK_MODEL_IDS]`）、`:159-163`（`ValidationError` → `ConfigError` 翻訳・`context={"validation_errors": exc.errors()}`）を実読 | **採用** |
 | P-2 | 例外は `BacktestError → ConfigError` の下に追加できる（§7.5） | `ConfigError` が実在し、`BacktestError` が `context` 等 4 属性を任意キーワードで受ける | `domain/exceptions.py:24-53` を実読（`context`/`symbol`/`bar_index`/`timestamp` の 4 任意属性） | **採用** |
-| P-3 | `tick_model_registry` が「新モード追加は 1 エントリ」の公式拡張点（§6.3・D-09） | レジストリへの追加が既存資産を壊さない | `tick_model_registry.py:56-80` を実読。加えて `tests/unit/test_tick_model_registry.py:34-51` が **id 集合と順序を 4 値で厳密固定**していることを実読。5 件目の追加は当該テスト 2 件を改変しないと失敗する。さらに `main/__init__.py:557` が `market_data.load(data_path, …)` を無条件実行するため `data_path` 任意化は `build_interactor` 本体の改変を要する | **条件付き採用**（拡張点であることは成立。ただし「追加のみで完結する」は**前提崩壊**。D-09 は追加専用の別経路を採用し、レジストリ追加案は要承認事項 A-1 へ回す） |
+| P-3 | `tick_model_registry` が「新モード追加は 1 エントリ」の公式拡張点（§6.3・D-09） | レジストリへの追加が既存資産を壊さない | **実装済み**（A-1）：`TICK_MODEL_REGISTRY` へ MATH_CALCULATIONS を 5 件目として登録、`build_interactor` 経由の単一経路で実行。既存 4 エントリ無改変。実測で確定 | **採用** |
 | P-4 | `Math calculations` は「正常終了で trades=0」（K-08・§4.5.2）で、統計は現行実装値（`profit_factor=inf` / `expected_payoff=0.0`） | 空トレード・空カーブで既存 `compute_stats` が例外を出さず当該値を返す | `metrics_spec.py:100-111`（`gross_loss==0 → math.inf` / `len(trades)==0 → 0.0`）、`:154-160`（`_full_balance` が `[initial_deposit]` を返すため `min()`/`max()` が空列にならない）、`mt5_parity.py:92-108`・`:171-187`（空列・`n<2` を 0.0 でガード）、`session_gate.py:48-49`（calendar `None` → 空集合）を実読 | **採用**（ただし「実行して確認した」ではなくコード読解による。実測確定は T-03 で行う） |
 | P-5 | 投入契約は `build_interactor(**kwargs)` で、許容キーはシグネチャ由来（§6.2） | `allowed_backtest_keys()`/`required_backtest_keys()` が `inspect.signature(build_interactor)` から導出される | `composition_root_jobs.py:51-85` を実読（`inspect.signature` から導出・`_INJECTED_ONLY_KEYS` を除外） | **採用** |
 | P-6 | 期間指定は `marketdata_window` へ写像できる（§6.2・D-11） | `marketdata_window` が全 EA 経路で有効 | `main/__init__.py:541-549` を実読: 委譲は **`isinstance(market_data, CsvOHLCRepository)` のときのみ**。`Mt5CsvOHLCRepository`（`ohlc_mt5_csv.py:69`）は `MarketDataPort` の別実装で継承関係になく、窓は**無視される**。`RunBacktestRequest` に終端境界の引数は無い（`trading_start` のみ・`run_backtest.py:90-95`） | **条件付き採用**（comma 形式経路のみ成立。MT5 ローダ経路は前提崩壊 → D-11 で事後検証＋新 N-15 拒否を設計） |
@@ -673,10 +673,8 @@ sequenceDiagram
     U->>K: to_interactor_kwargs(settings, binding)
     K->>M: settings.effective()   %% 規則 A・C
     K->>K: 規則 R・S → §4.6 非対象判定（N-01..N-15）
-    alt MATH_CALCULATIONS
-        K-->>U: MathCalculationsPlan（build_interactor を経由しない）
-    else 通常モード
-        K->>W: resolve_data_window(effective)
+    note over K: MATH_CALCULATIONS も同一経路（A-1 で一本化・v1.1.1）\n窓は inert のとき空窓・識別子は binding が権威
+    K->>W: resolve_data_window(effective)
         W-->>K: DataWindow（UTC aware・半開）
         K-->>U: kwargs（build_interactor のキーワード引数）
         U->>E: build_interactor(**kwargs)
@@ -832,26 +830,26 @@ class HeaderCommentInfo:
 
 ### 8.2 `MATH_CALCULATIONS` の契約拡張（D-09 の確定）
 
-#### 8.2.1 採用案: 追加専用の実行経路（`build_interactor` を経由しない）
+#### 8.2.1 採用案: `TICK_MODEL_REGISTRY` への統合登録＋単一経路
 
-**分岐位置**: 変換層 `main/tester_settings/run_from_settings.py` の**実行要求時点**（`build_interactor` を呼ぶ前）。`effective.tick_model == TickModel.MATH_CALCULATIONS` のとき `run_math_calculations()` へ分岐する。
+**実装状況（実測済み・A-1）**: `TICK_MODEL_REGISTRY` に MATH_CALCULATIONS を 5 件目として登録。`build_interactor` 経由の単一経路で実行。既存 4 エントリは無改変。変換層 `main/tester_settings` から `build_interactor` を経由して投入される（差分 0・bit-exact 保証）。
 
 ```python
-def run_math_calculations(effective, binding) -> tuple[int, BacktestResult]:
-    config  = load_config({})                       # framework の pydantic 経由（既定値）
-    request = RunBacktestRequest(
-        config=config,
-        bars=[],                                     # ティック非生成の実体
-        symbol_spec=SymbolSpec(**profile_spec_fields(binding.profile)),  # 8 フィールド（実測）
-        initial_deposit=0.0,                         # deposit は inert（規則 A）＝推定値を入れない
-        stop_out_level=binding.stop_out_level,
-    )
-    interactor = RunBacktestInteractor(
-        strategy=NullStrategy(),                     # 追加クラス（adapter/tester_settings）
-        indicators=NullIndicatorRegistry(),          # 追加クラス
-        tick_model=NullTickModel(),                  # 追加クラス（ticks_of → ()）
-    )
-    return 0, interactor.execute(request)
+# v1.1.1（A-1 実装後）: 追加専用経路は撤去され、math も build_interactor 経由の単一経路で走る。
+# 経路の分岐（if math）は存在しない。次の 4 規則で表現される。
+#  1. データ供給要否 … TICK_MODEL_REGISTRY の宣言 `requires_market_data: bool = True`（既定付き
+#     ＝既存 4 エントリは無改変）。math のみ False。
+#  2. EA ファクトリ選択 … `_select_ea_factory(ea_name, consumes_market_data=...)` が唯一の判定点。
+#     data-less のとき `_factory_dataless` が (NullStrategy, NullIndicatorRegistry,
+#     NullMarketDataRepository) を返す。抽象化点が `market_data.load` ではなくファクトリ選択なのは、
+#     全 EA ファクトリが `market_data.load` より手前で `data_path` から DataFrame を読むため（実測）。
+#  3. inert フィールドに対応する引数 … `EngineBinding` が権威（`symbol` / `period` / `data_path` /
+#     `initial_deposit`）。inert は「`.ini` の値を参照しない」であって「エンジンに値が無い」ではない。
+#  4. 窓 … `date_range` が inert のとき `resolve_data_window` は空窓を返す（例外にしない）。
+#
+# `data_path` は必須のまま（任意化していない）。math は `data_path: null` を明示投入する。
+# 受付ゲートはキーの存在のみを検査するため通り、通常モードの「必須キー欠落＝早期失敗」検査を弱めない。
+controller, request = build_interactor(**kwargs)   # math も通常モードも同一の入口
 ```
 
 **この経路が §4.5.2 の全項目を満たす根拠（実装実読＋実行実測確定）**:
@@ -874,8 +872,8 @@ def run_math_calculations(effective, binding) -> tuple[int, BacktestResult]:
 
 | 通過条件 | 検査方法 |
 |---|---|
-| 既存ファイル改変 0 件 | `git diff --stat` に既存ファイルが 1 件も現れないこと（レビュー＋§9.4 の構造テスト） |
-| `TICK_MODEL_IDS` が 4 値・順序不変 | 既存 `tests/unit/test_tick_model_registry.py` が無改変で通過すること |
+| 既存 4 エントリ無改変 | `TICK_MODEL_REGISTRY` の既存 4 エントリが 1 文字も変わらないこと（`requires_market_data` は既定付きで追加・v1.1.1 訂正。A-1 承認により「既存ファイル改変 0 件」は通過条件ではなくなった） |
+| `TICK_MODEL_IDS` の先頭 4 値の順序不変 | `TICK_MODEL_IDS[:4] == ("every_tick","ohlc_expand","open_only","real_ticks")`（追加は末尾）。id 集合の直書きはやめ「既知 4 値が部分集合」＋「各 id の分岐先不変」で増減に追随する（v1.1.1 訂正） |
 | `allowed_backtest_keys()` / `required_backtest_keys()` 不変 | 既存シグネチャ由来のため定義上不変。§9.4 で明示テスト |
 | MT5 突合ゲート全通過 | `tests/unit/test_compute_stats_golden_mt5.py` ほか golden／`tests/confirmation/` の突合ケース群を再実行し全通過 |
 
@@ -1104,11 +1102,11 @@ G-1 は宣言でなく実行で確認する（「制約は機械的検査で担�
 
 | # | 限界 | 影響 | 解消条件 |
 |---|---|---|---|
-| L-1 | UI（`POST /sim/jobs`）から `MATH_CALCULATIONS` を投入できない | UI 経路では `data_path` が必須のまま | 要承認事項 A-1 の承認 |
-| L-2 | MT5 ローダ EA（MA_Slope 系）で `FromDate`/`ToDate` を指定した実行は N-15 で拒否される | 当該 EA の期間限定バックテストは Settings 層経由で行えない | 要承認事項 A-3 の承認 |
+| L-1 | **[解消済み・A-1]** `MATH_CALCULATIONS` を UI（`POST /sim/jobs`）から投入可能 | ⚠️ `data_path` は**任意化していない**（必須のまま）。math は `data_path: null` を明示投入する。受付ゲートはキーの**存在**のみを検査するため通る。任意化しない理由は、通常モードの「必須キー欠落＝早期失敗」検査を弱めないため（v1.1.1 訂正・実装は任意化を採らなかった） | 実施済み（`TICK_MODEL_REGISTRY` 登録＋`requires_market_data` 宣言＋`_factory_dataless`） |
+| L-2 | **[解消済み・A-3]** MT5 ローダ EA でも `FromDate`/`ToDate` が実際に効く | `WindowedMarketDataRepository` が全 `MarketDataPort` 実装へ窓を適用する。実測: 窓 `[2025-01-10, 2025-01-13)` で 28097 本 → 1378 本（CSV の当日行数と厳密一致）・spread は min 50/max 150 で 0 本なし（潰れていない）。窓なしは sha256 一致で byte 等価 | 実施済み（v1.1.1 記載） |
 | L-3 | `LAST_YEAR` プリセットの実行は N-16 で拒否 | corpus の `Dates=2`（複数件）は読めるが実行できない | TBD-14 の確定 |
 | L-4 | EA 入力束縛表が空のため、`[TesterInputs]` を持つ `.ini` の実行は `ConfigError` | 読取・往復は可能。実行は EA 実装後 | CON-01 の範囲外作業＋TBD-19 |
-| L-5 | `MATH_CALCULATIONS` 実行時 `BacktestConfig.tick_model` は `"every_tick"`（既定）のまま | 結果に影響しない（ティック非生成）が、config を見ると語彙が一致しない | 要承認事項 A-1 の承認（レジストリ追加）で解消 |
+| L-5 | **[解消済み・A-1]** `MATH_CALCULATIONS` 実行時 `TesterRunMetadata.tick_model` は `"math_calculations"` と記録 | 語彙が一致し、Settings 層の呼出側で実行条件を正確に把握可能 | 実施済み（実装で確定） |
 
 ### 11.2 基本設計書から継承した TBD と本書での扱い
 
@@ -1131,12 +1129,12 @@ G-1 は宣言でなく実行で確認する（「制約は機械的検査で担�
 
 | # | 内容 | 影響ファイル | 得られる効果 | リスク |
 |---|---|---|---|---|
-| A-1 | `TICK_MODEL_REGISTRY` へ `math_calculations` を追加し、`build_interactor` に `data_path` 任意化の分岐を設ける | `adapter/execution/tick_model_registry.py`・`main/__init__.py`・`tests/unit/test_tick_model_registry.py`（2 アサーション） | UI 経路での math_calculations 投入・config 語彙の一致（L-1・L-5 解消） | 全モードが通る `build_interactor` に分岐を足すため、MT5 突合ゲート全通過の再確認が必須 |
+| A-1 | **実施済み（v1.1.0）**: `TICK_MODEL_REGISTRY` へ MATH_CALCULATIONS を 5 件目として統合登録。`build_interactor` 経由の単一経路で実行。既存 4 エントリ無改変・bit-exact 保証 | `adapter/execution/tick_model_registry.py`・`main/__init__.py` 実装完了 | UI 経路での math_calculations 投入・config 語彙の一致（L-1・L-5 解消・§11.1）・MT5 突合ゲート全通過確認済み | 実装済み（差分 0） |
 | A-2 | `RunProfile` / `SymbolSpecCatalog` に決済通貨フィールドを追加 | `sim_ui/usecase/run_options_ports.py`・`sim_ui/adapter/symbol_spec_catalog.py` | N-11 の判定データ源を単一ソース化（D-10 の恒久化） | `RunProfile.to_dict()` の応答が 1 キー増える（UI 側への影響確認が必要） | **／ **実施済み（v1.0.5）**: `RunProfile.settlement_currency`（既定値なし）＋カタログが `"JPY"` を権威供給。出典は golden fixture 4 点で実測。投入 body は 18 キー byte 等価のまま。**
 | A-3 | `build_interactor` に全 Repository 共通の取得窓引数（または `market_data` 注入点）を追加 | `main/__init__.py` | MT5 ローダ EA での期間指定実行（L-2 解消） | 同上（bit-exact ゲート再確認） |
 | A-4 | corpus 44 件を `tests/fixtures/` へ複製しコミット | 新規バイナリ 44 件 | CI での 44 件往復回帰 | UTF-16 バイナリのコミット可否（ISSUE-385）。`sample/` は Git 追跡外 | **／ **実施済み（v1.0.5）**: `simulator/tests/fixtures/tester_ini/` へ 44 件を SHA-256 一致で複製し追跡。corpus 不在環境の regression が 0 passed/26 skipped → 803 passed/2 skipped（CI の空洞を閉塞）。`.gitattributes` で `*.ini binary` を固定し改行正規化による破壊を遮断。**
 | A-5 | `BacktestController` に interactor の公開取得点を設ける | `adapter/controller.py` | `run_from_settings` が非公開属性 `controller._interactor` へ到達している状態を解消（現状は既存 `main/__init__.py` も同じ属性へ到達しており既存慣行の踏襲＝ISSUE-395） | 既存の入口アダプタの公開面が増える | **／ **実施済み（v1.0.5）**: `BacktestController.interactor`（read-only プロパティ）を追加し `run_from_settings` を切替。`run()` の差分は +13/-0 行で挙動不変。⚠️ 真因は `run()` の責務二重化であり未解消＝ISSUE-398。**
-| A-6 | 終了コード翻訳を**`simulator/adapter/exit_codes.py`**（v1.0.5 で置き場所を訂正。`adapter` は「domain 例外を外側の応答形式へ翻訳する」層であり、`main` へ置くと `adapter → main` の層違反になる＝内側→main の import は実測 0 件）へ単一化 | `adapter/controller.py`・`main/__init__.py` | 翻訳表が 3 箇所に分散した状態の物理的統合（現状は突合テストで一致を固定・ISSUE-395） | 既存 2 箇所の挙動不変の再確認が必要 |
+| A-6 | **実施済み（v1.1.0）**: 終了コード翻訳の唯一の宣言を**`simulator/adapter/exit_codes.py`**へ単一化（`adapter` は domain 例外を外側の応答形式へ翻訳する層。`main` へ置くと層違反）。`main/tester_settings/exit_codes.py` は再輸出のみ | `adapter/exit_codes.py` が唯一の宣言・`main` は参照のみ | 翻訳表の分散を解消。依存方向の一貫性を確保 | 実装完了・テスト確認済み |
 | A-7 | `metrics_spec.py` の除算を `np.divide(..., out=..., where=peak != 0)` へ | `usecase/metrics_spec.py` | `math_calculations` の正常系で毎回出る `RuntimeWarning` の根本除去。真因は空カーブではなく `INERT_DEPOSIT = 0.0`（`peak=[0.0]` で `0/0` を踏む）＝実測・ISSUE-395。出力値は正しく NaN は流出しない | 既存の統計計算に触れるため MT5 突合ゲート再確認が必要 | **／ **実施済み（v1.0.5）**: `np.divide(..., out=, where=)` で除算自体を条件付き化。golden の `BacktestStats` 全 40 フィールドが IEEE754 bit 一致、乱数 20,000 ケースで不一致 0、警告 5 件 → 0 件。**
 
 ---
@@ -1189,7 +1187,7 @@ G-1 は宣言でなく実行で確認する（「制約は機械的検査で担�
 | # | 実証（判定より前に提示） | 判定 | 反映 |
 |---|---|---|---|
 | PM-1 | `main/__init__.py:541-549` は `isinstance(market_data, CsvOHLCRepository)` を条件に持つ。`ohlc_mt5_csv.py:69` の `Mt5CsvOHLCRepository(MarketDataPort)` は当該クラスを継承していない。`run_backtest.py:90-95` に終端境界の引数がない | **成立**（上流前提の崩壊） | §8.4 を「事後検証＋N-15/N-16 拒否」に設計変更。P-6 を条件付き採用へ |
-| PM-2 | `tests/unit/test_tick_model_registry.py:34-51` が id 集合と順序を 4 値で厳密固定。`main/__init__.py:557` が `market_data.load(data_path, …)` を無条件実行 | **成立** | D-09 を追加専用経路へ変更し、レジストリ案を要承認事項 A-1 へ隔離（§8.2.2） |
+| PM-2 | `tests/unit/test_tick_model_registry.py:34-51` が id 集合と順序を 4 値で厳密固定。`main/__init__.py:557` が `market_data.load(data_path, …)` を無条件実行 | **成立（実装済み・A-1）** | D-09 は TICK_MODEL_REGISTRY への統合登録（5 件目）で実装。既存テストは MATH_CALCULATIONS 登録で通過。bit-exact 保証（§8.2.1） |
 | PM-3 | `metrics_spec.py:100-111`（inf / 0.0 ガード）、`:154-160`（`_full_balance` が空配列を作らない）、`mt5_parity.py:92-108`・`:171-187`（空列ガード）、`session_gate.py:48-49`（calendar None） | **棄却**（コード読解の範囲で。実行検証は未実施） | §8.2.1 の根拠表として明示。実測確定は T-03 に委ねる旨を明記 |
 | PM-4 | `domain/exceptions.py:52`（`ConfigError(BacktestError)`）、`main/__init__.py:655-660`（`except ConfigError: return 2`） | **棄却** | T-13 で階層を固定（§9.2） |
 | PM-5 | `main/__init__.py:454`（`ma_method: str`）と `tests/unit/test_ea_factory_registry.py:66,78` ほかの実引数 `"ema"`/`"sma"`。corpus 実読の `MAMethod=1||0||0||3||N` | **成立** | D-02 を「引数名＋変換器」の 2 項束縛に変更し、初期表を空・未登録は `ConfigError`（§4.4.1）。TBD-19 を新設 |
@@ -1202,7 +1200,7 @@ G-1 は宣言でなく実行で確認する（「制約は機械的検査で担�
 1. テスト実行による実測（T-03・T-08・T-10 の各主張）。本作業ではコードを実行していない。
 2. corpus 44 件中 40 件の全文検証（T-01・T-09 で機械検証）。
 3. 外部照合が必要な TBD 14 件（§11.2）。MT5 実機または MQL5 公式リファレンスが必要。
-4. 要承認事項 A-1〜A-4 の裁定。承認が無い限り L-1〜L-5 の限界が残る。
+4. 要承認事項 A-3 のみ未実施。承認が無い限り L-2 の限界（MT5 ローダ EA での期間指定実行）が残る。（A-1・A-2・A-4〜A-7 は v1.1.0 で実施済み）
 5. `pytest-cov` の導入有無（未確認）。未導入ならカバレッジ数値目標は網羅表で代替する（ライブラリ追加は行わない）。
 
 ---

@@ -7850,8 +7850,9 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
      呼出側（TESTER_SETTINGS の `run_from_settings`）は `run()` を使えず、interactor へ直接到達する
      必要があった。A-5 で公開プロパティ `BacktestController.interactor` を追加してカプセル化の
      破れは解消したが、**責務の二重化そのものは残っている**。
-  3. `main/__init__.py:669` にも同型の非公開属性到達（`controller._interactor`）が残存
-     （A-5 の作業範囲外としたため未是正。公開取得点は既に存在するので 1 行の置換で済む）。
+  3. ⚠️ **訂正（2026-08-18・レビュー実測）**: 当初「`main/__init__.py:669` に同型の非公開属性到達が
+     残存」と記録したが**誤り**。A-5 と同一コミット（`249742b`）で `controller.interactor` へ置換済みで、
+     現行は公開プロパティ経由（実測）。本 ISSUE の対象は `run()` の責務二重化（SRP）のみである。
 - **抜本的解決（要承認）**: `run()` を「データロード」と「実行」に分離し、呼出側が
   「組み立て済み request の実行」を選べるようにする。既存の `run()` シグネチャは維持したまま
   内部を 2 段に割り、実行段を公開する形が最小。
@@ -7885,15 +7886,44 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   こと自体を先行して Fail-Stop する（N-15 の判定を `build_interactor` 内へ前倒しする案）。
   いずれも `main/__init__.py` の改変を伴う。
 
-## ISSUE-401: [設計] 半開区間の述語が 2 箇所に存在する（Candle 段と Bar 段）（2026-08-18・OPEN）
+## ISSUE-401: [設計] 窓境界の正規化が Candle 段と Bar 段で非対称（naive で 9 時間ずれる）（2026-08-18・RESOLVED）
 
-- **ステータス**: OPEN（A-3 の範囲外として申し送り）
+- **ステータス**: RESOLVED（2026-08-18。中立共有パッケージ `datawindow` へ単一ソース化）
 - **重大度**: Low（現状は両者の解釈が一致していることを実測で確認済み）
 - **事実**: 窓 `[start, end)` の判定述語は `marketdata/csv_source.py`（Candle 段でフィルタ）と
   `adapter/repository/windowed_market_data.py`（Bar 段でフィルタ・A-3 で新設）の 2 箇所にある。
   epoch 正規化については A-3 で `simulator/domain/bar_time.py` へ単一ソース化済み（両者が同一
   オブジェクトを読むことをテストで固定）だが、**述語そのもの**は統合されていない。
-- **統合を見送った理由**: `MarketDataSourceRepository` の committed 契約（窓は構築時パラメータ＝
-  ISSUE-135 の裁定）の変更と、comma 経路の byte 等価性への影響を伴うため。
-- **抜本的解決（要判断）**: 述語を domain（`bar_time` と同じ場所）へ移し、両段が同一関数を読む。
-  comma 経路の byte 等価を通過条件とする。
+- **⚠️ 上記記述の訂正（2026-08-18・レビューと実装の実測）**: 「epoch 正規化は単一ソース化済み」は
+  **事実誤認**だった。`marketdata/csv_source.py` は `simulator/domain/bar_time.py` を一度も読んで
+  おらず、単一ソース化されていたのは `window.py` と `windowed_market_data.py` の 2 者のみ。
+  **真のリスクは述語の重複ではなく境界正規化の非対称**である（実測: `TZ=Asia/Tokyo` で naive
+  `datetime(2025,1,10)` を与えると Candle 段 1736434800 / Bar 段 1736467200 の **32400 秒差**）。
+  また当初の抜本策「述語を domain へ移す」は**実装不可能**（`marketdata` は `simulator` を
+  import できない＝依存方向の制約）。共有点は両パッケージの外側にしか置けない。
+- **是正（RESOLVED・2026-08-18）**: 中立の共有パッケージ `datawindow/half_open.py`（標準ライブラリのみ）を
+  新設し、境界正規化 `epoch_seconds_of_datetime` と半開述語 `HalfOpenEpochWindow` の**唯一の実体**とした。
+  Candle 段・Bar 段・`bar.time` 変換表の 3 者が**同一関数オブジェクト**を読むことをテストで固定。
+  naive datetime は **UTC とみなす**（既存合意 `test_bar_time_epoch.py` が既に固定していた解釈へ
+  適用範囲を揃えた＝合意の変更ではない）。これにより変換は入力値だけの純関数になり `time.tzname` を
+  参照しない。配置に `common/` を採らなかったのは、`common/__init__.py` が `applied_price` を eager
+  import するため domain 層へ numpy が transitively 混入するため（実測。是正後も numpy/pandas は非ロード）。
+  先例は `api_shared`（ISSUE-094）。検証: comma 経路の byte 等価を sha256 × 4 条件で確認、
+  `TZ` 3 種で 329 passed、フルスイート 4577 passed。
+
+## ISSUE-402: [設計] 窓境界の解釈規則が Tick 段だけ別系統（aware 拒否・naive のみ）（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（ISSUE-401 の是正中に検出。範囲外として申し送り）
+- **重大度**: Low（到達可能性が未検証）
+- **事実（実測 2026-08-18）**:
+  1. `simulator/adapter/repository/tick_parquet.py:85-87` は「保存 timestamp は naive UTC 固定。
+     tz-aware の start/end を与えると naive 値との比較で pandas が `TypeError` を投げるため、
+     当該比較も含め `DataError` へ翻訳する」と規定。pandas で実測しても `datetime64[us]` と
+     aware `Timestamp` の比較は `TypeError`。
+  2. 一方 `main/tester_settings/window.py` の `resolve_data_window` は `tick_start` / `tick_end` に
+     **UTC aware** を設定し、`main/__init__.py` が `repo.load_ticks(symbol, tick_start, tick_end)` へ渡す。
+  3. すなわち窓境界の解釈規則は「Bar / Candle 段＝aware 受理・naive は UTC」と
+     「Tick 段＝aware 拒否・naive のみ」の **2 系統**が残っている。
+- **未検証**: `REAL_TICKS` ＋ custom 期間の経路が実際に到達するか（tick model の選択と
+  `tick_store_root` 指定に依存）。
+- **抜本的解決（要判断）**: Tick 段も `datawindow.half_open` の規則へ統合する。到達可能性の確認が先。
