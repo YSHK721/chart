@@ -203,6 +203,7 @@ class TestProductionCodeUsesThePublicInteractorAccess:
 class TestTheOutputStageCannotRaiseConfigError:
     """出力段の委譲が挙動を変えないための前提を機械的に固定する（A-6 後半）。
 
+    **固定対象の不変条件（不変）**: `_present_outputs` から `ConfigError` が出ないこと。
     `run_backtest` の出力段は従来 `except BacktestError: return 1, result` と
     終了コードを直書きしていた。これを `exit_code_for(error)` へ委譲すると、
     もし `_present_outputs` から `ConfigError` が出れば 1 ではなく 2 になる。
@@ -216,12 +217,42 @@ class TestTheOutputStageCannotRaiseConfigError:
     `ExecutionError` 1 であり、`ConfigError` は 0 件。残る呼出（`Path.mkdir` /
     `write_text` / `setattr`）は標準ライブラリで、`simulator` 配下に `__setattr__` の
     再定義は 0 件（実測）。
+
+    **閉包の TYPE_CHECKING 誤認の是正（ISSUE-411・2026-08-18）**:
+    本検査は長らく閉包を過大に計算していた。`_project_imports` が
+    ``if TYPE_CHECKING:`` ガード配下の import を実行時 import と同一視していたためである。
+    `usecase/ports.py:14-16` は `Bar` / `Order` を型注釈専用に import しており
+    （``if TYPE_CHECKING:  # 型注釈専用（実行時 import 不要・domain のみ）``）、
+    これが閉包へ混入して `domain/bar.py` `domain/order.py` `domain/exceptions.py`
+    `domain/_shared.py` `domain/bar_time.py` を引き込み、閉包は **8 モジュール**に膨れていた。
+
+    除外の正当性は**言語仕様**である。`typing.TYPE_CHECKING` は実行時 ``False`` であり
+    （実測: ``python -c "import typing; print(typing.TYPE_CHECKING)"`` → ``False``）、
+    ガード配下の文は実行時に評価されない。したがってガード配下の import は
+    「出力段が実行時に到達するコード」ではなく、閉包に含めてはならない。
+
+    是正後の閉包は **3 モジュール**（`presenter/json.py` / `presenter/markdown.py` /
+    `usecase/ports.py`）であり、実行時の実測と一致する（`import` 後の ``sys.modules``
+    に `simulator.domain.bar` は現れない）。この閉包の `ConfigError` raise は **0 件**である。
+
+    なお ISSUE-411 で `Bar.__post_init__` へ time 型契約の表明（違反は `ConfigError`）を
+    入れた際、本検査が落ちた。当初これを「近似が過大だから許可リストで通す」方向で
+    扱いかけたが、**真因は閉包計算のバグ**であり、`domain/bar.py` はそもそも出力段の
+    実行時閉包に存在しない。無条件検査（閉包内に `ConfigError` の raise 0 件）のまま
+    正しい閉包を与えるのが抜本策である。
     """
 
     #: `_present_outputs` が呼ぶプロジェクト内コードの入口。
     _PRESENTER_SEEDS = (
         _SIMULATOR_DIR / "adapter" / "presenter" / "json.py",
         _SIMULATOR_DIR / "adapter" / "presenter" / "markdown.py",
+    )
+
+    #: 是正後の実行時閉包（実測値）。膨張・縮小のいずれもここで気付ける。
+    _RUNTIME_CLOSURE = (
+        _SIMULATOR_DIR / "adapter" / "presenter" / "json.py",
+        _SIMULATOR_DIR / "adapter" / "presenter" / "markdown.py",
+        _SIMULATOR_DIR / "usecase" / "ports.py",
     )
 
     def _module_path(self, module_name: str) -> "Path | None":
@@ -234,9 +265,44 @@ class TestTheOutputStageCannotRaiseConfigError:
                 return candidate
         return None
 
+    @staticmethod
+    def _is_type_checking_guard(node: ast.AST) -> bool:
+        """``if TYPE_CHECKING:`` / ``if typing.TYPE_CHECKING:`` か。"""
+        if not isinstance(node, ast.If):
+            return False
+        test = node.test
+        return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+            isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+        )
+
     def _project_imports(self, path: Path) -> "set[str]":
+        """実行時に評価される `simulator.*` の import を列挙する。
+
+        ``if TYPE_CHECKING:`` ガード配下の import は**除外する**。除外の正当性は
+        言語仕様である: `typing.TYPE_CHECKING` は実行時 ``False`` であり、ガード配下の
+        文は実行時に評価されない（型検査器だけが真とみなす）。除外しないと型注釈専用の
+        import が「出力段が実行時に到達するコード」として扱われ、閉包が過大になる
+        （ISSUE-411: `usecase/ports.py` の型注釈専用 import が `domain/*` 5 件を
+        引き込み、閉包が 3 → 8 モジュールへ膨れていた）。
+
+        除外するのは **`body`（真側）のみ**。`else:` 節（`orelse`）は `TYPE_CHECKING`
+        が実行時 ``False`` であるため**必ず実行される**——`ast.walk(if_node)` で
+        If ノード全体を除外すると `else:` 側の実行時 import まで閉包から落ち、
+        ゲートが無音で通る（再レビュー 🟡-新-1 の実測: `else:` 節へ実行時 import を
+        注入した変異が素通りした）。
+        """
+        tree = _tree(path)
+        guarded = {
+            id(sub)
+            for node in ast.walk(tree)
+            if self._is_type_checking_guard(node)
+            for stmt in node.body
+            for sub in ast.walk(stmt)
+        }
         modules: set[str] = set()
-        for node in ast.walk(_tree(path)):
+        for node in ast.walk(tree):
+            if id(node) in guarded:
+                continue
             if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
                 modules.add(node.module)
             elif isinstance(node, ast.Import):
@@ -278,11 +344,41 @@ class TestTheOutputStageCannotRaiseConfigError:
             "exit 1 → exit 2 の挙動変化を起こす）: " + "; ".join(violations)
         )
 
+    def test_the_closure_is_exactly_the_runtime_reachable_modules(self):
+        """閉包が実行時到達集合と一致する（TYPE_CHECKING 誤認の再発検出）。
+
+        識別力: `_project_imports` の TYPE_CHECKING 除外を外すと閉包が 8 件へ膨れ、
+        本検定が落ちる。逆に seed が失われて閉包が縮んでも落ちる。
+        期待値は実行時の実測（`presenter` を import した後の `sys.modules`）と一致する。
+        """
+        assert self._closure() == set(self._RUNTIME_CLOSURE)
+
     def test_the_closure_is_not_empty(self):
         # 閉包が空なら上の検査は常に通る（＝ゲートとして無意味）。
         closure = self._closure()
         assert set(self._PRESENTER_SEEDS) <= closure
-        assert _SIMULATOR_DIR / "domain" / "exceptions.py" in closure
+        assert _SIMULATOR_DIR / "usecase" / "ports.py" in closure
+
+    def test_an_else_branch_of_a_type_checking_guard_stays_in_the_closure(self, tmp_path):
+        """`if TYPE_CHECKING: ... else: <実行時 import>` の else 側は閉包に**残る**。
+
+        `TYPE_CHECKING` は実行時 False なので `else:` 節は必ず実行される。除外集合が
+        If ノード全体（`ast.walk(if_node)`）だと else 側の実行時 import まで落ち、
+        ゲートが無音化する（再レビュー 🟡-新-1 で変異が素通りした実測あり）。
+        本検定はその再発を固定する。
+        """
+        probe = tmp_path / "probe.py"
+        probe.write_text(
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from simulator.domain.bar import Bar\n"
+            "else:\n"
+            "    from simulator.usecase.run_backtest import RunBacktestRequest\n",
+            encoding="utf-8",
+        )
+        imports = self._project_imports(probe)
+        assert "simulator.usecase.run_backtest" in imports  # else 側＝実行時に走る
+        assert "simulator.domain.bar" not in imports  # body 側＝型検査専用
 
     def test_no_module_redefines_setattr(self):
         # `setattr(result, ...)` が ConfigError を出す経路を塞ぐ。
@@ -333,6 +429,37 @@ class TestTheGateHasDetectionPower:
     def test_a_boolean_return_is_not_treated_as_an_exit_code(self):
         source = "def f():\n    try:\n        g()\n    except ValueError:\n        return False\n"
         assert _literal_returning_handlers(ast.parse(source)) == []
+
+    def test_a_type_checking_only_import_is_excluded_from_the_closure(self, tmp_path):
+        """閉包計算が `if TYPE_CHECKING:` 配下の import を実行時 import と混同しない。
+
+        識別力: 除外判定を外すと本検定が落ちる。`usecase/ports.py` の型注釈専用 import が
+        `domain/*` を閉包へ引き込んでいた欠陥（ISSUE-411）の再発検出点である。
+        """
+        gate = TestTheOutputStageCannotRaiseConfigError()
+        module = tmp_path / "guarded.py"
+        module.write_text(
+            "from typing import TYPE_CHECKING\n"
+            "import simulator.usecase.ports\n"
+            "if TYPE_CHECKING:\n"
+            "    from simulator.domain.bar import Bar\n",
+            encoding="utf-8",
+        )
+        imported = gate._project_imports(module)
+        assert "simulator.usecase.ports" in imported  # 実行時 import は残る
+        assert "simulator.domain.bar" not in imported  # 型注釈専用は除外される
+
+    def test_a_typing_qualified_type_checking_guard_is_also_excluded(self, tmp_path):
+        """`if typing.TYPE_CHECKING:`（属性形式）も除外する。"""
+        gate = TestTheOutputStageCannotRaiseConfigError()
+        module = tmp_path / "guarded_attr.py"
+        module.write_text(
+            "import typing\n"
+            "if typing.TYPE_CHECKING:\n"
+            "    from simulator.domain.bar import Bar\n",
+            encoding="utf-8",
+        )
+        assert gate._project_imports(module) == set()
 
     def test_the_private_attribute_probe_detects_the_violation(self):
         assert "_interactor" in _accessed_attributes(

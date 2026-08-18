@@ -189,7 +189,7 @@ class TestSingleSourceOfTheRule:
 
     def test_bar_time_converter_table_reads_the_shared_normalizer(self):
         # `bar.time` の datetime 変換器＝窓境界の変換器（規則を 2 つ持たない）。
-        converters = [convert for _matches, convert in EPOCH_CONVERTERS]
+        converters = [convert for _matches, convert, _tag in EPOCH_CONVERTERS]
         assert epoch_seconds_of_datetime in converters
 
     def test_half_open_predicate_has_a_single_owner(self):

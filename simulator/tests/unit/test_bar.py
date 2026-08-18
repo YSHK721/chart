@@ -2,16 +2,19 @@
 
 不変条件: low <= min(open,close) <= max(open,close) <= high かつ spread >= 0。
 違反時 OHLCInvalidError。振る舞いなし（不変データ）。
+time は `bar_time.EPOCH_CONVERTERS` の受理集合に限る（違反時 ConfigError・ISSUE-411）。
 """
 from __future__ import annotations
 
 import dataclasses
+from datetime import datetime, timezone
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from simulator.domain.bar import Bar
-from simulator.domain.exceptions import OHLCInvalidError
+from simulator.domain.exceptions import ConfigError, OHLCInvalidError
 
 
 def _t():
@@ -41,7 +44,7 @@ class TestBarValid:
         assert bar.spread == 0
 
     def test_epoch_int_time_is_accepted(self):
-        # Arrange / Act: 時刻型は epoch int も許容（pd.Timestamp 禁止方針）
+        # Arrange / Act: 時刻型は epoch int も許容（受理集合は bar_time.EPOCH_CONVERTERS）
         bar = Bar(time=1_700_000_000, open=1.0, high=1.5, low=0.8, close=1.2, volume=1.0, spread=1)
         # Assert
         assert bar.time == 1_700_000_000
@@ -74,3 +77,147 @@ class TestBarInvalid:
         # spread < 0（境界の外）
         with pytest.raises(OHLCInvalidError):
             Bar(time=_t(), open=1.0, high=1.5, low=0.8, close=1.2, volume=1.0, spread=-1)
+
+
+# ============================================================================
+# ISSUE-411 スライス 3: time の型契約を構築時に表明する（ISSUE-403 残スライス）
+# ============================================================================
+#
+# 未対応の時刻表現の `Bar` を**そもそも作らせない**ことで、下流の手書き型判定
+# （ISSUE-412 の同型サイト群）が必要になる原因そのものを消す。受理集合の定義は
+# `bar_time.EPOCH_CONVERTERS` が唯一持ち、ここでは述語 `is_supported_time` を呼ぶ。
+
+
+def _bar(time):
+    """OHLC 不変条件を満たす引数で `Bar` を構築する（観測対象は time 契約のみ）。"""
+    return Bar(time=time, open=1.0, high=1.5, low=0.8, close=1.2, volume=1.0, spread=1)
+
+
+class TestBarTimeContract:
+    @pytest.mark.parametrize(
+        "time",
+        [
+            1_700_000_000,
+            np.int64(1_700_000_000),
+            np.datetime64("2024-01-01T00:00:00"),
+        ],
+        ids=["int", "np.int64", "np.datetime64"],
+    )
+    def test_supported_time_representations_construct(self, time):
+        # Arrange / Act: BAR タグの表現（epoch int / numpy.datetime64）は構築できる
+        bar = _bar(time)
+        # Assert
+        assert bar.time is time
+
+    @pytest.mark.parametrize(
+        "time",
+        ["2024-01-01T00:00:00", "1700000000", 1.5, 1_700_000_000.0, True, False, None,
+         object()],
+        ids=["ISO 文字列", "数字文字列", "float", "float epoch", "True", "False", "None",
+             "object"],
+    )
+    def test_unsupported_time_representation_raises_config_error(self, time):
+        # Arrange / Act / Assert: 表外の表現は推測で解釈せず fail-stop
+        with pytest.raises(ConfigError):
+            _bar(time)
+
+    @pytest.mark.parametrize(
+        "time",
+        [
+            datetime(2024, 1, 1),
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            pd.Timestamp("2024-01-01"),
+            pd.Timestamp("2024-01-01", tz="UTC"),
+        ],
+        ids=["naive datetime", "aware datetime", "pd.Timestamp", "aware pd.Timestamp"],
+    )
+    def test_datetime_representations_are_rejected_as_bar_time(self, time):
+        """`datetime` / `pd.Timestamp` は窓境界の表現であって `Bar.time` ではない。
+
+        既存契約は複数箇所に明文がある（`domain/trade_record.py:14`・
+        `domain/exceptions.py:31`・`adapter/execution/tick_model.py:142` ほか）:
+        「時刻型は numpy.datetime64 または epoch int（pd.Timestamp 禁止）」。
+        `pd.Timestamp` は `datetime` のサブクラスなので、`datetime` を受理すると
+        この明文より契約が広がる（レビュー 🔴-3）。受理集合はタグで分離する。
+        """
+        # Arrange / Act / Assert
+        with pytest.raises(ConfigError):
+            _bar(time)
+
+    def test_config_error_carries_the_offending_type_in_context(self):
+        # Arrange / Act
+        with pytest.raises(ConfigError) as exc:
+            _bar("2024-01-01T00:00:00")
+        # Assert: 原因を無音にしない（type と value を context に載せる）
+        assert exc.value.context["value_type"] == "str"
+        assert exc.value.context["value"] == "2024-01-01T00:00:00"
+
+    def test_config_error_message_states_how_to_fix_it(self):
+        """メッセージが是正手順を含む（🟡-4: 何を渡せばよいかを示す）。"""
+        # Arrange / Act
+        with pytest.raises(ConfigError) as exc:
+            _bar("2024-01-01T00:00:00")
+        # Assert: 受理表現を名指しする（利用者が次の一手を取れる）
+        message = str(exc.value)
+        assert "epoch" in message
+        assert "numpy.datetime64" in message
+
+    def test_time_contract_is_checked_before_the_ohlc_invariant(self):
+        # Arrange: time 違反と OHLC 違反が同時に成立する引数
+        # Act / Assert: 先に評価されるのは time 契約（ConfigError）であり OHLCInvalidError ではない
+        with pytest.raises(ConfigError):
+            Bar(time="2024-01-01T00:00:00", open=1.0, high=0.5, low=0.8, close=0.9,
+                volume=1.0, spread=1)
+
+    def test_time_contract_is_checked_before_the_spread_invariant(self):
+        # Arrange: time 違反と spread 違反が同時に成立する引数
+        # Act / Assert
+        with pytest.raises(ConfigError):
+            Bar(time="2024-01-01T00:00:00", open=1.0, high=1.5, low=0.8, close=1.2,
+                volume=1.0, spread=-1)
+
+    def test_ohlc_invariant_still_raises_when_time_is_valid(self):
+        # Arrange / Act / Assert: time が契約内なら従来どおり OHLC 違反を送出する（退行防止）
+        with pytest.raises(OHLCInvalidError):
+            Bar(time=_t(), open=1.0, high=0.5, low=0.8, close=0.9, volume=1.0, spread=1)
+
+    def test_dataclasses_replace_re_checks_the_time_contract(self):
+        """`dataclasses.replace` による再構築でも契約検査が効く。
+
+        `Bar` は frozen dataclass であり、フィールドの差し替えは `replace` で行う
+        （`simulator/adapter/strategy/sizing_decorator.py` が `Order` で採る手法）。
+        `replace` は `__post_init__` を**再実行する**ため、構築時と同じ契約が掛かる。
+        ここを固定しないと「構築は塞いだが差し替えで契約外の time を入れられる」穴が残る。
+        """
+        import dataclasses
+
+        # Arrange: 契約を満たす Bar
+        bar = _bar(1_700_000_000)
+        # Act / Assert: 契約違反の time へ replace すると構築時と同じ ConfigError
+        with pytest.raises(ConfigError):
+            dataclasses.replace(bar, time="2024-01-01")
+        # Assert: 契約内の time なら replace は成功する（過剰拒否でない）
+        assert dataclasses.replace(bar, time=1_700_000_001).time == 1_700_000_001
+
+    def test_accepted_set_is_not_enumerated_a_second_time_in_bar(self):
+        """受理集合の定義は `bar_time` が唯一持つ（`bar.py` は述語を呼ぶだけ）。
+
+        識別力: `bar.py` 側で型を列挙し直すと、表への追加に追随せず本検定が落ちる。
+        """
+        import simulator.domain.bar as bar_module
+        import simulator.domain.bar_time as bar_time_module
+
+        class _Marker:
+            pass
+
+        original = bar_time_module.EPOCH_CONVERTERS
+        bar_time_module.EPOCH_CONVERTERS = original + (
+            (lambda v: isinstance(v, _Marker), lambda v: 0, bar_time_module.BAR),
+        )
+        try:
+            assert bar_module.Bar(
+                time=_Marker(), open=1.0, high=1.5, low=0.8, close=1.2,
+                volume=1.0, spread=1,
+            ).time is not None
+        finally:
+            bar_time_module.EPOCH_CONVERTERS = original

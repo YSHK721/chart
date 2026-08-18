@@ -3,10 +3,13 @@
 A-3（取得窓を全 `MarketDataPort` 実装へ効かせる）で新設。従来この正規化は
 `simulator/main/tester_settings/window.py` にのみ存在したが、窓デコレータ
 （`simulator/adapter/repository/windowed_market_data.py`）も同じ比較を要するため、
-書き直せば手書き複製になる。正規化の対象は `Bar.time` の型契約
-（`simulator/domain/bar.py`: ``numpy.datetime64`` または epoch int）そのものであり、
+書き直せば手書き複製になる。正規化の対象は `Bar.time` の型契約そのものであり、
 その所有者は domain 層である。よって実体を本モジュールへ置き、`window.py` と
 窓デコレータの双方が**同一オブジェクト**を読む（複製 0）。
+
+受理集合（= `Bar.time` の型契約）の定義は本モジュールの ``EPOCH_CONVERTERS`` が唯一持つ。
+`simulator/domain/bar.py` は表現を列挙し直さず `is_supported_time` を呼んで構築時に表明する
+（ISSUE-411 スライス 3）。
 
 依存規律（`bar.py` と同じ）: 標準ライブラリ・domain 例外・`datawindow`（標準ライブラリ
 のみで構成される中立共有パッケージ）に依存する。numpy / pandas は直接にも transitively
@@ -34,7 +37,7 @@ simulator.domain.bar_time`` 後に ``numpy`` が ``sys.modules`` へ載らない
 
 拡張点（OCP）: 時刻表現の追加は ``EPOCH_CONVERTERS`` への 1 エントリ追加で済む。
 判定関数（`Callable[[Any], bool]`）と変換関数（`Callable[[Any], int]`）の対を並べた
-表であり、既存エントリ・利用側（`epoch_seconds`）は改変しない。
+表であり、既存エントリ・利用側（`epoch_seconds` / `is_supported_time`）は改変しない。
 """
 from __future__ import annotations
 
@@ -70,13 +73,46 @@ def _from_numpy_datetime64(value: Any) -> int:
     return int(value.astype("datetime64[s]").astype("int64"))
 
 
+#: 契約タグ: `Bar.time` の受理集合に属するエントリ。
+BAR = "BAR"
+#: 契約タグ: 窓境界の受理集合に属するエントリ（`Bar.time` ではない）。
+WINDOW = "WINDOW"
+
 #: 時刻表現 → epoch 秒の変換器（判定順に評価する。表現の追加＝1 エントリ追加）。
-EPOCH_CONVERTERS: "tuple[tuple[Callable[[Any], bool], Callable[[Any], int]], ...]" = (
-    (_is_integer, _from_integer),
+#:
+#: 各エントリは (判定, 変換, 契約タグ) の 3 つ組である。本表は**2 つの契約**を載せる:
+#:   - ``BAR``   : `Bar.time` の受理集合（epoch int / ``numpy.datetime64``）。
+#:                 既存契約「`pd.Timestamp` 禁止」（`domain/trade_record.py` /
+#:                 `domain/exceptions.py` / `adapter/execution/tick_model.py` に明文）と一致する。
+#:   - ``WINDOW``: 窓境界の受理集合（``datetime``。`main/tester_settings/window.py`
+#:                 `resolve_data_window` が aware datetime で生成する）。
+#: タグを持たせる理由（ISSUE-411 レビュー 🔴-3）: 分離前は `is_supported_time` が
+#: ``datetime`` も受理し、`pd.Timestamp` が `datetime` のサブクラスであるため
+#: 「`Bar.time` に `pd.Timestamp` 禁止」の明文より契約が広くなっていた。
+#: 判定述語は互いに素である（int / datetime / datetime64 は相互に非包含）ため、
+#: タグの導入で `epoch_seconds` の挙動は変わらない。
+EPOCH_CONVERTERS: (
+    "tuple[tuple[Callable[[Any], bool], Callable[[Any], int], str], ...]"
+) = (
+    (_is_integer, _from_integer, BAR),
+    (_is_numpy_datetime64, _from_numpy_datetime64, BAR),
     # B-4: 窓境界と同じ関数オブジェクト（複製を持たない）。
-    (_is_datetime, epoch_seconds_of_datetime),
-    (_is_numpy_datetime64, _from_numpy_datetime64),
+    (_is_datetime, epoch_seconds_of_datetime, WINDOW),
 )
+
+
+def is_supported_time(value: Any) -> bool:
+    """``value`` が `Bar.time` の型契約（= ``EPOCH_CONVERTERS`` の受理集合）に属するか。
+
+    受理集合の定義は ``EPOCH_CONVERTERS`` が唯一持つ。本述語はそこから導出するだけで、
+    対応表現を列挙し直さない（写しを作れば表への追加に追随せず契約が二重定義になる）。
+    `Bar` の構築時契約検査（`simulator/domain/bar.py`）が読む（ISSUE-411）。
+
+    見るのは ``BAR`` タグのエントリだけである。``WINDOW`` タグ（``datetime``）は
+    窓境界の表現であって `Bar.time` ではない（`pd.Timestamp` は ``datetime`` の
+    サブクラスであり、含めると既存の「`pd.Timestamp` 禁止」契約より広くなる）。
+    """
+    return any(matches(value) for matches, _, tag in EPOCH_CONVERTERS if tag == BAR)
 
 
 def epoch_seconds(value: Any) -> int:
@@ -86,7 +122,8 @@ def epoch_seconds(value: Any) -> int:
     事後条件: UTC 基準の epoch 秒を返す。
     例外: 未対応の表現は ``ConfigError``（推測で解釈しない）。
     """
-    for matches, convert in EPOCH_CONVERTERS:
+    # 契約タグは問わない（窓境界の正規化にも使うため全エントリを見る）。
+    for matches, convert, _tag in EPOCH_CONVERTERS:
         if matches(value):
             return convert(value)
     raise ConfigError(

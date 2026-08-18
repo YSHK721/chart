@@ -217,14 +217,16 @@ def test_exit_breakeven_pnl_zero_is_treated_as_loss_color(tmp_path):
     assert ex["lwc"]["color"] == "#ef5350"  # pnl==0 は非勝ち
 
 
-def test_marker_time_uses_pandas_timestamp_unix_seconds(tmp_path):
+def test_marker_time_agrees_with_the_candles_unix_seconds_rule(tmp_path):
     # Arrange
     rec = _record(entry_time="2025-01-02 09:00:00", exit_time="2025-01-02 10:00:00")
     # Act
     payload = _present([rec], tmp_path=tmp_path)
     entry = [m for m in payload["markers"] if m["meta"]["kind"] == "entry"][0]
     ex = [m for m in payload["markers"] if m["meta"]["kind"] == "exit"][0]
-    # Assert: candles と同一式 int(pd.Timestamp(t).timestamp())
+    # Assert: candles 生成規則（marketdata/dataset.py）と**値が一致**する。ISSUE-411 以降
+    #   presenter は式を共有せず bar_time.epoch_seconds へ委譲するため、期待値は別経路
+    #   （pandas）で独立に算出したオラクルとして与える。
     assert entry["lwc"]["time"] == _unix("2025-01-02 09:00:00")
     assert ex["lwc"]["time"] == _unix("2025-01-02 10:00:00")
 
@@ -468,3 +470,56 @@ def test_v4_pair_win_false_at_breakeven_pnl_zero(tmp_path):
     payload = _present([rec], tmp_path=tmp_path)
     # Assert: pnl==0 は win=False（exit marker の負け色と一致）
     assert payload["pairs"][0]["win"] is False
+
+
+# ============================================================================
+# ISSUE-411 スライス 1: epoch int（np.int64）の時刻表現を 1970 年へ落とさない
+# ============================================================================
+#
+# `bar.time` の実体は経路で分かれる（ISSUE-403 B-1 実測）。comma 形式 CSV ローダ
+# （`adapter/repository/ohlc_csv.py`）は epoch 整数を採用し、pandas はその整数を
+# **ns** と解釈するため、`pd.Timestamp(np.int64(1755183000))` は 1970-01-01 になる
+# （実測: `int(pd.Timestamp(np.int64(1755183000)).timestamp())` == 1）。
+# epoch 秒への正規化は `simulator.domain.bar_time.epoch_seconds` が唯一の実体であり、
+# presenter はその関数を呼ぶ（規則を書き写さない）。
+
+
+def _record_with_epoch_int_times(entry: int, exit_: int) -> TradeRecord:
+    """時刻が epoch int（`numpy.int64`）の TradeRecord（comma 形式 CSV 経路の実型）。"""
+    import numpy as np
+
+    return TradeRecord(
+        side="buy",
+        volume=1.0,
+        entry_time=np.int64(entry),
+        exit_time=np.int64(exit_),
+        entry_price=8568.9,
+        exit_price=8600.0,
+        contract_size=10.0,
+        swap=0.0,
+        commission=0.0,
+        exit_reason="tp",
+    )
+
+
+def test_marker_time_of_numpy_int64_epoch_is_the_epoch_itself(tmp_path):
+    # Arrange: comma 形式 CSV 経路の実型（np.int64 の epoch 秒）
+    rec = _record_with_epoch_int_times(1755183000, 1755186600)
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    # Assert: epoch を ns と誤読せずその値のまま出力する（誤読時は 1 になる）
+    entry_marker = next(m for m in payload["markers"] if m["meta"]["kind"] == "entry")
+    exit_marker = next(m for m in payload["markers"] if m["meta"]["kind"] == "exit")
+    assert entry_marker["lwc"]["time"] == 1755183000
+    assert exit_marker["lwc"]["time"] == 1755186600
+
+
+def test_pair_record_time_of_numpy_int64_epoch_is_the_epoch_itself(tmp_path):
+    # Arrange: pairs（線分結合用）も同じ変換実体を通る
+    rec = _record_with_epoch_int_times(1755183000, 1755186600)
+    # Act
+    payload = _present([rec], tmp_path=tmp_path)
+    # Assert
+    p = payload["pairs"][0]
+    assert p["entry"]["time"] == 1755183000
+    assert p["exit"]["time"] == 1755186600

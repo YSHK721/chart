@@ -4,18 +4,18 @@
   CHART_TRADE_MARKERS_BASIC_DESIGN.md §12（H-1 配色/position、H-2 exit_reason、H-3 text）。
 
 BacktestResult.trades（TradeRecord 列）を Marker DTO 列へ純変換し JSON を書き出す。
-trades は読み取り専用で消費する（domain へ書き戻さない）。時刻は candles 生成
-（dataset.py の _to_unix_seconds）と同一式 int(pd.Timestamp(t).timestamp()) で UNIX 秒化する。
+trades は読み取り専用で消費する（domain へ書き戻さない）。時刻の UNIX 秒化は
+`simulator.domain.bar_time.epoch_seconds`（`bar.time` 型契約の唯一の実体）へ委譲する。
+規則の逐語はそちらだけが持つ（ここへ書き写すとドリフト源になる。ISSUE-411）。
 
-adapter 層は usecase + domain + 技術ドライバ（pandas/stdlib json）のみに依存する。
+adapter 層は usecase + domain + 技術ドライバ（stdlib json）のみに依存する。
 """
 from __future__ import annotations
 
 import json
 from typing import Any
 
-import pandas as pd
-
+from simulator.domain.bar_time import epoch_seconds
 from simulator.usecase.marker_ports import TradeMarkerPresenterPort
 
 # H-1 確定配色（presenter 内定数）。
@@ -24,8 +24,14 @@ _C_SELL = "#ef5350"
 
 
 def _unix(value: Any) -> int:
-    """candles 生成（dataset.py の _to_unix_seconds）と同一式で UNIX 秒へ変換する。"""
-    return int(pd.Timestamp(value).timestamp())
+    """時刻表現を UNIX 秒へ正規化する（変換規則は domain の単一ソースが所有する）。
+
+    ISSUE-411: 旧実装 ``int(pd.Timestamp(value).timestamp())`` は epoch 整数
+    （comma 形式 CSV 経路の `bar.time` = ``numpy.int64``）を **ns** と誤読し 1970 年を
+    黙って出していた（実測: ``np.int64(1755183000)`` → 1）。判定表を持つのは
+    `bar_time.EPOCH_CONVERTERS` だけであり、ここでは呼ぶだけにする。
+    """
+    return epoch_seconds(value)
 
 
 def _marker(time: Any, position: str, shape: str, color: str, text: str,

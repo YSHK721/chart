@@ -7970,7 +7970,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-403: [不具合・実測] `RealTickModel` が epoch int の `bar.time` を受けられず翻訳されない `ValueError` が漏れる（2026-08-18・IN_PROGRESS）
 
-- **ステータス**: IN_PROGRESS（スライス 2/3/4 完了・是正検証済み。残スライス 1＝`Bar` 契約表明は ISSUE-411 で承認待ち）
+- **ステータス**: RESOLVED（2026-08-18。スライス 2/3/4 は f5513be でマージ済み・残スライス 1（`Bar` 契約表明）も ISSUE-411 の是正記録どおり完了＝全スライス完了）
 - **重大度**: Medium
 - **実測（2026-08-18）**: `real_ticks` ＋ comma 形式（epoch 整数 `time`）CSV で `simulator/adapter/execution/tick_model.py:145` の `_normalize_bar_time`（是正前の該当箇所・d2c4324 で撤去済み）が `np.datetime64(bar_time)` を呼び、`ValueError: Converting an integer to a NumPy datetime requires a specified unit` を送出する。`bar.time` の実体は経路により epoch int / `numpy.datetime64` に分かれる（内部設計 §8.4.1 W-4 の既知事実）。ISSUE-400 と同じ「未翻訳例外が終了コード表を素通りする」系統だが別サイト。
 - **抜本的解決**: `bar.time` の表現差を吸収する単一ソース（`simulator/domain/bar_time.py`）へ委譲する。是正には `tick_model.py` の変更が要る。
@@ -8096,7 +8096,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **関連**: ISSUE-406（原因の一般形）・ISSUE-407（半開述語の第 3 複製）・ISSUE-408（丸め方向）。
 
 ## ISSUE-411: `Bar.time` 契約検査（ISSUE-403 スライス 1）が本番 1 経路で成立しない
-- **ステータス**: OPEN（新規起票。承認待ち＝スコープ外の本番変更を要するため未着手）
+- **ステータス**: RESOLVED（2026-08-18。是正完了・レビュー承認済み。是正記録は本エントリ末尾）
 - **重大度**: Medium（現時点で数値誤りは未観測。ただし ISSUE-403 の抜本是正が完了しない）
 - **背景**: ISSUE-403 の是正で `_bar_period` / `tick_model` の手書き型分岐は撤去した（d2c4324）。
   残る抜本策は「未対応の時刻表現の `Bar` をそもそも作らせない」ことであり、`Bar.__post_init__` へ
@@ -8124,6 +8124,44 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   marketdata `date` 列が UTC / ブローカー時刻のどちらであるかの確定が前提であり、
   参照実装の確認とユーザー承認なしに推測で決めない。
 - **関連**: ISSUE-403（本体・スライス 2/3/4 は完了）・ISSUE-401 🟡-2（naive=UTC の既存合意）。
+- **⚠️ 中核記述の訂正（実測 2026-08-18・アーキテクチャ評価 R-1 → スライス 0 で確定）**:
+  「`_unix = int(pd.Timestamp(value).timestamp())` は naive を**ローカル TZ**と解釈」は**誤り**。
+  実測: `TZ=Asia/Tokyo` で `pd.Timestamp('2025-01-10').timestamp()` = **1736467200.0**（UTC 解釈。
+  Python 標準 `datetime.timestamp()` と異なり pandas は naive を UTC として扱う）。
+  したがって「naive 解釈が chart 系と engine 系で割れている」という診断は不成立で、真の欠陥は
+  **整数 epoch（np.int64）を ns と誤読して 1970 年になる 1 点**（実測: `int(pd.Timestamp(
+  np.int64(1755183000)).timestamp())` = 1）。是正方向（共有実体への委譲）は不変だが、
+  **是正による出力数値の変化は 0＝UI 影響なし**（現行の有効入力に対し byte 等価）。
+- **前提の確定（ユーザー裁定 2026-08-18）**: marketdata `date` 列（naive 文字列）は **UTC**。
+  実データ `data/marketdata/jp225_m1.csv` は 4,586,836 行・`date` 欠損 0（実測）。
+- **射程の確定（アーキテクチャ評価 2026-08-18）**: 是正対象＝`trade_markers.py::_unix`・
+  `export_trade_markers.py::candle_unix_times`（bridge と不可分・step 6 の print-only を assert 化）・
+  `bridge_marketdata_df` の epoch 化・`Bar` 契約表明。`marketdata/dataset.py::_to_unix_seconds` は
+  **射程外**（実経路 `_index_unix_seconds` は既に UTC・依存方向制約で委譲には構造変更が要る・YAGNI）。
+  同型残存 `int_time_views.unix_seconds` / `run_is_oos_cli.py:61` は ISSUE-412 へ追記。
+- **是正記録（実測 2026-08-18・ブランチ `fix/issue-411-bar-time-contract`・レビュー承認済み）**:
+  - 3fb4385: `trade_markers._unix` を `bar_time.epoch_seconds` へ委譲＋`bridge_marketdata_df` を
+    epoch int 化＋`candle_unix_times` を `{int(v)}` 化（不可分＝片方だけでは export 経路が停止 or
+    全マーカー 1970 になることを統制実験で実証）。包含外件数を戻り値 summary へ追加。
+  - e438973: `bar_time.is_supported_time`（表から導出）＋`Bar.__post_init__` 先頭の契約検査
+    （違反 `ConfigError`・是正手順入りメッセージ）＋domain 純度ゲート新設＋
+    `test_windowed_market_data` の検証点を duck-typed stub へ移動。
+  - レビュー差戻 3 件の是正: aa4a7fa=出力段安全ゲートの真因是正（閉包計算が TYPE_CHECKING 専用
+    import を実行時 import と誤認→除外。B1+B2 許可リスト方式は撤去し無条件検定へ復帰。旧方式で
+    素通りしたサブクラス構築・再輸出別名・名前代入の変異 3 種が全て検出されることを実証）／
+    e9b2cb4=`EPOCH_CONVERTERS` を (判定, 変換, 契約タグ) へ構造化し `Bar.time` 受理集合を
+    BAR タグ（int・numpy.datetime64）に限定＝既存契約「pd.Timestamp 禁止」（8 箇所の明文）と一致。
+    `epoch_seconds` は全タグで挙動不変（9 値比較・差分 0）／e5acfb6=CLI が包含外非 0 で exit 1＋
+    設計書 5 箇所を実装へ追随／6ca43c1=承認条件（TYPE_CHECKING 除外を body 側のみに限定・
+    else 節の実行時 import は閉包に残す）。
+  - **検証（レビュアー独立再実行）**: unit 2174→2175 passed（TZ=UTC / Asia/Tokyo 両系）・
+    integration 271（fingerprint 6 passed・固定 sha256 無改変）・sim_ui 689・markers JSON は
+    **ブランチ着手前 f5513be と byte 完全一致**（凍結入力 chmod 444・TZ 2 系・sha256 71cad6b5…）。
+    変異検定 計 19 種で退行検出力を実証。`Bar` 構築 +0.40µs/bar（全履歴 4.59M 行で +2.2〜2.8 秒）。
+  - **申し送り（マージ後・ISSUE-413 相当）**: 閉包へのパッケージ `__init__.py` 取り込み
+    （現状 4 ファイルは空で不変条件成立・潜在）／epoch 丸め規則のスカラ実体（0 方向切捨）と
+    ベクタ実体（floor）の 1969 年以前での不一致（ISSUE-408 と同系・現行データ影響 0）。
+  - これにより **ISSUE-403 の全スライスが完了**（D′ 成立＝契約の機械的強制）。
 
 ## ISSUE-412: [不具合・実測] `Bar.time` 手書き型判定の同型欠陥が本番 2 サイトに残存（session_calendar / walk_forward_cli）（2026-08-18）
 
@@ -8140,7 +8178,13 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
     `isinstance(sample_bar_time, int)` で分岐する。`isinstance(np.int64(1), int)` は False（numpy 2.4.6
     実測）のため、comma-CSV 由来の実型では int 秒でなく `np.timedelta64` が返り、同一時刻で span の
     型が割れる。
-- **抜本的解決**: 両サイトとも `simulator.domain.bar_time.epoch_seconds` への委譲で除去する
+- **追記（2026-08-18・ISSUE-411 アーキテクチャ評価で検出した同型サイト 2 件）**:
+  - **(C)** `simulator/report_ui/tools/int_time_views.py:36` `unix_seconds`: `isinstance(t, int)` が
+    `np.int64` を弾き `pd.Timestamp(np.int64)` 経路へ落ち **1970 年**になる（report_ui / sim_ui の
+    report.json 両経路が通る。comma-CSV 系 EA のジョブで実害。`raw_bars` の実型は未実測）。
+  - **(D)** `simulator/tools/run_is_oos_cli.py:61`: `isinstance(sample_bar_time, int)` の同型分岐。
+    np.int64 で分岐を外れ `datetime64` を返し `bar.time` と型不一致。
+- **抜本的解決**: 全サイトとも `simulator.domain.bar_time.epoch_seconds` への委譲で除去する
   （ISSUE-403 の d2c4324 が `_bar_period` / `tick_model` で行った是正と同一手法）。
   恒久策は ISSUE-411（`Bar` 構築時の契約表明）の成立＝手書き判定の必要そのものの消滅。
 - **関連**: ISSUE-403（同型の原型）・ISSUE-411（恒久策）。

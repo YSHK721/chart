@@ -143,12 +143,26 @@ class TestBarsArePreservedNotRebuilt:
 
 
 class TestUnsupportedTimeRepresentation:
-    """推測で解釈しない（未対応の時刻表現は fail-stop）。"""
+    """推測で解釈しない（未対応の時刻表現は fail-stop）。
+
+    ISSUE-411 スライス 3 以降、未対応の時刻表現は `Bar` の構築時点で `ConfigError` になる
+    （`Bar.__post_init__` の契約表明）。したがって「`Bar` 型としては構築不能」の固定は
+    `simulator/tests/unit/test_bar.py::TestBarTimeContract` が担う。
+
+    本クラスが担うのは**デコレータ自身の**契約である。内側 port は `MarketDataPort`
+    実装であれば何でもよく（LSP: 事前条件を強化しない）、`Bar` 型を返すとは限らない。
+    そこで duck-typed stub を返させ、「窓比較が未対応の時刻表現を推測解釈せず
+    `ConfigError` を送出する」ことをデコレータ単体で観測する。
+    """
 
     def test_unknown_bar_time_type_raises_config_error(self):
+        import types
+
         from simulator.domain.exceptions import ConfigError
 
-        inner = _RecordingPort([_bar("2024-01-02T00:00:00")])  # ISO 文字列は未対応
+        # Arrange: 内側 port が time だけを持つ duck-typed stub を返す（ISO 文字列は未対応）
+        inner = _RecordingPort([types.SimpleNamespace(time="2024-01-02T00:00:00")])
         repo = WindowedMarketDataRepository(inner, window=_WINDOW)
+        # Act / Assert
         with pytest.raises(ConfigError):
             repo.load("x")

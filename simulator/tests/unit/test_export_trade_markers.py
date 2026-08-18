@@ -40,7 +40,9 @@ def test_bridge_renames_date_to_time_and_adds_zero_spread():
     bridged = ext.bridge_marketdata_df(src)
     # Assert: engine 形式（time/open/high/low/close/volume/spread）に変換され spread=0
     assert list(bridged.columns) == ["time", "open", "high", "low", "close", "volume", "spread"]
-    assert list(bridged["time"]) == ["2025-01-02 09:00:00", "2025-01-02 09:01:00"]
+    # ISSUE-411: engine の `Bar.time` 契約は epoch int / numpy.datetime64 であり文字列ではない。
+    #   marketdata の `date` は naive 文字列（UTC・ユーザー裁定 2026-08-18）なので epoch 秒へ据える。
+    assert list(bridged["time"]) == [1735808400, 1735808460]
     assert list(bridged["spread"]) == [0, 0]
 
 
@@ -84,16 +86,65 @@ def test_markers_outside_lists_each_time_not_in_candle_set():
     assert sorted(outside) == [300, 999]
 
 
-def test_candle_times_from_bridged_df_uses_same_unix_formula_as_presenter():
-    # Arrange: ブリッジ後 time 列（文字列）→ presenter と同一式 int(pd.Timestamp().timestamp())
-    bridged = pd.DataFrame({"time": ["2025-01-02 09:00:00", "2025-01-02 09:01:00"]})
+def test_candle_times_reads_the_bridged_epoch_column_without_reconverting():
+    # Arrange: ブリッジ後 time 列は既に epoch 秒（int）＝engine の Bar.time 契約
+    bridged = pd.DataFrame({"time": [1735808400, 1735808460]})
     # Act
     times = ext.candle_unix_times(bridged)
-    # Assert
-    assert times == {
-        int(pd.Timestamp("2025-01-02 09:00:00").timestamp()),
-        int(pd.Timestamp("2025-01-02 09:01:00").timestamp()),
-    }
+    # Assert: 第 2 の変換規則を持たず、列の値をそのまま集合にする
+    assert times == {1735808400, 1735808460}
+
+
+def test_bridged_time_column_dtype_is_integer():
+    # Arrange: marketdata 形式（date は naive 文字列）
+    src = pd.DataFrame(
+        {
+            "date": ["2025-01-02 09:00:00", "2025-01-02 09:01:00"],
+            "open": [8568.9, 8569.0], "high": [8570.0, 8571.0],
+            "low": [8567.0, 8568.0], "close": [8569.0, 8570.0], "volume": [0.0, 0.0],
+        }
+    )
+    # Act
+    bridged = ext.bridge_marketdata_df(src)
+    # Assert: 整数系 dtype（float 化すると to_csv が "1.7358084e+09" 等になり engine が壊れる）
+    assert pd.api.types.is_integer_dtype(bridged["time"]), bridged["time"].dtype
+
+
+def test_candle_times_equal_engine_bar_time_set_for_the_same_bridged_csv(tmp_path):
+    # Arrange: ブリッジ結果を engine が読む形（CSV）で書き出し、同じ CSV を engine に読ませる
+    from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
+
+    src = pd.DataFrame(
+        {
+            "date": [f"2025-01-02 09:{i:02d}:00" for i in range(5)],
+            "open": [8000.0 + i for i in range(5)],
+            "high": [8001.0 + i for i in range(5)],
+            "low": [7999.0 + i for i in range(5)],
+            "close": [8000.5 + i for i in range(5)],
+            "volume": [0.0 for _ in range(5)],
+        }
+    )
+    bridged = ext.bridge_marketdata_df(src)
+    csv = tmp_path / "engine.csv"
+    bridged.to_csv(csv, index=False)
+    # Act: 包含検証で突き合わせる 2 つの集合をそれぞれ生成する
+    candle_times = ext.candle_unix_times(bridged)
+    bar_times = {int(b.time) for b in CsvOHLCRepository().load(str(csv))}
+    # Assert: 集合として一致する（step 6 の包含検証が意味を持つ前提）
+    assert candle_times == bar_times
+
+
+@pytest.mark.skipif(not _REAL_CSV.exists(), reason="real marketdata not present")
+def test_run_and_export_reports_zero_markers_outside_candles_in_its_return_value(tmp_path):
+    # Arrange: 実 marketdata 直近 tail（step 6 の包含検証を実経路で観測する）
+    out = tmp_path / "trade_markers.json"
+    # Act
+    summary = ext.run_and_export(
+        csv_path=_REAL_CSV, out_path=out, ea_name="TC24051901", rows=2500
+    )
+    # Assert: 包含外件数が戻り値で検証できる（print のみ＝サイレントにしない）かつ 0 件
+    assert "markers_outside_candles" in summary
+    assert summary["markers_outside_candles"] == 0
 
 
 # ---- Fix v2 §8.1 Fix-A: 既定生成窓を「直近（tail）」へ ------------------------
@@ -199,3 +250,46 @@ def test_default_run_uses_recent_tail_and_survives_margin_call(tmp_path):
     #   先頭読み（OLD）では 2012 になり本 assert が失敗する＝Fix-A を駆動する。
     latest = max(m["lwc"]["time"] for m in payload["markers"])
     assert pd.Timestamp(latest, unit="s").year == 2026
+
+
+# ---- ISSUE-411 🟡-3: 包含外マーカーを終了コードで表明する --------------------
+#
+# `run_and_export` は step 6（集合包含検証）の結果を summary へ載せるが、`main()` が
+# 戻り値を捨てていたため CLI としては依然サイレントだった（包含外があっても exit 0）。
+
+
+class _StubExport:
+    """`run_and_export` の代役（包含外件数だけを制御する）。"""
+
+    def __init__(self, outside: int) -> None:
+        self.outside = outside
+        self.calls = 0
+
+    def __call__(self, **kwargs):
+        self.calls += 1
+        return {"count": 2, "markers": [], "markers_outside_candles": self.outside}
+
+
+def test_main_exits_zero_when_no_marker_is_outside_the_candle_set(monkeypatch, tmp_path):
+    # Arrange: 包含外 0 件
+    stub = _StubExport(outside=0)
+    monkeypatch.setattr(ext, "run_and_export", stub)
+    # Act
+    code = ext.main(["--out", str(tmp_path / "m.json"), "--rows", "10"])
+    # Assert: 従来どおり成功終了
+    assert code == 0
+    assert stub.calls == 1
+
+
+def test_main_exits_one_and_reports_to_stderr_when_markers_fall_outside(
+    monkeypatch, tmp_path, capsys
+):
+    # Arrange: 包含外 3 件（設計 §4 は 0 件合格）
+    monkeypatch.setattr(ext, "run_and_export", _StubExport(outside=3))
+    # Act
+    code = ext.main(["--out", str(tmp_path / "m.json"), "--rows", "10"])
+    # Assert: 非ゼロ終了かつ stderr へ件数を明示（無音で成功扱いにしない）
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert "3" in err

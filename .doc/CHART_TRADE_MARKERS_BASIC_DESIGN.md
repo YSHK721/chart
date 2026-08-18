@@ -231,9 +231,13 @@ export class TradeMarkersRenderer {
 本章は §3〜§11 の該当箇所を**上書き（supersede）**する確定決定。Blocker/Critical/High を解消する。
 
 ### 12.1 B-1 解決 — 時刻変換式を candles 生成と完全一致させる
-- presenter は時刻を **`int(pd.Timestamp(value).timestamp())`** で UNIX 秒（整数）化する。これは
-  candles 生成（`indicator_ui/api/adapter/compute/dataset.py` の同名変換）と**同一式**。両者が同一式で
-  naive 値を換算するため、サーバ TZ に依らず**相対的に一致**する（オフセットが相殺）。
+- presenter は時刻を **`simulator.domain.bar_time.epoch_seconds`**（`Bar.time` 型契約の単一ソース）へ
+  委譲して UNIX 秒（整数）化する。変換規則を presenter 側に書き写さない（ISSUE-411）。
+- naive 値は **UTC** として解釈される（実測: `pd.Timestamp('2025-01-10').timestamp()` は TZ=UTC /
+  Asia/Tokyo / America/New_York のいずれでも 1736467200.0）。サーバ TZ に依存しない**絶対的な一致**であり、
+  旧記述の「オフセットが相殺されるため相対的に一致」は誤りだった（ISSUE-411 で訂正）。
+- 旧式 `int(pd.Timestamp(value).timestamp())` は epoch 整数（comma 形式 CSV 経路の `numpy.int64`）を
+  **ns と誤読**して 1970 年を返す欠陥があった（実測: `np.int64(1755183000)` → 1）。
 - 設計 §4.3 / FR-3 の「UTC へ正規化」という曖昧語は**削除**。確定式のみを正とする。
 - 適用対象は `TradeRecord.entry_time/exit_time`（MA_Slope 系=np.datetime64）。comma 形式
   （TC24051901 既定経路）の `time` 列実型は CSV 依存のため、詳細設計で fixture を Read 実証する。
