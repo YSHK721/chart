@@ -14,6 +14,8 @@
                OptimizationMode / OptimizationCriterion / SubjectKind / InputForm
     定数     : ExecutionDelay / TIMEFRAME_INI_LABELS / INI_LABEL_TO_TIMEFRAME /
                TICK_MODEL_ENGINE_IDS
+    実証状態 : PROVEN_EXECUTION_DELAYS / PROVISIONAL_EXECUTION_DELAYS /
+               approximation_reason_for（`ExecutionDelay` と同じ宣言サイト）
 
 3. 元 MQL 対応:
     `.ini` の 2 セクション `[Tester]` / `[TesterInputs]` と MQL の
@@ -28,6 +30,8 @@ from __future__ import annotations
 
 from simulator.usecase.tester_settings.enums import (
     INI_LABEL_TO_TIMEFRAME,
+    PROVEN_EXECUTION_DELAYS,
+    PROVISIONAL_EXECUTION_DELAYS,
     TICK_MODEL_ENGINE_IDS,
     TIMEFRAME_INI_LABELS,
     DateRangeKind,
@@ -40,6 +44,7 @@ from simulator.usecase.tester_settings.enums import (
     SubjectKind,
     TickModel,
     Timeframe,
+    approximation_reason_for,
 )
 from simulator.usecase.tester_settings.models import (
     INERT_FIELDS,
@@ -63,11 +68,14 @@ __all__ = [
     "InputForm",
     "OptimizationCriterion",
     "OptimizationMode",
+    "PROVEN_EXECUTION_DELAYS",
+    "PROVISIONAL_EXECUTION_DELAYS",
     "SubjectKind",
     "TICK_MODEL_ENGINE_IDS",
     "TIMEFRAME_INI_LABELS",
     "TickModel",
     "Timeframe",
+    "approximation_reason_for",
     # 生表現
     "IniDocument",
     "IniLine",

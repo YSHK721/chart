@@ -1,13 +1,16 @@
 """Settings タブの列挙 10 種と `.ini` ラベル写像（基本設計 §4.3・内部設計 §4.2.2）。
 
 1. 層名/責務:
-    usecase 層（内側 DTO の一部）。`.ini` / MQL の生値と 1:1 に対応する語彙だけを
-    定義する。I/O・検証・変換は行わない（純粋な値の定義）。
+    usecase 層（内側 DTO の一部）。`.ini` / MQL の生値と 1:1 に対応する語彙と、
+    その**実証状態**を定義する。I/O・検証・値の変換は行わない（値の定義と、
+    定義済みの値だけを引数に取る純関数に限る）。
 
 2. 含む構造:
     Timeframe / TickModel / DateRangeKind / DatesPreset / ForwardMode /
     OptimizationMode / OptimizationCriterion / SubjectKind / InputForm の 9 列挙と、
-    名前付き定数 ExecutionDelay（生 int を保持するためフィールド型にしない）。
+    名前付き定数 ExecutionDelay（生 int を保持するためフィールド型にしない）と、
+    その**実証状態の唯一の宣言**（PROVEN_EXECUTION_DELAYS /
+    PROVISIONAL_EXECUTION_DELAYS / approximation_reason_for）。
     TIMEFRAME_INI_LABELS / INI_LABEL_TO_TIMEFRAME: `Period` のラベル写像。
     TICK_MODEL_ENGINE_IDS: `Model` → 現行エンジンの tick_model id（§6.2）。
 
@@ -150,6 +153,48 @@ class ExecutionDelay:
 
     def __init__(self) -> None:  # pragma: no cover - 定数名前空間のため生成しない
         raise TypeError("ExecutionDelay は定数の名前空間であり生成できません")
+
+
+# --- `ExecutionDelay` の実証状態（唯一の宣言場所） ---------------------------------
+# 「名前を与えた」ことと「意味が実証されている」ことは別の事実であり、上の宣言コメント
+# （暫定 / 実証）がその唯一の根拠である。これを別モジュールや外側の層（`main` の
+# `kwargs_mapper` 等）で判定すると、定数の宣言と実証状態の判定が離れ、片方だけが更新
+# される。ここで宣言し、外側は読むだけにすることで判定箇所は 1 つになる。
+#
+# 以前の実装は `kwargs_mapper` で `vars(ExecutionDelay)` を走査し「名前がある＝実測済み」
+# とみなしていたため、`ExecutionMode=0`（暫定・TBD-08）が「近似ではない」として呼出側へ
+# 伝わっていた（実測）。
+#
+# 宣言漏れの扱い: 定数を増やして実証状態を書き忘れた場合、`PROVEN` にも `PROVISIONAL`
+# にも入らないため「名前なし」と同じ扱い（＝近似）に倒れる。安全側であり、かつ網羅ゲート
+# （`test_execution_delay_evidence.py`）が漏れ自体を検出して落とす。
+
+#: 意味が**実証済み**の遅延。上の宣言コメント「実証（golden fixture の delays_ms=50 と
+#: 一致）」が根拠であり、実証があるのはこの 1 値だけである。
+PROVEN_EXECUTION_DELAYS: "frozenset[int]" = frozenset({ExecutionDelay.DELAY_50MS})
+
+#: 名前は与えたが意味が**暫定**の遅延 → 未確定事項番号。上の宣言コメント
+#: 「暫定（TBD-08。画像 1 のラベル対応は未取得）」が根拠。
+PROVISIONAL_EXECUTION_DELAYS: "dict[int, str]" = {
+    ExecutionDelay.ZERO_LATENCY_IDEAL: "TBD-08",
+}
+
+
+def approximation_reason_for(delay: "int | None") -> "str | None":
+    """遅延値 1 個の近似理由を返す（`None` なら近似ではない）。
+
+    事前条件: なし（``None`` は「値が供給されていない」＝近似の主張をしない）。
+    事後条件: 実証済みの値のみ ``None`` を返す。暫定の値は TBD 番号を含む理由を、
+        名前を持たない値は未実測である旨の理由を返す。
+    例外: 送出しない。``int`` と ``None`` のいずれに対しても値を返す（辞書引きは
+        `dict.get` であり、未宣言の値でも `KeyError` にならない）。
+    """
+    if delay is None or delay in PROVEN_EXECUTION_DELAYS:
+        return None
+    tbd = PROVISIONAL_EXECUTION_DELAYS.get(delay)
+    if tbd is not None:
+        return f"delay={delay} 未実証（{tbd}）"
+    return f"delay={delay} 未実測"
 
 
 class OptimizationMode(IntEnum):
