@@ -5497,7 +5497,6 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
   許可されていてもディレクトリ symlink を辿らないこと・降りる前に除外判定できること）。
   tools 全体 152 件 Green。
 - **関連**: ISSUE-280（node_modules 自己参照 symlink）、ISSUE-302（worktree 前提の検定）。
-
 ## ISSUE-304: [ツール] codescan がファイルの同一性をパスで判定し、symlink 共有を「コード複製」と誤報（2026-08-09）
 - **ステータス**: RESOLVED（2026-08-09・原因除去・同一ツリーでの前後比較で実測確認）
 - **重大度**: High（重複検出の結論そのものが逆転する。上位 15 件中 14 件が誤報だった）
@@ -7800,11 +7799,19 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **影響**: `.ini` 起点の本番エントリポイント（CLI / UI）を作る段で、(a) データセットが
   `stop_out_action` を供給しないと MT5 の正解と食い違う、(b) EA ごとの値許容域を Settings 層が
   知らないため、投入時ではなく実行時に `ConfigError` になる。
-- **対策案（抜本・いずれも要判断）**:
-  1. `stop_out_action` の権威をデータセット（`SymbolSpecCatalog`）に持たせる。ただし既存の
-     sim ジョブ経路の結果が変わり得るため、MT5 突合ゲートでの再確認が前提。
-  2. EA ごとの値許容域を `_EA_FACTORIES` の登録情報として宣言し、Settings 層が投入時に検証できる
-     ようにする（現在は EA ファクトリ内の実行時検査のみ）。
+- **対策案（実測による結論・2026-08-18）**:
+  1. **案(a) を棄却**: `stop_out_action` の権威を `SymbolSpecCatalog` に持たせる案。理由: ①MT5
+     突合ゲートは catalog を読まず `case.yaml` の値を `build_interactor` へ直接渡すため、catalog
+     を変えてもゲートは何も検出しない。②`close_and_halt` は JP225 固有値ではなく、MT5 忠実性を
+     要する全経路が同値を設定している（`test_ma_slope_reconcile.py` / `tools/export_trade_markers.py` /
+     `report_ui/tools/export_report_payload.py` / `test_walk_forward_integration.py`）。銘柄仕様に置くと
+     「MT5 忠実性」が「データセット権威」に紛れる（SRP 違反）。
+  2. **採用方針（要承認）**: `stop_out_action` の権威を `kwargs_mapper` の `_config_overrides` に持たせる。
+     既定値 `close_and_halt` を辞書に追加し、`.ini` 経路の全ジョブから参照可能に。効果範囲は `.ini`
+     経路のみで sim ジョブと MT5 突合は byte 等価。（先例: `entry_price_basis` と同じ位置・同じ理由付け）。
+  3. **案(b) を棄却**: EA ごとの値許容域を `_EA_FACTORIES` の登録情報として宣言する案。理由: 値許容域の
+     宣言点は**戦略クラス**（`simulator/adapter/strategy/ma_slope.py:50` の `on_init`）であり、登録表へ
+     書くと宣言が 2 箇所になる（DRY 違反）。該当は戦略 7 本中 1 本で第 2 の実例は 0 件（YAGNI）。
 - **関連**: A-1（レジストリ拡張）・A-2（決済通貨の権威化）と同じ「データセット/EA の権威情報を
   どこが持つか」という論点に属する。
 
@@ -7838,21 +7845,21 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   3. 既存テストの id 集合・順序アサーションは「5 値に書き換える」のではなく、
      **増減に追随する形**へ改める（先頭 4 値の順序不変＋既知 4 値が部分集合＋各 id の分岐先不変）。
 
-## ISSUE-398: [設計] `BacktestController.run()` がデータロードと実行を 1 メソッドに束ねている（SRP 違反・A-5 の真因）（2026-08-18・OPEN）
+## ISSUE-398: [設計] `BacktestController.run()` がデータロードと実行を 1 メソッドに束ねている（SRP 違反・A-5 の真因）（2026-08-18・訂正 2026-08-18）
 
 - **ステータス**: OPEN（要承認。A-5 では `run()` 無改変を制約としたため未是正）
-- **重大度**: Medium（呼出側が「検証済みの request をそのまま実行する」ことを選べず、
-  黙って `trading_start` が落ちる経路を生む）
+- **重大度**: Medium（本番呼出が 1 件のみで影響限定・ただし設計上の責務二重化は残存）
 - **事実（実測 2026-08-18）**:
   1. `adapter/controller.py` の `run()` は `market_data.load` を実行し `RunBacktestRequest` を
      自前で組み直してから interactor へ委譲する。`trading_start` は渡さない（既定 `None` になる）。
-  2. そのため「`build_interactor` が返した request を検証し、その同一 request を実行したい」
-     呼出側（TESTER_SETTINGS の `run_from_settings`）は `run()` を使えず、interactor へ直接到達する
-     必要があった。A-5 で公開プロパティ `BacktestController.interactor` を追加してカプセル化の
-     破れは解消したが、**責務の二重化そのものは残っている**。
-  3. ⚠️ **訂正（2026-08-18・レビュー実測）**: 当初「`main/__init__.py:669` に同型の非公開属性到達が
-     残存」と記録したが**誤り**。A-5 と同一コミット（`249742b`）で `controller.interactor` へ置換済みで、
-     現行は公開プロパティ経由（実測）。本 ISSUE の対象は `run()` の責務二重化（SRP）のみである。
+  2. ⚠️ **訂正（本番呼出側の実測）**: 当初「複数呼出側が `controller.run()` を経由」と記録したが誤り。
+     本番呼出は `main/__init__.py:770` **1 件のみ**。`tools/` CLI 3 本と `report_ui` は
+     `build_interactor` を直接呼び `run()` を使わない（`run_is_oos_cli.py:42` に「使わない」と明記）。
+     `run_backtest` の本番呼出は `main/____main__.py:80` と `sim_ui/main/run_job.py:274` の 2 件。
+  3. ⚠️ **訂正（`_interactor` 直接到達の実測）**: A-5 で「カプセル化の破れは消えた」と記録したが**残存**。
+     私有属性 `_interactor` への本番到達が **3 件**（`simulator/tools/run_is_oos_cli.py:48` /
+     `simulator/tools/export_trade_markers.py:155` / `simulator/report_ui/tools/export_report_payload.py:86`）
+     と **MT5 突合検定 1 件**（`simulator/tests/integration/test_ma_slope_reconcile.py:117`）に残存。
 - **抜本的解決（要承認）**: `run()` を「データロード」と「実行」に分離し、呼出側が
   「組み立て済み request の実行」を選べるようにする。既存の `run()` シグネチャは維持したまま
   内部を 2 段に割り、実行段を公開する形が最小。
@@ -7870,21 +7877,28 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   `errstate` による抑制自体が不要になる（症状の抑制を消して原因を除去する形に揃う）。
 - **通過条件**: 指標値が bit 一致であること（既存の指標検定・MT5 突合ゲート）。
 
-## ISSUE-400: [不具合] 取得窓が bars を 0 本に絞ると `_bar_period` が `IndexError` で落ちる（N-15 の Fail-Stop に到達しない）（2026-08-18・OPEN）
+## ISSUE-400: [不具合] 取得窓が bars を 0 本に絞ると `_bar_period` が `IndexError` で落ちる（N-15 の Fail-Stop に到達しない）（2026-08-18・RESOLVED 2026-08-18）
 
-- **ステータス**: OPEN（A-3 の作業中に検出。**A-3 が新設した欠陥ではなく先在**であることを実測確認済み）
-- **重大度**: Medium（明示的な Fail-Stop（N-15）ではなく、翻訳されない `IndexError` で落ちるため
-  原因が呼出側に伝わらない）
+- **ステータス**: RESOLVED（2026-08-18。是正済み）
+- **重大度**: Medium（翻訳されない `IndexError` で落ちるため原因が呼出側に伝わらない）
 - **事実（実測 2026-08-18）**:
   1. 取得窓が bars を 0 本に絞り、かつ `tick_model=real_ticks` で `tick_start`/`tick_end` が
      未指定のとき、`main/__init__.py` の `_bar_period` が `IndexError: list index out of range` を
      送出する。`UnsupportedSettingError`（N-15）による明示拒否に到達しない。
-  2. **先在の確認**: A-3 以前から存在する comma 委譲経路でも、同じ入力で同一の `IndexError` が
-     再現する。A-3（窓を全 Repository へ効かせる）は本欠陥の**到達範囲を広げるだけ**である。
-- **抜本的解決**: `_bar_period` が空列に対して「期間を決められない」ことを型・例外で表明し、
-  呼出側が `BacktestError` 系（翻訳される例外）へ載せる。あるいは窓適用後に bars が 0 本である
-  こと自体を先行して Fail-Stop する（N-15 の判定を `build_interactor` 内へ前倒しする案）。
-  いずれも `main/__init__.py` の改変を伴う。
+  2. **先在の確認（実測）**: A-3 以前から存在する comma 委譲経路でも、同じ入力で同一の `IndexError` が
+     再現する。A-3（窓を全 Repository へ効かせる）は本欠陥の**到達範囲を広げるだけ**。
+- **是正内容（実測 2026-08-18）**: `simulator/main/__init__.py` の `_bar_period` に事前条件の表明を追加し、
+  空列に対して `DataError` を送出する（25 行追加・削除 0）。原因は「窓が 0 本にすること」ではなく
+  「`_bar_period` が部分関数でありながら事前条件を自分の語彙で表明していなかったこと」。
+  違反が stdlib の `IndexError` として漏れて終了コード表に載らなかった。
+- **N-15 との役割分担（実測で二重化なし確認）**: Settings 経路は custom date range のとき
+  `tick_start`/`tick_end` を必ず供給するため `_bar_period` に到達せず、N-15 が唯一の判定者のまま。
+  新 `DataError` は N-15 が構造上到達できない領域（build 中の失敗・窓を課していない空 CSV）だけを覆う。
+- **検証（実測）**: 是正後 `real_ticks` ＋ 窓 0 本 → `DataError` → exit 1。math 正常系
+  （bars=[]・trades=0・exit 0）は不変。窓なし・空 CSV ＋ `every_tick` は従来どおり exit 0。全体 3079 passed。
+- **上流前提（条件付き成立）**: 「comma 委譲経路でも同じ入力で `IndexError` が再現する」は条件付きで正しい。
+  委譲経路は `time` 列が UNIX 秒 int であることを契約とし、ISO 文字列 CSV は窓到達前に `DataError` で
+  fail-fast する。再現には epoch 整数の `time` 列が要る。
 
 ## ISSUE-401: [設計] 窓境界の正規化が Candle 段と Bar 段で非対称（naive で 9 時間ずれる）（2026-08-18・RESOLVED）
 
@@ -7911,11 +7925,11 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   先例は `api_shared`（ISSUE-094）。検証: comma 経路の byte 等価を sha256 × 4 条件で確認、
   `TZ` 3 種で 329 passed、フルスイート 4577 passed。
 
-## ISSUE-402: [設計] 窓境界の解釈規則が Tick 段だけ別系統（aware 拒否・naive のみ）（2026-08-18・OPEN）
+## ISSUE-402: [設計] 窓境界の解釈規則が Tick 段だけ別系統（aware 拒否・naive のみ）（2026-08-18・RESOLVED）
 
-- **ステータス**: OPEN（ISSUE-401 の是正中に検出。範囲外として申し送り）
-- **重大度**: Low（到達可能性が未検証）
-- **事実（実測 2026-08-18）**:
+- **ステータス**: RESOLVED（2026-08-18。Tick 段を `datawindow.half_open` へ統合）
+- **重大度**: Low
+- **事実（実測 2026-08-18・是正前）**:
   1. `simulator/adapter/repository/tick_parquet.py:85-87` は「保存 timestamp は naive UTC 固定。
      tz-aware の start/end を与えると naive 値との比較で pandas が `TypeError` を投げるため、
      当該比較も含め `DataError` へ翻訳する」と規定。pandas で実測しても `datetime64[us]` と
@@ -7923,7 +7937,80 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   2. 一方 `main/tester_settings/window.py` の `resolve_data_window` は `tick_start` / `tick_end` に
      **UTC aware** を設定し、`main/__init__.py` が `repo.load_ticks(symbol, tick_start, tick_end)` へ渡す。
   3. すなわち窓境界の解釈規則は「Bar / Candle 段＝aware 受理・naive は UTC」と
-     「Tick 段＝aware 拒否・naive のみ」の **2 系統**が残っている。
-- **未検証**: `REAL_TICKS` ＋ custom 期間の経路が実際に到達するか（tick model の選択と
-  `tick_store_root` 指定に依存）。
-- **抜本的解決（要判断）**: Tick 段も `datawindow.half_open` の規則へ統合する。到達可能性の確認が先。
+     「Tick 段＝aware 拒否・naive のみ」の **2 系統**が残っていた。
+- **是正（実測 2026-08-18）**: Tick 段を ISSUE-401 で新設した `datawindow.half_open` の規則へ統合。
+  `load_ticks` の中核は `window = HalfOpenEpochWindow(epoch_seconds(start), epoch_seconds(end))` と
+  `df.loc[ts_epoch.map(window.contains)]` の 2 行になり、Bar 段と同型に。述語・正規化を書き直さず
+  共有メソッドそのものを呼ぶ（複製ゼロ）。docstring の「aware は `TypeError` なので `DataError` へ翻訳する」
+  規定は撤去。
+- **検証（実測）**: 是正前は aware が `TypeError`→`DataError`、epoch int が `AttributeError`→`DataError`
+  で失敗し、naive のみ成立していた。是正後は epoch int / aware / naive / `datetime64` の **4 表現が
+  Bar 段と同一結果**。既存 naive 経路の不変性は、旧実装を再現した参照実装との突合で **乱択 300 窓
+  mismatch 0**・**952,000 行の全期間ロードで `assert_frame_equal` OK**。全体 3125 passed（`TZ=UTC`）/
+  3128 passed（`TZ=Asia/Tokyo`）、MT5 突合 141 passed（TZ 両系）。
+- **是正で変わった唯一の点（文書化）**: 空窓（`start >= end`）は part を 1 つも読まなくなり、
+  返り値 0 行の dtype が parquet 由来から object へ変わる。行数・列名は不変で、現存呼出は空窓を作らない。
+
+## ISSUE-403: [不具合・実測] `RealTickModel` が epoch int の `bar.time` を受けられず翻訳されない `ValueError` が漏れる（2026-08-18）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: Medium
+- **実測（2026-08-18）**: `real_ticks` ＋ comma 形式（epoch 整数 `time`）CSV で `simulator/adapter/execution/tick_model.py:145` の `_normalize_bar_time` が `np.datetime64(bar_time)` を呼び、`ValueError: Converting an integer to a NumPy datetime requires a specified unit` を送出する。`bar.time` の実体は経路により epoch int / `numpy.datetime64` に分かれる（内部設計 §8.4.1 W-4 の既知事実）。ISSUE-400 と同じ「未翻訳例外が終了コード表を素通りする」系統だが別サイト。
+- **抜本的解決**: `bar.time` の表現差を吸収する単一ソース（`simulator/domain/bar_time.py`）へ委譲する。是正には `tick_model.py` の変更が要る。
+
+## ISSUE-404: [設計] `run_backtest` 経路に MT5 等級のオラクルが存在しない（2026-08-18）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: High（本セッションで判明した最大のリスク）
+- **実測（2026-08-18）**: MT5 突合（`test_ma_slope_reconcile.py`）は `build_interactor` ＋ 私有 `execute` を使い `run_backtest` を通らない。sim ジョブ検定（`sim_ui/tests/integration/test_run_job*.py`）は `run_backtest` を差し替えて引数だけ観測する（`test_run_job.py:15` に明記）。`run_backtest` の数値を測る検定は `tests/integration/test_end_to_end_run.py`（`trades == 1` の合成 1 件）のみ。
+- **帰結**: `run_backtest`（＝sim UI の実行経路）に触れる変更は、壊れても既存ゲートが検出しない。
+- **抜本的解決**: JP225 プロファイル相当の入力で `stats.json` の全フィールドを sha256 で固定する回帰検定を新設する。
+
+## ISSUE-405: [設計] `sim_ui` adapter が他スライスの Composition Root を import している（複製 3 件）（2026-08-18）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: Medium
+- **実測（2026-08-18）**: `simulator/sim_ui/adapter/ea_registry_series_catalog.py:77,106`・`ea_stop_loss_param_catalog.py:77,80-82`・`symbol_spec_catalog.py:119` が `simulator.main` の私有名 `_EA_FACTORIES` / `_factory_tc24051901` を越境 import している（当初「2 件」と記録したが実数は 3 件）。うち `ea_stop_loss_param_catalog.py:80` は `getattr(sim_main, "_EA_FACTORIES", {})` という文字列形式のため、`ast.Name` を見る現行の AST 検定では検出できない。
+- **抜本的解決**: `main` に公開アクセサを設け、adapter は直接 import せず composition root が注入する（既存前例 R-4＝`report_payload_writer`）。AST ゲートの射程を `simulator/`（tests を除く）へ広げ、文字列リテラル引数の `getattr` も検出対象に加える。
+
+## ISSUE-406: [不具合] 接点スキャン CLI の epoch 換算が 10^6 倍ずれる（実バグ・再現済み）（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: High（実行可能 CLI の出力時刻が壊れる）
+- **事実（実測 2026-08-18）**: `/workspaces/app/simulator/tools/run_scan_contacts_cli.py:139` が
+  `secs = pd.to_datetime(df["timestamp"]).astype("int64") // 1_000_000_000` と書いており、
+  ナノ秒前提の除数を使っている。しかし `ParquetTickRepository` から読み戻した dtype は
+  `datetime64[ms]` / `datetime64[us]` である（実 store で確認）。実測値:
+  `dtype: datetime64[ms]` / `cli secs[0]: 1709`（正しくは `1709251200`）。
+  すなわち接点スキャンの時刻が 10^6 倍ずれる。
+- **抜本的解決**: 解像度に依存しない換算へ変える（`datawindow`／`simulator/domain/bar_time.py` の
+  既存の単一ソースへ委譲するのが筋。`astype("int64")` の直接除算をやめる）。
+- **検出経緯**: ISSUE-402（Tick 段の時刻規則統合）の作業中に発見。書込許可外のため未修正。
+
+## ISSUE-407: [設計] 半開述語と日列挙の第 3 の複製が bench に残る（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: Low
+- **事実（実測）**: `/workspaces/app/simulator/tools/bench/bench_run.py:146` に日列挙と半開述語の
+  手書き複製がある。`d = lo.normalize()` を使うため境界解釈も第 3 系統になっている
+  （Bar/Candle/Tick 段は `datawindow.half_open` へ統合済み）。
+- **抜本的解決**: `datawindow.half_open` を読む形へ寄せる。
+
+## ISSUE-408: [設計] `epoch_seconds_of_datetime` の丸め方向が tick 列と異なる（2026-08-18・OPEN）
+
+- **ステータス**: OPEN（新規起票）
+- **重大度**: Low（実害は未観測）
+- **事実（実測）**: `datawindow/half_open.py` の `epoch_seconds_of_datetime` は `int(timestamp())`＝
+  **0 方向切り捨て**、一方 tick 列側は **floor**。1970 年より前の境界でのみ 1 秒ずれ得る。
+  tick データは 2000 年代以降のため実害なし（**未検証**: 1970 年以前のデータを扱う予定の有無）。
+- **抜本的解決**: 丸め方向を floor に統一する（負の epoch を扱う要件が生じた時点で必須）。
+
+## ISSUE-409: [記録] ISSUE.md 台帳の番号重複 8 種・欠番 2 件の存在確認（2026-08-18）
+
+- **ステータス**: OPEN（記録のみ。既存番号は変更しない）
+- **重大度**: Low（外部参照の破壊防止が理由。抜本解決は新規採番ゲート）
+- **事実（実測 2026-08-18・`git show HEAD:ISSUE.md` で本セッション以前から存在することを確認）**:
+  番号の**重複 8 種**（ISSUE-087・089・091・092・093・094・151・362）と**欠番 2 件**（266・345）が
+  存在する。参照の曖昧さを生むため記録する。
+- **対策案（抜本）**: 以後の採番を機械的に検査する（起票時に重複・欠番を検出する仕組み）。
+  既存の番号は書き換えないこと（外部からの参照が壊れるため）。
