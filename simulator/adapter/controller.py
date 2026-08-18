@@ -52,6 +52,18 @@ class BacktestController:
         """
         return self._interactor
 
+    @property
+    def market_data(self) -> MarketDataPort:
+        """注入された MarketDataPort 実装（読み取り専用の公開取得点）。
+
+        🟡-5: 「どの実装が注入されたか」「その実装で読み直すと何が返るか」を確かめる
+        呼び出し側（取得窓の合成デコレータ検定＝`tests/integration/
+        test_marketdata_window_mt5_path.py`）が、非公開属性 `_market_data` へ到達して
+        いた。`interactor` と同型の公開プロパティを設け、到達手段を契約の内側に置く。
+        注入した実体をそのまま返し、差し替えは許さない（構築時注入の DI 契約を保つ）。
+        """
+        return self._market_data
+
     def run(
         self,
         config: Any,

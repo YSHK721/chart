@@ -112,10 +112,10 @@ class TestWindowIsAppliedToTheMt5Path:
         controller, _ = build_interactor(
             **_ma_slope_kwargs(synth_csv, marketdata_window=_SYNTH_WINDOW)
         )
-        assert isinstance(controller._market_data, WindowedMarketDataRepository)
+        assert isinstance(controller.market_data, WindowedMarketDataRepository)
         # 委譲経路（spread=0 固定）へ寄せてはならない（H-4）。
-        assert isinstance(controller._market_data.inner, Mt5CsvOHLCRepository)
-        assert not isinstance(controller._market_data.inner, MarketDataSourceRepository)
+        assert isinstance(controller.market_data.inner, Mt5CsvOHLCRepository)
+        assert not isinstance(controller.market_data.inner, MarketDataSourceRepository)
 
     def test_first_and_last_bars_are_inside_the_half_open_window(self, synth_csv):
         _, request = build_interactor(
@@ -169,7 +169,7 @@ class TestRealMt5FixtureUnderWindow:
         controller, request = build_interactor(
             **_ma_slope_kwargs(_FIXTURE_CSV, marketdata_window=_REAL_WINDOW)
         )
-        reloaded = controller._market_data.load(_FIXTURE_CSV, None, "M1")
+        reloaded = controller.market_data.load(_FIXTURE_CSV, None, "M1")
         built = list(request.bars)
         assert len(reloaded) == len(built)
         assert str(reloaded[0].time) == str(built[0].time)
@@ -193,8 +193,8 @@ class TestNoWindowIsByteIdentical:
 
     def test_repository_is_not_wrapped_without_a_window(self):
         controller, _ = build_interactor(**_ma_slope_kwargs(_FIXTURE_CSV))
-        assert isinstance(controller._market_data, Mt5CsvOHLCRepository)
-        assert not isinstance(controller._market_data, WindowedMarketDataRepository)
+        assert isinstance(controller.market_data, Mt5CsvOHLCRepository)
+        assert not isinstance(controller.market_data, WindowedMarketDataRepository)
 
     def test_bars_match_the_pre_change_fingerprint(self):
         _, request = build_interactor(**_ma_slope_kwargs(_FIXTURE_CSV))
