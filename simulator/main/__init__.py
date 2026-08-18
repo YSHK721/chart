@@ -88,7 +88,8 @@ def _make_tick_model(tick_model_key: str, ohlc_order: str = "ohlc") -> Any:
 def _make_session_calendar(session_calendar_key: str) -> Any:
     """config.session_calendar キーから SessionCalendarPort 実装を生成する。
 
-    "jp225" のときのみ Jp225SessionCalendar（日次プレオープン 01:01・金曜 23:55 クローズ）。
+    "jp225" のときのみ Jp225SessionCalendar（日次プレオープン 01:01 開場・日次クローズ
+    23:59 以降閉鎖。金曜固有ではなく毎日同一＝実装 `daily_close_minute=1439` の実測記述）。
     それ以外（既定 "broker"/"none"/未知値）は NullCalendar＝常時開場で既定経路を
     byte-identical に保つ（config_loader の既定 "broker" を変更しないためのフォールバック）。
     """

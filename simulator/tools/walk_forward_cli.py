@@ -19,6 +19,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from simulator.domain.bar_time import is_epoch_integer
 from simulator.tools.optimize_cli import (
     _build_objective_port,
     _build_search_port,
@@ -57,10 +58,21 @@ _BUILD_INTERACTOR_KEYWORDS = frozenset({
 # --- span 正規化（L-1・課題-W3） --------------------------------------------
 
 def _normalize_span(value: str, sample_bar_time: Any) -> Any:
-    """span 文字列を時刻型と整合する差分へ正規化（int 秒 / numpy.timedelta64）。"""
+    """span 文字列を時刻型と整合する差分へ正規化（int 秒 / numpy.timedelta64）。
+
+    どちらの表現を選ぶかは `bar.time` が epoch 整数かどうかで決まる。その**判定は
+    `simulator.domain.bar_time.is_epoch_integer` が唯一持つ**（規則を書き写さない）。
+    以前は `isinstance(sample_bar_time, int)` を手書きしていたが
+    `isinstance(np.int64(1), int)` は False（numpy 2.4.6 実測）であり、comma 形式 CSV 由来の
+    実型が int 分岐から外れて `numpy.timedelta64` になっていた（ISSUE-412 (B)）。
+
+    span は `run_is_oos_cli.normalize_time` が作る境界と**対で使われる**
+    （`usecase/walk_forward.py:157-163` が `split = global_start + is_span` を組む）。
+    両者が同じ判定を読むことで、境界と差分が別々の表現へ倒れる事態そのものを除去する。
+    """
     import pandas as pd
 
-    if isinstance(sample_bar_time, int) and not isinstance(sample_bar_time, bool):
+    if is_epoch_integer(sample_bar_time):
         return int(pd.Timedelta(value).total_seconds())
     return pd.Timedelta(value).to_timedelta64()
 

@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from simulator.domain.bar_time import epoch_seconds, is_epoch_integer
 from simulator.main import build_interactor
 from simulator.usecase.run_is_oos import RunIsOosRequest, run_is_oos
 
@@ -55,12 +56,28 @@ def normalize_time(value: str, sample_bar_time: Any) -> Any:
     """CLI 文字列を bar.time と比較可能な型へ正規化（tools 層に pandas を閉じる・TBD-5）。
 
     sample_bar_time が numpy.datetime64 系なら pd.Timestamp(value).to_datetime64()、
-    epoch int 系なら int(pd.Timestamp(value).timestamp()) を返す。
+    epoch int 系なら epoch 秒 int を返す。
+
+    どちらの表現を選ぶかは `bar.time` が epoch 整数かどうかで決まる。その**判定も
+    epoch 秒への変換も `simulator.domain.bar_time` が唯一持つ**（規則を書き写さない）。
+    以前は `isinstance(sample_bar_time, (int,))` を手書きしていたが
+    `isinstance(np.int64(1), int)` は False（numpy 2.4.6 実測）であり、comma 形式 CSV 由来の
+    実型が int 分岐から外れて `numpy.datetime64` を返していた。返した境界は
+    `usecase/run_is_oos.py:35` で `bar.time < split` に掛かり、
+    `numpy.datetime64 < numpy.int64` は **UFuncTypeError**（実測）になる（ISSUE-412 (D)）。
+
+    `pd.Timestamp` は `datetime` のサブクラスなので、`epoch_seconds` は表の WINDOW
+    エントリ（窓境界の変換規則）で受ける。naive の解釈は pandas の
+    `Timestamp.timestamp()` と同じ **UTC 基準**であり、旧実装と同値である
+    （ISSUE-411 実測記録・`TestEpochRuleIsUnchanged` が固定する）。
     """
     ts = pd.Timestamp(value)
-    if isinstance(sample_bar_time, (int,)) and not isinstance(sample_bar_time, bool):
-        return int(ts.timestamp())
-    # numpy.datetime64（既定の Mt5CsvOHLCRepository / CsvOHLCRepository の bar.time 型）
+    if is_epoch_integer(sample_bar_time):
+        return epoch_seconds(ts)
+    # numpy.datetime64 経路＝MT5 タブ形式ローダ `Mt5CsvOHLCRepository` の bar.time 型
+    # （`adapter/repository/ohlc_mt5_csv.py:56` 実読）。comma 形式の `CsvOHLCRepository` は
+    # CSV の値をそのまま採用して epoch 整数になる（`adapter/repository/ohlc_csv.py:31-33`
+    # 実読・`bar_time` B-1）ため、そちらは上の epoch 整数分岐へ入る。
     return ts.to_datetime64()
 
 

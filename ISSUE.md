@@ -8165,7 +8165,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-412: [不具合・実測] `Bar.time` 手書き型判定の同型欠陥が本番 2 サイトに残存（session_calendar / walk_forward_cli）（2026-08-18）
 
-- **ステータス**: OPEN（新規起票。ISSUE-403 レビュー時に共有実体の利用者全 grep で検出・実測確定）
+- **ステータス**: RESOLVED（2026-08-18。4 サイト是正・レビュー条件付き承認→条件充足。是正記録は本エントリ末尾）
 - **重大度**: Medium（(A) は例外の出ない誤分類＝サイレント。ただし発火する保存済み spec は現存 0）
 - **事実（すべてレビューでの実測 2026-08-18）**:
   - **(A)** `simulator/adapter/calendar/session_calendar.py:62` `Jp225SessionCalendar.closed_bar_indices`
@@ -8184,10 +8184,40 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
     report.json 両経路が通る。comma-CSV 系 EA のジョブで実害。`raw_bars` の実型は未実測）。
   - **(D)** `simulator/tools/run_is_oos_cli.py:61`: `isinstance(sample_bar_time, int)` の同型分岐。
     np.int64 で分岐を外れ `datetime64` を返し `bar.time` と型不一致。
+- **追記 2（2026-08-18・是正着手時のアーキテクチャ評価）**:
+  - (A) の到達条件に **`marketdata_window` 指定＋comma EA 経路**（`marketdata_source.py:45` →
+    `dataset.py:131-132` の plain int）が抜けていた（追加）。
+  - (C) の「`raw_bars` の実型は未実測」は解消: `run_job.py:192-195` は `build_interactor` の
+    `request.bars` そのもの＝`Bar` 契約の型。
+  - 同型の**形**が `framework/config_loader.py:101` に 1 件あるが、入力は YAML/CLI 由来の
+    `str | int` で `np.int64` の到達経路がなく**射程外**（記録のみ）。
 - **抜本的解決**: 全サイトとも `simulator.domain.bar_time.epoch_seconds` への委譲で除去する
   （ISSUE-403 の d2c4324 が `_bar_period` / `tick_model` で行った是正と同一手法）。
   恒久策は ISSUE-411（`Bar` 構築時の契約表明）の成立＝手書き判定の必要そのものの消滅。
 - **関連**: ISSUE-403（同型の原型）・ISSUE-411（恒久策）。
+- **是正記録（実測 2026-08-18・ブランチ `fix/issue-412-same-type-epoch-sites`）**:
+  - fb0cf52=判定述語を公開名 `is_epoch_integer` 化（表の整数エントリと同一オブジェクト・写しゼロ）／
+    6b9467e=(C) `unix_seconds` を `epoch_seconds` 委譲（pandas 依存消滅。bool 拒否の例外型は
+    TypeError→ConfigError＝委譲の帰結・意図（無音禁止）は不変）／3ff07fc=(B)(D) 不可分
+    （(D) は型不一致でなく `UFuncTypeError` で比較不能だったことも実測）／7cc50ac=(A)
+    `pd.Timestamp(epoch_seconds(bar.time), unit="s")`（型誤読の除去のみ・時間基準は ISSUE-414）／
+    16adabd・レビュー条件=旧記述の是正（「金曜 23:55」等）＋(A) の `is` 同一性検定。
+  - **(C) は実害だった**: sim_ui の report.json が comma-CSV 系経路で全バー・全トレードの時刻を
+    1970 年で出力していた（E2E 実測 332 回到達・`np.int64(1704067200)`→旧 1／新 1704067200）。
+    是正で当該経路の出力値は正しい値へ**変化**する（byte 等価でないのは是正そのもの）。
+    plain int でも同欠陥が再現することを実測（ISSUE 本文の np.int64 限定は狭かった）。
+  - **検証**: unit 2211（TZ=UTC / Asia/Tokyo）・integration 271（fingerprint 固定 sha256 不変）・
+    report_ui+sim_ui 912・replay_ui 261。レビュアー独立検証: 変異 6 種全検出・(A) 1440 分全件で
+    旧実装と判定一致・(C) 217 標本で値不変・(B)(D) 総当たりで差分は np.int64 のみ。
+    byte 等価の射程は epoch ≥ 0 かつ秒境界（1970 年以前×秒未満は floor/切捨の差で 1 秒ずれ得る・
+    本番到達なし）。
+  - **射程外（記録のみ）**: `framework/config_loader.py:101`・`marketdata/tf_meta.py:121` に
+    同型の**形**があるが、いずれも入力経路に np.int64 の到達がなく現時点で無害
+    （tf_meta は外れると無音フォールバックのため、到達経路が生じたら要是正。
+    `marketdata`→`simulator` は依存不可のため是正には述語の `datawindow` 移設が要る）。
+  - **申し送り（ISSUE-413 系）**: `int_time_views` の pandas 非依存・`bar_time` の numpy/pandas
+    非流入を固定する機械ゲート／comma-CSV 実読で sim_ui writer まで通す E2E／
+    `int_time_views.py:14-15` の受理表現列挙の実証化。
 
 ## ISSUE-413: [申し送り] ISSUE-403 ブランチレビューの推奨事項（マージ後追随・7 件）（2026-08-18）
 
@@ -8208,3 +8238,33 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
      `test_tick_model.py` の開始境界ちょうどのティック標本追加・`timestamp_epoch_seconds` の
      `_tick_frame` 直接参照検討・epoch 列の 2 重計算解消・`main/__init__.py:274` ほか未使用 import 3 件
 - **関連**: ISSUE-403・ISSUE-407・ISSUE-408・ISSUE-410。
+
+## ISSUE-414: [設計・要裁定] Jp225 セッション定数の時間基準が bar.time の時間基準と未整合の疑い（2026-08-18）
+
+- **ステータス**: OPEN（新規起票。ISSUE-412 アーキテクチャ評価 TBD-1）
+- **重大度**: Medium（comma-CSV／marketdata 経路＋jp225 指定でセッション判定が体系的にずれる可能性）
+- **事実（実ファイル読解 2026-08-18）**:
+  1. `Jp225SessionCalendar` の定数（01:01 開場／23:59 閉鎖）は **MT5 ブローカー壁時計**由来
+     （`session_calendar.py` docstring の journal 突合 260620-01/02/03）。
+  2. 一方 comma-CSV／marketdata 経路の `Bar.time` は **UTC epoch**（ユーザー裁定 2026-08-18）。
+  3. 両フィードは別基準の証拠がある: MT5 fixture `JP225_M1_202501.csv` は 2025.01.02 が
+     01:00 始まり（00:00–00:59 不在）・01:00 の open=39400.5。`data/marketdata/jp225_m1.csv`
+     （UTC）は同日 00:00 から連続・01:00 UTC の open=39283.4（同一時刻で値が不一致）。
+- **帰結**: ISSUE-412 の是正（型誤読の除去）後も、「MT5 壁時計で定義された定数を UTC 壁時計に
+  当てる」ことになり、正しいセッション判定かは**未実証**。ISSUE-412 の是正はこの主張をしない。
+- **抜本的解決**: MT5 journal（参照実装）の時刻系を再確認し、UTC↔ブローカー時刻のオフセットを
+  確定のうえ裁定を得る。`Jp225SessionCalendar.__init__` は `daily_open_minute` /
+  `daily_close_minute` の注入点を既に持つため、基準確定後は注入で解決（構造変更不要）。
+- **関連**: ISSUE-412（型誤読の除去）・marketdata `date`=UTC 裁定。
+
+## ISSUE-415: [設計] `Bar.time` の二重表現（epoch int / datetime64）が同じ操作集合を持たない（LSP 違反の残存）（2026-08-18）
+
+- **ステータス**: OPEN（新規起票。ISSUE-412 アーキテクチャ評価 S-6）
+- **重大度**: Low〜Medium（(B)(D) の二重表現ディスパッチが必要になり続ける構造的原因）
+- **事実**: engine は `bar.time < trading_start` 等の**生比較**を 4 箇所で行う
+  （`run_backtest.py:306,314,617,624`）ため、呼出側は境界値を bar.time の表現に合わせて
+  組む必要があり、tools 層に表現ディスパッチ（`_normalize_span` / `normalize_time`）が残る。
+  ISSUE-412 で判定述語は単一ソース化したが、**二重表現そのもの**は未解消。
+- **抜本的解決**: engine の時刻比較を epoch 秒へ一本化（全バー正規化 or 表現の一本化）。
+  MT5 突合 byte 等価・ホットループ性能への影響実測が前提のため独立実施。
+- **関連**: ISSUE-412（対症箇所）・ISSUE-403/411（同系列の原型）。

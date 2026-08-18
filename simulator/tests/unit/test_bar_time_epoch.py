@@ -96,6 +96,51 @@ class TestSingleSource:
         assert len(EPOCH_CONVERTERS) >= 3
 
 
+class TestIsEpochIntegerIsPublic:
+    """整数エントリの判定述語は公開名 `is_epoch_integer` として読める（ISSUE-412 S-0）。
+
+    なぜ公開するか（実測に基づく理由・推測しない）:
+        `Bar.time` が epoch 整数か否かの判定を、利用側（tools 層の
+        `walk_forward_cli._normalize_span` / `run_is_oos_cli.normalize_time`）が
+        手書きしていた。その手書きは `isinstance(v, int)` であり
+        `isinstance(np.int64(1), int)` は **False**（numpy 2.4.6 実測）なので、
+        comma 形式 CSV 由来の実型が分岐から外れていた（ISSUE-412 (B)/(D)）。
+        利用側が判定を書き写さずに済むには、表の整数エントリの判定関数そのものが
+        公開名で読める必要がある。
+
+    固定する契約:
+        1. `is_epoch_integer` は ``EPOCH_CONVERTERS`` の整数エントリの判定関数
+           **そのもの**（同一オブジェクト）である。写しではない。
+        2. ``numpy.int64`` を受理する（手書き `isinstance(v, int)` との差そのもの）。
+        3. ``bool`` を受理しない（`isinstance(True, int)` は真だが時刻ではない）。
+    """
+
+    def test_public_name_is_the_integer_entry_predicate_itself(self):
+        # Arrange: 表から BAR タグの整数エントリ（`epoch_seconds(1) == 1` で識別する）
+        from simulator.domain.bar_time import BAR, is_epoch_integer
+
+        integer_entries = [
+            matches for matches, _c, tag in EPOCH_CONVERTERS
+            if tag == BAR and matches(1)
+        ]
+        # Act / Assert: 表のエントリと公開名が同一オブジェクト（写しがあれば落ちる）
+        assert len(integer_entries) == 1
+        assert integer_entries[0] is is_epoch_integer
+
+    def test_numpy_int64_is_an_epoch_integer(self):
+        from simulator.domain.bar_time import is_epoch_integer
+
+        # 手書き `isinstance(v, int)` が False を返す実型（numpy 2.4.6 実測）。
+        assert isinstance(np.int64(1), int) is False  # 前提の実測
+        assert is_epoch_integer(np.int64(1_704_067_200)) is True
+
+    def test_bool_is_not_an_epoch_integer(self):
+        from simulator.domain.bar_time import is_epoch_integer
+
+        assert isinstance(True, int) is True  # 前提の実測
+        assert is_epoch_integer(True) is False
+
+
 class TestIsSupportedTime:
     """`Bar.time` 契約の公開述語（ISSUE-411 スライス 3 / レビュー 🔴-3）。
 

@@ -26,6 +26,17 @@ def _bar(t, *, o=100.0, h=101.0, l=99.0, c=100.0, spread=0):
     return Bar(time=np.datetime64(t), open=o, high=h, low=l, close=c, volume=1.0, spread=spread)
 
 
+def _epoch(t) -> int:
+    """ISO 文字列を epoch 秒へ（`_bar` と同一の瞬時を指すことを保証するため同じ入力から導く）。"""
+    return int(np.datetime64(t, "s").astype("int64"))
+
+
+def _epoch_bar(t, *, kind=np.int64):
+    """`_bar` と同一時刻を epoch 整数で表したバー（comma 形式 CSV ローダの実型）。"""
+    return Bar(time=kind(_epoch(t)), open=100.0, high=101.0, low=99.0, close=100.0,
+               volume=1.0, spread=0)
+
+
 # ---- カレンダー adapter 単体（純関数・高速） ----
 
 class TestNullCalendar:
@@ -61,6 +72,87 @@ class TestJp225SessionCalendar:
         ]
         closed = Jp225SessionCalendar().closed_bar_indices(bars)
         assert closed == {1, 2}
+
+
+class TestJp225SessionCalendarIsIndependentOfTimeRepresentation:
+    """同一時刻は「どの時刻表現で書かれたバーか」に依存せず同一判定になる（ISSUE-412 (A)）。
+
+    是正前の欠陥（実測 2026-08-18）:
+        `closed_bar_indices` は `pd.Timestamp(bar.time)` を呼んでいた。comma 形式 CSV
+        ローダ（`adapter/repository/ohlc_csv.py`）由来の `bar.time` は ``numpy.int64``
+        であり、`pd.Timestamp(np.int64(1768219200))` は **ns 解釈**で
+        1970-01-01 00:00:01.768219200 になる。`hour*60+minute = 0 < 61` なので
+        **場中バーが全件「閉鎖」に分類**されていた（例外は出ない）。
+        同一時刻を ``numpy.datetime64`` で与えると正しく開場判定になる。
+
+    本検定が主張しないこと（ISSUE-414）:
+        セッション定数（01:01 開場 / 23:59 閉鎖）は MT5 ブローカー壁時計由来であり、
+        comma-CSV / marketdata 経路の `Bar.time` は UTC epoch である。両者の時間基準が
+        一致するかは**未確定**であり、本検定は「セッション判定が正しくなった」ことを
+        主張しない。固定するのは**型の読み違いが除かれたこと**（表現非依存）だけである。
+    """
+
+    #: 判定境界を跨ぐ標本（日次プレオープン境界 60/61 分と日次クローズ境界 1438/1439 分）。
+    _SAMPLES = [
+        ("2026-01-12T01:00", True),   # 60 分 → 閉鎖
+        ("2026-01-12T01:01", False),  # 61 分 → 開場（境界ちょうど）
+        ("2026-01-12T12:00", False),  # 場中
+        ("2026-02-06T23:58", False),  # 1438 分 → 開場
+        ("2026-02-06T23:59", True),   # 1439 分 → 閉鎖（境界ちょうど）
+    ]
+
+    def test_numpy_int64_midday_bar_is_not_classified_as_closed(self):
+        # Arrange: comma 形式 CSV → pandas が返す実型の場中バー。
+        bar = _epoch_bar("2026-01-12T12:00")
+        assert isinstance(bar.time, int) is False  # 前提の実測（numpy 2.4.6）
+        # Act
+        closed = Jp225SessionCalendar().closed_bar_indices([bar])
+        # Assert: 1970 年へ落ちて全件閉鎖にならない。
+        assert closed == set()
+
+    @pytest.mark.parametrize("iso,expected_closed", _SAMPLES, ids=[s[0] for s in _SAMPLES])
+    def test_numpy_int64_bars_match_the_datetime64_verdict(self, iso, expected_closed):
+        # Arrange / Act: 同一時刻を 2 表現で与える。
+        dt64 = Jp225SessionCalendar().closed_bar_indices([_bar(iso)])
+        i64 = Jp225SessionCalendar().closed_bar_indices([_epoch_bar(iso)])
+        # Assert: 判定が一致し、かつ datetime64 側の既存挙動と同じ内容である。
+        assert i64 == dt64
+        assert i64 == ({0} if expected_closed else set())
+
+    @pytest.mark.parametrize("iso,expected_closed", _SAMPLES, ids=[s[0] for s in _SAMPLES])
+    def test_plain_int_bars_match_the_datetime64_verdict(self, iso, expected_closed):
+        """Python `int` の epoch も同一判定（是正前は ns 解釈で同じく 1970 年へ落ちていた）。"""
+        i = Jp225SessionCalendar().closed_bar_indices([_epoch_bar(iso, kind=int)])
+        assert i == ({0} if expected_closed else set())
+
+    def test_all_three_representations_agree_on_a_mixed_sequence(self):
+        """混在しない同一系列を 3 表現で流し、閉鎖 index 集合が完全一致する。"""
+        isos = [s[0] for s in self._SAMPLES]
+        calendar = Jp225SessionCalendar()
+        by_dt64 = calendar.closed_bar_indices([_bar(t) for t in isos])
+        by_i64 = calendar.closed_bar_indices([_epoch_bar(t) for t in isos])
+        by_int = calendar.closed_bar_indices([_epoch_bar(t, kind=int) for t in isos])
+        assert by_dt64 == by_i64 == by_int == {0, 4}
+
+    def test_calendar_reads_the_shared_normalizer(self):
+        """時刻正規化の実体は domain の共有オブジェクトである（写しの再発を機械検出）。
+
+        値の検定（上）は「壊れた複製」しか捕まえない。正しく書き写した複製は値が
+        一致したまま単一ソースを破るため、`is` 同一性で固定する（他 3 サイト＝
+        CLI 2 本・int_time_views と同じ流儀。レビュー 🟡-1）。
+        """
+        from simulator.adapter.calendar import session_calendar as sc
+        from simulator.domain import bar_time
+
+        assert sc.epoch_seconds is bar_time.epoch_seconds
+
+    def test_injected_session_bounds_still_apply_to_epoch_bars(self):
+        """注入した境界（`__init__` の 2 引数）が epoch 表現でも効く。
+
+        識別力: 委譲後に epoch 秒を固定値へ潰す実装にすると本検定が落ちる。
+        """
+        calendar = Jp225SessionCalendar(daily_open_minute=0, daily_close_minute=1440)
+        assert calendar.closed_bar_indices([_epoch_bar(t[0]) for t in self._SAMPLES]) == set()
 
 
 # ---- Interactor への適用（bar-mode 経路・閉鎖バーで約定しない） ----
