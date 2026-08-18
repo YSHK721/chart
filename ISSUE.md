@@ -7968,10 +7968,13 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-405: [設計] `sim_ui` adapter が他スライスの Composition Root を import している（複製 3 件）（2026-08-18）
 
-- **ステータス**: OPEN（新規起票）
+- **ステータス**: RESOLVED（2026-08-18）
 - **重大度**: Medium
-- **実測（2026-08-18）**: `simulator/sim_ui/adapter/ea_registry_series_catalog.py:77,106`・`ea_stop_loss_param_catalog.py:77,80-82`・`symbol_spec_catalog.py:119` が `simulator.main` の私有名 `_EA_FACTORIES` / `_factory_tc24051901` を越境 import している（当初「2 件」と記録したが実数は 3 件）。うち `ea_stop_loss_param_catalog.py:80` は `getattr(sim_main, "_EA_FACTORIES", {})` という文字列形式のため、`ast.Name` を見る現行の AST 検定では検出できない。
-- **抜本的解決**: `main` に公開アクセサを設け、adapter は直接 import せず composition root が注入する（既存前例 R-4＝`report_payload_writer`）。AST ゲートの射程を `simulator/`（tests を除く）へ広げ、文字列リテラル引数の `getattr` も検出対象に加える。
+- **是正内容（実装完了）**: `simulator/main/__init__.py` に公開アクセサ `build_ea_strategy(**spec) -> StrategyPort` と `known_ea_names() -> tuple[str, ...]` を追加。`DEFAULT_EA_NAME` を表の所有者へ集約（従来は sim_ui と engine fixtures に同じ文字列の写しが 2 つ）。`_ea_components` で引数と既定値を単一ソース化し、2 つの公開アクセサが共有することで既定値の片側ドリフトを構造的に不可能にした。`simulator/sim_ui/adapter/ea_build_probe.py`（新設）で「使い捨てデータで EA を組む」段を単一ソース化し、2 カタログへの知識の写しを排除。3 カタログ（`ea_registry_series_catalog` / `ea_stop_loss_param_catalog` / `symbol_spec_catalog`）は構築関数・EA 名一覧を注入で受ける（既定束縛なし）。束縛は `composition_root_jobs` の 1 箇所で完結。
+- **判明していた潜在欠陥（実在）**: 旧 SL カタログは factory 関数のソース文字列から戦略クラス名を推測しており、`make_weekly_vol_band(...)` 経由の WeeklyVolBand では常に特定に失敗して `None` を返していた。構築ベース化でこの推測ごと消滅。意味論は `None`（探索失敗）→ `frozenset()`（該当なし）へ変化したが、`submit_job` が `if not params: return` のため利用者から見た受付挙動は全 EA で不変（実測）。
+- **検証（実測）**: `simulator/tests` 3182 passed / `simulator/sim_ui/tests` 689 passed / MT5 突合ゲート 888 passed。`sim_ui` 本番 52 モジュールを AST 走査して私有名参照 0 件。`build_interactor` / `run_backtest` / `_select_ea_factory` は AST 抽出で byte 一致。`build_ea_indicators` の ema は実 MT5 fixture 28097 点が bit 一致。受付コスト 2.4 ms（NFR-01 の 1 秒に対し十分小さい）。実 HTTP で `/run-options`・`/ea-series` を確認。
+- **構造的原因の除去（別コミット）**: 本件が長期間検出されなかった原因は、依存方向ゲートの走査対象が `simulator/{adapter,usecase,domain,framework}` に限定され `sim_ui/adapter` が対象外だったこと。走査を「手書き列挙」から「構造による発見」へ置換し 14 層 192 モジュールへ拡張。さらに検出形態の穴を発見・是正（旧実装は `from simulator import main as sim_main` と相対 import・`importlib` 文字列を取り逃していた。これは本件で実際に使われていた形式でありながら射程外だった）。名前空間パッケージ（`__init__.py` 不在）による射程の穴も検定化。
+- **残存事項**: `ea_stop_loss_param_catalog` のソース文字列走査という手法自体は残存（SL 設定名の語彙が増えた場合は別途検討要）。
 
 ## ISSUE-406: [不具合] 接点スキャン CLI の epoch 換算が 10^6 倍ずれる（実バグ・再現済み）（2026-08-18・OPEN）
 
