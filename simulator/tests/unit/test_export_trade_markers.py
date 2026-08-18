@@ -250,3 +250,46 @@ def test_default_run_uses_recent_tail_and_survives_margin_call(tmp_path):
     #   先頭読み（OLD）では 2012 になり本 assert が失敗する＝Fix-A を駆動する。
     latest = max(m["lwc"]["time"] for m in payload["markers"])
     assert pd.Timestamp(latest, unit="s").year == 2026
+
+
+# ---- ISSUE-411 🟡-3: 包含外マーカーを終了コードで表明する --------------------
+#
+# `run_and_export` は step 6（集合包含検証）の結果を summary へ載せるが、`main()` が
+# 戻り値を捨てていたため CLI としては依然サイレントだった（包含外があっても exit 0）。
+
+
+class _StubExport:
+    """`run_and_export` の代役（包含外件数だけを制御する）。"""
+
+    def __init__(self, outside: int) -> None:
+        self.outside = outside
+        self.calls = 0
+
+    def __call__(self, **kwargs):
+        self.calls += 1
+        return {"count": 2, "markers": [], "markers_outside_candles": self.outside}
+
+
+def test_main_exits_zero_when_no_marker_is_outside_the_candle_set(monkeypatch, tmp_path):
+    # Arrange: 包含外 0 件
+    stub = _StubExport(outside=0)
+    monkeypatch.setattr(ext, "run_and_export", stub)
+    # Act
+    code = ext.main(["--out", str(tmp_path / "m.json"), "--rows", "10"])
+    # Assert: 従来どおり成功終了
+    assert code == 0
+    assert stub.calls == 1
+
+
+def test_main_exits_one_and_reports_to_stderr_when_markers_fall_outside(
+    monkeypatch, tmp_path, capsys
+):
+    # Arrange: 包含外 3 件（設計 §4 は 0 件合格）
+    monkeypatch.setattr(ext, "run_and_export", _StubExport(outside=3))
+    # Act
+    code = ext.main(["--out", str(tmp_path / "m.json"), "--rows", "10"])
+    # Assert: 非ゼロ終了かつ stderr へ件数を明示（無音で成功扱いにしない）
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert "3" in err

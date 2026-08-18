@@ -72,7 +72,7 @@ class TradeMarkerPresenterPort(abc.ABC):
 時刻（B-1 確定式・candles と同一）:
 ```python
 import pandas as pd
-def _unix(t) -> int: return int(pd.Timestamp(t).timestamp())   # dataset.py:_to_unix_seconds と同一式
+def _unix(t) -> int: return epoch_seconds(t)   # simulator.domain.bar_time の単一ソースへ委譲（ISSUE-411）
 ```
 配色・position・shape（H-1 確定・presenter 内定数）:
 ```python
@@ -111,7 +111,8 @@ present_markers(result, path, *, symbol, ea_name):
 ```
 1. marketdata/data/jp225_m1.csv を読み取り専用で pandas ロード（列 date,open,high,low,close,volume）。
 2. 列ブリッジ（既存データ非改変・新規 tmp へ書く）:
-     rename date→time, add spread=0, （必要列 time/open/high/low/close/volume/spread）
+     rename date→time, **epoch 秒化**（`timestamp_epoch_seconds`・naive=UTC）, add spread=0,
+     （必要列 time/open/high/low/close/volume/spread。`Bar.time` 契約は epoch int / numpy.datetime64）
    → tempfile に engine 形式 CSV を書き出す（NamedTemporaryFile・実行後削除）。
 3. build_interactor(data_path=tmp, ea_name=<既定 TC24051901>, symbol="JP225",
      point_size=0.1, digits=1, contract_size=10, ...既定値) で controller/request 構築。
@@ -191,10 +192,13 @@ catch (e) { console.warn('[trade-markers] init skipped', e); }
 ---
 
 ## 6. リスク対応（詳細設計時点で確定）
-- 時刻式不一致 → §2.3 で `int(pd.Timestamp(t).timestamp())` に固定（candles と同一）。
+- 時刻式不一致 → §2.3 で `simulator.domain.bar_time.epoch_seconds` への委譲に固定（ISSUE-411）。
+  旧記述の `int(pd.Timestamp(t).timestamp())` は epoch 整数（numpy.int64）を ns と誤読し 1970 年に落ちる。
 - v5 マーカー API → §3.1 ハンドル方式に固定。
 - 生成トリガ/出力先 → §2.5 スクリプト＋ `web/data/trade_markers.json` に固定（main 無改変・web/ 内）。
-- comma-CSV time 実型 → §2.5 ブリッジで `time` 列に date 文字列を載せ、presenter 側 `pd.Timestamp` で吸収。
+- comma-CSV time 実型 → §2.5 ブリッジで `time` 列を **epoch 秒 int** にする（ISSUE-411 で判断を反転）。
+  旧方針「date 文字列を載せ presenter 側 `pd.Timestamp` で吸収」は `Bar.time` 契約違反（`Bar(time=str)`）
+  を生むため撤回した。変換は bridge が 1 度だけ行い、presenter は epoch をそのまま読む。
 - 件数性能 → 全件描画・件数明示。実測で重い場合は `--rows` で範囲限定（サイレント切り捨てなし）。
 
 ---

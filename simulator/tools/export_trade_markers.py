@@ -209,7 +209,7 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--csv", default=str(_DEFAULT_CSV), help="入力 marketdata CSV")
     args = parser.parse_args(argv)
     try:
-        run_and_export(
+        summary = run_and_export(
             csv_path=Path(args.csv),
             out_path=Path(args.out),
             ea_name=args.ea_name,
@@ -218,6 +218,15 @@ def main(argv: "list[str] | None" = None) -> int:
         )
     except Exception as exc:  # noqa: BLE001 — 非ゼロ終了＋メッセージ（既存データ非改変）
         print(f"[trade-markers] ERROR: {exc}", file=sys.stderr)
+        return 1
+    # step 6（集合包含検証）は 0 件合格（design §4）。包含外を成功終了にしない
+    # （ISSUE-411 🟡-3: summary へ載せても main が捨てれば CLI としてはサイレント）。
+    outside = summary["markers_outside_candles"]
+    if outside:
+        print(
+            f"[trade-markers] ERROR: {outside} markers outside candle time set",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
