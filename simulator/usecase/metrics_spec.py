@@ -169,7 +169,13 @@ def _dd_arrays(balance_curve: Sequence[float], initial_deposit: float):
     b = _full_balance(balance_curve, initial_deposit)
     peak = np.maximum.accumulate(b)
     dd_abs = peak - b
-    dd_pct = np.where(peak != 0, dd_abs / peak * 100.0, 0.0)
+    # ISSUE-395 / A-7: np.where は分岐の前に両辺を評価するため peak==0 で 0/0 を実行し
+    # RuntimeWarning を出す（initial_deposit=0.0 の math_calculations は正常系で毎回踏む）。
+    # np.divide(..., where=) は除算そのものを条件付きにする（peak==0 の要素は out の 0.0
+    # がそのまま残る）。peak!=0 の要素の演算順序は従来と同一のため値は bit 単位で不変。
+    dd_pct = np.divide(
+        dd_abs, peak, out=np.zeros_like(dd_abs, dtype=float), where=peak != 0
+    ) * 100.0
     return dd_abs, dd_pct
 
 
