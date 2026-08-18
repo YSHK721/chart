@@ -76,6 +76,26 @@ _RULE_DATA_CONSISTENCY: str = "S"
 #: spread 無視の分岐に入り MT5 再現にならないため、Settings 経路は明示指定する。
 ENTRY_PRICE_BASIS: str = "current_open"
 
+#: 証拠金ストップアウト時の挙動の明示値（MT5 実走整合の実証値）。エンジン既定
+#: "fail_stop" は `MarginCallError` を送出して部分結果を破棄するが、実 MT5 は
+#: 保有玉を強制決済したうえでテストを完走し確定レポートを出す。よって Settings 経路は
+#: `ENTRY_PRICE_BASIS` と同じ理由——「エンジン既定のままだと MT5 と別の分岐に入る」——で
+#: 明示指定する。
+#:
+#: 出典（`simulator/tests/fixtures/mt5/ma_slope_jp225_202501/` の実 MT5 出力）:
+#:   - `mt5_report/tester.log` 11663 行:
+#:       `2025.01.13 13:07:00   position stop out triggered at 99.95%
+#:        [#2326 buy 1 JP225 38325.7]`
+#:   - `expected/report.json` 最終 deal（#2327）: `dir="out"` / `profit=-30.0` /
+#:     `balance=3831.0` / `comment="so 99.95% "` ＝ stop out が**決済 deal を生成**する
+#:     （例外中断なら deal は残らない）。
+#:   - 同 `results`: `total_trades=1163` / `total_net_profit=-6169.0` ＝ 集計まで**完走**。
+#:   - `case.yaml` `expected_summary.stop_out: true`。
+#: 上記の観測（強制決済 ＋ 完走）を再現するエンジン語彙は "close_and_halt" だけである。
+#: 本定数は `.ini` 経路の**未指定時の既定**であり、`binding.config_overrides` が別値を
+#: 持つ場合はそちらが勝つ（`_config_overrides` の優先順位）。
+STOP_OUT_ACTION: str = "close_and_halt"
+
 #: Settings 層の `Math calculations` の語彙。A-1（ISSUE-397）以降はエンジン id でもある
 #: ため、文字列を書き写さず `TICK_MODEL_ENGINE_IDS` から読む（単一ソース）。
 MATH_CALCULATIONS_WORD: str = TICK_MODEL_ENGINE_IDS[TickModel.MATH_CALCULATIONS]
@@ -361,7 +381,10 @@ def _config_overrides(ctx: _MappingContext) -> Any:
     優先順位:
         1. `binding.config_overrides`（データセット側が権威＝`SymbolSpecCatalog` 由来）。
         2. `Model`（Settings の権威項目）→ ``tick_model``（Settings が上書きする）。
-        3. ``entry_price_basis`` は未指定時のみ明示値を補う（§4.5.1）。
+        3. ``entry_price_basis`` / ``stop_out_action`` は未指定時のみ明示値を補う
+           （§4.5.1・`ENTRY_PRICE_BASIS` / `STOP_OUT_ACTION` の宣言に出典を記す）。
+           いずれも「エンジン既定のままだと MT5 と別の分岐に入る」という同一の理由で
+           明示する値であり、既定はここで 1 度だけ読む（値を 2 箇所に書かない）。
     """
     overrides = dict(ctx.binding.config_overrides or {})
     # A-1（L-5 の解消）: `Model` は全値がエンジン id を持つ（`tick_model_word` が単一の
@@ -369,6 +392,7 @@ def _config_overrides(ctx: _MappingContext) -> Any:
     # Settings 層の語彙と一致する（従来 math は既定 "every_tick" のままだった）。
     overrides["tick_model"] = tick_model_word(ctx.effective.tick_model)
     overrides.setdefault("entry_price_basis", ENTRY_PRICE_BASIS)
+    overrides.setdefault("stop_out_action", STOP_OUT_ACTION)
     return overrides
 
 
