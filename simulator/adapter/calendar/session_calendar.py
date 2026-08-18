@@ -14,13 +14,26 @@
   ギャップ検出方式は New Year 等の祝日ギャップで初回約定を誤拒否するため採らない
   （時刻ルールが実 MT5 拒否点と一致する）。
 
-pandas/numpy 依存は本 adapter 内に閉じる（usecase/domain へ漏らさない）。Bar.time が
-CSV 由来で ISO 文字列になり得る（ISSUE-016）ため曜日・時刻抽出前に Timestamp 化する。
+pandas/numpy 依存は本 adapter 内に閉じる（usecase/domain へ漏らさない）。曜日・時刻を
+抽出するために `bar.time` を Timestamp 化するが、**表現差の吸収は自前で判定せず
+`simulator.domain.bar_time.epoch_seconds` へ委譲する**（ISSUE-412 (A)）。
+
+`Bar.time` の受理集合は epoch 整数（`numpy.int64` を含む）と ``numpy.datetime64`` の
+2 つだけである（`domain/bar.py` の構築時契約・ISSUE-411）。かつて本 docstring は
+「CSV 由来で ISO 文字列になり得る（ISSUE-016）」と述べていたが、ISSUE-411 の構築時契約に
+より str の `Bar` は構築不能であり、その記述は現行仕様と一致しないため撤回する。
+
+時間基準の未確定事項（ISSUE-414・本モジュールは主張しない）:
+    下記のセッション定数は MT5 ブローカー壁時計の journal 突合から得たものである。
+    一方 comma-CSV / marketdata 経路の `Bar.time` は UTC epoch である。両者の時間基準が
+    一致するかは未実証であり、ISSUE-414 の裁定待ちである。ISSUE-412 の是正は
+    「型の読み違いの除去」だけを行い、セッション判定の正しさを主張しない。
 """
 from __future__ import annotations
 
 from typing import Any, Iterable
 
+from simulator.domain.bar_time import epoch_seconds
 from simulator.usecase.ports import SessionCalendarPort
 
 
@@ -59,7 +72,11 @@ class Jp225SessionCalendar(SessionCalendarPort):
 
         closed: set[int] = set()
         for i, bar in enumerate(bars):
-            ts = pd.Timestamp(bar.time)
+            # 表現差の吸収は domain の単一ソースへ委譲する（ここで型判定を書くと
+            # `Bar.time` の受理集合が本モジュールと domain の 2 か所で二重定義になる）。
+            # 直接 `pd.Timestamp(bar.time)` に掛けると、epoch 整数が ns 解釈されて
+            # 1970-01-01 に落ち、場中バーが全件「閉鎖」になる（ISSUE-412 (A) 実測）。
+            ts = pd.Timestamp(epoch_seconds(bar.time), unit="s")
             mins = ts.hour * 60 + ts.minute
             # 日次プレオープン（01:00 以前）または日次クローズ（23:59 以降）は閉鎖。
             if mins < self._daily_open_minute or mins >= self._daily_close_minute:
