@@ -51,8 +51,24 @@ from datawindow.half_open import epoch_seconds_of_datetime
 from simulator.domain.exceptions import ConfigError
 
 
-def _is_integer(value: Any) -> bool:
-    """整数（`numpy.int64` を含む）か。``bool`` は時刻ではないため除外する。"""
+def is_epoch_integer(value: Any) -> bool:
+    """整数（`numpy.int64` を含む）か。``bool`` は時刻ではないため除外する。
+
+    本関数は ``EPOCH_CONVERTERS`` の**整数エントリの判定関数そのもの**である（写しを
+    作らない）。公開名で読めるようにしているのは、`Bar.time` が epoch 整数か否かで
+    **出力の表現を選ぶ**利用側が存在するためである——`simulator/tools/walk_forward_cli.py`
+    `_normalize_span` と `simulator/tools/run_is_oos_cli.py` `normalize_time` は、
+    バーの時刻表現に合わせて int 秒 / ``numpy.timedelta64`` ないし
+    ``numpy.datetime64`` を返し分ける（`bar.time` との生比較が engine 側に存在する
+    ため二重表現そのものは残す）。
+
+    利用側が判定を書き写すと何が起きるか（実測・ISSUE-412 (B)/(D)）:
+        手書きの ``isinstance(value, int)`` は ``isinstance(np.int64(1), int)`` が
+        **False**（numpy 2.4.6 実測）であるため、comma 形式 CSV 由来の実型
+        （``numpy.int64``）を取り落とす。受理集合が本表と利用側の 2 か所で
+        食い違い、同一時刻で表現が割れる（例外は出ない）。写しを作らせないために
+        判定の実体は本関数 1 つだけとする。
+    """
     return isinstance(value, numbers.Integral) and not isinstance(value, bool)
 
 
@@ -94,7 +110,7 @@ WINDOW = "WINDOW"
 EPOCH_CONVERTERS: (
     "tuple[tuple[Callable[[Any], bool], Callable[[Any], int], str], ...]"
 ) = (
-    (_is_integer, _from_integer, BAR),
+    (is_epoch_integer, _from_integer, BAR),
     (_is_numpy_datetime64, _from_numpy_datetime64, BAR),
     # B-4: 窓境界と同じ関数オブジェクト（複製を持たない）。
     (_is_datetime, epoch_seconds_of_datetime, WINDOW),
