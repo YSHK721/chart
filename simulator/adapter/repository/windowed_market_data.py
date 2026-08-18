@@ -26,17 +26,25 @@ SOLID 上の位置づけ:
     （MA_Slope / MA_Slope_Pending / StopEntryProbe）の約定価格式（買い = open + spread×point）
     が壊れる。本デコレータは Bar を**同一インスタンスのまま**通すため spread を保存する。
 
-半開区間（既存規約に一致）:
-    `[start, end)`。`marketdata/csv_source.py` の `if t < start_ts or t >= end_ts: continue`
-    と同一。境界は UTC aware datetime（`main/tester_settings/window.py resolve_data_window`
-    が生成する）。`bar.time` は経路により epoch int / `numpy.datetime64` に分かれるため、
-    比較前に `simulator.domain.bar_time.epoch_seconds` で正規化する（正規化の実体は domain が
-    単一ソースとして所有し、本モジュールは書き直さない）。
+半開区間（規則の実体は 1 つ・ISSUE-401 🟡-2 の是正）:
+    `[start, end)`。境界の epoch 正規化と半開判定の実体は中立共有パッケージ
+    `datawindow.half_open` が唯一所有し、Candle 段（`marketdata/csv_source.py`）と本モジュール
+    が**同じオブジェクト**を読む。以前は両段が別々に境界を正規化しており、Candle 段が naive
+    datetime をローカル TZ で、本経路が UTC で解釈していた（実測: `TZ=Asia/Tokyo`・naive
+    `datetime(2025, 1, 10)` で 32400 秒＝9 時間差）。`marketdata_window` は `build_interactor`
+    の公開引数であるため、規約（内部設計 §8.4「境界時刻はすべて UTC aware」）に頼らず、
+    受け側で解釈を 1 つに確定させる。
+    `bar.time` は経路により epoch int / `numpy.datetime64` に分かれるため、比較前に
+    `simulator.domain.bar_time.epoch_seconds` で正規化する（その datetime 変換器は上記共有
+    実体そのものであり、規則を 2 つ持たない）。窓境界も同じ `epoch_seconds` を通すため、
+    公開引数が受け付ける時刻表現は `bar.time` と同じ 3 種（epoch int / datetime /
+    `numpy.datetime64`）のまま狭めない。
 """
 from __future__ import annotations
 
 from typing import Any
 
+from datawindow.half_open import HalfOpenEpochWindow
 from simulator.domain.bar import Bar
 from simulator.domain.bar_time import epoch_seconds
 from simulator.usecase.ports import MarketDataPort
@@ -79,7 +87,6 @@ class WindowedMarketDataRepository(MarketDataPort):
         if self._window is None:
             return bars
         start, end = self._window
-        start_epoch = epoch_seconds(start)
-        end_epoch = epoch_seconds(end)
-        # 半開 `[start, end)`（`marketdata/csv_source.py` の判定と同一規約）。
-        return [bar for bar in bars if start_epoch <= epoch_seconds(bar.time) < end_epoch]
+        # 境界正規化・半開判定とも共有実体（Candle 段と同一オブジェクト）を読む。
+        window = HalfOpenEpochWindow(epoch_seconds(start), epoch_seconds(end))
+        return [bar for bar in bars if window.contains(epoch_seconds(bar.time))]

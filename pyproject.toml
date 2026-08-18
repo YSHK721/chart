@@ -5,7 +5,8 @@
 # （ビルドバックエンドも導入しない＝[build-system] / [project] は置かない）。
 #
 # pythonpath: rootdir（= 本ファイルのあるリポジトリ根）**からの相対**で sys.path へ載せる。
-#   repo 根直下の固有名パッケージ（common / common_view / marketdata / api_shared / tools）と
+#   repo 根直下の固有名パッケージ（common / common_view / marketdata / api_shared /
+#   datawindow / tools）と
 #   market_profile_api を、どのパッケージディレクトリから pytest を起動しても解決可能にする。
 #
 #   値の唯一源は tools/dev_paths.txt（ISSUE-279）。一致は

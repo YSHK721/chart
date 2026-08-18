@@ -8,8 +8,11 @@ A-3（取得窓を全 `MarketDataPort` 実装へ効かせる）で新設。従�
 その所有者は domain 層である。よって実体を本モジュールへ置き、`window.py` と
 窓デコレータの双方が**同一オブジェクト**を読む（複製 0）。
 
-依存規律（`bar.py` と同じ）: 標準ライブラリと domain 例外のみに依存する。numpy /
-pandas を import しない（``numpy.datetime64`` は duck typing で判定する）。
+依存規律（`bar.py` と同じ）: 標準ライブラリ・domain 例外・`datawindow`（標準ライブラリ
+のみで構成される中立共有パッケージ）に依存する。numpy / pandas は直接にも transitively
+にも import しない（``numpy.datetime64`` は duck typing で判定する。``import
+simulator.domain.bar_time`` 後に ``numpy`` が ``sys.modules`` へ載らないことを実測で
+確認済み）。
 
 実測に基づく確定事項（推測しない）:
     B-1: `bar.time` の実体は経路で異なる。comma 形式 CSV ローダ
@@ -19,8 +22,15 @@ pandas を import しない（``numpy.datetime64`` は duck typing で判定す�
     B-2: 窓境界は UTC aware datetime（`main/tester_settings/window.py`
          `resolve_data_window` が `_midnight_utc` で生成する）。
     B-3: naive datetime を `datetime.timestamp()` に掛けるとプロセスのローカル TZ で
-         解釈される。本モジュールは naive を UTC とみなすことでこの環境依存という
+         解釈される。naive を UTC とみなすことでこの環境依存という
          **原因そのものを除去**する（症状回避ではない）。
+    B-4: その datetime → epoch 変換は**窓境界の正規化と同一の規則**である。実体は中立
+         共有パッケージ `datawindow.half_open.epoch_seconds_of_datetime` が唯一所有し、
+         本モジュールの `EPOCH_CONVERTERS` と Candle 段（`marketdata/csv_source.py`）が
+         同じ関数オブジェクトを読む。分けて書いていた時期は解釈が食い違っていた（実測:
+         `TZ=Asia/Tokyo`・naive `datetime(2025, 1, 10)` で 32400 秒差・ISSUE-401 🟡-2）。
+         `marketdata` は `simulator` を import できない（依存方向）ため、共有点は両
+         パッケージの外側へ置く。
 
 拡張点（OCP）: 時刻表現の追加は ``EPOCH_CONVERTERS`` への 1 エントリ追加で済む。
 判定関数（`Callable[[Any], bool]`）と変換関数（`Callable[[Any], int]`）の対を並べた
@@ -29,9 +39,12 @@ pandas を import しない（``numpy.datetime64`` は duck typing で判定す�
 from __future__ import annotations
 
 import numbers
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable
 
+# B-4: datetime → epoch の実体は中立共有パッケージが唯一所有する（窓境界の正規化と同一
+# 規則）。本モジュールは書き直さず、その**関数オブジェクトそのもの**を表へ載せる。
+from datawindow.half_open import epoch_seconds_of_datetime
 from simulator.domain.exceptions import ConfigError
 
 
@@ -48,12 +61,6 @@ def _is_datetime(value: Any) -> bool:
     return isinstance(value, datetime)
 
 
-def _from_datetime(value: datetime) -> int:
-    """aware は自身の TZ、naive は UTC とみなして epoch 秒へ（B-3 の除去）。"""
-    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    return int(aware.timestamp())
-
-
 def _is_numpy_datetime64(value: Any) -> bool:
     """``numpy.datetime64``（numpy を import せず duck typing で判定する）。"""
     return hasattr(value, "astype") and type(value).__name__ == "datetime64"
@@ -66,7 +73,8 @@ def _from_numpy_datetime64(value: Any) -> int:
 #: 時刻表現 → epoch 秒の変換器（判定順に評価する。表現の追加＝1 エントリ追加）。
 EPOCH_CONVERTERS: "tuple[tuple[Callable[[Any], bool], Callable[[Any], int]], ...]" = (
     (_is_integer, _from_integer),
-    (_is_datetime, _from_datetime),
+    # B-4: 窓境界と同じ関数オブジェクト（複製を持たない）。
+    (_is_datetime, epoch_seconds_of_datetime),
     (_is_numpy_datetime64, _from_numpy_datetime64),
 )
 
