@@ -17,7 +17,8 @@
 4. 依存:
     標準: pathlib / typing
     外部: なし
-    プロジェクト内: simulator.main（build_interactor 経由の実行段・`present_outputs`）/
+    プロジェクト内: simulator.domain.exceptions（ConfigError）/
+                    simulator.main（build_interactor 経由の実行段・`present_outputs`）/
                     simulator.main.tester_settings.exit_codes / .kwargs_mapper /
                     .run_from_settings
 
@@ -47,6 +48,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from simulator.domain.exceptions import ConfigError
 from simulator.main import present_outputs
 from simulator.main.tester_settings.exit_codes import SUCCESS_EXIT_CODE
 from simulator.main.tester_settings.kwargs_mapper import (
@@ -78,11 +80,22 @@ def run_settings_job(
         （モジュール docstring「なぜ例外を握らないのか」）。
 
     ``extensions`` は写像結果の**後**に適用する。拡張点は `.ini` からは供給されない
-    引数であり、写像の像とは交わらない（交わる名前を渡すのは呼出側の誤りであり、
-    `build_interactor` の引数検査が受け止める）。
+    引数であり、写像の像とは交わらない。交わる名前を渡すのは呼出側の誤りであるため、
+    **ここで `ConfigError` にする**（`build_interactor` は受け付ける引数名なら値をそのまま
+    使うため受け止めない。黙って後勝ちにすると「`.ini` に書いた条件と違う条件で走った
+    結果」が成功として出力まで進む）。規律は写像層の `_accepted_ea_params`（`.ini` 由来の
+    引数と重なる `ea_params` を拒む）と同一である。
     """
     kwargs = dict(effective_to_interactor_kwargs(effective, binding))
-    kwargs.update(extensions or {})
+    injected = dict(extensions or {})
+    conflicting = sorted(set(injected) & set(kwargs))
+    if conflicting:
+        raise ConfigError(
+            "拡張点への注入が Settings 由来の引数と衝突しています: "
+            f"{', '.join(conflicting)}",
+            context={"conflicting": conflicting},
+        )
+    kwargs.update(injected)
     result = execute_interactor_kwargs(kwargs, effective)
     # 出力段は `run_backtest` と**同一実体**（T-1 で公開名にした `present_outputs`）。
     # 診断メタ（EA 名・銘柄）は写像層が実際に `build_interactor` へ渡した値を使う

@@ -225,6 +225,49 @@ test("no front module writes a Tester Settings vocabulary literal (schema が単
   assert.deepEqual(offenders, []);
 });
 
+// 列挙キーの**生値**（`Model` の 4・`Dates` の 2 …）は enums が唯一の宣言であり、schema が
+// トークンとして配る。front に「キー名＋数値」の対が現れたら、それは値表の複製である
+// （名前を変えても対の形は残るため、語彙そのものより検出しやすい）。
+const TESTER_ENUM_KEYS = ["Model", "Optimization", "Dates", "ForwardMode", "OptimizationCriterion"];
+
+/** ソース中の「列挙キー名 × 数値リテラル」の対を列挙する（0 件が合格）。 */
+function testerNumericLiteralOffenses(src) {
+  const offenses = [];
+  for (const key of TESTER_ENUM_KEYS) {
+    const forms = [
+      // `Model: 4` / `Model = "4"` / `"Model": '0'` / `Model === 2`
+      new RegExp(`["'\`]?\\b${key}\\b["'\`]?\\s*(?::|=+)\\s*["'\`]?[+-]?\\d`),
+      // 表の行としての並置: `["Model", "4"]` / `("Dates", 2)`
+      new RegExp(`["'\`]${key}["'\`]\\s*,\\s*["'\`]?[+-]?\\d`),
+    ];
+    for (const form of forms) {
+      const hit = src.match(form);
+      if (hit) offenses.push(`${key}: ${hit[0]}`);
+    }
+  }
+  return offenses;
+}
+
+test("the enum-literal detector actually sees a duplicated token table (自己検定)", () => {
+  // 変異 1 点: front が `Model` のトークン表を持ち込んだ状態（実際に起きうる複製の形）。
+  const mutated = 'const MODEL_TOKENS = { Model: "4" };';
+  assert.ok(testerNumericLiteralOffenses(mutated).length > 0,
+    "検出器が複製を見逃しています（この検定が空振りしていれば下の走査は無意味）");
+  // schema から引く正しい形は 1 件も挙げない（過検出で本来の書き方を禁じない）
+  const proper = "const token = schema.enum_options.Model[0].token;\nconst k = \"Dates\";";
+  assert.deepEqual(testerNumericLiteralOffenses(proper), []);
+});
+
+test("no front module pairs a Tester enum key with a numeric literal", () => {
+  const offenders = [];
+  for (const name of FRONT_FILES) {
+    for (const offense of testerNumericLiteralOffenses(read(name))) {
+      offenders.push(`${name}: ${offense}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
+
 // --- 3. v4 vendor への参照が無い（NFR-07）----------------------------------------
 
 test("nothing references the report_ui v4 bundle", () => {
