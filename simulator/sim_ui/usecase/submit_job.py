@@ -79,7 +79,7 @@ class SubmitJobInteractor:
         # 実効粒度を決めるため、`Model` の妥当性が確定していないと判定の前提が立たない。
         if submission.settings:
             self._reject_invalid_settings(submission)
-        # 戦略項目（Phase 6 E-5）:参照する指標系列が当該 ea_name の登録系列に含まれるかを
+        # 戦略項目（Phase 6 E-5）: 参照する指標系列が当該 ea_name の登録系列に含まれるかを
         # 受付時に検証する（sizing とは独立）。E-3 と同じ系列カタログ Port を再利用する。
         if submission.strategy_enabled:
             self._reject_if_strategy_indicators_unavailable(submission)

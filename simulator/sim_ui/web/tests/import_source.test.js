@@ -69,32 +69,6 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 mo
   ].sort());
 });
 
-// --- 2c. Tester Settings の語彙を front が持たない（Phase 8・複製ゼロの機械検査）--------
-// 選択肢・キー順・必須キー・非対象理由の単一ソースは `GET /sim/settings-schema` の payload
-// （由来は `usecase/tester_settings/enums.py` と検証層・字句層の宣言）である。front に同じ
-// 語彙を書いた瞬間、列挙を増やしても UI だけ古いという食い違いが静かに生まれる。
-// 時間足ラベル・対象接尾辞の**実値**をソーステキストから機械的に禁じる。
-
-const TESTER_VOCABULARY = [
-  // 時間足ラベル（`enums.TIMEFRAME_INI_LABELS` の値。分/時足は M/H＋数字で誤検出しやすい
-  // ため、代表として日足以上と M1 を固定する）。
-  /\bM1\b/, /\bDaily\b/, /\bWeekly\b/, /\bMonthly\b/,
-  // 対象ファイルの接尾辞（`main/tester_settings.SUBJECT_SUFFIX`）。Expert 候補は schema が
-  // 連結済みのトークンを配るため、front が接尾辞を知る必要はない。
-  /\.ex5\b/,
-];
-
-test("no front module writes a Tester Settings vocabulary literal (schema が単一ソース)", () => {
-  const offenders = [];
-  for (const name of FRONT_FILES) {
-    const src = read(name);
-    for (const pattern of TESTER_VOCABULARY) {
-      if (pattern.test(src)) offenders.push(`${name}: ${pattern}`);
-    }
-  }
-  assert.deepEqual(offenders, []);
-});
-
 // --- 1b. style.css の波及遮断（裁定 B）------------------------------------------
 // 移植元 style.css は**子文書（report_view.html）の中だけ**で読む。統合ページ側の
 // コードが link すると、実測どおり既存 UI の body 背景・font・文字色が変わる。
@@ -223,6 +197,32 @@ test("the trade table columns are not re-declared in the sim layer", () => {
     assert.ok(!read(name).includes("Time(close)"),
       `${name} が明細列のラベルを写しています（table.js を import すること）`);
   }
+});
+
+// --- 2b. Tester Settings の語彙を front が持たない（Phase 8・複製ゼロの機械検査）--------
+// 選択肢・キー順・必須キー・非対象理由の単一ソースは `GET /sim/settings-schema` の payload
+// （由来は `usecase/tester_settings/enums.py` と検証層・字句層の宣言）である。front に同じ
+// 語彙を書いた瞬間、列挙を増やしても UI だけ古いという食い違いが静かに生まれる。
+// 時間足ラベル・対象接尾辞の**実値**をソーステキストから機械的に禁じる。
+
+const TESTER_VOCABULARY = [
+  // 時間足ラベル（`enums.TIMEFRAME_INI_LABELS` の値。分/時足は M/H＋数字で誤検出しやすい
+  // ため、代表として日足以上と M1 を固定する）。
+  /\bM1\b/, /\bDaily\b/, /\bWeekly\b/, /\bMonthly\b/,
+  // 対象ファイルの接尾辞（`main/tester_settings.SUBJECT_SUFFIX`）。Expert 候補は schema が
+  // 連結済みのトークンを配るため、front が接尾辞を知る必要はない。
+  /\.ex5\b/,
+];
+
+test("no front module writes a Tester Settings vocabulary literal (schema が単一ソース)", () => {
+  const offenders = [];
+  for (const name of FRONT_FILES) {
+    const src = read(name);
+    for (const pattern of TESTER_VOCABULARY) {
+      if (pattern.test(src)) offenders.push(`${name}: ${pattern}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
 });
 
 // --- 3. v4 vendor への参照が無い（NFR-07）----------------------------------------

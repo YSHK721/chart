@@ -24,8 +24,6 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 from simulator.main import run_backtest
 from simulator.main.tester_settings.kwargs_mapper import STOP_OUT_ACTION
 from simulator.sim_ui.main import run_job

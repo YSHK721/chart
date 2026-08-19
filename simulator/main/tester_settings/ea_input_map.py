@@ -7,6 +7,8 @@
     変換器の管理だけを行う（型の写像表を手書きしない）。
 
 2. 含む構造:
+    SUBJECT_SUFFIX      : テスト対象ファイルの接尾辞（`Expert` / `Indicator` の値）。
+                          字形の宣言はここ 1 箇所（Phase 8 裁定 T-6 で公開）。
     EaInputBinding      : 引数名 ＋ 変換器の 2 項束縛（1 入力＝1 エントリ）。
     EA_INPUT_BINDINGS   : ea_name → {`.ini` 入力名: 束縛}。**初期は空**（後述）。
     SCALAR_CONVERTERS   : 注釈型 → 変換器の登録表（型の追加＝1 エントリ追加）。
@@ -53,8 +55,6 @@ _WINDOWS_PATH_SEPARATOR: str = "\\"
 #: 正規表現側（`framework/tester_settings/validation.py` の `pattern=r"\.ex5$"`）との
 #: 統合は別 ISSUE 申し送り（T-6）。
 SUBJECT_SUFFIX: str = ".ex5"
-#: 従来名（本モジュール内の参照。公開名と同一実体であり 2 つの字形を持たない）。
-_SUBJECT_SUFFIX: str = SUBJECT_SUFFIX
 
 # 変換器が受理する書式（§4.4.1 の表。沈黙変換を禁止するため厳密に固定する）。
 _INT_PATTERN = re.compile(r"^[+-]?\d+$")
@@ -226,4 +226,4 @@ def ea_stem(subject_path: str) -> str:
     （`..\\..\\etc\\passwd.ex5` → ``passwd``）。
     """
     last = subject_path.rsplit(_WINDOWS_PATH_SEPARATOR, 1)[-1]
-    return last.removesuffix(_SUBJECT_SUFFIX)
+    return last.removesuffix(SUBJECT_SUFFIX)

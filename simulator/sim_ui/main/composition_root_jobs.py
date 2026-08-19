@@ -31,10 +31,10 @@ from simulator.sim_ui.adapter.ea_stop_loss_param_catalog import EaStopLossParamC
 from simulator.sim_ui.adapter.file_job_ledger import FileJobLedger
 from simulator.sim_ui.adapter.settings_ini_validator import SettingsIniValidator
 from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
+from simulator.sim_ui.adapter.subprocess_job_launcher import SubprocessJobLauncher
 from simulator.sim_ui.adapter.tester_settings_schema_catalog import (
     TesterSettingsSchemaCatalog,
 )
-from simulator.sim_ui.adapter.subprocess_job_launcher import SubprocessJobLauncher
 from simulator.sim_ui.framework.serve_sim_jobs import SimJobApp
 from simulator.sim_ui.usecase.job_ports import EaSubjectPort
 

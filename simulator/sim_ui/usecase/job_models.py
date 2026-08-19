@@ -95,12 +95,8 @@ class JobSubmission:
     def effective_granularity(self) -> str:
         """この run の実効評価粒度（"bar"|"tick"）を返す（Phase 7・粒度ゲート用）。
 
-        RunBacktestInteractor.execute の分岐（run_backtest.py）に忠実:
-        ``tick_model == "real_ticks"`` または ``pending_lifecycle`` の run は every-tick 経路
-        （tick 粒度・B4）、それ以外（every_tick/ohlc_expand/open_only 等の合成 tick_model）は
-        bar 経路（bar 粒度・B2）。既定 tick_model は config_loader と同じ "every_tick"（＝bar）。
-
-        判定そのものは :func:`granularity_of` が唯一持つ。本 property は**どの
+        判定そのものは :func:`granularity_of` が唯一持つ（規則の本文と既定値の字形を
+        ここへ写さない。既定は :data:`DEFAULT_TICK_MODEL`）。本 property は**どの
         tick_model が権威か**だけを決める:
 
             settings 有り（Phase 8）: `.ini` の `Model` が権威（写像層 `_config_overrides`

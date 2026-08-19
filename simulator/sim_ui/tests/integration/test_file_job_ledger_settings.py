@@ -33,7 +33,7 @@ def test_settingsは第4ブロックとして保存される(tmp_path: Path) -> 
     assert spec["settings"] == settings
 
 
-def test_settings不在ではキー構成が現行のまま(tmp_path: Path) -> None:
+def test_settings不在では第4ブロックがnullで他3ブロックは現行のまま(tmp_path: Path) -> None:
     # Arrange
     ledger = FileJobLedger(data_root=tmp_path)
     # Act

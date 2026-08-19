@@ -41,7 +41,7 @@ const PROFILE_FIELD_OF_KEY = {
   Leverage: "leverage",
   Currency: "settlement_currency",
 };
-/** profile にもschema にも供給源が無いキーの初期値（フォームの初期表示）。
+/** profile にも schema にも供給源が無いキーの初期値（フォームの初期表示）。
  *  `Deposit` は移設前の初期資金欄と同じ初期値。`ProfitInPips` / `Visual` は「使わない」側。 */
 const INITIAL_SCALARS = { Deposit: "10000", ProfitInPips: "0", Visual: "0" };
 

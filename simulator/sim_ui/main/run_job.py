@@ -7,7 +7,18 @@
 仕様を argv に並べると、シェル経由のクォート事故・引数の取り違えという壊れ方を
 新たに作ることになる（sim core と子プロセスの間で仕様の表現が二重化する）。
 
-結果ペイロードは `run_backtest` の既存出力（`stats.json` / `report.md`）に加えて、
+実行経路は 2 本あり、`spec.json` の `settings` ブロックの**有無だけ**で分岐する
+（Phase 8 §18.3）:
+    settings 不在（既定）: `simulator.main.run_backtest`（現行経路。`run_backtest` へ渡す
+        引数も出力段も Phase 8 で変えておらず、旧 spec の `stats.json` は byte 等価）。
+    settings 有り        : `main/tester_settings/run_settings_job`（`.ini` の生トークン →
+        `TesterSettings` → `EffectiveSettings` → 窓の事後検証 N-15 込みの実行）。
+どちらの経路も成果物（`stats.json` / `report.md`）は同一の出力段（`simulator.main` の
+`present_outputs`）を通る。Phase 6/7 の拡張点（`strategy_override` / `position_manager` /
+`strategy_decorator`）の組み立ては本 CLI の `main()` で**1 度だけ**行い、経路ごとに
+書き写さない。
+
+結果ペイロードは上記の既存出力（`stats.json` / `report.md`）に加えて、
 表示用の `report.json`（report_ui 形）を成功 run のときだけ書く（Phase 4・§8.1）。
 写像そのものは report_ui の UC / Presenter が単一ソースで、ここには写さない
 （§12.3-3 複製禁止）。書出しは `simulator.sim_ui.adapter.report_payload_writer` へ委譲する。
@@ -404,7 +415,8 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # 戦略項目（Phase 6 F-8・P6-E4）: strategy present のときだけ override を組んで渡す。
     # 不在/空は渡さない（引数の不在で既存挙動 byte 等価）。override と sizing decorator は
-    # 独立に meta へ載せ、build_interactor が override 置換→sizing wrap の順で合成する。
+    # 独立に `extensions` へ載せ（現行経路では下で `meta` へ合流する）、build_interactor が
+    # override 置換→sizing wrap の順で合成する。
     if spec.get("strategy"):
         try:
             extensions["strategy_override"] = _build_strategy_override(spec)
@@ -416,7 +428,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # 建玉変更（Phase 7 FR-07/08・P7）: strategy.trailing / partial_close が present のときだけ
     # PositionManager を組んで渡す。不在は渡さない（引数の不在で既存挙動 byte 等価）。
-    # position_manager と strategy_override/sizing decorator は独立に meta へ載せ、
+    # position_manager と strategy_override/sizing decorator は独立に `extensions` へ載せ、
     # build_interactor が各拡張点へ注入する。
     if spec.get("strategy"):
         try:
@@ -429,8 +441,10 @@ def main(argv: "list[str] | None" = None) -> int:
         if pm is not None:
             extensions["position_manager"] = pm
 
-    # Tester Settings 経路（Phase 8 §18・T-1）。settings 不在は**現行経路そのまま**
-    # （分岐の下は 1 文字も変えていない＝旧 spec の出力は byte 等価）。
+    # Tester Settings 経路（Phase 8 §18・T-1）。settings 不在は**現行経路**へ落ちる。
+    # 分岐の下は拡張点の合流（`meta.update`）と書出しの関数化のみで、`run_backtest` への
+    # 引数も出力段も変えていない＝旧 spec の `stats.json` は byte 等価
+    # （`tests/integration/test_run_job_settings.py` の直接実行との突合で固定）。
     if spec.get("settings"):
         return _run_with_settings(job_dir, spec, extensions)
 

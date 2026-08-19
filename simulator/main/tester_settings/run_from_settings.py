@@ -14,7 +14,11 @@
 
 2. 含む構造:
     run_from_settings（実行 A）: 設定 ＋ 注入束 → (終了コード, 結果, 実行メタ)。
-    run_effective_settings      : 実行段（例外を送出する。終了コード翻訳を行わない）。
+    run_effective_settings      : 実効設定 ＋ 注入束 → 同上（例外を送出する。終了コード
+                                  翻訳を行わない）。
+    execute_interactor_kwargs   : **唯一の実行段**（窓の事後検証 N-15 ＋ 検証した request
+                                  をそのまま実行）。Phase 8（裁定 T-1）で切り出し、
+                                  `main/tester_settings/run_settings_job` と共有する。
 
 3. 元 MQL 対応:
     MT5 ストラテジーテスターの Start ボタン（Settings タブの内容で 1 パスを実行する）。
