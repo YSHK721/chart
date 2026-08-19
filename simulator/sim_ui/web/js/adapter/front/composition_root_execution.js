@@ -6,6 +6,7 @@
 
 import { createJobSubmitClient } from "./job_submit_client.js";
 import { createSettingsSchemaClient } from "./settings_schema_client.js";
+import { createSimEaInputsPanelView } from "./sim_ea_inputs_panel_view.js";
 import { createSimExecutionPanelView } from "./sim_execution_panel_view.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
 
@@ -35,7 +36,10 @@ export async function mountSimExecutionPanel({
   // （指標セット欄・初期資金欄）が権威のまま成立する＝現行経路の本文と byte 等価。
   const testerView = createSimTesterSettingsPanelView({ doc });
   testerView.mount(host);
-  const view = createSimExecutionPanelView({ doc });
+  // EA パラメータ面（M2）。実行仕様の EA 側パラメータはこの面だけが所有する。
+  const eaInputsView = createSimEaInputsPanelView({ doc });
+  eaInputsView.mount(host);
+  const view = createSimExecutionPanelView({ doc, inputs: eaInputsView });
   view.mount(host);
   if (Array.isArray(eaCandidates)) view.setEaCandidates(eaCandidates);
 
@@ -95,5 +99,5 @@ export async function mountSimExecutionPanel({
     }
   });
 
-  return { view, client, testerView, schemaClient };
+  return { view, client, testerView, eaInputsView, schemaClient };
 }

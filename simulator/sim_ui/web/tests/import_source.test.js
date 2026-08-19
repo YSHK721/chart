@@ -49,6 +49,9 @@ const EXEC_ROOT = "composition_root_execution.js";
 // Phase 8 で追加した Tester Settings（MT5 設定パネル）系（純 DOM / HTTP・lwc に触れない）。
 const SETTINGS_CLIENT = "settings_schema_client.js";
 const TESTER_PANEL = "sim_tester_settings_panel_view.js";
+// Phase 9 で分けた面（S2）: EA パラメータ面（純 DOM）と投入契約（純関数）。
+const EA_INPUTS_PANEL = "sim_ea_inputs_panel_view.js";
+const SUBMISSION_BUILDER = "sim_submission_builder.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -60,13 +63,30 @@ function importSpecifiers(src) {
 
 // --- 1. 移植元は /sim/report-js/ からだけ引く ------------------------------------
 
-test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 modules", () => {
+test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + Phase 9 modules", () => {
   assert.deepEqual(FRONT_FILES.sort(), [
     ROOT, RENDERER, SOURCE, VIEW, FRAME,
     TABS, SEGMENT, COMPARE, CONTACTS_TOGGLE, FILTER_PILL,
     SUBMIT_CLIENT, EXEC_PANEL, EXEC_ROOT,
     SETTINGS_CLIENT, TESTER_PANEL,
+    EA_INPUTS_PANEL, SUBMISSION_BUILDER,
   ].sort());
+});
+
+// --- 1c. 投入契約は純関数（Phase 9 S2 M5）----------------------------------------
+// 本文の組み立て規則を DOM や HTTP と同じ面に置くと、規則を検証するのに器と通信の
+// ダブルが要る＝規則そのものを素で確かめられなくなる。M5 は依存 0 で保つ。
+
+test("the submission builder imports nothing (純関数＝依存 0)", () => {
+  assert.deepEqual(importSpecifiers(read(SUBMISSION_BUILDER)), []);
+});
+
+test("the submission builder touches neither DOM nor fetch (doc / fetch 非依存)", () => {
+  const src = read(SUBMISSION_BUILDER);
+  for (const forbidden of [/\bdoc\b/, /\bdocument\b/, /\bfetch\b/, /createElement/, /appendChild/]) {
+    assert.ok(!forbidden.test(src),
+      `${SUBMISSION_BUILDER} が ${forbidden} に触れています（投入契約は純関数で保つこと）`);
+  }
 });
 
 // --- 1b. style.css の波及遮断（裁定 B）------------------------------------------

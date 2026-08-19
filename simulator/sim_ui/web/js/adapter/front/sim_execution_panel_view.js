@@ -2,8 +2,10 @@
 //
 // 役割: 実行仕様（`backtest`）を組み、投入本文を作る。
 //
-// 責務（SRP）: DOM の生成と本文の組み立てだけ。fetch はしない（データセット profile は
-//   setRunOptions で**注入**する＝合成根が job_submit_client.loadRunOptions から供給）。
+// 責務（SRP）: DOM の生成だけ。fetch はしない（データセット profile は setRunOptions で
+//   **注入**する＝合成根が job_submit_client.loadRunOptions から供給）。投入本文の組み立ては
+//   sim_submission_builder（純関数・M5）が、EA パラメータは sim_ea_inputs_panel_view（M2）が
+//   所有する——このパネルは両者を**参照するだけ**で、規則も欄も写さない。
 //   投入自体も onSubmit コールバックで外へ渡す（このパネルは HTTP を知らない）。
 //
 // Phase 9 S1（§19.2）: 買い/売り条件の行組み立てと建玉変更の入力欄は **UI 出口として
@@ -13,17 +15,14 @@
 // fake DOM 前提: querySelector は使わず、フィールド要素の参照を JS 側で保持する
 //   （fake DOM の querySelector は null を返すため・_fakes.js 実測）。
 
-export function createSimExecutionPanelView({ doc } = {}) {
+import { buildSubmission as buildBody } from "./sim_submission_builder.js";
+
+export function createSimExecutionPanelView({ doc, inputs } = {}) {
   let root = null;
   let eaSel = null;
-  let slInput = null;
-  let tpInput = null;
   let submitBtn = null;
   let datasetSel = null;
-  let maPeriodInput = null;
-  let maMethodInput = null;
   let depositInput = null;
-  let lotInput = null;
   let eaCandidates = [];
   let profiles = [];
   let submitCb = null;
@@ -34,13 +33,6 @@ export function createSimExecutionPanelView({ doc } = {}) {
   let testerPanel = null;
   let eaWrap = null;
   let depositWrap = null;
-
-  // profile 由来の 11 キー（build_interactor の銘柄仕様・data_path/symbol/period）。
-  // front はこれらのリテラルを持たない（選択 profile からのみ供給）。
-  const PROFILE_KEYS = [
-    "data_path", "symbol", "period", "contract_size", "digits", "point_size",
-    "leverage", "volume_min", "volume_max", "volume_step", "stops_level",
-  ];
 
   const el = (tag, props) => {
     const node = doc.createElement(tag);
@@ -75,34 +67,26 @@ export function createSimExecutionPanelView({ doc } = {}) {
     if (testerPanel) testerPanel.setRunProfile(selectedProfile());
   }
 
-  function buildSubmission() {
-    // EA と初期資金は Tester パネルが結線されていれば **settings 値から導出**する（T-4）。
-    // 語幹の切り出し・接尾辞の連結は front で行わない（導出はパネルが schema の label から返す）。
-    const derived = testerPanel ? testerPanel.derivedBacktest() : null;
-    // フォーム 7 キー（ユーザー入力・既定値は UI フィールド）。
-    const backtest = {
-      ea_name: derived ? String(derived.ea_name || "") : String(eaSel.value || ""),
-      stop_loss_points: Number(slInput.value),
-      take_profit_points: Number(tpInput.value),
-      ma_period: Math.trunc(Number(maPeriodInput.value)),
-      ma_method: String(maMethodInput.value),
-      initial_deposit: derived ? Number(derived.initial_deposit) : Number(depositInput.value),
-      lot_size: Number(lotInput.value),
-    };
-    // profile 由来 11 キー（front リテラル 0・選択 profile からのみ）。
-    const profile = selectedProfile();
-    if (profile) {
-      for (const k of PROFILE_KEYS) backtest[k] = profile[k];
-      // profile が config_overrides（例 entry_price_basis）を持てば素通しする（front リテラル 0）。
-      // データセットの CSV 形式・EA ローダの組合せで既定の建値基準が成立しない場合に profile が
-      // 権威供給する（config_overrides は E-5b の任意キー＝build_interactor の同名 param）。
-      if (profile.config_overrides) backtest.config_overrides = profile.config_overrides;
+  /** 実行対象（EA・口座・設定ブロック）の供給元。Tester パネルが結線されていれば
+   *  そちらが権威（T-4: 同一概念の入力欄を 2 つ持たない）。 */
+  function subject() {
+    if (testerPanel) {
+      const derived = testerPanel.derivedBacktest();
+      return {
+        ea_name: derived.ea_name,
+        initial_deposit: derived.initial_deposit,
+        settings: testerPanel.buildSettings(),
+      };
     }
-    const body = { backtest };
-    // Tester Settings（Phase 8 §18 の第 4 ブロック）。未結線なら**キーごと載せない**＝
-    // 現行受付・現行実行経路（settings 不在）と同じ本文になる。
-    if (testerPanel) body.settings = testerPanel.buildSettings();
-    return body;
+    return {
+      ea_name: eaSel.value,
+      initial_deposit: Number(depositInput.value),
+      settings: null,
+    };
+  }
+
+  function buildSubmission() {
+    return buildBody({ profile: selectedProfile(), subject: subject(), inputs: inputs.values() });
   }
 
   return {
@@ -125,42 +109,20 @@ export function createSimExecutionPanelView({ doc } = {}) {
       fillOptions(eaSel, eaCandidates);
       eaWrap.appendChild(eaSel);
 
-      slInput = el("input", { id: "execSl", className: "exec-sl", type: "number", value: "0", min: "0" });
-      tpInput = el("input", { id: "execTp", className: "exec-tp", type: "number", value: "0", min: "0" });
-      const slWrap = el("label", { className: "exec-field", textContent: "SL(点)" });
-      slWrap.appendChild(slInput);
-      const tpWrap = el("label", { className: "exec-field", textContent: "TP(点)" });
-      tpWrap.appendChild(tpInput);
-
-      // 追加のフォーム項目（ユーザー入力・UI 既定値）。
-      maPeriodInput = el("input", { id: "execMaPeriod", className: "exec-maperiod", type: "number", value: "20", min: "1" });
-      maMethodInput = el("input", { id: "execMaMethod", className: "exec-mamethod", type: "text", value: "ema" });
       depositInput = el("input", { id: "execDeposit", className: "exec-deposit", type: "number", value: "10000", min: "0" });
-      lotInput = el("input", { id: "execLot", className: "exec-lot", type: "number", value: "0.1", min: "0" });
-      const maPeriodWrap = el("label", { className: "exec-field", textContent: "MA周期" });
-      maPeriodWrap.appendChild(maPeriodInput);
-      const maMethodWrap = el("label", { className: "exec-field", textContent: "MA種別" });
-      maMethodWrap.appendChild(maMethodInput);
       depositWrap = el("label", { className: "exec-field", textContent: "初期資金" });
       depositWrap.appendChild(depositInput);
-      const lotWrap = el("label", { className: "exec-field", textContent: "ロット" });
-      lotWrap.appendChild(lotInput);
 
       submitBtn = el("button", { id: "execSubmit", className: "exec-submit", type: "button", textContent: "投入" });
       submitBtn.addEventListener("click", () => { if (submitCb) submitCb(buildSubmission()); });
 
       root.appendChild(dsWrap);
       root.appendChild(eaWrap);
-      root.appendChild(slWrap);
-      root.appendChild(tpWrap);
-      root.appendChild(maPeriodWrap);
-      root.appendChild(maMethodWrap);
       root.appendChild(depositWrap);
-      root.appendChild(lotWrap);
       root.appendChild(submitBtn);
 
       host.appendChild(root);
-      this.elements = { root, eaSel, slInput, tpInput, submitBtn };
+      this.elements = { root, eaSel, submitBtn };
       return root;
     },
 

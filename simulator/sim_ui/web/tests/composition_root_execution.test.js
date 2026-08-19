@@ -9,10 +9,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { fakeDoc, findById } from "./_fakes.js";
+import { EA_INPUT_FIELDS } from "../js/adapter/front/sim_ea_inputs_panel_view.js";
 import { settingsSchema } from "./_settings_schema_fixture.js";
 import { mountSimExecutionPanel } from "../js/adapter/front/composition_root_execution.js";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+/** EA パラメータ欄の id（所在の単一ソースは宣言表＝この検定へ写さない）。 */
+const eaInputId = (param) => EA_INPUT_FIELDS.find((f) => f.param === param).id;
 
 const EA_LIST = ["PRO_fit_Band_EA", "TC24051901"];
 
@@ -64,8 +67,8 @@ test("submit posts the built body and notifies onSubmitted", async () => {
   await mountSimExecutionPanel({
     doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST, onSubmitted: (r) => submitted.push(r),
   });
-  findById(doc.body, "execSl").value = "100";
-  findById(doc.body, "execTp").value = "200";
+  findById(doc.body, eaInputId("stop_loss_points")).value = "100";
+  findById(doc.body, eaInputId("take_profit_points")).value = "200";
   findById(doc.body, "execSubmit")._listeners.click[0]();
   await flush();
   const post = fetchFn.calls.find((c) => c.url === "/sim/jobs");

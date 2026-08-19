@@ -11,22 +11,28 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { fakeDoc, findById } from "./_fakes.js";
+import {
+  EA_INPUT_FIELDS, createSimEaInputsPanelView,
+} from "../js/adapter/front/sim_ea_inputs_panel_view.js";
 import { createSimExecutionPanelView } from "../js/adapter/front/sim_execution_panel_view.js";
 
 function mounted() {
   const doc = fakeDoc();
-  const view = createSimExecutionPanelView({ doc });
+  // EA パラメータ面（M2）は本番と同じ実体を注入する（値の供給元をダブルに差し替えると
+  // 「宣言表 → 本文」の結線が検定から抜ける）。
+  const inputs = createSimEaInputsPanelView({ doc });
+  inputs.mount(doc.body);
+  const view = createSimExecutionPanelView({ doc, inputs });
   view.mount(doc.body);
-  return { doc, host: doc.body, view };
+  return { doc, host: doc.body, view, inputs };
 }
 
 // --- 1. 生成 ------------------------------------------------------------------
 
-test("mount builds ea/sl/tp inputs and a submit button", () => {
+test("mount builds the ea / deposit fields and a submit button", () => {
   const { host } = mounted();
   assert.ok(findById(host, "execEaName"), "#execEaName が無い");
-  assert.ok(findById(host, "execSl"), "#execSl が無い");
-  assert.ok(findById(host, "execTp"), "#execTp が無い");
+  assert.ok(findById(host, "execDeposit"), "#execDeposit が無い");
   assert.ok(findById(host, "execSubmit"), "#execSubmit が無い");
 });
 
@@ -49,13 +55,15 @@ const FORM_KEYS = [
   "ea_name", "stop_loss_points", "take_profit_points",
   "ma_period", "ma_method", "initial_deposit", "lot_size",
 ];
+/** EA パラメータ面の欄（値の所在は宣言表が持つ＝id をこの検定へ写さない）。 */
+const eaInputId = (param) => EA_INPUT_FIELDS.find((f) => f.param === param).id;
 
 test("buildSubmission returns the full 18-key backtest body", () => {
   const { host, view } = mounted();
   view.setRunOptions([_PROFILE]);
   setVal(findById(host, "execEaName"), "TC24051901");
-  setVal(findById(host, "execSl"), "100");
-  setVal(findById(host, "execTp"), "200");
+  setVal(findById(host, eaInputId("stop_loss_points")), "100");
+  setVal(findById(host, eaInputId("take_profit_points")), "200");
 
   const body = view.buildSubmission();
   const bt = body.backtest;
@@ -85,13 +93,13 @@ test("setRunOptions populates the dataset selector and profile drives backtest k
   assert.equal(bt.point_size, 0.001);
 });
 
-test("new form fields (ma_period/ma_method/initial_deposit/lot_size) are present and typed", () => {
+test("the EA inputs panel and the deposit field feed the backtest keys", () => {
   const { host, view } = mounted();
   view.setRunOptions([_PROFILE]);
-  setVal(findById(host, "execMaPeriod"), "20");
-  setVal(findById(host, "execMaMethod"), "ema");
+  setVal(findById(host, eaInputId("ma_period")), "20");
+  setVal(findById(host, eaInputId("ma_method")), "ema");
   setVal(findById(host, "execDeposit"), "10000");
-  setVal(findById(host, "execLot"), "0.1");
+  setVal(findById(host, eaInputId("lot_size")), "0.1");
   const bt = view.buildSubmission().backtest;
   assert.strictEqual(bt.ma_period, 20);
   assert.strictEqual(bt.ma_method, "ema");
@@ -140,7 +148,7 @@ test("attaching a tester panel puts settings on the body and derives the backtes
   view.setRunOptions([_PROFILE]);
   const panel = fakeTesterPanel();
   view.setTesterPanel(panel);
-  setVal(findById(host, "execSl"), "100");
+  setVal(findById(host, eaInputId("stop_loss_points")), "100");
   const body = view.buildSubmission();
   assert.deepEqual(body.settings, { tester: panel.state.tester, inputs: [] });
   assert.equal(body.backtest.ea_name, panel.state.derived.ea_name);
@@ -157,9 +165,8 @@ test("attaching a tester panel removes the duplicated ea / deposit fields (1 概
   view.setTesterPanel(fakeTesterPanel());
   assert.equal(findById(host, "execEaName"), null, "指標セット欄が重複したまま残っています");
   assert.equal(findById(host, "execDeposit"), null, "初期資金欄が重複したまま残っています");
-  // 一本化の対象外（SL/TP/MA/ロット）は残る
-  for (const id of ["execSl", "execTp", "execMaPeriod", "execMaMethod", "execLot",
-    "execSubmit"]) {
+  // 一本化の対象外（EA パラメータ面・投入ボタン）は残る
+  for (const id of [...EA_INPUT_FIELDS.map((f) => f.id), "execSubmit"]) {
     assert.ok(findById(host, id), `${id} が消えています`);
   }
 });
@@ -184,8 +191,7 @@ test("clicking submit invokes onSubmit with the built body", () => {
   const seen = [];
   view.onSubmit((b) => seen.push(b));
   setVal(findById(host, "execEaName"), "TC24051901");
-  setVal(findById(host, "execSl"), "50");
-  setVal(findById(host, "execTp"), "150");
+  setVal(findById(host, eaInputId("stop_loss_points")), "50");
   findById(host, "execSubmit")._listeners.click[0]();
   assert.equal(seen.length, 1);
   assert.equal(seen[0].backtest.ea_name, "TC24051901");
