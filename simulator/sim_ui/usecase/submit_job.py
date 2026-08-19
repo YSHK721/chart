@@ -1,6 +1,11 @@
 """U-SubmitJob: ジョブ投入（F-3 / FR-10・§12.7 並列実行）。
 
 規則:
+    0. 段階 2（§19.5）: `strategy` ブロック（条件・トレーリング・部分決済）を持つ投入は
+       **受付で拒否**する（`None` は受理・`{}` を含む非 None を拒否）。受付面が受け取る
+       範囲を MT5 の Settings タブへ揃えるための入口閉鎖であり、エンジン側の戦略資産は
+       `run_job` 直投入から到達可能なまま残る。以下の 1.（strategy 系の受付検証）は
+       本規則により到達不能になるが、可逆性のため残置している（撤去は別ターンの裁定）。
     1. sizing ON のときだけ**受付時検証**を行う。判定前に台帳へ書かない・子プロセスを
        起こさない（拒否したジョブの残骸を作らない）。検証は 2 つ:
          a. E-3（§12.5）: 建値推定に使える価格系列を指標レジストリが持たない戦略を拒否。
@@ -70,6 +75,10 @@ class SubmitJobInteractor:
 
     def execute(self, submission: JobSubmission) -> JobView:
         """投入して現在状態を返す。E-3 違反は :class:`SizingUnsupportedError`。"""
+        # 段階 2（§19.5）: 受付面が受け取る範囲を MT5 の Settings タブに揃える。
+        # 他のどの検証よりも先に置く: 受け取らないと決めた本文は、中身の妥当性を
+        # 論じる前に断る（「一部だけ検証して結局断る」という順序にしない）。
+        self._reject_strategy_block(submission)
         # sizing の有無に関係なく、子へ素通しする meta のキーを先に検証する
         # （未知キーは子プロセスで TypeError になり「投入は通ったが実行だけ落ちる」
         #  という遅い失敗になる。受付で弾いて即座に理由を返す）。
@@ -107,6 +116,32 @@ class SubmitJobInteractor:
         running = job.to(JobStatus.RUNNING)
         self._ledger.update(running, expect=JobStatus.RECEIVED)
         return JobView.of(running)
+
+    def _reject_strategy_block(self, submission: JobSubmission) -> None:
+        """段階 2（§19.5）: `strategy` ブロックを持つ投入を受付で明示拒否する。
+
+        sim の受付面は MT5 の Settings タブと同じ範囲だけを受け取る。条件・トレーリング・
+        部分決済は **MT5 Settings タブに対応物が無い**項目であり、EA 側（Expert）の実装で
+        指定するものである。受付面に残すと「MT5 と同じ画面のはずが sim だけ余計に効く」
+        非対称が API 面に残り続ける。
+
+        `None` を受理して `{}` を拒否する理由（判定が `is not None` である理由）:
+        台帳（`FileJobLedger.create`）は strategy 不在を `"strategy": null` と書き出す。
+        `null` まで拒否すると、保存済み spec をそのまま再投入するという正当な操作が
+        落ちる。一方 `{}` は「ブロックを渡した」という意思表示であり、黙って OFF に
+        倒すと「指定したのに無視された」を作るので拒否する。
+
+        エンジン側の戦略資産（`strategy_override` 等）は撤去していない——
+        **`run_job` 直投入（`--job-dir`）から到達可能**であり、閉じるのは受付 API
+        経由の入口だけである。
+        """
+        if submission.strategy is not None:
+            raise JobSubmissionInvalidError(
+                "strategy（条件・トレーリング・部分決済）は受け付けません。"
+                "MT5 Settings タブに対応物が無い項目であり、売買の条件や建玉の変更は"
+                "EA 側（Expert）の実装で指定してください"
+                "（エンジンの戦略資産は残っており run_job への直投入から到達できます）"
+            )
 
     def _reject_invalid_settings(self, submission: JobSubmission) -> None:
         """Phase 8（§18.4 スライス 3）: settings ブロックの受付検証 3 本。

@@ -4,6 +4,16 @@
 **受付時に検証**する。満たさなければ明示拒否（無音で誤った実行をさせない）。省略時
 （strategy 不在）は検証を巻き込まず既存挙動 byte 等価。実行時 fail-stop
 （GenericConditionStrategy の IndicatorBufferError）は最後の砦。
+
+**段階 2（§19.5）以降の位置づけ**: `strategy` ブロックを持つ投入は `execute` 冒頭の
+受付ゲート（`_reject_strategy_block`）で拒否されるため、上記 P6-E5 の受付検証は
+**到達不能**になった（検証コードは可逆性のため残置）。したがって本ファイルで
+`execute` を呼ぶ検定はすべて段階 2 のゲートで終端する（拒否理由は「参照系列が無い」
+ではなく「strategy を受け付けない」である）。P6-E5 の検証意図はエンジン側検定
+（`tests/integration/test_run_job_strategy.py` / `test_run_job_strategy_e2e.py` 等の
+run_job 直投入経路）へ移管済みであり、本ファイルは「受付面から到達できないこと」を
+固定する役割に変わった。新しい不変条件は
+`tests/unit/test_submit_job_strategy_rejection.py` が持つ。
 """
 from __future__ import annotations
 
@@ -25,6 +35,9 @@ from simulator.sim_ui.usecase.submit_job import SubmitJobInteractor
 # TC24051901 は registry に {madiff, close} を持つ（実測）。
 _CATALOG = FakeSeriesCatalog({"TC24051901": frozenset({"madiff", "close"})})
 
+#: 段階 2 の受付ゲートが返す文言の目印（P6-E5 の文言と取り違えないための固定点）。
+_INTAKE_GATE = "MT5 Settings"
+
 
 def _interactor(ledger=None, launcher=None, catalog=_CATALOG):
     return SubmitJobInteractor(
@@ -42,26 +55,26 @@ def _sub(strategy):
     return JobSubmission(backtest={"ea_name": "TC24051901"}, strategy=strategy)
 
 
-def test_strategy_referencing_available_series_is_accepted():
-    # Arrange: close は TC の registry にある
+def test_strategy_referencing_available_series_is_rejected_by_intake_gate():
+    # Arrange: close は TC の registry にある（段階 1 までは受理されていた本文）
     launcher = FakeLauncher()
     sut = _interactor(launcher=launcher)
     sub = _sub({"entry_long": [{"indicator": "close", "shift": 1, "op": ">", "rhs": 1.0}]})
-    # Act
-    got = sut.execute(sub)
-    # Assert
-    assert got.status == JobStatus.RUNNING.value
-    assert len(launcher.launched) == 1
+    # Act / Assert: 段階 2 以降は参照系列の可否に関わらず受付で終端する
+    with pytest.raises(JobSubmissionInvalidError) as exc:
+        sut.execute(sub)
+    assert _INTAKE_GATE in str(exc.value)
+    assert launcher.launched == []
 
 
 def test_strategy_referencing_missing_series_is_rejected():
     # Arrange: "ema" は TC の registry に無い
     sut = _interactor()
     sub = _sub({"entry_long": [{"indicator": "ema", "shift": 0, "op": ">", "rhs": 1.0}]})
-    # Act / Assert
+    # Act / Assert: 拒否理由は段階 2 のゲート（P6-E5 の「ema が無い」には到達しない）
     with pytest.raises(JobSubmissionInvalidError) as exc:
         sut.execute(sub)
-    assert "ema" in str(exc.value)
+    assert _INTAKE_GATE in str(exc.value)
 
 
 def test_missing_series_in_rhs_ref_is_rejected():
@@ -74,10 +87,10 @@ def test_missing_series_in_rhs_ref_is_rejected():
             ]
         }
     )
-    # Act / Assert
+    # Act / Assert: 同上（受付ゲートで終端する）
     with pytest.raises(JobSubmissionInvalidError) as exc:
         sut.execute(sub)
-    assert "sma" in str(exc.value)
+    assert _INTAKE_GATE in str(exc.value)
 
 
 def test_rejected_strategy_job_leaves_no_residue():
