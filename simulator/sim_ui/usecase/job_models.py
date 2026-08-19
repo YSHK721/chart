@@ -169,6 +169,10 @@ class JobView:
     job_id: str
     status: str
     failure_reason: "str | None" = None
+    #: この状態がもう遷移しないか（Phase 9 段階 3・§19.6 R1）。出所は domain の
+    #: :attr:`JobStatus.is_terminal` ただ 1 つであり、終端集合を写した第 2 実装を
+    #: 作らない（front は本フラグを読むだけで監視を止める）。
+    terminal: bool = False
 
     @classmethod
     def of(cls, job: SimulationJob) -> "JobView":
@@ -182,6 +186,7 @@ class JobView:
             job_id=job.job_id,
             status=job.status.value,
             failure_reason=job.failure_reason,
+            terminal=job.status.is_terminal,
         )
 
 
