@@ -4,6 +4,7 @@
 // ここは「実行条件を指定して投入する」入口を組む。結線だけを持ち、DOM 生成はパネル View、
 // HTTP は job_submit_client が持つ（SRP）。fetch・doc・host は注入する（実行とテストを分ける）。
 
+import { createJobStatusClient } from "./job_status_client.js";
 import { createJobSubmitClient } from "./job_submit_client.js";
 import { createSettingsSchemaClient } from "./settings_schema_client.js";
 import { createSimEaInputsPanelView } from "./sim_ea_inputs_panel_view.js";
@@ -30,11 +31,17 @@ export function reportViewUrl(jobId) {
  * @param {function} onSubmitted  投入成功時のコールバック（job view を受ける・任意）
  * @param {function} onError      投入失敗時のコールバック（任意）
  * @param {function} navigate     遷移の実行（注入・任意。既定は location.href への代入）
+ * @param {function} setTimeout   状態監視の時計（注入・任意。既定は globalThis）
+ * @param {function} clearTimeout 状態監視の時計の取消（注入・任意。既定は globalThis）
  */
 export async function mountSimExecutionPanel({
   doc, host, fetch: fetchFn, eaCandidates, onSubmitted, onError, navigate,
+  setTimeout: setTimeoutFn, clearTimeout: clearTimeoutFn,
 } = {}) {
   const client = createJobSubmitClient({ fetch: fetchFn });
+  const statusClient = createJobStatusClient({
+    fetch: fetchFn, setTimeout: setTimeoutFn, clearTimeout: clearTimeoutFn,
+  });
   const schemaClient = createSettingsSchemaClient({ fetch: fetchFn });
   // Tester Settings パネル（Phase 8）。schema が取れなくても**器は出す**（fail-open・
   // run-options と同じ流儀）。取れなければ候補 0 のまま理由を表示し、投入は旧フォーム
@@ -118,8 +125,29 @@ export async function mountSimExecutionPanel({
   // コールバック**全体**を try で包む（§19.6 B2）。本文の組立（供給元の読み出し・M5 の
   // 純関数）を try の外に置くと、そこで落ちた例外は誰にも捕まらず、画面は押しても何も
   // 起きないまま無音になる（実測済みの欠陥）。失敗は必ず掲示し、開発者コンソールにも残す。
+  // 実行状態の監視は**同時 1 本**（§19.6 S4）。実行指示面は再投入を許すため、落とさずに
+  // 新しい監視を足すと、前の run の状態が新しい run の掲示を上書きし続ける。
+  let stopWatch = null;
+  // 直近に掲示した状態。監視を諦めたときも「どの状態まで見えていたか」を残す（監視が
+  // 止まっただけで、ジョブが終わったわけではない＝終端と書かない）。
+  let lastStatus = null;
+
+  function onWatchUpdate(update) {
+    if (update && update.error) {
+      statusView.showJobState({
+        status: lastStatus, failure_reason: update.error, terminal: false,
+      });
+      console.error(update.error);
+      return;
+    }
+    lastStatus = update && update.status;
+    statusView.showJobState(update);
+  }
+
   view.onStart(async () => {
     try {
+      if (stopWatch) { stopWatch(); stopWatch = null; }
+      lastStatus = null;
       statusView.showSubmitting();
       // 本文の組み立ては純関数 1 箇所（M5）。ここは 3 つの供給元を渡すだけである。
       const derived = subjectSource.derivedBacktest();
@@ -137,6 +165,8 @@ export async function mountSimExecutionPanel({
       statusView.showAccepted({
         job_id: result && result.job_id, status: result && result.status,
       });
+      lastStatus = result && result.status;
+      if (result && result.job_id) stopWatch = statusClient.watch(result.job_id, onWatchUpdate);
       if (onSubmitted) onSubmitted(result);
     } catch (e) {
       const message = (e && e.message) || String(e);

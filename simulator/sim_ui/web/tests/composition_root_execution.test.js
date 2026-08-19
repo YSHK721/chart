@@ -398,6 +398,134 @@ test("a throwing body assembly is posted instead of silently escaping (B2: try �
   assert.equal(fetchFn.calls.filter((c) => c.url === "/sim/jobs").length, 0);
 });
 
+// --- Phase 9 段階 3 S4: 実行状態の監視（watch）の結線 ---------------------------------
+// 固定する不変条件:
+//   1. 投入が受理されたら状態監視が始まり、掲示が状態に追従する。
+//   2. 終端（サーバの `terminal`）で監視が止まる。
+//   3. 再投入では**前の監視を落とす**（同時 1 本）。落とさないと、前の run の状態が
+//      新しい run の掲示を上書きし続ける。
+
+/** 注入 timer のダブル（実時間を待たずに周期を進める）。 */
+function fakeTimer() {
+  const pending = new Map();
+  let nextId = 1;
+  return {
+    pending,
+    set(fn, ms) { const id = nextId; nextId += 1; pending.set(id, { fn, ms }); return id; },
+    clear(id) { pending.delete(id); },
+    async tick() {
+      const [id, entry] = [...pending.entries()][0] || [];
+      if (!entry) return false;
+      pending.delete(id);
+      await entry.fn();
+      return true;
+    },
+  };
+}
+
+/** 投入は連番の job_id を返し、状態照会は与えた台本を返す fetch。 */
+function watchFetch(jobIds, statesByJob) {
+  const calls = [];
+  let submitted = 0;
+  const fn = async (url, init) => {
+    calls.push({ url, init });
+    if (url === "/sim/settings-schema") return { ok: true, status: 200, json: async () => settingsSchema() };
+    if (url === "/sim/run-options") return { ok: true, status: 200, json: async () => RUN_OPTIONS };
+    if (url === "/sim/jobs") {
+      const jobId = jobIds[Math.min(submitted, jobIds.length - 1)];
+      submitted += 1;
+      return { ok: true, status: 202, json: async () => ({ job_id: jobId, status: "received" }) };
+    }
+    for (const jobId of jobIds) {
+      if (url === `/sim/jobs/${jobId}`) {
+        const queue = statesByJob[jobId];
+        const state = queue.length > 1 ? queue.shift() : queue[0];
+        return { ok: true, status: 200, json: async () => state };
+      }
+    }
+    return { ok: false, status: 404, json: async () => ({ error: "nope" }) };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test("an accepted submit starts a watch that follows the job to its terminal state", async () => {
+  // Arrange
+  const doc = fakeDoc();
+  const timer = fakeTimer();
+  const fetchFn = watchFetch(["j1"], {
+    j1: [
+      { job_id: "j1", status: "running", failure_reason: null, terminal: false },
+      { job_id: "j1", status: "failed", failure_reason: "N-05: 非対象トークン", terminal: true },
+    ],
+  });
+  await mountSimExecutionPanel({
+    doc, host: doc.body, fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear,
+  });
+  findById(doc.body, "runStart")._listeners.click[0]();
+  await flush();
+  // Act
+  await timer.tick();
+  // Assert: 実行中が掲示される
+  assert.equal(statusTextOf(doc.body, "run-status-state"), "running");
+  // Act: 終端まで進める
+  await timer.tick();
+  // Assert: 失敗理由（N-05）が画面に出て監視が止まる
+  assert.equal(statusTextOf(doc.body, "run-status-state"), "failed");
+  assert.equal(statusTextOf(doc.body, "run-status-reason"), "N-05: 非対象トークン");
+  assert.equal(await timer.tick(), false, "終端に達しても監視が続いています");
+});
+
+test("re-submitting stops the previous watch (同時 1 本)", async () => {
+  // Arrange
+  const doc = fakeDoc();
+  const timer = fakeTimer();
+  const fetchFn = watchFetch(["j1", "j2"], {
+    j1: [{ job_id: "j1", status: "running", terminal: false }],
+    j2: [{ job_id: "j2", status: "running", terminal: false }],
+  });
+  await mountSimExecutionPanel({
+    doc, host: doc.body, fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear,
+  });
+  const start = findById(doc.body, "runStart")._listeners.click[0];
+  start();
+  await flush();
+  // Act: 2 回目の投入
+  start();
+  await flush();
+  // Assert: 監視は 1 本だけで、指しているのは新しい job
+  assert.equal(timer.pending.size, 1, "前の監視が落ちていません（掲示が古い run に上書きされます）");
+  await timer.tick();
+  const polled = fetchFn.calls.filter((c) => String(c.url).startsWith("/sim/jobs/")).map((c) => c.url);
+  assert.deepEqual(polled, ["/sim/jobs/j2"], `古い job を監視しています: ${polled.join(",")}`);
+  assert.equal(statusTextOf(doc.body, "run-status-job"), "j2");
+});
+
+test("a watch that gives up posts the reason instead of freezing (無音で監視を諦めない)", async () => {
+  // Arrange: 状態照会が常に 502
+  const doc = fakeDoc();
+  const timer = fakeTimer();
+  const fetchFn = async (url, init) => {
+    if (url === "/sim/settings-schema") return { ok: true, status: 200, json: async () => settingsSchema() };
+    if (url === "/sim/run-options") return { ok: true, status: 200, json: async () => RUN_OPTIONS };
+    if (url === "/sim/jobs") return { ok: true, status: 202, json: async () => ({ job_id: "j1", status: "received" }) };
+    return { ok: false, status: 502, json: async () => { throw new Error("no body"); } };
+  };
+  await mountSimExecutionPanel({
+    doc, host: doc.body, fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear,
+  });
+  findById(doc.body, "runStart")._listeners.click[0]();
+  await flush();
+  // Act: 上限まで失敗させる
+  const seen = await capturingErrors(async () => {
+    while (await timer.tick());
+  });
+  // Assert
+  assert.match(String(statusTextOf(doc.body, "run-status-reason")), /502/,
+    "監視を諦めた理由が画面に出ていません");
+  assert.ok(seen.some((line) => /502/.test(line)), `console.error に残っていません: ${JSON.stringify(seen)}`);
+});
+
 test("reportViewUrl builds the ?job= dispatch url", async () => {
   const { reportViewUrl } = await import("../js/adapter/front/composition_root_execution.js");
   assert.equal(reportViewUrl("abc"), "?job=abc");
