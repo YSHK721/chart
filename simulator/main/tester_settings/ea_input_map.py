@@ -47,7 +47,14 @@ from simulator.usecase.tester_settings import TesterInput
 # `pathlib.Path` を経由しない: POSIX の Path は `\` を区切りとして扱わないため、
 # `..\..\etc\passwd.ex5` が 1 つの名前として残り、語幹抽出が破れる（§7.2）。
 _WINDOWS_PATH_SEPARATOR: str = "\\"
-_SUBJECT_SUFFIX: str = ".ex5"
+#: テスト対象ファイルの接尾辞（`Expert` / `Indicator` の値）。**公開**しているのは、
+#: 対象の候補（`EA 名 + 接尾辞`）を組み立てる側（sim_ui の schema 供給・Phase 8 裁定 T-6）が
+#: 字形を書き写さずに済むようにするためである。字形の宣言はここ 1 箇所に保つ。
+#: 正規表現側（`framework/tester_settings/validation.py` の `pattern=r"\.ex5$"`）との
+#: 統合は別 ISSUE 申し送り（T-6）。
+SUBJECT_SUFFIX: str = ".ex5"
+#: 従来名（本モジュール内の参照。公開名と同一実体であり 2 つの字形を持たない）。
+_SUBJECT_SUFFIX: str = SUBJECT_SUFFIX
 
 # 変換器が受理する書式（§4.4.1 の表。沈黙変換を禁止するため厳密に固定する）。
 _INT_PATTERN = re.compile(r"^[+-]?\d+$")
