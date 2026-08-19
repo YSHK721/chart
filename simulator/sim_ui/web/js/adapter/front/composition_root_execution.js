@@ -8,6 +8,7 @@ import { createJobSubmitClient } from "./job_submit_client.js";
 import { createSettingsSchemaClient } from "./settings_schema_client.js";
 import { createSimEaInputsPanelView } from "./sim_ea_inputs_panel_view.js";
 import { createSimRunActionView } from "./sim_run_action_view.js";
+import { createSimRunStatusView } from "./sim_run_status_view.js";
 import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
 import { buildSubmission, resolveProfile, symbolCandidatesOf } from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
@@ -89,6 +90,10 @@ export async function mountSimExecutionPanel({
   // 実行指示面（M3）。責務はスタートと結果導線だけ（本文も HTTP も知らない）。
   const view = createSimRunActionView({ doc });
   view.mount(host);
+  // 実行状態の掲示面（M6・§19.6 R2）。スタートの**直下**に置く: 押した結果がその場に
+  // 出ないと、投入が通ったのか拒まれたのかを画面から判断できない（ISSUE-423）。
+  const statusView = createSimRunStatusView({ doc });
+  statusView.mount(host);
 
   const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
 
@@ -110,26 +115,39 @@ export async function mountSimExecutionPanel({
   // 実行指示面が持ち、ここは「押されたらどこへ行くか」だけを決める。
   view.onViewResult((jobId) => { goTo(reportViewUrl(jobId)); });
 
+  // コールバック**全体**を try で包む（§19.6 B2）。本文の組立（供給元の読み出し・M5 の
+  // 純関数）を try の外に置くと、そこで落ちた例外は誰にも捕まらず、画面は押しても何も
+  // 起きないまま無音になる（実測済みの欠陥）。失敗は必ず掲示し、開発者コンソールにも残す。
   view.onStart(async () => {
-    // 本文の組み立ては純関数 1 箇所（M5）。ここは 3 つの供給元を渡すだけである。
-    const derived = subjectSource.derivedBacktest();
-    const body = buildSubmission({
-      profile: runProfile,
-      subject: {
-        ea_name: derived.ea_name,
-        initial_deposit: derived.initial_deposit,
-        settings: subjectSource.buildSettings(),
-      },
-      inputs: eaInputsView.values(),
-    });
     try {
+      statusView.showSubmitting();
+      // 本文の組み立ては純関数 1 箇所（M5）。ここは 3 つの供給元を渡すだけである。
+      const derived = subjectSource.derivedBacktest();
+      const body = buildSubmission({
+        profile: runProfile,
+        subject: {
+          ea_name: derived.ea_name,
+          initial_deposit: derived.initial_deposit,
+          settings: subjectSource.buildSettings(),
+        },
+        inputs: eaInputsView.values(),
+      });
       const result = await client.submit(body);
       if (result && result.job_id) view.showResultLink(result.job_id);
+      statusView.showAccepted({
+        job_id: result && result.job_id, status: result && result.status,
+      });
       if (onSubmitted) onSubmitted(result);
     } catch (e) {
+      const message = (e && e.message) || String(e);
+      statusView.showRejected({ message, status: e && e.status });
+      console.error(`投入できません: ${message}`);
+      // 既存の購読口は従来どおり呼ぶ（掲示の追加で契約を変えない＝後方互換）。
       if (onError) onError(e);
     }
   });
 
-  return { view, client, testerView, eaInputsView, fallbackView, subjectSource, schemaClient };
+  return {
+    view, client, testerView, eaInputsView, fallbackView, subjectSource, schemaClient, statusView,
+  };
 }

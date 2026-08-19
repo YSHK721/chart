@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fakeDoc, findById } from "./_fakes.js";
+import { fakeDoc, findById, flatten } from "./_fakes.js";
 import { EA_INPUT_FIELDS } from "../js/adapter/front/sim_ea_inputs_panel_view.js";
 import { settingsSchema } from "./_settings_schema_fixture.js";
 import { mountSimExecutionPanel } from "../js/adapter/front/composition_root_execution.js";
@@ -289,6 +289,113 @@ test("a non-array datasets payload degrades instead of blanking the form (fail-o
   // 銘柄は候補 0 件＝自由入力へ縮退する（候補を出せないことを理由に投入不能にしない）
   const symbol = findById(doc.body, "testerSymbol");
   assert.equal(symbol.tagName, "INPUT", "銘柄が自由入力へ縮退していません");
+});
+
+// --- Phase 9 段階 3 S3: 投入フィードバックの結線（§19.6・ISSUE-423）-------------------
+// 固定する不変条件:
+//   1. 掲示面（M6）は実行指示面（M3）の**直下**に組まれる（§19.6 R2）。
+//   2. 投入が通れば job_id と status がそのまま掲示される。
+//   3. 投入が拒まれればサーバの理由文が掲示される（400 が画面に 1 文字も出ない状態の是正）。
+//      既存の onError 呼出は**維持**する（後方互換）。
+//   4. 投入前の本文組立で例外が出ても無音にしない（try の射程が本文組立を含む）。
+
+/** 掲示枠のテキストを class から引く。 */
+function statusTextOf(host, className) {
+  const hit = flatten(host).find((n) => String(n.className || "").split(/\s+/).includes(className));
+  return hit ? String(hit.textContent || "") : null;
+}
+
+/** console.error を採取しながら関数を走らせる。 */
+async function capturingErrors(fn) {
+  const seen = [];
+  const original = console.error;
+  console.error = (...args) => seen.push(args.map(String).join(" "));
+  try {
+    await fn();
+  } finally {
+    console.error = original;
+  }
+  return seen;
+}
+
+test("the run status surface is mounted right below the run action surface (§19.6 R2)", async () => {
+  // Arrange / Act
+  const doc = fakeDoc();
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
+  // Assert
+  const ids = doc.body.children.map((c) => c.id);
+  assert.ok(ids.includes("simRunStatusPanel"), "掲示面が組まれていない");
+  assert.equal(ids[ids.indexOf("simRunActionPanel") + 1], "simRunStatusPanel",
+    `掲示面がスタートの直下にありません: ${ids.join(",")}`);
+});
+
+test("a successful submit posts the job id and status on the status surface", async () => {
+  // Arrange
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({ job: { job_id: "j42", status: "received" } });
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
+  // Act
+  findById(doc.body, "runStart")._listeners.click[0]();
+  await flush();
+  // Assert
+  assert.equal(statusTextOf(doc.body, "run-status-job"), "j42");
+  assert.equal(statusTextOf(doc.body, "run-status-state"), "received");
+});
+
+test("a rejected submit posts the server reason and still calls onError (後方互換)", async () => {
+  // Arrange: 受付が 400 で弾く構成
+  const doc = fakeDoc();
+  const fetchFn = (url, init) => {
+    if (url === "/sim/settings-schema") return Promise.resolve({ ok: false, status: 404, json: async () => ({ error: "no schema" }) });
+    if (url === "/sim/run-options") return Promise.resolve({ ok: true, status: 200, json: async () => RUN_OPTIONS });
+    if (url === "/sim/jobs") {
+      return Promise.resolve({ ok: false, status: 400, json: async () => ({ error: "実行対象が一致しません" }) });
+    }
+    return Promise.resolve({ ok: false, status: 404, json: async () => ({ error: "nope" }) });
+  };
+  const errors = [];
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await mountSimExecutionPanel({
+      doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST, onError: (e) => errors.push(e),
+    });
+  } finally {
+    console.warn = warn;
+  }
+  // Act
+  const seen = await capturingErrors(async () => {
+    findById(doc.body, "runStart")._listeners.click[0]();
+    await flush();
+  });
+  // Assert: 画面に理由が出る（ISSUE-423 の沈黙の解消）
+  assert.equal(statusTextOf(doc.body, "run-status-reason"), "実行対象が一致しません");
+  assert.equal(statusTextOf(doc.body, "run-status-state"), "400");
+  // 既存の購読口は従来どおり呼ばれる
+  assert.equal(errors.length, 1, "onError の呼出が失われています（後方互換の破れ）");
+  assert.match(errors[0].message, /実行対象が一致しません/);
+  // 理由は開発者コンソールにも残す（握り潰し禁止）
+  assert.ok(seen.some((line) => /実行対象が一致しません/.test(line)), `console.error に残っていません: ${JSON.stringify(seen)}`);
+});
+
+test("a throwing body assembly is posted instead of silently escaping (B2: try の射程)", async () => {
+  // Arrange: 本文の組立段（投入の**前**）で落ちる構成
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({ schema: settingsSchema() });
+  const panel = await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  panel.eaInputsView.values = () => { throw new Error("EA パラメータを読めません"); };
+  // Act
+  const seen = await capturingErrors(async () => {
+    findById(doc.body, "runStart")._listeners.click[0]();
+    await flush();
+  });
+  // Assert: 画面が無音にならない
+  assert.match(String(statusTextOf(doc.body, "run-status-reason")), /EA パラメータを読めません/,
+    "投入前の例外が画面に出ていません（try の射程が本文組立を含んでいない）");
+  assert.ok(seen.some((line) => /EA パラメータを読めません/.test(line)),
+    `console.error に残っていません: ${JSON.stringify(seen)}`);
+  // 投入そのものは起きていない（壊れた本文を送らない）
+  assert.equal(fetchFn.calls.filter((c) => c.url === "/sim/jobs").length, 0);
 });
 
 test("reportViewUrl builds the ?job= dispatch url", async () => {
