@@ -210,6 +210,51 @@ test("the schema failure reason is reported, not swallowed", async () => {
   assert.match(seen[0], /settings-schema|schema/i);
 });
 
+// --- Phase 9 S3: 実行対象の供給元は M1 / M4 のどちらか 1 つだけ ---------------------
+// 「作ってから消す」（欄を出してから removeChild する）を撤去した。schema が取れた構成では
+// 縮退面をそもそも作らず、取れない構成では Tester 面を実行対象の供給元にしない。
+
+test("the settings configuration mounts no degraded surface at all", async () => {
+  const doc = fakeDoc();
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
+  assert.ok(findById(doc.body, "simTesterPanel"), "Tester 面が出ていない");
+  assert.equal(findById(doc.body, "simSchemaFallbackPanel"), null,
+    "schema が取れているのに縮退面まで作っています（作ってから消す形の再発）");
+  assert.equal(findById(doc.body, "execEaName"), null, "縮退面の EA 欄が残っています");
+  assert.equal(findById(doc.body, "execDeposit"), null, "縮退面の初期資金欄が残っています");
+});
+
+test("the degraded configuration mounts the fallback surface and keeps the tester panel visible", async () => {
+  const doc = fakeDoc();
+  const seen = [];
+  const original = console.warn;
+  console.warn = (...args) => seen.push(args.map(String).join(" "));
+  try {
+    await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
+  } finally {
+    console.warn = original;
+  }
+  // 縮退面が立つ（実行対象の供給元）
+  assert.ok(findById(doc.body, "simSchemaFallbackPanel"), "縮退面が出ていない");
+  assert.ok(findById(doc.body, "execEaName"), "縮退面の EA 欄が無い");
+  // Tester 面の器は残る（なぜ設定を組めないのかを画面に出し続ける＝fail-open）
+  assert.ok(findById(doc.body, "simTesterPanel"), "取得失敗でパネルの器ごと消えている");
+  assert.equal(seen.length, 1, "取得失敗の理由が捨てられています");
+});
+
+test("the degraded ea candidates come from run-options (縮退面にも候補が届く)", async () => {
+  const doc = fakeDoc();
+  const original = console.warn;
+  console.warn = () => {};
+  try {
+    await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch() });
+  } finally {
+    console.warn = original;
+  }
+  const sel = findById(doc.body, "execEaName");
+  assert.deepEqual((sel.children || []).map((o) => o.value), RUN_OPTIONS.ea_names);
+});
+
 test("reportViewUrl builds the ?job= dispatch url", async () => {
   const { reportViewUrl } = await import("../js/adapter/front/composition_root_execution.js");
   assert.equal(reportViewUrl("abc"), "?job=abc");

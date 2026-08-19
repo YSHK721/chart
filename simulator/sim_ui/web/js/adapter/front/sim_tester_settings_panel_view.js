@@ -37,8 +37,10 @@ const PRESET_DATE_KEY = "Dates";
 const CUSTOM_DATE_KEYS = ["FromDate", "ToDate"];
 /** 空欄なら送らないキー（規則 F: `ForwardMode` がカスタム日付のときだけ要る）。 */
 const BLANK_MEANS_ABSENT = ["ForwardDate"];
+/** 実行対象の銘柄キー（実行対象データセットの決定に使う・Phase 9 S4）。 */
+const SYMBOL_KEY = "Symbol";
 /** 実行対象データセットとの一致が要求されるキー（写像層 `_require_match` の対象・T-3）。 */
-const PROFILE_MATCHED_KEYS = ["Symbol", "Period"];
+const PROFILE_MATCHED_KEYS = [SYMBOL_KEY, "Period"];
 /** `.ini` キー → 既定値を供給する run profile のフィールド名。
  *  値そのものは profile（＝`SymbolSpecCatalog` 由来）が持つ。ここが持つのは対応だけである。 */
 const PROFILE_FIELD_OF_KEY = {
@@ -96,6 +98,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   let dateCustom = null;
   let schema = null;
   let profile = null;
+  let symbolCb = null;
   /** 群 id → その群のフィールド置き場（`.tester-group-fields`）。rebuild ごとに作り直す。 */
   const groupHosts = new Map();
   /** `.ini` キー → 入力要素。 */
@@ -167,9 +170,11 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     return required ? `${key} *` : key;
   }
 
-  function onChanged() {
+  function onChanged(key) {
     renderWarnings();
     renderUnsupportedActivation();
+    // 銘柄を変えたら外へ通知する（実行対象データセットの決め直しは合成根が担う）。
+    if (key === SYMBOL_KEY && symbolCb) symbolCb(selectedSymbol());
   }
 
   function buildControl(key) {
@@ -187,8 +192,8 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
         value: INITIAL_SCALARS[key] || "", dataset: { key },
       });
     }
-    node.addEventListener("change", () => onChanged());
-    node.addEventListener("input", () => onChanged());
+    node.addEventListener("change", () => onChanged(key));
+    node.addEventListener("input", () => onChanged(key));
     const wrap = el("label", { className: "tester-field", textContent: labelFor(key) });
     wrap.appendChild(node);
     controls.set(key, node);
@@ -201,7 +206,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     dateCustom = el("input", {
       id: "testerDateCustom", className: "tester-date-mode", type: "checkbox", checked: false,
     });
-    dateCustom.addEventListener("change", () => onChanged());
+    dateCustom.addEventListener("change", () => onChanged(PRESET_DATE_KEY));
     wrap.appendChild(dateCustom);
     // 切替は「何を出し分けるか」の対象（期間キー）と同じ群に置く（分岐と対象を離さない）。
     groupHostFor(PRESET_DATE_KEY).appendChild(wrap);
@@ -338,6 +343,12 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     renderWarnings();
   }
 
+  /** 実行対象の銘柄（未生成なら空文字）。 */
+  function selectedSymbol() {
+    const token = currentToken(SYMBOL_KEY);
+    return token === null ? "" : token;
+  }
+
   function currentEaName() {
     const node = controls.get(SUBJECT_KEY);
     return node ? expertLabels.get(String(node.value || "")) || "" : "";
@@ -442,8 +453,11 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
 
     buildTesterMapping,
 
-    /** 投入本文の第 4 ブロック。`inputs` は常に空（T-2: EA 入力欄を出さない）。 */
+    /** 投入本文の第 4 ブロック。`inputs` は常に空（T-2: EA 入力欄を出さない）。
+     *  schema を取れていなければ**組まない**（null）——空の設定ブロックを載せると、候補 0 の
+     *  Expert から投入不能な本文が出来る（Phase 8 で実測した壊れ方）。 */
     buildSettings() {
+      if (!schema) return null;
       return { tester: buildTesterMapping(), inputs: [] };
     },
 
@@ -455,6 +469,11 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
         initial_deposit: Number(deposit ? deposit.value : NaN),
       };
     },
+
+    selectedSymbol,
+
+    /** 銘柄変更時のコールバックを登録する（新しい銘柄を渡す）。 */
+    onSymbolChange(cb) { symbolCb = cb; },
 
     warnings,
     activeUnsupported,

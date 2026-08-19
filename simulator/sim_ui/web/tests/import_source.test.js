@@ -52,6 +52,8 @@ const TESTER_PANEL = "sim_tester_settings_panel_view.js";
 // Phase 9 で分けた面（S2）: EA パラメータ面（純 DOM）と投入契約（純関数）。
 const EA_INPUTS_PANEL = "sim_ea_inputs_panel_view.js";
 const SUBMISSION_BUILDER = "sim_submission_builder.js";
+// Phase 9 S3: schema を取れない構成の縮退面（実行対象の供給元・M1 と同じ Port）。
+const SCHEMA_FALLBACK = "sim_schema_fallback_view.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -69,7 +71,7 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     TABS, SEGMENT, COMPARE, CONTACTS_TOGGLE, FILTER_PILL,
     SUBMIT_CLIENT, EXEC_PANEL, EXEC_ROOT,
     SETTINGS_CLIENT, TESTER_PANEL,
-    EA_INPUTS_PANEL, SUBMISSION_BUILDER,
+    EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
   ].sort());
 });
 

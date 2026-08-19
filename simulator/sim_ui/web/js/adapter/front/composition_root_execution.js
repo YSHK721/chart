@@ -8,6 +8,7 @@ import { createJobSubmitClient } from "./job_submit_client.js";
 import { createSettingsSchemaClient } from "./settings_schema_client.js";
 import { createSimEaInputsPanelView } from "./sim_ea_inputs_panel_view.js";
 import { createSimExecutionPanelView } from "./sim_execution_panel_view.js";
+import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
 
 /** 投入した job_id を閲覧するビューアの URL（report_view.html の `?job=` dispatch）。
@@ -41,35 +42,47 @@ export async function mountSimExecutionPanel({
   eaInputsView.mount(host);
   const view = createSimExecutionPanelView({ doc, inputs: eaInputsView });
   view.mount(host);
-  if (Array.isArray(eaCandidates)) view.setEaCandidates(eaCandidates);
 
-  // run config フォームの選択肢（データセット profile＋ea_name 一覧）を単一ソースから入れる。
+  // run config フォームの選択肢（データセット profile＋ea_name 一覧）を単一ソースから取る。
   // 取れなくてもパネルは出す（fail-open）。profile が空だと投入は E-5b で弾かれるが、
   // 「サーバが落ちた」ではなく「実行条件を取得できない」と分かる状態にする。
+  let datasets = [];
+  let eaNames = Array.isArray(eaCandidates) ? eaCandidates : [];
   try {
     const opts = await client.loadRunOptions();
-    view.setRunOptions((opts && opts.datasets) || []);
+    datasets = (opts && opts.datasets) || [];
     // eaCandidates 未指定なら run-options の ea_names を候補にする（単一ソース）。
-    if (!Array.isArray(eaCandidates)) view.setEaCandidates((opts && opts.ea_names) || []);
+    if (!Array.isArray(eaCandidates)) eaNames = (opts && opts.ea_names) || [];
   } catch (_e) {
-    view.setRunOptions([]);
+    datasets = [];
   }
 
   const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
 
-  // Tester Settings の schema を単一ソースから入れる。取れたときだけパネルを settings の
-  // 供給元として結線する（取れない構成で結線すると、候補 0 の Expert から空の投入本文が
-  // 出来てしまう）。取得失敗でもパネル自体は残り、理由が画面に出る。
+  // 実行対象（EA・口座・銘柄・設定ブロック）の供給元を 1 つだけ立てる（Phase 9 S3）。
+  //   schema が取れた  → M1 Tester Settings 面が供給元。縮退面は**作らない**。
+  //   取れなかった      → M4 縮退面を立てて供給元にする。Tester 面の器は残り、なぜ設定を
+  //                      組めないのかを画面に出し続ける（fail-open）。
+  // 「欄を出してから removeChild で消す」形は撤去した——消し忘れれば同一概念の入力欄が
+  // 2 つ並び、どちらの値で実行されたのかが画面から判断できなくなる。
+  let fallbackView = null;
+  let subjectSource = null;
   try {
     testerView.setSchema(await schemaClient.load());
-    view.setTesterPanel(testerView);
+    subjectSource = testerView;
   } catch (e) {
     testerView.setSchema(null);
-    // 理由を捨てない。schema が来ない run は旧フォームで動き続けるため、画面だけを見ても
+    fallbackView = createSimSchemaFallbackView({ doc });
+    fallbackView.mount(host);
+    fallbackView.setEaCandidates(eaNames);
+    subjectSource = fallbackView;
+    // 理由を捨てない。schema が来ない run は縮退面で動き続けるため、画面だけを見ても
     // 「なぜ Tester パネルが空なのか」が分からない（無音の縮退）。パネル上の掲示に加えて
     // 開発者コンソールにも残す。
     console.warn(`settings-schema を取得できません: ${(e && e.message) || e}`);
   }
+  view.setSubjectSource(subjectSource);
+  view.setRunOptions(datasets);
 
   // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。
   // ユーザーがこのボタンを押したときだけ `?job=<id>` の dispatch でビューアへ切り替える。
@@ -99,5 +112,5 @@ export async function mountSimExecutionPanel({
     }
   });
 
-  return { view, client, testerView, eaInputsView, schemaClient };
+  return { view, client, testerView, eaInputsView, fallbackView, subjectSource, schemaClient };
 }
