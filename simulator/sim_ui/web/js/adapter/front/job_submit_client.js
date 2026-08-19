@@ -42,13 +42,18 @@ export function createJobSubmitClient({ fetch: fetchFn } = {}) {
 
   return {
     /**
-     * バックテストジョブを投入する。strategy / sizing は不在なら本文に載せない。
+     * バックテストジョブを投入する。strategy / sizing / settings は不在なら本文に載せない。
      * 2xx なら parse 済み JSON（job_id / status）を返す。非 2xx は JobSubmitError。
+     *
+     * settings（Phase 8 §18・第 4 ブロック）は Tester Settings の生トークン Mapping。
+     * strategy と同型に「空なら載せない」ため、Tester パネルを結線していない構成の本文は
+     * 従来と byte 等価であり、旧フォーム投入がそのまま併存する。
      */
-    async submit({ backtest, strategy, sizing } = {}) {
+    async submit({ backtest, strategy, sizing, settings } = {}) {
       const body = { backtest: backtest || {} };
       if (nonEmptyObject(strategy)) body.strategy = strategy;
       if (sizing != null) body.sizing = sizing;
+      if (nonEmptyObject(settings)) body.settings = settings;
 
       const res = await doFetch(JOBS_URL, {
         method: "POST",

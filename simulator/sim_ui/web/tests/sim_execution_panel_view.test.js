@@ -296,6 +296,84 @@ test("position-change blocks coexist with entry conditions", () => {
   assert.ok(strategy.trailing, "trailing が entry と併存していない");
 });
 
+// --- 5d. Tester Settings パネルとの一本化（Phase 8 スライス 5・T-4）----------------
+// 固定する不変条件:
+//   - パネル未接続（＝schema を取れない構成）では本文に `settings` が載らない。旧フォーム
+//     投入（Phase 6/7 の 2〜3 キー本文）と byte 等価のまま併存する。
+//   - 接続すると本文へ `settings`（生トークン Mapping）が載り、`backtest` の
+//     `ea_name` / `initial_deposit` は **settings 側の値から導出**される。
+//   - 同一概念の入力欄を 2 つ持たない（EA・初期資金の重複欄は器から消える）。
+//   - profile 由来 11 キー・SL/TP/MA/ロット・条件・建玉変更は従来どおり。
+
+/** Tester パネルの契約（buildSettings / derivedBacktest / setRunProfile / onExpertChange）のダブル。 */
+function fakeTesterPanel(overrides) {
+  const state = {
+    tester: { Expert: "AAA.zzz", Symbol: "SYM" },
+    derived: { ea_name: "AAA", initial_deposit: 777 },
+    profiles: [],
+    expertCb: null,
+    ...overrides,
+  };
+  return {
+    state,
+    buildSettings() { return { tester: state.tester, inputs: [] }; },
+    derivedBacktest() { return state.derived; },
+    setRunProfile(p) { state.profiles.push(p); },
+    onExpertChange(cb) { state.expertCb = cb; },
+  };
+}
+
+test("without a tester panel the body carries no settings block (旧フォーム投入の併存)", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  setVal(findById(host, "execEaName"), "TC24051901");
+  const body = view.buildSubmission();
+  assert.equal("settings" in body, false);
+  assert.equal(body.backtest.ea_name, "TC24051901");
+});
+
+test("attaching a tester panel puts settings on the body and derives the backtest keys (T-4)", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  const panel = fakeTesterPanel();
+  view.setTesterPanel(panel);
+  setVal(findById(host, "execSl"), "100");
+  const body = view.buildSubmission();
+  assert.deepEqual(body.settings, { tester: panel.state.tester, inputs: [] });
+  assert.equal(body.backtest.ea_name, panel.state.derived.ea_name);
+  assert.equal(body.backtest.initial_deposit, panel.state.derived.initial_deposit);
+  // 18 キー完全のまま（profile 由来 11 ＋ フォーム 7）
+  assert.deepEqual(Object.keys(body.backtest).sort(), [...PROFILE_KEYS, ...FORM_KEYS].sort());
+  for (const k of PROFILE_KEYS) assert.strictEqual(body.backtest[k], _PROFILE[k], k);
+  assert.strictEqual(body.backtest.stop_loss_points, 100);
+});
+
+test("attaching a tester panel removes the duplicated ea / deposit fields (1 概念 1 欄)", () => {
+  const { host, view } = mounted();
+  view.setRunOptions([_PROFILE]);
+  view.setTesterPanel(fakeTesterPanel());
+  assert.equal(findById(host, "execEaName"), null, "指標セット欄が重複したまま残っています");
+  assert.equal(findById(host, "execDeposit"), null, "初期資金欄が重複したまま残っています");
+  // 一本化の対象外（SL/TP/MA/ロット・条件・建玉変更）は残る
+  for (const id of ["execSl", "execTp", "execMaPeriod", "execMaMethod", "execLot",
+    "execAddLong", "execTrailingOn", "execPartialOn", "execSubmit"]) {
+    assert.ok(findById(host, id), `${id} が消えています`);
+  }
+});
+
+test("the selected dataset profile is pushed to the tester panel (既定値の供給元)", () => {
+  const { host, view } = mounted();
+  const p2 = { ..._PROFILE, dataset: "other", symbol: "OTHER" };
+  view.setRunOptions([_PROFILE, p2]);
+  const panel = fakeTesterPanel();
+  view.setTesterPanel(panel);
+  assert.deepEqual(panel.state.profiles.at(-1), _PROFILE);
+  const ds = findById(host, "execDataset");
+  setVal(ds, "other");
+  ds._listeners.change[0]();
+  assert.deepEqual(panel.state.profiles.at(-1), p2);
+});
+
 // --- 5b. onEaChange（ea_name 変更で候補を選択 EA の系列へ入れ替える結線）--------
 
 test("changing ea_name fires onEaChange with the new ea (候補の再取得起点)", () => {

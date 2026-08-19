@@ -49,6 +49,13 @@ export function createSimExecutionPanelView({ doc } = {}) {
   let profiles = [];
   let submitCb = null;
   let eaChangeCb = null;
+  // Tester Settings パネル（Phase 8・T-4）。結線されている構成では、EA と初期資金の
+  // **入力欄はあちらに 1 つだけ**存在し、ここの重複欄は器から外す（同一概念の入力欄は 1 つ）。
+  // 未結線（schema を取れない構成）では従来どおりこちらの欄が権威で、本文に settings を
+  // 載せない＝旧フォーム投入と byte 等価。
+  let testerPanel = null;
+  let eaWrap = null;
+  let depositWrap = null;
 
   // profile 由来の 11 キー（build_interactor の銘柄仕様・data_path/symbol/period）。
   // front はこれらのリテラルを持たない（選択 profile からのみ供給）。
@@ -135,15 +142,23 @@ export function createSimExecutionPanelView({ doc } = {}) {
     return profiles.find((p) => p && p.dataset === key) || profiles[0];
   }
 
+  /** 選択 profile を Tester パネルへ渡す（既定値の供給元は 1 つ＝run-options の profile）。 */
+  function pushProfileToTester() {
+    if (testerPanel) testerPanel.setRunProfile(selectedProfile());
+  }
+
   function buildSubmission() {
+    // EA と初期資金は Tester パネルが結線されていれば **settings 値から導出**する（T-4）。
+    // 語幹の切り出し・接尾辞の連結は front で行わない（導出はパネルが schema の label から返す）。
+    const derived = testerPanel ? testerPanel.derivedBacktest() : null;
     // フォーム 7 キー（ユーザー入力・既定値は UI フィールド）。
     const backtest = {
-      ea_name: String(eaSel.value || ""),
+      ea_name: derived ? String(derived.ea_name || "") : String(eaSel.value || ""),
       stop_loss_points: Number(slInput.value),
       take_profit_points: Number(tpInput.value),
       ma_period: Math.trunc(Number(maPeriodInput.value)),
       ma_method: String(maMethodInput.value),
-      initial_deposit: Number(depositInput.value),
+      initial_deposit: derived ? Number(derived.initial_deposit) : Number(depositInput.value),
       lot_size: Number(lotInput.value),
     };
     // profile 由来 11 キー（front リテラル 0・選択 profile からのみ）。
@@ -177,6 +192,9 @@ export function createSimExecutionPanelView({ doc } = {}) {
     const body = { backtest };
     // 両側とも空なら strategy を丸ごと省く（OFF＝既存 2 キー本文と byte 等価）。
     if (Object.keys(strategy).length) body.strategy = strategy;
+    // Tester Settings（Phase 8 §18 の第 4 ブロック）。未結線なら**キーごと載せない**＝
+    // 現行受付・現行実行経路（settings 不在）と同じ本文になる。
+    if (testerPanel) body.settings = testerPanel.buildSettings();
     return body;
   }
 
@@ -190,9 +208,12 @@ export function createSimExecutionPanelView({ doc } = {}) {
       const dsWrap = el("label", { className: "exec-field", textContent: "データセット" });
       datasetSel = el("select", { id: "execDataset", className: "exec-dataset" });
       fillOptions(datasetSel, profiles.map((p) => p.dataset));
+      // データセットを変えたら Tester パネルの既定値（Symbol/Period/Leverage/Currency）も
+      // その profile へ追随させる（既定値の供給元を 1 つに保つ）。
+      datasetSel.addEventListener("change", () => { pushProfileToTester(); });
       dsWrap.appendChild(datasetSel);
 
-      const eaWrap = el("label", { className: "exec-field", textContent: "指標セット" });
+      eaWrap = el("label", { className: "exec-field", textContent: "指標セット" });
       eaSel = el("select", { id: "execEaName", className: "exec-ea" });
       fillOptions(eaSel, eaCandidates);
       // ea_name（指標セット）を変えたら、その EA の系列を候補へ取り直すよう外へ通知する
@@ -216,7 +237,7 @@ export function createSimExecutionPanelView({ doc } = {}) {
       maPeriodWrap.appendChild(maPeriodInput);
       const maMethodWrap = el("label", { className: "exec-field", textContent: "MA種別" });
       maMethodWrap.appendChild(maMethodInput);
-      const depositWrap = el("label", { className: "exec-field", textContent: "初期資金" });
+      depositWrap = el("label", { className: "exec-field", textContent: "初期資金" });
       depositWrap.appendChild(depositInput);
       const lotWrap = el("label", { className: "exec-field", textContent: "ロット" });
       lotWrap.appendChild(lotInput);
@@ -318,6 +339,21 @@ export function createSimExecutionPanelView({ doc } = {}) {
     setRunOptions(list) {
       profiles = Array.isArray(list) ? list.slice() : [];
       if (datasetSel) fillOptions(datasetSel, profiles.map((p) => p.dataset));
+      pushProfileToTester();
+    },
+
+    /** Tester Settings パネルを settings の供給元として結線する（Phase 8・T-4）。
+     *
+     *  結線した時点で、同一概念の重複欄（指標セット＝Expert・初期資金＝Deposit）を器から
+     *  外す。残すと「どちらの値で実行されたのか」が画面から判断できなくなる（認知負荷）。
+     *  結線しない構成（schema を取れない）では従来の欄がそのまま権威である。 */
+    setTesterPanel(panel) {
+      testerPanel = panel || null;
+      if (!testerPanel) return;
+      for (const wrap of [eaWrap, depositWrap]) {
+        if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+      }
+      pushProfileToTester();
     },
 
     addCondition,

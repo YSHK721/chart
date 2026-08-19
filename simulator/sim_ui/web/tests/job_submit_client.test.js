@@ -72,6 +72,23 @@ test("submit includes sizing when provided", async () => {
   assert.deepEqual(body.sizing, { enabled: true });
 });
 
+// Phase 8（スライス 5）: 第 4 ブロック `settings` の素通し。strategy / sizing と同型で、
+// 不在なら本文に載せない（＝旧フォーム投入と byte 等価のまま併存する）。
+test("submit includes the settings block when provided (Phase 8)", async () => {
+  const fetchFn = fakeFetch(okResponse({ job_id: "j1", status: "running" }));
+  const settings = { tester: { Expert: "AAA.zzz", Symbol: "SYM" }, inputs: [] };
+  await createJobSubmitClient({ fetch: fetchFn }).submit({ backtest: { ea_name: "AAA" }, settings });
+  const body = JSON.parse(fetchFn.calls[0].init.body);
+  assert.deepEqual(body.settings, settings);
+});
+
+test("submit omits settings when absent or empty (旧フォーム投入と byte 等価)", async () => {
+  const fetchFn = fakeFetch(okResponse({ job_id: "j1", status: "running" }));
+  await createJobSubmitClient({ fetch: fetchFn }).submit({ backtest: { ea_name: "X" }, settings: {} });
+  const body = JSON.parse(fetchFn.calls[0].init.body);
+  assert.equal("settings" in body, false);
+});
+
 test("submit sends JSON content-type", async () => {
   const fetchFn = fakeFetch(okResponse({ job_id: "j1", status: "running" }));
   await createJobSubmitClient({ fetch: fetchFn }).submit({ backtest: { ea_name: "X" } });

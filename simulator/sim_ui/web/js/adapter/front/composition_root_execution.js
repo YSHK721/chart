@@ -12,7 +12,9 @@
 //   /sim/ea-series に固定し、ea_name（指標セット）を変えるたびに選択 EA の系列へ取り直す。
 
 import { createJobSubmitClient } from "./job_submit_client.js";
+import { createSettingsSchemaClient } from "./settings_schema_client.js";
 import { createSimExecutionPanelView } from "./sim_execution_panel_view.js";
+import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
 
 /** /sim/ea-series payload から系列名の配列を取り出す。 */
 export function eaSeriesNames(payload) {
@@ -40,6 +42,12 @@ export async function mountSimExecutionPanel({
   doc, host, fetch: fetchFn, eaCandidates, onSubmitted, onError, navigate,
 } = {}) {
   const client = createJobSubmitClient({ fetch: fetchFn });
+  const schemaClient = createSettingsSchemaClient({ fetch: fetchFn });
+  // Tester Settings パネル（Phase 8）。schema が取れなくても**器は出す**（fail-open・
+  // run-options と同じ流儀）。取れなければ候補 0 のまま理由を表示し、投入は旧フォーム
+  // （指標セット欄・初期資金欄）が権威のまま成立する＝現行経路の本文と byte 等価。
+  const testerView = createSimTesterSettingsPanelView({ doc });
+  testerView.mount(host);
   const view = createSimExecutionPanelView({ doc });
   view.mount(host);
   if (Array.isArray(eaCandidates)) view.setEaCandidates(eaCandidates);
@@ -70,11 +78,27 @@ export async function mountSimExecutionPanel({
     }
   }
 
-  // 初期候補は選択中（先頭）の ea_name の系列。
-  const initialEa = view.elements.eaSel ? String(view.elements.eaSel.value || "") : "";
+  // Tester Settings の schema を単一ソースから入れる。取れたときだけパネルを settings の
+  // 供給元として結線する（取れない構成で結線すると、候補 0 の Expert から空の投入本文が
+  // 出来てしまう）。取得失敗でもパネル自体は残り、理由が画面に出る。
+  let testerWired = false;
+  try {
+    testerView.setSchema(await schemaClient.load());
+    view.setTesterPanel(testerView);
+    testerWired = true;
+  } catch (_e) {
+    testerView.setSchema(null);
+  }
+
+  // 初期候補は選択中の実行対象 EA の系列。権威は結線済みなら Tester パネルの Expert、
+  // 未結線なら従来の指標セット欄（＝投入本文の ea_name を出す側と必ず一致する）。
+  const initialEa = testerWired
+    ? String(testerView.derivedBacktest().ea_name || "")
+    : (view.elements.eaSel ? String(view.elements.eaSel.value || "") : "");
   await refreshCandidates(initialEa);
-  // ea_name（指標セット）を変えたら候補を選択 EA の系列へ取り直す。
+  // 実行対象 EA を変えたら候補をその EA の系列へ取り直す。
   view.onEaChange((eaName) => { refreshCandidates(eaName); });
+  testerView.onExpertChange((eaName) => { refreshCandidates(eaName); });
 
   // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。
   // ユーザーがこのボタンを押したときだけ `?job=<id>` の dispatch でビューアへ切り替える。
@@ -104,5 +128,5 @@ export async function mountSimExecutionPanel({
     }
   });
 
-  return { view, client };
+  return { view, client, testerView, schemaClient };
 }
