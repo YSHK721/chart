@@ -96,7 +96,6 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   let dateCustom = null;
   let schema = null;
   let profile = null;
-  let expertCb = null;
   /** 群 id → その群のフィールド置き場（`.tester-group-fields`）。rebuild ごとに作り直す。 */
   const groupHosts = new Map();
   /** `.ini` キー → 入力要素。 */
@@ -168,10 +167,9 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     return required ? `${key} *` : key;
   }
 
-  function onChanged(key) {
+  function onChanged() {
     renderWarnings();
     renderUnsupportedActivation();
-    if (key === SUBJECT_KEY && expertCb) expertCb(currentEaName());
   }
 
   function buildControl(key) {
@@ -189,8 +187,8 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
         value: INITIAL_SCALARS[key] || "", dataset: { key },
       });
     }
-    node.addEventListener("change", () => onChanged(key));
-    node.addEventListener("input", () => onChanged(key));
+    node.addEventListener("change", () => onChanged());
+    node.addEventListener("input", () => onChanged());
     const wrap = el("label", { className: "tester-field", textContent: labelFor(key) });
     wrap.appendChild(node);
     controls.set(key, node);
@@ -203,7 +201,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     dateCustom = el("input", {
       id: "testerDateCustom", className: "tester-date-mode", type: "checkbox", checked: false,
     });
-    dateCustom.addEventListener("change", () => onChanged(PRESET_DATE_KEY));
+    dateCustom.addEventListener("change", () => onChanged());
     wrap.appendChild(dateCustom);
     // 切替は「何を出し分けるか」の対象（期間キー）と同じ群に置く（分岐と対象を離さない）。
     groupHostFor(PRESET_DATE_KEY).appendChild(wrap);
@@ -461,7 +459,5 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     warnings,
     activeUnsupported,
 
-    /** Expert（実行対象 EA）変更時のコールバックを登録する（新 EA 名の語幹を渡す）。 */
-    onExpertChange(cb) { expertCb = cb; },
   };
 }

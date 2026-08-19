@@ -1,17 +1,16 @@
-// job_submit_client（ジョブ投入・指標候補取得・Phase 6 F-8）の単体テスト（fake fetch）。
+// job_submit_client（ジョブ投入・実行条件取得・Phase 6 F-8 / Phase 9 S1）の単体テスト（fake fetch）。
 //
 // 固定する不変条件:
 //   1. submit は同一オリジン相対の POST /sim/jobs（JSON 本文 {backtest, strategy, sizing}）。
 //      strategy / sizing は不在なら本文に載せない（OFF は既存 2 キー本文と byte 等価）。
 //   2. submit は 2xx なら parse 済み JSON（job_id / status）を返す。
 //   3. submit は非 2xx なら**サーバの error 文言つき**で throw する（無音にしない）。
-//   4. loadEaSeries は GET /sim/ea-series/{ea_name} の payload をそのまま返す（候補源の単一
-//      ソース＝その EA の registry 系列名。/sim/indicators は候補源に使わない）。
+//   4. loadRunOptions は GET /sim/run-options の payload をそのまま返す。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  JOBS_URL, EA_SERIES_URL, createJobSubmitClient,
+  JOBS_URL, createJobSubmitClient,
 } from "../js/adapter/front/job_submit_client.js";
 
 function fakeFetch(response) {
@@ -27,7 +26,6 @@ const STRATEGY = { entry_long: [{ indicator: "close", shift: 1, op: ">", rhs: 1.
 
 test("URL constants are the single source of the endpoints", () => {
   assert.equal(JOBS_URL, "/sim/jobs");
-  assert.equal(EA_SERIES_URL, "/sim/ea-series");
 });
 
 test("submit posts to /sim/jobs with method POST", async () => {
@@ -107,28 +105,6 @@ test("submit throws with the server error message on non-2xx", async () => {
   await assert.rejects(
     () => createJobSubmitClient({ fetch: fetchFn }).submit({ backtest: { ea_name: "X" }, strategy: STRATEGY }),
     (e) => /ema/.test(e.message),
-  );
-});
-
-test("loadEaSeries GETs /sim/ea-series/{ea_name} and returns the payload", async () => {
-  const payload = { ok: true, ea_name: "PRO_fit_Band_EA", series: ["adx", "close", "ema"] };
-  const fetchFn = fakeFetch({ ok: true, status: 200, json: async () => payload });
-  const got = await createJobSubmitClient({ fetch: fetchFn }).loadEaSeries("PRO_fit_Band_EA");
-  assert.equal(fetchFn.calls[0].url, "/sim/ea-series/PRO_fit_Band_EA");
-  assert.deepEqual(got, payload);
-});
-
-test("loadEaSeries URL-encodes the ea_name segment", async () => {
-  const fetchFn = fakeFetch({ ok: true, status: 200, json: async () => ({ series: [] }) });
-  await createJobSubmitClient({ fetch: fetchFn }).loadEaSeries("MA Slope/EA");
-  assert.equal(fetchFn.calls[0].url, "/sim/ea-series/MA%20Slope%2FEA");
-});
-
-test("loadEaSeries throws with the server message on non-2xx", async () => {
-  const fetchFn = fakeFetch(errResponse({ error: "ea_name をパスに含めてください" }, 400));
-  await assert.rejects(
-    () => createJobSubmitClient({ fetch: fetchFn }).loadEaSeries(""),
-    (e) => /ea_name/.test(e.message),
   );
 });
 

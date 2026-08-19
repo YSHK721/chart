@@ -93,9 +93,7 @@
 }
 #simTesterPanel .tester-input,
 #simExecPanel .exec-field input,
-#simExecPanel .exec-field select,
-#simExecPanel .exec-cond-row input,
-#simExecPanel .exec-cond-row select {
+#simExecPanel .exec-field select {
   min-width: 0;          /* grid/flex の中で内容幅に押し広げられないため（横あふれ防止） */
   width: 100%;
   padding: 2px 4px;
@@ -106,9 +104,7 @@
   font: inherit;
 }
 /* チェックボックスは幅いっぱいにしない（帯にならないよう左端に置く）。 */
-#simTesterPanel .tester-date-mode,
-#simExecPanel .exec-trailing-on,
-#simExecPanel .exec-partial-on {
+#simTesterPanel .tester-date-mode {
   width: auto;
   justify-self: start;
 }
@@ -172,8 +168,8 @@
 }
 
 /* --- 実行指示パネル（下部・同じ CSS 言語で最低限そろえる）------------------------- */
-/* 直下の子は「単票のフィールド」と「横断ブロック（条件・建玉変更・投入）」が混在する。
- * 前者を 2 カラムに流し、後者は全幅へ寄せる（DOM は変えない）。 */
+/* 直下の子は単票のフィールドと投入ボタンだけである。前者を 2 カラムに流し、
+ * 後者は全幅へ寄せる（DOM は変えない）。 */
 #simExecPanel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -183,49 +179,10 @@
 @media (max-width: 860px) {
   #simExecPanel { grid-template-columns: minmax(0, 1fr); }
 }
-#simExecPanel .exec-side,
 #simExecPanel .exec-submit {
   grid-column: 1 / -1;
 }
-#simExecPanel .exec-side {
-  margin-top: 6px;
-  padding: 6px 10px 8px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-}
-#simExecPanel .exec-side-title {
-  margin-bottom: 6px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .04em;
-}
-/* 建玉変更ブロックは中のフィールドを 2 カラムに流す（単票が縦に伸びないように）。 */
-#simExecPanel .exec-side[data-side="position-change"] {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px 20px;
-}
-#simExecPanel .exec-side[data-side="position-change"] .exec-side-title { grid-column: 1 / -1; }
-@media (max-width: 860px) {
-  #simExecPanel .exec-side[data-side="position-change"] { grid-template-columns: minmax(0, 1fr); }
-}
 
-/* 条件行（指標 / シフト / 比較 / 値 / 削除）を 1 行に並べる。 */
-#simExecPanel .exec-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-#simExecPanel .exec-cond-row {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 6px;
-  align-items: center;
-}
-
-#simExecPanel .exec-add,
-#simExecPanel .exec-del,
 #simExecPanel .exec-submit,
 #execViewResult {
   padding: 3px 10px;
@@ -236,9 +193,6 @@
   font: inherit;
   cursor: pointer;
 }
-#simExecPanel .exec-add { margin-top: 6px; justify-self: start; }
-#simExecPanel .exec-del { padding: 3px 8px; color: var(--muted); }
-#simExecPanel .exec-del:hover { color: var(--fg); }
 #simExecPanel .exec-submit {
   margin-top: 10px;
   justify-self: start;
