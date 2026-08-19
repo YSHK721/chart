@@ -8398,7 +8398,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-423: [不具合・既存] sim 受付拒否（400）の理由文が本番 UI に 1 文字も表示されない（2026-08-19）
 
-- **ステータス**: OPEN（新規起票。Phase 9 段階 2 設計調査 R-1。段階 2 が導入した欠陥ではなく既存）
+- **ステータス**: IN_PROGRESS（2026-08-19 着手。設計＝基本設計書 §19.6。ブランチ `feature/sim-runnable-feedback`）
 - **重大度**: Medium（Expert 不一致・規則 B〜Q・[TesterInputs] 拒否・段階 2 の新拒否すべてが対象）
 - **事実（実読 2026-08-19）**: 400 応答の `error` 文言は `job_submit_client.js:68-71` まで届くが、
   本番 HTML は `mountSimExecutionPanel({doc, host})` を **onError 未結線**で呼ぶ
@@ -8424,6 +8424,11 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 （strategy dict/空 dict・Symbol 不一致 ×2 モデル）。また front 実装上、解決不能な Symbol 状態で
 スタートを押すと「何も起きない」が新たな観測になる（従来は前回 profile の銘柄で実行されていた＝
 ISSUE-422 の症状。方向としては正しい変更だが、UI 結線の優先度判断材料として明記）。
+
+（ISSUE-423 への追記・2026-08-19 段階 3 設計）: 阻害要因の全数列挙で併発欠陥 B9 を記録——
+`composition_root_execution.js:96-98` のコメント「不一致は供給元の警告が画面に出す」は
+profile===null では成立しない（`sim_tester_settings_panel_view.js:371-372` が早期 return）。
+段階 3 のスコープ外（M1 の変更＝別アクター）。投入後の 400 理由表示（M6）で沈黙自体は解消される。
 
 ## ISSUE-425: [不具合] Tester パネルが実ブラウザでのみ構築例外となり fail-open の縮退フォームが表示される（2026-08-19）
 
