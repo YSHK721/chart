@@ -8348,3 +8348,21 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   宣言として載せ、front が**導出**で守れるようにする（front に規則を書かずに済む唯一の形）。
   宣言の追加先は `SettingsSchemaPort`＋`TesterSettingsSchemaCatalog`。
 - **関連**: 基本設計 §18.2 T-5（非対象値は表示するが投入前に理由を出す）。
+
+## ISSUE-420: [申し送り] sim Phase 8（MT5 Tester Settings の UI 結線）レビュー残項目 5 件（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。いずれもマージ非阻害・レビュー最終リスト C〜G）
+- **重大度**: Low（各項目の根拠・実測はレビュー記録および基本設計書 §18.5 参照）
+- **項目**:
+  1. front 語彙ガードが列挙メンバ名（`EVERY_TICK` 等）の複製を検出しない（§18.3 走査要件の残余。
+     Model 生値表・時間足ラベル・`.ex5`・trigger 語彙は検出済み）
+  2. `scalar_specs.expert_only` が schema で配られるが front の消費者 0（YAGNI。落とすか docstring を実態へ）
+  3. `present_outputs` / `_present_outputs` の 2 名併存（§18.5 R-8「同一概念に 2 つの呼び名を作らない」
+     の原則を未適用。一本化して私有名撤去が一貫）
+  4. `run_job._settings_supplied_params` が写像層の導出規則の第 2 実装（`& allowed` 欠落・突合検定が錨。
+     恒久解＝写像層への公開アクセサ・承認事項）
+  5. E2E の投入本文検定がキー集合の網羅を固定していない（front がキーを落としても緑のまま）
+- **経緯**: 🔴 3 件（fail-open 契約・T-5 宣言駆動化）と NEW-A/B（N-15 偽陽性・trigger 語彙ドリフト）は
+  マージ前に是正済み（070db19〜ead46dd）。本エントリは残余のみ。
+- **関連**: ISSUE-416（`.ex5` 2 箇所）・ISSUE-418（旧経路既定値の無音失敗・fail-open の退避先が依存）・
+  ISSUE-419（規則 B の front 側排他）。
