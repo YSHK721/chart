@@ -216,7 +216,30 @@ def test_Symbolがデータセットと不一致なら失敗し理由が残る(t
     assert "EURUSD" in reason, f"不一致の理由が残っていない: {reason!r}"
 
 
-# --- 5. Math calculations（規則 S）-------------------------------------------
+# --- 5. `ea_params` 残余の導出が写像層と一致する ------------------------------
+
+def test_写像層が供給する引数名の導出が実際の写像と一致する() -> None:
+    """`EngineBinding.ea_params` は「写像層が供給しない残余」でなければならない。
+
+    重なれば `ConfigError`（権威の二重化）、足りなければ規則 R の欠落になる。導出
+    （`run_job._settings_supplied_params`）は名前の表を手書きせず写像層の宣言から作って
+    いるが、**その導出規則が写像層の実際の像と一致すること**は独立に固定しないと、写像層
+    が束縛を 1 つ増やした日に静かにずれる。期待値を書き写さず、実際の写像結果と突き合わせる。
+    """
+    from simulator.framework.tester_settings import tester_settings_from_mapping
+    from simulator.main.tester_settings.kwargs_mapper import effective_to_interactor_kwargs
+
+    # Arrange
+    effective = tester_settings_from_mapping(_tester(), []).effective()
+    binding = run_job._build_engine_binding({"backtest": _backtest()}, effective)
+    # Act
+    kwargs = effective_to_interactor_kwargs(effective, binding)
+    # Assert
+    assert set(kwargs) - set(binding.ea_params) == run_job._settings_supplied_params()
+    assert not (set(binding.ea_params) & run_job._settings_supplied_params())
+
+
+# --- 6. Math calculations（規則 S）-------------------------------------------
 
 def test_Model3はデータ非供給で完走し建玉0になる(tmp_path: Path) -> None:
     # Arrange: `Model` の値は列挙が単一ソース（数値を書き写さない）
