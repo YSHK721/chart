@@ -8268,3 +8268,21 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **抜本的解決**: engine の時刻比較を epoch 秒へ一本化（全バー正規化 or 表現の一本化）。
   MT5 突合 byte 等価・ホットループ性能への影響実測が前提のため独立実施。
 - **関連**: ISSUE-412（対症箇所）・ISSUE-403/411（同系列の原型）。
+
+## ISSUE-416: [設計] 対象接尾辞 `.ex5` の宣言が 2 箇所に残る（定数と正規表現）（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。Phase 8 裁定 T-6 の申し送り）
+- **重大度**: Low（現状の実害なし。字形を変えたとき片方だけが腐る構造）
+- **事実**: 接尾辞の宣言が 2 箇所ある。
+  (A) `simulator/main/tester_settings/ea_input_map.py` の `SUBJECT_SUFFIX`（Phase 8 スライス 1 で
+  公開。語幹抽出と schema の候補生成が使う）。
+  (B) `simulator/framework/tester_settings/validation.py:373` 付近の
+  `_TesterIniModel.Expert` / `Indicator` の `pattern=r"\.ex5$"`（受理書式の検査）。
+  (B) は pydantic の `Field(pattern=...)` に**正規表現リテラル**として埋まっており、(A) を
+  参照していない。接尾辞が変わると (A) だけが更新され、(B) が旧字形のまま受理検査を続ける。
+- **抜本的解決**: (B) の pattern を (A) から組み立てる（`rf"{re.escape(SUBJECT_SUFFIX)}$"`）。
+  ただし validation（framework）から `main` を import することになり依存方向が外向きになるため、
+  接尾辞の宣言そのものを内側（`usecase/tester_settings`）へ移し、(A)(B) の双方がそこを参照する形に
+  するのが依存方向として正しい。移設は `ea_input_map` / `validation` の双方に触れるため独立実施。
+- **関連**: Phase 8 裁定 T-6（基本設計書 §18.2）・`test_settings_schema_single_source.py`
+  （schema 供給側のリテラル 0 を機械検査。本 Issue の (B) は検査範囲外）。
