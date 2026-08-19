@@ -10,11 +10,12 @@
 //   3. `strategy` は**常に不在**（Phase 9 S1 で UI 出口を撤去したため）。
 //   4. `settings` は null なら本文へ載せない（旧フォーム投入と byte 等価）。
 //   5. resolveProfile は symbol 一致の**先頭**を返し、一致が無ければ null（決定的）。
+//   6. symbolCandidatesOf は datasets から選べる銘柄を出現順で 1 つずつ返す（重複を畳む）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  PROFILE_KEYS, buildSubmission, resolveProfile,
+  PROFILE_KEYS, buildSubmission, resolveProfile, symbolCandidatesOf,
 } from "../js/adapter/front/sim_submission_builder.js";
 
 const PROFILE = Object.freeze({
@@ -108,4 +109,30 @@ test("resolveProfile returns null for a blank symbol (既定の当てはめを�
 test("resolveProfile compares symbols as strings (型で取りこぼさない)", () => {
   const numeric = { ...PROFILE, symbol: 225 };
   assert.strictEqual(resolveProfile([numeric], "225"), numeric);
+});
+
+// --- 6. symbolCandidatesOf --------------------------------------------------------
+// resolveProfile と対（datasets から実行対象を引く規則）。合成根に置くと、規則なのに
+// 器と通信のダブル無しでは確かめられなくなる（M5 が引き受ける理由そのもの）。
+
+test("symbolCandidatesOf lists the selectable symbols in dataset order", () => {
+  const a = { ...PROFILE, dataset: "a", symbol: "BBB" };
+  const b = { ...PROFILE, dataset: "b", symbol: "AAA" };
+  assert.deepEqual(symbolCandidatesOf([a, b]), ["BBB", "AAA"]);
+});
+
+test("symbolCandidatesOf folds several datasets of the same symbol into one", () => {
+  const a = { ...PROFILE, dataset: "a", symbol: "JP225" };
+  const b = { ...PROFILE, dataset: "b", symbol: "JP225" };
+  assert.deepEqual(symbolCandidatesOf([a, b]), ["JP225"]);
+});
+
+test("symbolCandidatesOf yields strings (候補は select の値＝文字列)", () => {
+  assert.deepEqual(symbolCandidatesOf([{ ...PROFILE, symbol: 225 }]), ["225"]);
+});
+
+test("symbolCandidatesOf returns an empty list for an empty or missing dataset list", () => {
+  assert.deepEqual(symbolCandidatesOf([]), []);
+  assert.deepEqual(symbolCandidatesOf(null), []);
+  assert.deepEqual(symbolCandidatesOf(undefined), []);
 });

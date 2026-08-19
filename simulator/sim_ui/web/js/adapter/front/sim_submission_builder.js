@@ -1,7 +1,8 @@
 // 投入契約（純関数・Phase 9 S2 M5）。
 //
 // 役割: 「実行対象データセット（profile）」「実行対象（subject＝EA と口座）」「EA パラメータ
-//   （inputs）」の 3 つから `POST /sim/jobs` の本文を組む。
+//   （inputs）」の 3 つから `POST /sim/jobs` の本文を組む。あわせて、実行対象データセット
+//   一覧から実行対象を引く規則（`resolveProfile` / `symbolCandidatesOf`）を所有する。
 //
 // なぜ純関数か: 本文の組み立て規則は front の中で最も壊れやすく、最も検証したい箇所である
 //   （キーの取りこぼし・型の落ち方は実測でしか分からない）。DOM や HTTP と同じ面に置くと
@@ -33,6 +34,24 @@ export function resolveProfile(datasets, symbol) {
   const wanted = symbol === null || symbol === undefined ? "" : String(symbol);
   if (wanted === "") return null;
   return datasets.find((p) => p && String(p.symbol) === wanted) || null;
+}
+
+/**
+ * 選べる銘柄の一覧を実行対象データセットから引く（resolveProfile と対の規則）。
+ *
+ * 同じ銘柄のデータセットが複数あっても候補は 1 つに畳む——候補は「選べる銘柄」であって
+ * 「データセットの数」ではない。並びは datasets の出現順であり、同じ入力からは必ず同じ
+ * 一覧が出る（決定的）。値は select の値になるため常に文字列で返す。
+ *
+ * 合成根ではなくここに置く理由: これは結線ではなく規則である。合成根に書くと、規則を
+ * 確かめるだけで器と通信のダブルが要る（M5 が投入契約を引き受けているのと同じ理由）。
+ *
+ * @param {object[]} datasets GET /sim/run-options の datasets
+ * @returns {string[]}
+ */
+export function symbolCandidatesOf(datasets) {
+  if (!Array.isArray(datasets)) return [];
+  return [...new Set(datasets.map((d) => String(d.symbol)))];
 }
 
 /**

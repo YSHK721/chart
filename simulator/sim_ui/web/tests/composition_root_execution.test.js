@@ -1,7 +1,7 @@
-// composition_root_execution（実行指示パネルの合成根・Phase 6 F-8 / Phase 9 S1）の単体テスト。
+// composition_root_execution（投入フォームの合成根・Phase 6 F-8 / Phase 9 S1〜S6）の単体テスト。
 //
 // 固定する不変条件:
-//   1. パネル（sim_execution_panel_view）と投入クライアント（job_submit_client）を結線する。
+//   1. 各面（M1〜M4）と投入クライアント（job_submit_client）を結線する。
 //   2. 実行条件（データセット profile・ea_name 候補）は GET /sim/run-options 由来。
 //   3. Tester Settings の schema は GET /sim/settings-schema 由来（取得失敗は fail-open）。
 //   4. 投入ボタン → client.submit（POST /sim/jobs）→ onSubmitted。

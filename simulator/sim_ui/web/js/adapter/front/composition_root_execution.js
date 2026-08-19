@@ -1,4 +1,4 @@
-// 実行指示パネルの合成根（Phase 6 F-8 / Phase 9 S1）。
+// 投入フォームの合成根（Phase 6 F-8 / Phase 9 S1〜S6）。
 //
 // 表示 iframe の合成根（composition_root_front.js）とは責務が別（あちらは完了ジョブの閲覧）。
 // ここは「実行条件を指定して投入する」入口を組む。結線だけを持ち、DOM 生成はパネル View、
@@ -9,7 +9,7 @@ import { createSettingsSchemaClient } from "./settings_schema_client.js";
 import { createSimEaInputsPanelView } from "./sim_ea_inputs_panel_view.js";
 import { createSimRunActionView } from "./sim_run_action_view.js";
 import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
-import { buildSubmission, resolveProfile } from "./sim_submission_builder.js";
+import { buildSubmission, resolveProfile, symbolCandidatesOf } from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
 
 /** 投入した job_id を閲覧するビューアの URL（report_view.html の `?job=` dispatch）。
@@ -19,14 +19,16 @@ export function reportViewUrl(jobId) {
 }
 
 /**
- * 実行指示パネルを host へ組み、投入クライアントと結線する。
+ * 投入フォームの 4 面（M1/M2/M3・schema を取れなければ M4）を host へ組み、投入
+ * クライアントと結線する。
  *
  * @param {Document} doc          注入 DOM
  * @param {Element}  host         器を挿す先
  * @param {function} fetch        注入 fetch（同一オリジン相対）
- * @param {string[]} eaCandidates ea_name（指標セット）候補
+ * @param {string[]} eaCandidates ea_name（指標セット）候補。未指定なら run-options から引く
  * @param {function} onSubmitted  投入成功時のコールバック（job view を受ける・任意）
  * @param {function} onError      投入失敗時のコールバック（任意）
+ * @param {function} navigate     遷移の実行（注入・任意。既定は location.href への代入）
  */
 export async function mountSimExecutionPanel({
   doc, host, fetch: fetchFn, eaCandidates, onSubmitted, onError, navigate,
@@ -52,9 +54,9 @@ export async function mountSimExecutionPanel({
   } catch (_e) {
     datasets = [];
   }
-  // 銘柄候補はデータセット一覧から引く（front リテラル 0）。同じ銘柄の複数データセットは
-  // 1 つに畳む——候補は「選べる銘柄」であって「データセットの数」ではない。
-  const symbolCandidates = [...new Set(datasets.map((d) => String(d.symbol)))];
+  // 銘柄候補はデータセット一覧から引く（front リテラル 0）。引き方そのものは規則なので
+  // M5 が所有する（ここは呼ぶだけ＝合成根は結線しか持たない）。
+  const symbolCandidates = symbolCandidatesOf(datasets);
 
   // 実行対象（銘柄・EA・口座・設定ブロック）の供給元を 1 つだけ立てる（Phase 9 S3）。
   //   schema が取れた  → M1 Tester Settings 面が供給元。縮退面は**作らない**。

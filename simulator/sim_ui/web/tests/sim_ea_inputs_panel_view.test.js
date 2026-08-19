@@ -56,6 +56,16 @@ test("the rendered label text comes from the declaration table", () => {
   }
 });
 
+test("the declared type drives the DOM input type as well (数値系はブラウザの数値入力)", () => {
+  // 宣言表の `type` は「投入値の変換」と「DOM の入力型」の両方を決める。片方だけ導出が
+  // 抜けると、型を増やしたのに欄だけ text のまま——という食い違いが黙って残る。
+  const { host } = mounted();
+  for (const f of EA_INPUT_FIELDS) {
+    const expected = f.type === "text" ? "text" : "number";
+    assert.equal(findById(host, f.id).type, expected, `${f.param}: DOM の入力型が宣言と違います`);
+  }
+});
+
 test("the initial value comes from the declaration table (View にリテラルを持たない)", () => {
   const { host } = mounted();
   for (const f of EA_INPUT_FIELDS) {

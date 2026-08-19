@@ -14,15 +14,16 @@
 //
 // fake DOM 前提: querySelector は使わず、param ごとに要素参照を JS 側で保持する。
 
-/** 入力の型 → 投入値への変換（宣言表の `type` が指す）。 */
-const COERCE = Object.freeze({
-  number: (v) => Number(v),
-  int: (v) => Math.trunc(Number(v)),
-  text: (v) => String(v),
+/** 入力の型 → 「DOM の `input[type]`」と「投入値への変換」（宣言表の `type` が指す）。
+ *
+ *  型を増やすときはこの表へ 1 行足す。DOM 側と変換側を別々の表に分けていると、片方だけ
+ *  足したときに欄が黙って text へ落ちる（型は増えたのに画面は元のまま）。変化の軸が 1 本
+ *  なら表も 1 本にする（OCP）。 */
+const INPUT_TYPES = Object.freeze({
+  number: Object.freeze({ dom: "number", coerce: (v) => Number(v) }),
+  int: Object.freeze({ dom: "number", coerce: (v) => Math.trunc(Number(v)) }),
+  text: Object.freeze({ dom: "text", coerce: (v) => String(v) }),
 });
-
-/** 入力の型 → DOM の `input[type]`（数値系はブラウザの数値入力に載せる）。 */
-const DOM_TYPE = Object.freeze({ number: "number", int: "number", text: "text" });
 
 /**
  * EA パラメータの宣言表（唯一の宣言）。
@@ -61,7 +62,7 @@ export function createSimEaInputsPanelView({ doc } = {}) {
     const props = {
       id: field.id,
       className: "ea-input",
-      type: DOM_TYPE[field.type],
+      type: INPUT_TYPES[field.type].dom,
       value: field.initial,
       dataset: { mt5: `inputs:${field.param}` },
     };
@@ -90,7 +91,7 @@ export function createSimEaInputsPanelView({ doc } = {}) {
       const out = {};
       for (const field of EA_INPUT_FIELDS) {
         const node = controls.get(field.param);
-        out[field.param] = COERCE[field.type](node ? node.value : field.initial);
+        out[field.param] = INPUT_TYPES[field.type].coerce(node ? node.value : field.initial);
       }
       return out;
     },

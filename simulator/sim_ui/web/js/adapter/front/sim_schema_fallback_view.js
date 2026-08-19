@@ -110,7 +110,10 @@ export function createSimSchemaFallbackView({ doc } = {}) {
       root.appendChild(eaWrap);
       root.appendChild(depositWrap);
       host.appendChild(root);
-      this.elements = { root, eaSel, depositInput, symbolNode };
+      // 銘柄の欄は候補注入のたびに組み直す（rebuildSymbol）。ここへ載せると mount 時点の
+      // 実体を指したまま古くなり、外から見た「今の欄」と食い違う。今の値が要るなら
+      // Port の selectedSymbol() を呼ぶ（値の出所を 1 つに保つ）。
+      this.elements = { root, eaSel, depositInput };
       return root;
     },
 
