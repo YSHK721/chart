@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from simulator.domain.exceptions import ConfigError
@@ -31,6 +33,8 @@ from simulator.framework.tester_settings import tester_settings_from_mapping
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
 from simulator.tests.tester_settings_engine_fixtures import (
     DEFAULT_EA_PARAMS,
+    SETTLEMENT_CURRENCY,
+    custom_range_settings,
     engine_binding,
     jp225_symbol_spec,
     runnable_settings,
@@ -277,6 +281,67 @@ class TestUnsupportedRulesAreDeclarative:
                     _kwargs(settings=runnable_settings(**{key: token}))
                     checked.append((rule_id, key, token))
         assert checked, "`except_tokens` の宣言が 1 件も無い"
+
+    # 残る 4 形（トークン列挙で表せないもの）も、**宣言のキーを使って**判定式と結ぶ。
+    # 宣言だけ書き換えても気付かない穴を残さない。
+
+    def test_off_candidates_binding_matches_the_ea_name_check(self):
+        """`off_candidates`（N-01）: 宣言キーへ候補外の値を置くと当該 rule が出る。"""
+        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_OFF_CANDIDATES
+
+        rule = RULES["N-01"]
+        assert rule.ui.mode == UI_TRIGGER_OFF_CANDIDATES
+        key = rule.ui.keys[0]
+        with pytest.raises(ConfigError) as excinfo:
+            _kwargs(settings=runnable_settings(**{key: "Definitely_Not_Registered.ex5"}))
+        assert excinfo.value.context["unsupported_id"] == "N-01"
+
+    def test_off_profile_binding_matches_the_settlement_currency_check(self):
+        """`off_profile`（N-11）: 宣言キーへ束縛の権威値と異なる値を置くと当該 rule が出る。"""
+        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_OFF_PROFILE
+
+        rule = RULES["N-11"]
+        assert rule.ui.mode == UI_TRIGGER_OFF_PROFILE
+        key = rule.ui.keys[0]
+        other = f"{SETTLEMENT_CURRENCY[:2]}X"  # 決済通貨と必ず異なる 3 文字（規則 L の書式）
+        with pytest.raises(UnsupportedSettingError) as excinfo:
+            _kwargs(settings=runnable_settings(**{key: other}))
+        assert excinfo.value.context["unsupported_id"] == "N-11"
+
+    def test_on_presence_binding_matches_the_window_precondition(self):
+        """`on_presence`（N-15）: 宣言キーが在るときだけ窓が課される（＝検証対象が生じる）。
+
+        N-15 は実行後にしか判定できない（`detect=None`）。UI 側の必要条件は
+        「窓を要求したか」であり、それは宣言キー（`FromDate`/`ToDate`）の有無と一致する。
+        """
+        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_ON_PRESENCE
+        from simulator.main.tester_settings.window import resolve_data_window
+
+        rule = RULES["N-15"]
+        assert rule.ui.mode == UI_TRIGGER_ON_PRESENCE
+        # 宣言キーが在る（custom 指定）→ 窓が課される
+        custom = custom_range_settings(date(2024, 1, 2), date(2024, 1, 3)).effective()
+        assert resolve_data_window(custom).marketdata_window is not None
+        # 宣言キーが無い（プリセット全期間）→ 窓は課されない＝N-15 の検証対象が無い
+        preset = runnable_settings(Dates="0").effective()
+        assert resolve_data_window(preset).marketdata_window is None
+
+    def test_none_binding_really_cannot_fire_from_a_raw_token(self):
+        """`none`（N-10）: `.ini` の生トークン（常に文字列）では判定式が発火しない。"""
+        from simulator.main.tester_settings.unsupported import (
+            NOT_VIOLATED,
+            RULES,
+            UI_TRIGGER_NONE,
+        )
+
+        rule = RULES["N-10"]
+        assert rule.ui.mode == UI_TRIGGER_NONE
+        key = rule.ui.keys[0]
+        for token in ("JP225", "JP225,USDJPY", ""):
+            effective = runnable_settings(**{key: token}).effective() if token else None
+            if effective is None:
+                continue  # 空文字は書式（規則 M）で先に弾かれる＝UI からは到達しない
+            assert rule.detect(effective, engine_binding(data_path=DATA_PATH)) is NOT_VIOLATED
 
 
 class TestActivationRules:
