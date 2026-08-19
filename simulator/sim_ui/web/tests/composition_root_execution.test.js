@@ -526,6 +526,45 @@ test("a watch that gives up posts the reason instead of freezing (無音で監�
   assert.ok(seen.some((line) => /502/.test(line)), `console.error に残っていません: ${JSON.stringify(seen)}`);
 });
 
+// --- Phase 9 段階 3 S5: mount 段の防御（B4「器を組めなかった失敗が無音」）--------------
+// 面の構築が例外で落ちると、画面には**何も出ない**まま `mountSimExecutionPanel` の呼出が
+// 抜ける（report_view.html は catch を持たない）。利用者に見えるのは白い画面だけである。
+// 器を組めなかったときも、掲示面だけは出して理由を出す。
+
+/** n 回目の `appendChild` で落ちる host（面の mount 失敗の再現）。 */
+function hostFailingAt(doc, n) {
+  const body = doc.body;
+  const original = body.appendChild.bind(body);
+  let calls = 0;
+  body.appendChild = (child) => {
+    calls += 1;
+    if (calls === n) throw new Error("パネルを組み立てられません");
+    return original(child);
+  };
+  return body;
+}
+
+test("a failing panel mount surfaces the reason instead of a blank screen (B4)", async () => {
+  // Arrange: 最初の面（Tester パネル）の mount で落ちる
+  const doc = fakeDoc();
+  const host = hostFailingAt(doc, 1);
+  // Act
+  let panel = null;
+  const seen = await capturingErrors(async () => {
+    await assert.doesNotReject(async () => {
+      panel = await mountSimExecutionPanel({ doc, host, fetch: routerFetch({ schema: settingsSchema() }) });
+    }, "mount の失敗が呼出側へ抜けています（report_view.html は catch を持たない）");
+  });
+  // Assert: 掲示面が出て理由が読める
+  assert.ok(findById(doc.body, "simRunStatusPanel"), "掲示面すら出ていません（白い画面）");
+  assert.match(String(statusTextOf(doc.body, "run-status-reason")), /パネルを組み立てられません/);
+  assert.ok(seen.some((line) => /パネルを組み立てられません/.test(line)),
+    `console.error に残っていません: ${JSON.stringify(seen)}`);
+  // 呼出側が受け取る形は保つ（面はどれも組めていないので null）
+  assert.equal(panel.view, null);
+  assert.ok(panel.statusView, "掲示面の参照が返っていません");
+});
+
 test("reportViewUrl builds the ?job= dispatch url", async () => {
   const { reportViewUrl } = await import("../js/adapter/front/composition_root_execution.js");
   assert.equal(reportViewUrl("abc"), "?job=abc");
