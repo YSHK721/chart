@@ -81,13 +81,21 @@ test("submit posts the built body and notifies onSubmitted", async () => {
 
 // --- Phase 6 拡張: run-options 結線 ＋ 結果導線（自動遷移禁止）-----------------
 
-test("mount loads run-options and populates the dataset selector + ea candidates", async () => {
+test("mount loads run-options and populates the symbol + ea candidates", async () => {
   const doc = fakeDoc();
   const fetchFn = routerFetch();
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  const original = console.warn;
+  console.warn = () => {};
+  try {
+    await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  } finally {
+    console.warn = original;
+  }
   assert.ok(fetchFn.calls.some((c) => c.url === "/sim/run-options"), "run-options を取得していない");
-  const ds = findById(doc.body, "execDataset");
-  assert.deepEqual((ds.children || []).map((o) => o.value), ["jp225_m1"]);
+  // 銘柄候補は run-options の datasets から（データセット選択は出さない）
+  const symbol = findById(doc.body, "execSymbol");
+  assert.deepEqual((symbol.children || []).map((o) => o.value),
+    RUN_OPTIONS.datasets.map((d) => d.symbol));
   // ea 候補は run-options の ea_names から（eaCandidates 未指定でも埋まる）
   const eaSel = findById(doc.body, "execEaName");
   assert.deepEqual((eaSel.children || []).map((o) => o.value), ["PRO_fit_Band_EA", "TC24051901"]);

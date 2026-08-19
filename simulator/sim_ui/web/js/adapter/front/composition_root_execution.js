@@ -9,6 +9,7 @@ import { createSettingsSchemaClient } from "./settings_schema_client.js";
 import { createSimEaInputsPanelView } from "./sim_ea_inputs_panel_view.js";
 import { createSimExecutionPanelView } from "./sim_execution_panel_view.js";
 import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
+import { resolveProfile } from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
 
 /** 投入した job_id を閲覧するビューアの URL（report_view.html の `?job=` dispatch）。
@@ -37,11 +38,6 @@ export async function mountSimExecutionPanel({
   // （指標セット欄・初期資金欄）が権威のまま成立する＝現行経路の本文と byte 等価。
   const testerView = createSimTesterSettingsPanelView({ doc });
   testerView.mount(host);
-  // EA パラメータ面（M2）。実行仕様の EA 側パラメータはこの面だけが所有する。
-  const eaInputsView = createSimEaInputsPanelView({ doc });
-  eaInputsView.mount(host);
-  const view = createSimExecutionPanelView({ doc, inputs: eaInputsView });
-  view.mount(host);
 
   // run config フォームの選択肢（データセット profile＋ea_name 一覧）を単一ソースから取る。
   // 取れなくてもパネルは出す（fail-open）。profile が空だと投入は E-5b で弾かれるが、
@@ -56,10 +52,11 @@ export async function mountSimExecutionPanel({
   } catch (_e) {
     datasets = [];
   }
+  // 銘柄候補はデータセット一覧から引く（front リテラル 0）。同じ銘柄の複数データセットは
+  // 1 つに畳む——候補は「選べる銘柄」であって「データセットの数」ではない。
+  const symbolCandidates = [...new Set(datasets.map((d) => String(d.symbol)))];
 
-  const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
-
-  // 実行対象（EA・口座・銘柄・設定ブロック）の供給元を 1 つだけ立てる（Phase 9 S3）。
+  // 実行対象（銘柄・EA・口座・設定ブロック）の供給元を 1 つだけ立てる（Phase 9 S3）。
   //   schema が取れた  → M1 Tester Settings 面が供給元。縮退面は**作らない**。
   //   取れなかった      → M4 縮退面を立てて供給元にする。Tester 面の器は残り、なぜ設定を
   //                      組めないのかを画面に出し続ける（fail-open）。
@@ -67,22 +64,46 @@ export async function mountSimExecutionPanel({
   // 2 つ並び、どちらの値で実行されたのかが画面から判断できなくなる。
   let fallbackView = null;
   let subjectSource = null;
+  testerView.setSymbolCandidates(symbolCandidates);
   try {
     testerView.setSchema(await schemaClient.load());
     subjectSource = testerView;
   } catch (e) {
     testerView.setSchema(null);
     fallbackView = createSimSchemaFallbackView({ doc });
-    fallbackView.mount(host);
+    fallbackView.setSymbolCandidates(symbolCandidates);
     fallbackView.setEaCandidates(eaNames);
+    fallbackView.mount(host);
     subjectSource = fallbackView;
     // 理由を捨てない。schema が来ない run は縮退面で動き続けるため、画面だけを見ても
     // 「なぜ Tester パネルが空なのか」が分からない（無音の縮退）。パネル上の掲示に加えて
     // 開発者コンソールにも残す。
     console.warn(`settings-schema を取得できません: ${(e && e.message) || e}`);
   }
+
+  // EA パラメータ面（M2）。実行仕様の EA 側パラメータはこの面だけが所有する。
+  const eaInputsView = createSimEaInputsPanelView({ doc });
+  eaInputsView.mount(host);
+  const view = createSimExecutionPanelView({ doc, inputs: eaInputsView });
+  view.mount(host);
   view.setSubjectSource(subjectSource);
-  view.setRunOptions(datasets);
+
+  const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
+
+  // 実行対象データセットは**銘柄から**引く（データセット選択という sim 独自の概念を出さない）。
+  // 解決できたときだけ供給元へ渡す: 解決できない銘柄で既定へ戻すと、利用者が打った値が
+  // 黙って書き換わる（ビュー自動介入の禁止）。解決できない間は直前の profile を保ち、
+  // 不一致は供給元の警告が画面に出す。
+  let runProfile = null;
+  function syncRunProfile() {
+    const next = resolveProfile(datasets, subjectSource.selectedSymbol());
+    if (next === null || next === runProfile) return;
+    runProfile = next;
+    subjectSource.setRunProfile(runProfile);
+    view.setRunProfile(runProfile);
+  }
+  subjectSource.onSymbolChange(() => { syncRunProfile(); });
+  syncRunProfile();
 
   // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。
   // ユーザーがこのボタンを押したときだけ `?job=<id>` の dispatch でビューアへ切り替える。

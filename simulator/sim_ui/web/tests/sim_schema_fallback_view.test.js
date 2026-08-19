@@ -1,7 +1,7 @@
 // sim_schema_fallback_view（縮退面・Phase 9 S3 M4）の単体テスト（fake DOM）。
 //
 // この面は「Tester Settings の schema を取れなかった構成」でだけ立つ。MT5 の設定を組めない
-// ので、実行に最低限要る 2 つ（実行対象 EA・初期資金）だけを受け取り、`settings` ブロックは
+// ので、実行に最低限要る 3 つ（銘柄・実行対象 EA・初期資金）だけを受け取り、`settings` ブロックは
 // **組まない**（null）。旧フォーム投入と byte 等価な本文になる。
 //
 // id を `execEaName` / `execDeposit` のまま保つのは意図的である: この 2 つは Phase 8 以前から
@@ -12,7 +12,7 @@
 //   1. 縮退面は `execEaName` / `execDeposit` を持つ（縮退経路の観測点を保つ）。
 //   2. buildSettings() は常に null（schema が無いのに設定ブロックを組まない）。
 //   3. derivedBacktest() は画面の値をそのまま実行対象として返す。
-//   4. selectedSymbol() は注入 run profile の symbol（この面は銘柄を発明しない）。
+//   4. selectedSymbol() は銘柄欄の値（候補は注入・この面は銘柄を発明しない）。
 //   5. SubjectSource Port の 5 つのメンバをすべて備える（M1 と同型）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -86,22 +86,29 @@ test("the deposit field carries an initial value (空欄から始めない)", ()
 
 // --- 4. selectedSymbol は注入 profile 由来 ---------------------------------------
 
-test("selectedSymbol is empty before a run profile arrives (銘柄を発明しない)", () => {
+test("selectedSymbol is empty before any candidate arrives (銘柄を発明しない)", () => {
   const { view } = mounted();
   assert.strictEqual(view.selectedSymbol(), "");
 });
 
-test("selectedSymbol comes from the injected run profile", () => {
-  const { view } = mounted();
-  view.setRunProfile(PROFILE);
+test("selectedSymbol comes from the symbol field (候補は注入)", () => {
+  const doc = fakeDoc();
+  const view = createSimSchemaFallbackView({ doc });
+  view.setSymbolCandidates(["SYM", "OTHER"]);
+  view.mount(doc.body);
   assert.strictEqual(view.selectedSymbol(), "SYM");
+  findById(doc.body, "execSymbol").value = "OTHER";
+  assert.strictEqual(view.selectedSymbol(), "OTHER");
 });
 
-test("clearing the run profile clears the symbol", () => {
-  const { view } = mounted();
+test("accepting a run profile does not overwrite the symbol field (書き戻さない)", () => {
+  const doc = fakeDoc();
+  const view = createSimSchemaFallbackView({ doc });
+  view.setSymbolCandidates(["SYM", "OTHER"]);
+  view.mount(doc.body);
+  findById(doc.body, "execSymbol").value = "OTHER";
   view.setRunProfile(PROFILE);
-  view.setRunProfile(null);
-  assert.strictEqual(view.selectedSymbol(), "");
+  assert.strictEqual(view.selectedSymbol(), "OTHER");
 });
 
 // --- 5. SubjectSource Port を備える（M1 と同型）----------------------------------

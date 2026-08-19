@@ -1,11 +1,12 @@
 // 縮退面（View・Phase 9 S3 M4）。
 //
-// 役割: Tester Settings の schema を取れなかった構成で、実行に最低限要る 2 つ——実行対象 EA と
-//   初期資金——を受け取る。MT5 の設定は組めないので `settings` ブロックは**作らない**（null）。
+// 役割: Tester Settings の schema を取れなかった構成で、実行に最低限要る 3 つ——銘柄・
+//   実行対象 EA・初期資金——を受け取る。MT5 の設定は組めないので `settings` ブロックは
+//   **作らない**（null）。
 //   投入本文は Phase 8 以前の旧フォームと byte 等価になる。
 //
 // 責務（SRP）: DOM の生成と、実行対象（SubjectSource）としての値の供給だけ。fetch はしない
-//   （EA 候補は setEaCandidates で、銘柄は setRunProfile で**注入**する）。
+//   （EA 候補は setEaCandidates で、銘柄候補は setSymbolCandidates で**注入**する）。
 //
 // なぜ M1（Tester Settings 面）と同じ Port を実装するか: 合成根は schema の有無で
 //   **どちらか 1 つだけ**を実行対象の供給元として使う。契約が同じなら合成根に分岐が要らない
@@ -25,8 +26,10 @@ export function createSimSchemaFallbackView({ doc } = {}) {
   let root = null;
   let eaSel = null;
   let depositInput = null;
+  let symbolHost = null;
+  let symbolNode = null;
   let eaCandidates = [];
-  let profile = null;
+  let symbolCandidates = [];
   let symbolCb = null;
 
   const el = (tag, props) => {
@@ -48,12 +51,40 @@ export function createSimSchemaFallbackView({ doc } = {}) {
     if (values.length && !values.includes(select.value)) select.value = values[0];
   }
 
+  /** 銘柄の入力欄を組み直す（候補があれば select・無ければ自由入力へ縮退）。
+   *  mount と setSymbolCandidates が同じ 1 本を通る（型の決め方を 2 箇所に置かない）。 */
+  function rebuildSymbol() {
+    if (!symbolHost) return;
+    const previous = symbolNode ? String(symbolNode.value || "") : "";
+    for (const child of Array.from(symbolHost.children || [])) symbolHost.removeChild(child);
+    if (symbolCandidates.length) {
+      symbolNode = el("select", { id: "execSymbol", className: "fallback-symbol" });
+      fillOptions(symbolNode, symbolCandidates);
+      if (symbolCandidates.includes(previous)) symbolNode.value = previous;
+    } else {
+      symbolNode = el("input", {
+        id: "execSymbol", className: "fallback-symbol", type: "text", value: previous,
+      });
+    }
+    symbolNode.addEventListener("change", () => { if (symbolCb) symbolCb(selectedSymbol()); });
+    symbolHost.appendChild(symbolNode);
+  }
+
+  /** 実行対象の銘柄（未生成なら空文字）。 */
+  function selectedSymbol() {
+    return symbolNode ? String(symbolNode.value == null ? "" : symbolNode.value) : "";
+  }
+
   return {
     elements: {},
 
     mount(host) {
       root = el("div", { id: "simSchemaFallbackPanel", className: "fallback-panel" });
       root.appendChild(el("div", { className: "fallback-title", textContent: "実行対象" }));
+
+      symbolHost = el("label", { className: "fallback-field", textContent: "Symbol" });
+      rebuildSymbol();
+      root.appendChild(symbolHost);
 
       const eaWrap = el("label", { className: "fallback-field", textContent: "指標セット" });
       eaSel = el("select", { id: "execEaName", className: "fallback-ea" });
@@ -70,7 +101,7 @@ export function createSimSchemaFallbackView({ doc } = {}) {
       root.appendChild(eaWrap);
       root.appendChild(depositWrap);
       host.appendChild(root);
-      this.elements = { root, eaSel, depositInput };
+      this.elements = { root, eaSel, depositInput, symbolNode };
       return root;
     },
 
@@ -80,20 +111,20 @@ export function createSimSchemaFallbackView({ doc } = {}) {
       if (eaSel) fillOptions(eaSel, eaCandidates);
     },
 
+    /** 銘柄候補（run-options の datasets 由来）を注入する（Phase 9 S4）。 */
+    setSymbolCandidates(list) {
+      symbolCandidates = Array.isArray(list) ? list.map((v) => String(v)) : [];
+      rebuildSymbol();
+    },
+
     // --- SubjectSource Port（M1 Tester Settings 面と同型）---------------------------
 
-    /** 実行対象データセットを注入する（この面が銘柄を発明しないための供給元）。 */
-    setRunProfile(runProfile) {
-      profile = runProfile || null;
-    },
+    /** 実行対象データセットを注入する（この面は既定値を持たないので受け取るだけ）。 */
+    setRunProfile(_runProfile) {},
 
-    /** 実行対象の銘柄。この面は選択肢を持たないので、注入 profile の値がそのまま権威。 */
-    selectedSymbol() {
-      const symbol = profile ? profile.symbol : null;
-      return symbol === undefined || symbol === null ? "" : String(symbol);
-    },
+    selectedSymbol,
 
-    /** 銘柄変更の購読口（Port の全域性のために備える。この面に銘柄の選択肢は無い）。 */
+    /** 銘柄変更時のコールバックを登録する（新しい銘柄を渡す）。 */
     onSymbolChange(cb) { symbolCb = cb; },
 
     /** `backtest` へ渡す実行対象（EA・口座）。 */

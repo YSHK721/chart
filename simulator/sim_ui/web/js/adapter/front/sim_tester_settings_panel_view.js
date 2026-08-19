@@ -99,6 +99,8 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   let schema = null;
   let profile = null;
   let symbolCb = null;
+  /** 実行対象データセットが供給する銘柄候補（Phase 9 S4）。空なら自由入力へ縮退する。 */
+  let symbolCandidates = [];
   /** 群 id → その群のフィールド置き場（`.tester-group-fields`）。rebuild ごとに作り直す。 */
   const groupHosts = new Map();
   /** `.ini` キー → 入力要素。 */
@@ -122,6 +124,13 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   /** 選択肢のあるキーなら [{token,label}]、自由入力なら null。判定は schema だけを見る。 */
   function optionsFor(key) {
     if (key === SUBJECT_KEY) return schema.expert_options || [];
+    // 銘柄は実行対象データセットが供給する（schema の列挙ではない）。候補が 1 つも無い
+    // 構成では自由入力へ落とす——候補を出せないことを理由に投入不能にはしない。
+    if (key === SYMBOL_KEY) {
+      return symbolCandidates.length
+        ? symbolCandidates.map((token) => ({ token, label: token }))
+        : null;
+    }
     const enumOptions = (schema.enum_options || {})[key];
     if (enumOptions) return enumOptions;
     const spec = (schema.scalar_specs || {})[key] || {};
@@ -440,6 +449,15 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     setSchema(payload) {
       schema = payload || null;
       rebuild();
+    },
+
+    /** 銘柄候補（run-options の datasets 由来）を注入する（Phase 9 S4）。
+     *
+     *  schema より**先に**渡すこと（schema 注入時の組み直しで候補が使われる）。schema が
+     *  既にある状態で渡した場合はフォームを組み直す（入力中の値は初期値へ戻る）。 */
+    setSymbolCandidates(list) {
+      symbolCandidates = Array.isArray(list) ? list.map((v) => String(v)) : [];
+      if (schema) rebuild();
     },
 
     /** 選択中のデータセット profile を注入する（Symbol/Period/Leverage/Currency の既定値）。 */

@@ -1,15 +1,15 @@
-// sim_execution_panel_view（実行指示パネル・Phase 6 F-8 / Phase 9 S1・S3）の単体テスト（fake DOM）。
+// sim_execution_panel_view（実行指示パネル・Phase 6 F-8 / Phase 9 S1・S3・S4）の単体テスト（fake DOM）。
 //
-// この面に残っているのは「実行対象データセットの選択」と「投入」だけである。EA パラメータは
+// この面に残っているのは「投入」だけである。EA パラメータは
 // M2（sim_ea_inputs_panel_view）、実行対象（EA・口座・設定ブロック）は SubjectSource（M1 か
 // M4）、本文の組み立ては M5（sim_submission_builder）が所有する。
 //
 // 固定する不変条件:
-//   1. データセット選択と投入ボタンを生成する。
+//   1. 投入ボタンを生成する（データセット選択は S4 で撤去＝銘柄から引く）。
 //   2. buildSubmission は SubjectSource と M2 と選択 profile から本文を組む（分岐を持たない）。
 //   3. SubjectSource が settings を出せば本文へ載り、null なら載らない——この面は
 //      供給元がどちらの面かを見分けない。
-//   4. 選択したデータセットの profile を SubjectSource へ渡す（既定値の供給元は 1 つ）。
+//   4. 注入された profile が profile 由来 11 キーの唯一の供給元である。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -70,10 +70,10 @@ const FORM_KEYS = [
 
 // --- 1. 生成 ------------------------------------------------------------------
 
-test("mount builds the dataset selector and a submit button", () => {
+test("mount builds a submit button and no dataset selector", () => {
   const { host } = mounted();
-  assert.ok(findById(host, "execDataset"), "#execDataset が無い");
   assert.ok(findById(host, "execSubmit"), "#execSubmit が無い");
+  assert.equal(findById(host, "execDataset"), null, "データセット選択が残っています");
 });
 
 test("mount owns no ea / deposit field of its own (供給元は SubjectSource 1 つ)", () => {
@@ -88,7 +88,7 @@ test("buildSubmission returns the full 18-key backtest body", () => {
   const { host, view } = mounted(fakeSubjectSource({
     derived: { ea_name: "TC24051901", initial_deposit: 10000 },
   }));
-  view.setRunOptions([_PROFILE]);
+  view.setRunProfile(_PROFILE);
   setVal(findById(host, eaInputId("stop_loss_points")), "100");
   setVal(findById(host, eaInputId("take_profit_points")), "200");
 
@@ -104,13 +104,11 @@ test("buildSubmission returns the full 18-key backtest body", () => {
   assert.deepEqual(Object.keys(body), ["backtest"]);
 });
 
-test("selecting another dataset switches the profile-derived keys (front リテラルでない証拠)", () => {
-  const { host, view } = mounted();
+test("injecting another profile switches the profile-derived keys (front リテラルでない証拠)", () => {
+  const { view } = mounted();
   const p2 = { ..._PROFILE, dataset: "other", symbol: "OTHER", contract_size: 1.0, point_size: 0.001 };
-  view.setRunOptions([_PROFILE, p2]);
-  const ds = findById(host, "execDataset");
-  assert.deepEqual((ds.children || []).map((o) => o.value), ["jp225_m1", "other"]);
-  setVal(ds, "other");
+  view.setRunProfile(_PROFILE);
+  view.setRunProfile(p2);
   const bt = view.buildSubmission().backtest;
   assert.equal(bt.symbol, "OTHER");
   assert.equal(bt.contract_size, 1.0);
@@ -119,7 +117,7 @@ test("selecting another dataset switches the profile-derived keys (front リテ�
 
 test("the EA inputs panel feeds its declared params into the backtest", () => {
   const { host, view } = mounted();
-  view.setRunOptions([_PROFILE]);
+  view.setRunProfile(_PROFILE);
   setVal(findById(host, eaInputId("ma_period")), "20");
   setVal(findById(host, eaInputId("ma_method")), "ema");
   setVal(findById(host, eaInputId("lot_size")), "0.1");
@@ -138,14 +136,14 @@ test("no strategy block is ever built (S1 で UI 出口を撤去した)", () => 
 
 test("a SubjectSource without settings yields a body with no settings block", () => {
   const { view } = mounted(fakeSubjectSource({ settings: null }));
-  view.setRunOptions([_PROFILE]);
+  view.setRunProfile(_PROFILE);
   assert.equal("settings" in view.buildSubmission(), false);
 });
 
 test("a SubjectSource with settings puts them on the body verbatim", () => {
   const settings = { tester: { Expert: "AAA.zzz", Symbol: "SYM" }, inputs: [] };
   const { view } = mounted(fakeSubjectSource({ settings }));
-  view.setRunOptions([_PROFILE]);
+  view.setRunProfile(_PROFILE);
   const body = view.buildSubmission();
   assert.deepEqual(body.settings, settings);
   assert.deepEqual(Object.keys(body.backtest).sort(), [...PROFILE_KEYS, ...FORM_KEYS].sort());
@@ -153,15 +151,10 @@ test("a SubjectSource with settings puts them on the body verbatim", () => {
 
 // --- 4. 既定値の供給元は 1 つ -----------------------------------------------------
 
-test("the selected dataset profile is pushed to the SubjectSource", () => {
-  const { host, view, source } = mounted();
-  const p2 = { ..._PROFILE, dataset: "other", symbol: "OTHER" };
-  view.setRunOptions([_PROFILE, p2]);
-  assert.deepEqual(source.state.profiles.at(-1), _PROFILE);
-  const ds = findById(host, "execDataset");
-  setVal(ds, "other");
-  ds._listeners.change[0]();
-  assert.deepEqual(source.state.profiles.at(-1), p2);
+test("with no profile injected the backtest carries no profile-derived key", () => {
+  const { view } = mounted();
+  const bt = view.buildSubmission().backtest;
+  for (const k of PROFILE_KEYS) assert.equal(k in bt, false, `${k} が front から湧いています`);
 });
 
 // --- 5. onSubmit ------------------------------------------------------------------
