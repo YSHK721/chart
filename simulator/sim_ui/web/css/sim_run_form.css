@@ -8,7 +8,7 @@
  * `tests/removed_ui_vocabulary_gate.test.js` が選択子を走査して機械強制する。
  *
  * 色は**移植元 style.css の :root 変数だけ**を使う（--bg / --panel / --line / --fg / --muted /
- * --accent / --pos）。hex をここへ書くと配色が 2 箇所になり、片方だけ腐る。子文書は style.css を
+ * --accent / --pos / --neg）。hex をここへ書くと配色が 2 箇所になり、片方だけ腐る。子文書は style.css を
  * 必ず link する（`tests/import_source.test.js` が機械強制）ので、変数は常に解決する。
  *
  * 寸法の前提（実測・style.css:16-26）: `body { height:100vh; display:flex; flex-direction:column;
@@ -224,4 +224,33 @@
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--accent);
+}
+
+/* --- 実行状態の掲示面（M6・§19.6 段階 3）------------------------------------------- */
+/* スタートの直下に置く掲示専用の面（操作要素は 0）。押した結果・実行の状態・失敗理由を
+   この 1 枠で読む。文字色は style.css のトークンから引く（hex を写さない）。 */
+#simRunStatusPanel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 6px 8px;
+  padding: 6px 12px;
+}
+#simRunStatusPanel .run-status-phase {
+  font-weight: 600;
+}
+#simRunStatusPanel .run-status-job {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+#simRunStatusPanel .run-status-state {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* 理由文は必ず改行して全文を出す（横に詰めると末尾が切れて理由が読めなくなる）。 */
+#simRunStatusPanel .run-status-reason {
+  flex-basis: 100%;
+  color: var(--neg);
+  white-space: pre-wrap;
 }
