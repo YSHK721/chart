@@ -1,26 +1,16 @@
-// 実行指示パネルの合成根（Phase 6 F-8）。
+// 投入フォームの合成根（Phase 6 F-8 / Phase 9 S1〜S6）。
 //
 // 表示 iframe の合成根（composition_root_front.js）とは責務が別（あちらは完了ジョブの閲覧）。
-// ここは「戦略を指定して投入する」入口を組む。結線だけを持ち、DOM 生成はパネル View、HTTP は
-// job_submit_client が持つ（SRP）。fetch・doc・host は注入する（実行とテストを分ける）。
-//
-// 指標候補の単一ソース（名前空間結線・依頼者承認 2026-08-12）: GET /sim/ea-series/{ea_name}。
-//   これは backend の受付検証（submit_job E-5）と GenericConditionStrategy が実際に参照する
-//   **ea_name 別の registry 系列名**（ema / adx / close ...・build_ea_indicators 単一ソース）を
-//   返す。因果カタログの /sim/indicators は別名前空間（MA / hl_range ...）かつ ea_name 非依存で
-//   あり、候補源に使うと選んだ指標が投入時 E-5 で全て 400 になる（実測済み）。したがって候補源は
-//   /sim/ea-series に固定し、ea_name（指標セット）を変えるたびに選択 EA の系列へ取り直す。
+// ここは「実行条件を指定して投入する」入口を組む。結線だけを持ち、DOM 生成はパネル View、
+// HTTP は job_submit_client が持つ（SRP）。fetch・doc・host は注入する（実行とテストを分ける）。
 
 import { createJobSubmitClient } from "./job_submit_client.js";
 import { createSettingsSchemaClient } from "./settings_schema_client.js";
-import { createSimExecutionPanelView } from "./sim_execution_panel_view.js";
+import { createSimEaInputsPanelView } from "./sim_ea_inputs_panel_view.js";
+import { createSimRunActionView } from "./sim_run_action_view.js";
+import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
+import { buildSubmission, resolveProfile, symbolCandidatesOf } from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
-
-/** /sim/ea-series payload から系列名の配列を取り出す。 */
-export function eaSeriesNames(payload) {
-  const series = (payload && payload.series) || [];
-  return series.map((s) => String(s));
-}
 
 /** 投入した job_id を閲覧するビューアの URL（report_view.html の `?job=` dispatch）。
  *  相対クエリのみ（同一文書内で dispatch＝フォーム→ビューアに切り替わる）。 */
@@ -29,14 +19,16 @@ export function reportViewUrl(jobId) {
 }
 
 /**
- * 実行指示パネルを host へ組み、投入クライアントと結線する。
+ * 投入フォームの 4 面（M1/M2/M3・schema を取れなければ M4）を host へ組み、投入
+ * クライアントと結線する。
  *
  * @param {Document} doc          注入 DOM
  * @param {Element}  host         器を挿す先
  * @param {function} fetch        注入 fetch（同一オリジン相対）
- * @param {string[]} eaCandidates ea_name（指標セット）候補
+ * @param {string[]} eaCandidates ea_name（指標セット）候補。未指定なら run-options から引く
  * @param {function} onSubmitted  投入成功時のコールバック（job view を受ける・任意）
  * @param {function} onError      投入失敗時のコールバック（任意）
+ * @param {function} navigate     遷移の実行（注入・任意。既定は location.href への代入）
  */
 export async function mountSimExecutionPanel({
   doc, host, fetch: fetchFn, eaCandidates, onSubmitted, onError, navigate,
@@ -48,89 +40,96 @@ export async function mountSimExecutionPanel({
   // （指標セット欄・初期資金欄）が権威のまま成立する＝現行経路の本文と byte 等価。
   const testerView = createSimTesterSettingsPanelView({ doc });
   testerView.mount(host);
-  const view = createSimExecutionPanelView({ doc });
-  view.mount(host);
-  if (Array.isArray(eaCandidates)) view.setEaCandidates(eaCandidates);
 
-  // run config フォームの選択肢（データセット profile＋ea_name 一覧）を単一ソースから入れる。
+  // run config フォームの選択肢（データセット profile＋ea_name 一覧）を単一ソースから取る。
   // 取れなくてもパネルは出す（fail-open）。profile が空だと投入は E-5b で弾かれるが、
   // 「サーバが落ちた」ではなく「実行条件を取得できない」と分かる状態にする。
+  let datasets = [];
+  let eaNames = Array.isArray(eaCandidates) ? eaCandidates : [];
   try {
     const opts = await client.loadRunOptions();
-    view.setRunOptions((opts && opts.datasets) || []);
+    datasets = (opts && opts.datasets) || [];
     // eaCandidates 未指定なら run-options の ea_names を候補にする（単一ソース）。
-    if (!Array.isArray(eaCandidates)) view.setEaCandidates((opts && opts.ea_names) || []);
+    if (!Array.isArray(eaCandidates)) eaNames = (opts && opts.ea_names) || [];
   } catch (_e) {
-    view.setRunOptions([]);
+    datasets = [];
   }
+  // 銘柄候補はデータセット一覧から引く（front リテラル 0）。引き方そのものは規則なので
+  // M5 が所有する（ここは呼ぶだけ＝合成根は結線しか持たない）。
+  const symbolCandidates = symbolCandidatesOf(datasets);
 
-  const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
-
-  // 選択中の ea_name の registry 系列を候補へ入れる。取れなくてもパネルは操作可能にする
-  // （fail-open だが投入は受付検証 E-5 で守られる）。
-  async function refreshCandidates(eaName) {
-    if (!eaName) { view.setIndicatorCandidates([]); return; }
-    try {
-      const payload = await client.loadEaSeries(eaName);
-      view.setIndicatorCandidates(eaSeriesNames(payload));
-    } catch (_e) {
-      view.setIndicatorCandidates([]);
-    }
-  }
-
-  // Tester Settings の schema を単一ソースから入れる。取れたときだけパネルを settings の
-  // 供給元として結線する（取れない構成で結線すると、候補 0 の Expert から空の投入本文が
-  // 出来てしまう）。取得失敗でもパネル自体は残り、理由が画面に出る。
-  let testerWired = false;
+  // 実行対象（銘柄・EA・口座・設定ブロック）の供給元を 1 つだけ立てる（Phase 9 S3）。
+  //   schema が取れた  → M1 Tester Settings 面が供給元。縮退面は**作らない**。
+  //   取れなかった      → M4 縮退面を立てて供給元にする。Tester 面の器は残り、なぜ設定を
+  //                      組めないのかを画面に出し続ける（fail-open）。
+  // 「欄を出してから removeChild で消す」形は撤去した——消し忘れれば同一概念の入力欄が
+  // 2 つ並び、どちらの値で実行されたのかが画面から判断できなくなる。
+  let fallbackView = null;
+  let subjectSource = null;
+  testerView.setSymbolCandidates(symbolCandidates);
   try {
     testerView.setSchema(await schemaClient.load());
-    view.setTesterPanel(testerView);
-    testerWired = true;
+    subjectSource = testerView;
   } catch (e) {
     testerView.setSchema(null);
-    // 理由を捨てない。schema が来ない run は旧フォームで動き続けるため、画面だけを見ても
+    fallbackView = createSimSchemaFallbackView({ doc });
+    fallbackView.setSymbolCandidates(symbolCandidates);
+    fallbackView.setEaCandidates(eaNames);
+    fallbackView.mount(host);
+    subjectSource = fallbackView;
+    // 理由を捨てない。schema が来ない run は縮退面で動き続けるため、画面だけを見ても
     // 「なぜ Tester パネルが空なのか」が分からない（無音の縮退）。パネル上の掲示に加えて
     // 開発者コンソールにも残す。
     console.warn(`settings-schema を取得できません: ${(e && e.message) || e}`);
   }
 
-  // 初期候補は選択中の実行対象 EA の系列。権威は結線済みなら Tester パネルの Expert、
-  // 未結線なら従来の指標セット欄（＝投入本文の ea_name を出す側と必ず一致する）。
-  const initialEa = testerWired
-    ? String(testerView.derivedBacktest().ea_name || "")
-    : (view.elements.eaSel ? String(view.elements.eaSel.value || "") : "");
-  await refreshCandidates(initialEa);
-  // 実行対象 EA を変えたら候補をその EA の系列へ取り直す。
-  view.onEaChange((eaName) => { refreshCandidates(eaName); });
-  testerView.onExpertChange((eaName) => { refreshCandidates(eaName); });
+  // EA パラメータ面（M2）。実行仕様の EA 側パラメータはこの面だけが所有する。
+  const eaInputsView = createSimEaInputsPanelView({ doc });
+  eaInputsView.mount(host);
+  // 実行指示面（M3）。責務はスタートと結果導線だけ（本文も HTTP も知らない）。
+  const view = createSimRunActionView({ doc });
+  view.mount(host);
 
-  // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。
-  // ユーザーがこのボタンを押したときだけ `?job=<id>` の dispatch でビューアへ切り替える。
-  function showResultLink(jobId) {
-    let link = view.elements.viewResult;
-    if (!link) {
-      link = doc.createElement("button");
-      link.id = "execViewResult";
-      link.className = "exec-view-result";
-      link.type = "button";
-      link.textContent = "結果を見る";
-      link.addEventListener("click", () => { if (link._jobId) goTo(reportViewUrl(link._jobId)); });
-      host.appendChild(link);
-      view.elements.viewResult = link;
-    }
-    link._jobId = jobId;
-    return link;
+  const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
+
+  // 実行対象データセットは**銘柄から**引く（データセット選択という sim 独自の概念を出さない）。
+  // 解決できたときだけ供給元へ渡す: 解決できない銘柄で既定へ戻すと、利用者が打った値が
+  // 黙って書き換わる（ビュー自動介入の禁止）。解決できない間は直前の profile を保ち、
+  // 不一致は供給元の警告が画面に出す。
+  let runProfile = null;
+  function syncRunProfile() {
+    const next = resolveProfile(datasets, subjectSource.selectedSymbol());
+    if (next === null || next === runProfile) return;
+    runProfile = next;
+    subjectSource.setRunProfile(runProfile);
   }
+  subjectSource.onSymbolChange(() => { syncRunProfile(); });
+  syncRunProfile();
 
-  view.onSubmit(async (body) => {
+  // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。導線の DOM は
+  // 実行指示面が持ち、ここは「押されたらどこへ行くか」だけを決める。
+  view.onViewResult((jobId) => { goTo(reportViewUrl(jobId)); });
+
+  view.onStart(async () => {
+    // 本文の組み立ては純関数 1 箇所（M5）。ここは 3 つの供給元を渡すだけである。
+    const derived = subjectSource.derivedBacktest();
+    const body = buildSubmission({
+      profile: runProfile,
+      subject: {
+        ea_name: derived.ea_name,
+        initial_deposit: derived.initial_deposit,
+        settings: subjectSource.buildSettings(),
+      },
+      inputs: eaInputsView.values(),
+    });
     try {
       const result = await client.submit(body);
-      if (result && result.job_id) showResultLink(result.job_id);
+      if (result && result.job_id) view.showResultLink(result.job_id);
       if (onSubmitted) onSubmitted(result);
     } catch (e) {
       if (onError) onError(e);
     }
   });
 
-  return { view, client, testerView, schemaClient };
+  return { view, client, testerView, eaInputsView, fallbackView, subjectSource, schemaClient };
 }

@@ -302,13 +302,3 @@ test("derivedBacktest takes ea_name from the Expert label and initial_deposit fr
   fire(sel);
   assert.equal(view.derivedBacktest().ea_name, schema.expert_options[1].label);
 });
-
-test("onExpertChange reports the selected EA name (指標候補の取得起点)", () => {
-  const { host, view, schema } = ready();
-  const seen = [];
-  view.onExpertChange((ea) => seen.push(ea));
-  const sel = field(host, "Expert");
-  sel.value = schema.expert_options[1].token;
-  fire(sel);
-  assert.deepEqual(seen, [schema.expert_options[1].label]);
-});

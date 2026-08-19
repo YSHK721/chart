@@ -105,7 +105,7 @@ async function main() {
     fire(period, "change");
   }
 
-  fire(findById(doc.body, "execSubmit"), "click");
+  fire(findById(doc.body, "runStart"), "click");
   const timer = setTimeout(() => settle(), SUBMIT_TIMEOUT_MS);
   await done;
   clearTimeout(timer);

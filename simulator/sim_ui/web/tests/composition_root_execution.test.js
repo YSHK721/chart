@@ -1,28 +1,22 @@
-// composition_root_execution（実行指示パネルの合成根・Phase 6 F-8）の単体テスト。
+// composition_root_execution（投入フォームの合成根・Phase 6 F-8 / Phase 9 S1〜S6）の単体テスト。
 //
-// 固定する不変条件（名前空間結線・依頼者承認 2026-08-12）:
-//   1. パネル（sim_execution_panel_view）と投入クライアント（job_submit_client）を結線する。
-//   2. 指標候補は GET /sim/ea-series/{ea_name} 由来（**選択中の ea_name の registry 系列名**）。
-//      /sim/indicators（因果カタログ・別名前空間）は候補源に使わない。候補は投入時の
-//      受付検証（E-5）・GenericConditionStrategy と同一名前空間になる。
-//   3. ea_name を変えると候補を選択 EA の系列へ入れ替える（再取得）。
-//   4. 投入ボタン → client.submit（POST /sim/jobs・strategy 本文つき）→ onSubmitted。
+// 固定する不変条件:
+//   1. 各面（M1〜M4）と投入クライアント（job_submit_client）を結線する。
+//   2. 実行条件（データセット profile・ea_name 候補）は GET /sim/run-options 由来。
+//   3. Tester Settings の schema は GET /sim/settings-schema 由来（取得失敗は fail-open）。
+//   4. 投入ボタン → client.submit（POST /sim/jobs）→ onSubmitted。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fakeDoc, findById, flatten } from "./_fakes.js";
+import { fakeDoc, findById } from "./_fakes.js";
+import { EA_INPUT_FIELDS } from "../js/adapter/front/sim_ea_inputs_panel_view.js";
 import { settingsSchema } from "./_settings_schema_fixture.js";
 import { mountSimExecutionPanel } from "../js/adapter/front/composition_root_execution.js";
 
-const hasClass = (el, c) => String((el && el.className) || "").split(/\s+/).includes(c);
-const byClass = (root, c) => flatten(root).filter((n) => hasClass(n, c));
 const flush = () => new Promise((r) => setTimeout(r, 0));
+/** EA パラメータ欄の id（所在の単一ソースは宣言表＝この検定へ写さない）。 */
+const eaInputId = (param) => EA_INPUT_FIELDS.find((f) => f.param === param).id;
 
-// ea_name 別の registry 系列（backend の /sim/ea-series が返す形）。
-const EA_SERIES = {
-  PRO_fit_Band_EA: { ok: true, ea_name: "PRO_fit_Band_EA", series: ["adx", "close", "ema"] },
-  TC24051901: { ok: true, ea_name: "TC24051901", series: ["close", "madiff"] },
-};
 const EA_LIST = ["PRO_fit_Band_EA", "TC24051901"];
 
 // GET /sim/run-options が返す形（datasets プロファイル＋ea_names）。
@@ -36,7 +30,7 @@ const RUN_OPTIONS = {
   ea_names: ["PRO_fit_Band_EA", "TC24051901"],
 };
 
-function routerFetch({ job, schema, schemaRaw } = {}) {
+function routerFetch({ job, schema, schemaRaw, runOptions } = {}) {
   const calls = [];
   const fn = async (url, init) => {
     calls.push({ url, init });
@@ -51,12 +45,9 @@ function routerFetch({ job, schema, schemaRaw } = {}) {
         ? { ok: true, status: 200, json: async () => schema }
         : { ok: false, status: 404, json: async () => ({ error: "no schema" }) };
     }
-    if (url.startsWith("/sim/ea-series/")) {
-      const ea = decodeURIComponent(url.slice("/sim/ea-series/".length));
-      const payload = EA_SERIES[ea] || { ok: true, ea_name: ea, series: [] };
-      return { ok: true, status: 200, json: async () => payload };
+    if (url === "/sim/run-options") {
+      return { ok: true, status: 200, json: async () => (runOptions || RUN_OPTIONS) };
     }
-    if (url === "/sim/run-options") return { ok: true, status: 200, json: async () => RUN_OPTIONS };
     if (url === "/sim/jobs") return { ok: true, status: 202, json: async () => (job || { job_id: "j1", status: "running" }) };
     return { ok: false, status: 404, json: async () => ({ error: "nope" }) };
   };
@@ -67,39 +58,8 @@ function routerFetch({ job, schema, schemaRaw } = {}) {
 test("mount builds the execution panel", async () => {
   const doc = fakeDoc();
   await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
-  assert.ok(findById(doc.body, "simExecPanel"), "パネルが生成されていない");
-  assert.ok(findById(doc.body, "execSubmit"));
-});
-
-test("indicator candidates come from GET /sim/ea-series/{selected ea}", async () => {
-  const doc = fakeDoc();
-  const fetchFn = routerFetch();
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
-  // 選択中の ea_name（初期は先頭）の系列を GET している
-  assert.ok(fetchFn.calls.some((c) => c.url === "/sim/ea-series/PRO_fit_Band_EA"));
-  // /sim/indicators は候補源に使わない
-  assert.ok(!fetchFn.calls.some((c) => c.url === "/sim/indicators"));
-  // 新規行の指標セレクタが選択 EA の registry 系列だけを持つ
-  findById(doc.body, "execAddLong")._listeners.click[0]();
-  const indSel = byClass(doc.body, "exec-ind")[0];
-  assert.deepEqual((indSel.children || []).map((o) => o.value), ["adx", "close", "ema"]);
-});
-
-test("changing ea_name refetches and repopulates the candidates", async () => {
-  const doc = fakeDoc();
-  const fetchFn = routerFetch();
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
-  // ea_name を TC24051901 へ変更 → change 発火
-  const eaSel = findById(doc.body, "execEaName");
-  eaSel.value = "TC24051901";
-  eaSel._listeners.change[0]();
-  await flush();
-  // 選択 EA の系列を再取得している
-  assert.ok(fetchFn.calls.some((c) => c.url === "/sim/ea-series/TC24051901"));
-  // 既存行があっても候補が入れ替わる
-  findById(doc.body, "execAddLong")._listeners.click[0]();
-  const indSel = byClass(doc.body, "exec-ind")[0];
-  assert.deepEqual((indSel.children || []).map((o) => o.value), ["close", "madiff"]);
+  assert.ok(findById(doc.body, "simRunActionPanel"), "実行指示面が生成されていない");
+  assert.ok(findById(doc.body, "runStart"));
 });
 
 test("submit posts the built body and notifies onSubmitted", async () => {
@@ -109,33 +69,35 @@ test("submit posts the built body and notifies onSubmitted", async () => {
   await mountSimExecutionPanel({
     doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST, onSubmitted: (r) => submitted.push(r),
   });
-  findById(doc.body, "execSl").value = "100";
-  findById(doc.body, "execTp").value = "200";
-  findById(doc.body, "execAddLong")._listeners.click[0]();
-  const row = byClass(doc.body, "exec-cond-row")[0];
-  byClass(row, "exec-ind")[0].value = "ema";
-  byClass(row, "exec-shift")[0].value = "1";
-  byClass(row, "exec-op")[0].value = ">";
-  byClass(row, "exec-rhs")[0].value = "0.5";
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, eaInputId("stop_loss_points")).value = "100";
+  findById(doc.body, eaInputId("take_profit_points")).value = "200";
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const post = fetchFn.calls.find((c) => c.url === "/sim/jobs");
   assert.ok(post, "POST /sim/jobs が呼ばれていない");
   const body = JSON.parse(post.init.body);
   assert.equal(body.backtest.ea_name, "PRO_fit_Band_EA");
-  assert.deepEqual(body.strategy.entry_long, [{ indicator: "ema", shift: 1, op: ">", rhs: 0.5 }]);
+  assert.equal(body.backtest.stop_loss_points, 100);
   assert.deepEqual(submitted, [{ job_id: "j7", status: "running" }]);
 });
 
 // --- Phase 6 拡張: run-options 結線 ＋ 結果導線（自動遷移禁止）-----------------
 
-test("mount loads run-options and populates the dataset selector + ea candidates", async () => {
+test("mount loads run-options and populates the symbol + ea candidates", async () => {
   const doc = fakeDoc();
   const fetchFn = routerFetch();
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  const original = console.warn;
+  console.warn = () => {};
+  try {
+    await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  } finally {
+    console.warn = original;
+  }
   assert.ok(fetchFn.calls.some((c) => c.url === "/sim/run-options"), "run-options を取得していない");
-  const ds = findById(doc.body, "execDataset");
-  assert.deepEqual((ds.children || []).map((o) => o.value), ["jp225_m1"]);
+  // 銘柄候補は run-options の datasets から（データセット選択は出さない）
+  const symbol = findById(doc.body, "execSymbol");
+  assert.deepEqual((symbol.children || []).map((o) => o.value),
+    RUN_OPTIONS.datasets.map((d) => d.symbol));
   // ea 候補は run-options の ea_names から（eaCandidates 未指定でも埋まる）
   const eaSel = findById(doc.body, "execEaName");
   assert.deepEqual((eaSel.children || []).map((o) => o.value), ["PRO_fit_Band_EA", "TC24051901"]);
@@ -146,7 +108,7 @@ test("run-options profile drives the submitted 18-key body", async () => {
   const fetchFn = routerFetch();
   const submitted = [];
   await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, onSubmitted: (r) => submitted.push(r) });
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const post = fetchFn.calls.find((c) => c.url === "/sim/jobs");
   const body = JSON.parse(post.init.body);
@@ -162,7 +124,7 @@ test("after submit a 'see results' affordance appears and does NOT auto-navigate
     doc, host: doc.body, fetch: routerFetch({ job: { job_id: "abc", status: "running" } }),
     navigate: (url) => nav.push(url),
   });
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   // 自動遷移しない（ビュー自動介入禁止）
   assert.deepEqual(nav, []);
@@ -179,7 +141,7 @@ test("after submit a 'see results' affordance appears and does NOT auto-navigate
 //   2. 取得に失敗してもパネル自体は出る（fail-open・run-options の既存流儀）。その場合は
 //      settings を本文に載せず、旧フォーム投入がそのまま成立する（併存）。
 //   3. 投入本文に `settings.tester`（生トークン）が載り、`backtest.ea_name` は Expert 由来。
-//   4. 指標候補の取得起点は Expert 選択（schema がある構成では指標セット欄を重複させない）。
+//   4. schema がある構成では指標セット欄・初期資金欄を重複させない（T-4）。
 
 test("mount fetches the settings schema and feeds the tester panel", async () => {
   const schema = settingsSchema();
@@ -200,7 +162,7 @@ test("the tester panel is still mounted when the schema fetch fails (fail-open)"
   assert.ok(findById(doc.body, "simTesterPanel"), "取得失敗でパネルが消えている（fail-open ではない）");
   // 候補が無いので settings は組めない。旧フォーム（指標セット欄）がそのまま権威。
   assert.ok(findById(doc.body, "execEaName"), "旧フォームの指標セット欄まで消えている");
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
   assert.equal("settings" in body, false);
@@ -211,7 +173,7 @@ test("submitting with a schema posts the settings block and the derived ea_name"
   const doc = fakeDoc();
   const fetchFn = routerFetch({ schema });
   await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
   assert.ok(body.settings, "settings ブロックが本文に載っていない");
@@ -223,20 +185,6 @@ test("submitting with a schema posts the settings block and the derived ea_name"
   for (const [k, v] of Object.entries(body.settings.tester)) {
     assert.equal(typeof v, "string", k);
   }
-});
-
-test("changing the Expert refetches the indicator candidates for that EA", async () => {
-  const schema = settingsSchema();
-  const doc = fakeDoc();
-  const fetchFn = routerFetch({ schema });
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
-  assert.ok(fetchFn.calls.some((c) => c.url === "/sim/ea-series/PRO_fit_Band_EA"));
-  const expert = findById(doc.body, "testerExpert");
-  expert.value = schema.expert_options[1].token;
-  expert._listeners.change[0]();
-  await flush();
-  assert.ok(fetchFn.calls.some((c) => c.url === "/sim/ea-series/TC24051901"),
-    "Expert 変更で候補を取り直していない");
 });
 
 // --- fail-open の起動条件（🔴-1）: 200 でも schema でなければ結線しない ----------------
@@ -251,7 +199,7 @@ test("a 200 non-JSON schema response leaves the legacy form authoritative (fail-
   assert.ok(findById(doc.body, "execEaName"), "指標セット欄が消えています（投入不能フォーム）");
   assert.ok(findById(doc.body, "execDeposit"), "初期資金欄が消えています（投入不能フォーム）");
   assert.ok(findById(doc.body, "simTesterPanel"), "パネルの器まで消えています");
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
   assert.equal("settings" in body, false, "空 schema のまま settings を載せています");
@@ -270,6 +218,77 @@ test("the schema failure reason is reported, not swallowed", async () => {
   }
   assert.equal(seen.length, 1, `取得失敗の理由が捨てられています: ${JSON.stringify(seen)}`);
   assert.match(seen[0], /settings-schema|schema/i);
+});
+
+// --- Phase 9 S3: 実行対象の供給元は M1 / M4 のどちらか 1 つだけ ---------------------
+// 「作ってから消す」（欄を出してから removeChild する）を撤去した。schema が取れた構成では
+// 縮退面をそもそも作らず、取れない構成では Tester 面を実行対象の供給元にしない。
+
+test("the settings configuration mounts no degraded surface at all", async () => {
+  const doc = fakeDoc();
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
+  assert.ok(findById(doc.body, "simTesterPanel"), "Tester 面が出ていない");
+  assert.equal(findById(doc.body, "simSchemaFallbackPanel"), null,
+    "schema が取れているのに縮退面まで作っています（作ってから消す形の再発）");
+  assert.equal(findById(doc.body, "execEaName"), null, "縮退面の EA 欄が残っています");
+  assert.equal(findById(doc.body, "execDeposit"), null, "縮退面の初期資金欄が残っています");
+});
+
+test("the degraded configuration mounts the fallback surface and keeps the tester panel visible", async () => {
+  const doc = fakeDoc();
+  const seen = [];
+  const original = console.warn;
+  console.warn = (...args) => seen.push(args.map(String).join(" "));
+  try {
+    await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
+  } finally {
+    console.warn = original;
+  }
+  // 縮退面が立つ（実行対象の供給元）
+  assert.ok(findById(doc.body, "simSchemaFallbackPanel"), "縮退面が出ていない");
+  assert.ok(findById(doc.body, "execEaName"), "縮退面の EA 欄が無い");
+  // Tester 面の器は残る（なぜ設定を組めないのかを画面に出し続ける＝fail-open）
+  assert.ok(findById(doc.body, "simTesterPanel"), "取得失敗でパネルの器ごと消えている");
+  assert.equal(seen.length, 1, "取得失敗の理由が捨てられています");
+});
+
+test("the degraded ea candidates come from run-options (縮退面にも候補が届く)", async () => {
+  const doc = fakeDoc();
+  const original = console.warn;
+  console.warn = () => {};
+  try {
+    await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch() });
+  } finally {
+    console.warn = original;
+  }
+  const sel = findById(doc.body, "execEaName");
+  assert.deepEqual((sel.children || []).map((o) => o.value), RUN_OPTIONS.ea_names);
+});
+
+// --- 実行条件の payload が壊れていても画面は立つ（fail-open・§19.4）-------------------
+// `datasets` が配列でない payload（別実装・プロキシが object を返した等）でも mount は完走し、
+// 操作できるフォームが出る。合成根が `datasets.map` を直に呼んでいた S6 時点では **TypeError で
+// mount が中断し、欄が 1 つも描かれなかった**（実測: 操作要素 1 個 / 新 25 個）。M5 の
+// `symbolCandidatesOf` が非配列を空候補へ畳むことで、銘柄が自由入力へ縮退して画面が残る。
+
+test("a non-array datasets payload degrades instead of blanking the form (fail-open)", async () => {
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({
+    schema: settingsSchema(),
+    runOptions: { ok: true, datasets: {}, ea_names: [] },   // 配列でない payload
+  });
+  // Act: mount が例外で中断しない
+  await assert.doesNotReject(
+    () => mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn }),
+    "非配列 payload で mount が中断しました（欄が 1 つも描かれません）",
+  );
+  // Assert: 3 面が立ち、操作できる状態で残る
+  for (const id of ["simTesterPanel", "simEaInputsPanel", "simRunActionPanel"]) {
+    assert.ok(findById(doc.body, id), `${id} が描かれていません`);
+  }
+  // 銘柄は候補 0 件＝自由入力へ縮退する（候補を出せないことを理由に投入不能にしない）
+  const symbol = findById(doc.body, "testerSymbol");
+  assert.equal(symbol.tagName, "INPUT", "銘柄が自由入力へ縮退していません");
 });
 
 test("reportViewUrl builds the ?job= dispatch url", async () => {

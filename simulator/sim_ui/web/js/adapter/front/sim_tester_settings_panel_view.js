@@ -37,8 +37,10 @@ const PRESET_DATE_KEY = "Dates";
 const CUSTOM_DATE_KEYS = ["FromDate", "ToDate"];
 /** 空欄なら送らないキー（規則 F: `ForwardMode` がカスタム日付のときだけ要る）。 */
 const BLANK_MEANS_ABSENT = ["ForwardDate"];
+/** 実行対象の銘柄キー（実行対象データセットの決定に使う・Phase 9 S4）。 */
+const SYMBOL_KEY = "Symbol";
 /** 実行対象データセットとの一致が要求されるキー（写像層 `_require_match` の対象・T-3）。 */
-const PROFILE_MATCHED_KEYS = ["Symbol", "Period"];
+const PROFILE_MATCHED_KEYS = [SYMBOL_KEY, "Period"];
 /** `.ini` キー → 既定値を供給する run profile のフィールド名。
  *  値そのものは profile（＝`SymbolSpecCatalog` 由来）が持つ。ここが持つのは対応だけである。 */
 const PROFILE_FIELD_OF_KEY = {
@@ -96,7 +98,9 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   let dateCustom = null;
   let schema = null;
   let profile = null;
-  let expertCb = null;
+  let symbolCb = null;
+  /** 実行対象データセットが供給する銘柄候補（Phase 9 S4）。空なら自由入力へ縮退する。 */
+  let symbolCandidates = [];
   /** 群 id → その群のフィールド置き場（`.tester-group-fields`）。rebuild ごとに作り直す。 */
   const groupHosts = new Map();
   /** `.ini` キー → 入力要素。 */
@@ -120,6 +124,13 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   /** 選択肢のあるキーなら [{token,label}]、自由入力なら null。判定は schema だけを見る。 */
   function optionsFor(key) {
     if (key === SUBJECT_KEY) return schema.expert_options || [];
+    // 銘柄は実行対象データセットが供給する（schema の列挙ではない）。候補が 1 つも無い
+    // 構成では自由入力へ落とす——候補を出せないことを理由に投入不能にはしない。
+    if (key === SYMBOL_KEY) {
+      return symbolCandidates.length
+        ? symbolCandidates.map((token) => ({ token, label: token }))
+        : null;
+    }
     const enumOptions = (schema.enum_options || {})[key];
     if (enumOptions) return enumOptions;
     const spec = (schema.scalar_specs || {})[key] || {};
@@ -171,14 +182,17 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   function onChanged(key) {
     renderWarnings();
     renderUnsupportedActivation();
-    if (key === SUBJECT_KEY && expertCb) expertCb(currentEaName());
+    // 銘柄を変えたら外へ通知する（実行対象データセットの決め直しは合成根が担う）。
+    if (key === SYMBOL_KEY && symbolCb) symbolCb(selectedSymbol());
   }
 
   function buildControl(key) {
     const options = optionsFor(key);
     let node;
     if (options) {
-      node = el("select", { id: `tester${key}`, className: "tester-input", dataset: { key } });
+      node = el("select", {
+        id: `tester${key}`, className: "tester-input", dataset: { key, mt5: `tester:${key}` },
+      });
       for (const option of options) {
         node.appendChild(el("option", { value: option.token, textContent: option.label }));
       }
@@ -186,7 +200,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     } else {
       node = el("input", {
         id: `tester${key}`, className: "tester-input", type: "text",
-        value: INITIAL_SCALARS[key] || "", dataset: { key },
+        value: INITIAL_SCALARS[key] || "", dataset: { key, mt5: `tester:${key}` },
       });
     }
     node.addEventListener("change", () => onChanged(key));
@@ -202,6 +216,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     const wrap = el("label", { className: "tester-field", textContent: "期間をカスタム指定する" });
     dateCustom = el("input", {
       id: "testerDateCustom", className: "tester-date-mode", type: "checkbox", checked: false,
+      dataset: { mt5: "ui:date-mode" },
     });
     dateCustom.addEventListener("change", () => onChanged(PRESET_DATE_KEY));
     wrap.appendChild(dateCustom);
@@ -340,6 +355,12 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     renderWarnings();
   }
 
+  /** 実行対象の銘柄（未生成なら空文字）。 */
+  function selectedSymbol() {
+    const token = currentToken(SYMBOL_KEY);
+    return token === null ? "" : token;
+  }
+
   function currentEaName() {
     const node = controls.get(SUBJECT_KEY);
     return node ? expertLabels.get(String(node.value || "")) || "" : "";
@@ -413,6 +434,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
       // 全一覧の開閉（既定は畳んだまま）。押した本人だけが開く＝自動で開かない。
       unsupportedToggle = el("button", {
         id: "simTesterUnsupportedToggle", className: "tester-unsupported-toggle", type: "button",
+        dataset: { mt5: "ui:unsupported-toggle" },
       });
       unsupportedToggle.addEventListener("click", () => setUnsupportedExpanded(
         unsupportedHost.dataset.expanded !== "1",
@@ -433,6 +455,15 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
       rebuild();
     },
 
+    /** 銘柄候補（run-options の datasets 由来）を注入する（Phase 9 S4）。
+     *
+     *  schema より**先に**渡すこと（schema 注入時の組み直しで候補が使われる）。schema が
+     *  既にある状態で渡した場合はフォームを組み直す（入力中の値は初期値へ戻る）。 */
+    setSymbolCandidates(list) {
+      symbolCandidates = Array.isArray(list) ? list.map((v) => String(v)) : [];
+      if (schema) rebuild();
+    },
+
     /** 選択中のデータセット profile を注入する（Symbol/Period/Leverage/Currency の既定値）。 */
     setRunProfile(runProfile) {
       profile = runProfile || null;
@@ -444,8 +475,11 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
 
     buildTesterMapping,
 
-    /** 投入本文の第 4 ブロック。`inputs` は常に空（T-2: EA 入力欄を出さない）。 */
+    /** 投入本文の第 4 ブロック。`inputs` は常に空（T-2: EA 入力欄を出さない）。
+     *  schema を取れていなければ**組まない**（null）——空の設定ブロックを載せると、候補 0 の
+     *  Expert から投入不能な本文が出来る（Phase 8 で実測した壊れ方）。 */
     buildSettings() {
+      if (!schema) return null;
       return { tester: buildTesterMapping(), inputs: [] };
     },
 
@@ -458,10 +492,13 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
       };
     },
 
+    selectedSymbol,
+
+    /** 銘柄変更時のコールバックを登録する（新しい銘柄を渡す）。 */
+    onSymbolChange(cb) { symbolCb = cb; },
+
     warnings,
     activeUnsupported,
 
-    /** Expert（実行対象 EA）変更時のコールバックを登録する（新 EA 名の語幹を渡す）。 */
-    onExpertChange(cb) { expertCb = cb; },
   };
 }
