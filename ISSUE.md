@@ -8366,3 +8366,15 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   マージ前に是正済み（070db19〜ead46dd）。本エントリは残余のみ。
 - **関連**: ISSUE-416（`.ex5` 2 箇所）・ISSUE-418（旧経路既定値の無音失敗・fail-open の退避先が依存）・
   ISSUE-419（規則 B の front 側排他）。
+
+## ISSUE-421: [設計] `reportViewUrl` が 2 モジュールで同名別実装（同一概念に 2 つの意味）（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。Phase 9 設計調査 R-h・段階 1 の対象外）
+- **重大度**: Low
+- **事実（実読 2026-08-19）**: `simulator/sim_ui/web/js/adapter/front/sim_frame_view.js:29`（絶対パス版）と
+  `composition_root_execution.js:27`（相対クエリ版）に同名 `reportViewUrl` が別実装で存在する。
+  値も導出規則も異なり、同一概念（結果ビューアの URL）に 2 つの呼び名・2 つの規則がある状態
+  （規約「同一概念に複数の呼び名を作らない」・codescan の diverged_names が検出する形そのもの）。
+- **抜本的解決**: URL 導出を単一モジュール（M5 系の純関数 or 専用 1 関数）へ集約し、両者が同一
+  実体を読む形にする。Phase 9 段階 1 の S5（結果導線の M3 移設）後に残る形を見てから実施。
+- **関連**: ISSUE-417（重複検出ツールの能力）・Phase 9 設計記録。
