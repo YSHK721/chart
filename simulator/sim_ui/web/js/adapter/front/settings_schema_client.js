@@ -31,7 +31,15 @@ export function createSettingsSchemaClient({ fetch: fetchFn } = {}) {
   return {
     /**
      * schema（{ok, key_order, required_keys, enum_options, scalar_specs,
-     * expert_options, unsupported}）を返す。非 2xx はサーバ文言つきで throw。
+     * expert_options, unsupported}）を返す。
+     *
+     * **schema を返せないときは必ず throw する**（`null` や形不正を成功にしない）。
+     * 呼出側は「例外＝schema 無し」を fail-open の起動条件に使うため、ここで成功に
+     * 化けさせると、空の schema でパネルが結線され、EA 欄・初期資金欄が器から外れた
+     * 投入不能フォームが黙って出来上がる。判定は 3 点:
+     *   1. 応答が無い / 非 2xx
+     *   2. 本文を JSON として読めない（プロキシのエラーページ等・HTTP は 200 になり得る）
+     *   3. payload が schema の契約（`ok: true`）を満たさない
      */
     async load() {
       const res = await doFetch(SETTINGS_SCHEMA_URL, { cache: "no-store" });
@@ -41,7 +49,8 @@ export function createSettingsSchemaClient({ fetch: fetchFn } = {}) {
       } catch (_e) {
         payload = null;
       }
-      if (!res || !res.ok) {
+      const ok = res && res.ok && payload && payload.ok === true;
+      if (!ok) {
         const reason =
           (payload && payload.error) || `設定 schema を取得できません (HTTP ${res && res.status})`;
         throw new SettingsSchemaError(reason, res && res.status);

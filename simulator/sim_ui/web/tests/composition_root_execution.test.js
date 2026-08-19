@@ -36,13 +36,17 @@ const RUN_OPTIONS = {
   ea_names: ["PRO_fit_Band_EA", "TC24051901"],
 };
 
-function routerFetch({ job, schema } = {}) {
+function routerFetch({ job, schema, schemaRaw } = {}) {
   const calls = [];
   const fn = async (url, init) => {
     calls.push({ url, init });
     // Phase 8: schema を渡さない呼び出しでは `/sim/settings-schema` は 404 に落ちる
     // （＝Tester パネルを結線できない構成）。既存の検定はこの経路のままで通る。
     if (url === "/sim/settings-schema") {
+      // `schemaRaw`: HTTP は 200 なのに本文が JSON でない（プロキシのエラーページ等）。
+      if (schemaRaw) {
+        return { ok: true, status: 200, json: async () => { throw new Error("Unexpected token <"); } };
+      }
       return schema
         ? { ok: true, status: 200, json: async () => schema }
         : { ok: false, status: 404, json: async () => ({ error: "no schema" }) };
@@ -233,6 +237,39 @@ test("changing the Expert refetches the indicator candidates for that EA", async
   await flush();
   assert.ok(fetchFn.calls.some((c) => c.url === "/sim/ea-series/TC24051901"),
     "Expert 変更で候補を取り直していない");
+});
+
+// --- fail-open の起動条件（🔴-1）: 200 でも schema でなければ結線しない ----------------
+// 200＋非 JSON を成功として扱うと、空 schema の Tester パネルが settings の供給元として
+// 結線され、EA 欄・初期資金欄が器から外れた**投入不能フォーム**になる。
+
+test("a 200 non-JSON schema response leaves the legacy form authoritative (fail-open)", async () => {
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({ schemaRaw: true });
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
+  // 旧フォームの欄が残っている（＝Tester パネルは settings の供給元として結線されていない）
+  assert.ok(findById(doc.body, "execEaName"), "指標セット欄が消えています（投入不能フォーム）");
+  assert.ok(findById(doc.body, "execDeposit"), "初期資金欄が消えています（投入不能フォーム）");
+  assert.ok(findById(doc.body, "simTesterPanel"), "パネルの器まで消えています");
+  findById(doc.body, "execSubmit")._listeners.click[0]();
+  await flush();
+  const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
+  assert.equal("settings" in body, false, "空 schema のまま settings を載せています");
+  assert.equal(body.backtest.ea_name, EA_LIST[0]);
+});
+
+test("the schema failure reason is reported, not swallowed", async () => {
+  const doc = fakeDoc();
+  const seen = [];
+  const original = console.warn;
+  console.warn = (...args) => seen.push(args.map(String).join(" "));
+  try {
+    await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(seen.length, 1, `取得失敗の理由が捨てられています: ${JSON.stringify(seen)}`);
+  assert.match(seen[0], /settings-schema|schema/i);
 });
 
 test("reportViewUrl builds the ?job= dispatch url", async () => {

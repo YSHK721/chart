@@ -58,6 +58,46 @@ test("a non-2xx response throws with the server-supplied reason", async () => {
   });
 });
 
+// --- 200 でも payload が schema でなければ失敗として扱う（fail-open の起動条件）------
+// なぜ: 呼出側（合成根）は「例外＝schema 無し」で旧フォームを権威に残す。ここで `null` や
+// 形不正を**成功**として返すと、fail-open が作動しないまま Tester パネルが結線され、
+// EA 欄・初期資金欄が器から外れた**投入不能フォーム**になる（実測済みの死因）。
+
+test("a 200 with an unparsable body throws instead of returning null", async () => {
+  // Arrange: プロキシのエラーページ等（HTTP は 200 でも本文が JSON でない）
+  const client = createSettingsSchemaClient({
+    fetch: async () => ({ ok: true, status: 200, json: async () => { throw new Error("Unexpected token <"); } }),
+  });
+  // Act / Assert
+  await assert.rejects(() => client.load(), (e) => {
+    assert.ok(e instanceof SettingsSchemaError, "200＋非 JSON を成功として返しています");
+    assert.equal(e.status, 200);
+    return true;
+  });
+});
+
+test("a 200 whose payload is not a schema (ok !== true) throws", async () => {
+  for (const payload of [null, {}, { ok: false, error: "台帳がありません" }, []]) {
+    const client = createSettingsSchemaClient({
+      fetch: async () => ({ ok: true, status: 200, json: async () => payload }),
+    });
+    await assert.rejects(() => client.load(), (e) => {
+      assert.ok(e instanceof SettingsSchemaError, `形不正 payload を成功として返しています: ${JSON.stringify(payload)}`);
+      return true;
+    });
+  }
+});
+
+test("the thrown reason prefers the server-supplied error text", async () => {
+  const client = createSettingsSchemaClient({
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: false, error: "台帳がありません" }) }),
+  });
+  await assert.rejects(() => client.load(), (e) => {
+    assert.match(e.message, /台帳がありません/);
+    return true;
+  });
+});
+
 test("a non-2xx with an unparsable body still throws with the status", async () => {
   const client = createSettingsSchemaClient({
     fetch: async () => ({ ok: false, status: 500, json: async () => { throw new Error("not json"); } }),

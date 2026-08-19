@@ -86,8 +86,12 @@ export async function mountSimExecutionPanel({
     testerView.setSchema(await schemaClient.load());
     view.setTesterPanel(testerView);
     testerWired = true;
-  } catch (_e) {
+  } catch (e) {
     testerView.setSchema(null);
+    // 理由を捨てない。schema が来ない run は旧フォームで動き続けるため、画面だけを見ても
+    // 「なぜ Tester パネルが空なのか」が分からない（無音の縮退）。パネル上の掲示に加えて
+    // 開発者コンソールにも残す。
+    console.warn(`settings-schema を取得できません: ${(e && e.message) || e}`);
   }
 
   // 初期候補は選択中の実行対象 EA の系列。権威は結線済みなら Tester パネルの Expert、
