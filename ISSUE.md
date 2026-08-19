@@ -8378,3 +8378,20 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **抜本的解決**: URL 導出を単一モジュール（M5 系の純関数 or 専用 1 関数）へ集約し、両者が同一
   実体を読む形にする。Phase 9 段階 1 の S5（結果導線の M3 移設）後に残る形を見てから実施。
 - **関連**: ISSUE-417（重複検出ツールの能力）・Phase 9 設計記録。
+
+## ISSUE-422: [設計] Symbol 不一致本文の遮断が front（警告のみ）でも server（inert 経路）でも成立しない組合せ（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。Phase 9 工程 5 レビュー 🟡-4。**段階 2（sim API 明示拒否）の裁定範囲へ合流**）
+- **重大度**: Medium（現行 UI からの到達は実ブラウザ実測で不能＝select 意味論により候補外値は保持されない。
+  プログラム的投入でのみ到達）
+- **事実（レビュー実読＋実測 2026-08-19）**:
+  1. front は Symbol 解決不能時に警告テキストを出すが投入は止めない（`composition_root_execution.js` の
+     `onStart` に警告ゲートなし）。
+  2. server の `_require_match` は不一致を `ConfigError` にするが、`symbol` は `INERT_FIELDS`
+     （`usecase/tester_settings/models.py:53-54`）に含まれ、`tick_model=MATH_CALCULATIONS` のとき
+     `_settings_or_binding` が injected を返して**不一致を黙認**する（`kwargs_mapper.py:324-326`）。
+  3. 実ブラウザ実測（2026-08-19）: Symbol は SELECT・候補外値の代入は空文字化＝**実 UI からは
+     不一致本文を作れない**。fake DOM 前提のテスト状態（候補外値の保持）は実ブラウザで再現しない。
+- **抜本的解決**: 段階 2 の裁定に「`settings.tester.Symbol` と `backtest.symbol` の不一致は
+  inert 判定より**前**に拒否する」を含める。front 側のスタート不能化は UI 挙動変更＝要承認として併記。
+- **関連**: Phase 9 §19・ISSUE-420。
