@@ -81,7 +81,10 @@ def _as_config_error(payload: "dict[str, Any]") -> BacktestError:
 #: 宣言と食い違っても静かに 0 件（または過剰発火）になる。
 UI_TRIGGER_ON_TOKENS = "on_tokens"           #: 列挙した生トークンに一致したら発火
 UI_TRIGGER_EXCEPT_TOKENS = "except_tokens"   #: 列挙した生トークン**以外**なら発火
-UI_TRIGGER_ON_PRESENCE = "on_presence"       #: そのキーが投入本文に載るなら発火
+#: そのキーが投入本文に載るなら発火。**現在この形を使う rule は無い**（N-15 は R-10 で
+#: `none` へ訂正した）。語彙としては残す——「キーの存在だけで当たる非対象」は表現として
+#: 成立し、front も実装済みだからである。使う rule が現れたときに宣言 1 行で足りる。
+UI_TRIGGER_ON_PRESENCE = "on_presence"
 UI_TRIGGER_OFF_CANDIDATES = "off_candidates" #: 配った候補集合に無い値なら発火
 UI_TRIGGER_OFF_PROFILE = "off_profile"       #: 実行対象データセットの権威値と異なれば発火
 UI_TRIGGER_NONE = "none"                     #: 生トークンでは判定できない（構造不変条件の防壁）
@@ -341,10 +344,13 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
             "（当該 EA のデータ取得経路は marketdata_window を参照しません）"
         ),
         detect=None,  # 判定にはエンジンが返したバー系列が要る（window.verify_window_applied）
-        # 窓を課すのは custom 指定（`FromDate`/`ToDate`）のときだけである
-        # （`window._entire_history` は `marketdata_window=None`＝検証対象が無い）。
-        # したがって「その 2 キーが投入本文に載る」ことが UI 側の必要条件そのものになる。
-        ui=UiTrigger(keys=("FromDate", "ToDate"), mode=UI_TRIGGER_ON_PRESENCE),
+        # UI からは判定できない（仕様訂正 2026-08-19・R-10）。当初は「窓を課すのは custom
+        # 指定のときだけ」という**必要条件**を `on_presence` で発火条件に用いたが、それは
+        # 十分条件ではない。窓が正しく適用されて完走する run（実測: `FromDate`/`ToDate` を
+        # 実在範囲で指定した run は exit 0）にも「適用されていません」という**偽の断定**が
+        # 常時点灯し、本当の非対象の警告まで無視されるようになる。判定はエンジンが返した
+        # バー系列を要するため、生トークンでは判定できない——それを N-10 と同じ形で宣言する。
+        ui=UiTrigger(keys=("FromDate", "ToDate"), mode=UI_TRIGGER_NONE),
     ),
     UnsupportedRule(
         unsupported_id="N-16",

@@ -29,6 +29,9 @@ const SCHEMA_PATH = "/sim/settings-schema";
 const SUBMIT_TIMEOUT_MS = 60_000;
 /** `legacy` シナリオで入力する初期資金（既定値ではストップアウトに達する・下記参照）。 */
 const LEGACY_DEPOSIT = "10000000";
+/** `custom_range` シナリオの期間（データセットの実在範囲内・`YYYY.MM.DD`＝R10 の書式）。 */
+const CUSTOM_FROM = "2025.01.06";
+const CUSTOM_TO = "2025.01.10";
 
 /** 相対パスを base で解決する fetch（＋投入本文の採取）。`legacy` は schema 面を塞ぐ。 */
 function makeFetch(calls) {
@@ -67,6 +70,18 @@ async function main() {
     // 旧経路との差は Phase 8 以前からの既存挙動である（本ドライバはそれを迂回しない
     // ——利用者が入力できる値を入力しているだけである）。
     findById(doc.body, "execDeposit").value = LEGACY_DEPOSIT;
+  }
+
+  if (scenario === "custom_range") {
+    // 期間をカスタム指定する（データセットの実在範囲内＝窓は実際に適用され run は完走する）。
+    const toggle = findById(doc.body, "testerDateCustom");
+    toggle.checked = true;
+    fire(toggle, "change");
+    const from = findById(doc.body, "testerFromDate");
+    const to = findById(doc.body, "testerToDate");
+    from.value = CUSTOM_FROM;
+    to.value = CUSTOM_TO;
+    fire(to, "change");
   }
 
   if (scenario === "unsupported") {

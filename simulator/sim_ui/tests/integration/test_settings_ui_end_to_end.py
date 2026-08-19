@@ -195,6 +195,27 @@ def test_settings不在の旧本文の投入も従来どおり完了する(stack
 
 # --- 5. データセットと食い違う Period は失敗し理由が残る ----------------------
 
+def test_正しく指定したカスタム期間に偽の非対象告知を出さない(stack) -> None:
+    """N-15 は**実行後にしか判定できない**（`detect=None`）。窓を要求しただけで
+    「要求した期間窓がエンジンへ適用されていません」と断定表示するのは偽の告知である。
+
+    本検定はその偽陽性を禁じる: データセットの実在範囲を指定した run は**完走する**
+    （＝窓は実際に適用されている）のに、UI がその run に N-15 を出していないこと。
+    警告が常時点灯すると、本当に非対象な選択の警告まで無視されるようになる。
+    """
+    # Act
+    observed = _drive(stack, "custom_range")
+    # Assert: カスタム期間が実際に投入本文へ載っている（何も指定していない run ではない）
+    tester = observed["body"]["settings"]["tester"]
+    assert "FromDate" in tester and "ToDate" in tester, tester
+    assert "Dates" not in tester, "規則 E: プリセットと同時に送っている"
+    # 偽の断定を出していない
+    assert "N-15" not in observed["active_unsupported"], observed["active_unsupported"]
+    # 窓は実際に適用され、run は完走する（＝上の告知が出ていたら偽陽性だったことの実証）
+    job_id = observed["submitted"]["job_id"]
+    assert _wait_terminal(stack, job_id)["status"] == "completed"
+
+
 def test_非対象トークンの選択は投入前にUIが理由を示し実行は失敗する(stack) -> None:
     """R-9: 実行段の Fail-Stop に至る**前**に、UI が当該告知の reason を出していること。
 

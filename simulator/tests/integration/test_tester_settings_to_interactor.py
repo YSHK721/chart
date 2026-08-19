@@ -308,23 +308,41 @@ class TestUnsupportedRulesAreDeclarative:
             _kwargs(settings=runnable_settings(**{key: other}))
         assert excinfo.value.context["unsupported_id"] == "N-11"
 
-    def test_on_presence_binding_matches_the_window_precondition(self):
-        """`on_presence`（N-15）: 宣言キーが在るときだけ窓が課される（＝検証対象が生じる）。
+    def test_n15_is_declared_unevaluable_from_raw_tokens(self):
+        """N-15 は生トークンでは判定できない（`none`）。
 
-        N-15 は実行後にしか判定できない（`detect=None`）。UI 側の必要条件は
-        「窓を要求したか」であり、それは宣言キー（`FromDate`/`ToDate`）の有無と一致する。
+        **仕様訂正の記録（R-10・2026-08-19）**: 当初は「窓を課すのは custom 指定のときだけ」
+        という**必要条件**を `on_presence` の発火条件に用いていた。しかしそれは十分条件では
+        ない——下の 2 つの assert が示すとおり、宣言キーの有無は「窓を要求したか」までしか
+        決めず、「その窓がエンジンへ適用されたか」は決めない。適用の成否はエンジンが返した
+        バー系列を要する（`window.verify_window_applied`）。必要条件を発火条件に使うと、
+        正しく適用されて完走する run にも「適用されていません」という断定が点灯した（実測）。
+        よって発火条件を `none` へ訂正した。**アサーションの弱体化ではなく仕様の訂正**であり、
+        偽陽性を禁じる検定を E2E 側に新設してある
+        （`test_settings_ui_end_to_end.test_正しく指定したカスタム期間に偽の非対象告知を出さない`）。
         """
-        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_ON_PRESENCE
+        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_NONE
         from simulator.main.tester_settings.window import resolve_data_window
 
         rule = RULES["N-15"]
-        assert rule.ui.mode == UI_TRIGGER_ON_PRESENCE
-        # 宣言キーが在る（custom 指定）→ 窓が課される
+        assert rule.ui.mode == UI_TRIGGER_NONE
+        assert rule.ui.keys, "束縛キーは残す（畳んだ全一覧での所在を失わせない）"
+        # 宣言キーの有無が決めるのは「窓を**要求**したか」まで（＝必要条件でしかない）。
         custom = custom_range_settings(date(2024, 1, 2), date(2024, 1, 3)).effective()
         assert resolve_data_window(custom).marketdata_window is not None
-        # 宣言キーが無い（プリセット全期間）→ 窓は課されない＝N-15 の検証対象が無い
         preset = runnable_settings(Dates="0").effective()
         assert resolve_data_window(preset).marketdata_window is None
+        # 適用の成否は判定式を持たない（実行後にしか分からない）ことの実証。
+        assert rule.detect is None
+
+    def test_the_on_presence_form_stays_available_for_future_rules(self):
+        """`on_presence` は使う rule が無くても語彙として残す（表現力の宣言）。"""
+        from simulator.main.tester_settings.unsupported import (
+            UI_TRIGGER_MODES,
+            UI_TRIGGER_ON_PRESENCE,
+        )
+
+        assert UI_TRIGGER_ON_PRESENCE in UI_TRIGGER_MODES
 
     def test_none_binding_really_cannot_fire_from_a_raw_token(self):
         """`none`（N-10）: `.ini` の生トークン（常に文字列）では判定式が発火しない。"""
