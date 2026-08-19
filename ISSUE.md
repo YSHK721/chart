@@ -8379,9 +8379,9 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   実体を読む形にする。Phase 9 段階 1 の S5（結果導線の M3 移設）後に残る形を見てから実施。
 - **関連**: ISSUE-417（重複検出ツールの能力）・Phase 9 設計記録。
 
-## ISSUE-422: [設計] Symbol 不一致本文の遮断が front（警告のみ）でも server（inert 経路）でも成立しない組合せ（2026-08-19）
+## ISSUE-422: [設計] Symbol 不一致本文の遮断が front（警告のみ）でも server（inert 経路）でも成立しない組合せ（2026-08-19・RESOLVED 2026-08-19）
 
-- **ステータス**: OPEN（新規起票。Phase 9 工程 5 レビュー 🟡-4。**段階 2（sim API 明示拒否）の裁定範囲へ合流**）
+- **ステータス**: RESOLVED（2026-08-19。段階 2 コミット 283c42d で是正＝受付の検査 b へ Symbol 一致を併合。math（Model=3）でも受付 400 を実測・変異検定で機械固定。写像層は effective() の None 化により原理的に検査不能＝受付層が唯一の成立点（§19.5）。同型穴 Period/Currency/Leverage は ISSUE-424）
 - **重大度**: Medium（現行 UI からの到達は実ブラウザ実測で不能＝select 意味論により候補外値は保持されない。
   プログラム的投入でのみ到達）
 - **事実（レビュー実読＋実測 2026-08-19）**:
@@ -8395,3 +8395,32 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **抜本的解決**: 段階 2 の裁定に「`settings.tester.Symbol` と `backtest.symbol` の不一致は
   inert 判定より**前**に拒否する」を含める。front 側のスタート不能化は UI 挙動変更＝要承認として併記。
 - **関連**: Phase 9 §19・ISSUE-420。
+
+## ISSUE-423: [不具合・既存] sim 受付拒否（400）の理由文が本番 UI に 1 文字も表示されない（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。Phase 9 段階 2 設計調査 R-1。段階 2 が導入した欠陥ではなく既存）
+- **重大度**: Medium（Expert 不一致・規則 B〜Q・[TesterInputs] 拒否・段階 2 の新拒否すべてが対象）
+- **事実（実読 2026-08-19）**: 400 応答の `error` 文言は `job_submit_client.js:68-71` まで届くが、
+  本番 HTML は `mountSimExecutionPanel({doc, host})` を **onError 未結線**で呼ぶ
+  （`report_view.html:64`）。`catch (e) { if (onError) onError(e); }` は無処理で終わる。
+  `failure_reason` の polling も front に無い。E2E driver だけが onError を渡している。
+- **抜本的解決**: 投入エラーの表示面を front に結線（UI 変更＝承認事項）。
+- **関連**: Phase 9 §19.5・「沈黙失敗禁止」規約。
+
+## ISSUE-424: [設計] 実行対象同一性の同型穴 3 件（Period/Currency/Leverage が math 時に不一致黙認）と拒否チャネル非対称（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。段階 2 設計調査 R-2/R-3。段階 2 は Symbol のみ是正）
+- **重大度**: Medium
+- **事実（実読 2026-08-19）**: `kwargs_mapper.py:339-349`（Period）・`:352-359`（Leverage）・
+  `unsupported.py:232-237`（N-11 Currency は `effective.currency is None` で math 時スキップ）が
+  ISSUE-422 の Symbol と同型。また Period は現状「実行時 failed」で報告され（python E2E が固定・
+  無改変誓約対象）、Symbol は段階 2 後「受付 400」＝同じ不一致が 2 経路で報告される非対称。
+  さらに `run_job --job-dir` 直投入経路は math × 不一致に防壁を持たない。
+- **抜本的解決**: 「実行対象の同一性」検査を受付の単一点へ統合（Period の受付化は E2E の
+  期待値改訂を伴うため要裁定）。
+- **関連**: ISSUE-422（Symbol＝段階 2 で是正）・Phase 9 §19.5。
+
+（ISSUE-423 への追記・2026-08-19 段階 2 レビュー）: 段階 2 により沈黙する受付拒否が 4 種増えた
+（strategy dict/空 dict・Symbol 不一致 ×2 モデル）。また front 実装上、解決不能な Symbol 状態で
+スタートを押すと「何も起きない」が新たな観測になる（従来は前回 profile の銘柄で実行されていた＝
+ISSUE-422 の症状。方向としては正しい変更だが、UI 結線の優先度判断材料として明記）。

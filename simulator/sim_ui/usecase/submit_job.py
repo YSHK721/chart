@@ -1,6 +1,18 @@
 """U-SubmitJob: ジョブ投入（F-3 / FR-10・§12.7 並列実行）。
 
 規則:
+    0. 段階 2（§19.5）: `strategy` ブロック（条件・トレーリング・部分決済）を持つ投入は
+       **受付で拒否**する（`None` は受理・`{}` を含む非 None を拒否）。受付面が受け取る
+       範囲を MT5 の Settings タブへ揃えるための入口閉鎖であり、エンジン側の戦略資産は
+       `run_job` 直投入から到達可能なまま残る。本規則により到達不能になるのは
+       **strategy 系の受付検証 3 本**（`_reject_if_strategy_indicators_unavailable` /
+       `_reject_invalid_position_change` / `_reject_trailing_granularity_mismatch`）で
+       あり、可逆性のため残置している（撤去は別ターンの裁定）。以下の 1.（sizing 系）は
+       到達不能にならない——sizing は strategy と独立に有効化でき、本ゲートを通過した
+       本文で従来どおり働く。
+       段階 2 の受付契約はもう 1 本ある: settings 付きの投入は**実行対象の一致**
+       （`Expert` の語幹と `ea_name`・`Symbol` と `backtest.symbol`）を受付で要求する
+       （理由と実装点の根拠は `_reject_invalid_settings` の docstring・ここへ写さない）。
     1. sizing ON のときだけ**受付時検証**を行う。判定前に台帳へ書かない・子プロセスを
        起こさない（拒否したジョブの残骸を作らない）。検証は 2 つ:
          a. E-3（§12.5）: 建値推定に使える価格系列を指標レジストリが持たない戦略を拒否。
@@ -70,6 +82,10 @@ class SubmitJobInteractor:
 
     def execute(self, submission: JobSubmission) -> JobView:
         """投入して現在状態を返す。E-3 違反は :class:`SizingUnsupportedError`。"""
+        # 段階 2（§19.5）: 受付面が受け取る範囲を MT5 の Settings タブに揃える。
+        # 他のどの検証よりも先に置く: 受け取らないと決めた本文は、中身の妥当性を
+        # 論じる前に断る（「一部だけ検証して結局断る」という順序にしない）。
+        self._reject_strategy_block(submission)
         # sizing の有無に関係なく、子へ素通しする meta のキーを先に検証する
         # （未知キーは子プロセスで TypeError になり「投入は通ったが実行だけ落ちる」
         #  という遅い失敗になる。受付で弾いて即座に理由を返す）。
@@ -108,13 +124,43 @@ class SubmitJobInteractor:
         self._ledger.update(running, expect=JobStatus.RECEIVED)
         return JobView.of(running)
 
+    def _reject_strategy_block(self, submission: JobSubmission) -> None:
+        """段階 2（§19.5）: `strategy` ブロックを持つ投入を受付で明示拒否する。
+
+        sim の受付面は MT5 の Settings タブと同じ範囲だけを受け取る。条件・トレーリング・
+        部分決済は **MT5 Settings タブに対応物が無い**項目であり、EA 側（Expert）の実装で
+        指定するものである。受付面に残すと「MT5 と同じ画面のはずが sim だけ余計に効く」
+        非対称が API 面に残り続ける。
+
+        `None` を受理して `{}` を拒否する理由（判定が `is not None` である理由）:
+        台帳（`FileJobLedger.create`）は strategy 不在を `"strategy": null` と書き出す。
+        `null` まで拒否すると、保存済み spec をそのまま再投入するという正当な操作が
+        落ちる。一方 `{}` は「ブロックを渡した」という意思表示であり、黙って OFF に
+        倒すと「指定したのに無視された」を作るので拒否する。
+
+        エンジン側の戦略資産（`strategy_override` 等）は撤去していない——
+        **`run_job` 直投入（`--job-dir`）から到達可能**であり、閉じるのは受付 API
+        経由の入口だけである。
+        """
+        if submission.strategy is not None:
+            raise JobSubmissionInvalidError(
+                "strategy（条件・トレーリング・部分決済）は受け付けません。"
+                "MT5 Settings タブに対応物が無い項目であり、売買の条件や建玉の変更は"
+                "EA 側（Expert）の実装で指定してください"
+                "（エンジンの戦略資産は残っており run_job への直投入から到達できます）"
+            )
+
     def _reject_invalid_settings(self, submission: JobSubmission) -> None:
         """Phase 8（§18.4 スライス 3）: settings ブロックの受付検証 3 本。
 
         a. 設定規則（B〜Q）— `SettingsValidationPort` が framework の単一ソースへ委譲する。
-        b. 実行対象の一致 — `Expert` の語幹（`EaSubjectPort`）と `backtest.ea_name` が
-           一致すること。食い違ったまま実行すると「指定した EA と違う EA の結果」が
-           静かに出る（どちらが権威かを決めずに両方渡す形にはしない）。
+        b. 実行対象の一致＝`Expert` の語幹と `Symbol` — `Expert` の語幹
+           （`EaSubjectPort`）と `backtest.ea_name`、および `Symbol`（生トークン）と
+           `backtest.symbol` がそれぞれ一致すること。食い違ったまま実行すると
+           「指定した EA と違う EA の結果」「指定と違う銘柄の結果」が静かに出る
+           （どちらが権威かを決めずに両方渡す形にはしない）。銘柄側は §19.5 /
+           ISSUE-422 の裁定で追加した——`Model=Math calculations` では写像層に
+           `.ini` の `Symbol` が到達せず、受付層が唯一の判定点である。
         c. T-2 裁定 — `[TesterInputs]` は Phase 8 では実行不能。束縛表（`EA_INPUT_BINDINGS`）
            が空であり、入力 1 行でも実行段で必ず `ConfigError` になる。受付で理由つきに
            拒否して「投入は通ったのに実行だけ落ちる」遅い失敗を作らない。
@@ -138,6 +184,26 @@ class SubmitJobInteractor:
                 f"Tester Settings の Expert={subject!r}（EA 名={stem!r}）は、実行仕様の "
                 f"ea_name={submission.ea_name!r} と一致しません。同じ EA を指してください"
                 "（食い違ったまま実行すると、指定した EA と違う EA の結果が出ます）"
+            )
+
+        # 実行対象の一致（銘柄・ISSUE-422 / §19.5）。比較するのは**生トークン**同士
+        # （`.ini` の `Symbol` と実行仕様の `symbol`）であり、正規化した派生値ではない。
+        #
+        # なぜ受付層で判定するか（写像層では実装できない・実測 §19.5）:
+        #   `TesterSettings.effective()` は `Model=Math calculations` のとき
+        #   `INERT_FIELDS`（`symbol` を含む）を None 化する
+        #   （`simulator/usecase/tester_settings/models.py`）。そのため写像層の
+        #   `_require_match` には `.ini` の `Symbol` が **到達しない**＝順序を変えても
+        #   math の不一致は写像層では検出できない。生トークンを持つのは受付層だけである。
+        #   受付層の判定集合は写像層の判定集合の真上位集合であり、二重化ではない
+        #   （写像層の検査は `run_job` 直投入経路の防壁として存続する）。
+        ini_symbol = str(tester.get("Symbol", ""))
+        run_symbol = str((submission.backtest or {}).get("symbol", ""))
+        if ini_symbol != run_symbol:
+            raise JobSubmissionInvalidError(
+                f"Tester Settings の Symbol={ini_symbol!r} は、実行仕様の "
+                f"symbol={run_symbol!r} と一致しません。同じ銘柄を指してください"
+                "（Modelling によっては指定と違う銘柄の結果が静かに出ます）"
             )
 
         if inputs:
