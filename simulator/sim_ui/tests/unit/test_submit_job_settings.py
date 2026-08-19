@@ -33,12 +33,17 @@ from simulator.sim_ui.tests.integration._fake_ports import (
 )
 from simulator.sim_ui.usecase.job_models import JobSubmission, JobSubmissionInvalidError
 from simulator.sim_ui.usecase.submit_job import SubmitJobInteractor
+from simulator.framework.tester_settings.loader import tester_settings_from_mapping
 from simulator.tests.tester_settings_engine_fixtures import runnable_expert_mapping
 
 # 実行可能な `[Tester]` マッピング（保証境界の内側）は既存の組み立て器が単一ソース。
 # ここで `.ini` の値を書き写さない。
 _EA_NAME = build_ea_subject_port().stem_of(runnable_expert_mapping()["Expert"])
 _CATALOG = FakeSeriesCatalog({_EA_NAME: frozenset({"close"})})
+
+#: `.ini` が指す銘柄（生トークン）と、それと食い違う銘柄。
+_TESTER_SYMBOL = runnable_expert_mapping()["Symbol"]
+_OTHER_SYMBOL = f"{_TESTER_SYMBOL}_OTHER"
 
 
 def _interactor(launcher=None) -> SubmitJobInteractor:
@@ -55,13 +60,21 @@ def _interactor(launcher=None) -> SubmitJobInteractor:
     )
 
 
-def _submission(*, tester=None, inputs=(), ea_name: str = _EA_NAME) -> JobSubmission:
+def _submission(
+    *, tester=None, inputs=(), ea_name: str = _EA_NAME, symbol=None
+) -> JobSubmission:
+    """既定は `.ini` と実行仕様が同じ実行対象を指す本文（本番 front と同じ形）。
+
+    `symbol` を明示すると実行仕様側だけを差し替えられる（実行対象の不一致を作る）。
+    既定値は `.ini` の `Symbol` から引く（銘柄名をここに書き写さない＝単一ソース）。
+    """
+    tester_map = dict(runnable_expert_mapping() if tester is None else tester)
     return JobSubmission(
-        backtest={"ea_name": ea_name},
-        settings={
-            "tester": dict(runnable_expert_mapping() if tester is None else tester),
-            "inputs": list(inputs),
+        backtest={
+            "ea_name": ea_name,
+            "symbol": tester_map.get("Symbol", "") if symbol is None else symbol,
         },
+        settings={"tester": tester_map, "inputs": list(inputs)},
     )
 
 
@@ -115,6 +128,87 @@ def test_Expert不在のsettingsは不一致として拒否される() -> None:
     # Act / Assert
     with pytest.raises(JobSubmissionInvalidError):
         sut.execute(sub)
+
+
+# --- 2b. Symbol と backtest.symbol の一致（ISSUE-422・段階 2 §19.5） ----------
+
+def test_Symbolとbacktest_symbolの不一致は受付で拒否される_Model1() -> None:
+    """`Model=1`（写像層の防壁が生きる経路）でも**受付で**止める。
+
+    現行は受付を素通りし、実行段で failed になる（遅い失敗）。同じ不一致が
+    Modelling によって別経路で報告される非対称を、受付側へ寄せて解消する。
+    """
+    # Arrange
+    sut = _interactor()
+    sub = _submission(tester=runnable_expert_mapping(Model="1"), symbol=_OTHER_SYMBOL)
+    # Act / Assert
+    with pytest.raises(JobSubmissionInvalidError) as caught:
+        sut.execute(sub)
+    message = str(caught.value)
+    assert _TESTER_SYMBOL in message, f"`.ini` の銘柄名が文言に無い: {message}"
+    assert _OTHER_SYMBOL in message, f"実行仕様の銘柄名が文言に無い: {message}"
+
+
+def test_Symbolとbacktest_symbolの不一致は受付で拒否される_math() -> None:
+    """`Model=3`（Math calculations）は写像層に `.ini` の Symbol が到達しない。
+
+    `TesterSettings.effective()` は `MATH_CALCULATIONS` のとき `INERT_FIELDS`
+    （`symbol` を含む）を None 化するため、写像層の `_require_match` は不一致を
+    黙認する（ISSUE-422）。受付で止めなければ「指定と違う銘柄の結果」が静かに出る。
+    """
+    # Arrange
+    sut = _interactor()
+    sub = _submission(tester=runnable_expert_mapping(Model="3"), symbol=_OTHER_SYMBOL)
+    # Act / Assert
+    with pytest.raises(JobSubmissionInvalidError) as caught:
+        sut.execute(sub)
+    assert _OTHER_SYMBOL in str(caught.value)
+
+
+def test_銘柄不一致の投入は台帳へ書かず子も起こさない() -> None:
+    # Arrange
+    launcher = FakeLauncher()
+    sut = _interactor(launcher=launcher)
+    sub = _submission(symbol=_OTHER_SYMBOL)
+    # Act
+    with pytest.raises(JobSubmissionInvalidError):
+        sut.execute(sub)
+    # Assert
+    assert launcher.launched == []
+
+
+def test_backtest_symbol不在は不一致として拒否される() -> None:
+    """実行仕様が銘柄を持たない本文は実行対象が定まらない（空文字との不一致）。"""
+    # Arrange
+    sut = _interactor()
+    sub = _submission(symbol="")
+    # Act / Assert
+    with pytest.raises(JobSubmissionInvalidError):
+        sut.execute(sub)
+
+
+def test_受付が比較する生トークンは設定モデルの値と恒等である() -> None:
+    """受付の比較対象（生トークン）が設定モデルの `symbol` と同じ値であること。
+
+    受付は `.ini` の生トークンを直接比べる。もし正規化を挟むと「受付は通るが
+    実行対象は別」の隙間ができる。恒等であることをここで固定する。
+    """
+    # Arrange / Act
+    settings = tester_settings_from_mapping(runnable_expert_mapping(), [])
+    # Assert
+    assert settings.symbol == _TESTER_SYMBOL
+
+
+def test_math実行では実行時ビューに銘柄が到達しない() -> None:
+    """受付層で判定する決定的根拠（§19.5）を機械で固定する。
+
+    `Model=3`（Math calculations）では `effective()` が `symbol` を None 化するため、
+    写像層は `.ini` の銘柄を見られない＝写像層では不一致を検出できない。
+    """
+    # Arrange / Act
+    effective = tester_settings_from_mapping(runnable_expert_mapping(Model="3"), []).effective()
+    # Assert
+    assert effective.symbol is None
 
 
 # --- 3. T-2: EA inputs は Phase 8 では実行不能 ------------------------------

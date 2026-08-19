@@ -112,9 +112,13 @@ class SubmitJobInteractor:
         """Phase 8（§18.4 スライス 3）: settings ブロックの受付検証 3 本。
 
         a. 設定規則（B〜Q）— `SettingsValidationPort` が framework の単一ソースへ委譲する。
-        b. 実行対象の一致 — `Expert` の語幹（`EaSubjectPort`）と `backtest.ea_name` が
-           一致すること。食い違ったまま実行すると「指定した EA と違う EA の結果」が
-           静かに出る（どちらが権威かを決めずに両方渡す形にはしない）。
+        b. 実行対象の一致＝`Expert` の語幹と `Symbol` — `Expert` の語幹
+           （`EaSubjectPort`）と `backtest.ea_name`、および `Symbol`（生トークン）と
+           `backtest.symbol` がそれぞれ一致すること。食い違ったまま実行すると
+           「指定した EA と違う EA の結果」「指定と違う銘柄の結果」が静かに出る
+           （どちらが権威かを決めずに両方渡す形にはしない）。銘柄側は §19.5 /
+           ISSUE-422 の裁定で追加した——`Model=Math calculations` では写像層に
+           `.ini` の `Symbol` が到達せず、受付層が唯一の判定点である。
         c. T-2 裁定 — `[TesterInputs]` は Phase 8 では実行不能。束縛表（`EA_INPUT_BINDINGS`）
            が空であり、入力 1 行でも実行段で必ず `ConfigError` になる。受付で理由つきに
            拒否して「投入は通ったのに実行だけ落ちる」遅い失敗を作らない。
@@ -138,6 +142,26 @@ class SubmitJobInteractor:
                 f"Tester Settings の Expert={subject!r}（EA 名={stem!r}）は、実行仕様の "
                 f"ea_name={submission.ea_name!r} と一致しません。同じ EA を指してください"
                 "（食い違ったまま実行すると、指定した EA と違う EA の結果が出ます）"
+            )
+
+        # 実行対象の一致（銘柄・ISSUE-422 / §19.5）。比較するのは**生トークン**同士
+        # （`.ini` の `Symbol` と実行仕様の `symbol`）であり、正規化した派生値ではない。
+        #
+        # なぜ受付層で判定するか（写像層では実装できない・実測 §19.5）:
+        #   `TesterSettings.effective()` は `Model=Math calculations` のとき
+        #   `INERT_FIELDS`（`symbol` を含む）を None 化する
+        #   （`simulator/usecase/tester_settings/models.py`）。そのため写像層の
+        #   `_require_match` には `.ini` の `Symbol` が **到達しない**＝順序を変えても
+        #   math の不一致は写像層では検出できない。生トークンを持つのは受付層だけである。
+        #   受付層の判定集合は写像層の判定集合の真上位集合であり、二重化ではない
+        #   （写像層の検査は `run_job` 直投入経路の防壁として存続する）。
+        ini_symbol = str(tester.get("Symbol", ""))
+        run_symbol = str((submission.backtest or {}).get("symbol", ""))
+        if ini_symbol != run_symbol:
+            raise JobSubmissionInvalidError(
+                f"Tester Settings の Symbol={ini_symbol!r} は、実行仕様の "
+                f"symbol={run_symbol!r} と一致しません。同じ銘柄を指してください"
+                "（Modelling によっては指定と違う銘柄の結果が静かに出ます）"
             )
 
         if inputs:
