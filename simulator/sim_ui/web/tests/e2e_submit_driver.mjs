@@ -69,6 +69,18 @@ async function main() {
     findById(doc.body, "execDeposit").value = LEGACY_DEPOSIT;
   }
 
+  if (scenario === "unsupported") {
+    // 非対象トークンを**宣言から**引いて選ぶ（`Model=4` 等の数値を書かない）。
+    // schema の告知が `on_tokens` で名指ししたキーとトークンをそのまま使う。
+    const schema = await (await globalThis.fetch(base + SCHEMA_PATH)).json();
+    const notice = schema.unsupported.find(
+      (n) => n.trigger === "on_tokens" && n.keys.includes("Model"),
+    );
+    const control = findById(doc.body, `tester${notice.keys[0]}`);
+    control.value = notice.tokens[0];
+    fire(control, "change");
+  }
+
   if (scenario === "mismatch") {
     // 実行対象データセットと食い違う `Period` を選ぶ（schema が配る別トークン）。
     const schema = await (await globalThis.fetch(base + SCHEMA_PATH)).json();
@@ -92,6 +104,8 @@ async function main() {
     failure,
     warnings: testerView.warnings(),
     active_unsupported: testerView.activeUnsupported().map((n) => n.unsupported_id),
+    // 画面に出た理由文（宣言の写しでないことを呼出側が宣言表と突き合わせる）
+    shown_unsupported_reasons: testerView.activeUnsupported().map((n) => n.reason),
     tester_panel_present: Boolean(findById(doc.body, "simTesterPanel")),
     legacy_ea_field_present: Boolean(findById(doc.body, "execEaName")),
     legacy_deposit_field_present: Boolean(findById(doc.body, "execDeposit")),

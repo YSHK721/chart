@@ -18,6 +18,12 @@
 //   `FromDate`/`ToDate` カスタムは同時に送れないため、切替 1 つで出し分ける。他の規則
 //   （B・F・K・H …）はサーバの Fail-Stop に委ねる——front で判定を写すと規則が 2 実装になる。
 //
+// 非対象の該当判定は**宣言駆動**（R-9）: どの選択がどの告知に当たるかは schema が配る
+//   `keys` × `trigger`（+`tokens`）だけで決める。キー名から宣言側の field 名を正規表現で
+//   再導出したり、「既定値から動かしたか」を該当の代理にしたりしない。前者は綴りが一致
+//   しない告知（実ティック・期間窓・実行対象 EA）を**静かに 0 件**にし、後者は profile を
+//   選び直しただけで既定が振り直され警告が黙って消える（どちらも実測済みの壊れ方）。
+//
 // EA inputs（`[TesterInputs]`）欄は出さない（裁定 T-2）。束縛表が空であり、1 行でも指定
 //   すれば実行段で必ず設定エラーになる。SL/TP/移動平均/ロットは実行仕様（backtest）が権威。
 //
@@ -72,10 +78,12 @@ function groupDefOf(key) {
   return FIELD_GROUPS.find((g) => g.keys.includes(key)) || DEFAULT_GROUP;
 }
 
-/** `.ini` キー（CamelCase）→ 非対象宣言の field 名（snake_case）。 */
-function fieldNameOf(key) {
-  return String(key).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
-}
+/** 非対象の発火条件（サーバ宣言 `UI_TRIGGER_*` と同一語彙）。front は条件を発明しない。 */
+const TRIGGER_ON_TOKENS = "on_tokens";
+const TRIGGER_EXCEPT_TOKENS = "except_tokens";
+const TRIGGER_ON_PRESENCE = "on_presence";
+const TRIGGER_OFF_CANDIDATES = "off_candidates";
+const TRIGGER_OFF_PROFILE = "off_profile";
 
 export function createSimTesterSettingsPanelView({ doc } = {}) {
   let root = null;
@@ -93,8 +101,6 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   const groupHosts = new Map();
   /** `.ini` キー → 入力要素。 */
   const controls = new Map();
-  /** `.ini` キー → 既定値（schema / profile が与えた値）。「動かしたか」の判定に使う。 */
-  const defaults = new Map();
   /** Expert の生トークン → EA 名の語幹（接尾辞の切り出しを front でやらない）。 */
   const expertLabels = new Map();
 
@@ -213,16 +219,47 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     }
   }
 
-  function snapshotDefaults() {
-    defaults.clear();
-    for (const [key, node] of controls) defaults.set(key, String(node.value == null ? "" : node.value));
+  /** キー K の現在値（未生成なら null）。 */
+  function currentToken(key) {
+    const node = controls.get(key);
+    return node ? String(node.value == null ? "" : node.value) : null;
   }
 
-  function noticesForKey(key) {
-    const field = fieldNameOf(key);
-    return (schema.unsupported || []).filter(
-      (notice) => notice.field === field || String(notice.field).startsWith(`${field}.`),
-    );
+  /** キー K に対して配られた候補トークン（自由入力なら空）。 */
+  function offeredTokens(key) {
+    const node = controls.get(key);
+    return ((node && node.children) || []).map((option) => String(option.value));
+  }
+
+  /** キー K の権威値（実行対象データセットが供給する値。無ければ null）。 */
+  function profileAuthority(key) {
+    const field = PROFILE_FIELD_OF_KEY[key];
+    const value = profile && field ? profile[field] : null;
+    return value === undefined || value === null ? null : String(value);
+  }
+
+  /** 告知 N がキー K で発火するか。**判定は宣言（trigger/tokens）だけで行う**。 */
+  function triggeredOn(notice, key, submitted) {
+    const token = currentToken(key);
+    const tokens = notice.tokens || [];
+    switch (notice.trigger) {
+      case TRIGGER_ON_PRESENCE:
+        return Object.prototype.hasOwnProperty.call(submitted, key);
+      case TRIGGER_ON_TOKENS:
+        return token !== null && tokens.includes(token);
+      case TRIGGER_EXCEPT_TOKENS:
+        return token !== null && !tokens.includes(token);
+      case TRIGGER_OFF_CANDIDATES:
+        return token !== null && !offeredTokens(key).includes(token);
+      case TRIGGER_OFF_PROFILE: {
+        const authority = profileAuthority(key);
+        return token !== null && authority !== null && token !== authority;
+      }
+      default:
+        // 生トークンでは判定できないと宣言された告知（構造不変条件の防壁）。
+        // 「動かしたら光らせる」等の代理判定を置かない（過剰発火は警告を無意味にする）。
+        return false;
+    }
   }
 
   /** 全一覧の開閉状態を DOM へ書く（実際の隠し方は CSS が持つ）。 */
@@ -280,7 +317,6 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     unsupportedToggle.dataset.count = String(((schema && schema.unsupported) || []).length);
     groupHosts.clear();
     controls.clear();
-    defaults.clear();
     expertLabels.clear();
     dateCustom = null;
     if (!schema) {
@@ -299,7 +335,6 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
       buildControl(key);
     }
     applyProfileDefaults();
-    snapshotDefaults();
     renderUnsupported();
     renderUnsupportedActivation();
     renderWarnings();
@@ -332,12 +367,11 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
 
   function activeUnsupported() {
     if (!schema) return [];
-    const active = new Set();
-    for (const [key, node] of controls) {
-      if (String(node.value == null ? "" : node.value) === defaults.get(key)) continue;
-      for (const notice of noticesForKey(key)) active.add(notice.unsupported_id);
-    }
-    return (schema.unsupported || []).filter((n) => active.has(n.unsupported_id));
+    // `on_presence` は「実際に投入本文へ載るか」で決まるため、組み上がった Mapping を見る
+    // （期間形式の排他・空欄の非搭載といった出し分けを二重に実装しない）。
+    const submitted = buildTesterMapping();
+    return (schema.unsupported || []).filter((notice) =>
+      (notice.keys || []).some((key) => triggeredOn(notice, key, submitted)));
   }
 
   function buildTesterMapping() {
@@ -404,7 +438,6 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
       profile = runProfile || null;
       if (!schema) return;
       applyProfileDefaults();
-      snapshotDefaults();
       renderUnsupportedActivation();
       renderWarnings();
     },

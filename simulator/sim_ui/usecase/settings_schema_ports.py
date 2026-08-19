@@ -44,22 +44,35 @@ class UnsupportedNotice:
     フィールド名 ``unsupported_id`` は宣言側（`main/tester_settings/unsupported.py` の
     `UnsupportedRule.unsupported_id`）と同一語彙にする。同じ概念に 2 つの呼び名
     （``id`` と ``unsupported_id``）を作らないためである（当該 docstring の明示規約）。
+
+    ``keys`` / ``trigger`` / ``tokens`` は**UI 束縛の宣言**（R-9）である。front は
+    「どの選択がこの告知に当たるか」をこの 3 つだけで判定し、キー名からフィールド名を
+    再導出したり、既定値との差分を該当の代理にしたりしない。推測で結ぶと、宣言と
+    食い違ったときに静かに 0 件（または過剰発火）になる。語彙（``trigger`` の値）は
+    宣言側の ``UI_TRIGGER_*`` と同一である。
     """
 
     unsupported_id: str
     field: str
     reason: str
     tbd: "str | None" = None
+    keys: "tuple[str, ...]" = ()
+    trigger: str = ""
+    tokens: "tuple[str, ...]" = ()
 
     def to_dict(self) -> "dict":
-        """JSON 直列化用のプレーン dict。``tbd`` が無いときはキーを載せない。"""
+        """JSON 直列化用のプレーン dict。``tbd`` / ``tokens`` は無いときキーを載せない。"""
         payload = {
             "unsupported_id": self.unsupported_id,
             "field": self.field,
             "reason": self.reason,
+            "keys": list(self.keys),
+            "trigger": self.trigger,
         }
         if self.tbd is not None:
             payload["tbd"] = self.tbd
+        if self.tokens:
+            payload["tokens"] = list(self.tokens)
         return payload
 
 

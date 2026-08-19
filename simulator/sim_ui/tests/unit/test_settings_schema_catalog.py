@@ -141,6 +141,75 @@ def test_unsupported_notices_cover_every_injected_rule(catalog) -> None:
     assert all(by_id[rid].tbd == rule.tbd for rid, rule in RULES.items())
 
 
+# --- 非対象の UI 束縛（R-9・宣言駆動）------------------------------------------
+# front は「どの選択が非対象に当たるか」をキー名の正規表現や既定値スナップショットから
+# **推測してはならない**（推測は宣言と食い違っても静かに 0 件になる）。束縛は宣言側
+# （`UnsupportedRule.ui`）が所有し、カタログはそれを解決して配るだけである。
+
+
+def test_every_notice_binds_to_a_non_empty_subset_of_the_key_order(catalog) -> None:
+    """空紐付け（どのキーにも当たらない告知）を禁じる。
+
+    空を許すと「宣言はあるのに UI では絶対に出ない」告知が生まれ、沈黙で保証境界の
+    外へ出られる。全件が **非空** かつ **キー順の部分集合** であることを固定する。
+    """
+    # Arrange / Act
+    notices = catalog.unsupported()
+    # Assert
+    assert notices, "告知が 0 件（宣言表の注入が届いていない）"
+    for notice in notices:
+        assert notice.keys, f"{notice.unsupported_id} がどの `.ini` キーにも紐づいていません"
+        unknown = set(notice.keys) - set(STANDARD_KEY_ORDER)
+        assert not unknown, f"{notice.unsupported_id} が未知のキーへ紐づいています: {sorted(unknown)}"
+
+
+def test_every_notice_declares_a_trigger_the_ui_can_evaluate(catalog) -> None:
+    """発火条件が宣言されており、トークン列挙型なら token が空でないこと。"""
+    # Arrange
+    from simulator.main.tester_settings.unsupported import UI_TRIGGER_MODES, UI_TRIGGERS_WITH_TOKENS
+
+    # Act
+    notices = catalog.unsupported()
+    # Assert
+    for notice in notices:
+        assert notice.trigger in UI_TRIGGER_MODES, (
+            f"{notice.unsupported_id} の発火条件が未知です: {notice.trigger!r}"
+        )
+        if notice.trigger in UI_TRIGGERS_WITH_TOKENS:
+            assert notice.tokens, f"{notice.unsupported_id} のトークン集合が空です"
+
+
+def test_notice_binding_is_the_rule_declaration_verbatim(catalog) -> None:
+    """カタログは宣言を**写すだけ**（キー・条件・トークンを自前で導出しない）。"""
+    # Arrange / Act
+    by_id = {n.unsupported_id: n for n in catalog.unsupported()}
+    # Assert
+    for rule_id, rule in RULES.items():
+        assert by_id[rule_id].keys == tuple(rule.ui.keys)
+        assert by_id[rule_id].trigger == rule.ui.mode
+        assert by_id[rule_id].tokens == tuple(rule.ui.tokens)
+
+
+def test_a_rule_without_a_ui_binding_is_rejected_at_construction() -> None:
+    """宣言を欠いた rule を黙って配らない（沈黙の縮退を作らない・構築時 Fail-Stop）。"""
+    # Arrange: `ui` を持たない宣言（将来 rule を足したときの取り違えの再現）
+    from dataclasses import replace
+
+    broken = dict(RULES)
+    victim = next(iter(broken))
+    broken[victim] = replace(broken[victim], ui=None)
+    # Act / Assert
+    with pytest.raises(ValueError, match=victim):
+        SchemaCatalog(
+            key_order=STANDARD_KEY_ORDER,
+            required_keys=_REQUIRED,
+            expert_only_keys=EXPERT_ONLY_KEYS,
+            known_ea_names=lambda: _EA_NAMES,
+            subject_suffix=_SUFFIX,
+            unsupported_rules=broken,
+        ).unsupported()
+
+
 def test_key_order_and_required_keys_pass_the_injection_through(catalog) -> None:
     # Arrange / Act / Assert
     assert catalog.key_order() == tuple(STANDARD_KEY_ORDER)

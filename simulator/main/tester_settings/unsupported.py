@@ -7,7 +7,8 @@
     非対象の追加が既存の分岐・関数の書き換えを要さない（OCP）。
 
 2. 含む構造:
-    UnsupportedRule       : 非対象 1 件の宣言（ID / field / reason / 判定式 / 送出）。
+    UiTrigger             : 設定フォームへの束縛（効くキー・発火条件・生トークン）。
+    UnsupportedRule       : 非対象 1 件の宣言（ID / field / reason / 判定式 / 送出 / UI 束縛）。
     RULES                 : ID → 宣言（N-01〜N-16 のうち送出を伴うもの）。
     RUN_REQUEST_RULES     : 実行要求時に評価する宣言（評価順）。
     NON_RAISING_RULES     : 送出を伴わない非対象（欠番・近似・責務境界・ロード時）。
@@ -24,7 +25,9 @@
     プロジェクト内: simulator.domain.exceptions（ConfigError）/
                     simulator.domain.tester_settings_exceptions（UnsupportedSettingError）/
                     simulator.usecase.tester_settings（DTO・列挙）/
-                    simulator.main.tester_settings.ea_input_map（ea_stem）
+                    simulator.main.tester_settings.ea_input_map（ea_stem）/
+                    simulator.adapter.tester_settings.ini_codec（生トークン表記の唯一の宣言。
+                        UI 束縛のトークンを字形ごと書き直さないために公開フォーマッタを使う）
 
 方針（基本設計 §4.6）: 非対象を沈黙スキップしない。非対象設定を実行要求された場合は
 例外を送出して run を中止する（Fail-Stop）。
@@ -34,6 +37,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, NoReturn
 
+from simulator.adapter.tester_settings.ini_codec import (
+    format_bool_token,
+    format_int_token,
+)
 from simulator.domain.exceptions import BacktestError, ConfigError
 from simulator.domain.tester_settings_exceptions import UnsupportedSettingError
 from simulator.main.tester_settings.ea_input_map import ea_stem
@@ -67,6 +74,51 @@ def _as_config_error(payload: "dict[str, Any]") -> BacktestError:
     return ConfigError(message, context=payload)
 
 
+#: UI 側の発火条件（`UiTrigger.mode`）。設定フォームは `.ini` の**生トークン**しか持たない
+#: ため、判定式（`detect`）をそのまま動かせない。そこで「どのキーの・どういう値なら
+#: 当該 rule に当たるか」を宣言として持たせ、UI はこの宣言だけを照合する。
+#: キー名の正規表現でフィールド名を再導出したり、既定値との差分を該当の代理にしたりすると、
+#: 宣言と食い違っても静かに 0 件（または過剰発火）になる。
+UI_TRIGGER_ON_TOKENS = "on_tokens"           #: 列挙した生トークンに一致したら発火
+UI_TRIGGER_EXCEPT_TOKENS = "except_tokens"   #: 列挙した生トークン**以外**なら発火
+UI_TRIGGER_ON_PRESENCE = "on_presence"       #: そのキーが投入本文に載るなら発火
+UI_TRIGGER_OFF_CANDIDATES = "off_candidates" #: 配った候補集合に無い値なら発火
+UI_TRIGGER_OFF_PROFILE = "off_profile"       #: 実行対象データセットの権威値と異なれば発火
+UI_TRIGGER_NONE = "none"                     #: 生トークンでは判定できない（構造不変条件の防壁）
+
+#: 妥当な発火条件の集合（UI・schema の検定が参照する唯一の宣言）。
+UI_TRIGGER_MODES: "frozenset[str]" = frozenset({
+    UI_TRIGGER_ON_TOKENS,
+    UI_TRIGGER_EXCEPT_TOKENS,
+    UI_TRIGGER_ON_PRESENCE,
+    UI_TRIGGER_OFF_CANDIDATES,
+    UI_TRIGGER_OFF_PROFILE,
+    UI_TRIGGER_NONE,
+})
+#: トークン列挙を伴う条件（空のトークン集合は宣言の書き損じ）。
+UI_TRIGGERS_WITH_TOKENS: "frozenset[str]" = frozenset({
+    UI_TRIGGER_ON_TOKENS, UI_TRIGGER_EXCEPT_TOKENS,
+})
+
+
+@dataclass(frozen=True)
+class UiTrigger:
+    """非対象 1 件の**UI 束縛**の宣言（どの `.ini` キーの・どんな値で当たるか）。
+
+    keys:   効く `.ini` キー（標準キー順に実在する名前）。**空にしない**——空は
+            「宣言はあるのに UI では絶対に出ない」告知を作り、沈黙で保証境界の外へ
+            出られるようにしてしまう。
+    mode:   発火条件（``UI_TRIGGER_*`` のいずれか）。
+    tokens: ``on_tokens`` / ``except_tokens`` のときの生トークン集合。表記は
+            `ini_codec` の公開フォーマッタ（`format_int_token` / `format_bool_token`）を
+            通して作る（字形の宣言を書き直さない）。
+    """
+
+    keys: "tuple[str, ...]"
+    mode: str
+    tokens: "tuple[str, ...]" = ()
+
+
 @dataclass(frozen=True)
 class UnsupportedRule:
     """非対象 1 件の宣言。
@@ -83,6 +135,10 @@ class UnsupportedRule:
              `raise_unsupported` で送出する。
     tbd:     未確定事項番号（あれば `context` の ``tbd`` に載る）。
     build:   宣言と `context` から例外を組み立てる関数（既定は E-07）。
+    ui:      設定フォームへの束縛（:class:`UiTrigger`）。投入**前**に理由を出すための
+             宣言であり、`detect` と同じものを指す（対応は
+             `tests/integration/test_tester_settings_to_interactor.py` が実行段の
+             実測で結ぶ）。``None`` は宣言の欠落であり、schema を組む側が Fail-Stop する。
     """
 
     unsupported_id: str
@@ -91,6 +147,7 @@ class UnsupportedRule:
     detect: "Callable[[EffectiveSettings, EngineBinding], Any] | None" = None
     tbd: "str | None" = None
     build: "Callable[[dict[str, Any]], BacktestError]" = _as_unsupported_setting_error
+    ui: "UiTrigger | None" = None
 
 
 def raise_unsupported(rule: UnsupportedRule, *, value: Any, **context: Any) -> NoReturn:
@@ -200,12 +257,19 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         ),
         detect=_detect_unknown_ea,
         build=_as_config_error,
+        # 候補（配った Expert 一覧＝known_ea_names）に無い値なら当たる。
+        ui=UiTrigger(keys=("Expert",), mode=UI_TRIGGER_OFF_CANDIDATES),
     ),
     UnsupportedRule(
         unsupported_id="N-02",
         field="optimization",
         reason="Settings 層からの最適化実行は対象外です（単一パスのみ）",
         detect=_detect_optimization,
+        ui=UiTrigger(
+            keys=("Optimization",),
+            mode=UI_TRIGGER_EXCEPT_TOKENS,
+            tokens=(format_int_token(OptimizationMode.DISABLED),),
+        ),
     ),
     UnsupportedRule(
         unsupported_id="N-03",
@@ -213,36 +277,61 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         reason="フォワードの期間分割位置が未確定です",
         detect=_detect_forward,
         tbd="TBD-03",
+        ui=UiTrigger(
+            keys=("ForwardMode",),
+            mode=UI_TRIGGER_EXCEPT_TOKENS,
+            tokens=(format_int_token(ForwardMode.DISABLED),),
+        ),
     ),
     UnsupportedRule(
         unsupported_id="N-05",
         field="tick_model",
         reason="実ティックの供給元（tick_store_root）が注入されていません",
         detect=_detect_real_ticks_without_store,
+        ui=UiTrigger(
+            keys=("Model",),
+            mode=UI_TRIGGER_ON_TOKENS,
+            tokens=(format_int_token(TickModel.REAL_TICKS),),
+        ),
     ),
     UnsupportedRule(
         unsupported_id="N-07",
         field="profit_in_pips",
         reason="pips 建ての集計式が BACKTEST_METRICS.md に定義されていません",
         detect=_detect_profit_in_pips,
+        ui=UiTrigger(
+            keys=("ProfitInPips",),
+            mode=UI_TRIGGER_ON_TOKENS,
+            tokens=(format_bool_token(True),),
+        ),
     ),
     UnsupportedRule(
         unsupported_id="N-09",
         field="visual",
         reason="テスターのリアルタイム描画は移植対象外です",
         detect=_detect_visual,
+        ui=UiTrigger(
+            keys=("Visual",),
+            mode=UI_TRIGGER_ON_TOKENS,
+            tokens=(format_bool_token(True),),
+        ),
     ),
     UnsupportedRule(
         unsupported_id="N-10",
         field="symbol",
         reason="現行エンジンの投入契約は単一銘柄（symbol: str）のみを受けます",
         detect=_detect_multi_symbol,
+        # 判定は「単一の文字列か」という**構造**であり、`.ini` の生トークンは常に
+        # 文字列である。UI の値からは原理的に当たり得ないため発火条件を持たない。
+        ui=UiTrigger(keys=("Symbol",), mode=UI_TRIGGER_NONE),
     ),
     UnsupportedRule(
         unsupported_id="N-11",
         field="currency",
         reason="口座通貨と銘柄の決済通貨が異なります（現行エンジンは換算レートを持ちません）",
         detect=_detect_cross_currency,
+        # 判定源は束縛の `settlement_currency`＝実行対象データセットの権威値。
+        ui=UiTrigger(keys=("Currency",), mode=UI_TRIGGER_OFF_PROFILE),
     ),
     UnsupportedRule(
         unsupported_id="N-15",
@@ -252,6 +341,10 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
             "（当該 EA のデータ取得経路は marketdata_window を参照しません）"
         ),
         detect=None,  # 判定にはエンジンが返したバー系列が要る（window.verify_window_applied）
+        # 窓を課すのは custom 指定（`FromDate`/`ToDate`）のときだけである
+        # （`window._entire_history` は `marketdata_window=None`＝検証対象が無い）。
+        # したがって「その 2 キーが投入本文に載る」ことが UI 側の必要条件そのものになる。
+        ui=UiTrigger(keys=("FromDate", "ToDate"), mode=UI_TRIGGER_ON_PRESENCE),
     ),
     UnsupportedRule(
         unsupported_id="N-16",
@@ -262,6 +355,11 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         ),
         detect=_detect_last_year,
         tbd="TBD-14",
+        ui=UiTrigger(
+            keys=("Dates",),
+            mode=UI_TRIGGER_ON_TOKENS,
+            tokens=(format_int_token(DatesPreset.LAST_YEAR),),
+        ),
     ),
 )
 

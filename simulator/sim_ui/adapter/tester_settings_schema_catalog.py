@@ -17,8 +17,10 @@
    （層ゲート: `tests/unit/test_sim_ui_import_direction.py`・CLEAN_ARCH の依存方向）。
 
 非対象の宣言（`unsupported_rules`）は**構造で受ける**（型を import しない）。読むのは
-``unsupported_id`` / ``field`` / ``reason`` / ``tbd`` の 4 属性だけであり、宣言側の語彙を
-そのまま使う（同じ概念に 2 つの呼び名を作らない）。
+``unsupported_id`` / ``field`` / ``reason`` / ``tbd`` と UI 束縛 ``ui``（``keys`` /
+``mode`` / ``tokens``）だけであり、宣言側の語彙をそのまま使う（同じ概念に 2 つの呼び名を
+作らない）。UI 束縛は**宣言が所有する**——ここでキー名から導出すると、宣言と食い違っても
+静かに 0 件になる告知が生まれる（R-9）。
 
 ラベルは列挙メンバ名である。MT5 の UI 文言は本リポジトリ内に根拠が無く、発明しない
 （基本設計 §18.3）。
@@ -164,13 +166,35 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
         ]
 
     def unsupported(self) -> "list[UnsupportedNotice]":
-        """非対象の告知（宣言表の全件・宣言順）。理由文言は書き写さず宣言から引く。"""
-        return [
-            UnsupportedNotice(
-                unsupported_id=rule.unsupported_id,
-                field=rule.field,
-                reason=rule.reason,
-                tbd=rule.tbd,
+        """非対象の告知（宣言表の全件・宣言順）。理由文言も UI 束縛も宣言から引く。
+
+        UI 束縛（``keys`` / ``trigger`` / ``tokens``）は宣言（`UnsupportedRule.ui`）の
+        写しであり、ここで導出しない。宣言を欠いた rule は **Fail-Stop** する——
+        黙って配ると「どのキーにも当たらない告知」が生まれ、非対象を選んでも UI が
+        何も言わないまま実行段の失敗に至る（沈黙の縮退）。
+        """
+        return [self._notice_of(rule) for rule in self._unsupported_rules.values()]
+
+    def _notice_of(self, rule: "Any") -> UnsupportedNotice:
+        ui = getattr(rule, "ui", None)
+        keys = tuple(getattr(ui, "keys", ()) or ())
+        if ui is None or not keys:
+            raise ValueError(
+                f"非対象の宣言 {rule.unsupported_id} に UI 束縛（効く `.ini` キー）が"
+                "ありません。束縛が空の告知は投入前に一度も出ないため配りません"
             )
-            for rule in self._unsupported_rules.values()
-        ]
+        unknown = sorted(set(keys) - set(self._key_order))
+        if unknown:
+            raise ValueError(
+                f"非対象の宣言 {rule.unsupported_id} が標準キー順に無いキーへ"
+                f"束縛されています: {unknown}"
+            )
+        return UnsupportedNotice(
+            unsupported_id=rule.unsupported_id,
+            field=rule.field,
+            reason=rule.reason,
+            tbd=rule.tbd,
+            keys=keys,
+            trigger=ui.mode,
+            tokens=tuple(ui.tokens),
+        )

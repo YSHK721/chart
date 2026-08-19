@@ -4,7 +4,9 @@
     1. ListSettingsSchemaInteractor.list() は port の 6 面を束ねた DTO を返す。
     2. SettingsSchemaApiController.list() は 200・{ok, key_order, required_keys,
        enum_options, scalar_specs, expert_options, unsupported}。
-    3. 選択肢は {token, label} の dict へ、非対象は {unsupported_id, field, reason, (tbd)} へ翻訳する。
+    3. 選択肢は {token, label} の dict へ、非対象は
+       {unsupported_id, field, reason, keys, trigger, (tbd), (tokens)} へ翻訳する
+       （`keys` / `trigger` は UI 束縛の宣言＝R-9。`tokens` は列挙型の条件のときだけ載る）。
     4. JSON 直列化は job_api_controller.ApiResponse を再利用する（同型の to_bytes を書かない）。
 
 本検定は**翻訳だけ**を見る。選択肢の中身が enums 由来であることは
@@ -45,8 +47,14 @@ class _FakePort(SettingsSchemaPort):
 
     def unsupported(self):
         return [
-            UnsupportedNotice(unsupported_id="N-99", field="f", reason="r", tbd="TBD-99"),
-            UnsupportedNotice(unsupported_id="N-98", field="g", reason="s"),
+            UnsupportedNotice(
+                unsupported_id="N-99", field="f", reason="r", tbd="TBD-99",
+                keys=("Symbol",), trigger="on_tokens", tokens=("t1",),
+            ),
+            UnsupportedNotice(
+                unsupported_id="N-98", field="g", reason="s",
+                keys=("Period",), trigger="on_presence",
+            ),
         ]
 
 
@@ -82,7 +90,11 @@ def test_controller_returns_200_with_the_schema() -> None:
 
 
 def test_controller_omits_the_tbd_key_when_the_rule_has_none() -> None:
-    """`tbd` が無い非対象に ``null`` を載せない（RunProfile.to_dict と同じ流儀）。"""
+    """`tbd` / `tokens` が無い非対象に ``null`` / 空配列を載せない（RunProfile.to_dict と同じ流儀）。
+
+    UI 束縛（`keys` / `trigger`）は**常に**載せる。front はこれだけで該当を判定するため、
+    欠けると「どのキーにも当たらない告知」になり、非対象を選んでも何も出ない。
+    """
     # Arrange
     ctrl = SettingsSchemaApiController(
         schema=ListSettingsSchemaInteractor(port=_FakePort())
@@ -95,8 +107,17 @@ def test_controller_omits_the_tbd_key_when_the_rule_has_none() -> None:
         "field": "f",
         "reason": "r",
         "tbd": "TBD-99",
+        "keys": ["Symbol"],
+        "trigger": "on_tokens",
+        "tokens": ["t1"],
     }
-    assert unsupported[1] == {"unsupported_id": "N-98", "field": "g", "reason": "s"}
+    assert unsupported[1] == {
+        "unsupported_id": "N-98",
+        "field": "g",
+        "reason": "s",
+        "keys": ["Period"],
+        "trigger": "on_presence",
+    }
 
 
 def test_controller_response_is_json_serializable() -> None:

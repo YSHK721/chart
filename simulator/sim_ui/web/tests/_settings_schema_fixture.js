@@ -52,10 +52,31 @@ export function settingsSchema() {
       { token: "TC24051901.zzz", label: "TC24051901" },
     ],
     unsupported: [
-      { unsupported_id: "X-01", field: "optimization", reason: "最適化は対象外です" },
-      { unsupported_id: "X-02", field: "forward_mode", reason: "フォワードは未確定です", tbd: "TBD-99" },
-      // どの `.ini` キーにも紐づかない告知（実物の date_range / subject_path と同型）。
-      { unsupported_id: "X-03", field: "date_range.preset", reason: "窓を決定できません" },
+      // 束縛（keys）と発火条件（trigger/tokens）は**サーバの宣言**（`UnsupportedRule.ui`）が
+      // 配る。front はこれを照合するだけで、キー名からの再導出も既定値との差分判定もしない。
+      // 6 形すべてを 1 件ずつ置き、実物の rule と同型にしてある。
+      { unsupported_id: "X-01", field: "optimization", reason: "最適化は対象外です",
+        keys: ["Optimization"], trigger: "except_tokens", tokens: ["o0"] },
+      { unsupported_id: "X-02", field: "forward_mode", reason: "フォワードは未確定です", tbd: "TBD-99",
+        keys: ["ForwardMode"], trigger: "except_tokens", tokens: ["f0"] },
+      // 特定トークンで発火（実物の N-16 `Dates=2` と同型）
+      { unsupported_id: "X-03", field: "date_range.preset", reason: "窓を決定できません",
+        keys: ["Dates"], trigger: "on_tokens", tokens: ["d2"] },
+      // 特定トークンで発火（実物の N-05 `Model=実ティック` と同型）
+      { unsupported_id: "X-04", field: "tick_model", reason: "実ティックの供給元がありません",
+        keys: ["Model"], trigger: "on_tokens", tokens: ["m1"] },
+      // キーが投入本文に載るなら発火（実物の N-15 と同型）
+      { unsupported_id: "X-05", field: "date_range", reason: "窓の適用は実行後にしか分かりません",
+        keys: ["FromDate", "ToDate"], trigger: "on_presence" },
+      // 配った候補に無い値なら発火（実物の N-01 と同型）
+      { unsupported_id: "X-06", field: "subject_path", reason: "実行可能な EA に限られます",
+        keys: ["Expert"], trigger: "off_candidates" },
+      // 実行対象データセットの権威値と異なれば発火（実物の N-11 と同型）
+      { unsupported_id: "X-07", field: "currency", reason: "口座通貨が決済通貨と異なります",
+        keys: ["Currency"], trigger: "off_profile" },
+      // 生トークンでは判定できない（実物の N-10＝構造不変条件の防壁と同型）
+      { unsupported_id: "X-08", field: "symbol", reason: "単一銘柄のみ受けます",
+        keys: ["Symbol"], trigger: "none" },
     ],
   };
 }

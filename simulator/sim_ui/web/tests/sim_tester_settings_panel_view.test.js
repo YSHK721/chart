@@ -191,17 +191,93 @@ test("every unsupported notice is rendered with the schema reason (沈黙させ�
   }
 });
 
-test("selecting a non-default value activates the notice bound to that key", () => {
+const activeIds = (view) => view.activeUnsupported().map((n) => n.unsupported_id);
+
+test("selecting a value outside the supported set activates that notice (except_tokens)", () => {
   const { host, view, schema } = ready();
-  assert.deepEqual(view.activeUnsupported().map((n) => n.unsupported_id), []);
+  assert.deepEqual(activeIds(view), []);
   const sel = field(host, "Optimization");
   sel.value = schema.enum_options.Optimization[1].token;
   fire(sel);
-  assert.deepEqual(view.activeUnsupported().map((n) => n.unsupported_id), ["X-01"]);
+  assert.deepEqual(activeIds(view), ["X-01"]);
   const line = byClass(host, "tester-unsupported-line").find((n) => n.dataset.unsupportedId === "X-01");
   assert.equal(line.dataset.active, "1");
   const other = byClass(host, "tester-unsupported-line").find((n) => n.dataset.unsupportedId === "X-02");
   assert.equal(other.dataset.active, "0");
+});
+
+// --- 6c. 該当判定は**宣言駆動**（R-9）------------------------------------------
+// front はキー名の正規表現でも既定値スナップショットでも判定しない。schema が配る
+// `keys` × `trigger`（+`tokens`）だけを照合する。以下は宣言 6 形すべての発火検定。
+
+test("a declared firing token activates its notice (on_tokens・T-5 が名指しした Dates)", () => {
+  const { host, view, schema } = ready();
+  const notice = schema.unsupported.find((n) => n.unsupported_id === "X-03");
+  const sel = field(host, notice.keys[0]);
+  sel.value = notice.tokens[0];
+  fire(sel);
+  assert.ok(activeIds(view).includes("X-03"), `宣言したトークンで発火していません: ${JSON.stringify(activeIds(view))}`);
+});
+
+test("a declared firing token on another key activates its notice (on_tokens)", () => {
+  const { host, view, schema } = ready();
+  const notice = schema.unsupported.find((n) => n.unsupported_id === "X-04");
+  const sel = field(host, notice.keys[0]);
+  sel.value = notice.tokens[0];
+  fire(sel);
+  assert.ok(activeIds(view).includes("X-04"));
+});
+
+test("a notice bound by presence fires once its keys are actually submitted (on_presence)", () => {
+  const { host, view } = ready();
+  assert.equal(activeIds(view).includes("X-05"), false, "既定（プリセット期間）で発火しています");
+  const toggle = findById(host, "testerDateCustom");
+  toggle.checked = true;
+  fire(toggle);
+  // 投入本文に載るキーと発火が一致する（載らないのに警告しない・載るのに黙らない）
+  assert.ok("FromDate" in view.buildTesterMapping());
+  assert.ok(activeIds(view).includes("X-05"));
+});
+
+test("a value outside the offered candidates fires its notice (off_candidates)", () => {
+  const { host, view } = ready();
+  assert.equal(activeIds(view).includes("X-06"), false);
+  const sel = field(host, "Expert");
+  sel.value = "NOT_A_CANDIDATE";
+  fire(sel);
+  assert.ok(activeIds(view).includes("X-06"));
+});
+
+test("a value differing from the run profile authority fires its notice (off_profile)", () => {
+  const { host, view, profile } = ready();
+  assert.equal(activeIds(view).includes("X-07"), false, "既定は profile の値なので発火しない");
+  const input = field(host, "Currency");
+  input.value = `${profile.settlement_currency}Z`;
+  fire(input, "input");
+  assert.ok(activeIds(view).includes("X-07"));
+});
+
+test("a notice declared as not evaluable from raw tokens never fires (none)", () => {
+  const { host, view, profile } = ready();
+  const input = field(host, "Symbol");
+  input.value = `${profile.symbol}X`;
+  fire(input, "input");
+  assert.equal(activeIds(view).includes("X-08"), false,
+    "生トークンでは判定できないと宣言された告知を発火させています（過剰発火）");
+});
+
+test("re-applying the same run profile does not change the active notices", () => {
+  // 既定値スナップショットを該当判定の代理にすると、profile 再適用で**該当が消える**
+  // （＝データセットを選び直しただけで警告が黙って消える）。
+  const { host, view, schema, profile } = ready();
+  const notice = schema.unsupported.find((n) => n.unsupported_id === "X-03");
+  const sel = field(host, notice.keys[0]);
+  sel.value = notice.tokens[0];
+  fire(sel);
+  const before = activeIds(view);
+  assert.ok(before.includes("X-03"));
+  view.setRunProfile(profile);
+  assert.deepEqual(activeIds(view), before, "profile 再適用で該当集合が変わりました");
 });
 
 // --- 7. EA inputs は出さない（T-2）---------------------------------------------

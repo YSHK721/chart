@@ -230,6 +230,54 @@ class TestUnsupportedRulesAreDeclarative:
         # N-04 は v1.1 で撤回・欠番（ISSUE-387 裁定）。表に残っていたら拒否が復活する。
         assert "N-04" not in self._declared_ids()
 
+    # --- UI 束縛の宣言（R-9）: 宣言と判定式が同じものを指すこと -----------------
+    # UI は「どの選択が非対象に当たるか」を宣言（`UnsupportedRule.ui`）だけから決める。
+    # 宣言が判定式（`detect`）とずれると、画面は「非対象です」と言うのに実行は通る
+    # （またはその逆）。宣言を写しで確かめず、**実行段の実測**で結ぶ。
+
+    def test_every_rule_declares_which_ini_keys_it_binds_to(self):
+        from simulator.adapter.tester_settings.ini_codec import STANDARD_KEY_ORDER
+        from simulator.main.tester_settings.unsupported import RULES
+
+        for rule_id, rule in RULES.items():
+            assert rule.ui is not None, f"{rule_id} に UI 束縛の宣言がありません"
+            assert rule.ui.keys, f"{rule_id} がどの `.ini` キーにも紐づいていません"
+            assert set(rule.ui.keys) <= set(STANDARD_KEY_ORDER), rule_id
+
+    def test_declared_firing_tokens_really_fire_their_rule(self):
+        """`on_tokens` で宣言したトークンが、実行段で当該 rule を発火させること。"""
+        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_ON_TOKENS
+
+        checked = []
+        for rule_id, rule in RULES.items():
+            if rule.ui.mode != UI_TRIGGER_ON_TOKENS or rule.detect is None:
+                continue
+            for key in rule.ui.keys:
+                for token in rule.ui.tokens:
+                    with pytest.raises(UnsupportedSettingError) as excinfo:
+                        _kwargs(settings=runnable_settings(**{key: token}))
+                    assert excinfo.value.context["unsupported_id"] == rule_id, (key, token)
+                    checked.append((rule_id, key, token))
+        assert checked, "`on_tokens` の宣言が 1 件も無い（束縛が空＝UI から発火しない）"
+
+    def test_declared_supported_tokens_do_not_fire_their_rule(self):
+        """`except_tokens` で宣言した「対象の値」では発火しないこと。"""
+        from simulator.main.tester_settings.unsupported import (
+            RULES,
+            UI_TRIGGER_EXCEPT_TOKENS,
+        )
+
+        checked = []
+        for rule_id, rule in RULES.items():
+            if rule.ui.mode != UI_TRIGGER_EXCEPT_TOKENS or rule.detect is None:
+                continue
+            for key in rule.ui.keys:
+                for token in rule.ui.tokens:
+                    # 例外が出ないこと自体が主張（出れば pytest が失敗させる）
+                    _kwargs(settings=runnable_settings(**{key: token}))
+                    checked.append((rule_id, key, token))
+        assert checked, "`except_tokens` の宣言が 1 件も無い"
+
 
 class TestActivationRules:
     """規則 R（E-08）と規則 S（E-03）。実行要求時にのみ適用される（§4.5.5）。"""

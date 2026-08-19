@@ -195,6 +195,27 @@ def test_settings不在の旧本文の投入も従来どおり完了する(stack
 
 # --- 5. データセットと食い違う Period は失敗し理由が残る ----------------------
 
+def test_非対象トークンの選択は投入前にUIが理由を示し実行は失敗する(stack) -> None:
+    """R-9: 実行段の Fail-Stop に至る**前**に、UI が当該告知の reason を出していること。
+
+    宣言（`UnsupportedRule.ui`）と判定式（`detect`）がずれていると、画面は黙ったまま
+    実行だけが落ちる（遅い失敗）。宣言駆動の該当判定が実物の schema で効くことを、
+    実 HTTP・実エンジンで固定する。
+    """
+    from simulator.main.tester_settings.unsupported import RULES
+
+    # Arrange / Act
+    observed = _drive(stack, "unsupported")
+    # Assert: 投入前に該当が出ている（front が黙っていない）
+    assert "N-05" in observed["active_unsupported"], observed["active_unsupported"]
+    assert RULES["N-05"].reason in observed["shown_unsupported_reasons"], observed
+    # 実行は Fail-Stop（沈黙で別の実行モードにフォールバックしない）
+    job_id = observed["submitted"]["job_id"]
+    final = _wait_terminal(stack, job_id)
+    assert final["status"] == "failed", final
+    assert "N-05" in (final["failure_reason"] or ""), final["failure_reason"]
+
+
 def test_Periodがデータセットと不一致なら失敗し理由が応答に載る(stack) -> None:
     # Act
     observed = _drive(stack, "mismatch")
