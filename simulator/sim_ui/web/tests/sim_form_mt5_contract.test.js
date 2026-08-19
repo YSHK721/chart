@@ -16,7 +16,9 @@
 //   ui:<name>      表示制御。**本文に寄与しない**（自分の名前が本文のキーにならない）
 //
 // 固定する不変条件:
-//   1. 3 面（＋縮退面）の全 INPUT / SELECT / BUTTON が `data-mt5` を持つ。
+//   1. **host 全体**の全 INPUT / SELECT / BUTTON が `data-mt5` を持ち、かつ 4 面のいずれかの
+//      配下にある（面の外に操作要素 0）。走査を面の内側に限ると、面の外へ生やした操作要素は
+//      検定から**見えないまま**になる（実測: 面の外の `data-mt5` 無しボタンは素通りした）。
 //   2. `tester:` の名前は schema の `key_order` の部分集合（この検定にキー名を写さない）。
 //   3. `inputs:` の集合 == 宣言表の param 集合 == 投入本文の実行仕様キー差（双方向一致）。
 //   4. `action:` の集合はちょうど {start}。
@@ -36,7 +38,8 @@ const SUBJECT_BACKTEST_KEYS = ["ea_name", "initial_deposit"];
 /** 契約が要求する接頭辞。 */
 const PREFIXES = ["tester", "inputs", "action", "ui"];
 
-/** 面の器（この 4 つの配下だけが投入フォームである）。 */
+/** 面の器（この 4 つの配下だけが投入フォームである）。
+ *  次スライスで 4 面 id の単一ソース化を行う（現状は本検定と CSS ゲートが各自で列挙する）。 */
 const PANEL_IDS = [
   "simTesterPanel", "simEaInputsPanel", "simRunActionPanel", "simSchemaFallbackPanel",
 ];
@@ -90,17 +93,21 @@ async function screen(schema) {
   return { host: doc.body, body: JSON.parse(post.init.body) };
 }
 
-/** 面の配下にある操作要素をすべて集める。 */
-function controlsOf(host) {
-  const out = [];
-  for (const id of PANEL_IDS) {
-    const panel = findById(host, id);
-    if (!panel) continue;
-    for (const node of flatten(panel)) {
-      if (CONTROL_TAGS.includes(node.tagName)) out.push({ panel: id, node });
-    }
+/** 要素が属する面の id を親方向にたどって返す（どの面にも属さなければ null）。 */
+function panelOf(node) {
+  let cursor = node;
+  while (cursor) {
+    if (PANEL_IDS.includes(cursor.id)) return cursor.id;
+    cursor = cursor.parentNode;
   }
-  return out;
+  return null;
+}
+
+/** **host 全体**の操作要素をすべて集める（面の外に生えた分も必ず拾う）。 */
+function controlsOf(host) {
+  return flatten(host)
+    .filter((node) => CONTROL_TAGS.includes(node.tagName))
+    .map((node) => ({ panel: panelOf(node), node }));
 }
 
 /** `data-mt5` を接頭辞ごとに集計する。 */
@@ -110,14 +117,23 @@ function declarationsOf(host) {
   const malformed = [];
   for (const { panel, node } of controlsOf(host)) {
     const declaration = node.dataset && node.dataset.mt5;
-    if (!declaration) { undeclared.push(`${panel}: <${node.tagName} id=${node.id || "?"}>`); continue; }
+    if (!declaration) {
+      undeclared.push(`${panel || "面の外"}: <${node.tagName} id=${node.id || "?"}>`);
+      continue;
+    }
     const at = String(declaration).indexOf(":");
     const prefix = at < 0 ? "" : String(declaration).slice(0, at);
     const name = at < 0 ? "" : String(declaration).slice(at + 1);
-    if (!PREFIXES.includes(prefix) || name === "") { malformed.push(`${panel}: ${declaration}`); continue; }
+    if (!PREFIXES.includes(prefix) || name === "") {
+      malformed.push(`${panel || "面の外"}: ${declaration}`);
+      continue;
+    }
     byPrefix[prefix].push(name);
   }
-  return { byPrefix, undeclared, malformed };
+  const outsidePanels = controlsOf(host)
+    .filter(({ panel }) => panel === null)
+    .map(({ node }) => `<${node.tagName} id=${node.id || "?"}>`);
+  return { byPrefix, undeclared, malformed, outsidePanels };
 }
 
 const CONFIGS = [["settings 構成", () => settingsSchema()], ["縮退構成", () => null]];
@@ -130,6 +146,12 @@ for (const [label, makeSchema] of CONFIGS) {
     const { undeclared, malformed } = declarationsOf(host);
     assert.deepEqual(undeclared, [], "data-mt5 の無い操作要素があります（対応物を言えない欄）");
     assert.deepEqual(malformed, [], "data-mt5 の書式が契約外です（<接頭辞>:<名前>）");
+  });
+
+  test(`${label}: no control is mounted outside the four form panels`, async () => {
+    const { host } = await screen(makeSchema());
+    assert.deepEqual(declarationsOf(host).outsidePanels, [],
+      "面の外に操作要素があります（面の内側だけを走査すると検定から見えなくなります）");
   });
 
   test(`${label}: the screen actually ships controls (空振り検定でないことの実証)`, async () => {
@@ -218,6 +240,21 @@ test("the declaration collector detects a control with no data-mt5 (自己検定
     victim.dataset.mt5 = saved;
   }
   assert.deepEqual(declarationsOf(host).undeclared, [], "復元できていません");
+});
+
+test("the declaration collector sees a control mounted outside every panel (自己検定)", async () => {
+  const { host } = await screen(settingsSchema());
+  const stray = { tagName: "BUTTON", id: "strayProbe", dataset: {}, children: [], parentNode: null };
+  host.appendChild(stray);
+  try {
+    const found = declarationsOf(host);
+    assert.deepEqual(found.outsidePanels, ["<BUTTON id=strayProbe>"],
+      "面の外の操作要素を検出できません（この検定は空振りしています）");
+    assert.ok(found.undeclared.length > 0, "面の外の宣言漏れも同時に検出できていません");
+  } finally {
+    host.removeChild(stray);
+  }
+  assert.deepEqual(declarationsOf(host).outsidePanels, [], "復元できていません");
 });
 
 test("the declaration collector rejects a malformed declaration (自己検定)", async () => {

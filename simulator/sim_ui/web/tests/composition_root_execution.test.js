@@ -30,7 +30,7 @@ const RUN_OPTIONS = {
   ea_names: ["PRO_fit_Band_EA", "TC24051901"],
 };
 
-function routerFetch({ job, schema, schemaRaw } = {}) {
+function routerFetch({ job, schema, schemaRaw, runOptions } = {}) {
   const calls = [];
   const fn = async (url, init) => {
     calls.push({ url, init });
@@ -45,7 +45,9 @@ function routerFetch({ job, schema, schemaRaw } = {}) {
         ? { ok: true, status: 200, json: async () => schema }
         : { ok: false, status: 404, json: async () => ({ error: "no schema" }) };
     }
-    if (url === "/sim/run-options") return { ok: true, status: 200, json: async () => RUN_OPTIONS };
+    if (url === "/sim/run-options") {
+      return { ok: true, status: 200, json: async () => (runOptions || RUN_OPTIONS) };
+    }
     if (url === "/sim/jobs") return { ok: true, status: 202, json: async () => (job || { job_id: "j1", status: "running" }) };
     return { ok: false, status: 404, json: async () => ({ error: "nope" }) };
   };
@@ -261,6 +263,32 @@ test("the degraded ea candidates come from run-options (縮退面にも候補が
   }
   const sel = findById(doc.body, "execEaName");
   assert.deepEqual((sel.children || []).map((o) => o.value), RUN_OPTIONS.ea_names);
+});
+
+// --- 実行条件の payload が壊れていても画面は立つ（fail-open・§19.4）-------------------
+// `datasets` が配列でない payload（別実装・プロキシが object を返した等）でも mount は完走し、
+// 操作できるフォームが出る。合成根が `datasets.map` を直に呼んでいた S6 時点では **TypeError で
+// mount が中断し、欄が 1 つも描かれなかった**（実測: 操作要素 1 個 / 新 25 個）。M5 の
+// `symbolCandidatesOf` が非配列を空候補へ畳むことで、銘柄が自由入力へ縮退して画面が残る。
+
+test("a non-array datasets payload degrades instead of blanking the form (fail-open)", async () => {
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({
+    schema: settingsSchema(),
+    runOptions: { ok: true, datasets: {}, ea_names: [] },   // 配列でない payload
+  });
+  // Act: mount が例外で中断しない
+  await assert.doesNotReject(
+    () => mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn }),
+    "非配列 payload で mount が中断しました（欄が 1 つも描かれません）",
+  );
+  // Assert: 3 面が立ち、操作できる状態で残る
+  for (const id of ["simTesterPanel", "simEaInputsPanel", "simRunActionPanel"]) {
+    assert.ok(findById(doc.body, id), `${id} が描かれていません`);
+  }
+  // 銘柄は候補 0 件＝自由入力へ縮退する（候補を出せないことを理由に投入不能にしない）
+  const symbol = findById(doc.body, "testerSymbol");
+  assert.equal(symbol.tagName, "INPUT", "銘柄が自由入力へ縮退していません");
 });
 
 test("reportViewUrl builds the ?job= dispatch url", async () => {

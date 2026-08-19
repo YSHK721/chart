@@ -11,7 +11,9 @@
 // 固定する不変条件:
 //   1. front の各モジュールに撤去語彙が 0 件。
 //   2. 配信 CSS に撤去クラスが 0 件。
-//   3. 検出器そのものが機能する（変異を注入すると検出できる＝空振りしていない）。
+//   3. 検出器そのものが機能する（変異を注入すると検出できる＝空振りしていない）。走査対象が
+//      0 件でも「違反 0 件」に見えてしまうため、**走査対象が空でないこと**を先に固定する
+//      （実測: 収集条件を壊すと front も CSS も 0 件になり、全検定が無言で緑になった）。
 //   4. 投入フォームの CSS 選択子がパネル id の配下に閉じている（結果ビューアへの波及 0）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -84,6 +86,7 @@ test("the removal detector actually sees a re-introduced vocabulary (自己検�
 // --- 1. front に撤去語彙が 0 件 --------------------------------------------------
 
 test("no front module keeps a removed UI-outlet vocabulary (Phase 9 S1)", () => {
+  assert.ok(FRONT_FILES.length > 0, "front モジュールを 1 本も収集できていません（この走査は空振りです）");
   const offenders = [];
   for (const name of FRONT_FILES) {
     const src = readFileSync(join(FRONT_DIR, name), "utf8");
@@ -97,6 +100,7 @@ test("no front module keeps a removed UI-outlet vocabulary (Phase 9 S1)", () => 
 // --- 2. 配信 CSS に撤去クラスが 0 件 ---------------------------------------------
 
 test("no shipped stylesheet keeps a removed UI-outlet class", () => {
+  assert.ok(CSS_FILES.length > 0, "配信 CSS を 1 枚も収集できていません（この走査は空振りです）");
   const offenders = [];
   for (const name of CSS_FILES) {
     const src = readFileSync(join(CSS_DIR, name), "utf8");
