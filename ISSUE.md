@@ -8478,3 +8478,17 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
       （提供要求で停止。間接証拠で進めるには不可能理由＋推論ラベル＋明示承認の 3 点を要す）」の可否。
 - **関連**: ISSUE-425（同時期の実測）・memory: no-speculation-without-evidence／
   no-destructive-verdict-under-framing／verify-facts-not-just-numbers（追記済み）。
+
+## ISSUE-427: [検定] `test_composition_root_arg_parity` の既存赤 1 件（ChartToastView/ClipboardGateway のテスト専用引数）（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。段階 3 TDD 工程中に発見・本ブランチ起因ではない）
+- **重大度**: Medium（ゲート検定が恒常赤＝ゲートとして機能していない）
+- **事実（実測 2026-08-19）**: `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form` が
+  `ChartToastView.{setTimeout,clearTimeout,durationMs}`・`ClipboardGateway.navigator` の 4 違反で失敗
+  （1 failed, 6 passed）。指摘内容＝「本番の合成根は当該キーを渡さないのに、全テストが渡している＝
+  本番が作る形（キー不在の構築）を検証するテストが 1 本も無い」。対象は `indigators/indicator_ui`。
+  段階 3 ブランチ `feature/sim-runnable-feedback` は `indigators/`・`tools/` を 0 ファイル変更
+  （`git diff c72722f --name-only -- indigators tools` = 空）＝既存欠陥。
+- **抜本的解決**: 各対象に「本番の合成根と同形（テスト専用キー不在）の構築」を検証するテストを追加し
+  ゲートを緑に戻す（検定の緩和・除外リスト追加は症状回避＝不可）。
+- **関連**: ISSUE-423（発見契機＝段階 3 TDD の回帰実行）。
