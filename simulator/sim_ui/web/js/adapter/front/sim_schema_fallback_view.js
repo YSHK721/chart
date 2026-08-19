@@ -16,6 +16,9 @@
 //   入力欄であり、python 側の実 UI 検定が「縮退構成でこの欄が権威である」ことをこの id で
 //   観測している。面の持ち主が変わっても観測点は動かさない。
 //
+// 画面契約（S6）: この面の 3 欄は MT5 の `Symbol` / `Expert` / `Deposit` の縮退版である。
+//   設定ブロックは組まないが、欄そのものは MT5 の対応物を持つので `tester:` を名乗る。
+//
 // fake DOM 前提: querySelector は使わず、要素参照を JS 側で保持する。
 
 /** 初期資金の初期表示。schema があれば Tester 面の `Deposit` が同じ役割を担う
@@ -58,12 +61,15 @@ export function createSimSchemaFallbackView({ doc } = {}) {
     const previous = symbolNode ? String(symbolNode.value || "") : "";
     for (const child of Array.from(symbolHost.children || [])) symbolHost.removeChild(child);
     if (symbolCandidates.length) {
-      symbolNode = el("select", { id: "execSymbol", className: "fallback-symbol" });
+      symbolNode = el("select", {
+        id: "execSymbol", className: "fallback-symbol", dataset: { mt5: "tester:Symbol" },
+      });
       fillOptions(symbolNode, symbolCandidates);
       if (symbolCandidates.includes(previous)) symbolNode.value = previous;
     } else {
       symbolNode = el("input", {
         id: "execSymbol", className: "fallback-symbol", type: "text", value: previous,
+        dataset: { mt5: "tester:Symbol" },
       });
     }
     symbolNode.addEventListener("change", () => { if (symbolCb) symbolCb(selectedSymbol()); });
@@ -87,7 +93,9 @@ export function createSimSchemaFallbackView({ doc } = {}) {
       root.appendChild(symbolHost);
 
       const eaWrap = el("label", { className: "fallback-field", textContent: "指標セット" });
-      eaSel = el("select", { id: "execEaName", className: "fallback-ea" });
+      eaSel = el("select", {
+        id: "execEaName", className: "fallback-ea", dataset: { mt5: "tester:Expert" },
+      });
       fillOptions(eaSel, eaCandidates);
       eaWrap.appendChild(eaSel);
 
@@ -95,6 +103,7 @@ export function createSimSchemaFallbackView({ doc } = {}) {
       depositInput = el("input", {
         id: "execDeposit", className: "fallback-deposit",
         type: "number", value: INITIAL_DEPOSIT, min: "0",
+        dataset: { mt5: "tester:Deposit" },
       });
       depositWrap.appendChild(depositInput);
 

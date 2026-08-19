@@ -190,7 +190,9 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     const options = optionsFor(key);
     let node;
     if (options) {
-      node = el("select", { id: `tester${key}`, className: "tester-input", dataset: { key } });
+      node = el("select", {
+        id: `tester${key}`, className: "tester-input", dataset: { key, mt5: `tester:${key}` },
+      });
       for (const option of options) {
         node.appendChild(el("option", { value: option.token, textContent: option.label }));
       }
@@ -198,7 +200,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     } else {
       node = el("input", {
         id: `tester${key}`, className: "tester-input", type: "text",
-        value: INITIAL_SCALARS[key] || "", dataset: { key },
+        value: INITIAL_SCALARS[key] || "", dataset: { key, mt5: `tester:${key}` },
       });
     }
     node.addEventListener("change", () => onChanged(key));
@@ -214,6 +216,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     const wrap = el("label", { className: "tester-field", textContent: "期間をカスタム指定する" });
     dateCustom = el("input", {
       id: "testerDateCustom", className: "tester-date-mode", type: "checkbox", checked: false,
+      dataset: { mt5: "ui:date-mode" },
     });
     dateCustom.addEventListener("change", () => onChanged(PRESET_DATE_KEY));
     wrap.appendChild(dateCustom);
@@ -431,6 +434,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
       // 全一覧の開閉（既定は畳んだまま）。押した本人だけが開く＝自動で開かない。
       unsupportedToggle = el("button", {
         id: "simTesterUnsupportedToggle", className: "tester-unsupported-toggle", type: "button",
+        dataset: { mt5: "ui:unsupported-toggle" },
       });
       unsupportedToggle.addEventListener("click", () => setUnsupportedExpanded(
         unsupportedHost.dataset.expanded !== "1",

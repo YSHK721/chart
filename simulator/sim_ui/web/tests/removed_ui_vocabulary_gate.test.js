@@ -12,6 +12,7 @@
 //   1. front の各モジュールに撤去語彙が 0 件。
 //   2. 配信 CSS に撤去クラスが 0 件。
 //   3. 検出器そのものが機能する（変異を注入すると検出できる＝空振りしていない）。
+//   4. 投入フォームの CSS 選択子がパネル id の配下に閉じている（結果ビューアへの波及 0）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -49,6 +50,13 @@ const REMOVED_FRONT_VOCABULARY = [
 const REMOVED_CSS_CLASSES = [
   "exec-cond-row", "exec-side", "exec-rows", "exec-add", "exec-del",
   "exec-trailing-on", "exec-partial-on", "exec-trail", "exec-partial",
+];
+
+/** 投入フォームの整形だけを持つ配信 CSS（結果ビューアの見た目には 1 つも当ててはならない）。 */
+const RUN_FORM_CSS = "sim_run_form.css";
+/** 投入フォームの面（この id の配下だけに選択子を閉じる）。 */
+const FORM_PANEL_IDS = [
+  "#simTesterPanel", "#simEaInputsPanel", "#simSchemaFallbackPanel", "#simRunActionPanel",
 ];
 
 /** ソース 1 本に残っている撤去語彙を列挙する（0 件が合格）。 */
@@ -97,4 +105,40 @@ test("no shipped stylesheet keeps a removed UI-outlet class", () => {
     }
   }
   assert.deepEqual(offenders, []);
+});
+
+// --- 4. 投入フォーム CSS の波及遮断（Phase 9 S6・裁定 B と同じ理由）------------------
+// 投入フォームの整形は `?job=` **無し**で開いた入口だけに当たる。素の要素（body / input /
+// select / button）や共有クラスへ当てると、同じ文書で開く結果ビューアの見た目まで動く。
+// 選択子の先頭が面の id であることを機械的に固定する（宣言では守れない）。
+
+/** 宣言ブロックの選択子だけを取り出す（@media 等の at-rule と中身の宣言は除く）。 */
+function selectorsOf(css) {
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const out = [];
+  for (const [, head] of withoutComments.matchAll(/([^{}]+)\{/g)) {
+    const selector = head.trim();
+    if (!selector || selector.startsWith("@")) continue;
+    for (const part of selector.split(",")) {
+      const one = part.trim();
+      if (one) out.push(one);
+    }
+  }
+  return out;
+}
+
+test("the selector extractor sees both scoped and unscoped rules (自己検定)", () => {
+  const found = selectorsOf("@media (max-width: 1px) { #simTesterPanel .x { color: red } }\nbutton { color: red }");
+  assert.deepEqual(found.sort(), ["#simTesterPanel .x", "button"]);
+});
+
+test("every run-form rule is scoped under a form panel id (結果ビューアへの波及 0)", () => {
+  const css = readFileSync(join(CSS_DIR, RUN_FORM_CSS), "utf8");
+  const selectors = selectorsOf(css);
+  assert.ok(selectors.length > 0, "選択子が 1 つも取れていません（この走査は空振りです）");
+  const escaped = selectors.filter(
+    (s) => !FORM_PANEL_IDS.some((id) => s === id || s.startsWith(`${id} `) || s.startsWith(`${id}[`) || s.startsWith(`${id}:`)),
+  );
+  assert.deepEqual(escaped, [],
+    "投入フォーム CSS がパネル id の外へ出ています（結果ビューアの見た目まで動きます）");
 });
