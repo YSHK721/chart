@@ -8395,3 +8395,27 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **抜本的解決**: 段階 2 の裁定に「`settings.tester.Symbol` と `backtest.symbol` の不一致は
   inert 判定より**前**に拒否する」を含める。front 側のスタート不能化は UI 挙動変更＝要承認として併記。
 - **関連**: Phase 9 §19・ISSUE-420。
+
+## ISSUE-423: [不具合・既存] sim 受付拒否（400）の理由文が本番 UI に 1 文字も表示されない（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。Phase 9 段階 2 設計調査 R-1。段階 2 が導入した欠陥ではなく既存）
+- **重大度**: Medium（Expert 不一致・規則 B〜Q・[TesterInputs] 拒否・段階 2 の新拒否すべてが対象）
+- **事実（実読 2026-08-19）**: 400 応答の `error` 文言は `job_submit_client.js:68-71` まで届くが、
+  本番 HTML は `mountSimExecutionPanel({doc, host})` を **onError 未結線**で呼ぶ
+  （`report_view.html:64`）。`catch (e) { if (onError) onError(e); }` は無処理で終わる。
+  `failure_reason` の polling も front に無い。E2E driver だけが onError を渡している。
+- **抜本的解決**: 投入エラーの表示面を front に結線（UI 変更＝承認事項）。
+- **関連**: Phase 9 §19.5・「沈黙失敗禁止」規約。
+
+## ISSUE-424: [設計] 実行対象同一性の同型穴 3 件（Period/Currency/Leverage が math 時に不一致黙認）と拒否チャネル非対称（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。段階 2 設計調査 R-2/R-3。段階 2 は Symbol のみ是正）
+- **重大度**: Medium
+- **事実（実読 2026-08-19）**: `kwargs_mapper.py:339-349`（Period）・`:352-359`（Leverage）・
+  `unsupported.py:232-237`（N-11 Currency は `effective.currency is None` で math 時スキップ）が
+  ISSUE-422 の Symbol と同型。また Period は現状「実行時 failed」で報告され（python E2E が固定・
+  無改変誓約対象）、Symbol は段階 2 後「受付 400」＝同じ不一致が 2 経路で報告される非対称。
+  さらに `run_job --job-dir` 直投入経路は math × 不一致に防壁を持たない。
+- **抜本的解決**: 「実行対象の同一性」検査を受付の単一点へ統合（Period の受付化は E2E の
+  期待値改訂を伴うため要裁定）。
+- **関連**: ISSUE-422（Symbol＝段階 2 で是正）・Phase 9 §19.5。
