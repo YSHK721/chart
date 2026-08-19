@@ -1,0 +1,256 @@
+/* 投入フォーム（Tester Settings パネル ＋ 実行指示パネル）の表示整形（Phase 8 スライス 7）。
+ *
+ * 対象は `report_view.html` を `?job=` **無し**で開いたときの入口だけである。結果ビューア側
+ * （`?job=<id>`）に出る DOM へは 1 つも当たらない——本ファイルの選択子はすべて
+ * `#simTesterPanel` / `#simExecPanel` / `#execViewResult` の配下に閉じてある。素の要素
+ * （body / input / select / button）へ当てると結果ビューアの見た目まで動く（style.css の
+ * 波及遮断と同じ理由・裁定 B）。
+ *
+ * 色は**移植元 style.css の :root 変数だけ**を使う（--bg / --panel / --line / --fg / --muted /
+ * --accent）。hex をここへ書くと配色が 2 箇所になり、片方だけ腐る。子文書は style.css を必ず
+ * link する（`tests/import_source.test.js` が機械強制）ので、変数は常に解決する。
+ *
+ * 寸法の前提（実測・style.css:16-26）: `body { height:100vh; display:flex; flex-direction:column;
+ * overflow:hidden }`。したがって器の中で伸びる子にして **自分の中でスクロールさせない限り、
+ * はみ出した分は画面外に消えて操作できない**。パネルごとに `min-height:0` ＋ `overflow-y:auto`
+ * を与えるのはこのためである（body 側の overflow は触らない＝結果ビューアに波及させない）。
+ *
+ * 装飾は足さない（認知負荷の最小化）。ここでやるのは「群に分ける」「ラベルと入力を揃える」
+ * 「常時出す物と畳む物を分ける」の 3 つだけである。
+ */
+
+/* --- 器（body 直下の 2 パネル）------------------------------------------------- */
+/* flex: 0 1 auto = 中身の高さで置き、入り切らないときだけ縮んで自分の中で送る。 */
+#simTesterPanel,
+#simExecPanel {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 8px 12px 0;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+#simExecPanel { margin-bottom: 8px; }
+
+/* --- パネル見出し ---------------------------------------------------------------- */
+#simTesterPanel .tester-title {
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* schema を取れていないときの理由文。空文字のときは箱ごと消す（空の余白を残さない）。 */
+#simTesterPanel .tester-empty:empty { display: none; }
+#simTesterPanel .tester-empty {
+  margin-bottom: 8px;
+  color: var(--accent);
+}
+
+/* --- 群（対象 / 期間 / 実行 / 口座 …）------------------------------------------- */
+#simTesterPanel .tester-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#simTesterPanel .tester-group {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 6px 10px 8px;
+}
+#simTesterPanel .tester-group-title {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+/* 2 カラム整列。狭い画面では 1 カラムへ落とす（横スクロールを作らない）。 */
+#simTesterPanel .tester-group-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 20px;
+}
+@media (max-width: 860px) {
+  #simTesterPanel .tester-group-fields { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* --- ラベル / 入力の整列 --------------------------------------------------------- */
+/* label 直下のテキストノードは無名グリッドアイテムになる（CSS Grid 仕様）。よって
+ * `<label>ラベル文<input></label>` の構造のまま 2 列に割り付けられる（DOM を変えない）。 */
+#simTesterPanel .tester-field,
+#simExecPanel .exec-field {
+  display: grid;
+  grid-template-columns: minmax(7em, 11em) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  color: var(--fg);
+}
+#simTesterPanel .tester-input,
+#simExecPanel .exec-field input,
+#simExecPanel .exec-field select,
+#simExecPanel .exec-cond-row input,
+#simExecPanel .exec-cond-row select {
+  min-width: 0;          /* grid/flex の中で内容幅に押し広げられないため（横あふれ防止） */
+  width: 100%;
+  padding: 2px 4px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+}
+/* チェックボックスは幅いっぱいにしない（帯にならないよう左端に置く）。 */
+#simTesterPanel .tester-date-mode,
+#simExecPanel .exec-trailing-on,
+#simExecPanel .exec-partial-on {
+  width: auto;
+  justify-self: start;
+}
+
+/* --- 投入前の警告（データセット不一致）------------------------------------------- */
+#simTesterPanel .tester-warn:empty { display: none; }
+#simTesterPanel .tester-warn {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+}
+
+/* --- 非対象告知（N-xx）----------------------------------------------------------- */
+/* 現在値に効いている分だけを常時出す。0 件なら箱ごと消える（壁を出さない）。 */
+#simTesterPanel .tester-unsupported-active:empty { display: none; }
+#simTesterPanel .tester-unsupported-active {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+#simTesterPanel .tester-unsupported-active-line {
+  padding: 4px 8px;
+  border-left: 2px solid var(--accent);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* 全一覧の開閉。開く中身が 0 件のときはトグルごと消す（押しても何も出ないボタンを残さない）。 */
+#simTesterPanel .tester-unsupported-toggle {
+  margin-top: 8px;
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+}
+#simTesterPanel .tester-unsupported-toggle:hover { color: var(--fg); }
+#simTesterPanel .tester-unsupported-toggle[data-count="0"] { display: none; }
+
+/* 既定は畳む。開閉の真実は View が置く data-expanded であり、CSS は隠し方だけを持つ。 */
+#simTesterPanel .tester-unsupported[data-expanded="0"] { display: none; }
+#simTesterPanel .tester-unsupported[data-expanded="1"] {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+#simTesterPanel .tester-unsupported-line {
+  padding: 2px 8px;
+  color: var(--muted);
+}
+/* 一覧を開いたときも、現在値に効いている行は見分けが付くようにする。 */
+#simTesterPanel .tester-unsupported-line[data-active="1"] {
+  border-left: 2px solid var(--accent);
+  color: var(--fg);
+}
+
+/* --- 実行指示パネル（下部・同じ CSS 言語で最低限そろえる）------------------------- */
+/* 直下の子は「単票のフィールド」と「横断ブロック（条件・建玉変更・投入）」が混在する。
+ * 前者を 2 カラムに流し、後者は全幅へ寄せる（DOM は変えない）。 */
+#simExecPanel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 20px;
+  align-content: start;
+}
+@media (max-width: 860px) {
+  #simExecPanel { grid-template-columns: minmax(0, 1fr); }
+}
+#simExecPanel .exec-side,
+#simExecPanel .exec-submit {
+  grid-column: 1 / -1;
+}
+#simExecPanel .exec-side {
+  margin-top: 6px;
+  padding: 6px 10px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+#simExecPanel .exec-side-title {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+/* 建玉変更ブロックは中のフィールドを 2 カラムに流す（単票が縦に伸びないように）。 */
+#simExecPanel .exec-side[data-side="position-change"] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 20px;
+}
+#simExecPanel .exec-side[data-side="position-change"] .exec-side-title { grid-column: 1 / -1; }
+@media (max-width: 860px) {
+  #simExecPanel .exec-side[data-side="position-change"] { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 条件行（指標 / シフト / 比較 / 値 / 削除）を 1 行に並べる。 */
+#simExecPanel .exec-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#simExecPanel .exec-cond-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+#simExecPanel .exec-add,
+#simExecPanel .exec-del,
+#simExecPanel .exec-submit,
+#execViewResult {
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+}
+#simExecPanel .exec-add { margin-top: 6px; justify-self: start; }
+#simExecPanel .exec-del { padding: 3px 8px; color: var(--muted); }
+#simExecPanel .exec-del:hover { color: var(--fg); }
+#simExecPanel .exec-submit {
+  margin-top: 10px;
+  justify-self: start;
+  padding: 4px 16px;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* 「結果を見る」は body 直下（パネルの外）に足される。器の外でも浮かないようそろえる。 */
+#execViewResult {
+  flex: 0 0 auto;
+  margin: 0 12px 8px;
+  align-self: start;
+  border-color: var(--accent);
+  color: var(--accent);
+}

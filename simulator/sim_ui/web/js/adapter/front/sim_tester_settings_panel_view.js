@@ -48,6 +48,30 @@ const INITIAL_SCALARS = { Deposit: "10000", ProfitInPips: "0", Visual: "0" };
 /** schema を取れていないときの表示（候補 0 のまま黙らせない）。 */
 const NO_SCHEMA_TEXT = "設定 schema を取得できていません（この構成では Tester Settings を投入できません）";
 
+/** 非対象一覧の開閉トグルの表示文（開いているかを字面でも示す）。 */
+const UNSUPPORTED_TOGGLE_TEXT = { collapsed: "非対象の詳細を開く", expanded: "非対象の詳細を閉じる" };
+
+/** 群 → `.ini` キーの割当（**表示メタデータ**・スライス 7）。
+ *
+ *  ここに置くのは「キー名をどの見出しの下に並べるか」だけである。語彙値（時間足ラベル・
+ *  `Model` の生値・対象接尾辞）は 1 つも持たない——値の単一ソースは schema のままである。
+ *
+ *  **割当表に無いキーは既定群へ落とす**（`DEFAULT_GROUP`）。schema が新しいキーを配ったとき、
+ *  ここを直し忘れても UI から**消えない**（表を直せば置き場所だけが変わる＝OCP）。 */
+const FIELD_GROUPS = [
+  { id: "subject", title: "対象", keys: ["Expert", "Symbol", "Period"] },
+  { id: "period", title: "期間", keys: ["Dates", "FromDate", "ToDate", "ForwardMode", "ForwardDate"] },
+  { id: "run", title: "実行", keys: ["Model", "ExecutionMode", "Optimization", "OptimizationCriterion", "Visual", "ProfitInPips"] },
+  { id: "account", title: "口座", keys: ["Deposit", "Currency", "Leverage"] },
+];
+/** 割当表に無いキーの落とし先（新キーを黙って捨てないための受け皿）。 */
+const DEFAULT_GROUP = { id: "other", title: "その他", keys: [] };
+
+/** キーが属する群の定義を返す（無ければ既定群）。 */
+function groupDefOf(key) {
+  return FIELD_GROUPS.find((g) => g.keys.includes(key)) || DEFAULT_GROUP;
+}
+
 /** `.ini` キー（CamelCase）→ 非対象宣言の field 名（snake_case）。 */
 function fieldNameOf(key) {
   return String(key).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
@@ -58,11 +82,15 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   let fieldsHost = null;
   let warnNode = null;
   let unsupportedHost = null;
+  let unsupportedActiveHost = null;
+  let unsupportedToggle = null;
   let emptyNote = null;
   let dateCustom = null;
   let schema = null;
   let profile = null;
   let expertCb = null;
+  /** 群 id → その群のフィールド置き場（`.tester-group-fields`）。rebuild ごとに作り直す。 */
+  const groupHosts = new Map();
   /** `.ini` キー → 入力要素。 */
   const controls = new Map();
   /** `.ini` キー → 既定値（schema / profile が与えた値）。「動かしたか」の判定に使う。 */
@@ -103,6 +131,32 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     return [...proven, ...provisional];
   }
 
+  /** 群の器（見出し＋フィールド置き場）を作って登録し、フィールド置き場を返す。 */
+  function createGroup(def) {
+    const section = el("div", { className: "tester-group", dataset: { group: def.id } });
+    section.appendChild(el("div", { className: "tester-group-title", textContent: def.title }));
+    const host = el("div", { className: "tester-group-fields" });
+    section.appendChild(host);
+    fieldsHost.appendChild(section);
+    groupHosts.set(def.id, host);
+    return host;
+  }
+
+  /** 描画するキー列から、**中身のある群だけ**を宣言順に先に並べる。
+   *  先に並べないと群の順序が key_order の出現順になり、見出しの並びが schema 依存で揺れる。 */
+  function prepareGroups(keys) {
+    const present = new Set(keys);
+    for (const def of FIELD_GROUPS) {
+      if (def.keys.some((k) => present.has(k))) createGroup(def);
+    }
+  }
+
+  /** キーの群のフィールド置き場を返す（割当表に無いキーは既定群を末尾に作って落とす）。 */
+  function groupHostFor(key) {
+    const def = groupDefOf(key);
+    return groupHosts.get(def.id) || createGroup(def);
+  }
+
   function labelFor(key) {
     const required = (schema.required_keys || []).includes(key);
     return required ? `${key} *` : key;
@@ -134,7 +188,7 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     const wrap = el("label", { className: "tester-field", textContent: labelFor(key) });
     wrap.appendChild(node);
     controls.set(key, node);
-    fieldsHost.appendChild(wrap);
+    groupHostFor(key).appendChild(wrap);
   }
 
   /** 期間形式の切替（規則 E をフォームが破らないための唯一の分岐）。 */
@@ -145,7 +199,8 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     });
     dateCustom.addEventListener("change", () => onChanged(PRESET_DATE_KEY));
     wrap.appendChild(dateCustom);
-    fieldsHost.appendChild(wrap);
+    // 切替は「何を出し分けるか」の対象（期間キー）と同じ群に置く（分岐と対象を離さない）。
+    groupHostFor(PRESET_DATE_KEY).appendChild(wrap);
   }
 
   function applyProfileDefaults() {
@@ -170,22 +225,45 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     );
   }
 
+  /** 全一覧の開閉状態を DOM へ書く（実際の隠し方は CSS が持つ）。 */
+  function setUnsupportedExpanded(open) {
+    unsupportedHost.dataset.expanded = open ? "1" : "0";
+    unsupportedToggle.textContent = open
+      ? UNSUPPORTED_TOGGLE_TEXT.expanded : UNSUPPORTED_TOGGLE_TEXT.collapsed;
+  }
+
+  /** 告知 1 件の表示文（全一覧と常時表示で同じ 1 箇所から作る）。 */
+  function noticeText(notice) {
+    const tbd = notice.tbd ? `（${notice.tbd}）` : "";
+    return `${notice.unsupported_id} ${notice.field}: ${notice.reason}${tbd}`;
+  }
+
   function renderUnsupported() {
     clear(unsupportedHost);
     for (const notice of (schema && schema.unsupported) || []) {
-      const tbd = notice.tbd ? `（${notice.tbd}）` : "";
       unsupportedHost.appendChild(el("div", {
         className: "tester-unsupported-line",
         dataset: { unsupportedId: notice.unsupported_id, active: "0" },
-        textContent: `${notice.unsupported_id} ${notice.field}: ${notice.reason}${tbd}`,
+        textContent: noticeText(notice),
       }));
     }
   }
 
   function renderUnsupportedActivation() {
-    const active = new Set(activeUnsupported().map((n) => n.unsupported_id));
+    const active = activeUnsupported();
+    const activeIds = new Set(active.map((n) => n.unsupported_id));
     for (const line of unsupportedHost.children || []) {
-      line.dataset.active = active.has(line.dataset.unsupportedId) ? "1" : "0";
+      line.dataset.active = activeIds.has(line.dataset.unsupportedId) ? "1" : "0";
+    }
+    // 現在値が該当する告知だけを**畳まずに**出す。該当が無ければ 0 件＝壁を出さない。
+    // 該当集合は `activeUnsupported()`（schema.unsupported の field 宣言）が決める。
+    clear(unsupportedActiveHost);
+    for (const notice of active) {
+      unsupportedActiveHost.appendChild(el("div", {
+        className: "tester-unsupported-active-line",
+        dataset: { unsupportedId: notice.unsupported_id },
+        textContent: noticeText(notice),
+      }));
     }
   }
 
@@ -196,6 +274,11 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   function rebuild() {
     clear(fieldsHost);
     clear(unsupportedHost);
+    clear(unsupportedActiveHost);
+    // 開く中身の件数をトグルへ書く（0 件なら CSS が消す＝押しても何も出ないボタンを残さない）。
+    // schema を取れない構成でも必ず通る位置に置く（下の早期 return より前）。
+    unsupportedToggle.dataset.count = String(((schema && schema.unsupported) || []).length);
+    groupHosts.clear();
     controls.clear();
     defaults.clear();
     expertLabels.clear();
@@ -209,8 +292,9 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
     for (const option of schema.expert_options || []) {
       expertLabels.set(String(option.token), String(option.label));
     }
-    for (const key of schema.key_order || []) {
-      if (key === INDICATOR_KEY) continue;   // 規則 D: 本パネルは Expert テスト
+    const renderedKeys = (schema.key_order || []).filter((k) => k !== INDICATOR_KEY);
+    prepareGroups(renderedKeys);   // 規則 D: 本パネルは Expert テスト（Indicator は出さない）
+    for (const key of renderedKeys) {
       if (key === PRESET_DATE_KEY) buildDateModeToggle();
       buildControl(key);
     }
@@ -282,13 +366,30 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
       emptyNote = el("div", { id: "simTesterEmpty", className: "tester-empty", textContent: NO_SCHEMA_TEXT });
       fieldsHost = el("div", { id: "simTesterFields", className: "tester-fields" });
       warnNode = el("div", { id: "simTesterWarn", className: "tester-warn", textContent: "" });
+      // 現在値に効いている告知の常時表示席（畳まない）。全一覧より前に置く。
+      unsupportedActiveHost = el("div", {
+        id: "simTesterUnsupportedActive", className: "tester-unsupported-active",
+      });
+      // 開閉の状態は DOM 属性 1 つ（`data-expanded`）が持ち、実際の隠し方は CSS が決める
+      // （View は「開いているか」だけを言う）。初期状態は下の `setUnsupportedExpanded(false)`
+      // が 1 箇所で決める（属性と字面を別々に初期化しない）。
       unsupportedHost = el("div", { id: "simTesterUnsupported", className: "tester-unsupported" });
       root.appendChild(emptyNote);
       root.appendChild(fieldsHost);
+      // 全一覧の開閉（既定は畳んだまま）。押した本人だけが開く＝自動で開かない。
+      unsupportedToggle = el("button", {
+        id: "simTesterUnsupportedToggle", className: "tester-unsupported-toggle", type: "button",
+      });
+      unsupportedToggle.addEventListener("click", () => setUnsupportedExpanded(
+        unsupportedHost.dataset.expanded !== "1",
+      ));
+      setUnsupportedExpanded(false);
       root.appendChild(warnNode);
+      root.appendChild(unsupportedActiveHost);
+      root.appendChild(unsupportedToggle);
       root.appendChild(unsupportedHost);
       host.appendChild(root);
-      this.elements = { root, fieldsHost, warnNode, unsupportedHost };
+      this.elements = { root, fieldsHost, warnNode, unsupportedActiveHost, unsupportedHost };
       return root;
     },
 
