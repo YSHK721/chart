@@ -1,71 +1,78 @@
-# TDD 実行記録 — Trade Markers v7（ホバー減光・カーソル画素近接判定）
+# TDD 実行記録 — 再レビュー是正（NEW-A / NEW-B / NEW-C ・sim Phase 8）
 
-対象: `indigators/indicator_ui/web/js/adapter/front/trade_markers_renderer.js` の `_onCrosshair` 改修。
-フェーズ: 実装パイプライン フェーズ3「Red/Green」のみ（Refactor はフェーズ4・別担当）。
+対象ブランチ `feature/sim-phase8-tester-settings-ui`（起点 4fc3fb2）。
 
 ## §1 要件分析
 
 | 要素 | 内容 |
 |---|---|
-| 機能 | カーソル画素（param.point）と各マーカー画素の 2 次元距離で最近傍マーカーが許容半径内ならそのトレード i を `_highlight` にする |
-| 目的 | hoveredObjectId 単独依存による「ホバー減光発火の不規則」を是正（§13 v7） |
-| 入力 | `param`（{point:{x,y}, hoveredObjectId}）／`this._pairs`（i/entry/exit の time・price）／`chart.timeScale().timeToCoordinate`・`mainSeries.priceToCoordinate` |
-| 出力 | `_highlight`（trade i または null）→ 単一 `_render()` で marker 減光・ペア線・v6 ローソク減光に連動 |
-| 制約 | 距離尺度 Math.hypot 単一固定・`_HIT_RADIUS_PX=12`・null 安全（throw 禁止・hoveredObjectId フォールバック）・tie は小さい i 優先・単一 _render 不変（C2）・後方互換 |
-| 対象外 | canvas 実描画・実 hover の体感（ブラウザ確認）／Refactor（フェーズ4）／simulator・presenter（変更不要） |
+| 機能 | (A) N-15 の UI 束縛を `none` へ訂正 (B) 発火条件の語彙一致の機械検査 (C) §18.5 の行順整理と R-10 追記 |
+| 目的 | 正常な run への偽の断定の除去／片側改名の素通り遮断 |
+| 入力 | `UnsupportedRule.ui` の宣言・front の `const TRIGGER_*`・fixture の `trigger` |
+| 出力 | `activeUnsupported()` の該当集合（N-15 を含まない）／語彙一致の合否 |
+| 制約 | `on_presence` を語彙から削らない／束縛キーは残す／既存の実行時 Fail-Stop は無改変／8000・8381 無停止 |
+| 対象外 | N-15 の実行時判定の改変（`detect=None` の理由は不変）／規則 B（ISSUE-419）／UI 既定値（ISSUE-418） |
 
-## §2 テストケース設計（v7 11 件・AAA・境界値網羅）
+## §2 テストケース設計（新規 7 件）
 
-| TC | 種別 | 設計根拠 |
+| 群 | 種別 | 設計根拠 |
 |---|---|---|
-| near within radius highlights | 正常系 | 近接ヒット＋非ハイライト減光発火 |
-| far outside radius → null | 異常系（境界外） | 近接→遠方の状態遷移で highlight 解除を検証（弱 assertion 回避） |
-| radius boundary 12 hit / 13 not | 境界値 | 半径ちょうど採用・超過非採用 |
-| nearest among candidates | 正常系 | 最近傍選択 |
-| tie-break lower index | 境界値（同値） | 同距離タイ＝小さい i 決定論 |
-| exit-side marker triggers | 正常系 | exit.price からの画素でも発火 |
-| param.point undefined → fallback | 異常系（null 安全） | hoveredObjectId フォールバック |
-| coord API null → fallback | 異常系（null 安全） | 座標 null フォールバック |
-| param null no-throw | 異常系（null 安全） | throw せず highlight 解除 |
-| C2 single _render | 不変条件 | setMarkers 1 回・highlight 発火 |
-| backward compat（座標 API 非提供） | 後方互換 | hoveredObjectId 経路・throw なし |
+| E2E 1 件 | 異常系（偽陽性の否定）＋結合 | 実在範囲のカスタム期間で「N-15 が出ない」かつ「run は completed」＝偽陽性であったことの同時実証 |
+| 束縛検定 2 件 | 仕様訂正の記録・不変条件 | N-15 が `none`／束縛キーは残す／`detect is None`（必要条件と十分条件の別を docstring に記録）・`on_presence` を語彙から削らない |
+| 語彙検定 5 件 | 構造ガード＋自己検定 | front ⊆ 宣言／差分は `none` ちょうど 1 つ／fixture も同射程／抽出器の空振り検出／改名を別物として見る |
 
 ## §3 🔴 Red 結果
 
-- 実装事前不在の実証（grep）: `param.point` 参照 0 件・`_HIT_RADIUS_PX`/`Math.hypot` 0 件・`this._chart` 未保持 → v7 機能は事前不在。
-- 初回実行: `fail 3 / pass 311`。**8 件のヒット系が現状実装でも Pass**（assertion 弱体＝AP.1 R-7 の疑い）を検出。
-- 是正: ヒット系テストに「非ハイライト marker が減光色になる」アンカーを必須化。
-- 強化後実行: `fail 7 / pass 307`。失敗 7 件は全て point 近接ヒット系（期待された理由で失敗＝v7 機能の不在）。Pass 4 件は hoveredObjectId フォールバックの後方互換テスト（現状実装でも動くのが正当・AP.1 R-2 非該当）。
+### NEW-A（真の Red）
+- 実装事前状態の実証: `unsupported.py:344` が `mode=UI_TRIGGER_ON_PRESENCE`（Read で確認）。
+- 初回実行: **`AssertionError: ['N-15'] / assert 'N-15' not in ['N-15']`**
+  （新設 E2E `test_正しく指定したカスタム期間に偽の非対象告知を出さない`）。
+  失敗は投入前の観測点で起きるため、Red 時点では run を 1 つも消費していない。
+- 期待された理由か: **はい**。正常完走する指定に対して front が非対象を断定していた。
+
+### NEW-B（穴の実測 → ガードの検出力で実証）
+本件は「必ず通るテスト」を Red と称さない（AP.1 R-2 回避）。代わりに**欠陥の存在**を変異で先に実測した:
+- サーバ側 `UI_TRIGGER_OFF_PROFILE` の値を改名 → **python 458 passed / npm 291 passed**（全ゲート素通り）。
+- ガード新設後、同じ変異 → **4 failed / 1 passed**。front 側改名 → **2 failed / 3 passed**。復元 → 5 passed。
 
 ### Red 観測ゲート（4 軸）
 | 軸 | 判定 |
 |---|---|
-| ① 過剰実装 | 非該当（実装未着手で Red 観測） |
-| ② 成功テスト先行（AP.1 R-2） | 非該当（v7 新機能テストは全失敗。Pass は後方互換アンカー） |
-| ③ 実装の事前残存 | 非該当（grep で事前不在を実証） |
-| ④ assertion 弱体 | 検出→是正済（fail 3→fail 7 へ強化し v7 機能の不在を検出可能化） |
+| ① 過剰実装 | 非該当（NEW-A は Red 観測後に宣言を訂正） |
+| ② 成功テスト先行 | 非該当（NEW-B は Red と称さず、欠陥を変異で実測した上でガードとして追加したと明示） |
+| ③ 実装の事前残存 | 非該当（`on_presence` 宣言の存在を Read で確認したうえで訂正） |
+| ④ assertion 弱体 | 非該当（NEW-A は E2E で run の completed も同時に主張。NEW-B は変異 2 種で検出力を実証） |
 
 ## §4 🟢 Green 結果
 
-- 実装: `_HIT_RADIUS_PX=12` 定数・constructor で `this._chart` 保持・`_onCrosshair` で `_nearestTradeByPixel` を最優先しフォールバックに hoveredObjectId・無ければ null。`_nearestTradeByPixel` は各 pair の entry/exit 画素と point の `Math.hypot` を測り最近傍が半径内なら i を返す（座標 null スキップ・厳密 `<` で先頭優先）。
-- 結果: v7 11 件すべて緑。全 **314 件緑 / fail 0**（ベースライン 303 + v7 11）。回帰破壊なし。
-- 最小性: 近接判定追加のみ。_render/_applyCandleDimming 等の既存経路本体は無変更（C2 不変）。setData 直呼びなし（upstream 隔離維持）。
-- ビルド: `node build.mjs` 成功（exit 0）。
+- NEW-A: `ui=UiTrigger(keys=("FromDate","ToDate"), mode=UI_TRIGGER_NONE)`。束縛キーは残す
+  （畳んだ全一覧での所在を保つ）。`UI_TRIGGER_ON_PRESENCE` は語彙として残し、その理由を
+  定数の docstring に記した。→ E2E **7 passed**・束縛検定 63 passed・`npm test` 291 passed。
+- NEW-B: `sim_ui/tests/unit/test_settings_trigger_vocabulary.py`（5 件）。→ 5 passed。
+- NEW-C: §18.5 を R-7 / R-8 / R-9 の順へ（内容無変更）＋ R-10 追記。
+- 最小性: 実装の変更は宣言 1 行（`mode`）のみ。判定式・送出・実行経路・front の照合ロジックは無改変。
+
+## §5 ♻️ Refactor 結果
+
+構造改善なし（宣言 1 行の訂正とテスト追加のみ）。変異による検出力の実測は §3 に記載。
+変異の復元は `cp`（git の破壊的コマンド不使用）。復元後 `git status` に実装差分なし。
 
 ## §6 完了判定
 
 | 項目 | 判定 |
 |---|---|
-| テスト存在・実行可能 | ✔ v7 11 件（node:test） |
-| Red/Green 出力 | ✔（Refactor はフェーズ4・別担当） |
-| カバレッジ（正常/境界/異常/不変/後方互換） | ✔ 11 ケースで網羅 |
+| テスト存在・実行可能 | ✔ E2E 7・語彙検定 5・束縛検定（engine 208 passed の内数）・web 291 |
+| Red/Green の各出力 | ✔（NEW-B は Red ではなく変異実測であることを明示） |
+| カバレッジ（偽陽性の否定・仕様訂正の記録・語彙一致・抽出器の自己検定） | ✔ |
 | テスト名が機能・期待を記述 | ✔ |
-| 回帰（全テスト緑） | ✔ 314/314・build 成功 |
-| 横断アンチパターン | 非該当（テスト改変・skip・カバレッジ偽装なし） |
+| 回帰 | ✔ 既存テストの緩和 0。N-15 参照箇所は仕様訂正として更新し、その別（必要条件／十分条件）を docstring に記録 |
+| 横断アンチパターン | 非該当（skip / xfail / カバレッジ偽装なし） |
 
 ## 違反リスト
-**空集合**（強制ルール違反なし。初回 assertion 弱体は Red 段階で是正済）。
+**空集合**。
 
-## 残存（フェーズ4 引き継ぎ）
-- tie-break の配列順依存（`this._pairs` が i 昇順でない場合の堅牢化）は Refactor 候補。現状は presenter 出力が i 昇順で実害なし。
-- canvas 実描画・実 hover の発火規則性・`_HIT_RADIUS_PX` 体感調整はブラウザ確認に委譲。
+## 残存
+- N-15 は実行時に発火しても**投入前には予告できない**（`detect=None` の帰結）。理由は
+  `failure_reason` と告知の全一覧に残るため沈黙ではない。
+- E2E `custom_range` の日付はデータセットの実在範囲に依存（既存の窓検定と同じ前提）。
+- ブラウザ目視は依頼者のスタック再起動後。ISSUE-418 / ISSUE-419 は未着手（承認事項）。
