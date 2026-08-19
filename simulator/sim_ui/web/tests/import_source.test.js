@@ -357,6 +357,26 @@ test("no front module assigns to the read-only .children getter (実ブラウザ
   }
 });
 
+// `Element.children` は実ブラウザで HTMLCollection＝Array メソッド（map/filter/forEach…）を
+// 持たない。fake DOM は素の配列なので直接呼び出しが単体テストでは通ってしまい、実 UI でのみ
+// TypeError で描画が落ちる（実測 2026-08-19: offeredTokens の `.map` が Tester パネル構築を
+// 例外にし fail-open の縮退フォームへ落とした＝ISSUE-425）。Array.from(...) を経由すること。
+
+test("no front module calls Array methods directly on .children (HTMLCollection には無い)", () => {
+  const arrayMethodAfter = /(map|filter|forEach|flatMap|reduce|some|every|find|findIndex)\s*\(/;
+  for (const name of FRONT_FILES) {
+    const offenders = read(name)
+      .split("\n")
+      .map((line, i) => ({ line, no: i + 1 }))
+      .filter(({ line }) => line.includes(".children"))
+      // `Array.from(...)` を経由する行は配列化済み＝許可。直接呼びだけを禁じる。
+      .filter(({ line }) => !line.includes("Array.from"))
+      .filter(({ line }) => arrayMethodAfter.test(line.slice(line.indexOf(".children"))));
+    assert.deepEqual(offenders.map((o) => o.no), [],
+      `${name} が .children へ直接 Array メソッドを呼んでいます（実ブラウザの HTMLCollection には無い＝描画事故）。Array.from(...) を経由すること: 行 ${offenders.map((o) => o.no).join(",")}`);
+  }
+});
+
 // 非標準 `Element.parent`（読み取り含む）を禁じる。実ブラウザに `.parent` は無く（親参照は
 // `parentNode`/`parentElement`）、`node.parent` は常に undefined。fake DOM が非標準 `.parent` を
 // 生やしているため単体テストでは通ってしまい、実 UI でのみ「行削除が DOM に反映されない」等の

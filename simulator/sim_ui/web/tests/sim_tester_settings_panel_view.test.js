@@ -302,3 +302,19 @@ test("derivedBacktest takes ea_name from the Expert label and initial_deposit fr
   fire(sel);
   assert.equal(view.derivedBacktest().ea_name, schema.expert_options[1].label);
 });
+
+test("offered candidates survive a real-DOM HTMLCollection (children に .map が無くても動く)", () => {
+  // 実ブラウザの `Element.children` は HTMLCollection＝Array メソッドを持たない。
+  // fake DOM の配列 children を getter 経由の array-like（length と添字のみ）へ差し替えて
+  // 実 DOM の意味論を再現する（実測 2026-08-19: `.map` 直呼びが TypeError で
+  // Tester パネル構築を落とし、fail-open の縮退フォームに落ちていた＝ISSUE-425）。
+  const { host, view } = ready();
+  const sel = field(host, "Expert");
+  const kids = sel.children;
+  const collection = { length: kids.length };
+  kids.forEach((c, i) => { collection[i] = c; });
+  Object.defineProperty(sel, "children", { get: () => collection });
+  sel.value = "NOT_A_CANDIDATE";
+  fire(sel);
+  assert.ok(activeIds(view).includes("X-06"), "HTMLCollection 相当の children で告知判定が動いていません");
+});

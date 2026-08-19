@@ -243,7 +243,9 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   /** キー K に対して配られた候補トークン（自由入力なら空）。 */
   function offeredTokens(key) {
     const node = controls.get(key);
-    return ((node && node.children) || []).map((option) => String(option.value));
+    // 実 DOM の `children` は HTMLCollection＝Array メソッドを持たない（fake DOM は配列
+    // なので単体では露見しない・ISSUE-425 実測）。必ず Array.from を経由する。
+    return Array.from((node && node.children) || []).map((option) => String(option.value));
   }
 
   /** キー K の権威値（実行対象データセットが供給する値。無ければ null）。 */
