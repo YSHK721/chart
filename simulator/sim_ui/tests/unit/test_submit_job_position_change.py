@@ -85,18 +85,25 @@ def test_partial_close_mapping_is_rejected_by_intake_gate():
     assert launcher.launched == []
 
 
-def test_non_mapping_trailing_is_rejected():
-    sut = _interactor()
+def test_non_mapping_trailing_is_rejected_by_intake_gate():
+    # 構造が壊れていても（Phase 7 なら構造検査が拒否した本文でも）受付で終端する。
+    launcher = FakeLauncher()
+    sut = _interactor(launcher=launcher)
     sub = _sub({"entry_long": _ENTRY, "trailing": [1, 2, 3]})
-    with pytest.raises(JobSubmissionInvalidError):
+    with pytest.raises(JobSubmissionInvalidError) as exc:
         sut.execute(sub)
+    assert _INTAKE_GATE in str(exc.value)
+    assert launcher.launched == []
 
 
-def test_non_mapping_partial_close_is_rejected():
-    sut = _interactor()
+def test_non_mapping_partial_close_is_rejected_by_intake_gate():
+    launcher = FakeLauncher()
+    sut = _interactor(launcher=launcher)
     sub = _sub({"entry_long": _ENTRY, "partial_close": "nope"})
-    with pytest.raises(JobSubmissionInvalidError):
+    with pytest.raises(JobSubmissionInvalidError) as exc:
         sut.execute(sub)
+    assert _INTAKE_GATE in str(exc.value)
+    assert launcher.launched == []
 
 
 # --- 粒度不一致 fail-stop（🟡・無言不作動の防止） ---------------------------
@@ -109,16 +116,20 @@ def _sub_with_tickmodel(strategy, tick_model=None):
     )
 
 
-def test_real_ticks_run_with_bar_trailing_is_rejected():
-    # real_ticks 実行（tick 粒度）＋ trailing granularity="bar" → 無言不作動 → 拒否。
-    sut = _interactor()
+def test_real_ticks_run_with_bar_trailing_is_rejected_by_intake_gate():
+    # real_ticks 実行 ＋ granularity="bar"（Phase 7 なら粒度ゲートが拒否した本文）でも
+    # 拒否理由は受付ゲートである（粒度ゲートには到達しない）。
+    launcher = FakeLauncher()
+    sut = _interactor(launcher=launcher)
     sub = _sub_with_tickmodel(
         {"entry_long": _ENTRY, "trailing": {"granularity": "bar",
                                             "trigger_points": 50, "distance_points": 30}},
         tick_model="real_ticks",
     )
-    with pytest.raises(JobSubmissionInvalidError):
+    with pytest.raises(JobSubmissionInvalidError) as exc:
         sut.execute(sub)
+    assert _INTAKE_GATE in str(exc.value)
+    assert launcher.launched == []
 
 
 def test_real_ticks_run_with_tick_trailing_is_rejected_by_intake_gate():
@@ -136,15 +147,18 @@ def test_real_ticks_run_with_tick_trailing_is_rejected_by_intake_gate():
     assert launcher.launched == []
 
 
-def test_bar_run_with_tick_trailing_is_rejected():
-    # 既定（every_tick＝bar 経路）＋ trailing granularity="tick" → 無言不作動 → 拒否。
-    sut = _interactor()
+def test_bar_run_with_tick_trailing_is_rejected_by_intake_gate():
+    # 既定（every_tick＝bar 経路）＋ granularity="tick"（Phase 7 なら粒度ゲートが拒否）。
+    launcher = FakeLauncher()
+    sut = _interactor(launcher=launcher)
     sub = _sub_with_tickmodel(
         {"entry_long": _ENTRY, "trailing": {"granularity": "tick",
                                             "trigger_points": 50, "distance_points": 30}},
     )
-    with pytest.raises(JobSubmissionInvalidError):
+    with pytest.raises(JobSubmissionInvalidError) as exc:
         sut.execute(sub)
+    assert _INTAKE_GATE in str(exc.value)
+    assert launcher.launched == []
 
 
 def test_bar_run_with_bar_trailing_default_is_rejected_by_intake_gate():

@@ -132,13 +132,16 @@ def test_strategy_override_is_not_an_accepted_backtest_key():
     assert "strategy_decorator" not in allowed
 
 
-def test_strategy_validated_even_when_sizing_off():
-    # Arrange: sizing OFF でも strategy 参照検証は効く（独立した検証）
-    sut = _interactor()
+def test_strategy_is_rejected_by_intake_gate_even_when_sizing_off():
+    # Arrange: sizing OFF でも受付ゲートで終端する（sizing の有無と独立）
+    launcher = FakeLauncher()
+    sut = _interactor(launcher=launcher)
     sub = JobSubmission(
         backtest={"ea_name": "TC24051901"},
         sizing=None,
         strategy={"entry_long": [{"indicator": "ema", "shift": 0, "op": ">", "rhs": 1.0}]},
     )
-    with pytest.raises(JobSubmissionInvalidError):
+    with pytest.raises(JobSubmissionInvalidError) as exc:
         sut.execute(sub)
+    assert _INTAKE_GATE in str(exc.value)
+    assert launcher.launched == []

@@ -177,14 +177,35 @@ def test_銘柄不一致の投入は台帳へ書かず子も起こさない() ->
     assert launcher.launched == []
 
 
-def test_backtest_symbol不在は不一致として拒否される() -> None:
-    """実行仕様が銘柄を持たない本文は実行対象が定まらない（空文字との不一致）。"""
+def test_backtest_symbolが空文字なら不一致として拒否される() -> None:
+    """実行仕様の銘柄が空文字の本文は実行対象が定まらない（`.ini` の Symbol との不一致）。
+
+    真の**不在**（`symbol` キーそのものが無い）はここには届かない——本番の
+    `required_backtest_keys` は `symbol` を必須に含むため、先行する必須キー検査が
+    先に 400 を返す（本検定は `no_required_backtest_keys` を使うため空文字で代替する）。
+    """
     # Arrange
     sut = _interactor()
     sub = _submission(symbol="")
     # Act / Assert
     with pytest.raises(JobSubmissionInvalidError):
         sut.execute(sub)
+
+
+def test_大小文字と空白の違いは同一銘柄と見なされない() -> None:
+    """比較は**生トークンの恒等**である（正規化しない）。
+
+    `.ini` の `Symbol` は MT5 が解決する銘柄名そのものであり、大小文字や前後空白を
+    こちらで吸収すると「受付は通ったが実行対象は別」の隙間ができる。正規化比較
+    （`strip().upper()` 等）へ書き換えると本検定が落ちる。
+    """
+    # Arrange: 実行仕様側だけを小文字化＋前後空白づけ
+    sut = _interactor()
+    sub = _submission(symbol=f" {_TESTER_SYMBOL.lower()} ")
+    # Act / Assert
+    with pytest.raises(JobSubmissionInvalidError) as caught:
+        sut.execute(sub)
+    assert _TESTER_SYMBOL.lower() in str(caught.value)
 
 
 def test_受付が比較する生トークンは設定モデルの値と恒等である() -> None:
