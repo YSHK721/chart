@@ -669,6 +669,25 @@ if not frozenset(EXPERT_ONLY_KEYS) < TESTER_KEYS:
     raise RuntimeError("EXPERT_ONLY_KEYS が字句層の TESTER_KEYS の真部分集合ではありません")
 
 
+def required_tester_keys() -> "tuple[str, ...]":
+    """`[Tester]` の**無条件必須**キーを標準キー順で返す（追加のみ・挙動 0 変化）。
+
+    「無条件」とは、他キーの選択に依らず常に必要という意味である。条件付きの必須
+    （規則 D の `Expert` / `Indicator`・規則 E の `Dates` / `FromDate`＋`ToDate`）は
+    本関数に含まれない——それらは排他条件を伴い、単独のキー集合では表せない。
+
+    導出元は宣言（`_TesterIniModel` の required フィールド）ただ 1 つである。必須キーの
+    表を別に手書きすると、宣言に既定値を足したときに片方だけが腐る。フィールド名が
+    `.ini` のキー名と一致することはモジュール読込時に機械検査済み（上の RuntimeError）。
+
+    用途: 設定フォームの schema 供給（Phase 8）が「常に埋めねばならないキー」を
+    UI へ配るための単一ソース。検証そのものの経路は本関数を通らない。
+    """
+    return tuple(
+        key for key in STANDARD_KEY_ORDER if _TesterIniModel.model_fields[key].is_required()
+    )
+
+
 def rule_id_for(key: str | None) -> str:
     """`.ini` キーに対応する規則 ID（未知キーは規則 P）。"""
     rule = KEY_RULES.get(key or "")
