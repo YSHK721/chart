@@ -63,6 +63,9 @@ class JobApiController:
             sizing=body.get("sizing"),
             # Phase 6 F-8（P6-E3）: 戦略項目ブロックを読取る。不在は None（既定 OFF・byte 等価）。
             strategy=body.get("strategy"),
+            # Phase 8 §18（T-4）: Tester Settings ブロック（第 4 ブロック）。不在は None
+            # ＝旧 spec と併存し、現行経路は byte 等価のまま。
+            settings=body.get("settings"),
         )
         try:
             view = self._submit.execute(submission)

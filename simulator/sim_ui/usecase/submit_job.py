@@ -30,9 +30,11 @@ from simulator.sim_ui.usecase.job_models import (
     SizingUnsupportedError,
 )
 from simulator.sim_ui.usecase.job_ports import (
+    EaSubjectPort,
     IndicatorSeriesCatalogPort,
     JobLauncherPort,
     JobLedgerPort,
+    SettingsValidationPort,
     StopLossParamCatalogPort,
 )
 
@@ -50,6 +52,8 @@ class SubmitJobInteractor:
         stop_loss_catalog: StopLossParamCatalogPort,
         allowed_backtest_keys: "Callable[[], frozenset[str]]",
         required_backtest_keys: "Callable[[], frozenset[str]]",
+        settings_validator: "SettingsValidationPort | None" = None,
+        ea_subject: "EaSubjectPort | None" = None,
     ) -> None:
         self._ledger = ledger
         self._launcher = launcher
@@ -58,6 +62,11 @@ class SubmitJobInteractor:
         self._stop_loss_catalog = stop_loss_catalog
         self._allowed_backtest_keys = allowed_backtest_keys
         self._required_backtest_keys = required_backtest_keys
+        # Phase 8（§18）: settings ブロックを持つ投入だけが使う 2 Port。既定 ``None`` は
+        # 「settings 経路を結線していない構成」を表す。settings 不在の投入は 1 度も
+        # 触れないため、既存の結線（Phase 1〜7）は 1 行も変えずに動く（OCP）。
+        self._settings_validator = settings_validator
+        self._ea_subject = ea_subject
 
     def execute(self, submission: JobSubmission) -> JobView:
         """投入して現在状態を返す。E-3 違反は :class:`SizingUnsupportedError`。"""
@@ -65,6 +74,11 @@ class SubmitJobInteractor:
         # （未知キーは子プロセスで TypeError になり「投入は通ったが実行だけ落ちる」
         #  という遅い失敗になる。受付で弾いて即座に理由を返す）。
         self._reject_invalid_backtest_keys(submission)
+        # Tester Settings（Phase 8 §18）: settings present のときだけ検証する。
+        # **戦略項目の検証より先**に置く: 粒度ゲート（下）は settings の `Model` を権威に
+        # 実効粒度を決めるため、`Model` の妥当性が確定していないと判定の前提が立たない。
+        if submission.settings:
+            self._reject_invalid_settings(submission)
         # 戦略項目（Phase 6 E-5）: 参照する指標系列が当該 ea_name の登録系列に含まれるかを
         # 受付時に検証する（sizing とは独立）。E-3 と同じ系列カタログ Port を再利用する。
         if submission.strategy_enabled:
@@ -93,6 +107,45 @@ class SubmitJobInteractor:
         running = job.to(JobStatus.RUNNING)
         self._ledger.update(running, expect=JobStatus.RECEIVED)
         return JobView.of(running)
+
+    def _reject_invalid_settings(self, submission: JobSubmission) -> None:
+        """Phase 8（§18.4 スライス 3）: settings ブロックの受付検証 3 本。
+
+        a. 設定規則（B〜Q）— `SettingsValidationPort` が framework の単一ソースへ委譲する。
+        b. 実行対象の一致 — `Expert` の語幹（`EaSubjectPort`）と `backtest.ea_name` が
+           一致すること。食い違ったまま実行すると「指定した EA と違う EA の結果」が
+           静かに出る（どちらが権威かを決めずに両方渡す形にはしない）。
+        c. T-2 裁定 — `[TesterInputs]` は Phase 8 では実行不能。束縛表（`EA_INPUT_BINDINGS`）
+           が空であり、入力 1 行でも実行段で必ず `ConfigError` になる。受付で理由つきに
+           拒否して「投入は通ったのに実行だけ落ちる」遅い失敗を作らない。
+
+        検証の順序は a → b → c（より根本的な理由から返す）。
+        """
+        settings = submission.settings or {}
+        tester = settings.get("tester") or {}
+        inputs = settings.get("inputs") or []
+        if self._settings_validator is None or self._ea_subject is None:
+            raise JobSubmissionInvalidError(
+                "この構成は Tester Settings 経路を受け付けません"
+                "（settings ブロックの検証 Port が結線されていません）"
+            )
+        self._settings_validator.validate(tester, inputs)
+
+        subject = str(tester.get("Expert", ""))
+        stem = self._ea_subject.stem_of(subject)
+        if stem != submission.ea_name:
+            raise JobSubmissionInvalidError(
+                f"Tester Settings の Expert={subject!r}（EA 名={stem!r}）は、実行仕様の "
+                f"ea_name={submission.ea_name!r} と一致しません。同じ EA を指してください"
+                "（食い違ったまま実行すると、指定した EA と違う EA の結果が出ます）"
+            )
+
+        if inputs:
+            raise JobSubmissionInvalidError(
+                f"[TesterInputs] は現在実行できません（指定 {len(inputs)} 行）。EA 入力の"
+                "束縛表が空のため、1 行でも指定すると実行段で必ず設定エラーになります。"
+                "SL / TP / 移動平均 / ロット等は実行仕様（backtest）側で指定してください"
+            )
 
     def _reject_if_price_series_missing(self, submission: JobSubmission) -> None:
         """E-3（§12.5）: 必要な価格系列が無い戦略の sizing ON を明示エラーで拒む。"""

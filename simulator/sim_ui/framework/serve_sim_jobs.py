@@ -98,6 +98,8 @@ class SimJobApp(SimApp):
         stop_loss_catalog: Any,
         allowed_backtest_keys: Any,
         required_backtest_keys: Any,
+        settings_validator: Any = None,
+        ea_subject: Any = None,
     ) -> None:
         super().__init__(web_dir=web_dir, shared_js_root=shared_js_root)
         self.ledger = ledger
@@ -113,6 +115,10 @@ class SimJobApp(SimApp):
                 stop_loss_catalog=stop_loss_catalog,
                 allowed_backtest_keys=allowed_backtest_keys,
                 required_backtest_keys=required_backtest_keys,
+                # Phase 8 §18: settings ブロック（第 4 ブロック）の受付検証 Port。
+                # 既定 None は「settings 経路を結線しない構成」（既存の呼出はそのまま動く）。
+                settings_validator=settings_validator,
+                ea_subject=ea_subject,
             ),
             query=query,
             cancel=CancelJobInteractor(ledger=ledger, launcher=launcher),

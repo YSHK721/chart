@@ -9,6 +9,28 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from simulator.sim_ui.domain.simulation_job import SimulationJob
+from simulator.usecase.tester_settings import TICK_MODEL_ENGINE_IDS, TickModel
+
+#: 実効粒度が tick になるエンジン tick_model id。語彙は列挙が単一ソースであり、
+#: 文字列をここに書き写さない（`Model` の値と語の対応は 1 箇所にしか無い）。
+_TICK_GRANULARITY_ENGINE_ID: str = TICK_MODEL_ENGINE_IDS[TickModel.REAL_TICKS]
+
+#: `config_overrides.tick_model` 未指定時の既定（config_loader と同じ）。
+DEFAULT_TICK_MODEL: str = TICK_MODEL_ENGINE_IDS[TickModel.EVERY_TICK]
+
+
+def granularity_of(*, tick_model: str, pending_lifecycle: bool) -> str:
+    """実効評価粒度（"bar"|"tick"）の**唯一の判定点**。
+
+    `RunBacktestInteractor.execute` の分岐（run_backtest.py）に忠実: ``real_ticks``
+    または ``pending_lifecycle`` の run は every-tick 経路（tick 粒度・B4）、それ以外
+    （every_tick / ohlc_expand / open_only 等の合成 tick_model）は bar 経路（bar 粒度・B2）。
+
+    入力を `EffectiveSettings` でも `backtest` でもなく **engine の tick_model id** に
+    しているのは、settings 経路（`Model` 由来）と現行経路（`config_overrides` 由来）を
+    同じ 1 つの判定へ合流させるためである（判定を 2 箇所に書けば片方だけ腐る）。
+    """
+    return "tick" if (tick_model == _TICK_GRANULARITY_ENGINE_ID or pending_lifecycle) else "bar"
 
 
 @dataclass(frozen=True)
@@ -25,11 +47,17 @@ class JobSubmission:
       子プロセス（run_job）が :class:`GenericConditionStrategy` を構築して
       ``build_interactor(strategy_override=...)`` へ渡す。sim コアは中身を解釈せず、
       受付検証（E-5）で参照指標名の集合だけを読む。
+    ``settings``: MT5 Tester Settings ブロック（Phase 8 §18・T-4）。形は
+      ``{"tester": {キー: 生トークン}, "inputs": [行原文]}``。**生トークンのまま**運ぶ
+      （型付き DTO へ写すと検証の第 2 実装ができ、往復（NFR-02）が壊れる）。``None``
+      なら **OFF**（既定・settings 不在で既存挙動 byte 等価）。規則 B〜Q の検証は
+      `SettingsValidationPort` が framework の単一ソースへ委譲する。
     """
 
     backtest: Mapping[str, Any]
     sizing: "Mapping[str, Any] | None" = None
     strategy: "Mapping[str, Any] | None" = None
+    settings: "Mapping[str, Any] | None" = None
 
     @property
     def ea_name(self) -> str:
@@ -67,15 +95,43 @@ class JobSubmission:
     def effective_granularity(self) -> str:
         """この run の実効評価粒度（"bar"|"tick"）を返す（Phase 7・粒度ゲート用）。
 
-        RunBacktestInteractor.execute の分岐（run_backtest.py）に忠実:
-        ``tick_model == "real_ticks"`` または ``pending_lifecycle`` の run は every-tick 経路
-        （tick 粒度・B4）、それ以外（every_tick/ohlc_expand/open_only 等の合成 tick_model）は
-        bar 経路（bar 粒度・B2）。既定 tick_model は config_loader と同じ "every_tick"（＝bar）。
+        判定そのものは :func:`granularity_of` が唯一持つ（規則の本文と既定値の字形を
+        ここへ写さない。既定は :data:`DEFAULT_TICK_MODEL`）。本 property は**どの
+        tick_model が権威か**だけを決める:
+
+            settings 有り（Phase 8）: `.ini` の `Model` が権威（写像層 `_config_overrides`
+              と同じ優先順位＝`Model` が `config_overrides.tick_model` を上書きする）。
+            settings 不在（既定）  : 現行どおり `backtest.config_overrides.tick_model`。
         """
         overrides = self.backtest.get("config_overrides") or {}
-        tick_model = str(overrides.get("tick_model", "every_tick"))
-        pending = bool(overrides.get("pending_lifecycle", False))
-        return "tick" if (tick_model == "real_ticks" or pending) else "bar"
+        tick_model = self._settings_tick_model()
+        if tick_model is None:
+            tick_model = str(overrides.get("tick_model", DEFAULT_TICK_MODEL))
+        return granularity_of(
+            tick_model=tick_model,
+            pending_lifecycle=bool(overrides.get("pending_lifecycle", False)),
+        )
+
+    def _settings_tick_model(self) -> "str | None":
+        """settings の `Model`（生トークン）→ エンジンの tick_model id。
+
+        変換表は :data:`TICK_MODEL_ENGINE_IDS`（`usecase/tester_settings/enums.py`）が
+        単一ソースであり、対応をここに書き写さない。
+
+        ``None`` を返す 2 つの場合——settings 不在／`Model` を持たないか未知値——は
+        いずれも「settings は粒度を決めない」の意であり、呼出側は現行規則へ落ちる。
+        `Model` は検証層の必須キーかつ既知値のみ受理であるため、受付検証を通った投入
+        では必ず値が引ける（未知値の報告は rule_id 付きの検証例外が担う）。
+        """
+        tester = (self.settings or {}).get("tester") or {}
+        raw = tester.get("Model")
+        if raw is None:
+            return None
+        try:
+            model = TickModel(int(str(raw)))
+        except ValueError:
+            return None
+        return TICK_MODEL_ENGINE_IDS[model]
 
     def trailing_granularity(self) -> "str | None":
         """strategy.trailing の granularity（省略時 "bar"）。trailing 不在は None。"""

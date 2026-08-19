@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from simulator.domain.exceptions import ConfigError
@@ -31,6 +33,8 @@ from simulator.framework.tester_settings import tester_settings_from_mapping
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
 from simulator.tests.tester_settings_engine_fixtures import (
     DEFAULT_EA_PARAMS,
+    SETTLEMENT_CURRENCY,
+    custom_range_settings,
     engine_binding,
     jp225_symbol_spec,
     runnable_settings,
@@ -229,6 +233,133 @@ class TestUnsupportedRulesAreDeclarative:
     def test_withdrawn_n04_is_not_declared(self):
         # N-04 は v1.1 で撤回・欠番（ISSUE-387 裁定）。表に残っていたら拒否が復活する。
         assert "N-04" not in self._declared_ids()
+
+    # --- UI 束縛の宣言（R-9）: 宣言と判定式が同じものを指すこと -----------------
+    # UI は「どの選択が非対象に当たるか」を宣言（`UnsupportedRule.ui`）だけから決める。
+    # 宣言が判定式（`detect`）とずれると、画面は「非対象です」と言うのに実行は通る
+    # （またはその逆）。宣言を写しで確かめず、**実行段の実測**で結ぶ。
+
+    def test_every_rule_declares_which_ini_keys_it_binds_to(self):
+        from simulator.adapter.tester_settings.ini_codec import STANDARD_KEY_ORDER
+        from simulator.main.tester_settings.unsupported import RULES
+
+        for rule_id, rule in RULES.items():
+            assert rule.ui is not None, f"{rule_id} に UI 束縛の宣言がありません"
+            assert rule.ui.keys, f"{rule_id} がどの `.ini` キーにも紐づいていません"
+            assert set(rule.ui.keys) <= set(STANDARD_KEY_ORDER), rule_id
+
+    def test_declared_firing_tokens_really_fire_their_rule(self):
+        """`on_tokens` で宣言したトークンが、実行段で当該 rule を発火させること。"""
+        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_ON_TOKENS
+
+        checked = []
+        for rule_id, rule in RULES.items():
+            if rule.ui.mode != UI_TRIGGER_ON_TOKENS or rule.detect is None:
+                continue
+            for key in rule.ui.keys:
+                for token in rule.ui.tokens:
+                    with pytest.raises(UnsupportedSettingError) as excinfo:
+                        _kwargs(settings=runnable_settings(**{key: token}))
+                    assert excinfo.value.context["unsupported_id"] == rule_id, (key, token)
+                    checked.append((rule_id, key, token))
+        assert checked, "`on_tokens` の宣言が 1 件も無い（束縛が空＝UI から発火しない）"
+
+    def test_declared_supported_tokens_do_not_fire_their_rule(self):
+        """`except_tokens` で宣言した「対象の値」では発火しないこと。"""
+        from simulator.main.tester_settings.unsupported import (
+            RULES,
+            UI_TRIGGER_EXCEPT_TOKENS,
+        )
+
+        checked = []
+        for rule_id, rule in RULES.items():
+            if rule.ui.mode != UI_TRIGGER_EXCEPT_TOKENS or rule.detect is None:
+                continue
+            for key in rule.ui.keys:
+                for token in rule.ui.tokens:
+                    # 例外が出ないこと自体が主張（出れば pytest が失敗させる）
+                    _kwargs(settings=runnable_settings(**{key: token}))
+                    checked.append((rule_id, key, token))
+        assert checked, "`except_tokens` の宣言が 1 件も無い"
+
+    # 残る 4 形（トークン列挙で表せないもの）も、**宣言のキーを使って**判定式と結ぶ。
+    # 宣言だけ書き換えても気付かない穴を残さない。
+
+    def test_off_candidates_binding_matches_the_ea_name_check(self):
+        """`off_candidates`（N-01）: 宣言キーへ候補外の値を置くと当該 rule が出る。"""
+        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_OFF_CANDIDATES
+
+        rule = RULES["N-01"]
+        assert rule.ui.mode == UI_TRIGGER_OFF_CANDIDATES
+        key = rule.ui.keys[0]
+        with pytest.raises(ConfigError) as excinfo:
+            _kwargs(settings=runnable_settings(**{key: "Definitely_Not_Registered.ex5"}))
+        assert excinfo.value.context["unsupported_id"] == "N-01"
+
+    def test_off_profile_binding_matches_the_settlement_currency_check(self):
+        """`off_profile`（N-11）: 宣言キーへ束縛の権威値と異なる値を置くと当該 rule が出る。"""
+        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_OFF_PROFILE
+
+        rule = RULES["N-11"]
+        assert rule.ui.mode == UI_TRIGGER_OFF_PROFILE
+        key = rule.ui.keys[0]
+        other = f"{SETTLEMENT_CURRENCY[:2]}X"  # 決済通貨と必ず異なる 3 文字（規則 L の書式）
+        with pytest.raises(UnsupportedSettingError) as excinfo:
+            _kwargs(settings=runnable_settings(**{key: other}))
+        assert excinfo.value.context["unsupported_id"] == "N-11"
+
+    def test_n15_is_declared_unevaluable_from_raw_tokens(self):
+        """N-15 は生トークンでは判定できない（`none`）。
+
+        **仕様訂正の記録（R-10・2026-08-19）**: 当初は「窓を課すのは custom 指定のときだけ」
+        という**必要条件**を `on_presence` の発火条件に用いていた。しかしそれは十分条件では
+        ない——下の 2 つの assert が示すとおり、宣言キーの有無は「窓を要求したか」までしか
+        決めず、「その窓がエンジンへ適用されたか」は決めない。適用の成否はエンジンが返した
+        バー系列を要する（`window.verify_window_applied`）。必要条件を発火条件に使うと、
+        正しく適用されて完走する run にも「適用されていません」という断定が点灯した（実測）。
+        よって発火条件を `none` へ訂正した。**アサーションの弱体化ではなく仕様の訂正**であり、
+        偽陽性を禁じる検定を E2E 側に新設してある
+        （`test_settings_ui_end_to_end.test_正しく指定したカスタム期間に偽の非対象告知を出さない`）。
+        """
+        from simulator.main.tester_settings.unsupported import RULES, UI_TRIGGER_NONE
+        from simulator.main.tester_settings.window import resolve_data_window
+
+        rule = RULES["N-15"]
+        assert rule.ui.mode == UI_TRIGGER_NONE
+        assert rule.ui.keys, "束縛キーは残す（畳んだ全一覧での所在を失わせない）"
+        # 宣言キーの有無が決めるのは「窓を**要求**したか」まで（＝必要条件でしかない）。
+        custom = custom_range_settings(date(2024, 1, 2), date(2024, 1, 3)).effective()
+        assert resolve_data_window(custom).marketdata_window is not None
+        preset = runnable_settings(Dates="0").effective()
+        assert resolve_data_window(preset).marketdata_window is None
+        # 適用の成否は判定式を持たない（実行後にしか分からない）ことの実証。
+        assert rule.detect is None
+
+    def test_the_on_presence_form_stays_available_for_future_rules(self):
+        """`on_presence` は使う rule が無くても語彙として残す（表現力の宣言）。"""
+        from simulator.main.tester_settings.unsupported import (
+            UI_TRIGGER_MODES,
+            UI_TRIGGER_ON_PRESENCE,
+        )
+
+        assert UI_TRIGGER_ON_PRESENCE in UI_TRIGGER_MODES
+
+    def test_none_binding_really_cannot_fire_from_a_raw_token(self):
+        """`none`（N-10）: `.ini` の生トークン（常に文字列）では判定式が発火しない。"""
+        from simulator.main.tester_settings.unsupported import (
+            NOT_VIOLATED,
+            RULES,
+            UI_TRIGGER_NONE,
+        )
+
+        rule = RULES["N-10"]
+        assert rule.ui.mode == UI_TRIGGER_NONE
+        key = rule.ui.keys[0]
+        for token in ("JP225", "JP225,USDJPY", ""):
+            effective = runnable_settings(**{key: token}).effective() if token else None
+            if effective is None:
+                continue  # 空文字は書式（規則 M）で先に弾かれる＝UI からは到達しない
+            assert rule.detect(effective, engine_binding(data_path=DATA_PATH)) is NOT_VIOLATED
 
 
 class TestActivationRules:

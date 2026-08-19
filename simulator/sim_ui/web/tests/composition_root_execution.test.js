@@ -11,6 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { fakeDoc, findById, flatten } from "./_fakes.js";
+import { settingsSchema } from "./_settings_schema_fixture.js";
 import { mountSimExecutionPanel } from "../js/adapter/front/composition_root_execution.js";
 
 const hasClass = (el, c) => String((el && el.className) || "").split(/\s+/).includes(c);
@@ -35,10 +36,21 @@ const RUN_OPTIONS = {
   ea_names: ["PRO_fit_Band_EA", "TC24051901"],
 };
 
-function routerFetch({ job } = {}) {
+function routerFetch({ job, schema, schemaRaw } = {}) {
   const calls = [];
   const fn = async (url, init) => {
     calls.push({ url, init });
+    // Phase 8: schema を渡さない呼び出しでは `/sim/settings-schema` は 404 に落ちる
+    // （＝Tester パネルを結線できない構成）。既存の検定はこの経路のままで通る。
+    if (url === "/sim/settings-schema") {
+      // `schemaRaw`: HTTP は 200 なのに本文が JSON でない（プロキシのエラーページ等）。
+      if (schemaRaw) {
+        return { ok: true, status: 200, json: async () => { throw new Error("Unexpected token <"); } };
+      }
+      return schema
+        ? { ok: true, status: 200, json: async () => schema }
+        : { ok: false, status: 404, json: async () => ({ error: "no schema" }) };
+    }
     if (url.startsWith("/sim/ea-series/")) {
       const ea = decodeURIComponent(url.slice("/sim/ea-series/".length));
       const payload = EA_SERIES[ea] || { ok: true, ea_name: ea, series: [] };
@@ -159,6 +171,105 @@ test("after submit a 'see results' affordance appears and does NOT auto-navigate
   // ユーザークリックで初めて ?job=<id> へ遷移
   link._listeners.click[0]();
   assert.deepEqual(nav, ["?job=abc"]);
+});
+
+// --- Phase 8: Tester Settings パネルの結線（スライス 5）---------------------------
+// 固定する不変条件:
+//   1. 合成根は `GET /sim/settings-schema` を取りに行き、取れた schema をパネルへ注入する。
+//   2. 取得に失敗してもパネル自体は出る（fail-open・run-options の既存流儀）。その場合は
+//      settings を本文に載せず、旧フォーム投入がそのまま成立する（併存）。
+//   3. 投入本文に `settings.tester`（生トークン）が載り、`backtest.ea_name` は Expert 由来。
+//   4. 指標候補の取得起点は Expert 選択（schema がある構成では指標セット欄を重複させない）。
+
+test("mount fetches the settings schema and feeds the tester panel", async () => {
+  const schema = settingsSchema();
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({ schema });
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  assert.ok(fetchFn.calls.some((c) => c.url === "/sim/settings-schema"), "schema を取得していない");
+  assert.ok(findById(doc.body, "simTesterPanel"), "Tester パネルが出ていない");
+  const expert = findById(doc.body, "testerExpert");
+  assert.deepEqual((expert.children || []).map((o) => o.value),
+    schema.expert_options.map((o) => o.token));
+});
+
+test("the tester panel is still mounted when the schema fetch fails (fail-open)", async () => {
+  const doc = fakeDoc();
+  const fetchFn = routerFetch();
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
+  assert.ok(findById(doc.body, "simTesterPanel"), "取得失敗でパネルが消えている（fail-open ではない）");
+  // 候補が無いので settings は組めない。旧フォーム（指標セット欄）がそのまま権威。
+  assert.ok(findById(doc.body, "execEaName"), "旧フォームの指標セット欄まで消えている");
+  findById(doc.body, "execSubmit")._listeners.click[0]();
+  await flush();
+  const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
+  assert.equal("settings" in body, false);
+});
+
+test("submitting with a schema posts the settings block and the derived ea_name", async () => {
+  const schema = settingsSchema();
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({ schema });
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  findById(doc.body, "execSubmit")._listeners.click[0]();
+  await flush();
+  const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
+  assert.ok(body.settings, "settings ブロックが本文に載っていない");
+  assert.equal(body.settings.tester.Expert, schema.expert_options[0].token);
+  assert.equal(body.backtest.ea_name, schema.expert_options[0].label);
+  // profile 由来キーは run-options のまま（front リテラル 0）
+  assert.equal(body.backtest.symbol, RUN_OPTIONS.datasets[0].symbol);
+  // 生トークンのみ（数値・日付も文字列）
+  for (const [k, v] of Object.entries(body.settings.tester)) {
+    assert.equal(typeof v, "string", k);
+  }
+});
+
+test("changing the Expert refetches the indicator candidates for that EA", async () => {
+  const schema = settingsSchema();
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({ schema });
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  assert.ok(fetchFn.calls.some((c) => c.url === "/sim/ea-series/PRO_fit_Band_EA"));
+  const expert = findById(doc.body, "testerExpert");
+  expert.value = schema.expert_options[1].token;
+  expert._listeners.change[0]();
+  await flush();
+  assert.ok(fetchFn.calls.some((c) => c.url === "/sim/ea-series/TC24051901"),
+    "Expert 変更で候補を取り直していない");
+});
+
+// --- fail-open の起動条件（🔴-1）: 200 でも schema でなければ結線しない ----------------
+// 200＋非 JSON を成功として扱うと、空 schema の Tester パネルが settings の供給元として
+// 結線され、EA 欄・初期資金欄が器から外れた**投入不能フォーム**になる。
+
+test("a 200 non-JSON schema response leaves the legacy form authoritative (fail-open)", async () => {
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({ schemaRaw: true });
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
+  // 旧フォームの欄が残っている（＝Tester パネルは settings の供給元として結線されていない）
+  assert.ok(findById(doc.body, "execEaName"), "指標セット欄が消えています（投入不能フォーム）");
+  assert.ok(findById(doc.body, "execDeposit"), "初期資金欄が消えています（投入不能フォーム）");
+  assert.ok(findById(doc.body, "simTesterPanel"), "パネルの器まで消えています");
+  findById(doc.body, "execSubmit")._listeners.click[0]();
+  await flush();
+  const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
+  assert.equal("settings" in body, false, "空 schema のまま settings を載せています");
+  assert.equal(body.backtest.ea_name, EA_LIST[0]);
+});
+
+test("the schema failure reason is reported, not swallowed", async () => {
+  const doc = fakeDoc();
+  const seen = [];
+  const original = console.warn;
+  console.warn = (...args) => seen.push(args.map(String).join(" "));
+  try {
+    await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(seen.length, 1, `取得失敗の理由が捨てられています: ${JSON.stringify(seen)}`);
+  assert.match(seen[0], /settings-schema|schema/i);
 });
 
 test("reportViewUrl builds the ?job= dispatch url", async () => {

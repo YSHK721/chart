@@ -169,18 +169,37 @@ def _format_date(value: date | None) -> str | None:
     return format_date_token(value)
 
 
-def _format_bool(value: bool | None) -> str | None:
-    """R11: `1` / `0`。"""
-    if value is None:
-        return None
+def format_bool_token(value: bool) -> str:
+    """R11: `1` / `0`。**真偽値の生トークン表記の唯一の宣言**。
+
+    公開名である理由は `format_date_token` と同じである（是正 B）。保証境界の宣言
+    （`main/tester_settings/unsupported.py` の UI 束縛）は「どの生トークンが非対象か」を
+    宣言するために同じ表記を要する。表記を各層で書き直すと同じ規則が複数箇所に生じ、
+    片方だけが腐る。表記を要する側は本関数を使い、字形を書き直さない。
+    """
     return "1" if value else "0"
 
 
-def _format_int(value: int | None) -> str | None:
-    """`IntEnum` を含む整数の生値表記。"""
+def format_int_token(value: int) -> str:
+    """`IntEnum` を含む整数の生値表記。**整数の生トークン表記の唯一の宣言**。
+
+    公開名である理由は :func:`format_bool_token` と同じ。
+    """
+    return str(int(value))
+
+
+def _format_bool(value: bool | None) -> str | None:
+    """書出し用ラッパ（``None`` は「キーを出力しない」を表す）。"""
     if value is None:
         return None
-    return str(int(value))
+    return format_bool_token(value)
+
+
+def _format_int(value: int | None) -> str | None:
+    """書出し用ラッパ（``None`` は「キーを出力しない」を表す）。"""
+    if value is None:
+        return None
+    return format_int_token(value)
 
 
 def _format_timeframe(value: Timeframe | None) -> str | None:

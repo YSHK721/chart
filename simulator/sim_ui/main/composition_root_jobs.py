@@ -29,9 +29,14 @@ from simulator.sim_ui.adapter.ea_build_probe import EaBuildProbe
 from simulator.sim_ui.adapter.ea_registry_series_catalog import EaRegistrySeriesCatalog
 from simulator.sim_ui.adapter.ea_stop_loss_param_catalog import EaStopLossParamCatalog
 from simulator.sim_ui.adapter.file_job_ledger import FileJobLedger
+from simulator.sim_ui.adapter.settings_ini_validator import SettingsIniValidator
 from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
 from simulator.sim_ui.adapter.subprocess_job_launcher import SubprocessJobLauncher
+from simulator.sim_ui.adapter.tester_settings_schema_catalog import (
+    TesterSettingsSchemaCatalog,
+)
 from simulator.sim_ui.framework.serve_sim_jobs import SimJobApp
+from simulator.sim_ui.usecase.job_ports import EaSubjectPort
 
 # repo 根 = simulator/sim_ui/main/composition_root_jobs.py の parents[3]。
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -93,6 +98,64 @@ def build_stop_loss_catalog() -> EaStopLossParamCatalog:
 def build_run_options_port() -> SymbolSpecCatalog:
     """実行指示フォームの選択肢を供給する RunOptionsPort（束縛済み）。"""
     return SymbolSpecCatalog(known_ea_names=_known_ea_names)
+
+
+def build_settings_schema_port() -> TesterSettingsSchemaCatalog:
+    """Tester Settings フォームの schema を供給する SettingsSchemaPort（束縛済み・Phase 8）。
+
+    **注入束縛の単一点**である。カタログ（adapter）は列挙（`usecase/tester_settings/enums.py`）
+    しか直接知らず、外側に属する事実——字句層の標準キー順・検証層の必須キーと Expert 専用
+    キー・エンジンの実行可能 EA 名・対象接尾辞・非対象の宣言表——はすべてここで束ねる。
+    束縛点を関数にしてあるのは、配信面の Composition Root（`composition_root_display`）が
+    同じ結線を書き写さないようにするためである（`build_run_options_port` と同じ理由）。
+
+    import を関数内に置く理由は `_build_ea_indicators` と同じ（本モジュールの import で
+    設定検証系一式を引き込まない。schema が実際に要求された時点で解決される）。
+    """
+    from simulator.adapter.tester_settings.ini_codec import STANDARD_KEY_ORDER
+    from simulator.framework.tester_settings.validation import (
+        EXPERT_ONLY_KEYS,
+        required_tester_keys,
+    )
+    from simulator.main.tester_settings.ea_input_map import SUBJECT_SUFFIX
+    from simulator.main.tester_settings.unsupported import RULES
+
+    return TesterSettingsSchemaCatalog(
+        key_order=STANDARD_KEY_ORDER,
+        required_keys=required_tester_keys(),
+        expert_only_keys=EXPERT_ONLY_KEYS,
+        known_ea_names=_known_ea_names,
+        subject_suffix=SUBJECT_SUFFIX,
+        unsupported_rules=RULES,
+    )
+
+
+def build_settings_validation_port() -> SettingsIniValidator:
+    """Tester Settings の受付検証 Port（Phase 8 §18.4 スライス 3）。
+
+    実装（adapter）が framework の `tester_settings_from_mapping` へ委譲するため、
+    本関数は実装の**選択**だけを行う（規則をここに書かない）。
+    """
+    return SettingsIniValidator()
+
+
+class _EaSubject(EaSubjectPort):
+    """`ea_stem`（エンジンの単一ソース）への束縛（:class:`EaSubjectPort` 実装）。
+
+    語幹の取り出し規則（Windows 区切り・`.ex5` 接尾辞の扱い）は
+    `simulator.main.tester_settings.ea_input_map.ea_stem` が唯一持つ。usecase / adapter は
+    `simulator.main` を import できない（層ゲート）ため、束縛は本 Composition Root が担う。
+    """
+
+    def stem_of(self, subject_path: str) -> str:
+        from simulator.main.tester_settings.ea_input_map import ea_stem
+
+        return ea_stem(subject_path)
+
+
+def build_ea_subject_port() -> _EaSubject:
+    """`Expert` → EA 名の語幹を供給する Port（束縛済み・Phase 8）。"""
+    return _EaSubject()
 
 
 # 子へ素通しする `backtest` meta が注入専用に予約しているキー。JSON から渡させない。
@@ -178,4 +241,7 @@ def build_sim_job_app(
         stop_loss_catalog=build_stop_loss_catalog(),
         allowed_backtest_keys=allowed_backtest_keys,
         required_backtest_keys=required_backtest_keys,
+        # Phase 8 §18: settings ブロックを持つ投入だけが使う 2 Port。
+        settings_validator=build_settings_validation_port(),
+        ea_subject=build_ea_subject_port(),
     )

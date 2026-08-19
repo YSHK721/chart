@@ -14,7 +14,11 @@
 
 2. 含む構造:
     run_from_settings（実行 A）: 設定 ＋ 注入束 → (終了コード, 結果, 実行メタ)。
-    run_effective_settings      : 実行段（例外を送出する。終了コード翻訳を行わない）。
+    run_effective_settings      : 実効設定 ＋ 注入束 → 同上（例外を送出する。終了コード
+                                  翻訳を行わない）。
+    execute_interactor_kwargs   : **唯一の実行段**（窓の事後検証 N-15 ＋ 検証した request
+                                  をそのまま実行）。Phase 8（裁定 T-1）で切り出し、
+                                  `main/tester_settings/run_settings_job` と共有する。
 
 3. 元 MQL 対応:
     MT5 ストラテジーテスターの Start ボタン（Settings タブの内容で 1 パスを実行する）。
@@ -54,6 +58,33 @@ from simulator.main.tester_settings.window import resolve_data_window, verify_wi
 from simulator.usecase.tester_settings import EffectiveSettings, TesterSettings
 
 
+def execute_interactor_kwargs(
+    kwargs: "dict[str, Any]", effective: EffectiveSettings
+) -> Any:
+    """検証済みの投入引数で 1 run を実行する（窓の事後検証込み・**唯一の実行段**）。
+
+    事前条件: ``kwargs`` は `effective_to_interactor_kwargs` の像（＋呼出側が足した
+        拡張点の注入物）。
+    事後条件: `build_interactor` が組んだ request を**そのまま**実行した結果を返す。
+    例外: `BacktestError` 系をそのまま送出する（終了コードへの翻訳は呼出側の責務）。
+
+    本関数を切り出しているのは、Settings 経路の実行 facade が 2 本（`run_from_settings`＝
+    成果物を書かない検証・CLI 用と、`run_settings_job`＝成果物と拡張注入を伴うジョブ用）に
+    なるためである。窓の事後検証（N-15）と「検証した request をそのまま実行する」規律を
+    2 箇所に書き写すと、片方だけが将来の改訂に追随しない。
+    """
+    controller, request = build_interactor(**kwargs)
+    # 窓が実際に適用されたことを実行**前**に確認する（N-15・Fail-Stop の維持）。
+    # EA 名は診断 3 点（§8.4.4）の 1 つ。`kwargs["ea_name"]` は写像層が `ea_stem` から
+    # 導いて **`build_interactor` へ実際に渡した**識別子である。ここで `ea_stem(...)` を
+    # 呼び直さないのは、算出式を 2 箇所に書けば「エンジンが受け取った EA」と「診断が
+    # 示す EA」が将来ずれ得るためである。
+    verify_window_applied(request, resolve_data_window(effective), ea_name=kwargs["ea_name"])
+    # ISSUE-398: 公開の実行点 `BacktestController.execute` で、検証した request を
+    # そのまま実行する（`controller.run` は検証した request を捨てて組み直すため使えない）。
+    return controller.execute(request)
+
+
 def run_effective_settings(
     effective: EffectiveSettings, binding: EngineBinding
 ) -> "tuple[int, Any, TesterRunMetadata]":
@@ -67,16 +98,7 @@ def run_effective_settings(
         （検証だけを行いたい呼出しが終了コードを解釈し直さずに済む）。
     """
     kwargs = effective_to_interactor_kwargs(effective, binding)
-    controller, request = build_interactor(**kwargs)
-    # 窓が実際に適用されたことを実行**前**に確認する（N-15・Fail-Stop の維持）。
-    # EA 名は診断 3 点（§8.4.4）の 1 つ。`kwargs["ea_name"]` は写像層が `ea_stem` から
-    # 導いて **`build_interactor` へ実際に渡した**識別子である。ここで `ea_stem(...)` を
-    # 呼び直さないのは、算出式を 2 箇所に書けば「エンジンが受け取った EA」と「診断が
-    # 示す EA」が将来ずれ得るためである。
-    verify_window_applied(request, resolve_data_window(effective), ea_name=kwargs["ea_name"])
-    # ISSUE-398: 公開の実行点 `BacktestController.execute` で、検証した request を
-    # そのまま実行する（`controller.run` は検証した request を捨てて組み直すため使えない）。
-    result = controller.execute(request)
+    result = execute_interactor_kwargs(kwargs, effective)
     return SUCCESS_EXIT_CODE, result, build_run_metadata(effective)
 
 

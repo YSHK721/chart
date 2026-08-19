@@ -27,6 +27,11 @@
        全画面レイアウトにするので、その**伸びる子**にしないと 3 窓の高さが 0 基準で解決され
        2px に潰れる（実測 2026-08-12）。統合ページ側と同じ 1 枚を読む（規則を分けない）。 -->
   <link rel="stylesheet" href="/sim/css/sim_display.css" />
+  <!-- 投入フォーム（`?job=` 無しで開いたときの入口）の表示整形。選択子はすべて
+       #simTesterPanel / #simExecPanel / #execViewResult の配下に閉じてあるので、
+       結果ビューア（`?job=<id>`）の見た目には 1 つも当たらない（波及遮断・裁定 B）。
+       色は style.css の :root 変数だけを使う（hex をこちらへ写さない）。 -->
+  <link rel="stylesheet" href="/sim/css/sim_run_form.css" />
 </head>
 <body>
   <!-- 比較・判定タブ（FR-17/18）が使う Chart.js v4.4.1（report_ui の vendor 実体・無改変）。

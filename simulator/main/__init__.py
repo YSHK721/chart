@@ -861,6 +861,15 @@ def _present_outputs(result: Any, output_dir: Path, *, ea_name: str, symbol: str
         ) from exc
 
 
+#: 出力段の**公開名**（Phase 8 裁定 T-1・追加のみ）。`_present_outputs` と同一実体であり
+#: 2 つ目の実装を作らない。公開する理由: Settings 経路の実行 facade
+#: （`main/tester_settings/run_settings_job.py`）が成果物（stats.json / report.md）を
+#: 書くために同じ出力段を通る必要がある。`run_backtest` を呼べば出力は得られるが、
+#: その経路は Settings 由来の窓検証（N-15）と拡張注入を持たない。私有名を外から掴むのは
+#: カプセル化の破れ（ISSUE-398 と同型）なので、公開名を 1 つ足す。
+present_outputs = _present_outputs
+
+
 def run_backtest(
     *,
     output_dir: Any = None,

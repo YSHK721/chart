@@ -7,7 +7,18 @@
 仕様を argv に並べると、シェル経由のクォート事故・引数の取り違えという壊れ方を
 新たに作ることになる（sim core と子プロセスの間で仕様の表現が二重化する）。
 
-結果ペイロードは `run_backtest` の既存出力（`stats.json` / `report.md`）に加えて、
+実行経路は 2 本あり、`spec.json` の `settings` ブロックの**有無だけ**で分岐する
+（Phase 8 §18.3）:
+    settings 不在（既定）: `simulator.main.run_backtest`（現行経路。`run_backtest` へ渡す
+        引数も出力段も Phase 8 で変えておらず、旧 spec の `stats.json` は byte 等価）。
+    settings 有り        : `main/tester_settings/run_settings_job`（`.ini` の生トークン →
+        `TesterSettings` → `EffectiveSettings` → 窓の事後検証 N-15 込みの実行）。
+どちらの経路も成果物（`stats.json` / `report.md`）は同一の出力段（`simulator.main` の
+`present_outputs`）を通る。Phase 6/7 の拡張点（`strategy_override` / `position_manager` /
+`strategy_decorator`）の組み立ては本 CLI の `main()` で**1 度だけ**行い、経路ごとに
+書き写さない。
+
+結果ペイロードは上記の既存出力（`stats.json` / `report.md`）に加えて、
 表示用の `report.json`（report_ui 形）を成功 run のときだけ書く（Phase 4・§8.1）。
 写像そのものは report_ui の UC / Presenter が単一ソースで、ここには写さない
 （§12.3-3 複製禁止）。書出しは `simulator.sim_ui.adapter.report_payload_writer` へ委譲する。
@@ -212,6 +223,161 @@ def _supply_contacts(bars: "list", backtest: "dict[str, Any]") -> "list[dict]":
     )
 
 
+def _settings_supplied_params() -> "frozenset[str]":
+    """Settings 写像層が供給する `build_interactor` 引数名の集合（Phase 8）。
+
+    `EngineBinding.ea_params` は「`.ini` からは供給できない EA 固有引数」だけを受ける
+    （重なるキーは `ConfigError`＝権威の二重化を防ぐ設計）。その残余を求めるための集合で
+    あり、**名前の表を手書きしない**——写像層の公開宣言（`EXPLICIT_BINDINGS`）と、写像層が
+    名前一致で導出する 2 つの DTO（`SymbolSpec` / `DataWindow`）のフィールド名から機械的に
+    導く（`kwargs_mapper._derived_bindings` と同じ導出規則）。
+
+    導出が実際の写像結果と一致することは
+    `sim_ui/tests/integration/test_run_job_settings.py` が実行結果で突き合わせる
+    （ずれれば `ea_params` の衝突・不足として即座に落ちる）。
+    """
+    from dataclasses import fields
+
+    from simulator.main.tester_settings.kwargs_mapper import EXPLICIT_BINDINGS
+    from simulator.main.tester_settings.window import DataWindow
+    from simulator.usecase.models import SymbolSpec
+
+    return (
+        frozenset(binding.param for binding in EXPLICIT_BINDINGS)
+        | frozenset(field.name for field in fields(SymbolSpec))
+        | frozenset(field.name for field in fields(DataWindow))
+    )
+
+
+def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
+    """`backtest` ブロック ＋ カタログから `EngineBinding`（§6 補助 DTO）を組む。
+
+    Settings 層は銘柄仕様・データパス・EA 固有引数・決済通貨を持たない（`.ini` に無い）。
+    それらの供給は **`sim_ui` 側 Composition Root の責務**である（不変条件 I-6: 変換層は
+    `sim_ui` を import しない）。
+
+    供給元（憶測で埋めない）:
+        銘柄仕様   — 投入された `backtest`（front が profile から導いた 8 キー）。
+                     `SymbolSpec` のフィールド名と同名であるため機械的に写す。
+        決済通貨   — `SymbolSpecCatalog` の profile（A-2 で恒久化された唯一の供給源）。
+                     登録の無い銘柄は**推定しない**で失敗させる。
+        EA 固有引数 — `backtest` のうち写像層が供給しない残余（`_settings_supplied_params`）。
+        data_path  — バー系列を消費する modelling のときだけ渡す（規則 S）。要否の宣言は
+                     `tick_model_registry.consumes_market_data` の 1 箇所にしかない。
+    """
+    from dataclasses import fields
+
+    from simulator.adapter.execution.tick_model_registry import consumes_market_data
+    from simulator.main import known_ea_names
+    from simulator.main.tester_settings.kwargs_mapper import EngineBinding, tick_model_word
+    from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
+    from simulator.usecase.models import SymbolSpec
+
+    backtest = spec.get("backtest") or {}
+    symbol = backtest["symbol"]
+    profile = next(
+        (p for p in build_run_options_port().datasets() if p.symbol == symbol), None
+    )
+    if profile is None:
+        raise ValueError(
+            f"銘柄 {symbol!r} の実行プロファイルが登録されていません"
+            "（決済通貨の供給源が無いため実行できません。推定値では N-11 の判定が壊れます）"
+        )
+    supplied = _settings_supplied_params()
+    return EngineBinding(
+        symbol_spec=SymbolSpec(**{f.name: backtest[f.name] for f in fields(SymbolSpec)}),
+        symbol=symbol,
+        period=backtest["period"],
+        data_path=(
+            str(backtest["data_path"])
+            if consumes_market_data(tick_model_word(effective.tick_model))
+            else None
+        ),
+        known_ea_names=frozenset(known_ea_names()),
+        settlement_currency=profile.settlement_currency,
+        ea_params={k: v for k, v in backtest.items() if k not in supplied},
+        config_overrides=dict(backtest.get("config_overrides") or {}),
+    )
+
+
+def _write_report_payload(job_dir: Path, result: Any, *, load_run_inputs, contacts_supply) -> None:
+    """表示用ペイロード（report.json）を書く。**run の成否は変えない**。
+
+    書出しに失敗しても終了コードを変えないのは、バックテスト自体は成功しており、表示の
+    失敗で成功した計算を捨てないためである。ただし理由は残す——起動器が stderr を
+    DEVNULL に固定するため、print だけでは「完了なのに結果が出ない」の原因が誰にも届かない。
+    """
+    try:
+        report_payload_writer.write(
+            job_dir, result,
+            load_run_inputs=load_run_inputs,
+            contacts_supply=contacts_supply,
+        )
+    except Exception as exc:  # 表示の失敗で成功した計算を捨てない
+        message = f"report.json の書出しに失敗しました: {exc}"
+        print(message, file=sys.stderr)
+        _record_report_payload_error(job_dir, message)
+
+
+def _run_with_settings(
+    job_dir: Path, spec: "dict[str, Any]", extensions: "dict[str, Any]"
+) -> int:
+    """Tester Settings 経路（Phase 8 §18.3「実行」）。
+
+    `.ini` の生トークン → `TesterSettings` → `EffectiveSettings` → `run_settings_job`（T-1）。
+    検証（規則 B〜Q）は受付段と**同じ実体**（`tester_settings_from_mapping`）を通る。
+
+    終了コードの翻訳は `exit_codes.exit_code_for`（唯一の宣言場所）で行い、**文言は
+    `failure.json` に残す**。翻訳を実行 facade の中で行うと理由が終了コードへ潰れ、
+    運用者には「なぜ落ちたか」が届かない（起動器は stderr を捨てる）。
+    """
+    from simulator.domain.exceptions import BacktestError
+    from simulator.framework.tester_settings import tester_settings_from_mapping
+    from simulator.main.tester_settings.exit_codes import exit_code_for
+    from simulator.main.tester_settings.kwargs_mapper import effective_to_interactor_kwargs
+    from simulator.main.tester_settings.run_settings_job import run_settings_job
+
+    block = spec.get("settings") or {}
+    try:
+        settings = tester_settings_from_mapping(
+            dict(block.get("tester") or {}), list(block.get("inputs") or [])
+        )
+        effective = settings.effective()
+        binding = _build_engine_binding(spec, effective)
+    except Exception as exc:
+        message = f"Tester Settings の解釈に失敗しました: {exc}"
+        print(message, file=sys.stderr)
+        _record_failure(job_dir, message)
+        return _EXIT_SPEC_ERROR
+
+    try:
+        exit_code, result, _metadata = run_settings_job(
+            effective, binding, output_dir=job_dir, extensions=extensions
+        )
+    except BacktestError as error:
+        message = f"Tester Settings からの実行に失敗しました: {error}"
+        print(message, file=sys.stderr)
+        _record_failure(job_dir, message)
+        return exit_code_for(error)
+    except Exception as exc:  # 内部例外を呼出側へ生で漏らさない
+        message = f"バックテストの実行に失敗しました: {exc}"
+        print(message, file=sys.stderr)
+        _record_failure(job_dir, message)
+        return _EXIT_SPEC_ERROR
+
+    if exit_code == 0 and result is not None:
+        # 表示用の足は **settings 経路で実際に使われた投入引数**から取り直す。`backtest`
+        # ブロックから取り直すと、`.ini` の期間窓が効いていない全期間の足が「今の結果の足」
+        # として表示される（窓を絞った run ほど食い違いが大きくなる）。
+        run_kwargs = effective_to_interactor_kwargs(effective, binding)
+        _write_report_payload(
+            job_dir, result,
+            load_run_inputs=lambda _backtest: _load_run_inputs(run_kwargs),
+            contacts_supply=lambda bars, _backtest: _supply_contacts(bars, run_kwargs),
+        )
+    return exit_code
+
+
 def main(argv: "list[str] | None" = None) -> int:
     """1 ジョブを実行して終了コードを返す。"""
     parser = argparse.ArgumentParser(
@@ -233,10 +399,14 @@ def main(argv: "list[str] | None" = None) -> int:
         _record_failure(job_dir, message)
         return _EXIT_SPEC_ERROR
 
+    # `build_interactor` の拡張点への注入物（JSON スカラーでは渡せない実体）。現行経路は
+    # `meta` へ載せ、settings 経路は `run_settings_job(extensions=...)` へ渡す——**組み立ては
+    # 1 箇所**であり、経路ごとに書き写さない。
+    extensions: "dict[str, Any]" = {}
     sizing = spec.get("sizing") or {}
     if sizing.get("enabled", False):
         try:
-            meta["strategy_decorator"] = _build_decorator(spec)
+            extensions["strategy_decorator"] = _build_decorator(spec)
         except Exception as exc:
             message = f"サイジングの構築に失敗しました: {exc}"
             print(message, file=sys.stderr)
@@ -245,10 +415,11 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # 戦略項目（Phase 6 F-8・P6-E4）: strategy present のときだけ override を組んで渡す。
     # 不在/空は渡さない（引数の不在で既存挙動 byte 等価）。override と sizing decorator は
-    # 独立に meta へ載せ、build_interactor が override 置換→sizing wrap の順で合成する。
+    # 独立に `extensions` へ載せ（現行経路では下で `meta` へ合流する）、build_interactor が
+    # override 置換→sizing wrap の順で合成する。
     if spec.get("strategy"):
         try:
-            meta["strategy_override"] = _build_strategy_override(spec)
+            extensions["strategy_override"] = _build_strategy_override(spec)
         except Exception as exc:
             message = f"戦略項目の構築に失敗しました: {exc}"
             print(message, file=sys.stderr)
@@ -257,7 +428,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # 建玉変更（Phase 7 FR-07/08・P7）: strategy.trailing / partial_close が present のときだけ
     # PositionManager を組んで渡す。不在は渡さない（引数の不在で既存挙動 byte 等価）。
-    # position_manager と strategy_override/sizing decorator は独立に meta へ載せ、
+    # position_manager と strategy_override/sizing decorator は独立に `extensions` へ載せ、
     # build_interactor が各拡張点へ注入する。
     if spec.get("strategy"):
         try:
@@ -268,8 +439,16 @@ def main(argv: "list[str] | None" = None) -> int:
             _record_failure(job_dir, message)
             return _EXIT_SPEC_ERROR
         if pm is not None:
-            meta["position_manager"] = pm
+            extensions["position_manager"] = pm
 
+    # Tester Settings 経路（Phase 8 §18・T-1）。settings 不在は**現行経路**へ落ちる。
+    # 分岐の下は拡張点の合流（`meta.update`）と書出しの関数化のみで、`run_backtest` への
+    # 引数も出力段も変えていない＝旧 spec の `stats.json` は byte 等価
+    # （`tests/integration/test_run_job_settings.py` の直接実行との突合で固定）。
+    if spec.get("settings"):
+        return _run_with_settings(job_dir, spec, extensions)
+
+    meta.update(extensions)
     try:
         exit_code, _result = run_backtest(output_dir=job_dir, **meta)
     except Exception as exc:  # 内部例外を呼び出し側へ生で漏らさない
@@ -281,18 +460,11 @@ def main(argv: "list[str] | None" = None) -> int:
     # 表示用ペイロード（report.json）は**成功 run のときだけ**書く。失敗 run の結果を
     # 表示面へ出すと、古い/壊れた結果が「今の結果」に見える。
     if exit_code == 0 and _result is not None:
-        try:
-            report_payload_writer.write(
-                job_dir, _result,
-                load_run_inputs=_load_run_inputs,
-                contacts_supply=_supply_contacts,
-            )
-        except Exception as exc:  # 表示の失敗で成功した計算を捨てない
-            message = f"report.json の書出しに失敗しました: {exc}"
-            print(message, file=sys.stderr)
-            # 終了コードは変えない。ただし**理由は残す**——起動器が stderr を DEVNULL に
-            # するため、print だけでは「完了なのに結果が出ない」の原因が誰にも届かない。
-            _record_report_payload_error(job_dir, message)
+        _write_report_payload(
+            job_dir, _result,
+            load_run_inputs=_load_run_inputs,
+            contacts_supply=_supply_contacts,
+        )
     return exit_code
 
 

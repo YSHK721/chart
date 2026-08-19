@@ -30,17 +30,23 @@ from simulator.replay_ui.framework.static_file_server import StaticFileServer
 from simulator.sim_ui.adapter.ea_series_api_controller import EaSeriesApiController
 from simulator.sim_ui.framework.allowlist_file_routes import AllowlistFileRoutes
 from simulator.sim_ui.adapter.run_options_api_controller import RunOptionsApiController
+from simulator.sim_ui.adapter.settings_schema_api_controller import (
+    SettingsSchemaApiController,
+)
 from simulator.sim_ui.framework.serve_sim_display import SimDisplayApp
 from simulator.sim_ui.framework.serve_sim_ea_series import SimEaSeriesApp
 from simulator.sim_ui.framework.serve_sim_run_options import SimRunOptionsApp
+from simulator.sim_ui.framework.serve_sim_settings_schema import SimSettingsSchemaApp
 # エンジン公開アクセサへの束縛は `composition_root_jobs` が単一ソースとして持つ
 # （同じ結線を 2 つの root に書き写さない・ISSUE-405）。
 from simulator.sim_ui.main.composition_root_jobs import (
     build_run_options_port,
     build_series_catalog,
+    build_settings_schema_port,
 )
 from simulator.sim_ui.main.composition_root_indicators import build_sim_indicator_app
 from simulator.sim_ui.usecase.list_run_options import ListRunOptionsInteractor
+from simulator.sim_ui.usecase.list_settings_schema import ListSettingsSchemaInteractor
 
 # repo 根 = simulator/sim_ui/main/composition_root_display.py の parents[3]。
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -89,6 +95,17 @@ def build_sim_display_app(
         inner=inner,
         controller=RunOptionsApiController(
             options=ListRunOptionsInteractor(port=build_run_options_port())
+        ),
+    )
+    # Phase 8 スライス 2（Tester Settings の UI 結線・基本設計 §18.3）: 設定パネルの schema
+    # `GET /settings-schema`（キー順・選択肢・仕様・非対象告知・単一ソース
+    # TesterSettingsSchemaCatalog）を委譲でもう 1 本足す。`/run-options` とは別 API に
+    # するのは供給元も変更理由も異なるからである（アクター分離・SRP）。既存の配信面・
+    # API 面は素通し（OCP・byte 不変）。
+    inner = SimSettingsSchemaApp(
+        inner=inner,
+        controller=SettingsSchemaApiController(
+            schema=ListSettingsSchemaInteractor(port=build_settings_schema_port())
         ),
     )
     report_web = root / "simulator" / "report_ui" / "web"

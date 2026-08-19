@@ -14,7 +14,7 @@ DIP: Interactor はこれらの抽象にのみ依存し、FS / subprocess / pand
 from __future__ import annotations
 
 import abc
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from simulator.sim_ui.domain.simulation_job import JobStatus, SimulationJob
 from simulator.sim_ui.usecase.job_models import JobSubmission
@@ -116,4 +116,37 @@ class StopLossParamCatalogPort(abc.ABC):
     @abc.abstractmethod
     def stop_loss_params(self, ea_name: str) -> "frozenset[str] | None":
         """SL を決める設定パラメータ名の集合。探索不能なら ``None``。"""
+        raise NotImplementedError
+
+
+class SettingsValidationPort(abc.ABC):
+    """MT5 Tester Settings（`[Tester]` / `[TesterInputs]`）の受付検証の抽象（Phase 8）。
+
+    ISP: 既存 3 Port とは別の変更要因（設定規則 B〜Q）を持つため分ける。
+
+    DIP の要点: 規則そのものは usecase に**持たない**。実装（adapter）が
+    `framework/tester_settings/loader` の単一ソースへ委譲する。usecase 側に条件表を
+    置くと検証が 2 実装になり、片方だけが規則改訂に追随しない。
+    """
+
+    @abc.abstractmethod
+    def validate(self, tester: "Mapping[str, str]", inputs: "Sequence[str]") -> None:
+        """規則違反があれば `JobSubmissionInvalidError` を送出する。合法なら何も返さない。
+
+        ``tester``: `[Tester]` の (キー→**生トークン**)。``inputs``: `[TesterInputs]` の行原文。
+        """
+        raise NotImplementedError
+
+
+class EaSubjectPort(abc.ABC):
+    """`Expert` の値（Windows 表記のテスト対象ファイル）→ EA 名の語幹（Phase 8）。
+
+    語幹の取り出し規則（区切り・接尾辞の扱い）はエンジン側
+    （`main/tester_settings/ea_input_map.ea_stem`）が単一ソースであり、合成根が束縛する。
+    usecase / adapter は `simulator.main` を import できない（層ゲート）ため Port で受ける。
+    """
+
+    @abc.abstractmethod
+    def stem_of(self, subject_path: str) -> str:
+        """`Expert` の値から EA 名の語幹を返す。"""
         raise NotImplementedError

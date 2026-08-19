@@ -46,6 +46,9 @@ const FILTER_PILL = "sim_filter_pill_view.js";
 const SUBMIT_CLIENT = "job_submit_client.js";
 const EXEC_PANEL = "sim_execution_panel_view.js";
 const EXEC_ROOT = "composition_root_execution.js";
+// Phase 8 で追加した Tester Settings（MT5 設定パネル）系（純 DOM / HTTP・lwc に触れない）。
+const SETTINGS_CLIENT = "settings_schema_client.js";
+const TESTER_PANEL = "sim_tester_settings_panel_view.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -57,11 +60,12 @@ function importSpecifiers(src) {
 
 // --- 1. 移植元は /sim/report-js/ からだけ引く ------------------------------------
 
-test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 modules", () => {
+test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 modules", () => {
   assert.deepEqual(FRONT_FILES.sort(), [
     ROOT, RENDERER, SOURCE, VIEW, FRAME,
     TABS, SEGMENT, COMPARE, CONTACTS_TOGGLE, FILTER_PILL,
     SUBMIT_CLIENT, EXEC_PANEL, EXEC_ROOT,
+    SETTINGS_CLIENT, TESTER_PANEL,
   ].sort());
 });
 
@@ -193,6 +197,75 @@ test("the trade table columns are not re-declared in the sim layer", () => {
     assert.ok(!read(name).includes("Time(close)"),
       `${name} が明細列のラベルを写しています（table.js を import すること）`);
   }
+});
+
+// --- 2b. Tester Settings の語彙を front が持たない（Phase 8・複製ゼロの機械検査）--------
+// 選択肢・キー順・必須キー・非対象理由の単一ソースは `GET /sim/settings-schema` の payload
+// （由来は `usecase/tester_settings/enums.py` と検証層・字句層の宣言）である。front に同じ
+// 語彙を書いた瞬間、列挙を増やしても UI だけ古いという食い違いが静かに生まれる。
+// 時間足ラベル・対象接尾辞の**実値**をソーステキストから機械的に禁じる。
+
+const TESTER_VOCABULARY = [
+  // 時間足ラベル（`enums.TIMEFRAME_INI_LABELS` の値。分/時足は M/H＋数字で誤検出しやすい
+  // ため、代表として日足以上と M1 を固定する）。
+  /\bM1\b/, /\bDaily\b/, /\bWeekly\b/, /\bMonthly\b/,
+  // 対象ファイルの接尾辞（`main/tester_settings.SUBJECT_SUFFIX`）。Expert 候補は schema が
+  // 連結済みのトークンを配るため、front が接尾辞を知る必要はない。
+  /\.ex5\b/,
+];
+
+test("no front module writes a Tester Settings vocabulary literal (schema が単一ソース)", () => {
+  const offenders = [];
+  for (const name of FRONT_FILES) {
+    const src = read(name);
+    for (const pattern of TESTER_VOCABULARY) {
+      if (pattern.test(src)) offenders.push(`${name}: ${pattern}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
+
+// 列挙キーの**生値**（`Model` の 4・`Dates` の 2 …）は enums が唯一の宣言であり、schema が
+// トークンとして配る。front に「キー名＋数値」の対が現れたら、それは値表の複製である
+// （名前を変えても対の形は残るため、語彙そのものより検出しやすい）。
+const TESTER_ENUM_KEYS = ["Model", "Optimization", "Dates", "ForwardMode", "OptimizationCriterion"];
+
+/** ソース中の「列挙キー名 × 数値リテラル」の対を列挙する（0 件が合格）。 */
+function testerNumericLiteralOffenses(src) {
+  const offenses = [];
+  for (const key of TESTER_ENUM_KEYS) {
+    const forms = [
+      // `Model: 4` / `Model = "4"` / `"Model": '0'` / `Model === 2`
+      new RegExp(`["'\`]?\\b${key}\\b["'\`]?\\s*(?::|=+)\\s*["'\`]?[+-]?\\d`),
+      // 表の行としての並置: `["Model", "4"]` / `("Dates", 2)`
+      new RegExp(`["'\`]${key}["'\`]\\s*,\\s*["'\`]?[+-]?\\d`),
+    ];
+    for (const form of forms) {
+      const hit = src.match(form);
+      if (hit) offenses.push(`${key}: ${hit[0]}`);
+    }
+  }
+  return offenses;
+}
+
+test("the enum-literal detector actually sees a duplicated token table (自己検定)", () => {
+  // 変異 1 点: front が `Model` のトークン表を持ち込んだ状態（実際に起きうる複製の形）。
+  const mutated = 'const MODEL_TOKENS = { Model: "4" };';
+  assert.ok(testerNumericLiteralOffenses(mutated).length > 0,
+    "検出器が複製を見逃しています（この検定が空振りしていれば下の走査は無意味）");
+  // schema から引く正しい形は 1 件も挙げない（過検出で本来の書き方を禁じない）
+  const proper = "const token = schema.enum_options.Model[0].token;\nconst k = \"Dates\";";
+  assert.deepEqual(testerNumericLiteralOffenses(proper), []);
+});
+
+test("no front module pairs a Tester enum key with a numeric literal", () => {
+  const offenders = [];
+  for (const name of FRONT_FILES) {
+    for (const offense of testerNumericLiteralOffenses(read(name))) {
+      offenders.push(`${name}: ${offense}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
 });
 
 // --- 3. v4 vendor への参照が無い（NFR-07）----------------------------------------
