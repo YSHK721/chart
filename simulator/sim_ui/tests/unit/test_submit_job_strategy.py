@@ -9,11 +9,18 @@
 受付ゲート（`_reject_strategy_block`）で拒否されるため、上記 P6-E5 の受付検証は
 **到達不能**になった（検証コードは可逆性のため残置）。したがって本ファイルで
 `execute` を呼ぶ検定はすべて段階 2 のゲートで終端する（拒否理由は「参照系列が無い」
-ではなく「strategy を受け付けない」である）。P6-E5 の検証意図はエンジン側検定
-（`tests/integration/test_run_job_strategy.py` / `test_run_job_strategy_e2e.py` 等の
-run_job 直投入経路）へ移管済みであり、本ファイルは「受付面から到達できないこと」を
-固定する役割に変わった。新しい不変条件は
+ではなく「strategy を受け付けない」である）。本ファイルは「受付面から到達できないこと」
+を固定する役割に変わった。新しい不変条件は
 `tests/unit/test_submit_job_strategy_rejection.py` が持つ。
+
+**「エンジン側へ移管済み」とは書かない（実測 2026-08-19）**: エンジン側の run_job 直投入
+検定（`tests/integration/test_run_job_strategy.py` / `test_run_job_strategy_e2e.py`）は
+無改変で緑だが、そこが固定するのは `strategy_override` の受け渡し・構築失敗の記録・
+E2E の決定性であって、**P6-E5 の判定（参照指標 ⊆ EA の登録系列）と 1:1 対応する検定は
+無い**（実測: 当該 2 ファイルに missing-series の検定は存在しない）。移管ではなく、
+受付面が strategy 本文を受け取らなくなった＝**守る対象そのものが消えた**が正しい。
+run_job 直投入経路で参照系列が無い本文を渡した場合の受け皿は、従来どおり実行時
+fail-stop（`GenericConditionStrategy` の `IndicatorBufferError`）である。
 """
 from __future__ import annotations
 

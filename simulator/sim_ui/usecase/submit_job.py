@@ -4,8 +4,15 @@
     0. 段階 2（§19.5）: `strategy` ブロック（条件・トレーリング・部分決済）を持つ投入は
        **受付で拒否**する（`None` は受理・`{}` を含む非 None を拒否）。受付面が受け取る
        範囲を MT5 の Settings タブへ揃えるための入口閉鎖であり、エンジン側の戦略資産は
-       `run_job` 直投入から到達可能なまま残る。以下の 1.（strategy 系の受付検証）は
-       本規則により到達不能になるが、可逆性のため残置している（撤去は別ターンの裁定）。
+       `run_job` 直投入から到達可能なまま残る。本規則により到達不能になるのは
+       **strategy 系の受付検証 3 本**（`_reject_if_strategy_indicators_unavailable` /
+       `_reject_invalid_position_change` / `_reject_trailing_granularity_mismatch`）で
+       あり、可逆性のため残置している（撤去は別ターンの裁定）。以下の 1.（sizing 系）は
+       到達不能にならない——sizing は strategy と独立に有効化でき、本ゲートを通過した
+       本文で従来どおり働く。
+       段階 2 の受付契約はもう 1 本ある: settings 付きの投入は**実行対象の一致**
+       （`Expert` の語幹と `ea_name`・`Symbol` と `backtest.symbol`）を受付で要求する
+       （理由と実装点の根拠は `_reject_invalid_settings` の docstring・ここへ写さない）。
     1. sizing ON のときだけ**受付時検証**を行う。判定前に台帳へ書かない・子プロセスを
        起こさない（拒否したジョブの残骸を作らない）。検証は 2 つ:
          a. E-3（§12.5）: 建値推定に使える価格系列を指標レジストリが持たない戦略を拒否。

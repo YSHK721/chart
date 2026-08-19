@@ -7,11 +7,19 @@ run_job の framework loader が fail-stop で担う（受付は構造のみ・�
 **段階 2（§19.5）以降の位置づけ**: `strategy` ブロックを持つ投入は `execute` 冒頭の
 受付ゲート（`_reject_strategy_block`）で拒否されるため、上記 Phase 7 の受付検証
 （構造検査・粒度ゲート）は **到達不能**になった（検証コードは可逆性のため残置）。
-本ファイルで `execute` を呼ぶ検定はすべて段階 2 のゲートで終端する。Phase 7 の
-検証意図はエンジン側検定（`tests/integration/test_run_job_position_manager.py` /
-`test_run_job_settings_extensions.py` 等の run_job 直投入経路）へ移管済みであり、
-本ファイルは「受付面から到達できないこと」を固定する役割に変わった。新しい不変条件は
+本ファイルで `execute` を呼ぶ検定はすべて段階 2 のゲートで終端する。本ファイルは
+「受付面から到達できないこと」を固定する役割に変わった。新しい不変条件は
 `tests/unit/test_submit_job_strategy_rejection.py` が持つ。
+
+**「エンジン側へ移管済み」とは書かない（実測 2026-08-19）**: エンジン側の run_job 直投入
+検定（`tests/integration/test_run_job_position_manager.py` /
+`test_run_job_settings_extensions.py`）は無改変で緑であり、`position_manager` の
+仕様読込と作動はエンジン側（`simulator/tests/unit/test_position_manager_spec_loader.py` /
+`simulator/tests/integration/test_position_manager_engine.py`）が固定する。ただし
+**粒度ゲートの判定（trailing.granularity と run の実効粒度の突き合わせ）と 1:1 対応する
+検定はエンジン側に無い**（実測: loader は granularity の列挙のみを検証し、run の
+tick_model との一致は見ない）。移管ではなく、受付面が strategy 本文を受け取らなくなった
+＝**守る対象そのものが消えた**が正しい（run_job 直投入経路は元から受付を通らない）。
 """
 from __future__ import annotations
 
@@ -152,8 +160,11 @@ def test_bar_run_with_bar_trailing_default_is_rejected_by_intake_gate():
     assert launcher.launched == []
 
 
-def test_partial_close_is_rejected_by_intake_gate():
+def test_partial_close_on_real_ticks_is_rejected_by_intake_gate():
     # partial_close は粒度非依存＝Phase 7 の粒度ゲート対象外だが、段階 2 では拒否対象。
+    # 名前に real_ticks を残すのは、上の `..._mapping_is_rejected_by_intake_gate`
+    # （粒度指定なし）と区別する条件がこれだけだから（旧名 `..._has_no_granularity_gate`
+    # が持っていた識別子を、改名で落とさない）。
     launcher = FakeLauncher()
     sut = _interactor(launcher=launcher)
     sub = _sub_with_tickmodel(
