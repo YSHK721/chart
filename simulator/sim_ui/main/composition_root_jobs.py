@@ -29,12 +29,14 @@ from simulator.sim_ui.adapter.ea_build_probe import EaBuildProbe
 from simulator.sim_ui.adapter.ea_registry_series_catalog import EaRegistrySeriesCatalog
 from simulator.sim_ui.adapter.ea_stop_loss_param_catalog import EaStopLossParamCatalog
 from simulator.sim_ui.adapter.file_job_ledger import FileJobLedger
+from simulator.sim_ui.adapter.settings_ini_validator import SettingsIniValidator
 from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
 from simulator.sim_ui.adapter.tester_settings_schema_catalog import (
     TesterSettingsSchemaCatalog,
 )
 from simulator.sim_ui.adapter.subprocess_job_launcher import SubprocessJobLauncher
 from simulator.sim_ui.framework.serve_sim_jobs import SimJobApp
+from simulator.sim_ui.usecase.job_ports import EaSubjectPort
 
 # repo 根 = simulator/sim_ui/main/composition_root_jobs.py の parents[3]。
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -128,6 +130,34 @@ def build_settings_schema_port() -> TesterSettingsSchemaCatalog:
     )
 
 
+def build_settings_validation_port() -> SettingsIniValidator:
+    """Tester Settings の受付検証 Port（Phase 8 §18.4 スライス 3）。
+
+    実装（adapter）が framework の `tester_settings_from_mapping` へ委譲するため、
+    本関数は実装の**選択**だけを行う（規則をここに書かない）。
+    """
+    return SettingsIniValidator()
+
+
+class _EaSubject(EaSubjectPort):
+    """`ea_stem`（エンジンの単一ソース）への束縛（:class:`EaSubjectPort` 実装）。
+
+    語幹の取り出し規則（Windows 区切り・`.ex5` 接尾辞の扱い）は
+    `simulator.main.tester_settings.ea_input_map.ea_stem` が唯一持つ。usecase / adapter は
+    `simulator.main` を import できない（層ゲート）ため、束縛は本 Composition Root が担う。
+    """
+
+    def stem_of(self, subject_path: str) -> str:
+        from simulator.main.tester_settings.ea_input_map import ea_stem
+
+        return ea_stem(subject_path)
+
+
+def build_ea_subject_port() -> _EaSubject:
+    """`Expert` → EA 名の語幹を供給する Port（束縛済み・Phase 8）。"""
+    return _EaSubject()
+
+
 # 子へ素通しする `backtest` meta が注入専用に予約しているキー。JSON から渡させない。
 #   `strategy_decorator` は run_job がサイジング設定から組み立てて注入する（E-2）。
 #   `strategy_override` は run_job が spec.strategy から GenericConditionStrategy を組んで
@@ -211,4 +241,7 @@ def build_sim_job_app(
         stop_loss_catalog=build_stop_loss_catalog(),
         allowed_backtest_keys=allowed_backtest_keys,
         required_backtest_keys=required_backtest_keys,
+        # Phase 8 §18: settings ブロックを持つ投入だけが使う 2 Port。
+        settings_validator=build_settings_validation_port(),
+        ea_subject=build_ea_subject_port(),
     )

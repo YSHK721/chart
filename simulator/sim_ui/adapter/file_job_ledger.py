@@ -62,7 +62,10 @@ class FileJobLedger(JobLedgerPort):
                  "sizing": dict(submission.sizing) if submission.sizing else None,
                  # Phase 6 F-8（P6-E1）: 戦略項目ブロック（backtest/sizing の兄弟）。
                  # 不在時は null（既定 OFF＝子プロセス側の解釈は byte 等価）。
-                 "strategy": dict(submission.strategy) if submission.strategy else None},
+                 "strategy": dict(submission.strategy) if submission.strategy else None,
+                 # Phase 8 §18（T-4）: Tester Settings ブロック（第 4 ブロック）。
+                 # 不在時は null＝旧 spec と併存し、子プロセスは現行経路を通る。
+                 "settings": dict(submission.settings) if submission.settings else None},
                 ensure_ascii=False,
                 indent=1,
             ),
