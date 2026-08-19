@@ -2,7 +2,7 @@
  *
  * 対象は `report_view.html` を `?job=` **無し**で開いたときの入口だけである。結果ビューア側
  * （`?job=<id>`）に出る DOM へは 1 つも当たらない——本ファイルの選択子はすべて
- * `#simTesterPanel` / `#simExecPanel` / `#execViewResult` の配下に閉じてある。素の要素
+ * `#simTesterPanel` / `#simEaInputsPanel` / `#simRunActionPanel` の配下に閉じてある。素の要素
  * （body / input / select / button）へ当てると結果ビューアの見た目まで動く（style.css の
  * 波及遮断と同じ理由・裁定 B）。
  *
@@ -22,7 +22,8 @@
 /* --- 器（body 直下の 2 パネル）------------------------------------------------- */
 /* flex: 0 1 auto = 中身の高さで置き、入り切らないときだけ縮んで自分の中で送る。 */
 #simTesterPanel,
-#simExecPanel {
+#simEaInputsPanel,
+#simRunActionPanel {
   flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -32,7 +33,7 @@
   border: 1px solid var(--line);
   border-radius: 4px;
 }
-#simExecPanel { margin-bottom: 8px; }
+#simRunActionPanel { margin-bottom: 8px; }
 
 /* --- パネル見出し ---------------------------------------------------------------- */
 #simTesterPanel .tester-title {
@@ -83,7 +84,7 @@
 /* label 直下のテキストノードは無名グリッドアイテムになる（CSS Grid 仕様）。よって
  * `<label>ラベル文<input></label>` の構造のまま 2 列に割り付けられる（DOM を変えない）。 */
 #simTesterPanel .tester-field,
-#simExecPanel .exec-field {
+#simRunActionPanel .exec-field {
   display: grid;
   grid-template-columns: minmax(7em, 11em) minmax(0, 1fr);
   align-items: center;
@@ -92,8 +93,8 @@
   color: var(--fg);
 }
 #simTesterPanel .tester-input,
-#simExecPanel .exec-field input,
-#simExecPanel .exec-field select {
+#simRunActionPanel .exec-field input,
+#simRunActionPanel .exec-field select {
   min-width: 0;          /* grid/flex の中で内容幅に押し広げられないため（横あふれ防止） */
   width: 100%;
   padding: 2px 4px;
@@ -170,21 +171,21 @@
 /* --- 実行指示パネル（下部・同じ CSS 言語で最低限そろえる）------------------------- */
 /* 直下の子は単票のフィールドと投入ボタンだけである。前者を 2 カラムに流し、
  * 後者は全幅へ寄せる（DOM は変えない）。 */
-#simExecPanel {
+#simRunActionPanel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px 20px;
   align-content: start;
 }
 @media (max-width: 860px) {
-  #simExecPanel { grid-template-columns: minmax(0, 1fr); }
+  #simRunActionPanel { grid-template-columns: minmax(0, 1fr); }
 }
-#simExecPanel .exec-submit {
+#simRunActionPanel .run-start {
   grid-column: 1 / -1;
 }
 
-#simExecPanel .exec-submit,
-#execViewResult {
+#simRunActionPanel .run-start,
+#simRunActionPanel .exec-view-result {
   padding: 3px 10px;
   background: transparent;
   color: var(--fg);
@@ -193,15 +194,15 @@
   font: inherit;
   cursor: pointer;
 }
-#simExecPanel .exec-submit {
+#simRunActionPanel .run-start {
   margin-top: 10px;
   justify-self: start;
   padding: 4px 16px;
   border-color: var(--accent);
   color: var(--accent);
 }
-/* 「結果を見る」は body 直下（パネルの外）に足される。器の外でも浮かないようそろえる。 */
-#execViewResult {
+/* 「結果を見る」は実行指示面の中に足される（S5 で合成根から移設）。 */
+#simRunActionPanel .exec-view-result {
   flex: 0 0 auto;
   margin: 0 12px 8px;
   align-self: start;

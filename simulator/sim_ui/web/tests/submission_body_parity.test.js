@@ -124,7 +124,7 @@ const EA_INPUT_IDS = EA_INPUT_FIELDS;
 /** 縮退面の初期資金欄（schema が無い構成でのみ存在する）。 */
 const LEGACY_DEPOSIT_ID = "execDeposit";
 /** 実行開始ボタン。 */
-const START_BUTTON_ID = "execSubmit";
+const START_BUTTON_ID = "runStart";
 
 test("the settings configuration submits the S1 body verbatim", async () => {
   assert.deepEqual(await submittedBody(settingsSchema()), sortDeep(GOLDEN.settings));

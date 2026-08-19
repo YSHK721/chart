@@ -44,7 +44,7 @@ const CONTACTS_TOGGLE = "sim_contacts_toggle_view.js";
 const FILTER_PILL = "sim_filter_pill_view.js";
 // Phase 6 で追加した実行指示（戦略投入）系（いずれも純 DOM / HTTP・lwc に触れない）。
 const SUBMIT_CLIENT = "job_submit_client.js";
-const EXEC_PANEL = "sim_execution_panel_view.js";
+const RUN_ACTION = "sim_run_action_view.js";
 const EXEC_ROOT = "composition_root_execution.js";
 // Phase 8 で追加した Tester Settings（MT5 設定パネル）系（純 DOM / HTTP・lwc に触れない）。
 const SETTINGS_CLIENT = "settings_schema_client.js";
@@ -69,7 +69,7 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
   assert.deepEqual(FRONT_FILES.sort(), [
     ROOT, RENDERER, SOURCE, VIEW, FRAME,
     TABS, SEGMENT, COMPARE, CONTACTS_TOGGLE, FILTER_PILL,
-    SUBMIT_CLIENT, EXEC_PANEL, EXEC_ROOT,
+    SUBMIT_CLIENT, RUN_ACTION, EXEC_ROOT,
     SETTINGS_CLIENT, TESTER_PANEL,
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
   ].sort());
@@ -78,6 +78,17 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
 // --- 1c. 投入契約は純関数（Phase 9 S2 M5）----------------------------------------
 // 本文の組み立て規則を DOM や HTTP と同じ面に置くと、規則を検証するのに器と通信の
 // ダブルが要る＝規則そのものを素で確かめられなくなる。M5 は依存 0 で保つ。
+
+// --- 1d. 合成根は DOM を作らない（Phase 9 S5）------------------------------------
+// 器の骨格を作るのは View だけである。合成根が createElement を持つと、DOM の所有者が
+// 2 箇所に散り、CSS の選択子もパネル id の外へはみ出す（`#execViewResult` が body 直下に
+// 生えていた S4 までがまさにそれ）。
+
+test("the execution composition root creates no DOM of its own", () => {
+  const src = read(EXEC_ROOT);
+  assert.ok(!/createElement|createDocumentFragment/.test(src),
+    `${EXEC_ROOT} が DOM を生成しています（骨格を作るのは View だけ）`);
+});
 
 test("the submission builder imports nothing (純関数＝依存 0)", () => {
   assert.deepEqual(importSpecifiers(read(SUBMISSION_BUILDER)), []);

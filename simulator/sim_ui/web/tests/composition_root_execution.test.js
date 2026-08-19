@@ -56,8 +56,8 @@ function routerFetch({ job, schema, schemaRaw } = {}) {
 test("mount builds the execution panel", async () => {
   const doc = fakeDoc();
   await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
-  assert.ok(findById(doc.body, "simExecPanel"), "パネルが生成されていない");
-  assert.ok(findById(doc.body, "execSubmit"));
+  assert.ok(findById(doc.body, "simRunActionPanel"), "実行指示面が生成されていない");
+  assert.ok(findById(doc.body, "runStart"));
 });
 
 test("submit posts the built body and notifies onSubmitted", async () => {
@@ -69,7 +69,7 @@ test("submit posts the built body and notifies onSubmitted", async () => {
   });
   findById(doc.body, eaInputId("stop_loss_points")).value = "100";
   findById(doc.body, eaInputId("take_profit_points")).value = "200";
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const post = fetchFn.calls.find((c) => c.url === "/sim/jobs");
   assert.ok(post, "POST /sim/jobs が呼ばれていない");
@@ -106,7 +106,7 @@ test("run-options profile drives the submitted 18-key body", async () => {
   const fetchFn = routerFetch();
   const submitted = [];
   await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, onSubmitted: (r) => submitted.push(r) });
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const post = fetchFn.calls.find((c) => c.url === "/sim/jobs");
   const body = JSON.parse(post.init.body);
@@ -122,7 +122,7 @@ test("after submit a 'see results' affordance appears and does NOT auto-navigate
     doc, host: doc.body, fetch: routerFetch({ job: { job_id: "abc", status: "running" } }),
     navigate: (url) => nav.push(url),
   });
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   // 自動遷移しない（ビュー自動介入禁止）
   assert.deepEqual(nav, []);
@@ -160,7 +160,7 @@ test("the tester panel is still mounted when the schema fetch fails (fail-open)"
   assert.ok(findById(doc.body, "simTesterPanel"), "取得失敗でパネルが消えている（fail-open ではない）");
   // 候補が無いので settings は組めない。旧フォーム（指標セット欄）がそのまま権威。
   assert.ok(findById(doc.body, "execEaName"), "旧フォームの指標セット欄まで消えている");
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
   assert.equal("settings" in body, false);
@@ -171,7 +171,7 @@ test("submitting with a schema posts the settings block and the derived ea_name"
   const doc = fakeDoc();
   const fetchFn = routerFetch({ schema });
   await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
   assert.ok(body.settings, "settings ブロックが本文に載っていない");
@@ -197,7 +197,7 @@ test("a 200 non-JSON schema response leaves the legacy form authoritative (fail-
   assert.ok(findById(doc.body, "execEaName"), "指標セット欄が消えています（投入不能フォーム）");
   assert.ok(findById(doc.body, "execDeposit"), "初期資金欄が消えています（投入不能フォーム）");
   assert.ok(findById(doc.body, "simTesterPanel"), "パネルの器まで消えています");
-  findById(doc.body, "execSubmit")._listeners.click[0]();
+  findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
   assert.equal("settings" in body, false, "空 schema のまま settings を載せています");

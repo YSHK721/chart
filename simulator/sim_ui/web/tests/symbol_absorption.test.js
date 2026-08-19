@@ -77,7 +77,7 @@ async function mountRoot(opts = {}) {
 
 /** 投入して本文を読む。 */
 async function submitBody(host, fetchFn) {
-  findById(host, "execSubmit")._listeners.click[0]();
+  findById(host, "runStart")._listeners.click[0]();
   await flush();
   return JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
 }

@@ -7,9 +7,9 @@
 import { createJobSubmitClient } from "./job_submit_client.js";
 import { createSettingsSchemaClient } from "./settings_schema_client.js";
 import { createSimEaInputsPanelView } from "./sim_ea_inputs_panel_view.js";
-import { createSimExecutionPanelView } from "./sim_execution_panel_view.js";
+import { createSimRunActionView } from "./sim_run_action_view.js";
 import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
-import { resolveProfile } from "./sim_submission_builder.js";
+import { buildSubmission, resolveProfile } from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
 
 /** 投入した job_id を閲覧するビューアの URL（report_view.html の `?job=` dispatch）。
@@ -84,9 +84,9 @@ export async function mountSimExecutionPanel({
   // EA パラメータ面（M2）。実行仕様の EA 側パラメータはこの面だけが所有する。
   const eaInputsView = createSimEaInputsPanelView({ doc });
   eaInputsView.mount(host);
-  const view = createSimExecutionPanelView({ doc, inputs: eaInputsView });
+  // 実行指示面（M3）。責務はスタートと結果導線だけ（本文も HTTP も知らない）。
+  const view = createSimRunActionView({ doc });
   view.mount(host);
-  view.setSubjectSource(subjectSource);
 
   const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
 
@@ -100,33 +100,29 @@ export async function mountSimExecutionPanel({
     if (next === null || next === runProfile) return;
     runProfile = next;
     subjectSource.setRunProfile(runProfile);
-    view.setRunProfile(runProfile);
   }
   subjectSource.onSymbolChange(() => { syncRunProfile(); });
   syncRunProfile();
 
-  // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。
-  // ユーザーがこのボタンを押したときだけ `?job=<id>` の dispatch でビューアへ切り替える。
-  function showResultLink(jobId) {
-    let link = view.elements.viewResult;
-    if (!link) {
-      link = doc.createElement("button");
-      link.id = "execViewResult";
-      link.className = "exec-view-result";
-      link.type = "button";
-      link.textContent = "結果を見る";
-      link.addEventListener("click", () => { if (link._jobId) goTo(reportViewUrl(link._jobId)); });
-      host.appendChild(link);
-      view.elements.viewResult = link;
-    }
-    link._jobId = jobId;
-    return link;
-  }
+  // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。導線の DOM は
+  // 実行指示面が持ち、ここは「押されたらどこへ行くか」だけを決める。
+  view.onViewResult((jobId) => { goTo(reportViewUrl(jobId)); });
 
-  view.onSubmit(async (body) => {
+  view.onStart(async () => {
+    // 本文の組み立ては純関数 1 箇所（M5）。ここは 3 つの供給元を渡すだけである。
+    const derived = subjectSource.derivedBacktest();
+    const body = buildSubmission({
+      profile: runProfile,
+      subject: {
+        ea_name: derived.ea_name,
+        initial_deposit: derived.initial_deposit,
+        settings: subjectSource.buildSettings(),
+      },
+      inputs: eaInputsView.values(),
+    });
     try {
       const result = await client.submit(body);
-      if (result && result.job_id) showResultLink(result.job_id);
+      if (result && result.job_id) view.showResultLink(result.job_id);
       if (onSubmitted) onSubmitted(result);
     } catch (e) {
       if (onError) onError(e);
