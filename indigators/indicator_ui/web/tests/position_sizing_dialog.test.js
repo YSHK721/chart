@@ -1,0 +1,401 @@
+// position_sizing_dialog.js（ポジションサイズ計算機のモーダル DOM アダプター）のテスト。
+//
+// 設計入力（唯一の仕様源）: .doc/POSITION_SIZING_CHART_INTEGRATION_DESIGN.md
+//   裁定記録 TBD-1/5（建値も価格の単一ソース＝チャートに一本化。**gap モード・間隔指定は撤廃**。
+//     順張り／逆張り 2 カード比較は参照実装 :1098 の明示により同一結果＝表示しない）、
+//   TBD-3（図 3＝資産推移パスは含めない）、TBD-4（3 トグルは 3 つとも残す）、
+//   スライス 6（`color_theme_dialogs.js` と同型・コールバック注入・遅延参照・DOM は自分で生成）、
+//   「追加要件裁定 R-P1」（各価格欄の「チャートで指定」がアーム式ピッカーの受け口）、
+//   §3 UC-04（表示文字列は Presenter が生成する。**計算は usecase の ViewModel が持つ**）。
+//
+// 固定する規約:
+//   - 表示値は `usecase/position_sizing_plan.js` の ViewModel をそのまま出す（第 2 実装を作らない）。
+//   - 協働子（usecase・renderer・ピッカー）は import しない＝すべて注入コールバック。
+//   - 「チャートで指定」はアーム要求を**呼ぶだけ**（ピッカー本体はスライス 8-d）。
+// 構造: Arrange-Act-Assert（AAA）。jsdom を避けた最小 DOM スタブ（color_theme_dialogs と同作法）。
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { PositionSizingDialog } from '../js/adapter/front/position_sizing_dialog.js';
+
+// ---- 最小 DOM スタブ（新規依存を追加しない）--------------------------------
+class El {
+  constructor(tag = 'div') {
+    this.tag = tag;
+    this.children = [];
+    this.dataset = {};
+    this.textContent = '';
+    this.type = '';
+    this.id = '';
+    this.title = '';
+    this.value = '';
+    this.checked = false;
+    this.disabled = false;
+    this.min = '';
+    this.max = '';
+    this.step = '';
+    this.parentNode = null;
+    this._cls = new Set();
+    this._handlers = {};
+  }
+
+  get className() { return [...this._cls].join(' '); }
+
+  set className(v) { this._cls = new Set(String(v).split(/\s+/).filter(Boolean)); }
+
+  get classList() {
+    const s = this._cls;
+    return {
+      add: (c) => s.add(c),
+      remove: (c) => s.delete(c),
+      contains: (c) => s.has(c),
+      toggle: (c, on) => {
+        const next = on === undefined ? !s.has(c) : on;
+        if (next) { s.add(c); } else { s.delete(c); }
+      },
+    };
+  }
+
+  get innerHTML() { return ''; }
+
+  set innerHTML(v) {
+    if (v === '') {
+      for (const k of this.children) { k.parentNode = null; }
+      this.children = [];
+    }
+  }
+
+  append(...kids) {
+    for (const k of kids) {
+      if (k && typeof k === 'object') { k.parentNode = this; this.children.push(k); }
+    }
+  }
+
+  appendChild(k) { this.append(k); return k; }
+
+  removeChild(k) {
+    this.children = this.children.filter((c) => c !== k);
+    if (k) { k.parentNode = null; }
+    return k;
+  }
+
+  setAttribute(k, v) { this.dataset[`attr_${k}`] = v; }
+
+  focus() {}
+
+  addEventListener(ev, fn) { (this._handlers[ev] ??= []).push(fn); }
+
+  fire(ev, arg = {}) { for (const fn of this._handlers[ev] ?? []) { fn(arg); } }
+}
+
+function fakeDoc() {
+  const body = new El('body');
+  return { body, createElement: (t) => new El(t) };
+}
+
+function flatten(el, out = []) {
+  for (const kid of el.children ?? []) { out.push(kid); flatten(kid, out); }
+  return out;
+}
+
+const textOf = (el) => [el, ...flatten(el)].map((e) => e.textContent ?? '').join(' ');
+
+const byData = (root, key, value) => flatten(root).find((e) => e.dataset && e.dataset[key] === value) ?? null;
+
+const allData = (root, key) => flatten(root).filter((e) => e.dataset && e.dataset[key] !== undefined);
+
+// usecase（position_sizing_plan.js）の ViewModel と同じ形（snake_case の plan・camelCase の派生）。
+const VM = {
+  derived: {
+    lossRate: 0.62, expectedValue: 0.4212, kellyFraction: 0.1537, halfKellyFraction: 0.0769,
+  },
+  edge: {
+    kellyFraction: 0.1537, halfKellyFraction: 0.0769, constrainedFraction: 0.0912,
+    rorAtConstrained: 0.0098, rorAtKelly: 0.31, growthAtKelly: 0.0541, growthAtConstrained: 0.0402,
+  },
+  fraction: 0.0912,
+  fractionChoice: 'safe',
+  plan: {
+    lots: [2, 3, 5], total_lot: 10, avg_price: 58650, required_margin: 58650,
+    margin_use: 0.341, losscut_price: 58020, losscut_distance: 630, rr: 2.4, breakeven: 0.294,
+    ev_yen: 12345.6, buildable_lot: 10, total_risk: 15000, effective_risk: 15000,
+    stop_invalid: false, round_zeroed: false, immediate_lc: false, margin_binds: false,
+    lc_before_stop: false,
+  },
+  violations: [],
+  levelLines: {
+    direction: 'long', entryPrices: [58700, 58600, 58500], stopPrice: 58340, takePrice: 59200,
+    losscutPrice: 58020,
+  },
+};
+
+function build(opts = {}) {
+  const doc = fakeDoc();
+  const dialog = new PositionSizingDialog({ document: doc, ...opts });
+  dialog.open();
+  return { doc, dialog, root: doc.body.children[0] };
+}
+
+// ---------------------------------------------------------------------------
+// 殻（同型元 color_theme_dialogs の open/close 規約）
+// ---------------------------------------------------------------------------
+
+test('TC-PD01 open() で body へ 1 枚だけ生成し close() で除去する（二重 open で増えない）', () => {
+  // Arrange / Act
+  const { doc, dialog } = build();
+  // Assert
+  assert.equal(doc.body.children.length, 1);
+  dialog.open();
+  assert.equal(doc.body.children.length, 1, '同時に 2 枚開かない（後勝ち）');
+  dialog.close();
+  assert.equal(doc.body.children.length, 0);
+  assert.doesNotThrow(() => dialog.close(), 'close の重ねがけは冪等');
+});
+
+// ---------------------------------------------------------------------------
+// Step 1（エッジと破産確率）
+// ---------------------------------------------------------------------------
+
+test('TC-PD02 Step 1 の入力 7 件が在席し sims の既定は 4000（裁定済み）', () => {
+  // Arrange / Act
+  const { root } = build();
+  // Assert
+  for (const f of ['winRate', 'payoffRatio', 'ruinLevel', 'alpha', 'horizon', 'splitCount', 'sims']) {
+    assert.ok(byData(root, 'psField', f), `Step 1 の入力 ${f} が無い`);
+  }
+  assert.equal(byData(root, 'psField', 'sims').value, '4000');
+});
+
+test('TC-PD03 Step 1 に「計算する」ボタンがある（MC は押したときだけ走る）', () => {
+  // Arrange / Act
+  const { root } = build();
+  // Assert
+  const run = byData(root, 'psAction', 'run');
+  assert.ok(run, '「計算する」が無い');
+  assert.ok(textOf(run).includes('計算'), `文言に「計算」を含む（実際: ${textOf(run)}）`);
+});
+
+// ---------------------------------------------------------------------------
+// Step 2（採用する f を選ぶ）
+// ---------------------------------------------------------------------------
+
+test('TC-PD04 Step 2 は safe / half / full の 3 択・既定は safe（参照実装 :337-346）', () => {
+  // Arrange / Act
+  const { root } = build();
+  // Assert
+  assert.deepEqual(allData(root, 'psChoice').map((e) => e.dataset.psChoice), ['safe', 'half', 'full']);
+  assert.equal(byData(root, 'psChoice', 'safe').classList.contains('is-active'), true);
+});
+
+// ---------------------------------------------------------------------------
+// Step 3（分割エントリー）
+// ---------------------------------------------------------------------------
+
+test('TC-PD05 Step 3 の入力（E・V・mr・K・重み）と方向が在席する', () => {
+  // Arrange / Act
+  const { root } = build();
+  // Assert
+  for (const f of ['balance', 'pointValue', 'marginRate', 'splits', 'weightPattern', 'direction']) {
+    assert.ok(byData(root, 'psField', f), `Step 3 の入力 ${f} が無い`);
+  }
+});
+
+test('TC-PD06 3 トグル（ロット単位・決済・建て制約）が 3 つとも在席する（TBD-4）', () => {
+  // Arrange / Act
+  const { root } = build();
+  // Assert
+  assert.ok(byData(root, 'psField', 'lotMode'), 'ロット単位（整数/小数）が無い');
+  assert.ok(byData(root, 'psField', 'exitMode'), '決済（ブラケット/時間）が無い');
+  assert.ok(byData(root, 'psField', 'capBasis'), '建て制約（証拠金100%/ロスカット基準）が無い');
+});
+
+test('TC-PD07 撤廃項目は載せない: gap 系（pmode・g・gapmode）・順張り/逆張り 2 カード・図 3（TBD-1/3）', () => {
+  // Arrange / Act
+  const { root } = build();
+  const fields = allData(root, 'psField').map((e) => e.dataset.psField);
+  const text = textOf(root);
+  // Assert
+  for (const gone of ['pmode', 'priceMode', 'gap', 'gapMode', 'gapmode']) {
+    assert.equal(fields.includes(gone), false, `撤廃したはずの入力 ${gone} が載っている（TBD-1）`);
+  }
+  assert.equal(/順張り|逆張り/.test(text), false, '順張り／逆張りの 2 カードは direct では同一結果＝表示しない');
+  assert.equal(/資産推移/.test(text), false, '図 3（資産推移パス）は含めない（TBD-3）');
+});
+
+// ---------------------------------------------------------------------------
+// 価格欄とアーム式ピッカーの受け口（R-P1）
+// ---------------------------------------------------------------------------
+
+test('TC-PD08 価格欄は 建値 K 本＋損切り＋利確。各欄に「チャートで指定」がある（R-P1）', () => {
+  // Arrange / Act
+  const { root } = build();
+  const prices = allData(root, 'psPrice').map((e) => e.dataset.psPrice);
+  const picks = allData(root, 'psPick').map((e) => e.dataset.psPick);
+  // Assert
+  assert.deepEqual(prices, ['entry:0', 'entry:1', 'entry:2', 'stop', 'take'], '既定 K=3 の建値 3 本＋損切り＋利確');
+  assert.deepEqual(picks, prices, '価格欄と「チャートで指定」は 1 対 1');
+  assert.ok(textOf(byData(root, 'psPick', 'stop')).includes('チャートで指定'));
+});
+
+test('TC-PD09 「チャートで指定」はアーム要求を対象識別子つきで呼ぶだけ（ピッカー本体は 8-d）', () => {
+  // Arrange
+  const armed = [];
+  const { root } = build({ onRequestPick: (target) => armed.push(target) });
+  // Act
+  byData(root, 'psPick', 'stop').fire('click');
+  byData(root, 'psPick', 'entry:1').fire('click');
+  byData(root, 'psPick', 'take').fire('click');
+  // Assert
+  assert.deepEqual(armed, ['stop', 'entry:1', 'take']);
+});
+
+test('TC-PD10 分割本数 K を変えると建値欄が増減する（K は建値の本数そのもの）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  const splits = byData(root, 'psField', 'splits');
+  // Act
+  splits.value = '5';
+  splits.fire('input');
+  // Assert
+  const prices = allData(dialog._root, 'psPrice').map((e) => e.dataset.psPrice);
+  assert.deepEqual(prices, ['entry:0', 'entry:1', 'entry:2', 'entry:3', 'entry:4', 'stop', 'take']);
+});
+
+// ---------------------------------------------------------------------------
+// 入力の通知（DIP: 判定も計算もせず、そのまま渡す）
+// ---------------------------------------------------------------------------
+
+test('TC-PD11 数値入力の変更を通知する。% の欄は比へ写して渡す（表示単位の変換だけ）', () => {
+  // Arrange
+  const patches = [];
+  const { root } = build({ onChangeParams: (p) => patches.push(p) });
+  // Act
+  const p = byData(root, 'psField', 'winRate');
+  p.value = '42';
+  p.fire('input');
+  const r = byData(root, 'psField', 'payoffRatio');
+  r.value = '3.1';
+  r.fire('input');
+  // Assert
+  assert.deepEqual(patches, [{ winRate: 0.42 }, { payoffRatio: 3.1 }]);
+});
+
+test('TC-PD12 択一（方向・重み・3 トグル）の変更を識別子のまま通知する', () => {
+  // Arrange
+  const patches = [];
+  const { root } = build({ onChangeParams: (p) => patches.push(p) });
+  // Act
+  const sel = byData(root, 'psField', 'capBasis');
+  sel.value = 'lc';
+  sel.fire('change');
+  // Assert
+  assert.deepEqual(patches, [{ capBasis: 'lc' }]);
+});
+
+test('TC-PD13 採用 f の 3 択は選択状態を移し、識別子を通知する（Step 2）', () => {
+  // Arrange
+  const patches = [];
+  const { root } = build({ onChangeParams: (p) => patches.push(p) });
+  // Act
+  byData(root, 'psChoice', 'half').fire('click');
+  // Assert
+  assert.deepEqual(patches, [{ fractionChoice: 'half' }]);
+  assert.equal(byData(root, 'psChoice', 'half').classList.contains('is-active'), true);
+  assert.equal(byData(root, 'psChoice', 'safe').classList.contains('is-active'), false);
+});
+
+test('TC-PD14 価格欄の入力は水準として通知する（価格の単一ソースは水準側・TBD-1）', () => {
+  // Arrange
+  const levels = [];
+  const { root } = build({ onChangeLevels: (l) => levels.push(l) });
+  // Act
+  byData(root, 'psPrice', 'entry:0').value = '58700';
+  byData(root, 'psPrice', 'entry:1').value = '58600';
+  byData(root, 'psPrice', 'entry:2').value = '58500';
+  const stop = byData(root, 'psPrice', 'stop');
+  stop.value = '58340';
+  stop.fire('input');
+  // Assert
+  assert.equal(levels.length, 1);
+  assert.deepEqual(levels[0].entryPrices, [58700, 58600, 58500]);
+  assert.equal(levels[0].stopPrice, 58340);
+  assert.equal(levels[0].takePrice, null, '未入力の利確は null（0 円の利確にしない）');
+  assert.equal(levels[0].direction, 'long');
+});
+
+test('TC-PD15 setPrice(target, price) で外（ピッカー・水準線 drag）から価格を書き戻せる', () => {
+  // Arrange
+  const levels = [];
+  const { root, dialog } = build({ onChangeLevels: (l) => levels.push(l) });
+  // Act
+  dialog.setPrice('stop', 58340);
+  // Assert
+  assert.equal(byData(root, 'psPrice', 'stop').value, '58340');
+  assert.equal(levels.length, 1, '書き戻しも入力と同じ経路で通知する（片方向にしない）');
+  assert.equal(levels[0].stopPrice, 58340);
+});
+
+// ---------------------------------------------------------------------------
+// 表示（usecase の ViewModel をそのまま出す＝第 2 実装を作らない）
+// ---------------------------------------------------------------------------
+
+test('TC-PD16 render(vm) は ViewModel の値を表示する（式を 1 つも持たない）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  dialog.render(VM);
+  // Assert: 合計ロット・平均建値・ロスカット価格・RR は VM の値がそのまま出る。
+  assert.equal(byData(root, 'psOut', 'totalLot').textContent, '10');
+  assert.equal(byData(root, 'psOut', 'avgPrice').textContent, '58650');
+  assert.equal(byData(root, 'psOut', 'losscutPrice').textContent, '58020');
+  assert.equal(byData(root, 'psOut', 'rr').textContent, '2.4');
+  // Step 1 の派生（MC 非依存）と MC 結果も VM 由来。
+  assert.equal(byData(root, 'psOut', 'kellyFraction').textContent, '0.1537');
+  assert.equal(byData(root, 'psOut', 'constrainedFraction').textContent, '0.0912');
+  assert.equal(byData(root, 'psOut', 'fraction').textContent, '0.0912');
+});
+
+test('TC-PD17 MC 未実行（edge=null）の欄は「—」のまま（0 と偽らない）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  dialog.render({ ...VM, edge: null, fraction: 0 });
+  // Assert
+  assert.equal(byData(root, 'psOut', 'constrainedFraction').textContent, '—');
+  assert.equal(byData(root, 'psOut', 'kellyFraction').textContent, '0.1537', '派生カードは MC 非依存で出る');
+});
+
+test('TC-PD18 違反・警告は VM の判定をそのまま出す（判定を作らない）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  dialog.render({
+    ...VM,
+    violations: ['stop_invalid'],
+    plan: { ...VM.plan, immediate_lc: true, margin_binds: true },
+  });
+  // Assert
+  const warn = byData(root, 'psOut', 'warnings').textContent;
+  assert.match(warn, /stop_invalid/);
+  assert.match(warn, /immediate_lc/);
+  assert.match(warn, /margin_binds/);
+});
+
+test('TC-PD19 閉じているときの render は no-op（例外にしない）', () => {
+  // Arrange
+  const { dialog } = build();
+  dialog.close();
+  // Act / Assert
+  assert.doesNotThrow(() => dialog.render(VM));
+});
+
+test('TC-PD20 「計算する」は MC 実行要求を呼ぶだけ（計算は usecase・実行場所は Worker）', () => {
+  // Arrange
+  const calls = [];
+  const { root } = build({ onRun: () => calls.push('run') });
+  // Act
+  byData(root, 'psAction', 'run').fire('click');
+  // Assert
+  assert.deepEqual(calls, ['run']);
+});
