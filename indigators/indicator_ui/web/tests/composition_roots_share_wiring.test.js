@@ -39,6 +39,16 @@ const SHARED_OWNED = [
   'new TickvolBandsActor(',
   'new TradeMarkersRenderer(',
   'new CurrentPriceView(',
+  // ISSUE-368 スライス 7: 計算機一式（メニュー・モーダル・協働子・水準線 primitive・drag・
+  //   ピッカー・MC Worker ゲートウェイ）。生成は共有配線が所有し、root は識別子だけを渡す。
+  'new PositionSizingMenu(',
+  'new PositionSizingDialog(',
+  'new PositionSizingController(',
+  'new PriceLevelLinesPrimitive(',
+  'new PriceLevelDragController(',
+  'new PricePickController(',
+  'new McWorkerGateway(',
+  'new PositionSizingPlanUseCase(',
 ];
 
 function read(rel) {

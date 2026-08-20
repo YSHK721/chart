@@ -64,12 +64,15 @@ const STEP3_FIELDS = [
 ];
 
 // 択一トグル（TBD-4: 3 つとも残す）と方向・重み。値は参照実装の識別子をそのまま使う。
+//   def: 既定値（省略時は options の先頭）。参照実装 :578 の `S` 初期値に合わせる
+//   （wpattern:'linear' / lotmode:'int' / ltmode:'lc' / exit:'bracket' / dir:'long'）。
 const SELECTS = [
   { key: 'direction', label: '方向', options: [['long', 'ロング'], ['short', 'ショート']] },
   {
     key: 'weightPattern',
     label: '重み',
     options: [['equal', '均等'], ['linear', '線形'], ['double', '倍々'], ['custom', 'カスタム']],
+    def: 'linear',
   },
   { key: 'lotMode', label: 'ロット単位', options: [['int', '整数'], ['dec', '小数']] },
   { key: 'exitMode', label: '決済', options: [['bracket', 'ブラケット'], ['time', '時間']] },
@@ -77,8 +80,55 @@ const SELECTS = [
     key: 'capBasis',
     label: '建て制約',
     options: [['margin', '証拠金 100%'], ['lc', 'ロスカット基準']],
+    def: 'lc',
   },
 ];
+
+// 既定の採用 f（参照実装 :578 `chosen:'safe'`）。
+const DEFAULT_FRACTION_CHOICE = 'safe';
+
+/**
+ * usecase の初期 params（**モーダルの定義表から導出する単一ソース**）。
+ *
+ * 合成根が自前で既定値を書くと、画面の初期表示と計算の初期値が食い違う（画面は 38% なのに
+ * 計算は別の値、という取り違え）。数値欄は % を比へ写す規則も入力時と同一にする。
+ */
+export function defaultParams() {
+  const out = {};
+  for (const f of [...STEP1_FIELDS, ...STEP3_FIELDS]) {
+    if (f.key === 'splits') {
+      continue;   // K は建値の本数＝水準側（levels）が持つ。params ではない。
+    }
+    out[f.key] = f.unit === '%' ? f.value / 100 : f.value;
+  }
+  for (const s of SELECTS) {
+    if (s.key === 'direction' || s.key === 'exitMode') {
+      continue;   // 方向は水準（E-02）が持ち、決済方式は表示だけの関心（usecase へ渡さない）。
+    }
+    out[s.key] = selectDefault(s);
+  }
+  out.fractionChoice = DEFAULT_FRACTION_CHOICE;
+  return out;
+}
+
+/**
+ * 初期水準（**まだ価格を入れていない**状態）。K 本の空欄と損切り・利確の空欄を表す。
+ * 価格は「チャートが単一ソース」であり、初期値を勝手に置かない（TBD-1）。
+ */
+export function defaultLevels() {
+  const splits = STEP3_FIELDS.find((f) => f.key === 'splits');
+  const direction = SELECTS.find((s) => s.key === 'direction');
+  return {
+    direction: selectDefault(direction),
+    entryPrices: new Array(splits ? splits.value : 1).fill(null),
+    stopPrice: null,
+    takePrice: null,
+  };
+}
+
+function selectDefault(spec) {
+  return spec.def ?? spec.options[0][0];
+}
 
 export const FRACTION_CHOICES = [
   ['safe', '安全（破産確率制約）'],
@@ -409,6 +459,56 @@ export class PositionSizingDialog {
     this._emitLevels();
   }
 
+  /**
+   * 水準（ViewModel の levelLines）を価格欄へ**通知せずに**書き戻す（水準線 drag の反映）。
+   *
+   * 通知しない理由: drag は水準そのものを更新しており、モーダルは表示を合わせるだけでよい。
+   * ここで `onChangeLevels` を出すと drag → モーダル → 水準更新 → drag と往復する（エコー）。
+   * 逆に手入力・ピッカー・右クリックは**モーダルが起点**なので通知する（`setPrice` 側）。
+   *
+   * @param {{direction:string,entryPrices:Array<number>,stopPrice:number,takePrice:(number|null)}} levelLines
+   */
+  syncPrices(levelLines) {
+    if (!levelLines || !this._root) {
+      return;
+    }
+    const entries = Array.isArray(levelLines.entryPrices) ? levelLines.entryPrices : [];
+    const splits = this._fields.get('splits');
+    if (splits && entries.length > 0 && String(entries.length) !== splits.value) {
+      splits.value = String(entries.length);
+      this._renderPriceRows();
+    }
+    const write = (target, value) => {
+      const input = this._prices.get(target);
+      if (input) {
+        input.value = (value === null || value === undefined) ? '' : String(value);
+      }
+    };
+    entries.forEach((price, i) => write(`entry:${i}`, price));
+    write('stop', levelLines.stopPrice);
+    write('take', levelLines.takePrice);
+    const direction = this._fields.get('direction');
+    if (direction && levelLines.direction) {
+      direction.value = levelLines.direction;
+    }
+  }
+
+  /**
+   * 建値を 1 本増やして価格を書き込む（右クリック「この価格を建値に追加」の受け口・R-P3）。
+   * K（分割本数）は建値の本数そのものなので、欄を増やすことは K を増やすことと同義である。
+   * @param {number} price
+   */
+  addEntryPrice(price) {
+    const splits = this._fields.get('splits');
+    if (!splits) {
+      return;
+    }
+    const next = this._splitCount() + 1;
+    splits.value = String(next);
+    this._renderPriceRows();          // 既存の入力値は target 名で引き継がれる。
+    this.setPrice(`entry:${next - 1}`, price);
+  }
+
   // 価格欄の現在値を水準（E-02 の入力）として通知する。判定・派生距離は持たない（domain の責務）。
   _emitLevels() {
     if (!this._onChangeLevels) {
@@ -436,7 +536,9 @@ export class PositionSizingDialog {
     return Number.isInteger(raw) && raw >= 1 ? raw : 1;
   }
 
-  _selectRow({ key, label, options }) {
+  _selectRow({
+    key, label, options, def = null,
+  }) {
     const doc = this._doc;
     const row = doc.createElement('label');
     row.className = 'ps-row';
@@ -445,7 +547,7 @@ export class PositionSizingDialog {
     name.textContent = label;
     const select = doc.createElement('select');
     select.dataset.psField = key;
-    select.value = options[0][0];
+    select.value = selectDefault({ options, def });
     for (const [value, text] of options) {
       const opt = doc.createElement('option');
       opt.value = value;

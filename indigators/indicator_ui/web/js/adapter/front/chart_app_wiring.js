@@ -49,6 +49,18 @@ import { LocalStorageThemeGateway } from './local_storage_theme_gateway.js';
 import { ColorThemeController, COLOR_THEME_HOST_CONTRACT, loadThemeState } from './color_theme_controller.js';
 import { createHostView } from './host_view.js';
 import { resolveAllChrome } from '../../usecase/color_resolver.js';
+// ISSUE-368 スライス 7: ポジションサイズ計算機一式（生成は共有配線が所有し、root は識別子だけを渡す）。
+import { PositionSizingMenu } from './position_sizing_menu.js';
+import { PositionSizingDialog, defaultParams, defaultLevels } from './position_sizing_dialog.js';
+import { PositionSizingController } from './position_sizing_controller.js';
+import { PriceLevelLinesPrimitive } from './price_level_lines_primitive.js';
+import { PriceLevelDragController } from './price_level_drag_controller.js';
+import { PricePickController } from './price_pick_controller.js';
+import { McWorkerGateway } from './mc_worker_gateway.js';
+import { createPriceContextItems } from './position_sizing_context_items.js';
+import { resolvePickedPrice } from './price_pick_resolver.js';
+import { PositionSizingPlanUseCase } from '../../usecase/position_sizing_plan.js';
+import { createPriceLevels } from '../../domain/price_levels.js';
 
 // ISSUE-383: 時系列契約防壁トーストの表示時間（ms）。文言に「詳細ログの場所」まで含むため
 //   既定（1.6 秒）より長く取る（読み切れないと能動通知の意味がない）。
@@ -160,6 +172,7 @@ export async function composeChartShell({
 export function installSharedUi({
   container, renderer, doc, getController, updatePaneHeight,
   isVerticalPanBlocked = undefined, getTemplates = () => null, getColorThemes = () => null,
+  getPositionSizing = () => null,
   toolbar = {}, contextMenuItems = [],
 } = {}) {
   // アプリ外枠（ツールバー・指標ダイアログ）の DOM は View が所有し生成する（ISSUE-278 #16）。
@@ -253,8 +266,14 @@ export function installSharedUi({
   // 指標カラーテーマのメニュー・ダイアログ（基本設計_指標カラーテーマ §6.1〜§6.3・§7.1）。
   const { menu: colorThemeMenu, dialogs: colorThemeDialogs } = createColorThemeUi(doc, getColorThemes);
 
+  // ポジションサイズ計算機のツールバー入口とモーダル（ISSUE-368 スライス 6/7）。
+  //   協働子は wireControllerCollaborators で生成されるため getPositionSizing() で遅延参照する
+  //   （テンプレート・テーマと同一規約。未結線のうちは押しても何も起きず例外も出ない）。
+  const { menu: positionSizingMenu, dialog: positionSizingDialog } = createPositionSizingUi(doc, getPositionSizing);
+
   return {
     chartTemplateMenu, chartTemplateDialogs, colorThemeMenu, colorThemeDialogs,
+    positionSizingMenu, positionSizingDialog,
     chartContextMenu, chartToast,
     // ISSUE-368 スライス 3: 縦パンブロッカーの登録口（解除関数を返す）。
     registerVerticalPanBlocker: (predicate) => chartInteraction.addVerticalPanBlocker(predicate),
@@ -284,6 +303,26 @@ function createColorThemeUi(doc, getColorThemes) {
   return { menu, dialogs };
 }
 
+// 計算機のメニュー・モーダルを組み立てて install する（installSharedUi から 1 回だけ呼ぶ）。
+//   器（#position-sizing-menu）は installChartToolbar が生成済みで、項目 DOM は各モジュールが作る。
+//   menu / dialog は協働子を import せず、コールバック注入だけで結ぶ（color_theme と同一の形）。
+function createPositionSizingUi(doc, getPositionSizing) {
+  const of = () => getPositionSizing();
+  const dialog = new PositionSizingDialog({
+    document: doc,
+    onChangeParams: (patch) => { const c = of(); return c ? c.setParams(patch) : undefined; },
+    onChangeLevels: (spec) => { const c = of(); return c ? c.setLevels(spec) : undefined; },
+    onRun: () => { const c = of(); return c ? c.runMonteCarlo() : undefined; },
+    onRequestPick: (target) => { const c = of(); return c ? c.requestPick(target) : undefined; },
+  });
+  const menu = new PositionSizingMenu({
+    document: doc,
+    onOpen: () => { const c = of(); return c ? c.open() : undefined; },
+  });
+  menu.install();
+  return { menu, dialog };
+}
+
 // controller 生成後に結ぶ協働子（テンプレート協働子・取引密度帯・売買マーカー・現在値）。
 //   onTimeframeChanged: 時間足購読へ追加で流すフック（live の tf-period 即時再適用など）。未指定は no-op。
 export function wireControllerCollaborators({
@@ -291,6 +330,7 @@ export function wireControllerCollaborators({
   templateStore, chartTemplateMenu, chartTemplateDialogs,
   themeStore, themeState = null, chromeThemeApplier = null,
   colorThemeMenu = null, colorThemeDialogs = null, now = null,
+  positionSizingDialog = null, registerVerticalPanBlocker = null, chartToast = null,
   lwc, mainSeries, chart, container, currentPriceView,
   onTimeframeChanged = () => {},
 } = {}) {
@@ -410,7 +450,93 @@ export function wireControllerCollaborators({
     onTimeframeChanged(tf);
   });
 
+  // ポジションサイズ計算機の協働子（ISSUE-368 スライス 7）。モーダルが注入されている構成でだけ
+  //   組む（未注入の最小構成・単体テストでは従来どおり何も生えない）。
+  const positionSizing = positionSizingDialog
+    ? createPositionSizingCollaborators({
+      renderer, container, doc, dialog: positionSizingDialog, registerVerticalPanBlocker, toast: chartToast,
+    })
+    : null;
+
   return {
-    chartTemplates, tickvolBands, tradeMarkers, currentPriceView, colorThemes,
+    chartTemplates, tickvolBands, tradeMarkers, currentPriceView, colorThemes, positionSizing,
   };
+}
+
+// 計算機の協働子一式を組む（水準線 primitive・drag・ピッカー・MC Worker・usecase・協働子）。
+//
+//   ここで一括して組む理由: これらは互いの識別子を必要とする（drag は「いまの水準」を協働子から
+//   得る／ピッカーの確定はモーダルへ書き戻す／協働子は primitive とモーダルへ配る）。root へ
+//   ばらすと、同じ結線を 2 つの root へ手書き複製することになる（ISSUE-278 #4 が撤去した状態）。
+//
+//   スライス 4 の未結線（`new PriceLevelDragController` の呼び出し 0 件）はここで解消される。
+function createPositionSizingCollaborators({
+  renderer, container, doc, dialog, registerVerticalPanBlocker, toast,
+}) {
+  // 水準線の描画先（メイン系列の背景 primitive・§6）。装着時にクロム色が 1 回配られる。
+  const primitive = new PriceLevelLinesPrimitive();
+  if (renderer && typeof renderer.attachBackgroundPrimitive === 'function') {
+    renderer.attachBackgroundPrimitive('position_sizing', () => primitive);
+  }
+
+  // 初期状態はモーダルの定義表から導出する（画面の初期表示と計算の初期値を食い違わせない）。
+  const levels = createPriceLevels(defaultLevels());
+  const usecase = new PositionSizingPlanUseCase({
+    mcPort: new McWorkerGateway(),
+    levels,
+    params: defaultParams(),
+  });
+
+  // ピッカーの確定はモーダルへ書き戻す（`controller` は直後に確定する＝呼び出し時解決）。
+  const picker = new PricePickController({
+    container,
+    renderer,
+    document: doc,
+    registerVerticalPanBlocker,
+    onConfirm: (target, price) => controller.confirmPick(target, price),
+  });
+  picker.install();
+
+  const controller = new PositionSizingController({
+    usecase, dialog, picker, primitive, levels, toast,
+  });
+
+  // 水準線 drag（スライス 4）。掴む対象の座標源は primitive、水準の実体は協働子から得る。
+  const drag = new PriceLevelDragController({
+    container,
+    renderer,
+    primitive,
+    getLevels: () => controller.levels(),
+    onLevelsChange: (next) => controller.applyLevels(next),
+    registerVerticalPanBlocker,
+  });
+  drag.install();
+
+  return {
+    controller, primitive, picker, drag, usecase,
+  };
+}
+
+/**
+ * 右クリックメニューへ載せる価格設定 3 項目を作る（ISSUE-368 スライス 8-c・R-P3）。
+ *
+ * root が `installSharedUi({ contextMenuItems })` へ渡す（共有配線が無条件に足すと replay まで
+ * 項目が出るため）。座標→価格の解決はピッカーと同一の 1 本（`resolvePickedPrice`）を使う。
+ *
+ * @param {object} deps
+ * @param {object} deps.renderer ChartRenderer。
+ * @param {Function} deps.getPositionSizing 協働子の遅延参照（生成前は null を返してよい）。
+ * @param {?object} [deps.toast] 案内表示（下段ペイン・価格が取れない座標）。
+ */
+export function createPositionSizingContextItems({ renderer, getPositionSizing, toast = null }) {
+  const of = () => getPositionSizing();
+  return createPriceContextItems({
+    resolvePrice: (context) => resolvePickedPrice({
+      renderer, x: context ? context.x : undefined, y: context ? context.y : undefined,
+    }),
+    onSetStop: (price) => { const c = of(); return c ? c.setStopPrice(price) : undefined; },
+    onAddEntry: (price) => { const c = of(); return c ? c.addEntryPrice(price) : undefined; },
+    onSetTake: (price) => { const c = of(); return c ? c.setTakePrice(price) : undefined; },
+    toast,
+  });
 }

@@ -14,6 +14,7 @@ import {
   composeChartShell,
   installSharedUi,
   wireControllerCollaborators,
+  createPositionSizingContextItems,
   fetchCandles,
 } from './chart_app_wiring.js';
 import { LiveUpdater } from './live_updater.js';
@@ -263,8 +264,11 @@ export async function bootstrap({
   //   共有配線が install する。controller / テンプレート協働子は遅延参照で渡す（生成はこの後）。
   let chartTemplates = null;
   let colorThemes = null;
+  // ISSUE-368 スライス 7: 計算機の協働子は wireControllerCollaborators で生成される（遅延参照）。
+  let positionSizing = null;
   const {
     chartTemplateMenu, chartTemplateDialogs, colorThemeMenu, colorThemeDialogs,
+    positionSizingDialog, chartToast, registerVerticalPanBlocker,
   } = installSharedUi({
     container,
     renderer,
@@ -273,6 +277,14 @@ export async function bootstrap({
     updatePaneHeight,
     getTemplates: () => chartTemplates,
     getColorThemes: () => colorThemes,
+    getPositionSizing: () => positionSizing,
+    // 右クリックの価格設定 3 項目（R-P3）は**ライブ root だけ**が注入する。共有配線が無条件に
+    //   足すとリプレイの右クリックにも出る（replay 汚染の禁止・設計「ピッカー経路の実測検証」3）。
+    contextMenuItems: createPositionSizingContextItems({
+      renderer,
+      getPositionSizing: () => positionSizing,
+      toast: null,   // 告知先は協働子の生成時に共有トーストが結ばれる（ここでは器を持たない）。
+    }),
     // ツールバーの構成（ISSUE-278 #16）: ライブ追従トグルは本 root（ライブ）が常に持つ。
     //   リプレイのオン・オフトグルは**リプレイ層が注入されたページ**＝統合 UI のときだけ置く
     //   （standalone live には切替先が無い）。差はフラグ 1 つで表し markup は複製しない。
@@ -315,15 +327,19 @@ export async function bootstrap({
   //   旧 tf の列が残留し「週間隔÷7 の細い列」に見える実機バグが起きた。
   const {
     chartTemplates: templates, tickvolBands, tradeMarkers, colorThemes: themes,
+    positionSizing: sizing,
   } = wireControllerCollaborators({
     controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
     templateStore, chartTemplateMenu, chartTemplateDialogs,
     themeStore, themeState, chromeThemeApplier, colorThemeMenu, colorThemeDialogs,
+    positionSizingDialog, registerVerticalPanBlocker, chartToast,
     lwc, mainSeries, chart, container, currentPriceView,
     onTimeframeChanged: () => refreshTfPeriodNow(),
   });
   chartTemplates = templates;
   colorThemes = themes;
+  // 遅延参照の解決（ここで初めてメニュー・モーダル・右クリック項目が生きる）。
+  positionSizing = sizing ? sizing.controller : null;
 
   // 時間足毎profile列（tf-period・最小価格単位・ローリング窓＋ジッターバッファ）の配線（served のみ）。
   //   sessions モード（marketProfile.isSessions()）かつ対応 tf（1m..1D）のとき、可視レンジぶんの列を

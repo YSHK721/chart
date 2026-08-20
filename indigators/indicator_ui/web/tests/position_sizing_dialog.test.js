@@ -17,7 +17,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { PositionSizingDialog } from '../js/adapter/front/position_sizing_dialog.js';
+import { PositionSizingDialog, defaultParams, defaultLevels } from '../js/adapter/front/position_sizing_dialog.js';
 
 // ---- 最小 DOM スタブ（新規依存を追加しない）--------------------------------
 class El {
@@ -478,4 +478,92 @@ test('TC-PD25 時間決済には参照実装どおりの注記を出す（2 値�
   dialog.render(VM);
   // Assert
   assert.match(textOf(byData(root, 'psGroup', 'time')), /2 値評価は不適用|2値評価は不適用/);
+});
+
+test('TC-PD26 addEntryPrice(price) は建値を 1 本増やして書き込む（右クリック「建値に追加」の受け口）', () => {
+  // Arrange: 既定 K=3。
+  const levels = [];
+  const { root, dialog } = build({ onChangeLevels: (l) => levels.push(l) });
+  byData(root, 'psPrice', 'entry:0').value = '58700';
+  // Act
+  dialog.addEntryPrice(58500);
+  // Assert
+  assert.equal(byData(dialog._root, 'psField', 'splits').value, '4', 'K が 1 本増える（K＝建値の本数）');
+  assert.equal(byData(dialog._root, 'psPrice', 'entry:3').value, '58500', '増えた欄へ書き込む');
+  assert.equal(byData(dialog._root, 'psPrice', 'entry:0').value, '58700', '既存の入力は残る');
+  assert.equal(levels.length, 1, '追加も入力と同じ経路で通知する');
+  assert.equal(levels[0].entryPrices.length, 4);
+});
+
+test('TC-PD27 syncPrices(levelLines) は通知せずに価格欄へ書き戻す（水準線 drag の反映・エコーしない）', () => {
+  // Arrange: drag は水準そのものを更新する。モーダルは「表示を合わせる」だけでよく、
+  //   ここで通知すると drag → モーダル → drag の往復（エコー）になる。
+  const levels = [];
+  const { root, dialog } = build({ onChangeLevels: (l) => levels.push(l) });
+  // Act
+  dialog.syncPrices({
+    direction: 'long', entryPrices: [58700, 58600], stopPrice: 58340, takePrice: 59200,
+  });
+  // Assert
+  assert.equal(byData(dialog._root, 'psField', 'splits').value, '2', 'K は建値の本数に合わせる');
+  assert.equal(byData(dialog._root, 'psPrice', 'entry:1').value, '58600');
+  assert.equal(byData(dialog._root, 'psPrice', 'stop').value, '58340');
+  assert.equal(byData(dialog._root, 'psPrice', 'take').value, '59200');
+  assert.deepEqual(levels, [], '書き戻しでは通知しない（エコー防止）');
+  assert.equal(byData(root, 'psField', 'direction').value, 'long');
+});
+
+test('TC-PD28 syncPrices は利確 null を空欄にする（0 円の利確にしない）', () => {
+  // Arrange
+  const { dialog } = build();
+  dialog.syncPrices({
+    direction: 'long', entryPrices: [58700], stopPrice: 58340, takePrice: 59200,
+  });
+  // Act
+  dialog.syncPrices({
+    direction: 'long', entryPrices: [58700], stopPrice: 58340, takePrice: null,
+  });
+  // Assert
+  assert.equal(byData(dialog._root, 'psPrice', 'take').value, '');
+});
+
+// ---------------------------------------------------------------------------
+// 既定値の単一ソース（ISSUE-368 スライス 7）
+//   合成根が usecase の初期 params / levels を組み立てるとき、モーダルの初期表示と食い違うと
+//   「画面には 38% と出ているのに計算は別の値」という取り違えが起きる。既定はモーダルの
+//   定義表から導出し、合成根はそれを使う（2 か所に書かない）。
+// ---------------------------------------------------------------------------
+
+test('TC-PD29 defaultParams() はモーダルの初期表示と同じ値を返す（% は比へ）', () => {
+  // Arrange / Act
+  const { root } = build();
+  const params = defaultParams();
+  // Assert
+  assert.equal(params.winRate, 0.38);
+  assert.equal(byData(root, 'psField', 'winRate').value, '38', '画面は % 表示・計算は比');
+  assert.equal(params.payoffRatio, 2.74);
+  assert.equal(params.marginRate, 0.1);
+  assert.equal(params.sims, 4000);
+  assert.equal(params.balance, 172000);
+  assert.equal(params.fractionChoice, 'safe');
+});
+
+test('TC-PD30 重みの既定は参照実装 :578（S.wpattern=linear）に合わせる', () => {
+  // Arrange / Act
+  const { root } = build();
+  // Assert
+  assert.equal(byData(root, 'psField', 'weightPattern').value, 'linear');
+  assert.equal(defaultParams().weightPattern, 'linear');
+  assert.equal(defaultParams().lotMode, 'int', 'ロット単位の既定は整数（:578 S.lotmode）');
+  assert.equal(defaultParams().capBasis, 'lc', '建て制約の既定はロスカット基準（:578 S.ltmode）');
+});
+
+test('TC-PD31 defaultLevels() は「まだ価格を入れていない」状態（K 本の空欄）を返す', () => {
+  // Arrange / Act
+  const levels = defaultLevels();
+  // Assert
+  assert.equal(levels.direction, 'long');
+  assert.deepEqual(levels.entryPrices, [null, null, null], '既定 K=3 の空欄');
+  assert.equal(levels.stopPrice, null);
+  assert.equal(levels.takePrice, null);
 });
