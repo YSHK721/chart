@@ -191,6 +191,18 @@ export class PositionSizingController {
     this._dialog?.syncPrices?.(this._usecase.viewModel().levelLines);
   }
 
+  /**
+   * 手入力の確定（change / blur）→ 価格欄の表示をモデル（水準）へ合わせ直す（D-3）。
+   *
+   * ピッカー・右クリックと**同じ 1 本**（`_syncPricesFromModel`）を使う。手入力だけ別の
+   * 合わせ方を持つと、経路ごとに表示規則が割れる（原因 β と同型）。
+   * 仕様が未解決（tick=null）のときは domain が丸めないので、書き戻しても打った値のまま
+   * ＝手入力を落とさないというフェイルセーフが自動的に保たれる。
+   */
+  commitPrices() {
+    this._syncPricesFromModel();
+  }
+
   // 閉じていれば開く（開いていれば何もしない＝入力中の値を作り直さない）。
   _ensureOpen() {
     const dialog = this._dialog;

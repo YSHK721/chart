@@ -319,6 +319,8 @@ function createPositionSizingUi(doc, getPositionSizing) {
     onClose: () => { const c = of(); return c ? c.cancelPick() : undefined; },
     // アーム中バーの [取消]（画面から解除できる手段・裁定 2026-08-20）。
     onCancelPick: () => { const c = of(); return c ? c.cancelPick() : undefined; },
+    // 手入力の確定 → 欄の表示をモデル値へ合わせ直す（D-3・裁定 2026-08-20）。
+    onCommitPrices: () => { const c = of(); return c ? c.commitPrices() : undefined; },
   });
   const menu = new PositionSizingMenu({
     document: doc,
@@ -527,6 +529,10 @@ function createPositionSizingCollaborators({
     // アーム中はモーダルがチャートを覆ってはならない（実 UI 実測 2026-08-20: backdrop が
     //   ビューポート全面のままで elementFromPoint がモーダルを返し、R-P1 が成立しなかった）。
     onArmChange: (armed, target) => controller.setPicking(armed, target),
+    // 解決済みの銘柄仕様を**値として配る**（S-6: 解決点は本関数の 1 か所だけ）。ピッカーが
+    //   これを resolver へ転送することで、右クリックと同じ規則・同じ引数で価格が決まる（D-1）。
+    //   表示桁（digits）もここから届く＝ゴーストの書式が台帳に従う（D-2）。
+    spec: symbolSpec,
   });
   picker.install();
 

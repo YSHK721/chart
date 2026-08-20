@@ -265,10 +265,14 @@ export class PositionSizingDialog {
    * @param {?function} [opts.onRun] () => void。「計算する」＝ MC 実行要求。
    * @param {?function} [opts.onRequestPick] (target) => void。「チャートで指定」＝アーム要求
    *   （target は 'entry:0' / 'stop' / 'take'）。ピッカー本体はスライス 8-d。
+   * @param {?function} [opts.onCommitPrices] () => void。価格の**入力確定**（change / blur）。
+   *   呼び出し側が「表示をモデルに合わせ直す」ための合図で、本 class は水準を持たないため
+   *   自分では合わせられない（D-3）。未注入なら従来どおり何も起きない。
    */
   constructor({
     document: doc = null, onChangeParams = null, onChangeLevels = null,
     onRun = null, onRequestPick = null, onClose = null, onCancelPick = null,
+    onCommitPrices = null,
   } = {}) {
     this._doc = doc;
     this._onChangeParams = typeof onChangeParams === 'function' ? onChangeParams : null;
@@ -277,6 +281,7 @@ export class PositionSizingDialog {
     this._onRequestPick = typeof onRequestPick === 'function' ? onRequestPick : null;
     this._onClose = typeof onClose === 'function' ? onClose : null;
     this._onCancelPick = typeof onCancelPick === 'function' ? onCancelPick : null;
+    this._onCommitPrices = typeof onCommitPrices === 'function' ? onCommitPrices : null;
     this._pickingBar = null;     // アーム中に出す細いバー（パネルは畳む）
     this._reopening = false;     // open() が内部で close() する間だけ真（取消ではない）
     this._root = null;
@@ -692,6 +697,16 @@ export class PositionSizingDialog {
     input.addEventListener('input', () => {
       this._priceValues.set(target, input.value);   // 保持先はモデル（DOM は表示）。
       this._emitLevels();
+      // ここで表示を書き戻さない: 打っている最中の文字列（'58700.'）を毎回モデルの数値で
+      //   上書きするとカーソルを奪う（D-3 の対象外事項）。合わせるのは確定時だけ。
+    });
+    // 入力確定（Enter / blur）。打った値が刻みの外なら水準は domain の関門が丸めるのに、
+    //   欄の表示は打ったまま残る＝**表示と値の乖離**（ISSUE-368 が除去している症状と同型）。
+    //   ここで「合わせ直せ」と外へ知らせる（丸めも書式もここには置かない＝第 2 実装を作らない）。
+    input.addEventListener('change', () => {
+      this._priceValues.set(target, input.value);
+      this._emitLevels();
+      this._onCommitPrices?.();
     });
     const pick = doc.createElement('button');
     pick.type = 'button';

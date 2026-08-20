@@ -9,6 +9,8 @@
 // 責務（SRP）: アーム状態の保持と、ホバー表示・確定・解除の 3 遷移だけ。
 //   - 価格の解決は `price_pick_resolver`（8-c と**同一の 1 本**）。ここに座標変換を持たない。
 //   - 水準の更新はしない。確定した値は `onConfirm(target, price)` で呼び出し側（モーダル）へ渡す。
+//   - 銘柄仕様（`spec`）は**配られたものをそのまま転送するだけ**（解決しない・既定値を持たない）。
+//     解決は front 配下 1 か所（`chart_app_wiring`）で済んでいる（設計「追補: 工程 2」S-6）。
 //
 // 縦パン抑止を二重化する理由（スライス 4 の実測と同一）:
 //   1. `renderer.setUserInteraction(false)` は lwc の handleScroll/handleScale しか落とさない。
@@ -48,11 +50,15 @@ export class PricePickController {
    *   モーダルを知らないので、状態だけを外へ知らせる（表示の決定は呼び出し側＝DIP）。
    * @param {object} [deps.anchor] 版面要素の直接注入（既定は document から .chart-wrap）。
    * @param {number} [deps.tolerancePx] スナップ許容（px）。
+   * @param {{tick:number,digits:number}|null} [deps.spec] 銘柄仕様（呼び値・表示桁）。
+   *   resolver と**同じ 3 状態**を保つ: 未指定（undefined）＝銘柄仕様を扱わない構成（従来の契約・
+   *   量子化しない）／`null`＝解決に失敗（確定させない）／`{tick,digits}`＝解決できた。
+   *   ここで既定値へ倒さないので、`undefined` と `null` の区別が resolver までそのまま届く。
    */
   constructor({
     container, renderer, document: doc = null,
     registerVerticalPanBlocker = null, onConfirm = null, anchor = null,
-    onArmChange = null, tolerancePx = DEFAULT_PICK_TOLERANCE_PX,
+    onArmChange = null, tolerancePx = DEFAULT_PICK_TOLERANCE_PX, spec,
   } = {}) {
     this._container = container ?? null;
     this._renderer = renderer ?? null;
@@ -63,6 +69,7 @@ export class PricePickController {
     this._releaseInteraction = null;
     this._anchor = anchor;
     this._tolerancePx = tolerancePx;
+    this._spec = spec;
     this._target = null;          // アーム中の入力先（'entry:i' / 'stop' / 'take'）または null
     this._unregisterBlocker = null;
     this._host = null;
@@ -142,10 +149,14 @@ export class PricePickController {
     return r ? { x: cx - r.left, y: cy - r.top } : { x: cx, y: cy };
   }
 
+  // 解決は resolver の 1 本。**`spec` を必ず転送する**（D-1 の是正）: 転送しないと
+  //   量子化（丸めの適用点 経路 1・2）がピッカー経路だけ効かず、同じ座標でも右クリックと
+  //   違う候補へ吸う（実測: 右クリック 62708 / ピッカー 62707）。設計 `price_pick_resolver.js:15-16`
+  //   の「呼び出し口は 2 つでも規則の実装は 1 つ」は、引数を揃えて初めて成立する。
   _resolve(e) {
     const { x, y } = this._containerXY(e);
     return resolvePickedPrice({
-      renderer: this._renderer, x, y, tolerancePx: this._tolerancePx,
+      renderer: this._renderer, x, y, tolerancePx: this._tolerancePx, spec: this._spec,
     });
   }
 
@@ -157,7 +168,7 @@ export class PricePickController {
       this._showGhost(y, resolved.reason === OTHER_PANE ? MSG_OTHER_PANE : '', { line: false });
       return;
     }
-    this._showGhost(y, pickLabel(resolved), { line: true });
+    this._showGhost(y, pickLabel(resolved, this._digits()), { line: true });
   }
 
   // 確定: 価格が取れたときだけ書き戻して解除する。取れないときはアームを続ける（押し直せる）。
@@ -172,6 +183,12 @@ export class PricePickController {
     if (this._onConfirm) {
       this._onConfirm(target, resolved.price);
     }
+  }
+
+  // 表示桁（台帳の `digits`）。仕様が無い構成では undefined＝書式は従来どおり整数固定。
+  //   値をここで決めない（権威は Python 台帳ただ 1 つ・設計「追補: 工程 2」E-2）。
+  _digits() {
+    return this._spec ? this._spec.digits : undefined;
   }
 
   // lwc 操作の抑止を**登録**する（ChartRenderer.suppressInteraction）。drag と同時に抑止しても
@@ -232,8 +249,9 @@ export class PricePickController {
 }
 
 // 採用予定価格の表示文字列。どこへ吸ったか（候補名）まで出す（R-P2「採用予定値を明示」）。
-function pickLabel(resolved) {
-  const price = priceOnLine(resolved.price);   // 生の浮動小数を画面に出さない（実 UI 実測の是正）。
+function pickLabel(resolved, digits) {
+  // 生の浮動小数を画面に出さない（実 UI 実測の是正）。表示桁は台帳の `digits`（D-2 裁定）。
+  const price = priceOnLine(resolved.price, digits);
   if (!resolved.snapped || !resolved.candidate) {
     return price;
   }

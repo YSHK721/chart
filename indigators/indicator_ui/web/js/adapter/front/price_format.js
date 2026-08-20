@@ -25,11 +25,27 @@
  * （＝**チャート水準線の参照実装そのもの**）」と定めているため、チャート上の水準線・
  * その予定位置（ゴースト）に添える価格はこの規則に従う。
  *
+ * 表示桁は**銘柄仕様の `digits`**（依頼者裁定 2026-08-20・D-2）。権威は Python 台帳
+ * `marketdata/symbol_spec.py` ただ 1 つで、front はその生成物を配られて渡すだけである
+ * （`digits` をここに書かない・既定値をここで決めない）。
+ *
+ * 従来（参照実装 :777 の整数固定）との関係:
+ *   `digits` 未指定・`digits=0` は `Math.round(value).toLocaleString()` と**厳密に同一**。
+ *   これは偶然ではなく構成による: 先に `Math.round(value * 10**d) / 10**d` で丸めた**整数**を
+ *   渡すため、`Intl` 側の丸めは何もしない（`Intl` の既定 halfExpand と `Math.round` の
+ *   +∞ 側丸めは負の `.5` で食い違うが、その差はここへ届かない）。JP225 は `digits=0` なので
+ *   見た目の変化は 0 である（`tests/price_format_price_on_line_digits.test.js` TC-PF05 が固定）。
+ *
  * @param {number} value 価格。
- * @returns {string} 例: 58998.75 → '58,999'
+ * @param {number} [digits] 表示桁（台帳の `digits`）。未指定は 0＝従来と同一。
+ * @returns {string} 例: 58998.75 → '58,999'（digits 未指定 / 0）・'58,998.75'（digits=2）
  */
-export function priceOnLine(value) {
-  return Math.round(value).toLocaleString();
+export function priceOnLine(value, digits) {
+  const d = Number.isInteger(digits) && digits >= 0 ? digits : 0;
+  const scale = 10 ** d;
+  return (Math.round(value * scale) / scale).toLocaleString(undefined, {
+    minimumFractionDigits: d, maximumFractionDigits: d,
+  });
 }
 
 /** 表の中の価格（参照実装の kv 行 `r.avgP.toFixed(0)` 等）。例: 58650.4 → '58650' */
