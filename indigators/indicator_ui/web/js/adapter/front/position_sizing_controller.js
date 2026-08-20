@@ -75,14 +75,21 @@ export class PositionSizingController {
     return this._usecase.levels();
   }
 
+  // MC は数秒かかる（grid 60 点 × sims × T）。進捗を中継しないと「押しても何も起きない」と
+  //   区別できない（NFR-09「MC 実行中もチャート操作が固まらない／進捗が進む」）。
+  //   比の解釈も書式も持たず**そのまま渡す**（表示は Presenter の責務）。
+  //   完了・失敗のどちらでも必ず消す（残すと「まだ計算中」に見える）。
   async runMonteCarlo() {
+    const onProgress = (ratio) => this._dialog?.setProgress?.(ratio);
     try {
-      this._present(await this._usecase.runMonteCarlo());
+      this._present(await this._usecase.runMonteCarlo(onProgress));
     } catch (err) {
       // 無音の縮退をしない（押しても何も起きない状態を作らない）。原因は console にも残す。
       // eslint-disable-next-line no-console
       console.error('[position-sizing] MC 実行に失敗:', err);
       this._toast?.show?.(MSG_MC_FAILED);
+    } finally {
+      this._dialog?.setProgress?.(null);
     }
   }
 

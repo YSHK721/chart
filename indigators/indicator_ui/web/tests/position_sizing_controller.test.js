@@ -243,3 +243,62 @@ test('TC-PC14 水準の保持は usecase 1 か所（協働子は自前の写し�
     '協働子が水準の写しを持っている（単一ソースが 2 つに割れる）',
   );
 });
+
+// ---------------------------------------------------------------------------
+// MC 進捗の中継（設計スライス 5 NFR-09「MC 実行中もチャート操作が固まらない／**進捗が進む**」）
+//
+//   domain → Worker → gateway → usecase の 4 段は結線済みだったが、協働子が onProgress を
+//   渡していなかったため、進捗は既定の no-op で捨てられていた（Worker からの通知 62 回が
+//   空撃ち）。MC は数秒かかるので、表示が無いと「押しても何も起きない」と区別できない。
+//   本 class は**中継するだけ**（比の解釈も書式も持たない＝表示は Presenter の責務）。
+// ---------------------------------------------------------------------------
+
+// 進捗を観測できる最小構成（既存の build() は触らない＝本節だけの自前 fake）。
+function buildWithProgress({ ratios = [0.25, 1], fail = null } = {}) {
+  const seen = { progress: [], toasts: [] };
+  const dialog = {
+    open() {}, render() {}, syncPrices() {}, setPrice() {}, addEntryPrice() {},
+    setProgress: (r) => seen.progress.push(r),
+  };
+  const mcPort = {
+    async solve(spec, onProgress) {
+      for (const r of ratios) {
+        if (onProgress) { onProgress(r); }
+      }
+      if (fail) { throw fail; }
+      return solveEdgeRuin(spec);
+    },
+  };
+  const usecase = new PositionSizingPlanUseCase({
+    mcPort, levels: createPriceLevels(LEVELS), params: PARAMS,
+  });
+  const controller = new PositionSizingController({
+    usecase, dialog, toast: { show: (m) => seen.toasts.push(m) },
+  });
+  return { controller, seen };
+}
+
+test('TC-PC15 MC の進捗がモーダルへ中継され、完了で消える（固まって見えない・NFR-09）', async () => {
+  // Arrange
+  const { controller, seen } = buildWithProgress({ ratios: [0.25, 0.5, 1] });
+  // Act
+  await controller.runMonteCarlo();
+  // Assert: 実行中の比がそのまま届き、最後に消去（null）で終わる。
+  assert.deepEqual(
+    seen.progress,
+    [0.25, 0.5, 1, null],
+    '進捗が中継されていない（Worker からの通知が捨てられている）',
+  );
+});
+
+test('TC-PC16 MC が失敗しても進捗を消す（走り続けているように見せない）', async () => {
+  // Arrange
+  const { controller, seen } = buildWithProgress({
+    ratios: [0.25], fail: new McUnavailableError('worker 起動失敗'),
+  });
+  // Act
+  await controller.runMonteCarlo();
+  // Assert
+  assert.equal(seen.progress.at(-1), null, '失敗時に進捗が残ると「まだ計算中」に見える');
+  assert.equal(seen.toasts.length, 1, '失敗の告知は従来どおり出る（無音にしない）');
+});

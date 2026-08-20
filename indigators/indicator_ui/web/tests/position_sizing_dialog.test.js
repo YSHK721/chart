@@ -567,3 +567,35 @@ test('TC-PD31 defaultLevels() は「まだ価格を入れていない」状態�
   assert.equal(levels.stopPrice, null);
   assert.equal(levels.takePrice, null);
 });
+
+// ---------------------------------------------------------------------------
+// MC 進捗の表示（設計スライス 5 NFR-09「MC 実行中もチャート操作が固まらない／**進捗が進む**」）
+//
+//   進捗の観測点は MC ループの内側にしかなく、domain → Worker → gateway → usecase の
+//   4 段はすでに通っていたが、**表示先が無かった**（62 回の postMessage が空撃ちだった）。
+//   計算は数秒かかるため、表示が無いと「押しても何も起きない／固まった」と区別できない。
+//   本モーダルは**表示するだけ**（比→%の書式は Presenter の責務・計算は 1 つも持たない）。
+// ---------------------------------------------------------------------------
+
+test('TC-PD32 setProgress(ratio) は進捗を表示し、null で消える（完了後に残さない）', () => {
+  // Arrange
+  const { dialog, root } = build();
+  const progress = () => byData(root, 'psOut', 'progress');
+  assert.equal(progress().textContent, '', '開いた直後は進捗を出さない（走っていないため）');
+  // Act / Assert: 実行中。
+  dialog.setProgress(0.42);
+  assert.equal(progress().textContent, '計算中 42%');
+  dialog.setProgress(1);
+  assert.equal(progress().textContent, '計算中 100%');
+  // Act / Assert: 完了・失敗で消す（古い進捗を画面に残さない）。
+  dialog.setProgress(null);
+  assert.equal(progress().textContent, '');
+});
+
+test('TC-PD33 閉じているときの setProgress は no-op（例外にしない）', () => {
+  // Arrange
+  const { dialog } = build();
+  dialog.close();
+  // Act / Assert
+  assert.doesNotThrow(() => dialog.setProgress(0.5));
+});

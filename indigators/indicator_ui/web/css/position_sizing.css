@@ -73,6 +73,12 @@
   background: var(--ct-uiAccent, #2962ff); border: 1px solid var(--ct-uiAccent, #2962ff);
   border-radius: 5px; color: var(--ct-uiTextStrong, #ffffff); font-size: 12px;
 }
+/* MC 進捗（NFR-09「進捗が進む」）。走っていない間は textContent が空＝高さを占めるだけで
+   何も見えない。数字が伸び縮みしても行が揺れないよう等幅数字にする。 */
+.ps-progress {
+  color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px; min-height: 14px;
+  margin-top: 4px; text-align: center; font-variant-numeric: tabular-nums;
+}
 /* 決済方式で出し分ける表示群（参照実装 :1064 と同じ切り替え）。 */
 .ps-exit-group { border-top: 1px solid var(--ct-uiBorder, #2a2e39); margin-top: 6px; padding-top: 6px; }
 .ps-exit-group.is-hidden { display: none; }

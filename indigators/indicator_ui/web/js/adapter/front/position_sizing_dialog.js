@@ -161,6 +161,7 @@ export class PositionSizingDialog {
     this._fields = new Map();    // data-ps-field キー -> 入力要素
     this._prices = new Map();    // 'entry:i' / 'stop' / 'take' -> 入力要素
     this._priceBox = null;       // 価格欄のコンテナ（K の変更で作り直す）
+    this._progress = null;       // MC 進捗の表示欄（open で作り close で捨てる）
     this._exitGroups = new Map();  // 決済方式で出し分ける表示群（bracket / time）
     this._exitMode = 'bracket';    // 参照実装 :578 の初期値
   }
@@ -184,6 +185,7 @@ export class PositionSizingDialog {
     this._fields = new Map();
     this._prices = new Map();
     this._priceBox = null;
+    this._progress = null;
     this._exitGroups = new Map();
   }
 
@@ -244,6 +246,16 @@ export class PositionSizingDialog {
     const run = this._button('計算する', 'run', 'ps-dialog-run');
     run.addEventListener('click', () => this._onRun?.());
     sec.append(run);
+    // MC の進捗（NFR-09「MC 実行中もチャート操作が固まらない／進捗が進む」）。
+    //   MC は数秒かかるため、表示が無いと「押しても何も起きない」と区別できない。
+    //   欄は常設で、走っていない間は空文字（「0%」と出すと止まっているように見える）。
+    const progress = this._doc.createElement('div');
+    progress.className = 'ps-progress';
+    progress.dataset.psOut = 'progress';
+    progress.textContent = '';
+    this._outs.set('progress', progress);
+    this._progress = progress;
+    sec.append(progress);
     return sec;
   }
 
@@ -587,6 +599,22 @@ export class PositionSizingDialog {
     row.append(name, val);
     this._outs.set(key, val);
     return row;
+  }
+
+  /**
+   * MC の進捗を表示する（NFR-09「進捗が進む」）。
+   *
+   * 表示するだけで、判定も計算も持たない（比 → % の書式は Presenter の責務＝§3 UC-04）。
+   * `null`（完了・失敗）で消す。古い進捗を残すと「まだ走っている」ように見える。
+   *
+   * @param {number|null} ratio 0..1 の進捗比。null で消去。
+   */
+  setProgress(ratio) {
+    const el = this._progress;
+    if (!this._root || !el) {
+      return;   // 閉じているときは no-op（モーダルを閉じてから完了しても例外にしない）。
+    }
+    el.textContent = Number.isFinite(ratio) ? `計算中 ${Math.round(ratio * 100)}%` : '';
   }
 
   /**

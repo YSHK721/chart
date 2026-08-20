@@ -73,3 +73,11 @@ test('TC-CS02 ゴースト線とアーム中の隠蔽が定義されている（
   assert.match(CSS, /\.price-pick-ghost\.is-hidden\s*\{[^}]*display\s*:\s*none/, 'アーム解除でゴーストが消えない');
   assert.match(CSS, /\.price-pick-line\s*\{[^}]*(height|border-top)/, 'ゴースト線に太さが無い（見えない）');
 });
+
+test('TC-CS05 MC 進捗欄に CSS 規則が在る（見えなければ「進捗が進む」が成立しない・NFR-09）', () => {
+  // 既存 TC-CS01 の REQUIRED_RULES は改変せず、追加分は本検定で固定する
+  //   （既存アサーションを触らずに射程を広げる）。
+  // Arrange / Act / Assert
+  assert.match(CSS, /\.ps-progress\s*\{/, '進捗欄の CSS が無い（実 UI で見えない）');
+  assert.match(CSS, /\.ps-progress\s*\{[^}]*min-height/, '空文字のときに行が潰れて進捗表示で版面が跳ねる');
+});
