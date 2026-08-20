@@ -73,10 +73,14 @@ export async function mountSimExecutionPanel({
     view, client, testerView, eaInputsView, fallbackView, subjectSource, schemaClient, statusView,
   });
 
-  // mount 段**全体**を包む（§19.6 B4）。面の構築が例外で落ちると、呼出側
-  // （`report_view.html` は catch を持たない）まで抜けて画面には何も出ない——利用者に
-  // 見えるのは白い画面だけである。組めなかったときも掲示面だけは出し、理由を画面と
-  // 開発者コンソールの両方に残す（握り潰し禁止）。
+  // 組み立て（mount 段）**と結線段**の全体を包む（§19.6 B4・🔴-1）。呼出側
+  // （`report_view.html`）は catch を持たないため、ここで抜けた例外は誰にも捕まらない。
+  // 落ち方は 2 通りあり、どちらも無音になる:
+  //   mount 段  — 画面に何も出ない（白い画面）
+  //   結線段    — 4 面は**完成して見える**のに、スタートの購読者が登録されておらず、
+  //               押しても何も起きない（掲示も console も空＝死んだフォーム）
+  // 後者は前者より悪い。壊れていることが画面から分からないためである。どちらの場合も
+  // 掲示面だけは出し、理由を画面と開発者コンソールの両方に残す（握り潰し禁止）。
   try {
     // Tester Settings パネル（Phase 8）。schema が取れなくても**器は出す**（fail-open・
     // run-options と同じ流儀）。取れなければ候補 0 のまま理由を表示し、投入は旧フォーム
@@ -131,6 +135,82 @@ export async function mountSimExecutionPanel({
     // 掲示面はスタートの**直下**（§19.6 R2）: 押した結果がその場に出ないと、投入が通った
     // のか拒まれたのかを画面から判断できない（ISSUE-423）。
     mountStatus();
+
+    const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
+
+    // 実行対象データセットは**銘柄から**引く（データセット選択という sim 独自の概念を出さない）。
+    // 解決できたときだけ供給元へ渡す: 解決できない銘柄で既定へ戻すと、利用者が打った値が
+    // 黙って書き換わる（ビュー自動介入の禁止）。解決できない間は直前の profile を保ち、
+    // 不一致は供給元の警告が画面に出す。
+    let runProfile = null;
+    function syncRunProfile() {
+      const next = resolveProfile(datasets, subjectSource.selectedSymbol());
+      if (next === null || next === runProfile) return;
+      runProfile = next;
+      subjectSource.setRunProfile(runProfile);
+    }
+    subjectSource.onSymbolChange(() => { syncRunProfile(); });
+    syncRunProfile();
+
+    // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。導線の DOM は
+    // 実行指示面が持ち、ここは「押されたらどこへ行くか」だけを決める。
+    view.onViewResult((jobId) => { goTo(reportViewUrl(jobId)); });
+
+    // 実行状態の監視は**同時 1 本**（§19.6 S4）。実行指示面は再投入を許すため、落とさずに
+    // 新しい監視を足すと、前の run の状態が新しい run の掲示を上書きし続ける。
+    let stopWatch = null;
+    // 直近に掲示した状態。監視を諦めたときも「どの状態まで見えていたか」を残す（監視が
+    // 止まっただけで、ジョブが終わったわけではない＝終端と書かない）。
+    let lastStatus = null;
+
+    function onWatchUpdate(update) {
+      if (update && update.error) {
+        statusView.showJobState({
+          status: lastStatus, failure_reason: update.error, terminal: false,
+        });
+        console.error(update.error);
+        return;
+      }
+      lastStatus = update && update.status;
+      statusView.showJobState(update);
+    }
+
+    // コールバック**全体**を try で包む（§19.6 B2）。本文の組立（供給元の読み出し・M5 の
+    // 純関数）を try の外に置くと、そこで落ちた例外は誰にも捕まらず、画面は押しても何も
+    // 起きないまま無音になる（実測済みの欠陥）。失敗は必ず掲示し、開発者コンソールにも残す。
+    view.onStart(async () => {
+      try {
+        if (stopWatch) { stopWatch(); stopWatch = null; }
+        lastStatus = null;
+        statusView.showSubmitting();
+        // 本文の組み立ては純関数 1 箇所（M5）。ここは 3 つの供給元を渡すだけである。
+        const derived = subjectSource.derivedBacktest();
+        const body = buildSubmission({
+          profile: runProfile,
+          subject: {
+            ea_name: derived.ea_name,
+            initial_deposit: derived.initial_deposit,
+            settings: subjectSource.buildSettings(),
+          },
+          inputs: eaInputsView.values(),
+        });
+        const result = await client.submit(body);
+        if (result && result.job_id) view.showResultLink(result.job_id);
+        statusView.showAccepted({
+          job_id: result && result.job_id, status: result && result.status,
+        });
+        lastStatus = result && result.status;
+        if (result && result.job_id) stopWatch = statusClient.watch(result.job_id, onWatchUpdate);
+        if (onSubmitted) onSubmitted(result);
+      } catch (e) {
+        const message = (e && e.message) || String(e);
+        statusView.showRejected({ message, status: e && e.status });
+        console.error(`投入できません: ${message}`);
+        // 既存の購読口は従来どおり呼ぶ（掲示の追加で契約を変えない＝後方互換）。
+        if (onError) onError(e);
+      }
+    });
+
   } catch (e) {
     const message = (e && e.message) || String(e);
     console.error(`投入フォームを組み立てられません: ${message}`);
@@ -145,81 +225,5 @@ export async function mountSimExecutionPanel({
     view = null;
     return panelRefs();
   }
-
-  const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
-
-  // 実行対象データセットは**銘柄から**引く（データセット選択という sim 独自の概念を出さない）。
-  // 解決できたときだけ供給元へ渡す: 解決できない銘柄で既定へ戻すと、利用者が打った値が
-  // 黙って書き換わる（ビュー自動介入の禁止）。解決できない間は直前の profile を保ち、
-  // 不一致は供給元の警告が画面に出す。
-  let runProfile = null;
-  function syncRunProfile() {
-    const next = resolveProfile(datasets, subjectSource.selectedSymbol());
-    if (next === null || next === runProfile) return;
-    runProfile = next;
-    subjectSource.setRunProfile(runProfile);
-  }
-  subjectSource.onSymbolChange(() => { syncRunProfile(); });
-  syncRunProfile();
-
-  // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。導線の DOM は
-  // 実行指示面が持ち、ここは「押されたらどこへ行くか」だけを決める。
-  view.onViewResult((jobId) => { goTo(reportViewUrl(jobId)); });
-
-  // 実行状態の監視は**同時 1 本**（§19.6 S4）。実行指示面は再投入を許すため、落とさずに
-  // 新しい監視を足すと、前の run の状態が新しい run の掲示を上書きし続ける。
-  let stopWatch = null;
-  // 直近に掲示した状態。監視を諦めたときも「どの状態まで見えていたか」を残す（監視が
-  // 止まっただけで、ジョブが終わったわけではない＝終端と書かない）。
-  let lastStatus = null;
-
-  function onWatchUpdate(update) {
-    if (update && update.error) {
-      statusView.showJobState({
-        status: lastStatus, failure_reason: update.error, terminal: false,
-      });
-      console.error(update.error);
-      return;
-    }
-    lastStatus = update && update.status;
-    statusView.showJobState(update);
-  }
-
-  // コールバック**全体**を try で包む（§19.6 B2）。本文の組立（供給元の読み出し・M5 の
-  // 純関数）を try の外に置くと、そこで落ちた例外は誰にも捕まらず、画面は押しても何も
-  // 起きないまま無音になる（実測済みの欠陥）。失敗は必ず掲示し、開発者コンソールにも残す。
-  view.onStart(async () => {
-    try {
-      if (stopWatch) { stopWatch(); stopWatch = null; }
-      lastStatus = null;
-      statusView.showSubmitting();
-      // 本文の組み立ては純関数 1 箇所（M5）。ここは 3 つの供給元を渡すだけである。
-      const derived = subjectSource.derivedBacktest();
-      const body = buildSubmission({
-        profile: runProfile,
-        subject: {
-          ea_name: derived.ea_name,
-          initial_deposit: derived.initial_deposit,
-          settings: subjectSource.buildSettings(),
-        },
-        inputs: eaInputsView.values(),
-      });
-      const result = await client.submit(body);
-      if (result && result.job_id) view.showResultLink(result.job_id);
-      statusView.showAccepted({
-        job_id: result && result.job_id, status: result && result.status,
-      });
-      lastStatus = result && result.status;
-      if (result && result.job_id) stopWatch = statusClient.watch(result.job_id, onWatchUpdate);
-      if (onSubmitted) onSubmitted(result);
-    } catch (e) {
-      const message = (e && e.message) || String(e);
-      statusView.showRejected({ message, status: e && e.status });
-      console.error(`投入できません: ${message}`);
-      // 既存の購読口は従来どおり呼ぶ（掲示の追加で契約を変えない＝後方互換）。
-      if (onError) onError(e);
-    }
-  });
-
   return panelRefs();
 }

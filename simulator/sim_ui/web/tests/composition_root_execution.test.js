@@ -565,6 +565,49 @@ test("a failing panel mount surfaces the reason instead of a blank screen (B4)",
   assert.ok(panel.statusView, "掲示面の参照が返っていません");
 });
 
+// --- 🔴-1: 結線段の失敗も掲示する（mount 段だけを守っても「死んだフォーム」が残る）------
+// 面の mount が全部通っても、結線段（実行対象の同期・購読口の登録）で例外が出れば呼出側
+// （`report_view.html` は catch を持たない）へ抜ける。このとき画面には 4 面が**完成して
+// 見える**のに、スタートの購読者は登録されておらず、掲示も console も空になる——押しても
+// 何も起きず、理由がどこにも出ない「無音の死んだフォーム」である。
+// 例外は実行対象データセットの読み出し（`setRunProfile` → プロファイル値の参照）へ注入する。
+// 結線段のどこで落ちても同じ出口へ来ることを固定するのが目的である。
+
+/** 結線段でのみ読まれるプロファイル値の参照が落ちる run-options。 */
+function runOptionsPoisonedAtWiring(message) {
+  const dataset = {
+    dataset: "jp225_m1", data_path: "/d/jp225_m1.csv", symbol: "JP225",
+    contract_size: 10.0, digits: 1, point_size: 0.1, leverage: 10.0,
+    volume_min: 0.01, volume_max: 100.0, volume_step: 0.01, stops_level: 0,
+    get period() { throw new Error(message); },
+  };
+  return { ok: true, datasets: [dataset], ea_names: EA_LIST };
+}
+
+test("a failing wiring stage surfaces the reason instead of a silently dead form (🔴-1)", async () => {
+  // Arrange: mount は全部通り、結線段（実行対象の同期）で落ちる構成
+  const doc = fakeDoc();
+  const fetchFn = routerFetch({
+    schema: settingsSchema(),
+    runOptions: runOptionsPoisonedAtWiring("実行対象を同期できません"),
+  });
+  // Act
+  let panel = null;
+  const seen = await capturingErrors(async () => {
+    await assert.doesNotReject(async () => {
+      panel = await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+    }, "結線段の失敗が呼出側へ抜けています（report_view.html は catch を持たない）");
+  });
+  // Assert: 理由が画面と開発者コンソールの両方に出る
+  assert.ok(findById(doc.body, "simRunStatusPanel"), "掲示面が出ていません");
+  assert.match(String(statusTextOf(doc.body, "run-status-reason")), /実行対象を同期できません/,
+    "結線段の例外が画面に出ていません（無音の死んだフォーム）");
+  assert.ok(seen.some((line) => /実行対象を同期できません/.test(line)),
+    `console.error に残っていません: ${JSON.stringify(seen)}`);
+  // 実行指示面は結線されていない＝押せない面を「組めた」として返さない
+  assert.equal(panel.view, null, "結線できていない面を呼出側へ返しています");
+});
+
 test("reportViewUrl builds the ?job= dispatch url", async () => {
   const { reportViewUrl } = await import("../js/adapter/front/composition_root_execution.js");
   assert.equal(reportViewUrl("abc"), "?job=abc");
