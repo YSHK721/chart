@@ -190,6 +190,17 @@ export class PriceLevelLinesPrimitive {
   //     隔離宣言を広げるより、upstream に触らない経路へ寄せるほうが隔離が保てる。
   //   理由 2: 描画は bitmap 座標系で行うため、幅も同じ座標系の値を使うほうが整合する。
   //   幅が取れないときは 0（線を引かない）＝例外を投げない。
+  //
+  // **未検証事項（HiDPI・実 UI 検証 NFR-09 で確定させる）**: 既存実装に 2 つの流儀が同居している。
+  //   (a) `tickvol_bands_primitive.js:116-117` / `replay_boundary_dim.js:91` は media 座標へ
+  //       `scope.horizontalPixelRatio` を掛けてから描く
+  //   (b) `market_profile_primitive.js:531,542` は `priceToCoordinate` の値（media 座標）を
+  //       そのまま使い、幅だけ `scope.bitmapSize.width` を使う（`pair_lines_primitive.js` も無変換）
+  //   本 primitive は (b) に合わせている（実 UI で目視確認され続けている側の流儀）。
+  //   横一本線は x が足りていれば足りるので（bitmapSize.width ≧ mediaSize.width）幅は安全側だが、
+  //   **y の位置が dpr>1 でずれないか**はソースからは決められない。dpr=2 の実機で
+  //   線がローソクの価格と一致することを確認すること。ずれた場合の是正は
+  //   (a)(b) どちらが正しいかの確定を伴うため、本 primitive 単独では判断しない。
   _extentWidth(scope) {
     const width = scope && (
       (scope.bitmapSize && scope.bitmapSize.width)
