@@ -66,6 +66,13 @@ export async function mountSimExecutionPanel({
   let datasets = [];
   let eaNames = Array.isArray(eaCandidates) ? eaCandidates : [];
 
+  /** 呼出側へ返す面の参照。成功・失敗のどちらの出口も**この 1 箇所**から作る。
+   *  出口ごとに object リテラルを書くと、片方にだけ面を足したときに「構成によって
+   *  返る形が違う」状態が黙って生まれる（呼出側は分岐を知らないまま undefined を掴む）。 */
+  const panelRefs = () => ({
+    view, client, testerView, eaInputsView, fallbackView, subjectSource, schemaClient, statusView,
+  });
+
   // mount 段**全体**を包む（§19.6 B4）。面の構築が例外で落ちると、呼出側
   // （`report_view.html` は catch を持たない）まで抜けて画面には何も出ない——利用者に
   // 見えるのは白い画面だけである。組めなかったときも掲示面だけは出し、理由を画面と
@@ -133,10 +140,10 @@ export async function mountSimExecutionPanel({
     } catch (_e) {
       // 掲示面すら挿せない（host そのものが壊れている）。理由は既に console に残っている。
     }
-    return {
-      view: null, client, testerView, eaInputsView, fallbackView, subjectSource,
-      schemaClient, statusView,
-    };
+    // 実行指示面は**組めていない**（生成の途中で落ちた場合は参照だけが残る）。押せない面を
+    // 返すと、呼出側は結線済みだと誤認する。この出口では必ず落とす。
+    view = null;
+    return panelRefs();
   }
 
   const goTo = navigate || ((url) => { if (typeof location !== "undefined") location.href = url; });
@@ -214,7 +221,5 @@ export async function mountSimExecutionPanel({
     }
   });
 
-  return {
-    view, client, testerView, eaInputsView, fallbackView, subjectSource, schemaClient, statusView,
-  };
+  return panelRefs();
 }
