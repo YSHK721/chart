@@ -95,6 +95,27 @@ JS 実装 0 件・新規ファイル名衝突 0 件・依存方向違反 0 件�
 5. 残存（スライス 7 で解消）: 新規 domain 4 本の replay_ui への symlink 未設置（強制ガードは
    工程 2 是正 2 の走査根配列化で導入する）。
 
+## 工程 3 実装確定記録（スライス 3〜5・2026-08-20。本文を上書きする）
+
+実装コミット: `47a188c`（スライス 3＝priceAtCoordinate＋縦パンブロッカー合成 addVerticalPanBlocker）／
+`43e9914`（スライス 4＝price_level_lines_primitive＋price_level_drag_controller）／
+`d94f76f`（スライス 5＝position_sizing_plan・mc_port・mc_worker_gateway・MC Worker 本体＋
+worker_url_resolution ガード）／`63440eb`・`d900fc7`（追補）。
+ゲート: web 全 5 スイート緑（indicator_ui 2007＝+81）・pytest 4678・既存テスト改変 0・
+参照 HTML／simulator 差分 0・変異 7 件 Red→復元緑。
+
+1. **逸脱採用: `edge_ruin_core.solveEdgeRuin` に任意観測フック `onProgress` を追加**。進捗は MC
+   ループ内側でしか観測できず、時間ベース偽 progress は不採用。フック有無で結果が 1 bit も
+   変わらないことを検定で固定・RoR 2457 点厳密一致は継続緑。Python 権威に対応物は置かない
+   （UI を持たない側に進捗の関心が無い＝golden の射程外）。
+2. スライス 3 で `installSharedUi` が controller を保持するよう是正（従来は install 後破棄＝
+   設計前提 P7 の棄却）。lwc `timeScale()` は隔離宣言を広げず描画スコープ経由に留めた。
+3. drag は capture 登録＋ホバー中ブロッカーの二重化（共有配線の bubble 登録より先に握るため）。
+4. **実 UI 検証（NFR-09）への送付事項**: (a) HiDPI（dpr>1）の水準線 y 位置（既存 primitive に
+   `*PixelRatio` 有無の 2 流儀が同居・ソースから確定不能） (b) Worker 実経路（node に DOM Worker
+   無し＝gateway の実 `new Worker` 分岐・worker 本体の self 配線・統合 UI の Service Worker 下 200）
+5. 水準線の配色は既存 3 chrome スロットを流用（専用スロット新設＝UI 変更は別途承認事項）。
+
 ---
 
 # ISSUE-368 実装設計（読み取り専用・確定案）
