@@ -196,6 +196,9 @@ export class ChartRenderer {
     // 価格パンの px→価格換算に使う pane 高（container 高 - timeScale().height() 相当）。
     //   composition root が setPaneHeight で供給する。
     this._paneHeight = null;
+    // lwc 操作可否の合成（suppressInteraction 参照）。明示フラグ AND 抑止者ゼロ で有効。
+    this._interactionEnabled = true;
+    this._interactionSuppressors = new Set();
     // ISSUE-114/115: チャート右端の常設余白（幅比率基準）。最新足が右端に張り付くストレスの解消。
     //   rightOffset は scrollToRealTime / FOLLOW 追従で尊重されるため、ライブ新足でも余白が維持される。
     //   ISSUE-164（ユーザー裁定）: ズームへの自動追従（可視範囲購読での再適用）は廃止済み。
@@ -296,10 +299,42 @@ export class ChartRenderer {
   //   lightweight-charts の applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は呼ばない）。
   //   enabled=false でスクロール/ズーム停止、true で復元。applyOptions 非提供時は no-op（後方互換）。
   setUserInteraction(enabled) {
+    this._interactionEnabled = !!enabled;
+    this._applyUserInteraction();
+  }
+
+  /**
+   * lwc 操作（handleScroll / handleScale）の抑止を**登録**する（解除関数を返す）。
+   *
+   * なぜ合成にするか（実測 2026-08-20）: 抑止の口は `setUserInteraction` の**単数スロット**しか
+   * 無く、現に 3 者が奪い合っている——MP のスワイプ捕捉（`mp_replay_scrub.js`）・水準線 drag・
+   * アーム式ピッカー。単数のままだと「drag を離した瞬間に、アーム継続中のピッカーの抑止まで
+   * 復帰する」（工程 5 🔴-2 で再現）。単数スロット競合は `setCandleObserver` /
+   * `setTfPeriodHoverHandler` で既に踏んだ破綻型なので、`addVerticalPanBlocker` と同型の
+   * 登録方式にして構造的に潰す。
+   *
+   * 抑止を持つ者が 1 人でも居る間は復帰しない。解除関数は冪等（二重呼び出しで他者の抑止を
+   * 巻き添えにしない＝トークンで持ち主を区別する）。
+   *
+   * @returns {Function} 解除関数。
+   */
+  suppressInteraction() {
+    const token = {};
+    this._interactionSuppressors.add(token);
+    this._applyUserInteraction();
+    return () => {
+      if (this._interactionSuppressors.delete(token)) {
+        this._applyUserInteraction();
+      }
+    };
+  }
+
+  // 実効値を lwc へ配る（明示フラグ AND 抑止者ゼロ）。
+  _applyUserInteraction() {
     if (typeof this._chart.applyOptions !== 'function') {
       return;
     }
-    const on = !!enabled;
+    const on = this._interactionEnabled && this._interactionSuppressors.size === 0;
     this._chart.applyOptions({ handleScroll: on, handleScale: on });
   }
 

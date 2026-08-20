@@ -33,6 +33,7 @@ export class PriceLevelDragController {
     getLevels = () => null,
     onLevelsChange = () => {},
     registerVerticalPanBlocker = null,
+    isGrabBlocked = null,
     grabTolerancePx = DEFAULT_GRAB_TOLERANCE_PX,
   } = {}) {
     this._container = container;
@@ -41,6 +42,9 @@ export class PriceLevelDragController {
     this._getLevels = getLevels;
     this._onLevelsChange = onLevelsChange;
     this._registerVerticalPanBlocker = registerVerticalPanBlocker;
+    // 掴んではいけない状態を外から注入する（ピッカーがアーム中など）。未注入は従来どおり常に掴める。
+    this._isGrabBlocked = typeof isGrabBlocked === 'function' ? isGrabBlocked : () => false;
+    this._releaseInteraction = null;
     this._tolerance = grabTolerancePx;
     this._dragging = null;      // 掴んでいる handle（{kind,index}）または null
     this._hovered = null;       // ホバー中の handle または null
@@ -73,17 +77,22 @@ export class PriceLevelDragController {
       if (e.button !== 0) {
         return;
       }
+      if (this._isGrabBlocked()) {
+        return;   // ピッカーのアーム中など（入力先は常に一意＝R-P1。別の水準を動かさない）。
+      }
       const handle = this._handleAt(e);
       if (!handle) {
         return;   // 線から離れている＝通常のチャート操作に委ねる（何も奪わない）。
       }
       this._dragging = handle;
-      this._setUserInteraction(false);
+      this._suppressInteraction();
     }, { capture: true });
 
     container.addEventListener('pointermove', (e) => {
       if (!this._dragging) {
-        this._hovered = this._handleAt(e);   // ホバー中もブロッカーを真にする（順序非依存）。
+        // 掴めない状態（ピッカーのアーム中）ではホバー扱いにもしない
+        //   ＝縦パンブロッカーを無用に真にしない。
+        this._hovered = this._isGrabBlocked() ? null : this._handleAt(e);
         return;
       }
       if ((e.buttons & 1) === 0) {
@@ -106,7 +115,8 @@ export class PriceLevelDragController {
       return;
     }
     this._dragging = null;
-    this._setUserInteraction(true);
+    this._releaseInteraction?.();
+    this._releaseInteraction = null;
   }
 
   // コンテナ左上基準の y（offsetY は lwc の内部 canvas 基準になるため使わない
@@ -131,10 +141,14 @@ export class PriceLevelDragController {
     return this._renderer.priceAtCoordinate(this._containerY(e));
   }
 
-  _setUserInteraction(enabled) {
-    if (this._renderer && typeof this._renderer.setUserInteraction === 'function') {
-      this._renderer.setUserInteraction(enabled);
+  // lwc 操作の抑止を**登録**する（単数スロットの奪い合いを避ける＝ChartRenderer.suppressInteraction）。
+  //   解除は自分が受け取ったトークンだけを外すので、同時に抑止しているピッカーを巻き添えにしない。
+  _suppressInteraction() {
+    const renderer = this._renderer;
+    if (this._releaseInteraction || !renderer || typeof renderer.suppressInteraction !== 'function') {
+      return;
     }
+    this._releaseInteraction = renderer.suppressInteraction();
   }
 
   // 掴んでいる水準へ価格を反映する（非破壊更新は PriceLevels 側の責務）。

@@ -450,3 +450,28 @@ test('TC-SW16 モーダルを閉じた後の右クリック「建値に追加」
   const entries = flatten(dialogRoot).filter((e) => e.dataset && /^entry:/.test(e.dataset.psPrice ?? ''));
   assert.equal(entries.some((e) => e.value === '58700'), true, '追加した建値が欄に無い');
 });
+
+test('TC-SW17 共有配線が drag へ「アーム中は掴まない」述語を渡す（🔴-2 の結線）', () => {
+  // TC-VB06 は述語を注入した状態の**振る舞い**を固定するが、本番配線が注入し忘れても
+  //   気づけない（実測: 結線を外す変異が TC-VB06 では Red にならなかった）。結線側を固定する。
+  // Arrange / Act
+  const wiring = read('chart_app_wiring.js');
+  // Assert
+  assert.match(
+    wiring,
+    /isGrabBlocked:\s*\(\)\s*=>\s*picker\.isArmed\(\)/,
+    'drag に「ピッカーがアーム中なら掴まない」述語が渡っていない（アーム中に別の水準が動く）',
+  );
+});
+
+test('TC-SW18 本番配線の drag とピッカーが同じアーム状態を見る（端から端まで）', () => {
+  // Arrange: 実物の共有配線で組み上げた drag / picker を取り出す。
+  const ctx = bootAll();
+  const { drag, picker } = ctx.wired.positionSizing;
+  // Act / Assert: アーム状態が drag の掴み可否へ本当に伝わっている。
+  assert.equal(drag._isGrabBlocked(), false, 'アーム前は掴める');
+  picker.arm('take');
+  assert.equal(drag._isGrabBlocked(), true, 'アーム中も掴めてしまう（入力先が一意にならない）');
+  picker.disarm();
+  assert.equal(drag._isGrabBlocked(), false, '解除後も掴めないままになっている');
+});

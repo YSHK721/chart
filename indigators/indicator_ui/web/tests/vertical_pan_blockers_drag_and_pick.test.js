@@ -130,3 +130,111 @@ test('TC-VB05 両方が活性のとき、片方だけ解除しても抑止は残
   // Assert
   assert.equal(pans(ctx), false, '片方の解除が他方の抑止まで消してはならない');
 });
+
+// ---------------------------------------------------------------------------
+// アーム中の drag 競合（工程 5 レビュー 🔴-2・node で再現済み）
+//
+//   再現ログ: `arm('take')` 中に既存の損切り線の近傍（掴み許容 6px）をクリックすると
+//   `STOP MUTATED -> 58798`（＝**入力先でない水準が動く**。R-P1「入力先が常に一意」の破綻）。
+//   さらに drag の `_end()` が `setUserInteraction(true)` を出すため、**アーム継続中なのに
+//   lwc 操作が復帰**する（単数スロットの奪い合い＝`setCandleObserver` と同型の再発）。
+//
+//   根治は 2 つ:
+//     (1) `setUserInteraction` の単数スロットを**登録方式**（`suppressInteraction()` →
+//         解除関数）へ合成する。抑止を持つ者が 1 人でも居る間は復帰しない。
+//         実測で本スロットは 3 者が奪い合っている（MP スワイプ捕捉・drag・ピッカー）。
+//     (2) drag に「ピッカーがアーム中なら掴まない」述語を注入する（同型の登録口）。
+// ---------------------------------------------------------------------------
+
+import { ChartRenderer } from '../js/adapter/front/chart_renderer.js';
+
+// 実物の ChartRenderer を使う（合成の成否は renderer の実装で決まるため、fake で写すと
+//   「fake だけ正しい」状態を作る）。lwc chart は applyOptions を記録する最小 fake。
+function bootReal() {
+  const applied = [];
+  const chart = {
+    applyOptions: (o) => applied.push(o),
+    addSeries: () => ({ setData() {}, applyOptions() {}, data: () => [] }),
+    subscribeCrosshairMove() {},
+  };
+  // 価格変換まで働く mainSeries（これが無いと priceAtCoordinate が null を返し、
+  //   「掴めていないから動かない」のか「価格が取れないから動かない」のか区別できない）。
+  const mainSeries = {
+    applyOptions() {}, setData() {}, data: () => [], coordinateToPrice: (y) => 59000 - y,
+  };
+  const renderer = new ChartRenderer({ chart, mainSeries, lwc: {} });
+  const container = fakeContainer();
+  const shared = installSharedUi({
+    container, renderer, doc: null, getController: () => null, updatePaneHeight: () => {},
+  });
+  let levels = {
+    stopPrice: 58340,
+    withStop(p) { return { ...this, stopPrice: p }; },
+    withEntry() { return this; },
+    withTake(p) { return { ...this, takePrice: p }; },
+  };
+  const picker = new PricePickController({
+    container, renderer, document: null, registerVerticalPanBlocker: shared.registerVerticalPanBlocker,
+  });
+  picker.install();
+  const drag = new PriceLevelDragController({
+    container,
+    renderer,
+    primitive: fakePrimitive,
+    getLevels: () => levels,
+    onLevelsChange: (next) => { levels = next; },
+    registerVerticalPanBlocker: shared.registerVerticalPanBlocker,
+    isGrabBlocked: () => picker.isArmed(),
+  });
+  drag.install();
+  // 直近に適用された lwc 操作可否（handleScroll）。未適用なら既定 true。
+  const interactionOn = () => {
+    for (let i = applied.length - 1; i >= 0; i -= 1) {
+      if (applied[i] && 'handleScroll' in applied[i]) { return applied[i].handleScroll; }
+    }
+    return true;
+  };
+  return {
+    container, renderer, drag, picker, interactionOn, levels: () => levels,
+  };
+}
+
+test('TC-VB06 アーム中は線近傍を押しても水準が動かない（入力先は常に一意・R-P1）', () => {
+  // Arrange: 掴める線は y=200。ピッカーは別の欄（利確）をアーム中。
+  const ctx = bootReal();
+  ctx.picker.arm('take');
+  const before = ctx.levels().stopPrice;
+  // Act: 線の真上を押して動かす（アームしていなければ掴めてしまう座標）。
+  ctx.container.fire('pointerdown', { button: 0, clientY: 200 });
+  ctx.container.fire('pointermove', { buttons: 1, clientY: 240 });
+  ctx.container.fire('pointerup', {});
+  // Assert
+  assert.equal(ctx.drag.isDragging(), false, 'アーム中に掴んでしまっている');
+  assert.equal(ctx.levels().stopPrice, before, '入力先でない損切り線が動いた（R-P1 の破綻）');
+});
+
+test('TC-VB07 drag が終わってもアーム中は lwc 操作が復帰しない（抑止の合成）', () => {
+  // Arrange
+  const ctx = bootReal();
+  ctx.picker.arm('stop');
+  assert.equal(ctx.interactionOn(), false, 'アームで lwc 操作が落ちる');
+  // Act: drag を成立させて終わらせる（アーム中は掴めないので述語を外した状態で観測するため、
+  //   ここでは drag 単体の抑止・解除を直接動かす）。
+  const release = ctx.renderer.suppressInteraction();
+  release();
+  // Assert: drag 側が解除しても、ピッカーの抑止が残っている間は復帰しない。
+  assert.equal(ctx.interactionOn(), false, '他者の解除でアーム中の抑止まで解けている');
+});
+
+test('TC-VB08 抑止を持つ者が全員解除して初めて復帰する（片方だけでは戻らない）', () => {
+  // Arrange
+  const ctx = bootReal();
+  const a = ctx.renderer.suppressInteraction();
+  ctx.picker.arm('stop');
+  assert.equal(ctx.interactionOn(), false);
+  // Act / Assert: 片方ずつ解除する。
+  a();
+  assert.equal(ctx.interactionOn(), false, '1 人残っているのに復帰した');
+  ctx.picker.disarm();
+  assert.equal(ctx.interactionOn(), true, '全員解除しても復帰しない');
+});

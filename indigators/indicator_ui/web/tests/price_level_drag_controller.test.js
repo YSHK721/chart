@@ -54,6 +54,12 @@ function fakeRenderer({ priceAtCoordinate = PRICE_AT } = {}) {
     calls,
     priceAtCoordinate,
     setUserInteraction: (v) => { calls.userInteraction.push(v); },
+    // 抑止は登録方式（ChartRenderer.suppressInteraction）。実物と同じく「最初の抑止で落ち、
+    //   最後の解除で戻る」遷移を同じ配列へ記録するため、観測できる系列は従来と同一である。
+    suppressInteraction() {
+      calls.userInteraction.push(false);
+      return () => { calls.userInteraction.push(true); };
+    },
     panPriceByPixels: (dy) => { calls.pan.push(dy); },
     handlePriceWheel: () => false,
     isOverPriceAxis: () => false,

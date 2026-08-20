@@ -57,6 +57,7 @@ export class PricePickController {
     this._registerBlocker = registerVerticalPanBlocker;
     this._onConfirm = typeof onConfirm === 'function' ? onConfirm : null;
     this._onArmChange = typeof onArmChange === 'function' ? onArmChange : null;
+    this._releaseInteraction = null;
     this._anchor = anchor;
     this._tolerancePx = tolerancePx;
     this._target = null;          // アーム中の入力先（'entry:i' / 'stop' / 'take'）または null
@@ -110,7 +111,7 @@ export class PricePickController {
    */
   arm(target) {
     this._target = target;
-    this._setUserInteraction(false);
+    this._suppressInteraction();
     // アーム中はチャートがポインタを受け取れる必要がある（モーダルが覆っていると R-P1 が
     //   成立しない・実 UI 実測 2026-08-20）。どう見せるかは呼び出し側の責務。
     this._onArmChange?.(true);
@@ -123,7 +124,8 @@ export class PricePickController {
     }
     this._target = null;
     this._hideGhost();
-    this._setUserInteraction(true);
+    this._releaseInteraction?.();
+    this._releaseInteraction = null;
     this._onArmChange?.(false);
   }
 
@@ -169,10 +171,14 @@ export class PricePickController {
     }
   }
 
-  _setUserInteraction(enabled) {
-    if (this._renderer && typeof this._renderer.setUserInteraction === 'function') {
-      this._renderer.setUserInteraction(enabled);
+  // lwc 操作の抑止を**登録**する（ChartRenderer.suppressInteraction）。drag と同時に抑止しても
+  //   互いの解除で巻き添えにならない（単数スロット `setUserInteraction` の奪い合いを避ける）。
+  _suppressInteraction() {
+    const renderer = this._renderer;
+    if (this._releaseInteraction || !renderer || typeof renderer.suppressInteraction !== 'function') {
+      return;
     }
+    this._releaseInteraction = renderer.suppressInteraction();
   }
 
   // 版面（.chart-wrap）配下のホストを用意する（無ければ作り・あれば再利用）。

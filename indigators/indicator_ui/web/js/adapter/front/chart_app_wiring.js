@@ -512,6 +512,9 @@ function createPositionSizingCollaborators({
     getLevels: () => controller.levels(),
     onLevelsChange: (next) => controller.applyLevels(next),
     registerVerticalPanBlocker,
+    // ピッカーのアーム中は掴ませない（入力先は常に一意＝R-P1。アーム中に別の水準線を
+    //   掴むと「利確を指定していたのに損切りが動く」が起きる・工程 5 🔴-2 で再現）。
+    isGrabBlocked: () => picker.isArmed(),
   });
   drag.install();
 
