@@ -780,3 +780,95 @@ test('TC-PD41 ロット表示は lotMode に従う（参照実装 fmtLot: int �
   dialog.render({ ...VM, plan: { ...VM.plan, total_lot: 1234.7 } });
   assert.equal(out(), '1234.70単位', 'dec は小数 2 桁');
 });
+
+// ---------------------------------------------------------------------------
+// 重み「カスタム」（工程 5 レビュー 🔴-3・node で再現）
+//
+//   再現: 重みで「カスタム」を選ぶと
+//   `weight_pattern='custom' には custom_weights が必要です` が throw され計算が止まる。
+//   選択肢だけ移植して入力欄（参照実装 `ensureCustomLen` / `renderCustomInputs`）を
+//   落としたのが原因＝**移植で条件を削った**状態。参照実装どおり移植する:
+//     - 既定シードは `[1,2,…,K]`（`while(S.customW.length<K)S.customW.push(S.customW.length+1)`）
+//     - K を変えたら長さを追随（伸長はシード・短縮は slice）
+//     - 入力は `step 0.5 / min 0`、値は `parseFloat(v)||0`
+// ---------------------------------------------------------------------------
+
+test('TC-PD42 重みカスタムを選ぶと既定シード [1..K] が計算へ渡る（例外で止まらない）', () => {
+  // Arrange
+  const patches = [];
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc, onChangeParams: (p) => patches.push(p) });
+  dialog.open();
+  const root = doc.body.children[0];
+  const sel = byData(root, 'psField', 'weightPattern');
+  // Act
+  sel.value = 'custom';
+  sel.fire('change');
+  // Assert: パターンと重みが**同時に**渡る（別々だと custom_weights 不在の瞬間に throw する）。
+  const last = patches.at(-1);
+  assert.equal(last.weightPattern, 'custom');
+  assert.deepEqual(last.customWeights, [1, 2, 3], '参照実装 ensureCustomLen の既定シード（K=3）');
+});
+
+test('TC-PD43 カスタム欄は K 本描かれ、値の変更が計画へ渡る（参照 renderCustomInputs）', () => {
+  // Arrange
+  const patches = [];
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc, onChangeParams: (p) => patches.push(p) });
+  dialog.open();
+  const root = doc.body.children[0];
+  const sel = byData(root, 'psField', 'weightPattern');
+  sel.value = 'custom';
+  sel.fire('change');
+  // Act
+  const inputs = allData(root, 'psCustomWeight');
+  assert.equal(inputs.length, 3, 'K=3 本の入力欄が出ていない');
+  assert.equal(inputs[0].step, '0.5', '参照実装は step 0.5');
+  assert.equal(inputs[0].min, '0', '参照実装は min 0');
+  inputs[1].value = '4.5';
+  inputs[1].fire('input');
+  // Assert
+  assert.deepEqual(patches.at(-1).customWeights, [1, 4.5, 3]);
+});
+
+test('TC-PD44 K を変えるとカスタム欄の長さが追随する（伸長はシード・短縮は切り詰め）', () => {
+  // Arrange
+  const patches = [];
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc, onChangeParams: (p) => patches.push(p) });
+  dialog.open();
+  const root = doc.body.children[0];
+  const sel = byData(root, 'psField', 'weightPattern');
+  sel.value = 'custom';
+  sel.fire('change');
+  const splits = byData(root, 'psField', 'splits');
+  // Act: K=5 へ伸ばす。
+  splits.value = '5';
+  splits.fire('input');
+  // Assert
+  assert.equal(allData(root, 'psCustomWeight').length, 5);
+  assert.deepEqual(patches.at(-1).customWeights, [1, 2, 3, 4, 5], '伸長分は参照実装のシード');
+  // Act: K=2 へ縮める。
+  splits.value = '2';
+  splits.fire('input');
+  // Assert
+  assert.equal(allData(root, 'psCustomWeight').length, 2);
+  assert.deepEqual(patches.at(-1).customWeights, [1, 2], '短縮は slice');
+});
+
+test('TC-PD45 カスタム以外を選ぶと入力欄は出ない（参照実装は custom のときだけ表示）', () => {
+  // Arrange
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc });
+  dialog.open();
+  const root = doc.body.children[0];
+  const sel = byData(root, 'psField', 'weightPattern');
+  // Act / Assert: 既定（linear）では出ない。
+  assert.equal(allData(root, 'psCustomWeight').length, 0);
+  sel.value = 'custom';
+  sel.fire('change');
+  assert.equal(allData(root, 'psCustomWeight').length, 3);
+  sel.value = 'equal';
+  sel.fire('change');
+  assert.equal(allData(root, 'psCustomWeight').length, 0, 'custom を外しても欄が残っている');
+});

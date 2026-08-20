@@ -93,6 +93,13 @@
   color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px; min-height: 14px;
   margin-top: 4px; text-align: center; font-variant-numeric: tabular-nums;
 }
+/* 重みカスタムの入力欄（参照実装 renderCustomInputs）。#1..#K を横に並べる。 */
+.ps-custom-weights { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 6px; }
+.ps-custom-note { flex: 1 0 100%; color: var(--ct-uiTextAux, #9aa0ad); font-size: 10px; line-height: 1.5; }
+.ps-custom-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.ps-custom-label { color: var(--ct-uiTextAux, #9aa0ad); font-size: 10px; }
+.ps-custom-cell input { width: 56px; }
+
 /* 決済方式で出し分ける表示群（参照実装 :1064 と同じ切り替え）。 */
 .ps-exit-group { border-top: 1px solid var(--ct-uiBorder, #2a2e39); margin-top: 6px; padding-top: 6px; }
 .ps-exit-group.is-hidden { display: none; }

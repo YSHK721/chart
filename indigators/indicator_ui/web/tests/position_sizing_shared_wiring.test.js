@@ -475,3 +475,22 @@ test('TC-SW18 本番配線の drag とピッカーが同じアーム状態を見
   picker.disarm();
   assert.equal(drag._isGrabBlocked(), false, '解除後も掴めないままになっている');
 });
+
+test('TC-SW19 重みカスタムを選んでも計算が止まらない（🔴-3 の throw を端から端まで塞ぐ）', () => {
+  // 再現していた症状は「`weight_pattern='custom' には custom_weights が必要です` が throw され
+  //   計算が停止」。モーダル単体の検定（TC-PD42）は渡す値までしか見ないので、実物の usecase を
+  //   通して例外が出ないところまで固定する。
+  // Arrange
+  const ctx = bootAll();
+  ctx.mounts.get('position-sizing-menu').children[0].fire('click');
+  const dialogRoot = ctx.body.children.find((e) => e.dataset && e.dataset.psDialog === 'plan');
+  const sel = flatten(dialogRoot).find((e) => e.dataset && e.dataset.psField === 'weightPattern');
+  // Act / Assert
+  sel.value = 'custom';
+  assert.doesNotThrow(() => sel.fire('change'), '重みカスタムで計算が例外停止する');
+  // 入力欄が出て、値を変えても止まらない。
+  const inputs = flatten(dialogRoot).filter((e) => e.dataset && e.dataset.psCustomWeight !== undefined);
+  assert.equal(inputs.length, 3, 'カスタム入力欄が出ていない');
+  inputs[0].value = '2.5';
+  assert.doesNotThrow(() => inputs[0].fire('input'), '重みの変更で計算が例外停止する');
+});

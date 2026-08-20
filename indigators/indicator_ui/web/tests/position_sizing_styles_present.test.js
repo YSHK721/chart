@@ -116,3 +116,11 @@ test('TC-CS07 アーム中はパネルを寄せて幅を詰める（透過だけ
     'アーム中もパネルが中央のままでチャートの中心を覆う',
   );
 });
+
+test('TC-CS08 重みカスタムの入力欄に CSS 規則が在る（見えなければ入力できない・🔴-3）', () => {
+  // Arrange / Act / Assert
+  for (const sel of ['.ps-custom-weights', '.ps-custom-cell', '.ps-custom-label']) {
+    assert.equal(CSS.includes(`${sel} `) || CSS.includes(`${sel},`) || CSS.includes(`${sel}{`), true,
+      `${sel} の CSS が無い（実 UI で欄が見えない／並ばない）`);
+  }
+});

@@ -84,6 +84,13 @@ const SELECTS = [
   },
 ];
 
+// 分割本数 K の下限・上限（参照実装 `renderCustomInputs` の `Math.max(1,Math.min(10,...))`）。
+//   本モジュールは何も import できない（TC-SW02）ため、domain/split_entry_plan.js の
+//   MIN_SPLITS / MAX_SPLITS と同値をここに置く。食い違うと権威側が例外で弾く
+//   （＝食い違いは静かに残らない）。
+const MIN_SPLITS = 1;
+const MAX_SPLITS = 10;
+
 // 既定の採用 f（参照実装 :578 `chosen:'safe'`）。
 const DEFAULT_FRACTION_CHOICE = 'safe';
 
@@ -222,6 +229,8 @@ export class PositionSizingDialog {
     this._prices = new Map();    // 'entry:i' / 'stop' / 'take' -> 入力要素
     this._priceBox = null;       // 価格欄のコンテナ（K の変更で作り直す）
     this._progress = null;       // MC 進捗の表示欄（open で作り close で捨てる）
+    this._customBox = null;      // 重みカスタムの入力欄コンテナ（参照実装 renderCustomInputs）
+    this._customWeights = [];    // 各建玉のロット比（参照実装 S.customW）
     this._exitGroups = new Map();  // 決済方式で出し分ける表示群（bracket / time）
     this._exitMode = 'bracket';    // 参照実装 :578 の初期値
   }
@@ -246,6 +255,7 @@ export class PositionSizingDialog {
     this._prices = new Map();
     this._priceBox = null;
     this._progress = null;
+    this._customBox = null;
     this._exitGroups = new Map();
   }
 
@@ -348,6 +358,12 @@ export class PositionSizingDialog {
     for (const s of SELECTS) {
       sec.append(this._selectRow(s));
     }
+    // 重みカスタムの入力欄（参照実装 renderCustomInputs）。custom のときだけ中身を持つ。
+    const custom = this._doc.createElement('div');
+    custom.className = 'ps-custom-weights';
+    sec.append(custom);
+    this._customBox = custom;
+    this._renderCustomInputs();
     // 価格欄（建値 K 本＋損切り＋利確）。K の変更で作り直すためコンテナを保持する。
     const box = this._doc.createElement('div');
     box.className = 'ps-prices';
@@ -457,6 +473,9 @@ export class PositionSizingDialog {
       if (key === 'splits') {
         // K は「建値の本数」そのもの（別のパラメータではない）。欄を作り直して水準を通知する。
         this._renderPriceRows();
+        // 重みカスタムの本数も K に追随する（参照実装 ensureCustomLen）。
+        this._renderCustomInputs();
+        this._emitCustomWeights();
         this._emitLevels();
         return;
       }
@@ -468,6 +487,72 @@ export class PositionSizingDialog {
     this._fields.set(key, input);
     row.append(name, input);
     return row;
+  }
+
+  /**
+   * 重みの長さを K に合わせる（参照実装 `ensureCustomLen(K)` の写し）。
+   *   伸長は `push(length+1)`＝`[1,2,…,K]` のシード、短縮は `slice(0,K)`。
+   *   条件を足しも削りもしない（参照実装が正解を定義する）。
+   */
+  _ensureCustomLen(splits) {
+    while (this._customWeights.length < splits) {
+      this._customWeights.push(this._customWeights.length + 1);
+    }
+    if (this._customWeights.length > splits) {
+      this._customWeights = this._customWeights.slice(0, splits);
+    }
+  }
+
+  /**
+   * 重みカスタムの入力欄を描く（参照実装 `renderCustomInputs()` の写し）。
+   *   custom 以外では中身を空にする（参照実装も `box.innerHTML=''` で消す）。
+   *   K は参照実装と同じく 1〜10 に丸める。
+   */
+  _renderCustomInputs() {
+    const box = this._customBox;
+    if (!box) {
+      return;
+    }
+    box.innerHTML = '';
+    if ((this._fields.get('weightPattern')?.value ?? '') !== 'custom') {
+      return;
+    }
+    const splits = Math.max(MIN_SPLITS, Math.min(MAX_SPLITS, this._splitCount()));
+    this._ensureCustomLen(splits);
+    const doc = this._doc;
+    const note = doc.createElement('div');
+    note.className = 'ps-custom-note';
+    note.textContent = `各建玉のロット比を直接入力（#1 がストップ最遠側 → #${splits} に向かう並び）：`;
+    box.append(note);
+    this._customWeights.forEach((weight, index) => {
+      const cell = doc.createElement('label');
+      cell.className = 'ps-custom-cell';
+      const name = doc.createElement('span');
+      name.className = 'ps-custom-label';
+      name.textContent = `#${index + 1}`;
+      const input = doc.createElement('input');
+      input.type = 'number';
+      input.dataset.psCustomWeight = String(index);
+      input.step = '0.5';    // 参照実装 `step="0.5"`
+      input.min = '0';       // 参照実装 `min="0"`
+      input.value = String(weight);
+      input.addEventListener('input', () => {
+        // 参照実装 `S.customW[i]=parseFloat(e.target.value)||0`（非数は 0）。
+        const raw = Number.parseFloat(input.value);
+        this._customWeights[index] = Number.isFinite(raw) ? raw : 0;
+        this._emitCustomWeights();
+      });
+      cell.append(name, input);
+      box.append(cell);
+    });
+  }
+
+  // いまの重み（写しを渡す＝外から配列を書き換えられない）。
+  _emitCustomWeights() {
+    if ((this._fields.get('weightPattern')?.value ?? '') !== 'custom') {
+      return;
+    }
+    this._onChangeParams?.({ customWeights: [...this._customWeights] });
   }
 
   // 価格欄の作り直し（K 本の建値＋損切り＋利確）。既存の入力値は同じ target 名で引き継ぐ。
@@ -643,6 +728,16 @@ export class PositionSizingDialog {
       if (key === 'direction') {
         // 方向は**水準（E-02）が持つ**（ViewModel の levelLines.direction）。params ではない。
         this._emitLevels();
+        return;
+      }
+      if (key === 'weightPattern') {
+        // 入力欄を出し入れし、**パターンと重みを同時に**渡す。別々に渡すと
+        //   「custom なのに custom_weights が無い」瞬間ができ、権威が例外で止まる（🔴-3）。
+        this._renderCustomInputs();
+        this._onChangeParams?.({
+          weightPattern: select.value,
+          customWeights: [...this._customWeights],
+        });
         return;
       }
       this._onChangeParams?.({ [key]: select.value });
