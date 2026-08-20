@@ -5,6 +5,7 @@
 //   スライス 7（協働子は共有配線が生成し、root は識別子の受け渡しのみ）。
 //
 // 責務（SRP）: **繋ぐだけ**。式・判定・不変条件は 1 つも持たない（ColorThemeController と同じ位置）。
+//   状態も持たない: 現在の水準（E-02）の保持者は usecase 1 か所で、本 class は取り次ぐだけ。
 //   - 入力（モーダル・右クリック・ピッカー）を usecase の Input Boundary へ写す
 //   - usecase の ViewModel を 2 つの表示先（モーダル／水準線 primitive）へ配る
 //   - 価格の**書き戻し経路は 1 本**（モーダルの入力欄）。右クリックもピッカーもここを通るため、
@@ -26,11 +27,9 @@ export class PositionSizingController {
    * @param {?object} [deps.toast]  ChartToastView 互換（show(text)）。
    */
   constructor({
-    usecase, dialog, picker = null, primitive = null, toast = null, levels = null,
+    usecase, dialog, picker = null, primitive = null, toast = null,
   } = {}) {
     this._usecase = usecase;
-    // 現在の水準（domain 実体）。drag は「いま掴める線」を本 class から得る（座標源を割らない）。
-    this._levels = levels;
     this._dialog = dialog;
     this._picker = picker;
     this._primitive = primitive;
@@ -54,8 +53,7 @@ export class PositionSizingController {
   //   未入力（null）を含む入力でも作り直す: 計算は権威（domain）が「ロット 0」で答え、
   //   モーダルは非有限を「—」で出す。ここで入力途中を判定して弾くと、判定が 2 か所になる。
   setLevels(spec) {
-    this._levels = createPriceLevels(spec);
-    this._present(this._usecase.setLevels(this._levels));
+    this._present(this._usecase.setLevels(createPriceLevels(spec)));
   }
 
   /**
@@ -63,15 +61,18 @@ export class PositionSizingController {
    * モーダルの価格欄は `syncPrices`（通知しない書き戻し）で追随させる＝エコーを作らない。
    */
   applyLevels(levels) {
-    this._levels = levels;
     const vm = this._usecase.setLevels(levels);
     this._dialog?.syncPrices?.(vm.levelLines);
     this._present(vm);
   }
 
-  /** いまの水準（domain 実体）。drag の掴み対象・非破壊更新の元になる。 */
+  /**
+   * いまの水準（domain 実体）。drag の掴み対象・非破壊更新の元になる。
+   * **保持はしない**（所有者は usecase 1 か所）。ここに写しを置くと、両方を書く経路を
+   * 通らない更新で「計算に使う水準」と「掴む水準」が割れる（TC-PC14 が固定）。
+   */
   levels() {
-    return this._levels;
+    return this._usecase.levels();
   }
 
   async runMonteCarlo() {

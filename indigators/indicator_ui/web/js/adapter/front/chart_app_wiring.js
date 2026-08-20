@@ -480,10 +480,10 @@ function createPositionSizingCollaborators({
   }
 
   // 初期状態はモーダルの定義表から導出する（画面の初期表示と計算の初期値を食い違わせない）。
-  const levels = createPriceLevels(defaultLevels());
+  //   水準の保持者は usecase 1 か所（協働子へ写しを渡さない＝TC-PC14）。
   const usecase = new PositionSizingPlanUseCase({
     mcPort: new McWorkerGateway(),
-    levels,
+    levels: createPriceLevels(defaultLevels()),
     params: defaultParams(),
   });
 
@@ -498,7 +498,7 @@ function createPositionSizingCollaborators({
   picker.install();
 
   const controller = new PositionSizingController({
-    usecase, dialog, picker, primitive, levels, toast,
+    usecase, dialog, picker, primitive, toast,
   });
 
   // 水準線 drag（スライス 4）。掴む対象の座標源は primitive、水準の実体は協働子から得る。

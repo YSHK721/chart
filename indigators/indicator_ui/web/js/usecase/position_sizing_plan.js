@@ -42,6 +42,17 @@ export class PositionSizingPlanUseCase {
     return this.viewModel();
   }
 
+  /**
+   * いまの水準（E-02 の実体）。**保持者はここだけ**。
+   *
+   * 水準線 drag は「いま掴める線」の非破壊更新の元をここから得る。協働子側にも写しを置くと、
+   * 両方を書く経路を 1 つでも通らない更新が入った瞬間に「計算に使う水準」と「掴む水準」が
+   * 割れる（例外は出ず、線だけが古い位置に残る）。読み取り口を出して所有者を 1 つに保つ。
+   */
+  levels() {
+    return this._levels;
+  }
+
   setParams(patch) {
     this._params = { ...this._params, ...patch };
     return this.viewModel();

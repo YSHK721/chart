@@ -220,3 +220,26 @@ test('TC-PC13 levels() は現在の水準（domain 実体）を返す（drag の
   controller.setLevels({ ...LEVELS, stopPrice: 58100 });
   assert.equal(controller.levels().stopPrice, 58100, '更新後は新しい水準を返す（古い実体を掴ませない）');
 });
+
+// ---------------------------------------------------------------------------
+// 水準の所有者は 1 つ（SOLID リファクタリング 2026-08-20）
+//
+//   E-02 PriceLevels は「価格水準の単一ソース」である。協働子と usecase が**それぞれ**
+//   現在値を保持していると、両者を同時に書く経路（setLevels / applyLevels）を 1 つでも
+//   通らない更新が入った瞬間に、「計算に使う水準」と「drag が掴む水準」が割れる。
+//   割れても例外は出ず、線だけが古い位置に残る（実 UI を触るまで気づけない）。
+//   保持は usecase 1 か所にし、協働子は取り次ぐだけにする。
+// ---------------------------------------------------------------------------
+
+test('TC-PC14 水準の保持は usecase 1 か所（協働子は自前の写しを持たない）', () => {
+  // Arrange
+  const { controller, usecase } = build();
+  // Act: usecase 側だけを更新する（協働子の setLevels を通さない経路）。
+  usecase.setLevels(createPriceLevels({ ...LEVELS, stopPrice: 57000 }));
+  // Assert: 協働子が写しを持っていれば、ここで古い 58340 を返す（＝掴む線と計算がずれる）。
+  assert.equal(
+    controller.levels().stopPrice,
+    57000,
+    '協働子が水準の写しを持っている（単一ソースが 2 つに割れる）',
+  );
+});
