@@ -21,8 +21,11 @@ import { kellyFraction } from '../domain/edge_ruin_core.js';
 import { buildSplitEntryPlan } from '../domain/split_entry_plan.js';
 import { assertMonteCarloPort } from './mc_port.js';
 
-// 採用 f の 3 択（参照実装 :339-343 のセグメント）。
-export const FRACTION_CHOICES = ['safe', 'half', 'full'];
+// 採用 f の 3 択（参照実装 :339-343 のセグメント）の**語彙の所在**:
+//   値と表示名の対応は View（position_sizing_dialog.js の FRACTION_CHOICES）が所有する。
+//   ここに値だけの同名リストを置いていたが、消費者が 0 で、同じ概念に 2 つの定義がある状態
+//   （「どちらが正か」を読む人に考えさせる）だったため撤去した。
+//   本 usecase が見るのは `params.fractionChoice` の値そのものだけ（_chosenFraction）。
 
 export class PositionSizingPlanUseCase {
   constructor({ mcPort, levels, params }) {
