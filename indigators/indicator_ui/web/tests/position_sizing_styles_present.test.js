@@ -98,3 +98,21 @@ test('TC-CS06 アーム中は面が透過しモーダル本体だけ操作でき
     'アーム中にモーダル本体まで操作不能になる（取消も入力もできない）',
   );
 });
+
+test('TC-CS07 アーム中はパネルを寄せて幅を詰める（透過だけではチャートが露出しない）', () => {
+  // 実測（2026-08-20）: 版面 780px 幅に対しパネルは `width:720px`（中央寄せ）＝約 92% を占める。
+  //   backdrop を透過しても、パネル自体が覆う領域はポインタを通さないため、押せるチャートは
+  //   左右 30px ずつしか残らない＝「アーム中にチャートを操作できる」が実質成立しない。
+  //   アーム中だけパネルを端へ寄せ、幅を詰めてチャートを露出させる。
+  // Arrange: `.is-picking` 下のパネル規則を取り出す。
+  const rule = CSS.match(/\.ps-dialog-backdrop\.is-picking\s+\.ps-dialog\s*\{([^}]*)\}/g) ?? [];
+  const body = rule.join(' ');
+  // Act / Assert
+  assert.notEqual(rule.length, 0, 'アーム中のパネル規則が無い');
+  assert.match(body, /width\s*:/, 'アーム中もパネルが 720px のままでチャートを覆う');
+  assert.match(
+    CSS,
+    /\.ps-dialog-backdrop\.is-picking\s*\{[^}]*justify-content\s*:/,
+    'アーム中もパネルが中央のままでチャートの中心を覆う',
+  );
+});

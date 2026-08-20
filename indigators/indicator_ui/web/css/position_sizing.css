@@ -25,6 +25,13 @@
    暗幕も外す（チャートを見ながら価格を選ぶため）。 */
 .ps-dialog-backdrop.is-picking { pointer-events: none; background: transparent; }
 .ps-dialog-backdrop.is-picking .ps-dialog { pointer-events: auto; }
+/* 透過だけでは足りない: 実測でパネルは `width:720px` 中央寄せ＝版面 780px の約 92% を覆うため、
+   面を透過してもポインタが通るのは左右 30px ずつしか残らない。アーム中だけパネルを右上へ寄せ、
+   幅を詰めてチャートを露出させる（入力先の欄は見えたまま＝R-P1「入力先が常に一意」を保つ）。 */
+.ps-dialog-backdrop.is-picking { align-items: flex-start; justify-content: flex-end; }
+.ps-dialog-backdrop.is-picking .ps-dialog {
+  width: 320px; max-width: 40vw; max-height: 70vh; margin: 8px;
+}
 .ps-dialog {
   width: 720px; max-width: 94vw; max-height: 88vh;
   background: var(--ct-uiPanel, #1e222d); border: 1px solid var(--ct-uiBorder, #2a2e39); border-radius: 8px;
