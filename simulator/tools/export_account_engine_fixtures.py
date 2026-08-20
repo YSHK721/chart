@@ -1,7 +1,7 @@
 """export_account_engine_fixtures — JS 側検定用の golden fixture を出力する（ISSUE-369 Phase 2）。
 
 目的:
-    チャート UI 統合（ISSUE-368）で JS（domain/position_sizing_plan.js 予定）が実装する
+    チャート UI 統合（ISSUE-368）で JS（domain/account_margin_core.js）が実装する
     証拠金・ロスカット計算の数値検定に使う正解データを、権威（simulator/usecase/
     account_engine.py の閉形式）から生成する。JS 側は本 JSON と一致することを node --test で
     検定する（LAYERING_CONVENTIONS: 権威 Python・JS は golden fixture 一致検定）。
