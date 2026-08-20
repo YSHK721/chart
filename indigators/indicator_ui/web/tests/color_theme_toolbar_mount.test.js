@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { installChartToolbar } from '../js/adapter/front/app_chrome_view.js';
+import { INDEX_HTML } from './index_html_pages.js';
 
 class El {
   constructor() {
@@ -43,12 +44,9 @@ function makeDoc() {
   return { doc, anchor };
 }
 
-const INDEX_HTML = [
-  '../../../../indigators/indicator_ui/web/index.html',
-  '../../../../simulator/replay_ui/web/index.html',
-  '../../../../simulator/report_ui/web/index.html',
-  '../../../../unified_ui/web/index.html',
-];
+// 一覧は単一ソース（tests/index_html_pages.js）から読む。ISSUE-368 工程 2 是正 1:
+//   同型のガードが増えたときに一覧を手書き複製すると、配信ページの増減で片方だけが取り残される。
+//   本ファイルのアサーションは変えていない（読み先を定数から共有モジュールへ移しただけ）。
 
 test('TC-CT01 ツールバーに #color-theme-menu の空マウントを生成する（§6.1）', () => {
   // Arrange

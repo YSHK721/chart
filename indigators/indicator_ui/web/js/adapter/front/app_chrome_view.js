@@ -119,6 +119,9 @@ export function installChartToolbar(
     //   項目 DOM は color_theme_menu.js が生成する。**index.html には 1 枚も書かない**
     //   （器は本 View が所有する＝ISSUE-278 #16 の規約）。
     '<div class="color-theme-menu" id="color-theme-menu"></div>',
+    // ポジションサイズ計算機のマウント（ISSUE-368 スライス 6）。テーマと同じく器だけを置き、
+    //   トリガー DOM は position_sizing_menu.js が生成する（index.html は 1 枚も触らない）。
+    '<div class="position-sizing-menu" id="position-sizing-menu"></div>',
     '<button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター">'
       + '<span class="ic">∿</span><span class="lbl">インジケーター</span></button>',
     // モード切替のオン・オフトグル（統合 UI のみ・注入された定義の順に並ぶ）。
