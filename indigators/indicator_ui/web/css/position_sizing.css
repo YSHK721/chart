@@ -1,0 +1,93 @@
+/* position_sizing.css — ポジションサイズ計算機とアーム式ピッカーの見た目（ISSUE-368）。
+
+   器・項目 DOM は JS（app_chrome_view / position_sizing_menu / position_sizing_dialog /
+   price_pick_controller）が生成する。ここは**その見た目だけ**を持つ。
+
+   色の規約（テーマ恒等）: 生の色を書かず、必ず既存のクロムトークン `var(--ct-*, fallback)` を
+   通す。fallback は現行の既定色と同値にする（テーマ未選択時の見えを動かさない）。専用スロットの
+   新設＝配色の変更は別途承認事項のため行わない。
+
+/* ツールバー入口（器はツールバーが生成・トリガーは position_sizing_menu.js）。 */
+.position-sizing-menu { position: relative; display: inline-flex; }
+.position-sizing-menu-trigger { display: inline-flex; align-items: center; gap: 4px; }
+
+/* モーダル（同型元: .theme-dialog-*）。背景クリックでは閉じない＝誤操作防止は JS 側。 */
+.ps-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .45);
+  display: none; align-items: center; justify-content: center;
+}
+.ps-dialog-backdrop.is-open { display: flex; }
+.ps-dialog {
+  width: 720px; max-width: 94vw; max-height: 88vh;
+  background: var(--ct-uiPanel, #1e222d); border: 1px solid var(--ct-uiBorder, #2a2e39); border-radius: 8px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+}
+.ps-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border-bottom: 1px solid var(--ct-uiBorder, #2a2e39); user-select: none;
+}
+.ps-dialog-title { font-size: 14px; font-weight: 600; color: var(--ct-uiTextStrong, #ffffff); }
+.ps-dialog-close {
+  background: transparent; border: none; color: var(--ct-uiTextAux, #9aa0ad); font-size: 18px; cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.ps-dialog-close:hover { color: var(--ct-uiTextStrong, #ffffff); background: var(--ct-uiBorder, #2a2e39); }
+.ps-dialog-body {
+  padding: 12px 14px; overflow-y: auto; color: var(--ct-uiText, #d1d4dc); font-size: 13px;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;
+}
+.ps-dialog-section { min-width: 0; }
+.ps-dialog-section-title {
+  font-size: 12px; font-weight: 600; color: var(--ct-uiTextStrong, #ffffff);
+  border-bottom: 1px solid var(--ct-uiBorder, #2a2e39); padding-bottom: 5px; margin-bottom: 8px;
+}
+.ps-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ps-row-label { flex: 0 0 46%; color: var(--ct-uiTextLabel, #b2b5be); font-size: 12px; }
+.ps-row input, .ps-row select {
+  flex: 1 1 auto; min-width: 0;
+  background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
+  border-radius: 5px; color: var(--ct-uiText, #d1d4dc); font-size: 12px; padding: 4px 6px;
+}
+.ps-price-row input { flex: 1 1 auto; }
+.ps-pick {
+  flex: 0 0 auto; background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
+  border-radius: 5px; color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px; padding: 4px 6px; cursor: pointer;
+}
+.ps-pick:hover { color: var(--ct-uiTextStrong, #ffffff); border-color: var(--ct-uiAccent, #2962ff); }
+.ps-out { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.ps-out-label { color: var(--ct-uiTextLabel, #b2b5be); font-size: 11px; }
+.ps-out-value { color: var(--ct-uiTextStrong, #ffffff); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ps-choice {
+  background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
+  border-radius: 5px; color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px;
+  padding: 4px 8px; margin: 0 4px 8px 0; cursor: pointer;
+}
+.ps-choice.is-active {
+  background: var(--ct-uiAccent, #2962ff); border-color: var(--ct-uiAccent, #2962ff);
+  color: var(--ct-uiTextStrong, #ffffff);
+}
+.ps-dialog-run {
+  width: 100%; margin-top: 8px; padding: 6px 10px; cursor: pointer;
+  background: var(--ct-uiAccent, #2962ff); border: 1px solid var(--ct-uiAccent, #2962ff);
+  border-radius: 5px; color: var(--ct-uiTextStrong, #ffffff); font-size: 12px;
+}
+/* 決済方式で出し分ける表示群（参照実装 :1064 と同じ切り替え）。 */
+.ps-exit-group { border-top: 1px solid var(--ct-uiBorder, #2a2e39); margin-top: 6px; padding-top: 6px; }
+.ps-exit-group.is-hidden { display: none; }
+.ps-exit-note { color: var(--ct-uiTextAux, #9aa0ad); font-size: 10px; line-height: 1.5; margin-top: 4px; }
+
+/* アーム式ピッカーのゴースト（版面配下・price_pick_controller.js が所有）。
+   ホストは「採用予定の価格の高さ」に置かれ、線は版面いっぱいに水平に伸びる。 */
+.price-pick-ghost { position: absolute; left: 0; right: 0; z-index: 12; pointer-events: none; }
+.price-pick-ghost.is-hidden { display: none; }
+.price-pick-line {
+  height: 0; border-top: 1px dashed var(--ct-uiAccent, #2962ff);
+}
+.price-pick-label {
+  position: absolute; right: 6px; top: -9px;
+  background: var(--ct-uiPanel, #1e222d); border: 1px solid var(--ct-uiAccent, #2962ff);
+  border-radius: 4px; color: var(--ct-uiTextStrong, #ffffff);
+  font-size: 11px; padding: 1px 6px; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
