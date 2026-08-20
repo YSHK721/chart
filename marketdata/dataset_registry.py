@@ -32,12 +32,17 @@ class DatasetDescriptor:
 
     Attributes:
         path: ホワイトリスト解決先の実 CSV パス（生パス直送・パストラバーサル防止の唯一解決）。
+        symbol: この ref の価格がどの銘柄のものか（ISSUE-368 工程 2・案 E-1）。呼び値・表示桁は
+            :mod:`marketdata.symbol_spec` が銘柄キーで持つ（**別アクター**＝ブローカー規約の
+            所有物ゆえ、ここには同居させない）。従来は供給側が銘柄を一度も名乗らず、front が
+            ``CHART_SYMBOL='NI225'`` を自称していた。
         clamp_outliers: 読取時 外れ値クランプ（serving 戦略）の対象か（実市場 ref のみ True）。
         rollup: 1 分足原子＋事前生成ロールアップ CSV の供給経路を使うか（メモリ有界化・D-2）。
         tick: 形成中バー/tf-period を供給するティック由来 ref か（ticks parquet を持つ）。
     """
 
     path: Path
+    symbol: str
     clamp_outliers: bool = False
     rollup: bool = False
     tick: bool = False
@@ -46,22 +51,36 @@ class DatasetDescriptor:
 # datasetRef 記述子レジストリ（唯一源）。挿入順は従来の DATASET_WHITELIST と一致させる。
 REGISTRY: dict[str, DatasetDescriptor] = {
     # サンプル（同梱・日足 OHLCV）。合成 golden のためクランプ対象外。
+    #
+    # symbol="TSLA" の根拠（**推測ではなく同梱ファイルの実測**・ISSUE-368 工程 2）:
+    #   1. 同梱の ``examples/6_callbacks/bar_data/TSLA_30min.csv`` と日付が重なる 50 営業日の
+    #      うち 49 日で、30 分足から畳んだ日中 high/low が本 CSV の日足 high/low と**完全一致**
+    #      （例 2023-02-02: high=196.76 / low=182.61 が両者一致）。上流 repo の同梱データが
+    #      TSLA であることは ``examples/6_callbacks/callbacks.py:37`` の既定銘柄とも整合する。
+    #   2. 本 CSV の値は分割調整済み（2010-06-29 始点・close=1.5927）。最終分割以降
+    #      （2023-04-14 まで）の 640 値はすべて小数 2 桁以内＝**0.01 格子**。それ以前は分割調整の
+    #      残差で最大 4 桁になる。呼び値 0.01 はこの「調整前の素の格子」に一致する。
     "sample": DatasetDescriptor(
         path=_WORKSPACE_ROOT
         / "lightweight-charts-python-main"
         / "examples"
         / "4_line_indicators"
         / "ohlcv.csv",
+        symbol="TSLA",
     ),
     # JP225 日足（Dukascopy E_N225Jap・外れ値補正済み）。実市場ゆえクランプ対象。
-    "jp225": DatasetDescriptor(path=DATA_DIR / "jp225_daily.csv", clamp_outliers=True),
+    "jp225": DatasetDescriptor(
+        path=DATA_DIR / "jp225_daily.csv", symbol="JP225", clamp_outliers=True
+    ),
     # JP225 1分足原子（全時間足はこれを resample）。実市場・ロールアップ経路。
     "jp225_m1": DatasetDescriptor(
-        path=DATA_DIR / "jp225_m1.csv", clamp_outliers=True, rollup=True
+        path=DATA_DIR / "jp225_m1.csv", symbol="JP225", clamp_outliers=True, rollup=True
     ),
     # JP225 1分足（ティック由来・原子）。実市場・ロールアップ経路・ティック由来供給。
+    # symbol は既存事実の明文化（``tick_m1._DEFAULT_SYMBOL="JP225"`` / ``_DEFAULT_REF="jp225_tick"``）。
     "jp225_tick": DatasetDescriptor(
         path=DATA_DIR / "jp225_tick_m1.csv",
+        symbol="JP225",
         clamp_outliers=True,
         rollup=True,
         tick=True,

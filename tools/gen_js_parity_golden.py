@@ -25,6 +25,9 @@ import numpy as np  # noqa: E402
 from marketdata import session_day as sd  # noqa: E402
 from marketdata import resample  # noqa: E402
 from marketdata import tf_meta  # noqa: E402
+# ISSUE-368 工程 2（案 E-3）: 銘柄仕様（呼び値・表示桁）の権威は Python 台帳。JS は生成物として読む。
+from marketdata import dataset_registry  # noqa: E402
+from marketdata import symbol_spec  # noqa: E402
 # ISSUE-091 A7: private 名でなく公開 API（value_area）を参照する。
 # ISSUE-260: VA 比率の既定は Python 唯一源。JS は生成物として読む（第 2 定義を作らない）。
 from market_profile_api.compute.market_profile import VA_PCT_DEFAULT, value_area  # noqa: E402
@@ -38,6 +41,10 @@ MP_CAP_OUT = (ROOT / "indigators" / "market_profile" / "web" / "js" / "domain"
 #: MP パラメータ既定値の JS 生成物（VA 比率。Python の compute が唯一源・ISSUE-260）。
 MP_PARAM_OUT = (ROOT / "indigators" / "market_profile" / "web" / "js" / "domain"
                 / "mp_param_defaults_generated.js")
+#: 銘柄仕様の JS 生成物（呼び値・表示桁。Python の台帳が唯一源・ISSUE-368 工程 2 案 E-3）。
+#: 消費者は indicator_ui のみ（market_profile とは共有しない）ため実体をこちらに置く。
+SYMBOL_SPEC_OUT = (ROOT / "indigators" / "indicator_ui" / "web" / "js" / "domain"
+                   / "symbol_spec_generated.js")
 
 
 def _utc(y, m, d, hh=0, mm=0, ss=0):
@@ -218,6 +225,43 @@ def render_mp_param_defaults_js(va_pct_default: float) -> str:
     )
 
 
+def render_symbol_spec_js(dataset_symbols: "dict[str, str]", symbol_specs: "dict") -> str:
+    """銘柄仕様の JS モジュール（データのみ・自動生成）を組み立てる。
+
+    ``dataset_symbols`` は ref→銘柄（``dataset_registry.REGISTRY`` 由来）、``symbol_specs`` は
+    銘柄→``SymbolSpec``（``marketdata.symbol_spec.SYMBOL_SPECS``）。両方を配ることで front は
+    手元の ``datasetRef`` から spec まで到達できる（front に第 2 の対応表を作らせない）。
+    """
+    refs = ",\n".join(
+        f"  '{ref}': '{symbol}'" for ref, symbol in dataset_symbols.items()
+    )
+    specs = ",\n".join(
+        "  '{s}': Object.freeze({{ tick: {tick!r}, digits: {digits} }})".format(
+            s=s, tick=spec.tick, digits=int(spec.digits)
+        )
+        for s, spec in symbol_specs.items()
+    )
+    return (
+        "// symbol_spec_generated.js — 銘柄仕様台帳（**自動生成・手で編集しない**）。\n"
+        "//\n"
+        "// 生成元: marketdata/dataset_registry.py の REGISTRY（ref→銘柄）\n"
+        "//         ＋ marketdata/symbol_spec.py の SYMBOL_SPECS（銘柄→呼び値・表示桁）。\n"
+        "// 生成器: tools/gen_js_parity_golden.py（台帳変更時に再実行する）。\n"
+        "//\n"
+        "// なぜ生成物なのか（ISSUE-368 工程 2・案 E-3）: 呼び値を JS 側にも書くと第 2 定義になり、\n"
+        "//   Python の台帳と静かにずれる（ISSUE-253 / ISSUE-254 と同型）。定義は Python ただ 1 つと\n"
+        "//   し、JS は生成された値を読むだけにする。陳腐化は marketdata/tests の parity 検定が落とす。\n"
+        "//   HTTP route は作らない（供給元が 1 つ・起動時 1 回の定数。route 化は無音フォールバックと\n"
+        "//   file:// 起動不能を新設する）。\n"
+        "//\n"
+        "//   datasetRef → 銘柄 → { tick: 呼び値, digits: 表示桁 } の 2 段を両方ここで配る。\n"
+        "//   未知 ref / 未知銘柄は undefined になる（呼び側は無音で生値に落とさず機能を落とす）。\n"
+        "export const DATASET_SYMBOLS = Object.freeze({\n" + refs + ",\n});\n"
+        "\n"
+        "export const SYMBOL_SPECS = Object.freeze({\n" + specs + ",\n});\n"
+    )
+
+
 def main() -> None:
     sessions = [
         {
@@ -255,6 +299,14 @@ def main() -> None:
     print(f"wrote {MP_CAP_OUT}")
     MP_PARAM_OUT.write_text(render_mp_param_defaults_js(VA_PCT_DEFAULT), encoding="utf-8")
     print(f"wrote {MP_PARAM_OUT}")
+    SYMBOL_SPEC_OUT.write_text(
+        render_symbol_spec_js(
+            {ref: d.symbol for ref, d in dataset_registry.REGISTRY.items()},
+            symbol_spec.SYMBOL_SPECS,
+        ),
+        encoding="utf-8",
+    )
+    print(f"wrote {SYMBOL_SPEC_OUT}")
 
 
 if __name__ == "__main__":
