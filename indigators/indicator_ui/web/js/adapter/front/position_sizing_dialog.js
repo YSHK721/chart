@@ -228,7 +228,11 @@ export class PositionSizingDialog {
     this._outs = new Map();      // data-ps-out キー -> 表示要素
     this._choiceEls = new Map(); // 採用 f の 3 択
     this._fields = new Map();    // data-ps-field キー -> 入力要素
-    this._prices = new Map();    // 'entry:i' / 'stop' / 'take' -> 入力要素
+    this._prices = new Map();    // 'entry:i' / 'stop' / 'take' -> 入力要素（表示）
+    // 価格の**保持先**（Y-4）。DOM は表示に徹し、値はここが持つ。K の打ち直し（空文字を
+    //   通過する）で欄を作り直しても、モデル側に在るので消えない。close() でも捨てない
+    //   ＝右クリックで開き直したときに直前の入力が戻る。
+    this._priceValues = new Map();
     this._priceBox = null;       // 価格欄のコンテナ（K の変更で作り直す）
     this._progress = null;       // MC 進捗の表示欄（open で作り close で捨てる）
     this._customBox = null;      // 重みカスタムの入力欄コンテナ（参照実装 renderCustomInputs）
@@ -572,7 +576,11 @@ export class PositionSizingDialog {
     if (!box) {
       return;
     }
-    const previous = new Map([...this._prices].map(([target, el]) => [target, el.value]));
+    // 捨てる前に、いま画面に出ている値をモデルへ取り込む（欄の作り直しで編集を失わない）。
+    //   モデルは K を跨いで残るので、K の打ち直し（空文字の通過）で建値が消えない（Y-4）。
+    for (const [target, el] of this._prices) {
+      this._priceValues.set(target, el.value);
+    }
     box.innerHTML = '';
     this._prices = new Map();
     const splits = this._splitCount();
@@ -582,7 +590,7 @@ export class PositionSizingDialog {
     }
     targets.push(['stop', '損切り'], ['take', '利確']);
     for (const [target, label] of targets) {
-      box.append(this._priceRow(target, label, previous.get(target) ?? ''));
+      box.append(this._priceRow(target, label, this._priceValues.get(target) ?? ''));
     }
   }
 
@@ -600,7 +608,10 @@ export class PositionSizingDialog {
     input.dataset.psPrice = target;
     input.step = 'any';
     input.value = value;
-    input.addEventListener('input', () => this._emitLevels());
+    input.addEventListener('input', () => {
+      this._priceValues.set(target, input.value);   // 保持先はモデル（DOM は表示）。
+      this._emitLevels();
+    });
     const pick = doc.createElement('button');
     pick.type = 'button';
     pick.className = 'ps-pick';
@@ -624,6 +635,7 @@ export class PositionSizingDialog {
       return;
     }
     input.value = String(price);
+    this._priceValues.set(target, input.value);
     this._emitLevels();
   }
 
@@ -647,9 +659,11 @@ export class PositionSizingDialog {
       this._renderPriceRows();
     }
     const write = (target, value) => {
+      const text = (value === null || value === undefined) ? '' : String(value);
+      this._priceValues.set(target, text);
       const input = this._prices.get(target);
       if (input) {
-        input.value = (value === null || value === undefined) ? '' : String(value);
+        input.value = text;
       }
     };
     entries.forEach((price, i) => write(`entry:${i}`, price));

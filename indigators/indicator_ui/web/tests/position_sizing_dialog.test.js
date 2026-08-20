@@ -872,3 +872,58 @@ test('TC-PD45 カスタム以外を選ぶと入力欄は出ない（参照実装
   sel.fire('change');
   assert.equal(allData(root, 'psCustomWeight').length, 0, 'custom を外しても欄が残っている');
 });
+
+// ---------------------------------------------------------------------------
+// 価格の保持先（工程 5 レビュー Y-4）
+//
+//   再現: K 欄を空にすると `_splitCount()` が 1 へ落ちて欄を作り直すため、建値 2 本目以降の
+//   入力値が**消える**。入力途中（空文字）は打ち直しの通過点であり、そこで値を捨てると
+//   「K を打ち直しただけで入力が消えた」になる。
+//   是正: 入力値はモデル側（Map）に持ち、DOM は表示に徹する（作り直しても値が残る）。
+// ---------------------------------------------------------------------------
+
+test('TC-PD46 K 欄を空にしても建値の入力値が消えない（打ち直しの通過点で捨てない）', () => {
+  // Arrange: K=3 のまま 3 本へ値を入れる。
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc });
+  dialog.open();
+  const root = doc.body.children[0];
+  const price = (t) => byData(root, 'psPrice', t);
+  price('entry:0').value = '58700';
+  price('entry:0').fire('input');
+  price('entry:1').value = '58600';
+  price('entry:1').fire('input');
+  price('entry:2').value = '58500';
+  price('entry:2').fire('input');
+  const splits = byData(root, 'psField', 'splits');
+  // Act: K 欄を空にする（打ち直しの途中）→ そのまま 3 へ戻す。
+  splits.value = '';
+  splits.fire('input');
+  splits.value = '3';
+  splits.fire('input');
+  // Assert: 3 本とも元の値が残っている。
+  assert.equal(byData(root, 'psPrice', 'entry:0').value, '58700');
+  assert.equal(byData(root, 'psPrice', 'entry:1').value, '58600', 'K を打ち直しただけで消えた');
+  assert.equal(byData(root, 'psPrice', 'entry:2').value, '58500', 'K を打ち直しただけで消えた');
+});
+
+test('TC-PD47 K を減らして戻しても損切り・利確は残る（欄の作り直しで捨てない）', () => {
+  // Arrange
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc });
+  dialog.open();
+  const root = doc.body.children[0];
+  byData(root, 'psPrice', 'stop').value = '58340';
+  byData(root, 'psPrice', 'stop').fire('input');
+  byData(root, 'psPrice', 'take').value = '59200';
+  byData(root, 'psPrice', 'take').fire('input');
+  const splits = byData(root, 'psField', 'splits');
+  // Act
+  splits.value = '1';
+  splits.fire('input');
+  splits.value = '3';
+  splits.fire('input');
+  // Assert
+  assert.equal(byData(root, 'psPrice', 'stop').value, '58340');
+  assert.equal(byData(root, 'psPrice', 'take').value, '59200');
+});
