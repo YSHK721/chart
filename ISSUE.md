@@ -8492,3 +8492,44 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
 - **抜本的解決**: 各対象に「本番の合成根と同形（テスト専用キー不在）の構築」を検証するテストを追加し
   ゲートを緑に戻す（検定の緩和・除外リスト追加は症状回避＝不可）。
 - **関連**: ISSUE-423（発見契機＝段階 3 TDD の回帰実行）。
+
+## ISSUE-428: [設計・要裁定] `/sim/jobs` パス基底が M5/M7 の 2 モジュールに手書き複製（単一ソース化が既存ガードと不可侵制約に阻まれる）（2026-08-20）
+
+- **ステータス**: OPEN（段階 3 SOLID リファクタ工程で検出。抜本形が承認事項を伴うため未着手）
+- **重大度**: Medium（現時点の実害 0。サーバ側のジョブ面パスを変えた際に片方だけ腐る）
+- **事実（実測 2026-08-20・実行されるコード上の複製 2 件）**:
+  - `simulator/sim_ui/web/js/adapter/front/job_submit_client.js:20` `export const JOBS_URL = "/sim/jobs";`
+  - `simulator/sim_ui/web/js/adapter/front/job_status_client.js:19` `` return `/sim/jobs/${encodeURIComponent(jobId)}`; ``
+  厳命「同じコードを手書き複製するな（単一ソース）」に抵触する。
+- **単一ソース化を阻む制約（すべて実測。4 経路とも塞がっている）**:
+  1. `tests/import_source.test.js:92` `assert.deepEqual(importSpecifiers(read(STATUS_CLIENT)), [])`
+     ＝M7 は**何も import できない**（共有モジュールを引けない）。
+  2. `tests/import_source.test.js:73` `assert.deepEqual(FRONT_FILES.sort(), [...])` が front を 20 ファイルに固定
+     ＝共有モジュール新設は既存アサーションの改変を要する。
+  3. `tests/job_status_client.test.js:66` `assert.equal(jobStatusUrl("j1"), "/sim/jobs/j1")` は注入を受けない
+     ＝M7 は単独で基底を持てなければならない（合成根からの注入では基底が M7 に残り複製が消えない）。
+  4. `job_submit_client.js` は Phase 9 誓約の不可侵ファイル（1 byte 不変）＝M5 側から共有点を引けない。
+- **抜本的解決（承認事項・未実施）**: `js/adapter/front/sim_job_endpoints.js`（依存 0・パス基底の唯一の宣言）を
+  新設し、M5・M7 の双方がそこから引く。伴う承認事項は 2 点——(a) 不可侵ファイル `job_submit_client.js` の改変、
+  (b) 既存アサーション 3 件（上記 1・2・3）の改訂。いずれも段階 3 の誓約（不可侵・既存検定無改変）に触れるため、
+  独立した工程として裁定を要する。
+- **却下した代替（応急処置に該当するため提示のみで不採用）**: 合成根から basePath を注入する形は、
+  M7 に既定値の基底リテラルが残るため複製が消えず、権威が 2 つ（既定と注入）に増えて悪化する。
+- **関連**: ISSUE-421（同型＝同一概念が 2 モジュールに別実装）・memory: no-hand-duplication-single-source。
+
+## ISSUE-429: [設計] 掲示面 M6 の DOM 内部構造（class 名）を外部 4 箇所が再実装している（2026-08-20）
+
+- **ステータス**: OPEN（段階 3 SOLID リファクタ工程で検出。是正がテストコード改変を伴うため未着手）
+- **重大度**: Low（検定・driver 側のみ。本番描画への影響 0）
+- **事実（実測 2026-08-20）**: `sim_run_status_view.js` の掲示枠 class 名（`run-status-phase` 等）を、
+  `tests/sim_run_status_view.test.js:34 textOf`・`tests/composition_root_execution.test.js:303 statusTextOf`・
+  `tests/e2e_submit_driver.mjs` の `statusPanelText` / `statusSlotText` の 4 箇所が個別に走査で再実装している。
+  M6 内部では 2026-08-20 の宣言表化（STATUS_SLOTS）で class 名は単一ソース化済みだが、**外部消費者は依然として
+  内部構造を知っている**（M6 が class 名を変えると 4 箇所が同時に壊れる）。
+  あわせて `fakeTimer` が `tests/job_status_client.test.js` と `tests/composition_root_execution.test.js` に
+  実装違いで手書き複製されている（`_fakes.js` が共有ダブルの置き場として既存）。
+- **抜本的解決**: M6 が掲示中の文字を読む口を公開し（既に `elements.<key>Node` を公開済み＝走査は不要）、
+  消費者はそれを使う。`fakeTimer` は `_fakes.js` へ集約する。いずれも既存テストの**ヘルパ関数本体**の
+  改変を伴うため（アサーションは不変）、TDD Refactor の「テストコードを変更しない」規律との関係で
+  独立した工程として実施の可否を要確認。
+- **関連**: memory: no-hand-duplication-single-source。
