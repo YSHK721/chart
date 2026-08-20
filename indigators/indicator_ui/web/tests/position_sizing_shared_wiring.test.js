@@ -589,3 +589,22 @@ test('TC-SW22 計算機一式は replay ツリー内で相対 import が解決�
   // Assert
   assert.deepEqual(missing, [], `replay ツリーで解決できない import（symlink 張り忘れ）: ${missing.join(', ')}`);
 });
+
+test('TC-SW23 「チャートで指定」で対象名つきバーへ畳み、取消で復帰する（裁定 2026-08-20・端から端まで）', () => {
+  // Arrange
+  const ctx = bootAll();
+  ctx.mounts.get('position-sizing-menu').children[0].fire('click');
+  const backdrop = ctx.body.children.find((e) => e.dataset && e.dataset.psDialog === 'plan');
+  const textOf = (el) => [el, ...flatten(el)].map((e) => e.textContent ?? '').join(' ');
+  const bar = () => flatten(backdrop).find((e) => e.dataset && e.dataset.psPickingBar !== undefined);
+  // Act: 利確欄の「チャートで指定」を押す。
+  flatten(backdrop).find((e) => e.dataset && e.dataset.psPick === 'take').fire('click');
+  // Assert: 畳んだ状態＋対象名が出る（どの欄を指定中かが画面に残る）。
+  assert.equal(backdrop.classList.contains('is-picking'), true);
+  assert.match(textOf(bar()), /利確をチャートで指定中/, 'バーに対象名が出ていない');
+  // Act: バーの [取消] を押す（画面からの解除手段）。
+  flatten(backdrop).find((e) => e.dataset && e.dataset.psAction === 'cancel-pick').fire('click');
+  // Assert: アームが解けてパネルが復帰する。
+  assert.equal(ctx.wired.positionSizing.picker.isArmed(), false, '[取消] でアームが解除されない');
+  assert.equal(backdrop.classList.contains('is-picking'), false, 'パネルが復帰しない');
+});

@@ -1006,3 +1006,63 @@ test('TC-PD51 即時ロスカットは「実質なし」に倒さない（参照
   assert.equal(/実質ロスカットなし/.test(text), false, '証拠金不足なのに安全側の文言を出している');
   assert.match(text, /ロスカットが損切りより手前/);
 });
+
+// ---------------------------------------------------------------------------
+// アーム中は細いバーに畳む（依頼者裁定 2026-08-20・実測スクショ根拠）
+//
+//   実測: 320px へ狭めた版ではモーダル本体が残るため入力欄の値が切れ（「38」→「3」）、
+//   ラベルが 3 行に折り返して読めない。パネルを細くするのではなく**畳む**。
+//   アーム中はパネル本体を隠し「◯◯をチャートで指定中… [取消]」の細いバーだけを出す。
+//   確定・取消でパネルが復帰し、**入力状態は保持**される（DOM を作り直さないため）。
+// ---------------------------------------------------------------------------
+
+const pickingBar = (root) => flatten(root).find((e) => e.dataset && e.dataset.psPickingBar !== undefined);
+
+test('TC-PD52 アーム中は対象名つきの細いバーを出す（指定中の欄で文言が変わる）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  assert.equal(root._cls.has('is-picking'), false, '開いた直後は通常表示');
+  // Act / Assert: 損切り。
+  dialog.setPicking(true, 'stop');
+  assert.equal(root._cls.has('is-picking'), true);
+  assert.match(textOf(pickingBar(root)), /損切りをチャートで指定中/);
+  // Act / Assert: 建値 2 本目（対象名が変わる）。
+  dialog.setPicking(true, 'entry:1');
+  assert.match(textOf(pickingBar(root)), /建値 2をチャートで指定中/);
+  // Act / Assert: 利確。
+  dialog.setPicking(true, 'take');
+  assert.match(textOf(pickingBar(root)), /利確をチャートで指定中/);
+});
+
+test('TC-PD53 バーの [取消] は取消要求を通知する（画面から解除できる手段を残す）', () => {
+  // Arrange
+  const calls = [];
+  const doc = fakeDoc();
+  const dialog = new PositionSizingDialog({ document: doc, onCancelPick: () => calls.push('cancel') });
+  dialog.open();
+  const root = doc.body.children[0];
+  dialog.setPicking(true, 'stop');
+  // Act
+  flatten(root).find((e) => e.dataset && e.dataset.psAction === 'cancel-pick').fire('click');
+  // Assert
+  assert.deepEqual(calls, ['cancel']);
+});
+
+test('TC-PD54 解除でパネルが復帰し、入力状態が保持される（畳んだだけ・作り直さない）', () => {
+  // Arrange: 値を入れてからアームする。
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc });
+  dialog.open();
+  const root = doc.body.children[0];
+  const stop = byData(root, 'psPrice', 'stop');
+  stop.value = '58340';
+  stop.fire('input');
+  byData(root, 'psField', 'winRate').value = '41';
+  // Act
+  dialog.setPicking(true, 'stop');
+  dialog.setPicking(false, null);
+  // Assert: 同じ要素が生きていて値も残っている。
+  assert.equal(root._cls.has('is-picking'), false, 'バー表示のまま戻っていない');
+  assert.equal(byData(root, 'psPrice', 'stop').value, '58340', '入力値が失われた');
+  assert.equal(byData(root, 'psField', 'winRate').value, '41', '入力値が失われた');
+});

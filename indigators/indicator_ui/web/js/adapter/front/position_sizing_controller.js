@@ -125,8 +125,8 @@ export class PositionSizingController {
    * アーム中はモーダルを非モーダル化しないとチャートを覆ったままになり、
    * ホバーもクリックもできず R-P1 が成立しない。判断も表示も持たず**中継するだけ**。
    */
-  setPicking(armed) {
-    this._dialog?.setPicking?.(armed);
+  setPicking(armed, target = null) {
+    this._dialog?.setPicking?.(armed, target);
   }
 
   /**

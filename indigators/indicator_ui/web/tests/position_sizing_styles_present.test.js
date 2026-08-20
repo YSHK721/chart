@@ -99,22 +99,23 @@ test('TC-CS06 アーム中は面が透過しモーダル本体だけ操作でき
   );
 });
 
-test('TC-CS07 アーム中はパネルを寄せて幅を詰める（透過だけではチャートが露出しない）', () => {
-  // 実測（2026-08-20）: 版面 780px 幅に対しパネルは `width:720px`（中央寄せ）＝約 92% を占める。
-  //   backdrop を透過しても、パネル自体が覆う領域はポインタを通さないため、押せるチャートは
-  //   左右 30px ずつしか残らない＝「アーム中にチャートを操作できる」が実質成立しない。
-  //   アーム中だけパネルを端へ寄せ、幅を詰めてチャートを露出させる。
-  // Arrange: `.is-picking` 下のパネル規則を取り出す。
-  const rule = CSS.match(/\.ps-dialog-backdrop\.is-picking\s+\.ps-dialog\s*\{([^}]*)\}/g) ?? [];
-  const body = rule.join(' ');
-  // Act / Assert
-  assert.notEqual(rule.length, 0, 'アーム中のパネル規則が無い');
-  assert.match(body, /width\s*:/, 'アーム中もパネルが 720px のままでチャートを覆う');
+test('TC-CS07 アーム中はパネルを畳み細いバーだけを出す（裁定 2026-08-20）', () => {
+  // 旧版（320px へ幅を詰める）は実測スクショで入力欄の値が切れ（「38」→「3」）、ラベルが
+  //   3 行折り返しで読めなかった。裁定により**畳む**方式へ差し替え。パネルは display:none
+  //   （消さずに隠すだけ＝解除で入力値がそのまま復帰する）、バーだけを出す。
+  // Arrange / Act / Assert
   assert.match(
     CSS,
-    /\.ps-dialog-backdrop\.is-picking\s*\{[^}]*justify-content\s*:/,
-    'アーム中もパネルが中央のままでチャートの中心を覆う',
+    /\.ps-dialog-backdrop\.is-picking\s+\.ps-dialog\s*\{[^}]*display\s*:\s*none/,
+    'アーム中もパネルが出たままでチャートを覆う',
   );
+  assert.match(
+    CSS,
+    /\.ps-dialog-backdrop\.is-picking\s+\.ps-picking-bar\s*\{[^}]*display\s*:\s*flex/,
+    'アーム中の案内バーが出ない（解除手段も対象名も画面から消える）',
+  );
+  assert.match(CSS, /\.ps-picking-bar\s*\{[^}]*display\s*:\s*none/, '非アーム中にバーが出たままになる');
+  assert.match(CSS, /\.ps-picking-cancel\s*\{/, '[取消] ボタンの CSS が無い（押せるように見えない）');
 });
 
 test('TC-CS08 重みカスタムの入力欄に CSS 規則が在る（見えなければ入力できない・🔴-3）', () => {

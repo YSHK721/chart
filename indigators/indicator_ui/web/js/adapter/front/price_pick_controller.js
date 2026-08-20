@@ -43,7 +43,7 @@ export class PricePickController {
    * @param {object} deps.document  DOM 実装（注入）。
    * @param {?Function} [deps.registerVerticalPanBlocker] (predicate) => unregister。
    * @param {?Function} [deps.onConfirm] (target, price) => void。確定時の書き戻し。
-   * @param {?Function} [deps.onArmChange] (armed: boolean) => void。アーム状態の変化通知。
+   * @param {?Function} [deps.onArmChange] (armed: boolean, target: ?string) => void。アーム状態の変化通知。
    *   アーム中はモーダルがチャートを覆ってはならない（実 UI 実測 2026-08-20）。本 class は
    *   モーダルを知らないので、状態だけを外へ知らせる（表示の決定は呼び出し側＝DIP）。
    * @param {object} [deps.anchor] 版面要素の直接注入（既定は document から .chart-wrap）。
@@ -117,7 +117,7 @@ export class PricePickController {
     this._suppressInteraction();
     // アーム中はチャートがポインタを受け取れる必要がある（モーダルが覆っていると R-P1 が
     //   成立しない・実 UI 実測 2026-08-20）。どう見せるかは呼び出し側の責務。
-    this._onArmChange?.(true);
+    this._onArmChange?.(true, this._target);
   }
 
   /** 解除（Esc・モーダル側の取消・確定後）。冪等。 */
@@ -129,7 +129,7 @@ export class PricePickController {
     this._hideGhost();
     this._releaseInteraction?.();
     this._releaseInteraction = null;
-    this._onArmChange?.(false);
+    this._onArmChange?.(false, null);
   }
 
   // ---- 内部 ----

@@ -241,6 +241,21 @@ export const FRACTION_CHOICES = [
   ['full', 'フルケリー'],
 ];
 
+/**
+ * 価格欄の対象名（`entry:i` / `stop` / `take` → 表示名）。
+ * 欄のラベルとアーム中バーの文言が**同じ表**から出る（片方だけ直る取り残しを作らない）。
+ */
+function priceTargetLabel(target) {
+  if (target === 'stop') {
+    return '損切り';
+  }
+  if (target === 'take') {
+    return '利確';
+  }
+  const m = /^entry:(\d+)$/.exec(String(target ?? ''));
+  return m ? `建値 ${Number(m[1]) + 1}` : '';
+}
+
 export class PositionSizingDialog {
   /**
    * @param {object} opts
@@ -253,7 +268,7 @@ export class PositionSizingDialog {
    */
   constructor({
     document: doc = null, onChangeParams = null, onChangeLevels = null,
-    onRun = null, onRequestPick = null, onClose = null,
+    onRun = null, onRequestPick = null, onClose = null, onCancelPick = null,
   } = {}) {
     this._doc = doc;
     this._onChangeParams = typeof onChangeParams === 'function' ? onChangeParams : null;
@@ -261,6 +276,8 @@ export class PositionSizingDialog {
     this._onRun = typeof onRun === 'function' ? onRun : null;
     this._onRequestPick = typeof onRequestPick === 'function' ? onRequestPick : null;
     this._onClose = typeof onClose === 'function' ? onClose : null;
+    this._onCancelPick = typeof onCancelPick === 'function' ? onCancelPick : null;
+    this._pickingBar = null;     // アーム中に出す細いバー（パネルは畳む）
     this._reopening = false;     // open() が内部で close() する間だけ真（取消ではない）
     this._root = null;
     this._outs = new Map();      // data-ps-out キー -> 表示要素
@@ -304,6 +321,7 @@ export class PositionSizingDialog {
     this._priceBox = null;
     this._progress = null;
     this._customBox = null;
+    this._pickingBar = null;
     this._exitGroups = new Map();
     if (wasOpen) {
       this._onClose?.();
@@ -342,7 +360,19 @@ export class PositionSizingDialog {
     body.append(this._step1(), this._step2(), this._step3());
 
     panel.append(head, body);
-    root.append(panel);
+    // アーム中に出す細いバー（パネルの**兄弟**に置く。子にするとパネルを畳んだとき一緒に消える）。
+    //   高さを詰め、チャートを極力覆わない（裁定 2026-08-20）。
+    const bar = doc.createElement('div');
+    bar.className = 'ps-picking-bar';
+    bar.dataset.psPickingBar = '';
+    const barText = doc.createElement('span');
+    barText.className = 'ps-picking-text';
+    const barCancel = this._button('取消', 'cancel-pick', 'ps-picking-cancel');
+    barCancel.addEventListener('click', () => this._onCancelPick?.());
+    bar.append(barText, barCancel);
+    this._pickingBar = bar;
+    this._pickingText = barText;
+    root.append(bar, panel);
     // 背景クリックでは閉じない（誤操作防止・color_theme_dialogs と同方針）。
     root.addEventListener('mousedown', (ev) => {
       if (ev && ev.target === root && typeof ev.stopPropagation === 'function') {
@@ -625,9 +655,9 @@ export class PositionSizingDialog {
     const splits = this._splitCount();
     const targets = [];
     for (let i = 0; i < splits; i += 1) {
-      targets.push([`entry:${i}`, `建値 ${i + 1}`]);
+      targets.push([`entry:${i}`, priceTargetLabel(`entry:${i}`)]);
     }
-    targets.push(['stop', '損切り'], ['take', '利確']);
+    targets.push(['stop', priceTargetLabel('stop')], ['take', priceTargetLabel('take')]);
     for (const [target, label] of targets) {
       box.append(this._priceRow(target, label, this._priceValues.get(target) ?? ''));
     }
@@ -834,18 +864,27 @@ export class PositionSizingDialog {
    * そのままだと `elementFromPoint(チャート中央)` がモーダルを返す＝チャートをホバーも
    * クリックもできず、R-P1（クロスヘア追従 → クリック確定）が実 UI で成立しない。
    *
-   * ここで持つのは**状態クラスの付け外しだけ**で、透過そのものは CSS が決める
-   * （`.ps-dialog-backdrop.is-picking` に `pointer-events: none`／パネルだけ `auto`）。
+   * ここで持つのは**状態クラスの付け外しとバーの文言だけ**で、畳み方は CSS が決める
+   * （`.is-picking` でパネルを隠し、細いバーだけを出す）。
    * DOM を作り直さないため、アーム解除・確定後も全入力値がそのまま残る（必須要件）。
    *
+   * 裁定（2026-08-20・実測スクショ根拠）: パネルを細くするのではなく**畳む**。
+   * 320px へ狭めた版では入力欄の値が切れ（「38」→「3」）、ラベルが 3 行に折り返して読めなかった。
+   *
    * @param {boolean} on アーム中なら true。
+   * @param {?string} target 指定中の欄（'entry:i' / 'stop' / 'take'）。バーの文言に使う。
    */
-  setPicking(on) {
+  setPicking(on, target = null) {
     const root = this._root;
     if (!root || !root.classList || typeof root.classList.toggle !== 'function') {
       return;   // 閉じている・DOM 非対応は no-op。
     }
     root.classList.toggle('is-picking', !!on);
+    if (this._pickingText) {
+      // 対象名は価格欄のラベルと同じ表から引く（片方だけ直る取り残しを作らない）。
+      const label = priceTargetLabel(target);
+      this._pickingText.textContent = on && label ? `${label}をチャートで指定中…` : '';
+    }
   }
 
   /**

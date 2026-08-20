@@ -316,6 +316,8 @@ function createPositionSizingUi(doc, getPositionSizing) {
     onRequestPick: (target) => { const c = of(); return c ? c.requestPick(target) : undefined; },
     // 閉じたらアームも解除する（残すと抑止が掛かったまま解除手段が画面から消える・Y-1）。
     onClose: () => { const c = of(); return c ? c.cancelPick() : undefined; },
+    // アーム中バーの [取消]（画面から解除できる手段・裁定 2026-08-20）。
+    onCancelPick: () => { const c = of(); return c ? c.cancelPick() : undefined; },
   });
   const menu = new PositionSizingMenu({
     document: doc,
@@ -498,7 +500,7 @@ function createPositionSizingCollaborators({
     onConfirm: (target, price) => controller.confirmPick(target, price),
     // アーム中はモーダルがチャートを覆ってはならない（実 UI 実測 2026-08-20: backdrop が
     //   ビューポート全面のままで elementFromPoint がモーダルを返し、R-P1 が成立しなかった）。
-    onArmChange: (armed) => controller.setPicking(armed),
+    onArmChange: (armed, target) => controller.setPicking(armed, target),
   });
   picker.install();
 
