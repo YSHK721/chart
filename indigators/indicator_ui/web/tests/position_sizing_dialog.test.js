@@ -414,3 +414,68 @@ test('TC-PD21 K の変更で価格欄を作り直しても、同じ欄の入力�
   assert.equal(byData(dialog._root, 'psPrice', 'stop').value, '58340');
   assert.equal(byData(dialog._root, 'psPrice', 'entry:3').value, '', '増えた欄は空から始まる');
 });
+
+// ---------------------------------------------------------------------------
+// 決済方式（exit）の表示出し分け（ISSUE-368 乖離記録 1 の解消・スライス 7）
+//
+// 参照実装の定義（**読んで確認した事実**・推測ではない）:
+//   `S.exit` の出現箇所は :387-389（DOM）/ :578（初期値）/ :799-800（トグル→renderSplit）/
+//   :1064（renderSplit の表示分岐）/ :1115・:1136（テキスト出力）だけで、
+//   **build()（:956-1031）には 1 箇所も出てこない**＝計算には効かず、表示だけを切り替える。
+//   - bracket: 損益分岐到達確率 / 実測勝率 p / 超過勝率 / 期待値（実測 p ベース）の 4 行
+//   - time   : 代わりに「期待値 EV（①実測, R マルチプル）＝ Rp−q」1 行と注記
+// ---------------------------------------------------------------------------
+
+test('TC-PD22 既定（ブラケット）は 2 値評価の 4 行を出し、時間決済の行は出さない（:1064）', () => {
+  // Arrange / Act
+  const { root, dialog } = build();
+  dialog.render(VM);
+  // Assert
+  for (const key of ['breakeven', 'winRate', 'excess', 'evYen']) {
+    assert.ok(byData(root, 'psOut', key), `ブラケット決済の行 ${key} が無い`);
+  }
+  assert.equal(byData(root, 'psGroup', 'bracket').classList.contains('is-hidden'), false);
+  assert.equal(byData(root, 'psGroup', 'time').classList.contains('is-hidden'), true);
+});
+
+test('TC-PD23 時間決済へ切り替えると 2 値評価を隠し、EV（R マルチプル）を出す（:1064 の else 側）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  dialog.render(VM);
+  // Act
+  const sel = byData(root, 'psField', 'exitMode');
+  sel.value = 'time';
+  sel.fire('change');
+  // Assert
+  assert.equal(byData(root, 'psGroup', 'bracket').classList.contains('is-hidden'), true);
+  assert.equal(byData(root, 'psGroup', 'time').classList.contains('is-hidden'), false);
+  assert.equal(
+    byData(root, 'psOut', 'evMultiple').textContent,
+    String(VM.derived.expectedValue),
+    'EV は ViewModel の derived.expectedValue（Rp−q）をそのまま出す＝式を持たない',
+  );
+});
+
+test('TC-PD24 exit は usecase へ渡さない（参照実装で build() に効かない＝表示だけの関心）', () => {
+  // Arrange
+  const patches = [];
+  const { root } = build({ onChangeParams: (p) => patches.push(p) });
+  // Act
+  const sel = byData(root, 'psField', 'exitMode');
+  sel.value = 'time';
+  sel.fire('change');
+  // Assert
+  assert.deepEqual(patches, [], '計算に効かない値を usecase へ流すと「効いているつもり」の偽配線になる');
+});
+
+test('TC-PD25 時間決済には参照実装どおりの注記を出す（2 値評価は不適用）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  const sel = byData(root, 'psField', 'exitMode');
+  sel.value = 'time';
+  sel.fire('change');
+  dialog.render(VM);
+  // Assert
+  assert.match(textOf(byData(root, 'psGroup', 'time')), /2 値評価は不適用|2値評価は不適用/);
+});

@@ -111,6 +111,8 @@ export class PositionSizingDialog {
     this._fields = new Map();    // data-ps-field キー -> 入力要素
     this._prices = new Map();    // 'entry:i' / 'stop' / 'take' -> 入力要素
     this._priceBox = null;       // 価格欄のコンテナ（K の変更で作り直す）
+    this._exitGroups = new Map();  // 決済方式で出し分ける表示群（bracket / time）
+    this._exitMode = 'bracket';    // 参照実装 :578 の初期値
   }
 
   _usable() {
@@ -132,6 +134,7 @@ export class PositionSizingDialog {
     this._fields = new Map();
     this._prices = new Map();
     this._priceBox = null;
+    this._exitGroups = new Map();
   }
 
   open() {
@@ -231,14 +234,65 @@ export class PositionSizingDialog {
     this._renderPriceRows();
     for (const [key, label] of [
       ['totalLot', '合計ロット'], ['avgPrice', '平均建値'], ['totalRisk', '合計リスク'],
-      ['rr', 'RR'], ['breakeven', '損益分岐勝率'], ['evYen', '期待値（円）'],
+      ['rr', 'RR'],
+    ]) {
+      sec.append(this._outRow(key, label));
+    }
+    // 決済方式による表示の出し分け（参照実装 :1064）。**計算には効かない**（build() に exit は
+    //   1 箇所も出てこない）ため、切り替えるのは出す行だけで、値はどちらも同じ ViewModel から来る。
+    sec.append(this._bracketGroup(), this._timeGroup());
+    for (const [key, label] of [
       ['requiredMargin', '必要証拠金'], ['marginUse', '証拠金使用率'],
       ['losscutPrice', 'ロスカット価格'], ['buildableLot', '実建可能ロット'],
       ['warnings', '警告'],
     ]) {
       sec.append(this._outRow(key, label));
     }
+    this._applyExitMode('bracket');   // 既定は参照実装 :578 と同じ bracket。
     return sec;
+  }
+
+  // ブラケット決済（:1064 の then 側）: 2 値評価の 4 行。
+  _bracketGroup() {
+    const box = this._doc.createElement('div');
+    box.className = 'ps-exit-group';
+    box.dataset.psGroup = 'bracket';
+    for (const [key, label] of [
+      ['breakeven', '損益分岐到達確率（無ドリフト）'],
+      ['winRate', '実測勝率 p（入力）'],
+      ['excess', '超過勝率（p−分岐点）'],
+      ['evYen', '期待値（実測 p ベース）'],
+    ]) {
+      box.append(this._outRow(key, label));
+    }
+    this._exitGroups.set('bracket', box);
+    return box;
+  }
+
+  // 時間決済（:1064 の else 側）: EV（① 実測・R マルチプル）1 行と注記。
+  //   EV＝Rp−q は ViewModel の derived.expectedValue と同一の値であり、ここで計算し直さない。
+  _timeGroup() {
+    const box = this._doc.createElement('div');
+    box.className = 'ps-exit-group';
+    box.dataset.psGroup = 'time';
+    box.append(this._outRow('evMultiple', '期待値 EV（① 実測・R マルチプル）'));
+    const note = this._doc.createElement('div');
+    note.className = 'ps-exit-note';
+    note.textContent = '時間決済：多くが途中決済のため利確/損切りの 2 値評価は不適用。'
+      + '期待値は ① の実測 p・R（EV=Rp−q）で見る。';
+    box.append(note);
+    this._exitGroups.set('time', box);
+    return box;
+  }
+
+  // 出す行の切り替え（表示だけ・値には触れない）。
+  _applyExitMode(mode) {
+    this._exitMode = mode;
+    for (const [key, box] of this._exitGroups) {
+      if (box.classList && typeof box.classList.toggle === 'function') {
+        box.classList.toggle('is-hidden', key !== mode);
+      }
+    }
   }
 
   // ---- 部品 ------------------------------------------------------------------
@@ -399,6 +453,12 @@ export class PositionSizingDialog {
       select.append(opt);
     }
     select.addEventListener('change', () => {
+      if (key === 'exitMode') {
+        // 参照実装で exit は build() に効かない（表示の出し分けだけ）。usecase へ渡すと
+        //   「効いているつもり」の偽配線になるため、ここで表示を切り替えて終える。
+        this._applyExitMode(select.value);
+        return;
+      }
       if (key === 'direction') {
         // 方向は**水準（E-02）が持つ**（ViewModel の levelLines.direction）。params ではない。
         this._emitLevels();
@@ -461,6 +521,10 @@ export class PositionSizingDialog {
       marginUse: plan.margin_use,
       losscutPrice: plan.losscut_price,
       buildableLot: plan.buildable_lot,
+      excess: plan.excess,
+      winRate: plan.win_rate,
+      // 時間決済の EV（Rp−q）。derived と同じ値であり、ここで計算し直さない（:1064 else 側）。
+      evMultiple: d.expectedValue,
     };
     for (const [key, value] of Object.entries(values)) {
       const el = this._outs.get(key);
