@@ -8433,8 +8433,8 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
 
 ## ISSUE-425: [不具合] Tester パネルが実ブラウザでのみ構築例外となり fail-open の縮退フォームが表示される（2026-08-19）
 
-- **ステータス**: OPEN（是正コミット 3936cb9 をブランチ `fix/issue-425-tester-panel-real-dom` に保全済み。
-  **マージは依頼者裁定待ち**）
+- **ステータス**: RESOLVED（2026-08-19 依頼者指示「未ステージ分を原子的コミットとして develop へマージしろ」
+  により 3850fde で develop へマージ済み。実ブラウザで 4 グループ表示を確認済み）
 - **重大度**: High（依頼者環境で実際に発生。「設定項目が少ない」という依頼者観察の正体）
 - **事実（実測 2026-08-19）**:
   1. `sim_tester_settings_panel_view.js:246` の `offeredTokens` が `node.children` へ `.map` を
