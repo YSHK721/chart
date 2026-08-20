@@ -15,6 +15,15 @@ import path from 'node:path';
 const JS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'js');
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
+// 走査根の一覧（ISSUE-368 工程 2 是正 2 で**配列化**）。単一ソース共有は indicator_ui だけでなく
+//   replay 配信根でも運用されている（replay の js 配下は 100 本超が symlink）。走査根が
+//   indicator_ui だけだと、replay 側で symlink が壊れても本ガードは緑のままだった。
+//   **読み先を増やしただけでアサーションは変えていない**。
+const JS_DIRS = [
+  JS_DIR,
+  path.join(REPO_ROOT, 'simulator', 'replay_ui', 'web', 'js'),
+];
+
 // js/ 配下の symlink を再帰列挙する。
 function findSymlinks(dir) {
   const out = [];
@@ -31,7 +40,7 @@ function findSymlinks(dir) {
 }
 
 test('single-source symlinks under web/js all resolve to existing files', () => {
-  const links = findSymlinks(JS_DIR);
+  const links = JS_DIRS.flatMap((dir) => findSymlinks(dir));
   // 単一ソース共有は現に運用されている＝0 件なら列挙ロジックの破綻を疑う。
   assert.ok(links.length > 0, 'web/js に symlink が 1 件も見つからない（列挙ロジックの破綻の疑い）');
 
