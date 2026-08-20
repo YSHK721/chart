@@ -399,3 +399,18 @@ test('TC-PD20 「計算する」は MC 実行要求を呼ぶだけ（計算は u
   // Assert
   assert.deepEqual(calls, ['run']);
 });
+
+test('TC-PD21 K の変更で価格欄を作り直しても、同じ欄の入力値は残る（入力を捨てない）', () => {
+  // Arrange: 建値 1 と損切りを入れてから K を増やす。
+  const { root, dialog } = build();
+  byData(root, 'psPrice', 'entry:0').value = '58700';
+  byData(root, 'psPrice', 'stop').value = '58340';
+  // Act
+  const splits = byData(root, 'psField', 'splits');
+  splits.value = '4';
+  splits.fire('input');
+  // Assert
+  assert.equal(byData(dialog._root, 'psPrice', 'entry:0').value, '58700');
+  assert.equal(byData(dialog._root, 'psPrice', 'stop').value, '58340');
+  assert.equal(byData(dialog._root, 'psPrice', 'entry:3').value, '', '増えた欄は空から始まる');
+});
