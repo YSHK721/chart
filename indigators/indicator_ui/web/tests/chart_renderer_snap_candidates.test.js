@@ -296,3 +296,43 @@ test('TC-SC15 panes 非提供（Fake/SSR）は null（例外にしない・非�
   // Act / Assert
   assert.equal(renderer.paneIndexAtCoordinate(10), null);
 });
+
+// ---------------------------------------------------------------------------
+// ペイン幾何の単一ソース（SOLID リファクタリング 2026-08-20）
+//
+//   凡例のチップ位置（paneLegendModel の group.top）と、座標→ペイン判定
+//   （paneIndexAtCoordinate）は同じ幾何を見なければならない。累積の式が 2 か所にあると、
+//   区切り高の扱いが片方だけ変わったとき「凡例は正しいのにクリック判定だけずれる」
+//   ＝下段ペインのクリックを価格として受け取る（裁定 2026-08-20 の違反）状態になる。
+//   実装は `_paneTops` 1 か所に寄せた。ここでは**外から見える対応**を固定する。
+// ---------------------------------------------------------------------------
+
+test('TC-SC16 凡例の group.top と paneIndexAtCoordinate の境界が一致する（幾何の単一ソース）', () => {
+  // Arrange: 価格ペイン＋オシレーター 2 枚の 3 段構成。
+  const { renderer } = newRenderer([10, 20, 30], [300, 100, 80]);
+  renderer.setCandles(CANDLES);
+  renderer.renderLine('rsi#1', [{
+    name: 'rsi', kind: 'line', style: 'solid', width: 1, color: '#0f0',
+    data: [{ time: 20, value: 55 }],
+  }], { pane: true });
+  renderer.renderLine('macd#1', [{
+    name: 'macd', kind: 'line', style: 'solid', width: 1, color: '#00f',
+    data: [{ time: 20, value: 1 }],
+  }], { pane: true });
+  // Act
+  const { groups } = renderer.paneLegendModel();
+  // Assert: 凡例が言う上端と高さの範囲が、そのままペイン判定の範囲になっている。
+  assert.equal(groups.length >= 2, true, '前提: 複数ペインが在る');
+  for (const group of groups) {
+    assert.equal(
+      renderer.paneIndexAtCoordinate(group.top),
+      group.paneIndex,
+      `凡例の上端 ${group.top}px がペイン ${group.paneIndex} と判定されない（幾何が 2 本に割れている）`,
+    );
+    assert.equal(
+      renderer.paneIndexAtCoordinate(group.top + group.height - 1),
+      group.paneIndex,
+      `凡例の下端直前がペイン ${group.paneIndex} と判定されない（幾何が 2 本に割れている）`,
+    );
+  }
+});

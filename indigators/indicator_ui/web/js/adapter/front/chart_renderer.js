@@ -717,13 +717,7 @@ export class ChartRenderer {
   paneLegendModel(param = null, valuePickerFor = null) {
     const seriesData = (param && param.seriesData) || null;
     const heights = this._paneHeights();
-    const separator = this._paneSeparatorPx(heights);
-    const tops = [];
-    let acc = 0;
-    for (let i = 0; i < heights.length; i += 1) {
-      tops.push(acc);
-      acc += heights[i] + separator;
-    }
+    const tops = this._paneTops(heights, this._paneSeparatorPx(heights));
     const byPane = new Map();
     for (const [instanceId, slot] of this._instances) {
       const paneIndex = this._slotPaneIndex(slot);
@@ -807,6 +801,22 @@ export class ChartRenderer {
     const sum = heights.reduce((a, b) => a + b, 0);
     const rest = this._paneHeight - sum;
     return rest > 0 ? rest / (heights.length - 1) : 0;
+  }
+
+  // 各ペインの上端 y（チャート要素基準）を paneIndex 順で返す。
+  //   ペイン幾何の派生規則（上端＝それより上のペイン高と区切り高の累積）を持つのは**ここだけ**。
+  //   凡例のチップ位置（paneLegendModel の group.top）と、座標→ペイン判定
+  //   （paneIndexAtCoordinate）は同じ幾何を見る必要がある。累積の式を各所に書くと、
+  //   区切り高の扱いが片方だけ変わったときに「凡例は正しいのにクリック判定だけずれる」
+  //   （＝下段ペインのクリックを価格として受けてしまう）状態を作れてしまう。
+  _paneTops(heights, separator) {
+    const tops = [];
+    let acc = 0;
+    for (let i = 0; i < heights.length; i += 1) {
+      tops.push(acc);
+      acc += heights[i] + separator;
+    }
+    return tops;
   }
 
   /**
@@ -1017,8 +1027,8 @@ export class ChartRenderer {
    *   クランプ無しの線形外挿であり、オシレーターペインを押しても「価格」が返る（異常値）。
    *   ピッカーは「価格ペインを押したときだけ」価格を受け取る必要がある。
    *
-   * 幾何の出所はペイン別凡例（`_paneHeights` / `_paneSeparatorPx`）と同一にする。ここで
-   *   独自に高さを測ると、凡例の座標系と食い違う第 2 実装になる。
+   * 幾何の出所はペイン別凡例と同一にする（上端の算出は `_paneTops` 1 か所）。ここで
+   *   累積を書き直すと、凡例の座標系と食い違う第 2 実装になる。
    *
    * @param {number} y チャート要素の左上基準の y（px）。
    * @returns {number|null} ペイン領域の外（時間軸・負値）と非対応環境（panes 非提供）は null。
@@ -1028,13 +1038,11 @@ export class ChartRenderer {
       return null;
     }
     const heights = this._paneHeights();
-    const separator = this._paneSeparatorPx(heights);
-    let top = 0;
+    const tops = this._paneTops(heights, this._paneSeparatorPx(heights));
     for (let i = 0; i < heights.length; i += 1) {
-      if (y >= top && y < top + heights[i]) {
+      if (y >= tops[i] && y < tops[i] + heights[i]) {
         return i;
       }
-      top += heights[i] + separator;
     }
     return null;   // 区切り上・時間軸・領域外は「どのペインでもない」（価格を作らない）。
   }
