@@ -10,15 +10,13 @@
 //   価格の作り方は `price_pick_resolver`（注入）、水準の持ち方は呼び出し側（usecase）の責務。
 //   メニューは項目の中身を知らず、本モジュールはメニューの開閉を知らない（OCP）。
 
-import { OTHER_PANE } from './price_pick_resolver.js';
+// 案内文言は理由コードと同じ場所（price_pick_resolver）から取る。ここへ書き写すと、
+//   ピッカー（8-d）側の同一文言と 2 か所に割れる（裁定の文言変更で片方が取り残される）。
+import { OTHER_PANE, MSG_OTHER_PANE, MSG_NO_PRICE } from './price_pick_resolver.js';
 
 export const SET_STOP_LABEL = 'この価格を損切りに設定';
 export const ADD_ENTRY_LABEL = 'この価格を建値に追加';
 export const SET_TAKE_LABEL = 'この価格を利確に設定';
-
-// 裁定（2026-08-20）の案内文言。下段ペインを押しても「何も起きない」状態にしない。
-export const MSG_OTHER_PANE = '価格チャート上で指定してください';
-export const MSG_NO_PRICE = 'この位置の価格が取れません';
 
 /**
  * @param {object} deps

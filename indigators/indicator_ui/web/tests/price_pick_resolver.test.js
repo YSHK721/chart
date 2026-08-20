@@ -15,7 +15,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolvePickedPrice, OTHER_PANE } from '../js/adapter/front/price_pick_resolver.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  resolvePickedPrice, OTHER_PANE, MSG_OTHER_PANE, MSG_NO_PRICE,
+} from '../js/adapter/front/price_pick_resolver.js';
 
 // 価格ペイン（pane 0）は y=0..299、下段（pane 1）は y=300..399。
 //   価格は y=0 で 59000、1px あたり 1 下がる線形（実 lwc の外挿と同じく範囲外もクランプしない）。
@@ -96,4 +102,35 @@ test('TC-PR07 renderer 未注入・面の欠落は例外にせず「確定しな
   // Arrange / Act / Assert
   assert.equal(resolvePickedPrice({ renderer: null, x: 1, y: 1 }).price, null);
   assert.equal(resolvePickedPrice({ renderer: {}, x: 1, y: 1 }).price, null);
+});
+
+// ---------------------------------------------------------------------------
+// 案内文言の単一ソース（構造ガード）
+//
+//   宣言（コメント）ではなく機械的検査で担保する（プロジェクト規約: 制約は git/ソース実測で強制）。
+//   本ブランチでは同一文言 '価格チャート上で指定してください' が右クリック項目（8-c）と
+//   ピッカー（8-d）の 2 モジュールへ手書き複製されていた。裁定の文言が変わったとき片方だけ
+//   直る＝「取り残し」がそのまま実 UI の食い違いになる。定義は 1 か所であることを固定する。
+// ---------------------------------------------------------------------------
+
+test('TC-PR08 案内文言の定義は front 配下に 1 か所だけ（複製を機械的に禁止する）', () => {
+  // Arrange: front 配下の全 .js を読む（テストは対象外＝検定は文言を直書きしてよい）。
+  const frontDir = fileURLToPath(new URL('../js/adapter/front/', import.meta.url));
+  const sources = readdirSync(frontDir)
+    .filter((name) => name.endsWith('.js'))
+    .map((name) => [name, readFileSync(join(frontDir, name), 'utf8')]);
+  // Act / Assert
+  for (const [message, owner] of [
+    [MSG_OTHER_PANE, 'price_pick_resolver.js'],
+    [MSG_NO_PRICE, 'price_pick_resolver.js'],
+  ]) {
+    const holders = sources
+      .filter(([, src]) => src.includes(`'${message}'`) || src.includes(`"${message}"`))
+      .map(([name]) => name);
+    assert.deepEqual(
+      holders,
+      [owner],
+      `案内文言「${message}」の定義が ${owner} 以外にもある（複製＝取り残しの原因）: ${holders.join(', ')}`,
+    );
+  }
 });

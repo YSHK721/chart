@@ -66,6 +66,23 @@ test('TC-SP05 非有限のクリック価格は null（黙って 0 や NaN を�
   assert.equal(resolveSnappedPrice(CANDIDATES, null, 50), null);
 });
 
+test('TC-SP10 有限のクリック価格なら必ず非 null を返す（呼び出し側に null 分岐を作らせない契約）', () => {
+  // 契約の明文化: null になるのは TC-SP05 の非有限入力のときだけ。price_pick_resolver は
+  //   自分で有限性を確かめてから本関数を呼ぶため、戻り値の null 判定は到達不能な死んだ分岐になる。
+  //   ここが崩れる（有限入力で null を返す）変更が入ったら、その分岐の不在が実バグになる。
+  // Arrange: 候補あり／なし・許容の内外・許容が非有限、の全経路を有限価格で通す。
+  const cases = [
+    [CANDIDATES, 58790, 50], [CANDIDATES, 58740, 50], [[], 58790, 50],
+    [null, 58790, 50], [CANDIDATES, 58800, NaN], [CANDIDATES, 0, 0],
+  ];
+  // Act / Assert
+  for (const [candidates, price, tolerance] of cases) {
+    const got = resolveSnappedPrice(candidates, price, tolerance);
+    assert.notEqual(got, null, `有限価格 ${price} で null が返った（呼び出し側の前提が崩れる）`);
+    assert.equal(Number.isFinite(got.price), true);
+  }
+});
+
 test('TC-SP06 候補が配列でないときは素のクリック価格（例外にしない）', () => {
   // Arrange: 列挙側（renderer）が非対応環境で null を返す経路。
   // Act

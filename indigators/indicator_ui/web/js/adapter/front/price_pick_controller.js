@@ -19,12 +19,13 @@
 // ホスト要素は本 View が所有する（overlay_host の規約・index.html は 1 枚も触らない）。
 
 import { ensureOverlayHost } from './overlay_host.js';
-import { resolvePickedPrice, OTHER_PANE, DEFAULT_PICK_TOLERANCE_PX } from './price_pick_resolver.js';
+// 案内文言（裁定 2026-08-20「下段ペインで押しても何も起きない状態を作らない」）は
+//   理由コードと同居する単一ソースから取る。右クリック（8-c）と同じ文言を写さない。
+import {
+  resolvePickedPrice, OTHER_PANE, MSG_OTHER_PANE, DEFAULT_PICK_TOLERANCE_PX,
+} from './price_pick_resolver.js';
 
 const HOST_CLASS = 'price-pick-ghost';
-
-/** 裁定（2026-08-20）の案内文言。下段ペインで「押しても何も起きない」状態を作らない。 */
-export const MSG_OTHER_PANE = '価格チャート上で指定してください';
 
 // OHLC 候補の label はフィールド名（表示文言は View の責務＝8-b の取り決め）。ここで日本語へ写す。
 const OHLC_LABEL = Object.freeze({
