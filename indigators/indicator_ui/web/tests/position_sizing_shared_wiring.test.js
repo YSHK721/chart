@@ -70,15 +70,21 @@ test('TC-SW04 ライブ root は計算機を結線する（識別子の受け渡
   assert.match(root, /createPositionSizingContextItems\(/, '項目の生成は共有配線のヘルパを使う（root へ配線を複製しない）');
 });
 
-test('TC-SW05 リプレイ root は右クリック項目を注入しない（replay 汚染の禁止・8-c の通過条件）', () => {
+test('TC-SW05 両 root は同一モジュール由来の項目を注入する（項目定義を複製しない）', () => {
+  // 対象の付け替え（依頼者裁定 2026-08-20）: 元は「リプレイ root は注入しない」を見ていたが、
+  //   確定要件により**両 root が注入する**。守るべきは「項目定義を root へ複製しないこと」
+  //   （複製すると文言・価格解決が 2 か所に割れる）。アサーションの形は変えていない。
   // Arrange / Act
   const replayRoot = readFileSync(
     fileURLToPath(new URL('../../../../simulator/replay_ui/web/js/adapter/front/composition_root_front.js', import.meta.url)),
     'utf8',
   );
-  // Assert
-  assert.equal(/contextMenuItems/.test(replayRoot), false);
-  assert.equal(/createPositionSizingContextItems/.test(replayRoot), false);
+  const liveRoot = read('composition_root_front.js');
+  // Assert: どちらも共有配線のヘルパ経由（項目のラベルも価格解決も root には書かれていない）。
+  for (const [name, src] of [['live', liveRoot], ['replay', replayRoot]]) {
+    assert.equal(/この価格を損切りに設定/.test(src), false, `${name} root に項目の文言が複製されている`);
+    assert.equal(/resolvePickedPrice\(/.test(src), false, `${name} root に価格解決が複製されている`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -252,4 +258,38 @@ test('TC-SW08 モーダルの「チャートで指定」がピッカーをアー
   // Assert
   assert.equal(ctx.wired.positionSizing.picker.isArmed(), true);
   assert.equal(ctx.wired.positionSizing.picker.armedTarget(), 'stop');
+});
+
+// ---------------------------------------------------------------------------
+// ライブ／リプレイの対称性（依頼者裁定 2026-08-20・確定要件 ISSUE.md:6927
+//   「ライブ＋リプレイ両方に載せる（chart_app_wiring の共有配線で 3 配信ページに同時掲載）」）
+//
+//   注入機構（contextMenuItems 引数・共有配線への無条件追加禁止）は維持したまま、
+//   **両 root が同じ 3 項目を注入する**ことで対称にする。項目定義は複製せず同一モジュールを参照。
+// ---------------------------------------------------------------------------
+
+const replayRootSrc = () => readFileSync(
+  fileURLToPath(new URL('../../../../simulator/replay_ui/web/js/adapter/front/composition_root_front.js', import.meta.url)),
+  'utf8',
+);
+
+test('TC-SW09 リプレイ root も計算機を結線する（ボタンが押せない・モーダルが開かない状態を残さない）', () => {
+  // Arrange / Act
+  const src = replayRootSrc();
+  // Assert: 協働子の遅延参照と受け渡しがそろっていないと、ツールバーのボタンは在るのに何も起きない。
+  assert.match(src, /getPositionSizing:/, '協働子の遅延参照を installSharedUi へ渡していない（ボタンが死ぬ）');
+  assert.match(src, /positionSizingDialog/, 'モーダルを wireControllerCollaborators へ渡していない（協働子が生えない）');
+  assert.match(src, /registerVerticalPanBlocker/, '縦パンブロッカーの登録口を渡していない（drag・ピッカーが縦パンを止められない）');
+});
+
+test('TC-SW10 リプレイ root も右クリック 3 項目を注入する（ライブと対称・項目定義は複製しない）', () => {
+  // Arrange / Act
+  const src = replayRootSrc();
+  // Assert
+  assert.match(src, /contextMenuItems:/, 'リプレイ root が右クリック項目を注入していない');
+  assert.match(
+    src,
+    /createPositionSizingContextItems\(/,
+    '項目は共有配線のヘルパから作る（root へ項目定義を複製しない）',
+  );
 });

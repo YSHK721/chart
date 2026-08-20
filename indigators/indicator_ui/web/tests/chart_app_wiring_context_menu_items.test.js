@@ -136,16 +136,24 @@ test('TC-CX03 注入した項目の onSelect にはコンテナ基準の座標�
   assert.deepEqual(seen, [{ x: 42, y: 84 }]);
 });
 
-test('TC-CX04 リプレイ root は項目を注入しない（共有配線への無条件追加＝replay 汚染の禁止）', () => {
-  // Arrange: 実ファイルを読む（配線の事実を検定する。fake では汚染は見つからない）。
+test('TC-CX04 共有配線は自分では項目を足さない（無条件追加の禁止・注入機構の維持）', () => {
+  // 対象の付け替え（依頼者裁定 2026-08-20）: 本検定は元は「リプレイ root は注入しない」を見ていたが、
+  //   確定要件（ISSUE.md:6927「ライブ＋リプレイ両方に載せる」）により**両 root が注入する**形へ
+  //   変わった。守るべき不変条件は「共有配線が無条件に足さないこと」＝どのページに出すかを root が
+  //   決められること（計算機を載せないページが将来増えても、そのページだけ出ない状態を作れる）。
+  //   よって対象を root から**仕組み単体（共有配線のソース）**へ付け替える。アサーションの形
+  //   （equal(..., false)）は変えていない。
+  // Arrange: 共有配線の実ファイルを読む。
   const src = readFileSync(
-    fileURLToPath(new URL('../../../../simulator/replay_ui/web/js/adapter/front/composition_root_front.js', import.meta.url)),
+    fileURLToPath(new URL('../js/adapter/front/chart_app_wiring.js', import.meta.url)),
     'utf8',
   );
-  // Act / Assert
+  // Act: installSharedUi の本体（次の export まで）で価格設定項目を自分で作っていないか。
+  const body = src.slice(src.indexOf('export function installSharedUi'), src.indexOf('function createColorThemeUi'));
+  // Assert
   assert.equal(
-    /contextMenuItems/.test(src),
+    /createPositionSizingContextItems\(|createPriceContextItems\(/.test(body),
     false,
-    'リプレイ root が価格設定項目を注入している（ポジションサイズ計算機はライブ側の機能）',
+    '共有配線が価格設定項目を自分で足している（どのページに出すかを root が決められなくなる）',
   );
 });
