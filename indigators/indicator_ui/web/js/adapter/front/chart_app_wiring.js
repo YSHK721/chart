@@ -471,10 +471,17 @@ export function wireControllerCollaborators({
 
   // ポジションサイズ計算機の協働子（ISSUE-368 スライス 7）。モーダルが注入されている構成でだけ
   //   組む（未注入の最小構成・単体テストでは従来どおり何も生えない）。
-  // 銘柄仕様（呼び値）の解決は **ここ 1 回だけ**（ISSUE-368 スライス S-6）。以後は値として配る
-  //   （resolver へ／初期水準の `createPriceLevels` へ／モーダルの `step` へ）。解決点を複数持つと
-  //   「どの銘柄の刻みで丸めたか」が経路ごとに割れる。datasetRef は既に本関数の引数として届いており、
-  //   新しい配管は作らない（設計「追補: 工程 2」E-3・S-6 通過条件）。
+  // 銘柄仕様（呼び値）を引き、以後は**値として配る**（resolver へ／初期水準の `createPriceLevels`
+  //   へ／モーダルの `step` へ）。配る先が自分で引き直すと「どの銘柄の刻みで丸めたか」が経路ごとに
+  //   割れるため、本関数より下では二度と引かない（設計「追補: 工程 2」E-3・S-6 通過条件）。
+  //
+  // 引き当ての**呼び出し**は本モジュール内に 2 か所ある（`composeChartShell` と本関数）。同一の
+  //   `datasetRef`（root が両方へ渡す同じ値）に対する同一の純関数呼び出しで、`lookupSymbolSpec` は
+  //   凍結された生成物を読むだけで状態を持たないため、結果は必ず一致する。
+  //   `themeState` と同型の「起動時に解決した値を root 経由で転送する」形（:357 参照）へ寄せる案は
+  //   **工程 4 で実測のうえ見送った**: 本関数を `datasetRef` だけで直接呼ぶ既存検定が 5 ファイルあり
+  //   （`tests/support/position_sizing_boot.js:10` が「差し替え口は datasetRef」と契約を明記）、
+  //   引数へ移すと既存 30 件が赤になる。テストの期待値を書き換えずには成立しない形なので採らない。
   const symbolSpec = lookupSymbolSpec(datasetRef);
   // 銘柄名（表示）も同じ解決結果から配る（ISSUE-368 A-4）。器はツールバーが持ち、中身は
   //   「どのデータセットを見ているか」を知っている本関数が入れる（tf-menu / tpl-menu と同じ
@@ -513,6 +520,9 @@ function createPositionSizingCollaborators({
   //   （設計「フェイルセーフ」: 値ではなく機能を落とし理由を出す）。告知はトースト（利用者が
   //   実際に使おうとした時点）と console.error（開発者向けの証跡）の両方で出す。前者だけだと
   //   原因（どの ref か）が残らず、後者だけだと DevTools を開かない限り気づけない。
+  //   `symbolSpec` の真偽だけを見てよい理由（不変条件）: `lookupSymbolSpec` は「量子化に使えない
+  //   刻みを持つ台帳」を解決成功と扱わない（`symbol_spec_catalog.js` の 3 段目）。したがって
+  //   ここへ届く `symbolSpec` の `tick` は必ず正の有限数で、この面に検算を第 2 実装として置かない。
   const tick = symbolSpec ? symbolSpec.tick : null;
   if (!symbolSpec) {
     // eslint-disable-next-line no-console

@@ -306,10 +306,17 @@ export class PositionSizingDialog {
 
   /**
    * 銘柄仕様（呼び値）を受け取る（共有配線が解決済みの値を配る・解決はしない）。
+   *
+   * 刻みを**検算しない**（工程 4・SRP）。「量子化に使える刻みか」の判定は唯一源
+   * （`domain/price_quantize.js` の `usableTick`）が持ち、front での適用点は引き当ての 1 か所で、
+   * そこが使えない刻みを「解決できた」として返さない。ここに同じ式を書くと第 3 の写しになり、
+   * しかも本 View は純粋な書式モジュール以外を import できない規約（TC-SW02）のため、
+   * その写しは唯一源と機械的に同期できない＝静かにずれる形でしか置けない。
+   *
    * @param {{tick:number}|null|undefined} spec 解決できないときは null（step は 'any' のまま）。
    */
   setSymbolSpec(spec) {
-    this._tick = spec && Number.isFinite(spec.tick) && spec.tick > 0 ? spec.tick : null;
+    this._tick = spec ? spec.tick : null;
   }
 
   _usable() {

@@ -38,6 +38,29 @@ export function quantize(price, tick) {
 }
 
 /**
+ * 量子化に**使える刻み**か判定し、使えるなら刻みを、使えなければ `null` を返す。
+ *
+ * 「使える刻み」の定義をここに 1 つだけ置く理由（SRP・原因 β と同型の予防）:
+ *   同じ判定が `adapter/front/price_pick_resolver.js`（フェイルクローズ）と
+ *   `adapter/front/chart_bootstrap.js`（価格軸の桁設定）に別々の式で存在し、
+ *   `chart_app_wiring.js` と `position_sizing_controller.js` には**存在しなかった**。
+ *   規則が 1 つで実装が 2 つ・不在が 2 つある状態は、片方だけを直したときに割れる。
+ *
+ * なぜ `0` と負値を弾くのが必要か（実測 node v24・2026-08-20）:
+ *   `quantize(58998.75, 0)  === NaN`   （`Math.round(p/0)*0` → `Infinity*0`）
+ *   `quantize(58998.75, -1) === 58999` （**丸まってしまう**＝誤りが正常値の顔で下流へ入る）
+ *   `quantize(58998.75, NaN) === NaN`
+ *   いずれも設計「フェイルセーフ」が禁じる「無音の誤答」である。`quantize` 自身の素通し条件は
+ *   `null` / 未指定のみ（後方互換の契約）なので、**使えない刻みは quantize へ渡す前に落とす**。
+ *
+ * @param {*} tick 判定する刻み。
+ * @returns {number|null} 正の有限数ならその値、それ以外は `null`。
+ */
+export function usableTick(tick) {
+  return Number.isFinite(tick) && tick > 0 ? tick : null;
+}
+
+/**
  * `tick` の小数桁数（`1` → 0・`0.1` → 1・`0.25` → 2・`1e-7` → 7）。
  *
  * 指数表記を分けて扱う理由: JS は 1e-6 未満の数を指数表記で文字列化する（`String(1e-7) === '1e-7'`）。

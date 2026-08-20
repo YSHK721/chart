@@ -52,7 +52,14 @@ export class PositionSizingController {
     return this._symbolSpec ?? null;
   }
 
-  /** 水準に効かせる刻み（未注入・未解決なら null＝量子化しない）。 */
+  /**
+   * 水準に効かせる刻み（未注入・未解決なら null＝量子化しない）。
+   *
+   * 真偽判定だけで済む理由（不変条件）: 注入元の引き当て（front 配下で銘柄仕様を解決する唯一の口）
+   * は、量子化に使えない刻みを持つ台帳を「解決できた」として返さない。ゆえに `_symbolSpec` が
+   * 真なら `tick` は必ず正の有限数であり、ここで検算を第 2 実装として持たない
+   * （判定の唯一源は `domain/price_quantize.js` の `usableTick`）。
+   */
   _tick() {
     return this._symbolSpec ? this._symbolSpec.tick : null;
   }

@@ -17,19 +17,31 @@
 //   呼び側は null を受けて**機能を落とし理由を出す**（値を落とさない）。
 
 import { DATASET_SYMBOLS, SYMBOL_SPECS } from '../../domain/symbol_spec_generated.js';
+import { usableTick } from '../../domain/price_quantize.js';
 
 /**
  * datasetRef から銘柄仕様を引く。
  *
+ * **この関数が返す spec は「そのまま使える」ことを保証する**（呼び側が tick を検算しなくてよい）。
+ *   使えない刻みを持つ台帳は「解決できた」と言わずに null を返す＝壊れた値が front を流れ始める
+ *   起点を作らない。この保証があるので下流（共有配線・協働子）は `symbolSpec` の真偽だけを見る。
+ *
  * @param {string} datasetRef データセット参照（'jp225_tick' 等）。
  * @returns {{symbol:string, tick:number, digits:number}|null}
- *   解決できないときは null（未知 ref・銘柄に spec が無い・ref が文字列でない）。
+ *   解決できないときは null（ref が文字列でない・未知 ref・銘柄に spec が無い・刻みが使えない）。
  *   返すのは**毎回新しいオブジェクト**（呼び側の書き換えが台帳や次の引き当てへ波及しない）。
  */
 export function lookupSymbolSpec(datasetRef) {
+  // 1 段目。`typeof` の検査が**この段の実効部分**である（実測 2026-08-20・工程 4）:
+  //   これを外すと ref の暗黙の文字列化で `['jp225']` や `{toString(){return 'jp225'}}` が
+  //   JP225 として引き当たる（実測 3 例が漏れた）。文字列でないものは ref ではない。
+  //   一方 `Object.hasOwn(DATASET_SYMBOLS, ...)` の方は、**現時点の台帳では**単独の実効性を持たない:
+  //   `Object.prototype` の全 12 プロパティ名を ref として与えても、それらが返す値（関数・
+  //   `Object.prototype` 自身）は 2 段目の `Object.hasOwn(SYMBOL_SPECS, symbol)` が漏れなく塞ぐ
+  //   （実測: 漏れ 0 件）。それでも残すのは、この保証が**2 段目の実装に依存**しているためである
+  //   （2 段目を Map 化・構造変更した瞬間に 1 段目の穴が無言で開く）。各段が自分の添字参照を
+  //   自分で守る形を保つ。
   if (typeof datasetRef !== 'string' || !Object.hasOwn(DATASET_SYMBOLS, datasetRef)) {
-    // 継承プロパティ（'toString' 等）を素の添字参照で拾わない。拾うと tick=undefined のまま
-    //   「解決できた」と誤判定し、量子化が無音で素通しになる。
     return null;
   }
   const symbol = DATASET_SYMBOLS[datasetRef];
@@ -37,5 +49,11 @@ export function lookupSymbolSpec(datasetRef) {
     return null;
   }
   const spec = SYMBOL_SPECS[symbol];
+  // 3 段目: 刻みが量子化に使えるか。判定の定義は持たない（`domain/price_quantize.js` の
+  //   `usableTick` が唯一源）。生成物が壊れていれば pytest（marketdata/tests）が先に赤くなるが、
+  //   front 側でも「解決できた」と名乗らないことで、壊れた値が下流へ入る経路自体を閉じる。
+  if (usableTick(spec.tick) === null) {
+    return null;
+  }
   return { symbol, tick: spec.tick, digits: spec.digits };
 }

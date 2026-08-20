@@ -18,7 +18,7 @@
 // 依存: renderer（隔離点の公開面のみ）と domain の純関数だけ。lwc API 名・DOM は触らない。
 
 import { resolveSnappedPrice } from '../../domain/snap_price_resolver.js';
-import { quantize } from '../../domain/price_quantize.js';
+import { quantize, usableTick } from '../../domain/price_quantize.js';
 
 /** 確定しなかった理由（呼び出し側の案内表示の分岐に使う）。 */
 export const OTHER_PANE = 'other_pane';        // 価格ペインの外（下段ペイン）＝裁定により無効
@@ -109,12 +109,15 @@ export function resolvePickedPrice({
 }
 
 /**
- * 仕様から呼び値を取り出す。正の有限数でなければ null（＝解決できていない）。
+ * 仕様から呼び値を取り出す。使えない刻みなら null（＝解決できていない）。
  * ここで「使えない tick」を弾くことで、下流の量子化に「丸めたつもりで丸まっていない」状態を作らない。
+ *
+ * 判定の**定義は持たない**（`domain/price_quantize.js` の `usableTick` が唯一源）。ここが自前の式を
+ * 持つと、同じ規則が front 側に第 2 定義として残る。本関数が担うのは「spec からどう取り出すか」だけ
+ * （`{tick}` でも生の数値でも受ける呼び出し面の互換）である。
  */
 function tickOf(spec) {
-  const tick = spec && typeof spec === 'object' ? spec.tick : spec;
-  return Number.isFinite(tick) && tick > 0 ? tick : null;
+  return usableTick(spec && typeof spec === 'object' ? spec.tick : spec);
 }
 
 /**

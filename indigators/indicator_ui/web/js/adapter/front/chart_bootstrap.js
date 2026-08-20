@@ -15,6 +15,7 @@
 //   二重定義になる（§7.2 S1 の欠点）。値は現行と文字列同値のため挙動は不変。
 
 import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
+import { usableTick } from '../../domain/price_quantize.js';
 
 // 価格の表示形式（ISSUE-368 A-3）。**銘柄仕様が解決できているときだけ**設定する。
 //   実測（vendor v5.2.0 バンドル・系列共通既定）: `priceFormat:{type:"price",precision:2,minMove:.01}`。
@@ -28,7 +29,9 @@ function priceFormatOf(symbolSpec) {
     return {};
   }
   const { tick, digits } = symbolSpec;
-  if (!Number.isFinite(tick) || tick <= 0 || !Number.isInteger(digits) || digits < 0) {
+  // 「使える刻みか」の判定は domain の唯一源（`usableTick`）に委ねる＝ここで式を書き直さない。
+  //   桁の判定だけがこの面の固有条件（軸の precision に入れられるのは非負整数だけ）。
+  if (usableTick(tick) === null || !Number.isInteger(digits) || digits < 0) {
     return {};   // 壊れた仕様で軸を固定すると、誤りが「読める表示」に化けて気付けない。
   }
   return { priceFormat: { type: 'price', precision: digits, minMove: tick } };
