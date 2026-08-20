@@ -18,12 +18,17 @@
 //   - 使える = 正の有限数。`0` / 負 / 非有限 / 非数（型強制なし）はすべて `null`。
 //   - 判定と適用が食い違わない: 使えると判定した刻みでは `quantize` が有限値を返す。
 //
-// 対象外（意図的に検定しない）:
-//   `tick < 1e-100` の極小刻み。`usableTick` は正の有限数として**使えると判定する**が、
-//   `quantize` は `toFixed(101)` 以上になり RangeError を投げる（実測は報告に添付）。
-//   ここは唯一源の契約自体が割れている領域で、どちらへ倒すかは実装側の判定を要する。
-//   現状の挙動をここで期待値として固定すると、割れたままの契約を検定で追認することになるため
-//   本ファイルでは期待値を置かない（実カタログの刻みは 1〜0.001 の範囲で、この領域には入らない）。
+// 極小刻み領域について（工程 3 で契約の割れを是正済み・TC-UT08〜10 で検定する）:
+//   本ファイル追加時点では、`decimalsOf(tick) > 100` になる極小刻みを `usableTick` が
+//   「正の有限数だから使える」と判定する一方、`quantize` の `toFixed` が RangeError を投げていた。
+//   唯一源が「使える」と名乗った刻みで適用側が落ちる＝契約が割れている状態だったため、
+//   当時は期待値を置かず未検定にしていた。
+//   工程 3 で判定側（`usableTick`）に適用可能性の条件を含める形で是正した
+//   （`js/domain/price_quantize.js` の `MAX_FRACTION_DIGITS`＝`toFixed` の言語仕様上の上限 100）。
+//   よって本ファイルはこの領域を未検定のまま残さない: 上限超過は関門で落ちること（TC-UT08）、
+//   上限ちょうど（`1e-100`）までは従来どおり通ること（TC-UT09）、
+//   通した刻みでは `quantize` が例外を投げないこと（TC-UT10）を期待値として固定する。
+//   （実カタログの刻みは JP225=1.0 / TSLA=0.01 でこの領域には入らないが、関門の契約は全域で成立させる。）
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -110,4 +115,52 @@ test('TC-UT07 usableTick が落とす刻みを quantize へ直接渡すと無音
   assert.equal(quantize(58998.75, -1), 58999, 'tick=-1 は丸まってしまう＝誤りが正常値の顔をする');
   assert.ok(Number.isNaN(quantize(58998.75, NaN)), 'tick=NaN は NaN');
   assert.ok(Number.isNaN(quantize(58998.75, Infinity)), 'tick=Infinity は NaN');
+});
+
+test('TC-UT08 usableTick は quantize が適用できない極小刻みを落とす（判定と適用の境界を一致させる）', () => {
+  // Arrange: `quantize` の丸め戻しは `toFixed(decimalsOf(tick))`（price_quantize.js:37）。
+  //   ECMA-262 の `Number.prototype.toFixed` は fractionDigits が 0..100 の外なら RangeError を投げる。
+  //   したがって `decimalsOf(tick) > 100` の刻みは「量子化に使えない」。
+  assert.throws(() => (0).toFixed(101), RangeError, '前提: toFixed は 101 桁で RangeError');
+  assert.equal((0).toFixed(100).length, 102, '前提: toFixed は 100 桁までは受け付ける');
+
+  // Act / Assert: 上限を超える刻みは関門で落ちる（下流へ渡らない）
+  assert.equal(usableTick(1e-101), null);          // decimalsOf = 101（上限 +1）
+  assert.equal(usableTick(5e-324), null);          // decimalsOf = 324（表現可能な最小の正数）
+  assert.equal(usableTick(Number.MIN_VALUE), null);
+  assert.equal(usableTick(2.5e-100), null);        // 指数は -100 でも仮数の桁で 101 になる
+});
+
+test('TC-UT09 usableTick は上限ちょうどまでの刻みを使えるまま通す（境界値・既存の緑を狭めない）', () => {
+  // Arrange / Act / Assert: decimalsOf = 100 は toFixed が受け付ける上限そのもの
+  assert.equal(usableTick(1e-100), 1e-100);
+  assert.equal(usableTick(1e-99), 1e-99);
+  assert.equal(usableTick(1e-7), 1e-7);
+  assert.equal(usableTick(Number.MAX_VALUE), Number.MAX_VALUE);
+});
+
+test('TC-UT10 usableTick が使えると判定した刻みでは quantize が例外を投げない（唯一源の契約）', () => {
+  // Arrange: 関門を通った刻みは front 5 か所からそのまま quantize / priceFormat へ渡る。
+  //   「使えると名乗った刻みで適用側が落ちる」領域が 1 つでもあれば契約が割れている。
+  const candidates = [
+    1, 0.1, 0.25, 0.001, 100, 1e-6, 1e-7, 1e-98, 1e-99, 1e-100,
+    2.5e-100, 1e-101, 1.5e-101, 5e-324, Number.MIN_VALUE, Number.MAX_VALUE,
+  ];
+  const prices = [58998.75, 62707.710070965324, 8568.89, 0, -1234.5];
+  for (const tick of candidates) {
+    // Act
+    const passed = usableTick(tick);
+    if (passed === null) continue;   // 関門が落とした刻みは下流へ入らない
+    for (const price of prices) {
+      // Assert: 使えると判定した以上、適用は必ず成立する（RangeError を投げない）
+      assert.doesNotThrow(
+        () => quantize(price, passed),
+        `usableTick が通した刻み ${tick} で quantize(${price}) が例外を投げた`,
+      );
+      assert.ok(
+        Number.isFinite(quantize(price, passed)),
+        `quantize(${price}, ${tick}) が有限でない`,
+      );
+    }
+  }
 });

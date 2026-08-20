@@ -113,14 +113,32 @@ test('TC-FC05 刻みが数値でない台帳は解決成功にしない（文字
   }
 });
 
-test('TC-FC06 境界: 0 の直上の刻みは解決できる（判定は「0 より大」であって「1 以上」ではない）', async () => {
-  // Arrange
-  const lookup = await catalogWithTick('Number.MIN_VALUE');
+test('TC-FC06 境界: 量子化できる限界までの極小刻みは解決できる（判定は「0 より大」であって「1 以上」ではない）', async () => {
+  // Arrange: 下限側を締めすぎていないことの回帰ガード。
+  //   入力は `usableTick` が通す上限そのもの（`decimalsOf(1e-100) === 100` ＝ `toFixed` の受付上限）。
+  //   実測（node v24.16.0・2026-08-20）: `usableTick(1e-100) === 1e-100` / `quantize(58998.75, 1e-100) === 58998.75`。
+  //   当初は `Number.MIN_VALUE` を使っていたが、それは量子化不能な値であり期待値が事実に反していた
+  //   （根拠は TC-FC06B）。本ケースの宣言意図「下限を締めすぎない」は変えず、入力だけを正しい境界へ差し替えている。
+  const lookup = await catalogWithTick('1e-100');
   // Act
   const got = lookup('jp225_tick');
-  // Assert: 下限側を締めすぎていないこと（正当な微小刻みまで落とすと機能が無音で消える）。
-  assert.notEqual(got, null, '正の有限刻みが落とされている');
-  assert.equal(got.tick, Number.MIN_VALUE);
+  // Assert
+  assert.notEqual(got, null, '量子化できる極小刻みが落とされている（下限側の締めすぎ）');
+  assert.equal(got.tick, 1e-100);
+});
+
+test('TC-FC06B 境界: Number.MIN_VALUE は解決成功にしない（量子化が原理的に不能）', async () => {
+  // Arrange: 「正の有限数なら使える」では足りないことの根拠（すべて node v24.16.0 実測・2026-08-20）:
+  //   1. `58998.75 / 5e-324 === Infinity` → `Math.round(58998.75 / 5e-324) * 5e-324 === Infinity`。
+  //      つまり `toFixed` の有無に関わらず、実勢価格では量子化そのものが成立しない。
+  //   2. `decimalsOf(5e-324) === 324` で `toFixed` の受付上限 100 を超えるため、
+  //      `quantize(58998.75, 5e-324)` は `RangeError: toFixed() digits argument must be between 0 and 100`。
+  //   よってこの刻みは「使えない」と判定するのが正しい。解決成功として通すと、
+  //   例外で止まるか、下流へ `Infinity` という**無音の誤答**が流れる。
+  //   （`5e-324 === Number.MIN_VALUE` 。判定の定義源は `js/domain/price_quantize.js` の `usableTick`。）
+  const lookup = await catalogWithTick('Number.MIN_VALUE');
+  // Act / Assert
+  assert.equal(lookup('jp225_tick'), null);
 });
 
 test('TC-FC07 文字列でない ref は引き当てない（暗黙の文字列化で別銘柄に化けない）', () => {

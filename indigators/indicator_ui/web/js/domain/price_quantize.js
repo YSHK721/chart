@@ -53,12 +53,37 @@ export function quantize(price, tick) {
  *   いずれも設計「フェイルセーフ」が禁じる「無音の誤答」である。`quantize` 自身の素通し条件は
  *   `null` / 未指定のみ（後方互換の契約）なので、**使えない刻みは quantize へ渡す前に落とす**。
  *
+ * なぜ「正の有限数」だけでは足りないか（実測 node v24・2026-08-20）:
+ *   `quantize(58998.75, 1e-101)` は `RangeError: toFixed() digits argument must be between 0 and 100`。
+ *   `1e-101` は正の有限数なので「使える」と名乗れてしまうが、適用側の丸め戻し
+ *   （`quantize` の `toFixed(decimalsOf(tick))`）が受け付けられない桁数になる。
+ *   「使える」の定義は**適用が成立すること**まで含む。含めずに呼び出し側で個別に下限を検査すると
+ *   判定の第 2 実装が生まれ、原因 β（規則が 1 つで実装が複数）に戻る。
+ *
+ * 担保の範囲（事実の記録・本関数では判定しない）:
+ *   ここが担保するのは**刻み単独で判定できる範囲**のみである。`price / tick` が非有限へ溢れる領域
+ *   （実測: `58998.75 / 5e-324 === Infinity`）は価格に依存するため刻みだけでは判定できず、本関数の対象外。
+ *   現行台帳の刻み（`domain/symbol_spec_generated.js`: JP225=`1.0` / TSLA=`0.01`）では到達しない。
+ *
  * @param {*} tick 判定する刻み。
- * @returns {number|null} 正の有限数ならその値、それ以外は `null`。
+ * @returns {number|null} 正の有限数で、かつ `quantize` が適用できる刻みならその値。それ以外は `null`。
  */
 export function usableTick(tick) {
-  return Number.isFinite(tick) && tick > 0 ? tick : null;
+  if (!Number.isFinite(tick) || tick <= 0) {
+    return null;
+  }
+  return decimalsOf(tick) <= MAX_FRACTION_DIGITS ? tick : null;
 }
+
+/**
+ * `quantize` の丸め戻しに使う `Number.prototype.toFixed` が受け付ける小数桁数の上限。
+ *
+ * 由来: ECMA-262 `Number.prototype.toFixed ( fractionDigits )` は `fractionDigits` が
+ *   0 以上 100 以下でないとき `RangeError` を投げる（実測: `(0).toFixed(100)` は成立し、
+ *   `(0).toFixed(101)` は `RangeError: toFixed() digits argument must be between 0 and 100`）。
+ *   したがってこの値は本モジュールが選んだ閾値ではなく、**適用側の言語仕様上の境界**である。
+ */
+const MAX_FRACTION_DIGITS = 100;
 
 /**
  * `tick` の小数桁数（`1` → 0・`0.1` → 1・`0.25` → 2・`1e-7` → 7）。
