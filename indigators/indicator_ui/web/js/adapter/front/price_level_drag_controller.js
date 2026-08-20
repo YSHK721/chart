@@ -64,7 +64,7 @@ export class PriceLevelDragController {
     }
     if (typeof this._registerVerticalPanBlocker === 'function') {
       this._unregisterBlocker = this._registerVerticalPanBlocker(
-        () => this.isDragging() || this._hovered != null,
+        () => this.isDragging() || this.hoveredHandle() != null,
       );
     }
 

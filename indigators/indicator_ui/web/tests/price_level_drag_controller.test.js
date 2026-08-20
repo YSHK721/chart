@@ -303,3 +303,60 @@ test('container 不在／addEventListener 非対応でも install は例外を�
     new PriceLevelDragController({ container: {}, renderer: fakeRenderer() }).install();
   });
 });
+
+// ---- 防御分岐（自己レビューのカバレッジ計測で未検定と判明した経路）----
+//   これら 4 分岐は先に実装が書かれていた（テスト先行に反した＝TDD の順序違反）。
+//   検出は node --experimental-test-coverage の未到達行による。撤去せず検定を足したのは、
+//   同種の防御が本コードベースの既定の流儀だからである
+//   （chart_interaction_controller.install の no-op・installChartToolbar の null 返し・
+//   primitive の attach 前 no-op）。ここだけ流儀を変えると読み手の予測を裏切る。
+
+test('掴んでいないときの pointerup は lwc 操作を触らない（無関係な操作を奪わない）', () => {
+  // Arrange
+  const ctx = build();
+  // Act — 線から離れた場所で押して離す
+  ctx.container.dispatch('pointerdown', { button: 0, clientY: clientYOf(Y_OF(58340) + 80) });
+  ctx.container.dispatch('pointerup', {});
+  // Assert
+  assert.deepEqual(ctx.renderer.calls.userInteraction, [],
+    'setUserInteraction(true) を余計に呼ばない（他の機能が落とした抑止を勝手に戻さない）');
+});
+
+test('primitive 未注入では掴み判定を行わない（配線前でも例外を投げない）', () => {
+  // Arrange
+  const container = fakeContainer();
+  const renderer = fakeRenderer();
+  const ctl = new PriceLevelDragController({ container, renderer, primitive: null });
+  ctl.install();
+  // Act / Assert
+  assert.doesNotThrow(() => container.dispatch('pointerdown', { button: 0, clientY: 100 }));
+  assert.equal(ctl.isDragging(), false);
+});
+
+test('renderer が座標変換を持たない場合は水準を更新しない', () => {
+  // Arrange
+  const ctx = build({ renderer: { setUserInteraction() {}, panPriceByPixels() {} } });
+  const stopY = Y_OF(58340);
+  // Act
+  ctx.container.dispatch('pointerdown', { button: 0, clientY: clientYOf(stopY) });
+  ctx.container.dispatch('pointermove', { buttons: 1, clientY: clientYOf(stopY + 10) });
+  // Assert
+  assert.equal(ctx.changes.length, 0);
+});
+
+test('水準が未設定（getLevels が null）でも掴み操作で落ちない', () => {
+  // Arrange
+  const container = fakeContainer();
+  const renderer = fakeRenderer();
+  const ctl = new PriceLevelDragController({
+    container, renderer, primitive: preparedPrimitive(), getLevels: () => null,
+  });
+  ctl.install();
+  const stopY = Y_OF(58340);
+  // Act / Assert
+  assert.doesNotThrow(() => {
+    container.dispatch('pointerdown', { button: 0, clientY: clientYOf(stopY) });
+    container.dispatch('pointermove', { buttons: 1, clientY: clientYOf(stopY + 10) });
+    container.dispatch('pointerup', {});
+  });
+});
