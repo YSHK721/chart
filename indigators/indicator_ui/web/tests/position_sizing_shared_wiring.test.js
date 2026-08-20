@@ -396,3 +396,57 @@ test('TC-SW14 アーム→解除でモーダルの入力状態が失われない
   assert.equal(price('entry:0').value, '58700', '建値の入力が消えた');
   assert.equal(price('stop').value, '58340', '損切りの入力が消えた');
 });
+
+// ---------------------------------------------------------------------------
+// 右クリックはモーダル未オープンでも値が入る（工程 5 レビュー 🔴-1・node で再現）
+//
+//   再現: モーダルを一度も開かず（または × で閉じた後）に右クリック →「損切りに設定」を選ぶと
+//   通知 0・stop=null・console 出力なし＝**完全無音**。原因は書き戻し先の `_prices` が
+//   `close()` で空 Map に捨てられており、`setPrice` が `if (!input) return;` で黙って抜けること。
+//   右クリックの意図は「この価格を計算機へ入れる」なので、閉じていれば開いてから書き戻す。
+// ---------------------------------------------------------------------------
+
+test('TC-SW15 モーダル未オープンでも右クリックで価格が入る（無音にしない）', () => {
+  // Arrange: ツールバーを押さない＝モーダルは一度も開いていない。
+  const ctx = bootAll();
+  assert.equal(ctx.body.children.length, 0, '前提: モーダルは開いていない');
+  const items = createPositionSizingContextItems({
+    renderer: {
+      priceAtCoordinate: (y) => 59000 - y,
+      paneIndexAtCoordinate: () => 0,
+      snapCandidatesAt: () => [],
+    },
+    getPositionSizing: () => ctx.positionSizing,
+    getToast: () => ctx.shared.chartToast,
+  });
+  // Act: 「この価格を損切りに設定」を y=660（=58340）で選ぶ。
+  items[0].onSelect({ x: 100, y: 660 });
+  // Assert: モーダルが開き、その欄へ値が入っている。
+  const dialogRoot = ctx.body.children.find((e) => e.dataset && e.dataset.psDialog === 'plan');
+  assert.notEqual(dialogRoot, undefined, '右クリックしてもモーダルが開かない（値の行き先が無い＝無音）');
+  const stop = flatten(dialogRoot).find((e) => e.dataset && e.dataset.psPrice === 'stop');
+  assert.equal(stop.value, '58340', '価格が欄まで届いていない');
+});
+
+test('TC-SW16 モーダルを閉じた後の右クリック「建値に追加」でも値が入る（🔴-1 の別経路）', () => {
+  // Arrange: 一度開いてから閉じる（× 相当）。
+  const ctx = bootAll();
+  ctx.mounts.get('position-sizing-menu').children[0].fire('click');
+  ctx.wired.positionSizing.controller._dialog.close();
+  const items = createPositionSizingContextItems({
+    renderer: {
+      priceAtCoordinate: (y) => 59000 - y,
+      paneIndexAtCoordinate: () => 0,
+      snapCandidatesAt: () => [],
+    },
+    getPositionSizing: () => ctx.positionSizing,
+    getToast: () => ctx.shared.chartToast,
+  });
+  // Act: 「この価格を建値に追加」（items[1]）。
+  items[1].onSelect({ x: 100, y: 300 });
+  // Assert
+  const dialogRoot = ctx.body.children.find((e) => e.dataset && e.dataset.psDialog === 'plan');
+  assert.notEqual(dialogRoot, undefined, '閉じた後の右クリックが無音のまま');
+  const entries = flatten(dialogRoot).filter((e) => e.dataset && /^entry:/.test(e.dataset.psPrice ?? ''));
+  assert.equal(entries.some((e) => e.value === '58700'), true, '追加した建値が欄に無い');
+});

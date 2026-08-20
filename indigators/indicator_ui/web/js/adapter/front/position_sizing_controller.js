@@ -109,9 +109,24 @@ export class PositionSizingController {
     this._dialog?.setPicking?.(armed);
   }
 
-  /** ピッカーの確定 → モーダルの当該欄へ書き戻す（唯一の書き戻し経路）。 */
+  /**
+   * ピッカー・右クリックの確定 → モーダルの当該欄へ書き戻す（唯一の書き戻し経路）。
+   *
+   * 閉じているときは**開いてから**書き戻す。書き戻し先の入力欄は `close()` で捨てられるため、
+   * 開かずに書くと `setPrice` が黙って抜けて**完全無音**になる（工程 5 🔴-1・node 再現済み）。
+   * 右クリックの意図は「この価格を計算機へ入れる」であり、行き先を用意するのが筋。
+   */
   confirmPick(target, price) {
+    this._ensureOpen();
     this._dialog?.setPrice?.(target, price);
+  }
+
+  // 閉じていれば開く（開いていれば何もしない＝入力中の値を作り直さない）。
+  _ensureOpen() {
+    const dialog = this._dialog;
+    if (dialog && typeof dialog.isOpen === 'function' && !dialog.isOpen()) {
+      this.open();
+    }
   }
 
   setStopPrice(price) {
@@ -122,8 +137,9 @@ export class PositionSizingController {
     this.confirmPick('take', price);
   }
 
-  /** 右クリック「この価格を建値に追加」→ 建値を 1 本増やす。 */
+  /** 右クリック「この価格を建値に追加」→ 建値を 1 本増やす（閉じていれば開いてから）。 */
   addEntryPrice(price) {
+    this._ensureOpen();
     this._dialog?.addEntryPrice?.(price);
   }
 
