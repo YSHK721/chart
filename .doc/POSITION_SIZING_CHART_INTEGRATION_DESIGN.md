@@ -162,6 +162,30 @@ index.html 4 枚／barInfoAt 検定／simulator／参照 HTML 差分 0。
 - OHLC 候補 label はフィールド名（表示文言は View の責務）。メニューはポップ無しトリガー 1 個
   （選ぶ項目が実在しないため・器と注入規約は color_theme と同型）。
 
+## 工程 3 実装確定記録（スライス 8-c・8-d・7・2026-08-20。本文と工程 2 是正 2 を上書きする）
+
+実装コミット: `3b72f2d`（8-c 右クリック 3 項目＝`contextMenuItems` 注入・ChartContextMenu 差分 0）／
+`d25249e`（8-d アーム式ピッカー＝ゴースト線・スナップ表示・Esc/取消解除・下段ペイン非確定＋案内・
+drag と縦パンブロッカー OR 併用）／`427ca24`（exit 結線＝参照実装で build() に不出現＝表示のみと
+実測し、その定義どおり usecase へ渡さない）／`851e37e`（走査根配列化）／`250ef4a`（スライス 7 結線
+＝drag 未結線解消・replay symlink 17 本）／`a46fe53`（CSS）。
+ゲート: web 全緑（indicator_ui 2131）・pytest 4678・変異 12 件 Red→復元緑・
+index.html／参照 HTML／simulator の py・tests 差分 0。
+
+1. **是正 2 の根拠訂正（実測により上書き）**: replay 配信は dual-root
+   （`static_file_server.py:90-103` が shared_js_root へフォールバック）＝symlink 欠落は 404 に
+   ならない。素朴な厳格化は配信中 12 ファイルの誤検出になるため、ガードは**実際の配信規則**
+   （どちらの根にも無ければ Red）で判定する。symlink 17 本は 404 回避でなくツリー自己完結のため。
+2. **CSS は `css/position_sizing.css` 新設＋app.css へ @import 1 行**（`css_theme_identity.test.js`
+   が app.css の色目録を全数固定しており、既存アサーション不変と両立する唯一の形。色は
+   `--ct-*` 経由のみを新ガードで強制）。Pre-mortem 成立の記録: CSS 皆無＝ゴースト線不可視を
+   構造ガードで恒久遮断。
+3. **右クリック 3 項目はライブ・リプレイ対称**（確定要件「両方に載せる」2026-08-11。リプレイ root
+   からも注入・項目定義は同一モジュール参照＝複製 0）。
+4. weightPattern/capBasis の既定は参照実装 `:578`（linear／lc）に一致させる。
+5. 残存＝実 UI 検証（NFR-09）: ゴースト線 y 位置・HiDPI・統合 UI の Worker×Service Worker・
+   CSS の見え。ISSUE-430（隔離ガード座標系 4 名不在）は独立に残存。
+
 ---
 
 # ISSUE-368 実装設計（読み取り専用・確定案）
