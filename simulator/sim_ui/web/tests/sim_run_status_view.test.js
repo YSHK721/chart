@@ -46,6 +46,38 @@ test("mount builds the run status panel under the host", () => {
   assert.equal(panel.parentNode, doc.body, "host の直下に組まれていない");
 });
 
+test("mount appends the panel at the end of the host by default", () => {
+  // Arrange: 先客が居る host（通常経路では 4 面の後ろに掲示面が並ぶ）
+  const doc = fakeDoc();
+  const first = doc.createElement("div");
+  first.id = "alreadyThere";
+  doc.body.appendChild(first);
+  // Act
+  createSimRunStatusView({ doc }).mount(doc.body);
+  // Assert
+  assert.deepEqual(doc.body.children.map((c) => c.id), ["alreadyThere", "simRunStatusPanel"]);
+});
+
+test("mount({atTop:true}) puts the panel first (§19.6 R2: mount 段の失敗時のみ最上部)", () => {
+  // Arrange: 途中まで組めた面が既に居る host
+  const doc = fakeDoc();
+  const first = doc.createElement("div");
+  first.id = "alreadyThere";
+  doc.body.appendChild(first);
+  // Act
+  createSimRunStatusView({ doc }).mount(doc.body, { atTop: true });
+  // Assert: 理由は画面の最上部に出す（途中まで組めた面に埋もれさせない）
+  assert.deepEqual(doc.body.children.map((c) => c.id), ["simRunStatusPanel", "alreadyThere"]);
+});
+
+test("mount({atTop:true}) works on an empty host too (境界値: 先客 0 件)", () => {
+  // Arrange / Act
+  const doc = fakeDoc();
+  createSimRunStatusView({ doc }).mount(doc.body, { atTop: true });
+  // Assert
+  assert.deepEqual(doc.body.children.map((c) => c.id), ["simRunStatusPanel"]);
+});
+
 // --- 2. 投入の掲示（投入中 → 受付）-------------------------------------------------
 
 test("showSubmitting posts the in-flight phase", () => {

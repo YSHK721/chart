@@ -31,6 +31,16 @@ export function fakeEl(tag = "div") {
       toggle(c, on) { if (on === undefined) { this._set.has(c) ? this._set.delete(c) : this._set.add(c); } else if (on) { this._set.add(c); } else { this._set.delete(c); } },
     },
     appendChild(child) { child.parentNode = this; child.parent = this; this.children.push(child); return child; },
+    // 実 DOM の `firstChild` / `insertBefore` に合わせる（参照が null なら末尾へ足す）。
+    get firstChild() { return this.children[0] || null; },
+    insertBefore(child, reference) {
+      const at = reference ? this.children.indexOf(reference) : -1;
+      child.parentNode = this;
+      child.parent = this;
+      if (at < 0) this.children.push(child);
+      else this.children.splice(at, 0, child);
+      return child;
+    },
     removeChild(child) {
       const i = this.children.indexOf(child);
       if (i >= 0) { this.children.splice(i, 1); child.parentNode = null; child.parent = null; }

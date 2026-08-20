@@ -709,6 +709,32 @@ test("a failing wiring stage surfaces the reason instead of a silently dead form
   assert.equal(panel.view, null, "結線できていない面を呼出側へ返しています");
 });
 
+test("a late mount failure puts the status surface at the very top (§19.6 R2)", async () => {
+  // Arrange: 3 面目（実行指示面）の mount で落ちる＝先に組めた 2 面が既に host に居る
+  const doc = fakeDoc();
+  const host = hostFailingAt(doc, 3);
+  // Act
+  const seen = await capturingErrors(async () => {
+    await mountSimExecutionPanel({ doc, host, fetch: routerFetch({ schema: settingsSchema() }) });
+  });
+  // Assert: 理由は半端に組まれた面の**上**に出す（下に置くと見つけられない）
+  assert.equal(doc.body.children[0].id, "simRunStatusPanel",
+    `掲示面が最上部にありません: ${doc.body.children.map((c) => c.id).join(",")}`);
+  assert.ok(doc.body.children.length > 1, "先に組めた面が残っていません（この検定は空振りです）");
+  assert.match(String(statusTextOf(doc.body, "run-status-reason")), /パネルを組み立てられません/);
+  assert.ok(seen.length > 0, "console.error に残っていません");
+});
+
+test("the normal path keeps the status surface below the run action surface (§19.6 R2)", async () => {
+  // Arrange / Act: 失敗しない構成では最上部へ動かさない（掲示はスタートの直下のまま）
+  const doc = fakeDoc();
+  await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
+  // Assert
+  const ids = doc.body.children.map((c) => c.id);
+  assert.notEqual(ids[0], "simRunStatusPanel", "成功経路で掲示面を最上部へ動かしています");
+  assert.equal(ids[ids.indexOf("simRunActionPanel") + 1], "simRunStatusPanel");
+});
+
 test("reportViewUrl builds the ?job= dispatch url", async () => {
   const { reportViewUrl } = await import("../js/adapter/front/composition_root_execution.js");
   assert.equal(reportViewUrl("abc"), "?job=abc");

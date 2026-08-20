@@ -50,9 +50,9 @@ export async function mountSimExecutionPanel({
   // （§19.6 R2）。二重に挿さないよう、挿したかどうかはこの 1 箇所で持つ。
   const statusView = createSimRunStatusView({ doc });
   let statusMounted = false;
-  function mountStatus() {
+  function mountStatus({ atTop = false } = {}) {
     if (statusMounted) return;
-    statusView.mount(host);
+    statusView.mount(host, { atTop });
     statusMounted = true;
   }
 
@@ -236,7 +236,9 @@ export async function mountSimExecutionPanel({
     const message = (e && e.message) || String(e);
     console.error(`投入フォームを組み立てられません: ${message}`);
     try {
-      mountStatus();
+      // 途中まで組めた面が既に居る（実行指示面の手前で落ちた等）。理由をその**下**に
+      // 置くと、壊れた器に埋もれて見つけられない。この経路だけ最上部へ挿す（§19.6 R2）。
+      mountStatus({ atTop: true });
       statusView.showFatal(message);
     } catch (_e) {
       // 掲示面すら挿せない（host そのものが壊れている）。理由は既に console に残っている。

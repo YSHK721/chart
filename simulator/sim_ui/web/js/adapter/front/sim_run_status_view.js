@@ -68,7 +68,15 @@ export function createSimRunStatusView({ doc } = {}) {
   return {
     elements: {},
 
-    mount(host) {
+    /**
+     * 掲示面を host へ組む。
+     *
+     * `atTop` は「途中まで組めた面より前に出す」ためだけの選択肢である（§19.6 R2）。
+     * 通常経路の掲示はスタートの直下（＝末尾）だが、器の組み立てに失敗したときは
+     * **半端に組まれた面の下**に理由を置くと見つけられない。どちらにするかは器の組み方を
+     * 知っている合成根が決め、この面は挿す位置を自分で判断しない。
+     */
+    mount(host, { atTop = false } = {}) {
       root = el("div", { id: "simRunStatusPanel", className: "run-status-panel" });
       const elements = { root };
       for (const slot of STATUS_SLOTS) {
@@ -77,7 +85,10 @@ export function createSimRunStatusView({ doc } = {}) {
         slots.set(slot.key, node);
         elements[`${slot.key}Node`] = node;
       }
-      host.appendChild(root);
+      // 先客が居なければ `firstChild` は null＝insertBefore は末尾追加と同じ意味になる
+      // （実 DOM の仕様。空の host でも分岐を増やさない）。
+      if (atTop) host.insertBefore(root, host.firstChild);
+      else host.appendChild(root);
       this.elements = elements;
       return root;
     },
