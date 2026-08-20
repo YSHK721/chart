@@ -6917,7 +6917,9 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-368: [機能] ポジションサイズ計算機のチャート UI 統合（2026-08-11・OPEN・保留）
 
-- **ステータス**: OPEN（保留。着手条件＝ISSUE-369 の口座状態エンジンで証拠金・ロスカット式が実測確定すること）
+- **ステータス**: IN_PROGRESS（2026-08-20 着手。設計＝`.doc/POSITION_SIZING_CHART_INTEGRATION_DESIGN.md`
+  （スライス 0〜7・裁定記録 TBD-1/5 建値一本化・TBD-3 図 3 除外・TBD-4 3 トグル残置・TBD-2 HTML 保持）。
+  ブランチ `feature/issue-368-position-sizing-ui`。着手条件は ISSUE-369 RESOLVED で成立済み）
 - **重大度**: 低（現行は単体 HTML `integrated_position_sizing_calculator.html` で運用可能）
 - **内容**: 単体 HTML の計算機（ケリー基準・破産確率 MC・分割エントリーのロット変換）を
   indicator_ui のチャートへ統合する。壁打ち（2026-08-11）で確定した要件:
