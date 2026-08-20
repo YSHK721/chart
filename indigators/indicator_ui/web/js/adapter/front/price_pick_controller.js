@@ -19,6 +19,9 @@
 // ホスト要素は本 View が所有する（overlay_host の規約・index.html は 1 枚も触らない）。
 
 import { ensureOverlayHost } from './overlay_host.js';
+// 価格の書式は**モーダルと同じ単一ソース**から取る（第 2 実装を作らない）。ゴーストは
+//   「これから置く水準線に添える価格」なので、参照実装 :777（数直線マーカー）の規則を使う。
+import { priceOnLine } from './price_format.js';
 // 案内文言（裁定 2026-08-20「下段ペインで押しても何も起きない状態を作らない」）は
 //   理由コードと同居する単一ソースから取る。右クリック（8-c）と同じ文言を写さない。
 import {
@@ -230,10 +233,11 @@ export class PricePickController {
 
 // 採用予定価格の表示文字列。どこへ吸ったか（候補名）まで出す（R-P2「採用予定値を明示」）。
 function pickLabel(resolved) {
+  const price = priceOnLine(resolved.price);   // 生の浮動小数を画面に出さない（実 UI 実測の是正）。
   if (!resolved.snapped || !resolved.candidate) {
-    return String(resolved.price);
+    return price;
   }
   const c = resolved.candidate;
   const name = c.kind === 'ohlc' ? (OHLC_LABEL[c.label] ?? c.label) : c.label;
-  return name ? `${resolved.price}（${name}）` : String(resolved.price);
+  return name ? `${price}（${name}）` : price;
 }

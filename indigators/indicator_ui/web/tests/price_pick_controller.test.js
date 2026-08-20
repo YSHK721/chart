@@ -128,7 +128,8 @@ test('TC-PK02 ホバーで採用予定価格を表示する（スナップ時は
   ctx.container.fire('pointermove', { clientX: 50, clientY: 100 });
   // Assert
   const text = ghostText(ctx.wrap);
-  assert.match(text, /58904/, '採用予定価格（スナップ後）を明示する');
+  // 書式は参照実装 :777（丸め＋桁区切り）。書式の権威は TC-PK09/10 が持つ。
+  assert.match(text, /58,904/, '採用予定価格（スナップ後）を明示する');
   assert.match(text, /sma20/, 'どこへ吸ったかを明示する');
 });
 
@@ -204,4 +205,49 @@ test('TC-PK08 アーム対象の差し替えは後勝ち（入力先は常に一
   ctx.container.fire('click', { clientX: 50, clientY: 100, button: 0 });
   // Assert
   assert.deepEqual(ctx.confirmed, [['take', 58900]], '後から押した欄だけが入力先になる');
+});
+
+// ---------------------------------------------------------------------------
+// ゴーストラベルの価格書式（実 UI 実測 2026-08-20・要是正の最後の 1 件）
+//
+//   実測: `.price-pick-ghost textContent = "62698.25050922694"`＝**生の浮動小数**。
+//   差分 2 の書式化がモーダル内に留まり、ピッカー面へ漏れていた。
+//
+//   採る規則は参照実装 `:777`（数直線マーカーの価格）= `Math.round(val).toLocaleString()`。
+//   根拠: 設計書 :335 が `drawPriceLine :752-783` を「建値 / 損切り / ロスカットの数直線
+//   （＝**チャート水準線の参照実装そのもの**）」と明記しており、ゴーストは
+//   「これから置く水準線に添える価格」だから同じ面の規則に従う。
+//   モーダル内の kv 行（`avgP.toFixed(0)` 等）は別の面の規則であり、混同しない。
+// ---------------------------------------------------------------------------
+
+test('TC-PK09 ゴーストの価格は参照実装 :777 の書式で出る（生の浮動小数を出さない）', () => {
+  // Arrange: 候補なし＝素のクリック価格。clientY=1.25 → 59000-1.25 = 58998.75。
+  const ctx = build();
+  ctx.picker.arm('stop');
+  // Act
+  ctx.container.fire('pointermove', { clientX: 50, clientY: 1.25 });
+  // Assert: Math.round(58998.75).toLocaleString() = '58,999'
+  const text = ghostText(ctx.wrap);
+  assert.match(text, /58,999/, '参照実装 :777 の書式（丸め＋桁区切り）で出ていない');
+  assert.equal(/58998\.75|\.\d{3,}/.test(text), false, `生の浮動小数が出ている: ${text}`);
+});
+
+test('TC-PK10 スナップ時は書式化した価格に候補名を併記する（R-P2「採用予定値を明示」）', () => {
+  // Arrange: y=96 の 4 価格（58904）に移動平均。
+  const ctx = build({ candidates: [{ kind: 'series', label: 'sma20', price: 58904 }] });
+  ctx.picker.arm('stop');
+  // Act
+  ctx.container.fire('pointermove', { clientX: 50, clientY: 100 });
+  // Assert
+  assert.match(ghostText(ctx.wrap), /58,904（sma20）/, '書式化した価格＋候補名の併記になっていない');
+});
+
+test('TC-PK11 OHLC 候補は日本語名で併記する（label はフィールド名・表示は View の責務）', () => {
+  // Arrange
+  const ctx = build({ candidates: [{ kind: 'ohlc', label: 'high', price: 58902 }] });
+  ctx.picker.arm('stop');
+  // Act
+  ctx.container.fire('pointermove', { clientX: 50, clientY: 100 });
+  // Assert
+  assert.match(ghostText(ctx.wrap), /58,902（高値）/);
 });

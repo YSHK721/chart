@@ -19,6 +19,13 @@
 // 単位の扱い（Presenter の変換）: 参照実装と同じく p・破産水準・α・証拠金率は **%** で入力させ、
 //   境界（onChangeParams へ渡す時）で比へ写す。ここにあるのは表示単位の変換だけで、式ではない。
 
+// 書式は共有モジュールの**単一ソース**から取る（協働子ではなく純粋な値変換のみ）。
+//   自前で持つと、同じ規則がピッカー側と 2 か所に割れる（実 UI 実測 2026-08-20 で
+//   ゴーストに生の浮動小数が残った）。
+import {
+  priceInTable, percent1, percent2, signedFixed3, decimal2, decimal3, yen, lotAmount,
+} from './price_format.js';
+
 // 入力の定義表（手書きの DOM を並べない＝行を足すのは表への 1 行）。
 //   key      : ViewModel / usecase のパラメータ名（そのまま onChangeParams のキーになる）
 //   label    : 表示名（参照実装の文言）
@@ -184,21 +191,17 @@ function losscutAssessmentText(plan) {
 // 本モジュールは何も import できない（TC-SW02 が「モーダルは import しない」を施行）ため、
 //   書式表はこのファイル内に置く。
 
-const pct2 = (x) => `${(x * 100).toFixed(2)}%`;        // 参照: `(f*100).toFixed(2)+'%'`
-const pct1 = (x) => `${(x * 100).toFixed(1)}%`;        // 参照: `(rorAtKelly*100).toFixed(1)+'%'`
-const yen = (x) => `¥${Math.round(x).toLocaleString()}`; // 参照: `¥${Math.round(v).toLocaleString()}`
-const fix0 = (x) => x.toFixed(0);                       // 参照: `r.avgP.toFixed(0)`
-const signed3 = (x) => `${x >= 0 ? '+' : ''}${x.toFixed(3)}`; // 参照: `${ev>=0?'+':''}${ev.toFixed(3)}`
-
-// 参照実装 `:1041` の fmtLot（ロット単位で切り替わる唯一の書式）。
-const fmtLot = (x, lotMode) => (lotMode === 'int'
-  ? Math.floor(x + 1e-9).toLocaleString()
-  : x.toFixed(2));
+// 書式の実体は price_format.js（単一ソース）。ここでは対応表の可読性のため別名だけ与える。
+const pct2 = percent2;
+const pct1 = percent1;
+const fix0 = priceInTable;
+const signed3 = signedFixed3;
+const fmtLot = lotAmount;
 
 // 出力キー → 書式。**参照実装に定義がある項目だけ**を載せる（無い項目は素の値のまま）。
 const OUT_FORMAT = Object.freeze({
   // Step 1 派生カード（参照 `updateDerived()`）
-  lossRate: (v) => v.toFixed(3),                        // `q.toFixed(3)`
+  lossRate: decimal3,                                   // 参照 `q.toFixed(3)`
   expectedValue: signed3,                               // `${ev>=0?'+':''}${ev.toFixed(3)}`
   kellyFraction: pct2,                                  // `(f*100).toFixed(2)+'%'`
   halfKellyFraction: pct2,                              // `(Math.max(f,0)/2*100).toFixed(2)+'%'`
@@ -214,11 +217,11 @@ const OUT_FORMAT = Object.freeze({
   totalLot: (v, c) => `${fmtLot(v, c.lotMode)}単位`,    // `${fmtLot(r.totalLot)}単位`
   avgPrice: fix0,                                       // `r.avgP.toFixed(0)`
   totalRisk: yen,                                       // `¥${Math.round(r.totalRisk).toLocaleString()}`
-  rr: (v) => `${v.toFixed(2)} : 1`,                     // `${r.rr.toFixed(2)} : 1`
+  rr: (v) => `${decimal2(v)} : 1`,                      // 参照 `${r.rr.toFixed(2)} : 1`
   breakeven: pct1,                                      // `(r.breakeven*100).toFixed(1)+'%'`
   winRate: pct1,                                        // `(r.pEmp*100).toFixed(1)+'%'`
-  excess: (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`, // `${r.excess>=0?'+':''}${(r.excess*100).toFixed(1)}%`
-  evYen: (v) => `${v >= 0 ? '+' : '−'}¥${Math.abs(Math.round(v)).toLocaleString()}`,
+  excess: (v) => `${v >= 0 ? '+' : ''}${pct1(v)}`,      // `${r.excess>=0?'+':''}${(r.excess*100).toFixed(1)}%`
+  evYen: (v) => `${v >= 0 ? '+' : '−'}${yen(Math.abs(v))}`,
   evMultiple: signed3,                                  // 時間決済側の EV（`...toFixed(3)`）
   requiredMargin: yen,                                  // `¥${Math.round(r.reqMargin).toLocaleString()}`
   marginUse: pct1,                                      // `(r.marginUse*100).toFixed(1)+'%'`
@@ -227,7 +230,7 @@ const OUT_FORMAT = Object.freeze({
     if (c.plan.immediate_lc === true) {
       return '即時（証拠金不足）';
     }
-    return v < 0 ? `${v.toFixed(0)}（0未満・到達不能）` : v.toFixed(0);
+    return v < 0 ? `${fix0(v)}（0未満・到達不能）` : fix0(v);
   },
   buildableLot: (v, c) => `${fmtLot(v, c.lotMode)}単位`, // `${fmtLot(r.totalLotBuild)}単位`
 });

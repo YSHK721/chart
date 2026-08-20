@@ -13,7 +13,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -35,13 +36,37 @@ test('TC-SW01 スライス 4 の drag 未結線が解消している（共有配
   assert.match(wiring, /new PositionSizingController\(/, '協働子が本番配線で生成されていない');
 });
 
+// 計算機の View が import してよい唯一のもの＝**純粋な値変換**（状態も DOM も持たない）。
+//   協働子（usecase・renderer・picker・primitive・controller）は従来どおり注入で結ぶ（DIP）。
+//   書式だけを許すのは、同じ規則を 2 か所に持つと必ず片方が取り残されるため
+//   （実 UI 実測 2026-08-20: モーダルだけ書式化した結果ゴーストに生の浮動小数が残った）。
+const VIEW_IMPORT_ALLOWLIST = ['./price_format.js'];
+
 test('TC-SW02 メニューは協働子を import しない（コールバック注入・遅延参照＝DIP）', () => {
   // Arrange / Act
   const menu = read('position_sizing_menu.js');
   const dialog = read('position_sizing_dialog.js');
-  // Assert
+  const importsOf = (src) => [...src.matchAll(/^import\s[\s\S]*?from\s*'([^']+)';/gm)].map((m) => m[1]);
+  // Assert: メニューは従来どおり import 0。
   assert.equal(/^import /m.test(menu), false, 'メニューが何かを import している（注入で結ぶ規約）');
-  assert.equal(/^import /m.test(dialog), false, 'モーダルが何かを import している（注入で結ぶ規約）');
+  // モーダルは許可された純粋モジュール以外を import しない（協働子を掴まない）。
+  const disallowed = importsOf(dialog).filter((spec) => !VIEW_IMPORT_ALLOWLIST.includes(spec));
+  assert.deepEqual(
+    disallowed,
+    [],
+    `モーダルが協働子を import している（注入で結ぶ規約）: ${disallowed.join(', ')}`,
+  );
+});
+
+test('TC-SW02b 許可された書式モジュールは純粋である（状態・DOM・協働子を持ち込まない）', () => {
+  // 許可リストの前提「純粋な値変換」を機械的に確かめる。ここが崩れると TC-SW02 の緩和が
+  //   そのまま「モーダルが協働子を掴める穴」になる。
+  // Arrange / Act
+  const shared = read('price_format.js');
+  // Assert
+  assert.equal(/^import /m.test(shared), false, '書式モジュールが何かを import している');
+  assert.equal(/document|window|localStorage|fetch\(/.test(shared), false, 'DOM・IO に触れている');
+  assert.equal(/\bclass\b|this\./.test(shared), false, '状態を持っている（純関数のみのはず）');
 });
 
 test('TC-SW03 root は識別子の受け渡しだけ（配線ロジックを root へ複製しない）', () => {
@@ -520,4 +545,47 @@ test('TC-SW21 開き直し（open が内部で close する）はアームを巻
   controller.open();
   // Assert: 「閉じていなかったものを開き直した」だけでアームを解除しない。
   assert.equal(picker.isArmed(), true, '開き直しでアームが巻き添えで解除された');
+});
+
+// ---------------------------------------------------------------------------
+// リプレイ側ツリーの自己完結（ISSUE-368 の範囲）
+//
+//   本ブランチは計算機一式を replay へ symlink している（17 本）。その目的は 404 回避ではなく
+//   **ツリーの自己完結**（配信は dual-root フォールバックがあるため、symlink が無くても
+//   実 UI は動いてしまい、欠落が誰にも見えない）。実際に本工程で新設した `price_format.js` は
+//   symlink を張り忘れても全ガードが緑のままだった。
+//
+//   全ツリーへ厳格化はしない: 実測で replay 配下には dual-root に依存する既存 12 ファイルが在り、
+//   一律に禁じると誤検出になる（工程 3 記録 1 の裁定と一致）。**ISSUE-368 の集合だけ**を見る。
+// ---------------------------------------------------------------------------
+
+test('TC-SW22 計算機一式は replay ツリー内で相対 import が解決する（symlink 張り忘れの検出）', () => {
+  // Arrange: replay 側に置かれた計算機モジュール（symlink 済みのもの）。
+  const replayJs = fileURLToPath(new URL('../../../../simulator/replay_ui/web/js/', import.meta.url));
+  const targets = [
+    'adapter/front/position_sizing_dialog.js',
+    'adapter/front/position_sizing_menu.js',
+    'adapter/front/position_sizing_controller.js',
+    'adapter/front/position_sizing_context_items.js',
+    'adapter/front/price_pick_controller.js',
+    'adapter/front/price_pick_resolver.js',
+    'adapter/front/price_level_drag_controller.js',
+    'adapter/front/price_level_lines_primitive.js',
+    'adapter/front/mc_worker_gateway.js',
+    'adapter/front/position_sizing_mc_worker.js',
+  ];
+  // Act: 各モジュールの相対 import が replay ツリー内で実在するかを見る。
+  const missing = [];
+  for (const rel of targets) {
+    const file = join(replayJs, rel);
+    const src = readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/from\s*'(\.[^']+)'/g)) {
+      const spec = m[1];
+      if (!existsSync(join(dirname(file), spec))) {
+        missing.push(`${rel} -> ${spec}`);
+      }
+    }
+  }
+  // Assert
+  assert.deepEqual(missing, [], `replay ツリーで解決できない import（symlink 張り忘れ）: ${missing.join(', ')}`);
 });

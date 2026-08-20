@@ -134,3 +134,33 @@ test('TC-PR08 案内文言の定義は front 配下に 1 か所だけ（複製�
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// 表示書式の単一ソース（実 UI 実測 2026-08-20 の再発防止）
+//
+//   差分 2 でモーダル側だけを書式化した結果、ピッカーのゴーストに生の浮動小数が残った。
+//   「同じ規則を 2 か所に書かない」を宣言ではなく機械的検査で担保する
+//   （案内文言の TC-PR08 と同型）。書式の定義は price_format.js だけが持ち、
+//   計算機の View は**呼ぶだけ**にする。
+// ---------------------------------------------------------------------------
+
+test('TC-PR09 計算機の View は書式を自前で持たない（定義は price_format.js の 1 か所）', () => {
+  // Arrange: 書式の実装に使う API（数値 → 文字列の丸め・桁区切り）。
+  const FORMAT_API = /\.toFixed\(|\.toLocaleString\(/;
+  const frontDir = fileURLToPath(new URL('../js/adapter/front/', import.meta.url));
+  const views = ['position_sizing_dialog.js', 'price_pick_controller.js', 'position_sizing_context_items.js'];
+  // Act / Assert
+  for (const name of views) {
+    const src = readFileSync(join(frontDir, name), 'utf8');
+    // コメント（規則の出典を引用している）は対象外＝実行されるコードだけを見る。
+    const code = src.replace(/\/\/.*$/gm, '');
+    assert.equal(
+      FORMAT_API.test(code),
+      false,
+      `${name} が書式を自前で持っている（price_format.js を呼ぶ。第 2 実装は取り残しを生む）`,
+    );
+  }
+  // 定義側には在ること（ガードが空振りしていないことの確認）。
+  const shared = readFileSync(join(frontDir, 'price_format.js'), 'utf8');
+  assert.match(shared, FORMAT_API, '共有モジュールに書式の実装が無い（ガードが無意味）');
+});
