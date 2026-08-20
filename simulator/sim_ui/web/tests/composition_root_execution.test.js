@@ -501,6 +501,107 @@ test("re-submitting stops the previous watch (同時 1 本)", async () => {
   assert.equal(statusTextOf(doc.body, "run-status-job"), "j2");
 });
 
+// --- 🟡-1: 応答前の二度押しでも監視は 1 本（同時 1 本の破れ）---------------------------
+// 前の監視を落とす判定は「監視が既に張られているか」で行っていたが、監視が張られるのは
+// **応答が返ってから**である。1 回目の応答が返る前に 2 回目を押すと、落とす対象がまだ
+// 無いため停止は空振りし、応答が 2 つ返った時点で監視が 2 本走る（実測: POSTs=2 /
+// pending watchers=2）。以後、古い run の状態が新しい run の掲示を上書きし続ける。
+// ボタンの無効化は UI 挙動の変更（承認事項）なので行わない——**遅れて返った応答を
+// 現在の run でないと判定して捨てる**（投入の通番で見分ける）。
+
+/** POST の応答を保留できる fetch（応答前の二度押しを作るため）。 */
+function deferredSubmitFetch(jobIds) {
+  const calls = [];
+  const gates = [];
+  let submitted = 0;
+  const fn = async (url, init) => {
+    calls.push({ url, init });
+    if (url === "/sim/settings-schema") return { ok: true, status: 200, json: async () => settingsSchema() };
+    if (url === "/sim/run-options") return { ok: true, status: 200, json: async () => RUN_OPTIONS };
+    if (url === "/sim/jobs") {
+      const jobId = jobIds[Math.min(submitted, jobIds.length - 1)];
+      submitted += 1;
+      const response = { ok: true, status: 202, json: async () => ({ job_id: jobId, status: "received" }) };
+      return new Promise((resolve) => { gates.push(() => resolve(response)); });
+    }
+    for (const jobId of jobIds) {
+      if (url === `/sim/jobs/${jobId}`) {
+        return { ok: true, status: 200, json: async () => ({ job_id: jobId, status: "running", terminal: false }) };
+      }
+    }
+    return { ok: false, status: 404, json: async () => ({ error: "nope" }) };
+  };
+  fn.calls = calls;
+  /** 保留していた投入応答をすべて返す（`newestFirst` で到着順を逆転させる）。 */
+  fn.releaseAll = ({ newestFirst = false } = {}) => {
+    const pending = gates.slice();
+    gates.length = 0;
+    if (newestFirst) pending.reverse();
+    for (const open of pending) open();
+  };
+  return fn;
+}
+
+test("pressing start twice before the first response still leaves one watch (🟡-1)", async () => {
+  // Arrange
+  const doc = fakeDoc();
+  const timer = fakeTimer();
+  const nav = [];
+  const fetchFn = deferredSubmitFetch(["j1", "j2"]);
+  await mountSimExecutionPanel({
+    doc, host: doc.body, fetch: fetchFn, navigate: (url) => nav.push(url),
+    setTimeout: timer.set, clearTimeout: timer.clear,
+  });
+  const start = findById(doc.body, "runStart")._listeners.click[0];
+  // Act: 1 回目の応答が返る前に 2 回目を押す
+  start();
+  await flush();
+  start();
+  await flush();
+  fetchFn.releaseAll();
+  await flush();
+  await flush();
+  // Assert: 投入は 2 回だが監視は 1 本だけ
+  assert.equal(fetchFn.calls.filter((c) => c.url === "/sim/jobs").length, 2, "二度押しになっていません");
+  assert.equal(timer.pending.size, 1, "監視が 2 本走っています（古い run が掲示を上書きし続けます）");
+  // 掲示と結果導線は新しい run を指す
+  assert.equal(statusTextOf(doc.body, "run-status-job"), "j2");
+  findById(doc.body, "execViewResult")._listeners.click[0]();
+  assert.deepEqual(nav, ["?job=j2"], "結果導線が古い run を指しています");
+  // 動いている 1 本が新しい run を照会している
+  await timer.tick();
+  const polled = fetchFn.calls.filter((c) => String(c.url).startsWith("/sim/jobs/")).map((c) => c.url);
+  assert.deepEqual(polled, ["/sim/jobs/j2"], `古い run を監視しています: ${polled.join(",")}`);
+});
+
+test("a late stale response does not overwrite the current run's posting (🟡-1)", async () => {
+  // Arrange: 応答が**逆順**で届く場合（新しい run が先・古い run が後）。到着順は
+  // ネットワーク側の都合であり、front が「最後に届いた方が新しい」と決めてはならない。
+  const doc = fakeDoc();
+  const timer = fakeTimer();
+  const nav = [];
+  const fetchFn = deferredSubmitFetch(["j1", "j2"]);
+  await mountSimExecutionPanel({
+    doc, host: doc.body, fetch: fetchFn, navigate: (url) => nav.push(url),
+    setTimeout: timer.set, clearTimeout: timer.clear,
+  });
+  const start = findById(doc.body, "runStart")._listeners.click[0];
+  start();
+  await flush();
+  start();
+  await flush();
+  // Act
+  fetchFn.releaseAll({ newestFirst: true });
+  await flush();
+  await flush();
+  // Assert: 掲示も結果導線も現在の run（j2）のまま
+  assert.equal(statusTextOf(doc.body, "run-status-job"), "j2",
+    "遅れて届いた古い応答が現在の run の掲示を上書きしています");
+  findById(doc.body, "execViewResult")._listeners.click[0]();
+  assert.deepEqual(nav, ["?job=j2"], "結果導線が古い run へ差し替わっています");
+  assert.equal(timer.pending.size, 1, "監視が 2 本走っています");
+});
+
 test("a watch that gives up posts the reason instead of freezing (無音で監視を諦めない)", async () => {
   // Arrange: 状態照会が常に 502
   const doc = fakeDoc();

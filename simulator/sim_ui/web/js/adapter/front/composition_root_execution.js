@@ -162,8 +162,20 @@ export async function mountSimExecutionPanel({
     // 直近に掲示した状態。監視を諦めたときも「どの状態まで見えていたか」を残す（監視が
     // 止まっただけで、ジョブが終わったわけではない＝終端と書かない）。
     let lastStatus = null;
+    // 投入の通番（🟡-1）。「今どの run を見ているか」を**押した時点**で決める。
+    //
+    // なぜ通番が要るか: 前の監視を落とす判定を「監視が張られているか」で行うと、監視が
+    // 張られるのは応答が返ってからなので、応答前の二度押しでは落とす対象がまだ無く停止が
+    // 空振りする（実測: POSTs=2 / 監視 2 本）。到着順もネットワーク次第であり「最後に
+    // 届いた方が新しい」とは限らない。押した順番だけが確かな順序である。
+    // ボタンの無効化（UI 挙動の変更＝承認事項）は行わず、**遅れて届いた応答を捨てる**。
+    let submitSeq = 0;
 
-    function onWatchUpdate(update) {
+    /** この応答が現在の run のものか（古い run の応答は掲示にも監視にも使わない）。 */
+    const isCurrentRun = (seq) => seq === submitSeq;
+
+    function onWatchUpdate(seq, update) {
+      if (!isCurrentRun(seq)) return;
       if (update && update.error) {
         statusView.showJobState({
           status: lastStatus, failure_reason: update.error, terminal: false,
@@ -179,6 +191,9 @@ export async function mountSimExecutionPanel({
     // 純関数）を try の外に置くと、そこで落ちた例外は誰にも捕まらず、画面は押しても何も
     // 起きないまま無音になる（実測済みの欠陥）。失敗は必ず掲示し、開発者コンソールにも残す。
     view.onStart(async () => {
+      // 押した時点で通番を進める（この 1 行が「現在の run」の定義）。
+      submitSeq += 1;
+      const seq = submitSeq;
       try {
         if (stopWatch) { stopWatch(); stopWatch = null; }
         lastStatus = null;
@@ -195,16 +210,22 @@ export async function mountSimExecutionPanel({
           inputs: eaInputsView.values(),
         });
         const result = await client.submit(body);
-        if (result && result.job_id) view.showResultLink(result.job_id);
-        statusView.showAccepted({
-          job_id: result && result.job_id, status: result && result.status,
-        });
-        lastStatus = result && result.status;
-        if (result && result.job_id) stopWatch = statusClient.watch(result.job_id, onWatchUpdate);
+        // 画面へ触れるのは現在の run だけ（遅れて届いた古い応答は掲示も導線も動かさない）。
+        // 購読口（onSubmitted / onError）は投入ごとに従来どおり呼ぶ＝外向きの契約は不変。
+        if (isCurrentRun(seq)) {
+          if (result && result.job_id) view.showResultLink(result.job_id);
+          statusView.showAccepted({
+            job_id: result && result.job_id, status: result && result.status,
+          });
+          lastStatus = result && result.status;
+          if (result && result.job_id) {
+            stopWatch = statusClient.watch(result.job_id, (update) => onWatchUpdate(seq, update));
+          }
+        }
         if (onSubmitted) onSubmitted(result);
       } catch (e) {
         const message = (e && e.message) || String(e);
-        statusView.showRejected({ message, status: e && e.status });
+        if (isCurrentRun(seq)) statusView.showRejected({ message, status: e && e.status });
         console.error(`投入できません: ${message}`);
         // 既存の購読口は従来どおり呼ぶ（掲示の追加で契約を変えない＝後方互換）。
         if (onError) onError(e);
