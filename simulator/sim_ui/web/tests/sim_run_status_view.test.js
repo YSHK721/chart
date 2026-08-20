@@ -171,6 +171,27 @@ test("showJobState keeps the accepted job id on screen (どの run の状態か�
     "状態更新で job_id が消えています（どの run の状態か分からなくなる）");
 });
 
+// --- 4b. 監視を諦めた（ジョブは終わっていないが、状態の取得を止めた）-------------------
+// 「実行中…」のまま止まると、利用者は更新を待ち続ける。止まったのは**監視**であって
+// ジョブではない——この 2 つを画面で区別する（終端語彙は持ち込まない）。
+
+test("showWatchAbandoned distinguishes a stopped watch from a running job", () => {
+  // Arrange
+  const { view, panel } = mounted();
+  view.showAccepted({ job_id: "j5", status: "received" });
+  view.showJobState({ status: "running", terminal: false });
+  // Act
+  view.showWatchAbandoned({ status: "running", failure_reason: "状態を取得できません (HTTP 502)" });
+  // Assert: 直近の状態と諦めた理由は残しつつ、段階は「実行中」でも「終了」でもない
+  assert.equal(textOf(panel, "run-status-state"), "running");
+  assert.equal(textOf(panel, "run-status-reason"), "状態を取得できません (HTTP 502)");
+  assert.equal(textOf(panel, "run-status-job"), "j5");
+  const phase = String(textOf(panel, "run-status-phase"));
+  assert.ok(phase.length > 0, "段階が空です");
+  assert.doesNotMatch(phase, /実行中/, "監視を止めたのに「実行中」のままです（更新を待ち続けます）");
+  assert.doesNotMatch(phase, /終了/, "ジョブが終わったと読める文言です（終端はサーバが決める）");
+});
+
 // --- 5. 器そのものを組めなかった場合（mount 段の失敗・B4）----------------------------
 
 test("showFatal posts the failure message", () => {

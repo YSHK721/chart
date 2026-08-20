@@ -177,9 +177,9 @@ export async function mountSimExecutionPanel({
     function onWatchUpdate(seq, update) {
       if (!isCurrentRun(seq)) return;
       if (update && update.error) {
-        statusView.showJobState({
-          status: lastStatus, failure_reason: update.error, terminal: false,
-        });
+        // 止まったのは監視であってジョブではない。「実行中…」のままにすると来ない更新を
+        // 待たせ、「終了」にすると終わっていないジョブを終わったことにする（🟡-3）。
+        statusView.showWatchAbandoned({ status: lastStatus, failure_reason: update.error });
         console.error(update.error);
         return;
       }

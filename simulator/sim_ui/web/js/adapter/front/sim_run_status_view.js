@@ -22,6 +22,7 @@ const PHASE_ACCEPTED = "受付しました";
 const PHASE_REJECTED = "投入できませんでした";
 const PHASE_RUNNING = "実行中…";
 const PHASE_TERMINAL = "終了しました";
+const PHASE_ABANDONED = "状態の取得を中止しました";
 const PHASE_FATAL = "画面を組み立てられませんでした";
 
 /**
@@ -122,6 +123,20 @@ export function createSimRunStatusView({ doc } = {}) {
         job: currentJobId,
         state: status,
         reason: failureReason,
+      });
+    },
+
+    /**
+     * 状態の取得を諦めた（連続失敗で監視を止めた）。
+     *
+     * 止まったのは**監視**であってジョブではない。段階を「実行中…」のままにすると利用者は
+     * 来ない更新を待ち続け、「終了しました」にすると終わっていないジョブを終わったことに
+     * してしまう（終端を決めるのはサーバ・§19.6 R1）。第 3 の段階として区別する。
+     * 直近に見えていた状態は消さずに残す（どこまで見えていたかが判断材料になる）。
+     */
+    showWatchAbandoned({ status, failure_reason: failureReason } = {}) {
+      post({
+        phase: PHASE_ABANDONED, job: currentJobId, state: status, reason: failureReason,
       });
     },
 

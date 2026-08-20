@@ -627,6 +627,31 @@ test("a watch that gives up posts the reason instead of freezing (無音で監�
   assert.ok(seen.some((line) => /502/.test(line)), `console.error に残っていません: ${JSON.stringify(seen)}`);
 });
 
+test("an abandoned watch stops claiming the job is still running (🟡-3)", async () => {
+  // Arrange: 状態照会が常に 502
+  const doc = fakeDoc();
+  const timer = fakeTimer();
+  const fetchFn = async (url) => {
+    if (url === "/sim/settings-schema") return { ok: true, status: 200, json: async () => settingsSchema() };
+    if (url === "/sim/run-options") return { ok: true, status: 200, json: async () => RUN_OPTIONS };
+    if (url === "/sim/jobs") return { ok: true, status: 202, json: async () => ({ job_id: "j1", status: "received" }) };
+    return { ok: false, status: 502, json: async () => { throw new Error("no body"); } };
+  };
+  await mountSimExecutionPanel({
+    doc, host: doc.body, fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear,
+  });
+  findById(doc.body, "runStart")._listeners.click[0]();
+  await flush();
+  // Act: 上限まで失敗させる
+  await capturingErrors(async () => { while (await timer.tick()); });
+  // Assert: 段階が「実行中」のままではない（来ない更新を待たせない）
+  const phase = String(statusTextOf(doc.body, "run-status-phase"));
+  assert.doesNotMatch(phase, /実行中/, `監視を諦めたのに段階が実行中のままです: ${phase}`);
+  assert.doesNotMatch(phase, /終了/, "終わっていないジョブを終わったことにしています");
+  // 直近に見えていた状態は残る
+  assert.equal(statusTextOf(doc.body, "run-status-state"), "received");
+});
+
 // --- Phase 9 段階 3 S5: mount 段の防御（B4「器を組めなかった失敗が無音」）--------------
 // 面の構築が例外で落ちると、画面には**何も出ない**まま `mountSimExecutionPanel` の呼出が
 // 抜ける（report_view.html は catch を持たない）。利用者に見えるのは白い画面だけである。
