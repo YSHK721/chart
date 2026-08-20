@@ -81,3 +81,20 @@ test('TC-CS05 MC 進捗欄に CSS 規則が在る（見えなければ「進捗�
   assert.match(CSS, /\.ps-progress\s*\{/, '進捗欄の CSS が無い（実 UI で見えない）');
   assert.match(CSS, /\.ps-progress\s*\{[^}]*min-height/, '空文字のときに行が潰れて進捗表示で版面が跳ねる');
 });
+
+test('TC-CS06 アーム中は面が透過しモーダル本体だけ操作できる（チャートを覆わない・R-P1）', () => {
+  // 実 UI 実測 2026-08-20: backdrop が inset:0 のまま残り elementFromPoint がモーダルを返した
+  //   ＝チャートをホバーもクリックもできなかった。状態クラスの付け外し（TC-SW13）だけでは
+  //   実ブラウザの透過は保証されないため、CSS 側の規則をここで固定する（2 点で挟む）。
+  // Arrange / Act / Assert
+  assert.match(
+    CSS,
+    /\.ps-dialog-backdrop\.is-picking\s*\{[^}]*pointer-events\s*:\s*none/,
+    'アーム中に面が透過しない（チャートがクリックできない）',
+  );
+  assert.match(
+    CSS,
+    /\.ps-dialog-backdrop\.is-picking\s+\.ps-dialog\s*\{[^}]*pointer-events\s*:\s*auto/,
+    'アーム中にモーダル本体まで操作不能になる（取消も入力もできない）',
+  );
+});

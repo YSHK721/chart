@@ -100,6 +100,15 @@ export class PositionSizingController {
     this._picker?.arm?.(target);
   }
 
+  /**
+   * アーム状態の変化をモーダルへ中継する（実 UI 実測 2026-08-20 の是正）。
+   * アーム中はモーダルを非モーダル化しないとチャートを覆ったままになり、
+   * ホバーもクリックもできず R-P1 が成立しない。判断も表示も持たず**中継するだけ**。
+   */
+  setPicking(armed) {
+    this._dialog?.setPicking?.(armed);
+  }
+
   /** ピッカーの確定 → モーダルの当該欄へ書き戻す（唯一の書き戻し経路）。 */
   confirmPick(target, price) {
     this._dialog?.setPrice?.(target, price);

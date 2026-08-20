@@ -18,6 +18,13 @@
   display: none; align-items: center; justify-content: center;
 }
 .ps-dialog-backdrop.is-open { display: flex; }
+/* アーム式ピッカー中（is-picking）は**非モーダル**にする（実 UI 実測 2026-08-20 の是正）。
+   backdrop は inset:0 のビューポート全面のため、そのままだとチャートをホバーもクリックも
+   できず R-P1（クロスヘア追従 → クリック確定）が成立しない。面だけ透過し、モーダル本体は
+   操作可能なまま残す（閉じない＝入力値が DOM に残る＝アーム解除後も状態が消えない）。
+   暗幕も外す（チャートを見ながら価格を選ぶため）。 */
+.ps-dialog-backdrop.is-picking { pointer-events: none; background: transparent; }
+.ps-dialog-backdrop.is-picking .ps-dialog { pointer-events: auto; }
 .ps-dialog {
   width: 720px; max-width: 94vw; max-height: 88vh;
   background: var(--ct-uiPanel, #1e222d); border: 1px solid var(--ct-uiBorder, #2a2e39); border-radius: 8px;

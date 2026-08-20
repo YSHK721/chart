@@ -494,6 +494,9 @@ function createPositionSizingCollaborators({
     document: doc,
     registerVerticalPanBlocker,
     onConfirm: (target, price) => controller.confirmPick(target, price),
+    // アーム中はモーダルがチャートを覆ってはならない（実 UI 実測 2026-08-20: backdrop が
+    //   ビューポート全面のままで elementFromPoint がモーダルを返し、R-P1 が成立しなかった）。
+    onArmChange: (armed) => controller.setPicking(armed),
   });
   picker.install();
 

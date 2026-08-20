@@ -40,19 +40,23 @@ export class PricePickController {
    * @param {object} deps.document  DOM 実装（注入）。
    * @param {?Function} [deps.registerVerticalPanBlocker] (predicate) => unregister。
    * @param {?Function} [deps.onConfirm] (target, price) => void。確定時の書き戻し。
+   * @param {?Function} [deps.onArmChange] (armed: boolean) => void。アーム状態の変化通知。
+   *   アーム中はモーダルがチャートを覆ってはならない（実 UI 実測 2026-08-20）。本 class は
+   *   モーダルを知らないので、状態だけを外へ知らせる（表示の決定は呼び出し側＝DIP）。
    * @param {object} [deps.anchor] 版面要素の直接注入（既定は document から .chart-wrap）。
    * @param {number} [deps.tolerancePx] スナップ許容（px）。
    */
   constructor({
     container, renderer, document: doc = null,
     registerVerticalPanBlocker = null, onConfirm = null, anchor = null,
-    tolerancePx = DEFAULT_PICK_TOLERANCE_PX,
+    onArmChange = null, tolerancePx = DEFAULT_PICK_TOLERANCE_PX,
   } = {}) {
     this._container = container ?? null;
     this._renderer = renderer ?? null;
     this._doc = doc;
     this._registerBlocker = registerVerticalPanBlocker;
     this._onConfirm = typeof onConfirm === 'function' ? onConfirm : null;
+    this._onArmChange = typeof onArmChange === 'function' ? onArmChange : null;
     this._anchor = anchor;
     this._tolerancePx = tolerancePx;
     this._target = null;          // アーム中の入力先（'entry:i' / 'stop' / 'take'）または null
@@ -107,6 +111,9 @@ export class PricePickController {
   arm(target) {
     this._target = target;
     this._setUserInteraction(false);
+    // アーム中はチャートがポインタを受け取れる必要がある（モーダルが覆っていると R-P1 が
+    //   成立しない・実 UI 実測 2026-08-20）。どう見せるかは呼び出し側の責務。
+    this._onArmChange?.(true);
   }
 
   /** 解除（Esc・モーダル側の取消・確定後）。冪等。 */
@@ -117,6 +124,7 @@ export class PricePickController {
     this._target = null;
     this._hideGhost();
     this._setUserInteraction(true);
+    this._onArmChange?.(false);
   }
 
   // ---- 内部 ----

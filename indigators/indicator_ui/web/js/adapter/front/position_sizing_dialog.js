@@ -602,6 +602,27 @@ export class PositionSizingDialog {
   }
 
   /**
+   * ピッカーのアーム中だけモーダルを**非モーダル化**する（実 UI 実測 2026-08-20 の是正）。
+   *
+   * 背景（実測）: backdrop は `position:fixed; inset:0`（ビューポート全面）であり、アーム中も
+   * そのままだと `elementFromPoint(チャート中央)` がモーダルを返す＝チャートをホバーも
+   * クリックもできず、R-P1（クロスヘア追従 → クリック確定）が実 UI で成立しない。
+   *
+   * ここで持つのは**状態クラスの付け外しだけ**で、透過そのものは CSS が決める
+   * （`.ps-dialog-backdrop.is-picking` に `pointer-events: none`／パネルだけ `auto`）。
+   * DOM を作り直さないため、アーム解除・確定後も全入力値がそのまま残る（必須要件）。
+   *
+   * @param {boolean} on アーム中なら true。
+   */
+  setPicking(on) {
+    const root = this._root;
+    if (!root || !root.classList || typeof root.classList.toggle !== 'function') {
+      return;   // 閉じている・DOM 非対応は no-op。
+    }
+    root.classList.toggle('is-picking', !!on);
+  }
+
+  /**
    * MC の進捗を表示する（NFR-09「進捗が進む」）。
    *
    * 表示するだけで、判定も計算も持たない（比 → % の書式は Presenter の責務＝§3 UC-04）。

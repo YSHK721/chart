@@ -336,3 +336,63 @@ test('TC-SW12 両 root が告知先を渡す（案内の結線を root で落と
     assert.match(src, /getToast:\s*\(\)\s*=>\s*chartToast/, `${name} root が告知先を渡していない（案内が出ない）`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// アーム中はチャートがポインタを受け取れる（実 UI 実測 2026-08-20・R-P1 の機能不全）
+//
+//   実測: 「チャートで指定」を押した後も `.ps-dialog-backdrop.is-open` は
+//   `position:fixed; inset:0; display:flex`（780x493＝ビューポート全面）のまま残り、
+//   `document.elementFromPoint(390,260)` が `ps-dialog-section` を返した
+//   ＝**チャートをホバーもクリックもできない**。ゴースト線も確定も起きず R-P1 が成立しない。
+//   単体検定は fake DOM が重なりを持たないため全緑ですり抜けていた（ISSUE-425 と同型）。
+//
+//   採った形は「アーム中だけ backdrop を非モーダル化する」（下記 TC-SW13 の状態クラス）。
+//   モーダルを閉じる案を採らない理由: `open()` は `close()`→再構築で `_fields` / `_prices` を
+//   捨てるため、Step1/2/3 の全入力値を退避する新規の状態ストアが要る（必須要件
+//   「アーム解除／確定後に入力状態が失われないこと」を満たすのに機構の新設が必要になる）。
+//   透過なら DOM に手を触れないので入力保持は構造的に自明（TC-SW14 で固定）。
+//
+//   fake DOM は pointer-events を再現しないため、**観測点は状態クラス**に置き、
+//   実際の透過は CSS ガード（TC-CS06）で固定する（2 点で挟んで実 UI の穴を塞ぐ）。
+// ---------------------------------------------------------------------------
+
+test('TC-SW13 アームするとモーダルが非モーダル化し、解除で戻る（チャートを覆ったままにしない）', () => {
+  // Arrange: ツールバー → モーダルを開く。
+  const ctx = bootAll();
+  ctx.mounts.get('position-sizing-menu').children[0].fire('click');
+  const backdrop = ctx.body.children.find((e) => e.dataset && e.dataset.psDialog === 'plan');
+  assert.equal(backdrop.classList.contains('is-picking'), false, '開いた直後は通常のモーダル');
+  // Act: 損切りの「チャートで指定」を押す（＝アーム）。
+  const pick = flatten(backdrop).find((e) => e.dataset && e.dataset.psPick === 'stop');
+  pick.fire('click');
+  // Assert: アーム中はチャート面がポインタを受けられる状態へ移る。
+  assert.equal(ctx.wired.positionSizing.picker.isArmed(), true, '前提: アームされている');
+  assert.equal(
+    backdrop.classList.contains('is-picking'),
+    true,
+    'アーム中もモーダルがチャートを覆ったまま（ホバーもクリックもできない＝R-P1 が成立しない）',
+  );
+  // Act: 解除（Esc・モーダル取消と同じ経路）。
+  ctx.wired.positionSizing.picker.disarm();
+  // Assert: 通常のモーダルへ戻る（透過のまま残すと本文がクリックできない）。
+  assert.equal(backdrop.classList.contains('is-picking'), false, '解除後も非モーダルのまま残っている');
+});
+
+test('TC-SW14 アーム→解除でモーダルの入力状態が失われない（必須要件）', () => {
+  // Arrange: モーダルを開き、Step1/Step3 の入力と価格欄へ値を入れる。
+  const ctx = bootAll();
+  ctx.mounts.get('position-sizing-menu').children[0].fire('click');
+  const backdrop = ctx.body.children.find((e) => e.dataset && e.dataset.psDialog === 'plan');
+  const field = (key) => flatten(backdrop).find((e) => e.dataset && e.dataset.psField === key);
+  const price = (target) => flatten(backdrop).find((e) => e.dataset && e.dataset.psPrice === target);
+  field('winRate').value = '41';
+  price('entry:0').value = '58700';
+  price('stop').value = '58340';
+  // Act: アームして解除する。
+  flatten(backdrop).find((e) => e.dataset && e.dataset.psPick === 'stop').fire('click');
+  ctx.wired.positionSizing.picker.disarm();
+  // Assert: 同じ要素が生きており、値がそのまま残っている（作り直していない）。
+  assert.equal(field('winRate').value, '41', 'Step 1 の入力が消えた');
+  assert.equal(price('entry:0').value, '58700', '建値の入力が消えた');
+  assert.equal(price('stop').value, '58340', '損切りの入力が消えた');
+});
