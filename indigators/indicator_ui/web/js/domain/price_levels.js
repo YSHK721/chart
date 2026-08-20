@@ -15,7 +15,16 @@
 //   単一ソース化（TBD-1）後は entryPrices[0] がその役割を負う。
 //   gap（建玉間隔）は TBD-1 で撤廃済みのため本モジュールは一切扱わない。
 //
-// 依存ゼロ（DOM・fetch・lwc を触らない）。
+// **量子化の不変条件（ISSUE-368 スライス S-4）**: 呼び値の刻み `tick` を注入すると、
+//   「刻み上にない価格は PriceLevels に存在できない」。関門は構築・更新口（コンストラクタ）1 か所で、
+//   create / withEntry / withStop / withTake の 4 経路すべてがここを通る。関門を domain に置く理由は
+//   水準線 drag（`adapter/front/price_level_drag_controller.js:157-176`）が resolver を通らないため
+//   （設計「追補: 工程 2」E-4・丸めの適用点 経路 6）。`tick` は**任意注入・既定は素通し**で、
+//   未注入なら従来と完全に同一に振る舞う。丸めの式は `price_quantize.js` にしか置かない。
+//
+// 依存ゼロ（DOM・fetch・lwc を触らない）。import は同層 domain のみ。
+
+import { quantize } from './price_quantize.js';
 
 export const LONG = 'long';
 export const SHORT = 'short';
@@ -25,11 +34,13 @@ export const STOP_INVALID = 'stop_invalid';
 export const TAKE_INVALID = 'take_invalid';
 
 class PriceLevels {
-  constructor(direction, entryPrices, stopPrice, takePrice) {
+  constructor(direction, entryPrices, stopPrice, takePrice, tick) {
     this.direction = direction;
-    this.entryPrices = Object.freeze(entryPrices.slice());
-    this.stopPrice = stopPrice;
-    this.takePrice = takePrice;
+    this.entryPrices = Object.freeze(entryPrices.map((p) => quantize(p, tick)));
+    this.stopPrice = quantize(stopPrice, tick);
+    this.takePrice = quantize(takePrice, tick);
+    // 刻みは価格ではないので**列挙可能な状態にしない**（「保持するのは価格だけ」を崩さない）。
+    Object.defineProperty(this, '_tick', { value: tick, enumerable: false });
     Object.freeze(this);
   }
 
@@ -84,7 +95,7 @@ class PriceLevels {
 
   /** 損切り価格を差し替えた新しい水準（非破壊）。 */
   withStop(price) {
-    return new PriceLevels(this.direction, this.entryPrices, price, this.takePrice);
+    return new PriceLevels(this.direction, this.entryPrices, price, this.takePrice, this._tick);
   }
 
   /** i 番目の建値を差し替えた新しい水準（非破壊）。 */
@@ -94,18 +105,19 @@ class PriceLevels {
     }
     const next = this.entryPrices.slice();
     next[index] = price;
-    return new PriceLevels(this.direction, next, this.stopPrice, this.takePrice);
+    return new PriceLevels(this.direction, next, this.stopPrice, this.takePrice, this._tick);
   }
 
   /** 利確価格を差し替えた新しい水準（非破壊。null で無効化）。 */
   withTake(price) {
-    return new PriceLevels(this.direction, this.entryPrices, this.stopPrice, price);
+    return new PriceLevels(this.direction, this.entryPrices, this.stopPrice, price, this._tick);
   }
 }
 
 /**
  * 価格水準を作る。
- * @param {{direction:string, entryPrices:number[], stopPrice:number, takePrice:(number|null)}} spec
+ * @param {{direction:string, entryPrices:number[], stopPrice:number, takePrice:(number|null),
+ *           tick:(number|null|undefined)}} spec `tick` は任意（未指定なら量子化しない）。
  * @returns {PriceLevels}
  */
 export function createPriceLevels(spec) {
@@ -118,5 +130,6 @@ export function createPriceLevels(spec) {
     throw new Error('entryPrices は 1 本以上必要です');
   }
   const takePrice = spec.takePrice === undefined ? null : spec.takePrice;
-  return new PriceLevels(direction, entryPrices, spec.stopPrice, takePrice);
+  const tick = spec.tick === undefined ? null : spec.tick;
+  return new PriceLevels(direction, entryPrices, spec.stopPrice, takePrice, tick);
 }
