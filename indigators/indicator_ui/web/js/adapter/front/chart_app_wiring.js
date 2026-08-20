@@ -170,9 +170,14 @@ export function installSharedUi({
   installIndicatorDialog(doc, {});
 
   // チャート操作（縦価格パン・wheel 価格ズーム・dblclick reset）。振る舞い本体は当該 controller が所有。
-  new ChartInteractionController({
+  //   ISSUE-368 スライス 3: 生成した実体を保持する（従来は install() 後に捨てていた）。
+  //   縦パンを止めたい後発の協働子（水準線 drag）は controller 生成より後に結線されるため、
+  //   登録口を戻り値で配る。root が自前で ChartInteractionController を new し直すのは
+  //   `composition_roots_share_wiring.test.js` の SHARED_OWNED が禁じている＝配るのは共有配線の責務。
+  const chartInteraction = new ChartInteractionController({
     container, renderer, getController, updatePaneHeight, isVerticalPanBlocked,
-  }).install();
+  });
+  chartInteraction.install();
 
   // ISSUE-116: 「最新のバーまでスクロール」ボタン（» ）。DOM 不在は install 内の防御で no-op。
   new ScrollToLatestButton({ container, renderer, document: doc }).install();
@@ -247,6 +252,8 @@ export function installSharedUi({
   return {
     chartTemplateMenu, chartTemplateDialogs, colorThemeMenu, colorThemeDialogs,
     chartContextMenu, chartToast,
+    // ISSUE-368 スライス 3: 縦パンブロッカーの登録口（解除関数を返す）。
+    registerVerticalPanBlocker: (predicate) => chartInteraction.addVerticalPanBlocker(predicate),
   };
 }
 

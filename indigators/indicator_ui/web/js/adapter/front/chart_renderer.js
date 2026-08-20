@@ -352,6 +352,25 @@ export class ChartRenderer {
     this._scale.resetPriceZoom();
   }
 
+  // ISSUE-368 スライス 3: コンテナ上の y 座標 → 価格の**公開**変換。
+  //   由来: y→価格の公開変換はどこにも無く（内部利用は本ファイル :613 の _onCrosshairMove と
+  //   scale_controller の 2 箇所だけ）、水準線 drag が価格を得る手段を持たなかった。
+  //   upstream の API 名（coordinateToPrice）は隔離点である本ファイル内に留め、呼び出し側は
+  //   priceAtCoordinate しか知らない（`upstream_isolation_declaration.test.js` の隔離規約）。
+  //   可視範囲外は upstream が null を返す＝そのまま null を返す（0 へ倒すと画面外の掴みが
+  //   価格 0 として下流へ流れる）。非有限 y は変換を呼ばない（NaN 価格を作らない）。
+  priceAtCoordinate(y) {
+    if (!Number.isFinite(y)) {
+      return null;
+    }
+    const series = this._mainSeries;
+    if (!series || typeof series.coordinateToPrice !== 'function') {
+      return null;
+    }
+    const price = series.coordinateToPrice(y);
+    return price == null ? null : Number(price);
+  }
+
   // ISSUE-116: 最新足が可視範囲内か（「最新のバーまでスクロール」ボタンの表示判定用）。
   //   getVisibleLogicalRange().to が末尾 index 以上なら可視（右余白ぶん to は末尾より大きくなる）。
   //   API 非提供・データ無し・レンジ不明は true（＝最新扱い・ボタンを出さない安全側）。
