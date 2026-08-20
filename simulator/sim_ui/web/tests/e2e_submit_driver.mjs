@@ -16,17 +16,24 @@
 //
 // これはテストではない（`*.test.js` ではないので `npm test` は収集しない）。
 //
-// 使い方: node e2e_submit_driver.mjs <base-url> <scenario>
-//   settings : schema 込み（Tester Settings パネルが settings の供給元）
-//   legacy   : schema 面が無い構成（fail-open → 旧フォーム投入・settings 不在）
-//   mismatch : Period を実行対象データセットと食い違わせて投入
+// 使い方: node e2e_submit_driver.mjs <base-url> <scenario> [mode]
+//   settings   : schema 込み（Tester Settings パネルが settings の供給元）
+//   legacy     : schema 面が無い構成（fail-open → 旧フォーム投入・settings 不在）
+//   mismatch   : Period を実行対象データセットと食い違わせて投入
+//   bad_symbol : 候補外の Symbol を打って投入（受付が 400 で拒む＝理由文の掲示を観測する）
+//   mode="watch": 投入後、状態監視の掲示が終端まで追従するのを待ってから出力する
+//                 （既定は投入の応答を得た時点で終了＝既存シナリオの観測は変わらない）
 
-import { fakeDoc, findById } from "./_fakes.js";
+import { fakeDoc, findById, flatten } from "./_fakes.js";
 import { mountSimExecutionPanel } from "../js/adapter/front/composition_root_execution.js";
 
-const [base, scenario] = process.argv.slice(2);
+const [base, scenario, mode] = process.argv.slice(2);
 const SCHEMA_PATH = "/sim/settings-schema";
 const SUBMIT_TIMEOUT_MS = 60_000;
+/** 監視の掲示が終端に追い付くのを待つ上限（front の照会周期は 1000ms）。 */
+const WATCH_TIMEOUT_MS = 300_000;
+/** `bad_symbol` シナリオで打つ、候補に無い銘柄（実ブラウザの select では作れない値）。 */
+const OUT_OF_CANDIDATE_SYMBOL = "NOT_A_DATASET_SYMBOL";
 /** `legacy` シナリオで入力する初期資金（既定値ではストップアウトに達する・下記参照）。 */
 const LEGACY_DEPOSIT = "10000000";
 /** `custom_range` シナリオの期間（データセットの実在範囲内・`YYYY.MM.DD`＝R10 の書式）。 */
@@ -46,6 +53,47 @@ function makeFetch(calls) {
 
 /** fake DOM のリスナを直接叩く（実ブラウザのイベント発火の代わり）。 */
 const fire = (el, ev) => (el._listeners[ev] || []).forEach((f) => f());
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 掲示面（M6）に出ている文字を集める（枠の区切りは空白 1 個で連結する）。 */
+function statusPanelText(doc) {
+  const panel = findById(doc.body, "simRunStatusPanel");
+  if (!panel) return "";
+  return flatten(panel)
+    .map((n) => String(n.textContent || ""))
+    .filter((t) => t.length > 0)
+    .join(" ");
+}
+
+/** 掲示枠 1 つの文字（class 名で引く）。 */
+function statusSlotText(doc, className) {
+  const panel = findById(doc.body, "simRunStatusPanel");
+  if (!panel) return "";
+  const hit = flatten(panel).find(
+    (n) => String(n.className || "").split(/\s+/).includes(className),
+  );
+  return hit ? String(hit.textContent || "") : "";
+}
+
+/**
+ * 状態監視の掲示がサーバの終端状態に追い付くまで待つ。
+ *
+ * 終端かどうかも「どの状態か」も**サーバの応答をそのまま**使う（front の語彙も終端集合も
+ * ここへ書かない）。掲示された状態がサーバの `status` と一致したら追い付いたと判定する。
+ */
+async function waitForStatusPanelToCatchUp(doc, jobId) {
+  const deadline = Date.now() + WATCH_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const res = await globalThis.fetch(`${base}/sim/jobs/${jobId}`, { cache: "no-store" });
+    const payload = await res.json();
+    if (payload.terminal === true && statusSlotText(doc, "run-status-state") === payload.status) {
+      return payload;
+    }
+    await sleep(250);
+  }
+  return null;
+}
 
 async function main() {
   const doc = fakeDoc();
@@ -105,10 +153,23 @@ async function main() {
     fire(period, "change");
   }
 
+  if (scenario === "bad_symbol") {
+    // 候補に無い銘柄を打つ（実行対象データセットが解決できない＝`.ini` の Symbol と
+    // 実行仕様の symbol が食い違い、受付が 400 で拒む）。実ブラウザは候補付き select の
+    // ため候補外を作れない（ISSUE-422 実測）＝この観測は fake DOM 経路に限る。
+    const symbol = findById(doc.body, "testerSymbol");
+    symbol.value = OUT_OF_CANDIDATE_SYMBOL;
+    fire(symbol, "change");
+  }
+
   fire(findById(doc.body, "runStart"), "click");
   const timer = setTimeout(() => settle(), SUBMIT_TIMEOUT_MS);
   await done;
   clearTimeout(timer);
+
+  if (mode === "watch" && submitted && submitted.job_id) {
+    await waitForStatusPanelToCatchUp(doc, submitted.job_id);
+  }
 
   const post = calls.find((c) => c.path === "/sim/jobs");
   process.stdout.write(`${JSON.stringify({
@@ -124,6 +185,8 @@ async function main() {
     tester_panel_present: Boolean(findById(doc.body, "simTesterPanel")),
     legacy_ea_field_present: Boolean(findById(doc.body, "execEaName")),
     legacy_deposit_field_present: Boolean(findById(doc.body, "execDeposit")),
+    // 掲示面（M6）に実際に出ている文字（§19.6 段階 3・追加のみ）。既存キーは変えない。
+    status_panel_text: statusPanelText(doc),
   })}\n`);
 }
 

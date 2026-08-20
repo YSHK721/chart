@@ -59,6 +59,9 @@ const RUN_FORM_CSS = "sim_run_form.css";
 /** 投入フォームの面（この id の配下だけに選択子を閉じる）。 */
 const FORM_PANEL_IDS = [
   "#simTesterPanel", "#simEaInputsPanel", "#simSchemaFallbackPanel", "#simRunActionPanel",
+  // Phase 9 段階 3（§19.6）: 実行状態の掲示面。掲示専用（操作要素 0）だが、面である以上
+  // 整形は同じ規律に従う——選択子はこの id の配下に閉じる。
+  "#simRunStatusPanel",
 ];
 
 /** ソース 1 本に残っている撤去語彙を列挙する（0 件が合格）。 */

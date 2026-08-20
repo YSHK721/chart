@@ -94,11 +94,15 @@ def _json(base: str, path: str):
     return status, (json.loads(raw) if raw else None)
 
 
-def _drive(base: str, scenario: str) -> dict:
-    """front（本番の合成根）を fake DOM で動かして投入し、その観測を返す。"""
+def _drive(base: str, scenario: str, mode: str = "") -> dict:
+    """front（本番の合成根）を fake DOM で動かして投入し、その観測を返す。
+
+    ``mode="watch"`` は投入後に**状態監視の掲示が終端へ追い付くまで**待たせる
+    （Phase 9 段階 3 §19.6）。既定（空）の観測は従来と変わらない。
+    """
     proc = subprocess.run(
-        [_NODE, str(_DRIVER), base, scenario],
-        capture_output=True, text=True, timeout=180, cwd=str(_SIM_WEB),
+        [_NODE, str(_DRIVER), base, scenario, mode],
+        capture_output=True, text=True, timeout=600, cwd=str(_SIM_WEB),
     )
     assert proc.returncode == 0, f"front ドライバが落ちました:\n{proc.stderr}"
     return json.loads(proc.stdout.strip().splitlines()[-1])
@@ -251,3 +255,47 @@ def test_Periodがデータセットと不一致なら失敗し理由が応答�
     reason = final["failure_reason"] or ""
     assert "period" in reason, reason
     assert chosen in reason, reason
+
+
+# --- 6. 投入フィードバックと実行状態が画面に出る（Phase 9 段階 3・§19.6・ISSUE-423）---
+# ここまでの検定は「サーバが正しく拒む / 失敗する」ことを固定してきた。しかし利用者が
+# 見るのは画面である。**理由が画面に 1 文字も出ない**なら、押しても何も起きない道具で
+# あることに変わりはない。掲示面（M6）に出た文字そのものを観測点にする。
+
+def test_受付が拒んだ理由文が掲示面にそのまま出る(stack) -> None:
+    """400 の理由が画面に出ることの実証（ISSUE-423 の中核）。
+
+    射程: 実ブラウザでは銘柄が候補付き select であり、候補外の値を作れない
+    （ISSUE-422 実測）。したがって 400 の観測は **fake DOM 経路に限る**。
+    「実 UI で 400 を確認した」とは主張しない。
+    """
+    # Act
+    observed = _drive(stack, "bad_symbol")
+    # Assert: 受付が拒んでいる（投入は成立していない）
+    assert observed["submitted"] is None, observed
+    failure = observed["failure"]
+    assert failure is not None and failure["status"] == 400, observed
+    assert failure["message"], observed
+    # 画面に出ている文字に、サーバの理由文が**そのまま**含まれる（front が要約しない）
+    assert failure["message"] in observed["status_panel_text"], observed["status_panel_text"]
+
+
+def test_失敗したジョブのfailure_reasonが掲示面に出る(stack) -> None:
+    """実行段の Fail-Stop（N-05）の理由が、監視の掲示として画面へ届くことの実証。
+
+    投入が 202 で通った後の失敗は、状態を照会しなければ画面には現れない
+    （`GET /sim/jobs/{id}` の front 消費者が 0 だった＝§19.6 の阻害要因 4）。
+    """
+    # Act: 掲示が終端へ追い付くまで front を走らせる
+    observed = _drive(stack, "unsupported", "watch")
+    job_id = observed["submitted"]["job_id"]
+    # Assert: サーバ側は失敗し、終端フラグを配っている（§19.6 R1）
+    final = _wait_terminal(stack, job_id)
+    assert final["status"] == "failed", final
+    assert final["terminal"] is True, final
+    reason = final["failure_reason"] or ""
+    assert reason, final
+    # 画面には状態（生値）と理由がそのまま出ている
+    panel = observed["status_panel_text"]
+    assert final["status"] in panel, panel
+    assert reason in panel, panel

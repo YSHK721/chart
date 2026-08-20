@@ -54,6 +54,10 @@ const EA_INPUTS_PANEL = "sim_ea_inputs_panel_view.js";
 const SUBMISSION_BUILDER = "sim_submission_builder.js";
 // Phase 9 S3: schema を取れない構成の縮退面（実行対象の供給元・M1 と同じ Port）。
 const SCHEMA_FALLBACK = "sim_schema_fallback_view.js";
+// Phase 9 段階 3（§19.6）: 実行状態の掲示面（M6・DOM のみ・操作要素 0）。
+const RUN_STATUS = "sim_run_status_view.js";
+// Phase 9 段階 3（§19.6）: ジョブ状態の照会（M7・HTTP / timer のみ・DOM を知らない）。
+const STATUS_CLIENT = "job_status_client.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -72,7 +76,28 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     SUBMIT_CLIENT, RUN_ACTION, EXEC_ROOT,
     SETTINGS_CLIENT, TESTER_PANEL,
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
+    RUN_STATUS, STATUS_CLIENT,
   ].sort());
+});
+
+// --- 1e. 掲示面は他の front モジュールに依存しない（Phase 9 段階 3 S1 M6）--------------
+// 掲示面が別の面や通信を掴むと、「状態をどう出すか」を確かめるのに器と通信のダブルが要る。
+// M6 は DOM だけ・依存 0 で保つ（M7 job_status_client も同様に DOM を知らない）。
+
+test("the run status view imports nothing (掲示面は依存 0)", () => {
+  assert.deepEqual(importSpecifiers(read(RUN_STATUS)), []);
+});
+
+test("the job status client imports nothing (通信面は依存 0)", () => {
+  assert.deepEqual(importSpecifiers(read(STATUS_CLIENT)), []);
+});
+
+test("the job status client touches no DOM (掲示は M6 の責務)", () => {
+  const src = read(STATUS_CLIENT);
+  for (const forbidden of [/\bdoc\b/, /\bdocument\b/, /createElement/, /appendChild/, /textContent/]) {
+    assert.ok(!forbidden.test(src),
+      `${STATUS_CLIENT} が ${forbidden} に触れています（通信と時計だけの面で保つこと）`);
+  }
 });
 
 // --- 1c. 投入契約は純関数（Phase 9 S2 M5）----------------------------------------

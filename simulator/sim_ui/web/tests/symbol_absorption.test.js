@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fakeDoc, findById } from "./_fakes.js";
+import { fakeDoc, findById, IDLE_WATCH_TIMER } from "./_fakes.js";
 import { settingsSchema } from "./_settings_schema_fixture.js";
 import { createSimTesterSettingsPanelView } from "../js/adapter/front/sim_tester_settings_panel_view.js";
 import { createSimSchemaFallbackView } from "../js/adapter/front/sim_schema_fallback_view.js";
@@ -68,7 +68,7 @@ async function mountRoot(opts = {}) {
   const warn = console.warn;
   console.warn = () => {};
   try {
-    await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+    await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn });
   } finally {
     console.warn = warn;
   }

@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fakeDoc, findById } from "./_fakes.js";
+import { fakeDoc, findById, IDLE_WATCH_TIMER } from "./_fakes.js";
 import { settingsSchema } from "./_settings_schema_fixture.js";
 import { mountSimExecutionPanel } from "../js/adapter/front/composition_root_execution.js";
 
@@ -104,7 +104,7 @@ async function submittedBody(schema) {
   const warn = console.warn;
   console.warn = () => {};   // 縮退構成の掲示は本件の対象外（別検定が固定している）
   try {
-    await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+    await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn });
   } finally {
     console.warn = warn;
   }

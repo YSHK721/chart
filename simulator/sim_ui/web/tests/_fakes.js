@@ -31,6 +31,16 @@ export function fakeEl(tag = "div") {
       toggle(c, on) { if (on === undefined) { this._set.has(c) ? this._set.delete(c) : this._set.add(c); } else if (on) { this._set.add(c); } else { this._set.delete(c); } },
     },
     appendChild(child) { child.parentNode = this; child.parent = this; this.children.push(child); return child; },
+    // 実 DOM の `firstChild` / `insertBefore` に合わせる（参照が null なら末尾へ足す）。
+    get firstChild() { return this.children[0] || null; },
+    insertBefore(child, reference) {
+      const at = reference ? this.children.indexOf(reference) : -1;
+      child.parentNode = this;
+      child.parent = this;
+      if (at < 0) this.children.push(child);
+      else this.children.splice(at, 0, child);
+      return child;
+    },
     removeChild(child) {
       const i = this.children.indexOf(child);
       if (i >= 0) { this.children.splice(i, 1); child.parentNode = null; child.parent = null; }
@@ -60,6 +70,19 @@ export function flatten(root) {
   if (root) walk(root);
   return out;
 }
+
+/**
+ * 状態監視の時計を止める注入（`mountSimExecutionPanel` へ展開して使う・🟡-4）。
+ *
+ * 投入する検定は本番の watcher を起動する。時計を注入しないと**実 timer**で 1 秒ごとに
+ * 照会が走り続け、検定が終わった後も node が終了を待つ（実測: 1 ファイルあたり約 3.0 秒の
+ * 待ちと、購読者側 console.error の漏出）。状態監視そのものを確かめる検定は `fakeTimer`
+ * を自前で組むので、これは「監視を動かさない」ための既定である。
+ */
+export const IDLE_WATCH_TIMER = Object.freeze({
+  setTimeout: () => 0,
+  clearTimeout: () => {},
+});
 
 /** document ダブル（createElement / head / body）。 */
 export function fakeDoc() {

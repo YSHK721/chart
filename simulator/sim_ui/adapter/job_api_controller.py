@@ -114,4 +114,7 @@ def _view_payload(view: JobView) -> "dict[str, Any]":
         "job_id": view.job_id,
         "status": view.status,
         "failure_reason": view.failure_reason,
+        # Phase 9 段階 3（§19.6 R1）: 終端かどうかはサーバが配る。**追加のみ**であり
+        # 既存キーは 1 つも変えていない（front の消費者は本キーだけを読んで監視を止める）。
+        "terminal": view.terminal,
     }

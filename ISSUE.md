@@ -8398,7 +8398,9 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-423: [不具合・既存] sim 受付拒否（400）の理由文が本番 UI に 1 文字も表示されない（2026-08-19）
 
-- **ステータス**: OPEN（新規起票。Phase 9 段階 2 設計調査 R-1。段階 2 が導入した欠陥ではなく既存）
+- **ステータス**: RESOLVED（2026-08-20。§19.6 段階 3 で M6 掲示面・M7 状態クライアント・合成根結線を実装。
+  実 UI 実測＝completed 掲示＋結果 3 窓／failed＋N-05 理由文掲示・console 0・終端でポーリング停止。
+  400 理由の表示は E2E（fake DOM）で実証＝実 UI では候補付き select により 400 自体が作れない）
 - **重大度**: Medium（Expert 不一致・規則 B〜Q・[TesterInputs] 拒否・段階 2 の新拒否すべてが対象）
 - **事実（実読 2026-08-19）**: 400 応答の `error` 文言は `job_submit_client.js:68-71` まで届くが、
   本番 HTML は `mountSimExecutionPanel({doc, host})` を **onError 未結線**で呼ぶ
@@ -8425,10 +8427,16 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 スタートを押すと「何も起きない」が新たな観測になる（従来は前回 profile の銘柄で実行されていた＝
 ISSUE-422 の症状。方向としては正しい変更だが、UI 結線の優先度判断材料として明記）。
 
+（ISSUE-423 への追記・2026-08-19 段階 3 設計）: 阻害要因の全数列挙で併発欠陥 B9 を記録——
+`composition_root_execution.js` の `syncRunProfile` 直前のコメント「不一致は供給元の警告が画面に出す」
+（起票時 :96-98。段階 3 の再構成で移動し **2026-08-20 時点は :155-158**・当該文は :158）は
+profile===null では成立しない（`sim_tester_settings_panel_view.js:371-372` が早期 return）。
+段階 3 のスコープ外（M1 の変更＝別アクター）。投入後の 400 理由表示（M6）で沈黙自体は解消される。
+
 ## ISSUE-425: [不具合] Tester パネルが実ブラウザでのみ構築例外となり fail-open の縮退フォームが表示される（2026-08-19）
 
-- **ステータス**: OPEN（是正コミット 3936cb9 をブランチ `fix/issue-425-tester-panel-real-dom` に保全済み。
-  **マージは依頼者裁定待ち**）
+- **ステータス**: RESOLVED（2026-08-19 依頼者指示「未ステージ分を原子的コミットとして develop へマージしろ」
+  により 3850fde で develop へマージ済み。実ブラウザで 4 グループ表示を確認済み）
 - **重大度**: High（依頼者環境で実際に発生。「設定項目が少ない」という依頼者観察の正体）
 - **事実（実測 2026-08-19）**:
   1. `sim_tester_settings_panel_view.js:246` の `offeredTokens` が `node.children` へ `.map` を
@@ -8473,3 +8481,66 @@ ISSUE-422 の症状。方向としては正しい変更だが、UI 結線の優�
       （提供要求で停止。間接証拠で進めるには不可能理由＋推論ラベル＋明示承認の 3 点を要す）」の可否。
 - **関連**: ISSUE-425（同時期の実測）・memory: no-speculation-without-evidence／
   no-destructive-verdict-under-framing／verify-facts-not-just-numbers（追記済み）。
+
+## ISSUE-427: [検定] `test_composition_root_arg_parity` の既存赤 1 件（ChartToastView/ClipboardGateway のテスト専用引数）（2026-08-19）
+
+- **ステータス**: OPEN（新規起票。段階 3 TDD 工程中に発見・本ブランチ起因ではない）
+- **重大度**: Medium（ゲート検定が恒常赤＝ゲートとして機能していない）
+- **事実（実測 2026-08-19）**: `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form` が
+  `ChartToastView.{setTimeout,clearTimeout,durationMs}`・`ClipboardGateway.navigator` の 4 違反で失敗
+  （1 failed, 6 passed）。指摘内容＝「本番の合成根は当該キーを渡さないのに、全テストが渡している＝
+  本番が作る形（キー不在の構築）を検証するテストが 1 本も無い」。対象は `indigators/indicator_ui`。
+  段階 3 ブランチ `feature/sim-runnable-feedback` は `indigators/`・`tools/` を 0 ファイル変更
+  （`git diff c72722f --name-only -- indigators tools` = 空）＝既存欠陥。
+- **抜本的解決**: 各対象に「本番の合成根と同形（テスト専用キー不在）の構築」を検証するテストを追加し
+  ゲートを緑に戻す（検定の緩和・除外リスト追加は症状回避＝不可）。
+- **関連**: ISSUE-423（発見契機＝段階 3 TDD の回帰実行）。
+
+## ISSUE-428: [設計・要裁定] `/sim/jobs` パス基底が M5/M7 の 2 モジュールに手書き複製（単一ソース化が既存ガードと不可侵制約に阻まれる）（2026-08-20）
+
+- **ステータス**: OPEN（段階 3 SOLID リファクタ工程で検出。抜本形が承認事項を伴うため未着手）
+- **重大度**: Medium（現時点の実害 0。サーバ側のジョブ面パスを変えた際に片方だけ腐る）
+- **事実（実測 2026-08-20・実行されるコード上の複製 2 件）**:
+  - `simulator/sim_ui/web/js/adapter/front/job_submit_client.js:20` `export const JOBS_URL = "/sim/jobs";`
+  - `simulator/sim_ui/web/js/adapter/front/job_status_client.js:19` `` return `/sim/jobs/${encodeURIComponent(jobId)}`; ``
+  厳命「同じコードを手書き複製するな（単一ソース）」に抵触する。
+- **単一ソース化を阻む制約（出所を実測して分類・2026-08-20 訂正）**: 当初「4 経路とも塞がっている」と
+  記したが不正確である。**外因は 1 件だけ**であり、残る 3 件は本ブランチ自身が立てた拘束か、
+  本ブランチが既に改訂している対象である。
+  1. **自縛**（`git show f31e1e8` で実測）: `tests/import_source.test.js` の
+     `assert.deepEqual(importSpecifiers(read(STATUS_CLIENT)), [])`＝M7 は何も import できない。
+     この行を**足したのは本ブランチの f31e1e8 自身**であり、外から与えられた制約ではない。
+  2. **改訂実績あり**: `tests/import_source.test.js` の `assert.deepEqual(FRONT_FILES.sort(), [...])`。
+     既存アサーションではあるが、本ブランチは ea74949（M6 追加）・f31e1e8（M7 追加）で**既に 2 回**
+     改訂している（front にファイルを足すたびに更新するのが当該検定の仕様）。共有モジュール新設で
+     もう 1 行足すことは、この検定の想定内の改訂である。
+  3. **自縛**（`git show f31e1e8` で実測）: `tests/job_status_client.test.js` の
+     `assert.equal(jobStatusUrl("j1"), "/sim/jobs/j1")`。これも f31e1e8 が足した検定である。
+  4. **外因（唯一）**: `job_submit_client.js` は Phase 9 誓約の不可侵ファイル（1 byte 不変）
+     ＝M5 側から共有点を引けない。これだけが本ブランチの外から与えられた制約である。
+- **抜本的解決（承認事項・未実施）**: `js/adapter/front/sim_job_endpoints.js`（依存 0・パス基底の唯一の宣言）を
+  新設し、M5・M7 の双方がそこから引く。伴う承認事項は**実質 1 点**——不可侵ファイル
+  `job_submit_client.js` の改変（上記 4）である。上記 1・3 は本ブランチが自分で立てた検定であり、
+  同じ工程で自ら改訂できる（他者との合意事項ではない）。上記 2 は当該検定の想定内の改訂である。
+  ただし「既存検定のアサーションを変えない」という段階 3 の作業誓約には触れるため、
+  独立した工程として裁定を要する点は変わらない。
+- **却下した代替（応急処置に該当するため提示のみで不採用）**: 合成根から basePath を注入する形は、
+  M7 に既定値の基底リテラルが残るため複製が消えず、権威が 2 つ（既定と注入）に増えて悪化する。
+- **関連**: ISSUE-421（同型＝同一概念が 2 モジュールに別実装）・memory: no-hand-duplication-single-source。
+
+## ISSUE-429: [設計] 掲示面 M6 の DOM 内部構造（class 名）を外部 4 箇所が再実装している（2026-08-20）
+
+- **ステータス**: OPEN（段階 3 SOLID リファクタ工程で検出。是正がテストコード改変を伴うため未着手）
+- **重大度**: Low（検定・driver 側のみ。本番描画への影響 0）
+- **事実（実測 2026-08-20）**: `sim_run_status_view.js` の掲示枠 class 名（`run-status-phase` 等）を、
+  `tests/sim_run_status_view.test.js:34 textOf`・`tests/composition_root_execution.test.js:303 statusTextOf`・
+  `tests/e2e_submit_driver.mjs` の `statusPanelText` / `statusSlotText` の 4 箇所が個別に走査で再実装している。
+  M6 内部では 2026-08-20 の宣言表化（STATUS_SLOTS）で class 名は単一ソース化済みだが、**外部消費者は依然として
+  内部構造を知っている**（M6 が class 名を変えると 4 箇所が同時に壊れる）。
+  あわせて `fakeTimer` が `tests/job_status_client.test.js` と `tests/composition_root_execution.test.js` に
+  実装違いで手書き複製されている（`_fakes.js` が共有ダブルの置き場として既存）。
+- **抜本的解決**: M6 が掲示中の文字を読む口を公開し（既に `elements.<key>Node` を公開済み＝走査は不要）、
+  消費者はそれを使う。`fakeTimer` は `_fakes.js` へ集約する。いずれも既存テストの**ヘルパ関数本体**の
+  改変を伴うため（アサーションは不変）、TDD Refactor の「テストコードを変更しない」規律との関係で
+  独立した工程として実施の可否を要確認。
+- **関連**: memory: no-hand-duplication-single-source。
