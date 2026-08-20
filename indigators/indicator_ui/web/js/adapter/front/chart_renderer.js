@@ -965,6 +965,80 @@ export class ChartRenderer {
     return { time, ohlc, sessionMP, indicators };
   }
 
+  /**
+   * ISSUE-368 スライス 8-b: x 座標が指す足の**スナップ候補**をプレーンデータで列挙する。
+   *
+   * @param {number} x チャート要素の左上基準の x（px）。
+   * @returns {Array<{kind:string,label:string,price:number}>|null}
+   *   足が無い座標（データ範囲外・時間軸未確定）は null。
+   */
+  snapCandidatesAt(x) {
+    const time = this._timeAtCoordinate(x);
+    if (time == null) {
+      return null;
+    }
+    const series = [];
+    const levels = [];
+    const pricePane = this._pricePaneIndex();
+    for (const slot of this._instances.values()) {
+      if (this._slotPaneIndex(slot) !== pricePane) {
+        continue;   // オシレーターペインの値は価格ではない（55 を価格として吸うと桁が変わる）。
+      }
+      for (const v of this._slotValues(slot, (s) => pointValueAt(s, time))) {
+        if (Number.isFinite(v.value)) {
+          series.push({ kind: 'series', label: v.name, price: v.value });
+        }
+      }
+      if (slot.visible === false) {
+        continue;   // 水準線は _slotValues を通らない＝可視の判定をここでも行う（描画と一致させる）。
+      }
+      for (const h of slot.hlinePayloads ?? []) {
+        if (h && Number.isFinite(h.price)) {
+          levels.push({ kind: 'level', label: h.text ?? '', price: h.price });
+        }
+      }
+    }
+    const ohlc = [];
+    const candle = pointAtTime(this.getCandles(), time);
+    if (candle && candle.open !== undefined) {
+      for (const label of ['open', 'high', 'low', 'close']) {
+        ohlc.push({ kind: 'ohlc', label, price: candle[label] });
+      }
+    }
+    // 並びが解決の優先順（スナップ解決器は同距離で先頭を採る）。指標系列＝クリックの狙い、
+    //   水準線＝明示的に置かれた参照、OHLC＝常に在る背景、の順に置く。
+    return [...series, ...levels, ...ohlc];
+  }
+
+  /**
+   * ISSUE-368 スライス 8-b: y 座標が属するペイン番号（**必須のガード**）。
+   *
+   * なぜ要るか（設計書「ピッカー経路の実測検証」2）: vendor 実測で `coordinateToPrice` は
+   *   クランプ無しの線形外挿であり、オシレーターペインを押しても「価格」が返る（異常値）。
+   *   ピッカーは「価格ペインを押したときだけ」価格を受け取る必要がある。
+   *
+   * 幾何の出所はペイン別凡例（`_paneHeights` / `_paneSeparatorPx`）と同一にする。ここで
+   *   独自に高さを測ると、凡例の座標系と食い違う第 2 実装になる。
+   *
+   * @param {number} y チャート要素の左上基準の y（px）。
+   * @returns {number|null} ペイン領域の外（時間軸・負値）と非対応環境（panes 非提供）は null。
+   */
+  paneIndexAtCoordinate(y) {
+    if (!Number.isFinite(y)) {
+      return null;
+    }
+    const heights = this._paneHeights();
+    const separator = this._paneSeparatorPx(heights);
+    let top = 0;
+    for (let i = 0; i < heights.length; i += 1) {
+      if (y >= top && y < top + heights[i]) {
+        return i;
+      }
+      top += heights[i] + separator;
+    }
+    return null;   // 区切り上・時間軸・領域外は「どのペインでもない」（価格を作らない）。
+  }
+
   // x 座標（チャート要素基準）が指す足の time。範囲外・非対応環境（Fake/SSR）は null。
   //   バンドル実測（v5.2.0）: `coordinateToTime` は座標→バー index（Math.ceil）→ 元の time
   //   （originalTime）へ写す。データ範囲外の index は null を返す＝足の無い所では開かない。
