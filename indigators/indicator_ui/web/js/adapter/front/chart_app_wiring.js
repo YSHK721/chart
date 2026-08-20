@@ -160,7 +160,7 @@ export async function composeChartShell({
 export function installSharedUi({
   container, renderer, doc, getController, updatePaneHeight,
   isVerticalPanBlocked = undefined, getTemplates = () => null, getColorThemes = () => null,
-  toolbar = {},
+  toolbar = {}, contextMenuItems = [],
 } = {}) {
   // アプリ外枠（ツールバー・指標ダイアログ）の DOM は View が所有し生成する（ISSUE-278 #16）。
   //   配信 3 ページへ同じマークアップを手書き複製する義務を無くす（指標ダイアログは 3 ページで
@@ -221,8 +221,12 @@ export function installSharedUi({
       };
     },
   });
+  // ISSUE-368 スライス 8-c: root が渡した項目を**後ろに**足す（R-P3 の価格設定 3 項目）。
+  //   共有配線が無条件に足すと replay まで項目が出る（＝replay 汚染）。逆に root で
+  //   `new ChartContextMenu` すると contextmenu リスナーが 2 本になり、メニューが二重に出る。
+  //   よって「メニューは共有・項目は注入」に保つ（ChartContextMenu 自体は 1 byte も変えない）。
   const chartContextMenu = new ChartContextMenu({
-    document: doc, container, items: [copyBarInfo],
+    document: doc, container, items: [copyBarInfo, ...(contextMenuItems ?? [])],
   });
   chartContextMenu.install();
 
