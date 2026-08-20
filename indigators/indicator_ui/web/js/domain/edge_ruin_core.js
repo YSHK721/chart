@@ -99,9 +99,30 @@ export function simulateRuinProbability(f, p, payoffRatio, ruinLevel, horizon, s
  * @param {{win_rate:number, payoff_ratio:number, ruin_level:number, alpha:number,
  *          horizon:number, split_count:number, seed:number, sims:number}} spec
  *   キー名は golden fixture（Python 権威の snake_case）に合わせる。
+ * @param {(ratio:number)=>void} [onProgress]
+ *   **計算に一切影響しない観測フック**（任意）。格子 1 点ぶんが終わるたびに進捗比を渡し、
+ *   完了時に必ず 1 を渡す。Python 権威（edge_ruin.py）に対応物は無い。進捗は MC のループの
+ *   内側でしか観測できず（本関数は grid 60 点 × sims × T を 1 呼び出しで回す）、
+ *   時間ベースの偽の進捗は「止まっているのに進んで見える」を隠すため採らない。
+ *   数値・乱数消費順は変わらないので golden 一致検定の射程外である。
  * @returns {object} 権威 EdgeRuinResult の写し（JS 側は camelCase）
  */
-export function solveEdgeRuin(spec) {
+export function solveEdgeRuin(spec, onProgress = null) {
+  // 進捗の分母: 格子 60 点＋フルケリー点（sims*2＝格子 2 点ぶん）。
+  const report = typeof onProgress === 'function' ? onProgress : null;
+  const progressTotal = STEPS + 2;
+  let progressDone = 0;
+  const tick = (units) => {
+    if (!report) {
+      return;
+    }
+    progressDone += units;
+    report(Math.min(progressDone / progressTotal, 1));
+  };
+  return solveEdgeRuinInner(spec, tick, report);
+}
+
+function solveEdgeRuinInner(spec, tick, report) {
   const p = spec.win_rate;
   const payoffRatio = spec.payoff_ratio;
   const sims = spec.sims === undefined ? SIMS : spec.sims;
@@ -121,9 +142,13 @@ export function solveEdgeRuin(spec) {
   // :630 gPts
   const growthCurve = grid.map((f) => [f, growthRate(f, p, payoffRatio)]);
   // :631-633 rorPts（grid 昇順に消費）
-  const rorCurve = grid.map((f) => [
-    f, simulateRuinProbability(f, p, payoffRatio, spec.ruin_level, spec.horizon, sims, rng),
-  ]);
+  const rorCurve = grid.map((f) => {
+    const point = [
+      f, simulateRuinProbability(f, p, payoffRatio, spec.ruin_level, spec.horizon, sims, rng),
+    ];
+    tick(1);
+    return point;
+  });
 
   // :636-637 先頭から連続して RoR≤α である最後の格子点
   let fSafe = 0;
@@ -152,6 +177,10 @@ export function solveEdgeRuin(spec) {
   const rorAtKelly = fk > 0
     ? simulateRuinProbability(fk, p, payoffRatio, spec.ruin_level, spec.horizon, sims * 2, rng)
     : 0;
+  tick(2);
+  if (report) {
+    report(1);   // 完了は必ず 1 で終える（途中で止まったように見せない）。
+  }
   // :640
   const gKelly = growthRate(Math.max(fk, 0), p, payoffRatio);
   const gSafe = growthRate(fSafe, p, payoffRatio);
