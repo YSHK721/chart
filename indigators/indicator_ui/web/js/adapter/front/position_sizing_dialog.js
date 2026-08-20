@@ -294,6 +294,17 @@ export class PositionSizingDialog {
     this._customWeights = [];    // 各建玉のロット比（参照実装 S.customW）
     this._exitGroups = new Map();  // 決済方式で出し分ける表示群（bracket / time）
     this._exitMode = 'bracket';    // 参照実装 :578 の初期値
+    // 価格欄の刻み（ISSUE-368 スライス S-6・丸めの適用点 経路 7）。**表示の関心だけ**を持つ:
+    //   ここで値を丸めない（丸めるのは domain の 1 か所）。未解決なら従来どおり step='any'。
+    this._tick = null;
+  }
+
+  /**
+   * 銘柄仕様（呼び値）を受け取る（共有配線が解決済みの値を配る・解決はしない）。
+   * @param {{tick:number}|null|undefined} spec 解決できないときは null（step は 'any' のまま）。
+   */
+  setSymbolSpec(spec) {
+    this._tick = spec && Number.isFinite(spec.tick) && spec.tick > 0 ? spec.tick : null;
   }
 
   _usable() {
@@ -675,7 +686,8 @@ export class PositionSizingDialog {
     const input = doc.createElement('input');
     input.type = 'number';
     input.dataset.psPrice = target;
-    input.step = 'any';
+    // 刻みが分かっているなら矢印キー・スピナーが刻みの外へ出ない（経路 7）。
+    input.step = this._tick === null ? 'any' : String(this._tick);
     input.value = value;
     input.addEventListener('input', () => {
       this._priceValues.set(target, input.value);   // 保持先はモデル（DOM は表示）。

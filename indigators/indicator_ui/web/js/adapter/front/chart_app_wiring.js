@@ -58,7 +58,8 @@ import { PriceLevelDragController } from './price_level_drag_controller.js';
 import { PricePickController } from './price_pick_controller.js';
 import { McWorkerGateway } from './mc_worker_gateway.js';
 import { createPriceContextItems } from './position_sizing_context_items.js';
-import { resolvePickedPrice } from './price_pick_resolver.js';
+import { resolvePickedPrice, MSG_NO_SYMBOL_SPEC } from './price_pick_resolver.js';
+import { lookupSymbolSpec } from './symbol_spec_catalog.js';
 import { PositionSizingPlanUseCase } from '../../usecase/position_sizing_plan.js';
 import { createPriceLevels } from '../../domain/price_levels.js';
 
@@ -456,9 +457,21 @@ export function wireControllerCollaborators({
 
   // ポジションサイズ計算機の協働子（ISSUE-368 スライス 7）。モーダルが注入されている構成でだけ
   //   組む（未注入の最小構成・単体テストでは従来どおり何も生えない）。
+  // 銘柄仕様（呼び値）の解決は **ここ 1 回だけ**（ISSUE-368 スライス S-6）。以後は値として配る
+  //   （resolver へ／初期水準の `createPriceLevels` へ／モーダルの `step` へ）。解決点を複数持つと
+  //   「どの銘柄の刻みで丸めたか」が経路ごとに割れる。datasetRef は既に本関数の引数として届いており、
+  //   新しい配管は作らない（設計「追補: 工程 2」E-3・S-6 通過条件）。
+  const symbolSpec = lookupSymbolSpec(datasetRef);
   const positionSizing = positionSizingDialog
     ? createPositionSizingCollaborators({
-      renderer, container, doc, dialog: positionSizingDialog, registerVerticalPanBlocker, toast: chartToast,
+      renderer,
+      container,
+      doc,
+      dialog: positionSizingDialog,
+      registerVerticalPanBlocker,
+      toast: chartToast,
+      symbolSpec,
+      datasetRef,
     })
     : null;
 
@@ -475,8 +488,19 @@ export function wireControllerCollaborators({
 //
 //   スライス 4 の未結線（`new PriceLevelDragController` の呼び出し 0 件）はここで解消される。
 function createPositionSizingCollaborators({
-  renderer, container, doc, dialog, registerVerticalPanBlocker, toast,
+  renderer, container, doc, dialog, registerVerticalPanBlocker, toast, symbolSpec, datasetRef,
 }) {
+  // 呼び値。解決できなければ null＝**丸めない**のではなく「チャートからの価格指定を落とす」
+  //   （設計「フェイルセーフ」: 値ではなく機能を落とし理由を出す）。告知はトースト（利用者が
+  //   実際に使おうとした時点）と console.error（開発者向けの証跡）の両方で出す。前者だけだと
+  //   原因（どの ref か）が残らず、後者だけだと DevTools を開かない限り気づけない。
+  const tick = symbolSpec ? symbolSpec.tick : null;
+  if (!symbolSpec) {
+    // eslint-disable-next-line no-console
+    console.error(`[position-sizing] 銘柄仕様が解決できません（datasetRef=${datasetRef}）: ${MSG_NO_SYMBOL_SPEC}`);
+  }
+  // モーダルの価格欄の刻み（経路 7）。解決できなければ従来どおり step='any'（手入力は落とさない）。
+  dialog?.setSymbolSpec?.(symbolSpec);
   // 水準線の描画先（メイン系列の背景 primitive・§6）。装着時にクロム色が 1 回配られる。
   const primitive = new PriceLevelLinesPrimitive();
   if (renderer && typeof renderer.attachBackgroundPrimitive === 'function') {
@@ -485,9 +509,11 @@ function createPositionSizingCollaborators({
 
   // 初期状態はモーダルの定義表から導出する（画面の初期表示と計算の初期値を食い違わせない）。
   //   水準の保持者は usecase 1 か所（協働子へ写しを渡さない＝TC-PC14）。
+  //   刻みを注入すると「刻み上にない価格は PriceLevels に存在できない」が不変条件になる
+  //   （E-02・S-4）。resolver を通らない水準線 drag（経路 6）もここを通るため迂回できない。
   const usecase = new PositionSizingPlanUseCase({
     mcPort: new McWorkerGateway(),
-    levels: createPriceLevels(defaultLevels()),
+    levels: createPriceLevels({ ...defaultLevels(), tick }),
     params: defaultParams(),
   });
 
@@ -505,7 +531,7 @@ function createPositionSizingCollaborators({
   picker.install();
 
   const controller = new PositionSizingController({
-    usecase, dialog, picker, primitive, toast,
+    usecase, dialog, picker, primitive, toast, symbolSpec,
   });
 
   // 水準線 drag（スライス 4）。掴む対象の座標源は primitive、水準の実体は協働子から得る。
@@ -518,7 +544,9 @@ function createPositionSizingCollaborators({
     registerVerticalPanBlocker,
     // ピッカーのアーム中は掴ませない（入力先は常に一意＝R-P1。アーム中に別の水準線を
     //   掴むと「利確を指定していたのに損切りが動く」が起きる・工程 5 🔴-2 で再現）。
-    isGrabBlocked: () => picker.isArmed(),
+    //   銘柄仕様が解決できないときも掴ませない（フェイルセーフ: 経路 6 も落とす。掴めてしまうと
+    //   刻みの分からない価格を drag で作れる＝機能だけが無音で生き残る）。
+    isGrabBlocked: () => picker.isArmed() || !symbolSpec,
   });
   drag.install();
 
@@ -549,19 +577,31 @@ export function createPositionSizingContextItems({
   renderer, getPositionSizing, getToast = () => null,
 }) {
   const of = () => getPositionSizing();
+  // 銘柄仕様は**協働子から遅延参照する**（ISSUE-368 スライス S-6）。本関数は root が呼ぶため
+  //   datasetRef を受け取っておらず、ここで自分で解決すると解決点が 2 つになる（＝経路ごとに
+  //   違う刻みで丸まりうる）。解決は wireControllerCollaborators の 1 回だけで、その結果を
+  //   協働子が保持している。既存の遅延参照（getPositionSizing）に相乗りする＝新しい配管を作らない。
+  //   協働子が未生成（配線途中）なら null＝フェイルクローズ（確定させない）。
+  const specOf = () => { const c = of(); return c && typeof c.symbolSpec === 'function' ? c.symbolSpec() : null; };
   return createPriceContextItems({
     resolvePrice: (context) => resolvePickedPrice({
-      renderer, x: context ? context.x : undefined, y: context ? context.y : undefined,
+      renderer,
+      x: context ? context.x : undefined,
+      y: context ? context.y : undefined,
+      spec: specOf(),
     }),
     onSetStop: (price) => { const c = of(); return c ? c.setStopPrice(price) : undefined; },
     onAddEntry: (price) => { const c = of(); return c ? c.addEntryPrice(price) : undefined; },
     onSetTake: (price) => { const c = of(); return c ? c.setTakePrice(price) : undefined; },
     // 呼ばれた時点で告知先を解決する（未生成・DOM 不在なら告知しない＝例外を投げない）。
+    //   銘柄仕様が解決できていないときは**その理由へ差し替える**: このとき機能全体が無効なので、
+    //   座標ごとの理由（「価格が取れません」「価格チャート上で…」）を出すと、利用者は
+    //   「別の場所を押せば入る」と誤解して押し続ける（無音ではないが誤った案内になる）。
     toast: {
       show: (message) => {
         const t = getToast();
         if (t && typeof t.show === 'function') {
-          t.show(message);
+          t.show(specOf() ? message : MSG_NO_SYMBOL_SPEC);
         }
       },
     },

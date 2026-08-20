@@ -14,6 +14,8 @@
 // 依存: usecase（内向き）と注入された協働子だけ。lwc・DOM・fetch は触らない。
 
 import { createPriceLevels } from '../../domain/price_levels.js';
+// 案内文言は理由コードと同居する単一ソースから取る（ここへ書き写すと 2 か所に割れる）。
+import { MSG_NO_SYMBOL_SPEC } from './price_pick_resolver.js';
 
 const MSG_MC_FAILED = '計算できませんでした（モンテカルロの実行に失敗）';
 
@@ -25,16 +27,34 @@ export class PositionSizingController {
    * @param {?object} [deps.picker] PricePickController（アーム式ピッカー）。
    * @param {?object} [deps.primitive] PriceLevelLinesPrimitive（水準線の表示先）。
    * @param {?object} [deps.toast]  ChartToastView 互換（show(text)）。
+   * @param {{tick:number}|null} [deps.symbolSpec] 銘柄仕様（ISSUE-368 スライス S-6）。
+   *   **3 状態を区別する**（resolver と同じ規約）: 未指定（undefined）＝銘柄仕様を扱わない構成
+   *   （従来の最小構成・単体検定。量子化しない）／`null`＝解決に失敗（チャートからの価格指定を
+   *   落とす）／`{tick}`＝解決できた（水準は刻み上にしか存在できない）。
    */
   constructor({
-    usecase, dialog, picker = null, primitive = null, toast = null,
+    usecase, dialog, picker = null, primitive = null, toast = null, symbolSpec,
   } = {}) {
     this._usecase = usecase;
     this._dialog = dialog;
     this._picker = picker;
     this._primitive = primitive;
     this._toast = toast;
+    this._symbolSpec = symbolSpec;
     this._mcInFlight = null;   // 実行中の MC（再入ガード・Y-2）
+  }
+
+  /**
+   * 注入された銘柄仕様（右クリック項目の価格解決が遅延参照する・S-6）。
+   * **保持しているものを返すだけ**（解決は共有配線の 1 か所が済ませている）。
+   */
+  symbolSpec() {
+    return this._symbolSpec ?? null;
+  }
+
+  /** 水準に効かせる刻み（未注入・未解決なら null＝量子化しない）。 */
+  _tick() {
+    return this._symbolSpec ? this._symbolSpec.tick : null;
   }
 
   // ---- モーダルの開閉 ----
@@ -53,8 +73,10 @@ export class PositionSizingController {
   // 水準は価格だけを受け取り、不変条件は domain（E-02）が持つ。
   //   未入力（null）を含む入力でも作り直す: 計算は権威（domain）が「ロット 0」で答え、
   //   モーダルは非有限を「—」で出す。ここで入力途中を判定して弾くと、判定が 2 か所になる。
+  //   刻み（tick）はここで**必ず**添える。モーダルは価格しか知らず、水準を作るのは本 class の
+  //   責務だからである（domain が丸めるので、front 側に丸めの第 2 実装は生まれない）。
   setLevels(spec) {
-    this._present(this._usecase.setLevels(createPriceLevels(spec)));
+    this._present(this._usecase.setLevels(createPriceLevels({ ...spec, tick: this._tick() })));
   }
 
   /**
@@ -110,8 +132,20 @@ export class PositionSizingController {
 
   // ---- チャートからの入力（R-P1 ピッカー / R-P3 右クリック）----
 
-  /** モーダルの「チャートで指定」→ ピッカーをアームする。 */
+  /**
+   * モーダルの「チャートで指定」→ ピッカーをアームする。
+   *
+   * 銘柄仕様が解決できていないときは**アームしない**（設計「フェイルセーフ」: ピッカーは確定しない）。
+   * 無音で機能だけ死ぬのを避けるため、理由をトーストで告知し console にも残す。
+   * 手入力は落とさない（人が打った値は人の責任で使う）＝ここで落とすのはチャート由来の経路だけ。
+   */
   requestPick(target) {
+    if (this._symbolSpec === null) {
+      // eslint-disable-next-line no-console
+      console.error(`[position-sizing] ${MSG_NO_SYMBOL_SPEC}（target=${target}）`);
+      this._toast?.show?.(MSG_NO_SYMBOL_SPEC);
+      return;
+    }
     this._picker?.arm?.(target);
   }
 
@@ -139,6 +173,22 @@ export class PositionSizingController {
   confirmPick(target, price) {
     this._ensureOpen();
     this._dialog?.setPrice?.(target, price);
+    this._syncPricesFromModel();
+  }
+
+  /**
+   * 価格欄の表示を**モデル（水準）に合わせ直す**（通知しない書き戻し）。
+   *
+   * なぜ必要か: チャート由来の価格は生の浮動小数（実測 `62707.710070965324`）で届く。水準そのものは
+   * domain の関門が刻みへ丸めるが、欄に書いた文字列は書いたままなので「欄は生値・水準は刻み上・
+   * ゴーストは丸めた表示」と 3 者が食い違う（ISSUE-368 の症状そのもの）。**表示はモデルから導く**
+   * ことで、front に丸めの第 2 実装を作らずに一致させる。
+   *
+   * 手入力（'input' イベント）では**呼ばない**: 打っている途中の文字列（'62707.'）を毎回モデルの
+   * 数値で上書きすると、打った文字が消える。呼ぶのは外からの書き戻し（ピッカー・右クリック）だけ。
+   */
+  _syncPricesFromModel() {
+    this._dialog?.syncPrices?.(this._usecase.viewModel().levelLines);
   }
 
   // 閉じていれば開く（開いていれば何もしない＝入力中の値を作り直さない）。
@@ -161,6 +211,7 @@ export class PositionSizingController {
   addEntryPrice(price) {
     this._ensureOpen();
     this._dialog?.addEntryPrice?.(price);
+    this._syncPricesFromModel();
   }
 
   // ---- 表示 ----
