@@ -1,187 +1,105 @@
-# prompt-validation-workflow: sim Phase 9 段階 2 ブランチ準備
+# Prompt Validation Workflow Report
 
-実行日時: 2026-08-19
-対象タスク: sim Phase 9 段階 2 ブランチ準備
+## Pre-mortem: 想定失敗原因分析
 
----
+本タスク（マージ→テスト実行）が本番で失敗したと仮定。最も可能性の高い失敗原因を推定。
 
-## Pre-mortem: 成果物が本番で失敗する場合の最有力原因
+### 失敗原因 F-1: 禁止コマンドの誤実行
+**推定原因**: `git checkout --` / `git restore` / `git reset --hard` / `git stash` を無意識に使用し、作業ツリー未コミット変更を消失。
 
-本タスク（git ブランチ準備）が失敗する最も可能性の高いシナリオを推定：
+**根拠**: 破壊的コマンド禁止の指示が複数あり、エラー時に習慣的に使う可能性。
 
-### 推定失敗原因
+### 失敗原因 F-2: git add -A / git add . による環境ファイル混入
+**推定原因**: 無差別 add でファイルをステージし、意図しないファイル（symlink など）がコミットに混入。
 
-1. **バックアップブランチが誤った HEAD に基づいている**
-   - 他エージェント並行作業で HEAD が移動した可能性
-   - 指示のバックアップ基点（HEAD 9c4bdf1）と実際のバックアップ基点が不一致
-   - **影響**: 復旧不可能になる可能性
+**根拠**: 指示で「git add -A/. 禁止」と明記されており、確認手順が重要。
 
-2. **作業ブランチが誤った基点から作成されている**
-   - develop ブランチのローカル HEAD がリモートと乖離している可能性
-   - feature ブランチが develop の誤った位置から作成された
-   - **影響**: マージ時に予期しないコンフリクト・差分
+### 失敗原因 F-3: コンフリクト時の指示逆行
+**推定原因**: コンフリクト出時に「解決を試みず即中断」との指示を無視し、解決を試みる。
 
-3. **既知の未追跡ファイル以外の変更が誤認識される**
-   - `.claude/skills/*/output.md` 3 件（副生成物）以外に未コミット変更がある
-   - git status の出力解釈誤り
-   - **影響**: 重要な変更が lost する可能性
+**根拠**: 指示に「解決を試みず即中断して報告」と明記されているが、エラー前夜症候群で解決に走る可能性。
 
-4. **git コマンド自体の失敗（権限・git 設定エラー）**
-   - git config の破損
-   - ファイルシステム権限エラー
-   - **影響**: ブランチ作成・切替が失敗
+### 失敗原因 F-4: テスト期待値不一致時の隠蔽
+**推定原因**: npm test / pytest が期待値と異なる出力をしても「完了」と報告。
 
-5. **worktree-archive などの環境依存物がコミットされる可能性**
-   - 後続の作業で `git add -A` が使用される
-   - 環境依存物（symlink・環境変数ファイル）が誤ってステージングされる
-   - **影響**: 本番展開時に symlink の自己参照・参照の失われる危険
+**根拠**: テスト実行結果の正確な記録が品質保証。不一致を即報告する規律が必須。
 
----
+### 失敗原因 F-5: マージコミット取り消し禁止の違反
+**推定原因**: テストゲート赤時に「マージコミット取り消し・再修正」の指示を無視してコミット取り消し。
 
-## 証拠先行: 実証的証拠の提示（判定より先）
+**根拠**: 指示で「ゲート赤でもマージコミット取り消さず・即中断」と明記。反射的に取り消す可能性。
 
-### 証拠 1: バックアップブランチの正確性
+## 証拠先行検証
 
-**実施内容**: バックアップ作成時点での HEAD を確認
+### 検証 V-1: 禁止コマンド非使用の保証
+**実証方法**: 各操作ステップで git コマンド文字列を明示・確認してから実行。
 
-**実行結果**:
-```
-$ git log -1 --format="%h %s"
-9c4bdf1 merge: feature/sim-phase9-mt5-screen-sync（...）
+**実測予定**:
+- `git checkout develop` のみ（--/restore/reset/stash は非使用）
+- `git merge --no-ff` の正確な実行
 
-$ git branch backup/20260819-sim-phase9s2-pre HEAD
-（正常完了）
+**判定基準**: コマンド文字列に禁止パターンが含まれないこと
 
-$ git show-ref backup/20260819-sim-phase9s2-pre
-9c4bdf1... refs/heads/backup/20260819-sim-phase9s2-pre
-```
+### 検証 V-2: git add 操作の確認
+**実証方法**: マージ後、`git status` で意図しないファイルがステージされていないことを確認。
 
-**判定**: ✅ バックアップブランチは指示通り HEAD 9c4bdf1 に正確に作成されている。
+**実測予定**:
+- `git status --porcelain` でステージ状態を確認
+- `git diff --cached --stat` でステージ差分を確認
 
----
+**判定基準**: マージコミットのみ・未追跡ファイル混入なし
 
-### 証拠 2: 作業ブランチの基点確認
+### 検証 V-3: コンフリクト検出時の動作
+**実証方法**: git merge 出力を読み、CONFLICT メッセージ有無を判定。
 
-**実施内容**: 作業ブランチが develop の現 HEAD から正確に作成されたか確認
+**実測予定**:
+- コンフリクト出→即中断・報告（git merge --abort は後述）
+- コンフリクトなし→次ステップへ進行
 
-**実行結果**:
-```
-$ git branch feature/sim-phase9-stage2-api-sync develop
-（正常完了）
+**判定基準**: コンフリクト出時は即座に中断（解決試行なし）
 
-$ git show-ref feature/sim-phase9-stage2-api-sync
-9c4bdf1... refs/heads/feature/sim-phase9-stage2-api-sync
+### 検証 V-4: テスト実行結果の完全記録
+**実証方法**: 各テストコマンド出力を stdout に記録・期待値と比較。
 
-$ git log -1 --all --oneline | grep "9c4bdf1"
-9c4bdf1 merge: feature/sim-phase9-mt5-screen-sync（...）
-```
+**実測予定**:
+- npm test → 期待 410 passed の確認
+- pytest simulator/sim_ui/tests → 期待 803 passed の確認
+- pytest simulator → 期待 4594 passed の確認
 
-**判定**: ✅ 作業ブランチは develop の現 HEAD から正確に作成されている。develop = 9c4bdf1 であることを確認済み。
+**判定基準**: 出力値と期待値が一致するか明示・不一致は即報告
 
----
+### 検証 V-5: マージコミット の可逆性保証
+**実証方法**: マージ後、`git log --oneline -3` でマージコミットが記録されていることを確認。
 
-### 証拠 3: 現在ブランチと切替の成功確認
+**実測予定**:
+- マージコミットハッシュを記録
+- 取り消さない（取り消しコマンドは非使用）
 
-**実施内容**: git checkout で作業ブランチへ切替完了、状態確認
+**判定基準**: マージコミットが履歴に残っている（取り消されていない）
 
-**実行結果**:
-```
-$ git checkout feature/sim-phase9-stage2-api-sync
-Switched to branch 'feature/sim-phase9-stage2-api-sync'
-M	.claude/skills/TDD/output.md
-M	.claude/skills/prompt-validation-workflow/output.md
-M	.claude/skills/upstream-input-validation/output.md
+## 検証計画（実施順序）
 
-$ git branch -v
-* feature/sim-phase9-stage2-api-sync 9c4bdf1 merge: feature/sim-phase9-...
-```
-
-**判定**: ✅ 切替成功。現在ブランチは feature/sim-phase9-stage2-api-sync。
-
----
-
-### 証拠 4: 未コミット変更の限定確認
-
-**実施内容**: git status で未コミット変更が指示許容範囲か確認
-
-**実行結果**:
-```
-Changes not staged for commit:
-  modified:   .claude/skills/TDD/output.md
-  modified:   .claude/skills/prompt-validation-workflow/output.md
-  modified:   .claude/skills/upstream-input-validation/output.md
-
-Untracked files:
-  .claude/worktree-archive/
-  MQL5_Profiles_Tester.zip
-  integrated_position_sizing_calculator.html.bak-260811
-```
-
-**判定**: ✅ 未コミット変更は副生成物 3 ファイル（許容）。未追跡は既知環境依存物（許容）。指示許容範囲内。
-
----
-
-### 証拠 5: worktree-archive などの環境依存物の非コミット状態確認
-
-**実施内容**: 環境依存物が .gitignore で除外されているか、またはステージング対象外か確認
-
-**実行結果**:
-```
-$ git status --short | grep -E "worktree-archive|MQL5_Profiles|html.bak"
-?? .claude/worktree-archive/
-?? MQL5_Profiles_Tester.zip
-?? integrated_position_sizing_calculator.html.bak-260811
-```
-
-**判定**: ✅ 環境依存物はすべて「??」（未追跡）。git add での無差別拾いの対象外。
-
----
-
-## 検証: 推定原因と証拠の照合
-
-| # | 推定失敗原因 | 実証結果 | 棄却/成立 |
+| 順序 | 内容 | 検証対象 | 完了条件 |
 |---|---|---|---|
-| 1 | バックアップが誤った HEAD に基づいている | 証拠 1: backup は 9c4bdf1 に正確に作成 | **棄却** |
-| 2 | 作業ブランチが誤った基点から作成 | 証拠 2: feature は develop (9c4bdf1) から正確に作成 | **棄却** |
-| 3 | 既知範囲外の変更がある | 証拠 4: 未コミット変更は副生成物 3 ファイル（許容） | **棄却** |
-| 4 | git コマンド失敗 | 証拠 3: 全 git 操作は正常完了・切替成功 | **棄却** |
-| 5 | 環境依存物がコミットされる | 証拠 5: 環境依存物は未追跡（git add -A でも無差別拾いのリスク低） | **リスク特定** |
+| 1 | git checkout develop 実行 | V-1 | コンフリクトなし |
+| 2 | git merge --no-ff 実行 | V-1・V-3・V-5 | コンフリクトなし・マージコミット生成 |
+| 3 | npm test 実行（web） | V-2・V-4 | 410 passed または差異を記録 |
+| 4 | pytest simulator/sim_ui/tests 実行 | V-2・V-4 | 803 passed または差異を記録 |
+| 5 | pytest simulator 実行 | V-2・V-4 | 4594 passed または差異を記録 |
+| 6 | 結果報告（マージハッシュ・git log・ゲート件数） | V-4・V-5 | 完全記録 |
 
-**判定**: 推定原因 1〜4 はすべて棄却。原因 5（環境依存物）は後続作業の git add 段階でのリスク。
+## 残存リスク
 
----
+1. **テストスイート定義の変化** — 本ブランチ内でテスト自体が追加・削除された場合、期待値（410/803/4594）は旧値のまま。実測値が異なるのは正常。判定基準の再確認は本タスク外。
+2. **CI 環境と異なる実行環境** — ローカル実行のため CI 環境との差異。テスト出力の解釈は実測値を優先。
+3. **ISSUE-427 既存赤の再確認** — pytest simulator 実行で ISSUE-427 既存赤が表示される場合、本指示で「無関係・sim_ui 配下に含まず」と明示済み。詳細分析は本タスク外。
 
-## 反映: 成立原因の対応
+## 判定: 自己レビュー合格基準
 
-成立した失敗原因（原因 5）の対応：
+- [x] Pre-mortem で 5 件以上の失敗原因推定
+- [x] 証拠先行で各失敗原因対応の検証方法を明示
+- [x] 検証計画で実施順序・完了条件を明確化
+- [x] 残存リスク特定・「なし」明示または列挙
 
-**リスク要因**: 後続作業で `git add .` や `git add -A` が使用されると、未追跡の環境依存物（worktree-archive、MQL5_Profiles_Tester.zip など）が誤ってステージングされる可能性。
+**最終判定**: ✓ 自己レビュー合格。マージ操作実行に進む。
 
-**対応**: CLAUDE.md の禁止ルール（`git add -A` / `git add .` 禁止）および MEMORY.md の「環境 symlink をコミットするな」を参照。**本ブランチでの実装時には、ファイルパスを明示した `git add <path>` を使用**すること。
-
----
-
-## 残存リスク特定
-
-本タスク（ブランチ準備）の完了時点で検出できない、後続作業に委ねる項目：
-
-1. **ファイルパス明示 git add の遵守**
-   - 後続の作業ブランチでのコミット時に、環境依存物が誤ってステージングされないこと
-   - **対象**: worktree-archive/ / MQL5_Profiles_Tester.zip / *.bak ファイル
-   - **確認手段**: 各コミット前に `git diff --cached --stat` を読み込む
-
-2. **parallel agent 間での git 破壊的コマンド禁止の遵守**
-   - 本ツリーで並行作業する他エージェントが `git checkout --` / `git restore` / `git reset --hard` を使用しないこと
-   - **確認手段**: git log で commit メッセージを確認（破壊的操作の痕跡）
-
----
-
-## 完了判定（DoD チェック）
-
-- [x] Pre-mortem で最も可能性の高い失敗原因が 1 件以上特定されている（5 件推定）
-- [x] 判定より前に実証的証拠が提示されている（証拠 1〜5）
-- [x] 成立した原因は対応方法が記述されている（原因 5 への対応）
-- [x] 棄却された原因の理由が実証に基づいている
-- [x] 残存リスク（後続作業に委ねる項目）が列挙されている
-
-**最終判定**: ✅ 本スキルの完了条件を充足。
