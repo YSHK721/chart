@@ -949,3 +949,14 @@ S-1〜S-6 は既存テストを 1 件も改変しない。
 1. `tick` の真値は外部情報（OANDA 取扱銘柄ページ）でしか確定できない。A-1 の承認なしに実装すると「実証的証拠のない仮定で実装」に該当する。
 2. lwc 既定 `minMove` の実値は未検証（vendor bundle が 1 行 minified）。確定しているのは「アプリ側で設定していない」ことのみ。A-3 実装時に実測が必要。
 3. `marketdata` を銘柄規約の置き場にすることの妥当性（呼び値は厳密には `api_shared` 寄りの性質を持つ）。中立パッケージ新設の可能性を排除できていない＝A-6。
+
+## 承認結果（2026-08-20・依頼者裁定）
+
+| ID | 裁定 | 実装への確定事項 |
+|---|---|---|
+| A-1 | **`tick = 1.0` を採用** | `marketdata/symbol_spec.py` に `JP225: tick=1.0, digits=0`。真値判明時の変更点はこの 1 行のみ。**この値は OANDA 証券 CFD の呼び値の実測ではなく「安全側の既定」である**ことをモジュール docstring に明記する（1.0 の倍数は 0.1 の倍数でもあるため無効価格を作らない／逆は作る） |
+| A-2 | **派生価格は丸めない** | 丸めるのは指定価格（建値・損切り・利確）のみ。`losscutPrice`・加重平均建値は権威関数の答えを front が改変しないため素通し。表示は既存 `toFixed(0)` のまま |
+| A-3 | **価格軸の表示桁を `digits` に合わせる** | lwc `priceFormat.minMove/precision` を `chart_bootstrap` で設定（S-7） |
+| A-4 | **`NI225` → 台帳由来の `JP225` へ** | `CHART_SYMBOL` リテラルを削除し導出化。既存テスト 3 本（`color_theme_toolbar_mount` / `bar_info_text` / `copy_bar_info_item`）の期待値改変を伴うため S-7 に分離（**S-7 のみ既存テスト改変可・S-1〜S-6 は 1 件も改変しない**） |
+| A-5 | **`sim_ui` の値は本件で触らない** | 同名概念の二重所在は TBD-D としてフォローアップ ISSUE 化 |
+| A-6 | **`marketdata` の改変を承認** | `DatasetDescriptor.symbol` 追加（追加のみ・既存 4 導出関数 `whitelist`/`clamp_refs`/`rollup_refs`/`tick_refs` は無変更）／`marketdata/symbol_spec.py` 新規／`tools/gen_js_parity_golden.py` に出力 1 本追加 |
