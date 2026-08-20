@@ -177,5 +177,7 @@ test('TC-VC03 水準の違反（ロングで損切りが建値より上）は VM
   // Act
   dialog.render(uc.viewModel());
   // Assert
-  assert.match(byOut(root, 'warnings').textContent, /stop_invalid/);
+  // 表示は参照実装 :1051 の文言（内部識別子は画面に出さない・Y-5）。本検定の意図は
+  //   「VM の判定が表示まで届く」ことで、文言の権威は TC-PD48 が持つ。
+  assert.match(byOut(root, 'warnings').textContent, /ストップ価格が不正/);
 });
