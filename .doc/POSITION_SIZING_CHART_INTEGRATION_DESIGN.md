@@ -116,6 +116,30 @@ worker_url_resolution ガード）／`63440eb`・`d900fc7`（追補）。
    無し＝gateway の実 `new Worker` 分岐・worker 本体の self 配線・統合 UI の Service Worker 下 200）
 5. 水準線の配色は既存 3 chrome スロットを流用（専用スロット新設＝UI 変更は別途承認事項）。
 
+## ピッカー経路の実測検証（2026-08-20・R-P1〜R-P4 の実装前提。読み取り検証・合格＝実装可）
+
+1. **x→足→指標値・OHLC は既存 `ChartRenderer.barInfoAt(x)`（:948-966・検定済）で成立**。
+   `series.data()`＋`pointAtTime` 二分探索が唯一の任意足到達経路（隔離点内で使用中）。
+2. **新設は renderer 追加 2 面のみ（barInfoAt は 1 byte も変えない＝既存 deepEqual 検定を壊さないため）**:
+   - `snapCandidatesAt(x)`: 価格ペイン（pane 0）の系列値＋水準線（hlinePayloads）＋OHLC を
+     プレーンデータで列挙（barInfoAt は paneIndex を捨て水準線を含まない＝不足 2 点の実測による）
+   - `paneIndexAtCoordinate(y)`: **必須**。vendor 実測で `coordinateToPrice` はクランプ無しの線形
+     外挿＝オシレーターペインのクリックが異常価格を返すため、価格ペイン判定が要る
+3. **右クリック（R-P3）は競合なし**: lwc は contextmenu 非購読・全ポインタ経路が `button!==0` で
+   降りる（`chart_interaction_controller.js:118` 実測）。既存 `ChartContextMenu` に項目注入
+   （`installSharedUi` へ `contextMenuItems=[]` 引数を追加し root から渡す。共有配線への無条件
+   追加は replay を汚染するため禁止。自前 new は二重リスナーになるため禁止）。
+4. **px 許容→価格差は `priceAtCoordinate(y)` と `priceAtCoordinate(y+tolPx)` の差で換算**
+   （`priceToCoordinate` を front に生やさない）。
+5. **段階分割（スライス 8）**: 8-a domain 純関数 `snap_price_resolver.js` → 8-b renderer 2 面 →
+   8-c 右クリック項目注入 → 8-d アーム式ピッカー（スライス 6 のモーダルに依存＝アーム状態の
+   置き場）。**スライス 4 の drag 未結線（`new PriceLevelDragController` 呼出 0 件）は
+   スライス 7 で解消**。
+6. 既存の穴（本件と独立・ISSUE-430 起票）: 隔離ガード `UPSTREAM_API` に座標系 4 名
+   （coordinateToPrice/coordinateToTime/coordinateToLogical/data）が不在＝規約であって施行でない。
+7. 要裁定: オシレーターペイン上のクリック挙動（既定案＝価格ペインのみ有効・他ペインは無効化して
+   案内表示。参照実装が存在しない領域）。
+
 ---
 
 # ISSUE-368 実装設計（読み取り専用・確定案）

@@ -8546,3 +8546,15 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
   改変を伴うため（アサーションは不変）、TDD Refactor の「テストコードを変更しない」規律との関係で
   独立した工程として実施の可否を要確認。
 - **関連**: memory: no-hand-duplication-single-source。
+
+## ISSUE-430: [検定] upstream 隔離ガードが座標系 API を施行対象にしていない（2026-08-20）
+
+- **ステータス**: OPEN（新規起票。ISSUE-368 ピッカー経路検証の副産物・本件と独立の既存の穴）
+- **重大度**: Low（現時点の違反 0 件を実測済み。ただし恒久的性質ではない）
+- **事実（実測 2026-08-20）**: `upstream_isolation_declaration.test.js:28-33` の `UPSTREAM_API` に
+  `coordinateToPrice`・`coordinateToTime`・`coordinateToLogical`・`data` が不在。隔離単位の外の
+  ファイルがこれらを直呼びしても検出されない＝「lwc API 名は隔離点内に留める」は座標系 API に
+  ついて規約であって施行でない。
+- **抜本的解決**: `UPSTREAM_API` へ 4 名を追加し、同時に `chart_renderer.js` 冒頭の宣言も更新する
+  （宣言と施行の一致検定があるため片側だけは不可）。
+- **関連**: ISSUE-368（発見契機）・`.doc/POSITION_SIZING_CHART_INTEGRATION_DESIGN.md` ピッカー経路検証 6。
