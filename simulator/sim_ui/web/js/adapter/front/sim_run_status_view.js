@@ -24,12 +24,28 @@ const PHASE_RUNNING = "実行中…";
 const PHASE_TERMINAL = "終了しました";
 const PHASE_FATAL = "画面を組み立てられませんでした";
 
+/**
+ * 掲示枠の宣言表（唯一の宣言）。器（要素と class）も書き込み先も公開参照も**この表から
+ * 導出する**。枠を増やすときはここへ 1 行足すだけであり、3 箇所（mount の生成・post の
+ * 書き込み・elements の公開）へ別々に書き足さない——別々に書けば、足し忘れた側だけが
+ * 黙って古いままになる。変化の軸が 1 本なら表も 1 本にする（OCP・M2 の EA_INPUT_FIELDS
+ * と同じ流儀）。
+ *
+ *   key       : 掲示 1 件のキー（`post` に渡す名前。公開参照は `<key>Node`）
+ *   tag       : 生成する要素（理由文だけ改行させるため div / span を使い分ける）
+ *   className : CSS の選択子（`css/sim_run_form.css` が #simRunStatusPanel 配下で引く）
+ */
+const STATUS_SLOTS = Object.freeze([
+  Object.freeze({ key: "phase", tag: "div", className: "run-status-phase" }),
+  Object.freeze({ key: "job", tag: "span", className: "run-status-job" }),
+  Object.freeze({ key: "state", tag: "span", className: "run-status-state" }),
+  Object.freeze({ key: "reason", tag: "div", className: "run-status-reason" }),
+]);
+
 export function createSimRunStatusView({ doc } = {}) {
   let root = null;
-  let phaseNode = null;
-  let jobNode = null;
-  let stateNode = null;
-  let reasonNode = null;
+  /** key → 掲示枠の要素（mount 前は空＝掲示は何もしない）。 */
+  const slots = new Map();
   // 掲示中の job（状態更新のたびに「どの run の話か」が消えないよう覚えておく）。
   let currentJobId = null;
 
@@ -39,13 +55,14 @@ export function createSimRunStatusView({ doc } = {}) {
     return node;
   };
 
-  /** 掲示枠を書き換える（未 mount では何もしない）。値は必ず文字列にして入れる。 */
-  function post({ phase, job, state, reason }) {
+  /** 掲示枠を書き換える（未 mount では何もしない）。値は必ず文字列にして入れる。
+   *  表に在る枠は**毎回すべて**書く（前の掲示の断片が残ると、今の状態と混ざって読める）。 */
+  function post(update) {
     if (!root) return;
-    phaseNode.textContent = phase == null ? "" : String(phase);
-    jobNode.textContent = job == null ? "" : String(job);
-    stateNode.textContent = state == null ? "" : String(state);
-    reasonNode.textContent = reason == null ? "" : String(reason);
+    for (const slot of STATUS_SLOTS) {
+      const value = update[slot.key];
+      slots.get(slot.key).textContent = value == null ? "" : String(value);
+    }
   }
 
   return {
@@ -53,13 +70,15 @@ export function createSimRunStatusView({ doc } = {}) {
 
     mount(host) {
       root = el("div", { id: "simRunStatusPanel", className: "run-status-panel" });
-      phaseNode = el("div", { className: "run-status-phase" });
-      jobNode = el("span", { className: "run-status-job" });
-      stateNode = el("span", { className: "run-status-state" });
-      reasonNode = el("div", { className: "run-status-reason" });
-      for (const node of [phaseNode, jobNode, stateNode, reasonNode]) root.appendChild(node);
+      const elements = { root };
+      for (const slot of STATUS_SLOTS) {
+        const node = el(slot.tag, { className: slot.className });
+        root.appendChild(node);
+        slots.set(slot.key, node);
+        elements[`${slot.key}Node`] = node;
+      }
       host.appendChild(root);
-      this.elements = { root, phaseNode, jobNode, stateNode, reasonNode };
+      this.elements = elements;
       return root;
     },
 
