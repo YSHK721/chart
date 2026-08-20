@@ -24,7 +24,7 @@
 //
 // 依存ゼロ（DOM・fetch・lwc を触らない）。import は同層 domain のみ。
 
-import { quantize } from './price_quantize.js';
+import { quantize, usableTick } from './price_quantize.js';
 
 export const LONG = 'long';
 export const SHORT = 'short';
@@ -131,5 +131,16 @@ export function createPriceLevels(spec) {
   }
   const takePrice = spec.takePrice === undefined ? null : spec.takePrice;
   const tick = spec.tick === undefined ? null : spec.tick;
+  // 関門が自分では刻みを検証していなかった（工程 5 🟡-3）。同じ domain に「使える刻みか」の
+  //   唯一源 `usableTick` があるのに呼ばず、無音の誤答を通していた（実測 node v24・2026-08-20）:
+  //     tick=0 / NaN / Infinity → 全価格が NaN（`quantize` の素通し契約は null/未指定だけ）
+  //     tick=-1                 → **無音で丸まる**（58998.75 → 58999）＝誤りが正常値の顔で入る
+  //     tick=1e-101             → `toFixed` の RangeError が domain の外へ漏れる
+  //   「刻み上にない価格は存在できない」を名乗る以上、刻み自体の妥当性もここで閉じる。
+  //   判定は書き写さず唯一源へ委ねる（規則が 1 つで実装が 2 つある状態を作らない＝原因 β）。
+  //   素通し契約（`null` / 未指定＝量子化しない）は変えない。
+  if (tick !== null && usableTick(tick) === null) {
+    throw new Error(`量子化に使えない刻み（tick）です: ${String(tick)}`);
+  }
   return new PriceLevels(direction, entryPrices, spec.stopPrice, takePrice, tick);
 }

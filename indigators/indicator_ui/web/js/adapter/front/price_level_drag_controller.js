@@ -34,6 +34,7 @@ export class PriceLevelDragController {
     onLevelsChange = () => {},
     registerVerticalPanBlocker = null,
     isGrabBlocked = null,
+    onGrabBlocked = null,
     grabTolerancePx = DEFAULT_GRAB_TOLERANCE_PX,
   } = {}) {
     this._container = container;
@@ -44,6 +45,12 @@ export class PriceLevelDragController {
     this._registerVerticalPanBlocker = registerVerticalPanBlocker;
     // 掴んではいけない状態を外から注入する（ピッカーがアーム中など）。未注入は従来どおり常に掴める。
     this._isGrabBlocked = typeof isGrabBlocked === 'function' ? isGrabBlocked : () => false;
+    // 掴めなかったことの**告知**（工程 5 🟡-2）。設計「フェイルセーフ」は「確定しない」だけでなく
+    //   「理由を出す」ことまで求めるが、drag 経路には告知が 1 行も無く、線が動かない理由を
+    //   利用者が「掴めない」のか「バグ」なのか区別できなかった。
+    //   **任意注入・既定 no-op**（何を告知するか＝文言と条件は結線側の責務。本 class は
+    //   トーストも文言も知らない＝DIP）。判定そのもの（`isGrabBlocked`）は変えない。
+    this._onGrabBlocked = typeof onGrabBlocked === 'function' ? onGrabBlocked : () => {};
     this._releaseInteraction = null;
     this._tolerance = grabTolerancePx;
     this._dragging = null;      // 掴んでいる handle（{kind,index}）または null
@@ -78,7 +85,13 @@ export class PriceLevelDragController {
         return;
       }
       if (this._isGrabBlocked()) {
-        return;   // ピッカーのアーム中など（入力先は常に一意＝R-P1。別の水準を動かさない）。
+        // ピッカーのアーム中など（入力先は常に一意＝R-P1。別の水準を動かさない）。
+        //   **掴む対象の上を押したときだけ**告知する: 線から離れた場所は通常のチャート操作で
+        //   あって「掴めなかった」ではなく、そこで鳴らすと操作のたびに鳴る。
+        if (this._handleAt(e)) {
+          this._onGrabBlocked();
+        }
+        return;
       }
       const handle = this._handleAt(e);
       if (!handle) {

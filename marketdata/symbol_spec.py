@@ -21,7 +21,18 @@ JP225 の ``tick=1.0`` について（**重要・A-1 裁定 2026-08-20**):
     ``sim_ui`` の ``digits=1`` / ``point_size=0.1``（``sim_ui/adapter/symbol_spec_catalog.py``）は
     OANDA-Japan **MT5** の JP225（``contract_size=10``）＝**別商品**であり、本件の権威にならない
     （A-5: 本件では触らない・二重所在は TBD-D としてフォローアップ）。
-    **真値が判明したときの変更点は下記台帳の 1 行のみ。**
+    **真値が判明したときの変更点は「台帳 1 行」では済まない**（実測 2026-08-20・工程 5 是正 5）。
+    値そのものを期待に持つ箇所が 6 ファイル 18 か所ある:
+      1. 下記台帳 1 行（``SYMBOL_SPECS["JP225"]``）
+      2. 裁定値ピン ``marketdata/tests/test_symbol_spec_ledger.py``（``test_JP225の呼び値は裁定値である``）
+      3. 生成物 ``.../web/js/domain/symbol_spec_generated.js``（``tools/gen_js_parity_golden.py`` の再実行）
+      4. 量子化後の期待値を持つ JS 検定 3 本
+         （``position_sizing_pick_path_parity.test.js`` 3 か所 /
+          ``position_sizing_symbol_spec_wiring.test.js`` 6 か所 /
+          ``position_sizing_price_input_commit.test.js`` 6 か所）
+    2 は「無言の変更を見えるようにする」ための意図的なピンであり、4 は刻みで丸めた結果を
+    期待に書いているため刻みが変われば当然変わる。いずれも**赤で気付ける**設計だが、
+    「1 行で済む」ではない。
 """
 
 from __future__ import annotations
@@ -46,7 +57,8 @@ class SymbolSpec:
 #: 銘柄仕様台帳（唯一源）。キーは ``DatasetDescriptor.symbol`` が名乗る銘柄シンボル。
 SYMBOL_SPECS: dict[str, SymbolSpec] = {
     # OANDA 証券 JP225 CFD（contract_size=1）。tick は**安全側の既定**（上記モジュール
-    # docstring 参照・A-1 裁定）。真値判明時に変更するのはこの 1 行のみ。
+    # docstring 参照・A-1 裁定）。真値判明時に変更する箇所の一覧も同 docstring に記す
+    # （この 1 行では済まない＝裁定値ピン・生成物・期待値を持つ検定も動く）。
     "JP225": SymbolSpec(tick=1.0, digits=0),
     # 同梱サンプル（datasetRef="sample"）の銘柄。実体の同定と刻みの根拠は
     # dataset_registry.py の "sample" 記述子のコメントに記す（実測に基づく）。

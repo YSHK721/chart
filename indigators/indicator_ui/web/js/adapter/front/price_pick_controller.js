@@ -27,7 +27,7 @@ import { priceOnLine } from './price_format.js';
 // 案内文言（裁定 2026-08-20「下段ペインで押しても何も起きない状態を作らない」）は
 //   理由コードと同居する単一ソースから取る。右クリック（8-c）と同じ文言を写さない。
 import {
-  resolvePickedPrice, OTHER_PANE, MSG_OTHER_PANE, DEFAULT_PICK_TOLERANCE_PX,
+  resolvePickedPrice, OTHER_PANE, MSG_OTHER_PANE, MSG_NO_PRICE, DEFAULT_PICK_TOLERANCE_PX,
 } from './price_pick_resolver.js';
 
 const HOST_CLASS = 'price-pick-ghost';
@@ -160,12 +160,17 @@ export class PricePickController {
     });
   }
 
-  // ホバー: ゴースト線と採用予定価格を出す（下段ペインは線を出さず案内だけ）。
+  // ホバー: ゴースト線と採用予定価格を出す（確定しない座標では線を出さず案内だけ）。
+  //   **確定しない理由は必ず案内する**（設計「フェイルセーフ」＝値ではなく機能を落とし理由を出す）。
+  //   工程 5 🟡-1 の是正: 従来は `NO_PRICE`（時間軸の帯・ペイン区切り線＝`paneIndexAtCoordinate`
+  //   が `null`）のとき文言が空文字で、画面上で何も起きず理由も出なかった。右クリック経路
+  //   （`position_sizing_context_items.js`）は同じ理由に `MSG_NO_PRICE` を出しており非対称だった。
+  //   文言は理由コードと同居する単一ソースから取る（写しを作らない）。
   _preview(e) {
     const resolved = this._resolve(e);
     const { y } = this._containerXY(e);
     if (resolved.price === null || resolved.price === undefined) {
-      this._showGhost(y, resolved.reason === OTHER_PANE ? MSG_OTHER_PANE : '', { line: false });
+      this._showGhost(y, guidanceFor(resolved.reason), { line: false });
       return;
     }
     this._showGhost(y, pickLabel(resolved, this._digits()), { line: true });
@@ -246,6 +251,12 @@ export class PricePickController {
       this._label.textContent = '';
     }
   }
+}
+
+// 確定しない理由 → 案内文言。右クリック経路（`position_sizing_context_items.js`）と**同じ選び分け**
+//   （同じ理由に同じ文言）。分岐の形を揃えることで 2 経路の非対称が再発したときに検定で落ちる。
+function guidanceFor(reason) {
+  return reason === OTHER_PANE ? MSG_OTHER_PANE : MSG_NO_PRICE;
 }
 
 // 採用予定価格の表示文字列。どこへ吸ったか（候補名）まで出す（R-P2「採用予定値を明示」）。

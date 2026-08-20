@@ -119,8 +119,16 @@ export async function composeChartShell({
   //   （ISSUE-277 の残 / ISSUE-278 #16: 配信 3 ページへの手書き複製を撤去）。
   //   **構築順が DOM の並び**になるため「現在値 → 読み取り欄」の順に作る（従来 HTML と同じ並び）。
   //   現在値の大型表示そのものは維持する（依頼者判断 2026-08-07）。
-  const currentPriceView = new CurrentPriceView({ document: doc, elementId: 'current-price' });
-  const readoutView = new CrosshairReadoutView({ document: doc, elementId: 'crosshair-readout' });
+  //   表示桁は既に解決済みの `symbolSpec` から**値として配る**（A-3 の「現在値」・S-6: 解決点は
+  //   本モジュールの既存 2 か所だけで、View 側に新しい引き当てを作らない）。解決できなければ
+  //   `null`＝従来の表示（無音で桁を決めない・価格軸 `priceFormat` と同じ態度）。
+  const priceDigits = symbolSpec ? symbolSpec.digits : null;
+  const currentPriceView = new CurrentPriceView({
+    document: doc, elementId: 'current-price', priceDigits,
+  });
+  const readoutView = new CrosshairReadoutView({
+    document: doc, elementId: 'crosshair-readout', priceDigits,
+  });
   // ペイン別凡例（ISSUE-276）。描画先の器は View 自身が版面（.chart-wrap）配下へ生成する
   //   （HTML への直書き＝配信ページの手書き複製をやめた・ISSUE-277）。root は id 文字列を知らない。
   // 指標ペインの並べ替え（ドラッグ&ドロップ・ユーザー指示 2026-08-09）。凡例のチップを掴み手にし、
@@ -479,9 +487,13 @@ export function wireControllerCollaborators({
   //   `datasetRef`（root が両方へ渡す同じ値）に対する同一の純関数呼び出しで、`lookupSymbolSpec` は
   //   凍結された生成物を読むだけで状態を持たないため、結果は必ず一致する。
   //   `themeState` と同型の「起動時に解決した値を root 経由で転送する」形（:357 参照）へ寄せる案は
-  //   **工程 4 で実測のうえ見送った**: 本関数を `datasetRef` だけで直接呼ぶ既存検定が 5 ファイルあり
-  //   （`tests/support/position_sizing_boot.js:10` が「差し替え口は datasetRef」と契約を明記）、
-  //   引数へ移すと既存 30 件が赤になる。テストの期待値を書き換えずには成立しない形なので採らない。
+  //   **本ブランチでは実施しない**（工程 5 是正 5-2 で下記のとおり記述を訂正した）。
+  //   従来ここには「引数へ移すと既存 30 件が赤になる／テストの期待値を書き換えずには成立しない」と
+  //   書いていたが、**それは誤り**である: `symbolSpec = lookupSymbolSpec(datasetRef)` を
+  //   **既定値つきの任意引数**にすれば（JS の分配既定値は先行する束縛を参照できる）、`datasetRef`
+  //   だけを渡す既存の呼び出しは 1 バイトも変わらない。加えて 2 か所の呼び出しは同一 `datasetRef`
+  //   に対する同一の純関数呼び出しであり、結果は必ず一致する（上記のとおり状態を持たない）。
+  //   見送る理由は「成立しないから」ではなく、明示転送への移行が本ブランチの是正範囲外だからである。
   const symbolSpec = lookupSymbolSpec(datasetRef);
   // 銘柄名（表示）も同じ解決結果から配る（ISSUE-368 A-4）。器はツールバーが持ち、中身は
   //   「どのデータセットを見ているか」を知っている本関数が入れる（tf-menu / tpl-menu と同じ
@@ -580,6 +592,16 @@ function createPositionSizingCollaborators({
     //   銘柄仕様が解決できないときも掴ませない（フェイルセーフ: 経路 6 も落とす。掴めてしまうと
     //   刻みの分からない価格を drag で作れる＝機能だけが無音で生き残る）。
     isGrabBlocked: () => picker.isArmed() || !symbolSpec,
+    // 掴めなかった理由の告知（工程 5 🟡-2）。設計「フェイルセーフ」は経路 6（drag）にも
+    //   「トーストで告知」を課しているが、判定だけがあって告知が無かった。
+    //   **鳴らすのは刻みが不明なときだけ**: アーム中は入力先が一意であること自体が意図した
+    //   状態で、掴もうとするたびに鳴らすと連打で鳴り続ける（裁定どおり無告知のまま）。
+    //   文言はピッカー・右クリックと同じ単一ソースから取る（写しを作らない）。
+    onGrabBlocked: () => {
+      if (!symbolSpec) {
+        toast?.show?.(MSG_NO_SYMBOL_SPEC);
+      }
+    },
   });
   drag.install();
 

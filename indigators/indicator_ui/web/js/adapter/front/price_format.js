@@ -10,13 +10,34 @@
 //   実際に、差分 2 でモーダル側だけを書式化した結果、ゴーストに生の浮動小数
 //   `62698.25050922694` が出続けていた（実 UI 実測 2026-08-20）。第 2 実装を作らない。
 //
-// **面によって規則が違う**ことに注意（参照実装がそう定義している）:
+// **面によって規則が違う**ことに注意。ただし参照実装が定義しているのは **`digits=0` の面だけ**
+//   （実測 2026-08-20・工程 5 是正 5-3。参照実装は単一銘柄・整数価格専用で、価格を出す箇所は
+//    `Math.round(val).toLocaleString()` と `.toFixed(0)` の 2 種しか無く、`digits ≠ 0` の書式を
+//    一度も定義していない）:
 //   - 数直線マーカー（線に添える価格）  : `Math.round(val).toLocaleString()`（:777）
 //   - モーダルの kv 行（表の中の価格）  : `val.toFixed(0)`（加重平均建値・損切り・ロスカット）
 //   どちらか一方へ寄せると参照実装から乖離するため、両方を別の関数として持つ。
+//   `digits ≠ 0` へ拡張した `priceOnLine(value, digits)` は参照実装の定義ではなく、
+//   **依頼者裁定 A-3 / D-2（2026-08-20）による本統合の追加規則**である（`digits=0` では
+//   参照実装 :777 と厳密に一致することを検定で固定している＝拡張が既存の面を動かさない）。
 //
 // 純関数のみ（import 0・DOM/lwc/fetch を触らない）。ロケールは参照実装と同じく既定に従う
 //   （`toLocaleString()` を引数なしで呼ぶ＝参照実装の記述そのまま）。
+
+/**
+ * 表示桁として**使える** `digits` か（台帳が解決できたか）。
+ *
+ * 判定をここに 1 つだけ置く理由（SRP・原因 β と同型の予防）: 同じ「桁が解決できたか」を
+ * `priceOnLine`（解決できなければ参照実装どおり整数）と `format.js` の `fmtPrice`
+ * （解決できなければ従来の指標値書式へ落ちる）が別々の式で持つと、片方だけを直したときに割れる。
+ * **落とし先が違うだけで判定は同一**なので、判定だけを共有し落とし先は呼び出し側が決める。
+ *
+ * @param {*} digits 判定する桁。
+ * @returns {boolean} 0 以上の整数なら true。
+ */
+export function hasPriceDigits(digits) {
+  return Number.isInteger(digits) && digits >= 0;
+}
 
 /**
  * 線に添える価格（参照実装 `:777` の数直線マーカー）。
@@ -41,7 +62,7 @@
  * @returns {string} 例: 58998.75 → '58,999'（digits 未指定 / 0）・'58,998.75'（digits=2）
  */
 export function priceOnLine(value, digits) {
-  const d = Number.isInteger(digits) && digits >= 0 ? digits : 0;
+  const d = hasPriceDigits(digits) ? digits : 0;
   const scale = 10 ** d;
   return (Math.round(value * scale) / scale).toLocaleString(undefined, {
     minimumFractionDigits: d, maximumFractionDigits: d,
