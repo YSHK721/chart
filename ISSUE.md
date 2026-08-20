@@ -6915,7 +6915,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 - **射程外**: 本チェックアウト側の `serve.sh` は develop に取り込むまで `--takeover` を持たない
   （戻すときは占有が無い状態からの通常起動になる）。
 
-## ISSUE-368: [機能] ポジションサイズ計算機のチャート UI 統合（2026-08-11・OPEN・保留）
+## ISSUE-368: [機能] ポジションサイズ計算機のチャート UI 統合（2026-08-11 起票・2026-08-20 RESOLVED）
 
 - **ステータス**: RESOLVED（2026-08-20。設計＝`.doc/POSITION_SIZING_CHART_INTEGRATION_DESIGN.md`
   （スライス 0〜7・裁定記録 TBD-1/5 建値一本化・TBD-3 図 3 除外・TBD-4 3 トグル残置・TBD-2 HTML 保持・
