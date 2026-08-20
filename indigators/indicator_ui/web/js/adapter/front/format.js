@@ -1,5 +1,16 @@
 // 読み取り欄・ウォーターマーク向けの値整形ユーティリティ（adapter/front 共有）。
 //   chart_renderer.js（機能③）と crosshair_readout_view.js で重複していた整形を一元化する。
+//
+// **価格と指標値は別の関数**（ISSUE-368 A-3・実 UI 実測 2026-08-20）:
+//   価格（現在値・バー情報の OHLC）の表示桁は銘柄仕様 `digits` が決めるが、指標の値は決めない
+//   （下段ペインには価格でない系列がある＝RSI・ma_marod。価格の桁を強制すると誤りになる）。
+//   両者が `fmtValue` を共有していたため、価格軸だけ整数になり現在値は `65,721.051` のまま
+//   残った。`fmtValue`＝指標値・`fmtPrice`＝価格 に分ける。
+
+// 丸め＋桁区切りの規則そのものは価格書式の単一ソースが持つ（第 2 実装を作らない）。
+//   `hasPriceDigits` は「台帳が桁を解決できたか」の判定で、解決できないときの落とし先だけが
+//   面ごとに違う（線に添える価格＝参照実装どおり整数／本モジュール＝従来の `fmtValue`）。
+import { priceOnLine, hasPriceDigits } from './price_format.js';
 
 // epoch 秒（lightweight-charts の UTCTimestamp）を ISO 風の日時文字列 'YYYY-MM-DD HH:MM' へ。
 //   business-day オブジェクト等は防御的に String 化する。
@@ -32,4 +43,25 @@ export function fmtValue(v) {
     return '';
   }
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+/**
+ * 価格の整形（現在値・バー情報の OHLC）。表示桁は**銘柄仕様の `digits`**（ISSUE-368 A-3）。
+ *
+ * 権威は Python 台帳 `marketdata/symbol_spec.py` ただ 1 つで、front は解決結果を配られて
+ * 渡すだけである（`digits` の既定値をここで決めない・台帳をここで引かない）。
+ *
+ * `digits` が解決できないとき（未指定・`null`・整数でない・負）は **従来（`fmtValue`）と
+ * 完全に同一**へ落ちる。無音で誤った桁（例: 0 桁）に固定しない＝「決められない」を
+ * 「整数だ」と偽らない（`chart_bootstrap` が価格軸で採る態度と同じ）。
+ *
+ * @param {number|null|undefined} v 価格。非有限は空文字（`fmtValue` と同じ契約）。
+ * @param {number} [digits] 表示桁（台帳の `digits`）。
+ * @returns {string} 例: 65721.051 → '65,721'（digits=0）・'65,721.05'（digits=2）
+ */
+export function fmtPrice(v, digits) {
+  if (v === null || v === undefined || !Number.isFinite(v)) {
+    return '';
+  }
+  return hasPriceDigits(digits) ? priceOnLine(v, digits) : fmtValue(v);
 }

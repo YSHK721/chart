@@ -11,7 +11,7 @@
 //   - DOM は注入（document / elementId）。テストは fake document を渡す。
 //   - 値が null / 非有限 / 対象要素不在でも安全（クラッシュしない・空表示）。
 
-import { fmtValue } from './format.js';
+import { fmtPrice } from './format.js';
 import { ensureOverlayStackSlot } from './overlay_host.js';
 
 export class CurrentPriceView {
@@ -20,10 +20,14 @@ export class CurrentPriceView {
   //   左上スタックへ生成する。配信 3 ページへ `<div id="current-price">` を手書き複製する義務を
   //   無くす（取り残しが表示の全滅を招く経路を断つ）。スタック内の順序は構築順で決まるため、
   //   合成根は本 View を読み取り欄より先に構築する。
-  constructor({ document, elementId, anchor = null }) {
+  // priceDigits: 表示桁（銘柄仕様の `digits`・ISSUE-368 A-3）。**注入のみ**で、ここでは解決も
+  //   既定値の決定もしない（権威は Python 台帳ただ 1 つ・front の解決点は chart_app_wiring の
+  //   1 か所）。未注入・解決不能なら従来の表示へ落ちる＝無音で桁を決めない。
+  constructor({ document, elementId, anchor = null, priceDigits = null }) {
     this._document = document ?? null;
     this._elementId = elementId;
     this._anchor = anchor;
+    this._priceDigits = priceDigits;
     // 構築時に欄を確保する（描画順に依存せず DOM の並びを決めるため）。生成不能環境は null。
     this._el = ensureOverlayStackSlot(this._document, { id: elementId, anchor });
     // 直前に表示した値（方向判定の基準）。null=未表示。
@@ -51,7 +55,7 @@ export class CurrentPriceView {
       this._direction = value > this._prevValue ? 'is-up' : 'is-down';
     }
     this._prevValue = value;
-    el.textContent = fmtValue(value);
+    el.textContent = fmtPrice(value, this._priceDigits);
     el.className = this._direction;
   }
 }

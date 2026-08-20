@@ -27,6 +27,39 @@ export class ChartInteractionController {
     this._updatePaneHeight = updatePaneHeight;
     this._isVerticalPanBlocked = typeof isVerticalPanBlocked === 'function'
       ? isVerticalPanBlocked : () => false;
+    // ISSUE-368 スライス 3: 追加ブロッカーの登録先（下記 addVerticalPanBlocker 参照）。
+    this._verticalPanBlockers = new Set();
+  }
+
+  // ISSUE-368 スライス 3: 縦パンを止める述語を**追加**登録する（解除関数を返す）。
+  //
+  //   なぜ合成にするか: 止める口は constructor の `isVerticalPanBlocked` 単数スロットしか無く、
+  //   リプレイ root が「MP リプレイ表示モード中は縦パンしない」で既に使用中である
+  //   （`composition_roots_share_wiring.test.js:98` が固定）。水準線 drag（スライス 4）が
+  //   同じ口を要求するため、流用するとリプレイ側の条件を上書きして壊す。単数スロットの奪い合いは
+  //   `setCandleObserver` / `setTfPeriodHoverHandler` で既に起きた再発型なので、OR 合成にして潰す。
+  //
+  //   評価は pointerdown のたびに行う（登録時点の値を焼き付けない）。未登録・未注入は
+  //   従来と完全に同一＝常にブロックなし。関数以外は無視する（未定義を真と扱わない）。
+  addVerticalPanBlocker(predicate) {
+    if (typeof predicate !== 'function') {
+      return () => {};   // 呼び出し側に分岐を作らせないため、解除関数は常に返す。
+    }
+    this._verticalPanBlockers.add(predicate);
+    return () => { this._verticalPanBlockers.delete(predicate); };
+  }
+
+  // 縦パンを開始してよいか（合成判定）。constructor 注入と登録ブロッカーの OR。
+  _verticalPanBlocked() {
+    if (this._isVerticalPanBlocked()) {
+      return true;
+    }
+    for (const blocked of this._verticalPanBlockers) {
+      if (blocked()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // container の wheel・dblclick・pointerdown/move/up/leave（本体縦パン）を配線する。
@@ -82,7 +115,7 @@ export class ChartInteractionController {
       let vpanActive = false;
       let lastVpanY = 0;
       container.addEventListener('pointerdown', (e) => {
-        if (this._isVerticalPanBlocked() || e.button !== 0) {
+        if (this._verticalPanBlocked() || e.button !== 0) {
           return; // 外部ブロック述語（replay の MP リプレイ中ゲート等・ISSUE-123）または非左ボタン。
         }
         if (renderer.isOverPriceAxis(containerXY(e).x)) {

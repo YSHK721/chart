@@ -1,7 +1,7 @@
 // app_chrome_view.installChartToolbar がテーマメニューの空マウントを生成することの固定。
 //
 // 設計入力（唯一の仕様源）: .doc/indicator-management-ui/基本設計_指標カラーテーマ.md v0.3.1
-//   §6.1（ツールバーの並びは [NI225] [日 ▾] [ライブ] [テンプレート ▾] [テーマ ▾] [インジケーター]
+//   §6.1（ツールバーの並びは [銘柄] [日 ▾] [ライブ] [テンプレート ▾] [テーマ ▾] [インジケーター]
 //        [リプレイ]。空マウント `<div class="color-theme-menu" id="color-theme-menu"></div>` は
 //        `app_chrome_view.installChartToolbar` が生成し、項目 DOM は color_theme_menu.js が生成する。
 //        **index.html は 1 枚も触らない**＝ISSUE-278 #16 の規約）。
@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { installChartToolbar } from '../js/adapter/front/app_chrome_view.js';
+import { INDEX_HTML } from './index_html_pages.js';
 
 class El {
   constructor() {
@@ -43,12 +44,9 @@ function makeDoc() {
   return { doc, anchor };
 }
 
-const INDEX_HTML = [
-  '../../../../indigators/indicator_ui/web/index.html',
-  '../../../../simulator/replay_ui/web/index.html',
-  '../../../../simulator/report_ui/web/index.html',
-  '../../../../unified_ui/web/index.html',
-];
+// 一覧は単一ソース（tests/index_html_pages.js）から読む。ISSUE-368 工程 2 是正 1:
+//   同型のガードが増えたときに一覧を手書き複製すると、配信ページの増減で片方だけが取り残される。
+//   本ファイルのアサーションは変えていない（読み先を定数から共有モジュールへ移しただけ）。
 
 test('TC-CT01 ツールバーに #color-theme-menu の空マウントを生成する（§6.1）', () => {
   // Arrange

@@ -11,7 +11,7 @@
 //   - dto が null / ohlc null / overlays 空 / 対象要素不在でも安全（クラッシュしない・空表示）。
 
 // 日時表記は format.js の fmtTime が単一情報源（右クリックの「情報をコピーする」と同じ表記）。
-import { fmtValue, fmtTime } from './format.js';
+import { fmtValue, fmtPrice, fmtTime } from './format.js';
 import { ensureOverlayStackSlot } from './overlay_host.js';
 
 // OHLC 行のセル定義（描画順 O/H/L/C）。dto.ohlc のキー・CSS クラス・先頭ラベルを保持する。
@@ -27,10 +27,14 @@ export class CrosshairReadoutView {
   //   ISSUE-277 の残 / ISSUE-278 #16: 欄そのものを本 View が所有し、版面（.chart-wrap）配下の
   //   左上スタックへ生成する（配信 3 ページへの手書き複製をやめる）。スタック内の順序は構築順で
   //   決まるため、合成根は現在値 View を本 View より先に構築する（従来の並びを保つ）。
-  constructor({ document, elementId, anchor = null }) {
+  // priceDigits: バー情報（OHLC）の表示桁（銘柄仕様の `digits`・ISSUE-368 A-3）。**注入のみ**。
+  //   overlay 各行（指標の値）には効かせない: 下段ペインには価格でない系列（RSI・ma_marod）が
+  //   あり、価格の桁を強制すると誤りになる。未注入なら OHLC も従来どおり。
+  constructor({ document, elementId, anchor = null, priceDigits = null }) {
     this._document = document ?? null;
     this._elementId = elementId;
     this._anchor = anchor;
+    this._priceDigits = priceDigits;
     // 構築時に欄を確保する（描画順に依存せず DOM の並びを決めるため）。生成不能環境は null。
     this._el = ensureOverlayStackSlot(this._document, { id: elementId, anchor });
   }
@@ -68,7 +72,7 @@ export class CrosshairReadoutView {
       const cells = OHLC_CELLS.map(({ key, className, label }) => {
         const cell = doc.createElement('span');
         cell.className = className;
-        cell.textContent = `${label} ${fmtValue(dto.ohlc[key])}`;
+        cell.textContent = `${label} ${fmtPrice(dto.ohlc[key], this._priceDigits)}`;
         return cell;
       });
       ohlcRow.append(time, ...cells);

@@ -43,12 +43,27 @@ import { ChartTemplateController } from './chart_template_controller.js';
 import { ColorThemeMenu } from './color_theme_menu.js';
 import { ColorThemeDialogs } from './color_theme_dialogs.js';
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
-import { installChartToolbar, installIndicatorDialog, CHART_SYMBOL } from './app_chrome_view.js';
+import {
+  installChartToolbar, installIndicatorDialog, setChartSymbol, chartSymbol,
+} from './app_chrome_view.js';
 import { ChromeThemeApplier } from './chrome_theme_applier.js';
 import { LocalStorageThemeGateway } from './local_storage_theme_gateway.js';
 import { ColorThemeController, COLOR_THEME_HOST_CONTRACT, loadThemeState } from './color_theme_controller.js';
 import { createHostView } from './host_view.js';
 import { resolveAllChrome } from '../../usecase/color_resolver.js';
+// ISSUE-368 スライス 7: ポジションサイズ計算機一式（生成は共有配線が所有し、root は識別子だけを渡す）。
+import { PositionSizingMenu } from './position_sizing_menu.js';
+import { PositionSizingDialog, defaultParams, defaultLevels } from './position_sizing_dialog.js';
+import { PositionSizingController } from './position_sizing_controller.js';
+import { PriceLevelLinesPrimitive } from './price_level_lines_primitive.js';
+import { PriceLevelDragController } from './price_level_drag_controller.js';
+import { PricePickController } from './price_pick_controller.js';
+import { McWorkerGateway } from './mc_worker_gateway.js';
+import { createPriceContextItems } from './position_sizing_context_items.js';
+import { resolvePickedPrice, MSG_NO_SYMBOL_SPEC } from './price_pick_resolver.js';
+import { lookupSymbolSpec } from './symbol_spec_catalog.js';
+import { PositionSizingPlanUseCase } from '../../usecase/position_sizing_plan.js';
+import { createPriceLevels } from '../../domain/price_levels.js';
 
 // ISSUE-383: 時系列契約防壁トーストの表示時間（ms）。文言に「詳細ログの場所」まで含むため
 //   既定（1.6 秒）より長く取る（読み切れないと能動通知の意味がない）。
@@ -86,8 +101,22 @@ export async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe =
 export async function composeChartShell({
   lwc, container, doc, storage, fetch, datasetRef, recentBars,
 } = {}) {
+  // 銘柄仕様（呼び値・表示桁）を datasetRef から引く。値の権威は marketdata 台帳ただ 1 つで、
+  //   front は解決結果を**値として配るだけ**（ISSUE-368 S-6 / S-7 A-3）。引き当ては
+  //   `lookupSymbolSpec`（front 配下で台帳へ触れる唯一の口）で、本モジュールの外へは出さない。
+  //   ここと wireControllerCollaborators の 2 か所が同じ `datasetRef`（root が両方へ渡す同一の値）
+  //   から同じ純関数を引く＝結果は必ず一致する（引き当ては台帳の凍結オブジェクトを読むだけで
+  //   状態を持たない）。値を持ち回るための新しい配管（**root の引数追加**）は作らない。
+  //   この一文の射程（工程 5 是正 A で明確化・事実に合わせた補足であって方針変更ではない）:
+  //   戒めているのは「root の**入力**を増やして値を外から通す」形だけである。**戻り値へ足して
+  //   root が転送する**形は既存の先例そのもの（`themeState`: 本関数が 1 回解決 → 戻り値 → root →
+  //   `wireControllerCollaborators`）で、解決点は本関数の中に留まったままなので抵触しない。
+  //   実際、解決済みの値を**画面の他の面へ配る**手段はこれしかない（下の `priceDigits` と同型）。
+  const symbolSpec = lookupSymbolSpec(datasetRef);
   // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123）。
-  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container });
+  //   表示桁（priceFormat）は台帳の digits/tick に従わせる（A-3）。解決できなければ渡さない＝
+  //   lwc 既定（precision=2 / minMove=0.01）のまま＝従来の挙動（front が桁を勝手に決めない）。
+  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container, symbolSpec });
   // ポート実装: ComputeHttpClient（fetch /compute）。candles は /candles から取得する。
   const compute = new ComputeHttpClient({ fetch });
 
@@ -95,8 +124,16 @@ export async function composeChartShell({
   //   （ISSUE-277 の残 / ISSUE-278 #16: 配信 3 ページへの手書き複製を撤去）。
   //   **構築順が DOM の並び**になるため「現在値 → 読み取り欄」の順に作る（従来 HTML と同じ並び）。
   //   現在値の大型表示そのものは維持する（依頼者判断 2026-08-07）。
-  const currentPriceView = new CurrentPriceView({ document: doc, elementId: 'current-price' });
-  const readoutView = new CrosshairReadoutView({ document: doc, elementId: 'crosshair-readout' });
+  //   表示桁は既に解決済みの `symbolSpec` から**値として配る**（A-3 の「現在値」・S-6: 解決点は
+  //   本モジュールの既存 2 か所だけで、View 側に新しい引き当てを作らない）。解決できなければ
+  //   `null`＝従来の表示（無音で桁を決めない・価格軸 `priceFormat` と同じ態度）。
+  const priceDigits = symbolSpec ? symbolSpec.digits : null;
+  const currentPriceView = new CurrentPriceView({
+    document: doc, elementId: 'current-price', priceDigits,
+  });
+  const readoutView = new CrosshairReadoutView({
+    document: doc, elementId: 'crosshair-readout', priceDigits,
+  });
   // ペイン別凡例（ISSUE-276）。描画先の器は View 自身が版面（.chart-wrap）配下へ生成する
   //   （HTML への直書き＝配信ページの手書き複製をやめた・ISSUE-277）。root は id 文字列を知らない。
   // 指標ペインの並べ替え（ドラッグ&ドロップ・ユーザー指示 2026-08-09）。凡例のチップを掴み手にし、
@@ -149,6 +186,9 @@ export async function composeChartShell({
     chart, mainSeries, compute, readoutView, currentPriceView, paneLegendView, renderer,
     updatePaneHeight, persistence, templateStore, catalog, loadCandles, chromeThemeApplier,
     themeStore, themeState,
+    // 解決済みの銘柄仕様（`themeState` と同型の転送）。root は中身を解釈せず `installSharedUi` へ
+    //   渡すだけで、台帳を引き直さない（解決点は本関数と wireControllerCollaborators の 2 か所のまま）。
+    symbolSpec,
   };
 }
 
@@ -157,10 +197,14 @@ export async function composeChartShell({
 //   isVerticalPanBlocked: 縦パンを開始しない条件（MP リプレイ表示モード等）。未指定は従来どおり無条件。
 //   getTemplates: テンプレート協働子の遅延参照（controller 生成後に代入されるため）。
 //   getColorThemes: テーマ協働子の遅延参照（getTemplates と同一規約・同じ理由）。
+//   symbolSpec: 解決済みの銘柄仕様 `{symbol, tick, digits}`（composeChartShell の戻り値を root が
+//     そのまま転送する）。**既定値つきの任意引数**なので、渡さない既存の呼び出しは 1 バイトも
+//     変わらない（従来どおり価格の桁を決めない）。ここでは解決しない＝解決点を増やさない。
 export function installSharedUi({
   container, renderer, doc, getController, updatePaneHeight,
   isVerticalPanBlocked = undefined, getTemplates = () => null, getColorThemes = () => null,
-  toolbar = {},
+  getPositionSizing = () => null,
+  toolbar = {}, contextMenuItems = [], symbolSpec = null,
 } = {}) {
   // アプリ外枠（ツールバー・指標ダイアログ）の DOM は View が所有し生成する（ISSUE-278 #16）。
   //   配信 3 ページへ同じマークアップを手書き複製する義務を無くす（指標ダイアログは 3 ページで
@@ -170,17 +214,23 @@ export function installSharedUi({
   installIndicatorDialog(doc, {});
 
   // チャート操作（縦価格パン・wheel 価格ズーム・dblclick reset）。振る舞い本体は当該 controller が所有。
-  new ChartInteractionController({
+  //   ISSUE-368 スライス 3: 生成した実体を保持する（従来は install() 後に捨てていた）。
+  //   縦パンを止めたい後発の協働子（水準線 drag）は controller 生成より後に結線されるため、
+  //   登録口を戻り値で配る。root が自前で ChartInteractionController を new し直すのは
+  //   `composition_roots_share_wiring.test.js` の SHARED_OWNED が禁じている＝配るのは共有配線の責務。
+  const chartInteraction = new ChartInteractionController({
     container, renderer, getController, updatePaneHeight, isVerticalPanBlocked,
-  }).install();
+  });
+  chartInteraction.install();
 
   // ISSUE-116: 「最新のバーまでスクロール」ボタン（» ）。DOM 不在は install 内の防御で no-op。
   new ScrollToLatestButton({ container, renderer, document: doc }).install();
 
   // ユーザー指示 2026-08-09: ローソク足上の右クリックメニュー（「情報をコピーする」）。
   //   足の解決と値の取り出しは renderer（upstream 隔離点）、見出し（ラベル＋パラメータ）と時間足は
-  //   controller（表示名・適用状態の単一情報源）、銘柄は app_chrome_view の CHART_SYMBOL
-  //   （ツールバーと同一文字列）、書き込みは ClipboardGateway、告知は ChartToastView。
+  //   controller（表示名・適用状態の単一情報源）、銘柄は app_chrome_view の器
+  //   （`chartSymbol(doc)`＝ツールバーが表示しているのと同一の実体。front は名前を自称しない・
+  //   ISSUE-368 A-4）、書き込みは ClipboardGateway、告知は ChartToastView。
   //   メニューは項目の中身を知らない。controller は本関数の呼び出し時点では未生成のため遅延参照する。
   //   ユーザー指摘 2026-08-10: 値だけでは「どのチャート・どのパラメータの値か」が復元できないため、
   //   コピー時点の文脈をここで集めて渡す（貼り付け先には画面が無い）。
@@ -200,6 +250,10 @@ export function installSharedUi({
       SERIES_GUARD_TOAST_MS,
     );
   });
+  // 四本値の表示桁（工程 5 是正 A）。読み取り欄（`composeChartShell` の `priceDigits`）と**同じ
+  //   解決結果**を配る＝コピーした文字列と画面表示が食い違わない（`format.js:17-18` が単一ソース化の
+  //   根拠に掲げる不変条件）。解決できない構成では `null`＝従来どおり（無音で桁を決めない）。
+  const priceDigits = symbolSpec ? symbolSpec.digits : null;
   const copyBarInfo = createCopyBarInfoItem({
     renderer,
     clipboard: new ClipboardGateway({ document: doc }),
@@ -207,17 +261,23 @@ export function installSharedUi({
     getContext: () => {
       const c = getController ? getController() : null;
       if (!c || typeof c.legendRows !== 'function') {
-        return { symbol: CHART_SYMBOL };   // controller 未生成（最小 fake）＝銘柄だけで縮退。
+        // controller 未生成（最小 fake）＝銘柄と桁だけで縮退。
+        return { symbol: chartSymbol(doc), priceDigits };
       }
       return {
-        symbol: CHART_SYMBOL,
+        symbol: chartSymbol(doc),
         timeframe: c._timeframe,
         labels: new Map(c.legendRows().map((r) => [r.instanceId, indicatorHeading(r)])),
+        priceDigits,
       };
     },
   });
+  // ISSUE-368 スライス 8-c: root が渡した項目を**後ろに**足す（R-P3 の価格設定 3 項目）。
+  //   共有配線が無条件に足すと replay まで項目が出る（＝replay 汚染）。逆に root で
+  //   `new ChartContextMenu` すると contextmenu リスナーが 2 本になり、メニューが二重に出る。
+  //   よって「メニューは共有・項目は注入」に保つ（ChartContextMenu 自体は 1 byte も変えない）。
   const chartContextMenu = new ChartContextMenu({
-    document: doc, container, items: [copyBarInfo],
+    document: doc, container, items: [copyBarInfo, ...(contextMenuItems ?? [])],
   });
   chartContextMenu.install();
 
@@ -244,9 +304,17 @@ export function installSharedUi({
   // 指標カラーテーマのメニュー・ダイアログ（基本設計_指標カラーテーマ §6.1〜§6.3・§7.1）。
   const { menu: colorThemeMenu, dialogs: colorThemeDialogs } = createColorThemeUi(doc, getColorThemes);
 
+  // ポジションサイズ計算機のツールバー入口とモーダル（ISSUE-368 スライス 6/7）。
+  //   協働子は wireControllerCollaborators で生成されるため getPositionSizing() で遅延参照する
+  //   （テンプレート・テーマと同一規約。未結線のうちは押しても何も起きず例外も出ない）。
+  const { menu: positionSizingMenu, dialog: positionSizingDialog } = createPositionSizingUi(doc, getPositionSizing);
+
   return {
     chartTemplateMenu, chartTemplateDialogs, colorThemeMenu, colorThemeDialogs,
+    positionSizingMenu, positionSizingDialog,
     chartContextMenu, chartToast,
+    // ISSUE-368 スライス 3: 縦パンブロッカーの登録口（解除関数を返す）。
+    registerVerticalPanBlocker: (predicate) => chartInteraction.addVerticalPanBlocker(predicate),
   };
 }
 
@@ -273,6 +341,32 @@ function createColorThemeUi(doc, getColorThemes) {
   return { menu, dialogs };
 }
 
+// 計算機のメニュー・モーダルを組み立てて install する（installSharedUi から 1 回だけ呼ぶ）。
+//   器（#position-sizing-menu）は installChartToolbar が生成済みで、項目 DOM は各モジュールが作る。
+//   menu / dialog は協働子を import せず、コールバック注入だけで結ぶ（color_theme と同一の形）。
+function createPositionSizingUi(doc, getPositionSizing) {
+  const of = () => getPositionSizing();
+  const dialog = new PositionSizingDialog({
+    document: doc,
+    onChangeParams: (patch) => { const c = of(); return c ? c.setParams(patch) : undefined; },
+    onChangeLevels: (spec) => { const c = of(); return c ? c.setLevels(spec) : undefined; },
+    onRun: () => { const c = of(); return c ? c.runMonteCarlo() : undefined; },
+    onRequestPick: (target) => { const c = of(); return c ? c.requestPick(target) : undefined; },
+    // 閉じたらアームも解除する（残すと抑止が掛かったまま解除手段が画面から消える・Y-1）。
+    onClose: () => { const c = of(); return c ? c.cancelPick() : undefined; },
+    // アーム中バーの [取消]（画面から解除できる手段・裁定 2026-08-20）。
+    onCancelPick: () => { const c = of(); return c ? c.cancelPick() : undefined; },
+    // 手入力の確定 → 欄の表示をモデル値へ合わせ直す（D-3・裁定 2026-08-20）。
+    onCommitPrices: () => { const c = of(); return c ? c.commitPrices() : undefined; },
+  });
+  const menu = new PositionSizingMenu({
+    document: doc,
+    onOpen: () => { const c = of(); return c ? c.open() : undefined; },
+  });
+  menu.install();
+  return { menu, dialog };
+}
+
 // controller 生成後に結ぶ協働子（テンプレート協働子・取引密度帯・売買マーカー・現在値）。
 //   onTimeframeChanged: 時間足購読へ追加で流すフック（live の tf-period 即時再適用など）。未指定は no-op。
 export function wireControllerCollaborators({
@@ -280,6 +374,7 @@ export function wireControllerCollaborators({
   templateStore, chartTemplateMenu, chartTemplateDialogs,
   themeStore, themeState = null, chromeThemeApplier = null,
   colorThemeMenu = null, colorThemeDialogs = null, now = null,
+  positionSizingDialog = null, registerVerticalPanBlocker = null, chartToast = null,
   lwc, mainSeries, chart, container, currentPriceView,
   onTimeframeChanged = () => {},
 } = {}) {
@@ -399,7 +494,188 @@ export function wireControllerCollaborators({
     onTimeframeChanged(tf);
   });
 
+  // ポジションサイズ計算機の協働子（ISSUE-368 スライス 7）。モーダルが注入されている構成でだけ
+  //   組む（未注入の最小構成・単体テストでは従来どおり何も生えない）。
+  // 銘柄仕様（呼び値）を引き、以後は**値として配る**（resolver へ／初期水準の `createPriceLevels`
+  //   へ／モーダルの `step` へ）。配る先が自分で引き直すと「どの銘柄の刻みで丸めたか」が経路ごとに
+  //   割れるため、本関数より下では二度と引かない（設計「追補: 工程 2」E-3・S-6 通過条件）。
+  //
+  // 引き当ての**呼び出し**は本モジュール内に 2 か所ある（`composeChartShell` と本関数）。同一の
+  //   `datasetRef`（root が両方へ渡す同じ値）に対する同一の純関数呼び出しで、`lookupSymbolSpec` は
+  //   凍結された生成物を読むだけで状態を持たないため、結果は必ず一致する。
+  //   `themeState` と同型の「起動時に解決した値を root 経由で転送する」形（:357 参照）へ寄せる案は
+  //   **本ブランチでは実施しない**（工程 5 是正 5-2 で下記のとおり記述を訂正した）。
+  //   従来ここには「引数へ移すと既存 30 件が赤になる／テストの期待値を書き換えずには成立しない」と
+  //   書いていたが、**それは誤り**である: `symbolSpec = lookupSymbolSpec(datasetRef)` を
+  //   **既定値つきの任意引数**にすれば（JS の分配既定値は先行する束縛を参照できる）、`datasetRef`
+  //   だけを渡す既存の呼び出しは 1 バイトも変わらない。加えて 2 か所の呼び出しは同一 `datasetRef`
+  //   に対する同一の純関数呼び出しであり、結果は必ず一致する（上記のとおり状態を持たない）。
+  //   見送る理由は「成立しないから」ではなく、明示転送への移行が本ブランチの是正範囲外だからである。
+  const symbolSpec = lookupSymbolSpec(datasetRef);
+  // 銘柄名（表示）も同じ解決結果から配る（ISSUE-368 A-4）。器はツールバーが持ち、中身は
+  //   「どのデータセットを見ているか」を知っている本関数が入れる（tf-menu / tpl-menu と同じ
+  //   「器は View・中身は所有者」の分離）。解決できなければ縮退表示になる＝**無音で空にしない**。
+  //   ツールバーが無い構成（最小 fake・SSR）では no-op。
+  setChartSymbol(doc, symbolSpec ? symbolSpec.symbol : null);
+  const positionSizing = positionSizingDialog
+    ? createPositionSizingCollaborators({
+      renderer,
+      container,
+      doc,
+      dialog: positionSizingDialog,
+      registerVerticalPanBlocker,
+      toast: chartToast,
+      symbolSpec,
+      datasetRef,
+    })
+    : null;
+
   return {
-    chartTemplates, tickvolBands, tradeMarkers, currentPriceView, colorThemes,
+    chartTemplates, tickvolBands, tradeMarkers, currentPriceView, colorThemes, positionSizing,
   };
+}
+
+// 計算機の協働子一式を組む（水準線 primitive・drag・ピッカー・MC Worker・usecase・協働子）。
+//
+//   ここで一括して組む理由: これらは互いの識別子を必要とする（drag は「いまの水準」を協働子から
+//   得る／ピッカーの確定はモーダルへ書き戻す／協働子は primitive とモーダルへ配る）。root へ
+//   ばらすと、同じ結線を 2 つの root へ手書き複製することになる（ISSUE-278 #4 が撤去した状態）。
+//
+//   スライス 4 の未結線（`new PriceLevelDragController` の呼び出し 0 件）はここで解消される。
+function createPositionSizingCollaborators({
+  renderer, container, doc, dialog, registerVerticalPanBlocker, toast, symbolSpec, datasetRef,
+}) {
+  // 呼び値。解決できなければ null＝**丸めない**のではなく「チャートからの価格指定を落とす」
+  //   （設計「フェイルセーフ」: 値ではなく機能を落とし理由を出す）。告知はトースト（利用者が
+  //   実際に使おうとした時点）と console.error（開発者向けの証跡）の両方で出す。前者だけだと
+  //   原因（どの ref か）が残らず、後者だけだと DevTools を開かない限り気づけない。
+  //   `symbolSpec` の真偽だけを見てよい理由（不変条件）: `lookupSymbolSpec` は「量子化に使えない
+  //   刻みを持つ台帳」を解決成功と扱わない（`symbol_spec_catalog.js` の 3 段目）。したがって
+  //   ここへ届く `symbolSpec` の `tick` は必ず正の有限数で、この面に検算を第 2 実装として置かない。
+  const tick = symbolSpec ? symbolSpec.tick : null;
+  if (!symbolSpec) {
+    // eslint-disable-next-line no-console
+    console.error(`[position-sizing] 銘柄仕様が解決できません（datasetRef=${datasetRef}）: ${MSG_NO_SYMBOL_SPEC}`);
+  }
+  // モーダルの価格欄の刻み（経路 7）。解決できなければ従来どおり step='any'（手入力は落とさない）。
+  dialog?.setSymbolSpec?.(symbolSpec);
+  // 水準線の描画先（メイン系列の背景 primitive・§6）。装着時にクロム色が 1 回配られる。
+  const primitive = new PriceLevelLinesPrimitive();
+  if (renderer && typeof renderer.attachBackgroundPrimitive === 'function') {
+    renderer.attachBackgroundPrimitive('position_sizing', () => primitive);
+  }
+
+  // 初期状態はモーダルの定義表から導出する（画面の初期表示と計算の初期値を食い違わせない）。
+  //   水準の保持者は usecase 1 か所（協働子へ写しを渡さない＝TC-PC14）。
+  //   刻みを注入すると「刻み上にない価格は PriceLevels に存在できない」が不変条件になる
+  //   （E-02・S-4）。resolver を通らない水準線 drag（経路 6）もここを通るため迂回できない。
+  const usecase = new PositionSizingPlanUseCase({
+    mcPort: new McWorkerGateway(),
+    levels: createPriceLevels({ ...defaultLevels(), tick }),
+    params: defaultParams(),
+  });
+
+  // ピッカーの確定はモーダルへ書き戻す（`controller` は直後に確定する＝呼び出し時解決）。
+  const picker = new PricePickController({
+    container,
+    renderer,
+    document: doc,
+    registerVerticalPanBlocker,
+    onConfirm: (target, price) => controller.confirmPick(target, price),
+    // アーム中はモーダルがチャートを覆ってはならない（実 UI 実測 2026-08-20: backdrop が
+    //   ビューポート全面のままで elementFromPoint がモーダルを返し、R-P1 が成立しなかった）。
+    onArmChange: (armed, target) => controller.setPicking(armed, target),
+    // 解決済みの銘柄仕様を**値として配る**（S-6: 解決点は本関数の 1 か所だけ）。ピッカーが
+    //   これを resolver へ転送することで、右クリックと同じ規則・同じ引数で価格が決まる（D-1）。
+    //   表示桁（digits）もここから届く＝ゴーストの書式が台帳に従う（D-2）。
+    spec: symbolSpec,
+  });
+  picker.install();
+
+  const controller = new PositionSizingController({
+    usecase, dialog, picker, primitive, toast, symbolSpec,
+  });
+
+  // 水準線 drag（スライス 4）。掴む対象の座標源は primitive、水準の実体は協働子から得る。
+  const drag = new PriceLevelDragController({
+    container,
+    renderer,
+    primitive,
+    getLevels: () => controller.levels(),
+    onLevelsChange: (next) => controller.applyLevels(next),
+    registerVerticalPanBlocker,
+    // ピッカーのアーム中は掴ませない（入力先は常に一意＝R-P1。アーム中に別の水準線を
+    //   掴むと「利確を指定していたのに損切りが動く」が起きる・工程 5 🔴-2 で再現）。
+    //   銘柄仕様が解決できないときも掴ませない（フェイルセーフ: 経路 6 も落とす。掴めてしまうと
+    //   刻みの分からない価格を drag で作れる＝機能だけが無音で生き残る）。
+    isGrabBlocked: () => picker.isArmed() || !symbolSpec,
+    // 掴めなかった理由の告知（工程 5 🟡-2）。設計「フェイルセーフ」は経路 6（drag）にも
+    //   「トーストで告知」を課しているが、判定だけがあって告知が無かった。
+    //   **鳴らすのは刻みが不明なときだけ**: アーム中は入力先が一意であること自体が意図した
+    //   状態で、掴もうとするたびに鳴らすと連打で鳴り続ける（裁定どおり無告知のまま）。
+    //   文言はピッカー・右クリックと同じ単一ソースから取る（写しを作らない）。
+    onGrabBlocked: () => {
+      if (!symbolSpec) {
+        toast?.show?.(MSG_NO_SYMBOL_SPEC);
+      }
+    },
+  });
+  drag.install();
+
+  return {
+    controller, primitive, picker, drag, usecase,
+  };
+}
+
+/**
+ * 右クリックメニューへ載せる価格設定 3 項目を作る（ISSUE-368 スライス 8-c・R-P3）。
+ *
+ * root が `installSharedUi({ contextMenuItems })` へ渡す（共有配線が無条件に足すと replay まで
+ * 項目が出るため）。座標→価格の解決はピッカーと同一の 1 本（`resolvePickedPrice`）を使う。
+ *
+ * 告知先（案内トースト）は **遅延参照**で受ける。共有トースト `chartToast` は `installSharedUi` の
+ * 内側で生成されるため、その引数（本関数の戻り値）を組み立てる時点では root から参照できない。
+ * 値で受けると root は `null` を渡すしかなく、下段ペインの右クリックが**無音**になる
+ * （裁定「オシレーターペイン上のクリックは無効化＋案内」の未達・2026-08-20 に実際に発生していた）。
+ * 遅延 getter は `getPositionSizing` / `getTemplates` / `getColorThemes` と同一規約で、
+ * 受け渡し機構を新設しない。
+ *
+ * @param {object} deps
+ * @param {object} deps.renderer ChartRenderer。
+ * @param {Function} deps.getPositionSizing 協働子の遅延参照（生成前は null を返してよい）。
+ * @param {Function} [deps.getToast] 案内表示の遅延参照（下段ペイン・価格が取れない座標）。
+ */
+export function createPositionSizingContextItems({
+  renderer, getPositionSizing, getToast = () => null,
+}) {
+  const of = () => getPositionSizing();
+  // 銘柄仕様は**協働子から遅延参照する**（ISSUE-368 スライス S-6）。本関数は root が呼ぶため
+  //   datasetRef を受け取っておらず、ここで自分で解決すると解決点が 2 つになる（＝経路ごとに
+  //   違う刻みで丸まりうる）。解決は wireControllerCollaborators の 1 回だけで、その結果を
+  //   協働子が保持している。既存の遅延参照（getPositionSizing）に相乗りする＝新しい配管を作らない。
+  //   協働子が未生成（配線途中）なら null＝フェイルクローズ（確定させない）。
+  const specOf = () => { const c = of(); return c && typeof c.symbolSpec === 'function' ? c.symbolSpec() : null; };
+  return createPriceContextItems({
+    resolvePrice: (context) => resolvePickedPrice({
+      renderer,
+      x: context ? context.x : undefined,
+      y: context ? context.y : undefined,
+      spec: specOf(),
+    }),
+    onSetStop: (price) => { const c = of(); return c ? c.setStopPrice(price) : undefined; },
+    onAddEntry: (price) => { const c = of(); return c ? c.addEntryPrice(price) : undefined; },
+    onSetTake: (price) => { const c = of(); return c ? c.setTakePrice(price) : undefined; },
+    // 呼ばれた時点で告知先を解決する（未生成・DOM 不在なら告知しない＝例外を投げない）。
+    //   銘柄仕様が解決できていないときは**その理由へ差し替える**: このとき機能全体が無効なので、
+    //   座標ごとの理由（「価格が取れません」「価格チャート上で…」）を出すと、利用者は
+    //   「別の場所を押せば入る」と誤解して押し続ける（無音ではないが誤った案内になる）。
+    toast: {
+      show: (message) => {
+        const t = getToast();
+        if (t && typeof t.show === 'function') {
+          t.show(specOf() ? message : MSG_NO_SYMBOL_SPEC);
+        }
+      },
+    },
+  });
 }

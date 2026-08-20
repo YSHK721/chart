@@ -196,6 +196,9 @@ export class ChartRenderer {
     // 価格パンの px→価格換算に使う pane 高（container 高 - timeScale().height() 相当）。
     //   composition root が setPaneHeight で供給する。
     this._paneHeight = null;
+    // lwc 操作可否の合成（suppressInteraction 参照）。明示フラグ AND 抑止者ゼロ で有効。
+    this._interactionEnabled = true;
+    this._interactionSuppressors = new Set();
     // ISSUE-114/115: チャート右端の常設余白（幅比率基準）。最新足が右端に張り付くストレスの解消。
     //   rightOffset は scrollToRealTime / FOLLOW 追従で尊重されるため、ライブ新足でも余白が維持される。
     //   ISSUE-164（ユーザー裁定）: ズームへの自動追従（可視範囲購読での再適用）は廃止済み。
@@ -296,10 +299,42 @@ export class ChartRenderer {
   //   lightweight-charts の applyOptions 直叩きは本所（ChartRenderer）に閉じる（primitive/actor は呼ばない）。
   //   enabled=false でスクロール/ズーム停止、true で復元。applyOptions 非提供時は no-op（後方互換）。
   setUserInteraction(enabled) {
+    this._interactionEnabled = !!enabled;
+    this._applyUserInteraction();
+  }
+
+  /**
+   * lwc 操作（handleScroll / handleScale）の抑止を**登録**する（解除関数を返す）。
+   *
+   * なぜ合成にするか（実測 2026-08-20）: 抑止の口は `setUserInteraction` の**単数スロット**しか
+   * 無く、現に 3 者が奪い合っている——MP のスワイプ捕捉（`mp_replay_scrub.js`）・水準線 drag・
+   * アーム式ピッカー。単数のままだと「drag を離した瞬間に、アーム継続中のピッカーの抑止まで
+   * 復帰する」（工程 5 🔴-2 で再現）。単数スロット競合は `setCandleObserver` /
+   * `setTfPeriodHoverHandler` で既に踏んだ破綻型なので、`addVerticalPanBlocker` と同型の
+   * 登録方式にして構造的に潰す。
+   *
+   * 抑止を持つ者が 1 人でも居る間は復帰しない。解除関数は冪等（二重呼び出しで他者の抑止を
+   * 巻き添えにしない＝トークンで持ち主を区別する）。
+   *
+   * @returns {Function} 解除関数。
+   */
+  suppressInteraction() {
+    const token = {};
+    this._interactionSuppressors.add(token);
+    this._applyUserInteraction();
+    return () => {
+      if (this._interactionSuppressors.delete(token)) {
+        this._applyUserInteraction();
+      }
+    };
+  }
+
+  // 実効値を lwc へ配る（明示フラグ AND 抑止者ゼロ）。
+  _applyUserInteraction() {
     if (typeof this._chart.applyOptions !== 'function') {
       return;
     }
-    const on = !!enabled;
+    const on = this._interactionEnabled && this._interactionSuppressors.size === 0;
     this._chart.applyOptions({ handleScroll: on, handleScale: on });
   }
 
@@ -350,6 +385,25 @@ export class ChartRenderer {
   // 価格軸のダブルクリック等で自動スケールへ復帰する（実体は ScaleController.resetPriceZoom）。
   resetPriceZoom() {
     this._scale.resetPriceZoom();
+  }
+
+  // ISSUE-368 スライス 3: コンテナ上の y 座標 → 価格の**公開**変換。
+  //   由来: y→価格の公開変換はどこにも無く（内部利用は本ファイル :613 の _onCrosshairMove と
+  //   scale_controller の 2 箇所だけ）、水準線 drag が価格を得る手段を持たなかった。
+  //   upstream の API 名（coordinateToPrice）は隔離点である本ファイル内に留め、呼び出し側は
+  //   priceAtCoordinate しか知らない（`upstream_isolation_declaration.test.js` の隔離規約）。
+  //   可視範囲外は upstream が null を返す＝そのまま null を返す（0 へ倒すと画面外の掴みが
+  //   価格 0 として下流へ流れる）。非有限 y は変換を呼ばない（NaN 価格を作らない）。
+  priceAtCoordinate(y) {
+    if (!Number.isFinite(y)) {
+      return null;
+    }
+    const series = this._mainSeries;
+    if (!series || typeof series.coordinateToPrice !== 'function') {
+      return null;
+    }
+    const price = series.coordinateToPrice(y);
+    return price == null ? null : Number(price);
   }
 
   // ISSUE-116: 最新足が可視範囲内か（「最新のバーまでスクロール」ボタンの表示判定用）。
@@ -698,13 +752,7 @@ export class ChartRenderer {
   paneLegendModel(param = null, valuePickerFor = null) {
     const seriesData = (param && param.seriesData) || null;
     const heights = this._paneHeights();
-    const separator = this._paneSeparatorPx(heights);
-    const tops = [];
-    let acc = 0;
-    for (let i = 0; i < heights.length; i += 1) {
-      tops.push(acc);
-      acc += heights[i] + separator;
-    }
+    const tops = this._paneTops(heights, this._paneSeparatorPx(heights));
     const byPane = new Map();
     for (const [instanceId, slot] of this._instances) {
       const paneIndex = this._slotPaneIndex(slot);
@@ -788,6 +836,22 @@ export class ChartRenderer {
     const sum = heights.reduce((a, b) => a + b, 0);
     const rest = this._paneHeight - sum;
     return rest > 0 ? rest / (heights.length - 1) : 0;
+  }
+
+  // 各ペインの上端 y（チャート要素基準）を paneIndex 順で返す。
+  //   ペイン幾何の派生規則（上端＝それより上のペイン高と区切り高の累積）を持つのは**ここだけ**。
+  //   凡例のチップ位置（paneLegendModel の group.top）と、座標→ペイン判定
+  //   （paneIndexAtCoordinate）は同じ幾何を見る必要がある。累積の式を各所に書くと、
+  //   区切り高の扱いが片方だけ変わったときに「凡例は正しいのにクリック判定だけずれる」
+  //   （＝下段ペインのクリックを価格として受けてしまう）状態を作れてしまう。
+  _paneTops(heights, separator) {
+    const tops = [];
+    let acc = 0;
+    for (let i = 0; i < heights.length; i += 1) {
+      tops.push(acc);
+      acc += heights[i] + separator;
+    }
+    return tops;
   }
 
   /**
@@ -944,6 +1008,78 @@ export class ChartRenderer {
     }
     const sessionMP = this._sessionMP ? (this._sessionMP.get(time) || null) : null;
     return { time, ohlc, sessionMP, indicators };
+  }
+
+  /**
+   * ISSUE-368 スライス 8-b: x 座標が指す足の**スナップ候補**をプレーンデータで列挙する。
+   *
+   * @param {number} x チャート要素の左上基準の x（px）。
+   * @returns {Array<{kind:string,label:string,price:number}>|null}
+   *   足が無い座標（データ範囲外・時間軸未確定）は null。
+   */
+  snapCandidatesAt(x) {
+    const time = this._timeAtCoordinate(x);
+    if (time == null) {
+      return null;
+    }
+    const series = [];
+    const levels = [];
+    const pricePane = this._pricePaneIndex();
+    for (const slot of this._instances.values()) {
+      if (this._slotPaneIndex(slot) !== pricePane) {
+        continue;   // オシレーターペインの値は価格ではない（55 を価格として吸うと桁が変わる）。
+      }
+      for (const v of this._slotValues(slot, (s) => pointValueAt(s, time))) {
+        if (Number.isFinite(v.value)) {
+          series.push({ kind: 'series', label: v.name, price: v.value });
+        }
+      }
+      if (slot.visible === false) {
+        continue;   // 水準線は _slotValues を通らない＝可視の判定をここでも行う（描画と一致させる）。
+      }
+      for (const h of slot.hlinePayloads ?? []) {
+        if (h && Number.isFinite(h.price)) {
+          levels.push({ kind: 'level', label: h.text ?? '', price: h.price });
+        }
+      }
+    }
+    const ohlc = [];
+    const candle = pointAtTime(this.getCandles(), time);
+    if (candle && candle.open !== undefined) {
+      for (const label of ['open', 'high', 'low', 'close']) {
+        ohlc.push({ kind: 'ohlc', label, price: candle[label] });
+      }
+    }
+    // 並びが解決の優先順（スナップ解決器は同距離で先頭を採る）。指標系列＝クリックの狙い、
+    //   水準線＝明示的に置かれた参照、OHLC＝常に在る背景、の順に置く。
+    return [...series, ...levels, ...ohlc];
+  }
+
+  /**
+   * ISSUE-368 スライス 8-b: y 座標が属するペイン番号（**必須のガード**）。
+   *
+   * なぜ要るか（設計書「ピッカー経路の実測検証」2）: vendor 実測で `coordinateToPrice` は
+   *   クランプ無しの線形外挿であり、オシレーターペインを押しても「価格」が返る（異常値）。
+   *   ピッカーは「価格ペインを押したときだけ」価格を受け取る必要がある。
+   *
+   * 幾何の出所はペイン別凡例と同一にする（上端の算出は `_paneTops` 1 か所）。ここで
+   *   累積を書き直すと、凡例の座標系と食い違う第 2 実装になる。
+   *
+   * @param {number} y チャート要素の左上基準の y（px）。
+   * @returns {number|null} ペイン領域の外（時間軸・負値）と非対応環境（panes 非提供）は null。
+   */
+  paneIndexAtCoordinate(y) {
+    if (!Number.isFinite(y)) {
+      return null;
+    }
+    const heights = this._paneHeights();
+    const tops = this._paneTops(heights, this._paneSeparatorPx(heights));
+    for (let i = 0; i < heights.length; i += 1) {
+      if (y >= tops[i] && y < tops[i] + heights[i]) {
+        return i;
+      }
+    }
+    return null;   // 区切り上・時間軸・領域外は「どのペインでもない」（価格を作らない）。
   }
 
   // x 座標（チャート要素基準）が指す足の time。範囲外・非対応環境（Fake/SSR）は null。

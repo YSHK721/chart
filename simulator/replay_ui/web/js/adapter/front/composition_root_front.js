@@ -21,6 +21,7 @@ import {
   composeChartShell,
   installSharedUi,
   wireControllerCollaborators,
+  createPositionSizingContextItems,
   fetchCandles,
 } from './chart_app_wiring.js';
 import { LiveUpdater } from './live_updater.js';
@@ -68,16 +69,22 @@ export async function bootstrap({
     // 指標カラーテーマ（段階 3）。ライブと同一配線＝テーマ集合・選択中テーマはモード間で共有される
     //   （storage 名前空間が同一実体・E-17）。
     themeStore, themeState, chromeThemeApplier,
+    // 銘柄仕様（呼び値・表示桁）。ライブと同一配線＝解決は共有配線の 1 回だけで、
+    //   root は識別子を通すだけ（themeStore / themeState と同一の受け渡し規約）。
+    symbolSpec,
   } = await composeChartShell({ lwc, container, doc, storage, fetch, datasetRef, recentBars });
 
   let controller;
   let chartTemplates = null;
   let colorThemes = null;
+  // ISSUE-368 スライス 7: 計算機の協働子は wireControllerCollaborators で生成される（遅延参照）。
+  let positionSizing = null;
   // controller に依存しない UI 部品（操作・スクロール・時間足メニュー・テンプレートメニュー）。
   //   リプレイ固有の差は「MP リプレイ表示モード中は縦パンを開始しない」ゲートのみ（旧フォークの
   //   _isReplayOn を注入で維持）。controller / 協働子は遅延参照で渡す（生成はこの後）。
   const {
     chartTemplateMenu, chartTemplateDialogs, colorThemeMenu, colorThemeDialogs,
+    positionSizingDialog, chartToast, registerVerticalPanBlocker,
   } = installSharedUi({
     container,
     renderer,
@@ -89,9 +96,23 @@ export async function bootstrap({
       && controller._marketProfile.isReplay()),
     getTemplates: () => chartTemplates,
     getColorThemes: () => colorThemes,
+    getPositionSizing: () => positionSizing,
+    // 右クリックの価格設定 3 項目（R-P3）。確定要件（ISSUE.md:6927「ライブ＋リプレイ両方に載せる」）
+    //   によりライブと**対称**に注入する。共有配線が無条件に足す形にはしない（注入機構は維持）＝
+    //   計算機を載せないページが将来増えても、そのページだけ項目が出ない状態を作れる。
+    contextMenuItems: createPositionSizingContextItems({
+      renderer,
+      getPositionSizing: () => positionSizing,
+      // 告知先（下段ペインの案内・裁定 2026-08-20）はライブと同一で遅延参照。共有トーストは
+      //   installSharedUi の内側で生成されるため、この引数を作る時点では未生成である。
+      getToast: () => chartToast,
+    }),
     // standalone replay のツールバーはライブ追従トグルもリプレイトグルも持たない
     //   （ライブ更新が無く、切替先のライブも無い）。
     toolbar: { liveFollow: false, enterReplay: false },
+    // 足情報のコピーが画面の読み取り欄と同じ桁で書くための転送（工程 5 是正 A）。
+    //   ライブ root と**対称**に渡す。
+    symbolSpec,
   });
   // リプレイ操作バー（ISSUE-278 #16: markup は View が所有＝2 ページ複製をやめた）。
   //   「リプレイ終了（✕）」は統合 UI だけが持つ（standalone には戻り先のライブが無い）。
@@ -112,14 +133,18 @@ export async function bootstrap({
   // controller 生成後の協働子（テンプレート・取引密度帯・売買マーカー・現在値）は共有配線が結ぶ。
   const {
     chartTemplates: templates, tickvolBands, tradeMarkers, colorThemes: themes,
+    positionSizing: sizing,
   } = wireControllerCollaborators({
     controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
     templateStore, chartTemplateMenu, chartTemplateDialogs,
     themeStore, themeState, chromeThemeApplier, colorThemeMenu, colorThemeDialogs,
+    positionSizingDialog, registerVerticalPanBlocker, chartToast,
     lwc, mainSeries, chart, container, currentPriceView,
   });
   chartTemplates = templates;
   colorThemes = themes;
+  // 遅延参照の解決（ここで初めてメニュー・モーダル・右クリック項目が生きる）。
+  positionSizing = sizing ? sizing.controller : null;
 
   // B方式は /candles から実 OHLCV を取得し、メイン系列を差し替える（/compute と時間軸を揃える）。
   //   初期は既定時間足・直近 recentBars 本。取得失敗時は SAMPLE_DATA のまま（フォールバック）。

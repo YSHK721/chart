@@ -1,0 +1,1 @@
+../../../../../indigators/indicator_ui/web/js/domain/snap_price_resolver.js

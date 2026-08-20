@@ -6917,7 +6917,31 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-368: [機能] ポジションサイズ計算機のチャート UI 統合（2026-08-11・OPEN・保留）
 
-- **ステータス**: OPEN（保留。着手条件＝ISSUE-369 の口座状態エンジンで証拠金・ロスカット式が実測確定すること）
+- **ステータス**: RESOLVED（2026-08-20。設計＝`.doc/POSITION_SIZING_CHART_INTEGRATION_DESIGN.md`
+  （スライス 0〜7・裁定記録 TBD-1/5 建値一本化・TBD-3 図 3 除外・TBD-4 3 トグル残置・TBD-2 HTML 保持・
+  追補「工程 2」＝銘柄仕様の供給経路 案 E・承認結果 A-1〜A-6・工程 5 レビューと追加裁定 B-1/B-2）。
+  ブランチ `feature/issue-368-position-sizing-ui` → develop。着手条件は ISSUE-369 RESOLVED で成立済み）
+- **結果**（2026-08-20・実 UI 実測つき）:
+  - 当初の症状（チャートからピックした価格が生値 `62707.710070965324` のままモーダルへ書き戻り、
+    ゴースト表示 `62,708` と食い違う）を**根本原因ごと除去**した。原因は 2 つ。
+    (α) 価格が「どの銘柄の価格か」を供給側が一度も名乗っていない（`DatasetDescriptor` は
+    `path`/`clamp_outliers`/`rollup`/`tick` のみで symbol を持たず、front は `CHART_SYMBOL='NI225'` と
+    自称するしかなかった）。(β) 丸めの適用点が 7 経路に散っており、1 つ足すたび取り残しが出る。
+  - 是正: ref→銘柄の名乗りを `marketdata/dataset_registry.py` へ、呼び値・表示桁の台帳を
+    `marketdata/symbol_spec.py`（新規・A2 アクター所有・依存 0）へ置き、JS へは **HTTP ではなく生成物**
+    （`tools/gen_js_parity_golden.py` → `web/js/domain/symbol_spec_generated.js`）で配る。量子化は
+    `PriceLevels` の**構築・更新口の不変条件**にして、resolver を通らない drag 経路も迂回できなくした。
+  - 実 UI 実測（ライブ 8000/live・リプレイ 8000/replay の両方）: ゴースト `59,558` → 損切り欄 `59558`／
+    ツールバー `JP225`（`NI225` は DOM 0 件）／価格軸・現在値・バー情報が整数／価格欄 `step="1"`／
+    右クリック 4 項目／下段ペインで「価格チャート上で指定してください」／手入力 `58700.4`→blur→`58700`／
+    コピーテキストと画面の OHLC が**同一文字列**／指標値は 3 桁のまま（対象外の非巻き込み）。
+  - フェイルセーフも**実 UI で実証**（未知 ref を経路で差し替えて実測）: ツールバー「銘柄未解決」・
+    トースト「この銘柄の価格の刻みが不明なため…」・`console.error` に ref 付きで出力・値は入らない。
+  - ゲート: web 5 スイート全成功（indicator_ui **2364**）・`pytest marketdata` 272・`pytest simulator` 4678。
+    不可侵資産（参照実装 HTML・`chart_renderer.js`）の diff 0 行。既存テストの改変は S-7 の 8 行のみ
+    （銘柄名の値の差し替え。アサーションの追加・削除・緩和 0）。
+  - 工程 5 レビュー判定: **承認**（🔴 0 件・🟡 7 件）。🟡 のうち 5 件はマージ前に是正済み。
+    残りは ISSUE-431〜433 へ分割。
 - **重大度**: 低（現行は単体 HTML `integrated_position_sizing_calculator.html` で運用可能）
 - **内容**: 単体 HTML の計算機（ケリー基準・破産確率 MC・分割エントリーのロット変換）を
   indicator_ui のチャートへ統合する。壁打ち（2026-08-11）で確定した要件:
@@ -8544,3 +8568,75 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
   改変を伴うため（アサーションは不変）、TDD Refactor の「テストコードを変更しない」規律との関係で
   独立した工程として実施の可否を要確認。
 - **関連**: memory: no-hand-duplication-single-source。
+
+## ISSUE-430: [検定] upstream 隔離ガードが座標系 API を施行対象にしていない（2026-08-20）
+
+- **ステータス**: OPEN（新規起票。ISSUE-368 ピッカー経路検証の副産物・本件と独立の既存の穴）
+- **重大度**: Low（現時点の違反 0 件を実測済み。ただし恒久的性質ではない）
+- **事実（実測 2026-08-20）**: `upstream_isolation_declaration.test.js:28-33` の `UPSTREAM_API` に
+  `coordinateToPrice`・`coordinateToTime`・`coordinateToLogical`・`data` が不在。隔離単位の外の
+  ファイルがこれらを直呼びしても検出されない＝「lwc API 名は隔離点内に留める」は座標系 API に
+  ついて規約であって施行でない。
+- **抜本的解決**: `UPSTREAM_API` へ 4 名を追加し、同時に `chart_renderer.js` 冒頭の宣言も更新する
+  （宣言と施行の一致検定があるため片側だけは不可）。
+- **関連**: ISSUE-368（発見契機）・`.doc/POSITION_SIZING_CHART_INTEGRATION_DESIGN.md` ピッカー経路検証 6。
+
+## ISSUE-431: [設計] 新規協働子が ChartRenderer 実体を丸ごと受け取る（ISP）
+
+- **ステータス**: OPEN（2026-08-20 起票。ISSUE-368 工程 5 レビュー 🟡-4）
+- **重大度**: 低（現時点の誤動作は無い。将来の変更波及の問題）
+- **内容**: `chart_app_wiring.js` の `PricePickController` / `PriceLevelDragController` は
+  `ChartRenderer` 実体をそのまま受け取るが、実際に使うのは 5 メソッドのみ
+  （`priceAtCoordinate` / `paneIndexAtCoordinate` / `snapCandidatesAt` / `suppressInteraction`）。
+  `ChartRenderer` の公開面は `movePane` / `attachBackgroundPrimitive` / `barInfoAt` 等を含む。
+- **抜本的解決**: **同一ファイル内に正解形がある**（`createHostView(controller, COLOR_THEME_HOST_CONTRACT)`）。
+  `PRICE_PICK_HOST_CONTRACT` を定義して契約面へ射影する。`host_view.js` は既存で新設 0。
+- **なぜ問題か**: `tests/support/position_sizing_boot.js` の `fakeRenderer` が renderer 面の写しを持つため、
+  renderer 側の無関係な変更が計算機テストへ波及する構造になっている。
+- **関連**: ISSUE-368・`.doc/POSITION_SIZING_CHART_INTEGRATION_DESIGN.md`「工程 5 レビュー結果」。
+
+## ISSUE-432: [設計] 銘柄仕様は「追加」は OCP を満たすが「訂正」は満たさない
+
+- **ステータス**: OPEN（2026-08-20 起票。ISSUE-368 工程 5 レビュー 🟡-6b）
+- **重大度**: 中（`tick=1.0` は実測ではなく安全側の既定であり、訂正が実際に起こり得る）
+- **内容**: 銘柄の**追加**は台帳 2 ファイル各 1 行＋生成器再実行で閉じる（front 0 ファイル・実測済み）。
+  一方、既存銘柄の `tick` を**訂正**すると実測 6 ファイル 18 箇所が赤になる
+  （台帳 `marketdata/symbol_spec.py:50`／裁定値ピン `test_symbol_spec_ledger.py:110`／生成物／
+  `position_sizing_pick_path_parity.test.js` 3 箇所／`position_sizing_symbol_spec_wiring.test.js` 6 箇所／
+  `position_sizing_price_input_commit.test.js` 6 箇所）。とくに刻みが変わると**勝つスナップ候補が
+  入れ替わる**ため、期待値を直書きしたテストは必ず赤になる。
+- **抜本的解決**: **同ブランチ内に正解形がある**。`position_sizing_pick_path_parity.test.js` の TC-PP04 は
+  `lookupSymbolSpec(TSLA_REF)` から `tick`/`digits` を引き、`assert.deepEqual(..., '台帳の前提が
+  変わっている（テストの前提を見直すこと）')` で**前提崩壊を明示的に検出してから**期待値を使う。
+  JP225 系の期待値も台帳から導出する（`quantize(RAW, JP225_TICK)` を期待値にする）か、同じ前提
+  アサーションを先頭に置く。裁定値ピン 1 本だけは「値が無言で変わらない」ための意図的な直書きとして残す。
+- **注意**: 訂正のコストが高いほど訂正されずに残る。`tick` の真値は OANDA 取扱銘柄ページ（外部）でしか
+  確定できないため、判明時に確実に反映できる形にしておく必要がある。
+- **関連**: ISSUE-368（A-1 裁定）・`marketdata/symbol_spec.py` の docstring。
+
+## ISSUE-433: [整理] 銘柄仕様まわりの残存事項（NI225 の残骸・symlink 方針・アクター内包・案内の決定点）
+
+- **ステータス**: OPEN（2026-08-20 起票。ISSUE-368 工程 5 レビュー 🔵-1〜4・TBD-D/E）
+- **重大度**: 低（いずれも現時点の誤動作は無い）
+- **内容**（4 件＋2 件）:
+  1. `NI225` の残骸: 配信 3 ページの実装からは 0 件だが、`simulator/replay_ui/web/data/sample_data.js` の
+     `meta.symbol="NI225 (sample)"`（**参照 0 件の死んだ値**）・docstring・無関係な分析スクリプトに残る。
+     S-7 の通過条件の文言を「配信 3 ページの実装から 0 件」へ精緻化する。
+  2. replay 配信根への symlink 方針が不統一: `price_quantize.js` は symlink 化、`symbol_spec_catalog.js` /
+     `symbol_spec_generated.js` は未 symlink（dual-root フォールバックで配信は成立・実測済み）。
+     どちらの流儀かが読み取れない。
+  3. `marketdata` パッケージが A2（ブローカー規約）と A-MD（市場データ供給）の 2 アクターを内包する
+     （モジュール単位では分離済み・A-6 で承認）。中立パッケージ新設の再検討（TBD-D）。
+     併せて `simulator/sim_ui/adapter/symbol_spec_catalog.py:112-113` の `digits`/`point_size`
+     （OANDA-Japan **MT5** の JP225・`contract_size=10`＝**別商品**）との二重所在も整理する。
+  4. 理由→案内文言の決定点が 2 か所に残る: `position_sizing_context_items.js` は `no_symbol_spec` に
+     `MSG_NO_PRICE` を返し、正しい文言は共有配線のトースト差し替えだけが保証している
+     （**利用者が見る文言は正しい＝実測済み**）。
+  5. TBD-E: `priceInTable`（モーダル kv 行）は参照実装の `toFixed(0)` 固定で `digits` に追随しない。
+     参照実装は単一銘柄・整数価格専用で `digits ≠ 0` の書式を一度も定義していないため**射程外**。
+     2 銘柄目を配信する時点で裁定する。既定案は `priceInTable(value, digits)` へ拡張し `digits=0` で
+     従来 byte 等価にすること（`priceOnLine` が既に採っている後方互換の型）。
+  6. `usableTick` は**刻み単独で判定できる範囲のみ**を担保する。`price / tick` が非有限へ溢れる領域
+     （価格依存・実測 `58998.75 / 5e-324 === Infinity`）は判定できない。現行台帳では到達しない。
+- **抜本的解決**: 1〜4 は個別に小さく、2 銘柄目の追加時にまとめて片付けるのが適切。5 は裁定待ち。
+- **関連**: ISSUE-368・ISSUE-431・ISSUE-432・`.doc/POSITION_SIZING_CHART_INTEGRATION_DESIGN.md`。
