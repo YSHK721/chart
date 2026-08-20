@@ -8426,7 +8426,8 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 ISSUE-422 の症状。方向としては正しい変更だが、UI 結線の優先度判断材料として明記）。
 
 （ISSUE-423 への追記・2026-08-19 段階 3 設計）: 阻害要因の全数列挙で併発欠陥 B9 を記録——
-`composition_root_execution.js:96-98` のコメント「不一致は供給元の警告が画面に出す」は
+`composition_root_execution.js` の `syncRunProfile` 直前のコメント「不一致は供給元の警告が画面に出す」
+（起票時 :96-98。段階 3 の再構成で移動し **2026-08-20 時点は :155-158**・当該文は :158）は
 profile===null では成立しない（`sim_tester_settings_panel_view.js:371-372` が早期 return）。
 段階 3 のスコープ外（M1 の変更＝別アクター）。投入後の 400 理由表示（M6）で沈黙自体は解消される。
 
@@ -8501,18 +8502,26 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
   - `simulator/sim_ui/web/js/adapter/front/job_submit_client.js:20` `export const JOBS_URL = "/sim/jobs";`
   - `simulator/sim_ui/web/js/adapter/front/job_status_client.js:19` `` return `/sim/jobs/${encodeURIComponent(jobId)}`; ``
   厳命「同じコードを手書き複製するな（単一ソース）」に抵触する。
-- **単一ソース化を阻む制約（すべて実測。4 経路とも塞がっている）**:
-  1. `tests/import_source.test.js:92` `assert.deepEqual(importSpecifiers(read(STATUS_CLIENT)), [])`
-     ＝M7 は**何も import できない**（共有モジュールを引けない）。
-  2. `tests/import_source.test.js:73` `assert.deepEqual(FRONT_FILES.sort(), [...])` が front を 20 ファイルに固定
-     ＝共有モジュール新設は既存アサーションの改変を要する。
-  3. `tests/job_status_client.test.js:66` `assert.equal(jobStatusUrl("j1"), "/sim/jobs/j1")` は注入を受けない
-     ＝M7 は単独で基底を持てなければならない（合成根からの注入では基底が M7 に残り複製が消えない）。
-  4. `job_submit_client.js` は Phase 9 誓約の不可侵ファイル（1 byte 不変）＝M5 側から共有点を引けない。
+- **単一ソース化を阻む制約（出所を実測して分類・2026-08-20 訂正）**: 当初「4 経路とも塞がっている」と
+  記したが不正確である。**外因は 1 件だけ**であり、残る 3 件は本ブランチ自身が立てた拘束か、
+  本ブランチが既に改訂している対象である。
+  1. **自縛**（`git show f31e1e8` で実測）: `tests/import_source.test.js` の
+     `assert.deepEqual(importSpecifiers(read(STATUS_CLIENT)), [])`＝M7 は何も import できない。
+     この行を**足したのは本ブランチの f31e1e8 自身**であり、外から与えられた制約ではない。
+  2. **改訂実績あり**: `tests/import_source.test.js` の `assert.deepEqual(FRONT_FILES.sort(), [...])`。
+     既存アサーションではあるが、本ブランチは ea74949（M6 追加）・f31e1e8（M7 追加）で**既に 2 回**
+     改訂している（front にファイルを足すたびに更新するのが当該検定の仕様）。共有モジュール新設で
+     もう 1 行足すことは、この検定の想定内の改訂である。
+  3. **自縛**（`git show f31e1e8` で実測）: `tests/job_status_client.test.js` の
+     `assert.equal(jobStatusUrl("j1"), "/sim/jobs/j1")`。これも f31e1e8 が足した検定である。
+  4. **外因（唯一）**: `job_submit_client.js` は Phase 9 誓約の不可侵ファイル（1 byte 不変）
+     ＝M5 側から共有点を引けない。これだけが本ブランチの外から与えられた制約である。
 - **抜本的解決（承認事項・未実施）**: `js/adapter/front/sim_job_endpoints.js`（依存 0・パス基底の唯一の宣言）を
-  新設し、M5・M7 の双方がそこから引く。伴う承認事項は 2 点——(a) 不可侵ファイル `job_submit_client.js` の改変、
-  (b) 既存アサーション 3 件（上記 1・2・3）の改訂。いずれも段階 3 の誓約（不可侵・既存検定無改変）に触れるため、
-  独立した工程として裁定を要する。
+  新設し、M5・M7 の双方がそこから引く。伴う承認事項は**実質 1 点**——不可侵ファイル
+  `job_submit_client.js` の改変（上記 4）である。上記 1・3 は本ブランチが自分で立てた検定であり、
+  同じ工程で自ら改訂できる（他者との合意事項ではない）。上記 2 は当該検定の想定内の改訂である。
+  ただし「既存検定のアサーションを変えない」という段階 3 の作業誓約には触れるため、
+  独立した工程として裁定を要する点は変わらない。
 - **却下した代替（応急処置に該当するため提示のみで不採用）**: 合成根から basePath を注入する形は、
   M7 に既定値の基底リテラルが残るため複製が消えず、権威が 2 つ（既定と注入）に増えて悪化する。
 - **関連**: ISSUE-421（同型＝同一概念が 2 モジュールに別実装）・memory: no-hand-duplication-single-source。
