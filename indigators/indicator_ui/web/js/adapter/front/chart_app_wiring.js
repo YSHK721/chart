@@ -314,6 +314,8 @@ function createPositionSizingUi(doc, getPositionSizing) {
     onChangeLevels: (spec) => { const c = of(); return c ? c.setLevels(spec) : undefined; },
     onRun: () => { const c = of(); return c ? c.runMonteCarlo() : undefined; },
     onRequestPick: (target) => { const c = of(); return c ? c.requestPick(target) : undefined; },
+    // 閉じたらアームも解除する（残すと抑止が掛かったまま解除手段が画面から消える・Y-1）。
+    onClose: () => { const c = of(); return c ? c.cancelPick() : undefined; },
   });
   const menu = new PositionSizingMenu({
     document: doc,

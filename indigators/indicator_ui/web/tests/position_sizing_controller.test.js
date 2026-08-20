@@ -302,3 +302,77 @@ test('TC-PC16 MC が失敗しても進捗を消す（走り続けているよう
   assert.equal(seen.progress.at(-1), null, '失敗時に進捗が残ると「まだ計算中」に見える');
   assert.equal(seen.toasts.length, 1, '失敗の告知は従来どおり出る（無音にしない）');
 });
+
+// ---------------------------------------------------------------------------
+// MC の再入ガード（工程 5 レビュー Y-2）
+//
+//   「計算する」に再入ガードが無く、押すたびに `new Worker` が増える（gateway は
+//   solve 1 回につき Worker を 1 つ作る）。連打すると Worker が積み上がり、
+//   最後に解決したものが表示を上書きする（どれが今の入力の結果か分からない）。
+//   実行中は**同じ Promise を返す**（＝新しい実行を始めない）。
+// ---------------------------------------------------------------------------
+
+test('TC-PC17 実行中の再入は新しい MC を始めない（同じ実行を共有する）', async () => {
+  // Arrange: 解決を手元で握る MonteCarloPort（未解決のまま残さないよう全ての resolver を持つ）。
+  const resolvers = [];
+  let solveCalls = 0;
+  const port = {
+    solve() {
+      solveCalls += 1;
+      return new Promise((res) => { resolvers.push(res); });
+    },
+  };
+  const usecase = new PositionSizingPlanUseCase({
+    mcPort: port, levels: createPriceLevels(LEVELS), params: PARAMS,
+  });
+  const controller = new PositionSizingController({
+    usecase, dialog: { render() {}, setProgress() {} },
+  });
+  // Act: 決着前に 2 回押す。
+  const first = controller.runMonteCarlo();
+  const second = controller.runMonteCarlo();
+  const edge = solveEdgeRuin({
+    win_rate: 0.38, payoff_ratio: 2.74, ruin_level: 0.5, alpha: 0.01,
+    horizon: 10, split_count: 5, seed: 1, sims: 10,
+  });
+  resolvers.forEach((res) => res(edge));   // 何本立っていても全部決着させる（hang させない）。
+  await Promise.all([first, second]);
+  // Assert
+  assert.equal(solveCalls, 1, '押すたびに MC（Worker）が増えている');
+});
+
+test('TC-PC18 決着後は次の実行を受け付ける（ガードが張り付いたままにならない）', async () => {
+  // Arrange
+  let solveCalls = 0;
+  const port = { solve: async (spec) => { solveCalls += 1; return solveEdgeRuin(spec); } };
+  const usecase = new PositionSizingPlanUseCase({
+    mcPort: port, levels: createPriceLevels(LEVELS), params: PARAMS,
+  });
+  const controller = new PositionSizingController({
+    usecase, dialog: { render() {}, setProgress() {} },
+  });
+  // Act
+  await controller.runMonteCarlo();
+  await controller.runMonteCarlo();
+  // Assert
+  assert.equal(solveCalls, 2, '1 回目の後に押せなくなっている（ガードが解除されていない）');
+});
+
+test('TC-PC19 失敗しても次の実行を受け付ける（例外でガードが残らない）', async () => {
+  // Arrange
+  let solveCalls = 0;
+  const port = {
+    solve: async () => { solveCalls += 1; throw new McUnavailableError('worker 起動失敗'); },
+  };
+  const usecase = new PositionSizingPlanUseCase({
+    mcPort: port, levels: createPriceLevels(LEVELS), params: PARAMS,
+  });
+  const controller = new PositionSizingController({
+    usecase, dialog: { render() {}, setProgress() {} }, toast: { show() {} },
+  });
+  // Act
+  await controller.runMonteCarlo();
+  await controller.runMonteCarlo();
+  // Assert
+  assert.equal(solveCalls, 2, '失敗後に押せなくなっている（ガードが張り付いた）');
+});

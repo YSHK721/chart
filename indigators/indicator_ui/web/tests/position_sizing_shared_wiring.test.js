@@ -494,3 +494,30 @@ test('TC-SW19 重みカスタムを選んでも計算が止まらない（🔴-3
   inputs[0].value = '2.5';
   assert.doesNotThrow(() => inputs[0].fire('input'), '重みの変更で計算が例外停止する');
 });
+
+test('TC-SW20 × でモーダルを閉じるとアームも解除される（Y-1・R-P1「モーダル側の取消で解除」）', () => {
+  // 閉じてもアームが残ると、ピッカーの抑止（lwc 操作の抑止・縦パンブロッカー）が
+  //   掛かったままになり、チャートが操作できないのに解除する手段が画面から消える。
+  // Arrange
+  const ctx = bootAll();
+  ctx.mounts.get('position-sizing-menu').children[0].fire('click');
+  const dialogRoot = ctx.body.children.find((e) => e.dataset && e.dataset.psDialog === 'plan');
+  flatten(dialogRoot).find((e) => e.dataset && e.dataset.psPick === 'stop').fire('click');
+  assert.equal(ctx.wired.positionSizing.picker.isArmed(), true, '前提: アーム中');
+  // Act: × を押す（data-ps-action="cancel"）。
+  flatten(dialogRoot).find((e) => e.dataset && e.dataset.psAction === 'cancel').fire('click');
+  // Assert
+  assert.equal(ctx.wired.positionSizing.picker.isArmed(), false, '閉じてもアームが残っている');
+});
+
+test('TC-SW21 開き直し（open が内部で close する）はアームを巻き添えにしない（Y-1 の副作用防止）', () => {
+  // Arrange: 閉じていない状態から open を呼ぶと内部で close() が走る。
+  const ctx = bootAll();
+  const { controller, picker } = ctx.wired.positionSizing;
+  controller.open();
+  picker.arm('stop');
+  // Act: もう一度開く（右クリック経路の _ensureOpen でも起こりうる）。
+  controller.open();
+  // Assert: 「閉じていなかったものを開き直した」だけでアームを解除しない。
+  assert.equal(picker.isArmed(), true, '開き直しでアームが巻き添えで解除された');
+});

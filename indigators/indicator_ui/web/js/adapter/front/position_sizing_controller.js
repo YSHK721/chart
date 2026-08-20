@@ -34,6 +34,7 @@ export class PositionSizingController {
     this._picker = picker;
     this._primitive = primitive;
     this._toast = toast;
+    this._mcInFlight = null;   // 実行中の MC（再入ガード・Y-2）
   }
 
   // ---- モーダルの開閉 ----
@@ -79,7 +80,21 @@ export class PositionSizingController {
   //   区別できない（NFR-09「MC 実行中もチャート操作が固まらない／進捗が進む」）。
   //   比の解釈も書式も持たず**そのまま渡す**（表示は Presenter の責務）。
   //   完了・失敗のどちらでも必ず消す（残すと「まだ計算中」に見える）。
-  async runMonteCarlo() {
+  // 実行中に押し直しても**新しい MC を始めない**（Y-2）。gateway は solve 1 回につき Worker を
+  //   1 つ作るため、連打すると Worker が積み上がり、最後に決着したものが表示を上書きする
+  //   （どれが今の入力の結果なのか分からなくなる）。実行中は同じ Promise を返す。
+  //   決着（成功・失敗のいずれでも）で必ずガードを外す＝押せないまま張り付かない。
+  runMonteCarlo() {
+    if (this._mcInFlight) {
+      return this._mcInFlight;
+    }
+    this._mcInFlight = this._runMonteCarlo().finally(() => {
+      this._mcInFlight = null;
+    });
+    return this._mcInFlight;
+  }
+
+  async _runMonteCarlo() {
     const onProgress = (ratio) => this._dialog?.setProgress?.(ratio);
     try {
       this._present(await this._usecase.runMonteCarlo(onProgress));
@@ -98,6 +113,11 @@ export class PositionSizingController {
   /** モーダルの「チャートで指定」→ ピッカーをアームする。 */
   requestPick(target) {
     this._picker?.arm?.(target);
+  }
+
+  /** モーダルが閉じた（× ・取消）→ アームも解除する（R-P1「モーダル側の取消で解除」）。 */
+  cancelPick() {
+    this._picker?.disarm?.();
   }
 
   /**

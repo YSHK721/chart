@@ -215,13 +215,15 @@ export class PositionSizingDialog {
    */
   constructor({
     document: doc = null, onChangeParams = null, onChangeLevels = null,
-    onRun = null, onRequestPick = null,
+    onRun = null, onRequestPick = null, onClose = null,
   } = {}) {
     this._doc = doc;
     this._onChangeParams = typeof onChangeParams === 'function' ? onChangeParams : null;
     this._onChangeLevels = typeof onChangeLevels === 'function' ? onChangeLevels : null;
     this._onRun = typeof onRun === 'function' ? onRun : null;
     this._onRequestPick = typeof onRequestPick === 'function' ? onRequestPick : null;
+    this._onClose = typeof onClose === 'function' ? onClose : null;
+    this._reopening = false;     // open() が内部で close() する間だけ真（取消ではない）
     this._root = null;
     this._outs = new Map();      // data-ps-out キー -> 表示要素
     this._choiceEls = new Map(); // 採用 f の 3 択
@@ -245,6 +247,10 @@ export class PositionSizingDialog {
   }
 
   close() {
+    // 「利用者が開いていたものを閉じた」ときだけ通知する（R-P1「モーダル側の取消で解除」）。
+    //   open() は先頭で close() を呼ぶ（二重表示の防止）。これは**取消ではない**ので、
+    //   無条件に通知するとアームが巻き添えで解除される（TC-SW21 が固定）。
+    const wasOpen = this._root !== null && !this._reopening;
     if (this._root && this._root.parentNode) {
       this._root.parentNode.removeChild(this._root);
     }
@@ -257,13 +263,18 @@ export class PositionSizingDialog {
     this._progress = null;
     this._customBox = null;
     this._exitGroups = new Map();
+    if (wasOpen) {
+      this._onClose?.();
+    }
   }
 
   open() {
     if (!this._usable()) {
       return;   // DOM 不在（SSR・テスト最小 fake）は no-op。
     }
+    this._reopening = true;
     this.close();   // 同時に 2 枚開かない（後勝ち・同型元と同じ規約）。
+    this._reopening = false;
     const doc = this._doc;
     const root = doc.createElement('div');
     root.className = 'ps-dialog-backdrop is-open';
