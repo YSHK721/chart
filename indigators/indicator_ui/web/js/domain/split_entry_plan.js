@@ -133,6 +133,21 @@ export function buildSplitEntryPlan(spec) {
   if (!CAP_BASES.includes(spec.cap_basis)) {
     throw new Error(`cap_basis は ${CAP_BASES.join(', ')} です: ${spec.cap_basis}`);
   }
+  // 権威 `simulator/usecase/split_entry_plan.py` の `__post_init__`（:154-159）と同じ検証。
+  //   鏡が権威より緩いと「Python なら例外で止まる入力が JS では Infinity/NaN のまま下流へ流れる」
+  //   食い違いが生まれる（実測: point_value=0 で基準ロットが Infinity になり、合計ロット・
+  //   必要証拠金まで伝播していた）。golden fixture は正常系しか固定しないため、
+  //   異常系は本検証と単体検定で押さえる。
+  //   （weight_pattern の検証は generateWeights が同じ WEIGHT_PATTERNS で行う）
+  if (!(spec.point_value > 0)) {
+    throw new Error(`point_value は正である必要があります: ${spec.point_value}`);
+  }
+  if (!(spec.margin_rate >= 0)) {
+    throw new Error(`margin_rate は 0 以上の比です: ${spec.margin_rate}`);
+  }
+  if (!(spec.win_rate >= 0 && spec.win_rate <= 1)) {
+    throw new Error(`win_rate は [0,1] の比です: ${spec.win_rate}`);
+  }
   const long = direction === LONG;
   const balance = spec.balance;
   const pointValue = spec.point_value;

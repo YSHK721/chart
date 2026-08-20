@@ -81,3 +81,62 @@ test('4 分岐が fixture 側で真偽ともに現れ、JS でも同一条件で
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// 入力検証の権威一致（工程 5 レビュー Y-3）
+//
+//   golden fixture は**正常系の数値**しか固定しない。異常系（不正入力）は fixture の射程外だが、
+//   鏡が権威より緩いと「Python なら例外で止まる入力が、JS では Infinity/NaN のまま下流へ流れる」
+//   という食い違いが生まれる。実測: `point_value=0` で基準ロットが Infinity になり、
+//   そのまま合計ロット・必要証拠金へ伝播していた。
+//
+//   権威 `simulator/usecase/split_entry_plan.py` の `__post_init__`（:138-159）が課す検証:
+//     direction ∈ {long,short} ／ MIN_SPLITS ≤ K ≤ MAX_SPLITS ／ lot_mode ∈ LOT_MODES ／
+//     cap_basis ∈ CAP_BASES ／ weight_pattern ∈ WEIGHT_PATTERNS ／
+//     **point_value > 0** ／ **margin_rate ≥ 0** ／ **0 ≤ win_rate ≤ 1**
+//   末尾 3 つが鏡に欠けていた。
+// ---------------------------------------------------------------------------
+
+const VALID_SPEC = Object.freeze({
+  direction: 'long',
+  entry_prices: [58700, 58600, 58500],
+  stop_price: 58340,
+  take_price: 59200,
+  fraction: 0.09,
+  balance: 172000,
+  point_value: 1,
+  margin_rate: 0.1,
+  win_rate: 0.38,
+  weight_pattern: 'linear',
+  custom_weights: null,
+  lot_mode: 'int',
+  cap_basis: 'lc',
+});
+
+test('TC-SE01 point_value は正でなければ例外（権威 :154。0 だと Infinity が下流へ流れる）', () => {
+  // Arrange / Act / Assert
+  assert.throws(() => buildSplitEntryPlan({ ...VALID_SPEC, point_value: 0 }), /point_value/);
+  assert.throws(() => buildSplitEntryPlan({ ...VALID_SPEC, point_value: -1 }), /point_value/);
+  // 境界: 正の最小側は通る。
+  assert.doesNotThrow(() => buildSplitEntryPlan({ ...VALID_SPEC, point_value: 1e-9 }));
+});
+
+test('TC-SE02 margin_rate は 0 以上（権威 :156）', () => {
+  // Arrange / Act / Assert
+  assert.throws(() => buildSplitEntryPlan({ ...VALID_SPEC, margin_rate: -0.01 }), /margin_rate/);
+  assert.doesNotThrow(() => buildSplitEntryPlan({ ...VALID_SPEC, margin_rate: 0 }));
+});
+
+test('TC-SE03 win_rate は [0,1] の比（権威 :158）', () => {
+  // Arrange / Act / Assert
+  assert.throws(() => buildSplitEntryPlan({ ...VALID_SPEC, win_rate: -0.01 }), /win_rate/);
+  assert.throws(() => buildSplitEntryPlan({ ...VALID_SPEC, win_rate: 1.01 }), /win_rate/);
+  // 境界（両端は許容）。
+  assert.doesNotThrow(() => buildSplitEntryPlan({ ...VALID_SPEC, win_rate: 0 }));
+  assert.doesNotThrow(() => buildSplitEntryPlan({ ...VALID_SPEC, win_rate: 1 }));
+});
+
+test('TC-SE04 正常系は例外にならない（検証追加で通常の計算を塞いでいない）', () => {
+  // Arrange / Act / Assert
+  assert.doesNotThrow(() => buildSplitEntryPlan(VALID_SPEC));
+});
