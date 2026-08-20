@@ -599,3 +599,95 @@ test('TC-PD33 閉じているときの setProgress は no-op（例外にしな�
   // Act / Assert
   assert.doesNotThrow(() => dialog.setProgress(0.5));
 });
+
+// ---------------------------------------------------------------------------
+// select の既定値（実 UI 実測 2026-08-20・参照実装 :578 が正解を定義する）
+//
+//   実 UI 実測: 重み=equal / 建て制約=margin。参照実装 :578 は
+//   `wpattern:'linear'` / `ltmode:'lc'`。SELECTS 表の `def` は既に linear / lc なので
+//   「既定が 2 か所にある」のではなく、**`select.value` を option 追加より前に設定していた**
+//   のが原因である（HTML 仕様: 一致する option が無い value 代入は選択に反映されず、
+//   その後 option を足すと非 multiple の select は先頭 option が選択状態になる）。
+//
+//   実測 5 件はすべて `options[0][0]` と一致し、`def` とは 2 件で食い違う:
+//     direction  options[0]=long    def なし → 実測 long    （両説一致）
+//     weight     options[0]=equal   def=linear → 実測 equal  （def 説と矛盾）
+//     lotMode    options[0]=int     def なし → 実測 int      （両説一致）
+//     exitMode   options[0]=bracket def なし → 実測 bracket  （両説一致）
+//     capBasis   options[0]=margin  def=lc   → 実測 margin   （def 説と矛盾）
+//   ＝「先頭 option が勝っている」で 5/5 説明でき、「def が使われている」では 3/5 しか
+//   説明できない。よって原因は代入順序と確定する。
+//
+//   上の El は value を素のプロパティとして持つため順序差を再現できず、既存検定は
+//   全緑ですり抜けていた。ここでは仕様どおりの select を使う（fake の穴を塞ぐ）。
+// ---------------------------------------------------------------------------
+
+// HTMLSelectElement の value セマンティクスを再現する最小 fake。
+class SpecSelectEl extends El {
+  constructor() {
+    super('select');
+  }
+
+  // 基底 El の constructor が this.value='' を代入するため（サブクラスのフィールド初期化より
+  //   前に走る）、option 一覧は参照時に遅延生成する。
+  get _opts() { return (this._optionValues ??= []); }
+
+  get value() {
+    // 選択が無い非 multiple の select は先頭 option の値を返す（仕様どおり）。
+    if (this._value) { return this._value; }
+    return this._opts[0] ?? '';
+  }
+
+  set value(v) {
+    // 一致する option が無ければ選択されない（＝代入は捨てられる）。
+    this._value = this._opts.includes(v) ? v : '';
+  }
+
+  append(...kids) {
+    for (const k of kids) {
+      if (k && k.tag === 'option') { this._opts.push(k.value); }
+    }
+    super.append(...kids);
+  }
+}
+
+function specDoc() {
+  const body = new El('body');
+  return {
+    body,
+    createElement: (t) => (t === 'select' ? new SpecSelectEl() : new El(t)),
+  };
+}
+
+test('TC-PD34 select の初期表示が参照実装 :578 の既定と一致する（重み linear・建て制約 lc）', () => {
+  // Arrange: 仕様どおりの select を持つ DOM で開く。
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc });
+  dialog.open();
+  const root = doc.body.children[0];
+  const valueOf = (key) => byData(root, 'psField', key).value;
+  // Act / Assert: 参照実装 :578 の S 初期値（dir/exit/wpattern/lotmode/ltmode）。
+  assert.equal(valueOf('direction'), 'long');
+  assert.equal(valueOf('weightPattern'), 'linear', '参照実装 :578 は wpattern:"linear"');
+  assert.equal(valueOf('lotMode'), 'int');
+  assert.equal(valueOf('exitMode'), 'bracket');
+  assert.equal(valueOf('capBasis'), 'lc', '参照実装 :578 は ltmode:"lc"');
+});
+
+test('TC-PD35 画面の初期表示と usecase の初期 params が一致する（既定は単一ソース）', () => {
+  // 画面が equal を出しているのに計算が linear で回る、という取り違えを構造で止める。
+  // Arrange
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc });
+  dialog.open();
+  const root = doc.body.children[0];
+  const params = defaultParams();
+  // Act / Assert: params が持つ択一キーは、画面の select と同じ値でなければならない。
+  for (const key of ['weightPattern', 'lotMode', 'capBasis']) {
+    assert.equal(
+      byData(root, 'psField', key).value,
+      params[key],
+      `${key}: 画面の初期表示と計算の初期値が食い違っている`,
+    );
+  }
+});

@@ -559,13 +559,20 @@ export class PositionSizingDialog {
     name.textContent = label;
     const select = doc.createElement('select');
     select.dataset.psField = key;
-    select.value = selectDefault({ options, def });
+    // **option を全て足してから value を代入する**（順序が仕様上の意味を持つ・実 UI 実測 2026-08-20）。
+    //   HTML 仕様では、一致する option が存在しない value 代入は選択に反映されず捨てられる。
+    //   その後 option を足すと非 multiple の select は先頭 option が選択状態になるため、
+    //   逆順に書くと `def` が無視され options[0] が既定になる（実 UI で 重み=equal・
+    //   建て制約=margin となり、参照実装 :578 の linear / lc と食い違っていた）。
+    //   検定の最小 DOM は value を素のプロパティとして持つため順序差を再現できない
+    //   ＝この誤りは実ブラウザでしか出ない。TC-PD34 は仕様どおりの select fake で固定する。
     for (const [value, text] of options) {
       const opt = doc.createElement('option');
       opt.value = value;
       opt.textContent = text;
       select.append(opt);
     }
+    select.value = selectDefault({ options, def });
     select.addEventListener('change', () => {
       if (key === 'exitMode') {
         // 参照実装で exit は build() に効かない（表示の出し分けだけ）。usecase へ渡すと
