@@ -26,6 +26,26 @@ export const POLL_INTERVAL_MS = 1000;
  *  無限に叩き続けると、サーバが落ちている間ずっと通信を出し続ける。定数は 1 箇所に置く。 */
 export const MAX_CONSECUTIVE_FAILURES = 3;
 
+/**
+ * 購読者へ 1 件渡す（監視ループと購読者の**唯一の接点**）。
+ *
+ * 監視ループの生存は購読者の成否と独立でなければならない。購読者（掲示側）が例外を投げると
+ * `poll` の promise が reject するが、timer コールバックの戻り値は誰も待っていないため
+ * unhandled rejection として消える——次の照会が予約されないまま監視が**無音で死ぬ**
+ * （実行中のジョブの状態が二度と更新されない＝ISSUE-423 が是正したはずの沈黙の再発）。
+ *
+ * 例外はここで止め、周期・終端停止・諦めの判断（ループの制御）へ持ち込まない。理由は
+ * 開発者コンソールへ残す（握り潰し禁止）。購読者の契約は**同期**であり、返り値は使わない。
+ */
+function notifySubscriber(onUpdate, update) {
+  if (!onUpdate) return;
+  try {
+    onUpdate(update);
+  } catch (e) {
+    console.error(`実行状態の購読者が例外を投げました: ${(e && e.message) || e}`);
+  }
+}
+
 /** 照会失敗（非 2xx / 本文が読めない）のエラー。サーバの error 文言を握って上位へ届ける。 */
 export class JobStatusError extends Error {
   constructor(message, status) {
@@ -94,14 +114,14 @@ export function createJobStatusClient({
         failures += 1;
         if (failures >= MAX_CONSECUTIVE_FAILURES) {
           stopped = true;
-          if (onUpdate) onUpdate({ error: (e && e.message) || String(e), status: e && e.status });
+          notifySubscriber(onUpdate, { error: (e && e.message) || String(e), status: e && e.status });
           return;
         }
         schedule();
         return;
       }
       if (stopped) return;   // 応答を待っている間に停止されていたら掲示もしない
-      if (onUpdate) onUpdate(payload);
+      notifySubscriber(onUpdate, payload);
       if (payload && payload.terminal === true) {
         stopped = true;
         return;

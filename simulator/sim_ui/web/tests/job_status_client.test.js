@@ -198,6 +198,84 @@ test("watch gives up after consecutive failures and reports why", async () => {
   assert.match(String(seen[0].error), /502/);
 });
 
+// --- watch の生存が購読者に依存しないこと（監視の無音死の禁止）------------------------
+// `onUpdate` は front の掲示側（M6 を呼ぶ合成根）である。そこが例外を投げると `poll` の
+// promise が reject するが、timer コールバックの戻り値は誰も待っていないため unhandled
+// rejection として消え、**次の照会が予約されないまま監視が黙って死ぬ**（実行中のジョブの
+// 状態が二度と更新されない＝ISSUE-423 が是正したはずの沈黙の再発）。
+// 監視ループの継続・終端停止・諦めの判断は、いずれも購読者の成否と独立でなければならない。
+
+/** console.error を採取しながら関数を走らせる。 */
+async function capturingErrors(fn) {
+  const seen = [];
+  const original = console.error;
+  console.error = (...args) => seen.push(args.map(String).join(" "));
+  try {
+    await fn();
+  } finally {
+    console.error = original;
+  }
+  return seen;
+}
+
+test("a throwing subscriber does not kill the watch (購読者の例外で無音停止しない)", async () => {
+  // Arrange: 1 回目の掲示で例外を投げる購読者
+  const fetchFn = scriptedFetch([running(), running()]);
+  const timer = fakeTimer();
+  const seen = [];
+  const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
+  client.watch("j1", (u) => {
+    seen.push(u);
+    if (seen.length === 1) throw new Error("掲示できません");
+  });
+  // Act
+  const errors = await capturingErrors(async () => {
+    await assert.doesNotReject(() => timer.tick(),
+      "購読者の例外が監視ループへ抜けています（unhandled rejection）");
+  });
+  // Assert: 次の照会が予約されており、監視は続く
+  assert.equal(timer.pending.size, 1, "購読者の例外で次の照会が予約されていません（監視が無音で死んでいます）");
+  await timer.tick();
+  assert.equal(seen.length, 2, "例外の後に監視が続いていません");
+  // 理由は握り潰さない（掲示側の不具合が誰にも見えなくなる）
+  assert.ok(errors.some((line) => /掲示できません/.test(line)),
+    `購読者の例外が console.error に残っていません: ${JSON.stringify(errors)}`);
+});
+
+test("a throwing subscriber does not defeat the terminal stop (終端停止は購読者に依存しない)", async () => {
+  // Arrange: 終端応答の掲示で例外を投げる購読者
+  const fetchFn = scriptedFetch([completed()]);
+  const timer = fakeTimer();
+  const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
+  client.watch("j1", () => { throw new Error("掲示できません"); });
+  // Act
+  await capturingErrors(async () => {
+    await assert.doesNotReject(() => timer.tick());
+  });
+  // Assert: 終端で止まる（購読者が落ちても照会し続けない）
+  assert.equal(await timer.tick(), false, "終端に達しても監視が続いています");
+  assert.equal(fetchFn.calls.length, 1, "終端後も照会しています");
+});
+
+test("a throwing subscriber on the give-up report does not escape as a rejection", async () => {
+  // Arrange: 照会が常に失敗し、諦めの通知でも購読者が例外を投げる
+  const fetchFn = scriptedFetch([boom()]);
+  const timer = fakeTimer();
+  const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
+  client.watch("j1", () => { throw new Error("掲示できません"); });
+  // Act
+  const errors = await capturingErrors(async () => {
+    for (let i = 0; i < MAX_CONSECUTIVE_FAILURES; i += 1) {
+      await assert.doesNotReject(() => timer.tick(),
+        "諦めの通知で投げられた例外が監視ループへ抜けています");
+    }
+  });
+  // Assert
+  assert.equal(await timer.tick(), false, "上限に達しても監視が続いています");
+  assert.ok(errors.some((line) => /掲示できません/.test(line)),
+    `購読者の例外が console.error に残っていません: ${JSON.stringify(errors)}`);
+});
+
 test("a single failure between successes does not stop the watch (境界値: 連続でない失敗)", async () => {
   // Arrange
   const fetchFn = scriptedFetch([boom(), running(), running()]);
