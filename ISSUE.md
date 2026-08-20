@@ -8398,7 +8398,9 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-423: [不具合・既存] sim 受付拒否（400）の理由文が本番 UI に 1 文字も表示されない（2026-08-19）
 
-- **ステータス**: IN_PROGRESS（2026-08-19 着手。設計＝基本設計書 §19.6。ブランチ `feature/sim-runnable-feedback`）
+- **ステータス**: RESOLVED（2026-08-20。§19.6 段階 3 で M6 掲示面・M7 状態クライアント・合成根結線を実装。
+  実 UI 実測＝completed 掲示＋結果 3 窓／failed＋N-05 理由文掲示・console 0・終端でポーリング停止。
+  400 理由の表示は E2E（fake DOM）で実証＝実 UI では候補付き select により 400 自体が作れない）
 - **重大度**: Medium（Expert 不一致・規則 B〜Q・[TesterInputs] 拒否・段階 2 の新拒否すべてが対象）
 - **事実（実読 2026-08-19）**: 400 応答の `error` 文言は `job_submit_client.js:68-71` まで届くが、
   本番 HTML は `mountSimExecutionPanel({doc, host})` を **onError 未結線**で呼ぶ
