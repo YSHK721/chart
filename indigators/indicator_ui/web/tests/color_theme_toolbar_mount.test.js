@@ -1,7 +1,7 @@
 // app_chrome_view.installChartToolbar がテーマメニューの空マウントを生成することの固定。
 //
 // 設計入力（唯一の仕様源）: .doc/indicator-management-ui/基本設計_指標カラーテーマ.md v0.3.1
-//   §6.1（ツールバーの並びは [NI225] [日 ▾] [ライブ] [テンプレート ▾] [テーマ ▾] [インジケーター]
+//   §6.1（ツールバーの並びは [銘柄] [日 ▾] [ライブ] [テンプレート ▾] [テーマ ▾] [インジケーター]
 //        [リプレイ]。空マウント `<div class="color-theme-menu" id="color-theme-menu"></div>` は
 //        `app_chrome_view.installChartToolbar` が生成し、項目 DOM は color_theme_menu.js が生成する。
 //        **index.html は 1 枚も触らない**＝ISSUE-278 #16 の規約）。

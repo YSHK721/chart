@@ -20,9 +20,59 @@
 // アプリ外枠のアンカー。配信 3 ページすべてが持つ唯一の共通土台。
 export const APP_ANCHOR_SELECTOR = '#app';
 
-// 銘柄名の単一情報源。ツールバーの表示と、足情報のコピー（どのチャートの値か）で同じ文字列を使う。
-//   ここを複製すると「画面は NI225・コピーは別名」という食い違いが静かに生まれる。
-export const CHART_SYMBOL = 'NI225';
+// 銘柄名の器のセレクタ。**値は front が持たない**（ISSUE-368 A-4・承認結果 2026-08-20）。
+//   旧状態: 銘柄名の定数（`CHART_SYMBOL`）を front が自称していた。実データが何の銘柄かは
+//   データ側（datasetRef → 台帳）でしか決まらないため、front の自称と実データは食い違い得た
+//   （実際に食い違っていた）。リテラルを別の値へ書き換えるだけでは「front が銘柄を自称する構造」
+//   が残る（設計 D-3）ため、値を削除し、marketdata の台帳から解決した名前を注入する
+//   （台帳を引く口は front に 1 つだけで、本 View はその結果を受け取るだけ＝台帳を知らない）。
+//
+//   保持先はこの器ただ 1 つ。ツールバーの表示と足情報のコピー（どのチャートの値か）は同じ実体を
+//   読む＝「画面は X・コピーは Y」という食い違いを、定数ではなく**実体の一意性**で防ぐ
+//   （器はページに 1 つ＝本 View の冪等性の契約と同じ強さ）。中身を入れるのは
+//   「どのデータセットを見ているか」を知っている側（共有配線の解決点）で、器を置くのは本 View。
+//   これは tf-menu / tpl-menu / color-theme-menu と同じ「器は View・中身は所有者」の分離である。
+const CHART_SYMBOL_SELECTOR = '.tb-symbol';
+
+// 銘柄名が解決できていないときの表示。空文字（無音）にせず、実在しない銘柄名も出さない。
+//   「解決できていない」という事実をそのまま出す（price_pick_resolver のフェイルセーフと同じ流儀＝
+//   値ではなく機能・情報を落とし、理由を残す）。
+export const UNRESOLVED_CHART_SYMBOL = '銘柄未解決';
+
+function chartSymbolElement(doc) {
+  return doc && typeof doc.querySelector === 'function' ? doc.querySelector(CHART_SYMBOL_SELECTOR) : null;
+}
+
+/**
+ * 解決済みの銘柄名を器へ入れる（表示の更新）。
+ *
+ * @param {object} doc      document（器を探す先）。
+ * @param {string|null} symbol 台帳から解決した銘柄名。解決できていないなら null。
+ * @returns {string|null}   実際に表示した文字列。器が無い構成（ツールバー未 install・DOM 非対応）は
+ *                          null＝no-op（例外を投げない。この構成には表示すべき画面が無い）。
+ */
+export function setChartSymbol(doc, symbol) {
+  const el = chartSymbolElement(doc);
+  if (!el) {
+    return null;
+  }
+  const label = (typeof symbol === 'string' && symbol.length > 0) ? symbol : UNRESOLVED_CHART_SYMBOL;
+  // textContent（innerHTML ではない）＝注入文字列が markup として解釈される余地を残さない。
+  el.textContent = label;
+  return label;
+}
+
+/**
+ * いま表示している銘柄名を読む（コピー文脈が「どのチャートの値か」を書くために使う）。
+ *
+ * @param {object} doc document。
+ * @returns {string|null} 器が無ければ null（銘柄欄を書かない＝従来どおり値だけコピーする）。
+ */
+export function chartSymbol(doc) {
+  const el = chartSymbolElement(doc);
+  const text = el && typeof el.textContent === 'string' ? el.textContent : '';
+  return text.length > 0 ? text : null;
+}
 
 function resolveAnchor(doc, { anchor = null, anchorSelector = APP_ANCHOR_SELECTOR } = {}) {
   // DOM 非対応（SSR・要素生成しか持たないスタブ document）は描画対象が存在しない＝縮退する。
@@ -102,7 +152,9 @@ export function installChartToolbar(
   const bar = doc.createElement('div');
   bar.className = 'toolbar';
   bar.innerHTML = [
-    `<span class="tb-symbol">${CHART_SYMBOL}</span>`,
+    // 銘柄名の器。中身は「どのデータセットか」を知る側が setChartSymbol で入れる。
+    //   入るまでは縮退表示（空欄にすると「銘柄が無い画面」に見え、誤りに気付けない）。
+    `<span class="tb-symbol">${UNRESOLVED_CHART_SYMBOL}</span>`,
     '<span class="tb-sep"></span>',
     // 時間足ドロップダウンのマウント（ISSUE-117/123）。項目集合は timeframe_menu.js が台帳から生成する。
     '<div class="tf-menu" id="tf-menu"></div>',

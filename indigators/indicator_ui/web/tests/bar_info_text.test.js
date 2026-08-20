@@ -25,12 +25,12 @@ const INFO = {
 };
 
 const LABELS = new Map([['rsi#1', 'RSI']]);
-const CTX = { symbol: 'NI225', timeframe: '1D', labels: LABELS };
+const CTX = { symbol: 'JP225', timeframe: '1D', labels: LABELS };
 
 test('銘柄・時間足 → 日時 → 四本値 → 指標の順で返す', () => {
   const text = formatBarInfoText(INFO, CTX);
   assert.deepEqual(text.split('\n'), [
-    'NI225\t1D',
+    'JP225\t1D',
     '2010-06-29 00:00',
     'O 1.2\tH 1.6\tL 1.1\tC 1.5',
     'RSI\trsi 55.25',
@@ -43,7 +43,7 @@ test('文脈未注入（銘柄・時間足なし）でも値は落とさない�
 });
 
 test('片方だけの文脈は有る方だけ書く（空欄を並べない）', () => {
-  assert.equal(formatBarInfoText(INFO, { symbol: 'NI225' }).split('\n')[0], 'NI225');
+  assert.equal(formatBarInfoText(INFO, { symbol: 'JP225' }).split('\n')[0], 'JP225');
   assert.equal(formatBarInfoText(INFO, { timeframe: '5m' }).split('\n')[0], '5m');
 });
 
@@ -79,7 +79,7 @@ test('当日 MP（POC/VA）は DTO に載っているときだけ四本値の次
 
 test('四本値が無い足（材料未着）は日時と指標だけを返す', () => {
   const text = formatBarInfoText({ ...INFO, ohlc: null }, CTX);
-  assert.deepEqual(text.split('\n'), ['NI225\t1D', '2010-06-29 00:00', 'RSI\trsi 55.25']);
+  assert.deepEqual(text.split('\n'), ['JP225\t1D', '2010-06-29 00:00', 'RSI\trsi 55.25']);
 });
 
 test('info が null（足の無い位置）は空文字＝呼び出し側はコピーしない', () => {

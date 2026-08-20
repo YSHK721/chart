@@ -43,7 +43,9 @@ import { ChartTemplateController } from './chart_template_controller.js';
 import { ColorThemeMenu } from './color_theme_menu.js';
 import { ColorThemeDialogs } from './color_theme_dialogs.js';
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
-import { installChartToolbar, installIndicatorDialog, CHART_SYMBOL } from './app_chrome_view.js';
+import {
+  installChartToolbar, installIndicatorDialog, setChartSymbol, chartSymbol,
+} from './app_chrome_view.js';
 import { ChromeThemeApplier } from './chrome_theme_applier.js';
 import { LocalStorageThemeGateway } from './local_storage_theme_gateway.js';
 import { ColorThemeController, COLOR_THEME_HOST_CONTRACT, loadThemeState } from './color_theme_controller.js';
@@ -99,8 +101,17 @@ export async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe =
 export async function composeChartShell({
   lwc, container, doc, storage, fetch, datasetRef, recentBars,
 } = {}) {
+  // 銘柄仕様（呼び値・表示桁）を datasetRef から引く。値の権威は marketdata 台帳ただ 1 つで、
+  //   front は解決結果を**値として配るだけ**（ISSUE-368 S-6 / S-7 A-3）。引き当ては
+  //   `lookupSymbolSpec`（front 配下で台帳へ触れる唯一の口）で、本モジュールの外へは出さない。
+  //   ここと wireControllerCollaborators の 2 か所が同じ `datasetRef`（root が両方へ渡す同一の値）
+  //   から同じ純関数を引く＝結果は必ず一致する（引き当ては台帳の凍結オブジェクトを読むだけで
+  //   状態を持たない）。値を持ち回るための新しい配管（root の引数追加）は作らない。
+  const symbolSpec = lookupSymbolSpec(datasetRef);
   // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123）。
-  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container });
+  //   表示桁（priceFormat）は台帳の digits/tick に従わせる（A-3）。解決できなければ渡さない＝
+  //   lwc 既定（precision=2 / minMove=0.01）のまま＝従来の挙動（front が桁を勝手に決めない）。
+  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container, symbolSpec });
   // ポート実装: ComputeHttpClient（fetch /compute）。candles は /candles から取得する。
   const compute = new ComputeHttpClient({ fetch });
 
@@ -198,8 +209,9 @@ export function installSharedUi({
 
   // ユーザー指示 2026-08-09: ローソク足上の右クリックメニュー（「情報をコピーする」）。
   //   足の解決と値の取り出しは renderer（upstream 隔離点）、見出し（ラベル＋パラメータ）と時間足は
-  //   controller（表示名・適用状態の単一情報源）、銘柄は app_chrome_view の CHART_SYMBOL
-  //   （ツールバーと同一文字列）、書き込みは ClipboardGateway、告知は ChartToastView。
+  //   controller（表示名・適用状態の単一情報源）、銘柄は app_chrome_view の器
+  //   （`chartSymbol(doc)`＝ツールバーが表示しているのと同一の実体。front は名前を自称しない・
+  //   ISSUE-368 A-4）、書き込みは ClipboardGateway、告知は ChartToastView。
   //   メニューは項目の中身を知らない。controller は本関数の呼び出し時点では未生成のため遅延参照する。
   //   ユーザー指摘 2026-08-10: 値だけでは「どのチャート・どのパラメータの値か」が復元できないため、
   //   コピー時点の文脈をここで集めて渡す（貼り付け先には画面が無い）。
@@ -226,10 +238,10 @@ export function installSharedUi({
     getContext: () => {
       const c = getController ? getController() : null;
       if (!c || typeof c.legendRows !== 'function') {
-        return { symbol: CHART_SYMBOL };   // controller 未生成（最小 fake）＝銘柄だけで縮退。
+        return { symbol: chartSymbol(doc) };   // controller 未生成（最小 fake）＝銘柄だけで縮退。
       }
       return {
-        symbol: CHART_SYMBOL,
+        symbol: chartSymbol(doc),
         timeframe: c._timeframe,
         labels: new Map(c.legendRows().map((r) => [r.instanceId, indicatorHeading(r)])),
       };
@@ -464,6 +476,11 @@ export function wireControllerCollaborators({
   //   「どの銘柄の刻みで丸めたか」が経路ごとに割れる。datasetRef は既に本関数の引数として届いており、
   //   新しい配管は作らない（設計「追補: 工程 2」E-3・S-6 通過条件）。
   const symbolSpec = lookupSymbolSpec(datasetRef);
+  // 銘柄名（表示）も同じ解決結果から配る（ISSUE-368 A-4）。器はツールバーが持ち、中身は
+  //   「どのデータセットを見ているか」を知っている本関数が入れる（tf-menu / tpl-menu と同じ
+  //   「器は View・中身は所有者」の分離）。解決できなければ縮退表示になる＝**無音で空にしない**。
+  //   ツールバーが無い構成（最小 fake・SSR）では no-op。
+  setChartSymbol(doc, symbolSpec ? symbolSpec.symbol : null);
   const positionSizing = positionSizingDialog
     ? createPositionSizingCollaborators({
       renderer,

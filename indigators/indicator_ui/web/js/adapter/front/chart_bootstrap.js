@@ -16,10 +16,30 @@
 
 import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 
+// 価格の表示形式（ISSUE-368 A-3）。**銘柄仕様が解決できているときだけ**設定する。
+//   実測（vendor v5.2.0 バンドル・系列共通既定）: `priceFormat:{type:"price",precision:2,minMove:.01}`。
+//   アプリ側は従来この指定を 1 か所も持っておらず、この既定に委ねていた＝JP225（digits=0・tick=1）
+//   でも軸・現在値・クロスヘアは小数 2 桁で出る。値だけを刻みへ丸めると「軸は 2 桁・入る値は整数」の
+//   乖離が残るため、桁も台帳に従わせる。
+//   解決できないときに既定の桁を**こちらで決め直さない**（決められないことを 0 桁と偽らない）。
+//   仕様は引数で受ける＝本ヘルパは台帳を知らない（front での解決点を増やさない）。
+function priceFormatOf(symbolSpec) {
+  if (!symbolSpec) {
+    return {};
+  }
+  const { tick, digits } = symbolSpec;
+  if (!Number.isFinite(tick) || tick <= 0 || !Number.isInteger(digits) || digits < 0) {
+    return {};   // 壊れた仕様で軸を固定すると、誤りが「読める表示」に化けて気付けない。
+  }
+  return { priceFormat: { type: 'price', precision: digits, minMove: tick } };
+}
+
 // チャート＋メインローソク系列を生成して返す（present を正とした共通オプション）。
 //   - crosshair Normal(0): Magnet スナップ無効（ユーザー要望・enum 無い環境向け 0 フォールバック）。
 //   - 現在値ライン: 固定橙・常時表示（ISSUE-084。日別プロファイルのローソク透明化でも消えない）。
-export function createChartWithMainSeries({ lwc, container }) {
+//   - symbolSpec: 銘柄仕様 `{symbol, tick, digits}`（呼び出し側が台帳から解決したもの）。未指定は
+//     priceFormat を設定しない＝lwc 既定のまま（従来の呼び出しは byte 等価）。
+export function createChartWithMainSeries({ lwc, container, symbolSpec = null }) {
   // v5: background は { type: ColorType.Solid, color }、panes のリサイズ separator は既定 ON。
   const chart = lwc.createChart(container, {
     layout: {
@@ -58,6 +78,9 @@ export function createChartWithMainSeries({ lwc, container }) {
     priceLineColor: CHROME_CURRENT.priceLine,
     priceLineWidth: 1,
     lastValueVisible: true,
+    // 表示桁（価格軸・現在値ラベル・クロスヘアの読み）を銘柄の刻みへ合わせる（A-3）。
+    //   仕様が無ければキーごと現れない＝従来と同一のオプションになる。
+    ...priceFormatOf(symbolSpec),
   });
   return { chart, mainSeries };
 }

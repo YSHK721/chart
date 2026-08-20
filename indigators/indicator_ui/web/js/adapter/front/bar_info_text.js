@@ -93,7 +93,8 @@ function indicatorLine(entry, labels) {
  * @param {object|null} info      ChartRenderer.barInfoAt の戻り
  *                                { time, ohlc, sessionMP, indicators:[{instanceId, values:[{name,value}]}] }。
  * @param {object} [context]      コピー時点のチャート文脈。
- * @param {string} [context.symbol]      銘柄名（app_chrome_view の CHART_SYMBOL＝ツールバーと同一）。
+ * @param {string} [context.symbol]      銘柄名（app_chrome_view の器＝ツールバーが表示しているのと
+ *                                同一の文字列。値の権威は marketdata 台帳・ISSUE-368 A-4）。
  * @param {string} [context.timeframe]   時間足コード（'1D' 等・台帳 TF_CODES の表記）。
  * @param {Map} [context.labels]         instanceId → 見出し（indicatorHeading 済み）。未指定は instanceId 表記。
  * @param {number} [context.copiedAtMs]  コピーを実行した実時刻（epoch ミリ秒）。渡されたときだけ
