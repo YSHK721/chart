@@ -10,8 +10,10 @@
 //   1 行目: 銘柄 ＋ 時間足（ユーザー指摘 2026-08-10「コピーした情報がどのチャートか分からない」）。
 //           貼り付け先には画面が無く、値だけでは同じ数字が別チャート・別足と区別できない。
 //   2 行目: 日時（日付 + 時間。読み取り欄と同じ fmtTime＝format.js が単一情報源）
-//   3 行目: 四本値（O/H/L/C。読み取り欄と同じラベルと整形 fmtValue）
-//   4 行目: 当日 MP（POC/VA。読み取り欄が出しているときと同じ条件＝DTO に載っているときだけ）
+//   3 行目: 四本値（O/H/L/C。読み取り欄と同じラベルと整形 **fmtPrice**）
+//   4 行目: 当日 MP（POC/VA。読み取り欄が出しているときと同じ条件＝DTO に載っているときだけ。
+//           読み取り欄が fmtValue で出しているので**こちらも fmtValue のまま**＝面ごとに寄せ方を
+//           変えると「同じ整形」が再び割れる）
 //   以降  : 指標 1 件 1 行（ペイン別凡例と同じ並び＝ペイン順・適用順）。
 //           行は「凡例のラベル ＋ パラメータ」＋系列ごとに「系列名 値」。凡例は系列名を
 //           ツールチップに、パラメータを設定ダイアログに隠すが、貼り付け先ではどちらも見えない
@@ -21,7 +23,14 @@
 // 値が無い（その足に材料が無い）系列は**出さない**。凡例が空欄を作らないのと同じ規約で、
 //   空欄や 0 を捏造しない。値が 1 つも無い指標は行ごと出さない。
 
-import { fmtValue, fmtTime, fmtInstant } from './format.js';
+// 四本値は**価格**なので表示桁は銘柄仕様の `digits` が決める（ISSUE-368 B-1）。読み取り欄が
+//   `fmtPrice` へ移った工程 5 是正で、コピーだけが `fmtValue`（小数 3 桁固定）に取り残され、
+//   `format.js:17-18` が単一ソース化の根拠に掲げる「コピーした文字列と画面表示が食い違わない」が
+//   割れていた（実測 2026-08-20: コピー `O 65,800.949` / 画面 `O 65,801`）。同じ関数を使う。
+//   指標値（fmtValue）は対象外＝下段ペインには価格でない系列がある。
+import {
+  fmtValue, fmtPrice, fmtTime, fmtInstant,
+} from './format.js';
 
 const SEP = '\t';
 
@@ -99,10 +108,13 @@ function indicatorLine(entry, labels) {
  * @param {Map} [context.labels]         instanceId → 見出し（indicatorHeading 済み）。未指定は instanceId 表記。
  * @param {number} [context.copiedAtMs]  コピーを実行した実時刻（epoch ミリ秒）。渡されたときだけ
  *                                       最終行に「コピー日時」を書く（時計は呼び出し側が持つ＝本関数は純粋）。
+ * @param {number} [context.priceDigits] 四本値の表示桁（銘柄仕様の `digits`）。**注入のみ**で、
+ *                                ここでは解決しない・既定値を決めない（権威は Python 台帳ただ 1 つ）。
+ *                                未指定・解決不能なら従来（`fmtValue`）と完全同一へ落ちる。
  * @returns {string}              コピーする文字列。材料が何も無ければ空文字（＝呼び出し側はコピーしない）。
  */
 export function formatBarInfoText(info, {
-  symbol = null, timeframe = null, labels = null, copiedAtMs = null,
+  symbol = null, timeframe = null, labels = null, copiedAtMs = null, priceDigits = null,
 } = {}) {
   if (!info) {
     return '';
@@ -120,7 +132,7 @@ export function formatBarInfoText(info, {
   if (info.ohlc) {
     const cells = [];
     for (const { key, label } of OHLC_CELLS) {
-      const text = fmtValue(info.ohlc[key]);
+      const text = fmtPrice(info.ohlc[key], priceDigits);
       if (text) {
         cells.push(`${label} ${text}`);
       }

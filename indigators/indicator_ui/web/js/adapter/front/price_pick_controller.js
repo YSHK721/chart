@@ -27,7 +27,8 @@ import { priceOnLine } from './price_format.js';
 // 案内文言（裁定 2026-08-20「下段ペインで押しても何も起きない状態を作らない」）は
 //   理由コードと同居する単一ソースから取る。右クリック（8-c）と同じ文言を写さない。
 import {
-  resolvePickedPrice, OTHER_PANE, MSG_OTHER_PANE, MSG_NO_PRICE, DEFAULT_PICK_TOLERANCE_PX,
+  resolvePickedPrice, OTHER_PANE, NO_SYMBOL_SPEC,
+  MSG_OTHER_PANE, MSG_NO_PRICE, MSG_NO_SYMBOL_SPEC, DEFAULT_PICK_TOLERANCE_PX,
 } from './price_pick_resolver.js';
 
 const HOST_CLASS = 'price-pick-ghost';
@@ -253,10 +254,23 @@ export class PricePickController {
   }
 }
 
-// 確定しない理由 → 案内文言。右クリック経路（`position_sizing_context_items.js`）と**同じ選び分け**
-//   （同じ理由に同じ文言）。分岐の形を揃えることで 2 経路の非対称が再発したときに検定で落ちる。
+// 確定しない理由 → 案内文言。右クリック経路（`position_sizing_context_items.js` ＋ 共有配線の
+//   告知差し替え）と**同じ選び分け**（同じ理由に同じ文言）。
+//
+// 工程 5 是正 C: 従来は「`OTHER_PANE` でなければ `MSG_NO_PRICE`」の 2 分岐で、後から増えた
+//   3 つ目の理由 `NO_SYMBOL_SPEC`（刻みが不明＝機能ごと無効）まで `MSG_NO_PRICE` へ吸われていた
+//   （実測 2026-08-20）。右クリック経路は同じ理由に `MSG_NO_SYMBOL_SPEC` を出しており
+//   非対称で、かつ**理由と案内が食い違う案内は無音より悪い**（利用者は「別の場所を押せば入る」と
+//   誤解して押し続ける）。理由コードごとに明示的に選ぶ形にする＝理由が増えたら分岐が足りないことが
+//   ここで見える（既定へ黙って吸わせない）。文言は理由コードと同居する単一ソースから取る。
 function guidanceFor(reason) {
-  return reason === OTHER_PANE ? MSG_OTHER_PANE : MSG_NO_PRICE;
+  if (reason === OTHER_PANE) {
+    return MSG_OTHER_PANE;
+  }
+  if (reason === NO_SYMBOL_SPEC) {
+    return MSG_NO_SYMBOL_SPEC;
+  }
+  return MSG_NO_PRICE;
 }
 
 // 採用予定価格の表示文字列。どこへ吸ったか（候補名）まで出す（R-P2「採用予定値を明示」）。

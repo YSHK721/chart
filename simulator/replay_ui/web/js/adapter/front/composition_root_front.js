@@ -69,6 +69,9 @@ export async function bootstrap({
     // 指標カラーテーマ（段階 3）。ライブと同一配線＝テーマ集合・選択中テーマはモード間で共有される
     //   （storage 名前空間が同一実体・E-17）。
     themeStore, themeState, chromeThemeApplier,
+    // 銘柄仕様（呼び値・表示桁）。ライブと同一配線＝解決は共有配線の 1 回だけで、
+    //   root は識別子を通すだけ（themeStore / themeState と同一の受け渡し規約）。
+    symbolSpec,
   } = await composeChartShell({ lwc, container, doc, storage, fetch, datasetRef, recentBars });
 
   let controller;
@@ -107,6 +110,9 @@ export async function bootstrap({
     // standalone replay のツールバーはライブ追従トグルもリプレイトグルも持たない
     //   （ライブ更新が無く、切替先のライブも無い）。
     toolbar: { liveFollow: false, enterReplay: false },
+    // 足情報のコピーが画面の読み取り欄と同じ桁で書くための転送（工程 5 是正 A）。
+    //   ライブ root と**対称**に渡す。
+    symbolSpec,
   });
   // リプレイ操作バー（ISSUE-278 #16: markup は View が所有＝2 ページ複製をやめた）。
   //   「リプレイ終了（✕）」は統合 UI だけが持つ（standalone には戻り先のライブが無い）。

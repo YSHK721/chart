@@ -172,6 +172,9 @@ export async function bootstrap({
     // 指標カラーテーマ（基本設計_指標カラーテーマ.md 段階 3）。templateStore と同じ受け渡し規約で
     //   共有配線へ渡す（生成と解決は composeChartShell が所有し、root は識別子を通すだけ）。
     themeStore, themeState, chromeThemeApplier,
+    // 銘柄仕様（呼び値・表示桁）。解決は共有配線が 1 回行い、root は**識別子を通すだけ**
+    //   （themeStore / themeState と同一の受け渡し規約）。root は台帳を引かない。
+    symbolSpec,
   } = await composeChartShell({ lwc, container, doc, storage, fetch, datasetRef, recentBars });
 
   // Market Profile（独立アクター・candle 版 MVP）の組み立て。取得（client）と描画（primitive）を
@@ -292,6 +295,9 @@ export async function bootstrap({
     //   リプレイのオン・オフトグルは**リプレイ層が注入されたページ**＝統合 UI のときだけ置く
     //   （standalone live には切替先が無い）。差はフラグ 1 つで表し markup は複製しない。
     toolbar: toolbar ?? { liveFollow: true, enterReplay: !!replay },
+    // 足情報のコピー（右クリック）が画面の読み取り欄と同じ桁で書くための転送（工程 5 是正 A）。
+    //   リプレイ root と**対称**に渡す（片側だけの是正は再フォークと同じ取り残しを生む）。
+    symbolSpec,
   });
   // リプレイ操作バーの DOM もリプレイ層が所有する（live root はリプレイのコードを import しない＝
   //   注入のみ。未注入の standalone live では生成されない＝従来どおりバーは存在しない）。

@@ -106,7 +106,12 @@ export async function composeChartShell({
   //   `lookupSymbolSpec`（front 配下で台帳へ触れる唯一の口）で、本モジュールの外へは出さない。
   //   ここと wireControllerCollaborators の 2 か所が同じ `datasetRef`（root が両方へ渡す同一の値）
   //   から同じ純関数を引く＝結果は必ず一致する（引き当ては台帳の凍結オブジェクトを読むだけで
-  //   状態を持たない）。値を持ち回るための新しい配管（root の引数追加）は作らない。
+  //   状態を持たない）。値を持ち回るための新しい配管（**root の引数追加**）は作らない。
+  //   この一文の射程（工程 5 是正 A で明確化・事実に合わせた補足であって方針変更ではない）:
+  //   戒めているのは「root の**入力**を増やして値を外から通す」形だけである。**戻り値へ足して
+  //   root が転送する**形は既存の先例そのもの（`themeState`: 本関数が 1 回解決 → 戻り値 → root →
+  //   `wireControllerCollaborators`）で、解決点は本関数の中に留まったままなので抵触しない。
+  //   実際、解決済みの値を**画面の他の面へ配る**手段はこれしかない（下の `priceDigits` と同型）。
   const symbolSpec = lookupSymbolSpec(datasetRef);
   // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123）。
   //   表示桁（priceFormat）は台帳の digits/tick に従わせる（A-3）。解決できなければ渡さない＝
@@ -181,6 +186,9 @@ export async function composeChartShell({
     chart, mainSeries, compute, readoutView, currentPriceView, paneLegendView, renderer,
     updatePaneHeight, persistence, templateStore, catalog, loadCandles, chromeThemeApplier,
     themeStore, themeState,
+    // 解決済みの銘柄仕様（`themeState` と同型の転送）。root は中身を解釈せず `installSharedUi` へ
+    //   渡すだけで、台帳を引き直さない（解決点は本関数と wireControllerCollaborators の 2 か所のまま）。
+    symbolSpec,
   };
 }
 
@@ -189,11 +197,14 @@ export async function composeChartShell({
 //   isVerticalPanBlocked: 縦パンを開始しない条件（MP リプレイ表示モード等）。未指定は従来どおり無条件。
 //   getTemplates: テンプレート協働子の遅延参照（controller 生成後に代入されるため）。
 //   getColorThemes: テーマ協働子の遅延参照（getTemplates と同一規約・同じ理由）。
+//   symbolSpec: 解決済みの銘柄仕様 `{symbol, tick, digits}`（composeChartShell の戻り値を root が
+//     そのまま転送する）。**既定値つきの任意引数**なので、渡さない既存の呼び出しは 1 バイトも
+//     変わらない（従来どおり価格の桁を決めない）。ここでは解決しない＝解決点を増やさない。
 export function installSharedUi({
   container, renderer, doc, getController, updatePaneHeight,
   isVerticalPanBlocked = undefined, getTemplates = () => null, getColorThemes = () => null,
   getPositionSizing = () => null,
-  toolbar = {}, contextMenuItems = [],
+  toolbar = {}, contextMenuItems = [], symbolSpec = null,
 } = {}) {
   // アプリ外枠（ツールバー・指標ダイアログ）の DOM は View が所有し生成する（ISSUE-278 #16）。
   //   配信 3 ページへ同じマークアップを手書き複製する義務を無くす（指標ダイアログは 3 ページで
@@ -239,6 +250,10 @@ export function installSharedUi({
       SERIES_GUARD_TOAST_MS,
     );
   });
+  // 四本値の表示桁（工程 5 是正 A）。読み取り欄（`composeChartShell` の `priceDigits`）と**同じ
+  //   解決結果**を配る＝コピーした文字列と画面表示が食い違わない（`format.js:17-18` が単一ソース化の
+  //   根拠に掲げる不変条件）。解決できない構成では `null`＝従来どおり（無音で桁を決めない）。
+  const priceDigits = symbolSpec ? symbolSpec.digits : null;
   const copyBarInfo = createCopyBarInfoItem({
     renderer,
     clipboard: new ClipboardGateway({ document: doc }),
@@ -246,12 +261,14 @@ export function installSharedUi({
     getContext: () => {
       const c = getController ? getController() : null;
       if (!c || typeof c.legendRows !== 'function') {
-        return { symbol: chartSymbol(doc) };   // controller 未生成（最小 fake）＝銘柄だけで縮退。
+        // controller 未生成（最小 fake）＝銘柄と桁だけで縮退。
+        return { symbol: chartSymbol(doc), priceDigits };
       }
       return {
         symbol: chartSymbol(doc),
         timeframe: c._timeframe,
         labels: new Map(c.legendRows().map((r) => [r.instanceId, indicatorHeading(r)])),
+        priceDigits,
       };
     },
   });
