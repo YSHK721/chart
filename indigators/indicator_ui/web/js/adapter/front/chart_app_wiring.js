@@ -523,12 +523,21 @@ function createPositionSizingCollaborators({
  * root が `installSharedUi({ contextMenuItems })` へ渡す（共有配線が無条件に足すと replay まで
  * 項目が出るため）。座標→価格の解決はピッカーと同一の 1 本（`resolvePickedPrice`）を使う。
  *
+ * 告知先（案内トースト）は **遅延参照**で受ける。共有トースト `chartToast` は `installSharedUi` の
+ * 内側で生成されるため、その引数（本関数の戻り値）を組み立てる時点では root から参照できない。
+ * 値で受けると root は `null` を渡すしかなく、下段ペインの右クリックが**無音**になる
+ * （裁定「オシレーターペイン上のクリックは無効化＋案内」の未達・2026-08-20 に実際に発生していた）。
+ * 遅延 getter は `getPositionSizing` / `getTemplates` / `getColorThemes` と同一規約で、
+ * 受け渡し機構を新設しない。
+ *
  * @param {object} deps
  * @param {object} deps.renderer ChartRenderer。
  * @param {Function} deps.getPositionSizing 協働子の遅延参照（生成前は null を返してよい）。
- * @param {?object} [deps.toast] 案内表示（下段ペイン・価格が取れない座標）。
+ * @param {Function} [deps.getToast] 案内表示の遅延参照（下段ペイン・価格が取れない座標）。
  */
-export function createPositionSizingContextItems({ renderer, getPositionSizing, toast = null }) {
+export function createPositionSizingContextItems({
+  renderer, getPositionSizing, getToast = () => null,
+}) {
   const of = () => getPositionSizing();
   return createPriceContextItems({
     resolvePrice: (context) => resolvePickedPrice({
@@ -537,6 +546,14 @@ export function createPositionSizingContextItems({ renderer, getPositionSizing, 
     onSetStop: (price) => { const c = of(); return c ? c.setStopPrice(price) : undefined; },
     onAddEntry: (price) => { const c = of(); return c ? c.addEntryPrice(price) : undefined; },
     onSetTake: (price) => { const c = of(); return c ? c.setTakePrice(price) : undefined; },
-    toast,
+    // 呼ばれた時点で告知先を解決する（未生成・DOM 不在なら告知しない＝例外を投げない）。
+    toast: {
+      show: (message) => {
+        const t = getToast();
+        if (t && typeof t.show === 'function') {
+          t.show(message);
+        }
+      },
+    },
   });
 }

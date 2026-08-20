@@ -100,7 +100,9 @@ export async function bootstrap({
     contextMenuItems: createPositionSizingContextItems({
       renderer,
       getPositionSizing: () => positionSizing,
-      toast: null,
+      // 告知先（下段ペインの案内・裁定 2026-08-20）はライブと同一で遅延参照。共有トーストは
+      //   installSharedUi の内側で生成されるため、この引数を作る時点では未生成である。
+      getToast: () => chartToast,
     }),
     // standalone replay のツールバーはライブ追従トグルもリプレイトグルも持たない
     //   （ライブ更新が無く、切替先のライブも無い）。

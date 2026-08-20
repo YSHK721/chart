@@ -283,7 +283,10 @@ export async function bootstrap({
     contextMenuItems: createPositionSizingContextItems({
       renderer,
       getPositionSizing: () => positionSizing,
-      toast: null,   // 告知先は協働子の生成時に共有トーストが結ばれる（ここでは器を持たない）。
+      // 告知先（下段ペインの案内・裁定 2026-08-20）は**遅延参照**で渡す。共有トーストは
+      //   installSharedUi の内側で生成されるため、この引数を作る時点では未生成である
+      //   （値で渡そうとして null になり、右クリックが無音だった。2026-08-20 是正）。
+      getToast: () => chartToast,
     }),
     // ツールバーの構成（ISSUE-278 #16）: ライブ追従トグルは本 root（ライブ）が常に持つ。
     //   リプレイのオン・オフトグルは**リプレイ層が注入されたページ**＝統合 UI のときだけ置く

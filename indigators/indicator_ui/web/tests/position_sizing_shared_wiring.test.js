@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import {
   installSharedUi, wireControllerCollaborators, createPositionSizingContextItems,
 } from '../js/adapter/front/chart_app_wiring.js';
+import { MSG_OTHER_PANE } from '../js/adapter/front/price_pick_resolver.js';
 
 const FRONT = new URL('../js/adapter/front/', import.meta.url);
 const read = (name) => readFileSync(fileURLToPath(new URL(name, FRONT)), 'utf8');
@@ -292,4 +293,46 @@ test('TC-SW10 リプレイ root も右クリック 3 項目を注入する（ラ
     /createPositionSizingContextItems\(/,
     '項目は共有配線のヘルパから作る（root へ項目定義を複製しない）',
   );
+});
+
+// ---------------------------------------------------------------------------
+// 下段ペイン右クリックの案内（裁定 2026-08-20・是正 2026-08-20）
+//
+//   裁定は「オシレーターペイン上のクリックは**無効化＋案内**」（設計書 ピッカー経路の実測検証 7）。
+//   8-c（右クリック）は notify() を実装済みだったが、**両 root が toast: null を渡していた**ため
+//   本番では無音だった（押しても何も起きない＝裁定の未達）。告知先 `chartToast` は
+//   installSharedUi の**内側**で生成されるため、引数を組み立てる時点では root から参照できない。
+//   解決は既存規約と同じ遅延参照（getPositionSizing / getTemplates と同型の getter）。
+// ---------------------------------------------------------------------------
+
+test('TC-SW11 下段ペインの右クリックは共有トーストで案内する（無音の縮退をしない）', () => {
+  // Arrange: 共有配線を組み、告知先（共有トースト）を観測する。
+  //   show を後から差し替えて観測できること自体が「遅延参照で解決している」ことの実証になる
+  //   （生成時に値を焼き付けていたら、この差し替えは効かない）。
+  const ctx = bootAll();
+  const seen = [];
+  ctx.shared.chartToast.show = (m) => seen.push(m);
+  const items = createPositionSizingContextItems({
+    renderer: {
+      priceAtCoordinate: (y) => 59000 - y,
+      paneIndexAtCoordinate: (y) => (y >= 0 && y < 300 ? 0 : 1),
+      snapCandidatesAt: () => [],
+    },
+    getPositionSizing: () => ctx.positionSizing,
+    getToast: () => ctx.shared.chartToast,
+  });
+  // Act: 下段ペイン（y=350）で「この価格を損切りに設定」を選ぶ。
+  items[0].onSelect({ x: 100, y: 350 });
+  // Assert
+  assert.deepEqual(seen, [MSG_OTHER_PANE], '下段ペインの右クリックが無音（裁定「無効化＋案内」の未達）');
+});
+
+test('TC-SW12 両 root が告知先を渡す（案内の結線を root で落とさない）', () => {
+  // Arrange / Act
+  const liveRoot = read('composition_root_front.js');
+  const replayRoot = replayRootSrc();
+  // Assert: 遅延参照で共有トーストを渡していること（toast: null のままだと本番だけ無音になる）。
+  for (const [name, src] of [['live', liveRoot], ['replay', replayRoot]]) {
+    assert.match(src, /getToast:\s*\(\)\s*=>\s*chartToast/, `${name} root が告知先を渡していない（案内が出ない）`);
+  }
 });
