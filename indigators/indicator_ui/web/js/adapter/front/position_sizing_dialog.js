@@ -130,6 +130,66 @@ function selectDefault(spec) {
   return spec.def ?? spec.options[0][0];
 }
 
+// ---- 表示書式（参照実装が正解を定義する）--------------------------------------
+//
+// 実 UI 実測（2026-08-20）で `EV=0.42120000000000013` `f*=0.1537226277372263` のように
+//   **生の float** が出ていた。参照実装 integrated_position_sizing_calculator.html は
+//   項目ごとに書式を定義しており、それが正解である（推測で決めない・足さない）。
+//
+// ここにあるのは**整形だけ**で、値は 1 つも作らない（§3 UC-04 Presenter の責務）。
+//   計算値は ViewModel のまま（第 2 実装を作らない）。
+//
+// 本モジュールは何も import できない（TC-SW02 が「モーダルは import しない」を施行）ため、
+//   書式表はこのファイル内に置く。
+
+const pct2 = (x) => `${(x * 100).toFixed(2)}%`;        // 参照: `(f*100).toFixed(2)+'%'`
+const pct1 = (x) => `${(x * 100).toFixed(1)}%`;        // 参照: `(rorAtKelly*100).toFixed(1)+'%'`
+const yen = (x) => `¥${Math.round(x).toLocaleString()}`; // 参照: `¥${Math.round(v).toLocaleString()}`
+const fix0 = (x) => x.toFixed(0);                       // 参照: `r.avgP.toFixed(0)`
+const signed3 = (x) => `${x >= 0 ? '+' : ''}${x.toFixed(3)}`; // 参照: `${ev>=0?'+':''}${ev.toFixed(3)}`
+
+// 参照実装 `:1041` の fmtLot（ロット単位で切り替わる唯一の書式）。
+const fmtLot = (x, lotMode) => (lotMode === 'int'
+  ? Math.floor(x + 1e-9).toLocaleString()
+  : x.toFixed(2));
+
+// 出力キー → 書式。**参照実装に定義がある項目だけ**を載せる（無い項目は素の値のまま）。
+const OUT_FORMAT = Object.freeze({
+  // Step 1 派生カード（参照 `updateDerived()`）
+  lossRate: (v) => v.toFixed(3),                        // `q.toFixed(3)`
+  expectedValue: signed3,                               // `${ev>=0?'+':''}${ev.toFixed(3)}`
+  kellyFraction: pct2,                                  // `(f*100).toFixed(2)+'%'`
+  halfKellyFraction: pct2,                              // `(Math.max(f,0)/2*100).toFixed(2)+'%'`
+  // Step 1 MC 結果カード
+  constrainedFraction: pct2,                            // `(fSafe*100).toFixed(2)+'%'`（c_safe）
+  // **注記（外挿）**: 参照実装は rorAtSafe を数値として表示しない（c_safe_sub は α を出す）。
+  //   同種の量である rorAtKelly の書式 `(rorAtKelly*100).toFixed(1)+'%'` を当てている。
+  //   参照実装が直接定義した規則ではない旨をここに残す（要確認事項として報告済み）。
+  rorAtConstrained: pct1,
+  // Step 2（参照 `updateChosen()`）
+  fraction: pct2,                                       // `(f*100).toFixed(2)+'%'`
+  // Step 3（参照 `renderSplit()` の kv 行）
+  totalLot: (v, c) => `${fmtLot(v, c.lotMode)}単位`,    // `${fmtLot(r.totalLot)}単位`
+  avgPrice: fix0,                                       // `r.avgP.toFixed(0)`
+  totalRisk: yen,                                       // `¥${Math.round(r.totalRisk).toLocaleString()}`
+  rr: (v) => `${v.toFixed(2)} : 1`,                     // `${r.rr.toFixed(2)} : 1`
+  breakeven: pct1,                                      // `(r.breakeven*100).toFixed(1)+'%'`
+  winRate: pct1,                                        // `(r.pEmp*100).toFixed(1)+'%'`
+  excess: (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`, // `${r.excess>=0?'+':''}${(r.excess*100).toFixed(1)}%`
+  evYen: (v) => `${v >= 0 ? '+' : '−'}¥${Math.abs(Math.round(v)).toLocaleString()}`,
+  evMultiple: signed3,                                  // 時間決済側の EV（`...toFixed(3)`）
+  requiredMargin: yen,                                  // `¥${Math.round(r.reqMargin).toLocaleString()}`
+  marginUse: pct1,                                      // `(r.marginUse*100).toFixed(1)+'%'`
+  // `r.immediateLC?'即時（証拠金不足）':(r.lcPrice<0?r.lcPrice.toFixed(0)+'（0未満・到達不能）':r.lcPrice.toFixed(0))`
+  losscutPrice: (v, c) => {
+    if (c.plan.immediate_lc === true) {
+      return '即時（証拠金不足）';
+    }
+    return v < 0 ? `${v.toFixed(0)}（0未満・到達不能）` : v.toFixed(0);
+  },
+  buildableLot: (v, c) => `${fmtLot(v, c.lotMode)}単位`, // `${fmtLot(r.totalLotBuild)}単位`
+});
+
 export const FRACTION_CHOICES = [
   ['safe', '安全（破産確率制約）'],
   ['half', 'ハーフケリー'],
@@ -684,10 +744,16 @@ export class PositionSizingDialog {
       // 時間決済の EV（Rp−q）。derived と同じ値であり、ここで計算し直さない（:1064 else 側）。
       evMultiple: d.expectedValue,
     };
+    // 整形の文脈（参照実装が書式の切り替えに使っている状態）。ロット書式は S.lotmode、
+    //   ロスカット価格の分岐は r.immediateLC に従う（どちらも参照実装の定義どおり）。
+    const context = { plan, lotMode: this._fields.get('lotMode')?.value ?? 'int' };
     for (const [key, value] of Object.entries(values)) {
       const el = this._outs.get(key);
       if (el) {
-        el.textContent = Number.isFinite(value) ? String(value) : '—';
+        const format = OUT_FORMAT[key];
+        el.textContent = Number.isFinite(value)
+          ? (format ? format(value, context) : String(value))
+          : '—';
       }
     }
     this._renderWarnings(vm, plan);

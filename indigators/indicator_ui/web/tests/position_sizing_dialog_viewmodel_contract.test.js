@@ -153,9 +153,17 @@ test('TC-VC02 MC 実行後は制約 f と採用 f が埋まる（Step 1/2 の表
   const vm = await uc.runMonteCarlo();
   dialog.render(vm);
   // Assert
-  assert.equal(byOut(root, 'constrainedFraction').textContent, String(vm.edge.constrainedFraction));
-  assert.equal(byOut(root, 'rorAtConstrained').textContent, String(vm.edge.rorAtConstrained));
-  assert.equal(byOut(root, 'fraction').textContent, String(vm.fraction));
+  // 表示は参照実装の書式（f 系は % ・RoR は小数 1 桁）。本検定の目的は「VM の値が表示まで
+  //   届いているか（キー名の食い違いが無いか）」であり、書式そのものの権威は TC-PD38 が持つ。
+  assert.equal(
+    byOut(root, 'constrainedFraction').textContent,
+    `${(vm.edge.constrainedFraction * 100).toFixed(2)}%`,
+  );
+  assert.equal(
+    byOut(root, 'rorAtConstrained').textContent,
+    `${(vm.edge.rorAtConstrained * 100).toFixed(1)}%`,
+  );
+  assert.equal(byOut(root, 'fraction').textContent, `${(vm.fraction * 100).toFixed(2)}%`);
   assert.notEqual(byOut(root, 'fraction').textContent, '—');
 });
 

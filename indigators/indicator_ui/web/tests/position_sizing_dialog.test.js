@@ -346,14 +346,15 @@ test('TC-PD16 render(vm) は ViewModel の値を表示する（式を 1 つも�
   // Act
   dialog.render(VM);
   // Assert: 合計ロット・平均建値・ロスカット価格・RR は VM の値がそのまま出る。
-  assert.equal(byData(root, 'psOut', 'totalLot').textContent, '10');
+  // 書式は参照実装 renderSplit の `${fmtLot(r.totalLot)}単位`（書式の権威は TC-PD39）。
+  assert.equal(byData(root, 'psOut', 'totalLot').textContent, '10単位');
   assert.equal(byData(root, 'psOut', 'avgPrice').textContent, '58650');
   assert.equal(byData(root, 'psOut', 'losscutPrice').textContent, '58020');
-  assert.equal(byData(root, 'psOut', 'rr').textContent, '2.4');
+  assert.equal(byData(root, 'psOut', 'rr').textContent, '2.40 : 1');
   // Step 1 の派生（MC 非依存）と MC 結果も VM 由来。
-  assert.equal(byData(root, 'psOut', 'kellyFraction').textContent, '0.1537');
-  assert.equal(byData(root, 'psOut', 'constrainedFraction').textContent, '0.0912');
-  assert.equal(byData(root, 'psOut', 'fraction').textContent, '0.0912');
+  assert.equal(byData(root, 'psOut', 'kellyFraction').textContent, '15.37%');
+  assert.equal(byData(root, 'psOut', 'constrainedFraction').textContent, '9.12%');
+  assert.equal(byData(root, 'psOut', 'fraction').textContent, '9.12%');
 });
 
 test('TC-PD17 MC 未実行（edge=null）の欄は「—」のまま（0 と偽らない）', () => {
@@ -363,7 +364,7 @@ test('TC-PD17 MC 未実行（edge=null）の欄は「—」のまま（0 と偽�
   dialog.render({ ...VM, edge: null, fraction: 0 });
   // Assert
   assert.equal(byData(root, 'psOut', 'constrainedFraction').textContent, '—');
-  assert.equal(byData(root, 'psOut', 'kellyFraction').textContent, '0.1537', '派生カードは MC 非依存で出る');
+  assert.equal(byData(root, 'psOut', 'kellyFraction').textContent, '15.37%', '派生カードは MC 非依存で出る');
 });
 
 test('TC-PD18 違反・警告は VM の判定をそのまま出す（判定を作らない）', () => {
@@ -451,8 +452,8 @@ test('TC-PD23 時間決済へ切り替えると 2 値評価を隠し、EV（R �
   assert.equal(byData(root, 'psGroup', 'time').classList.contains('is-hidden'), false);
   assert.equal(
     byData(root, 'psOut', 'evMultiple').textContent,
-    String(VM.derived.expectedValue),
-    'EV は ViewModel の derived.expectedValue（Rp−q）をそのまま出す＝式を持たない',
+    '+0.421',
+    'EV は ViewModel の derived.expectedValue（Rp−q）を参照実装の書式で出す＝式を持たない',
   );
 });
 
@@ -690,4 +691,92 @@ test('TC-PD35 画面の初期表示と usecase の初期 params が一致する�
       `${key}: 画面の初期表示と計算の初期値が食い違っている`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// 表示書式（参照実装が正解を定義する・実 UI 実測 2026-08-20 の是正）
+//
+//   実 UI 実測: EV=0.42120000000000013 / f*=0.1537226277372263 のように**生の float**が出ていた。
+//   参照実装 `updateDerived()` は q→toFixed(3)、EV→符号付き toFixed(3)、f 系→% 表示（toFixed(2)）と
+//   定義している。整形は View（Presenter）の責務で、計算値は 1 つも変えない（§3 UC-04）。
+//   参照実装に表示定義が無い項目へ勝手な整形規則を足さないこと（下の rorAtConstrained の注記参照）。
+// ---------------------------------------------------------------------------
+
+test('TC-PD36 Step 1 の派生は参照実装 updateDerived の書式で出る（q・EV・f*・ハーフ）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  dialog.render(VM);
+  // Assert: q→`q.toFixed(3)` / EV→`(ev>=0?'+':'')+ev.toFixed(3)` /
+  //   f*→`(f*100).toFixed(2)+'%'` / ハーフ→`(max(f,0)/2*100).toFixed(2)+'%'`
+  assert.equal(byData(root, 'psOut', 'lossRate').textContent, '0.620');
+  assert.equal(byData(root, 'psOut', 'expectedValue').textContent, '+0.421');
+  assert.equal(byData(root, 'psOut', 'kellyFraction').textContent, '15.37%');
+  assert.equal(byData(root, 'psOut', 'halfKellyFraction').textContent, '7.69%');
+});
+
+test('TC-PD37 EV が負なら符号を付けない（参照実装は正のときだけ + を足す）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  dialog.render({ ...VM, derived: { ...VM.derived, expectedValue: -0.1234 } });
+  // Assert: `${ev>=0?'+':''}${ev.toFixed(3)}` → 負は toFixed が付ける '−' のみ。
+  assert.equal(byData(root, 'psOut', 'expectedValue').textContent, '-0.123');
+});
+
+test('TC-PD38 f 系（制約 f・採用 f）は % 表示（参照実装 c_safe / chosenF）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  dialog.render(VM);
+  // Assert: `(fSafe*100).toFixed(2)+'%'` / `(f*100).toFixed(2)+'%'`
+  assert.equal(byData(root, 'psOut', 'constrainedFraction').textContent, '9.12%');
+  assert.equal(byData(root, 'psOut', 'fraction').textContent, '9.12%');
+});
+
+test('TC-PD39 Step 3 は参照実装 renderSplit の書式で出る（ロット・金額・比・％）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  dialog.render(VM);
+  const out = (k) => byData(root, 'psOut', k).textContent;
+  // Assert: 参照実装の該当式どおり。
+  assert.equal(out('totalLot'), '10単位', '`fmtLot(r.totalLot)+"単位"`');
+  assert.equal(out('avgPrice'), '58650', '`r.avgP.toFixed(0)`');
+  assert.equal(out('totalRisk'), '¥15,000', '`¥${Math.round(r.totalRisk).toLocaleString()}`');
+  assert.equal(out('rr'), '2.40 : 1', '`${r.rr.toFixed(2)} : 1`');
+  assert.equal(out('breakeven'), '29.4%', '`(r.breakeven*100).toFixed(1)+"%"`');
+  assert.equal(out('requiredMargin'), '¥58,650', '`¥${Math.round(r.reqMargin).toLocaleString()}`');
+  assert.equal(out('marginUse'), '34.1%', '`(r.marginUse*100).toFixed(1)+"%"`');
+  assert.equal(out('losscutPrice'), '58020', '`r.lcPrice.toFixed(0)`');
+  assert.equal(out('buildableLot'), '10単位', '`fmtLot(r.totalLotBuild)+"単位"`');
+  assert.equal(out('evYen'), '+¥12,346', '`${x>=0?"+":"−"}¥${Math.abs(Math.round(x)).toLocaleString()}`');
+});
+
+test('TC-PD40 ロスカット価格の分岐は参照実装どおり（即時／0 未満／通常）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  const out = () => byData(root, 'psOut', 'losscutPrice').textContent;
+  // Act / Assert: `r.immediateLC?'即時（証拠金不足）':(r.lcPrice<0?...+'（0未満・到達不能）':...)`
+  dialog.render({ ...VM, plan: { ...VM.plan, immediate_lc: true } });
+  assert.equal(out(), '即時（証拠金不足）');
+  dialog.render({ ...VM, plan: { ...VM.plan, losscut_price: -120.4 } });
+  assert.equal(out(), '-120（0未満・到達不能）');
+  dialog.render(VM);
+  assert.equal(out(), '58020');
+});
+
+test('TC-PD41 ロット表示は lotMode に従う（参照実装 fmtLot: int は切り捨て・dec は小数 2 桁）', () => {
+  // Arrange: 既定は int。
+  const doc = specDoc();
+  const dialog = new PositionSizingDialog({ document: doc });
+  dialog.open();
+  const root = doc.body.children[0];
+  const out = () => byData(root, 'psOut', 'totalLot').textContent;
+  // Act / Assert: `S.lotmode==='int'?Math.floor(x+1e-9).toLocaleString():x.toFixed(2)`
+  dialog.render({ ...VM, plan: { ...VM.plan, total_lot: 1234.7 } });
+  assert.equal(out(), '1,234単位', 'int は切り捨て＋桁区切り');
+  byData(root, 'psField', 'lotMode').value = 'dec';
+  dialog.render({ ...VM, plan: { ...VM.plan, total_lot: 1234.7 } });
+  assert.equal(out(), '1234.70単位', 'dec は小数 2 桁');
 });
