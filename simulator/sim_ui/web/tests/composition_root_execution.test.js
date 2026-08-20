@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fakeDoc, findById, flatten } from "./_fakes.js";
+import { fakeDoc, findById, flatten, IDLE_WATCH_TIMER } from "./_fakes.js";
 import { EA_INPUT_FIELDS } from "../js/adapter/front/sim_ea_inputs_panel_view.js";
 import { settingsSchema } from "./_settings_schema_fixture.js";
 import { mountSimExecutionPanel } from "../js/adapter/front/composition_root_execution.js";
@@ -57,7 +57,7 @@ function routerFetch({ job, schema, schemaRaw, runOptions } = {}) {
 
 test("mount builds the execution panel", async () => {
   const doc = fakeDoc();
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
   assert.ok(findById(doc.body, "simRunActionPanel"), "実行指示面が生成されていない");
   assert.ok(findById(doc.body, "runStart"));
 });
@@ -66,7 +66,7 @@ test("submit posts the built body and notifies onSubmitted", async () => {
   const doc = fakeDoc();
   const fetchFn = routerFetch({ job: { job_id: "j7", status: "running" } });
   const submitted = [];
-  await mountSimExecutionPanel({
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER,
     doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST, onSubmitted: (r) => submitted.push(r),
   });
   findById(doc.body, eaInputId("stop_loss_points")).value = "100";
@@ -89,7 +89,7 @@ test("mount loads run-options and populates the symbol + ea candidates", async (
   const original = console.warn;
   console.warn = () => {};
   try {
-    await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+    await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn });
   } finally {
     console.warn = original;
   }
@@ -107,7 +107,7 @@ test("run-options profile drives the submitted 18-key body", async () => {
   const doc = fakeDoc();
   const fetchFn = routerFetch();
   const submitted = [];
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, onSubmitted: (r) => submitted.push(r) });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn, onSubmitted: (r) => submitted.push(r) });
   findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const post = fetchFn.calls.find((c) => c.url === "/sim/jobs");
@@ -120,7 +120,7 @@ test("run-options profile drives the submitted 18-key body", async () => {
 test("after submit a 'see results' affordance appears and does NOT auto-navigate", async () => {
   const doc = fakeDoc();
   const nav = [];
-  await mountSimExecutionPanel({
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER,
     doc, host: doc.body, fetch: routerFetch({ job: { job_id: "abc", status: "running" } }),
     navigate: (url) => nav.push(url),
   });
@@ -147,7 +147,7 @@ test("mount fetches the settings schema and feeds the tester panel", async () =>
   const schema = settingsSchema();
   const doc = fakeDoc();
   const fetchFn = routerFetch({ schema });
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn });
   assert.ok(fetchFn.calls.some((c) => c.url === "/sim/settings-schema"), "schema を取得していない");
   assert.ok(findById(doc.body, "simTesterPanel"), "Tester パネルが出ていない");
   const expert = findById(doc.body, "testerExpert");
@@ -158,7 +158,7 @@ test("mount fetches the settings schema and feeds the tester panel", async () =>
 test("the tester panel is still mounted when the schema fetch fails (fail-open)", async () => {
   const doc = fakeDoc();
   const fetchFn = routerFetch();
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
   assert.ok(findById(doc.body, "simTesterPanel"), "取得失敗でパネルが消えている（fail-open ではない）");
   // 候補が無いので settings は組めない。旧フォーム（指標セット欄）がそのまま権威。
   assert.ok(findById(doc.body, "execEaName"), "旧フォームの指標セット欄まで消えている");
@@ -172,7 +172,7 @@ test("submitting with a schema posts the settings block and the derived ea_name"
   const schema = settingsSchema();
   const doc = fakeDoc();
   const fetchFn = routerFetch({ schema });
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn });
   findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
   const body = JSON.parse(fetchFn.calls.find((c) => c.url === "/sim/jobs").init.body);
@@ -194,7 +194,7 @@ test("submitting with a schema posts the settings block and the derived ea_name"
 test("a 200 non-JSON schema response leaves the legacy form authoritative (fail-open)", async () => {
   const doc = fakeDoc();
   const fetchFn = routerFetch({ schemaRaw: true });
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
   // 旧フォームの欄が残っている（＝Tester パネルは settings の供給元として結線されていない）
   assert.ok(findById(doc.body, "execEaName"), "指標セット欄が消えています（投入不能フォーム）");
   assert.ok(findById(doc.body, "execDeposit"), "初期資金欄が消えています（投入不能フォーム）");
@@ -212,7 +212,7 @@ test("the schema failure reason is reported, not swallowed", async () => {
   const original = console.warn;
   console.warn = (...args) => seen.push(args.map(String).join(" "));
   try {
-    await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
+    await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
   } finally {
     console.warn = original;
   }
@@ -226,7 +226,7 @@ test("the schema failure reason is reported, not swallowed", async () => {
 
 test("the settings configuration mounts no degraded surface at all", async () => {
   const doc = fakeDoc();
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
   assert.ok(findById(doc.body, "simTesterPanel"), "Tester 面が出ていない");
   assert.equal(findById(doc.body, "simSchemaFallbackPanel"), null,
     "schema が取れているのに縮退面まで作っています（作ってから消す形の再発）");
@@ -240,7 +240,7 @@ test("the degraded configuration mounts the fallback surface and keeps the teste
   const original = console.warn;
   console.warn = (...args) => seen.push(args.map(String).join(" "));
   try {
-    await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
+    await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
   } finally {
     console.warn = original;
   }
@@ -257,7 +257,7 @@ test("the degraded ea candidates come from run-options (縮退面にも候補が
   const original = console.warn;
   console.warn = () => {};
   try {
-    await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch() });
+    await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch() });
   } finally {
     console.warn = original;
   }
@@ -279,7 +279,7 @@ test("a non-array datasets payload degrades instead of blanking the form (fail-o
   });
   // Act: mount が例外で中断しない
   await assert.doesNotReject(
-    () => mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn }),
+    () => mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn }),
     "非配列 payload で mount が中断しました（欄が 1 つも描かれません）",
   );
   // Assert: 3 面が立ち、操作できる状態で残る
@@ -321,7 +321,7 @@ async function capturingErrors(fn) {
 test("the run status surface is mounted right below the run action surface (§19.6 R2)", async () => {
   // Arrange / Act
   const doc = fakeDoc();
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
   // Assert
   const ids = doc.body.children.map((c) => c.id);
   assert.ok(ids.includes("simRunStatusPanel"), "掲示面が組まれていない");
@@ -333,7 +333,7 @@ test("a successful submit posts the job id and status on the status surface", as
   // Arrange
   const doc = fakeDoc();
   const fetchFn = routerFetch({ job: { job_id: "j42", status: "received" } });
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
   // Act
   findById(doc.body, "runStart")._listeners.click[0]();
   await flush();
@@ -357,7 +357,7 @@ test("a rejected submit posts the server reason and still calls onError (後方�
   const warn = console.warn;
   console.warn = () => {};
   try {
-    await mountSimExecutionPanel({
+    await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER,
       doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST, onError: (e) => errors.push(e),
     });
   } finally {
@@ -382,7 +382,7 @@ test("a throwing body assembly is posted instead of silently escaping (B2: try �
   // Arrange: 本文の組立段（投入の**前**）で落ちる構成
   const doc = fakeDoc();
   const fetchFn = routerFetch({ schema: settingsSchema() });
-  const panel = await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+  const panel = await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn });
   panel.eaInputsView.values = () => { throw new Error("EA パラメータを読めません"); };
   // Act
   const seen = await capturingErrors(async () => {
@@ -678,7 +678,7 @@ test("a failing panel mount surfaces the reason instead of a blank screen (B4)",
   let panel = null;
   const seen = await capturingErrors(async () => {
     await assert.doesNotReject(async () => {
-      panel = await mountSimExecutionPanel({ doc, host, fetch: routerFetch({ schema: settingsSchema() }) });
+      panel = await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host, fetch: routerFetch({ schema: settingsSchema() }) });
     }, "mount の失敗が呼出側へ抜けています（report_view.html は catch を持たない）");
   });
   // Assert: 掲示面が出て理由が読める
@@ -721,7 +721,7 @@ test("a failing wiring stage surfaces the reason instead of a silently dead form
   let panel = null;
   const seen = await capturingErrors(async () => {
     await assert.doesNotReject(async () => {
-      panel = await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+      panel = await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn });
     }, "結線段の失敗が呼出側へ抜けています（report_view.html は catch を持たない）");
   });
   // Assert: 理由が画面と開発者コンソールの両方に出る
@@ -740,7 +740,7 @@ test("a late mount failure puts the status surface at the very top (§19.6 R2)",
   const host = hostFailingAt(doc, 3);
   // Act
   const seen = await capturingErrors(async () => {
-    await mountSimExecutionPanel({ doc, host, fetch: routerFetch({ schema: settingsSchema() }) });
+    await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host, fetch: routerFetch({ schema: settingsSchema() }) });
   });
   // Assert: 理由は半端に組まれた面の**上**に出す（下に置くと見つけられない）
   assert.equal(doc.body.children[0].id, "simRunStatusPanel",
@@ -753,11 +753,60 @@ test("a late mount failure puts the status surface at the very top (§19.6 R2)",
 test("the normal path keeps the status surface below the run action surface (§19.6 R2)", async () => {
   // Arrange / Act: 失敗しない構成では最上部へ動かさない（掲示はスタートの直下のまま）
   const doc = fakeDoc();
-  await mountSimExecutionPanel({ doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
   // Assert
   const ids = doc.body.children.map((c) => c.id);
   assert.notEqual(ids[0], "simRunStatusPanel", "成功経路で掲示面を最上部へ動かしています");
   assert.equal(ids[ids.indexOf("simRunActionPanel") + 1], "simRunStatusPanel");
+});
+
+// --- 🟡-4: 解体口（組んだものを止める手段）------------------------------------------
+// 監視は組み立て側が start するが、止める手段が呼出側に無かった。呼出側（画面の破棄・
+// 検定の後片付け）は「動いている監視を止める」ことができず、時計だけが空回りし続ける
+// （実測: 本ファイルだけで console.error 7 行の漏出と実 timer による約 3.0 秒の待ち）。
+// 組んだものは組んだ側が止められるようにする。
+
+test("the mounted panel exposes a dispose that stops the running watch (🟡-4)", async () => {
+  // Arrange
+  const doc = fakeDoc();
+  const timer = fakeTimer();
+  const panel = await mountSimExecutionPanel({
+    doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }),
+    setTimeout: timer.set, clearTimeout: timer.clear,
+  });
+  findById(doc.body, "runStart")._listeners.click[0]();
+  await flush();
+  assert.equal(timer.pending.size, 1, "監視が始まっていません（この検定は空振りです）");
+  // Act
+  panel.dispose();
+  // Assert
+  assert.equal(timer.pending.size, 0, "dispose しても監視が動いたままです");
+});
+
+test("dispose is safe when nothing was started (境界値: 監視 0 本)", async () => {
+  // Arrange
+  const doc = fakeDoc();
+  const timer = fakeTimer();
+  const panel = await mountSimExecutionPanel({
+    doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }),
+    setTimeout: timer.set, clearTimeout: timer.clear,
+  });
+  // Act / Assert: 投入前でも、二度呼んでも落ちない
+  assert.doesNotThrow(() => { panel.dispose(); panel.dispose(); });
+});
+
+test("dispose is available even when the assembly failed (解体口は常に在る)", async () => {
+  // Arrange: mount 段で落ちる構成
+  const doc = fakeDoc();
+  const host = hostFailingAt(doc, 1);
+  // Act
+  let panel = null;
+  await capturingErrors(async () => {
+    panel = await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host, fetch: routerFetch({ schema: settingsSchema() }) });
+  });
+  // Assert: 出口が違っても呼出側が受け取る形は同じ（panelRefs は 1 箇所）
+  assert.equal(typeof panel.dispose, "function", "失敗経路の戻り値に解体口がありません");
+  assert.doesNotThrow(() => panel.dispose());
 });
 
 test("reportViewUrl builds the ?job= dispatch url", async () => {

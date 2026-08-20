@@ -65,12 +65,26 @@ export async function mountSimExecutionPanel({
   // 実行条件（データセット profile＋ea_name 一覧）。結線段でも使うため try の外に置く。
   let datasets = [];
   let eaNames = Array.isArray(eaCandidates) ? eaCandidates : [];
+  // 動いている状態監視の停止関数（同時 1 本）。解体口から止めるため try の外に置く。
+  let stopWatch = null;
+
+  /**
+   * 組んだものを止める（🟡-4）。現在は状態監視の時計だけが「動き続ける物」である。
+   *
+   * 組み立て側が start する物には、呼出側が止める手段が要る。無いと、画面を捨てても
+   * 時計だけが空回りし続ける（実測: 検定 1 ファイルで console.error 7 行の漏出と実 timer
+   * による約 3.0 秒の待ち）。何度呼んでも安全にする（後片付けの順序を呼出側に強いない）。
+   */
+  function dispose() {
+    if (stopWatch) { stopWatch(); stopWatch = null; }
+  }
 
   /** 呼出側へ返す面の参照。成功・失敗のどちらの出口も**この 1 箇所**から作る。
    *  出口ごとに object リテラルを書くと、片方にだけ面を足したときに「構成によって
    *  返る形が違う」状態が黙って生まれる（呼出側は分岐を知らないまま undefined を掴む）。 */
   const panelRefs = () => ({
     view, client, testerView, eaInputsView, fallbackView, subjectSource, schemaClient, statusView,
+    dispose,
   });
 
   // 組み立て（mount 段）**と結線段**の全体を包む（§19.6 B4・🔴-1）。呼出側
@@ -157,8 +171,9 @@ export async function mountSimExecutionPanel({
     view.onViewResult((jobId) => { goTo(reportViewUrl(jobId)); });
 
     // 実行状態の監視は**同時 1 本**（§19.6 S4）。実行指示面は再投入を許すため、落とさずに
-    // 新しい監視を足すと、前の run の状態が新しい run の掲示を上書きし続ける。
-    let stopWatch = null;
+    // 新しい監視を足すと、前の run の状態が新しい run の掲示を上書きし続ける
+    // （停止関数 `stopWatch` は解体口と共有するため上で宣言している）。
+
     // 直近に掲示した状態。監視を諦めたときも「どの状態まで見えていたか」を残す（監視が
     // 止まっただけで、ジョブが終わったわけではない＝終端と書かない）。
     let lastStatus = null;

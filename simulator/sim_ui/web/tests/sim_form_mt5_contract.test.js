@@ -26,7 +26,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fakeDoc, findById, flatten } from "./_fakes.js";
+import { fakeDoc, findById, flatten, IDLE_WATCH_TIMER } from "./_fakes.js";
 import { settingsSchema } from "./_settings_schema_fixture.js";
 import { EA_INPUT_FIELDS } from "../js/adapter/front/sim_ea_inputs_panel_view.js";
 import { PROFILE_KEYS } from "../js/adapter/front/sim_submission_builder.js";
@@ -83,7 +83,7 @@ async function screen(schema) {
   const warn = console.warn;
   console.warn = () => {};
   try {
-    await mountSimExecutionPanel({ doc, host: doc.body, fetch: fetchFn });
+    await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn });
   } finally {
     console.warn = warn;
   }
