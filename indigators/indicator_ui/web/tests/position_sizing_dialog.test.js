@@ -377,10 +377,15 @@ test('TC-PD18 違反・警告は VM の判定をそのまま出す（判定を�
     plan: { ...VM.plan, immediate_lc: true, margin_binds: true },
   });
   // Assert
+  // 表示は参照実装の文言（内部識別子は画面に出さない・Y-5）。本検定の意図は
+  //   「VM の判定がそのまま表示へ届く（判定を作らない）」ことで、文言の権威は TC-PD48 が持つ。
   const warn = byData(root, 'psOut', 'warnings').textContent;
-  assert.match(warn, /stop_invalid/);
-  assert.match(warn, /immediate_lc/);
-  assert.match(warn, /margin_binds/);
+  assert.match(warn, /ストップ価格が不正/);          // violations の stop_invalid
+  assert.match(warn, /ロット制限/);                   // plan.margin_binds
+  // immediate_lc は参照実装ではロスカット価格欄の表示（「即時（証拠金不足）」）として現れる。
+  //   ※本 VM は immediate_lc=true かつ lc_before_stop=false だが、権威は
+  //   `lcBeforeStop = immediateLc || …` なので実際には同時に真になる（検定用の合成値）。
+  assert.equal(byData(root, 'psOut', 'losscutPrice').textContent, '即時（証拠金不足）');
 });
 
 test('TC-PD19 閉じているときの render は no-op（例外にしない）', () => {
@@ -926,4 +931,78 @@ test('TC-PD47 K を減らして戻しても損切り・利確は残る（欄の�
   // Assert
   assert.equal(byData(root, 'psPrice', 'stop').value, '58340');
   assert.equal(byData(root, 'psPrice', 'take').value, '59200');
+});
+
+// ---------------------------------------------------------------------------
+// 警告文言と ロスカット評価の 3 分岐（工程 5 レビュー Y-5 / B-2）
+//
+//   Y-5: 警告が内部識別子（`stop_invalid` 等）のまま出ていた。参照実装は各フラグに文言を
+//        定義している。フラグ→文言の対応表を 1 か所に置く。
+//   B-2: 参照実装のロスカット評価は**3 分岐**（`:1077-1081`）:
+//          (!immediateLC && lcPrice<0) → 「実質ロスカットなし」（安全側）
+//          lcBeforeStop               → 「⚠ ロスカットが損切りより手前」
+//          それ以外                    → 「✓ 損切りがロスカットより先に発動（意図通り）」
+//        移植では 1 通りに縮んでいた（負のロスカット価格＝安全側なのに警告扱い）。
+// ---------------------------------------------------------------------------
+
+test('TC-PD48 警告は参照実装の文言で出る（内部識別子を画面に出さない・Y-5）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  dialog.render({
+    ...VM,
+    violations: ['stop_invalid'],
+    plan: { ...VM.plan, stop_invalid: true, round_zeroed: true, margin_binds: true },
+  });
+  // Assert
+  const warn = byData(root, 'psOut', 'warnings').textContent;
+  assert.match(warn, /ストップ価格が不正/, '参照実装 :1051 の文言');
+  assert.match(warn, /ロングでは建玉より下/, '方向で文言が変わる（:1051）');
+  assert.match(warn, /0単位に丸められている/, '参照実装 :1052 の文言');
+  assert.match(warn, /ロット制限/, 'marginBinds の文言');
+  assert.equal(/stop_invalid|round_zeroed|margin_binds/.test(warn), false, '内部識別子が漏れている');
+});
+
+test('TC-PD49 ショートでは損切り位置の文言が反転する（参照実装 :1051）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act
+  dialog.render({
+    ...VM,
+    plan: { ...VM.plan, stop_invalid: true },
+    levelLines: { ...VM.levelLines, direction: 'short' },
+  });
+  // Assert
+  assert.match(byData(root, 'psOut', 'warnings').textContent, /ショートでは建玉より上/);
+});
+
+test('TC-PD50 ロスカット評価は 3 分岐（実質なし／手前／意図どおり・B-2）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  const out = () => byData(root, 'psOut', 'losscutAssessment').textContent;
+  // Act / Assert 1: ロスカット価格が負＝実質ロスカットなし（安全側）。
+  dialog.render({ ...VM, plan: { ...VM.plan, losscut_price: -120, lc_before_stop: true } });
+  assert.match(out(), /実質ロスカットなし/, '負のロスカット価格を警告側に倒している（B-2）');
+  // Act / Assert 2: ロスカットが損切りより手前。
+  dialog.render({ ...VM, plan: { ...VM.plan, lc_before_stop: true } });
+  assert.match(out(), /ロスカットが損切りより手前/);
+  // Act / Assert 3: 意図どおり。
+  dialog.render({ ...VM, plan: { ...VM.plan, lc_before_stop: false } });
+  assert.match(out(), /損切りがロスカットより先に発動/);
+});
+
+test('TC-PD51 即時ロスカットは「実質なし」に倒さない（参照実装の条件 !immediateLC && lcPrice<0）', () => {
+  // Arrange
+  const { root, dialog } = build();
+  // Act: immediate_lc なら lcPrice が負でも「実質なし」ではない。
+  dialog.render({
+    ...VM,
+    plan: {
+      ...VM.plan, losscut_price: -120, immediate_lc: true, lc_before_stop: true,
+    },
+  });
+  // Assert
+  const text = byData(root, 'psOut', 'losscutAssessment').textContent;
+  assert.equal(/実質ロスカットなし/.test(text), false, '証拠金不足なのに安全側の文言を出している');
+  assert.match(text, /ロスカットが損切りより手前/);
 });

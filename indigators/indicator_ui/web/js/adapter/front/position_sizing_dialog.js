@@ -137,6 +137,41 @@ function selectDefault(spec) {
   return spec.def ?? spec.options[0][0];
 }
 
+
+// ---- 警告・評価の文言（参照実装が正解を定義する）--------------------------------
+//
+// 内部識別子（`stop_invalid` 等）を画面に出さない。フラグ → 文言の対応表を**ここ 1 か所**に置く
+// （散らすと、フラグを足したときに文言だけ抜ける）。文言は参照実装
+// integrated_position_sizing_calculator.html の該当式をそのまま写す（推測で足さない）。
+
+const WARNING_TEXT = Object.freeze({
+  // 参照 `:1051`（方向で「下／上」が入れ替わる）
+  stop_invalid: (ctx) => '⚠ ストップ価格が不正。'
+    + `${ctx.long ? 'ロングでは建玉より下' : 'ショートでは建玉より上'}にストップ価格を置く必要がある`
+    + '（このモードの最寄り建玉より損失側）。数値は暫定表示。',
+  // 参照 `:1052` の roundZeroed 節
+  round_zeroed: () => '整数モード：各建玉を切り捨て。一部の建玉が0単位に丸められている（ロット過小）。',
+  // 参照 `:1084` の marginBinds 節
+  margin_binds: (ctx) => `⚠ ${ctx.capBasis === 'lc' ? 'ロスカット価格制約' : '証拠金制約'}でロット制限。`
+    + 'f が要求する単位数は建てられない。f を下げるのが根本対処。',
+});
+
+// ロスカット評価（参照 `:1077-1081` の**3 分岐**）。移植で 1 通りに縮んでいた（B-2）。
+//   条件・順序は参照実装のまま（`!immediateLC && lcPrice<0` を最優先で安全側に読む）。
+function losscutAssessmentText(plan) {
+  if (plan.immediate_lc !== true && plan.losscut_price < 0) {
+    return 'ロスカット価格が負（0未満）＝価格によるロスカットは発生しない。'
+      + '価格が0まで下げても有効証拠金が必要証拠金を上回るため、実質的にロスカットは損切りより'
+      + '遥か遠く安全側（「実質ロスカットなし」と読む）。週末ギャップ等の急変リスクは別途注意。';
+  }
+  if (plan.lc_before_stop === true) {
+    return '⚠ ロスカットが損切りより手前。証拠金が先に尽き、σ̂ベースの損切りが機能する前に'
+      + '成行で強制決済される。ロット（f）を下げるか、ストップを狭めるか、証拠金を増やす必要がある。';
+  }
+  return '✓ 損切りがロスカットより先に発動（意図通り）。'
+    + 'ただしギャップ耐性のため使用率は低いほど安全。';
+}
+
 // ---- 表示書式（参照実装が正解を定義する）--------------------------------------
 //
 // 実 UI 実測（2026-08-20）で `EV=0.42120000000000013` `f*=0.1537226277372263` のように
@@ -396,7 +431,8 @@ export class PositionSizingDialog {
     sec.append(this._bracketGroup(), this._timeGroup());
     for (const [key, label] of [
       ['requiredMargin', '必要証拠金'], ['marginUse', '証拠金使用率'],
-      ['losscutPrice', 'ロスカット価格'], ['buildableLot', '実建可能ロット'],
+      ['losscutPrice', 'ロスカット価格'], ['losscutAssessment', 'ロスカット評価'],
+      ['buildableLot', '実建可能ロット'],
       ['warnings', '警告'],
     ]) {
       sec.append(this._outRow(key, label));
@@ -883,14 +919,30 @@ export class PositionSizingDialog {
   }
 
   // 警告は **VM の判定をそのまま並べる**（どれが警告かを本モジュールで決め直さない）。
+  //   出すのは**参照実装の文言**で、内部識別子は画面に出さない（Y-5）。
+  //   ロスカットの前後関係（immediate_lc / lc_before_stop）は警告ではなく
+  //   「ロスカット評価」の 3 分岐が担う（参照実装の構成・B-2）。
   _renderWarnings(vm, plan) {
+    const assessment = this._outs.get('losscutAssessment');
+    if (assessment) {
+      assessment.textContent = losscutAssessmentText(plan);
+    }
     const el = this._outs.get('warnings');
     if (!el) {
       return;
     }
-    const flags = ['stop_invalid', 'round_zeroed', 'immediate_lc', 'margin_binds', 'lc_before_stop'];
-    const hits = [...(vm.violations ?? []), ...flags.filter((f) => plan[f] === true)];
-    el.textContent = hits.length > 0 ? [...new Set(hits)].join(' / ') : '—';
+    const context = {
+      long: (vm.levelLines?.direction ?? 'long') === 'long',
+      capBasis: this._fields.get('capBasis')?.value ?? 'lc',
+    };
+    const flags = ['stop_invalid', 'take_invalid', 'round_zeroed', 'margin_binds'];
+    const hits = [...new Set([
+      ...(vm.violations ?? []),
+      ...flags.filter((f) => plan[f] === true),
+    ])].filter((f) => flags.includes(f));
+    // 文言が定義されていないフラグは識別子のまま出す（黙って消さない＝取り残しが見える）。
+    const text = hits.map((f) => (WARNING_TEXT[f] ? WARNING_TEXT[f](context) : f)).join(' / ');
+    el.textContent = text.length > 0 ? text : '—';
   }
 
   _selectChoice(value) {

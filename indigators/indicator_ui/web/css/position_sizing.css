@@ -72,7 +72,7 @@
 .ps-pick:hover { color: var(--ct-uiTextStrong, #ffffff); border-color: var(--ct-uiAccent, #2962ff); }
 .ps-out { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 0; }
 .ps-out-label { color: var(--ct-uiTextLabel, #b2b5be); font-size: 11px; }
-.ps-out-value { color: var(--ct-uiTextStrong, #ffffff); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ps-out-value { white-space: normal; text-align: right; color: var(--ct-uiTextStrong, #ffffff); font-size: 12px; font-variant-numeric: tabular-nums; }
 .ps-choice {
   background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
   border-radius: 5px; color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px;
