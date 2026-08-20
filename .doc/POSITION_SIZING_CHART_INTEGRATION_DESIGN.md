@@ -869,3 +869,83 @@ simulator/replay_ui/web/js/**                【symlink 追加】上記 front / 
 - 修正指示を発行した箇所（上流「確定事実」P6 の不十分性）は、スライス 3 の縦パンブロッカー合成により再検証で合格パターンに到達
 - YAGNI 検証: 維持 3 / 削除推奨 5
 - 未解決事項 7 件はすべて §13 に列挙し、いずれも依存方向・単一ソース戦略の判定に影響しない（UI 構成とスコープの裁定事項）
+
+---
+
+# 追補: 工程 2（銘柄仕様の供給経路）— 2026-08-20
+
+裁定「銘柄仕様を front へ供給する（案 D）」を受けた経路設計。architecture-executor が読み取り専用で実測した結果を記録する。
+
+## D-1 / D-2 / D-3 をいずれも採らない理由（実測）
+
+| 案 | 残る原因 | 実証 |
+|---|---|---|
+| D-1 `DatasetPort` に「ref → 銘柄仕様」を足す | **SRP 違反を新設する**。`DatasetPort` は ISP で 3 面に分割済み（`api/usecase/dataset_port.py:28-73`）で、いずれも「市場データ供給」アクターの関心事。呼び値はブローカー規約（A2）の所有物であり、証拠金率改定と rollup 経路変更が同じ境界を揺らす。加えて**丸めの取り残し（原因 β）を一切除去しない** | 同左 |
+| D-2 `SymbolSpecCatalog` を共有層へ移し back が配信 | (1) `SymbolSpecCatalog` は `RunProfile`（`data_path`・`volume_*`・`stops_level`・`config_overrides`＝バックテスト実行の関心事）と不可分（`sim_ui/usecase/run_options_ports.py:43-56`）でそのまま降ろせない。(2) 配信は**結線 4 点**を新設する（indicator_ui route／replay の任意注入 Port `serve_replay.py:186-200`／unified の手書き許可リスト `sw_rewrite.js:21-34`／front クライアント）。(3) `catalog_client.js:47-50` 型の**無音フォールバック**を新設する（ISSUE-278 #8 で事故実績）。(4) `file://` 起動で取得不能 | 同左 |
+| D-3 先に `CHART_SYMBOL` を直す | 単独ではリテラルの置き換えにしかならず、front が銘柄を自称する構造が不変。**同じ食い違いを別の場所に固定する**。E-1 の後に「削除（導出化）」として実施する | `app_chrome_view.js:25`,`:105` |
+
+## 決定: 案 E — 供給は HTTP でなく生成物、丸めは E-02 の不変条件
+
+除去する原因は 2 つ。
+
+- **原因 α: 価格が「どの銘柄の価格か」を供給側が一度も名乗っていない。** `DatasetDescriptor` のフィールドは `path` / `clamp_outliers` / `rollup` / `tick` の 4 つのみで symbol を持たない（`marketdata/dataset_registry.py:31-44`・実測）。front は `CHART_SYMBOL='NI225'` を自称するしかない。
+- **原因 β: 丸めの適用点が 7 経路に散っている。** 本ブランチで既に発生（差分 2＝モーダルだけ書式化しゴーストに生値が残った／`price_format.js:7-11` に記録）。
+
+| # | 構成 | 内容 |
+|---|---|---|
+| E-1 | `marketdata/dataset_registry.py` | `DatasetDescriptor` に `symbol: str` を追加（追加のみ・既存 4 導出関数は無変更）。ref→銘柄の対応は既にコード上に実在する（`marketdata/tick_m1.py:59-60` の `_DEFAULT_SYMBOL="JP225"` / `_DEFAULT_REF="jp225_tick"`）＝**新しい手書き対応表の新設ではなく、既存事実の明文化** |
+| E-2 | `marketdata/symbol_spec.py`（新規） | 呼び値 `tick`・表示桁 `digits` の唯一の定義（symbol キー）。A2 所有。`DatasetDescriptor` には同居させない（アクター分離） |
+| E-3 | `tools/gen_js_parity_golden.py` | 出力 1 本追加 → `web/js/domain/symbol_spec_generated.js`。陳腐化は `marketdata/tests/` の parity 検定で落とす（`test_tf_ledger_parity.py` と同型）。**HTTP route を作らない**（規約 `.doc/LAYERING_CONVENTIONS.md:28-32`＝権威は Python・JS は生成物） |
+| E-4 | `web/js/domain/price_quantize.js`（新規） | 量子化を **`PriceLevels`（E-02）の構築・更新口**に置く。「刻み上にない価格は `PriceLevels` に存在できない」を不変条件にする。drag 経路（`price_level_drag_controller.js:157-176`）は resolver を通らないため、関門は domain でなければ迂回される |
+
+依存方向違反 0（新設 4 モジュールのうち `price_quantize.js` と生成物は import 0、`price_levels.js` は同層のみ、`marketdata/symbol_spec.py` は import 0）。front 側 `SymbolSpecPort` と HTTP route `/symbol_spec` は YAGNI で削除（供給元が 1 つ・起動時 1 回の定数）。
+
+## 丸めの適用点（全 7 経路・実測）
+
+| # | 経路 | file:line | 本設計での扱い |
+|---|---|---|---|
+| 1 | スナップ候補 | `chart_renderer.js:1020-1055` → `price_pick_resolver.js:85-86` | resolver で量子化（**renderer は 0 バイト改変**） |
+| 2 | 素のクリック価格 | `price_pick_resolver.js:73` | 同じ関数で量子化 |
+| 3 | ゴーストラベル | `price_pick_controller.js:236` | 書式不変。値が量子化済みになり表示と一致 |
+| 4 | ピッカー確定→書き戻し | `price_pick_controller.js:173` → `position_sizing_dialog.js:706` | E-02 の関門 |
+| 5 | 右クリック 3 項目 | `position_sizing_context_items.js:49` | E-02 の関門 |
+| 6 | 水準線 drag | `price_level_drag_controller.js:157-176` | **E-02 の関門**（resolver を通らない唯一の経路） |
+| 7 | 手入力欄 | `position_sizing_dialog.js:678` (`step='any'`) | 関門＋`step` を `tick` へ |
+
+## フェイルセーフ（仕様が解決できないとき）
+
+**無音で生値に落とさない。値ではなく機能を落とし、理由を出す。** 未知 ref → `reason='no_symbol_spec'`／ピッカー・右クリック・drag は確定しない／トースト「この銘柄の価格の刻みが不明なため、チャートからの価格指定を無効にしています」／手入力は従来どおり可。生成物の欠落は import 解決で起動時に落ち、台帳との不一致は pytest で赤になる。`catalog_client.js:47-50` 型の静的既定への無音フォールバックは**採らない**（ISSUE-278 #8 の再演になる）。
+
+## 実装スライス（S-1〜S-7）
+
+共通の不可侵（`git diff --name-only` に現れたら不合格）: `data/marketdata/**`／`simulator/**`／`integrated_position_sizing_calculator.html`／既存 `**/tests/**`（新規追加を除く）／`indigators/indicator_ui/api/**`／`web/vendor/**`。
+共通の緑ゲート: pytest 失敗 0・skip 増なし／`tools/run_web_tests.sh` 全 5 スイート成功。
+
+| スライス | 内容 | 通過条件（機械検査） |
+|---|---|---|
+| S-1 | Python 台帳（`symbol_spec.py` ＋ `DatasetDescriptor.symbol`） | 新規 `marketdata/tests/test_symbol_spec_ledger.py`: 全 ref が非空 symbol／全 symbol に spec／`tick>0` かつ `10**-digits<=tick`／`tick_m1._DEFAULT_SYMBOL == REGISTRY['jp225_tick'].symbol` |
+| S-2 | 生成物 | 冒頭に「自動生成・編集しない」／内容が Python 台帳と一致／import 文 0 行／再実行で差分 0 |
+| S-3 | `domain/price_quantize.js` | `null`/`NaN`/`Infinity`/`tick=null` 素通し・`quantize(58998.75,1)===58999`・`quantize(8568.89,0.1)===8568.9`（残差 0）／import 0 行／**既存 web テスト無改変で緑** |
+| S-4 | E-02 の不変条件 | 既存 `price_levels.test.js` を 1 バイトも変えずに緑（既定 `tick=null` で byte 等価）／注入時 `create`・`withEntry`・`withStop`・`withTake` の 4 経路すべて刻み上／量子化の式が `web/js` 配下 1 ファイルのみ |
+| S-5 | resolver（候補量子化＋`NO_SYMBOL_SPEC`） | 既存 3 テスト無改変で緑／spec 未注入時 `price===null` かつ `reason==='no_symbol_spec'`／文言 literal 1 回／`chart_renderer.js` の diff 0 行 |
+| S-6 | 結線（`chart_app_wiring` で 1 回解決し配る） | 既存 `position_sizing_shared_wiring.test.js`・`composition_roots_share_wiring.test.js` 無改変で緑／spec 解決が front 配下 1 か所／`served_import_resolution.test.js`・`symlink_health.test.js` 緑 |
+| S-7（**要承認**） | `CHART_SYMBOL` 撤去＋lwc `priceFormat` 設定 | `grep -r NI225` が 0 件／全 5 スイート緑。**既存テスト 3 本の改変を伴うため分離**（`color_theme_toolbar_mount.test.js`・`bar_info_text.test.js`・`copy_bar_info_item.test.js`） |
+
+S-1〜S-6 は既存テストを 1 件も改変しない。
+
+## 承認事項（工程 3 着手前）
+
+| ID | 事項 | 既定案 | 根拠 |
+|---|---|---|---|
+| A-1 | JP225 の `tick` の値 | **1.0** | 対象は OANDA 証券 JP225 **CFD**（`contract_size=1`・`prototype_260811-01/parity_check.py:11`）。`sim_ui` の `digits=1`/`point_size=0.1` は OANDA-Japan **MT5** JP225（`contract_size=10`・`simulator/tests/fixtures/mt5/.../case.yaml:13-20`）＝**別商品**であり本件の権威にならない。CFD の呼び値の出典はリポジトリ内に無い（`docs/oanda_indices_cfd_about.md:104` は「銘柄毎に異なる（取扱銘柄ページ参照）」・出典は外部 URL `:286`）。未確定下では 1.0 が安全側（1.0 の倍数は 0.1 の倍数でもある／逆は無効価格を作る）。参照実装の価格表示も整数・入力 `step="10"` |
+| A-2 | 派生価格（ロスカット・加重平均建値）を丸めるか | **丸めない**（指定価格＝建値／損切り／利確のみ） | `losscutPrice` は口座規約の計算結果（権威 `simulator/usecase/account_engine.py`）。front が丸めると権威関数の答えを改変することになる |
+| A-3 | 価格軸・現在値の表示桁を `digits` に合わせるか（lwc `priceFormat`） | **合わせる**（S-7） | 現在アプリは `priceFormat` 未設定で vendor 既定に委ねている（実測 0 件）。値だけ丸めると「軸は 2 桁・入る値は整数」の乖離が残る |
+| A-4 | ツールバー `NI225` を台帳由来の `JP225` に変える | **変える**（リテラル削除＝導出化） | 表示専用で計算影響 0（消費 3 か所すべて表示）。ただし既存テスト 3 本の改変を伴う |
+| A-5 | `sim_ui/adapter/symbol_spec_catalog.py:112-113` の `digits`/`point_size` を新台帳へ一本化するか | **本件では触らない**・フォローアップ ISSUE 化 | MT5 bit-exact ゲートが張られており別商品の値。同名概念が 2 か所に並ぶ状態は TBD-D として記録 |
+| A-6 | `marketdata/dataset_registry.py`（共有最下層）と `tools/gen_js_parity_golden.py` の改変 | **実施**（追加のみ・既存フィールド不変） | ISSUE-368 の front 作業から見ると別スライスのため承認対象。既存 4 導出関数は無変更で通る |
+
+## 残存リスク
+
+1. `tick` の真値は外部情報（OANDA 取扱銘柄ページ）でしか確定できない。A-1 の承認なしに実装すると「実証的証拠のない仮定で実装」に該当する。
+2. lwc 既定 `minMove` の実値は未検証（vendor bundle が 1 行 minified）。確定しているのは「アプリ側で設定していない」ことのみ。A-3 実装時に実測が必要。
+3. `marketdata` を銘柄規約の置き場にすることの妥当性（呼び値は厳密には `api_shared` 寄りの性質を持つ）。中立パッケージ新設の可能性を排除できていない＝A-6。
