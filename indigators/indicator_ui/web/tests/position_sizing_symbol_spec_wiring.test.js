@@ -94,6 +94,9 @@ function flatten(el, out = []) {
 function fakeRenderer() {
   return {
     panPriceByPixels() {}, handlePriceWheel: () => false, isOverPriceAxis: () => false,
+    // ISSUE-440: 幾何が動いたら凡例を引き直す面（ChartInteractionController が呼ぶ）。
+    refreshPaneLegendIfGeometryChanged: () => false,
+    setPaneAreaHeightProvider() {},
     resetPriceZoom() {}, setPaneHeight() {}, isLatestBarVisible: () => true, scrollToLatest() {},
     barInfoAt: () => null, setUserInteraction() {}, attachBackgroundPrimitive() {},
     setCandleObserver() {}, setPaneOrderObserver() {},

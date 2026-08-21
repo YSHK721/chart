@@ -196,6 +196,13 @@ export class ChartRenderer {
     // 価格パンの px→価格換算に使う pane 高（container 高 - timeScale().height() 相当）。
     //   composition root が setPaneHeight で供給する。
     this._paneHeight = null;
+    // ペイン領域の総高を「その場で測る」関数（setPaneAreaHeightProvider で供給・ISSUE-440）。
+    //   未供給なら _paneHeight へ縮退する（既存の呼び出しは不変）。
+    this._paneAreaHeightProvider = null;
+    // 最後に凡例 DTO を配ったときのペイン幾何の指紋（refreshPaneLegendIfGeometryChanged 用）。
+    this._lastPaneGeometrySig = null;
+    // 次フレームでの幾何突き合わせを予約済みか（多重予約を作らない・_scheduleGeometryRecheck）。
+    this._geometryRecheckPending = false;
     // lwc 操作可否の合成（suppressInteraction 参照）。明示フラグ AND 抑止者ゼロ で有効。
     this._interactionEnabled = true;
     this._interactionSuppressors = new Set();
@@ -685,8 +692,31 @@ export class ChartRenderer {
   }
 
   // ペイン別凡例 DTO を構築してコールバックへ渡す（ISSUE-276）。
+  //   発行のたびに幾何の指紋を控える。どの経路で発行されても「最後に配った幾何」が 1 つに
+  //   決まるので、refreshPaneLegendIfGeometryChanged が二重発行にならない（ISSUE-440）。
   _emitPaneLegend(param = null) {
+    this._lastPaneGeometrySig = this._paneGeometrySignature();
     this._onPaneLegend(this.paneLegendModel(param));
+    this._scheduleGeometryRecheck();
+  }
+
+  // 配った直後の幾何は**まだ確定していないことがある**（ISSUE-440）。ペインの増減は
+  //   lightweight-charts が次の描画で高さを配り直すため、指標を適用した瞬間に発行した DTO は
+  //   古い高さで組まれている。実測 2026-08-21: 起動直後（マウス操作なし）の凡例が
+  //   ペイン上端 558/745px に対し 698/930px に出たまま動かなかった（マウスを動かすと直る
+  //   ＝発行の契機が無いだけで、位置の規則は正しい）。
+  //   よって発行のたびに**次フレームで突き合わせ**、変わっていれば配り直す。変わっていなければ
+  //   何も起きないので、通常のクロスヘア移動で余計な再描画は生まれない（多重予約もしない）。
+  _scheduleGeometryRecheck() {
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
+    if (!raf || this._geometryRecheckPending) {
+      return;
+    }
+    this._geometryRecheckPending = true;
+    raf(() => {
+      this._geometryRecheckPending = false;
+      this.refreshPaneLegendIfGeometryChanged();
+    });
   }
 
   // 指標ペインの並べ替え（ドラッグ&ドロップの着地点・ユーザー指示 2026-08-09）。
@@ -824,19 +854,70 @@ export class ChartRenderer {
     });
   }
 
+  // ペイン領域の総高（container 高 − 時間軸高）。**測れるなら必ず測り直す**（ISSUE-440）。
+  //   保持値（_paneHeight・setPaneHeight で push される）は、push しない経路（起動直後・
+  //   ペイン区切りのドラッグ・版面のリサイズ）で古いままになる。総高がずれると下の区切り高が
+  //   ずれ、凡例の位置とクリック→ペイン判定が同じだけ狂う（実測 2026-08-21: 起動直後の凡例が
+  //   正位置より 42px 下、区切りドラッグ後は 100px 下）。供給者（composition root）が測る関数を
+  //   渡していればそれを毎回呼ぶ＝幾何は「使う時点の実測」だけを根拠にする。
+  _paneAreaHeight() {
+    if (typeof this._paneAreaHeightProvider === 'function') {
+      const measured = this._paneAreaHeightProvider();
+      if (Number.isFinite(measured) && measured > 0) {
+        return measured;
+      }
+    }
+    return this._paneHeight > 0 ? this._paneHeight : 0;
+  }
+
+  /**
+   * ペイン領域の総高を「その場で測る」関数を供給する（composition root が結ぶ）。
+   * 未供給なら従来どおり保持値（setPaneHeight）を使う＝既存の呼び出しは 1 バイトも変わらない。
+   */
+  setPaneAreaHeightProvider(fn) {
+    this._paneAreaHeightProvider = typeof fn === 'function' ? fn : null;
+  }
+
   // ペイン間の区切り高（px）。lightweight-charts はペインを 1px 前後の区切りで積むが、その値は
   //   upstream のスタイル由来なので定数で持たない。「ペイン領域の総高 − 各ペイン高の合計」を
-  //   ペイン間の数で割って実測から求める。総高は composition root が供給する _paneHeight
-  //   （container 高 − 時間軸高）を使う（upstream への問い合わせを増やさない）。
+  //   ペイン間の数で割って実測から求める。総高は _paneAreaHeight()（実測優先）から取る。
   //   求まらない環境では 0（数 px のズレはチップ位置として無害・例外を出す側へは倒さない）。
   _paneSeparatorPx(heights) {
-    if (heights.length < 2 || !(this._paneHeight > 0)) {
+    const area = this._paneAreaHeight();
+    if (heights.length < 2 || !(area > 0)) {
       return 0;
     }
     const sum = heights.reduce((a, b) => a + b, 0);
-    const rest = this._paneHeight - sum;
+    const rest = area - sum;
     return rest > 0 ? rest / (heights.length - 1) : 0;
   }
+
+  // いまのペイン幾何を表す指紋（高さの並び＋領域総高）。値が変わったときだけ凡例を引き直す
+  //   ための比較用で、DTO の再構築より桁違いに安い（数値の連結だけ）。
+  _paneGeometrySignature() {
+    return `${this._paneHeights().join('/')}|${Math.round(this._paneAreaHeight())}`;
+  }
+
+  /**
+   * ペイン幾何が前回発行時から変わっていれば、凡例 DTO を作り直す（変わっていなければ何もしない）。
+   *
+   * なぜ要るか（実測 2026-08-21・ISSUE-440）: 凡例の位置はペイン幾何の従属変数なのに、
+   *   再発行の契機が「データ・構成・クロスヘア」しか無かった。ペイン区切りのドラッグと版面の
+   *   リサイズはそのどれでもないため、**ラベルだけが古い位置に取り残される**（実測: 区切りを
+   *   100px 上へ引いてもラベルは動かず、ペイン上端 458px に対しラベル 558px）。
+   *   「幾何が動いたら引き直す」を成立させる呼び出し口がこれである。
+   *
+   * @returns {boolean} 引き直したか
+   */
+  refreshPaneLegendIfGeometryChanged() {
+    const sig = this._paneGeometrySignature();
+    if (sig === this._lastPaneGeometrySig) {
+      return false;
+    }
+    this._emitPaneLegend(null);
+    return true;
+  }
+
 
   // 各ペインの上端 y（チャート要素基準）を paneIndex 順で返す。
   //   ペイン幾何の派生規則（上端＝それより上のペイン高と区切り高の累積）を持つのは**ここだけ**。

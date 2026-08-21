@@ -34,7 +34,9 @@ import { setSeriesTimeGuardNotifier } from './series_time_guard.js';
 import { ClipboardGateway } from './clipboard_gateway.js';
 import { createCopyBarInfoItem } from './copy_bar_info_item.js';
 import { indicatorHeading } from './bar_info_text.js';
-import { createChartWithMainSeries, makeUpdatePaneHeight } from './chart_bootstrap.js';
+import {
+  createChartWithMainSeries, makeUpdatePaneHeight, makeMeasurePaneAreaHeight, installPaneGeometryFollow,
+} from './chart_bootstrap.js';
 import { ScrollToLatestButton } from './scroll_to_latest_button.js';
 import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
 import { ChartTemplateMenu } from './chart_template_menu.js';
@@ -172,6 +174,14 @@ export async function composeChartShell({
   // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
   const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
   updatePaneHeight();
+  // ペイン幾何の派生（区切り高→凡例の位置・座標→ペイン判定）は **使う時点の実測**を根拠にする
+  //   （ISSUE-440）。push だけだと、setPaneHeight を呼ばない経路（起動直後・区切りドラッグ・
+  //   版面リサイズ）で古い総高から区切り高が逆算され、ラベルだけが数十 px ずれる。
+  renderer.setPaneAreaHeightProvider(makeMeasurePaneAreaHeight({ container, chart }));
+  // 版面の寸法が変わったら凡例を引き直す（下部ペインの分割線・ウィンドウのリサイズ）。
+  //   幾何が変わっていなければ何も起きない（指紋比較のみ）。lwc の subscribeSizeChange は
+  //   autoSize 由来のリサイズで発火しないことを実測したので、寸法は自分で観測する。
+  installPaneGeometryFollow({ container, renderer });
 
   const persistence = new LocalStorageGateway(storage);
   // テンプレート永続化（§4.2 の 3 キー）。接頭辞は注入された storage が付ける（gateway は付けない）。
