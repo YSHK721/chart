@@ -31,9 +31,11 @@
  * 見切れ・左右 57% は空白）。縦を使い切る前に横を使う。
  * 狭いときは 1 列へ落として縦積みへ戻す（横スクロールを作らない）。 */
 #simRunForm {
-  /* 行の高さの単一ソース（ISSUE-443）。控えの種類（select / 入力 / チェックボックス）で
-   * 割れないよう、全面がこの 1 つの値を使う。 */
+  /* 行の高さと入力欄の幅の単一ソース（ISSUE-443）。控えの種類（select / 入力 /
+   * チェックボックス）でも、面（Tester / Inputs / 縮退面）でも割れないよう、
+   * 全面がこの 2 つの値を使う＝群をまたいでも欄の位置と大きさが同じ規則で決まる。 */
   --sim-field-row-h: 24px;
+  --sim-field-input-w: 150px;
   display: grid;
   /* 設定は群が 4 つ、入力は 3 欄＋スタート。2:1 で割り当てると、広い版面では設定側に
    * 群が 3 つ並び（340px×3）、縦の消費がさらに減る。 */
@@ -110,8 +112,12 @@
 }
 #simTesterPanel .tester-group {
   break-inside: avoid;   /* 群カードを段の途中で割らない */
-  width: max-content;    /* 中身の幅で置く（段幅いっぱいに引き伸ばさない） */
-  max-width: 100%;
+  /* 幅は段いっぱい、ただし**中身が要る幅で頭打ち**にする（内側余白 20 ＋ ラベル 136 ＋
+   * 間 6 ＋ 欄 150 ＝ 312px）。中身の幅で置くと群ごとにカード幅が変わって間隔が不揃いになり、
+   * 頭打ちが無いと段が広いとき（狭い画面で 1〜2 段になるとき）にカードだけが間延びする。
+   * 頭打ちを置けば、段が広くても狭くてもどの群も同じ幅になる。 */
+  width: auto;
+  max-width: 320px;
   margin: 0 0 8px;
   padding: 6px 10px;
   border: 1px solid var(--line);
@@ -177,14 +183,16 @@
 #simSchemaFallbackPanel .fallback-ea,
 #simSchemaFallbackPanel .fallback-deposit {
   min-width: 0;          /* grid/flex の中で内容幅に押し広げられないため（横あふれ防止） */
-  width: 100%;
   /* 高さは**上下余白ではなく height で決める**。上下余白で決めると、select と input で
    * 内側の詰まり方が違うぶんだけ高さが割れる（実測: 24px と 27px）。 */
   height: var(--sim-field-row-h);
-  /* 入る値の実幅に合わせて頭打ちにする（依頼者指示 2026-08-22「input ボックスの幅を調整」）。
-   * 実測: 箱は 240px なのに中身は "0" / "M1" / "ema" / "ENTIRE_HISTORY"（最長でも約 100px）。
-   * 176px は最長の選択肢（ENTIRE_HISTORY ＋ 矢印）が切れない最小幅の実測値。 */
-  max-width: 176px;
+  /* 幅は**全面で同じ 1 つの値**にする（依頼者指摘 2026-08-22「各グループ同士の要素中心線を
+   * 揃えたい」）。「入る余地があるだけ広げる」形だと、面や列の幅が違うぶんだけ欄の幅が
+   * 変わり、群をまたぐと中心線がずれる（実測: Tester Settings 150px / Inputs 164〜176px）。
+   * 150px は最長の選択肢（ENTIRE_HISTORY ＋ 矢印）が切れない実測幅であり、いちばん狭い
+   * 列（4 段組み時の 158px）にも収まる。 */
+  width: var(--sim-field-input-w);
+  max-width: 100%;
   box-sizing: border-box;
   padding: 0 8px;
   background: var(--bg);
