@@ -8804,3 +8804,96 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
 - 実行状態表示（ISSUE-423 で新設した M6/M7）は本調査では観察していない（job を投入していない）。
 
 - **関連**: ISSUE-420〜423（sim Phase 8/9）・ISSUE-380（report_ui 移植）・ISSUE-434。
+
+## ISSUE-437: [機能] Forward（フォワードテスト）が設定できない — 分割位置が未実証で全面拒否
+
+- **ステータス**: OPEN（2026-08-21・依頼者質問「Forward を設定したい場合は?」を起点に起票。
+  **解消の起点は依頼者による MT5 実機での成果物取得**）
+- **重大度**: 中（機能が無いこと自体は宣言済み。ただし代替導線も無い）
+
+### 現状（実測 2026-08-21）
+
+1. **`ForwardMode` が `DISABLED`(0) 以外なら、値に関わらず実行が拒否される**。
+   `main/tester_settings/unsupported.py:195-199` の `_detect_forward` は `None` と `DISABLED`
+   だけを `NOT_VIOLATED` とし、それ以外は保証境界 `N-03`（E-07 `UnsupportedSettingError`・
+   理由「フォワードの期間分割位置が未確定です」・`TBD-03`）を送出する。
+   **`PRESET_SPLIT`(3) と `CUSTOM_DATE`(4) を区別していない**（後者は分割位置が `ForwardDate` で
+   明示されるが、同じ 1 本の判定で落ちる）。UI 側の告知も `UI_TRIGGER_EXCEPT_TOKENS`＋
+   トークン `0` のみ許容で同じ射程。
+2. **列挙値も一部しか無い**。`usecase/tester_settings/enums.py` の `ForwardMode` は
+   `DISABLED`=0 / `PRESET_SPLIT`=3 / `CUSTOM_DATE`=4 の 3 値のみ。MT5 画面の `1/2` `1/4` に
+   対応する値は **corpus（`tests/fixtures/tester_ini/` 44 件）未出現のため未定義＝拒否**（E-05）。
+   MT5 画面の 5 択のうち、値として定義できているのは 3 つ。
+3. **代替導線も無い**。sim のジョブ経路は常に単一区間 `"single"` を出力する
+   （`sim_ui/adapter/report_payload_writer.py:41`。`"is"` を名乗らせない設計）。IS/OOS の比較・
+   判定タブ（FR-17/18）は存在するが、その 2 区間を作る側は **日付直書きの一回限りスクリプト**
+   （`report_ui/tools/export_report_payload.py:65-66`＝`2026-04-01` / `2026-04-15` 固定・
+   専用 CSV 前提）だけで、UI からは到達できない。
+
+### 依頼者提供物の判定（`ReportTester-900005560.html`・2026-08-21）
+
+**Forward の実証には使えない。** 全文検索で `Forward` は **0 件**。あわせて `Modelling` /
+`Delays` / `Optimization` も **0 件**であり、**MT5 の HTML レポートは実行条件を出力しない**
+（Settings 欄は Expert / Symbol / Period / Inputs / Company / Currency / Initial Deposit /
+Leverage の 8 項目のみ）。実行条件の権威は `.ini`（と設定スクリーンショット）である。
+本ファイル自体の内容は ISSUE-438 に分離して記録する。
+
+### 抜本的解決（順序・最短経路）
+
+1. **MT5 実機で 1 ケース取得（依頼者にしかできない・唯一のブロッカー）**:
+   `Forward: Custom` ＋ `ForwardDate` を指定して実行し、**`.ini` / レポート / 価格 CSV** を取る。
+   - **`Custom` から始める根拠**: 分割位置が `ForwardDate` で明示されるため、実証すべき未知は
+     「**境界バーが IS / OOS どちらに入るか**」の 1 点だけになる。`1/2` `1/3` `1/4` は
+     「期間長で割るのかバー数で割るのか」も未確定（TBD-03）で、1 ケースでは確定しない。
+2. 取得物を `fixtures/mt5/<新ケース>/` へ追加（コーパスに `ForwardMode=4` の実測が入る）。
+3. `N-03` を **`CUSTOM_DATE`(4) に限って**解除する（`_detect_forward` を値で分岐させる）。
+   `PRESET_SPLIT`(3) は TBD-03 が残るため非対象のまま据え置く。
+4. Settings → エンジンの窓適用を結線し、レポートを `is` / `oos` の 2 区間で出す
+   （`SINGLE_SEGMENT_KEY` 固定を外す）。表示側（比較・判定タブ）は既存のまま使える。
+
+### 検定できない範囲（明示）
+
+- MT5 が Forward 実行時に**どの成果物をどの形で出すか**は未確認（本リポジトリに Forward 実行の
+  出力が 1 件も無い）。ステップ 1 の取得物を見るまで、ステップ 4 のレポート形は確定しない。
+
+- **関連**: ISSUE-387（N-04 撤回）・TBD-03・TBD-04・ISSUE-438。
+
+## ISSUE-438: [整理] 新規 MT5 レポート（2026.06.01-02）が未追跡でリポジトリ直下に置かれている
+
+- **ステータス**: OPEN（2026-08-21・依頼者提供。**採用可否とファイル移動は承認待ち**）
+- **重大度**: 中（未追跡＝喪失リスク。内容は golden ケースとして成立しうる）
+
+### 対象
+
+`/workspaces/app/ReportTester-900005560.html`（357,118 bytes・md5 `22b26c210492a58488f262d4ea1e6996`・
+**git 未追跡**）。`.doc/ReportTester-900005560.html`（155,622 bytes・md5 `91774264...`）とは**別物**で、
+レポート番号が同じだけである。
+
+### 内容（実測 2026-08-21）
+
+- **対象**: `260618-01`（MA_Slope_EA）/ JP225 / **M1 / 2026.06.01 - 2026.06.02** /
+  初期証拠金 10,000 JPY / 1:10 / OANDA-Japan MT5 Live (Build 6090)
+- **結果**: Bars 1376・Ticks 53954・**Total Trades 187**・Total Deals 374・Net −1,142・
+  PF 0.77・Expected Payoff −6.11・Sharpe −5.00・Z-Score 0.32 (25.10%)・
+  Balance DD Maximal 1,895 (19%)・Equity DD Maximal 2,025 (20%)・Margin Level 123.19%
+- **Deals 明細を完備**（374 行＋`end of test`）＝ `expected/report.json` を構成できる。
+
+### 判定
+
+既存 fixture（`ma_slope_jp225_202501`＝2025 年 1 月・1163 trades）とは**別期間**であり、
+**2 ケース目の突合材料になる**。ただし現状は不足がある。
+
+- **不足**: `.ini`（実行条件の権威。HTML には Modelling / Delays / Optimization / Forward が
+  一切載らない＝実測）／価格 CSV（再実走用）／`expected/report.json` へのパース。
+- **既存の不完全ケース**: `fixtures/mt5/ma_slope_jp225_202601/` は `expected/report.json`
+  （deals 2889 件）**だけ**を持ち、README が定める `case.yaml` / `input/` / `expert/` /
+  `mt5_report/` を欠く。本件を追加するなら同じ形にしないこと。
+
+### 抜本的解決
+
+1. 採用するなら `fixtures/mt5/ma_slope_jp225_202606/` を README の構成どおりに作り、
+   本 HTML を `mt5_report/` へ**移動**する（リポジトリ直下から外す）。**移動は承認事項**。
+2. `.ini` と価格 CSV を併せて取得し、`case.yaml` と `expected/report.json` を作る。
+3. 採用しないなら、リポジトリ直下から退避する（未追跡のまま放置しない）。
+
+- **関連**: ISSUE-437（Forward の実証材料としては使えない旨の判定）。
