@@ -686,7 +686,10 @@ export class PositionSizingDialog {
     }
   }
 
-  // 1 行: [ラベル] [価格入力] [チャートで指定]。
+  // 2 段: 1 段目 [ラベル] ／ 2 段目 [価格入力] [チャートで指定]（裁定 2026-08-20・ISSUE-434）。
+  //   1 段に並べると、縮まないラベル（flex: 0 0 46%）と縮まないボタンが列幅 221px の
+  //   ほぼ全部を先取りし、入力欄に 14px しか残らず**建値が打てなかった**（実ブラウザ実測）。
+  //   ラベルを別の段へ出すと入力欄は列幅からボタン分だけを引いた幅を使える。
   //   「チャートで指定」は**アーム要求を呼ぶだけ**（ピッカー本体はスライス 8-d の責務）。
   _priceRow(target, label, value) {
     const doc = this._doc;
@@ -721,8 +724,12 @@ export class PositionSizingDialog {
     pick.dataset.psPick = target;
     pick.textContent = 'チャートで指定';
     pick.addEventListener('click', () => this._onRequestPick?.(target));
+    // 入力欄とボタンだけの段。ラベルはこの段の外に出すので幅を奪い合わない。
+    const controls = doc.createElement('span');
+    controls.className = 'ps-price-controls';
+    controls.append(input, pick);
     this._prices.set(target, input);
-    row.append(name, input, pick);
+    row.append(name, controls);
     return row;
   }
 

@@ -76,7 +76,30 @@
   background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
   border-radius: 5px; color: var(--ct-uiText, #d1d4dc); font-size: 12px; padding: 4px 6px;
 }
-.ps-price-row input { flex: 1 1 auto; }
+/* 価格行だけ 2 段にする（裁定 2026-08-20・ISSUE-434）。
+   実ブラウザ実測（1600x1000・ダイアログ 720px の 3 カラム＝1 列 221px。上の .ps-dialog-body の
+   padding 14px・gap 14px から (720−28−28)/3 = 221.3px と一致する）:
+     ラベル（flex: 0 0 46% ＝縮まない・102px）＋ gap 8px×2 ＋「チャートで指定」
+     （flex: 0 0 auto ＝縮まない・約 90px）が列を先取りし、入力欄（flex: 1 1 auto;
+     min-width: 0）に **14px** しか残らなかった＝建値が打てない。
+     通常行の入力欄は同じ列で 111px。入力欄に 111px を残すにはボタン幅が 221−102−16−111
+     ＝ **−8px** ＝負になるため、文字を短くする・padding を削る調整では原理的に届かない
+     （幅予算そのものが足りない）。
+   ラベルを上段へ出すと入力欄は 列 − ボタン − gap ＝ 約 121〜124px（通常行の 111px より広い）。
+   縦積みにすると `.ps-row` の `align-items: center` と `.ps-row-label` の `flex: 0 0 46%` は
+   **主軸が縦になるため高さの指定として効いてしまう**。価格行に限って両方を打ち消す。 */
+.ps-price-row { flex-direction: column; align-items: stretch; gap: 4px; }
+.ps-price-row .ps-row-label { flex: 0 0 auto; }
+.ps-price-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+/* `.ps-row input` の `min-width: 0` は「flex 既定の auto を打ち消して縮ませる」ための指定で、
+   縮まないボタンと同じ段に置くと入力欄を 0 まで潰す。価格行では読める下限（7em ＝ 84px）を戻し、
+   列がさらに狭まったときはボタンを次の段へ逃がす（wrap）＝入力欄は下限を割らない。
+   基準幅は **0**（`flex: 1 1 0`）にする。`auto` だと基準幅が `<input type=number>` の内容由来の
+   intrinsic 幅（実測 169px）になり、169 ＋ gap 8 ＋ ボタン 92 ＝ 269 > 列 221 で wrap が発動して
+   ボタンが 3 段目へ落ちた（実 UI 実測 2026-08-20: rowH 78px・入力欄が段を独占して 221px）。
+   0 なら折り返し判定に使う仮サイズは min-width の 84px まで下がり、84 ＋ 8 ＋ 92 ＝ 184 ≦ 221 で
+   同じ段に収まり、残り幅を取って 221 − 92 − 8 ＝ 121px になる（実測 120.6px・sameLine true）。 */
+.ps-price-row input { flex: 1 1 0; min-width: 7em; }
 .ps-pick {
   flex: 0 0 auto; background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
   border-radius: 5px; color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px; padding: 4px 6px; cursor: pointer;
