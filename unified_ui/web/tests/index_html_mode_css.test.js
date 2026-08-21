@@ -149,11 +149,20 @@ describe('index.html — モード別 CSS の 3 値化', () => {
 
   test('bottom_pane_is_a_column_flex_child_with_a_default_height', () => {
     // Assert: 既定高は CSS が持つ（JS は起動時に版面へ手を入れない）。中身は縦に伸ばす。
+    //   縮み側は 1＝ウィンドウを縮めたときはペインも譲る。0 のままだとドラッグで広げた px が
+    //   残り、flex はチャート側だけを削ってチャートが消える（実測 2026-08-21）。
     const pane = HTML.match(/#um-bottom-pane\s*\{([^}]*flex:[^}]*)\}/);
     expect(pane).not.toBeNull();
-    expect(pane[1]).toMatch(/flex:\s*0\s+0\s+45%/);
+    expect(pane[1]).toMatch(/flex:\s*0\s+1\s+45%/);
     expect(pane[1]).toMatch(/flex-direction:\s*column/);
-    expect(pane[1]).toMatch(/min-height:\s*0/);
+  });
+
+  test('bottom_pane_css_does_not_restate_the_minimum_heights', () => {
+    // Assert: 下限の px は View の定数だけが持つ（CSS にも書くと可動域の計算とずれる）。
+    const rules = HTML_NO_COMMENTS.match(/#um-bottom-pane\s*\{[^}]*\}/g) || [];
+    for (const rule of rules) {
+      expect(rule).not.toMatch(/min-height:\s*[1-9]/);
+    }
   });
 
   test('splitter_is_a_grabbable_boundary', () => {

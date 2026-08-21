@@ -158,6 +158,24 @@ describe('createBottomPaneView — 器の生成と所有', () => {
     expect(view.host().id).toBe(BOTTOM_PANE_ID);
   });
 
+  test('mount_両側の下限を版面へ書く', () => {
+    // Assert: 下限は View の定数だけが持ち、版面へは View が書く（CSS と二重に持たない）。
+    //   これが無いと、ドラッグで広げた後にウィンドウを縮めたとき flex がチャート側だけを
+    //   削ってチャートが消える（実測 2026-08-21: 高さ 600 へ縮めてチャート 0px）。
+    const { view, above } = mounted();
+    expect(view.host().style.minHeight).toBe(`${MIN_PANE_PX}px`);
+    expect(above.style.minHeight).toBe(`${MIN_ABOVE_PX}px`);
+  });
+
+  test('unmount_上の要素へ書いた下限を戻す', () => {
+    // Arrange: 上の要素は他所（live core の版面）の持ち物。
+    const { view, above } = mounted();
+    // Act
+    view.unmount();
+    // Assert
+    expect(above.style.minHeight).toBe('');
+  });
+
   test('mount_購読は文書ではなく分割線が持つ', () => {
     // Assert: 文書へ purchase を残さないので、器を外せば購読も消える（積み上がらない）。
     const { doc, view } = mounted();

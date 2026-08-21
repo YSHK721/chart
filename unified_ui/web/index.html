@@ -69,9 +69,13 @@
     }
     #um-bottom-splitter:hover { background: var(--ct-uiTextDim, #787b86); }
     /* 下部ペイン: 既定は版面の 45%。ドラッグしたときだけ View が flex-basis を px で上書きする
-       （既定値を JS に持たせない＝起動時に版面へ手を入れない）。中身（表示層）は縦に伸ばす。 */
+       （既定値を JS に持たせない＝起動時に版面へ手を入れない）。中身（表示層）は縦に伸ばす。
+       縮み側は 1（ウィンドウを縮めたときはペインも譲る）。譲らせないと、ドラッグで広げた px が
+       そのまま残り、flex はチャート側だけを削ってチャートが消える（実測 2026-08-21）。
+       両側の**下限**（px）はここに書かない: 同じ数値がドラッグの可動域計算と CSS に分かれて
+       置かれるとずれるので、bottom_pane_view.js の定数から View が版面へ書く。 */
     #um-bottom-pane {
-      flex: 0 0 45%; min-height: 0; overflow: hidden; flex-direction: column;
+      flex: 0 1 45%; overflow: hidden; flex-direction: column;
       background: var(--ct-uiSurface, #131722);
     }
     /* モード切替ボタンはオン・オフのトグル（全モードで常に表示）。選択中のモードは

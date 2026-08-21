@@ -143,6 +143,17 @@ export function createBottomPaneView({ doc, measureHeight = measureByRect } = {}
       pane = doc.createElement("div");
       pane.id = BOTTOM_PANE_ID;
 
+      // 両側の下限は**この 2 定数だけ**が持ち、版面へは View が書く。CSS 側にも同じ px を
+      //   置くと、ドラッグの可動域（clampPaneHeight）と版面の下限が別々に動いてずれる。
+      //   下限が版面に無いと、ドラッグ後にウィンドウを縮めたとき flex がチャート側だけを
+      //   削ってチャートが消える（実測 2026-08-21: 1600×1000 でペイン 832 まで広げてから
+      //   高さ 600 へ縮めると チャート 0px・ペインが版面から 280px はみ出した）。
+      //   ＝「ボタンで消える」を直しても「縮めると消える」が残っていた。
+      pane.style.minHeight = `${MIN_PANE_PX}px`;
+      if (above) {
+        above.style.minHeight = `${MIN_ABOVE_PX}px`;
+      }
+
       // 購読は 3 つとも**分割線が持つ**（ポインタ捕捉で移動・離しもここへ配られる）。
       //   文書側に置かないので、unmount で器を外せば購読も一緒に消える。
       splitter.addEventListener("pointerdown", onPointerDown);
@@ -174,6 +185,10 @@ export function createBottomPaneView({ doc, measureHeight = measureByRect } = {}
     /** 分割線とペインを外す（統合ページへ何も残さない）。二重 unmount は無視。 */
     unmount() {
       if (!pane) return;
+      // 上の要素は他所（live core の版面）の持ち物なので、書いた下限は必ず戻す。
+      if (above) {
+        above.style.minHeight = "";
+      }
       app.removeChild(splitter);
       app.removeChild(pane);
       app = above = splitter = pane = null;
