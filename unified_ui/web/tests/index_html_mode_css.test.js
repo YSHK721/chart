@@ -121,6 +121,53 @@ describe('index.html — モード別 CSS の 3 値化', () => {
     expect(rule[0]).not.toMatch(/um-mode-/);
   });
 
+  // --- 裁定 2026-08-21: 表示層は下部ペインへ出す（版面は排他ではなく縦 2 分割）-------------
+  //
+  // 旧規則 `body:not(.um-chart-api) .chart-wrap { display: none }`（承認 H-C）は、sim を押すと
+  //   チャートが消える**排他**の版面だった。参照実装の MT5 はストラテジーテスターを下部ドック
+  //   ペインに出し、チャートは上に残す。依頼者指示により版面を縦 2 分割へ置き換えた。
+  test('chart_wrap_is_not_collapsed_in_any_mode', () => {
+    // Assert: チャートを畳む規則が残っていない（残ると 2 分割にした意味が消える）。
+    expect(HTML_NO_COMMENTS).not.toMatch(/\.chart-wrap\s*\{[^}]*display:\s*none/);
+  });
+
+  test('bottom_pane_is_hidden_by_default_and_shown_only_without_chart_api', () => {
+    // Assert: 既定は非表示。chart API を持たない core のときだけ出す（#replay-bar と同流儀）。
+    expect(HTML).toMatch(/#um-bottom-splitter,\s*#um-bottom-pane\s*\{\s*display:\s*none;?\s*\}/);
+    expect(HTML).toMatch(/body:not\(\.um-chart-api\)\s+#um-bottom-splitter\s*\{\s*display:\s*block;?\s*\}/);
+    expect(HTML).toMatch(/body:not\(\.um-chart-api\)\s+#um-bottom-pane\s*\{\s*display:\s*flex;?\s*\}/);
+  });
+
+  test('bottom_pane_rules_do_not_enumerate_modes', () => {
+    // Assert: モード名で書くと第 4 モードのたびにセレクタを足す義務が生まれる。
+    const rules = HTML_NO_COMMENTS.match(/[^}]*#um-bottom-(?:pane|splitter)[^{]*\{[^}]*\}/g) || [];
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) {
+      expect(rule).not.toMatch(/um-mode-/);
+    }
+  });
+
+  test('bottom_pane_is_a_column_flex_child_with_a_default_height', () => {
+    // Assert: 既定高は CSS が持つ（JS は起動時に版面へ手を入れない）。中身は縦に伸ばす。
+    const pane = HTML.match(/#um-bottom-pane\s*\{([^}]*flex:[^}]*)\}/);
+    expect(pane).not.toBeNull();
+    expect(pane[1]).toMatch(/flex:\s*0\s+0\s+45%/);
+    expect(pane[1]).toMatch(/flex-direction:\s*column/);
+    expect(pane[1]).toMatch(/min-height:\s*0/);
+  });
+
+  test('splitter_is_a_grabbable_boundary', () => {
+    // Assert: 分割線には規則が 2 本ある（出し入れ／寸法）。寸法側は「掴める」こと——高さを
+    //   持ち、カーソルが row-resize で、touch-action:none（指でなぞってもスクロールに
+    //   奪われない）——を満たす。高さの数値は CSS だけが持つ（View は実測で可動域を出すので
+    //   同じ数値を JS 側に写さない＝二重定義を作らない）。
+    const rules = HTML.match(/#um-bottom-splitter\s*\{[^}]*\}/g) || [];
+    const sizing = rules.filter((r) => /cursor:\s*row-resize/.test(r));
+    expect(sizing).toHaveLength(1);
+    expect(sizing[0]).toMatch(/height:\s*[1-9]\d*px/);
+    expect(sizing[0]).toMatch(/touch-action:\s*none/);
+  });
+
   test('initial_body_classes_match_the_default_mode_state', () => {
     // Arrange: applyModeUi が走るのは bootstrap 完了後。それまでの間、body の初期クラスが
     //   状態を正しく表していないと、ツールバーが出てから初期化が終わるまでのあいだだけ

@@ -79,10 +79,10 @@ function resolveJobId({ jobId, search }) {
 export async function setupSimDisplay({ doc, host, jobId, search } = {}) {
   const frame = createSimFrameView({ doc });
   const targetJobId = resolveJobId({ jobId, search });
-  // 器は `.chart-wrap` と同じ版面（#app の flex 子）へ置く。承認 H-C により統合ページは
-  //   chart API を持たないモードで `.chart-wrap` を畳むので、空いた領域をそのまま受け取る。
-  //   #app が無いページ（子文書・E2E fixture）では渡された host にそのまま置く。
-  const mountPoint = (host && host.querySelector && host.querySelector("#app")) || host;
+  // 器は**渡された host へそのまま**挿す。どこへ置くかは統合層の判断であって sim の契約では
+  //   ない（旧実装は host の中から `#app` を探していた＝統合ページの id を sim 側が知っていた）。
+  //   統合ページは下部ペイン（#um-bottom-pane）を渡す（裁定 2026-08-21・MT5 と同じ版面分割）。
+  const mountPoint = host;
   let enabled = false;
 
   return {
