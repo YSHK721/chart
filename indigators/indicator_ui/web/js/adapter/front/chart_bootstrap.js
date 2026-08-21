@@ -121,7 +121,8 @@ export function makeUpdatePaneHeight({ container, chart, renderer }) {
  * @returns {function} 購読解除（観測できない環境では no-op）
  */
 export function installPaneGeometryFollow({ container, renderer, win = globalThis }) {
-  const refresh = () => renderer.refreshPaneLegendIfGeometryChanged();
+  // 版面の総高が変わったときは、価格ペイン高の保存（ISSUE-440(2)）まで含めて揃える。
+  const refresh = () => renderer.syncPaneGeometry();
   const Observer = win && win.ResizeObserver;
   if (!container || typeof Observer !== 'function') {
     return () => {};

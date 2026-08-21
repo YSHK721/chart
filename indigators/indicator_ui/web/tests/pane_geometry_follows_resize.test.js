@@ -45,7 +45,8 @@ function fakeChart(heights) {
       _series: [],
       paneIndex() { return panesArr.indexOf(pane); },
       getHeight() { return state.heights[panesArr.indexOf(pane)] ?? 0; },
-      setStretchFactor() {}, setPreserveEmptyPane() {},
+      stretch: 1,
+      setStretchFactor(v) { pane.stretch = v; }, setPreserveEmptyPane() {},
       addSeries(def, opts) {
         const s = fakeSeries(); s._pane = pane; pane._series.push(s); return s;
       },
@@ -55,6 +56,11 @@ function fakeChart(heights) {
   panesArr.push(makePane());
   return {
     state,
+    // lwc の配分（高さ ∝ ストレッチ比）を再現する。avail はペインへ配れる総高。
+    layout(avail) {
+      const sum = panesArr.reduce((a, p) => a + p.stretch, 0);
+      state.heights = panesArr.map((p) => Math.round(avail * (p.stretch / sum)));
+    },
     panes() { return panesArr; },
     addPane() { const p = makePane(); panesArr.push(p); return p; },
     removePane(i) { panesArr.splice(i, 1); },
@@ -84,6 +90,17 @@ function build(heights = [697, 232]) {
 }
 
 const topOfPane1 = (model) => model.groups.find((g) => g.paneIndex === 1)?.top;
+
+// 価格ペイン＋指標ペイン 2 枚（区切り 2 本）の構成。
+function build3(heights = [557, 186, 185]) {
+  const { chart, renderer, emitted } = build(heights);
+  renderer.renderLine('osc#2', [{
+    name: 'osc2', kind: 'line', style: 'solid', width: 1, color: '#00f',
+    data: [{ time: 20, value: 1 }],
+  }], { pane: true });
+  chart.state.heights = [...heights];
+  return { chart, renderer, emitted };
+}
 
 test('総高は毎回測り直す（押し込まれた古い値より実測を優先する）', () => {
   // Arrange: 価格 697 / 指標 232・区切り 1px ＝ 総高 930。押し込み値は古い 1204 のまま。
@@ -245,6 +262,100 @@ test('予約は多重に積まない（クロスヘア移動のたびに rAF を
   } finally {
     globalThis.requestAnimationFrame = original;
   }
+});
+
+
+// ---------------------------------------------------------------------------
+// (2) 版面の増減は指標ペインで吸収し、価格ペインの高さを保つ（依頼者裁定 2026-08-21）
+//
+//   lightweight-charts の既定は全ペインの比率保持で、下部ペインやウィンドウの操作に価格
+//   チャートが引きずられて縮む（実測: 版面 502→352 で価格 251→171・指標 222→152）。
+//   価格の見えは操作の主目的なので、増減は指標側で吸収する。
+// ---------------------------------------------------------------------------
+
+test('総高が変わったら価格ペインの高さを保ち、差分は指標ペインが吸収する', () => {
+  // Arrange: 価格 557 / 指標 186・185（利用者の配分）。総高 930。
+  const { chart, renderer } = build3([557, 186, 185]);
+  let area = 930;
+  renderer.setPaneAreaHeightProvider(() => area);
+  renderer.syncPaneGeometry();                       // 目標として控える
+  // Act: 版面が 930 → 730 へ縮む（lwc は先に比率保持で配り直す）。
+  area = 730;
+  chart.layout(728);
+  renderer.syncPaneGeometry();
+  chart.layout(728);                                  // 与えたストレッチ比で再配分
+  // Assert: 価格ペインは 557 のまま（比配分の丸めで ±1px）、指標 2 枚が差分を前回比で分ける。
+  assert.ok(Math.abs(chart.state.heights[0] - 557) <= 1, `価格ペイン ${chart.state.heights[0]}`);
+  assert.ok(Math.abs((chart.state.heights[1] + chart.state.heights[2]) - (728 - 557)) <= 2);
+  // 前回比（186:185）に沿って分ける＝ほぼ等分（丸めで同値になり得るので順序で見る）。
+  assert.ok(chart.state.heights[1] >= chart.state.heights[2], '前回比の順序を保つ');
+  assert.ok(Math.abs(chart.state.heights[1] - chart.state.heights[2]) <= 2, '前回比どおりに近い');
+});
+
+test('版面が戻れば元の配分へ戻る（詰めた高さを目標にしない）', () => {
+  // Arrange
+  const { chart, renderer } = build3([557, 186, 185]);
+  let area = 930;
+  renderer.setPaneAreaHeightProvider(() => area);
+  renderer.syncPaneGeometry();
+  // Act: 縮めてから戻す。
+  area = 500; chart.layout(498); renderer.syncPaneGeometry(); chart.layout(498);
+  area = 930; chart.layout(928); renderer.syncPaneGeometry(); chart.layout(928);
+  // Assert: 利用者が決めた配分（557/186/185）へ復帰する（丸めで ±1px）。
+  [557, 186, 185].forEach((want, i) => {
+    assert.ok(Math.abs(chart.state.heights[i] - want) <= 1, `pane${i}=${chart.state.heights[i]} want ${want}`);
+  });
+});
+
+test('指標ペインが下限に達したら価格ペインが譲る（潰さない）', () => {
+  // Arrange: 版面が極端に低い。
+  const { chart, renderer } = build3([557, 186, 185]);
+  let area = 300;
+  renderer.setPaneAreaHeightProvider(() => 930);
+  renderer.syncPaneGeometry();
+  renderer.setPaneAreaHeightProvider(() => area);
+  // Act
+  chart.layout(298); renderer.syncPaneGeometry(); chart.layout(298);
+  // Assert: 指標は下限 40px、価格が残りを引き取る（合計は版面のまま）。
+  assert.ok(Math.abs(chart.state.heights[1] - 40) <= 1);
+  assert.ok(Math.abs(chart.state.heights[2] - 40) <= 1);
+  assert.ok(Math.abs(chart.state.heights[0] - (298 - 80)) <= 2);
+});
+
+test('区切りドラッグ（総高そのまま）には介入せず、その配分を新しい目標にする', () => {
+  // Arrange
+  const { chart, renderer } = build3([557, 186, 185]);
+  renderer.setPaneAreaHeightProvider(() => 930);
+  renderer.syncPaneGeometry();
+  // Act: 利用者が区切りを動かした（総高は不変）。
+  chart.state.heights = [407, 336, 185];
+  renderer.syncPaneGeometry();
+  // Assert: 介入しない（そのまま）。
+  assert.deepEqual(chart.state.heights, [407, 336, 185]);
+  // Act: そのあと版面が縮んで戻る。
+  renderer.setPaneAreaHeightProvider(() => 500);
+  chart.layout(498); renderer.syncPaneGeometry(); chart.layout(498);
+  renderer.setPaneAreaHeightProvider(() => 930);
+  chart.layout(928); renderer.syncPaneGeometry(); chart.layout(928);
+  // Assert: 新しい目標（利用者の配分）へ戻る。
+  assert.ok(Math.abs(chart.state.heights[0] - 407) <= 1, `価格 ${chart.state.heights[0]}`);
+  assert.ok(Math.abs(chart.state.heights[1] - 336) <= 1, `指標 ${chart.state.heights[1]}`);
+});
+
+test('ペインが 1 枚だけなら何もしない（配る相手が居ない）', () => {
+  // Arrange
+  const chart = fakeChart([930]);
+  const main = fakeSeries();
+  main.getPane = () => chart.panes()[0];
+  const renderer = new ChartRenderer({ chart, mainSeries: main, lwc: { LineSeries }, onPaneLegend: () => {} });
+  let area = 930;
+  renderer.setPaneAreaHeightProvider(() => area);
+  renderer.syncPaneGeometry();
+  // Act
+  area = 500; chart.state.heights = [498];
+  // Assert: 例外にならず、高さも触らない。
+  assert.doesNotThrow(() => renderer.syncPaneGeometry());
+  assert.deepEqual(chart.state.heights, [498]);
 });
 
 test('makeMeasurePaneAreaHeight は container 高 − 時間軸高を返す（測れなければ 0）', () => {

@@ -34,7 +34,7 @@ function fakeRenderer() {
     isOverPriceAxis: () => false,
     // ISSUE-440: 幾何が動いたら凡例を引き直す面。ChartInteractionController が pointermove /
     //   pointerup で呼ぶので、renderer ダブルも契約を満たす（部分実装を通さない＝fail-close）。
-    refreshPaneLegendIfGeometryChanged: () => false,
+    refreshPaneLegendIfGeometryChanged: () => false, syncPaneGeometry: () => false,
     resetPriceZoom() {},
     setPaneHeight() {},
     isLatestBarVisible: () => true,

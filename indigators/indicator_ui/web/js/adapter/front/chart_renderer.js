@@ -112,6 +112,12 @@ const TRANSPARENT_COLOR = 'rgba(0,0,0,0)';
 //   「配信前の初期値」＝現行リテラルとしてのみ使う（未配信時の挙動は不変・D-11）。
 const INITIAL_CHROME_SLOTS = Object.freeze({ ...CHROME_CURRENT });
 
+// 版面の増減を指標ペインで吸収するときの下限（ISSUE-440(2)・依頼者裁定 2026-08-21）。
+//   これ未満へ詰めると軸ラベルも凡例も読めなくなるので、指標側で吸収し切れないぶんだけ
+//   価格ペインが譲る（版面が極端に低いときに価格ペインを 0 にしないための床）。
+const MIN_INDICATOR_PANE_PX = 40;
+const MIN_PRICE_PANE_PX = 60;
+
 // 受け取った配線点だけを上書きした新しい保持値を返す（未指定＝undefined の配線点は現状維持）。
 //   lightweight-charts の applyOptions が部分マージであることと同じ規約にする。
 function mergeChromeSlots(held, patch) {
@@ -203,6 +209,13 @@ export class ChartRenderer {
     this._lastPaneGeometrySig = null;
     // 次フレームでの幾何突き合わせを予約済みか（多重予約を作らない・_scheduleGeometryRecheck）。
     this._geometryRecheckPending = false;
+    // 利用者が最後に決めたペイン配分（総高が変わらないあいだの実測）。総高が変わったとき、
+    //   価格ペインをこの高さへ戻すための目標にする（ISSUE-440(2)）。
+    this._paneGoal = null;
+    // 目標を控えた時点の版面総高。これと違う総高を観測したら「利用者以外の要因」と判定する。
+    this._lastPaneArea = null;
+    // 自分が配り直した高さ（利用者の意思と区別するための印）。
+    this._appliedPaneHeights = null;
     // lwc 操作可否の合成（suppressInteraction 参照）。明示フラグ AND 抑止者ゼロ で有効。
     this._interactionEnabled = true;
     this._interactionSuppressors = new Set();
@@ -715,7 +728,10 @@ export class ChartRenderer {
     this._geometryRecheckPending = true;
     raf(() => {
       this._geometryRecheckPending = false;
-      this.refreshPaneLegendIfGeometryChanged();
+      // 幾何の突き合わせと同時に「利用者が決めた配分」の控えも更新する（ISSUE-440(2)）。
+      //   起動直後はペインが増えるたびに高さが確定し直すので、ここで控えないと最初の
+      //   版面変化のときに目標が無い（＝lwc の比率保持のまま価格ペインが縮む）。
+      this.syncPaneGeometry();
     });
   }
 
@@ -896,6 +912,124 @@ export class ChartRenderer {
   //   ための比較用で、DTO の再構築より桁違いに安い（数値の連結だけ）。
   _paneGeometrySignature() {
     return `${this._paneHeights().join('/')}|${Math.round(this._paneAreaHeight())}`;
+  }
+
+  /**
+   * 版面の総高が変わったとき、**価格ペインの高さを保ち、差分は指標ペインへ配る**（ISSUE-440(2)）。
+   *
+   * 依頼者裁定 2026-08-21: 「価格ペインを保ち、指標ペインが伸縮」。lightweight-charts の既定は
+   *   全ペインの比率保持（実測: 版面 502→352 で価格 251→171・指標 222→152）で、価格チャートが
+   *   下部ペインの操作に引きずられて縮む。価格の見えは操作の主目的なので、面積の増減は指標側で
+   *   吸収する。
+   *
+   * 何を「保つ」か: **利用者が最後に決めた高さ**である。総高が変わらないあいだの高さ変更は
+   *   区切りドラッグ＝利用者の意思なので、それを控えて（_paneGoal）総高が変わったときの目標にする。
+   *   区切りドラッグそのもの（総高が変わらない操作）には介入しない——その境界は価格ペインの
+   *   下辺そのものなので、動かせば価格ペイン高が変わるのが定義であり、介入は操作の否定になる。
+   *
+   * 下限: 指標ペインは各 MIN_INDICATOR_PANE_PX、価格ペインは MIN_PRICE_PANE_PX。指標側だけで
+   *   吸収し切れないときに限り価格ペインが譲る（版面が極端に低いときに潰さないため）。
+   *
+   * @returns {boolean} 高さの割り当てを変えたか
+   */
+  _applyPreservedPriceHeight(area, heights, prevHeights) {
+    const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+    // 区切りの総高は「総高 − 各ペイン高の合計」。ペインへ配れるのは残りだけ。
+    const avail = sum(heights);
+    if (!(avail > 0)) {
+      return false;
+    }
+    const priceIdx = this._pricePaneIndex();
+    const others = heights.map((_, i) => i).filter((i) => i !== priceIdx);
+    if (others.length === 0) {
+      return false;
+    }
+    const minOthers = others.length * MIN_INDICATOR_PANE_PX;
+    const priceCap = Math.max(MIN_PRICE_PANE_PX, avail - minOthers);
+    const price = Math.min(Math.max(prevHeights[priceIdx], MIN_PRICE_PANE_PX), priceCap);
+    const rest = Math.max(0, avail - price);
+    const prevOthers = others.map((i) => Math.max(0, prevHeights[i]));
+    const prevOthersSum = sum(prevOthers);
+    const targets = heights.slice();
+    targets[priceIdx] = price;
+    let assigned = 0;
+    others.forEach((paneIdx, k) => {
+      const share = prevOthersSum > 0 ? rest * (prevOthers[k] / prevOthersSum) : rest / others.length;
+      const h = Math.max(MIN_INDICATOR_PANE_PX, share);
+      targets[paneIdx] = h;
+      assigned += h;
+    });
+    // 下限で膨らんだぶんは価格ペインが引き取る（合計を版面へ合わせる）。
+    targets[priceIdx] = Math.max(MIN_PRICE_PANE_PX, avail - assigned);
+    // 1px 未満の差で毎フレーム書き換えない（描画のばたつきを作らない）。
+    if (targets.every((h, i) => Math.abs(h - heights[i]) < 1)) {
+      return false;
+    }
+    // 高さの比＝ストレッチ比。lightweight-charts はペインを比で配るので、目標高をそのまま
+    //   比として与えれば（合計が版面と一致するため）目標どおりの px になる。
+    const panes = typeof this._chart.panes === 'function' ? this._chart.panes() : [];
+    let applied = false;
+    panes.forEach((pane, i) => {
+      if (pane && typeof pane.setStretchFactor === 'function' && targets[i] > 0) {
+        pane.setStretchFactor(targets[i]);
+        applied = true;
+      }
+    });
+    // 自分が配った値の印（次の観測でこれと一致する高さは「利用者の意思」ではない）。
+    this._appliedPaneHeights = applied ? targets : null;
+    return applied;
+  }
+
+  /**
+   * 幾何を実測へ揃える（総高が変わっていれば再配分し、変わっていれば凡例を配り直す）。
+   *
+   * 呼ぶのは版面の寸法変化の観測点（installPaneGeometryFollow）。区切りドラッグのように
+   *   総高が変わらない変更では再配分せず、利用者が決めた高さを**目標として控える**だけにする。
+   *
+   * @returns {boolean} 凡例を配り直したか
+   */
+  syncPaneGeometry() {
+    const area = this._paneAreaHeight();
+    const heights = this._paneHeights();
+    if (area > 0 && heights.length > 0) {
+      const areaChanged = this._lastPaneArea !== null && this._lastPaneArea !== area;
+      if (areaChanged && this._paneGoal && this._paneGoal.length === heights.length && heights.length >= 2) {
+        // 総高が変わった＝利用者以外の要因（下部ペイン・ウィンドウ）。目標へ寄せ直す。
+        //   目標そのものは書き換えない（面積が戻ったときに元の高さへ戻すため）。
+        this._applyPreservedPriceHeight(area, heights, this._paneGoal);
+        this._lastPaneArea = area;
+      } else {
+        this._notePaneGeometry();
+      }
+    }
+    return this.refreshPaneLegendIfGeometryChanged();
+  }
+
+  // 総高が変わっていないあいだの高さ＝**利用者が決めた配分**として控える（ISSUE-440(2)）。
+  //   自分が配り直した直後の値は控えない（それは利用者の意思ではない）。控えてしまうと、
+  //   版面が戻ったときに「詰められた高さ」が正解として復元され、元の配分へ戻らなくなる。
+  _notePaneGeometry() {
+    const area = this._paneAreaHeight();
+    if (!(area > 0)) {
+      return;
+    }
+    const heights = this._paneHeights();
+    if (heights.length === 0) {
+      return;
+    }
+    // 自分が配った状態のままなら控えない（詰めた高さを「利用者が決めた配分」にしない）。
+    const isOurs = this._appliedPaneHeights
+      && this._appliedPaneHeights.length === heights.length
+      && this._appliedPaneHeights.every((h, i) => Math.abs(h - heights[i]) <= 2);
+    if (isOurs) {
+      this._lastPaneArea = area;
+      return;
+    }
+    if (this._lastPaneArea === null || this._lastPaneArea === area) {
+      this._paneGoal = heights;
+      this._appliedPaneHeights = null;
+    }
+    this._lastPaneArea = area;
   }
 
   /**
