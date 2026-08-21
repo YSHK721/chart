@@ -36,10 +36,10 @@ import {
 
 const DATASET_REF = 'jp225_tick';
 
-// 中身の高さへ足す余白（ISSUE-442）。子文書の外枠（body の余白）と、下端が窓の縁に貼り付いて
-//   見えないようにするための最小のゆとり。実測: フォームの中身 287px に対しペイン 300px で
-//   スクロールなしに収まる。
-const SIM_PANE_CONTENT_MARGIN_PX = 14;
+// 中身の高さへ足す余白（ISSUE-442 / ISSUE-443）。小数の高さがそのまま切り上がってスクロール
+//   バーが出るのを避けるためだけの最小値にする。14px にしていたときは中身の下に目に見える
+//   帯が残った（依頼者指摘 2026-08-22「下部余白が存在する」）。
+const SIM_PANE_CONTENT_MARGIN_PX = 4;
 
 // 単一 mount の live root と、注入するリプレイ部品の URL（/replay プロキシ経由で取得）。
 const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';

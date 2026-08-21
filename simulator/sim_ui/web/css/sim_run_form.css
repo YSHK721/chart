@@ -31,6 +31,9 @@
  * 見切れ・左右 57% は空白）。縦を使い切る前に横を使う。
  * 狭いときは 1 列へ落として縦積みへ戻す（横スクロールを作らない）。 */
 #simRunForm {
+  /* 行の高さの単一ソース（ISSUE-443）。控えの種類（select / 入力 / チェックボックス）で
+   * 割れないよう、全面がこの 1 つの値を使う。 */
+  --sim-field-row-h: 24px;
   display: grid;
   /* 設定は群が 4 つ、入力は 3 欄＋スタート。2:1 で割り当てると、広い版面では設定側に
    * 群が 3 つ並び（340px×3）、縦の消費がさらに減る。 */
@@ -72,7 +75,7 @@
   border: 1px solid var(--line);
   border-radius: 4px;
 }
-#simRunActionPanel { margin-bottom: 8px; }
+#simRunActionPanel { margin-bottom: 4px; }
 
 /* --- 面の見出し ------------------------------------------------------------------- */
 #simTesterPanel .tester-title,
@@ -161,6 +164,11 @@
   grid-template-columns: 136px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
+  /* **行の高さは控えの種類で変えない**（依頼者指摘 2026-08-22「左右の input ボックスの
+   * 中心線がズレている」）。実測では select 24px / 入力 27px / チェックボックス 19px と
+   * まちまちで、群ごとに行ピッチが 28px と 31px に分かれ、隣の群と最大 11px ずれていた。
+   * 行の高さを 1 つに固定すれば、どの群でも N 行目の中心が同じ y に来る。 */
+  min-height: var(--sim-field-row-h);
   color: var(--fg);
 }
 #simTesterPanel .tester-input,
@@ -170,24 +178,27 @@
 #simSchemaFallbackPanel .fallback-deposit {
   min-width: 0;          /* grid/flex の中で内容幅に押し広げられないため（横あふれ防止） */
   width: 100%;
+  /* 高さは**上下余白ではなく height で決める**。上下余白で決めると、select と input で
+   * 内側の詰まり方が違うぶんだけ高さが割れる（実測: 24px と 27px）。 */
+  height: var(--sim-field-row-h);
   /* 入る値の実幅に合わせて頭打ちにする（依頼者指示 2026-08-22「input ボックスの幅を調整」）。
    * 実測: 箱は 240px なのに中身は "0" / "M1" / "ema" / "ENTIRE_HISTORY"（最長でも約 100px）。
    * 176px は最長の選択肢（ENTIRE_HISTORY ＋ 矢印）が切れない最小幅の実測値。 */
   max-width: 176px;
   box-sizing: border-box;
-  padding: 4px 8px;
+  padding: 0 8px;
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--line);
   border-radius: 3px;
   font: inherit;
 }
-/* select は行の高さが input と揃わない（矢印の分だけ内側が詰まる）。上下だけ少し薄くする。 */
+/* select は矢印のぶん内側が詰まる。高さは上で固定してあるので左右だけ薄くする。 */
 #simTesterPanel select.tester-input,
 #simSchemaFallbackPanel select.fallback-symbol,
 #simSchemaFallbackPanel select.fallback-ea {
-  padding-top: 3px;
-  padding-bottom: 3px;
+  padding-left: 6px;
+  padding-right: 2px;
 }
 /* チェックボックスは幅いっぱいにしない（帯にならないよう左端に置く）。 */
 #simTesterPanel .tester-date-mode {
@@ -222,9 +233,16 @@
   color: var(--fg);
 }
 
-/* 全一覧の開閉。開く中身が 0 件のときはトグルごと消す（押しても何も出ないボタンを残さない）。 */
+/* 全一覧の開閉。開く中身が 0 件のときはトグルごと消す（押しても何も出ないボタンを残さない）。
+ * 置き場所は**見出しの右端**（ISSUE-443・依頼者指摘「下部余白が存在する」）。面の最後に置くと、
+ * それだけで 1 行（実測 30px）を下端に足す一方、見出し行の右側は空いたままだった。面全体に
+ * 掛かる開閉なので見出しに置くのが意味とも合う。中身（一覧）は従来どおり流れの中に出す。 */
+#simTesterPanel { position: relative; }
 #simTesterPanel .tester-unsupported-toggle {
-  margin-top: 8px;
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  margin: 0;
   padding: 2px 8px;
   background: transparent;
   color: var(--muted);
