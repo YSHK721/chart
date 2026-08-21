@@ -66,8 +66,8 @@
   min-height: 0;
   box-sizing: border-box;
   width: 100%;
-  margin: 8px 0 0;
-  padding: 8px 12px;
+  margin: 6px 0 0;
+  padding: 6px 10px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -94,21 +94,28 @@
 }
 
 /* --- 群（対象 / 期間 / 実行 / 口座 …）------------------------------------------- */
-/* 群（対象 / 期間 / 実行 / 口座）は幅が許すかぎり横に並べる（縦の消費を減らす）。
- * 340px は「ラベル列 140px ＋ 入力 ≥180px」が成立する最小幅の実測値。 */
+/* 群（対象 / 期間 / 実行 / 口座）は幅が許すかぎり横に並べ、**中身の幅で置く**。
+ * 引き伸ばす（1fr）と、入力が短い群ほどカード内に空白が残る（実測 2026-08-22: カード 414px に
+ * 対し中身は 140+8+240=388px、入力の中身は "0" や "M1"）。折り返しは flex-wrap が行う。 */
 #simTesterPanel .tester-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  align-content: start;
+  /* 段組み（multicol）で流す。横並び（flex-wrap）だと**行の高さが最も高い群に揃う**ため、
+   * 短い群（対象 3 行・口座 3 行）の下に空白が残り、次の群が新しい行へ落ちる
+   * （実測 2026-08-22: 対象カードの下に約 100px の空白・口座が 2 行目へ）。段組みなら
+   * 短い群の直後に次の群が続く。 */
+  columns: 300px;
+  column-gap: 8px;
 }
 #simTesterPanel .tester-group {
-  margin: 6px;
-  padding: 8px 12px;
+  break-inside: avoid;   /* 群カードを段の途中で割らない */
+  width: max-content;    /* 中身の幅で置く（段幅いっぱいに引き伸ばさない） */
+  max-width: 100%;
+  margin: 0 0 8px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 3px;
 }
 #simTesterPanel .tester-group-title {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
@@ -121,24 +128,25 @@
 #simTesterPanel .tester-group-fields {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 6px 18px;
+  gap: 4px;
   align-content: start;
 }
+/* Inputs / 縮退面は**自分の幅**で列数を決める（画面幅ではない）。ビューポート基準の
+ * media query だと、列が狭いのに 2 列のままになり入力欄が潰れる（実測 2026-08-22:
+ * 画面 1280px で入力欄が 58px まで縮み、値が切れた）。280px は
+ * 「ラベル列 136px ＋ ゆとり ＋ 入力 ≥120px」が成立する最小幅。 */
 #simEaInputsPanel,
 #simSchemaFallbackPanel {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 4px 12px;
   align-content: start;
 }
 #simEaInputsPanel .ea-inputs-title,
 #simSchemaFallbackPanel .fallback-title {
   grid-column: 1 / -1;
 }
-@media (max-width: 860px) {
-  #simEaInputsPanel,
-  #simSchemaFallbackPanel { grid-template-columns: minmax(0, 1fr); }
-}
+
 
 /* --- ラベル / 入力の整列 --------------------------------------------------------- */
 /* label 直下のテキストノードは無名グリッドアイテムになる（CSS Grid 仕様）。よって
@@ -147,9 +155,12 @@
 #simEaInputsPanel .ea-field,
 #simSchemaFallbackPanel .fallback-field {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr);
+  /* ラベル列は**最長のラベルに合わせた実測値**（実測 2026-08-22: 最長 134px＝
+   * 「期間をカスタム指定する」／次点 112px＝OptimizationCriterion）。これ未満にすると
+   * 折り返して行が 2 段になり、詰めたはずの縦が増える。 */
+  grid-template-columns: 136px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: var(--fg);
 }
 #simTesterPanel .tester-input,
@@ -159,8 +170,12 @@
 #simSchemaFallbackPanel .fallback-deposit {
   min-width: 0;          /* grid/flex の中で内容幅に押し広げられないため（横あふれ防止） */
   width: 100%;
+  /* 入る値の実幅に合わせて頭打ちにする（依頼者指示 2026-08-22「input ボックスの幅を調整」）。
+   * 実測: 箱は 240px なのに中身は "0" / "M1" / "ema" / "ENTIRE_HISTORY"（最長でも約 100px）。
+   * 176px は最長の選択肢（ENTIRE_HISTORY ＋ 矢印）が切れない最小幅の実測値。 */
+  max-width: 176px;
   box-sizing: border-box;
-  padding: 0.75em 10px;
+  padding: 4px 8px;
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--line);
@@ -171,8 +186,8 @@
 #simTesterPanel select.tester-input,
 #simSchemaFallbackPanel select.fallback-symbol,
 #simSchemaFallbackPanel select.fallback-ea {
-  padding-top: 0.6em;
-  padding-bottom: 0.6em;
+  padding-top: 3px;
+  padding-bottom: 3px;
 }
 /* チェックボックスは幅いっぱいにしない（帯にならないよう左端に置く）。 */
 #simTesterPanel .tester-date-mode {
