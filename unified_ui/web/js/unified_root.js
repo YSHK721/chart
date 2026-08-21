@@ -36,6 +36,11 @@ import {
 
 const DATASET_REF = 'jp225_tick';
 
+// 中身の高さへ足す余白（ISSUE-442）。子文書の外枠（body の余白）と、下端が窓の縁に貼り付いて
+//   見えないようにするための最小のゆとり。実測: フォームの中身 287px に対しペイン 300px で
+//   スクロールなしに収まる。
+const SIM_PANE_CONTENT_MARGIN_PX = 14;
+
 // 単一 mount の live root と、注入するリプレイ部品の URL（/replay プロキシ経由で取得）。
 const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';
 const REPLAY_CONTROLLER = '/replay/js/adapter/front/replay_indicator_controller.js';
@@ -318,6 +323,15 @@ async function main() {
     doc: document,
     lwc: window.LightweightCharts,
     host: bottomPane.host(),
+    // 中身が必要とする高さを受け取り、**既定の高さ**として与える（ISSUE-442・裁定 2026-08-22）。
+    //   既定が版面の 45% 固定だと、投入フォームの下に余白が出る一方でチャート側は必要以上に
+    //   削られ、指標ペインが狭くなって手で広げる作業が要った。決めるのは統合層（ペインの所有者）で、
+    //   sim は測って渡すだけ。利用者が一度でも分割線を掴んでいたら**触らない**（自動介入の禁止）。
+    onContentHeight: (px) => {
+      if (!bottomPane.isUserSized()) {
+        bottomPane.setHeightPx(px + SIM_PANE_CONTENT_MARGIN_PX);
+      }
+    },
   });
 
   modeController = createModeController({

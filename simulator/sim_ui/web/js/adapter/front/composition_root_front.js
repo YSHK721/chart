@@ -41,7 +41,7 @@ import { buildGlossary, wireTips } from "/sim/report-js/glossary.js";
 import { createLwc5ChartRenderer } from "./lwc5_chart_renderer.js";
 import { createReportSourceClient, firstSegment, readJobId } from "./report_source_client.js";
 import { createSimDisplayView } from "./sim_display_view.js";
-import { createSimFrameView } from "./sim_frame_view.js";
+import { createSimFrameView, waitForContent } from "./sim_frame_view.js";
 import { createSimSegmentView } from "./sim_segment_view.js";
 import { createSimCompareView } from "./sim_compare_view.js";
 import { createSimContactsToggleView } from "./sim_contacts_toggle_view.js";
@@ -76,13 +76,18 @@ function resolveJobId({ jobId, search }) {
  * @param {string}   search `location.search` 相当
  * @returns {{enable: function, disable: function}}
  */
-export async function setupSimDisplay({ doc, host, jobId, search } = {}) {
+export async function setupSimDisplay({ doc, host, jobId, search, onContentHeight, raf } = {}) {
   const frame = createSimFrameView({ doc });
   const targetJobId = resolveJobId({ jobId, search });
   // 器は**渡された host へそのまま**挿す。どこへ置くかは統合層の判断であって sim の契約では
   //   ない（旧実装は host の中から `#app` を探していた＝統合ページの id を sim 側が知っていた）。
   //   統合ページは下部ペイン（#um-bottom-pane）を渡す（裁定 2026-08-21・MT5 と同じ版面分割）。
   const mountPoint = host;
+  // 次フレームの予約（注入可能）。既定はブラウザの requestAnimationFrame、無い環境では null＝
+  //   高さの通知そのものを行わない（時計を勝手に作らない）。
+  const nextFrame = typeof raf === "function"
+    ? raf
+    : (typeof requestAnimationFrame === "function" ? (fn) => requestAnimationFrame(fn) : null);
   let enabled = false;
 
   return {
@@ -91,6 +96,16 @@ export async function setupSimDisplay({ doc, host, jobId, search } = {}) {
       if (enabled) return;
       enabled = true;
       frame.mount(mountPoint, targetJobId);
+      // 中身が必要とする高さを**宿主へ伝える**（ISSUE-442）。どう使うか（ペインの既定高さに
+      //   するか）は宿主の判断で、sim は測って渡すだけ（DIP）。購読者が居なければ何もしない。
+      //
+      //   **いつ測るか**が要点である。`load` の時点ではまだ足りない——子文書の面は module script が
+      //   組み立てるので、load 直後の高さは組み立て途中の値になる（実測 2026-08-22: 高さ 109px
+      //   ＝下限 120 に丸められ、ペインが 123px で開いた）。子は組み立ての完了を
+      //   `window.__simReportViewReady` で表明するので、それを待ってから測る。
+      if (typeof onContentHeight === "function") {
+        waitForContent(frame, nextFrame, (h) => onContentHeight(h));
+      }
     },
 
     /** sim モードから出るときに呼ばれる。器ごと畳む（統合ページへ何も残さない）。 */

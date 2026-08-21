@@ -266,30 +266,32 @@ test('予約は多重に積まない（クロスヘア移動のたびに rAF を
 
 
 // ---------------------------------------------------------------------------
-// (2) 版面の増減は指標ペインで吸収し、価格ペインの高さを保つ（依頼者裁定 2026-08-21）
+// (2) 版面の増減は**利用者が決めた配分の比**を保って全ペインを伸縮する
+//     （ISSUE-442・依頼者裁定 2026-08-22）
 //
-//   lightweight-charts の既定は全ペインの比率保持で、下部ペインやウィンドウの操作に価格
-//   チャートが引きずられて縮む（実測: 版面 502→352 で価格 251→171・指標 222→152）。
-//   価格の見えは操作の主目的なので、増減は指標側で吸収する。
+//   前の規則（価格の px を保ち差分を指標が吸収・ISSUE-440(2)）は、面積が大きく減る場面
+//   （sim を開くと版面 928→472px）で指標ペインを下限 40px まで潰し、開くたびに手で広げる
+//   作業が要った。比で伸縮すれば全ペインが同じ割合で譲り、面積が戻れば元の px へ戻る。
 // ---------------------------------------------------------------------------
 
-test('総高が変わったら価格ペインの高さを保ち、差分は指標ペインが吸収する', () => {
-  // Arrange: 価格 557 / 指標 186・185（利用者の配分）。総高 930。
+test('総高が変わったら配分の比を保って全ペインが伸縮する', () => {
+  // Arrange: 価格 557 / 指標 186・185（利用者の配分）。総高 930・配れるのは 928。
   const { chart, renderer } = build3([557, 186, 185]);
   let area = 930;
   renderer.setPaneAreaHeightProvider(() => area);
   renderer.syncPaneGeometry();                       // 目標として控える
-  // Act: 版面が 930 → 730 へ縮む（lwc は先に比率保持で配り直す）。
-  area = 730;
-  chart.layout(728);
+  // Act: 版面が半分ほどへ縮む（sim を開いた状態に相当）。
+  area = 474;
+  chart.layout(472);
   renderer.syncPaneGeometry();
-  chart.layout(728);                                  // 与えたストレッチ比で再配分
-  // Assert: 価格ペインは 557 のまま（比配分の丸めで ±1px）、指標 2 枚が差分を前回比で分ける。
-  assert.ok(Math.abs(chart.state.heights[0] - 557) <= 1, `価格ペイン ${chart.state.heights[0]}`);
-  assert.ok(Math.abs((chart.state.heights[1] + chart.state.heights[2]) - (728 - 557)) <= 2);
-  // 前回比（186:185）に沿って分ける＝ほぼ等分（丸めで同値になり得るので順序で見る）。
-  assert.ok(chart.state.heights[1] >= chart.state.heights[2], '前回比の順序を保つ');
-  assert.ok(Math.abs(chart.state.heights[1] - chart.state.heights[2]) <= 2, '前回比どおりに近い');
+  chart.layout(472);                                  // 与えたストレッチ比で再配分
+  // Assert: どのペインも同じ割合（472/928 ≒ 0.509）で譲る＝指標が潰れない。
+  const k = 472 / 928;
+  [557, 186, 185].forEach((goal, i) => {
+    assert.ok(Math.abs(chart.state.heights[i] - goal * k) <= 2,
+      `pane${i}=${chart.state.heights[i]} want ≒ ${Math.round(goal * k)}`);
+  });
+  assert.ok(chart.state.heights[1] > 90, `指標ペインが潰れている: ${chart.state.heights[1]}`);
 });
 
 test('版面が戻れば元の配分へ戻る（詰めた高さを目標にしない）', () => {
@@ -307,19 +309,18 @@ test('版面が戻れば元の配分へ戻る（詰めた高さを目標にし�
   });
 });
 
-test('指標ペインが下限に達したら価格ペインが譲る（潰さない）', () => {
-  // Arrange: 版面が極端に低い。
+test('版面が極端に低いときは下限で止め、残りを比で配り直す（0 へ潰さない）', () => {
+  // Arrange: 比で配ると指標が 40px を割る版面（150px を 557:186:185 で配ると 90/30/30）。
   const { chart, renderer } = build3([557, 186, 185]);
-  let area = 300;
   renderer.setPaneAreaHeightProvider(() => 930);
   renderer.syncPaneGeometry();
-  renderer.setPaneAreaHeightProvider(() => area);
+  renderer.setPaneAreaHeightProvider(() => 152);
   // Act
-  chart.layout(298); renderer.syncPaneGeometry(); chart.layout(298);
-  // Assert: 指標は下限 40px、価格が残りを引き取る（合計は版面のまま）。
-  assert.ok(Math.abs(chart.state.heights[1] - 40) <= 1);
-  assert.ok(Math.abs(chart.state.heights[2] - 40) <= 1);
-  assert.ok(Math.abs(chart.state.heights[0] - (298 - 80)) <= 2);
+  chart.layout(150); renderer.syncPaneGeometry(); chart.layout(150);
+  // Assert: 下限に当たった指標は 40px で固定し、価格が残りを取る（合計は版面のまま）。
+  assert.ok(Math.abs(chart.state.heights[1] - 40) <= 1, `指標1 ${chart.state.heights[1]}`);
+  assert.ok(Math.abs(chart.state.heights[2] - 40) <= 1, `指標2 ${chart.state.heights[2]}`);
+  assert.ok(Math.abs(chart.state.heights[0] - (150 - 80)) <= 2, `価格 ${chart.state.heights[0]}`);
 });
 
 test('区切りドラッグ（総高そのまま）には介入せず、その配分を新しい目標にする', () => {
@@ -338,8 +339,8 @@ test('区切りドラッグ（総高そのまま）には介入せず、その�
   renderer.setPaneAreaHeightProvider(() => 930);
   chart.layout(928); renderer.syncPaneGeometry(); chart.layout(928);
   // Assert: 新しい目標（利用者の配分）へ戻る。
-  assert.ok(Math.abs(chart.state.heights[0] - 407) <= 1, `価格 ${chart.state.heights[0]}`);
-  assert.ok(Math.abs(chart.state.heights[1] - 336) <= 1, `指標 ${chart.state.heights[1]}`);
+  assert.ok(Math.abs(chart.state.heights[0] - 407) <= 2, `価格 ${chart.state.heights[0]}`);
+  assert.ok(Math.abs(chart.state.heights[1] - 336) <= 2, `指標 ${chart.state.heights[1]}`);
 });
 
 test('ペインが 1 枚だけなら何もしない（配る相手が居ない）', () => {

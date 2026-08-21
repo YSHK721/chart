@@ -307,7 +307,21 @@ describe('createBottomPaneView — 分割線のドラッグ', () => {
     expect(view.host().style.flexBasis).toBe('750px');
   });
 
-  test('setHeightPx_可動域へ丸めて適用する', () => {
+  test('掴む前は「利用者が決めた高さ」ではない（中身に合わせてよい）', () => {
+  // Assert: ISSUE-442。既定の高さを中身に合わせるかどうかの判定点。
+  const { view } = mounted();
+  expect(view.isUserSized()).toBe(false);
+});
+
+test('分割線を掴んだら以後は利用者が決めた高さ扱い', () => {
+  // Arrange / Act
+  const { view } = mounted();
+  drag(view, -50, { release: true });
+  // Assert: 一度決めた高さを後から自動で変えない（ビュー自動介入の禁止）。
+  expect(view.isUserSized()).toBe(true);
+});
+
+test('setHeightPx_可動域へ丸めて適用する', () => {
     // Arrange
     const { view } = mounted();
     // Act

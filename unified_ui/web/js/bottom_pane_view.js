@@ -80,10 +80,13 @@ export function createBottomPaneView({ doc, measureHeight = measureByRect } = {}
   let pane = null;
   // ドラッグ中だけ立つ状態。pointerdown で掴んだ時点の座標とペイン高を覚える。
   let drag = null;
+  // 利用者が分割線を掴んだか（ISSUE-442）。掴んだ後は中身に合わせる自動設定を行わない
+  //   ——一度決めた高さを後から勝手に変えるのはビュー自動介入に当たる。
+  let userSized = false;
 
   const applyHeight = (px) => {
-    // flex-basis で与える（`flex-grow:0 / flex-shrink:0` は CSS 側が持つ）。既定値
-    //   （45%）は CSS が持ち、ドラッグしたときだけ px を上書きする＝自動介入をしない。
+    // flex-basis で与える（`flex-grow:0 / flex-shrink:0` は CSS 側が持つ）。既定値は CSS が
+    //   持ち、ドラッグ（と中身に合わせる初期設定）だけが px を上書きする。
     pane.style.flexBasis = `${Math.round(px)}px`;
   };
 
@@ -106,6 +109,8 @@ export function createBottomPaneView({ doc, measureHeight = measureByRect } = {}
 
   const onPointerDown = (ev) => {
     if (!pane) return;
+    // 掴んだ時点で「利用者が決めた高さ」に変わる（以後、中身に合わせる自動設定は行わない）。
+    userSized = true;
     // 予算は掴んだ時点で 1 回だけ測る（移動のたびに測ると、自分が変えた高さを読み直して
     //   予算が揺れる）。
     drag = { startY: ev.clientY, startHeight: measureHeight(pane), budget: budget() };
@@ -173,6 +178,9 @@ export function createBottomPaneView({ doc, measureHeight = measureByRect } = {}
     /** 分割線（診断・E2E の観測点）。未 mount なら null。 */
     splitterElement() { return splitter; },
 
+    /** 利用者が分割線を掴んで高さを決めたか（ISSUE-442）。 */
+    isUserSized() { return userSized; },
+
     /** 現在のペイン高（px）。未 mount なら 0。 */
     heightPx() { return pane ? measureHeight(pane) : 0; },
 
@@ -193,6 +201,7 @@ export function createBottomPaneView({ doc, measureHeight = measureByRect } = {}
       app.removeChild(pane);
       app = above = splitter = pane = null;
       drag = null;
+      userSized = false;
     },
   };
 }
