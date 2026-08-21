@@ -1,8 +1,9 @@
 /* 投入フォームの表示整形（Phase 9 S6・案 A 改／基本設計 §19.2）。
  *
  * 対象は `report_view.html` を `?job=` **無し**で開いたときの入口だけである。結果ビューア側
- * （`?job=<id>`）に出る DOM へは 1 つも当たらない——本ファイルの選択子はすべて面の id
- * （`#simTesterPanel` / `#simEaInputsPanel` / `#simSchemaFallbackPanel` / `#simRunActionPanel`）
+ * （`?job=<id>`）に出る DOM へは 1 つも当たらない——本ファイルの選択子はすべて版面と面の id
+ * （`#simRunForm` / `#simRunFormSettings` / `#simRunFormInputs` / `#simTesterPanel` /
+ * `#simEaInputsPanel` / `#simSchemaFallbackPanel` / `#simRunActionPanel` / `#simRunStatusPanel`）
  * の配下に閉じてある。素の要素（body / input / select / button）へ当てると結果ビューアの
  * 見た目まで動く（style.css の波及遮断と同じ理由・裁定 B）。閉じていることは
  * `tests/removed_ui_vocabulary_gate.test.js` が選択子を走査して機械強制する。
@@ -12,28 +13,60 @@
  * 必ず link する（`tests/import_source.test.js` が機械強制）ので、変数は常に解決する。
  *
  * 寸法の前提（実測・style.css:16-26）: `body { height:100vh; display:flex; flex-direction:column;
- * overflow:hidden }`。したがって器の中で伸びる子にして **自分の中でスクロールさせない限り、
- * はみ出した分は画面外に消えて操作できない**。面ごとに `min-height:0` ＋ `overflow-y:auto`
- * を与えるのはこのためである（body 側の overflow は触らない＝結果ビューアに波及させない）。
+ * overflow:hidden }`。したがって器の中で **自分の中で送らない限り、はみ出した分は画面外に
+ * 消えて操作できない**。送るのは版面 `#simRunForm` **1 枚だけ**にする（面ごとに
+ * `overflow-y:auto` を与えると入れ子スクロールが増える＝ISSUE-436 #5 の指摘）。
+ * body 側の overflow は触らない（結果ビューアに波及させない）。
  *
- * 寸法の出所は §19.2 の参照値（依頼者確認済みモック variant-a2/a3）であり、この 6 つだけを
- * 動かした: 面の幅と中央寄せ / 群カードの margin・padding / フィールドの gap / ラベル列の幅 /
- * 入力の内側余白 / スタートボタンの位置と色。これ以外の寸法は現行維持である。
+ * 寸法の出所は §19.2 の参照値（依頼者確認済みモック variant-a2/a3）。ISSUE-441（依頼者指示
+ * 2026-08-22）で版面だけを変えた: 4 面の縦積み・幅 min(860px,100%-24px) 中央寄せ →
+ * **設定と入力の 2 列**・幅は版面いっぱい・Tester の群は横へ流す。面の中の寸法（ラベル列の
+ * 幅・入力の内側余白・gap・スタートの位置と色）は現行維持である。
  */
 
+/* --- 版面（ISSUE-441・依頼者指示 2026-08-22）--------------------------------------
+ * 設定（Tester Settings）と入力（Inputs＋実行）を**横に分ける**。旧構成は 4 面を縦に積み、
+ * 幅を min(860px, 100%-24px) の中央寄せにしていたため、下部ペインを縮めると Inputs と
+ * スタートが画面外へ出て操作できなくなった（実測: 版面 1990×約 260px で Inputs 以下が
+ * 見切れ・左右 57% は空白）。縦を使い切る前に横を使う。
+ * 狭いときは 1 列へ落として縦積みへ戻す（横スクロールを作らない）。 */
+#simRunForm {
+  display: grid;
+  /* 設定は群が 4 つ、入力は 3 欄＋スタート。2:1 で割り当てると、広い版面では設定側に
+   * 群が 3 つ並び（340px×3）、縦の消費がさらに減る。 */
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 0 12px;
+  box-sizing: border-box;
+  width: calc(100% - 24px);   /* 横は使い切る（中央に寄せて余白を作らない） */
+  margin: 0 auto;
+  min-height: 0;
+  overflow-y: auto;   /* 版面ごと送る（面ごとの入れ子スクロールを増やさない） */
+}
+@media (max-width: 900px) {
+  #simRunForm { grid-template-columns: minmax(0, 1fr); }
+}
+/* 列は中身を縦に積むだけ（列そのものは器＝背景も枠も持たない）。 */
+#simRunFormSettings,
+#simRunFormInputs {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* --- 面の器（4 面共通）------------------------------------------------------------ */
-/* flex: 0 1 auto = 中身の高さで置き、入り切らないときだけ縮んで自分の中で送る。
- * 幅は min(860px, 100% - 24px) の中央寄せ（広い画面で 1 行が間延びしない）。 */
+/* 幅は列いっぱい（版面が幅を決める）。高さは中身なり＝面ごとの入れ子スクロールは作らない
+ * （送るのは版面 #simRunForm 1 枚だけ。3 重スクロールは ISSUE-436 #5 の指摘）。 */
 #simTesterPanel,
 #simEaInputsPanel,
 #simSchemaFallbackPanel,
 #simRunActionPanel {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
-  overflow-y: auto;
   box-sizing: border-box;
-  width: min(860px, 100% - 24px);
-  margin: 8px auto 0;
+  width: 100%;
+  margin: 8px 0 0;
   padding: 8px 12px;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -61,12 +94,15 @@
 }
 
 /* --- 群（対象 / 期間 / 実行 / 口座 …）------------------------------------------- */
+/* 群（対象 / 期間 / 実行 / 口座）は幅が許すかぎり横に並べる（縦の消費を減らす）。
+ * 340px は「ラベル列 140px ＋ 入力 ≥180px」が成立する最小幅の実測値。 */
 #simTesterPanel .tester-fields {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  align-content: start;
 }
 #simTesterPanel .tester-group {
-  margin: 6px 8px;
+  margin: 6px;
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 3px;
@@ -80,7 +116,14 @@
 }
 
 /* --- フィールドの整列（2 カラム・狭い画面では 1 カラムへ落として横スクロールを作らない）--- */
-#simTesterPanel .tester-group-fields,
+/* 群の中は 1 列（群そのものが横に並ぶので、中でさらに 2 列にすると入力欄が狭くなる）。
+ * Inputs / 縮退面は列の中で 2 列を保つ（項目数が少なく、横が余るため）。 */
+#simTesterPanel .tester-group-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px 18px;
+  align-content: start;
+}
 #simEaInputsPanel,
 #simSchemaFallbackPanel {
   display: grid;
@@ -93,7 +136,6 @@
   grid-column: 1 / -1;
 }
 @media (max-width: 860px) {
-  #simTesterPanel .tester-group-fields,
   #simEaInputsPanel,
   #simSchemaFallbackPanel { grid-template-columns: minmax(0, 1fr); }
 }
@@ -234,7 +276,7 @@
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 10px;
-  margin: 6px 8px;
+  margin: 6px 0;
   padding: 6px 12px;
 }
 #simRunStatusPanel .run-status-phase {

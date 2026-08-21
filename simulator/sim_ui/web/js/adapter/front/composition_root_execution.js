@@ -11,6 +11,7 @@ import { createSettingsSchemaClient } from "./settings_schema_client.js";
 import { createSimEaInputsPanelView } from "./sim_ea_inputs_panel_view.js";
 import { createSimRunActionView } from "./sim_run_action_view.js";
 import { createSimRunStatusView } from "./sim_run_status_view.js";
+import { createSimRunLayoutView } from "./sim_run_layout_view.js";
 import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
 import { buildSubmission, resolveProfile, symbolCandidatesOf } from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
@@ -52,9 +53,15 @@ export async function mountSimExecutionPanel({
   let statusMounted = false;
   function mountStatus({ atTop = false } = {}) {
     if (statusMounted) return;
-    statusView.mount(host, { atTop });
+    // 通常経路は入力列（スタートの直下＝§19.6 R2）。mount 段が落ちたときは版面がまだ無い
+    // ので host の最上部へ出す（理由を出す先を必ず残す）。
+    statusView.mount(atTop ? host : (layout.inputsHost() || host), { atTop });
     statusMounted = true;
   }
+
+  // 版面（ISSUE-441）: 設定と入力を横に分ける器。面の mount 先はここから取る。
+  //   器が作れない環境（fake DOM の縮退等）でも面は host へ出す＝画面が空にならない。
+  const layout = createSimRunLayoutView({ doc });
 
   // 面の参照（mount 段が落ちた場合は null のまま返す＝呼出側が受け取る形は変えない）。
   let testerView = null;
@@ -99,8 +106,12 @@ export async function mountSimExecutionPanel({
     // Tester Settings パネル（Phase 8）。schema が取れなくても**器は出す**（fail-open・
     // run-options と同じ流儀）。取れなければ候補 0 のまま理由を表示し、投入は旧フォーム
     // （指標セット欄・初期資金欄）が権威のまま成立する＝現行経路の本文と byte 等価。
+    layout.mount(host);
+    const settingsHost = layout.settingsHost() || host;
+    const inputsHost = layout.inputsHost() || host;
+
     testerView = createSimTesterSettingsPanelView({ doc });
-    testerView.mount(host);
+    testerView.mount(settingsHost);
 
     // run config フォームの選択肢を単一ソースから取る。取れなくてもパネルは出す
     // （fail-open）。profile が空だと投入は E-5b で弾かれるが、「サーバが落ちた」ではなく
@@ -132,7 +143,7 @@ export async function mountSimExecutionPanel({
       fallbackView = createSimSchemaFallbackView({ doc });
       fallbackView.setSymbolCandidates(symbolCandidates);
       fallbackView.setEaCandidates(eaNames);
-      fallbackView.mount(host);
+      fallbackView.mount(settingsHost);
       subjectSource = fallbackView;
       // 理由を捨てない。schema が来ない run は縮退面で動き続けるため、画面だけを見ても
       // 「なぜ Tester パネルが空なのか」が分からない（無音の縮退）。パネル上の掲示に加えて
@@ -142,10 +153,10 @@ export async function mountSimExecutionPanel({
 
     // EA パラメータ面（M2）。実行仕様の EA 側パラメータはこの面だけが所有する。
     eaInputsView = createSimEaInputsPanelView({ doc });
-    eaInputsView.mount(host);
+    eaInputsView.mount(inputsHost);
     // 実行指示面（M3）。責務はスタートと結果導線だけ（本文も HTTP も知らない）。
     view = createSimRunActionView({ doc });
-    view.mount(host);
+    view.mount(inputsHost);
     // 掲示面はスタートの**直下**（§19.6 R2）: 押した結果がその場に出ないと、投入が通った
     // のか拒まれたのかを画面から判断できない（ISSUE-423）。
     mountStatus();
