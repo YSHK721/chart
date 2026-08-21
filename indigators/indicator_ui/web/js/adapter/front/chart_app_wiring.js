@@ -59,7 +59,7 @@ import { PriceLevelLinesPrimitive } from './price_level_lines_primitive.js';
 import { PriceLevelDragController } from './price_level_drag_controller.js';
 import { PricePickController } from './price_pick_controller.js';
 import { McWorkerGateway } from './mc_worker_gateway.js';
-import { createPriceContextItems } from './position_sizing_context_items.js';
+import { createPriceContextItems, liveMenuItems } from './position_sizing_context_items.js';
 import { resolvePickedPrice, MSG_NO_SYMBOL_SPEC } from './price_pick_resolver.js';
 import { lookupSymbolSpec } from './symbol_spec_catalog.js';
 import { PositionSizingPlanUseCase } from '../../usecase/position_sizing_plan.js';
@@ -276,8 +276,12 @@ export function installSharedUi({
   //   共有配線が無条件に足すと replay まで項目が出る（＝replay 汚染）。逆に root で
   //   `new ChartContextMenu` すると contextmenu リスナーが 2 本になり、メニューが二重に出る。
   //   よって「メニューは共有・項目は注入」に保つ（ChartContextMenu 自体は 1 byte も変えない）。
+  //   ISSUE-435: 一覧は**開くたびに読み直す**。ここで `[copyBarInfo, ...items]` と新しい配列へ
+  //   写すと install 時点の内容が焼き付き、注入側の増減（設定済みの水準だけ出る解除項目）が
+  //   永久に届かない（`chart_context_menu.js:34,122` は構築時の参照を開くたびに読む・実測）。
+  //   静的な配列を渡す従来の呼び出しは、毎回同じ内容が組み直されるだけで挙動が変わらない。
   const chartContextMenu = new ChartContextMenu({
-    document: doc, container, items: [copyBarInfo, ...(contextMenuItems ?? [])],
+    document: doc, container, items: liveMenuItems(() => [copyBarInfo, ...(contextMenuItems ?? [])]),
   });
   chartContextMenu.install();
 
@@ -561,6 +565,9 @@ function createPositionSizingCollaborators({
   dialog?.setSymbolSpec?.(symbolSpec);
   // 水準線の描画先（メイン系列の背景 primitive・§6）。装着時にクロム色が 1 回配られる。
   const primitive = new PriceLevelLinesPrimitive();
+  // 線に添える価格の表示桁（ISSUE-435 実装 2）。モーダルの欄（上の setSymbolSpec）・ピッカーの
+  //   ゴースト（下の spec）と**同じ解決結果**を配る＝同じ価格が面ごとに違う文字列にならない。
+  primitive.setSymbolSpec?.(symbolSpec);
   if (renderer && typeof renderer.attachBackgroundPrimitive === 'function') {
     renderer.attachBackgroundPrimitive('position_sizing', () => primitive);
   }
@@ -655,7 +662,10 @@ export function createPositionSizingContextItems({
   //   協働子が保持している。既存の遅延参照（getPositionSizing）に相乗りする＝新しい配管を作らない。
   //   協働子が未生成（配線途中）なら null＝フェイルクローズ（確定させない）。
   const specOf = () => { const c = of(); return c && typeof c.symbolSpec === 'function' ? c.symbolSpec() : null; };
-  return createPriceContextItems({
+  // 一覧は**開くたびに組み直す**（ISSUE-435）。root は本関数を起動時に 1 回しか呼ばず、その戻り値が
+  //   `ChartContextMenu` に握られ続ける（`composition_root_front.js:286` / `chart_context_menu.js:34`）。
+  //   解除項目は「いま設定済みの水準」で増減するので、1 回きりのスナップショットでは永久に出ない。
+  return liveMenuItems(() => createPriceContextItems({
     resolvePrice: (context) => resolvePickedPrice({
       renderer,
       x: context ? context.x : undefined,
@@ -665,6 +675,11 @@ export function createPositionSizingContextItems({
     onSetStop: (price) => { const c = of(); return c ? c.setStopPrice(price) : undefined; },
     onAddEntry: (price) => { const c = of(); return c ? c.addEntryPrice(price) : undefined; },
     onSetTake: (price) => { const c = of(); return c ? c.setTakePrice(price) : undefined; },
+    // 解除項目（ISSUE-435 実装 1）。**いまの水準**を協働子から遅延参照する（水準の保持者は
+    //   usecase 1 か所で、ここへ写しを置かない＝TC-PC14 と同じ規律）。協働子が未生成なら
+    //   null＝解除項目が 1 つも出ない（未結線の状態で「押しても何も起きない項目」を出さない）。
+    onClear: (target) => { const c = of(); return c ? c.clearPrice(target) : undefined; },
+    getLevels: () => { const c = of(); return c && typeof c.levels === 'function' ? c.levels() : null; },
     // 呼ばれた時点で告知先を解決する（未生成・DOM 不在なら告知しない＝例外を投げない）。
     //   銘柄仕様が解決できていないときは**その理由へ差し替える**: このとき機能全体が無効なので、
     //   座標ごとの理由（「価格が取れません」「価格チャート上で…」）を出すと、利用者は
@@ -677,5 +692,5 @@ export function createPositionSizingContextItems({
         }
       },
     },
-  });
+  }));
 }
