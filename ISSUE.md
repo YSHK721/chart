@@ -9332,3 +9332,84 @@ Inputs とスタートが画面外へ出て操作できない。一方で横は�
 - **関連**: ISSUE-279（import パス解決）・ISSUE-348（配信元の取り違え）・
   ISSUE-363/365（venv symlink 事故）。固定ポート 8000 と「生起動禁止・serve.sh 経由」の規律は
   段階 1・2 のいずれでも維持する。
+
+## ISSUE-445: 実 MT5 ライブの JP225 銘柄仕様が fixture `case.yaml` と食い違う（contract_size 10 倍・volume 粒度）
+
+- **ステータス**: OPEN（2026-08-25・MT5 ライブ接続の実測で発見）
+- **重大度**: 高（`contract_size` は「結果に効く定数」と明記されており、ライブ発注時の
+  損益計算が 10 倍ずれる。ただし現行のバックテスト機能は非退行＝稼働中の不具合ではない）
+- **発見経路**: 依頼者質問「MetaTrader5 とライブ接続できるか」の可否検証。VMware Fusion 上の
+  Windows 11 Pro（ARM64・x64 エミュレーション）から `MetaTrader5` パッケージで実接続に成功し、
+  `mt5.symbol_info('JP225')` の権威値を初めて実測した。
+
+### 実測値（2026-08-25・OANDA-Japan MT5 Live・口座 900005560）
+
+`mt5.initialize()` → `True (1, 'Success')`。`terminal_info.company='OANDA Corporation'` /
+`account_info.server='OANDA-Japan MT5 Live'` / `trade_mode=2`（REAL）。
+
+| 項目 | 実測値 | `case.yaml`（L14-20） | 一致 |
+|---|---|---|---|
+| `digits` | 1 | 1 | ✅ |
+| `point` / `point_size` | 0.1 | 0.1 | ✅ |
+| **`trade_contract_size`** | **1.0** | **10** | ❌ **10 倍差** |
+| `trade_tick_size` | 0.1 | （記載なし） | — |
+| `trade_tick_value` | 0.1 | （記載なし） | — |
+| `volume_min` | 1.0 | （記載なし・reconcile は lot=0.1） | ❌ |
+| `volume_step` | 1.0 | （記載なし・カタログ保持値 0.01） | ❌ |
+| `volume_max` | 10000.0 | （カタログ保持値 100） | ❌ |
+| `spread` | 100（=10.0 価格単位） | — | — |
+| `trade_mode` | 4（FULL） | — | — |
+
+**実測値は自己整合している**（読み取り誤りではない）:
+`trade_tick_value = trade_contract_size × trade_tick_size` → `1.0 × 0.1 = 0.1` ✅。
+`contract_size=10` なら `tick_value=1.0` になるはずだが、実測は 0.1。
+
+### 矛盾する記述の所在（2 箇所）
+
+1. `simulator/sim_ui/adapter/symbol_spec_catalog.py:8-10` — 「JP225（OANDA-Japan MT5）の
+   **結果に効く定数**は `case.yaml` を**唯一のオラクル**とする: `contract_size=10` / `digits=1` /
+   `point_size=0.1` / `leverage=10`」
+2. `marketdata/symbol_spec.py:22` — 「`sim_ui` の `digits=1` / `point_size=0.1` は
+   OANDA-Japan **MT5** の JP225（**`contract_size=10`**）＝**別商品**であり、本件の権威にならない」
+
+`case.yaml:49` は損益式も明記する: `profit = (exit-entry) * lot * contract_size; 0.1lot * 10 = 1 JPY / price unit`。
+
+### 影響
+
+- **A（ライブ発注・未実装）**: 実測 `contract_size=1.0` に対し `case.yaml` 由来の 10 を使うと、
+  ライブの損益・必要証拠金・ポジションサイズが **10 倍**ずれる。
+- **B（ロット粒度・未実装）**: 実測 `volume_min=1.0` / `volume_step=1.0` に対し、reconcile テストと
+  カタログは lot=0.1 / step=0.01 を使う。**`lot=0.1` はライブでは発注不成立**。
+  カタログ L14-17 の「volume は gate-neutral（結果に効かない）」は**バックテスト内に限った成立条件**であり、
+  ライブには持ち越せない。
+- **C（バックテスト・現行）**: 非退行。`test_run_options_mt5_gate.py` は `contract_size=10` で
+  golden を bit-exact 再現しており、**当時のモデルとしては整合している**。
+- **D（`marketdata/symbol_spec.py` の A-1 裁定）**: 台帳 `SYMBOL_SPECS["JP225"]=(tick=1.0, digits=0)` は
+  「OANDA 証券 CFD（`contract_size=1`）＝MT5 とは別商品」を根拠に MT5 側の値を権威から除外している。
+  だが実測で MT5 側も `contract_size=1.0` であり、**両者を分ける判別子として挙げられた値が崩れた**。
+  ※「証券 CFD と MT5 が同一商品である」ことは**証明されていない**（別サービスの可能性は残る）。
+  崩れたのは**判別の根拠**であって結論ではない。台帳の書き換えは行わない。
+
+### 未検証（原因は確定していない）
+
+- (a) 2025-01 → 2026-08 の間に OANDA が JP225 の契約仕様を変更した
+- (b) `case.yaml` の `contract_size=10` が当初から誤りだった
+  （ただし golden を bit-exact 再現している事実と整合させる説明が要る）
+- (c) 実測した `JP225` と fixture の `JP225` が別シンボル系列である
+
+**いずれも実測で確定させるまで、どの記述も書き換えない。**
+
+### 次の一手（着手前に承認を取る）
+
+1. `mt5_report/tester.log` と `ReportTester-900005560.xlsx` から、2025-01 当時の
+   契約仕様の記載を洗い出す。→ (a) と (b) を切り分ける判定材料。
+2. `mt5.history_deals_get()` で実約定の損益と価格差・ロットを突き合わせ、
+   現行 `contract_size` を約定側から逆算する。→ 実測の追認。
+3. 恒久策の方向（**要承認・設計判断**）: 銘柄仕様を fixture のリテラルではなく
+   **供給元から実行時に読む**構造にする（ISSUE-368「銘柄同一性はデータ供給側の台帳」の延長）。
+   これが根本解であり、値の書き換えは対症療法にとどまる。
+
+- **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
+  `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
+  `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
+  記録しており、本件の是正もその範囲に及ぶ。
