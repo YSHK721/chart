@@ -9487,6 +9487,22 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
    EA 入力 lot 対 実約定 volume）は `xfail(strict=True)` で固定し、段階 1・2 完了時に
    unexpectedly passing で赤に転じて撤去を促す。`simulator`/`marketdata`/`tools` 全体で
    5137 passed・2 xfailed（唯一の赤 `test_composition_root_arg_parity` は ISSUE-427/371 の既存赤・無関係）。
+   → **段階 1 完了（2026-08-25・commit `9efaf8b`・`tdd-executor` に委譲）**: 原典
+   `MA_Slope_EA.mq5:NormalizeLot()` と `OpenPosition` の 0 以下不発注分岐を `MaSlope` へ 1:1 移植し、
+   `build_interactor` の `strategy_params` へ `volume_min`/`volume_max`/`volume_step` を供給した。
+   MQL5 `MathRound`（絶対値 0.5 切り上げ）は Python の銀行家丸めと境界が食い違うため専用実装。
+   **現行値では恒等写像**であり golden 不変（実測: reconcile 緑・`trades=1164`/`net=-6173.9`/
+   `balance=3826.1`・全体 5147 passed／既存赤 1 件のみで増減なし）。
+   - **段階 2 の確認項目（実測 2026-08-25）**: sim モードの `SizingDecorator` は戦略が返した volume を
+     `replace(order, volume=decision.volume)` で上書きするが、`AccountMarginSizing` が同じ
+     `symbol_spec` で `floor_to_step(step/min/max)` 済みであり**非正規化ロットは出ない**。
+     ただし丸め方針が原典と異なる（原典＝`MathRound` 後に `volume_min` へ**切り上げ**／
+     sizing＝保守側 `floor` で `volume_min` 未満は**発注しない**・裁定 2026-08-13）。
+     段階 2 で `volume_min` が 0.01 → 1.0 になると sizing 経路の不発注が増える。是正ではなく
+     **方針差の確認事項**として段階 2 の通過条件に含める。
+   - **申し送り**: 他戦略（`tc24051901` / `ma_slope_pending` / `stop_entry_probe` / `pro_fit_band` /
+     `generic_condition_strategy`）は依然 `cfg["lot_size"]` を素通しする（RC-2 と同型の欠落）。
+     原典 `.mq5` を持つものだけが移植対象になるため、対象の同定を含めて段階 3 で裁定する。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
