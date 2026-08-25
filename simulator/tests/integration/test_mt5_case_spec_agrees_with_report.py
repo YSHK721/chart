@@ -114,12 +114,10 @@ def test_case_yaml_contract_size_agrees_with_report(case):
     assert report.ok, report.describe()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ISSUE-445 RC-2: EA 入力 Lot=0.1 に対し実約定は 1.0。simulator 側 MaSlope は"
-        "参照実装の NormalizeLot を持たず入力値をそのまま発注する。段階 1 で解消する。"
-    ),
-)
-def test_case_yaml_expert_lot_agrees_with_executed_volume(case):
-    assert float(case.config["expert"]["lot"]) in sd.executed_volumes(case.expected)
+# 注記（2026-08-25 是正）: 当初ここに
+# `test_case_yaml_expert_lot_agrees_with_executed_volume` を xfail(strict) で置いたが、これは
+# fixture 内の 2 値（`case.yaml` の EA 入力 lot と `report.json` の実約定 volume）を比べるだけで
+# **simulator のコードに依存しない**。段階 1 でも緑化し得ず、xfail の reason（「段階 1 で解消
+# する」）が誤りだったため撤去した。この事実は
+# `test_executed_volume_is_single_valued_and_not_the_ea_input` が緑の検定として保持する。
+# simulator 側が参照実装どおり正規化することの検定は、段階 1 の TDD が自前で立てる。
