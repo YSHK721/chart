@@ -9413,3 +9413,112 @@ Inputs とスタートが画面外へ出て操作できない。一方で横は�
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
   `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
   記録しており、本件の是正もその範囲に及ぶ。
+
+## ISSUE-446: [調査] MT5 ライブ接続のため Windows 環境へ移行できるか（可否と障壁）
+
+- **ステータス**: OPEN（2026-08-25・依頼者質問「このリポジトリは Windows 環境に移行しても
+  動作するか」→「MetaTrader5 と接続不可なので完全に Windows 対応が必要か」）
+- **重大度**: 中（現行機能の不具合ではない。着手方針の判断待ち）
+- **実測環境**: Dev Container（`/workspaces/app`）＋ VMware Fusion 上の Windows 11 Pro。
+  以下はすべてコマンド実行・ファイル・プロセスの実測であり、推測を含まない。
+
+### 結論
+
+**MT5 ライブ接続は現在の環境で実現可能。全体を Windows 化する必要はない。**
+MT5 に触れる境界は既に `MarketDataPort` として抽象化済みであり、Windows 側に置くのは
+その実装 1 個で足りる（追加のみ＝OCP）。
+
+### 実測 1: ホスト環境
+
+| 項目 | 実測値 | 出典 |
+|---|---|---|
+| CPU | `aarch64` / `Vendor ID: Apple` | `lscpu` |
+| カーネル | `6.12.54-linuxkit` | `uname -a` |
+| WSL シグネチャ | 無し | `/proc/version` |
+| macOS 生成物 | `.DS_Store` を複数検出 | `find` |
+| ホスト到達 | `host.docker.internal` → `192.168.65.254` | `getent hosts` |
+| 外部到達 | 443/tcp 到達可 | `/dev/tcp` |
+
+→ **Apple Silicon Mac 上の Docker Desktop**。Windows マシンはコンテナから見える範囲に存在しない。
+
+### 実測 2: 現リポジトリの MT5 依存は「オフライン」である
+
+- `import MetaTrader5` / `mt5.initialize` / `terminal64` の出現: **追跡ファイル 0 件**。
+- 現在の依存の実体は**エクスポート済みファイルの読み込み**:
+  `simulator/adapter/repository/ohlc_mt5_csv.py`（`MarketDataPort` 実装・TAB 区切り `<DATE>` 形式）と
+  `simulator/tests/fixtures/mt5/` の `report.json` 突合。
+- → 「WSL2/Docker だと MT5 に繋がらない」は**稼働中の障害ではなく、ライブ接続を新設する場合の制約**。
+
+### 実測 3: ネイティブ Windows 化（案 2）の障壁
+
+| 障壁 | 実測 |
+|---|---|
+| bash 起動層 | 追跡 `*.sh` 計 **1167 行** |
+| POSIX 固有 | `setsid` 7 / `kill -` 6 / `ps -eo` 6 / `trap` 9 / `curl` 10 / `bin/python` 8 箇所 |
+| PYTHONPATH | `tools/dev_paths.sh` が `:` で連結（Windows は `;`） |
+| symlink | git 追跡 **146 件**（全て相対・絶対 0 件） |
+
+`setsid` とプロセスグループ kill は Windows に等価物が無く、**起動・停止機構の再設計**になる。
+MT5 の 1 境界へ到達する目的に対して手段が過大。
+
+### 実測 4: 案 1 の成立確認（VMware Fusion / Windows 11 Pro）
+
+依頼者の VM で実行した結果（2026-08-25）:
+
+1. `terminal64.exe` 起動・口座ログイン成功。
+2. `platform.machine()` → `ARM64`、`sys.version` → `[MSC v.1944 64 bit (AMD64)]`、
+   `sysconfig.get_platform()` → `win-amd64`。
+   **判定の要点（誤読しやすい）**: `platform.machine()` は Windows では
+   **ハードウェアの物理アーキテクチャ**を返す（CPython `platform._get_machine_win32()` を実読して確認。
+   WMI の CPU Architecture、次いで `PROCESSOR_ARCHITEW6432` を参照し、コメントに
+   "WOW64 processes mask the native architecture" と明記）。
+   Python バイナリの種別は `sys.version` / `sysconfig.get_platform()` で判定する。
+   → 導入済み Python は **x64 ビルドが ARM64 上でエミュレーション動作**しており、要件を満たす。
+3. `pip install MetaTrader5` → `metatrader5-5.0.6090-cp314-cp314-win_amd64.whl` 取得成功
+   （cp314 wheel は提供されている）。
+4. `mt5.initialize()` → **`True (1, 'Success')`**。
+   `terminal_info`: build 6140 / `company='OANDA Corporation'` / `connected=True` /
+   `trade_allowed=False` / `dlls_allowed=False` / `codepage=932`。
+   `account_info`: `login=900005560` / `server='OANDA-Japan MT5 Live'` / **`trade_mode=2`（REAL）** /
+   `balance=176832.0 JPY` / `leverage=10` / `margin_mode=2` / `margin_so_call=100.0` / `margin_so_so=100.0`。
+5. 銘柄名の同定: **`JP225` のみ `True`**（`JPN225` / `JP225Cash` / `Nikkei225` は `False`）。
+   → `tools/acquire_marketdata.py` の `SYMBOL = "JP225"` と一致し、**結線先の変更は不要**。
+6. `copy_rates_from_pos('JP225', TIMEFRAME_M1, 0, 3)` → 実データ 3 本を取得
+   （`66280.2` / `66315.2` / `66265.2` / `66300.2`・tick_volume 44・spread 50）。
+
+### 派生した実測成果
+
+- **ロスカット水準の権威値**を初めて実測（`margin_so_call=100.0` / `margin_so_so=100.0`）。
+  memory `position-sizing-backend-first`（口座状態エンジンの証拠金・ロスカット参照実装が先）の
+  入力になる。
+- **口座 900005560 は既存 fixture `ReportTester-900005560.xlsx` と同一**＝parity 基準と
+  ライブ供給元がブローカー・口座レベルで一致する。
+- 銘柄仕様の食い違いを検出 → **ISSUE-445 として別途起票**（`contract_size` 10 倍差・volume 粒度）。
+
+### 安全上の記録
+
+**接続先は実弾のライブ口座**（`trade_mode=2` = REAL・残高 ¥176,832）。
+現時点で端末側 `trade_allowed=False`（Algo Trading OFF）のため `order_send()` は通らず、
+これが安全装置として機能している。**発注系の検証はデモ口座を用意してから着手する**。
+本調査では発注系 API を一切実行していない。
+
+### 残る未検証
+
+- **コンテナ → VM の TCP 到達**（案 1 の最後の関門）。VM をブリッジ接続にし、
+  `bash -c 'cat </dev/null >/dev/tcp/<VM_IP>/<port>'` で実測する。VM の IP 待ち。
+- Mac 上で完結させる代替（Wine 経由の MT5）は未検証。案 1 が成立したため優先度は低い。
+
+### 段階分割（着手する場合・各段階の可逆性と通過条件）
+
+- **段階 1（可逆・追加のみ）**: コンテナ → VM の到達性を実測する。既存コード無改変。
+  通過条件: 任意ポートで TCP 到達を確認。
+- **段階 2（可逆・追加のみ・要承認）**: Windows 側に MT5 アダプタ（`MarketDataPort` 実装）を
+  新規追加する。本体・既存アダプタは無改変（OCP）。
+  通過条件: コンテナ側から JP225 の M1 を取得し、既存 CSV 経路と同一形状の `domain.Bar` 列になる。
+  **前提: ISSUE-445 の `contract_size` を確定させること**（未確定のまま結線すると 10 倍の損益差を作り込む）。
+- **段階 3（要承認・大）**: 発注・口座参照のライブ結線。**デモ口座が前提**。
+  段階 2 とは独立の別課題であり、データ取得だけなら不要。
+
+- **関連**: ISSUE-445（銘柄仕様の食い違い・段階 2 の前提）・ISSUE-368（銘柄仕様の供給経路）・
+  ISSUE-444（デスクトップアプリ化の可否／同じく POSIX 依存の起動層が障壁）。
+  固定ポート 8000 と「生起動禁止・`serve.sh` 経由」の規律は本件でも維持する。
