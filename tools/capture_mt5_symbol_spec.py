@@ -74,8 +74,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-#: リポジトリ根。約定履歴の出力先がここの配下なら中断する（コミット事故の防止）。
-REPO_ROOT = Path(__file__).resolve().parents[1]
+#: 本スクリプト自身の位置（既定の出力先の起点・リポジトリが無い環境での基準）。
+SCRIPT_PATH = Path(__file__).resolve()
 
 #: 生成物の相対配置（設計書 §3.2）。
 SNAPSHOT_DIR = "marketdata/symbol_specs"
@@ -119,9 +119,32 @@ def sanitize_path_component(raw: str) -> str:
     return converted
 
 
+def find_repo_root(start: Path) -> "Path | None":
+    """``start`` を含む git リポジトリの根を返す。無ければ ``None``。
+
+    **スクリプトの位置から推測しない**（実測 2026-08-25 の事故）: 当初は
+    ``Path(__file__).parents[1]`` をリポジトリ根と決め打ちしていた。本スクリプトは
+    リポジトリごと配布せず**単体ファイルとして Windows VM へ持ち込む**運用であり
+    （MT5 端末は VM 側にしかない）、そこでは親ディレクトリがリポジトリではない。
+    その結果、デスクトップ等の正当な出力先が「リポジトリ配下」と誤判定され中断した。
+    判定は ``.git`` の実在という**事実**で行う。
+    """
+    current = start.resolve()
+    candidates = [current, *current.parents] if current.is_dir() else list(current.parents)
+    for candidate in candidates:
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _snapshot_base_dir() -> Path:
+    """既定の出力先の起点。リポジトリ内ならその根、外なら本スクリプトの隣。"""
+    return find_repo_root(SCRIPT_PATH) or SCRIPT_PATH.parent
+
+
 def default_out_path(server: str, symbol: str) -> Path:
     """既定の出力先を返す（ディレクトリは作らない）。"""
-    return REPO_ROOT / SNAPSHOT_DIR / sanitize_path_component(server) / (
+    return _snapshot_base_dir() / SNAPSHOT_DIR / sanitize_path_component(server) / (
         f"{sanitize_path_component(symbol)}.json"
     )
 
@@ -196,12 +219,14 @@ def resolve_deals_out(raw: str) -> Path:
     ``git add`` で取り込まれる。**経路の側で不可能にする**（運用の注意では防げない）。
     """
     path = Path(raw).expanduser().resolve()
-    root = REPO_ROOT.resolve()
-    if path == root or root in path.parents:
+    # 守る対象は「実在するリポジトリ」である。スクリプトの位置から推測すると、
+    # リポジトリの無い環境（VM 単体配布）で正当な出力先を誤って拒否する（find_repo_root 参照）。
+    root = find_repo_root(path)
+    if root is not None:
         raise CaptureError(
             f"約定履歴の出力先がリポジトリ配下です: {path}。"
             " 残高・約定情報がコミットされる事故を防ぐため、リポジトリ外を指定してください"
-            f"（リポジトリ根: {root}）。"
+            f"（検出したリポジトリ根: {root}）。"
         )
     return path
 

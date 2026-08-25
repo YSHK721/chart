@@ -455,6 +455,47 @@ def test_deals_out_outside_repository_is_accepted(tmp_path):
     assert cap.resolve_deals_out(str(target)) == target.resolve()
 
 
+# --- リポジトリ根は「.git の実在」で判定する（実測 2026-08-25 の事故の回帰固定）-------
+#
+# 当初は `Path(__file__).parents[1]` をリポジトリ根と決め打ちしていた。本スクリプトは
+# 単体ファイルとして Windows VM へ持ち込む運用（MT5 端末は VM 側にしかない）であり、
+# そこでは親ディレクトリがリポジトリではない。デスクトップ等の正当な出力先が
+# 「リポジトリ配下」と誤判定されて中断した。
+
+
+def test_find_repo_root_detects_this_repository():
+    assert cap.find_repo_root(_SOURCE) == _REPO_ROOT
+
+
+def test_find_repo_root_is_none_outside_any_repository(tmp_path):
+    assert cap.find_repo_root(tmp_path / "nested" / "deals.json") is None
+
+
+def test_find_repo_root_detects_a_foreign_repository(tmp_path):
+    """判定が本リポジトリ固有でないこと（`.git` を持つ任意の木を検出する）。"""
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    assert cap.find_repo_root(tmp_path / "repo" / "sub" / "deals.json") == tmp_path / "repo"
+
+
+def test_deals_out_rejected_inside_a_foreign_repository(tmp_path):
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    with pytest.raises(cap.CaptureError) as ei:
+        cap.resolve_deals_out(str(tmp_path / "repo" / "deals.json"))
+    assert "リポジトリ" in str(ei.value)
+
+
+def test_deals_out_accepted_when_script_sibling_tree_is_not_a_repository(tmp_path):
+    """VM 単体配布の再現: スクリプトの親がリポジトリでないとき、その配下も拒否しない。"""
+    home = tmp_path / "Users" / "yoshi"
+    (home / "Desktop").mkdir(parents=True)
+    target = home / "Desktop" / "jp225_deals.json"
+    assert cap.resolve_deals_out(str(target)) == target.resolve()
+
+
+def test_snapshot_base_dir_is_repo_root_when_inside_a_repository():
+    assert cap._snapshot_base_dir() == _REPO_ROOT
+
+
 def test_with_deals_requires_deals_out():
     rc = cap.main(["--symbol", "JP225", "--with-deals"], mt5=FakeMt5(), now=_AT)
     assert rc != 0
