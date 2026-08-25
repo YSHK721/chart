@@ -698,6 +698,12 @@ def build_interactor(
         # MaSlope が参照する追加パラメータ（TC24051901 は未参照のため無害）。
         "slope_shift": slope_shift,
         "slope_min_points": slope_min_points,
+        # MaSlope の NormalizeLot（原典 MA_Slope_EA.mq5:157）が参照する銘柄仕様。
+        # SymbolInfoDouble(SYMBOL_VOLUME_MIN/MAX/STEP) 相当（ISSUE-445 段階 1・
+        # 他戦略は未参照のため無害）。SymbolSpec と同じ引数を供給元とする。
+        "volume_min": volume_min,
+        "volume_max": volume_max,
+        "volume_step": volume_step,
         # MaSlopePending が参照する追加パラメータ（MaSlope/TC は未参照のため無害）。
         "digits": digits,
         "stops_level": stops_level,

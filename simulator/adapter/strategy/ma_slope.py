@@ -15,6 +15,9 @@ EMA(MA_Period, close) の傾きで売買するシンプルな EA。新規バー�
 発注:
     成行（kind="market"・price=None。約定価格・スプレッドは execution で解決）。
     SL/TP は stop_loss_points / take_profit_points が 0 のとき None（本 EA は SL/TP 無し）。
+    ロットは原典 NormalizeLot(Lot) で銘柄仕様（VOLUME_MIN/MAX/STEP）に合わせて正規化し、
+    0 以下なら発注しない（原典 OpenPosition の分岐・ISSUE-445 段階 1）。銘柄仕様は
+    config の volume_min / volume_max / volume_step で供給する（未供給は制約なし）。
 境界:
     bar_index < (1 + SlopeShift) は確定足 2 点が引けず []。
 
@@ -28,6 +31,7 @@ EMA(MA_Period, close) の傾きで売買するシンプルな EA。新規バー�
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from simulator.domain.exceptions import ConfigError
@@ -84,7 +88,9 @@ class MaSlope(StrategyPort):
         if signal in held_sides:
             return []
         # 反対方向保有はドテン（反対側成行を返し interactor が反転決済）/ 無保有は新規。
-        return [self._build_order(signal)]
+        order = self._build_order(signal)
+        # 原典 OpenPosition: NormalizeLot が 0 以下なら発注せず戻る（Print して return）。
+        return [] if order is None else [order]
 
     def on_position_check(self, position: Any, bar_index: int, indicators: Any) -> str:
         # 反転はシグナルで実施する（on_position_check は SL/TP 監視用）。
@@ -98,15 +104,67 @@ class MaSlope(StrategyPort):
             return set()
         return {p.side for p in getattr(account, "open_positions", [])}
 
-    def _build_order(self, side: str) -> Order:
+    def _build_order(self, side: str) -> "Order | None":
         cfg = self._config
+        volume = self._normalize_lot(cfg["lot_size"])
+        if volume <= 0.0:
+            # 原典 OpenPosition: 有効なロット数を算出できない場合は発注しない。
+            return None
         # 本 EA は SL/TP 無し（None）。SL/TP>0 は on_init が ConfigError で拒否済みの
         # ため、ここへ到達する config は必ず SL/TP=0（ISSUE-098 🟡-2 の LSP 是正）。
         return Order(
             side=side,
             kind="market",
-            volume=cfg["lot_size"],
+            volume=volume,
             price=None,
             sl=None,
             tp=None,
         )
+
+    def _normalize_lot(self, lot: float) -> float:
+        """原典 MA_Slope_EA.mq5:NormalizeLot(lot) の移植（ISSUE-445 段階 1）。
+
+        銘柄仕様は config（strategy_params）の volume_min / volume_max / volume_step
+        で供給する。未供給時は 0.0＝制約なしとして原典の非正値分岐に載せる。
+        """
+        cfg = self._config
+        step = self._spec_value(cfg, "volume_step")
+        volume_min = self._spec_value(cfg, "volume_min")
+        v = lot
+        if step > 0.0:
+            v = self._math_round(v / step) * step
+        if v < volume_min:
+            v = volume_min
+        volume_max = self._spec_value(cfg, "volume_max")
+        if volume_max > 0.0 and v > volume_max:
+            v = volume_max
+        # 浮動小数の誤差を除去（ステップの桁数で正規化）— 原典 NormalizeDouble(v, digits)。
+        digits = int(math.ceil(-math.log10(step))) if step > 0.0 else 2
+        if digits < 0:
+            digits = 0
+        return self._normalize_double(v, digits)
+
+    @staticmethod
+    def _math_round(x: float) -> float:
+        """MQL5 `MathRound`（絶対値 0.5 を切り上げ＝ゼロから遠ざかる丸め）。
+
+        Python 組込み `round` は銀行家丸め（実測: round(2.5)==2 / round(0.5)==0）で
+        原典と境界の挙動が食い違うため使わない。
+        """
+        magnitude = math.floor(abs(x))
+        if abs(x) - magnitude >= 0.5:
+            magnitude += 1.0
+        return math.copysign(magnitude, x)
+
+    @classmethod
+    def _normalize_double(cls, value: float, digits: int) -> float:
+        """MQL5 `NormalizeDouble(value, digits)`（指定小数桁への丸め・0.5 は切り上げ）。"""
+        scale = 10.0**digits
+        return cls._math_round(value * scale) / scale
+
+    @staticmethod
+    def _spec_value(cfg: Any, key: str) -> float:
+        try:
+            return float(cfg[key])
+        except KeyError:
+            return 0.0
