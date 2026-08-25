@@ -9263,3 +9263,72 @@ Inputs とスタートが画面外へ出て操作できない。一方で横は�
 字寸・余白の尺度化（ISSUE-436 段階 2）とは別問題である。
 
 - **関連**: ISSUE-441（2 列化と詰め）・ISSUE-442（ペイン既定高さ）・ISSUE-436（尺度化は未着手）。
+
+## ISSUE-444: [調査] リポジトリをデスクトップアプリとして起動できるか（可否と障壁）
+
+- **ステータス**: OPEN（2026-08-25・依頼者質問「このリポジトリをデスクトップアプリとして
+  起動させることは可能か」）
+- **重大度**: 中（現行機能の不具合ではない。着手可否の判断待ち）
+- **実測環境**: Dev Container（Debian 13 trixie・`/workspaces/app`）。以下はすべてファイル／
+  プロセス／ファイルシステムの実測であり、推測を含まない。
+
+### 結論
+
+**可能**。本体は既に localhost の Web アプリであり、ウィンドウ shell を**追加するだけ**で成立する。
+既存サーバ・UI の改変は要らない。
+
+### 根拠（実測）
+
+| 項目 | 実測値 | 出典 |
+|---|---|---|
+| サーバ実装 | Python 標準ライブラリのみ（`ThreadingHTTPServer`）。FastAPI/uvicorn/Flask は 0 件 | `unified_ui/router.py:28,144`／`indigators/indicator_ui/api/framework/server.py:31` |
+| 公開ポートと経路 | 8000 で router、`/live`→8001・`/replay`→8281・`/sim`→8381 へ proxy | `unified_ui/serve.sh:68-71,360-365` |
+| フロント | 素の HTML ＋ ES modules。**実行時ビルド不要** | `unified_ui/web/index.html`／各 `package.json` に `build` スクリプト無し（依存は vitest / node --test のみ） |
+| チャート | ベンダリング済み（CDN 非依存） | `indigators/indicator_ui/web/vendor/lightweight-charts.js` |
+| 窓の描画手段 | **pywebview 6.2.1 が venv に導入済み**（同梱 `lightweight-charts-python-main` の依存として） | `lightweight-charts-python-main/setup.py:13`／venv site-packages |
+| デスクトップ化の既存実装 | 無し（Electron / Tauri / PyInstaller の設定ファイルは不在） | 全域検索 0 件 |
+
+### 障壁（着手する場合に除去が要るもの）
+
+1. **起動が Linux 専用**。`unified_ui/serve.sh` は `bash` ＋ `setsid`（:297）＋ `ps -eo`（:135）＋
+   `kill -TERM -PGID` に依存する。`setsid` は macOS に無く、Windows でも動かない。
+   起動は 3 プロセス（live/replay/sim core）＋ データ watch 2 本
+   （`export_jp225_m1.py --watch` と `tools/live_tick_watch.py --stream`・
+   `indigators/indicator_ui/serve.sh:64-73`）の multi-process オーケストレーションである。
+2. **リポジトリ外の絶対 symlink 2 本**。`data/marketdata` → `/app/data/marketdata`（**実測 5.2 GB**）、
+   `lightweight-charts-python-main/.venv` → `/app/lightweight-charts-python-main/.venv`
+   （**lib のみで実測 569 MB**）。`/app` は `/workspaces/app` と別ファイルシステム（overlay）で
+   リポジトリの外にある。環境変数 `MARKETDATA_DATA_DIR` / `VENV_PYTHON` での上書き経路は既にある
+   （`tools/dev_paths.sh`・`simulator/replay_ui/serve.sh:29`）。
+3. **依存宣言が実態と乖離**。`requirements.txt` は GTO プリフロップ CLI 向けの記述のままで
+   numpy/tqdm しか書かれておらず、実際の依存（pandas・pyarrow・dukascopy_python 等）は
+   手動構築 venv にしか存在しない。`pyproject.toml` は「ビルドバックエンドも導入しない＝
+   `[build-system]` / `[project]` は置かない」と明記されており、配布物を作る土台が無い。
+
+**R（rpy2）は障壁ではない（実測で確認）**: rpy2 を import するのは
+`indigators/tgp_btlm/src/rbridge.py:83`（`TgpBtlmFitter.fit_predict` 内の**遅延 import**）と
+プロトタイプ `prototype_260626-01/serve.py:24` のみ。同じ Protocol を満たす純 numpy 実装
+`OlsBtlmFitter`（`indigators/tgp_btlm/src/reference.py:32`・「R 不要」と明記）が存在し、
+未導入時は明示的な `ImportError` になるだけでアプリの起動は妨げない。
+`Dockerfile:62-76` の `r-base-dev` / `gfortran` は tgp バックエンド用の任意インストールである。
+
+なお本 Dev Container には GUI が無い（`DISPLAY` 未設定・`/tmp/.X11-unix` 不在・
+`docker-compose.yml` は `command: sleep infinity`）。窓の動作確認はホスト OS 側で行う必要がある。
+
+### 段階分割（着手する場合・各段階の可逆性と通過条件）
+
+- **段階 1（可逆・追加のみ・障壁 1〜3 と無関係）**: 現行 Linux 環境で窓として開くだけ。
+  スタックを起動し `http://127.0.0.1:8000/` を `webview` で開くランチャを**新規追加**する
+  （既存 `serve.sh`・`router.py`・`web/` は無改変）。
+  通過条件: 窓で live/replay/sim の 3 面が動く／窓を閉じた後に router・core・watch の
+  取り残しが 0（`ps` で確認）／既存の `./unified_ui/serve.sh` 経路が非退行。
+- **段階 2（要承認・OCP）**: 起動構成（ポート・core・watch）を Python の Composition Root へ
+  単一ソース化し、`serve.sh` はその薄い入口に縮める。これで障壁 1（`setsid` 依存）が消え、
+  macOS/Windows へ届く。既存起動経路に手を入れるため別ターンで承認を取る。
+- **段階 3（要承認・大）**: 配布物化。障壁 2（5.2 GB データと 569 MB venv の外部実体）・
+  3（依存宣言）の除去が前提。段階 1・2 とは独立の別課題であり、
+  「自分の PC でウィンドウとして開く」だけなら不要。
+
+- **関連**: ISSUE-279（import パス解決）・ISSUE-348（配信元の取り違え）・
+  ISSUE-363/365（venv symlink 事故）。固定ポート 8000 と「生起動禁止・serve.sh 経由」の規律は
+  段階 1・2 のいずれでも維持する。
