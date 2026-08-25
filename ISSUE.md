@@ -9479,6 +9479,14 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
    値の是正）→ 3（`case.yaml` 仕様ブロック撤去・`leverage` の所在是正・TBD-D 裁定。**別ターン**）。
    **順序は交換不可**（実測: 値だけ先に是正すると trades 1164→3315・net -6173.9→-1885.3 で golden が壊れる。
    `NormalizeLot` 移植後の等価パラメータでは trades 系列 sha256 が現行と bit-exact 一致する）。
+   → **段階 0 完了（2026-08-25・依頼者承認済み）**: 検出ゲートを新設した（追加のみ・既存改変 0）。
+   `simulator/tests/fixtures/mt5/spec_derivation.py`（`report.json` からの機械導出）と
+   `simulator/tests/integration/test_mt5_case_spec_agrees_with_report.py`（9 件）。
+   導出は `contract_size=1.0` を確認し（片側検査・全 1163 決済が丸め許容内）、`contract_size=10` は
+   1163 件中 1088 件で棄却される（最大残差 2205）。既知の不整合 2 件（`contract_size` と
+   EA 入力 lot 対 実約定 volume）は `xfail(strict=True)` で固定し、段階 1・2 完了時に
+   unexpectedly passing で赤に転じて撤去を促す。`simulator`/`marketdata`/`tools` 全体で
+   5137 passed・2 xfailed（唯一の赤 `test_composition_root_arg_parity` は ISSUE-427/371 の既存赤・無関係）。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
