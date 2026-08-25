@@ -9335,7 +9335,8 @@ Inputs とスタートが画面外へ出て操作できない。一方で横は�
 
 ## ISSUE-445: 実 MT5 ライブの JP225 銘柄仕様が fixture `case.yaml` と食い違う（contract_size 10 倍・volume 粒度）
 
-- **ステータス**: OPEN（2026-08-25・MT5 ライブ接続の実測で発見）
+- **ステータス**: OPEN（2026-08-25・MT5 ライブ接続の実測で発見。**同日 原因確定＝(b) fixture の記載誤り**。
+  是正は未着手＝要承認・設計判断のため OPEN のまま）
 - **重大度**: 高（`contract_size` は「結果に効く定数」と明記されており、ライブ発注時の
   損益計算が 10 倍ずれる。ただし現行のバックテスト機能は非退行＝稼働中の不具合ではない）
 - **発見経路**: 依頼者質問「MetaTrader5 とライブ接続できるか」の可否検証。VMware Fusion 上の
@@ -9383,28 +9384,90 @@ Inputs とスタートが画面外へ出て操作できない。一方で横は�
   カタログ L14-17 の「volume は gate-neutral（結果に効かない）」は**バックテスト内に限った成立条件**であり、
   ライブには持ち越せない。
 - **C（バックテスト・現行）**: 非退行。`test_run_options_mt5_gate.py` は `contract_size=10` で
-  golden を bit-exact 再現しており、**当時のモデルとしては整合している**。
+  golden を bit-exact 再現している。~~**当時のモデルとしては整合している**~~
+  → **訂正（2026-08-25）**: 整合ではなく **`contract_size` と `lot` の 2 つの誤りが積の上で
+  相殺している**（`0.1×10 = 1.0×1.0`）。機序は後述「なぜ golden が bit-exact のままなのか」。
 - **D（`marketdata/symbol_spec.py` の A-1 裁定）**: 台帳 `SYMBOL_SPECS["JP225"]=(tick=1.0, digits=0)` は
   「OANDA 証券 CFD（`contract_size=1`）＝MT5 とは別商品」を根拠に MT5 側の値を権威から除外している。
   だが実測で MT5 側も `contract_size=1.0` であり、**両者を分ける判別子として挙げられた値が崩れた**。
   ※「証券 CFD と MT5 が同一商品である」ことは**証明されていない**（別サービスの可能性は残る）。
   崩れたのは**判別の根拠**であって結論ではない。台帳の書き換えは行わない。
 
-### 未検証（原因は確定していない）
+### 切り分け結果（2026-08-25・fixture 実測で (b) に確定）
 
-- (a) 2025-01 → 2026-08 の間に OANDA が JP225 の契約仕様を変更した
-- (b) `case.yaml` の `contract_size=10` が当初から誤りだった
-  （ただし golden を bit-exact 再現している事実と整合させる説明が要る）
-- (c) 実測した `JP225` と fixture の `JP225` が別シンボル系列である
+**原因は (b)＝`case.yaml` の `contract_size=10` は当初から誤りである。** (a) と (c) は否定された。
+判定材料はすべて fixture 自身（`mt5_report/tester.log` ・ `ReportTester-900005560.xlsx` ・
+`expected/report.json`）の実測であり、外部の仮定を用いていない。
 
-**いずれも実測で確定させるまで、どの記述も書き換えない。**
+**証拠 1: 実約定ロットは 0.1 ではなく 1.00 だった**（`tester.log`・UTF-16LE で 11675 行）
+
+- `CS 0 21:38:15.813 260618-01 (JP225,M1) 2025.01.02 01:01:00 CTrade::OrderSend: market buy 1.00 JP225 [done at 39412.0]`
+- 全 deal 行が `deal #N buy/sell 1 JP225`、`report.json` の `deals[].vol` は **2327 件すべて `"1"`**。
+- EA `expert/MA_Slope_EA.mq5:NormalizeLot()` は `SYMBOL_VOLUME_MIN/STEP/MAX` を実行時に読み、
+  `v < min` なら `v = min` に持ち上げる。入力 `Lot=0.1` が `1.00` になった事実は、
+  **テスター実行時点の `volume_min` が既に 1.0 だった**ことを意味する（2026-08 のライブ実測と一致）。
+- `Lot=0.1` は xlsx `Inputs:` 行と `report.json settings.inputs` に載る **EA 入力値**であって
+  約定ロットではない。両者を同一視したことが誤りの起点。
+
+**証拠 2: 損益は `1 JPY / price unit`＝`lot(1.0) × contract_size(1.0)`**
+
+- 決済 deal 1163 件のうち **1159 件で `profit == (exit-entry) × sign × 1.0` が厳密一致**。
+  残り 4 件は差が 0.2〜0.5 JPY で、いずれも MT5 が損益を JPY 整数へ丸めた結果（例 32.4 → 32）。
+- したがって確定するのは積 `lot × contract_size = 1.0` のみ。約定ロットが 1.0 である以上、
+  `contract_size = 1.0` である。
+
+**証拠 3: ストップアウト時の証拠金維持率が `contract_size=1.0` でしか成立しない**
+
+`tester.log`: `2025.01.13 13:07:00 position stop out triggered at 99.95% [#2326 buy 1 JP225 38325.7]`。
+その時点の equity は 3831（`report.json` deal #2327 の balance）。`Margin = lot × contract_size × entry / leverage`（`domain/position.py:44-46`）に leverage=10 を入れると:
+
+| 仮定 | Margin | MarginLevel = 3831 / Margin | ログの 99.95% |
+|---|---|---|---|
+| `contract_size=1.0` | 38325.7 / 10 = **3832.57** | **99.959%** | ✅ 一致 |
+| `contract_size=10` | 38325.7 | 10.0% | ❌ 桁違い |
+
+**証拠 4: レポートは `contract_size` を一度も記載していない**
+
+xlsx `Settings` セクションの記載は Expert / Symbol / Period / Inputs / Company / Currency /
+Initial Deposit / Leverage の 8 項目のみ（実測）。`contract_size` の行は存在しない。
+`case.yaml:13` の見出し「銘柄仕様 (実 MT5 由来の確定値)」に反し、**`contract_size: 10` の出所は
+レポートではなく逆算**である（「約定ロット＝0.1」という誤前提と実測損益 1 JPY/price unit から
+`10` を解いた形跡が `case.yaml:49` / `report.json settings.derived.note` の
+`0.1lot*10=1 JPY per price unit` に残っている）。
+
+**(a) の否定**: テスター実行（ログのタイムスタンプ・エージェントログ名より 2026-06-18）は
+`volume_min=1.0` / `contract_size=1.0` の下で走っている。fixture 作成時点で既に 2026-08 の
+ライブ実測と同値であり、「2025-01 → 2026-08 の間の仕様変更」は本件の説明にならない。
+
+**(c) の否定**: xlsx L2 `OANDA-Japan MT5 Live (Build 5833)` / L15 `Company: OANDA Corporation` /
+`tester.log` の `JP225,M1 (OANDA-Japan MT5 Live)`、およびレポート名の口座番号 `900005560` は、
+2026-08-25 のライブ実測（同一サーバ・同一口座・同一シンボル名）と一致する。別系列ではない。
+
+### なぜ golden が bit-exact のままなのか（影響 C の機序・確定）
+
+reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
+`contract_size=10` と `lot_size=0.1` を**対で**与えている。バックテスト計算で `lot` が
+単独で現れる箇所は無く、常に積 `lot × contract_size` として使われる
+（`domain/position.py`: `floating_pnl` = `Δprice × volume × contract_size × sign` /
+`required_margin` = `volume × contract_size × entry / leverage`）。
+
+- 真値: `1.0 × 1.0 = 1.0`
+- fixture: `0.1 × 10 = 1.0`
+
+**2 つの誤りが積の上で完全に相殺している。** 損益・証拠金・equity・ストップアウト時刻の
+すべてが一致するのはこのためであり、「当時のモデルとして整合していた」のではない。
+相殺が破れるのは **`lot` が単独で効く箇所だけ**＝`volume_min` / `volume_step` 検証
+（`domain/order.py:75-89`）とライブ発注ロットであり、これが影響 A・B と厳密に一致する。
 
 ### 次の一手（着手前に承認を取る）
 
-1. `mt5_report/tester.log` と `ReportTester-900005560.xlsx` から、2025-01 当時の
-   契約仕様の記載を洗い出す。→ (a) と (b) を切り分ける判定材料。
+1. ~~`mt5_report/tester.log` と `ReportTester-900005560.xlsx` から、2025-01 当時の
+   契約仕様の記載を洗い出す。→ (a) と (b) を切り分ける判定材料。~~
+   → **実施済（2026-08-25）。上記「切り分け結果」のとおり (b) に確定。**
 2. `mt5.history_deals_get()` で実約定の損益と価格差・ロットを突き合わせ、
    現行 `contract_size` を約定側から逆算する。→ 実測の追認。
+   **未実施**（Windows VM 上でのみ実行可能・コンテナからは到達不可）。
+   証拠 1〜3 で fixture 側は確定したため、本項は**ライブ側の追認**としてのみ残る（優先度低）。
 3. 恒久策の方向（**要承認・設計判断**）: 銘柄仕様を fixture のリテラルではなく
    **供給元から実行時に読む**構造にする（ISSUE-368「銘柄同一性はデータ供給側の台帳」の延長）。
    これが根本解であり、値の書き換えは対症療法にとどまる。
