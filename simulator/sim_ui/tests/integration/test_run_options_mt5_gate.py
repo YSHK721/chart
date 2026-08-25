@@ -1,16 +1,24 @@
-"""SymbolSpecCatalog の MT5 突合 bit-exact ゲート（Phase 6 拡張・最重要）.
+"""SymbolSpecCatalog の MT5 突合ゲート（Phase 6 拡張・最重要）.
 
-裁定（憶測禁止）: フォームが供給する JP225 の**結果に効く定数**は MT5 突合 fixture の
-case.yaml を唯一のオラクルとする。本ゲートは 2 段:
-    (a) **実保証**。SymbolSpecCatalog の JP225 プロファイルの結果に効く定数（contract_size/
-        digits/point_size/leverage）が case.yaml と直接等値であり、stops_level==0 であること。
-        フォーム供給定数の MT5 一致は本 (a) の等値 assert が担保する。
-    (b) **補助（現状 vacuous）**。その定数で build_interactor→実走した結果が case.yaml 由来
-        定数の直接実走と bit-exact 一致すること＝定数が run へ流れ非クラッシュ・決定的である
+裁定（憶測禁止・**2026-08-25 にオラクルを移した**: ISSUE-445 段階 2 /
+`.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md` §7）: フォームが供給する JP225 の銘柄仕様は
+**供給元スナップショット**（`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`）を
+唯一のオラクルとする。従来は `case.yaml` を唯一のオラクルにしていたが、case.yaml は自身が
+「人が読むためのメタ要約」と宣言する転記物であり、そこに書かれた `contract_size: 10` は
+出所の無い逆算値だった（ISSUE-445 の RC-1）。本ゲートは 3 段:
+
+    (a) **実保証**。SymbolSpecCatalog の JP225 プロファイルの銘柄仕様 8 項目が供給元
+        スナップショットと等値であること（カタログがリテラルを持たないことの実証）。
+    (a') **独立検証**。供給元と**独立な**証拠＝`expected/report.json` の deals から機械導出
+        した値とも一致すること（設計書 §3.3 の検出ゲート）。これが (a) の同語反復化を防ぐ。
+        導出できない項目（volume_min/step/max・stops_level）はレポートが出力しないため
+        (a') の対象外である（導出できないものを導出したふりをしない）。
+    (b) **補助（現状 vacuous）**。その定数で build_interactor→実走した結果が決定的である
         ことのみ確認する。**本 _oscillating_csv は TC24051901 で trades=0（実測 2026-08-12）**の
-        ため定数差分が結果に効かず、(b) は「定数の実感度」を独立には拘束しない（実保証は (a)）。
+        ため定数差分が結果に効かず、(b) は「定数の実感度」を独立には拘束しない（実保証は (a)(a')）。
         意味ある negative control（TC が建玉を出す CSV での定数感度検定）は非 cheap のため ISSUE 化。
-volume は結果に効かない（gate-neutral）ため突合対象にしない。build_interactor 既存引数は無改変。
+
+build_interactor 既存引数は無改変。
 """
 from __future__ import annotations
 
@@ -19,40 +27,77 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from marketdata.symbol_spec_snapshot import (
+    OANDA_JAPAN_MT5_LIVE,
+    load_snapshot,
+    settlement_currency,
+    spec_fields,
+)
 from simulator.main import run_backtest
 from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 from simulator.tests.fixtures.mt5 import load_case
+from simulator.tests.fixtures.mt5 import spec_derivation as sd
 
 _CASE = "ma_slope_jp225_202501"
+_SYMBOL = "JP225"
 
 
 def _jp225_profile():
-    return [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
+    return [p for p in build_run_options_port().datasets() if p.symbol == _SYMBOL][0]
 
 
-def test_catalog_constants_match_mt5_fixture():
-    # (a) 結果に効く定数 == case.yaml 権威値
-    sym = load_case(_CASE).config["symbol"]
-    jp = _jp225_profile()
-    assert jp.contract_size == float(sym["contract_size"])
-    assert jp.digits == int(sym["digits"])
-    assert jp.point_size == float(sym["point_size"])
-    assert jp.leverage == float(sym["leverage"])
-    assert jp.stops_level == 0
-    assert jp.symbol == sym["name"] and jp.period == "M1"
+def _snapshot():
+    return load_snapshot(OANDA_JAPAN_MT5_LIVE, _SYMBOL)
 
 
-def test_catalog_settlement_currency_matches_mt5_fixture():
-    """決済通貨も case.yaml を唯一のオラクルとする（A-2・D-10 の供給源恒久化）。
+def test_catalog_constants_match_the_supply_snapshot():
+    """(a) 銘柄仕様 8 項目 == 供給元スナップショット（カタログにリテラルが無いことの実証）。
 
-    出典（実測・憶測禁止）:
-        case.yaml の ``symbol.currency``（＝銘柄仕様ブロック・「実 MT5 由来の確定値」）。
-        期待値をここにリテラルで書かない（fixture から引く＝単一ソース）。
+    期待値をここにリテラルで書かない。カタログが値を持ち始めたら（＝供給元から乖離したら）
+    赤になる。
     """
-    sym = load_case(_CASE).config["symbol"]
-    assert "currency" in sym, "case.yaml に symbol.currency が無い（オラクル不在）"
+    expected = spec_fields(_snapshot())
     jp = _jp225_profile()
-    assert jp.settlement_currency == sym["currency"]
+    assert len(expected) == 8
+    for name, value in expected.items():
+        assert getattr(jp, name) == value, f"{name}: カタログ {getattr(jp, name)!r} != 供給元 {value!r}"
+    assert jp.symbol == _SYMBOL and jp.period == "M1"
+
+
+def test_catalog_constants_agree_with_the_independent_report_derivation():
+    """(a') 供給元と**独立な**証拠（report.json の deals からの機械導出）とも一致する。
+
+    設計書 §3.3 の検出ゲート。(a) だけだと「スナップショット == スナップショット」の
+    同語反復になるため、実 MT5 テスターの確定出力から機械導出した値と突き合わせる。
+    **このゲートがあれば ISSUE-445 は fixture 作成時点（2026-06-18）に赤で止まっていた**
+    （実測: contract_size=10 は 1163 件中 1088 件で棄却・最大残差 2205）。
+
+    導出できない項目（volume_min / volume_step / volume_max / stops_level）はレポートが
+    制約を出力しないため対象外（設計書 §3.3・導出できないものを導出したふりをしない）。
+    """
+    expected = load_case(_CASE).expected
+    jp = _jp225_profile()
+    # 損益の整合から contract_size を片側検査する。
+    report = sd.contract_size_consistency(expected, jp.contract_size)
+    assert report.ok, report.describe()
+    # digits は観測小数桁の下限を下回らない（片側検査）。
+    assert jp.digits >= sd.price_decimals(expected)
+    # leverage は口座属性としてレポートに載る。
+    assert jp.leverage == sd.account_leverage(expected)
+
+
+def test_catalog_settlement_currency_matches_the_supply_snapshot():
+    """決済通貨も供給元を唯一のオラクルとする（A-2・D-10 の供給源恒久化）。
+
+    出典（実測・憶測禁止）: スナップショットの ``symbol.currency_profit``＝MT5 端末が
+    銘柄の属性として出力する profit 通貨。期待値をここにリテラルで書かない。
+    従来は ``case.yaml`` の ``symbol.currency``（人が書いた転記物）を唯一のオラクルに
+    していた（ISSUE-445 段階 2 で移管）。
+    """
+    jp = _jp225_profile()
+    assert jp.settlement_currency == settlement_currency(_snapshot())
+    # 独立な証拠（実 MT5 テスター出力の口座通貨）とも一致する。
+    assert jp.settlement_currency == sd.settlement_currency(load_case(_CASE).expected)
 
 
 def test_catalog_settlement_currency_agrees_with_report_oracle():
@@ -108,20 +153,16 @@ def _meta_from(profile_like, csv: Path) -> dict:
     )
 
 
-def test_catalog_spec_reproduces_fixture_run_bit_exact(tmp_path: Path):
-    # (b) カタログ定数で実走 == case.yaml 定数で実走（bit-exact）
+def test_catalog_spec_reproduces_snapshot_run_bit_exact(tmp_path: Path):
+    # (b) カタログ定数で実走 == 供給元スナップショット定数で実走（bit-exact）
     csv = _oscillating_csv(tmp_path / "osc.csv")
     jp = _jp225_profile()
-    catalog_spec = {
-        "contract_size": jp.contract_size, "digits": jp.digits, "point_size": jp.point_size,
-        "leverage": jp.leverage, "stops_level": jp.stops_level,
-    }
-    sym = load_case(_CASE).config["symbol"]
-    fixture_spec = {
-        "contract_size": float(sym["contract_size"]), "digits": int(sym["digits"]),
-        "point_size": float(sym["point_size"]), "leverage": float(sym["leverage"]),
-        "stops_level": 0,
-    }
+    keys = ("contract_size", "digits", "point_size", "leverage", "stops_level")
+    catalog_spec = {k: getattr(jp, k) for k in keys}
+    # 期待側は供給元から直に引く（case.yaml は stops_level / volume を持たないため
+    # オラクルになれない＝ISSUE-445 段階 2 でオラクルをスナップショットへ移した）。
+    supply = spec_fields(_snapshot())
+    fixture_spec = {k: supply[k] for k in keys}
 
     out_a, out_b = tmp_path / "a", tmp_path / "b"
     out_a.mkdir(); out_b.mkdir()

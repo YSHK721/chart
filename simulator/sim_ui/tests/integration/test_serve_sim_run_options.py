@@ -2,8 +2,9 @@
 
 固定する不変条件（run config フォーム結線・依頼者承認 2026-08-12）:
     1. `GET /run-options` が datasets（JP225 プロファイル）＋ea_names を 200 で返す。
-    2. datasets の JP225 は結果に効く定数（contract_size=10 等）を持つ（フォーム投入が
-       完全 spec になる＝E-5b を通る）。
+    2. datasets の JP225 は銘柄仕様 8 項目を持ち、**供給元スナップショット**と等値である
+       （フォーム投入が完全 spec になる＝E-5b を通る）。期待値をここにリテラルで持たない
+       （ISSUE-445 段階 2 で権威を case.yaml → スナップショットへ移した）。
     3. ea_names は _EA_FACTORIES 由来（TC24051901 を含む）。
     4. 既存面（/indicators・/ea-series・/jobs・静的）は 1 バイトも変わらない（委譲・OCP）。
     5. 接頭辞を共有する別パス（/run-options-extra）は既存の静的面へ落ちる（prefix 境界）。
@@ -77,8 +78,12 @@ def test_run_options_returns_datasets_and_ea_names(display) -> None:
     payload = json.loads(body)
     assert payload["ok"] is True
     jp = [d for d in payload["datasets"] if d["symbol"] == "JP225"][0]
-    assert jp["contract_size"] == 10.0 and jp["digits"] == 1
-    assert jp["point_size"] == 0.1 and jp["leverage"] == 10.0
+    # 銘柄仕様の期待値をここにリテラルで書かない（ISSUE-445 段階 2）。権威は供給元
+    # スナップショットであり、旧値 contract_size=10.0 は出所の無い逆算値だった。
+    from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
+
+    for name, value in load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225").items():
+        assert jp[name] == value, f"{name}: 応答 {jp[name]!r} != 供給元 {value!r}"
     assert "TC24051901" in payload["ea_names"]
 
 

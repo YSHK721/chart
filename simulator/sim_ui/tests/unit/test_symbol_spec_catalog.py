@@ -1,8 +1,13 @@
 """SymbolSpecCatalog（run config の銘柄仕様・データセット単一ソース）の単体検定（Phase 6 拡張）.
 
-固定する不変条件（憶測禁止・MT5 突合 fixture 由来で確定）:
-    1. datasets() は JP225 の RunProfile を返す。結果に効く定数（contract_size/digits/
-       point_size/leverage/stops_level）は MT5 fixture case.yaml と一致（reconcile golden 再現）。
+固定する不変条件（憶測禁止・供給元スナップショット由来で確定）:
+    1. datasets() は JP225 の RunProfile を返す。銘柄仕様 8 項目（contract_size/digits/
+       point_size/leverage/stops_level/volume_min/volume_max/volume_step）は**供給元
+       スナップショット**（`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`）と
+       一致する。従来は case.yaml のリテラル（contract_size=10 / stops_level=0）を
+       ここに書き写していたが、前者は出所の無い逆算値・後者はオラクル不在の値であり、
+       ISSUE-445 段階 2 で権威を供給元へ移した。値の突合の詳細（供給元と独立な report.json
+       導出との一致）は `sim_ui/tests/integration/test_run_options_mt5_gate.py` が持つ。
     2. data_path は dataset_registry.whitelist() の単一ソース由来（ハードコードしない）。
     3. ea_names() は注入元（`simulator.main.known_ea_names`）から導出（ハードコード禁止・
        束縛は Composition Root が持つ・ISSUE-405）。
@@ -19,16 +24,21 @@ def test_is_run_options_port():
     assert isinstance(build_run_options_port(), RunOptionsPort)
 
 
-def test_jp225_profile_result_affecting_constants_match_fixture():
-    # Arrange / Act
+def test_jp225_profile_symbol_spec_comes_from_the_supply_snapshot():
+    # Arrange: 銘柄仕様の唯一の権威（MT5 端末から機械取得したスナップショット）。
+    from marketdata.symbol_spec_snapshot import (
+        OANDA_JAPAN_MT5_LIVE,
+        load_spec_fields,
+    )
+
+    expected = load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")
+    # Act
     profiles = build_run_options_port().datasets()
-    # Assert: JP225 の結果に効く定数（case.yaml 権威値）
     jp = [p for p in profiles if p.symbol == "JP225"][0]
-    assert jp.contract_size == 10.0
-    assert jp.digits == 1
-    assert jp.point_size == 0.1
-    assert jp.leverage == 10.0
-    assert jp.stops_level == 0
+    # Assert: 8 項目すべてが供給元と等値（カタログがリテラルを持たないことの実証）。
+    assert len(expected) == 8
+    for name, value in expected.items():
+        assert getattr(jp, name) == value, f"{name}: カタログ {getattr(jp, name)!r} != 供給元 {value!r}"
     assert jp.symbol == "JP225" and jp.period == "M1"
 
 

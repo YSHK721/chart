@@ -11,12 +11,16 @@ description: >-
   にかけた結果。バックテスト計算ロジック(compute_stats 等)の golden 突合に用いる。
 
 # --- 銘柄仕様 (実 MT5 由来の確定値) ---
+# 権威は marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json (MT5 端末から機械取得)
+# へ移った (ISSUE-445 段階 2)。本ブロックは可読性のための転記であり、テストは参照しない。
+# ブロックごとの撤去は段階 3。
 symbol:
   name: JP225
   point_size: 0.1
   digits: 1
-  contract_size: 10
-  leverage: 10        # 1:10
+  contract_size: 1.0  # 是正 2026-08-25 (ISSUE-445): 旧値 10 は出所の無い逆算値だった。
+                      # 供給元 trade_contract_size=1.0 / tick_value=contract*tick=0.1 と整合。
+  leverage: 10        # 1:10 (口座属性。銘柄仕様ではない = 設計書 §3.4・分離は段階 3)
   currency: JPY
 
 # --- 口座 ---
@@ -46,7 +50,13 @@ run:
   spread_model: from_bar
   # 約定ルール (report.json settings.derived.fill_rule より):
   #   buy = bid + spread*point (ask), sell = bid
-  # 損益: profit = (exit-entry) * lot * contract_size; 0.1lot * 10 = 1 JPY / price unit
+  # 損益: profit = (exit-entry) * lot * contract_size
+  #   実態 (是正 2026-08-25・ISSUE-445): 実約定 1.0 lot * contract_size 1.0 = 1 JPY / price unit。
+  #   上記 expert.lot: 0.1 は MT5 の EA 入力値であって約定ロットではない。原典
+  #   MA_Slope_EA.mq5:NormalizeLot() が volume_min=1.0 まで持ち上げるため実約定は 1.00 になる
+  #   (tester.log の全 deal 行 `deal #N buy/sell 1 JP225` / report.json deals[].vol は
+  #    2327 件すべて "1"・実測)。旧記載 `0.1lot * 10 = 1 JPY / price unit` は
+  #   「約定ロット = 入力 0.1」という誤前提から contract_size を 10 と逆算したものだった。
 
 # --- 期待サマリー ---
 # 注記: 最終的な正(オラクル)は expected/report.json の `results` を用いること。
