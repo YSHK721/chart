@@ -9471,6 +9471,14 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
 3. 恒久策の方向（**要承認・設計判断**）: 銘柄仕様を fixture のリテラルではなく
    **供給元から実行時に読む**構造にする（ISSUE-368「銘柄同一性はデータ供給側の台帳」の延長）。
    これが根本解であり、値の書き換えは対症療法にとどまる。
+   → **設計済（2026-08-25）**: `.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md`（**未承認・未実装**）。
+   根本原因を 2 つに分解した: **RC-1** 銘柄仕様の権威が人の転記物（`case.yaml`）にあり供給元と
+   突き合わせる機構が無い／**RC-2** `simulator/adapter/strategy/ma_slope.py` が参照実装
+   `MA_Slope_EA.mq5:NormalizeLot()` を持たず、これが RC-1 の誤りを相殺して隠した。
+   段階 0（検出ゲート新設・値不変）→ 1（`NormalizeLot` 移植）→ 2（供給元スナップショット導入と
+   値の是正）→ 3（`case.yaml` 仕様ブロック撤去・`leverage` の所在是正・TBD-D 裁定。**別ターン**）。
+   **順序は交換不可**（実測: 値だけ先に是正すると trades 1164→3315・net -6173.9→-1885.3 で golden が壊れる。
+   `NormalizeLot` 移植後の等価パラメータでは trades 系列 sha256 が現行と bit-exact 一致する）。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
