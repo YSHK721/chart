@@ -9556,6 +9556,18 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
    - 全体: `simulator marketdata tools` で **3 failed / 5221 passed / 1 skipped / 1 xfailed**
      （着手前ベースライン 1 failed / 5206 passed）。増えた赤 2 件は上記の要裁定ピンのみ。
      既存赤 `test_composition_root_arg_parity`（ISSUE-427/371・JS 側）は不変・無関係。
+   → **裁定済・段階 2 完了（2026-08-25）**: fingerprint の trades ピンを更新した。
+   独立に実測して退行でないことを確定させてから更新している（旧プロファイルと新プロファイルを
+   同一データで実走し `asdict(TradeRecord)` を全列比較）:
+     - 差がある列は **`contract_size` と `volume` の 2 列のみ**（ケース A・B とも）。
+     - この 2 列を除いたダイジェストは **bit-exact 一致**（時刻・価格・pnl・exit_reason 不変）。
+     - `stats_sha256` と `trade_count` は**旧ピンと完全一致**＝損益統計は 1 ビットも動かない。
+     - 積 `volume × contract_size` は `0.1×10 = 1.0×1.0` で不変であり損益・証拠金に効かない。
+   `trades_sha256` は `asdict(TradeRecord)` 全列を畳む値であり**銘柄仕様そのものを含む**ため、
+   仕様の是正が現れるのは正しい挙動である。旧ピンは識別のためテスト内にコメントで残した。
+   最終: `simulator marketdata tools` で **1 failed / 5223 passed / 1 skipped / 1 xfailed**
+   （赤は既存の `test_composition_root_arg_parity` 1 件のみ＝着手前と同一）。
+   残る `xfail(strict)` 1 件は `report.json` の `settings.derived.contract_size`（段階 3 で解消）。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。

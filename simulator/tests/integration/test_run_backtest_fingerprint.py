@@ -47,15 +47,32 @@ _CASE = "ma_slope_jp225_202501"
 #: MT5 突合テストと同じ取引開始時刻（これ以前のバーは EMA seed 収束のみ）。
 _TRADING_START = np.datetime64("2025-01-02T01:00:00")
 
+# --- trades ピンの更新履歴（ISSUE-445 段階 2・2026-08-25）--------------------
+#
+# `trades_sha256` は `asdict(TradeRecord)` 全列を畳んだ値であり、**銘柄仕様そのもの**
+# （`volume` と `contract_size`）を含む。段階 2 で銘柄仕様の権威を供給元スナップショットへ
+# 移した結果、記録される 2 列が誤り（`volume=0.1` / `contract_size=10.0`）から真値
+# （`volume=1.0` / `contract_size=1.0`）へ変わり、ダイジェストが動いた。
+#
+# 退行でないことを実測で確定させてから更新した（旧プロファイルと新プロファイルを
+# 同一データで実走して全列比較・2026-08-25）:
+#   - 差がある列は **`contract_size` と `volume` の 2 列のみ**（A・B とも）。
+#   - この 2 列を除いたダイジェストは **bit-exact 一致**（時刻・価格・pnl・exit_reason 不変）。
+#   - `stats_sha256` と `trade_count` は **旧ピンと完全一致**（＝損益統計は 1 ビットも動かない）。
+# 積 `volume × contract_size` は 0.1×10 = 1.0×1.0 で不変であり、損益・証拠金に効かない。
+# 旧ピン（参考・退行との識別用）:
+#   A trades e2c1fa0be743f38722f180a1f29e54e33c4f4a05f147175f71ea97ea8074c84c
+#   B trades 33d1670fdabe6c864821c94f6668a802bffe99b1efd0ac02fbd4ff84b721891d
+
 # --- ケース A: `trading_start` なし（本番の全呼出がこの形） -------------------
 # 是正前後で一致することを実走で確認した値（ISSUE-398 の byte 等価ゲート）。
 _A_STATS_SHA256 = "2d696eb1539203f7a5141799a560aaab95588e7e4272b5a8820306805815ae6f"
-_A_TRADES_SHA256 = "e2c1fa0be743f38722f180a1f29e54e33c4f4a05f147175f71ea97ea8074c84c"
+_A_TRADES_SHA256 = "3942ad9a43746e867b02a61b7e8f0e679444fae9de90149ca378c6c51610517c"
 _A_TRADE_COUNT = 1107
 
 # --- ケース B: `trading_start` あり（是正で「黙って捨てる」が消えた） ---------
 _B_STATS_SHA256 = "767255a5620d3ead33a64b50dacd539858099322c4d8b4d18ca0f56c6b2ef520"
-_B_TRADES_SHA256 = "33d1670fdabe6c864821c94f6668a802bffe99b1efd0ac02fbd4ff84b721891d"
+_B_TRADES_SHA256 = "a2535a03273585e1aa2ecec2d0c313a8515c3ab64ce90151c4133c2c891e8353"
 _B_TRADE_COUNT = 1164
 
 
