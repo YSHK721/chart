@@ -107,6 +107,12 @@ data/marketdata
 # blanket *.csv ignore から除外し、移設前コードで採取した golden を版管理に固定する。
 !indigators/indicator_ui/api/tests/golden/
 !indigators/indicator_ui/api/tests/golden/**
+# 銘柄仕様スナップショット（ISSUE-445 段階 2・供給元 MT5 の権威値を機械取得した台帳）。
+#   時系列データではなく**版管理する台帳**であり、上の blanket `*.json` から除外する。
+#   これに巻き込まれると台帳が clean clone に無く、銘柄仕様の唯一の権威が消える。
+#   人が編集する対象ではない（ファイル内 `_generated` が明示・再取得は capture スクリプト）。
+!marketdata/symbol_specs/
+!marketdata/symbol_specs/**
 *.parquet
 *.feather
 *.pkl

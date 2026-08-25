@@ -9503,6 +9503,25 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
    - **申し送り**: 他戦略（`tc24051901` / `ma_slope_pending` / `stop_entry_probe` / `pro_fit_band` /
      `generic_condition_strategy`）は依然 `cfg["lot_size"]` を素通しする（RC-2 と同型の欠落）。
      原典 `.mq5` を持つものだけが移植対象になるため、対象の同定を含めて段階 3 で裁定する。
+   → **供給元スナップショット取得済（2026-08-25T22:33:48Z・commit は下記）**:
+   `tools/capture_mt5_symbol_spec.py` を VM 上で実行し
+   `marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`（`symbol` 96 フィールド）を得た。
+   端末 build 6140 / MetaTrader5 5.0.6090 / `account.trade_mode=2`（REAL）。
+   **転送はコピー&ペースト**（VM にリポジトリが無く、Docker named volume はホストから見えない）。
+   値はすべて ASCII のため貼付内容をそのまま用い、`_generated` の日本語のみ生成元の
+   `generated_marker()` から機械再生成した（PowerShell コンソールの文字化けを持ち込まない）。
+   直列化も生成元の `serialize()` を用いており VM 上の生成物とバイト等価である。
+   - **確認**: `trade_contract_size=1.0` / `volume_min=1.0` / `volume_step=1.0` / `volume_max=10000.0` /
+     `digits=1` / `point=0.1` / `trade_tick_value=0.1` / `currency_profit="JPY"` / `account.leverage=10`。
+     ISSUE-445 冒頭の実測表・切り分け結果（証拠 1〜3）と完全に一致する。
+   - **新たな不一致（3 件目・段階 2 の対象に追加）**: `trade_stops_level=5` に対し
+     カタログ（`symbol_spec_catalog.py`）と reconcile は **`stops_level=0`**。
+     MA_Slope は SL/TP 無しで参照しないため golden は不変だが、`ma_slope_pending` と
+     `stop_entry_probe` は `cfg["stops_level"] * point` を**建値オフセットの下限クランプ**に
+     使う（実測）。0 → 5 で最小距離が 0 → 0.5 価格単位になり、これら 2 戦略の結果が変わる。
+     段階 2 の通過条件に「変化する戦略の同定と影響の実測」を含める。
+   - **付随**: 決済通貨の権威が供給元側に得られた（`currency_profit`）。現行は `case.yaml` の
+     `symbol.currency` を唯一のオラクルにしている（`test_run_options_mt5_gate.py`）。段階 2 で供給元へ寄せる。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
