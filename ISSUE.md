@@ -9522,6 +9522,40 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      段階 2 の通過条件に「変化する戦略の同定と影響の実測」を含める。
    - **付随**: 決済通貨の権威が供給元側に得られた（`currency_profit`）。現行は `case.yaml` の
      `symbol.currency` を唯一のオラクルにしている（`test_run_options_mt5_gate.py`）。段階 2 で供給元へ寄せる。
+   → **段階 2 実装済（2026-08-25・commit `d0b95e7` / `726b40e` / `df470b9` / `a8273f3`）**:
+   供給元スナップショットを唯一の権威にし、カタログと reconcile から銘柄仕様の数値リテラルを
+   撤去した（AST 実測で両ファイルとも 0 件）。新設 `marketdata/symbol_spec_snapshot.py` は
+   依存ゼロで、MT5 名 →`SymbolSpec` 8 フィールド名の対応表を 1 箇所に持ち、「1 箇所であること」を
+   AST 走査が施行する（負の対照で非空虚を実証）。`leverage` は `account` から引く。
+   - **通過条件 1（golden bit-exact 不変）達成**: reconcile は `trades=1164` /
+     `net=-6173.899999999994` / `balance=3826.100000000006` で不変。実走の約定 volume 集合 = {1.0}
+     となり、MT5 レポートの `deals[].vol`（2327 件すべて 1）と**初めて一致**した。
+   - **段階 0 の xfail が緑に転じ撤去**（D6）。検出ゲートが設計どおり XPASS(strict) で知らせた。
+     代わりに `report.json` の `settings.derived.contract_size=10`（人が後から書いた逆算値）を
+     突合する検定を新設し `xfail(strict=True)` で固定した（是正は段階 3）。
+   - **D7 実測（`stops_level` 0 → 5）**: `MaSlopePending` / `StopEntryProbe` とも **bit-exact 一致**
+     （trades 1770 / 10100・net -4610.0 / 9990.0・sha256 一致）。クランプ閾値 `5×0.1=0.5` 価格単位が
+     リポジトリ内の全呼出値（entry_offset 5.0〜10.0 / SL 20.0 / TP 50.0）を下回り一度も効かないため。
+     **上記「新たな不一致」の予測「これら 2 戦略の結果が変わる」は実測により否定された。**
+     空虚な確認ではない（負の対照: `stops_level=100` で pending 1770→3288・`200` で probe 10100→2127）。
+   - **sizing 経路の方針差（段階 2 の確認項目）実測**: `volume_min` 0.01 → 1.0 / `volume_step` 0.01 → 1.0 /
+     `volume_max` 100 → 10000 により、`floor_to_step` が発注を成立させる最小の算出量が
+     **0.01 → 1.0（100 倍）** になった（`contract_size` 10→1.0 で point_value が 1/10 になり算出量自体は
+     約 10 倍になるため、実効の閾値上昇は約 10 倍）。算出量 1.0 未満は `BLOCK_BELOW_MINIMUM` で不発注。
+     これは退行ではなく、**実ブローカーが拒否するロットを sim が出さなくなった**ことである
+     （従来 0.35 lot 等はライブでは発注不成立）。丸め方針が原典と異なる点（原典＝`MathRound` 後に
+     `volume_min` へ切り上げ／sizing＝保守側 floor で不発注）は従来どおり未解決＝段階 3 の裁定対象。
+   - **要裁定（未解決・期待値を書き換えず赤のまま残した）**: `test_run_backtest_fingerprint.py` の
+     `_A_TRADES_SHA256` / `_B_TRADES_SHA256`。同ファイルの `_meta` は「reconcile と同一プロファイル」を
+     名乗りつつ銘柄仕様を case.yaml とリテラルの混成で組んでおり、供給元へ揃え直した。その結果
+     `trade_count`（1107 / 1164）と `stats_sha256` は**現ピンのまま一致**するが `trades_sha256` だけが動く。
+     原因は実測で特定済み——全トレードで差があるのは `volume`（0.1→1.0）と `contract_size`（10.0→1.0）の
+     2 フィールドのみで、時刻・価格・pnl・exit_reason は完全一致（差分 2 列を除くと bit-exact）。
+     すなわち是正した真値がトレード記録に現れただけだが、golden ピンの更新は独立した裁定事項のため
+     **書き換えていない**。実測値: A `3942ad9a…10517c` / B `a2535a03…891e8353`。
+   - 全体: `simulator marketdata tools` で **3 failed / 5221 passed / 1 skipped / 1 xfailed**
+     （着手前ベースライン 1 failed / 5206 passed）。増えた赤 2 件は上記の要裁定ピンのみ。
+     既存赤 `test_composition_root_arg_parity`（ISSUE-427/371・JS 側）は不変・無関係。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
