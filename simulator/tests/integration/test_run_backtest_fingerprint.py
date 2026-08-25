@@ -38,6 +38,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.main import run_backtest
 from simulator.tests.fixtures.mt5 import load_case
 
@@ -59,7 +60,15 @@ _B_TRADE_COUNT = 1164
 
 
 def _meta(case, *, trading_start=None) -> dict:
-    """MT5 突合テスト（`test_ma_slope_reconcile.py`）と同一の実走プロファイル。"""
+    """MT5 突合テスト（`test_ma_slope_reconcile.py`）と同一の実走プロファイル。
+
+    銘柄仕様 8 項目は突合テストと**同じ供給元**（スナップショット）から引く
+    （ISSUE-445 段階 2）。ここにリテラルを書くと「同一プロファイル」という前提が
+    黙って崩れる——実際、従来は `volume_min=0.1` / `volume_step=0.1` / `stops_level=0` を
+    書き写しており、`case.yaml` の `contract_size` だけが是正されたとき
+    「真値 × 非正規化ロット」という**どこにも存在しない組み合わせ**になった（実測:
+    trades 1164 → 3315・設計書 §6 の V1 と同じ壊れ方）。下記の指紋は不変である。
+    """
     c = case.config
     sym, acc, ea = c["symbol"], c["account"], c["expert"]
     meta = dict(
@@ -68,14 +77,7 @@ def _meta(case, *, trading_start=None) -> dict:
         period="M1",
         ea_name="MA_Slope_EA",
         initial_deposit=float(acc["initial_deposit"]),
-        contract_size=float(sym["contract_size"]),
-        volume_min=0.1,
-        volume_max=100.0,
-        volume_step=0.1,
-        stops_level=0,
-        digits=int(sym["digits"]),
-        point_size=float(sym["point_size"]),
-        leverage=float(sym["leverage"]),
+        **load_spec_fields(OANDA_JAPAN_MT5_LIVE, sym["name"]),
         ma_period=int(ea["ma_period"]),
         ma_method=ea["ma_method"],
         lot_size=float(ea["lot"]),
