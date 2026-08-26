@@ -9809,6 +9809,31 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      `SnapshotError` になり CLI が動かなくなる**。是正には「供給元にある銘柄は供給元を引き、
      無い銘柄は明示指定を要求する（既定値を置かない）」という設計裁定が要る。本件（触ってよい
      ファイルが 2 ツールに限定）の範囲外のため未着手。
+   → **`leverage` 分離の検出ゲートを先置き（2026-08-26・commit `bad4700` / `797ca86`・
+   `tdd-executor` に委譲・追加のみ／本番コード 0 バイト改変）**: 設計書 §3.4 が「段階 3 送り」と
+   した `leverage` 分離（`SymbolSpec` に口座属性が混ざる SRP 違反）について、**分離より先に
+   検出ゲートだけを置いた**。段階 0 と同じ規律である。
+   - 新設 `simulator/tests/unit/test_symbol_spec_fields_are_symbol_sourced.py`。固定する不変条件は
+     「`SymbolSpec` の全フィールドが供給元スナップショットの `symbol_info` セクションから引ける」。
+     現状 `leverage` だけが `account` 由来で違反するため `xfail(strict=True)` で固定した。分離が
+     入れば XPASS(strict) で赤に転じ、マーカー撤去を機械的に促す。
+   - **検定側にリテラルを持たない**: 対象は `dataclasses.fields(SymbolSpec)`、供給元は
+     `SPEC_FIELD_SOURCES[...].section`、**セクション名すら** `SETTLEMENT_CURRENCY_SOURCE.section`
+     から同定する（`currency_profit` は `symbol_info` のフィールドであるため）。この同定が壊れて
+     いないことも専用の緑の検定で押さえている（壊れるとゲートが空虚化するため）。
+   - **非空虚性を両方向で実測**: `--runxfail` で本物の赤（`violations == {'leverage'}`）を観測し、
+     さらに「分離後の姿」を再現して **XPASS(strict) が赤になること**まで実走で確認した。
+     「是正が入ればマーカー撤去を促す」は仮定ではない。判定は純関数 1 つに集約し、負の対照も
+     同じ関数を呼ぶ（判定を 2 度書かない）。
+   - **呼称についての是正**: 依頼時に使った「段階 3-D0 / 3-D1 / 3-D2」は設計書にも本台帳にも
+     **未記載の会話上の呼称**であった（grep 実測 0 件）。呼称だけを xfail の解消条件に書くと
+     段階 1 の前科（誤った reason を書いて撤去する羽目になった件）と同型になるため、権威
+     （設計書 §3.4）と呼称非依存の実体条件を reason に併記させた。
+   - **申し送り**: 分離を実施する際は xfail マーカーに加え `test_the_violation_is_localised_to_a_single_field`
+     も更新／撤去が要る（違反 0 件になるため）。
+   - 実測: 単体 **8 passed / 1 xfailed**（XPASS なし）。全走は本件と `contract_size` 残渣の是正を
+     合わせて **1 failed / 5342 passed / 1 skipped / 1 xfailed**（赤は既存の
+     `test_composition_root_arg_parity` 1 件＝ISSUE-427/371・無関係）。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
