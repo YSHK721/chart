@@ -1,21 +1,24 @@
-"""検出ゲート（暫定・段階 A）: テストコードに残る JP225 銘柄仕様リテラルの所在を機械が持つ。
+"""検出ゲート（段階 A で新設・段階 C で Python 側は解消）: JP225 銘柄仕様リテラルの検出。
 
 由来: ISSUE-445 RC-1。JP225 の ``contract_size`` の真値は供給元スナップショット
 ``marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`` の ``trade_contract_size``
 ＝ **1.0** である。長く書かれていた ``10`` は MT5 レポートに一度も現れない**出所の無い逆算値**。
-fixture・カタログ・本番ツール・本番 CLI は是正済みだが、**テストコードには残っている**。
 
-本ゲートは**値を直さない**。「どこに残っているか」を機械が保持する状態を作るだけである
-（段階 0 / 段階 3-D0 と同じ規律: 是正より先にゲートを置き、既知の不整合は
-``xfail(strict=True)`` で固定する。是正が入ると XPASS(strict) で赤に転じ、マーカー撤去を促す）。
+段階 A（2026-08-26）で、fixture・カタログ・本番ツール・本番 CLI が是正済みなのに
+**テストコードに残っていた 13 件**（Python 12 件＋ MT5 レポート JSON 1 件）を
+``xfail(strict=True)`` の台帳として固定した（是正より先にゲートを置く規律）。
+段階 C（2026-08-26）で Python 12 件を**供給元から引く形へ**是正し、台帳 ``_KNOWN`` は
+**空**になった。以後、本ファイルは「JP225 を名乗る誤値がどこにも無い」ことを固定し続ける
+**恒久の緑**として機能する（判定は ``test_the_ledger_agrees_with_the_scan_in_both_directions``
+が持つ）。残る ``xfail`` は JSON fixture 1 件のみで、これは別裁定（下記）。
 
 **``test_tool_symbol_specs_from_snapshot.py`` と別ファイルにした理由**:
 向こうの ``_spec_literals`` は**銘柄を問わない**走査（銘柄仕様 8 キーへの数値リテラルを
 すべて挙げる）である。テストコードに向けると EURUSD 相当（``contract_size=100000.0``）や
 合成仕様（``1.0``）まで挙がり、ISSUE-445 の残渣と区別できない。本ファイルの判定は
 **JP225 を名乗る組み立てに限定**した別問いであり、共有できるロジックが無い（複製ではない）。
-加えて向こうは本番コードの**恒久**不変条件で全件緑、こちらは残渣が消えたら**ファイルごと
-削除する暫定ゲート**であり、寿命が違う。
+加えて向こうは本番コードの**恒久**不変条件で全件緑、こちらは JP225 のテストコード側の
+残渣を対象とする別の走査であり、対象範囲が違う。
 
 **走査対象を人が列挙しない**: 対象は ``git ls-files '*.py'``（tracked 全件）＋ MT5 レポート
 JSON 1 件であり、そこから機械が違反を**発見**する。人が書いた一覧を検査する形にすると、
@@ -26,13 +29,16 @@ JSON 1 件であり、そこから機械が違反を**発見**する。人が書
 固定する不変条件:
 
     1. tracked なソースのうち、JP225 を名乗る銘柄仕様の組み立てに供給元と食い違う
-       ``contract_size`` リテラルを持つものが 1 つも無い。現状は違反するため既知分を
-       ``xfail(strict=True)`` で固定する（``_KNOWN`` が実測の台帳）。
-    2. 台帳にも除外にも無いファイルが新たに違反を持ち込まない（**こちらは緑**）。
+       ``contract_size`` リテラルを持つものが、**既知の台帳 ``_KNOWN``（段階 C 以降は空）と
+       明示除外 ``_EXCLUDED_BY_INTENT`` の外に 1 つも無い**（両方向一致・**恒久の緑**）。
+       左が増える＝新規混入、左が減る＝是正済みで台帳から外す合図。どちらも赤にする。
+    2. その台帳が**走査結果から導出されていない**（AST で施行）。導出形に戻すと新規混入が
+       自動吸収されて検定が空虚になる。
     3. 判定関数が、JP225 を名乗らない組み立て（負の対照・合成データ）を検出しない。
        ``_MUST_NOT_DETECT`` の**実ソースを食わせて** 0 件で示す（一覧に入れていない、
        ではなく検出しないことを実証する）。
     4. 判定関数が、是正後の姿（供給元から引く形／リテラル不在）を検出しない。
+    5. MT5 レポート JSON 1 件は**別裁定**として ``xfail(strict=True)`` のまま残す（下記）。
 
 判定は ``_disagreeing_with_the_snapshot`` 1 つに集約し、AST 走査・JSON 走査・負の対照が
 同じ関数を呼ぶ（判定を 2 度書かない）。
@@ -280,52 +286,41 @@ _EXCLUDED_BY_INTENT = {
     ),
 }
 
-#: 既知の違反＝**所在の台帳**（値の期待値ではない）。実測 2026-08-26・tracked 全件走査。
-#: 段階 A ではここを ``xfail(strict=True)`` で固定するだけで、値は 1 つも直さない。
+#: 既知の違反＝**所在の台帳**（値の期待値ではない）。
 #:
-#: **走査結果から導出してはならない**。導出すると新しい違反ファイルが collection 時に
-#: 自動で台帳へ入って赤にならずに吸収される（＝ISSUE-445 の失敗モードの再生産）。
-#: 人が書き下し、走査結果との一致を検定で見る。この規律自体を
+#: **段階 C（2026-08-26）で空になった**。段階 A が載せていた Python 12 件は、いずれも
+#: ``**load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")`` で供給元から引く形へ是正され、
+#: 走査に掛からなくなった（外し忘れは XPASS(strict) で赤になる仕組みだったため、
+#: 外すこと自体が是正の完了条件でもある）。以後この空の台帳と
+#: ``test_the_ledger_agrees_with_the_scan_in_both_directions`` の組が、
+#: 「JP225 を名乗る誤値は明示除外の 1 件を除いてどこにも無い」を**恒久の緑**で固定する。
+#: 段階 A が載せていた 12 件（是正済み・履歴として残す。再発時はここへ書き戻すのではなく
+#: 是正すること）:
+#:     sim_ui/tests/unit/test_run_options_api_controller.py
+#:     sim_ui/tests/unit/test_symbol_spec_catalog.py
+#:     tests/integration/test_composition_ma_slope.py
+#:     tests/integration/test_ea_factory_selection_rule.py
+#:     tests/integration/test_ea_indicator_series_accessor.py
+#:     tests/integration/test_is_oos_stop_probe.py
+#:     tests/integration/test_marketdata_window_mt5_path.py
+#:     tests/integration/test_optimize_sp1_degenerate.py
+#:     tests/integration/test_walk_forward_integration.py
+#:     tests/unit/test_ea_factory_registry.py（`_mt5_kwargs` のみ）
+#:     tests/unit/test_is_oos_barmode_index.py
+#:     tests/unit/test_run_backtest.py（`_jp225_spec()`）
+#:
+#: **走査結果から導出してはならない**（空になっても同じ）。導出すると新しい違反ファイルが
+#: collection 時に自動で台帳へ入って赤にならずに吸収される（＝ISSUE-445 の失敗モードの
+#: 再生産）。人が書き下し、走査結果との一致を検定で見る。この規律自体を
 #: ``test_the_ledger_is_written_down_and_not_derived_from_the_scan`` が AST で固定する。
-#: 是正が済んだ行はここから外す（外し忘れは XPASS(strict) で赤になる）。
-_KNOWN = (
-    # 先行調査の手作業一覧から漏れていた 2 件（tracked 全件走査で発見・2026-08-26）。
-    "simulator/sim_ui/tests/unit/test_run_options_api_controller.py",
-    "simulator/sim_ui/tests/unit/test_symbol_spec_catalog.py",
-    "simulator/tests/integration/test_composition_ma_slope.py",
-    "simulator/tests/integration/test_ea_factory_selection_rule.py",
-    "simulator/tests/integration/test_ea_indicator_series_accessor.py",
-    "simulator/tests/integration/test_is_oos_stop_probe.py",
-    "simulator/tests/integration/test_marketdata_window_mt5_path.py",
-    "simulator/tests/integration/test_optimize_sp1_degenerate.py",
-    "simulator/tests/integration/test_walk_forward_integration.py",
-    # `_mt5_kwargs` のみ。同ファイルの `_comma_kwargs` は JP225 を名乗るが
-    # contract_size=1.0＝真値であり対象外（判定は「食い違うこと」で行う）。
-    "simulator/tests/unit/test_ea_factory_registry.py",
-    "simulator/tests/unit/test_is_oos_barmode_index.py",
-    # `_jp225_spec()`。symbol= を持たず**関数名**だけが JP225 を名乗る形。
-    "simulator/tests/unit/test_run_backtest.py",
-)
+_KNOWN = ()
 
 
 def _clears() -> str:
     return (
-        "解消条件: 当該 JP225 仕様の組み立てが供給元"
-        " load_spec_fields(OANDA_JAPAN_MT5_LIVE, 'JP225') 由来の値へ置換されたとき。"
-        "そのとき本検定は XPASS(strict) で赤に転じるので、xfail マーカーごと当該行を"
-        "台帳から外すこと。"
-    )
-
-
-def _pin(rel: str):
-    hits = _FOUND.get(rel, ())
-    return pytest.param(
-        rel,
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason=f"ISSUE-445 段階 A の既知違反 {rel}: {'; '.join(hits)}。{_clears()}",
-        ),
-        id=rel,
+        "解消条件: 当該 JP225 仕様の値が供給元"
+        " load_spec_fields(OANDA_JAPAN_MT5_LIVE, 'JP225') と一致したとき。"
+        "そのとき本検定は XPASS(strict) で赤に転じるので、xfail マーカーごと撤去すること。"
     )
 
 
@@ -348,6 +343,10 @@ def test_the_ledger_is_written_down_and_not_derived_from_the_scan():
     それは ISSUE-445 の失敗モード（誤りが 2 か月誰にも気付かれない）そのものである。
     台帳は人が書き下し、走査結果との**一致**を検定で見る——この向きでないと
     「新規混入を捕まえる」検定が構造的に空虚になる。
+
+    段階 C で台帳は**空のタプル**になったが、本検定の趣旨は変わらない。空であることと
+    導出であることは別であり、``_KNOWN = tuple(...)`` / ``set(_FOUND) - ...`` はいずれも
+    ``ast.Tuple`` ではないためここで赤になる（実測で確認）。
     """
     module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
     assigned = [
@@ -361,16 +360,20 @@ def test_the_ledger_is_written_down_and_not_derived_from_the_scan():
     assert len(assigned) == 1, "_KNOWN の代入が 1 つでない"
     value = assigned[0]
     assert isinstance(value, ast.Tuple), "_KNOWN は tuple リテラルでなければならない"
-    assert value.elts and all(
+    assert all(
         isinstance(e, ast.Constant) and isinstance(e.value, str) for e in value.elts
     ), "_KNOWN の要素は文字列リテラルでなければならない（式で導出しない）"
 
 
 def test_the_ledger_agrees_with_the_scan_in_both_directions():
-    """台帳と走査結果が**完全一致**すること。
+    """台帳と走査結果が**完全一致**すること（段階 C 以降はこれが**恒久の緑**）。
 
     片側包含では足りない。左が増える＝新規混入（台帳に足す前に赤で気付く）、
     左が減る＝是正済み（台帳から外す合図）。どちらも赤にする。
+
+    段階 C で ``_KNOWN`` が空になったため、本検定は
+    「tracked な Python のうち JP225 を名乗る誤値を持つのは ``_EXCLUDED_BY_INTENT`` の
+    1 件だけ」＝**是正した 12 件が是正済みのままであること**を固定し続ける。
     """
     assert set(_FOUND) == set(_KNOWN) | set(_EXCLUDED_BY_INTENT), (
         "台帳と走査結果が食い違う。\n"
@@ -391,26 +394,26 @@ def test_the_excluded_source_is_actually_detected_by_the_scanner():
         assert _FOUND.get(rel), f"{rel} は走査に掛からない。除外の記述が古い。"
 
 
-# --- 2. 既知違反の固定（値は直さない・所在だけ持つ）--------------------------------------
-
-
-@pytest.mark.parametrize("rel", [_pin(rel) for rel in _KNOWN])
-def test_tracked_source_holds_no_jp225_spec_literals(rel):
-    hits = _FOUND.get(rel, [])
-    assert hits == [], (
-        f"{rel} に JP225 を名乗る銘柄仕様リテラルが残っている:\n  "
-        + "\n  ".join(hits)
-        + f"\n真値は供給元 {OANDA_JAPAN_MT5_LIVE}/{_SYMBOL}.json: {_TRUTH}"
-    )
+# --- 2. 既知違反の固定（Python 側は段階 C で空・残るは JSON fixture 1 件）-----------------
+#
+# 段階 A の ``test_tracked_source_holds_no_jp225_spec_literals``（``_KNOWN`` を
+# ``xfail(strict=True)`` で 1 件ずつ固定する parametrize）は、段階 C で ``_KNOWN`` が
+# 空になったため撤去した。同じ判定は
+# ``test_the_ledger_agrees_with_the_scan_in_both_directions`` が**両方向**で持っており
+# （空の台帳＋明示除外 1 件 == 走査結果）、2 つ置くと判定の二重記述になる。
 
 
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        f"ISSUE-445 段階 A の既知違反 {_REPORT_JSON}: {'; '.join(_FOUND_JSON)}。"
+        f"ISSUE-445 段階 A の既知違反（段階 C の範囲外・**別裁定**）{_REPORT_JSON}: "
+        f"{'; '.join(_FOUND_JSON)}。"
         "この fixture の deals[] には vol フィールドが無く、単独では実約定 volume を"
         "確定できない（証明できるのは積 lot × contract_size = 0.1 × 10 = 1.0 のみ）。"
-        "是正は lot と contract_size を**対で**動かす必要がある。" + _clears()
+        "是正は lot と contract_size を**対で**動かす必要がある。さらに本ケースは "
+        "case.yaml を持たない不完全ケースで tracked なテストからの参照が 0 件であり、"
+        "MT5 レポートを写した golden fixture としてテストコードの定数とは性質が違う。"
+        + _clears()
     ),
 )
 def test_report_json_holds_no_jp225_spec_literals():

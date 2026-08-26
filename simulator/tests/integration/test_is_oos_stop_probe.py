@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.main import build_interactor
 from simulator.tools.run_is_oos_cli import make_run_segment, normalize_time
 from simulator.usecase.run_is_oos import RunIsOosRequest, run_is_oos
@@ -46,14 +47,9 @@ def _stop_probe_kwargs(csv_path: Path) -> dict:
         period="M1",
         ea_name="StopEntryProbe_EA",
         initial_deposit=10_000.0,
-        contract_size=10.0,
-        volume_min=0.01,
-        volume_max=100.0,
-        volume_step=0.01,
-        stops_level=0,
-        digits=1,
-        point_size=0.1,
-        leverage=10.0,
+        # 銘柄仕様 8 キーは供給元スナップショットだけを権威とする（ISSUE-445 段階 C）。
+        # ここにリテラルを書かない＝人が値を選べない。
+        **load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"),
         ma_period=60,
         ma_method="ema",
         lot_size=0.1,
@@ -109,10 +105,11 @@ def test_is_oos_stop_probe_reproduces_precedent_and_no_data_mutation(tmp_path):
 
     # Assert: 先例 bit-exact（reconcile_is.py / reconcile.py の固定値）
     #
-    # ⚠ ISSUE-445 段階 B: 以下 4 行は**是正で動かない**ピンである（実測 2026-08-26）。
-    # `_stop_probe_kwargs` の銘柄仕様 5 項目を供給元へ**対で**寄せると `volume_min` が
+    # ⚠ ISSUE-445 段階 B/C: 以下 4 行は**是正で動かない**ピンである（実測 2026-08-26）。
+    # 段階 C で `_stop_probe_kwargs` の銘柄仕様を供給元へ**対で**寄せた結果 `volume_min` が
     # 0.01 → 1.0 になり `NormalizeLot` が lot を持ち上げるため、積 `lot × contract_size`
-    # は 0.1 × 10.0 = 1.0 × 1.0 で不変になり、この 4 値は 1 ビットも動かない（実走で確認）。
+    # は 0.1 × 10.0 = 1.0 × 1.0 で不変になり、この 4 値は 1 ビットも動かなかった（実走で確認）。
+    # 下記は**是正前に測った値のまま**である。
     # 一方 `contract_size` だけを寄せると profit +11370 → **+1137**・OOS trades 2438 →
     # **4877** に壊れる。赤になったら**期待値を書き換えず**、是正が片側だけになって
     # いないかを疑うこと。

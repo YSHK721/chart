@@ -17,6 +17,7 @@ import numpy as np
 
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.domain.bar import Bar
 from simulator.domain.exceptions import MarginCallError
 from simulator.domain.order import Order
@@ -389,7 +390,7 @@ def _config_open_fill():
     )
 
 
-# --- ISSUE-445 段階 B: `_jp225_spec()` を使う 4 検定の損益ピン ------------------------
+# --- ISSUE-445 段階 B/C: `_jp225_spec()` を使う 4 検定の損益ピン ----------------------
 #
 # なぜ要るか（実測 2026-08-26）: 下の 4 検定は `entry_price` / `exit_price` しか見ておらず、
 # **約定価格は `contract_size` に依存しない**。そのため `_jp225_spec()` の `contract_size` を
@@ -397,39 +398,33 @@ def _config_open_fill():
 # `(exit - entry) × sign × volume × contract_size`（`domain/trade_record.py:62-73`）であり、
 # ここだけが銘柄仕様の誤りに反応する。
 #
-# **段階 C で「更新が要る」ピンである（不変ピンではない）**:
+# **これは「更新が要る」ピンだった（不変ピンではない）**:
 #   本モジュールの `Order(volume=1.0)` は**テストが直接書いた数**であり、`lot_size` →
 #   `NormalizeLot` → `volume_min` の経路を通らない。したがって ISSUE-445 の「2 つの誤りの
 #   相殺」（積 `lot × contract_size` が保存される関係）は**ここでは成立しない**。
 #   実測: `contract_size` だけ 1.0 にしても、銘柄仕様 5 項目を対で真値へ寄せても、
-#   pnl はどちらも 1/10（280.0 → 28.0）になり**同じ値**になる。
-#   ⇒ このピンは是正の**失敗と成功を区別しない**。赤になったら期待値を 1/10 へ更新して
-#     よいが、「更新したから正しい」とは言えない。対で是正できたかの判定は
+#   pnl はどちらも 1/10（280.0 → 28.0）になり**同じ値**になった。
+#   ⇒ このピンは是正の**失敗と成功を区別しない**。段階 C の是正で下記のとおり 1/10 へ
+#     更新したが、「更新したから正しい」とは言えない。対で是正できたかの判定は
 #     `simulator/tests/unit/test_is_oos_barmode_index.py` の不変ピンで行うこと。
-_JP225_BUY_OPEN_SPREAD_PNL = 280.0   # (39440 - 39412) × 1.0 × 10.0
-_JP225_SELL_OPEN_BID_PNL = -480.0    # (39450 - 39402) × -1 × 1.0 × 10.0
-_JP225_DEFAULT_CLOSE_PNL = 100.0     # (39450 - 39440) × 1.0 × 10.0
+#   段階 C の更新の導出（`contract_size` 10.0 → 供給元の真値 1.0・volume は 1.0 のまま）と、
+#   **約定価格 39412.0 / 39402.0 / 39440.0 / 39450.0 が是正前後で不変**であることは
+#   下の各検定の `entry_price` / `exit_price` の assert が同じ実行で固定している。
+#   旧ピン（退行との識別用）: 280.0 / -480.0 / 100.0。
+_JP225_BUY_OPEN_SPREAD_PNL = 28.0    # (39440 - 39412) × 1.0 × 1.0
+_JP225_SELL_OPEN_BID_PNL = -48.0     # (39450 - 39402) × -1 × 1.0 × 1.0
+_JP225_DEFAULT_CLOSE_PNL = 10.0      # (39450 - 39440) × 1.0 × 1.0
 
 
 def _jp225_spec():
-    """JP225 相当（point_size=0.1・contract=10・leverage=10）。
+    """JP225（銘柄仕様 8 項目は供給元スナップショットだけを権威とする）。
 
-    ⚠ ISSUE-445: ここの `contract_size=10.0` / `volume_min=0.01` / `volume_max=100.0` /
-    `volume_step=0.01` / `stops_level=0` は供給元スナップショット
-    （`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`＝1.0 / 1.0 / 10000.0 /
-    1.0 / 5）と食い違う。是正は段階 C の対象であり、そのとき上記 `_JP225_*_PNL` の
-    更新が要る（理由と限界は直上の注記を参照）。
+    ISSUE-445 段階 C: 段階 B までは `contract_size=10.0` / `volume_min=0.01` /
+    `volume_max=100.0` / `volume_step=0.01` / `stops_level=0` を人が書いており、
+    供給元（`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`＝1.0 / 1.0 /
+    10000.0 / 1.0 / 5）と食い違っていた。ここにリテラルを書かない＝人が値を選べない。
     """
-    return SymbolSpec(
-        contract_size=10.0,
-        volume_min=0.01,
-        volume_max=100.0,
-        volume_step=0.01,
-        stops_level=0,
-        digits=1,
-        point_size=0.1,
-        leverage=10.0,
-    )
+    return SymbolSpec(**load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"))
 
 
 class TestConfigDrivenSpreadOpenFill:

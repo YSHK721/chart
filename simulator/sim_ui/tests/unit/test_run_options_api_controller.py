@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.sim_ui.adapter.run_options_api_controller import RunOptionsApiController
 from simulator.sim_ui.usecase.list_run_options import ListRunOptionsInteractor
 from simulator.sim_ui.usecase.run_options_ports import RunOptionsPort, RunProfile
@@ -17,10 +18,11 @@ def _profile(dataset="jp225_m1"):
     # settlement_currency は既定値を持たない必須フィールド（N-11 の判定データ源・D-10 同型の
     # Fail-Stop）。本検定は「翻訳が値を素通しするか」だけを見るため、権威値の出典突合は
     # integration/test_run_options_mt5_gate.py が fixture 直参照で担う（値の二重記述をしない）。
+    # 銘柄仕様 8 項目は供給元スナップショットだけを権威とする（ISSUE-445 段階 C）。
+    # ここにリテラルを書かない＝人が値を選べない。
     return RunProfile(
         dataset=dataset, data_path="/x/jp225_m1.csv", symbol="JP225", period="M1",
-        contract_size=10.0, digits=1, point_size=0.1, leverage=10.0,
-        volume_min=0.01, volume_max=100.0, volume_step=0.01, stops_level=0,
+        **load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"),
         settlement_currency="JPY",
     )
 
@@ -52,13 +54,14 @@ def test_controller_returns_200_with_datasets_and_ea_names():
     assert resp.payload["ok"] is True
     assert resp.payload["ea_names"] == ["A_EA", "TC24051901"]
     assert resp.payload["datasets"][0]["symbol"] == "JP225"
-    # ⚠ ISSUE-445 段階 B: この 10.0 は `_profile()` に書いた値の**写し**であり、
+    # ⚠ ISSUE-445 段階 C: ここは `_profile()` が持つ値の**写し**であり、
     # 「翻訳が値を素通しするか」だけを見ている（権威との突合は
     # `sim_ui/tests/integration/test_run_options_mt5_gate.py` が持つ）。
-    # よって段階 C で `_profile()` を供給元へ寄せたら、この行も**更新が要る**
-    # （実測 2026-08-26: `contract_size` だけ寄せても 5 項目を対で寄せてもここが赤になる）。
-    # 更新して緑に戻せるピンなので、「緑になった」ことは是正が正しい証拠にならない。
-    assert resp.payload["datasets"][0]["contract_size"] == 10.0
+    # 段階 B まではここに `10.0` を人が書いており、`_profile()` を供給元へ寄せると
+    # 赤に転じる**更新が要るピン**だった。段階 C で `_profile()` と同じ供給元から引く形に
+    # 改めたので、人が数字を書き換えて緑に戻す余地は無くなった。
+    # ただし依然として「素通し」の検定であり、緑は銘柄仕様の正しさの証拠にならない。
+    assert resp.payload["datasets"][0]["contract_size"] == _profile().contract_size
     assert resp.payload["datasets"][0]["dataset"] == "jp225_m1"
 
 

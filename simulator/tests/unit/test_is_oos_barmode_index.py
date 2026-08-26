@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.main import build_interactor
 from simulator.tools.run_is_oos_cli import make_run_segment, normalize_time
 from simulator.usecase.run_is_oos import RunIsOosRequest, run_is_oos, slice_is_bars
@@ -52,14 +53,11 @@ def _kwargs(csv_path: Path) -> dict:
         period="M1",
         ea_name="MA_Slope_EA",
         initial_deposit=10_000.0,
-        contract_size=10.0,
-        volume_min=0.1,
-        volume_max=100.0,
-        volume_step=0.1,
-        stops_level=0,
-        digits=1,
-        point_size=0.1,
-        leverage=10.0,
+        # 銘柄仕様 8 キーは供給元スナップショットだけを権威とする（ISSUE-445 段階 C）。
+        # ここにリテラルを書かない＝人が値を選べない。下の不変ピン
+        # （`test_the_symbol_spec_reaches_the_is_and_oos_numbers`）は、この是正で
+        # **1 ビットも動かない**ことを固定している（積 lot × contract_size が保存される）。
+        **load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"),
         ma_period=20,
         ma_method="ema",
         lot_size=0.1,
@@ -71,7 +69,7 @@ def _kwargs(csv_path: Path) -> dict:
     )
 
 
-# --- ISSUE-445 段階 B: 銘柄仕様の是正の失敗を検出する数値ピン --------------------------
+# --- ISSUE-445 段階 B/C: 銘柄仕様の是正の失敗を検出する数値ピン ------------------------
 #
 # なぜ要るか（実測 2026-08-26）: 本モジュールの既存 assert は `trades > 0` と
 # **同一パラメータ同士の** `asdict` 比較しかなく、上の `_kwargs()` の銘柄仕様が壊れても
@@ -80,14 +78,14 @@ def _kwargs(csv_path: Path) -> dict:
 # （`BacktestStats` 39 列のうち 19 列が動く）。ISSUE-445 の失敗モードは
 # 「2 つの誤りの相殺」であり、件数だけを見るピンでは原理的に捕まらない。
 #
-# **段階 C で「不変であるべき」ピンである（値を書き換えて緑に戻してはならない）**:
-#   損益に効くのは積 `lot × contract_size` であり、現行は 0.1 × 10.0 = 1.0。
-#   `_kwargs()` を供給元 `load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` へ**対で**
-#   寄せると `volume_min` が 0.1 → 1.0 になり `NormalizeLot` が lot を 1.0 へ持ち上げる
-#   ため、積は 1.0 × 1.0 = 1.0 のまま不変になる。実測（銘柄仕様 5 項目
-#   contract_size / volume_min / volume_max / volume_step / stops_level を一括で真値へ
-#   寄せた変異）では `asdict(is_stats)` 39 列が現行と**完全一致**し、下記 sha256 も同値だった。
-#   したがって是正でこのピンが赤に転じたら、それは**是正の失敗**（片側だけ動かした・
+# **これは「不変であるべき」ピンである（値を書き換えて緑に戻してはならない）**:
+#   損益に効くのは積 `lot × contract_size`。段階 B までは 0.1 × 10.0 = 1.0 であり、
+#   段階 C で `_kwargs()` を供給元 `load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` へ
+#   **対で**寄せた結果 `volume_min` が 0.1 → 1.0 になり `NormalizeLot` が lot を 1.0 へ
+#   持ち上げるため、積は 1.0 × 1.0 = 1.0 のまま不変である。実測（段階 B の PAIR 変異・
+#   段階 C の実是正の双方）で `asdict(is_stats)` 39 列が段階 A 以前と**完全一致**し、
+#   下記 sha256 も同値だった。下記の値は**是正前に測ったもののまま**である。
+#   したがって今後このピンが赤に転じたら、それは**是正の失敗**（片側だけ動かした・
 #   lot の解決を忘れた等）である。期待値の更新ではなく是正内容を疑うこと。
 _IS_TRADES = 4
 _IS_PROFIT = -156.29999999999563
