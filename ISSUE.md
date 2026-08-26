@@ -10166,6 +10166,103 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      test_no_test_only_precondition_without_production_form` 1 件（ISSUE-427/371・無関係）。
      xfail 13 件は**そのまま xfail**（値を 1 つも変えていないため XPASS は出ない）。
 
+9. **段階 C（2026-08-26）— テストコード 12 件を供給元から引く形へ是正した**（commit `cfed973`）:
+   段階 A の台帳のうち Python 12 件を是正した。本番コードは 0 バイト改変。
+
+   - **是正の形（数値を書き直さない）**: `contract_size=10.0` を `1.0` に書き換えるだけでは
+     「人が値を書ける構造」（RC-1 そのもの）が残るため、**リテラルを撤去**して
+     `**load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` へ置換した（8 キー一括）。
+     `SymbolSpec` を返す `_jp225_spec()` は `SymbolSpec(**load_spec_fields(...))`、
+     `RunProfile` を組む 2 件も同じ形。
+   - **共通ヘルパを作らなかった判断とその理由**: 既存の先例
+     （`tests/integration/test_ma_slope_reconcile.py:95` / `test_run_backtest_fingerprint.py:97` /
+     `tools/symbol_spec_args.py:213` / `report_ui/tools/export_report_payload.py:54` /
+     `tools/export_trade_markers.py:143` / `sim_ui/adapter/symbol_spec_catalog.py`）は
+     いずれも `load_spec_fields` を**直に呼ぶ**。ここで `jp225_spec()` のようなテスト用
+     ヘルパを新設すると、**同一概念に 2 つ目の呼び名**ができて既存 6 か所と食い違う
+     （「同じことを別の書き方で書く」ことになる）。値の単一ソースは
+     `load_spec_fields`／スナップショットであり、各呼び出しはその**参照**であって
+     値の複製ではない（複製禁止が防ごうとしている「取り残し」は原理的に起きない）。
+     よって既存の作法に揃え、語彙を増やさなかった。
+   - **差分が意図どおりであることの機械的実証**（緑を根拠にできない (3) 分類の 6 件を含む
+     全 12 件）: HEAD と作業ツリーの AST を突き合わせ、JP225 を名乗る各 Call について
+     (a) **銘柄仕様以外の kwargs が AST 完全一致**、(b) 銘柄仕様 8 リテラルが 0 件、
+     (c) `**` 展開が 1 個追加、を全件で確認した（異常 0 件）。段階 B が「(3) ピンを足す
+     意味がない」と分類した 6 件（`test_symbol_spec_catalog` / `test_composition_ma_slope` /
+     `test_ea_factory_selection_rule` / `test_ea_indicator_series_accessor` /
+     `test_marketdata_window_mt5_path` / `test_ea_factory_registry`）は緑が正しさの証拠に
+     ならないため、この AST 突合が根拠である。**注記**: 段階 B の「(3) 7 件」の 13 番目は
+     JSON fixture であり段階 C の範囲外。Python は 6 件。
+   - **不変ピンは 1 つも動かなかった（実測・値は是正前のまま）**:
+     - `test_is_oos_stop_probe.py` / `test_optimize_sp1_degenerate.py` /
+       `test_walk_forward_integration.py`: IS `trades=5224` / `profit=11370.0`、
+       OOS `trades=2438` / `profit=-4020.0`（3 ファイル 5 検定・51.15s・全緑）。
+     - `test_is_oos_barmode_index.py`: IS `trades=4` / `profit=-156.29999999999563` /
+       `balance_min=9843.700000000004`、OOS `trades=2` / `profit=-91.0`、
+       `asdict(BacktestStats)` 全 39 列の sha256
+       `aa15b2c4a01f7234745a524330cbdd29b6ca9e93e97654c1e26ae8b53d4ff418`。
+     - MT5 突合の要（本件で 1 バイトも触っていない）: `test_ma_slope_reconcile.py`
+       `trades=1164` / `net=-6173.9` / MT5 `1163` / `-6169.0`、
+       `test_run_backtest_fingerprint.py` の A/B 指紋（`_B_TRADE_COUNT=1164` /
+       `_B_STATS_SHA256=767255e…f520` / `_B_TRADES_SHA256=a2535a0…8353`）— 21 検定全緑。
+     `git diff` 上、これら 4 ファイルの期待値行は 1 行も変更されていない。
+   - **更新したピンとその導出**（`test_run_backtest.py` の 3 定数のみ）: 同モジュールは
+     `Order(volume=1.0)` を**テストが直接構築**し `lot_size → NormalizeLot → volume_min` を
+     通らないため「2 つの誤りの相殺」が成立しない。`pnl = (exit-entry) × sign × volume ×
+     contract_size` で `contract_size` が 10.0 → 供給元の真値 1.0 になり、`volume` は 1.0 の
+     まま（真値の `volume_min=1.0` / `volume_step=1.0` に対しても妥当）なので **1/10**:
+     `_JP225_BUY_OPEN_SPREAD_PNL` 280.0 → **28.0**（(39440-39412)×1.0×1.0）／
+     `_JP225_SELL_OPEN_BID_PNL` -480.0 → **-48.0**（(39450-39402)×-1×1.0×1.0）／
+     `_JP225_DEFAULT_CLOSE_PNL` 100.0 → **10.0**（(39450-39440)×1.0×1.0）。
+     **約定価格は不変**（実測・是正後に実走）: buy `entry=39412.0 / exit=39440.0`、
+     sell `entry=39402.0 / exit=39450.0`、既定 close `entry=39440.0 / exit=39450.0`。
+     このピンは CS_ONLY と PAIR を区別しないため、**更新は正しさの証拠にならない**
+     （対で是正できたかの判定は `test_is_oos_barmode_index.py` の不変ピンが持つ）。
+     `test_run_options_api_controller.py` の写しピンは `== 10.0` を
+     `== _profile().contract_size` に改め、人が数字を書き換えて緑に戻す余地を消した。
+   - **検出ゲートの更新**: 台帳 `_KNOWN` を**空のタプル**にし、XPASS(strict) に転じた
+     parametrize `test_tracked_source_holds_no_jp225_spec_literals` を撤去した（同じ判定を
+     `test_the_ledger_agrees_with_the_scan_in_both_directions` が両方向で持っており、
+     2 つ置くと判定の二重記述になる）。`_KNOWN` が空になったことに伴い
+     `test_the_ledger_is_written_down_and_not_derived_from_the_scan` の
+     `assert value.elts and all(...)` を `assert all(...)` にした（tuple リテラル要件は維持。
+     空であることと導出であることは別）。JSON fixture 1 件は**別裁定**として xfail のまま。
+   - **ゲートの非空虚性を 3 変異で実測**（いずれも Edit で復元し 18 passed / 1 xfailed を再確認）:
+     (a) 是正済みファイルへ `contract_size=10.0` を書き戻す → `…agrees_with_the_scan…` が
+     **1 failed**（「走査にあって台帳・除外に無い（新規混入）」）。
+     (b) `_KNOWN = tuple(sorted(set(_FOUND) - set(_EXCLUDED_BY_INTENT)))` と導出形に戻す →
+     `…not_derived_from_the_scan` が **1 failed**（`isinstance(<ast.Call>, ast.Tuple)` が False）。
+     (c) 是正済みファイル名を `_KNOWN` に残す → `…agrees_with_the_scan…` が **1 failed**
+     （「台帳にあって走査に無い」）。⇒ 空の台帳でも検定は空虚になっていない。
+   - **実測（全走）**: `python -m pytest simulator marketdata tools -q -p no:randomly` =
+     **2 failed / 5395 passed / 1 skipped / 2 xfailed**（着手前ベースラインは同一コマンドで
+     **1 failed / 5396 passed / 1 skipped / 14 xfailed** を実測）。
+     xfail 14 → 2 は本件の 12 件が消えた分と一致（残り 2 = JSON fixture 1 件＋本件と無関係の 1 件）。
+     passed -1 は**新たな赤 1 件**（下記）に対応する。既存の赤
+     `tools/tests/test_composition_root_arg_parity.py::
+     test_no_test_only_precondition_without_production_form` は ISSUE-427/371・無関係。
+
+   - **⚠ 未解決（承認待ち・段階 C の作業範囲外のため未着手）— 新たな赤 1 件**:
+     `simulator/tests/unit/test_ma_slope_normalize_lot.py::
+     test_build_interactor_supplies_volume_spec_to_strategy_params` が
+     `assert request.config["volume_min"] == pytest.approx(0.1)` で **1.0 != 0.1** となり赤。
+     - **原因**: 当該検定は `simulator/tests/unit/test_ea_factory_registry.py` の
+       `_mt5_kwargs` を**別ファイルから import して**使い、その 0.1 / 100.0 / 0.1 を
+       期待値として**書き写して**いる（`test_run_options_api_controller.py` の写しピンと
+       同型だが、**所在が別ファイル**）。検出ゲートは「組み立ての Call kwargs」を走査する
+       ため assert のリテラルには掛からず、段階 A の台帳（13 件）にも段階 B の 3 分類表にも
+       現れなかった。段階 B の PAIR 変異は**当該 12 ファイルだけ**を実走したため、
+       この横断消費者は一度も踏まれていない。**段階 A/B の前提の穴**である。
+     - **抜本策（未実施・要承認）**: 期待値を書き写す形をやめ、同じ権威と突き合わせる
+       （検定の趣旨「Composition Root が銘柄仕様を strategy_params へ供給しているか」は
+       むしろ強くなる）。実測で成立を確認済み — 是正後の
+       `request.config` は `volume_min=1.0` / `volume_max=10000.0` / `volume_step=1.0` で
+       `load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` と**3 キーとも一致**する。
+     - **横断消費者はこの 1 件のみ**（tracked 全件 grep 実測: 是正した 12 ファイルを
+       import しているのはこの 1 行だけ）。
+     - **申し送り**: 検出ゲートは「組み立て側」しか見ない。**期待値側に書き写された
+       銘柄仕様**は原理的に検出範囲外であり、この穴は本件の是正では塞がっていない。
+
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
   `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
