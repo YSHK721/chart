@@ -10204,7 +10204,7 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      - MT5 突合の要（本件で 1 バイトも触っていない）: `test_ma_slope_reconcile.py`
        `trades=1164` / `net=-6173.9` / MT5 `1163` / `-6169.0`、
        `test_run_backtest_fingerprint.py` の A/B 指紋（`_B_TRADE_COUNT=1164` /
-       `_B_STATS_SHA256=767255e…f520` / `_B_TRADES_SHA256=a2535a0…8353`）— 21 検定全緑。
+       `_B_STATS_SHA256=767255a…f520` / `_B_TRADES_SHA256=a2535a0…8353`）— 21 検定全緑。
      `git diff` 上、これら 4 ファイルの期待値行は 1 行も変更されていない。
    - **更新したピンとその導出**（`test_run_backtest.py` の 3 定数のみ）: 同モジュールは
      `Order(volume=1.0)` を**テストが直接構築**し `lot_size → NormalizeLot → volume_min` を
