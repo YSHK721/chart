@@ -9914,6 +9914,66 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
    - **申し送り 2**: `.doc/ISOOS_SIMPLE_SPLIT_DETAILED_DESIGN.md:292` の引数表は
      `--contract-size` を「build_interactor へそのまま透過」と説明しており、供給元解決を経る
      現在の実体と食い違う（変更範囲外のため未是正）。
+   → **`--lot-size` の既定値も供給元由来にした（2026-08-26・commit `e5fd47f`・依頼者裁定・
+   `tdd-executor` に委譲）**: 直上の申し送り 1（素通し戦略の lot）と申し送り 2（設計書の引数表）を
+   解消した。CLI に唯一残っていた「人が書いた数」＝`--lot-size 0.1` を撤去し、未指定なら
+   **解決済み銘柄仕様の `volume_min`**（供給元由来の最小発注単位）から引く。
+   - **裁定の根拠（既存の前例に揃える）**: `export_trade_markers` は `b440a9d` で
+     `lot_size=spec["volume_min"]` を採用済みであり、理由は「人が選んだ数ではなく**原典 EA の
+     `NormalizeLot(0.1)` の戻り値と同値**」。`volume_min` は人が書いた値ではなく供給元（MT5 端末）
+     由来であるため、これを既定にすることは RC-1（人が書いた既定値が権威になる）に当たらない。
+   - **戦略によって挙動が割れていた（実測・再現し直した）**: 素通し戦略 `TC24051901`（原典 `.mq5`
+     を持たず `NormalizeLot` 相当が無い）は既定 0.1 で `InvalidPriceError: volume が
+     [volume_min, volume_max] 範囲外`。`--lot-size 1.0` なら `rc=0`、`--lot-size 1.5` は
+     `volume が volume_step の倍数でない`。一方 `NormalizeLot` 移植済みの EA
+     （`StopEntryProbe_EA` / `MA_Slope_EA`）は既定 0.1 でも実行時に `volume_min` へ持ち上がるため
+     `rc=0`。**同じ既定値が戦略ごとに別の意味を持っていた**のが是正前の姿である。
+   - **単一ソース**: `symbol_spec_args` に `add_lot_size_argument` / `resolve_lot_size` を追加
+     （3 CLI へ同じ解決を手書きで複製しない）。解決の呼出は `run_is_oos_cli.main` と
+     `optimize_cli._build_base_kwargs` の 2 箇所のみ（`walk_forward_cli` は後者を再利用）。
+     8 項目の解決も**呼出を 1 回**に整理した（2 度呼ぶと食い違い警告が二重に出るため）。
+   - **未登録銘柄は 8 項目と同じ fail-loud（新しい語彙・例外を増やさない）**: 既定 lot は供給元
+     スナップショットを直接引かず**解決済み仕様**から引く。したがって lot 固有の失敗経路は無く、
+     未登録銘柄では先に `SymbolSpecArgsError` が出る（実測: `--symbol NO_SUCH_SYMBOL` は
+     `--lot-size 1.0` を明示しても中断し、出力ディレクトリを作らない）。逆に 8 項目をすべて明示
+     すれば未登録銘柄でも lot まで解決する（その明示 `volume_min` が既定になる）。
+   - **明示指定は 8 項目と対称・食い違い警告だけ非対称（裁定と理由）**: 明示は優先する（8 項目と
+     同じ）。ただし供給元との食い違い警告は**置かない**。供給元は `lot_size` という値を持たず、
+     `volume_min` は lot の**下限**であって lot の供給値ではないため、下限より大きい正当な lot
+     （例 2 ロット）でも常時鳴り、誤りを識別できない。識別できる条件（下限割れ・刻み外れ）は
+     `domain/order.py` の `Order.validate` が既に所有し（`usecase/_execution.admit_orders` が
+     唯一の門・段階 3-C）、同じ規則を CLI へ書き写せば所有者が 2 つになる。
+   - **出力は変わらない（実測・sha256）**: `StopEntryProbe_EA`（`export_report_payload.COMMON` と
+     同じ EA パラメータ・確認 fixture）で 3 CLI を実走し、是正前後で `is_oos.json` /
+     `optimize.json` / `walk_forward.json` と各 `report.md` が **sha256 一致**（IS trades=336・
+     非空虚）。`MA_Slope_EA` も「既定 lot」と「`--lot-size 0.1`」で `is_oos.json` が sha256 一致
+     （trades=58）。`TC24051901` は是正前が中断、是正後は **rc=0**（IS trades=100）。
+   - **退行防止（+13 件・すべて負の対照つき）**: `test_cli_symbol_spec_args.py` に §6 を追加
+     （既定値なし／引数は残存／3 CLI の解決結果が `volume_min` と一致／撤去した 0.1 は
+     `volume_min` と不一致／明示優先／無警告と有警告の対／未登録銘柄の fail-loud／8 項目明示なら
+     lot まで解決）。`test_tool_symbol_specs_from_snapshot.py` の §3（Root が渡す lot は発注可能）は
+     **重複を作らず拡張**し、CLI 既定 lot を `Order.validate` で判定する 1 件を足した（既存の
+     負の対照＝0.1 は弾かれる、をそのまま共有する）。期待値はテスト側に書かず `load_spec_fields`
+     と突き合わせる。
+   - **ゲートの非空虚性を変異で実測**: (a) `default=0.1` を書き戻す → **5 failed**、(b) 既定を
+     `volume_max` へ変える → **4 failed**（テストが本番をなぞるだけではないことの実証）、
+     (c) 明示優先を外す → **1 failed**。いずれも Edit で復元し 44 passed を再確認。
+   - **実測（全走）**: `python -m pytest simulator marketdata tools -q` =
+     **1 failed / 5377 passed / 1 skipped / 1 xfailed**（着手前ベースライン
+     1 failed / 5364 passed / 1 skipped / 1 xfailed を同一コマンドで実測。増分 +13 は本件の
+     新規検定と一致）。赤は既存の `test_composition_root_arg_parity` 1 件（ISSUE-427/371・無関係）。
+   - **設計書（申し送り 2 の解消）**: `.doc/ISOOS_SIMPLE_SPLIT_DETAILED_DESIGN.md` §2.2.2 の
+     引数表は**初版 v1.0.0（2026-06-20）当時の設計判断の記録**として書き換えず、
+     `SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md` §RC-1 冒頭と同じ作法で日付つき注記を併記した
+     （現在は銘柄仕様 8 項目＋`--lot-size` の計 9 引数が「透過」ではなく解決を経ること、
+     既定値なし・明示優先・警告の有無・未登録銘柄の中断を明記）。
+   - **申し送り（変更範囲外・未是正）**: (1) `Order.validate` の `InvalidPriceError` は
+     `context`（volume / min / max）を持つが `str(exc)` に出ないため、CLI 利用者には規則名しか
+     見えない（`domain/exceptions.py` を読んで確認）。既定 lot が供給元由来になったことで
+     到達するのは「利用者が自分で打った lot」のみになり影響は縮んだが、文言自体は未改善。
+     (2) `.doc/ISOOS_OPTIMIZATION_DETAILED_DESIGN.md`（`base_kwargs` の擬似コードに
+     `contract_size=10.0` / `lot_size=0.1`、Best Parameters 表に `lot_size 0.1`）にも同型の
+     食い違いが残る。どちらも本タスクの触ってよいファイルの外。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
