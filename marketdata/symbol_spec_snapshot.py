@@ -18,15 +18,34 @@ ISSUE-445 で判明した誤りは「値が 1 つ間違っていたこと」で�
 MT5 のフィールド名（``trade_contract_size`` / ``trade_stops_level`` / ``point`` …）と
 ``simulator/usecase/models.py:SymbolSpec`` の 8 フィールド名（``contract_size`` /
 ``stops_level`` / ``point_size`` …）は綴りが違う。この対応が複数箇所に散ると、片方だけ直した
-ときに沈黙で食い違う。よって対応は :data:`SPEC_FIELD_SOURCES` と
-:data:`SETTLEMENT_CURRENCY_SOURCE` に**限る**。この不変条件は宣言ではなく
-``marketdata/tests/test_symbol_spec_snapshot.py`` の AST 走査が施行する
-（MT5 フィールド名のリテラルがモジュール内に 2 箇所現れたら赤）。
+ときに沈黙で食い違う。よって対応を持つ表は次の 3 つに**限る**:
+
+* :data:`SYMBOL_FIELD_SOURCES` — 銘柄仕様（``mt5.symbol_info()`` の出力＝``symbol`` セクション）
+* :data:`ACCOUNT_FIELD_SOURCES` — 口座属性（``account`` セクション）
+* :data:`SETTLEMENT_CURRENCY_SOURCE` — 決済（profit）通貨 1 件
+
+:data:`SPEC_FIELD_SOURCES` は上 2 表の**合成ビュー**であり、対応を新たに持たない（MT5 の
+フィールド名を 1 つも書かない）。よって「対応は 1 箇所にしかない」という不変条件は分割後も
+保たれる——どのフィールドも、その供給元を述べている表はちょうど 1 つである。この不変条件は
+宣言ではなく ``marketdata/tests/test_symbol_spec_snapshot.py`` の AST 走査が施行する
+（MT5 フィールド名のリテラルが上 3 表の**外**に現れたら赤。合成ビューも「外」であり、
+そこに対応を書き足せば赤になる）。加えて同ファイルは
+「:data:`SYMBOL_FIELD_SOURCES` ∪ :data:`ACCOUNT_FIELD_SOURCES` == :data:`SPEC_FIELD_SOURCES`」
+（並び・``FieldSource`` の中身まで）と「各表の供給セクションが単一」を機械的に固定する。
+
+## 銘柄の契約と口座の契約を混ぜない（SRP・設計書 §3.4）
 
 ``leverage`` は ``symbol`` ではなく ``account`` セクションから引く。``mt5.symbol_info()`` に
 ``leverage`` は存在しない（ISSUE-445 実測・スナップショットの ``symbol`` 96 フィールドに無い）。
-``leverage`` が銘柄仕様ではなく口座属性であること自体は SRP 違反として残るが、
-``SymbolSpec`` からの分離は既存 IF に触れるため**段階 3**（設計書 §3.4）。
+変更起点が違う 2 つ（銘柄の契約 / 口座の契約）を 1 つの表に同居させるのは SRP 違反であるため、
+表を :data:`SYMBOL_FIELD_SOURCES` と :data:`ACCOUNT_FIELD_SOURCES` に分けた
+（この作業の呼称「段階 3-D1」は依頼時の会話上のものであり設計書には無い。権威は §3.4）。
+
+**呼出側は 1 箇所も変わらない。** :data:`SPEC_FIELD_SOURCES` は合成ビューとして従来どおり
+8 エントリを同じ並びで公開し、:func:`spec_fields` は従来どおり 8 キーの dict を返す。
+``SymbolSpec``（``simulator`` 側の型）から ``leverage`` を外すことは既存 IF
+（``build_interactor`` の引数）に触れるため**別段階**（設計書 §3.4「段階 3 送り」）であり、
+本モジュールでは行っていない。
 
 ## 依存方向
 
@@ -66,8 +85,9 @@ class FieldSource:
     cast: "Callable[[Any], Any]"
 
 
-#: MT5 フィールド名 → ``SymbolSpec`` の 8 フィールド名。**対応表はここだけ**（module docstring）。
-SPEC_FIELD_SOURCES: "Mapping[str, FieldSource]" = MappingProxyType(
+#: **銘柄仕様の表**: MT5 フィールド名 → 銘柄の契約を表すフィールド名。
+#: 供給元は ``mt5.symbol_info()`` の出力（スナップショットの ``symbol`` セクション）ただ 1 つ。
+SYMBOL_FIELD_SOURCES: "Mapping[str, FieldSource]" = MappingProxyType(
     {
         "contract_size": FieldSource("symbol", "trade_contract_size", float),
         "volume_min": FieldSource("symbol", "volume_min", float),
@@ -76,9 +96,22 @@ SPEC_FIELD_SOURCES: "Mapping[str, FieldSource]" = MappingProxyType(
         "stops_level": FieldSource("symbol", "trade_stops_level", int),
         "digits": FieldSource("symbol", "digits", int),
         "point_size": FieldSource("symbol", "point", float),
-        # 口座属性（symbol_info に leverage は無い・設計書 §3.4）。
+    }
+)
+
+#: **口座属性の表**: 供給元は ``account`` セクション（``mt5.symbol_info()`` に無い値・設計書 §3.4）。
+#: 銘柄仕様とは変更起点が違うため表を分けている（module docstring「SRP」節）。
+ACCOUNT_FIELD_SOURCES: "Mapping[str, FieldSource]" = MappingProxyType(
+    {
         "leverage": FieldSource("account", "leverage", float),
     }
+)
+
+#: 上 2 表の**合成ビュー**（``SymbolSpec`` の 8 フィールド名 → 供給元）。ここに対応を書かない。
+#: 並びは「銘柄仕様 → 口座属性」であり、``simulator/tools/symbol_spec_args.py:SPEC_KEYS``
+#: （argparse の宣言順）として呼出側に観測される。
+SPEC_FIELD_SOURCES: "Mapping[str, FieldSource]" = MappingProxyType(
+    {**SYMBOL_FIELD_SOURCES, **ACCOUNT_FIELD_SOURCES}
 )
 
 #: 決済（profit）通貨。``SymbolSpec`` の 8 フィールドには含まれないため別に置く
@@ -159,6 +192,8 @@ __all__ = [
     "OANDA_JAPAN_MT5_LIVE",
     "SnapshotError",
     "FieldSource",
+    "SYMBOL_FIELD_SOURCES",
+    "ACCOUNT_FIELD_SOURCES",
     "SPEC_FIELD_SOURCES",
     "SETTLEMENT_CURRENCY_SOURCE",
     "snapshot_path",
