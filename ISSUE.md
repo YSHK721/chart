@@ -9834,6 +9834,86 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
    - 実測: 単体 **8 passed / 1 xfailed**（XPASS なし）。全走は本件と `contract_size` 残渣の是正を
      合わせて **1 failed / 5342 passed / 1 skipped / 1 xfailed**（赤は既存の
      `test_composition_root_arg_parity` 1 件＝ISSUE-427/371・無関係）。
+   → **本番 CLI 3 件の既定値を撤去（2026-08-26・commit `1995bca`・`tdd-executor` に委譲）**:
+   直上で「未是正」と記録した最後の本番残渣。`run_is_oos_cli` / `optimize_cli` /
+   `walk_forward_cli` が銘柄仕様 8 項目を argparse の**既定値**として持っていた形を撤去し、
+   供給元スナップショットから解決する形へ移した。既定値は台帳と同じ（人が値を書ける）うえ、
+   **コマンド行に現れないぶん台帳より見えない**。
+   - **裁定（依頼者承認済み）**: 既定値を撤去し、供給元にスナップショットがある銘柄は供給元から
+     引く。無い銘柄は**明示指定を必須にして fail-loud**。「動かすために既定値を残す」は症状の
+     出る条件を避けただけで RC-1 を消していないため採らない。
+   - **単一ソース化**: 新設 `simulator/tools/symbol_spec_args.py`（責務は引数の宣言と解決だけ・
+     実行や I/O を混ぜない）。3 CLI が同じ解決を手書きで持たない。`walk_forward_cli` は
+     `optimize_cli._build_base_kwargs` を再利用しているため、**解決の呼出は 2 箇所**
+     （`run_is_oos_cli.main` と `_build_base_kwargs`）にしかない。オプション名（`--contract-size`）は
+     フィールド名から導出し、型は供給元の対応表 `FieldSource.cast` から取る（綴りも型表も写さない）。
+   - **明示指定と供給元の食い違いは「警告」にした（裁定と理由）**: 明示は「人が書いた台帳」では
+     なく呼出時の意図であり、かつコマンド行に見える。探索 CLI は what-if 実行のためにあるので
+     中断にすると用途を壊す。ただし ISSUE-445 の失敗モードは「誤りが 2 か月誰にも気付かれな
+     かったこと」であり、貼り付け回された古いコマンドが同じ 10 倍差を無言で再生産する経路は
+     ふさぐ必要がある。よって **stderr へ両方の値を名指しで出す**（実測: 旧既定 8 項目を明示
+     すると 5 行の warn が出る＝食い違う 5 項目ちょうど）。
+   - **供給元（サーバ）名を CLI 引数にしない（裁定と理由）**: サーバ名は「銘柄仕様の値」では
+     なく「どの台帳を引くか」の指定である。実測（`ls marketdata/symbol_specs/`）で供給元は
+     `OANDA-Japan-MT5-Live` の**1 つだけ**であり、唯一の正当値しか取り得ない引数は情報を持たない
+     （YAGNI）。誤値は `SnapshotError` で fail-loud になるため「無言で誤った値が入る」危険も無い。
+     既に是正済みの本番ツール 2 件と `SymbolSpecCatalog` はいずれもモジュール定数で束ねており、
+     CLI だけ別作法にすると同じ概念に 2 つの呼び名ができる。`SPEC_SERVER` の 1 箇所で決める。
+     **`--symbol` は利用者が上書きできる**ままなので、未登録銘柄の fail-loud が要る（下記）。
+   - **fail-loud のメッセージ**: 「どの銘柄・どのサーバか」「未指定の項目名（`--contract-size` …）」
+     「`tools/capture_mt5_symbol_spec.py` を MT5 端末で実行して取得する」「上記を明示指定する」を
+     含む（`SnapshotError` 本文を内包）。実測: `--symbol XAUUSD` で **exit=1**・出力ディレクトリを
+     作らずに中断する。8 項目すべてを明示すればスナップショット不在でも通る（値はすべてコマンド
+     行に現れており、既定値を無言で使うのとは別物）。
+   - **出力は変わらない（実測）**: `run_is_oos_cli` を確認 fixture（`bars_m1.csv`・
+     `StopEntryProbe_EA`・`export_report_payload.COMMON` と同じ EA パラメータ）で実走し、
+     是正前（旧既定 8 項目を明示）と是正後（供給元）で `is_oos.json` / `report.md` が
+     **byte 同一**（sha256 一致）。値は IS `trades=5224 / profit=+11370 / balance_min=9680`・
+     OOS `trades=2438 / profit=-4020 / balance_min=5980` で、既存オラクルと一致する。
+     理由は `lot × contract_size` が `0.1×10 = 1.0×1.0` で不変（`NormalizeLot` が lot を
+     `volume_min` へ持ち上げる）ことと、`stops_level` 0→5 のクランプ閾値 0.5 価格単位が
+     本 fixture の全呼出値を下回ること（段階 2 の実測と同じ）。
+   - **負の対照（片側だけの是正は壊れる）**: `--volume-min 0.01 --volume-step 0.01` だけを旧既定に
+     据え置くと（＝`contract_size` だけ真値 1.0）、IS `profit +11370 → +1137`（1/10）・
+     OOS `trades 2438 → 4877` に壊れる。`b440a9d` で report ツールについて実測した数値と
+     **完全に一致**した。「2 つの誤りの相殺」は CLI 経路でも同じであり、対で是正するほかない。
+   - **WF 統合テスト 2 件の argv を是正した（無言の空虚化を防ぐ）**:
+     `test_walk_forward_determinism.py` / `test_walk_forward_meta_keys.py` は
+     `--contract-size 10.0 --digits 1 --point-size 0.1 --leverage 10.0` を明示しつつ
+     `volume_*` / `stops_level` は既定に頼っていた。既定撤去後にこれを残すと「明示
+     `contract_size=10.0` × 供給元 `volume_min=1.0`」の混成になり、証拠金が足りず
+     **IS trades が 5224 → 1 に落ちる**（実測）。byte 同一・キー存在の検定は取引 1 本でも緑の
+     ままなので、**気付かずに空虚化する**。銘柄仕様 4 項目を argv から撤去して供給元から
+     引かせ（撤去後は 5224 に復帰＝是正前と同値）、決定論検定に非空虚性 assert を足した。
+     `--lot-size` は EA 入力であり銘柄仕様ではないため据え置いた。
+   - **退行防止（+22 件・すべて負の対照つき）**: 新設
+     `simulator/tests/unit/test_cli_symbol_spec_args.py`（18 件）が **組み上がったパーサ**を見る
+     （`get_default(...) is None`・8 項目とも引数自体は残っている・既定 argv の解決結果が
+     `load_spec_fields` と一致・明示優先・食い違い警告と非警告・未登録銘柄の fail-loud・
+     全項目明示なら通る・1 項目でも欠ければ通らない）。既存 AST ゲート
+     `test_tool_symbol_specs_from_snapshot.py` は**重複を作らず拡張**した（4 形目＝
+     `add_argument("--contract-size", …, default=10.0)` を追加、走査対象に CLI 3 件と
+     `symbol_spec_args` を追加＝+4 件）。
+   - **2 つのゲートが別物であることを実測で確認した**: `default=10.0` を書き戻すと両方が赤。
+     一方 `default=source.cast(7)` のような**算出された既定値**は AST ゲートが素通し（13 passed）で
+     パーサ側ゲートだけが赤になる。どちらか一方では穴が残る。改変は Edit で復元し、復元後に
+     31 passed を再確認済み。
+   - **実測（全走）**: `python -m pytest simulator marketdata tools -q` =
+     **1 failed / 5364 passed / 1 skipped / 1 xfailed**（着手前ベースライン
+     1 failed / 5342 passed / 1 skipped / 1 xfailed を同一コマンドで実測済み）。増分
+     +22 passed は本件の 18 + 4 と一致する。赤は既存の `test_composition_root_arg_parity`
+     1 件（ISSUE-427/371・JS 合成根・無関係）のみで、本件による新規の赤は無い。
+   - **申し送り 1（要裁定・素通し戦略の lot）**: `TC24051901` のように `NormalizeLot` を持たない
+     戦略では、CLI 既定 `--lot-size 0.1` が供給元 `volume_min=1.0` の下で発注不成立になる
+     （実測: `InvalidPriceError: volume が [volume_min, volume_max] 範囲外`・`--lot-size 1.0` なら
+     `rc=0`）。**無言ではなく即中断**するので誤った結果は出ないが、`lot_size` は EA 入力であって
+     銘柄仕様ではないため本件の承認範囲（8 項目）に含めず既定 0.1 を据え置いた。供給元の最小
+     発注単位へ寄せるか（`export_trade_markers` の前例）、明示必須にするかは別途裁定が要る。
+     あわせて `domain/order.py` の例外文言は lot も供給元も名指ししないため、原因に辿り着き
+     にくい（変更範囲外）。
+   - **申し送り 2**: `.doc/ISOOS_SIMPLE_SPLIT_DETAILED_DESIGN.md:292` の引数表は
+     `--contract-size` を「build_interactor へそのまま透過」と説明しており、供給元解決を経る
+     現在の実体と食い違う（変更範囲外のため未是正）。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
