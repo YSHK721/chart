@@ -12,8 +12,15 @@ description: >-
 
 # --- 銘柄仕様 (実 MT5 由来の確定値) ---
 # 権威は marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json (MT5 端末から機械取得)
-# へ移った (ISSUE-445 段階 2)。本ブロックは可読性のための転記であり、テストは参照しない。
-# ブロックごとの撤去は段階 3。
+# へ移った (ISSUE-445 段階 2)。本ブロックは可読性のための転記であり、実走 (reconcile /
+# fingerprint / カタログ) は参照しない。
+#
+# 是正 2026-08-26: ここには「テストは参照しない」とあったが**事実と食い違っていた**。
+# 検出ゲート test_mt5_case_spec_agrees_with_report.py は digits / leverage / currency /
+# contract_size の 4 キーを「申告値」として読み、test_run_options_mt5_gate.py が currency を
+# 読む (実測)。転記が残る間の乖離は TestCaseYamlStillMirrorsTheSupplier が赤にする。
+# ブロックごとの撤去は段階 3-E (撤去を含むため別ターンで裁定)。name は撤去対象外
+# (銘柄の同一性そのものであり、供給元スナップショットを引くための鍵)。
 symbol:
   name: JP225
   point_size: 0.1

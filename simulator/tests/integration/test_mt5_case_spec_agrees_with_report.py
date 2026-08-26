@@ -28,15 +28,29 @@ CI を緑に保つため `xfail(strict=True)` で固定し、是正が入ると 
       **段階 3-A で緑に転じたため撤去済**（2026-08-26）。2 例目。
 
 現時点で xfail は 1 件も無い（既知の不整合はすべて解消済み）。
+
+**供給元スナップショットの突合（段階 3-E 準備・2026-08-26 追加）**: 段階 2 で銘柄仕様の権威は
+`marketdata/symbol_specs/…/JP225.json` へ移ったが、**その権威そのものを MT5 レポートと
+突き合わせるゲートは無かった**（実測: 従来の突合対象は `case.yaml` のみ。スナップショットは
+reconcile の実走を通じて間接的に裏付けられるだけだった）。下の
+`TestSupplierSnapshotAgreesWithTheReport` がその直接の突合を担う。あわせて
+`TestCaseYamlStillMirrorsTheSupplier` が「重複が残っている間は必ず一致する」ことを固定し、
+段階 3-E（`case.yaml` の `symbol:` ブロック撤去）が**挙動に影響しない**ことを機械的に保証する。
 """
 from __future__ import annotations
 
 import pytest
 
+from marketdata.symbol_spec_snapshot import (
+    OANDA_JAPAN_MT5_LIVE,
+    load_settlement_currency,
+    load_spec_fields,
+)
 from simulator.tests.fixtures.mt5 import load_case
 from simulator.tests.fixtures.mt5 import spec_derivation as sd
 
 _CASE = "ma_slope_jp225_202501"
+_SYMBOL = "JP225"
 
 
 @pytest.fixture(scope="module")
@@ -134,6 +148,96 @@ def test_report_derived_contract_size_agrees_with_the_report_itself(case):
     derived = case.expected["settings"]["derived"]["contract_size"]
     report = sd.contract_size_consistency(case.expected, float(derived))
     assert report.ok, report.describe()
+
+
+# --- 供給元スナップショット（＝現在の権威）との突合 -----------------------------------
+
+
+@pytest.fixture(scope="module")
+def supplier():
+    """銘柄仕様の**現在の権威**（MT5 端末から機械取得したスナップショット）。"""
+    return load_spec_fields(OANDA_JAPAN_MT5_LIVE, _SYMBOL)
+
+
+class TestSupplierSnapshotAgreesWithTheReport:
+    """権威そのものを MT5 レポートの機械導出値と突き合わせる。
+
+    段階 2 以降、実走が使う銘柄仕様はすべてこのスナップショットである。従来の突合対象は
+    `case.yaml`（人が読むための転記）だけであり、**権威側が MT5 出力と食い違っても直接
+    赤にする検定は無かった**。将来 OANDA が仕様を改定してスナップショットを取り直した
+    ときに、その改定が golden と矛盾するなら本クラスが赤で知らせる（設計書 §8 の意図）。
+    """
+
+    def test_contract_size_agrees_with_the_report(self, case, supplier):
+        report = sd.contract_size_consistency(case.expected, supplier["contract_size"])
+        assert report.ok, report.describe()
+
+    def test_leverage_agrees_with_the_report(self, case, supplier):
+        assert supplier["leverage"] == sd.account_leverage(case.expected)
+
+    def test_settlement_currency_agrees_with_the_report(self, case):
+        assert load_settlement_currency(
+            OANDA_JAPAN_MT5_LIVE, _SYMBOL
+        ) == sd.settlement_currency(case.expected)
+
+    def test_digits_covers_the_observed_price_decimals(self, case, supplier):
+        # 片側検査（全価格が整数なら観測桁は過小評価される・設計書 §8）。
+        assert supplier["digits"] >= sd.price_decimals(case.expected)
+
+    def test_the_executed_volume_is_valid_on_the_supplier_volume_grid(
+        self, case, supplier
+    ):
+        """実約定ロットが供給元の volume 格子（min / max / step）に載ること。
+
+        RC-2 の逆側の裏付けである。`volume_min=1.0` は「EA 入力 0.1 が持ち上げられた」と
+        いう主張の根拠であり、その主張は**実約定 volume が 1.0 だったこと**と噛み合って
+        いなければならない。ここが食い違うなら、スナップショットか導出のどちらかが誤り。
+        """
+        for volume in sd.executed_volumes(case.expected):
+            assert supplier["volume_min"] <= volume <= supplier["volume_max"]
+            ratio = volume / supplier["volume_step"]
+            assert ratio == pytest.approx(round(ratio))
+
+
+class TestCaseYamlStillMirrorsTheSupplier:
+    """`case.yaml` の `symbol:` ブロックが権威の忠実な転記であること（段階 3-E の前提）。
+
+    このブロックは段階 2 以降「人が読むための転記」であり、実走はここを見ない。しかし
+    **転記が残っている間は乖離し得る**——それを許すと RC-1（人が書いた値が権威のように
+    振る舞う）が小さく再生する。ここで一致を固定しておけば、段階 3-E の撤去は
+    「同じ値を 2 箇所に持つのをやめる」だけになり、挙動に影響しないことが機械的に言える。
+
+    `name` は対象外（銘柄の同一性そのものであり、供給元を引くための鍵）。
+    """
+
+    #: `case.yaml` の `symbol:` キー → 権威側の同じ値を引く 8 フィールド名。
+    #: 撤去時はこの表がそのまま「消す対象」の一覧になる。
+    _MIRRORED_NUMERIC = ("point_size", "digits", "contract_size", "leverage")
+    #: 通貨は `SymbolSpec` の 8 フィールドに含まれないため別に引く。
+    _MIRRORED = _MIRRORED_NUMERIC + ("currency",)
+
+    def test_every_mirrored_number_matches_the_supplier(self, case, supplier):
+        declared = case.config["symbol"]
+        mismatched = [
+            key
+            for key in self._MIRRORED_NUMERIC
+            if float(declared[key]) != float(supplier[key])
+        ]
+        assert not mismatched, (
+            f"case.yaml の symbol.{mismatched} が供給元スナップショットと食い違う"
+        )
+
+    def test_the_declared_currency_matches_the_supplier(self, case):
+        assert case.config["symbol"]["currency"] == load_settlement_currency(
+            OANDA_JAPAN_MT5_LIVE, _SYMBOL
+        )
+
+    def test_the_block_holds_nothing_beyond_the_identity_and_the_mirror(self, case):
+        """転記以外の値がここに増えていないこと（増えたら権威が二重化する）。
+
+        新しいキーが足されたら赤にする。足したい値があるなら供給元へ入れる（RC-1 の再発防止）。
+        """
+        assert set(case.config["symbol"]) == {"name"} | set(self._MIRRORED)
 
 
 # 注記（2026-08-25 是正）: 当初ここに
