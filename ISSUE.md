@@ -9697,6 +9697,40 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      実際に読む（実測）。
    - これにより段階 3-E の撤去は「同じ値を 2 箇所に持つのをやめる」だけになり、**挙動に影響
      しないことが機械的に言える**状態になった。撤去自体は未実施（別ターンで裁定）。
+   → **段階 3-E2a 完了（2026-08-26・commit `2ebbb60`）**: `case.yaml` の `symbol:` から重複を
+   撤去し、RC-1 の温床（同じ値が 2 箇所にある状態）を消した。
+   - **消したもの**: `case.yaml` の `point_size` / `digits` / `contract_size` / `leverage` /
+     `currency` の 5 キー（**`name` は残す**——銘柄の同一性そのものであり、供給元
+     スナップショットを引くための鍵）。あわせて冗長になった 6 検定
+     （`test_case_yaml_digits_covers_observed_price_decimals` /
+     `…_leverage_agrees_with_report` / `…_currency_agrees_with_report` /
+     `…_contract_size_agrees_with_report` /
+     `TestCaseYamlStillMirrorsTheSupplier` の値突合 2 件）と `_MIRRORED*` 表・段階 3-E1 の注記。
+   - **不変条件の引き継ぎ先**（消す前にコードを読んで確認）: 権威↔レポートは
+     `TestSupplierSnapshotAgreesWithTheReport`、カタログ↔供給元・カタログ↔レポート導出は
+     `simulator/sim_ui/tests/integration/test_run_options_mt5_gate.py`。両者に多重化されている。
+   - **1 検定だけ残した**: `TestCaseYamlHoldsOnlyTheIdentity`（旧
+     `TestCaseYamlStillMirrorsTheSupplier` を改名・`assert set(case.config["symbol"]) == {"name"}`
+     の 1 行へ縮小・`supplier` fixture 依存を削除）。**「`case.yaml` に権威値が生え直さない」
+     ことを見ているテストは他に 1 件も無い**（実測）ため引き継ぎ先が存在しない。失うと将来
+     `symbol:` に `swap_long:` 等を書き足しても全テストが緑のままで RC-1 が小さく再生する。
+     非空虚性は負の対照で実証——`symbol:` に `swap_long: -1.5` を一時追加すると**本検定だけ**が
+     赤（他 36 件は緑）。改変は Edit で復元し `git diff` が空であることを確認済み。
+   - **モジュール docstring を実体に合わせて書き直した**。「申告値は `case.yaml` から引く」は
+     撤去後は事実でない。段階 3-E 準備で「テストは参照しない」という嘘のコメントを是正した
+     前科があるため、記述と実体の食い違いを残さない。
+   - **実測**: `python -m pytest simulator tools marketdata -q` = **1 failed / 5325 passed /
+     1 skipped**（赤は既存の `tools/tests/test_composition_root_arg_parity.py::
+     test_no_test_only_precondition_without_production_form` 1 件＝ISSUE-427/371・本件と無関係）。
+     `test_ma_slope_reconcile` は `trades=1164` / `net=-6173.9` / `balance=3826.1` で**不変**、
+     `test_run_backtest_fingerprint` の指紋（stats/trades sha256・trade_count）も**不変**。
+     実走系が読むのは `symbol.name` だけであるという事前実測どおり、挙動は 1 ビットも動いていない。
+   - **申し送り（本段階の範囲外・未是正）**:
+     `simulator/sim_ui/tests/integration/test_run_options_mt5_gate.py:118` の docstring が
+     消えた `TestCaseYamlStillMirrorsTheSupplier` を現存物として参照しており、記述が実体と
+     食い違う。同ファイルは本段階の変更許可範囲外のため触っていない。
+     `.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md:18,21` の現状分析（`symbol:` ブロックに
+     「銘柄仕様 (実 MT5 由来の確定値)」の見出しが付く、等）も撤去後は現在形として成立しない。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
