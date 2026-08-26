@@ -114,8 +114,11 @@ def test_catalog_settlement_currency_agrees_with_report_oracle():
     申告値の供給元（ISSUE-445 段階 3-E1・2026-08-26）: 従来は `case.yaml` の
     `symbol.currency` から引いていた。case.yaml の `symbol:` ブロックは段階 2 で権威を失い
     **転記**になったため、ここも供給元スナップショットから引く。これで `case.yaml` を
-    「銘柄仕様の申告値」として読む本番向けゲートは無くなった（残るのは転記の一致を
-    確かめる `TestCaseYamlStillMirrorsTheSupplier` のみ＝段階 3-E2 でブロックごと消える）。
+    「銘柄仕様の申告値」として読むゲートは無くなった。続く段階 3-E2（2026-08-26）で
+    `case.yaml` の `symbol:` から重複 5 キーを撤去し `name` だけを残したため、いま
+    `case.yaml` の `symbol:` を読む検定は
+    `test_mt5_case_spec_agrees_with_report.py::TestCaseYamlHoldsOnlyTheIdentity`
+    （権威値が生え直さないことの固定）1 件だけである。
     """
     case = load_case(_CASE)
     settings = case.expected["settings"]
