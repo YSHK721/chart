@@ -84,6 +84,17 @@ def test_gate_rejects_a_wrong_contract_size(case):
 
 
 # --- 申告値との突合（現時点で緑）-----------------------------------------------------
+#
+# 段階 3-E1 の注記（2026-08-26）: 以下の `case.yaml` 申告値ベースの 4 検定
+# （`digits` / `leverage` / `currency` / `contract_size`）は、
+#   - 権威 ↔ レポート  = `TestSupplierSnapshotAgreesWithTheReport`
+#   - 転記 ↔ 権威      = `TestCaseYamlStillMirrorsTheSupplier`
+# の 2 つが揃ったことで**推移的に含意される**（転記==権威==レポート）。すなわち現時点で
+# 冗長である。**ここでは消さない**——撤去は `case.yaml` の `symbol:` ブロック本体と同時に
+# 行うのが最小の可逆単位であり、段階 3-E2 の裁定事項だからである。申告値の供給元を
+# 供給元スナップショットへ「切り替える」ことも行わない。切り替えると上の
+# `TestSupplierSnapshotAgreesWithTheReport` と**逐語的に同一の検定**になり、単一ソース化の
+# 規律（手書き複製の禁止）に反するためである。
 
 
 def test_executed_volume_is_single_valued_and_not_the_ea_input(case):

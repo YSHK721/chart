@@ -106,16 +106,23 @@ def test_catalog_settlement_currency_agrees_with_report_oracle():
     case.yaml は「人が読むためのメタ要約」（case.yaml 冒頭コメント）であり、数値の最終
     オラクルは report.json 側。report.json の 2 箇所が独立に JPY を示す（実測）:
         - ``settings.currency``（L19）= 実 MT5 テスターの**口座通貨**。
-        - ``settings.derived.note``（L29）``0.1lot*10=1 JPY per price unit``
+        - ``settings.derived.note`` ``… 1 JPY per price unit``
           = **損益が JPY 建てで発生する**＝銘柄の決済（profit）通貨が JPY。
     後者が決済通貨の直接証拠であり、前者との一致は「本 fixture では口座通貨＝決済通貨」
     （N-11 非該当のケース）であることを示す。両方を固定して取り違えを検出する。
+
+    申告値の供給元（ISSUE-445 段階 3-E1・2026-08-26）: 従来は `case.yaml` の
+    `symbol.currency` から引いていた。case.yaml の `symbol:` ブロックは段階 2 で権威を失い
+    **転記**になったため、ここも供給元スナップショットから引く。これで `case.yaml` を
+    「銘柄仕様の申告値」として読む本番向けゲートは無くなった（残るのは転記の一致を
+    確かめる `TestCaseYamlStillMirrorsTheSupplier` のみ＝段階 3-E2 でブロックごと消える）。
     """
     case = load_case(_CASE)
     settings = case.expected["settings"]
-    assert settings["currency"] == case.config["symbol"]["currency"]
-    # 決済（profit）通貨の直接証拠。ここも fixture から引き、期待値をリテラルで持たない。
-    assert f"1 {case.config['symbol']['currency']} per price unit" in settings["derived"]["note"]
+    currency = settlement_currency(_snapshot())
+    assert settings["currency"] == currency
+    # 決済（profit）通貨の直接証拠。期待値をここにリテラルで書かない。
+    assert f"1 {currency} per price unit" in settings["derived"]["note"]
     assert _jp225_profile().settlement_currency == settings["currency"]
 
 
