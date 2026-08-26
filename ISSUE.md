@@ -9568,6 +9568,48 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
    最終: `simulator marketdata tools` で **1 failed / 5223 passed / 1 skipped / 1 xfailed**
    （赤は既存の `test_composition_root_arg_parity` 1 件のみ＝着手前と同一）。
    残る `xfail(strict)` 1 件は `report.json` の `settings.derived.contract_size`（段階 3 で解消）。
+   → **段階 3-B 完了（2026-08-26・commit `40d0460` / `07ca821` / `605461d`・`tdd-executor` に委譲）**:
+   原典 `.mq5` を持つ残り 2 戦略へ `NormalizeLot` を移植した。**原典ごとに別物**であり共通化していない。
+   - `MaSlopePending` ← `2026-03_ma-limit/ea.mq5:299`（`PlaceEntry:180-195`＝**発注のたび**適用。
+     結果 0 以下はペンディングを設置しない）。本体は `MA_Slope_EA.mq5:157-175` と行単位で同一
+     （実測: 改行コード正規化後に完全一致）。
+   - `StopEntryProbe` ← `2026-04_stop-probe/ea.mq5:159`（`OnInit:51-91`＝**起動時 1 回**適用し
+     `g_lot` に保持。`Lot<=0`(:53) と正規化結果 `<=0`(:69) の `INIT_PARAMETERS_INCORRECT` は
+     `ConfigError` に対応させた）。この `NormalizeLot` は他 2 本と**別関数**である:
+     `vstep<=0` のとき `vstep=(vmin>0)?vmin:0.01` に置換して**必ず丸め**（丸めをスキップしない）、
+     `digits` は `MathMax(0, MathCeil(-MathLog10(vstep) - 1e-9))` とイプシロンを引く。
+   - `ProFitBand` は**移植対象外**（原典 `simulator/experts/PRO!fit_Band.mq5` に `NormalizeLot` /
+     `SYMBOL_VOLUME_*` の出現 0 件・`mrequest.volume = Lot;` が :419 / :513 の 2 箇所で素通し）。
+     退行防止のため素通しを検定で固定した（`tests/unit/test_pro_fit_band_lot_passthrough.py`）。
+   - 原典 `.mq5` を持たない `tc24051901` / `weekly_vol_band` / `generic_condition_strategy` は
+     対象外（推測実装をしない）。
+   - **予見された赤は出なかった（実測）**。confirmation golden は 3 本とも旧リテラル仕様と
+     供給元真値（`contract_size=1.0`/`volume_min=step=1.0`/`stops_level=5`）で完全一致し、
+     `TradeRecord.volume` 列だけが `0.1 → 1.0` に変わる:
+
+     | 突合 | 旧リテラル | 真値 |
+     |---|---|---|
+     | `2026-04_ma-limit`（pending） | trades=1770 / net=-4610.0 / balance=5390.0 | 同一 |
+     | `2026-03_ma-limit`（pending） | trades=12787 / net=+5666.0 / balance=15666.0 | 同一 |
+     | `2026-04_stop-probe`（probe） | trades=10100 / net=+9990.0 / balance=19990.0 | 同一 |
+
+     機序は段階 2 の reconcile と同型で、`lot × contract_size` が `0.1×10 = 1.0×1.0` と不変であり
+     損益・証拠金は積でしか `lot` を使わないため（`domain/position.py`）。
+   - 既存テスト・突合スクリプトが使う銘柄仕様は**すべて旧リテラル**（`volume_min=0.01` /
+     `volume_step=0.01`・`reconcile.py` 3 本と `test_is_oos_stop_probe.py`）か**未供給**
+     （`test_ma_slope_pending.py` / `test_stop_entry_probe.py` の `_cfg()`）であり、
+     いずれも現行 lot（0.1 / 1.0）に対して恒等写像になる。供給元真値との食い違いは
+     `sim_ui` のカタログ経路にのみ存在し、そこを通る全走テストは無い。
+   - 全体: `simulator marketdata tools` で **1 failed / 5263 passed / 1 skipped**
+     （着手前ベースライン 1 failed / 5224 passed / 1 skipped。差分 +39 はすべて新規テスト。
+     赤は既存の `test_composition_root_arg_parity` 1 件のみ＝ISSUE-427/371・無関係）。
+     通過条件の `test_ma_slope_reconcile` / `test_run_backtest_fingerprint` は緑のまま
+     （`trades=1164` / `net=-6173.9` / `balance=3826.1`・指紋一致）。
+   - **未解決（設計判断・要裁定）**: MQL5 プリミティブ `_math_round` / `_normalize_double` /
+     `_spec_value` が 3 ファイルで**AST 完全一致の手書き複製**になった（実測: それぞれ
+     `b3329d80d777` / `dd31603ea216` / `3a46970034bc`）。`_normalize_lot` は
+     `ma_slope` と `ma_slope_pending` が AST 一致（`aa6d11ca051a`）、`stop_entry_probe` のみ別
+     （`80792b0ba327`）。集約には `ma_slope.py` の改変が要るが本段階では触らない指示のため未実施。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
