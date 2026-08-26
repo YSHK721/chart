@@ -37,6 +37,11 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from simulator.adapter.strategy.mql5_runtime import (
+    math_round,
+    normalize_double,
+    spec_value,
+)
 from simulator.domain.exceptions import ConfigError
 from simulator.domain.order import Order
 from simulator.usecase.ports import StrategyPort
@@ -62,9 +67,9 @@ class StopEntryProbe(StrategyPort):
         self._config = config
         g_lot = self._normalize_lot(
             lot,
-            vmin=self._spec_value(config, "volume_min"),
-            vmax=self._spec_value(config, "volume_max"),
-            vstep=self._spec_value(config, "volume_step"),
+            vmin=spec_value(config, "volume_min"),
+            vmax=spec_value(config, "volume_max"),
+            vstep=spec_value(config, "volume_step"),
         )
         if g_lot <= 0.0:
             self._config = None
@@ -73,8 +78,8 @@ class StopEntryProbe(StrategyPort):
                 "（原典 2026-04_stop-probe/ea.mq5:69 INIT_PARAMETERS_INCORRECT）",
                 context={
                     "lot_size": lot,
-                    "volume_min": self._spec_value(config, "volume_min"),
-                    "volume_step": self._spec_value(config, "volume_step"),
+                    "volume_min": spec_value(config, "volume_min"),
+                    "volume_step": spec_value(config, "volume_step"),
                 },
             )
         self._lot = g_lot
@@ -135,41 +140,21 @@ class StopEntryProbe(StrategyPort):
         ``MA_Slope_EA.mq5`` / ``2026-03_ma-limit/ea.mq5`` の同名関数と**混同しない**:
         あちらは ``step <= 0`` で丸めをスキップし ``digits`` を 2 に固定する。ここは
         ``vstep`` を置換して必ず丸め、``digits`` は 1e-9 のイプシロンを引いてから切り上げる。
+
+        MQL5 プリミティブ（``MathRound`` / ``NormalizeDouble`` / ``SymbolInfoDouble`` 相当）は
+        :mod:`simulator.adapter.strategy.mql5_runtime` が単独で所有する。本メソッドは参照する
+        だけで再実装しない（ISSUE-445・複製の再発は AST ゲートが赤にする）。本メソッド自体は
+        上記のとおり他 2 本と別物であり共通化しない。
         """
         if vstep <= 0.0:
             vstep = vmin if vmin > 0.0 else 0.01
-        v = self._math_round(lot / vstep) * vstep
+        v = math_round(lot / vstep) * vstep
         if v < vmin:
             v = vmin
         if vmax > 0.0 and v > vmax:
             v = vmax
         digits = int(max(0.0, math.ceil(-math.log10(vstep) - 1e-9)))
-        return self._normalize_double(v, digits)
-
-    @staticmethod
-    def _math_round(x: float) -> float:
-        """MQL5 ``MathRound``（絶対値 0.5 を切り上げ＝ゼロから遠ざかる丸め）。
-
-        Python 組込み ``round`` は銀行家丸め（実測: round(2.5)==2 / round(0.5)==0）で
-        原典と境界の挙動が食い違うため使わない。
-        """
-        magnitude = math.floor(abs(x))
-        if abs(x) - magnitude >= 0.5:
-            magnitude += 1.0
-        return math.copysign(magnitude, x)
-
-    @classmethod
-    def _normalize_double(cls, value: float, digits: int) -> float:
-        """MQL5 ``NormalizeDouble(value, digits)``（指定小数桁への丸め・0.5 は切り上げ）。"""
-        scale = 10.0**digits
-        return cls._math_round(value * scale) / scale
-
-    @staticmethod
-    def _spec_value(cfg: Any, key: str) -> float:
-        try:
-            return float(cfg[key])
-        except KeyError:
-            return 0.0
+        return normalize_double(v, digits)
 
     def _calc_sltp(self, side: str, price: float) -> "tuple[float | None, float | None]":
         """基準価格から SL/TP を算出（points==0 で None・原典 CalcSlTp）。"""

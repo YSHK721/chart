@@ -44,6 +44,11 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from simulator.adapter.strategy.mql5_runtime import (
+    math_round,
+    normalize_double,
+    spec_value,
+)
 from simulator.domain.order import Order
 from simulator.usecase.ports import StrategyPort
 
@@ -146,47 +151,27 @@ class MaSlopePending(StrategyPort):
             int digits = (step > 0.0) ? (int)MathCeil(-MathLog10(step)) : 2;
             if(digits < 0) digits = 0;
             return(NormalizeDouble(v, digits));
+
+        MQL5 プリミティブ（``MathRound`` / ``NormalizeDouble`` / ``SymbolInfoDouble`` 相当）は
+        :mod:`simulator.adapter.strategy.mql5_runtime` が単独で所有する。本メソッドは参照する
+        だけで再実装しない（ISSUE-445・複製の再発は AST ゲートが赤にする）。本メソッド自体は
+        ``2026-04_stop-probe/ea.mq5:159`` の同名関数と**別物**であり共通化しない。
         """
         cfg = self._config
-        step = self._spec_value(cfg, "volume_step")
-        volume_min = self._spec_value(cfg, "volume_min")
+        step = spec_value(cfg, "volume_step")
+        volume_min = spec_value(cfg, "volume_min")
         v = lot
         if step > 0.0:
-            v = self._math_round(v / step) * step
+            v = math_round(v / step) * step
         if v < volume_min:
             v = volume_min
-        volume_max = self._spec_value(cfg, "volume_max")
+        volume_max = spec_value(cfg, "volume_max")
         if volume_max > 0.0 and v > volume_max:
             v = volume_max
         digits = int(math.ceil(-math.log10(step))) if step > 0.0 else 2
         if digits < 0:
             digits = 0
-        return self._normalize_double(v, digits)
-
-    @staticmethod
-    def _math_round(x: float) -> float:
-        """MQL5 ``MathRound``（絶対値 0.5 を切り上げ＝ゼロから遠ざかる丸め）。
-
-        Python 組込み ``round`` は銀行家丸め（実測: round(2.5)==2 / round(0.5)==0）で
-        原典と境界の挙動が食い違うため使わない。
-        """
-        magnitude = math.floor(abs(x))
-        if abs(x) - magnitude >= 0.5:
-            magnitude += 1.0
-        return math.copysign(magnitude, x)
-
-    @classmethod
-    def _normalize_double(cls, value: float, digits: int) -> float:
-        """MQL5 ``NormalizeDouble(value, digits)``（指定小数桁への丸め・0.5 は切り上げ）。"""
-        scale = 10.0**digits
-        return cls._math_round(value * scale) / scale
-
-    @staticmethod
-    def _spec_value(cfg: Any, key: str) -> float:
-        try:
-            return float(cfg[key])
-        except KeyError:
-            return 0.0
+        return normalize_double(v, digits)
 
     def _calc_sltp(self, side: str, price: float) -> "tuple[float | None, float | None]":
         """基準価格から SL/TP を算出（points==0 で None・原典 CalcSlTp）。"""
