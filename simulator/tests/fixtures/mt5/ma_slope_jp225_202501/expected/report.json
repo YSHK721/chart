@@ -23,10 +23,10 @@
   "delays_ms": 50,
   "derived": {
    "point_size": 0.1,
-   "contract_size": 10,
+   "contract_size": 1.0,
    "digits": 1,
    "fill_rule": "buy=bid+spread*point (ask), sell=bid",
-   "note": "profit=(exit-entry)*lot*contract; 0.1lot*10=1 JPY per price unit"
+   "note": "profit=(exit-entry)*lot*contract; 1.0lot*1=1 JPY per price unit (実約定ロットは deals[].vol=1。EA 入力 Lot=0.1 は NormalizeLot が volume_min=1.0 へ持ち上げた値・ISSUE-445)"
   }
  },
  "results": {

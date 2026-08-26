@@ -24,7 +24,10 @@ CI を緑に保つため `xfail(strict=True)` で固定し、是正が入ると 
 
     - `case.yaml` の `contract_size`: 段階 0 で xfail 固定 → **段階 2 で緑に転じたため撤去済**
       （2026-08-25）。この機構が設計どおり働いたことの実例である。
-    - `report.json` の `settings.derived.contract_size`: 段階 3 で解消（下記）。
+    - `report.json` の `settings.derived.contract_size`: 段階 2 で xfail 固定 →
+      **段階 3-A で緑に転じたため撤去済**（2026-08-26）。2 例目。
+
+現時点で xfail は 1 件も無い（既知の不整合はすべて解消済み）。
 """
 from __future__ import annotations
 
@@ -114,24 +117,19 @@ def test_case_yaml_contract_size_agrees_with_report(case):
     assert report.ok, report.describe()
 
 
-# --- 既知の不整合（段階 3 で解消する。解消したら xfail を外す）------------------------
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ISSUE-445: report.json の settings.derived.contract_size=10 は人が後から書いた"
-        "逆算値であり、同じ report.json の deals と整合しない（真値 1.0）。report.json 自体は"
-        "実 MT5 テスターの確定出力＝golden オラクルのため本段階では触らない。是正は段階 3。"
-    ),
-)
 def test_report_derived_contract_size_agrees_with_the_report_itself(case):
     """`settings.derived` の申告値をレポート本体（deals）と突き合わせる。
 
     `settings.derived` は**レポートが出力した値ではない**（xlsx `Settings` の 8 項目に
-    `contract_size` の行は存在しない・実測）。人が付けた注釈が `report.json` に同居して
-    いるため、その誤りが `case.yaml` 是正後も**見えたまま追跡される**よう本検定を置く。
-    段階 3 で `settings.derived` を是正すると XPASS(strict) で撤去を促す。
+    `contract_size` の行は存在しない・実測）。人が付けた注釈が `report.json` に同居している。
+
+    **段階 3-A で緑に転じた（2026-08-26）**: 本検定は段階 2 で `xfail(strict=True)` として
+    置かれ、`settings.derived.contract_size=10` を赤として検出していた。段階 3-A で値を
+    1.0 へ是正した（実出力部 `results` / `deals` / `deals_count` / `source` は sha256 で
+    不変を確認済み・変更は `derived` の 2 行のみ）。XPASS(strict) がマーカー撤去を促した。
+
+    なお `settings.derived` と `report.json` の同居自体が SRP 違反である（実 MT5 出力と
+    人の注釈が 1 ファイルに混ざる）。ブロックの**撤去**は所在の変更であり別裁定。
     """
     derived = case.expected["settings"]["derived"]["contract_size"]
     report = sd.contract_size_consistency(case.expected, float(derived))
