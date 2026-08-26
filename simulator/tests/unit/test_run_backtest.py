@@ -389,8 +389,37 @@ def _config_open_fill():
     )
 
 
+# --- ISSUE-445 段階 B: `_jp225_spec()` を使う 4 検定の損益ピン ------------------------
+#
+# なぜ要るか（実測 2026-08-26）: 下の 4 検定は `entry_price` / `exit_price` しか見ておらず、
+# **約定価格は `contract_size` に依存しない**。そのため `_jp225_spec()` の `contract_size` を
+# 供給元の真値 1.0 へ寄せても 4 件とも緑のまま通る（実測）。損益 `pnl()` は
+# `(exit - entry) × sign × volume × contract_size`（`domain/trade_record.py:62-73`）であり、
+# ここだけが銘柄仕様の誤りに反応する。
+#
+# **段階 C で「更新が要る」ピンである（不変ピンではない）**:
+#   本モジュールの `Order(volume=1.0)` は**テストが直接書いた数**であり、`lot_size` →
+#   `NormalizeLot` → `volume_min` の経路を通らない。したがって ISSUE-445 の「2 つの誤りの
+#   相殺」（積 `lot × contract_size` が保存される関係）は**ここでは成立しない**。
+#   実測: `contract_size` だけ 1.0 にしても、銘柄仕様 5 項目を対で真値へ寄せても、
+#   pnl はどちらも 1/10（280.0 → 28.0）になり**同じ値**になる。
+#   ⇒ このピンは是正の**失敗と成功を区別しない**。赤になったら期待値を 1/10 へ更新して
+#     よいが、「更新したから正しい」とは言えない。対で是正できたかの判定は
+#     `simulator/tests/unit/test_is_oos_barmode_index.py` の不変ピンで行うこと。
+_JP225_BUY_OPEN_SPREAD_PNL = 280.0   # (39440 - 39412) × 1.0 × 10.0
+_JP225_SELL_OPEN_BID_PNL = -480.0    # (39450 - 39402) × -1 × 1.0 × 10.0
+_JP225_DEFAULT_CLOSE_PNL = 100.0     # (39450 - 39440) × 1.0 × 10.0
+
+
 def _jp225_spec():
-    """JP225 相当（point_size=0.1・contract=10・leverage=10）。"""
+    """JP225 相当（point_size=0.1・contract=10・leverage=10）。
+
+    ⚠ ISSUE-445: ここの `contract_size=10.0` / `volume_min=0.01` / `volume_max=100.0` /
+    `volume_step=0.01` / `stops_level=0` は供給元スナップショット
+    （`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`＝1.0 / 1.0 / 10000.0 /
+    1.0 / 5）と食い違う。是正は段階 C の対象であり、そのとき上記 `_JP225_*_PNL` の
+    更新が要る（理由と限界は直上の注記を参照）。
+    """
     return SymbolSpec(
         contract_size=10.0,
         volume_min=0.01,
@@ -428,6 +457,9 @@ class TestConfigDrivenSpreadOpenFill:
         # Assert: buy entry_price == open(39402) + spread(100) * point(0.1) == 39412.0
         assert result.trades[0].side == "buy"
         assert result.trades[0].entry_price == pytest.approx(39412.0)
+        # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
+        assert result.trades[0].pnl() == pytest.approx(_JP225_BUY_OPEN_SPREAD_PNL)
+        assert result.stats.profit == pytest.approx(_JP225_BUY_OPEN_SPREAD_PNL)
 
     def test_sell_fills_at_open_bid_when_enabled(self):
         # Arrange: sell は bid（=現バー open）で約定（spread 寄与 0）。
@@ -445,6 +477,9 @@ class TestConfigDrivenSpreadOpenFill:
         # Assert: sell entry_price == open(39402)（bid 基準・spread 寄与 0）
         assert result.trades[0].side == "sell"
         assert result.trades[0].entry_price == pytest.approx(39402.0)
+        # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
+        assert result.trades[0].pnl() == pytest.approx(_JP225_SELL_OPEN_BID_PNL)
+        assert result.stats.profit == pytest.approx(_JP225_SELL_OPEN_BID_PNL)
 
     def test_default_config_keeps_close_fill_zero_spread(self):
         # 後方互換特性化: 新フィールド既定（"close"）では従来どおり buy=close・spread 無視。
@@ -463,6 +498,9 @@ class TestConfigDrivenSpreadOpenFill:
         # Assert: 従来どおり close(39440) で約定（open でも open+spread でもない）
         assert result.trades[0].side == "buy"
         assert result.trades[0].entry_price == pytest.approx(39440.0)
+        # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
+        assert result.trades[0].pnl() == pytest.approx(_JP225_DEFAULT_CLOSE_PNL)
+        assert result.stats.profit == pytest.approx(_JP225_DEFAULT_CLOSE_PNL)
 
 
 # ---- cycle2-2c: equity カーブが毎バー floating 込みで記録される（特性化・既実装の退行防止） ----
@@ -597,6 +635,8 @@ class TestReverseShortCloseSpread:
         reverse_trade = next(t for t in result.trades if t.exit_reason == "reverse")
         assert reverse_trade.side == "sell"
         assert reverse_trade.exit_price == pytest.approx(39450.0)
+        # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
+        assert reverse_trade.pnl() == pytest.approx(_JP225_SELL_OPEN_BID_PNL)
 
 
 # ---- cycle4-②: stop_out_action config（fail_stop 既定 / close_and_halt） ----

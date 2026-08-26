@@ -35,6 +35,19 @@ def _write_mt5_csv(path: Path, n: int = 30) -> Path:
 
 
 def _ma_slope_kwargs(csv_path: Path) -> dict:
+    """⚠ ISSUE-445 段階 B: 本モジュールは銘柄仕様の**正しさを検証していない**。
+
+    下の `contract_size=10.0` ほか 5 項目は供給元スナップショット
+    （`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`）と食い違うが、
+    本モジュールが見るのは「どの strategy が選ばれたか」と「registry が ema を解決するか」
+    だけで、いずれも `build_interactor` が backtest を**走らせない**段階で決まる。
+    実測（2026-08-26）: `contract_size` だけを真値 1.0 にしても、5 項目を対で真値へ
+    寄せても、3 検定とも緑のまま通る。
+
+    したがって数値ピンを足す余地が無い（積 `lot × contract_size` が効く出力がここには
+    無い）。段階 C は本モジュールの緑を「銘柄仕様の是正が正しい」根拠にしてはならない。
+    損益への波及は `simulator/tests/unit/test_is_oos_barmode_index.py` の不変ピンが見る。
+    """
     return dict(
         data_path=csv_path,
         symbol="JP225",

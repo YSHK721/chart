@@ -113,6 +113,13 @@ def test_optimize_degenerate_single_candidate_matches_sp1_precedent_and_no_data_
     )
 
     # Assert: best=唯一候補。IS/OOS が先例 bit-exact（reconcile_is.py / reconcile.py）
+    #
+    # ⚠ ISSUE-445 段階 B: 以下の IS/OOS 4 値は**是正で動かない**ピンである
+    # （実測 2026-08-26）。`_base_kwargs` の銘柄仕様 5 項目を供給元へ**対で**寄せると
+    # 積 `lot × contract_size` が 0.1 × 10.0 = 1.0 × 1.0 で不変になり、この 4 値は
+    # 1 ビットも動かない（実走で確認）。一方 `contract_size` だけを寄せると
+    # profit +11370 → **+1137** に壊れる。赤になったら**期待値を書き換えず**、
+    # 是正が片側だけになっていないかを疑うこと。
     assert result.best_params == {"stop_loss_points": 200}
     assert result.best_is_stats.trades == 5224
     assert result.best_is_stats.profit == 11370.0

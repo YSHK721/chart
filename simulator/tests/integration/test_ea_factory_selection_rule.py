@@ -124,6 +124,19 @@ def _math_kwargs(**overrides):
 
 
 def _ma_slope_kwargs(**overrides):
+    """⚠ ISSUE-445 段階 B: 本モジュールは銘柄仕様の**正しさを検証していない**。
+
+    下の `contract_size=10.0` ほか 5 項目は供給元スナップショット
+    （`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`）と食い違うが、
+    本モジュールが見るのは registry の実装クラス名・bars の本数（28097）・規則 S の
+    例外と終了コードだけであり、いずれも損益を計算しない。実測（2026-08-26）:
+    `contract_size` だけを真値 1.0 にしても、5 項目を対で真値へ寄せても、25 検定とも
+    緑のまま通る。
+
+    したがって数値ピンを足す余地が無い。段階 C は本モジュールの緑を「銘柄仕様の是正が
+    正しい」根拠にしてはならない。損益への波及は
+    `simulator/tests/unit/test_is_oos_barmode_index.py` の不変ピンが見る。
+    """
     base = dict(
         data_path=_MT5_FIXTURE,
         symbol="JP225",

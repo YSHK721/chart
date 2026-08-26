@@ -10,9 +10,13 @@ usecase の slice_is_bars/RunIsOosRequest/run_is_oos を結線して検証する
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import asdict
 from pathlib import Path
+
+import pytest
 
 from simulator.main import build_interactor
 from simulator.tools.run_is_oos_cli import make_run_segment, normalize_time
@@ -65,6 +69,41 @@ def _kwargs(csv_path: Path) -> dict:
         slope_min_points=1.0,
         config_overrides={"tick_model": "open_only", "entry_price_basis": "current_open"},
     )
+
+
+# --- ISSUE-445 段階 B: 銘柄仕様の是正の失敗を検出する数値ピン --------------------------
+#
+# なぜ要るか（実測 2026-08-26）: 本モジュールの既存 assert は `trades > 0` と
+# **同一パラメータ同士の** `asdict` 比較しかなく、上の `_kwargs()` の銘柄仕様が壊れても
+# 3 検定とも**緑のまま通る**。実際に `contract_size` だけを供給元の真値 1.0 へ寄せると
+# `trades` は 4 のまま**変わらず**、`profit` だけが -156.3 → -15.63 に壊れた
+# （`BacktestStats` 39 列のうち 19 列が動く）。ISSUE-445 の失敗モードは
+# 「2 つの誤りの相殺」であり、件数だけを見るピンでは原理的に捕まらない。
+#
+# **段階 C で「不変であるべき」ピンである（値を書き換えて緑に戻してはならない）**:
+#   損益に効くのは積 `lot × contract_size` であり、現行は 0.1 × 10.0 = 1.0。
+#   `_kwargs()` を供給元 `load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` へ**対で**
+#   寄せると `volume_min` が 0.1 → 1.0 になり `NormalizeLot` が lot を 1.0 へ持ち上げる
+#   ため、積は 1.0 × 1.0 = 1.0 のまま不変になる。実測（銘柄仕様 5 項目
+#   contract_size / volume_min / volume_max / volume_step / stops_level を一括で真値へ
+#   寄せた変異）では `asdict(is_stats)` 39 列が現行と**完全一致**し、下記 sha256 も同値だった。
+#   したがって是正でこのピンが赤に転じたら、それは**是正の失敗**（片側だけ動かした・
+#   lot の解決を忘れた等）である。期待値の更新ではなく是正内容を疑うこと。
+_IS_TRADES = 4
+_IS_PROFIT = -156.29999999999563
+_IS_BALANCE_MIN = 9843.700000000004
+#: `BacktestStats` 全 39 列を畳んだ指紋（先例:
+#: `simulator/tests/integration/test_run_backtest_fingerprint.py` の `_digest`）。
+#: 列を名指しする assert だけだと、名指ししなかった列の退行を通す。
+_IS_STATS_SHA256 = "aa15b2c4a01f7234745a524330cbdd29b6ca9e93e97654c1e26ae8b53d4ff418"
+_OOS_TRADES = 2
+_OOS_PROFIT = -91.0
+
+
+def _stats_digest(stats) -> str:
+    return hashlib.sha256(
+        json.dumps(asdict(stats), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def test_barmode_registry_positions_bit_identical_after_slice(tmp_path):
@@ -139,3 +178,38 @@ def test_barmode_run_is_oos_is_stats_matches_truncated_build(tmp_path):
     # Assert: 非 trivial（約定発生）かつ bit-identical
     assert result.is_stats.trades > 0
     assert asdict(result.is_stats) == asdict(is_stats_rebuilt)
+
+
+def test_the_symbol_spec_reaches_the_is_and_oos_numbers(tmp_path):
+    """`_kwargs()` の銘柄仕様が IS/OOS の損益へ実際に効いていることを数値で固定する。
+
+    上の 3 検定は**同一パラメータ同士**を比べるため、`_kwargs()` の銘柄仕様が誤っていても
+    両辺が同じだけ動いて緑のまま通る（実測）。ここだけが「値が正しいか」を見る。
+
+    ピンの性質は上の `_IS_*` / `_OOS_*` の注記を参照——ISSUE-445 の是正で**動いてはならない**。
+    """
+    # Arrange
+    full_csv = _write_mt5_csv(tmp_path / "full.csv", n=60)
+    controller, request = build_interactor(**_kwargs(full_csv))
+    sample_time = request.bars[0].time
+    run_segment = make_run_segment(controller, request)
+
+    # Act
+    result = run_is_oos(
+        request=RunIsOosRequest(
+            split=normalize_time("2025-01-02T00:40:00", sample_time),
+            is_trading_start=normalize_time("2025-01-02T00:00:00", sample_time),
+        ),
+        full_bars=request.bars,
+        run_segment=run_segment,
+    )
+
+    # Assert: 件数は `contract_size` の誤りで動かない（実測）ので、単独では不十分。
+    assert result.is_stats.trades == _IS_TRADES
+    assert result.oos_stats.trades == _OOS_TRADES
+    # Assert: 積 `lot × contract_size` が効く量（損益・残高）を名指しで固定する。
+    assert result.is_stats.profit == pytest.approx(_IS_PROFIT)
+    assert result.is_stats.balance_min == pytest.approx(_IS_BALANCE_MIN)
+    assert result.oos_stats.profit == pytest.approx(_OOS_PROFIT)
+    # Assert: 名指ししなかった列の退行も通さない（全 39 列の指紋）。
+    assert _stats_digest(result.is_stats) == _IS_STATS_SHA256

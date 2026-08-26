@@ -68,6 +68,20 @@ def _write_comma_csv(path: Path, n: int = 12) -> Path:
 
 
 def _mt5_kwargs(csv_path: Path, ea_name: str) -> dict:
+    """⚠ ISSUE-445 段階 B: 本モジュールは銘柄仕様の**正しさを検証していない**。
+
+    下の `contract_size=10.0` ほか 5 項目は供給元スナップショット
+    （`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`）と食い違うが、
+    本モジュールが見るのは strategy の型・market_data の型・registry の系列名の解決
+    だけであり、いずれも backtest を**走らせない**段階で決まる。実測（2026-08-26）:
+    `contract_size` だけを真値 1.0 にしても、5 項目を対で真値へ寄せても、8 検定とも
+    緑のまま通る。
+
+    したがって数値ピンを足す余地が無い。段階 C は本モジュールの緑を「銘柄仕様の是正が
+    正しい」根拠にしてはならない。損益への波及は
+    `simulator/tests/unit/test_is_oos_barmode_index.py` の不変ピンが見る。
+    （`_comma_kwargs` は JP225 を名乗るが `contract_size=1.0`＝真値であり是正対象外。）
+    """
     return dict(
         data_path=csv_path, symbol="JP225", period="M1", ea_name=ea_name,
         initial_deposit=10_000.0, contract_size=10.0, volume_min=0.1, volume_max=100.0,

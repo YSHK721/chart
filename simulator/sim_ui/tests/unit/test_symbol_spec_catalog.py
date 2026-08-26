@@ -111,6 +111,16 @@ def test_settlement_currency_is_required_without_default():
     assert field.default is dataclasses.MISSING
     assert field.default_factory is dataclasses.MISSING
 
+    # ⚠ ISSUE-445 段階 B: 下の `RunProfile(...)` は `symbol="JP225"` を名乗り
+    # `contract_size=10.0` ほか供給元と食い違う値を持つため検出ゲート
+    # （`simulator/tests/unit/test_jp225_spec_literals_in_tests.py`）に掛かるが、
+    # **値は本検定の結果に 1 ビットも効かない**——見ているのは
+    # `settlement_currency` 省略時の `TypeError` だけであり、8 項目を真値へ寄せても
+    # 変わらず緑になる（実測 2026-08-26）。よって数値ピンを足す余地は無い。
+    # 段階 C は本検定の緑を「銘柄仕様が正しい」根拠にしてはならない。
+    # 本ファイルで値の正しさを見ているのは
+    # `test_jp225_profile_symbol_spec_comes_from_the_supply_snapshot` だけであり、
+    # そちらは供給元と 8 項目を突合している（期待値をこのファイルに書いていない）。
     with pytest.raises(TypeError):
         RunProfile(
             dataset="x", data_path="/x.csv", symbol="JP225", period="M1",

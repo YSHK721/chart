@@ -52,6 +52,12 @@ def test_controller_returns_200_with_datasets_and_ea_names():
     assert resp.payload["ok"] is True
     assert resp.payload["ea_names"] == ["A_EA", "TC24051901"]
     assert resp.payload["datasets"][0]["symbol"] == "JP225"
+    # ⚠ ISSUE-445 段階 B: この 10.0 は `_profile()` に書いた値の**写し**であり、
+    # 「翻訳が値を素通しするか」だけを見ている（権威との突合は
+    # `sim_ui/tests/integration/test_run_options_mt5_gate.py` が持つ）。
+    # よって段階 C で `_profile()` を供給元へ寄せたら、この行も**更新が要る**
+    # （実測 2026-08-26: `contract_size` だけ寄せても 5 項目を対で寄せてもここが赤になる）。
+    # 更新して緑に戻せるピンなので、「緑になった」ことは是正が正しい証拠にならない。
     assert resp.payload["datasets"][0]["contract_size"] == 10.0
     assert resp.payload["datasets"][0]["dataset"] == "jp225_m1"
 
