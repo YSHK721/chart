@@ -10051,9 +10051,18 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      ファイルの違反を赤にする。段階 A で値を直さない間に同じ誤りが別ファイルへ増えるのを
      防ぐ。あわせて「是正後の姿」（供給元から引き数値リテラルを置かない形）を判定関数に
      食わせて 0 件を恒久固定した——これが無いと「是正したのに赤が消えない」ゲートになりうる。
+   - **自己レビューで検出・是正した欠陥（重要）**: 初版は `_KNOWN`（台帳）を
+     `set(_FOUND) - set(_EXCLUDED)` で**走査結果から導出**していた。この形だと新規混入
+     検定の `unlisted` が構造的に常に空になり、**検定が空虚**だった（実測で確認）。
+     さらに悪いことに、新しい違反ファイルは collection 時に自動で台帳へ入って
+     `xfail` が付き、**赤にならずに吸収される**——ISSUE-445 の失敗モードそのものの
+     再生産である。台帳を 12 件の文字列リテラルとして書き下し、走査結果との**両方向**
+     一致（左が増える＝新規混入／左が減る＝是正済み）を検定する形に改めた。両方向とも
+     実際に落ちることを実測済み。導出への逆戻りは、`_KNOWN` の代入が tuple リテラルで
+     あることを本ファイル自身の AST で固定して防ぐ（導出形のとき実際に赤になる）。
    - **実測（全走）**: `python -m pytest simulator marketdata tools -q` =
-     **1 failed / 5394 passed / 1 skipped / 14 xfailed**（着手前ベースライン
-     1 failed / 5377 passed / 1 skipped / 1 xfailed。増分は passed +17・xfailed +13 で
+     **1 failed / 5395 passed / 1 skipped / 14 xfailed**（着手前ベースライン
+     1 failed / 5377 passed / 1 skipped / 1 xfailed。増分は passed +18・xfailed +13 で
      本件の新規検定と一致）。赤は既存の `test_composition_root_arg_parity` 1 件
      （ISSUE-427/371・無関係）で、新たな赤は無い。
    - **申し送り（段階 B 以降）**: (1) 上記 13 件の是正は `contract_size` 単独ではなく
