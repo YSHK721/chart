@@ -21,7 +21,9 @@ from typing import Any, Callable, Mapping
 
 from simulator.tools.run_is_oos_cli import assert_safe_output_dir
 from simulator.tools.symbol_spec_args import (
+    add_lot_size_argument,
     add_symbol_spec_arguments,
+    resolve_lot_size,
     resolve_symbol_spec,
 )
 from simulator.usecase.optimize import OptimizeRequest, optimize
@@ -168,7 +170,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     add_symbol_spec_arguments(p)
     p.add_argument("--ma-period", type=int, default=60)
     p.add_argument("--ma-method", default="ema")
-    p.add_argument("--lot-size", type=float, default=0.1)
+    # EA 入力 lot も既定値を置かず供給元の最小発注単位から引く（ISSUE-445・同じ単一ソース）。
+    add_lot_size_argument(p)
     p.add_argument("--stop-loss-points", type=int, default=0)
     p.add_argument("--take-profit-points", type=int, default=0)
     p.add_argument("--entry-offset-points", type=float, default=0.0)
@@ -223,19 +226,22 @@ def _parse_search_space(items: "list[str]") -> dict:
 
 
 def _build_base_kwargs(args) -> dict:
+    # contract_size / volume_min / volume_max / volume_step / stops_level /
+    # digits / point_size / leverage の 8 項目（供給元が唯一の権威・明示指定が優先）。
+    # walk_forward_cli も本関数を再利用するため、解決は 1 箇所にしかない。
+    # 解決は 1 回だけ行う（2 度呼ぶと食い違い警告が二重に出る）。
+    spec = resolve_symbol_spec(args)
     return dict(
         data_path=args.data_path,
         symbol=args.symbol,
         period=args.period,
         ea_name=args.ea_name,
         initial_deposit=args.initial_deposit,
-        # contract_size / volume_min / volume_max / volume_step / stops_level /
-        # digits / point_size / leverage の 8 項目（供給元が唯一の権威・明示指定が優先）。
-        # walk_forward_cli も本関数を再利用するため、解決は 1 箇所にしかない。
-        **resolve_symbol_spec(args),
+        **spec,
         ma_period=args.ma_period,
         ma_method=args.ma_method,
-        lot_size=args.lot_size,
+        # EA 入力 lot（未指定なら解決済み仕様の最小発注単位＝供給元由来）。
+        lot_size=resolve_lot_size(args, spec),
         stop_loss_points=args.stop_loss_points,
         take_profit_points=args.take_profit_points,
         entry_offset_points=args.entry_offset_points,

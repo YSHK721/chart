@@ -1,4 +1,6 @@
-"""symbol_spec_args — 実行入口 CLI の銘柄仕様引数を宣言し、解決する単一ソース。
+"""symbol_spec_args — 実行入口 CLI の「供給元から来る引数」を宣言し、解決する単一ソース。
+
+対象は銘柄仕様 8 項目と、既定値を供給元から引く EA 入力 ``lot_size``（下記「lot_size の扱い」）。
 
 由来: ISSUE-445 恒久策の**本番残渣（最後の 1 件）**／``.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md`` §3.2。
 
@@ -30,6 +32,17 @@ argparse の**既定値**として持っていた（``--contract-size 10.0`` / `
 誰にも気付かれなかったこと」であり、貼り付け回された古いコマンドが同じ 10 倍差を再生産しても
 無言のままになる経路をふさぐ。中断ではなく警告にするのは、明示値は供給元の写しではなく
 **意図的な仮定**でありうるためである（供給元と一致していなければ即誤りとは言えない）。
+
+## lot_size の扱い（2026-08-26・依頼者裁定）
+
+``lot_size`` は銘柄仕様ではなく **EA 入力**だが、既定値 ``0.1`` は同じ「人が書いた数」であった。
+供給元の ``volume_min=1.0`` の下では、原典 ``.mq5`` を持たず ``NormalizeLot`` 相当を実装しない
+素通し戦略（``TC24051901``）が発注できない（実測 2026-08-26: ``InvalidPriceError``）。
+既定を供給元の**最小発注単位**（``volume_min``）にすると、原典 EA の ``NormalizeLot(0.1)`` の
+戻り値と同値になり、どちらの戦略でも同じ実効 lot になる。前例は ``export_trade_markers``
+（``b440a9d`` で ``lot_size=spec["volume_min"]`` を採用）であり、同じ作法に揃える。
+規律 1〜3 のうち 1（既定値を置かない）と 2（未指定は供給元から引く）は lot にも同じく適用する。
+3（fail-loud）は銘柄仕様の解決が先に走るため**自動的に同じ**になる（:func:`resolve_lot_size`）。
 
 ## 供給元（サーバ）名を CLI 引数にしない理由
 
@@ -104,6 +117,52 @@ def add_symbol_spec_arguments(parser: argparse.ArgumentParser) -> argparse.Argum
     return parser
 
 
+def add_lot_size_argument(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """EA 入力 ``--lot-size`` を ``default=None`` で宣言する（既定値を置かない）。
+
+    オプション名は :func:`spec_option` で導出する（綴りを写さない）。``lot_size`` は銘柄仕様
+    ではないため :func:`add_symbol_spec_arguments` とは別の関数だが、**既定値を置かない**という
+    規律は同じである（下の :func:`resolve_lot_size` を参照）。
+    """
+    parser.add_argument(
+        spec_option("lot_size"),
+        type=float,
+        default=None,
+        help="EA 入力 lot（既定値なし。未指定なら供給元の最小発注単位 volume_min を使う）",
+    )
+    return parser
+
+
+def resolve_lot_size(args: argparse.Namespace, spec: "Mapping[str, Any]") -> float:
+    """EA 入力 lot を解決する。明示指定が優先、未指定なら ``spec`` の最小発注単位。
+
+    引数 ``spec`` は :func:`resolve_symbol_spec` の戻り値（＝**解決済み**の銘柄仕様）である。
+    供給元スナップショットを直接引き直さないのは 2 つの理由による: (1) 解決済み仕様と食い違う
+    lot を作らない（8 項目を明示して未登録銘柄を走らせる経路でも、その明示 ``volume_min`` が
+    lot の既定になる）。(2) 解決を 2 度呼ぶと食い違い警告が二重に出る。
+    したがって lot 固有の失敗経路は無く、未登録銘柄の fail-loud は 8 項目と**同じ**
+    :class:`SymbolSpecArgsError`（呼出側が先に :func:`resolve_symbol_spec` を通るため）である。
+
+    なぜ既定が ``volume_min`` か（``export_trade_markers`` の前例・``b440a9d``）:
+        人が選んだ数ではなく**原典 EA の ``NormalizeLot(0.1)`` の戻り値と同値**だからである。
+        原典 ``.mq5`` を移植した戦略は発注前に ``NormalizeLot`` を掛け、``volume_min`` 未満の
+        lot を ``volume_min`` へ持ち上げる。素通し戦略（``TC24051901``・原典 ``.mq5`` を持たず
+        正規化段が無い）ではその持ち上げが起きないため、Root が発注可能な lot を供給しなければ
+        ``InvalidPriceError`` になる（実測 2026-08-26: 旧既定 0.1 は供給元 ``volume_min=1.0``
+        の下で「volume が [volume_min, volume_max] 範囲外」）。既定を供給元由来にすると
+        **どちらの戦略でも同じ実効 lot** になる。
+
+    明示指定を供給元と突き合わせて警告しないのは 8 項目との**意図的な非対称**である。
+    供給元は ``lot_size`` という値を持たない——``volume_min`` は lot の**下限**であって
+    lot の供給値ではない。下限より大きい lot は正当な指定（例: 2 ロット）であり、食い違いを
+    警告にすると正当な使い方のたびに鳴って誤りを識別できない。識別できる条件（下限割れ・
+    刻み外れ）は :meth:`simulator.domain.order.Order.validate` が既に所有し
+    ``InvalidPriceError`` で落とす（実測: ``--lot-size 1.5`` は「volume が volume_step の
+    倍数でない」）。同じ規則を CLI 側へ書き写すと所有者が 2 つになる。
+    """
+    return spec["volume_min"] if args.lot_size is None else args.lot_size
+
+
 def _warn_on_disagreement(
     explicit: "Mapping[str, Any]", supplied: "Mapping[str, Any]", symbol: str
 ) -> None:
@@ -166,5 +225,7 @@ __all__ = [
     "SymbolSpecArgsError",
     "spec_option",
     "add_symbol_spec_arguments",
+    "add_lot_size_argument",
     "resolve_symbol_spec",
+    "resolve_lot_size",
 ]

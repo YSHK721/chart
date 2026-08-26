@@ -27,8 +27,10 @@
     2. 走査対象 6 ファイル（両ツール + CLI 3 件 + ``symbol_spec_args``）のソースに銘柄仕様
        8 キーへの数値リテラル束縛が 1 つも無い（AST 走査）。keyword 引数・単純代入
        （クラス属性を含む）・dict リテラル・argparse 既定値の 4 形を検出する。
-    3. ``export_trade_markers`` の EA 入力 lot が供給元の volume 制約を満たす
+    3. Root が供給する EA 入力 lot が供給元の volume 制約を満たす
        （``domain.order.Order.validate`` ＝ 実行時に発注を弾く当のコードで判定する）。
+       対象は ``export_trade_markers`` と、実行入口 CLI 3 件の既定 lot
+       （``symbol_spec_args.resolve_lot_size``・2026-08-26 追加）。
 
     3 について ``export_report_payload``（``StopEntryProbe_EA``）を対象にしないのは、当該戦略が
     原典 ``2026-04_stop-probe/ea.mq5`` の ``NormalizeLot`` を移植済み（ISSUE-445 段階 3-B）で
@@ -41,6 +43,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import ast
 from pathlib import Path
 
@@ -61,7 +64,7 @@ from simulator.tools import (
     symbol_spec_args,
     walk_forward_cli,
 )
-from simulator.tools.symbol_spec_args import spec_option
+from simulator.tools.symbol_spec_args import resolve_lot_size, spec_option
 from simulator.usecase.models import SymbolSpec
 
 _SYMBOL = "JP225"
@@ -213,11 +216,27 @@ def test_markers_tool_lot_is_orderable_under_the_snapshot_volume_rules(spec):
     order.validate(symbol_spec)  # InvalidPriceError が出ないこと＝発注可能
 
 
+def test_cli_default_lot_is_orderable_under_the_snapshot_volume_rules(spec):
+    """実行入口 CLI が既定で供給する lot も同じ規律で発注可能である（2026-08-26 追加）。
+
+    CLI は 3 件とも ``--lot-size`` に既定値を持たず、未指定なら
+    ``symbol_spec_args.resolve_lot_size`` が解決済み仕様から引く（既定値なしと解決規則は
+    ``test_cli_symbol_spec_args.py`` が組み上がったパーサ側で固定する）。ここは
+    **実行時に発注を弾く当のコード**（``Order.validate``）で発注可能性だけを見る。
+    是正前の既定 0.1 が弾かれることは直下の負の対照が示す。
+    """
+    lot = resolve_lot_size(argparse.Namespace(lot_size=None), spec)
+    order = Order(side="buy", kind="market", volume=lot, price=None)
+    order.validate(SymbolSpec(**spec))  # InvalidPriceError が出ないこと＝発注可能
+
+
 def test_previous_lot_is_rejected_under_the_snapshot_volume_rules(spec):
     """**負の対照**: 従来の ``lot_size=0.1`` は供給元の ``volume_min`` の下で発注不成立。
 
     是正前の値（0.1）と是正前の ``volume_min``（0.01）が**対で**成立していたことを示す
     （どちらか一方だけを真値へ寄せると実行時に落ちる＝ISSUE-445 の「相殺」と同型）。
+    上の 2 検定（markers ツール／CLI 既定）が空虚でないことの対照でもある——0.1 は
+    ``export_trade_markers`` と CLI 3 件が**ともに**持っていた是正前の lot である。
     """
     symbol_spec = SymbolSpec(**spec)
     with pytest.raises(InvalidPriceError):

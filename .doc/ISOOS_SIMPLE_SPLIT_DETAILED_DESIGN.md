@@ -292,6 +292,23 @@ def build_degradation_report(
 | `--symbol` `--period` `--initial-deposit` `--contract-size` `--lot-size` `--stop-loss-points` `--take-profit-points` `--entry-offset-points` `--entry-type` `--ma-period` `--ma-method` ほか | — | — | — | `build_interactor` の戦略・シンボルパラメータをそのまま透過 |
 | `--config-override` | str（`k=v` 反復） | 任意 | — | `config_overrides` dict 構成（`pending_lifecycle=true` 等） |
 
+> **注記（2026-08-26 追記・上表は初版 v1.0.0 時点の記録であり現在形ではない）**
+> 上表 5 行目の「そのまま透過」は、初版（2026-06-20）当時の設計判断の記録として書き換えずに残す。
+> 現在は ISSUE-445 の恒久策により、次の 9 引数だけが**透過ではなく解決を経る**：
+> 銘柄仕様 8 項目（`--contract-size` / `--volume-min` / `--volume-max` / `--volume-step` /
+> `--stops-level` / `--digits` / `--point-size` / `--leverage`）と EA 入力 `--lot-size`。
+> 9 引数とも **argparse 既定値を持たない**（`default=None`）。未指定時は
+> `simulator/tools/symbol_spec_args.py` が供給元スナップショット
+> （`marketdata/symbol_specs/<server>/<symbol>.json`・MT5 端末から機械取得）から解決する。
+> 8 項目はスナップショットの同名フィールド、`--lot-size` は解決済み仕様の `volume_min`
+> （＝最小発注単位）から来る。明示指定は 9 引数とも優先される（8 項目は供給元と食い違えば
+> stderr へ警告。`--lot-size` は供給元が lot の値を持たないため警告しない）。未登録銘柄で
+> 8 項目のいずれかが未指定なら `SymbolSpecArgsError` で中断する（既定値で埋めない）。
+> 本注記は同表の他の引数（`--symbol` / `--period` / `--initial-deposit` / `--ma-period` /
+> `--ma-method` / `--stop-loss-points` / `--take-profit-points` / `--entry-offset-points` /
+> `--entry-type`）の透過を変更しない。同じ形は `optimize_cli` / `walk_forward_cli` にも適用済み。
+> 根拠と実測: `ISSUE.md` の ISSUE-445 ／ `.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md` §RC-1。
+
 #### 2.2.3 run_segment コールバックの構成（参照実装）
 
 ```python

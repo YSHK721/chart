@@ -23,6 +23,23 @@
     4. 供給元にスナップショットが無い銘柄で明示指定も無ければ **fail-loud**。メッセージは
        「どの銘柄か」「どう取得するか」「どう明示指定するか」を含む。
     5. 8 項目すべてを明示指定した場合はスナップショット不在でも通る（明示指定が唯一の源）。
+    6. EA 入力 ``--lot-size`` も既定値を持たず、未指定なら**解決済み仕様の** ``volume_min``
+       （＝供給元の最小発注単位）から来る（2026-08-26 追加・下記）。
+
+**6 の由来（2026-08-26・依頼者裁定）**: `--lot-size` だけが人の書いた数（0.1）を既定値として
+残っていた。素通し戦略（``TC24051901``・原典 ``.mq5`` を持たず ``NormalizeLot`` 相当が無い）
+では供給元の ``volume_min=1.0`` の下で ``InvalidPriceError`` になり実行できない（実測）。
+前例は ``export_trade_markers``（``b440a9d``）の ``lot_size=spec["volume_min"]`` であり、
+「人が選んだ数ではなく原典 EA の ``NormalizeLot(0.1)`` の戻り値と同値」であることを根拠に
+既に採用・レビュー通過している。同じ作法へ揃える。
+
+``--lot-size`` の**明示指定は 8 項目と対称**（明示が優先）だが、**食い違い警告は置かない**
+（意図的な非対称）。供給元は ``lot_size`` という値を持たず、``volume_min`` は lot の**下限**で
+あって lot の供給値ではない。``volume_min`` と違う lot は正当な指定（例: 2 ロット）であり、
+警告にすると正当な使い方のたびに鳴る＝誤りを識別できない。識別できる条件（下限割れ・刻み
+外れ）は ``domain.order.Order.validate`` が既に所有し ``InvalidPriceError`` で落ちる
+（実測 2026-08-26: ``--lot-size 0.1`` → 範囲外 / ``--lot-size 1.5`` → 刻み外れ）。同じ規則を
+CLI 側へ書き写すと所有者が 2 つになる。
 
 負の対照を各検定に対で置く（落ちないゲートは無価値であるため）。
 """
@@ -40,6 +57,7 @@ from simulator.tools import optimize_cli, run_is_oos_cli, walk_forward_cli
 from simulator.tools.symbol_spec_args import (
     SPEC_KEYS,
     SymbolSpecArgsError,
+    resolve_lot_size,
     resolve_symbol_spec,
     spec_option,
 )
@@ -59,6 +77,21 @@ _REMOVED_DEFAULTS = {
     "volume_step": 0.01,
     "stops_level": 0,
 }
+
+#: EA 入力 lot のフィールド名（オプション名は ``spec_option`` が導出する＝綴りを写さない）。
+_LOT = "lot_size"
+#: 是正前に 3 CLI が ``--lot-size`` の argparse 既定値として持っていた値（2026-08-26 に撤去）。
+#: 期待値ではなく負の対照。撤去済みのためソースからは取得できず、ここが唯一の記録である。
+_REMOVED_LOT_DEFAULT = 0.1
+
+
+def _other_lot(spec: dict) -> float:
+    """既定（``volume_min``）と**別物**の、供給元の刻みに載る lot（明示指定の入力）。
+
+    値をここに書かない。``volume_step`` が 0 の供給元では既定と一致してしまうが、その場合は
+    対の負の対照（``test_the_explicit_lot_used_above_differs_…``）が赤になる（空虚化しない）。
+    """
+    return spec["volume_min"] + spec["volume_step"]
 
 
 def _run_is_oos_argv() -> "list[str]":
@@ -216,3 +249,87 @@ def test_unregistered_symbol_with_one_value_missing_still_fails_loud(spec):
     with pytest.raises(SymbolSpecArgsError) as ei:
         resolve_symbol_spec(_parse("run_is_oos_cli", explicit))
     assert spec_option(keys[-1]) in str(ei.value)
+
+
+# --- 6. EA 入力 lot も既定値を持たず供給元の最小発注単位から来る ------------------------
+
+
+def test_cli_parsers_hold_no_lot_size_default():
+    for name in _CLIS:
+        assert _CLIS[name][0]().get_default(_LOT) is None, name
+
+
+def test_cli_parsers_still_declare_the_lot_size_option():
+    """**負の対照**: 「既定値なし」は引数を消して達成したのではない（明示指定は可能）。"""
+    for name in _CLIS:
+        options = {opt for action in _CLIS[name][0]()._actions for opt in action.option_strings}
+        assert spec_option(_LOT) in options, name
+
+
+@pytest.mark.parametrize("name", sorted(_CLIS))
+def test_cli_resolves_the_lot_size_from_the_supplied_minimum_volume(name, spec):
+    """既定 lot は供給元の最小発注単位（``volume_min``）。期待値はテスト側に書かない。"""
+    args = _parse(name)
+    assert resolve_lot_size(args, resolve_symbol_spec(args)) == spec["volume_min"]
+
+
+def test_the_removed_lot_default_disagrees_with_the_supplied_minimum_volume(spec):
+    """**負の対照**: 撤去した既定 lot は供給元の最小発注単位と一致しない（上は空虚でない）。"""
+    assert _REMOVED_LOT_DEFAULT != spec["volume_min"]
+
+
+def test_explicit_lot_size_overrides_the_supplied_minimum_volume(spec):
+    """明示指定は 8 項目と**対称**に優先する（呼出時の意図であり、コマンド行に見える）。"""
+    args = _parse("run_is_oos_cli", [spec_option(_LOT), str(_other_lot(spec))])
+    assert resolve_lot_size(args, resolve_symbol_spec(args)) == _other_lot(spec)
+
+
+def test_the_explicit_lot_used_above_differs_from_the_supplied_minimum_volume(spec):
+    """**負の対照**: 上の明示値は既定と別物（「明示優先」が既定と見分けられている）。"""
+    assert _other_lot(spec) != spec["volume_min"]
+
+
+def test_explicit_lot_size_is_not_warned_when_it_differs_from_the_minimum_volume(
+    spec, capsys
+):
+    """lot の食い違いは**警告しない**（8 項目との意図的な非対称・module docstring）。
+
+    供給元は ``lot_size`` を持たず ``volume_min`` は下限であって lot の供給値ではない。
+    下限より大きい lot は正当な指定であり、警告にすると正当な使い方のたびに鳴る。
+    """
+    args = _parse("run_is_oos_cli", [spec_option(_LOT), str(_other_lot(spec))])
+    resolve_lot_size(args, resolve_symbol_spec(args))
+    assert capsys.readouterr().err == ""
+
+
+def test_a_disagreeing_symbol_spec_item_is_still_warned_on_the_same_path(spec, capsys):
+    """**負の対照**: 同じ呼び出し列で銘柄仕様が食い違えば警告は出る（無警告は lot 限定）。"""
+    args = _parse(
+        "run_is_oos_cli",
+        [spec_option(_LOT), str(_other_lot(spec)), "--contract-size", "3.0"],
+    )
+    resolve_lot_size(args, resolve_symbol_spec(args))
+    assert "contract_size" in capsys.readouterr().err
+
+
+def test_unregistered_symbol_fails_loud_even_when_the_lot_is_explicit(spec):
+    """未登録銘柄の扱いは 8 項目と**同じ** fail-loud（lot の明示は仕様の欠落を救わない）。"""
+    args = _parse(
+        "run_is_oos_cli",
+        ["--symbol", _UNREGISTERED, spec_option(_LOT), str(_other_lot(spec))],
+    )
+    with pytest.raises(SymbolSpecArgsError):
+        resolve_lot_size(args, resolve_symbol_spec(args))
+
+
+def test_unregistered_symbol_with_every_value_explicit_resolves_the_lot_too(spec):
+    """**負の対照**: 8 項目を明示すれば未登録銘柄でも lot まで解決する（無条件に落ちない）。
+
+    既定 lot は**解決済み仕様**から引くのであって供給元スナップショットを直接引かない
+    （＝仕様が解決できた経路では必ず lot も解決できる）ことの実証でもある。
+    """
+    explicit: "list[str]" = ["--symbol", _UNREGISTERED]
+    for key in SPEC_KEYS:
+        explicit += [spec_option(key), str(spec[key])]
+    args = _parse("run_is_oos_cli", explicit)
+    assert resolve_lot_size(args, resolve_symbol_spec(args)) == spec["volume_min"]
