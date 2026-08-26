@@ -9647,6 +9647,42 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      （pending / probe）は「キー未供給なら lot 素通し」を検定しており、fail-loud 化は
      テスト修正ではなく**挙動仕様の変更**になる。よって fail-loud 化は
      「15 fixture へのキー供給追加」＋「仕様固定 2 件の撤回の裁定」を要する。**本段階では変更しない。**
+   → **段階 3-C 完了（2026-08-26・依頼者指示「3-C を実装しろ」・commit `3d190df`）**:
+   発注の不変条件検査を実行経路へ結線した。設計書 §7「非対象」に送っていた項目である。
+   - **埋めた穴**: `Order.validate`（side/kind の整合・volume の範囲と刻み・SL/TP の
+     stops_level 距離）は domain 実装当初から存在したが、**本番の実行経路から一度も
+     呼ばれていなかった**（実測: 本番コードの `.validate(` 呼出は `usecase/account_engine.py`
+     の 2 件のみ）。定義された不変条件が検査されず、MT5 では成立しない発注がそのまま約定し得た。
+     RC-2（`MaSlope` が `volume=0.1 < volume_min=1.0` を発注）はまさにこの型であり、
+     **本門が結線されていれば初回実行で露見していた**（`TestAdmissionWouldHaveCaughtRc2` が
+     供給元スナップショットの実値で固定）。
+   - **結線点**: `usecase/_execution.admit_orders` を発注受理の唯一の門として新設し、
+     `RunBacktestInteractor` の 3 呼出点（bar 経路の `on_new_bar`・every-tick 経路の
+     `on_new_bar`・ペンディング再アームの `on_tick`）を通した。`SizingDecorator` 等の
+     デコレータは `self._strategy` の内側にあるため合成後の発注が検査される。
+   - **違反時は送出する（拒否＋続行にしない）**。原典 EA はいずれも `OrderSend` の前に
+     自前で `NormalizeLot` を掛けており、**不正発注はサーバへ到達しない**。つまり
+     「MT5 サーバが不正発注をどう扱うか」は参照実装の定義域の外にある。ここで拒否＋続行を
+     選ぶと参照実装が定義していない挙動を推測で作り込むことになり、かつ壊れたアダプタが
+     「トレード 0 件」という一見正当な結果を無言で返す。受理側は判断せず送出し人が裁定する。
+   - **`Order._validate_volume` の除算ガード**: `volume_step <= 0` を「刻み制約なし」として
+     扱う。実測で `WeeklyVolBand` 経路の `SymbolSpec` が `volume_step=0.0` を渡しており
+     （`test_weekly_vol_band_segments.py`）、従来なら ZeroDivisionError で検査器が検査対象と
+     無関係な理由で落ちた。戦略側 `stop_entry_probe._normalize_lot` の `if step > 0` 分岐と同一規約。
+   - **再発は規約でなく検査で塞ぐ**: `tests/unit/test_order_admission.py` が `run_backtest.py` を
+     AST 走査し、`self._strategy.<発注フック>()` が `admit_orders` の引数配下に無ければ赤にする。
+     フック名は `StrategyPort` の戻り型注釈（`list[Order]`）から導出しており検査側に直書きしない
+     （Port に発注フックが増えれば自動で対象に入る）。負の対照（門を外した呼出点を検出・
+     引数配下に深く入れ子でも受理と認める）も恒久テストとして固定した。
+   - **影響測定（実測）**: 結線した状態で新規テストを含めずに全走し **1 failed / 5304 passed /
+     1 skipped** ＝着手前と件数まで同一。すなわち現行の全経路で**不変条件違反は 0 件**であり、
+     送出か拒否かの選択が観測に差を生む場面は現時点で存在しない。
+     `test_ma_slope_reconcile` / `test_run_backtest_fingerprint` は緑（`trades=1164` /
+     `net=-6173.9` / `balance=3826.1`・指紋一致）。新規テスト込みの最終は
+     **1 failed / 5323 passed / 1 skipped**（差分 +19 はすべて新規。赤は既存の
+     `test_composition_root_arg_parity` 1 件＝ISSUE-427/371・無関係）。
+   - **本段階の非対象**: ペンディング価格と現在値の距離（MT5 は `stops_level` を発注価格にも
+     課す）は `Order.validate` が検査しておらず、ここでも追加しない（参照実装の確認が先）。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
