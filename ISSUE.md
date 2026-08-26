@@ -9610,6 +9610,43 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      `b3329d80d777` / `dd31603ea216` / `3a46970034bc`）。`_normalize_lot` は
      `ma_slope` と `ma_slope_pending` が AST 一致（`aa6d11ca051a`）、`stop_entry_probe` のみ別
      （`80792b0ba327`）。集約には `ma_slope.py` の改変が要るが本段階では触らない指示のため未実施。
+   → **解消（2026-08-26・依頼者承認済み・commit `d72ff60` / `a43cffb`）**: 上記の手書き複製を
+   単一ソース化した。**挙動は 1 ビットも変えていない**（下記実測）。
+   - 新設 `simulator/adapter/strategy/mql5_runtime.py` が MQL5 の言語・実行環境の意味論を
+     **単独で所有**する: `math_round`（`MathRound`）/ `normalize_double`（`NormalizeDouble`）/
+     `spec_value`（`SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_*)` 相当）。戦略ロジックは置かない。
+   - 3 戦略の MQL5 プリミティブ private 定義は **0 件**（AST 実測）。`_normalize_lot` は
+     原典が別物であるため各戦略に残した（`test_normalize_lot_originals_diverge.py` は不変・緑）。
+   - **再発は規約でなく検査で塞ぐ**: `tests/unit/test_mql5_primitive_single_ownership.py` が
+     `simulator/adapter/strategy/*.py` を AST 走査し、所有関数の再実装を
+     (1) 正規化 AST 指紋の一致 (2) 所有関数との同名 のいずれかで検出して赤にする。
+     走査対象は glob・所有一覧は `mql5_runtime.__all__` から導出しており、検査側に列挙を
+     ハードコードしていない（新戦略・新プリミティブは自動的に対象へ入る）。
+     非空虚性は負の対照で実証済み: `ma_slope.py` へ**関数名も変数名も変えた** private コピーを
+     一時注入すると 3 件とも「構造一致」で赤になった（注入は Edit で撤去済み・作業ツリーは
+     HEAD と完全一致）。合成ファイルによる同等の対照を恒久テストとしても固定した。
+   - 実測（挙動不変の直接証拠）: confirmation golden 3 本の trades 系列 sha256 が着手前と一致
+     — `2026-03_ma-limit` `2ba70d5458be…`（12787 / +5666）/ `2026-04_ma-limit` `83afa16d9b8f…`
+     （1770 / −4610）/ `2026-04_stop-probe` `30e586659b21…`（10100 / +9990）。
+     `test_ma_slope_reconcile` / `test_run_backtest_fingerprint` は緑（`trades=1164` /
+     `net=-6173.9` / `balance=3826.1`・指紋一致）。全体は **1 failed / 5304 passed / 1 skipped**
+     （着手前 1 failed / 5263 passed / 1 skipped。差分 +41 はすべて新規テスト。赤は既存の
+     `test_composition_root_arg_parity` 1 件＝ISSUE-427/371・無関係）。
+   - **`spec_value` の fail-loud 化は既存テストを壊さずには不可能（実測・変更していない）**:
+     `RunConfig` は「欠落キーは loud に失敗」（`main/run_config.py:29-33`）だが `spec_value` は
+     `KeyError` を `0.0`＝制約なしに翻訳しており非対称である。実行時に fail-loud 版へ差し替えて
+     全走したところ **17 件が赤**（`test_strategy_ma_slope.py` 5 / `test_stop_entry_probe.py` 6 /
+     `test_ma_slope_pending.py` 4 / `*_normalize_lot.py` 2）。欠落は 3 種
+     （`RunConfig['volume_min']` / `dict['volume_min']` / `dict['volume_step']`・計 17 回）。
+     内訳の性質が 2 つに分かれる:
+     (a) **本番経路は影響を受けない** — `build_interactor` は `volume_min/max/step` を
+     必須キーワード引数で受け（`main/__init__.py:631-633`）常に strategy_params へ入れる
+     （:704-706）。観測された `RunConfig['volume_min']` は `test_stop_entry_probe.py:300/328/354`
+     が `RunConfig` を直接組む**テスト専用経路**である。
+     (b) **2 件は仕様として固定されている** — `test_missing_volume_spec_keys_leave_lot_untouched`
+     （pending / probe）は「キー未供給なら lot 素通し」を検定しており、fail-loud 化は
+     テスト修正ではなく**挙動仕様の変更**になる。よって fail-loud 化は
+     「15 fixture へのキー供給追加」＋「仕様固定 2 件の撤回の裁定」を要する。**本段階では変更しない。**
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
