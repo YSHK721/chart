@@ -22,6 +22,10 @@ import pandas as pd
 
 from simulator.domain.bar_time import epoch_seconds, is_epoch_integer
 from simulator.main import build_interactor
+from simulator.tools.symbol_spec_args import (
+    add_symbol_spec_arguments,
+    resolve_symbol_spec,
+)
 from simulator.usecase.run_is_oos import RunIsOosRequest, run_is_oos
 
 
@@ -139,14 +143,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--symbol", default="JP225")
     p.add_argument("--period", default="M1")
     p.add_argument("--initial-deposit", type=float, default=10_000.0)
-    p.add_argument("--contract-size", type=float, default=10.0)
-    p.add_argument("--volume-min", type=float, default=0.01)
-    p.add_argument("--volume-max", type=float, default=100.0)
-    p.add_argument("--volume-step", type=float, default=0.01)
-    p.add_argument("--stops-level", type=int, default=0)
-    p.add_argument("--digits", type=int, default=1)
-    p.add_argument("--point-size", type=float, default=0.1)
-    p.add_argument("--leverage", type=float, default=10.0)
+    # 銘柄仕様 8 項目は既定値を置かず供給元から解決する（ISSUE-445 RC-1・単一ソース）。
+    add_symbol_spec_arguments(p)
     p.add_argument("--ma-period", type=int, default=60)
     p.add_argument("--ma-method", default="ema")
     p.add_argument("--lot-size", type=float, default=0.1)
@@ -192,14 +190,9 @@ def main(argv: "list[str] | None" = None, *, repo_root: Any = None) -> int:
         period=args.period,
         ea_name=args.ea_name,
         initial_deposit=args.initial_deposit,
-        contract_size=args.contract_size,
-        volume_min=args.volume_min,
-        volume_max=args.volume_max,
-        volume_step=args.volume_step,
-        stops_level=args.stops_level,
-        digits=args.digits,
-        point_size=args.point_size,
-        leverage=args.leverage,
+        # contract_size / volume_min / volume_max / volume_step / stops_level /
+        # digits / point_size / leverage の 8 項目（供給元が唯一の権威・明示指定が優先）。
+        **resolve_symbol_spec(args),
         ma_period=args.ma_period,
         ma_method=args.ma_method,
         lot_size=args.lot_size,
