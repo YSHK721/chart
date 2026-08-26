@@ -9975,6 +9975,94 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      `contract_size=10.0` / `lot_size=0.1`、Best Parameters 表に `lot_size 0.1`）にも同型の
      食い違いが残る。どちらも本タスクの触ってよいファイルの外。
 
+7. **段階 A（2026-08-26）— テストコードの残渣を機械が持つ状態にする（値は 1 つも直さない）**:
+   fixture・カタログ・本番ツール・本番 CLI は是正済みだが、**テストコードには誤値が残る**。
+   段階 0 / 段階 3-D0 と同じ規律で、是正より先に検出ゲートを置き、既知の不整合を
+   `xfail(strict=True)` で固定した。是正が入ると XPASS(strict) で赤に転じ、マーカー撤去を促す
+   （XPASS(strict) が実際に赤になることは最小再現で実測済み）。
+   - **新設**: `simulator/tests/unit/test_jp225_spec_literals_in_tests.py`。
+     `test_tool_symbol_specs_from_snapshot.py` を拡張せず別ファイルにした理由は 2 つ。
+     (a) 向こうの `_spec_literals` は**銘柄を問わない**走査であり、テストコードへ向けると
+     EURUSD 相当（`contract_size=100000.0`）や合成仕様（`1.0`）まで挙がって RC-1 の残渣と
+     区別できない（実測: 10 ファイルで 100 件超の列挙になる）。本件の判定は「JP225 を名乗る
+     組み立てに限る」別問いで、共有できるロジックが無い＝複製ではない。(b) 向こうは本番
+     コードの**恒久**不変条件で全件緑、こちらは残渣が消えたら**ファイルごと削除する暫定
+     ゲート**で寿命が違う。
+   - **走査対象を人が列挙しない**: 対象は `git ls-files '*.py'`（tracked 全件 1308）＋ MT5
+     レポート JSON 1 件で、そこから機械が違反を**発見**する。人が書いた一覧を検査する形だと
+     一覧の取りこぼしがそのまま検出漏れになる。**この差は現に出た**——先行調査が手で挙げた
+     11 件に対し tracked 全件走査は **13 件**を検出し、下記 8/9 が一覧から漏れていた。
+     `rglob` ではなく index を引くのは、`simulator/tests/confirmation/**` の未追跡スクリプト
+     15 件を走査から外すため（実測）。
+   - **既知違反の台帳（13 件・実測 2026-08-26）**。いずれも `symbol="JP225"` を名乗りながら
+     供給元と食い違う `contract_size` を持つ。行番号は当時のもの：
+     1. `simulator/tests/integration/test_composition_ma_slope.py` L44
+     2. `simulator/tests/integration/test_ea_factory_selection_rule.py` L133
+     3. `simulator/tests/integration/test_ea_indicator_series_accessor.py` L56
+     4. `simulator/tests/integration/test_is_oos_stop_probe.py` L49
+     5. `simulator/tests/integration/test_marketdata_window_mt5_path.py` L64
+     6. `simulator/tests/integration/test_optimize_sp1_degenerate.py` L45
+     7. `simulator/tests/integration/test_walk_forward_integration.py` L36
+     8. `simulator/sim_ui/tests/unit/test_run_options_api_controller.py` L22 **（一覧漏れ）**
+     9. `simulator/sim_ui/tests/unit/test_symbol_spec_catalog.py` L117 **（一覧漏れ）**
+     10. `simulator/tests/unit/test_ea_factory_registry.py` L73（`_mt5_kwargs` のみ。
+         同ファイルの `_comma_kwargs` は JP225 を名乗るが `contract_size=1.0`＝真値で対象外）
+     11. `simulator/tests/unit/test_is_oos_barmode_index.py` L51
+     12. `simulator/tests/unit/test_run_backtest.py` L395（`_jp225_spec()`。`symbol=` を持たず
+         **関数名**だけが JP225 を名乗るため、同定に「囲む def 名」の規則を足した）
+     13. `simulator/tests/fixtures/mt5/ma_slope_jp225_202601/expected/report.json`
+         `settings.contract_size: 10`（AST では走査できないため JSON 用の入口を別に置いた。
+         **判定は共有**する）
+   - **JSON fixture の限界（断定しないこと）**: 当該 `report.json` の `deals[]` に `vol`
+     フィールドが無く、**この fixture 単独では実約定 volume を確定できない**。証明できるのは
+     積 `lot × contract_size = 0.1 × 10 = 1.0` のみ。是正は lot と contract_size を**対で**
+     動かす必要がある。
+   - **赤は contract_size だけを挙げない**: 検出の起点は `contract_size` の食い違いだが、
+     起点が立った組み立ての**食い違うキーを全部**挙げる（実測では併せて `volume_min` /
+     `volume_max` / `volume_step` / `stops_level` が出る）。ISSUE-445 の失敗モードは
+     「2 つの誤りの相殺」であり、`contract_size` だけ真値へ寄せると `volume_min` との組が
+     壊れて実行時に落ちるため（上記 OOS trades 2438 → 4877 と同型）。
+   - **是正対象でないもの（偽陽性にしない・分類と根拠）**:
+     - **構造上そもそも検出しない**（`_MUST_NOT_DETECT`。「一覧に入れていない」ではなく
+       **実ソースを判定関数に食わせて 0 件**であることを検定で固定した）:
+       `test_tool_symbol_specs_from_snapshot.py` の `_REMOVED_LITERALS` と
+       `test_cli_symbol_spec_args.py` の `_REMOVED_DEFAULTS`（負の対照。Call ではなく
+       module 直下の dict）／`test_stop_entry_probe.py`（`_spec()` は銘柄を名乗らない。
+       値は `margin=1*10*100/10=100` の手計算で `stop_out` を成立させるテストの都合）／
+       `test_hedged_margin_multi.py`（`contract_size=CONTRACT_SIZE` は Name であって
+       数値リテラルでない）／`test_trade_markers_presenter.py`（JP225 を名乗る組み立てが
+       無い。期待値 622.0 に `*10` が焼き込まれている）。
+     - **検出されるが明示除外**（`_EXCLUDED_BY_INTENT`。機械では判別できないため、
+       「検出はされる」ことを別検定で固定したうえで外した＝取りこぼしでないことの実証）:
+       `simulator/tests/integration/test_sizing_estimated_entry_price.py` L135。合格閾値が
+       `volume_step` であり真値にすると閾値が 10 倍に緩んで検定が空虚化する。是正には
+       閾値の設計変更が要り、値の差し替えでは済まない。
+     - 合成データ（`symbol` が `"SYM"` / `"AAA"` 等）と `.codescan/` ・
+       `simulator/sim_ui/data/*/spec.json` ・`simulator/tests/confirmation/**` は
+       untracked または JP225 を名乗らないため走査に掛からない。
+   - **非空虚性の実測**: `--runxfail` で **13 failed / 17 passed**。各赤にファイル名と
+     行番号（例: `test_composition_ma_slope.py … L44: contract_size=10.0 / L45: volume_min=0.1
+     / L46: volume_max=100.0 / L47: volume_step=0.1 / L48: stops_level=0`）と供給元の真値
+     `{contract_size: 1.0, volume_min: 1.0, volume_max: 10000.0, volume_step: 1.0,
+     stops_level: 5, digits: 1, point_size: 0.1, leverage: 10.0}` が出る。次段階は
+     このメッセージだけで作業できる。
+   - **これ以上増えないことは今すぐ固定した**（緑）:
+     `test_no_unlisted_source_introduces_jp225_spec_literals` が、台帳にも除外にも無い
+     ファイルの違反を赤にする。段階 A で値を直さない間に同じ誤りが別ファイルへ増えるのを
+     防ぐ。あわせて「是正後の姿」（供給元から引き数値リテラルを置かない形）を判定関数に
+     食わせて 0 件を恒久固定した——これが無いと「是正したのに赤が消えない」ゲートになりうる。
+   - **実測（全走）**: `python -m pytest simulator marketdata tools -q` =
+     **1 failed / 5394 passed / 1 skipped / 14 xfailed**（着手前ベースライン
+     1 failed / 5377 passed / 1 skipped / 1 xfailed。増分は passed +17・xfailed +13 で
+     本件の新規検定と一致）。赤は既存の `test_composition_root_arg_parity` 1 件
+     （ISSUE-427/371・無関係）で、新たな赤は無い。
+   - **申し送り（段階 B 以降）**: (1) 上記 13 件の是正は `contract_size` 単独ではなく
+     `volume_min` / `volume_max` / `volume_step` / `stops_level` と**対で**行う。`volume_min`
+     が 0.01/0.1 → 1.0 になるため各テストの `lot_size=0.1` は発注不成立になり、lot 側の
+     解決も同時に要る。(2) 是正のたび当該 `xfail` は XPASS(strict) で赤になるので、
+     マーカーごと台帳から外す。13 件すべてが消えたらファイルごと削除してよい。
+     (3) `_EXCLUDED_BY_INTENT` の 1 件は閾値の設計変更を伴うため別段階に切る。
+
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
   `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
