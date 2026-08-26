@@ -9751,6 +9751,64 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      → **16 passed**。ドキュメント是正のみで挙動に影響しない。
      （委譲先の `document-executor` は Bash を持たず実行できないため、検証は本体が行った。
      委譲先が報告に書いた「テストが全緑のまま」は実行を伴わない記述であり、実測へ置き換えた。）
+   → **本番コードの `contract_size` 残渣を是正（2026-08-26・commit `b440a9d`・`tdd-executor` に委譲）**:
+   段階 2〜3-E2 で権威を供給元へ移したのは fixture・カタログ・突合テストであり、**テスト外の
+   実行経路**に残渣が 2 件残っていた。両ツールとも銘柄仕様 8 項目を
+   `load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` の展開で引く形にし、数値リテラルを撤去した
+   （reconcile / fingerprint の前例に倣う）。値の差し替えでは RC-1（人が値を書ける構造）が残る。
+   - **「値の差し替え」では誤りになることの実測**: `contract_size` だけを 1.0 にして `lot` を
+     据え置くと積 `lot × contract_size` が 1/10 になり、report は net +11370 → **+1137** /
+     OOS trades 2438 → **4877** に壊れる。ISSUE-445 の「2 つの誤りの相殺」は**対で**是正するほかない。
+   - `simulator/report_ui/tools/export_report_payload.py`: IS/OOS オラクル
+     （5224/+11370/21370・2438/-4020/5980）は**不変**。5.96MB の `report.json` の差は
+     `segments.*.trades[].volume` が 0.1 → 1.0 の **1 点のみ**（全パス走査で確認）。実 MT5 の
+     `deals[].vol=1` と初めて一致した。`lot_size=0.1` は原典どおり据え置き（移植済み
+     `NormalizeLot` が実行時に `volume_min` へ持ち上げる＝段階 3-B の効果）。`_Spec`（UC へ渡す
+     仕様ビュー）も同じ供給元へ寄せ、ファイル内の第 2 の台帳を消した。
+   - `simulator/tools/export_trade_markers.py`: `markers` 配列は **bit-exact 一致**。`pairs` は
+     `volume` 0.1 → 1.0 になり、602 件中 106 件の `profit` が乗算順序由来の 1 ULP
+     （最大 2.9e-14・相対 1.8e-16）だけ動く。合計損益は最終桁まで同値。
+   - **`lot` の扱い（本件で唯一の裁量・要確認）**: `TC24051901` は原典 `.mq5` を持たず
+     `cfg["lot_size"]` を素通しする（段階 3-B の申し送り）ため、供給元の `volume_min=1.0` の下で
+     従来の `lot=0.1` は `InvalidPriceError`（実測＝ツールが動かない）。Composition Root が
+     供給元の**最小発注単位**を渡す形にした（人が選んだ数ではなく、原典 EA の `NormalizeLot(0.1)`
+     が返す値と同じ）。既存検定 `test_meta_uses_resilient_lot_size` の `assert lot_size == 0.1` は
+     供給元由来（`spec["volume_min"]`）へ改め、名称も `…_the_minimum_orderable_lot_size` にした。
+   - **`leverage=100.0` は「完走のためのつまみ」ではなかった（仮説が実測で棄却された）**:
+     本ツールは `stop_out_level` を渡さず既定 0.0（`simulator/main/__init__.py:644`）のため
+     `margin_level() < stop_out_level` が成立せず（`usecase/run_backtest.py:332,474,971`）、
+     **証拠金経路そのものが無効**である。実測でも `leverage` を 0.5 / 10 / 100 のいずれにしても
+     出力は sha256 まで同一。よって真値 10（供給元 `account.leverage`）へ寄せるのは無償である。
+     同じ理由で `config_overrides={"stop_out_action": "close_and_halt"}`（Fix-B）も現状では
+     効いていない（撤去は本件の範囲外＝申し送り）。
+   - **退行防止**: `simulator/tests/unit/test_tool_symbol_specs_from_snapshot.py`（9 件）。
+     (1) 8 項目の値が供給元と一致（期待値をテスト側に書かず `load_spec_fields` から引く）、
+     (2) 両ツールのソースに銘柄仕様の数値リテラルが 1 つも無いこと（AST 走査・keyword 引数 /
+     単純代入 / dict リテラルの 3 形＝是正前に実在した 3 形すべて）、(3) EA 入力 lot が供給元の
+     volume 制約を満たすこと（実行時に落とす当のコード `domain/order.py:Order.validate` で判定）。
+     各々に負の対照を対で置いた——撤去したリテラル 6 個が供給元と食い違うこと・走査が書き戻し
+     3 形を検出し供給元展開形は検出しないこと・`lot=0.1` が `InvalidPriceError` になること。
+   - **実測（全走）**: `python -m pytest simulator marketdata tools -q` =
+     **1 failed / 5342 passed / 1 skipped / 1 xfailed**（着手前ベースライン
+     1 failed / 5325 passed / 1 skipped を同一コマンドで実測済み）。赤は既存の
+     `tools/tests/test_composition_root_arg_parity.py`（ISSUE-427/371・JS 合成根・無関係）1 件のみ。
+     増分 +17 passed / +1 xfailed の内訳は本件 9 件と、並行作業の段階 3-D0 ゲート 8 件 + xfail 1 件。
+   - **申し送り（本件の範囲外・未是正）**: `contract_size=10.0` のリテラルは main ツリーに
+     なお **35 ファイル**残る（実測・`.claude/worktrees` 除く）。内訳は
+     `simulator/tests/confirmation/**` の reconcile・scratch スクリプト **15 件**（手動実行・
+     実 MT5 突合を名乗る）、pytest 検定 **18 件**、本件で是正した 2 ツールの docstring 内の
+     言及 2 件。前者は `export_report_payload` が「所与と完全一致」と宣言していた相手であり
+     （当該 docstring は事実に合わせて是正済み）、次段階の対象になる。
+   - **本番 CLI 3 件にも同じ残渣がある（本件で新たに判明・未是正）**: `simulator/tools/` の
+     `run_is_oos_cli.py:142-149` / `optimize_cli.py:163-170` / `walk_forward_cli.py:192-199` は
+     銘柄仕様 8 項目すべてを argparse の**既定値**として持つ（`--contract-size 10.0` /
+     `--volume-min 0.01` / `--volume-max 100.0` / `--volume-step 0.01` / `--stops-level 0` /
+     `--digits 1` / `--point-size 0.1` / `--leverage 10.0`）。既定値は「人が書いた値が権威に
+     なる」形そのものであり RC-1 と同型である。ただし 3 件はいずれも `--symbol`（既定 JP225）を
+     **利用者が上書きできる**ため、無条件に供給元を引くと**スナップショットの無い銘柄で
+     `SnapshotError` になり CLI が動かなくなる**。是正には「供給元にある銘柄は供給元を引き、
+     無い銘柄は明示指定を要求する（既定値を置かない）」という設計裁定が要る。本件（触ってよい
+     ファイルが 2 ツールに限定）の範囲外のため未着手。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
