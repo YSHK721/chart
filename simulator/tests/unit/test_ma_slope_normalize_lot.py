@@ -122,6 +122,7 @@ def test_build_interactor_supplies_volume_spec_to_strategy_params(tmp_path):
     # を参照する。Composition Root（build_interactor）が strategy_params へ供給していなければ
     # 銘柄仕様が戦略に届かない（既存 point_size / digits / stops_level と同じ扱い）。
     # 重複定義を避けるため既存テストの kwargs ビルダを再利用する。
+    from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
     from simulator.main import build_interactor
     from simulator.tests.unit.test_ea_factory_registry import _mt5_kwargs, _write_mt5_csv
 
@@ -130,11 +131,17 @@ def test_build_interactor_supplies_volume_spec_to_strategy_params(tmp_path):
     # Act
     _controller, request = build_interactor(**_mt5_kwargs(csv, "MA_Slope_EA"))
 
-    # Assert: build_interactor の引数（volume_min=0.1 / volume_max=100.0 / volume_step=0.1）が
-    # そのまま解決できる
-    assert request.config["volume_min"] == pytest.approx(0.1)
-    assert request.config["volume_max"] == pytest.approx(100.0)
-    assert request.config["volume_step"] == pytest.approx(0.1)
+    # Assert: build_interactor へ渡った銘柄仕様が strategy_params へそのまま届く。
+    #
+    # 期待値を**書き写さない**（ISSUE-445 段階 C・2026-08-26 是正）: 従来はここに
+    # `0.1 / 100.0 / 0.1` を数値で書いており、`_mt5_kwargs` が供給元スナップショットを
+    # 引く形へ是正された時点で赤になった。数値の写しは「人が書いた値が権威になる」形
+    # （RC-1）そのものである。`_mt5_kwargs` と**同じ権威**を引いて突き合わせれば、
+    # 供給元が変わっても本検定の趣旨（Composition Root が銘柄仕様を戦略へ供給しているか）
+    # は保たれる——むしろ「素通ししているか」を直接見る形になり強くなる。
+    supplier = load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")
+    for key in ("volume_min", "volume_max", "volume_step"):
+        assert request.config[key] == pytest.approx(supplier[key])
 
 
 def test_non_positive_normalized_volume_places_no_order():
