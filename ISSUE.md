@@ -10272,6 +10272,64 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
        ただし上の申し送り（ゲートが期待値側を見ない）は**そのまま残る**——本件は穴から
        出た唯一の横断消費者であって、穴自体は塞いでいない。
 
+   → **供給元の対応表を「銘柄仕様 / 口座属性」の 2 表へ分割（2026-08-26・commit `4c65cba` /
+   `d7b6638`・`tdd-executor` に委譲・依頼時の呼称「段階 3-D1」）**: 直上の検出ゲートが赤で
+   示していた SRP 違反のうち、**供給元側の表だけ**を是正した。`SPEC_FIELD_SOURCES` は 8 エントリの
+   うち `leverage` だけが `FieldSource("account", …)` であり、変更起点の違う 2 つの契約
+   （銘柄の契約 / 口座の契約）が 1 つの表に同居していた（設計書 §3.4）。
+   - **分割の形と命名**: `SYMBOL_FIELD_SOURCES`（7 件・`symbol_info` の出力＝`symbol` セクション）
+     と `ACCOUNT_FIELD_SOURCES`（1 件・`account` セクション）。`SPEC_FIELD_SOURCES` は両者の
+     **合成ビュー**として残し、MT5 フィールド名を 1 つも持たない。命名は既存の作法
+     （`…_FIELD_SOURCES`）へ揃え、**表の名前がそのまま供給セクション名を指す**形にした
+     （「各表の section は単一」が名前から読める。`marketdata/symbol_spec.py:SYMBOL_SPECS` との
+     grep 上の誤読も避けられる）。語彙は 2 つだけ増やし、`FieldSource` の形は変えていない。
+   - **呼出側 0 改変の根拠（実測）**: 変更ファイルは `marketdata/symbol_spec_snapshot.py` と
+     その検定、および後述の docstring 是正 1 件のみ（`git diff --name-only` 実測 3 件）。
+     新名 2 つの参照箇所は grep 実測で上記 2 ファイルのみ（他 0 件）。消費者 30 か所超は
+     `SPEC_FIELD_SOURCES` / `spec_fields` / `load_spec_fields` を従来どおり参照している。
+     `load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` の 8 キー・**並び**・値・型、対応表の
+     全エントリ（section / key / cast）、決済通貨は着手前後で**完全一致**（`diff` 0 行）。
+     MT5 突合は bit-exact 不変（`trades=1164` / `net=-6173.9` / `balance=3826.1`）。全走
+     **1 failed / 5409 passed / 1 skipped / 2 xfailed**——着手前ベースライン
+     （1 failed / 5396 passed / 1 skipped / 2 xfailed）からの増分 **+13 passed は本件の追加検定のみ**で、
+     `failed` / `skipped` / `xfailed` は 1 件も動いていない（赤は既存の
+     `test_composition_root_arg_parity` 1 件＝ISSUE-427/371・無関係）。**挙動 0 変化**である。
+   - **段階 3-D2（`SymbolSpec` からの `leverage` 分離）の前提として固定したもの**:
+     (1) `SYMBOL_FIELD_SOURCES` ∪ `ACCOUNT_FIELD_SOURCES` == `SPEC_FIELD_SOURCES`（キー集合だけで
+     なく**並び**と `FieldSource` の中身まで。並びは `simulator/tools/symbol_spec_args.py:SPEC_KEYS`
+     ＝ argparse の宣言順として呼出側に観測されるため）、(2) **各表の `section` が単一**である
+     こと（空の表も不合格＝空の分割で自明に成立させない）、(3) 2 表の section が互いに異なり、
+     どちらも実スナップショットに実在して全キーが引けること。これにより 3-D2 は「`SymbolSpec` の
+     フィールド集合を `SYMBOL_FIELD_SOURCES` のキー集合へ一致させ、合成ビューを畳む」だけの
+     作業になり、どのフィールドがどちらの契約に属するかを人が判断し直す余地が無くなる。
+   - **判定はテスト側にリテラルを持たない**: 銘柄側の section は `SETTLEMENT_CURRENCY_SOURCE`
+     から同定し（`currency_profit` は `symbol_info` のフィールド）、口座側は名前を書かず
+     「銘柄側と異なる実在セクション」として押さえる。判定は純関数 2 つ
+     （`composition_disagreements` / `tables_not_drawing_from_a_single_section`）に集約し、
+     **負の対照 8 件**（欠落・`cast` 差し替え・並び替え・分割どうしのキー重複・混在表・空表・
+     偽陽性を出さない 2 件）が同じ関数を呼ぶ（判定を 2 度書かない）。
+   - **既存 AST ゲートへの抵触と対処**: 「MT5 フィールド名は対応表の代入文の外に出ない」ゲートは
+     `_TABLE_NAMES` に表の**変数名**を持つため、分割した瞬間に 8 件全部が「外」と判定されて
+     赤になった（実測）。趣旨（対応は 1 箇所に限る）は変えず、`_TABLE_NAMES` を分割後の 3 表
+     （`SYMBOL_…` / `ACCOUNT_…` / `SETTLEMENT_CURRENCY_SOURCE`）へ更新した。**合成ビューは
+     意図的に載せていない**——載せなければ合成ビューの代入文は走査上「外」であり、そこへ
+     第 2 の対応を書き足すと赤になる。ゲートは緩んでおらず、検出面が 1 つ増えている。
+     非空虚性は実測で確認した（無改変＝緑／関数内に `snapshot["symbol"]["point"]` を生やす＝赤
+     ／合成ビューに対応を書き足す＝赤）。
+   - **段階 3-D0 のゲートは無改変で `xfail(strict)` のまま**（XPASS ではない・実測）。
+     `--runxfail` で覗いた本物の赤も `violations == {'leverage'}` のまま変わらない。
+     `SymbolSpec` は依然 `leverage` を持つため、これが正しい状態である。合成ビューを残した
+     ことで、当該ゲートが読む `SPEC_FIELD_SOURCES[...].section` /
+     `SETTLEMENT_CURRENCY_SOURCE.section` の経路は 1 バイトも変わらなかった。
+   - **付随して是正した事実誤り 1 件（commit `d7b6638`・docstring のみ）**: 段階 3-D0 ゲートの
+     docstring が「『3-D0 / 3-D1 / 3-D2』は設計書・`ISSUE.md` には未記載（grep 実測 0 件）」と
+     **現在形**で述べていたが、本台帳には当該ゲートの新設を記録した時点から登場している
+     （2026-08-26 再実測 3 件）。設計書側は依然 0 件。本記録がさらに件数を増やすため、
+     「事実と食い違う記述を残さない」規律に従い当該 1 文のみを実測へ合わせた（判定関数・
+     xfail マーカー・検定本体は無改変）。
+   - **やっていないこと**: `SymbolSpec` からの `leverage` 撤去（＝段階 3-D2・別裁定）。
+     `simulator/usecase/models.py` は 1 バイトも触っていない。
+
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
   `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
