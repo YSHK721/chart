@@ -24,6 +24,13 @@
 **本段階では何も分離しない。** ``SymbolSpec`` からの ``leverage`` 分離は既存 IF
 （``build_interactor`` の引数）に触れるため段階 3-D1 / 3-D2 の裁定に属する。
 
+段階の呼称について（実測 2026-08-26）: 「3-D0 / 3-D1 / 3-D2」は本作業の依頼時の呼称であり、
+設計書・``ISSUE.md`` には未記載である（grep 実測 0 件。記録済みの細分は 3-A / 3-B / 3-C /
+3-E 系 / 3-F）。設計書 §3.4 が権威であり、そこでの位置づけは「分離自体は**段階 3 送り**」。
+本ゲートの解消条件の実体は呼称に依存しない——``SymbolSpec`` から ``leverage`` が外れること
+（あるいは ``symbol_info`` から引けるようになること。後者は供給元に当該キーが無いため
+起こり得ない＝実測）である。
+
 判定をテスト側のリテラルで持たない:
     期待値・違反キーの一覧をここに書かない。判定は :func:`fields_not_sourced_from_symbol_info`
     が :data:`SPEC_FIELD_SOURCES` の ``section`` と ``dataclasses.fields(SymbolSpec)`` から
@@ -163,7 +170,8 @@ class TestTheGateDetectsAndOnlyDetects:
     strict=True,
     reason=(
         "ISSUE-445 の既知の不整合: leverage は口座属性であり symbol_info に存在しない"
-        "（設計書 §3.4）。段階 3-D2 で SymbolSpec から leverage を分離したときに解消する。"
+        "（設計書 §3.4）。段階 3-D2＝設計書 §3.4 が『段階 3 送り』とした leverage 分離で、"
+        "SymbolSpec から leverage を分離したときに解消する。"
         "解消したら本マーカーを外すこと（XPASS(strict) が赤で知らせる）。"
     ),
 )
