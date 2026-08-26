@@ -280,11 +280,32 @@ _EXCLUDED_BY_INTENT = {
     ),
 }
 
-#: 既知の違反＝**所在の台帳**（値の期待値ではない）。実測 2026-08-26。
+#: 既知の違反＝**所在の台帳**（値の期待値ではない）。実測 2026-08-26・tracked 全件走査。
 #: 段階 A ではここを ``xfail(strict=True)`` で固定するだけで、値は 1 つも直さない。
-_KNOWN = tuple(
-    sorted(set(_FOUND) - set(_EXCLUDED_BY_INTENT))
-) or ("<既知違反なし: 台帳を撤去してよい>",)
+#:
+#: **走査結果から導出してはならない**。導出すると新しい違反ファイルが collection 時に
+#: 自動で台帳へ入って赤にならずに吸収される（＝ISSUE-445 の失敗モードの再生産）。
+#: 人が書き下し、走査結果との一致を検定で見る。この規律自体を
+#: ``test_the_ledger_is_written_down_and_not_derived_from_the_scan`` が AST で固定する。
+#: 是正が済んだ行はここから外す（外し忘れは XPASS(strict) で赤になる）。
+_KNOWN = (
+    # 先行調査の手作業一覧から漏れていた 2 件（tracked 全件走査で発見・2026-08-26）。
+    "simulator/sim_ui/tests/unit/test_run_options_api_controller.py",
+    "simulator/sim_ui/tests/unit/test_symbol_spec_catalog.py",
+    "simulator/tests/integration/test_composition_ma_slope.py",
+    "simulator/tests/integration/test_ea_factory_selection_rule.py",
+    "simulator/tests/integration/test_ea_indicator_series_accessor.py",
+    "simulator/tests/integration/test_is_oos_stop_probe.py",
+    "simulator/tests/integration/test_marketdata_window_mt5_path.py",
+    "simulator/tests/integration/test_optimize_sp1_degenerate.py",
+    "simulator/tests/integration/test_walk_forward_integration.py",
+    # `_mt5_kwargs` のみ。同ファイルの `_comma_kwargs` は JP225 を名乗るが
+    # contract_size=1.0＝真値であり対象外（判定は「食い違うこと」で行う）。
+    "simulator/tests/unit/test_ea_factory_registry.py",
+    "simulator/tests/unit/test_is_oos_barmode_index.py",
+    # `_jp225_spec()`。symbol= を持たず**関数名**だけが JP225 を名乗る形。
+    "simulator/tests/unit/test_run_backtest.py",
+)
 
 
 def _clears() -> str:
@@ -315,8 +336,49 @@ def test_the_scan_reaches_the_whole_tracked_tree():
     """走査が実際に木を舐めていること。空振りする走査で「違反 0」を主張しない。"""
     tracked = _tracked("*.py")
     assert len(tracked) > 1_000
-    # 既知違反を 1 件も拾えていないなら走査が壊れている（`_KNOWN` は実測由来）。
-    assert set(_FOUND) >= set(_KNOWN)
+    # 走査が index を引けていること（`git ls-files` が空を返しても緑にしない）。
+    assert all(rel.endswith(".py") for rel in tracked)
+
+
+def test_the_ledger_is_written_down_and_not_derived_from_the_scan():
+    """``_KNOWN`` が**走査結果から導出されていない**こと（自己検査・最重要）。
+
+    ``_KNOWN = set(_FOUND) - set(_EXCLUDED)`` のように導出すると、新しい違反ファイルは
+    collection 時に自動で台帳へ入って ``xfail`` が付き、**赤にならずに吸収される**。
+    それは ISSUE-445 の失敗モード（誤りが 2 か月誰にも気付かれない）そのものである。
+    台帳は人が書き下し、走査結果との**一致**を検定で見る——この向きでないと
+    「新規混入を捕まえる」検定が構造的に空虚になる。
+    """
+    module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    assigned = [
+        node.value
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_KNOWN" for t in node.targets
+        )
+    ]
+    assert len(assigned) == 1, "_KNOWN の代入が 1 つでない"
+    value = assigned[0]
+    assert isinstance(value, ast.Tuple), "_KNOWN は tuple リテラルでなければならない"
+    assert value.elts and all(
+        isinstance(e, ast.Constant) and isinstance(e.value, str) for e in value.elts
+    ), "_KNOWN の要素は文字列リテラルでなければならない（式で導出しない）"
+
+
+def test_the_ledger_agrees_with_the_scan_in_both_directions():
+    """台帳と走査結果が**完全一致**すること。
+
+    片側包含では足りない。左が増える＝新規混入（台帳に足す前に赤で気付く）、
+    左が減る＝是正済み（台帳から外す合図）。どちらも赤にする。
+    """
+    assert set(_FOUND) == set(_KNOWN) | set(_EXCLUDED_BY_INTENT), (
+        "台帳と走査結果が食い違う。\n"
+        f"  走査にあって台帳・除外に無い（新規混入）: "
+        f"{sorted(set(_FOUND) - set(_KNOWN) - set(_EXCLUDED_BY_INTENT))}\n"
+        f"  台帳にあって走査に無い（是正済み・台帳から外す）: "
+        f"{sorted(set(_KNOWN) - set(_FOUND))}"
+    )
 
 
 def test_the_excluded_source_is_actually_detected_by_the_scanner():
@@ -359,23 +421,6 @@ def test_report_json_holds_no_jp225_spec_literals():
 
 
 # --- 3. 新規混入の検出（こちらは緑・恒久）------------------------------------------------
-
-
-def test_no_unlisted_source_introduces_jp225_spec_literals():
-    """台帳にも除外にも無いファイルが違反を持ち込んでいないこと。
-
-    段階 A の値は 1 つも直さないが、**これ以上増えない**ことはいま固定できる。
-    このゲートが無いと、是正が終わるまでの間に同じ誤りが別ファイルへ増える。
-    """
-    unlisted = {
-        rel: hits
-        for rel, hits in _FOUND.items()
-        if rel not in _KNOWN and rel not in _EXCLUDED_BY_INTENT
-    }
-    assert unlisted == {}, (
-        "台帳に無いファイルが JP225 銘柄仕様リテラルを持ち込んでいる:\n"
-        + "\n".join(f"{rel}:\n  " + "\n  ".join(h) for rel, h in unlisted.items())
-    )
 
 
 # --- 4. 判定関数が「含めてはならないもの」を拾わないこと（機械的な実証）-------------------
