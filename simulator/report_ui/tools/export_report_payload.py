@@ -5,8 +5,15 @@ BuildReportPayload UC → ReportUiPresenter を結線して report.json を書�
 main は無改変。pandas / 時刻変換（_unix）は本 tools 層に閉じ、UC へは int 時刻のみ渡す。
 
 EA param・config_overrides は reconcile_is.py / reconcile.py の所与パラメータと完全一致
-（伝播漏れ防止・R-5 対策）。EA param（SL/TP/stops_level/point_size/digits）は本 CLI が
-唯一の真実源として derive へ同一値を注入する。
+（伝播漏れ防止・R-5 対策）。EA param（SL/TP）は本 CLI が唯一の真実源として derive へ
+同一値を注入する。
+
+**銘柄仕様（stops_level/point_size/digits を含む 8 項目）は例外**（ISSUE-445・2026-08-26）:
+権威は供給元スナップショット（`marketdata/symbol_specs/…/JP225.json`）であり、reconcile
+スクリプト側のリテラルとは一致しない（あちらは未是正＝ISSUE-445 の申し送り）。一致させる
+相手を「人が書いた別のリテラル」にすると RC-1（人が値を書ける構造）が再生する。
+実測（2026-08-26）: 是正後も本 CLI の IS/OOS オラクル（5224/+11370/21370・2438/-4020/5980）は
+不変で、report.json の差は `segments.*.trades[].volume` が 0.1 → 1.0 になる 1 点のみ。
 """
 from __future__ import annotations
 
@@ -15,6 +22,7 @@ from typing import Any
 
 import pandas as pd
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 # ISSUE-091 #3: 主スライスの公開 API のみ参照する（private 名 _ema_series の越境 import を解消）。
 from simulator.main import build_interactor, ema_series
 from simulator.report_ui.adapter.report_presenter import ReportUiPresenter
@@ -37,11 +45,21 @@ OUT = ROOT / "simulator/report_ui/web/data/report.json"
 # EA param（derive_sl_tp / excursion へ注入する唯一の真実源・§7）。
 EA_PARAMS = {"sl_points": 200, "tp_points": 500}
 
+# 銘柄仕様の供給元（ISSUE-445 段階 2 と同じ唯一の権威）。銘柄名・サーバ名は**同一性**の指定で
+# あって仕様の値ではない。以前ここには ``contract_size`` の 10.0（MT5 レポートに一度も現れない
+# 逆算値・真値 1.0）を含む 8 項目のリテラルがあった＝人が値を書ける構造（RC-1）。
+_SYMBOL = "JP225"
+#: contract_size / volume_min / volume_max / volume_step / stops_level / digits /
+#: point_size / leverage の 8 項目。数値はここに 1 つも書かない。
+_SPEC = load_spec_fields(OANDA_JAPAN_MT5_LIVE, _SYMBOL)
+
 # build_interactor 共通引数（reconcile_is.py / reconcile.py の所与と完全一致・§7）。
+# ``lot_size`` は EA 入力（原典 ``2026-04_stop-probe/ea.mq5`` の所与）であり銘柄仕様ではない。
+# 移植済みの ``NormalizeLot``（ISSUE-445 段階 3-B）が実行時に ``volume_min`` へ持ち上げるため
+# ここは原典どおり 0.1 のままにする（実測: 実走の約定 volume は 1.0 になる）。
 COMMON = dict(
-    symbol="JP225", period="M1", ea_name="StopEntryProbe_EA",
-    initial_deposit=10000.0, contract_size=10.0, volume_min=0.01, volume_max=100.0,
-    volume_step=0.01, stops_level=0, digits=1, point_size=0.1, leverage=10.0,
+    symbol=_SYMBOL, period="M1", ea_name="StopEntryProbe_EA",
+    initial_deposit=10000.0, **_SPEC,
     ma_period=60, ma_method="ema", lot_size=0.1, stop_loss_points=200,
     take_profit_points=500, entry_offset_points=100.0, entry_type="stop",
     config_overrides={
@@ -154,10 +172,13 @@ def build_payload() -> Any:
 
 
 class _Spec:
-    """UC へ渡す SymbolSpec 相当（point_size/digits/stops_level・§7 と一致）。"""
-    point_size = 0.1
-    digits = 1
-    stops_level = 0
+    """UC へ渡す SymbolSpec 相当（point_size/digits/stops_level・§7 と一致）。
+
+    値は ``COMMON`` と同じ供給元スナップショットから取る（同一ファイル内に第 2 の台帳を作らない）。
+    """
+    point_size = _SPEC["point_size"]
+    digits = _SPEC["digits"]
+    stops_level = _SPEC["stops_level"]
 
 
 def _meta(seg: str, label: str) -> dict:
