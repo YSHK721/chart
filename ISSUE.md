@@ -10262,6 +10262,15 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
        import しているのはこの 1 行だけ）。
      - **申し送り**: 検出ゲートは「組み立て側」しか見ない。**期待値側に書き写された
        銘柄仕様**は原理的に検出範囲外であり、この穴は本件の是正では塞がっていない。
+     - → **解消（2026-08-26・commit `99af6f0`）**: 上記の抜本策を実施した。期待値の
+       書き写しをやめ `load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` と突き合わせる形
+       （3 キーをループで比較）へ改めた。検定の趣旨は保たれ、「素通ししているか」を直接
+       見る形になっている。実測: 当該 3 ファイルで **36 passed / 1 xfailed**、全走で
+       **1 failed / 5396 passed / 1 skipped / 2 xfailed**（赤は既存の
+       `test_composition_root_arg_parity` 1 件のみ＝ISSUE-427/371・無関係。xfail 2 =
+       JSON fixture 1 ＋ 無関係 1）。**段階 C の新たな赤は解消した。**
+       ただし上の申し送り（ゲートが期待値側を見ない）は**そのまま残る**——本件は穴から
+       出た唯一の横断消費者であって、穴自体は塞いでいない。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
