@@ -10072,6 +10072,96 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      マーカーごと台帳から外す。13 件すべてが消えたらファイルごと削除してよい。
      (3) `_EXCLUDED_BY_INTENT` の 1 件は閾値の設計変更を伴うため別段階に切る。
 
+8. **段階 B（2026-08-26）— 是正の失敗を検出できる状態を作る（値は 1 つも変えない・追加のみ）**:
+   段階 A の台帳 13 件について「`contract_size` だけを是正したら赤になるか」を**全件実測**し、
+   検出できないもののうちピンを足せる 2 件に数値ピンを追加した。本番コードは 0 バイト改変。
+
+   - **実測の方法（リポジトリ非改変）**: 段階 A のゲートと**同じ同定規則**（JP225 を名乗る
+     Call の銘柄仕様 keyword で供給元と食い違うもの・起点は `contract_size`）で対象を AST
+     で特定し、ファイルを一時的に書き換えて当該テストだけを実走し、`finally` で元へ戻す
+     ハーネスを使った。各実行後に `git diff` が空であることを確認済み。変異は 2 種:
+     **CS_ONLY**（`contract_size` だけ真値 1.0）と **PAIR**（食い違う 5 項目
+     `contract_size` / `volume_min` / `volume_max` / `volume_step` / `stops_level` を一括で真値へ）。
+
+   - **13 件の 3 分類（すべて実走の実測。`—` は当該変異で緑）**:
+
+     | # | ファイル | CS_ONLY | PAIR | 分類 |
+     |---|---|---|---|---|
+     | 1 | `sim_ui/tests/unit/test_run_options_api_controller.py:55` | **赤** | **赤** | (1) 既に検出できる（写しピン） |
+     | 2 | `sim_ui/tests/unit/test_symbol_spec_catalog.py:117` | — | — | (3) ピンを足す意味がない |
+     | 3 | `tests/integration/test_composition_ma_slope.py:44` | — | — | (3) |
+     | 4 | `tests/integration/test_ea_factory_selection_rule.py:133` | — | — | (3) |
+     | 5 | `tests/integration/test_ea_indicator_series_accessor.py:56` | — | — | (3) |
+     | 6 | `tests/integration/test_is_oos_stop_probe.py:49` | **赤** | — | (1) 既に検出できる（**不変ピン**） |
+     | 7 | `tests/integration/test_marketdata_window_mt5_path.py:64` | — | — | (3) |
+     | 8 | `tests/integration/test_optimize_sp1_degenerate.py:45` | **赤** | — | (1)（**不変ピン**） |
+     | 9 | `tests/integration/test_walk_forward_integration.py:36` | **赤** | — | (1)（**不変ピン**） |
+     | 10 | `tests/unit/test_ea_factory_registry.py:73` | — | — | (3) |
+     | 11 | `tests/unit/test_is_oos_barmode_index.py:51` | — | — | **(2) ピンを足した** |
+     | 12 | `tests/unit/test_run_backtest.py:395` | — | — | **(2) ピンを足した** |
+     | 13 | `fixtures/mt5/ma_slope_jp225_202601/expected/report.json` | — | — | (3)（**消費者が 1 件も無い**） |
+
+   - **(3) の根拠（無理にピンを作らない）**: 2〜5・7・10 はいずれも `build_interactor` が
+     backtest を**走らせない**段階の観測（strategy の型 / market_data の型 / registry の
+     系列名 / 指標系列 / bars の件数・時刻・spread・sha256 / 例外と終了コード）だけを見ており、
+     積 `lot × contract_size` が効く出力を**現在の観測対象に 1 つも持たない**（＝ピンを
+     足すには当該モジュールの責務外の実走を新設するほかなく、それは検定の捏造になる）。
+     2 は `pytest.raises(TypeError)` の
+     中の構築で、値は結果に 1 ビットも効かない。13 は `load_case` の走査対象にならず
+     （`expected/` しか無い不完全ケース）、**tracked なテストで参照している箇所が 0 件**
+     （grep 実測）。ここへ数値ピンを捏造することは検定の空虚化そのものなので行わず、
+     代わりに各 `_kwargs` の docstring へ「本モジュールは銘柄仕様の正しさを検証していない・
+     段階 C はこの緑を根拠にしてはならない」を明記した。
+
+   - **追加したピンと、段階 C での扱い**:
+     - **不変であるべきピン（値を書き換えて緑に戻してはならない）** —
+       `tests/unit/test_is_oos_barmode_index.py` に新設した
+       `test_the_symbol_spec_reaches_the_is_and_oos_numbers`。IS `trades=4` /
+       `profit=-156.29999999999563` / `balance_min=9843.700000000004`、OOS `trades=2` /
+       `profit=-91.0`、および `asdict(BacktestStats)` 全 39 列の sha256
+       `aa15b2c4a01f7234745a524330cbdd29b6ca9e93e97654c1e26ae8b53d4ff418`。
+       **なぜここが核心か**: 既存の合格条件は `trades > 0` と**同一パラメータ同士**の
+       `asdict` 比較だけで、`contract_size` を壊しても `trades` は **4 のまま動かず**
+       3 件とも緑で通っていた（＝是正の失敗が無言で通る）。実測では CS_ONLY で
+       `profit` -156.3 → **-15.63**（39 列中 **19 列**が動く）、PAIR では 39 列が
+       **現行と完全一致**（sha256 も同値）。件数だけのピンでは原理的に捕まらない。
+     - **更新が要るピン（赤になったら 1/10 へ更新してよいが、更新は正しさの証拠にならない）** —
+       `tests/unit/test_run_backtest.py` の `_jp225_spec()` を使う 4 検定に足した `pnl()` /
+       `stats.profit`（280.0 / -480.0 / 100.0 / -480.0）。本モジュールの `Order(volume=1.0)` は
+       **テストが直接書いた数**で `lot_size → NormalizeLot → volume_min` の経路を通らないため、
+       「2 つの誤りの相殺」が成立しない。実測でも CS_ONLY と PAIR が**同じ値**（280.0 → 28.0）に
+       なり、**是正の失敗と成功を区別しない**。
+     - 既存の強いピンにも同じ区別を注記した（人が数字を書き換えて緑にする事故の予防）。
+       6 / 8 / 9 の IS/OOS 4 値（5224・+11370・2438・-4020）は**是正で動かない**（PAIR で実走
+       確認）ため「赤になったら期待値を書き換えず片側是正を疑え」と明記。1 の
+       `contract_size == 10.0` は `_profile()` の**写し**なので「更新が要る」と明記した。
+
+   - **非空虚性の実測（追加したピンが実際に赤になること）**: CS_ONLY 変異下で
+     `test_is_oos_barmode_index.py` は **1 failed / 3 passed**（新設ピンだけが赤・
+     `profit -15.63 != -156.3 ± 1.6e-04`）、`test_run_backtest.py` は **4 failed / 26 passed**
+     （足した 4 件の `pnl` だけが赤）。PAIR 変異下では前者 **4 passed**（不変ピンであることの
+     実証）、後者 **4 failed**（更新が要るピンであることの実証）。いずれも変異は `finally` で
+     復元し、`git diff` が空であることを確認したうえで次へ進んだ。
+
+   - **段階 A の申し送り (1) を実測で訂正する**: 「`volume_min` が 1.0 になるため各テストの
+     `lot_size=0.1` は発注不成立になり、lot 側の解決も同時に要る」は**成立しない**。
+     PAIR 変異（銘柄仕様 5 項目のみ・`lot_size` は 0.1 のまま据え置き）で **12 件すべてが緑**
+     だった。理由は移植済み `NormalizeLot` が実行時に lot を `volume_min` へ持ち上げるため
+     （`b440a9d` の実測と同じ機構）。素通し戦略 `TC24051901` を JP225 仕様で走らせる検定は
+     この 12 件に無い（`_comma_kwargs` 経路の `TC24051901` は `contract_size=1.0`＝真値で
+     対象外）。**限定**: 実証したのは「銘柄仕様 5 項目だけを寄せた変異で 12 件が緑」までで
+     あり、`lot_size` を供給元由来へ寄せた場合の挙動は測っていない。段階 C が
+     `lot_size` に触れないなら追加の是正は要らない、という限定つきの結論である。
+   - **段階 A の台帳の数え方についての注記**: 「13 件」のうち Python のテストファイルは
+     **12 件**で、13 件目は JSON fixture（テストではない・消費者 0 件）である。
+   - **実測（全走）**: `python -m pytest simulator marketdata tools -q` =
+     **1 failed / 5396 passed / 1 skipped / 14 xfailed**（着手前ベースライン
+     1 failed / 5395 passed / 1 skipped / 14 xfailed を同一コマンドで実測。増分 +1 passed は
+     新設した不変ピン 1 件と一致する。`test_run_backtest.py` への追加は既存検定への assert
+     追加なので件数を動かさない）。赤は既存の `tools/tests/test_composition_root_arg_parity.py::
+     test_no_test_only_precondition_without_production_form` 1 件（ISSUE-427/371・無関係）。
+     xfail 13 件は**そのまま xfail**（値を 1 つも変えていないため XPASS は出ない）。
+
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
   `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
