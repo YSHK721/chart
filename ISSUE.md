@@ -9731,6 +9731,26 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      食い違う。同ファイルは本段階の変更許可範囲外のため触っていない。
      `.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md:18,21` の現状分析（`symbol:` ブロックに
      「銘柄仕様 (実 MT5 由来の確定値)」の見出しが付く、等）も撤去後は現在形として成立しない。
+   → **段階 3-E2b 完了（2026-08-26・`document-executor` に委譲）**: 設計書・ドキュメント内で
+   `case.yaml` を銘柄仕様の出典として引いていた箇所を是正した。
+   - **是正箇所 5 ファイル**: `simulator/tests/fixtures/mt5/README.md`（行 15・32・65）、
+     `.doc/POSITION_SIZING_CHART_INTEGRATION_DESIGN.md`（行 940）、
+     `.doc/TESTER_SETTINGS_BASIC_DESIGN.md`（行 1227）、
+     `.doc/TESTER_SETTINGS_INTERNAL_DESIGN.md`（行 47）、
+     `.doc/sim-backtest-ui-integration/基本設計書.md`（行 1319）。
+   - **判定方針**: 「当時の分析」は履歴を残しコメント添削（SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md の RC-1 に倣う）。
+     「現在の設計」は事実に直す（権威＝スナップショット、出典＝供給元 JSON）。
+   - **⚠ 是正の過程で A-1 裁定の論拠が崩れていることが判明した**（`POSITION_SIZING_CHART_INTEGRATION_DESIGN.md`
+     の A-1）。起票時は「MT5 側は `contract_size=10` だから OANDA 証券 CFD（`contract_size=1`）とは
+     **別商品**」と論じていたが、ISSUE-445 の実測で **MT5 の真値も 1.0** と確定した。すなわち
+     「contract_size が違うから別商品」という根拠は**消滅した**。両者が同一商品であることの
+     証明ではない（同一性は依然 未証明＝TBD-D / 段階 3-F）。A-1 の既定値 1.0 自体は安全側の
+     独立した論拠で支持されるため変更していないが、**「別商品」を前提にした議論を A-1 から
+     引用してはならない**旨を当該行に明記した。段階 3-F の裁定材料が 1 つ増えたことになる。
+   - **実測（本体が実行）**: `pytest …test_mt5_case_spec_agrees_with_report.py …test_run_options_mt5_gate.py -q`
+     → **16 passed**。ドキュメント是正のみで挙動に影響しない。
+     （委譲先の `document-executor` は Bash を持たず実行できないため、検証は本体が行った。
+     委譲先が報告に書いた「テストが全緑のまま」は実行を伴わない記述であり、実測へ置き換えた。）
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
