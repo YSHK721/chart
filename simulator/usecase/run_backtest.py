@@ -18,6 +18,7 @@ from simulator.domain.exceptions import MarginCallError
 from simulator.domain.position import Position
 from simulator.domain.trade_record import TradeRecord
 from simulator.usecase._execution import (
+    admit_orders,
     check_sltp_hit,
     check_sltp_hit_at_tick,
     close_price_for,
@@ -361,10 +362,14 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     account.update_floating_pnl_at(bid=nb_bid, ask=nb_ask)
             # D 保有状態 / E シグナル評価（EA ロジック）
             #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。
+            #   戦略の戻り値は admit_orders（受理の唯一の門・ISSUE-445 段階 3-C）を通す。
             orders = (
                 []
                 if halted
-                else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
+                else admit_orders(
+                    self._strategy.on_new_bar(bar_index, self._indicators, account) or [],
+                    spec,
+                )
             )
             # 市場閉鎖バーは新規成行を約定しない（ドテン反転の reverse 決済も含め全約定を
             #   スキップ）。on_new_bar は評価済＝保有不変のため、戦略（保有側基準の
@@ -709,10 +714,14 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
             # D/E ★足境界のみ: 新規バーシグナル評価（ティックで呼ばない）。
             #   halt 後は発注しない（玉を増やさない）。open-tick SL/TP 後の保有で評価する。
+            #   戦略の戻り値は admit_orders（受理の唯一の門・ISSUE-445 段階 3-C）を通す。
             orders = (
                 []
                 if halted
-                else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
+                else admit_orders(
+                    self._strategy.on_new_bar(bar_index, self._indicators, account) or [],
+                    spec,
+                )
             )
             # 注文方式で経路を分ける（kind="market" は足境界の成行・既存経路／指値・逆指値の
             #   ペンディングは足途中ティックでトリガ評価する別経路）。pending EA は kind が
@@ -933,8 +942,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     and not resting_pending
                     and not session_gate.is_closed(bar_index)
                 ):
-                    rearm = (
-                        self._strategy.on_tick(bar_index, q_bid, q_ask, account) or []
+                    # 再アームも発注であり、受理の門（admit_orders）を通す。
+                    rearm = admit_orders(
+                        self._strategy.on_tick(bar_index, q_bid, q_ask, account) or [],
+                        spec,
                     )
                     if rearm:
                         resting_pending = list(rearm)

@@ -81,6 +81,13 @@ class Order:
                     "max": spec.volume_max,
                 },
             )
+        # volume_step <= 0 は「刻み制約なし」を表す（ISSUE-445 段階 3-C）。
+        # 実測（2026-08-26）: `WeeklyVolBand` 経路の spec は `volume_step=0.0` を渡す。
+        # 素直に除算すると ZeroDivisionError になり、検査器が検査対象と無関係な理由で
+        # 落ちる。戦略側の `NormalizeLot` 相当（`stop_entry_probe._normalize_lot` の
+        # `if step > 0` 分岐）も同じ規約で刻み量子化を飛ばしており、ここはそれに揃える。
+        if spec.volume_step <= 0:
+            return
         # volume_step の倍数か（丸め誤差許容）
         ratio = self.volume / spec.volume_step
         if abs(ratio - round(ratio)) > _STEP_RATIO_TOL:
