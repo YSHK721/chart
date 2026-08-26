@@ -9683,6 +9683,20 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      `test_composition_root_arg_parity` 1 件＝ISSUE-427/371・無関係）。
    - **本段階の非対象**: ペンディング価格と現在値の距離（MT5 は `stops_level` を発注価格にも
      課す）は `Order.validate` が検査しておらず、ここでも追加しない（参照実装の確認が先）。
+   → **段階 3-E 準備（2026-08-26・commit `0f2551b`・追加のみ）**: 権威（スナップショット）を
+   MT5 レポートへ**直接**突き合わせるゲートが無かった（従来の突合対象は `case.yaml` だけで、
+   スナップショットは reconcile の実走を通じて間接的に裏付けられるのみ）。追加のみで結線した。
+   - `TestSupplierSnapshotAgreesWithTheReport`: `contract_size` / `leverage` / 決済通貨 /
+     `digits`（片側）に加え、**実約定 volume が供給元の volume 格子（min/max/step）に載る**ことを
+     固定した（`volume_min=1.0` という主張と実約定 1.0 の噛み合わせ＝RC-2 の逆側の裏付け）。
+   - `TestCaseYamlStillMirrorsTheSupplier`: 転記が残る間の乖離を赤にする。非空虚性は負の対照で
+     実証済み——`case.yaml` の `point_size` を 0.2 へ一時改変すると**本検定だけ**が赤になった
+     （他のどのテストも検出しない＝従来この乖離は素通りだった）。改変は復元済み。
+   - `case.yaml` のコメント是正: 「テストは参照しない」は**事実と食い違っていた**。検出ゲートが
+     `digits` / `leverage` / `currency` / `contract_size` を、`sim_ui` ゲートが `currency` を
+     実際に読む（実測）。
+   - これにより段階 3-E の撤去は「同じ値を 2 箇所に持つのをやめる」だけになり、**挙動に影響
+     しないことが機械的に言える**状態になった。撤去自体は未実施（別ターンで裁定）。
 
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
