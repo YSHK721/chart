@@ -64,7 +64,7 @@ def _harvest_from_controller(error: "BaseException | None") -> int:
     controller = BacktestController(
         market_data=_RaisingMarketData(error), interactor=_NoopInteractor()
     )
-    return controller.run(config=None, source_ref="-", account=_UNUSED_ACCOUNT)
+    return controller.run(config=None, source_ref="-", symbol_spec=None, account=_UNUSED_ACCOUNT)
 
 
 def _harvest_from_run_backtest(error: "BaseException | None", monkeypatch) -> int:

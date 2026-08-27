@@ -83,7 +83,7 @@ class TestPublicAccessor:
         interactor = _StubInteractor()
         controller = _controller(interactor)
 
-        code = controller.run(object(), "data.csv", account=_UNUSED_ACCOUNT)
+        code = controller.run(object(), "data.csv", symbol_spec=None, account=_UNUSED_ACCOUNT)
 
         assert code == 0
         assert len(interactor.executed) == 1

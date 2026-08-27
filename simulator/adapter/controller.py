@@ -121,7 +121,7 @@ class BacktestController:
         *,
         timeframe: Any = None,
         period: Any = None,
-        symbol_spec: Any = None,
+        symbol_spec: Any,
         account: AccountSpec,
     ) -> int:
         """1 run を実行し終了コード（0/1/2）を返す。
@@ -130,11 +130,22 @@ class BacktestController:
         `execute`）へ割り、本メソッドは**翻訳**だけを自分の責務として残す。
         戻り値・例外伝播は従来と同一である。
 
-        `account` はキーワード必須（既定値なし・ISSUE-445 段階 3-D3）。段階 3-D2 まで
-        `initial_deposit` / `stop_out_level` は既定 0.0 を持っていたが、それは
-        「人が書いた値を既定として持つ」形（RC-1 と同型）の残渣であり、口座の契約を
-        1 つの型へ束ねた本段階で消えた。**本番の呼出は 0 件**（`run_backtest` は
-        `execute(request)` を直接呼ぶ・実測 2026-08-27）。
+        **契約引数（`config` / `symbol_spec` / `account`）に既定値を置かない**
+        （ISSUE-445 段階 3-D3）。契約引数とは「本メソッドが `RunBacktestRequest` へ
+        そのまま載せる引数」＝当該 DTO のフィールドと同名の引数である（`timeframe` /
+        `period` は `market_data.load` へ渡す取得パラメータであり、`None` が
+        MarketDataPort 契約上の意味を持つため対象外）。
+
+        段階 3-D2 までは `symbol_spec=None` / `initial_deposit=0.0` /
+        `stop_out_level=0.0` の 3 つが既定値を持っていた。前者は「銘柄の契約が無い
+        request」——エンジンは `spec.contract_size` 等を無条件に読むため実行できない——を
+        本メソッドが黙って組める形であり、後の 2 つは「人が書いた値が権威になる」形
+        （RC-1 と同型）だった。口座の契約を 1 型へ束ねた際に後者 2 つは構造的に消え、
+        残った `symbol_spec` の既定も本段階で撤去した。**本番の呼出は 0 件**
+        （`run_backtest` は `execute(request)` を直接呼ぶ・実測 2026-08-27）であり、
+        影響はスタブ Interactor を使うテストのみである。
+        この規律は `simulator/tests/unit/test_backtest_controller.py` の
+        `test_run_places_no_default_on_the_contract_arguments` が機械的に施行する。
         """
         try:
             self.execute(

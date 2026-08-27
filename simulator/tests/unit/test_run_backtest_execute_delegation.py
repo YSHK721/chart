@@ -155,5 +155,5 @@ class TestTheMarketDataIsLoadedOnlyOnce:
         controller = BacktestController(
             market_data=market_data, interactor=_RecordingInteractor(object())
         )
-        controller.run(None, "-", account=_UNUSED_ACCOUNT)
+        controller.run(None, "-", symbol_spec=None, account=_UNUSED_ACCOUNT)
         assert market_data.loads == 1
