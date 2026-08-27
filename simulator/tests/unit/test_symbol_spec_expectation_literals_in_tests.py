@@ -474,16 +474,17 @@ _EXCLUDED_BY_INTENT: "dict[str, str]" = {
 
 #: 既知の違反＝**所在の台帳**（値の期待値ではない）。**走査結果から導出してはならない。**
 #:
-#: `test_run_options_api_controller.py` L74 `assert json.loads(raw)["datasets"][0]
-#: ["point_size"] == 0.1` は、同ファイル L64 が段階 C で
-#: `== _profile().contract_size` へ是正されたのと**同じ形の取り残し**である
-#: （`_profile()` は `**load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` で組まれる）。
-#: 仕掛け線ではない——前提を宣言するコメントも無く、`point_size` を選んだ理由も
-#: 「JSON 直列化を確かめる」ことに限られる。是正は本ゲートの範囲外（要指示）のため、
-#: 段階 A と同じ規律で **是正より先にゲートを置き** xfail(strict=True) で所在を固定する。
-_KNOWN: "tuple[str, ...]" = (
-    "simulator/sim_ui/tests/unit/test_run_options_api_controller.py",
-)
+#: **現在 0 件**（2026-08-27）。本ゲートが新設時に検出した唯一の違反
+#: `test_run_options_api_controller.py` L74 `assert … ["point_size"] == 0.1` は、
+#: 同ファイル L64 が段階 C で `== _profile().contract_size` へ是正されたのと同じ形の
+#: **取り残し**であった。是正（`== _profile().point_size`）を入れた結果、本台帳に基づく
+#: xfail が **XPASS(strict) で赤に転じ**、マーカーと台帳エントリの撤去を機械的に促した
+#: ——機構が設計どおり働いた実例である。
+#:
+#: 空のままでよい。新たな違反が混入すれば
+#: `test_the_ledger_agrees_with_the_scan_in_both_directions` が「台帳に無い違反」として
+#: 赤にする（空であることと導出であることは別＝下の自己検査を参照）。
+_KNOWN: "tuple[str, ...]" = ()
 
 
 def test_the_ledger_agrees_with_the_scan_in_both_directions():
@@ -573,20 +574,13 @@ def test_scanner_does_not_detect_the_sources_that_must_stay_out(rel):
     )
 
 
-@pytest.mark.parametrize("rel", _KNOWN)
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ISSUE-445: 期待値側に書き写された銘柄仕様（本ゲートが新たに検出した既知違反）。"
-        f"{'; '.join(f'{rel}: {hits}' for rel, hits in _FOUND.items() if rel in _KNOWN)}。"
-        "是正は本作業の範囲外（要指示）。解消条件: 当該 assert が数値リテラルをやめ、"
-        "`_profile().point_size` のように供給元由来の値と突き合わせる形になったとき。"
-        "そのとき本検定は XPASS(strict) で赤に転じるので、"
-        "xfail マーカーごと撤去し `_KNOWN` から外すこと。"
-    ),
-)
-def test_known_written_down_expectation_is_still_there(rel):
-    assert _FOUND.get(rel) is None, (
-        f"{rel} に銘柄仕様の期待値リテラルが残っている:\n  "
-        + "\n  ".join(_FOUND.get(rel) or [])
-    )
+# 注記（2026-08-27・撤去の記録）: ここには `_KNOWN` を parametrize して既知違反の所在を
+# `xfail(strict=True)` で固定する `test_known_written_down_expectation_is_still_there` を
+# 置いていた。本ゲートが新設時に検出した唯一の違反
+# （`test_run_options_api_controller.py` L74 の `== 0.1`）を是正した結果、その検定は
+# **XPASS(strict) で赤に転じ**、自らの reason に書いたとおり「マーカーごと撤去し `_KNOWN`
+# から外せ」と機械的に知らせた。指示どおり撤去した（機構が設計どおり働いた実例）。
+#
+# 台帳が空になっても検出力は落ちない: `test_the_ledger_agrees_with_the_scan_in_both_directions`
+# が「台帳にも除外にも無い違反」を赤にするため、新たな混入はそこで捕まる。
+# 既知違反が再び現れたら `_KNOWN` へ書き下し、本検定を同じ形で復活させればよい。

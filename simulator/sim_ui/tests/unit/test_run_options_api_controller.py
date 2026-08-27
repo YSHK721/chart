@@ -71,4 +71,7 @@ def test_controller_response_is_json_serializable():
     raw = ctrl.list().to_bytes()
     import json
 
-    assert json.loads(raw)["datasets"][0]["point_size"] == 0.1
+    # 期待値を書き写さない（ISSUE-445・2026-08-27 是正）: ここには `0.1` を人が書いており、
+    # 同ファイル L64 が段階 C で供給元参照へ寄せられたときに**この 1 行だけ取り残されていた**
+    # （期待値側ゲートが検出）。`_profile()` と同じ供給元から引く。
+    assert json.loads(raw)["datasets"][0]["point_size"] == _profile().point_size
