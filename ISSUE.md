@@ -10487,8 +10487,8 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      `leverage` は既存 `test_leverage_reaches_required_margin.py` が持つため**新設しない**
      （`request.account.leverage` へ追随させただけ）。残る 2 つも**既存の値弁別的な検定が
      ある**ため新設しなかった: `initial_deposit` は
-     `test_run_backtest.py::TestEquityCurve`（`Account(balance=...)` 経由で
-     `equity_curve[0] == 10_000.0`）＋ MT5 指紋の `stats_sha256` ピン、`stop_out_level` は
+     `test_run_backtest.py::TestPerBarEquityCurve`（`Account(balance=...)` 経由で
+     `equity_curve[0] == 10_000.0`・L541）＋ MT5 指紋の `stats_sha256` ピン、`stop_out_level` は
      `test_run_backtest.py:273`（50.0 で `MarginCallError`）と同ファイルの 0.0 の兄弟検定が
      対になっており、値を取り違えれば落ちる。実際にこの畳み込みで**配線切れを 3 件検出した**
      （`test_end_to_end_run.py` / `test_sizing_estimated_entry_price.py` の
@@ -10513,12 +10513,14 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      （A: `stats 2d696eb1…` / `trades 3942ad9a…` / `trade_count 1107`、
      B: `stats 767255a5…` / `trades a2535a03…` / `trade_count 1164`）。すなわち損益・
      確定トレード列は 1 ビットも動いていない。
-   - **影響範囲（実測）**: 変更 24 ファイル（本番 3 / テスト 20 / 新設 1）。本番は
+   - **影響範囲（実測）**: 変更 20 ファイル（本番 4 / テスト 15 / 新設 1・`git diff --name-only`
+     で数えた実測。`ISSUE.md` を除く）。本番は
      `usecase/models.py`（`AccountSpec` 追加）・`usecase/run_backtest.py`（フィールド畳み込み
      ＋読み出し 17 箇所を `request.account.*` へ）・`adapter/controller.py`
      （`_build_request` / `run` の引数畳み込み）・`main/__init__.py`（`AccountSpec` 組立）。
      ——`marketdata/` は 0 バイト、`simulator/sim_ui/web` の JS は **0 行**改変
-     （`git diff --name-only HEAD~3 -- simulator/sim_ui/web marketdata` が 0 件。投入 body の
+     （本件の 3 commit の範囲で `git diff --name-only -- simulator/sim_ui/web marketdata` が
+     0 件。投入 body の
      キー集合は不変であり front の `PROFILE_KEYS` は従来どおり `leverage` を送る）。
      `npm test` は **421 pass / 0 fail**（着手前も 421 pass / 0 fail・同値）。
      `simulator/sim_ui/main/run_job.py` は**無改変**（`EngineBinding` を畳まなかったため）。
