@@ -10414,6 +10414,137 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      設計書 §3.4 の書き換え（同節は当時の段階分割の記録であり、現在の実体と矛盾しない。
      「段階 3 送り」は本記録で解消済み）・`BacktestController.run()` の既存既定値の撤去。
 
+   → **口座属性を `AccountSpec` 1 型へ束ねる（2026-08-27・commit `b7dd7fb` / `62823b4` /
+   `4ff159e`・`tdd-executor` に委譲・依頼時の呼称「段階 3-D3」・依頼者承認済みの案 D）**:
+   段階 3-D2 で `SymbolSpec` から外した口座属性は `RunBacktestRequest` に**3 つフラットに**
+   （`initial_deposit` / `leverage` / `stop_out_level`）置かれていた。これを `AccountSpec`
+   1 型へ束ね、**`SymbolSpec`＝銘柄の契約 / `AccountSpec`＝口座の契約**の 2 軸を型で明示した。
+   - **SOLID への写像**: SRP＝変更起点の違う 2 契約が型として分かれる。OCP＝供給元
+     スナップショットの `account` セクションは既に `company` / `currency` / `leverage` /
+     `server` / `trade_mode` を持ち、実口座からは `margin_mode=2` / `margin_so_call=100.0` /
+     `margin_so_so=100.0` も実測記録がある。これらが増えるたびに `RunBacktestRequest` を
+     改変するのは OCP 違反であり、`AccountSpec` に閉じる。ISP＝`Position.required_margin`
+     が要るのは `(leverage, contract_size)` だけであり、口座側の依存が 1 型に集約される。
+   - **`frozen=True` にした理由**: 本型は run 中に変化しない「契約」である。可変な口座
+     **状態**（balance / margin / floating_pnl）は `domain/account.py:Account` が担い、
+     当該 docstring が「run 全体で状態遷移する集約であり、値オブジェクト（frozen）方針の
+     例外として可変」と明記している。契約と状態が両方とも可変だと、run の途中で契約側を
+     書き換える経路が型の上で開く。frozen はその経路を閉じる（`SymbolSpec` が非 frozen で
+     あることとは揃えない——あちらは本段階の変更対象外である）。
+   - **既定値は 1 つも置かない（`stop_out_level` の既定 0.0 も撤去した）**: 判断は実測に
+     基づく。(1) 供給元は当該キーを供給していない（`ACCOUNT_FIELD_SOURCES` は `leverage`
+     のみ）。(2) 実口座の値は `margin_so_so=100.0`（ISSUE-445/446 実測）であり、MT5 突合は
+     `stop_out_level=99.95`、IS/OOS・walk-forward は 100.0 を渡す。0.0 を渡している本番
+     ツールは自分でそれを「無効化」と説明している（`simulator/tools/export_trade_markers.py`
+     L127-128:「`build_interactor(stop_out_level=0.0)` の既定のまま渡しておらず、
+     `margin_level() < stop_out_level` が成立しないため」）。(3) にもかかわらず 0.0 は
+     **no-op ではない**——`margin_level() = equity / margin * 100` は equity が負に落ちれば
+     負になり得るため、`< 0.0` は成立し得る生きた閾値である。結論: 0.0 は「未設定の代用」
+     でありながら黙って停止条件として働く値＝ RC-1（人が書いた値が権威になる）と同型で
+     あり、必須化した。新しい既定値は 1 つも発明していない。
+   - **`build_interactor` の公開シグネチャは不変（実測）**: `inspect.signature` の引数名
+     リストは着手前後で完全一致（**38 引数・名前も並びも同一**・JSON 突合で diff 0 行）。
+     `HEAD~3` 版との AST 比較（`kwonlyargs` の集合・順序）も一致（対称差 0）。フラットな
+     3 引数を受けて内側の 2 軸へ写すのが Composition Root の責務であり、`AccountSpec` の
+     組み立ては `simulator/main/__init__.py` の 1 箇所に閉じる。よって呼出は 1 つも変わらない。
+   - **`BacktestController.run()` の引数がどう変わったか（既定値残渣の裁き）**: 着手前は
+     `run(config, source_ref, *, timeframe=None, period=None, symbol_spec=None,
+     initial_deposit=0.0, leverage, stop_out_level=0.0)`。着手後は
+     `run(config, source_ref, *, timeframe=None, period=None, symbol_spec, account)`。
+     口座 3 引数は `account: AccountSpec` 1 つへ畳まれ、`initial_deposit=0.0` /
+     `stop_out_level=0.0` の残渣は**構造的に消えた**。残った `symbol_spec=None` も
+     **撤去した**——エンジンは `spec.contract_size` 等を無条件に読むため `None` の request は
+     実行できず、「呼出が型の上では成功するが契約は満たされていない」という RC-1 と同じ
+     失敗の形だからである。本番の呼出は 0 件（`run_backtest` は `execute(request)` を直接
+     呼ぶ・再実測）で、影響はスタブ Interactor を使うテスト 8 か所のみ。
+     `timeframe` / `period` の既定 `None` は**残した**（`market_data.load` へ渡す取得
+     パラメータであり、`RunBacktestRequest` のフィールドではない＝契約引数ではない）。
+   - **`EngineBinding`（`kwargs_mapper`）は畳まなかった。理由（実測）**: (a) 当該 3
+     フィールドは**権威が揃っていない**——`leverage` / `initial_deposit` は `.ini` の値との
+     一致を要求し（`_require_match`）、inert のときだけ binding が権威になる（ISSUE-397
+     裁定）。`stop_out_level` だけが純粋な注入である。「口座の契約」という 1 つの名前で
+     束ねると、その名前が持たない権威を主張することになる。run の実際の口座契約は写像層の
+     裁定結果であって binding ではない。(b) 本番の唯一の組立元
+     `simulator/sim_ui/main/run_job.py:_build_engine_binding` は `initial_deposit` と
+     `stop_out_level` を**供給していない**（既定に依存・実測 L293-307）。`AccountSpec` は
+     全フィールド必須であるから、畳むと当該呼出側が `initial_deposit` を**発明**するか、
+     `AccountSpec` に既定を戻すかのどちらかになる。どちらも本段階の目的に反する。
+     (c) `EngineBinding` の写像先は `build_interactor` の**フラットな引数**であり、
+     シグネチャ不変の制約下では畳んでも境界の形は変わらない。
+   - **退行防止の検定（重複を作らない・負の対照つき）**: 新設は
+     `simulator/tests/unit/test_account_spec_holds_only_account_attributes.py` の 1 ファイル
+     （10 件）。固定する不変条件は 4 つ——(1) 銘柄仕様が `AccountSpec` に混ざらない、
+     (2) 口座属性の家は 1 つ（`RunBacktestRequest` はフラットな口座属性を持たず
+     `AccountSpec` 型の受け口をちょうど 1 つ持つ）、(3) `AccountSpec` は既定値を 1 つも
+     持たない、(4) frozen である。**判定は既存ゲートの純関数
+     `fields_not_sourced_from_symbol_info`（段階 3-D0 の
+     `test_symbol_spec_fields_are_symbol_sourced.py`）を import して再利用し、その補集合を
+     取る**（同じ判定を 2 度書かない。既存の前例＝`test_leverage_reaches_required_margin`
+     が `test_run_backtest` のスパイを import する形と同じ）。フィールド名・セクション名・
+     件数はテスト側に一切書かず、供給元の対応表と `dataclasses.fields` から導く（型注釈の
+     同定も `get_type_hints` で解決し、クラス名の文字列比較をしない）。
+   - **`leverage` / `initial_deposit` / `stop_out_level` の「末端まで届く」担保**:
+     `leverage` は既存 `test_leverage_reaches_required_margin.py` が持つため**新設しない**
+     （`request.account.leverage` へ追随させただけ）。残る 2 つも**既存の値弁別的な検定が
+     ある**ため新設しなかった: `initial_deposit` は
+     `test_run_backtest.py::TestEquityCurve`（`Account(balance=...)` 経由で
+     `equity_curve[0] == 10_000.0`）＋ MT5 指紋の `stats_sha256` ピン、`stop_out_level` は
+     `test_run_backtest.py:273`（50.0 で `MarginCallError`）と同ファイルの 0.0 の兄弟検定が
+     対になっており、値を取り違えれば落ちる。実際にこの畳み込みで**配線切れを 3 件検出した**
+     （`test_end_to_end_run.py` / `test_sizing_estimated_entry_price.py` の
+     `request.initial_deposit` 読み 2 ファイル 3 件が赤になり、`request.account.initial_deposit`
+     へ是正）。
+   - **非空虚性は実走で確認した（宣言ではない）**: 本番の型を摂動させて赤を観測し、戻して
+     緑に復した。(a) `AccountSpec` に `contract_size` を混ぜる＋`stop_out_level` に既定を
+     戻す＋`frozen` を外す → **4 failed / 6 passed**（不変条件 1・3・4 と負の対照 1 件が赤）、
+     復元後 **10 passed**（`git diff` 0 行で復元を確認）。(b) `run()` の `symbol_spec` に
+     既定を戻す → `test_run_places_no_default_on_the_contract_arguments` が
+     `['symbol_spec']` を挙げて赤、復元後 8 passed。(c) 段階 3-D3 の Red 自体も実測——
+     `AccountSpec` を追加し畳み込み前に走らせた時点で不変条件 2 が
+     `['initial_deposit', 'leverage', 'stop_out_level']` を挙げて赤になった。
+   - **契約引数の既定値禁止も機械で固定した**: `test_backtest_controller.py::
+     test_run_places_no_default_on_the_contract_arguments`。契約引数の一覧を書かず
+     「`RunBacktestRequest` のフィールドと同名の `run()` の引数」として導く（実測で
+     `config` / `symbol_spec` / `account` の 3 つ）。走査が 1 件以下に痩せたら赤にする
+     （空振り防止）。合成関数による負の対照 2 件（検出する／取得パラメータを偽陽性にしない）。
+   - **MT5 突合は bit-exact 不変（最重要の通過条件・実測）**:
+     `test_ma_slope_reconcile.py` / `test_run_backtest_fingerprint.py` が **21 passed**。
+     `trades=1164` / `net profit=-6173.9` / `最終 balance=3826.1`、および指紋ピンの一致
+     （A: `stats 2d696eb1…` / `trades 3942ad9a…` / `trade_count 1107`、
+     B: `stats 767255a5…` / `trades a2535a03…` / `trade_count 1164`）。すなわち損益・
+     確定トレード列は 1 ビットも動いていない。
+   - **影響範囲（実測）**: 変更 24 ファイル（本番 3 / テスト 20 / 新設 1）。本番は
+     `usecase/models.py`（`AccountSpec` 追加）・`usecase/run_backtest.py`（フィールド畳み込み
+     ＋読み出し 17 箇所を `request.account.*` へ）・`adapter/controller.py`
+     （`_build_request` / `run` の引数畳み込み）・`main/__init__.py`（`AccountSpec` 組立）。
+     ——`marketdata/` は 0 バイト、`simulator/sim_ui/web` の JS は **0 行**改変
+     （`git diff --name-only HEAD~3 -- simulator/sim_ui/web marketdata` が 0 件。投入 body の
+     キー集合は不変であり front の `PROFILE_KEYS` は従来どおり `leverage` を送る）。
+     `npm test` は **421 pass / 0 fail**（着手前も 421 pass / 0 fail・同値）。
+     `simulator/sim_ui/main/run_job.py` は**無改変**（`EngineBinding` を畳まなかったため）。
+   - **全走（実測）**: **1 failed / 5427 passed / 1 skipped / 1 xfailed**。着手前ベースライン
+     は **1 failed / 5414 passed / 1 skipped / 1 xfailed**（本ターンで再実測。段階 3-D2 の
+     記録と一致）。差分は **passed +13 のみ**で `failed` / `skipped` / `xfailed` は 1 件も
+     動いていない。**内訳は全数で辻褄が合う**: 新設ゲート 10 件 ＋
+     `test_backtest_controller.py` の 3 件（5→8）。`fields(RunBacktestRequest)` 駆動の
+     parametrize は tracked 全件に **0 件**（grep 実測）であり、フィールドが 6→5 に減った
+     ことで件数が動いた検定は無い。赤は既存の
+     `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form`
+     1 件のみ（ISSUE-427/371・JS 合成根の走査であり本件と無関係）で、**新たな赤は 0 件**。
+   - **やっていないこと**: `marketdata/` の改変（0 バイト）・JS の改変（0 行）・
+     `SymbolSpec` の改変（0 バイト）・`build_interactor` のシグネチャ変更（0）・
+     `EngineBinding` の畳み込み（上記理由）・`build_interactor(stop_out_level=0.0)` の
+     既定値の撤去（**シグネチャ不変の制約により本段階では触れない**。したがって「誰も
+     書いていない 0.0」は Composition Root の入口に**まだ残っている**——`AccountSpec` が
+     必須化したのはその 1 段内側であり、発明の根は消えていない。撤去はシグネチャ変更を
+     伴うため別裁定＝申し送り）。
+   - **申し送り**: (1) 上記の `build_interactor(stop_out_level=0.0)` および
+     `EngineBinding.stop_out_level: float = 0.0`（`build_interactor` の既定を写した値）。
+     供給元は当該キーを供給しておらず、実口座は `margin_so_so=100.0` である。口座状態
+     エンジン（2026-08-11 裁定）の受け皿として `ACCOUNT_FIELD_SOURCES` に
+     `margin_so_so` を足すのが筋であり、そのとき本残渣は自然に消える。
+     (2) `SymbolSpec` は非 frozen のままである（本段階の変更対象外）。
+
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
   `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
