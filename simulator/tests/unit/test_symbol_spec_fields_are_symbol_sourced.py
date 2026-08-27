@@ -4,6 +4,12 @@
 段階 0（``simulator/tests/integration/test_mt5_case_spec_agrees_with_report.py``）と同じ規律で
 **値を 1 つも変えず、検出ゲートだけを先に置く**。
 
+**現在は恒久の緑**（2026-08-26・段階 3-D2 で是正済み）。``SymbolSpec`` から ``leverage``
+が外れ（7 フィールド）、口座属性は ``usecase/run_backtest.py:RunBacktestRequest`` が持つ。
+是正を入れた瞬間、本ゲートは設計どおり **XPASS(strict)** で赤に転じ、``xfail`` マーカーの
+撤去を機械的に促した（実測。この機構が働いた 3 例目である）。以後、本ファイルは
+「銘柄の契約の型に別の契約の値が同居していない」ことを固定し続ける。
+
 **固定する不変条件**: ``SymbolSpec`` の各フィールドは、供給元スナップショットの
 ``symbol`` セクション（＝ ``mt5.symbol_info()`` が返すもの）から引ける。
 
@@ -13,18 +19,20 @@
 1 つの型に同居するのは SRP 違反であり、ISSUE-445 の RC-1（人が書いた値が権威のように振る舞う）
 が入り込む隙間そのものになる。
 
-**現状これは 1 件だけ違反している**（``leverage``・口座属性）。``mt5.symbol_info()`` が返す
+**かつてこれは 1 件だけ違反していた**（``leverage``・口座属性）。``mt5.symbol_info()`` が返す
 96 フィールドに ``leverage`` は無く（ISSUE-445 実測 2026-08-25）、``tester.log:13`` も
-``initial deposit 10000 JPY, leverage 1:10`` と**口座の行**に記録している。よって本ゲートは
-**現時点で赤になるのが正しい**。CI を緑に保つため ``xfail(strict=True)`` で「既知の不整合」と
-して固定し、是正が入ると **XPASS(strict)** で赤に転じて「マーカーを外せ」と機械的に知らせる。
-この機構は段階 0 → 段階 2、段階 2 → 段階 3-A の 2 度とも設計どおり働いた（実例は段階 0 の
-検出ゲートの docstring）。
+``initial deposit 10000 JPY, leverage 1:10`` と**口座の行**に記録している。当時は CI を緑に
+保つため ``xfail(strict=True)`` で「既知の不整合」として固定していた。段階 3-D2（2026-08-26）
+で ``SymbolSpec`` から ``leverage`` を外したところ、宣言どおり **XPASS(strict)** で赤に転じ、
+マーカー撤去を機械的に促した。この機構は段階 0 → 段階 2、段階 2 → 段階 3-A に続いて
+**3 度目**も設計どおり働いた。
 
-**本段階では何も分離しない。** ``SymbolSpec`` からの ``leverage`` 分離は既存 IF
-（``build_interactor`` の引数）に触れるため段階 3-D1 / 3-D2 の裁定に属する。
+**空の分割で自明に緑にしない**: 「``SymbolSpec`` に account 由来が無い」は、対応表から
+口座属性の供給ごと消しても成立してしまう。よって
+:func:`test_the_supply_table_still_carries_account_sourced_fields_outside_the_symbol_spec`
+が「口座由来の供給が**実在し**、かつ ``SymbolSpec`` の外にある」ことを対で固定する。
 
-段階の呼称について（実測 2026-08-26）: 「3-D0 / 3-D1 / 3-D2」は本作業の依頼時の呼称であり、
+段階の呼称について（実測 2026-08-26・段階 3-D0 時点の記録）: 「3-D0 / 3-D1 / 3-D2」は依頼時の呼称であり、
 **設計書には未記載**である（``.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md`` の grep 実測 0 件。
 記録済みの細分は 3-A / 3-B / 3-C / 3-E 系 / 3-F）。``ISSUE.md`` については、本ゲート新設時点の
 実測は 0 件だったが、その新設自体を記録した時点から ISSUE-445 の作業記録として登場する
@@ -42,8 +50,10 @@
     （:data:`SYMBOL_INFO_SECTION` 参照）。
 
 既存検定との住み分け（重複を作らない）:
-    - ``simulator/tests/unit/test_symbol_spec_snapshot_field_parity.py`` — 対応表の**キー集合**が
-      ``SymbolSpec`` のフィールド名集合と一致すること。本ゲートは同じ集合の **section** を見る。
+    - ``simulator/tests/unit/test_symbol_spec_snapshot_field_parity.py`` — **銘柄仕様の表**の
+      キー集合が ``SymbolSpec`` のフィールド名集合と一致すること（および口座属性の表の
+      キーが ``RunBacktestRequest`` に行き先を持つこと）。本ゲートは同じ集合の
+      **section** を見る。
     - ``marketdata/tests/test_symbol_spec_snapshot.py`` — 対応表が実スナップショット上で解決する
       こと・``leverage`` が ``account`` 由来であること。あちらは供給元ローダ側の記述であり、
       ``SymbolSpec``（``simulator`` 側の型）を知らない。本ゲートは型の側から見る。
@@ -102,6 +112,17 @@ def _symbol_spec_field_names() -> "FrozenSet[str]":
 def _violations() -> "FrozenSet[str]":
     return fields_not_sourced_from_symbol_info(
         SPEC_FIELD_SOURCES, _symbol_spec_field_names(), SYMBOL_INFO_SECTION
+    )
+
+
+def _account_sourced_table_entries() -> "FrozenSet[str]":
+    """対応表のうち ``symbol_info`` 以外（＝口座）から引くエントリ名。
+
+    判定は同じ純関数に投げる（判定を 2 度書かない）。対象を「``SymbolSpec`` の
+    フィールド」から「対応表の全キー」に替えるだけで、口座由来の供給が引ける。
+    """
+    return fields_not_sourced_from_symbol_info(
+        SPEC_FIELD_SOURCES, frozenset(SPEC_FIELD_SOURCES), SYMBOL_INFO_SECTION
     )
 
 
@@ -166,18 +187,9 @@ class TestTheGateDetectsAndOnlyDetects:
         )
 
 
-# --- 固定する不変条件（現時点では既知の不整合により赤）--------------------------------
+# --- 固定する不変条件（段階 3-D2 で是正済み・恒久の緑）--------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ISSUE-445 の既知の不整合: leverage は口座属性であり symbol_info に存在しない"
-        "（設計書 §3.4）。段階 3-D2＝設計書 §3.4 が『段階 3 送り』とした leverage 分離で、"
-        "SymbolSpec から leverage を分離したときに解消する。"
-        "解消したら本マーカーを外すこと（XPASS(strict) が赤で知らせる）。"
-    ),
-)
 def test_every_symbol_spec_field_is_sourced_from_symbol_info():
     """``SymbolSpec`` は銘柄の契約だけを持つ（口座の契約を持たない）。"""
     # Arrange / Act
@@ -189,7 +201,7 @@ def test_every_symbol_spec_field_is_sourced_from_symbol_info():
     )
 
 
-# --- 緑の検定（違反が 1 件に局在していること・その 1 件が実在の証拠を持つこと）---------
+# --- 緑の検定（分離が「口座の契約を消した」形でないこと・その実在の証拠）---------------
 
 
 @pytest.fixture(scope="module")
@@ -198,31 +210,43 @@ def snapshot() -> "dict[str, Any]":
     return load_snapshot(OANDA_JAPAN_MT5_LIVE, _SYMBOL)
 
 
-def test_the_violation_is_localised_to_a_single_field():
-    """違反は 1 件だけである（段階 3-D0 時点の記録）。
+def test_the_supply_table_still_carries_account_sourced_fields_outside_the_symbol_spec():
+    """口座由来の供給は**実在し**、かつ ``SymbolSpec`` の外にある（段階 3-D2 の到達点）。
 
-    2 件目が生えたら赤になる。是正で 0 件になったときも赤になる（そのときは
-    :func:`test_every_symbol_spec_field_is_sourced_from_symbol_info` の xfail が
-    XPASS(strict) で赤になり、本検定と併せて「記録を更新せよ」と知らせる）。
+    段階 3-D0 ではここに「違反は 1 件だけ」という**当時の状態の記録**を置いていた。是正で
+    違反が 0 件になり当該記録は赤になったため、実体に合わせて**問いを差し替えた**。
+    単に消さないのは、上のゲート単体では「対応表から口座属性の供給ごと消す」形でも緑に
+    なってしまうためである（分離ではなく削除でも通る＝空虚化）。本検定はその抜け道を塞ぐ:
+
+        1. 対応表に ``symbol_info`` 以外から引くエントリが**残っている**（口座の契約が実在）。
+        2. そのどれもが ``SymbolSpec`` のフィールドでは**ない**（同居していない）。
+
+    2 件目の口座属性が増えても壊れない（件数を数えない）。逆に口座属性が ``SymbolSpec``
+    へ戻ったら 2. が赤になる。
     """
-    fields = _symbol_spec_field_names()
-    violations = _violations()
-    assert len(violations) == 1
-    symbol_sourced = fields - violations
-    assert len(symbol_sourced) == len(fields) - 1
-    assert all(
-        SPEC_FIELD_SOURCES[name].section == SYMBOL_INFO_SECTION for name in symbol_sourced
+    account_sourced = _account_sourced_table_entries()
+    assert account_sourced, (
+        "対応表に symbol_info 以外から引くエントリが 1 つも無い。"
+        "口座の契約の供給が消えている（分離ではなく削除になっている）。"
+    )
+    intruders = account_sourced & _symbol_spec_field_names()
+    assert not intruders, (
+        f"口座由来のフィールドが SymbolSpec に同居している: {sorted(intruders)}"
     )
 
 
-def test_the_violating_field_is_absent_from_the_symbol_info_section(snapshot):
-    """違反フィールドは実際に ``symbol_info`` の出力に存在しない（直接証拠）。
+def test_the_account_sourced_fields_are_absent_from_the_symbol_info_section(snapshot):
+    """口座由来のフィールドは実際に ``symbol_info`` の出力に存在しない（直接証拠）。
 
     「銘柄仕様ではない」を対応表の申告（``section`` の綴り）ではなく供給元の中身で裏付ける。
     ここが緑である限り、``section`` が ``symbol`` でないことは記述の都合ではなく実体である。
+    走査対象は ``_violations()``（是正後は空＝空回りする）ではなく対応表の口座由来
+    エントリであり、是正後も証拠を見続ける。
     """
     section = snapshot[SYMBOL_INFO_SECTION]
-    for name in _violations():
+    names = _account_sourced_table_entries()
+    assert names  # 空走で自明に緑にしない
+    for name in names:
         assert SPEC_FIELD_SOURCES[name].key not in section
 
 
