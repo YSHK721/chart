@@ -10547,6 +10547,95 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      `margin_so_so` を足すのが筋であり、そのとき本残渣は自然に消える。
      (2) `SymbolSpec` は非 frozen のままである（本段階の変更対象外）。
 
+   → **期待値側に書き写された銘柄仕様を検出するゲートを新設（2026-08-27・`tdd-executor` に
+   委譲・追加のみ／本番コード 0 バイト改変）**: 段階 C の申し送り「検出ゲートは組み立て側しか
+   見ない。**期待値側に書き写された銘柄仕様**は原理的に検出範囲外であり、この穴は本件の是正では
+   塞がっていない」に対して、機械判定できる範囲を確定させ、その範囲にゲートを置いた。
+   新設 `simulator/tests/unit/test_symbol_spec_expectation_literals_in_tests.py`。
+   姉妹ゲート `test_jp225_spec_literals_in_tests.py` には射程を明示する docstring 4 行のみ追加。
+
+   - **穴の実在範囲を全数で測った（値一致では機械判定できないことの実測）**: 供給元の 8 値
+     （`1.0` / `1.0` / `10000.0` / `1.0` / `5` / `1` / `0.1` / `10.0`）のいずれかと一致する
+     数値リテラルを tracked 全 `*.py` の `assert` 内で数えると **1611 件 / 345 ファイル**。
+     `0.1` や `1.0` はあらゆる文脈に現れるため、**「値が一致する」を判定基準にしたゲートは
+     成立しない**（何でも検出する＝無価値）。よって判定は**値ではなく形**で行う。
+   - **判定の定義（4 条件の連言）**: (1) **母集団** — そのファイルが供給元に触れている。
+     (A) 自分で `load_spec_fields` / `spec_fields` を呼ぶ関数を持つ、または (B) そういう関数を
+     **他ファイルから import している**。(2) **位置** — リテラルが `assert` 文の中にある。
+     (3) **相手** — 同じ `assert` 内で銘柄仕様フィールドの**読み出し**（`x.volume_min` /
+     `x["volume_min"]`、まとめ書き `cfg == {"volume_min": 0.1}` を含む）と突き合わされている
+     （`pytest.approx` は剥がす）。(4) **往復でない** — 同じ `def` 内の `assert` の**外**に
+     同じ値が現れない（現れるならテスト自身が注入した入力＝供給元が変わっても陳腐化しない）。
+   - **(B) が射程の要であることの実測**: 段階 C の実例は是正**前**（`99af6f0^`）の AST で
+     `load_spec_fields` / `spec_fields` を参照する関数が **0 個**であり、(A) では母集団に
+     入らない。母集団を「自分で供給元を呼ぶファイル」に限ると**実例の形が丸ごと外れる**
+     ——これが段階 A/B の見落とし経路そのものである。なお是正後の同ファイルは (A) にも
+     該当するようになったため、(B) の単独実証は合成ソースで行っている
+     （`_supplier_touching_sources(sources)` に走査対象を注入できる形にした）。
+   - **依頼時の設計案 (a) を単独では採らなかった理由（実測）**: 依頼は「供給元由来のビルダを
+     import している消費者に限定する」案を挙げていたが、それは上記 (B) だけに相当する。
+     実測では (B) 単独の消費者は tracked 全件で **4 件**しかなく、本ゲートが新たに見つけた
+     違反 `test_run_options_api_controller.py` は (A)（自分で `load_spec_fields` を呼ぶ）で
+     母集団に入るファイルであるため、**(a) 単独では検出できなかった**。よって (a) を包含する
+     形で (A)+(B) に広げた（偽陽性は往復除外と母集団制限で 0 件に保った・下記実測）。
+   - **自己レビューで見つけて是正した欠陥 1 件（相対 import）**: 当初の母集団同定は
+     `ImportFrom.module` を絶対名として扱っており、`from .builders import _kw` の形を
+     解決できなかった。tracked `*.py` の相対 `ImportFrom` は **312 件**あり（実測）、
+     パッケージ内で相対 import された二次ビルダの消費者が母集団から**静かに漏れる**
+     ＝この穴と同型の見落としである。`_imported_module()` を追加して import 元の
+     パッケージから解決するようにした（実ツリーの母集団は 32 件のまま変化なし＝
+     現時点で該当する消費者は無いが、規則としての穴は塞いだ）。
+   - **精度の実測（2026-08-27）**: tracked `*.py` **1311 件**のうち母集団は **32 件**。
+     母集団内のヒットは **3 ファイル 3 件**で、内訳は次のとおり。**偽陽性 0 件**
+     （3 件すべて人手で分類し、根拠を各エントリに記載した）。
+     - **新たに見つけた違反 1 件（是正は未着手＝要指示）**:
+       `simulator/sim_ui/tests/unit/test_run_options_api_controller.py:74`
+       `assert json.loads(raw)["datasets"][0]["point_size"] == 0.1`。`_profile()` は
+       `**load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")` で組まれるため、この `0.1` は
+       供給元の値の写しである。**同ファイル L64 が段階 C で `== _profile().contract_size`
+       へ是正されたのと同じ形の取り残し**（同じファイルの中で片方だけ直っていた）。
+       段階 A と同じ規律で**是正より先にゲートを置き** `xfail(strict=True)` で所在を固定した。
+       解消時は XPASS(strict) で赤に転じ、マーカー撤去と `_KNOWN` からの削除を促す。
+     - **意図的な仕掛け線 2 件（`_EXCLUDED_BY_INTENT`）**:
+       `test_jp225_spec_literals_in_tests.py:190`（`assert _TRUTH["contract_size"] == 1.0`
+       ＝直後の負の対照が食わせる合成ソースが真値と一致していることの宣言）と
+       `test_order_admission.py:144`（`assert jp225.volume_min == 1.0` ＝続く
+       `lot=0.1` 棄却検定が意味を持つ前提の宣言）。どちらも原文コメントが役割を述べており、
+       **供給元が変われば赤くする**ために置かれた値＝権威として振る舞っていない。
+       役割は機械では判別できないため明示除外し、`…_are_actually_detected_by_the_scanner`
+       が「検出されないから外れているのではない」ことを固定する。
+   - **絞り込みが消している偽陽性の実測**: 母集団の制限（供給元に触れないファイルを外す）が
+     **6 件 / 5 ファイル**を消している（`test_usecase_models.py` の合成 EURUSD 相当
+     `contract_size=100000.0` ほか、`test_config_loader.py` の `digits=5` 等）。往復除外が
+     さらに **2 件**を消している（`test_symbol_spec_snapshot.py` の `fake[...] = 12.5` 読み戻し、
+     `test_cli_symbol_spec_args.py` の CLI 引数 `"3.0"` 読み戻し）。どちらも**実ソースを
+     判定関数に食わせて 0 件**で固定しており、「一覧に入れていない」では済ませていない。
+   - **非空虚性を 4 変異で実測**（いずれも復元して 14 passed / 1 xfailed を再確認）:
+     (a) 台帳を `tuple(sorted(set(_FOUND) - set(_EXCLUDED_BY_INTENT)))` と導出形にする →
+     `…is_written_down_and_not_derived_from_the_scan` が **1 failed**。
+     (b) 既知違反を台帳から落とす → `…agrees_with_the_scan_in_both_directions` が **1 failed**。
+     (c) 母集団から (B) import 経路を外す → **4 failed**（(B) 単独実証・両方向一致・
+     母集団の自己検査・除外の意図性）。(d) 往復除外を無効化する → **3 failed**。
+     加えて、実例（`99af6f0` 是正**前**の形）を合成ソースとして食わせると **3 件検出**、
+     是正**後**の実ソースは **0 件**——「是正したのに赤が消えない」ゲートになっていない。
+   - **塞げていない範囲（＝この穴は完全には塞がっていない。正確に書く）**: 判定は AST の
+     **局所形**しか見ないため、次は原理的に検出できない。(1) 期待値を中間の名前に置いた形
+     （`_EXPECTED_MIN = 0.1` … `== _EXPECTED_MIN`）。(2) 期待値に演算が入る形（`== 0.1 * 2`）。
+     (3) `assert` の外に置いた期待値（`@pytest.mark.parametrize` の expected 列など）。
+     (4) 銘柄仕様の読み出しと同じ式に現れない写し（別変数へ移してから比較する形）。
+     (5) `.py` 以外（JSON fixture 等・姉妹ゲートが別入口で 1 件だけ見ている）。
+     いずれも値の流れを追う実装（データフロー解析）を要する。**現状は「実例が属する形は
+     塞いだが、写しの一般形は塞いでいない」**である。
+   - **実測（全走）**: `python -m pytest simulator marketdata tools -q -p no:randomly` =
+     **1 failed / 5442 passed / 1 skipped / 2 xfailed**（着手前ベースラインを同一コマンドで
+     実測: **1 failed / 5427 passed / 1 skipped / 1 xfailed**）。増分 **+15 passed / +1 xfailed
+     は新設ファイルの検定数と完全一致**（15 passed / 1 xfailed 単体実測）。赤は既存の
+     `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form`
+     1 件のみ（ISSUE-427/371・無関係）で、**新たな赤は 0 件**。
+   - **やっていないこと**: 上記違反 1 件の是正（要指示。`== 0.1` を `== _profile().point_size`
+     とすれば済むが、既存テストの改変は本作業の許可範囲外）・本番コードの改変（0 バイト）・
+     `marketdata/` の改変（0 バイト）・姉妹ゲートの判定ロジックの変更（docstring のみ追加）。
+
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
   `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
