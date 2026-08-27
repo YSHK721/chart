@@ -105,7 +105,7 @@ class TestMappingRules:
         binding = engine_binding(data_path=None)
         assert kwargs["symbol"] == binding.symbol
         assert kwargs["period"] == binding.period
-        assert kwargs["leverage"] == binding.symbol_spec.leverage
+        assert kwargs["leverage"] == binding.leverage
 
     def test_data_path_is_supplied_as_none(self):
         # 規則 4: 注入束由来の ``None`` は欠落ではない（規則 S が整合を担保済み）。

@@ -306,7 +306,12 @@ class TestVerifyWindowApplied:
     def test_empty_bars_are_rejected(self):
         # §8.4.3: bars が空なら Repository が既に DataError を出しているはず（K-14）。
         # ここへ到達した空列は「窓が効いて 0 件になった」として N-15 で止める。
-        empty = RunBacktestRequest(config=None, bars=[], symbol_spec=None, initial_deposit=0.0)
+        empty = RunBacktestRequest(
+            config=None, bars=[], symbol_spec=None, initial_deposit=0.0,
+            # 口座属性は既定値を持たない（ISSUE-445 段階 3-D2）。窓の事後検証は bars しか
+            # 見ないため、この値は判定に一切影響しない。
+            leverage=1.0,
+        )
         window = resolve_data_window(custom_range_settings(FROM_DATE, TO_DATE).effective())
         with pytest.raises(UnsupportedSettingError) as excinfo:
             verify_window_applied(empty, window)

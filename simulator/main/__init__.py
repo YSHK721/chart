@@ -827,7 +827,6 @@ def build_interactor(
         stops_level=stops_level,
         digits=digits,
         point_size=point_size,
-        leverage=leverage,
     )
 
     request = RunBacktestRequest(
@@ -835,6 +834,9 @@ def build_interactor(
         bars=bars,
         symbol_spec=symbol_spec,
         initial_deposit=initial_deposit,
+        # 口座属性は銘柄仕様と別の面へ渡す（ISSUE-445 段階 3-D2・設計書 §3.4）。
+        # `build_interactor` の引数名は不変（呼出 105 箇所は 1 つも変わらない）。
+        leverage=leverage,
         stop_out_level=stop_out_level,
         # warmup/trading_start（既定 None=全バー取引＝後方互換）。warmup 込み CSV を
         # data_path に与え trading_start を指定すると、開始前のバーは指標 seed 収束のみ。

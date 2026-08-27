@@ -36,6 +36,7 @@ from simulator.tests.tester_settings_engine_fixtures import (
     SETTLEMENT_CURRENCY,
     custom_range_settings,
     engine_binding,
+    jp225_leverage,
     jp225_symbol_spec,
     runnable_settings,
 )
@@ -86,16 +87,15 @@ class TestSymbolSpecMapping:
 
     def test_leverage_is_float_and_matches_the_binding(self):
         kwargs = _kwargs()
-        # corpus 実測の `Leverage=10`（基本設計 §4.7 #14）と `SymbolSpec.leverage`
-        assert kwargs["leverage"] == pytest.approx(float(jp225_symbol_spec().leverage))
+        # corpus 実測の `Leverage=10`（基本設計 §4.7 #14）と `EngineBinding.leverage`
+        # （ISSUE-445 段階 3-D2 以降、権威は口座属性の注入であって `SymbolSpec` ではない）。
+        assert kwargs["leverage"] == pytest.approx(jp225_leverage())
         assert isinstance(kwargs["leverage"], float)
 
     def test_leverage_mismatch_is_rejected(self):
-        import dataclasses
-
-        mismatched = dataclasses.replace(jp225_symbol_spec(), leverage=100.0)
+        # `.ini` の `Leverage` と食い違う値を注入すれば ConfigError（沈黙上書きしない）。
         with pytest.raises(ConfigError):
-            _kwargs(symbol_spec=mismatched)
+            _kwargs(leverage=jp225_leverage() * 10.0)
 
 
 class TestAccountAndPeriodMapping:

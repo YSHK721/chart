@@ -93,6 +93,11 @@ def _config(tick_model="real_ticks", **overrides):
     return BacktestConfig(**base)
 
 
+#: 合成 run の口座レバレッジ。ISSUE-445 段階 3-D2 で `SymbolSpec` から
+#: `RunBacktestRequest` へ移した値（移設前と同じ数＝必要証拠金は不変）。
+_LEVERAGE = 100.0
+
+
 def _spec(**overrides):
     base = dict(
         contract_size=1.0,
@@ -102,19 +107,19 @@ def _spec(**overrides):
         stops_level=0,
         digits=5,
         point_size=0.00001,
-        leverage=100.0,
     )
     base.update(overrides)
     return SymbolSpec(**base)
 
 
 def _request(bars, *, config=None, initial_deposit=10_000.0, stop_out_level=0.0,
-             symbol_spec=None):
+             symbol_spec=None, leverage=_LEVERAGE):
     return RunBacktestRequest(
         config=config or _config(),
         bars=bars,
         symbol_spec=symbol_spec or _spec(),
         initial_deposit=initial_deposit,
+        leverage=leverage,
         stop_out_level=stop_out_level,
     )
 
@@ -364,7 +369,7 @@ class TestStopOutFiresAtTick:
             T0: [(1.10, 1.10, 1.10, T0)],
             T1: [(1.10, 1.10, 1.10, T1), (1.00, 1.00, 1.00, T1)],  # 2 番目で margin 割れ
         }
-        spec = _spec(contract_size=100_000.0, leverage=100.0)
+        spec = _spec(contract_size=100_000.0)
         order = Order(side="buy", kind="market", volume=1.0, price=None)
         strategy = SpyStrategyPort(orders_by_bar={0: [order]})
         interactor = RunBacktestInteractor(
@@ -388,7 +393,7 @@ class TestStopOutFiresAtTick:
             T0: [(1.10, 1.10, 1.10, T0)],
             T1: [(1.00, 1.00, 1.00, T1)],
         }
-        spec = _spec(contract_size=100_000.0, leverage=100.0)
+        spec = _spec(contract_size=100_000.0)
         config = _config(stop_out_action="close_and_halt")
         order = Order(side="buy", kind="market", volume=1.0, price=None)
         strategy = SpyStrategyPort(orders_by_bar={0: [order]})

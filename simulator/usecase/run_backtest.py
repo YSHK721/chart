@@ -87,6 +87,12 @@ class RunBacktestRequest:
     bars: Any
     symbol_spec: Any
     initial_deposit: float
+    # 口座属性（ISSUE-445 段階 3-D2・設計書 §3.4）。`initial_deposit` / `stop_out_level`
+    # と同じ面に置く——`leverage` は `mt5.symbol_info()` に存在せず（供給元スナップショット
+    # 実測）、供給元でも `account` セクションから引く値であるため、銘柄仕様（`symbol_spec`）
+    # の中には置かない。**既定値を持たない**: 既定値は「人が書いた値が権威になる」形
+    # （ISSUE-445 RC-1）と同型であり、必要証拠金の除数を黙って発明することになる。
+    leverage: float
     stop_out_level: float = 0.0
     # warmup/trading_start（config-gated・既定 None=全バー取引＝後方互換）。
     # 指定時は bar.time < trading_start のバーを「指標 update のみ実施し、トレード/
@@ -277,7 +283,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 exit_price=exit_price,
                 exit_reason=exit_reason,
                 contract_size=contract_size,
-                leverage=spec.leverage,
+                leverage=request.leverage,
                 account=account,
                 trades=trades,
                 deals=deals,
@@ -405,7 +411,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     order, bid=bid, ask=ask, spread=fill_spread, point_size=fill_point
                 )
                 account.open_positions.append(position)
-                account.margin += position.required_margin(spec.leverage, contract_size)
+                account.margin += position.required_margin(request.leverage, contract_size)
                 open_trades.append(
                     _OpenTrade(
                         position=position,
@@ -590,7 +596,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 exit_price=exit_price,
                 exit_reason=exit_reason,
                 contract_size=contract_size,
-                leverage=spec.leverage,
+                leverage=request.leverage,
                 account=account,
                 trades=trades,
                 deals=deals,
@@ -697,7 +703,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
                 for order, pos in filled:
                     account.open_positions.append(pos)
-                    account.margin += pos.required_margin(spec.leverage, contract_size)
+                    account.margin += pos.required_margin(request.leverage, contract_size)
                     open_trades.append(
                         _OpenTrade(
                             position=pos,
@@ -764,7 +770,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     )
                     account.open_positions.append(position)
                     account.margin += position.required_margin(
-                        spec.leverage, contract_size
+                        request.leverage, contract_size
                     )
                     open_trades.append(
                         _OpenTrade(
@@ -912,7 +918,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     for order, pos in filled:
                         account.open_positions.append(pos)
                         account.margin += pos.required_margin(
-                            spec.leverage, contract_size
+                            request.leverage, contract_size
                         )
                         open_trades.append(
                             _OpenTrade(
@@ -966,7 +972,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     #   保有列は account.open_positions と open_trades が常時 lockstep のため
                     #   走査対象・順序・式が inline 版と同一＝byte-identical。
                     margin_level = account.hedged_margin_level(
-                        leverage=spec.leverage, contract_size=contract_size
+                        leverage=request.leverage, contract_size=contract_size
                     )
                 if margin_level < request.stop_out_level:
                     if config.stop_out_action != "close_and_halt":

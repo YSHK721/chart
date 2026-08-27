@@ -76,6 +76,17 @@ class BacktestConfig:
 class SymbolSpec:
     """シンボル仕様。domain.order.Order.validate が duck typing で要求する属性
     （volume_min/volume_max/volume_step/stops_level/point_size）を満たす。
+
+    **銘柄の契約だけを持つ**（ISSUE-445 段階 3-D2・設計書
+    `.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md` §3.4）。7 フィールドはいずれも
+    供給元 `mt5.symbol_info()` から引ける（対応表は
+    `marketdata/symbol_spec_snapshot.py:SYMBOL_FIELD_SOURCES` が単一ソース）。
+    口座属性（`leverage` 等）はここに置かない——変更起点が違う契約を同居させると
+    SRP 違反になり、人が書いた値が銘柄仕様の権威のように振る舞う隙間ができる。
+    `leverage` の置き場は `usecase/run_backtest.py:RunBacktestRequest`
+    （`initial_deposit` / `stop_out_level` と同じ口座属性の面）である。
+    この不変条件は `simulator/tests/unit/test_symbol_spec_fields_are_symbol_sourced.py`
+    が機械的に施行する。
     """
 
     contract_size: float
@@ -85,7 +96,6 @@ class SymbolSpec:
     stops_level: int
     digits: int
     point_size: float
-    leverage: float
 
 
 @dataclass

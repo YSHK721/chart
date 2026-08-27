@@ -17,7 +17,11 @@ import numpy as np
 
 import pytest
 
-from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
+from marketdata.symbol_spec_snapshot import (
+    OANDA_JAPAN_MT5_LIVE,
+    SYMBOL_FIELD_SOURCES,
+    load_spec_fields,
+)
 from simulator.domain.bar import Bar
 from simulator.domain.exceptions import MarginCallError
 from simulator.domain.order import Order
@@ -94,6 +98,12 @@ def _config():
     )
 
 
+#: 合成 run の口座レバレッジ。ISSUE-445 段階 3-D2 で `SymbolSpec` から
+#: `RunBacktestRequest`（口座属性の面）へ移した値であり、**移設前と同じ数**である
+#: （本モジュールの合成シナリオの必要証拠金を変えないため）。
+_LEVERAGE = 100.0
+
+
 def _symbol_spec():
     return SymbolSpec(
         contract_size=1.0,
@@ -103,17 +113,17 @@ def _symbol_spec():
         stops_level=0,
         digits=5,
         point_size=0.00001,
-        leverage=100.0,
     )
 
 
 def _request(bars, *, config=None, initial_deposit=10_000.0, stop_out_level=0.0,
-             symbol_spec=None):
+             symbol_spec=None, leverage=_LEVERAGE):
     return RunBacktestRequest(
         config=config or _config(),
         bars=bars,
         symbol_spec=symbol_spec or _symbol_spec(),
         initial_deposit=initial_deposit,
+        leverage=leverage,
         stop_out_level=stop_out_level,
     )
 
@@ -253,7 +263,6 @@ class TestFailStopOnMarginCall:
         spec = SymbolSpec(
             contract_size=100_000.0, volume_min=0.01, volume_max=100.0,
             volume_step=0.01, stops_level=0, digits=5, point_size=0.00001,
-            leverage=100.0,
         )
         strategy = SpyStrategyPort(log, orders_by_bar={0: [order]})
         interactor = RunBacktestInteractor(
@@ -424,7 +433,8 @@ def _jp225_spec():
     供給元（`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`＝1.0 / 1.0 /
     10000.0 / 1.0 / 5）と食い違っていた。ここにリテラルを書かない＝人が値を選べない。
     """
-    return SymbolSpec(**load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"))
+    supplied = load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")
+    return SymbolSpec(**{name: supplied[name] for name in SYMBOL_FIELD_SOURCES})
 
 
 class TestConfigDrivenSpreadOpenFill:
@@ -561,11 +571,11 @@ class TestFloatingPnlBasisWiring:
         )
         spec = SymbolSpec(
             contract_size=1.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
-            stops_level=0, digits=1, point_size=0.1, leverage=100.0,
+            stops_level=0, digits=1, point_size=0.1,
         )
         req = RunBacktestRequest(
             config=self._config("bid_ask"), bars=bars, symbol_spec=spec,
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0,
         )
         # Act
         result = interactor.execute(req)
@@ -584,11 +594,11 @@ class TestFloatingPnlBasisWiring:
         )
         spec = SymbolSpec(
             contract_size=1.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
-            stops_level=0, digits=1, point_size=0.1, leverage=100.0,
+            stops_level=0, digits=1, point_size=0.1,
         )
         req = RunBacktestRequest(
             config=self._config("close"), bars=bars, symbol_spec=spec,
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0,
         )
         # Act
         result = interactor.execute(req)
@@ -673,7 +683,6 @@ def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None,
     spec = SymbolSpec(
         contract_size=100_000.0, volume_min=0.01, volume_max=100.0,
         volume_step=0.01, stops_level=0, digits=5, point_size=0.00001,
-        leverage=100.0,
     )
     order = Order(side="buy", kind="market", volume=1.0, price=None)
     strategy = SpyStrategyPort([], orders_by_bar=orders_by_bar or {0: [order]})
@@ -914,7 +923,7 @@ def _tc_invariance_setup(strategy):
     }
     spec = SymbolSpec(
         contract_size=1.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
-        stops_level=0, digits=5, point_size=0.0001, leverage=100.0,
+        stops_level=0, digits=5, point_size=0.0001,
     )
     registry = PandasIndicatorRegistry(
         {"madiff": pd.Series(madiff), "close": pd.Series(close)}
@@ -924,7 +933,7 @@ def _tc_invariance_setup(strategy):
     )
     req = RunBacktestRequest(
         config=_RunConfigLike(base, params), bars=bars, symbol_spec=spec,
-        initial_deposit=100_000.0, stop_out_level=0.0,
+        initial_deposit=100_000.0, leverage=_LEVERAGE, stop_out_level=0.0,
     )
     return interactor, req
 
@@ -993,7 +1002,7 @@ class TestTradingStartWarmupExclusion:
         )
         req = RunBacktestRequest(
             config=_config(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0,
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act
@@ -1021,7 +1030,7 @@ class TestTradingStartWarmupExclusion:
         )
         req = RunBacktestRequest(
             config=_config(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0,
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act
@@ -1089,7 +1098,7 @@ class TestPrimeFirstTradingBar:
         )
         req = RunBacktestRequest(
             config=self._config_primed(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0,
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act
@@ -1113,7 +1122,7 @@ class TestPrimeFirstTradingBar:
         )
         req = RunBacktestRequest(
             config=self._config_primed(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0,
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act
@@ -1137,7 +1146,7 @@ class TestPrimeFirstTradingBar:
         )
         req = RunBacktestRequest(
             config=_config(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0,
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act

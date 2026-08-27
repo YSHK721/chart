@@ -27,6 +27,11 @@ from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.domain.exceptions import ConfigError, DataError
 
 
+#: `BacktestController.run` が組む `RunBacktestRequest.leverage`（ISSUE-445 段階 3-D2 で
+#: 口座属性として必須化・既定値なし）。本モジュールのスタブ Interactor は request を
+#: 解釈しないため、この値は観測される結果に一切影響しない（証拠金計算を通らない）。
+_UNUSED_LEVERAGE = 1.0
+
 class _MarketData:
     """`BacktestController` が要求する最小の `MarketDataPort` 代役。"""
 
@@ -147,5 +152,5 @@ class TestTheMarketDataIsLoadedOnlyOnce:
         controller = BacktestController(
             market_data=market_data, interactor=_RecordingInteractor(object())
         )
-        controller.run(None, "-")
+        controller.run(None, "-", leverage=_UNUSED_LEVERAGE)
         assert market_data.loads == 1

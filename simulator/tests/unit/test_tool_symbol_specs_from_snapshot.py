@@ -52,6 +52,7 @@ import pytest
 from marketdata.symbol_spec_snapshot import (
     OANDA_JAPAN_MT5_LIVE,
     SPEC_FIELD_SOURCES,
+    SYMBOL_FIELD_SOURCES,
     load_spec_fields,
 )
 from simulator.domain.exceptions import InvalidPriceError
@@ -70,6 +71,18 @@ from simulator.usecase.models import SymbolSpec
 _SYMBOL = "JP225"
 #: 銘柄仕様のキー集合は対応表が唯一源（ここに列挙を書き写さない）。
 _SPEC_KEYS = tuple(SPEC_FIELD_SOURCES)
+
+
+def _symbol_spec(supplied: dict) -> SymbolSpec:
+    """供給元の 8 キーから**銘柄仕様のキーだけ**で ``SymbolSpec`` を組む。
+
+    ISSUE-445 段階 3-D2 以降、合成ビュー（``SPEC_FIELD_SOURCES``＝8 キー）は
+    ``build_interactor`` の引数集合であって ``SymbolSpec`` の形ではない（``leverage`` は
+    口座属性）。絞り込みのキー集合も対応表が唯一源であり、ここに列挙を書き写さない。
+    """
+    return SymbolSpec(**{key: supplied[key] for key in SYMBOL_FIELD_SOURCES})
+
+
 #: CLI オプション名 → フィールド名。導出規則の所有者は ``symbol_spec_args.spec_option``。
 _SPEC_OPTIONS = {spec_option(key): key for key in _SPEC_KEYS}
 
@@ -211,7 +224,7 @@ def test_scanner_detects_a_reintroduced_literal():
 def test_markers_tool_lot_is_orderable_under_the_snapshot_volume_rules(spec):
     """``TC24051901`` は lot を素通しするため、Root が供給する lot 自体が発注可能でなければならない。"""
     meta = markers_tool._meta("dummy.csv", "TC24051901")
-    symbol_spec = SymbolSpec(**{key: meta[key] for key in _SPEC_KEYS})
+    symbol_spec = _symbol_spec(meta)
     order = Order(side="buy", kind="market", volume=meta["lot_size"], price=None)
     order.validate(symbol_spec)  # InvalidPriceError が出ないこと＝発注可能
 
@@ -227,7 +240,7 @@ def test_cli_default_lot_is_orderable_under_the_snapshot_volume_rules(spec):
     """
     lot = resolve_lot_size(argparse.Namespace(lot_size=None), spec)
     order = Order(side="buy", kind="market", volume=lot, price=None)
-    order.validate(SymbolSpec(**spec))  # InvalidPriceError が出ないこと＝発注可能
+    order.validate(_symbol_spec(spec))  # InvalidPriceError が出ないこと＝発注可能
 
 
 def test_previous_lot_is_rejected_under_the_snapshot_volume_rules(spec):
@@ -238,6 +251,6 @@ def test_previous_lot_is_rejected_under_the_snapshot_volume_rules(spec):
     上の 2 検定（markers ツール／CLI 既定）が空虚でないことの対照でもある——0.1 は
     ``export_trade_markers`` と CLI 3 件が**ともに**持っていた是正前の lot である。
     """
-    symbol_spec = SymbolSpec(**spec)
+    symbol_spec = _symbol_spec(spec)
     with pytest.raises(InvalidPriceError):
         Order(side="buy", kind="market", volume=0.1, price=None).validate(symbol_spec)

@@ -23,6 +23,11 @@ from simulator.adapter.controller import BacktestController
 from simulator.usecase.ports import MarketDataPort, RunBacktestInputBoundary
 
 
+#: `BacktestController.run` が組む `RunBacktestRequest.leverage`（ISSUE-445 段階 3-D2 で
+#: 口座属性として必須化・既定値なし）。本モジュールのスタブ Interactor は request を
+#: 解釈しないため、この値は観測される結果に一切影響しない（証拠金計算を通らない）。
+_UNUSED_LEVERAGE = 1.0
+
 class _StubMarketData(MarketDataPort):
     def __init__(self):
         self.loaded = []
@@ -76,7 +81,7 @@ class TestPublicAccessor:
         interactor = _StubInteractor()
         controller = _controller(interactor)
 
-        code = controller.run(object(), "data.csv")
+        code = controller.run(object(), "data.csv", leverage=_UNUSED_LEVERAGE)
 
         assert code == 0
         assert len(interactor.executed) == 1

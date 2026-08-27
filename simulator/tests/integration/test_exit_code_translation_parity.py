@@ -35,6 +35,11 @@ CONFIG_ERROR = ConfigError("突合用（設定不正）")
 BACKTEST_ERROR = DataError("突合用（実行時）")
 
 
+#: `BacktestController.run` が組む `RunBacktestRequest.leverage`（ISSUE-445 段階 3-D2 で
+#: 口座属性として必須化・既定値なし）。本モジュールのスタブ Interactor は request を
+#: 解釈しないため、この値は観測される結果に一切影響しない（証拠金計算を通らない）。
+_UNUSED_LEVERAGE = 1.0
+
 class _RaisingMarketData:
     """`BacktestController.run` の翻訳を起動するための最小の `MarketDataPort` 代役。"""
 
@@ -57,7 +62,7 @@ def _harvest_from_controller(error: "BaseException | None") -> int:
     controller = BacktestController(
         market_data=_RaisingMarketData(error), interactor=_NoopInteractor()
     )
-    return controller.run(config=None, source_ref="-")
+    return controller.run(config=None, source_ref="-", leverage=_UNUSED_LEVERAGE)
 
 
 def _harvest_from_run_backtest(error: "BaseException | None", monkeypatch) -> int:

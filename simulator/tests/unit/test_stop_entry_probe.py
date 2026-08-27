@@ -152,10 +152,15 @@ def _config(**overrides):
     return BacktestConfig(**base)
 
 
+#: 口座レバレッジ（ISSUE-445 段階 3-D2 で `SymbolSpec` から `RunBacktestRequest` へ移設。
+#: 値は移設前と同じ＝必要証拠金は不変）。
+_LEVERAGE = 10.0
+
+
 def _spec():
     return SymbolSpec(
         contract_size=10.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
-        stops_level=0, digits=1, point_size=0.1, leverage=10.0,
+        stops_level=0, digits=1, point_size=0.1,
     )
 
 
@@ -177,7 +182,8 @@ def _run(strategy, bars, ticks, *, config, session_calendar=None,
     )
     req = RunBacktestRequest(
         config=config, bars=bars, symbol_spec=_spec(),
-        initial_deposit=initial_deposit, stop_out_level=stop_out_level,
+        initial_deposit=initial_deposit, leverage=_LEVERAGE,
+        stop_out_level=stop_out_level,
     )
     return interactor.execute(req)
 
