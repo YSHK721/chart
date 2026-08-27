@@ -835,7 +835,8 @@ def build_interactor(
         symbol_spec=symbol_spec,
         initial_deposit=initial_deposit,
         # 口座属性は銘柄仕様と別の面へ渡す（ISSUE-445 段階 3-D2・設計書 §3.4）。
-        # `build_interactor` の引数名は不変（呼出 105 箇所は 1 つも変わらない）。
+        # `build_interactor` の引数名は不変（呼出は 1 つも変わらない。tracked な .py の
+        # AST 走査で呼出 91 箇所／26 ファイル・実測 2026-08-27）。
         leverage=leverage,
         stop_out_level=stop_out_level,
         # warmup/trading_start（既定 None=全バー取引＝後方互換）。warmup 込み CSV を

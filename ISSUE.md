@@ -10330,6 +10330,90 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
    - **やっていないこと**: `SymbolSpec` からの `leverage` 撤去（＝段階 3-D2・別裁定）。
      `simulator/usecase/models.py` は 1 バイトも触っていない。
 
+   → **`SymbolSpec` から口座属性 `leverage` を分離（2026-08-27・commit `43c83ae` /
+   `25cecd4` / `c869f78`・`tdd-executor` に委譲・依頼時の呼称「段階 3-D2」・依頼者承認済みの案 B）**:
+   設計書 §3.4 が「既存 IF に触れるため**段階 3 送り**」とした分離を実施した。これで
+   **`SymbolSpec` は銘柄の契約だけを持つ**（7 フィールド＝`SYMBOL_FIELD_SOURCES` のキー集合と一致）。
+   - **実装形**: `leverage` は `usecase/run_backtest.py:RunBacktestRequest` の口座属性の面
+     （既存の `initial_deposit` / `stop_out_level` と同じ）へ移す。engine の読み出し 7 箇所は
+     `spec.leverage` → `request.leverage`（いずれも `request` がスコープ内にあり**配管の追加は 0**）。
+     写像層は `EngineBinding.leverage`（必須注入）から引く。`sim_ui` の `_build_engine_binding` は
+     `backtest["leverage"]` を明示注入する（`SymbolSpec` から外れて機械導出に載らないため）。
+     **既定値はどこにも置かない**——既定値は RC-1（人が書いた値が権威になる）と同型であり、
+     必要証拠金の除数を黙って発明することになる。
+   - **`build_interactor` の公開シグネチャは不変（実測）**: `inspect.signature` の引数名リストは
+     着手前後で**完全一致**（38 引数・名前も並びも同一）。HEAD 版との AST 比較でも差 0
+     （`ast` で `build_interactor` の `kwonlyargs` を抽出して集合比較・対称差 0）。
+     よって呼出は 1 つも変わらない。**呼出件数は依頼時の前提「105 箇所」を再現できなかった**——
+     tracked な `.py` の AST 走査（`.claude/` 配下の worktree を除く）では **91 箇所 / 26 ファイル**、
+     `grep "build_interactor("` のトークン一致は 133 件（定義・docstring・文字列を含む）。
+     件数の食い違いは結論に影響しない（シグネチャが不変であるから改変 0 である）が、
+     台帳には**自分で測った数**を残す。`simulator/sim_ui/web` の JS は
+     **0 行改変**（`git diff --name-only -- simulator/sim_ui/web` が空。投入 body のキー集合は
+     不変であり、front の `PROFILE_KEYS` は従来どおり `leverage` を送る＝
+     `js/adapter/front/sim_submission_builder.js:15-19` 実測）。`npm test` は **421 pass / 0 fail**。
+     `marketdata/` も 1 バイトも触っていない。
+   - **MT5 突合は bit-exact 不変（最重要の通過条件・実測）**: `test_ma_slope_reconcile.py` /
+     `test_run_backtest_fingerprint.py` が 21 passed。`trades=1164` / `net=-6173.9` /
+     `balance=3826.1`、および `stats_sha256` / `trades_sha256` のピン一致。すなわち損益・
+     確定トレード列は 1 ビットも動いていない。
+   - **段階 3-D0 のゲートは宣言どおり XPASS(strict) で赤に転じた（機構が働いた 3 例目）**:
+     分離を入れた直後の実測は
+     `FAILED …::test_every_symbol_spec_field_is_sourced_from_symbol_info` で理由は
+     `[XPASS(strict)]`（`--runxfail` 等の細工なし）。「是正が入ればマーカー撤去を促す」は
+     仮定ではなく実測で 3 度目（段階 0 → 段階 2、段階 2 → 段階 3-A に続く）。マーカーを撤去し
+     恒久の緑にした。
+   - **ゲート 3 種の追随と、その理由**:
+     (1) 当時の状態の記録だった `…_violation_is_localised_to_a_single_field` は違反 0 件で
+     赤になる。**消さずに問いを差し替えた**——「口座由来の供給が**実在し**、かつ `SymbolSpec` の
+     外にある」。上のゲート単体では「対応表から口座属性の供給ごと消す」形でも緑になる
+     （空の分割で自明に成立する）ため、その抜け道を対で塞ぐ。件数は数えない（2 件目の口座属性が
+     増えても壊れない）。(2) 直接証拠の検定（違反フィールドが `symbol` セクションに無いこと）は
+     走査対象が `_violations()` のままだと**是正後は空回りして自明に緑**になるため、対応表の
+     口座由来エントリへ移した。判定は既存の純関数 1 つに投げたまま（判定を 2 度書かない）。
+     (3) `test_symbol_spec_snapshot_field_parity.py` は突合先をセクションごとの表へ移した:
+     `SYMBOL_FIELD_SOURCES` == `SymbolSpec` のフィールド（厳密一致）/
+     `ACCOUNT_FIELD_SOURCES` ⊆ `RunBacktestRequest` のフィールド（**行き先の実在**。
+     `initial_deposit` のように供給元から引かない口座属性もあるため包含）/ 合成ビュー ⊆
+     `build_interactor` の引数名（`**load_spec_fields(...)` 展開の前提・従来どおり合成ビューが対象）。
+     **守れるもの**は「供給元の各エントリに消費側の受け口が実在する」ことと
+     `build_interactor(**load_spec_fields(...))` の成立。**守れなくなるもの**は
+     `SymbolSpec(**load_spec_fields(...))` の成立であり、これは口座属性を銘柄仕様の型へ
+     流し込む形そのものであるから**意図した喪失**である（呼出側は銘柄仕様の表でキーを絞る）。
+   - **退行防止の検定を新設**（`test_leverage_reaches_required_margin.py`）: 移設で配管が
+     切れても数値が偶然合う事態に備え、消費の末端 `Position.required_margin` の**第 1 引数を
+     実行中に記録**して `request.leverage` と突き合わせる。期待値はテスト側に持たず、投入値は
+     供給元から引く。負の対照 3 種——(a) 2 つの異なる値で末端の受領値が追随する、
+     (b) `symbol_spec` が食い違う `leverage` 属性を持っていても届くのは request の値
+     （`spec.leverage` を読む形への退行で落ちる）、(c) 記録が空でない＋必要証拠金が投入値に
+     反比例する。**非空虚性は実走で確認**した（engine を `spec.leverage` へ戻すと 4 件とも赤。
+     うち (b) は AttributeError ではなく値の不一致 `{30.0} != {10.0}` で落ちる）。
+   - **影響範囲（実測）**: 変更 26 ファイル（本番 6 / テスト 19 / 新設 1）。本番は
+     `usecase/models.py`・`usecase/run_backtest.py`・`main/__init__.py`・
+     `main/tester_settings/kwargs_mapper.py`・`adapter/controller.py`・`sim_ui/main/run_job.py`。
+     テスト側は「`SymbolSpec(...)` から `leverage` を外し、同じ値を request/binding へ渡す」
+     機械的追随であり、**合成シナリオの数値（必要証拠金）は 1 つも変えていない**。
+   - **`BacktestController.run()` で既定値が要ると分かった件（発明せず報告する）**: `run()` は
+     自分の引数から request を組むため `leverage` の供給が要る。既存の
+     `symbol_spec=None` / `initial_deposit=0.0` / `stop_out_level=0.0` に倣って既定値を置くと
+     「必要証拠金の除数を誰も指定しないまま run が通る」経路を**新設**することになるため、
+     **キーワード必須（既定なし）**にした。**本番の呼出は 0 件**（`run_backtest` は
+     `controller.execute(request)` を直接呼ぶ・grep 実測）で、影響はスタブ Interactor を使う
+     テスト 8 か所のみ。そこには意味のある値が無いため `_UNUSED_LEVERAGE`（＝結果に影響しない
+     ことを名前と注釈で明示）を渡した。**申し送り**: `run()` の既存 3 引数の既定値は RC-1 と
+     同型の残渣であり、本番呼出 0 件の今なら撤去できる（別裁定・本件では触っていない）。
+   - **全走（実測）**: **1 failed / 5414 passed / 1 skipped / 1 xfailed**。着手前ベースラインは
+     **1 failed / 5409 passed / 1 skipped / 2 xfailed**（本ターンで再実測。段階 3-D1 の記録と一致）。
+     差分の内訳は**全数で辻褄が合う**: xfailed −1＝3-D0 マーカー撤去、passed +5 ＝
+     新設 4 件 ＋ 対応表 parity +2 件 ＋ XPASS 化 +1 件 −
+     `test_tester_settings_engine_fixtures.py` の `fields(SymbolSpec)` 駆動の parametrize
+     2 件（8→7 フィールドで 2 件減）。赤は既存の
+     `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form`
+     1 件のみ（ISSUE-427/371・無関係）で、**新たな赤は 0 件**。
+   - **やっていないこと**: `marketdata/` の改変（0 バイト）・JS の改変（0 行）・
+     設計書 §3.4 の書き換え（同節は当時の段階分割の記録であり、現在の実体と矛盾しない。
+     「段階 3 送り」は本記録で解消済み）・`BacktestController.run()` の既存既定値の撤去。
+
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
   `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
