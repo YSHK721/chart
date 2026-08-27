@@ -27,7 +27,7 @@ from simulator.usecase._execution import (
     resolve_eval_quote,
 )
 from simulator.usecase.compute_stats import compute_stats
-from simulator.usecase.models import BacktestResult
+from simulator.usecase.models import AccountSpec, BacktestResult
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
 from simulator.usecase.session_gate import SessionGate
@@ -86,14 +86,14 @@ class RunBacktestRequest:
     config: Any
     bars: Any
     symbol_spec: Any
-    initial_deposit: float
-    # 口座属性（ISSUE-445 段階 3-D2・設計書 §3.4）。`initial_deposit` / `stop_out_level`
-    # と同じ面に置く——`leverage` は `mt5.symbol_info()` に存在せず（供給元スナップショット
-    # 実測）、供給元でも `account` セクションから引く値であるため、銘柄仕様（`symbol_spec`）
-    # の中には置かない。**既定値を持たない**: 既定値は「人が書いた値が権威になる」形
-    # （ISSUE-445 RC-1）と同型であり、必要証拠金の除数を黙って発明することになる。
-    leverage: float
-    stop_out_level: float = 0.0
+    # 契約は 2 軸（ISSUE-445 段階 3-D3・設計書 §3.4）。`symbol_spec`＝銘柄の契約、
+    # `account`＝口座の契約。段階 3-D2 では口座属性（`initial_deposit` / `leverage` /
+    # `stop_out_level`）を本 DTO が 3 つフラットに持っていたが、供給元スナップショットの
+    # `account` セクションは既に 5 キーを持ち、実口座からは `margin_mode` /
+    # `margin_so_call` / `margin_so_so` も実測記録されている。口座属性が増えるたびに
+    # 本 DTO を改変するのは OCP 違反であるため、`AccountSpec` に閉じる。
+    # **既定値は持たない**（`AccountSpec` 側も全フィールド既定なし）。
+    account: AccountSpec
     # warmup/trading_start（config-gated・既定 None=全バー取引＝後方互換）。
     # 指定時は bar.time < trading_start のバーを「指標 update のみ実施し、トレード/
     # equity_curve/stats から除外する」ウォームアップ区間として扱う（指標 seed の収束のみ
@@ -269,7 +269,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # "bid_ask" 時は売り保有を Ask=close+spread×point で評価するため point_size を渡す。
         floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
         account = Account(
-            balance=request.initial_deposit,
+            balance=request.account.initial_deposit,
             contract_size=contract_size,
             floating_pnl_basis=floating_pnl_basis,
             point_size=spec.point_size,
@@ -283,7 +283,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 exit_price=exit_price,
                 exit_reason=exit_reason,
                 contract_size=contract_size,
-                leverage=request.leverage,
+                leverage=request.account.leverage,
                 account=account,
                 trades=trades,
                 deals=deals,
@@ -335,13 +335,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     bar, entry_price_basis="current_open", point_size=spec.point_size
                 )
                 account.update_floating_pnl_at(bid=o_bid, ask=o_ask)
-                if account.margin_level() < request.stop_out_level:
+                if account.margin_level() < request.account.stop_out_level:
                     if config.stop_out_action != "close_and_halt":
                         raise MarginCallError(
                             "margin_level が stop_out_level を下回りました（bar open 評価）",
                             context={
                                 "margin_level": account.margin_level(),
-                                "stop_out_level": request.stop_out_level,
+                                "stop_out_level": request.account.stop_out_level,
                             },
                             bar_index=bar_index,
                         )
@@ -411,7 +411,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     order, bid=bid, ask=ask, spread=fill_spread, point_size=fill_point
                 )
                 account.open_positions.append(position)
-                account.margin += position.required_margin(request.leverage, contract_size)
+                account.margin += position.required_margin(request.account.leverage, contract_size)
                 open_trades.append(
                     _OpenTrade(
                         position=position,
@@ -477,14 +477,14 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             )
             account.update_floating_pnl_at(bid=eq_bid, ask=eq_ask)
             equity_curve.append(account.equity)
-            if account.margin_level() < request.stop_out_level:
+            if account.margin_level() < request.account.stop_out_level:
                 # 既定 "fail_stop": 従来どおり MarginCallError を送出し部分結果を破棄する。
                 if config.stop_out_action != "close_and_halt":
                     raise MarginCallError(
                         "margin_level が stop_out_level を下回りました",
                         context={
                             "margin_level": account.margin_level(),
-                            "stop_out_level": request.stop_out_level,
+                            "stop_out_level": request.account.stop_out_level,
                         },
                         bar_index=bar_index,
                     )
@@ -516,7 +516,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             trades=trades,
             balance_curve=balance_curve,
             equity_curve=equity_curve,
-            initial_deposit=request.initial_deposit,
+            initial_deposit=request.account.initial_deposit,
         )
         return BacktestResult(
             trades=trades,
@@ -582,7 +582,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         contract_size = spec.contract_size
         floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
         account = Account(
-            balance=request.initial_deposit,
+            balance=request.account.initial_deposit,
             contract_size=contract_size,
             floating_pnl_basis=floating_pnl_basis,
             point_size=spec.point_size,
@@ -596,7 +596,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 exit_price=exit_price,
                 exit_reason=exit_reason,
                 contract_size=contract_size,
-                leverage=request.leverage,
+                leverage=request.account.leverage,
                 account=account,
                 trades=trades,
                 deals=deals,
@@ -703,7 +703,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
                 for order, pos in filled:
                     account.open_positions.append(pos)
-                    account.margin += pos.required_margin(request.leverage, contract_size)
+                    account.margin += pos.required_margin(request.account.leverage, contract_size)
                     open_trades.append(
                         _OpenTrade(
                             position=pos,
@@ -770,7 +770,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     )
                     account.open_positions.append(position)
                     account.margin += position.required_margin(
-                        request.leverage, contract_size
+                        request.account.leverage, contract_size
                     )
                     open_trades.append(
                         _OpenTrade(
@@ -918,7 +918,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     for order, pos in filled:
                         account.open_positions.append(pos)
                         account.margin += pos.required_margin(
-                            request.leverage, contract_size
+                            request.account.leverage, contract_size
                         )
                         open_trades.append(
                             _OpenTrade(
@@ -972,15 +972,15 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     #   保有列は account.open_positions と open_trades が常時 lockstep のため
                     #   走査対象・順序・式が inline 版と同一＝byte-identical。
                     margin_level = account.hedged_margin_level(
-                        leverage=request.leverage, contract_size=contract_size
+                        leverage=request.account.leverage, contract_size=contract_size
                     )
-                if margin_level < request.stop_out_level:
+                if margin_level < request.account.stop_out_level:
                     if config.stop_out_action != "close_and_halt":
                         raise MarginCallError(
                             "margin_level が stop_out_level を下回りました",
                             context={
                                 "margin_level": account.margin_level(),
-                                "stop_out_level": request.stop_out_level,
+                                "stop_out_level": request.account.stop_out_level,
                             },
                             bar_index=bar_index,
                         )
@@ -1028,7 +1028,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             trades=trades,
             balance_curve=balance_curve,
             equity_curve=equity_curve,
-            initial_deposit=request.initial_deposit,
+            initial_deposit=request.account.initial_deposit,
         )
         return BacktestResult(
             trades=trades,

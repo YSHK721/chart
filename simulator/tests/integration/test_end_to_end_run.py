@@ -111,6 +111,6 @@ class TestBuildInteractorUnit:
 
         assert isinstance(controller._interactor, RunBacktestInputBoundary)
         assert isinstance(request, RunBacktestRequest)
-        # meta が結線される: initial_deposit と symbol_spec が反映
-        assert request.initial_deposit == 10_000.0
+        # meta が結線される: 口座の契約（ISSUE-445 段階 3-D3）と銘柄仕様が反映
+        assert request.account.initial_deposit == 10_000.0
         assert request.symbol_spec.contract_size == 1.0

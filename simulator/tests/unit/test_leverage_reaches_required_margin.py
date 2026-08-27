@@ -5,7 +5,7 @@
 数値が偶然合う**（既定値・別の供給源・古い読み出しが生き残る）ことを防ぐために置く。
 
 **何を固定するか**: エンジンが証拠金計算に使う ``leverage`` は
-``RunBacktestRequest.leverage`` **その値**である。消費の末端は
+``RunBacktestRequest.account.leverage`` **その値**である。消費の末端は
 ``simulator/domain/position.py:Position.required_margin(leverage, contract_size)``
 であり、本検定はその第 1 引数を実行中に記録して突き合わせる（統計量や損益といった
 間接的な観測ではなく、**末端で受け取った値そのもの**を見る）。
@@ -47,7 +47,7 @@ from simulator.tests.unit.test_run_backtest import (
     _bar,
     _config,
 )
-from simulator.usecase.models import SymbolSpec
+from simulator.usecase.models import AccountSpec, SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
 _SYMBOL = "JP225"
@@ -114,8 +114,14 @@ def _request(*, leverage: float, symbol_spec=None) -> RunBacktestRequest:
         config=_config(),
         bars=_bars(),
         symbol_spec=symbol_spec if symbol_spec is not None else _symbol_spec(),
-        initial_deposit=1_000_000.0,  # 証拠金不足で止めないだけの額（銘柄仕様ではない）
-        leverage=leverage,
+        # 口座の契約（ISSUE-445 段階 3-D3）。`initial_deposit` は証拠金不足で止めない
+        # だけの額、`stop_out_level` は段階 3-D2 まで既定値だった 0.0（本 run は
+        # equity が正のまま推移し stop-out 判定を通らない＝結果に影響しない）。
+        account=AccountSpec(
+            initial_deposit=1_000_000.0,
+            leverage=leverage,
+            stop_out_level=0.0,
+        ),
     )
 
 
@@ -128,7 +134,7 @@ class TestTheRequestLeverageReachesRequiredMargin:
         recorded = _run_recording_required_margin(monkeypatch, request_)
         # Assert: 末端が呼ばれ、受け取った値は投入した値そのもの。
         assert recorded, "required_margin が 1 度も呼ばれていない（証拠金経路を通っていない）"
-        assert set(recorded) == {request_.leverage}
+        assert set(recorded) == {request_.account.leverage}
 
     def test_a_different_leverage_changes_what_the_terminal_consumer_receives(
         self, monkeypatch
@@ -162,7 +168,7 @@ class TestTheRequestLeverageReachesRequiredMargin:
         recorded = _run_recording_required_margin(monkeypatch, request_)
         # Assert
         assert recorded
-        assert set(recorded) == {request_.leverage}
+        assert set(recorded) == {request_.account.leverage}
         assert stale.leverage not in set(recorded)
 
 

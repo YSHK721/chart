@@ -22,7 +22,7 @@ from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.domain.bar import Bar
 from simulator.domain.order import Order
 from simulator.main.run_config import RunConfig
-from simulator.usecase.models import BacktestConfig, SymbolSpec
+from simulator.usecase.models import AccountSpec, BacktestConfig, SymbolSpec
 from simulator.usecase.run_backtest import (
     RunBacktestInteractor,
     RunBacktestRequest,
@@ -182,8 +182,10 @@ def _run(strategy, bars, ticks, *, config, session_calendar=None,
     )
     req = RunBacktestRequest(
         config=config, bars=bars, symbol_spec=_spec(),
-        initial_deposit=initial_deposit, leverage=_LEVERAGE,
-        stop_out_level=stop_out_level,
+        account=AccountSpec(
+            initial_deposit=initial_deposit, leverage=_LEVERAGE,
+            stop_out_level=stop_out_level,
+        ),
     )
     return interactor.execute(req)
 

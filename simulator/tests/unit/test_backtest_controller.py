@@ -11,6 +11,7 @@ MarketDataPort / RunBacktestInputBoundary はスタブする。
 from __future__ import annotations
 
 from simulator.domain.exceptions import BacktestError, ConfigError, DataError
+from simulator.usecase.models import AccountSpec
 from simulator.usecase.ports import MarketDataPort, RunBacktestInputBoundary
 
 
@@ -48,10 +49,11 @@ def _controller(market_data, interactor):
 
 _CONFIG = object()  # 構築済 BacktestConfig のスタンドイン（controller は検証しない）
 
-#: `BacktestController.run` が組む `RunBacktestRequest.leverage`（ISSUE-445 段階 3-D2 で
-#: 口座属性として必須化・既定値なし）。本モジュールのスタブ Interactor は request を
-#: 解釈しないため、この値は観測される結果に一切影響しない（証拠金計算を通らない）。
-_UNUSED_LEVERAGE = 1.0
+#: `BacktestController.run` が組む `RunBacktestRequest.account`（ISSUE-445 段階 3-D3 で
+#: 口座の契約 1 型に束ね、既定値をどのフィールドにも置かない）。本モジュールのスタブ
+#: Interactor は request を解釈しないため、これらの値は観測される結果に一切影響しない
+#: （証拠金計算を通らない）。
+_UNUSED_ACCOUNT = AccountSpec(initial_deposit=0.0, leverage=1.0, stop_out_level=0.0)
 
 
 def test_run_returns_zero_on_success():
@@ -59,7 +61,7 @@ def test_run_returns_zero_on_success():
     ic = _StubInteractor(result=object())
     ctrl = _controller(md, ic)
 
-    code = ctrl.run(_CONFIG, "data.csv", leverage=_UNUSED_LEVERAGE)
+    code = ctrl.run(_CONFIG, "data.csv", account=_UNUSED_ACCOUNT)
 
     assert code == 0
     assert ic.executed  # Interactor へ委譲した
@@ -71,7 +73,7 @@ def test_run_returns_two_on_config_error():
     ic = _StubInteractor(raises=ConfigError("bad config"))
     ctrl = _controller(md, ic)
 
-    code = ctrl.run(_CONFIG, "data.csv", leverage=_UNUSED_LEVERAGE)
+    code = ctrl.run(_CONFIG, "data.csv", account=_UNUSED_ACCOUNT)
 
     assert code == 2
 
@@ -81,7 +83,7 @@ def test_run_returns_one_on_backtest_error():
     ic = _StubInteractor(raises=BacktestError("run failed"))
     ctrl = _controller(md, ic)
 
-    code = ctrl.run(_CONFIG, "data.csv", leverage=_UNUSED_LEVERAGE)
+    code = ctrl.run(_CONFIG, "data.csv", account=_UNUSED_ACCOUNT)
 
     assert code == 1
 
@@ -92,7 +94,7 @@ def test_run_returns_one_on_data_error_during_load():
     ic = _StubInteractor(result=object())
     ctrl = _controller(md, ic)
 
-    code = ctrl.run(_CONFIG, "data.csv", leverage=_UNUSED_LEVERAGE)
+    code = ctrl.run(_CONFIG, "data.csv", account=_UNUSED_ACCOUNT)
 
     assert code == 1
 
@@ -103,6 +105,6 @@ def test_config_error_caught_before_backtest_error():
     ic = _StubInteractor(raises=ConfigError("init invalid"))
     ctrl = _controller(md, ic)
 
-    code = ctrl.run(_CONFIG, "data.csv", leverage=_UNUSED_LEVERAGE)
+    code = ctrl.run(_CONFIG, "data.csv", account=_UNUSED_ACCOUNT)
 
     assert code == 2  # 1 ではない（ConfigError 専用コード）

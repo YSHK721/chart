@@ -23,6 +23,7 @@ from typing import Any
 
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.domain.exceptions import BacktestError
+from simulator.usecase.models import AccountSpec
 from simulator.usecase.ports import MarketDataPort, RunBacktestInputBoundary
 from simulator.usecase.run_backtest import RunBacktestRequest
 
@@ -93,9 +94,7 @@ class BacktestController:
         timeframe: Any,
         period: Any,
         symbol_spec: Any,
-        initial_deposit: float,
-        leverage: float,
-        stop_out_level: float,
+        account: AccountSpec,
     ) -> RunBacktestRequest:
         """データ取得段: `source_ref` を読み `RunBacktestRequest` を組む。
 
@@ -103,17 +102,16 @@ class BacktestController:
         公開しており、ここを公開すると**同一操作に 2 つの入口**ができる。`run()` が
         自分の引数から request を組むための内部手続きに閉じる。
 
-        `leverage`（ISSUE-445 段階 3-D2）は口座属性であり **既定値を置かない**。
-        必要証拠金の除数をここで発明すると、人が書いた値が権威になる（RC-1 と同型）。
-        呼出側が値を持たないなら、その呼出は証拠金計算を伴う run を組めていない。
+        `account`（ISSUE-445 段階 3-D3）は口座の契約であり **既定値を置かない**。
+        初期証拠金・必要証拠金の除数・ストップアウト水準をここで発明すると、人が書いた
+        値が権威になる（RC-1 と同型）。呼出側が値を持たないなら、その呼出は証拠金計算を
+        伴う run を組めていない。
         """
         return RunBacktestRequest(
             config=config,
             bars=self._market_data.load(source_ref, timeframe, period),
             symbol_spec=symbol_spec,
-            initial_deposit=initial_deposit,
-            leverage=leverage,
-            stop_out_level=stop_out_level,
+            account=account,
         )
 
     def run(
@@ -124,9 +122,7 @@ class BacktestController:
         timeframe: Any = None,
         period: Any = None,
         symbol_spec: Any = None,
-        initial_deposit: float = 0.0,
-        leverage: float,
-        stop_out_level: float = 0.0,
+        account: AccountSpec,
     ) -> int:
         """1 run を実行し終了コード（0/1/2）を返す。
 
@@ -134,12 +130,11 @@ class BacktestController:
         `execute`）へ割り、本メソッドは**翻訳**だけを自分の責務として残す。
         戻り値・例外伝播は従来と同一である。
 
-        `leverage` はキーワード必須（既定値なし・ISSUE-445 段階 3-D2）。既存の
-        `symbol_spec` / `initial_deposit` / `stop_out_level` は既定値を持つが、それは
-        本メソッドが「人が書いた値を既定として持つ」形（RC-1 と同型）であることの
-        現れであり、ここへ倣って `leverage` にも既定を置くと、必要証拠金の除数を
-        誰も指定しないまま run が通る経路を新設することになる。**本番の呼出は 0 件**
-        （`run_backtest` は `execute(request)` を直接呼ぶ・実測 2026-08-26）。
+        `account` はキーワード必須（既定値なし・ISSUE-445 段階 3-D3）。段階 3-D2 まで
+        `initial_deposit` / `stop_out_level` は既定 0.0 を持っていたが、それは
+        「人が書いた値を既定として持つ」形（RC-1 と同型）の残渣であり、口座の契約を
+        1 つの型へ束ねた本段階で消えた。**本番の呼出は 0 件**（`run_backtest` は
+        `execute(request)` を直接呼ぶ・実測 2026-08-27）。
         """
         try:
             self.execute(
@@ -149,9 +144,7 @@ class BacktestController:
                     timeframe=timeframe,
                     period=period,
                     symbol_spec=symbol_spec,
-                    initial_deposit=initial_deposit,
-                    leverage=leverage,
-                    stop_out_level=stop_out_level,
+                    account=account,
                 )
             )
             return SUCCESS_EXIT_CODE

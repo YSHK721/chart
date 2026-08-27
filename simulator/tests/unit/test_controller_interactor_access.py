@@ -20,13 +20,15 @@ from __future__ import annotations
 import pytest
 
 from simulator.adapter.controller import BacktestController
+from simulator.usecase.models import AccountSpec
 from simulator.usecase.ports import MarketDataPort, RunBacktestInputBoundary
 
 
-#: `BacktestController.run` が組む `RunBacktestRequest.leverage`（ISSUE-445 段階 3-D2 で
-#: 口座属性として必須化・既定値なし）。本モジュールのスタブ Interactor は request を
-#: 解釈しないため、この値は観測される結果に一切影響しない（証拠金計算を通らない）。
-_UNUSED_LEVERAGE = 1.0
+#: `BacktestController.run` が組む `RunBacktestRequest.account`（ISSUE-445 段階 3-D3 で
+#: 口座の契約 1 型に束ね、既定値をどのフィールドにも置かない）。本モジュールのスタブ
+#: Interactor は request を解釈しないため、これらの値は観測される結果に一切影響しない
+#: （証拠金計算を通らない）。
+_UNUSED_ACCOUNT = AccountSpec(initial_deposit=0.0, leverage=1.0, stop_out_level=0.0)
 
 class _StubMarketData(MarketDataPort):
     def __init__(self):
@@ -81,7 +83,7 @@ class TestPublicAccessor:
         interactor = _StubInteractor()
         controller = _controller(interactor)
 
-        code = controller.run(object(), "data.csv", leverage=_UNUSED_LEVERAGE)
+        code = controller.run(object(), "data.csv", account=_UNUSED_ACCOUNT)
 
         assert code == 0
         assert len(interactor.executed) == 1

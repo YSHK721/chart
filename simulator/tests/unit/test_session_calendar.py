@@ -18,7 +18,7 @@ from simulator.adapter.calendar.session_calendar import (
 )
 from simulator.domain.bar import Bar
 from simulator.domain.order import Order
-from simulator.usecase.models import BacktestConfig, SymbolSpec
+from simulator.usecase.models import AccountSpec, BacktestConfig, SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
 
@@ -220,8 +220,10 @@ def _spec():
 
 
 def _request(bars, **ov):
+    account = dict(initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0)
+    account.update({k: ov.pop(k) for k in list(ov) if k in account})
     base = dict(config=_config(), bars=bars, symbol_spec=_spec(),
-                initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0)
+                account=AccountSpec(**account))
     base.update(ov)
     return RunBacktestRequest(**base)
 

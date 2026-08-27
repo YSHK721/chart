@@ -47,6 +47,7 @@ from simulator.tests.tester_settings_engine_fixtures import (
     utc_midnight,
     write_comma_csv,
 )
+from simulator.usecase.models import AccountSpec
 from simulator.usecase.run_backtest import RunBacktestRequest
 
 #: 合成 comma CSV の 1 日 1 本・5 本（2024-01-01 〜 2024-01-05 の 00:00Z）。
@@ -307,10 +308,10 @@ class TestVerifyWindowApplied:
         # §8.4.3: bars が空なら Repository が既に DataError を出しているはず（K-14）。
         # ここへ到達した空列は「窓が効いて 0 件になった」として N-15 で止める。
         empty = RunBacktestRequest(
-            config=None, bars=[], symbol_spec=None, initial_deposit=0.0,
-            # 口座属性は既定値を持たない（ISSUE-445 段階 3-D2）。窓の事後検証は bars しか
-            # 見ないため、この値は判定に一切影響しない。
-            leverage=1.0,
+            config=None, bars=[], symbol_spec=None,
+            # 口座の契約は既定値を持たない（ISSUE-445 段階 3-D3）。窓の事後検証は bars
+            # しか見ないため、これらの値は判定に一切影響しない。
+            account=AccountSpec(initial_deposit=0.0, leverage=1.0, stop_out_level=0.0),
         )
         window = resolve_data_window(custom_range_settings(FROM_DATE, TO_DATE).effective())
         with pytest.raises(UnsupportedSettingError) as excinfo:

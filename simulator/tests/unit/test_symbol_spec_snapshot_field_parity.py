@@ -20,9 +20,11 @@
     持つ）ため、この等式は**成立しなくなった**。突合先を供給セクションごとの表へ移す:
 
     * :data:`SYMBOL_FIELD_SOURCES`（銘柄仕様）== ``SymbolSpec`` のフィールド（厳密一致）
-    * :data:`ACCOUNT_FIELD_SOURCES`（口座属性）⊆ ``RunBacktestRequest`` のフィールド
+    * :data:`ACCOUNT_FIELD_SOURCES`（口座属性）⊆ ``AccountSpec`` のフィールド
       （行き先が実在すること。``initial_deposit`` / ``stop_out_level`` のように供給元
       スナップショットから引かない口座属性もあるため**包含**で押さえる）
+      — 段階 3-D3 で行き先を ``RunBacktestRequest``（口座属性をフラットに持っていた形）
+      から ``AccountSpec``（口座の契約の型）へ移した。``SymbolSpec`` と対称になる。
     * 合成ビュー（``load_spec_fields`` が返す 8 キー）⊆ ``build_interactor`` の引数名
       （``**`` 展開の前提。ここは従来どおり合成ビューが対象）
 
@@ -45,8 +47,7 @@ from marketdata.symbol_spec_snapshot import (
     SPEC_FIELD_SOURCES,
     SYMBOL_FIELD_SOURCES,
 )
-from simulator.usecase.models import SymbolSpec
-from simulator.usecase.run_backtest import RunBacktestRequest
+from simulator.usecase.models import AccountSpec, SymbolSpec
 
 
 def _field_names(dataclass_type) -> "set[str]":
@@ -57,21 +58,22 @@ def test_symbol_table_covers_exactly_the_symbol_spec_fields():
     assert set(SYMBOL_FIELD_SOURCES) == _field_names(SymbolSpec)
 
 
-def test_account_table_fields_have_a_destination_on_the_run_request():
-    """口座属性の供給には、それを受ける口座属性の面（``RunBacktestRequest``）がある。
+def test_account_table_fields_have_a_destination_on_the_account_spec():
+    """口座属性の供給には、それを受ける口座の契約の型（``AccountSpec``）がある。
 
     行き先が無い供給は「引けるが誰にも届かない」状態であり、消費側が既定値で埋める形へ
     静かに戻り得る（ISSUE-445 RC-1）。**空の表で自明に成立させない**ため非空も要求する。
     """
     assert ACCOUNT_FIELD_SOURCES
-    missing = sorted(set(ACCOUNT_FIELD_SOURCES) - _field_names(RunBacktestRequest))
-    assert not missing, f"RunBacktestRequest が受け取らない口座属性: {missing}"
+    missing = sorted(set(ACCOUNT_FIELD_SOURCES) - _field_names(AccountSpec))
+    assert not missing, f"AccountSpec が受け取らない口座属性: {missing}"
 
 
 def test_the_two_tables_do_not_both_claim_the_same_field():
     """銘柄仕様と口座属性の受け口が重ならない（同じ名前が 2 つの契約に属さない）。"""
     assert set(SYMBOL_FIELD_SOURCES).isdisjoint(set(ACCOUNT_FIELD_SOURCES))
     assert _field_names(SymbolSpec).isdisjoint(set(ACCOUNT_FIELD_SOURCES))
+    assert _field_names(AccountSpec).isdisjoint(set(SYMBOL_FIELD_SOURCES))
 
 
 def test_build_interactor_accepts_the_mapping_table_keys():

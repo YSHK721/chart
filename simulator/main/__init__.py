@@ -58,7 +58,7 @@ from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import BacktestError, DataError
 from simulator.framework.config_loader import load_config
 from simulator.main.run_config import RunConfig
-from simulator.usecase.models import SymbolSpec
+from simulator.usecase.models import AccountSpec, SymbolSpec
 from simulator.usecase.ports import IndicatorPort
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
@@ -829,16 +829,21 @@ def build_interactor(
         point_size=point_size,
     )
 
+    # 口座の契約（ISSUE-445 段階 3-D3・設計書 §3.4）。銘柄の契約（`symbol_spec`）と
+    # 対称に、口座属性を 1 つの型へ束ねてから usecase へ渡す。**組み立てはここ
+    # （Composition Root）だけ**であり、`build_interactor` の引数名・並びは不変である
+    # （フラットな 3 引数を受け取り、内側の 2 軸へ写すのが本関数の責務）。
+    account_spec = AccountSpec(
+        initial_deposit=initial_deposit,
+        leverage=leverage,
+        stop_out_level=stop_out_level,
+    )
+
     request = RunBacktestRequest(
         config=run_config,
         bars=bars,
         symbol_spec=symbol_spec,
-        initial_deposit=initial_deposit,
-        # 口座属性は銘柄仕様と別の面へ渡す（ISSUE-445 段階 3-D2・設計書 §3.4）。
-        # `build_interactor` の引数名は不変（呼出は 1 つも変わらない。tracked な .py の
-        # AST 走査で呼出 91 箇所／26 ファイル・実測 2026-08-27）。
-        leverage=leverage,
-        stop_out_level=stop_out_level,
+        account=account_spec,
         # warmup/trading_start（既定 None=全バー取引＝後方互換）。warmup 込み CSV を
         # data_path に与え trading_start を指定すると、開始前のバーは指標 seed 収束のみ。
         trading_start=trading_start,

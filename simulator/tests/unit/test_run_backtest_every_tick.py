@@ -23,7 +23,7 @@ import pytest
 from simulator.domain.bar import Bar
 from simulator.domain.exceptions import MarginCallError
 from simulator.domain.order import Order
-from simulator.usecase.models import BacktestConfig, SymbolSpec
+from simulator.usecase.models import AccountSpec, BacktestConfig, SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
 
@@ -118,9 +118,11 @@ def _request(bars, *, config=None, initial_deposit=10_000.0, stop_out_level=0.0,
         config=config or _config(),
         bars=bars,
         symbol_spec=symbol_spec or _spec(),
-        initial_deposit=initial_deposit,
-        leverage=leverage,
-        stop_out_level=stop_out_level,
+        account=AccountSpec(
+            initial_deposit=initial_deposit,
+            leverage=leverage,
+            stop_out_level=stop_out_level,
+        ),
     )
 
 
