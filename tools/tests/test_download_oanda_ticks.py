@@ -137,6 +137,12 @@ def test_load_cookie_header_requires_a_source():
         dl.load_cookie_header(None, env={})
 
 
+def test_load_cookie_header_accepts_pasted_curl_from_stdin():
+    """host のファイルは container から見えない。貼り付けを直接受け取れること。"""
+    curl = "curl 'https://www.oanda.jp/' -H 'cookie: JSESSIONID=abc'"
+    assert dl.load_cookie_header(None, env={}, stdin_text=curl) == "JSESSIONID=abc"
+
+
 def test_parse_ym_rejects_bad_format():
     assert dl.parse_ym("2020-05") == (2020, 5)
     with pytest.raises(ValueError):

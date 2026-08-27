@@ -13,14 +13,19 @@ UI と同じ 2 段の HTTP 呼出をそのまま自動化するだけであり�
 
 認証:
     マイページのログインセッション Cookie が必須（未ログインではページに一覧が出ない）。
-    ``--cookie-file`` で渡す。**最短手順（Chrome / macOS）**:
+    ブラウザは host（macOS）側・本スクリプトは container 側で動くため、**host に保存した
+    ファイルは container から見えない**。よって既定の受け口は **stdin への貼り付け** とする。
+
+    **最短手順（Chrome / macOS）**:
       1. ログイン済みで https://www.oanda.jp/trade/web/tools/tickDownload を開く
       2. ``⌥⌘I`` で DevTools を開き **Network** タブ → ``⌘R`` で再読込
       3. 一覧の一番上の行 ``tickDownload`` を右クリック → **Copy** → **Copy as cURL**
-      4. ``pbpaste > /tmp/oanda_cookie.txt``
-    貼り付けた cURL から cookie を自動抽出する。``Cookie: a=1; b=2`` 形式や
-    Netscape cookies.txt も同じ引数で受け付ける（自動判別）。
-    環境変数 ``OANDA_COOKIE`` でも渡せる。**Cookie をリポジトリへ置かないこと**。
+      4. container のターミナルで ``python -m tools.download_oanda_ticks --cookie-stdin``
+         を実行し、``⌘V`` で貼り付け → Enter → ``Ctrl-D``
+
+    貼り付けた cURL から cookie を自動抽出する。``Cookie: a=1; b=2`` 形式や Netscape
+    cookies.txt も同じ経路で受け付ける（自動判別）。``--cookie-file`` / 環境変数
+    ``OANDA_COOKIE`` も使える。**Cookie をリポジトリへ置かないこと**。
 
 保存:
     既定は ``DATA_DIR/oanda_ticks/<PAIR>/ticks_<PAIR>_<YYYY-MM>.zip``（gitignore 対象）。
@@ -200,16 +205,27 @@ def cookie_header_from_text(text: str) -> str:
     return raw
 
 
-def load_cookie_header(cookie_file: Optional[str], env: "Optional[Dict[str, str]]" = None) -> str:
-    """``--cookie-file`` か環境変数 ``OANDA_COOKIE`` から Cookie ヘッダ値を得る。"""
+def load_cookie_header(
+    cookie_file: Optional[str],
+    env: "Optional[Dict[str, str]]" = None,
+    stdin_text: Optional[str] = None,
+) -> str:
+    """貼り付け（stdin）・ファイル・環境変数のいずれかから Cookie ヘッダ値を得る。
+
+    ブラウザは host（macOS）側、本スクリプトは container 側で動くため、host に保存した
+    ファイルは container から見えない。既定の受け口を **stdin への貼り付け** とする。
+    """
     env = os.environ if env is None else env
+    if stdin_text is not None:
+        return cookie_header_from_text(stdin_text)
     if cookie_file:
         return cookie_header_from_text(Path(cookie_file).read_text(encoding="utf-8"))
     raw = env.get("OANDA_COOKIE")
     if raw:
         return cookie_header_from_text(raw)
     raise AuthError(
-        "Cookie が指定されていません。--cookie-file を渡すか環境変数 OANDA_COOKIE を設定してください。"
+        "Cookie が指定されていません。--cookie-stdin を付けて Copy as cURL を貼り付けるか、"
+        "--cookie-file / 環境変数 OANDA_COOKIE を使ってください。"
     )
 
 
@@ -364,10 +380,15 @@ def fetch_one(fetcher, archive: Archive, dest: Path, retries: int, backoff: floa
     return size, digest, names
 
 
-def run(args: argparse.Namespace, fetcher=None) -> int:
+def run(args: argparse.Namespace, fetcher=None, stdin=None) -> int:
     out_dir = Path(args.out_dir)
     if fetcher is None:
-        fetcher = RequestsFetcher(load_cookie_header(args.cookie_file))
+        stdin_text = None
+        if getattr(args, "cookie_stdin", False):
+            stream = sys.stdin if stdin is None else stdin
+            print("Copy as cURL を貼り付けて Enter → Ctrl-D:", file=sys.stderr)
+            stdin_text = stream.read()
+        fetcher = RequestsFetcher(load_cookie_header(args.cookie_file, stdin_text=stdin_text))
 
     html = _with_retry(lambda: fetcher.get_text(PAGE_URL), args.retries, args.backoff, "tickDownload ページ取得")
     archives = parse_archives(html)
@@ -443,6 +464,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--since", default="2020-05", help="開始年月 YYYY-MM（既定 2020-05・両端含む）")
     p.add_argument("--until", default=None, help="終了年月 YYYY-MM（既定: ページの最新月まで）")
     p.add_argument("--out-dir", default=str(DATA_DIR / "oanda_ticks"), help="保存先ディレクトリ")
+    p.add_argument("--cookie-stdin", action="store_true",
+                   help="Copy as cURL の貼り付けを標準入力から受け取る（**推奨**・ファイル不要）")
     p.add_argument("--cookie-file", default=None,
                    help="Chrome の Copy as cURL を貼ったファイル（Cookie ヘッダ値・cookies.txt も可。"
                         "既定は環境変数 OANDA_COOKIE）")
@@ -469,6 +492,9 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
         return run(args)
     except AuthError as exc:
         LOG.error("認証エラー: %s", exc)
+        return 2
+    except ValueError as exc:  # Cookie の書式不正など、利用者が直せる入力エラー。
+        LOG.error("入力エラー: %s", exc)
         return 2
 
 
