@@ -13,9 +13,13 @@ UI と同じ 2 段の HTTP 呼出をそのまま自動化するだけであり�
 
 認証:
     マイページのログインセッション Cookie が必須（未ログインではページに一覧が出ない）。
-    ``--cookie-file`` で渡す。ファイル内容は次のいずれでもよい（自動判別）:
-      - ブラウザの DevTools > Network > 任意のリクエスト > Request Headers の ``Cookie:`` 行
-      - Netscape 形式の cookies.txt（``# Netscape`` で始まる、または TAB 区切り 7 列）
+    ``--cookie-file`` で渡す。**最短手順（Chrome / macOS）**:
+      1. ログイン済みで https://www.oanda.jp/trade/web/tools/tickDownload を開く
+      2. ``⌥⌘I`` で DevTools を開き **Network** タブ → ``⌘R`` で再読込
+      3. 一覧の一番上の行 ``tickDownload`` を右クリック → **Copy** → **Copy as cURL**
+      4. ``pbpaste > /tmp/oanda_cookie.txt``
+    貼り付けた cURL から cookie を自動抽出する。``Cookie: a=1; b=2`` 形式や
+    Netscape cookies.txt も同じ引数で受け付ける（自動判別）。
     環境変数 ``OANDA_COOKIE`` でも渡せる。**Cookie をリポジトリへ置かないこと**。
 
 保存:
@@ -138,13 +142,35 @@ def select_archives(
     return sorted(out, key=lambda a: (a.pair, a.year, a.month))
 
 
+# Chrome の「Copy as cURL」が出す cookie ヘッダ（``-H $'cookie: …'`` / ``-b '…'`` の双方）。
+_CURL_COOKIE_RE = re.compile(r"""(?:-H|--header)\s+\$?(['"])\s*cookie:\s*(?P<v>.*?)(?<!\\)\1"""
+                             r"""|(?:-b|--cookie)\s+\$?(['"])(?P<v2>.*?)(?<!\\)\3""",
+                             re.IGNORECASE | re.DOTALL)
+
+
+def _unescape_shell_single_quoted(value: str) -> str:
+    """``$'…'`` 内のエスケープを戻す（Chrome は ``\\'``・``\\\\`` を使う）。"""
+    return value.replace("\\'", "'").replace("\\\\", "\\")
+
+
 def cookie_header_from_text(text: str) -> str:
     """Cookie ファイルの中身を ``Cookie:`` ヘッダ値へ正規化する。
 
-    受け付ける形式:
-      - ``Cookie: a=1; b=2`` / ``a=1; b=2``（DevTools からのコピー）
+    受け付ける形式（自動判別）:
+      - Chrome DevTools の「Copy as cURL」をそのまま貼ったもの（**推奨・最短**）
+      - ``Cookie: a=1; b=2`` / ``a=1; b=2``（Request Headers からのコピー）
       - Netscape cookies.txt（TAB 区切り 7 列・``#`` 始まりはコメント）
     """
+    if "curl " in text:
+        m = _CURL_COOKIE_RE.search(text)
+        if m:
+            raw = m.group("v") if m.group("v") is not None else m.group("v2")
+            return _unescape_shell_single_quoted(raw).strip()
+        raise ValueError(
+            "cURL は見つかりましたが cookie ヘッダがありません。"
+            "ログイン済みのタブで Copy as cURL し直してください。"
+        )
+
     lines = [ln for ln in text.splitlines() if ln.strip()]
     data_lines = [ln for ln in lines if not ln.lstrip().startswith("#")]
     netscape = [ln for ln in data_lines if ln.count("\t") >= 6]
@@ -418,7 +444,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--until", default=None, help="終了年月 YYYY-MM（既定: ページの最新月まで）")
     p.add_argument("--out-dir", default=str(DATA_DIR / "oanda_ticks"), help="保存先ディレクトリ")
     p.add_argument("--cookie-file", default=None,
-                   help="Cookie ヘッダ値 or Netscape cookies.txt のファイル（既定は環境変数 OANDA_COOKIE）")
+                   help="Chrome の Copy as cURL を貼ったファイル（Cookie ヘッダ値・cookies.txt も可。"
+                        "既定は環境変数 OANDA_COOKIE）")
     p.add_argument("--sleep", type=float, default=2.0, help="連続取得の間隔秒（既定 2.0）")
     p.add_argument("--retries", type=int, default=3, help="一時障害の再試行回数（既定 3）")
     p.add_argument("--backoff", type=float, default=2.0, help="再試行の初期待機秒（既定 2.0・指数増加）")

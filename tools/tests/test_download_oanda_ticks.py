@@ -106,6 +106,27 @@ def test_cookie_header_from_text(text, expected):
     assert dl.cookie_header_from_text(text) == expected
 
 
+def test_cookie_header_from_chrome_copy_as_curl():
+    """Chrome の「Copy as cURL」をそのまま貼っても通る（手作業を増やさない）。"""
+    curl = (
+        "curl 'https://www.oanda.jp/trade/web/tools/tickDownload' \\\n"
+        "  -H 'accept: text/html' \\\n"
+        "  -H $'cookie: JSESSIONID=abc; SESSION=d\\'ef; other=1' \\\n"
+        "  -H 'user-agent: Mozilla/5.0'\n"
+    )
+    assert dl.cookie_header_from_text(curl) == "JSESSIONID=abc; SESSION=d'ef; other=1"
+
+
+def test_cookie_header_from_curl_with_b_flag():
+    curl = "curl 'https://www.oanda.jp/' -b 'JSESSIONID=abc; other=1' --compressed"
+    assert dl.cookie_header_from_text(curl) == "JSESSIONID=abc; other=1"
+
+
+def test_cookie_header_from_curl_without_cookie_is_rejected():
+    with pytest.raises(ValueError):
+        dl.cookie_header_from_text("curl 'https://www.oanda.jp/' -H 'accept: */*'")
+
+
 def test_cookie_header_rejects_garbage():
     with pytest.raises(ValueError):
         dl.cookie_header_from_text("これは Cookie ではありません")
